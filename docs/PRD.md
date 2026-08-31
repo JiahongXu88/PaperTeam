@@ -119,6 +119,8 @@ Linux Server
 7. 历史版本
 8. 项目设置
 
+其中「文献与证据」页面是项目文献库（Project Literature Library）与 Evidence Store 的统一管理入口（见第 6 章）。
+
 ### 4.2 系统管理
 面向管理员。
 
@@ -165,12 +167,21 @@ projects/thesis-001/
 ├── figures/
 ├── tables/
 ├── sources/
+│   ├── papers/      # 原始论文文件（PDF / BibTeX 等）
+│   ├── parsed/      # 解析后的结构化内容
+│   └── metadata/    # 文献元数据
 ├── evidence/
 ├── reviews/
 ├── data/
 ├── build/
 └── project.json
 ```
+
+目录约定说明：
+
+- `sources/` 承载项目文献库的原始论文与解析产物，`evidence/` 承载 Evidence Store 数据
+- 原始论文、解析数据、Evidence 三者保持清晰边界，不混用
+- 以上为逻辑划分；检索索引等派生产物的物理存放位置（项目目录内或独立的本地存储）由实现决定，本节只约定逻辑关系（见 6.7）
 
 ## 5.2 项目首页
 
@@ -199,9 +210,42 @@ projects/thesis-001/
 
 # 6. 资料上传与文献管理
 
-## 6.1 文件上传
+## 6.1 项目文献库（Project Literature Library）
 
-支持：
+每个论文项目拥有一个独立的项目文献库，作为该项目全部参考文献及其解析内容的统一存放与检索单元：
+
+```text
+论文项目 A → 项目文献库 A
+论文项目 B → 项目文献库 B
+```
+
+基本约定：
+
+- 默认情况下，不同项目之间的文献、检索索引与 Evidence 相互隔离
+- 第一版不建设跨项目的全局公共文献知识库
+- 项目文献库的生命周期与论文项目绑定：
+  - 用户关闭浏览器后仍然保留
+  - 后续继续该论文时仍可使用
+  - 删除论文项目时，可随项目一起删除
+  - 用户可主动从项目文献库中删除某一篇文献
+- 项目文献库是一项产品能力，不与任何具体存储或数据库技术绑定；第一版允许采用轻量级本地存储与索引实现，具体选型由后续 Architecture / ADR 决定
+
+「文献与证据」页面是项目文献库的管理入口。
+
+## 6.2 添加参考文献
+
+在「文献与证据」页面提供明显的「添加参考文献」入口。
+
+最终产品能力覆盖以下来源（第一版实现时可分阶段支持）：
+
+- 上传本地 PDF
+- 上传 BibTeX
+- 输入 DOI 导入
+- 输入 arXiv 链接 / ID 导入
+- 输入论文 URL 导入
+
+除参考文献外，项目仍支持上传一般性资料：
+
 - PDF
 - DOCX
 - TXT
@@ -212,11 +256,12 @@ projects/thesis-001/
 - JPG
 - BibTeX
 
-支持拖拽上传。
+支持拖拽上传。上传的资料统一存放于项目 `sources/` 目录（见 5.1），其中被识别为文献的条目纳入项目文献库管理。
 
-## 6.2 文献识别
+## 6.3 文献识别
 
-上传文献后自动提取：
+文献进入项目文献库后自动提取：
+
 - 标题
 - 作者
 - 年份
@@ -225,24 +270,92 @@ projects/thesis-001/
 - 摘要
 - 关键词
 
-## 6.3 文献状态
+## 6.4 文献来源
 
-每篇文献显示：
-- 信息完整
-- 缺少 DOI
-- 信息待确认
-- 已进入 Evidence Store
+系统区分文献进入项目文献库的方式：
 
-## 6.4 Evidence Store
+- USER_ADDED：用户主动上传或导入
+- AGENT_RETRIEVED：Researcher 网络检索获得
 
-系统建立统一证据库。
+「用户上传」只说明文献的进入方式，不代表其内容绝对可信。USER_ADDED 不等于事实意义上的 Trusted 来源，用户上传的文献同样需要经过 Evidence 提取与核验流程。
 
-建议结构：
+## 6.5 文献状态
+
+每篇文献具有明确的生命周期状态：
+
+- 解析中：正在提取元数据与正文
+- 可使用：解析完成，可被 Agent 检索与引用
+- 信息待确认：元数据缺失或存疑（如缺少 DOI），需用户确认
+- 验证通过：文献内容与引用信息经过核验
+- 已拒绝 / 不建议引用：质量不满足要求或被判定不适合引用
+- 解析失败：无法解析，可重新上传或删除
+
+## 6.6 重点参考（Preferred Reference）
+
+用户可将某篇文献标记为「重点参考」：
+
+- Agent 检索、Evidence 提取与写作时提高该文献的优先级
+- 标记在前端可见，可随时取消
+
+## 6.7 文献解析与项目级检索
+
+文献加入项目文献库后，系统需要建立可供 Agent 使用的结构化内容：
+
+```text
+PDF / 文献
+   ↓
+元数据提取
+   ↓
+正文解析
+   ↓
+按章节 / 段落等合理粒度建立可检索内容
+   ↓
+项目级检索索引
+   ↓
+Researcher / Writer / Reviewer 查询
+```
+
+以上为产品能力要求，不限定必须使用特定关系型数据库或向量检索实现；第一版允许采用轻量级本地存储与索引，具体技术由后续 Architecture / ADR 决定。
+
+## 6.8 文献管理能力
+
+用户在「文献与证据」页面可以：
+
+- 查看已添加的论文列表
+- 搜索文献
+- 删除文献
+- 查看解析状态
+- 查看标题、作者、年份、DOI、来源等元数据
+- 标记 / 取消「重点参考」
+- 查看某篇文献产生了哪些 Evidence
+- 查看论文正文中哪些引用使用了这篇文献
+
+## 6.9 Evidence Store 与项目文献库的关系
+
+系统为每个项目建立 Evidence Store，与项目文献库分工如下：
+
+- Project Literature Library：保存和检索「原始参考资料」
+- Evidence Store：保存「从原始资料中提取出来、能够支撑论文具体 Claim 的证据」
+
+二者构成上下游关系：
+
+```text
+Project Literature Library（原始文献）
+        ↓
+Researcher 阅读 / 检索
+        ↓
+Evidence Store（结构化证据）
+        ↓
+Writer / Fact Checker / Academic Reviewer
+```
+
+Evidence 必须尽量能够反向定位原始文献。建议结构：
 
 ```json
 {
   "evidence_id": "E023",
   "claim": "论文可支持的事实性观点",
+  "paper_id": "P012",
   "source": {
     "title": "",
     "authors": [],
@@ -250,17 +363,56 @@ projects/thesis-001/
     "doi": "",
     "url": ""
   },
-  "location": "Section 4.2 / Table 3",
+  "location": {
+    "page": 7,
+    "section": "4.2",
+    "chunk": "para-12"
+  },
   "evidence": "",
   "confidence": 0.94
 }
 ```
 
+字段说明：
+
+- `paper_id`：关联项目文献库中的原始文献
+- `source`：标题、作者、年份、DOI / URL 等文献信息
+- `location`：页码、Section、段落或 chunk 定位
+- `claim`：该 Evidence 支撑的具体观点
+- `evidence`：证据内容
+- `confidence`：证据强度
+
+Evidence 不应成为与原始论文失去关联的孤立文本。
+
 Evidence 用于：
+
 - Writer 写作
 - Fact Checker 核验
 - Citation Reviewer 核验
 - Academic Reviewer 判断论据充分性
+
+## 6.10 资料检索范围控制
+
+用户可为论文任务选择资料检索范围：
+
+- 仅使用当前项目文献库
+- 优先使用项目文献库，证据不足时允许网络检索
+- 允许 Researcher 自由补充外部文献
+
+默认采用：
+
+> 优先使用项目文献库，证据不足时允许 Researcher 补充网络检索。
+
+前端可表现为类似：
+
+```text
+参考资料范围：
+○ 仅项目文献库
+● 优先项目文献库，不足时联网检索
+○ 允许自由检索
+```
+
+该设置约束 Researcher 的检索行为（见 7.2）。
 
 ---
 
@@ -281,7 +433,8 @@ Evidence 用于：
 ## 7.2 Researcher
 
 职责：
-- 根据论文主题检索文献
+- 根据论文主题与资料检索范围检索文献
+- 优先检索项目文献库与已有 Evidence
 - 阅读用户上传文献
 - 读取已有 Evidence
 - 提取可引用事实
@@ -289,10 +442,20 @@ Evidence 用于：
 - 标记证据不足部分
 - 为 Writer 和 Reviewer 提供研究材料
 
+检索策略：
+
+- 默认优先搜索项目文献库和已有 Evidence
+- 项目文献库与已有 Evidence 不足时，再根据 Workflow 配置与用户设置的资料检索范围进行网络检索（见 6.10）
+- 网络检索获得的新论文可进入项目文献库，来源标记为 AGENT_RETRIEVED，先作为候选文献，经解析与确认后再用于写作与引用
+- 「重点参考」文献在检索与 Evidence 提取中享有更高优先级（见 6.6）
+
 ## 7.3 Writer
 
 职责：
 - 根据论文大纲、已有正文、Evidence 和用户要求撰写内容
+- 优先基于已有 Evidence 和项目文献库写作，引用须指向项目文献库中的真实文献
+- 不得为了完成文字而虚构论文或引用
+- 缺乏可靠来源时，显式标记证据不足，不强行生成看似有据的内容
 - 输出 LaTeX
 - 使用统一引用格式
 - 对缺乏证据的内容做显式标记
@@ -303,9 +466,23 @@ Evidence 用于：
 职责：
 - 将正文拆分为 factual claims
 - 对每个 claim 查询 Evidence
-- 必要时进一步读取原始文献
+- 必要时进一步读取项目文献库中的原始文献
 - 判断事实性声明是否有充分证据
 - 输出结构化事实审查结果
+
+核验链路：
+
+```text
+Claim
+  ↓
+Citation / Evidence
+  ↓
+Project Literature Library
+  ↓
+原始论文具体位置（页码 / Section / 段落）
+```
+
+Fact Checker 检查正文 Claim 时应能沿该链路追溯：从正文引用回查 Evidence，再回查项目文献库中的原始论文，并定位到具体页码、章节或段落（见 6.9）。
 
 状态统一为：
 - SUPPORTED
@@ -440,6 +617,8 @@ Final Editor
       ↓
 完成
 ```
+
+其中 Researcher 环节遵循资料检索范围设置（见 6.10）：优先检索项目文献库与已有 Evidence，证据不足时再按用户设置补充网络检索。
 
 ## 8.2 全面审稿流程
 
@@ -1069,6 +1248,8 @@ SystemLog
 ```text
 /api/projects
 /api/projects/:id/files
+/api/projects/:id/sources
+/api/projects/:id/evidence
 /api/projects/:id/write
 /api/projects/:id/review
 /api/projects/:id/revise
@@ -1168,39 +1349,74 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 
 # 25. MVP 开发范围
 
-## 第一阶段：基础运行
+整体阶段顺序：
+
+```text
+Runtime 基础
+  → Agent 基础调用与项目 / LaTeX 基础
+  → Project Literature Library + Evidence Store
+  → Researcher / Writer / Fact Checker 核心闭环
+  → 完整多 Agent Workflow
+  → 视觉审稿
+  → 系统管理
+```
+
+其中「Project Literature Library + Evidence Store」必须先于 Researcher / Fact Checker 完整能力落地：二者的检索、Evidence 生成与事实核验都依赖稳定的项目级文献检索和证据来源。
+
+## 第一阶段：Runtime 基础
 
 完成：
 - Linux 部署
 - OpenClaw Gateway
 - PaperTeam Backend
-- Paper Manager
-- Researcher
-- Writer
-- Fact Checker
+- AgentRuntimeAdapter
+
+当前进度：M1「Backend Runtime Skeleton」已完成（Backend 基础工程、`AgentRuntime` 抽象、`OpenClawRuntimeAdapter`、Gateway 健康检查），待真实 Gateway 环境验证（见 PROJECT_STATUS.md）。
+
+## 第二阶段：Agent 基础调用与项目 / LaTeX 基础
+
+完成：
+- runAgent / getTask / cancelTask / streamEvents 等 Runtime 接口的完整实现
+- Paper Manager 基础调度
+- 基础项目目录与 project.json
+- 项目列表、新建项目
+- 资料上传（文件上传）
+- LaTeX 编译
+- PDF 输出
+- 历史版本（Git 版本管理）
+
+## 第三阶段：Project Literature Library + Evidence Store
+
+完成：
+- 项目文献库（项目级隔离、生命周期与论文项目绑定）
+- 添加参考文献：本地 PDF / BibTeX / DOI / arXiv 链接或 ID / 论文 URL
+- 文献元数据识别与文献状态（USER_ADDED / AGENT_RETRIEVED、解析状态）
+- 重点参考（Preferred Reference）
+- 文献解析与项目级检索
+- Evidence Store 与证据反向定位原始文献
+- 「文献与证据」页面（搜索 / 删除 / 解析状态 / Evidence 关联 / 引用反查）
+- 资料检索范围控制
+
+## 第四阶段：Researcher / Writer / Fact Checker 核心闭环
+
+完成：
+- Researcher：优先项目文献库检索，按资料检索范围受控补充网络检索
+- Writer：基于 Evidence 与项目文献库写作
+- Fact Checker：可追溯核验链路
+- 写作流程最小闭环（见场景一）
+
+## 第五阶段：完整多 Agent Workflow
+
+完成：
 - Academic Reviewer
 - Style Reviewer
 - Final Editor
-- 基础项目目录
-- LaTeX 编译
-- PDF 输出
-- AgentRuntimeAdapter
+- 全面审稿流程
+- 修改闭环
+- 章节列表、写作任务、审稿报告
+- Workflow 进度、PDF 查看、任务状态
 
-## 第二阶段：论文工作台
-
-完成：
-- 项目列表
-- 新建项目
-- 上传资料
-- 章节列表
-- 写作任务
-- 全面审稿
-- 审稿报告
-- Workflow 进度
-- PDF 查看
-- 历史版本
-
-## 第三阶段：视觉审稿
+## 第六阶段：视觉审稿
 
 完成：
 - PDF 页面渲染
@@ -1210,7 +1426,7 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - LaTeX Engineer
 - 自动修复闭环
 
-## 第四阶段：系统管理
+## 第七阶段：系统管理
 
 完成：
 - 系统状态
@@ -1232,13 +1448,13 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 
 用户：
 1. 新建论文
-2. 上传参考文献
+2. 在「文献与证据」页添加参考文献（上传 PDF / 导入 BibTeX 或 DOI）
 3. 选择“第三章”
 4. 输入“根据现有资料完善方法章节”
 5. 点击开始
 
 系统：
-1. Researcher 整理 Evidence
+1. Researcher 优先检索项目文献库并整理 Evidence
 2. Writer 生成 LaTeX
 3. Reviewer 自动审查
 4. Final Editor 修改
@@ -1249,6 +1465,7 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - 能查看最终章节
 - 能查看审稿问题
 - 能生成 PDF
+- 参考文献可在项目文献库中查看，正文引用可追溯到原始文献
 
 ## 场景二：全面审稿
 
