@@ -4,8 +4,10 @@
 
 ## 当前阶段
 
-**M1：Backend Runtime Skeleton 已完成（待真实 Gateway 环境验证）**。
-Backend 可启动，通过统一 `AgentRuntime` 接口与 OpenClaw Gateway 完成健康检查。
+**第一阶段（Runtime 基础）：M1 Backend Runtime Skeleton 已完成（待真实 Gateway 环境验证）**。
+Backend 可启动，通过统一 `AgentRuntime` 接口与 OpenClaw Gateway 完成健康检查；`AgentRuntime` 抽象、`OpenClawRuntimeAdapter`、Gateway health check 均已完成，真实 OpenClaw Gateway 连通仍属待环境验证项。
+
+**下一阶段：第二阶段「Agent 基础调用与项目 / LaTeX 基础」，尚未开始。**
 
 ## M1：Backend Runtime Skeleton
 
@@ -46,7 +48,14 @@ M1 边界：未实现任何业务 Agent、Workflow、数据库、前端等（见
 
 ## MVP 阶段划分（摘自 PRD §25）
 
-1. **基础运行**：Linux 部署 + OpenClaw Gateway + Backend + 核心 Agent + AgentRuntimeAdapter + LaTeX 编译 + PDF 输出
-2. **论文工作台**：项目列表 / 新建 / 上传资料 / 写作任务 / 全面审稿 / 审稿报告 / Workflow 进度 / PDF 查看 / 历史版本
-3. **视觉审稿**：PDF 页面渲染 + Visual Reviewer + 问题定位 + LaTeX Engineer 自动修复闭环
-4. **系统管理**：系统状态 / Gateway 管理 / Agent 管理 / 模型管理 / Workflow 配置 / 日志 / 系统诊断 / 文件管理 / Command Center / Web Terminal
+| # | 阶段 | 范围 | 状态 |
+|---|---|---|---|
+| 1 | Runtime 基础 | Linux 部署、OpenClaw Gateway、PaperTeam Backend、AgentRuntimeAdapter | M1 Backend Runtime Skeleton 已完成，待真实 Gateway 环境验证 |
+| 2 | Agent 基础调用与项目 / LaTeX 基础 | runAgent / getTask / streamEvents 等完整 Runtime 调用、Paper Manager 基础调度、基础项目目录与 project.json、项目列表 / 新建项目、资料上传、LaTeX 编译、PDF 输出、历史版本（Git） | 未开始（当前下一阶段） |
+| 3 | Project Literature Library + Evidence Store | 项目文献库、添加参考文献（PDF / BibTeX / DOI / arXiv / URL）、文献解析与项目级检索、Evidence 反向定位原始文献、「文献与证据」页面、资料检索范围控制 | 未开始 |
+| 4 | Researcher / Writer / Fact Checker 核心闭环 | 优先项目文献库检索 + 受控网络补充、基于 Evidence 写作、可追溯核验链路、写作流程最小闭环 | 未开始 |
+| 5 | 完整多 Agent Workflow | Academic Reviewer、Style Reviewer、Final Editor、全面审稿、修改闭环、审稿报告与 Workflow 进度 | 未开始 |
+| 6 | 视觉审稿 | PDF 页面渲染、Visual Reviewer、PDF 问题定位、LaTeX Engineer、自动修复闭环 | 未开始 |
+| 7 | 系统管理 | 系统状态、Gateway / Agent / 模型 / Workflow 配置、日志、系统诊断、文件管理、Command Center、Web Terminal | 未开始 |
+
+其中第 3 阶段（Project Literature Library + Evidence Store）必须先于 Researcher / Fact Checker 完整能力落地：二者的检索、Evidence 生成与事实核验都依赖稳定的项目级文献检索和证据来源（见 PRD §25）。
