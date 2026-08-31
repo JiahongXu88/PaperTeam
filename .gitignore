@@ -43,7 +43,8 @@ pids/
 *.seed
 
 # ===== 运行时数据 =====
-runtime/
+# 锚定仓库根，避免误忽略代码目录（如 backend/src/runtime/）
+/runtime/
 tmp/
 temp/
 .cache/

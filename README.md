@@ -26,7 +26,23 @@ PaperTeam/
 
 ## 快速开始
 
-项目尚处于初始化阶段，开发与部署指南待补充。
+### Backend（M1：Runtime Skeleton）
+
+```bash
+cd backend
+npm install
+npm run build
+npm test
+# 复制并填写环境变量（至少需要 OPENCLAW_GATEWAY_URL）
+cp ../.env.example ../.env
+npm start
+```
+
+启动后 Backend 会加载配置、初始化 `OpenClawRuntimeAdapter` 并对 OpenClaw Gateway
+执行一次健康检查（真实接口：`GET {OPENCLAW_GATEWAY_URL}/health`），
+同时提供自身的 `GET /health`（Node 原生 HTTP，无 Web 框架）。
+
+其余部分的开发与部署指南待补充。
 
 ## 环境变量
 
