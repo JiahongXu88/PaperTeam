@@ -1,0 +1,71 @@
+# ===== 密钥与环境 =====
+.env
+.env.*
+!.env.example
+
+# ===== Node =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ===== 构建产物 =====
+dist/
+build/
+out/
+.next/
+.nuxt/
+coverage/
+*.tsbuildinfo
+
+# ===== LaTeX 编译中间产物 =====
+*.aux
+*.bbl
+*.blg
+*.bcf
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.toc
+*.out
+*.synctex.gz
+*.synctex(busy)
+*.xdv
+*.run.xml
+
+# ===== 日志 =====
+logs/
+*.log
+pids/
+*.pid
+*.seed
+
+# ===== 运行时数据 =====
+runtime/
+tmp/
+temp/
+.cache/
+*.pid.lock
+
+# ===== 数据库数据 =====
+data/
+*.sqlite
+*.sqlite3
+*.db
+
+# ===== 用户论文项目数据（服务器工作区，不入库） =====
+projects/
+workspace/
+papers/
+uploads/
+evidence-store/
+
+# ===== 编辑器 / 操作系统 =====
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
