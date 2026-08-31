@@ -124,10 +124,10 @@ describe("OpenClawRuntimeAdapter.healthCheck", () => {
     expect(() => new OpenClawRuntimeAdapter({ baseUrl: "ftp://host:1" })).toThrow(/http/);
   });
 
-  it("M1 范围外的方法抛出 RuntimeCapabilityError，而非假实现", () => {
+  it("M2 范围外的方法抛出 RuntimeCapabilityError，而非假实现", () => {
     const adapter = new OpenClawRuntimeAdapter({ baseUrl: "http://127.0.0.1:18789" });
 
-    expect(() => adapter.runAgent({ agentId: "writer", task: "t" })).toThrow(RuntimeCapabilityError);
+    // runAgent 已在 M2 实现（见 runAgent.test.ts），这里只验证仍未实现的方法
     expect(() => adapter.getTask("t1")).toThrow(RuntimeCapabilityError);
     expect(() => adapter.cancelTask("t1")).toThrow(RuntimeCapabilityError);
     expect(() => adapter.sendMessage("s1", "hello")).toThrow(RuntimeCapabilityError);

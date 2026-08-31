@@ -3,19 +3,24 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ConfigError, loadConfig } from "./config/config.js";
 import { applyEnvFile, findEnvFile } from "./config/envFile.js";
+import { GenerationService } from "./generation/GenerationService.js";
 import { createBackendHttpServer } from "./httpServer.js";
+import { LatexCompiler } from "./latex/LatexCompiler.js";
+import { ProjectStore } from "./project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
+import { WriterService } from "./writer/WriterService.js";
 
 /**
- * PaperTeam Backend 启动入口（M1：Runtime Skeleton）。
+ * PaperTeam Backend 启动入口（M2：Agent Invocation + Project + LaTeX Skeleton）。
  *
  * 启动流程：
  *   1. 加载 .env（可选，仅补缺，不覆盖真实环境变量）
  *   2. 加载并校验配置
- *   3. 初始化 OpenClawRuntimeAdapter（AgentRuntime 第一版实现）
- *   4. 对 OpenClaw Gateway 执行一次健康检查并输出结果
- *   5. 启动最小 HTTP 服务（GET /health）
+ *   3. 装配服务：ProjectStore / WriterService / GenerationService / LatexCompiler
+ *   4. 初始化 OpenClawRuntimeAdapter（AgentRuntime 第一版实现）
+ *   5. 对 OpenClaw Gateway 执行一次健康检查并输出结果
+ *   6. 启动 HTTP 服务（GET /health + 项目 API）
  */
 
 export async function startBackend(): Promise<void> {
@@ -33,21 +38,42 @@ export async function startBackend(): Promise<void> {
     throw error;
   }
 
-  console.log(`  env:     ${config.env}`);
-  console.log(`  gateway: ${config.gateway.url}`);
+  console.log(`  env:          ${config.env}`);
+  console.log(`  gateway:      ${config.gateway.url}`);
+  console.log(`  projectsRoot: ${config.projectsRoot}`);
+  console.log(`  writerAgent:  ${config.writerAgentId}`);
 
   const runtime: AgentRuntime = new OpenClawRuntimeAdapter({
     baseUrl: config.gateway.url,
     apiKey: config.gateway.apiKey,
     timeoutMs: config.gateway.healthTimeoutMs,
+    rpcTimeoutMs: config.gateway.rpcTimeoutMs,
+    runTimeoutMs: config.gateway.runTimeoutMs,
+  });
+
+  const projects = new ProjectStore({ root: config.projectsRoot });
+  const writer = new WriterService({
+    runtime,
+    agentId: config.writerAgentId,
+    log: (message) => console.log(message),
+  });
+  const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
+  const generation = new GenerationService({
+    projects,
+    writer,
+    latex,
+    log: (message) => console.log(message),
   });
 
   const health = await runtime.healthCheck();
   reportGatewayHealth(health);
 
-  const server = createBackendHttpServer({ runtime });
+  const server = createBackendHttpServer({ runtime, projects, generation });
   server.listen(config.port, () => {
-    console.log(`PaperTeam Backend listening on http://localhost:${config.port} (GET /health)`);
+    console.log(
+      `PaperTeam Backend listening on http://localhost:${config.port}` +
+        ` (GET /health, POST /api/projects, POST /api/projects/:id/generate)`,
+    );
   });
 
   registerShutdown(server);
@@ -66,7 +92,7 @@ function loadDotEnvBestEffort(): void {
     return;
   }
   const applied = applyEnvFile(process.env, envFile.values);
-  console.log(`  dotenv:  ${envFile.path}（载入 ${applied.length} 个变量）`);
+  console.log(`  dotenv:       ${envFile.path}（载入 ${applied.length} 个变量）`);
 }
 
 function reportGatewayHealth(health: RuntimeHealth): void {
@@ -77,7 +103,9 @@ function reportGatewayHealth(health: RuntimeHealth): void {
   }
   console.log("OpenClaw Gateway: unavailable");
   console.log(`  reason: ${health.detail}`);
-  console.log("  提示：GET /health 会持续报告 Gateway 状态；请确认 Gateway 已启动并检查 OPENCLAW_GATEWAY_URL。");
+  console.log(
+    "  提示：GET /health 会持续报告 Gateway 状态；请确认 Gateway 已启动并检查 OPENCLAW_GATEWAY_URL。",
+  );
 }
 
 function registerShutdown(server: import("node:http").Server): void {

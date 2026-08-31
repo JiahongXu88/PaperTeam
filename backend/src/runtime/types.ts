@@ -39,23 +39,36 @@ export interface RuntimeHealth {
   checkedAt: string;
 }
 
-/** 发起一次 Agent 任务（后续里程碑实现） */
+/** 发起一次 Agent 任务（M2 起由 OpenClawRuntimeAdapter 真实执行） */
 export interface RunAgentInput {
   agentId: string;
   task: string;
   projectId?: string;
   inputFiles?: string[];
+  /** 本次任务的整体超时（毫秒）；缺省使用 Runtime 配置的默认值 */
+  timeoutMs?: number;
+  /** 附加到任务的业务侧标记（透传给 Adapter 诊断日志，不参与 Runtime 协议） */
+  metadata?: Record<string, unknown>;
 }
 
-/** Agent 任务（后续里程碑实现） */
+/**
+ * Agent 任务（M2：同步完成语义 —— runAgent() 返回时任务已达终态）。
+ * OpenClaw 特有标识（sessionKey、Gateway 请求 id 等）只保存在
+ * metadata 诊断字段中，业务层不得依赖其结构。
+ */
 export interface AgentTask {
   taskId: string;
   agentId: string;
   status: AgentTaskStatus;
   createdAt: string;
   updatedAt: string;
+  /** 任务实际执行的开始/结束时间（ISO 8601） */
+  startedAt?: string;
+  completedAt?: string;
   output?: string;
   error?: string;
+  /** 诊断元数据（内容由 Runtime 实现决定，仅用于排障） */
+  metadata?: Record<string, unknown>;
 }
 
 /** Agent 事件流事件（后续里程碑实现） */
@@ -82,13 +95,13 @@ export interface AgentRuntime {
   healthCheck(): Promise<RuntimeHealth>;
 }
 
-/** M1 范围外的方法被调用时抛出，避免留下静默的假实现 */
+/** M2 范围外的方法被调用时抛出，避免留下静默的假实现 */
 export class RuntimeCapabilityError extends Error {
   override readonly name = "RuntimeCapabilityError";
 
   constructor(method: keyof AgentRuntime, provider: RuntimeProvider) {
     super(
-      `AgentRuntime.${method}() 尚未实现（当前里程碑 M1 只提供 healthCheck，provider: ${provider}）`,
+      `AgentRuntime.${method}() 尚未实现（当前里程碑 M2 提供 healthCheck 与 runAgent，provider: ${provider}）`,
     );
   }
 }

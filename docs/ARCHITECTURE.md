@@ -66,6 +66,38 @@ interface AgentRuntime {
 - 任务状态统一为：`queued / running / completed / failed / cancelled`。
 - 未来替换或新增 Runtime（新 Agent 框架、本地模型等）不影响业务层。
 
+**runAgent 的真实映射（M2 已实现）**：
+
+```text
+AgentRuntime.runAgent(input)
+  → WebSocket 连接 Gateway 根路径（http(s):// 自动转 ws(s)://）
+  → connect 握手（operator 角色 + operator.read/write scope + auth.token）
+  → RPC "agent"        {message, agentId, idempotencyKey}      → {runId, sessionKey}
+  → RPC "agent.wait"   {runId, timeoutMs}（30s 分片轮询）        → 终态 {status:"ok"|"error", ...}
+  → RPC "chat.history" {sessionKey, limit, maxChars}            → 最后一条 assistant 消息全文
+  → 映射为 AgentTask{taskId=runId, status, output}
+```
+
+协议依据：OpenClaw 官方 `docs/gateway/protocol.md`、`docs/gateway/external-apps.md`
+（"For agent runs, start with the `agent` RPC and pair it with `agent.wait`"）与
+`@openclaw/gateway-protocol@2026.8.1` 的 `protocol.schema.json`。
+OpenClaw 特有标识（sessionKey 等）只存在于 Adapter 内部与 AgentTask.metadata 诊断字段。
+
+### 2.1.1 M2 Backend 模块划分
+
+```text
+backend/src/
+├── config/        配置加载与校验（gateway / projects / latex / writerAgentId）
+├── errors.ts      业务错误模型（稳定错误码 → HTTP 状态码映射）
+├── runtime/       AgentRuntime 契约 + OpenClawRuntimeAdapter
+│   └── openclaw/  GatewayWebSocket（Adapter 专用内部 WS 客户端）
+├── project/       ProjectStore（项目目录 / project.json / 路径安全）
+├── writer/        WriterService（Writer Prompt 组装 + LaTeX 输出校验）
+├── generation/    GenerationService（Writer → main.tex → LatexCompiler 最小编排）
+├── latex/         LatexCompiler（latexmk -xelatex / xelatex 探测与编译）
+└── httpServer.ts  Node 原生 HTTP：/health、/api/projects、/api/projects/:id/generate
+```
+
 ### 2.2 核心论文工作流
 
 **写作流程**（串行链）：

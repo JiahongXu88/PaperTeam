@@ -1,9 +1,11 @@
 /**
- * PaperTeam Backend 配置（M1 只覆盖启动 Runtime Skeleton 所需部分）。
+ * PaperTeam Backend 配置（M2 覆盖 Runtime 调用、项目与 LaTeX 编译所需部分）。
  *
  * 配置来源：环境变量（可选地从仓库根 / backend 目录的 .env 文件补缺）。
  * 语义与根目录 .env.example 保持一致，不引入新的必填项。
  */
+
+import { resolve } from "node:path";
 
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
@@ -18,22 +20,50 @@ export type NodeEnv = "development" | "production" | "test";
 export interface GatewayConfig {
   /** OpenClaw Gateway 基地址，例如 http://127.0.0.1:18789 */
   url: string;
-  /** Gateway API Key（M1 的 /health 探针无需鉴权；预留给后续 RPC 调用） */
+  /** Gateway API Key（/health 探针无需鉴权；WebSocket connect 握手使用） */
   apiKey?: string;
   /** 健康检查超时（毫秒） */
   healthTimeoutMs: number;
+  /** WebSocket 连接与单次 RPC 的默认超时（毫秒） */
+  rpcTimeoutMs: number;
+  /** 单次 runAgent 的整体超时（毫秒） */
+  runTimeoutMs: number;
+}
+
+export interface LatexConfig {
+  /** 单次 LaTeX 编译超时（毫秒） */
+  compileTimeoutMs: number;
 }
 
 export interface AppConfig {
   env: NodeEnv;
   port: number;
   gateway: GatewayConfig;
+  /** Writer Agent 对应的 OpenClaw agent id */
+  writerAgentId: string;
+  /** 论文项目工作区根目录（绝对路径） */
+  projectsRoot: string;
+  latex: LatexConfig;
 }
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 5000;
+const DEFAULT_RPC_TIMEOUT_MS = 15_000;
+const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+const DEFAULT_WRITER_AGENT_ID = "writer";
+const DEFAULT_PROJECTS_ROOT = "./projects";
+const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
+
 const HEALTH_TIMEOUT_MIN_MS = 100;
 const HEALTH_TIMEOUT_MAX_MS = 60_000;
+const RPC_TIMEOUT_MIN_MS = 1_000;
+const RPC_TIMEOUT_MAX_MS = 120_000;
+const RUN_TIMEOUT_MIN_MS = 1_000;
+const RUN_TIMEOUT_MAX_MS = 3_600_000;
+const LATEX_TIMEOUT_MIN_MS = 1_000;
+const LATEX_TIMEOUT_MAX_MS = 1_800_000;
+
+const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 const NODE_ENVS: readonly NodeEnv[] = ["development", "production", "test"];
 
@@ -45,6 +75,25 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       url: readGatewayUrl(source),
       apiKey: readOptionalValue(source, "OPENCLAW_GATEWAY_API_KEY"),
       healthTimeoutMs: readHealthTimeoutMs(source),
+      rpcTimeoutMs: readTimeoutMs(source, "OPENCLAW_GATEWAY_RPC_TIMEOUT_MS", {
+        default: DEFAULT_RPC_TIMEOUT_MS,
+        min: RPC_TIMEOUT_MIN_MS,
+        max: RPC_TIMEOUT_MAX_MS,
+      }),
+      runTimeoutMs: readTimeoutMs(source, "OPENCLAW_AGENT_RUN_TIMEOUT_MS", {
+        default: DEFAULT_RUN_TIMEOUT_MS,
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+    },
+    writerAgentId: readWriterAgentId(source),
+    projectsRoot: readProjectsRoot(source),
+    latex: {
+      compileTimeoutMs: readTimeoutMs(source, "LATEX_COMPILE_TIMEOUT_MS", {
+        default: DEFAULT_LATEX_COMPILE_TIMEOUT_MS,
+        min: LATEX_TIMEOUT_MIN_MS,
+        max: LATEX_TIMEOUT_MAX_MS,
+      }),
     },
   };
 }
@@ -105,18 +154,51 @@ function readGatewayUrl(source: Record<string, string | undefined>): string {
 }
 
 function readHealthTimeoutMs(source: Record<string, string | undefined>): number {
-  const key = "OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS";
+  return readTimeoutMs(source, "OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS", {
+    default: DEFAULT_HEALTH_TIMEOUT_MS,
+    min: HEALTH_TIMEOUT_MIN_MS,
+    max: HEALTH_TIMEOUT_MAX_MS,
+  });
+}
+
+/** 通用整型超时配置读取（缺省 / 越界报错） */
+function readTimeoutMs(
+  source: Record<string, string | undefined>,
+  key: string,
+  bounds: { default: number; min: number; max: number },
+): number {
   const raw = source[key];
   if (raw === undefined || raw.trim() === "") {
-    return DEFAULT_HEALTH_TIMEOUT_MS;
+    return bounds.default;
   }
   const ms = Number.parseInt(raw.trim(), 10);
-  if (!Number.isInteger(ms) || ms < HEALTH_TIMEOUT_MIN_MS || ms > HEALTH_TIMEOUT_MAX_MS) {
+  if (!Number.isInteger(ms) || ms < bounds.min || ms > bounds.max) {
     throw new ConfigError(
-      `${key} 必须是 ${HEALTH_TIMEOUT_MIN_MS}-${HEALTH_TIMEOUT_MAX_MS} 的整数（毫秒），当前为 "${raw.trim()}"`,
+      `${key} 必须是 ${bounds.min}-${bounds.max} 的整数（毫秒），当前为 "${raw.trim()}"`,
     );
   }
   return ms;
+}
+
+function readWriterAgentId(source: Record<string, string | undefined>): string {
+  const key = "OPENCLAW_WRITER_AGENT_ID";
+  const raw = (source[key] ?? "").trim();
+  if (raw === "") {
+    return DEFAULT_WRITER_AGENT_ID;
+  }
+  if (!AGENT_ID_PATTERN.test(raw)) {
+    throw new ConfigError(
+      `${key} 只能包含字母、数字、下划线或连字符（长度 1-64），当前为 "${raw}"`,
+    );
+  }
+  return raw;
+}
+
+function readProjectsRoot(source: Record<string, string | undefined>): string {
+  const key = "PROJECTS_ROOT";
+  const raw = (source[key] ?? "").trim() || DEFAULT_PROJECTS_ROOT;
+  // 相对路径基于进程工作目录解析为绝对路径，路径管理集中在服务端
+  return resolve(process.cwd(), raw);
 }
 
 function readOptionalValue(

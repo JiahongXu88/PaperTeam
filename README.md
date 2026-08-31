@@ -26,7 +26,7 @@ PaperTeam/
 
 ## 快速开始
 
-### Backend（M1：Runtime Skeleton）
+### Backend（M2：Agent Invocation + Project + LaTeX Skeleton）
 
 ```bash
 cd backend
@@ -39,8 +39,20 @@ npm start
 ```
 
 启动后 Backend 会加载配置、初始化 `OpenClawRuntimeAdapter` 并对 OpenClaw Gateway
-执行一次健康检查（真实接口：`GET {OPENCLAW_GATEWAY_URL}/health`），
-同时提供自身的 `GET /health`（Node 原生 HTTP，无 Web 框架）。
+执行一次健康检查（真实接口：`GET {OPENCLAW_GATEWAY_URL}/health`）。
+
+M2 起提供的 API（Node 原生 HTTP，无 Web 框架）：
+
+```text
+GET  /health                      存活探针（含 Gateway 实时健康）
+POST /api/projects                创建论文项目 {title}
+GET  /api/projects/:id            查询项目元数据
+POST /api/projects/:id/generate   Writer 写作 + LaTeX 编译 {prompt}
+```
+
+`generate` 的内部链路：创建/定位项目 → `AgentRuntime.runAgent()`（WebSocket 调用
+OpenClaw Gateway 的 `agent` / `agent.wait` / `chat.history` RPC）→ Writer 返回完整
+LaTeX → 校验后写入 `manuscript/main.tex` → `LatexCompiler` 编译 → `build/paper.pdf`。
 
 其余部分的开发与部署指南待补充。
 
