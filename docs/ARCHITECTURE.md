@@ -59,6 +59,7 @@ interface AgentRuntime {
   sendMessage(sessionId: string, message: string): Promise<void>;
   streamEvents(taskId: string, onEvent: (event: AgentEvent) => void): Promise<void>;
   healthCheck(): Promise<RuntimeHealth>;
+  close?(): Promise<void>;   // M2.1：进程 shutdown 时释放连接
 }
 ```
 
@@ -66,34 +67,80 @@ interface AgentRuntime {
 - 任务状态统一为：`queued / running / completed / failed / cancelled`。
 - 未来替换或新增 Runtime（新 Agent 框架、本地模型等）不影响业务层。
 
-**runAgent 的真实映射（M2 已实现）**：
+**M2.1 起的调用链（官方 Gateway SDK）**：
+
+```text
+HTTP API
+  │
+GenerationService
+  │
+WriterService
+  │
+AgentRuntime（接口）
+  │
+OpenClawRuntimeAdapter
+  │
+OpenClaw Gateway Client SDK（@openclaw/gateway-client 2026.8.1，wire protocol v4）
+  │   由 SDK 负责：ws transport、connect.challenge 挑战、connect 握手、鉴权、
+  │   protocol v4 协商、request id 关联与超时、结构化错误、重连退避
+  │   PaperTeam 保留（src/runtime/openclaw/gatewayClient.ts 薄 wrapper）：
+  │   配置装配（url / clientDisplayName / scopes / 超时）、就绪等待预算、幂等 stop
+  │
+OpenClaw Gateway
+  │
+Agent Runtime
+```
+
+**runAgent 的真实映射（M2.1，按官方 external-apps 指南）**：
 
 ```text
 AgentRuntime.runAgent(input)
-  → WebSocket 连接 Gateway 根路径（http(s):// 自动转 ws(s)://）
-  → connect 握手（operator 角色 + operator.read/write scope + auth.token）
-  → RPC "agent"        {message, agentId, idempotencyKey}      → {runId, sessionKey}
-  → RPC "agent.wait"   {runId, timeoutMs}（30s 分片轮询）        → 终态 {status:"ok"|"error", ...}
-  → RPC "chat.history" {sessionKey, limit, maxChars}            → 最后一条 assistant 消息全文
-  → 映射为 AgentTask{taskId=runId, status, output}
+  → SDK connect（operator 角色 + operator.read/write scope + token；
+    收到 connect.challenge 挑战后握手，hello-ok 即就绪；单次运行语义：
+    首个连接失败立即放弃，不搭乘 SDK 重试循环）
+  → RPC "agent"        {message, agentId?, sessionKey?, idempotencyKey}
+                        → 验收 {runId, sessionKey, agentId, status:"accepted", acceptedAt}
+  → RPC "agent.wait"   {runId, timeoutMs}（分片轮询）
+                        → 终态 status:"ok"|"error"，或带 endedAt 的 timeout 终态快照；
+                          "pending" / 无 endedAt 的 timeout = 等待窗口耗尽，继续轮询
+  → RPC "chat.history" {sessionKey, limit, maxChars}   → 最后一条 assistant 消息全文
+                                                       （terminalReply 4096 截断仅兜底）
+  → 映射为 AgentTask{taskId=runId, status, output, metadata:{sessionKey}}
 ```
 
-协议依据：OpenClaw 官方 `docs/gateway/protocol.md`、`docs/gateway/external-apps.md`
-（"For agent runs, start with the `agent` RPC and pair it with `agent.wait`"）与
-`@openclaw/gateway-protocol@2026.8.1` 的 `protocol.schema.json`。
+协议依据：OpenClaw **2026.8.1** 源码（`packages/gateway-client/*`、
+`src/gateway/server-methods/agent*.ts`、`src/gateway/agent-turn/*`）与官方
+`docs/gateway/protocol.md`、`docs/gateway/external-apps.md`（"For agent runs,
+start with the `agent` RPC and pair it with `agent.wait`"）。protocol version
+使用官方常量 `PROTOCOL_VERSION`（`@openclaw/gateway-protocol/version`，当前 = 4），
+不在 PaperTeam 硬编码。
 OpenClaw 特有标识（sessionKey 等）只存在于 Adapter 内部与 AgentTask.metadata 诊断字段。
 
-### 2.1.1 M2 Backend 模块划分
+### 2.1.2 Project ≠ OpenClaw Session（M2.1 最小映射）
+
+```text
+PaperTeam Project（业务对象，ProjectStore 自持）
+  │  project.json: { id, title, status, …, runtimeSessionKey? }   ← Runtime-neutral 引用
+  ▼
+OpenClaw Session（Agent Runtime 上下文）
+     sessionKey = agent:{agentId}:paperteam-{projectId}
+```
+
+- **两个概念不合并**：Project 是论文业务对象；OpenClaw Session 是 Agent 的对话/工作上下文。ProjectStore 只保存一个不透明引用 `runtimeSessionKey`，不理解其格式。
+- **派生规则**：首次生成未存引用时，由 Adapter 按 `projectId` 派生稳定 key（同一 Project 复用、不同 Project 隔离，避免跨论文上下文污染）；网关按 key 自动创建会话。成功后 `GenerationService` 把实际使用的 key 写回 project.json，下次原样透传（`RunAgentInput.sessionKey`）。
+- 无 `projectId` 的调用不指定 sessionKey，由网关解析默认会话。
+
+### 2.1.3 M2 Backend 模块划分（M2.1 后）
 
 ```text
 backend/src/
 ├── config/        配置加载与校验（gateway / projects / latex / writerAgentId）
 ├── errors.ts      业务错误模型（稳定错误码 → HTTP 状态码映射）
 ├── runtime/       AgentRuntime 契约 + OpenClawRuntimeAdapter
-│   └── openclaw/  GatewayWebSocket（Adapter 专用内部 WS 客户端）
-├── project/       ProjectStore（项目目录 / project.json / 路径安全）
-├── writer/        WriterService（Writer Prompt 组装 + LaTeX 输出校验）
-├── generation/    GenerationService（Writer → main.tex → LatexCompiler 最小编排）
+│   └── openclaw/  gatewayClient（官方 GatewayClient 的薄 wrapper：配置/就绪/生命周期）
+├── project/       ProjectStore（项目目录 / project.json / runtimeSessionKey / 路径安全）
+├── writer/        WriterService（Writer Prompt 组装 + LaTeX 输出校验 + sessionKey 透传）
+├── generation/    GenerationService（Writer → main.tex → LatexCompiler 编排 + 会话写回）
 ├── latex/         LatexCompiler（latexmk -xelatex / xelatex 探测与编译）
 └── httpServer.ts  Node 原生 HTTP：/health、/api/projects、/api/projects/:id/generate
 ```

@@ -1,17 +1,19 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  GatewayClientRequestError,
+  GatewayClientRequestTimeoutError,
+} from "@openclaw/gateway-client";
+
+import {
   AgentRunFailedError,
   AgentRuntimeUnavailableError,
   AgentTimeoutError,
 } from "../errors.js";
 import {
-  GatewayConnectError,
-  GatewayProtocolError,
-  GatewayRpcError,
-  GatewayTimeoutError,
-  GatewayWebSocket,
-} from "./openclaw/gatewayWebSocket.js";
+  GatewayConnectionError,
+  OpenClawGatewayConnection,
+} from "./openclaw/gatewayClient.js";
 import type {
   AgentEvent,
   AgentRuntime,
@@ -24,7 +26,7 @@ import type {
 import { RuntimeCapabilityError } from "./types.js";
 
 /**
- * OpenClawRuntimeAdapter —— AgentRuntime 的第一版实现（对接 OpenClaw Gateway）。
+ * OpenClawRuntimeAdapter —— AgentRuntime 的实现（对接 OpenClaw Gateway）。
  *
  * 所有 OpenClaw 细节都封装在本文件（及 ./openclaw/ 内部模块）中，
  * 业务层只感知 AgentRuntime 接口。
@@ -34,17 +36,21 @@ import { RuntimeCapabilityError } from "./types.js";
  *   健康时返回 HTTP 200，响应体 {"ok":true,"status":"live"}
  *   （Gateway 默认端口 18789；另有 /healthz 别名与 /ready 深度就绪探针）
  *
- * runAgent 使用的真实接口（对照 docs/gateway/protocol.md、docs/gateway/external-apps.md
- * 与 @openclaw/gateway-protocol@2026.8.1 的 protocol.schema.json 确认）：
- *   1. WebSocket 连接到 Gateway 根路径，connect 握手（operator 角色 + 共享 token）
- *   2. RPC "agent"        {message, idempotencyKey, agentId?} → {runId, status:"in_flight", sessionKey?}
- *   3. RPC "agent.wait"   {runId, timeoutMs} → {status:"ok"|"error"|"timeout"|..., error?, terminalReply?}
- *   4. RPC "chat.history" {sessionKey, limit, maxChars} → {messages:[{role,text,...}]}
- *      （terminalReply.text 上限 4096 字符，完整 LaTeX 必须从 chat.history 获取）
- *
- * 参考来源：OpenClaw Gateway HTTP 探针实现（src/gateway/server-http.ts，
- * GATEWAY_PROBE_STATUS_BY_PATH）、src/gateway/server-methods/agent*.ts、
- * src/gateway/agent-turn/agent-job.ts 与官方文档 docs.openclaw.ai/gateway/*。
+ * M2.1 起 runAgent 建立在官方 SDK 上（对照 OpenClaw 2026.8.1 源码
+ * packages/gateway-client/*、src/gateway/server-methods/agent*.ts 与
+ * docs/gateway/external-apps.md 确认）：
+ *   0. @openclaw/gateway-client 完成 transport / connect.challenge 挑战 /
+ *      connect 握手 / 鉴权 / protocol v4 / request 关联与结构化错误
+ *   1. RPC "agent"  {message, idempotencyKey, agentId?, sessionKey?}
+ *      → 验收 {runId, sessionKey, agentId, status:"accepted", acceptedAt}
+ *      （网关随后还会对同一请求 id 发送 final 帧，供 expectFinal 客户端使用；
+ *      本 Adapter 按官方 external-apps 指南采用 agent + agent.wait 组合，
+ *      对断线重连更稳健，不依赖 final 帧）
+ *   2. RPC "agent.wait" {runId, timeoutMs} 分片轮询至终态
+ *      （终态 = ok | error，或带 endedAt 的 timeout 终态快照）
+ *   3. RPC "chat.history" {sessionKey, limit, maxChars} → {messages:[{role,text,...}]}
+ *      （agent.wait 的 terminalReply.text 上限 4096 字符，完整 LaTeX 必须从
+ *      chat.history 获取；terminalReply 仅作兜底）
  */
 
 const HEALTH_PATH = "/health";
@@ -65,6 +71,9 @@ const AGENT_WAIT_RPC_SLACK_MS = 10_000;
 
 /** chat.history 允许返回的最大正文字符数（协议上限 500000） */
 const CHAT_HISTORY_MAX_CHARS = 200_000;
+
+/** PaperTeam 派生 Runtime 会话的前缀（OpenClaw sessionKey 形如 agent:{agentId}:{peer}） */
+const SESSION_PEER_PREFIX = "paperteam";
 
 export interface OpenClawRuntimeOptions {
   /** Gateway 基地址，如 http://127.0.0.1:18789（不应带查询串/锚点） */
@@ -93,6 +102,9 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
   private readonly runTimeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly log: (message: string) => void;
+  /** 在途连接（runAgent 每次一条；close() 时统一停止） */
+  private readonly activeConnections = new Set<OpenClawGatewayConnection>();
+  private closed = false;
 
   constructor(options: OpenClawRuntimeOptions) {
     const baseUrl = options.baseUrl.trim().replace(/\/+$/, "");
@@ -110,7 +122,7 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
 
     this.baseUrl = baseUrl;
     this.apiKey = options.apiKey?.trim() || undefined;
-    this.timeoutMs = options.timeoutMs ?? 5000;
+    this.timeoutMs = options.timeoutMs ?? 5_000;
     this.rpcTimeoutMs = options.rpcTimeoutMs ?? 15_000;
     this.runTimeoutMs = options.runTimeoutMs ?? 300_000;
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -198,78 +210,85 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
     }
   }
 
-  // ---- runAgent（M2 真实实现） ----
+  // ---- runAgent（官方 Gateway Client 上的实现） ----
 
   /**
    * 执行一次 Agent 任务（同步完成语义：返回时任务已达终态）。
    *
-   * 映射到 OpenClaw 的真实调用序列：
-   *   agent → agent.wait（分片轮询至终态）→ chat.history（取完整回复文本）
+   * 映射到 OpenClaw 官方推荐调用序列（docs/gateway/external-apps.md）：
+   *   agent（验收，取 runId/sessionKey）
+   *   → agent.wait（分片轮询至终态）
+   *   → chat.history（取完整回复文本）
+   *
+   * 会话解析（M2.1）：
+   *   input.sessionKey 原样复用；否则按 projectId 派生稳定会话
+   *   agent:{agentId}:paperteam-{projectId}（同一 Project 复用上下文，
+   *   不同 Project 互不污染；都不存在时不指定，由网关解析默认会话）。
    *
    * 异常映射：
-   *   连接/握手/协议错误 → AgentRuntimeUnavailableError
-   *   RPC 被网关拒绝     → AgentRunFailedError
-   *   整体超时           → AgentTimeoutError
-   *   运行以 error 终态结束 → 返回 status="failed" 的 AgentTask（不抛异常）
+   *   连接/握手/协议/鉴权错误 → AgentRuntimeUnavailableError
+   *   RPC 被网关拒绝         → AgentRunFailedError
+   *   整体超时               → AgentTimeoutError
+   *   运行以 error/timeout 终态结束 → 返回 status="failed" 的 AgentTask（不抛异常）
    */
   async runAgent(input: RunAgentInput): Promise<AgentTask> {
     const message = input.task.trim();
     if (message === "") {
       throw new AgentRunFailedError("任务内容为空");
     }
+    if (this.closed) {
+      throw new AgentRuntimeUnavailableError("Runtime 已关闭", "adapter closed");
+    }
     const runTimeoutMs = input.timeoutMs ?? this.runTimeoutMs;
+    const sessionKey = resolveSessionKey(input);
 
-    const ws = new GatewayWebSocket({
+    const connection = new OpenClawGatewayConnection({
       url: this.websocketUrl(),
-      token: this.apiKey,
+      ...(this.apiKey ? { token: this.apiKey } : {}),
       connectTimeoutMs: this.rpcTimeoutMs,
-      rpcTimeoutMs: this.rpcTimeoutMs,
+      requestTimeoutMs: this.rpcTimeoutMs,
       clientVersion: "paperteam-backend-0.1.0",
       log: this.log,
     });
+    this.activeConnections.add(connection);
 
     try {
       try {
-        await ws.connect();
+        await connection.connect();
       } catch (error) {
-        throw this.mapInfrastructureError(error, "连接 Gateway WebSocket 失败");
+        throw this.mapInfrastructureError(error, "连接 Gateway 失败");
       }
 
-      // 1. 发起 agent 运行
-      let start: unknown;
+      // 1. 发起 agent 运行（网关验收后返回 runId/sessionKey）
+      let start: Record<string, unknown>;
       try {
-        start = await ws.request(
-          "agent",
-          {
+        start = asRecord(
+          await connection.request("agent", {
             message,
             ...(input.agentId ? { agentId: input.agentId } : {}),
+            ...(sessionKey ? { sessionKey } : {}),
             idempotencyKey: `paperteam-${randomUUID()}`,
-          },
-          this.rpcTimeoutMs,
+          }),
         );
       } catch (error) {
         throw this.mapInfrastructureError(error, "发起 agent 运行失败");
       }
-      const startPayload = asRecord(start);
-      const runId = readString(startPayload, "runId");
+      const runId = readString(start, "runId");
       if (!runId) {
-        throw new AgentRunFailedError(
-          "Gateway 响应缺少 runId",
-          summarize(startPayload),
-        );
+        throw new AgentRunFailedError("Gateway 响应缺少 runId", summarize(start));
       }
-      const sessionKey = readString(startPayload, "sessionKey");
+      const resolvedSessionKey = readString(start, "sessionKey") ?? sessionKey;
       this.log(
-        `[openclaw-runtime] runAgent agent -> runId=${runId} sessionKey=${sessionKey ?? "(无)"} agentId=${input.agentId}`,
+        `[openclaw-runtime] runAgent agent -> runId=${runId} ` +
+          `sessionKey=${resolvedSessionKey ?? "(默认)"} agentId=${input.agentId}`,
       );
 
       const createdAt = new Date().toISOString();
 
       // 2. 轮询 agent.wait 直到终态（或整体超时）
       const deadline = Date.now() + runTimeoutMs;
-      let waitPayload: Record<string, unknown> = startPayload;
-      let waitStatus = readString(startPayload, "status");
-      while (!isTerminalWaitStatus(waitStatus)) {
+      let waitPayload: Record<string, unknown> = start;
+      while (!isTerminalWaitPayload(waitPayload)) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
           throw new AgentTimeoutError(runTimeoutMs);
@@ -277,24 +296,20 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
         const chunk = Math.min(remaining, AGENT_WAIT_CHUNK_MS);
         let waitResult: unknown;
         try {
-          waitResult = await ws.request(
+          waitResult = await connection.request(
             "agent.wait",
             { runId, timeoutMs: chunk },
-            chunk + AGENT_WAIT_RPC_SLACK_MS,
+            { timeoutMs: chunk + AGENT_WAIT_RPC_SLACK_MS },
           );
         } catch (error) {
           throw this.mapInfrastructureError(error, "等待 agent 运行失败");
         }
         waitPayload = asRecord(waitResult);
-        waitStatus = readString(waitPayload, "status");
-        if (waitStatus === "timeout" && remaining <= chunk + 50) {
-          // 最后一片等待超时：整体预算耗尽
-          throw new AgentTimeoutError(runTimeoutMs);
-        }
       }
 
+      const waitStatus = readString(waitPayload, "status");
       if (waitStatus !== "ok") {
-        // 运行失败 / 超时终态：返回 failed 任务，由业务层解释
+        // 运行失败 / 运行超时终态：返回 failed 任务，由业务层解释
         const errorText =
           readString(waitPayload, "error") ??
           readString(waitPayload, "summary") ??
@@ -303,31 +318,32 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
         this.log(`[openclaw-runtime] runAgent ${runId} 终态=${waitStatus}：${errorText}`);
         return this.buildTask(runId, input.agentId, createdAt, "failed", {
           error: errorText,
-          sessionKey,
+          sessionKey: resolvedSessionKey,
         });
       }
 
       // 3. 取回完整回复文本（chat.history；terminalReply 有 4096 字符截断，仅作兜底）
-      const output = await this.retrieveOutput(ws, runId, sessionKey, waitPayload);
+      const output = await this.retrieveOutput(connection, runId, resolvedSessionKey, waitPayload);
       if (output === null) {
         throw new AgentRunFailedError(
           "Agent 运行成功但没有返回任何文本",
-          `runId=${runId} sessionKey=${sessionKey ?? "(无)"}`,
+          `runId=${runId} sessionKey=${resolvedSessionKey ?? "(默认)"}`,
         );
       }
 
       return this.buildTask(runId, input.agentId, createdAt, "completed", {
         output,
-        sessionKey,
+        sessionKey: resolvedSessionKey,
       });
     } finally {
-      ws.close();
+      this.activeConnections.delete(connection);
+      await connection.stop();
     }
   }
 
   /** 从 chat.history 提取最后一条 assistant 消息；不可用时退回 terminalReply（可能被截断） */
   private async retrieveOutput(
-    ws: GatewayWebSocket,
+    connection: OpenClawGatewayConnection,
     runId: string,
     sessionKey: string | undefined,
     waitPayload: Record<string, unknown>,
@@ -335,10 +351,9 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
     if (sessionKey) {
       let history: unknown;
       try {
-        history = await ws.request(
+        history = await connection.request(
           "chat.history",
           { sessionKey, limit: 50, maxChars: CHAT_HISTORY_MAX_CHARS },
-          this.rpcTimeoutMs,
         );
       } catch (error) {
         // 历史读取失败不致命：继续尝试 terminalReply 兜底
@@ -383,23 +398,27 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
     };
   }
 
-  /** 底层错误 → 业务错误（底层细节只进日志） */
+  /** SDK / 连接层错误 → 业务错误（底层细节只进日志） */
   private mapInfrastructureError(error: unknown, context: string): Error {
-    if (error instanceof GatewayConnectError) {
-      this.log(`[openclaw-runtime] ${context}：connect 错误 ${error.code} ${error.message}`);
+    if (error instanceof GatewayConnectionError) {
+      this.log(`[openclaw-runtime] ${context}：${error.code} ${error.message}`);
       return new AgentRuntimeUnavailableError(context, `${error.code}：${error.message}`);
     }
-    if (error instanceof GatewayTimeoutError) {
-      this.log(`[openclaw-runtime] ${context}：${error.message}`);
-      return new AgentRuntimeUnavailableError(context, error.message);
+    if (error instanceof GatewayClientRequestTimeoutError) {
+      // SDK 本地请求截止（CLIENT_TIMEOUT）：连接状态不可信，视为 Runtime 不可用
+      this.log(
+        `[openclaw-runtime] ${context}：RPC ${error.method} 本地超时（${error.timeoutMs}ms）`,
+      );
+      return new AgentRuntimeUnavailableError(
+        context,
+        `RPC ${error.method} 本地超时（${error.timeoutMs}ms）`,
+      );
     }
-    if (error instanceof GatewayRpcError) {
-      this.log(`[openclaw-runtime] ${context}：RPC ${error.code} ${error.message}`);
-      return new AgentRunFailedError(`${context}（${error.code}）`, `${error.code}：${error.message}`);
-    }
-    if (error instanceof GatewayProtocolError) {
-      this.log(`[openclaw-runtime] ${context}：${error.message}`);
-      return new AgentRuntimeUnavailableError(context, error.message);
+    if (error instanceof GatewayClientRequestError) {
+      // 网关权威拒绝（结构化错误：code/gatewayCode/details/retryable）
+      const code = error.gatewayCode || error.code;
+      this.log(`[openclaw-runtime] ${context}：RPC 拒绝 ${code} ${error.message}`);
+      return new AgentRunFailedError(`${context}（${code}）`, `${code}：${error.message}`);
     }
     this.log(`[openclaw-runtime] ${context}：未分类错误 ${errorText(error)}`);
     return new AgentRuntimeUnavailableError(context, errorText(error));
@@ -413,6 +432,16 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
       parsed.pathname = "/";
     }
     return parsed.toString();
+  }
+
+  // ---- 生命周期（M2.1） ----
+
+  /** 停止全部在途连接；进程 shutdown 时调用（幂等） */
+  async close(): Promise<void> {
+    this.closed = true;
+    const connections = [...this.activeConnections];
+    this.activeConnections.clear();
+    await Promise.allSettled(connections.map((connection) => connection.stop()));
   }
 
   // ---- 以下接口属于后续里程碑，当前只保留契约 ----
@@ -460,6 +489,21 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
 
 // ---- runAgent 辅助函数（防御性解析 Gateway 响应） ----
 
+/** 解析本次运行的会话：显式复用 > 按 projectId 派生 > 不指定（网关默认） */
+function resolveSessionKey(input: RunAgentInput): string | undefined {
+  const explicit = input.sessionKey?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  const projectId = input.projectId?.trim();
+  if (projectId && input.agentId) {
+    // OpenClaw sessionKey 形如 agent:{agentId}:{peer}；peer 部分保留 opaque id。
+    // 派生规则稳定：同一 Project 的后续生成复用同一会话，不同 Project 隔离。
+    return `agent:${input.agentId}:${SESSION_PEER_PREFIX}-${projectId}`;
+  }
+  return undefined;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -471,9 +515,23 @@ function readString(record: Record<string, unknown>, key: string): string | unde
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-/** agent.wait 的终态集合（对照 src/gateway/agent-turn/agent-job.ts） */
-function isTerminalWaitStatus(status: string | undefined): boolean {
-  return status === "ok" || status === "error";
+/**
+ * agent.wait 响应是否为终态（对照 src/gateway/agent-turn/agent-turn-service.ts
+ * 的 waitForTurn 与 agent-job.ts 的终态快照）：
+ * - status ok / error            → 终态
+ * - status timeout + endedAt     → 运行以 timeout 终结的终态快照
+ * - status timeout 无 endedAt    → 等待窗口耗尽（运行未结束，继续轮询）
+ * - status pending / in_flight 等 → 未终态
+ */
+function isTerminalWaitPayload(payload: Record<string, unknown>): boolean {
+  const status = readString(payload, "status");
+  if (status === "ok" || status === "error") {
+    return true;
+  }
+  if (status === "timeout" && typeof payload["endedAt"] === "number") {
+    return true;
+  }
+  return false;
 }
 
 /** 从 chat.history 响应中提取最后一条 assistant 消息文本 */

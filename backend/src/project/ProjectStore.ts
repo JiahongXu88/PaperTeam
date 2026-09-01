@@ -34,6 +34,13 @@ export interface ProjectMetadata {
   createdAt: string;
   updatedAt: string;
   status: ProjectStatus;
+  /**
+   * Runtime 会话引用（M2.1，Runtime-neutral）。
+   * 指向上次生成任务落到的 Agent Runtime 会话（OpenClaw 的 sessionKey），
+   * 下次生成原样复用，保证同一 Project 上下文连续、不同 Project 隔离。
+   * Project 与 Runtime Session 是两个概念：这里是引用，不是合并。
+   */
+  runtimeSessionKey?: string;
 }
 
 /** 合法 projectId：小写字母/数字开头，允许连字符，长度 1-64 */
@@ -166,6 +173,25 @@ export class ProjectStore {
     return updated;
   }
 
+  /**
+   * 记录 / 更新 Runtime 会话引用（M2.1）。
+   * 传入 undefined 清除引用。值由 Runtime 层产生（OpenClaw sessionKey），
+   * ProjectStore 只做存储，不理解其格式。
+   */
+  async updateRuntimeSessionKey(
+    projectId: string,
+    runtimeSessionKey: string | undefined,
+  ): Promise<ProjectMetadata> {
+    const metadata = await this.getRequired(projectId);
+    const updated: ProjectMetadata = {
+      ...metadata,
+      ...(runtimeSessionKey !== undefined ? { runtimeSessionKey } : {}),
+      updatedAt: this.now().toISOString(),
+    };
+    await this.writeMetadata(updated);
+    return updated;
+  }
+
   // ---- 路径工具（全部经过 projectId 校验与包含性检查） ----
 
   /** 项目根目录（先校验 id，再做路径包含检查） */
@@ -238,6 +264,10 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   const createdAt = typeof record["createdAt"] === "string" ? record["createdAt"] : undefined;
   const updatedAt = typeof record["updatedAt"] === "string" ? record["updatedAt"] : undefined;
   const status = record["status"];
+  const runtimeSessionKey =
+    typeof record["runtimeSessionKey"] === "string" && record["runtimeSessionKey"] !== ""
+      ? record["runtimeSessionKey"]
+      : undefined;
   if (
     !id ||
     !PROJECT_ID_PATTERN.test(id) ||
@@ -255,6 +285,7 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
     createdAt,
     updatedAt,
     status,
+    ...(runtimeSessionKey !== undefined ? { runtimeSessionKey } : {}),
   };
 }
 

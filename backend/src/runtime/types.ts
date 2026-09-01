@@ -44,6 +44,12 @@ export interface RunAgentInput {
   agentId: string;
   task: string;
   projectId?: string;
+  /**
+   * 复用的 Runtime 会话标识（M2.1）。
+   * 来自上次任务结果 metadata.sessionKey 的原样透传；缺省时由 Adapter
+   * 按 projectId 派生稳定会话（保证同一 Project 复用、不同 Project 隔离）。
+   */
+  sessionKey?: string;
   inputFiles?: string[];
   /** 本次任务的整体超时（毫秒）；缺省使用 Runtime 配置的默认值 */
   timeoutMs?: number;
@@ -53,8 +59,10 @@ export interface RunAgentInput {
 
 /**
  * Agent 任务（M2：同步完成语义 —— runAgent() 返回时任务已达终态）。
- * OpenClaw 特有标识（sessionKey、Gateway 请求 id 等）只保存在
- * metadata 诊断字段中，业务层不得依赖其结构。
+ * OpenClaw 特有标识保存在 metadata 诊断字段中：
+ *   - runId      本次运行的 Gateway run 标识（即 taskId）
+ *   - sessionKey 运行落到的 Runtime 会话（跨任务复用，见 RunAgentInput.sessionKey）
+ * 业务层不得依赖 metadata 的具体结构。
  */
 export interface AgentTask {
   taskId: string;
@@ -93,6 +101,12 @@ export interface AgentRuntime {
   streamEvents(taskId: string, onEvent: (event: AgentEvent) => void): Promise<void>;
 
   healthCheck(): Promise<RuntimeHealth>;
+
+  /**
+   * 释放 Runtime 持有的资源（M2.1：进程 shutdown 时调用）。
+   * 实现应停止在途连接并保证进程可退出；未实现时视为无资源需释放。
+   */
+  close?(): Promise<void>;
 }
 
 /** M2 范围外的方法被调用时抛出，避免留下静默的假实现 */

@@ -2,10 +2,10 @@
   "name": "paperteam-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "PaperTeam Backend (M2: Agent Invocation + Project + LaTeX Skeleton)",
+  "description": "PaperTeam Backend (M2.1: OpenClaw 2.0 Runtime Upgrade)",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -18,5 +18,9 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@openclaw/gateway-client": "2026.8.1",
+    "@openclaw/gateway-protocol": "2026.8.1"
   }
 }

@@ -141,7 +141,17 @@ describe("POST /api/projects/:id/generate（全链路）", () => {
     const gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { runId: "run-http-1", status: "in_flight", sessionKey: "agent:writer:s-http" } };
+          // 2026.8.1 官方验收 payload（status=accepted + acceptedAt）
+          return {
+            ok: true,
+            payload: {
+              runId: "run-http-1",
+              sessionKey: "agent:writer:paperteam-s-http",
+              agentId: "writer",
+              status: "accepted",
+              acceptedAt: Date.now(),
+            },
+          };
         }
         if (method === "agent.wait") {
           return { ok: true, payload: { runId: "run-http-1", status: "ok" } };
@@ -192,6 +202,67 @@ describe("POST /api/projects/:id/generate（全链路）", () => {
     // Gateway 收到的 writer prompt 含用户任务
     const agentRequest = gateway.requests.find((request) => request.method === "agent");
     expect((agentRequest?.params["message"] as string)).toContain("RAG");
+    // M2.1 会话映射：按 projectId 派生 sessionKey，成功后写回 project.json
+    expect(agentRequest?.params["sessionKey"]).toBe(`agent:writer:paperteam-${created.id}`);
+    const persisted = await store.get(created.id);
+    expect(persisted?.runtimeSessionKey).toBe("agent:writer:paperteam-s-http");
+  });
+
+  it("会话连续性：第二次 generate 复用 project.json 中持久化的 runtimeSessionKey", async () => {
+    const seenSessionKeys: string[] = [];
+    const gateway = await startMockGateway({
+      handler: (method, params) => {
+        if (method === "agent") {
+          const key = String(params["sessionKey"] ?? "");
+          seenSessionKeys.push(key);
+          return {
+            ok: true,
+            payload: {
+              runId: `run-http-${seenSessionKeys.length}`,
+              sessionKey: key,
+              agentId: "writer",
+              status: "accepted",
+              acceptedAt: Date.now(),
+            },
+          };
+        }
+        if (method === "agent.wait") {
+          return { ok: true, payload: { status: "ok" } };
+        }
+        if (method === "chat.history") {
+          return { ok: true, payload: { messages: [{ role: "assistant", text: LATEX_DOC }] } };
+        }
+        return defaultHandler()(method, params);
+      },
+    });
+    gateways.push(gateway);
+
+    const runtime = new OpenClawRuntimeAdapter({
+      baseUrl: gateway.httpUrl,
+      rpcTimeoutMs: 2_000,
+      log: () => {},
+    });
+    const { server, store } = await startApiStack(runtime, { latexRunner: fakeSuccessfulRunner });
+    const created = await store.create("会话连续性测试");
+
+    for (const prompt of ["第一轮：引言", "第二轮：结论"]) {
+      const response = await request(
+        server,
+        "POST",
+        `/api/projects/${created.id}/generate`,
+        JSON.stringify({ prompt }),
+      );
+      expect(response.status).toBe(200);
+    }
+
+    // 第一轮：按 projectId 派生；第二轮：复用第一轮网关返回并持久化的 key
+    expect(seenSessionKeys).toEqual([
+      `agent:writer:paperteam-${created.id}`,
+      `agent:writer:paperteam-${created.id}`,
+    ]);
+    expect((await store.get(created.id))?.runtimeSessionKey).toBe(
+      `agent:writer:paperteam-${created.id}`,
+    );
   });
 
   it("Agent 失败（Gateway RPC 错误）：返回 502 AGENT_RUN_FAILED，项目状态 failed", async () => {

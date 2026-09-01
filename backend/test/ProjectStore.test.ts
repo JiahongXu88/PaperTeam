@@ -131,4 +131,49 @@ describe("ProjectStore", () => {
     await writeFile(join(store.rootDir, project.id, "project.json"), "{not json", "utf8");
     expect(await store.get(project.id)).toBeNull();
   });
+
+  it("updateRuntimeSessionKey 记录/更新会话引用并随 updateStatus 保留", async () => {
+    const { store } = await newStore();
+    const project = await store.create("会话引用测试");
+    expect(project.runtimeSessionKey).toBeUndefined();
+
+    const updated = await store.updateRuntimeSessionKey(
+      project.id,
+      "agent:writer:paperteam-p-abc123",
+    );
+    expect(updated.runtimeSessionKey).toBe("agent:writer:paperteam-p-abc123");
+    expect((await store.get(project.id))?.runtimeSessionKey).toBe(
+      "agent:writer:paperteam-p-abc123",
+    );
+
+    // 状态更新不丢失会话引用
+    await store.updateStatus(project.id, "generated");
+    expect((await store.get(project.id))?.runtimeSessionKey).toBe(
+      "agent:writer:paperteam-p-abc123",
+    );
+
+    // 引用可再次更新（Runtime 换会话时）
+    await store.updateRuntimeSessionKey(project.id, "agent:writer:paperteam-p-def456");
+    expect((await store.get(project.id))?.runtimeSessionKey).toBe(
+      "agent:writer:paperteam-p-def456",
+    );
+
+    // 不存在的项目抛业务错误
+    await expect(store.updateRuntimeSessionKey("p-nosuch", "k")).rejects.toMatchObject({
+      code: "PROJECT_NOT_FOUND",
+    });
+  });
+
+  it("旧版 project.json（无 runtimeSessionKey 字段）可正常读取", async () => {
+    const { store } = await newStore();
+    const project = await store.create("向后兼容测试");
+    const { readFile, writeFile } = await import("node:fs/promises");
+    const path = join(store.rootDir, project.id, "project.json");
+    const legacy = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    delete legacy["runtimeSessionKey"];
+    await writeFile(path, JSON.stringify(legacy), "utf8");
+    const read = await store.get(project.id);
+    expect(read?.id).toBe(project.id);
+    expect(read?.runtimeSessionKey).toBeUndefined();
+  });
 });

@@ -41,8 +41,13 @@ export class WriterService {
   /**
    * 执行一次写作任务。
    * 输入是用户的自然语言写作要求；输出是完整 LaTeX 文档。
+   * sessionKey（可选）是该项目上次任务返回的 Runtime 会话引用，原样透传以复用上下文。
    */
-  async write(params: { projectId: string; prompt: string }): Promise<WriterResult> {
+  async write(params: {
+    projectId: string;
+    prompt: string;
+    sessionKey?: string;
+  }): Promise<WriterResult> {
     const prompt = params.prompt.trim();
     if (prompt === "") {
       throw new AgentRunFailedError("写作任务（prompt）不能为空");
@@ -52,6 +57,7 @@ export class WriterService {
       agentId: this.agentId,
       task: buildWriterPrompt(prompt),
       projectId: params.projectId,
+      ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
       metadata: { role: "writer", milestone: "M2" },
     });
 

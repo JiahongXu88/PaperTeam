@@ -12,15 +12,15 @@ import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { WriterService } from "./writer/WriterService.js";
 
 /**
- * PaperTeam Backend 启动入口（M2：Agent Invocation + Project + LaTeX Skeleton）。
+ * PaperTeam Backend 启动入口（M2.1：OpenClaw 2.0 Runtime Upgrade）。
  *
  * 启动流程：
  *   1. 加载 .env（可选，仅补缺，不覆盖真实环境变量）
  *   2. 加载并校验配置
  *   3. 装配服务：ProjectStore / WriterService / GenerationService / LatexCompiler
- *   4. 初始化 OpenClawRuntimeAdapter（AgentRuntime 第一版实现）
+ *   4. 初始化 OpenClawRuntimeAdapter（基于官方 @openclaw/gateway-client）
  *   5. 对 OpenClaw Gateway 执行一次健康检查并输出结果
- *   6. 启动 HTTP 服务（GET /health + 项目 API）
+ *   6. 启动 HTTP 服务（GET /health + 项目 API）；shutdown 时释放 Runtime 连接
  */
 
 export async function startBackend(): Promise<void> {
@@ -76,7 +76,7 @@ export async function startBackend(): Promise<void> {
     );
   });
 
-  registerShutdown(server);
+  registerShutdown(server, runtime);
 }
 
 function loadDotEnvBestEffort(): void {
@@ -108,9 +108,12 @@ function reportGatewayHealth(health: RuntimeHealth): void {
   );
 }
 
-function registerShutdown(server: import("node:http").Server): void {
+function registerShutdown(server: import("node:http").Server, runtime: AgentRuntime): void {
   const shutdown = (signal: string) => {
     console.log(`\nPaperTeam Backend shutting down (${signal})...`);
+    // 先释放 Runtime 在途连接（避免 dangling WebSocket / 定时器残留），
+    // 再关 HTTP 服务；两者并行，任一完成即可退出
+    void runtime.close?.().catch(() => {});
     server.close(() => {
       process.exit(0);
     });

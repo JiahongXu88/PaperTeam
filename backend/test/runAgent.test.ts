@@ -10,12 +10,17 @@ import {
   defaultHandler,
   startMockGateway,
   type MockGateway,
+  type MockGatewayHandler,
 } from "./helpers/mockGateway.js";
 
 /**
  * runAgent 集成测试：通过本地真实 WebSocket mock Gateway 验证
- * connect 握手 → agent → agent.wait → chat.history 的完整调用序列，
- * 不依赖真实 OpenClaw Gateway。
+ * connect 挑战/握手 → agent（accepted 验收）→ agent.wait → chat.history
+ * 的完整调用序列（对齐 OpenClaw 2026.8.1 官方协议），不依赖真实 Gateway。
+ *
+ * 协议层（挑战、握手、帧编解码、request 关联）由官方
+ * @openclaw/gateway-client 负责，mock 只实现服务端必需子集；
+ * 测试重点是 PaperTeam Adapter 的行为。
  */
 
 const LATEX_DOC = [
@@ -24,6 +29,17 @@ const LATEX_DOC = [
   "\\title{RAG 简介}",
   "\\end{document}",
 ].join("\n");
+
+/** 2026.8.1 官方 agent RPC 的验收 payload（agent-run-admission-phase.ts） */
+function acceptance(runId: string, sessionKey: string): Record<string, unknown> {
+  return {
+    runId,
+    sessionKey,
+    agentId: "writer",
+    status: "accepted",
+    acceptedAt: Date.now(),
+  };
+}
 
 let gateway: MockGateway | null = null;
 
@@ -45,24 +61,22 @@ function makeAdapter(overrides: Partial<ConstructorParameters<typeof OpenClawRun
 }
 
 describe("OpenClawRuntimeAdapter.runAgent", () => {
-  it("正常路径：agent → agent.wait(ok) → chat.history 返回完整 LaTeX", async () => {
+  it("正常路径：agent(accepted) → agent.wait(ok) → chat.history 返回完整 LaTeX", async () => {
     gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return {
-            ok: true,
-            payload: { runId: "run-1", status: "in_flight", sessionKey: "agent:writer:s1" },
-          };
+          expect(params["sessionKey"]).toBe("agent:writer:paperteam-p-test");
+          return { ok: true, payload: acceptance("run-1", "agent:writer:paperteam-p-test") };
         }
         if (method === "agent.wait") {
           return { ok: true, payload: { runId: "run-1", status: "ok" } };
         }
         if (method === "chat.history") {
-          expect(params["sessionKey"]).toBe("agent:writer:s1");
+          expect(params["sessionKey"]).toBe("agent:writer:paperteam-p-test");
           return {
             ok: true,
             payload: {
-              sessionKey: "agent:writer:s1",
+              sessionKey: "agent:writer:paperteam-p-test",
               messages: [
                 { role: "user", text: "写论文" },
                 { role: "assistant", text: "中间回复" },
@@ -88,9 +102,9 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
     expect(task.startedAt).toBeTruthy();
     expect(task.completedAt).toBeTruthy();
     // OpenClaw 细节只应存在于诊断 metadata
-    expect(task.metadata).toEqual({ sessionKey: "agent:writer:s1" });
+    expect(task.metadata).toEqual({ sessionKey: "agent:writer:paperteam-p-test" });
 
-    // 请求序列与参数校验
+    // 请求序列与参数校验（connect 由官方客户端在收到挑战后发出）
     expect(gateway.requests.map((r) => r.method)).toEqual([
       "connect",
       "agent",
@@ -101,27 +115,69 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
     expect(connectParams["role"]).toBe("operator");
     expect(connectParams["scopes"]).toEqual(["operator.read", "operator.write"]);
     expect(connectParams["minProtocol"]).toBe(4);
+    expect(connectParams["maxProtocol"]).toBe(4);
     const agentParams = gateway.requests[1]!.params;
     expect(agentParams["message"]).toContain("RAG");
     expect(agentParams["agentId"]).toBe("writer");
     expect(typeof agentParams["idempotencyKey"]).toBe("string");
   });
 
-  it("第一次 agent.wait 未终态时继续轮询直到 ok", async () => {
+  it("会话派生：不同 Project 派生不同 sessionKey，同一 Project 稳定复用", async () => {
+    const seenKeys: string[] = [];
+    const handler: MockGatewayHandler = (method, params) => {
+      if (method === "agent") {
+        seenKeys.push(String(params["sessionKey"]));
+        return {
+          ok: true,
+          payload: acceptance(`run-${seenKeys.length}`, String(params["sessionKey"])),
+        };
+      }
+      if (method === "agent.wait") {
+        return { ok: true, payload: { status: "ok" } };
+      }
+      if (method === "chat.history") {
+        return { ok: true, payload: { messages: [{ role: "assistant", text: LATEX_DOC }] } };
+      }
+      return defaultHandler()(method, params);
+    };
+    gateway = await startMockGateway({ handler });
+    const adapter = makeAdapter();
+
+    await adapter.runAgent({ agentId: "writer", task: "写", projectId: "p-a" });
+    await adapter.runAgent({ agentId: "writer", task: "写", projectId: "p-b" });
+    // 同一 Project 第二次：显式传入上次返回的 sessionKey 时原样复用
+    await adapter.runAgent({
+      agentId: "writer",
+      task: "写",
+      projectId: "p-a",
+      sessionKey: "agent:writer:paperteam-p-a",
+    });
+
+    expect(seenKeys).toEqual([
+      "agent:writer:paperteam-p-a",
+      "agent:writer:paperteam-p-b",
+      "agent:writer:paperteam-p-a",
+    ]);
+  });
+
+  it("第一次 agent.wait 未终态（pending / 等待窗口耗尽）时继续轮询直到 ok", async () => {
     let waitCalls = 0;
     gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { runId: "run-2", status: "in_flight", sessionKey: "s2" } };
+          return { ok: true, payload: acceptance("run-2", "agent:writer:paperteam-s2") };
         }
         if (method === "agent.wait") {
           waitCalls += 1;
           return {
             ok: true,
             payload:
-              waitCalls < 3
-                ? { runId: "run-2", status: "in_flight" }
-                : { runId: "run-2", status: "ok" },
+              waitCalls === 1
+                ? { runId: "run-2", status: "pending", timeoutPhase: "queue" }
+                : waitCalls === 2
+                  // 等待窗口耗尽但运行未终结（无 endedAt）→ 仍需继续轮询
+                  ? { runId: "run-2", status: "timeout", timeoutPhase: "queue" }
+                  : { runId: "run-2", status: "ok" },
           };
         }
         if (method === "chat.history") {
@@ -134,7 +190,7 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
       },
     });
 
-    const task = await makeAdapter().runAgent({ agentId: "writer", task: "写" });
+    const task = await makeAdapter().runAgent({ agentId: "writer", task: "写", projectId: "p-s2" });
     expect(task.status).toBe("completed");
     expect(waitCalls).toBe(3);
     expect(params_of(gateway, "agent.wait")["runId"]).toBe("run-2");
@@ -144,7 +200,7 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
     gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { runId: "run-3", status: "in_flight", sessionKey: "s3" } };
+          return { ok: true, payload: acceptance("run-3", "agent:writer:paperteam-s3") };
         }
         if (method === "agent.wait") {
           return {
@@ -221,7 +277,7 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
     gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { status: "in_flight" } }; // 没有 runId
+          return { ok: true, payload: { status: "accepted" } }; // 没有 runId
         }
         return defaultHandler()(method, params);
       },
@@ -238,10 +294,10 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
       responseDelayMs: 30,
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { runId: "run-9", status: "in_flight", sessionKey: "s9" } };
+          return { ok: true, payload: acceptance("run-9", "agent:writer:paperteam-s9") };
         }
         if (method === "agent.wait") {
-          return { ok: true, payload: { runId: "run-9", status: "in_flight" } };
+          return { ok: true, payload: { runId: "run-9", status: "pending" } };
         }
         return defaultHandler()(method, params);
       },
@@ -260,7 +316,7 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
     gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { runId: "run-a", status: "in_flight", sessionKey: "sa" } };
+          return { ok: true, payload: acceptance("run-a", "agent:writer:paperteam-sa") };
         }
         if (method === "agent.wait") {
           return {
@@ -268,6 +324,7 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
             payload: {
               runId: "run-a",
               status: "ok",
+              endedAt: Date.now(),
               terminalReply: { disposition: "visible", text: LATEX_DOC },
             },
           };
@@ -288,7 +345,7 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
     gateway = await startMockGateway({
       handler: (method, params) => {
         if (method === "agent") {
-          return { ok: true, payload: { runId: "run-b", status: "in_flight", sessionKey: "sb" } };
+          return { ok: true, payload: acceptance("run-b", "agent:writer:paperteam-sb") };
         }
         if (method === "agent.wait") {
           return { ok: true, payload: { runId: "run-b", status: "ok" } };
@@ -317,6 +374,16 @@ describe("OpenClawRuntimeAdapter.runAgent", () => {
       rpcTimeoutMs: 2_000,
       log: () => {},
     });
+    await expect(adapter.runAgent({ agentId: "writer", task: "写" })).rejects.toMatchObject({
+      code: "AGENT_RUNTIME_UNAVAILABLE",
+    });
+  });
+
+  it("close() 后再 runAgent：抛 AgentRuntimeUnavailableError；close 幂等", async () => {
+    gateway = await startMockGateway({ handler: defaultHandler() });
+    const adapter = makeAdapter();
+    await adapter.close();
+    await adapter.close();
     await expect(adapter.runAgent({ agentId: "writer", task: "写" })).rejects.toMatchObject({
       code: "AGENT_RUNTIME_UNAVAILABLE",
     });

@@ -1,14 +1,19 @@
 /**
- * 测试辅助：按 OpenClaw Gateway WebSocket 协议响应的本地 mock 服务。
+ * 测试辅助：按 OpenClaw Gateway WebSocket 协议（2026.8.1，protocol v4）响应的本地 mock 服务。
  *
- * 实现的协议子集（与 src/runtime/openclaw/gatewayWebSocket.ts 对应）：
+ * 与官方 @openclaw/gateway-client 的真实行为对齐的最小契约：
  * - HTTP Upgrade → WebSocket 握手（Sec-WebSocket-Accept）
+ * - 升级完成后立即发送 connect.challenge 事件 {nonce, ts}
+ *   （官方客户端在收到挑战前不会发送 connect 请求）
  * - 解析客户端（带掩码）文本帧，发送服务端（不带掩码）文本帧
  * - req/res 关联；connect 默认返回 hello-ok
  *
+ * 只实现服务端必需子集，不复制 OpenClaw Gateway 的完整实现；
+ * 测试重点是 PaperTeam Adapter 的行为，不是重新实现协议。
  * 不依赖任何第三方库，不依赖真实 Gateway。
  */
 
+import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { Duplex } from "node:stream";
@@ -68,6 +73,16 @@ export async function startMockGateway(options: MockGatewayOptions): Promise<Moc
         "Connection: Upgrade\r\n" +
         `Sec-WebSocket-Accept: ${accept}\r\n` +
         "\r\n",
+    );
+    // 官方网关在升级完成后立即下发挑战事件（server/ws-connection.ts），
+    // 客户端收到挑战后才会发送 connect 请求
+    writeTextFrame(
+      socket,
+      JSON.stringify({
+        type: "event",
+        event: "connect.challenge",
+        payload: { nonce: randomUUID(), ts: Date.now() },
+      }),
     );
     attachWebSocketSession(socket, options, requests);
   });
@@ -215,7 +230,12 @@ async function handleMessage(
   const response = reply.ok
     ? { type: "res", id, ok: true, payload: reply.payload }
     : { type: "res", id, ok: false, error: reply.error };
-  writeFrame(socket, 0x1, Buffer.from(JSON.stringify(response), "utf8"));
+  writeTextFrame(socket, JSON.stringify(response));
+}
+
+/** 发送一帧服务端 → 客户端的 JSON 文本帧 */
+function writeTextFrame(socket: Duplex, json: string): void {
+  writeFrame(socket, 0x1, Buffer.from(json, "utf8"));
 }
 
 /** 写一帧服务端 → 客户端（无掩码）文本/控制帧 */

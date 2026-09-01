@@ -1,14 +1,37 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-08-31
+> 更新日期：2026-09-01
 
 ## 当前阶段
 
-**第二阶段（Agent 基础调用与项目 / LaTeX 基础）：M2「Agent Invocation + Project + LaTeX Skeleton」已完成代码与 mock 验证，待真实 OpenClaw / 真实 LaTeX 环境验证。**
+**M2.1「OpenClaw 2.0 Runtime Upgrade」已完成：Runtime 底座接入 OpenClaw 2026.8.1 官方 Gateway SDK（wire protocol v4），并已通过真实 Gateway smoke 验证。**
 
-M2 交付的最小真实闭环：`POST /api/projects` 创建论文项目 → `POST /api/projects/:id/generate` 通过 `AgentRuntime.runAgent()` 真实调用 Writer Agent → 校验 LaTeX → 写入 `manuscript/main.tex` → `LatexCompiler` 编译 → `build/paper.pdf`。
+M2 交付的最小真实闭环不变：`POST /api/projects` 创建论文项目 → `POST /api/projects/:id/generate` 通过 `AgentRuntime.runAgent()` 真实调用 Writer Agent → 校验 LaTeX → 写入 `manuscript/main.tex` → `LatexCompiler` 编译 → `build/paper.pdf`。M2.1 只替换底座：自研 Gateway WebSocket 协议实现退役，改为官方 `@openclaw/gateway-client`，并新增 Project ↔ Runtime Session 的最小映射。
 
-**下一阶段：第三阶段「Project Literature Library + Evidence Store」尚未开始（M2 刻意未包含文献库与多 Agent）。**
+**下一阶段：第三阶段「Project Literature Library + Evidence Store」尚未开始（M2.1 刻意未包含文献库与多 Agent）。**
+
+## M2.1：OpenClaw 2.0 Runtime Upgrade
+
+基线：OpenClaw **2026.8.1**（git tag `v2026.8.1`，commit `ea806575e6`，npm `latest`；`2026.9.1-beta.1` 为 beta 不采用）。
+wire protocol **v4**（官方常量 `PROTOCOL_VERSION` / `MIN_CLIENT_PROTOCOL_VERSION`，均 = 4）。
+运行时要求 **Node >= 22.19.0**（两个 SDK 包的 engines 约束）。
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 官方 SDK 接入 | ✅ 完成 | `@openclaw/gateway-client@2026.8.1` + `@openclaw/gateway-protocol@2026.8.1`（精确 pin）。transport（ws）、connect.challenge 挑战 → connect 握手 → hello-ok、鉴权、protocol v4 协商、request 关联/超时、结构化错误、重连退避（1s→30s ×2）全部由 SDK 负责 |
+| 自研协议退役 | ✅ 完成 | 删除 `src/runtime/openclaw/gatewayWebSocket.ts`（M2 自研帧协议/握手/request map/超时管理）。新增 `src/runtime/openclaw/gatewayClient.ts`：官方 GatewayClient 的薄 wrapper，只保留配置装配（url/身份/scopes/超时）、「等待 hello-ok」就绪预算（首个连接失败立即放弃，不搭乘 SDK 重试循环）与幂等 stop |
+| runAgent 生命周期 | ✅ 完成 | 按官方 external-apps 指南：`agent` RPC → 验收 `{runId, sessionKey, agentId, status:"accepted", acceptedAt}`（2026.8.1 真实契约；网关随后同 id 发 final 帧，本方案不依赖）→ `agent.wait` 分片轮询至终态（ok/error，或带 `endedAt` 的 timeout 终态快照；`pending`/等待窗口耗尽继续轮询）→ `chat.history` 取完整文本（`terminalReply` 4096 截断仅兜底） |
+| protocol version | ✅ 官方常量 | `import { PROTOCOL_VERSION } from "@openclaw/gateway-protocol/version"`，不再硬编码；backend 客户端 SDK 默认即 v4-only |
+| Project ↔ Session 映射 | ✅ 完成 | `RunAgentInput.sessionKey`（显式复用）+ 按 projectId 派生 `agent:{agentId}:paperteam-{projectId}`（OpenClaw sessionKey 格式，opaque peer）；`ProjectMetadata.runtimeSessionKey`（Runtime-neutral）持久化于 project.json，`GenerationService` 成功后写回、下次原样复用；同 Project 上下文连续、不同 Project 隔离（有测试） |
+| 错误模型 | ✅ 完成 | SDK 结构化错误映射：`GatewayClientRequestError`（网关权威拒绝，code/gatewayCode/details/retryable）→ RPC 阶段 `AGENT_RUN_FAILED`、连接阶段 `AGENT_RUNTIME_UNAVAILABLE`；`GatewayClientRequestTimeoutError`（CLIENT_TIMEOUT 本地截止）→ `AGENT_RUNTIME_UNAVAILABLE`；连接/握手失败（含 AUTH_TOKEN_MISMATCH、PROTOCOL_MISMATCH）→ `AGENT_RUNTIME_UNAVAILABLE`；整体超时 → `AGENT_TIMEOUT`。SDK 内部错误不泄露到 HTTP 客户端 |
+| 生命周期 | ✅ 完成 | 每次 runAgent 一条连接、finally 幂等 stop；新增 `AgentRuntime.close?()` 与 `OpenClawRuntimeAdapter.close()`（停止全部在途连接），server shutdown（SIGINT/SIGTERM）接入；无 dangling WebSocket / 定时器残留（测试进程干净退出） |
+| mock Gateway 升级 | ✅ 完成 | `test/helpers/mockGateway.ts` 对齐 2026.8.1 服务端契约：升级后立即下发 `connect.challenge {nonce, ts}`（官方客户端收到挑战前不发 connect）；mock 仍只实现服务端必需子集，不复制完整协议 |
+| 测试 | ✅ 完成 | 79 个测试全部通过（较 M2 +5）：runAgent 13（含 acceptance 契约、pending/窗口耗尽轮询、sessionKey 派生/复用/隔离、close 生命周期）、HTTP 全链路 13（含两轮 generate 会话连续性）、ProjectStore 13（含 runtimeSessionKey 持久化/向后兼容）等 |
+| 真实 Gateway smoke | ✅ 完成 | 本机启动 `openclaw@2026.8.1 gateway`（npx，只读使用现有 ~/.openclaw 配置）：`healthCheck` healthy（354ms）；SDK connect → hello-ok `protocol=4, server=2026.8.1`；RPC `status` 成功；PaperTeam `runAgent` 完整链路 → 网关验收 `runId=paperteam-ee38400e…`、`sessionKey=agent:main:paperteam-p-smoke`（派生 key 被真实网关接受）→ `agent.wait` 到达 error 终态（本机 workspace 需 `openclaw doctor --fix` 迁移，且未配置模型凭据；属环境问题而非协议问题，未改动用户全局配置/状态）；进程干净退出 |
+
+依赖变化：新增运行时依赖 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（均精确 pin `2026.8.1`；传递依赖 `ws` / `ipaddr.js` / `typebox`）；`engines` 从 `>=22` 收紧为 `>=22.19.0`；tsconfig `lib` 升至 ES2024（`Promise.withResolvers`）。
+
+M2.1 边界：未引入 Swarm / A2A / 多 Agent 编排（M3+）；`onEvent` / `streamEvents` / `getTask` / `cancelTask` 仍为契约占位（SDK 已具备事件能力，Runtime 层未设计死路）；未做连接池（维持每次 runAgent 一条连接的简单语义）。
 
 ## M2：Agent Invocation + Project + LaTeX Skeleton
 
@@ -76,14 +99,14 @@ M1 边界：未实现任何业务 Agent、Workflow、数据库、前端等（见
 - 数据库第一版使用 SQLite（PRD 建议方案，待最终确认）
 - Docker 部署细节（镜像划分、compose 结构、TeX Live 镜像体积控制）
 - M1/M2 遗留验证项：
-  - 真实 OpenClaw Gateway 环境下的健康检查与 Agent 调用（本机开发环境无 Gateway 进程与 .env；M2 已用按官方协议实现的本地 WebSocket mock 完成全链路验证）
+  - ~~真实 OpenClaw Gateway 环境下的健康检查与 Agent 调用~~ → M2.1 已用本机 `openclaw@2026.8.1 gateway` 完成真实 smoke（健康检查、SDK connect/hello、RPC `status`、`agent` 验收 → `agent.wait` 终态）；带模型凭据的完整文本生成仍待有凭据的环境
   - 真实 LaTeX 编译（本机未安装 latexmk / xelatex；编译器代码与错误路径已通过注入式测试覆盖）
 
 ## M2 遗留项（进入后续里程碑前建议处理）
 
-1. **真实环境验证**：在有 OpenClaw Gateway 的环境配置 `OPENCLAW_GATEWAY_URL` / `OPENCLAW_GATEWAY_API_KEY` / `OPENCLAW_WRITER_AGENT_ID` 后执行一次真实 Writer 调用；在装有 TeX Live 的环境跑一次真实编译（当前机器两者均缺）。
-2. **runAgent 连接复用**：当前每次 runAgent 新建一条 WebSocket 连接（M2 简化）；后续需要并发多 Agent 时应引入连接池 / 长连接管理。
-3. **getTask / cancelTask / streamEvents / sendMessage**：仍为 `RuntimeCapabilityError`，属第二阶段剩余工作（Paper Manager 调度、任务状态查询需要它们）。
+1. **真实环境验证**：带模型凭据环境下执行一次真实 Writer 调用到文本返回（M2.1 smoke 已验证协议链路至终态；本机 ~/.openclaw 需 `openclaw doctor --fix` 且未配模型，因 AutoClaw 共用该状态而未改动）；在装有 TeX Live 的环境跑一次真实编译（当前机器两者均缺）。
+2. **runAgent 连接复用**：每次 runAgent 新建一条 GatewayClient 连接（M2.1 有意保持的简单语义；单次连接失败即放弃，不搭乘 SDK 重试循环）；后续并发多 Agent 时再评估长连接/池化。
+3. **getTask / cancelTask / streamEvents / sendMessage**：仍为 `RuntimeCapabilityError`，属后续里程碑（Paper Manager 调度、任务状态查询需要它们）。SDK 已具备事件订阅能力（onEvent / sessions.*），M3 做 Progress/Event 时接入。
 4. **generate 为同步阻塞 API**：写作 + 编译在一次 HTTP 请求内完成（可能长耗时）；后续里程碑引入任务模型（POST 返回 taskId + 轮询/SSE）。
 5. **LaTeX fallback 只跑单轮 xelatex**：交叉引用可能需要两轮；latexmk 路径无此问题。真实环境首推 latexmk。
 6. **项目列表 / 删除 / 上传 / Git 版本管理**：第二阶段范围内，M2 未做。

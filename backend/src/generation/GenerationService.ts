@@ -56,6 +56,8 @@ export class GenerationService {
   /**
    * 对已存在的项目执行一次「Writer 写作 + LaTeX 编译」。
    * 项目不存在 / Writer 失败 / 编译失败分别抛对应业务错误。
+   * 会话连续性（M2.1）：把 project.json 里的 runtimeSessionKey 传给 Writer
+   * 复用；成功后把本次实际使用的会话引用写回，失败不改变已存引用。
    */
   async generate(params: { projectId: string; prompt: string }): Promise<GenerationResult> {
     const project = await this.projects.getRequired(params.projectId);
@@ -65,7 +67,11 @@ export class GenerationService {
       const written = await this.writer.write({
         projectId: project.id,
         prompt: params.prompt,
+        ...(project.runtimeSessionKey
+          ? { sessionKey: project.runtimeSessionKey }
+          : {}),
       });
+      await this.persistRuntimeSession(project.id, written.task.metadata?.["sessionKey"]);
 
       const manuscriptDir = this.projects.manuscriptDir(project.id);
       await mkdir(manuscriptDir, { recursive: true });
@@ -129,6 +135,18 @@ export class GenerationService {
     } catch (error) {
       // 状态更新失败不影响主流程，只记日志
       this.log(`[generation] ${projectId} 状态更新失败：${String(error)}`);
+    }
+  }
+
+  /** 会话引用写回失败不影响主流程（下次生成会重新派生/复用旧值） */
+  private async persistRuntimeSession(projectId: string, sessionKey: unknown): Promise<void> {
+    if (typeof sessionKey !== "string" || sessionKey === "") {
+      return;
+    }
+    try {
+      await this.projects.updateRuntimeSessionKey(projectId, sessionKey);
+    } catch (error) {
+      this.log(`[generation] ${projectId} 会话引用写回失败：${String(error)}`);
     }
   }
 }
