@@ -20,7 +20,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@openclaw/gateway-client": "2026.8.1",
-    "@openclaw/gateway-protocol": "2026.8.1"
+    "@openclaw/gateway-client": "2026.8.2",
+    "@openclaw/gateway-protocol": "2026.8.2"
   }
 }

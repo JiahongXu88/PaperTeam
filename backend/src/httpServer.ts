@@ -7,6 +7,7 @@ import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
+import type { RuntimeStatusService } from "./runtime/statusService.js";
 import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
@@ -70,6 +71,8 @@ export interface BackendHttpServerOptions {
   stack?: ServiceStack;
   /** M3.2 Existing-LaTeX 导入器 */
   importer?: LatexImporter;
+  /** M3.5 Runtime 状态诊断（GET /api/runtime/status） */
+  runtimeStatus?: RuntimeStatusService;
 }
 
 export function createBackendHttpServer({
@@ -79,9 +82,10 @@ export function createBackendHttpServer({
   orchestrator,
   stack,
   importer,
+  runtimeStatus,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    handleRequest(req, res, { runtime, projects, generation, orchestrator, stack, importer }).catch(
+    handleRequest(req, res, { runtime, projects, generation, orchestrator, stack, importer, runtimeStatus }).catch(
       (error: unknown) => {
         const businessError = toBusinessError(error);
         if (businessError.code === "INTERNAL_ERROR") {
@@ -107,6 +111,7 @@ interface Services {
   orchestrator: WorkflowOrchestrator;
   stack?: ServiceStack;
   importer?: LatexImporter;
+  runtimeStatus?: RuntimeStatusService;
 }
 
 async function handleRequest(
@@ -137,6 +142,22 @@ async function handleRequest(
         checkedAt: health.checkedAt,
       },
     });
+    return;
+  }
+
+  // ---- GET /api/runtime/status（M3.5 Runtime 诊断） ----
+  if (pathname === "/api/runtime/status") {
+    if (method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    if (services.runtimeStatus === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "Runtime 诊断服务未配置" });
+      return;
+    }
+    const status = await services.runtimeStatus.getStatus();
+    sendJson(res, 200, { status });
     return;
   }
 

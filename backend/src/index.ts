@@ -7,6 +7,8 @@ import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
+import { RuntimeStatusService } from "./runtime/statusService.js";
+import { OPENCLAW_RUNTIME_VERSION } from "./dev/runtimeConfig.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { LatexImporter } from "./import/LatexImporter.js";
@@ -85,6 +87,14 @@ export async function startBackend(): Promise<void> {
   const health = await runtime.healthCheck();
   reportGatewayHealth(health);
 
+  // M3.5：Runtime 诊断（GET /api/runtime/status）
+  const runtimeStatus = new RuntimeStatusService({
+    runtime,
+    agentIds: config.agents,
+    expectedRuntimeVersion: OPENCLAW_RUNTIME_VERSION,
+    log: (message) => console.log(message),
+  });
+
   const orchestrator = new WorkflowOrchestrator({
     projects,
     runStore: new WorkflowRunStore(projects),
@@ -112,12 +122,14 @@ export async function startBackend(): Promise<void> {
     orchestrator,
     stack,
     importer,
+    runtimeStatus,
   });
   server.listen(config.port, () => {
     console.log(
       `PaperTeam Backend listening on http://localhost:${config.port}` +
-        ` (GET /health, POST /api/projects, POST /api/projects/:id/generate,` +
-        ` POST /api/projects/:id/workflows, GET /api/runs/:runId[/events])`,
+        ` (GET /health, GET /api/runtime/status, POST /api/projects,` +
+        ` POST /api/projects/:id/generate, POST /api/projects/:id/workflows,` +
+        ` GET /api/runs/:runId[/events])`,
     );
   });
 
@@ -161,12 +173,14 @@ function registerShutdown(
   const shutdown = (signal: string) => {
     console.log(`\nPaperTeam Backend shutting down (${signal})...`);
     // 先停编排器（请求取消活跃 run 并等循环退出，checkpoint 已随执行落盘），
-    // 再释放 Runtime 在途连接，最后关 HTTP 服务
+    // 再释放 Runtime 在途连接，最后关 HTTP 服务（SSE 长连接会阻止
+    // server.close 完成，主动 closeAllConnections 让退出即时、干净）
     void orchestrator
       .close()
       .catch(() => {})
       .finally(() => {
         void runtime.close?.().catch(() => {});
+        server.closeAllConnections?.();
         server.close(() => {
           process.exit(0);
         });

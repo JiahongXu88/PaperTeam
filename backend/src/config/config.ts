@@ -134,10 +134,14 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       }),
     },
     agents: {
-      writer: readAgentId(source, "OPENCLAW_WRITER_AGENT_ID", "writer"),
-      researcher: readAgentId(source, "OPENCLAW_RESEARCHER_AGENT_ID", "researcher"),
-      reviewer: readAgentId(source, "OPENCLAW_REVIEWER_AGENT_ID", "reviewer"),
-      citation: readAgentId(source, "OPENCLAW_CITATION_AGENT_ID", "citation"),
+      // M3.5 起默认全部映射到 OpenClaw 默认 agent（main）：业务角色
+      // （Researcher/Writer/Reviewer/Citation）靠 prompt + contextScope 隔离
+      // 会话，不需要独立的 OpenClaw agent 注册（方案 A，见 docs/DECISIONS.md
+      // D-0018）；需要独立 agent（不同模型/工具策略）时用环境变量覆盖。
+      writer: readAgentId(source, "OPENCLAW_WRITER_AGENT_ID", "main"),
+      researcher: readAgentId(source, "OPENCLAW_RESEARCHER_AGENT_ID", "main"),
+      reviewer: readAgentId(source, "OPENCLAW_REVIEWER_AGENT_ID", "main"),
+      citation: readAgentId(source, "OPENCLAW_CITATION_AGENT_ID", "main"),
     },
     projectsRoot: readProjectsRoot(source),
     latex: {

@@ -133,6 +133,18 @@ export class OpenClawRuntimeAdapter implements AgentRuntime {
   }
 
   /**
+   * 连接信息（诊断服务用）：不暴露 token 本体，只暴露建立诊断连接
+   * 所需的最小材料。token 只在进程内使用，不进入任何日志 / 响应。
+   */
+  connectionInfo(): { baseUrl: string; hasApiKey: boolean; apiKey?: string } {
+    return {
+      baseUrl: this.baseUrl,
+      hasApiKey: this.apiKey !== undefined,
+      ...(this.apiKey !== undefined ? { apiKey: this.apiKey } : {}),
+    };
+  }
+
+  /**
    * 对 Gateway 发起一次健康检查。
    *
    * 不抛出业务异常：无论 Gateway 是否在线，都返回结构化的 RuntimeHealth。
