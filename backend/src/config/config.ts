@@ -35,24 +35,40 @@ export interface LatexConfig {
   compileTimeoutMs: number;
 }
 
+export interface WorkflowConfig {
+  /** 单个 Stage 执行超时（毫秒） */
+  stageTimeoutMs: number;
+  /** 单个 Stage 最大尝试次数（含首次） */
+  stageMaxAttempts: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
   gateway: GatewayConfig;
-  /** Writer Agent 对应的 OpenClaw agent id */
-  writerAgentId: string;
+  /** 各业务 Agent 对应的 OpenClaw agent id */
+  agents: AgentIds;
   /** 论文项目工作区根目录（绝对路径） */
   projectsRoot: string;
   latex: LatexConfig;
+  workflow: WorkflowConfig;
+}
+
+export interface AgentIds {
+  writer: string;
+  researcher: string;
+  reviewer: string;
+  citation: string;
 }
 
 const DEFAULT_PORT = 3000;
 const DEFAULT_HEALTH_TIMEOUT_MS = 5000;
 const DEFAULT_RPC_TIMEOUT_MS = 15_000;
 const DEFAULT_RUN_TIMEOUT_MS = 300_000;
-const DEFAULT_WRITER_AGENT_ID = "writer";
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
+const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
+const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 
 const HEALTH_TIMEOUT_MIN_MS = 100;
 const HEALTH_TIMEOUT_MAX_MS = 60_000;
@@ -62,6 +78,10 @@ const RUN_TIMEOUT_MIN_MS = 1_000;
 const RUN_TIMEOUT_MAX_MS = 3_600_000;
 const LATEX_TIMEOUT_MIN_MS = 1_000;
 const LATEX_TIMEOUT_MAX_MS = 1_800_000;
+const STAGE_TIMEOUT_MIN_MS = 5_000;
+const STAGE_TIMEOUT_MAX_MS = 3_600_000;
+const STAGE_MAX_ATTEMPTS_MIN = 1;
+const STAGE_MAX_ATTEMPTS_MAX = 5;
 
 const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
@@ -86,13 +106,30 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         max: RUN_TIMEOUT_MAX_MS,
       }),
     },
-    writerAgentId: readWriterAgentId(source),
+    agents: {
+      writer: readAgentId(source, "OPENCLAW_WRITER_AGENT_ID", "writer"),
+      researcher: readAgentId(source, "OPENCLAW_RESEARCHER_AGENT_ID", "researcher"),
+      reviewer: readAgentId(source, "OPENCLAW_REVIEWER_AGENT_ID", "reviewer"),
+      citation: readAgentId(source, "OPENCLAW_CITATION_AGENT_ID", "citation"),
+    },
     projectsRoot: readProjectsRoot(source),
     latex: {
       compileTimeoutMs: readTimeoutMs(source, "LATEX_COMPILE_TIMEOUT_MS", {
         default: DEFAULT_LATEX_COMPILE_TIMEOUT_MS,
         min: LATEX_TIMEOUT_MIN_MS,
         max: LATEX_TIMEOUT_MAX_MS,
+      }),
+    },
+    workflow: {
+      stageTimeoutMs: readTimeoutMs(source, "WORKFLOW_STAGE_TIMEOUT_MS", {
+        default: DEFAULT_STAGE_TIMEOUT_MS,
+        min: STAGE_TIMEOUT_MIN_MS,
+        max: STAGE_TIMEOUT_MAX_MS,
+      }),
+      stageMaxAttempts: readInt(source, "WORKFLOW_STAGE_MAX_ATTEMPTS", {
+        default: DEFAULT_STAGE_MAX_ATTEMPTS,
+        min: STAGE_MAX_ATTEMPTS_MIN,
+        max: STAGE_MAX_ATTEMPTS_MAX,
       }),
     },
   };
@@ -180,11 +217,15 @@ function readTimeoutMs(
   return ms;
 }
 
-function readWriterAgentId(source: Record<string, string | undefined>): string {
-  const key = "OPENCLAW_WRITER_AGENT_ID";
+/** 读取 agent id 配置（缺省用默认值；非法字符报错） */
+function readAgentId(
+  source: Record<string, string | undefined>,
+  key: string,
+  fallback: string,
+): string {
   const raw = (source[key] ?? "").trim();
   if (raw === "") {
-    return DEFAULT_WRITER_AGENT_ID;
+    return fallback;
   }
   if (!AGENT_ID_PATTERN.test(raw)) {
     throw new ConfigError(
@@ -192,6 +233,25 @@ function readWriterAgentId(source: Record<string, string | undefined>): string {
     );
   }
   return raw;
+}
+
+/** 通用整型配置读取（缺省 / 越界报错） */
+function readInt(
+  source: Record<string, string | undefined>,
+  key: string,
+  bounds: { default: number; min: number; max: number },
+): number {
+  const raw = source[key];
+  if (raw === undefined || raw.trim() === "") {
+    return bounds.default;
+  }
+  const value = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+    throw new ConfigError(
+      `${key} 必须是 ${bounds.min}-${bounds.max} 的整数，当前为 "${raw.trim()}"`,
+    );
+  }
+  return value;
 }
 
 function readProjectsRoot(source: Record<string, string | undefined>): string {

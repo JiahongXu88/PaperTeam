@@ -4,46 +4,69 @@ import { BusinessError, toBusinessError } from "./errors.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
+import type { WorkflowDomainEvent, WorkflowKind } from "./workflow/types.js";
+import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
 /**
  * Backend 自身的轻量 HTTP 服务（Node 原生 http，无 Web 框架）。
  *
- * M2 端点：
- *   GET  /health                     存活探针（含 Gateway 实时健康）
- *   POST /api/projects               创建论文项目 {title}
- *   GET  /api/projects/:id           查询项目元数据
- *   POST /api/projects/:id/generate  Writer 写作 + LaTeX 编译 {prompt}
+ * M3 端点：
+ *   GET  /health                                存活探针（含 Gateway 实时健康）
+ *   POST /api/projects                          创建论文项目 {title}
+ *   GET  /api/projects/:id                      查询项目元数据
+ *   POST /api/projects/:id/generate             Writer 写作 + LaTeX 编译（M2 同步形态，保留兼容）
+ *   POST /api/projects/:id/workflows            创建异步 WorkflowRun {kind, prompt?} → {runId}
+ *   GET  /api/runs?projectId=xxx                项目 run 列表
+ *   GET  /api/runs/:runId                       run 状态 / 当前 stage / 待办 / 错误
+ *   GET  /api/runs/:runId/events                SSE：Domain Event replay + 实时推送
+ *   POST /api/runs/:runId/resume                提交 HITL 输入 {decision, payload?}
+ *   POST /api/runs/:runId/cancel                取消 run
  */
 
-/** 请求体大小上限（字节） */
+/** 默认请求体大小上限（字节） */
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/** SSE 心跳间隔（毫秒） */
+const SSE_HEARTBEAT_MS = 15_000;
 
 export interface BackendHttpServerOptions {
   runtime: AgentRuntime;
   projects: ProjectStore;
   generation: GenerationService;
+  orchestrator: WorkflowOrchestrator;
 }
 
 export function createBackendHttpServer({
   runtime,
   projects,
   generation,
+  orchestrator,
 }: BackendHttpServerOptions): Server {
-  return createServer((req: IncomingMessage, res: ServerResponse) => {
-    handleRequest(req, res, { runtime, projects, generation }).catch((error: unknown) => {
-      const businessError = toBusinessError(error);
-      if (businessError.code === "INTERNAL_ERROR") {
-        console.error("[http] 未处理错误:", error);
-      }
-      sendBusinessError(res, businessError);
-    });
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    handleRequest(req, res, { runtime, projects, generation, orchestrator }).catch(
+      (error: unknown) => {
+        const businessError = toBusinessError(error);
+        if (businessError.code === "INTERNAL_ERROR") {
+          console.error("[http] 未处理错误:", error);
+        }
+        if (!res.headersSent) {
+          sendBusinessError(res, businessError);
+        } else {
+          res.end();
+        }
+      },
+    );
   });
+  // SSE 长连接需要禁用请求级超时（keep-alive 由心跳维持）
+  server.requestTimeout = 0;
+  return server;
 }
 
 interface Services {
   runtime: AgentRuntime;
   projects: ProjectStore;
   generation: GenerationService;
+  orchestrator: WorkflowOrchestrator;
 }
 
 async function handleRequest(
@@ -51,7 +74,8 @@ async function handleRequest(
   res: ServerResponse,
   services: Services,
 ): Promise<void> {
-  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+  const url = new URL(req.url ?? "/", "http://localhost");
+  const pathname = url.pathname;
   const method = (req.method ?? "GET").toUpperCase();
 
   // ---- GET /health ----
@@ -93,7 +117,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- /api/projects/:id 与 /api/projects/:id/generate ----
+  // ---- /api/projects/:id ----
   const projectMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})$/.exec(pathname);
   if (projectMatch) {
     const projectId = projectMatch[1] ?? "";
@@ -107,6 +131,7 @@ async function handleRequest(
     return;
   }
 
+  // ---- POST /api/projects/:id/generate（M2 同步形态，保留兼容） ----
   const generateMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/generate$/.exec(pathname);
   if (generateMatch) {
     const projectId = generateMatch[1] ?? "";
@@ -125,17 +150,188 @@ async function handleRequest(
     return;
   }
 
+  // ---- POST /api/projects/:id/workflows（M3.0：异步 WorkflowRun） ----
+  const workflowsMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/workflows$/.exec(pathname);
+  if (workflowsMatch) {
+    const projectId = workflowsMatch[1] ?? "";
+    if (method !== "POST") {
+      res.setHeader("Allow", "POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    const body = await readJsonBody(req);
+    const kind = readWorkflowKind(body);
+    const prompt = readStringField(body, "prompt");
+    const run = await services.orchestrator.createRun(projectId, kind, {
+      ...(prompt !== undefined ? { prompt } : {}),
+    });
+    sendJson(res, 202, { runId: run.runId, status: run.status, workflowKind: run.workflowKind });
+    return;
+  }
+
+  // ---- GET /api/runs?projectId=... ----
+  if (pathname === "/api/runs") {
+    if (method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    const projectId = url.searchParams.get("projectId") ?? "";
+    if (projectId === "") {
+      throw new BusinessError("INVALID_REQUEST", "缺少查询参数 projectId");
+    }
+    const runs = await services.orchestrator.listRuns(projectId);
+    sendJson(res, 200, { runs });
+    return;
+  }
+
+  // ---- /api/runs/:runId[/events|/resume|/cancel] ----
+  const runMatch = /^\/api\/runs\/([a-z0-9][a-z0-9-]{0,63})(\/[a-z]+)?$/.exec(pathname);
+  if (runMatch) {
+    const runId = runMatch[1] ?? "";
+    const action = runMatch[2] ?? "";
+    if (action === "") {
+      if (method !== "GET") {
+        res.setHeader("Allow", "GET");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return;
+      }
+      const run = await services.orchestrator.getRun(runId);
+      sendJson(res, 200, { run });
+      return;
+    }
+    if (action === "/events") {
+      if (method !== "GET") {
+        res.setHeader("Allow", "GET");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return;
+      }
+      await handleRunEventsSse(req, res, services.orchestrator, runId);
+      return;
+    }
+    if (action === "/resume") {
+      if (method !== "POST") {
+        res.setHeader("Allow", "POST");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return;
+      }
+      const body = await readJsonBody(req);
+      const decision = readStringField(body, "decision");
+      if (decision === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 decision");
+      }
+      const payload = readPayloadField(body, "payload");
+      const run = await services.orchestrator.resume(runId, { decision, ...(payload !== undefined ? { payload } : {}) });
+      sendJson(res, 200, { run });
+      return;
+    }
+    if (action === "/cancel") {
+      if (method !== "POST") {
+        res.setHeader("Allow", "POST");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return;
+      }
+      const run = await services.orchestrator.cancel(runId);
+      sendJson(res, 200, { run });
+      return;
+    }
+    sendJson(res, 404, { status: "not_found", path: pathname });
+    return;
+  }
+
   sendJson(res, 404, { status: "not_found", path: pathname });
 }
 
+// ---- SSE：WorkflowRun 进度（Domain Event replay + 实时推送） ----
+
+async function handleRunEventsSse(
+  req: IncomingMessage,
+  res: ServerResponse,
+  orchestrator: WorkflowOrchestrator,
+  runId: string,
+): Promise<void> {
+  // 先订阅再 replay：replay 期间新到的事件进缓冲，按 seq 去重后补发，
+  // 保证「已有事件 replay + 实时事件」无缝且不重不漏。
+  const buffered: WorkflowDomainEvent[] = [];
+  let replayDone = false;
+  let lastSeq = 0;
+  let closed = false;
+
+  let unsubscribe: (() => void) | null = null;
+  // run 不存在时 subscribe 抛 WORKFLOW_NOT_FOUND（headers 未发送，安全映射 404）
+  unsubscribe = await orchestrator.subscribe(runId, (event) => {
+    if (closed) {
+      return;
+    }
+    if (replayDone) {
+      if (event.seq > lastSeq) {
+        lastSeq = event.seq;
+        writeSseEvent(res, event);
+      }
+    } else {
+      buffered.push(event);
+    }
+  });
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  res.write(": connected\n\n");
+
+  const { events, skippedLines } = await orchestrator.readEvents(runId);
+  for (const event of events) {
+    writeSseEvent(res, event);
+    lastSeq = Math.max(lastSeq, event.seq);
+  }
+  if (skippedLines > 0) {
+    res.write(`: replay 完成（${events.length} 条事件，${skippedLines} 行损坏已跳过）\n\n`);
+  } else {
+    res.write(`: replay 完成（${events.length} 条事件）\n\n`);
+  }
+  replayDone = true;
+  // 补发订阅缓冲中比 replay 更新的事件（seq 去重）
+  buffered.sort((a, b) => a.seq - b.seq);
+  for (const event of buffered) {
+    if (event.seq > lastSeq) {
+      lastSeq = event.seq;
+      writeSseEvent(res, event);
+    }
+  }
+
+  // 心跳：保活 + 代理缓冲提示；连接断开时清理干净（不影响 workflow 执行）
+  const heartbeat = setInterval(() => {
+    if (closed) {
+      return;
+    }
+    res.write(": ping\n\n");
+  }, SSE_HEARTBEAT_MS);
+  req.on("close", () => {
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe?.();
+  });
+}
+
+function writeSseEvent(res: ServerResponse, event: WorkflowDomainEvent): void {
+  res.write(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+// ---- 请求体与字段解析 ----
+
 /** 读取并解析 JSON 请求体；非法 JSON / 超限抛 INVALID_REQUEST */
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(
+  req: IncomingMessage,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).byteLength;
-    if (size > MAX_BODY_BYTES) {
-      throw new BusinessError("INVALID_REQUEST", `请求体超过 ${MAX_BODY_BYTES} 字节上限`);
+    if (size > maxBytes) {
+      throw new BusinessError("INVALID_REQUEST", `请求体超过 ${maxBytes} 字节上限`);
     }
     chunks.push(chunk as Buffer);
   }
@@ -158,6 +354,34 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {
   const value = body[field];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function readPayloadField(
+  body: Record<string, unknown>,
+  field: string,
+): Record<string, unknown> | undefined {
+  const value = body[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new BusinessError("INVALID_REQUEST", `字段 ${field} 必须是 JSON 对象`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
+  const kind = body["kind"];
+  if (kind === undefined) {
+    return "idea_to_paper";
+  }
+  if (kind === "idea_to_paper" || kind === "existing_paper_improvement") {
+    return kind;
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    "字段 kind 只能是 idea_to_paper 或 existing_paper_improvement（缺省 idea_to_paper）",
+  );
 }
 
 function sendBusinessError(res: ServerResponse, error: BusinessError): void {

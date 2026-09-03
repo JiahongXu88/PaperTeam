@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 
 import {
@@ -55,6 +55,8 @@ export const PROJECT_DIRECTORIES: readonly string[] = [
   "evidence",
   "reviews",
   "build",
+  "workflow",
+  "research",
 ];
 
 export interface ProjectStoreOptions {
@@ -213,12 +215,54 @@ export class ProjectStore {
     return join(this.projectDir(projectId), "build");
   }
 
+  sourcesDir(projectId: string): string {
+    return join(this.projectDir(projectId), "sources");
+  }
+
+  evidenceDir(projectId: string): string {
+    return join(this.projectDir(projectId), "evidence");
+  }
+
+  reviewsDir(projectId: string): string {
+    return join(this.projectDir(projectId), "reviews");
+  }
+
+  researchDir(projectId: string): string {
+    return join(this.projectDir(projectId), "research");
+  }
+
+  /** WorkflowRun 状态根目录（Authoritative State，PRD §5.5 workflow/） */
+  workflowDir(projectId: string): string {
+    return join(this.projectDir(projectId), "workflow");
+  }
+
   mainTexPath(projectId: string): string {
     return join(this.manuscriptDir(projectId), "main.tex");
   }
 
   paperPdfPath(projectId: string): string {
     return join(this.buildDir(projectId), "paper.pdf");
+  }
+
+  /** 列出全部项目 id（依据目录名 + project.json 可解析） */
+  async list(): Promise<string[]> {
+    let entries: readonly string[];
+    try {
+      entries = await readdir(this.root);
+    } catch {
+      return [];
+    }
+    const projects: string[] = [];
+    for (const entry of entries) {
+      if (!PROJECT_ID_PATTERN.test(entry)) {
+        continue;
+      }
+      const metadata = await this.get(entry);
+      if (metadata !== null) {
+        projects.push(metadata.id);
+      }
+    }
+    return projects.sort();
   }
 
   /** 写入 project.json */

@@ -50,6 +50,14 @@ export interface RunAgentInput {
    * 按 projectId 派生稳定会话（保证同一 Project 复用、不同 Project 隔离）。
    */
   sessionKey?: string;
+  /**
+   * 上下文作用域（M3.0，ARCHITECTURE §6.3）。
+   * 会话维度扩展为 projectId × agentId × contextScope：
+   * 同一 Agent 的不同 scope（如 Reviewer 的 fact / academic / style）
+   * 持有独立会话，互不污染。取值为简短的业务 scope 字符串
+   * （如 "research" / "writing" / "review/fact"），非法字符会被安全归一化。
+   */
+  contextScope?: string;
   inputFiles?: string[];
   /** 本次任务的整体超时（毫秒）；缺省使用 Runtime 配置的默认值 */
   timeoutMs?: number;

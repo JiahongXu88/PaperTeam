@@ -12,17 +12,25 @@ import { ProjectStore } from "../src/project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "../src/runtime/OpenClawRuntimeAdapter.js";
 import type { AgentRuntime, RuntimeHealth } from "../src/runtime/types.js";
 import { WriterService } from "../src/writer/WriterService.js";
+import {
+  createIdeaToPaperDefinition,
+  type WorkflowServices,
+} from "../src/workflow/definitions.js";
+import { WorkflowOrchestrator } from "../src/workflow/WorkflowOrchestrator.js";
+import { WorkflowRunStore } from "../src/workflow/runStore.js";
 import { defaultHandler, startMockGateway, type MockGateway } from "./helpers/mockGateway.js";
 
 const servers: Server[] = [];
 const tempRoots: string[] = [];
 const gateways: MockGateway[] = [];
+const orchestrators: WorkflowOrchestrator[] = [];
 
 afterAll(async () => {
   await Promise.all([
     ...servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     ...tempRoots.map((root) => rm(root, { recursive: true, force: true })),
     ...gateways.map((gateway) => gateway.close()),
+    ...orchestrators.map((orchestrator) => orchestrator.close()),
   ]);
 });
 
@@ -418,7 +426,26 @@ async function startApiStack(
     runner: options.latexRunner ?? fakeSuccessfulRunner,
   });
   const generation = new GenerationService({ projects: store, writer, latex, log: () => {} });
-  const server = createBackendHttpServer({ runtime, projects: store, generation });
+  const workflowServices: WorkflowServices = {
+    projects: store,
+    generation,
+    stageTimeoutMs: 10_000,
+    stageMaxAttempts: 2,
+  };
+  const orchestrator = new WorkflowOrchestrator({
+    projects: store,
+    runStore: new WorkflowRunStore(store),
+    definitionFactory: (kind) => {
+      if (kind !== "idea_to_paper") {
+        throw new Error(`unexpected kind: ${kind}`);
+      }
+      return createIdeaToPaperDefinition(workflowServices);
+    },
+    retryDelayMs: 0,
+    log: () => {},
+  });
+  orchestrators.push(orchestrator);
+  const server = createBackendHttpServer({ runtime, projects: store, generation, orchestrator });
   servers.push(server);
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);

@@ -4,15 +4,22 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ConfigError, loadConfig } from "./config/config.js";
 import { applyEnvFile, findEnvFile } from "./config/envFile.js";
 import { GenerationService } from "./generation/GenerationService.js";
+import { BusinessError } from "./errors.js";
 import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { WriterService } from "./writer/WriterService.js";
+import {
+  createIdeaToPaperDefinition,
+  type WorkflowServices,
+} from "./workflow/definitions.js";
+import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
+import { WorkflowRunStore } from "./workflow/runStore.js";
 
 /**
- * PaperTeam Backend 启动入口（M2.1：OpenClaw 2.0 Runtime Upgrade）。
+ * PaperTeam Backend 启动入口（M3.0：Workflow Foundation）。
  *
  * 启动流程：
  *   1. 加载 .env（可选，仅补缺，不覆盖真实环境变量）
@@ -20,7 +27,8 @@ import { WriterService } from "./writer/WriterService.js";
  *   3. 装配服务：ProjectStore / WriterService / GenerationService / LatexCompiler
  *   4. 初始化 OpenClawRuntimeAdapter（基于官方 @openclaw/gateway-client）
  *   5. 对 OpenClaw Gateway 执行一次健康检查并输出结果
- *   6. 启动 HTTP 服务（GET /health + 项目 API）；shutdown 时释放 Runtime 连接
+ *   6. 装配 WorkflowOrchestrator 并恢复中断的 WorkflowRun（checkpoint 恢复）
+ *   7. 启动 HTTP 服务；shutdown 时先停编排器再释放 Runtime 连接
  */
 
 export async function startBackend(): Promise<void> {
@@ -41,7 +49,7 @@ export async function startBackend(): Promise<void> {
   console.log(`  env:          ${config.env}`);
   console.log(`  gateway:      ${config.gateway.url}`);
   console.log(`  projectsRoot: ${config.projectsRoot}`);
-  console.log(`  writerAgent:  ${config.writerAgentId}`);
+  console.log(`  agents:       researcher=${config.agents.researcher} writer=${config.agents.writer} reviewer=${config.agents.reviewer} citation=${config.agents.citation}`);
 
   const runtime: AgentRuntime = new OpenClawRuntimeAdapter({
     baseUrl: config.gateway.url,
@@ -54,7 +62,7 @@ export async function startBackend(): Promise<void> {
   const projects = new ProjectStore({ root: config.projectsRoot });
   const writer = new WriterService({
     runtime,
-    agentId: config.writerAgentId,
+    agentId: config.agents.writer,
     log: (message) => console.log(message),
   });
   const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
@@ -68,15 +76,46 @@ export async function startBackend(): Promise<void> {
   const health = await runtime.healthCheck();
   reportGatewayHealth(health);
 
-  const server = createBackendHttpServer({ runtime, projects, generation });
+  const workflowServices: WorkflowServices = {
+    projects,
+    generation,
+    stageTimeoutMs: config.workflow.stageTimeoutMs,
+    stageMaxAttempts: config.workflow.stageMaxAttempts,
+  };
+  const orchestrator = new WorkflowOrchestrator({
+    projects,
+    runStore: new WorkflowRunStore(projects),
+    definitionFactory: (kind) => {
+      switch (kind) {
+        case "idea_to_paper":
+          return createIdeaToPaperDefinition(workflowServices);
+        case "existing_paper_improvement":
+          // M3.2 提供；M3.0 阶段明确拒绝而不是假装可用
+          throw new BusinessError(
+            "INVALID_REQUEST",
+            "existing_paper_improvement workflow 将在 M3.2 提供（请使用 idea_to_paper）",
+          );
+      }
+    },
+    log: (message) => console.log(message),
+  });
+
+  // 进程重启后：恢复中断的 WorkflowRun（依据 checkpoint，不依赖对话历史）
+  const recovered = await orchestrator.recoverInterruptedRuns();
+  if (recovered.length > 0) {
+    console.log(`  workflow:     恢复 ${recovered.length} 个中断的 WorkflowRun`);
+  }
+
+  const server = createBackendHttpServer({ runtime, projects, generation, orchestrator });
   server.listen(config.port, () => {
     console.log(
       `PaperTeam Backend listening on http://localhost:${config.port}` +
-        ` (GET /health, POST /api/projects, POST /api/projects/:id/generate)`,
+        ` (GET /health, POST /api/projects, POST /api/projects/:id/generate,` +
+        ` POST /api/projects/:id/workflows, GET /api/runs/:runId[/events])`,
     );
   });
 
-  registerShutdown(server, runtime);
+  registerShutdown(server, runtime, orchestrator);
 }
 
 function loadDotEnvBestEffort(): void {
@@ -108,17 +147,26 @@ function reportGatewayHealth(health: RuntimeHealth): void {
   );
 }
 
-function registerShutdown(server: import("node:http").Server, runtime: AgentRuntime): void {
+function registerShutdown(
+  server: import("node:http").Server,
+  runtime: AgentRuntime,
+  orchestrator: WorkflowOrchestrator,
+): void {
   const shutdown = (signal: string) => {
     console.log(`\nPaperTeam Backend shutting down (${signal})...`);
-    // 先释放 Runtime 在途连接（避免 dangling WebSocket / 定时器残留），
-    // 再关 HTTP 服务；两者并行，任一完成即可退出
-    void runtime.close?.().catch(() => {});
-    server.close(() => {
-      process.exit(0);
-    });
-    // 兜底：close 回调因 keep-alive 连接悬挂时强制退出
-    setTimeout(() => process.exit(0), 5000).unref();
+    // 先停编排器（请求取消活跃 run 并等循环退出，checkpoint 已随执行落盘），
+    // 再释放 Runtime 在途连接，最后关 HTTP 服务
+    void orchestrator
+      .close()
+      .catch(() => {})
+      .finally(() => {
+        void runtime.close?.().catch(() => {});
+        server.close(() => {
+          process.exit(0);
+        });
+        // 兜底：close 回调因 keep-alive 连接悬挂时强制退出
+        setTimeout(() => process.exit(0), 5000).unref();
+      });
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));

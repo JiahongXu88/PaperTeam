@@ -21,6 +21,16 @@ export type BusinessErrorCode =
   | "LATEX_TOOL_UNAVAILABLE"
   | "LATEX_COMPILE_FAILED"
   | "LATEX_COMPILE_TIMEOUT"
+  | "WORKFLOW_NOT_FOUND"
+  | "WORKFLOW_INVALID_STATE"
+  | "WORKFLOW_CANCELLED"
+  | "STAGE_FAILED"
+  | "STAGE_CONTRACT_VIOLATION"
+  | "AWAITING_INPUT"
+  | "EVIDENCE_VALIDATION"
+  | "CITATION_VERIFICATION"
+  | "QUALITY_GATE_FAILED"
+  | "IMPORT_VALIDATION"
   | "INTERNAL_ERROR";
 
 /** 错误码 → HTTP 状态码 */
@@ -36,6 +46,16 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   LATEX_TOOL_UNAVAILABLE: 500,
   LATEX_COMPILE_FAILED: 422,
   LATEX_COMPILE_TIMEOUT: 504,
+  WORKFLOW_NOT_FOUND: 404,
+  WORKFLOW_INVALID_STATE: 409,
+  WORKFLOW_CANCELLED: 409,
+  STAGE_FAILED: 500,
+  STAGE_CONTRACT_VIOLATION: 500,
+  AWAITING_INPUT: 409,
+  EVIDENCE_VALIDATION: 422,
+  CITATION_VERIFICATION: 502,
+  QUALITY_GATE_FAILED: 422,
+  IMPORT_VALIDATION: 422,
   INTERNAL_ERROR: 500,
 };
 
@@ -122,6 +142,110 @@ export class LatexCompileFailedError extends BusinessError {
 export class LatexCompileTimeoutError extends BusinessError {
   constructor(timeoutMs: number) {
     super("LATEX_COMPILE_TIMEOUT", `LaTeX 编译超时（${timeoutMs}ms）`);
+  }
+}
+
+// ---- Workflow（M3.0） ----
+
+export class WorkflowNotFoundError extends BusinessError {
+  constructor(runId: string) {
+    super("WORKFLOW_NOT_FOUND", `WorkflowRun 不存在：${runId}`);
+  }
+}
+
+/** 对不在预期状态的 WorkflowRun 执行操作（非法状态转换） */
+export class WorkflowInvalidStateError extends BusinessError {
+  constructor(runId: string, currentStatus: string, action: string) {
+    super(
+      "WORKFLOW_INVALID_STATE",
+      `无法对状态为 ${currentStatus} 的 WorkflowRun 执行 ${action}（runId: ${runId}）`,
+    );
+  }
+}
+
+/** WorkflowRun 已被取消后继续使用（内部信号错误；HTTP 层一般映射为 invalid state） */
+export class WorkflowCancelledError extends BusinessError {
+  constructor(runId: string) {
+    super("WORKFLOW_CANCELLED", `WorkflowRun 已取消：${runId}`);
+  }
+}
+
+/** Stage 执行失败（重试耗尽或不可重试；携带失败分类供编排层使用） */
+export class StageFailedError extends BusinessError {
+  readonly category: StageFailureCategory;
+  constructor(stageId: string, category: StageFailureCategory, message: string, detail?: string) {
+    super("STAGE_FAILED", `Stage ${stageId} 失败（${category}）：${message}`, detail);
+    this.category = category;
+  }
+}
+
+/** Stage 产出未通过 DoD 校验（StageContract violation） */
+export class StageContractViolationError extends BusinessError {
+  readonly violations: readonly string[];
+  constructor(stageId: string, violations: readonly string[]) {
+    super(
+      "STAGE_CONTRACT_VIOLATION",
+      `Stage ${stageId} 的产出未通过 DoD 校验：${violations.join("；")}`,
+    );
+    this.violations = violations;
+  }
+}
+
+/**
+ * Stage 失败分类（决定是否重试，M3.0）：
+ * - transient          瞬时失败（Agent 输出异常、模型抖动）→ 可重试
+ * - timeout            超时 → 可重试
+ * - runtime_unavailable Runtime 不可用（Gateway 掉线）→ 可重试
+ * - contract_violation DoD / 结构化校验不通过 → 按契约可重试（LLM 重新生成可能自愈）
+ * - permanent          永久失败（输入非法、环境缺失）→ 不重试
+ */
+export type StageFailureCategory =
+  | "transient"
+  | "timeout"
+  | "runtime_unavailable"
+  | "contract_violation"
+  | "permanent";
+
+/** HITL：Stage 需要用户输入才能继续（由编排层转为 awaiting_input，不是异常路径） */
+export class AwaitingInputSignal extends BusinessError {
+  readonly prompt: string;
+  readonly options: readonly string[];
+  constructor(prompt: string, options: readonly string[]) {
+    super("AWAITING_INPUT", `Workflow 等待用户输入：${prompt}`);
+    this.prompt = prompt;
+    this.options = options;
+  }
+}
+
+// ---- Evidence / Citation（M3.1） ----
+
+export class EvidenceValidationError extends BusinessError {
+  constructor(reason: string) {
+    super("EVIDENCE_VALIDATION", `Evidence 数据校验失败：${reason}`);
+  }
+}
+
+export class CitationVerificationError extends BusinessError {
+  constructor(message: string, detail?: string) {
+    super("CITATION_VERIFICATION", `引用核验失败：${message}`, detail);
+  }
+}
+
+// ---- Quality Gate（M3.2；判定结果本身不是 HTTP 错误，此类型供内部复用） ----
+
+export class QualityGateFailedError extends BusinessError {
+  readonly reasons: readonly string[];
+  constructor(reasons: readonly string[]) {
+    super("QUALITY_GATE_FAILED", `Quality Gate 未通过：${reasons.join("；")}`);
+    this.reasons = reasons;
+  }
+}
+
+// ---- 导入（M3.2 Existing-LaTeX） ----
+
+export class ImportValidationError extends BusinessError {
+  constructor(reason: string) {
+    super("IMPORT_VALIDATION", `导入校验失败：${reason}`);
   }
 }
 
