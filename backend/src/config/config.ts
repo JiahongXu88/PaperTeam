@@ -53,6 +53,15 @@ export interface CitationConfig {
   contactEmail?: string;
 }
 
+export interface ReviewConfig {
+  /** 自动 revision 最大轮数（bounded loop；超出进 HITL） */
+  maxRevisionRounds: number;
+  /** Quality Gate：academic 总分阈值 */
+  academicPassScore: number;
+  /** Quality Gate：AI 文风风险上限 */
+  styleRiskMax: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -64,6 +73,7 @@ export interface AppConfig {
   latex: LatexConfig;
   workflow: WorkflowConfig;
   citation: CitationConfig;
+  review: ReviewConfig;
 }
 
 export interface AgentIds {
@@ -83,6 +93,9 @@ const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
 const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 const DEFAULT_CITATION_MAX_LOOKUPS = 20;
 const DEFAULT_CITATION_TIMEOUT_MS = 8_000;
+const DEFAULT_MAX_REVISION_ROUNDS = 2;
+const DEFAULT_ACADEMIC_PASS_SCORE = 80;
+const DEFAULT_STYLE_RISK_MAX = 35;
 
 const HEALTH_TIMEOUT_MIN_MS = 100;
 const HEALTH_TIMEOUT_MAX_MS = 60_000;
@@ -161,6 +174,23 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       ...(readOptionalValue(source, "CITATION_CONTACT_EMAIL") !== undefined
         ? { contactEmail: readOptionalValue(source, "CITATION_CONTACT_EMAIL") }
         : {}),
+    },
+    review: {
+      maxRevisionRounds: readInt(source, "WORKFLOW_MAX_REVISION_ROUNDS", {
+        default: DEFAULT_MAX_REVISION_ROUNDS,
+        min: 0,
+        max: 5,
+      }),
+      academicPassScore: readInt(source, "QUALITY_ACADEMIC_PASS_SCORE", {
+        default: DEFAULT_ACADEMIC_PASS_SCORE,
+        min: 0,
+        max: 100,
+      }),
+      styleRiskMax: readInt(source, "QUALITY_STYLE_RISK_MAX", {
+        default: DEFAULT_STYLE_RISK_MAX,
+        min: 0,
+        max: 100,
+      }),
     },
   };
 }

@@ -36,6 +36,12 @@ export interface StageRunContext {
   signal: AbortSignal;
   /** Stage 内部进度事件（如逐 section 写作进度） */
   emitProgress(data: Record<string, unknown>): Promise<void>;
+  /** 发布业务级 Domain Event（如 quality_gate.failed；不得透传 Runtime 细节） */
+  emitDomain(
+    type: WorkflowDomainEventType,
+    data: Record<string, unknown>,
+    message?: string,
+  ): Promise<void>;
   /** 诊断日志 */
   log(message: string): void;
 }
@@ -141,6 +147,8 @@ export interface WorkflowState {
   stageHistory: StageRecord[];
   /** HITL 输入按 stage id 归档（含被 re-run 覆盖前的最新输入） */
   inputs: Record<string, ResumeInput>;
+  /** 定义侧计数器（如手动追加的修订轮数；引擎不解释其语义） */
+  counters?: Record<string, number>;
   awaiting?: AwaitingInputCheckpoint;
   error?: { code: string; message: string; stageId?: string };
   completion?: WorkflowCompletion;

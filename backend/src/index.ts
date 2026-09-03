@@ -3,14 +3,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ConfigError, loadConfig } from "./config/config.js";
 import { applyEnvFile, findEnvFile } from "./config/envFile.js";
-import { BusinessError } from "./errors.js";
 import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { buildServiceStack } from "./serviceStack.js";
-import { createIdeaToPaperDefinition } from "./workflow/definitions.js";
+import { LatexImporter } from "./import/LatexImporter.js";
+import {
+  createExistingPaperDefinition,
+  createIdeaToPaperDefinition,
+} from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "./workflow/runStore.js";
 
@@ -56,13 +59,19 @@ export async function startBackend(): Promise<void> {
   });
 
   const projects = new ProjectStore({ root: config.projectsRoot });
+  const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
   const stack = buildServiceStack({
     runtime,
     projects,
-    latex: new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs }),
+    latex,
     agentIds: config.agents,
     stageTimeoutMs: config.workflow.stageTimeoutMs,
     stageMaxAttempts: config.workflow.stageMaxAttempts,
+    review: {
+      maxRevisionRounds: config.review.maxRevisionRounds,
+      academicPassScore: config.review.academicPassScore,
+      styleRiskMax: config.review.styleRiskMax,
+    },
     citation: {
       metadataEnabled: config.citation.metadataEnabled,
       maxMetadataLookups: config.citation.maxMetadataLookups,
@@ -71,6 +80,7 @@ export async function startBackend(): Promise<void> {
     },
     log: (message) => console.log(message),
   });
+  const importer = new LatexImporter({ projects, latex, log: (message) => console.log(message) });
 
   const health = await runtime.healthCheck();
   reportGatewayHealth(health);
@@ -83,11 +93,7 @@ export async function startBackend(): Promise<void> {
         case "idea_to_paper":
           return createIdeaToPaperDefinition(stack.workflowServices);
         case "existing_paper_improvement":
-          // M3.2 提供；M3.1 阶段明确拒绝而不是假装可用
-          throw new BusinessError(
-            "INVALID_REQUEST",
-            "existing_paper_improvement workflow 将在 M3.2 提供（请使用 idea_to_paper）",
-          );
+          return createExistingPaperDefinition(stack.workflowServices);
       }
     },
     log: (message) => console.log(message),
@@ -104,6 +110,8 @@ export async function startBackend(): Promise<void> {
     projects,
     generation: stack.generation,
     orchestrator,
+    stack,
+    importer,
   });
   server.listen(config.port, () => {
     console.log(

@@ -1,8 +1,9 @@
 /**
- * 测试辅助：完整服务栈 + 按 contextScope 脚本化的 Agent Runtime（M3.1）。
+ * 测试辅助：完整服务栈 + 按 contextScope 脚本化的 Agent Runtime（M3.1 / M3.2）。
  *
- * scriptedIdeaRuntime 让 idea_to_paper 全流程在无 Gateway 的测试里真实跑通：
- * 按 AgentRuntime 的 contextScope 返回对应的结构化输出。
+ * scriptedIdeaRuntime 让两条 workflow 在无 Gateway 的测试里真实跑通：
+ * 按 AgentRuntime 的 contextScope 返回对应的结构化输出；
+ * review 轮次可脚本化（pass / fail 序列）以驱动 bounded revision loop。
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -15,9 +16,13 @@ import { LatexCompiler, type CommandRunner } from "../../src/latex/LatexCompiler
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import type { AgentRuntime, AgentTask, RuntimeHealth } from "../../src/runtime/types.js";
 import { buildServiceStack, type ServiceStack } from "../../src/serviceStack.js";
+import { LatexImporter } from "../../src/import/LatexImporter.js";
 import { WorkflowOrchestrator } from "../../src/workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "../../src/workflow/runStore.js";
-import { createIdeaToPaperDefinition } from "../../src/workflow/definitions.js";
+import {
+  createExistingPaperDefinition,
+  createIdeaToPaperDefinition,
+} from "../../src/workflow/definitions.js";
 
 export const AGENT_IDS = {
   writer: "writer",
@@ -106,9 +111,121 @@ export const SECTION_TEX = [
   "\\end{equation}",
 ].join("\n");
 
+/** 修订后的章节片段（不引入新引用：修订只应基于现有 Evidence 收敛表述） */
+export const REVISED_SECTION_TEX = [
+  "\\section{章节标题（修订后）}",
+  "",
+  "修订后的论述：基于已核验证据的稳健表述，避免无证据的强论断。",
+].join("\n");
+
+/** Existing-Paper 论文理解输出 */
+export const EXISTING_ANALYSIS_JSON = JSON.stringify({
+  domainOverview:
+    "该论文提出一种检索增强生成方法，在两个数据集上与基线对比；实验包含消融，但缺少统计显著性检验与最新基线。",
+  relatedWorkDirections: ["RAG 基线方法", "评估协议"],
+  researchGaps: ["缺少统计显著性检验", "基线较旧", "写作模板化明显"],
+  potentialContributions: ["提出了一个融合重排的 RAG 变体", "在两个数据集上验证"],
+  researchQuestions: ["重排对幻觉率的影响？"],
+  literaturePlan: ["补充 2024-2026 的 RAG 基线论文"],
+  evidence: [],
+  bibliography: [],
+  weaknesses: ["缺少显著性检验", "相关工作覆盖不足", "结论表述过强"],
+});
+
+/** 改进计划输出 */
+export const IMPROVEMENT_PLAN_JSON = JSON.stringify({
+  plan: [
+    {
+      section: "sections/experiments.tex",
+      action: "补充统计显著性检验并弱化过强结论",
+      rationale: "审稿指出缺少显著性检验",
+      priority: "high",
+    },
+    {
+      section: "sections/introduction.tex",
+      action: "增加最新基线的相关工作讨论",
+      rationale: "相关工作覆盖不足",
+      priority: "medium",
+    },
+  ],
+});
+
+// ---- Review 输出（pass / fail 两套） ----
+
+const REVIEW_PASS = {
+  fact: JSON.stringify({
+    summary: "关键论断均有证据支撑。",
+    claims: [
+      { section: "sections/introduction.tex", claim: "RAG 降低幻觉率", verdict: "SUPPORTED", evidenceId: "E001" },
+    ],
+    issues: [],
+  }),
+  academic: JSON.stringify({
+    summary: "结构完整、论证清晰。",
+    scores: { 问题定义: 88, 方法合理性: 85, 实验充分性: 82, 论证逻辑: 86, 写作质量: 90 },
+    overallScore: 86,
+    issues: [],
+  }),
+  style: JSON.stringify({
+    summary: "文风自然。",
+    riskScore: 18,
+    issues: [],
+  }),
+};
+
+const REVIEW_FAIL = {
+  fact: JSON.stringify({
+    summary: "存在无证据支撑的关键论断。",
+    claims: [
+      { section: "sections/introduction.tex", claim: "准确率提升 12.4%", verdict: "UNSUPPORTED", note: "Evidence 只支持 8.7%" },
+    ],
+    issues: [
+      {
+        category: "fact",
+        severity: "critical",
+        section: "sections/introduction.tex",
+        description: "准确率提升 12.4% 无证据支撑（证据只支持 8.7%）",
+        suggestedAction: "改为 8.7% 或补充实验",
+        blocking: true,
+      },
+    ],
+  }),
+  academic: JSON.stringify({
+    summary: "实验充分性不足。",
+    scores: { 问题定义: 70, 方法合理性: 65, 实验充分性: 55, 论证逻辑: 68, 写作质量: 72 },
+    overallScore: 66,
+    issues: [
+      {
+        category: "academic",
+        severity: "major",
+        section: "sections/experiments.tex",
+        description: "缺少消融实验",
+        suggestedAction: "补充消融",
+        blocking: false,
+      },
+    ],
+  }),
+  style: JSON.stringify({
+    summary: "模板化表达较多。",
+    riskScore: 68,
+    issues: [
+      {
+        category: "style",
+        severity: "minor",
+        section: "sections/related-work.tex",
+        description: "连接词滥用",
+        suggestedAction: "改写过渡句",
+        blocking: false,
+      },
+    ],
+  }),
+};
+
 export interface ScriptedRuntimeOptions {
   /** feasibility 输出序列（依次消费；耗尽后用最后一个） */
   feasibilitySequence?: string[];
+  /** review 轮次结果序列（每轮 = fact+academic+style 三路；耗尽后用最后一个），默认全 pass */
+  reviewSequence?: ("pass" | "fail")[];
   /** 是否挂起第一次 runAgent（cancel / 并发测试） */
   hangFirstCall?: boolean;
 }
@@ -117,15 +234,15 @@ export interface ScriptedRuntime {
   runtime: AgentRuntime;
   calls: { agentId: string; contextScope?: string }[];
   release: () => void;
-  /** 第一次调用已解除挂起 */
-  released: () => boolean;
 }
 
 /** 按 contextScope 脚本化的 fake Runtime */
 export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): ScriptedRuntime {
   const calls: { agentId: string; contextScope?: string }[] = [];
   const feasibilitySequence = options.feasibilitySequence ?? [FEASIBILITY_HIGH_JSON];
+  const reviewSequence = options.reviewSequence ?? ["pass"];
   let feasibilityIndex = 0;
+  let reviewCallIndex = 0; // 每 3 次为一轮
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -144,6 +261,8 @@ export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): Scrip
       let output = LATEX_DOC;
       if (scope === "research") {
         output = RESEARCH_JSON;
+      } else if (scope === "research/existing-analysis") {
+        output = EXISTING_ANALYSIS_JSON;
       } else if (scope === "research/feasibility") {
         output =
           feasibilitySequence[Math.min(feasibilityIndex, feasibilitySequence.length - 1)] ??
@@ -153,6 +272,16 @@ export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): Scrip
         output = OUTLINE_JSON;
       } else if (scope === "writing/sections") {
         output = SECTION_TEX;
+      } else if (scope === "writing/revision") {
+        output = REVISED_SECTION_TEX;
+      } else if (scope === "writing/improvement-plan") {
+        output = IMPROVEMENT_PLAN_JSON;
+      } else if (scope.startsWith("review/")) {
+        const round = Math.floor(reviewCallIndex / 3);
+        reviewCallIndex += 1;
+        const outcome = reviewSequence[Math.min(round, reviewSequence.length - 1)] ?? "pass";
+        const pack = outcome === "pass" ? REVIEW_PASS : REVIEW_FAIL;
+        output = scope === "review/fact" ? pack.fact : scope === "review/academic" ? pack.academic : pack.style;
       }
       const now = new Date().toISOString();
       const task: AgentTask = {
@@ -181,10 +310,7 @@ export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): Scrip
   return {
     runtime,
     calls,
-    release: () => {
-      hangResolve?.();
-    },
-    released: () => hangConsumed,
+    release: () => hangResolve?.(),
   };
 }
 
@@ -221,12 +347,14 @@ export const fakeFailingRunner: CommandRunner = async (command, args) => {
 };
 
 export type ServiceStackOptionsCitation = Parameters<typeof buildServiceStack>[0]["citation"];
+export type ServiceStackOptionsReview = Parameters<typeof buildServiceStack>[0]["review"];
 
 export interface TestStack {
   stack: ServiceStack;
   store: ProjectStore;
   root: string;
   orchestrator: WorkflowOrchestrator;
+  importer: LatexImporter;
   server: Server;
   cleanup: () => Promise<void>;
   /** HTTP 请求辅助 */
@@ -243,12 +371,16 @@ export async function startTestStack(
   options: {
     latexRunner?: CommandRunner;
     citation?: ServiceStackOptionsCitation;
+    review?: ServiceStackOptionsReview;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
   } = {},
 ): Promise<TestStack> {
   const root = await mkdtemp(join(tmpdir(), "paperteam-stack-"));
   const store = new ProjectStore({ root });
-  const latex = new LatexCompiler({ timeoutMs: 10_000, runner: options.latexRunner ?? fakeSuccessfulRunner });
+  const latex = new LatexCompiler({
+    timeoutMs: 10_000,
+    runner: options.latexRunner ?? fakeSuccessfulRunner,
+  });
   const stack = buildServiceStack({
     runtime,
     projects: store,
@@ -256,17 +388,23 @@ export async function startTestStack(
     agentIds: { ...AGENT_IDS },
     stageTimeoutMs: 10_000,
     stageMaxAttempts: 2,
-    ...(options.citation ? { citation: options.citation } : {}),
+    ...(options.review ? { review: options.review } : {}),
+    ...(options.citation
+      ? { citation: options.citation }
+      : { citation: { metadataEnabled: false } }), // 测试默认关闭外网 metadata 查询
     log: () => {},
   });
+  const importer = new LatexImporter({ projects: store, latex, log: () => {} });
   const orchestrator = new WorkflowOrchestrator({
     projects: store,
     runStore: new WorkflowRunStore(store),
     definitionFactory: (kind) => {
-      if (kind !== "idea_to_paper") {
-        throw new Error(`unexpected kind: ${kind}`);
+      switch (kind) {
+        case "idea_to_paper":
+          return createIdeaToPaperDefinition(stack.workflowServices);
+        case "existing_paper_improvement":
+          return createExistingPaperDefinition(stack.workflowServices);
       }
-      return createIdeaToPaperDefinition(stack.workflowServices);
     },
     retryDelayMs: 0,
     log: () => {},
@@ -277,6 +415,7 @@ export async function startTestStack(
     generation: stack.generation,
     orchestrator,
     stack,
+    importer,
   });
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);
@@ -293,6 +432,7 @@ export async function startTestStack(
     store,
     root,
     orchestrator,
+    importer,
     server,
     cleanup,
     port: () => port,

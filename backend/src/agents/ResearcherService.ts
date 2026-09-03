@@ -164,6 +164,102 @@ export class ResearcherService {
     const lines = usable.slice(0, 20).map((item) => describeSource(item));
     return [`项目文献库（${usable.length} 项）：`, ...lines].join("\n");
   }
+
+  /**
+   * Existing-Paper：论文理解（M3.2）。
+   * 读取导入的 LaTeX 项目，产出结构化理解（贡献 / 论证 / 实验组织 / 弱点），
+   * 映射为 ResearchReport 形状供后续 Feasibility 与改进计划复用。
+   */
+  async analyzeExistingPaper(params: {
+    projectId: string;
+    manuscriptDigest: string;
+  }): Promise<ResearcherResult & { weaknesses: string[]; contributions: string[] }> {
+    const project = await this.projects.getRequired(params.projectId);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      task: [
+        "你是一名学术研究员（Researcher）。请阅读并理解下面这篇已有论文（LaTeX 结构化摘要），做论文理解分析。",
+        "",
+        "只输出一个 JSON 对象（不要 Markdown 围栏），字段：",
+        "{",
+        '  "domainOverview": "论文内容与论证结构概述（200-400 字）",',
+        '  "relatedWorkDirections": ["论文涉及的相关工作方向"],',
+        '  "researchGaps": ["论文当前的弱点与不足（对照目标档次）"],',
+        '  "potentialContributions": ["论文现有贡献"],',
+        '  "researchQuestions": ["论文试图回答的问题"],',
+        '  "literaturePlan": ["建议补充的文献方向"],',
+        '  "evidence": [],',
+        '  "bibliography": [],',
+        '  "weaknesses": ["具体弱点清单（供改进计划使用）"]',
+        "}",
+        "",
+        "要求：如实评估，不夸大贡献；实验组织方式（Benchmark/Baseline/Ablation）缺失要点名。",
+        "",
+        `标题：${project.title}`,
+        `目标档次：${project.targetProfile ?? "未指定"}`,
+        "",
+        "===== 论文（LaTeX 结构化摘要）=====",
+        params.manuscriptDigest,
+      ].join("\n"),
+      projectId: params.projectId,
+      contextScope: "research/existing-analysis",
+      metadata: { role: "researcher", skill: "paper-understanding", milestone: "M3.2" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `论文理解任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "论文理解结果");
+    const report: ResearchReport = {
+      domainOverview: readRequiredString(parsed, "domainOverview", "论文理解结果"),
+      relatedWorkDirections: readRequiredStringArray(
+        parsed,
+        "relatedWorkDirections",
+        "论文理解结果",
+        { minItems: 0 },
+      ),
+      researchGaps: readRequiredStringArray(parsed, "researchGaps", "论文理解结果", { minItems: 0 }),
+      potentialContributions: readRequiredStringArray(
+        parsed,
+        "potentialContributions",
+        "论文理解结果",
+      ),
+      researchQuestions: readRequiredStringArray(parsed, "researchQuestions", "论文理解结果", {
+        minItems: 0,
+      }),
+      literaturePlan: readRequiredStringArray(parsed, "literaturePlan", "论文理解结果", {
+        minItems: 0,
+      }),
+    };
+    const weaknesses = readRequiredStringArray(parsed, "weaknesses", "论文理解结果", {
+      minItems: 0,
+    });
+
+    // 落盘（覆盖 research.json：existing-paper 流程的“调研”即论文理解）
+    const researchDir = this.projects.researchDir(params.projectId);
+    await mkdir(researchDir, { recursive: true });
+    const artifact: ResearchArtifact = {
+      generatedAt: new Date().toISOString(),
+      taskId: task.taskId,
+      report,
+      evidence: [],
+      bibliography: [],
+    };
+    await writeFile(
+      join(researchDir, "research.json"),
+      JSON.stringify({ ...artifact, weaknesses, kind: "existing_paper_analysis" }, null, 2) + "\n",
+      "utf8",
+    );
+    this.log(`[researcher] projectId=${params.projectId} 论文理解完成：weaknesses=${weaknesses.length}`);
+    return {
+      report,
+      reportPath: "research/research.json",
+      evidenceAppended: 0,
+      bibliographyCount: 0,
+      taskId: task.taskId,
+      weaknesses,
+      contributions: report.potentialContributions,
+    };
+  }
 }
 
 export type ResearchArtifact = {

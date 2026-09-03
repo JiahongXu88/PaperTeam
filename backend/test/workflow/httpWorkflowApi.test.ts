@@ -168,7 +168,8 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
 
     const run = (await stack.request("GET", `/api/runs/${runId}`)).body["run"] as WorkflowState;
     expect(run.status).toBe("completed");
-    expect(run.completion?.label).toBe("draft");
+    // M3.2：双 Gate 通过 → Final
+    expect(run.completion?.label).toBe("final");
     expect(run.completedStages).toEqual([
       "research.idea",
       "research.feasibility",
@@ -177,8 +178,12 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
       "hitl.outline_confirm",
       "writing.sections",
       "citation.verify",
+      "review.run",
+      "quality.gate",
       "build.draft",
     ]);
+    expect(run.completion?.summary?.["qualityGatePassed"]).toBe(true);
+    expect(run.completion?.summary?.["buildOk"]).toBe(true);
 
     const projectRoot = join(stack.root, projectId);
     const research = JSON.parse(
@@ -209,6 +214,15 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
       await readFile(join(projectRoot, "reviews", "citation-report.json"), "utf8"),
     ) as { summary?: { missingKeys?: number } };
     expect(citationReport.summary?.missingKeys).toBe(0);
+    // M3.2：审稿汇总与 Quality Gate 报告落盘
+    const reviewSummary = JSON.parse(
+      await readFile(join(projectRoot, "reviews", "review-summary-r1.json"), "utf8"),
+    ) as { scores?: { academicScore?: number } };
+    expect(reviewSummary.scores?.academicScore).toBeGreaterThanOrEqual(80);
+    const gate = JSON.parse(
+      await readFile(join(projectRoot, "reviews", "quality-gate-r1.json"), "utf8"),
+    ) as { gate?: { passed?: boolean } };
+    expect(gate.gate?.passed).toBe(true);
     const pdf = await readFile(join(projectRoot, "build", "paper.pdf"), "utf8");
     expect(pdf).toContain("%PDF-1.5");
     const evidence = JSON.parse(

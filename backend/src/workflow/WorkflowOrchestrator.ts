@@ -143,6 +143,7 @@ export class WorkflowOrchestrator {
       stageResults: {},
       stageHistory: [],
       inputs: {},
+      counters: {},
       eventsSeq: 0,
     };
     await this.runStore.saveCheckpoint(state);
@@ -483,6 +484,13 @@ export class WorkflowOrchestrator {
           signal: controller.signal,
           emitProgress: (data) =>
             this.emit(handle, { type: "stage.progress", stageId: stage.id, attempt, data }),
+          emitDomain: (type, data, message) =>
+            this.emit(handle, {
+              type,
+              stageId: stage.id,
+              ...(message !== undefined ? { message } : {}),
+              data,
+            }),
           log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
         };
         const result = await withTimeout(
@@ -602,6 +610,7 @@ export class WorkflowOrchestrator {
       state: structuredClone(state),
       signal: new AbortController().signal,
       emitProgress: () => Promise.resolve(),
+      emitDomain: () => Promise.resolve(),
       log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
     };
     const payload = (await stage.hitl.payload?.(ctx)) ?? undefined;

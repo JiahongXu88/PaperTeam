@@ -12,6 +12,7 @@ import { AgentRunFailedError, InvalidLatexOutputError } from "../errors.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
+import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { validateOutline } from "../manuscript/ManuscriptService.js";
 import { extractJsonObject } from "../agents/outputParsing.js";
@@ -176,6 +177,190 @@ export class WriterService {
     }
     return { latex, taskId: task.taskId };
   }
+
+  // ---- M3.2：修订 ----
+
+  /**
+   * 依据汇总的 review issues / 改进计划修订单个章节（有界修改闭环中的一环）。
+   * 只针对该章节的问题；证据不足的论断要求弱化或删除，不允许新造引用。
+   */
+  async reviseSection(params: {
+    projectId: string;
+    section: OutlineSection;
+    outline: Outline;
+    currentLatex: string;
+    issues: ReviewIssue[];
+    evidence: EvidenceRecord[];
+    bibliography: BibliographyEntryInput[];
+    buildError?: string;
+    extraInstructions?: string;
+  }): Promise<{ latex: string; taskId: string }> {
+    if (params.issues.length === 0 && params.buildError === undefined) {
+      // 无问题章节原样返回（不烧 Token）
+      return { latex: params.currentLatex, taskId: "(unchanged)" };
+    }
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      task: buildRevisePrompt(params),
+      projectId: params.projectId,
+      contextScope: "writing/revision",
+      metadata: { role: "writer", skill: "revision", milestone: "M3.2" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(
+        task.error ?? `章节 ${params.section.id} 修订任务以 ${task.status} 状态结束`,
+      );
+    }
+    const latex = stripCodeFence(task.output ?? "").trim();
+    if (latex === "") {
+      throw new AgentRunFailedError(`章节 ${params.section.id} 修订没有返回内容`);
+    }
+    if (latex.includes("\\documentclass") || latex.includes("\\begin{document}")) {
+      throw new InvalidLatexOutputError(
+        `章节 ${params.section.id} 修订返回了完整文档骨架（应为正文片段）`,
+      );
+    }
+    if (!hasBalancedBraces(latex)) {
+      throw new InvalidLatexOutputError(`章节 ${params.section.id} 修订花括号不配对`);
+    }
+    return { latex, taskId: task.taskId };
+  }
+
+  /**
+   * Existing-Paper Improvement：依据审稿问题与目标差距生成分节改进计划。
+   * 输出为结构化 plan（经校验），不改写正文。
+   */
+  async planImprovement(params: {
+    projectId: string;
+    issues: ReviewIssue[];
+    analysisDigest: string;
+    feasibilityLevel: string;
+    targetProfile?: string;
+    feedback?: string;
+  }): Promise<ImprovementPlan> {
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      task: [
+        "你是一名论文写手（Writer）。请基于审稿问题与目标差距，为已有 LaTeX 论文制定分节改进计划（只规划，不写正文）。",
+        "",
+        "只输出一个 JSON 对象（不要 Markdown 围栏）：",
+        '{"plan": [{"section": "sections/xxx.tex", "action": "具体改法", "rationale": "对应的问题或差距", "priority": "high|medium|low"}]}',
+        "",
+        "要求：",
+        "1. plan 至少 1 项、至多 20 项；section 必须是现有章节文件之一。",
+        "2. 优先处理 critical / blocking 问题与编译错误。",
+        "3. 证据不足的论断计划为「弱化或删除」，不允许计划编造实验或引用。",
+        ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
+        "",
+        `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,
+        "",
+        "===== 论文理解摘要 =====",
+        params.analysisDigest,
+        "",
+        "===== 审稿问题 =====",
+        ...params.issues
+          .slice(0, 30)
+          .map(
+            (issue) =>
+              `- [${issue.severity}${issue.blocking ? "/blocking" : ""}][${issue.section}] ${issue.description}`,
+          ),
+      ].join("\n"),
+      projectId: params.projectId,
+      contextScope: "writing/improvement-plan",
+      metadata: { role: "writer", skill: "improvement-plan", milestone: "M3.2" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `改进计划任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "改进计划");
+    const rawPlan = parsed["plan"];
+    if (!Array.isArray(rawPlan) || rawPlan.length === 0) {
+      throw new AgentRunFailedError("改进计划：缺少非空 plan 数组");
+    }
+    const items: ImprovementPlanItem[] = [];
+    for (const raw of rawPlan.slice(0, 20)) {
+      if (typeof raw !== "object" || raw === null) {
+        continue;
+      }
+      const record = raw as Record<string, unknown>;
+      const section = typeof record["section"] === "string" ? record["section"].trim() : "";
+      const action = typeof record["action"] === "string" ? record["action"].trim() : "";
+      if (section === "" || action === "") {
+        continue;
+      }
+      const priority =
+        record["priority"] === "high" || record["priority"] === "medium" || record["priority"] === "low"
+          ? record["priority"]
+          : "medium";
+      items.push({
+        section,
+        action,
+        ...(typeof record["rationale"] === "string" && record["rationale"].trim() !== ""
+          ? { rationale: record["rationale"].trim() }
+          : {}),
+        priority,
+      });
+    }
+    if (items.length === 0) {
+      throw new AgentRunFailedError("改进计划：没有合法条目");
+    }
+    return { items };
+  }
+}
+
+export interface ImprovementPlanItem {
+  section: string;
+  action: string;
+  rationale?: string;
+  priority: "high" | "medium" | "low";
+}
+
+export interface ImprovementPlan {
+  items: ImprovementPlanItem[];
+}
+
+function buildRevisePrompt(params: {
+  section: OutlineSection;
+  outline: Outline;
+  currentLatex: string;
+  issues: ReviewIssue[];
+  evidence: EvidenceRecord[];
+  bibliography: BibliographyEntryInput[];
+  buildError?: string;
+  extraInstructions?: string;
+}): string {
+  return [
+    `你是一名学术论文写手（Writer）。请修订论文章节「${params.section.title}」。`,
+    "",
+    "输出要求：",
+    "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
+    "2. 逐条解决下列针对本章节的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
+    "3. 只允许引用以下参考文献 key：" +
+      (params.bibliography.length > 0
+        ? params.bibliography.map((entry) => entry.key).join(", ")
+        : "（无：不要使用 \\cite）"),
+    ...(params.buildError
+      ? ["4. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
+      : []),
+    ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
+    "",
+    "===== 本章节当前内容 =====",
+    params.currentLatex.slice(0, 12_000),
+    "",
+    "===== 针对本章节的问题 =====",
+    ...(params.issues.length > 0
+      ? params.issues.map(
+          (issue) =>
+            `- [${issue.severity}${issue.blocking ? "/blocking" : ""}] ${issue.description}` +
+            (issue.suggestedAction ? `（建议：${issue.suggestedAction}）` : ""),
+        )
+      : ["（无审稿问题）"]),
+    "",
+    "===== 可用 Evidence =====",
+    ...params.evidence
+      .slice(0, 15)
+      .map((record) => `- [${record.id}] ${record.claim.slice(0, 140)}`),
+  ].join("\n");
 }
 
 /** 解析大纲 sections 数组（防御性） */

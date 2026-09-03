@@ -13,6 +13,7 @@ import { ProjectStore } from "./project/ProjectStore.js";
 import { FeasibilityService } from "./agents/FeasibilityService.js";
 import { ResearcherService } from "./agents/ResearcherService.js";
 import type { AgentRuntime } from "./runtime/types.js";
+import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
 import { BuiltinPdfAnalyzer } from "./sources/PdfAnalyzer.js";
 import { WriterService } from "./writer/WriterService.js";
@@ -31,6 +32,11 @@ export interface ServiceStackOptions {
   };
   stageTimeoutMs?: number;
   stageMaxAttempts?: number;
+  review?: {
+    maxRevisionRounds?: number;
+    academicPassScore?: number;
+    styleRiskMax?: number;
+  };
   citation?: {
     metadataEnabled?: boolean;
     maxMetadataLookups?: number;
@@ -50,6 +56,7 @@ export interface ServiceStack {
   generation: GenerationService;
   researcher: ResearcherService;
   feasibility: FeasibilityService;
+  reviewer: ReviewerService;
   evidence: EvidenceStore;
   sources: SourceStore;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -110,6 +117,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       : {}),
     log,
   });
+  const reviewer = new ReviewerService({
+    runtime: options.runtime,
+    agentId: options.agentIds.reviewer,
+    projects: options.projects,
+    log,
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -118,6 +131,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     generation,
     researcher,
     feasibility,
+    reviewer,
     evidence,
     sources,
     pdfAnalyzer,
@@ -129,6 +143,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       generation,
       researcher,
       feasibility,
+      reviewer,
       evidence,
       sources,
       manuscript,
@@ -137,6 +152,11 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       latex,
       stageTimeoutMs: options.stageTimeoutMs ?? 900_000,
       stageMaxAttempts: options.stageMaxAttempts ?? 2,
+      review: {
+        maxRevisionRounds: options.review?.maxRevisionRounds ?? 2,
+        academicPassScore: options.review?.academicPassScore ?? 80,
+        styleRiskMax: options.review?.styleRiskMax ?? 35,
+      },
     },
   };
 }

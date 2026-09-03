@@ -1,12 +1,23 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { BusinessError, toBusinessError } from "./errors.js";
 import type { GenerationService } from "./generation/GenerationService.js";
+import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
+import { readFeasibilityReport } from "./agents/FeasibilityService.js";
+import { aggregateReviews, type ReviewSummary } from "./review/ReviewAggregator.js";
+import {
+  evaluateQualityGate,
+  runBuildGate,
+  saveQualityGateReport,
+} from "./quality/gates.js";
+import { collectLatexFiles } from "./manuscript/LatexFiles.js";
+import { writeJsonAtomic } from "./util/atomic.js";
 import type { WorkflowDomainEvent, WorkflowKind } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -57,6 +68,8 @@ export interface BackendHttpServerOptions {
   orchestrator: WorkflowOrchestrator;
   /** M3.1 业务服务栈（文献 / Evidence / 引用 / 手稿） */
   stack?: ServiceStack;
+  /** M3.2 Existing-LaTeX 导入器 */
+  importer?: LatexImporter;
 }
 
 export function createBackendHttpServer({
@@ -65,9 +78,10 @@ export function createBackendHttpServer({
   generation,
   orchestrator,
   stack,
+  importer,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    handleRequest(req, res, { runtime, projects, generation, orchestrator, stack }).catch(
+    handleRequest(req, res, { runtime, projects, generation, orchestrator, stack, importer }).catch(
       (error: unknown) => {
         const businessError = toBusinessError(error);
         if (businessError.code === "INTERNAL_ERROR") {
@@ -92,6 +106,7 @@ interface Services {
   generation: GenerationService;
   orchestrator: WorkflowOrchestrator;
   stack?: ServiceStack;
+  importer?: LatexImporter;
 }
 
 async function handleRequest(
@@ -270,9 +285,17 @@ async function handleRequest(
     return;
   }
 
-  // ---- M3.1 资源路由（需要服务栈） ----
+  // ---- M3.1/M3.2 资源路由（需要服务栈） ----
   if (services.stack !== undefined) {
-    const handled = await handleProjectResourceRoutes(req, res, pathname, method, url, services.stack);
+    const handled = await handleProjectResourceRoutes(
+      req,
+      res,
+      pathname,
+      method,
+      url,
+      services.stack,
+      services.importer,
+    );
     if (handled) {
       return;
     }
@@ -281,7 +304,7 @@ async function handleRequest(
   sendJson(res, 404, { status: "not_found", path: pathname });
 }
 
-/** M3.1：/api/projects/:id/{sources|evidence|feasibility|citation-*,manuscript,context} */
+/** /api/projects/:id/{sources|evidence|feasibility|citation-*|manuscript|context|review*|quality-gate|build|import} */
 async function handleProjectResourceRoutes(
   req: IncomingMessage,
   res: ServerResponse,
@@ -289,6 +312,7 @@ async function handleProjectResourceRoutes(
   method: string,
   url: URL,
   stack: ServiceStack,
+  importer?: LatexImporter,
 ): Promise<boolean> {
   const base = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/([a-z-]+)(\/.*)?$/.exec(pathname);
   if (base === null) {
@@ -488,7 +512,6 @@ async function handleProjectResourceRoutes(
     return false;
   }
   if (resource === "feasibility" && method === "GET") {
-    const { readFeasibilityReport } = await import("./agents/FeasibilityService.js");
     const report = await readFeasibilityReport(stack.projects, projectId);
     if (report === null) {
       sendJson(res, 200, { feasibility: null, note: "尚未评估（先运行 idea_to_paper workflow）" });
@@ -531,7 +554,196 @@ async function handleProjectResourceRoutes(
     }
     return true;
   }
+
+  // ---- M3.2：review / quality-gate / build / import ----
+
+  if (resource === "review" || resource === "reviews") {
+    if (method === "POST") {
+      // 独立全面审稿：三路并行 + 确定性聚合（同 workflow 内的 review.run）
+      const digest = await buildReviewDigest(stack, projectId);
+      const evidence = await stack.evidence.list(projectId);
+      const project = await stack.projects.getRequired(projectId);
+      const citation = await stack.citation.latestReport(projectId);
+      const results = await stack.reviewer.reviewAll({
+        projectId,
+        manuscriptDigest: digest,
+        evidence: evidence.slice(0, 20),
+        targetProfile: project.targetProfile,
+        ...(citation
+          ? {
+              citationDigest: `cited=${citation.summary.citedCount} missing=${citation.summary.missingKeys} hallucinated=${citation.summary.hallucinated}`,
+            }
+          : {}),
+      });
+      const { readdir } = await import("node:fs/promises");
+      let round = 1;
+      try {
+        const names = await readdir(stack.projects.reviewsDir(projectId));
+        round =
+          names
+            .map((name) => /^review-summary-r(\d+)\.json$/.exec(name))
+            .filter((match): match is RegExpExecArray => match !== null)
+            .reduce((max, match) => Math.max(max, Number(match[1])), 0) + 1;
+      } catch {
+        // 无历史
+      }
+      const reportPaths: string[] = [];
+      for (const result of results) {
+        reportPaths.push(await stack.reviewer.saveReport(projectId, round, result));
+      }
+      const summary = aggregateReviews(results, round, reportPaths);
+      await writeJsonAtomic(
+        join(stack.projects.reviewsDir(projectId), `review-summary-r${round}.json`),
+        summary,
+      );
+      sendJson(res, 200, { summary });
+      return true;
+    }
+    if (method === "GET") {
+      const { readdir } = await import("node:fs/promises");
+      const summaries: unknown[] = [];
+      try {
+        const names = (await readdir(stack.projects.reviewsDir(projectId))).sort();
+        for (const name of names) {
+          if (/^review-summary-r\d+\.json$/.test(name)) {
+            summaries.push(JSON.parse(await readFile(join(stack.projects.reviewsDir(projectId), name), "utf8")));
+          }
+        }
+      } catch {
+        // 无 reviews 目录
+      }
+      sendJson(res, 200, { reviews: summaries });
+      return true;
+    }
+    res.setHeader("Allow", "GET, POST");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+
+  if (resource === "quality-gate" && method === "POST") {
+    // 从最新 artifacts 确定性评估（缺 review 时如实报错）
+    const summary = await latestReviewSummaryFrom(stack, projectId);
+    if (summary === null) {
+      throw new BusinessError("INVALID_REQUEST", "尚无 review 结果（先执行 review 或 workflow）");
+    }
+    const citation = await stack.citation.latestReport(projectId);
+    const evidence = await stack.evidence.stats(projectId);
+    const feasibility = (await readFeasibilityReport(stack.projects, projectId))?.report ?? null;
+    const gate = evaluateQualityGate(
+      { review: summary, citation, evidence, feasibility },
+      {
+        academicPassScore: stack.workflowServices.review.academicPassScore,
+        styleRiskMax: stack.workflowServices.review.styleRiskMax,
+        requireFeasibility: true,
+      },
+    );
+    await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary);
+    sendJson(res, 200, { gate });
+    return true;
+  }
+
+  if (resource === "build" && method === "POST") {
+    // Build Gate + Draft PDF（质量语义不影响构建）
+    const { build, compile } = await runBuildGate(stack.projects, stack.latex, projectId);
+    sendJson(res, 200, {
+      build,
+      compile: {
+        ok: compile.ok,
+        tool: compile.tool,
+        durationMs: compile.durationMs,
+        ...(compile.pdfPath !== null ? { pdfPath: "build/paper.pdf" } : {}),
+        ...(compile.logPath !== null ? { logPath: "build/compile.log" } : {}),
+        ...(compile.error !== undefined ? { error: compile.error } : {}),
+      },
+    });
+    return true;
+  }
+
+  if (resource === "import" && importer !== undefined) {
+    if (method === "POST") {
+      const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
+      const archiveBase64 = readStringField(body, "archiveBase64");
+      const files = body["files"];
+      let report;
+      if (archiveBase64 !== undefined) {
+        let archive: Buffer;
+        try {
+          archive = Buffer.from(archiveBase64, "base64");
+        } catch {
+          throw new BusinessError("INVALID_REQUEST", "archiveBase64 不是合法 base64");
+        }
+        report = await importer.importFromArchive(projectId, archive);
+      } else if (Array.isArray(files)) {
+        report = await importer.importFromFiles(projectId, files as never);
+      } else {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含 archiveBase64 或 files");
+      }
+      sendJson(res, 200, { report });
+      return true;
+    }
+    if (method === "GET") {
+      try {
+        const report = JSON.parse(
+          await readFile(
+            join(stack.projects.projectDir(projectId), "workflow", "import-report.json"),
+            "utf8",
+          ),
+        );
+        sendJson(res, 200, { report });
+      } catch {
+        sendJson(res, 200, { report: null, note: "尚未导入（POST archiveBase64 或 files）" });
+      }
+      return true;
+    }
+    res.setHeader("Allow", "GET, POST");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+
   return false;
+}
+
+/** 审稿用稿件摘要（main + sections 截断） */
+async function buildReviewDigest(stack: ServiceStack, projectId: string): Promise<string> {
+  const files = await collectLatexFiles(stack.projects.manuscriptDir(projectId));
+  const parts: string[] = [];
+  if (files.mainTex !== null) {
+    parts.push(`[main.tex]\n${files.mainTex.content.slice(0, 2000)}`);
+  }
+  for (const section of files.sections.slice(0, 15)) {
+    parts.push(`[${section.relativePath}]\n${section.content.slice(0, 2500)}`);
+  }
+  if (parts.length === 0) {
+    throw new BusinessError("INVALID_REQUEST", "manuscript 目录没有任何 .tex 文件");
+  }
+  return parts.join("\n\n").slice(0, 40_000);
+}
+
+/** 最新 review 汇总（round 最大） */
+async function latestReviewSummaryFrom(
+  stack: ServiceStack,
+  projectId: string,
+): Promise<ReviewSummary | null> {
+  const { readdir } = await import("node:fs/promises");
+  try {
+    const names = await readdir(stack.projects.reviewsDir(projectId));
+    const rounds = names
+      .map((name) => /^review-summary-r(\d+)\.json$/.exec(name))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => Number(match[1]))
+      .sort((a, b) => b - a);
+    if (rounds.length === 0) {
+      return null;
+    }
+    return JSON.parse(
+      await readFile(
+        join(stack.projects.reviewsDir(projectId), `review-summary-r${rounds[0]}.json`),
+        "utf8",
+      ),
+    ) as ReviewSummary;
+  } catch {
+    return null;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
