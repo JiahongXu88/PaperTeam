@@ -1,14 +1,92 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-01
+> 更新日期：2026-09-03
 
 ## 当前阶段
 
-**M2.1「OpenClaw 2.0 Runtime Upgrade」已完成：Runtime 底座接入 OpenClaw 2026.8.1 官方 Gateway SDK（wire protocol v4），并已通过真实 Gateway smoke 验证。**
+**M2.1「OpenClaw 2.0 Runtime Upgrade」已完成；随后完成了「Architecture Research / Product Design Refresh」（产品与 M3 架构设计冻结，仅文档）。下一阶段：M3.0「Workflow Foundation」。**
 
 M2 交付的最小真实闭环不变：`POST /api/projects` 创建论文项目 → `POST /api/projects/:id/generate` 通过 `AgentRuntime.runAgent()` 真实调用 Writer Agent → 校验 LaTeX → 写入 `manuscript/main.tex` → `LatexCompiler` 编译 → `build/paper.pdf`。M2.1 只替换底座：自研 Gateway WebSocket 协议实现退役，改为官方 `@openclaw/gateway-client`，并新增 Project ↔ Runtime Session 的最小映射。
 
-**下一阶段：第三阶段「Project Literature Library + Evidence Store」尚未开始（M2.1 刻意未包含文献库与多 Agent）。**
+原「第三阶段：Project Literature Library + Evidence Store」的排期已被 M3 新路线取代：文献库与 Evidence Store 并入 **M3.1**，且之前必须先完成 **M3.0 Workflow Foundation**（原计划缺失的确定性编排层）。
+
+## Architecture Research / Product Design Refresh（2026-09，✅ 已完成，设计冻结）
+
+本里程碑为**纯文档工作**（README / PRD / DECISIONS / ARCHITECTURE / PROJECT_STATUS），未改动任何业务代码、测试与依赖。
+
+### 竞品调研
+
+完成了 PaperTeam vs **PaperKit** vs **Open Academic Paper Machine** vs **AutoResearchClaw** 的架构调研。核心结论：
+
+1. 不应该继续追求大量 Agent。
+2. Paper Manager 不应该作为 LLM Agent 负责确定性流程编排。
+3. Workflow 应由 Backend TypeScript **WorkflowOrchestrator** 负责。
+4. Workflow 采用线性主干 + 有界循环 + 少量并行 fan-out / join，不引入复杂 DAG / Graph Engine。
+5. Workspace / Evidence / Artifacts 是项目事实来源。
+6. OpenClaw Session 是 Runtime Context，可以重建，不承担项目真相。
+7. M3 应采用少量专业 Agent：Researcher / Writer / Reviewer / Citation。
+8. Agent 角色细化优先通过 Skill 完成，而不是继续拆 Agent。
+9. M3 第一阶段应该先建设 Workflow Foundation，而不是继续堆 Agent。
+
+### 产品设计冻结
+
+- 产品定位升级为「**从研究 Idea 到论文交付，以及已有论文改造的 AI 多 Agent 学术研究与论文生产工作台**」，核心链路 Idea → Research → Feasibility → Evidence → Writing → Review → Revision → LaTeX / PDF。
+- 两类一级工作流：**Idea-to-Paper** 与 **Existing-Paper Improvement**（MVP 仅 LaTeX 项目导入）。
+- 目标模型拆为 **documentType / targetProfile / targetVenue** 三维度（本轮只冻结概念，不写死 enum）。
+- 新增产品原则 **Target Feasibility Assessment**（HIGH / MEDIUM / LOW / INSUFFICIENT，禁止"83% 成功概率"式虚假精确）。
+- PDF 语义角色拆分 **sourceRole**（evidence / reference / both）；Reference Paper 走多模态分析产出 **Reference Style Profile**（结构参考，非内容抄袭）。
+- **Build Gate 与 Quality Gate 分离**：Quality 失败不禁止编译，Draft 只要求 Build Gate，Final 双 Gate 通过。
+- Evidence Store 字段方向冻结（verificationStatus / supportStrength / verificationLevel；数值 confidence 仅辅助）。
+- M3.0 核心抽象 **StageContract** 与异步 **WorkflowRun**（含 Domain Event 分层与 HITL awaiting_input）。
+
+### 决策记录
+
+新增 ADR **D-0008 ~ D-0015**（D-0006 标记 superseded），见 [DECISIONS.md](DECISIONS.md)。
+
+## M3 Roadmap
+
+### M3.0 — Workflow Foundation（下一阶段）
+
+- WorkflowOrchestrator（确定性 TypeScript 编排，取代 Paper Manager 角色规划）
+- WorkflowRun / Stage 运行时（pending / running / awaiting_input / completed / failed / cancelled）
+- StageContract 抽象（stage id / inputs / outputs / DoD / retry policy / failure type / max attempts）
+- 异步 API（`POST /api/projects/:id/workflows` → runId；`GET /api/runs/:runId`；SSE）
+- checkpoint / resume
+- Domain Event 流（workflow.* / stage.* / quality_gate.*；与 Runtime Event 分层）
+- HITL awaiting_input / resume
+- Session context scope（projectId × agentId × contextScope）
+
+### M3.1 — Research & Evidence
+
+- Idea Research（领域现状 / Related Work / Research Gap / Novelty 分析）
+- Literature Research（项目文献库 + 受控网络检索）
+- Target Feasibility Assessment
+- PDF Reference Paper Analysis（Multimodal → Reference Style Profile）
+- EvidenceStore（supportStrength / verificationLevel / 反向定位）
+- Citation Verification
+- Section-based Writer
+- context derived state（context.yaml 等蒸馏产物）
+
+### M3.2 — Review & Revision
+
+- Reviewer（fact / academic / style 三 skill，可并行）
+- Review aggregation
+- bounded revision loop（最大 N 轮 + 超限 Human Checkpoint）
+- Quality Gate（确定性判定器）
+- Existing LaTeX Improvement workflow（导入 / 结构解析 / Baseline Compile / 论文理解 / Citation-Evidence Audit / Improvement Plan / 逐节 Revision / Re-review）
+
+### M4+
+
+- frontend workbench（完整前端工作台）
+- Visual Reviewer（视觉审稿）
+- LaTeX repair loop（确定性修复工具链）
+- version management（完整版本管理体验）
+- optional Experiment subsystem（仅当产品正式扩展为自动科研实验平台）
+- self-learning / evolution evaluation（系统自评估与演进）
+
+> 历史备注：早期 PRD 的七阶段 MVP 排期（Runtime 基础 → … → 系统管理）已被上述路线
+> 取代；其中第 1、2 阶段已由 M1 / M2 / M2.1 交付，文献库与 Evidence Store 移入 M3.1，
+> 多 Agent 审稿闭环移入 M3.2，视觉审稿与系统管理移入 M4+。
 
 ## M2.1：OpenClaw 2.0 Runtime Upgrade
 
@@ -38,7 +116,7 @@ M2.1 边界：未引入 Swarm / A2A / 多 Agent 编排（M3+）；`onEvent` / `s
 | 项 | 状态 | 说明 |
 |---|---|---|
 | `runAgent()` 真实实现 | ✅ 完成；已通过 mock Gateway 验证；⏳ 待真实 OpenClaw 验证 | `OpenClawRuntimeAdapter.runAgent()` 映射到 OpenClaw 真实调用序列：WebSocket connect 握手（operator 角色 + 共享 token）→ RPC `agent`（发起运行，ACK 返回 runId/sessionKey）→ RPC `agent.wait`（30s 分片轮询至终态）→ RPC `chat.history`（取完整回复文本；`terminalReply` 有 4096 字符截断，仅作兜底）。协议对照官方 `docs/gateway/protocol.md`、`docs/gateway/external-apps.md`、`src/gateway/server-methods/agent*.ts` 与 `@openclaw/gateway-protocol@2026.8.1` 的 `protocol.schema.json` |
-| Gateway WebSocket 客户端（内部） | ✅ 完成 | `src/runtime/openclaw/gatewayWebSocket.ts`：基于 Node 22+ 内置全局 WebSocket，零第三方依赖；帧协议 `{type:"req"/"res"/"event"}`、请求关联、超时、断连清理。OpenClaw 细节不外泄到业务层 |
+| Gateway WebSocket 客户端（内部） | ✅ 完成（M2.1 已退役） | `src/runtime/openclaw/gatewayWebSocket.ts`：基于 Node 22+ 内置全局 WebSocket，零第三方依赖；帧协议 `{type:"req"/"res"/"event"}`、请求关联、超时、断连清理。OpenClaw 细节不外泄到业务层 |
 | `getTask / cancelTask / sendMessage / streamEvents` | ⏸ 保留契约 | 仍抛 `RuntimeCapabilityError`（M2 范围外） |
 | 最小 Project 管理 | ✅ 完成 | `ProjectStore`：创建项目（manuscript/sources/evidence/reviews/build 目录 + project.json 元数据 id/title/createdAt/updatedAt/status）、读取、状态更新；projectId 白名单正则 + 路径包含性双保险，防路径穿越；无数据库 |
 | Writer 最小角色 | ✅ 完成 | `WriterService`：把用户任务包装成 Writer Prompt（要求完整 ctexart LaTeX、无 Markdown 围栏、不虚构引用），调用 runAgent，校验输出含 `\documentclass`/`\begin{document}`，防御性剥离代码围栏；空结果/非 LaTeX 拒绝落盘 |
@@ -47,7 +125,7 @@ M2.1 边界：未引入 Swarm / A2A / 多 Agent 编排（M3+）；`onEvent` / `s
 | 业务错误模型 | ✅ 完成 | `src/errors.ts`：INVALID_REQUEST / INVALID_PROJECT_ID / INVALID_PROJECT_TITLE / PROJECT_NOT_FOUND / AGENT_RUNTIME_UNAVAILABLE / AGENT_RUN_FAILED / AGENT_TIMEOUT / INVALID_LATEX_OUTPUT / LATEX_TOOL_UNAVAILABLE / LATEX_COMPILE_FAILED / LATEX_COMPILE_TIMEOUT → 各自映射 HTTP 状态码；底层细节只进日志 |
 | 测试 | ✅ 完成 | 74 个测试（vitest）全部通过：ProjectStore（11）、runAgent 经真实 WebSocket mock Gateway（11）、Writer（7）、LatexCompiler（7）、HTTP API 含全链路（12）、M1 既有（26）。`npm run build` / `npm run typecheck` / `npm test` 全部通过 |
 
-M2 边界：未实现 Researcher / Fact Checker / 各 Reviewer、多 Agent Workflow、文献库、Evidence Store、上传、数据库、前端、用户系统（见 PRD §25）。
+M2 边界：未实现 Researcher / Reviewer / Citation、多 Agent Workflow、文献库、Evidence Store、上传、数据库、前端、用户系统（见 PRD）。
 
 依赖变化：无新增运行时依赖（仍为零）；`engines` 从 `>=20` 调整为 `>=22`（runAgent 依赖 Node 22+ 内置 WebSocket，避免引入 `ws` 等第三方库）。
 `package-lock.json` 因本机 npm 无法从原 lockfile 的 npmmirror 源安装而按官方 registry 重新生成（devDependencies 未变）。
@@ -56,12 +134,10 @@ M2 边界：未实现 Researcher / Fact Checker / 各 Reviewer、多 Agent Workf
 
 | 验证项 | 状态 |
 |---|---|
-| 单元/集成测试（mock Gateway + 注入式 LaTeX runner） | ✅ 通过（74/74） |
-| 真实 OpenClaw Gateway Agent 调用 | ❌ 未验证（本机无 Gateway 进程、无 .env；不伪造假验证） |
+| 单元/集成测试（mock Gateway + 注入式 LaTeX runner） | ✅ 通过（M2 时 74/74，M2.1 后 79/79） |
+| 真实 OpenClaw Gateway Agent 调用 | ✅ M2.1 已用本机 `openclaw@2026.8.1 gateway` 完成协议链路 smoke（健康检查、SDK connect/hello、RPC `status`、`agent` 验收 → `agent.wait` 终态）；带模型凭据的完整文本生成仍待有凭据的环境 |
 | 真实 LaTeX 编译产出 paper.pdf | ❌ 未验证（本机未安装 latexmk / xelatex） |
 | 缺失环境时的错误路径 | ✅ 已验证（LatexToolUnavailable / AgentRuntimeUnavailable 等有明确错误码与短摘要） |
-
-## M1：Backend Runtime Skeleton
 
 ## M1：Backend Runtime Skeleton
 
@@ -75,10 +151,12 @@ M2 边界：未实现 Researcher / Fact Checker / 各 Reviewer、多 Agent Workf
 | Backend 启动入口 + `GET /health` | ✅ 完成 | 启动时输出 Gateway 健康结果；提供轻量 HTTP `GET /health`（Node 原生 http），返回 Backend 存活状态与实时 runtime 探测结果 |
 | 测试 | ✅ 完成 | 30 个测试（vitest）：配置加载（合法/缺失/URL 非法等 11 项）、.env 解析（7 项）、Adapter 四态（healthy / unreachable / timeout / unhealthy 共 8 项，使用本地真实 HTTP 服务模拟）、HTTP 端点（4 项）；`npm run build` / `npm run typecheck` / `npm test` 全部通过 |
 
-M1 边界：未实现任何业务 Agent、Workflow、数据库、前端等（见 PRD §25 阶段划分）。
+M1 边界：未实现任何业务 Agent、Workflow、数据库、前端等。
 `OPENCLAW_GATEWAY_API_KEY` 已预留但健康探针无需鉴权，留给后续 RPC 调用。
 
 ## 已确定的项目决策
+
+完整背景与影响见 [DECISIONS.md](DECISIONS.md)（D-0001~D-0015）。
 
 | # | 决策 | 状态 |
 |---|---|---|
@@ -87,40 +165,33 @@ M1 边界：未实现任何业务 Agent、Workflow、数据库、前端等（见
 | 3 | **使用 AgentRuntimeAdapter 隔离 Runtime**：Backend 业务层只依赖统一的 `AgentRuntime` 接口，为未来替换或扩展 Runtime 保留边界 | ✅ 已确定 |
 | 4 | **LaTeX 作为论文主格式**：XeLaTeX + latexmk 编译，输出 PDF；版本用 Git 管理，前端只暴露业务版本号 | ✅ 已确定 |
 | 5 | **双模式前端**：普通用户的论文工作台 + 管理员的系统管理后台 | ✅ 已确定 |
-| 6 | **多 Agent 覆盖完整论文流程**：多 Agent 写作（Researcher / Writer / Final Editor / LaTeX Engineer）、事实核验（Fact Checker）、学术审稿（Academic Reviewer）、文风审查（Style Reviewer）、视觉审稿（Visual Reviewer），由 Paper Manager 统一调度 | ✅ 已确定 |
+| 6 | ~~多 Agent 覆盖完整论文流程（Paper Manager 统一调度 9 个 Agent）~~ → **少量专业 Agent + Skill**：Researcher / Writer / Reviewer（fact / academic / style 三 skill）/ Citation；编排由确定性 WorkflowOrchestrator 负责 | ✅ 已修订（D-0008 / D-0009，取代原 D-0006） |
 | 7 | **服务器端后续使用 Docker 部署** | ✅ 已确定 |
-
-各决策的背景与影响见 [DECISIONS.md](DECISIONS.md)。
+| 8 | **Workflow 编排使用确定性 Backend WorkflowOrchestrator**，Paper Manager 不再作为流程控制 Agent | ✅ 已确定（D-0008） |
+| 9 | **两类一级 Workflow**：Idea-to-Paper 与 Existing-LaTeX Improvement | ✅ 已确定（D-0010） |
+| 10 | **Target Feasibility Assessment**：必须诚实评估目标论文档次，不承诺现有条件无法支撑的目标 | ✅ 已确定（D-0011） |
+| 11 | **Reference Paper 与 Evidence Source 语义分离**：sourceRole = evidence / reference / both | ✅ 已确定（D-0012） |
+| 12 | **Workspace / Evidence / Artifacts 是 authoritative state**；Derived Context 可重建；Runtime Session 不作为业务真相 | ✅ 已确定（D-0013） |
+| 13 | **Workflow = 线性 Stage + bounded loop + limited fan-out/join**，不引入 DAG Engine | ✅ 已确定（D-0014） |
+| 14 | **Build Gate 与 Quality Gate 分离**：Draft 只要求 Build Gate，Final 双 Gate 通过 | ✅ 已确定（D-0015） |
 
 ## 待确定事项
 
 - ~~后端语言/框架选型~~ → 已随 M1 落地为 Node.js + TypeScript（零运行时依赖起步，Web 框架待首个业务 API 里程碑再评估）
-- 前端技术栈选型
+- 前端技术栈选型（M4+）
 - 数据库第一版使用 SQLite（PRD 建议方案，待最终确认）
 - Docker 部署细节（镜像划分、compose 结构、TeX Live 镜像体积控制）
-- M1/M2 遗留验证项：
-  - ~~真实 OpenClaw Gateway 环境下的健康检查与 Agent 调用~~ → M2.1 已用本机 `openclaw@2026.8.1 gateway` 完成真实 smoke（健康检查、SDK connect/hello、RPC `status`、`agent` 验收 → `agent.wait` 终态）；带模型凭据的完整文本生成仍待有凭据的环境
+- contextScope 的取值集合与 sessionKey 派生规则（M3.0 实现时冻结，见 ARCHITECTURE §6.3）
+- documentType / targetProfile / targetVenue 的最终 enum 值（本轮只冻结概念，数据模型落地时确定）
+- 遗留验证项：
+  - ~~真实 OpenClaw Gateway 环境下的健康检查与 Agent 调用~~ → M2.1 已完成真实 smoke；带模型凭据的完整文本生成仍待有凭据的环境
   - 真实 LaTeX 编译（本机未安装 latexmk / xelatex；编译器代码与错误路径已通过注入式测试覆盖）
 
-## M2 遗留项（进入后续里程碑前建议处理）
+## M2 遗留项（进入 M3.0 前建议处理）
 
 1. **真实环境验证**：带模型凭据环境下执行一次真实 Writer 调用到文本返回（M2.1 smoke 已验证协议链路至终态；本机 ~/.openclaw 需 `openclaw doctor --fix` 且未配模型，因 AutoClaw 共用该状态而未改动）；在装有 TeX Live 的环境跑一次真实编译（当前机器两者均缺）。
 2. **runAgent 连接复用**：每次 runAgent 新建一条 GatewayClient 连接（M2.1 有意保持的简单语义；单次连接失败即放弃，不搭乘 SDK 重试循环）；后续并发多 Agent 时再评估长连接/池化。
-3. **getTask / cancelTask / streamEvents / sendMessage**：仍为 `RuntimeCapabilityError`，属后续里程碑（Paper Manager 调度、任务状态查询需要它们）。SDK 已具备事件订阅能力（onEvent / sessions.*），M3 做 Progress/Event 时接入。
-4. **generate 为同步阻塞 API**：写作 + 编译在一次 HTTP 请求内完成（可能长耗时）；后续里程碑引入任务模型（POST 返回 taskId + 轮询/SSE）。
+3. **getTask / cancelTask / streamEvents / sendMessage**：仍为 `RuntimeCapabilityError`。M3.0 的 WorkflowRun 进度与事件（Domain Event / SSE）需要 streamEvents 接入；SDK 已具备事件订阅能力（onEvent / sessions.*）。
+4. **generate 为同步阻塞 API**：写作 + 编译在一次 HTTP 请求内完成（可能长耗时）。M3.0 引入异步 WorkflowRun（POST 返回 runId + 轮询 / SSE）后由其取代。
 5. **LaTeX fallback 只跑单轮 xelatex**：交叉引用可能需要两轮；latexmk 路径无此问题。真实环境首推 latexmk。
-6. **项目列表 / 删除 / 上传 / Git 版本管理**：第二阶段范围内，M2 未做。
-
-## MVP 阶段划分（摘自 PRD §25）
-
-| # | 阶段 | 范围 | 状态 |
-|---|---|---|---|
-| 1 | Runtime 基础 | Linux 部署、OpenClaw Gateway、PaperTeam Backend、AgentRuntimeAdapter | M1 Backend Runtime Skeleton 已完成，待真实 Gateway 环境验证 |
-| 2 | Agent 基础调用与项目 / LaTeX 基础 | runAgent / getTask / streamEvents 等完整 Runtime 调用、Paper Manager 基础调度、基础项目目录与 project.json、项目列表 / 新建项目、资料上传、LaTeX 编译、PDF 输出、历史版本（Git） | M2 已交付其中的 runAgent、项目目录 / project.json、新建项目 API、LaTeX 编译、PDF 输出（mock 验证）；getTask / streamEvents、Paper Manager 调度、上传、Git 版本为 M2 遗留项 |
-| 3 | Project Literature Library + Evidence Store | 项目文献库、添加参考文献（PDF / BibTeX / DOI / arXiv / URL）、文献解析与项目级检索、Evidence 反向定位原始文献、「文献与证据」页面、资料检索范围控制 | 未开始 |
-| 4 | Researcher / Writer / Fact Checker 核心闭环 | 优先项目文献库检索 + 受控网络补充、基于 Evidence 写作、可追溯核验链路、写作流程最小闭环 | 未开始 |
-| 5 | 完整多 Agent Workflow | Academic Reviewer、Style Reviewer、Final Editor、全面审稿、修改闭环、审稿报告与 Workflow 进度 | 未开始 |
-| 6 | 视觉审稿 | PDF 页面渲染、Visual Reviewer、PDF 问题定位、LaTeX Engineer、自动修复闭环 | 未开始 |
-| 7 | 系统管理 | 系统状态、Gateway / Agent / 模型 / Workflow 配置、日志、系统诊断、文件管理、Command Center、Web Terminal | 未开始 |
-
-其中第 3 阶段（Project Literature Library + Evidence Store）必须先于 Researcher / Fact Checker 完整能力落地：二者的检索、Evidence 生成与事实核验都依赖稳定的项目级文献检索和证据来源（见 PRD §25）。
+6. **项目列表 / 删除 / 上传 / Git 版本管理**：随 M3.1 / M3.2 交付。
