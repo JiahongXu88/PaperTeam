@@ -1,7 +1,8 @@
 # PaperTeam 系统架构
 
-> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0017）整理。
-> M1 / M2 / M2.1 / **M3（M3.0 Workflow Foundation / M3.1 Research & Evidence / M3.2 Review & Revision）已实现**。
+> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0018）整理。
+> M1 / M2 / M2.1 / **M3（M3.0 Workflow Foundation / M3.1 Research & Evidence / M3.2 Review & Revision）已实现**，
+> **M3.5 Runtime Bootstrap / M3 Closure 已实现（独立 OpenClaw Runtime + `npm run dev` 一键启动）**。
 > 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
 > 前端（M4+）、Visual Reviewer、LaTeX repair loop、完整版本管理、Docker 部署为 Planned。
 
@@ -278,6 +279,78 @@ subsystem 均在 M4+ / backlog。
 
 ## 6. Runtime 层
 
+### 6.0 Runtime Bootstrap 与独立 OpenClaw 实例（M3.5 已实现）
+
+PaperTeam 不依赖用户机器上的全局 OpenClaw 安装或全局 `~/.openclaw` state（D-0018）。
+开发入口 `npm run dev`（仓库根）执行完整 Bootstrap：
+
+```text
+npm run dev
+  │
+  ├─ scripts/dev.mjs（入口薄壳）
+  │    ├─ Node 版本检查（对齐锁定 openclaw 版本的支持范围）
+  │    ├─ 根依赖（openclaw runtime 本体）/ backend 依赖缺失时自动 npm install
+  │    └─ 构建 backend（tsc）→ 启动 backend/dist/dev/cli.js
+  │
+  └─ backend/src/dev/cli.ts（Runtime Bootstrap 编排）
+       ├─ 解析 PaperTeam 用户级 Runtime 路径（默认 %USERPROFILE%\.paperteam；
+       │    PAPERTEAM_RUNTIME_ROOT 可覆盖；与 ~/.openclaw 相等/嵌套 → 拒绝启动）
+       ├─ 读取/生成 runtime/runtime.json（OpenClaw 精确版本、Gateway 端口、随机 token）
+       ├─ 校验项目本地 openclaw 安装版本与锁定一致（漂移 → 拒绝启动）
+       ├─ 准备独立 state：OPENCLAW_STATE_DIR + OPENCLAW_CONFIG_PATH
+       │    （最小 config：{"gateway":{"mode":"local"}}，已存在不覆盖）
+       ├─ 启动 Gateway（node openclaw.mjs gateway --port 18790，
+       │    注入 OPENCLAW_STATE_DIR/CONFIG_PATH/GATEWAY_TOKEN，剔除 OPENCLAW_PROFILE）
+       ├─ 等待 GET /health 就绪（默认 60s 预算；进程提前退出 → 报错不空等）
+       ├─ 启动 Backend（注入 OPENCLAW_GATEWAY_URL/API_KEY/PAPERTEAM_PORT）
+       └─ Ctrl+C / SIGTERM → 先停 Backend（checkpoint 落盘）再停 Gateway
+            （优雅期 + Windows taskkill /T、POSIX SIGKILL 兜底；无孤儿进程）
+```
+
+布局与隔离：
+
+```text
+%USERPROFILE%\.paperteam\            （用户级，不入 Git；PAPERTEAM_RUNTIME_ROOT 可覆盖）
+└── runtime\
+    ├── runtime.json                 # Bootstrap 配置（端口 / 随机 token / OpenClaw 版本）
+    └── openclaw\                    # OPENCLAW_STATE_DIR（会话/凭据/缓存/workspace）
+        ├── openclaw.json            # OPENCLAW_CONFIG_PATH（Gateway 配置）
+        └── .env                     # 模型 provider API Key（OpenClaw 官方凭据位置）
+```
+
+版本锚点：openclaw（runtime 本体，根 package.json devDependency）与
+`@openclaw/gateway-client` / `@openclaw/gateway-protocol`（backend 依赖）全部精确
+pin 到同一版本（当前 **2026.8.2**，wire protocol v4）；测试
+（`backend/test/dev/versionPins.test.ts`）断言三处一致且不允许 `^`/`~`/`latest`。
+
+### 6.0.1 Business Agent → Runtime Agent 映射（方案 A，D-0018）
+
+```text
+PaperTeam 业务角色              Runtime 映射（config 层，env 可覆盖）
+Researcher / Writer /     →    OpenClaw agent "main"（默认；全新安装即存在）
+Reviewer / Citation             会话隔离靠 contextScope（§6.3）：
+                                  research / research/feasibility / writing/outline /
+                                  writing/sections / review/fact / review/academic /
+                                  review/style / …（同一 agent 内互不污染）
+```
+
+业务 Service 只持有注入的 agentId（`serviceStack` 装配），不感知 OpenClaw 注册表。
+`GET /api/runtime/status` 通过 `agents.list` RPC 实时校验每个映射 registered/missing，
+未来某角色需要独立模型/权限时改环境变量即可。
+
+### 6.0.2 Runtime 诊断（GET /api/runtime/status，M3.5）
+
+一次只读诊断（operator.read 权限，不泄露 token/密钥）回答四个问题：
+
+| 维度 | 状态 |
+|---|---|
+| gateway | `healthy` / `starting` / `unavailable` / `auth_error` / `protocol_mismatch`（/health 探针 + connect 握手 + RPC） |
+| runtime | `ready` / `model_not_configured` / `auth_error` / `protocol_mismatch` / `gateway_unavailable` |
+| agents | 每个业务角色 → agentId 的映射 `configured` / `missing`（对照 agents.list） |
+| model | `configured`（provider 名单）/ `not_configured` / `unknown`（models.authStatus） |
+
+模型未配置不阻塞启动：Gateway 无凭据也能健康运行，诊断如实上报。
+
 ### 6.1 AgentRuntimeAdapter（Runtime 隔离层，已实现）
 
 业务层不直接依赖 OpenClaw，只依赖统一接口：
@@ -314,7 +387,7 @@ AgentRuntime（接口）
   │
 OpenClawRuntimeAdapter
   │
-OpenClaw Gateway Client SDK（@openclaw/gateway-client 2026.8.1，wire protocol v4）
+OpenClaw Gateway Client SDK（@openclaw/gateway-client 2026.8.2，wire protocol v4）
   │   由 SDK 负责：ws transport、connect.challenge 挑战、connect 握手、鉴权、
   │   protocol v4 协商、request id 关联与超时、结构化错误、重连退避
   │   PaperTeam 保留（src/runtime/openclaw/gatewayClient.ts 薄 wrapper）：
@@ -342,12 +415,11 @@ AgentRuntime.runAgent(input)
   → 映射为 AgentTask{taskId=runId, status, output, metadata:{sessionKey}}
 ```
 
-协议依据：OpenClaw **2026.8.1** 源码（`packages/gateway-client/*`、
-`src/gateway/server-methods/agent*.ts`、`src/gateway/agent-turn/*`）与官方
-`docs/gateway/protocol.md`、`docs/gateway/external-apps.md`（"For agent runs,
-start with the `agent` RPC and pair it with `agent.wait`"）。protocol version
-使用官方常量 `PROTOCOL_VERSION`（`@openclaw/gateway-protocol/version`，当前 = 4），
-不在 PaperTeam 硬编码。
+协议依据：OpenClaw **2026.8.2** 官方 npm 包（`@openclaw/gateway-client`、
+`@openclaw/gateway-protocol` 及 `openclaw` 发行包内 docs）——"For agent runs,
+start with the `agent` RPC and pair it with `agent.wait`"（docs/gateway/external-apps.md）。
+protocol version 使用官方常量 `PROTOCOL_VERSION`（`@openclaw/gateway-protocol/version`，
+当前 = 4），不在 PaperTeam 硬编码。
 OpenClaw 特有标识（sessionKey 等）只存在于 Adapter 内部与 AgentTask.metadata 诊断字段。
 
 ### 6.3 Session Scope（M2.1 已实现最小映射；M3 设计约束）
@@ -407,7 +479,12 @@ backend/src/
 ├── config/        配置加载与校验（gateway / agents / projects / latex / workflow / citation / review）
 ├── errors.ts      业务错误模型（稳定错误码 → HTTP 状态码映射）
 ├── runtime/       AgentRuntime 契约 + OpenClawRuntimeAdapter（contextScope 派生）
+│   │              + statusService（GET /api/runtime/status 诊断）
 │   └── openclaw/  gatewayClient（官方 GatewayClient 的薄 wrapper）
+├── dev/           Runtime Bootstrap（M3.5）：runtimePaths（独立 state 路径与隔离校验）、
+│                  runtimeConfig（runtime.json：版本/端口/token）、openclawState（state
+│                  准备 + 安装校验 + 子进程环境）、gatewayHealth（/health 轮询等待）、
+│                  supervisor（Gateway+Backend 双进程生命周期）、cli（编排入口）
 ├── project/       ProjectStore（研究定位字段 / 路径安全 / list / updateMeta）
 ├── workflow/      WorkflowOrchestrator（引擎）、definitions（两条 workflow 的
 │                  stage 注册表 + plan/onInput 确定性规划器）、runStore（checkpoint
@@ -441,9 +518,14 @@ backend/src/
 
 ```text
 PaperTeam/
-├── frontend/   # Web 前端（论文工作台 + 系统管理后台，M4+）
-├── backend/    # PaperTeam Backend
-├── agents/     # Agent 定义与配置（AGENTS.md 等）
-├── docker/     # Docker 部署配置
-└── docs/       # PRD、状态、架构、决策记录
+├── package.json      # 根开发入口（openclaw runtime 精确 pin + npm run dev）
+├── scripts/dev.mjs   # dev 启动器薄壳（依赖/构建检查 → 启动 Runtime Bootstrap）
+├── frontend/         # Web 前端（论文工作台 + 系统管理后台，M4+）
+├── backend/          # PaperTeam Backend（含 src/dev Runtime Bootstrap）
+├── agents/           # Agent 定义与配置（AGENTS.md 等）
+├── docker/           # Docker 部署配置
+└── docs/             # PRD、状态、架构、决策记录
 ```
+
+运行时数据均在仓库外：论文项目 workspace 在 `PROJECTS_ROOT`（默认 backend/projects/），
+OpenClaw 独立 state 在用户级 `~/.paperteam/`（见 §6.0），二者均被 .gitignore 排除。

@@ -246,3 +246,46 @@ PDF 绝对路径，由 Agent 内置 pdf 工具完成视觉级分析。分析接�
 **影响**：视觉图表级 PDF 分析 E2E 依赖部署环境（Gateway 在线 + 视觉模型 +
 Agent 沙箱可读 PROJECTS_ROOT），列为 Non-blocking Validation Gap；确定性文本层分析
 （BuiltinPdfAnalyzer）始终可用并如实报告抽取质量。
+
+---
+
+## D-0018 业务角色默认映射单一 OpenClaw agent（main），隔离靠 contextScope；PaperTeam 拥有独立 OpenClaw Runtime
+
+- **日期**：2026-09-03
+- **状态**：accepted（M3.5 Runtime Bootstrap 实现时冻结）
+
+**背景**：两个问题一起决策。(1) M3 的四个业务角色（Researcher / Writer /
+Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此前真实 smoke 暴露
+过"researcher 等 agentId 未注册"的失败。(2) PaperTeam 的开发/运行环境此前依赖
+用户机器上已有的 OpenClaw 安装与全局 `~/.openclaw` state（与 AutoClaw 等其他项目
+共用），既不可复现也有污染用户数据的风险。
+
+**决策**：
+
+1. **Agent 映射（方案 A）**：四个业务角色默认全部映射到 OpenClaw 默认 agent
+   （`main`）。理由：业务角色的差异只在 prompt 与上下文，会话隔离已由 contextScope
+   （D-0016）完整提供；四个角色不需要不同的模型、工具权限或独立长期上下文（对照
+   D-0009 拆分准则，均不满足拆独立 Agent 的条件）；且全新 OpenClaw 安装只有
+   `main`，默认即可用。映射保持在 Runtime/config 层
+   （`OPENCLAW_{WRITER|RESEARCHER|REVIEWER|CITATION}_AGENT_ID`，缺省 `main`），
+   业务 Service 不感知注册表；未来若某角色确需独立模型/权限，改环境变量即可，
+   `GET /api/runtime/status` 会如实报告每个映射的 registered/missing。
+2. **独立 OpenClaw Runtime（隔离三件套）**：PaperTeam 通过 Runtime Bootstrap
+   运行自己的 OpenClaw 实例，按官方 multiple-gateways 的隔离清单使用
+   `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH` + 独立端口（默认 18790，避开
+   全局常用 18789），state 放用户级 `%USERPROFILE%\.paperteam\runtime\openclaw\`。
+   Bootstrap 在解析路径时硬校验与全局 `~/.openclaw` 既不相等也不嵌套，命中即拒绝
+   启动。OpenClaw 版本精确 pin 在根 package.json（当前 2026.8.2，与
+   `@openclaw/gateway-client` / `gateway-protocol` 同版本，protocol v4），以项目本地
+   npm 安装获取，不 vendoring 源码、不依赖全局安装、不依赖任何 OpenClaw 源码
+   checkout（如 `D:\Projects\openclaw`）。
+3. **模型凭据边界**：Bootstrap 绝不搬运或复用任何其他项目的凭据；Gateway 无凭据
+   也能健康启动，模型未配置由 `GET /api/runtime/status` 如实上报
+   （`runtime.phase = model_not_configured`），不阻塞 dev 启动。用户为 PaperTeam
+   配置模型的方式是把 provider API Key 写进独立 state 的 `.env`
+   （`~/.paperteam/runtime/openclaw/.env`，OpenClaw 官方支持的凭据位置）。
+
+**影响**：`npm run dev` 成为唯一开发入口（自动：检查 Node/依赖 → 准备隔离 state →
+启动 Gateway → 等 healthy → 启动 Backend → Ctrl+C 优雅关闭双进程、无孤儿）；
+`POST /api/projects/:id/generate` 之外的 Runtime 细节对用户不可见。该决策把
+"Runtime Bootstrap"从未决问题清单移入已实现。
