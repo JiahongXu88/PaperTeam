@@ -518,6 +518,11 @@ Evidence 必须能够反向定位原始文献。数据模型草案（字段方�
 - **confidence**（数值）：仅作为辅助字段，**不得成为 Quality Gate 的核心判定依据**。
   系统不依赖 LLM 自评的 `confidence = 0.94` 这类虚假精确数字做关键决策
 
+**存储口径**：EvidenceStore M3.1 默认采用文件优先——项目级 `evidence/evidence.jsonl`
+作为持久化存储。EvidenceStore 保持接口抽象；M3 阶段项目内查询优先使用内存索引 /
+文件扫描等轻量实现，**不提前引入数据库**；SQLite 是否引入以及具体索引方式，待真实
+出现数据规模、查询性能、并发或跨项目检索需求后再评估。
+
 Evidence 不应成为与原始论文失去关联的孤立文本。Evidence 用于：
 
 - Writer 写作（只用可支撑的 Evidence 支撑论述）
@@ -1466,8 +1471,11 @@ OpenClaw Gateway 作为服务器内部服务访问。
 
 ## 23. 数据模型草案
 
-> 本草稿冻结**概念与字段方向**，不冻结最终 enum 值与存储实现（第一版 SQLite，
-> 后续可切 PostgreSQL；文件内容仍存放于项目 Workspace）。
+> 本草稿冻结**概念与字段方向**，不冻结最终 enum 值。存储口径：EvidenceStore M3.1
+> 采用项目级 `evidence/evidence.jsonl` 文件持久化（接口抽象保持，项目内查询使用
+> 内存索引 / 文件扫描等轻量实现）；M3 不提前引入数据库，SQLite 及其余结构化状态
+> 存储（后续可切 PostgreSQL）的引入条件，待真实数据规模 / 查询性能 / 并发 /
+> 跨项目检索需求出现后再评估。文件内容仍存放于项目 Workspace。
 
 ```text
 Project
@@ -1692,7 +1700,7 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - Literature Research（项目文献库 + 受控网络检索）
 - Target Feasibility Assessment
 - PDF Reference Paper Analysis（Multimodal → Reference Style Profile）
-- EvidenceStore（含 supportStrength / verificationLevel / 反向定位）
+- EvidenceStore（project-scoped `evidence/evidence.jsonl` 文件实现；含 supportStrength / verificationLevel / 反向定位）
 - Citation Verification
 - Section-based Writer
 - context derived state（context.yaml 等蒸馏产物）

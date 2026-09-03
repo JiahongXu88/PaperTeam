@@ -36,7 +36,7 @@ M2 交付的最小真实闭环不变：`POST /api/projects` 创建论文项目 �
 - 新增产品原则 **Target Feasibility Assessment**（HIGH / MEDIUM / LOW / INSUFFICIENT，禁止"83% 成功概率"式虚假精确）。
 - PDF 语义角色拆分 **sourceRole**（evidence / reference / both）；Reference Paper 走多模态分析产出 **Reference Style Profile**（结构参考，非内容抄袭）。
 - **Build Gate 与 Quality Gate 分离**：Quality 失败不禁止编译，Draft 只要求 Build Gate，Final 双 Gate 通过。
-- Evidence Store 字段方向冻结（verificationStatus / supportStrength / verificationLevel；数值 confidence 仅辅助）。
+- Evidence Store 字段方向冻结（verificationStatus / supportStrength / verificationLevel；数值 confidence 仅辅助）；存储确定采用**文件优先**——项目级 `evidence/evidence.jsonl` 持久化，EvidenceStore 保持接口抽象，M3 不提前引入数据库（SQLite 与索引策略待真实需求验证）。
 - M3.0 核心抽象 **StageContract** 与异步 **WorkflowRun**（含 Domain Event 分层与 HITL awaiting_input）。
 
 ### 决策记录
@@ -62,7 +62,7 @@ M2 交付的最小真实闭环不变：`POST /api/projects` 创建论文项目 �
 - Literature Research（项目文献库 + 受控网络检索）
 - Target Feasibility Assessment
 - PDF Reference Paper Analysis（Multimodal → Reference Style Profile）
-- EvidenceStore（supportStrength / verificationLevel / 反向定位）
+- EvidenceStore（project-scoped `evidence/evidence.jsonl` 文件实现；supportStrength / verificationLevel / 反向定位）
 - Citation Verification
 - Section-based Writer
 - context derived state（context.yaml 等蒸馏产物）
@@ -175,21 +175,25 @@ M1 边界：未实现任何业务 Agent、Workflow、数据库、前端等。
 | 13 | **Workflow = 线性 Stage + bounded loop + limited fan-out/join**，不引入 DAG Engine | ✅ 已确定（D-0014） |
 | 14 | **Build Gate 与 Quality Gate 分离**：Draft 只要求 Build Gate，Final 双 Gate 通过 | ✅ 已确定（D-0015） |
 
-## 待确定事项
+## 未决设计问题
 
-- ~~后端语言/框架选型~~ → 已随 M1 落地为 Node.js + TypeScript（零运行时依赖起步，Web 框架待首个业务 API 里程碑再评估）
-- 前端技术栈选型（M4+）
-- 数据库第一版使用 SQLite（PRD 建议方案，待最终确认）
-- Docker 部署细节（镜像划分、compose 结构、TeX Live 镜像体积控制）
-- contextScope 的取值集合与 sessionKey 派生规则（M3.0 实现时冻结，见 ARCHITECTURE §6.3）
-- documentType / targetProfile / targetVenue 的最终 enum 值（本轮只冻结概念，数据模型落地时确定）
-- 遗留验证项：
-  - ~~真实 OpenClaw Gateway 环境下的健康检查与 Agent 调用~~ → M2.1 已完成真实 smoke；带模型凭据的完整文本生成仍待有凭据的环境
-  - 真实 LaTeX 编译（本机未安装 latexmk / xelatex；编译器代码与错误路径已通过注入式测试覆盖）
+1. **documentType / targetProfile / targetVenue 最终 enum**：本轮只冻结概念与三维度模型，最终枚举值在数据模型实现时确定。
+2. **contextScope / sessionKey**：原则已冻结（`projectId × agentId × contextScope`），但 contextScope 取值集合、生命周期与 sessionKey 派生规则在 M3.0 实现时确定（见 ARCHITECTURE §6.3）。
+3. **EvidenceStore 后续索引策略与 SQLite 迁移条件**：存储方案已定为 project-scoped `evidence/evidence.jsonl`（文件优先，M3 不提前引入数据库）；未决的是索引方式、SQLite 迁移阈值、是否出现跨项目检索需求——待真实使用数据（数据规模 / 查询性能 / 并发）验证后再评估。
+4. **M4+ 前端技术栈与 Docker / 部署方案**（镜像划分、compose 结构、TeX Live 镜像体积控制）。
 
-## M2 遗留项（进入 M3.0 前建议处理）
+> 已决记录：~~后端语言/框架选型~~ → Node.js + TypeScript（M1 落地）；~~EvidenceStore 存储~~ → 项目级 JSONL 文件（本轮设计冻结）。
 
-1. **真实环境验证**：带模型凭据环境下执行一次真实 Writer 调用到文本返回（M2.1 smoke 已验证协议链路至终态；本机 ~/.openclaw 需 `openclaw doctor --fix` 且未配模型，因 AutoClaw 共用该状态而未改动）；在装有 TeX Live 的环境跑一次真实编译（当前机器两者均缺）。
+## 非阻塞环境验证项（Non-blocking Validation Gaps）
+
+以下为**环境验证缺口，不是设计决策，不阻塞 M3.0 开发**：
+
+1. 带真实模型凭据的 Writer 端到端生成（M2.1 smoke 已验证协议链路至终态）。
+2. 安装 TeX Live 后的真实 LaTeX 编译验证（本机未安装 latexmk / xelatex；编译器代码与错误路径已通过注入式测试覆盖）。
+
+## M2 遗留项（均不阻塞 M3.0 开发）
+
+1. **真实环境验证（非阻塞，见「非阻塞环境验证项」）**：带模型凭据环境下执行一次真实 Writer 调用到文本返回（M2.1 smoke 已验证协议链路至终态；本机 ~/.openclaw 需 `openclaw doctor --fix` 且未配模型，因 AutoClaw 共用该状态而未改动）；在装有 TeX Live 的环境跑一次真实编译（当前机器两者均缺）。
 2. **runAgent 连接复用**：每次 runAgent 新建一条 GatewayClient 连接（M2.1 有意保持的简单语义；单次连接失败即放弃，不搭乘 SDK 重试循环）；后续并发多 Agent 时再评估长连接/池化。
 3. **getTask / cancelTask / streamEvents / sendMessage**：仍为 `RuntimeCapabilityError`。M3.0 的 WorkflowRun 进度与事件（Domain Event / SSE）需要 streamEvents 接入；SDK 已具备事件订阅能力（onEvent / sessions.*）。
 4. **generate 为同步阻塞 API**：写作 + 编译在一次 HTTP 请求内完成（可能长耗时）。M3.0 引入异步 WorkflowRun（POST 返回 runId + 轮询 / SSE）后由其取代。

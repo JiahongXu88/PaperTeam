@@ -257,9 +257,13 @@ subsystem 均在 M4+ / backlog。
   sections/）、`sources/`（papers / parsed / metadata）、`evidence/`、`reviews/`、
   `workflow/`、`figures/`、`tables/`、`data/`、`build/`、`project.json`。
 - **Evidence Store**（M3.1）：字段与状态模型见 PRD §6.9（verificationStatus /
-  supportStrength / verificationLevel；数值 confidence 仅辅助）。
-- **结构化状态**入数据库（WorkflowRun、ReviewReport、Issue、SystemLog 等）：第一版
-  SQLite，后续可切 PostgreSQL；文件内容仍在 Workspace。
+  supportStrength / verificationLevel；数值 confidence 仅辅助）。存储采用文件优先：
+  项目级 `evidence/evidence.jsonl` 持久化；EvidenceStore 保持接口抽象，项目内查询
+  优先使用内存索引 / 文件扫描等轻量实现，M3 不提前引入数据库。
+- **结构化状态**（WorkflowRun、ReviewReport、Issue、SystemLog 等）：与 EvidenceStore
+  同口径——M3 文件优先、不提前引入数据库；SQLite 是否引入（后续可切 PostgreSQL）
+  及具体索引方式，待真实数据规模 / 查询性能 / 并发 / 跨项目检索需求出现后再评估。
+  文件内容仍在 Workspace。
 - **版本管理**：服务器端 Git；前端只展示业务版本号（V12/V13…，Draft / Final 标记）；
   Existing-Paper 导入产生 baseline 快照版本。
 
@@ -406,7 +410,7 @@ backend/src/
 ├── workflow/      WorkflowOrchestrator、WorkflowRun、Stage 状态机、StageContract、
 │                  checkpoint / resume、Domain Event 发布
 ├── runs/          WorkflowRun API（/api/runs/*）与 SSE
-├── evidence/      EvidenceStore（存取、核验状态、反向定位）
+├── evidence/      EvidenceStore（project-scoped JSONL 文件实现；存取、核验状态、反向定位）
 ├── sources/       项目文献库（sourceRole、解析、项目级检索）
 ├── citation/      Citation Agent 服务侧（引用核验结果、bib 治理）
 └── quality/       Build Gate / Quality Gate 判定器
