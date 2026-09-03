@@ -1,8 +1,9 @@
 # PaperTeam 系统架构
 
-> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0015）整理。
-> M1 / M2 / M2.1 已实现部分如实标注；Workflow / 多 Agent / Evidence 层为 **M3 设计**
-> （2026-09-03 设计冻结），尚未实现。实现进度以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
+> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0017）整理。
+> M1 / M2 / M2.1 / **M3（M3.0 Workflow Foundation / M3.1 Research & Evidence / M3.2 Review & Revision）已实现**。
+> 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
+> 前端（M4+）、Visual Reviewer、LaTeX repair loop、完整版本管理、Docker 部署为 Planned。
 
 ## 1. 总体架构
 
@@ -73,13 +74,13 @@ Linux Server
    └── Logs
 ```
 
-### 1.2 当前实现（M2.1 后）
+### 1.2 当前实现（M3 后）
 
-当前 Backend 已实现的只有图中最小闭环：HTTP API → GenerationService → WriterService →
-AgentRuntime → OpenClawRuntimeAdapter → OpenClaw Gateway（Writer 单 Agent）→
-manuscript/main.tex → LatexCompiler → build/paper.pdf。WorkflowOrchestrator、
-多 Agent、EvidenceStore、异步 WorkflowRun 均未实现（见 §9 模块划分与
-PROJECT_STATUS.md）。
+M3 目标架构（§1.1）已在 backend 落地：HTTP API/SSE → WorkflowOrchestrator（确定性引擎）→
+Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime 调用 OpenClaw Gateway）→
+Project / Evidence / Artifacts 落盘 → Build Gate / Quality Gate。两条一级工作流
+（Idea-to-Paper、Existing-LaTeX Improvement）共享审稿-修订-构建后段。尚未实现：
+frontend（M4+）、Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -138,13 +139,15 @@ Domain Event 示例：`workflow.started`、`stage.started`、`stage.completed`�
 
 规则（D-0015）：`not_found citation → 禁止编译` 是被禁止的设计。
 
-## 3. Workflow 层（M3.0 设计）
+## 3. Workflow 层（M3.0 已实现）
 
 ### 3.1 WorkflowOrchestrator
 
 - **确定性 TypeScript 代码，不是 Agent，不调用 LLM**（D-0008）。
 - 负责：状态、Stage 推进、retry、timeout、checkpoint、resume、branch、loop、hard gate。
 - 不负责：内容理解、语义判断、论文分析、审稿（这些是 Agent / Skill 的事）。
+- 实现：`backend/src/workflow/WorkflowOrchestrator.ts`（引擎）+ `definitions.ts`
+  （两条 workflow 的 stage 注册表与 plan()/onInput() 纯函数规划器）。
 
 ### 3.2 两类 Workflow，共享后段
 
@@ -199,19 +202,19 @@ fan-out / join 的使用点：三类 review skill 并行、多节 Revision 并�
 StageContract 是 WorkflowOrchestrator 推进、重试与 resume 判定的唯一依据；LLM 产出
 必须落到 produced outputs 并通过 DoD 校验才算 Stage 完成。
 
-### 3.5 WorkflowRun（异步运行）
+### 3.5 WorkflowRun（异步运行，M3.0 已实现）
 
-当前 `POST /api/projects/:id/generate` 是同步 API（M2 形态）。M3.0 起改为：
+M2 的同步 `POST /api/projects/:id/generate` 保留为 deprecated 兼容端点；论文生产由异步 run 承载：
 
 ```text
-POST /api/projects/:id/workflows   → { runId }
-GET  /api/runs/:runId              → { status, currentStage, … }
-GET  /api/runs/:runId/events（SSE） → Domain Event 流
-POST /api/runs/:runId/resume       → HITL 输入提交
+POST /api/projects/:id/workflows   → 202 {runId, status}
+GET  /api/runs/:runId              → { status, currentStage, awaiting?, error?, completion? }
+GET  /api/runs/:runId/events       → SSE（Domain Event replay + 实时）
+POST /api/runs/:runId/resume       → HITL 输入 {decision, payload?}
 POST /api/runs/:runId/cancel
 ```
 
-状态机：
+状态机（同一项目存在 pending/running/awaiting_input 的 run 时拒绝新建）：
 
 ```text
 pending → running → awaiting_input → running → … → completed
@@ -220,12 +223,18 @@ pending → running → awaiting_input → running → … → completed
                 └──────────────► cancelled ◄─────────┘
 ```
 
-### 3.6 Checkpoint / Resume / HITL
+终态转换遵循「先持久化 checkpoint、后提交内存、再广播事件」，保证对外可见的终态
+一定已可恢复；进程重启后 `recoverInterruptedRuns()` 依据 checkpoint 重启中断的 run
+（已成功 stage 不重复执行），awaiting_input 的 run 保持等待用户 resume。
 
-- WorkflowRun 状态与 checkpoint 持久化于项目 `workflow/` 目录（Authoritative State）
-- 服务重启后可从最近 checkpoint 恢复；恢复依据是 Workspace 状态，不是 Chat History
-- HITL：Feasibility 确认、Improvement Plan 确认、Outline 确认（可选）、bounded loop
-  超限介入；对应 `workflow.awaiting_input` / `workflow.resumed` 事件
+### 3.6 Checkpoint / Resume / HITL（M3.0 已实现）
+
+- WorkflowRun 状态与 checkpoint 持久化于项目 `workflow/runs/<runId>/`（Authoritative State）：
+  `checkpoint.json`（原子写：tmp → fsync → rename）、`events.jsonl`、`stages/`（每次尝试记录）
+- 恢复依据是 Workspace 状态与 checkpoint，不是 Chat History
+- HITL：feasibility 确认（approve/adjust 重评估 ≤3 次/cancel）、outline 确认
+  （approve/revise ≤3 次/cancel）、改进计划确认、bounded loop 超限介入
+  （accept_draft/revise_more ≤3 轮/cancel）
 
 ## 4. Agent 层（M3 设计）
 
@@ -344,35 +353,38 @@ OpenClaw 特有标识（sessionKey 等）只存在于 Adapter 内部与 AgentTas
 ### 6.3 Session Scope（M2.1 已实现最小映射；M3 设计约束）
 
 M2.1 已实现 **Project ≠ Session**：ProjectStore 持久化 Runtime-neutral 引用
-`runtimeSessionKey`；首次生成未存引用时由 Adapter 按 `projectId` 派生稳定 key
-（`agent:{agentId}:paperteam-{projectId}`，同一 Project 复用、不同 Project 隔离），
-成功后由 `GenerationService` 写回 project.json，下次原样透传。
+`runtimeSessionKey`；首次生成未存引用时由 Adapter 按 `projectId` 派生稳定 key，成功后写回。
 
-**M3 设计约束**：并行 Reviewer 等场景将会话维度从
-
-```text
-projectId × agentId
-```
-
-扩展为：
+**M3.0 已实现 contextScope（D-0016）**：会话维度为
 
 ```text
 projectId × agentId × contextScope
 ```
 
-即共享同一个 Reviewer Agent Definition 的 fact review / academic review / style review
-可各持有独立 context scope（独立上下文、可独立并行、互不污染）。contextScope 的取值
-与 sessionKey 派生规则在 M3.0 实现时冻结；ProjectStore 仍只保存不透明引用。
+派生规则（已冻结并在 Adapter 实现 + 测试）：
 
-## 7. 质量与构建
+```text
+无 scope：agent:{agentId}:paperteam-{projectId}          （M2.1 行为保持）
+有 scope：agent:{agentId}:paperteam-{projectId}--{scope} （scope 安全归一化：
+          小写、允许 [a-z0-9/_-]、非法字符折叠为 "-"、无 ":" 注入、长度 ≤48）
+```
 
-- **Build Gate**：由 LatexCompiler 与日志解析实现（确定性）。判定维度：LaTeX 语法、
-  references.bib 可用、图片资源、依赖 packages、编译结果。
-- **Quality Gate**：确定性判定器，消费 Reviewer（fact / academic / style）与 Citation
-  的结构化结果 + Evidence Store 状态（verificationStatus / supportStrength），对照
-  targetProfile / targetVenue 要求输出通过 / 阻止项清单。数值 confidence 不是核心
-  判定依据。
-- 版本标记：Draft（Build Gate 通过即可）/ Final（双 Gate 通过）。
+实际使用的 scope：research、research/feasibility、research/existing-analysis、
+writing/outline、writing/sections、writing/revision、writing/improvement-plan、
+review/fact、review/academic、review/style、sources/pdf-analysis。
+显式 sessionKey 仍然优先；scope 取值由 PaperTeam 代码内控（不接受用户自由输入）。
+
+## 7. 质量与构建（M3.2 已实现）
+
+- **Build Gate**（`quality/gates.ts`）：由 LatexCompiler 编译 + 结构检查（include 文件存在、
+  bib 可用）实现（确定性）。判定维度不含任何质量语义；编译失败/结构缺失给出 reasons。
+- **Quality Gate**：确定性判定器，9 条规则消费 Reviewer 聚合结果 + Citation 报告 +
+  Evidence 状态（supportStrength / verificationStatus）+ Feasibility 结论，阈值可配置
+  （academic ≥ 80、style ≤ 35、自动修订 ≤ 2 轮）。数值 confidence 不是核心判定依据。
+- **bounded revision loop**：Quality Gate 失败 → revision（review issues + 引用核验问题
+  进入修订指令）→ 复核 → 循环 ≤ N 轮（默认 2）→ 超限 HITL（accept_draft / revise_more ≤3 / cancel）。
+- 版本标记：Draft（Build Gate 通过即可）/ Final（双 Gate 通过）；completion.label 记录于
+  run 结果（完整版本管理体验属 M4+）。
 
 ## 8. 前端双模式
 
@@ -388,32 +400,32 @@ projectId × agentId × contextScope
 
 ## 9. Backend 模块划分
 
-当前（M2.1 已实现）：
+M3 实际结构：
 
 ```text
 backend/src/
-├── config/        配置加载与校验（gateway / projects / latex / writerAgentId）
+├── config/        配置加载与校验（gateway / agents / projects / latex / workflow / citation / review）
 ├── errors.ts      业务错误模型（稳定错误码 → HTTP 状态码映射）
-├── runtime/       AgentRuntime 契约 + OpenClawRuntimeAdapter
-│   └── openclaw/  gatewayClient（官方 GatewayClient 的薄 wrapper：配置/就绪/生命周期）
-├── project/       ProjectStore（项目目录 / project.json / runtimeSessionKey / 路径安全）
-├── writer/        WriterService（Writer Prompt 组装 + LaTeX 输出校验 + sessionKey 透传）
-├── generation/    GenerationService（Writer → main.tex → LatexCompiler 编排 + 会话写回）
-├── latex/         LatexCompiler（latexmk -xelatex / xelatex 探测与编译）
-└── httpServer.ts  Node 原生 HTTP：/health、/api/projects、/api/projects/:id/generate
-```
-
-M3 规划新增（设计冻结，未实现）：
-
-```text
-backend/src/
-├── workflow/      WorkflowOrchestrator、WorkflowRun、Stage 状态机、StageContract、
-│                  checkpoint / resume、Domain Event 发布
-├── runs/          WorkflowRun API（/api/runs/*）与 SSE
-├── evidence/      EvidenceStore（project-scoped JSONL 文件实现；存取、核验状态、反向定位）
-├── sources/       项目文献库（sourceRole、解析、项目级检索）
-├── citation/      Citation Agent 服务侧（引用核验结果、bib 治理）
-└── quality/       Build Gate / Quality Gate 判定器
+├── runtime/       AgentRuntime 契约 + OpenClawRuntimeAdapter（contextScope 派生）
+│   └── openclaw/  gatewayClient（官方 GatewayClient 的薄 wrapper）
+├── project/       ProjectStore（研究定位字段 / 路径安全 / list / updateMeta）
+├── workflow/      WorkflowOrchestrator（引擎）、definitions（两条 workflow 的
+│                  stage 注册表 + plan/onInput 确定性规划器）、runStore（checkpoint
+│                  持久化）、eventLog（Domain Event JSONL）、types（StageContract 等）
+├── agents/        ResearcherService、FeasibilityService、ReviewerService（业务角色，
+│                  Prompt + 结构化输出校验）、outputParsing（防御性 JSON 提取）
+├── writer/        WriterService（M2 完整文档 + M3 大纲 / 分节 / 修订 / 改进计划）
+├── evidence/      EvidenceStore（project-scoped JSONL）
+├── sources/       SourceStore（文献库）+ PdfAnalyzer（builtin 文本层 + multimodal 扩展点）
+├── manuscript/    ManuscriptService（outline / main.tex 组装 / context.yaml）、
+│                  LatexFiles（\input 递归收集）
+├── citation/      StaticCitationChecker（Layer 1）、metadataProviders（Layer 2：
+│                  CrossRef/OpenAlex/arXiv）、CitationService（编排 + 报告）
+├── review/        ReviewAggregator（确定性聚合）
+├── quality/       gates（Build Gate / Quality Gate 判定器）
+├── import/        zipReader（零依赖 ZIP + 防 Zip Slip）、LatexImporter（导入 MVP）
+├── serviceStack.ts 服务栈装配（生产与测试共用）
+└── httpServer.ts  Node 原生 HTTP：全部 API + SSE
 ```
 
 ## 10. 部署形态

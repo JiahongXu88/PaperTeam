@@ -1539,16 +1539,20 @@ AgentTask
 
 ## 24. API 方向草案
 
-已实现（M2 / M2.1）：
+已实现（M2 / M2.1 / **M3**；实际 API 清单以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准）：
 
 ```text
 GET  /health
-POST /api/projects                {title}
+POST /api/projects                {title, researchIdea?, …}   # M3 起携带研究定位字段
 GET  /api/projects/:id
-POST /api/projects/:id/generate   {prompt}   # 同步，M3.0 后由 WorkflowRun 取代
+PATCH /api/projects/:id                                       # M3.1
+POST /api/projects/:id/generate   {prompt}   # 同步（deprecated，由 WorkflowRun 取代）
+# 以上之外的 M3 端点（workflows / runs / SSE / sources / evidence / feasibility /
+# citation / review / quality-gate / build / import / manuscript / context）
+# 已按第 24 章方向实现，详见 PROJECT_STATUS.md「M3 API 一览」
 ```
 
-M3 方向草案：
+M3 方向草案（对照实现）：
 
 ```text
 # WorkflowRun（M3.0）
@@ -1683,7 +1687,7 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
   Academic Paper Machine / AutoResearchClaw）与本轮产品/架构方向冻结
   （DECISIONS D-0008~D-0015）
 
-### M3.0 — Workflow Foundation
+### M3.0 — Workflow Foundation（✅ 已实现）
 
 - WorkflowOrchestrator（确定性编排）
 - WorkflowRun / Stage 运行时
@@ -1694,21 +1698,22 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - HITL awaiting_input / resume
 - Session contextScope（projectId × agentId × contextScope）
 
-### M3.1 — Research & Evidence
+### M3.1 — Research & Evidence（✅ 已实现）
 
 - Idea Research（领域现状 / Related Work / Research Gap / Novelty 分析）
-- Literature Research（项目文献库 + 受控网络检索）
+- Literature Research（项目文献库；受控网络检索属 Researcher 行为约束，检索工具接入 M4+）
 - Target Feasibility Assessment
-- PDF Reference Paper Analysis（Multimodal → Reference Style Profile）
+- PDF Reference Paper Analysis（确定性文本层已实现；视觉级 multimodal 为扩展点，
+  受模型 / Runtime 能力约束——见 PROJECT_STATUS 非阻塞验证项）
 - EvidenceStore（project-scoped `evidence/evidence.jsonl` 文件实现；含 supportStrength / verificationLevel / 反向定位）
-- Citation Verification
+- Citation Verification（静态层 + CrossRef/OpenAlex/arXiv metadata 层）
 - Section-based Writer
 - context derived state（context.yaml 等蒸馏产物）
 
-### M3.2 — Review & Revision
+### M3.2 — Review & Revision（✅ 已实现）
 
-- Reviewer（fact / academic / style 三 skill）
-- Review aggregation
+- Reviewer（fact / academic / style 三 skill，可并行）
+- Review aggregation（确定性聚合）
 - bounded revision loop（含超限 Human Checkpoint）
 - Quality Gate
 - Existing LaTeX Improvement workflow（导入 / 解析 / Baseline Compile / 理解 / 审计 /

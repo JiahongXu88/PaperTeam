@@ -199,3 +199,50 @@
 **决策**：Build Gate 只判定文档能否构建（LaTeX 语法、references.bib、图片、packages、编译结果）；Quality Gate 判定论文质量是否允许进入 Final（hallucinated citation、not_found citation、unsupported critical claim、unresolved review issue、target requirement 未达到、Evidence 不足）。Draft PDF 只要求 Build Gate 通过；Final 必须 Build Gate + Quality Gate 全部通过；Quality Gate 失败不禁止编译。
 
 **影响**：版本引入 draft / final 标记；PDF 页面区分 Draft / Final 并展示 Quality Gate 阻止项清单；Quality Gate 判定是确定性代码，基于 Reviewer / Citation 的结构化结果与 Evidence 状态（supportStrength / verificationLevel），不以 LLM 自评数值 confidence 为核心依据。
+
+---
+
+## D-0016 contextScope 会话派生规则：projectId × agentId × contextScope，`--` 分隔
+
+- **日期**：2026-09-03
+- **状态**：accepted（M3.0 实现时冻结）
+
+**背景**：并行 Reviewer（fact / academic / style 三 skill）共享同一 Agent 定义但需要独立上下文，互不污染（D-0013 的会话维度扩展）。需要冻结 sessionKey 派生规则，且不得破坏 OpenClaw sessionKey 结构（`agent:{agentId}:{peer}`）或造成 scope 串会话。
+
+**决策**：会话维度扩展为 `projectId × agentId × contextScope`；派生规则：
+
+```text
+无 scope：agent:{agentId}:paperteam-{projectId}
+有 scope：agent:{agentId}:paperteam-{projectId}--{scope}
+```
+
+scope 归一化：小写；允许 `[a-z0-9/_-]`；其余字符折叠为 `-`；不产生 `:` 注入；长度 ≤ 48。
+scope 取值由 PaperTeam 代码内控（少量固定常量，如 `review/fact`），不接受用户自由输入，
+因此折叠的非单射性（空格与字面 `-` 折叠到同一 scope）不构成实际风险。
+显式 `sessionKey` 仍优先于派生；M2.1 的无 scope 行为保持不变（回归测试覆盖）。
+
+**影响**：OpenClaw 特有标识仍只存在于 Adapter 内部；业务层通过 `RunAgentInput.contextScope`
+表达会话隔离意图；ProjectStore 继续只保存不透明引用。
+
+---
+
+## D-0017 参考论文多模态分析走消息内本地路径（agent 内置 pdf 工具），不把 PDF 作为 agent RPC 附件
+
+- **日期**：2026-09-03
+- **状态**：accepted
+
+**背景**：Reference Paper 视觉级分析（图表、版式、结构）需要把 PDF 交给具备视觉能力的
+Agent。对照 OpenClaw 2026.8.1 源码确认：`agent` RPC 的 `attachments` 字段只接受
+image/*（`acceptNonImage: false`，PDF 会被网关拒绝）；PDF 作为附件的路径只存在于
+`chat.send` 入口。Agent 侧存在内置 `pdf` 工具（可读取本地/URL PDF，文本抽取 + 原生
+PDF 输入或页面渲染的视觉分析）。
+
+**决策**：PaperTeam 的 PDF 归自己管理（ingestion、存储、元数据、确定性文本层分析）；
+多模态层通过 `AgentMultimodalAnalyzer` 扩展点实现——在消息文本中给出服务器本地
+PDF 绝对路径，由 Agent 内置 pdf 工具完成视觉级分析。分析接口定义为本仓库的
+`MultimodalAnalyzer`；能力不可用（Gateway 离线、模型无视觉能力、沙箱路径未授权）时
+返回明确的 capability-gap 结果，不伪造验证成功。
+
+**影响**：视觉图表级 PDF 分析 E2E 依赖部署环境（Gateway 在线 + 视觉模型 +
+Agent 沙箱可读 PROJECTS_ROOT），列为 Non-blocking Validation Gap；确定性文本层分析
+（BuiltinPdfAnalyzer）始终可用并如实报告抽取质量。
