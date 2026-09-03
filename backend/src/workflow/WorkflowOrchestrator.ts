@@ -209,8 +209,14 @@ export class WorkflowOrchestrator {
       );
     }
     const stageId = handle.state.awaiting.stageId;
-    await handle.definition.onInput(handle.state, stageId, input);
+    const outcome = await handle.definition.onInput(handle.state, stageId, input);
     handle.state.inputs[stageId] = input;
+    if (outcome === "cancel") {
+      // 用户决策为取消：直接终结（保持 awaiting 清理与事件一致）
+      handle.state.awaiting = undefined;
+      await this.finalizeCancelled(handle);
+      return structuredClone(handle.state);
+    }
     handle.state.awaiting = undefined;
     handle.state.status = "running";
     // HITL stage 在收到输入时视为完成（与执行型 stage 一致进入 completedStages）

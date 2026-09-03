@@ -5,17 +5,13 @@ import { join } from "node:path";
 
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 
-import { GenerationService } from "../src/generation/GenerationService.js";
 import { createBackendHttpServer } from "../src/httpServer.js";
 import { LatexCompiler, type CommandRunner } from "../src/latex/LatexCompiler.js";
 import { ProjectStore } from "../src/project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "../src/runtime/OpenClawRuntimeAdapter.js";
 import type { AgentRuntime, RuntimeHealth } from "../src/runtime/types.js";
-import { WriterService } from "../src/writer/WriterService.js";
-import {
-  createIdeaToPaperDefinition,
-  type WorkflowServices,
-} from "../src/workflow/definitions.js";
+import { buildServiceStack } from "../src/serviceStack.js";
+import { createIdeaToPaperDefinition } from "../src/workflow/definitions.js";
 import { WorkflowOrchestrator } from "../src/workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "../src/workflow/runStore.js";
 import { defaultHandler, startMockGateway, type MockGateway } from "./helpers/mockGateway.js";
@@ -420,18 +416,19 @@ async function startApiStack(
   const root = await mkdtemp(join(tmpdir(), "paperteam-api-"));
   tempRoots.push(root);
   const store = new ProjectStore({ root });
-  const writer = new WriterService({ runtime, agentId: "writer", log: () => {} });
   const latex = new LatexCompiler({
     timeoutMs: 5_000,
     runner: options.latexRunner ?? fakeSuccessfulRunner,
   });
-  const generation = new GenerationService({ projects: store, writer, latex, log: () => {} });
-  const workflowServices: WorkflowServices = {
+  const stack = buildServiceStack({
+    runtime,
     projects: store,
-    generation,
+    latex,
+    agentIds: { writer: "writer", researcher: "researcher", reviewer: "reviewer", citation: "citation" },
     stageTimeoutMs: 10_000,
     stageMaxAttempts: 2,
-  };
+    log: () => {},
+  });
   const orchestrator = new WorkflowOrchestrator({
     projects: store,
     runStore: new WorkflowRunStore(store),
@@ -439,13 +436,19 @@ async function startApiStack(
       if (kind !== "idea_to_paper") {
         throw new Error(`unexpected kind: ${kind}`);
       }
-      return createIdeaToPaperDefinition(workflowServices);
+      return createIdeaToPaperDefinition(stack.workflowServices);
     },
     retryDelayMs: 0,
     log: () => {},
   });
   orchestrators.push(orchestrator);
-  const server = createBackendHttpServer({ runtime, projects: store, generation, orchestrator });
+  const server = createBackendHttpServer({
+    runtime,
+    projects: store,
+    generation: stack.generation,
+    orchestrator,
+    stack,
+  });
   servers.push(server);
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);

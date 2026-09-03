@@ -1,9 +1,12 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
 
 import { BusinessError, toBusinessError } from "./errors.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
+import type { ServiceStack } from "./serviceStack.js";
+import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
 import type { WorkflowDomainEvent, WorkflowKind } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -11,20 +14,38 @@ import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
  * Backend 自身的轻量 HTTP 服务（Node 原生 http，无 Web 框架）。
  *
  * M3 端点：
- *   GET  /health                                存活探针（含 Gateway 实时健康）
- *   POST /api/projects                          创建论文项目 {title}
- *   GET  /api/projects/:id                      查询项目元数据
- *   POST /api/projects/:id/generate             Writer 写作 + LaTeX 编译（M2 同步形态，保留兼容）
- *   POST /api/projects/:id/workflows            创建异步 WorkflowRun {kind, prompt?} → {runId}
- *   GET  /api/runs?projectId=xxx                项目 run 列表
- *   GET  /api/runs/:runId                       run 状态 / 当前 stage / 待办 / 错误
- *   GET  /api/runs/:runId/events                SSE：Domain Event replay + 实时推送
- *   POST /api/runs/:runId/resume                提交 HITL 输入 {decision, payload?}
- *   POST /api/runs/:runId/cancel                取消 run
+ *   GET    /health                                  存活探针（含 Gateway 实时健康）
+ *   POST   /api/projects                            创建论文项目 {title, researchIdea?, …}
+ *   GET    /api/projects/:id                        查询项目元数据
+ *   PATCH  /api/projects/:id                        更新研究定位字段
+ *   POST   /api/projects/:id/generate               Writer 写作 + LaTeX 编译（M2 同步形态，保留兼容）
+ *   POST   /api/projects/:id/workflows              创建异步 WorkflowRun {kind, prompt?} → {runId}
+ *   GET    /api/runs?projectId=xxx                  项目 run 列表
+ *   GET    /api/runs/:runId                         run 状态 / 当前 stage / 待办 / 错误
+ *   GET    /api/runs/:runId/events                  SSE：Domain Event replay + 实时推送
+ *   POST   /api/runs/:runId/resume                  提交 HITL 输入 {decision, payload?}
+ *   POST   /api/runs/:runId/cancel                  取消 run
+ *   POST   /api/projects/:id/sources                上传文献（JSON + base64；sourceRole）
+ *   GET    /api/projects/:id/sources                文献列表
+ *   GET    /api/projects/:id/sources/:sid           文献详情
+ *   PATCH  /api/projects/:id/sources/:sid           更新 sourceRole / preferred / metadata
+ *   DELETE /api/projects/:id/sources/:sid           删除文献
+ *   POST   /api/projects/:id/sources/:sid/analyze   PDF 分析（builtin / multimodal）
+ *   GET    /api/projects/:id/evidence               Evidence 列表（支持查询参数过滤）
+ *   POST   /api/projects/:id/evidence               手工添加 Evidence
+ *   POST   /api/projects/:id/evidence/:eid/verify   更新 Evidence 核验状态
+ *   GET    /api/projects/:id/feasibility            最近一次可行性报告
+ *   POST   /api/projects/:id/citation-check         执行引用核验（静态 + metadata）
+ *   GET    /api/projects/:id/citation-report        最近一次引用核验报告
+ *   GET    /api/projects/:id/manuscript             大纲 + 章节状态
+ *   GET    /api/projects/:id/context                Derived Context（?rebuild=true 强制重建）
  */
 
 /** 默认请求体大小上限（字节） */
 const MAX_BODY_BYTES = 1024 * 1024;
+
+/** 文献上传（base64 内容）请求体上限：原始 20MB × base64 膨胀 ≈ 28MB */
+const MAX_UPLOAD_BODY_BYTES = 28 * 1024 * 1024;
 
 /** SSE 心跳间隔（毫秒） */
 const SSE_HEARTBEAT_MS = 15_000;
@@ -34,6 +55,8 @@ export interface BackendHttpServerOptions {
   projects: ProjectStore;
   generation: GenerationService;
   orchestrator: WorkflowOrchestrator;
+  /** M3.1 业务服务栈（文献 / Evidence / 引用 / 手稿） */
+  stack?: ServiceStack;
 }
 
 export function createBackendHttpServer({
@@ -41,9 +64,10 @@ export function createBackendHttpServer({
   projects,
   generation,
   orchestrator,
+  stack,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    handleRequest(req, res, { runtime, projects, generation, orchestrator }).catch(
+    handleRequest(req, res, { runtime, projects, generation, orchestrator, stack }).catch(
       (error: unknown) => {
         const businessError = toBusinessError(error);
         if (businessError.code === "INTERNAL_ERROR") {
@@ -67,6 +91,7 @@ interface Services {
   projects: ProjectStore;
   generation: GenerationService;
   orchestrator: WorkflowOrchestrator;
+  stack?: ServiceStack;
 }
 
 async function handleRequest(
@@ -112,22 +137,28 @@ async function handleRequest(
     if (title === undefined) {
       throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 title");
     }
-    const project = await services.projects.create(title);
+    const project = await services.projects.create(title, readResearchMeta(body));
     sendJson(res, 201, { project });
     return;
   }
 
-  // ---- /api/projects/:id ----
+  // ---- /api/projects/:id（GET / PATCH） ----
   const projectMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})$/.exec(pathname);
   if (projectMatch) {
     const projectId = projectMatch[1] ?? "";
-    if (method !== "GET") {
-      res.setHeader("Allow", "GET");
-      sendJson(res, 405, { status: "method_not_allowed", method });
+    if (method === "GET") {
+      const project = await services.projects.getRequired(projectId);
+      sendJson(res, 200, { project });
       return;
     }
-    const project = await services.projects.getRequired(projectId);
-    sendJson(res, 200, { project });
+    if (method === "PATCH") {
+      const body = await readJsonBody(req);
+      const project = await services.projects.updateMeta(projectId, readResearchMeta(body, true));
+      sendJson(res, 200, { project });
+      return;
+    }
+    res.setHeader("Allow", "GET, PATCH");
+    sendJson(res, 405, { status: "method_not_allowed", method });
     return;
   }
 
@@ -239,7 +270,338 @@ async function handleRequest(
     return;
   }
 
+  // ---- M3.1 资源路由（需要服务栈） ----
+  if (services.stack !== undefined) {
+    const handled = await handleProjectResourceRoutes(req, res, pathname, method, url, services.stack);
+    if (handled) {
+      return;
+    }
+  }
+
   sendJson(res, 404, { status: "not_found", path: pathname });
+}
+
+/** M3.1：/api/projects/:id/{sources|evidence|feasibility|citation-*,manuscript,context} */
+async function handleProjectResourceRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  method: string,
+  url: URL,
+  stack: ServiceStack,
+): Promise<boolean> {
+  const base = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/([a-z-]+)(\/.*)?$/.exec(pathname);
+  if (base === null) {
+    return false;
+  }
+  const projectId = base[1] ?? "";
+  const resource = base[2] ?? "";
+  const rest = base[3] ?? "";
+
+  // ---- sources ----
+  if (resource === "sources") {
+    if (rest === "") {
+      if (method === "POST") {
+        const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
+        const fileName = readStringField(body, "fileName");
+        const contentBase64 = readStringField(body, "contentBase64");
+        if (fileName === undefined || contentBase64 === undefined) {
+          throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
+        }
+        let content: Buffer;
+        try {
+          content = Buffer.from(contentBase64, "base64");
+        } catch {
+          throw new BusinessError("INVALID_REQUEST", "contentBase64 不是合法 base64");
+        }
+        if (content.byteLength === 0) {
+          throw new BusinessError("INVALID_REQUEST", "contentBase64 解码后为空");
+        }
+        const item = await stack.sources.add(projectId, {
+          fileName,
+          content,
+          ...(readSourceRole(body) !== undefined ? { sourceRole: readSourceRole(body) } : {}),
+          metadata: readSourceMetadata(body),
+          ...(body["preferred"] === true ? { preferred: true } : {}),
+        });
+        // PDF 自动跑确定性分析（失败不阻塞上传）
+        if (item.fileName.toLowerCase().endsWith(".pdf")) {
+          try {
+            const analysis = await stack.pdfAnalyzer.analyzeFile(
+              await stack.sources.filePath(projectId, item.sourceId),
+            );
+            const updated = await stack.sources.setAnalysis(projectId, item.sourceId, analysis);
+            sendJson(res, 201, { source: updated });
+            return true;
+          } catch {
+            sendJson(res, 201, { source: item });
+            return true;
+          }
+        }
+        sendJson(res, 201, { source: item });
+        return true;
+      }
+      if (method === "GET") {
+        const items = await stack.sources.list(projectId);
+        sendJson(res, 200, { sources: items });
+        return true;
+      }
+      res.setHeader("Allow", "GET, POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    const itemMatch = /^\/([A-Z]\d{2,})$/.exec(rest);
+    if (itemMatch) {
+      const sourceId = itemMatch[1] ?? "";
+      if (method === "GET") {
+        const item = await stack.sources.getRequired(projectId, sourceId);
+        sendJson(res, 200, { source: item });
+        return true;
+      }
+      if (method === "PATCH") {
+        const body = await readJsonBody(req);
+        const item = await stack.sources.update(projectId, sourceId, {
+          ...(readSourceRole(body) !== undefined ? { sourceRole: readSourceRole(body)! } : {}),
+          ...(typeof body["preferred"] === "boolean" ? { preferred: body["preferred"] } : {}),
+          metadata: readSourceMetadata(body),
+        });
+        sendJson(res, 200, { source: item });
+        return true;
+      }
+      if (method === "DELETE") {
+        await stack.sources.remove(projectId, sourceId);
+        sendJson(res, 200, { status: "deleted", sourceId });
+        return true;
+      }
+      res.setHeader("Allow", "GET, PATCH, DELETE");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    const analyzeMatch = /^\/([A-Z]\d{2,})\/analyze$/.exec(rest);
+    if (analyzeMatch && method === "POST") {
+      const sourceId = analyzeMatch[1] ?? "";
+      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const mode = body["mode"] === "multimodal" ? "multimodal" : "builtin";
+      const item = await stack.sources.getRequired(projectId, sourceId);
+      const path = await stack.sources.filePath(projectId, sourceId);
+      const analysis =
+        mode === "multimodal"
+          ? await new AgentMultimodalAnalyzer({
+              runtime: stack.runtime,
+              agentId: stack.agentIds.researcher,
+            }).analyzeReferencePaper({
+              projectId,
+              absolutePath: path,
+            })
+          : await stack.pdfAnalyzer.analyzeFile(path);
+      const updated = await stack.sources.setAnalysis(projectId, sourceId, analysis);
+      sendJson(res, 200, { source: updated });
+      return true;
+    }
+    return false;
+  }
+
+  // ---- evidence ----
+  if (resource === "evidence") {
+    if (rest === "") {
+      if (method === "GET") {
+        const filter = {
+          ...(url.searchParams.get("status") !== null
+            ? { status: url.searchParams.get("status") as never }
+            : {}),
+          ...(url.searchParams.get("sourceId") !== null
+            ? { sourceId: url.searchParams.get("sourceId") ?? undefined }
+            : {}),
+          ...(url.searchParams.get("section") !== null
+            ? { section: url.searchParams.get("section") ?? undefined }
+            : {}),
+        };
+        const records = Object.keys(filter).length
+          ? await stack.evidence.query(projectId, filter)
+          : await stack.evidence.list(projectId);
+        sendJson(res, 200, { evidence: records });
+        return true;
+      }
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        const record = await stack.evidence.append(
+          projectId,
+          {
+            claim: String(body["claim"] ?? ""),
+            ...(typeof body["summary"] === "string" ? { summary: body["summary"] } : {}),
+            ...(typeof body["quote"] === "string" ? { quote: body["quote"] } : {}),
+            ...(isRecord(body["source"]) ? { source: body["source"] as never } : {}),
+            ...(isRecord(body["location"]) ? { location: body["location"] as never } : {}),
+          },
+          "user",
+        );
+        sendJson(res, 201, { evidence: record });
+        return true;
+      }
+      res.setHeader("Allow", "GET, POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    const evidenceMatch = /^\/([A-Z]\d{2,})(\/verify)?$/.exec(rest);
+    if (evidenceMatch) {
+      const evidenceId = evidenceMatch[1] ?? "";
+      const isVerify = evidenceMatch[2] === "/verify";
+      if (!isVerify && method === "GET") {
+        const record = await stack.evidence.get(projectId, evidenceId);
+        if (record === null) {
+          throw new BusinessError("INVALID_REQUEST", `Evidence 不存在：${evidenceId}`);
+        }
+        sendJson(res, 200, { evidence: record });
+        return true;
+      }
+      if (isVerify && method === "POST") {
+        const body = await readJsonBody(req);
+        const status = readStringField(body, "verificationStatus");
+        if (status === undefined) {
+          throw new BusinessError("INVALID_REQUEST", "请求体必须包含 verificationStatus");
+        }
+        const record = await stack.evidence.updateVerification(projectId, evidenceId, {
+          verificationStatus: status as never,
+          ...(typeof body["verificationMethod"] === "string"
+            ? { verificationMethod: body["verificationMethod"] }
+            : {}),
+          ...(typeof body["verificationLevel"] === "string"
+            ? { verificationLevel: body["verificationLevel"] as never }
+            : {}),
+          ...(typeof body["supportStrength"] === "string"
+            ? { supportStrength: body["supportStrength"] as never }
+            : {}),
+        });
+        sendJson(res, 200, { evidence: record });
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  // ---- feasibility / citation / manuscript / context ----
+  if (rest !== "") {
+    return false;
+  }
+  if (resource === "feasibility" && method === "GET") {
+    const { readFeasibilityReport } = await import("./agents/FeasibilityService.js");
+    const report = await readFeasibilityReport(stack.projects, projectId);
+    if (report === null) {
+      sendJson(res, 200, { feasibility: null, note: "尚未评估（先运行 idea_to_paper workflow）" });
+      return true;
+    }
+    sendJson(res, 200, { feasibility: report });
+    return true;
+  }
+  if (resource === "citation-check" && method === "POST") {
+    const report = await stack.citation.verify(projectId);
+    sendJson(res, 200, { report });
+    return true;
+  }
+  if (resource === "citation-report" && method === "GET") {
+    const report = await stack.citation.latestReport(projectId);
+    sendJson(res, 200, { report });
+    return true;
+  }
+  if (resource === "manuscript" && method === "GET") {
+    const outline = await stack.manuscript.loadOutline(projectId);
+    const sections = await stack.manuscript.sectionStatuses(projectId);
+    sendJson(res, 200, { outline, sections });
+    return true;
+  }
+  if (resource === "context" && method === "GET") {
+    const rebuild = url.searchParams.get("rebuild") === "true";
+    if (rebuild) {
+      const evidenceStats = await stack.evidence.stats(projectId);
+      const content = await stack.manuscript.rebuildContext(projectId, { evidenceStats });
+      sendJson(res, 200, { context: content, rebuilt: true });
+      return true;
+    }
+    try {
+      const content = await readFile(stack.manuscript.contextPath(projectId), "utf8");
+      sendJson(res, 200, { context: content, rebuilt: false });
+    } catch {
+      const evidenceStats = await stack.evidence.stats(projectId);
+      const content = await stack.manuscript.rebuildContext(projectId, { evidenceStats });
+      sendJson(res, 200, { context: content, rebuilt: true });
+    }
+    return true;
+  }
+  return false;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 读取创建/更新项目时的研究定位字段 */
+function readResearchMeta(body: Record<string, unknown>, forPatch = false): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  const stringFields = [
+    "researchIdea",
+    "researchField",
+    "documentType",
+    "targetProfile",
+    "targetVenue",
+    "language",
+  ];
+  for (const field of stringFields) {
+    const value = body[field];
+    if (typeof value === "string" && value.trim() !== "") {
+      meta[field] = value;
+    } else if (forPatch && typeof value === "string") {
+      meta[field] = value; // PATCH 允许空串清除（ProjectStore 归一化为不设置）
+    }
+  }
+  const workflowKind = body["workflowKind"];
+  if (workflowKind === "idea_to_paper" || workflowKind === "existing_paper_improvement") {
+    meta["workflowKind"] = workflowKind;
+  } else if (workflowKind !== undefined) {
+    throw new BusinessError(
+      "INVALID_REQUEST",
+      "workflowKind 只能是 idea_to_paper 或 existing_paper_improvement",
+    );
+  }
+  return meta;
+}
+
+function readSourceRole(body: Record<string, unknown>): "evidence" | "reference" | "both" | undefined {
+  const value = body["sourceRole"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "evidence" || value === "reference" || value === "both") {
+    return value;
+  }
+  throw new BusinessError("INVALID_REQUEST", "sourceRole 只能是 evidence / reference / both");
+}
+
+function readSourceMetadata(body: Record<string, unknown>): {
+  title?: string;
+  authors?: string[];
+  year?: number;
+  doi?: string;
+  url?: string;
+  venue?: string;
+} {
+  const metadata: Record<string, unknown> = {};
+  for (const field of ["title", "doi", "url", "venue"] as const) {
+    const value = body[field];
+    if (typeof value === "string" && value.trim() !== "") {
+      metadata[field] = value;
+    }
+  }
+  if (Array.isArray(body["authors"]) && body["authors"].every((a) => typeof a === "string")) {
+    metadata["authors"] = body["authors"];
+  }
+  if (typeof body["year"] === "number" && Number.isInteger(body["year"])) {
+    metadata["year"] = body["year"];
+  }
+  return metadata;
 }
 
 // ---- SSE：WorkflowRun 进度（Domain Event replay + 实时推送） ----

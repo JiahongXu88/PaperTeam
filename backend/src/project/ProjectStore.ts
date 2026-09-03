@@ -18,6 +18,7 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 
 import {
+  BusinessError,
   InvalidProjectIdError,
   InvalidProjectTitleError,
   ProjectNotFoundError,
@@ -25,6 +26,37 @@ import {
 
 /** 项目状态（M2 只区分创建与一次生成的结果） */
 export type ProjectStatus = "created" | "generated" | "failed";
+
+/** 一级工作流类型（PRD §5.1） */
+export type ProjectWorkflowKind = "idea_to_paper" | "existing_paper_improvement";
+
+/**
+ * 目标定位（PRD §5.4）：三个维度分开表达，不使用单一 paperLevel。
+ * 取值为自由字符串（长度受限）；DOCUMENT_TYPES / TARGET_PROFILES 只是
+ * 前端与 Prompt 使用的建议值集合，不在存储层冻结 enum。
+ */
+export const DOCUMENT_TYPES: readonly string[] = [
+  "undergraduate_thesis",
+  "master_thesis",
+  "doctoral_thesis",
+  "journal_article",
+  "conference_paper",
+];
+
+export const TARGET_PROFILES: readonly string[] = [
+  "course_paper",
+  "undergraduate_thesis",
+  "excellent_undergraduate_thesis",
+  "master_thesis",
+  "doctoral_thesis",
+  "general_journal",
+  "core_journal",
+  "high_level_journal",
+  "general_conference",
+  "high_level_conference",
+  "top_conference",
+  "top_journal",
+];
 
 /** project.json 的结构（schemaVersion 用于后续兼容性判断） */
 export interface ProjectMetadata {
@@ -41,6 +73,26 @@ export interface ProjectMetadata {
    * Project 与 Runtime Session 是两个概念：这里是引用，不是合并。
    */
   runtimeSessionKey?: string;
+  /** 一级工作流类型（M3.1；缺省视为 idea_to_paper，向后兼容） */
+  workflowKind?: ProjectWorkflowKind;
+  /** 研究资料元数据（M3.1，PRD §5.2） */
+  researchIdea?: string;
+  researchField?: string;
+  documentType?: string;
+  targetProfile?: string;
+  targetVenue?: string;
+  language?: string;
+}
+
+/** 创建项目时可提供的研究定位字段（全部可选、经同一套校验） */
+export interface ProjectResearchMetaInput {
+  workflowKind?: ProjectWorkflowKind;
+  researchIdea?: string;
+  researchField?: string;
+  documentType?: string;
+  targetProfile?: string;
+  targetVenue?: string;
+  language?: string;
 }
 
 /** 合法 projectId：小写字母/数字开头，允许连字符，长度 1-64 */
@@ -87,9 +139,10 @@ export class ProjectStore {
     return this.root;
   }
 
-  /** 创建项目：生成目录结构与 project.json */
-  async create(title: string): Promise<ProjectMetadata> {
+  /** 创建项目：生成目录结构与 project.json（可选研究定位字段） */
+  async create(title: string, meta: ProjectResearchMetaInput = {}): Promise<ProjectMetadata> {
     const normalizedTitle = normalizeTitle(title);
+    const normalizedMeta = normalizeResearchMeta(meta);
 
     // 根目录首次使用时可能不存在
     await mkdir(this.root, { recursive: true });
@@ -131,6 +184,7 @@ export class ProjectStore {
       createdAt: timestamp,
       updatedAt: timestamp,
       status: "created",
+      ...normalizedMeta,
     };
     await this.writeMetadata(metadata);
     return metadata;
@@ -169,6 +223,23 @@ export class ProjectStore {
     const updated: ProjectMetadata = {
       ...metadata,
       status,
+      updatedAt: this.now().toISOString(),
+    };
+    await this.writeMetadata(updated);
+    return updated;
+  }
+
+  /** 更新研究定位字段（PATCH 语义：只改传入的字段；title 一并可改） */
+  async updateMeta(
+    projectId: string,
+    patch: ProjectResearchMetaInput & { title?: string },
+  ): Promise<ProjectMetadata> {
+    const metadata = await this.getRequired(projectId);
+    const normalized = normalizeResearchMeta(patch);
+    const updated: ProjectMetadata = {
+      ...metadata,
+      ...(patch.title !== undefined ? { title: normalizeTitle(patch.title) } : {}),
+      ...normalized,
       updatedAt: this.now().toISOString(),
     };
     await this.writeMetadata(updated);
@@ -297,7 +368,7 @@ function normalizeTitle(title: string): string {
   return trimmed;
 }
 
-/** 防御性解析 project.json（字段缺失/类型错误返回 null） */
+/** 防御性解析 project.json（字段缺失/类型错误返回 null；旧版文件缺 M3 字段可读） */
 function normalizeMetadata(value: unknown): ProjectMetadata | null {
   if (typeof value !== "object" || value === null) {
     return null;
@@ -322,6 +393,12 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   ) {
     return null;
   }
+  // M3.1 可选研究定位字段：只在合法时保留，非法值静默丢弃（防御性读取）
+  const research = readOptionalResearchFields(record);
+  const workflowKind =
+    record["workflowKind"] === "idea_to_paper" || record["workflowKind"] === "existing_paper_improvement"
+      ? (record["workflowKind"] as ProjectWorkflowKind)
+      : undefined;
   return {
     schemaVersion: 1,
     id,
@@ -330,8 +407,33 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
     updatedAt,
     status,
     ...(runtimeSessionKey !== undefined ? { runtimeSessionKey } : {}),
+    ...(workflowKind !== undefined ? { workflowKind } : {}),
+    ...research,
   };
 }
+
+/** 读取可选研究定位字段（类型与长度校验，非法返回不包含该字段） */
+function readOptionalResearchFields(record: Record<string, unknown>): Partial<ProjectMetadata> {
+  const out: Partial<ProjectMetadata> = {};
+  const stringFields = [
+    "researchIdea",
+    "researchField",
+    "documentType",
+    "targetProfile",
+    "targetVenue",
+    "language",
+  ] as const;
+  for (const field of stringFields) {
+    const raw = record[field];
+    if (typeof raw === "string" && raw.trim() !== "" && raw.length <= META_MAX_LENGTH) {
+      out[field] = raw.trim();
+    }
+  }
+  return out;
+}
+
+/** 研究定位字段长度上限 */
+const META_MAX_LENGTH = 4000;
 
 function isDirectoryExistsError(error: unknown): boolean {
   return (
@@ -339,4 +441,50 @@ function isDirectoryExistsError(error: unknown): boolean {
     error !== null &&
     (error as { code?: unknown }).code === "EEXIST"
   );
+}
+
+/** 校验并归一化研究定位输入（非法值直接抛业务错误） */
+function normalizeResearchMeta(meta: ProjectResearchMetaInput): Partial<ProjectMetadata> {
+  const out: Partial<ProjectMetadata> = {};
+  if (meta.workflowKind !== undefined) {
+    if (
+      meta.workflowKind !== "idea_to_paper" &&
+      meta.workflowKind !== "existing_paper_improvement"
+    ) {
+      throw new BusinessError("INVALID_REQUEST", `非法的 workflowKind："${meta.workflowKind}"`);
+    }
+    out.workflowKind = meta.workflowKind;
+  }
+  const entries: [keyof ProjectResearchMetaInput, number][] = [
+    ["researchIdea", 8000],
+    ["researchField", 200],
+    ["documentType", 100],
+    ["targetProfile", 100],
+    ["targetVenue", 300],
+    ["language", 50],
+  ];
+  for (const [field, maxLength] of entries) {
+    const raw = meta[field];
+    if (raw === undefined) {
+      continue;
+    }
+    if (typeof raw !== "string") {
+      throw new BusinessError("INVALID_REQUEST", `字段 ${field} 必须是字符串`);
+    }
+    const trimmed = raw.trim();
+    if (trimmed === "") {
+      continue; // 空串视为「不设置」
+    }
+    if (trimmed.length > maxLength) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `字段 ${field} 长度不能超过 ${maxLength} 个字符`,
+      );
+    }
+    if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(trimmed)) {
+      throw new BusinessError("INVALID_REQUEST", `字段 ${field} 不能包含控制字符`);
+    }
+    (out as Record<string, unknown>)[field] = trimmed;
+  }
+  return out;
 }

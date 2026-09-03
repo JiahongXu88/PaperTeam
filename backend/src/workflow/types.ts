@@ -166,8 +166,11 @@ export interface WorkflowDefinition {
   readonly stages: readonly StageSpec[];
   /** 确定性推进：基于 state 决定下一步 */
   plan(state: WorkflowState): PlanDecision;
-  /** 校验并应用 HITL 输入（非法 decision 抛 WorkflowInvalidStateError） */
-  onInput(state: WorkflowState, stageId: string, input: ResumeInput): Promise<void>;
+  /**
+   * 校验并应用 HITL 输入（非法 decision 抛 WorkflowInvalidStateError）。
+   * 返回 "cancel" 表示该输入要求取消整个 run（engine 负责终结）。
+   */
+  onInput(state: WorkflowState, stageId: string, input: ResumeInput): Promise<void | "cancel">;
 }
 
 // ---- Domain Event（与 Runtime Event 分层，ARCHITECTURE §2.3） ----

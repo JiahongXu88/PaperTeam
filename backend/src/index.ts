@@ -3,18 +3,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ConfigError, loadConfig } from "./config/config.js";
 import { applyEnvFile, findEnvFile } from "./config/envFile.js";
-import { GenerationService } from "./generation/GenerationService.js";
 import { BusinessError } from "./errors.js";
 import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
-import { WriterService } from "./writer/WriterService.js";
-import {
-  createIdeaToPaperDefinition,
-  type WorkflowServices,
-} from "./workflow/definitions.js";
+import { buildServiceStack } from "./serviceStack.js";
+import { createIdeaToPaperDefinition } from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "./workflow/runStore.js";
 
@@ -60,37 +56,34 @@ export async function startBackend(): Promise<void> {
   });
 
   const projects = new ProjectStore({ root: config.projectsRoot });
-  const writer = new WriterService({
+  const stack = buildServiceStack({
     runtime,
-    agentId: config.agents.writer,
-    log: (message) => console.log(message),
-  });
-  const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
-  const generation = new GenerationService({
     projects,
-    writer,
-    latex,
+    latex: new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs }),
+    agentIds: config.agents,
+    stageTimeoutMs: config.workflow.stageTimeoutMs,
+    stageMaxAttempts: config.workflow.stageMaxAttempts,
+    citation: {
+      metadataEnabled: config.citation.metadataEnabled,
+      maxMetadataLookups: config.citation.maxMetadataLookups,
+      metadataTimeoutMs: config.citation.metadataTimeoutMs,
+      ...(config.citation.contactEmail ? { contactEmail: config.citation.contactEmail } : {}),
+    },
     log: (message) => console.log(message),
   });
 
   const health = await runtime.healthCheck();
   reportGatewayHealth(health);
 
-  const workflowServices: WorkflowServices = {
-    projects,
-    generation,
-    stageTimeoutMs: config.workflow.stageTimeoutMs,
-    stageMaxAttempts: config.workflow.stageMaxAttempts,
-  };
   const orchestrator = new WorkflowOrchestrator({
     projects,
     runStore: new WorkflowRunStore(projects),
     definitionFactory: (kind) => {
       switch (kind) {
         case "idea_to_paper":
-          return createIdeaToPaperDefinition(workflowServices);
+          return createIdeaToPaperDefinition(stack.workflowServices);
         case "existing_paper_improvement":
-          // M3.2 提供；M3.0 阶段明确拒绝而不是假装可用
+          // M3.2 提供；M3.1 阶段明确拒绝而不是假装可用
           throw new BusinessError(
             "INVALID_REQUEST",
             "existing_paper_improvement workflow 将在 M3.2 提供（请使用 idea_to_paper）",
@@ -106,7 +99,12 @@ export async function startBackend(): Promise<void> {
     console.log(`  workflow:     恢复 ${recovered.length} 个中断的 WorkflowRun`);
   }
 
-  const server = createBackendHttpServer({ runtime, projects, generation, orchestrator });
+  const server = createBackendHttpServer({
+    runtime,
+    projects,
+    generation: stack.generation,
+    orchestrator,
+  });
   server.listen(config.port, () => {
     console.log(
       `PaperTeam Backend listening on http://localhost:${config.port}` +

@@ -419,6 +419,15 @@ describe("WorkflowOrchestrator：HITL awaiting_input 与 resume", () => {
     expect(finished.completedStages).toEqual(["hitl.gate", "after"]);
     expect(finished.inputs["hitl.gate"]?.decision).toBe("approve");
 
+    // 事件异步落盘：轮询等待 workflow.completed 事件出现（内存态先行可见）
+    await waitUntil(
+      async () =>
+        (await harness.orchestrator.readEvents(run.runId)).events.some(
+          (event) => event.type === "workflow.completed",
+        ),
+      5_000,
+      "workflow.completed 事件落盘",
+    );
     const { events } = await harness.orchestrator.readEvents(run.runId);
     const types = events.map((event) => event.type);
     expect(types).toContain("workflow.awaiting_input");

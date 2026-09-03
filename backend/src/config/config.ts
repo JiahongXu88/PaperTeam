@@ -42,6 +42,17 @@ export interface WorkflowConfig {
   stageMaxAttempts: number;
 }
 
+export interface CitationConfig {
+  /** metadata 核验开关（关闭时仅静态层） */
+  metadataEnabled: boolean;
+  /** 最多核验的 bib 条目数（rate-limit friendly） */
+  maxMetadataLookups: number;
+  /** 单请求超时（毫秒） */
+  metadataTimeoutMs: number;
+  /** CrossRef 礼仪邮箱（可选，不写入任何密钥） */
+  contactEmail?: string;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -52,6 +63,7 @@ export interface AppConfig {
   projectsRoot: string;
   latex: LatexConfig;
   workflow: WorkflowConfig;
+  citation: CitationConfig;
 }
 
 export interface AgentIds {
@@ -69,6 +81,8 @@ const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
 const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
+const DEFAULT_CITATION_MAX_LOOKUPS = 20;
+const DEFAULT_CITATION_TIMEOUT_MS = 8_000;
 
 const HEALTH_TIMEOUT_MIN_MS = 100;
 const HEALTH_TIMEOUT_MAX_MS = 60_000;
@@ -131,6 +145,22 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: STAGE_MAX_ATTEMPTS_MIN,
         max: STAGE_MAX_ATTEMPTS_MAX,
       }),
+    },
+    citation: {
+      metadataEnabled: readBool(source, "CITATION_METADATA_ENABLED", true),
+      maxMetadataLookups: readInt(source, "CITATION_MAX_METADATA_LOOKUPS", {
+        default: DEFAULT_CITATION_MAX_LOOKUPS,
+        min: 0,
+        max: 200,
+      }),
+      metadataTimeoutMs: readTimeoutMs(source, "CITATION_METADATA_TIMEOUT_MS", {
+        default: DEFAULT_CITATION_TIMEOUT_MS,
+        min: 1_000,
+        max: 60_000,
+      }),
+      ...(readOptionalValue(source, "CITATION_CONTACT_EMAIL") !== undefined
+        ? { contactEmail: readOptionalValue(source, "CITATION_CONTACT_EMAIL") }
+        : {}),
     },
   };
 }
@@ -252,6 +282,26 @@ function readInt(
     );
   }
   return value;
+}
+
+/** 布尔配置读取（true/false，缺省用 default） */
+function readBool(
+  source: Record<string, string | undefined>,
+  key: string,
+  defaultValue: boolean,
+): boolean {
+  const raw = source[key];
+  if (raw === undefined || raw.trim() === "") {
+    return defaultValue;
+  }
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === "true" || trimmed === "1" || trimmed === "yes") {
+    return true;
+  }
+  if (trimmed === "false" || trimmed === "0" || trimmed === "no") {
+    return false;
+  }
+  throw new ConfigError(`${key} 只能是 true/false，当前为 "${raw.trim()}"`);
 }
 
 function readProjectsRoot(source: Record<string, string | undefined>): string {
