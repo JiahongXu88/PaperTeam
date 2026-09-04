@@ -1,22 +1,21 @@
 #!/usr/bin/env node
 /**
- * PaperTeam dev 启动器（`npm run dev`，M3.8：Pi in-process Runtime）。
+ * PaperTeam dev 启动器（`npm run dev`，M4：Backend + React Workbench）。
  *
- * 启动模型（无 Gateway 子进程 / 端口 / 握手 / state 准备）：
+ * 启动模型（无 Gateway / supervisor / 进程管理器依赖）：
  *
- *   npm run dev → 本启动器 → backend/dist/index.js（Pi SDK in-process 嵌入）
+ *   npm run dev → 本启动器 → backend/dist/index.js（Pi SDK in-process）
+ *                            + frontend Vite Dev Server（proxy /api、/health）
  *
  * 职责：
  *   1. Node 版本检查（复用根 package.json 的 engines.node，单一事实源）
- *   2. backend 依赖缺失时执行 npm install
- *   3. 构建 backend（tsc，保证 dist 新鲜）
- *   4. 启动 Backend 并透传信号 / 退出码
+ *   2. backend / frontend 依赖缺失时执行 npm install
+ *   3. 构建 backend（tsc，保证 dist 新鲜）；frontend 由 Vite 按需编译
+ *   4. 同时启动两个子进程：日志加 [backend] / [vite] 前缀，任一退出则全部退出
  *
- * Backend 监听端口经 PAPERTEAM_PORT 配置（默认 3000）；
- * 模型凭据经 PAPERTEAM_PI_MODEL / PAPERTEAM_PI_API_KEY 或
- * <PAPERTEAM_RUNTIME_ROOT>/runtime/pi/agent/auth.json 配置（见 .env.example）。
- *
- * 不引入任何 monorepo / 进程管理工具（Nx、Turborepo、PM2 等）。
+ * 端口：Backend 默认 3000（PAPERTEAM_PORT 覆盖，透传给 Vite proxy）；
+ * Vite Dev Server 固定 5173（strictPort）。Ctrl+C 会终止两个子进程
+ * （Windows 下用 taskkill 结束进程树；POSIX 转发 SIGINT/SIGTERM）。
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -26,6 +25,7 @@ import { dirname, join } from "node:path";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const BACKEND_DIST_ENTRY = join(repoRoot, "backend", "dist", "index.js");
+const VITE_ENTRY = join(repoRoot, "frontend", "node_modules", "vite", "bin", "vite.js");
 
 /**
  * Node 版本检查的唯一事实源：根 package.json 的 engines.node。
@@ -111,8 +111,97 @@ function runSync(command, args, cwd) {
   }
 }
 
+/** 带前缀的子进程 stdout/stderr 转发（逐行加前缀；尾部不完整行缓存到下一段） */
+function pipeWithPrefix(child, prefix) {
+  for (const stream of [child.stdout, child.stderr]) {
+    if (stream === null) {
+      continue;
+    }
+    let buffer = "";
+    stream.setEncoding("utf8");
+    stream.on("data", (chunk) => {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim() !== "") {
+          process.stdout.write(`${prefix} ${line}\n`);
+        }
+      }
+    });
+    stream.on("end", () => {
+      if (buffer.trim() !== "") {
+        process.stdout.write(`${prefix} ${buffer}\n`);
+      }
+    });
+  }
+}
+
+/** 结束子进程树：Windows 用 taskkill /T（vite 还有 esbuild 子进程）；其余用 SIGTERM */
+function stopChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  if (process.platform === "win32" && child.pid !== undefined) {
+    spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+  } else {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // 已退出
+    }
+  }
+}
+
+/** 双子进程编排：任一退出（含 Ctrl+C）→ 停掉另一个 → 同步退出码退出 */
+function startChildren() {
+  const sharedEnv = { ...process.env };
+  const backend = spawn(process.execPath, [BACKEND_DIST_ENTRY], {
+    cwd: join(repoRoot, "backend"),
+    stdio: ["ignore", "pipe", "pipe"],
+    env: sharedEnv,
+  });
+  const vite = spawn(process.execPath, [VITE_ENTRY], {
+    cwd: join(repoRoot, "frontend"),
+    stdio: ["ignore", "pipe", "pipe"],
+    env: sharedEnv,
+  });
+  pipeWithPrefix(backend, "[backend]");
+  pipeWithPrefix(vite, "[vite]");
+  console.log(`[paperteam-dev] backend pid=${backend.pid ?? "?"}，vite pid=${vite.pid ?? "?"}（Ctrl+C 同时退出）`);
+
+  let shuttingDown = false;
+  const shutdown = (reason, code) => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log(`[paperteam-dev] ${reason}，正在退出…`);
+    stopChild(backend);
+    stopChild(vite);
+    // 给子进程一点时间落地清理，然后退出（避免僵尸 dev 进程）
+    setTimeout(() => process.exit(code), 500);
+  };
+
+  backend.on("exit", (code, signal) => {
+    console.log(`[backend] exited（code=${code ?? "?"} signal=${signal ?? "-"}）`);
+    shutdown("backend 退出", code ?? 1);
+  });
+  vite.on("exit", (code, signal) => {
+    console.log(`[vite] exited（code=${code ?? "?"} signal=${signal ?? "-"}）`);
+    shutdown("vite 退出", code ?? 1);
+  });
+
+  if (process.platform !== "win32") {
+    // POSIX：转发信号。Windows：Ctrl+C 事件会送达共享控制台的子进程，
+    // 子进程退出再触发上面的 shutdown 兜底。
+    process.on("SIGINT", () => shutdown("SIGINT", 0));
+    process.on("SIGTERM", () => shutdown("SIGTERM", 0));
+  }
+}
+
 function main() {
-  console.log(`PaperTeam dev（node ${process.versions.node}，Pi in-process Runtime）`);
+  console.log(`PaperTeam dev（node ${process.versions.node}，Pi in-process Runtime + React Workbench）`);
 
   const enginesNode = readEnginesNode();
   if (!isSupportedNode(enginesNode)) {
@@ -123,41 +212,20 @@ function main() {
     process.exit(1);
   }
 
-  // 依赖检查（backend：业务 + Pi SDK 依赖）
+  // 依赖检查（backend：业务 + Pi SDK；frontend：React/Vite 工具链）
   if (!existsSync(join(repoRoot, "backend", "node_modules", "@earendil-works"))) {
     console.log("[paperteam-dev] backend 依赖缺失，执行 npm install ...");
     runSync("npm", ["install"], join(repoRoot, "backend"));
   }
+  if (!existsSync(join(repoRoot, "frontend", "node_modules", "vite"))) {
+    console.log("[paperteam-dev] frontend 依赖缺失，执行 npm install ...");
+    runSync("npm", ["install"], join(repoRoot, "frontend"));
+  }
 
-  // 构建（保证 dist 与 src 一致；tsc 增量很快）
+  // 构建（保证 dist 与 src 一致；tsc 增量很快；frontend 交给 Vite 按需编译）
   runSync("npm", ["run", "build"], join(repoRoot, "backend"));
 
-  // 启动 Backend（Pi SDK in-process；stdio 直通）
-  const child = spawn(process.execPath, [BACKEND_DIST_ENTRY], {
-    cwd: join(repoRoot, "backend"),
-    stdio: "inherit",
-    env: { ...process.env },
-  });
-  if (process.platform !== "win32") {
-    // POSIX：转发信号让 Backend 优雅关闭。
-    // Windows 不转发：控制台 Ctrl+C 事件原生送达同一控制台的 Backend 进程
-    // （其自身运行优雅清理）；此时 child.kill() 是 TerminateProcess，
-    // 反而会在优雅关闭完成前硬杀 Backend。
-    const forward = (signal) => {
-      if (child.pid !== undefined) {
-        try {
-          child.kill(signal);
-        } catch {
-          // 已退出
-        }
-      }
-    };
-    process.on("SIGINT", () => forward("SIGINT"));
-    process.on("SIGTERM", () => forward("SIGTERM"));
-  }
-  child.on("exit", (code, signal) => {
-    process.exit(code ?? (signal ? 1 : 0));
-  });
+  startChildren();
 }
 
 main();

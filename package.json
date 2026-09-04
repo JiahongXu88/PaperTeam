@@ -2,16 +2,16 @@
   "name": "paperteam",
   "version": "0.1.0",
   "private": true,
-  "description": "PaperTeam — AI Multi-Agent Academic Research & Paper Workbench（根开发入口：Backend + Pi Runtime in-process）",
+  "description": "PaperTeam — AI Multi-Agent Academic Research & Paper Workbench（根开发入口：Backend + Pi Runtime + React Workbench）",
   "type": "module",
   "engines": {
     "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
   },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "install:all": "npm --prefix backend install",
-    "build": "npm --prefix backend run build",
-    "typecheck": "npm --prefix backend run typecheck",
-    "test": "npm --prefix backend test"
+    "install:all": "npm --prefix backend install && npm --prefix frontend install",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "test": "npm --prefix backend test && npm --prefix frontend test"
   }
 }
