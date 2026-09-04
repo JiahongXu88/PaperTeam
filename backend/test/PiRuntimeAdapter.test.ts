@@ -1,0 +1,768 @@
+/**
+ * PiRuntimeAdapter 专项测试（M3.7）。
+ *
+ * 分层（对应任务书 §23）：
+ * - Level 1 纯单元：注入 fake AgentSession + stub ModelRuntime（不跑 Pi SDK 循环）
+ * - Level 2 SDK 集成：真实 @earendil-works/pi-coding-agent 0.84.4 +
+ *   官方 fauxProvider（pi-ai 公开导出）——真实 Agent loop / 工具注册表 /
+ *   事件链 / abort 语义，仅模型流为脚本化假流
+ * - Level 3 真实 provider LLM：本机无凭据，NOT VERIFIED（见 M3.7 报告）
+ */
+
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import type {
+  AgentSession,
+  AgentSessionEvent,
+  CreateAgentSessionOptions,
+} from "@earendil-works/pi-coding-agent";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
+
+import { PiRuntimeAdapter } from "../src/runtime/PiRuntimeAdapter.js";
+import type { PiRuntimeOptions } from "../src/runtime/PiRuntimeAdapter.js";
+import { resolveRoleConfig } from "../src/runtime/pi/roleConfig.js";
+import { RuntimeCapabilityError } from "../src/runtime/types.js";
+import {
+  AgentRunFailedError,
+  AgentRuntimeUnavailableError,
+  AgentTimeoutError,
+} from "../src/errors.js";
+
+type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
+
+// ---------------------------------------------------------------------------
+// Level 1：fake AgentSession（实现 adapter 实际使用的最小表面）
+// ---------------------------------------------------------------------------
+
+type FakeBehavior =
+  | { kind: "complete"; output: string }
+  | { kind: "errorStop"; message: string }
+  | { kind: "preflightReject"; message: string }
+  | { kind: "hangUntilAbort" };
+
+interface FakeSessionState {
+  prompts: string[];
+  maxConcurrent: number;
+  aborted: number;
+  disposed: boolean;
+  /** prompt 是否挂起（hangUntilAbort 未被 abort 前） */
+  pending: boolean;
+}
+
+class FakeAgentSession {
+  readonly prompts: string[] = [];
+  maxConcurrent = 0;
+  abortedCount = 0;
+  disposed = false;
+  pending = false;
+  /** 可变行为（测试中途 setBehavior 会同步更新已建会话） */
+  behavior: FakeBehavior;
+  private active = 0;
+  private readonly listeners = new Set<(event: AgentSessionEvent) => void>();
+  private readonly messages: { role: string; content: { type: string; text?: string }[]; stopReason?: string; errorMessage?: string }[] = [];
+  private releasePending: (() => void) | undefined;
+
+  constructor(behavior: FakeBehavior) {
+    this.behavior = behavior;
+  }
+
+  get agent(): { state: { messages: unknown[] } } {
+    return { state: { messages: this.messages } };
+  }
+
+  subscribe(listener: (event: AgentSessionEvent) => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private emit(event: AgentSessionEvent): void {
+    for (const listener of this.listeners) {
+      listener(event);
+    }
+  }
+
+  async prompt(text: string): Promise<void> {
+    this.prompts.push(text);
+    this.active += 1;
+    this.maxConcurrent = Math.max(this.maxConcurrent, this.active);
+    const behavior = this.behavior;
+    try {
+      if (behavior.kind === "preflightReject") {
+        throw new Error(behavior.message);
+      }
+      this.emit({ type: "agent_start" } as AgentSessionEvent);
+      if (behavior.kind === "hangUntilAbort") {
+        this.pending = true;
+        await new Promise<void>((resolve) => {
+          this.releasePending = resolve;
+        });
+        this.pending = false;
+        return;
+      }
+      const isError = behavior.kind === "errorStop";
+      const text2 = isError ? "" : behavior.kind === "complete" ? behavior.output : "";
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: text2 }],
+        stopReason: isError ? "error" : "stop",
+        ...(isError ? { errorMessage: behavior.message } : {}),
+      };
+      this.emit({
+        type: "message_update",
+        message,
+        assistantMessageEvent: { type: "text_delta", delta: text2.slice(0, 10) },
+      } as unknown as AgentSessionEvent);
+      this.messages.push(message);
+      this.emit({ type: "agent_end", messages: [message], willRetry: false } as AgentSessionEvent);
+      this.emit({ type: "agent_settled" } as AgentSessionEvent);
+    } finally {
+      this.active -= 1;
+    }
+  }
+
+  async abort(): Promise<void> {
+    this.abortedCount += 1;
+    if (this.releasePending !== undefined) {
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "aborted",
+        errorMessage: "Request was aborted",
+      };
+      this.messages.push(message);
+      this.emit({ type: "agent_end", messages: [message], willRetry: false } as AgentSessionEvent);
+      this.emit({ type: "agent_settled" } as AgentSessionEvent);
+      const release = this.releasePending;
+      this.releasePending = undefined;
+      release();
+    }
+  }
+
+  async waitForIdle(): Promise<void> {}
+
+  dispose(): void {
+    this.disposed = true;
+    this.listeners.clear();
+  }
+
+  getLastAssistantText(): string | undefined {
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message === undefined) {
+        continue;
+      }
+      if (message.role === "assistant") {
+        const text = message.content.find((block) => block.type === "text")?.text;
+        return text !== undefined && text !== "" ? text : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  state(): FakeSessionState {
+    return {
+      prompts: [...this.prompts],
+      maxConcurrent: this.maxConcurrent,
+      aborted: this.abortedCount,
+      disposed: this.disposed,
+      pending: this.pending,
+    };
+  }
+}
+
+/** Level 1 会话工厂：记录创建次数与参数，脚本化行为 */
+function createFakeFactory() {
+  const created: {
+    session: FakeAgentSession;
+    params: { cwd: string; role: string };
+  }[] = [];
+  let behavior: FakeBehavior = { kind: "complete", output: "ok" };
+  return {
+    get created() {
+      return created;
+    },
+    setBehavior(next: FakeBehavior) {
+      behavior = next;
+      // 已建会话同步更新（会话被 adapter 复用，行为必须可变）
+      for (const { session } of created) {
+        session.behavior = next;
+      }
+    },
+    factory: async (params: { cwd: string; role: { role: string } }) => {
+      const session = new FakeAgentSession(behavior);
+      created.push({ session, params: { cwd: params.cwd, role: params.role.role } });
+      return session as unknown as AgentSession;
+    },
+  };
+}
+
+/** Level 1 的 stub ModelRuntime（adapter 只用到下列方法） */
+function stubModelRuntime(): PiRuntimeOptions["modelRuntime"] {
+  return {
+    getModel: () => ({ provider: "fake", id: "fake-1" }) as PiModel,
+    hasConfiguredAuth: () => true,
+    getError: () => undefined,
+  } as unknown as PiRuntimeOptions["modelRuntime"];
+}
+
+// ---------------------------------------------------------------------------
+// 公共装置
+// ---------------------------------------------------------------------------
+
+const tempDirs: string[] = [];
+
+async function makeTempDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+async function makeLevel1Adapter(
+  factory: ReturnType<typeof createFakeFactory>,
+  extra: Partial<PiRuntimeOptions> = {},
+): Promise<PiRuntimeAdapter> {
+  const agentDir = await makeTempDir("pi-l1-agent-");
+  const workspaceRoot = await makeTempDir("pi-l1-ws-");
+  return new PiRuntimeAdapter({
+    agentDir,
+    workspaceRoot,
+    modelRuntime: stubModelRuntime(),
+    model: { provider: "fake", id: "fake-1" } as PiModel,
+    createSession: factory.factory as NonNullable<PiRuntimeOptions["createSession"]>,
+    log: () => {},
+    ...extra,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Level 1：纯单元
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（Level 1：fake session）", () => {
+  it("provider 标识为 pi；未初始化即 healthCheck 会触发懒初始化并保持 healthy", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    expect(adapter.provider).toBe("pi");
+    const health = await adapter.healthCheck();
+    expect(health.ok).toBe(true);
+    expect(health.provider).toBe("pi");
+    expect(health.status).toBe("healthy");
+    expect(health.latencyMs).not.toBeNull();
+  });
+
+  it("runAgent 成功：completed + 输出 + metadata.sessionKey（projectId × contextScope 派生）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "LaTeX 草稿" });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "写引言",
+      projectId: "proj-a",
+      contextScope: "writing/outline",
+    });
+    expect(task.status).toBe("completed");
+    expect(task.output).toBe("LaTeX 草稿");
+    expect(task.metadata?.["sessionKey"]).toBe("agent:writer:paperteam-proj-a--writing/outline");
+    expect(task.metadata?.["role"]).toBe("writer");
+    expect(factory.created).toHaveLength(1);
+    expect(factory.created[0]?.params.role).toBe("writer");
+    expect(factory.created[0]?.params.cwd.endsWith(join("proj-a"))).toBe(true);
+  });
+
+  it("runAgent 失败（transcript stopReason=error）：返回 failed 任务，不抛异常", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "errorStop", message: "provider 502" });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({
+      agentId: "reviewer",
+      task: "review",
+      projectId: "proj-a",
+      contextScope: "review/fact",
+    });
+    expect(task.status).toBe("failed");
+    expect(task.error).toContain("provider 502");
+  });
+
+  it("runAgent 前置拒绝（prompt throw）：结构化 failed 任务", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "preflightReject", message: "No API key for anthropic/x" });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "main", task: "hi", projectId: "p" });
+    expect(task.status).toBe("failed");
+    expect(task.error).toContain("No API key");
+  });
+
+  it("空任务内容与关闭后调用分别抛 AgentRunFailedError / AgentRuntimeUnavailableError", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    await expect(adapter.runAgent({ agentId: "main", task: "  " })).rejects.toBeInstanceOf(
+      AgentRunFailedError,
+    );
+    await adapter.close();
+    await expect(adapter.runAgent({ agentId: "main", task: "x" })).rejects.toBeInstanceOf(
+      AgentRuntimeUnavailableError,
+    );
+    expect((await adapter.healthCheck()).ok).toBe(false);
+  });
+
+  it("模型未配置：healthCheck 仍 healthy，runAgent 结构化 failed（model_not_configured 口径）", async () => {
+    const agentDir = await makeTempDir("pi-l1-nomodel-");
+    const workspaceRoot = await makeTempDir("pi-l1-ws-");
+    const adapter = new PiRuntimeAdapter({ agentDir, workspaceRoot, log: () => {} });
+    const health = await adapter.healthCheck();
+    expect(health.ok).toBe(true);
+    expect(health.detail).toContain("PAPERTEAM_PI_MODEL");
+    const task = await adapter.runAgent({ agentId: "main", task: "hi", projectId: "p" });
+    expect(task.status).toBe("failed");
+    expect(task.error).toContain("Pi 模型未配置");
+    const snapshot = await adapter.modelStatusSnapshot();
+    expect(snapshot.phase).toBe("not_configured");
+  });
+
+  it("SDK 初始化失败（agentDir 是文件）：runAgent 抛 AgentRuntimeUnavailableError，healthCheck unhealthy", async () => {
+    const fileAsDir = join(await makeTempDir("pi-l1-init-"), "occupier.txt");
+    await writeFile(fileAsDir, "x", "utf8");
+    const workspaceRoot = await makeTempDir("pi-l1-ws-");
+    const adapter = new PiRuntimeAdapter({ agentDir: fileAsDir, workspaceRoot, log: () => {} });
+    const health = await adapter.healthCheck();
+    expect(health.ok).toBe(false);
+    expect(health.status).toBe("unhealthy");
+    await expect(adapter.runAgent({ agentId: "main", task: "hi" })).rejects.toBeInstanceOf(
+      AgentRuntimeUnavailableError,
+    );
+  });
+
+  it("timeout：runAgent 抛 AgentTimeoutError，底层 abort 被调用", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    await expect(
+      adapter.runAgent({
+        agentId: "writer",
+        task: "慢任务",
+        projectId: "p",
+        timeoutMs: 150,
+      }),
+    ).rejects.toBeInstanceOf(AgentTimeoutError);
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+  });
+
+  it("cancelTask：在途任务被取消（session.abort → cancelled 任务），结束后的任务报错", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const running = adapter.runAgent({ agentId: "reviewer", task: "review", projectId: "p" });
+    // v1 契约下 mid-run 拿 taskId 的 seam：诊断口 listActiveTasks
+    let taskId: string | undefined;
+    for (let attempt = 0; attempt < 50 && taskId === undefined; attempt += 1) {
+      const active = adapter.listActiveTasks();
+      taskId = active[0]?.taskId;
+      if (taskId === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    expect(taskId).toBeDefined();
+    expect(factory.created[0]?.session.pending).toBe(true);
+    await adapter.cancelTask(taskId!);
+    const task = await running;
+    expect(task.status).toBe("cancelled");
+    // 已取消的任务再次 cancel：幂等 no-op（终态保持 cancelled）
+    await adapter.cancelTask(taskId!);
+    // 已成功完结的任务 cancel：报错
+    factory.setBehavior({ kind: "complete", output: "done" });
+    const finished = await adapter.runAgent({ agentId: "reviewer", task: "r2", projectId: "p" });
+    expect(finished.status).toBe("completed");
+    await expect(adapter.cancelTask(finished.taskId)).rejects.toBeInstanceOf(AgentRunFailedError);
+  });
+
+  it("事件订阅：streamEvents 回放该任务事件（顺序 + 归属）；未知任务报错", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "hello world" });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "main", task: "hi", projectId: "p" });
+    const types: string[] = [];
+    await adapter.streamEvents(task.taskId, (event) => {
+      types.push(event.type);
+      expect(event.taskId).toBe(task.taskId);
+      expect(typeof event.ts).toBe("string");
+    });
+    expect(types[0]).toBe("agent_start");
+    expect(types).toContain("message_update");
+    expect(types).toContain("agent_end");
+    expect(types.indexOf("agent_start")).toBeLessThan(types.indexOf("agent_end"));
+    await expect(adapter.streamEvents("pi-nonexistent", () => {})).rejects.toBeInstanceOf(
+      AgentRunFailedError,
+    );
+  });
+
+  it("session 复用：同一 sessionKey 复用同一 AgentSession（上下文连续性）", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    await adapter.runAgent({ agentId: "writer", task: "第一轮", projectId: "p", contextScope: "writing/sections" });
+    await adapter.runAgent({ agentId: "writer", task: "第二轮", projectId: "p", contextScope: "writing/sections" });
+    expect(factory.created).toHaveLength(1);
+    expect(factory.created[0]?.session.prompts).toEqual(["第一轮", "第二轮"]);
+    // 显式 sessionKey 透传（GenerationService 兼容）同样复用并回写 metadata
+    const explicit = await adapter.runAgent({
+      agentId: "writer",
+      task: "第三轮",
+      sessionKey: "agent:writer:paperteam-legacy",
+    });
+    expect(explicit.metadata?.["sessionKey"]).toBe("agent:writer:paperteam-legacy");
+    expect(factory.created).toHaveLength(2);
+  });
+
+  it("隔离：不同 project / 不同 contextScope 各自独立会话（含 reviewer 三 scope）", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    await adapter.runAgent({ agentId: "reviewer", task: "a", projectId: "proj-a", contextScope: "review/fact" });
+    await adapter.runAgent({ agentId: "reviewer", task: "b", projectId: "proj-a", contextScope: "review/academic" });
+    await adapter.runAgent({ agentId: "reviewer", task: "c", projectId: "proj-a", contextScope: "review/style" });
+    await adapter.runAgent({ agentId: "reviewer", task: "d", projectId: "proj-b", contextScope: "review/fact" });
+    expect(factory.created).toHaveLength(4);
+    const cwds = new Set(factory.created.map(({ params }) => params.cwd));
+    expect(cwds.size).toBe(2); // proj-a × 1 + proj-b × 1
+    expect(factory.created[3]?.params.cwd.endsWith(join("proj-b"))).toBe(true);
+  });
+
+  it("per-session 串行：同一会话的两次 runAgent 不并发", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    await Promise.all([
+      adapter.runAgent({ agentId: "w", task: "1", projectId: "p", contextScope: "writing/x" }),
+      adapter.runAgent({ agentId: "w", task: "2", projectId: "p", contextScope: "writing/x" }),
+    ]);
+    expect(factory.created).toHaveLength(1);
+    expect(factory.created[0]?.session.maxConcurrent).toBe(1);
+    expect(factory.created[0]?.session.prompts).toHaveLength(2);
+  });
+
+  it("非法 projectId（路径越界）被拒绝", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    await expect(
+      adapter.runAgent({ agentId: "w", task: "x", projectId: "../escape" }),
+    ).rejects.toBeInstanceOf(AgentRunFailedError);
+  });
+
+  it("getTask：完结任务可查（含 cancelled）；未知任务报错；sendMessage 为 Capability 占位", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "m", task: "hi", projectId: "p" });
+    const fetched = await adapter.getTask(task.taskId);
+    expect(fetched.status).toBe("completed");
+    expect(fetched.metadata?.["sessionKey"]).toBe(task.metadata?.["sessionKey"]);
+    await expect(adapter.getTask("pi-nope")).rejects.toBeInstanceOf(AgentRunFailedError);
+    expect(() => adapter.sendMessage("s", "m")).toThrow(RuntimeCapabilityError);
+  });
+
+  it("close/dispose：全部会话 dispose；在途任务被 abort 收敛为 cancelled", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const running = adapter.runAgent({ agentId: "m", task: "慢", projectId: "p" });
+    for (let attempt = 0; attempt < 50 && adapter.listActiveTasks().length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await adapter.close();
+    const task = await running;
+    expect(task.status).toBe("cancelled");
+    expect(factory.created[0]?.session.disposed).toBe(true);
+    expect(adapter.listActiveTasks()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 角色映射（纯函数）
+// ---------------------------------------------------------------------------
+
+describe("Pi role 映射", () => {
+  it("contextScope 前缀 → 角色（research/writing/review/default）", () => {
+    expect(resolveRoleConfig("research").role).toBe("researcher");
+    expect(resolveRoleConfig("research/feasibility").role).toBe("researcher");
+    expect(resolveRoleConfig("writing/sections").role).toBe("writer");
+    expect(resolveRoleConfig("review/fact").role).toBe("reviewer");
+    expect(resolveRoleConfig(undefined).role).toBe("default");
+    expect(resolveRoleConfig("other").role).toBe("default");
+  });
+
+  it("工具白名单按最小必要：reviewer/researcher 只读；writer 可写；无人持有 shell", () => {
+    const configs = [
+      resolveRoleConfig("research"),
+      resolveRoleConfig("writing/x"),
+      resolveRoleConfig("review/fact"),
+      resolveRoleConfig(undefined),
+    ];
+    for (const config of configs) {
+      expect(config.tools).not.toContain("bash");
+      expect(config.tools).not.toContain("powershell");
+    }
+    expect(resolveRoleConfig("writing/x").tools).toContain("write");
+    expect(resolveRoleConfig("review/fact").tools).not.toContain("write");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Level 2：真实 Pi SDK + 官方 faux provider
+// ---------------------------------------------------------------------------
+
+const FAUX_PROVIDER_ID = "paperteam-faux";
+
+async function makeLevel2Adapter(options: {
+  faux?: Parameters<typeof fauxProvider>[0];
+  adapterExtra?: Partial<PiRuntimeOptions>;
+  withModelSpec?: boolean;
+} = {}) {
+  const agentDir = await makeTempDir("pi-l2-agent-");
+  const workspaceRoot = await makeTempDir("pi-l2-ws-");
+  const faux = fauxProvider({
+    provider: FAUX_PROVIDER_ID,
+    models: [{ id: "fx-1", reasoning: false }],
+    ...(options.faux ?? {}),
+  });
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(agentDir, "auth.json"),
+    modelsPath: join(agentDir, "models.json"),
+  });
+  modelRuntime.registerNativeProvider(faux.provider);
+  const adapterOptions: PiRuntimeOptions = {
+    agentDir,
+    workspaceRoot,
+    modelRuntime,
+    ...(options.withModelSpec ? { modelSpec: `${FAUX_PROVIDER_ID}/fx-1` } : {}),
+    ...(!options.withModelSpec
+      ? { model: modelRuntime.getModel(FAUX_PROVIDER_ID, "fx-1") }
+      : {}),
+    log: () => {},
+    ...(options.adapterExtra ?? {}),
+  };
+  const adapter = new PiRuntimeAdapter(adapterOptions);
+  return { adapter, faux, agentDir, workspaceRoot, modelRuntime };
+}
+
+describe("PiRuntimeAdapter（Level 2：真实 SDK + faux model）", () => {
+  it("初始化 / 健康 / 单轮 runAgent：真实 Agent loop + 假模型流", async () => {
+    const { adapter, faux } = await makeLevel2Adapter();
+    faux.setResponses([fauxAssistantMessage([fauxText("这是真实 Pi Agent Loop 的输出。")])]);
+
+    const t0 = Date.now();
+    const health = await adapter.healthCheck();
+    const initMs = Date.now() - t0;
+    expect(health.ok).toBe(true);
+    expect(health.detail).toContain(`${FAUX_PROVIDER_ID}/fx-1`);
+    expect(initMs).toBeLessThan(10_000); // 本地 Runtime overhead（记录进报告）
+
+    const snapshot = await adapter.modelStatusSnapshot();
+    expect(snapshot.phase).toBe("configured");
+    expect(snapshot.providers).toEqual([FAUX_PROVIDER_ID]);
+
+    const t1 = Date.now();
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "写一段",
+      projectId: "proj-x",
+      contextScope: "writing/outline",
+    });
+    const runMs = Date.now() - t1;
+    expect(task.status).toBe("completed");
+    expect(task.output).toContain("真实 Pi Agent Loop");
+    expect(task.metadata?.["model"]).toBe(`${FAUX_PROVIDER_ID}/fx-1`);
+    expect(runMs).toBeLessThan(15_000);
+    expect(faux.state.callCount).toBe(1);
+    await adapter.close();
+  }, 30_000);
+
+  it("systemPromptOverride 生效：role 提示词真实到达 LLM 请求上下文", async () => {
+    const capturedSystems: (string | undefined)[] = [];
+    const { adapter, faux } = await makeLevel2Adapter();
+    faux.setResponses([
+      (context) => {
+        capturedSystems.push(context.systemPrompt);
+        return fauxAssistantMessage([fauxText("ok")]);
+      },
+      (context) => {
+        capturedSystems.push(context.systemPrompt);
+        return fauxAssistantMessage([fauxText("ok")]);
+      },
+    ]);
+    await adapter.runAgent({
+      agentId: "reviewer",
+      task: "review",
+      projectId: "p",
+      contextScope: "review/fact",
+    });
+    await adapter.runAgent({
+      agentId: "researcher",
+      task: "research",
+      projectId: "p",
+      contextScope: "research",
+    });
+    expect(capturedSystems).toHaveLength(2);
+    expect(capturedSystems[0]).toContain("审稿");
+    expect(capturedSystems[1]).toContain("调研");
+    await adapter.close();
+  }, 30_000);
+
+  it("事件流：真实 SDK 事件链顺序合理、任务归属一致、message_update 有增量", async () => {
+    const { adapter, faux } = await makeLevel2Adapter();
+    faux.setResponses([fauxAssistantMessage([fauxText("流水线事件测试输出")])]);
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "写",
+      projectId: "p",
+      contextScope: "writing/sections",
+    });
+    const types: string[] = [];
+    await adapter.streamEvents(task.taskId, (event) => {
+      types.push(event.type);
+      expect(event.taskId).toBe(task.taskId);
+    });
+    expect(types[0]).toBe("agent_start");
+    expect(types[types.length - 1]).toBe("agent_settled");
+    expect(types).toContain("message_update");
+    expect(types).toContain("agent_end");
+    const updates = types.filter((type) => type === "message_update");
+    expect(updates.length).toBeGreaterThan(0);
+    expect(types.indexOf("agent_end")).toBeLessThan(types.indexOf("agent_settled"));
+    await adapter.close();
+  }, 30_000);
+
+  it("Reviewer 三路并发：三个独立 AgentSession 并行执行，输出不串、会话不串", async () => {
+    const { adapter, faux } = await makeLevel2Adapter();
+    // 响应工厂按用户消息内容分发（消除调用顺序不确定性）
+    const modeResponse = (mode: string) => (_context: unknown) =>
+      fauxAssistantMessage([fauxText(`{"summary":"${mode} done","issues":[]}`)]);
+    faux.setResponses(
+      ["fact", "academic", "style", "fact", "academic", "style"].map((mode) => modeResponse(mode)),
+    );
+    const t0 = Date.now();
+    const results = await Promise.all(
+      (["fact", "academic", "style"] as const).map((mode) =>
+        adapter.runAgent({
+          agentId: "reviewer",
+          task: `请执行 review ${mode}`,
+          projectId: "proj-r3",
+          contextScope: `review/${mode}`,
+        }),
+      ),
+    );
+    const fanoutMs = Date.now() - t0;
+    expect(results.every((result) => result.status === "completed")).toBe(true);
+    const outputs = results.map((result) => result.output ?? "");
+    expect(outputs.some((output) => output.includes("fact done"))).toBe(true);
+    expect(outputs.some((output) => output.includes("academic done"))).toBe(true);
+    expect(outputs.some((output) => output.includes("style done"))).toBe(true);
+    const keys = results.map((result) => String(result.metadata?.["sessionKey"]));
+    expect(new Set(keys).size).toBe(3);
+    for (const key of keys) {
+      expect(key.startsWith("agent:reviewer:paperteam-proj-r3--review/")).toBe(true);
+    }
+    expect(fanoutMs).toBeLessThan(30_000);
+    await adapter.close();
+  }, 60_000);
+
+  it("abort（真实 SDK）：LLM 流式生成中取消 → cancelled；会话仍可继续使用", async () => {
+    // 低速率流式输出（长文本 + tokensPerSecond 限速）保证取消窗口
+    const longText = "字".repeat(600);
+    const { adapter, faux } = await makeLevel2Adapter({
+      faux: { tokensPerSecond: 60, tokenSize: { min: 2, max: 4 } },
+    });
+    faux.setResponses([fauxAssistantMessage([fauxText(longText)])]);
+    const running = adapter.runAgent({
+      agentId: "writer",
+      task: "慢慢写",
+      projectId: "p",
+      contextScope: "writing/outline",
+    });
+    let taskId: string | undefined;
+    for (let attempt = 0; attempt < 200 && taskId === undefined; attempt += 1) {
+      taskId = adapter.listActiveTasks()[0]?.taskId;
+      if (taskId === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    expect(taskId).toBeDefined();
+    await adapter.cancelTask(taskId!);
+    const task = await running;
+    expect(task.status).toBe("cancelled");
+    // abort 后同一会话可复用（session 未损坏）
+    faux.setResponses([fauxAssistantMessage([fauxText("恢复后的输出")])]);
+    const next = await adapter.runAgent({
+      agentId: "writer",
+      task: "继续写",
+      projectId: "p",
+      contextScope: "writing/outline",
+    });
+    expect(next.status).toBe("completed");
+    expect(next.output).toContain("恢复后的输出");
+    expect(next.metadata?.["sessionKey"]).toBe(task.metadata?.["sessionKey"]);
+    await adapter.close();
+  }, 60_000);
+
+  it("模型解析失败（真实 ModelRuntime 初始化路径）：healthy + not_configured + 结构化失败", async () => {
+    const agentDir = await makeTempDir("pi-l2-unknown-");
+    const workspaceRoot = await makeTempDir("pi-l2-ws-");
+    const adapter = new PiRuntimeAdapter({
+      agentDir,
+      workspaceRoot,
+      modelSpec: "no-such-provider/no-such-model",
+      log: () => {},
+    });
+    const health = await adapter.healthCheck();
+    expect(health.ok).toBe(true); // Runtime 健康 ≠ 模型就绪
+    expect((await adapter.modelStatusSnapshot()).phase).toBe("not_configured");
+    const task = await adapter.runAgent({ agentId: "m", task: "hi", projectId: "p" });
+    expect(task.status).toBe("failed");
+    expect(task.error).toContain("no-such-provider/no-such-model");
+    await adapter.close();
+  }, 30_000);
+
+  it("provider 无凭据：模型存在但 auth 未配置 → not_configured", async () => {
+    const agentDir = await makeTempDir("pi-l2-noauth-");
+    const workspaceRoot = await makeTempDir("pi-l2-ws-");
+    const modelRuntime = await ModelRuntime.create({
+      authPath: join(agentDir, "auth.json"),
+      modelsPath: join(agentDir, "models.json"),
+    });
+    modelRuntime.registerProvider("noauth-provider", {
+      api: "openai-completions",
+      baseUrl: "https://noauth.example.invalid/v1",
+      models: [
+        {
+          id: "m-1",
+          name: "No Auth Model",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 100_000,
+          maxTokens: 4_096,
+        },
+      ],
+    });
+    const adapter = new PiRuntimeAdapter({
+      agentDir,
+      workspaceRoot,
+      modelSpec: "noauth-provider/m-1",
+      modelRuntime,
+      log: () => {},
+    });
+    const health = await adapter.healthCheck();
+    expect(health.ok).toBe(true);
+    const snapshot = await adapter.modelStatusSnapshot();
+    expect(snapshot.phase).toBe("not_configured");
+    expect(snapshot.detail).toContain("凭据");
+    const task = await adapter.runAgent({ agentId: "m", task: "hi", projectId: "p" });
+    expect(task.status).toBe("failed");
+    await adapter.close();
+  }, 30_000);
+});

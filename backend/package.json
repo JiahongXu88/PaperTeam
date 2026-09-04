@@ -15,11 +15,13 @@
     "dev": "npm run build && node dist/index.js"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.84.4",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
     "@openclaw/gateway-client": "2026.9.1",
     "@openclaw/gateway-protocol": "2026.9.1"
   }

@@ -281,6 +281,25 @@ export class DevSupervisor {
     };
   }
 
+  /**
+   * 仅启动并监督 Backend（M3.7：PAPERTEAM_AGENT_RUNTIME=pi 时无 Gateway 进程）。
+   * 阻塞至 Backend 退出或外部信号；语义与 run() 的 Backend 段一致。
+   */
+  async runBackendOnly(backendSpec: StartBackendSpec): Promise<DevRunResult> {
+    this.backend = this.runner.spawn({ label: "backend", ...backendSpec });
+    this.log(`[backend] 启动中（pid=${this.backend.pid}）`);
+    this.backendStartedNotifier?.();
+
+    await this.waitForAnyExit();
+    const firstExit = this.collectFirstExit();
+    await this.shutdown(firstExit !== null ? "进程退出" : "外部请求");
+    return {
+      firstExit,
+      gatewayExit: undefined,
+      backendExit: this.backendExitCode,
+    };
+  }
+
   private collectFirstExit(): { label: string; code: number | null } | null {
     return this.firstExit;
   }

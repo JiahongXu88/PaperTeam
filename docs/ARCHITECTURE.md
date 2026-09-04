@@ -78,7 +78,8 @@ Linux Server
 ### 1.2 当前实现（M3 后）
 
 M3 目标架构（§1.1）已在 backend 落地：HTTP API/SSE → WorkflowOrchestrator（确定性引擎）→
-Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime 调用 OpenClaw Gateway）→
+Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime 调用 Agent Runtime——
+默认 OpenClaw Gateway，M3.7 起可切换 in-process Pi，见 §6.4）→
 Project / Evidence / Artifacts 落盘 → Build Gate / Quality Gate。两条一级工作流
 （Idea-to-Paper、Existing-LaTeX Improvement）共享审稿-修订-构建后段。尚未实现：
 frontend（M4+）、Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
@@ -368,11 +369,16 @@ interface AgentRuntime {
 ```
 
 - 第一版由 **OpenClawRuntimeAdapter** 实现，对接 OpenClaw Gateway 的 Agent / Session /
-  Task / Event Stream。
+  Task / Event Stream；**M3.7 起新增并列实现 PiRuntimeAdapter**（§6.4，in-process
+  Pi SDK，默认仍为 openclaw）。
 - 任务状态统一为：`queued / running / completed / failed / cancelled`。
 - 未来替换或新增 Runtime（新 Agent 框架、本地模型等）不影响业务层。
-- `getTask / cancelTask / sendMessage / streamEvents` 目前仍为契约占位
-  （`RuntimeCapabilityError`），M3 做 Progress / Event 时接入。
+- `getTask / cancelTask / sendMessage / streamEvents` 在 OpenClaw 实现中仍为契约占位
+  （`RuntimeCapabilityError`）；PiRuntimeAdapter 已实现 getTask（有限回溯）/
+  cancelTask（真实 abort）/ streamEvents（事件回放），sendMessage 两端均为占位
+  （HITL 走 Workflow resume，不经 Runtime sendMessage）。受 Contract v1 的
+  runAgent 同步终态语义限制（taskId 在返回后才可知），运行中取消/订阅对上层
+  仍不可达（`listActiveTasks()` 诊断口是其最小形态）；正式暴露属 Contract v2。
 
 ### 6.2 M2.1 起的调用链（官方 Gateway SDK，已实现）
 
@@ -445,6 +451,70 @@ projectId × agentId × contextScope
 writing/outline、writing/sections、writing/revision、writing/improvement-plan、
 review/fact、review/academic、review/style、sources/pdf-analysis。
 显式 sessionKey 仍然优先；scope 取值由 PaperTeam 代码内控（不接受用户自由输入）。
+派生实现自 M3.7 起共享于 `backend/src/runtime/sessionKey.ts`——两个 Adapter
+（OpenClaw / Pi）产生完全一致的 sessionKey，provider 切换不改变上层会话语义。
+
+### 6.4 PiRuntimeAdapter（M3.7 side-by-side 候选实现，默认不启用）
+
+OpenClaw 2026.9.1 仍是 **production/default baseline**；Pi
+（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin）是 M3.7 的 feasibility
+候选 runtime，经 `PAPERTEAM_AGENT_RUNTIME=pi` 启用（默认 `openclaw`）。两条路径
+side-by-side，业务层零感知（仍只依赖 AgentRuntime 接口；所有 Pi 细节封装在
+`backend/src/runtime/PiRuntimeAdapter.ts` 与 `pi/` 内部，业务代码不 import
+`@earendil-works/*`）。
+
+```text
+业务层（Workflow / Researcher / Writer / Reviewer）
+  │
+AgentRuntime（接口，不变）
+  │
+PiRuntimeAdapter                       ←── 对照 OpenClawRuntimeAdapter
+  │
+@earendil-works/pi-coding-agent SDK（in-process，无子进程）
+  │   createAgentSession()（官方 embedding API）：
+  │     SessionManager.inMemory(cwd)   —— Runtime session 可丢弃（§2.1 红线）
+  │     DefaultResourceLoader({ systemPromptOverride }) —— 角色 → 系统提示词
+  │     tools: [...]                   —— 角色 → 工具白名单（最小必要，无 shell）
+  │     ModelRuntime（agentDir 隔离： <runtimeRoot>/runtime/pi/agent/）
+  │     SettingsManager.inMemory（关闭 auto-compaction）
+  │
+模型 Provider（anthropic / openai / zai / …内置目录，或注册的自定义 provider）
+```
+
+关键语义（与 OpenClaw 路径对齐或有意区分的点）：
+
+- **会话**：一个逻辑 sessionKey ↔ 一个进程内 AgentSession；sessionKey 派生与
+  OpenClaw 完全一致（§6.3，共享实现）。同一会话内串行（Pi 的 Agent 单会话
+  一次一个 run），跨会话完全并发（Reviewer 三路 = 三个独立 AgentSession）。
+  会话创建 in-flight 去重（并发同 key 只建一次）。
+- **模型 / 凭据**：`PAPERTEAM_PI_MODEL`（provider/model-id）+ 可选
+  `PAPERTEAM_PI_API_KEY`（`setRuntimeApiKey`，仅内存不落盘）；缺省按 Pi 官方
+  优先级：agentDir auth.json > 标准环境变量。模型未配置 = Runtime 健康、
+  模型未就绪（`modelStatusSnapshot()` 分区报告），runAgent 结构化失败，不伪造。
+- **runAgent**：`session.prompt()` 同步终态语义（settle 即返回）；失败 / 中断
+  不 reject，而是落在 transcript 的 assistant 消息 `stopReason`
+  （`"error"` → failed 任务；`"aborted"` + 超时 → `AgentTimeoutError`；
+  `"aborted"` + cancelTask → cancelled 任务）——与 OpenClaw 的
+  agent.wait 终态口径一一对应。
+- **timeout**：Pi SDK 无内建 run 超时；Adapter 定时器 + `session.abort()`
+  实现与 OpenClaw 一致的 `runTimeoutMs`。
+- **事件**：会话创建即 `session.subscribe()`，映射为 PaperTeam AgentEvent
+  （agent_start / message_update / tool_execution_* / agent_end / agent_settled），
+  按任务有界缓存；`streamEvents(taskId)` 为回放语义（v1 限制见 §6.1）。
+- **abort**：`cancelTask(taskId)` 真实 `session.abort()`（LLM 流中断、工具执行
+  收 abort signal），abort 后同一会话可继续使用（L2 测试实证）；对
+  compaction 的 abort 边界未验证（PaperTeam 不触发 manual compaction，
+  auto-compaction 已关闭）。
+- **health**：无 HTTP 探针（in-process）；healthy = SDK 加载 + Adapter 未关闭 +
+  ModelRuntime 初始化成功。「无 API Key」不是 Runtime 不健康（与 §6.0.2 的
+  model_not_configured 分区语义一致）。
+- **进程模型**：Backend 进程内完成一切——无 Gateway 子进程 / 端口 / WebSocket /
+  握手 / RPC 轮询（Windows 实测零子进程；对照 OpenClaw 路径的 §6.0 Bootstrap
+  全套设施）。`npm run dev` 在 pi 模式下只启动并监督 Backend。
+- **诊断**：`GET /api/runtime/status` 按 provider 分流——pi 返回
+  `gateway.phase="not_applicable"` + runtime/model 相位；RuntimeStatus 的形状
+  仍为 Gateway 时代的结构，这是当前诊断服务与 OpenClaw 的架构耦合点
+  （记录在案，未重写）。
 
 ## 7. 质量与构建（M3.2 已实现）
 

@@ -2,7 +2,7 @@
  * Runtime Bootstrap CLI（M3.5）：`npm run dev` 的实际执行体。
  *
  * 由仓库根 scripts/dev.mjs 在确保依赖与构建后调用（node dist/dev/cli.js）。
- * 完整流程：
+ * 完整流程（默认 provider = openclaw）：
  *
  *   1. 解析 PaperTeam 用户级 Runtime 路径（默认 ~/.paperteam，与 ~/.openclaw 硬隔离）
  *   2. 读取/生成 runtime.json（精确 OpenClaw 版本、Gateway 端口、随机 token）
@@ -12,6 +12,9 @@
  *   6. 等待 /health 就绪（超时报错并附 Gateway 日志提示）
  *   7. 启动 Backend（注入 OPENCLAW_GATEWAY_URL / API Key / 端口）
  *   8. Ctrl+C / SIGTERM → 先停 Backend 再停 Gateway（无孤儿进程）
+ *
+ * PAPERTEAM_AGENT_RUNTIME=pi（M3.7）时：跳过 3-6（无 Gateway 进程 / 端口 /
+ * state），仅启动并监督 Backend（Pi Runtime in-process 嵌入于 Backend）。
  *
  * 模型凭据不属于 Bootstrap：Gateway 无凭据也能健康启动，Agent 调用阶段的
  * “model not configured” 由 GET /api/runtime/status 如实报告。
@@ -49,10 +52,46 @@ export async function runBootstrap(options: {
   const paths = resolveRuntimePaths(env);
   console.log(`  runtimeRoot:  ${paths.root}`);
 
-  // 2. runtime.json（端口 / token / 版本；旧版本的 openclawVersion 在此迁移到当前 pin）
+  // M3.7：Runtime 选择（默认 openclaw；pi = in-process，无 Gateway 进程，
+  // 跳过 openclaw 安装校验 / state 准备 / Gateway 启动，只监督 Backend）
+  const agentRuntime = (env["PAPERTEAM_AGENT_RUNTIME"] ?? "openclaw").trim().toLowerCase();
+  if (agentRuntime !== "openclaw" && agentRuntime !== "pi") {
+    throw new BootstrapError(
+      `PAPERTEAM_AGENT_RUNTIME 只能是 openclaw / pi，当前为 "${agentRuntime}"`,
+    );
+  }
+
+  // runtime.json 同时承载两种 provider 的 Backend 端口（pi 模式只读端口，
+  // 不做 openclaw 版本迁移语义之外的任何准备）
   const runtimeConfig = await loadRuntimeConfig(paths.runtimeConfigPath, env, undefined, (message) =>
     console.log(message),
   );
+  const backendDistEntry = join(repoRoot, "backend", "dist", "index.js");
+
+  if (agentRuntime === "pi") {
+    console.log(`  runtime:      pi（in-process，无 Gateway）`);
+    console.log(
+      `  backendPort:  ${String(runtimeConfig.backendPort)}`,
+    );
+    const supervisor = new DevSupervisor({ log });
+    supervisor.registerSignalHandlers();
+    console.log("  ── 启动 Backend（Pi Runtime）──");
+    await supervisor.runBackendOnly({
+      command: process.execPath,
+      args: [backendDistEntry],
+      cwd: join(repoRoot, "backend"),
+      env: {
+        ...env,
+        PAPERTEAM_AGENT_RUNTIME: "pi",
+        PAPERTEAM_PORT: String(runtimeConfig.backendPort),
+        NODE_ENV: env["NODE_ENV"] ?? "development",
+      },
+    });
+    console.log("PaperTeam dev 已退出。");
+    return;
+  }
+
+  // 2. runtime.json（端口 / token / 版本；旧版本的 openclawVersion 在此迁移到当前 pin）
   console.log(`  openclaw:     ${runtimeConfig.openclawVersion}（本地安装校验中...）`);
 
   // 3. 项目本地 OpenClaw 安装（版本精确一致）
@@ -89,7 +128,6 @@ export async function runBootstrap(options: {
   console.log(`  gateway:      ${gatewayUrl}`);
   console.log("  ── 启动 OpenClaw Gateway ──");
 
-  const backendDistEntry = join(repoRoot, "backend", "dist", "index.js");
   await supervisor.run(
     {
       command: process.execPath,

@@ -26,17 +26,18 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 
 ## 当前状态
 
-| 里程碑 | 状态 | 内容 |
-|---|---|---|
-| M1 Backend Runtime Skeleton | ✅ 完成 | Backend 工程、`AgentRuntime` 抽象、`OpenClawRuntimeAdapter`、Gateway 健康检查 |
-| M2 Agent Invocation + Project + LaTeX | ✅ 完成 | `runAgent()` 真实调用链、`ProjectStore`、`WriterService`、`GenerationService`、`LatexCompiler`、HTTP API |
-| M2.1 OpenClaw 2.0 Runtime Upgrade | ✅ 完成 | 官方 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（wire protocol v4）、Project 与 Runtime Session 隔离 |
-| Architecture Research & Product Design Refresh | ✅ 完成 | 竞品调研与产品/架构方向冻结（D-0008~D-0015） |
-| **M3.0 Workflow Foundation** | ✅ 完成 | `WorkflowOrchestrator`（确定性引擎）、`StageContract`（DoD）、异步 `WorkflowRun` + checkpoint/resume、Domain Event + SSE、HITL awaiting_input、协作式取消、Session contextScope |
-| **M3.1 Research & Evidence** | ✅ 完成 | Researcher（调研 + Evidence 候选）、Target Feasibility（HIGH/MEDIUM/LOW/INSUFFICIENT + HITL adjust）、`EvidenceStore`（JSONL）、Citation 核验（静态 + CrossRef/OpenAlex/arXiv）、文献库 + PDF 文本层分析（多模态为扩展点）、分节写作、Derived Context |
-| **M3.2 Review & Revision** | ✅ 完成 | Reviewer（fact/academic/style 三 skill 并行）、确定性聚合、Quality Gate（9 规则）、bounded revision loop（≤2 轮 + 超限 HITL）、Build Gate、Draft/Final 双 Gate 语义、Existing-LaTeX 导入（防 Zip Slip）与改造 workflow |
-| **M3.5 Runtime Bootstrap / M3 Closure** | ✅ 完成 | **M3 Complete**：PaperTeam 独立 OpenClaw Runtime（隔离 state、精确版本 pin）、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿 |
-| **M3.6 Runtime Baseline Upgrade** | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（openclaw / gateway-client / gateway-protocol 三处统一精确 pin，protocol v4 不变）；Node 兼容检查改为复用根 package.json engines（Node 26+ 可用）；runtime.json 旧版本自动迁移；全量回归 255 测试 + 真实 Gateway E2E 通过 |
+| 里程碑                                            | 状态   | 内容                                                                                                                                                                                                                      |
+| ---------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1 Backend Runtime Skeleton                    | ✅ 完成 | Backend 工程、`AgentRuntime` 抽象、`OpenClawRuntimeAdapter`、Gateway 健康检查                                                                                                                                                      |
+| M2 Agent Invocation + Project + LaTeX          | ✅ 完成 | `runAgent()` 真实调用链、`ProjectStore`、`WriterService`、`GenerationService`、`LatexCompiler`、HTTP API                                                                                                                          |
+| M2.1 OpenClaw 2.0 Runtime Upgrade              | ✅ 完成 | 官方 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（wire protocol v4）、Project 与 Runtime Session 隔离                                                                                                             |
+| Architecture Research & Product Design Refresh | ✅ 完成 | 竞品调研与产品/架构方向冻结（D-0008\~D-0015）                                                                                                                                                                                          |
+| **M3.0 Workflow Foundation**                   | ✅ 完成 | `WorkflowOrchestrator`（确定性引擎）、`StageContract`（DoD）、异步 `WorkflowRun` + checkpoint/resume、Domain Event + SSE、HITL awaiting\_input、协作式取消、Session contextScope                                                              |
+| **M3.1 Research & Evidence**                   | ✅ 完成 | Researcher（调研 + Evidence 候选）、Target Feasibility（HIGH/MEDIUM/LOW/INSUFFICIENT + HITL adjust）、`EvidenceStore`（JSONL）、Citation 核验（静态 + CrossRef/OpenAlex/arXiv）、文献库 + PDF 文本层分析（多模态为扩展点）、分节写作、Derived Context              |
+| **M3.2 Review & Revision**                     | ✅ 完成 | Reviewer（fact/academic/style 三 skill 并行）、确定性聚合、Quality Gate（9 规则）、bounded revision loop（≤2 轮 + 超限 HITL）、Build Gate、Draft/Final 双 Gate 语义、Existing-LaTeX 导入（防 Zip Slip）与改造 workflow                                      |
+| **M3.5 Runtime Bootstrap / M3 Closure**        | ✅ 完成 | **M3 Complete**：PaperTeam 独立 OpenClaw Runtime（隔离 state、精确版本 pin）、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿                                                                          |
+| **M3.6 Runtime Baseline Upgrade**              | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（openclaw / gateway-client / gateway-protocol 三处统一精确 pin，protocol v4 不变）；Node 兼容检查改为复用根 package.json engines（Node 26+ 可用）；runtime.json 旧版本自动迁移；全量回归 255 测试 + 真实 Gateway E2E 通过 |
+| **M3.7 Pi Runtime Feasibility**                | ✅ 完成 | Side-by-side `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin，in-process 嵌入，`PAPERTEAM_AGENT_RUNTIME=pi` 启用，默认仍 openclaw）；sessionKey 派生与 OpenClaw 一致；角色 → systemPrompt/工具白名单映射；Reviewer 三路并发 / abort / 事件 / timeout / 隔离全验证（L1+L2）；Windows 实测无 Gateway 子进程；结论 MIGRATE TO PI（建议，正式迁移另立任务）；全量回归 280 测试 |
 
 **M3.6 Complete**：后端「完整 M3 可运行基线」的 Runtime baseline 已固化在
 OpenClaw 2026.9.1（Node.js + npm 为当前 Runtime / Package Manager baseline，
@@ -46,7 +47,7 @@ Backend healthy → workflow 真实推进到 Researcher 的 Gateway RPC 调用�
 （无模型凭据时如实进入 `model_not_configured` / 结构化失败，不伪造）；
 存量安装（runtime.json 仍记录旧版本）升级时自动迁移、不误报漂移。带真实
 模型凭据的完整全链路 E2E、TeX Live 真实编译、多模态 PDF 视觉级分析为
-非阻塞环境验证缺口，见 [PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。
+非阻塞环境验证缺口，见 [PROJECT\_STATUS.md](docs/PROJECT_STATUS.md)。
 255 个测试全部通过。
 
 **未实现（M4+）**：前端工作台、Visual Reviewer、LaTeX repair loop、
@@ -54,12 +55,12 @@ Backend healthy → workflow 真实推进到 Researcher 的 Gateway RPC 调用�
 
 ## 文档
 
-| 文档 | 说明 |
-|---|---|
-| [docs/PRD.md](docs/PRD.md) | 产品需求文档 |
-| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 / M3.1 / M3.2 / M3.5 / M3.6 / M4+） |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构说明 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 技术决策记录（ADR） |
+| 文档                                                | 说明                                                |
+| ------------------------------------------------- | ------------------------------------------------- |
+| [docs/PRD.md](docs/PRD.md)                        | 产品需求文档                                            |
+| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 / M3.1 / M3.2 / M3.5 / M3.6 / M4+） |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      | 系统架构说明                                            |
+| [docs/DECISIONS.md](docs/DECISIONS.md)            | 技术决策记录（ADR）                                       |
 
 ## 目录结构
 
@@ -133,7 +134,7 @@ npm start
 ```
 
 当前提供的 API（Node 原生 HTTP，无 Web 框架；完整清单见
-[PROJECT_STATUS.md](docs/PROJECT_STATUS.md)「M3 API 一览」）：
+[PROJECT\_STATUS.md](docs/PROJECT_STATUS.md)「M3 API 一览」）：
 
 ```text
 GET    /health                                存活探针（含 Gateway 实时健康）
@@ -195,3 +196,4 @@ Project ≠ Session：Session 是可重建的 Runtime Context，不承担项目�
   自动迁移到当前 pin（端口 / token 保留）。
 - **独立 state**：`~/.paperteam/runtime/openclaw/`（`PAPERTEAM_RUNTIME_ROOT` 可覆盖）；
   与全局 `~/.openclaw` 相等或嵌套的路径会被直接拒绝。
+

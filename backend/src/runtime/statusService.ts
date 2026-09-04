@@ -23,21 +23,23 @@ import { GatewayConnectionError, OpenClawGatewayConnection } from "./openclaw/ga
  */
 export const GATEWAY_CLIENT_SDK_VERSION = "2026.9.1";
 
-/** 网关连接相位 */
+/** 网关连接相位（not_applicable：in-process Runtime（pi）无 Gateway 进程） */
 export type GatewayPhase =
   | "healthy"
   | "starting"
   | "unavailable"
   | "auth_error"
-  | "protocol_mismatch";
+  | "protocol_mismatch"
+  | "not_applicable";
 
-/** Runtime 综合相位（对齐 M3.5 验收口径） */
+/** Runtime 综合相位（对齐 M3.5 验收口径；runtime_unavailable：in-process Runtime 初始化失败） */
 export type RuntimePhase =
   | "ready"
   | "model_not_configured"
   | "auth_error"
   | "protocol_mismatch"
-  | "gateway_unavailable";
+  | "gateway_unavailable"
+  | "runtime_unavailable";
 
 /** 模型配置相位 */
 export type ModelPhase = "configured" | "not_configured" | "unknown";
@@ -145,6 +147,13 @@ export class RuntimeStatusService {
 
   /** 执行一次完整诊断（任何内部失败都收敛为结构化状态，不抛出） */
   async getStatus(): Promise<RuntimeStatus> {
+    // M3.7：pi 为 in-process Runtime，无 Gateway / WebSocket / RPC 诊断链路，
+    // 走独立的轻量诊断（healthCheck + 模型就绪摘要）。RuntimeStatus 形状
+    // 保持不变（gateway 字段用 not_applicable 占位）——这是当前诊断服务
+    // 与 OpenClaw Gateway 的架构耦合点，记录于 M3.7 报告。
+    if (this.runtime.provider === "pi") {
+      return this.getPiStatus();
+    }
     const health: RuntimeHealth = await this.runtime.healthCheck();
     const base = {
       backend: { ok: true as const },
@@ -305,6 +314,74 @@ export class RuntimeStatusService {
       registered: false,
       status: "missing" as const,
     }));
+  }
+
+  /**
+   * pi provider 的轻量诊断（M3.7）：
+   * - runtime 相位 = healthCheck（SDK 加载 / 未关闭 / ModelRuntime 初始化）
+   * - model 相位 = Adapter 的 modelStatusSnapshot()（duck-typing，同
+   *   OpenClaw 的 connectionInfo 模式）；「未配置 API Key」≠ Runtime 不健康
+   * - agents = 角色 → Pi 配置映射恒存在（无 agent 注册表）
+   */
+  private async getPiStatus(): Promise<RuntimeStatus> {
+    const health = await this.runtime.healthCheck();
+    const modelSnapshot = await this.piModelStatus();
+    return {
+      backend: { ok: true },
+      gateway: {
+        phase: "not_applicable",
+        detail: "Pi in-process Runtime（无 Gateway 进程 / 端口 / WebSocket）",
+        latencyMs: health.latencyMs,
+      },
+      runtime: {
+        phase: health.ok
+          ? modelSnapshot.phase === "configured"
+            ? "ready"
+            : "model_not_configured"
+          : "runtime_unavailable",
+        detail: health.detail,
+      },
+      versions: {
+        gatewayClientSdk: GATEWAY_CLIENT_SDK_VERSION,
+        ...(this.expectedRuntimeVersion ? { expectedRuntime: this.expectedRuntimeVersion } : {}),
+        protocol: PROTOCOL_VERSION,
+      },
+      agents: {
+        ownership: "pi-in-process（角色 → PiRuntimeAdapter 配置映射，无 agent 注册表）",
+        roles: roleEntries(this.agentIds).map(([role, agentId]) => ({
+          role,
+          agentId,
+          registered: true,
+          status: "configured" as const,
+        })),
+      },
+      model: {
+        phase: modelSnapshot.phase,
+        providers: modelSnapshot.providers,
+        detail: modelSnapshot.detail,
+      },
+    };
+  }
+
+  /** 从 Runtime 实现读取模型就绪摘要（PiRuntimeAdapter 提供；其余实现 unknown） */
+  private async piModelStatus(): Promise<{
+    phase: "configured" | "not_configured" | "unknown";
+    providers: string[];
+    detail: string;
+  }> {
+    const snapshot = (
+      this.runtime as {
+        modelStatusSnapshot?: () => Promise<{
+          phase: "configured" | "not_configured" | "unknown";
+          providers: string[];
+          detail: string;
+        }>;
+      }
+    ).modelStatusSnapshot;
+    if (typeof snapshot === "function") {
+      return snapshot.call(this.runtime);
+    }
+    return { phase: "unknown", providers: [], detail: "Runtime 实现未暴露模型就绪摘要" };
   }
 
   private mapAgents(agentList: Record<string, unknown> | null): RuntimeStatus["agents"] {

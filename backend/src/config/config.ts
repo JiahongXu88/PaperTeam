@@ -7,6 +7,8 @@
 
 import { resolve } from "node:path";
 
+import type { RuntimeProvider } from "../runtime/types.js";
+
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
 
@@ -16,6 +18,9 @@ export class ConfigError extends Error {
 }
 
 export type NodeEnv = "development" | "production" | "test";
+
+/** Agent Runtime 选择（M3.7）：默认 openclaw（生产基线）；pi 为 feasibility 候选 */
+export const AGENT_RUNTIME_PROVIDERS: readonly RuntimeProvider[] = ["openclaw", "pi"];
 
 export interface GatewayConfig {
   /** OpenClaw Gateway 基地址，例如 http://127.0.0.1:18789 */
@@ -62,10 +67,25 @@ export interface ReviewConfig {
   styleRiskMax: number;
 }
 
+export interface PiRuntimeConfig {
+  /** 模型规格 "provider/model-id"（如 anthropic/claude-opus-4-5）；缺省 = 模型未配置 */
+  model?: string;
+  /** Provider API Key（可选；不设置则按 Pi 官方优先级：auth.json > 标准环境变量） */
+  apiKey?: string;
+  /** Pi 全局配置目录（可选；缺省由 wiring 层落到 <runtimeRoot>/pi/agent） */
+  agentDir?: string;
+  /** 单次 runAgent 的整体超时（毫秒） */
+  runTimeoutMs: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
+  /** Agent Runtime 选择（M3.7；默认 openclaw） */
+  agentRuntime: RuntimeProvider;
   gateway: GatewayConfig;
+  /** Pi Runtime 配置（agentRuntime=pi 时生效） */
+  pi: PiRuntimeConfig;
   /** 各业务 Agent 对应的 OpenClaw agent id */
   agents: AgentIds;
   /** 论文项目工作区根目录（绝对路径） */
@@ -115,11 +135,15 @@ const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const NODE_ENVS: readonly NodeEnv[] = ["development", "production", "test"];
 
 export function loadConfig(source: Record<string, string | undefined> = process.env): AppConfig {
+  const agentRuntime = readAgentRuntime(source);
   return {
     env: readNodeEnv(source),
     port: readPort(source),
+    agentRuntime,
     gateway: {
-      url: readGatewayUrl(source),
+      // Gateway 地址仅在 openclaw provider 下必填（Pi 为 in-process Runtime，
+      // 没有 Gateway）；两套超时配置保持共用语义。
+      url: readGatewayUrl(source, agentRuntime),
       apiKey: readOptionalValue(source, "OPENCLAW_GATEWAY_API_KEY"),
       healthTimeoutMs: readHealthTimeoutMs(source),
       rpcTimeoutMs: readTimeoutMs(source, "OPENCLAW_GATEWAY_RPC_TIMEOUT_MS", {
@@ -138,10 +162,24 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       // （Researcher/Writer/Reviewer/Citation）靠 prompt + contextScope 隔离
       // 会话，不需要独立的 OpenClaw agent 注册（方案 A，见 docs/DECISIONS.md
       // D-0018）；需要独立 agent（不同模型/工具策略）时用环境变量覆盖。
+      // Pi provider 下 agentId 仅作为会话键组成与诊断标签（Pi 无 agent
+      // 注册表，角色映射在 PiRuntimeAdapter 内部完成）。
       writer: readAgentId(source, "OPENCLAW_WRITER_AGENT_ID", "main"),
       researcher: readAgentId(source, "OPENCLAW_RESEARCHER_AGENT_ID", "main"),
       reviewer: readAgentId(source, "OPENCLAW_REVIEWER_AGENT_ID", "main"),
       citation: readAgentId(source, "OPENCLAW_CITATION_AGENT_ID", "main"),
+    },
+    pi: {
+      model: readOptionalValue(source, "PAPERTEAM_PI_MODEL"),
+      apiKey: readOptionalValue(source, "PAPERTEAM_PI_API_KEY"),
+      ...(readOptionalValue(source, "PAPERTEAM_PI_AGENT_DIR") !== undefined
+        ? { agentDir: readOptionalValue(source, "PAPERTEAM_PI_AGENT_DIR") }
+        : {}),
+      runTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_RUN_TIMEOUT_MS", {
+        default: DEFAULT_RUN_TIMEOUT_MS,
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
     },
     projectsRoot: readProjectsRoot(source),
     latex: {
@@ -224,13 +262,31 @@ function readPort(source: Record<string, string | undefined>): number {
   return port;
 }
 
-function readGatewayUrl(source: Record<string, string | undefined>): string {
+function readAgentRuntime(source: Record<string, string | undefined>): RuntimeProvider {
+  const raw = (source["PAPERTEAM_AGENT_RUNTIME"] ?? "openclaw").trim().toLowerCase();
+  const match = AGENT_RUNTIME_PROVIDERS.find((candidate) => candidate === raw);
+  if (!match) {
+    throw new ConfigError(
+      `PAPERTEAM_AGENT_RUNTIME 只能是 ${AGENT_RUNTIME_PROVIDERS.join(" / ")}，当前为 "${raw}"`,
+    );
+  }
+  return match;
+}
+
+function readGatewayUrl(
+  source: Record<string, string | undefined>,
+  agentRuntime: RuntimeProvider,
+): string {
   const key = "OPENCLAW_GATEWAY_URL";
   const raw = (source[key] ?? "").trim();
   if (raw === "") {
+    if (agentRuntime === "pi") {
+      // Pi 为 in-process Runtime：无 Gateway，地址留空（healthCheck 不再探测）
+      return "";
+    }
     throw new ConfigError(
       `缺少必需配置 OPENCLAW_GATEWAY_URL（OpenClaw Gateway 地址，例如 http://127.0.0.1:18789）。` +
-        ` 请参考根目录 .env.example 复制为 .env 并填写。`,
+        ` 请参考根目录 .env.example 复制为 .env 并填写（或设置 PAPERTEAM_AGENT_RUNTIME=pi 使用 Pi Runtime）。`,
     );
   }
 

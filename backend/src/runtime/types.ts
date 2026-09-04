@@ -5,8 +5,12 @@
  * M1 仅实现 healthCheck()；其余方法只固定契约，待后续里程碑实现。
  */
 
-/** Agent Runtime 提供方标识 */
-export type RuntimeProvider = "openclaw";
+/**
+ * Agent Runtime 提供方标识。
+ * - openclaw：经 Gateway（WebSocket + RPC）的进程外 Runtime（M3.5/M3.6 基线，默认）
+ * - pi：@earendil-works/pi-coding-agent 的 in-process SDK Runtime（M3.7 feasibility）
+ */
+export type RuntimeProvider = "openclaw" | "pi";
 
 /** 任务状态（PRD §12.3 统一口径） */
 export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";

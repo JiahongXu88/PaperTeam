@@ -1,4 +1,4 @@
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { ConfigError, loadConfig } from "./config/config.js";
@@ -7,8 +7,11 @@ import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
+import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import { OPENCLAW_RUNTIME_VERSION } from "./dev/runtimeConfig.js";
+import { resolveRuntimePaths } from "./dev/runtimePaths.js";
+import { PI_RUNTIME_VERSION } from "./runtime/pi/version.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { LatexImporter } from "./import/LatexImporter.js";
@@ -48,17 +51,34 @@ export async function startBackend(): Promise<void> {
   }
 
   console.log(`  env:          ${config.env}`);
-  console.log(`  gateway:      ${config.gateway.url}`);
+  console.log(`  runtime:      ${config.agentRuntime}`);
+  if (config.agentRuntime === "openclaw") {
+    console.log(`  gateway:      ${config.gateway.url}`);
+  } else {
+    console.log(`  pi:           model=${config.pi.model ?? "(未配置)"} agentDir=${config.pi.agentDir ?? "(runtimeRoot/pi/agent)"}`);
+  }
   console.log(`  projectsRoot: ${config.projectsRoot}`);
   console.log(`  agents:       researcher=${config.agents.researcher} writer=${config.agents.writer} reviewer=${config.agents.reviewer} citation=${config.agents.citation}`);
 
-  const runtime: AgentRuntime = new OpenClawRuntimeAdapter({
-    baseUrl: config.gateway.url,
-    apiKey: config.gateway.apiKey,
-    timeoutMs: config.gateway.healthTimeoutMs,
-    rpcTimeoutMs: config.gateway.rpcTimeoutMs,
-    runTimeoutMs: config.gateway.runTimeoutMs,
-  });
+  // M3.7：Runtime 选择（默认 openclaw；PAPERTEAM_AGENT_RUNTIME=pi 时 in-process）
+  let runtime: AgentRuntime;
+  if (config.agentRuntime === "pi") {
+    runtime = new PiRuntimeAdapter({
+      ...(config.pi.model !== undefined ? { modelSpec: config.pi.model } : {}),
+      ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
+      agentDir: config.pi.agentDir ?? join(resolveRuntimePaths().root, "runtime", "pi", "agent"),
+      workspaceRoot: config.projectsRoot,
+      runTimeoutMs: config.pi.runTimeoutMs,
+    });
+  } else {
+    runtime = new OpenClawRuntimeAdapter({
+      baseUrl: config.gateway.url,
+      apiKey: config.gateway.apiKey,
+      timeoutMs: config.gateway.healthTimeoutMs,
+      rpcTimeoutMs: config.gateway.rpcTimeoutMs,
+      runTimeoutMs: config.gateway.runTimeoutMs,
+    });
+  }
 
   const projects = new ProjectStore({ root: config.projectsRoot });
   const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
@@ -85,13 +105,14 @@ export async function startBackend(): Promise<void> {
   const importer = new LatexImporter({ projects, latex, log: (message) => console.log(message) });
 
   const health = await runtime.healthCheck();
-  reportGatewayHealth(health);
+  reportRuntimeHealth(health);
 
   // M3.5：Runtime 诊断（GET /api/runtime/status）
   const runtimeStatus = new RuntimeStatusService({
     runtime,
     agentIds: config.agents,
-    expectedRuntimeVersion: OPENCLAW_RUNTIME_VERSION,
+    expectedRuntimeVersion:
+      config.agentRuntime === "pi" ? PI_RUNTIME_VERSION : OPENCLAW_RUNTIME_VERSION,
     log: (message) => console.log(message),
   });
 
@@ -152,17 +173,24 @@ function loadDotEnvBestEffort(): void {
   console.log(`  dotenv:       ${envFile.path}（载入 ${applied.length} 个变量）`);
 }
 
-function reportGatewayHealth(health: RuntimeHealth): void {
+function reportRuntimeHealth(health: RuntimeHealth): void {
   if (health.ok) {
     const latency = health.latencyMs === null ? "" : `（${health.latencyMs}ms）`;
-    console.log(`OpenClaw Gateway: healthy${latency}`);
+    console.log(`${health.provider === "pi" ? "Pi Runtime" : "OpenClaw Gateway"}: healthy${latency}`);
+    if (health.provider === "pi") {
+      console.log(`  detail: ${health.detail}`);
+    }
     return;
   }
-  console.log("OpenClaw Gateway: unavailable");
-  console.log(`  reason: ${health.detail}`);
   console.log(
-    "  提示：GET /health 会持续报告 Gateway 状态；请确认 Gateway 已启动并检查 OPENCLAW_GATEWAY_URL。",
+    `${health.provider === "pi" ? "Pi Runtime" : "OpenClaw Gateway"}: unavailable（${health.status}）`,
   );
+  console.log(`  reason: ${health.detail}`);
+  if (health.provider === "openclaw") {
+    console.log(
+      "  提示：GET /health 会持续报告 Gateway 状态；请确认 Gateway 已启动并检查 OPENCLAW_GATEWAY_URL。",
+    );
+  }
 }
 
 function registerShutdown(

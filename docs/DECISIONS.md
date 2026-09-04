@@ -289,3 +289,37 @@ Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此
 启动 Gateway → 等 healthy → 启动 Backend → Ctrl+C 优雅关闭双进程、无孤儿）；
 `POST /api/projects/:id/generate` 之外的 Runtime 细节对用户不可见。该决策把
 "Runtime Bootstrap"从未决问题清单移入已实现。
+
+## D-0019 M3.7 Runtime Feasibility：新增 side-by-side PiRuntimeAdapter，默认 Runtime 仍为 OpenClaw
+
+- **日期**：2026-09-04
+- **状态**：accepted（M3.7 完成时冻结；正式迁移另立决策）
+
+**背景**：评估「PaperTeam 直接嵌入 Pi SDK（@earendil-works/pi-coding-agent
+0.84.4，官方 embedding API）」是否比「经 OpenClaw Gateway 子进程」更合适。触发
+因素是公司项目换 Pi，但评估本身以 PaperTeam 的真实需求为准，不预设答案。
+
+**决策**：
+
+1. **Side-by-side，不动默认**：新增 `PiRuntimeAdapter`（`PAPERTEAM_AGENT_RUNTIME=pi`
+   启用），OpenClaw 2026.9.1 保持 production/default baseline；不删除任何
+   OpenClaw / Runtime Bootstrap 代码；前端零感知。
+2. **嵌入方式**：官方 `createAgentSession()` in-process（不 spawn CLI、不用 RPC
+   mode、不包本地 server）——验证的核心价值就是 in-process Runtime。会话用
+   `SessionManager.inMemory()`：Workspace / checkpoint 是业务事实源（D-0013），
+   Runtime session 是可丢弃执行上下文，不为它建持久化。
+3. **角色映射沿用方案 A 的精神**（D-0018）：Pi 无 agent 注册表，角色差异落到
+   Adapter 内部最小映射（contextScope 前缀 → systemPrompt + 工具白名单），
+   任务级指令仍由业务 prompt 内联；不新建 Workflow Agent 层。
+4. **sessionKey 派生共享**（`runtime/sessionKey.ts`）：两个 Adapter 产生一致
+   key，provider 切换不改变上层会话语义（含 GenerationService 的显式透传）。
+5. **auto-compaction 关闭**（in-memory settings）：M3 流程不依赖 compaction，
+   关闭避免长会话隐式摘要的不确定性；其 abort 边界未验证且不影响 PaperTeam。
+
+**影响**：A/B 验证（Level 1 + Level 2 真实 SDK × 官方 faux provider + Windows
+进程实测）全部 P0 项通过，结论 **MIGRATE TO PI（建议）**——Pi 以明显更简单的
+架构（无 Gateway / WebSocket / 握手 / RPC 轮询 / 子进程 / 端口）覆盖 PaperTeam
+当前全部 Runtime 需求；cancelTask / streamEvents 在 Pi 侧先行实现（受 Contract
+v1 限制对上层暂不可达，`listActiveTasks()` 为 v2 的最小 seam）。正式迁移（默认
+切换、OpenClaw 退役）留待后续任务与独立决策；Level 3 真实 provider LLM E2E
+因本机无凭据 NOT VERIFIED，迁移前建议补做。
