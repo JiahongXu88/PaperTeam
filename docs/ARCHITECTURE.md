@@ -516,17 +516,55 @@ PiRuntimeAdapter
 - 版本标记：Draft（Build Gate 通过即可）/ Final（双 Gate 通过）；completion.label 记录于
   run 结果（完整版本管理体验属 M4+）。
 
-## 8. 前端双模式
+## 8. 前端（M4.0-M4.2 已落地 React Web Workbench）
 
-- **论文工作台**（普通用户）：首页看板、我的论文（两类项目）、新建项目（两类入口）、
-  论文写作、论文审稿、文献与证据（含 sourceRole / Style Profile）、PDF 查看
-  （Draft / Final）、历史版本、项目设置。隐藏 session / agentId / runId / Runtime
+### 8.1 技术栈与目录（M4.1）
+
+冻结技术栈：**React 19 + TypeScript（strict）+ Vite + React Router 7 +
+TanStack Query 5 + Zustand 5**（npm；无 Next.js / Redux / GraphQL / SSR /
+大型设计系统——样式为单文件手写 CSS）。
+
+```text
+frontend/src/
+├── api/            # 统一 API 层：client（ApiError/NETWORK_ERROR 收敛）+
+│   │                # projects / runs / runtime（唯一 fetch 出口）
+├── types/api.ts    # Frontend DTO（契约见 docs/API_CONTRACT.md）
+├── hooks/          # TanStack Query hooks（queryKeys 集中定义）
+├── stores/         # Zustand（纯 UI 状态：模型未配置横幅 dismiss）
+├── router/         # 路由：/ →redirect /projects；/projects(/new/:id)；* →404
+├── pages/          # ProjectsPage / NewProjectPage / ProjectPage / NotFoundPage
+├── components/     # common（StateViews / RuntimeStatusChip）、layout（AppLayout）、
+│   │                # project（ProjectCard / Badges）
+├── constants/      # documentType / targetProfile 建议值（与 Backend 同步）
+├── utils/          # format（时间格式化）
+└── styles/         # index.css（CSS 变量 + 基础组件类）
+```
+
+**状态管理边界**：Server State（projects / project / runs / runtime status）一律
+TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据、禁止巨型 global store。
+
+### 8.2 前后端边界（M4.0 红线）
+
+- 前端只消费 [API_CONTRACT.md](API_CONTRACT.md) 的 DTO；Pi AgentSession / Pi
+  原始 event / AgentRunHandle / WorkflowState 全量不进前端（`api/runs.ts` 显式
+  映射为 UI 子集）。
+- Runtime Status 消费 M3.8 Pi schema（runtime/model/agents/sessions），
+  **不出现任何 Gateway 字段**（DECISIONS D-0019）；顶栏徽标 30s 轮询，
+  模型未配置时显示可关闭横幅（Runtime 健康 ≠ 模型就绪）。
+- Dev 下 Vite Dev Server（:5173）将 `/api`、`/health` proxy 到 Backend（:3000），
+  前端全部同源相对路径（无 CORS）；生产部署形态（Backend 静态托管 dist）M4.8 决策。
+
+### 8.3 双模式目标（PRD；系统管理后台 M4.8+）
+
+- **论文工作台**（普通用户）：My Papers（两类项目）、New Project（两类入口）、
+  Workflow 实时视图（M4.3）、HITL 待办（M4.4）、文献与证据（M4.5）、审稿 /
+  Quality Gate（M4.6）、PDF 查看（M4.7）。隐藏 session / agentId / runId / Runtime
   技术细节，只展示业务阶段与 awaiting_input 待办。
-- **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、
-  WorkflowRun / Session、日志、文件管理、系统诊断、Command Center、Web Terminal。
+- **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、日志、
+  系统诊断（M4.8+）。
 
-实时通信：SSE（WorkflowRun 进度 / Domain Event）优先；Web Terminal 使用 WebSocket
-（xterm.js + node-pty）。
+实时通信：SSE（WorkflowRun 进度 / Domain Event）；M4.3 起订阅
+`GET /api/runs/:runId/events`（replay + 实时 + 心跳 + seq 去重，契约已审计足够）。
 
 ## 9. Backend 模块划分
 
@@ -571,13 +609,13 @@ backend/src/
 
 ```text
 PaperTeam/
-├── package.json      # 根开发入口（npm run dev / build / test 转发）
-├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 直启 Backend）
-├── frontend/         # Web 前端（论文工作台 + 系统管理后台，M4+）
+├── package.json      # 根开发入口（dev / build / typecheck / test 均覆盖前后端）
+├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 同时启动 Backend + Vite）
+├── frontend/         # React Web Workbench（React 19 + Vite，M4；见 §8）
 ├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime）
 ├── agents/           # Agent 定义与配置（AGENTS.md 等）
 ├── docker/           # Docker 部署配置
-└── docs/             # PRD、状态、架构、决策记录
+└── docs/             # PRD、状态、架构、决策记录、API Contract
 ```
 
 运行时数据均在仓库外：论文项目 workspace 在 `PROJECTS_ROOT`（默认 backend/projects/），

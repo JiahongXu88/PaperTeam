@@ -39,36 +39,43 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 | **M3.6 Runtime Baseline Upgrade**              | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（历史基线；M3.8 起 OpenClaw 不再参与运行）                                                                                                                                                        |
 | **M3.7 Pi Runtime Feasibility**                | ✅ 完成 | Side-by-side `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent` 0.84.4）全项验证（in-process 嵌入 / 三路并发 / abort / 事件 / 隔离 / Windows 零 Gateway 子进程），结论 MIGRATE TO PI（历史可行性验证）                                                                              |
 | **M3.8 Pi Runtime Migration & Contract v2**    | ✅ 完成 | **Pi 成为唯一正式 Runtime**（OpenClaw Gateway / Bootstrap / 三依赖全部移除）；`AgentRuntime` Contract v2（`startAgent` → 句柄：运行中事件流 / 取消 / result）；tool execution abort 传导实证；RuntimeStatus 去 Gateway 化；`npm run dev` 直启 Backend（零 Gateway 子进程）                                                  |
+| **M4.0-M4.2 React Web Workbench**              | ✅ 完成 | Frontend API Contract（`docs/API_CONTRACT.md` + `GET /api/projects`）；React 19 + TS + Vite + React Router + TanStack Query + Zustand 前端骨架；Project List / Create Project（双模式）/ Project Workspace；`npm run dev` 一键双进程（Backend :3000 + Vite :5173 proxy 同源）                                                          |
 
-**M3.8 Complete**：Runtime baseline 为 **Pi SDK in-process**（`@earendil-works/pi-coding-agent`
-0.84.4 精确 pin，Node.js + npm）。`npm run dev` 启动链为
-`dev.mjs → backend/dist/index.js`（Node 检查 → 依赖检查 → 构建 → 直启 Backend；
-无 Gateway 子进程 / 端口 / 握手 / state 准备）。OpenClaw 2026.9.1 是 M3.6 的历史
-baseline（M3.7 完成可行性验证，M3.8 正式迁移到 Pi）。230 个测试全部通过。
+**M4.0-M4.2 Complete**：Runtime baseline 保持 **Pi SDK in-process**
+（`@earendil-works/pi-coding-agent` 0.84.4）。React Web Workbench（React 19.2 /
+Vite 7 / react-router-dom 7.18 / @tanstack/react-query 5.102 / zustand 5.0，
+npm，`frontend/` 独立包）已落地：项目列表、创建项目（Idea-to-Paper +
+Existing-Paper 改进）、项目工作区基础壳；前端只消费
+[API\_CONTRACT.md](docs/API_CONTRACT.md) 冻结的 DTO，Runtime Status 适配 Pi
+schema（零 Gateway 字段）。`npm run dev` 同时启动 Backend（:3000）与 Vite
+Dev Server（:5173，`/api`、`/health` 同源 proxy），任一退出联动全退。
+Backend 234 + Frontend 24 个测试全部通过。
 
-**未实现（M4+）**：前端工作台（React）、Visual Reviewer、LaTeX repair loop、
-完整版本管理体验、系统管理后台、Docker 部署。
+**未实现（M4.3+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
+Review / PDF UI、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
+系统管理后台、Docker 部署。
 
 ## 文档
 
 | 文档                                                | 说明                                                |
 | ------------------------------------------------- | --- |
 | [docs/PRD.md](docs/PRD.md)                        | 产品需求文档                                            |
-| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 ~ M3.8 / M4+）                        |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      | 系统架构说明                                            |
+| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 ~ M3.8 / M4）                        |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      | 系统架构说明（§8：前端架构与状态管理边界）                         |
+| [docs/API\_CONTRACT.md](docs/API_CONTRACT.md)     | Frontend API Contract（端点 / DTO / SSE，M4.0 冻结）         |
 | [docs/DECISIONS.md](docs/DECISIONS.md)            | 技术决策记录（ADR）                                       |
 
 ## 目录结构
 
 ```text
 PaperTeam/
-├── package.json      # 根开发入口（npm run dev / build / test 转发）
-├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 直启 Backend）
-├── frontend/         # Web 前端（论文工作台 + 系统管理后台，M4+）
+├── package.json      # 根开发入口（dev / build / typecheck / test 均覆盖前后端）
+├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 同时启动 Backend + Vite）
+├── frontend/         # React Web Workbench（React 19 + Vite，M4）
 ├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime / LaTeX / 版本管理）
 ├── agents/           # Agent 定义与配置（AGENTS.md 等）
 ├── docker/           # Docker 部署配置
-└── docs/             # 项目文档
+└── docs/             # 项目文档（含 API_CONTRACT.md）
 ```
 
 ## 快速开始（Quick Start）
@@ -76,16 +83,19 @@ PaperTeam/
 ```bash
 git clone https://github.com/JiahongXu88/PaperTeam.git
 cd PaperTeam
-npm install            # 安装依赖（backend：Pi SDK 0.84.4 精确 pin）
-npm run dev            # 一键启动：PaperTeam Backend（Pi Runtime in-process）
+npm run install:all   # 安装依赖（backend：Pi SDK 0.84.4 精确 pin；frontend：React 19 + Vite）
+npm run dev           # 一键启动：Backend + React Workbench
 ```
 
 `npm run dev` 会自动完成：
 
 1. Node 版本检查（复用根 package.json 的 `engines.node`：`>=22.22.3 <23` / `>=24.15.0 <25` / `>=25.9.0`，Node 26+ 可用）
-2. backend 依赖安装与构建（缺失时自动 `npm install` + `tsc`）
-3. 启动 PaperTeam Backend（`http://localhost:3000`，Pi SDK 以 in-process 方式嵌入，无 Gateway 子进程）
-4. `Ctrl+C` 优雅关闭（Backend 取消活跃 run、收敛 Runtime、落盘 checkpoint 后退出）
+2. backend / frontend 依赖安装与 backend 构建（缺失时自动 `npm install` + `tsc`）
+3. 同时启动两个进程（日志带 `[backend]` / `[vite]` 前缀）：
+   - **PaperTeam Backend**：`http://localhost:3000`（Pi SDK in-process，无 Gateway 子进程）
+   - **React Workbench（Vite Dev Server）**：`http://localhost:5173`（`/api`、`/health` 同源 proxy 到 Backend，无 CORS）
+4. 浏览器打开 **http://localhost:5173** —— 项目列表 / 新建项目 / 项目工作台
+5. `Ctrl+C` 同时退出两个进程（任一子进程退出也会联动全退；端口 3000/5173 释放）
 
 ### 配置模型（可选但 Agent 调用必需）
 
@@ -117,25 +127,30 @@ curl http://localhost:3000/health                # 存活探针（含 Pi Runtime
 curl http://localhost:3000/api/runtime/status    # runtime/agents/model/sessions 全景诊断
 ```
 
-### 开发调试（backend 单独运行 / 测试）
+### 开发调试（单独运行 / 测试）
 
 ```bash
-cd backend
-npm install
-npm test              # 230 个测试
-npm run typecheck && npm run build
-# 单独启动 backend（Pi Runtime in-process，无需任何外部 Runtime）：
-npm start
+# 根目录一键（前后端一起）：
+npm run build          # backend tsc + frontend tsc --noEmit + vite build
+npm run typecheck      # backend + frontend
+npm test               # backend 234 + frontend 24 个测试
+
+# backend 单独：
+cd backend && npm start          # Pi Runtime in-process，无需任何外部 Runtime
+
+# frontend 单独（需要 backend 在 :3000 运行，或用 proxy 目标）：
+cd frontend && npm run dev       # Vite Dev Server :5173
 ```
 
 当前提供的 API（Node 原生 HTTP，无 Web 框架；完整清单见
-[PROJECT\_STATUS.md](docs/PROJECT_STATUS.md)「M3 API 一览」）：
+[API\_CONTRACT.md](docs/API_CONTRACT.md)）：
 
 ```text
 GET    /health                                存活探针（含 Pi Runtime 实时健康）
 GET    /api/runtime/status                    Runtime 诊断（runtime/agents/model/sessions）
 
 ── 主入口：Workflow API ──
+GET    /api/projects                          项目列表（M4.0，updatedAt 降序）
 POST   /api/projects                          创建论文项目（含研究定位字段）
 POST   /api/projects/:id/workflows            创建异步 WorkflowRun → {runId}
 GET    /api/runs/:runId                       run 状态 / 当前 stage / HITL 待办
@@ -178,7 +193,8 @@ Project ≠ Session：Session 是可重建的 Runtime Context，不承担项目�
 
 参考 [.env.example](.env.example)：复制为 `.env` 后填入真实值。`.env` 已被 Git 忽略，
 **不要提交任何真实 Key**。模型配置（`PAPERTEAM_PI_MODEL` / `PAPERTEAM_PI_API_KEY`）
-见上文「配置模型」。
+见上文「配置模型」。端口：`PAPERTEAM_PORT`（默认 3000）同时作用于 Backend 监听与
+Vite proxy 目标；前端 API Base 可用 `VITE_API_BASE_URL` 改写（缺省同源相对路径）。
 
 ## Runtime 说明（M3.8）
 

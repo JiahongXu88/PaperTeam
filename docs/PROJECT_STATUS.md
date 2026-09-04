@@ -1,20 +1,30 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-04（M3.8 Pi Runtime Migration & Runtime Contract v2 完成后）
+> 更新日期：2026-09-04（M4.0-M4.2 React Web Workbench 完成后）
 
 ## 当前阶段
 
-**M3.8 Complete（M3.0 → M3.1 → M3.2 → M3.5 Runtime Bootstrap → M3.6 Runtime
-Baseline Upgrade → M3.7 Pi Runtime Feasibility → M3.8 Pi Runtime Migration &
-Contract v2）。Pi SDK（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin）成为
-**唯一正式 Runtime baseline**：in-process 嵌入、零 Gateway 子进程 / 端口 /
-WebSocket / 握手 / RPC。OpenClaw 全套基础设施（Runtime Adapter / Gateway
-client / Bootstrap / supervisor / runtime.json / 三处依赖）已随 M3.8 移除
-（git 历史即回退机制）。`AgentRuntime` 契约升级 v2：`startAgent()` 立即返回
-句柄（taskId 即时可得；运行中可消费事件流、可取消、result 单独 await）；
-tool execution 的 AbortSignal 取消传导经真实 SDK 实证。
-下一阶段：M4 Not Started（前端工作台 React 19 + TypeScript + Vite、
-Visual Reviewer、LaTeX repair loop、完整版本管理）。**
+**M4.0-M4.2 Complete（M4.0 Frontend API Contract → M4.1 React Frontend
+Skeleton → M4.2 Project Workbench）。React Web Workbench 已落地：React 19 +
+TypeScript + Vite + React Router 7 + TanStack Query 5 + Zustand 5（npm，
+frontend/ 独立包）；`npm run dev` 一键双进程（Backend :3000 + Vite :5173，
+`/api`、`/health` 经 Vite proxy 同源转发，任一退出联动全退）。前端只消费
+[API_CONTRACT.md](API_CONTRACT.md) 冻结的 DTO，不依赖 Backend 内部对象；
+Runtime Status 完全适配 M3.8 Pi schema（无任何 Gateway 字段）。Project
+List / Create Project（双模式）/ Project Workspace 基础壳就绪。
+下一阶段：M4.3 Workflow Live View + SSE + Cancel。**
+
+## M4.0-M4.2 — React Web Workbench（✅ 完成，2026-09-04）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| M4.0 API Contract | ✅ 完成 | 新增 `docs/API_CONTRACT.md`（端点清单 / DTO / SSE 载荷 / 变更纪律）；审计确认 Backend 已有全部 Project/Workflow/Run/SSE/Evidence/Review/Import 端点，唯一缺口 `GET /api/projects` 已补（`ProjectStore.listMetadata()`，updatedAt 降序，损坏 project.json 跳过）；DTO 边界：Pi AgentSession / Pi event / AgentRunHandle / WorkflowState 全量不进前端 |
+| M4.1 Frontend Skeleton | ✅ 完成 | `frontend/` 独立 npm 包：React 19.2 / TS 5.9（strict）/ Vite 7 / react-router-dom 7.18 / @tanstack/react-query 5.102 / zustand 5.0；目录 `api/ components/ pages/ router/ stores/ hooks/ types/ constants/ utils/ styles/`；统一 API Client（ApiError：status/code/NETWORK_ERROR 收敛，404 判定）；Server State 全走 TanStack Query（retry 仅 5xx/网络错误），UI State 走 Zustand（唯一状态：模型未配置横幅 dismiss）；路由 `/`→redirect、`/projects`、`/projects/new`、`/projects/:projectId`、`*`→404；顶栏 RuntimeStatusChip（30s 轮询，Pi schema）+ 模型未配置横幅 |
+| M4.2 Project Workbench | ✅ 完成 | ProjectsPage（列表/空态/错误重试/真实字段卡片）；NewProjectPage（Idea-to-Paper 全字段表单 + 双模式选择；校验镜像 Backend 长度上限；Existing-Paper 显示「导入 API 已开放、上传 UI 后续提供」如实提示）；ProjectPage（研究定位真实字段 + WorkflowRun 记录表 + Workflow/Evidence/Review/Artifacts 导航入口标注 M4.3-M4.7，无 mock 数据）；loading/empty/error/not found/form validation/retry/响应式齐备 |
+| Dev 双进程 | ✅ 完成 | `scripts/dev.mjs`：backend 依赖/构建检查 + frontend 依赖检查 → 同时 spawn `backend/dist/index.js`（[backend] 前缀）与 Vite（[vite] 前缀）；任一子进程退出 → taskkill 进程树联动退出；Windows 实测 vite 被杀 → backend 联动 → 3000/5173 全释放；根脚本 `build/typecheck/test` 覆盖前后端 |
+| 测试 | ✅ 通过 | Backend 234/234（新增 4：GET /api/projects ×3 + listMetadata 排序）；Frontend 24/24（apiClient 6 / projectsApi 4 / ProjectsPage 5 / NewProjectPage 4 / routing 5；Vitest 3 + RTL，`globals: false` 下显式 cleanup）；前端 `tsc --noEmit` 与 production build 通过 |
+
+## M3.8 — Pi Runtime Migration & Runtime Contract v2（✅ 完成，2026-09-04）
 
 M3 交付两条一级业务工作流（真实编排引擎 + 真实业务服务，测试中以脚本化 Agent Runtime 全链路验证）：
 
