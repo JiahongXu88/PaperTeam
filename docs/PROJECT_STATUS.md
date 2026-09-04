@@ -1,6 +1,6 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-04（M4.0-M4.2 React Web Workbench 完成后）
+> 更新日期：2026-09-05（M4.2.5 Live Model Integration Gate 完成后）
 
 ## 当前阶段
 
@@ -12,7 +12,10 @@ frontend/ 独立包）；`npm run dev` 一键双进程（Backend :3000 + Vite :5
 [API_CONTRACT.md](API_CONTRACT.md) 冻结的 DTO，不依赖 Backend 内部对象；
 Runtime Status 完全适配 M3.8 Pi schema（无任何 Gateway 字段）。Project
 List / Create Project（双模式）/ Project Workspace 基础壳就绪。
-下一阶段：M4.3 Workflow Live View + SSE + Cancel。**
+**M4.2.5 Live Model Integration Gate ✅（2026-09-05）：真实 Provider
+`zai-coding-cn/glm-5.3` 经运行中 Backend 全链路验证（单 Agent smoke /
+live SSE / Workflow 至首个 HITL / 真实 cancel），L3 Live Provider E2E
+verified（见下）。下一阶段：M4.3 Workflow Live View + SSE + Cancel。**
 
 ## M4.0-M4.2 — React Web Workbench（✅ 完成，2026-09-04）
 
@@ -23,6 +26,19 @@ List / Create Project（双模式）/ Project Workspace 基础壳就绪。
 | M4.2 Project Workbench | ✅ 完成 | ProjectsPage（列表/空态/错误重试/真实字段卡片）；NewProjectPage（Idea-to-Paper 全字段表单 + 双模式选择；校验镜像 Backend 长度上限；Existing-Paper 显示「导入 API 已开放、上传 UI 后续提供」如实提示）；ProjectPage（研究定位真实字段 + WorkflowRun 记录表 + Workflow/Evidence/Review/Artifacts 导航入口标注 M4.3-M4.7，无 mock 数据）；loading/empty/error/not found/form validation/retry/响应式齐备 |
 | Dev 双进程 | ✅ 完成 | `scripts/dev.mjs`：backend 依赖/构建检查 + frontend 依赖检查 → 同时 spawn `backend/dist/index.js`（[backend] 前缀）与 Vite（[vite] 前缀）；任一子进程退出 → taskkill 进程树联动退出；Windows 实测 vite 被杀 → backend 联动 → 3000/5173 全释放；根脚本 `build/typecheck/test` 覆盖前后端 |
 | 测试 | ✅ 通过 | Backend 234/234（新增 4：GET /api/projects ×3 + listMetadata 排序）；Frontend 24/24（apiClient 6 / projectsApi 4 / ProjectsPage 5 / NewProjectPage 4 / routing 5；Vitest 3 + RTL，`globals: false` 下显式 cleanup）；前端 `tsc --noEmit` 与 production build 通过 |
+
+## M4.2.5 — Live Model Integration Gate（✅ PASS，2026-09-05）
+
+验证型里程碑（无代码改动）。真实 Provider `zai-coding-cn/glm-5.3`（Pi 0.84.4 in-process，`model.phase=configured`）经**运行中 Backend 的公开 HTTP API** 完成 L3 全链路验证。四项验证：
+
+| 项 | 结果 | 说明 |
+|---|---|---|
+| 单 Agent live smoke | ✅ | `POST /api/projects/:id/generate`（Writer 真实 GLM 调用 10.3s，`manuscript/main.tex` 落盘 1657 字符，内容切题非模板；LaTeX 编译因本机无 TeX 工具 graceful 降级） |
+| live 事件流 | ✅ | SSE `GET /api/runs/:runId/events`：replay 边界清晰（`: replay 完成` 注释），此后 4 条 **LIVE** 域事件按 seq 递增实时到达（research.idea 完成 +248s、feasibility 完成 +348s、awaiting_input +348s），stageId 归属正确 |
+| Workflow E2E 至首个 HITL | ✅ | run `w-93366adfc650`（项目 `p-b76342cc5b69`）：research.idea（真实 GLM 248s，6 gaps / 21 bibliography / 12 evidence）→ research.feasibility（100s，level=LOW）→ `hitl.feasibility_confirm` **awaiting_input**；checkpoint/events.jsonl/stage 记录/research/feasibility 产物全落盘；activeRuns 归零、managedSessions=3 |
+| 真实 cancel | ✅ | run `w-5386755ccb0c`（项目 `p-1131d9dd8cad`）：research.idea 真实生成中（activeRuns=1）POST cancel → 边界语义（在途 LLM 跑完提交结果，循环检查点终结）→ `workflow.cancelled`，终态 cancelled；同项目 run `w-43719502d7c0` 在**复用的同一 research 会话**上新 taskId 完成 research（58s）→ cancel 后会话可复用；全程 runtime healthy |
+
+验证边界（如实记录）：AgentEvent 级（message_update 增量）事件与 AgentRuntime 级 mid-stream `session.abort()` 对真实 Provider 的直接观测，因凭据仅存在于运行中 Backend 进程（`PAPERTEAM_PI_API_KEY` → `setRuntimeApiKey` 仅内存，不落盘；子进程脚本 `modelStatus=not_configured`，符合设计）而无公开观测面——前者经 M3.8 L2（真实 SDK + fauxProvider 假流）覆盖同一映射代码，后者以 Workflow 边界 cancel + runAgent 幂等语义间接验证。凭据安全：Key 未落盘/未入日志/未入库（工作区产物 0 命中；`.env.example` 仅占位符）；Pi 全程 in-process（无 Gateway 进程、无 18789/18790 端口）；回归 build/typecheck/test 全绿（234+24）。测试项目保留：`p-b76342cc5b69`（M4.2.5 Live Model E2E，停于 HITL，可作 M4.3 实时 Workflow UI 演示）、`p-1131d9dd8cad`（M4.2.5 Live Cancel Test，cancelled ×2）。
 
 ## M3.8 — Pi Runtime Migration & Runtime Contract v2（✅ 完成，2026-09-04）
 
@@ -55,7 +71,7 @@ Side-by-side 可行性验证：不改变默认 Runtime（当时为 openclaw）�
 |---|---|---|
 | PiRuntimeAdapter | ✅ 完成 | 官方 `createAgentSession()` in-process 嵌入（无子进程 / RPC / Gateway）；会话 = `SessionManager.inMemory(cwd)`（Runtime session 可丢弃，Workspace/checkpoint 是事实源）；sessionKey 派生与 OpenClaw 完全一致（`runtime/sessionKey.ts` 共享，GenerationService 显式透传兼容）；per-session 串行 + 跨 session 并发（创建 in-flight 去重）；timeout = 定时器 + `session.abort()`；auto-compaction 经 in-memory settings 关闭 |
 | 角色 → Pi 配置映射 | ✅ 完成 | contextScope 前缀 → researcher/writer/reviewer/default：`systemPromptOverride` + 工具白名单（researcher/reviewer 只读，writer 可写文件，无人持有 shell）；systemPrompt 到达 LLM 上下文有 L2 测试实证 |
-| 验证分层 | ✅ L1+L2 / L3 NOT VERIFIED | L1 fake session 纯单元 + L2 真实 SDK + 官方 `fauxProvider` 假流：初始化 / 健康 / runAgent 成败 / timeout / 事件顺序与归属 / **abort（LLM 流中取消 → cancelled，会话可复用）** / session 复用 / project·contextScope 隔离 / **Reviewer 三路并发（独立会话、输出不串）** / close·dispose；L3 真实 provider LLM 因本机无凭据 NOT VERIFIED（未伪造） |
+| 验证分层 | ✅ L1+L2 / **L3 verified（2026-09-05）** | L1 fake session 纯单元 + L2 真实 SDK + 官方 `fauxProvider` 假流：初始化 / 健康 / runAgent 成败 / timeout / 事件顺序与归属 / **abort（LLM 流中取消 → cancelled，会话可复用）** / session 复用 / project·contextScope 隔离 / **Reviewer 三路并发（独立会话、输出不串）** / close·dispose；L3 真实 provider LLM 于 M4.2.5 经运行中 Backend + `zai-coding-cn/glm-5.3` 验证（见 M4.2.5 节） |
 | Windows 生命周期 | ✅ 实测 | pi 模式 Backend：零子进程、不占 Gateway 端口（18790）、kill 后无孤儿、端口释放；OpenClaw 基线 `npm run dev` 同日复验正常（Gateway 7.6s ready、health 200、优雅关闭） |
 | 回归 | ✅ 通过 | `npm run build` / `npm run typecheck` / `npm test` 280/280（零回归）；顺带修复全量并发下偶发的 orchestrator cancel/awaiting_input 竞态（独立 commit） |
 | 结论 | **MIGRATE TO PI（建议）** | P0 验证项全部通过；正式迁移由 **M3.8 执行完毕**（本表为历史记录） |
@@ -187,7 +203,7 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 
 以下为**环境验证缺口，不是设计决策，不阻塞代码交付**：
 
-1. **带真实模型凭据的完整 Idea-to-Paper E2E**：M3.7/M3.8 已用真实 Pi SDK + 官方 fauxProvider 验证全部 Runtime 语义（初始化 / 单轮 / 事件 / 取消 / 工具取消 / 并发 / 隔离）；**L3 真实 provider LLM 因本机无凭据 NOT VERIFIED**（不伪造）。配置方法：设置 `PAPERTEAM_PI_MODEL` + `PAPERTEAM_PI_API_KEY`（或 agentDir auth.json）后重启 `npm run dev`。
+1. **带真实模型凭据的完整 Idea-to-Paper E2E**：M3.7/M3.8 已用真实 Pi SDK + 官方 fauxProvider 验证全部 Runtime 语义（初始化 / 单轮 / 事件 / 取消 / 工具取消 / 并发 / 隔离）；**L3 Live Provider E2E 已于 M4.2.5（2026-09-05）verified**——真实 `zai-coding-cn/glm-5.3` 经运行中 Backend 验证单 Agent / SSE / Workflow 至首个 HITL / cancel（见 M4.2.5 节）。HITL resume 之后的完整论文链（Outline → 写作 → 审稿 → 修订 → PDF）仍未跑真实模型（有意节省额度，M4.3+ 按需）。
 2. **TeX Live 真实编译**：本机未安装 pdflatex/xelatex/latexmk；LatexCompiler 与 Build Gate 的编译路径经注入式 runner 覆盖，真实 PDF 编译待有 TeX 环境的机器验证。
 3. **多模态 PDF 视觉级分析 E2E**：依赖具备视觉/PDF 能力的模型与沙箱路径授权，当前环境无法真实跑通（返回 capability-gap 如实报告，不伪造成功）。
 4. **Citation metadata providers 真实网络**：真实限流与响应形态待部署环境观察。
@@ -198,7 +214,7 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 2. EvidenceStore 的 update/markUsage 是全量原子重写（规模内可接受）；索引/数据库迁移条件仍按未决问题 2 评估。
 3. 修订循环对「需要改 bib 本身」的引用问题只能删除/弱化引用，不会替用户新造文献条目（有意为之：防伪造引用）；bib 自动新增策略未实现，补文献属于 Researcher/用户输入路径。
 4. Pi compaction abort 未验证（上游边界）：auto-compaction 已禁用、manual compact 未使用；若未来启用需专项验证其取消边界。
-5. Level 3 真实 provider LLM E2E 未验证（本机无凭据；L1+L2 已覆盖全部 Runtime 语义，不阻塞 M4）。
+5. Workflow cancel 为边界语义（stage 服务不监听 AbortSignal，在途 LLM 调用跑完后于循环检查点终结；M4.2.5 真实验证确认）；AgentRuntime 级 mid-stream abort 对真实 Provider 的直接观测无公开 API 面（L2 已覆盖同一代码路径）。
 6. Windows 下若 dev 父进程被外部硬杀（非 Ctrl+C），Backend 进程可能残留（正常 Ctrl+C 已验证优雅退出）；Pi 路径无任何 Runtime 子进程，硬杀 Backend 即全部回收。
 
 （M3.5~M3.7 时代与 OpenClaw Gateway 相关的遗留项——runAgent 每次连接、Windows Gateway 硬杀孤儿、Gateway 版本 RPC、Bootstrap/生命周期——已随 M3.8 迁移消失，从本清单移除。）
@@ -211,6 +227,7 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 
 ## 历史
 
+- **M4.2.5 Live Model Integration Gate**：验证型里程碑（无代码改动）——真实 Provider `zai-coding-cn/glm-5.3` 经运行中 Backend 公开 API 完成 L3 验证：单 Agent smoke（10.3s 真实输出）、live SSE（4 条 LIVE 域事件实时推送）、Workflow E2E 至首个 HITL（checkpoint 全落盘）、真实 cancel（边界语义 + 会话复用）；凭据零泄漏，Pi 全程 in-process，234+24 测试零回归。
 - **M3.8 Pi Runtime Migration & Contract v2**：Pi 成为唯一正式 Runtime（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin）；OpenClaw 全套基础设施（Adapter / Gateway client / Bootstrap / supervisor / runtime.json / 三依赖）移除；`AgentRuntime` Contract v2（startAgent → 句柄：运行中事件流 / 取消 / result）；tool execution AbortSignal 取消传导实证；RuntimeStatus 去 Gateway 化；dev 直启 Backend；230 测试。**Pi + Node.js + npm 固化为 M4 Runtime baseline。**
 - **M3.7 Pi Runtime Feasibility**：Side-by-side PiRuntimeAdapter 全项验证（in-process / 三路并发 / abort / 事件 / 隔离 / Windows 零 Gateway 子进程），结论 MIGRATE TO PI；280 测试。
 - **M3.6 Runtime Baseline Upgrade**：OpenClaw 全家桶 2026.8.2 → **2026.9.1**（历史 baseline；Node 兼容检查收敛到根 package.json engines；runtime.json 存量版本自动迁移；255 测试 + 真机 Gateway E2E 回归）。
