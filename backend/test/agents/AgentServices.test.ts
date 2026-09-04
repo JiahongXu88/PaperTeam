@@ -26,40 +26,42 @@ afterAll(async () => {
 });
 
 function runtimeReturning(output: () => string): AgentRuntime {
+  const makeTask = (agentId: string): AgentTask => {
+    const now = new Date().toISOString();
+    return {
+      taskId: "run-agent-test",
+      agentId,
+      status: "completed",
+      createdAt: now,
+      updatedAt: now,
+      output: output(),
+    };
+  };
   return {
-    provider: "openclaw",
+    provider: "pi",
     healthCheck: async () => ({
       ok: true,
-      provider: "openclaw",
+      provider: "pi",
       status: "healthy",
       detail: "ok",
       latencyMs: 1,
       checkedAt: new Date().toISOString(),
     }),
-    runAgent: async (input) => {
-      const now = new Date().toISOString();
-      const task: AgentTask = {
-        taskId: "run-agent-test",
-        agentId: input.agentId,
-        status: "completed",
-        createdAt: now,
-        updatedAt: now,
-        output: output(),
+    startAgent: async (input) => {
+      const task = makeTask(input.agentId);
+      return {
+        taskId: task.taskId,
+        sessionKey: `agent:${input.agentId}:paperteam-fake`,
+        events: async function* () {},
+        cancel: async () => {},
+        result: async () => task,
       };
-      return task;
     },
+    runAgent: async (input) => makeTask(input.agentId),
     getTask: () => {
       throw new Error("not implemented");
     },
-    cancelTask: () => {
-      throw new Error("not implemented");
-    },
-    sendMessage: () => {
-      throw new Error("not implemented");
-    },
-    streamEvents: () => {
-      throw new Error("not implemented");
-    },
+    close: async () => {},
   };
 }
 

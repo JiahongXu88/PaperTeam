@@ -21,7 +21,7 @@
 ## D-0002 使用 OpenClaw 作为 Agent Runtime
 
 - **日期**：2026-08-31
-- **状态**：accepted
+- **状态**：superseded（Runtime 本体由 D-0020 取代：M3.8 迁移到 Pi in-process）
 
 **背景**：Agent Team 需要 Session、Task、事件流、多 Agent 调度等成熟能力，自研成本高。
 
@@ -252,7 +252,9 @@ Agent 沙箱可读 PROJECTS_ROOT），列为 Non-blocking Validation Gap；确�
 ## D-0018 业务角色默认映射单一 OpenClaw agent（main），隔离靠 contextScope；PaperTeam 拥有独立 OpenClaw Runtime
 
 - **日期**：2026-09-03
-- **状态**：accepted（M3.5 Runtime Bootstrap 实现时冻结）
+- **状态**：accepted（部分取代：「独立 OpenClaw Runtime」部分由 D-0020 取代——OpenClaw
+  实例与 Bootstrap 已移除；「方案 A」（角色不拆独立 agent、隔离靠 contextScope、
+  会话标识默认 main）在 Pi 下延续）（M3.5 Runtime Bootstrap 实现时冻结）
 
 **背景**：两个问题一起决策。(1) M3 的四个业务角色（Researcher / Writer /
 Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此前真实 smoke 暴露
@@ -293,7 +295,8 @@ Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此
 ## D-0019 M3.7 Runtime Feasibility：新增 side-by-side PiRuntimeAdapter，默认 Runtime 仍为 OpenClaw
 
 - **日期**：2026-09-04
-- **状态**：accepted（M3.7 完成时冻结；正式迁移另立决策）
+- **状态**：accepted（M3.7 完成时冻结；「默认仍为 OpenClaw / side-by-side 保留」
+  部分由 D-0020 取代，正式迁移已执行）
 
 **背景**：评估「PaperTeam 直接嵌入 Pi SDK（@earendil-works/pi-coding-agent
 0.84.4，官方 embedding API）」是否比「经 OpenClaw Gateway 子进程」更合适。触发
@@ -323,3 +326,50 @@ Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此
 v1 限制对上层暂不可达，`listActiveTasks()` 为 v2 的最小 seam）。正式迁移（默认
 切换、OpenClaw 退役）留待后续任务与独立决策；Level 3 真实 provider LLM E2E
 因本机无凭据 NOT VERIFIED，迁移前建议补做。
+
+---
+
+## D-0020 M3.8 Pi Runtime Migration：Pi 成为唯一正式 Runtime；AgentRuntime 契约升级 v2
+
+- **日期**：2026-09-04
+- **状态**：accepted
+
+**背景**：M3.7（D-0019）以 side-by-side 方式完成 Pi 可行性验证，结论 MIGRATE TO
+PI：Pi 以 in-process 架构（无 Gateway / WebSocket / 握手 / RPC 轮询 / 子进程 /
+端口）覆盖 PaperTeam 当前全部 Runtime 需求。同时 AgentRuntime Contract v1 存在
+结构性缺陷——`runAgent()` 阻塞到任务终态才返回，调用方运行期间拿不到 taskId，
+`cancelTask` / `streamEvents` 对上层天然不可达——而 M4 前端需要实时状态展示与
+运行中取消。
+
+**决策**：
+
+1. **Pi 为唯一正式 Runtime**：`@earendil-works/pi-coding-agent` 0.84.4 精确 pin，
+   in-process 嵌入。删除 `PAPERTEAM_AGENT_RUNTIME` selector 与双 Runtime 装配分支
+   ——不为「可能切回」保留一套不用的 Runtime，git 历史即回退机制。
+2. **OpenClaw 全套退役**：OpenClawRuntimeAdapter、Gateway client（WebSocket /
+   握手 / RPC / health）、Runtime Bootstrap（runtime.json / token / port /
+   supervisor / state 准备）、三个 npm 依赖（openclaw、@openclaw/gateway-client、
+   @openclaw/gateway-protocol）全部移除；用户磁盘旧 state 无害忽略。
+3. **AgentRuntime Contract v2**：`startAgent(input)` 立即返回
+   `AgentRunHandle{taskId, sessionKey, events(), cancel(), result()}`——taskId
+   在执行开始时即可得（排队不阻塞句柄）；事件流 replay + live、settle 后自然
+   结束；取消幂等（queued 短路 / running 真实 abort）；result Promise 缓存；
+   close 收敛全部 active run。`runAgent()` 保留为 start + await result 的
+   convenience（既有业务调用点零改动）。v1 的 cancelTask / streamEvents /
+   sendMessage 从契约移除；getTask 保留（已完结任务回溯）。
+4. **事件与取消的归一化边界**：Pi 原始事件对象不透传业务层（Pi Event →
+   AgentEvent → Domain Event → SSE）。取消归因以 Adapter 侧取消意图
+   （cancelRequested）为准——工具执行中 abort 时 SDK 终态为
+   `stopReason="error" + "This operation was aborted"`（LLM 流中断才是
+   `"aborted"`），不依赖 SDK 的 stopReason 编码差异。
+5. **dev 直启**：`npm run dev` = Node 检查 → 依赖检查 → 构建 → 直启
+   backend/dist/index.js；无 Gateway 子进程 / 端口 / state 准备。
+6. **RuntimeStatus 去 Gateway 化**：诊断形状为 runtime（provider/phase/version）+
+   model（configured/not_configured）+ agents + sessions；Runtime 健康 ≠ 模型
+   就绪（无 API Key = runtime healthy + model not_configured）。
+
+**影响**：M3 业务层零改动（runAgent convenience 保持语义）；Reviewer 三路并发 /
+隔离 / checkpoint 恢复等全量回归通过；tool execution 的 AbortSignal 取消传导
+经真实 SDK（fauxProvider + customTools 慢工具）专项实证；测试从 280 调整为 230
+（OpenClaw 架构专属测试随架构删除，v2 语义新增覆盖）。未来需要 Web Search 等
+扩展能力时优先 Pi custom tool / MCP / 独立服务，不为单一工具恢复完整 Gateway。

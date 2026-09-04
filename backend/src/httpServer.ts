@@ -26,7 +26,7 @@ import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
  * Backend 自身的轻量 HTTP 服务（Node 原生 http，无 Web 框架）。
  *
  * M3 端点：
- *   GET    /health                                  存活探针（含 Gateway 实时健康）
+ *   GET    /health                                  存活探针（含 Pi Runtime 实时健康）
  *   POST   /api/projects                            创建论文项目 {title, researchIdea?, …}
  *   GET    /api/projects/:id                        查询项目元数据
  *   PATCH  /api/projects/:id                        更新研究定位字段

@@ -2,9 +2,8 @@
  * Runtime 会话标识的统一派生（M3.7 从 OpenClawRuntimeAdapter 抽出共享）。
  *
  * 派生规则（M3.0，ARCHITECTURE §6.3）是 PaperTeam 的业务事实，与具体
- * Runtime 实现无关——OpenClawRuntimeAdapter 与 PiRuntimeAdapter 必须产生
- * 完全一致的 sessionKey，保证 A/B 切换时上层（如 GenerationService 的
- * sessionKey 透传/回写）语义不变：
+ * Runtime 实现无关——PiRuntimeAdapter 按本规则产生稳定 sessionKey，
+ * 上层（如 GenerationService 的 sessionKey 透传/回写）语义不随实现变化：
  *   显式复用 > 按 projectId（+ contextScope）派生 > undefined（由实现兜底）
  */
 

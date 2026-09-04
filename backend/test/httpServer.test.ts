@@ -8,24 +8,27 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createBackendHttpServer } from "../src/httpServer.js";
 import { LatexCompiler, type CommandRunner } from "../src/latex/LatexCompiler.js";
 import { ProjectStore } from "../src/project/ProjectStore.js";
-import { OpenClawRuntimeAdapter } from "../src/runtime/OpenClawRuntimeAdapter.js";
-import type { AgentRuntime, RuntimeHealth } from "../src/runtime/types.js";
+import { AgentRunFailedError } from "../src/errors.js";
+import type {
+  AgentRuntime,
+  AgentRunHandle,
+  AgentTask,
+  RunAgentInput,
+  RuntimeHealth,
+} from "../src/runtime/types.js";
 import { buildServiceStack } from "../src/serviceStack.js";
 import { createIdeaToPaperDefinition } from "../src/workflow/definitions.js";
 import { WorkflowOrchestrator } from "../src/workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "../src/workflow/runStore.js";
-import { defaultHandler, startMockGateway, type MockGateway } from "./helpers/mockGateway.js";
 
 const servers: Server[] = [];
 const tempRoots: string[] = [];
-const gateways: MockGateway[] = [];
 const orchestrators: WorkflowOrchestrator[] = [];
 
 afterAll(async () => {
   await Promise.all([
     ...servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
     ...tempRoots.map((root) => rm(root, { recursive: true, force: true })),
-    ...gateways.map((gateway) => gateway.close()),
     ...orchestrators.map((orchestrator) => orchestrator.close()),
   ]);
 });
@@ -65,7 +68,7 @@ describe("Backend HTTP /health（M1 行为保持）", () => {
     const body = await getJson(server, "/health");
 
     expect(body.status).toBe("ok");
-    expect(body.runtime?.provider).toBe("openclaw");
+    expect(body.runtime?.provider).toBe("pi");
     expect(body.runtime?.ok).toBe(true);
     expect(body.runtime?.status).toBe("healthy");
     expect(typeof body.runtime?.detail).toBe("string");
@@ -137,42 +140,8 @@ describe("POST /api/projects（项目创建）", () => {
 });
 
 describe("POST /api/projects/:id/generate（全链路）", () => {
-  afterEach(() => {
-    // gateway 由 gateways 数组统一回收
-  });
-
-  it("成功路径：HTTP → Project → Writer → runAgent(WS mock Gateway) → main.tex → 编译(mock) → 200", async () => {
-    const gateway = await startMockGateway({
-      handler: (method, params) => {
-        if (method === "agent") {
-          // 2026.8.1 官方验收 payload（status=accepted + acceptedAt）
-          return {
-            ok: true,
-            payload: {
-              runId: "run-http-1",
-              sessionKey: "agent:writer:paperteam-s-http",
-              agentId: "writer",
-              status: "accepted",
-              acceptedAt: Date.now(),
-            },
-          };
-        }
-        if (method === "agent.wait") {
-          return { ok: true, payload: { runId: "run-http-1", status: "ok" } };
-        }
-        if (method === "chat.history") {
-          return { ok: true, payload: { messages: [{ role: "assistant", text: LATEX_DOC }] } };
-        }
-        return defaultHandler()(method, params);
-      },
-    });
-    gateways.push(gateway);
-
-    const runtime = new OpenClawRuntimeAdapter({
-      baseUrl: gateway.httpUrl,
-      rpcTimeoutMs: 2_000,
-      log: () => {},
-    });
+  it("成功路径：HTTP → Project → Writer → runAgent(脚本化 Runtime) → main.tex → 编译(mock) → 200", async () => {
+    const runtime = recordingLatexRuntime();
     const { server, store } = await startApiStack(runtime, { latexRunner: fakeSuccessfulRunner });
     const created = await store.create("全链路测试");
 
@@ -203,49 +172,17 @@ describe("POST /api/projects/:id/generate（全链路）", () => {
     expect(pdf).toContain("%PDF-1.5");
     // 项目状态已更新
     expect((await store.get(created.id))?.status).toBe("generated");
-    // Gateway 收到的 writer prompt 含用户任务
-    const agentRequest = gateway.requests.find((request) => request.method === "agent");
-    expect((agentRequest?.params["message"] as string)).toContain("RAG");
-    // M2.1 会话映射：按 projectId 派生 sessionKey，成功后写回 project.json
-    expect(agentRequest?.params["sessionKey"]).toBe(`agent:writer:paperteam-${created.id}`);
+    // Runtime 收到的 writer prompt 含用户任务
+    expect(runtime.calls[0]?.task).toContain("RAG");
+    // 会话映射：首次调用不透传（Runtime 侧按 projectId 派生并在 metadata 回显），
+    // 成功后派生 key 写回 project.json
+    expect(runtime.calls[0]?.sessionKey).toBeUndefined();
     const persisted = await store.get(created.id);
-    expect(persisted?.runtimeSessionKey).toBe("agent:writer:paperteam-s-http");
+    expect(persisted?.runtimeSessionKey).toBe(`agent:writer:paperteam-${created.id}`);
   });
 
   it("会话连续性：第二次 generate 复用 project.json 中持久化的 runtimeSessionKey", async () => {
-    const seenSessionKeys: string[] = [];
-    const gateway = await startMockGateway({
-      handler: (method, params) => {
-        if (method === "agent") {
-          const key = String(params["sessionKey"] ?? "");
-          seenSessionKeys.push(key);
-          return {
-            ok: true,
-            payload: {
-              runId: `run-http-${seenSessionKeys.length}`,
-              sessionKey: key,
-              agentId: "writer",
-              status: "accepted",
-              acceptedAt: Date.now(),
-            },
-          };
-        }
-        if (method === "agent.wait") {
-          return { ok: true, payload: { status: "ok" } };
-        }
-        if (method === "chat.history") {
-          return { ok: true, payload: { messages: [{ role: "assistant", text: LATEX_DOC }] } };
-        }
-        return defaultHandler()(method, params);
-      },
-    });
-    gateways.push(gateway);
-
-    const runtime = new OpenClawRuntimeAdapter({
-      baseUrl: gateway.httpUrl,
-      rpcTimeoutMs: 2_000,
-      log: () => {},
-    });
+    const runtime = recordingLatexRuntime();
     const { server, store } = await startApiStack(runtime, { latexRunner: fakeSuccessfulRunner });
     const created = await store.create("会话连续性测试");
 
@@ -259,32 +196,15 @@ describe("POST /api/projects/:id/generate（全链路）", () => {
       expect(response.status).toBe(200);
     }
 
-    // 第一轮：按 projectId 派生；第二轮：复用第一轮网关返回并持久化的 key
-    expect(seenSessionKeys).toEqual([
-      `agent:writer:paperteam-${created.id}`,
-      `agent:writer:paperteam-${created.id}`,
-    ]);
-    expect((await store.get(created.id))?.runtimeSessionKey).toBe(
-      `agent:writer:paperteam-${created.id}`,
-    );
+    // 第一轮：透传缺省（undefined，Runtime 侧按 projectId 派生并在 metadata 回显）；
+    // 第二轮：复用第一轮 Runtime 返回并持久化的 key（显式透传）
+    const derivedKey = `agent:writer:paperteam-${created.id}`;
+    expect(runtime.calls.map((call) => call.sessionKey)).toEqual([undefined, derivedKey]);
+    expect((await store.get(created.id))?.runtimeSessionKey).toBe(derivedKey);
   });
 
-  it("Agent 失败（Gateway RPC 错误）：返回 502 AGENT_RUN_FAILED，项目状态 failed", async () => {
-    const gateway = await startMockGateway({
-      handler: (method, params) => {
-        if (method === "agent") {
-          return { ok: false, error: { code: "INVALID_REQUEST", message: "agent not found: writer" } };
-        }
-        return defaultHandler()(method, params);
-      },
-    });
-    gateways.push(gateway);
-
-    const runtime = new OpenClawRuntimeAdapter({
-      baseUrl: gateway.httpUrl,
-      rpcTimeoutMs: 2_000,
-      log: () => {},
-    });
+  it("Agent 失败（Runtime 错误）：返回 502 AGENT_RUN_FAILED，项目状态 failed", async () => {
+    const runtime = failingRuntime();
     const { server, store } = await startApiStack(runtime, { latexRunner: fakeSuccessfulRunner });
     const created = await store.create("Agent 失败测试");
 
@@ -349,43 +269,99 @@ describe("POST /api/projects/:id/generate（全链路）", () => {
 
 // ---- 测试辅助 ----
 
+/** 记录 runAgent 输入（task / sessionKey 透传）的假 Runtime；返回固定 LaTeX。
+ * sessionKey 语义与 PiRuntimeAdapter 对齐：透传优先，否则按 projectId 派生
+ * 并在 task.metadata.sessionKey 回显（供 GenerationService 持久化）。 */
+function recordingLatexRuntime(): AgentRuntime & {
+  calls: { task: string; sessionKey?: string }[];
+} {
+  const calls: { task: string; sessionKey?: string }[] = [];
+  const runtime: AgentRuntime = {
+    provider: "pi",
+    healthCheck: async () => makeHealth(true, "healthy", "Pi Runtime 正常"),
+    startAgent: async (input: RunAgentInput) => {
+      calls.push({ task: input.task, sessionKey: input.sessionKey });
+      const task = latexTask("run-http-1", input);
+      return handleOf(task);
+    },
+    runAgent: async (input: RunAgentInput) => {
+      calls.push({ task: input.task, sessionKey: input.sessionKey });
+      return latexTask("run-http-1", input);
+    },
+    getTask: () => {
+      throw new Error("not implemented");
+    },
+    close: async () => {},
+  };
+  return Object.assign(runtime, { calls });
+}
+
+function latexTask(taskId: string, input: RunAgentInput): AgentTask {
+  const now = new Date().toISOString();
+  return {
+    taskId,
+    agentId: input.agentId,
+    status: "completed",
+    createdAt: now,
+    updatedAt: now,
+    output: LATEX_DOC,
+    metadata: {
+      sessionKey: input.sessionKey ?? `agent:writer:paperteam-${input.projectId ?? "adhoc"}`,
+    },
+  };
+}
+
+function handleOf(task: AgentTask): AgentRunHandle {
+  return {
+    taskId: task.taskId,
+    sessionKey: String(task.metadata?.["sessionKey"]),
+    events: async function* () {},
+    cancel: async () => {},
+    result: async () => task,
+  };
+}
+
+/** runAgent 直接抛业务错误的假 Runtime（模拟 Runtime 不可用 / 拒绝执行） */
+function failingRuntime(): AgentRuntime {
+  return {
+    provider: "pi",
+    healthCheck: async () => makeHealth(true, "healthy", "Pi Runtime 正常"),
+    startAgent: () => {
+      throw new AgentRunFailedError("模型未配置", "not_configured");
+    },
+    runAgent: () => {
+      throw new AgentRunFailedError("模型未配置", "not_configured");
+    },
+    getTask: () => {
+      throw new Error("not implemented");
+    },
+    close: async () => {},
+  };
+}
+
 function healthyRuntime(): AgentRuntime {
   return {
-    provider: "openclaw",
-    healthCheck: async () => makeHealth(true, "healthy", "Gateway 在线"),
+    provider: "pi",
+    healthCheck: async () => makeHealth(true, "healthy", "Pi Runtime 正常"),
+    startAgent: () => {
+      throw new Error("not implemented");
+    },
     runAgent: () => {
       throw new Error("not implemented");
     },
     getTask: () => {
       throw new Error("not implemented");
     },
-    cancelTask: () => {
-      throw new Error("not implemented");
-    },
-    sendMessage: () => {
-      throw new Error("not implemented");
-    },
-    streamEvents: () => {
-      throw new Error("not implemented");
-    },
+    close: async () => {},
   };
 }
 
-/** 返回固定 LaTeX 的假 Runtime（不经过 WebSocket） */
+/** 返回固定 LaTeX 的假 Runtime */
 function latexRuntime(): AgentRuntime {
   return {
     ...healthyRuntime(),
-    runAgent: async () => {
-      const now = new Date().toISOString();
-      return {
-        taskId: "run-fake-1",
-        agentId: "writer",
-        status: "completed" as const,
-        createdAt: now,
-        updatedAt: now,
-        output: LATEX_DOC,
-      };
-    },
+    startAgent: async (input: RunAgentInput) => handleOf(latexTask("run-fake-1", input)),
+    runAgent: async (input: RunAgentInput) => latexTask("run-fake-1", input),
   };
 }
 
@@ -396,7 +372,7 @@ function makeHealth(
 ): RuntimeHealth {
   return {
     ok,
-    provider: "openclaw",
+    provider: "pi",
     status,
     detail,
     latencyMs: ok ? 12 : null,

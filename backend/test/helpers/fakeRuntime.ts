@@ -1,6 +1,12 @@
-/** 测试辅助：构造 AgentTask 与脚本化 AgentRuntime */
+/** 测试辅助：构造 AgentTask 与脚本化 AgentRuntime（Contract v2） */
 
-import type { AgentRuntime, AgentTask, RuntimeHealth } from "../../src/runtime/types.js";
+import type {
+  AgentRuntime,
+  AgentRunHandle,
+  AgentTask,
+  RunAgentInput,
+  RuntimeHealth,
+} from "../../src/runtime/types.js";
 
 export function makeAgentTask(output: string, agentId = "agent", status: AgentTask["status"] = "completed"): AgentTask {
   const now = new Date().toISOString();
@@ -17,11 +23,22 @@ export function makeAgentTask(output: string, agentId = "agent", status: AgentTa
 export function makeHealth(ok: boolean): RuntimeHealth {
   return {
     ok,
-    provider: "openclaw",
+    provider: "pi",
     status: ok ? "healthy" : "unreachable",
     detail: ok ? "ok" : "down",
     latencyMs: ok ? 5 : null,
     checkedAt: new Date().toISOString(),
+  };
+}
+
+/** 从终态任务构造 v2 handle（events 为空流；cancel 幂等 no-op） */
+export function handleFromTask(task: AgentTask, sessionKey = `agent:${task.agentId}:paperteam-fake`): AgentRunHandle {
+  return {
+    taskId: task.taskId,
+    sessionKey,
+    events: async function* () {},
+    cancel: async () => {},
+    result: async () => task,
   };
 }
 
@@ -30,23 +47,20 @@ export function runtimeFromScript(
   script: (input: { agentId: string; task: string; contextScope?: string }) => string,
 ): AgentRuntime {
   return {
-    provider: "openclaw",
+    provider: "pi",
     healthCheck: async () => makeHealth(true),
-    runAgent: async (input) => {
+    startAgent: async (input: RunAgentInput) => {
+      const output = script(input);
+      const task = makeAgentTask(output, input.agentId);
+      return handleFromTask(task);
+    },
+    runAgent: async (input: RunAgentInput) => {
       const output = script(input);
       return makeAgentTask(output, input.agentId);
     },
     getTask: () => {
       throw new Error("not implemented");
     },
-    cancelTask: () => {
-      throw new Error("not implemented");
-    },
-    sendMessage: () => {
-      throw new Error("not implemented");
-    },
-    streamEvents: () => {
-      throw new Error("not implemented");
-    },
+    close: async () => {},
   };
 }

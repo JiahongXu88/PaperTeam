@@ -1,50 +1,54 @@
 /**
- * PiRuntimeAdapter —— AgentRuntime 的 Pi 实现（M3.7 Feasibility，side-by-side）。
+ * PiRuntimeAdapter —— AgentRuntime Contract v2 的 Pi 实现（M3.8 正式 baseline）。
  *
- * 架构（对照 OpenClawRuntimeAdapter）：
+ * 架构：
  *
- *   OpenClaw：Backend ─WebSocket/RPC→ Gateway 子进程 ─→ agent runtime
- *   Pi：     Backend ─in-process→ @earendil-works/pi-coding-agent SDK
+ *   PaperTeam Backend ─in-process→ @earendil-works/pi-coding-agent SDK → LLM/Tools
  *
  * 所有 Pi 细节都封装在本文件（及 ./pi/ 内部模块）中，业务层只感知
- * AgentRuntime 接口。默认 Runtime 仍是 OpenClaw（config.agentRuntime
- * 选择，PAPERTEAM_AGENT_RUNTIME=pi 时启用本实现）。
+ * AgentRuntime 接口（./types.ts）。
  *
  * 官方 embedding API（对照 pi-coding-agent 0.84.4 dist/docs/sdk.md 与
  * dist/core/sdk.d.ts 确认）：
  *   createAgentSession({ cwd, agentDir, model, modelRuntime, tools,
- *                        resourceLoader, sessionManager, settingsManager })
+ *                        resourceLoader, sessionManager, settingsManager,
+ *                        customTools })
  *   session.prompt(text, { expandPromptTemplates: false }) —— 同步终态语义
  *     （resolve 即本轮 agent run 已 settle；失败/中断不 reject，
  *       而是落进 transcript 的 assistant 消息 stopReason:
  *       "error" / "aborted"，见 pi-agent-core Agent.handleRunFailure）
  *   session.abort() / waitForIdle() / dispose()
  *   session.subscribe(listener) → unsubscribe
+ *   ToolDefinition.execute(toolCallId, params, signal, ...) —— 工具执行
+ *     收到协作式 AbortSignal（cancel 传导验证点）
  *
- * 关键取舍（详见 M3.7 报告 §4）：
+ * v2 关键取舍（延续 M3.7 验证结论，详见 docs/DECISIONS.md D-0019）：
  * - 会话：SessionManager.inMemory(cwd)——Runtime session 是可丢弃执行
  *   上下文，Workspace/checkpoint 才是事实源；不为 Runtime session 建
- *   持久化。sessionKey 派生与 OpenClaw 完全一致（./sessionKey.ts），
+ *   持久化。sessionKey 派生（./sessionKey.ts）保持稳定，
  *   GenerationService 的显式 sessionKey 透传/回写语义保持兼容。
  * - 每个逻辑会话一个 AgentSession；Pi 的 Agent 单会话一次只允许一个
  *   run（"Agent is already processing"），Adapter 用 per-session 串行
  *   队列保证；不同 sessionKey 完全并发（Reviewer 三路 fan-out 即三个
- *   独立 AgentSession）。
+ *   独立 AgentSession）。排队发生在 startAgent 返回句柄之后——taskId
+ *   的立即可得性不依赖队列位置。
  * - auto-compaction 经 SettingsManager.inMemory({compaction:{enabled:false}})
- *   关闭：M3 流程不依赖 compaction，关闭可避免长会话触发隐式摘要
- *   带来的不确定性（manual compact() 未使用，其 abort 边界不在本
- *   验证范围内）。
+ *   关闭：M3 流程不依赖 compaction（manual compact 未使用，其 abort
+ *   边界不在验证范围内，记录为上游边界）。
  * - healthCheck 语义：SDK 已加载 + Adapter 未关闭 + ModelRuntime 初始化
  *   成功 = healthy。「未配置 API Key」不是 Runtime 不健康，而是模型
  *   未就绪（modelStatus 单独报告，供 statusService 分区展示）。
  * - timeout：Pi SDK 无内建 run 超时，Adapter 用定时器 + session.abort()
- *   实现与 OpenClaw 一致的 runTimeoutMs 语义。
- * - 事件：Adapter 在会话创建时订阅事件并映射为 PaperTeam AgentEvent，
- *   按任务缓存（有界）。streamEvents(taskId) 为「replay 已缓存事件」
- *   语义——AgentRuntime Contract v1 的 runAgent 同步终态语义下，调用方
- *   在运行中拿不到 taskId，无法 mid-run 订阅（Runtime Contract v1
- *   limitation，见 types.ts 审计注释）；底层 mid-run 订阅能力真实存在
- *   （session.subscribe），由专项测试验证。
+ *   实现 runTimeoutMs 语义（handle.result() 以 AgentTimeoutError reject，
+ *   与业务错误映射口径一致）。
+ * - 事件：会话创建时挂持久 listener，Pi 事件映射为 PaperTeam AgentEvent
+ *   （原始事件对象不透传业务层）。handle.events() 为「replay + live」
+ *   语义：订阅即从头回放已缓存事件，随后 live 消费，settle 后迭代
+ *   自然结束；多次订阅互相独立。
+ * - cancel：幂等。排队中（未获得 session）的任务置取消标记，获得
+ *   session 后直接 settle cancelled（不触发 prompt，也不误伤同会话
+ *   正在运行的其他任务）；运行中的任务执行真实 session.abort()（协作式：
+ *   LLM 流中断、tool 执行收到 AbortSignal）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -63,6 +67,7 @@ import type {
   AgentSessionEvent,
   CreateAgentSessionOptions,
   ResourceLoader,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 import {
@@ -76,12 +81,12 @@ import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
 import type {
   AgentEvent,
   AgentRuntime,
+  AgentRunHandle,
   AgentTask,
   RunAgentInput,
   RuntimeHealth,
   RuntimeProvider,
 } from "./types.js";
-import { RuntimeCapabilityError } from "./types.js";
 
 /** Pi 模型类型（不直接依赖 pi-ai：经 pi-coding-agent 的公开选项类型提取） */
 type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -92,10 +97,10 @@ type PiModelRuntime = ModelRuntime;
 /** 每任务事件缓冲上限（超出丢最旧，保尾部；诊断用途足够） */
 const TASK_EVENT_BUFFER_LIMIT = 500;
 
-/** 已完结任务记录上限（getTask/streamEvents 可回溯的窗口） */
+/** 已完结任务记录上限（getTask 可回溯的窗口） */
 const TASK_RECORD_LIMIT = 200;
 
-/** 无 projectId 时的会话兜底键（对应 OpenClaw 的「网关默认会话」语义） */
+/** 无 projectId 时的会话兜底键（对应 v1 的「默认会话」语义） */
 function adhocSessionKey(agentId: string): string {
   return `agent:${agentId}:paperteam-adhoc`;
 }
@@ -103,8 +108,8 @@ function adhocSessionKey(agentId: string): string {
 export interface PiRuntimeOptions {
   /**
    * 模型规格 "provider/model-id"（如 "anthropic/claude-opus-4-5"）。
-   * 缺省时 Runtime 健康但模型未配置：runAgent 结构化失败（与 OpenClaw
-   * 的 model_not_configured 口径一致），不伪造成功。
+   * 缺省时 Runtime 健康但模型未配置：startAgent 结构化失败
+   * （result() resolve status="failed"），不伪造成功。
    */
   modelSpec?: string;
   /**
@@ -140,11 +145,17 @@ export interface PiRuntimeOptions {
     sessionManager: SessionManager;
     resourceLoader: ResourceLoader;
   }) => Promise<AgentSession>;
+  /**
+   * 附加自定义工具（createAgentSession customTools；测试注入用，生产角色
+   * 工具面由 roleConfig 白名单决定）。工具执行的 AbortSignal 由 SDK 提供
+   * （cancel 传导验证点）。
+   */
+  customTools?: ToolDefinition[];
   /** 诊断日志输出，默认 console.log */
   log?: (message: string) => void;
 }
 
-/** 模型就绪摘要（statusService 经 duck-typing 读取；与 RuntimeHealth 分区） */
+/** 模型就绪摘要（statusService 读取；与 RuntimeHealth 分区） */
 export interface PiModelStatus {
   phase: "configured" | "not_configured" | "unknown";
   /** 已配置凭据的 provider 名单（不含任何 key） */
@@ -169,19 +180,88 @@ interface ManagedSession {
   unsubscribe?: () => void;
 }
 
-/** 在途任务 */
-interface InFlightTask {
+/**
+ * 任务运行状态：v2 handle 的事实源。
+ * 事件以 events 数组为单一事实源，迭代器各自持游标回放。
+ */
+interface RunState {
   taskId: string;
   sessionKey: string;
+  /** 后台链启动时刻（诊断） */
   startedAt: string;
-  /** 整个 runAgent promise（cancelTask 等待其收敛用） */
+  /** 映射后的任务事件（单一事实源；迭代器按游标回放） */
+  events: AgentEvent[];
+  /** events() 迭代器的唤醒回调（事件新增 / settle 时全部唤醒后清空） */
+  eventWaiters: Set<() => void>;
+  /** 任务是否已达终态（result 已 resolve/reject） */
+  settled: boolean;
+  /** resolve 路径终态 */
+  task?: AgentTask;
+  /** reject 路径错误（timeout / runtime 异常 / 空输出） */
+  failure?: unknown;
+  /** result() 的缓存 promise（settle 时 resolve/reject，可重复 await） */
+  resultPromise: Promise<AgentTask>;
+  resolveResult: (task: AgentTask) => void;
+  rejectResult: (error: unknown) => void;
+  /** queued：等待 per-session 队列；running：已独占 session 执行中 */
+  phase: "queued" | "running";
+  /** cancel 请求（幂等标记；queued 任务获得 session 后生效） */
+  cancelRequested: boolean;
+  /** 后台 run 链完全收敛（cancel/close 等待用） */
   runSettled: Promise<void>;
 }
 
-/** 已完结任务记录（getTask / streamEvents replay） */
+/** 已完结任务记录（getTask 回溯） */
 interface TaskRecord {
   task: AgentTask;
-  events: AgentEvent[];
+}
+
+/** events() 返回的迭代器（独立游标；break 经 return() 清理订阅） */
+class AgentEventIterator implements AsyncIterator<AgentEvent>, AsyncIterable<AgentEvent> {
+  private readonly state: RunState;
+  private cursor = 0;
+  private waiter: (() => void) | null = null;
+
+  constructor(state: RunState) {
+    this.state = state;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+    return this;
+  }
+
+  async next(): Promise<IteratorResult<AgentEvent>> {
+    const state = this.state;
+    // replay（已缓存）与 live（新事件）走同一游标逻辑；不变量：
+    // settle 后 events 不再增长，排空即 done。
+    while (true) {
+      if (this.cursor < state.events.length) {
+        const event = state.events[this.cursor];
+        this.cursor += 1;
+        if (event !== undefined) {
+          return { done: false, value: structuredClone(event) };
+        }
+        continue;
+      }
+      if (state.settled) {
+        return { done: true, value: undefined };
+      }
+      // 等待新事件或 settle（唤醒回调在 break 后不再注册，悬挂 promise 由 GC 回收）
+      await new Promise<void>((resolve) => {
+        this.waiter = resolve;
+        state.eventWaiters.add(resolve);
+      });
+      this.waiter = null;
+    }
+  }
+
+  async return(): Promise<IteratorResult<AgentEvent>> {
+    if (this.waiter !== null) {
+      this.state.eventWaiters.delete(this.waiter);
+      this.waiter = null;
+    }
+    return { done: true, value: undefined };
+  }
 }
 
 export class PiRuntimeAdapter implements AgentRuntime {
@@ -196,12 +276,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly injectedModelRuntime: PiModelRuntime | undefined;
   private readonly injectedModel: PiModel | undefined;
   private readonly createSessionImpl: NonNullable<PiRuntimeOptions["createSession"]> | undefined;
+  private readonly customTools: ToolDefinition[] | undefined;
   private readonly log: (message: string) => void;
 
   private readonly sessions = new Map<string, ManagedSession>();
-  /** 会话创建的 in-flight 去重（并发 runAgent 同 key 时只创建一次） */
+  /** 会话创建的 in-flight 去重（并发同 key 时只创建一次） */
   private readonly sessionCreations = new Map<string, Promise<ManagedSession>>();
-  private readonly inFlight = new Map<string, InFlightTask>();
+  private readonly inFlight = new Map<string, RunState>();
   private readonly taskRecords = new Map<string, TaskRecord>();
 
   private settingsManager?: SettingsManager;
@@ -223,16 +304,17 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.injectedModelRuntime = options.modelRuntime;
     this.injectedModel = options.model;
     this.createSessionImpl = options.createSession;
+    this.customTools = options.customTools;
     this.log = options.log ?? ((message) => console.log(message));
   }
 
-  // ---- 初始化（懒加载、并发去重；healthCheck 与首个 runAgent 共享） ----
+  // ---- 初始化（懒加载、并发去重；healthCheck 与首个 startAgent 共享） ----
 
   private ensureInitialized(): Promise<void> {
     if (this.initPromise === undefined) {
       this.initPromise = this.doInitialize().catch((error: unknown) => {
         // 失败不缓存 initPromise 之外的状态：initError 置位后，
-        // healthCheck/runAgent 都按「Runtime 不可用」结构化上报。
+        // healthCheck/startAgent 都按「Runtime 不可用」结构化上报。
         this.initError =
           error instanceof Error ? error.message : `Pi Runtime 初始化失败：${String(error)}`;
       });
@@ -244,7 +326,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const startedAt = Date.now();
     await mkdir(this.agentDir, { recursive: true });
 
-    // 共享 in-memory settings：关闭 auto-compaction（M3.7 取舍，见文件头）
+    // 共享 in-memory settings：关闭 auto-compaction（见文件头取舍）
     this.settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
     });
@@ -321,7 +403,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   }
 
   private logInitDone(startedAt: number, modelMissing: boolean): void {
-    const note = modelMissing ? "（模型未配置：runAgent 将结构化失败）" : "";
+    const note = modelMissing ? "（模型未配置：startAgent 将结构化失败）" : "";
     this.log(`[pi-runtime] 初始化完成（${Date.now() - startedAt}ms）${note}`);
   }
 
@@ -377,7 +459,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     };
   }
 
-  /** 模型就绪摘要（RuntimeStatusService 经 duck-typing 读取；非 AgentRuntime 契约） */
+  /** 模型就绪摘要（RuntimeStatusService 读取；非 AgentRuntime 契约） */
   async modelStatusSnapshot(): Promise<PiModelStatus> {
     if (this.closed) {
       return { phase: "unknown", providers: [], detail: "Pi Runtime 已关闭" };
@@ -386,9 +468,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return this.modelStatus;
   }
 
-  // ---- runAgent（同步终态语义，与 OpenClawRuntimeAdapter 对齐） ----
+  /** 已解析的模型标签（"provider/model-id"；未配置为 undefined；诊断用） */
+  get resolvedModel(): string | undefined {
+    return this.resolvedModelLabel;
+  }
 
-  async runAgent(input: RunAgentInput): Promise<AgentTask> {
+  // ---- startAgent（v2 主入口：句柄立即返回，run 在后台收敛） ----
+
+  async startAgent(input: RunAgentInput): Promise<AgentRunHandle> {
     const message = input.task.trim();
     if (message === "") {
       throw new AgentRunFailedError("任务内容为空");
@@ -404,45 +491,156 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const sessionKey =
       resolveSessionKey(input) ?? adhocSessionKey(input.agentId || "default");
     const scope = sanitizeContextScope(input.contextScope);
+    const taskId = `pi-${randomUUID()}`;
+    const state = this.createRunState(taskId, sessionKey);
 
-    // 模型未配置：结构化失败（不抛异常），与 OpenClaw 的 model_not_configured 口径一致
+    // 模型未配置：句柄立即结构化失败（不进 session；口径与 v1 runAgent 一致）
     if (this.model === undefined) {
-      this.log(`[pi-runtime] runAgent 拒绝（模型未配置）：sessionKey=${sessionKey}`);
-      return this.buildTask({
-        taskId: `pi-${randomUUID()}`,
-        agentId: input.agentId,
-        status: "failed",
-        sessionKey,
-        error: `Pi 模型未配置：${this.modelStatus.detail}`,
-      });
+      this.log(`[pi-runtime] startAgent 拒绝（模型未配置）：sessionKey=${sessionKey}`);
+      this.settleTask(
+        state,
+        this.buildTask({
+          taskId,
+          agentId: input.agentId,
+          status: "failed",
+          sessionKey,
+          error: `Pi 模型未配置：${this.modelStatus.detail}`,
+        }),
+      );
+      return this.makeHandle(state);
     }
 
-    const managed = await this.getOrCreateSession(sessionKey, input, scope);
-    const release = await this.acquireSession(managed);
-    const taskId = `pi-${randomUUID()}`;
-    const events: AgentEvent[] = [];
-    managed.activeTaskId = taskId;
-
-    const runPromise = (async () => {
+    // 后台链：会话获取（含排队）→ 独占执行 → 终态归因。
+    // startAgent 不 await 这条链——taskId 与句柄立即对上层可见。
+    state.runSettled = (async () => {
+      let release: (() => void) | undefined;
+      let managed: ManagedSession | undefined;
       try {
-        return await this.runOnSession(managed, { taskId, input, message, events, sessionKey });
+        managed = await this.getOrCreateSession(sessionKey, input, scope);
+        release = await this.acquireSession(managed);
+        state.phase = "running";
+        managed.activeTaskId = taskId;
+        managed.runCount += 1;
+        managed.lastUsedAt = new Date().toISOString();
+
+        if (state.cancelRequested) {
+          // 排队期间被取消：不触发 prompt（也不误伤同会话前序 run）
+          this.log(`[pi-runtime] startAgent ${taskId} 在排队期间被取消，直接终态`);
+          this.settleTask(
+            state,
+            this.buildTask({
+              taskId,
+              agentId: input.agentId,
+              status: "cancelled",
+              sessionKey,
+              error: "任务已取消（开始执行前）",
+            }),
+          );
+          return;
+        }
+
+        const task = await this.runOnSession(managed, { taskId, input, message, state, sessionKey });
+        this.settleTask(state, task);
+      } catch (error) {
+        this.settleFailure(state, error);
       } finally {
-        managed.activeTaskId = undefined;
-        release();
+        if (managed !== undefined) {
+          if (managed.activeTaskId === taskId) {
+            managed.activeTaskId = undefined;
+          }
+        }
+        release?.();
+        this.inFlight.delete(taskId);
       }
     })();
+    this.inFlight.set(taskId, state);
 
-    const runSettled = runPromise.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.inFlight.set(taskId, { taskId, sessionKey, startedAt: new Date().toISOString(), runSettled });
+    return this.makeHandle(state);
+  }
 
-    try {
-      return await runPromise;
-    } finally {
-      this.inFlight.delete(taskId);
+  /** convenience：startAgent + await result（同步终态语义，业务层零改动） */
+  async runAgent(input: RunAgentInput): Promise<AgentTask> {
+    const handle = await this.startAgent(input);
+    return handle.result();
+  }
+
+  private createRunState(taskId: string, sessionKey: string): RunState {
+    let resolveResult!: (task: AgentTask) => void;
+    let rejectResult!: (error: unknown) => void;
+    const resultPromise = new Promise<AgentTask>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    return {
+      taskId,
+      sessionKey,
+      startedAt: new Date().toISOString(),
+      events: [],
+      eventWaiters: new Set(),
+      settled: false,
+      resultPromise,
+      resolveResult,
+      rejectResult,
+      phase: "queued",
+      cancelRequested: false,
+      runSettled: Promise.resolve(),
+    };
+  }
+
+  private makeHandle(state: RunState): AgentRunHandle {
+    return {
+      taskId: state.taskId,
+      sessionKey: state.sessionKey,
+      events: () => new AgentEventIterator(state),
+      cancel: () => this.cancelRun(state),
+      result: () => state.resultPromise,
+    };
+  }
+
+  /** 终态归因 resolve 路径：记录 + 唤醒全部等待方 */
+  private settleTask(state: RunState, task: AgentTask): void {
+    if (state.settled) {
+      return;
     }
+    state.settled = true;
+    state.task = task;
+    state.resolveResult(task);
+    this.wakeEventWaiters(state);
+  }
+
+  /** 终态归因 reject 路径（timeout / runtime 异常 / 空输出；错误口径与 v1 一致） */
+  private settleFailure(state: RunState, error: unknown): void {
+    if (state.settled) {
+      return;
+    }
+    state.settled = true;
+    state.failure = error;
+    state.rejectResult(error);
+    this.wakeEventWaiters(state);
+  }
+
+  private wakeEventWaiters(state: RunState): void {
+    const waiters = [...state.eventWaiters];
+    state.eventWaiters.clear();
+    for (const waiter of waiters) {
+      waiter();
+    }
+  }
+
+  /** 取消单个 run（幂等；handle.cancel 与 close 共用） */
+  private async cancelRun(state: RunState): Promise<void> {
+    if (state.settled) {
+      return; // 已完成 / 已取消 / 已失败：幂等 no-op
+    }
+    state.cancelRequested = true;
+    if (state.phase === "running") {
+      const managed = this.sessions.get(state.sessionKey);
+      if (managed !== undefined) {
+        await managed.session.abort().catch(() => {});
+      }
+    }
+    // queued 任务：标记已置位，获得 session 后直接终态（见 startAgent 后台链）
+    await state.runSettled;
   }
 
   /** 在已独占的会话上执行一次 run（超时 / abort / 终态归因都在这里收敛） */
@@ -452,17 +650,15 @@ export class PiRuntimeAdapter implements AgentRuntime {
       taskId: string;
       input: RunAgentInput;
       message: string;
-      events: AgentEvent[];
+      state: RunState;
       sessionKey: string;
     },
   ): Promise<AgentTask> {
-    const { taskId, input, message, events, sessionKey } = context;
-    const runTimeoutMs = input.timeoutMs ?? this.runTimeoutMs;
+    const { taskId, input, message, state, sessionKey } = context;
     const createdAt = new Date().toISOString();
-    managed.runCount += 1;
-    managed.lastUsedAt = new Date().toISOString();
-    this.attachEventCollector(managed, taskId, events);
+    this.attachEventForwarder(managed, taskId, state);
 
+    const runTimeoutMs = input.timeoutMs ?? this.runTimeoutMs;
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -478,7 +674,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       promptError = error;
     } finally {
       clearTimeout(timer);
-      this.collectors.delete(taskId);
+      this.eventForwarders.delete(taskId);
     }
 
     if (timedOut) {
@@ -496,7 +692,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
         status: "failed",
         sessionKey,
         createdAt,
-        events,
         error: `Pi AgentSession 拒绝执行：${detail}`,
       });
     }
@@ -504,6 +699,22 @@ export class PiRuntimeAdapter implements AgentRuntime {
     // prompt() 正常 resolve：终态落在 transcript 的最后一条 assistant 消息
     const last = lastAssistantMessage(managed.session);
     const stopReason = last?.stopReason;
+
+    // 工具执行中 abort 的实测路径（M3.8 §14）：SDK 将终态记为
+    // stopReason="error" + errorMessage="This operation was aborted"
+    // （LLM 流中断才是 "aborted"）。以 Adapter 侧的取消意图为准归因，
+    // 不依赖 SDK 的 stopReason 编码差异。
+    if (state.cancelRequested && (stopReason === "error" || stopReason === "aborted")) {
+      this.log(`[pi-runtime] runAgent ${taskId} 终态=${stopReason ?? "(none)"}（cancelRequested → cancelled）`);
+      return this.buildTask({
+        taskId,
+        agentId: input.agentId,
+        status: "cancelled",
+        sessionKey,
+        createdAt,
+        error: "任务已取消（session.abort）",
+      });
+    }
 
     if (stopReason === "error") {
       const errorText = last?.errorMessage ?? "Pi agent run 以 error 终态结束";
@@ -514,13 +725,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
         status: "failed",
         sessionKey,
         createdAt,
-        events,
         error: errorText,
       });
     }
 
     if (stopReason === "aborted") {
-      // 超时路径已在上面抛 AgentTimeoutError；到这里说明是 cancelTask 触发的 abort
+      // 超时路径已在上面抛 AgentTimeoutError；到这里说明是 cancel 触发的 abort
       this.log(`[pi-runtime] runAgent ${taskId} 终态=aborted（cancelled）`);
       return this.buildTask({
         taskId,
@@ -528,7 +738,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
         status: "cancelled",
         sessionKey,
         createdAt,
-        events,
         error: "任务已取消（session.abort）",
       });
     }
@@ -547,7 +756,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
       status: "completed",
       sessionKey,
       createdAt,
-      events,
       output,
       model: this.resolvedModelLabel,
       role: managed.role.role,
@@ -560,7 +768,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
     status: AgentTask["status"];
     sessionKey: string;
     createdAt?: string;
-    events?: AgentEvent[];
     output?: string;
     error?: string;
     model?: string;
@@ -584,12 +791,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
         ...(fields.role !== undefined ? { role: fields.role } : {}),
       },
     };
-    this.rememberTask(fields.taskId, { task, events: fields.events ?? [] });
+    this.rememberTask(fields.taskId, task);
     return task;
   }
 
-  private rememberTask(taskId: string, record: TaskRecord): void {
-    this.taskRecords.set(taskId, record);
+  private rememberTask(taskId: string, task: AgentTask): void {
+    this.taskRecords.set(taskId, { task });
     while (this.taskRecords.size > TASK_RECORD_LIMIT) {
       const oldest = this.taskRecords.keys().next().value;
       if (oldest === undefined) {
@@ -671,7 +878,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
               resourceLoader,
               sessionManager,
               settingsManager: this.settingsManager!,
-              tools: role.tools,
+              // tools 是白名单（allowedToolNames）：自定义工具名必须并入，
+              // 否则 _refreshToolRegistry 会把未列入白名单的 customTools 过滤掉
+              tools: [
+                ...role.tools,
+                ...(this.customTools?.map((tool) => tool.name) ?? []),
+              ],
+              ...(this.customTools !== undefined ? { customTools: this.customTools } : {}),
             })
           ).session;
 
@@ -718,121 +931,93 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return release;
   }
 
-  // ---- 事件（Pi → PaperTeam AgentEvent 映射；运行期收集、事后 replay） ----
+  // ---- 事件（Pi → PaperTeam AgentEvent 映射；写入 RunState 事实源） ----
 
-  private collectors = new Map<string, (event: AgentSessionEvent) => void>();
+  private eventForwarders = new Map<string, (event: AgentSessionEvent) => void>();
 
-  private attachEventCollector(managed: ManagedSession, taskId: string, events: AgentEvent[]): void {
+  private attachEventForwarder(managed: ManagedSession, taskId: string, state: RunState): void {
     void managed;
     // 会话创建时已挂持久 listener（见 wireSessionEvents）；
-    // 这里登记当前任务的收集器，listener 按 activeTaskId 分发。
-    this.collectors.set(taskId, (event) => {
+    // 这里登记当前任务的事件转发器，listener 按 activeTaskId 分发。
+    this.eventForwarders.set(taskId, (event) => {
       const mapped = mapPiEvent(taskId, event);
-      if (mapped !== undefined) {
-        events.push(mapped);
-        if (events.length > TASK_EVENT_BUFFER_LIMIT) {
-          events.splice(0, events.length - TASK_EVENT_BUFFER_LIMIT);
-        }
+      if (mapped === undefined) {
+        return;
       }
+      state.events.push(mapped);
+      if (state.events.length > TASK_EVENT_BUFFER_LIMIT) {
+        state.events.splice(0, state.events.length - TASK_EVENT_BUFFER_LIMIT);
+      }
+      this.wakeEventWaiters(state);
     });
   }
 
-  /** 会话创建后立即挂持久 listener：向当前活跃任务收集器分发事件 */
+  /** 会话创建后立即挂持久 listener：向当前活跃任务转发器分发事件 */
   private wireSessionEvents(managed: ManagedSession): () => void {
     return managed.session.subscribe((event) => {
       const taskId = managed.activeTaskId;
       if (taskId === undefined) {
         return;
       }
-      this.collectors.get(taskId)?.(event);
+      this.eventForwarders.get(taskId)?.(event);
     });
   }
 
-  // ---- v1 契约中的任务级接口（Pi 天然支持；OpenClaw 侧仍是占位） ----
+  // ---- 任务级接口 ----
 
-  /** 查询已完结任务（AgentRuntime Contract v1 下调用方仅在 runAgent 返回后可用） */
+  /** 查询已完结任务（运行中任务经 handle.result() 获取终态） */
   async getTask(taskId: string): Promise<AgentTask> {
     const record = this.taskRecords.get(taskId);
     if (record !== undefined) {
       return structuredClone(record.task);
     }
-    const inFlightEntry = this.inFlight.get(taskId);
-    if (inFlightEntry !== undefined) {
-      throw new AgentRunFailedError(`任务 ${taskId} 仍在运行（v1 契约下运行中任务不可查询）`);
+    if (this.inFlight.has(taskId)) {
+      throw new AgentRunFailedError(`任务 ${taskId} 仍在运行（请经 handle.result() 获取终态）`);
     }
     throw new AgentRunFailedError(`任务不存在或已超出回溯窗口（${TASK_RECORD_LIMIT} 条）：${taskId}`);
   }
 
   /**
-   * 查询在途任务（非 AgentRuntime 契约；诊断用）。v1 契约下调用方在
-   * runAgent 返回前拿不到 taskId，无法 mid-run cancel/订阅——这个只读
-   * 口子是 Contract v2 需要正式暴露的能力的最小形态。
+   * 查询在途任务（非 AgentRuntime 契约；诊断用）。
    */
-  listActiveTasks(): { taskId: string; sessionKey: string; startedAt: string }[] {
-    return [...this.inFlight.values()].map(({ taskId, sessionKey, startedAt }) => ({
+  listActiveTasks(): { taskId: string; sessionKey: string; phase: "queued" | "running"; startedAt: string }[] {
+    return [...this.inFlight.values()].map(({ taskId, sessionKey, phase, startedAt }) => ({
       taskId,
       sessionKey,
+      phase,
       startedAt,
     }));
   }
 
-  /**
-   * 取消在途任务：真实 session.abort()（协作式：LLM 流中断、tool 执行
-   * 收到 abort signal）。归因到对应 runAgent 返回 status="cancelled"。
-   */
-  async cancelTask(taskId: string): Promise<void> {
-    const entry = this.inFlight.get(taskId);
-    if (entry === undefined) {
-      const record = this.taskRecords.get(taskId);
-      if (record !== undefined && record.task.status === "cancelled") {
-        return; // 幂等
-      }
-      throw new AgentRunFailedError(`任务不存在或已结束，无法取消：${taskId}`);
-    }
-    const managed = this.sessions.get(entry.sessionKey);
-    if (managed === undefined) {
-      throw new AgentRunFailedError(`取消失败：会话 ${entry.sessionKey} 已不存在`);
-    }
-    await managed.session.abort().catch(() => {});
-    await entry.runSettled;
-  }
-
-  /**
-   * 回放该任务的已缓存事件（replay 语义）。运行中实时订阅需要
-   * AgentRuntime Contract v2（runAgent 返回句柄后再订阅）——底层能力
-   * 已由 session.subscribe 提供（专项测试验证），此处不引入 v2。
-   */
-  async streamEvents(taskId: string, onEvent: (event: AgentEvent) => void): Promise<void> {
-    const record = this.taskRecords.get(taskId);
-    const inFlightEntry = this.inFlight.get(taskId);
-    if (record === undefined && inFlightEntry === undefined) {
-      throw new AgentRunFailedError(`任务不存在或已超出回溯窗口：${taskId}`);
-    }
-    for (const event of record?.events ?? []) {
-      onEvent(structuredClone(event));
-    }
-  }
-
-  /** PaperTeam 无运行中向会话追加消息的业务路径（HITL 走 Workflow resume） */
-  sendMessage(_sessionId: string, _message: string): Promise<void> {
-    void _sessionId;
-    void _message;
-    throw new RuntimeCapabilityError("sendMessage", this.provider);
+  /** 会话/在途诊断快照（非 AgentRuntime 契约；RuntimeStatusService 读取） */
+  runtimeStats(): { activeRuns: number; managedSessions: number } {
+    return { activeRuns: this.inFlight.size, managedSessions: this.sessions.size };
   }
 
   // ---- 生命周期 ----
 
-  /** 停止全部在途 run 并释放所有 AgentSession（幂等；进程 shutdown 时调用） */
+  /** 取消/收敛全部在途 run 并释放所有 AgentSession（幂等；进程 shutdown 时调用） */
   async close(): Promise<void> {
     this.closed = true;
+    const states = [...this.inFlight.values()];
+    for (const state of states) {
+      state.cancelRequested = true;
+      if (state.phase === "running") {
+        const managed = this.sessions.get(state.sessionKey);
+        if (managed !== undefined) {
+          void managed.session.abort().catch(() => {});
+        }
+      }
+    }
+    // 等全部 run 收敛（含 queued 任务的直接终态路径）
+    await Promise.allSettled(states.map((state) => state.runSettled));
+
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    this.collectors.clear();
+    this.eventForwarders.clear();
     await Promise.allSettled(
       sessions.map(async (managed) => {
-        if (managed.activeTaskId !== undefined) {
-          await managed.session.abort().catch(() => {});
-        }
+        managed.unsubscribe?.();
         managed.session.dispose();
       }),
     );
@@ -923,7 +1108,7 @@ function mapPiEvent(taskId: string, event: AgentSessionEvent): AgentEvent | unde
     case "turn_end":
       return { taskId, type: event.type, ts, data: {} };
     default:
-      // compaction / retry / queue 等 session 级事件：M3.7 不映射
+      // compaction / retry / queue 等 session 级事件：不映射
       return undefined;
   }
 }

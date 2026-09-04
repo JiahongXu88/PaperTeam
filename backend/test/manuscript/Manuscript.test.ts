@@ -178,15 +178,33 @@ describe("collectLatexFiles（\\input 递归收集）", () => {
 
 function runtimeReturning(output: string): AgentRuntime {
   return {
-    provider: "openclaw",
+    provider: "pi",
     healthCheck: async () => ({
       ok: true,
-      provider: "openclaw",
+      provider: "pi",
       status: "healthy",
       detail: "ok",
       latencyMs: 1,
       checkedAt: new Date().toISOString(),
     }),
+    startAgent: async (input) => {
+      const now = new Date().toISOString();
+      const task: AgentTask = {
+        taskId: "run-w",
+        agentId: input.agentId,
+        status: "completed",
+        createdAt: now,
+        updatedAt: now,
+        output,
+      };
+      return {
+        taskId: task.taskId,
+        sessionKey: `agent:${input.agentId}:paperteam-fake`,
+        events: async function* () {},
+        cancel: async () => {},
+        result: async () => task,
+      };
+    },
     runAgent: async (input) => {
       const now = new Date().toISOString();
       const task: AgentTask = {
@@ -202,15 +220,7 @@ function runtimeReturning(output: string): AgentRuntime {
     getTask: () => {
       throw new Error("not implemented");
     },
-    cancelTask: () => {
-      throw new Error("not implemented");
-    },
-    sendMessage: () => {
-      throw new Error("not implemented");
-    },
-    streamEvents: () => {
-      throw new Error("not implemented");
-    },
+    close: async () => {},
   };
 }
 

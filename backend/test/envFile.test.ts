@@ -23,16 +23,16 @@ describe("parseEnvFile", () => {
       "# 注释行",
       "",
       "PAPERTEAM_PORT=3000",
-      "OPENCLAW_GATEWAY_URL = http://127.0.0.1:18789 ",
-      'OPENCLAW_GATEWAY_API_KEY="quoted-key"',
+      "PAPERTEAM_PI_MODEL = anthropic/claude-opus-4-5 ",
+      'PAPERTEAM_PI_API_KEY="quoted-key"',
       "SESSION_SECRET='single-quoted'",
       "export NODE_ENV=production",
     ].join("\n"));
 
     expect(values).toEqual({
       PAPERTEAM_PORT: "3000",
-      OPENCLAW_GATEWAY_URL: "http://127.0.0.1:18789",
-      OPENCLAW_GATEWAY_API_KEY: "quoted-key",
+      PAPERTEAM_PI_MODEL: "anthropic/claude-opus-4-5",
+      PAPERTEAM_PI_API_KEY: "quoted-key",
       SESSION_SECRET: "single-quoted",
       NODE_ENV: "production",
     });

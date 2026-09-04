@@ -4,7 +4,7 @@
  * 每个 run 一份 events.jsonl（追加写）。读取时容忍损坏行：
  * 损坏行计入 skipped、不中断（日志是进度记录，不是判定依据）。
  * 事件是 PaperTeam Domain Event（workflow.* / stage.* / quality_gate.*），
- * 不写入 OpenClaw 的 tool call / token / 协议帧（分层见 ARCHITECTURE §2.3）。
+ * 不写入 Runtime 的 tool call / token / 内部事件（分层见 ARCHITECTURE §2.3）。
  */
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";

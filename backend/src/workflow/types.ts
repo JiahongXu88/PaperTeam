@@ -73,7 +73,7 @@ export interface HitlStageSpec {
   readonly requiredInputs: readonly string[];
   readonly producedOutputs: readonly string[];
   readonly hitl: {
-    /** 呈现给用户的提示（业务语言，不含 session / Gateway 细节） */
+    /** 呈现给用户的提示（业务语言，不含 session / Runtime 细节） */
     prompt: string;
     /** 可选决策（如 approve / adjust / cancel） */
     options: readonly string[];

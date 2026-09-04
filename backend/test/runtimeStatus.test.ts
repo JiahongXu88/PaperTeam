@@ -1,216 +1,150 @@
 /**
- * M3.5 Runtime 状态诊断（RuntimeStatusService / GET /api/runtime/status）测试。
- * 使用 fake AgentRuntime（healthCheck）+ fake StatusConnection（RPC），
- * 覆盖：healthy / unavailable / auth_error / protocol_mismatch /
- * model_not_configured / agent mapping configured|missing。
+ * Runtime 状态诊断（RuntimeStatusService / GET /api/runtime/status，M3.8
+ * 去 Gateway 化）测试。使用 fake AgentRuntime（healthCheck +
+ * modelStatusSnapshot + runtimeStats），覆盖：runtime healthy/unhealthy、
+ * model configured/not_configured/unknown、agents 映射、sessions 诊断、
+ * 敏感信息不泄露。
  */
 
 import { describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 
-import { GatewayConnectionError } from "../src/runtime/openclaw/gatewayClient.js";
-import {
-  GATEWAY_CLIENT_SDK_VERSION,
-  RuntimeStatusService,
-  type ConnectionDeps,
-  type StatusConnection,
-} from "../src/runtime/statusService.js";
-import { OPENCLAW_RUNTIME_VERSION } from "../src/dev/runtimeConfig.js";
+import { RuntimeStatusService } from "../src/runtime/statusService.js";
+import { PI_RUNTIME_VERSION } from "../src/runtime/pi/version.js";
 import type { AgentRuntime, RuntimeHealth } from "../src/runtime/types.js";
 import { createBackendHttpServer } from "../src/httpServer.js";
 import { AGENT_IDS } from "./helpers/testStack.js";
 
 const AGENT_IDS_MAIN = { writer: "main", researcher: "main", reviewer: "main", citation: "main" };
 
-function makeRuntime(healthy: boolean): AgentRuntime & { connectionInfo?: () => { baseUrl: string } } {
+/** fake PiRuntimeAdapter 诊断表面：healthCheck + 模型就绪 + 会话统计 */
+function makeRuntime(options: {
+  healthy?: boolean;
+  modelPhase?: "configured" | "not_configured" | "unknown";
+  model?: string;
+  providers?: string[];
+  activeRuns?: number;
+  managedSessions?: number;
+}): AgentRuntime {
+  const healthy = options.healthy ?? true;
+  const modelPhase = options.modelPhase ?? (healthy ? "configured" : "unknown");
   const health = (ok: boolean): RuntimeHealth => ({
     ok,
-    provider: "openclaw",
-    status: ok ? "healthy" : "unreachable",
-    detail: ok ? "Gateway 在线" : "connect ECONNREFUSED",
-    latencyMs: ok ? 3 : null,
+    provider: "pi",
+    status: ok ? "healthy" : "unhealthy",
+    detail: ok ? "Pi in-process Runtime 正常" : "Pi Runtime 初始化失败：boom",
+    latencyMs: ok ? 7 : null,
     checkedAt: new Date().toISOString(),
   });
-  const runtime = {
-    provider: "openclaw" as const,
-    healthCheck: async () => health(healthy),
-    connectionInfo: () => ({ baseUrl: "http://127.0.0.1:18790" }),
-  };
-  return runtime as AgentRuntime & { connectionInfo?: () => { baseUrl: string } };
-}
-
-/** 脚本化诊断连接：connect 行为 + 各 RPC 响应可配置 */
-function makeConnection(options: {
-  connectError?: Error;
-  responses?: Record<string, unknown>;
-  rpcError?: { method: string; error: Error };
-}): StatusConnection & { requests: string[] } {
-  const requests: string[] = [];
   return {
-    requests,
-    connect: async () => {
-      if (options.connectError) {
-        throw options.connectError;
-      }
+    provider: "pi",
+    healthCheck: async () => health(healthy),
+    startAgent: () => {
+      throw new Error("not needed in this test");
     },
-    request: async <T>(method: string): Promise<T> => {
-      requests.push(method);
-      if (options.rpcError && method === options.rpcError.method) {
-        throw options.rpcError.error;
-      }
-      const response = options.responses?.[method];
-      return (response === undefined ? {} : response) as T;
+    runAgent: () => {
+      throw new Error("not needed in this test");
     },
-    stop: async () => {},
-  };
+    getTask: () => {
+      throw new Error("not implemented");
+    },
+    close: async () => {},
+    ...(options.modelPhase !== "unknown"
+      ? {
+          modelStatusSnapshot: async () => ({
+            phase: modelPhase,
+            providers: options.providers ?? [],
+            detail: modelPhase === "configured" ? "模型已配置" : "PAPERTEAM_PI_MODEL 未设置",
+          }),
+        }
+      : {}),
+    ...(options.model !== undefined ? { resolvedModel: options.model } : {}),
+    runtimeStats: () => ({
+      activeRuns: options.activeRuns ?? 0,
+      managedSessions: options.managedSessions ?? 0,
+    }),
+  } as AgentRuntime;
 }
 
-const IDENTITY = { version: OPENCLAW_RUNTIME_VERSION, protocol: 4 };
-const AGENTS_LIST = {
-  defaultId: "main",
-  ownership: "sole",
-  agents: [{ id: "main", kind: "agent" }],
-};
-const AGENTS_LIST_MULTI = {
-  defaultId: "main",
-  ownership: "explicit",
-  agents: [{ id: "main" }, { id: "researcher" }, { id: "writer" }],
-};
-const MODEL_CONFIGURED = { providers: [{ provider: "anthropic" }, { provider: "openai" }] };
-const MODEL_EMPTY = { providers: [] };
-
-function makeService(connection: StatusConnection, agentIds = AGENT_IDS_MAIN) {
-  return new RuntimeStatusService({
-    runtime: makeRuntime(true),
-    agentIds,
-    expectedRuntimeVersion: OPENCLAW_RUNTIME_VERSION,
-    createConnection: () => connection,
-  });
+function makeService(runtime: AgentRuntime, agentIds = AGENT_IDS_MAIN) {
+  return new RuntimeStatusService({ runtime, agentIds });
 }
 
-describe("RuntimeStatusService", () => {
-  it("全绿：gateway healthy、agents configured、model configured、版本一致", async () => {
-    const connection = makeConnection({
-      responses: {
-        "gateway.identity.get": IDENTITY,
-        "agents.list": AGENTS_LIST,
-        "models.authStatus": MODEL_CONFIGURED,
-      },
-    });
-    const status = await makeService(connection).getStatus();
-    expect(status.gateway.phase).toBe("healthy");
-    expect(status.runtime.phase).toBe("ready");
-    expect(status.versions.gatewayRuntime).toBe(OPENCLAW_RUNTIME_VERSION);
-    expect(status.versions.expectedRuntime).toBe(OPENCLAW_RUNTIME_VERSION);
-    expect(status.versions.protocol).toBe(4);
-    expect(status.versions.gatewayClientSdk).toBe(GATEWAY_CLIENT_SDK_VERSION);
-    expect(status.agents.defaultId).toBe("main");
-    expect(status.agents.ownership).toBe("sole");
+describe("RuntimeStatusService（Pi 形状）", () => {
+  it("全绿：runtime healthy + version、model configured（含标签与 providers）、agents 全 configured", async () => {
+    const status = await makeService(
+      makeRuntime({
+        modelPhase: "configured",
+        model: "anthropic/claude-opus-4-5",
+        providers: ["anthropic"],
+        activeRuns: 2,
+        managedSessions: 3,
+      }),
+    ).getStatus();
+    expect(status.backend.ok).toBe(true);
+    expect(status.runtime.provider).toBe("pi");
+    expect(status.runtime.phase).toBe("healthy");
+    expect(status.runtime.version).toBe(PI_RUNTIME_VERSION);
+    expect(status.runtime.latencyMs).toBe(7);
+    expect(status.model.phase).toBe("configured");
+    expect(status.model.model).toBe("anthropic/claude-opus-4-5");
+    expect(status.model.providers).toEqual(["anthropic"]);
+    expect(status.agents.roles).toHaveLength(4);
     for (const role of status.agents.roles) {
       expect(role.status).toBe("configured");
       expect(role.agentId).toBe("main");
     }
-    expect(status.model.phase).toBe("configured");
-    expect(status.model.providers).toEqual(["anthropic", "openai"]);
-    // 不泄露敏感信息
+    expect(status.sessions).toEqual({ activeRuns: 2, managedSessions: 3 });
+    // 新形状不再有 Gateway 概念
     const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain("gateway");
+    expect(serialized).not.toContain("not_applicable");
     expect(serialized).not.toContain("token");
     expect(serialized).not.toContain("apiKey");
   });
 
-  it("gateway 不可达 → gateway unavailable / runtime gateway_unavailable，roles 标记 missing", async () => {
-    const connection = makeConnection({});
-    const service = new RuntimeStatusService({
-      runtime: makeRuntime(false),
-      agentIds: AGENT_IDS_MAIN,
-      createConnection: () => connection,
-    });
-    const status = await service.getStatus();
-    expect(status.gateway.phase).toBe("unavailable");
-    expect(status.runtime.phase).toBe("gateway_unavailable");
-    expect(status.agents.roles.every((role) => role.status === "missing")).toBe(true);
-    expect(connection.requests).toHaveLength(0); // 未发起 RPC
-  });
-
-  it("token 不匹配 → auth_error（gateway 与 runtime 同步）", async () => {
-    const connection = makeConnection({
-      connectError: new GatewayConnectionError("auth", "AUTH_TOKEN_MISMATCH"),
-    });
-    const status = await makeService(connection).getStatus();
-    expect(status.gateway.phase).toBe("auth_error");
-    expect(status.runtime.phase).toBe("auth_error");
-    expect(status.runtime.detail).toContain("OPENCLAW_GATEWAY_API_KEY");
-  });
-
-  it("协议不匹配 → protocol_mismatch", async () => {
-    const connection = makeConnection({
-      connectError: new GatewayConnectionError("protocol", "PROTOCOL_MISMATCH"),
-    });
-    const status = await makeService(connection).getStatus();
-    expect(status.gateway.phase).toBe("protocol_mismatch");
-    expect(status.runtime.phase).toBe("protocol_mismatch");
-  });
-
-  it("模型未配置 → runtime phase = model_not_configured（gateway 仍 healthy）", async () => {
-    const connection = makeConnection({
-      responses: {
-        "gateway.identity.get": IDENTITY,
-        "agents.list": AGENTS_LIST,
-        "models.authStatus": MODEL_EMPTY,
-      },
-    });
-    const status = await makeService(connection).getStatus();
-    expect(status.gateway.phase).toBe("healthy");
-    expect(status.runtime.phase).toBe("model_not_configured");
+  it("Runtime 健康 ≠ 模型就绪：无 Key 时 runtime=healthy、model=not_configured", async () => {
+    const status = await makeService(
+      makeRuntime({ healthy: true, modelPhase: "not_configured" }),
+    ).getStatus();
+    expect(status.runtime.phase).toBe("healthy");
     expect(status.model.phase).toBe("not_configured");
-    expect(status.runtime.detail).toContain("模型未配置");
+    expect(status.model.model).toBeUndefined();
+    expect(status.model.detail).toContain("PAPERTEAM_PI_MODEL");
   });
 
-  it("映射到未注册的 agentId → 该角色 missing（多 agent 注册表场景）", async () => {
-    const connection = makeConnection({
-      responses: {
-        "gateway.identity.get": IDENTITY,
-        "agents.list": AGENTS_LIST_MULTI, // 注册表：main / researcher / writer
-        "models.authStatus": MODEL_CONFIGURED,
-      },
-    });
-    // researcher/writer 映射到已注册的独立 agent；reviewer/citation 映射到不存在的 id
-    const status = await makeService(connection, {
-      researcher: "researcher",
-      writer: "writer",
-      reviewer: "reviewer",
-      citation: "citation",
-    }).getStatus();
-    const byRole = new Map(status.agents.roles.map((role) => [role.role, role.status]));
-    expect(byRole.get("researcher")).toBe("configured");
-    expect(byRole.get("writer")).toBe("configured");
-    expect(byRole.get("reviewer")).toBe("missing");
-    expect(byRole.get("citation")).toBe("missing");
-  });
-
-  it("models.authStatus RPC 失败 → model unknown，但整体不失败", async () => {
-    const connection = makeConnection({
-      responses: {
-        "gateway.identity.get": IDENTITY,
-        "agents.list": AGENTS_LIST,
-      },
-      rpcError: { method: "models.authStatus", error: new Error("not available") },
-    });
-    const status = await makeService(connection).getStatus();
+  it("Runtime 不健康（初始化失败 / 已关闭）→ runtime=unhealthy、model=unknown", async () => {
+    const status = await makeService(makeRuntime({ healthy: false })).getStatus();
+    expect(status.runtime.phase).toBe("unhealthy");
+    expect(status.runtime.detail).toContain("初始化失败");
     expect(status.model.phase).toBe("unknown");
-    expect(status.gateway.phase).toBe("healthy");
-    expect(status.runtime.phase).toBe("ready");
   });
 
-  it("agents.list RPC 失败 → gateway starting，roles 全部 missing", async () => {
-    const connection = makeConnection({
-      responses: { "gateway.identity.get": IDENTITY },
-      rpcError: { method: "agents.list", error: new Error("boom") },
-    });
-    const status = await makeService(connection).getStatus();
-    expect(status.gateway.phase).toBe("starting");
-    expect(status.runtime.phase).toBe("gateway_unavailable");
-    expect(status.agents.roles.every((role) => role.status === "missing")).toBe(true);
+  it("角色映射使用配置的会话标识（Pi 无 agent 注册表，映射恒存在）", async () => {
+    const status = await makeService(
+      makeRuntime({ modelPhase: "configured" }),
+      {
+        researcher: "researcher",
+        writer: "writer",
+        reviewer: "reviewer",
+        citation: "citation",
+      },
+    ).getStatus();
+    const byRole = new Map(status.agents.roles.map((role) => [role.role, role.agentId]));
+    expect(byRole.get("researcher")).toBe("researcher");
+    expect(byRole.get("writer")).toBe("writer");
+    expect(byRole.get("reviewer")).toBe("reviewer");
+    expect(byRole.get("citation")).toBe("citation");
+    expect(status.agents.roles.every((role) => role.status === "configured")).toBe(true);
+  });
+
+  it("Runtime 未暴露模型摘要 → model=unknown，整体不失败", async () => {
+    const status = await makeService(
+      makeRuntime({ healthy: true, modelPhase: "unknown" }),
+    ).getStatus();
+    expect(status.model.phase).toBe("unknown");
+    expect(status.model.detail).toContain("未暴露");
+    expect(status.runtime.phase).toBe("healthy");
   });
 });
 
@@ -218,20 +152,12 @@ describe("RuntimeStatusService", () => {
 
 describe("GET /api/runtime/status（HTTP）", () => {
   it("配置了诊断服务 → 200 结构化状态", async () => {
-    const connection = makeConnection({
-      responses: {
-        "gateway.identity.get": IDENTITY,
-        "agents.list": AGENTS_LIST,
-        "models.authStatus": MODEL_EMPTY,
-      },
-    });
     const service = new RuntimeStatusService({
-      runtime: makeRuntime(true),
+      runtime: makeRuntime({ healthy: true, modelPhase: "not_configured" }),
       agentIds: { ...AGENT_IDS },
-      createConnection: () => connection,
     });
     const server = createBackendHttpServer({
-      runtime: makeRuntime(true),
+      runtime: makeRuntime({ healthy: true, modelPhase: "not_configured" }),
       projects: null as never,
       generation: null as never,
       orchestrator: null as never,
@@ -241,8 +167,9 @@ describe("GET /api/runtime/status（HTTP）", () => {
     try {
       const response = await fetch(`http://127.0.0.1:${portOf(server)}/api/runtime/status`);
       expect(response.status).toBe(200);
-      const body = (await response.json()) as { status: { runtime: { phase: string } } };
-      expect(body.status.runtime.phase).toBe("model_not_configured");
+      const body = (await response.json()) as { status: { runtime: { phase: string }; model: { phase: string } } };
+      expect(body.status.runtime.phase).toBe("healthy");
+      expect(body.status.model.phase).toBe("not_configured");
     } finally {
       await close(server);
     }
@@ -250,7 +177,7 @@ describe("GET /api/runtime/status（HTTP）", () => {
 
   it("未配置诊断服务 → 503 明确提示", async () => {
     const server = createBackendHttpServer({
-      runtime: makeRuntime(true),
+      runtime: makeRuntime({ healthy: true, modelPhase: "configured" }),
       projects: null as never,
       generation: null as never,
       orchestrator: null as never,

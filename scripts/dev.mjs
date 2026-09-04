@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 /**
- * PaperTeam dev 启动器（`npm run dev`，M3.5 Runtime Bootstrap 的入口薄壳）。
+ * PaperTeam dev 启动器（`npm run dev`，M3.8：Pi in-process Runtime）。
  *
- * 职责（真正的编排在 backend/dist/dev/cli.js，本文件只做进入前的准备）：
- *   1. Node 版本检查（直接复用根 package.json 的 engines.node，与
- *      openclaw@2026.9.1 的支持范围保持一致，单一事实源）
- *   2. 根目录依赖（openclaw runtime 本体）缺失时执行 npm install
- *   3. backend 依赖缺失时执行 npm install
- *   4. 构建 backend（tsc，保证 dist 新鲜）
- *   5. 启动 bootstrap CLI 并透传信号 / 退出码
+ * 启动模型（无 Gateway 子进程 / 端口 / 握手 / state 准备）：
+ *
+ *   npm run dev → 本启动器 → backend/dist/index.js（Pi SDK in-process 嵌入）
+ *
+ * 职责：
+ *   1. Node 版本检查（复用根 package.json 的 engines.node，单一事实源）
+ *   2. backend 依赖缺失时执行 npm install
+ *   3. 构建 backend（tsc，保证 dist 新鲜）
+ *   4. 启动 Backend 并透传信号 / 退出码
+ *
+ * Backend 监听端口经 PAPERTEAM_PORT 配置（默认 3000）；
+ * 模型凭据经 PAPERTEAM_PI_MODEL / PAPERTEAM_PI_API_KEY 或
+ * <PAPERTEAM_RUNTIME_ROOT>/runtime/pi/agent/auth.json 配置（见 .env.example）。
  *
  * 不引入任何 monorepo / 进程管理工具（Nx、Turborepo、PM2 等）。
  */
@@ -19,15 +25,11 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const OPENCLAW_ENTRY = join(repoRoot, "node_modules", "openclaw", "openclaw.mjs");
-const BACKEND_DIST_CLI = join(repoRoot, "backend", "dist", "dev", "cli.js");
+const BACKEND_DIST_ENTRY = join(repoRoot, "backend", "dist", "index.js");
 
 /**
- * Node 版本检查的唯一事实源：根 package.json 的 engines.node
- * （与 openclaw@2026.9.1 node-version.mjs 的支持范围一致：
- *   >=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0 —— 末段无上界，
- *   即 Node 26+ 受支持且为官方推荐线，Node 23 仍不支持）。
- * 这里不再手工维护第二份范围表，避免两处互相漂移（M3.6 修复项）。
+ * Node 版本检查的唯一事实源：根 package.json 的 engines.node。
+ * 这里不再手工维护第二份范围表，避免两处互相漂移。
  */
 function readEnginesNode() {
   const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
@@ -110,24 +112,19 @@ function runSync(command, args, cwd) {
 }
 
 function main() {
-  console.log(`PaperTeam dev（node ${process.versions.node}）`);
+  console.log(`PaperTeam dev（node ${process.versions.node}，Pi in-process Runtime）`);
 
   const enginesNode = readEnginesNode();
   if (!isSupportedNode(enginesNode)) {
     console.error(
       `[paperteam-dev] Node 版本不满足要求：需要满足 ${enginesNode}` +
-        `（与 openclaw@2026.9.1 支持范围一致；Node 26+ 可用），当前 ${process.versions.node}。` +
-        ` 请切换 Node 后重试。`,
+        `（Node 26+ 可用），当前 ${process.versions.node}。 请切换 Node 后重试。`,
     );
     process.exit(1);
   }
 
-  // 依赖检查（根：openclaw runtime；backend：业务依赖）
-  if (!existsSync(OPENCLAW_ENTRY)) {
-    console.log("[paperteam-dev] 根目录依赖缺失（openclaw runtime），执行 npm install ...");
-    runSync("npm", ["install"], repoRoot);
-  }
-  if (!existsSync(join(repoRoot, "backend", "node_modules", "@openclaw"))) {
+  // 依赖检查（backend：业务 + Pi SDK 依赖）
+  if (!existsSync(join(repoRoot, "backend", "node_modules", "@earendil-works"))) {
     console.log("[paperteam-dev] backend 依赖缺失，执行 npm install ...");
     runSync("npm", ["install"], join(repoRoot, "backend"));
   }
@@ -135,17 +132,17 @@ function main() {
   // 构建（保证 dist 与 src 一致；tsc 增量很快）
   runSync("npm", ["run", "build"], join(repoRoot, "backend"));
 
-  // 启动 bootstrap CLI（stdio 直通）
-  const child = spawn(process.execPath, [BACKEND_DIST_CLI], {
-    cwd: repoRoot,
+  // 启动 Backend（Pi SDK in-process；stdio 直通）
+  const child = spawn(process.execPath, [BACKEND_DIST_ENTRY], {
+    cwd: join(repoRoot, "backend"),
     stdio: "inherit",
     env: { ...process.env },
   });
   if (process.platform !== "win32") {
-    // POSIX：转发信号让 cli.js 优雅关闭。
-    // Windows 不转发：控制台 Ctrl+C 事件原生送达同一控制台的 cli.js 及其
-    // 子进程（各自运行优雅清理）；此时 child.kill() 是 TerminateProcess，
-    // 反而会在优雅关闭完成前硬杀 cli.js。
+    // POSIX：转发信号让 Backend 优雅关闭。
+    // Windows 不转发：控制台 Ctrl+C 事件原生送达同一控制台的 Backend 进程
+    // （其自身运行优雅清理）；此时 child.kill() 是 TerminateProcess，
+    // 反而会在优雅关闭完成前硬杀 Backend。
     const forward = (signal) => {
       if (child.pid !== undefined) {
         try {

@@ -19,7 +19,7 @@ import { extractJsonObject } from "../agents/outputParsing.js";
 
 export interface WriterServiceOptions {
   runtime: AgentRuntime;
-  /** Writer 对应的 OpenClaw agent id */
+  /** Writer 对应的 Runtime 会话标识（sessionKey 组成段） */
   agentId: string;
   /** 诊断日志 */
   log?: (message: string) => void;

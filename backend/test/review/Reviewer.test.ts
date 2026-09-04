@@ -103,15 +103,26 @@ describe("ReviewerService（fake runtime）", () => {
     const project = await store.create("审稿测试");
     const calls: { agentId: string; contextScope?: string }[] = [];
     const runtime: AgentRuntime = {
-      provider: "openclaw",
+      provider: "pi",
       healthCheck: async () => ({
         ok: true,
-        provider: "openclaw",
+        provider: "pi",
         status: "healthy",
         detail: "ok",
         latencyMs: 1,
         checkedAt: new Date().toISOString(),
       }),
+      startAgent: async (input) => {
+        calls.push({ agentId: input.agentId, contextScope: input.contextScope });
+        const task = makeAgentTask(script(input));
+        return {
+          taskId: task.taskId,
+          sessionKey: `agent:${input.agentId}:paperteam-fake`,
+          events: async function* () {},
+          cancel: async () => {},
+          result: async () => task,
+        };
+      },
       runAgent: async (input) => {
         calls.push({ agentId: input.agentId, contextScope: input.contextScope });
         return makeAgentTask(script(input));
@@ -119,15 +130,7 @@ describe("ReviewerService（fake runtime）", () => {
       getTask: () => {
         throw new Error("not implemented");
       },
-      cancelTask: () => {
-        throw new Error("not implemented");
-      },
-      sendMessage: () => {
-        throw new Error("not implemented");
-      },
-      streamEvents: () => {
-        throw new Error("not implemented");
-      },
+      close: async () => {},
     };
     return {
       service: new ReviewerService({ runtime, agentId: "reviewer", projects: store, log: () => {} }),

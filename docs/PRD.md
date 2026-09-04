@@ -56,7 +56,7 @@ Related Work、Research Gap、Novelty / Contribution 分析与目标可行性评
    显式标记证据不足，不为完成文字而虚构论文、数据或引用。
 3. **Workspace 是事实来源**：`manuscript/`、`sources/`、`evidence/`、`reviews/`、
    workflow state 与 artifacts 是 Authoritative State；`context.yaml` 等是可重建的
-   Derived Context；OpenClaw Session 只是可丢弃的 Runtime Context。业务流程不能依赖
+   Derived Context；Runtime Session（Pi AgentSession）只是可丢弃的执行上下文。业务流程不能依赖
    Chat History 才能恢复（见 9.6）。
 4. **确定性编排**：流程状态、Stage 推进、重试、超时、Checkpoint、分支与循环由后端
    确定性代码（WorkflowOrchestrator）负责；LLM 只负责内容理解、语义判断、论文分析与
@@ -99,7 +99,7 @@ Related Work、Research Gap、Novelty / Contribution 分析与目标可行性评
 管理员主要负责：
 
 - 查看服务器运行状态
-- 查看 OpenClaw Gateway 状态
+- 查看 Runtime / 模型状态（GET /api/runtime/status）
 - 管理 Agent 与 Skill
 - 配置模型
 - 查看任务、WorkflowRun 与 Session
@@ -132,7 +132,7 @@ PaperTeam Backend
    └── Admin（系统管理后台）
    │
    ▼
-OpenClaw Gateway（Agent Runtime）
+Pi SDK in-process（Agent Runtime，M3.8）
    │
    ├── Researcher    领域调研、文献检索、Evidence 生成、可行性分析
    ├── Writer        基于大纲与 Evidence 的分节写作与修改
@@ -181,7 +181,7 @@ Linux Server
 主要页面：
 
 1. 系统状态
-2. OpenClaw
+2. Agent Runtime（Pi SDK in-process，M3.8 起）
 3. Agent 管理
 4. 模型管理
 5. Workflow 配置
@@ -1004,7 +1004,7 @@ HITL 约定：
 - WorkflowRun 进入 `awaiting_input`，前端明确提示用户待办
 - 用户输入后 `workflow.resumed`，从 checkpoint 继续
 - Workflow 状态持久化（`workflow/` 目录），服务重启后可恢复；恢复依据是 Workspace
-  状态与 checkpoint，**不依赖 OpenClaw Chat History**
+  状态与 checkpoint，**不依赖 Runtime 会话历史**
 
 ## 9.7 异步 WorkflowRun
 
@@ -1027,7 +1027,7 @@ pending / running / awaiting_input / completed / failed / cancelled
 
 进度事件是 **PaperTeam Domain Event**（如 workflow.started、stage.started、
 stage.completed、stage.failed、workflow.awaiting_input、workflow.resumed、
-quality_gate.failed、workflow.completed）。Domain Event 与 OpenClaw Runtime Event 是
+quality_gate.failed、workflow.completed）。Domain Event 与 Runtime Event（Pi 事件归一化）是
 两个层次的概念，不能混用（见 ARCHITECTURE.md 事件分层）。
 
 ---
@@ -1260,7 +1260,7 @@ Existing-Paper Improvement 项目的初始导入快照是一个特殊版本（ba
 
 ## 14.1 目标
 
-PaperTeam Backend 通过统一 Runtime 接口调用底层 Agent 系统（当前为 OpenClaw）。
+PaperTeam Backend 通过统一 Runtime 接口（AgentRuntime Contract v2）调用底层 Agent 系统（当前为 Pi SDK in-process）。
 
 业务层只表达：
 
@@ -1272,7 +1272,7 @@ PaperTeam Backend 通过统一 Runtime 接口调用底层 Agent 系统（当前�
 
 ## 14.2 Session 原则
 
-- **Project ≠ Session**：Project 是论文业务对象；OpenClaw Session 是 Agent 的
+- **Project ≠ Session**：Project 是论文业务对象；Runtime Session 是 Agent 的
   Runtime 上下文，可重建、可丢弃，不承担项目事实来源
 - 同一 Project 的同一 Agent 会话保持上下文连续；不同 Project 互不污染
 - M3 并行 Reviewer 等场景进一步引入 **contextScope**：会话维度为
@@ -1337,7 +1337,7 @@ PaperTeam Backend 通过统一 Runtime 接口调用底层 Agent 系统（当前�
 日志来源：
 
 - PaperTeam Backend
-- OpenClaw Gateway
+- ~~OpenClaw Gateway~~（M3.8 起由 Pi SDK in-process 取代，无独立网关进程）
 - Agent
 - Model Provider
 - LaTeX
@@ -1371,7 +1371,7 @@ Gateway unavailable
 
 ✓ Linux 正常
 ✓ Node.js 正常
-✗ OpenClaw Gateway stopped
+✗ Agent Runtime unavailable（Pi SDK）
 ✓ Model API 正常
 
 建议操作：
@@ -1448,12 +1448,12 @@ Command Center、Web Terminal、文件管理。
 
 Linux：Ubuntu Server。
 
-核心组件：Node.js、OpenClaw Gateway、PaperTeam Backend、Git、Python、TeX Live
+核心组件：Node.js、PaperTeam Backend（内嵌 Pi Runtime）、Git、Python、TeX Live
 （XeLaTeX / latexmk / Biber）、Poppler、PDF Renderer。
 
 ## 22.2 服务
 
-建议长期运行：PaperTeam Backend、OpenClaw Gateway、Web Frontend、Database。
+建议长期运行：PaperTeam Backend（内嵌 Pi Runtime）、Web Frontend、Database。
 
 支持 systemd 管理。
 
@@ -1465,7 +1465,7 @@ Linux：Ubuntu Server。
 https://paper.example.com
 ```
 
-OpenClaw Gateway 作为服务器内部服务访问。
+模型 Provider 凭据经环境变量 / auth.json 配置，不对外暴露。
 
 ---
 
@@ -1611,7 +1611,7 @@ GET  /api/projects/:id/versions
 - Web Terminal
 - 审稿结果推送
 
-事件分层：OpenClaw Runtime Event 经 RuntimeAdapter 转换为 WorkflowOrchestrator 关心的
+事件分层：Pi Runtime Event 经 PiRuntimeAdapter 转换为 WorkflowOrchestrator 关心的
 运行信号，再对外发布为 PaperTeam Domain Event；两层事件不混用（见 ARCHITECTURE.md）。
 
 ---
@@ -1620,7 +1620,7 @@ GET  /api/projects/:id/versions
 
 ## 26.1 可用性
 
-普通用户使用系统时无需：SSH、Git 命令、LaTeX 命令、OpenClaw 命令、Linux 命令。
+普通用户使用系统时无需：SSH、Git 命令、LaTeX 命令、Runtime 命令、Linux 命令。
 
 ## 26.2 可观测性
 
@@ -1691,8 +1691,16 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
   诊断 API、优雅关闭——**M3 Complete**
 - **M3.6 Runtime Baseline Upgrade**：OpenClaw baseline 2026.8.2 → **2026.9.1**
   （三处依赖统一精确 pin，protocol v4 不变，无 breaking change）；Node 兼容检查
-  收敛到根 package.json engines（Node 26+ 可用）；runtime.json 存量版本自动迁移；
-  Node.js + npm 仍为 Runtime / Package Manager baseline，**2026.9.1 固化为 M4 基线**
+  收敛到根 package.json engines（Node 26+ 可用）；runtime.json 存量版本自动迁移
+  （历史基线，M3.8 起 OpenClaw 不再参与运行）
+- **M3.7 Pi Runtime Feasibility**：Side-by-side PiRuntimeAdapter
+  （`@earendil-works/pi-coding-agent` 0.84.4）全项验证（in-process / 三路并发 /
+  abort / 事件 / 隔离 / Windows 零 Gateway 子进程），结论 MIGRATE TO PI（D-0019）
+- **M3.8 Pi Runtime Migration & Contract v2**：**Pi 成为唯一正式 Runtime**
+  （OpenClaw Gateway / Bootstrap / 三依赖全部移除，D-0020）；`AgentRuntime`
+  Contract v2（startAgent → 句柄：运行中事件流 / 取消 / result）；tool
+  execution AbortSignal 取消传导实证；RuntimeStatus 去 Gateway 化；dev 直启
+  Backend；**Pi 0.84.4 + Node.js + npm 固化为 M4 Runtime baseline**
 
 ### M3.0 — Workflow Foundation（✅ 已实现）
 

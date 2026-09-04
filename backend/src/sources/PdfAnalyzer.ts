@@ -6,10 +6,10 @@
  *   页数、图片对象数、zlib 解压后的 Tj/TJ 文本抽取、章节标题识别、引用标记密度、
  *   文本预览。对子集字体 / Identity-H 编码的 PDF 提取质量有限，如实报告
  *   extractionQuality（good / partial / poor），不伪造成功。
- * - Layer 2（MultimodalAnalyzer 扩展点）：视觉图表级分析。OpenClaw 2026.8.1 的
+ * - Layer 2（MultimodalAnalyzer 扩展点）：视觉图表级分析。Runtime 的
  *   agent RPC 附件仅支持 image/*（PDF 会被网关拒绝），因此 AgentMultimodalAnalyzer
  *   通过消息文本引用服务器本地路径、由 Agent 内置 pdf 工具完成（真实可用性
- *   取决于 Gateway / 模型能力与沙箱路径授权；不可用时返回明确的 capability-gap
+ *   取决于模型能力与沙箱路径授权；不可用时返回明确的 capability-gap
  *   结果，不伪造验证成功）。
  *
  * 分析失败不破坏项目：异常被捕获并转为 status=failed 的结果。
@@ -146,7 +146,7 @@ export interface MultimodalAnalyzer {
 
 /**
  * 基于 Agent 的多模态分析（扩展点实现）。
- * 消息中给出服务器本地 PDF 路径，由 Agent（OpenClaw 内置 pdf 工具）完成
+ * 消息中给出服务器本地 PDF 路径，由 Agent（Runtime pdf 能力）完成
  * 视觉级分析；本实现不把 PDF 作为 RPC 附件传递（agent 入口拒绝非图片附件）。
  */
 export class AgentMultimodalAnalyzer implements MultimodalAnalyzer {
@@ -177,7 +177,7 @@ export class AgentMultimodalAnalyzer implements MultimodalAnalyzer {
       headings: [],
       citationMarkers: 0,
       textPreview: "",
-      note: "multimodal 能力不可用（未配置模型凭据或 Gateway 不在线）",
+      note: "multimodal 能力不可用（未配置模型凭据）",
       analyzedAt: this.now().toISOString(),
     };
     let task;

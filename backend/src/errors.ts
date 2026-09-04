@@ -3,7 +3,7 @@
  *
  * 原则：
  * - 业务层只抛出本文件中的错误类型，底层细节（ECONNRESET、
- *   OpenClaw 内部错误结构、child_process 原始错误等）只写日志；
+ *   底层 Runtime 内部错误结构、child_process 原始错误等）只写日志；
  * - 每个错误携带稳定的 `code`，供 HTTP API 映射状态码与前端判断；
  * - `detail` 是给排障看的短摘要，不包含堆栈。
  */
@@ -195,7 +195,7 @@ export class StageContractViolationError extends BusinessError {
  * Stage 失败分类（决定是否重试，M3.0）：
  * - transient          瞬时失败（Agent 输出异常、模型抖动）→ 可重试
  * - timeout            超时 → 可重试
- * - runtime_unavailable Runtime 不可用（Gateway 掉线）→ 可重试
+ * - runtime_unavailable Runtime 不可用（Runtime 初始化失败 / 已关闭）→ 可重试
  * - contract_violation DoD / 结构化校验不通过 → 按契约可重试（LLM 重新生成可能自愈）
  * - permanent          永久失败（输入非法、环境缺失）→ 不重试
  */

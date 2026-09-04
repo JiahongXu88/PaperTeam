@@ -1,8 +1,8 @@
 # PaperTeam 系统架构
 
-> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0018）整理。
+> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0019）整理。
 > M1 / M2 / M2.1 / **M3（M3.0 Workflow Foundation / M3.1 Research & Evidence / M3.2 Review & Revision）已实现**，
-> **M3.5 Runtime Bootstrap / M3 Closure 已实现（独立 OpenClaw Runtime + `npm run dev` 一键启动）**。
+> **M3.8 已完成：Pi SDK 成为唯一正式 Runtime（in-process，零 Gateway），AgentRuntime 契约升级 v2**。
 > 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
 > 前端（M4+）、Visual Reviewer、LaTeX repair loop、完整版本管理、Docker 部署为 Planned。
 
@@ -27,11 +27,13 @@
                          │
          Project / Evidence / Artifacts           ← Authoritative State（事实来源）
                          │
-                   AgentRuntime                   ← 统一 Runtime 接口
+                   AgentRuntime                   ← 统一 Runtime 接口（Contract v2）
                          │
-              OpenClawRuntimeAdapter              ← Runtime 隔离层
+                  PiRuntimeAdapter                ← Runtime 隔离层
                          │
-                  OpenClaw Gateway                ← Agent Runtime
+              Pi SDK（in-process）                 ← Agent Runtime
+                         │
+                   LLM / Tools
 ```
 
 完整的分层视图：
@@ -58,7 +60,7 @@ PaperTeam Backend（backend/）
    └── Admin               系统管理后台
    │
    ▼
-OpenClaw Gateway（Agent Runtime）
+Pi SDK in-process（@earendil-works/pi-coding-agent 0.84.4，无子进程）
    │
    ├── Researcher    领域调研、文献检索、Evidence 生成、可行性分析支持
    ├── Writer        分节写作与 revision
@@ -78,8 +80,8 @@ Linux Server
 ### 1.2 当前实现（M3 后）
 
 M3 目标架构（§1.1）已在 backend 落地：HTTP API/SSE → WorkflowOrchestrator（确定性引擎）→
-Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime 调用 Agent Runtime——
-默认 OpenClaw Gateway，M3.7 起可切换 in-process Pi，见 §6.4）→
+Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime Contract v2 调用
+PiRuntimeAdapter —— Pi SDK in-process，见 §6.4）→
 Project / Evidence / Artifacts 落盘 → Build Gate / Quality Gate。两条一级工作流
 （Idea-to-Paper、Existing-LaTeX Improvement）共享审稿-修订-构建后段。尚未实现：
 frontend（M4+）、Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
@@ -94,7 +96,7 @@ frontend（M4+）、Visual Reviewer、LaTeX repair loop、Git 版本管理体验
 |---|---|---|
 | **Authoritative State**（事实来源） | `manuscript/`、`sources/`、`evidence/`、`reviews/`、workflow state（`workflow/`）、build artifacts | 项目唯一真相；所有 Stage 产出必须落盘于此 |
 | **Derived Context**（蒸馏产物） | `context.yaml`、outline summary、section status、terminology summary、Reference Style Profile | 可由事实来源随时重新生成；只是 Agent 输入的优化，**不是第二份事实数据库** |
-| **Runtime Context**（运行时上下文） | OpenClaw Session（Chat History） | disposable，可重建，**不承担项目真相** |
+| **Runtime Context**（运行时上下文） | Pi AgentSession（进程内会话） | disposable，可重建，**不承担项目真相** |
 
 规则（D-0013）：业务流程不能依赖 Chat History 才能恢复；恢复依据是 Workspace 状态与
 workflow checkpoint。
@@ -105,7 +107,7 @@ workflow checkpoint。
 PaperTeam Project（业务对象，ProjectStore 自持）
   │  project.json: { id, title, status, …, runtimeSessionKey? }   ← Runtime-neutral 引用
   ▼
-OpenClaw Session（Agent Runtime 上下文）
+Pi AgentSession（Agent Runtime 上下文，进程内）
      sessionKey = agent:{agentId}:paperteam-{projectId}          ← M2.1 已实现
      M3 扩展：projectId × agentId × contextScope                  ← 见 §6.3
 ```
@@ -115,9 +117,9 @@ Project 是论文业务对象；Session 是 Agent 对话 / 工作上下文，可
 ### 2.3 Domain Event ≠ Runtime Event
 
 ```text
-OpenClaw Runtime Event（SDK 事件：session / agent 运行信号）
+Pi Runtime Event（SDK 事件：session / agent 运行信号）
    ↓
-RuntimeAdapter（转换 / 归一化）
+PiRuntimeAdapter（转换 / 归一化）
    ↓
 WorkflowOrchestrator（消费运行信号，驱动 Stage 状态机）
    ↓
@@ -128,8 +130,8 @@ SSE（前端进度）
 
 Domain Event 示例：`workflow.started`、`stage.started`、`stage.completed`、
 `stage.failed`、`workflow.awaiting_input`、`workflow.resumed`、
-`quality_gate.failed`、`workflow.completed`。OpenClaw 的事件名、sessionKey 等细节
-不允许透传到前端事件协议。
+`quality_gate.failed`、`workflow.completed`。Pi 的原始事件对象、sessionKey 等细节
+不允许透传到前端事件协议（Runtime Event → AgentEvent → Domain Event 逐层归一化）。
 
 ### 2.4 Build Gate ≠ Quality Gate
 
@@ -280,153 +282,145 @@ subsystem 均在 M4+ / backlog。
 
 ## 6. Runtime 层
 
-### 6.0 Runtime Bootstrap 与独立 OpenClaw 实例（M3.5 已实现）
+### 6.0 Runtime 形态与 dev 启动（M3.8：Pi in-process）
 
-PaperTeam 不依赖用户机器上的全局 OpenClaw 安装或全局 `~/.openclaw` state（D-0018）。
-开发入口 `npm run dev`（仓库根）执行完整 Bootstrap：
+M3.8 起 Pi SDK 是**唯一正式 Runtime**：Backend 进程内嵌入
+`@earendil-works/pi-coding-agent`（0.84.4 精确 pin），无 Gateway 子进程 / 端口 /
+WebSocket / 握手 / RPC。M3.5~M3.6 时代的 OpenClaw Runtime Bootstrap（独立 state、
+runtime.json、Gateway spawn/health/token/supervisor）已随迁移移除，git 历史即回退
+机制；用户磁盘上的旧 `~/.paperteam/runtime/openclaw/` state 无害忽略。
+
+开发入口 `npm run dev`（仓库根）：
 
 ```text
 npm run dev
   │
-  ├─ scripts/dev.mjs（入口薄壳）
-  │    ├─ Node 版本检查（对齐锁定 openclaw 版本的支持范围）
-  │    ├─ 根依赖（openclaw runtime 本体）/ backend 依赖缺失时自动 npm install
-  │    └─ 构建 backend（tsc）→ 启动 backend/dist/dev/cli.js
-  │
-  └─ backend/src/dev/cli.ts（Runtime Bootstrap 编排）
-       ├─ 解析 PaperTeam 用户级 Runtime 路径（默认 %USERPROFILE%\.paperteam；
-       │    PAPERTEAM_RUNTIME_ROOT 可覆盖；与 ~/.openclaw 相等/嵌套 → 拒绝启动）
-       ├─ 读取/生成 runtime/runtime.json（OpenClaw 精确版本、Gateway 端口、随机 token）
-       ├─ 校验项目本地 openclaw 安装版本与锁定一致（漂移 → 拒绝启动）
-       ├─ 准备独立 state：OPENCLAW_STATE_DIR + OPENCLAW_CONFIG_PATH
-       │    （最小 config：{"gateway":{"mode":"local"}}，已存在不覆盖）
-       ├─ 启动 Gateway（node openclaw.mjs gateway --port 18790，
-       │    注入 OPENCLAW_STATE_DIR/CONFIG_PATH/GATEWAY_TOKEN，剔除 OPENCLAW_PROFILE）
-       ├─ 等待 GET /health 就绪（默认 60s 预算；进程提前退出 → 报错不空等）
-       ├─ 启动 Backend（注入 OPENCLAW_GATEWAY_URL/API_KEY/PAPERTEAM_PORT）
-       └─ Ctrl+C / SIGTERM → 先停 Backend（checkpoint 落盘）再停 Gateway
-            （优雅期 + Windows taskkill /T、POSIX SIGKILL 兜底；无孤儿进程）
+  └─ scripts/dev.mjs
+       ├─ Node 版本检查（根 package.json engines.node 为唯一事实源）
+       ├─ backend 依赖缺失时自动 npm install
+       ├─ 构建 backend（tsc）
+       └─ 直启 backend/dist/index.js（stdio 直通；POSIX 转发信号，
+          Windows Ctrl+C 原生送达 Backend 自行优雅收敛）
 ```
 
-布局与隔离：
+Backend 启动（`backend/src/index.ts`）：加载 .env → 校验配置 → 构造
+PiRuntimeAdapter → healthCheck（Runtime 健康 ≠ 模型就绪）→ 装配服务栈与
+WorkflowOrchestrator → 恢复中断 run → HTTP 监听。Ctrl+C / SIGTERM：
+先停编排器（取消活跃 run、checkpoint 落盘）→ Runtime close（取消/收敛全部
+在途 run、dispose 会话）→ 关 HTTP（断开 SSE）。
+
+Pi 配置目录布局（用户级，不入 Git；`PAPERTEAM_RUNTIME_ROOT` 可覆盖）：
 
 ```text
-%USERPROFILE%\.paperteam\            （用户级，不入 Git；PAPERTEAM_RUNTIME_ROOT 可覆盖）
-└── runtime\
-    ├── runtime.json                 # Bootstrap 配置（端口 / 随机 token / OpenClaw 版本）
-    └── openclaw\                    # OPENCLAW_STATE_DIR（会话/凭据/缓存/workspace）
-        ├── openclaw.json            # OPENCLAW_CONFIG_PATH（Gateway 配置）
-        └── .env                     # 模型 provider API Key（OpenClaw 官方凭据位置）
+%USERPROFILE%\.paperteam└── runtime\pigent    ├── auth.json    # Pi 官方凭据（可选；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
+    └── models.json  # 自定义模型注册（可选）
 ```
 
-版本锚点：openclaw（runtime 本体，根 package.json devDependency）与
-`@openclaw/gateway-client` / `@openclaw/gateway-protocol`（backend 依赖）全部精确
-pin 到同一版本（当前 **2026.9.1**，wire protocol v4）；测试
-（`backend/test/dev/versionPins.test.ts`）断言三处一致且不允许 `^`/`~`/`latest`。
-
-### 6.0.1 Business Agent → Runtime Agent 映射（方案 A，D-0018）
+### 6.0.1 Business Agent → Runtime 会话映射（方案 A，D-0018）
 
 ```text
 PaperTeam 业务角色              Runtime 映射（config 层，env 可覆盖）
-Researcher / Writer /     →    OpenClaw agent "main"（默认；全新安装即存在）
-Reviewer / Citation             会话隔离靠 contextScope（§6.3）：
+Researcher / Writer /     →    会话标识 "main"（默认；仅作 sessionKey 组成段与
+Reviewer / Citation             诊断标签——Pi 无 agent 注册表，角色由
+                                PiRuntimeAdapter 按 contextScope 前缀解析为
+                                systemPrompt + 工具白名单）
+                                会话隔离靠 contextScope（§6.3）：
                                   research / research/feasibility / writing/outline /
                                   writing/sections / review/fact / review/academic /
-                                  review/style / …（同一 agent 内互不污染）
+                                  review/style / …（互不污染）
 ```
 
-业务 Service 只持有注入的 agentId（`serviceStack` 装配），不感知 OpenClaw 注册表。
-`GET /api/runtime/status` 通过 `agents.list` RPC 实时校验每个映射 registered/missing，
-未来某角色需要独立模型/权限时改环境变量即可。
+业务 Service 只持有注入的 agentId（`serviceStack` 装配）。`PAPERTEAM_{ROLE}_AGENT_ID`
+可覆盖会话标识（主要影响 sessionKey 派生段）。
 
-### 6.0.2 Runtime 诊断（GET /api/runtime/status，M3.5）
+### 6.0.2 Runtime 诊断（GET /api/runtime/status，M3.8 形状）
 
-一次只读诊断（operator.read 权限，不泄露 token/密钥）回答四个问题：
+一次只读诊断（不泄露 token/密钥）回答四个问题：
 
 | 维度 | 状态 |
 |---|---|
-| gateway | `healthy` / `starting` / `unavailable` / `auth_error` / `protocol_mismatch`（/health 探针 + connect 握手 + RPC） |
-| runtime | `ready` / `model_not_configured` / `auth_error` / `protocol_mismatch` / `gateway_unavailable` |
-| agents | 每个业务角色 → agentId 的映射 `configured` / `missing`（对照 agents.list） |
-| model | `configured`（provider 名单）/ `not_configured` / `unknown`（models.authStatus） |
+| runtime | `provider: "pi"`、`phase: healthy / unhealthy`、`version`（Pi SDK 精确版本）、detail、latencyMs（healthCheck：SDK 可加载 + Adapter 未关闭 + ModelRuntime 初始化正常） |
+| model | `phase: configured / not_configured / unknown`、`model?`（解析后的 provider/model-id）、`providers`（有凭据名单） |
+| agents | 每个业务角色 → 会话标识映射（Pi 无注册表，恒 `configured`） |
+| sessions | `activeRuns`（在途 run 数）/ `managedSessions`（受管 AgentSession 数） |
 
-模型未配置不阻塞启动：Gateway 无凭据也能健康运行，诊断如实上报。
+模型未配置不阻塞启动：Runtime healthy + model `not_configured` 分区如实上报
+（Runtime 健康 ≠ 模型就绪）。M4 Frontend 不需要感知历史上的 Gateway 概念
+（gateway / protocol / clientSdk 字段已随 M3.8 删除）。
 
-### 6.1 AgentRuntimeAdapter（Runtime 隔离层，已实现）
+### 6.1 AgentRuntime 契约（Contract v2，M3.8）
 
-业务层不直接依赖 OpenClaw，只依赖统一接口：
+业务层不直接依赖 Pi SDK，只依赖统一接口（`backend/src/runtime/types.ts`）：
 
 ```ts
 interface AgentRuntime {
-  runAgent(input: RunAgentInput): Promise<AgentTask>;
-  getTask(taskId: string): Promise<AgentTask>;
-  cancelTask(taskId: string): Promise<void>;
-  sendMessage(sessionId: string, message: string): Promise<void>;
-  streamEvents(taskId: string, onEvent: (event: AgentEvent) => void): Promise<void>;
-  healthCheck(): Promise<RuntimeHealth>;
-  close?(): Promise<void>;   // M2.1：进程 shutdown 时释放连接
+  readonly provider: RuntimeProvider;                       // "pi"
+  startAgent(input: RunAgentInput): Promise<AgentRunHandle>; // v2 主入口
+  runAgent(input: RunAgentInput): Promise<AgentTask>;        // convenience = start + await result
+  getTask(taskId: string): Promise<AgentTask>;               // 已完结任务回溯
+  healthCheck(): Promise<RuntimeHealth>;                     // Runtime 健康（≠ 模型就绪）
+  close(): Promise<void>;                                    // 收敛全部 run / dispose 会话
+}
+
+interface AgentRunHandle {
+  readonly taskId: string;      // startAgent 返回时即已生成（不等排队/执行）
+  readonly sessionKey: string;
+  events(): AsyncIterable<AgentEvent>; // replay + live；settle 后自然结束；多订阅独立
+  cancel(): Promise<void>;             // 幂等；queued 短路 / running 真实 abort
+  result(): Promise<AgentTask>;        // 终态（Promise 缓存，可重复 await；超时/Runtime 异常 reject）
 }
 ```
 
-- 第一版由 **OpenClawRuntimeAdapter** 实现，对接 OpenClaw Gateway 的 Agent / Session /
-  Task / Event Stream；**M3.7 起新增并列实现 PiRuntimeAdapter**（§6.4，in-process
-  Pi SDK，默认仍为 openclaw）。
+- 唯一实现：**PiRuntimeAdapter**（§6.4）。
 - 任务状态统一为：`queued / running / completed / failed / cancelled`。
-- 未来替换或新增 Runtime（新 Agent 框架、本地模型等）不影响业务层。
-- `getTask / cancelTask / sendMessage / streamEvents` 在 OpenClaw 实现中仍为契约占位
-  （`RuntimeCapabilityError`）；PiRuntimeAdapter 已实现 getTask（有限回溯）/
-  cancelTask（真实 abort）/ streamEvents（事件回放），sendMessage 两端均为占位
-  （HITL 走 Workflow resume，不经 Runtime sendMessage）。受 Contract v1 的
-  runAgent 同步终态语义限制（taskId 在返回后才可知），运行中取消/订阅对上层
-  仍不可达（`listActiveTasks()` 诊断口是其最小形态）；正式暴露属 Contract v2。
+- 未来替换或新增 Runtime 不影响业务层（v1 → v2 的动机与迁移记录见 D-0019：
+  v1 的 runAgent 同步终态语义使 taskId 在结束后才可知，运行中取消/订阅对上层
+  不可达；v2 以句柄为核心修复）。
+- v1 的 `cancelTask / streamEvents / sendMessage` 已从契约移除：取消走
+  `handle.cancel()`，事件走 `handle.events()`，HITL 走 Workflow resume。
+- 业务层既有 `await runtime.runAgent(...)` 调用点（Researcher / Writer /
+  Reviewer / Citation / PdfAnalyzer）经 convenience helper 零改动保持原语义。
 
-### 6.2 M2.1 起的调用链（官方 Gateway SDK，已实现）
+### 6.2 调用链（Pi in-process，M3.8 已实现）
 
 ```text
 HTTP API
   │
-GenerationService
+GenerationService / ResearcherService / ReviewerService / …
   │
-WriterService
+AgentRuntime（Contract v2 接口）
   │
-AgentRuntime（接口）
+PiRuntimeAdapter
   │
-OpenClawRuntimeAdapter
+@earendil-works/pi-coding-agent SDK（in-process，无子进程）
+  │   createAgentSession()（官方 embedding API）：SessionManager.inMemory(cwd)、
+  │   DefaultResourceLoader({ systemPromptOverride })、tools 白名单、
+  │   ModelRuntime（agentDir 隔离）、SettingsManager.inMemory（关闭 auto-compaction）
   │
-OpenClaw Gateway Client SDK（@openclaw/gateway-client 2026.9.1，wire protocol v4）
-  │   由 SDK 负责：ws transport、connect.challenge 挑战、connect 握手、鉴权、
-  │   protocol v4 协商、request id 关联与超时、结构化错误、重连退避
-  │   PaperTeam 保留（src/runtime/openclaw/gatewayClient.ts 薄 wrapper）：
-  │   配置装配（url / clientDisplayName / scopes / 超时）、就绪等待预算、幂等 stop
-  │
-OpenClaw Gateway
-  │
-Agent Runtime
+模型 Provider（anthropic / openai / …内置目录，或注册的自定义 provider）+ Tools
 ```
 
-**runAgent 的真实映射（M2.1，按官方 external-apps 指南）**：
+**startAgent 的真实映射**：
 
 ```text
-AgentRuntime.runAgent(input)
-  → SDK connect（operator 角色 + operator.read/write scope + token；
-    收到 connect.challenge 挑战后握手，hello-ok 即就绪；单次运行语义：
-    首个连接失败立即放弃，不搭乘 SDK 重试循环）
-  → RPC "agent"        {message, agentId?, sessionKey?, idempotencyKey}
-                        → 验收 {runId, sessionKey, agentId, status:"accepted", acceptedAt}
-  → RPC "agent.wait"   {runId, timeoutMs}（分片轮询）
-                        → 终态 status:"ok"|"error"，或带 endedAt 的 timeout 终态快照；
-                          "pending" / 无 endedAt 的 timeout = 等待窗口耗尽，继续轮询
-  → RPC "chat.history" {sessionKey, limit, maxChars}   → 最后一条 assistant 消息全文
-                                                       （terminalReply 4096 截断仅兜底）
-  → 映射为 AgentTask{taskId=runId, status, output, metadata:{sessionKey}}
+AgentRuntime.startAgent(input)
+  → 校验（空任务 / closed / init error → 结构化异常）
+  → 解析 sessionKey（显式透传 > projectId×agentId×contextScope 派生，§6.3）
+  → 生成 taskId，立即返回 AgentRunHandle（不等排队/执行）
+  → 后台链：getOrCreateSession（in-flight 去重）→ per-session 串行队列
+    （Pi 单会话一次一个 run；跨会话完全并发）→ session.prompt()
+    （同步终态语义：settle 才 resolve；失败/中断不 reject，落在 transcript
+    assistant 消息 stopReason）→ 终态归因为 AgentTask
+  → handle.result()：completed / failed（stopReason=error）/ cancelled
+    （cancelRequested + aborted|error）/ 超时 reject AgentTimeoutError
 ```
 
-协议依据：OpenClaw **2026.9.1** 官方 npm 包（`@openclaw/gateway-client`、
-`@openclaw/gateway-protocol` 及 `openclaw` 发行包内 docs）——"For agent runs,
-start with the `agent` RPC and pair it with `agent.wait`"（docs/gateway/external-apps.md）。
-protocol version 使用官方常量 `PROTOCOL_VERSION`（`@openclaw/gateway-protocol/version`，
-当前 = 4），不在 PaperTeam 硬编码。
-OpenClaw 特有标识（sessionKey 等）只存在于 Adapter 内部与 AgentTask.metadata 诊断字段。
+事件：会话创建即 `session.subscribe()`，Pi 事件映射为 PaperTeam AgentEvent
+（原始事件对象不透传）；`handle.events()` replay + live 消费。
+取消：`handle.cancel()` → `session.abort()`（协作式：LLM 流中断、工具执行收到
+AbortSignal——tool execution abort 已由真实 SDK 专项测试实证）；排队中任务
+置标记、获得会话后直接短路为 cancelled（不误伤同会话前序 run）。
+Pi 特有标识（sessionKey 等）只存在于 Adapter 内部与 AgentTask.metadata 诊断字段。
 
 ### 6.3 Session Scope（M2.1 已实现最小映射；M3 设计约束）
 
@@ -451,24 +445,23 @@ projectId × agentId × contextScope
 writing/outline、writing/sections、writing/revision、writing/improvement-plan、
 review/fact、review/academic、review/style、sources/pdf-analysis。
 显式 sessionKey 仍然优先；scope 取值由 PaperTeam 代码内控（不接受用户自由输入）。
-派生实现自 M3.7 起共享于 `backend/src/runtime/sessionKey.ts`——两个 Adapter
-（OpenClaw / Pi）产生完全一致的 sessionKey，provider 切换不改变上层会话语义。
+派生实现共享于 `backend/src/runtime/sessionKey.ts`（纯函数，与 Runtime 实现
+解耦）——sessionKey 是 PaperTeam 的业务事实，Runtime 实现变化不改变上层会话语义。
 
-### 6.4 PiRuntimeAdapter（M3.7 side-by-side 候选实现，默认不启用）
+### 6.4 PiRuntimeAdapter（M3.8 正式 baseline）
 
-OpenClaw 2026.9.1 仍是 **production/default baseline**；Pi
-（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin）是 M3.7 的 feasibility
-候选 runtime，经 `PAPERTEAM_AGENT_RUNTIME=pi` 启用（默认 `openclaw`）。两条路径
-side-by-side，业务层零感知（仍只依赖 AgentRuntime 接口；所有 Pi 细节封装在
+Pi（`@earendil-works/pi-coding-agent` **0.84.4** 精确 pin）是 M3.8 起的**唯一正式
+Runtime**（M3.7 为 side-by-side 可行性验证，OpenClaw 2026.9.1 为 M3.5/M3.6 历史
+baseline，全部 OpenClaw 运行时依赖已移除）。所有 Pi 细节封装在
 `backend/src/runtime/PiRuntimeAdapter.ts` 与 `pi/` 内部，业务代码不 import
-`@earendil-works/*`）。
+`@earendil-works/*`。
 
 ```text
 业务层（Workflow / Researcher / Writer / Reviewer）
   │
-AgentRuntime（接口，不变）
+AgentRuntime（Contract v2 接口，§6.1）
   │
-PiRuntimeAdapter                       ←── 对照 OpenClawRuntimeAdapter
+PiRuntimeAdapter
   │
 @earendil-works/pi-coding-agent SDK（in-process，无子进程）
   │   createAgentSession()（官方 embedding API）：
@@ -481,40 +474,35 @@ PiRuntimeAdapter                       ←── 对照 OpenClawRuntimeAdapter
 模型 Provider（anthropic / openai / zai / …内置目录，或注册的自定义 provider）
 ```
 
-关键语义（与 OpenClaw 路径对齐或有意区分的点）：
+关键语义：
 
-- **会话**：一个逻辑 sessionKey ↔ 一个进程内 AgentSession；sessionKey 派生与
-  OpenClaw 完全一致（§6.3，共享实现）。同一会话内串行（Pi 的 Agent 单会话
-  一次一个 run），跨会话完全并发（Reviewer 三路 = 三个独立 AgentSession）。
-  会话创建 in-flight 去重（并发同 key 只建一次）。
+- **会话**：一个逻辑 sessionKey ↔ 一个进程内 AgentSession；sessionKey 派生（§6.3）
+  稳定。同一会话内串行（Pi 的 Agent 单会话一次一个 run；排队发生在句柄返回之后，
+  taskId 的立即可得性不依赖队列位置），跨会话完全并发（Reviewer 三路 = 三个独立
+  AgentSession）。会话创建 in-flight 去重（并发同 key 只建一次）。
 - **模型 / 凭据**：`PAPERTEAM_PI_MODEL`（provider/model-id）+ 可选
-  `PAPERTEAM_PI_API_KEY`（`setRuntimeApiKey`，仅内存不落盘）；缺省按 Pi 官方
-  优先级：agentDir auth.json > 标准环境变量。模型未配置 = Runtime 健康、
-  模型未就绪（`modelStatusSnapshot()` 分区报告），runAgent 结构化失败，不伪造。
-- **runAgent**：`session.prompt()` 同步终态语义（settle 即返回）；失败 / 中断
-  不 reject，而是落在 transcript 的 assistant 消息 `stopReason`
-  （`"error"` → failed 任务；`"aborted"` + 超时 → `AgentTimeoutError`；
-  `"aborted"` + cancelTask → cancelled 任务）——与 OpenClaw 的
-  agent.wait 终态口径一一对应。
-- **timeout**：Pi SDK 无内建 run 超时；Adapter 定时器 + `session.abort()`
-  实现与 OpenClaw 一致的 `runTimeoutMs`。
+  `PAPERTEAM_PI_API_KEY`（`setRuntimeApiKey`，仅内存不落盘、不进日志）；缺省按
+  Pi 官方优先级：agentDir auth.json > 标准环境变量。模型未配置 = Runtime 健康、
+  模型未就绪（`modelStatusSnapshot()` 分区报告），startAgent 结构化失败，不伪造。
+- **终态归因**：`session.prompt()` 同步终态语义；transcript assistant 消息
+  `stopReason`：`"error"` → failed；`"aborted"`（或工具执行中 abort 的
+  `"error" + "This operation was aborted"`，以 cancelRequested 意图归因）→
+  cancelled；超时 → `AgentTimeoutError`（handle.result() reject）。
+- **timeout**：Pi SDK 无内建 run 超时；Adapter 定时器 + `session.abort()`。
 - **事件**：会话创建即 `session.subscribe()`，映射为 PaperTeam AgentEvent
-  （agent_start / message_update / tool_execution_* / agent_end / agent_settled），
-  按任务有界缓存；`streamEvents(taskId)` 为回放语义（v1 限制见 §6.1）。
-- **abort**：`cancelTask(taskId)` 真实 `session.abort()`（LLM 流中断、工具执行
-  收 abort signal），abort 后同一会话可继续使用（L2 测试实证）；对
-  compaction 的 abort 边界未验证（PaperTeam 不触发 manual compaction，
-  auto-compaction 已关闭）。
+  （agent_start / message_start / message_update / message_end /
+  tool_execution_start / update / end / agent_end / agent_settled / turn_start /
+  turn_end）；`handle.events()` 为 replay + live，settle 后迭代自然结束。
+- **abort**：`handle.cancel()` 真实 `session.abort()`（幂等；LLM 流中断、工具执行
+  收 AbortSignal——真实 SDK 专项测试实证），abort 后同一会话可继续使用；
+  对 compaction 的 abort 边界未验证（PaperTeam 不触发 manual compaction，
+  auto-compaction 已关闭；上游边界，见 PROJECT_STATUS 遗留 4）。
 - **health**：无 HTTP 探针（in-process）；healthy = SDK 加载 + Adapter 未关闭 +
   ModelRuntime 初始化成功。「无 API Key」不是 Runtime 不健康（与 §6.0.2 的
-  model_not_configured 分区语义一致）。
+  model not_configured 分区语义一致）。
 - **进程模型**：Backend 进程内完成一切——无 Gateway 子进程 / 端口 / WebSocket /
-  握手 / RPC 轮询（Windows 实测零子进程；对照 OpenClaw 路径的 §6.0 Bootstrap
-  全套设施）。`npm run dev` 在 pi 模式下只启动并监督 Backend。
-- **诊断**：`GET /api/runtime/status` 按 provider 分流——pi 返回
-  `gateway.phase="not_applicable"` + runtime/model 相位；RuntimeStatus 的形状
-  仍为 Gateway 时代的结构，这是当前诊断服务与 OpenClaw 的架构耦合点
-  （记录在案，未重写）。
+  握手 / RPC 轮询（Windows 实测零子进程）。`npm run dev` 直启 Backend（§6.0）。
+- **诊断**：`GET /api/runtime/status` 为 Pi 形状（§6.0.2），无 Gateway 概念。
 
 ## 7. 质量与构建（M3.2 已实现）
 
@@ -532,9 +520,9 @@ PiRuntimeAdapter                       ←── 对照 OpenClawRuntimeAdapter
 
 - **论文工作台**（普通用户）：首页看板、我的论文（两类项目）、新建项目（两类入口）、
   论文写作、论文审稿、文献与证据（含 sourceRole / Style Profile）、PDF 查看
-  （Draft / Final）、历史版本、项目设置。隐藏 session / agentId / runId / Gateway
+  （Draft / Final）、历史版本、项目设置。隐藏 session / agentId / runId / Runtime
   技术细节，只展示业务阶段与 awaiting_input 待办。
-- **系统管理**（管理员）：系统状态、OpenClaw、Agent 管理、模型管理、Workflow 配置、
+- **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、
   WorkflowRun / Session、日志、文件管理、系统诊断、Command Center、Web Terminal。
 
 实时通信：SSE（WorkflowRun 进度 / Domain Event）优先；Web Terminal 使用 WebSocket
@@ -546,15 +534,10 @@ M3 实际结构：
 
 ```text
 backend/src/
-├── config/        配置加载与校验（gateway / agents / projects / latex / workflow / citation / review）
+├── config/        配置加载与校验（pi / agents / projects / latex / workflow / citation / review）
 ├── errors.ts      业务错误模型（稳定错误码 → HTTP 状态码映射）
-├── runtime/       AgentRuntime 契约 + OpenClawRuntimeAdapter（contextScope 派生）
-│   │              + statusService（GET /api/runtime/status 诊断）
-│   └── openclaw/  gatewayClient（官方 GatewayClient 的薄 wrapper）
-├── dev/           Runtime Bootstrap（M3.5）：runtimePaths（独立 state 路径与隔离校验）、
-│                  runtimeConfig（runtime.json：版本/端口/token）、openclawState（state
-│                  准备 + 安装校验 + 子进程环境）、gatewayHealth（/health 轮询等待）、
-│                  supervisor（Gateway+Backend 双进程生命周期）、cli（编排入口）
+├── runtime/       AgentRuntime 契约 v2 + PiRuntimeAdapter（sessionKey 派生、角色映射
+│   │              pi/roleConfig、版本 pin pi/version）+ statusService（诊断，Pi 形状）
 ├── project/       ProjectStore（研究定位字段 / 路径安全 / list / updateMeta）
 ├── workflow/      WorkflowOrchestrator（引擎）、definitions（两条 workflow 的
 │                  stage 注册表 + plan/onInput 确定性规划器）、runStore（checkpoint
@@ -579,23 +562,23 @@ backend/src/
 
 长期运行于 Linux 服务器（推荐 Ubuntu）：
 
-- 服务：PaperTeam Backend、OpenClaw Gateway、Web Frontend、Database
+- 服务：PaperTeam Backend（内嵌 Pi Runtime）、Web Frontend、Database
 - 依赖：Node.js（>= 22.19.0）、Git、Python、TeX Live（XeLaTeX/latexmk/Biber）、Poppler
 - **后续使用 Docker 容器化部署**（配置位于 `docker/`）
-- 用户只访问一个 HTTPS 域名；OpenClaw Gateway 作为内部服务，不对外暴露
+- 用户只访问一个 HTTPS 域名；模型 Provider 凭据经环境变量 / auth.json 配置
 
 ## 11. 仓库目录结构
 
 ```text
 PaperTeam/
-├── package.json      # 根开发入口（openclaw runtime 精确 pin + npm run dev）
-├── scripts/dev.mjs   # dev 启动器薄壳（依赖/构建检查 → 启动 Runtime Bootstrap）
+├── package.json      # 根开发入口（npm run dev / build / test 转发）
+├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 直启 Backend）
 ├── frontend/         # Web 前端（论文工作台 + 系统管理后台，M4+）
-├── backend/          # PaperTeam Backend（含 src/dev Runtime Bootstrap）
+├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime）
 ├── agents/           # Agent 定义与配置（AGENTS.md 等）
 ├── docker/           # Docker 部署配置
 └── docs/             # PRD、状态、架构、决策记录
 ```
 
 运行时数据均在仓库外：论文项目 workspace 在 `PROJECTS_ROOT`（默认 backend/projects/），
-OpenClaw 独立 state 在用户级 `~/.paperteam/`（见 §6.0），二者均被 .gitignore 排除。
+Pi 配置目录在用户级 `~/.paperteam/runtime/pi/agent/`（见 §6.0），二者均被 .gitignore 排除。

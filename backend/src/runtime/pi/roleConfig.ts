@@ -1,15 +1,15 @@
 /**
  * PaperTeam 业务角色 → Pi AgentSession 配置映射（M3.7）。
  *
- * 设计原则（对照 OpenClaw 方案 A，docs/DECISIONS.md D-0018）：
- * - OpenClaw 路径下所有角色共用默认 agent（main），靠 prompt + contextScope
- *   隔离会话；Pi 没有 agent 注册表，因此"角色"落到 Adapter 内部的
- *   最小配置映射：systemPrompt + 工具白名单。
+ * 设计原则（延续方案 A，docs/DECISIONS.md D-0018）：
+ * - 所有角色共用同一 Runtime（历史 OpenClaw 路径默认 agent main，靠
+ *   prompt + contextScope 隔离会话）；Pi 没有 agent 注册表，因此"角色"
+ *   落到 Adapter 内部的最小配置映射：systemPrompt + 工具白名单。
  * - 角色判定依据 contextScope 前缀（PaperTeam 代码内控的固定常量，
  *   见 sanitizeContextScope 的约束说明）：research* → researcher、
  *   writing* → writer、review* → reviewer；无 scope 时用 default。
- * - 任务级指令（真正的角色提示词）由上层业务 prompt 内联携带
- *   （与 OpenClaw 路径一致），这里的 systemPrompt 只做最小角色框架，
+ * - 任务级指令（真正的角色提示词）由上层业务 prompt 内联携带，
+ *   这里的 systemPrompt 只做最小角色框架，
  *   不复制一套 Workflow Agent 层。
  * - 工具白名单按最小必要原则：M3 各角色的真实工作面是
  *   「读 workspace / 写 LaTeX」，shell 类工具（bash/powershell）默认

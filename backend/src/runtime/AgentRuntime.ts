@@ -6,6 +6,7 @@
 export type {
   AgentRuntime,
   AgentEvent,
+  AgentRunHandle,
   AgentTask,
   AgentTaskStatus,
   RunAgentInput,
@@ -13,4 +14,3 @@ export type {
   RuntimeHealthStatus,
   RuntimeProvider,
 } from "./types.js";
-export { RuntimeCapabilityError } from "./types.js";

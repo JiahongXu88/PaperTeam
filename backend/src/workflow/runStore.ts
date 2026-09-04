@@ -7,7 +7,7 @@
  *   ├── events.jsonl      Domain Event 追加日志
  *   └── stages/           每次 Stage 尝试的运行记录
  *
- * 恢复依据是 checkpoint 与 Workspace 状态，不依赖 OpenClaw Chat History（D-0013）。
+ * 恢复依据是 checkpoint 与 Workspace 状态，不依赖 Runtime 会话历史（D-0013）。
  */
 
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";

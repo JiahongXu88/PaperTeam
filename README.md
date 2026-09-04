@@ -19,7 +19,7 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 
 - **Target Feasibility Assessment**：系统基于 Idea、Novelty、Evidence 与实验条件诚实评估目标论文层级是否可被支撑，不承诺无法达到的目标（如"一键生成顶会论文"）。
 - **少量专业 Agent + Skill**：M3 Agent Team 为 Researcher / Writer / Reviewer / Citation；流程编排由后端确定性的 TypeScript WorkflowOrchestrator 负责，不使用 LLM Agent 做流程控制。
-- **Workspace / Evidence / Artifacts 是事实来源**：OpenClaw Session 只是可重建的 Runtime Context，业务恢复不依赖 Chat History。
+- **Workspace / Evidence / Artifacts 是事实来源**：Runtime Session 只是可重建的执行上下文，业务恢复不依赖 Chat History。
 - **Build Gate 与 Quality Gate 分离**：Draft PDF 只要求可构建；标记 Final 必须通过事实、引用与审稿质量门。
 
 普通用户只需通过浏览器使用；Agent 调度、模型调用、LaTeX 编译、PDF 生成、版本管理、日志与系统维护全部由 Linux 服务器完成。
@@ -28,37 +28,33 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 
 | 里程碑                                            | 状态   | 内容                                                                                                                                                                                                                      |
 | ---------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M1 Backend Runtime Skeleton                    | ✅ 完成 | Backend 工程、`AgentRuntime` 抽象、`OpenClawRuntimeAdapter`、Gateway 健康检查                                                                                                                                                      |
+| M1 Backend Runtime Skeleton                    | ✅ 完成 | Backend 工程、`AgentRuntime` 抽象、Runtime 健康检查（历史 OpenClaw Gateway 基线）                                                                                                                                                      |
 | M2 Agent Invocation + Project + LaTeX          | ✅ 完成 | `runAgent()` 真实调用链、`ProjectStore`、`WriterService`、`GenerationService`、`LatexCompiler`、HTTP API                                                                                                                          |
-| M2.1 OpenClaw 2.0 Runtime Upgrade              | ✅ 完成 | 官方 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（wire protocol v4）、Project 与 Runtime Session 隔离                                                                                                             |
+| M2.1 OpenClaw 2.0 Runtime Upgrade              | ✅ 完成 | 官方 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（wire protocol v4）、Project 与 Runtime Session 隔离（历史基线，M3.8 已随迁移移除）                                                                                             |
 | Architecture Research & Product Design Refresh | ✅ 完成 | 竞品调研与产品/架构方向冻结（D-0008\~D-0015）                                                                                                                                                                                          |
 | **M3.0 Workflow Foundation**                   | ✅ 完成 | `WorkflowOrchestrator`（确定性引擎）、`StageContract`（DoD）、异步 `WorkflowRun` + checkpoint/resume、Domain Event + SSE、HITL awaiting\_input、协作式取消、Session contextScope                                                              |
 | **M3.1 Research & Evidence**                   | ✅ 完成 | Researcher（调研 + Evidence 候选）、Target Feasibility（HIGH/MEDIUM/LOW/INSUFFICIENT + HITL adjust）、`EvidenceStore`（JSONL）、Citation 核验（静态 + CrossRef/OpenAlex/arXiv）、文献库 + PDF 文本层分析（多模态为扩展点）、分节写作、Derived Context              |
 | **M3.2 Review & Revision**                     | ✅ 完成 | Reviewer（fact/academic/style 三 skill 并行）、确定性聚合、Quality Gate（9 规则）、bounded revision loop（≤2 轮 + 超限 HITL）、Build Gate、Draft/Final 双 Gate 语义、Existing-LaTeX 导入（防 Zip Slip）与改造 workflow                                      |
-| **M3.5 Runtime Bootstrap / M3 Closure**        | ✅ 完成 | **M3 Complete**：PaperTeam 独立 OpenClaw Runtime（隔离 state、精确版本 pin）、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿                                                                          |
-| **M3.6 Runtime Baseline Upgrade**              | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（openclaw / gateway-client / gateway-protocol 三处统一精确 pin，protocol v4 不变）；Node 兼容检查改为复用根 package.json engines（Node 26+ 可用）；runtime.json 旧版本自动迁移；全量回归 255 测试 + 真实 Gateway E2E 通过 |
-| **M3.7 Pi Runtime Feasibility**                | ✅ 完成 | Side-by-side `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin，in-process 嵌入，`PAPERTEAM_AGENT_RUNTIME=pi` 启用，默认仍 openclaw）；sessionKey 派生与 OpenClaw 一致；角色 → systemPrompt/工具白名单映射；Reviewer 三路并发 / abort / 事件 / timeout / 隔离全验证（L1+L2）；Windows 实测无 Gateway 子进程；结论 MIGRATE TO PI（建议，正式迁移另立任务）；全量回归 280 测试 |
+| **M3.5 Runtime Bootstrap / M3 Closure**        | ✅ 完成 | **M3 Complete**：PaperTeam 独立 Runtime state、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿（历史 OpenClaw Gateway 形态，M3.8 已简化）                                                                          |
+| **M3.6 Runtime Baseline Upgrade**              | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（历史基线；M3.8 起 OpenClaw 不再参与运行）                                                                                                                                                        |
+| **M3.7 Pi Runtime Feasibility**                | ✅ 完成 | Side-by-side `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent` 0.84.4）全项验证（in-process 嵌入 / 三路并发 / abort / 事件 / 隔离 / Windows 零 Gateway 子进程），结论 MIGRATE TO PI（历史可行性验证）                                                                              |
+| **M3.8 Pi Runtime Migration & Contract v2**    | ✅ 完成 | **Pi 成为唯一正式 Runtime**（OpenClaw Gateway / Bootstrap / 三依赖全部移除）；`AgentRuntime` Contract v2（`startAgent` → 句柄：运行中事件流 / 取消 / result）；tool execution abort 传导实证；RuntimeStatus 去 Gateway 化；`npm run dev` 直启 Backend（零 Gateway 子进程）                                                  |
 
-**M3.6 Complete**：后端「完整 M3 可运行基线」的 Runtime baseline 已固化在
-OpenClaw 2026.9.1（Node.js + npm 为当前 Runtime / Package Manager baseline，
-M4 前端 React 19 + TypeScript + Vite 将基于该版本继续开发）。`npm run dev`
-在全新机器上真实验证过：自动初始化独立 state → Gateway 2026.9.1 healthy →
-Backend healthy → workflow 真实推进到 Researcher 的 Gateway RPC 调用层
-（无模型凭据时如实进入 `model_not_configured` / 结构化失败，不伪造）；
-存量安装（runtime.json 仍记录旧版本）升级时自动迁移、不误报漂移。带真实
-模型凭据的完整全链路 E2E、TeX Live 真实编译、多模态 PDF 视觉级分析为
-非阻塞环境验证缺口，见 [PROJECT\_STATUS.md](docs/PROJECT_STATUS.md)。
-255 个测试全部通过。
+**M3.8 Complete**：Runtime baseline 为 **Pi SDK in-process**（`@earendil-works/pi-coding-agent`
+0.84.4 精确 pin，Node.js + npm）。`npm run dev` 启动链为
+`dev.mjs → backend/dist/index.js`（Node 检查 → 依赖检查 → 构建 → 直启 Backend；
+无 Gateway 子进程 / 端口 / 握手 / state 准备）。OpenClaw 2026.9.1 是 M3.6 的历史
+baseline（M3.7 完成可行性验证，M3.8 正式迁移到 Pi）。230 个测试全部通过。
 
-**未实现（M4+）**：前端工作台、Visual Reviewer、LaTeX repair loop、
+**未实现（M4+）**：前端工作台（React）、Visual Reviewer、LaTeX repair loop、
 完整版本管理体验、系统管理后台、Docker 部署。
 
 ## 文档
 
 | 文档                                                | 说明                                                |
-| ------------------------------------------------- | ------------------------------------------------- |
+| ------------------------------------------------- | --- |
 | [docs/PRD.md](docs/PRD.md)                        | 产品需求文档                                            |
-| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 / M3.1 / M3.2 / M3.5 / M3.6 / M4+） |
+| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 ~ M3.8 / M4+）                        |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      | 系统架构说明                                            |
 | [docs/DECISIONS.md](docs/DECISIONS.md)            | 技术决策记录（ADR）                                       |
 
@@ -66,10 +62,10 @@ Backend healthy → workflow 真实推进到 Researcher 的 Gateway RPC 调用�
 
 ```text
 PaperTeam/
-├── package.json      # 根开发入口（openclaw runtime 精确 pin + npm run dev）
-├── scripts/dev.mjs   # dev 启动器（依赖/构建检查 → Runtime Bootstrap）
+├── package.json      # 根开发入口（npm run dev / build / test 转发）
+├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 直启 Backend）
 ├── frontend/         # Web 前端（论文工作台 + 系统管理后台，M4+）
-├── backend/          # PaperTeam Backend（API / Workflow / Runtime / LaTeX / 版本管理）
+├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime / LaTeX / 版本管理）
 ├── agents/           # Agent 定义与配置（AGENTS.md 等）
 ├── docker/           # Docker 部署配置
 └── docs/             # 项目文档
@@ -80,45 +76,45 @@ PaperTeam/
 ```bash
 git clone https://github.com/JiahongXu88/PaperTeam.git
 cd PaperTeam
-npm install            # 安装根依赖（含 openclaw runtime 本体，精确 pin 2026.9.1）
-npm run dev            # 一键启动：独立 OpenClaw Gateway + PaperTeam Backend
+npm install            # 安装依赖（backend：Pi SDK 0.84.4 精确 pin）
+npm run dev            # 一键启动：PaperTeam Backend（Pi Runtime in-process）
 ```
 
 `npm run dev` 会自动完成：
 
-1. Node 版本检查（复用根 package.json 的 `engines.node`，与 openclaw 2026.9.1 支持范围一致：`>=22.22.3 <23` / `>=24.15.0 <25` / `>=25.9.0`，Node 26+ 可用且为官方推荐线）
+1. Node 版本检查（复用根 package.json 的 `engines.node`：`>=22.22.3 <23` / `>=24.15.0 <25` / `>=25.9.0`，Node 26+ 可用）
 2. backend 依赖安装与构建（缺失时自动 `npm install` + `tsc`）
-3. 初始化 **PaperTeam 独立 OpenClaw Runtime**（用户级 `~/.paperteam/runtime/openclaw/`，与全局 `~/.openclaw` 完全隔离；首次生成随机 Gateway token）
-4. 启动 OpenClaw Gateway（`http://127.0.0.1:18790`）并等待健康
-5. 启动 PaperTeam Backend（`http://localhost:3000`）
-6. `Ctrl+C` 优雅关闭全部进程（先 Backend 后 Gateway，无孤儿进程）
-
-**PaperTeam 自动管理自己的 OpenClaw Runtime**：不要求全局安装 OpenClaw，不读写
-`~/.openclaw`，不依赖任何 OpenClaw 源码 checkout（`D:\Projects\openclaw` 只是可选的
-源码参考，**不是运行依赖**）。版本由根 `package.json` 精确 pin，lockfile 可复现。
+3. 启动 PaperTeam Backend（`http://localhost:3000`，Pi SDK 以 in-process 方式嵌入，无 Gateway 子进程）
+4. `Ctrl+C` 优雅关闭（Backend 取消活跃 run、收敛 Runtime、落盘 checkpoint 后退出）
 
 ### 配置模型（可选但 Agent 调用必需）
 
-Bootstrap 不搬运任何其他项目的凭据。为 PaperTeam 的独立 Gateway 配置模型：
+Runtime 不搬运任何其他项目的凭据。为 PaperTeam 配置模型（三选一，优先级从高到低）：
 
 ```bash
-# 把 provider API Key 写入 PaperTeam 独立 state 的 .env（OpenClaw 官方凭据位置）
-#   Windows: %USERPROFILE%\.paperteam\runtime\openclaw\.env
-#   Linux/macOS: ~/.paperteam/runtime/openclaw/.env
-echo ANTHROPIC_API_KEY=sk-ant-... >> ~/.paperteam/runtime/openclaw/.env
+# 方式 A：环境变量（.env，见 .env.example）
+echo PAPERTEAM_PI_MODEL=anthropic/claude-opus-4-5 >> .env
+echo PAPERTEAM_PI_API_KEY=sk-ant-... >> .env
+
+# 方式 B：Pi 官方凭据文件（PaperTeam 专属目录，与 ~/.pi 隔离）
+#   Windows:   %USERPROFILE%\.paperteam\runtime\pi\agent\auth.json
+#   Linux/macOS: ~/.paperteam/runtime/pi/agent/auth.json
+# 方式 C：标准环境变量（ANTHROPIC_API_KEY / OPENAI_API_KEY / ...）
+
 # 重启 npm run dev 后，用诊断确认：
 curl http://localhost:3000/api/runtime/status
-#   runtime.phase: ready（model_not_configured 表示还没有任何凭据）
+#   runtime.phase: healthy + model.phase: configured
 ```
 
-不配置模型时 `npm run dev` 仍正常启动（Gateway healthy、Backend healthy、API 可用），
-`GET /api/runtime/status` 如实上报 `model_not_configured`，Agent 调用会返回结构化失败。
+不配置模型时 `npm run dev` 仍正常启动（Runtime healthy、Backend healthy、API 可用），
+`GET /api/runtime/status` 如实上报 `model.phase: not_configured`（Runtime 健康 ≠ 模型
+就绪），Agent 调用会返回结构化失败，不伪造成功。
 
 ### 常用诊断
 
 ```bash
-curl http://localhost:3000/health                # 存活探针（含 Gateway 实时健康）
-curl http://localhost:3000/api/runtime/status    # gateway/runtime/agents/model 全景诊断
+curl http://localhost:3000/health                # 存活探针（含 Pi Runtime 实时健康）
+curl http://localhost:3000/api/runtime/status    # runtime/agents/model/sessions 全景诊断
 ```
 
 ### 开发调试（backend 单独运行 / 测试）
@@ -126,10 +122,9 @@ curl http://localhost:3000/api/runtime/status    # gateway/runtime/agents/model 
 ```bash
 cd backend
 npm install
-npm test              # 254 个测试
+npm test              # 230 个测试
 npm run typecheck && npm run build
-# 单独启动 backend（需自备 Gateway，例如 npm run dev 已在跑时）：
-cp ../.env.example ../.env   # 填 OPENCLAW_GATEWAY_URL / API_KEY
+# 单独启动 backend（Pi Runtime in-process，无需任何外部 Runtime）：
 npm start
 ```
 
@@ -137,8 +132,8 @@ npm start
 [PROJECT\_STATUS.md](docs/PROJECT_STATUS.md)「M3 API 一览」）：
 
 ```text
-GET    /health                                存活探针（含 Gateway 实时健康）
-GET    /api/runtime/status                    Runtime 诊断（gateway/runtime/agents/model）
+GET    /health                                存活探针（含 Pi Runtime 实时健康）
+GET    /api/runtime/status                    Runtime 诊断（runtime/agents/model/sessions）
 
 ── 主入口：Workflow API ──
 POST   /api/projects                          创建论文项目（含研究定位字段）
@@ -168,8 +163,10 @@ POST   /api/projects/:id/generate             M2 同步写作+编译（deprecate
 所有 Agent 产出必须通过 Stage DoD 校验才算完成；进程中断后从 checkpoint 恢复，
 已成功 stage 不重复执行。
 
-所有 Agent 调用通过 `AgentRuntime.runAgent()`（经由官方 `@openclaw/gateway-client` SDK
-调用 OpenClaw Gateway 的 `agent` / `agent.wait` / `chat.history` RPC）执行。会话维度为
+所有 Agent 调用通过 `AgentRuntime` 契约（v2：`startAgent()` 返回句柄 ——
+运行中可消费事件流、可取消、`result()` 单独 await；`runAgent()` 为同步终态
+convenience）执行，当前实现为 `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent`
+SDK in-process；业务层不 import Pi SDK）。会话维度为
 `projectId × agentId × contextScope`：同一项目同一 Agent 的不同 scope（如 Reviewer 的
 `review/fact` / `review/academic` / `review/style`）持有独立会话、可并行、互不污染；
 Project ≠ Session：Session 是可重建的 Runtime Context，不承担项目事实来源
@@ -180,20 +177,20 @@ Project ≠ Session：Session 是可重建的 Runtime Context，不承担项目�
 ## 环境变量
 
 参考 [.env.example](.env.example)：复制为 `.env` 后填入真实值。`.env` 已被 Git 忽略，
-**不要提交任何真实 Key**。使用 `npm run dev` 时无需手动配置 Gateway 相关变量
-（Bootstrap 自动注入）；模型 provider API Key 写入 PaperTeam 独立 state 的 `.env`
-（见上文「配置模型」），不放仓库 `.env`。
+**不要提交任何真实 Key**。模型配置（`PAPERTEAM_PI_MODEL` / `PAPERTEAM_PI_API_KEY`）
+见上文「配置模型」。
 
-## Runtime 说明（M3.5）
+## Runtime 说明（M3.8）
 
-- **业务角色 → OpenClaw agent 映射**：Researcher / Writer / Reviewer / Citation
-  默认全部映射 OpenClaw 默认 agent `main`，会话隔离靠 contextScope（方案 A，
-  [D-0018](docs/DECISIONS.md)）；需要独立模型/权限时用
-  `OPENCLAW_{WRITER|RESEARCHER|REVIEWER|CITATION}_AGENT_ID` 覆盖。
-- **版本锚点**：openclaw runtime（根 package.json）、`@openclaw/gateway-client`、
-  `@openclaw/gateway-protocol` 全部精确 pin **2026.9.1**（wire protocol v4 不变）；
-  安装版本漂移会在启动时被拒绝；存量 runtime.json 记录的旧版本会在启动时
-  自动迁移到当前 pin（端口 / token 保留）。
-- **独立 state**：`~/.paperteam/runtime/openclaw/`（`PAPERTEAM_RUNTIME_ROOT` 可覆盖）；
-  与全局 `~/.openclaw` 相等或嵌套的路径会被直接拒绝。
-
+- **Pi in-process**：`@earendil-works/pi-coding-agent` **0.84.4** 精确 pin（backend
+  `package.json`），无 Gateway 子进程 / WebSocket / RPC；`npm run dev` 直启 Backend。
+- **业务角色映射**：Researcher / Writer / Reviewer / Citation 无 agent 注册表概念，
+  角色（systemPrompt + 工具白名单）由 `PiRuntimeAdapter` 按 contextScope 前缀解析
+  （research\* → researcher、writing\* → writer、review\* → reviewer；方案 A，
+  [D-0018](docs/DECISIONS.md)）；会话标识可用
+  `PAPERTEAM_{WRITER|RESEARCHER|REVIEWER|CITATION}_AGENT_ID` 覆盖（默认 main，
+  仅作 sessionKey 组成段与诊断标签）。
+- **独立配置目录**：`~/.paperteam/runtime/pi/agent/`（`PAPERTEAM_RUNTIME_ROOT` 可覆盖；
+  auth.json / models.json 放这里），与用户全局 `~/.pi` 隔离。
+- **历史**：OpenClaw 2026.9.1 为 M3.5/M3.6 的历史 Runtime baseline；M3.7 完成Pi
+  可行性验证；M3.8 正式迁移到 Pi 并移除 OpenClaw 全部运行时依赖（git 历史即回退机制）。

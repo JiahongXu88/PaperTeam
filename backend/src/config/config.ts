@@ -1,13 +1,12 @@
 /**
- * PaperTeam Backend 配置（M2 覆盖 Runtime 调用、项目与 LaTeX 编译所需部分）。
+ * PaperTeam Backend 配置（M3.8 起 Runtime = Pi in-process，无 Gateway 配置）。
  *
  * 配置来源：环境变量（可选地从仓库根 / backend 目录的 .env 文件补缺）。
  * 语义与根目录 .env.example 保持一致，不引入新的必填项。
  */
 
-import { resolve } from "node:path";
-
-import type { RuntimeProvider } from "../runtime/types.js";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
@@ -18,22 +17,6 @@ export class ConfigError extends Error {
 }
 
 export type NodeEnv = "development" | "production" | "test";
-
-/** Agent Runtime 选择（M3.7）：默认 openclaw（生产基线）；pi 为 feasibility 候选 */
-export const AGENT_RUNTIME_PROVIDERS: readonly RuntimeProvider[] = ["openclaw", "pi"];
-
-export interface GatewayConfig {
-  /** OpenClaw Gateway 基地址，例如 http://127.0.0.1:18789 */
-  url: string;
-  /** Gateway API Key（/health 探针无需鉴权；WebSocket connect 握手使用） */
-  apiKey?: string;
-  /** 健康检查超时（毫秒） */
-  healthTimeoutMs: number;
-  /** WebSocket 连接与单次 RPC 的默认超时（毫秒） */
-  rpcTimeoutMs: number;
-  /** 单次 runAgent 的整体超时（毫秒） */
-  runTimeoutMs: number;
-}
 
 export interface LatexConfig {
   /** 单次 LaTeX 编译超时（毫秒） */
@@ -72,8 +55,8 @@ export interface PiRuntimeConfig {
   model?: string;
   /** Provider API Key（可选；不设置则按 Pi 官方优先级：auth.json > 标准环境变量） */
   apiKey?: string;
-  /** Pi 全局配置目录（可选；缺省由 wiring 层落到 <runtimeRoot>/pi/agent） */
-  agentDir?: string;
+  /** Pi 全局配置目录（auth.json / models.json；默认 <PAPERTEAM_RUNTIME_ROOT>/runtime/pi/agent） */
+  agentDir: string;
   /** 单次 runAgent 的整体超时（毫秒） */
   runTimeoutMs: number;
 }
@@ -81,12 +64,9 @@ export interface PiRuntimeConfig {
 export interface AppConfig {
   env: NodeEnv;
   port: number;
-  /** Agent Runtime 选择（M3.7；默认 openclaw） */
-  agentRuntime: RuntimeProvider;
-  gateway: GatewayConfig;
-  /** Pi Runtime 配置（agentRuntime=pi 时生效） */
+  /** Pi Runtime 配置（唯一 Runtime，M3.8） */
   pi: PiRuntimeConfig;
-  /** 各业务 Agent 对应的 OpenClaw agent id */
+  /** 各业务 Agent 的会话标识（sessionKey 组成段与诊断标签；Pi 无 agent 注册表） */
   agents: AgentIds;
   /** 论文项目工作区根目录（绝对路径） */
   projectsRoot: string;
@@ -104,8 +84,6 @@ export interface AgentIds {
 }
 
 const DEFAULT_PORT = 3000;
-const DEFAULT_HEALTH_TIMEOUT_MS = 5000;
-const DEFAULT_RPC_TIMEOUT_MS = 15_000;
 const DEFAULT_RUN_TIMEOUT_MS = 300_000;
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
@@ -117,10 +95,6 @@ const DEFAULT_MAX_REVISION_ROUNDS = 2;
 const DEFAULT_ACADEMIC_PASS_SCORE = 80;
 const DEFAULT_STYLE_RISK_MAX = 35;
 
-const HEALTH_TIMEOUT_MIN_MS = 100;
-const HEALTH_TIMEOUT_MAX_MS = 60_000;
-const RPC_TIMEOUT_MIN_MS = 1_000;
-const RPC_TIMEOUT_MAX_MS = 120_000;
 const RUN_TIMEOUT_MIN_MS = 1_000;
 const RUN_TIMEOUT_MAX_MS = 3_600_000;
 const LATEX_TIMEOUT_MIN_MS = 1_000;
@@ -134,52 +108,53 @@ const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 const NODE_ENVS: readonly NodeEnv[] = ["development", "production", "test"];
 
+/** PaperTeam 用户级运行时根目录的环境变量覆盖 */
+const PAPERTEAM_RUNTIME_ROOT_ENV = "PAPERTEAM_RUNTIME_ROOT";
+
+/**
+ * PaperTeam 用户级 Runtime 根目录（默认 ~/.paperteam）。
+ * Pi 的 auth.json / models.json 隔离在 <root>/runtime/pi/agent 下。
+ */
+export function resolveRuntimeRoot(
+  source: Record<string, string | undefined> = process.env,
+  home: string = homedir(),
+): string {
+  const override = source[PAPERTEAM_RUNTIME_ROOT_ENV]?.trim();
+  if (override) {
+    if (!isAbsolute(override)) {
+      // 相对路径拒绝（resolve 会基于 cwd 静默补全，掩盖配置错误）
+      throw new ConfigError(`PAPERTEAM_RUNTIME_ROOT 必须是绝对路径："${override}"`);
+    }
+    return resolve(override);
+  }
+  return join(home, ".paperteam");
+}
+
 export function loadConfig(source: Record<string, string | undefined> = process.env): AppConfig {
-  const agentRuntime = readAgentRuntime(source);
   return {
     env: readNodeEnv(source),
     port: readPort(source),
-    agentRuntime,
-    gateway: {
-      // Gateway 地址仅在 openclaw provider 下必填（Pi 为 in-process Runtime，
-      // 没有 Gateway）；两套超时配置保持共用语义。
-      url: readGatewayUrl(source, agentRuntime),
-      apiKey: readOptionalValue(source, "OPENCLAW_GATEWAY_API_KEY"),
-      healthTimeoutMs: readHealthTimeoutMs(source),
-      rpcTimeoutMs: readTimeoutMs(source, "OPENCLAW_GATEWAY_RPC_TIMEOUT_MS", {
-        default: DEFAULT_RPC_TIMEOUT_MS,
-        min: RPC_TIMEOUT_MIN_MS,
-        max: RPC_TIMEOUT_MAX_MS,
-      }),
-      runTimeoutMs: readTimeoutMs(source, "OPENCLAW_AGENT_RUN_TIMEOUT_MS", {
+    pi: {
+      model: readOptionalValue(source, "PAPERTEAM_PI_MODEL"),
+      apiKey: readOptionalValue(source, "PAPERTEAM_PI_API_KEY"),
+      agentDir:
+        readOptionalValue(source, "PAPERTEAM_PI_AGENT_DIR") ??
+        join(resolveRuntimeRoot(source), "runtime", "pi", "agent"),
+      runTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_RUN_TIMEOUT_MS", {
         default: DEFAULT_RUN_TIMEOUT_MS,
         min: RUN_TIMEOUT_MIN_MS,
         max: RUN_TIMEOUT_MAX_MS,
       }),
     },
     agents: {
-      // M3.5 起默认全部映射到 OpenClaw 默认 agent（main）：业务角色
+      // 会话标识默认沿用 M3.7 验证基线（main）：业务角色
       // （Researcher/Writer/Reviewer/Citation）靠 prompt + contextScope 隔离
-      // 会话，不需要独立的 OpenClaw agent 注册（方案 A，见 docs/DECISIONS.md
-      // D-0018）；需要独立 agent（不同模型/工具策略）时用环境变量覆盖。
-      // Pi provider 下 agentId 仅作为会话键组成与诊断标签（Pi 无 agent
-      // 注册表，角色映射在 PiRuntimeAdapter 内部完成）。
-      writer: readAgentId(source, "OPENCLAW_WRITER_AGENT_ID", "main"),
-      researcher: readAgentId(source, "OPENCLAW_RESEARCHER_AGENT_ID", "main"),
-      reviewer: readAgentId(source, "OPENCLAW_REVIEWER_AGENT_ID", "main"),
-      citation: readAgentId(source, "OPENCLAW_CITATION_AGENT_ID", "main"),
-    },
-    pi: {
-      model: readOptionalValue(source, "PAPERTEAM_PI_MODEL"),
-      apiKey: readOptionalValue(source, "PAPERTEAM_PI_API_KEY"),
-      ...(readOptionalValue(source, "PAPERTEAM_PI_AGENT_DIR") !== undefined
-        ? { agentDir: readOptionalValue(source, "PAPERTEAM_PI_AGENT_DIR") }
-        : {}),
-      runTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_RUN_TIMEOUT_MS", {
-        default: DEFAULT_RUN_TIMEOUT_MS,
-        min: RUN_TIMEOUT_MIN_MS,
-        max: RUN_TIMEOUT_MAX_MS,
-      }),
+      // 会话（方案 A，见 docs/DECISIONS.md D-0018）。Pi 无 agent 注册表，
+      // 此值仅作为 sessionKey 组成段与诊断标签；需要区分会话键时用环境变量覆盖。
+      writer: readAgentId(source, "PAPERTEAM_WRITER_AGENT_ID", "main"),
+      researcher: readAgentId(source, "PAPERTEAM_RESEARCHER_AGENT_ID", "main"),
+      reviewer: readAgentId(source, "PAPERTEAM_REVIEWER_AGENT_ID", "main"),
+      citation: readAgentId(source, "PAPERTEAM_CITATION_AGENT_ID", "main"),
     },
     projectsRoot: readProjectsRoot(source),
     latex: {
@@ -260,62 +235,6 @@ function readPort(source: Record<string, string | undefined>): number {
     );
   }
   return port;
-}
-
-function readAgentRuntime(source: Record<string, string | undefined>): RuntimeProvider {
-  const raw = (source["PAPERTEAM_AGENT_RUNTIME"] ?? "openclaw").trim().toLowerCase();
-  const match = AGENT_RUNTIME_PROVIDERS.find((candidate) => candidate === raw);
-  if (!match) {
-    throw new ConfigError(
-      `PAPERTEAM_AGENT_RUNTIME 只能是 ${AGENT_RUNTIME_PROVIDERS.join(" / ")}，当前为 "${raw}"`,
-    );
-  }
-  return match;
-}
-
-function readGatewayUrl(
-  source: Record<string, string | undefined>,
-  agentRuntime: RuntimeProvider,
-): string {
-  const key = "OPENCLAW_GATEWAY_URL";
-  const raw = (source[key] ?? "").trim();
-  if (raw === "") {
-    if (agentRuntime === "pi") {
-      // Pi 为 in-process Runtime：无 Gateway，地址留空（healthCheck 不再探测）
-      return "";
-    }
-    throw new ConfigError(
-      `缺少必需配置 OPENCLAW_GATEWAY_URL（OpenClaw Gateway 地址，例如 http://127.0.0.1:18789）。` +
-        ` 请参考根目录 .env.example 复制为 .env 并填写（或设置 PAPERTEAM_AGENT_RUNTIME=pi 使用 Pi Runtime）。`,
-    );
-  }
-
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new ConfigError(`OPENCLAW_GATEWAY_URL 不是合法 URL："${raw}"`);
-  }
-
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new ConfigError(
-      `OPENCLAW_GATEWAY_URL 必须以 http:// 或 https:// 开头，当前为 "${raw}"`,
-    );
-  }
-  if (url.search || url.hash) {
-    throw new ConfigError(`OPENCLAW_GATEWAY_URL 不应包含查询串或锚点："${raw}"`);
-  }
-
-  // 统一去掉尾部斜杠，便于 Adapter 直接拼接探测路径
-  return raw.replace(/\/+$/, "");
-}
-
-function readHealthTimeoutMs(source: Record<string, string | undefined>): number {
-  return readTimeoutMs(source, "OPENCLAW_GATEWAY_HEALTH_TIMEOUT_MS", {
-    default: DEFAULT_HEALTH_TIMEOUT_MS,
-    min: HEALTH_TIMEOUT_MIN_MS,
-    max: HEALTH_TIMEOUT_MAX_MS,
-  });
 }
 
 /** 通用整型超时配置读取（缺省 / 越界报错） */

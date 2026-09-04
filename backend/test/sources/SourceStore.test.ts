@@ -199,8 +199,29 @@ describe("BuiltinPdfAnalyzer（确定性文本层）", () => {
 describe("AgentMultimodalAnalyzer（扩展点）", () => {
   function runtimeWith(output: string | Error): AgentRuntime {
     return {
-      provider: "openclaw",
+      provider: "pi",
       healthCheck: async () => makeHealth(),
+      startAgent: async (input) => {
+        if (output instanceof Error) {
+          throw output;
+        }
+        const now = new Date().toISOString();
+        const task: AgentTask = {
+          taskId: "run-mm",
+          agentId: input.agentId,
+          status: "completed",
+          createdAt: now,
+          updatedAt: now,
+          output,
+        };
+        return {
+          taskId: task.taskId,
+          sessionKey: `agent:${input.agentId}:paperteam-fake`,
+          events: async function* () {},
+          cancel: async () => {},
+          result: async () => task,
+        };
+      },
       runAgent: async (input) => {
         if (output instanceof Error) {
           throw output;
@@ -219,15 +240,7 @@ describe("AgentMultimodalAnalyzer（扩展点）", () => {
       getTask: () => {
         throw new Error("not implemented");
       },
-      cancelTask: () => {
-        throw new Error("not implemented");
-      },
-      sendMessage: () => {
-        throw new Error("not implemented");
-      },
-      streamEvents: () => {
-        throw new Error("not implemented");
-      },
+      close: async () => {},
     };
   }
 
@@ -271,7 +284,7 @@ describe("AgentMultimodalAnalyzer（扩展点）", () => {
 function makeHealth(): RuntimeHealth {
   return {
     ok: true,
-    provider: "openclaw",
+    provider: "pi",
     status: "healthy",
     detail: "ok",
     latencyMs: 1,

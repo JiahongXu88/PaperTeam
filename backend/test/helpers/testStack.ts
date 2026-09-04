@@ -247,7 +247,7 @@ export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): Scrip
   let hangConsumed = options.hangFirstCall !== true;
 
   const runtime: AgentRuntime = {
-    provider: "openclaw",
+    provider: "pi",
     healthCheck: async () => makeHealth(true),
     runAgent: async (input) => {
       calls.push({ agentId: input.agentId, contextScope: input.contextScope });
@@ -294,18 +294,20 @@ export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): Scrip
       };
       return task;
     },
+    startAgent: async (input) => {
+      const task = await runtime.runAgent(input);
+      return {
+        taskId: task.taskId,
+        sessionKey: `agent:${input.agentId}:paperteam-scripted`,
+        events: async function* () {},
+        cancel: async () => {},
+        result: async () => task,
+      };
+    },
     getTask: () => {
       throw new Error("not implemented");
     },
-    cancelTask: () => {
-      throw new Error("not implemented");
-    },
-    sendMessage: () => {
-      throw new Error("not implemented");
-    },
-    streamEvents: () => {
-      throw new Error("not implemented");
-    },
+    close: async () => {},
   };
   return {
     runtime,
@@ -317,7 +319,7 @@ export function scriptedIdeaRuntime(options: ScriptedRuntimeOptions = {}): Scrip
 function makeHealth(ok: boolean): RuntimeHealth {
   return {
     ok,
-    provider: "openclaw",
+    provider: "pi",
     status: ok ? "healthy" : "unreachable",
     detail: ok ? "ok" : "down",
     latencyMs: ok ? 5 : null,

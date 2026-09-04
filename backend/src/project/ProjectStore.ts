@@ -68,7 +68,7 @@ export interface ProjectMetadata {
   status: ProjectStatus;
   /**
    * Runtime 会话引用（M2.1，Runtime-neutral）。
-   * 指向上次生成任务落到的 Agent Runtime 会话（OpenClaw 的 sessionKey），
+   * 指向上次生成任务落到的 Agent Runtime 会话（sessionKey），
    * 下次生成原样复用，保证同一 Project 上下文连续、不同 Project 隔离。
    * Project 与 Runtime Session 是两个概念：这里是引用，不是合并。
    */
@@ -248,7 +248,7 @@ export class ProjectStore {
 
   /**
    * 记录 / 更新 Runtime 会话引用（M2.1）。
-   * 传入 undefined 清除引用。值由 Runtime 层产生（OpenClaw sessionKey），
+   * 传入 undefined 清除引用。值由 Runtime 层产生（sessionKey），
    * ProjectStore 只做存储，不理解其格式。
    */
   async updateRuntimeSessionKey(

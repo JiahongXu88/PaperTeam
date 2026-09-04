@@ -2,7 +2,7 @@
  * 论文生成最小工作流（M2）：
  *
  *   ProjectService → WriterService → AgentRuntime.runAgent()
- *   → OpenClawRuntimeAdapter → Writer 返回 LaTeX
+ *   → PiRuntimeAdapter → Writer 返回 LaTeX
  *   → 写入 manuscript/main.tex → LatexCompiler → build/paper.pdf
  *
  * 只编排，不含业务判断以外的逻辑；多 Agent 调度属于后续里程碑。

@@ -6,7 +6,7 @@ import { WriterService, buildWriterPrompt } from "../src/writer/WriterService.js
 
 /** 可编程的假 Runtime：记录调用并返回预设任务结果 */
 class FakeRuntime implements AgentRuntime {
-  readonly provider = "openclaw" as const;
+  readonly provider = "pi" as const;
   readonly calls: { agentId: string; task: string; projectId?: string }[] = [];
   private result: () => AgentTask;
 
@@ -18,6 +18,18 @@ class FakeRuntime implements AgentRuntime {
     throw new Error("not needed in this test");
   }
 
+  async startAgent(input: import("../src/runtime/types.js").RunAgentInput): Promise<import("../src/runtime/types.js").AgentRunHandle> {
+    this.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId });
+    const task = this.result();
+    return {
+      taskId: task.taskId,
+      sessionKey: `agent:${input.agentId}:paperteam-fake`,
+      events: async function* () {},
+      cancel: async () => {},
+      result: async () => task,
+    };
+  }
+
   async runAgent(input: import("../src/runtime/types.js").RunAgentInput): Promise<AgentTask> {
     this.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId });
     return this.result();
@@ -26,14 +38,9 @@ class FakeRuntime implements AgentRuntime {
   getTask(): Promise<AgentTask> {
     throw new Error("not implemented");
   }
-  cancelTask(): Promise<void> {
-    throw new Error("not implemented");
-  }
-  sendMessage(): Promise<void> {
-    throw new Error("not implemented");
-  }
-  streamEvents(): Promise<void> {
-    throw new Error("not implemented");
+
+  close(): Promise<void> {
+    return Promise.resolve();
   }
 }
 

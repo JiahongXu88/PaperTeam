@@ -1,17 +1,10 @@
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
 import { ConfigError, loadConfig } from "./config/config.js";
 import { applyEnvFile, findEnvFile } from "./config/envFile.js";
 import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
-import { OpenClawRuntimeAdapter } from "./runtime/OpenClawRuntimeAdapter.js";
 import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
-import { OPENCLAW_RUNTIME_VERSION } from "./dev/runtimeConfig.js";
-import { resolveRuntimePaths } from "./dev/runtimePaths.js";
-import { PI_RUNTIME_VERSION } from "./runtime/pi/version.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { LatexImporter } from "./import/LatexImporter.js";
@@ -21,18 +14,19 @@ import {
 } from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "./workflow/runStore.js";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
- * PaperTeam Backend 启动入口（M3.0：Workflow Foundation）。
+ * PaperTeam Backend 启动入口（M3.0：Workflow Foundation；M3.8：Pi Runtime）。
  *
  * 启动流程：
  *   1. 加载 .env（可选，仅补缺，不覆盖真实环境变量）
  *   2. 加载并校验配置
- *   3. 装配服务：ProjectStore / WriterService / GenerationService / LatexCompiler
- *   4. 初始化 OpenClawRuntimeAdapter（基于官方 @openclaw/gateway-client）
- *   5. 对 OpenClaw Gateway 执行一次健康检查并输出结果
- *   6. 装配 WorkflowOrchestrator 并恢复中断的 WorkflowRun（checkpoint 恢复）
- *   7. 启动 HTTP 服务；shutdown 时先停编排器再释放 Runtime 连接
+ *   3. 装配 PiRuntimeAdapter（in-process SDK；无 Gateway 子进程 / 端口 / 握手）
+ *   4. 执行一次 Runtime 健康检查并输出结果（模型就绪度独立报告）
+ *   5. 装配 WorkflowOrchestrator 并恢复中断的 WorkflowRun（checkpoint 恢复）
+ *   6. 启动 HTTP 服务；shutdown 时先停编排器再收敛 Runtime 在途 run
  */
 
 export async function startBackend(): Promise<void> {
@@ -51,34 +45,18 @@ export async function startBackend(): Promise<void> {
   }
 
   console.log(`  env:          ${config.env}`);
-  console.log(`  runtime:      ${config.agentRuntime}`);
-  if (config.agentRuntime === "openclaw") {
-    console.log(`  gateway:      ${config.gateway.url}`);
-  } else {
-    console.log(`  pi:           model=${config.pi.model ?? "(未配置)"} agentDir=${config.pi.agentDir ?? "(runtimeRoot/pi/agent)"}`);
-  }
+  console.log(`  runtime:      pi（in-process，@earendil-works/pi-coding-agent）`);
+  console.log(`  pi:           model=${config.pi.model ?? "(未配置)"} agentDir=${config.pi.agentDir}`);
   console.log(`  projectsRoot: ${config.projectsRoot}`);
   console.log(`  agents:       researcher=${config.agents.researcher} writer=${config.agents.writer} reviewer=${config.agents.reviewer} citation=${config.agents.citation}`);
 
-  // M3.7：Runtime 选择（默认 openclaw；PAPERTEAM_AGENT_RUNTIME=pi 时 in-process）
-  let runtime: AgentRuntime;
-  if (config.agentRuntime === "pi") {
-    runtime = new PiRuntimeAdapter({
-      ...(config.pi.model !== undefined ? { modelSpec: config.pi.model } : {}),
-      ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
-      agentDir: config.pi.agentDir ?? join(resolveRuntimePaths().root, "runtime", "pi", "agent"),
-      workspaceRoot: config.projectsRoot,
-      runTimeoutMs: config.pi.runTimeoutMs,
-    });
-  } else {
-    runtime = new OpenClawRuntimeAdapter({
-      baseUrl: config.gateway.url,
-      apiKey: config.gateway.apiKey,
-      timeoutMs: config.gateway.healthTimeoutMs,
-      rpcTimeoutMs: config.gateway.rpcTimeoutMs,
-      runTimeoutMs: config.gateway.runTimeoutMs,
-    });
-  }
+  const runtime: AgentRuntime = new PiRuntimeAdapter({
+    ...(config.pi.model !== undefined ? { modelSpec: config.pi.model } : {}),
+    ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
+    agentDir: config.pi.agentDir,
+    workspaceRoot: config.projectsRoot,
+    runTimeoutMs: config.pi.runTimeoutMs,
+  });
 
   const projects = new ProjectStore({ root: config.projectsRoot });
   const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
@@ -107,12 +85,10 @@ export async function startBackend(): Promise<void> {
   const health = await runtime.healthCheck();
   reportRuntimeHealth(health);
 
-  // M3.5：Runtime 诊断（GET /api/runtime/status）
+  // Runtime 诊断（GET /api/runtime/status）
   const runtimeStatus = new RuntimeStatusService({
     runtime,
     agentIds: config.agents,
-    expectedRuntimeVersion:
-      config.agentRuntime === "pi" ? PI_RUNTIME_VERSION : OPENCLAW_RUNTIME_VERSION,
     log: (message) => console.log(message),
   });
 
@@ -174,23 +150,14 @@ function loadDotEnvBestEffort(): void {
 }
 
 function reportRuntimeHealth(health: RuntimeHealth): void {
+  const latency = health.latencyMs === null ? "" : `（${health.latencyMs}ms）`;
   if (health.ok) {
-    const latency = health.latencyMs === null ? "" : `（${health.latencyMs}ms）`;
-    console.log(`${health.provider === "pi" ? "Pi Runtime" : "OpenClaw Gateway"}: healthy${latency}`);
-    if (health.provider === "pi") {
-      console.log(`  detail: ${health.detail}`);
-    }
+    console.log(`Pi Runtime: healthy${latency}`);
+    console.log(`  detail: ${health.detail}`);
     return;
   }
-  console.log(
-    `${health.provider === "pi" ? "Pi Runtime" : "OpenClaw Gateway"}: unavailable（${health.status}）`,
-  );
+  console.log(`Pi Runtime: unavailable（${health.status}）${latency}`);
   console.log(`  reason: ${health.detail}`);
-  if (health.provider === "openclaw") {
-    console.log(
-      "  提示：GET /health 会持续报告 Gateway 状态；请确认 Gateway 已启动并检查 OPENCLAW_GATEWAY_URL。",
-    );
-  }
 }
 
 function registerShutdown(
@@ -201,13 +168,13 @@ function registerShutdown(
   const shutdown = (signal: string) => {
     console.log(`\nPaperTeam Backend shutting down (${signal})...`);
     // 先停编排器（请求取消活跃 run 并等循环退出，checkpoint 已随执行落盘），
-    // 再释放 Runtime 在途连接，最后关 HTTP 服务（SSE 长连接会阻止
-    // server.close 完成，主动 closeAllConnections 让退出即时、干净）
+    // 再收敛 Runtime 在途 run / 释放全部 AgentSession，最后关 HTTP 服务
+    // （SSE 长连接会阻止 server.close 完成，主动 closeAllConnections 让退出即时、干净）
     void orchestrator
       .close()
       .catch(() => {})
       .finally(() => {
-        void runtime.close?.().catch(() => {});
+        void runtime.close().catch(() => {});
         server.closeAllConnections?.();
         server.close(() => {
           process.exit(0);
