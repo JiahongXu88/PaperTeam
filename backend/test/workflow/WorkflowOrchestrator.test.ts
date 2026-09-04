@@ -732,7 +732,23 @@ describe("Domain Event 日志（events.jsonl）", () => {
     const run = await harness.orchestrator.createRun(harness.projectId, "idea_to_paper");
     await waitForStatus(harness.orchestrator, run.runId, ["completed"]);
 
-    const { events } = await harness.orchestrator.readEvents(run.runId);
+    // 内存状态先于事件落盘可见（persistThenCommit：saveCheckpoint → 改内存
+    // → await 事件追加）。waitForStatus 看到内存 completed 时，最后一条
+    // workflow.completed 可能尚未写完 events.jsonl（全量并发下偶发）。
+    // 这里轮询事件文件直至 workflow.completed 出现（有界等待）。
+    const deadline = Date.now() + 5_000;
+    let events: Awaited<ReturnType<typeof harness.orchestrator.readEvents>>["events"];
+    for (;;) {
+      events = (await harness.orchestrator.readEvents(run.runId)).events;
+      const last = events[events.length - 1];
+      if (last !== undefined && last.type === "workflow.completed") {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`等待 workflow.completed 事件落盘超时（当前 ${events.length} 条）`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     const types = events.map((event) => event.type);
     expect(types[0]).toBe("workflow.started");
     expect(types).toEqual(
