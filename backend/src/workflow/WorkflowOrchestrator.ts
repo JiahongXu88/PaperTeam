@@ -251,6 +251,17 @@ export class WorkflowOrchestrator {
     for (const controller of handle.abortControllers) {
       controller.abort();
     }
+    if (handle.state.status === "awaiting_input" && handle.loop !== null) {
+      // 竞态收敛（全量并发测试下偶发）：enterAwaitingInput 的 persistThenCommit
+      // 先改内存状态再 await 事件追加，getRun 轮询已能看到 awaiting_input，
+      // 而 runLoop 的 .finally 尚未清空 handle.loop。此时循环既不会再执行
+      // stage 工作、也不会再检查 cancelRequested（检查点在 for(;;) 顶部），
+      // 若只设标志就返回，run 将永远停在 awaiting_input。awaiting_input 且
+      // loop 非空只可能是循环正在退出（resume 会先同步置回 running 再
+      // startLoop），等待其自然退出（避免与循环的落盘/事件追加并发）后，
+      // 由下方分支立即终结。
+      await handle.loop.catch(() => {});
+    }
     if (handle.loop === null) {
       await this.finalizeCancelled(handle);
     }
@@ -358,6 +369,12 @@ export class WorkflowOrchestrator {
       return;
     }
     const { state, definition } = handle;
+
+    if (state.status === "cancelled" || state.status === "completed" || state.status === "failed") {
+      // resume() 会先同步置回 running 再 startLoop，但其间仍有 await 窗口；
+      // 若 cancel() 已在该窗口内终结 run，这里直接退出，避免把终态复活为 running。
+      return;
+    }
 
     if (state.status === "pending") {
       state.status = "running";
