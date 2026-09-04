@@ -139,6 +139,40 @@ describe("POST /api/projects（项目创建）", () => {
   });
 });
 
+describe("GET /api/projects（项目列表，M4.0）", () => {
+  it("无项目时返回空数组", async () => {
+    const { server } = await startApiStack(healthyRuntime());
+    const response = await request(server, "GET", "/api/projects");
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.text) as { projects?: unknown[] }).toMatchObject({ projects: [] });
+  });
+
+  it("返回全部项目元数据，updatedAt 非升序（最近更新在前）", async () => {
+    const { server, store } = await startApiStack(healthyRuntime());
+    const first = await store.create("第一个项目");
+    const second = await store.create("第二个项目", { researchField: "计算机科学" });
+    await store.updateMeta(first.id, { targetVenue: "SIGIR" }); // bump updatedAt
+
+    const response = await request(server, "GET", "/api/projects");
+    expect(response.status).toBe(200);
+    const { projects } = JSON.parse(response.text) as {
+      projects?: Array<{ id?: string; updatedAt?: string; researchField?: string }>;
+    };
+    expect(projects?.map((p) => p.id).sort()).toEqual([first.id, second.id].sort());
+    expect(projects?.find((p) => p.id === second.id)?.researchField).toBe("计算机科学");
+    // 响应整体按 updatedAt 降序（自洽校验，不依赖时钟精度）
+    const updateds = (projects ?? []).map((p) => p.updatedAt ?? "");
+    expect([...updateds].sort((a, b) => b.localeCompare(a))).toEqual(updateds);
+  });
+
+  it("GET 以外的方法返回 405（Allow: GET, POST）", async () => {
+    const { server } = await startApiStack(healthyRuntime());
+    const response = await request(server, "PUT", "/api/projects", "{}");
+    expect(response.status).toBe(405);
+    expect(response.headers.get("allow")).toBe("GET, POST");
+  });
+});
+
 describe("POST /api/projects/:id/generate（全链路）", () => {
   it("成功路径：HTTP → Project → Writer → runAgent(脚本化 Runtime) → main.tex → 编译(mock) → 200", async () => {
     const runtime = recordingLatexRuntime();

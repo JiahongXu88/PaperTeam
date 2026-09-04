@@ -132,6 +132,26 @@ describe("ProjectStore", () => {
     expect(await store.get(project.id)).toBeNull();
   });
 
+  it("listMetadata：按 updatedAt 降序返回全部元数据，损坏项目静默跳过", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-projects-"));
+    tempRoots.push(root);
+    let tick = 1_700_000_000_000;
+    const store = new ProjectStore({ root, now: () => new Date(tick += 10) });
+    const older = await store.create("较早创建");
+    const newer = await store.create("较晚创建");
+    await store.updateMeta(older.id, { researchField: "信息检索" }); // bump updatedAt → 排最前
+
+    const list = await store.listMetadata();
+    expect(list.map((p) => p.id)).toEqual([older.id, newer.id]);
+    expect(list[0]?.researchField).toBe("信息检索");
+
+    // 损坏 project.json 的项目目录：跳过而不是报错
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(root, "p-broken000001"));
+    await writeFile(join(root, "p-broken000001", "project.json"), "{bad", "utf8");
+    expect(await store.listMetadata()).toHaveLength(2);
+  });
+
   it("updateRuntimeSessionKey 记录/更新会话引用并随 updateStatus 保留", async () => {
     const { store } = await newStore();
     const project = await store.create("会话引用测试");

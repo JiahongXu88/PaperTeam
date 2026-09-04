@@ -124,7 +124,7 @@ export async function startBackend(): Promise<void> {
   server.listen(config.port, () => {
     console.log(
       `PaperTeam Backend listening on http://localhost:${config.port}` +
-        ` (GET /health, GET /api/runtime/status, POST /api/projects,` +
+        ` (GET /health, GET /api/runtime/status, GET|POST /api/projects,` +
         ` POST /api/projects/:id/generate, POST /api/projects/:id/workflows,` +
         ` GET /api/runs/:runId[/events])`,
     );

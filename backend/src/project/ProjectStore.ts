@@ -336,6 +336,25 @@ export class ProjectStore {
     return projects.sort();
   }
 
+  /**
+   * 列出全部项目元数据（M4.0：GET /api/projects 用）。
+   * 按 updatedAt 降序（最近更新在前，id 作稳定 tie-break）；
+   * project.json 损坏的目录静默跳过（与 list() 一致）。
+   */
+  async listMetadata(): Promise<ProjectMetadata[]> {
+    const ids = await this.list();
+    const metadata: ProjectMetadata[] = [];
+    for (const id of ids) {
+      const project = await this.get(id);
+      if (project !== null) {
+        metadata.push(project);
+      }
+    }
+    return metadata.sort(
+      (a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id),
+    );
+  }
+
   /** 写入 project.json */
   private async writeMetadata(metadata: ProjectMetadata): Promise<void> {
     const dir = this.projectDir(metadata.id);

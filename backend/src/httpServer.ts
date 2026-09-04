@@ -27,6 +27,7 @@ import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
  *
  * M3 端点：
  *   GET    /health                                  存活探针（含 Pi Runtime 实时健康）
+ *   GET    /api/projects                            项目列表（M4.0：updatedAt 降序）
  *   POST   /api/projects                            创建论文项目 {title, researchIdea?, …}
  *   GET    /api/projects/:id                        查询项目元数据
  *   PATCH  /api/projects/:id                        更新研究定位字段
@@ -163,8 +164,14 @@ async function handleRequest(
 
   // ---- /api/projects ----
   if (pathname === "/api/projects") {
+    if (method === "GET") {
+      // M4.0：项目列表（updatedAt 降序）；ProjectStore 无项目时返回 []
+      const projects = await services.projects.listMetadata();
+      sendJson(res, 200, { projects });
+      return;
+    }
     if (method !== "POST") {
-      res.setHeader("Allow", "POST");
+      res.setHeader("Allow", "GET, POST");
       sendJson(res, 405, { status: "method_not_allowed", method });
       return;
     }
