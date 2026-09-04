@@ -9,7 +9,13 @@ import { describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 
 import { GatewayConnectionError } from "../src/runtime/openclaw/gatewayClient.js";
-import { RuntimeStatusService, type ConnectionDeps, type StatusConnection } from "../src/runtime/statusService.js";
+import {
+  GATEWAY_CLIENT_SDK_VERSION,
+  RuntimeStatusService,
+  type ConnectionDeps,
+  type StatusConnection,
+} from "../src/runtime/statusService.js";
+import { OPENCLAW_RUNTIME_VERSION } from "../src/dev/runtimeConfig.js";
 import type { AgentRuntime, RuntimeHealth } from "../src/runtime/types.js";
 import { createBackendHttpServer } from "../src/httpServer.js";
 import { AGENT_IDS } from "./helpers/testStack.js";
@@ -59,7 +65,7 @@ function makeConnection(options: {
   };
 }
 
-const IDENTITY = { version: "2026.8.2", protocol: 4 };
+const IDENTITY = { version: OPENCLAW_RUNTIME_VERSION, protocol: 4 };
 const AGENTS_LIST = {
   defaultId: "main",
   ownership: "sole",
@@ -77,7 +83,7 @@ function makeService(connection: StatusConnection, agentIds = AGENT_IDS_MAIN) {
   return new RuntimeStatusService({
     runtime: makeRuntime(true),
     agentIds,
-    expectedRuntimeVersion: "2026.8.2",
+    expectedRuntimeVersion: OPENCLAW_RUNTIME_VERSION,
     createConnection: () => connection,
   });
 }
@@ -94,10 +100,10 @@ describe("RuntimeStatusService", () => {
     const status = await makeService(connection).getStatus();
     expect(status.gateway.phase).toBe("healthy");
     expect(status.runtime.phase).toBe("ready");
-    expect(status.versions.gatewayRuntime).toBe("2026.8.2");
-    expect(status.versions.expectedRuntime).toBe("2026.8.2");
+    expect(status.versions.gatewayRuntime).toBe(OPENCLAW_RUNTIME_VERSION);
+    expect(status.versions.expectedRuntime).toBe(OPENCLAW_RUNTIME_VERSION);
     expect(status.versions.protocol).toBe(4);
-    expect(status.versions.gatewayClientSdk).toBe("2026.8.2");
+    expect(status.versions.gatewayClientSdk).toBe(GATEWAY_CLIENT_SDK_VERSION);
     expect(status.agents.defaultId).toBe("main");
     expect(status.agents.ownership).toBe("sole");
     for (const role of status.agents.roles) {

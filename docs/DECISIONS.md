@@ -275,7 +275,7 @@ Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此
    `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH` + 独立端口（默认 18790，避开
    全局常用 18789），state 放用户级 `%USERPROFILE%\.paperteam\runtime\openclaw\`。
    Bootstrap 在解析路径时硬校验与全局 `~/.openclaw` 既不相等也不嵌套，命中即拒绝
-   启动。OpenClaw 版本精确 pin 在根 package.json（当前 2026.8.2，与
+   启动。OpenClaw 版本精确 pin 在根 package.json（当前 2026.9.1，与
    `@openclaw/gateway-client` / `gateway-protocol` 同版本，protocol v4），以项目本地
    npm 安装获取，不 vendoring 源码、不依赖全局安装、不依赖任何 OpenClaw 源码
    checkout（如 `D:\Projects\openclaw`）。

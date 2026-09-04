@@ -35,14 +35,19 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 | **M3.0 Workflow Foundation** | ✅ 完成 | `WorkflowOrchestrator`（确定性引擎）、`StageContract`（DoD）、异步 `WorkflowRun` + checkpoint/resume、Domain Event + SSE、HITL awaiting_input、协作式取消、Session contextScope |
 | **M3.1 Research & Evidence** | ✅ 完成 | Researcher（调研 + Evidence 候选）、Target Feasibility（HIGH/MEDIUM/LOW/INSUFFICIENT + HITL adjust）、`EvidenceStore`（JSONL）、Citation 核验（静态 + CrossRef/OpenAlex/arXiv）、文献库 + PDF 文本层分析（多模态为扩展点）、分节写作、Derived Context |
 | **M3.2 Review & Revision** | ✅ 完成 | Reviewer（fact/academic/style 三 skill 并行）、确定性聚合、Quality Gate（9 规则）、bounded revision loop（≤2 轮 + 超限 HITL）、Build Gate、Draft/Final 双 Gate 语义、Existing-LaTeX 导入（防 Zip Slip）与改造 workflow |
-| **M3.5 Runtime Bootstrap / M3 Closure** | ✅ 完成 | **M3 Complete**：PaperTeam 独立 OpenClaw Runtime（隔离 state、精确版本 2026.8.2）、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿 |
+| **M3.5 Runtime Bootstrap / M3 Closure** | ✅ 完成 | **M3 Complete**：PaperTeam 独立 OpenClaw Runtime（隔离 state、精确版本 pin）、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿 |
+| **M3.6 Runtime Baseline Upgrade** | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（openclaw / gateway-client / gateway-protocol 三处统一精确 pin，protocol v4 不变）；Node 兼容检查改为复用根 package.json engines（Node 26+ 可用）；runtime.json 旧版本自动迁移；全量回归 255 测试 + 真实 Gateway E2E 通过 |
 
-**M3 Complete**：后端达到「完整 M3 可运行基线」。`npm run dev` 在全新机器上
-真实验证过：自动初始化独立 state → Gateway healthy → Backend healthy →
-workflow 真实推进到 Researcher 的 Gateway RPC 调用层（无模型凭据时如实进入
-`model_not_configured` / 结构化失败，不伪造）。带真实模型凭据的完整全链路 E2E、
-TeX Live 真实编译、多模态 PDF 视觉级分析为非阻塞环境验证缺口，见
-[PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。254 个测试全部通过。
+**M3.6 Complete**：后端「完整 M3 可运行基线」的 Runtime baseline 已固化在
+OpenClaw 2026.9.1（Node.js + npm 为当前 Runtime / Package Manager baseline，
+M4 前端 React 19 + TypeScript + Vite 将基于该版本继续开发）。`npm run dev`
+在全新机器上真实验证过：自动初始化独立 state → Gateway 2026.9.1 healthy →
+Backend healthy → workflow 真实推进到 Researcher 的 Gateway RPC 调用层
+（无模型凭据时如实进入 `model_not_configured` / 结构化失败，不伪造）；
+存量安装（runtime.json 仍记录旧版本）升级时自动迁移、不误报漂移。带真实
+模型凭据的完整全链路 E2E、TeX Live 真实编译、多模态 PDF 视觉级分析为
+非阻塞环境验证缺口，见 [PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。
+255 个测试全部通过。
 
 **未实现（M4+）**：前端工作台、Visual Reviewer、LaTeX repair loop、
 完整版本管理体验、系统管理后台、Docker 部署。
@@ -52,7 +57,7 @@ TeX Live 真实编译、多模态 PDF 视觉级分析为非阻塞环境验证缺
 | 文档 | 说明 |
 |---|---|
 | [docs/PRD.md](docs/PRD.md) | 产品需求文档 |
-| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 / M3.1 / M3.2 / M4+） |
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 / M3.1 / M3.2 / M3.5 / M3.6 / M4+） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构说明 |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 技术决策记录（ADR） |
 
@@ -74,13 +79,13 @@ PaperTeam/
 ```bash
 git clone https://github.com/JiahongXu88/PaperTeam.git
 cd PaperTeam
-npm install            # 安装根依赖（含 openclaw runtime 本体，精确 pin 2026.8.2）
+npm install            # 安装根依赖（含 openclaw runtime 本体，精确 pin 2026.9.1）
 npm run dev            # 一键启动：独立 OpenClaw Gateway + PaperTeam Backend
 ```
 
 `npm run dev` 会自动完成：
 
-1. Node 版本检查（需满足 openclaw 2026.8.2 支持范围：`>=22.22.3 <23` / `>=24.15.0 <25` / `>=25.9.0`）
+1. Node 版本检查（复用根 package.json 的 `engines.node`，与 openclaw 2026.9.1 支持范围一致：`>=22.22.3 <23` / `>=24.15.0 <25` / `>=25.9.0`，Node 26+ 可用且为官方推荐线）
 2. backend 依赖安装与构建（缺失时自动 `npm install` + `tsc`）
 3. 初始化 **PaperTeam 独立 OpenClaw Runtime**（用户级 `~/.paperteam/runtime/openclaw/`，与全局 `~/.openclaw` 完全隔离；首次生成随机 Gateway token）
 4. 启动 OpenClaw Gateway（`http://127.0.0.1:18790`）并等待健康
@@ -185,7 +190,8 @@ Project ≠ Session：Session 是可重建的 Runtime Context，不承担项目�
   [D-0018](docs/DECISIONS.md)）；需要独立模型/权限时用
   `OPENCLAW_{WRITER|RESEARCHER|REVIEWER|CITATION}_AGENT_ID` 覆盖。
 - **版本锚点**：openclaw runtime（根 package.json）、`@openclaw/gateway-client`、
-  `@openclaw/gateway-protocol` 全部精确 pin **2026.8.2**（wire protocol v4）；
-  安装版本漂移会在启动时被拒绝。
+  `@openclaw/gateway-protocol` 全部精确 pin **2026.9.1**（wire protocol v4 不变）；
+  安装版本漂移会在启动时被拒绝；存量 runtime.json 记录的旧版本会在启动时
+  自动迁移到当前 pin（端口 / token 保留）。
 - **独立 state**：`~/.paperteam/runtime/openclaw/`（`PAPERTEAM_RUNTIME_ROOT` 可覆盖）；
   与全局 `~/.openclaw` 相等或嵌套的路径会被直接拒绝。

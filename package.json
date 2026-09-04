@@ -15,6 +15,6 @@
     "test": "npm --prefix backend test"
   },
   "devDependencies": {
-    "openclaw": "2026.8.2"
+    "openclaw": "2026.9.1"
   }
 }

@@ -1,18 +1,30 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-03（M3.5 Runtime Bootstrap / M3 Closure 完成后）
+> 更新日期：2026-09-04（M3.6 Runtime Baseline Upgrade 完成后）
 
 ## 当前阶段
 
-**M3 Complete（M3.0 → M3.1 → M3.2 → M3.5 Runtime Bootstrap / M3 Closure）。
-后端达到「完整 M3 可运行基线」：`npm run dev` 一键启动 PaperTeam 独立 OpenClaw
-Gateway + Backend，Ctrl+C 优雅关闭、无孤儿进程。下一阶段：M4（前端工作台、
-Visual Reviewer、LaTeX repair loop、完整版本管理）。**
+**M3.6 Complete（M3.0 → M3.1 → M3.2 → M3.5 Runtime Bootstrap → M3.6 Runtime
+Baseline Upgrade）。OpenClaw baseline 已固化在 2026.9.1：`npm run dev` 一键启动
+PaperTeam 独立 OpenClaw Gateway + Backend，Ctrl+C 优雅关闭、无孤儿进程；
+存量安装升级自动迁移。Runtime / Package Manager baseline 仍为 Node.js + npm
+（未引入 Bun）。下一阶段：M4 Not Started（前端工作台 React 19 + TypeScript +
+Vite、Visual Reviewer、LaTeX repair loop、完整版本管理，基于 2026.9.1 开发）。**
 
 M3 交付两条一级业务工作流（真实编排引擎 + 真实业务服务，测试中以脚本化 Agent Runtime 全链路验证）：
 
 - **Idea-to-Paper**：调研 → 可行性评估（HITL approve/adjust）→ 大纲（HITL approve/revise）→ 分节写作 → 引用核验 → 三路审稿 → Quality Gate →（bounded 修订 ≤2 轮 + 超限 HITL）→ Build Gate → Final（双 Gate 通过）/ Draft。
 - **Existing-LaTeX Improvement**：导入（防 Zip Slip）→ 结构解析 → Baseline Compile → 论文理解 → 引用审计 → 审稿 → 目标评估 → 改进计划（HITL）→ 逐节改造 →（共享审稿/修订/构建后段）。
+
+## M3.6 — Runtime Baseline Upgrade（✅ 完成，2026-09-04）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| OpenClaw 2026.8.2 → 2026.9.1 | ✅ 完成 | openclaw（runtime 本体，根 devDependency）= `@openclaw/gateway-client` = `@openclaw/gateway-protocol` = **2026.9.1**（三处统一精确 pin，protocol v4 不变，较 2026.8.2 为 stable 大版本升级）；lockfile 更新；版本锚点测试防漂移 |
+| SDK / Protocol 兼容性 | ✅ 无需适配 | 静态核对 + 编译 + 真机验证：`PROTOCOL_VERSION=4` 不变；`GatewayClient` 构造选项 / `start`·`request`·`stopAndWait` / `GatewayClientRequestError`·`GatewayClientRequestTimeoutError` 全部保留（新增导出均为增量）；RPC `agent`（两段式验收）/ `agent.wait` / `chat.history` / `gateway.identity.get` / `agents.list` / `models.authStatus` 行为不变；`/health` 契约（`{"ok":true,"status":"live"}`）与实例隔离三件套（`OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` / `--port`）不变；未发现影响 PaperTeam 的 breaking change |
+| Node Runtime 兼容 | ✅ 完成 | 修复 M3.5 缺口：`scripts/dev.mjs` 原以 `[25,9,0,26)` 上界错误拒绝 Node 26（engines 的 `>=25.9.0` 无上界、openclaw 2026.9.1 官方支持并推荐 Node 26）；现改为复用根 package.json `engines.node` 作为唯一事实源（微型解析器，不新增依赖、不做版本管理器），单点维护 |
+| runtime.json 存量升级迁移 | ✅ 完成 | M3.5 时代写入的 `openclawVersion: 2026.8.2` 会在启动时自动迁移到当前代码 pin（端口 / token 保留，迁移有日志）；修复存量安装升级会被误判「版本漂移」而拒绝启动的缺口；单测 + 真机 E2E（temp runtime root 预置旧版本 → 迁移 → Gateway 健康）双验证 |
+| 回归 | ✅ 通过 | `npm run build` / `npm run typecheck` / `npm test`（**255** 通过，含新增迁移测试）；真机 `npm run dev`：Gateway 2026.9.1 约 6s 就绪、health 200、Backend 3000 监听、进程树唯一（无重复 Gateway）、真实 workflow RPC 链路（agent 验收 → agent.wait 终态 → 网关权威错误 → transient 重试 2/2 → failed 终态、SSE 事件完整）、优雅关闭级联无孤儿、端口全部释放 |
 
 ## M3.5 — Runtime Bootstrap / M3 Closure（✅ 完成）
 
@@ -20,7 +32,7 @@ M3 交付两条一级业务工作流（真实编排引擎 + 真实业务服务�
 |---|---|---|
 | Runtime Bootstrap | ✅ 完成 | 仓库根 `npm run dev`：Node 版本检查 → 依赖自动安装（根 openclaw runtime + backend）→ 构建 → 准备独立 state → 启动 Gateway → 等 /health 就绪（60s 预算，进程提前退出即报错）→ 启动 Backend（注入 Gateway URL/token/端口）→ Ctrl+C 优雅关闭 |
 | 独立 OpenClaw state | ✅ 完成 | `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH` + 独立端口 18790（官方 multiple-gateways 隔离清单）；state 在用户级 `~/.paperteam/runtime/openclaw/`；路径解析硬校验与全局 `~/.openclaw` 不相等/不嵌套，命中拒绝启动（D-0018） |
-| OpenClaw 版本统一 | ✅ 完成 | openclaw（runtime 本体，根 devDependency）= `@openclaw/gateway-client` = `@openclaw/gateway-protocol` = **2026.8.2**（protocol v4，较 M3 pin 的 2026.8.1 为兼容补丁升级，全量回归通过）；全部精确 pin，测试断言三处一致且禁止 `^`/`~`/`latest`；安装版本漂移在启动时拒绝 |
+| OpenClaw 版本统一 | ✅ 完成 | openclaw（runtime 本体，根 devDependency）= `@openclaw/gateway-client` = `@openclaw/gateway-protocol` = **2026.9.1**（M3.5 时为 2026.8.2，M3.6 升级；protocol v4 全程不变）；全部精确 pin，测试断言三处一致且禁止 `^`/`~`/`latest`；安装版本漂移在启动时拒绝，存量 runtime.json 旧版本自动迁移 |
 | Agent 映射（方案 A） | ✅ 完成 | Researcher/Writer/Reviewer/Citation 默认全部映射 OpenClaw 默认 agent `main`，会话隔离靠 contextScope（D-0016/D-0018）；映射在 config 层（env 可覆盖），Service 不感知注册表；`agents.list` RPC 实时校验 registered/missing |
 | Runtime 诊断 | ✅ 完成 | `GET /api/runtime/status`：gateway（healthy/starting/unavailable/auth_error/protocol_mismatch）、runtime（ready/model_not_configured/auth_error/protocol_mismatch/gateway_unavailable）、agents 映射、model 凭据状态；不泄露 token/密钥；模型未配置不阻塞启动 |
 | 优雅关闭 | ✅ 完成 | Ctrl+C：Backend 先停（编排器取消活跃 run、checkpoint 落盘、`server.closeAllConnections()` 立即断开 SSE）→ Gateway 后停；Windows 真实控制台 Ctrl+C E2E 验证（全进程退出、端口释放、无孤儿）；强制兜底 taskkill /T（win）/SIGKILL（posix） |
@@ -123,7 +135,7 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 
 ## 测试与验证
 
-- **254 个测试全部通过**（vitest；M1/M2/M2.1 原有 79 个 + M3 业务 136 个 + M3.5 新增 39 个）：
+- **255 个测试全部通过**（vitest；M1/M2/M2.1 原有 79 个 + M3 业务 136 个 + M3.5 新增 39 个 + M3.6 新增 1 个 runtime.json 旧版本迁移测试）：
   M3.5 新增覆盖——Runtime Bootstrap（路径隔离/嵌套拒绝/相对路径拒绝、runtime.json
   读取/生成/校验/env 覆盖不落盘、token 脱敏、最小 openclaw.json 不覆盖用户配置、
   安装版本漂移拒绝、子进程环境注入与 OPENCLAW_PROFILE 剔除、健康等待成功/重试/超时）、
@@ -144,16 +156,16 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 2. **TeX Live 真实编译**：本机未安装 pdflatex/xelatex/latexmk；LatexCompiler 与 Build Gate 的编译路径经注入式 runner 覆盖，真实 PDF 编译待有 TeX 环境的机器验证。
 3. **多模态 PDF 视觉级分析 E2E**：`AgentMultimodalAnalyzer` 依赖 Gateway 在线 + 具备视觉/PDF 能力的模型 + Agent 沙箱可读 PROJECTS_ROOT，当前环境无法真实跑通（返回 capability-gap 如实报告，不伪造成功）。
 4. **Citation metadata providers 真实网络**：CrossRef/OpenAlex/arXiv 的真实网络路径在测试中以注入 fetch 覆盖（超时/5xx/网络故障 → unverifiable 的分支）；真实限流与响应形态待部署环境观察。
-5. **Gateway 版本上报**：OpenClaw 2026.8.2 的 `gateway.identity.get` 响应不含版本字段，`/api/runtime/status` 的 `versions.gatewayRuntime` 因此缺省；版本一致性由 Bootstrap 启动时的本地安装精确校验保证（漂移拒绝启动）。
+5. **Gateway 版本上报**：**已针对 2026.9.1 重新查证（2026-09-04，源码级）**：`gateway.identity.get` 响应仍只有 `{deviceId, publicKey}`，不含任何版本字段；新增的 `system.info` RPC 返回机器 / Node / 端口等系统信息，同样不含 OpenClaw 自身版本。`/api/runtime/status` 的 `versions.gatewayRuntime` 因此继续缺省；版本一致性仍由 Bootstrap 启动时的本地安装精确校验保证（漂移拒绝启动）。
 
-## M3 遗留问题（真实问题，均不阻塞 M3 验收）
+## M3 遗留问题（真实问题，均不阻塞 M3.6 验收）
 
 1. `getTask / cancelTask / streamEvents / sendMessage` 仍为 `RuntimeCapabilityError` 占位（M3 的进度与事件经编排层 Domain Event 实现，未依赖 Runtime 事件流；SDK 已具备能力，接入属 M4+）。
-2. 每次 runAgent 一条 Gateway 连接（M2.1 语义）；M3.2 三路 review 并行时瞬时 3 条连接，测试观察无残留；连接池化待真实并发压力评估后再做。
+2. 每次 runAgent 一条 Gateway 连接（M2.1 语义）；M3.2 三路 review 并行时瞬时 3 条连接，测试观察无残留；在没有真实并发性能证据前不做连接池。
 3. EvidenceStore 的 update/markUsage 是全量原子重写（规模内可接受）；索引/数据库迁移条件仍按未决问题 2 评估。
 4. 修订循环对「需要改 bib 本身」的引用问题只能删除/弱化引用，不会替用户新造文献条目（有意为之：防伪造引用）；补文献属于 Researcher/用户输入路径。
-5. 大纲 HITL 为强制节点（PRD 标记 Outline 确认为可选）；当前实现两处 HITL（feasibility/outline）都必经，前端可优化为可配置。
-6. Windows 下若 `npm run dev` 的父进程被外部硬杀（非控制台 Ctrl+C），子进程可能残留；正常 Ctrl+C 已验证无孤儿，硬杀场景的恢复手段是 `taskkill /PID <dev pid> /T /F`（POSIX 无此问题，进程组信号直达）。
+5. Outline HITL 当前仍为强制节点（PRD 标记 Outline 确认为可选）；当前实现两处 HITL（feasibility/outline）都必经，计划 M4 前端 / Workflow 配置化处理。
+6. Windows 下若 `npm run dev` 的父进程被外部硬杀（非控制台 Ctrl+C），子进程可能残留；正常 Ctrl+C 已验证无孤儿（M3.5 交互式 E2E；M3.6 在无头环境以子进程退出触发的同一关闭路径复验），硬杀场景的恢复手段是 `taskkill /PID <dev pid> /T /F`（POSIX 无此问题，进程组信号直达）。
 
 ## 未决设计问题
 
@@ -163,8 +175,9 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 
 ## 历史
 
+- **M3.6 Runtime Baseline Upgrade**：OpenClaw 全家桶 2026.8.2 → **2026.9.1**（stable 大版本，protocol v4 不变，无 breaking change、无需 SDK 适配）；Node 兼容检查收敛到根 package.json engines（Node 26+ 可用）；runtime.json 存量版本自动迁移；255 测试 + 真机 Gateway E2E 回归；**2026.9.1 固化为 M4 Runtime baseline**（Node.js + npm，不引入 Bun）。
 - **M3.5 Runtime Bootstrap / M3 Closure**：OpenClaw 全家桶升级 2026.8.2（兼容补丁，protocol v4 不变）、独立 Runtime state（`~/.paperteam`）、`npm run dev` 一键启动、Agent 映射方案 A（D-0018）、`GET /api/runtime/status`、优雅关闭与无孤儿验证、254 测试。
-- **M2.1 OpenClaw 2.0 Runtime Upgrade**：官方 `@openclaw/gateway-client/protocol`（2026.8.1 → M3.5 升至 2026.8.2，protocol v4）、Project↔Session 隔离与 runtimeSessionKey 持久化（详见 git history 与 README）。
+- **M2.1 OpenClaw 2.0 Runtime Upgrade**：官方 `@openclaw/gateway-client/protocol`（2026.8.1 → M3.5 升至 2026.8.2 → M3.6 升至 2026.9.1，protocol v4）、Project↔Session 隔离与 runtimeSessionKey 持久化（详见 git history 与 README）。
 - **M2 Agent Invocation + Project + LaTeX**：runAgent 真实调用链、ProjectStore、WriterService、GenerationService、LatexCompiler、HTTP API。
 - **M1 Backend Runtime Skeleton**：工程骨架、AgentRuntime 抽象、OpenClawRuntimeAdapter、Gateway 健康检查。
 - **Architecture Research & Product Design Refresh**：竞品调研与产品/架构方向冻结（D-0008~D-0015）。

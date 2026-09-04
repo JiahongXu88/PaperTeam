@@ -49,8 +49,10 @@ export async function runBootstrap(options: {
   const paths = resolveRuntimePaths(env);
   console.log(`  runtimeRoot:  ${paths.root}`);
 
-  // 2. runtime.json（端口 / token / 版本）
-  const runtimeConfig = await loadRuntimeConfig(paths.runtimeConfigPath, env);
+  // 2. runtime.json（端口 / token / 版本；旧版本的 openclawVersion 在此迁移到当前 pin）
+  const runtimeConfig = await loadRuntimeConfig(paths.runtimeConfigPath, env, undefined, (message) =>
+    console.log(message),
+  );
   console.log(`  openclaw:     ${runtimeConfig.openclawVersion}（本地安装校验中...）`);
 
   // 3. 项目本地 OpenClaw 安装（版本精确一致）

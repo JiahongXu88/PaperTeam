@@ -139,6 +139,28 @@ describe("loadRuntimeConfig：runtime.json 读取 / 生成 / 校验", () => {
     expect(files.get(configPath)).toBe(JSON.stringify(existing));
   });
 
+  it("旧版本 runtime.json（升级前 release 写入）→ 迁移到当前 pin 并重写文件（端口 / token 保留）", async () => {
+    // 模拟 M3.5（openclaw 2026.8.2 时代）写入的存量安装升级到当前 pin 的场景
+    const stale = {
+      openclawVersion: "2026.8.2",
+      gatewayPort: 18800,
+      backendPort: 3100,
+      gatewayToken: "fixed-token-abcdefghijklmnop",
+    };
+    const { io, files } = memoryIo({ [configPath]: JSON.stringify(stale) });
+    const logs: string[] = [];
+    const config = await loadRuntimeConfig(configPath, {}, io, (message) => logs.push(message));
+    expect(config.openclawVersion).toBe(OPENCLAW_RUNTIME_VERSION);
+    expect(config.gatewayPort).toBe(18800);
+    expect(config.backendPort).toBe(3100);
+    expect(config.gatewayToken).toBe("fixed-token-abcdefghijklmnop");
+    const saved = JSON.parse(files.get(configPath) ?? "{}") as Record<string, unknown>;
+    expect(saved["openclawVersion"]).toBe(OPENCLAW_RUNTIME_VERSION);
+    expect(saved["gatewayToken"]).toBe("fixed-token-abcdefghijklmnop");
+    expect(logs.join("\n")).toContain("2026.8.2");
+    expect(logs.join("\n")).toContain(OPENCLAW_RUNTIME_VERSION);
+  });
+
   it("环境变量覆盖端口与 token（不写回文件）", async () => {
     const { io, files } = memoryIo();
     const config = await loadRuntimeConfig(
@@ -185,7 +207,7 @@ describe("loadRuntimeConfig：runtime.json 读取 / 生成 / 校验", () => {
     expect(redactGatewayToken("abcdefghijklmnop")).toBe("abcd****");
     expect(redactGatewayToken("abc")).toBe("****");
     const summary = summarizeRuntimeConfig({
-      openclawVersion: "2026.8.2",
+      openclawVersion: OPENCLAW_RUNTIME_VERSION,
       gatewayPort: 18790,
       backendPort: 3000,
       gatewayToken: "secret-secret-secret-secret",

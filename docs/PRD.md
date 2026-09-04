@@ -1681,14 +1681,18 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
   `OpenClawRuntimeAdapter`、Gateway 健康检查
 - **M2 Agent Invocation + Project + LaTeX**：`runAgent()` 真实调用链、ProjectStore、
   WriterService、GenerationService、LatexCompiler、最小 HTTP API
-- **M2.1 OpenClaw 2.0 Runtime Upgrade**：官方 Gateway SDK（2026.8.2 / protocol v4，
-  M3.5 自 2026.8.1 补丁升级）、Project ↔ Session 隔离与 runtimeSessionKey 持久化
+- **M2.1 OpenClaw 2.0 Runtime Upgrade**：官方 Gateway SDK（2026.8.1 起，M3.5 补丁至
+  2026.8.2、M3.6 升至 2026.9.1，protocol v4）、Project ↔ Session 隔离与 runtimeSessionKey 持久化
 - **Architecture Research & Product Design Refresh**：竞品调研（vs PaperKit / Open
   Academic Paper Machine / AutoResearchClaw）与本轮产品/架构方向冻结
   （DECISIONS D-0008~D-0015）
 - **M3.5 Runtime Bootstrap / M3 Closure**：PaperTeam 独立 OpenClaw Runtime（隔离
   state、精确版本）、`npm run dev` 一键启动、Agent 映射方案 A（D-0018）、Runtime
   诊断 API、优雅关闭——**M3 Complete**
+- **M3.6 Runtime Baseline Upgrade**：OpenClaw baseline 2026.8.2 → **2026.9.1**
+  （三处依赖统一精确 pin，protocol v4 不变，无 breaking change）；Node 兼容检查
+  收敛到根 package.json engines（Node 26+ 可用）；runtime.json 存量版本自动迁移；
+  Node.js + npm 仍为 Runtime / Package Manager baseline，**2026.9.1 固化为 M4 基线**
 
 ### M3.0 — Workflow Foundation（✅ 已实现）
 

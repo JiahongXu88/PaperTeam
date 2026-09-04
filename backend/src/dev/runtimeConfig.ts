@@ -19,7 +19,7 @@ import { dirname } from "node:path";
 import { BootstrapError } from "./runtimePaths.js";
 
 /** PaperTeam 运行的 OpenClaw 精确版本（禁止 ^ / ~ / latest） */
-export const OPENCLAW_RUNTIME_VERSION = "2026.8.2";
+export const OPENCLAW_RUNTIME_VERSION = "2026.9.1";
 
 /** PaperTeam 独立 Gateway 默认端口（避开 OpenClaw 全局默认 18789） */
 export const DEFAULT_GATEWAY_PORT = 18790;
@@ -80,9 +80,14 @@ export function summarizeRuntimeConfig(config: RuntimeConfig): Record<string, un
 /**
  * 读取（不存在则创建）runtime.json 并合成最终配置。
  *
+ * openclawVersion 的期望值始终以代码 pin（OPENCLAW_RUNTIME_VERSION）为唯一
+ * 权威：文件里的旧版本（升级前 release 写入的）自动迁移为新 pin 并重写文件
+ * （M3.6 升级路径），不迁移会导致 Bootstrap 用旧版本去校验本地安装而误报漂移。
+ *
  * @param runtimeConfigPath runtime.json 路径
  * @param env 环境变量（覆盖端口 / token；不写回文件）
  * @param io 文件 IO（可注入，测试用）
+ * @param log 迁移等提示日志（缺省丢弃）
  */
 export async function loadRuntimeConfig(
   runtimeConfigPath: string,
@@ -97,6 +102,7 @@ export async function loadRuntimeConfig(
       await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
     },
   },
+  log: (message: string) => void = () => {},
 ): Promise<RuntimeConfig> {
   let file: RuntimeConfigFile = {};
   let existed = true;
@@ -116,7 +122,14 @@ export async function loadRuntimeConfig(
     }
   }
 
-  const openclawVersion = readVersion(file.openclawVersion);
+  const fileVersion = readVersion(file.openclawVersion);
+  const openclawVersion = OPENCLAW_RUNTIME_VERSION;
+  if (fileVersion !== undefined && fileVersion !== openclawVersion) {
+    log(
+      `[bootstrap] runtime.json 的 openclawVersion ${fileVersion} → ${openclawVersion}` +
+        `（跟随当前代码 pin 迁移，端口 / token 保持不变）`,
+    );
+  }
   const gatewayPort = readPortField(file.gatewayPort, "gatewayPort");
   const backendPort = readPortField(file.backendPort, "backendPort");
   const fileToken = readToken(file.gatewayToken);
@@ -182,7 +195,7 @@ function readVersion(value: unknown): string {
   }
   if (typeof value !== "string" || !VERSION_PATTERN.test(value)) {
     throw new BootstrapError(
-      `runtime.json 的 openclawVersion 必须是形如 2026.8.2 的精确版本号，当前为 ${JSON.stringify(value)}`,
+      `runtime.json 的 openclawVersion 必须是形如 2026.9.1 的精确版本号，当前为 ${JSON.stringify(value)}`,
       "RUNTIME_CONFIG_INVALID",
     );
   }

@@ -21,7 +21,7 @@ import { GatewayConnectionError, OpenClawGatewayConnection } from "./openclaw/ga
  * Backend 使用的官方 gateway-client SDK 版本（与 backend/package.json 的
  * 精确 pin 保持一致；backend/test/dev/versionPins 有断言防止漂移）。
  */
-export const GATEWAY_CLIENT_SDK_VERSION = "2026.8.2";
+export const GATEWAY_CLIENT_SDK_VERSION = "2026.9.1";
 
 /** 网关连接相位 */
 export type GatewayPhase =

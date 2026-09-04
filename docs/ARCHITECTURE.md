@@ -320,7 +320,7 @@ npm run dev
 
 版本锚点：openclaw（runtime 本体，根 package.json devDependency）与
 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（backend 依赖）全部精确
-pin 到同一版本（当前 **2026.8.2**，wire protocol v4）；测试
+pin 到同一版本（当前 **2026.9.1**，wire protocol v4）；测试
 （`backend/test/dev/versionPins.test.ts`）断言三处一致且不允许 `^`/`~`/`latest`。
 
 ### 6.0.1 Business Agent → Runtime Agent 映射（方案 A，D-0018）
@@ -387,7 +387,7 @@ AgentRuntime（接口）
   │
 OpenClawRuntimeAdapter
   │
-OpenClaw Gateway Client SDK（@openclaw/gateway-client 2026.8.2，wire protocol v4）
+OpenClaw Gateway Client SDK（@openclaw/gateway-client 2026.9.1，wire protocol v4）
   │   由 SDK 负责：ws transport、connect.challenge 挑战、connect 握手、鉴权、
   │   protocol v4 协商、request id 关联与超时、结构化错误、重连退避
   │   PaperTeam 保留（src/runtime/openclaw/gatewayClient.ts 薄 wrapper）：
@@ -415,7 +415,7 @@ AgentRuntime.runAgent(input)
   → 映射为 AgentTask{taskId=runId, status, output, metadata:{sessionKey}}
 ```
 
-协议依据：OpenClaw **2026.8.2** 官方 npm 包（`@openclaw/gateway-client`、
+协议依据：OpenClaw **2026.9.1** 官方 npm 包（`@openclaw/gateway-client`、
 `@openclaw/gateway-protocol` 及 `openclaw` 发行包内 docs）——"For agent runs,
 start with the `agent` RPC and pair it with `agent.wait`"（docs/gateway/external-apps.md）。
 protocol version 使用官方常量 `PROTOCOL_VERSION`（`@openclaw/gateway-protocol/version`，

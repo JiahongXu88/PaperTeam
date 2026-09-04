@@ -1,7 +1,7 @@
 /**
  * PaperTeam 独立 OpenClaw state / config 准备（M3.5 Runtime Bootstrap）。
  *
- * 依据 OpenClaw 2026.8.2 官方文档（docs/gateway/multiple-gateways.md 的
+ * 依据 OpenClaw 2026.9.1 官方文档（docs/gateway/multiple-gateways.md 的
  * isolation checklist）确认的实例隔离方式：
  *   - OPENCLAW_STATE_DIR  <dir>   会话 / 凭据 / 缓存 / workspace 全部落在这里
  *   - OPENCLAW_CONFIG_PATH <file> 该实例的 openclaw.json

@@ -3,7 +3,8 @@
  * PaperTeam dev 启动器（`npm run dev`，M3.5 Runtime Bootstrap 的入口薄壳）。
  *
  * 职责（真正的编排在 backend/dist/dev/cli.js，本文件只做进入前的准备）：
- *   1. Node 版本检查（对齐锁定的 openclaw@2026.8.2 支持范围）
+ *   1. Node 版本检查（直接复用根 package.json 的 engines.node，与
+ *      openclaw@2026.9.1 的支持范围保持一致，单一事实源）
  *   2. 根目录依赖（openclaw runtime 本体）缺失时执行 npm install
  *   3. backend 依赖缺失时执行 npm install
  *   4. 构建 backend（tsc，保证 dist 新鲜）
@@ -13,7 +14,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -21,29 +22,66 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const OPENCLAW_ENTRY = join(repoRoot, "node_modules", "openclaw", "openclaw.mjs");
 const BACKEND_DIST_CLI = join(repoRoot, "backend", "dist", "dev", "cli.js");
 
-/** openclaw@2026.8.2 支持的 Node 范围（与其 node-version.mjs 一致） */
-const SUPPORTED_NODE_RANGES = [
-  [22, 22, 3, 23],
-  [24, 15, 0, 25],
-  [25, 9, 0, 26],
-];
+/**
+ * Node 版本检查的唯一事实源：根 package.json 的 engines.node
+ * （与 openclaw@2026.9.1 node-version.mjs 的支持范围一致：
+ *   >=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0 —— 末段无上界，
+ *   即 Node 26+ 受支持且为官方推荐线，Node 23 仍不支持）。
+ * 这里不再手工维护第二份范围表，避免两处互相漂移（M3.6 修复项）。
+ */
+function readEnginesNode() {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+  const engines = pkg?.engines?.node;
+  if (typeof engines !== "string" || engines.trim() === "") {
+    console.error("[paperteam-dev] 根 package.json 缺少 engines.node，无法进行 Node 版本检查。");
+    process.exit(1);
+  }
+  return engines.trim();
+}
+
+/** engines 里实际用到的简单比较符（>= <= > < = + 纯数字版本）；不认识的语法直接报错 */
+const VERSION_TOKEN = /^(>=|<=|>|<|=)?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/;
 
 function nodeVersionParts() {
   const parts = process.versions.node.split(".").map((piece) => Number.parseInt(piece, 10));
   return { major: parts[0] ?? 0, minor: parts[1] ?? 0, patch: parts[2] ?? 0 };
 }
 
-function isSupportedNode() {
-  const { major, minor, patch } = nodeVersionParts();
-  return SUPPORTED_NODE_RANGES.some(([loMajor, loMinor, loPatch, hiMajor]) => {
-    if (major < loMajor || major >= hiMajor) {
-      return false;
-    }
-    if (major > loMajor) {
-      return true;
-    }
-    return minor > loMinor || (minor === loMinor && patch >= loPatch);
-  });
+function satisfiesToken(token, { major, minor, patch }) {
+  const match = VERSION_TOKEN.exec(token);
+  if (match === null) {
+    console.error(
+      `[paperteam-dev] engines.node 含不支持的语法 "${token}"（启动器只实现 >= <= > < = 与纯数字版本）。`,
+    );
+    process.exit(1);
+  }
+  const operator = match[1] ?? "=";
+  const target = [Number(match[2]), Number(match[3] ?? 0), Number(match[4] ?? 0)];
+  const compared =
+    (major - target[0]) || (minor - target[1]) || (patch - target[2]);
+  switch (operator) {
+    case ">=":
+      return compared >= 0;
+    case "<=":
+      return compared <= 0;
+    case ">":
+      return compared > 0;
+    case "<":
+      return compared < 0;
+    default:
+      return compared === 0;
+  }
+}
+
+function isSupportedNode(enginesNode) {
+  const current = nodeVersionParts();
+  return enginesNode.split("||").some((alternative) =>
+    alternative
+      .trim()
+      .split(/\s+/)
+      .filter((token) => token !== "")
+      .every((token) => satisfiesToken(token, current)),
+  );
 }
 
 function runSync(command, args, cwd) {
@@ -74,10 +112,11 @@ function runSync(command, args, cwd) {
 function main() {
   console.log(`PaperTeam dev（node ${process.versions.node}）`);
 
-  if (!isSupportedNode()) {
+  const enginesNode = readEnginesNode();
+  if (!isSupportedNode(enginesNode)) {
     console.error(
-      `[paperteam-dev] Node 版本不满足要求：openclaw@2026.8.2 支持 ` +
-        `>=22.22.3 <23 / >=24.15.0 <25 / >=25.9.0，当前 ${process.versions.node}。` +
+      `[paperteam-dev] Node 版本不满足要求：需要满足 ${enginesNode}` +
+        `（与 openclaw@2026.9.1 支持范围一致；Node 26+ 可用），当前 ${process.versions.node}。` +
         ` 请切换 Node 后重试。`,
     );
     process.exit(1);
