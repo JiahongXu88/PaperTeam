@@ -24,32 +24,44 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 
 普通用户只需通过浏览器使用；Agent 调度、模型调用、LaTeX 编译、PDF 生成、版本管理、日志与系统维护全部由 Linux 服务器完成。
 
+## 技术栈
+
+| 层 | 技术 |
+| --- | --- |
+| Frontend | React 19 + TypeScript + Vite（React Router 7 + TanStack Query 5 + Zustand 5） |
+| Backend | Node.js + TypeScript（原生 HTTP，无 Web 框架） |
+| Agent Runtime | Pi SDK（`@earendil-works/pi-coding-agent`，in-process） |
+| Workflow | PaperTeam WorkflowOrchestrator（确定性 TypeScript 编排引擎） |
+
 ## 当前状态
 
 | 里程碑                                            | 状态   | 内容                                                                                                                                                                                                                      |
 | ---------------------------------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M1 Backend Runtime Skeleton                    | ✅ 完成 | Backend 工程、`AgentRuntime` 抽象、Runtime 健康检查（历史 OpenClaw Gateway 基线）                                                                                                                                                      |
+| M1 Backend Runtime Skeleton                    | ✅ 完成 | Backend 工程、`AgentRuntime` 抽象、Runtime 健康检查                                                                                                                                                      |
 | M2 Agent Invocation + Project + LaTeX          | ✅ 完成 | `runAgent()` 真实调用链、`ProjectStore`、`WriterService`、`GenerationService`、`LatexCompiler`、HTTP API                                                                                                                          |
-| M2.1 OpenClaw 2.0 Runtime Upgrade              | ✅ 完成 | 官方 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（wire protocol v4）、Project 与 Runtime Session 隔离（历史基线，M3.8 已随迁移移除）                                                                                             |
+| M2.1 OpenClaw 2.0 Runtime Upgrade              | ✅ 完成 | 官方 `@openclaw/gateway-client` / `@openclaw/gateway-protocol`（wire protocol v4）、Project 与 Runtime Session 隔离（历史基线）                                                                                             |
 | Architecture Research & Product Design Refresh | ✅ 完成 | 竞品调研与产品/架构方向冻结（D-0008\~D-0015）                                                                                                                                                                                          |
 | **M3.0 Workflow Foundation**                   | ✅ 完成 | `WorkflowOrchestrator`（确定性引擎）、`StageContract`（DoD）、异步 `WorkflowRun` + checkpoint/resume、Domain Event + SSE、HITL awaiting\_input、协作式取消、Session contextScope                                                              |
 | **M3.1 Research & Evidence**                   | ✅ 完成 | Researcher（调研 + Evidence 候选）、Target Feasibility（HIGH/MEDIUM/LOW/INSUFFICIENT + HITL adjust）、`EvidenceStore`（JSONL）、Citation 核验（静态 + CrossRef/OpenAlex/arXiv）、文献库 + PDF 文本层分析（多模态为扩展点）、分节写作、Derived Context              |
 | **M3.2 Review & Revision**                     | ✅ 完成 | Reviewer（fact/academic/style 三 skill 并行）、确定性聚合、Quality Gate（9 规则）、bounded revision loop（≤2 轮 + 超限 HITL）、Build Gate、Draft/Final 双 Gate 语义、Existing-LaTeX 导入（防 Zip Slip）与改造 workflow                                      |
-| **M3.5 Runtime Bootstrap / M3 Closure**        | ✅ 完成 | **M3 Complete**：PaperTeam 独立 Runtime state、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿（历史 OpenClaw Gateway 形态，M3.8 已简化）                                                                          |
-| **M3.6 Runtime Baseline Upgrade**              | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（历史基线；M3.8 起 OpenClaw 不再参与运行）                                                                                                                                                        |
-| **M3.7 Pi Runtime Feasibility**                | ✅ 完成 | Side-by-side `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent` 0.84.4）全项验证（in-process 嵌入 / 三路并发 / abort / 事件 / 隔离 / Windows 零 Gateway 子进程），结论 MIGRATE TO PI（历史可行性验证）                                                                              |
-| **M3.8 Pi Runtime Migration & Contract v2**    | ✅ 完成 | **Pi 成为唯一正式 Runtime**（OpenClaw Gateway / Bootstrap / 三依赖全部移除）；`AgentRuntime` Contract v2（`startAgent` → 句柄：运行中事件流 / 取消 / result）；tool execution abort 传导实证；RuntimeStatus 去 Gateway 化；`npm run dev` 直启 Backend（零 Gateway 子进程）                                                  |
+| **M3.5 Runtime Bootstrap / M3 Closure**        | ✅ 完成 | **M3 Complete**：PaperTeam 独立 Runtime state、`npm run dev` 一键启动、Agent 映射（方案 A，D-0018）、`GET /api/runtime/status` 诊断、优雅关闭无孤儿                                                                          |
+| **M3.6 Runtime Baseline Upgrade**              | ✅ 完成 | OpenClaw baseline 2026.8.2 → **2026.9.1**（历史基线）                                                                                                                                                        |
+| **M3.7 Pi Runtime Feasibility**                | ✅ 完成 | Side-by-side `PiRuntimeAdapter`（`@earendil-works/pi-coding-agent` 0.84.4）全项验证（in-process 嵌入 / 三路并发 / abort / 事件 / 隔离 / Windows 零子进程），结论 MIGRATE TO PI（历史可行性验证）                                                                              |
+| **M3.8 Pi Runtime Migration & Contract v2**    | ✅ 完成 | **Pi 成为唯一正式 Runtime**（OpenClaw Gateway / Bootstrap / 三依赖全部移除）；`AgentRuntime` Contract v2（`startAgent` → 句柄：运行中事件流 / 取消 / result）；tool execution abort 传导实证；RuntimeStatus 去 Gateway 化；`npm run dev` 直启 Backend                                                  |
 | **M4.0-M4.2 React Web Workbench**              | ✅ 完成 | Frontend API Contract（`docs/API_CONTRACT.md` + `GET /api/projects`）；React 19 + TS + Vite + React Router + TanStack Query + Zustand 前端骨架；Project List / Create Project（双模式）/ Project Workspace；`npm run dev` 一键双进程（Backend :3000 + Vite :5173 proxy 同源）                                                          |
+| **M4.2.5 Live Model Integration Gate**         | ✅ PASS | 真实 Provider `zai-coding-cn/glm-5.3` 经运行中 Backend 公开 API 完成 L3 全链路验证（单 Agent smoke / live SSE / Workflow 至首个 HITL / 真实 cancel）；凭据仅存 Backend 进程内存，零泄漏 |
 
-**M4.0-M4.2 Complete**：Runtime baseline 保持 **Pi SDK in-process**
+**M4.0-M4.2.5 Complete**：Runtime baseline 保持 **Pi SDK in-process**
 （`@earendil-works/pi-coding-agent` 0.84.4）。React Web Workbench（React 19.2 /
 Vite 7 / react-router-dom 7.18 / @tanstack/react-query 5.102 / zustand 5.0，
 npm，`frontend/` 独立包）已落地：项目列表、创建项目（Idea-to-Paper +
 Existing-Paper 改进）、项目工作区基础壳；前端只消费
 [API\_CONTRACT.md](docs/API_CONTRACT.md) 冻结的 DTO，Runtime Status 适配 Pi
-schema（零 Gateway 字段）。`npm run dev` 同时启动 Backend（:3000）与 Vite
+schema。`npm run dev` 同时启动 Backend（:3000）与 Vite
 Dev Server（:5173，`/api`、`/health` 同源 proxy），任一退出联动全退。
-Backend 234 + Frontend 24 个测试全部通过。
+Backend 234 + Frontend 24 个测试全部通过。M4.2.5 Live Model Integration
+Gate ✅ PASS（2026-09-05）：真实 Provider `zai-coding-cn/glm-5.3` 经运行中
+Backend 完成 L3 全链路验证（详见 [PROJECT_STATUS.md](docs/PROJECT_STATUS.md)）。
 
 **未实现（M4.3+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
 Review / PDF UI、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
@@ -60,7 +72,7 @@ Review / PDF UI、Visual Reviewer、LaTeX repair loop、完整版本管理体验
 | 文档                                                | 说明                                                |
 | ------------------------------------------------- | --- |
 | [docs/PRD.md](docs/PRD.md)                        | 产品需求文档                                            |
-| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M3.0 ~ M3.8 / M4）                        |
+| [docs/PROJECT\_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与路线（M1 ~ M4）                        |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      | 系统架构说明（§8：前端架构与状态管理边界）                         |
 | [docs/API\_CONTRACT.md](docs/API_CONTRACT.md)     | Frontend API Contract（端点 / DTO / SSE，M4.0 冻结）         |
 | [docs/DECISIONS.md](docs/DECISIONS.md)            | 技术决策记录（ADR）                                       |
@@ -73,8 +85,8 @@ PaperTeam/
 ├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 同时启动 Backend + Vite）
 ├── frontend/         # React Web Workbench（React 19 + Vite，M4）
 ├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime / LaTeX / 版本管理）
-├── agents/           # Agent 定义与配置（AGENTS.md 等）
-├── docker/           # Docker 部署配置
+├── agents/           # Agent 定义与配置（预留，当前角色配置在 backend/src/runtime/pi/）
+├── docker/           # Docker 部署配置（预留）
 └── docs/             # 项目文档（含 API_CONTRACT.md）
 ```
 
@@ -92,7 +104,7 @@ npm run dev           # 一键启动：Backend + React Workbench
 1. Node 版本检查（复用根 package.json 的 `engines.node`：`>=22.22.3 <23` / `>=24.15.0 <25` / `>=25.9.0`，Node 26+ 可用）
 2. backend / frontend 依赖安装与 backend 构建（缺失时自动 `npm install` + `tsc`）
 3. 同时启动两个进程（日志带 `[backend]` / `[vite]` 前缀）：
-   - **PaperTeam Backend**：`http://localhost:3000`（Pi SDK in-process，无 Gateway 子进程）
+   - **PaperTeam Backend**：`http://localhost:3000`（Pi SDK in-process）
    - **React Workbench（Vite Dev Server）**：`http://localhost:5173`（`/api`、`/health` 同源 proxy 到 Backend，无 CORS）
 4. 浏览器打开 **http://localhost:5173** —— 项目列表 / 新建项目 / 项目工作台
 5. `Ctrl+C` 同时退出两个进程（任一子进程退出也会联动全退；端口 3000/5173 释放）
@@ -136,7 +148,7 @@ npm run typecheck      # backend + frontend
 npm test               # backend 234 + frontend 24 个测试
 
 # backend 单独：
-cd backend && npm start          # Pi Runtime in-process，无需任何外部 Runtime
+cd backend && npm start          # Pi SDK in-process
 
 # frontend 单独（需要 backend 在 :3000 运行，或用 proxy 目标）：
 cd frontend && npm run dev       # Vite Dev Server :5173
@@ -196,10 +208,10 @@ Project ≠ Session：Session 是可重建的 Runtime Context，不承担项目�
 见上文「配置模型」。端口：`PAPERTEAM_PORT`（默认 3000）同时作用于 Backend 监听与
 Vite proxy 目标；前端 API Base 可用 `VITE_API_BASE_URL` 改写（缺省同源相对路径）。
 
-## Runtime 说明（M3.8）
+## Runtime 说明
 
 - **Pi in-process**：`@earendil-works/pi-coding-agent` **0.84.4** 精确 pin（backend
-  `package.json`），无 Gateway 子进程 / WebSocket / RPC；`npm run dev` 直启 Backend。
+  `package.json`）；`npm run dev` 直启 Backend。
 - **业务角色映射**：Researcher / Writer / Reviewer / Citation 无 agent 注册表概念，
   角色（systemPrompt + 工具白名单）由 `PiRuntimeAdapter` 按 contextScope 前缀解析
   （research\* → researcher、writing\* → writer、review\* → reviewer；方案 A，
@@ -208,5 +220,5 @@ Vite proxy 目标；前端 API Base 可用 `VITE_API_BASE_URL` 改写（缺省�
   仅作 sessionKey 组成段与诊断标签）。
 - **独立配置目录**：`~/.paperteam/runtime/pi/agent/`（`PAPERTEAM_RUNTIME_ROOT` 可覆盖；
   auth.json / models.json 放这里），与用户全局 `~/.pi` 隔离。
-- **历史**：OpenClaw 2026.9.1 为 M3.5/M3.6 的历史 Runtime baseline；M3.7 完成Pi
+- **历史**：OpenClaw 2026.9.1 为 M3.5/M3.6 的历史 Runtime baseline；M3.7 完成 Pi
   可行性验证；M3.8 正式迁移到 Pi 并移除 OpenClaw 全部运行时依赖（git 历史即回退机制）。

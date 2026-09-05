@@ -1,14 +1,15 @@
 # PaperTeam 系统架构
 
-> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0019）整理。
-> M1 / M2 / M2.1 / **M3（M3.0 Workflow Foundation / M3.1 Research & Evidence / M3.2 Review & Revision）已实现**，
-> **M3.8 已完成：Pi SDK 成为唯一正式 Runtime（in-process，零 Gateway），AgentRuntime 契约升级 v2**。
+> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0020）整理。
+> **M1 ~ M3.8（Backend：Workflow / Evidence / Review / Pi Runtime）与 M4.0-M4.2（React Web
+> Workbench）已实现**；Pi SDK 为唯一正式 Agent Runtime（in-process），AgentRuntime 契约 v2。
 > 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
-> 前端（M4+）、Visual Reviewer、LaTeX repair loop、完整版本管理、Docker 部署为 Planned。
+> 前端 M4.3+ 页面（Workflow Live View / HITL / Evidence / Review / PDF）、Visual Reviewer、
+> LaTeX repair loop、完整版本管理、Docker 部署为 Planned。
 
 ## 1. 总体架构
 
-### 1.1 目标架构（M3）
+### 1.1 目标架构
 
 ```text
                         PaperTeam
@@ -42,7 +43,7 @@
 用户浏览器
    │
    ▼
-PaperTeam Web（frontend/，M4+）
+PaperTeam Web（frontend/，M4.0-M4.2 已落地基础壳）
    │
    ▼
 PaperTeam Backend（backend/）
@@ -77,14 +78,16 @@ Linux Server
    └── Logs
 ```
 
-### 1.2 当前实现（M3 后）
+### 1.2 当前实现（M4.2 后）
 
 M3 目标架构（§1.1）已在 backend 落地：HTTP API/SSE → WorkflowOrchestrator（确定性引擎）→
 Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime Contract v2 调用
 PiRuntimeAdapter —— Pi SDK in-process，见 §6.4）→
 Project / Evidence / Artifacts 落盘 → Build Gate / Quality Gate。两条一级工作流
-（Idea-to-Paper、Existing-LaTeX Improvement）共享审稿-修订-构建后段。尚未实现：
-frontend（M4+）、Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
+（Idea-to-Paper、Existing-LaTeX Improvement）共享审稿-修订-构建后段。前端
+React Web Workbench（M4.0-M4.2，§8）已落地项目列表 / 创建项目 / 项目工作区基础壳。
+尚未实现：Workflow Live View / HITL 等 M4.3+ 前端页面、Visual Reviewer、
+LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -284,11 +287,11 @@ subsystem 均在 M4+ / backlog。
 
 ### 6.0 Runtime 形态与 dev 启动（M3.8：Pi in-process）
 
-M3.8 起 Pi SDK 是**唯一正式 Runtime**：Backend 进程内嵌入
-`@earendil-works/pi-coding-agent`（0.84.4 精确 pin），无 Gateway 子进程 / 端口 /
-WebSocket / 握手 / RPC。M3.5~M3.6 时代的 OpenClaw Runtime Bootstrap（独立 state、
-runtime.json、Gateway spawn/health/token/supervisor）已随迁移移除，git 历史即回退
-机制；用户磁盘上的旧 `~/.paperteam/runtime/openclaw/` state 无害忽略。
+Pi SDK 是**唯一正式 Runtime**：Backend 进程内嵌入
+`@earendil-works/pi-coding-agent`（0.84.4 精确 pin），全部 Agent 执行发生在
+Backend 进程内。（历史：M3.5/M3.6 曾使用 OpenClaw Gateway，M3.8 迁移到 Pi 并移除
+全部相关基础设施，演进见 DECISIONS.md D-0019/D-0020；用户磁盘上的旧
+`~/.paperteam/runtime/openclaw/` state 无害，可忽略。）
 
 开发入口 `npm run dev`（仓库根）：
 
@@ -312,7 +315,9 @@ WorkflowOrchestrator → 恢复中断 run → HTTP 监听。Ctrl+C / SIGTERM：
 Pi 配置目录布局（用户级，不入 Git；`PAPERTEAM_RUNTIME_ROOT` 可覆盖）：
 
 ```text
-%USERPROFILE%\.paperteam└── runtime\pigent    ├── auth.json    # Pi 官方凭据（可选；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
+%USERPROFILE%\.paperteam\
+└── runtime\pi\agent
+    ├── auth.json    # Pi 官方凭据（可选；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
     └── models.json  # 自定义模型注册（可选）
 ```
 
@@ -345,8 +350,7 @@ Reviewer / Citation             诊断标签——Pi 无 agent 注册表，角�
 | sessions | `activeRuns`（在途 run 数）/ `managedSessions`（受管 AgentSession 数） |
 
 模型未配置不阻塞启动：Runtime healthy + model `not_configured` 分区如实上报
-（Runtime 健康 ≠ 模型就绪）。M4 Frontend 不需要感知历史上的 Gateway 概念
-（gateway / protocol / clientSdk 字段已随 M3.8 删除）。
+（Runtime 健康 ≠ 模型就绪）。前端只消费本节 schema（DECISIONS D-0020）。
 
 ### 6.1 AgentRuntime 契约（Contract v2，M3.8）
 
@@ -450,9 +454,8 @@ review/fact、review/academic、review/style、sources/pdf-analysis。
 
 ### 6.4 PiRuntimeAdapter（M3.8 正式 baseline）
 
-Pi（`@earendil-works/pi-coding-agent` **0.84.4** 精确 pin）是 M3.8 起的**唯一正式
-Runtime**（M3.7 为 side-by-side 可行性验证，OpenClaw 2026.9.1 为 M3.5/M3.6 历史
-baseline，全部 OpenClaw 运行时依赖已移除）。所有 Pi 细节封装在
+Pi（`@earendil-works/pi-coding-agent` **0.84.4** 精确 pin）是**唯一正式
+Runtime**（演进历史见 DECISIONS.md D-0019/D-0020）。所有 Pi 细节封装在
 `backend/src/runtime/PiRuntimeAdapter.ts` 与 `pi/` 内部，业务代码不 import
 `@earendil-works/*`。
 
@@ -500,9 +503,9 @@ PiRuntimeAdapter
 - **health**：无 HTTP 探针（in-process）；healthy = SDK 加载 + Adapter 未关闭 +
   ModelRuntime 初始化成功。「无 API Key」不是 Runtime 不健康（与 §6.0.2 的
   model not_configured 分区语义一致）。
-- **进程模型**：Backend 进程内完成一切——无 Gateway 子进程 / 端口 / WebSocket /
-  握手 / RPC 轮询（Windows 实测零子进程）。`npm run dev` 直启 Backend（§6.0）。
-- **诊断**：`GET /api/runtime/status` 为 Pi 形状（§6.0.2），无 Gateway 概念。
+- **进程模型**：Backend 进程内完成一切（无子进程、无额外端口；Windows 实测）。
+  `npm run dev` 直启 Backend（§6.0）。
+- **诊断**：`GET /api/runtime/status` 为 Pi 形状（§6.0.2）。
 
 ## 7. 质量与构建（M3.2 已实现）
 
@@ -548,8 +551,8 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
 - 前端只消费 [API_CONTRACT.md](API_CONTRACT.md) 的 DTO；Pi AgentSession / Pi
   原始 event / AgentRunHandle / WorkflowState 全量不进前端（`api/runs.ts` 显式
   映射为 UI 子集）。
-- Runtime Status 消费 M3.8 Pi schema（runtime/model/agents/sessions），
-  **不出现任何 Gateway 字段**（DECISIONS D-0019）；顶栏徽标 30s 轮询，
+- Runtime Status 消费 Pi schema（runtime/model/agents/sessions，DECISIONS D-0020）；
+  顶栏徽标 30s 轮询，
   模型未配置时显示可关闭横幅（Runtime 健康 ≠ 模型就绪）。
 - Dev 下 Vite Dev Server（:5173）将 `/api`、`/health` proxy 到 Backend（:3000），
   前端全部同源相对路径（无 CORS）；生产部署形态（Backend 静态托管 dist）M4.8 决策。
@@ -601,7 +604,7 @@ backend/src/
 长期运行于 Linux 服务器（推荐 Ubuntu）：
 
 - 服务：PaperTeam Backend（内嵌 Pi Runtime）、Web Frontend、Database
-- 依赖：Node.js（>= 22.19.0）、Git、Python、TeX Live（XeLaTeX/latexmk/Biber）、Poppler
+- 依赖：Node.js（根 package.json `engines.node`：`>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`）、Git、Python、TeX Live（XeLaTeX/latexmk/Biber）、Poppler
 - **后续使用 Docker 容器化部署**（配置位于 `docker/`）
 - 用户只访问一个 HTTPS 域名；模型 Provider 凭据经环境变量 / auth.json 配置
 
@@ -613,8 +616,8 @@ PaperTeam/
 ├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 同时启动 Backend + Vite）
 ├── frontend/         # React Web Workbench（React 19 + Vite，M4；见 §8）
 ├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime）
-├── agents/           # Agent 定义与配置（AGENTS.md 等）
-├── docker/           # Docker 部署配置
+├── agents/           # Agent 定义与配置（预留）
+├── docker/           # Docker 部署配置（预留）
 └── docs/             # PRD、状态、架构、决策记录、API Contract
 ```
 

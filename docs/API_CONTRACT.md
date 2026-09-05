@@ -20,11 +20,9 @@
   `status=0, code=NETWORK_ERROR`。
 - 实时通信：SSE（`GET /api/runs/:runId/events`，Domain Event replay + 实时推送，
   心跳 15s）。事件为 **Workflow Domain Event**（非 Pi Runtime event），M4.3 起消费。
-- Runtime Status 为 M3.8 去 Gateway 化后的 **Pi schema**：
+- Runtime Status 为 **Pi schema**：
   `runtime{provider:"pi", phase, version}` + `model{phase, model?, providers}` +
-  `agents{roles}` + `sessions{activeRuns, managedSessions}`。
-  历史字段（gateway / gatewayRuntimeVersion / protocolVersion / gatewayClientSdk /
-  gatewayPort / gatewayToken）已删除，前端禁止重现（DECISIONS D-0019）。
+  `agents{roles}` + `sessions{activeRuns, managedSessions}`（DECISIONS D-0020）。
 
 ## 1. 端点清单（以源码为准，M4.0 审计结果）
 
@@ -106,7 +104,7 @@ interface WorkflowRunView {                      // WorkflowState → UI 子集�
   completion?: { label: "final" | "draft" } | null;
 }
 
-interface RuntimeStatusView {                    // M3.8 Pi schema（去 Gateway 化）
+interface RuntimeStatusView {                    // Pi schema（M3.8 冻结）
   backend: { ok: true };
   runtime: { provider: "pi"; phase: "healthy" | "unhealthy"; version: string; detail: string; latencyMs: number | null };
   model: { phase: "configured" | "not_configured" | "unknown"; model?: string; providers: string[]; detail: string };

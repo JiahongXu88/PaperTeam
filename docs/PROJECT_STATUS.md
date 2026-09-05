@@ -10,7 +10,7 @@ TypeScript + Vite + React Router 7 + TanStack Query 5 + Zustand 5（npm，
 frontend/ 独立包）；`npm run dev` 一键双进程（Backend :3000 + Vite :5173，
 `/api`、`/health` 经 Vite proxy 同源转发，任一退出联动全退）。前端只消费
 [API_CONTRACT.md](API_CONTRACT.md) 冻结的 DTO，不依赖 Backend 内部对象；
-Runtime Status 完全适配 M3.8 Pi schema（无任何 Gateway 字段）。Project
+Runtime Status 完全适配 Pi schema。Project
 List / Create Project（双模式）/ Project Workspace 基础壳就绪。
 **M4.2.5 Live Model Integration Gate ✅（2026-09-05）：真实 Provider
 `zai-coding-cn/glm-5.3` 经运行中 Backend 全链路验证（单 Agent smoke /
@@ -40,7 +40,7 @@ verified（见下）。下一阶段：M4.3 Workflow Live View + SSE + Cancel。*
 
 验证边界（如实记录）：AgentEvent 级（message_update 增量）事件与 AgentRuntime 级 mid-stream `session.abort()` 对真实 Provider 的直接观测，因凭据仅存在于运行中 Backend 进程（`PAPERTEAM_PI_API_KEY` → `setRuntimeApiKey` 仅内存，不落盘；子进程脚本 `modelStatus=not_configured`，符合设计）而无公开观测面——前者经 M3.8 L2（真实 SDK + fauxProvider 假流）覆盖同一映射代码，后者以 Workflow 边界 cancel + runAgent 幂等语义间接验证。凭据安全：Key 未落盘/未入日志/未入库（工作区产物 0 命中；`.env.example` 仅占位符）；Pi 全程 in-process（无 Gateway 进程、无 18789/18790 端口）；回归 build/typecheck/test 全绿（234+24）。测试项目保留：`p-b76342cc5b69`（M4.2.5 Live Model E2E，停于 HITL，可作 M4.3 实时 Workflow UI 演示）、`p-1131d9dd8cad`（M4.2.5 Live Cancel Test，cancelled ×2）。
 
-## M3.8 — Pi Runtime Migration & Runtime Contract v2（✅ 完成，2026-09-04）
+## M3 — 两条一级业务工作流（✅ 完成）
 
 M3 交付两条一级业务工作流（真实编排引擎 + 真实业务服务，测试中以脚本化 Agent Runtime 全链路验证）：
 
@@ -161,7 +161,7 @@ Side-by-side 可行性验证：不改变默认 Runtime（当时为 openclaw）�
 
 ```text
 GET    /health                                    存活探针（含 Pi Runtime 实时健康）
-GET    /api/runtime/status                        Runtime 诊断（runtime/agents/model/sessions；M3.8 形状）
+GET    /api/runtime/status                        Runtime 诊断（runtime/agents/model/sessions，Pi schema）
 POST   /api/projects                              创建项目 {title, workflowKind?, researchIdea?, …}
 GET    /api/projects/:id                          项目元数据
 PATCH  /api/projects/:id                          更新研究定位字段
@@ -193,7 +193,7 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 
 ## 测试与验证
 
-- **230 个测试全部通过**（vitest，22 个测试文件；M3.8 迁移后口径）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）。
+- **Backend 234 + Frontend 24 个测试全部通过**（vitest；backend 22 个测试文件。M3.8 迁移后口径，M4.0 新增 4 个 backend 测试：`GET /api/projects` ×3 + `listMetadata` 排序；Frontend 24 个属 `frontend/` 独立包）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。
 - 测试策略：编排引擎与业务服务为真实实现，仅 AgentRuntime 注入脚本化 fake

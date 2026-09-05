@@ -37,7 +37,7 @@ Related Work、Research Gap、Novelty / Contribution 分析与目标可行性评
 
 1. 覆盖从研究 Idea 到论文交付的完整链路，而不只替代"打字写论文"环节。
 2. 支持已有论文（LaTeX 项目）的系统性改造与提升。
-3. 让非技术用户无需接触命令行、Git、LaTeX 环境或 OpenClaw 配置即可使用。
+3. 让非技术用户无需接触命令行、Git 或 LaTeX 环境即可使用。
 4. 建立可重复执行、可恢复、可暂停等待用户输入（HITL）的论文生产工作流。
 5. 将论文内容质量、事实真实性、引用完整性、AI 文风风险以直观方式展示，并用明确的
    Gate 控制论文能否标记为 Final。
@@ -1220,7 +1220,7 @@ Major Issues     3
 ○ 生成最终版本
 ```
 
-隐藏底层 session、agentId、runId 和 Gateway 技术信息。awaiting_input 时显示明确的
+隐藏底层 session、agentId、runId 等 Runtime 技术信息。awaiting_input 时显示明确的
 用户待办入口。
 
 ---
@@ -1289,10 +1289,10 @@ PaperTeam Backend 通过统一 Runtime 接口（AgentRuntime Contract v2）调�
 显示：
 
 - Linux Server：CPU / 内存 / 磁盘
-- Gateway、Agent Runtime、LaTeX、PDF Renderer、Model Provider 状态
+- Agent Runtime（Pi）、LaTeX、PDF Renderer、Model Provider 状态
 - 最近异常
 
-快捷操作：重启 Gateway、重新加载配置、健康检查、查看日志。
+快捷操作：重启相关服务、重新加载配置、健康检查、查看日志。
 
 ## 15.2 Agent 管理
 
@@ -1337,8 +1337,7 @@ PaperTeam Backend 通过统一 Runtime 接口（AgentRuntime Contract v2）调�
 日志来源：
 
 - PaperTeam Backend
-- ~~OpenClaw Gateway~~（M3.8 起由 Pi SDK in-process 取代，无独立网关进程）
-- Agent
+- Agent（经 Pi Agent Runtime，in-process）
 - Model Provider
 - LaTeX
 - System
@@ -1355,7 +1354,7 @@ PaperTeam Backend 通过统一 Runtime 接口（AgentRuntime Contract v2）调�
 
 系统诊断自动检测：
 
-- Gateway 是否运行、端口是否监听
+- Agent Runtime 是否健康（Pi SDK）
 - Model Provider 是否可用
 - LaTeX 是否安装
 - PDF Renderer 是否可用
@@ -1367,15 +1366,14 @@ PaperTeam Backend 通过统一 Runtime 接口（AgentRuntime Contract v2）调�
 结果示例：
 
 ```text
-Gateway unavailable
+✗ Agent Runtime unavailable（Pi SDK）
 
 ✓ Linux 正常
 ✓ Node.js 正常
-✗ Agent Runtime unavailable（Pi SDK）
 ✓ Model API 正常
 
 建议操作：
-[启动 Gateway]
+[重启服务]
 [查看日志]
 [打开终端]
 ```
@@ -1388,7 +1386,7 @@ Gateway unavailable
 
 支持：
 
-- Gateway status / restart / 查看日志
+- Agent Runtime status / 服务重启 / 查看日志
 - CPU / Memory / Disk
 - Git status / Git log
 - LaTeX compile
@@ -1424,7 +1422,7 @@ Browser → WebSocket → PaperTeam Backend → PTY → Linux Shell
 
 重点目录：projects、agents、logs、config。
 
-对 AGENTS.md、openclaw.json 等配置提供专门编辑入口。
+对 AGENTS.md 等配置提供专门编辑入口。
 
 ---
 
@@ -1437,7 +1435,7 @@ Browser → WebSocket → PaperTeam Backend → PTY → Linux Shell
 
 ## 21.2 管理员
 
-额外权限：系统配置、Agent 配置、模型配置、Gateway 管理、日志、系统诊断、
+额外权限：系统配置、Agent 配置、模型配置、Agent Runtime 管理、日志、系统诊断、
 Command Center、Web Terminal、文件管理。
 
 ---
@@ -1629,7 +1627,7 @@ GET  /api/projects/:id/versions
 - 当前 WorkflowRun 与 Stage
 - Agent 执行状态
 - 模型请求
-- Gateway 状态
+- Agent Runtime 状态
 - 系统日志
 - LaTeX 编译日志
 
@@ -1642,7 +1640,7 @@ GET  /api/projects/:id/versions
 - awaiting_input 的人工恢复
 - LaTeX 编译错误显示
 - 版本恢复
-- Gateway 重启
+- 服务重启
 - 系统诊断
 
 恢复依据是 Workspace 事实状态，不依赖 Chat History。
@@ -1807,14 +1805,14 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - 版本标记为 Draft；Quality Gate 阻止 Final
 - 问题清单进入修改闭环
 
-## 场景四：Gateway 故障
+## 场景四：Agent Runtime 故障
 
 管理员进入系统管理。
 
 系统显示：
 
 ```text
-OpenClaw Gateway: Error
+Agent Runtime: Error
 ```
 
 管理员：
@@ -1822,12 +1820,12 @@ OpenClaw Gateway: Error
 1. 点击健康检查
 2. 查看诊断结果
 3. 查看日志
-4. 点击重启 Gateway
+4. 点击重启服务
 
 验收：
 
 - 全过程可在浏览器完成
-- Gateway 恢复后状态自动刷新
+- Agent Runtime 恢复后状态自动刷新
 - 进行中的 WorkflowRun 不因 Runtime 抖动丢失（可 resume）
 
 ---
@@ -1862,7 +1860,7 @@ OpenClaw Gateway: Error
 - Workflow 编排与恢复
 - Agent / Skill 调度
 - Evidence 与引用核验
-- OpenClaw / LaTeX / Git / 模型 / 日志 / 自动化
+- Agent Runtime（Pi SDK）/ LaTeX / Git / 模型 / 日志 / 自动化
 
 最终达到：
 
