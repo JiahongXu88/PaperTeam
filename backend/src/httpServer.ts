@@ -557,6 +557,44 @@ async function handleProjectResourceRoutes(
       });
       return true;
     }
+    if (rest === "/map") {
+      if (method === "GET") {
+        const map = await stack.paperStore.loadMap(projectId);
+        sendJson(res, 200, { map });
+        return true;
+      }
+      if (method === "POST") {
+        const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+        const refreshSummaries = body["refreshSummaries"] !== false;
+        const map = await stack.paperMap.ensureMap(projectId, { refreshSummaries });
+        sendJson(res, 200, { map });
+        return true;
+      }
+      res.setHeader("Allow", "GET, POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+    if (rest === "/review-context" && method === "GET") {
+      const sectionId = url.searchParams.get("sectionId");
+      if (sectionId === null) {
+        const scopes = await stack.reviewContext.listSectionScopes(projectId);
+        sendJson(res, 200, { sections: scopes });
+        return true;
+      }
+      const context = await stack.reviewContext.buildSectionContext(projectId, sectionId, {
+        reviewSkill: url.searchParams.get("skill") ?? undefined,
+      });
+      sendJson(res, 200, {
+        context: {
+          contextScope: context.contextScope,
+          sectionId: context.sectionId,
+          sectionTitle: context.sectionTitle,
+          budget: context.budget,
+          prompt: context.prompt,
+        },
+      });
+      return true;
+    }
     if (rest === "/reparse" && method === "POST") {
       const document = await stack.paperIngest.reparse(projectId);
       sendJson(res, 200, { document: toPaperDocumentSummary(document) });

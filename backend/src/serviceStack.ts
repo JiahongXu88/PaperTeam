@@ -10,7 +10,9 @@ import { GenerationService } from "./generation/GenerationService.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ManuscriptService } from "./manuscript/ManuscriptService.js";
 import { PaperIngestService } from "./paper/PaperIngestService.js";
+import { PaperMapService } from "./paper/PaperMapService.js";
 import { PaperStore } from "./paper/PaperStore.js";
+import { ReviewContextBuilder } from "./paper/ReviewContextBuilder.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { FeasibilityService } from "./agents/FeasibilityService.js";
 import { ResearcherService } from "./agents/ResearcherService.js";
@@ -67,6 +69,8 @@ export interface ServiceStack {
   latex: LatexCompiler;
   paperStore: PaperStore;
   paperIngest: PaperIngestService;
+  paperMap: PaperMapService;
+  reviewContext: ReviewContextBuilder;
   workflowServices: WorkflowServices;
 }
 
@@ -127,6 +131,14 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     store: paperStore,
     log,
   });
+  const paperMap = new PaperMapService({
+    projects: options.projects,
+    store: paperStore,
+    runtime: options.runtime,
+    reviewerAgentId: options.agentIds.reviewer,
+    log,
+  });
+  const reviewContext = new ReviewContextBuilder({ projects: options.projects, store: paperStore });
   const reviewer = new ReviewerService({
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,
@@ -150,6 +162,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     latex,
     paperStore,
     paperIngest,
+    paperMap,
+    reviewContext,
     workflowServices: {
       projects: options.projects,
       generation,
