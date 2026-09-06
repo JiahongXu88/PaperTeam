@@ -39,6 +39,14 @@ export function AppLayout() {
         <Link to="/projects" className="brand">
           PaperTeam
         </Link>
+        <nav className="top-nav">
+          <Link to="/projects" className="top-nav-link">
+            Projects
+          </Link>
+          <Link to="/skills" className="top-nav-link">
+            Skills
+          </Link>
+        </nav>
         <RuntimeStatusChip />
       </header>
       <ModelConfigBanner />

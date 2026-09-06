@@ -610,3 +610,128 @@ h3 {
     padding: 3px 8px;
   }
 }
+
+/* ---- M4.3: 顶部导航 / PDF / Citations / Skills ---- */
+
+.top-nav {
+  display: flex;
+  gap: 16px;
+  margin-left: 24px;
+}
+
+.top-nav-link {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.92rem;
+}
+
+.top-nav-link:hover {
+  color: var(--text);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--surface);
+}
+
+.chip.meta-verified { border-color: #2e7d32; color: #2e7d32; }
+.chip.meta-metadata_mismatch { border-color: #b26a00; color: #b26a00; }
+.chip.meta-ambiguous { border-color: #7b1fa2; color: #7b1fa2; }
+.chip.meta-not_found { border-color: #c62828; color: #c62828; }
+.chip.meta-unresolved { border-color: #616161; color: #616161; }
+.chip.verdict-supported { border-color: #2e7d32; color: #2e7d32; }
+.chip.verdict-partially_supported { border-color: #b26a00; color: #b26a00; }
+.chip.verdict-unsupported,
+.chip.verdict-contradicted { border-color: #c62828; color: #c62828; }
+.chip.verdict-insufficient_evidence { border-color: #616161; color: #616161; }
+.chip.status-installed { border-color: #2e7d32; color: #2e7d32; }
+
+.action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.upload-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.doc-title {
+  font-weight: 600;
+  margin: 4px 0 8px;
+}
+
+.ref-cell {
+  max-width: 460px;
+}
+
+.ref-title {
+  display: block;
+}
+
+.ref-meta {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.ref-canonical {
+  font-size: 0.8rem;
+  max-width: 220px;
+  word-break: break-all;
+}
+
+.skill-card .skill-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.skill-summary {
+  margin: 8px 0 12px;
+}
+
+.skill-summary-pending {
+  color: var(--text-muted);
+}
+
+.skill-original {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-radius: 8px;
+  font-size: 0.86rem;
+  color: var(--text-muted);
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent, #3572b0);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.86rem;
+  text-decoration: underline;
+}
+
+.btn-link:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+.fabricate-warning { color: #c62828; font-weight: 600; }

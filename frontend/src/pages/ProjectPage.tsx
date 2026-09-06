@@ -3,24 +3,29 @@ import { Link, useParams } from "react-router-dom";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
+import { CitationsPanel } from "../components/project/CitationsPanel.js";
+import { PdfPanel } from "../components/project/PdfPanel.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import { useProject, useProjectRuns } from "../hooks/queries.js";
 import { ApiError } from "../api/client.js";
 import { formatDateTime } from "../utils/format.js";
 
 /**
- * Project Workspace（M4.2 基础壳）。
+ * Project Workspace（M4.2 基础壳 + M4.3 PDF/Citations）。
  *
  * Overview 展示真实数据（项目定位字段 + 最近 WorkflowRun 摘要）；
+ * PDF / Citations 为 M4.3 落地的 Final PDF Review 与引用完整性；
  * Workflow / Evidence / Review / Artifacts 为导航入口，完整功能属
- * M4.3-M4.7（不做占位 mock 数据）。
+ * M4.4-M4.7（不做占位 mock 数据）。
  */
 
-type TabId = "overview" | "workflow" | "evidence" | "review" | "artifacts";
+type TabId = "overview" | "pdf" | "citations" | "workflow" | "evidence" | "review" | "artifacts";
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; milestone?: string }> = [
   { id: "overview", label: "Overview" },
-  { id: "workflow", label: "Workflow", milestone: "M4.3" },
+  { id: "pdf", label: "PDF / Structure" },
+  { id: "citations", label: "Citations" },
+  { id: "workflow", label: "Workflow", milestone: "M4.4" },
   { id: "evidence", label: "Evidence", milestone: "M4.5" },
   { id: "review", label: "Review / Quality Gate", milestone: "M4.6" },
   { id: "artifacts", label: "Draft / Final PDF", milestone: "M4.7" },
@@ -220,12 +225,16 @@ export function ProjectPage() {
             <ProjectRunsPanel projectId={project.id} />
           </div>
         </div>
+      ) : tab === "pdf" ? (
+        <PdfPanel projectId={project.id} />
+      ) : tab === "citations" ? (
+        <CitationsPanel projectId={project.id} />
       ) : (
         <div className="panel">
           <h2>{TABS.find((entry) => entry.id === tab)?.label}</h2>
           <p className="panel-empty">
             该模块计划在 {TABS.find((entry) => entry.id === tab)?.milestone} 提供，
-            当前里程碑（M4.0-M4.2）暂未开放。
+            当前里程碑暂未开放。
           </p>
         </div>
       )}
