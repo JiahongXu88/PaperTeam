@@ -554,6 +554,25 @@ async function handleProjectResourceRoutes(
       });
       return true;
     }
+    if (rest === "/verify-metadata" && method === "POST") {
+      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const result = await stack.citationIntegrity.verifyMetadata(projectId, {
+        ...(body["force"] === true ? { force: true } : {}),
+      });
+      sendJson(res, 200, {
+        byStatus: result.byStatus,
+        checked: result.checked,
+        reused: result.reused,
+        telemetry: result.telemetry,
+        records: result.records,
+      });
+      return true;
+    }
+    if (rest === "/metadata" && method === "GET") {
+      const records = await stack.citationIntegrity.listMetadataRecords(projectId);
+      sendJson(res, 200, { records });
+      return true;
+    }
     if (rest === "" && method === "GET") {
       const summary = await stack.citationIntegrity.summary(projectId);
       const references = await stack.paperStore.loadReferences<Record<string, unknown>>(projectId);

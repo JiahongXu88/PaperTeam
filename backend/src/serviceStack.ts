@@ -23,6 +23,7 @@ import { BuiltinPdfAnalyzer } from "./sources/PdfAnalyzer.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
+import type { ScholarlyResolverOptions } from "./citation/scholarly.js";
 import type { WorkflowServices } from "./workflow/definitions.js";
 
 export interface ServiceStackOptions {
@@ -49,6 +50,8 @@ export interface ServiceStackOptions {
     contactEmail?: string;
     /** 可注入 fetch（测试） */
     fetchImpl?: typeof fetch;
+    /** M4.3.4 scholarly resolver（PDF 引用核验；测试注入 providers/fetch） */
+    scholarly?: ScholarlyResolverOptions;
   };
   log?: (message: string) => void;
 }
@@ -141,7 +144,15 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const reviewContext = new ReviewContextBuilder({ projects: options.projects, store: paperStore });
-  const citationIntegrity = new CitationIntegrityService({ projects: options.projects, store: paperStore, log });
+  const citationIntegrity = new CitationIntegrityService({
+    projects: options.projects,
+    store: paperStore,
+    ...(options.citation?.scholarly !== undefined ? { scholarly: options.citation.scholarly } : {}),
+    ...(options.citation?.maxMetadataLookups !== undefined
+      ? { maxMetadataLookups: options.citation.maxMetadataLookups }
+      : {}),
+    log,
+  });
   const reviewer = new ReviewerService({
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,

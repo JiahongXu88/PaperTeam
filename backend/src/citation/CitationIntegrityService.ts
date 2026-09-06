@@ -14,11 +14,21 @@ import { BusinessError } from "../errors.js";
 import { fingerprintJson } from "../util/hash.js";
 import type { PaperStore, StageRecord } from "../paper/PaperStore.js";
 import { ReferenceExtractor, type ExtractionResult } from "../paper/ReferenceExtractor.js";
-import type { CitationCallout, ReferenceEntry } from "./integrity.js";
+import type {
+  CitationCallout,
+  CitationMetadataStatus,
+  CitationVerificationRecord,
+  ReferenceEntry,
+} from "./integrity.js";
+import { ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
 
 export interface CitationIntegrityOptions {
   projects: ProjectStore;
   store: PaperStore;
+  /** scholarly resolver 注入（测试用 fake providers / fetch） */
+  scholarly?: ScholarlyResolverOptions;
+  /** metadata 核验上限（rate-limit friendly，默认 40） */
+  maxMetadataLookups?: number;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -26,12 +36,16 @@ export interface CitationIntegrityOptions {
 export class CitationIntegrityService {
   private readonly projects: ProjectStore;
   private readonly store: PaperStore;
+  private readonly resolver: ScholarlyResolver;
+  private readonly maxLookups: number;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
 
   constructor(options: CitationIntegrityOptions) {
     this.projects = options.projects;
     this.store = options.store;
+    this.resolver = new ScholarlyResolver(options.scholarly);
+    this.maxLookups = options.maxMetadataLookups ?? 40;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
   }
@@ -128,5 +142,151 @@ export class CitationIntegrityService {
 
   protected async saveStage(projectId: string, record: StageRecord): Promise<void> {
     await this.store.saveStage(projectId, record);
+  }
+
+  // ---- metadata 核验 stage（M4.3.4：确定性外部核验，无 LLM） ----
+
+  /**
+   * 逐条核验（文件粒度持久化 + 指纹跳过：第 37 条失败不影响前 36 条，
+   * 重跑只补缺失/变化条目）。默认上限 maxLookups 条。
+   */
+  async verifyMetadata(
+    projectId: string,
+    options: { force?: boolean } = {},
+  ): Promise<{
+    byStatus: Record<CitationMetadataStatus, number>;
+    checked: number;
+    reused: number;
+    records: CitationVerificationRecord[];
+    telemetry: { providerCalls: number; cacheHits: number; retries: number };
+  }> {
+    await this.projects.getRequired(projectId);
+    const references = await this.store.loadReferences<ReferenceEntry>(projectId);
+    if (references.length === 0) {
+      throw new BusinessError("INVALID_REQUEST", "尚未提取引用（先 POST /citations/extract）");
+    }
+    const targets = references.slice(0, this.maxLookups);
+    const byStatus: Record<CitationMetadataStatus, number> = {
+      VERIFIED: 0,
+      METADATA_MISMATCH: 0,
+      AMBIGUOUS: 0,
+      NOT_FOUND: 0,
+      UNRESOLVED: 0,
+    };
+    const records: CitationVerificationRecord[] = [];
+    let reused = 0;
+    for (const reference of targets) {
+      const existing = await this.store.loadRecord<CitationVerificationRecord>(
+        projectId,
+        "metadata",
+        reference.referenceId,
+      );
+      if (!options.force && existing !== null && existing.fingerprint === reference.fingerprint) {
+        byStatus[existing.status] += 1;
+        records.push(existing);
+        reused += 1;
+        continue;
+      }
+      const record = await this.verifyReference(projectId, reference);
+      byStatus[record.status] += 1;
+      records.push(record);
+    }
+    await this.saveStage(projectId, {
+      stage: "metadata",
+      status: "ok",
+      inputFingerprint: fingerprintJson(targets.map((r) => `${r.referenceId}:${r.fingerprint}`)),
+      outputSummary: { ...byStatus, checked: targets.length },
+      updatedAt: this.now().toISOString(),
+    });
+    this.log(
+      `[citation-integrity] projectId=${projectId} metadata 核验：checked=${targets.length} reused=${reused} verified=${byStatus.VERIFIED} not_found=${byStatus.NOT_FOUND}`,
+    );
+    return {
+      byStatus,
+      checked: targets.length,
+      reused,
+      records,
+      telemetry: {
+        providerCalls: this.resolver.telemetry.providerCalls,
+        cacheHits: this.resolver.telemetry.cacheHits,
+        retries: this.resolver.telemetry.retries,
+      },
+    };
+  }
+
+  private async verifyReference(
+    projectId: string,
+    reference: ReferenceEntry,
+  ): Promise<CitationVerificationRecord> {
+    const verdict = await this.resolver.resolve({
+      ...(reference.title !== undefined ? { title: reference.title } : {}),
+      ...(reference.authors !== undefined ? { authors: reference.authors } : {}),
+      ...(reference.year !== undefined ? { year: reference.year } : {}),
+      ...(reference.doi !== undefined ? { doi: reference.doi } : {}),
+      ...(reference.arxivId !== undefined ? { arxivId: reference.arxivId } : {}),
+    });
+    const notFoundAttempts = verdict.attempts.filter((attempt) => attempt.outcome === "not_found").length;
+    const status: CitationMetadataStatus =
+      verdict.outcome === "match"
+        ? "VERIFIED"
+        : verdict.outcome === "mismatch"
+          ? "METADATA_MISMATCH"
+          : verdict.outcome === "ambiguous"
+            ? "AMBIGUOUS"
+            : verdict.outcome === "not_found"
+              ? "NOT_FOUND"
+              : "UNRESOLVED";
+    // probable fabrication = 强证据：全部书目库一致 not_found（≥3 且无 error）+ 有可查字段
+    const probableFabrication =
+      status === "NOT_FOUND" &&
+      notFoundAttempts >= 3 &&
+      verdict.attempts.every((attempt) => attempt.outcome === "not_found") &&
+      (reference.title !== undefined || reference.doi !== undefined);
+    const record: CitationVerificationRecord = {
+      referenceId: reference.referenceId,
+      status,
+      probableFabrication,
+      ...(verdict.canonical !== undefined
+        ? { canonical: verdict.canonical }
+        : verdict.candidates !== undefined && verdict.candidates.length > 0
+          ? { canonical: verdict.candidates[0] }
+          : {}),
+      ...(verdict.mismatches !== undefined ? { mismatches: verdict.mismatches } : {}),
+      attempts: verdict.attempts.map((attempt) => ({
+        provider: attempt.provider as CitationVerificationRecord["attempts"][number]["provider"],
+        outcome:
+          attempt.outcome === "match"
+            ? "match"
+            : attempt.outcome === "mismatch"
+              ? "mismatch"
+              : attempt.outcome === "not_found"
+                ? "not_found"
+                : attempt.outcome === "ambiguous"
+                  ? "ambiguous"
+                  : "error",
+        ...(attempt.note !== undefined ? { note: attempt.note } : {}),
+      })),
+      checkedAt: this.now().toISOString(),
+      fingerprint: reference.fingerprint,
+      ...(verdict.outcome === "unresolved"
+        ? { error: verdict.attempts.find((a) => a.outcome === "error")?.note ?? "多源检索未获结论" }
+        : {}),
+    };
+    await this.store.saveRecord(projectId, "metadata", reference.referenceId, record);
+    return record;
+  }
+
+  /** 全部 metadata 记录（API 用） */
+  async listMetadataRecords(projectId: string): Promise<CitationVerificationRecord[]> {
+    await this.projects.getRequired(projectId);
+    const ids = await this.store.listRecordIds(projectId, "metadata");
+    const records: CitationVerificationRecord[] = [];
+    for (const id of ids) {
+      const record = await this.store.loadRecord<CitationVerificationRecord>(projectId, "metadata", id);
+      if (record !== null) {
+        records.push(record);
+      }
+    }
+    return records;
   }
 }
