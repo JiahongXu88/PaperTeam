@@ -81,7 +81,8 @@ describe("SkillsPage（M4.3.7）", () => {
     });
     renderWithProviders(<SkillsPage />, { route: "/skills" });
 
-    expect(await screen.findByText("verify-citations")).toBeInTheDocument();
+    // 卡片标题与 Agent 绑定表锚点都会出现 skill 名
+    expect((await screen.findAllByText("verify-citations")).length).toBeGreaterThan(0);
     expect(screen.getByText(/引用真实性与语义一致性核验/)).toBeInTheDocument();
     expect(screen.getByText(/citation_verification/)).toBeInTheDocument();
     expect(screen.getAllByText(/ae85ae3/).length).toBeGreaterThan(0);
@@ -267,8 +268,8 @@ describe("CitationsPanel（M4.3.7）", () => {
     renderWithProviders(<CitationsPanel projectId="p-x1" />);
 
     expect(await screen.findByText("Layer Normalization")).toBeInTheDocument();
-    expect(screen.getByText("Verified 1")).toBeInTheDocument();
-    expect(screen.getByText("Not Found 1")).toBeInTheDocument();
+    expect(screen.getByText("已验证 1")).toBeInTheDocument();
+    expect(screen.getByText("未找到 1")).toBeInTheDocument();
     expect(screen.getByText(/疑似捏造/)).toBeInTheDocument();
     expect(screen.getByText("via arxiv")).toBeInTheDocument();
     // 操作按钮存在
