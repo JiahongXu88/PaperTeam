@@ -95,6 +95,7 @@ async function request<T>({ method, path, body, signal }: RequestOptions): Promi
 export const apiClient = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>({ method: "GET", path, signal }),
   post: <T>(path: string, body?: unknown) => request<T>({ method: "POST", path, body }),
+  put: <T>(path: string, body?: unknown) => request<T>({ method: "PUT", path, body }),
   patch: <T>(path: string, body?: unknown) => request<T>({ method: "PATCH", path, body }),
   delete: <T>(path: string) => request<T>({ method: "DELETE", path }),
 };

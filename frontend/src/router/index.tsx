@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 
 import { AppLayout } from "../components/layout/AppLayout.js";
+import { ModelSettingsPage } from "../pages/ModelSettingsPage.js";
 import { NewProjectPage } from "../pages/NewProjectPage.js";
 import { NotFoundPage } from "../pages/NotFoundPage.js";
 import { ProjectPage } from "../pages/ProjectPage.js";
@@ -14,6 +15,7 @@ import { SkillsPage } from "../pages/SkillsPage.js";
  *   /projects/new         → 创建项目
  *   /projects/:projectId  → Project Workspace（Overview / PDF / Citations / …）
  *   /skills               → Skill Registry（M4.3.6/7）
+ *   /settings/model       → Model Settings（M4.3.7.5）
  *   *                     → 404
  */
 export function AppRoutes() {
@@ -25,6 +27,7 @@ export function AppRoutes() {
         <Route path="/projects/new" element={<NewProjectPage />} />
         <Route path="/projects/:projectId" element={<ProjectPage />} />
         <Route path="/skills" element={<SkillsPage />} />
+        <Route path="/settings/model" element={<ModelSettingsPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

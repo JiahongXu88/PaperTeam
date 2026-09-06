@@ -490,6 +490,22 @@ h3 {
   font-size: 0.9rem;
 }
 
+/* ---- Model Settings（M4.3.7.5） ---- */
+
+.api-key-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.api-key-row input {
+  flex: 1;
+}
+
+.test-result {
+  margin-top: 8px;
+}
+
 .form-actions {
   display: flex;
   justify-content: flex-end;

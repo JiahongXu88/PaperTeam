@@ -93,6 +93,60 @@ export interface RuntimeStatusView {
   };
 }
 
+// ---- Model Settings（M4.3.7.5；GET 永不返回 key 本体） ----
+
+/** 模型配置生效来源（env > 本地保存 > 未配置） */
+export type ModelConfigurationSource = "environment" | "stored" | "not_configured";
+
+/** GET /api/settings/model 的 settings DTO（无任何 key 字段） */
+export interface ModelSettingsView {
+  provider?: string;
+  model?: string;
+  savedModel?: string;
+  apiKeyConfigured: boolean;
+  apiKeySource: "environment" | "stored" | "none";
+  configurationSource: ModelConfigurationSource;
+  envOverride: boolean;
+  runtimePhase: "healthy" | "unhealthy";
+  runtimeVersion: string;
+  modelPhase: "configured" | "not_configured" | "unknown";
+  modelDetail: string;
+  detail: string;
+}
+
+/** provider 目录条目（安全 metadata） */
+export interface ModelProviderOptionView {
+  id: string;
+  name: string;
+  authConfigured: boolean;
+  apiKeyLoginSupported: boolean;
+  modelCount: number;
+}
+
+/** 单个模型目录条目（安全 metadata） */
+export interface ModelOptionView {
+  modelId: string;
+  displayName: string;
+  contextWindow?: number;
+  reasoning?: boolean;
+  input?: string[];
+}
+
+/** GET /api/settings/model/options（?provider= 时返回该 provider 的模型） */
+export type ModelOptionsView =
+  | { providers: ModelProviderOptionView[] }
+  | { provider: ModelProviderOptionView; models: ModelOptionView[] };
+
+/** POST /api/settings/model/test 的结果（失败分类稳定） */
+export interface ModelTestResultView {
+  ok: boolean;
+  provider: string;
+  model: string;
+  latencyMs?: number;
+  code?: string;
+  detail?: string;
+}
+
 // ---- 通用 ----
 
 /** Backend 统一错误响应体：{status:"error", error:{code,message,detail?}} */

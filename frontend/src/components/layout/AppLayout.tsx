@@ -22,8 +22,9 @@ function ModelConfigBanner() {
   return (
     <div className="model-banner" role="status">
       <span>
-        Runtime 正常，但模型未配置（{data.model.detail}）。Workflow 需要模型凭据，请参考
-        .env.example 配置后重启 Backend。
+        Runtime 正常，但模型未配置（{data.model.detail}）。Workflow
+        需要模型凭据：可在 <Link to="/settings/model">Settings → Model</Link>{" "}
+        保存模型与 API Key，或参考 .env.example 设置环境变量。
       </span>
       <button type="button" className="btn btn-small" onClick={dismiss}>
         知道了
@@ -45,6 +46,9 @@ export function AppLayout() {
           </Link>
           <Link to="/skills" className="top-nav-link">
             Skills
+          </Link>
+          <Link to="/settings/model" className="top-nav-link">
+            Settings
           </Link>
         </nav>
         <RuntimeStatusChip />

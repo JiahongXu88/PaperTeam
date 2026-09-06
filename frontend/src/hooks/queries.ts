@@ -14,6 +14,13 @@ import {
   verifyMetadata,
 } from "../api/paper.js";
 import { listSkills, regenerateSkillSummary } from "../api/skills.js";
+import {
+  clearModelApiKey,
+  getModelOptions,
+  getModelSettings,
+  saveModelSettings,
+  testModelConnection,
+} from "../api/settings.js";
 import type { CreateProjectInput } from "../types/api.js";
 
 /**
@@ -31,6 +38,9 @@ export const queryKeys = {
   citations: (projectId: string) => ["projects", projectId, "citations"] as const,
   citationIntegrity: (projectId: string) => ["projects", projectId, "citations", "integrity"] as const,
   skills: ["skills"] as const,
+  modelSettings: ["model-settings"] as const,
+  modelOptions: ["model-settings", "options"] as const,
+  modelOptionsFor: (provider: string) => ["model-settings", "options", provider] as const,
 };
 
 /** 项目列表（updatedAt 降序） */
@@ -184,5 +194,54 @@ export function useRegenerateSkillSummary() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
     },
+  });
+}
+
+// ---- M4.3.7.5 Model Settings ----
+
+/** 配置失效：model settings + 权威 runtime status（顶栏徽标随之刷新） */
+function invalidateModelState(queryClient: ReturnType<typeof useQueryClient>) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.modelSettings });
+  void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeStatus });
+}
+
+/** Model Settings 状态（无 key 本体） */
+export function useModelSettings() {
+  return useQuery({
+    queryKey: queryKeys.modelSettings,
+    queryFn: ({ signal }) => getModelSettings(signal),
+  });
+}
+
+/** 模型目录：无参 = provider 列表；provider = 该 provider 的模型列表 */
+export function useModelOptions(provider?: string) {
+  return useQuery({
+    queryKey: provider === undefined ? queryKeys.modelOptions : queryKeys.modelOptionsFor(provider),
+    queryFn: ({ signal }) => getModelOptions(provider, signal),
+  });
+}
+
+/** 保存模型偏好（可选携带新 Key；成功后失效 model settings + runtime status） */
+export function useSaveModelSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { model: string; apiKey?: string }) => saveModelSettings(input),
+    onSuccess: () => invalidateModelState(queryClient),
+  });
+}
+
+/** 清除本地保存的 API Key */
+export function useClearModelApiKey() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => clearModelApiKey(),
+    onSuccess: () => invalidateModelState(queryClient),
+  });
+}
+
+/** Test Connection（携带当前填写但未保存的 model/key；不改缓存状态） */
+export function useTestModelConnection() {
+  return useMutation({
+    mutationFn: (input: { model: string; apiKey?: string }) => testModelConnection(input),
   });
 }
