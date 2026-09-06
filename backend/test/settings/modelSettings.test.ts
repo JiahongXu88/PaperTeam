@@ -175,6 +175,19 @@ describe("ModelSettingsService：状态读取", () => {
     expect(status.modelPhase).toBe("configured");
     expect(JSON.stringify(status)).not.toContain(SENTINEL_KEY);
   });
+
+  it("modelId 含斜杠的回归：openrouter/anthropic/claude-sonnet-4 可保存，DTO 拆出 provider/modelId", async () => {
+    const harness = await makeHarness();
+    // Pi 静态目录中 openrouter 的模型 id 本身即 "anthropic/claude-sonnet-4"（含斜杠）
+    expect(
+      harness.modelRuntime.getModel("openrouter", "anthropic/claude-sonnet-4"),
+    ).toBeDefined();
+    await harness.service.saveModel({ model: "openrouter/anthropic/claude-sonnet-4" });
+    const status = await harness.service.getStatus();
+    expect(status.model).toBe("openrouter/anthropic/claude-sonnet-4");
+    expect(status.provider).toBe("openrouter");
+    expect(status.modelId).toBe("anthropic/claude-sonnet-4");
+  });
 });
 
 describe("ModelSettingsService：保存语义", () => {

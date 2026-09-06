@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useSearchParams, useParams } from "react-router-dom";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
@@ -8,15 +7,16 @@ import { PdfPanel } from "../components/project/PdfPanel.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import { useCitations, useCitationIntegrity, usePaper, useProject, useProjectRuns } from "../hooks/queries.js";
 import { ApiError } from "../api/client.js";
+import { formatApiError } from "../utils/errors.js";
 import { formatDateTime } from "../utils/format.js";
 import type { PaperDocSummary } from "../types/paper.js";
 
 /**
- * Project Workspace（Visual Redesign 2026-09）。
+ * Project Workspace（Visual Redesign 2026-09 / UX Polish 2026-09）。
  *
- * 结构：面包屑（Projects / 项目名）→ 衬线标题 + 状态 → 项目级导航 →
- * 内容。Overview 左主右辅：研究定位与想法在主列，文档 / 引用 / 运行
- * 摘要在侧栏；未开放模块用明确的「规划中」占位，不伪装成故障页。
+ * 结构：衬线标题 + 状态 → 项目级导航（当前只暴露真正可用的模块，
+ * 规划中的 Workflow/Evidence/Review/Artifacts 不占一级导航）→ 内容。
+ * 当前 Tab 进入 URL（?tab=），刷新 / 分享链接可恢复；无效值回退概览。
  */
 
 type TabId = "overview" | "pdf" | "citations" | "workflow" | "evidence" | "review" | "artifacts";
@@ -27,54 +27,65 @@ interface TabEntry {
   milestone?: string;
 }
 
+/** 全量 Tab 定义（含未开放模块；未开放项暂不在一级导航渲染，里程碑完成后恢复） */
 const TABS: ReadonlyArray<TabEntry> = [
-  { id: "overview", label: "Overview" },
-  { id: "pdf", label: "PDF / Structure" },
-  { id: "citations", label: "Citations" },
-  { id: "workflow", label: "Workflow", milestone: "M4.4" },
-  { id: "evidence", label: "Evidence", milestone: "M4.5" },
-  { id: "review", label: "Review / Quality Gate", milestone: "M4.6" },
-  { id: "artifacts", label: "Draft / Final PDF", milestone: "M4.7" },
+  { id: "overview", label: "概览" },
+  { id: "pdf", label: "PDF 与结构" },
+  { id: "citations", label: "引用核验" },
+  { id: "workflow", label: "工作流", milestone: "M4.4" },
+  { id: "evidence", label: "证据", milestone: "M4.5" },
+  { id: "review", label: "审稿 / 质量门禁", milestone: "M4.6" },
+  { id: "artifacts", label: "草稿 / 最终 PDF", milestone: "M4.7" },
 ];
 
+/** 一级导航只渲染当前真实可用的模块 */
+const VISIBLE_TABS: ReadonlyArray<TabEntry> = TABS.filter((entry) => entry.milestone === undefined);
+
 const COMING_DESCRIPTION: Record<string, string> = {
-  workflow: "启动与跟踪 WorkflowRun：阶段进度、HITL 等待输入、取消与恢复。",
-  evidence: "研究证据库：文献检索结果、PDF 文本层分析与 Derived Context。",
-  review: "Reviewer 三路审阅与 Quality Gate 结论、修订循环状态。",
+  workflow: "启动与跟踪工作流运行：阶段进度、等待确认、取消与恢复。",
+  evidence: "研究证据库：文献检索结果、PDF 文本层分析与派生上下文。",
+  review: "Reviewer 三路审阅与质量门禁结论、修订循环状态。",
   artifacts: "草稿与最终交付物：LaTeX 源、编译产物与版本历史。",
 };
 
 type OpenableTab = "pdf" | "citations";
 
+/** URL ?tab= → TabId（仅接受已开放的 Tab；缺失 / 未开放 / 非法值回退概览） */
+function tabFromParam(param: string | null): TabId {
+  const found = VISIBLE_TABS.find((entry) => entry.id === param);
+  return found !== undefined ? found.id : "overview";
+}
+
+/** WorkflowRun 完成标签（completion.label）→ 中文 */
+const COMPLETION_LABELS: Record<string, string> = {
+  final: "最终稿",
+  draft: "草稿",
+};
+
 function ProjectRunsPanel({ projectId }: { projectId: string }) {
   const { data, isPending, isError, error, refetch } = useProjectRuns(projectId);
 
   if (isPending) {
-    return <Loading label="加载 Workflow 运行记录…" />;
+    return <Loading label="加载工作流运行记录…" />;
   }
   if (isError) {
     return (
       <ErrorState
         title="运行记录加载失败"
-        message={error instanceof Error ? error.message : String(error)}
+        message={formatApiError(error)}
         onRetry={() => void refetch()}
       />
     );
   }
   if (data === undefined || data.length === 0) {
-    return (
-      <p className="panel-empty">
-        尚未运行 Workflow。运行界面即将开放；当前可经 API 触发
-        （POST /api/projects/{projectId}/workflows）。
-      </p>
-    );
+    return <p className="panel-empty">尚未开始工作流。运行界面即将开放。</p>;
   }
   return (
     <div className="table-scroll">
       <table className="data-table">
         <thead>
           <tr>
-            <th>Run</th>
+            <th>运行</th>
             <th>状态</th>
             <th>当前阶段</th>
             <th>完成</th>
@@ -89,7 +100,7 @@ function ProjectRunsPanel({ projectId }: { projectId: string }) {
                 <RunStatusBadge status={run.status} />
               </td>
               <td>{run.currentStage ?? "—"}</td>
-              <td>{run.completion?.label ?? "—"}</td>
+              <td>{run.completion !== undefined && run.completion !== null ? (COMPLETION_LABELS[run.completion.label] ?? run.completion.label) : "—"}</td>
               <td className="muted">{formatDateTime(run.updatedAt) ?? "—"}</td>
             </tr>
           ))}
@@ -119,7 +130,7 @@ function WorkspaceAside({
   // 下一步建议：由真实状态推导，最多两条
   const nextSteps: Array<{ label: string; tab: OpenableTab }> = [];
   if (!paper.isPending && (doc === null || doc === undefined)) {
-    nextSteps.push({ label: "上传 Final PDF", tab: "pdf" });
+    nextSteps.push({ label: "上传最终 PDF", tab: "pdf" });
   }
   if (!citations.isPending && !citationsReady) {
     nextSteps.push({ label: "提取并核验引用", tab: "citations" });
@@ -154,9 +165,9 @@ function WorkspaceAside({
           type="button"
           className="aside-title aside-title-link"
           onClick={() => onOpenTab("pdf")}
-          title="打开 PDF / Structure"
+          title="打开 PDF 与结构"
         >
-          Final PDF <span className="aside-next-arrow" aria-hidden="true">›</span>
+          最终 PDF <span className="aside-next-arrow" aria-hidden="true">›</span>
         </button>
         <dl className="aside-rows">
           {paper.isPending ? (
@@ -204,9 +215,9 @@ function WorkspaceAside({
           type="button"
           className="aside-title aside-title-link"
           onClick={() => onOpenTab("citations")}
-          title="打开 Citations"
+          title="打开引用核验"
         >
-          Citations <span className="aside-next-arrow" aria-hidden="true">›</span>
+          引用核验 <span className="aside-next-arrow" aria-hidden="true">›</span>
         </button>
         <dl className="aside-rows">
           {citations.isPending ? (
@@ -224,13 +235,13 @@ function WorkspaceAside({
           ) : (
             <>
               <div className="aside-row">
-                <dt>References</dt>
+                <dt>参考文献条目</dt>
                 <dd>
                   <span className="aside-value">{summary.references}</span>
                 </dd>
               </div>
               <div className="aside-row">
-                <dt>Callouts</dt>
+                <dt>正文引用</dt>
                 <dd>
                   <span className="aside-value">{summary.callouts}</span>
                 </dd>
@@ -264,7 +275,12 @@ function ComingPanel({ entry }: { entry: TabEntry }) {
 
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
-  const [tab, setTab] = useState<TabId>("overview");
+  // Tab 状态进入 URL（?tab=overview|pdf|citations）：刷新 / 复制链接可恢复
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tab = tabFromParam(searchParams.get("tab"));
+  const setTab = (next: TabId) => {
+    setSearchParams(next === "overview" ? {} : { tab: next });
+  };
   const { data, isPending, isError, error, refetch } = useProject(projectId);
 
   if (isPending) {
@@ -284,9 +300,7 @@ export function ProjectPage() {
           message={
             notFound
               ? `找不到项目 ${projectId}（可能已被删除，或链接有误）。`
-              : error instanceof Error
-                ? error.message
-                : String(error)
+              : formatApiError(error)
           }
           onRetry={notFound ? undefined : () => void refetch()}
         />
@@ -325,7 +339,7 @@ export function ProjectPage() {
       </div>
 
       <nav className="tabs" role="tablist" aria-label="项目工作区">
-        {TABS.map((entry) => (
+        {VISIBLE_TABS.map((entry) => (
           <button
             key={entry.id}
             type="button"
@@ -335,11 +349,6 @@ export function ProjectPage() {
             onClick={() => setTab(entry.id)}
           >
             {entry.label}
-            {entry.milestone !== undefined ? (
-              <span className="tab-milestone" title={`规划于 ${entry.milestone}`}>
-                Soon
-              </span>
-            ) : null}
           </button>
         ))}
       </nav>
@@ -373,7 +382,7 @@ export function ProjectPage() {
                   ) : null}
                   {project.targetVenue ? (
                     <div>
-                      <dt>目标 Venue</dt>
+                      <dt>目标期刊 / 会议</dt>
                       <dd>{project.targetVenue}</dd>
                     </div>
                   ) : null}
@@ -385,9 +394,7 @@ export function ProjectPage() {
                   ) : null}
                 </dl>
               ) : (
-                <p className="panel-empty">
-                  尚未填写研究定位字段。可经 PATCH /api/projects/{project.id} 补充（编辑界面后续提供）。
-                </p>
+                <p className="panel-empty">尚未填写研究定位字段（编辑界面即将提供）。</p>
               )}
               {project.researchIdea ? (
                 <div className="idea-block">
@@ -398,8 +405,8 @@ export function ProjectPage() {
               {project.workflowKind === "existing_paper_improvement" ? (
                 <p className="note note-info" style={{ marginTop: 16 }}>
                   <span>
-                    已有论文改进模式：LaTeX 导入 API 已开放（POST /api/projects/{project.id}/import），
-                    导入与改进流程界面将在后续里程碑提供；最终 PDF 已可在「PDF / Structure」上传。
+                    已有论文改进模式：在「PDF 与结构」上传论文最终 PDF 后即可提取并核验引用；
+                    LaTeX 项目导入与改进流程界面将在后续里程碑提供。
                   </span>
                 </p>
               ) : null}
@@ -407,7 +414,7 @@ export function ProjectPage() {
 
             <section>
               <div className="section-head">
-                <h2>Workflow 运行记录</h2>
+                <h2>工作流运行记录</h2>
               </div>
               <ProjectRunsPanel projectId={project.id} />
             </section>

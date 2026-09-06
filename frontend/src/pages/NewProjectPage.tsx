@@ -8,6 +8,7 @@ import {
   TARGET_PROFILE_OPTIONS,
 } from "../constants/projectMeta.js";
 import { useCreateProject } from "../hooks/queries.js";
+import { formatApiError } from "../utils/errors.js";
 import type { CreateProjectInput, WorkflowKind } from "../types/api.js";
 
 /**
@@ -64,7 +65,7 @@ function validate(form: FormState): string | null {
     return `研究领域不能超过 ${LIMITS.researchField} 个字符`;
   }
   if (form.targetVenue.trim().length > LIMITS.targetVenue) {
-    return `目标 venue 不能超过 ${LIMITS.targetVenue} 个字符`;
+    return `目标期刊 / 会议不能超过 ${LIMITS.targetVenue} 个字符`;
   }
   if (form.language.trim().length > LIMITS.language) {
     return `写作语言不能超过 ${LIMITS.language} 个字符`;
@@ -122,7 +123,12 @@ export function NewProjectPage() {
     }
     createProject.mutate(toInput(form), {
       onSuccess: (project) => {
-        void navigate(`/projects/${project.id}`);
+        // 已有论文改进：创建后直达「PDF 与结构」，上传最终 PDF 是该模式的第一个动作
+        void navigate(
+          form.workflowKind === "existing_paper_improvement"
+            ? `/projects/${project.id}?tab=pdf`
+            : `/projects/${project.id}`,
+        );
       },
     });
   };
@@ -134,10 +140,10 @@ export function NewProjectPage() {
   return (
     <section className="page page-narrow">
       <PageHeader
-        title="New Project"
+        title="新建项目"
         breadcrumb={
           <>
-            <Link to="/projects">My Papers</Link>
+            <Link to="/projects">论文项目</Link>
             <span className="crumb-sep" aria-hidden="true">/</span>
             <span>新建项目</span>
           </>
@@ -183,11 +189,10 @@ export function NewProjectPage() {
             </label>
           </div>
           {isExisting ? (
-            <div className="note note-warn" data-testid="import-note">
+            <div className="note note-info" data-testid="import-note">
               <span>
-                创建后即可导入现有论文：LaTeX 项目与最终 PDF 的上传界面将在后续里程碑提供，
-                当前可经 Backend 已开放的 import API（POST /api/projects/:id/import）导入
-                LaTeX 压缩包；最终 PDF 已可在工作区「PDF / Structure」上传。
+                创建后将直接进入「PDF 与结构」，可立即上传论文的最终 PDF（.pdf），
+                作为引用核验与审阅的正式输入。LaTeX 项目导入界面将在后续里程碑提供。
               </span>
             </div>
           ) : null}
@@ -232,7 +237,7 @@ export function NewProjectPage() {
               />
             </div>
             <div className="field">
-              <label htmlFor="targetVenue">目标 Venue</label>
+              <label htmlFor="targetVenue">目标期刊 / 会议</label>
               <input
                 id="targetVenue"
                 name="targetVenue"
@@ -299,14 +304,7 @@ export function NewProjectPage() {
           </p>
         ) : null}
         {createProject.isError ? (
-          <ErrorState
-            title="创建失败"
-            message={
-              createProject.error instanceof Error
-                ? createProject.error.message
-                : String(createProject.error)
-            }
-          />
+          <ErrorState title="创建失败" message={formatApiError(createProject.error)} />
         ) : null}
 
         <div className="form-actions">

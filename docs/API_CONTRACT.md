@@ -89,7 +89,7 @@
 | 端点 | 说明 | 前端消费方 |
 |---|---|---|
 | `GET /api/settings/model` | `{settings: ModelSettingsView}`（生效配置/provider/凭据状态/configurationSource/runtimePhase/modelPhase；**永不返回 key 本体**） | ModelSettingsPage「当前状态」 |
-| `PUT /api/settings/model` | `{model: "provider/model-id", apiKey?}`；apiKey **字段省略 = 保持原 Key**，空字符串 = 400；成功 → `{settings}` | ModelSettingsPage（Save） |
+| `PUT /api/settings/model` | `{model: "provider/model-id", apiKey?}`（model-id 段可含 `/`，如 `openrouter/anthropic/claude-sonnet-4`；按首个 `/` 拆 provider）；apiKey **字段省略 = 保持原 Key**，空字符串 = 400；成功 → `{settings}` | ModelSettingsPage（Save） |
 | `DELETE /api/settings/model/key` | 清除本地保存的 API Key（agentDir auth.json；env 凭据仍在时模型保持 configured）→ `{settings}` | ModelSettingsPage（Clear Key） |
 | `GET /api/settings/model/options` | provider 列表 `{providers: [{id,name,authConfigured,apiKeyLoginSupported,modelCount}]}`（安全 metadata，无 baseUrl/key） | Provider 下拉 |
 | `GET /api/settings/model/options?provider=x` | 单 provider 模型目录 `{provider, models: [{modelId,displayName,contextWindow?,reasoning?,input?}]}` | Model 下拉 |
@@ -169,6 +169,7 @@ interface RuntimeStatusView {                    // Pi schema（M3.8 冻结）
 type ModelConfigurationSource = "environment" | "stored" | "not_configured";
 interface ModelSettingsView {
   provider?: string;                          // 生效模型 provider 段
+  modelId?: string;                           // 生效模型 model-id 段（provider 之后整体；可含 "/"，如 openrouter 的 "anthropic/claude-sonnet-4"）
   model?: string;                             // 生效 "provider/model-id"
   savedModel?: string;                        // Settings UI 保存值（env 覆盖时与 model 不同）
   apiKeyConfigured: boolean;                  // provider 有可用凭据（任何来源）

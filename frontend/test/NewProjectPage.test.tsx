@@ -21,6 +21,11 @@ vi.mock("../src/api/runs.js", () => ({
   listProjectRuns: vi.fn(async () => []),
 }));
 
+vi.mock("../src/api/paper.js", () => ({
+  getPaper: vi.fn(async () => ({ document: null })),
+  uploadPaperPdf: vi.fn(),
+}));
+
 vi.mock("../src/api/runtime.js", () => ({
   getRuntimeStatus: vi.fn(async () => ({
     backend: { ok: true },
@@ -64,7 +69,7 @@ describe("NewProjectPage", () => {
     expect(createProject).not.toHaveBeenCalled();
   });
 
-  it("合法提交：payload 裁剪空字段，成功后导航到 /projects/:id", async () => {
+  it("合法提交（Idea → Paper）：payload 裁剪空字段，成功后导航到项目概览", async () => {
     vi.mocked(createProject).mockResolvedValue(created);
     vi.mocked(getProject).mockResolvedValue(created);
     const user = userEvent.setup();
@@ -103,7 +108,7 @@ describe("NewProjectPage", () => {
     expect(screen.getByRole("button", { name: "创建项目" })).toBeEnabled();
   });
 
-  it("选择已有论文改进：显示导入说明（Backend 导入 API 已开放）", async () => {
+  it("选择已有论文改进：说明创建后上传最终 PDF 的路径（不含开发者术语）", async () => {
     vi.mocked(createProject).mockClear();
     const user = userEvent.setup();
     renderCreateFlow();
@@ -111,7 +116,35 @@ describe("NewProjectPage", () => {
     expect(screen.queryByTestId("import-note")).toBeNull();
     await user.click(screen.getByLabelText(/已有论文改进/));
 
-    expect(screen.getByTestId("import-note")).toHaveTextContent("import");
+    const note = screen.getByTestId("import-note");
+    expect(note).toHaveTextContent("PDF 与结构");
+    expect(note).toHaveTextContent("最终 PDF");
+    // 不再暴露 API 路径 / Backend 等开发者术语
+    expect(note).not.toHaveTextContent("POST /api");
+    expect(note).not.toHaveTextContent("Backend");
     expect(screen.getByRole("radio", { name: /已有论文改进/ })).toBeChecked();
+  });
+
+  it("已有论文改进创建成功：自动进入「PDF 与结构」并提示上传", async () => {
+    vi.mocked(createProject).mockResolvedValue({
+      ...created,
+      workflowKind: "existing_paper_improvement",
+    });
+    vi.mocked(getProject).mockResolvedValue({
+      ...created,
+      workflowKind: "existing_paper_improvement",
+    });
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByLabelText(/已有论文改进/));
+    await user.type(screen.getByLabelText(/论文标题/), "已有论文项目");
+    await user.click(screen.getByRole("button", { name: "创建项目" }));
+
+    // 落地页直接是 PDF 上传（?tab=pdf），不再是概览
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "上传最终 PDF" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("研究定位")).not.toBeInTheDocument();
   });
 });

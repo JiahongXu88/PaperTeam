@@ -1103,16 +1103,20 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
 // ---- 辅助函数 ----
 
-/** "provider/model-id" 解析（两段、均非空；Settings 服务共享校验） */
+/**
+ * "provider/model-id" 解析（首段为 provider，其余整体为 model-id；均非空）。
+ * modelId 本身可含 "/"（如 openrouter 的 "anthropic/claude-sonnet-4"，
+ * Pi 注册表内该 provider 的模型 id 即为带斜杠形式）；Settings 服务共享校验。
+ */
 export function parseModelSpec(spec: string): { provider: string; modelId: string } | undefined {
   const trimmed = spec.trim();
-  if (!trimmed.includes("/")) {
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) {
     return undefined;
   }
-  const slash = trimmed.indexOf("/");
   const provider = trimmed.slice(0, slash).trim();
   const modelId = trimmed.slice(slash + 1).trim();
-  if (provider === "" || modelId === "" || modelId.includes("/")) {
+  if (provider === "" || modelId === "") {
     return undefined;
   }
   return { provider, modelId };

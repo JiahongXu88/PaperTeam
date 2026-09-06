@@ -101,6 +101,8 @@ export type ModelConfigurationSource = "environment" | "stored" | "not_configure
 /** GET /api/settings/model 的 settings DTO（无任何 key 字段） */
 export interface ModelSettingsView {
   provider?: string;
+  /** model-id 段（provider 之后整体；可含 "/"，如 openrouter 的 anthropic/claude-sonnet-4） */
+  modelId?: string;
   model?: string;
   savedModel?: string;
   apiKeyConfigured: boolean;

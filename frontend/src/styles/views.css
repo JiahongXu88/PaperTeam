@@ -163,15 +163,15 @@
 }
 
 .dot-ok {
-  background: #4fae83;
+  background: var(--spine-ok);
 }
 
 .dot-warn {
-  background: #d0a03c;
+  background: var(--spine-warn);
 }
 
 .dot-error {
-  background: #d0705f;
+  background: var(--spine-danger);
 }
 
 .dot-muted {
@@ -189,7 +189,7 @@
   margin-top: var(--s-5);
   padding: 9px 14px;
   background: var(--warn-bg);
-  border: 1px solid #ead9ac;
+  border: 1px solid var(--warn-line);
   border-radius: var(--r-md);
   font-size: var(--fs-meta);
   color: var(--ink-700);
@@ -850,7 +850,7 @@
 }
 
 .ledger-bar-seg-tone-warn {
-  background: #c99a35;
+  background: var(--warn-bar);
 }
 
 .ledger-bar-seg-tone-danger {
@@ -889,20 +889,20 @@
 /* 严重状态行：极淡语义底色 + 左缘色条（不吵，但扫读可辨） */
 .ref-row-flag-danger {
   border-left-color: var(--danger);
-  background: #fdf6f5;
+  background: var(--danger-row);
 }
 
 .ref-row-flag-danger:hover {
-  background: #fbeeed;
+  background: var(--danger-row-hover);
 }
 
 .ref-row-flag-warn {
-  border-left-color: #c99a35;
-  background: #fdfaf1;
+  border-left-color: var(--warn-bar);
+  background: var(--warn-row);
 }
 
 .ref-row-flag-warn:hover {
-  background: #faf4e4;
+  background: var(--warn-row-hover);
 }
 
 /* 无法解析出标题的条目：原文降级展示，不伪装成标题 */
@@ -1022,8 +1022,14 @@
 .skill-tags {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   margin-top: var(--s-3);
+}
+
+.skill-tags .skill-tags-label {
+  font-size: var(--fs-label);
+  color: var(--ink-500);
 }
 
 /* 卡片 footer：次级操作收口 */
@@ -1074,7 +1080,7 @@
 }
 
 .danger-zone {
-  border: 1px solid #ecd2ce;
+  border: 1px solid var(--danger-line);
   background: var(--page);
   border-radius: var(--r-lg);
   padding: var(--s-5) var(--s-6);
@@ -1094,37 +1100,11 @@
   color: var(--danger);
 }
 
-/* ============ 响应式（桌面优先） ============ */
+/* ============ 响应式（桌面优先） ============
+   侧栏保持完整宽度（书脊结构不因窗口宽度退化为无图标空 rail；
+   1180px 以下只收敛内容区栅格）。 */
 
 @media (max-width: 1180px) {
-  .app-sidebar {
-    width: var(--rail-w);
-  }
-
-  .sidebar-brand {
-    padding: 16px 14px;
-  }
-
-  .sidebar-brand-sub,
-  .sidebar-link .link-text,
-  .sidebar-label {
-    display: none;
-  }
-
-  .sidebar-link {
-    justify-content: center;
-    padding: 9px 0;
-  }
-
-  .sidebar-runtime .rt-label,
-  .sidebar-runtime .rt-text {
-    display: none;
-  }
-
-  .sidebar-runtime {
-    align-items: center;
-  }
-
   .doc-grid,
   .workspace-grid {
     grid-template-columns: 1fr;

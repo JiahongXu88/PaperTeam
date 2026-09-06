@@ -58,6 +58,8 @@ export interface ModelSettingsEnv {
 export interface ModelSettingsStatus {
   /** 生效模型的 provider 段（模型未配置时缺省） */
   provider?: string;
+  /** 生效模型的 model-id 段（provider 之后整体；可含 "/"，如 openrouter 的 anthropic/claude-sonnet-4） */
+  modelId?: string;
   /** 生效模型 "provider/model-id"（env 覆盖时为 env 值） */
   model?: string;
   /** Settings UI 保存的本地偏好（可能与生效值不同：env 覆盖时） */
@@ -168,6 +170,7 @@ export class ModelSettingsService {
 
     return {
       ...(parsed !== undefined ? { provider: parsed.provider } : {}),
+      ...(parsed !== undefined ? { modelId: parsed.modelId } : {}),
       ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
       ...(stored.model !== undefined ? { savedModel: stored.model } : {}),
       apiKeyConfigured,

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
+import { ModelCombobox } from "../components/common/ModelCombobox.js";
 import {
   useClearModelApiKey,
   useModelOptions,
@@ -9,16 +10,20 @@ import {
   useSaveModelSettings,
   useTestModelConnection,
 } from "../hooks/queries.js";
+import { formatApiError } from "../utils/errors.js";
 import type { ModelSettingsView } from "../types/api.js";
 
 /**
- * Model Settings 页面（Visual Redesign 2026-09）。
+ * 模型设置页（Visual Redesign 2026-09 / UX Polish 2026-09）。
  *
  * 安全约束（docs/API_CONTRACT.md）：
  * - API Key 输入框每次进入页面保持空白，永不回填已保存值；
  * - Show/Hide 只作用于用户本次刚输入的值；
  * - 不保存 Key 到 localStorage/sessionStorage/URL；
  * - GET 响应不含 key 本体（只显示「已配置」状态与来源）。
+ *
+ * modelId 语义：后端 DTO 直接提供 provider + modelId（modelId 可含 "/"，
+ * 如 openrouter 的 anthropic/claude-sonnet-4），前端不从 spec 字符串自行拆分。
  */
 
 const SOURCE_LABEL: Record<ModelSettingsView["configurationSource"], string> = {
@@ -35,20 +40,13 @@ const KEY_SOURCE_LABEL: Record<ModelSettingsView["apiKeySource"], string> = {
 
 /** 测试失败分类 → 人读文本 */
 const TEST_CODE_LABEL: Record<string, string> = {
-  AUTH_FAILED: "认证失败（API Key 无效或无权限）",
-  MODEL_NOT_FOUND: "模型不存在",
-  PROVIDER_UNAVAILABLE: "Provider 不可达",
-  RATE_LIMITED: "触发限流",
-  TIMEOUT: "超时",
+  AUTH_FAILED: "API Key 无效或认证失败",
+  MODEL_NOT_FOUND: "找不到所选模型",
+  PROVIDER_UNAVAILABLE: "模型服务不可达",
+  RATE_LIMITED: "请求过于频繁，请稍后重试",
+  TIMEOUT: "连接超时，请检查网络或模型服务",
   UNKNOWN: "未知错误",
 };
-
-/** 上下文窗口 → 简洁读数（200k / 1M） */
-function formatContext(window: number): string {
-  return window >= 1_000_000
-    ? `${(window / 1_000_000).toFixed(window % 1_000_000 === 0 ? 0 : 1)}M ctx`
-    : `${Math.round(window / 1000)}k ctx`;
-}
 
 export function ModelSettingsPage() {
   const settingsQuery = useModelSettings();
@@ -65,7 +63,7 @@ export function ModelSettingsPage() {
       <section className="page">
         <ErrorState
           title="模型配置加载失败"
-          message={settingsQuery.error instanceof Error ? settingsQuery.error.message : String(settingsQuery.error)}
+          message={formatApiError(settingsQuery.error)}
           onRetry={() => void settingsQuery.refetch()}
         />
       </section>
@@ -75,9 +73,9 @@ export function ModelSettingsPage() {
 }
 
 function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
-  // 表单状态：provider/model 从当前生效配置种子；key 输入永远从空白开始
+  // 表单状态：provider/modelId 从后端 DTO 的显式字段种子；key 输入永远从空白开始
   const [providerId, setProviderId] = useState(settings.provider ?? "");
-  const [modelId, setModelId] = useState(settings.model?.split("/")[1] ?? "");
+  const [modelId, setModelId] = useState(settings.modelId ?? "");
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [showKey, setShowKey] = useState(false);
 
@@ -140,8 +138,8 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   return (
     <section className="page">
       <PageHeader
-        title="Model Settings"
-        sub="配置 Pi Runtime 的模型与 API Key；保存后新的 Agent Run 即使用新配置。优先级：环境变量 > 本地保存。"
+        title="模型设置"
+        sub="配置模型与 API Key；保存后新的 Agent 任务即使用新配置。优先级：环境变量 > 本地保存。"
       />
 
       <dl className="settings-status">
@@ -161,7 +159,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
           <dd>{SOURCE_LABEL[settings.configurationSource]}</dd>
         </div>
         <div className="aside-row">
-          <dt>Model</dt>
+          <dt>模型</dt>
           <dd className="mono">{settings.model ?? "（未配置）"}</dd>
         </div>
         <div className="aside-row">
@@ -204,7 +202,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
         </div>
         <div className="panel-stack" style={{ gap: "var(--s-5)" }}>
           <div className="field">
-            <label htmlFor="model-provider">Provider</label>
+            <label htmlFor="model-provider">模型提供商</label>
             <select
               id="model-provider"
               value={providerId}
@@ -214,7 +212,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
               }}
               disabled={providers === undefined}
             >
-              <option value="">{providers === undefined ? "加载中…" : "选择 Provider"}</option>
+              <option value="">{providers === undefined ? "加载中…" : "选择模型提供商"}</option>
               {providers?.map((provider) => (
                 <option key={provider.id} value={provider.id}>
                   {provider.name}（{provider.id}）
@@ -224,31 +222,21 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
           </div>
 
           <div className="field">
-            <label htmlFor="model-id">Model</label>
-            <select
+            <label htmlFor="model-id">模型</label>
+            <ModelCombobox
               id="model-id"
+              models={models}
               value={modelId}
-              onChange={(event) => setModelId(event.target.value)}
-              disabled={providerId === "" || models === undefined}
-            >
-              <option value="">
-                {providerId === ""
-                  ? "先选择 Provider"
-                  : models === undefined
-                    ? "加载中…"
-                    : models.length === 0
-                      ? "（该 Provider 暂无模型目录）"
-                      : "选择模型"}
-              </option>
-              {models?.map((model) => (
-                <option key={model.modelId} value={model.modelId}>
-                  {model.displayName}
-                  {model.contextWindow !== undefined
-                    ? `（${formatContext(model.contextWindow)}）`
-                    : ""}
-                </option>
-              ))}
-            </select>
+              onChange={setModelId}
+              disabled={providerId === ""}
+              loading={providerId !== "" && models === undefined}
+              emptyHint="（该提供商暂无模型目录）"
+            />
+            <span className="field-help">
+              {providerId === ""
+                ? "请先选择模型提供商"
+                : "输入名称或 Model ID 筛选；Model ID 可包含「/」（如 anthropic/claude-sonnet-4）"}
+            </span>
           </div>
 
           <div className="field">
@@ -269,7 +257,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
                 className="btn"
                 onClick={() => setShowKey((value) => !value)}
               >
-                {showKey ? "Hide" : "Show"}
+                {showKey ? "隐藏" : "显示"}
               </button>
             </div>
             {settings.apiKeyConfigured ? (
@@ -286,7 +274,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
                 data-testid="test-connection"
                 title="测试当前填写的模型与 Key（不落盘）"
               >
-                {test.isPending ? "测试中…" : "Test Connection"}
+                {test.isPending ? "测试中…" : "测试连接"}
               </button>
             </div>
           </div>
@@ -299,13 +287,13 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
               disabled={selectedModel === "" || save.isPending}
               data-testid="save-model"
             >
-              {save.isPending ? "保存中…" : "Save"}
+              {save.isPending ? "保存中…" : "保存"}
             </button>
           </div>
 
           {save.isError ? (
             <p className="form-error" role="alert" data-testid="save-error">
-              保存失败：{save.error instanceof Error ? save.error.message : String(save.error)}
+              保存失败：{formatApiError(save.error)}
             </p>
           ) : null}
           {save.isSuccess ? (
@@ -314,7 +302,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
                 <span className="note-mark">✓</span> 已保存
                 {settings.envOverride
                   ? "（注意：当前进程环境变量优先，本地配置在环境变量不存在时生效）"
-                  : "，新的 Agent Run 将使用新配置"}
+                  : "，新的 Agent 任务将使用新配置"}
                 。
               </span>
             </p>
@@ -325,7 +313,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
               {test.data.ok ? (
                 <p className="note note-success" role="status">
                   <span>
-                    <span className="note-mark">✓</span> Connection OK：{test.data.provider}/{test.data.model}
+                    <span className="note-mark">✓</span> 连接正常：{test.data.provider}/{test.data.model}
                     （{test.data.latencyMs}ms）
                   </span>
                 </p>
@@ -334,7 +322,12 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
                   <span>
                     <span className="note-mark">✗</span>{" "}
                     {TEST_CODE_LABEL[test.data.code ?? "UNKNOWN"] ?? test.data.code}
-                    {test.data.detail !== undefined ? `：${test.data.detail}` : ""}
+                    {test.data.detail !== undefined ? (
+                      <>
+                        <br />
+                        <span className="faint">详细信息：{test.data.detail}</span>
+                      </>
+                    ) : null}
                   </span>
                 </p>
               )}
@@ -342,14 +335,14 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
           ) : null}
           {test.isError ? (
             <p className="form-error" role="alert">
-              测试请求失败：{test.error instanceof Error ? test.error.message : String(test.error)}
+              测试请求失败：{formatApiError(test.error)}
             </p>
           ) : null}
         </div>
       </form>
 
       <div className="danger-zone">
-        <div className="danger-kicker">Danger Zone</div>
+        <div className="danger-kicker">危险操作</div>
         <div className="section-head">
           <h2 className="panel-title">清除本地保存的 API Key</h2>
         </div>
@@ -364,11 +357,11 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
             disabled={!settings.apiKeyConfigured || settings.apiKeySource !== "stored" || clearKey.isPending}
             data-testid="clear-key"
           >
-            {clearKey.isPending ? "清除中…" : "Clear saved API Key"}
+            {clearKey.isPending ? "清除中…" : "清除已保存的 API Key"}
           </button>
           {clearKey.isError ? (
             <span className="form-error" role="alert">
-              清除失败：{clearKey.error instanceof Error ? clearKey.error.message : String(clearKey.error)}
+              清除失败：{formatApiError(clearKey.error)}
             </span>
           ) : null}
           {clearKey.isSuccess ? (

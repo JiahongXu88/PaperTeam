@@ -28,12 +28,16 @@
   --spine-text-strong: #f1f4f7;
   --spine-line: #2c3644;
   --spine-accent: #d8e2f4; /* 侧栏选中项文字（在 accent-bg 上） */
+  --spine-ok: #4fae83; /* 深色侧栏上的状态 dot（比浅底色亮） */
+  --spine-warn: #d0a03c;
+  --spine-danger: #d0705f;
 
   /* ---- 品牌 accent：墨钴蓝 ---- */
   --accent: #2f5aa8;
   --accent-strong: #27498c;
   --accent-bg: #edf1f8;
   --accent-bg-strong: #dde5f2;
+  --accent-contrast: #ffffff; /* accent 实底上的文字（按钮等） */
 
   /* ---- 语义色（浅底深字，长时阅读安全） ---- */
   --ok: #1f714b;
@@ -42,8 +46,16 @@
   --info-bg: #eaf2fa;
   --warn: #8f6408;
   --warn-bg: #f9f1de;
+  --warn-dot: #b98a1d; /* 登记簿 dot 用亮一档的 warn（小面积可辨识） */
+  --warn-bar: #c99a35; /* 比例条 / 行缘的 warn 中间调 */
+  --warn-line: #ead9ac; /* warn 提示条描边 */
+  --warn-row: #fdfaf1; /* 极淡 warn 行底色 */
+  --warn-row-hover: #faf4e4;
   --danger: #b23a2e;
   --danger-bg: #f9ecea;
+  --danger-line: #ecd2ce; /* 危险操作区描边 */
+  --danger-row: #fdf6f5; /* 极淡 danger 行底色 */
+  --danger-row-hover: #fbeeed;
 
   /* ---- 字体角色 ---- */
   --font-ui: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -79,7 +91,6 @@
 
   /* ---- 结构尺寸 ---- */
   --sidebar-w: 228px;
-  --rail-w: 60px;
   --content-max: 1240px;
   --header-h: 56px;
 
