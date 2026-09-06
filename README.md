@@ -63,8 +63,12 @@ Backend 234 + Frontend 24 个测试全部通过。M4.2.5 Live Model Integration
 Gate ✅ PASS（2026-09-05）：真实 Provider `zai-coding-cn/glm-5.3` 经运行中
 Backend 完成 L3 全链路验证（详见 [PROJECT_STATUS.md](docs/PROJECT_STATUS.md)）。
 
-**未实现（M4.3+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
-Review / PDF UI、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
+**M4.3 已落地（前端能力现状）**：项目工作区含 概览 / PDF 与结构（上传最终
+PDF、解析状态、结构树）/ 引用核验（提取、真实性 + 语义两层核验、逐条状态）；
+全局 Skills 页（中文简介为主，来源 / 修订版本 / 许可证折叠）；模型设置页
+（Provider + 模型搜索选择、API Key、测试连接）；Tab 状态进 URL，中文界面。
+**未实现（M4.4+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
+Review 界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
 系统管理后台、Docker 部署。
 
 ## 文档
