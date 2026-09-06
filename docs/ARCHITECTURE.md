@@ -530,14 +530,14 @@ TanStack Query 5 + Zustand 5**（npm；无 Next.js / Redux / GraphQL / SSR /
 ```text
 frontend/src/
 ├── api/            # 统一 API 层：client（ApiError/NETWORK_ERROR 收敛）+
-│   │                # projects / runs / runtime（唯一 fetch 出口）
+│   │                # projects / runs / runtime / paper / skills（唯一 fetch 出口）
 ├── types/api.ts    # Frontend DTO（契约见 docs/API_CONTRACT.md）
 ├── hooks/          # TanStack Query hooks（queryKeys 集中定义）
 ├── stores/         # Zustand（纯 UI 状态：模型未配置横幅 dismiss）
 ├── router/         # 路由：/ →redirect /projects；/projects(/new/:id)；* →404
-├── pages/          # ProjectsPage / NewProjectPage / ProjectPage / NotFoundPage
+├── pages/          # ProjectsPage / NewProjectPage / ProjectPage / SkillsPage / NotFoundPage
 ├── components/     # common（StateViews / RuntimeStatusChip）、layout（AppLayout）、
-│   │                # project（ProjectCard / Badges）
+│   │                # project（ProjectCard / Badges / PdfPanel / CitationsPanel）
 ├── constants/      # documentType / targetProfile 建议值（与 Backend 同步）
 ├── utils/          # format（时间格式化）
 └── styles/         # index.css（CSS 变量 + 基础组件类）
@@ -623,3 +623,43 @@ PaperTeam/
 
 运行时数据均在仓库外：论文项目 workspace 在 `PROJECTS_ROOT`（默认 backend/projects/），
 Pi 配置目录在用户级 `~/.paperteam/runtime/pi/agent/`（见 §6.0），二者均被 .gitignore 排除。
+
+
+## 12. PDF Review + Citation Integrity + Skill Registry（M4.3 已实现）
+
+### 12.1 数据流（与「长 Session 审稿」的反模式对照）
+
+```text
+Final PDF（只读输入）
+  → parse_paper_pdf.py（pymupdf 子进程，stdout JSON）
+  → 组装（TypeScript 确定性）：pages / sections(TOC>正则>整档) / chunks(页 provenance)
+  → 持久化 paper/{source, parsed/*, stages.json}（事实源）
+  → PaperMap（导航图 + 单 section 摘要，指纹缓存）
+  → ReviewContextBuilder（受控 section context：概览+他节摘要+本节 chunks+引用）
+  → 短生命周期 review task（scope review/section/<id>，Session 可丢弃）
+  → 引用提取（numeric 展开 / 不猜）→ metadata 核验（外部学术库，确定性）
+  → (claim,citation) 语义核验（judge 只见真实证据；确定性 severity）
+  → Citation Integrity 规则并入 QualityGate
+```
+
+关键不变量：**其他章节全文绝不进入当前章节上下文**；**Runtime Session 删除后
+context 从磁盘确定性重建**；**逐条记录文件持久化 + 指纹跳过**（第 37 条失败
+不重做前 36 条）。
+
+### 12.2 失败语义（引用核验）
+
+| 状态 | 含义 | 决定方 |
+|---|---|---|
+| VERIFIED / METADATA_MISMATCH / AMBIGUOUS | 找到文献 / 字段不符 / 多版本无法唯一 | 确定性代码 + 外部库 |
+| NOT_FOUND | ≥2 权威来源检索成功但均无 | 确定性代码（**非模型**） |
+| UNRESOLVED | 检索暂时失败（网络/限流/超时） | 确定性代码 |
+| probable fabrication | ≥3 全一致 not_found + 零 error + 有可查字段 | 确定性代码（强证据才标） |
+| 语义 verdict 六值 | SUPPORTED…/SKIPPED | LLM judge（仅凭真实证据；引文逐字校验） |
+
+### 12.3 Skill Registry
+
+仓库内审计 seed（pin revision + LICENSE + PROVENANCE）→ 启动幂等安装到
+`<runtimeRoot>/skills/installed/`（contentHash，变化标 stale）→ 按角色绑定注入
+Pi Session（`noSkills + additionalSkillPaths`；progressive disclosure 保持）。
+`search_papers`/`lookup_paper` 为 PaperTeam 受控 customTools（researcher/citation
+角色），共享 ScholarlyResolver（缓存/重试/telemetry）。写操作（install 等）M5。

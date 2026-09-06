@@ -1732,12 +1732,38 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - Existing LaTeX Improvement workflow（导入 / 解析 / Baseline Compile / 理解 / 审计 /
   逐节改造）
 
+### M4.0-M4.2 — React Web Workbench（✅ 已实现）
+
+- M4.0 Frontend API Contract（docs/API_CONTRACT.md 冻结；前后端唯一契约）
+- M4.1 React Frontend Skeleton（React 19 + TS + Vite + Router 7 + TanStack Query 5 + Zustand 5）
+- M4.2 Project Workbench（项目列表 / 创建 / Workspace 基础壳；dev 双进程）
+- M4.2.5 Live Model Integration Gate（真实 zai-coding-cn/glm-5.3 经运行中
+  Backend 全链路 L3 验证：单 Agent / SSE / Workflow 至 HITL / cancel）
+- M4.2.6 Documentation Consistency Cleanup（六文档对齐 Pi 架构）
+
+### M4.3 — PDF Review + Citation Integrity + Skill Registry（✅ Foundation 已实现）
+
+- Final PDF 成为 Existing Paper 的正式 Review 输入（Read-only 审阅，不修改 PDF）
+- PDF → 确定性解析（pymupdf 子进程）→ pages / sections / chunks（页 provenance）
+- PaperMap + 受控 section review context（长文档反模式对策：其他章节全文
+  绝不进入当前章节上下文；Session 丢弃后从磁盘确定性重建）
+- Reference / CitationCallout 提取（numeric 展开、关联不上不猜）
+- 引用完整性两层核验：文献真实性（外部学术库确定性核验，NOT_FOUND≠捏造≠
+  检索失败）与 (claim,citation) 语义核验（模型禁止凭记忆、证据引文逐字校验、
+  severity 确定性派生）；Citation Integrity 规则并入 Quality Gate
+- Skill Registry（审计 seed + pin revision + LICENSE/PROVENANCE，按角色注入
+  Pi 会话；首批 verify-citations 与 paper-search 两项 MIT Academic Skill；
+  中文简介一次生成持久化）；受控 search_papers / lookup_paper 工具
+- 最小前端：PDF / Structure、Citations、Skills 三视图
+- M4.3.8（真实用户论文全文 Review E2E）为下一里程碑
+
 ### M4+
 
-- frontend workbench（完整前端工作台）
+- Workflow Live View（SSE 实时视图 / cancel UI）
 - Visual Reviewer（视觉审稿）
 - LaTeX repair loop（确定性修复工具链）
 - version management（完整版本管理体验）
+- Skill 写操作（install / uninstall / update / 绑定编辑；远程安装需安全设计）
 - optional Experiment subsystem（仅当产品正式扩展为自动科研实验平台）
 - self-learning / evolution evaluation（系统自评估与演进）
 

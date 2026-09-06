@@ -1,6 +1,7 @@
 # PaperTeam Frontend API Contract（M4.0）
 
-> 冻结日期：2026-09-04（M4.0）。本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
+> 冻结日期：2026-09-04（M4.0）；M4.3 增补 PDF / Citations / Skills 端点（2026-09-06）。
+> 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
 > **不得**直接 JSON serialize 给前端。
@@ -55,6 +56,33 @@
 | `GET /api/projects/:id/manuscript`、`GET …/context`、`POST …/citation-check`、`GET …/citation-report` | 手稿 / 派生上下文 / 引用核验 | M4.5-M4.7 |
 | `PATCH /api/projects/:id` | 更新研究定位字段 | M4.x（编辑表单） |
 | `POST /api/projects/:id/generate` | M2 同步生成（保留兼容；前端不使用） | 不消费 |
+
+### 1.2b M4.3 已消费 ✅（PDF / Citations / Skills）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `POST /api/projects/:id/paper/pdf` | 上传 Final PDF（`{fileName, contentBase64}`，≤50MB，%PDF- 校验；sha256 幂等）→ 201 `{document: PaperDocSummary, unchanged}` | ProjectPage「PDF / Structure」 |
+| `GET /api/projects/:id/paper` | `{document: PaperDocSummary\|null, sections?, stages?, note?}`（summary 不含 pages/chunks 全文） | ProjectPage「PDF / Structure」 |
+| `POST /api/projects/:id/paper/reparse` | 对已落盘原料重跑解析 | （工具 API） |
+| `GET /api/projects/:id/paper/chunks?sectionId=` | chunk 明细（每条含 chunkId/pageStart/pageEnd/sectionId/text） | （M4.3.8 review 视图） |
+| `GET/POST /api/projects/:id/paper/map` | PaperMap 读取 / 重建（POST body `{refreshSummaries?: boolean}`） | （M4.3.8） |
+| `GET /api/projects/:id/paper/review-context?sectionId=[&skill=]` | section review 受控上下文预览（budget 分项） | （M4.3.8 / 诊断） |
+| `POST /api/projects/:id/citations/extract` | 引用提取（确定性）→ `{summary{referenceCount,calloutCount}, reused, references, callouts}` | Citations 面板（重新提取） |
+| `GET /api/projects/:id/citations` | `{summary: ExtractionSummary, references: ReferenceView[]}` | Citations 面板 |
+| `POST /api/projects/:id/citations/verify-metadata` | 真实性核验（外部学术库；逐条文件持久化 + 指纹跳过）→ `{byStatus, checked, reused, telemetry, records}` | Citations 面板 |
+| `GET /api/projects/:id/citations/metadata` | `{records: MetadataRecordView[]}`（逐条 status/canonical/mismatches） | Citations 面板（status 列） |
+| `POST /api/projects/:id/citations/verify-claims` | (claim,citation) 语义核验（需模型；`{force?, limit?}`） | Citations 面板 |
+| `GET /api/projects/:id/citations/claims` / `GET …/integrity` | 语义核验记录 / 完整性汇总（metadata 五态 + semantic verdict 分布 + gate 输入） | Citations 面板 / M4.6 |
+| `GET /api/skills` | `{skills: SkillView[], bindings}`（含 pin revision/license/中文简介状态） | SkillsPage |
+| `GET /api/skills/:id` | `{skill: SkillView}`；400=不存在 | （详情视图） |
+| `POST /api/skills/:id/summary` | 重新生成中文简介（模型未配置 → 400 结构化错误） | SkillsPage |
+
+> M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **UNRESOLVED**
+> （检索暂时失败）≠ probable fabrication（≥3 源全一致零 error 才标记）；
+> 语义 verdict 六值固定（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED /
+> CONTRADICTED / INSUFFICIENT_EVIDENCE / SKIPPED）；INSUFFICIENT_EVIDENCE 不进入
+> 阻断性 gate（人工复核）。Skill 写操作（install/uninstall/update/绑定编辑）为
+> M5 范围，本轮无对应端点、前端也不显示假按钮。
 
 ### 1.3 已知缺口
 

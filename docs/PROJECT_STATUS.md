@@ -1,11 +1,19 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-05（M4.2.5 Live Model Integration Gate 完成后）
+> 更新日期：2026-09-06（M4.3 PDF Review + Citation Integrity + Skill Registry 完成后）
 
 ## 当前阶段
 
-**M4.0-M4.2 Complete（M4.0 Frontend API Contract → M4.1 React Frontend
-Skeleton → M4.2 Project Workbench）。React Web Workbench 已落地：React 19 +
+**M4.3 Foundation Complete（M4.3.0 Review Domain Model → M4.3.7 Minimal
+UI；M4.3.8 真实用户论文 E2E 属下一轮）。** Final PDF 正式成为 Existing
+Paper 的 Review 输入：PDF → pymupdf 确定性解析 → pages/sections/chunks（页
+provenance）→ PaperMap + 受控 section review context（其他章节全文绝不进
+入当前章节的审稿上下文）；引用完整性两层核验（文献真实性=外部学术库确
+定性核验，NOT_FOUND≠捏造；(claim,citation) 单记录语义核验，模型禁止凭记
+忆判定、judge 引文必须逐字来自检索证据）；Skill Registry 落地（两项审计
+过的 MIT Academic Skill，pin revision + LICENSE + PROVENANCE，按角色注入
+Pi 会话，progressive disclosure 保持）。M4.0-M4.2 的 React Workbench 基线
+保持。React 19 +
 TypeScript + Vite + React Router 7 + TanStack Query 5 + Zustand 5（npm，
 frontend/ 独立包）；`npm run dev` 一键双进程（Backend :3000 + Vite :5173，
 `/api`、`/health` 经 Vite proxy 同源转发，任一退出联动全退）。前端只消费
@@ -16,6 +24,25 @@ List / Create Project（双模式）/ Project Workspace 基础壳就绪。
 `zai-coding-cn/glm-5.3` 经运行中 Backend 全链路验证（单 Agent smoke /
 live SSE / Workflow 至首个 HITL / 真实 cancel），L3 Live Provider E2E
 verified（见下）。下一阶段：M4.3 Workflow Live View + SSE + Cancel。**
+
+## M4.3 — PDF Review + Citation Integrity + Skill Registry（✅ Foundation Complete，2026-09-06）
+
+> M4.3.8（真实用户论文全文 Review E2E）不在本轮；本轮以真实公开论文
+> （arXiv 1706.03762）完成集成 smoke。
+
+| 子里程碑 | 状态 | 说明 |
+|---|---|---|
+| M4.3.0 Domain Model | ✅ | `paper/types.ts`（PaperDocument/Page/Section/Chunk/PaperMap + 防御性读取守卫）、`citation/integrity.ts`（ReferenceEntry / CitationCallout / CanonicalPaperRecord / CitationVerificationRecord / **ClaimCitationRecord**（(claim,citation) 单记录，借鉴 RefWarden）+ `deriveClaimSeverity` 确定性派生）、`review/finding.ts`（ReviewFinding，provenance 强制）、`skills/types.ts`（SkillMetadata + frontmatter 解析）。全部 JSON 可序列化，无 Pi 类型泄漏 |
+| M4.3.1 PDF Ingestion | ✅ | `backend/tools/parse_paper_pdf.py`（pymupdf 1.28.2 子进程，UTF-8 stdout JSON、无 shell）+ `PdfParser` seam + 确定性 section/chunk 组装（TOC > 标题正则 > 整档；References 章节标题+[n] 双确认补齐）+ `PaperStore`（paper/source + parsed/{document.json,pages/,sections.json,chunks.jsonl} + stages.json）+ 上传校验（%PDF- 头 / 50MB / basename 归一化 / sha256 幂等替换）。真实 PDF：15 页 / 23 sections / 27 chunks / quality=good；重启后全新实例可重建 |
+| M4.3.2 Long-document Context | ✅ | `PaperMapService`（骨架确定性 + 单 section 摘要一次调用、指纹缓存、失败容忍）+ `ReviewContextBuilder`（论文概览 + 全文导航摘要 + 仅当前章节 chunks + 可选引用注入；分项 budget）。**隔离证明**：Method 上下文不含其他章节全文；**会话无关证明**：Runtime Session 全弃后从磁盘确定性重建 |
+| M4.3.3 Citation Extraction | ✅ | `ReferenceExtractor`（numeric [n] 条目 + 跨行合并 + 章节边界正文剥离；title/authors/year/venue/doi/arXiv best-effort；Unicode 安全）+ callout（[1]/[2,3]/[4-7] 展开为逐条 relation；范围内空缺=unresolved、超范围=invalid，不猜；author-year best-effort）；真实 PDF 40 条 references / 51 callouts / 关联可追踪 |
+| M4.3.4 Metadata Verification | ✅ | `ScholarlyResolver`（crossref/openalex/semantic-scholar/arxiv 轻量 connector；标题+作者重合+年份±1 门控；重复收录合并；DOI 精确优先；重试×1 + LRU 查询缓存 + 礼貌间隔 + telemetry）。**失败语义**：网络/5xx/超时=error→UNRESOLVED（绝不 NOT_FOUND）；≥2 权威 not_found=NOT_FOUND；≥3 全一致零 error 才 probable fabrication。逐条文件持久化 + 指纹跳过。live：真实论文 VERIFIED / 虚构文献 not_found / S2 429 优雅降级 |
+| M4.3.5 Semantic Verification | ✅ | judge 链路 claim→citation→已核验 canonical→真实检索证据→LLM→verdict；真实性未确立→SKIPPED（不验证不存在的文献）；无摘要→INSUFFICIENT_EVIDENCE 确定性短路（零模型调用）；**judge 伪造引文剥离**（keyQuote 必须逐字来自证据）；severity 确定性派生；Citation Integrity 4 硬规则并入 QualityGate（INSUFFICIENT_EVIDENCE 不阻断只标人工复核）；citation 角色（scope citation/*）；模型调用/上下文规模 telemetry |
+| M4.3.6 Skill Registry | ✅ | `SkillRegistry`（仓库内审计 seed → `<runtimeRoot>/skills/installed`，contentHash 幂等、变化标 stale；LICENSE/PROVENANCE 随附）；seeds：**verify-citations**（Agents4Academia-AI/citation_verification, MIT, pin `ae85ae3` 原件 verbatim）+ **paper-search**（openags/paper-search-mcp, MIT, pin `234678a`，PaperTeam 兼容 wrapper + UPSTREAM_SKILL.md 原件保留）；绑定 researcher→paper-search、citation→双、reviewer→verify-citations、writer→无；Pi 注入 `DefaultResourceLoader({noSkills, additionalSkillPaths})`（用户 ~/.pi 不受影响）；`search_papers`/`lookup_paper` 受控工具（共享 resolver 缓存）；中文简介一次生成持久化（模型未配置→summary_pending 不失败） |
+| M4.3.7 Minimal UI | ✅ | ProjectPage 新增 PDF / Structure 与 Citations 标签（上传/解析状态/sections 表；两层核验摘要 chips + 逐条 status/canonical/疑似捏造告警 + 分步操作）；全局 Skills 页（中文简介为主、原始描述折叠、来源@revision/license/绑定，**无未实现的 Install/Uninstall 按钮**）；全部 server state 走 TanStack Query |
+| M4.3.8 用户论文 E2E | ⏳ 下一轮 | 直接用用户最终 PDF 验收 |
+
+外部选型结论：**pymupdf adopt**（本机已有 1.28.2；pymupdf4llm 评估后不作为核心依赖——markdown re-flow 破坏 chunk↔原文对应）；**GROBID defer**（callout↔reference 关联有价值但 Java21/Docker 部署超出本轮，`ScholarlyStructureParser` seam 未建、待 M4.3.8/M5 评估）；**RefWarden adopt+借鉴**（(claim,citation) 模型/never-from-memory/确定性 severity）；**paper-search 借鉴 provider 设计 + wrapper 收录**（不自建多平台搜索框架、不引入其 Python MCP server）。
 
 ## M4.0-M4.2 — React Web Workbench（✅ 完成，2026-09-04）
 
@@ -189,11 +216,27 @@ POST   /api/projects/:id/quality-gate             Quality Gate 评估（基于�
 POST   /api/projects/:id/build                    Build Gate + Draft PDF
 GET    /api/projects/:id/manuscript               大纲 + 章节状态
 GET    /api/projects/:id/context?rebuild=true     Derived Context
+POST   /api/projects/:id/paper/pdf                上传 Final PDF + 解析（M4.3）
+GET    /api/projects/:id/paper                    PDF 状态 + sections + stages（M4.3）
+POST   /api/projects/:id/paper/reparse            重跑解析（M4.3）
+GET    /api/projects/:id/paper/chunks?sectionId=  chunk 明细（M4.3）
+GET|POST /api/projects/:id/paper/map              PaperMap 读/重建（M4.3）
+GET    /api/projects/:id/paper/review-context     section review 上下文预览（M4.3）
+POST   /api/projects/:id/citations/extract        引用提取（确定性，M4.3）
+GET    /api/projects/:id/citations                提取摘要 + references（M4.3）
+POST   /api/projects/:id/citations/verify-metadata 真实性核验（外部学术库，M4.3）
+GET    /api/projects/:id/citations/metadata       逐条核验记录（M4.3）
+POST   /api/projects/:id/citations/verify-claims  (claim,citation) 语义核验（M4.3）
+GET    /api/projects/:id/citations/claims         语义核验记录（M4.3）
+GET    /api/projects/:id/citations/integrity      完整性汇总 + gate 输入（M4.3）
+GET    /api/skills                                Skill 列表 + 绑定（M4.3）
+GET    /api/skills/:id                            Skill 详情（M4.3）
+POST   /api/skills/:id/summary                    重新生成中文简介（M4.3）
 ```
 
 ## 测试与验证
 
-- **Backend 234 + Frontend 24 个测试全部通过**（vitest；backend 22 个测试文件。M3.8 迁移后口径，M4.0 新增 4 个 backend 测试：`GET /api/projects` ×3 + `listMetadata` 排序；Frontend 24 个属 `frontend/` 独立包）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
+- **Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。
 - 测试策略：编排引擎与业务服务为真实实现，仅 AgentRuntime 注入脚本化 fake
@@ -206,7 +249,9 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 1. **带真实模型凭据的完整 Idea-to-Paper E2E**：M3.7/M3.8 已用真实 Pi SDK + 官方 fauxProvider 验证全部 Runtime 语义（初始化 / 单轮 / 事件 / 取消 / 工具取消 / 并发 / 隔离）；**L3 Live Provider E2E 已于 M4.2.5（2026-09-05）verified**——真实 `zai-coding-cn/glm-5.3` 经运行中 Backend 验证单 Agent / SSE / Workflow 至首个 HITL / cancel（见 M4.2.5 节）。HITL resume 之后的完整论文链（Outline → 写作 → 审稿 → 修订 → PDF）仍未跑真实模型（有意节省额度，M4.3+ 按需）。
 2. **TeX Live 真实编译**：本机未安装 pdflatex/xelatex/latexmk；LatexCompiler 与 Build Gate 的编译路径经注入式 runner 覆盖，真实 PDF 编译待有 TeX 环境的机器验证。
 3. **多模态 PDF 视觉级分析 E2E**：依赖具备视觉/PDF 能力的模型与沙箱路径授权，当前环境无法真实跑通（返回 capability-gap 如实报告，不伪造成功）。
-4. **Citation metadata providers 真实网络**：真实限流与响应形态待部署环境观察。
+4. **Citation metadata providers 真实网络**：M4.3 已用真实 crossref/openalex/arxiv 跑通 live smoke（含 S2 429 降级、虚构文献 not_found）；长期限流形态待部署环境观察。
+5. **GLM 语义核验 live**：本轮模型未配置（凭据按规范仅运行时注入），语义核验以 Fake Runtime 全场景覆盖 + 真实 backend 降级路径验证；待模型配置后做 GLM-5.3 live 语义 smoke（M4.3.8 顺带）。
+6. **GROBID**：callout↔reference 精细关联与 author-year 复杂版式的增强通道，部署成本（Java 21/Docker）超出本轮；M4.3.8/M5 评估（见 DECISIONS）。
 
 ## M3 遗留问题（真实问题，均不阻塞验收）
 
@@ -227,6 +272,7 @@ GET    /api/projects/:id/context?rebuild=true     Derived Context
 
 ## 历史
 
+- **M4.3 PDF Review + Citation Integrity + Skill Registry**：Final PDF 成为 Existing Paper 正式 Review 输入；确定性解析（pymupdf 子进程）→ pages/sections/chunks；PaperMap + 受控 section context（隔离证明 + 会话无关重建证明）；引用提取（range 展开/不猜语义）；两层核验（NOT_FOUND≠捏造≠检索失败；语义 judge 禁止凭记忆、伪造引文剥离、确定性 severity）；Citation Integrity 规则并入 QualityGate；Skill Registry（两项 MIT 审计 skill pin revision 入库、按角色注入、中文简介持久化）；最小前端三视图；真实 PDF + 真实学术库 live smoke；285+34 测试。
 - **M4.2.5 Live Model Integration Gate**：验证型里程碑（无代码改动）——真实 Provider `zai-coding-cn/glm-5.3` 经运行中 Backend 公开 API 完成 L3 验证：单 Agent smoke（10.3s 真实输出）、live SSE（4 条 LIVE 域事件实时推送）、Workflow E2E 至首个 HITL（checkpoint 全落盘）、真实 cancel（边界语义 + 会话复用）；凭据零泄漏，Pi 全程 in-process，234+24 测试零回归。
 - **M3.8 Pi Runtime Migration & Contract v2**：Pi 成为唯一正式 Runtime（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin）；OpenClaw 全套基础设施（Adapter / Gateway client / Bootstrap / supervisor / runtime.json / 三依赖）移除；`AgentRuntime` Contract v2（startAgent → 句柄：运行中事件流 / 取消 / result）；tool execution AbortSignal 取消传导实证；RuntimeStatus 去 Gateway 化；dev 直启 Backend；230 测试。**Pi + Node.js + npm 固化为 M4 Runtime baseline。**
 - **M3.7 Pi Runtime Feasibility**：Side-by-side PiRuntimeAdapter 全项验证（in-process / 三路并发 / abort / 事件 / 隔离 / Windows 零 Gateway 子进程），结论 MIGRATE TO PI；280 测试。

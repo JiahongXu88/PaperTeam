@@ -373,3 +373,55 @@ PI：Pi 以 in-process 架构（无 Gateway / WebSocket / 握手 / RPC 轮询 / 
 经真实 SDK（fauxProvider + customTools 慢工具）专项实证；测试从 280 调整为 230
 （OpenClaw 架构专属测试随架构删除，v2 语义新增覆盖）。未来需要 Web Search 等
 扩展能力时优先 Pi custom tool / MCP / 独立服务，不为单一工具恢复完整 Gateway。
+
+## D-0021 M4.3 PDF 解析采用 pymupdf 子进程（Windows + stdout JSON 协议），pymupdf4llm 不作核心依赖
+
+Python 依赖隔离在 `backend/tools/`（`parse_paper_pdf.py`：execFile 无 shell、
+PYTHONIOENCODING=utf-8、超时、stdout 单 JSON、stderr 仅日志）；领域组装
+（sections/chunks/ID/质量分级）全部在 TypeScript 侧可单测。pymupdf4llm 经实测
+评估后不采用为依赖：其 markdown re-flow 破坏 chunk 文本与 PDF 原文的 1:1
+对应（引用 provenance 需要），且核心需求（页文本/TOC/字号）由 pymupdf 原生
+API 覆盖。pymupdf 为 AGPL/商业双许可——本地内部工具形态下无实际约束，若未来
+对外提供闭源服务需重新评估（或换 pypdfium2）。
+
+## D-0022 GROBID 本轮 defer：numeric 引用正则可解，部署成本（Java 21/Docker + 常驻内存）超出 M4.3 范围
+
+GROBID（Apache 2.0）的 callout↔reference 精细关联（F1 0.76-0.91）对
+author-year 风格与复杂版式有真实价值，留作 M4.3.8/M5 的增强通道评估
+（届时以 `ScholarlyStructureParser` seam 接入 REST 服务形态，不走子进程）。
+本轮 numeric（[n] 自识别）+ 标题正则 + author-year best-effort 已覆盖目标
+论文风格；「关联不上就 unresolved，不猜」是安全下界。
+
+## D-0023 引用核验两层分离：metadata truth（确定性外部核验）≠ semantic support（LLM judge + 真实证据）；NOT_FOUND ≠ 捏造 ≠ 检索失败
+
+借鉴 RefWarden（Agents4Academia-AI/citation_verification,
+MIT, pin ae85ae3）。三层语义严格区分：provider 网络/5xx/超时 → UNRESOLVED；
+≥2 权威 not_found → NOT_FOUND；≥3 全一致零 error 且有可查字段 → 才标
+probable fabrication。语义 judge 只拿 claim + canonical + 真实检索证据
+（evidenceLevel=abstract 如实标注），禁止凭记忆；judge 的 keyQuote 必须逐字
+来自证据否则剥离；真实性未确立 → semantic SKIPPED；无证据 →
+INSUFFICIENT_EVIDENCE（不阻断，人工复核）。severity 由
+(existence, verdict, priority) 确定性派生，模型不定级。Citation Integrity
+硬规则并入现有 QualityGate（不另造平行 Gate Engine）。
+
+## D-0024 长文档 Review 采用 PaperMap + 短生命周期 section task，禁止整篇 PDF 塞进增长型 Session
+
+PDF → 确定性解析 → PaperMap（导航图 + 单 section 摘要，指纹缓存）→ 每个
+section 一个受控 context（论文概览 + 其他章节**摘要** + 当前章节 chunks +
+可选引用），scope `review/section/<id>` 稳定、从磁盘事实源确定性重建。
+其他章节全文绝不进入当前章节上下文（隔离证明测试）；摘要失败不阻塞
+（status=failed 可重跑）；token 控制经 telemetry 可审计。
+
+## D-0025 Skill Store 独立于 ~/.pi；第三方 Skill 必须仓库内审计 seed + pin revision + LICENSE，按角色注入
+
+PaperTeam 数据目录 `<runtimeRoot>/skills/installed/`；仓库内
+`backend/skills/seed/`（审计产物：SKILL.md + skill.json + LICENSE +
+PROVENANCE.md [+ UPSTREAM_SKILL.md]）→ 启动幂等安装（contentHash）。
+Pi 注入 `DefaultResourceLoader({noSkills: true, additionalSkillPaths})`：
+技能面完全 PaperTeam 自控、用户 ~/.pi 不受影响、progressive disclosure 保持
+（仅 name/description/location 进 system prompt）。外部 skill 不自动可信；
+本轮白名单两项（verify-citations 原件 verbatim；paper-search 为受控工具
+wrapper，原件保留、wrapper 注明）。paper-search 的工具面由 PaperTeam 受控
+`search_papers`/`lookup_paper` 提供（共享 ScholarlyResolver 缓存），不给
+Agent shell。中文简介一次生成持久化（模型不可用 → summary_pending，discovery
+不失败）。Install/Uninstall/Update/绑定编辑留 M5。
