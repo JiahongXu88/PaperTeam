@@ -5,10 +5,10 @@ import { useProjects, useRuntimeStatus } from "../../hooks/queries.js";
 import { useUiStore } from "../../stores/uiStore.js";
 
 /**
- * 应用布局（Visual Redesign 2026-09）：书脊式深墨侧栏 + 纸白内容区。
+ * 应用布局（Visual Redesign 2026-09 / Project Entry UX 2026-09）：书脊式深墨侧栏 + 纸白内容区。
  *
- * 侧栏：品牌 → Workspace 导航（Projects / Skills）→ Recent 项目快捷入口
- * （真实 listProjects 数据）→ 底部 Settings 与 Runtime 状态指示灯。
+ * 侧栏：品牌（PaperTeam，点击返回论文项目）→ 导航（论文项目 / Skills）→
+ * 最近项目快捷入口（真实 listProjects 数据，不含已归档）→ 底部设置与 Runtime 状态。
  */
 
 function ModelConfigBanner() {
@@ -61,9 +61,19 @@ export function AppLayout() {
   return (
     <div className="app-shell">
       <aside className="app-sidebar">
-        <Link to="/projects" className="sidebar-brand">
+        <Link
+          to="/projects"
+          className="sidebar-brand"
+          aria-label="返回论文项目"
+          title="返回论文项目"
+          data-testid="brand-home"
+        >
+          <span className="sidebar-brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6">
+              <path d="M2.5 6.5 8 2l5.5 4.5V13a1 1 0 0 1-1 1h-3v-4h-3v4h-3a1 1 0 0 1-1-1z" strokeLinejoin="round" />
+            </svg>
+          </span>
           <span className="sidebar-brand-name">PaperTeam</span>
-          <span className="sidebar-brand-sub">Research Workbench</span>
         </Link>
         <nav className="sidebar-nav" aria-label="全局导航">
           <NavLink to="/projects" className={navLinkClass}>
@@ -75,7 +85,7 @@ export function AppLayout() {
         </nav>
         <SidebarRecent />
         <div className="sidebar-footer">
-          <NavLink to="/settings/model" className={navLinkClass}>
+          <NavLink to="/settings" className={navLinkClass}>
             <span className="link-text">设置</span>
           </NavLink>
           <RuntimeStatusChip />

@@ -10,8 +10,9 @@ import type { ProjectStatus, WorkflowKind, WorkflowRunStatus } from "../types/ap
  */
 
 export const WORKFLOW_KIND_LABELS: Record<WorkflowKind, string> = {
-  idea_to_paper: "Idea → Paper",
-  existing_paper_improvement: "已有论文改进",
+  idea_to_paper: "想法成文",
+  existing_paper_improvement: "论文改进",
+  existing_paper_review: "论文 Review",
 };
 
 export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {

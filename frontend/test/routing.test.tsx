@@ -5,7 +5,7 @@ import { AppRoutes } from "../src/router/index.js";
 import type { ProjectView } from "../src/types/api.js";
 import { renderWithProviders } from "./helpers.js";
 
-/** 路由（M4.1）：/ 重定向、四个真实路由、404 */
+/** 路由（M4.1 + 生命周期 2026-09）：/ 重定向、真实路由、Settings 二级、404、Brand 主页入口 */
 
 vi.mock("../src/api/projects.js", () => ({
   listProjects: vi.fn(async () => [] as ProjectView[]),
@@ -25,6 +25,24 @@ vi.mock("../src/api/runtime.js", () => ({
     agents: { roles: [] },
     sessions: { activeRuns: 0, managedSessions: 0 },
   })),
+}));
+
+vi.mock("../src/api/settings.js", () => ({
+  getModelSettings: vi.fn(async () => ({
+    apiKeyConfigured: true,
+    apiKeySource: "environment",
+    configurationSource: "environment",
+    envOverride: true,
+    runtimePhase: "healthy",
+    runtimeVersion: "0.84.4",
+    modelPhase: "configured",
+    modelDetail: "ok",
+    detail: "ok",
+  })),
+  getModelOptions: vi.fn(async () => ({ providers: [] })),
+  saveModelSettings: vi.fn(),
+  clearModelApiKey: vi.fn(),
+  testModelConnection: vi.fn(),
 }));
 
 function renderAt(route: string) {
@@ -59,5 +77,27 @@ describe("routing", () => {
     const chip = await screen.findByTestId("runtime-chip");
     expect(chip).toHaveTextContent("Pi 0.84.4");
     expect(chip).toHaveTextContent("模型已配置");
+  });
+
+  it("Brand：PaperTeam 是返回论文项目的主页入口；不再出现 Research Workbench", async () => {
+    renderAt("/skills");
+    const brand = await screen.findByTestId("brand-home");
+    expect(brand).toHaveAttribute("href", "/projects");
+    expect(brand).toHaveAttribute("aria-label", "返回论文项目");
+    expect(screen.queryByText("Research Workbench")).toBeNull();
+  });
+
+  it("/settings 重定向到 /settings/model；Settings 二级导航可用", async () => {
+    renderAt("/settings");
+    expect(await screen.findByRole("heading", { name: "模型设置" })).toBeInTheDocument();
+    const subnav = screen.getByTestId("settings-subnav");
+    expect(subnav).toHaveTextContent("模型设置");
+    expect(subnav).toHaveTextContent("项目管理");
+  });
+
+  it("/settings/projects 渲染项目管理页（已归档项目）", async () => {
+    renderAt("/settings/projects");
+    expect(await screen.findByRole("heading", { name: "项目管理" })).toBeInTheDocument();
+    expect(await screen.findByText("暂无已归档项目。")).toBeInTheDocument();
   });
 });

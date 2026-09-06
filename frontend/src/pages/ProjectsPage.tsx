@@ -50,7 +50,7 @@ export function ProjectsPage() {
       ) : data !== undefined && data.length === 0 ? (
         <EmptyState
           title="还没有论文项目"
-          description="从研究想法出发（Idea → Paper），或导入已有论文做引用核验与改进。"
+          description="从研究想法开始写一篇新论文，或导入已有论文 PDF 做快速 Review 与系统性改进。"
         >
           <Link to="/projects/new" className="btn btn-primary">
             新建项目

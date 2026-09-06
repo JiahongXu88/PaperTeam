@@ -10,7 +10,10 @@
 // ---- Project ----
 
 /** 一级工作流类型（Backend workflow/types.ts WorkflowKind） */
-export type WorkflowKind = "idea_to_paper" | "existing_paper_improvement";
+export type WorkflowKind =
+  | "idea_to_paper"
+  | "existing_paper_improvement"
+  | "existing_paper_review";
 
 /** 项目状态（project.json status） */
 export type ProjectStatus = "created" | "generated" | "failed";
@@ -23,6 +26,8 @@ export interface ProjectView {
   createdAt: string;
   updatedAt: string;
   workflowKind?: WorkflowKind;
+  /** 生命周期：归档时间（存在 = 已归档；默认列表不显示） */
+  archivedAt?: string;
   researchIdea?: string;
   researchField?: string;
   documentType?: string;
@@ -41,6 +46,27 @@ export interface CreateProjectInput {
   targetProfile?: string;
   targetVenue?: string;
   language?: string;
+}
+
+/** 已有论文导入目标（UI 两个入口的内部映射，不进 prompt） */
+export type ExistingPaperGoal = "review_only" | "improvement";
+
+/** POST /api/projects/import-pdf 输入（File First：PDF + goal，其余可选） */
+export interface ImportProjectPdfInput {
+  fileName: string;
+  contentBase64: string;
+  goal: ExistingPaperGoal;
+  researchField?: string;
+  targetVenue?: string;
+  targetProfile?: string;
+  language?: string;
+}
+
+/** POST /api/projects/import-pdf 响应 */
+export interface ImportProjectPdfResult {
+  project: ProjectView;
+  /** 项目标题来源：PDF 内标题 / 文件名兜底 */
+  titleSource: "pdf" | "filename";
 }
 
 // ---- WorkflowRun（M4.2 只消费列表级摘要；完整 Live View 属于 M4.3） ----
@@ -64,7 +90,48 @@ export interface WorkflowRunView {
   updatedAt: string;
   awaiting?: { stageId: string; prompt: string; options: string[] } | null;
   error?: { code: string; message: string } | null;
-  completion?: { label: "final" | "draft" } | null;
+  completion?: { label: "final" | "draft" | "review" } | null;
+}
+
+// ---- Existing-Paper Review（existing_paper_review 聚合报告） ----
+
+/** 单条 ReviewFinding（Backend review/finding.ts） */
+export interface ReviewFindingView {
+  findingId: string;
+  category: "fact" | "academic" | "style" | "citation" | "consistency";
+  severity: "critical" | "major" | "minor" | "info";
+  sectionId?: string;
+  page?: number;
+  claimText?: string;
+  message: string;
+  suggestion?: string;
+  status: "open" | "resolved" | "dismissed";
+  source: string;
+}
+
+/** GET /api/projects/:id/paper-review 的聚合报告（无报告为 null） */
+export interface ExistingReviewReportView {
+  schemaVersion: number;
+  kind: "existing_paper_review";
+  round: number;
+  generatedAt: string;
+  paper: { title: string; pageCount?: number; sections?: number };
+  review: {
+    sectionsReviewed: number;
+    sectionsTotal: number;
+    skippedSections?: number;
+    findingsTotal: number;
+    parseFailures?: number;
+    dropped?: number;
+    bySeverity: Record<string, number>;
+    byCategory: Record<string, number>;
+  };
+  citationIntegrity: {
+    metadataByStatus?: Record<string, number>;
+    semantic?: Record<string, unknown>;
+    probableFabrications?: string[];
+  };
+  findings: ReviewFindingView[];
 }
 
 // ---- Runtime Status（M3.8 去 Gateway 化后的 Pi schema） ----

@@ -7,10 +7,12 @@ import { ApiError } from "../src/api/client.js";
 import type { ProjectView } from "../src/types/api.js";
 import { renderWithProviders } from "./helpers.js";
 
-/** ProjectsPage（M4.2）：加载 / 数据 / 空态 / 错误重试 */
+/** ProjectsPage（M4.2 + 生命周期 2026-09）：加载 / 数据 / 空态 / 错误重试 / 行菜单 */
 
 vi.mock("../src/api/projects.js", () => ({
   listProjects: vi.fn(),
+  archiveProject: vi.fn(),
+  renameProject: vi.fn(),
 }));
 
 vi.mock("../src/api/runtime.js", () => ({
@@ -54,22 +56,53 @@ describe("ProjectsPage", () => {
     expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
-  it("成功：渲染项目卡片的真实字段（标题 / 模式 / 状态 / 领域）", async () => {
+  it("成功：渲染项目行的真实字段（标题 / 模式 / 状态 / 领域）", async () => {
     vi.mocked(listProjects).mockResolvedValue(projects);
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
 
     expect(await screen.findByText("检索增强生成综述")).toBeInTheDocument();
     expect(screen.getByText("多模态跟踪改进")).toBeInTheDocument();
-    expect(screen.getByText("Idea → Paper")).toBeInTheDocument();
-    expect(screen.getByText("已有论文改进")).toBeInTheDocument();
+    expect(screen.getByText("想法成文")).toBeInTheDocument();
+    expect(screen.getByText("论文改进")).toBeInTheDocument();
     expect(screen.getByText("已创建")).toBeInTheDocument();
     expect(screen.getByText("已生成")).toBeInTheDocument();
     expect(screen.getByText(/信息检索/)).toBeInTheDocument();
-    // 卡片链接指向 workspace
-    expect(screen.getAllByTestId("project-card")[0]).toHaveAttribute(
+  });
+
+  it("行内主内容是指向 workspace 的链接；··· 菜单提供 打开 / 重命名 / 归档", async () => {
+    vi.mocked(listProjects).mockResolvedValue(projects);
+    renderWithProviders(<ProjectsPage />, { route: "/projects" });
+
+    await screen.findByText("检索增强生成综述");
+    // 主内容 Link 指向 workspace（菜单按钮在 Link 之外）
+    expect(screen.getAllByRole("link", { name: /检索增强生成综述/ })[0]).toHaveAttribute(
       "href",
       "/projects/p-first0000001",
     );
+    // ··· 菜单动作
+    const user = userEvent.setup();
+    await user.click(screen.getAllByTestId("project-row-menu")[0]);
+    expect(screen.getByRole("menuitem", { name: "打开" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "重命名" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "归档项目" })).toBeInTheDocument();
+    // 普通列表不提供永久删除
+    expect(screen.queryByRole("menuitem", { name: /删除/ })).toBeNull();
+  });
+
+  it("归档：调用 archiveProject；运行中项目（409）如实展示后端信息", async () => {
+    const { archiveProject } = await import("../src/api/projects.js");
+    vi.mocked(listProjects).mockResolvedValue([projects[0]!]);
+    vi.mocked(archiveProject).mockRejectedValue(
+      new ApiError(409, "PROJECT_BUSY", "当前项目仍有进行中的任务，请先完成或取消任务后再归档。"),
+    );
+    renderWithProviders(<ProjectsPage />, { route: "/projects" });
+
+    const user = userEvent.setup();
+    await screen.findByText("检索增强生成综述");
+    await user.click(screen.getByTestId("project-row-menu"));
+    await user.click(screen.getByRole("menuitem", { name: "归档项目" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("进行中的任务");
   });
 
   it("空态：无项目时显示引导与创建入口", async () => {

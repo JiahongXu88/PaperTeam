@@ -1,22 +1,35 @@
-import { Link, useSearchParams, useParams } from "react-router-dom";
+import { useState } from "react";
+import { Link, useNavigate, useSearchParams, useParams } from "react-router-dom";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
+import { InlineRename, RowMenu } from "../components/common/RowMenu.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
+import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
-import { useCitations, useCitationIntegrity, usePaper, useProject, useProjectRuns } from "../hooks/queries.js";
+import {
+  useArchiveProject,
+  useCitations,
+  useCitationIntegrity,
+  usePaper,
+  usePaperReviewReport,
+  useProject,
+  useProjectRuns,
+  useRenameProject,
+} from "../hooks/queries.js";
 import { ApiError } from "../api/client.js";
 import { formatApiError } from "../utils/errors.js";
 import { formatDateTime } from "../utils/format.js";
 import type { PaperDocSummary } from "../types/paper.js";
+import type { WorkflowKind } from "../types/api.js";
 
 /**
- * Project Workspace（Visual Redesign 2026-09 / UX Polish 2026-09）。
+ * Project Workspace（Project Entry & Lifecycle UX 2026-09）。
  *
- * 结构：衬线标题 + 状态 → 项目级导航（当前只暴露真正可用的模块，
- * 规划中的 Workflow/Evidence/Review/Artifacts 不占一级导航）→ 内容。
- * 当前 Tab 进入 URL（?tab=），刷新 / 分享链接可恢复；无效值回退概览。
+ * 结构：衬线标题（可重命名）+ 状态 → 项目级导航（只暴露真正可用的模块）→
+ * 内容。已有论文类项目提供「Review」Tab（PDF 快速 Review）。
+ * Tab 进入 URL（?tab=），刷新 / 分享链接可恢复；无效值回退概览。
  */
 
 type TabId = "overview" | "pdf" | "citations" | "workflow" | "evidence" | "review" | "artifacts";
@@ -32,35 +45,41 @@ const TABS: ReadonlyArray<TabEntry> = [
   { id: "overview", label: "概览" },
   { id: "pdf", label: "PDF 与结构" },
   { id: "citations", label: "引用核验" },
+  { id: "review", label: "Review", milestone: "existing-only" },
   { id: "workflow", label: "工作流", milestone: "M4.4" },
   { id: "evidence", label: "证据", milestone: "M4.5" },
-  { id: "review", label: "审稿 / 质量门禁", milestone: "M4.6" },
   { id: "artifacts", label: "草稿 / 最终 PDF", milestone: "M4.7" },
 ];
 
-/** 一级导航只渲染当前真实可用的模块 */
-const VISIBLE_TABS: ReadonlyArray<TabEntry> = TABS.filter((entry) => entry.milestone === undefined);
+/** 已有论文类项目（导入 PDF）开放 Review Tab；idea 项目仍是后续里程碑 */
+function visibleTabs(workflowKind: WorkflowKind | undefined): ReadonlyArray<TabEntry> {
+  const isExisting =
+    workflowKind === "existing_paper_improvement" || workflowKind === "existing_paper_review";
+  return TABS.filter(
+    (entry) => entry.milestone === undefined || (entry.milestone === "existing-only" && isExisting),
+  );
+}
 
 const COMING_DESCRIPTION: Record<string, string> = {
   workflow: "启动与跟踪工作流运行：阶段进度、等待确认、取消与恢复。",
   evidence: "研究证据库：文献检索结果、PDF 文本层分析与派生上下文。",
-  review: "Reviewer 三路审阅与质量门禁结论、修订循环状态。",
   artifacts: "草稿与最终交付物：LaTeX 源、编译产物与版本历史。",
 };
 
-type OpenableTab = "pdf" | "citations";
-
-/** URL ?tab= → TabId（仅接受已开放的 Tab；缺失 / 未开放 / 非法值回退概览） */
-function tabFromParam(param: string | null): TabId {
-  const found = VISIBLE_TABS.find((entry) => entry.id === param);
-  return found !== undefined ? found.id : "overview";
-}
+type OpenableTab = "pdf" | "citations" | "review";
 
 /** WorkflowRun 完成标签（completion.label）→ 中文 */
 const COMPLETION_LABELS: Record<string, string> = {
   final: "最终稿",
   draft: "草稿",
+  review: "审阅报告",
 };
+
+/** URL ?tab= → TabId（仅接受当前项目已开放的 Tab；其余回退概览） */
+function tabFromParam(param: string | null, visible: ReadonlyArray<TabEntry>): TabId {
+  const found = visible.find((entry) => entry.id === param);
+  return found !== undefined ? found.id : "overview";
+}
 
 function ProjectRunsPanel({ projectId }: { projectId: string }) {
   const { data, isPending, isError, error, refetch } = useProjectRuns(projectId);
@@ -113,24 +132,32 @@ function ProjectRunsPanel({ projectId }: { projectId: string }) {
 /** 侧栏：文档与引用状态摘要（真实查询；标题可跳转到对应 tab） */
 function WorkspaceAside({
   projectId,
+  workflowKind,
   onOpenTab,
 }: {
   projectId: string;
+  workflowKind: WorkflowKind | undefined;
   onOpenTab: (tab: OpenableTab) => void;
 }) {
   const paper = usePaper(projectId);
   const citations = useCitations(projectId);
   const integrity = useCitationIntegrity(projectId);
+  const reviewReport = usePaperReviewReport(projectId);
 
   const doc: PaperDocSummary | null | undefined = paper.data?.document;
   const summary = citations.data?.summary;
   const citationsReady = summary !== undefined && summary.extracted;
   const semanticTotal = integrity.data?.report?.semantic.total ?? 0;
+  const hasReport = reviewReport.data !== null && reviewReport.data !== undefined;
+  const reviewAvailable =
+    workflowKind === "existing_paper_improvement" || workflowKind === "existing_paper_review";
 
   // 下一步建议：由真实状态推导，最多两条
   const nextSteps: Array<{ label: string; tab: OpenableTab }> = [];
   if (!paper.isPending && (doc === null || doc === undefined)) {
     nextSteps.push({ label: "上传最终 PDF", tab: "pdf" });
+  } else if (reviewAvailable && !reviewReport.isPending && !hasReport) {
+    nextSteps.push({ label: "开始 Review（引用核验 + 分章节审阅）", tab: "review" });
   }
   if (!citations.isPending && !citationsReady) {
     nextSteps.push({ label: "提取并核验引用", tab: "citations" });
@@ -138,6 +165,7 @@ function WorkspaceAside({
   if (citationsReady && !integrity.isPending && semanticTotal === 0) {
     nextSteps.push({ label: "语义核验引用是否支持论断", tab: "citations" });
   }
+  nextSteps.splice(2);
 
   return (
     <aside className="workspace-aside">
@@ -275,13 +303,20 @@ function ComingPanel({ entry }: { entry: TabEntry }) {
 
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
-  // Tab 状态进入 URL（?tab=overview|pdf|citations）：刷新 / 复制链接可恢复
+  const navigate = useNavigate();
+  // Tab 状态进入 URL（?tab=overview|pdf|citations|review）：刷新 / 复制链接可恢复
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab = tabFromParam(searchParams.get("tab"));
+  const { data, isPending, isError, error, refetch } = useProject(projectId);
+  const rename = useRenameProject(projectId);
+  const archive = useArchiveProject();
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [headerError, setHeaderError] = useState<string | null>(null);
+
+  const visible = visibleTabs(data?.workflowKind);
+  const tab = tabFromParam(searchParams.get("tab"), visible);
   const setTab = (next: TabId) => {
     setSearchParams(next === "overview" ? {} : { tab: next });
   };
-  const { data, isPending, isError, error, refetch } = useProject(projectId);
 
   if (isPending) {
     return (
@@ -325,7 +360,55 @@ export function ProjectPage() {
   return (
     <section className="page">
       <div>
-        <h1 className="workspace-title">{project.title}</h1>
+        <div className="workspace-title-row">
+          {editingTitle ? (
+            <InlineRename
+              initial={project.title}
+              testId="workspace-rename"
+              onCancel={() => setEditingTitle(false)}
+              onCommit={(title) => {
+                setEditingTitle(false);
+                rename.mutate(title, {
+                  onError: (renameError) => setHeaderError(formatApiError(renameError)),
+                });
+              }}
+            />
+          ) : (
+            <h1 className="workspace-title">{project.title}</h1>
+          )}
+          {!editingTitle ? (
+            <div className="workspace-title-actions">
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="编辑标题"
+                title="编辑标题（PDF 识别的标题可能有误）"
+                data-testid="rename-project"
+                onClick={() => setEditingTitle(true)}
+              >
+                <span aria-hidden="true">✎</span>
+              </button>
+              <RowMenu
+                label="项目的更多操作"
+                testId="workspace-menu"
+                items={[
+                  { id: "rename", label: "重命名", onSelect: () => setEditingTitle(true) },
+                  {
+                    id: "archive",
+                    label: "归档项目",
+                    onSelect: () => {
+                      setHeaderError(null);
+                      archive.mutate(project.id, {
+                        onSuccess: () => void navigate("/projects"),
+                        onError: (archiveError) => setHeaderError(formatApiError(archiveError)),
+                      });
+                    },
+                  },
+                ]}
+              />
+            </div>
+          ) : null}
+        </div>
         <div className="workspace-badges">
           <WorkflowKindBadge kind={project.workflowKind} />
           <ProjectStatusBadge status={project.status} />
@@ -338,8 +421,22 @@ export function ProjectPage() {
         </div>
       </div>
 
+      {project.archivedAt !== undefined ? (
+        <p className="note note-warn" role="status" style={{ marginTop: 12 }}>
+          <span>
+            该项目已归档（{formatDateTime(project.archivedAt)}）。归档项目不出现在论文项目列表；
+            可在<Link to="/settings/projects">「设置 → 项目管理」</Link>恢复或永久删除。
+          </span>
+        </p>
+      ) : null}
+      {headerError !== null ? (
+        <p className="form-error" role="alert" style={{ marginTop: 8 }}>
+          {headerError}
+        </p>
+      ) : null}
+
       <nav className="tabs" role="tablist" aria-label="项目工作区">
-        {VISIBLE_TABS.map((entry) => (
+        {visible.map((entry) => (
           <button
             key={entry.id}
             type="button"
@@ -405,8 +502,15 @@ export function ProjectPage() {
               {project.workflowKind === "existing_paper_improvement" ? (
                 <p className="note note-info" style={{ marginTop: 16 }}>
                   <span>
-                    已有论文改进模式：在「PDF 与结构」上传论文最终 PDF 后即可提取并核验引用；
-                    LaTeX 项目导入与改进流程界面将在后续里程碑提供。
+                    系统性改进：第一阶段先完成「Review」建立基线（引用核验 + 分章节审阅），
+                    后续改进流程将基于 Review 发现进行；不会直接重写论文。
+                  </span>
+                </p>
+              ) : null}
+              {project.workflowKind === "existing_paper_review" ? (
+                <p className="note note-info" style={{ marginTop: 16 }}>
+                  <span>
+                    快速 Review 模式：只读分析现有论文，不修改正文。审阅结论与汇总报告在「Review」页查看。
                   </span>
                 </p>
               ) : null}
@@ -420,12 +524,14 @@ export function ProjectPage() {
             </section>
           </div>
 
-          <WorkspaceAside projectId={project.id} onOpenTab={setTab} />
+          <WorkspaceAside projectId={project.id} workflowKind={project.workflowKind} onOpenTab={setTab} />
         </div>
       ) : tab === "pdf" ? (
         <PdfPanel projectId={project.id} />
       ) : tab === "citations" ? (
         <CitationsPanel projectId={project.id} />
+      ) : tab === "review" ? (
+        <ReviewPanel projectId={project.id} onOpenTab={setTab} />
       ) : (
         <ComingPanel entry={TABS.find((entry) => entry.id === tab)!} />
       )}

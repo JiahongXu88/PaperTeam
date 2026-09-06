@@ -19,6 +19,7 @@ import type {
   ReferenceView,
   ExtractionSummary,
 } from "../types/paper.js";
+import type { ExistingReviewReportView } from "../types/api.js";
 
 export async function getPaper(projectId: string, signal?: AbortSignal): Promise<PaperResponse> {
   return apiClient.get<PaperResponse>(`/api/projects/${encodeURIComponent(projectId)}/paper`, signal);
@@ -97,4 +98,16 @@ export async function getMetadataRecords(
     signal,
   );
   return body.records ?? [];
+}
+
+/** 最新快速 Review 聚合报告（existing_paper_review；尚无报告为 null） */
+export async function getPaperReviewReport(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ExistingReviewReportView | null> {
+  const body = await apiClient.get<{ report: ExistingReviewReportView | null }>(
+    `/api/projects/${encodeURIComponent(projectId)}/paper-review`,
+    signal,
+  );
+  return body.report ?? null;
 }

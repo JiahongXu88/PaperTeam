@@ -53,20 +53,20 @@ export function ModelSettingsPage() {
 
   if (settingsQuery.isPending) {
     return (
-      <section className="page">
+      <div>
         <Loading label="加载模型配置…" />
-      </section>
+      </div>
     );
   }
   if (settingsQuery.isError) {
     return (
-      <section className="page">
+      <div>
         <ErrorState
           title="模型配置加载失败"
           message={formatApiError(settingsQuery.error)}
           onRetry={() => void settingsQuery.refetch()}
         />
-      </section>
+      </div>
     );
   }
   return <ModelSettingsBody settings={settingsQuery.data} />;
@@ -136,7 +136,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   };
 
   return (
-    <section className="page">
+    <div>
       <PageHeader
         title="模型设置"
         sub="配置模型与 API Key；保存后新的 Agent 任务即使用新配置。优先级：环境变量 > 本地保存。"
@@ -374,6 +374,6 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
           ) : null}
         </div>
       </div>
-    </section>
+    </div>
   );
 }
