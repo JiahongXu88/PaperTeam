@@ -231,6 +231,12 @@ GET    /api/projects/:id/citations/metadata       逐条核验记录（M4.3）
 POST   /api/projects/:id/citations/verify-claims  (claim,citation) 语义核验（M4.3）
 GET    /api/projects/:id/citations/claims         语义核验记录（M4.3）
 GET    /api/projects/:id/citations/integrity      完整性汇总 + gate 输入（M4.3）
+POST   /api/projects/import-pdf                   已有论文 File-First 导入（2026-09-07）
+GET    /api/projects?scope=archived|all            归档/全量列表（默认 active，2026-09-07）
+POST   /api/projects/:id/archive|restore           归档 / 恢复（2026-09-07）
+DELETE /api/projects/:id                           永久删除（仅已归档；2026-09-07）
+PATCH  /api/projects/:id                           研究定位 + title 重命名（2026-09-07）
+GET    /api/projects/:id/paper-review              快速 Review 聚合报告（2026-09-07）
 GET    /api/skills                                Skill 列表 + 绑定（M4.3）
 GET    /api/skills/:id                            Skill 详情（M4.3）
 POST   /api/skills/:id/summary                    重新生成中文简介（M4.3）
@@ -272,8 +278,19 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 2. EvidenceStore 索引与 SQLite 迁移条件（同前）。
 3. M4+ 前端技术栈、Docker/compose、TeX Live 镜像体积控制。
 
+## Project Entry & Lifecycle UX（✅ 完成，2026-09-07）
+
+产品入口与生命周期收口（不是视觉重设计；Modern Research Workbench 视觉体系保留）：
+
+- **新建项目二选一**：「从研究想法开始」/「导入已有论文」；导入已有论文 **File First**——PDF + 目标（快速 Review 推荐 / 系统性改进）即提交，无标题必填，其余定位字段折叠进「高级选项」。`POST /api/projects/import-pdf` 一次调用完成 建项目→解析→自动标题（PDF 内标题优先，不可用则文件名去扩展名兜底；不调 LLM、不要求手填）；ingest/parse 失败回滚删除项目，无半成品。
+- **existing_paper_review**：独立 WorkflowKind（completion label=`review`），复用 M4.3 Foundation——`paper.ensure`（PaperMap）→ `citation.extract` → `citation.metadata` → `citation.claims` → `review.sections`（ReviewContextBuilder 受控上下文 × SectionReviewService → ReviewFinding，≤40 节）→ `review.aggregate`（`reviews/existing-review-r*.json`）；不经过旧 manuscript review 链路。模型未配置时导入仍成功，Review 页给出「配置模型后即可开始 Review」引导。
+- **项目生命周期**：`archivedAt` 独立生命周期字段（与 status 正交）；`POST /archive`（运行中 run → 409 PROJECT_BUSY，不静默归档）/ `POST /restore` / `DELETE`（仅已归档，否则 409 PROJECT_NOT_ARCHIVED；删除整个工作区 + `PiRuntimeAdapter.releaseProjectSessions` 释放项目会话；设置页输入完整标题确认）。默认列表与最近项目只显示未归档（`?scope=archived|all`）。
+- **导航与 Settings**：PaperTeam 品牌即返回论文项目的主页入口（删 Research Workbench）；Settings 二级导航（模型设置 / 项目管理）；项目行重构为 row container + 主内容 Link + 「···」菜单（打开/重命名/归档），Header 支持编辑标题（PATCH title）。
+- **验收**：Backend 338 + Frontend 73 测试（新增 import 回滚/自动标题/goal 映射/archive 过滤/restore/仅归档可删/忙碌保护/会话释放/Review 全链路 Fake Runtime）；build/typecheck 通过；Chrome 真实浏览器 8 条用户路径 × 3 分辨率（CDP 驱动，截图存档）全部通过。
+
 ## 历史
 
+- **Project Entry & Lifecycle UX（2026-09-07）**：见上节。
 - **M4.3 PDF Review + Citation Integrity + Skill Registry**：Final PDF 成为 Existing Paper 正式 Review 输入；确定性解析（pymupdf 子进程）→ pages/sections/chunks；PaperMap + 受控 section context（隔离证明 + 会话无关重建证明）；引用提取（range 展开/不猜语义）；两层核验（NOT_FOUND≠捏造≠检索失败；语义 judge 禁止凭记忆、伪造引文剥离、确定性 severity）；Citation Integrity 规则并入 QualityGate；Skill Registry（两项 MIT 审计 skill pin revision 入库、按角色注入、中文简介持久化）；最小前端三视图；真实 PDF + 真实学术库 live smoke；285+34 测试。
 - **M4.2.5 Live Model Integration Gate**：验证型里程碑（无代码改动）——真实 Provider `zai-coding-cn/glm-5.3` 经运行中 Backend 公开 API 完成 L3 验证：单 Agent smoke（10.3s 真实输出）、live SSE（4 条 LIVE 域事件实时推送）、Workflow E2E 至首个 HITL（checkpoint 全落盘）、真实 cancel（边界语义 + 会话复用）；凭据零泄漏，Pi 全程 in-process，234+24 测试零回归。
 - **M3.8 Pi Runtime Migration & Contract v2**：Pi 成为唯一正式 Runtime（`@earendil-works/pi-coding-agent` 0.84.4 精确 pin）；OpenClaw 全套基础设施（Adapter / Gateway client / Bootstrap / supervisor / runtime.json / 三依赖）移除；`AgentRuntime` Contract v2（startAgent → 句柄：运行中事件流 / 取消 / result）；tool execution AbortSignal 取消传导实证；RuntimeStatus 去 Gateway 化；dev 直启 Backend；230 测试。**Pi + Node.js + npm 固化为 M4 Runtime baseline。**

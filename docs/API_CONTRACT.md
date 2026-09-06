@@ -1,6 +1,7 @@
 # PaperTeam Frontend API Contract（M4.0）
 
-> 冻结日期：2026-09-04（M4.0）；M4.3 增补 PDF / Citations / Skills 端点（2026-09-06）。
+> 冻结日期：2026-09-04（M4.0）；M4.3 增补 PDF / Citations / Skills 端点（2026-09-06）；
+> 2026-09-07 增补 Project Entry & Lifecycle（import-pdf / archive / restore / DELETE / scope / paper-review）。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -31,10 +32,11 @@
 
 | 端点 | 说明 | 前端消费方 |
 |---|---|---|
-| `GET /api/projects` | **M4.0 新增**。项目列表，`updatedAt` 降序 → `{projects: ProjectView[]}` | ProjectsPage |
+| `GET /api/projects` | 项目列表（未归档，`updatedAt` 降序）→ `{projects: ProjectView[], scope:"active"}`；`?scope=archived\|all` 切换范围（2026-09-07） | ProjectsPage / Sidebar 最近项目 |
 | `GET /api/projects/:id` | 项目详情 → `{project: ProjectView}`；404=PROJECT_NOT_FOUND | ProjectPage |
-| `POST /api/projects` | 创建（title 必填 + 可选研究定位字段）→ 201 `{project}` | NewProjectPage |
-| `GET /api/runs?projectId=` | 项目 run 列表（Backend 返回 WorkflowState 全量，前端映射为 RunView 子集） | ProjectPage Overview |
+| `POST /api/projects` | 创建（title 必填 + 可选研究定位字段）→ 201 `{project}` | NewProjectPage（从研究想法开始） |
+| `POST /api/projects/import-pdf` | **2026-09-07**。已有论文 File-First 导入：`{fileName, contentBase64, goal: "review_only"\|"improvement", …研究定位可选字段}` → 201 `{project, document: PaperDocSummary, titleSource: "pdf"\|"filename"}`。Backend 一次完成 建项目→解析→标题（PDF 内标题优先、不可用则文件名兜底）；任一步失败回滚删除项目，不留半成品 | NewProjectPage（导入已有论文） |
+| `GET /api/runs?projectId=` | 项目 run 列表（Backend 返回 WorkflowState 全量，前端映射为 RunView 子集） | ProjectPage Overview / ReviewPanel |
 | `GET /api/runtime/status` | Pi Runtime 诊断 → `{status: RuntimeStatusView}` | 顶栏 RuntimeStatusChip / 模型横幅 |
 | `GET /health` | 存活探针 | （诊断用） |
 
@@ -109,9 +111,29 @@
 > - Test Connection 不创建 AgentSession / 不写 Workspace / 不污染会话历史；
 >   携带未保存 Key 时经 `options.apiKey` 覆盖式注入（不落盘）。
 
-### 1.3 已知缺口
+### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
-- **项目删除 / 归档**：Backend 无对应端点（前端不提供该入口，不伪造）。
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun `{kind: WorkflowKind}`（kind 含 `existing_paper_review`）；**已归档项目 → 409 PROJECT_BUSY** → 202 `{runId, status, workflowKind}` | ReviewPanel（开始 Review）/ NewProjectPage（导入后自动启动） |
+| `POST /api/projects/:id/archive` | 归档项目（幂等）：设 `archivedAt`（独立于 status 的生命周期字段）。**存在 pending/running/awaiting_input run → 409 PROJECT_BUSY**（不静默归档、不自动取消）→ `{project}` | ProjectRow / ProjectPage Header（··· 菜单） |
+| `POST /api/projects/:id/restore` | 恢复归档（幂等）：清除 `archivedAt`，项目回到默认列表与最近项目 → `{project}` | Settings → 项目管理 |
+| `DELETE /api/projects/:id` | **永久删除整个工作区**（PDF/parsed/citations/reviews/workflow checkpoints/manuscript/build/元数据；并释放 Runtime 内该项目的 idle Agent Session）。前置校验：**必须已归档（否则 409 PROJECT_NOT_ARCHIVED）**、无进行中任务（否则 409 PROJECT_BUSY）→ `{status:"deleted"}` | Settings → 项目管理（输入完整标题确认后） |
+| `PATCH /api/projects/:id` | 更新研究定位字段；**title 字段 = 重命名**（PDF metadata 可能识别错误）→ `{project}` | ProjectRow / ProjectPage（编辑标题） |
+| `GET /api/projects/:id/paper-review` | 最新快速 Review 聚合报告（`reviews/existing-review-r*.json`，round 最大）→ `{report: ExistingReviewReportView \| null}` | ReviewPanel（审阅报告） |
+
+> 2026-09-07 语义约定：
+> - `archivedAt` 是**生命周期**状态，与 `status`（created/generated/failed 业务执行
+>   状态）正交；归档项目不出现在默认列表（`GET /api/projects`）与侧栏「最近项目」。
+> - `existing_paper_review` 是独立 WorkflowKind（completion label = `review`），
+>   走 M4.3 PDF Review Foundation 链路（PaperMap → Citation Integrity →
+>   ReviewContextBuilder 分章节 → ReviewFinding → 聚合报告），与旧
+>   `POST /api/projects/:id/review`（manuscriptDigest 三路审稿）互不复用。
+> - 快速 Review 只读，不修改论文正文；系统性改进（existing_paper_improvement）
+>   第一阶段同样是先建立 Review 基线。
+
+### 1.4 已知缺口
+
 - **WorkflowRun 跨项目列表 / 分页**：当前无分页参数，项目数大时需要后端扩展。
 - **静态资源托管**：Backend 尚未 serve `frontend/dist`（生产部署形态 M4.8 决策）。
 
@@ -120,7 +142,7 @@
 前端类型与 Backend JSON 逐一对齐；可选字段保持可选，UI 不虚构数据。
 
 ```ts
-type WorkflowKind   = "idea_to_paper" | "existing_paper_improvement";
+type WorkflowKind   = "idea_to_paper" | "existing_paper_improvement" | "existing_paper_review";
 type ProjectStatus  = "created" | "generated" | "failed";
 
 // 列表与详情同形（Backend project.json 全量返回）
@@ -128,6 +150,7 @@ interface ProjectView {
   id: string; title: string; status: ProjectStatus;
   createdAt: string; updatedAt: string;          // ISO 8601
   workflowKind?: WorkflowKind;                   // 缺省视为 idea_to_paper
+  archivedAt?: string;                           // 生命周期：存在 = 已归档（2026-09-07）
   researchIdea?: string; researchField?: string;
   documentType?: string; targetProfile?: string;
   targetVenue?: string; language?: string;
@@ -143,6 +166,16 @@ interface CreateProjectInput {                   // POST /api/projects 请求体
   language?: string;                             // ≤50
 }
 
+// POST /api/projects/import-pdf 请求体（2026-09-07；标题不由用户提供）
+interface ImportProjectPdfInput {
+  fileName: string;                              // *.pdf ≤50MB
+  contentBase64: string;
+  goal: "review_only" | "improvement";           // → existing_paper_review / existing_paper_improvement
+  researchField?: string; targetVenue?: string;  // 高级选项（全部可缺省）
+  targetProfile?: string; language?: string;
+}
+// 响应：{ project: ProjectView; document: PaperDocSummary; titleSource: "pdf" | "filename" }
+
 type WorkflowRunStatus =
   | "pending" | "running" | "awaiting_input"
   | "completed" | "failed" | "cancelled";
@@ -154,7 +187,20 @@ interface WorkflowRunView {                      // WorkflowState → UI 子集�
   createdAt: string; updatedAt: string;
   awaiting?: { stageId: string; prompt: string; options: string[] } | null;
   error?: { code: string; message: string } | null;
-  completion?: { label: "final" | "draft" } | null;
+  completion?: { label: "final" | "draft" | "review" } | null;
+}
+
+// GET /api/projects/:id/paper-review（2026-09-07）
+interface ExistingReviewReportView {
+  schemaVersion: number; kind: "existing_paper_review"; round: number; generatedAt: string;
+  paper: { title: string; pageCount?: number; sections?: number };
+  review: {
+    sectionsReviewed: number; sectionsTotal: number; skippedSections?: number;
+    findingsTotal: number; parseFailures?: number; dropped?: number;
+    bySeverity: Record<string, number>; byCategory: Record<string, number>;
+  };
+  citationIntegrity: { metadataByStatus?: Record<string, number>; semantic?: Record<string, unknown>; probableFabrications?: string[] };
+  findings: ReviewFindingView[];                 // 每条含 findingId/category/severity/sectionId?/page?/message/suggestion?/status/source
 }
 
 interface RuntimeStatusView {                    // Pi schema（M3.8 冻结）

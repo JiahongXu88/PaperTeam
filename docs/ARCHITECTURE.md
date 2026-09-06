@@ -78,16 +78,21 @@ Linux Server
    └── Logs
 ```
 
-### 1.2 当前实现（M4.2 后）
+### 1.2 当前实现（2026-09 后）
 
 M3 目标架构（§1.1）已在 backend 落地：HTTP API/SSE → WorkflowOrchestrator（确定性引擎）→
 Researcher / Writer / Reviewer / Citation 业务角色（经 AgentRuntime Contract v2 调用
 PiRuntimeAdapter —— Pi SDK in-process，见 §6.4）→
-Project / Evidence / Artifacts 落盘 → Build Gate / Quality Gate。两条一级工作流
-（Idea-to-Paper、Existing-LaTeX Improvement）共享审稿-修订-构建后段。前端
-React Web Workbench（M4.0-M4.2，§8）已落地项目列表 / 创建项目 / 项目工作区基础壳。
-尚未实现：Workflow Live View / HITL 等 M4.3+ 前端页面、Visual Reviewer、
-LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
+Project / Evidence / Artifacts 落盘 → Build Gate / Quality Gate。三类一级工作流
+（Idea-to-Paper、Existing-Paper Improvement、**Existing-Paper Review**（2026-09，
+PDF 只读快速审阅：PaperMap → Citation Integrity → 分章节 ReviewFinding → 聚合报告，
+completion label=`review`，与旧 manuscript review 三路审稿互不复用））；前两者
+共享审稿-修订-构建后段。前端 React Web Workbench（M4.0-M4.3，§8）已落地项目
+列表 / 新建项目（二选一入口 + PDF File-First 导入）/ 项目工作区（含 Review Tab）/
+Skills / Settings（模型设置 + 项目管理）。项目生命周期含 归档 / 恢复 / 永久删除
+（`archivedAt` 独立生命周期字段；删除时释放 Runtime 项目会话
+`releaseProjectSessions`）。尚未实现：Workflow Live View / HITL 等 M4.4+ 前端页面、
+Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
 
 ## 2. 核心概念区分（架构红线）
 

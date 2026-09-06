@@ -10,10 +10,11 @@
 Idea → Research → Feasibility → Evidence → Writing → Review → Revision → LaTeX / PDF
 ```
 
-支持两类一级工作流：
+支持三类一级工作流：
 
-1. **Idea-to-Paper**：输入研究 Idea、领域、已有材料与目标论文档次，由 Researcher 先完成领域调研与 Novelty / Feasibility 分析，经用户确认后再进入 Evidence、Outline、Writing、Review、Revision，最终产出 LaTeX / PDF。
-2. **Existing LaTeX Improvement**：导入已有 LaTeX 项目（main.tex / sections / references.bib / figures），经结构解析、Baseline 编译、论文理解、Citation Audit、Academic Review、Target Level Assessment 与用户确认后，逐节系统性改造。
+1. **Idea-to-Paper（从研究想法开始）**：输入研究 Idea、领域、已有材料与目标论文档次，由 Researcher 先完成领域调研与 Novelty / Feasibility 分析，经用户确认后再进入 Evidence、Outline、Writing、Review、Revision，最终产出 LaTeX / PDF。
+2. **Existing Paper — Quick Review（导入已有论文 → 快速 Review）**：上传论文最终 PDF 即建立项目（标题自动取自 PDF，无需手填），只读分析：引用真实性核验 → 论断-引用一致性 → 分章节审阅 → 汇总审阅报告；不修改论文正文。PDF 已是正式输入。
+3. **Existing Paper — Improvement（导入已有论文 → 系统性改进）**：PDF 导入后第一阶段先完成 Review 基线，再依据审阅发现进入后续修改与优化；LaTeX 项目导入（main.tex / sections / references.bib / figures）经结构解析、Baseline 编译、论文理解、Citation Audit、Academic Review、Target Level Assessment 与用户确认后逐节系统性改造。
 
 产品原则（详见 [docs/PRD.md](docs/PRD.md)）：
 
@@ -67,6 +68,17 @@ Backend 完成 L3 全链路验证（详见 [PROJECT_STATUS.md](docs/PROJECT_STAT
 PDF、解析状态、结构树）/ 引用核验（提取、真实性 + 语义两层核验、逐条状态）；
 全局 Skills 页（中文简介为主，来源 / 修订版本 / 许可证折叠）；模型设置页
 （Provider + 模型搜索选择、API Key、测试连接）；Tab 状态进 URL，中文界面。
+
+**Project Entry & Lifecycle UX（2026-09）已落地**：新建项目二选一入口
+（从研究想法开始 / 导入已有论文）；已有论文 **File First** 导入
+（`POST /api/projects/import-pdf`：PDF + 目标一次调用建项目，标题自动取自
+PDF、失败回滚不留半成品）；`existing_paper_review` 快速 Review 工作流
+（PaperMap → Citation Integrity → 分章节 Review → 聚合报告，M4.3 Foundation
+复用，不重写论文）；项目生命周期 归档 / 恢复 / 永久删除（`archivedAt` 独立于
+执行状态；运行中 409 保护；删除仅限已归档项目并输入标题确认，含 Runtime
+会话清理）；Settings 二级导航（模型设置 / 项目管理）；PaperTeam 品牌即
+返回论文项目的主页入口。
+
 **未实现（M4.4+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
 Review 界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
 系统管理后台、Docker 部署。
