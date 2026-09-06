@@ -1,0 +1,16 @@
+{
+  "id": "paper-search",
+  "name": "paper-search",
+  "originalDescription": "Search, download, and read academic papers from 20+ sources (arXiv, PubMed, Semantic Scholar, CrossRef, etc). Use when the user asks to find papers, search for research, look up academic literature, download a paper PDF, or extract text from a paper.",
+  "sourceType": "external",
+  "sourceRepo": "openags/paper-search-mcp",
+  "sourceRevision": "234678ab231074a7977320978ee0496dcdaddd1f",
+  "sourceUrl": "https://github.com/openags/paper-search-mcp",
+  "version": "0.1.4",
+  "license": "MIT",
+  "status": "installed",
+  "assignedAgents": ["researcher", "citation"],
+  "allowedTools": ["search_papers", "lookup_paper"],
+  "summaryStatus": "summary_pending",
+  "wrapperNote": "PaperTeam 兼容版：正文由上游 CLI 调用改写为宿主受控工具（search_papers/lookup_paper）；上游原件保留于 UPSTREAM_SKILL.md"
+}

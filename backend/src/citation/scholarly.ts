@@ -219,7 +219,8 @@ function openalexToRecord(item: Record<string, unknown>, now: string): Canonical
         : {}),
       ...(doi !== undefined ? { doi } : {}),
       ...(doiRaw !== undefined ? { url: `https://doi.org/${doi}` } : {}),
-      ...(item["abstract_inverted_index"] !== undefined
+      ...(item["abstract_inverted_index"] != null &&
+      typeof item["abstract_inverted_index"] === "object"
         ? { abstract: rebuildAbstract(item["abstract_inverted_index"] as Record<string, number[]>) }
         : {}),
     },
@@ -227,8 +228,11 @@ function openalexToRecord(item: Record<string, unknown>, now: string): Canonical
   );
 }
 
-/** OpenAlex inverted index → 顺序摘要 */
+/** OpenAlex inverted index → 顺序摘要（null 安全：无摘要的记录该字段为 null） */
 function rebuildAbstract(index: Record<string, number[]>): string {
+  if (typeof index !== "object" || index === null) {
+    return "";
+  }
   const slots: Array<{ word: string; position: number }> = [];
   for (const [word, positions] of Object.entries(index)) {
     for (const position of positions ?? []) {

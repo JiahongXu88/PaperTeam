@@ -84,6 +84,11 @@ export class CitationIntegrityService {
     this.log = options.log ?? (() => {});
   }
 
+  /** 共享 resolver（受控学术检索工具复用同一缓存与 telemetry） */
+  get scholarlyResolver(): ScholarlyResolver {
+    return this.resolver;
+  }
+
   /** 提取 stage：references + callouts 提取并持久化（指纹一致则跳过） */
   async extract(
     projectId: string,

@@ -374,6 +374,7 @@ export async function startTestStack(
     latexRunner?: CommandRunner;
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
+    skills?: { registry: import("../../src/skills/SkillRegistry.js").SkillRegistry; summaries?: import("../../src/skills/SkillSummaryService.js").SkillSummaryService };
     registerCleanup?: (cleanup: () => Promise<void>) => void;
   } = {},
 ): Promise<TestStack> {
@@ -418,6 +419,9 @@ export async function startTestStack(
     orchestrator,
     stack,
     importer,
+    ...(options.skills !== undefined
+      ? { skills: options.skills.registry, ...(options.skills.summaries !== undefined ? { skillSummaries: options.skills.summaries } : {}) }
+      : {}),
   });
   await new Promise<void>((resolve) => {
     server.listen(0, "127.0.0.1", resolve);

@@ -64,6 +64,8 @@ export interface PiRuntimeConfig {
 export interface AppConfig {
   env: NodeEnv;
   port: number;
+  /** PaperTeam 用户级 Runtime 根目录（skills store 等挂在其下） */
+  runtimeRoot: string;
   /** Pi Runtime 配置（唯一 Runtime，M3.8） */
   pi: PiRuntimeConfig;
   /** 各业务 Agent 的会话标识（sessionKey 组成段与诊断标签；Pi 无 agent 注册表） */
@@ -134,6 +136,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
   return {
     env: readNodeEnv(source),
     port: readPort(source),
+    runtimeRoot: resolveRuntimeRoot(source),
     pi: {
       model: readOptionalValue(source, "PAPERTEAM_PI_MODEL"),
       apiKey: readOptionalValue(source, "PAPERTEAM_PI_API_KEY"),

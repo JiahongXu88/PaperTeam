@@ -7,6 +7,9 @@ import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { buildServiceStack } from "./serviceStack.js";
+import { SkillRegistry } from "./skills/SkillRegistry.js";
+import { SkillSummaryService } from "./skills/SkillSummaryService.js";
+import { createScholarlyTools } from "./skills/scholarlyTools.js";
 import { LatexImporter } from "./import/LatexImporter.js";
 import {
   createExistingPaperDefinition,
@@ -14,7 +17,7 @@ import {
 } from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "./workflow/runStore.js";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 /**
@@ -50,12 +53,32 @@ export async function startBackend(): Promise<void> {
   console.log(`  projectsRoot: ${config.projectsRoot}`);
   console.log(`  agents:       researcher=${config.agents.researcher} writer=${config.agents.writer} reviewer=${config.agents.reviewer} citation=${config.agents.citation}`);
 
+  // M4.3.6 Skill Registry：安装仓库内审计过的 seed（pin revision + LICENSE +
+  // PROVENANCE）到 PaperTeam 数据目录的 Skill Store；按角色注入 Pi Session。
+  const skillRegistry = new SkillRegistry({
+    storeRoot: join(config.runtimeRoot, "skills"),
+    log: (message) => console.log(message),
+  });
+  const installedSkills = await skillRegistry.ensureInstalled();
+  console.log(
+    `  skills:       ${installedSkills.length} 个已安装（${installedSkills.map((s) => s.id).join(", ")}）`,
+  );
+
+  // 受控学术检索工具（paper-search skill 的工具面）：闭包延迟引用 stack，
+  // 保证与 CitationIntegrityService 共享同一个 resolver（缓存 / telemetry）
+  let stackRef: ReturnType<typeof buildServiceStack> | undefined;
   const runtime: AgentRuntime = new PiRuntimeAdapter({
     ...(config.pi.model !== undefined ? { modelSpec: config.pi.model } : {}),
     ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
     agentDir: config.pi.agentDir,
     workspaceRoot: config.projectsRoot,
     runTimeoutMs: config.pi.runTimeoutMs,
+    // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
+    roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),
+    roleCustomTools: (role) =>
+      (role === "researcher" || role === "citation") && stackRef !== undefined
+        ? createScholarlyTools(stackRef.citationIntegrity.scholarlyResolver)
+        : [],
   });
 
   const projects = new ProjectStore({ root: config.projectsRoot });
@@ -81,6 +104,25 @@ export async function startBackend(): Promise<void> {
     log: (message) => console.log(message),
   });
   const importer = new LatexImporter({ projects, latex, log: (message) => console.log(message) });
+  stackRef = stack;
+
+  // M4.3.6 中文简介：模型可用时补齐（一次生成、持久化；失败保持 summary_pending）
+  const skillSummaries = new SkillSummaryService({
+    registry: skillRegistry,
+    runtime,
+    agentId: config.agents.researcher,
+    log: (message) => console.log(message),
+  });
+  void skillSummaries
+    .generateMissing()
+    .then(({ generated, failed }) => {
+      if (generated.length > 0 || failed.length > 0) {
+        console.log(
+          `  skills:       中文简介 generated=${generated.length} pending=${failed.length}`,
+        );
+      }
+    })
+    .catch(() => {});
 
   const health = await runtime.healthCheck();
   reportRuntimeHealth(health);
@@ -120,6 +162,8 @@ export async function startBackend(): Promise<void> {
     stack,
     importer,
     runtimeStatus,
+    skills: skillRegistry,
+    skillSummaries,
   });
   server.listen(config.port, () => {
     console.log(

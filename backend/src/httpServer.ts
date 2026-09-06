@@ -10,6 +10,8 @@ import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import type { RuntimeStatusService } from "./runtime/statusService.js";
 import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
+import type { SkillRegistry } from "./skills/SkillRegistry.js";
+import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
 import { aggregateReviews, type ReviewSummary } from "./review/ReviewAggregator.js";
 import {
@@ -74,6 +76,9 @@ export interface BackendHttpServerOptions {
   importer?: LatexImporter;
   /** M3.5 Runtime 状态诊断（GET /api/runtime/status） */
   runtimeStatus?: RuntimeStatusService;
+  /** M4.3.6 Skill Registry（GET /api/skills） */
+  skills?: SkillRegistry;
+  skillSummaries?: SkillSummaryService;
 }
 
 export function createBackendHttpServer({
@@ -84,9 +89,21 @@ export function createBackendHttpServer({
   stack,
   importer,
   runtimeStatus,
+  skills,
+  skillSummaries,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    handleRequest(req, res, { runtime, projects, generation, orchestrator, stack, importer, runtimeStatus }).catch(
+    handleRequest(req, res, {
+      runtime,
+      projects,
+      generation,
+      orchestrator,
+      stack,
+      importer,
+      runtimeStatus,
+      skills,
+      skillSummaries,
+    }).catch(
       (error: unknown) => {
         const businessError = toBusinessError(error);
         if (businessError.code === "INTERNAL_ERROR") {
@@ -113,6 +130,8 @@ interface Services {
   stack?: ServiceStack;
   importer?: LatexImporter;
   runtimeStatus?: RuntimeStatusService;
+  skills?: SkillRegistry;
+  skillSummaries?: SkillSummaryService;
 }
 
 async function handleRequest(
@@ -159,6 +178,53 @@ async function handleRequest(
     }
     const status = await services.runtimeStatus.getStatus();
     sendJson(res, 200, { status });
+    return;
+  }
+
+  // ---- /api/skills（M4.3.6 全局 Skill 资源，只读 API + 摘要重生成） ----
+  if (pathname === "/api/skills" || pathname.startsWith("/api/skills/")) {
+    if (services.skills === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "Skill Registry 未配置" });
+      return;
+    }
+    const skillMatch = /^\/api\/skills\/([a-z0-9][a-z0-9-]*)(\/summary)?$/.exec(pathname);
+    if (skillMatch === null) {
+      if (method === "GET") {
+        const skills = await services.skills.list();
+        sendJson(res, 200, { skills, bindings: services.skills.bindings() });
+        return;
+      }
+      res.setHeader("Allow", "GET");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    const skillId = skillMatch[1] ?? "";
+    const isSummary = skillMatch[2] === "/summary";
+    if (!isSummary && method === "GET") {
+      const skill = await services.skills.get(skillId);
+      if (skill === null) {
+        throw new BusinessError("INVALID_REQUEST", `Skill 不存在：${skillId}`);
+      }
+      sendJson(res, 200, { skill });
+      return;
+    }
+    if (isSummary && method === "POST") {
+      if (services.skillSummaries === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "Skill 摘要服务未配置（模型不可用）");
+      }
+      const skill = await services.skills.get(skillId);
+      if (skill === null) {
+        throw new BusinessError("INVALID_REQUEST", `Skill 不存在：${skillId}`);
+      }
+      const { generated, failed } = await services.skillSummaries.generateMissing({ only: skillId });
+      if (failed.includes(skillId) || generated.length === 0) {
+        throw new BusinessError("INVALID_REQUEST", `简介生成失败（模型可能未配置）：${skillId}`);
+      }
+      const updated = await services.skills.get(skillId);
+      sendJson(res, 200, { skill: updated });
+      return;
+    }
+    sendJson(res, 404, { status: "not_found", path: pathname });
     return;
   }
 

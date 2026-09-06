@@ -94,6 +94,13 @@ export class ReferenceExtractor {
     }
     if (!sawNumeric) {
       notes.push("References 无 [n] 编号（author-year 风格：按 block 单元切分，字段提取 best-effort）");
+    } else {
+      // section 边界是页级的：References 标题常在页中，标题前的正文块
+      // （上一章结尾）不是参考文献——丢弃首个 [n] 条目之前的全部单元
+      const firstNumeric = collected.findIndex((entry) => entry.number !== undefined);
+      if (firstNumeric > 0) {
+        collected.splice(0, firstNumeric);
+      }
     }
 
     return collected.map((entry, index) =>

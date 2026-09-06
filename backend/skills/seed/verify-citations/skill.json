@@ -1,0 +1,15 @@
+{
+  "id": "verify-citations",
+  "name": "verify-citations",
+  "originalDescription": "Use when asked to verify, check, or audit the citations/references in a paper draft or preprint — whether each cited work is real, whether its authors/venue/year are correct, and whether it actually supports the claim it is attached to. Produces a fixed citation-verification table.",
+  "sourceType": "external",
+  "sourceRepo": "Agents4Academia-AI/citation_verification",
+  "sourceRevision": "ae85ae3d51a275a57f7aa80db22870995e3d0275",
+  "sourceUrl": "https://github.com/Agents4Academia-AI/citation_verification",
+  "version": "0.1.0",
+  "license": "MIT",
+  "status": "installed",
+  "assignedAgents": ["citation", "reviewer"],
+  "allowedTools": [],
+  "summaryStatus": "summary_pending"
+}

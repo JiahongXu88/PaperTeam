@@ -75,7 +75,7 @@ import {
   AgentRuntimeUnavailableError,
   AgentTimeoutError,
 } from "../errors.js";
-import { resolveRoleConfig, type PiRoleConfig } from "./pi/roleConfig.js";
+import { resolveRoleConfig, type PiRoleConfig, type PiRoleKey } from "./pi/roleConfig.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
 import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
 import type {
@@ -151,6 +151,16 @@ export interface PiRuntimeOptions {
    * （cancel 传导验证点）。
    */
   customTools?: ToolDefinition[];
+  /**
+   * 按角色注入的 skill 目录（M4.3.6 Skill Store）。Pi 会话经
+   * noSkills + additionalSkillPaths 完全由 PaperTeam 控制技能面：
+   * 只有 assigned 且 installed 的 skill 进入该角色的
+   * <available_skills>（progressive disclosure：仅 name/description/location
+   * 进 system prompt，正文由 Agent 按需 read）。
+   */
+  roleSkillDirs?: (role: PiRoleKey) => string[];
+  /** 按角色注入的自定义工具（如 researcher/citation 的受控学术检索） */
+  roleCustomTools?: (role: PiRoleKey) => ToolDefinition[];
   /** 诊断日志输出，默认 console.log */
   log?: (message: string) => void;
 }
@@ -277,6 +287,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly injectedModel: PiModel | undefined;
   private readonly createSessionImpl: NonNullable<PiRuntimeOptions["createSession"]> | undefined;
   private readonly customTools: ToolDefinition[] | undefined;
+  private readonly roleSkillDirs: NonNullable<PiRuntimeOptions["roleSkillDirs"]> | undefined;
+  private readonly roleCustomTools: NonNullable<PiRuntimeOptions["roleCustomTools"]> | undefined;
   private readonly log: (message: string) => void;
 
   private readonly sessions = new Map<string, ManagedSession>();
@@ -305,6 +317,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.injectedModel = options.model;
     this.createSessionImpl = options.createSession;
     this.customTools = options.customTools;
+    this.roleSkillDirs = options.roleSkillDirs;
+    this.roleCustomTools = options.roleCustomTools;
     this.log = options.log ?? ((message) => console.log(message));
   }
 
@@ -848,15 +862,23 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const cwd = this.resolveWorkspaceCwd(input.projectId);
     await mkdir(cwd, { recursive: true }).catch(() => {});
 
+    // M4.3.6 技能面完全自控：关闭全部默认发现（workspace/.pi、~/.pi 等），
+    // 只注入 PaperTeam Skill Store 中该角色 assigned 的 skill 目录。
+    const skillDirs = this.roleSkillDirs?.(role.role) ?? [];
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: this.agentDir,
       settingsManager: this.settingsManager!,
       systemPromptOverride: () => role.systemPrompt,
+      noSkills: true,
+      ...(skillDirs.length > 0 ? { additionalSkillPaths: skillDirs } : {}),
     });
     await resourceLoader.reload();
 
     const sessionManager = SessionManager.inMemory(cwd);
+    // 角色级自定义工具（受控学术检索等）与全局 customTools 合并注入
+    const roleTools = this.roleCustomTools?.(role.role) ?? [];
+    const allCustomTools = [...(this.customTools ?? []), ...roleTools];
     const session =
       this.createSessionImpl !== undefined
         ? await this.createSessionImpl({
@@ -882,9 +904,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
               // 否则 _refreshToolRegistry 会把未列入白名单的 customTools 过滤掉
               tools: [
                 ...role.tools,
-                ...(this.customTools?.map((tool) => tool.name) ?? []),
+                ...allCustomTools.map((tool) => tool.name),
               ],
-              ...(this.customTools !== undefined ? { customTools: this.customTools } : {}),
+              ...(allCustomTools.length > 0 ? { customTools: allCustomTools } : {}),
             })
           ).session;
 
@@ -902,7 +924,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     managed.unsubscribe = this.wireSessionEvents(managed);
     this.sessions.set(sessionKey, managed);
     this.log(
-      `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${role.tools.join(",")}] cwd=${cwd}`,
+      `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${[...role.tools, ...allCustomTools.map((tool) => tool.name)].join(",")}] skills=[${skillDirs.length}] cwd=${cwd}`,
     );
     return managed;
   }
