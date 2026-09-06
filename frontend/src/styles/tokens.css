@@ -1,0 +1,87 @@
+/**
+ * PaperTeam Design Tokens（Visual Redesign 2026-09）。
+ *
+ * 方向：Modern Research Workbench —— 深墨侧栏（书脊）+ 纸白内容（页面），
+ * 衬线只用于学术内容（论文/文献标题、研究想法），无衬线承担工具界面，
+ * 状态一律走「登记簿」dot 语义系统。唯一令所有颜色进出的文件。
+ */
+
+:root {
+  /* ---- 墨阶（文字 / 线条） ---- */
+  --ink-900: #1c2229; /* 主文字 */
+  --ink-700: #49525b; /* 次级文字 */
+  --ink-500: #737d87; /* 辅助文字 */
+  --ink-400: #9aa3ac; /* 弱化文字（时间戳等） */
+  --line: #e5e7ea; /* 发丝线 */
+  --line-strong: #cfd4da; /* 强分隔线 */
+
+  /* ---- 表面 ---- */
+  --paper: #f4f4f2; /* 应用画布（冷调纸灰，非奶油） */
+  --page: #ffffff; /* 内容表面 */
+
+  /* ---- 书脊（侧栏） ---- */
+  --spine: #1d2530;
+  --spine-deep: #161d26;
+  --spine-hover: #27313e;
+  --spine-active: #323f4f;
+  --spine-text: #aab4bf;
+  --spine-text-strong: #f1f4f7;
+  --spine-line: #2c3644;
+  --spine-accent: #d8e2f4; /* 侧栏选中项文字（在 accent-bg 上） */
+
+  /* ---- 品牌 accent：墨钴蓝 ---- */
+  --accent: #2f5aa8;
+  --accent-strong: #27498c;
+  --accent-bg: #edf1f8;
+  --accent-bg-strong: #dde5f2;
+
+  /* ---- 语义色（浅底深字，长时阅读安全） ---- */
+  --ok: #1f714b;
+  --ok-bg: #e8f2ec;
+  --info: #2c6faf;
+  --info-bg: #eaf2fa;
+  --warn: #8f6408;
+  --warn-bg: #f9f1de;
+  --danger: #b23a2e;
+  --danger-bg: #f9ecea;
+
+  /* ---- 字体角色 ---- */
+  --font-ui: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-reading: Georgia, "Times New Roman", "Songti SC", SimSun, serif; /* 学术内容 */
+  --font-mono: ui-monospace, Consolas, "Cascadia Mono", "PingFang SC", monospace; /* 标识符 */
+
+  /* ---- 字号（工具密度优先） ---- */
+  --fs-display: 22px; /* 页面标题 */
+  --fs-title: 16.5px; /* 区块标题 */
+  --fs-body: 14px; /* 正文 */
+  --fs-reading: 15.5px; /* 阅读型正文（衬线） */
+  --fs-meta: 13px; /* 次级说明 */
+  --fs-label: 12px; /* 字段标签 */
+  --fs-code: 12.5px; /* 标识符 */
+
+  /* ---- 间距（4px 网格） ---- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 44px;
+
+  /* ---- 圆角 / 阴影 / 动效 ---- */
+  --r-sm: 4px;
+  --r-md: 6px;
+  --r-lg: 8px;
+  --shadow-overlay: 0 8px 28px rgba(22, 29, 38, 0.14); /* 仅浮层 */
+  --t-fast: 120ms ease;
+  --t-med: 180ms ease;
+
+  /* ---- 结构尺寸 ---- */
+  --sidebar-w: 228px;
+  --rail-w: 60px;
+  --content-max: 1240px;
+  --header-h: 56px;
+
+  color-scheme: light;
+}

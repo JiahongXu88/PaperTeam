@@ -1,41 +1,37 @@
+import { RegistryStatus, StatusBadge } from "../common/StatusBadge.js";
 import {
-  PROJECT_STATUS_LABELS,
-  RUN_STATUS_LABELS,
-  WORKFLOW_KIND_LABELS,
-} from "../../constants/projectMeta.js";
+  PROJECT_STATUS_STYLES,
+  RUN_STATUS_STYLES,
+  statusStyleOf,
+} from "../common/status.js";
+import { WORKFLOW_KIND_LABELS } from "../../constants/projectMeta.js";
 import type { ProjectStatus, WorkflowKind, WorkflowRunStatus } from "../../types/api.js";
 
-/** 项目 / Run 状态徽标（M4.2）——只展示 Backend 真实字段，未知值原样显示 */
+/**
+ * 项目 / Run 状态徽标（Visual Redesign 2026-09）。
+ * 语义映射统一走 status.ts 注册表；未知值原样展示。
+ */
 
 export function WorkflowKindBadge({ kind }: { kind: WorkflowKind | undefined }) {
-  if (kind === undefined) {
-    return <span className="badge badge-kind">Idea → Paper</span>;
-  }
-  return <span className="badge badge-kind">{WORKFLOW_KIND_LABELS[kind] ?? kind}</span>;
+  // 历史项目可能缺 workflowKind，按默认主线（Idea → Paper）展示
+  const label = WORKFLOW_KIND_LABELS[kind ?? "idea_to_paper"];
+  return <span className="chip">{label}</span>;
 }
 
 export function ProjectStatusBadge({ status }: { status: ProjectStatus | undefined }) {
   if (status === undefined) {
     return null;
   }
-  const tone = status === "generated" ? "ok" : status === "failed" ? "error" : "muted";
-  return (
-    <span className={`badge badge-${tone}`}>
-      {PROJECT_STATUS_LABELS[status] ?? status}
-    </span>
-  );
+  const style = statusStyleOf(PROJECT_STATUS_STYLES, status);
+  return <RegistryStatus style={style} />;
 }
 
 export function RunStatusBadge({ status }: { status: WorkflowRunStatus }) {
-  const tone =
-    status === "completed"
-      ? "ok"
-      : status === "failed"
-        ? "error"
-        : status === "running" || status === "awaiting_input"
-          ? "info"
-          : status === "cancelled"
-            ? "muted"
-            : "muted";
-  return <span className={`badge badge-${tone}`}>{RUN_STATUS_LABELS[status] ?? status}</span>;
+  const style = statusStyleOf(RUN_STATUS_STYLES, status);
+  return <RegistryStatus style={style} />;
+}
+
+/** 独立 tone 状态（如「解析质量」）复用同一语言 */
+export function PlainStatus({ label, tone }: { label: string; tone: "ok" | "warn" | "danger" }) {
+  return <StatusBadge label={label} tone={tone} />;
 }
