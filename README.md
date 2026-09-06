@@ -111,19 +111,33 @@ npm run dev           # 一键启动：Backend + React Workbench
 
 ### 配置模型（可选但 Agent 调用必需）
 
-Runtime 不搬运任何其他项目的凭据。为 PaperTeam 配置模型（三选一，优先级从高到低）：
+Runtime 不搬运任何其他项目的凭据。两种配置方式（推荐本地用户用方式 1）：
+
+**方式 1：Settings UI（推荐本地用户）** —— `npm run dev` 后打开
+http://localhost:5173/settings/model ：选择 Provider / Model、粘贴 API Key、
+Save 即生效（新的 Agent Run 立即使用新配置，无需重启）；Test Connection
+可先验证凭据；配置持久化在 PaperTeam 用户数据目录（默认 `~/.paperteam`，
+不进仓库），重启后自动恢复。Key 只经同源 Backend 保存，任何页面/接口
+都不回显 Key 本体。
+
+**方式 2：环境变量（CI / dev override）** —— 优先级**高于** Settings UI
+保存的本地配置：
 
 ```bash
-# 方式 A：环境变量（.env，见 .env.example）
+# .env（见 .env.example；.env 已被 .gitignore 忽略，严禁提交真实 Key）
 echo PAPERTEAM_PI_MODEL=anthropic/claude-opus-4-5 >> .env
 echo PAPERTEAM_PI_API_KEY=sk-ant-... >> .env
 
-# 方式 B：Pi 官方凭据文件（PaperTeam 专属目录，与 ~/.pi 隔离）
+# 也可用 Pi 官方凭据文件（PaperTeam 专属目录，与 ~/.pi 隔离）
 #   Windows:   %USERPROFILE%\.paperteam\runtime\pi\agent\auth.json
 #   Linux/macOS: ~/.paperteam/runtime/pi/agent/auth.json
-# 方式 C：标准环境变量（ANTHROPIC_API_KEY / OPENAI_API_KEY / ...）
+# 或标准环境变量（ANTHROPIC_API_KEY / ZAI_CODING_CN_API_KEY / ...）
+```
 
-# 重启 npm run dev 后，用诊断确认：
+环境变量覆盖时 Settings 页面会明确提示「当前模型配置由环境变量提供」，
+仍可保存本地配置（在环境变量不存在时生效）。配置后用诊断确认：
+
+```bash
 curl http://localhost:3000/api/runtime/status
 #   runtime.phase: healthy + model.phase: configured
 ```

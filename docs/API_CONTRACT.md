@@ -84,6 +84,31 @@
 > 阻断性 gate（人工复核）。Skill 写操作（install/uninstall/update/绑定编辑）为
 > M5 范围，本轮无对应端点、前端也不显示假按钮。
 
+### 1.2c M4.3.7.5 已消费 ✅（Model Settings）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/settings/model` | `{settings: ModelSettingsView}`（生效配置/provider/凭据状态/configurationSource/runtimePhase/modelPhase；**永不返回 key 本体**） | ModelSettingsPage「当前状态」 |
+| `PUT /api/settings/model` | `{model: "provider/model-id", apiKey?}`；apiKey **字段省略 = 保持原 Key**，空字符串 = 400；成功 → `{settings}` | ModelSettingsPage（Save） |
+| `DELETE /api/settings/model/key` | 清除本地保存的 API Key（agentDir auth.json；env 凭据仍在时模型保持 configured）→ `{settings}` | ModelSettingsPage（Clear Key） |
+| `GET /api/settings/model/options` | provider 列表 `{providers: [{id,name,authConfigured,apiKeyLoginSupported,modelCount}]}`（安全 metadata，无 baseUrl/key） | Provider 下拉 |
+| `GET /api/settings/model/options?provider=x` | 单 provider 模型目录 `{provider, models: [{modelId,displayName,contextWindow?,reasoning?,input?}]}` | Model 下拉 |
+| `POST /api/settings/model/test` | Test Connection `{model, apiKey?}` → 200 `{result: {ok,provider,model,latencyMs? \| code,detail?}}`（失败分类：AUTH_FAILED / MODEL_NOT_FOUND / PROVIDER_UNAVAILABLE / RATE_LIMITED / TIMEOUT / UNKNOWN；detail 截断+脱敏） | ModelSettingsPage（Test Connection） |
+
+> M4.3.7.5 安全与语义约定：
+> - **Key 只进不出**：apiKey 只经 PUT/test 请求体进入（同源），任何 GET 响应
+>   无 key 字段（无 maskedApiKey/last4）；日志不打印请求体。
+> - **优先级**：`PAPERTEAM_PI_MODEL` / `PAPERTEAM_PI_API_KEY`（env，含 .env）
+>   > Settings UI 保存的本地配置（`<runtimeRoot>/settings/model.json` +
+>   `<agentDir>/auth.json`）。env 覆盖时 `configurationSource=environment`、
+>   `savedModel` 如实展示本地保存值（保存被允许，env 不存在时生效）。
+> - **生效边界**：保存/清除只影响**新的 Agent Run**；在途 run > 0 时返回
+>   409 `MODEL_CONFIG_BUSY`（不中断活跃任务），且不落盘（前置空闲检查）。
+> - **持久化**：本地配置写在 PaperTeam 用户数据目录（默认 `~/.paperteam`），
+>   不进仓库；重启后由启动装配恢复（env 缺省时 stored 生效）。
+> - Test Connection 不创建 AgentSession / 不写 Workspace / 不污染会话历史；
+>   携带未保存 Key 时经 `options.apiKey` 覆盖式注入（不落盘）。
+
 ### 1.3 已知缺口
 
 - **项目删除 / 归档**：Backend 无对应端点（前端不提供该入口，不伪造）。
@@ -138,6 +163,31 @@ interface RuntimeStatusView {                    // Pi schema（M3.8 冻结）
   model: { phase: "configured" | "not_configured" | "unknown"; model?: string; providers: string[]; detail: string };
   agents: { roles: Array<{ role: string; agentId: string; status: "configured" | "missing" }> };
   sessions: { activeRuns: number; managedSessions: number };
+}
+
+// M4.3.7.5 Model Settings（GET 永不返回 key 本体）
+type ModelConfigurationSource = "environment" | "stored" | "not_configured";
+interface ModelSettingsView {
+  provider?: string;                          // 生效模型 provider 段
+  model?: string;                             // 生效 "provider/model-id"
+  savedModel?: string;                        // Settings UI 保存值（env 覆盖时与 model 不同）
+  apiKeyConfigured: boolean;                  // provider 有可用凭据（任何来源）
+  apiKeySource: "environment" | "stored" | "none";
+  configurationSource: ModelConfigurationSource;
+  envOverride: boolean;                       // PAPERTEAM_PI_MODEL/API_KEY 任一存在
+  runtimePhase: "healthy" | "unhealthy";
+  runtimeVersion: string;                     // Pi SDK 精确版本
+  modelPhase: "configured" | "not_configured" | "unknown";
+  modelDetail: string; detail: string;        // 人读说明（env 覆盖提示）
+}
+type ModelOptionsView =
+  | { providers: Array<{ id: string; name: string; authConfigured: boolean; apiKeyLoginSupported: boolean; modelCount: number }> }
+  | { provider: {/* 同上 */}; models: Array<{ modelId: string; displayName: string; contextWindow?: number; reasoning?: boolean; input?: string[] }> };
+interface ModelTestResultView {
+  ok: boolean; provider: string; model: string;
+  latencyMs?: number;                         // ok=true
+  code?: "AUTH_FAILED" | "MODEL_NOT_FOUND" | "PROVIDER_UNAVAILABLE" | "RATE_LIMITED" | "TIMEOUT" | "UNKNOWN";  // ok=false
+  detail?: string;                            // 截断 + 脱敏（不含 key）
 }
 ```
 

@@ -316,10 +316,22 @@ Pi 配置目录布局（用户级，不入 Git；`PAPERTEAM_RUNTIME_ROOT` 可覆
 
 ```text
 %USERPROFILE%\.paperteam\
+├── settings\
+│   └── model.json  # M4.3.7.5 Settings UI 保存的模型偏好（非敏感；原子写）
 └── runtime\pi\agent
-    ├── auth.json    # Pi 官方凭据（可选；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
+    ├── auth.json    # Pi 官方凭据（Settings UI 保存的 API Key 也在此；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
     └── models.json  # 自定义模型注册（可选）
 ```
+
+**模型配置两级来源（M4.3.7.5）**：优先级 `PAPERTEAM_PI_MODEL` /
+`PAPERTEAM_PI_API_KEY`（env，含 .env 补缺）> Settings UI 保存的本地配置
+（`settings/model.json` 偏好 + `runtime/pi/agent/auth.json` 凭据）。
+本地保存完全复用 Pi 官方公开 API（不 deep import、不自建第二套 credential）：
+保存 Key = `ModelRuntime.login(provider,"api_key",interaction)`（经
+CredentialStore.modify 原子写 auth.json 并同步 provider 快照）；清除 =
+`ModelRuntime.logout`。API Key 属文件型本地存储（明文 JSON，权限边界为
+用户目录），不引入 DPAPI / Credential Manager（后续可单独增强，如实记录
+安全边界）；Key 永不进日志 / Git / 任何 GET 响应。
 
 ### 6.0.1 Business Agent → Runtime 会话映射（方案 A，D-0018）
 
@@ -487,6 +499,11 @@ PiRuntimeAdapter
   `PAPERTEAM_PI_API_KEY`（`setRuntimeApiKey`，仅内存不落盘、不进日志）；缺省按
   Pi 官方优先级：agentDir auth.json > 标准环境变量。模型未配置 = Runtime 健康、
   模型未就绪（`modelStatusSnapshot()` 分区报告），startAgent 结构化失败，不伪造。
+  M4.3.7.5 起 Settings UI 可在运行中变更配置（`reconfigure()`）：只影响新的
+  Agent Run；在途 run > 0 时拒绝（`MODEL_CONFIG_BUSY` 409，前置检查先于落盘）；
+  空闲会话直接释放重建（Workspace/checkpoint 是事实源，Runtime session 本就可
+  丢弃）；启动装配按 env > stored 解析生效模型（`resolveStartupModelSpec`），
+  重启后本地配置自动恢复。
 - **终态归因**：`session.prompt()` 同步终态语义；transcript assistant 消息
   `stopReason`：`"error"` → failed；`"aborted"`（或工具执行中 abort 的
   `"error" + "This operation was aborted"`，以 cancelRequested 意图归因）→
