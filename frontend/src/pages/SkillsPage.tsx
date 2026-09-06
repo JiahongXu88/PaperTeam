@@ -1,26 +1,33 @@
-import { useState } from "react";
-
 import { ErrorState, Loading } from "../components/common/StateViews.js";
+import { PageHeader } from "../components/common/PageHeader.js";
 import { useRegenerateSkillSummary, useSkills } from "../hooks/queries.js";
+import type { SkillView } from "../types/paper.js";
 
 /**
- * Skills 页面（M4.3.7）：已安装 Skill 的元数据展示——中文简介（主要）、
- * 原始 description（次要可折叠）、Assigned Agents、来源与 pin revision、
- * License、Allowed Tools、Status。
+ * Skills 页面（Visual Redesign 2026-09）：每个 Skill 作为「能力」呈现。
  *
- * 不显示 Install/Uninstall/Update 等未实现功能的按钮（M5 再做写操作）。
+ * 主信息：skill 名 + 中文简介 + Assigned Agents + 状态；
+ * 来源 / revision / license / 工具 / 路径收进「技术信息」折叠块。
+ * 不显示 Install / Uninstall / Update 等未实现功能（M5 再做写操作）。
  */
 
-function SkillCard({ skill }: { skill: import("../types/paper.js").SkillView }) {
-  const [showOriginal, setShowOriginal] = useState(false);
+function SkillCard({ skill }: { skill: SkillView }) {
   const regenerate = useRegenerateSkillSummary();
+
   return (
-    <div className="panel skill-card">
+    <article className="skill-card" id={skill.name}>
       <div className="skill-head">
-        <h2 className="mono">{skill.name}</h2>
-        <span className={`chip status-${skill.status}`}>{skill.status}</span>
-        {skill.summaryStatus === "stale" ? <span className="chip">简介待更新</span> : null}
+        <h2 className="skill-name">{skill.name}</h2>
+        {skill.status === "installed" ? (
+          <span className="status status-tone-ok">Installed</span>
+        ) : (
+          <span className="status status-tone-neutral">{skill.status}</span>
+        )}
+        {skill.summaryStatus === "stale" ? (
+          <span className="chip">简介待更新</span>
+        ) : null}
       </div>
+
       {skill.chineseSummary !== undefined ? (
         <p className="skill-summary">{skill.chineseSummary}</p>
       ) : (
@@ -28,60 +35,18 @@ function SkillCard({ skill }: { skill: import("../types/paper.js").SkillView }) 
           中文简介待生成（模型未配置时显示原始描述；模型可用后自动补齐）。
         </p>
       )}
-      <dl className="meta-grid">
-        <div>
-          <dt>Assigned Agents</dt>
-          <dd>{skill.assignedAgents.length > 0 ? skill.assignedAgents.join(", ") : "—"}</dd>
+
+      {skill.assignedAgents.length > 0 ? (
+        <div className="skill-tags">
+          {skill.assignedAgents.map((agent) => (
+            <span key={agent} className="chip">
+              {agent}
+            </span>
+          ))}
         </div>
-        <div>
-          <dt>Source</dt>
-          <dd>
-            {skill.sourceRepo !== undefined ? (
-              <>
-                {skill.sourceRepo}
-                {skill.sourceRevision !== undefined ? (
-                  <>
-                    {" @ "}
-                    <span className="mono">{skill.sourceRevision.slice(0, 7)}</span>
-                  </>
-                ) : null}
-              </>
-            ) : (
-              skill.sourceType
-            )}
-          </dd>
-        </div>
-        <div>
-          <dt>Version / Revision</dt>
-          <dd className="mono">
-            {skill.version ?? "—"}
-            {skill.sourceRevision !== undefined ? ` / ${skill.sourceRevision.slice(0, 12)}` : ""}
-          </dd>
-        </div>
-        <div>
-          <dt>License</dt>
-          <dd>{skill.license ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>Allowed Tools</dt>
-          <dd>{skill.allowedTools.length > 0 ? skill.allowedTools.join(", ") : "（无工具假设）"}</dd>
-        </div>
-        <div>
-          <dt>Installed</dt>
-          <dd className="mono">{skill.installedPath}</dd>
-        </div>
-      </dl>
-      {skill.wrapperNote !== undefined ? (
-        <p className="form-note">{skill.wrapperNote}</p>
       ) : null}
-      <div className="action-row">
-        <button
-          type="button"
-          className="btn-link"
-          onClick={() => setShowOriginal((value) => !value)}
-        >
-          {showOriginal ? "收起原始描述" : "查看原始描述"}
-        </button>
+
+      <div className="skill-footer">
         <button
           type="button"
           className="btn-link"
@@ -96,10 +61,52 @@ function SkillCard({ skill }: { skill: import("../types/paper.js").SkillView }) 
           </span>
         ) : null}
       </div>
-      {showOriginal ? (
-        <p className="skill-original">{skill.originalDescription}</p>
-      ) : null}
-    </div>
+
+      <details className="details-block" style={{ marginTop: 14 }}>
+        <summary>来源与技术信息</summary>
+        <div className="details-body">
+          {skill.wrapperNote !== undefined ? (
+            <p className="skill-original" style={{ marginBottom: 12 }}>
+              {skill.wrapperNote}
+            </p>
+          ) : null}
+          <dl className="meta-list">
+            <div>
+              <dt>来源</dt>
+              <dd className="mono">
+                {skill.sourceRepo ?? skill.sourceType}
+                {skill.sourceRevision !== undefined ? ` @ ${skill.sourceRevision.slice(0, 7)}` : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Version / Revision</dt>
+              <dd className="mono">
+                {skill.version ?? "—"}
+                {skill.sourceRevision !== undefined ? ` / ${skill.sourceRevision.slice(0, 12)}` : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>License</dt>
+              <dd>{skill.license ?? "—"}</dd>
+            </div>
+            <div>
+              <dt>Allowed Tools</dt>
+              <dd>
+                {skill.allowedTools.length > 0 ? skill.allowedTools.join(", ") : "（无工具假设）"}
+              </dd>
+            </div>
+            <div>
+              <dt>原始描述</dt>
+              <dd>{skill.originalDescription}</dd>
+            </div>
+            <div>
+              <dt>Installed</dt>
+              <dd className="mono">{skill.installedPath}</dd>
+            </div>
+          </dl>
+        </div>
+      </details>
+    </article>
   );
 }
 
@@ -127,9 +134,10 @@ export function SkillsPage() {
   if (data === undefined || data.skills.length === 0) {
     return (
       <section className="page">
-        <div className="panel">
-          <h2>Skills</h2>
-          <p className="panel-empty">尚未安装任何 Skill。</p>
+        <PageHeader title="Skills" sub="Agent 可用的专业能力" />
+        <div className="panel-coming">
+          <strong>尚未安装任何 Skill</strong>
+          <span>Skill 将随 Backend skills 目录注入（当前里程碑为只读展示）。</span>
         </div>
       </section>
     );
@@ -137,23 +145,22 @@ export function SkillsPage() {
 
   return (
     <section className="page">
-      <div className="page-head">
-        <div>
-          <p className="page-sub">Skills</p>
-          <h1>已安装的 Academic Skills</h1>
-          <p className="form-note">
-            {data.skills.length} 个 Skill；按 Agent 角色绑定注入 Pi 会话
-            （progressive disclosure：仅名称与描述进入系统提示，正文按需读取）。
-          </p>
-        </div>
-      </div>
-      <div className="panel-stack">
+      <PageHeader
+        title="Skills"
+        sub={`${data.skills.length} 个已安装能力 · 按 Agent 角色绑定注入 Pi 会话`}
+      />
+      <div className="skill-list">
         {data.skills.map((skill) => (
           <SkillCard key={skill.id} skill={skill} />
         ))}
-        <div className="panel">
+      </div>
+
+      <section>
+        <div className="section-head">
           <h2>Agent 绑定</h2>
-          <table className="runs-table">
+        </div>
+        <div className="table-scroll">
+          <table className="data-table">
             <thead>
               <tr>
                 <th>Agent</th>
@@ -164,13 +171,25 @@ export function SkillsPage() {
               {data.bindings.map((binding) => (
                 <tr key={binding.agentRole}>
                   <td className="mono">{binding.agentRole}</td>
-                  <td>{binding.skillIds.length > 0 ? binding.skillIds.join(", ") : "（无）"}</td>
+                  <td>
+                    {binding.skillIds.length > 0
+                      ? binding.skillIds.map((skillId, index) => (
+                          <span key={skillId}>
+                            {index > 0 ? ", " : ""}
+                            <a href={`#${skillId}`}>{skillId}</a>
+                          </span>
+                        ))
+                      : "—"}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-      </div>
+        <p className="section-note" style={{ marginTop: 8 }}>
+          仅名称与简介注入 Pi 系统提示，正文按需加载。
+        </p>
+      </section>
     </section>
   );
 }
