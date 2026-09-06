@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 
 import {
@@ -27,8 +27,11 @@ import {
 /** 项目状态（M2 只区分创建与一次生成的结果） */
 export type ProjectStatus = "created" | "generated" | "failed";
 
-/** 一级工作流类型（PRD §5.1） */
-export type ProjectWorkflowKind = "idea_to_paper" | "existing_paper_improvement";
+/** 一级工作流类型（PRD §5.1；existing_paper_review = PDF 只读 Review，M4.3.8 前置） */
+export type ProjectWorkflowKind =
+  | "idea_to_paper"
+  | "existing_paper_improvement"
+  | "existing_paper_review";
 
 /**
  * 目标定位（PRD §5.4）：三个维度分开表达，不使用单一 paperLevel。
@@ -75,6 +78,11 @@ export interface ProjectMetadata {
   runtimeSessionKey?: string;
   /** 一级工作流类型（M3.1；缺省视为 idea_to_paper，向后兼容） */
   workflowKind?: ProjectWorkflowKind;
+  /**
+   * 生命周期：归档时间（独立于 status 的业务执行状态）。
+   * 存在 = 已归档（默认项目列表不显示）；清除 = 恢复为活跃项目。
+   */
+  archivedAt?: string;
   /** 研究资料元数据（M3.1，PRD §5.2） */
   researchIdea?: string;
   researchField?: string;
@@ -265,6 +273,45 @@ export class ProjectStore {
     return updated;
   }
 
+  // ---- 生命周期：归档 / 恢复 / 永久删除 ----
+
+  /** 归档项目（幂等：已归档时保持原 archivedAt 不变） */
+  async archive(projectId: string): Promise<ProjectMetadata> {
+    const metadata = await this.getRequired(projectId);
+    if (metadata.archivedAt !== undefined) {
+      return metadata;
+    }
+    const updated: ProjectMetadata = {
+      ...metadata,
+      archivedAt: this.now().toISOString(),
+      updatedAt: this.now().toISOString(),
+    };
+    await this.writeMetadata(updated);
+    return updated;
+  }
+
+  /** 恢复项目（幂等：未归档时原样返回） */
+  async restore(projectId: string): Promise<ProjectMetadata> {
+    const metadata = await this.getRequired(projectId);
+    if (metadata.archivedAt === undefined) {
+      return metadata;
+    }
+    const { archivedAt: _archivedAt, ...rest } = metadata;
+    const updated: ProjectMetadata = { ...rest, updatedAt: this.now().toISOString() };
+    await this.writeMetadata(updated);
+    return updated;
+  }
+
+  /**
+   * 永久删除项目工作区（整个 {root}/{projectId}/ 目录：PDF / parsed /
+   * citations / reviews / workflow checkpoints / manuscript / build / 元数据）。
+   * 不可恢复。调用方（HTTP 层）负责前置校验：必须已归档且无进行中任务。
+   */
+  async delete(projectId: string): Promise<void> {
+    const dir = this.projectDir(projectId);
+    await rm(dir, { recursive: true, force: true });
+  }
+
   // ---- 路径工具（全部经过 projectId 校验与包含性检查） ----
 
   /** 项目根目录（先校验 id，再做路径包含检查） */
@@ -337,18 +384,28 @@ export class ProjectStore {
   }
 
   /**
-   * 列出全部项目元数据（M4.0：GET /api/projects 用）。
+   * 列出项目元数据（M4.0：GET /api/projects 用）。
+   * scope：active（默认，未归档）/ archived（已归档）/ all。
    * 按 updatedAt 降序（最近更新在前，id 作稳定 tie-break）；
    * project.json 损坏的目录静默跳过（与 list() 一致）。
    */
-  async listMetadata(): Promise<ProjectMetadata[]> {
+  async listMetadata(
+    scope: "active" | "archived" | "all" = "active",
+  ): Promise<ProjectMetadata[]> {
     const ids = await this.list();
     const metadata: ProjectMetadata[] = [];
     for (const id of ids) {
       const project = await this.get(id);
-      if (project !== null) {
-        metadata.push(project);
+      if (project === null) {
+        continue;
       }
+      if (scope === "archived" && project.archivedAt === undefined) {
+        continue;
+      }
+      if (scope === "active" && project.archivedAt !== undefined) {
+        continue;
+      }
+      metadata.push(project);
     }
     return metadata.sort(
       (a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id),
@@ -402,6 +459,10 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
     typeof record["runtimeSessionKey"] === "string" && record["runtimeSessionKey"] !== ""
       ? record["runtimeSessionKey"]
       : undefined;
+  const archivedAt =
+    typeof record["archivedAt"] === "string" && record["archivedAt"] !== ""
+      ? record["archivedAt"]
+      : undefined;
   if (
     !id ||
     !PROJECT_ID_PATTERN.test(id) ||
@@ -414,10 +475,9 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   }
   // M3.1 可选研究定位字段：只在合法时保留，非法值静默丢弃（防御性读取）
   const research = readOptionalResearchFields(record);
-  const workflowKind =
-    record["workflowKind"] === "idea_to_paper" || record["workflowKind"] === "existing_paper_improvement"
-      ? (record["workflowKind"] as ProjectWorkflowKind)
-      : undefined;
+  const workflowKind = isProjectWorkflowKind(record["workflowKind"])
+    ? (record["workflowKind"] as ProjectWorkflowKind)
+    : undefined;
   return {
     schemaVersion: 1,
     id,
@@ -426,9 +486,18 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
     updatedAt,
     status,
     ...(runtimeSessionKey !== undefined ? { runtimeSessionKey } : {}),
+    ...(archivedAt !== undefined ? { archivedAt } : {}),
     ...(workflowKind !== undefined ? { workflowKind } : {}),
     ...research,
   };
+}
+
+function isProjectWorkflowKind(value: unknown): boolean {
+  return (
+    value === "idea_to_paper" ||
+    value === "existing_paper_improvement" ||
+    value === "existing_paper_review"
+  );
 }
 
 /** 读取可选研究定位字段（类型与长度校验，非法返回不包含该字段） */
@@ -466,10 +535,7 @@ function isDirectoryExistsError(error: unknown): boolean {
 function normalizeResearchMeta(meta: ProjectResearchMetaInput): Partial<ProjectMetadata> {
   const out: Partial<ProjectMetadata> = {};
   if (meta.workflowKind !== undefined) {
-    if (
-      meta.workflowKind !== "idea_to_paper" &&
-      meta.workflowKind !== "existing_paper_improvement"
-    ) {
+    if (!isProjectWorkflowKind(meta.workflowKind)) {
       throw new BusinessError("INVALID_REQUEST", `非法的 workflowKind："${meta.workflowKind}"`);
     }
     out.workflowKind = meta.workflowKind;

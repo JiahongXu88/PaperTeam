@@ -16,6 +16,7 @@ import { createScholarlyTools } from "./skills/scholarlyTools.js";
 import { LatexImporter } from "./import/LatexImporter.js";
 import {
   createExistingPaperDefinition,
+  createExistingPaperReviewDefinition,
   createIdeaToPaperDefinition,
 } from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
@@ -160,6 +161,8 @@ export async function startBackend(): Promise<void> {
           return createIdeaToPaperDefinition(stack.workflowServices);
         case "existing_paper_improvement":
           return createExistingPaperDefinition(stack.workflowServices);
+        case "existing_paper_review":
+          return createExistingPaperReviewDefinition(stack.workflowServices);
       }
     },
     log: (message) => console.log(message),

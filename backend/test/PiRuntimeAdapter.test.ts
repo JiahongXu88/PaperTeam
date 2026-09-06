@@ -565,6 +565,32 @@ describe("PiRuntimeAdapter（Level 1：fake session）", () => {
     // close 后 healthCheck unhealthy
     expect((await adapter.healthCheck()).ok).toBe(false);
   });
+
+  it("releaseProjectSessions：按 projectId 精确释放会话（边界不误伤 p-x1 / p-x12）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "ok" });
+    const adapter = await makeLevel1Adapter(factory);
+    // p-x1 两个 scope + p-x12 一个 + 无 projectId 的显式会话
+    await adapter.runAgent({ agentId: "reviewer", task: "a", projectId: "p-x1", contextScope: "review/section/s1" });
+    await adapter.runAgent({ agentId: "reviewer", task: "b", projectId: "p-x1" });
+    await adapter.runAgent({ agentId: "reviewer", task: "c", projectId: "p-x12" });
+    await adapter.runAgent({ agentId: "writer", task: "d", sessionKey: "agent:writer:paperteam-other" });
+    expect(adapter.runtimeStats().managedSessions).toBe(4);
+
+    const released = await adapter.releaseProjectSessions("p-x1");
+    expect(released).toBe(2);
+    expect(adapter.runtimeStats().managedSessions).toBe(2);
+    // p-x1 的会话被 dispose；p-x12 与 other 会话保留（按创建顺序断言）
+    expect(factory.created[0]?.session.disposed).toBe(true);
+    expect(factory.created[1]?.session.disposed).toBe(true);
+    expect(factory.created[2]?.session.disposed).toBe(false);
+    expect(factory.created[3]?.session.disposed).toBe(false);
+    // 幂等：再次释放返回 0
+    await expect(adapter.releaseProjectSessions("p-x1")).resolves.toBe(0);
+    // 释放后可正常复用（重建会话）
+    const again = await adapter.runAgent({ agentId: "reviewer", task: "e", projectId: "p-x1" });
+    expect(again.status).toBe("completed");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -19,8 +19,11 @@ export type WorkflowRunStatus =
   | "failed"
   | "cancelled";
 
-/** 一级工作流类型（PRD §9.1） */
-export type WorkflowKind = "idea_to_paper" | "existing_paper_improvement";
+/** 一级工作流类型（PRD §9.1；existing_paper_review = 已有论文只读 Review，2026-09） */
+export type WorkflowKind =
+  | "idea_to_paper"
+  | "existing_paper_improvement"
+  | "existing_paper_review";
 
 // ---- Stage 与 StageContract ----
 
@@ -117,9 +120,12 @@ export interface ResumeInput {
   payload?: Record<string, unknown>;
 }
 
-/** Workflow 完成（label：final=双 Gate 通过；draft=Build Gate 通过即可） */
+/**
+ * Workflow 完成（label：final=双 Gate 通过；draft=Build Gate 通过即可；
+ * review=只读审阅流程完成（不产生稿件改动），existing_paper_review 用）
+ */
 export interface WorkflowCompletion {
-  label: "final" | "draft";
+  label: "final" | "draft" | "review";
   summary: Record<string, unknown>;
 }
 
@@ -161,7 +167,7 @@ export interface WorkflowState {
 /** 规划决策：执行下一个 stage / 完成 / 失败 */
 export type PlanDecision =
   | { kind: "stage"; stageId: string }
-  | { kind: "complete"; label: "final" | "draft"; summary: Record<string, unknown> }
+  | { kind: "complete"; label: "final" | "draft" | "review"; summary: Record<string, unknown> }
   | { kind: "fail"; code: string; message: string };
 
 /**

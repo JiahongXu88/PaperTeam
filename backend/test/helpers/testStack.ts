@@ -21,6 +21,7 @@ import { WorkflowOrchestrator } from "../../src/workflow/WorkflowOrchestrator.js
 import { WorkflowRunStore } from "../../src/workflow/runStore.js";
 import {
   createExistingPaperDefinition,
+  createExistingPaperReviewDefinition,
   createIdeaToPaperDefinition,
 } from "../../src/workflow/definitions.js";
 
@@ -375,6 +376,8 @@ export async function startTestStack(
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
     skills?: { registry: import("../../src/skills/SkillRegistry.js").SkillRegistry; summaries?: import("../../src/skills/SkillSummaryService.js").SkillSummaryService };
+    /** Final PDF parser 注入（import-pdf / existing_paper_review 测试用） */
+    paperParser?: import("../../src/paper/PdfParser.js").PdfParser;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
   } = {},
 ): Promise<TestStack> {
@@ -395,6 +398,7 @@ export async function startTestStack(
     ...(options.citation
       ? { citation: options.citation }
       : { citation: { metadataEnabled: false } }), // 测试默认关闭外网 metadata 查询
+    ...(options.paperParser !== undefined ? { paperParser: options.paperParser } : {}),
     log: () => {},
   });
   const importer = new LatexImporter({ projects: store, latex, log: () => {} });
@@ -407,6 +411,8 @@ export async function startTestStack(
           return createIdeaToPaperDefinition(stack.workflowServices);
         case "existing_paper_improvement":
           return createExistingPaperDefinition(stack.workflowServices);
+        case "existing_paper_review":
+          return createExistingPaperReviewDefinition(stack.workflowServices);
       }
     },
     retryDelayMs: 0,

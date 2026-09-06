@@ -2,11 +2,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { BusinessError, toBusinessError } from "./errors.js";
+import { BusinessError, ProjectBusyError, ProjectNotArchivedError, toBusinessError } from "./errors.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
+import { readExistingPaperGoal } from "./project/ProjectImportService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import type { RuntimeStatusService } from "./runtime/statusService.js";
 import type { ServiceStack } from "./serviceStack.js";
@@ -36,10 +37,15 @@ import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
  *   DELETE /api/settings/model/key                  清除本地保存的 API Key
  *   GET    /api/settings/model/options              模型目录（providers / ?provider= 模型列表）
  *   POST   /api/settings/model/test                 Test Connection（最小真实调用）
- *   GET    /api/projects                            项目列表（M4.0：updatedAt 降序）
+ *   GET    /api/projects                            项目列表（M4.0：updatedAt 降序；?scope=active|archived|all，默认 active）
  *   POST   /api/projects                            创建论文项目 {title, researchIdea?, …}
+ *   POST   /api/projects/import-pdf                 已有论文 File-First 导入 {fileName, contentBase64, goal, …}
+ *                                               → 建项目 + 解析 + 自动标题（失败回滚，无半成品）
  *   GET    /api/projects/:id                        查询项目元数据
- *   PATCH  /api/projects/:id                        更新研究定位字段
+ *   PATCH  /api/projects/:id                        更新研究定位字段（含 title 重命名）
+ *   POST   /api/projects/:id/archive                归档项目（有进行中任务 → 409 PROJECT_BUSY）
+ *   POST   /api/projects/:id/restore                恢复已归档项目
+ *   DELETE /api/projects/:id                        永久删除（仅已归档项目；否则 409 PROJECT_NOT_ARCHIVED）
  *   POST   /api/projects/:id/generate               Writer 写作 + LaTeX 编译（M2 同步形态，保留兼容）
  *   POST   /api/projects/:id/workflows              创建异步 WorkflowRun {kind, prompt?} → {runId}
  *   GET    /api/runs?projectId=xxx                  项目 run 列表
@@ -264,9 +270,13 @@ async function handleRequest(
   // ---- /api/projects ----
   if (pathname === "/api/projects") {
     if (method === "GET") {
-      // M4.0：项目列表（updatedAt 降序）；ProjectStore 无项目时返回 []
-      const projects = await services.projects.listMetadata();
-      sendJson(res, 200, { projects });
+      // M4.0：项目列表（updatedAt 降序）；默认只返回未归档项目
+      const scope = url.searchParams.get("scope") ?? "active";
+      if (scope !== "active" && scope !== "archived" && scope !== "all") {
+        throw new BusinessError("INVALID_REQUEST", "scope 只能是 active / archived / all");
+      }
+      const projects = await services.projects.listMetadata(scope);
+      sendJson(res, 200, { projects, scope });
       return;
     }
     if (method !== "POST") {
@@ -284,7 +294,45 @@ async function handleRequest(
     return;
   }
 
-  // ---- /api/projects/:id（GET / PATCH） ----
+  // ---- POST /api/projects/import-pdf（已有论文 File-First 导入，2026-09） ----
+  if (pathname === "/api/projects/import-pdf") {
+    if (method !== "POST") {
+      res.setHeader("Allow", "POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    if (services.stack === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "业务服务栈未配置" });
+      return;
+    }
+    const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
+    const fileName = readStringField(body, "fileName");
+    const contentBase64 = readStringField(body, "contentBase64");
+    if (fileName === undefined || contentBase64 === undefined) {
+      throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
+    }
+    let content: Buffer;
+    try {
+      content = Buffer.from(contentBase64, "base64");
+    } catch {
+      throw new BusinessError("INVALID_REQUEST", "contentBase64 不是合法 base64");
+    }
+    const goal = readExistingPaperGoal(body["goal"]);
+    const result = await services.stack.projectImport.importPdf({
+      fileName,
+      content,
+      goal,
+      meta: readResearchMeta(body),
+    });
+    sendJson(res, 201, {
+      project: result.project,
+      document: toPaperDocumentSummary(result.document),
+      titleSource: result.titleSource,
+    });
+    return;
+  }
+
+  // ---- /api/projects/:id（GET / PATCH / DELETE） ----
   const projectMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})$/.exec(pathname);
   if (projectMatch) {
     const projectId = projectMatch[1] ?? "";
@@ -295,12 +343,45 @@ async function handleRequest(
     }
     if (method === "PATCH") {
       const body = await readJsonBody(req);
-      const project = await services.projects.updateMeta(projectId, readResearchMeta(body, true));
+      const project = await services.projects.updateMeta(projectId, {
+        ...readResearchMeta(body, true),
+        ...(readOptionalTitle(body) !== undefined ? { title: readOptionalTitle(body)! } : {}),
+      });
       sendJson(res, 200, { project });
       return;
     }
-    res.setHeader("Allow", "GET, PATCH");
+    if (method === "DELETE") {
+      await permanentlyDeleteProject(services, projectId);
+      sendJson(res, 200, { status: "deleted", projectId });
+      return;
+    }
+    res.setHeader("Allow", "GET, PATCH, DELETE");
     sendJson(res, 405, { status: "method_not_allowed", method });
+    return;
+  }
+
+  // ---- POST /api/projects/:id/archive | /restore（生命周期，2026-09） ----
+  const lifecycleMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/(archive|restore)$/.exec(pathname);
+  if (lifecycleMatch) {
+    const projectId = lifecycleMatch[1] ?? "";
+    const action = lifecycleMatch[2] ?? "";
+    if (method !== "POST") {
+      res.setHeader("Allow", "POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    if (action === "archive") {
+      if (await services.orchestrator.hasActiveRun(projectId)) {
+        throw new ProjectBusyError(
+          "当前项目仍有进行中的任务，请先完成或取消任务后再归档。",
+        );
+      }
+      const project = await services.projects.archive(projectId);
+      sendJson(res, 200, { project });
+      return;
+    }
+    const project = await services.projects.restore(projectId);
+    sendJson(res, 200, { project });
     return;
   }
 
@@ -335,6 +416,10 @@ async function handleRequest(
     const body = await readJsonBody(req);
     const kind = readWorkflowKind(body);
     const prompt = readStringField(body, "prompt");
+    const project = await services.projects.getRequired(projectId);
+    if (project.archivedAt !== undefined) {
+      throw new ProjectBusyError(`项目已归档，不能启动新任务（请先恢复项目 ${projectId}）`);
+    }
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
     });
@@ -897,6 +982,13 @@ async function handleProjectResourceRoutes(
     return false;
   }
 
+  // ---- paper-review（existing_paper_review 聚合报告，2026-09） ----
+  if (resource === "paper-review" && method === "GET" && rest === "") {
+    const report = await latestExistingReviewReport(stack, projectId);
+    sendJson(res, 200, { report });
+    return true;
+  }
+
   // ---- feasibility / citation / manuscript / context ----
   if (rest !== "") {
     return false;
@@ -1145,6 +1237,33 @@ async function buildReviewDigest(stack: ServiceStack, projectId: string): Promis
   return parts.join("\n\n").slice(0, 40_000);
 }
 
+/** 最新 existing_paper_review 聚合报告（round 最大；无报告返回 null） */
+async function latestExistingReviewReport(
+  stack: ServiceStack,
+  projectId: string,
+): Promise<Record<string, unknown> | null> {
+  const { readdir } = await import("node:fs/promises");
+  try {
+    const names = await readdir(stack.projects.reviewsDir(projectId));
+    const rounds = names
+      .map((name) => /^existing-review-r(\d+)\.json$/.exec(name))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => Number(match[1]))
+      .sort((a, b) => b - a);
+    if (rounds.length === 0) {
+      return null;
+    }
+    return JSON.parse(
+      await readFile(
+        join(stack.projects.reviewsDir(projectId), `existing-review-r${rounds[0]}.json`),
+        "utf8",
+      ),
+    ) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 /** 最新 review 汇总（round 最大） */
 async function latestReviewSummaryFrom(
   stack: ServiceStack,
@@ -1196,12 +1315,16 @@ function readResearchMeta(body: Record<string, unknown>, forPatch = false): Reco
     }
   }
   const workflowKind = body["workflowKind"];
-  if (workflowKind === "idea_to_paper" || workflowKind === "existing_paper_improvement") {
+  if (
+    workflowKind === "idea_to_paper" ||
+    workflowKind === "existing_paper_improvement" ||
+    workflowKind === "existing_paper_review"
+  ) {
     meta["workflowKind"] = workflowKind;
   } else if (workflowKind !== undefined) {
     throw new BusinessError(
       "INVALID_REQUEST",
-      "workflowKind 只能是 idea_to_paper 或 existing_paper_improvement",
+      "workflowKind 只能是 idea_to_paper、existing_paper_improvement 或 existing_paper_review",
     );
   }
   return meta;
@@ -1375,13 +1498,45 @@ function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
   if (kind === undefined) {
     return "idea_to_paper";
   }
-  if (kind === "idea_to_paper" || kind === "existing_paper_improvement") {
+  if (
+    kind === "idea_to_paper" ||
+    kind === "existing_paper_improvement" ||
+    kind === "existing_paper_review"
+  ) {
     return kind;
   }
   throw new BusinessError(
     "INVALID_REQUEST",
-    "字段 kind 只能是 idea_to_paper 或 existing_paper_improvement（缺省 idea_to_paper）",
+    "字段 kind 只能是 idea_to_paper、existing_paper_improvement 或 existing_paper_review（缺省 idea_to_paper）",
   );
+}
+
+/** PATCH 请求体中的可选 title（重命名；非字符串或空串视为不修改） */
+function readOptionalTitle(body: Record<string, unknown>): string | undefined {
+  const value = body["title"];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+/**
+ * 永久删除项目（仅已归档；无进行中任务）：
+ * 前置校验 → 释放 Runtime 内该项目的 idle Agent Session → 删除整个工作区目录。
+ */
+async function permanentlyDeleteProject(services: Services, projectId: string): Promise<void> {
+  const project = await services.projects.getRequired(projectId);
+  if (project.archivedAt === undefined) {
+    throw new ProjectNotArchivedError(projectId);
+  }
+  if (await services.orchestrator.hasActiveRun(projectId)) {
+    throw new ProjectBusyError("当前项目仍有进行中的任务，请先完成或取消任务后再删除。");
+  }
+  // Runtime 会话清理：Workspace 删除后进程内不能长期保留该论文上下文
+  try {
+    await services.runtime.releaseProjectSessions?.(projectId);
+  } catch (error) {
+    // 会话清理失败不阻塞删除（目录已是事实源的全部）；仅记录
+    console.error(`[http] 释放项目 Runtime 会话失败（projectId=${projectId}）:`, error);
+  }
+  await services.projects.delete(projectId);
 }
 
 function sendBusinessError(res: ServerResponse, error: BusinessError): void {

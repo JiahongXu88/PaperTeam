@@ -1071,6 +1071,46 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return { activeRuns: this.inFlight.size, managedSessions: this.sessions.size };
   }
 
+  /**
+   * 释放某项目的全部 Runtime 会话（项目永久删除时的最小清理 seam）。
+   *
+   * sessionKey 派生规则（./sessionKey.ts）保证项目会话形如
+   *   agent:{agentId}:paperteam-{projectId}          （无 scope）
+   *   agent:{agentId}:paperteam-{projectId}--{scope} （有 scope）
+   * 按 projectId 边界精确匹配（p-x1 不误伤 p-x12）。
+   * 语义与 close() 相同但只作用于该项目：取消其在途 run → 等收敛 → dispose 会话。
+   * Workspace/checkpoint 是事实源，会话只是可丢弃执行上下文。
+   */
+  async releaseProjectSessions(projectId: string): Promise<number> {
+    if (this.closed) {
+      return 0;
+    }
+    const owned = (sessionKey: string): boolean => {
+      const peer = sessionKey.split(":")[2] ?? "";
+      return peer === `paperteam-${projectId}` || peer.startsWith(`paperteam-${projectId}--`);
+    };
+    const matchingSessions = [...this.sessions.values()].filter((managed) => owned(managed.key));
+    const matchingRuns = [...this.inFlight.values()].filter((state) => owned(state.sessionKey));
+    for (const state of matchingRuns) {
+      state.cancelRequested = true;
+      if (state.phase === "running") {
+        void this.sessions.get(state.sessionKey)?.session.abort().catch(() => {});
+      }
+    }
+    await Promise.allSettled(matchingRuns.map((state) => state.runSettled));
+    for (const managed of matchingSessions) {
+      this.sessions.delete(managed.key);
+      managed.unsubscribe?.();
+      managed.session.dispose();
+    }
+    if (matchingSessions.length > 0) {
+      this.log(
+        `[pi-runtime] 释放项目会话：projectId=${projectId} sessions=${matchingSessions.length} runsCancelled=${matchingRuns.length}`,
+      );
+    }
+    return matchingSessions.length;
+  }
+
   // ---- 生命周期 ----
 
   /** 取消/收敛全部在途 run 并释放所有 AgentSession（幂等；进程 shutdown 时调用） */

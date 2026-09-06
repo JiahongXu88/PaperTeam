@@ -24,6 +24,8 @@ export type BusinessErrorCode =
   | "WORKFLOW_NOT_FOUND"
   | "WORKFLOW_INVALID_STATE"
   | "WORKFLOW_CANCELLED"
+  | "PROJECT_BUSY"
+  | "PROJECT_NOT_ARCHIVED"
   | "STAGE_FAILED"
   | "STAGE_CONTRACT_VIOLATION"
   | "AWAITING_INPUT"
@@ -50,6 +52,8 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   WORKFLOW_NOT_FOUND: 404,
   WORKFLOW_INVALID_STATE: 409,
   WORKFLOW_CANCELLED: 409,
+  PROJECT_BUSY: 409,
+  PROJECT_NOT_ARCHIVED: 409,
   STAGE_FAILED: 500,
   STAGE_CONTRACT_VIOLATION: 500,
   AWAITING_INPUT: 409,
@@ -98,6 +102,25 @@ export class InvalidProjectTitleError extends BusinessError {
 export class ProjectNotFoundError extends BusinessError {
   constructor(projectId: string) {
     super("PROJECT_NOT_FOUND", `论文项目不存在：${projectId}`);
+  }
+}
+
+// ---- 项目生命周期（归档 / 恢复 / 永久删除）----
+
+/** 项目存在进行中的任务（workflow run）或 Runtime 在途会话，禁止归档 / 删除 */
+export class ProjectBusyError extends BusinessError {
+  constructor(message: string, detail?: string) {
+    super("PROJECT_BUSY", message, detail);
+  }
+}
+
+/** 永久删除只允许作用于已归档项目 */
+export class ProjectNotArchivedError extends BusinessError {
+  constructor(projectId: string) {
+    super(
+      "PROJECT_NOT_ARCHIVED",
+      `只有已归档的项目才能永久删除（请先归档项目 ${projectId}）`,
+    );
   }
 }
 

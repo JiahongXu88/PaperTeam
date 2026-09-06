@@ -173,6 +173,13 @@ export interface AgentRuntime {
   healthCheck(): Promise<RuntimeHealth>;
 
   /**
+   * 释放某项目持有的全部会话（项目永久删除时的最小清理 seam；可选）。
+   * 实现按 sessionKey 派生规则（projectId × agentId × contextScope）精确定位；
+   * 调用方负责先确认没有应保留的运行中任务。
+   */
+  releaseProjectSessions?(projectId: string): Promise<number>;
+
+  /**
    * 释放 Runtime 持有的资源：取消/收敛所有 active run、释放全部会话
    * （幂等；进程 shutdown 时调用），保证进程可退出。
    */

@@ -13,7 +13,10 @@ import { PaperIngestService } from "./paper/PaperIngestService.js";
 import { PaperMapService } from "./paper/PaperMapService.js";
 import { PaperStore } from "./paper/PaperStore.js";
 import { ReviewContextBuilder } from "./paper/ReviewContextBuilder.js";
+import { SectionReviewService } from "./paper/SectionReviewService.js";
+import type { PdfParser } from "./paper/PdfParser.js";
 import { ProjectStore } from "./project/ProjectStore.js";
+import { ProjectImportService } from "./project/ProjectImportService.js";
 import { FeasibilityService } from "./agents/FeasibilityService.js";
 import { ResearcherService } from "./agents/ResearcherService.js";
 import type { AgentRuntime } from "./runtime/types.js";
@@ -53,6 +56,8 @@ export interface ServiceStackOptions {
     /** M4.3.4 scholarly resolver（PDF 引用核验；测试注入 providers/fetch） */
     scholarly?: ScholarlyResolverOptions;
   };
+  /** Final PDF parser 注入（测试用 fake parser；缺省 PyMuPdfParser） */
+  paperParser?: PdfParser;
   log?: (message: string) => void;
 }
 
@@ -76,6 +81,8 @@ export interface ServiceStack {
   paperIngest: PaperIngestService;
   paperMap: PaperMapService;
   reviewContext: ReviewContextBuilder;
+  /** 已有论文 PDF 导入（File First：一次调用建项目 + 解析 + 定标题） */
+  projectImport: ProjectImportService;
   workflowServices: WorkflowServices;
 }
 
@@ -134,6 +141,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const paperIngest = new PaperIngestService({
     projects: options.projects,
     store: paperStore,
+    ...(options.paperParser !== undefined ? { parser: options.paperParser } : {}),
     log,
   });
   const paperMap = new PaperMapService({
@@ -144,6 +152,15 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const reviewContext = new ReviewContextBuilder({ projects: options.projects, store: paperStore });
+  const sectionReview = new SectionReviewService({
+    runtime: options.runtime,
+    reviewerAgentId: options.agentIds.reviewer,
+  });
+  const projectImport = new ProjectImportService({
+    projects: options.projects,
+    paperIngest,
+    log,
+  });
   const citationIntegrity = new CitationIntegrityService({
     projects: options.projects,
     store: paperStore,
@@ -181,6 +198,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     paperIngest,
     paperMap,
     reviewContext,
+    projectImport,
     workflowServices: {
       projects: options.projects,
       generation,
@@ -193,6 +211,13 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       writer,
       citation,
       latex,
+      paper: {
+        store: paperStore,
+        map: paperMap,
+        reviewContext,
+        citationIntegrity,
+        sectionReview,
+      },
       stageTimeoutMs: options.stageTimeoutMs ?? 900_000,
       stageMaxAttempts: options.stageMaxAttempts ?? 2,
       review: {

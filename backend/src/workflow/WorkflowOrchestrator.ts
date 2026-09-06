@@ -416,7 +416,13 @@ export class WorkflowOrchestrator {
             },
             () => ({
               type: "workflow.completed" as const,
-              message: `Workflow 完成（${label === "final" ? "Final：双 Gate 通过" : "Draft：Build Gate 通过"}）`,
+              message: `Workflow 完成（${
+                label === "final"
+                  ? "Final：双 Gate 通过"
+                  : label === "review"
+                    ? "Review：审阅报告已生成"
+                    : "Draft：Build Gate 通过"
+              }）`,
               data: { label, summary },
             }),
           );

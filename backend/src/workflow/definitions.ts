@@ -39,6 +39,13 @@ import { readFeasibilityReport, type FeasibilityService } from "../agents/Feasib
 import type { ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
 import type { CitationService, CitationReport } from "../citation/CitationService.js";
 import { extractCitationKeys } from "../citation/StaticCitationChecker.js";
+import type { CitationIntegrityService } from "../citation/CitationIntegrityService.js";
+import type { CitationCallout, ReferenceEntry } from "../citation/integrity.js";
+import type { PaperStore } from "../paper/PaperStore.js";
+import type { PaperMapService } from "../paper/PaperMapService.js";
+import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
+import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
+import type { ReviewFinding, FindingCategory, FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
 import {
   evaluateQualityGate,
@@ -69,6 +76,8 @@ export interface WorkflowServices {
   writer: WriterService;
   citation: CitationService;
   latex: LatexCompiler;
+  /** M4.3 PDF Review Foundation 服务束（existing_paper_review 用） */
+  paper: PaperReviewServices;
   stageTimeoutMs: number;
   stageMaxAttempts: number;
   /** bounded loop 与 Quality Gate 阈值 */
@@ -79,12 +88,23 @@ export interface WorkflowServices {
   };
 }
 
+/** M4.3 PDF Review Foundation：PaperMap / ReviewContext / Citation Integrity / Section Review */
+export interface PaperReviewServices {
+  store: PaperStore;
+  map: PaperMapService;
+  reviewContext: ReviewContextBuilder;
+  citationIntegrity: CitationIntegrityService;
+  sectionReview: SectionReviewService;
+}
+
 /** 目标调整 / 大纲与改进计划修订的次数上限（bounded，防无限循环烧 Token） */
 const MAX_FEASIBILITY_ADJUSTMENTS = 3;
 const MAX_OUTLINE_REVISIONS = 3;
 const MAX_PLAN_REVISIONS = 3;
 /** 手动追加修订轮数（HITL revise_more）的绝对上限 */
 const MAX_MANUAL_REVISION_ROUNDS = 3;
+/** 单轮 section review 的章节上限（超出部分如实记录为 skipped） */
+const MAX_REVIEW_SECTIONS = 40;
 
 const QUALITY_THRESHOLDS = (services: WorkflowServices): QualityGateThresholds => ({
   academicPassScore: services.review.academicPassScore,
@@ -1031,6 +1051,303 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }
+    },
+  };
+}
+
+// ============================================================
+// Existing-Paper Review（PDF 只读快速 Review，2026-09）定义
+// ============================================================
+
+/**
+ * 与旧 POST /api/projects/:id/review（manuscriptDigest + Evidence + 旧
+ * Citation report 的三路审稿）是两条不同链路：本定义走 M4.3 PDF Review
+ * Foundation——Final PDF → PaperMap → Citation Integrity artifacts →
+ * 分章节 Review（ReviewContextBuilder 受控上下文）→ ReviewFinding →
+ * 聚合报告（reviews/existing-review-r*.json）。只读，不改正文。
+ */
+function paperEnsureStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "paper.ensure",
+    description: "确认 Final PDF 已解析并构建 PaperMap（章节导航与摘要）",
+    requiredInputs: [],
+    producedOutputs: ["paper/paper-map.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      const document = await services.paper.store.loadDocument(ctx.projectId);
+      if (document === null) {
+        throw new BusinessError(
+          "STAGE_CONTRACT_VIOLATION",
+          "尚未上传/解析 Final PDF（先导入论文 PDF 再启动 Review）",
+        );
+      }
+      const map = await services.paper.map.ensureMap(ctx.projectId);
+      return {
+        pageCount: map.pageCount,
+        sections: map.sections.length,
+        ...(map.documentTitle !== undefined ? { documentTitle: map.documentTitle } : {}),
+      };
+    },
+    async verifyDod(ctx) {
+      const map = await services.paper.store.loadMap(ctx.projectId);
+      return map === null ? ["paper/paper-map.json 不存在"] : [];
+    },
+  };
+}
+
+function citationExtractStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "citation.extract",
+    description: "引用提取：参考文献条目 + 正文引用（确定性）",
+    requiredInputs: ["paper.ensure"],
+    producedOutputs: ["paper/citation/references.json", "paper/citation/callouts.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      const { result, reused } = await services.paper.citationIntegrity.extract(ctx.projectId);
+      return { references: result.references.length, callouts: result.callouts.length, reused };
+    },
+    async verifyDod(ctx) {
+      const summary = await services.paper.citationIntegrity.summary(ctx.projectId);
+      return summary.extracted ? [] : ["引用提取产物不存在"];
+    },
+  };
+}
+
+function citationMetadataStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "citation.metadata",
+    description: "引用真实性核验：公开学术库 metadata 比对",
+    requiredInputs: ["citation.extract"],
+    producedOutputs: ["paper/citation/metadata/*.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      const result = await services.paper.citationIntegrity.verifyMetadata(ctx.projectId);
+      return { checked: result.checked, byStatus: result.byStatus, reused: result.reused };
+    },
+  };
+}
+
+function citationClaimsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "citation.claims",
+    description: "Claim-Citation 一致性核验（语义判断，逐条记录）",
+    requiredInputs: ["citation.extract"],
+    producedOutputs: ["paper/citation/claims/*.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId);
+      return { summary: result.summary, reused: result.reused };
+    },
+  };
+}
+
+function reviewSectionsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "review.sections",
+    description: "分章节 Review：受控上下文 + Reviewer Agent → ReviewFinding",
+    requiredInputs: ["paper.ensure", "citation.extract"],
+    producedOutputs: ["章节 findings（进入聚合报告）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 4,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const scopes = await services.paper.reviewContext.listSectionScopes(ctx.projectId);
+      if (scopes.length === 0) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "论文没有可审阅的章节");
+      }
+      const capped = scopes.slice(0, MAX_REVIEW_SECTIONS);
+      const skipped = scopes.length - capped.length;
+
+      // 本节引用上下文：callout 关联到 reference 条目 + metadata 核验状态
+      const callouts = await services.paper.store.loadCallouts<CitationCallout>(ctx.projectId);
+      const references = await services.paper.store.loadReferences<ReferenceEntry>(ctx.projectId);
+      const metadataRecords = await services.paper.citationIntegrity.listMetadataRecords(ctx.projectId);
+      const statusByReference = new Map(metadataRecords.map((record) => [record.referenceId, record.status]));
+      const rawTextByReference = new Map(references.map((entry) => [entry.referenceId, entry.rawText]));
+
+      const findings: ReviewFinding[] = [];
+      const reviewed: string[] = [];
+      let parseFailures = 0;
+      let dropped = 0;
+      for (const [index, scope] of capped.entries()) {
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "分章节审阅已被取消");
+        }
+        const citations: CitationContextEntry[] = callouts
+          .filter((callout) => callout.sectionId === scope.sectionId)
+          .flatMap((callout) => callout.references)
+          .filter((relation) => relation.referenceId !== undefined)
+          .map((relation) => ({
+            referenceId: relation.referenceId!,
+            rawText: rawTextByReference.get(relation.referenceId!) ?? relation.label,
+            ...(statusByReference.get(relation.referenceId!) !== undefined
+              ? { status: String(statusByReference.get(relation.referenceId!)) }
+              : {}),
+          }));
+        const context = await services.paper.reviewContext.buildSectionContext(ctx.projectId, scope.sectionId, {
+          instruction: SECTION_REVIEW_INSTRUCTION,
+          ...(citations.length > 0 ? { citations } : {}),
+        });
+        const outcome = await services.paper.sectionReview.reviewSection({
+          projectId: ctx.projectId,
+          runId: ctx.runId,
+          context,
+        });
+        findings.push(...outcome.findings);
+        reviewed.push(scope.sectionId);
+        parseFailures += outcome.parseFailed ? 1 : 0;
+        dropped += outcome.dropped;
+        await ctx.emitProgress({
+          section: scope.sectionId,
+          index: index + 1,
+          total: capped.length,
+          findings: findings.length,
+        });
+      }
+      return {
+        sectionsReviewed: reviewed.length,
+        sectionsTotal: scopes.length,
+        skippedSections: skipped,
+        findingsTotal: findings.length,
+        parseFailures,
+        dropped,
+        findings,
+      };
+    },
+    // DoD 由 review.aggregate 的文件级校验兜底（verifyDod 运行时本次产出
+    // 尚未写入 stageResults，无法自读；findings 结构在聚合层强校验）
+  };
+}
+
+function reviewAggregateStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "review.aggregate",
+    description: "聚合 Review Findings + Citation Integrity → 审阅报告（确定性）",
+    requiredInputs: ["review.sections"],
+    producedOutputs: ["reviews/existing-review-r*.json"],
+    maxAttempts: 1, // 纯确定性聚合
+    timeoutMs: services.stageTimeoutMs,
+    retryable: [],
+    async execute(ctx) {
+      const sections = ctx.state.stageResults["review.sections"] ?? {};
+      const findings = (sections["findings"] as ReviewFinding[] | undefined) ?? [];
+      const integrity = await services.paper.citationIntegrity.integrityReport(ctx.projectId);
+      const map = await services.paper.store.loadMap(ctx.projectId);
+      const project = await services.projects.getRequired(ctx.projectId);
+
+      const bySeverity: Record<FindingSeverity, number> = { critical: 0, major: 0, minor: 0, info: 0 };
+      const byCategory: Partial<Record<FindingCategory, number>> = {};
+      for (const finding of findings) {
+        bySeverity[finding.severity] += 1;
+        byCategory[finding.category] = (byCategory[finding.category] ?? 0) + 1;
+      }
+      const round = countCompletions(ctx.state, "review.aggregate") + 1;
+      const report = {
+        schemaVersion: 1,
+        kind: "existing_paper_review",
+        round,
+        generatedAt: new Date().toISOString(),
+        paper: {
+          title: map?.documentTitle ?? project.title,
+          ...(map !== null ? { pageCount: map.pageCount, sections: map.sections.length } : {}),
+        },
+        review: {
+          sectionsReviewed: Number(sections["sectionsReviewed"] ?? 0),
+          sectionsTotal: Number(sections["sectionsTotal"] ?? 0),
+          skippedSections: Number(sections["skippedSections"] ?? 0),
+          findingsTotal: findings.length,
+          parseFailures: Number(sections["parseFailures"] ?? 0),
+          dropped: Number(sections["dropped"] ?? 0),
+          bySeverity,
+          byCategory,
+        },
+        citationIntegrity: {
+          metadataByStatus: integrity.metadataByStatus,
+          semantic: integrity.semantic,
+          probableFabrications: integrity.probableFabrications,
+        },
+        findings,
+      };
+      const fileName = `existing-review-r${round}.json`;
+      await writeJsonAtomic(join(services.projects.reviewsDir(ctx.projectId), fileName), report);
+      return {
+        round,
+        findingsTotal: findings.length,
+        bySeverity,
+        reportPath: `reviews/${fileName}`,
+      };
+    },
+    async verifyDod(ctx) {
+      const round = countCompletions(ctx.state, "review.aggregate") + 1;
+      try {
+        await readFile(
+          join(services.projects.reviewsDir(ctx.projectId), `existing-review-r${round}.json`),
+          "utf8",
+        );
+        return [];
+      } catch {
+        return [`reviews/existing-review-r${round}.json 不存在`];
+      }
+    },
+  };
+}
+
+export function createExistingPaperReviewDefinition(services: WorkflowServices): WorkflowDefinition {
+  const stages: readonly StageSpec[] = [
+    paperEnsureStage(services),
+    citationExtractStage(services),
+    citationMetadataStage(services),
+    citationClaimsStage(services),
+    reviewSectionsStage(services),
+    reviewAggregateStage(services),
+  ];
+
+  const front = [
+    "paper.ensure",
+    "citation.extract",
+    "citation.metadata",
+    "citation.claims",
+    "review.sections",
+    "review.aggregate",
+  ];
+
+  return {
+    kind: "existing_paper_review",
+    description:
+      "Existing-Paper Review：PaperMap → 引用提取 → 真实性核验 → 论断-引用一致性 → 分章节审阅 → 聚合审阅报告（只读，不修改论文）",
+    stages,
+    plan(state: WorkflowState): PlanDecision {
+      for (const stageId of front) {
+        if (!(stageId in state.stageResults)) {
+          return { kind: "stage", stageId };
+        }
+      }
+      const aggregate = state.stageResults["review.aggregate"] ?? {};
+      return {
+        kind: "complete",
+        label: "review",
+        summary: {
+          round: aggregate["round"] ?? 0,
+          findingsTotal: aggregate["findingsTotal"] ?? 0,
+          sectionsReviewed: state.stageResults["review.sections"]?.["sectionsReviewed"] ?? 0,
+          reportPath: aggregate["reportPath"] ?? null,
+        },
+      };
+    },
+    async onInput(state, stageId): Promise<void | "cancel"> {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        `本工作流没有待办节点（收到 ${stageId}）`,
+      );
     },
   };
 }
