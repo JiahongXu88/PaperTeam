@@ -15,7 +15,7 @@
  * 加载时各部分合并重建完整 PaperDocument；任一部分损坏 → null（重新 ingest）。
  */
 
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProjectStore } from "../project/ProjectStore.js";
@@ -74,6 +74,72 @@ export class PaperStore {
 
   citationDir(projectId: string): string {
     return join(this.root(projectId), "citation");
+  }
+
+  // ---- 引用核验产物（M4.3.3+：references / callouts / metadata / claims） ----
+
+  async saveExtraction(
+    projectId: string,
+    data: { references: unknown[]; callouts: unknown[]; notes?: string[] },
+  ): Promise<void> {
+    const dir = this.citationDir(projectId);
+    await mkdir(dir, { recursive: true });
+    await writeJsonAtomic(join(dir, "references.json"), data.references);
+    await writeJsonAtomic(join(dir, "callouts.json"), data.callouts);
+    if (data.notes !== undefined && data.notes.length > 0) {
+      await writeJsonAtomic(join(dir, "notes.json"), data.notes);
+    }
+  }
+
+  async loadReferences<T>(projectId: string): Promise<T[]> {
+    try {
+      const raw = JSON.parse(
+        await readFile(join(this.citationDir(projectId), "references.json"), "utf8"),
+      ) as unknown[];
+      return Array.isArray(raw) ? (raw as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async loadCallouts<T>(projectId: string): Promise<T[]> {
+    try {
+      const raw = JSON.parse(
+        await readFile(join(this.citationDir(projectId), "callouts.json"), "utf8"),
+      ) as unknown[];
+      return Array.isArray(raw) ? (raw as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** 单条核验记录 upsert（文件粒度：第 37 条失败不牵连其他条目） */
+  async saveRecord(projectId: string, kind: "metadata" | "claims", id: string, record: unknown): Promise<void> {
+    const dir = join(this.citationDir(projectId), kind);
+    await mkdir(dir, { recursive: true });
+    await writeJsonAtomic(join(dir, `${id}.json`), record);
+  }
+
+  async loadRecord<T>(projectId: string, kind: "metadata" | "claims", id: string): Promise<T | null> {
+    try {
+      return JSON.parse(
+        await readFile(join(this.citationDir(projectId), kind, `${id}.json`), "utf8"),
+      ) as T;
+    } catch {
+      return null;
+    }
+  }
+
+  async listRecordIds(projectId: string, kind: "metadata" | "claims"): Promise<string[]> {
+    try {
+      const names = await readdir(join(this.citationDir(projectId), kind));
+      return names
+        .map((name) => /^([A-Z]\d+.*?)\.json$/.exec(name)?.[1])
+        .filter((id): id is string => id !== undefined)
+        .sort();
+    } catch {
+      return [];
+    }
   }
 
   // ---- ingest（写入全部产物） ----

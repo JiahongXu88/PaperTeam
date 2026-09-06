@@ -535,6 +535,34 @@ async function handleProjectResourceRoutes(
     return false;
   }
 
+  // ---- citations（M4.3.3+ PDF 引用完整性） ----
+  if (resource === "citations") {
+    if (rest === "/extract" && method === "POST") {
+      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const { result, reused } = await stack.citationIntegrity.extract(projectId, {
+        ...(body["force"] === true ? { force: true } : {}),
+      });
+      sendJson(res, 200, {
+        summary: {
+          referenceCount: result.references.length,
+          calloutCount: result.callouts.length,
+        },
+        reused,
+        notes: result.notes,
+        references: result.references,
+        callouts: result.callouts,
+      });
+      return true;
+    }
+    if (rest === "" && method === "GET") {
+      const summary = await stack.citationIntegrity.summary(projectId);
+      const references = await stack.paperStore.loadReferences<Record<string, unknown>>(projectId);
+      sendJson(res, 200, { summary, references });
+      return true;
+    }
+    return false;
+  }
+
   // ---- paper（M4.3.1 Final PDF Review 输入） ----
   if (resource === "paper") {
     if (rest === "/pdf" && method === "POST") {
