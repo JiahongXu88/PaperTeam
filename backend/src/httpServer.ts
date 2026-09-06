@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { BusinessError, toBusinessError } from "./errors.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
+import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import type { RuntimeStatusService } from "./runtime/statusService.js";
@@ -29,6 +30,12 @@ import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
  *
  * M3 端点：
  *   GET    /health                                  存活探针（含 Pi Runtime 实时健康）
+ *   GET    /api/runtime/status                      Runtime 状态诊断（权威运行状态）
+ *   GET    /api/settings/model                      Model Settings 状态（M4.3.7.5，不含 key）
+ *   PUT    /api/settings/model                      保存模型偏好 + 可选 API Key
+ *   DELETE /api/settings/model/key                  清除本地保存的 API Key
+ *   GET    /api/settings/model/options              模型目录（providers / ?provider= 模型列表）
+ *   POST   /api/settings/model/test                 Test Connection（最小真实调用）
  *   GET    /api/projects                            项目列表（M4.0：updatedAt 降序）
  *   POST   /api/projects                            创建论文项目 {title, researchIdea?, …}
  *   GET    /api/projects/:id                        查询项目元数据
@@ -79,6 +86,8 @@ export interface BackendHttpServerOptions {
   /** M4.3.6 Skill Registry（GET /api/skills） */
   skills?: SkillRegistry;
   skillSummaries?: SkillSummaryService;
+  /** M4.3.7.5 Model Settings（/api/settings/model） */
+  modelSettings?: ModelSettingsService;
 }
 
 export function createBackendHttpServer({
@@ -91,6 +100,7 @@ export function createBackendHttpServer({
   runtimeStatus,
   skills,
   skillSummaries,
+  modelSettings,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     handleRequest(req, res, {
@@ -103,6 +113,7 @@ export function createBackendHttpServer({
       runtimeStatus,
       skills,
       skillSummaries,
+      modelSettings,
     }).catch(
       (error: unknown) => {
         const businessError = toBusinessError(error);
@@ -132,6 +143,7 @@ interface Services {
   runtimeStatus?: RuntimeStatusService;
   skills?: SkillRegistry;
   skillSummaries?: SkillSummaryService;
+  modelSettings?: ModelSettingsService;
 }
 
 async function handleRequest(
@@ -222,6 +234,27 @@ async function handleRequest(
       }
       const updated = await services.skills.get(skillId);
       sendJson(res, 200, { skill: updated });
+      return;
+    }
+    sendJson(res, 404, { status: "not_found", path: pathname });
+    return;
+  }
+
+  // ---- /api/settings/model（M4.3.7.5 Model Settings） ----
+  if (pathname === "/api/settings/model" || pathname.startsWith("/api/settings/model/")) {
+    if (services.modelSettings === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "Model Settings 服务未配置" });
+      return;
+    }
+    const handled = await handleModelSettingsRoutes(
+      req,
+      res,
+      pathname,
+      method,
+      url,
+      services.modelSettings,
+    );
+    if (handled) {
       return;
     }
     sendJson(res, 404, { status: "not_found", path: pathname });
@@ -396,6 +429,94 @@ async function handleRequest(
   }
 
   sendJson(res, 404, { status: "not_found", path: pathname });
+}
+
+/**
+ * /api/settings/model 路由组（M4.3.7.5）：
+ *   GET    /api/settings/model                 状态（不含任何 key）
+ *   PUT    /api/settings/model                 保存 {model, apiKey?}（apiKey 省略 = 保持原 Key）
+ *   DELETE /api/settings/model/key             清除本地保存的 API Key
+ *   GET    /api/settings/model/options         provider 列表（?provider= 查该 provider 模型）
+ *   POST   /api/settings/model/test            Test Connection {model, apiKey?}
+ *
+ * 安全约束：所有响应不携带 key 本体；apiKey 只经 PUT/test 请求体进入，
+ * 不落任何日志（请求体从不打印）。
+ */
+async function handleModelSettingsRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  method: string,
+  url: URL,
+  service: ModelSettingsService,
+): Promise<boolean> {
+  if (pathname === "/api/settings/model") {
+    if (method === "GET") {
+      const settings = await service.getStatus();
+      sendJson(res, 200, { settings });
+      return true;
+    }
+    if (method === "PUT") {
+      const body = await readJsonBody(req);
+      const model = readStringField(body, "model");
+      if (model === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 model");
+      }
+      // apiKey：字段不存在 → 保持原 Key；空字符串 → 语义非法（400）
+      const apiKeyField = body["apiKey"];
+      if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
+        throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
+      }
+      const settings = await service.saveModel({
+        model,
+        ...(typeof apiKeyField === "string" ? { apiKey: apiKeyField } : {}),
+      });
+      sendJson(res, 200, { settings });
+      return true;
+    }
+    res.setHeader("Allow", "GET, PUT");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+
+  if (pathname === "/api/settings/model/key" && method === "DELETE") {
+    const settings = await service.clearApiKey();
+    sendJson(res, 200, { settings });
+    return true;
+  }
+
+  if (pathname === "/api/settings/model/options" && method === "GET") {
+    const provider = url.searchParams.get("provider") ?? undefined;
+    const options = await service.getOptions(provider === "" ? undefined : provider);
+    sendJson(res, 200, { options });
+    return true;
+  }
+
+  if (pathname === "/api/settings/model/test" && method === "POST") {
+    const body = await readJsonBody(req);
+    const model = readStringField(body, "model");
+    if (model === undefined) {
+      throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 model");
+    }
+    const apiKeyField = body["apiKey"];
+    if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
+      throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
+    }
+    const result = await service.testConnection({
+      model,
+      ...(typeof apiKeyField === "string" && apiKeyField !== "" ? { apiKey: apiKeyField } : {}),
+    });
+    sendJson(res, 200, { result });
+    return true;
+  }
+
+  // 不匹配的子路径（如 GET /api/settings/model/key）：交给上层 404
+  if (pathname === "/api/settings/model/key" || pathname === "/api/settings/model/options" || pathname === "/api/settings/model/test") {
+    res.setHeader("Allow", pathname === "/api/settings/model/key" ? "DELETE" : pathname === "/api/settings/model/options" ? "GET" : "POST");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+  return false;
 }
 
 /** /api/projects/:id/{sources|evidence|feasibility|citation-*|manuscript|context|review*|quality-gate|build|import} */

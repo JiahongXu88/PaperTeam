@@ -3,9 +3,12 @@ import { applyEnvFile, findEnvFile } from "./config/envFile.js";
 import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
+import { ModelSettingsService } from "./settings/ModelSettingsService.js";
+import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { SkillRegistry } from "./skills/SkillRegistry.js";
 import { SkillSummaryService } from "./skills/SkillSummaryService.js";
@@ -67,12 +70,26 @@ export async function startBackend(): Promise<void> {
   // 受控学术检索工具（paper-search skill 的工具面）：闭包延迟引用 stack，
   // 保证与 CitationIntegrityService 共享同一个 resolver（缓存 / telemetry）
   let stackRef: ReturnType<typeof buildServiceStack> | undefined;
+  // M4.3.7.5 启动即解析生效模型：env（PAPERTEAM_PI_MODEL，含 .env）> Settings
+  // 保存的本地偏好（<runtimeRoot>/settings/model.json）——否则重启后 stored
+  // 配置只有展示、Runtime 仍 not_configured
+  const modelSettingsStore = new ModelSettingsStore({
+    settingsDir: join(config.runtimeRoot, "settings"),
+  });
+  const effectiveModelSpec = await resolveStartupModelSpec(config.pi.model, modelSettingsStore);
+  // 共享 ModelRuntime（M4.3.7.5）：adapter 与 ModelSettingsService 用同一实例，
+  // Settings 保存/清除 Key（login/logout）后 adapter 立即可见（同一 credential store）
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(config.pi.agentDir, "auth.json"),
+    modelsPath: join(config.pi.agentDir, "models.json"),
+  });
   const runtime: AgentRuntime = new PiRuntimeAdapter({
-    ...(config.pi.model !== undefined ? { modelSpec: config.pi.model } : {}),
+    ...(effectiveModelSpec !== undefined ? { modelSpec: effectiveModelSpec } : {}),
     ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
     agentDir: config.pi.agentDir,
     workspaceRoot: config.projectsRoot,
     runTimeoutMs: config.pi.runTimeoutMs,
+    modelRuntime,
     // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
     roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),
     roleCustomTools: (role) =>
@@ -154,6 +171,18 @@ export async function startBackend(): Promise<void> {
     console.log(`  workflow:     恢复 ${recovered.length} 个中断的 WorkflowRun`);
   }
 
+  // M4.3.7.5 Model Settings：env（PAPERTEAM_PI_*）> 本地保存（model.json + auth.json）
+  const modelSettings = new ModelSettingsService({
+    modelRuntime,
+    runtime: runtime as PiRuntimeAdapter,
+    store: modelSettingsStore,
+    env: {
+      ...(config.pi.model !== undefined ? { piModel: config.pi.model } : {}),
+      ...(config.pi.apiKey !== undefined ? { piApiKey: config.pi.apiKey } : {}),
+    },
+    log: (message) => console.log(message),
+  });
+
   const server = createBackendHttpServer({
     runtime,
     projects,
@@ -164,6 +193,7 @@ export async function startBackend(): Promise<void> {
     runtimeStatus,
     skills: skillRegistry,
     skillSummaries,
+    modelSettings,
   });
   server.listen(config.port, () => {
     console.log(

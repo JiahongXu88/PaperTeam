@@ -31,6 +31,7 @@ export type BusinessErrorCode =
   | "CITATION_VERIFICATION"
   | "QUALITY_GATE_FAILED"
   | "IMPORT_VALIDATION"
+  | "MODEL_CONFIG_BUSY"
   | "INTERNAL_ERROR";
 
 /** 错误码 → HTTP 状态码 */
@@ -56,6 +57,7 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   CITATION_VERIFICATION: 502,
   QUALITY_GATE_FAILED: 422,
   IMPORT_VALIDATION: 422,
+  MODEL_CONFIG_BUSY: 409,
   INTERNAL_ERROR: 500,
 };
 
@@ -246,6 +248,18 @@ export class QualityGateFailedError extends BusinessError {
 export class ImportValidationError extends BusinessError {
   constructor(reason: string) {
     super("IMPORT_VALIDATION", `导入校验失败：${reason}`);
+  }
+}
+
+// ---- Model Settings（M4.3.7.5） ----
+
+/** 配置变更时存在在途 Agent Run（不中断活跃 run；等待完成后再保存/清除） */
+export class ModelConfigBusyError extends BusinessError {
+  constructor(activeRuns: number) {
+    super(
+      "MODEL_CONFIG_BUSY",
+      `当前有 ${activeRuns} 个 Agent Run 正在执行，暂不能变更模型配置（不会中断活跃任务，请等待完成后再试）`,
+    );
   }
 }
 

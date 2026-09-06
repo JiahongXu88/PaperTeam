@@ -74,6 +74,7 @@ import {
   AgentRunFailedError,
   AgentRuntimeUnavailableError,
   AgentTimeoutError,
+  ModelConfigBusyError,
 } from "../errors.js";
 import { resolveRoleConfig, type PiRoleConfig, type PiRoleKey } from "./pi/roleConfig.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
@@ -277,8 +278,9 @@ class AgentEventIterator implements AsyncIterator<AgentEvent>, AsyncIterable<Age
 export class PiRuntimeAdapter implements AgentRuntime {
   readonly provider: RuntimeProvider = "pi";
 
-  private readonly modelSpec: string | undefined;
-  private readonly apiKey: string | undefined;
+  private modelSpec: string | undefined;
+  /** 启动时的 env API Key（PAPERTEAM_PI_API_KEY）；reconfigure 时按优先级重新注入 */
+  private readonly startupApiKey: string | undefined;
   private readonly agentDir: string;
   private readonly workspaceRoot: string;
   private readonly defaultCwd: string;
@@ -308,7 +310,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
   constructor(options: PiRuntimeOptions) {
     this.modelSpec = options.modelSpec?.trim() || undefined;
-    this.apiKey = options.apiKey?.trim() || undefined;
+    this.startupApiKey = options.apiKey?.trim() || undefined;
     this.agentDir = resolve(options.agentDir);
     this.workspaceRoot = resolve(options.workspaceRoot);
     this.defaultCwd = resolve(options.defaultCwd ?? process.cwd());
@@ -351,69 +353,81 @@ export class PiRuntimeAdapter implements AgentRuntime {
         authPath: join(this.agentDir, "auth.json"),
         modelsPath: join(this.agentDir, "models.json"),
       }));
-    const modelRuntime = this.modelRuntime;
 
     if (this.injectedModel !== undefined) {
       this.model = this.injectedModel;
       this.resolvedModelLabel = `${this.model.provider}/${this.model.id}`;
-    } else if (this.modelSpec !== undefined) {
-      const parsed = parseModelSpec(this.modelSpec);
-      if (parsed === undefined) {
-        this.modelStatus = {
-          phase: "not_configured",
-          providers: [],
-          detail: `PAPERTEAM_PI_MODEL 格式非法："${this.modelSpec}"（应为 provider/model-id）`,
-        };
-        this.log(`[pi-runtime] 模型规格非法：${this.modelSpec}`);
-        this.logInitDone(startedAt, true);
-        return;
-      }
-      const { provider, modelId } = parsed;
-      if (this.apiKey !== undefined) {
-        // 运行时注入（不落盘）；key 本体不进日志
-        await modelRuntime.setRuntimeApiKey(provider, this.apiKey);
-        this.log(`[pi-runtime] 已注入 ${provider} 的运行时 API Key`);
-      }
-      const model = modelRuntime.getModel(provider, modelId);
-      if (model === undefined) {
-        this.modelStatus = {
-          phase: "not_configured",
-          providers: [],
-          detail: `模型 ${provider}/${modelId} 不在注册表（内置目录 / agentDir models.json / 注册的 provider 均未提供）`,
-        };
-        this.log(`[pi-runtime] 模型未找到：${provider}/${modelId}`);
-        this.logInitDone(startedAt, true);
-        return;
-      }
-      if (!modelRuntime.hasConfiguredAuth(provider)) {
-        this.modelStatus = {
-          phase: "not_configured",
-          providers: [],
-          detail: `模型 ${provider}/${modelId} 已配置，但 provider 无可用凭据（PAPERTEAM_PI_API_KEY / agentDir 下 auth.json / 标准环境变量）`,
-        };
-        this.log(`[pi-runtime] provider=${provider} 无可用凭据`);
-        this.logInitDone(startedAt, true);
-        return;
-      }
-      this.model = model;
-      this.resolvedModelLabel = `${provider}/${modelId}`;
-    } else {
+      this.modelStatus = {
+        phase: "configured",
+        providers: [this.model.provider],
+        detail: `模型 ${this.resolvedModelLabel} 已配置`,
+      };
+      this.logInitDone(startedAt, false);
+      return;
+    }
+    await this.applyModelConfig();
+    this.logInitDone(startedAt, this.modelStatus.phase !== "configured");
+  }
+
+  /**
+   * 按当前 modelSpec 解析模型并更新就绪状态（doInitialize 与 reconfigure 共享）。
+   * env API Key（startupApiKey）在内存覆盖层注入（不落盘）；key 本体不进日志。
+   */
+  private async applyModelConfig(): Promise<void> {
+    this.model = undefined;
+    this.resolvedModelLabel = undefined;
+    if (this.modelSpec === undefined) {
       this.modelStatus = {
         phase: "not_configured",
         providers: [],
-        detail: "PAPERTEAM_PI_MODEL 未设置（如 anthropic/claude-opus-4-5）",
+        detail: "PAPERTEAM_PI_MODEL 未设置，且 Settings UI 未保存本地模型配置（如 anthropic/claude-opus-4-5）",
       };
-      this.log("[pi-runtime] 未配置模型（PAPERTEAM_PI_MODEL）");
-      this.logInitDone(startedAt, true);
+      this.log("[pi-runtime] 未配置模型（PAPERTEAM_PI_MODEL / Settings UI）");
       return;
     }
-
+    const parsed = parseModelSpec(this.modelSpec);
+    if (parsed === undefined) {
+      this.modelStatus = {
+        phase: "not_configured",
+        providers: [],
+        detail: `模型规格非法："${this.modelSpec}"（应为 provider/model-id）`,
+      };
+      this.log(`[pi-runtime] 模型规格非法：${this.modelSpec}`);
+      return;
+    }
+    const { provider, modelId } = parsed;
+    const modelRuntime = this.modelRuntime!;
+    if (this.startupApiKey !== undefined) {
+      // 运行时注入（不落盘）；key 本体不进日志
+      await modelRuntime.setRuntimeApiKey(provider, this.startupApiKey);
+      this.log(`[pi-runtime] 已注入 ${provider} 的运行时 API Key`);
+    }
+    const model = modelRuntime.getModel(provider, modelId);
+    if (model === undefined) {
+      this.modelStatus = {
+        phase: "not_configured",
+        providers: [],
+        detail: `模型 ${provider}/${modelId} 不在注册表（内置目录 / agentDir models.json / 注册的 provider 均未提供）`,
+      };
+      this.log(`[pi-runtime] 模型未找到：${provider}/${modelId}`);
+      return;
+    }
+    if (!modelRuntime.hasConfiguredAuth(provider)) {
+      this.modelStatus = {
+        phase: "not_configured",
+        providers: [],
+        detail: `模型 ${provider}/${modelId} 已配置，但 provider 无可用凭据（PAPERTEAM_PI_API_KEY / agentDir 下 auth.json / 标准环境变量 / Settings UI 保存）`,
+      };
+      this.log(`[pi-runtime] provider=${provider} 无可用凭据`);
+      return;
+    }
+    this.model = model;
+    this.resolvedModelLabel = `${provider}/${modelId}`;
     this.modelStatus = {
       phase: "configured",
-      providers: [this.model.provider],
+      providers: [model.provider],
       detail: `模型 ${this.resolvedModelLabel} 已配置`,
     };
-    this.logInitDone(startedAt, false);
   }
 
   private logInitDone(startedAt: number, modelMissing: boolean): void {
@@ -485,6 +499,47 @@ export class PiRuntimeAdapter implements AgentRuntime {
   /** 已解析的模型标签（"provider/model-id"；未配置为 undefined；诊断用） */
   get resolvedModel(): string | undefined {
     return this.resolvedModelLabel;
+  }
+
+  /**
+   * 运行时重载模型配置（M4.3.7.5 Settings UI）：按新的 modelSpec 重新解析
+   * 模型并释放既有 AgentSession。只影响新的 Agent Run：
+   * - 存在在途 run 时拒绝（ModelConfigBusyError → 409），不中断活跃任务；
+   * - 释放的会话必然空闲（Workspace/checkpoint 是事实源，Runtime session
+   *   本就是可丢弃执行上下文，见文件头取舍）；
+   * - env API Key（startupApiKey）在重载后按优先级重新注入（env > stored）。
+   */
+  async reconfigure(modelSpec: string | undefined): Promise<PiModelStatus> {
+    if (this.closed) {
+      throw new AgentRuntimeUnavailableError("Runtime 已关闭", "adapter closed");
+    }
+    await this.ensureInitialized();
+    if (this.initError !== undefined) {
+      throw new AgentRuntimeUnavailableError("Pi Runtime 初始化失败", this.initError);
+    }
+    if (this.inFlight.size > 0) {
+      throw new ModelConfigBusyError(this.inFlight.size);
+    }
+    if (this.injectedModel !== undefined) {
+      // 测试注入模型：不参与动态重配（保持注入语义，模型恒定）
+      return { ...this.modelStatus };
+    }
+    const nextSpec = modelSpec?.trim() || undefined;
+    if (nextSpec !== undefined && parseModelSpec(nextSpec) === undefined) {
+      throw new AgentRunFailedError(`模型规格非法："${nextSpec}"（应为 provider/model-id）`);
+    }
+    const sessions = [...this.sessions.values()];
+    this.sessions.clear();
+    await Promise.allSettled(
+      sessions.map(async (managed) => {
+        managed.unsubscribe?.();
+        managed.session.dispose();
+      }),
+    );
+    this.modelSpec = nextSpec;
+    await this.applyModelConfig();
+    this.log(`[pi-runtime] 模型配置已重载：${this.resolvedModelLabel ?? "(未配置)"}`);
+    return { ...this.modelStatus };
   }
 
   // ---- startAgent（v2 主入口：句柄立即返回，run 在后台收敛） ----
@@ -1048,8 +1103,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
 // ---- 辅助函数 ----
 
-/** "provider/model-id" 解析（两段、均非空） */
-function parseModelSpec(spec: string): { provider: string; modelId: string } | undefined {
+/** "provider/model-id" 解析（两段、均非空；Settings 服务共享校验） */
+export function parseModelSpec(spec: string): { provider: string; modelId: string } | undefined {
   const trimmed = spec.trim();
   if (!trimmed.includes("/")) {
     return undefined;
