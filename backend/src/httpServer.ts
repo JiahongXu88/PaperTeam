@@ -535,6 +535,71 @@ async function handleProjectResourceRoutes(
     return false;
   }
 
+  // ---- paper（M4.3.1 Final PDF Review 输入） ----
+  if (resource === "paper") {
+    if (rest === "/pdf" && method === "POST") {
+      const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
+      const fileName = readStringField(body, "fileName");
+      const contentBase64 = readStringField(body, "contentBase64");
+      if (fileName === undefined || contentBase64 === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
+      }
+      let content: Buffer;
+      try {
+        content = Buffer.from(contentBase64, "base64");
+      } catch {
+        throw new BusinessError("INVALID_REQUEST", "contentBase64 不是合法 base64");
+      }
+      const result = await stack.paperIngest.ingest(projectId, { fileName, content });
+      sendJson(res, 201, {
+        document: toPaperDocumentSummary(result.document),
+        unchanged: result.unchanged,
+      });
+      return true;
+    }
+    if (rest === "/reparse" && method === "POST") {
+      const document = await stack.paperIngest.reparse(projectId);
+      sendJson(res, 200, { document: toPaperDocumentSummary(document) });
+      return true;
+    }
+    if (rest === "/chunks") {
+      if (method !== "GET") {
+        res.setHeader("Allow", "GET");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return true;
+      }
+      const sectionId = url.searchParams.get("sectionId");
+      const chunks = await stack.paperStore.loadChunks(projectId);
+      sendJson(res, 200, {
+        chunks: sectionId === null ? chunks : chunks.filter((c) => c.sectionId === sectionId),
+      });
+      return true;
+    }
+    if (rest === "") {
+      if (method !== "GET") {
+        res.setHeader("Allow", "GET");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return true;
+      }
+      const document = await stack.paperStore.loadDocument(projectId);
+      if (document === null) {
+        sendJson(res, 200, {
+          document: null,
+          stages: await stack.paperIngest.getStageSummary(projectId),
+          note: "尚未上传 Final PDF（POST /api/projects/:id/paper/pdf）",
+        });
+        return true;
+      }
+      sendJson(res, 200, {
+        document: toPaperDocumentSummary(document),
+        sections: document.sections,
+        stages: await stack.paperIngest.getStageSummary(projectId),
+      });
+      return true;
+    }
+    return false;
+  }
+
   // ---- feasibility / citation / manuscript / context ----
   if (rest !== "") {
     return false;
@@ -729,6 +794,42 @@ async function handleProjectResourceRoutes(
   }
 
   return false;
+}
+
+/** PaperDocument 摘要（HTTP 响应不携带 pages/chunks 全文，明细走 /chunks 端点） */
+function toPaperDocumentSummary(document: {
+  projectId: string;
+  documentId: string;
+  title?: string;
+  originalFileName: string;
+  bytes: number;
+  sha256: string;
+  parse: { pageCount: number; extractionQuality: string; parsedAt: string; parserId: string; durationMs: number };
+  sections: unknown[];
+  chunks: unknown[];
+  abstractSectionId?: string;
+  referencesSectionId?: string;
+  ingestedAt: string;
+}): Record<string, unknown> {
+  return {
+    projectId: document.projectId,
+    documentId: document.documentId,
+    ...(document.title !== undefined ? { title: document.title } : {}),
+    originalFileName: document.originalFileName,
+    bytes: document.bytes,
+    sha256: document.sha256.slice(0, 12),
+    parse: document.parse,
+    pageCount: document.parse.pageCount,
+    sectionCount: document.sections.length,
+    chunkCount: document.chunks.length,
+    ...(document.abstractSectionId !== undefined
+      ? { abstractSectionId: document.abstractSectionId }
+      : {}),
+    ...(document.referencesSectionId !== undefined
+      ? { referencesSectionId: document.referencesSectionId }
+      : {}),
+    ingestedAt: document.ingestedAt,
+  };
 }
 
 /** 审稿用稿件摘要（main + sections 截断） */

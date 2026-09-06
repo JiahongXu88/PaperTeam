@@ -9,6 +9,8 @@ import { EvidenceStore } from "./evidence/EvidenceStore.js";
 import { GenerationService } from "./generation/GenerationService.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ManuscriptService } from "./manuscript/ManuscriptService.js";
+import { PaperIngestService } from "./paper/PaperIngestService.js";
+import { PaperStore } from "./paper/PaperStore.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { FeasibilityService } from "./agents/FeasibilityService.js";
 import { ResearcherService } from "./agents/ResearcherService.js";
@@ -63,6 +65,8 @@ export interface ServiceStack {
   manuscript: ManuscriptService;
   citation: CitationService;
   latex: LatexCompiler;
+  paperStore: PaperStore;
+  paperIngest: PaperIngestService;
   workflowServices: WorkflowServices;
 }
 
@@ -117,6 +121,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       : {}),
     log,
   });
+  const paperStore = new PaperStore(options.projects);
+  const paperIngest = new PaperIngestService({
+    projects: options.projects,
+    store: paperStore,
+    log,
+  });
   const reviewer = new ReviewerService({
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,
@@ -138,6 +148,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     manuscript,
     citation,
     latex,
+    paperStore,
+    paperIngest,
     workflowServices: {
       projects: options.projects,
       generation,
