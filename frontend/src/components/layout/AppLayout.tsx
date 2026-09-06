@@ -25,9 +25,9 @@ function ModelConfigBanner() {
   return (
     <div className="model-banner" role="status">
       <span>
-        Runtime 正常，但模型未配置（{data.model.detail}）。Workflow 需要模型凭据：
-        可在 <Link to="/settings/model">Settings → Model</Link> 保存模型与 API Key，
-        或参考 .env.example 设置环境变量。
+        Runtime 正常，但模型尚未配置。可在
+        <Link to="/settings/model">「模型设置」</Link>
+        保存模型与 API Key，之后再开始需要模型的任务。
       </span>
       <button type="button" className="btn btn-small" onClick={dismiss}>
         知道了
@@ -39,7 +39,7 @@ function ModelConfigBanner() {
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `sidebar-link${isActive ? " active" : ""}`;
 
-/** Recent 项目快捷入口（真实数据，最多 5 个；仅列表已有缓存时渲染） */
+/** 最近项目快捷入口（真实数据，最多 5 个；仅列表已有缓存时渲染） */
 function SidebarRecent() {
   const { data } = useProjects();
   if (data === undefined || data.length === 0) {
@@ -47,7 +47,7 @@ function SidebarRecent() {
   }
   return (
     <div className="sidebar-recent">
-      <span className="sidebar-label">Recent</span>
+      <span className="sidebar-label">最近项目</span>
       {data.slice(0, 5).map((project) => (
         <Link key={project.id} to={`/projects/${project.id}`} className="sidebar-recent-link" title={project.title}>
           {project.title}
@@ -66,9 +66,8 @@ export function AppLayout() {
           <span className="sidebar-brand-sub">Research Workbench</span>
         </Link>
         <nav className="sidebar-nav" aria-label="全局导航">
-          <span className="sidebar-label">Workspace</span>
           <NavLink to="/projects" className={navLinkClass}>
-            <span className="link-text">Projects</span>
+            <span className="link-text">论文项目</span>
           </NavLink>
           <NavLink to="/skills" className={navLinkClass}>
             <span className="link-text">Skills</span>
@@ -77,7 +76,7 @@ export function AppLayout() {
         <SidebarRecent />
         <div className="sidebar-footer">
           <NavLink to="/settings/model" className={navLinkClass}>
-            <span className="link-text">Settings</span>
+            <span className="link-text">设置</span>
           </NavLink>
           <RuntimeStatusChip />
         </div>

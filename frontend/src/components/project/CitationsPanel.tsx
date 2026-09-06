@@ -8,6 +8,7 @@ import {
   useVerifyClaims,
   useVerifyMetadata,
 } from "../../hooks/queries";
+import { formatApiError } from "../../utils/errors.js";
 import type { MetadataRecordView, MetadataStatus, ReferenceView } from "../../types/paper.js";
 
 /**
@@ -88,7 +89,7 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
     return (
       <ErrorState
         title="引用数据加载失败"
-        message={citations.error instanceof Error ? citations.error.message : String(citations.error)}
+        message={formatApiError(citations.error)}
         onRetry={() => void citations.refetch()}
       />
     );
@@ -102,11 +103,11 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
     return (
       <section>
         <div className="section-head">
-          <h2>Citation Integrity</h2>
+          <h2>引用核验</h2>
         </div>
         <div className="panel-coming">
           <strong>尚未提取引用</strong>
-          <span>先在「PDF / Structure」上传 Final PDF，再提取引用。</span>
+          <span>先在「PDF 与结构」上传最终 PDF，再提取引用。</span>
           <div className="action-row">
             <button
               type="button"
@@ -117,9 +118,7 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
               {extract.isPending ? "提取中…" : "提取引用"}
             </button>
             {extract.isError ? (
-              <span className="form-error">
-                {extract.error instanceof Error ? extract.error.message : String(extract.error)}
-              </span>
+              <span className="form-error">{formatApiError(extract.error)}</span>
             ) : null}
           </div>
         </div>
@@ -163,8 +162,8 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
             </button>
           </div>
           <div className="ledger">
-            <span className="ledger-item">References {summary.references}</span>
-            <span className="ledger-item">Callouts {summary.callouts}</span>
+            <span className="ledger-item">参考文献条目 {summary.references}</span>
+            <span className="ledger-item">正文引用 {summary.callouts}</span>
             <span className="ledger-item" title="同一引用可被多处 callout 关联">
               关联 {summary.resolvedRelations} · 未关联 {summary.unresolvedRelations} · 无效 {summary.invalidRelations}
             </span>
@@ -240,19 +239,19 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
 
       {verifyMeta.isError ? (
         <p className="form-error" role="alert">
-          真实性核验失败：{verifyMeta.error instanceof Error ? verifyMeta.error.message : String(verifyMeta.error)}
+          真实性核验失败：{formatApiError(verifyMeta.error)}
         </p>
       ) : null}
       {verifyClaims.isError ? (
         <p className="form-error" role="alert">
-          语义核验失败：{verifyClaims.error instanceof Error ? verifyClaims.error.message : String(verifyClaims.error)}
+          语义核验失败：{formatApiError(verifyClaims.error)}
           （需要已配置模型）
         </p>
       ) : null}
 
       <section>
         <div className="section-head">
-          <h2>References</h2>
+          <h2>参考文献</h2>
           <span className="section-note">{references.length} 条</span>
         </div>
         {references.length > 0 ? (
@@ -322,12 +321,12 @@ function ReferenceRow({
         {canonicalDoi !== undefined ? (
           <span className="ref-doi">
             {canonicalDoi}
-            {record?.canonical !== undefined ? ` · via ${record.canonical.provider}` : ""}
+            {record?.canonical !== undefined ? ` · 来源 ${record.canonical.provider}` : ""}
           </span>
         ) : reference.arxivId !== undefined ? (
           <span className="ref-doi">arXiv:{reference.arxivId}</span>
         ) : record?.canonical !== undefined ? (
-          <span className="ref-doi">via {record.canonical.provider}</span>
+          <span className="ref-doi">来源 {record.canonical.provider}</span>
         ) : null}
         {record?.probableFabrication === true ? (
           <span className="ref-flag ref-flag-danger">多源一致查无此文（疑似捏造，需人工确认）</span>

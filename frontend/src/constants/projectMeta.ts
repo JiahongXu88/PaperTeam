@@ -23,7 +23,7 @@ export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
 export const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
   pending: "排队中",
   running: "运行中",
-  awaiting_input: "等待输入",
+  awaiting_input: "等待确认",
   completed: "已完成",
   failed: "失败",
   cancelled: "已取消",

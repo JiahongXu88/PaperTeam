@@ -58,7 +58,7 @@ async function request<T>({ method, path, body, signal }: RequestOptions): Promi
     throw new ApiError(
       0,
       "NETWORK_ERROR",
-      "无法连接 PaperTeam Backend（请确认后端已启动）",
+      "无法连接 PaperTeam 后端服务（请确认服务已启动）",
       cause instanceof Error ? cause.message : String(cause),
     );
   }
@@ -73,7 +73,7 @@ async function request<T>({ method, path, body, signal }: RequestOptions): Promi
       throw new ApiError(
         response.status,
         "INVALID_RESPONSE",
-        `Backend 返回了非 JSON 响应（HTTP ${response.status}）`,
+        `服务返回了非 JSON 响应（HTTP ${response.status}）`,
         text.slice(0, 200),
       );
     }

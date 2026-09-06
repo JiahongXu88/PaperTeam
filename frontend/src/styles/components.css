@@ -40,13 +40,13 @@
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 .btn-primary:hover {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
-  color: #fff;
+  color: var(--accent-contrast);
 }
 
 .btn-danger {
@@ -121,7 +121,7 @@
 }
 
 .status-tone-warn::before {
-  background: #b98a1d;
+  background: var(--warn-dot);
 }
 
 .status-tone-danger::before {
@@ -474,6 +474,96 @@
 
 .data-table tbody tr:last-child td {
   border-bottom: none;
+}
+
+/* ============ 模型搜索选择器（轻量 combobox，无 UI 框架） ============ */
+
+.combobox {
+  position: relative;
+}
+
+.combobox input {
+  width: 100%;
+  padding: 8px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  font: inherit;
+  color: var(--ink-900);
+  background: var(--page);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.combobox input::placeholder {
+  color: var(--ink-400);
+}
+
+.combobox input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+
+.combobox-list {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--page);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-overlay);
+}
+
+.combobox-option {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.combobox-option.highlighted {
+  background: var(--accent-bg);
+}
+
+.combobox-option.selected {
+  background: var(--accent-bg-strong);
+}
+
+.combobox-option-name {
+  font-size: var(--fs-body);
+  color: var(--ink-900);
+  overflow-wrap: anywhere;
+}
+
+.combobox-option-ctx {
+  color: var(--ink-500);
+  font-size: var(--fs-label);
+}
+
+.combobox-option-id {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  color: var(--ink-500);
+  overflow-wrap: anywhere;
+}
+
+.combobox-empty,
+.combobox-more {
+  padding: 8px 10px;
+  color: var(--ink-500);
+  font-size: var(--fs-meta);
+}
+
+.combobox-more {
+  border-top: 1px solid var(--line);
 }
 
 /* ============ 详情折叠（原生 details，无 JS） ============ */

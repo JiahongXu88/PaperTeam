@@ -29,11 +29,11 @@ export function RuntimeStatusChip() {
       <span
         className="sidebar-runtime"
         data-testid="runtime-chip"
-        title="无法连接 PaperTeam Backend（GET /api/runtime/status）"
+        title="无法连接 PaperTeam 后端服务，请确认服务已启动"
       >
         <span className="sidebar-runtime-line">
           <span className="dot dot-error" aria-hidden="true" />
-          <span className="rt-label">Backend 未连接</span>
+          <span className="rt-label">服务未连接</span>
         </span>
       </span>
     );

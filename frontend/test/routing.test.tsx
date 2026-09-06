@@ -34,17 +34,17 @@ function renderAt(route: string) {
 describe("routing", () => {
   it("/ 重定向到 /projects（渲染项目列表）", async () => {
     renderAt("/");
-    expect(await screen.findByText("My Papers")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "论文项目" })).toBeInTheDocument();
   });
 
   it("/projects 渲染项目列表页", async () => {
     renderAt("/projects");
-    expect(await screen.findByText("My Papers")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "论文项目" })).toBeInTheDocument();
   });
 
   it("/projects/new 渲染创建页", async () => {
     renderAt("/projects/new");
-    expect(await screen.findByText("New Project")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "新建项目" })).toBeInTheDocument();
   });
 
   it("未知路径渲染 404", async () => {

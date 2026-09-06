@@ -112,9 +112,9 @@ describe("SkillsPage（M4.3.7）", () => {
 
 describe("PdfPanel（M4.3.7）", () => {
   it("空态：未上传时显示上传入口", async () => {
-    vi.mocked(getPaper).mockResolvedValue({ document: null, note: "尚未上传 Final PDF" });
+    vi.mocked(getPaper).mockResolvedValue({ document: null, note: "尚未上传最终 PDF" });
     renderWithProviders(<PdfPanel projectId="p-x1" />);
-    expect(await screen.findByText("上传 Final PDF")).toBeInTheDocument();
+    expect(await screen.findByText("上传最终 PDF")).toBeInTheDocument();
     expect(screen.getByLabelText(/\.pdf/i)).toBeInTheDocument();
   });
 
@@ -158,7 +158,7 @@ describe("PdfPanel（M4.3.7）", () => {
     expect(await screen.findByText("Attention Is All You Need")).toBeInTheDocument();
     expect(screen.getByText(/attention\.pdf/)).toBeInTheDocument();
     expect(screen.getByText("15")).toBeInTheDocument();
-    expect(screen.getByText(/23 sections \/ 27 chunks/)).toBeInTheDocument();
+    expect(screen.getByText(/23 \/ 27/)).toBeInTheDocument();
     expect(screen.getByText("Introduction")).toBeInTheDocument();
     expect(screen.getByText("p1-2")).toBeInTheDocument();
   });
@@ -271,7 +271,7 @@ describe("CitationsPanel（M4.3.7）", () => {
     expect(screen.getByText("已验证 1")).toBeInTheDocument();
     expect(screen.getByText("未找到 1")).toBeInTheDocument();
     expect(screen.getByText(/疑似捏造/)).toBeInTheDocument();
-    expect(screen.getByText("via arxiv")).toBeInTheDocument();
+    expect(screen.getByText("来源 arxiv")).toBeInTheDocument();
     // 操作按钮存在
     expect(screen.getByRole("button", { name: /核验文献真实性/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /语义核验/ })).toBeInTheDocument();

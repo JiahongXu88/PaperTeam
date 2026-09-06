@@ -9,7 +9,7 @@ import {
   usePaper,
   useUploadPaperPdf,
 } from "../../hooks/queries.js";
-import { ApiError } from "../../api/client.js";
+import { formatApiError } from "../../utils/errors.js";
 import type { PaperSectionView } from "../../types/paper.js";
 
 /**
@@ -32,11 +32,11 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
-/** 结构来源 → 人读标签（仅非 outline 的例外行标注，避免标签刷屏） */
+/** 结构来源 → 人读标签（仅非目录识别的例外行标注，避免标签刷屏） */
 const SECTION_SOURCE_LABEL: Record<PaperSectionView["source"], string | undefined> = {
   toc: undefined,
-  "heading-pattern": "headings",
-  "whole-document": "whole",
+  "heading-pattern": "标题识别",
+  "whole-document": "全文",
 };
 
 function StructureRow({ section }: { section: PaperSectionView }) {
@@ -86,13 +86,13 @@ export function PdfPanel({ projectId }: { projectId: string }) {
   };
 
   if (isPending) {
-    return <Loading label="加载 Final PDF 状态…" />;
+    return <Loading label="加载最终 PDF 状态…" />;
   }
   if (isError) {
     return (
       <ErrorState
         title="PDF 状态加载失败"
-        message={error instanceof Error ? error.message : String(error)}
+        message={formatApiError(error)}
         onRetry={() => void refetch()}
       />
     );
@@ -103,25 +103,25 @@ export function PdfPanel({ projectId }: { projectId: string }) {
     return (
       <section>
         <div className="section-head">
-          <h2>上传 Final PDF</h2>
+          <h2>上传最终 PDF</h2>
         </div>
         <label className="upload-zone">
           <input
             ref={fileInput}
             type="file"
             accept=".pdf,application/pdf"
-            aria-label="上传 Final PDF（.pdf）"
+            aria-label="上传最终 PDF（.pdf）"
             onChange={(event) => void onPickFile(event.target.files?.[0])}
             disabled={upload.isPending}
           />
-          <span className="upload-title">{upload.isPending ? "解析中（pymupdf）…" : "点击选择 PDF 文件"}</span>
+          <span className="upload-title">{upload.isPending ? "解析中…" : "点击选择 PDF 文件"}</span>
           <span className="upload-hint">
-            .pdf，不超过 50MB。Final PDF 是 Existing Paper 的正式 Review 输入（Read-only 审阅，不修改 PDF）。
+            .pdf 文件，不超过 50MB。最终 PDF 是引用核验与审阅的正式输入（只读分析，不修改原文件）。
           </span>
         </label>
         {upload.isError ? (
           <p className="form-error" style={{ marginTop: 12 }}>
-            上传失败：{upload.error instanceof ApiError ? upload.error.message : String(upload.error)}
+            上传失败：{formatApiError(upload.error)}
           </p>
         ) : null}
         {uploadError !== null ? (
@@ -168,9 +168,9 @@ export function PdfPanel({ projectId }: { projectId: string }) {
             <dd>{document.pageCount}</dd>
           </div>
           <div className="aside-row">
-            <dt>章节 / 块</dt>
+            <dt>章节 / 文本块</dt>
             <dd>
-              {document.sectionCount} sections / {document.chunkCount} chunks
+              {document.sectionCount} / {document.chunkCount}
             </dd>
           </div>
           <div className="aside-row">
@@ -191,7 +191,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
               ref={fileInput}
               type="file"
               accept=".pdf,application/pdf"
-              aria-label="替换 Final PDF（.pdf）"
+              aria-label="替换最终 PDF（.pdf）"
               style={{ display: "none" }}
               onChange={(event) => void onPickFile(event.target.files?.[0])}
               disabled={upload.isPending}
@@ -200,7 +200,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
         </div>
         {upload.isError ? (
           <p className="form-error" style={{ marginTop: 10 }}>
-            上传失败：{upload.error instanceof ApiError ? upload.error.message : String(upload.error)}
+            上传失败：{formatApiError(upload.error)}
           </p>
         ) : null}
         {uploadError !== null ? <p className="form-error" style={{ marginTop: 10 }}>{uploadError}</p> : null}
@@ -208,12 +208,12 @@ export function PdfPanel({ projectId }: { projectId: string }) {
 
       <section>
         <div className="section-head">
-          <h2>Structure</h2>
+          <h2>论文结构</h2>
           <div className="action-row">
             <span className="section-note">
               {sections.length} 个章节
               {tocCount > 0
-                ? ` · outline ${tocCount}${headingCount > 0 ? ` · headings ${headingCount}` : ""}`
+                ? ` · 目录识别 ${tocCount}${headingCount > 0 ? ` · 标题识别 ${headingCount}` : ""}`
                 : "（标题正则识别）"}
             </span>
             <button
@@ -221,7 +221,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
               className="btn btn-small btn-primary"
               onClick={() => extract.mutate()}
               disabled={extract.isPending}
-              title="提取结果在「Citations」页查看与核验"
+              title="提取结果在「引用核验」页查看与核验"
             >
               {extract.isPending ? "提取引用中…" : "提取引用"}
             </button>
@@ -238,7 +238,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
         )}
         {extract.isError ? (
           <p className="form-error" style={{ marginTop: 12 }}>
-            提取失败：{extract.error instanceof Error ? extract.error.message : String(extract.error)}
+            提取失败：{formatApiError(extract.error)}
           </p>
         ) : null}
       </section>

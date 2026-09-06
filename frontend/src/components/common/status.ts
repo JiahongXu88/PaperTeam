@@ -24,7 +24,7 @@ export const PROJECT_STATUS_STYLES: Record<string, StatusStyle> = {
 export const RUN_STATUS_STYLES: Record<string, StatusStyle> = {
   pending: { label: "排队中", tone: "neutral" },
   running: { label: "运行中", tone: "info" },
-  awaiting_input: { label: "等待输入", tone: "warn" },
+  awaiting_input: { label: "等待确认", tone: "warn" },
   completed: { label: "已完成", tone: "ok" },
   failed: { label: "失败", tone: "danger" },
   cancelled: { label: "已取消", tone: "neutral" },
@@ -33,10 +33,10 @@ export const RUN_STATUS_STYLES: Record<string, StatusStyle> = {
 /** 引用真实性（MetadataStatus）——中文标签，与全站状态语言一致 */
 export const METADATA_STATUS_STYLES: Record<string, StatusStyle> = {
   VERIFIED: { label: "已验证", tone: "ok" },
-  METADATA_MISMATCH: { label: "字段不一致", tone: "warn" },
+  METADATA_MISMATCH: { label: "元数据不一致", tone: "warn" },
   AMBIGUOUS: { label: "待定", tone: "neutral" },
   NOT_FOUND: { label: "未找到", tone: "danger" },
-  UNRESOLVED: { label: "未解析", tone: "neutral" },
+  UNRESOLVED: { label: "待确认", tone: "neutral" },
 };
 
 /** (claim, citation) 语义核验 verdict */
@@ -44,7 +44,7 @@ export const SEMANTIC_VERDICT_STYLES: Record<string, StatusStyle> = {
   SUPPORTED: { label: "支持", tone: "ok" },
   PARTIALLY_SUPPORTED: { label: "部分支持", tone: "warn" },
   UNSUPPORTED: { label: "不支持", tone: "danger" },
-  CONTRADICTED: { label: "矛盾", tone: "danger" },
+  CONTRADICTED: { label: "存在矛盾", tone: "danger" },
   INSUFFICIENT_EVIDENCE: { label: "证据不足", tone: "neutral" },
   SKIPPED: { label: "跳过", tone: "neutral" },
 };

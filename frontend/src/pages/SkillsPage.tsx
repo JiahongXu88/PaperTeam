@@ -1,6 +1,7 @@
 import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
 import { useRegenerateSkillSummary, useSkills } from "../hooks/queries.js";
+import { formatApiError } from "../utils/errors.js";
 import type { SkillView } from "../types/paper.js";
 
 /**
@@ -19,11 +20,13 @@ function SkillCard({ skill }: { skill: SkillView }) {
       <div className="skill-head">
         <h2 className="skill-name">{skill.name}</h2>
         {skill.status === "installed" ? (
-          <span className="status status-tone-ok">Installed</span>
+          <span className="status status-tone-ok">已安装</span>
         ) : (
-          <span className="status status-tone-neutral">{skill.status}</span>
+          <span className="status status-tone-warn">{skill.status === "disabled" ? "已停用" : skill.status}</span>
         )}
-        {skill.summaryStatus === "stale" ? (
+        {skill.summaryStatus === "summary_pending" ? (
+          <span className="chip">摘要待生成</span>
+        ) : skill.summaryStatus === "stale" ? (
           <span className="chip">简介待更新</span>
         ) : null}
       </div>
@@ -38,6 +41,7 @@ function SkillCard({ skill }: { skill: SkillView }) {
 
       {skill.assignedAgents.length > 0 ? (
         <div className="skill-tags">
+          <span className="skill-tags-label">已分配给</span>
           {skill.assignedAgents.map((agent) => (
             <span key={agent} className="chip">
               {agent}
@@ -56,9 +60,7 @@ function SkillCard({ skill }: { skill: SkillView }) {
           {regenerate.isPending ? "生成中…" : "重新生成中文简介"}
         </button>
         {regenerate.isError ? (
-          <span className="form-error">
-            生成失败（{regenerate.error instanceof Error ? regenerate.error.message : "模型可能未配置"}）
-          </span>
+          <span className="form-error">生成失败（{formatApiError(regenerate.error)}）</span>
         ) : null}
       </div>
 
@@ -79,18 +81,18 @@ function SkillCard({ skill }: { skill: SkillView }) {
               </dd>
             </div>
             <div>
-              <dt>Version / Revision</dt>
+              <dt>版本 / 修订版本</dt>
               <dd className="mono">
                 {skill.version ?? "—"}
                 {skill.sourceRevision !== undefined ? ` / ${skill.sourceRevision.slice(0, 12)}` : ""}
               </dd>
             </div>
             <div>
-              <dt>License</dt>
+              <dt>许可证</dt>
               <dd>{skill.license ?? "—"}</dd>
             </div>
             <div>
-              <dt>Allowed Tools</dt>
+              <dt>允许使用的工具</dt>
               <dd>
                 {skill.allowedTools.length > 0 ? skill.allowedTools.join(", ") : "（无工具假设）"}
               </dd>
@@ -100,7 +102,7 @@ function SkillCard({ skill }: { skill: SkillView }) {
               <dd>{skill.originalDescription}</dd>
             </div>
             <div>
-              <dt>Installed</dt>
+              <dt>安装路径</dt>
               <dd className="mono">{skill.installedPath}</dd>
             </div>
           </dl>
@@ -125,7 +127,7 @@ export function SkillsPage() {
       <section className="page">
         <ErrorState
           title="Skills 加载失败"
-          message={error instanceof Error ? error.message : String(error)}
+          message={formatApiError(error)}
           onRetry={() => void refetch()}
         />
       </section>
@@ -136,8 +138,8 @@ export function SkillsPage() {
       <section className="page">
         <PageHeader title="Skills" sub="Agent 可用的专业能力" />
         <div className="panel-coming">
-          <strong>尚未安装任何 Skill</strong>
-          <span>Skill 将随 Backend skills 目录注入（当前里程碑为只读展示）。</span>
+          <strong>当前没有已安装的 Skill</strong>
+          <span>Skill 安装后自动按 Agent 角色注入对应任务。</span>
         </div>
       </section>
     );
@@ -147,7 +149,7 @@ export function SkillsPage() {
     <section className="page">
       <PageHeader
         title="Skills"
-        sub={`${data.skills.length} 个已安装能力 · 按 Agent 角色绑定注入 Pi 会话`}
+        sub={`${data.skills.length} 个已安装能力 · 按 Agent 角色绑定`}
       />
       <div className="skill-list">
         {data.skills.map((skill) => (
@@ -187,7 +189,7 @@ export function SkillsPage() {
           </table>
         </div>
         <p className="section-note" style={{ marginTop: 8 }}>
-          仅名称与简介注入 Pi 系统提示，正文按需加载。
+          Agent 任务只加载 Skill 名称与中文简介，正文按需读取。
         </p>
       </section>
     </section>

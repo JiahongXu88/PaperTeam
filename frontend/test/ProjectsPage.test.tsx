@@ -77,10 +77,12 @@ describe("ProjectsPage", () => {
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
 
     expect(await screen.findByText("还没有论文项目")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "创建第一个项目" })).toHaveAttribute(
-      "href",
-      "/projects/new",
-    );
+    // 空态按钮与页头按钮同名（都指向 /projects/new）
+    const links = screen.getAllByRole("link", { name: "新建项目" });
+    expect(links.length).toBeGreaterThanOrEqual(1);
+    for (const link of links) {
+      expect(link).toHaveAttribute("href", "/projects/new");
+    }
   });
 
   it("错误：显示错误信息，点击重试后恢复", async () => {
@@ -96,10 +98,10 @@ describe("ProjectsPage", () => {
     expect(await screen.findByText("检索增强生成综述")).toBeInTheDocument();
   });
 
-  it("页头：提供 New Project 入口", async () => {
+  it("页头：提供新建项目入口", async () => {
     vi.mocked(listProjects).mockResolvedValue(projects);
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
-    await waitFor(() => expect(screen.getByText("My Papers")).toBeInTheDocument());
-    expect(screen.getByRole("link", { name: /New Project/ })).toHaveAttribute("href", "/projects/new");
+    await waitFor(() => expect(screen.getByText("论文项目")).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: /新建项目/ })).toHaveAttribute("href", "/projects/new");
   });
 });
