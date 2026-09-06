@@ -568,6 +568,31 @@ async function handleProjectResourceRoutes(
       });
       return true;
     }
+    if (rest === "/verify-claims" && method === "POST") {
+      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const result = await stack.citationIntegrity.verifyClaims(projectId, {
+        ...(body["force"] === true ? { force: true } : {}),
+        ...(typeof body["limit"] === "number" ? { limit: body["limit"] } : {}),
+      });
+      sendJson(res, 200, {
+        summary: result.summary,
+        verified: result.verified,
+        reused: result.reused,
+        telemetry: result.telemetry,
+        records: result.records,
+      });
+      return true;
+    }
+    if (rest === "/claims" && method === "GET") {
+      const records = await stack.citationIntegrity.listClaimRecords(projectId);
+      sendJson(res, 200, { records });
+      return true;
+    }
+    if (rest === "/integrity" && method === "GET") {
+      const report = await stack.citationIntegrity.integrityReport(projectId);
+      sendJson(res, 200, { report });
+      return true;
+    }
     if (rest === "/metadata" && method === "GET") {
       const records = await stack.citationIntegrity.listMetadataRecords(projectId);
       sendJson(res, 200, { records });

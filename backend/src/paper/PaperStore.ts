@@ -134,7 +134,7 @@ export class PaperStore {
     try {
       const names = await readdir(join(this.citationDir(projectId), kind));
       return names
-        .map((name) => /^([A-Z]\d+.*?)\.json$/.exec(name)?.[1])
+        .map((name) => /^([A-Za-z][A-Za-z0-9_-]*)\.json$/.exec(name)?.[1])
         .filter((id): id is string => id !== undefined)
         .sort();
     } catch {

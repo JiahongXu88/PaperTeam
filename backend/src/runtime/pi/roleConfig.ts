@@ -17,7 +17,7 @@
  *   不经过 Agent）。需要时可在 PiRuntimeAdapterOptions 覆盖。
  */
 
-export type PiRoleKey = "researcher" | "writer" | "reviewer" | "default";
+export type PiRoleKey = "researcher" | "writer" | "reviewer" | "citation" | "default";
 
 export interface PiRoleConfig {
   /** 角色键（诊断用） */
@@ -61,6 +61,15 @@ const ROLE_CONFIGS: Record<PiRoleKey, PiRoleConfig> = {
     ].join("\n"),
     tools: ["read", "grep", "find", "ls"],
   },
+  citation: {
+    role: "citation",
+    systemPrompt: [
+      "你是 PaperTeam 的引用核验 Agent（Citation）。",
+      "你只依据任务中提供的真实检索证据判断文献与论断的关系；禁止凭记忆判定文献存在性或支撑性。",
+      COMMON_DISCIPLINE,
+    ].join("\n"),
+    tools: ["read", "grep", "find", "ls"],
+  },
   default: {
     role: "default",
     systemPrompt: ["你是 PaperTeam 的 Agent。", COMMON_DISCIPLINE].join("\n"),
@@ -81,6 +90,9 @@ function roleKeyForScope(scope: string | undefined): PiRoleKey {
   }
   if (scope === "review" || scope.startsWith("review/")) {
     return "reviewer";
+  }
+  if (scope === "citation" || scope.startsWith("citation/")) {
+    return "citation";
   }
   return "default";
 }

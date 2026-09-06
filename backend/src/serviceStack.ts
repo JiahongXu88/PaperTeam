@@ -147,6 +147,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const citationIntegrity = new CitationIntegrityService({
     projects: options.projects,
     store: paperStore,
+    runtime: options.runtime,
+    citationAgentId: options.agentIds.citation,
     ...(options.citation?.scholarly !== undefined ? { scholarly: options.citation.scholarly } : {}),
     ...(options.citation?.maxMetadataLookups !== undefined
       ? { maxMetadataLookups: options.citation.maxMetadataLookups }

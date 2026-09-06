@@ -113,6 +113,14 @@ export interface QualityGateInput {
   feasibility: FeasibilityReport | null;
   /** HITL 明示接受已知差距（仍按目标标准执行，仅降低口径说明；不改判定） */
   acceptedKnownGaps?: boolean;
+  /** M4.3 Citation Integrity Gate 输入（PDF Review 流程；缺省不启用这组规则） */
+  citationIntegrity?: {
+    probableFabricated: number;
+    notFoundObligatory: number;
+    unsupportedCritical: number;
+    mismatchCritical: number;
+    insufficientEvidence: number;
+  };
 }
 
 export interface QualityGateResult {
@@ -209,6 +217,37 @@ export function evaluateQualityGate(
     passed: feasibilityOk,
     detail: feasibility === null ? "未评估（跳过）" : `feasibility=${feasibility.level}`,
   });
+
+  // 10-13. Citation Integrity（M4.3；并入同一 Gate Engine，不另造平行体系）
+  if (input.citationIntegrity !== undefined) {
+    const integrity = input.citationIntegrity;
+    rules.push({
+      rule: "citation_fabrication_zero",
+      passed: integrity.probableFabricated === 0,
+      detail: `confirmed/probable fabricated ${integrity.probableFabricated} 条`,
+    });
+    rules.push({
+      rule: "citation_not_found_obligatory_zero",
+      passed: integrity.notFoundObligatory === 0,
+      detail: `NOT_FOUND obligatory citation ${integrity.notFoundObligatory} 条（需人工判定）`,
+    });
+    rules.push({
+      rule: "citation_unsupported_critical_zero",
+      passed: integrity.unsupportedCritical === 0,
+      detail: `critical claim UNSUPPORTED/CONTRADICTED ${integrity.unsupportedCritical} 条`,
+    });
+    rules.push({
+      rule: "citation_metadata_mismatch_critical_zero",
+      passed: integrity.mismatchCritical === 0,
+      detail: `title/DOI 级 mismatch ${integrity.mismatchCritical} 条`,
+    });
+    // INSUFFICIENT_EVIDENCE ≠ fabricated：不阻断，要求补证据/人工复核
+    rules.push({
+      rule: "citation_insufficient_evidence_review",
+      passed: true,
+      detail: `INSUFFICIENT_EVIDENCE ${integrity.insufficientEvidence} 条（人工复核，不阻断）`,
+    });
+  }
 
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);
   return {

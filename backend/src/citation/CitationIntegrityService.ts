@@ -9,6 +9,7 @@
  * 第 37 篇引用检索失败不会要求重新 parse PDF——文件粒度记录 + 指纹跳过。
  */
 
+import type { AgentRuntime } from "../runtime/types.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { BusinessError } from "../errors.js";
 import { fingerprintJson } from "../util/hash.js";
@@ -18,17 +19,41 @@ import type {
   CitationCallout,
   CitationMetadataStatus,
   CitationVerificationRecord,
+  ClaimCitationRecord,
   ReferenceEntry,
 } from "./integrity.js";
+import { deriveClaimSeverity } from "./integrity.js";
 import { ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
+import {
+  buildClaimRecords,
+  buildEvidence,
+  buildJudgePrompt,
+  parseJudgeOutput,
+  summarizeSemantic,
+  type SemanticSummary,
+} from "./semanticVerifier.js";
+
+/** semantic stage telemetry（回答「这次语义核验烧了多少 token」） */
+export interface SemanticTelemetry {
+  modelCalls: number;
+  skippedNoMetadata: number;
+  skippedNoEvidence: number;
+  failed: number;
+  approxPromptChars: number;
+}
 
 export interface CitationIntegrityOptions {
   projects: ProjectStore;
   store: PaperStore;
+  /** semantic judge 用的 Runtime（citation 角色 scope） */
+  runtime?: AgentRuntime;
+  citationAgentId?: string;
   /** scholarly resolver 注入（测试用 fake providers / fetch） */
   scholarly?: ScholarlyResolverOptions;
   /** metadata 核验上限（rate-limit friendly，默认 40） */
   maxMetadataLookups?: number;
+  /** semantic 核验上限（默认 30；token 控制） */
+  maxSemanticVerifications?: number;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -37,15 +62,24 @@ export class CitationIntegrityService {
   private readonly projects: ProjectStore;
   private readonly store: PaperStore;
   private readonly resolver: ScholarlyResolver;
+  private readonly runtime: AgentRuntime | undefined;
+  private readonly citationAgentId: string | undefined;
   private readonly maxLookups: number;
+  private readonly maxSemantic: number;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
+
+  /** 最近一次 verifyClaims 的 telemetry（模型调用数 / 上下文规模） */
+  lastSemanticTelemetry: SemanticTelemetry | undefined;
 
   constructor(options: CitationIntegrityOptions) {
     this.projects = options.projects;
     this.store = options.store;
     this.resolver = new ScholarlyResolver(options.scholarly);
+    this.runtime = options.runtime;
+    this.citationAgentId = options.citationAgentId;
     this.maxLookups = options.maxMetadataLookups ?? 40;
+    this.maxSemantic = options.maxSemanticVerifications ?? 30;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
   }
@@ -289,4 +323,268 @@ export class CitationIntegrityService {
     }
     return records;
   }
+
+  // ---- semantic verification stage（M4.3.5：(claim, citation) 单记录） ----
+
+  /**
+   * 逐条语义核验。确定性短路优先（真实性未确立 → SKIPPED；无证据 →
+   * INSUFFICIENT_EVIDENCE，零模型调用），只有真实证据在手才调用 judge。
+   */
+  async verifyClaims(
+    projectId: string,
+    options: { force?: boolean; limit?: number } = {},
+  ): Promise<{
+    summary: SemanticSummary;
+    verified: number;
+    reused: number;
+    records: ClaimCitationRecord[];
+    telemetry: SemanticTelemetry;
+  }> {
+    if (this.runtime === undefined || this.citationAgentId === undefined) {
+      throw new BusinessError("INVALID_REQUEST", "semantic 核验需要 Runtime（服务未配置 runtime）");
+    }
+    await this.projects.getRequired(projectId);
+    const [references, callouts, document, metadataRaw] = await Promise.all([
+      this.store.loadReferences<ReferenceEntry>(projectId),
+      this.store.loadCallouts<CitationCallout>(projectId),
+      this.store.loadDocument(projectId),
+      this.listMetadataRecords(projectId),
+    ]);
+    if (references.length === 0) {
+      throw new BusinessError("INVALID_REQUEST", "尚未提取引用（先 POST /citations/extract）");
+    }
+    if (metadataRaw.length === 0) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        "尚未执行 metadata 核验（先 POST /citations/verify-metadata——真实性 Gate 先于语义核验）",
+      );
+    }
+    const metadataRecords = new Map(metadataRaw.map((record) => [record.referenceId, record]));
+    const sectionTitles = new Map((document?.sections ?? []).map((s) => [s.sectionId, s.title]));
+    const pending = buildClaimRecords(
+      callouts,
+      references,
+      metadataRecords,
+      sectionTitles,
+      this.now().toISOString(),
+    );
+
+    const telemetry = {
+      modelCalls: 0,
+      skippedNoMetadata: 0,
+      skippedNoEvidence: 0,
+      failed: 0,
+      approxPromptChars: 0,
+    };
+    const limit = options.limit ?? this.maxSemantic;
+    let verifiedCount = 0;
+    let reused = 0;
+    let processed = 0;
+    const records: ClaimCitationRecord[] = [];
+    for (const claim of pending) {
+      const existing = await this.store.loadRecord<ClaimCitationRecord>(
+        projectId,
+        "claims",
+        claim.claimCitationId,
+      );
+      if (
+        !options.force &&
+        existing !== null &&
+        existing.fingerprint === claim.fingerprint &&
+        (existing.status === "verified" || existing.status === "skipped")
+      ) {
+        // 只有终态成功记录才复用；failed/pending 必须重试（可恢复语义）
+        records.push(existing);
+        reused += 1;
+        continue;
+      }
+      if (processed >= limit) {
+        records.push(claim); // 超出本轮上限：保持 pending（下一轮继续）
+        continue;
+      }
+      processed += 1;
+      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry);
+      records.push(record);
+      if (record.status === "verified" || record.status === "skipped") {
+        verifiedCount += 1;
+      }
+    }
+
+    const summary = summarizeSemantic(metadataRaw, records);
+    await this.saveStage(projectId, {
+      stage: "semantic",
+      status: "ok",
+      inputFingerprint: fingerprintJson(pending.map((claim) => `${claim.claimCitationId}:${claim.fingerprint}`)),
+      outputSummary: { total: summary.total, ...summary.byVerdict },
+      updatedAt: this.now().toISOString(),
+    });
+    this.lastSemanticTelemetry = telemetry;
+    this.log(
+      `[citation-integrity] projectId=${projectId} semantic 核验：total=${summary.total} verified=${verifiedCount} skipped=${summary.skipped} modelCalls=${telemetry.modelCalls}`,
+    );
+    return { summary, verified: verifiedCount, reused, records, telemetry };
+  }
+
+  private async verifyClaim(
+    projectId: string,
+    claim: ClaimCitationRecord,
+    metadataRecords: Map<string, CitationVerificationRecord>,
+    telemetry: SemanticTelemetry,
+  ): Promise<ClaimCitationRecord> {
+    const metadata = metadataRecords.get(claim.referenceId);
+    const base: ClaimCitationRecord = { ...claim, evidence: [] };
+
+    // 真实性 Gate：NOT_FOUND / UNRESOLVED / AMBIGUOUS / 无记录 → semantic SKIPPED
+    if (
+      metadata === undefined ||
+      metadata.status === "NOT_FOUND" ||
+      metadata.status === "UNRESOLVED" ||
+      metadata.status === "AMBIGUOUS"
+    ) {
+      const reason =
+        metadata === undefined
+          ? "该文献未经 metadata 核验，语义核验跳过"
+          : `文献真实性未确立（${metadata.status}），语义核验跳过——不允许验证不存在的文献`;
+      const skipped: ClaimCitationRecord = {
+        ...base,
+        verdict: "SKIPPED",
+        reason,
+        status: "skipped",
+        severity: deriveSeverityFor(claim, metadata),
+        verifiedAt: this.now().toISOString(),
+      };
+      telemetry.skippedNoMetadata += 1;
+      await this.store.saveRecord(projectId, "claims", claim.claimCitationId, skipped);
+      return skipped;
+    }
+
+    const evidence = buildEvidence(metadata, this.now().toISOString());
+    const fabric = metadata.probableFabrication;
+
+    // 无可判证据 → INSUFFICIENT_EVIDENCE（确定性短路，零模型调用）
+    if (evidence.length === 0) {
+      const record: ClaimCitationRecord = {
+        ...base,
+        verdict: "INSUFFICIENT_EVIDENCE",
+        reason: "canonical record 无摘要等可判证据（abstract 缺失），证据不足以判断",
+        evidence: [],
+        status: "verified",
+        severity: deriveSeverityFor(claim, metadata),
+        verifiedAt: this.now().toISOString(),
+      };
+      telemetry.skippedNoEvidence += 1;
+      await this.store.saveRecord(projectId, "claims", claim.claimCitationId, record);
+      return record;
+    }
+
+    const prompt = buildJudgePrompt({
+      claimText: claim.claimText,
+      reference: { rawText: "" } as ReferenceEntry,
+      canonical: metadata.canonical,
+      evidence,
+    });
+    telemetry.approxPromptChars += prompt.length;
+    telemetry.modelCalls += 1;
+    try {
+      const task = await this.runtime!.runAgent({
+        agentId: this.citationAgentId!,
+        projectId,
+        contextScope: `citation/semantic/${claim.claimCitationId.toLowerCase()}`,
+        task: prompt,
+        metadata: { role: "citation", milestone: "M4.3" },
+      });
+      if (task.status !== "completed") {
+        throw new Error(task.error ?? "judge 任务未完成");
+      }
+      const judged = parseJudgeOutput(task.output ?? "", evidence);
+      const evidenceWithQuote =
+        judged.keyQuote !== undefined
+          ? [
+              {
+                ...evidence[0]!,
+                text: `${evidence[0]!.text}\n[judge 关键引文] ${judged.keyQuote}`,
+              },
+            ]
+          : evidence;
+      const record: ClaimCitationRecord = {
+        ...base,
+        verdict: judged.verdict,
+        reason: judged.reason,
+        evidence: evidenceWithQuote,
+        status: "verified",
+        severity: deriveClaimSeverity({
+          probableFabrication: fabric,
+          verdict: judged.verdict,
+          priority: claim.priority,
+        }),
+        model: task.metadata?.["model"] as string | undefined,
+        verifiedAt: this.now().toISOString(),
+      };
+      await this.store.saveRecord(projectId, "claims", claim.claimCitationId, record);
+      return record;
+    } catch (error) {
+      telemetry.failed += 1;
+      const record: ClaimCitationRecord = {
+        ...base,
+        status: "failed",
+        verdict: "INSUFFICIENT_EVIDENCE",
+        severity: "info",
+        error: error instanceof Error ? error.message : String(error),
+      };
+      await this.store.saveRecord(projectId, "claims", claim.claimCitationId, record);
+      return record;
+    }
+  }
+
+  /** 全部 claim 记录（API 用） */
+  async listClaimRecords(projectId: string): Promise<ClaimCitationRecord[]> {
+    await this.projects.getRequired(projectId);
+    const ids = await this.store.listRecordIds(projectId, "claims");
+    const records: ClaimCitationRecord[] = [];
+    for (const id of ids) {
+      const record = await this.store.loadRecord<ClaimCitationRecord>(projectId, "claims", id);
+      if (record !== null) {
+        records.push(record);
+      }
+    }
+    return records;
+  }
+
+  /** Citation Integrity 总报告（metadata + semantic + Quality Gate 输入） */
+  async integrityReport(projectId: string): Promise<{
+    metadataByStatus: Record<CitationMetadataStatus, number>;
+    semantic: SemanticSummary;
+    probableFabrications: string[];
+  }> {
+    const metadataRecords = await this.listMetadataRecords(projectId);
+    const claims = await this.listClaimRecords(projectId);
+    const byStatus: Record<CitationMetadataStatus, number> = {
+      VERIFIED: 0,
+      METADATA_MISMATCH: 0,
+      AMBIGUOUS: 0,
+      NOT_FOUND: 0,
+      UNRESOLVED: 0,
+    };
+    for (const record of metadataRecords) {
+      byStatus[record.status] += 1;
+    }
+    return {
+      metadataByStatus: byStatus,
+      semantic: summarizeSemantic(metadataRecords, claims),
+      probableFabrications: metadataRecords
+        .filter((record) => record.probableFabrication)
+        .map((record) => record.referenceId),
+    };
+  }
+}
+
+function deriveSeverityFor(
+  claim: ClaimCitationRecord,
+  metadata: CitationVerificationRecord | undefined,
+): ClaimCitationRecord["severity"] {
+  return deriveClaimSeverity({
+    probableFabrication: metadata?.probableFabrication ?? false,
+    verdict: "SKIPPED",
+    priority: claim.priority,
+  });
 }
