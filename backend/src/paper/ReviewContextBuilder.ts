@@ -121,9 +121,10 @@ export class ReviewContextBuilder {
       if (entry.sectionId === sectionId) {
         continue;
       }
+      const summary = "summary" in entry ? entry.summary : undefined;
       const summaryText =
-        entry.summary !== undefined && entry.summary.status === "ok" && entry.summary.summary
-          ? entry.summary.summary
+        summary !== undefined && summary.status === "ok" && summary.summary
+          ? summary.summary
           : "（摘要未生成）";
       const line = `- ${entry.sectionId} ${entry.title}（p${entry.pageStart}-${entry.pageEnd}）：${summaryText}`.slice(
         0,

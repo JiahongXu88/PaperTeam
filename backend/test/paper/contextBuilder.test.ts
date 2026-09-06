@@ -72,7 +72,7 @@ class FakeMapRuntime implements AgentRuntime {
     };
   }
 
-  async getTask() {
+  async getTask(): Promise<AgentTask> {
     throw new Error("not implemented");
   }
 
