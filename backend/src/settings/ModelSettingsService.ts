@@ -11,6 +11,8 @@
  * - Test Connection：completeSimple 最小真实调用（可携带未保存的 Key，
  *   经 options.apiKey 覆盖式注入，不落盘、不建 AgentSession、不写 Workspace）
  * - 生效：adapter.reconfigure（在途 run > 0 时拒绝，409；新 Run 用新配置）
+ * - 自定义提供商：CustomProviderStore 持久化 + ModelRuntime.registerProvider
+ *   注入 Pi 扩展层（启动时重放；Key 同样走 login/logout）
  *
  * 优先级（与 config.ts / 文档一致）：
  *   PAPERTEAM_PI_MODEL / PAPERTEAM_PI_API_KEY（env，最高）
@@ -23,10 +25,16 @@
 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
-import { BusinessError, ModelConfigBusyError } from "../errors.js";
+import { BusinessError, ModelConfigBusyError, NotFoundError } from "../errors.js";
 import { parseModelSpec } from "../runtime/PiRuntimeAdapter.js";
 import { PI_RUNTIME_VERSION } from "../runtime/pi/version.js";
 import type { RuntimeHealth } from "../runtime/types.js";
+import {
+  type CustomProviderConfig,
+  type CustomProviderStore,
+  toProviderConfigInput,
+  validateCustomProviderInput,
+} from "./CustomProviderStore.js";
 import type { ModelSettingsStore } from "./ModelSettingsStore.js";
 
 /** Test Connection 的最小真实调用超时（毫秒） */
@@ -88,6 +96,13 @@ export interface ModelProviderOption {
   /** 是否支持经 Settings UI 保存 API Key（provider.auth.apiKey.login 存在） */
   apiKeyLoginSupported: boolean;
   modelCount: number;
+  /** builtin = Pi 内置或 agentDir/models.json；custom = Settings UI 添加的自定义提供商 */
+  source: "builtin" | "custom";
+}
+
+/** 自定义提供商 DTO（配置本体 + 凭据是否就绪；不含 key） */
+export interface CustomProviderView extends CustomProviderConfig {
+  authConfigured: boolean;
 }
 
 export interface ModelOption {
@@ -121,14 +136,38 @@ export interface ModelSettingsServiceOptions {
   modelRuntime: ModelRuntime;
   runtime: ModelSettingsRuntime;
   store: ModelSettingsStore;
+  customProviders: CustomProviderStore;
   env: ModelSettingsEnv;
   log?: (message: string) => void;
+}
+
+/**
+ * 启动时把持久化的自定义提供商重放进 ModelRuntime（必须在 PiRuntimeAdapter
+ * 解析启动模型之前调用，否则偏好指向自定义提供商时 Runtime 会判 not_configured）。
+ * 单条注册失败只记日志、不阻塞启动。
+ */
+export async function registerStoredCustomProviders(
+  modelRuntime: ModelRuntime,
+  store: CustomProviderStore,
+  log: (message: string) => void = () => {},
+): Promise<number> {
+  let registered = 0;
+  for (const config of await store.load()) {
+    try {
+      modelRuntime.registerProvider(config.id, toProviderConfigInput(config));
+      registered += 1;
+    } catch (error) {
+      log(`[model-settings] 自定义提供商 ${config.id} 注册失败：${errorText(error)}`);
+    }
+  }
+  return registered;
 }
 
 export class ModelSettingsService {
   private readonly modelRuntime: ModelRuntime;
   private readonly runtime: ModelSettingsRuntime;
   private readonly store: ModelSettingsStore;
+  private readonly customProviders: CustomProviderStore;
   private readonly env: ModelSettingsEnv;
   private readonly log: (message: string) => void;
 
@@ -136,6 +175,7 @@ export class ModelSettingsService {
     this.modelRuntime = options.modelRuntime;
     this.runtime = options.runtime;
     this.store = options.store;
+    this.customProviders = options.customProviders;
     this.env = options.env;
     this.log = options.log ?? (() => {});
   }
@@ -192,10 +232,11 @@ export class ModelSettingsService {
     | { providers: ModelProviderOption[] }
     | { provider: ModelProviderOption; models: ModelOption[] }
   > {
+    const customIds = new Set((await this.customProviders.load()).map((config) => config.id));
     if (providerId === undefined || providerId === "") {
       const providers = this.modelRuntime
         .getProviders()
-        .map((provider) => this.toProviderOption(provider.id))
+        .map((provider) => this.toProviderOption(provider.id, customIds))
         .sort((a, b) => a.id.localeCompare(b.id));
       return { providers };
     }
@@ -206,7 +247,92 @@ export class ModelSettingsService {
     const models = this.modelRuntime
       .getModels(providerId)
       .map((model) => this.toModelOption(model));
-    return { provider: this.toProviderOption(providerId), models };
+    return { provider: this.toProviderOption(providerId, customIds), models };
+  }
+
+  // ---- 自定义提供商（/api/settings/model/custom-providers） ----
+
+  async listCustomProviders(): Promise<CustomProviderView[]> {
+    return (await this.customProviders.load()).map((config) => this.toCustomProviderView(config));
+  }
+
+  /**
+   * 新建或整体替换一个自定义提供商：校验 → 注入 ModelRuntime → 落盘 →
+   * （可选）保存 Key。id 与内置 / models.json 提供商冲突时拒绝，避免遮蔽官方目录。
+   */
+  async saveCustomProvider(
+    raw: unknown,
+    apiKey?: string,
+  ): Promise<{ provider: CustomProviderView; settings: ModelSettingsStatus }> {
+    this.assertIdle();
+    const input = validateCustomProviderInput(raw);
+    const stored = await this.customProviders.load();
+    const existing = stored.find((config) => config.id === input.id);
+    if (existing === undefined && this.modelRuntime.getProvider(input.id) !== undefined) {
+      throw new BusinessError("INVALID_REQUEST", `id "${input.id}" 与已有提供商冲突，请换一个 id`);
+    }
+    if (apiKey !== undefined && apiKey.trim() === "") {
+      throw new BusinessError("INVALID_REQUEST", "apiKey 不能为空字符串：不修改 Key 请省略该字段");
+    }
+
+    // 整体替换而不是合并：Pi 的重复注册会保留未提供的旧字段
+    if (existing !== undefined) {
+      this.modelRuntime.unregisterProvider(input.id);
+    }
+    try {
+      this.modelRuntime.registerProvider(input.id, toProviderConfigInput(input));
+    } catch (error) {
+      if (existing !== undefined) {
+        this.modelRuntime.registerProvider(existing.id, toProviderConfigInput(existing));
+      }
+      throw new BusinessError("INVALID_REQUEST", `提供商配置被 Runtime 拒绝：${errorText(error)}`);
+    }
+
+    const config: CustomProviderConfig = { ...input, updatedAt: new Date().toISOString() };
+    const next = existing !== undefined
+      ? stored.map((entry) => (entry.id === config.id ? config : entry))
+      : [...stored, config];
+    await this.customProviders.save(next);
+    this.log(`[model-settings] 已${existing !== undefined ? "更新" : "添加"}自定义提供商 ${config.id}（${config.api}，${config.models.length} 个模型）`);
+
+    if (apiKey !== undefined) {
+      await this.storeApiKey(config.id, apiKey);
+    }
+
+    // 当前生效模型属于这个提供商时，让 Runtime 重新解析模型定义（baseUrl / 协议可能变了）
+    const effective = this.env.piModel ?? (await this.store.load()).model;
+    if (effective !== undefined && parseModelSpec(effective)?.provider === config.id) {
+      await this.reconfigureSafely(effective, [apiKey]);
+    }
+    return { provider: this.toCustomProviderView(config), settings: await this.getStatus() };
+  }
+
+  /**
+   * 删除自定义提供商：从 Runtime 注销、清掉它的本地凭据；若模型偏好指向它，
+   * 一并清除偏好（否则重启后 Runtime 会解析到不存在的提供商）。
+   */
+  async deleteCustomProvider(id: string): Promise<ModelSettingsStatus> {
+    this.assertIdle();
+    const stored = await this.customProviders.load();
+    if (!stored.some((config) => config.id === id)) {
+      throw new NotFoundError("自定义提供商", id);
+    }
+    this.modelRuntime.unregisterProvider(id);
+    try {
+      await this.modelRuntime.logout(id);
+    } catch {
+      // 没有保存过凭据时 logout 无事可做
+    }
+    await this.customProviders.save(stored.filter((config) => config.id !== id));
+
+    const preference = (await this.store.load()).model;
+    if (preference !== undefined && parseModelSpec(preference)?.provider === id) {
+      await this.store.clear();
+      this.log(`[model-settings] 模型偏好 ${preference} 随自定义提供商 ${id} 一并清除`);
+    }
+    this.log(`[model-settings] 已删除自定义提供商 ${id}`);
+    await this.reconfigureSafely(this.env.piModel ?? (await this.store.load()).model, []);
+    return this.getStatus();
   }
 
   // ---- 保存（PUT /api/settings/model） ----
@@ -245,39 +371,7 @@ export class ModelSettingsService {
           "apiKey 不能为空字符串：不修改 Key 请省略该字段；清除 Key 请使用 DELETE /api/settings/model/key",
         );
       }
-      if (!this.supportsApiKeyLogin(provider)) {
-        throw new BusinessError(
-          "INVALID_REQUEST",
-          `provider ${provider} 不支持经 Settings UI 保存 API Key（仅环境变量凭据）`,
-        );
-      }
-      // Pi 官方写路径：credentials.modify → agentDir/auth.json + provider 快照同步。
-      // interaction 只应答唯一的 secret prompt；key 本体不进日志。
-      // 同步失败时 SDK 抛 CredentialSynchronizationError（.credential 携带 key
-      // 对象）——此处收敛为脱敏 BusinessError，杜绝 key 随错误对象进任何日志。
-      try {
-        await this.modelRuntime.login(provider, "api_key", {
-          prompt: async (prompt) => {
-            if (prompt.type !== "secret") {
-              throw new BusinessError(
-                "INVALID_REQUEST",
-                `provider ${provider} 的登录流程需要额外输入（${prompt.type}），不支持经 Settings UI 保存`,
-              );
-            }
-            return apiKey;
-          },
-          notify: () => {},
-        });
-      } catch (error) {
-        if (error instanceof BusinessError) {
-          throw error;
-        }
-        throw new BusinessError(
-          "INTERNAL_ERROR",
-          `保存 ${provider} 的凭据失败：${redact(errorText(error), [apiKey, ...this.knownSecrets()])}`,
-        );
-      }
-      this.log(`[model-settings] 已保存 ${provider} 的 API Key（写入 agentDir auth.json）`);
+      await this.storeApiKey(provider, apiKey);
     }
 
     await this.store.save(spec);
@@ -415,6 +509,48 @@ export class ModelSettingsService {
   // ---- 内部 ----
 
   /**
+   * Pi 官方写路径：credentials.modify → agentDir/auth.json + provider 快照同步。
+   * interaction 只应答唯一的 secret prompt；key 本体不进日志。
+   * 同步失败时 SDK 抛 CredentialSynchronizationError（.credential 携带 key
+   * 对象）——此处收敛为脱敏 BusinessError，杜绝 key 随错误对象进任何日志。
+   */
+  private async storeApiKey(provider: string, apiKey: string): Promise<void> {
+    if (!this.supportsApiKeyLogin(provider)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `provider ${provider} 不支持经 Settings UI 保存 API Key（仅环境变量凭据）`,
+      );
+    }
+    try {
+      await this.modelRuntime.login(provider, "api_key", {
+        prompt: async (prompt) => {
+          if (prompt.type !== "secret") {
+            throw new BusinessError(
+              "INVALID_REQUEST",
+              `provider ${provider} 的登录流程需要额外输入（${prompt.type}），不支持经 Settings UI 保存`,
+            );
+          }
+          return apiKey;
+        },
+        notify: () => {},
+      });
+    } catch (error) {
+      if (error instanceof BusinessError) {
+        throw error;
+      }
+      throw new BusinessError(
+        "INTERNAL_ERROR",
+        `保存 ${provider} 的凭据失败：${redact(errorText(error), [apiKey, ...this.knownSecrets()])}`,
+      );
+    }
+    this.log(`[model-settings] 已保存 ${provider} 的 API Key（写入 agentDir auth.json）`);
+  }
+
+  private toCustomProviderView(config: CustomProviderConfig): CustomProviderView {
+    return { ...config, authConfigured: this.getAuthStatus(config.id).configured };
+  }
+
+  /**
    * Runtime 重载的防泄漏包装：SDK 凭据同步错误（如
    * CredentialSynchronizationError）的错误对象可能内嵌 credential（含 key），
    * 绝不让原始对象逃逸到 HTTP 层的对象级日志；消息文本也先脱敏。
@@ -473,7 +609,7 @@ export class ModelSettingsService {
     return typeof login === "function";
   }
 
-  private toProviderOption(providerId: string): ModelProviderOption {
+  private toProviderOption(providerId: string, customIds: ReadonlySet<string>): ModelProviderOption {
     const provider = this.modelRuntime.getProvider(providerId);
     return {
       id: providerId,
@@ -481,6 +617,7 @@ export class ModelSettingsService {
       authConfigured: this.getAuthStatus(providerId).configured,
       apiKeyLoginSupported: this.supportsApiKeyLogin(providerId),
       modelCount: this.modelRuntime.getModels(providerId).length,
+      source: customIds.has(providerId) ? "custom" : "builtin",
     };
   }
 

@@ -28,12 +28,15 @@ import {
 import { listSkills, regenerateSkillSummary } from "../api/skills.js";
 import {
   clearModelApiKey,
+  deleteCustomProvider,
+  getCustomProviders,
   getModelOptions,
   getModelSettings,
+  saveCustomProvider,
   saveModelSettings,
   testModelConnection,
 } from "../api/settings.js";
-import type { CreateProjectInput, ImportProjectPdfInput, WorkflowKind, WorkflowRunView } from "../types/api.js";
+import type { CreateProjectInput, CustomProviderInput, ImportProjectPdfInput, WorkflowKind, WorkflowRunView } from "../types/api.js";
 
 /**
  * Server state 全部经 TanStack Query 流动；Zustand 只保存纯 UI 状态。
@@ -57,6 +60,7 @@ export const queryKeys = {
   modelSettings: ["model-settings"] as const,
   modelOptions: ["model-settings", "options"] as const,
   modelOptionsFor: (provider: string) => ["model-settings", "options", provider] as const,
+  customProviders: ["model-settings", "custom-providers"] as const,
 };
 
 /** 项目目录几乎不变：一天内不因窗口聚焦重取（1290 条模型目录不该反复下载） */
@@ -364,6 +368,27 @@ export function useSaveModelSettings() {
 export function useClearModelApiKey() {
   const invalidate = useInvalidateModelState();
   return useMutation({ mutationFn: () => clearModelApiKey(), onSuccess: invalidate });
+}
+
+export function useCustomProviders() {
+  return useQuery({
+    queryKey: queryKeys.customProviders,
+    queryFn: ({ signal }) => getCustomProviders(signal),
+  });
+}
+
+/** 新建 / 整体替换自定义提供商；成功后 provider 目录、模型目录与状态一起失效 */
+export function useSaveCustomProvider() {
+  const invalidate = useInvalidateModelState();
+  return useMutation({
+    mutationFn: (input: { provider: CustomProviderInput; apiKey?: string }) => saveCustomProvider(input),
+    onSuccess: invalidate,
+  });
+}
+
+export function useDeleteCustomProvider() {
+  const invalidate = useInvalidateModelState();
+  return useMutation({ mutationFn: (id: string) => deleteCustomProvider(id), onSuccess: invalidate });
 }
 
 /** Test Connection：携带当前填写但未保存的 model/key；不改缓存 */

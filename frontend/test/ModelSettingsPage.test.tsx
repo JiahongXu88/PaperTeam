@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 
 import { ModelSettingsPage } from "../src/pages/ModelSettingsPage.js";
 import type {
+  CustomProviderView,
+  ModelProviderOptionView,
   ModelOptionsView,
   ModelSettingsView,
   ModelTestResultView,
@@ -24,6 +26,9 @@ vi.mock("../src/api/settings.js", () => ({
   saveModelSettings: vi.fn(),
   clearModelApiKey: vi.fn(),
   testModelConnection: vi.fn(),
+  getCustomProviders: vi.fn(),
+  saveCustomProvider: vi.fn(),
+  deleteCustomProvider: vi.fn(),
 }));
 
 const {
@@ -32,6 +37,9 @@ const {
   saveModelSettings,
   clearModelApiKey,
   testModelConnection,
+  getCustomProviders,
+  saveCustomProvider,
+  deleteCustomProvider,
 } = await import("../src/api/settings.js");
 
 const storedSettings: ModelSettingsView = {
@@ -50,12 +58,27 @@ const storedSettings: ModelSettingsView = {
   detail: "模型配置来自设置页保存的本地配置。",
 };
 
-const providers: ModelOptionsView = {
+const providers: { providers: ModelProviderOptionView[] } = {
   providers: [
-    { id: "zai-coding-cn", name: "Z.AI Coding CN", authConfigured: true, apiKeyLoginSupported: true, modelCount: 2 },
-    { id: "anthropic", name: "Anthropic", authConfigured: false, apiKeyLoginSupported: true, modelCount: 1 },
-    { id: "openrouter", name: "OpenRouter", authConfigured: false, apiKeyLoginSupported: true, modelCount: 2 },
+    { id: "zai-coding-cn", name: "Z.AI Coding CN", authConfigured: true, apiKeyLoginSupported: true, modelCount: 2, source: "builtin" },
+    { id: "anthropic", name: "Anthropic", authConfigured: false, apiKeyLoginSupported: true, modelCount: 1, source: "builtin" },
+    { id: "openrouter", name: "OpenRouter", authConfigured: false, apiKeyLoginSupported: true, modelCount: 2, source: "builtin" },
+    // 小众提供商：默认折叠进「其他」
+    { id: "baseten", name: "Baseten", authConfigured: false, apiKeyLoginSupported: true, modelCount: 3, source: "builtin" },
+    { id: "cerebras", name: "Cerebras", authConfigured: false, apiKeyLoginSupported: true, modelCount: 1, source: "builtin" },
   ],
+};
+
+const customGateway: CustomProviderView = {
+  id: "my-gateway",
+  name: "My Gateway",
+  baseUrl: "https://gw.example.test",
+  api: "anthropic-messages",
+  authHeader: true,
+  headers: {},
+  models: [{ id: "claude-x", name: "Claude X", reasoning: false, contextWindow: 200000, maxTokens: 8192, input: ["text"] }],
+  updatedAt: "2026-09-07T00:00:00.000Z",
+  authConfigured: false,
 };
 
 const zaiModels: ModelOptionsView = {
@@ -80,8 +103,9 @@ const openrouterModels: ModelOptionsView = {
   ],
 };
 
-function mockApi(overrides?: { settings?: Partial<ModelSettingsView> }) {
+function mockApi(overrides?: { settings?: Partial<ModelSettingsView>; customProviders?: CustomProviderView[] }) {
   vi.mocked(getModelSettings).mockResolvedValue({ ...storedSettings, ...overrides?.settings });
+  vi.mocked(getCustomProviders).mockResolvedValue(overrides?.customProviders ?? []);
   vi.mocked(getModelOptions).mockImplementation(async (provider?: string) => {
     if (provider === "zai-coding-cn") {
       return zaiModels;
@@ -94,6 +118,15 @@ function mockApi(overrides?: { settings?: Partial<ModelSettingsView> }) {
     }
     return providers;
   });
+}
+
+/** 打开提供商搜索选择器并点选一个提供商（按名称匹配） */
+async function selectProvider(user: ReturnType<typeof userEvent.setup>, namePattern: RegExp) {
+  const input = await screen.findByTestId("provider-combobox-input");
+  await waitFor(() => expect(input).toBeEnabled());
+  await user.click(input);
+  const option = await screen.findByRole("option", { name: namePattern });
+  await user.click(option);
 }
 
 /** 打开模型搜索选择器并点选一个选项（按 displayName 匹配）；等模型目录就绪 */
@@ -148,7 +181,7 @@ describe("ModelSettingsPage", () => {
     await waitFor(() =>
       expect(screen.getByTestId("model-combobox-input")).toHaveValue("Claude Sonnet 4"),
     );
-    expect((screen.getByLabelText("模型提供商") as HTMLSelectElement).value).toBe("openrouter");
+    expect(screen.getByTestId("provider-combobox-input")).toHaveValue("OpenRouter（openrouter）");
 
     // 不重新选模型直接保存：payload 是完整 spec（provider + 含斜杠 modelId）
     fireEvent.click(screen.getByTestId("save-model"));
@@ -166,9 +199,7 @@ describe("ModelSettingsPage", () => {
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
 
     await screen.findByText("模型设置");
-    // 先等 provider 选项渲染（jsdom 对不存在选项的 select.change 会置空）
-    await screen.findByRole("option", { name: /Anthropic/ });
-    await user.selectOptions(screen.getByLabelText("模型提供商"), "anthropic");
+    await selectProvider(user, /Anthropic/);
     await selectModel(user, /Claude Opus X/);
     fireEvent.click(screen.getByTestId("save-model"));
 
@@ -337,6 +368,117 @@ describe("ModelSettingsPage", () => {
     });
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
     expect(await screen.findByTestId("clear-key")).toBeDisabled();
+  });
+
+  it("提供商选择器：分组 + 小众提供商折叠进「其他」，一键展开", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    const input = await screen.findByTestId("provider-combobox-input");
+    await user.click(input);
+    expect(await screen.findByText("已有凭据")).toBeInTheDocument();
+    expect(screen.getByText("常用提供商")).toBeInTheDocument();
+    // 折叠：Baseten / Cerebras 不在列表里，只有展开入口
+    expect(screen.queryByRole("option", { name: /Baseten/ })).not.toBeInTheDocument();
+    const toggle = screen.getByTestId("provider-show-other");
+    expect(toggle).toHaveTextContent("显示其他 2 个提供商");
+    await user.click(toggle);
+    expect(await screen.findByRole("option", { name: /Baseten/ })).toBeInTheDocument();
+    expect(screen.getByText("其他提供商")).toBeInTheDocument();
+  });
+
+  it("提供商选择器：输入首字母按前缀筛选（折叠组也参与），Enter 选中", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    const input = await screen.findByTestId("provider-combobox-input");
+    await user.click(input);
+    await user.type(input, "a");
+    // 前缀匹配：Anthropic 命中；OpenRouter / Z.AI 不命中；"a" 太短不做包含匹配
+    expect(await screen.findByRole("option", { name: /Anthropic/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /OpenRouter/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Z\.AI/ })).not.toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, "c");
+    // 折叠组的 Cerebras 在有输入时自动参与匹配
+    expect(await screen.findByRole("option", { name: /Cerebras/ })).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByTestId("provider-combobox-input")).toHaveValue("Cerebras（cerebras）"));
+
+    await user.click(screen.getByTestId("provider-combobox-input"));
+    await user.type(screen.getByTestId("provider-combobox-input"), "不存在");
+    expect(await screen.findByText(/没有匹配/)).toBeInTheDocument();
+  });
+
+  it("自定义提供商：空态 → 表单提交 → payload 形状正确，成功后选中新提供商", async () => {
+    mockApi();
+    vi.mocked(saveCustomProvider).mockResolvedValue({ provider: customGateway, settings: storedSettings });
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    expect(await screen.findByTestId("custom-providers-empty")).toBeInTheDocument();
+    await user.click(screen.getByTestId("add-custom-provider"));
+    const form = await screen.findByTestId("custom-provider-form");
+    expect(form).toBeInTheDocument();
+
+    // 缺必填项：前端即时提示，不发请求
+    await user.click(screen.getByTestId("save-custom-provider"));
+    expect(await screen.findByTestId("custom-provider-error")).toHaveTextContent("请填写提供商 id 与 Base URL");
+    expect(saveCustomProvider).not.toHaveBeenCalled();
+
+    await user.type(screen.getByLabelText(/提供商 id/), "My-Gateway");
+    await user.type(screen.getByLabelText("显示名称"), "My Gateway");
+    await user.type(screen.getByLabelText(/Base URL/), "https://gw.example.test");
+    await user.type(screen.getByLabelText("额外请求头（可选）"), "X-Tenant: research");
+    await user.type(screen.getByLabelText("模型 1 的 Model ID"), "claude-x");
+    await user.click(screen.getByLabelText("模型 1 支持图片输入"));
+    await user.type(screen.getByTestId("custom-provider-api-key"), "sk-custom-key");
+    await user.click(screen.getByTestId("save-custom-provider"));
+
+    await waitFor(() => {
+      expect(saveCustomProvider).toHaveBeenCalledWith({
+        provider: {
+          id: "my-gateway",
+          name: "My Gateway",
+          baseUrl: "https://gw.example.test",
+          api: "anthropic-messages",
+          authHeader: true,
+          headers: { "X-Tenant": "research" },
+          models: [{ id: "claude-x", name: "claude-x", reasoning: false, contextWindow: 200000, maxTokens: 8192, input: ["text", "image"] }],
+        },
+        apiKey: "sk-custom-key",
+      });
+    });
+    // 保存成功：表单关闭，「模型提供商」切到新提供商
+    await waitFor(() => expect(screen.queryByTestId("custom-provider-form")).not.toBeInTheDocument());
+    // 目录 mock 里没有 my-gateway，选择器显示原始 id
+    expect(screen.getByTestId("provider-combobox-input")).toHaveValue("my-gateway");
+  });
+
+  it("自定义提供商：列表行 → 编辑回填 → 删除需行内确认", async () => {
+    mockApi({ customProviders: [customGateway] });
+    vi.mocked(deleteCustomProvider).mockResolvedValue(storedSettings);
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    const row = await screen.findByTestId("custom-provider-my-gateway");
+    expect(row).toHaveTextContent("Anthropic Messages");
+    expect(row).toHaveTextContent("未配置");
+
+    await user.click(screen.getByTestId("edit-my-gateway"));
+    expect(await screen.findByTestId("custom-provider-form")).toHaveTextContent("编辑 my-gateway");
+    expect(screen.getByLabelText(/提供商 id/)).toBeDisabled();
+    expect(screen.getByLabelText(/Base URL/)).toHaveValue("https://gw.example.test");
+    expect(screen.getByLabelText("模型 1 的 Model ID")).toHaveValue("claude-x");
+    await user.click(screen.getByRole("button", { name: "取消" }));
+
+    await user.click(screen.getByTestId("delete-my-gateway"));
+    expect(deleteCustomProvider).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("confirm-delete-my-gateway"));
+    await waitFor(() => expect(deleteCustomProvider).toHaveBeenCalledWith("my-gateway"));
   });
 
   it("危险操作区：中文标题与说明", async () => {

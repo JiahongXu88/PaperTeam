@@ -19,6 +19,7 @@ import {
   ModelSettingsService,
   type ModelSettingsRuntime,
 } from "../../src/settings/ModelSettingsService.js";
+import { CustomProviderStore } from "../../src/settings/CustomProviderStore.js";
 import { ModelSettingsStore } from "../../src/settings/ModelSettingsStore.js";
 import type { RuntimeHealth } from "../../src/runtime/types.js";
 
@@ -64,6 +65,7 @@ async function makeSettingsServer(env?: { piModel?: string; piApiKey?: string })
     modelRuntime,
     runtime,
     store: new ModelSettingsStore({ settingsDir }),
+    customProviders: new CustomProviderStore({ settingsDir }),
     env: env ?? {},
     log: () => {},
   });

@@ -3,9 +3,18 @@ import { useState } from "react";
 import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
 import { ModelCombobox } from "../components/common/ModelCombobox.js";
-import { useClearModelApiKey, useModelOptions, useModelSettings, useSaveModelSettings, useTestModelConnection } from "../hooks/queries.js";
+import { ProviderCombobox } from "../components/common/ProviderCombobox.js";
+import { CustomProviderPanel } from "../components/settings/CustomProviderPanel.js";
+import {
+  useClearModelApiKey,
+  useCustomProviders,
+  useModelOptions,
+  useModelSettings,
+  useSaveModelSettings,
+  useTestModelConnection,
+} from "../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
-import type { ModelProviderOptionView, ModelSettingsView, ModelTestResultCode } from "../types/api.js";
+import type { ModelSettingsView, ModelTestResultCode } from "../types/api.js";
 
 /**
  * 模型设置。
@@ -63,14 +72,6 @@ export function ModelSettingsPage() {
   return <ModelSettingsBody settings={settingsQuery.data} />;
 }
 
-/** 已有凭据的 provider 排前面：40 个 provider 里用户真正能用的通常只有一两个 */
-function groupProviders(providers: ModelProviderOptionView[]): { ready: ModelProviderOptionView[]; others: ModelProviderOptionView[] } {
-  return {
-    ready: providers.filter((provider) => provider.authConfigured),
-    others: providers.filter((provider) => !provider.authConfigured),
-  };
-}
-
 function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   const [providerId, setProviderId] = useState(settings.provider ?? "");
   const [modelId, setModelId] = useState(settings.modelId ?? "");
@@ -80,6 +81,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
 
   const providersQuery = useModelOptions();
   const modelsQuery = useModelOptions(providerId === "" ? undefined : providerId);
+  const customProvidersQuery = useCustomProviders();
   const save = useSaveModelSettings();
   const clearKey = useClearModelApiKey();
   const test = useTestModelConnection();
@@ -186,16 +188,16 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
           <h2 className="panel-title">模型与凭据</h2>
           <div className="field">
             <label htmlFor="model-provider">模型提供商</label>
-            <select id="model-provider" value={providerId} onChange={(event) => onProviderChange(event.target.value)} disabled={providers === undefined}>
-              <option value="">{providers === undefined ? "加载中…" : "选择模型提供商"}</option>
-              {providers !== undefined ? <ProviderOptions providers={providers} /> : null}
-            </select>
+            <ProviderCombobox id="model-provider" providers={providers} value={providerId} onChange={onProviderChange} />
             {selectedProvider !== undefined ? (
               <span className="field-help">
                 {selectedProvider.modelCount} 个模型
                 {selectedProvider.authConfigured ? "，已有可用凭据" : selectedProvider.apiKeyLoginSupported ? "，需要在下方填写 API Key" : "，只接受环境变量凭据"}
+                {selectedProvider.source === "custom" ? "；自定义提供商，可在下方编辑" : ""}
               </span>
-            ) : null}
+            ) : (
+              <span className="field-help">输入首字母即可筛选；小众提供商折叠在「其他」里</span>
+            )}
           </div>
 
           <div className="field">
@@ -210,7 +212,7 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
               }}
               disabled={providerId === ""}
               loading={providerId !== "" && models === undefined}
-              emptyHint="该提供商暂无模型目录"
+              emptyHint={providerId === "" ? "请先选择模型提供商" : "该提供商暂无模型目录"}
             />
             <span className="field-help">{providerId === "" ? "请先选择模型提供商" : "输入名称或 Model ID 筛选；Model ID 可以包含「/」"}</span>
           </div>
@@ -293,6 +295,16 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
         </form>
       </div>
 
+      <CustomProviderPanel
+        providers={customProvidersQuery.data}
+        loading={customProvidersQuery.isPending}
+        onSaved={(savedProviderId) => {
+          if (savedProviderId !== providerId) {
+            onProviderChange(savedProviderId);
+          }
+        }}
+      />
+
       <section className="danger-zone" aria-labelledby="danger-title">
         <div className="danger-kicker">危险操作</div>
         <div className="section-head">
@@ -340,23 +352,5 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
         </div>
       </section>
     </div>
-  );
-}
-
-function ProviderOptions({ providers }: { providers: ModelProviderOptionView[] }) {
-  const { ready, others } = groupProviders(providers);
-  const render = (provider: ModelProviderOptionView) => (
-    <option key={provider.id} value={provider.id}>
-      {provider.name}（{provider.id}）
-    </option>
-  );
-  if (ready.length === 0) {
-    return <>{providers.map(render)}</>;
-  }
-  return (
-    <>
-      <optgroup label="已有凭据">{ready.map(render)}</optgroup>
-      <optgroup label="其他提供商">{others.map(render)}</optgroup>
-    </>
   );
 }

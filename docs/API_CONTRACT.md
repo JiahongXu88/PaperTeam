@@ -105,9 +105,12 @@
 | `GET /api/settings/model` | `{settings: ModelSettingsView}`（生效配置/provider/凭据状态/configurationSource/runtimePhase/modelPhase；**永不返回 key 本体**） | ModelSettingsPage「当前状态」 |
 | `PUT /api/settings/model` | `{model: "provider/model-id", apiKey?}`（model-id 段可含 `/`，如 `openrouter/anthropic/claude-sonnet-4`；按首个 `/` 拆 provider）；apiKey **字段省略 = 保持原 Key**，空字符串 = 400；成功 → `{settings}` | ModelSettingsPage（Save） |
 | `DELETE /api/settings/model/key` | 清除本地保存的 API Key（agentDir auth.json；env 凭据仍在时模型保持 configured）→ `{settings}` | ModelSettingsPage（Clear Key） |
-| `GET /api/settings/model/options` | provider 列表 `{providers: [{id,name,authConfigured,apiKeyLoginSupported,modelCount}]}`（安全 metadata，无 baseUrl/key） | Provider 下拉 |
+| `GET /api/settings/model/options` | provider 列表 `{providers: [{id,name,authConfigured,apiKeyLoginSupported,modelCount,source}]}`（`source: "builtin" \| "custom"`；安全 metadata，无 key） | Provider 搜索选择器（分组：已有凭据 / 自定义 / 常用 / 其他折叠） |
 | `GET /api/settings/model/options?provider=x` | 单 provider 模型目录 `{provider, models: [{modelId,displayName,contextWindow?,reasoning?,input?}]}` | Model 下拉 |
 | `POST /api/settings/model/test` | Test Connection `{model, apiKey?}` → 200 `{result: {ok,provider,model,latencyMs? \| code,detail?}}`（失败分类：AUTH_FAILED / MODEL_NOT_FOUND / PROVIDER_UNAVAILABLE / RATE_LIMITED / TIMEOUT / UNKNOWN；detail 截断+脱敏） | ModelSettingsPage（Test Connection） |
+| `GET /api/settings/model/custom-providers` | 自定义提供商列表 `{providers: CustomProviderView[]}`（配置本体 + `authConfigured`；无 key） | 模型设置「自定义提供商」表 |
+| `PUT /api/settings/model/custom-providers/:id` | 新建 / 整体替换 `{provider: CustomProviderInput, apiKey?}`（路径 id 必须等于 `provider.id`；id 与内置 / models.json 提供商冲突 → 400；在途 run → 409 MODEL_CONFIG_BUSY；`headers` 里不允许 Authorization / x-api-key 等认证头）→ `{provider, settings}`；成功后该 provider 立即出现在 `/options` | 自定义提供商表单 |
+| `DELETE /api/settings/model/custom-providers/:id` | 删除：从 Runtime 注销 + 删除其 auth.json 凭据 + 若模型偏好指向它则一并清除 → `{settings}`；未知 id → 404 NOT_FOUND | 自定义提供商表（行内确认） |
 
 > M4.3.7.5 安全与语义约定：
 > - **Key 只进不出**：apiKey 只经 PUT/test 请求体进入（同源），任何 GET 响应
@@ -244,8 +247,17 @@ interface ModelSettingsView {
   modelDetail: string; detail: string;        // 人读说明（env 覆盖提示）
 }
 type ModelOptionsView =
-  | { providers: Array<{ id: string; name: string; authConfigured: boolean; apiKeyLoginSupported: boolean; modelCount: number }> }
+  | { providers: Array<{ id: string; name: string; authConfigured: boolean; apiKeyLoginSupported: boolean; modelCount: number; source: "builtin" | "custom" }> }
   | { provider: {/* 同上 */}; models: Array<{ modelId: string; displayName: string; contextWindow?: number; reasoning?: boolean; input?: string[] }> };
+interface CustomProviderInput {                 // PUT /custom-providers/:id 的 provider 字段
+  id: string;                                   // ^[a-z0-9][a-z0-9-]{0,39}$
+  name: string; baseUrl: string;                // http(s)，无查询串
+  api: "anthropic-messages" | "openai-completions" | "openai-responses";
+  authHeader: boolean;                          // anthropic-messages 下用 Authorization: Bearer 代替 x-api-key
+  headers: Record<string, string>;              // 额外请求头（禁止认证头）
+  models: Array<{ id: string; name: string; reasoning: boolean; contextWindow: number; maxTokens: number; input: ("text" | "image")[] }>;
+}
+type CustomProviderView = CustomProviderInput & { updatedAt: string; authConfigured: boolean };
 interface ModelTestResultView {
   ok: boolean; provider: string; model: string;
   latencyMs?: number;                         // ok=true

@@ -243,7 +243,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **当前：Backend 365（+4 个默认跳过的 live smoke）+ Frontend 73 + 浏览器级 E2E 15（Playwright，`e2e/`，需运行中的 dev 栈）全部通过（2026-09-07）。**
+- **当前：Backend 382（+4 个默认跳过的 live smoke）+ Frontend 77 + 浏览器级 E2E 15（Playwright，`e2e/`，需运行中的 dev 栈）全部通过（2026-09-07）。**
 - 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。
@@ -288,6 +288,8 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 - **前端重设计（frontend-design skill，"编辑部校对台"方向）**：archival white 纸面 + ink indigo 强调、状态色 verdigris/ochre/vermilion、页面级标题 serif、左侧数字栏（gutter）替代卡片堆叠；无阴影/渐变；正式 Dark Mode（跟随系统 / 浅色 / 深色，`paperteam.theme` localStorage，`index.html` 首帧前脚本防闪烁，token 全覆盖，设置 → 外观 + 侧栏快捷切换）；App Error Boundary（"页面出现异常"，重新加载 / 返回论文项目，dev 才显示堆栈）；错误码集中映射（MODEL_CONFIG_BUSY / PROJECT_BUSY / NOT_FOUND / AUTH_FAILED / TIMEOUT / RATE_LIMITED / PDF_PARSE_FAILED …）；全部页面 loading / empty / error 三态；行内确认替代 `window.confirm`；tabs/menu a11y（role/aria-selected/键盘）。
 - **浏览器级 E2E**：`e2e/`（Playwright，channel chrome，可 `PAPERTEAM_E2E_CDP_URL` connectOverCDP 复用已开浏览器，端口经 env 配置）；`smoke.spec.ts` 16 步用户路径（导入 → 自动 Review → 真实 cancel → 引用提取 → Skills → 模型设置 → 主题切换持久化 → 归档/恢复/删除确认 → 清理自建项目）；`visual.spec.ts` 浅/深 × 1366x768 / 1440x900 / 1920x1080 / 1100w 截图 + 无水平溢出 + 深色真实生效断言。旧 `scripts/browser-qa*.mjs`（手写 CDP client）删除。
 - **真实论文 E2E（用户 PDF，不入库）**：26 页、36 节（42 chunks）、25 条参考文献（25/25 解析出标题/年份/作者）、49 处正文引用 / 63 条关联全部可解析；文献真实性 22 VERIFIED / 3 NOT_FOUND / 0 疑似捏造；语义核验 63 条（上限 30 条进入 judge）：2 支持 / 1 部分支持 / 3 不支持 / 39 证据不足 / 18 跳过；分章节审阅 33 / 36 节（3 节仅标题），226 条发现（严重 0 / 主要 59 / 次要 125 / 提示 42），单次完整审阅 29.5 分钟（≈54 s/节，glm-gateway Anthropic 兼容通道）。第一次 stage 尝试因笔记本进入待机 88 分钟被固定超时杀掉——由此引入空闲超时语义。PaperMap 摘要 / 文献元数据 / 语义核验结果按指纹复用，重跑零重复模型调用。
+
+- **模型设置增强（2026-09-07 追加）**：「模型提供商」改为搜索选择器（首字母前缀筛选；分组 已有凭据 / 自定义 / 常用 / 其他折叠）；新增**自定义提供商**（`/api/settings/model/custom-providers`，Anthropic Messages / OpenAI Chat Completions / OpenAI Responses 三种协议，Base URL / Bearer / 额外请求头 / 模型目录参数；配置存 `settings/custom-providers.json`，Key 走 auth.json，启动时 `registerProvider` 重放；删除连带凭据与偏好）。Backend +17 / Frontend +4 测试。
 
 遗留（不阻塞）：LatexCompiler `shell:true` 下 Windows 超时 kill 只杀 shell；语义核验 30 条上限与 INSUFFICIENT_EVIDENCE 占多数（无摘要文献）；项目列表状态字段沿用 M2 的 created/generated/failed，不反映 Review 运行中/完成（需要 list DTO 扩展）；Provider 偶发 503（外部）。
 

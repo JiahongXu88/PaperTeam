@@ -29,6 +29,7 @@ import {
   ModelSettingsService,
   type ModelSettingsRuntime,
 } from "../../src/settings/ModelSettingsService.js";
+import { CustomProviderStore } from "../../src/settings/CustomProviderStore.js";
 import {
   ModelSettingsStore,
   resolveStartupModelSpec,
@@ -141,6 +142,7 @@ async function makeHarness(options?: {
     modelRuntime,
     runtime: adapter,
     store: new ModelSettingsStore({ settingsDir }),
+    customProviders: new CustomProviderStore({ settingsDir }),
     env,
     log: (message) => logLines.push(message),
   });
@@ -280,6 +282,7 @@ describe("ModelSettingsService：保存语义", () => {
       modelRuntime: modelRuntime2,
       runtime: fakeRuntimeFrom(harness.adapter),
       store: new ModelSettingsStore({ settingsDir: harness.settingsDir }),
+      customProviders: new CustomProviderStore({ settingsDir: harness.settingsDir }),
       env: {},
       log: (message) => logLines.push(message),
     });
@@ -514,6 +517,7 @@ function serviceWithStubModelRuntime(
     modelRuntime,
     runtime,
     store: new ModelSettingsStore({ settingsDir: "unused" }),
+    customProviders: new CustomProviderStore({ settingsDir: "unused" }),
     env: {},
     log: (message) => logLines.push(message),
   });

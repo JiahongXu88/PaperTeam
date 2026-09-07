@@ -396,9 +396,11 @@ export async function startTestStack(
     stageMaxAttempts: 2,
     // 测试里节内重试不等退避
     review: { sectionRetryBackoffMs: [0, 0], ...(options.review ?? {}) },
+    // 测试默认完全离线：关闭旧 metadata 查询，scholarly resolver 不挂任何 provider
+    // （否则 citation.metadata stage 会真的去查 crossref / openalex，网络慢时整条链路超时）
     ...(options.citation
       ? { citation: options.citation }
-      : { citation: { metadataEnabled: false } }), // 测试默认关闭外网 metadata 查询
+      : { citation: { metadataEnabled: false, scholarly: { providers: [] } } }),
     ...(options.paperParser !== undefined ? { paperParser: options.paperParser } : {}),
     log: () => {},
   });

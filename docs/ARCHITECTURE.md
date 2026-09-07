@@ -323,10 +323,11 @@ Pi 配置目录布局（用户级，不入 Git；`PAPERTEAM_RUNTIME_ROOT` 可覆
 ```text
 %USERPROFILE%\.paperteam\
 ├── settings\
-│   └── model.json  # M4.3.7.5 Settings UI 保存的模型偏好（非敏感；原子写）
+│   ├── model.json             # M4.3.7.5 Settings UI 保存的模型偏好（非敏感；原子写）
+│   └── custom-providers.json  # Settings UI 添加的自定义提供商（baseUrl / 协议 / 模型目录 / 请求头；无 key；启动时 registerProvider 重放）
 └── runtime\pi\agent
-    ├── auth.json    # Pi 官方凭据（Settings UI 保存的 API Key 也在此；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
-    └── models.json  # 自定义模型注册（可选）
+    ├── auth.json    # Pi 官方凭据（Settings UI 保存的 API Key 也在此，自定义提供商同样；也可用 PAPERTEAM_PI_API_KEY / 标准环境变量）
+    └── models.json  # Pi 官方格式的手工模型注册（可选，与 custom-providers.json 并存）
 ```
 
 **模型配置两级来源（M4.3.7.5）**：优先级 `PAPERTEAM_PI_MODEL` /
@@ -646,7 +647,7 @@ backend/src/
 │                  CrossRef/OpenAlex/arXiv）、CitationService（编排 + 报告）
 ├── review/        ReviewAggregator（确定性聚合）、finding（ReviewFinding + 枚举常量）、
 │                  reviewArtifacts（reviews/ 目录 round 编号与读写，HTTP 与 workflow 共用）
-├── settings/      ModelSettingsService / Store（模型偏好 + Pi 凭据写路径，Key 不回显）
+├── settings/      ModelSettingsService / Store / CustomProviderStore（模型偏好、自定义提供商注入 Pi 扩展层、Pi 凭据写路径，Key 不回显）
 ├── skills/        SkillRegistry / SkillSummaryService / scholarlyTools
 ├── quality/       gates（Build Gate / Quality Gate 判定器）
 ├── import/        zipReader（零依赖 ZIP + 防 Zip Slip）、LatexImporter（导入 MVP）

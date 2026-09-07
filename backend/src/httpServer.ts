@@ -504,6 +504,9 @@ async function handleRequest(
  *   DELETE /api/settings/model/key             清除本地保存的 API Key
  *   GET    /api/settings/model/options         provider 列表（?provider= 查该 provider 模型）
  *   POST   /api/settings/model/test            Test Connection {model, apiKey?}
+ *   GET    /api/settings/model/custom-providers          自定义提供商列表（不含 key）
+ *   PUT    /api/settings/model/custom-providers/:id      新建 / 整体替换 {provider, apiKey?}
+ *   DELETE /api/settings/model/custom-providers/:id      删除（连同其本地凭据与指向它的模型偏好）
  *
  * 安全约束：所有响应不携带 key 本体；apiKey 只经 PUT/test 请求体进入，
  * 不落任何日志（请求体从不打印）。
@@ -573,6 +576,46 @@ async function handleModelSettingsRoutes(
       ...(typeof apiKeyField === "string" && apiKeyField !== "" ? { apiKey: apiKeyField } : {}),
     });
     sendJson(res, 200, { result });
+    return true;
+  }
+
+  if (pathname === "/api/settings/model/custom-providers") {
+    if (method === "GET") {
+      sendJson(res, 200, { providers: await service.listCustomProviders() });
+      return true;
+    }
+    res.setHeader("Allow", "GET");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+
+  const customProviderMatch = /^\/api\/settings\/model\/custom-providers\/([^/]+)$/.exec(pathname);
+  if (customProviderMatch !== null) {
+    const id = decodeURIComponent(customProviderMatch[1] ?? "");
+    if (method === "PUT") {
+      const body = await readJsonBody(req);
+      const provider = body["provider"];
+      if (typeof provider !== "object" || provider === null || Array.isArray(provider)) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含对象字段 provider");
+      }
+      if ((provider as Record<string, unknown>)["id"] !== id) {
+        throw new BusinessError("INVALID_REQUEST", "路径中的 id 与 provider.id 不一致");
+      }
+      const apiKeyField = body["apiKey"];
+      if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
+        throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
+      }
+      const result = await service.saveCustomProvider(provider, typeof apiKeyField === "string" ? apiKeyField : undefined);
+      sendJson(res, 200, result);
+      return true;
+    }
+    if (method === "DELETE") {
+      const settings = await service.deleteCustomProvider(id);
+      sendJson(res, 200, { settings });
+      return true;
+    }
+    res.setHeader("Allow", "PUT, DELETE");
+    sendJson(res, 405, { status: "method_not_allowed", method });
     return true;
   }
 

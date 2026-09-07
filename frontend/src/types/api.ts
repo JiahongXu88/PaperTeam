@@ -207,6 +207,37 @@ export interface ModelProviderOptionView {
   authConfigured: boolean;
   apiKeyLoginSupported: boolean;
   modelCount: number;
+  /** builtin = Pi 内置 / models.json；custom = 设置页添加的自定义提供商 */
+  source: "builtin" | "custom";
+}
+
+/** 自定义提供商可选的接口协议（与 Backend CUSTOM_PROVIDER_APIS 一致） */
+export type CustomProviderApi = "anthropic-messages" | "openai-completions" | "openai-responses";
+
+export interface CustomProviderModelInput {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  contextWindow: number;
+  maxTokens: number;
+  input: Array<"text" | "image">;
+}
+
+/** PUT /api/settings/model/custom-providers/:id 的 provider 字段 */
+export interface CustomProviderInput {
+  id: string;
+  name: string;
+  baseUrl: string;
+  api: CustomProviderApi;
+  authHeader: boolean;
+  headers: Record<string, string>;
+  models: CustomProviderModelInput[];
+}
+
+/** GET /api/settings/model/custom-providers 条目（不含 key） */
+export interface CustomProviderView extends CustomProviderInput {
+  updatedAt: string;
+  authConfigured: boolean;
 }
 
 /** 单个模型目录条目（安全 metadata） */

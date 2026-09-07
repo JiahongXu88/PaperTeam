@@ -1,5 +1,7 @@
 import { apiClient } from "./client.js";
 import type {
+  CustomProviderInput,
+  CustomProviderView,
   ModelOptionsView,
   ModelSettingsView,
   ModelTestResultView,
@@ -13,6 +15,9 @@ import type {
  *   DELETE /api/settings/model/key      → { settings }
  *   GET    /api/settings/model/options  → { options }（?provider= 单 provider 模型）
  *   POST   /api/settings/model/test     → { result }
+ *   GET    /api/settings/model/custom-providers      → { providers }
+ *   PUT    /api/settings/model/custom-providers/:id  → { provider, settings }
+ *   DELETE /api/settings/model/custom-providers/:id  → { settings }
  *
  * Key 只经 PUT/test 请求体发往同源 Backend；GET 响应不含 key，
  * 任何返回值都不落 localStorage/sessionStorage。
@@ -63,4 +68,27 @@ export async function testModelConnection(input: {
     input,
   );
   return body.result;
+}
+
+export async function getCustomProviders(signal?: AbortSignal): Promise<CustomProviderView[]> {
+  const body = await apiClient.get<{ providers: CustomProviderView[] }>("/api/settings/model/custom-providers", signal);
+  return body.providers;
+}
+
+export async function saveCustomProvider(input: {
+  provider: CustomProviderInput;
+  /** 省略 = 保持该提供商已保存的 Key */
+  apiKey?: string;
+}): Promise<{ provider: CustomProviderView; settings: ModelSettingsView }> {
+  return apiClient.put<{ provider: CustomProviderView; settings: ModelSettingsView }>(
+    `/api/settings/model/custom-providers/${encodeURIComponent(input.provider.id)}`,
+    input,
+  );
+}
+
+export async function deleteCustomProvider(id: string): Promise<ModelSettingsView> {
+  const body = await apiClient.delete<{ settings: ModelSettingsView }>(
+    `/api/settings/model/custom-providers/${encodeURIComponent(id)}`,
+  );
+  return body.settings;
 }

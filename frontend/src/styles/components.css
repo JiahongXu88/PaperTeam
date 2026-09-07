@@ -264,6 +264,25 @@ select {
   color: var(--danger);
 }
 
+/* 复选框 + 文案（表单里的布尔项） */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 36px;
+  font-size: var(--fs-body);
+  font-weight: 400;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 /* 单选卡片（新建项目的模式 / 目标） */
 .mode-cards {
   display: grid;
@@ -932,6 +951,34 @@ select {
   padding: var(--s-2) var(--s-3);
   font-size: var(--fs-meta);
   color: var(--ink-3);
+}
+
+.combobox-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-3) var(--s-1);
+  font-size: var(--fs-label);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+}
+
+.combobox-group + .combobox-group,
+.combobox-option + .combobox-group {
+  margin-top: var(--s-1);
+  border-top: 1px solid var(--line);
+}
+
+.combobox-group-count {
+  font-weight: 400;
+  font-family: var(--font-mono);
+}
+
+.combobox-toggle {
+  padding: var(--s-2) var(--s-3);
+  border-top: 1px solid var(--line);
+  margin-top: var(--s-1);
 }
 
 /* ---------- Tabs ---------- */

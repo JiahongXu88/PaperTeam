@@ -58,7 +58,8 @@ test.describe.serial("PaperTeam 用户路径 smoke", () => {
     // 标题来自 PDF（fixture 为 Attention Is All You Need；真实论文则是其标题），不是文件名占位
     await expect(page.locator("h1.workspace-title")).not.toHaveText(/\.pdf$/);
     // 模型已配置 → 自动开始 Review（阶段清单）；未配置 → 明确引导，不是死胡同
-    await expect(panel.getByTestId("review-running").or(panel.getByTestId("review-model-missing")).or(panel.getByTestId("start-review"))).toBeVisible();
+    // 模型未配置时提示与（禁用的）开始按钮同时存在，取首个即可
+    await expect(panel.getByTestId("review-running").or(panel.getByTestId("review-model-missing")).or(panel.getByTestId("start-review")).first()).toBeVisible();
 
     // 自动启动的 Review 会消耗模型额度：smoke 只验证"能启动 + 能取消"，随即取消，
     // 页面应把状态从运行中切到已取消（轮询只在有活跃 run 时进行）

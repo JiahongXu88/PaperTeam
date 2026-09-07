@@ -7,7 +7,8 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
-import { ModelSettingsService } from "./settings/ModelSettingsService.js";
+import { CustomProviderStore } from "./settings/CustomProviderStore.js";
+import { ModelSettingsService, registerStoredCustomProviders } from "./settings/ModelSettingsService.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { SkillRegistry } from "./skills/SkillRegistry.js";
@@ -84,6 +85,16 @@ export async function startBackend(): Promise<void> {
     authPath: join(config.pi.agentDir, "auth.json"),
     modelsPath: join(config.pi.agentDir, "models.json"),
   });
+  // Settings UI 添加的自定义提供商：先于 adapter 解析启动模型注入 Runtime
+  const customProviderStore = new CustomProviderStore({
+    settingsDir: join(config.runtimeRoot, "settings"),
+  });
+  const customProviderCount = await registerStoredCustomProviders(modelRuntime, customProviderStore, (message) =>
+    console.log(message),
+  );
+  if (customProviderCount > 0) {
+    console.log(`  providers:    ${customProviderCount} 个自定义提供商已注入 Runtime`);
+  }
   const runtime = new PiRuntimeAdapter({
     ...(effectiveModelSpec !== undefined ? { modelSpec: effectiveModelSpec } : {}),
     ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
@@ -189,6 +200,7 @@ export async function startBackend(): Promise<void> {
     modelRuntime,
     runtime,
     store: modelSettingsStore,
+    customProviders: customProviderStore,
     env: {
       ...(config.pi.model !== undefined ? { piModel: config.pi.model } : {}),
       ...(config.pi.apiKey !== undefined ? { piApiKey: config.pi.apiKey } : {}),

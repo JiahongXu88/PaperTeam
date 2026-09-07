@@ -314,6 +314,40 @@
   background: var(--surface);
 }
 
+.custom-providers {
+  margin-top: var(--s-8);
+  padding-top: var(--s-6);
+  border-top: 1px solid var(--line);
+}
+
+.custom-provider-form .form-section:first-of-type {
+  border-top: 1px solid var(--line);
+  padding-top: var(--s-5);
+}
+
+/* 模型目录编辑：单元格里直接放输入框，列宽跟随内容 */
+.model-rows td {
+  padding: var(--s-2);
+}
+
+.model-rows input[type="text"] {
+  min-width: 96px;
+}
+
+.model-rows td:nth-child(3) input,
+.model-rows td:nth-child(4) input {
+  width: 110px;
+  min-width: 0;
+  font-family: var(--font-mono);
+}
+
+.model-rows input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 10px 0 0;
+  accent-color: var(--accent);
+}
+
 .settings-actions {
   justify-content: flex-end;
 }

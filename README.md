@@ -173,10 +173,14 @@ echo PAPERTEAM_PI_API_KEY=sk-ant-... >> .env
 环境变量覆盖时 Settings 页面会明确提示「当前模型配置由环境变量提供」，
 仍可保存本地配置（在环境变量不存在时生效）。
 
-**Anthropic 兼容网关 / 自定义 provider**：在 `~/.paperteam/runtime/pi/agent/models.json`
-按 Pi 官方格式声明 provider（`baseUrl` / `api: "anthropic-messages"` / 模型列表），
-`apiKey` 可写成 `"$SOME_ENV_VAR"` 引用环境变量——文件里不出现任何 Key 本体。
-Settings 页面会把它当作普通 provider 列出。配置后用诊断确认：
+**Anthropic / OpenAI 兼容网关、私有部署（自定义提供商）**：在「设置 → 模型设置 →
+自定义提供商」里填写 id、Base URL、接口协议（Anthropic Messages / OpenAI Chat
+Completions / OpenAI Responses）、是否用 `Authorization: Bearer`、额外请求头与模型列表
+（Model ID / 上下文窗口 / 最大输出 / 是否支持推理与图片）。配置本体存
+`~/.paperteam/settings/custom-providers.json`（非敏感），API Key 与内置提供商一样只进
+`runtime/pi/agent/auth.json`；重启后自动重新注入 Pi Runtime。仍可按 Pi 官方格式手工编辑
+`runtime/pi/agent/models.json`（`apiKey` 可写成 `"$SOME_ENV_VAR"`），两者并存。
+「模型提供商」选择器支持输入首字母筛选，小众提供商折叠在「其他」里。配置后用诊断确认：
 
 ```bash
 curl http://localhost:3000/api/runtime/status
@@ -200,7 +204,7 @@ curl http://localhost:3000/api/runtime/status    # runtime/agents/model/sessions
 # 根目录一键（前后端一起）：
 npm run build          # backend tsc + frontend tsc --noEmit + vite build
 npm run typecheck      # backend + frontend
-npm test               # backend 363 + frontend 73 个 vitest 用例（不需要模型 / 外网）
+npm test               # backend 382 + frontend 77 个 vitest 用例（不需要模型 / 外网）
 
 # 浏览器级 E2E（需要 npm run dev 已在运行；用本机 Chrome，不下载浏览器）：
 npm run test:e2e:smoke          # 用户完整路径：创建 → 导入 PDF → Review → 引用 → Skills → 设置 → 主题 → 归档 / 恢复 / 删除确认
