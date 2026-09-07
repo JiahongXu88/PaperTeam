@@ -57,7 +57,7 @@ export interface ExecutionStageSpec {
   readonly producedOutputs: readonly string[];
   /** 最大尝试次数（含首次） */
   readonly maxAttempts: number;
-  /** 单次执行超时（毫秒） */
+  /** 单次执行的空闲超时（毫秒）：连续这么久没有 emitProgress 即判超时；不汇报进度的 stage 等价于整体超时 */
   readonly timeoutMs: number;
   /** 可重试的失败分类 */
   readonly retryable: readonly StageFailureCategory[];

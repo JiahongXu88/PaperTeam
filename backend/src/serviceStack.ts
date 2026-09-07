@@ -46,6 +46,7 @@ export interface ServiceStackOptions {
     maxRevisionRounds?: number;
     academicPassScore?: number;
     styleRiskMax?: number;
+    sectionRetryBackoffMs?: readonly number[];
   };
   citation?: {
     metadataEnabled?: boolean;
@@ -240,6 +241,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         maxRevisionRounds: options.review?.maxRevisionRounds ?? 2,
         academicPassScore: options.review?.academicPassScore ?? 80,
         styleRiskMax: options.review?.styleRiskMax ?? 35,
+        ...(options.review?.sectionRetryBackoffMs !== undefined
+          ? { sectionRetryBackoffMs: options.review.sectionRetryBackoffMs }
+          : {}),
       },
     },
   };

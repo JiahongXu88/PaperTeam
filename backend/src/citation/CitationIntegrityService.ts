@@ -337,7 +337,7 @@ export class CitationIntegrityService {
    */
   async verifyClaims(
     projectId: string,
-    options: { force?: boolean; limit?: number } = {},
+    options: { force?: boolean; limit?: number; signal?: AbortSignal } = {},
   ): Promise<{
     summary: SemanticSummary;
     verified: number;
@@ -408,7 +408,10 @@ export class CitationIntegrityService {
         continue;
       }
       processed += 1;
-      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry);
+      if (options.signal?.aborted === true) {
+        throw new BusinessError("WORKFLOW_CANCELLED", "语义核验已被取消");
+      }
+      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry, options.signal);
       records.push(record);
       if (record.status === "verified" || record.status === "skipped") {
         verifiedCount += 1;
@@ -435,6 +438,7 @@ export class CitationIntegrityService {
     claim: ClaimCitationRecord,
     metadataRecords: Map<string, CitationVerificationRecord>,
     telemetry: SemanticTelemetry,
+    signal?: AbortSignal,
   ): Promise<ClaimCitationRecord> {
     const metadata = metadataRecords.get(claim.referenceId);
     const base: ClaimCitationRecord = { ...claim, evidence: [] };
@@ -492,6 +496,7 @@ export class CitationIntegrityService {
     telemetry.modelCalls += 1;
     try {
       const task = await this.runtime!.runAgent({
+        ...(signal !== undefined ? { signal } : {}),
         agentId: this.citationAgentId!,
         projectId,
         contextScope: `citation/semantic/${claim.claimCitationId.toLowerCase()}`,

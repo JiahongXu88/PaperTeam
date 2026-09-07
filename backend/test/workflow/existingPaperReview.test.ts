@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { PdfParser, RawPdfExtraction } from "../../src/paper/PdfParser.js";
 import type { AgentRuntime, AgentTask, RunAgentInput } from "../../src/runtime/types.js";
+import { AgentRunFailedError } from "../../src/errors.js";
 import { startTestStack, type TestStack } from "../helpers/testStack.js";
 
 /** 分章节 findings 脚本：SEC01(Introduction) 一条 critical，SEC02(Method) 两条（major/minor） */
@@ -234,5 +235,71 @@ describe("existing_paper_review 工作流（Fake Runtime 全链路）", () => {
     expect(run["status"]).toBe("failed");
     const error = run["error"] as Record<string, unknown>;
     expect(String(error["message"])).toContain("Final PDF");
+  });
+});
+
+describe("review.sections 节内容错（Provider 抖动不重跑整个 stage）", () => {
+  const failures = new Map<string, number>();
+  const localCleanups: Array<() => Promise<void>> = [];
+
+  /** sec02 首次调用抛 503；sec03 永远失败；其余正常 */
+  function flakyRuntime(): AgentRuntime {
+    const base = makeReviewRuntime().runtime;
+    return {
+      ...base,
+      async runAgent(input: RunAgentInput): Promise<AgentTask> {
+        const scope = input.contextScope ?? "";
+        const count = (failures.get(scope) ?? 0) + 1;
+        failures.set(scope, count);
+        if (scope === "review/section/sec02" && count === 1) {
+          throw new AgentRunFailedError("503 No available channel for model");
+        }
+        if (scope === "review/section/sec03") {
+          throw new AgentRunFailedError("503 No available channel for model");
+        }
+        return base.runAgent(input);
+      },
+    };
+  }
+
+  afterAll(async () => {
+    for (const cleanup of localCleanups) {
+      await cleanup();
+    }
+  });
+
+  it("单节瞬时失败 → 节内重试成功；持续失败的章节记为 failedSections，run 仍完成", { timeout: 60_000 }, async () => {
+    const local = await startTestStack(flakyRuntime(), {
+      paperParser: fakeParser,
+      registerCleanup: (cleanup) => localCleanups.push(cleanup),
+    });
+    const created = await local.request("POST", "/api/projects/import-pdf", {
+      fileName: "attention.pdf",
+      contentBase64: Buffer.from("%PDF-1.5\nflaky-review").toString("base64"),
+      goal: "review_only",
+    });
+    const id = (created.body["project"] as Record<string, unknown>)["id"] as string;
+    const started = await local.request("POST", `/api/projects/${id}/workflows`, { kind: "existing_paper_review" });
+    const runId = started.body["runId"] as string;
+
+    let run: Record<string, unknown> = {};
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      run = (await local.request("GET", `/api/runs/${runId}`)).body["run"] as Record<string, unknown>;
+      if (["completed", "failed", "cancelled"].includes(String(run["status"]))) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(run["status"]).toBe("completed");
+    const history = run["stageHistory"] as Array<Record<string, unknown>>;
+    // stage 级只跑了一次：失败在节内消化，没有从第 1 节重跑
+    expect(history.filter((record) => record["stageId"] === "review.sections")).toHaveLength(1);
+    expect(failures.get("review/section/sec02")).toBe(2);
+    expect(failures.get("review/section/sec03")).toBe(3);
+
+    const report = (await local.request("GET", `/api/projects/${id}/paper-review`)).body["report"] as Record<string, unknown>;
+    const review = report["review"] as Record<string, unknown>;
+    expect(review["sectionsReviewed"]).toBe(2);
+    expect(review["failedSections"]).toBe(1);
   });
 });

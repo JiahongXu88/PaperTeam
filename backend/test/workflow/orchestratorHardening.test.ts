@@ -4,6 +4,7 @@
  * - stage 超时 → 在途 stage 的 signal 被 abort（否则重试会与它并发）
  * - 同项目并发 createRun → 只允许一个成功
  * - 事件日志追加失败不会让后续 emit 永久失败（链不被"污染"）
+ * - stage 超时按无进展时长计：持续汇报进度的长 stage 不被固定预算杀掉
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -132,6 +133,32 @@ describe("WorkflowOrchestrator 加固", () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]?.aborted).toBe(true);
     expect(finished.stageHistory[0]?.error?.category).toBe("timeout");
+  });
+
+  it("stage 超时按无进展时长计：持续 emitProgress 的长 stage 不会被固定预算杀掉", async () => {
+    const definition = singleStageDefinition({
+      id: "long-progress",
+      description: "总时长远超 timeoutMs，但每一小步都汇报进度",
+      requiredInputs: [],
+      producedOutputs: [],
+      maxAttempts: 1,
+      timeoutMs: 80,
+      retryable: RETRYABLE,
+      async execute(ctx) {
+        for (let step = 1; step <= 8; step += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          await ctx.emitProgress({ step });
+        }
+        return { steps: 8 };
+      },
+    });
+    const harness = await createHarness(definition);
+    const run = await harness.orchestrator.createRun(harness.projectId, "idea_to_paper");
+    const finished = await waitForStatus(harness.orchestrator, run.runId, ["completed", "failed"]);
+    expect(finished.status).toBe("completed");
+    expect(finished.stageResults["long-progress"]).toEqual({ steps: 8 });
+    // stage 完成后进度快照清空
+    expect(finished.progress).toBeUndefined();
   });
 
   it("同项目并发 createRun：只有一个成功，其余 409", async () => {

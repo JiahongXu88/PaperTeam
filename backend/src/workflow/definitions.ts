@@ -25,7 +25,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
+import { AgentRunFailedError, BusinessError, WorkflowInvalidStateError } from "../errors.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
@@ -60,6 +60,7 @@ import { writeJsonAtomic } from "../util/atomic.js";
 import type {
   PlanDecision,
   ResumeInput,
+  StageRunContext,
   StageSpec,
   WorkflowDefinition,
   WorkflowState,
@@ -88,6 +89,8 @@ export interface WorkflowServices {
     maxRevisionRounds: number;
     academicPassScore: number;
     styleRiskMax: number;
+    /** 单节审阅节内重试的退避（毫秒；缺省 SECTION_REVIEW_BACKOFF_MS，测试可置 0） */
+    sectionRetryBackoffMs?: readonly number[];
   };
 }
 
@@ -110,6 +113,26 @@ const MAX_MANUAL_REVISION_ROUNDS = 3;
 const MAX_REVIEW_SECTIONS = 40;
 /** 少于此字符数的章节只是标题行 / 编号，没有可审阅的内容 */
 const MIN_REVIEW_SECTION_CHARS = 80;
+/** 单节审阅的节内重试次数与退避（Provider 503 / 限流常在几秒到几十秒内恢复） */
+const SECTION_REVIEW_ATTEMPTS = 3;
+const SECTION_REVIEW_BACKOFF_MS = [5_000, 20_000];
+
+/** 可被取消信号打断的等待 */
+function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 
 const QUALITY_THRESHOLDS = (services: WorkflowServices): QualityGateThresholds => ({
   academicPassScore: services.review.academicPassScore,
@@ -1077,7 +1100,7 @@ function paperEnsureStage(services: WorkflowServices): StageSpec {
           "尚未上传/解析 Final PDF（先导入论文 PDF 再启动 Review）",
         );
       }
-      const map = await services.paper.map.ensureMap(ctx.projectId);
+      const map = await services.paper.map.ensureMap(ctx.projectId, { signal: ctx.signal });
       return {
         pageCount: map.pageCount,
         sections: map.sections.length,
@@ -1137,7 +1160,7 @@ function citationClaimsStage(services: WorkflowServices): StageSpec {
     timeoutMs: services.stageTimeoutMs,
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
-      const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId);
+      const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId, { signal: ctx.signal });
       return { summary: result.summary, reused: result.reused };
     },
   };
@@ -1173,8 +1196,38 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
 
       const findings: ReviewFinding[] = [];
       const reviewed: string[] = [];
+      const failedSections: string[] = [];
+      let lastSectionError = "";
       let parseFailures = 0;
       let dropped = 0;
+      const reviewSectionWithRetry = async (
+        svc: WorkflowServices,
+        stageCtx: StageRunContext,
+        context: Awaited<ReturnType<ReviewContextBuilder["buildSectionContext"]>>,
+        sectionId: string,
+      ) => {
+        for (let attempt = 1; attempt <= SECTION_REVIEW_ATTEMPTS; attempt += 1) {
+          try {
+            return await svc.paper.sectionReview.reviewSection({
+              projectId: stageCtx.projectId,
+              runId: stageCtx.runId,
+              context,
+              signal: stageCtx.signal,
+            });
+          } catch (error) {
+            if (stageCtx.signal.aborted || (error instanceof BusinessError && error.code === "WORKFLOW_CANCELLED")) {
+              throw error;
+            }
+            lastSectionError = error instanceof Error ? error.message : String(error);
+            stageCtx.log(`章节 ${sectionId} 审阅第 ${attempt} 次失败：${lastSectionError.slice(0, 200)}`);
+            if (attempt < SECTION_REVIEW_ATTEMPTS) {
+              const backoff = svc.review.sectionRetryBackoffMs ?? SECTION_REVIEW_BACKOFF_MS;
+              await waitOrAbort(backoff[attempt - 1] ?? 5_000, stageCtx.signal);
+            }
+          }
+        }
+        return null;
+      };
       for (const [index, scope] of capped.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "分章节审阅已被取消");
@@ -1194,28 +1247,35 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
           instruction: SECTION_REVIEW_INSTRUCTION,
           ...(citations.length > 0 ? { citations } : {}),
         });
-        const outcome = await services.paper.sectionReview.reviewSection({
-          projectId: ctx.projectId,
-          runId: ctx.runId,
-          context,
-          signal: ctx.signal,
-        });
-        findings.push(...outcome.findings);
-        reviewed.push(scope.sectionId);
-        parseFailures += outcome.parseFailed ? 1 : 0;
-        dropped += outcome.dropped;
+        // 单节失败（模型 503 / 抖动）先在节内退避重试；仍失败则记为失败章节继续下一节，
+        // 而不是让整个 stage 从第 1 节重跑（几十节的审阅不能因一次网络抖动全部作废）
+        const outcome = await reviewSectionWithRetry(services, ctx, context, scope.sectionId);
+        if (outcome === null) {
+          failedSections.push(scope.sectionId);
+        } else {
+          findings.push(...outcome.findings);
+          reviewed.push(scope.sectionId);
+          parseFailures += outcome.parseFailed ? 1 : 0;
+          dropped += outcome.dropped;
+        }
         await ctx.emitProgress({
           section: scope.sectionId,
           index: index + 1,
           total: capped.length,
           findings: findings.length,
+          failed: failedSections.length,
         });
+      }
+      if (reviewed.length === 0) {
+        // 一节都没审成：多半是模型 / Provider 整体不可用，按 transient 交给 stage 级重试
+        throw new AgentRunFailedError(`分章节审阅全部失败（${failedSections.length} 节），最近错误：${lastSectionError}`);
       }
       return {
         sectionsReviewed: reviewed.length,
         sectionsTotal: allScopes.length,
         skippedSections: skipped,
         emptySections,
+        failedSections,
         findingsTotal: findings.length,
         parseFailures,
         dropped,
@@ -1268,6 +1328,7 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
           sectionsTotal: Number(sections["sectionsTotal"] ?? 0),
           skippedSections: Number(sections["skippedSections"] ?? 0),
           emptySections: Number(sections["emptySections"] ?? 0),
+          failedSections: Array.isArray(sections["failedSections"]) ? sections["failedSections"].length : 0,
           findingsTotal: findings.length,
           parseFailures: Number(sections["parseFailures"] ?? 0),
           dropped: Number(sections["dropped"] ?? 0),

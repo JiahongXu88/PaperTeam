@@ -394,7 +394,8 @@ export async function startTestStack(
     agentIds: { ...AGENT_IDS },
     stageTimeoutMs: 10_000,
     stageMaxAttempts: 2,
-    ...(options.review ? { review: options.review } : {}),
+    // 测试里节内重试不等退避
+    review: { sectionRetryBackoffMs: [0, 0], ...(options.review ?? {}) },
     ...(options.citation
       ? { citation: options.citation }
       : { citation: { metadataEnabled: false } }), // 测试默认关闭外网 metadata 查询

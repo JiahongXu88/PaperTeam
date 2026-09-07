@@ -126,6 +126,8 @@ export interface ExistingReviewReportView {
     skippedSections?: number;
     /** 没有正文的章节（只有标题，如仅含子节的章）：计入 skippedSections */
     emptySections?: number;
+    /** 模型调用多次失败、未能审阅的章节数（不计入 sectionsReviewed） */
+    failedSections?: number;
     findingsTotal: number;
     parseFailures?: number;
     dropped?: number;

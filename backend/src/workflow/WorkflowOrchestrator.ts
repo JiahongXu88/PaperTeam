@@ -523,6 +523,9 @@ export class WorkflowOrchestrator {
         | { ok: true; result: Record<string, unknown> }
         | { ok: false; category: StageFailureCategory; code: string; message: string };
       try {
+        // 超时按"无进展时长"计：几十节的分章节审阅总时长随论文长度线性增长，
+        // 只要 stage 持续汇报进度就不该被固定预算杀掉；不汇报进度的 stage 语义与整体超时相同
+        const deadline = new IdleDeadline(stage.timeoutMs, `Stage ${stage.id} 执行超时（${stage.timeoutMs}ms 内无进展）`);
         const ctx: StageRunContext = {
           runId: state.runId,
           projectId: state.projectId,
@@ -530,6 +533,7 @@ export class WorkflowOrchestrator {
           state: structuredClone(state),
           signal: controller.signal,
           emitProgress: (data) => {
+            deadline.extend();
             state.progress = { stageId: stage.id, data, updatedAt: this.now().toISOString() };
             this.touch(state);
             return this.emit(handle, { type: "stage.progress", stageId: stage.id, attempt, data });
@@ -543,11 +547,7 @@ export class WorkflowOrchestrator {
             }),
           log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
         };
-        const result = await withTimeout(
-          stage.execute(ctx),
-          stage.timeoutMs,
-          `Stage ${stage.id} 执行超时（${stage.timeoutMs}ms）`,
-        );
+        const result = await deadline.race(stage.execute(ctx));
 
         // DoD 校验（StageContract：Agent 返回文本 ≠ 成功，产出必须确定性可检）
         const violations = (await stage.verifyDod?.(ctx)) ?? [];
@@ -879,20 +879,56 @@ function isActiveStatus(status: WorkflowState["status"]): boolean {
 /** 超时信号（内部；用于区分超时与其他错误） */
 class TimeoutSignal extends Error {}
 
-export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new TimeoutSignal(message)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
+/**
+ * 空闲超时：连续 idleMs 没有 extend() 就拒绝被 race 的 promise。
+ * 不调用 extend() 时等价于整体超时。
+ */
+export class IdleDeadline {
+  private timer: NodeJS.Timeout | undefined;
+  private reject: ((error: Error) => void) | undefined;
+  private settled = false;
+
+  constructor(
+    private readonly idleMs: number,
+    private readonly message: string,
+  ) {}
+
+  race<T>(promise: Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.reject = reject;
+      this.arm();
+      promise.then(
+        (value) => {
+          this.finish();
+          resolve(value);
+        },
+        (error) => {
+          this.finish();
+          reject(error);
+        },
+      );
+    });
+  }
+
+  /** 有进展：重新计时 */
+  extend(): void {
+    if (!this.settled && this.timer !== undefined) {
+      this.arm();
+    }
+  }
+
+  private arm(): void {
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.settled = true;
+      this.reject?.(new TimeoutSignal(this.message));
+    }, this.idleMs);
+  }
+
+  private finish(): void {
+    this.settled = true;
+    clearTimeout(this.timer);
+  }
 }
 
 /** BusinessError → Stage 失败分类（决定可否重试） */

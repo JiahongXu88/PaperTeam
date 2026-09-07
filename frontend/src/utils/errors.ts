@@ -59,3 +59,28 @@ export function formatApiErrorDetail(error: unknown): string | undefined {
   const text = parts.filter((part): part is string => part !== undefined && part !== "").join(" · ");
   return text === "" ? undefined : text;
 }
+
+/**
+ * Workflow run 的失败信息可能内嵌 Provider 的原始 JSON（如 503 响应体）：
+ * 给用户看的一行用稳定文案，原始内容留给折叠详情。
+ */
+export function summarizeRunError(message: string): { summary: string; detail?: string } {
+  const providerStatus = /\b(401|403|404|429|5\d\d)\b/.exec(message);
+  if (/no available channel|model_not_found|does not exist/i.test(message)) {
+    return { summary: "模型服务暂时没有可用通道（Provider 返回 503），稍后重新 Review 即可。", detail: message };
+  }
+  if (providerStatus !== null && /\{"error"|"type":"error"|Provider|request id/i.test(message)) {
+    const status = providerStatus[1];
+    const summary =
+      status === "401" || status === "403"
+        ? "模型 API Key 无效或无权限。"
+        : status === "429"
+          ? "模型服务限流（429），稍后重试。"
+          : `模型服务返回 ${status}，稍后重试。`;
+    return { summary, detail: message };
+  }
+  if (message.length > 200) {
+    return { summary: `${message.slice(0, 200)}…`, detail: message };
+  }
+  return { summary: message };
+}

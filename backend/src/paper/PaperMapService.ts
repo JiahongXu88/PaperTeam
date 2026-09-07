@@ -62,7 +62,7 @@ export class PaperMapService {
    */
   async ensureMap(
     projectId: string,
-    options: { refreshSummaries?: boolean } = {},
+    options: { refreshSummaries?: boolean; signal?: AbortSignal } = {},
   ): Promise<PaperMap> {
     const document = await this.store.loadDocument(projectId);
     if (document === null) {
@@ -90,7 +90,10 @@ export class PaperMapService {
       if (prior !== undefined && !summaryNeedsRefresh(prior, fingerprint)) {
         summary = prior; // 指纹一致：复用，不重跑
       } else if (options.refreshSummaries !== false) {
-        summary = await this.summarizeSection(projectId, section.sectionId, section.title, chunks, fingerprint);
+        if (options.signal?.aborted === true) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "PaperMap 摘要生成已被取消");
+        }
+        summary = await this.summarizeSection(projectId, section.sectionId, section.title, chunks, fingerprint, options.signal);
         telemetry.modelCalls += 1;
         if (summary.status === "ok") {
           telemetry.summariesRefreshed += 1;
@@ -154,6 +157,7 @@ export class PaperMapService {
     title: string,
     chunks: Array<{ text: string }>,
     fingerprint: string,
+    signal?: AbortSignal,
   ): Promise<PaperSectionSummary> {
     const input = chunks
       .map((chunk) => chunk.text)
@@ -168,6 +172,7 @@ export class PaperMapService {
         agentId: this.reviewerAgentId,
         projectId,
         contextScope: scope,
+        ...(signal !== undefined ? { signal } : {}),
         task: [
           "你是论文审稿助手。对下面这一章节的内容写 2-4 句中文摘要（客观概述：主题、方法/论点、关键内容），",
           "不要评价、不要建议、不要输出任何标题或 Markdown 格式，直接输出摘要正文。",

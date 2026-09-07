@@ -13,7 +13,7 @@ import {
   useProjectRuns,
   useRuntimeStatus,
 } from "../../hooks/queries.js";
-import { formatApiError } from "../../utils/errors.js";
+import { formatApiError, summarizeRunError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import type { ExistingReviewReportView, ReviewFindingView, WorkflowRunView } from "../../types/api.js";
 import type { PaperSectionView } from "../../types/paper.js";
@@ -29,10 +29,14 @@ const REVIEW_STAGES = ["paper.ensure", "citation.extract", "citation.metadata", 
 
 type SeverityFilter = "all" | ReviewFindingView["severity"];
 
-/** 未审阅章节的原因说明：无正文的章节标题 vs 超出单轮章节上限 */
-function describeSkipped(skipped: number, empty: number): string {
+/** 未审阅章节的原因说明：只有标题 / 超出单轮上限 / 模型调用失败 */
+function describeSkipped(skipped: number, empty: number, failed: number): string {
   const overCap = skipped - empty;
-  const parts = [empty > 0 ? `${empty} 节只有标题没有正文` : undefined, overCap > 0 ? `${overCap} 节超出单轮上限` : undefined];
+  const parts = [
+    empty > 0 ? `${empty} 节只有标题没有正文` : undefined,
+    overCap > 0 ? `${overCap} 节超出单轮上限` : undefined,
+    failed > 0 ? `${failed} 节模型调用失败，可重新 Review 补齐` : undefined,
+  ];
   return parts.filter((part): part is string => part !== undefined).join("，");
 }
 
@@ -98,14 +102,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
 
       {active && reviewRun !== undefined ? <RunProgress run={reviewRun} /> : null}
 
-      {reviewRun?.status === "failed" ? (
-        <div className="note note-error" role="alert">
-          <span>
-            <span className="note-mark">✗</span> Review 失败：{reviewRun.error?.message ?? "未知原因"}
-            {reviewRun.currentStage !== undefined ? <span className="muted">（阶段：{stageLabel(reviewRun.currentStage)}）</span> : null}
-          </span>
-        </div>
-      ) : null}
+      {reviewRun?.status === "failed" ? <RunFailure run={reviewRun} /> : null}
       {reviewRun?.status === "cancelled" && !hasReport ? (
         <p className="note note-info" role="status">
           <span>上一次 Review 已取消，可以重新开始。</span>
@@ -145,6 +142,25 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** 失败：一行稳定文案 + 阶段名；Provider 原始响应折叠 */
+function RunFailure({ run }: { run: WorkflowRunView }) {
+  const { summary, detail } = summarizeRunError(run.error?.message ?? "未知原因");
+  return (
+    <div className="note note-error" role="alert">
+      <span>
+        <span className="note-mark">✗</span> Review 失败：{summary}
+        {run.currentStage !== undefined ? <span className="muted">（阶段：{stageLabel(run.currentStage)}）</span> : null}
+        {detail !== undefined ? (
+          <details className="details-block" style={{ marginTop: "var(--s-2)" }}>
+            <summary>技术细节</summary>
+            <div className="details-body mono">{detail}</div>
+          </details>
+        ) : null}
+      </span>
+    </div>
   );
 }
 
@@ -212,8 +228,8 @@ function ReportBlock({
       <div className="review-summary">
         <span className="review-summary-scope">
           已审阅 {review.sectionsReviewed} / {review.sectionsTotal} 节
-          {review.skippedSections !== undefined && review.skippedSections > 0
-            ? `（${review.skippedSections} 节未审阅：${describeSkipped(review.skippedSections, review.emptySections ?? 0)}）`
+          {(review.skippedSections ?? 0) + (review.failedSections ?? 0) > 0
+            ? `（${describeSkipped(review.skippedSections ?? 0, review.emptySections ?? 0, review.failedSections ?? 0)}）`
             : ""}
         </span>
         <div className="ledger">
