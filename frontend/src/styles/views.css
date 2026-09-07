@@ -1155,3 +1155,34 @@
     margin-top: var(--s-1);
   }
 }
+
+.ref-details {
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+}
+
+.ref-details > summary {
+  cursor: pointer;
+  color: var(--ink-4);
+  user-select: none;
+}
+
+.ref-details-list {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--s-1) var(--s-3);
+  margin: var(--s-1) 0 0;
+}
+
+.ref-details-list dt {
+  color: var(--ink-4);
+}
+
+.ref-details-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ref-details-attempt {
+  display: block;
+}

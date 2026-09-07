@@ -19,8 +19,11 @@ import type {
   CitationFieldMismatch,
   ScholarlyProvider as ScholarlyProviderName,
 } from "./integrity.js";
-import { titlesMatch } from "./metadataProviders.js";
+import { compareFields, sameWork, scoreCandidate } from "./candidateScoring.js";
+import { REFERENCE_NORMALIZATION_VERSION, titleQueryVariants } from "./referenceText.js";
 import { fingerprintJson } from "../util/hash.js";
+
+export { compareFields } from "./candidateScoring.js";
 
 // ---- 查询与结果 ----
 
@@ -83,6 +86,9 @@ async function fetchJson(
   }
 }
 
+/** 搜索候选条数：标题比对严格，多取两条只提升召回不放宽判定 */
+const SEARCH_ROWS = 5;
+
 function record(base: Omit<CanonicalPaperRecord, "retrievedAt">, now: string): CanonicalPaperRecord {
   return { ...base, retrievedAt: now };
 }
@@ -99,7 +105,7 @@ export class CrossrefProvider implements ScholarlyProvider {
     const url =
       query.doi !== undefined
         ? `https://api.crossref.org/works/${encodeURIComponent(query.doi)}`
-        : `https://api.crossref.org/works?rows=3&query.bibliographic=${encodeURIComponent(query.title ?? "")}`;
+        : `https://api.crossref.org/works?rows=${SEARCH_ROWS}&query.bibliographic=${encodeURIComponent(query.title ?? "")}`;
     const result = await fetchJson(url, ctx, "PaperTeam/0.1 (scholarly verification; mailto:support@paperteam.local)");
     if (!result.ok) {
       return { kind: "error", note: `crossref 查询失败：${result.reason}` };
@@ -120,12 +126,17 @@ function extractCrossrefItems(body: unknown, byDoi: boolean): Array<Record<strin
     return typeof message === "object" && message !== null ? [message as Record<string, unknown>] : [];
   }
   const items = (message as Record<string, unknown> | undefined)?.["items"];
-  return Array.isArray(items) ? (items as Array<Record<string, unknown>>).slice(0, 3) : [];
+  return Array.isArray(items) ? (items as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS) : [];
 }
 
 function crossrefToRecord(item: Record<string, unknown>, now: string): CanonicalPaperRecord {
-  const titleRaw = item["title"];
-  const title = Array.isArray(titleRaw) ? String(titleRaw[0] ?? "") : typeof titleRaw === "string" ? titleRaw : undefined;
+  // Crossref 把 "Main: Subtitle" 拆成 title + subtitle 两个字段；拼回完整标题再比对
+  const mainTitle = firstString(item["title"]);
+  const subtitle = firstString(item["subtitle"]);
+  const title =
+    mainTitle !== undefined && subtitle !== undefined && subtitle !== "" && !mainTitle.toLowerCase().includes(subtitle.toLowerCase())
+      ? `${mainTitle}: ${subtitle}`
+      : mainTitle;
   const authors = Array.isArray(item["author"])
     ? (item["author"] as Array<Record<string, unknown>>).map(
         (author) =>
@@ -155,6 +166,13 @@ function crossrefToRecord(item: Record<string, unknown>, now: string): Canonical
   );
 }
 
+function firstString(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    return typeof value[0] === "string" ? (value[0] as string) : undefined;
+  }
+  return typeof value === "string" ? value : undefined;
+}
+
 function stripXml(text: string): string {
   return text.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
 }
@@ -175,7 +193,7 @@ export class OpenAlexProvider implements ScholarlyProvider {
     const url =
       query.doi !== undefined
         ? `https://api.openalex.org/works/https://doi.org/${query.doi}`
-        : `https://api.openalex.org/works?search=${encodeURIComponent(query.title ?? "")}&per-page=3`;
+        : `https://api.openalex.org/works?search=${encodeURIComponent(query.title ?? "")}&per-page=${SEARCH_ROWS}`;
     const result = await fetchJson(url, ctx, "PaperTeam/0.1 (scholarly verification)");
     if (!result.ok) {
       return { kind: "error", note: `openalex 查询失败：${result.reason}` };
@@ -183,7 +201,7 @@ export class OpenAlexProvider implements ScholarlyProvider {
     const now = new Date().toISOString();
     const body = result.body as Record<string, unknown>;
     const items: Array<Record<string, unknown>> = Array.isArray(body["results"])
-      ? (body["results"] as Array<Record<string, unknown>>).slice(0, 3)
+      ? (body["results"] as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS)
       : typeof body["id"] === "string"
         ? [body]
         : [];
@@ -259,14 +277,14 @@ export class SemanticScholarProvider implements ScholarlyProvider {
     const url =
       query.doi !== undefined
         ? `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(query.doi)}?fields=${fields}`
-        : `https://api.semanticscholar.org/graph/v1/paper/search?limit=3&fields=${fields}&query=${encodeURIComponent(query.title ?? "")}`;
+        : `https://api.semanticscholar.org/graph/v1/paper/search?limit=${SEARCH_ROWS}&fields=${fields}&query=${encodeURIComponent(query.title ?? "")}`;
     const result = await fetchJson(url, ctx, "PaperTeam/0.1 (scholarly verification)");
     if (!result.ok) {
       return { kind: "error", note: `semantic-scholar 查询失败：${result.reason}` };
     }
     const body = result.body as Record<string, unknown>;
     const items: Array<Record<string, unknown>> = Array.isArray(body["data"])
-      ? (body["data"] as Array<Record<string, unknown>>).slice(0, 3)
+      ? (body["data"] as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS)
       : body["paperId"] !== undefined
         ? [body]
         : [];
@@ -313,7 +331,7 @@ export class ArxivLookupProvider implements ScholarlyProvider {
       return { kind: "error", note: "缺少 arXiv id 与标题，无法查询" };
     }
     const term = query.arxivId !== undefined ? `id:${query.arxivId}` : `ti:"${query.title}"`;
-    const url = `https://export.arxiv.org/api/query?max_results=3&search_query=${encodeURIComponent(term)}`;
+    const url = `https://export.arxiv.org/api/query?max_results=${SEARCH_ROWS}&search_query=${encodeURIComponent(term)}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ctx.timeoutMs);
     try {
@@ -371,129 +389,94 @@ function decodeXml(value: string): string {
 // ---- 候选裁决（搜索路径共享） ----
 
 /**
- * 搜索候选裁决（RefWarden 门控思想：标题 + 作者重合 + 年份 ±1）：
- * 1. 标题不匹配的候选一律拒绝（不硬凑相近结果）；
- * 2. DOI 精确命中优先；
- * 3. 年份（±1）与第一作者姓氏门控逐步收窄；
- * 4. 收窄后仍多条但「同年 + 同第一作者」→ 同一作品的多库重复收录，
- *    选带 DOI 的代表记录（不判 ambiguous）；
- * 5. 真正多版本（年份/作者不一致）→ ambiguous，不猜。
+ * 搜索候选裁决（确定性打分，见 candidateScoring.ts）：
+ * 1. DOI 精确命中优先；
+ * 2. 标题 strong / medium tier 之外的候选一律拒绝（不硬凑相近结果）；
+ * 3. 接受的候选按 年份精确 > 第一作者 > 正式 DOI 排序；
+ * 4. 剩余多条若互为同一作品的多版本（预印本 / 正式发表 / 多库收录）→ 取代表记录；
+ * 5. 真正不同的作品并存 → ambiguous，不猜。
  */
-function pickFromSearch(query: ScholarlyQuery, candidates: CanonicalPaperRecord[]): LookupOutcome {
+export function pickFromSearch(query: ScholarlyQuery, candidates: CanonicalPaperRecord[]): LookupOutcome {
   if (candidates.length === 0) {
     return { kind: "not_found" };
   }
-  if (query.title !== undefined) {
-    const titled = candidates.filter((candidate) => titlesMatch(query.title!, candidate.title!));
-    if (titled.length === 0) {
-      // 搜索结果都与草稿标题不符 → 该来源没有此文
-      return { kind: "not_found" };
-    }
-    candidates = titled;
+  const scored = candidates.map((candidate) => scoreCandidate(query, candidate));
+  const byDoi = scored.find((entry) => entry.tier === "doi");
+  if (byDoi !== undefined) {
+    return verdictFor(query, byDoi.candidate);
   }
+  const accepted = scored
+    .filter((entry) => entry.tier === "strong" || entry.tier === "medium")
+    .sort((a, b) => b.rank - a.rank);
+  if (accepted.length === 0) {
+    // 搜索结果都与草稿标题不符 → 该来源没有此文
+    return { kind: "not_found" };
+  }
+  const best = accepted[0]!;
+  const rivals = accepted.slice(1).filter((entry) => !sameWork(best.candidate, entry.candidate));
+  if (rivals.length > 0) {
+    return { kind: "ambiguous", candidates: [best, ...rivals].slice(0, 3).map((entry) => entry.candidate) };
+  }
+  return verdictFor(query, best.candidate);
+}
 
-  if (query.doi !== undefined) {
-    const byDoi = candidates.find((candidate) => candidate.doi === query.doi!.toLowerCase());
-    if (byDoi !== undefined) {
-      const mismatches = compareFields(query, byDoi);
-      return mismatches.length > 0
-        ? { kind: "mismatch", record: byDoi, mismatches }
-        : { kind: "match", record: byDoi };
-    }
-  }
-
-  let pool = candidates;
-  if (query.year !== undefined) {
-    const byYear = pool.filter(
-      (candidate) => candidate.year !== undefined && Math.abs(candidate.year - query.year!) <= 1,
-    );
-    if (byYear.length > 0) {
-      pool = byYear;
-    }
-  }
-  if (query.authors !== undefined && query.authors.length > 0) {
-    const byAuthor = pool.filter((candidate) => authorsOverlap(query.authors!, candidate.authors));
-    if (byAuthor.length > 0) {
-      pool = byAuthor;
-    }
-  }
-  if (pool.length > 1) {
-    const years = new Set(pool.map((candidate) => candidate.year));
-    const sameFirstAuthor = pool.every((candidate) =>
-      authorsOverlap([query.authors?.[0] ?? pool[0]!.authors?.[0] ?? ""], candidate.authors),
-    );
-    if (years.size === 1 && sameFirstAuthor) {
-      pool = [pool.find((candidate) => candidate.doi !== undefined) ?? pool[0]!];
-    }
-  }
-  if (pool.length > 1) {
-    return { kind: "ambiguous", candidates: pool.slice(0, 3) };
-  }
-  const chosen = pool[0]!;
+function verdictFor(query: ScholarlyQuery, chosen: CanonicalPaperRecord): LookupOutcome {
   const mismatches = compareFields(query, chosen);
-  return mismatches.length > 0
-    ? { kind: "mismatch", record: chosen, mismatches }
-    : { kind: "match", record: chosen };
+  return mismatches.length > 0 ? { kind: "mismatch", record: chosen, mismatches } : { kind: "match", record: chosen };
 }
 
-/** 姓氏候选：PDF 提取常「姓在前」，学术库多「姓在后」——首/末 token 都可能是姓 */
-function surnameCandidates(name: string): Set<string> {
-  const tokens = name
-    .replace(/\./g, "")
-    .split(/\s+/)
-    .map((token) => token.toLowerCase().replace(/[^a-zà-žüöä'-]/g, ""))
-    .filter((token) => token.length > 1);
-  if (tokens.length === 0) {
-    return new Set();
-  }
-  return new Set([tokens[0]!, tokens[tokens.length - 1]!]);
+// ---- Query plan ----
+
+export interface QueryStep {
+  kind: "doi" | "title" | "arxiv";
+  /** 诊断标签（进入 attempt note） */
+  label: string;
+  query: ScholarlyQuery;
 }
 
-function authorsOverlap(queryAuthors: string[], candidateAuthors?: string[]): boolean {
-  if (candidateAuthors === undefined || candidateAuthors.length === 0) {
-    return false;
-  }
-  for (const queryAuthor of queryAuthors) {
-    for (const surname of surnameCandidates(queryAuthor)) {
-      if (candidateAuthors.some((candidate) => surnameCandidates(candidate).has(surname))) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
+/** 单条文献的 query plan 上限（每 provider）：DOI + 最多 3 个标题 variant */
+const MAX_TITLE_VARIANTS = 3;
 
-/** DOI 路径：canonical 已由 DOI 定位，只做字段比对 */
-export function compareFields(query: ScholarlyQuery, canonical: CanonicalPaperRecord): CitationFieldMismatch[] {
-  const mismatches: CitationFieldMismatch[] = [];
-  if (
-    query.title !== undefined &&
-    canonical.title !== undefined &&
-    !titlesMatch(query.title, canonical.title)
-  ) {
-    mismatches.push({ field: "title", expected: query.title, actual: canonical.title });
+/**
+ * 有界 query plan：
+ *   1. DOI（有则先精确查；404/error 或未命中再退回标题——DOI 抄错不该让真实文献 NOT_FOUND）；
+ *   2. 标题 variants（referenceText.titleQueryVariants：断词拼合 > 保留连字符 > 原文），
+ *      每个 variant 都带原始 authors/year/arxivId 供候选打分。
+ */
+export function buildQueryPlan(query: ScholarlyQuery): QueryStep[] {
+  const steps: QueryStep[] = [];
+  const shared = {
+    ...(query.authors !== undefined ? { authors: query.authors } : {}),
+    ...(query.year !== undefined ? { year: query.year } : {}),
+    ...(query.arxivId !== undefined ? { arxivId: query.arxivId } : {}),
+  };
+  if (query.doi !== undefined) {
+    steps.push({
+      kind: "doi",
+      label: `doi:${query.doi}`,
+      query: { doi: query.doi, ...shared, ...(query.title !== undefined ? { title: query.title } : {}) },
+    });
   }
-  if (query.year !== undefined && canonical.year !== undefined) {
-    if (Math.abs(query.year - canonical.year) > 1) {
-      mismatches.push({ field: "year", expected: String(query.year), actual: String(canonical.year) });
-    } else if (query.year !== canonical.year) {
-      mismatches.push({
-        field: "year",
-        expected: String(query.year),
-        actual: String(canonical.year),
-        note: "年份差 1（arXiv 预印本 vs 正式发表常见），按容忍处理不计 mismatch",
+  if (query.title !== undefined) {
+    const variants = titleQueryVariants(query.title).slice(0, MAX_TITLE_VARIANTS);
+    for (const [index, variant] of variants.entries()) {
+      steps.push({
+        kind: "title",
+        label: variants.length > 1 ? `title#${index + 1}:${variant}` : `title:${variant}`,
+        query: { title: variant, ...shared },
       });
     }
+  } else if (query.arxivId !== undefined && query.doi === undefined) {
+    steps.push({ kind: "arxiv", label: `arxiv:${query.arxivId}`, query: { arxivId: query.arxivId, ...shared } });
   }
-  if (
-    query.doi !== undefined &&
-    canonical.doi !== undefined &&
-    query.doi.toLowerCase() !== canonical.doi
-  ) {
-    mismatches.push({ field: "doi", expected: query.doi, actual: canonical.doi });
-  }
-  return mismatches.filter((m) => m.note === undefined);
+  return steps;
 }
+
+/**
+ * 核验算法版本：归一化 / 打分 / query plan 任一变化就递增，纳入 metadata 记录与
+ * cache fingerprint——旧 NOT_FOUND 结果自动失效，无需用户删 workspace。
+ */
+export const METADATA_VERIFICATION_VERSION = `v2.n${REFERENCE_NORMALIZATION_VERSION}`;
 
 // ---- Resolver（编排 + 缓存 + 语义裁决） ----
 
@@ -545,46 +528,58 @@ export class ScholarlyResolver {
     this.log = options.log ?? (() => {});
   }
 
-  /** 多源顺序核验：match/mismatch 即定；≥2 来源权威 not_found → not_found；否则 unresolved */
+  /**
+   * 多源顺序核验：match/mismatch 即定；≥2 来源权威 not_found → not_found；否则 unresolved。
+   *
+   * 每个 provider 走一条有界 query plan（见 buildQueryPlan）：DOI 精确查询 →
+   * 标题 query variants（断词拼合 / 保留连字符 / 原文）。某一步 not_found 才试下一步；
+   * error 立即停止该 provider（限流时不再加压），不把失败折叠成 not_found。
+   * 字段比对始终以原始 reference 字段为准（variant 只用于检索）。
+   */
   async resolve(query: ScholarlyQuery): Promise<ResolverVerdict> {
     const attempts: ResolverVerdict["attempts"] = [];
     let notFoundCount = 0;
     let firstAmbiguous: CanonicalPaperRecord[] | undefined;
-    let lastError: string | undefined;
 
-    if (query.title === undefined && query.doi === undefined && query.arxivId === undefined) {
-      return { outcome: "unresolved", attempts: [{ provider: "none", outcome: "error", note: "无可查字段（无标题/DOI/arXiv）" }], cacheHits: 0 };
+    const plan = buildQueryPlan(query);
+    if (plan.length === 0) {
+      return {
+        outcome: "unresolved",
+        attempts: [{ provider: "none", outcome: "error", note: "无可查字段（无标题/DOI/arXiv）" }],
+        cacheHits: 0,
+      };
     }
 
     for (const provider of this.providers) {
       if (this.delayMs > 0 && attempts.length > 0) {
         await new Promise((resolve) => setTimeout(resolve, this.delayMs));
       }
-      const outcome = await this.lookupCached(provider, query);
+      const step = await this.runPlan(provider, plan);
+      const outcome = step.outcome;
       switch (outcome.kind) {
         case "match":
-          attempts.push({ provider: provider.name, outcome: "match" });
-          return { outcome: "match", canonical: outcome.record, attempts, cacheHits: this.telemetry.cacheHits };
-        case "mismatch":
-          attempts.push({ provider: provider.name, outcome: "mismatch" });
+        case "mismatch": {
+          // variant 命中后按原始字段重新比对（variant 标题只服务检索）
+          const mismatches = compareFields(query, outcome.record);
+          attempts.push({ provider: provider.name, outcome: mismatches.length > 0 ? "mismatch" : "match", note: step.note });
           return {
-            outcome: "mismatch",
+            outcome: mismatches.length > 0 ? "mismatch" : "match",
             canonical: outcome.record,
-            mismatches: outcome.mismatches,
+            ...(mismatches.length > 0 ? { mismatches } : {}),
             attempts,
             cacheHits: this.telemetry.cacheHits,
           };
+        }
         case "ambiguous":
-          attempts.push({ provider: provider.name, outcome: "ambiguous" });
+          attempts.push({ provider: provider.name, outcome: "ambiguous", note: step.note });
           firstAmbiguous ??= outcome.candidates;
           break;
         case "not_found":
-          attempts.push({ provider: provider.name, outcome: "not_found" });
+          attempts.push({ provider: provider.name, outcome: "not_found", note: step.note });
           notFoundCount += 1;
           break;
         case "error":
           attempts.push({ provider: provider.name, outcome: "error", note: outcome.note });
-          lastError = outcome.note;
           break;
       }
     }
@@ -595,8 +590,33 @@ export class ScholarlyResolver {
     if (firstAmbiguous !== undefined) {
       return { outcome: "ambiguous", candidates: firstAmbiguous, attempts, cacheHits: this.telemetry.cacheHits };
     }
-    void lastError;
     return { outcome: "unresolved", attempts, cacheHits: this.telemetry.cacheHits };
+  }
+
+  /** 逐步执行 query plan：not_found 继续；match/mismatch/ambiguous/error 停止 */
+  private async runPlan(
+    provider: ScholarlyProvider,
+    plan: QueryStep[],
+  ): Promise<{ outcome: LookupOutcome; note: string }> {
+    let last: LookupOutcome = { kind: "not_found" };
+    const tried: string[] = [];
+    for (const [index, step] of plan.entries()) {
+      if (this.delayMs > 0 && index > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      }
+      last = await this.lookupCached(provider, step.query);
+      tried.push(step.label);
+      if (last.kind === "not_found") {
+        continue;
+      }
+      // DOI 在该库查不到（404）不等于文献不存在：退回标题检索；其它 error（限流/超时）停止
+      if (step.kind === "doi" && last.kind === "error" && /http-404/.test(last.note) && index < plan.length - 1) {
+        tried[tried.length - 1] = `${step.label}(404)`;
+        continue;
+      }
+      break;
+    }
+    return { outcome: last, note: `查询：${tried.join(" → ")}` };
   }
 
   private async lookupCached(provider: ScholarlyProvider, query: ScholarlyQuery): Promise<LookupOutcome> {

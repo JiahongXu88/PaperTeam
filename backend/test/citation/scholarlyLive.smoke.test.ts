@@ -68,4 +68,52 @@ describe.skipIf(!live)("M4.3.4 live scholarly lookup smoke（真实公网调用�
     expect(["not_found", "unresolved"]).toContain(verdict.outcome);
     expect(verdict.outcome).not.toBe("match");
   });
+
+  // 真实论文 Review（D:\Tmp\paper.pdf）里被判 NOT_FOUND 的三篇：输入用 PDF 提取的原始污染标题。
+  // 官方 DOI 只作 ground truth 核对，不参与运行逻辑。
+  const PDF_ARTIFACT_CASES = [
+    {
+      name: "ByteTrack (ECCV 2022)",
+      query: { title: "Byte- track: Multi-object tracking by associating every detection box", authors: ["Y. Zhang", "P. Sun"], year: 2022 },
+      doi: "10.1007/978-3-031-20047-2_1",
+      titleWord: "bytetrack",
+    },
+    {
+      name: "OC-SORT (CVPR 2023)",
+      query: { title: "Observation-centric sort: Rethink- ing sort for robust multi-object tracking", authors: ["J. Cao", "J. Pang"], year: 2023 },
+      doi: "10.1109/cvpr52729.2023.00934",
+      titleWord: "observation-centric sort",
+    },
+    {
+      name: "Deep SORT (ICIP 2017)",
+      query: { title: "Simple online and realtime tracking with a deep as- sociation metric", authors: ["N. Wojke", "A. Bewley", "D. Paulus"], year: 2017 },
+      doi: "10.1109/icip.2017.8296962",
+      titleWord: "deep association metric",
+    },
+  ] as const;
+
+  for (const testCase of PDF_ARTIFACT_CASES) {
+    it(`PDF 断词污染标题：${testCase.name} → match（正式发表 DOI）`, { timeout: 180_000 }, async () => {
+      const verdict = await resolver.resolve({ ...testCase.query, authors: [...testCase.query.authors] });
+      // eslint-disable-next-line no-console
+      console.log(`[live] ${testCase.name}:`, JSON.stringify({
+        outcome: verdict.outcome,
+        provider: verdict.canonical?.provider,
+        title: verdict.canonical?.title,
+        authors: verdict.canonical?.authors?.slice(0, 3),
+        year: verdict.canonical?.year,
+        doi: verdict.canonical?.doi,
+        attempts: verdict.attempts,
+      }));
+      if (verdict.outcome === "unresolved") {
+        // 全部 provider 失败（限流/网络）：如实 unresolved，不能是 not_found
+        expect(verdict.attempts.every((attempt) => attempt.outcome === "error")).toBe(true);
+        return;
+      }
+      expect(["match", "mismatch"]).toContain(verdict.outcome);
+      expect(verdict.canonical?.title?.toLowerCase()).toContain(testCase.titleWord);
+      // 正式发表版优先于 arXiv 预印本；多库同一作品时 DOI 应一致
+      expect(verdict.canonical?.doi?.toLowerCase()).toBe(testCase.doi);
+    });
+  }
 });

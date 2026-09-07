@@ -87,11 +87,15 @@ export interface MetadataRecordView {
     provider: string;
     recordId: string;
     title?: string;
+    authors?: string[];
     year?: number;
     venue?: string;
     doi?: string;
   };
   mismatches?: Array<{ field: string; expected?: string; actual?: string }>;
+  /** 各学术库查询结果（核验详情用；note 是后端诊断信息，不在 UI 展示） */
+  attempts?: Array<{ provider: string; outcome: string; note?: string }>;
+  checkedAt?: string;
 }
 
 export type SemanticVerdict =

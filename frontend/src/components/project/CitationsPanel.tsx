@@ -46,8 +46,33 @@ function LedgerBar({ segments }: { segments: Array<{ tone: string; count: number
   );
 }
 
+/** 后端把 PDF 行尾断词编码为软连字符（U+00AD）；展示时去掉，避免复制出不可见字符 */
+function stripSoftHyphens(text: string): string {
+  return text.replace(/\u00AD/g, "");
+}
+
 function displayTitle(title: string | undefined): string | undefined {
-  return title?.replace(/^\[\d+\]\s*/, "").trim() || undefined;
+  return title === undefined ? undefined : stripSoftHyphens(title).replace(/^\[\d+\]\s*/, "").trim() || undefined;
+}
+
+/** 单库查询结果 → 中文（未知值原样展示） */
+const ATTEMPT_OUTCOME_LABELS: Record<string, string> = {
+  match: "命中",
+  mismatch: "命中（字段有差异）",
+  not_found: "未收录",
+  ambiguous: "多个候选",
+  error: "查询失败",
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  crossref: "Crossref",
+  openalex: "OpenAlex",
+  "semantic-scholar": "Semantic Scholar",
+  arxiv: "arXiv",
+};
+
+function providerLabel(provider: string): string {
+  return PROVIDER_LABELS[provider] ?? provider;
 }
 
 export function CitationsPanel({ projectId }: { projectId: string }) {
@@ -281,8 +306,8 @@ function ReferenceRow({ reference, record }: { reference: ReferenceView; record?
         {title !== undefined ? (
           <span className="ref-title">{title}</span>
         ) : (
-          <span className="ref-rawtext" title={reference.rawText}>
-            {reference.rawText}
+          <span className="ref-rawtext" title={stripSoftHyphens(reference.rawText)}>
+            {stripSoftHyphens(reference.rawText)}
           </span>
         )}
         {metaParts.length > 0 ? (
@@ -310,6 +335,7 @@ function ReferenceRow({ reference, record }: { reference: ReferenceView; record?
             差异：{record.mismatches.map((m) => `${m.field}：文中 ${m.expected ?? "?"}，库中 ${m.actual ?? "?"}`).join("；")}
           </span>
         ) : null}
+        {record !== undefined ? <VerificationDetails record={record} /> : null}
       </div>
       <div className="gutter-side">
         {statusStyle !== undefined ? <span className={`status status-tone-${statusStyle.tone}`}>{statusStyle.label}</span> : <span className="status">未核验</span>}
@@ -318,5 +344,60 @@ function ReferenceRow({ reference, record }: { reference: ReferenceView; record?
         </span>
       </div>
     </article>
+  );
+}
+
+/** 折叠的核验详情：各库结果 / 匹配标题 / DOI / 检查时间。只展示事实，不展示内部分数 */
+function VerificationDetails({ record }: { record: MetadataRecordView }) {
+  const attempts = record.attempts ?? [];
+  const canonical = record.canonical;
+  if (attempts.length === 0 && canonical === undefined && record.checkedAt === undefined) {
+    return null;
+  }
+  return (
+    <details className="ref-details">
+      <summary>核验详情</summary>
+      <dl className="ref-details-list">
+        {attempts.length > 0 ? (
+          <>
+            <dt>核验来源</dt>
+            <dd>
+              {attempts.map((attempt, index) => (
+                <span key={index} className="ref-details-attempt">
+                  {providerLabel(attempt.provider)}：{ATTEMPT_OUTCOME_LABELS[attempt.outcome] ?? attempt.outcome}
+                </span>
+              ))}
+            </dd>
+          </>
+        ) : null}
+        {canonical?.title !== undefined ? (
+          <>
+            <dt>匹配标题</dt>
+            <dd>
+              {canonical.title}
+              {canonical.year !== undefined ? `（${canonical.year}）` : ""}
+            </dd>
+          </>
+        ) : null}
+        {canonical?.authors !== undefined && canonical.authors.length > 0 ? (
+          <>
+            <dt>库中作者</dt>
+            <dd>{canonical.authors.slice(0, 3).join("，")}{canonical.authors.length > 3 ? " 等" : ""}</dd>
+          </>
+        ) : null}
+        {canonical?.doi !== undefined ? (
+          <>
+            <dt>DOI</dt>
+            <dd className="mono">{canonical.doi}</dd>
+          </>
+        ) : null}
+        {record.checkedAt !== undefined ? (
+          <>
+            <dt>检查时间</dt>
+            <dd>{new Date(record.checkedAt).toLocaleString()}</dd>
+          </>
+        ) : null}
+      </dl>
+    </details>
   );
 }

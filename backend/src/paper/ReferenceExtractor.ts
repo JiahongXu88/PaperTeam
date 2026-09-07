@@ -15,7 +15,14 @@
 
 import { sha256Hex } from "../util/hash.js";
 import type { CitationCallout, ReferenceEntry } from "../citation/integrity.js";
+import { REFERENCE_NORMALIZATION_VERSION, normalizeReferenceText } from "../citation/referenceText.js";
 import type { PaperChunk, PaperDocument } from "./types.js";
+
+/**
+ * 提取算法版本（纳入 references stage 指纹）：条目切分 / 文本归一化 / 字段解析
+ * 任一变化就递增，让旧提取结果在下次 extract 时自动重算。
+ */
+export const REFERENCE_EXTRACTION_VERSION = `v2.n${REFERENCE_NORMALIZATION_VERSION}`;
 
 /** range 展开上限（防 [1-999] 之类解析事故） */
 const RANGE_EXPAND_LIMIT = 60;
@@ -56,14 +63,11 @@ export class ReferenceExtractor {
   private extractReferences(chunks: PaperChunk[], notes: string[]): ReferenceEntry[] {
     const units: Array<{ page: number; chunkId: string; text: string }> = [];
     for (const chunk of chunks) {
-      for (const part of chunk.text.split(/\n{2,}/)) {
-        // 行尾断词连字符（"Byte-\ntrack"）：去掉换行只留连字符。标题匹配会忽略连字符，
-        // 真实复合词（state-of-the-art）也不受影响
-        const text = part
-          .replace(/(\p{L})-\n\s*(\p{Ll})/gu, "$1-$2")
-          .replace(/\n/g, " ")
-          .replace(/\s+/g, " ")
-          .trim();
+      // 归一化必须在按 \n\n 切单元之前：pymupdf 会把跨列/跨页的一行拆成两个 block
+      // （"Byte-\n\ntrack"），切完再修就只剩 "Byte- track"。断词只去换行、保留连字符，
+      // 不猜原词是 ByteTrack 还是 multi-object——检索期由 query variants 处理
+      for (const part of normalizeReferenceText(chunk.text).split(/\n{2,}/)) {
+        const text = part.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
         if (text !== "") {
           units.push({ page: chunk.pageStart, chunkId: chunk.chunkId, text });
         }

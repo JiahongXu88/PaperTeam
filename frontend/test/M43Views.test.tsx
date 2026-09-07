@@ -267,7 +267,8 @@ describe("CitationsPanel（M4.3.7）", () => {
     ]);
     renderWithProviders(<CitationsPanel projectId="p-x1" />);
 
-    expect(await screen.findByText("Layer Normalization")).toBeInTheDocument();
+    // 标题行 + 折叠的「核验详情」里的匹配标题都会出现
+    expect((await screen.findAllByText("Layer Normalization")).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("已验证 1")).toBeInTheDocument();
     expect(screen.getByText("未找到 1")).toBeInTheDocument();
     expect(screen.getByText(/疑似捏造/)).toBeInTheDocument();

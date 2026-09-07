@@ -84,13 +84,17 @@
 | `POST /api/projects/:id/citations/extract` | 引用提取（确定性）→ `{summary{referenceCount,calloutCount}, reused, references, callouts}` | Citations 面板（重新提取） |
 | `GET /api/projects/:id/citations` | `{summary: ExtractionSummary, references: ReferenceView[]}` | Citations 面板 |
 | `POST /api/projects/:id/citations/verify-metadata` | 真实性核验（外部学术库；逐条文件持久化 + 指纹跳过）→ `{byStatus, checked, reused, telemetry, records}` | Citations 面板 |
-| `GET /api/projects/:id/citations/metadata` | `{records: MetadataRecordView[]}`（逐条 status/canonical/mismatches） | Citations 面板（status 列） |
+| `GET /api/projects/:id/citations/metadata` | `{records: MetadataRecordView[]}`（逐条 status/canonical/mismatches/attempts/checkedAt/algorithmVersion） | Citations 面板（status 列 + 折叠「核验详情」） |
 | `POST /api/projects/:id/citations/verify-claims` | (claim,citation) 语义核验（需模型；`{force?, limit?}`） | Citations 面板 |
 | `GET /api/projects/:id/citations/claims` / `GET …/integrity` | 语义核验记录 / 完整性汇总（metadata 五态 + semantic verdict 分布 + gate 输入） | Citations 面板 / M4.6 |
 | `GET /api/skills` | `{skills: SkillView[], bindings}`（含 pin revision/license/中文简介状态） | SkillsPage |
 | `GET /api/skills/:id` | `{skill: SkillView}`；404=NOT_FOUND | （详情视图） |
 | `POST /api/skills/:id/summary` | 重新生成中文简介（模型未配置 / 生成失败 → 502 AGENT_RUN_FAILED；摘要服务未装配 → 503） | SkillsPage |
 
+> 2026-09-07 引用核验 v2：PDF 行尾断词编码为软连字符 U+00AD（前端展示时去掉）；
+> 检索按 query plan（DOI → 标题 variants）+ 确定性候选打分（DOI / strong / medium tier）；
+> metadata 记录带 `algorithmVersion`，版本不一致或 status=UNRESOLVED 的记录下次核验自动重查。
+>
 > M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **UNRESOLVED**
 > （检索暂时失败）≠ probable fabrication（≥3 源全一致零 error 才标记）；
 > 语义 verdict 六值固定（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED /
