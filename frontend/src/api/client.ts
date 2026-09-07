@@ -99,3 +99,49 @@ export const apiClient = {
   patch: <T>(path: string, body?: unknown) => request<T>({ method: "PATCH", path, body }),
   delete: <T>(path: string) => request<T>({ method: "DELETE", path }),
 };
+
+/**
+ * Attachment download (non-JSON response, e.g. Markdown report):
+ * on failure still parse the unified JSON error; on success return the Blob + filename
+ * from Content-Disposition (UTF-8 filename* takes priority, ASCII filename as fallback).
+ */
+export async function apiDownload(
+  path: string,
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; fileName?: string }> {
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}${path}`, {
+      method: "GET",
+      headers: { Accept: "text/markdown, */*" },
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  } catch (cause) {
+    throw new ApiError(
+      0,
+      "NETWORK_ERROR",
+      "无法连接 PaperTeam 后端服务（请确认服务已启动）",
+      cause instanceof Error ? cause.message : String(cause),
+    );
+  }
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: Partial<ApiErrorBody> | null = null;
+    try {
+      parsed = JSON.parse(text) as Partial<ApiErrorBody>;
+    } catch {
+      // Non-JSON error response body: fall back to raw text
+    }
+    throw new ApiError(
+      response.status,
+      parsed?.error?.code ?? "HTTP_ERROR",
+      parsed?.error?.message ?? `下载失败（HTTP ${response.status}）`,
+      parsed?.error?.detail,
+    );
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const utf8 = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const ascii = /filename="([^"]+)"/i.exec(disposition);
+  const fileName = utf8?.[1] ? decodeURIComponent(utf8[1]) : ascii?.[1];
+  return { blob: await response.blob(), fileName };
+}

@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -31,6 +31,7 @@ import type { SkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
+import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
 import {
   evaluateQualityGate,
   runBuildGate,
@@ -488,6 +489,7 @@ async function handleRequest(
       url,
       services.stack,
       services.importer,
+      services.orchestrator,
     );
     if (handled) {
       return;
@@ -637,6 +639,7 @@ async function handleProjectResourceRoutes(
   url: URL,
   stack: ServiceStack,
   importer?: LatexImporter,
+  orchestrator?: WorkflowOrchestrator,
 ): Promise<boolean> {
   const base = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/([a-z-]+)(\/.*)?$/.exec(pathname);
   if (base === null) {
@@ -1007,14 +1010,82 @@ async function handleProjectResourceRoutes(
   }
 
   // ---- paper-review（existing_paper_review 聚合报告） ----
-  if (resource === "paper-review" && rest === "") {
-    if (method !== "GET") {
-      sendMethodNotAllowed(res, "GET", method);
+  if (resource === "paper-review") {
+    if (rest === "") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const report = await stack.reviewArtifacts.latestExistingReview(projectId);
+      sendJson(res, 200, { report });
       return true;
     }
-    const report = await stack.reviewArtifacts.latestExistingReview(projectId);
-    sendJson(res, 200, { report });
-    return true;
+    // GET /paper-review/export.md —— Markdown 报告下载（与 Web UI 同源的结构化数据）
+    if (rest === "/export.md") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const report = await stack.reviewArtifacts.latestExistingReview(projectId);
+      if (report === null) {
+        // 明确 404：不导出空文件（先运行快速 Review）
+        throw new NotFoundError("Review 报告（先运行快速 Review）", projectId);
+      }
+      const [project, document, references, metadataRecords, claims, callouts, gate, runs] = await Promise.all([
+        stack.projects.getRequired(projectId),
+        stack.paperStore.loadDocument(projectId),
+        stack.paperStore.loadReferences<Record<string, unknown>>(projectId),
+        stack.citationIntegrity.listMetadataRecords(projectId),
+        stack.citationIntegrity.listClaimRecords(projectId),
+        stack.paperStore.loadCallouts<Record<string, unknown>>(projectId),
+        readLatestQualityGate(stack, projectId),
+        orchestrator?.listRuns(projectId) ?? Promise.resolve([]),
+      ]);
+      const reviewRun = runs
+        .filter((run) => run.workflowKind === "existing_paper_review")
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      const exporter = new ReviewReportExporter();
+      const result = exporter.export({
+        report: report as never,
+        project: { title: project.title },
+        document:
+          document !== null
+            ? {
+                originalFileName: document.originalFileName,
+                pageCount: document.parse.pageCount,
+                parse: document.parse,
+                sections: document.sections.map((s) => ({ sectionId: s.sectionId, title: s.title })),
+              }
+            : null,
+        references: references as never[],
+        metadataRecords,
+        claims,
+        calloutCount: callouts.length,
+        run:
+          reviewRun !== undefined
+            ? {
+                runId: reviewRun.runId,
+                status: reviewRun.status,
+                ...(reviewRun.startedAt !== undefined ? { startedAt: reviewRun.startedAt } : {}),
+                ...(reviewRun.finishedAt !== undefined ? { finishedAt: reviewRun.finishedAt } : {}),
+                stageHistory: reviewRun.stageHistory.map((stage) => ({
+                  stageId: stage.stageId,
+                  status: stage.status,
+                  startedAt: stage.startedAt,
+                  finishedAt: stage.finishedAt,
+                })),
+              }
+            : null,
+        gate,
+      });
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Disposition", contentDisposition(result.fileName));
+      res.end(result.markdown);
+      return true;
+    }
+    return false;
   }
 
   // ---- feasibility / citation / manuscript / context ----
@@ -1239,6 +1310,48 @@ async function buildReviewDigest(stack: ServiceStack, projectId: string): Promis
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** 最新 Quality Gate 报告（quality-gate-r*.json；无则 null——快速 Review 默认不含 Gate） */
+async function readLatestQualityGate(
+  stack: ServiceStack,
+  projectId: string,
+): Promise<{ passed: boolean; reasons: string[]; rules: Array<{ rule: string; passed: boolean; detail: string }> } | null> {
+  let names: string[];
+  try {
+    names = await readdir(stack.projects.reviewsDir(projectId));
+  } catch {
+    return null;
+  }
+  const rounds = names
+    .map((name) => /^quality-gate-r(\d+)\.json$/.exec(name))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map((match) => Number(match[1]))
+    .sort((a, b) => b - a);
+  const latest = rounds[0];
+  if (latest === undefined) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(
+      await readFile(join(stack.projects.reviewsDir(projectId), `quality-gate-r${latest}.json`), "utf8"),
+    ) as { gate?: { passed?: unknown; reasons?: unknown; rules?: unknown } };
+    const gate = parsed.gate;
+    if (gate === undefined || typeof gate.passed !== "boolean" || !Array.isArray(gate.reasons)) {
+      return null;
+    }
+    return {
+      passed: gate.passed,
+      reasons: gate.reasons.filter((r): r is string => typeof r === "string"),
+      rules: (Array.isArray(gate.rules) ? gate.rules : []).filter(isRecord).map((rule) => ({
+        rule: String(rule["rule"] ?? ""),
+        passed: rule["passed"] === true,
+        detail: String(rule["detail"] ?? ""),
+      })),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** 读取创建/更新项目时的研究定位字段 */

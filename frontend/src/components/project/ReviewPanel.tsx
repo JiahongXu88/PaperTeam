@@ -7,6 +7,7 @@ import { FINDING_CATEGORY_LABELS, SEVERITY_ORDER, SEVERITY_STYLES, stageLabel, s
 import {
   isRunActive,
   useCreateWorkflowRun,
+  useExportReviewReport,
   useInvalidateReviewOutputs,
   usePaper,
   usePaperReviewReport,
@@ -57,6 +58,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
 
   const reviewRun = runs.data?.find((run) => run.workflowKind === "existing_paper_review");
   const active = isRunActive(reviewRun);
+  const exportReport = useExportReviewReport(projectId);
 
   // 活跃 → 终态的边沿：刷新派生数据
   const wasActive = useRef(false);
@@ -134,9 +136,26 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
           >
             {startReview.isPending ? "启动中…" : hasReport ? "重新 Review" : "开始 Review"}
           </button>
+          {hasReport ? (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => exportReport.mutate()}
+              disabled={exportReport.isPending}
+              title="下载完整 Review 报告（Markdown，UTF-8；与页面同一套结构化数据，不受筛选影响）"
+              data-testid="export-report"
+            >
+              {exportReport.isPending ? "导出中…" : "导出报告"}
+            </button>
+          ) : null}
           {startReview.isError ? (
             <span className="form-error" role="alert">
               启动失败：{formatApiError(startReview.error)}
+            </span>
+          ) : null}
+          {exportReport.isError ? (
+            <span className="form-error" role="alert">
+              导出失败：{formatApiError(exportReport.error)}
             </span>
           ) : null}
         </div>
