@@ -1,11 +1,10 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-06（M4.3 PDF Review + Citation Integrity + Skill Registry 完成后）
+> 更新日期：2026-09-07（Project Hardening & Real Paper E2E 完成后）
 
 ## 当前阶段
 
-**M4.3 Foundation Complete（M4.3.0 Review Domain Model → M4.3.7 Minimal
-UI；M4.3.8 真实用户论文 E2E 属下一轮）。** Final PDF 正式成为 Existing
+**Project Hardening & Real Paper E2E 完成（2026-09-07）：M4.3 全部子里程碑含 M4.3.8 真实用户论文 E2E 收口，产品进入可用状态；下一步 M4/M5 规划另行决定。** 此前基线——M4.3 Foundation Complete（M4.3.0 Review Domain Model → M4.3.7 Minimal UI）。 Final PDF 正式成为 Existing
 Paper 的 Review 输入：PDF → pymupdf 确定性解析 → pages/sections/chunks（页
 provenance）→ PaperMap + 受控 section review context（其他章节全文绝不进
 入当前章节的审稿上下文）；引用完整性两层核验（文献真实性=外部学术库确
@@ -42,7 +41,7 @@ verified（见下）。下一阶段：M4.3 Workflow Live View + SSE + Cancel。*
 | M4.3.7 Minimal UI | ✅ | ProjectPage 新增 PDF / Structure 与 Citations 标签（上传/解析状态/sections 表；两层核验摘要 chips + 逐条 status/canonical/疑似捏造告警 + 分步操作）；全局 Skills 页（中文简介为主、原始描述折叠、来源@revision/license/绑定，**无未实现的 Install/Uninstall 按钮**）；全部 server state 走 TanStack Query |
 | M4.3.7.5 Model Settings UI | ✅ | `Settings → Model`（/settings/model）：前端配置模型与 API Key，无需手工环境变量。后端 `ModelSettingsService` + `/api/settings/model` 路由组（GET 状态/PUT 保存/DELETE key/GET options/POST test）；存储完全复用 Pi 官方能力——偏好 `<runtimeRoot>/settings/model.json`（原子写，非敏感），Key 经 `ModelRuntime.login/logout` 落 `agentDir/auth.json`（不自建第二套 credential，无 deep import）；优先级 env（PAPERTEAM_PI_*）> stored，env 覆盖时 UI 明示且 savedModel 如实展示；`reconfigure()` 只影响新 Agent Run（在途 run>0 → 409 MODEL_CONFIG_BUSY，前置检查先于落盘）；Test Connection 走 `completeSimple` 最小真实调用（可携带未保存 Key 覆盖式注入，失败六分类+脱敏）；**Key 只进不出**：任何 GET 无 key 字段、日志零请求体、sentinel 回归测试覆盖；重启持久化（启动装配 resolveStartupModelSpec：env 缺省时 stored 自动生效，smoke 实证） |
 | Visual Redesign + UX/中文一致性 Polish | ✅ | Design Tokens + 深墨侧栏/纸白内容 + 统一状态注册表（2026-09-06）；UX Polish：全站中文优先（导航/表单/状态/错误码集中映射 `formatApiError`）、模型设置改**模型搜索选择器**（筛选/键盘/截断渲染，displayName 主视觉 + modelId 次要）、**modelId 含斜杠 bug 修复**（`parseModelSpec` 接受 openrouter `anthropic/claude-sonnet-4` 形态，DTO 显式 provider+modelId，前端不再 split 猜测，前后端回归测试）、Tab 状态进 URL（?tab=，无效回退概览）、未开放模块退出一级导航、Existing Paper 创建后直达 PDF 上传、侧栏保持完整宽度（修复窄窗口导航空白）、Design Token 收口（页面级 hex 全部入 token） |
-| M4.3.8 用户论文 E2E | ⏳ 下一轮 | 直接用用户最终 PDF 验收 |
+| M4.3.8 用户论文 E2E | ✅ 2026-09-07 | 用户真实论文（26 页中文，36 节 / 25 条参考文献）从产品入口导入 → 快速 Review 全链路完成，见「Project Hardening & Real Paper E2E」节 |
 
 外部选型结论：**pymupdf adopt**（本机已有 1.28.2；pymupdf4llm 评估后不作为核心依赖——markdown re-flow 破坏 chunk↔原文对应）；**GROBID defer**（callout↔reference 关联有价值但 Java21/Docker 部署超出本轮，`ScholarlyStructureParser` seam 未建、待 M4.3.8/M5 评估）；**RefWarden adopt+借鉴**（(claim,citation) 模型/never-from-memory/确定性 severity）；**paper-search 借鉴 provider 设计 + wrapper 收录**（不自建多平台搜索框架、不引入其 Python MCP server）。
 
@@ -244,7 +243,8 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
+- **当前：Backend 365（+4 个默认跳过的 live smoke）+ Frontend 73 + 浏览器级 E2E 15（Playwright，`e2e/`，需运行中的 dev 栈）全部通过（2026-09-07）。**
+- 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。
 - 测试策略：编排引擎与业务服务为真实实现，仅 AgentRuntime 注入脚本化 fake
@@ -278,6 +278,19 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 2. EvidenceStore 索引与 SQLite 迁移条件（同前）。
 3. M4+ 前端技术栈、Docker/compose、TeX Live 镜像体积控制。
 
+## Project Hardening & Real Paper E2E（✅ 完成，2026-09-07）
+
+全项目 Review / 加固 / 前端重设计 / 真实论文 E2E 一轮（不改产品语义、不换 Runtime、不降低引用真实性要求）：
+
+- **PDF 导入根因修复**：真实论文导入 400「PDF 解析器输出了非法 JSON」——MuPDF C 层把 `MuPDF error: syntax error ...` 警告直接写到 fd 1，与 JSON 混在 stdout。修复：`parse_paper_pdf.py` 解析期间 `dup2(2,1)` 把 fd 1 重定向到 stderr、结果 JSON 经保留的原 stdout fd 作为最后一行输出、`mupdf_display_errors(False)`；Node 侧只取最后一行非空 JSON，错误分为 `PDF_PARSE_FAILED`(422) / `PDF_PARSER_UNAVAILABLE`(503)。新增 `pdfToolchain.ts`（python/python3/py -3 / `PAPERTEAM_PDF_PYTHON` 探测 + 缓存）、`npm run doctor`、启动自检与 `/api/runtime/status.tools.pdfParser`、前端侧栏/横幅提示。中文论文：中文标题/摘要启发、中文编号章节（"3.1 总体框架"、"第 X 章"）、GB/T 7714 与 IEEE 引号式参考文献解析、以标题块为锚的 block→section 分配（同页多章节不再整页归入首节）。
+- **Review 韧性**：`review.sections` 只审有正文的章节（<80 字符的标题节记为 emptySections 跳过而非失败）；单节失败先节内退避重试（3 次，5s/20s），持续失败记 `failedSections` 继续下一节，全部失败才 stage 级重试；取消信号贯通 PaperMap 摘要 / 语义核验 / 单节审阅（在途模型调用立即 abort，不再等 stage 边界）；stage 超时改为**空闲超时**（连续 timeoutMs 无进度汇报才判超时，长论文不再被固定预算杀掉）；进度快照 `run.progress` 进 DTO，前端阶段清单实时显示"第 n / N 节、已记录 k 条发现"。
+- **Backend 加固**：BusinessError 新增 `NOT_FOUND`/`PDF_*`，`toBusinessError` 不再泄漏内部异常文案；HTTP 层上传体积上限、base64 字段校验、枚举参数校验、405；ProjectStore 每项目串行 `mutate()` + 原子写；SourceStore/EvidenceStore 损坏索引显式报错、404 语义统一；Orchestrator emit 链不被单次写失败污染、超时 abort 在途 stage、同项目并发 createRun 互斥、cancel 期间 stage 抛错归为 cancelled；`writeJsonAtomic` Windows EPERM/EBUSY 重试；`tsconfig` 开启 noUnused*/noImplicitReturns。
+- **前端重设计（frontend-design skill，"编辑部校对台"方向）**：archival white 纸面 + ink indigo 强调、状态色 verdigris/ochre/vermilion、页面级标题 serif、左侧数字栏（gutter）替代卡片堆叠；无阴影/渐变；正式 Dark Mode（跟随系统 / 浅色 / 深色，`paperteam.theme` localStorage，`index.html` 首帧前脚本防闪烁，token 全覆盖，设置 → 外观 + 侧栏快捷切换）；App Error Boundary（"页面出现异常"，重新加载 / 返回论文项目，dev 才显示堆栈）；错误码集中映射（MODEL_CONFIG_BUSY / PROJECT_BUSY / NOT_FOUND / AUTH_FAILED / TIMEOUT / RATE_LIMITED / PDF_PARSE_FAILED …）；全部页面 loading / empty / error 三态；行内确认替代 `window.confirm`；tabs/menu a11y（role/aria-selected/键盘）。
+- **浏览器级 E2E**：`e2e/`（Playwright，channel chrome，可 `PAPERTEAM_E2E_CDP_URL` connectOverCDP 复用已开浏览器，端口经 env 配置）；`smoke.spec.ts` 16 步用户路径（导入 → 自动 Review → 真实 cancel → 引用提取 → Skills → 模型设置 → 主题切换持久化 → 归档/恢复/删除确认 → 清理自建项目）；`visual.spec.ts` 浅/深 × 1366x768 / 1440x900 / 1920x1080 / 1100w 截图 + 无水平溢出 + 深色真实生效断言。旧 `scripts/browser-qa*.mjs`（手写 CDP client）删除。
+- **真实论文 E2E（用户 PDF，不入库）**：26 页、36 节（42 chunks）、25 条参考文献（25/25 解析出标题/年份/作者）、49 处正文引用 / 63 条关联全部可解析；文献真实性 22 VERIFIED / 3 NOT_FOUND / 0 疑似捏造；语义核验 63 条（上限 30 条进入 judge）：2 支持 / 1 部分支持 / 3 不支持 / 39 证据不足 / 18 跳过；分章节审阅 33 / 36 节（3 节仅标题），226 条发现（严重 0 / 主要 59 / 次要 125 / 提示 42），单次完整审阅 29.5 分钟（≈54 s/节，glm-gateway Anthropic 兼容通道）。第一次 stage 尝试因笔记本进入待机 88 分钟被固定超时杀掉——由此引入空闲超时语义。PaperMap 摘要 / 文献元数据 / 语义核验结果按指纹复用，重跑零重复模型调用。
+
+遗留（不阻塞）：LatexCompiler `shell:true` 下 Windows 超时 kill 只杀 shell；语义核验 30 条上限与 INSUFFICIENT_EVIDENCE 占多数（无摘要文献）；项目列表状态字段沿用 M2 的 created/generated/failed，不反映 Review 运行中/完成（需要 list DTO 扩展）；Provider 偶发 503（外部）。
+
 ## Project Entry & Lifecycle UX（✅ 完成，2026-09-07）
 
 产品入口与生命周期收口（不是视觉重设计；Modern Research Workbench 视觉体系保留）：
@@ -286,10 +299,11 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 - **existing_paper_review**：独立 WorkflowKind（completion label=`review`），复用 M4.3 Foundation——`paper.ensure`（PaperMap）→ `citation.extract` → `citation.metadata` → `citation.claims` → `review.sections`（ReviewContextBuilder 受控上下文 × SectionReviewService → ReviewFinding，≤40 节）→ `review.aggregate`（`reviews/existing-review-r*.json`）；不经过旧 manuscript review 链路。模型未配置时导入仍成功，Review 页给出「配置模型后即可开始 Review」引导。
 - **项目生命周期**：`archivedAt` 独立生命周期字段（与 status 正交）；`POST /archive`（运行中 run → 409 PROJECT_BUSY，不静默归档）/ `POST /restore` / `DELETE`（仅已归档，否则 409 PROJECT_NOT_ARCHIVED；删除整个工作区 + `PiRuntimeAdapter.releaseProjectSessions` 释放项目会话；设置页输入完整标题确认）。默认列表与最近项目只显示未归档（`?scope=archived|all`）。
 - **导航与 Settings**：PaperTeam 品牌即返回论文项目的主页入口（删 Research Workbench）；Settings 二级导航（模型设置 / 项目管理）；项目行重构为 row container + 主内容 Link + 「···」菜单（打开/重命名/归档），Header 支持编辑标题（PATCH title）。
-- **验收**：Backend 338 + Frontend 73 测试（新增 import 回滚/自动标题/goal 映射/archive 过滤/restore/仅归档可删/忙碌保护/会话释放/Review 全链路 Fake Runtime）；build/typecheck 通过；Chrome 真实浏览器 8 条用户路径 × 3 分辨率（CDP 驱动，截图存档）全部通过。
+- **验收**：Backend 338 + Frontend 73 测试（新增 import 回滚/自动标题/goal 映射/archive 过滤/restore/仅归档可删/忙碌保护/会话释放/Review 全链路 Fake Runtime）；build/typecheck 通过；Chrome 真实浏览器 8 条用户路径 × 3 分辨率（当时为手写 CDP 脚本，已被 `e2e/` Playwright 套件取代）全部通过。
 
 ## 历史
 
+- **Project Hardening & Real Paper E2E（2026-09-07）**：见上节。
 - **Project Entry & Lifecycle UX（2026-09-07）**：见上节。
 - **M4.3 PDF Review + Citation Integrity + Skill Registry**：Final PDF 成为 Existing Paper 正式 Review 输入；确定性解析（pymupdf 子进程）→ pages/sections/chunks；PaperMap + 受控 section context（隔离证明 + 会话无关重建证明）；引用提取（range 展开/不猜语义）；两层核验（NOT_FOUND≠捏造≠检索失败；语义 judge 禁止凭记忆、伪造引文剥离、确定性 severity）；Citation Integrity 规则并入 QualityGate；Skill Registry（两项 MIT 审计 skill pin revision 入库、按角色注入、中文简介持久化）；最小前端三视图；真实 PDF + 真实学术库 live smoke；285+34 测试。
 - **M4.2.5 Live Model Integration Gate**：验证型里程碑（无代码改动）——真实 Provider `zai-coding-cn/glm-5.3` 经运行中 Backend 公开 API 完成 L3 验证：单 Agent smoke（10.3s 真实输出）、live SSE（4 条 LIVE 域事件实时推送）、Workflow E2E 至首个 HITL（checkpoint 全落盘）、真实 cancel（边界语义 + 会话复用）；凭据零泄漏，Pi 全程 in-process，234+24 测试零回归。

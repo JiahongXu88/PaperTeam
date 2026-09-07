@@ -207,6 +207,7 @@ fan-out / join 的使用点：三类 review skill 并行、多节 Revision 并�
 | retry policy | 重试策略（哪些 failure type 可重试） |
 | failure type | 失败分类（transient / permanent / runtime-unavailable …） |
 | max attempts | 最大尝试次数 |
+| timeout | 空闲超时：连续 timeoutMs 无进度汇报（emitProgress）即判超时并 abort 在途 stage；分章节 Review 等长 stage 按节汇报进度，总时长可随论文长度增长 |
 
 示例（WriterStage）：requires = outline + evidence；produces =
 `sections/<name>.tex`；DoD = 文件存在、非空、LaTeX 语法合法（可编译到 preamble 级）。
@@ -552,21 +553,37 @@ TanStack Query 5 + Zustand 5**（npm；无 Next.js / Redux / GraphQL / SSR /
 ```text
 frontend/src/
 ├── api/            # 统一 API 层：client（ApiError/NETWORK_ERROR 收敛）+
-│   │                # projects / runs / runtime / paper / skills（唯一 fetch 出口）
-├── types/api.ts    # Frontend DTO（契约见 docs/API_CONTRACT.md）
-├── hooks/          # TanStack Query hooks（queryKeys 集中定义）
+│   │                # projects / runs / runtime / paper / skills / settings（唯一 fetch 出口；
+│   │                # runs.ts 逐字段校验 WorkflowState → WorkflowRunView）
+├── types/          # Frontend DTO（api.ts / paper.ts；契约见 docs/API_CONTRACT.md）
+├── hooks/queries.ts# TanStack Query hooks；key 分 ["projects","list",scope] 与 ["project",id,…]
+│                    # 两族，列表失效不重取项目子查询；run 列表只在有活跃 run 时轮询
 ├── stores/         # Zustand（纯 UI 状态：模型未配置横幅 dismiss）
-├── router/         # 路由：/ →redirect /projects；/projects(/new/:id)；* →404
-├── pages/          # ProjectsPage / NewProjectPage / ProjectPage / SkillsPage / NotFoundPage
-├── components/     # common（StateViews / RuntimeStatusChip）、layout（AppLayout）、
-│   │                # project（ProjectCard / Badges / PdfPanel / CitationsPanel）
+├── theme/          # 主题偏好（system / light / dark）：ThemeProvider + localStorage；
+│                    # index.html 内联脚本在 React 挂载前写 <html data-theme> 防闪白
+├── router/         # / →/projects；/projects(/new/:id)；/skills；/settings/(model|appearance|projects)；* →404
+├── pages/          # Projects / NewProject / Project / Skills / ModelSettings / AppearanceSettings /
+│                    # ProjectManagementSettings / NotFound
+├── components/     # common（StateViews / ErrorBoundary / RowMenu+InlineConfirm / ThemeControls /
+│   │                # ModelCombobox / status 注册表）、layout（AppLayout / SettingsLayout）、
+│   │                # project（Badges / ProjectRow / PdfPanel / CitationsPanel / ReviewPanel）
 ├── constants/      # documentType / targetProfile 建议值（与 Backend 同步）
-├── utils/          # format（时间格式化）
-└── styles/         # index.css（CSS 变量 + 基础组件类）
+├── utils/          # errors（错误码 → 中文文案 / 技术细节）、file（PDF 校验 + base64）、format
+└── styles/         # tokens（唯一颜色/尺寸来源，含 [data-theme="dark"]）→ base → components → views
 ```
 
 **状态管理边界**：Server State（projects / project / runs / runtime status）一律
 TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据、禁止巨型 global store。
+主题偏好是纯 UI 偏好，允许 localStorage（不是 server state，也不含敏感信息）。
+
+**视觉语言（2026-09-07 重设计）**：档案白纸面 + 墨水靛蓝唯一强调色，状态取铜绿 /
+赭石 / 朱砂三种批注色；衬线只用于页面级标题；参考文献编号、页码、序号统一落在左侧
+栏位（`.gutter-row`）对齐；不用卡片堆叠、大面积阴影与渐变。深色主题是同一套
+语义 token 的完整覆盖（表面 / 线 / 文字 / 状态 / 输入 / 菜单），不是 filter 反色。
+
+**健壮性**：`AppErrorBoundary` 包住路由出口（渲染异常 → 中文提示 + 重新加载 /
+返回，开发环境折叠显示详情）；所有主要视图都有 loading / empty / error 三态，
+错误码经 `utils/errors.ts` 转成用户文案，技术细节折叠。
 
 ### 8.2 前后端边界（M4.0 红线）
 
@@ -578,6 +595,14 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
   模型未配置时显示可关闭横幅（Runtime 健康 ≠ 模型就绪）。
 - Dev 下 Vite Dev Server（:5173）将 `/api`、`/health` proxy 到 Backend（:3000），
   前端全部同源相对路径（无 CORS）；生产部署形态（Backend 静态托管 dist）M4.8 决策。
+
+### 8.2b 浏览器级验收（e2e/，仅测试工具）
+
+`e2e/` 是独立 npm 包（Playwright），用本机 Chrome（`channel: "chrome"`，不下载浏览器），
+也可经 `PAPERTEAM_E2E_CDP_URL` 用 `connectOverCDP` 复用已开 remote-debugging 的浏览器；
+端口不硬编码，结束只断开不关用户浏览器。`smoke.spec.ts` 走完整用户路径并自清理，
+`visual.spec.ts` 做 4 视口 × 双主题截图与无溢出 / 深色生效断言。CDP 只是开发 / 测试
+工具，不进入 Backend 产品代码。
 
 ### 8.3 双模式目标（PRD；系统管理后台 M4.8+）
 
@@ -593,18 +618,23 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
 
 ## 9. Backend 模块划分
 
-M3 实际结构：
+实际结构（2026-09-07）：
 
 ```text
 backend/src/
-├── config/        配置加载与校验（pi / agents / projects / latex / workflow / citation / review）
+├── config/        配置加载与校验（pi / agents / projects / latex / workflow / citation / review / pdf）
 ├── errors.ts      业务错误模型（稳定错误码 → HTTP 状态码映射）
 ├── runtime/       AgentRuntime 契约 v2 + PiRuntimeAdapter（sessionKey 派生、角色映射
 │   │              pi/roleConfig、版本 pin pi/version）+ statusService（诊断，Pi 形状）
-├── project/       ProjectStore（研究定位字段 / 路径安全 / list / updateMeta）
-├── workflow/      WorkflowOrchestrator（引擎）、definitions（两条 workflow 的
-│                  stage 注册表 + plan/onInput 确定性规划器）、runStore（checkpoint
-│                  持久化）、eventLog（Domain Event JSONL）、types（StageContract 等）
+├── project/       ProjectStore（研究定位字段 / 路径安全 / 原子写 + 每项目写队列 /
+│                  生命周期）、ProjectImportService（PDF File-First 导入）
+├── paper/         PdfParser + pdfToolchain（Python / pymupdf 探测与 stdout JSON 协议）、
+│                  sectionChunking（TOC/标题 → sections，标题行锚定的 block 归属 → chunks）、
+│                  PaperStore、PaperIngestService、PaperMapService、ReviewContextBuilder、
+│                  ReferenceExtractor（IEEE / GB/T 7714 / APA 著录解析）、SectionReviewService
+├── workflow/      WorkflowOrchestrator（引擎）、definitions（三条 workflow 的
+│                  stage 注册表 + plan/onInput 确定性规划器）、kinds（WorkflowKind 常量）、
+│                  runStore（checkpoint 持久化）、eventLog（Domain Event JSONL）、types
 ├── agents/        ResearcherService、FeasibilityService、ReviewerService（业务角色，
 │                  Prompt + 结构化输出校验）、outputParsing（防御性 JSON 提取）
 ├── writer/        WriterService（M2 完整文档 + M3 大纲 / 分节 / 修订 / 改进计划）
@@ -614,7 +644,10 @@ backend/src/
 │                  LatexFiles（\input 递归收集）
 ├── citation/      StaticCitationChecker（Layer 1）、metadataProviders（Layer 2：
 │                  CrossRef/OpenAlex/arXiv）、CitationService（编排 + 报告）
-├── review/        ReviewAggregator（确定性聚合）
+├── review/        ReviewAggregator（确定性聚合）、finding（ReviewFinding + 枚举常量）、
+│                  reviewArtifacts（reviews/ 目录 round 编号与读写，HTTP 与 workflow 共用）
+├── settings/      ModelSettingsService / Store（模型偏好 + Pi 凭据写路径，Key 不回显）
+├── skills/        SkillRegistry / SkillSummaryService / scholarlyTools
 ├── quality/       gates（Build Gate / Quality Gate 判定器）
 ├── import/        zipReader（零依赖 ZIP + 防 Zip Slip）、LatexImporter（导入 MVP）
 ├── serviceStack.ts 服务栈装配（生产与测试共用）

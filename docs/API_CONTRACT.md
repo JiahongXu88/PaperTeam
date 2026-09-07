@@ -1,7 +1,9 @@
 # PaperTeam Frontend API Contract（M4.0）
 
 > 冻结日期：2026-09-04（M4.0）；M4.3 增补 PDF / Citations / Skills 端点（2026-09-06）；
-> 2026-09-07 增补 Project Entry & Lifecycle（import-pdf / archive / restore / DELETE / scope / paper-review）。
+> 2026-09-07 增补 Project Entry & Lifecycle（import-pdf / archive / restore / DELETE / scope / paper-review）；
+> 2026-09-07 Hardening：错误码 `NOT_FOUND` / `PDF_PARSE_FAILED` / `PDF_PARSER_UNAVAILABLE`、
+> `RuntimeStatusView.tools.pdfParser`、`WorkflowRunView.progress`、`ImportProjectPdfResult.document`（见 §0 / §2）。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -20,11 +22,21 @@
 
   前端 `ApiError{status, code, message, detail?}`；网络层失败（Backend 未启动）收敛为
   `status=0, code=NETWORK_ERROR`。
+- 状态码语义（2026-09-07 Hardening）：
+  - `404`：项目 / run / Skill / Evidence / 文献不存在（`PROJECT_NOT_FOUND` / `WORKFLOW_NOT_FOUND` / `NOT_FOUND`）；
+  - `400 INVALID_REQUEST`：请求体 / 查询参数不合法（含枚举字段非法、base64 字符集非法、可选请求体不是合法 JSON）；
+  - `422 PDF_PARSE_FAILED`：PDF 内容无法解析（损坏 / 加密 / 无文本层）；原料已落盘，可重试；
+  - `503 PDF_PARSER_UNAVAILABLE`：本机缺少 Python / pymupdf，`message` 含安装命令；
+  - `405` + `Allow`：已知路径、方法不对（含 citations / paper 子路径）；
+  - `500 INTERNAL_ERROR`：`message` 固定为通用文案，**不透传**内部异常消息与路径（原始错误只进 Backend 日志）。
+- 上传请求体上限与文件上限联动：论文 PDF 50MB（请求体 ≈ 67MB），文献 20MB（≈ 28MB）。
 - 实时通信：SSE（`GET /api/runs/:runId/events`，Domain Event replay + 实时推送，
   心跳 15s）。事件为 **Workflow Domain Event**（非 Pi Runtime event），M4.3 起消费。
 - Runtime Status 为 **Pi schema**：
   `runtime{provider:"pi", phase, version}` + `model{phase, model?, providers}` +
-  `agents{roles}` + `sessions{activeRuns, managedSessions}`（DECISIONS D-0020）。
+  `agents{roles}` + `sessions{activeRuns, managedSessions}`（DECISIONS D-0020）
+  + `tools{pdfParser{phase: "ready"|"unavailable"|"unknown", detail, pythonVersion?, pymupdfVersion?}}`
+  （PDF 解析工具链探测；前端据此在导入前提示依赖缺失）。
 
 ## 1. 端点清单（以源码为准，M4.0 审计结果）
 
@@ -65,7 +77,7 @@
 |---|---|---|
 | `POST /api/projects/:id/paper/pdf` | 上传 Final PDF（`{fileName, contentBase64}`，≤50MB，%PDF- 校验；sha256 幂等）→ 201 `{document: PaperDocSummary, unchanged}` | ProjectPage「PDF / Structure」 |
 | `GET /api/projects/:id/paper` | `{document: PaperDocSummary\|null, sections?, stages?, note?}`（summary 不含 pages/chunks 全文） | ProjectPage「PDF / Structure」 |
-| `POST /api/projects/:id/paper/reparse` | 对已落盘原料重跑解析 | （工具 API） |
+| `POST /api/projects/:id/paper/reparse` | 对已落盘原料重跑解析（解析器升级后无需重新上传；清空引用 / Review 派生产物）→ `{document}` | ProjectPage「PDF 与结构」（重新解析） |
 | `GET /api/projects/:id/paper/chunks?sectionId=` | chunk 明细（每条含 chunkId/pageStart/pageEnd/sectionId/text） | （M4.3.8 review 视图） |
 | `GET/POST /api/projects/:id/paper/map` | PaperMap 读取 / 重建（POST body `{refreshSummaries?: boolean}`） | （M4.3.8） |
 | `GET /api/projects/:id/paper/review-context?sectionId=[&skill=]` | section review 受控上下文预览（budget 分项） | （M4.3.8 / 诊断） |
@@ -76,8 +88,8 @@
 | `POST /api/projects/:id/citations/verify-claims` | (claim,citation) 语义核验（需模型；`{force?, limit?}`） | Citations 面板 |
 | `GET /api/projects/:id/citations/claims` / `GET …/integrity` | 语义核验记录 / 完整性汇总（metadata 五态 + semantic verdict 分布 + gate 输入） | Citations 面板 / M4.6 |
 | `GET /api/skills` | `{skills: SkillView[], bindings}`（含 pin revision/license/中文简介状态） | SkillsPage |
-| `GET /api/skills/:id` | `{skill: SkillView}`；400=不存在 | （详情视图） |
-| `POST /api/skills/:id/summary` | 重新生成中文简介（模型未配置 → 400 结构化错误） | SkillsPage |
+| `GET /api/skills/:id` | `{skill: SkillView}`；404=NOT_FOUND | （详情视图） |
+| `POST /api/skills/:id/summary` | 重新生成中文简介（模型未配置 / 生成失败 → 502 AGENT_RUN_FAILED；摘要服务未装配 → 503） | SkillsPage |
 
 > M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **UNRESOLVED**
 > （检索暂时失败）≠ probable fabrication（≥3 源全一致零 error 才标记）；
@@ -167,6 +179,8 @@ interface CreateProjectInput {                   // POST /api/projects 请求体
 }
 
 // POST /api/projects/import-pdf 请求体（2026-09-07；标题不由用户提供）
+// 响应：{ project: ProjectView, document: PaperDocSummary, titleSource: "pdf" | "filename" }
+// —— document 与 GET /paper 的 document 同形，前端直接种缓存
 interface ImportProjectPdfInput {
   fileName: string;                              // *.pdf ≤50MB
   contentBase64: string;
@@ -188,6 +202,8 @@ interface WorkflowRunView {                      // WorkflowState → UI 子集�
   awaiting?: { stageId: string; prompt: string; options: string[] } | null;
   error?: { code: string; message: string } | null;
   completion?: { label: "final" | "draft" | "review" } | null;
+  /** 当前 stage 最近一次 stage.progress 快照（如分章节审阅 {section,index,total,findings}；2026-09-07） */
+  progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
 }
 
 // GET /api/projects/:id/paper-review（2026-09-07）

@@ -29,10 +29,12 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 
 | 层 | 技术 |
 | --- | --- |
-| Frontend | React 19 + TypeScript + Vite（React Router 7 + TanStack Query 5 + Zustand 5） |
+| Frontend | React 19 + TypeScript + Vite（React Router 7 + TanStack Query 5 + Zustand 5）；手写 CSS Design Tokens，浅色 / 深色主题 |
 | Backend | Node.js + TypeScript（原生 HTTP，无 Web 框架） |
 | Agent Runtime | Pi SDK（`@earendil-works/pi-coding-agent`，in-process） |
 | Workflow | PaperTeam WorkflowOrchestrator（确定性 TypeScript 编排引擎） |
+| PDF 解析 | Python 3 + pymupdf（`backend/tools/parse_paper_pdf.py`，子进程 JSON 协议） |
+| E2E | Playwright（`e2e/`，本机 Chrome；可 connectOverCDP） |
 
 ## 当前状态
 
@@ -79,6 +81,14 @@ PDF、失败回滚不留半成品）；`existing_paper_review` 快速 Review 工
 会话清理）；Settings 二级导航（模型设置 / 项目管理）；PaperTeam 品牌即
 返回论文项目的主页入口。
 
+**Project Hardening & Product Polish（2026-09-07）已落地**：全项目审计与加固
+（编排器事件链 / 取消 / 超时、原子写、HTTP 校验与状态码、错误模型不透传内部信息）；
+**PDF 导入根因修复**（MuPDF C 层告警污染 stdout 协议；Python / pymupdf 自动探测 +
+`npm run doctor`）；章节文本按标题行精确归属（同页多章节不再丢失）；参考文献著录
+解析（IEEE / GB/T 7714 / APA）；前端整体重设计 + **深色模式**（跟随系统 / 浅色 /
+深色，设置 → 外观）；App 错误边界；Playwright 浏览器级 E2E（`e2e/`）。真实用户论文
+（26 页中文论文）已完成导入 → 引用核验 → 分章节 Review 全链路。
+
 **未实现（M4.4+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
 Review 界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
 系统管理后台、Docker 部署。
@@ -97,13 +107,16 @@ Review 界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验�
 
 ```text
 PaperTeam/
-├── package.json      # 根开发入口（dev / build / typecheck / test 均覆盖前后端）
-├── scripts/dev.mjs   # dev 启动器（Node/依赖检查 → 构建 → 同时启动 Backend + Vite）
-├── frontend/         # React Web Workbench（React 19 + Vite，M4）
-├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime / LaTeX / 版本管理）
-├── agents/           # Agent 定义与配置（预留，当前角色配置在 backend/src/runtime/pi/）
-├── docker/           # Docker 部署配置（预留）
-└── docs/             # 项目文档（含 API_CONTRACT.md）
+├── package.json         # 根开发入口（dev / doctor / build / typecheck / test / test:e2e）
+├── scripts/dev.mjs      # dev 启动器（Node/依赖检查 → 构建 → 同时启动 Backend + Vite）
+├── scripts/doctor.mjs   # 环境自检（Node / 依赖 / Python + pymupdf）
+├── frontend/            # React Web Workbench（React 19 + Vite）
+├── backend/             # PaperTeam Backend（API / Workflow / Pi Runtime / LaTeX）
+│   └── tools/parse_paper_pdf.py   # PDF 解析工具（pymupdf 子进程，stdout JSON 协议）
+├── e2e/                 # Playwright 浏览器级 E2E（仅测试工具，不进产品代码）
+├── agents/              # Agent 定义与配置（预留，当前角色配置在 backend/src/runtime/pi/）
+├── docker/              # Docker 部署配置（预留）
+└── docs/                # 项目文档（含 API_CONTRACT.md）
 ```
 
 ## 快速开始（Quick Start）
@@ -111,9 +124,16 @@ PaperTeam/
 ```bash
 git clone https://github.com/JiahongXu88/PaperTeam.git
 cd PaperTeam
-npm run install:all   # 安装依赖（backend：Pi SDK 0.84.4 精确 pin；frontend：React 19 + Vite）
+npm run install:all   # 安装依赖（backend：Pi SDK 0.84.4 精确 pin；frontend：React 19 + Vite；e2e：Playwright）
+npm run doctor        # 环境自检：Node / 依赖 / PDF 解析工具链（Python 3 + pymupdf）
 npm run dev           # 一键启动：Backend + React Workbench
 ```
+
+**PDF 解析依赖**：导入已有论文需要本机 Python 3.10+ 与 `pymupdf`
+（`python -m pip install pymupdf`）。Backend 启动时按 `python` / `python3` / `py -3`
+自动探测（也可用 `PAPERTEAM_PDF_PYTHON` 指定解释器路径）；缺失时启动日志、
+`GET /api/runtime/status`（`tools.pdfParser`）与前端顶部横幅都会明确提示，
+导入请求返回 `503 PDF_PARSER_UNAVAILABLE` 并附安装命令，而不是一个 `spawn ENOENT`。
 
 `npm run dev` 会自动完成：
 
@@ -151,7 +171,12 @@ echo PAPERTEAM_PI_API_KEY=sk-ant-... >> .env
 ```
 
 环境变量覆盖时 Settings 页面会明确提示「当前模型配置由环境变量提供」，
-仍可保存本地配置（在环境变量不存在时生效）。配置后用诊断确认：
+仍可保存本地配置（在环境变量不存在时生效）。
+
+**Anthropic 兼容网关 / 自定义 provider**：在 `~/.paperteam/runtime/pi/agent/models.json`
+按 Pi 官方格式声明 provider（`baseUrl` / `api: "anthropic-messages"` / 模型列表），
+`apiKey` 可写成 `"$SOME_ENV_VAR"` 引用环境变量——文件里不出现任何 Key 本体。
+Settings 页面会把它当作普通 provider 列出。配置后用诊断确认：
 
 ```bash
 curl http://localhost:3000/api/runtime/status
@@ -175,7 +200,13 @@ curl http://localhost:3000/api/runtime/status    # runtime/agents/model/sessions
 # 根目录一键（前后端一起）：
 npm run build          # backend tsc + frontend tsc --noEmit + vite build
 npm run typecheck      # backend + frontend
-npm test               # backend 234 + frontend 24 个测试
+npm test               # backend 363 + frontend 73 个 vitest 用例（不需要模型 / 外网）
+
+# 浏览器级 E2E（需要 npm run dev 已在运行；用本机 Chrome，不下载浏览器）：
+npm run test:e2e:smoke          # 用户完整路径：创建 → 导入 PDF → Review → 引用 → Skills → 设置 → 主题 → 归档 / 恢复 / 删除确认
+npm run test:e2e:visual         # 主要页面 × 4 视口 × 浅色/深色 截图 + 无溢出断言（输出 e2e/shots/）
+#   PAPERTEAM_E2E_PDF=D:\path\paper.pdf   用真实论文跑导入路径（默认用仓库内 arXiv fixture）
+#   PAPERTEAM_E2E_CDP_URL=http://127.0.0.1:9222   复用已开 remote-debugging 的浏览器（connectOverCDP）
 
 # backend 单独：
 cd backend && npm start          # Pi SDK in-process
