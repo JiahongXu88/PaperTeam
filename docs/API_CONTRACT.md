@@ -83,10 +83,10 @@
 | `GET /api/projects/:id/paper/review-context?sectionId=[&skill=]` | section review 受控上下文预览（budget 分项） | （M4.3.8 / 诊断） |
 | `POST /api/projects/:id/citations/extract` | 引用提取（确定性）→ `{summary{referenceCount,calloutCount}, reused, references, callouts}` | Citations 面板（重新提取） |
 | `GET /api/projects/:id/citations` | `{summary: ExtractionSummary, references: ReferenceView[]}` | Citations 面板 |
-| `POST /api/projects/:id/citations/verify-metadata` | 真实性核验（外部学术库；逐条文件持久化 + 指纹跳过）→ `{byStatus, checked, reused, telemetry, records}` | Citations 面板 |
-| `GET /api/projects/:id/citations/metadata` | `{records: MetadataRecordView[]}`（逐条 status/canonical/mismatches/attempts/checkedAt/algorithmVersion） | Citations 面板（status 列 + 折叠「核验详情」） |
-| `POST /api/projects/:id/citations/verify-claims` | (claim,citation) 语义核验（需模型；`{force?, limit?}`） | Citations 面板 |
-| `GET /api/projects/:id/citations/claims` / `GET …/integrity` | 语义核验记录 / 完整性汇总（metadata 五态 + semantic verdict 分布 + gate 输入） | Citations 面板 / M4.6 |
+| `POST /api/projects/:id/citations/verify-metadata` | 真实性核验（外部权威源：学术库 + software 官方仓库；逐条文件持久化 + 指纹跳过）→ `{byStatus, checked, reused, telemetry, profile, records}` | Citations 面板 |
+| `GET /api/projects/:id/citations/metadata` | `{records: MetadataRecordView[]}`（逐条 status/kind/canonical/mismatches/attempts/checkedAt/algorithmVersion） | Citations 面板（status 列 + 折叠「核验详情」） |
+| `POST /api/projects/:id/citations/verify-claims` | (claim,citation) 语义核验（需模型；`{force?, limit?}`——limit 只约束模型调用，确定性短路不占额度） | Citations 面板 |
+| `GET /api/projects/:id/citations/claims` / `GET …/integrity` | 语义核验记录（含 reasonCode 结构化原因）/ 完整性汇总（metadata 六态 + semantic verdict 分布 + gate 输入） | Citations 面板（语义核验明细）/ M4.6 |
 | `GET /api/skills` | `{skills: SkillView[], bindings}`（含 pin revision/license/中文简介状态） | SkillsPage |
 | `GET /api/skills/:id` | `{skill: SkillView}`；404=NOT_FOUND | （详情视图） |
 | `POST /api/skills/:id/summary` | 重新生成中文简介（模型未配置 / 生成失败 → 502 AGENT_RUN_FAILED；摘要服务未装配 → 503） | SkillsPage |
@@ -95,7 +95,14 @@
 > 检索按 query plan（DOI → 标题 variants）+ 确定性候选打分（DOI / strong / medium tier）；
 > metadata 记录带 `algorithmVersion`，版本不一致或 status=UNRESOLVED 的记录下次核验自动重查。
 >
-> M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **UNRESOLVED**
+> 2026-09-07 引用核验 v3（Review Usability）：条目带 `kind`（scholarly_paper / software /
+> dataset / documentation / web_resource / unknown；github/gitlab 链接 → software，经官方
+> repository / 文档核验——学术库未收录软件 ≠ 未找到）；查询失败（timeout/429/5xx）终态为
+> **PROVIDER_ERROR**（核验暂未完成，不参与 not-found vote，下次自动重试；旧 UNRESOLVED
+> 同义）。语义核验记录带结构化 `reasonCode`（NO_EVIDENCE / ABSTRACT_ONLY /
+> PROVIDER_ERROR / REFERENCE_UNVERIFIED / …），证据等级新增 repository / official_docs。
+>
+> M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **PROVIDER_ERROR**
 > （检索暂时失败）≠ probable fabrication（≥3 源全一致零 error 才标记）；
 > 语义 verdict 六值固定（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED /
 > CONTRADICTED / INSUFFICIENT_EVIDENCE / SKIPPED）；INSUFFICIENT_EVIDENCE 不进入
@@ -140,6 +147,7 @@
 | `DELETE /api/projects/:id` | **永久删除整个工作区**（PDF/parsed/citations/reviews/workflow checkpoints/manuscript/build/元数据；并释放 Runtime 内该项目的 idle Agent Session）。前置校验：**必须已归档（否则 409 PROJECT_NOT_ARCHIVED）**、无进行中任务（否则 409 PROJECT_BUSY）→ `{status:"deleted"}` | Settings → 项目管理（输入完整标题确认后） |
 | `PATCH /api/projects/:id` | 更新研究定位字段；**title 字段 = 重命名**（PDF metadata 可能识别错误）→ `{project}` | ProjectRow / ProjectPage（编辑标题） |
 | `GET /api/projects/:id/paper-review` | 最新快速 Review 聚合报告（`reviews/existing-review-r*.json`，round 最大）→ `{report: ExistingReviewReportView \| null}` | ReviewPanel（审阅报告） |
+| `GET /api/projects/:id/paper-review/export.md` | **完整 Review Markdown 报告下载**（与 Web UI 同源结构化数据；不受前端筛选影响）。`Content-Type: text/markdown; charset=utf-8`；`Content-Disposition: attachment`（RFC 5987 UTF-8 filename*，中文标题合法）；无报告 → 404 NOT_FOUND（不导出空文件） | ReviewPanel「导出报告」 |
 
 > 2026-09-07 语义约定：
 > - `archivedAt` 是**生命周期**状态，与 `status`（created/generated/failed 业务执行

@@ -34,6 +34,12 @@ import {
 /** judge prompt 中证据段上限（token 控制） */
 const EVIDENCE_MAX_CHARS = 4000;
 
+/**
+ * 语义核验算法版本：短路规则 / reasonCode / 证据等级变化即递增，纳入 claim 指纹——
+ * 旧记录（无 reasonCode 等）自动重跑，确定性短路零模型调用，代价可忽略。
+ */
+export const SEMANTIC_VERIFICATION_VERSION = 2;
+
 export interface ClaimJudgeOutput {
   verdict: ClaimSupportVerdict;
   reason: string;
@@ -83,6 +89,7 @@ export function buildClaimRecords(
         severity: "info",
         status: "pending",
         fingerprint: fingerprintJson({
+          semanticVersion: SEMANTIC_VERIFICATION_VERSION,
           claim: callout.sentence,
           referenceId: reference.referenceId,
           canonical: canonicalFingerprint,
@@ -106,7 +113,7 @@ export function classifyPriority(sectionTitle: string): ClaimPriority {
     : "helpful";
 }
 
-/** 从 canonical record 组装证据（v1：abstract 级） */
+/** 从 canonical record 组装证据（scholarly：abstract 级；software：repository 描述级） */
 export function buildEvidence(record: CitationVerificationRecord, now: string): EvidenceRecord[] {
   const abstract = record.canonical?.abstract;
   if (abstract === undefined || abstract.trim() === "") {
@@ -116,11 +123,12 @@ export function buildEvidence(record: CitationVerificationRecord, now: string): 
     record.canonical !== undefined
       ? `${record.canonical.provider}:${record.canonical.recordId || record.canonical.doi || "record"}`
       : record.referenceId;
+  const isSoftware = record.canonical?.software !== undefined;
   return [
     {
       source,
       text: abstract.slice(0, EVIDENCE_MAX_CHARS),
-      evidenceLevel: "abstract",
+      evidenceLevel: isSoftware ? "repository" : "abstract",
       ...(record.canonical?.doi !== undefined ? { doi: record.canonical.doi } : {}),
       ...(record.canonical?.url !== undefined ? { url: record.canonical.url } : {}),
       retrievedAt: record.canonical?.retrievedAt ?? now,

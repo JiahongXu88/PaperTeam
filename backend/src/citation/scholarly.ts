@@ -473,10 +473,12 @@ export function buildQueryPlan(query: ScholarlyQuery): QueryStep[] {
 }
 
 /**
- * 核验算法版本：归一化 / 打分 / query plan 任一变化就递增，纳入 metadata 记录与
- * cache fingerprint——旧 NOT_FOUND 结果自动失效，无需用户删 workspace。
+ * 核验算法版本：归一化 / 打分 / query plan / 核验分派（software 路径、PROVIDER_ERROR
+ * 语义）任一变化就递增，纳入 metadata 记录与 cache fingerprint——旧 NOT_FOUND 结果
+ * 自动失效，无需用户删 workspace。
+ *   v3：+ software kind 核验（SoftwareReferenceResolver）+ PROVIDER_ERROR 结论分离
  */
-export const METADATA_VERIFICATION_VERSION = `v2.n${REFERENCE_NORMALIZATION_VERSION}`;
+export const METADATA_VERIFICATION_VERSION = `v3.n${REFERENCE_NORMALIZATION_VERSION}`;
 
 // ---- Resolver（编排 + 缓存 + 语义裁决） ----
 
@@ -511,6 +513,20 @@ export class ScholarlyResolver {
 
   /** telemetry（外部读取；回答“这次核验花了多少外部调用”） */
   telemetry = { providerCalls: 0, cacheHits: 0, retries: 0 };
+  /** 按 provider 的调用画像（性能诊断用；随 providerCalls 同步累积） */
+  readonly byProvider = new Map<
+    ScholarlyProviderName,
+    { calls: number; notFound: number; errors: number; cacheHits: number; totalMs: number }
+  >();
+
+  private providerStat(name: ScholarlyProviderName) {
+    let stat = this.byProvider.get(name);
+    if (stat === undefined) {
+      stat = { calls: 0, notFound: 0, errors: 0, cacheHits: 0, totalMs: 0 };
+      this.byProvider.set(name, stat);
+    }
+    return stat;
+  }
 
   constructor(options: ScholarlyResolverOptions = {}) {
     this.providers = options.providers ?? [
@@ -621,12 +637,16 @@ export class ScholarlyResolver {
 
   private async lookupCached(provider: ScholarlyProvider, query: ScholarlyQuery): Promise<LookupOutcome> {
     const key = `${provider.name}:${fingerprintJson(query)}`;
+    const stat = this.providerStat(provider.name);
     const cached = this.cache.get(key);
     if (cached !== undefined) {
       this.telemetry.cacheHits += 1;
+      stat.cacheHits += 1;
       return cached;
     }
     this.telemetry.providerCalls += 1;
+    stat.calls += 1;
+    const startedAt = Date.now();
     let outcome = await provider.lookup(query, this.ctx);
     // 单次重试（网络抖动/5xx；重试仍失败如实报 error）
     if (outcome.kind === "error") {
@@ -634,6 +654,12 @@ export class ScholarlyResolver {
       this.log(`[scholarly] ${provider.name} 失败（${outcome.note}），重试一次`);
       await new Promise((resolve) => setTimeout(resolve, 300));
       outcome = await provider.lookup(query, this.ctx);
+    }
+    stat.totalMs += Date.now() - startedAt;
+    if (outcome.kind === "not_found") {
+      stat.notFound += 1;
+    } else if (outcome.kind === "error") {
+      stat.errors += 1;
     }
     if (this.cache.size >= this.cacheSize) {
       const oldest = this.cache.keys().next().value;

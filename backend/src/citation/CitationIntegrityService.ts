@@ -24,6 +24,8 @@ import type {
 } from "./integrity.js";
 import { deriveClaimSeverity } from "./integrity.js";
 import { METADATA_VERIFICATION_VERSION, ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
+import { SoftwareReferenceResolver, type SoftwareResolverOptions } from "./softwareResolver.js";
+import { extractRepositoryRef, inferReferenceKind } from "./referenceKinds.js";
 import { REFERENCE_EXTRACTION_VERSION } from "../paper/ReferenceExtractor.js";
 import {
   buildClaimRecords,
@@ -41,6 +43,26 @@ export interface SemanticTelemetry {
   skippedNoEvidence: number;
   failed: number;
   approxPromptChars: number;
+  /** 模型调用总耗时（ms；短路为 0）——性能诊断用 */
+  totalModelMs: number;
+  /** 每次模型调用耗时样本（ms；p50/p95 统计用，不落盘） */
+  modelCallMs: number[];
+}
+
+/** metadata stage 的外部检索画像（性能诊断：谁被查了几次、花了多久） */
+export interface MetadataLookupProfile {
+  providerCalls: number;
+  cacheHits: number;
+  retries: number;
+  byProvider: Array<{
+    provider: string;
+    calls: number;
+    notFound: number;
+    errors: number;
+    cacheHits: number;
+    totalMs: number;
+  }>;
+  software: { apiCalls: number; htmlCalls: number; cacheHits: number; notFound: number; errors: number };
 }
 
 export interface CitationIntegrityOptions {
@@ -51,6 +73,8 @@ export interface CitationIntegrityOptions {
   citationAgentId?: string;
   /** scholarly resolver 注入（测试用 fake providers / fetch） */
   scholarly?: ScholarlyResolverOptions;
+  /** software resolver 注入（测试用 fake fetch） */
+  software?: SoftwareResolverOptions;
   /** metadata 核验上限（rate-limit friendly，默认 40） */
   maxMetadataLookups?: number;
   /** semantic 核验上限（默认 30；token 控制） */
@@ -63,6 +87,7 @@ export class CitationIntegrityService {
   private readonly projects: ProjectStore;
   private readonly store: PaperStore;
   private readonly resolver: ScholarlyResolver;
+  private readonly softwareResolver: SoftwareReferenceResolver;
   private readonly runtime: AgentRuntime | undefined;
   private readonly citationAgentId: string | undefined;
   private readonly maxLookups: number;
@@ -72,11 +97,14 @@ export class CitationIntegrityService {
 
   /** 最近一次 verifyClaims 的 telemetry（模型调用数 / 上下文规模） */
   lastSemanticTelemetry: SemanticTelemetry | undefined;
+  /** 最近一次 verifyMetadata 的外部检索画像（性能诊断） */
+  lastMetadataProfile: MetadataLookupProfile | undefined;
 
   constructor(options: CitationIntegrityOptions) {
     this.projects = options.projects;
     this.store = options.store;
     this.resolver = new ScholarlyResolver(options.scholarly);
+    this.softwareResolver = new SoftwareReferenceResolver(options.software);
     this.runtime = options.runtime;
     this.citationAgentId = options.citationAgentId;
     this.maxLookups = options.maxMetadataLookups ?? 40;
@@ -201,6 +229,8 @@ export class CitationIntegrityService {
     reused: number;
     records: CitationVerificationRecord[];
     telemetry: { providerCalls: number; cacheHits: number; retries: number };
+    /** 外部检索画像（性能诊断：按 provider 的调用 / 命中 / 耗时） */
+    profile: MetadataLookupProfile;
   }> {
     await this.projects.getRequired(projectId);
     const references = await this.store.loadReferences<ReferenceEntry>(projectId);
@@ -213,6 +243,7 @@ export class CitationIntegrityService {
       METADATA_MISMATCH: 0,
       AMBIGUOUS: 0,
       NOT_FOUND: 0,
+      PROVIDER_ERROR: 0,
       UNRESOLVED: 0,
     };
     const records: CitationVerificationRecord[] = [];
@@ -224,13 +255,15 @@ export class CitationIntegrityService {
         reference.referenceId,
       );
       // 复用条件：条目原文未变 且 核验算法版本一致（旧算法的 NOT_FOUND 不能沿用）；
-      // UNRESOLVED 是 provider 瞬时失败（限流/超时），不是结论——下次核验必须重试
+      // PROVIDER_ERROR / 旧 UNRESOLVED 是 provider 瞬时失败（限流/超时），不是结论——
+      // 下次核验必须重试
       if (
         !options.force &&
         existing !== null &&
         existing.fingerprint === reference.fingerprint &&
         existing.algorithmVersion === METADATA_VERIFICATION_VERSION &&
-        existing.status !== "UNRESOLVED"
+        existing.status !== "UNRESOLVED" &&
+        existing.status !== "PROVIDER_ERROR"
       ) {
         byStatus[existing.status] += 1;
         records.push(existing);
@@ -252,23 +285,111 @@ export class CitationIntegrityService {
       updatedAt: this.now().toISOString(),
     });
     this.log(
-      `[citation-integrity] projectId=${projectId} metadata 核验：checked=${targets.length} reused=${reused} verified=${byStatus.VERIFIED} not_found=${byStatus.NOT_FOUND}`,
+      `[citation-integrity] projectId=${projectId} metadata 核验：checked=${targets.length} reused=${reused} verified=${byStatus.VERIFIED} not_found=${byStatus.NOT_FOUND} provider_error=${byStatus.PROVIDER_ERROR}`,
     );
+    const profile: MetadataLookupProfile = {
+      providerCalls: this.resolver.telemetry.providerCalls,
+      cacheHits: this.resolver.telemetry.cacheHits,
+      retries: this.resolver.telemetry.retries,
+      byProvider: [...this.resolver.byProvider.entries()].map(([provider, stat]) => ({ provider, ...stat })),
+      software: { ...this.softwareResolver.telemetry },
+    };
+    this.lastMetadataProfile = profile;
     return {
       byStatus,
       checked: targets.length,
       reused,
       records,
       telemetry: {
-        providerCalls: this.resolver.telemetry.providerCalls,
-        cacheHits: this.resolver.telemetry.cacheHits,
-        retries: this.resolver.telemetry.retries,
+        providerCalls: profile.providerCalls,
+        cacheHits: profile.cacheHits,
+        retries: profile.retries,
       },
+      profile,
     };
   }
 
+  /**
+   * 单条核验（kind 分派）：
+   *   software → SoftwareReferenceResolver（官方 repository / docs；学术库不收录软件）
+   *   其它     → ScholarlyResolver（学术库）
+   * 查询失败（timeout/429/5xx）→ PROVIDER_ERROR，绝不折叠成 NOT_FOUND。
+   */
   private async verifyReference(
     projectId: string,
+    reference: ReferenceEntry,
+  ): Promise<CitationVerificationRecord> {
+    const kind = inferReferenceKind(reference);
+    const record =
+      kind === "software"
+        ? await this.verifySoftwareReference(reference)
+        : await this.verifyScholarlyReference(reference);
+    await this.store.saveRecord(projectId, "metadata", reference.referenceId, record);
+    return record;
+  }
+
+  /** software 类：官方 repository / documentation 权威源核验 */
+  private async verifySoftwareReference(
+    reference: ReferenceEntry,
+  ): Promise<CitationVerificationRecord> {
+    const repository = extractRepositoryRef(reference);
+    if (repository === undefined) {
+      // inferReferenceKind 判 software 的依据就是 repository 链接——不可达分支（防御）
+      return this.unresolvedRecord(reference, "software 条目缺少 repository 链接");
+    }
+    const outcome = await this.softwareResolver.resolve(
+      { ...(reference.title !== undefined ? { title: reference.title } : {}), repository },
+      this.now().toISOString(),
+    );
+    const attempts = [
+      {
+        provider: "github" as const,
+        outcome:
+          outcome.kind === "match"
+            ? ("match" as const)
+            : outcome.kind === "mismatch"
+              ? ("mismatch" as const)
+              : outcome.kind === "not_found"
+                ? ("not_found" as const)
+                : ("error" as const),
+        ...(outcome.kind === "error" ? { note: outcome.note } : {}),
+        ...(outcome.kind === "match" || outcome.kind === "mismatch"
+          ? { note: `官方仓库：${outcome.canonical.software?.repositoryUrl ?? outcome.canonical.url}` }
+          : {}),
+      },
+    ];
+    if (outcome.kind === "error") {
+      return {
+        referenceId: reference.referenceId,
+        kind: "software",
+        status: "PROVIDER_ERROR",
+        probableFabrication: false,
+        attempts,
+        checkedAt: this.now().toISOString(),
+        fingerprint: reference.fingerprint,
+        algorithmVersion: METADATA_VERIFICATION_VERSION,
+        error: outcome.note,
+      };
+    }
+    return {
+      referenceId: reference.referenceId,
+      kind: "software",
+      status:
+        outcome.kind === "match" ? "VERIFIED" : outcome.kind === "mismatch" ? "METADATA_MISMATCH" : "NOT_FOUND",
+      probableFabrication: false, // software：404 也可能是改名/迁移，不判捏造
+      ...(outcome.kind === "match" || outcome.kind === "mismatch"
+        ? { canonical: outcome.canonical }
+        : {}),
+      ...(outcome.kind === "mismatch" ? { mismatches: outcome.mismatches } : {}),
+      attempts,
+      checkedAt: this.now().toISOString(),
+      fingerprint: reference.fingerprint,
+      algorithmVersion: METADATA_VERIFICATION_VERSION,
+    };
+  }
+
+  /** scholarly 类：学术库多源核验（原有链路） */
+  private async verifyScholarlyReference(
     reference: ReferenceEntry,
   ): Promise<CitationVerificationRecord> {
     const verdict = await this.resolver.resolve({
@@ -288,14 +409,14 @@ export class CitationIntegrityService {
             ? "AMBIGUOUS"
             : verdict.outcome === "not_found"
               ? "NOT_FOUND"
-              : "UNRESOLVED";
+              : "PROVIDER_ERROR";
     // probable fabrication = 强证据：全部书目库一致 not_found（≥3 且无 error）+ 有可查字段
     const probableFabrication =
       status === "NOT_FOUND" &&
       notFoundAttempts >= 3 &&
       verdict.attempts.every((attempt) => attempt.outcome === "not_found") &&
       (reference.title !== undefined || reference.doi !== undefined);
-    const record: CitationVerificationRecord = {
+    return {
       referenceId: reference.referenceId,
       status,
       probableFabrication,
@@ -326,8 +447,21 @@ export class CitationIntegrityService {
         ? { error: verdict.attempts.find((a) => a.outcome === "error")?.note ?? "多源检索未获结论" }
         : {}),
     };
-    await this.store.saveRecord(projectId, "metadata", reference.referenceId, record);
-    return record;
+  }
+
+  /** 无可查字段 / provider 失败的兜底记录（PROVIDER_ERROR，下次重试） */
+  private unresolvedRecord(reference: ReferenceEntry, note: string): CitationVerificationRecord {
+    return {
+      referenceId: reference.referenceId,
+      kind: inferReferenceKind(reference),
+      status: "PROVIDER_ERROR",
+      probableFabrication: false,
+      attempts: [],
+      checkedAt: this.now().toISOString(),
+      fingerprint: reference.fingerprint,
+      algorithmVersion: METADATA_VERIFICATION_VERSION,
+      error: note,
+    };
   }
 
   /** 全部 metadata 记录（API 用） */
@@ -395,11 +529,12 @@ export class CitationIntegrityService {
       skippedNoEvidence: 0,
       failed: 0,
       approxPromptChars: 0,
+      totalModelMs: 0,
+      modelCallMs: [] as number[],
     };
     const limit = options.limit ?? this.maxSemantic;
     let verifiedCount = 0;
     let reused = 0;
-    let processed = 0;
     const records: ClaimCitationRecord[] = [];
     for (const claim of pending) {
       const existing = await this.store.loadRecord<ClaimCitationRecord>(
@@ -418,15 +553,16 @@ export class CitationIntegrityService {
         reused += 1;
         continue;
       }
-      if (processed >= limit) {
-        records.push(claim); // 超出本轮上限：保持 pending（下一轮继续）
-        continue;
-      }
-      processed += 1;
       if (options.signal?.aborted === true) {
         throw new BusinessError("WORKFLOW_CANCELLED", "语义核验已被取消");
       }
-      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry, options.signal);
+      // 上限只约束模型调用：确定性短路（SKIPPED / 无证据 INSUFFICIENT）零成本，
+      // 不占预算——否则 54 条免费短路与真实 judge 抢同一个 30 条额度
+      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry, options.signal, limit);
+      if (record === null) {
+        records.push(claim); // 模型预算耗尽：保持 pending（下一轮继续）
+        continue;
+      }
       records.push(record);
       if (record.status === "verified" || record.status === "skipped") {
         verifiedCount += 1;
@@ -454,25 +590,30 @@ export class CitationIntegrityService {
     metadataRecords: Map<string, CitationVerificationRecord>,
     telemetry: SemanticTelemetry,
     signal?: AbortSignal,
-  ): Promise<ClaimCitationRecord> {
+    modelBudget?: number,
+  ): Promise<ClaimCitationRecord | null> {
     const metadata = metadataRecords.get(claim.referenceId);
     const base: ClaimCitationRecord = { ...claim, evidence: [] };
 
-    // 真实性 Gate：NOT_FOUND / UNRESOLVED / AMBIGUOUS / 无记录 → semantic SKIPPED
+    // 真实性 Gate：NOT_FOUND / PROVIDER_ERROR / AMBIGUOUS / 无记录 → semantic SKIPPED
     if (
       metadata === undefined ||
       metadata.status === "NOT_FOUND" ||
+      metadata.status === "PROVIDER_ERROR" ||
       metadata.status === "UNRESOLVED" ||
       metadata.status === "AMBIGUOUS"
     ) {
       const reason =
         metadata === undefined
           ? "该文献未经 metadata 核验，语义核验跳过"
-          : `文献真实性未确立（${metadata.status}），语义核验跳过——不允许验证不存在的文献`;
+          : metadata.status === "PROVIDER_ERROR" || metadata.status === "UNRESOLVED"
+            ? "文献真实性核验暂未完成（provider 查询失败），语义核验跳过——完成核验后自动补跑"
+            : `文献真实性未确立（${metadata.status}），语义核验跳过——不允许验证不存在的文献`;
       const skipped: ClaimCitationRecord = {
         ...base,
         verdict: "SKIPPED",
         reason,
+        reasonCode: "REFERENCE_UNVERIFIED",
         status: "skipped",
         severity: deriveSeverityFor(claim, metadata),
         verifiedAt: this.now().toISOString(),
@@ -490,7 +631,10 @@ export class CitationIntegrityService {
       const record: ClaimCitationRecord = {
         ...base,
         verdict: "INSUFFICIENT_EVIDENCE",
-        reason: "canonical record 无摘要等可判证据（abstract 缺失），证据不足以判断",
+        reason: metadata.kind === "software"
+          ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档），证据不足以判断"
+          : "只获取到书目 metadata（学术库记录无摘要），没有正文/摘要等可判证据，证据不足以判断",
+        reasonCode: "NO_EVIDENCE",
         evidence: [],
         status: "verified",
         severity: deriveSeverityFor(claim, metadata),
@@ -507,8 +651,13 @@ export class CitationIntegrityService {
       canonical: metadata.canonical,
       evidence,
     });
+    // 模型预算耗尽（上限只约束 LLM judge 调用；短路已免费完成）
+    if (modelBudget !== undefined && telemetry.modelCalls >= modelBudget) {
+      return null;
+    }
     telemetry.approxPromptChars += prompt.length;
     telemetry.modelCalls += 1;
+    const modelCallStartedAt = Date.now();
     try {
       const task = await this.runtime!.runAgent({
         ...(signal !== undefined ? { signal } : {}),
@@ -521,6 +670,9 @@ export class CitationIntegrityService {
       if (task.status !== "completed") {
         throw new Error(task.error ?? "judge 任务未完成");
       }
+      const callMs = Date.now() - modelCallStartedAt;
+      telemetry.modelCallMs.push(callMs);
+      telemetry.totalModelMs += callMs;
       const judged = parseJudgeOutput(task.output ?? "", evidence);
       const evidenceWithQuote =
         judged.keyQuote !== undefined
@@ -535,6 +687,8 @@ export class CitationIntegrityService {
         ...base,
         verdict: judged.verdict,
         reason: judged.reason,
+        // judge 依据现有证据无法判定：证据范围限于 abstract / 仓库描述
+        ...(judged.verdict === "INSUFFICIENT_EVIDENCE" ? { reasonCode: "ABSTRACT_ONLY" as const } : {}),
         evidence: evidenceWithQuote,
         status: "verified",
         severity: deriveClaimSeverity({
@@ -553,6 +707,7 @@ export class CitationIntegrityService {
         ...base,
         status: "failed",
         verdict: "INSUFFICIENT_EVIDENCE",
+        reasonCode: "PROVIDER_ERROR",
         severity: "info",
         error: error instanceof Error ? error.message : String(error),
       };
@@ -588,6 +743,7 @@ export class CitationIntegrityService {
       METADATA_MISMATCH: 0,
       AMBIGUOUS: 0,
       NOT_FOUND: 0,
+      PROVIDER_ERROR: 0,
       UNRESOLVED: 0,
     };
     for (const record of metadataRecords) {

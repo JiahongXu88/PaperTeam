@@ -71,9 +71,42 @@ export interface CitationCalloutReference {
 /** 学术库来源（canonical record 必须保留 provenance） */
 export type ScholarlyProvider = "crossref" | "openalex" | "semantic-scholar" | "arxiv";
 
+/**
+ * 引用条目类型（核验语义分派依据）：
+ *   scholarly_paper  学术论文——Crossref/OpenAlex/S2/arXiv 核验（默认）
+ *   software         软件/模型（如 Ultralytics YOLO11，无正式 paper）——官方
+ *                    repository / documentation 核验；学术库未收录 ≠ 不存在
+ *   dataset / documentation / web_resource  预留（本轮只做类型建模，
+ *                    暂无独立 resolver；推断保守，不会误标）
+ *   unknown          无可判信号
+ */
+export type ReferenceKind =
+  | "scholarly_paper"
+  | "software"
+  | "dataset"
+  | "documentation"
+  | "web_resource"
+  | "unknown";
+
+/** canonical 来源（学术库 + 软件权威源） */
+export type CanonicalSourceProvider = ScholarlyProvider | "github";
+
+/** 软件类 canonical 的权威来源信息（repository / 官方文档） */
+export interface SoftwareSourceRecord {
+  /** 官方代码仓库（GitHub / GitLab） */
+  repositoryUrl: string;
+  /** 官方文档 / 主页（repo homepage；有才填） */
+  homepage?: string;
+  /** 仓库描述（作为语义核验的 repository 级证据） */
+  description?: string;
+  stars?: number;
+  /** 最近一次推送（活跃度参考） */
+  pushedAt?: string;
+}
+
 export interface CanonicalPaperRecord {
-  provider: ScholarlyProvider;
-  /** provider 原生记录 id（DOI / OpenAlex id / S2 paperId / arxiv id） */
+  provider: CanonicalSourceProvider;
+  /** provider 原生记录 id（DOI / OpenAlex id / S2 paperId / arxiv id / GitHub full_name） */
   recordId: string;
   title?: string;
   authors?: string[];
@@ -82,8 +115,10 @@ export interface CanonicalPaperRecord {
   doi?: string;
   arxivId?: string;
   url?: string;
-  /** 摘要（semantic verification 的主要证据来源） */
+  /** 摘要（semantic verification 的主要证据来源）；software = 仓库描述 */
   abstract?: string;
+  /** provider = github 时的软件权威来源信息 */
+  software?: SoftwareSourceRecord;
   retrievedAt: string;
 }
 
@@ -93,18 +128,21 @@ export interface CanonicalPaperRecord {
  *   METADATA_MISMATCH  找到文献但字段不符（年份/作者/venue 与草稿不一致）
  *   AMBIGUOUS          多个候选无法唯一确定
  *   NOT_FOUND          多源检索成功但均无匹配（检索本身没失败）
- *   UNRESOLVED         检索失败（网络/限流/超时）——绝不等于 NOT_FOUND
+ *   PROVIDER_ERROR     核验暂未完成——timeout/429/5xx/network（绝不等于 NOT_FOUND，
+ *                      不参与 not-found vote；下次核验自动重试）
+ *   UNRESOLVED         旧记录的同类语义（v3 前的 PROVIDER_ERROR），仅用于读取兼容
  */
 export type CitationMetadataStatus =
   | "VERIFIED"
   | "METADATA_MISMATCH"
   | "AMBIGUOUS"
   | "NOT_FOUND"
+  | "PROVIDER_ERROR"
   | "UNRESOLVED";
 
 /** 单 provider 尝试记录（失败语义与结论分离） */
 export interface ProviderAttempt {
-  provider: ScholarlyProvider;
+  provider: CanonicalSourceProvider;
   outcome: "match" | "mismatch" | "not_found" | "error" | "ambiguous";
   note?: string;
 }
@@ -121,6 +159,8 @@ export interface CitationFieldMismatch {
 export interface CitationVerificationRecord {
   referenceId: string;
   status: CitationMetadataStatus;
+  /** 条目类型（v3 起；software 走官方 repository/docs 核验而非学术库） */
+  kind?: ReferenceKind;
   /**
    * 存在性可疑（probable fabrication）：仅当强证据（多源一致 NOT_FOUND、
    * 且各次检索本身成功）才为 true。NOT_FOUND 本身不等于捏造。
@@ -156,7 +196,14 @@ export type ClaimSupportVerdict =
   | "SKIPPED";
 
 /** 证据等级（诚实标注，不假装 full-text verified） */
-export type EvidenceLevel = "abstract" | "metadata" | "snippet" | "web" | "fulltext";
+export type EvidenceLevel =
+  | "abstract"
+  | "metadata"
+  | "snippet"
+  | "web"
+  | "fulltext"
+  | "repository"
+  | "official_docs";
 
 export interface EvidenceRecord {
   /** 证据来源（provider:recordId 或 URL） */
@@ -176,6 +223,23 @@ export type ClaimPriority = "obligatory" | "helpful";
 
 export type ClaimCitationStatus = "pending" | "verified" | "skipped" | "failed";
 
+/**
+ * 证据不足 / 跳过的结构化原因（有限枚举，UI 可按类别解释；不做自由文本归因）：
+ *   NO_EVIDENCE          只获取到书目 metadata，没有摘要/正文/仓库描述等可判证据
+ *   ABSTRACT_ONLY        只有 abstract（或 repository 描述）级证据，claim 超出其支持范围
+ *   FULLTEXT_UNAVAILABLE 全文无法获取（预留：fulltext 证据链路）
+ *   PROVIDER_ERROR       模型 / 检索 provider 查询失败
+ *   REFERENCE_UNVERIFIED 文献真实性未确立（NOT_FOUND/PROVIDER_ERROR 等），语义核验跳过
+ *   LOW_RELEVANCE        现有证据与 claim 相关性不足（预留：相关性打分）
+ */
+export type InsufficientReasonCode =
+  | "NO_EVIDENCE"
+  | "ABSTRACT_ONLY"
+  | "FULLTEXT_UNAVAILABLE"
+  | "PROVIDER_ERROR"
+  | "REFERENCE_UNVERIFIED"
+  | "LOW_RELEVANCE";
+
 /** 一条 (claim, citation) 语义核验记录（同文献多处被引 = 多条记录） */
 export interface ClaimCitationRecord {
   claimCitationId: string;
@@ -187,10 +251,12 @@ export interface ClaimCitationRecord {
   page: number;
   chunkId: string;
   priority: ClaimPriority;
-  /** 前置 Layer 1 结论快照（NOT_FOUND/UNRESOLVED 时 semantic 应 SKIPPED） */
+  /** 前置 Layer 1 结论快照（NOT_FOUND/PROVIDER_ERROR 等 → semantic SKIPPED） */
   metadataStatus: CitationMetadataStatus | "SKIPPED_NO_METADATA";
   verdict: ClaimSupportVerdict;
   reason?: string;
+  /** INSUFFICIENT_EVIDENCE / SKIPPED / failed 的结构化原因（有限枚举） */
+  reasonCode?: InsufficientReasonCode;
   evidence: EvidenceRecord[];
   /** 确定性派生（deriveClaimSeverity），模型不凭感觉定级 */
   severity: FindingSeverity;
