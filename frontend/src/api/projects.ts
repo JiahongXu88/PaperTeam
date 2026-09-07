@@ -7,7 +7,7 @@ import type {
 } from "../types/api.js";
 
 /**
- * Project API（M4.2 + 2026-09 生命周期收口）。
+ * Project API。
  *
  *   GET    /api/projects                    → { projects }（默认未归档；?scope=archived|all）
  *   GET    /api/projects/:id                → { project }
@@ -45,11 +45,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectV
 
 /** 已有论文 File-First 导入：一次调用建项目 + 解析 + 自动标题（后端失败回滚） */
 export async function importProjectPdf(input: ImportProjectPdfInput): Promise<ImportProjectPdfResult> {
-  const body = await apiClient.post<{ project: ProjectView; titleSource: "pdf" | "filename" }>(
-    "/api/projects/import-pdf",
-    input,
-  );
-  return { project: body.project, titleSource: body.titleSource };
+  return apiClient.post<ImportProjectPdfResult>("/api/projects/import-pdf", input);
 }
 
 /** 重命名（PDF metadata 可能识别错误，标题必须可后改） */

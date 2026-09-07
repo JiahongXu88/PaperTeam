@@ -4,12 +4,9 @@ import { EmptyState, ErrorState, Loading } from "../components/common/StateViews
 import { PageHeader } from "../components/common/PageHeader.js";
 import { ProjectRow } from "../components/project/ProjectRow.js";
 import { useProjects } from "../hooks/queries.js";
-import { formatApiError } from "../utils/errors.js";
+import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
 
-/**
- * 项目列表页（Visual Redesign 2026-09）：账簿式列表，回答
- * 「我有哪些论文项目 / 最后动过哪个 / 是什么类型 / 进行到哪」。
- */
+/** 论文项目列表：回答「我有哪些论文项目 / 最后动过哪个 / 进行到哪」 */
 export function ProjectsPage() {
   const { data, isPending, isError, error, refetch } = useProjects();
   const failedCount = data?.filter((project) => project.status === "failed").length ?? 0;
@@ -20,16 +17,12 @@ export function ProjectsPage() {
         title="论文项目"
         sub={
           data !== undefined && data.length > 0 ? (
-            failedCount > 0 ? (
-              <>
-                {data.length} 个论文项目 ·{" "}
-                <span style={{ color: "var(--danger)", fontWeight: 600 }}>{failedCount} 个失败</span>
-              </>
-            ) : (
-              `${data.length} 个论文项目`
-            )
+            <>
+              共 {data.length} 个项目
+              {failedCount > 0 ? <span className="page-sub-warn">，{failedCount} 个上次任务失败</span> : null}
+            </>
           ) : (
-            "管理你的论文项目与研究工作流"
+            "从研究想法开始写一篇新论文，或导入已有论文 PDF 做 Review。"
           )
         }
         actions={
@@ -45,6 +38,7 @@ export function ProjectsPage() {
         <ErrorState
           title="项目列表加载失败"
           message={formatApiError(error)}
+          detail={formatApiErrorDetail(error)}
           onRetry={() => void refetch()}
         />
       ) : data !== undefined && data.length === 0 ? (

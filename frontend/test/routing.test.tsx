@@ -68,14 +68,14 @@ describe("routing", () => {
   it("未知路径渲染 404", async () => {
     renderAt("/no-such-page");
     expect(await screen.findByText(/404/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/projects");
+    expect(screen.getByRole("link", { name: "返回论文项目" })).toHaveAttribute("href", "/projects");
   });
 
   it("布局：顶栏渲染品牌与 Runtime 徽标（Pi schema）", async () => {
     renderAt("/projects");
     expect(await screen.findByText("PaperTeam")).toBeInTheDocument();
     const chip = await screen.findByTestId("runtime-chip");
-    expect(chip).toHaveTextContent("Pi 0.84.4");
+    expect(chip).toHaveTextContent("Pi Runtime 0.84.4");
     expect(chip).toHaveTextContent("模型已配置");
   });
 
@@ -83,7 +83,7 @@ describe("routing", () => {
     renderAt("/skills");
     const brand = await screen.findByTestId("brand-home");
     expect(brand).toHaveAttribute("href", "/projects");
-    expect(brand).toHaveAttribute("aria-label", "返回论文项目");
+    expect(brand).toHaveAttribute("aria-label", "PaperTeam，返回论文项目");
     expect(screen.queryByText("Research Workbench")).toBeNull();
   });
 

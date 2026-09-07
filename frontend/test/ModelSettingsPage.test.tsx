@@ -116,7 +116,7 @@ describe("ModelSettingsPage", () => {
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
 
     expect(await screen.findByText("模型设置")).toBeInTheDocument();
-    expect(screen.getByText(/Pi 0\.84\.4/)).toBeInTheDocument();
+    expect(await screen.findByText(/Pi 0\.84\.4/)).toBeInTheDocument();
     expect(screen.getByText("本地存储")).toBeInTheDocument();
     expect(screen.getByTestId("api-key-configured")).toHaveTextContent("已配置");
     expect(screen.getByText("zai-coding-cn/glm-5.3")).toBeInTheDocument();
@@ -287,14 +287,13 @@ describe("ModelSettingsPage", () => {
       apiKeyConfigured: false,
       apiKeySource: "none",
     });
-    const confirmMock = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirmMock);
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
 
     const clearButton = await screen.findByTestId("clear-key");
     expect(clearButton).toHaveTextContent("清除已保存的 API Key");
     fireEvent.click(clearButton);
-    expect(confirmMock).toHaveBeenCalledTimes(1);
+    // 行内确认（不用系统 confirm 弹窗）
+    fireEvent.click(await screen.findByTestId("clear-key-confirm"));
     await waitFor(() => {
       expect(clearModelApiKey).toHaveBeenCalledTimes(1);
     });
@@ -303,11 +302,12 @@ describe("ModelSettingsPage", () => {
 
   it("清除 Key 取消：不调用 API", async () => {
     mockApi();
-    vi.stubGlobal("confirm", vi.fn(() => false));
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
 
     fireEvent.click(await screen.findByTestId("clear-key"));
+    fireEvent.click(await screen.findByRole("button", { name: "取消" }));
     expect(clearModelApiKey).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("clear-key")).toBeInTheDocument();
   });
 
   it("环境变量覆盖：显示覆盖提示与本地保存值差异", async () => {

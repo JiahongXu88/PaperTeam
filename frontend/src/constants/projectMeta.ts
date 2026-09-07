@@ -1,33 +1,17 @@
-import type { ProjectStatus, WorkflowKind, WorkflowRunStatus } from "../types/api.js";
+import type { WorkflowKind } from "../types/api.js";
 
 /**
- * 前端展示用的建议值集合与文案映射（M4.2）。
+ * 项目定位字段的建议值与文案。
  *
- * documentType / targetProfile 的取值集合与 Backend ProjectStore 导出的
- * DOCUMENT_TYPES / TARGET_PROFILES 保持同步（Backend 侧注释明确其为
- * 「前端与 Prompt 使用的建议值集合，不在存储层冻结 enum」——存储仍接受
- * 任意合法字符串；如 Backend 增加建议值，需要同步这里）。
+ * documentType / targetProfile 与 Backend ProjectStore 的 DOCUMENT_TYPES /
+ * TARGET_PROFILES 保持同步：存储层接受任意合法字符串，这里只是建议值，
+ * 未知值原样展示（不虚构）。状态类标签统一在 components/common/status.ts。
  */
 
 export const WORKFLOW_KIND_LABELS: Record<WorkflowKind, string> = {
   idea_to_paper: "想法成文",
   existing_paper_improvement: "论文改进",
   existing_paper_review: "论文 Review",
-};
-
-export const PROJECT_STATUS_LABELS: Record<ProjectStatus, string> = {
-  created: "已创建",
-  generated: "已生成",
-  failed: "失败",
-};
-
-export const RUN_STATUS_LABELS: Record<WorkflowRunStatus, string> = {
-  pending: "排队中",
-  running: "运行中",
-  awaiting_input: "等待确认",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
 };
 
 /** documentType 建议值（Backend DOCUMENT_TYPES） */

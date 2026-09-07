@@ -1,11 +1,11 @@
 /**
- * Frontend DTO（M4.0 API Contract 的前端侧）。
+ * 前端 DTO（docs/API_CONTRACT.md 的前端侧）。
  *
- * 原则（docs/API_CONTRACT.md）：React 不直接依赖 Backend 内部对象
- * （Pi AgentSession / Pi event / AgentRunHandle / WorkflowState 全量等），
- * 只消费这里声明的视图类型；新增字段必须先落到 API Contract 文档。
- * 字段与 Backend JSON 响应逐一对齐，可选字段保持可选（不虚构数据）。
+ * React 不直接依赖 Backend 内部对象（Pi 会话 / 事件 / WorkflowState 全量），
+ * 只消费这里声明的视图类型；字段与 Backend JSON 响应逐一对齐，可选字段保持可选。
  */
+
+import type { PaperDocSummary } from "./paper.js";
 
 // ---- Project ----
 
@@ -65,6 +65,8 @@ export interface ImportProjectPdfInput {
 /** POST /api/projects/import-pdf 响应 */
 export interface ImportProjectPdfResult {
   project: ProjectView;
+  /** 解析后的文档摘要（与 GET /paper 的 document 同形） */
+  document: PaperDocSummary;
   /** 项目标题来源：PDF 内标题 / 文件名兜底 */
   titleSource: "pdf" | "filename";
 }
@@ -91,6 +93,8 @@ export interface WorkflowRunView {
   awaiting?: { stageId: string; prompt: string; options: string[] } | null;
   error?: { code: string; message: string } | null;
   completion?: { label: "final" | "draft" | "review" } | null;
+  /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
+  progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
 }
 
 // ---- Existing-Paper Review（existing_paper_review 聚合报告） ----
@@ -158,6 +162,15 @@ export interface RuntimeStatusView {
     activeRuns: number;
     managedSessions: number;
   };
+  /** 外部工具链就绪度（旧 Backend 可能缺省） */
+  tools?: {
+    pdfParser: {
+      phase: "ready" | "unavailable" | "unknown";
+      detail: string;
+      pythonVersion?: string;
+      pymupdfVersion?: string;
+    };
+  };
 }
 
 // ---- Model Settings（M4.3.7.5；GET 永不返回 key 本体） ----
@@ -206,13 +219,22 @@ export type ModelOptionsView =
   | { providers: ModelProviderOptionView[] }
   | { provider: ModelProviderOptionView; models: ModelOptionView[] };
 
-/** POST /api/settings/model/test 的结果（失败分类稳定） */
+/** Test Connection 失败分类（Backend ModelTestResultCode） */
+export type ModelTestResultCode =
+  | "AUTH_FAILED"
+  | "MODEL_NOT_FOUND"
+  | "PROVIDER_UNAVAILABLE"
+  | "RATE_LIMITED"
+  | "TIMEOUT"
+  | "UNKNOWN";
+
+/** POST /api/settings/model/test 的结果 */
 export interface ModelTestResultView {
   ok: boolean;
   provider: string;
   model: string;
   latencyMs?: number;
-  code?: string;
+  code?: ModelTestResultCode;
   detail?: string;
 }
 

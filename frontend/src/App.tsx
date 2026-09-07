@@ -2,12 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import { AppRoutes } from "./router/index.js";
+import { ThemeProvider } from "./theme/ThemeProvider.js";
 
 /**
- * App 根组件（M4.1）：
- * - QueryClientProvider：Server State（缓存 / 重试 / 失效）；
- * - BrowserRouter：路由；
- * - 默认重试 1 次且只对 5xx / 网络错误重试（4xx 业务错误重试无意义）。
+ * 根组件：QueryClientProvider（server state）→ ThemeProvider（纯 UI 偏好）→ 路由。
+ * 查询默认只对 5xx / 网络错误重试一次；4xx 业务错误重试无意义。
  */
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,9 +25,11 @@ const queryClient = new QueryClient({
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <ThemeProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }

@@ -143,6 +143,11 @@ export interface WorkflowState {
   request?: Record<string, unknown>;
   /** 当前（或最近一次）执行的 stage */
   currentStage?: string;
+  /**
+   * 当前 stage 最近一次进度快照（stage.progress 事件的 data；如分章节审阅的 index/total）。
+   * 只随下一次 checkpoint 顺带落盘，供 GET /api/runs 展示，不作为恢复依据。
+   */
+  progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string };
   /** 按完成顺序的 stage id（重复执行时移动到末尾） */
   completedStages: string[];
   /** stage id → 最后一次成功产出 */

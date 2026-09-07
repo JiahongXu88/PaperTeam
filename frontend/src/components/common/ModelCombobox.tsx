@@ -3,10 +3,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelOptionView } from "../../types/api.js";
 
 /**
- * 模型搜索选择器（UX Polish 2026-09）。
+ * 模型搜索选择器。
  *
- * 轻量自研 combobox（不引入 UI 框架），解决单 provider 动辄数百上千条
- * 模型时原生 select 无法使用的问题：
+ * 轻量自研 combobox（不引入 UI 框架）：单个 provider 动辄数百上千条模型，
+ * 原生 select 不可用。
  * - 输入即筛选（displayName / modelId，不区分大小写）
  * - 键盘：↑↓ 移动高亮、Enter 选中、Esc 关闭
  * - 只渲染前 N 条匹配（不做全量 DOM）；截断时提示剩余数量
@@ -134,6 +134,7 @@ export function ModelCombobox({
         aria-expanded={open}
         aria-autocomplete="list"
         aria-controls={id !== undefined ? `${id}-listbox` : undefined}
+        aria-activedescendant={open && id !== undefined && rendered[highlight] !== undefined ? `${id}-option-${highlight}` : undefined}
         autoComplete="off"
         spellCheck={false}
         disabled={disabled}
@@ -166,6 +167,7 @@ export function ModelCombobox({
           {rendered.map((model, index) => (
             <li
               key={model.modelId}
+              id={id !== undefined ? `${id}-option-${index}` : undefined}
               role="option"
               aria-selected={model.modelId === value}
               className={`combobox-option${index === highlight ? " highlighted" : ""}${

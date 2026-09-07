@@ -3,27 +3,16 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { ErrorState } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
-import {
-  DOCUMENT_TYPE_OPTIONS,
-  TARGET_PROFILE_OPTIONS,
-} from "../constants/projectMeta.js";
-import { useCreateProject, useImportProjectPdf, useRuntimeStatus } from "../hooks/queries.js";
-import { createWorkflowRun } from "../api/runs.js";
-import { formatApiError } from "../utils/errors.js";
-import { fileToBase64 } from "../utils/file.js";
-import type {
-  CreateProjectInput,
-  ExistingPaperGoal,
-  ImportProjectPdfInput,
-} from "../types/api.js";
+import { DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
+import { useCreateProject, useCreateWorkflowRun, useImportProjectPdf, useRuntimeStatus } from "../hooks/queries.js";
+import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
+import { fileToBase64, MAX_PDF_UPLOAD_BYTES, validatePdfFile } from "../utils/file.js";
+import type { CreateProjectInput, ExistingPaperGoal, ImportProjectPdfInput } from "../types/api.js";
 
 /**
- * 新建项目页（Project Entry UX 2026-09）。
- *
- * 顶层只问一件事：你想做什么？
- *   A. 从研究想法开始（idea_to_paper：标题 + 研究想法 + 定位字段）
- *   B. 导入已有论文（File First：PDF + 目标，导入即建项目，标题自动生成，
- *      不要求用户先手填标题；其余定位字段折叠进「高级选项」）
+ * 新建项目：顶层只问一件事——你想做什么？
+ *   A. 从研究想法开始（标题 + 研究想法 + 定位字段）
+ *   B. 导入已有论文（File First：PDF + 目标即提交，标题由 PDF 自动识别，其余折叠进高级选项）
  */
 
 /** 与 Backend ProjectStore 一致的长度上限（前端提前拦截） */
@@ -34,9 +23,6 @@ const LIMITS = {
   targetVenue: 300,
   language: 50,
 } as const;
-
-/** PDF 上传上限（与 Backend PaperIngestService 一致） */
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 type EntryMode = "idea" | "existing";
 
@@ -60,7 +46,6 @@ const INITIAL_FORM: FormState = {
   language: "",
 };
 
-/** 返回错误文案；合法返回 null（只校验填写了的字段） */
 function validateIdeaForm(form: FormState): string | null {
   if (form.title.trim() === "") {
     return "论文标题不能为空";
@@ -83,27 +68,31 @@ function validateIdeaForm(form: FormState): string | null {
   return null;
 }
 
-/** 只提交非空字段（Backend 对空串视为「不设置」，显式裁剪更干净） */
-function toPicked(value: string): string | undefined {
+/** 只提交非空字段（Backend 对空串视为「不设置」） */
+function picked(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+function withPicked<K extends string>(key: K, value: string): Partial<Record<K, string>> {
+  const trimmed = picked(value);
+  return trimmed === undefined ? {} : ({ [key]: trimmed } as Record<K, string>);
 }
 
 function toCreateInput(form: FormState): CreateProjectInput {
   return {
     title: form.title.trim(),
     workflowKind: "idea_to_paper",
-    ...(toPicked(form.researchIdea) !== undefined ? { researchIdea: toPicked(form.researchIdea) } : {}),
-    ...(toPicked(form.researchField) !== undefined ? { researchField: toPicked(form.researchField) } : {}),
-    ...(toPicked(form.documentType) !== undefined ? { documentType: toPicked(form.documentType) } : {}),
-    ...(toPicked(form.targetProfile) !== undefined ? { targetProfile: toPicked(form.targetProfile) } : {}),
-    ...(toPicked(form.targetVenue) !== undefined ? { targetVenue: toPicked(form.targetVenue) } : {}),
-    ...(toPicked(form.language) !== undefined ? { language: toPicked(form.language) } : {}),
+    ...withPicked("researchIdea", form.researchIdea),
+    ...withPicked("researchField", form.researchField),
+    ...withPicked("documentType", form.documentType),
+    ...withPicked("targetProfile", form.targetProfile),
+    ...withPicked("targetVenue", form.targetVenue),
+    ...withPicked("language", form.language),
   };
 }
 
 export function NewProjectPage() {
-  const navigate = useNavigate();
   const [mode, setMode] = useState<EntryMode>("idea");
 
   return (
@@ -113,80 +102,51 @@ export function NewProjectPage() {
         breadcrumb={
           <>
             <Link to="/projects">论文项目</Link>
-            <span className="crumb-sep" aria-hidden="true">/</span>
+            <span className="crumb-sep" aria-hidden="true">
+              /
+            </span>
             <span>新建项目</span>
           </>
         }
       />
-      {mode === "idea" ? (
-        <IdeaForm onSwitchMode={() => setMode("existing")} navigate={navigate} />
-      ) : (
-        <ExistingPaperForm onSwitchMode={() => setMode("idea")} navigate={navigate} />
-      )}
+      {mode === "idea" ? <IdeaForm onSwitchMode={() => setMode("existing")} /> : <ExistingPaperForm onSwitchMode={() => setMode("idea")} />}
     </section>
   );
 }
 
 /** 模式切换卡（两份表单共用；当前模式高亮，点击另一张切换） */
 function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode: EntryMode) => void }) {
+  const cards: Array<{ mode: EntryMode; title: string; desc: string }> = [
+    { mode: "idea", title: "从研究想法开始", desc: "从一个研究想法出发，完成调研、证据整理、写作与审阅，最终生成论文。" },
+    { mode: "existing", title: "导入已有论文", desc: "上传论文 PDF，先做快速 Review（引用核验 + 分章节审阅），或进入系统性改进流程。" },
+  ];
   return (
     <div className="mode-cards">
-      <label className={`mode-card ${current === "idea" ? "selected" : ""}`}>
-        <input
-          type="radio"
-          name="entryMode"
-          value="idea"
-          checked={current === "idea"}
-          onChange={() => onSelect("idea")}
-        />
-        <span className="mode-card-top">
-          <span className="mode-card-dot" aria-hidden="true" />
-          <span className="mode-card-title">从研究想法开始</span>
-        </span>
-        <span className="mode-card-desc">
-          从一个研究想法出发，完成调研、证据整理、写作与审稿，最终生成论文。
-        </span>
-      </label>
-      <label className={`mode-card ${current === "existing" ? "selected" : ""}`}>
-        <input
-          type="radio"
-          name="entryMode"
-          value="existing"
-          checked={current === "existing"}
-          onChange={() => onSelect("existing")}
-        />
-        <span className="mode-card-top">
-          <span className="mode-card-dot" aria-hidden="true" />
-          <span className="mode-card-title">导入已有论文</span>
-        </span>
-        <span className="mode-card-desc">
-          上传论文 PDF，先做快速 Review（引用核验 + 分章节审阅），或进入系统性改进流程。
-        </span>
-      </label>
+      {cards.map((card) => (
+        <label key={card.mode} className={`mode-card${current === card.mode ? " selected" : ""}`}>
+          <input type="radio" name="entryMode" value={card.mode} checked={current === card.mode} onChange={() => onSelect(card.mode)} />
+          <span className="mode-card-top">
+            <span className="mode-card-dot" aria-hidden="true" />
+            <span className="mode-card-title">{card.title}</span>
+          </span>
+          <span className="mode-card-desc">{card.desc}</span>
+        </label>
+      ))}
     </div>
   );
 }
 
-// ============================================================
-// 模式 A：从研究想法开始
-// ============================================================
+// ---- 模式 A：从研究想法开始 ----
 
-function IdeaForm({
-  onSwitchMode,
-  navigate,
-}: {
-  onSwitchMode: () => void;
-  navigate: ReturnType<typeof useNavigate>;
-}) {
+function IdeaForm({ onSwitchMode }: { onSwitchMode: () => void }) {
+  const navigate = useNavigate();
   const createProject = useCreateProject();
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
   const [validationError, setValidationError] = useState<string | null>(null);
 
-  const update =
-    (field: keyof FormState) =>
-    (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
-      setForm((prev) => ({ ...prev, [field]: event.target.value }));
-    };
+  const update = (field: keyof FormState) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+    setForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -196,14 +156,12 @@ function IdeaForm({
       return;
     }
     createProject.mutate(toCreateInput(form), {
-      onSuccess: (project) => {
-        void navigate(`/projects/${project.id}`);
-      },
+      onSuccess: (project) => void navigate(`/projects/${project.id}`),
     });
   };
 
   return (
-    <form className="panel" onSubmit={onSubmit} noValidate>
+    <form className="panel form-panel" onSubmit={onSubmit} noValidate>
       <fieldset className="form-section">
         <legend>你想做什么？</legend>
         <ModeCards current="idea" onSelect={onSwitchMode} />
@@ -215,47 +173,21 @@ function IdeaForm({
           <label htmlFor="title">
             论文标题 <span className="required">*</span>
           </label>
-          <input
-            id="title"
-            name="title"
-            value={form.title}
-            onChange={update("title")}
-            placeholder="如：基于检索增强生成的学术写作辅助研究"
-            maxLength={LIMITS.title + 1}
-          />
+          <input id="title" name="title" value={form.title} onChange={update("title")} placeholder="如：基于检索增强生成的学术写作辅助研究" maxLength={LIMITS.title + 1} />
         </div>
         <div className="field">
           <label htmlFor="researchIdea">研究想法</label>
-          <textarea
-            id="researchIdea"
-            name="researchIdea"
-            rows={5}
-            value={form.researchIdea}
-            onChange={update("researchIdea")}
-            placeholder="用一段话描述研究问题、动机与初步思路"
-          />
+          <textarea id="researchIdea" name="researchIdea" rows={5} value={form.researchIdea} onChange={update("researchIdea")} placeholder="用一段话描述研究问题、动机与初步思路" />
           <span className="field-help">研究想法是主线的起点：Researcher 会据此完成调研与可行性分析。</span>
         </div>
         <div className="form-grid">
           <div className="field">
             <label htmlFor="researchField">研究领域</label>
-            <input
-              id="researchField"
-              name="researchField"
-              value={form.researchField}
-              onChange={update("researchField")}
-              placeholder="如：信息检索"
-            />
+            <input id="researchField" name="researchField" value={form.researchField} onChange={update("researchField")} placeholder="如：信息检索" />
           </div>
           <div className="field">
             <label htmlFor="targetVenue">目标期刊 / 会议</label>
-            <input
-              id="targetVenue"
-              name="targetVenue"
-              value={form.targetVenue}
-              onChange={update("targetVenue")}
-              placeholder="如：SIGIR 2027"
-            />
+            <input id="targetVenue" name="targetVenue" value={form.targetVenue} onChange={update("targetVenue")} placeholder="如：SIGIR 2027" />
           </div>
         </div>
       </fieldset>
@@ -287,14 +219,7 @@ function IdeaForm({
           </div>
           <div className="field">
             <label htmlFor="language">写作语言</label>
-            <input
-              id="language"
-              name="language"
-              value={form.language}
-              onChange={update("language")}
-              placeholder="如：中文 / English（可选）"
-              maxLength={LIMITS.language + 1}
-            />
+            <input id="language" name="language" value={form.language} onChange={update("language")} placeholder="如：中文 / English（可选）" maxLength={LIMITS.language + 1} />
           </div>
         </div>
       </fieldset>
@@ -305,7 +230,7 @@ function IdeaForm({
         </p>
       ) : null}
       {createProject.isError ? (
-        <ErrorState title="创建失败" message={formatApiError(createProject.error)} />
+        <ErrorState title="创建失败" message={formatApiError(createProject.error)} detail={formatApiErrorDetail(createProject.error)} />
       ) : null}
 
       <div className="form-actions">
@@ -320,20 +245,13 @@ function IdeaForm({
   );
 }
 
-// ============================================================
-// 模式 B：导入已有论文（File First）
-// ============================================================
+// ---- 模式 B：导入已有论文（File First） ----
 
-const GOAL_OPTIONS: Array<{
-  value: ExistingPaperGoal;
-  title: string;
-  desc: string;
-  recommended?: boolean;
-}> = [
+const GOAL_OPTIONS: ReadonlyArray<{ value: ExistingPaperGoal; title: string; desc: string; recommended?: boolean }> = [
   {
     value: "review_only",
     title: "快速 Review",
-    desc: "只分析现有论文：引用真实性核验、论断-引用一致性、分章节审阅，汇总审阅报告。不自动修改论文。",
+    desc: "只分析现有论文：引用真实性核验、论断与引用一致性、分章节审阅，生成 Review 报告。不修改论文。",
     recommended: true,
   },
   {
@@ -343,82 +261,103 @@ const GOAL_OPTIONS: Array<{
   },
 ];
 
-function ExistingPaperForm({
-  onSwitchMode,
-  navigate,
-}: {
-  onSwitchMode: () => void;
-  navigate: ReturnType<typeof useNavigate>;
-}) {
+type ImportPhase = "idle" | "encoding" | "uploading";
+
+function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
+  const navigate = useNavigate();
   const importPdf = useImportProjectPdf();
   const runtimeStatus = useRuntimeStatus();
+  const startReview = useCreateWorkflowRun();
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [goal, setGoal] = useState<ExistingPaperGoal>("review_only");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [researchField, setResearchField] = useState("");
-  const [targetVenue, setTargetVenue] = useState("");
-  const [targetProfile, setTargetProfile] = useState("");
-  const [language, setLanguage] = useState("");
+  const [advanced, setAdvanced] = useState<Pick<FormState, "researchField" | "targetVenue" | "targetProfile" | "language">>({
+    researchField: "",
+    targetVenue: "",
+    targetProfile: "",
+    language: "",
+  });
+  const [phase, setPhase] = useState<ImportPhase>("idle");
   const [validationError, setValidationError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+
+  const submitting = phase !== "idle";
 
   const onPickFile = (picked: File | undefined) => {
     setValidationError(null);
+    setReadError(null);
     if (picked === undefined) {
       return;
     }
-    if (!picked.name.toLowerCase().endsWith(".pdf")) {
-      setValidationError("只接受 .pdf 文件");
-      return;
-    }
-    if (picked.size > MAX_UPLOAD_BYTES) {
-      setValidationError("PDF 超过 50MB 上限");
+    const problem = validatePdfFile(picked);
+    if (problem !== null) {
+      setValidationError(problem);
+      setFile(null);
       return;
     }
     setFile(picked);
   };
 
+  const resetFileInput = () => {
+    if (fileInput.current !== null) {
+      fileInput.current.value = "";
+    }
+  };
+
   const onImport = async (event: FormEvent) => {
     event.preventDefault();
+    if (submitting) {
+      return;
+    }
     if (file === null) {
       setValidationError("请先选择论文 PDF 文件");
       return;
     }
     setValidationError(null);
+    setReadError(null);
+
+    let contentBase64: string;
+    try {
+      setPhase("encoding");
+      contentBase64 = await fileToBase64(file);
+    } catch (error) {
+      setPhase("idle");
+      setReadError(`读取文件失败：${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+
     const input: ImportProjectPdfInput = {
       fileName: file.name,
-      contentBase64: await fileToBase64(file),
+      contentBase64,
       goal,
-      ...(toPicked(researchField) !== undefined ? { researchField: toPicked(researchField)! } : {}),
-      ...(toPicked(targetVenue) !== undefined ? { targetVenue: toPicked(targetVenue)! } : {}),
-      ...(toPicked(targetProfile) !== undefined ? { targetProfile: toPicked(targetProfile)! } : {}),
-      ...(toPicked(language) !== undefined ? { language: toPicked(language)! } : {}),
+      ...withPicked("researchField", advanced.researchField),
+      ...withPicked("targetVenue", advanced.targetVenue),
+      ...withPicked("targetProfile", advanced.targetProfile),
+      ...withPicked("language", advanced.language),
     };
-    await importPdf.mutateAsync(input).then(
-      async ({ project }) => {
-        if (goal === "review_only") {
-          // 快速 Review：导入完成即自动启动审阅（模型已配置时；失败不阻断导航）
-          if (runtimeStatus.data?.model.phase === "configured") {
-            await createWorkflowRun(project.id, "existing_paper_review").catch(() => {});
+    setPhase("uploading");
+    importPdf.mutate(input, {
+      onSuccess: async ({ project }) => {
+        if (goal === "review_only" && runtimeStatus.data?.model.phase === "configured") {
+          // 快速 Review：模型已配置时导入完成即自动开始；启动失败不阻断导航，Review 页会给出手动入口
+          try {
+            await startReview.mutateAsync({ projectId: project.id, kind: "existing_paper_review" });
+          } catch {
+            // Review 页展示「开始 Review」按钮与失败原因
           }
-          void navigate(`/projects/${project.id}?tab=review`);
-          return;
         }
-        // 系统性改进：进入工作区，第一阶段先做 Review 基线
-        void navigate(`/projects/${project.id}`);
+        void navigate(goal === "review_only" ? `/projects/${project.id}?tab=review` : `/projects/${project.id}`);
       },
-      () => {
-        if (fileInput.current !== null) {
-          fileInput.current.value = "";
-        }
+      onError: () => {
+        setPhase("idle");
+        resetFileInput();
+        setFile(null);
       },
-    );
+    });
   };
 
-  const submitting = importPdf.isPending;
-
   return (
-    <form className="panel" onSubmit={(event) => void onImport(event)} noValidate data-testid="existing-import-form">
+    <form className="panel form-panel" onSubmit={(event) => void onImport(event)} noValidate data-testid="existing-import-form">
       <fieldset className="form-section">
         <legend>你想做什么？</legend>
         <ModeCards current="existing" onSelect={onSwitchMode} />
@@ -436,10 +375,10 @@ function ExistingPaperForm({
             disabled={submitting}
           />
           <span className="upload-title">
-            {file !== null ? file.name : submitting ? "解析中…" : "点击选择 PDF 文件"}
+            {phase === "encoding" ? "读取文件…" : phase === "uploading" ? "上传并解析中…" : file !== null ? file.name : "点击选择 PDF 文件"}
           </span>
           <span className="upload-hint">
-            .pdf 文件，不超过 50MB。导入后自动解析：论文标题将取自 PDF（缺失时用文件名），无需手填。
+            .pdf 文件，不超过 {Math.floor(MAX_PDF_UPLOAD_BYTES / (1024 * 1024))}MB。导入后自动解析：论文标题取自 PDF（缺失时用文件名），之后可以改。
           </span>
         </label>
       </fieldset>
@@ -448,22 +387,12 @@ function ExistingPaperForm({
         <legend>你希望先做什么？</legend>
         <div className="mode-cards">
           {GOAL_OPTIONS.map((option) => (
-            <label
-              key={option.value}
-              className={`mode-card ${goal === option.value ? "selected" : ""}`}
-              data-testid={`goal-${option.value}`}
-            >
-              <input
-                type="radio"
-                name="goal"
-                value={option.value}
-                checked={goal === option.value}
-                onChange={() => setGoal(option.value)}
-              />
+            <label key={option.value} className={`mode-card${goal === option.value ? " selected" : ""}`} data-testid={`goal-${option.value}`}>
+              <input type="radio" name="goal" value={option.value} checked={goal === option.value} onChange={() => setGoal(option.value)} disabled={submitting} />
               <span className="mode-card-top">
                 <span className="mode-card-dot" aria-hidden="true" />
                 <span className="mode-card-title">{option.title}</span>
-                {option.recommended ? <span className="chip chip-recommend">推荐</span> : null}
+                {option.recommended ? <span className="chip chip-tone-accent">推荐</span> : null}
               </span>
               <span className="mode-card-desc">{option.desc}</span>
             </label>
@@ -471,57 +400,31 @@ function ExistingPaperForm({
         </div>
       </fieldset>
 
-      <details
-        className="advanced-options"
-        open={advancedOpen}
-        onToggle={(event) => setAdvancedOpen((event.target as HTMLDetailsElement).open)}
-      >
+      <details className="advanced-options">
         <summary>高级选项（研究领域、目标期刊等，可选）</summary>
-        <div className="form-grid" style={{ marginTop: 12 }}>
+        <div className="form-grid" style={{ marginTop: "var(--s-3)" }}>
           <div className="field">
             <label htmlFor="import-research-field">研究领域</label>
-            <input
-              id="import-research-field"
-              value={researchField}
-              onChange={(event) => setResearchField(event.target.value)}
-              placeholder="如：信息检索"
-              maxLength={LIMITS.researchField + 1}
-            />
+            <input id="import-research-field" value={advanced.researchField} onChange={(e) => setAdvanced((a) => ({ ...a, researchField: e.target.value }))} placeholder="如：信息检索" maxLength={LIMITS.researchField + 1} />
           </div>
           <div className="field">
             <label htmlFor="import-target-venue">目标期刊 / 会议</label>
-            <input
-              id="import-target-venue"
-              value={targetVenue}
-              onChange={(event) => setTargetVenue(event.target.value)}
-              placeholder="如：SIGIR 2027"
-              maxLength={LIMITS.targetVenue + 1}
-            />
+            <input id="import-target-venue" value={advanced.targetVenue} onChange={(e) => setAdvanced((a) => ({ ...a, targetVenue: e.target.value }))} placeholder="如：SIGIR 2027" maxLength={LIMITS.targetVenue + 1} />
           </div>
           <div className="field">
             <label htmlFor="import-target-profile">目标定位</label>
-            <select
-              id="import-target-profile"
-              value={targetProfile}
-              onChange={(event) => setTargetProfile(event.target.value)}
-            >
+            <select id="import-target-profile" value={advanced.targetProfile} onChange={(e) => setAdvanced((a) => ({ ...a, targetProfile: e.target.value }))}>
               <option value="">未指定</option>
-              {TARGET_PROFILE_OPTIONS.map((optionItem) => (
-                <option key={optionItem.value} value={optionItem.value}>
-                  {optionItem.label}
+              {TARGET_PROFILE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
           </div>
           <div className="field">
             <label htmlFor="import-language">写作语言</label>
-            <input
-              id="import-language"
-              value={language}
-              onChange={(event) => setLanguage(event.target.value)}
-              placeholder="如：中文 / English（可选）"
-              maxLength={LIMITS.language + 1}
-            />
+            <input id="import-language" value={advanced.language} onChange={(e) => setAdvanced((a) => ({ ...a, language: e.target.value }))} placeholder="如：中文 / English（可选）" maxLength={LIMITS.language + 1} />
           </div>
         </div>
       </details>
@@ -531,8 +434,13 @@ function ExistingPaperForm({
           {validationError}
         </p>
       ) : null}
+      {readError !== null ? (
+        <p className="form-error" role="alert">
+          {readError}
+        </p>
+      ) : null}
       {importPdf.isError ? (
-        <ErrorState title="导入失败" message={formatApiError(importPdf.error)} />
+        <ErrorState title="导入失败" message={formatApiError(importPdf.error)} detail={formatApiErrorDetail(importPdf.error)} />
       ) : null}
       {importPdf.isSuccess ? (
         <p className="note note-success" role="status">
@@ -547,7 +455,7 @@ function ExistingPaperForm({
           取消
         </Link>
         <button type="submit" className="btn btn-primary" disabled={submitting}>
-          {submitting ? "导入中…" : "导入论文"}
+          {phase === "encoding" ? "读取中…" : phase === "uploading" ? "导入中…" : "导入论文"}
         </button>
       </div>
     </form>

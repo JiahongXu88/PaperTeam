@@ -1,75 +1,66 @@
 /**
- * PaperTeam Design Tokens（Visual Redesign 2026-09）。
+ * PaperTeam Design Tokens —— 全部颜色、字号、间距的唯一来源。
  *
- * 方向：Modern Research Workbench —— 深墨侧栏（书脊）+ 纸白内容（页面），
- * 衬线只用于学术内容（论文/文献标题、研究想法），无衬线承担工具界面，
- * 状态一律走「登记簿」dot 语义系统。唯一令所有颜色进出的文件。
+ * 方向：编辑部校对台。档案白纸面 + 墨水靛蓝作为唯一强调色，状态色取
+ * 铜绿 / 赭石 / 朱砂三种"批注色"，衬线只用于论文标题与页面标题，
+ * 数字统一用等宽数字（tabular-nums）落在左侧栏位——参考文献编号、页码、
+ * 章节页范围都在同一条竖线上对齐。
+ *
+ * 亮色 = :root；暗色 = [data-theme="dark"] 覆盖同名变量（阅览室夜灯，不是纯黑反色）。
+ * 组件只引用语义 token，不直接写十六进制。
  */
 
 :root {
-  /* ---- 墨阶（文字 / 线条） ---- */
-  --ink-900: #1c2229; /* 主文字 */
-  --ink-700: #49525b; /* 次级文字 */
-  --ink-500: #737d87; /* 辅助文字 */
-  --ink-400: #9aa3ac; /* 弱化文字（时间戳等） */
-  --line: #e5e7ea; /* 发丝线 */
-  --line-strong: #cfd4da; /* 强分隔线 */
+  /* ---- 纸面 / 表面 ---- */
+  --paper: #f4f4f1; /* 应用底：档案白（冷调，非奶油） */
+  --surface: #ffffff; /* 内容表面：表单、弹层、侧栏 */
+  --surface-raised: #fbfbf9; /* 轻微抬起：hover 行、次级块 */
+  --surface-sunken: #ececE7; /* 下沉：代码、输入禁用态 */
+  --line: #e2e3df; /* 发丝线 */
+  --line-strong: #c9cbc4; /* 强分隔 / 输入边框 */
 
-  /* ---- 表面 ---- */
-  --paper: #f4f4f2; /* 应用画布（冷调纸灰，非奶油） */
-  --page: #ffffff; /* 内容表面 */
+  /* ---- 墨阶（文字） ---- */
+  --ink: #1c2027; /* 正文 */
+  --ink-2: #4a505a; /* 次级 */
+  --ink-3: #6f7681; /* 辅助 */
+  --ink-4: #9aa0a9; /* 弱化：时间戳、占位 */
 
-  /* ---- 书脊（侧栏） ---- */
-  --spine: #1d2530;
-  --spine-deep: #161d26;
-  --spine-hover: #27313e;
-  --spine-active: #323f4f;
-  --spine-text: #aab4bf;
-  --spine-text-strong: #f1f4f7;
-  --spine-line: #2c3644;
-  --spine-accent: #d8e2f4; /* 侧栏选中项文字（在 accent-bg 上） */
-  --spine-ok: #4fae83; /* 深色侧栏上的状态 dot（比浅底色亮） */
-  --spine-warn: #d0a03c;
-  --spine-danger: #d0705f;
+  /* ---- 强调：墨水靛蓝（品牌 / 链接 / 主按钮 / 选中） ---- */
+  --accent: #34437a;
+  --accent-strong: #283461;
+  --accent-ink: #ffffff; /* accent 实底上的文字 */
+  --accent-soft: #eceff8; /* 选中底 / 强调块底 */
+  --accent-line: #c6cde6;
 
-  /* ---- 品牌 accent：墨钴蓝 ---- */
-  --accent: #2f5aa8;
-  --accent-strong: #27498c;
-  --accent-bg: #edf1f8;
-  --accent-bg-strong: #dde5f2;
-  --accent-contrast: #ffffff; /* accent 实底上的文字（按钮等） */
-
-  /* ---- 语义色（浅底深字，长时阅读安全） ---- */
-  --ok: #1f714b;
-  --ok-bg: #e8f2ec;
-  --info: #2c6faf;
-  --info-bg: #eaf2fa;
-  --warn: #8f6408;
-  --warn-bg: #f9f1de;
-  --warn-dot: #b98a1d; /* 登记簿 dot 用亮一档的 warn（小面积可辨识） */
-  --warn-bar: #c99a35; /* 比例条 / 行缘的 warn 中间调 */
-  --warn-line: #ead9ac; /* warn 提示条描边 */
-  --warn-row: #fdfaf1; /* 极淡 warn 行底色 */
-  --warn-row-hover: #faf4e4;
+  /* ---- 批注色（状态；浅底深字，长时阅读安全） ---- */
+  --ok: #2e7d5b;
+  --ok-soft: #e6f2ec;
+  --warn: #9a6b12;
+  --warn-soft: #f8f0dc;
+  --warn-line: #e6d5a8;
   --danger: #b23a2e;
-  --danger-bg: #f9ecea;
-  --danger-line: #ecd2ce; /* 危险操作区描边 */
-  --danger-row: #fdf6f5; /* 极淡 danger 行底色 */
-  --danger-row-hover: #fbeeed;
+  --danger-soft: #f9ebe9;
+  --danger-line: #ead0cc;
+  --info: #3b5a8a;
+  --info-soft: #e9eef6;
+  --neutral: #7a818c;
+  --neutral-soft: #eeeeeb;
 
   /* ---- 字体角色 ---- */
-  --font-ui: "Segoe UI", system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-reading: Georgia, "Times New Roman", "Songti SC", SimSun, serif; /* 学术内容 */
-  --font-mono: ui-monospace, Consolas, "Cascadia Mono", "PingFang SC", monospace; /* 标识符 */
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", Georgia, "Times New Roman", serif;
+  --font-mono: Consolas, "Cascadia Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
-  /* ---- 字号（工具密度优先） ---- */
-  --fs-display: 22px; /* 页面标题 */
-  --fs-title: 16.5px; /* 区块标题 */
-  --fs-body: 14px; /* 正文 */
-  --fs-reading: 15.5px; /* 阅读型正文（衬线） */
-  --fs-meta: 13px; /* 次级说明 */
-  --fs-label: 12px; /* 字段标签 */
-  --fs-code: 12.5px; /* 标识符 */
+  /* ---- 字号 / 行高 ---- */
+  --fs-display: 24px;
+  --lh-display: 1.35;
+  --fs-title: 17px;
+  --fs-body: 14px;
+  --lh-body: 1.65;
+  --fs-reading: 15px; /* 论文标题、研究想法等阅读型内容 */
+  --fs-meta: 12.5px;
+  --fs-label: 12px;
+  --fs-code: 12.5px;
 
   /* ---- 间距（4px 网格） ---- */
   --s-1: 4px;
@@ -79,20 +70,59 @@
   --s-5: 20px;
   --s-6: 24px;
   --s-8: 32px;
-  --s-10: 44px;
+  --s-10: 40px;
+  --s-12: 48px;
 
   /* ---- 圆角 / 阴影 / 动效 ---- */
-  --r-sm: 4px;
-  --r-md: 6px;
+  --r-sm: 3px;
+  --r-md: 5px;
   --r-lg: 8px;
-  --shadow-overlay: 0 8px 28px rgba(22, 29, 38, 0.14); /* 仅浮层 */
+  --shadow-pop: 0 6px 24px rgba(28, 32, 39, 0.12), 0 1px 3px rgba(28, 32, 39, 0.08); /* 仅浮层 */
   --t-fast: 120ms ease;
   --t-med: 180ms ease;
 
-  /* ---- 结构尺寸 ---- */
-  --sidebar-w: 228px;
-  --content-max: 1240px;
-  --header-h: 56px;
+  /* ---- 结构 ---- */
+  --sidebar-w: 232px;
+  --content-max: 1120px;
+  --gutter-w: 56px; /* 左侧数字栏位：参考文献编号 / 页码 / 序号 */
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
 
   color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --paper: #14161b;
+  --surface: #1b1e25;
+  --surface-raised: #21252d;
+  --surface-sunken: #111318;
+  --line: #2a2f39;
+  --line-strong: #3a404c;
+
+  --ink: #e7e8eb;
+  --ink-2: #b4b9c3;
+  --ink-3: #8b919d;
+  --ink-4: #656b77;
+
+  --accent: #9aabf0;
+  --accent-strong: #b7c3f5;
+  --accent-ink: #12162a;
+  --accent-soft: #232a45;
+  --accent-line: #394570;
+
+  --ok: #6fc094;
+  --ok-soft: #1c2f27;
+  --warn: #dba848;
+  --warn-soft: #2f2816;
+  --warn-line: #4d3f1c;
+  --danger: #e3837a;
+  --danger-soft: #34201e;
+  --danger-line: #55302c;
+  --info: #8fb0e0;
+  --info-soft: #1f2836;
+  --neutral: #8e95a1;
+  --neutral-soft: #262a33;
+
+  --shadow-pop: 0 8px 28px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+
+  color-scheme: dark;
 }

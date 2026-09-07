@@ -3,7 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>PaperTeam — AI 论文工作台</title>
+    <script>
+      // 主题预置：在 React 挂载前按已保存偏好 / 系统偏好设置 data-theme，避免首屏闪白。
+      // 与 src/theme/theme.ts 的 STORAGE_KEY / 取值保持一致。
+      (function () {
+        try {
+          var stored = window.localStorage.getItem("paperteam.theme");
+          var mode = stored === "light" || stored === "dark" ? stored : "system";
+          var dark = mode === "dark" || (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        } catch (_error) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

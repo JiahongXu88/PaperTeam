@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useSearchParams, useParams } from "react-router-dom";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
-import { InlineRename, RowMenu } from "../components/common/RowMenu.js";
+import { InlineConfirm, InlineRename, RowMenu } from "../components/common/RowMenu.js";
+import { RegistryStatus } from "../components/common/StatusBadge.js";
+import { COMPLETION_LABELS, EXTRACTION_QUALITY_STYLES, stageLabel, statusStyleOf } from "../components/common/status.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import {
+  isRunActive,
   useArchiveProject,
   useCitations,
   useCitationIntegrity,
@@ -19,284 +22,300 @@ import {
   useRenameProject,
 } from "../hooks/queries.js";
 import { ApiError } from "../api/client.js";
-import { formatApiError } from "../utils/errors.js";
+import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
 import { formatDateTime } from "../utils/format.js";
-import type { PaperDocSummary } from "../types/paper.js";
-import type { WorkflowKind } from "../types/api.js";
+import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js";
 
 /**
- * Project Workspace（Project Entry & Lifecycle UX 2026-09）。
- *
- * 结构：衬线标题（可重命名）+ 状态 → 项目级导航（只暴露真正可用的模块）→
- * 内容。已有论文类项目提供「Review」Tab（PDF 快速 Review）。
- * Tab 进入 URL（?tab=），刷新 / 分享链接可恢复；无效值回退概览。
+ * 项目工作区：标题（可重命名）+ 类型 / 状态 → 标签页（只暴露真正可用的模块）→ 内容。
+ * 已有论文类项目多一个「Review」标签。标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "pdf" | "citations" | "workflow" | "evidence" | "review" | "artifacts";
+type TabId = "overview" | "pdf" | "citations" | "review";
+type OpenableTab = Exclude<TabId, "overview">;
 
-interface TabEntry {
-  id: TabId;
-  label: string;
-  milestone?: string;
-}
-
-/** 全量 Tab 定义（含未开放模块；未开放项暂不在一级导航渲染，里程碑完成后恢复） */
-const TABS: ReadonlyArray<TabEntry> = [
+const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> = [
   { id: "overview", label: "概览" },
   { id: "pdf", label: "PDF 与结构" },
   { id: "citations", label: "引用核验" },
-  { id: "review", label: "Review", milestone: "existing-only" },
-  { id: "workflow", label: "工作流", milestone: "M4.4" },
-  { id: "evidence", label: "证据", milestone: "M4.5" },
-  { id: "artifacts", label: "草稿 / 最终 PDF", milestone: "M4.7" },
+  { id: "review", label: "Review", existingOnly: true },
 ];
 
-/** 已有论文类项目（导入 PDF）开放 Review Tab；idea 项目仍是后续里程碑 */
-function visibleTabs(workflowKind: WorkflowKind | undefined): ReadonlyArray<TabEntry> {
-  const isExisting =
-    workflowKind === "existing_paper_improvement" || workflowKind === "existing_paper_review";
-  return TABS.filter(
-    (entry) => entry.milestone === undefined || (entry.milestone === "existing-only" && isExisting),
-  );
+function isExistingPaper(kind: WorkflowKind | undefined): boolean {
+  return kind === "existing_paper_improvement" || kind === "existing_paper_review";
 }
 
-const COMING_DESCRIPTION: Record<string, string> = {
-  workflow: "启动与跟踪工作流运行：阶段进度、等待确认、取消与恢复。",
-  evidence: "研究证据库：文献检索结果、PDF 文本层分析与派生上下文。",
-  artifacts: "草稿与最终交付物：LaTeX 源、编译产物与版本历史。",
-};
+function visibleTabs(kind: WorkflowKind | undefined) {
+  return TABS.filter((entry) => entry.existingOnly !== true || isExistingPaper(kind));
+}
 
-type OpenableTab = "pdf" | "citations" | "review";
+function tabFromParam(param: string | null, visible: ReadonlyArray<{ id: TabId }>): TabId {
+  return visible.find((entry) => entry.id === param)?.id ?? "overview";
+}
 
-/** WorkflowRun 完成标签（completion.label）→ 中文 */
-const COMPLETION_LABELS: Record<string, string> = {
-  final: "最终稿",
-  draft: "草稿",
-  review: "审阅报告",
-};
-
-/** URL ?tab= → TabId（仅接受当前项目已开放的 Tab；其余回退概览） */
-function tabFromParam(param: string | null, visible: ReadonlyArray<TabEntry>): TabId {
-  const found = visible.find((entry) => entry.id === param);
-  return found !== undefined ? found.id : "overview";
+/** 分章节审阅进度（stage.progress 快照：index / total） */
+function runProgressText(run: WorkflowRunView): string | undefined {
+  const progress = run.progress;
+  if (progress === null || progress === undefined) {
+    return undefined;
+  }
+  const index = progress.data["index"];
+  const total = progress.data["total"];
+  if (typeof index === "number" && typeof total === "number" && total > 0) {
+    return `第 ${index} / ${total} 节`;
+  }
+  return undefined;
 }
 
 function ProjectRunsPanel({ projectId }: { projectId: string }) {
   const { data, isPending, isError, error, refetch } = useProjectRuns(projectId);
 
   if (isPending) {
-    return <Loading label="加载工作流运行记录…" />;
+    return <Loading label="加载任务记录…" />;
   }
   if (isError) {
-    return (
-      <ErrorState
-        title="运行记录加载失败"
-        message={formatApiError(error)}
-        onRetry={() => void refetch()}
-      />
-    );
+    return <ErrorState title="任务记录加载失败" message={formatApiError(error)} detail={formatApiErrorDetail(error)} onRetry={() => void refetch()} />;
   }
   if (data === undefined || data.length === 0) {
-    return <p className="panel-empty">尚未开始工作流。运行界面即将开放。</p>;
+    return <p className="panel-empty">还没有运行过任务。</p>;
   }
   return (
-    <div className="table-scroll">
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>运行</th>
-            <th>状态</th>
-            <th>当前阶段</th>
-            <th>完成</th>
-            <th>更新时间</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.map((run) => (
-            <tr key={run.runId}>
-              <td className="mono">{run.runId}</td>
-              <td>
-                <RunStatusBadge status={run.status} />
-              </td>
-              <td>{run.currentStage ?? "—"}</td>
-              <td>{run.completion !== undefined && run.completion !== null ? (COMPLETION_LABELS[run.completion.label] ?? run.completion.label) : "—"}</td>
-              <td className="muted">{formatDateTime(run.updatedAt) ?? "—"}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="gutter-list" data-testid="run-list">
+      {data.map((run, index) => {
+        const progress = runProgressText(run);
+        return (
+          <div key={run.runId} className="gutter-row">
+            <span className="gutter-num" title={run.runId}>
+              {data.length - index}
+            </span>
+            <div className="gutter-body">
+              <span className="run-title">
+                {run.workflowKind === "existing_paper_review" ? "快速 Review" : run.workflowKind === "existing_paper_improvement" ? "系统性改进" : "从想法到论文"}
+                {run.completion !== null && run.completion !== undefined ? (
+                  <span className="muted">，产出 {COMPLETION_LABELS[run.completion.label] ?? run.completion.label}</span>
+                ) : null}
+              </span>
+              <span className="run-meta">
+                {isRunActive(run) && run.currentStage !== undefined ? (
+                  <>
+                    {stageLabel(run.currentStage)}
+                    {progress !== undefined ? `，${progress}` : ""}
+                  </>
+                ) : run.status === "failed" && run.error ? (
+                  <span className="run-error">{run.error.message}</span>
+                ) : (
+                  <span className="muted">{formatDateTime(run.updatedAt) ?? "—"}</span>
+                )}
+              </span>
+            </div>
+            <div className="gutter-side">
+              <RunStatusBadge status={run.status} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-/** 侧栏：文档与引用状态摘要（真实查询；标题可跳转到对应 tab） */
-function WorkspaceAside({
-  projectId,
-  workflowKind,
-  onOpenTab,
-}: {
-  projectId: string;
-  workflowKind: WorkflowKind | undefined;
-  onOpenTab: (tab: OpenableTab) => void;
-}) {
-  const paper = usePaper(projectId);
-  const citations = useCitations(projectId);
-  const integrity = useCitationIntegrity(projectId);
-  const reviewReport = usePaperReviewReport(projectId);
+/** 右侧概要：下一步建议 + PDF / 引用状态（真实查询；标题可跳到对应标签页） */
+function WorkspaceAside({ project, onOpenTab }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void }) {
+  const paper = usePaper(project.id);
+  const citations = useCitations(project.id);
+  const integrity = useCitationIntegrity(project.id);
+  const reviewReport = usePaperReviewReport(project.id);
 
-  const doc: PaperDocSummary | null | undefined = paper.data?.document;
+  const doc = paper.data?.document;
   const summary = citations.data?.summary;
   const citationsReady = summary !== undefined && summary.extracted;
   const semanticTotal = integrity.data?.report?.semantic.total ?? 0;
   const hasReport = reviewReport.data !== null && reviewReport.data !== undefined;
-  const reviewAvailable =
-    workflowKind === "existing_paper_improvement" || workflowKind === "existing_paper_review";
+  const reviewAvailable = isExistingPaper(project.workflowKind);
 
-  // 下一步建议：由真实状态推导，最多两条
   const nextSteps: Array<{ label: string; tab: OpenableTab }> = [];
   if (!paper.isPending && (doc === null || doc === undefined)) {
-    nextSteps.push({ label: "上传最终 PDF", tab: "pdf" });
+    nextSteps.push({ label: "上传论文 PDF", tab: "pdf" });
   } else if (reviewAvailable && !reviewReport.isPending && !hasReport) {
     nextSteps.push({ label: "开始 Review（引用核验 + 分章节审阅）", tab: "review" });
   }
-  if (!citations.isPending && !citationsReady) {
+  if (doc !== null && doc !== undefined && !citations.isPending && !citationsReady) {
     nextSteps.push({ label: "提取并核验引用", tab: "citations" });
   }
   if (citationsReady && !integrity.isPending && semanticTotal === 0) {
     nextSteps.push({ label: "语义核验引用是否支持论断", tab: "citations" });
   }
-  nextSteps.splice(2);
 
   return (
-    <aside className="workspace-aside">
+    <aside className="workspace-aside" aria-label="项目概要">
       {nextSteps.length > 0 ? (
-        <div className="aside-block">
+        <section className="aside-block">
           <h2 className="aside-title">下一步</h2>
           <div className="aside-next">
-            {nextSteps.map((step) => (
-              <button
-                key={step.label}
-                type="button"
-                className="aside-next-item"
-                onClick={() => onOpenTab(step.tab)}
-              >
+            {nextSteps.slice(0, 2).map((step) => (
+              <button key={step.label} type="button" className="aside-next-item" onClick={() => onOpenTab(step.tab)}>
                 {step.label}
-                <span className="aside-next-arrow" aria-hidden="true">›</span>
+                <span className="aside-next-arrow" aria-hidden="true">
+                  ›
+                </span>
               </button>
             ))}
           </div>
-        </div>
+        </section>
       ) : null}
 
-      <div className="aside-block">
-        <button
-          type="button"
-          className="aside-title aside-title-link"
-          onClick={() => onOpenTab("pdf")}
-          title="打开 PDF 与结构"
-        >
-          最终 PDF <span className="aside-next-arrow" aria-hidden="true">›</span>
-        </button>
-        <dl className="aside-rows">
+      <section className="aside-block">
+        <h2 className="aside-title">
+          <button type="button" className="aside-title-link" onClick={() => onOpenTab("pdf")}>
+            论文 PDF
+          </button>
+        </h2>
+        <dl className="kv">
           {paper.isPending ? (
-            <div className="aside-row">
+            <div className="kv-row">
               <dt>状态</dt>
               <dd className="muted">加载中…</dd>
             </div>
           ) : doc === null || doc === undefined ? (
-            <button type="button" className="aside-row-click" onClick={() => onOpenTab("pdf")}>
-              <span className="ck-label">状态</span>
-              <span className="ck-value">
-                <span className="status status-tone-neutral">未上传</span>
-              </span>
-            </button>
+            <div className="kv-row">
+              <dt>状态</dt>
+              <dd>
+                <span className="status">未上传</span>
+              </dd>
+            </div>
           ) : (
             <>
-              <div className="aside-row">
+              <div className="kv-row">
                 <dt>规模</dt>
                 <dd>
-                  <span className="aside-value">{doc.pageCount}</span> 页 ·{" "}
-                  <span className="aside-value">{doc.sectionCount}</span> 节
+                  {doc.pageCount} 页，{doc.sectionCount} 节
                 </dd>
               </div>
-              <div className="aside-row">
-                <dt>文档</dt>
+              <div className="kv-row">
+                <dt>文件</dt>
                 <dd className="mono" title={doc.originalFileName}>
                   {doc.originalFileName}
                 </dd>
               </div>
-              <div className="aside-row">
+              <div className="kv-row">
                 <dt>解析质量</dt>
                 <dd>
-                  <span className={`status status-tone-${doc.parse.extractionQuality === "good" ? "ok" : doc.parse.extractionQuality === "partial" ? "warn" : "danger"}`}>
-                    {doc.parse.extractionQuality === "good" ? "良好" : doc.parse.extractionQuality === "partial" ? "部分" : "较差"}
-                  </span>
+                  <RegistryStatus style={statusStyleOf(EXTRACTION_QUALITY_STYLES, doc.parse.extractionQuality)} />
                 </dd>
               </div>
             </>
           )}
         </dl>
-      </div>
+      </section>
 
-      <div className="aside-block">
-        <button
-          type="button"
-          className="aside-title aside-title-link"
-          onClick={() => onOpenTab("citations")}
-          title="打开引用核验"
-        >
-          引用核验 <span className="aside-next-arrow" aria-hidden="true">›</span>
-        </button>
-        <dl className="aside-rows">
+      <section className="aside-block">
+        <h2 className="aside-title">
+          <button type="button" className="aside-title-link" onClick={() => onOpenTab("citations")}>
+            引用核验
+          </button>
+        </h2>
+        <dl className="kv">
           {citations.isPending ? (
-            <div className="aside-row">
+            <div className="kv-row">
               <dt>状态</dt>
               <dd className="muted">加载中…</dd>
             </div>
           ) : !citationsReady ? (
-            <button type="button" className="aside-row-click" onClick={() => onOpenTab("citations")}>
-              <span className="ck-label">状态</span>
-              <span className="ck-value">
-                <span className="status status-tone-neutral">未提取</span>
-              </span>
-            </button>
+            <div className="kv-row">
+              <dt>状态</dt>
+              <dd>
+                <span className="status">未提取</span>
+              </dd>
+            </div>
           ) : (
             <>
-              <div className="aside-row">
-                <dt>参考文献条目</dt>
-                <dd>
-                  <span className="aside-value">{summary.references}</span>
-                </dd>
+              <div className="kv-row">
+                <dt>参考文献</dt>
+                <dd>{summary.references} 条</dd>
               </div>
-              <div className="aside-row">
+              <div className="kv-row">
                 <dt>正文引用</dt>
-                <dd>
-                  <span className="aside-value">{summary.callouts}</span>
-                </dd>
+                <dd>{summary.callouts} 处</dd>
               </div>
               {summary.unresolvedRelations > 0 ? (
-                <div className="aside-row">
+                <div className="kv-row">
                   <dt>待关联</dt>
-                  <dd>
-                    <span className="aside-value">{summary.unresolvedRelations}</span>
-                  </dd>
+                  <dd>{summary.unresolvedRelations}</dd>
                 </div>
               ) : null}
             </>
           )}
         </dl>
-      </div>
+      </section>
     </aside>
   );
 }
 
-function ComingPanel({ entry }: { entry: TabEntry }) {
+function OverviewTab({ project, onOpenTab }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void }) {
+  const meta: Array<[string, string]> = [];
+  if (project.researchField) {
+    meta.push(["研究领域", project.researchField]);
+  }
+  const documentType = optionLabel(DOCUMENT_TYPE_OPTIONS, project.documentType);
+  if (documentType !== undefined) {
+    meta.push(["论文类型", documentType]);
+  }
+  const targetProfile = optionLabel(TARGET_PROFILE_OPTIONS, project.targetProfile);
+  if (targetProfile !== undefined) {
+    meta.push(["目标定位", targetProfile]);
+  }
+  if (project.targetVenue) {
+    meta.push(["目标期刊 / 会议", project.targetVenue]);
+  }
+  if (project.language) {
+    meta.push(["写作语言", project.language]);
+  }
+
   return (
-    <div className="panel-coming">
-      <span className="coming-tag">{entry.milestone}</span>
-      <strong>{entry.label}</strong>
-      <span>{COMING_DESCRIPTION[entry.id]}</span>
-      <span className="faint">即将开放，当前暂不可用。</span>
+    <div className="workspace-grid">
+      <div className="panel-stack">
+        <section className="section-block">
+          <div className="section-head">
+            <h2>研究定位</h2>
+          </div>
+          {meta.length > 0 ? (
+            <dl className="meta-list meta-list-2col">
+              {meta.map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="panel-empty">尚未填写研究定位字段。</p>
+          )}
+          {project.researchIdea ? (
+            <div className="idea-block">
+              <h3>研究想法</h3>
+              <p className="prewrap reading">{project.researchIdea}</p>
+            </div>
+          ) : null}
+          {project.workflowKind === "existing_paper_improvement" ? (
+            <p className="note note-info" style={{ marginTop: "var(--s-4)" }}>
+              <span>系统性改进：第一阶段先完成「Review」建立基线（引用核验 + 分章节审阅），后续改进流程基于 Review 发现进行，不会直接重写论文。</span>
+            </p>
+          ) : null}
+          {project.workflowKind === "existing_paper_review" ? (
+            <p className="note note-info" style={{ marginTop: "var(--s-4)" }}>
+              <span>快速 Review：只读分析现有论文，不修改正文。结论与报告在「Review」标签页查看。</span>
+            </p>
+          ) : null}
+        </section>
+
+        <section className="section-block">
+          <div className="section-head">
+            <h2>任务记录</h2>
+          </div>
+          <ProjectRunsPanel projectId={project.id} />
+        </section>
+      </div>
+
+      <WorkspaceAside project={project} onOpenTab={onOpenTab} />
     </div>
   );
 }
@@ -304,18 +323,32 @@ function ComingPanel({ entry }: { entry: TabEntry }) {
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  // Tab 状态进入 URL（?tab=overview|pdf|citations|review）：刷新 / 复制链接可恢复
   const [searchParams, setSearchParams] = useSearchParams();
   const { data, isPending, isError, error, refetch } = useProject(projectId);
   const rename = useRenameProject(projectId);
   const archive = useArchiveProject();
   const [editingTitle, setEditingTitle] = useState(false);
+  const [confirmingArchive, setConfirmingArchive] = useState(false);
   const [headerError, setHeaderError] = useState<string | null>(null);
 
   const visible = visibleTabs(data?.workflowKind);
   const tab = tabFromParam(searchParams.get("tab"), visible);
   const setTab = (next: TabId) => {
-    setSearchParams(next === "overview" ? {} : { tab: next });
+    // 标签切换用 replace：浏览器"后退"回到上一个页面，而不是逐个回退标签
+    setSearchParams(next === "overview" ? {} : { tab: next }, { replace: true });
+  };
+
+  const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (delta === 0) {
+      return;
+    }
+    event.preventDefault();
+    const next = visible[(index + delta + visible.length) % visible.length];
+    if (next !== undefined) {
+      setTab(next.id);
+      (event.currentTarget.parentElement?.children[(index + delta + visible.length) % visible.length] as HTMLElement | undefined)?.focus();
+    }
   };
 
   if (isPending) {
@@ -326,40 +359,29 @@ export function ProjectPage() {
     );
   }
 
-  if (isError) {
+  if (isError || data === undefined) {
     const notFound = error instanceof ApiError && error.isNotFound;
     return (
       <section className="page">
         <ErrorState
           title={notFound ? "项目不存在" : "项目加载失败"}
-          message={
-            notFound
-              ? `找不到项目 ${projectId}（可能已被删除，或链接有误）。`
-              : formatApiError(error)
-          }
+          message={notFound ? `找不到项目 ${projectId ?? ""}：可能已被删除，或链接有误。` : formatApiError(error)}
+          detail={notFound ? undefined : formatApiErrorDetail(error)}
           onRetry={notFound ? undefined : () => void refetch()}
-        />
-        <p>
-          <Link to="/projects" className="btn">
-            ← 返回项目列表
+        >
+          <Link to="/projects" className="btn btn-small">
+            返回论文项目
           </Link>
-        </p>
+        </ErrorState>
       </section>
     );
   }
 
-  const project = data!;
-  const meta = [
-    project.researchField,
-    optionLabel(DOCUMENT_TYPE_OPTIONS, project.documentType),
-    optionLabel(TARGET_PROFILE_OPTIONS, project.targetProfile),
-    project.targetVenue,
-    project.language,
-  ].filter((part): part is string => part !== undefined && part !== "");
+  const project = data;
 
   return (
     <section className="page">
-      <div>
+      <header className="workspace-head">
         <div className="workspace-title-row">
           {editingTitle ? (
             <InlineRename
@@ -368,9 +390,8 @@ export function ProjectPage() {
               onCancel={() => setEditingTitle(false)}
               onCommit={(title) => {
                 setEditingTitle(false);
-                rename.mutate(title, {
-                  onError: (renameError) => setHeaderError(formatApiError(renameError)),
-                });
+                setHeaderError(null);
+                rename.mutate(title, { onError: (renameError) => setHeaderError(formatApiError(renameError)) });
               }}
             />
           ) : (
@@ -386,155 +407,96 @@ export function ProjectPage() {
                 data-testid="rename-project"
                 onClick={() => setEditingTitle(true)}
               >
-                <span aria-hidden="true">✎</span>
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                  <path d="M11.5 2.5l2 2L5 13H3v-2z" strokeLinejoin="round" />
+                </svg>
               </button>
               <RowMenu
                 label="项目的更多操作"
                 testId="workspace-menu"
                 items={[
                   { id: "rename", label: "重命名", onSelect: () => setEditingTitle(true) },
-                  {
-                    id: "archive",
-                    label: "归档项目",
-                    onSelect: () => {
-                      setHeaderError(null);
-                      archive.mutate(project.id, {
-                        onSuccess: () => void navigate("/projects"),
-                        onError: (archiveError) => setHeaderError(formatApiError(archiveError)),
-                      });
-                    },
-                  },
+                  { id: "archive", label: "归档项目", onSelect: () => setConfirmingArchive(true) },
                 ]}
               />
             </div>
           ) : null}
         </div>
-        <div className="workspace-badges">
+        <div className="workspace-meta">
           <WorkflowKindBadge kind={project.workflowKind} />
           <ProjectStatusBadge status={project.status} />
-        </div>
-        <div className="workspace-meta">
-          <span>创建 {formatDateTime(project.createdAt)} · 更新 {formatDateTime(project.updatedAt)}</span>
-          <span className="id-chip" title="项目 ID（技术标识）">
+          <span className="workspace-dates">
+            创建于 {formatDateTime(project.createdAt)}，更新于 {formatDateTime(project.updatedAt)}
+          </span>
+          <span className="id-chip" title="项目 ID">
             {project.id}
           </span>
         </div>
-      </div>
-
-      {project.archivedAt !== undefined ? (
-        <p className="note note-warn" role="status" style={{ marginTop: 12 }}>
-          <span>
-            该项目已归档（{formatDateTime(project.archivedAt)}）。归档项目不出现在论文项目列表；
-            可在<Link to="/settings/projects">「设置 → 项目管理」</Link>恢复或永久删除。
-          </span>
-        </p>
-      ) : null}
-      {headerError !== null ? (
-        <p className="form-error" role="alert" style={{ marginTop: 8 }}>
-          {headerError}
-        </p>
-      ) : null}
+        {confirmingArchive ? (
+          <div className="workspace-inline-confirm">
+            <InlineConfirm
+              message="归档后项目不再出现在列表中，可在「设置 → 项目管理」恢复。"
+              confirmLabel="归档"
+              pending={archive.isPending}
+              onCancel={() => setConfirmingArchive(false)}
+              onConfirm={() => {
+                setHeaderError(null);
+                archive.mutate(project.id, {
+                  onSuccess: () => void navigate("/projects"),
+                  onError: (archiveError) => {
+                    setConfirmingArchive(false);
+                    setHeaderError(formatApiError(archiveError));
+                  },
+                });
+              }}
+            />
+          </div>
+        ) : null}
+        {project.archivedAt !== undefined ? (
+          <p className="note note-warn" role="status">
+            <span>
+              该项目已于 {formatDateTime(project.archivedAt)} 归档，不出现在论文项目列表；可在
+              <Link to="/settings/projects">「设置 → 项目管理」</Link>恢复或永久删除。
+            </span>
+          </p>
+        ) : null}
+        {headerError !== null ? (
+          <p className="form-error" role="alert">
+            {headerError}
+          </p>
+        ) : null}
+      </header>
 
       <nav className="tabs" role="tablist" aria-label="项目工作区">
-        {visible.map((entry) => (
+        {visible.map((entry, index) => (
           <button
             key={entry.id}
             type="button"
             role="tab"
+            id={`tab-${entry.id}`}
             aria-selected={tab === entry.id}
-            className={`tab ${tab === entry.id ? "active" : ""}`}
+            aria-controls={`tabpanel-${entry.id}`}
+            tabIndex={tab === entry.id ? 0 : -1}
+            className={`tab${tab === entry.id ? " active" : ""}`}
             onClick={() => setTab(entry.id)}
+            onKeyDown={(event) => onTabKeyDown(event, index)}
           >
             {entry.label}
           </button>
         ))}
       </nav>
 
-      {tab === "overview" ? (
-        <div className="workspace-grid">
-          <div className="panel-stack">
-            <section>
-              <div className="section-head">
-                <h2>研究定位</h2>
-              </div>
-              {meta.length > 0 ? (
-                <dl className="meta-list meta-list-2col">
-                  {project.researchField ? (
-                    <div>
-                      <dt>研究领域</dt>
-                      <dd>{project.researchField}</dd>
-                    </div>
-                  ) : null}
-                  {project.documentType ? (
-                    <div>
-                      <dt>论文类型</dt>
-                      <dd>{optionLabel(DOCUMENT_TYPE_OPTIONS, project.documentType)}</dd>
-                    </div>
-                  ) : null}
-                  {project.targetProfile ? (
-                    <div>
-                      <dt>目标定位</dt>
-                      <dd>{optionLabel(TARGET_PROFILE_OPTIONS, project.targetProfile)}</dd>
-                    </div>
-                  ) : null}
-                  {project.targetVenue ? (
-                    <div>
-                      <dt>目标期刊 / 会议</dt>
-                      <dd>{project.targetVenue}</dd>
-                    </div>
-                  ) : null}
-                  {project.language ? (
-                    <div>
-                      <dt>写作语言</dt>
-                      <dd>{project.language}</dd>
-                    </div>
-                  ) : null}
-                </dl>
-              ) : (
-                <p className="panel-empty">尚未填写研究定位字段（编辑界面即将提供）。</p>
-              )}
-              {project.researchIdea ? (
-                <div className="idea-block">
-                  <h3>研究想法</h3>
-                  <p className="prewrap">{project.researchIdea}</p>
-                </div>
-              ) : null}
-              {project.workflowKind === "existing_paper_improvement" ? (
-                <p className="note note-info" style={{ marginTop: 16 }}>
-                  <span>
-                    系统性改进：第一阶段先完成「Review」建立基线（引用核验 + 分章节审阅），
-                    后续改进流程将基于 Review 发现进行；不会直接重写论文。
-                  </span>
-                </p>
-              ) : null}
-              {project.workflowKind === "existing_paper_review" ? (
-                <p className="note note-info" style={{ marginTop: 16 }}>
-                  <span>
-                    快速 Review 模式：只读分析现有论文，不修改正文。审阅结论与汇总报告在「Review」页查看。
-                  </span>
-                </p>
-              ) : null}
-            </section>
-
-            <section>
-              <div className="section-head">
-                <h2>工作流运行记录</h2>
-              </div>
-              <ProjectRunsPanel projectId={project.id} />
-            </section>
-          </div>
-
-          <WorkspaceAside projectId={project.id} workflowKind={project.workflowKind} onOpenTab={setTab} />
-        </div>
-      ) : tab === "pdf" ? (
-        <PdfPanel projectId={project.id} />
-      ) : tab === "citations" ? (
-        <CitationsPanel projectId={project.id} />
-      ) : tab === "review" ? (
-        <ReviewPanel projectId={project.id} onOpenTab={setTab} />
-      ) : (
-        <ComingPanel entry={TABS.find((entry) => entry.id === tab)!} />
-      )}
+      <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`} className="tabpanel">
+        {tab === "overview" ? (
+          <OverviewTab project={project} onOpenTab={setTab} />
+        ) : tab === "pdf" ? (
+          <PdfPanel projectId={project.id} />
+        ) : tab === "citations" ? (
+          <CitationsPanel projectId={project.id} />
+        ) : (
+          <ReviewPanel projectId={project.id} onOpenTab={setTab} />
+        )}
+      </div>
     </section>
   );
 }

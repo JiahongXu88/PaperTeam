@@ -101,7 +101,10 @@ describe("ProjectsPage", () => {
     await screen.findByText("检索增强生成综述");
     await user.click(screen.getByTestId("project-row-menu"));
     await user.click(screen.getByRole("menuitem", { name: "归档项目" }));
+    // 行内确认后才真正调用归档
+    await user.click(await screen.findByRole("button", { name: "归档" }));
 
+    expect(archiveProject).toHaveBeenCalledWith(projects[0]!.id);
     expect(await screen.findByRole("alert")).toHaveTextContent("进行中的任务");
   });
 

@@ -1,9 +1,6 @@
 /**
- * PaperTeam Workbench 样式入口（Visual Redesign 2026-09）。
- *
- * 分层：tokens（唯一颜色/尺寸来源）→ base（reset + 排版）→
- * components（跨页面复用组件）→ views（App Shell 与页面结构）。
- * 单文件手写 CSS，不引入 UI 框架。
+ * 样式入口。分层：tokens（颜色 / 尺寸唯一来源，含深色主题）→ base（reset + 排版）→
+ * components（跨页面复用组件）→ views（外壳与页面结构）。手写 CSS，不引入 UI 框架。
  */
 
 @import "./tokens.css";

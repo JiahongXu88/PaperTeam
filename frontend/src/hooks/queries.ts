@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 
 import {
   archiveProject,
@@ -31,42 +32,53 @@ import {
   saveModelSettings,
   testModelConnection,
 } from "../api/settings.js";
-import type { CreateProjectInput, ImportProjectPdfInput, WorkflowKind } from "../types/api.js";
+import type { CreateProjectInput, ImportProjectPdfInput, WorkflowKind, WorkflowRunView } from "../types/api.js";
 
 /**
- * Server State hooks（M4.1-M4.3）：projects / runs / runtime status / PDF /
- * citations / skills 全部经 TanStack Query（缓存、重试、失效）。
- * Zustand 只保存纯 UI 状态。
+ * Server state 全部经 TanStack Query 流动；Zustand 只保存纯 UI 状态。
+ *
+ * key 设计：列表与单项分开前缀（["projects", "list", scope] vs ["project", id, …]），
+ * 使列表失效不会顺带重取所有已打开项目的 PDF / 引用 / Review 子查询。
  */
 
 export const queryKeys = {
-  projects: ["projects"] as const,
-  archivedProjects: ["projects", "archived"] as const,
-  project: (projectId: string) => ["projects", projectId] as const,
-  projectRuns: (projectId: string) => ["projects", projectId, "runs"] as const,
-  paperReview: (projectId: string) => ["projects", projectId, "paper-review"] as const,
+  projectList: (scope: "active" | "archived" | "all") => ["projects", "list", scope] as const,
+  projectLists: ["projects", "list"] as const,
+  project: (projectId: string) => ["project", projectId] as const,
+  projectRuns: (projectId: string) => ["project", projectId, "runs"] as const,
+  paper: (projectId: string) => ["project", projectId, "paper"] as const,
+  paperReview: (projectId: string) => ["project", projectId, "paper-review"] as const,
+  citations: (projectId: string) => ["project", projectId, "citations"] as const,
+  citationIntegrity: (projectId: string) => ["project", projectId, "citations", "integrity"] as const,
+  metadataRecords: (projectId: string) => ["project", projectId, "citations", "metadata"] as const,
   runtimeStatus: ["runtime-status"] as const,
-  paper: (projectId: string) => ["projects", projectId, "paper"] as const,
-  citations: (projectId: string) => ["projects", projectId, "citations"] as const,
-  citationIntegrity: (projectId: string) => ["projects", projectId, "citations", "integrity"] as const,
   skills: ["skills"] as const,
   modelSettings: ["model-settings"] as const,
   modelOptions: ["model-settings", "options"] as const,
   modelOptionsFor: (provider: string) => ["model-settings", "options", provider] as const,
 };
 
-/** 项目列表（updatedAt 降序；默认未归档） */
+/** 项目目录几乎不变：一天内不因窗口聚焦重取（1290 条模型目录不该反复下载） */
+const CATALOG_STALE_MS = 24 * 60 * 60 * 1000;
+
+const ACTIVE_RUN_STATUSES: ReadonlySet<WorkflowRunView["status"]> = new Set(["pending", "running", "awaiting_input"]);
+
+export function isRunActive(run: WorkflowRunView | undefined): boolean {
+  return run !== undefined && ACTIVE_RUN_STATUSES.has(run.status);
+}
+
+// ---- 项目 ----
+
 export function useProjects() {
   return useQuery({
-    queryKey: queryKeys.projects,
+    queryKey: queryKeys.projectList("active"),
     queryFn: ({ signal }) => listProjects("active", signal),
   });
 }
 
-/** 已归档项目列表（设置 → 项目管理） */
 export function useArchivedProjects() {
   return useQuery({
-    queryKey: queryKeys.archivedProjects,
+    queryKey: queryKeys.projectList("archived"),
     queryFn: ({ signal }) => listProjects("archived", signal),
   });
 }
@@ -75,115 +87,127 @@ export function useArchivedProjects() {
 export function useProject(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.project(projectId ?? ""),
-    queryFn: ({ signal }) => getProject(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
+    queryFn: ({ signal }) => getProject(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 
-/** 项目最近 WorkflowRun 摘要（intervalMs：运行监控轮询，如 Review 进度） */
-export function useProjectRuns(projectId: string | undefined, intervalMs?: number) {
+/** 项目的 WorkflowRun 列表：存在活跃 run 时按 pollMs 轮询，否则不轮询 */
+export function useProjectRuns(projectId: string | undefined, pollMs = 3000) {
   return useQuery({
     queryKey: queryKeys.projectRuns(projectId ?? ""),
-    queryFn: ({ signal }) => listProjectRuns(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
-    ...(intervalMs !== undefined ? { refetchInterval: intervalMs } : {}),
+    queryFn: ({ signal }) => listProjectRuns(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+    refetchInterval: (query) => (query.state.data?.some(isRunActive) === true ? pollMs : false),
   });
 }
 
-/** 创建项目（成功后失效列表缓存） */
-export function useCreateProject() {
+function useProjectMutationEffects() {
   const queryClient = useQueryClient();
+  return {
+    /** 单项写回 + 所有列表（active / archived / all）失效 */
+    syncProject: (project: { id: string }, data: unknown) => {
+      queryClient.setQueryData(queryKeys.project(project.id), data);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectLists });
+    },
+  };
+}
+
+export function useCreateProject() {
+  const { syncProject } = useProjectMutationEffects();
   return useMutation({
     mutationFn: (input: CreateProjectInput) => createProject(input),
-    onSuccess: (project) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-      void queryClient.setQueryData(queryKeys.project(project.id), project);
-    },
+    onSuccess: (project) => syncProject(project, project),
   });
 }
 
 /** 已有论文 File-First 导入（后端建项目 + 解析 + 自动标题，失败回滚） */
 export function useImportProjectPdf() {
+  const { syncProject } = useProjectMutationEffects();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: ImportProjectPdfInput) => importProjectPdf(input),
-    onSuccess: ({ project }) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-      void queryClient.setQueryData(queryKeys.project(project.id), project);
+    onSuccess: ({ project, document }) => {
+      syncProject(project, project);
+      // 导入响应已带文档摘要：直接种进 paper 缓存，落地工作区不再等一轮请求
+      queryClient.setQueryData(queryKeys.paper(project.id), { document, sections: undefined, stages: undefined });
     },
   });
 }
 
-/** 重命名项目（PATCH title；成功后同步详情与列表缓存） */
 export function useRenameProject(projectId: string | undefined) {
-  const queryClient = useQueryClient();
+  const { syncProject } = useProjectMutationEffects();
   return useMutation({
-    mutationFn: (title: string) => renameProject(projectId!, title),
-    onSuccess: (project) => {
-      void queryClient.setQueryData(queryKeys.project(projectId ?? ""), project);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-    },
+    mutationFn: (title: string) => renameProject(projectId ?? "", title),
+    onSuccess: (project) => syncProject(project, project),
   });
 }
 
-/** 归档项目（运行中 → 409 PROJECT_BUSY，由调用方展示错误信息） */
+/** 归档（运行中 → 409 PROJECT_BUSY，由调用方展示） */
 export function useArchiveProject() {
-  const queryClient = useQueryClient();
+  const { syncProject } = useProjectMutationEffects();
   return useMutation({
     mutationFn: (projectId: string) => archiveProject(projectId),
-    onSuccess: (project) => {
-      void queryClient.setQueryData(queryKeys.project(project.id), project);
-      // projects 前缀失效会同时刷新默认列表、最近项目与已归档列表
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-    },
+    onSuccess: (project) => syncProject(project, project),
   });
 }
 
-/** 恢复已归档项目 */
 export function useRestoreProject() {
-  const queryClient = useQueryClient();
+  const { syncProject } = useProjectMutationEffects();
   return useMutation({
     mutationFn: (projectId: string) => restoreProject(projectId),
-    onSuccess: (project) => {
-      void queryClient.setQueryData(queryKeys.project(project.id), project);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
-    },
+    onSuccess: (project) => syncProject(project, project),
   });
 }
 
-/** 永久删除（仅已归档项目；成功后清理该项目全部缓存） */
+/** 永久删除（仅已归档；成功后清掉该项目的全部缓存） */
 export function useDeleteProject() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (projectId: string) => deleteProject(projectId),
     onSuccess: (_result, projectId) => {
-      void queryClient.removeQueries({ queryKey: queryKeys.project(projectId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
+      queryClient.removeQueries({ queryKey: queryKeys.project(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectLists });
     },
   });
 }
 
-/** 启动 WorkflowRun（快速 Review 用 existing_paper_review） */
-export function useCreateWorkflowRun(projectId: string | undefined) {
+// ---- Workflow ----
+
+/** 启动 WorkflowRun（快速 Review = existing_paper_review）；成功后刷新该项目的 run 列表 */
+export function useCreateWorkflowRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (kind: WorkflowKind) => createWorkflowRun(projectId!, kind),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId ?? "") });
+    mutationFn: ({ projectId, kind }: { projectId: string; kind: WorkflowKind }) => createWorkflowRun(projectId, kind),
+    onSuccess: (_run, { projectId }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId) });
     },
   });
 }
 
-/** 最新快速 Review 聚合报告（无报告为 null） */
+/** Review run 结束后要刷新的派生数据（报告 / 引用 / 项目状态） */
+export function useInvalidateReviewOutputs(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    const id = projectId ?? "";
+    void queryClient.invalidateQueries({ queryKey: queryKeys.paperReview(id) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.citations(id) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.project(id) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.projectLists });
+  }, [projectId, queryClient]);
+}
+
 export function usePaperReviewReport(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.paperReview(projectId ?? ""),
-    queryFn: ({ signal }) => getPaperReviewReport(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
+    queryFn: ({ signal }) => getPaperReviewReport(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 
-/** Runtime Status（Pi schema；30s 轮询 + 窗口聚焦刷新） */
+// ---- 运行环境 ----
+
+/** Runtime / 模型 / PDF 工具链状态：30s 轮询 + 窗口聚焦刷新 */
 export function useRuntimeStatus() {
   return useQuery({
     queryKey: queryKeys.runtimeStatus,
@@ -192,104 +216,92 @@ export function useRuntimeStatus() {
   });
 }
 
-// ---- M4.3 PDF / Citations / Skills ----
+// ---- PDF / 引用 ----
 
-/** Final PDF 解析状态（含 sections 与 stages） */
 export function usePaper(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.paper(projectId ?? ""),
-    queryFn: ({ signal }) => getPaper(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
+    queryFn: ({ signal }) => getPaper(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 
-/** 上传 Final PDF（成功后失效 paper / citations / review 缓存） */
 export function useUploadPaperPdf(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: { fileName: string; contentBase64: string }) =>
-      uploadPaperPdf(projectId!, input),
+    mutationFn: (input: { fileName: string; contentBase64: string }) => uploadPaperPdf(projectId ?? "", input),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.paper(projectId ?? "") });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.citations(projectId ?? "") });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.paperReview(projectId ?? "") });
+      const id = projectId ?? "";
+      void queryClient.invalidateQueries({ queryKey: queryKeys.paper(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.citations(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.paperReview(id) });
     },
   });
 }
 
-/** 引用提取摘要 + reference 列表 */
 export function useCitations(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.citations(projectId ?? ""),
-    queryFn: ({ signal }) => listCitations(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
+    queryFn: ({ signal }) => listCitations(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 
-/** Citation Integrity 汇总报告（metadata + semantic + gate） */
 export function useCitationIntegrity(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.citationIntegrity(projectId ?? ""),
-    queryFn: ({ signal }) => getCitationIntegrity(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
+    queryFn: ({ signal }) => getCitationIntegrity(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 
-/** 逐条 metadata 核验记录（Reference 表 status 列） */
 export function useMetadataRecords(projectId: string | undefined) {
   return useQuery({
-    queryKey: ["projects", projectId ?? "", "citations", "metadata"] as const,
-    queryFn: ({ signal }) => getMetadataRecords(projectId!, signal),
-    enabled: projectId !== undefined && projectId !== "",
+    queryKey: queryKeys.metadataRecords(projectId ?? ""),
+    queryFn: ({ signal }) => getMetadataRecords(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 
-function useCitationStageMutation(projectId: string | undefined) {
+/** 引用三阶段（提取 / 真实性 / 语义）任何一步成功都刷新整组引用查询 */
+function useCitationInvalidation(projectId: string | undefined) {
   const queryClient = useQueryClient();
-  return {
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.citations(projectId ?? "") });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.citationIntegrity(projectId ?? "") });
-    },
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.citations(projectId ?? "") });
   };
 }
 
-/** 引用提取（确定性） */
 export function useExtractCitations(projectId: string | undefined) {
-  const invalidation = useCitationStageMutation(projectId);
-  return useMutation({
-    mutationFn: () => extractCitations(projectId!),
-    onSuccess: invalidation.onSuccess,
-  });
+  const invalidate = useCitationInvalidation(projectId);
+  return useMutation({ mutationFn: () => extractCitations(projectId ?? ""), onSuccess: invalidate });
 }
 
-/** metadata 核验（真实外部学术库） */
 export function useVerifyMetadata(projectId: string | undefined) {
-  const invalidation = useCitationStageMutation(projectId);
-  return useMutation({
-    mutationFn: () => verifyMetadata(projectId!),
-    onSuccess: invalidation.onSuccess,
-  });
+  const invalidate = useCitationInvalidation(projectId);
+  return useMutation({ mutationFn: () => verifyMetadata(projectId ?? ""), onSuccess: invalidate });
 }
 
-/** (claim, citation) 语义核验 */
+/** 单次语义核验条数上限（UI 会提示） */
+export const SEMANTIC_VERIFY_LIMIT = 30;
+
 export function useVerifyClaims(projectId: string | undefined) {
-  const invalidation = useCitationStageMutation(projectId);
+  const invalidate = useCitationInvalidation(projectId);
   return useMutation({
-    mutationFn: () => verifyClaims(projectId!, { limit: 30 }),
-    onSuccess: invalidation.onSuccess,
+    mutationFn: () => verifyClaims(projectId ?? "", { limit: SEMANTIC_VERIFY_LIMIT }),
+    onSuccess: invalidate,
   });
 }
 
-/** Skill 列表（全局，只读） */
+// ---- Skills ----
+
 export function useSkills() {
   return useQuery({
     queryKey: queryKeys.skills,
     queryFn: ({ signal }) => listSkills(signal),
+    staleTime: CATALOG_STALE_MS,
   });
 }
 
-/** 重新生成单个 skill 的中文简介 */
 export function useRegenerateSkillSummary() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -300,15 +312,16 @@ export function useRegenerateSkillSummary() {
   });
 }
 
-// ---- M4.3.7.5 Model Settings ----
+// ---- 模型设置 ----
 
-/** 配置失效：model settings + 权威 runtime status（顶栏徽标随之刷新） */
-function invalidateModelState(queryClient: ReturnType<typeof useQueryClient>) {
-  void queryClient.invalidateQueries({ queryKey: queryKeys.modelSettings });
-  void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeStatus });
+function useInvalidateModelState() {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.modelSettings });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.runtimeStatus });
+  };
 }
 
-/** Model Settings 状态（无 key 本体） */
 export function useModelSettings() {
   return useQuery({
     queryKey: queryKeys.modelSettings,
@@ -321,30 +334,30 @@ export function useModelOptions(provider?: string) {
   return useQuery({
     queryKey: provider === undefined ? queryKeys.modelOptions : queryKeys.modelOptionsFor(provider),
     queryFn: ({ signal }) => getModelOptions(provider, signal),
+    staleTime: CATALOG_STALE_MS,
   });
 }
 
-/** 保存模型偏好（可选携带新 Key；成功后失效 model settings + runtime status） */
 export function useSaveModelSettings() {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateModelState();
   return useMutation({
     mutationFn: (input: { model: string; apiKey?: string }) => saveModelSettings(input),
-    onSuccess: () => invalidateModelState(queryClient),
+    onSuccess: invalidate,
   });
 }
 
-/** 清除本地保存的 API Key */
 export function useClearModelApiKey() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () => clearModelApiKey(),
-    onSuccess: () => invalidateModelState(queryClient),
-  });
+  const invalidate = useInvalidateModelState();
+  return useMutation({ mutationFn: () => clearModelApiKey(), onSuccess: invalidate });
 }
 
-/** Test Connection（携带当前填写但未保存的 model/key；不改缓存状态） */
+/** Test Connection：携带当前填写但未保存的 model/key；不改缓存 */
 export function useTestModelConnection() {
   return useMutation({
     mutationFn: (input: { model: string; apiKey?: string }) => testModelConnection(input),
   });
+}
+
+function isNonEmpty(value: string | undefined): value is string {
+  return value !== undefined && value !== "";
 }

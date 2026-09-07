@@ -68,6 +68,21 @@ const created: ProjectView = {
   updatedAt: "2026-09-04T12:00:00.000Z",
 };
 
+/** 导入响应里的文档摘要（与 GET /paper 的 document 同形） */
+const importedDocument = {
+  projectId: "p-new",
+  documentId: "paper-1",
+  title: "Attention Is All You Need",
+  originalFileName: "attention.pdf",
+  bytes: 2048,
+  sha256: "abc123def456",
+  parse: { parserId: "pymupdf", parsedAt: "2026-09-07T00:00:00.000Z", durationMs: 100, pageCount: 15, extractionQuality: "good" as const },
+  pageCount: 15,
+  sectionCount: 23,
+  chunkCount: 27,
+  ingestedAt: "2026-09-07T00:00:00.000Z",
+};
+
 /** 真实路由：/projects/new ↔ /projects/:projectId（验证成功导航后的落地页） */
 function renderCreateFlow() {
   return renderWithProviders(
@@ -171,7 +186,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
       title: "Attention Is All You Need",
       workflowKind: "existing_paper_review",
     };
-    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, titleSource: "pdf" });
+    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
     vi.mocked(getProject).mockResolvedValue(imported);
     vi.mocked(createWorkflowRun).mockClear();
     const user = userEvent.setup();
@@ -201,7 +216,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
       title: "Attention Is All You Need",
       workflowKind: "existing_paper_improvement",
     };
-    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, titleSource: "pdf" });
+    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
     vi.mocked(getProject).mockResolvedValue(imported);
     vi.mocked(createWorkflowRun).mockClear();
     const user = userEvent.setup();

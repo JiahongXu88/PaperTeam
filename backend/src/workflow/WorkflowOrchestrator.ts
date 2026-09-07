@@ -529,8 +529,11 @@ export class WorkflowOrchestrator {
           attempt,
           state: structuredClone(state),
           signal: controller.signal,
-          emitProgress: (data) =>
-            this.emit(handle, { type: "stage.progress", stageId: stage.id, attempt, data }),
+          emitProgress: (data) => {
+            state.progress = { stageId: stage.id, data, updatedAt: this.now().toISOString() };
+            this.touch(state);
+            return this.emit(handle, { type: "stage.progress", stageId: stage.id, attempt, data });
+          },
           emitDomain: (type, data, message) =>
             this.emit(handle, {
               type,
@@ -601,6 +604,7 @@ export class WorkflowOrchestrator {
           summary: outcome.result,
         };
         state.stageResults[stage.id] = outcome.result;
+        state.progress = undefined;
         state.stageHistory.push(record);
         state.completedStages = [...state.completedStages.filter((id) => id !== stage.id), stage.id];
         this.touch(state);
