@@ -5,7 +5,6 @@
  */
 
 import { readdir } from "node:fs/promises";
-import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { PdfParser, RawPdfExtraction } from "../../src/paper/PdfParser.js";
@@ -17,6 +16,9 @@ function fakeParser(extraction: () => RawPdfExtraction): PdfParser {
     id: "fake",
     async parseFile() {
       return extraction();
+    },
+    async checkAvailability() {
+      return { available: true as const, command: "fake", args: [], pythonVersion: "0", pymupdfVersion: "0" };
     },
   };
 }
@@ -138,6 +140,9 @@ describe("POST /api/projects/import-pdf（File First 导入）", () => {
         id: "fake-broken",
         async parseFile() {
           throw boom;
+        },
+        async checkAvailability() {
+          return { available: true as const, command: "fake", args: [], pythonVersion: "0", pymupdfVersion: "0" };
         },
       },
       registerCleanup: (cleanup) => cleanups.push(cleanup),

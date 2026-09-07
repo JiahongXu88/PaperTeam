@@ -1,7 +1,5 @@
 /**
- * Final PDF Ingest 服务（M4.3.1）：Existing Paper 的合法 Review 输入。
- *
- * PDF 第一版定位：Read-only Review / Audit（不编辑 PDF）。
+ * Final PDF Ingest 服务：已有论文的 Review 输入（只读分析，不编辑 PDF）。
  *
  * 校验：扩展名 .pdf、%PDF- 签名、大小上限（默认 50MB，可配）、文件名规范化
  * （仅元数据用途——落盘路径固定 source/paper.pdf，天然免疫路径穿越）。
@@ -11,10 +9,10 @@
  * 后续 references/metadata/semantic stages 依据指纹跳过已完成工作。
  */
 
-import { mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 
-import { BusinessError } from "../errors.js";
+import { BusinessError, PdfParseFailedError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { sha256Hex } from "../util/hash.js";
 import { PyMuPdfParser, type PdfParser } from "./PdfParser.js";
@@ -124,6 +122,13 @@ export class PaperIngestService {
     try {
       const extraction = await this.parser.parseFile(sourcePath);
       const assembled = assemblePaper(extraction);
+      if (assembled.chunks.length === 0) {
+        // 零文本块的文档 readPaperDocument 会拒绝读取：与其落一份读不回的 document.json，
+        // 不如在这里如实失败（扫描件 / 纯图片 PDF 没有文本层）
+        throw new PdfParseFailedError(
+          `未从 PDF 提取到任何文本（${extraction.pageCount} 页）。可能是扫描件或纯图片 PDF，请提供带文本层的版本`,
+        );
+      }
       document = {
         schemaVersion: 1,
         projectId,

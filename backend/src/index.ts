@@ -84,7 +84,7 @@ export async function startBackend(): Promise<void> {
     authPath: join(config.pi.agentDir, "auth.json"),
     modelsPath: join(config.pi.agentDir, "models.json"),
   });
-  const runtime: AgentRuntime = new PiRuntimeAdapter({
+  const runtime = new PiRuntimeAdapter({
     ...(effectiveModelSpec !== undefined ? { modelSpec: effectiveModelSpec } : {}),
     ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
     agentDir: config.pi.agentDir,
@@ -119,6 +119,7 @@ export async function startBackend(): Promise<void> {
       metadataTimeoutMs: config.citation.metadataTimeoutMs,
       ...(config.citation.contactEmail ? { contactEmail: config.citation.contactEmail } : {}),
     },
+    ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
     log: (message) => console.log(message),
   });
   const importer = new LatexImporter({ projects, latex, log: (message) => console.log(message) });
@@ -145,16 +146,25 @@ export async function startBackend(): Promise<void> {
   const health = await runtime.healthCheck();
   reportRuntimeHealth(health);
 
+  // PDF 解析依赖自检：缺失不阻塞启动（导入时给结构化 503 + 安装指引），但要在启动日志里说清楚
+  const pdfToolchain = await stack.paperParser.checkAvailability();
+  console.log(
+    pdfToolchain.available
+      ? `  pdf parser:   ready（${pdfToolchain.command} ${pdfToolchain.args.join(" ")}，Python ${pdfToolchain.pythonVersion}，pymupdf ${pdfToolchain.pymupdfVersion}）`
+      : `  pdf parser:   不可用 —— ${pdfToolchain.detail}（可运行 npm run doctor 检查）`,
+  );
+
   // Runtime 诊断（GET /api/runtime/status）
   const runtimeStatus = new RuntimeStatusService({
     runtime,
     agentIds: config.agents,
+    pdfParser: stack.paperParser,
     log: (message) => console.log(message),
   });
 
   const orchestrator = new WorkflowOrchestrator({
     projects,
-    runStore: new WorkflowRunStore(projects),
+    runStore: new WorkflowRunStore(projects, { log: (message) => console.log(message) }),
     definitionFactory: (kind) => {
       switch (kind) {
         case "idea_to_paper":
@@ -177,7 +187,7 @@ export async function startBackend(): Promise<void> {
   // M4.3.7.5 Model Settings：env（PAPERTEAM_PI_*）> 本地保存（model.json + auth.json）
   const modelSettings = new ModelSettingsService({
     modelRuntime,
-    runtime: runtime as PiRuntimeAdapter,
+    runtime,
     store: modelSettingsStore,
     env: {
       ...(config.pi.model !== undefined ? { piModel: config.pi.model } : {}),
@@ -242,26 +252,37 @@ function registerShutdown(
   runtime: AgentRuntime,
   orchestrator: WorkflowOrchestrator,
 ): void {
+  let shuttingDown = false;
   const shutdown = (signal: string) => {
+    if (shuttingDown) {
+      return; // 第二次 Ctrl+C：已在退出流程中，不重复 close
+    }
+    shuttingDown = true;
     console.log(`\nPaperTeam Backend shutting down (${signal})...`);
+    // 兜底：任何一步悬挂（keep-alive 连接、未响应 abort 的工具）都在 5s 后强制退出
+    setTimeout(() => process.exit(0), 5000).unref();
     // 先停编排器（请求取消活跃 run 并等循环退出，checkpoint 已随执行落盘），
     // 再收敛 Runtime 在途 run / 释放全部 AgentSession，最后关 HTTP 服务
     // （SSE 长连接会阻止 server.close 完成，主动 closeAllConnections 让退出即时、干净）
-    void orchestrator
-      .close()
-      .catch(() => {})
-      .finally(() => {
-        void runtime.close().catch(() => {});
-        server.closeAllConnections?.();
-        server.close(() => {
-          process.exit(0);
-        });
-        // 兜底：close 回调因 keep-alive 连接悬挂时强制退出
-        setTimeout(() => process.exit(0), 5000).unref();
+    void (async () => {
+      await orchestrator.close().catch((error: unknown) => {
+        console.error("[paperteam] 编排器关闭异常：", errorText(error));
       });
+      await runtime.close().catch((error: unknown) => {
+        console.error("[paperteam] Runtime 关闭异常：", errorText(error));
+      });
+      server.closeAllConnections?.();
+      server.close(() => {
+        process.exit(0);
+      });
+    })();
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 const isDirectRun =

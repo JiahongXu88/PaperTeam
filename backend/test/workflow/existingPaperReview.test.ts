@@ -98,6 +98,9 @@ function makeReviewRuntime(): { runtime: AgentRuntime; calls: RecordedCall[] } {
 
 const fakeParser: PdfParser = {
   id: "fake",
+  async checkAvailability() {
+    return { available: true as const, command: "fake", args: [], pythonVersion: "0", pymupdfVersion: "0" };
+  },
   async parseFile(): Promise<RawPdfExtraction> {
     return {
       ok: true,

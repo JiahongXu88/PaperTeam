@@ -14,7 +14,7 @@ import { PaperMapService } from "./paper/PaperMapService.js";
 import { PaperStore } from "./paper/PaperStore.js";
 import { ReviewContextBuilder } from "./paper/ReviewContextBuilder.js";
 import { SectionReviewService } from "./paper/SectionReviewService.js";
-import type { PdfParser } from "./paper/PdfParser.js";
+import { PyMuPdfParser, type PdfParser } from "./paper/PdfParser.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { ProjectImportService } from "./project/ProjectImportService.js";
 import { FeasibilityService } from "./agents/FeasibilityService.js";
@@ -26,6 +26,7 @@ import { BuiltinPdfAnalyzer } from "./sources/PdfAnalyzer.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
+import { ReviewArtifactStore } from "./review/reviewArtifacts.js";
 import type { ScholarlyResolverOptions } from "./citation/scholarly.js";
 import type { WorkflowServices } from "./workflow/definitions.js";
 
@@ -58,6 +59,8 @@ export interface ServiceStackOptions {
   };
   /** Final PDF parser 注入（测试用 fake parser；缺省 PyMuPdfParser） */
   paperParser?: PdfParser;
+  /** PyMuPdfParser 的解释器覆盖（PAPERTEAM_PDF_PYTHON）；注入 paperParser 时忽略 */
+  pdfPythonCommand?: string;
   log?: (message: string) => void;
 }
 
@@ -78,11 +81,14 @@ export interface ServiceStack {
   citationIntegrity: CitationIntegrityService;
   latex: LatexCompiler;
   paperStore: PaperStore;
+  /** 解析器实例（HTTP 诊断 / 启动自检读取工具链就绪度） */
+  paperParser: PdfParser;
   paperIngest: PaperIngestService;
   paperMap: PaperMapService;
   reviewContext: ReviewContextBuilder;
   /** 已有论文 PDF 导入（File First：一次调用建项目 + 解析 + 定标题） */
   projectImport: ProjectImportService;
+  reviewArtifacts: ReviewArtifactStore;
   workflowServices: WorkflowServices;
 }
 
@@ -138,10 +144,16 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const paperStore = new PaperStore(options.projects);
+  const paperParser =
+    options.paperParser ??
+    new PyMuPdfParser({
+      ...(options.pdfPythonCommand !== undefined ? { pythonCommand: options.pdfPythonCommand } : {}),
+      log,
+    });
   const paperIngest = new PaperIngestService({
     projects: options.projects,
     store: paperStore,
-    ...(options.paperParser !== undefined ? { parser: options.paperParser } : {}),
+    parser: paperParser,
     log,
   });
   const paperMap = new PaperMapService({
@@ -178,6 +190,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     projects: options.projects,
     log,
   });
+  const reviewArtifacts = new ReviewArtifactStore(options.projects);
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -195,10 +208,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     citationIntegrity,
     latex,
     paperStore,
+    paperParser,
     paperIngest,
     paperMap,
     reviewContext,
     projectImport,
+    reviewArtifacts,
     workflowServices: {
       projects: options.projects,
       generation,
@@ -218,6 +233,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         citationIntegrity,
         sectionReview,
       },
+      reviewArtifacts,
       stageTimeoutMs: options.stageTimeoutMs ?? 900_000,
       stageMaxAttempts: options.stageMaxAttempts ?? 2,
       review: {

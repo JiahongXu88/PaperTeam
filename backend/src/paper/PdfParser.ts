@@ -1,24 +1,25 @@
 /**
- * PDF Parser 抽象与 pymupdf 实现（M4.3.1）。
+ * PDF Parser 抽象与 pymupdf 实现。
  *
  * PdfParser 接口是唯一 seam：业务层不感知 Python / pymupdf 存在。
  * ScholarlyStructureParser（GROBID 等学术结构服务）是另一个 seam，
- * 本轮不实现（见 docs/DECISIONS.md M4.3）。
+ * 尚未实现（见 docs/DECISIONS.md M4.3）。
  *
  * pymupdf adapter 纪律：
  * - child_process.execFile（无 shell，无注入面）；参数只传脚本绝对路径 + PDF 绝对路径；
+ * - 解释器由 PdfToolchain 探测（PAPERTEAM_PDF_PYTHON > python > python3 > py -3）；
  * - PYTHONIOENCODING=utf-8（Windows GBK 控制台默认会崩非 ASCII）；
  * - timeout（默认 60s）+ maxBuffer（默认 64MB）；
- * - stdout = 单个 JSON 对象（协议错误与退出码都收敛为结构化 PdfParserError）；
- * - stderr 仅进日志，不参与协议；
- * - python 解释器路径可配（PAPERTEAM_PDF_PYTHON，默认 "python"）。
+ * - 协议：stdout 最后一个非空行是 JSON 对象。前面若有其它输出（MuPDF C 层告警等）
+ *   只进日志，不参与协议；stderr 同样只进日志。
  */
 
 import { execFile } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BusinessError } from "../errors.js";
+import { PdfParseFailedError, PdfParserUnavailableError } from "../errors.js";
+import { PdfToolchain, pdfToolchainHint, type PdfToolchainStatus } from "./pdfToolchain.js";
 
 /** 解析器原始输出（Python 工具 JSON 协议，业务层只消费经校验的字段） */
 export interface RawPdfExtraction {
@@ -37,10 +38,12 @@ export interface PdfParser {
   readonly id: string;
   /** 解析 PDF 文件（绝对路径）；失败抛 BusinessError（不抛裸系统异常） */
   parseFile(absolutePath: string): Promise<RawPdfExtraction>;
+  /** 解析依赖是否就绪（启动自检 / 诊断用；不抛异常） */
+  checkAvailability(): Promise<PdfToolchainStatus>;
 }
 
 export interface PyMuPdfParserOptions {
-  /** Python 解释器（默认 "python"；Windows 也可给绝对路径） */
+  /** Python 解释器（PAPERTEAM_PDF_PYTHON；缺省自动探测） */
   pythonCommand?: string;
   /** 解析脚本路径（默认 backend/tools/parse_paper_pdf.py；测试可指 fixture） */
   scriptPath?: string;
@@ -49,39 +52,52 @@ export interface PyMuPdfParserOptions {
   log?: (message: string) => void;
 }
 
-/** 工具脚本默认位置（backend/tools/，与 src 的 dist 目录相对关系固定） */
+/** 工具脚本默认位置（backend/tools/，与 src、dist 的相对关系相同） */
 export function defaultParseScriptPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  // 开发：src/paper → ../../tools；构建后：dist/paper → ../../tools
   return resolve(here, "..", "..", "tools", "parse_paper_pdf.py");
 }
 
+/** 日志中保留的非协议输出长度 */
+const NOISE_LOG_CHARS = 500;
+
 export class PyMuPdfParser implements PdfParser {
   readonly id = "pymupdf";
-  private readonly pythonCommand: string;
+  private readonly toolchain: PdfToolchain;
   private readonly scriptPath: string;
   private readonly timeoutMs: number;
   private readonly maxBufferBytes: number;
   private readonly log: (message: string) => void;
 
   constructor(options: PyMuPdfParserOptions = {}) {
-    this.pythonCommand = options.pythonCommand ?? "python";
+    this.log = options.log ?? (() => {});
+    this.toolchain = new PdfToolchain({
+      ...(options.pythonCommand !== undefined ? { pythonCommand: options.pythonCommand } : {}),
+      log: this.log,
+    });
     this.scriptPath = resolve(options.scriptPath ?? defaultParseScriptPath());
     this.timeoutMs = options.timeoutMs ?? 60_000;
     this.maxBufferBytes = options.maxBufferBytes ?? 64 * 1024 * 1024;
-    this.log = options.log ?? (() => {});
+  }
+
+  checkAvailability(): Promise<PdfToolchainStatus> {
+    return this.toolchain.resolve();
   }
 
   async parseFile(absolutePath: string): Promise<RawPdfExtraction> {
-    const stdout = await this.exec(absolutePath);
+    const toolchain = await this.toolchain.resolve();
+    if (!toolchain.available) {
+      throw new PdfParserUnavailableError(pdfToolchainHint(toolchain));
+    }
+    const stdout = await this.exec(toolchain.command, toolchain.args, absolutePath);
     return this.validate(stdout);
   }
 
-  private exec(absolutePath: string): Promise<string> {
+  private exec(command: string, prefixArgs: readonly string[], absolutePath: string): Promise<string> {
     return new Promise<string>((resolvePromise, rejectPromise) => {
       execFile(
-        this.pythonCommand,
-        [this.scriptPath, resolve(absolutePath)],
+        command,
+        [...prefixArgs, this.scriptPath, resolve(absolutePath)],
         {
           timeout: this.timeoutMs,
           maxBuffer: this.maxBufferBytes,
@@ -90,63 +106,80 @@ export class PyMuPdfParser implements PdfParser {
           env: { ...process.env, PYTHONIOENCODING: "utf8", PYTHONDONTWRITEBYTECODE: "1" },
         },
         (error, stdout, stderr) => {
-          if (stderr !== undefined && stderr.trim() !== "") {
-            this.log(`[pdf-parser] stderr: ${stderr.trim().slice(0, 500)}`);
+          if (stderr.trim() !== "") {
+            this.log(`[pdf-parser] stderr: ${stderr.trim().slice(0, NOISE_LOG_CHARS)}`);
           }
-          if (error !== null) {
-            const timedOut = (error as { killed?: boolean }).killed === true;
+          if (error === null) {
+            resolvePromise(stdout);
+            return;
+          }
+          const { killed, code } = error as { killed?: boolean; code?: string | number };
+          if (code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+            rejectPromise(new PdfParseFailedError(`解析输出超过 ${this.maxBufferBytes} 字节上限（文档过大）`));
+            return;
+          }
+          if (killed === true) {
+            rejectPromise(new PdfParseFailedError(`解析超时（${this.timeoutMs}ms）`));
+            return;
+          }
+          if (code === "ENOENT") {
             rejectPromise(
-              new BusinessError(
-                "INVALID_REQUEST",
-                timedOut
-                  ? `PDF 解析超时（${this.timeoutMs}ms）`
-                  : `PDF 解析器执行失败（${this.pythonCommand}）：${error.message}`,
-              ),
+              new PdfParserUnavailableError(`解释器 ${command} 无法执行（可能已被卸载，请重新检查安装）`),
             );
             return;
           }
-          resolvePromise(stdout);
+          // 非零退出：脚本已尽力输出结构化 JSON（依赖缺失 / 打开失败 / 提取异常），交给 validate 归一
+          if (stdout.trim() !== "") {
+            resolvePromise(stdout);
+            return;
+          }
+          rejectPromise(
+            new PdfParseFailedError(`解析器进程异常退出（code=${String(code ?? "?")}）`, stderr.trim().slice(0, NOISE_LOG_CHARS)),
+          );
         },
       );
     });
   }
 
-  /** stdout JSON 协议校验：结构不符 / 工具自报失败 → 结构化业务错误 */
+  /** stdout 协议校验：取最后一个非空行为 JSON；结构不符 / 工具自报失败 → 结构化业务错误 */
   private validate(stdout: string): RawPdfExtraction {
+    const lines = stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
+    const payloadLine = lines.pop() ?? "";
+    if (lines.length > 0) {
+      this.log(`[pdf-parser] 非协议输出已忽略：${lines.join(" | ").slice(0, NOISE_LOG_CHARS)}`);
+    }
     let parsed: unknown;
     try {
-      parsed = JSON.parse(stdout);
+      parsed = JSON.parse(payloadLine);
     } catch {
-      throw new BusinessError(
-        "INVALID_REQUEST",
-        "PDF 解析器输出了非法 JSON（协议错误，请检查 backend/tools/parse_paper_pdf.py）",
+      throw new PdfParseFailedError(
+        "解析器输出了非法 JSON（协议错误）",
+        payloadLine.slice(0, NOISE_LOG_CHARS),
       );
     }
     if (typeof parsed !== "object" || parsed === null) {
-      throw new BusinessError("INVALID_REQUEST", "PDF 解析器输出不是 JSON 对象");
+      throw new PdfParseFailedError("解析器输出不是 JSON 对象");
     }
     const record = parsed as Record<string, unknown>;
     if (record["ok"] !== true) {
       const detail = typeof record["error"] === "string" ? record["error"] : "未知错误";
-      throw new BusinessError("INVALID_REQUEST", `PDF 解析失败：${detail}`);
+      if (record["code"] === "dependency_missing") {
+        throw new PdfParserUnavailableError(detail);
+      }
+      throw new PdfParseFailedError(detail);
     }
     const pageCount = record["pageCount"];
     const blocks = record["blocks"];
     const toc = record["toc"];
     if (typeof pageCount !== "number" || pageCount <= 0 || !Array.isArray(blocks)) {
-      throw new BusinessError("INVALID_REQUEST", "PDF 解析器输出缺少 pageCount/blocks 字段");
+      throw new PdfParseFailedError("解析器输出缺少 pageCount/blocks 字段");
     }
+    const parser = isRecord(record["parser"]) ? record["parser"] : {};
     return {
       ok: true,
       parser: {
-        id: typeof record["parser"] === "object" && record["parser"] !== null
-          ? String((record["parser"] as Record<string, unknown>)["id"] ?? "unknown")
-          : "unknown",
-        ...((typeof record["parser"] === "object" &&
-        record["parser"] !== null &&
-        typeof (record["parser"] as Record<string, unknown>)["version"] === "string")
-          ? { version: String((record["parser"] as Record<string, unknown>)["version"]) }
-          : {}),
+        id: typeof parser["id"] === "string" ? parser["id"] : "unknown",
+        ...(typeof parser["version"] === "string" ? { version: parser["version"] } : {}),
       },
       pageCount,
       title: typeof record["title"] === "string" ? record["title"] : "",
@@ -162,10 +195,7 @@ export class PyMuPdfParser implements PdfParser {
         : [],
       blocks: blocks.filter(
         (block): block is { page: number; text: string } =>
-          typeof block === "object" &&
-          block !== null &&
-          typeof (block as Record<string, unknown>)["page"] === "number" &&
-          typeof (block as Record<string, unknown>)["text"] === "string",
+          isRecord(block) && typeof block["page"] === "number" && typeof block["text"] === "string",
       ),
       totalChars: typeof record["totalChars"] === "number" ? record["totalChars"] : 0,
       notes: Array.isArray(record["notes"])
@@ -173,4 +203,8 @@ export class PyMuPdfParser implements PdfParser {
         : [],
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

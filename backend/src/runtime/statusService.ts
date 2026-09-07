@@ -14,8 +14,9 @@
  * clientSdk 等字段已随 M3.8 迁移删除，见 docs/DECISIONS.md D-0019）。
  */
 
+import type { PdfToolchainStatus } from "../paper/pdfToolchain.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
-import type { AgentRuntime, RuntimeHealth } from "./types.js";
+import type { AgentRuntime, RuntimeHealth, RuntimeModelStatus, RuntimeSessionStats } from "./types.js";
 
 /** Runtime 相位 */
 export type RuntimePhase = "healthy" | "unhealthy";
@@ -58,29 +59,45 @@ export interface RuntimeStatus {
     /** 受管 AgentSession 数（进程内、按 sessionKey） */
     managedSessions: number;
   };
+  /** 外部工具链就绪度（缺失时前端可提前提示，而不是等上传失败） */
+  tools: {
+    pdfParser: PdfParserToolStatus;
+  };
+}
+
+export interface PdfParserToolStatus {
+  phase: "ready" | "unavailable" | "unknown";
+  /** ready：解释器与 pymupdf 版本；unavailable：安装指引 */
+  detail: string;
+  pythonVersion?: string;
+  pymupdfVersion?: string;
 }
 
 export interface RuntimeStatusOptions {
   runtime: AgentRuntime;
   agentIds: { writer: string; researcher: string; reviewer: string; citation: string };
+  /** PDF 解析工具链探测（缺省 → unknown） */
+  pdfParser?: { checkAvailability(): Promise<PdfToolchainStatus> };
   log?: (message: string) => void;
 }
 
 export class RuntimeStatusService {
   private readonly runtime: AgentRuntime;
   private readonly agentIds: RuntimeStatusOptions["agentIds"];
+  private readonly pdfParser: RuntimeStatusOptions["pdfParser"];
   private readonly log: (message: string) => void;
 
   constructor(options: RuntimeStatusOptions) {
     this.runtime = options.runtime;
     this.agentIds = options.agentIds;
+    this.pdfParser = options.pdfParser;
     this.log = options.log ?? (() => {});
   }
 
   /** 执行一次完整诊断（任何内部失败都收敛为结构化状态，不抛出） */
   async getStatus(): Promise<RuntimeStatus> {
     const health: RuntimeHealth = await this.runtime.healthCheck();
-    const modelSnapshot = await this.piModelStatus();
+    const [modelSnapshot, pdfParser] = await Promise.all([this.piModelStatus(), this.pdfParserStatus()]);
     const sessions = this.runtimeSessions();
     return {
       backend: { ok: true },
@@ -107,53 +124,52 @@ export class RuntimeStatusService {
         })),
       },
       sessions,
+      tools: { pdfParser },
     };
   }
 
-  /** 从 Runtime 实现读取模型就绪摘要（PiRuntimeAdapter 提供；其余实现 unknown） */
-  private async piModelStatus(): Promise<{
-    phase: "configured" | "not_configured" | "unknown";
-    model?: string;
-    providers: string[];
-    detail: string;
-  }> {
-    const snapshot = (
-      this.runtime as {
-        modelStatusSnapshot?: () => Promise<{
-          phase: "configured" | "not_configured" | "unknown";
-          providers: string[];
-          detail: string;
-        }>;
+  private async pdfParserStatus(): Promise<PdfParserToolStatus> {
+    if (this.pdfParser === undefined) {
+      return { phase: "unknown", detail: "未接入 PDF 解析工具链探测" };
+    }
+    try {
+      const status = await this.pdfParser.checkAvailability();
+      if (status.available) {
+        return {
+          phase: "ready",
+          detail: `Python ${status.pythonVersion} + pymupdf ${status.pymupdfVersion}`,
+          pythonVersion: status.pythonVersion,
+          pymupdfVersion: status.pymupdfVersion,
+        };
       }
-    ).modelStatusSnapshot;
-    if (typeof snapshot !== "function") {
+      return { phase: "unavailable", detail: status.detail };
+    } catch (error) {
+      this.log(`[runtime-status] PDF 工具链探测失败：${errorText(error)}`);
+      return { phase: "unknown", detail: "PDF 解析工具链探测失败" };
+    }
+  }
+
+  /** 模型就绪摘要（Runtime 未实现诊断面时为 unknown） */
+  private async piModelStatus(): Promise<RuntimeModelStatus & { model?: string }> {
+    if (this.runtime.modelStatusSnapshot === undefined) {
       return { phase: "unknown", providers: [], detail: "Runtime 实现未暴露模型就绪摘要" };
     }
     try {
-      const result = await snapshot.call(this.runtime);
-      const model = (this.runtime as { resolvedModel?: string }).resolvedModel;
-      return {
-        phase: result.phase,
-        ...(model !== undefined ? { model } : {}),
-        providers: result.providers,
-        detail: result.detail,
-      };
+      const result = await this.runtime.modelStatusSnapshot();
+      const model = this.runtime.resolvedModel;
+      return { ...result, ...(model !== undefined ? { model } : {}) };
     } catch (error) {
       this.log(`[runtime-status] 模型就绪摘要读取失败：${errorText(error)}`);
       return { phase: "unknown", providers: [], detail: "模型就绪摘要读取失败" };
     }
   }
 
-  /** 从 Runtime 实现读取会话诊断（PiRuntimeAdapter 提供；其余实现为 0） */
-  private runtimeSessions(): RuntimeStatus["sessions"] {
-    const stats = (
-      this.runtime as { runtimeStats?: () => RuntimeStatus["sessions"] }
-    ).runtimeStats;
-    if (typeof stats !== "function") {
+  private runtimeSessions(): RuntimeSessionStats {
+    if (this.runtime.runtimeStats === undefined) {
       return { activeRuns: 0, managedSessions: 0 };
     }
     try {
-      return stats.call(this.runtime);
+      return this.runtime.runtimeStats();
     } catch {
       return { activeRuns: 0, managedSessions: 0 };
     }

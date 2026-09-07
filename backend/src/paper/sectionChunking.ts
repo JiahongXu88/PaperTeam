@@ -51,7 +51,7 @@ export function assemblePaper(extraction: RawPdfExtraction): AssembledPaper {
 }
 
 const ABSTRACT_TITLES = /^(abstract|摘要)\s*$/i;
-const REFERENCES_TITLES = /^(references|bibliography|参考文献|reference list)\s*$/i;
+const REFERENCES_TITLES = /^(?:\d{1,2}\s*[.、]?\s*)?(references|bibliography|参考文献|reference list)\s*$/i;
 
 // ---- pages ----
 
@@ -116,13 +116,13 @@ function buildSections(extraction: RawPdfExtraction, pages: PaperPage[]): PaperS
   return dedupeSections(sections);
 }
 
-/** 找 References 章节首页：标题行独立成行 + 页内含 [n] 条目标记（双条件降误报） */
+/** 找 References 章节首页：标题行独立成行 + 页内含 [n] 条目标记（双条件降误报；中英文标题都算） */
 function findReferencesPage(pages: PaperPage[]): number | undefined {
   for (const page of pages) {
-    if (!/^\s*references\s*$/im.test(page.text)) {
+    if (!/^\s*(?:references|bibliography|参考文献)\s*$/im.test(page.text)) {
       continue;
     }
-    if (/\[\d{1,3}\]/.test(page.text)) {
+    if (/[\[［]\d{1,3}[\]］]/.test(page.text)) {
       return page.pageNumber;
     }
   }
@@ -159,15 +159,25 @@ function sectionsFromToc(
   return dedupeSections(sections);
 }
 
-/** 页内标题正则 → sections（无 TOC 的兜底；覆盖编号章节 + 常见专名章节） */
+/**
+ * 页内标题正则 → sections（无 TOC 的兜底）。
+ * 覆盖英文编号章节 + 常见专名章节，以及中文论文的「1 引言」「第三章 方法」「参考文献」等形态。
+ */
+const ENGLISH_HEADING =
+  /^\s*(?:(\d{1,2})(?:\.\d{1,2})*\.?\s+)?(abstract|introduction|related work|background|preliminar\w*|method(s|ology)?|approach|experiment(s|al results)?|evaluation|results|discussion|conclusion(s)?|acknowledg\w*|references|bibliography)\s*$/im;
+const CHINESE_HEADING =
+  /^\s*(?:第[一二三四五六七八九十\d]{1,3}[章节]|\d{1,2}(?:\.\d{1,2})*[.、]?)?\s*(摘要|引言|绪论|前言|研究背景|相关工作|相关研究|背景|方法|研究方法|模型|实验|实验与分析|实验结果|结果|结果与分析|讨论|结论|总结|结论与展望|致谢|参考文献)\s*$/m;
+
 function sectionsFromHeadings(pages: PaperPage[]): PaperSection[] {
-  const headingPattern =
-    /^\s*(?:(\d{1,2})(?:\.\d{1,2})*\.?\s+)?(abstract|introduction|related work|background|preliminar\w*|method(s|ology)?|approach|experiment(s|al results)?|evaluation|results|discussion|conclusion(s)?|acknowledg\w*|references|bibliography)\s*$/im;
   const found: Array<{ title: string; page: number }> = [];
   for (const page of pages) {
-    const match = headingPattern.exec(page.text);
-    if (match !== null) {
-      const title = (match[2] ?? "").trim();
+    for (const pattern of [ENGLISH_HEADING, CHINESE_HEADING]) {
+      const match = pattern.exec(page.text);
+      if (match === null) {
+        continue;
+      }
+      // 两个 pattern 的章节名都是最后一个捕获组（英文 pattern 前面还有编号组）
+      const title = (match[match.length - 1] ?? "").trim();
       if (title !== "" && !found.some((entry) => entry.title.toLowerCase() === title.toLowerCase())) {
         found.push({ title, page: page.pageNumber });
       }

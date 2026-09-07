@@ -34,6 +34,9 @@ export type BusinessErrorCode =
   | "QUALITY_GATE_FAILED"
   | "IMPORT_VALIDATION"
   | "MODEL_CONFIG_BUSY"
+  | "PDF_PARSE_FAILED"
+  | "PDF_PARSER_UNAVAILABLE"
+  | "NOT_FOUND"
   | "INTERNAL_ERROR";
 
 /** 错误码 → HTTP 状态码 */
@@ -62,6 +65,9 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   QUALITY_GATE_FAILED: 422,
   IMPORT_VALIDATION: 422,
   MODEL_CONFIG_BUSY: 409,
+  PDF_PARSE_FAILED: 422,
+  PDF_PARSER_UNAVAILABLE: 503,
+  NOT_FOUND: 404,
   INTERNAL_ERROR: 500,
 };
 
@@ -274,6 +280,30 @@ export class ImportValidationError extends BusinessError {
   }
 }
 
+// ---- 通用资源不存在（Skill / Evidence / Source 等非项目、非 run 的资源）----
+
+export class NotFoundError extends BusinessError {
+  constructor(resource: string, id: string) {
+    super("NOT_FOUND", `${resource}不存在：${id}`);
+  }
+}
+
+// ---- PDF 解析（Final PDF Review 输入）----
+
+/** PDF 内容无法解析（损坏 / 加密 / 非 PDF 内容）：422，原料保留可重试 */
+export class PdfParseFailedError extends BusinessError {
+  constructor(reason: string, detail?: string) {
+    super("PDF_PARSE_FAILED", `PDF 解析失败：${reason}`, detail);
+  }
+}
+
+/** 本机缺少 PDF 解析依赖（Python / pymupdf）：503，附安装指引 */
+export class PdfParserUnavailableError extends BusinessError {
+  constructor(hint: string) {
+    super("PDF_PARSER_UNAVAILABLE", `未找到 PDF 解析依赖：${hint}`);
+  }
+}
+
 // ---- Model Settings（M4.3.7.5） ----
 
 /** 配置变更时存在在途 Agent Run（不中断活跃 run；等待完成后再保存/清除） */
@@ -286,11 +316,13 @@ export class ModelConfigBusyError extends BusinessError {
   }
 }
 
-/** 把任意抛出的未知错误归一为 BusinessError（不吞掉已知业务错误） */
+/**
+ * 把任意抛出的未知错误归一为 BusinessError（不吞掉已知业务错误）。
+ * 未知错误的原始消息可能带绝对路径 / SDK 内部细节，不进响应体；调用方负责记录原始错误。
+ */
 export function toBusinessError(error: unknown): BusinessError {
   if (error instanceof BusinessError) {
     return error;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  return new BusinessError("INTERNAL_ERROR", `内部错误：${message}`);
+  return new BusinessError("INTERNAL_ERROR", "服务内部错误，请稍后重试；详情见 Backend 日志");
 }

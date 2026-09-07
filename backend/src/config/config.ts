@@ -61,6 +61,11 @@ export interface PiRuntimeConfig {
   runTimeoutMs: number;
 }
 
+export interface PdfConfig {
+  /** PDF 解析用 Python 解释器（PAPERTEAM_PDF_PYTHON；缺省自动探测 python / python3 / py -3） */
+  pythonCommand?: string;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -76,6 +81,7 @@ export interface AppConfig {
   workflow: WorkflowConfig;
   citation: CitationConfig;
   review: ReviewConfig;
+  pdf: PdfConfig;
 }
 
 export interface AgentIds {
@@ -211,6 +217,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: 100,
       }),
+    },
+    pdf: {
+      ...(readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") !== undefined
+        ? { pythonCommand: readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") }
+        : {}),
     },
   };
 }

@@ -3,7 +3,7 @@
  * 校验 / 幂等 / 替换 / 重启持久化 / section-chunk 组装单元测试。
  */
 
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -11,7 +11,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PyMuPdfParser } from "../../src/paper/PdfParser.js";
 import { assemblePaper } from "../../src/paper/sectionChunking.js";
 import { PaperStore } from "../../src/paper/PaperStore.js";
-import { PaperIngestService } from "../../src/paper/PaperIngestService.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { BusinessError } from "../../src/errors.js";
 import { startTestStack, type TestStack } from "../helpers/testStack.js";
