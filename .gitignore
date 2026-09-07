@@ -71,6 +71,7 @@ desktop.ini
 .vscode/
 *.swp
 
-# ===== Browser QA 产物（scripts/browser-qa*.mjs 生成） =====
-.qa-shots/
-.qa-chrome-profile/
+# ===== Playwright E2E 产物（e2e/） =====
+e2e/report/
+e2e/test-results/
+e2e/shots/
