@@ -1101,10 +1101,14 @@ function paperEnsureStage(services: WorkflowServices): StageSpec {
         );
       }
       const map = await services.paper.map.ensureMap(ctx.projectId, { signal: ctx.signal });
+      const mapTelemetry = services.paper.map.lastTelemetry;
       return {
         pageCount: map.pageCount,
         sections: map.sections.length,
         ...(map.documentTitle !== undefined ? { documentTitle: map.documentTitle } : {}),
+        // 性能画像（run checkpoint 持久化，事后分析）
+        pdfParseMs: document.parse.durationMs,
+        paperMapTelemetry: mapTelemetry ?? { modelCalls: 0, summariesRefreshed: 0, failures: 0 },
       };
     },
     async verifyDod(ctx) {
@@ -1145,7 +1149,19 @@ function citationMetadataStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout"],
     async execute(ctx) {
       const result = await services.paper.citationIntegrity.verifyMetadata(ctx.projectId);
-      return { checked: result.checked, byStatus: result.byStatus, reused: result.reused };
+      return {
+        checked: result.checked,
+        byStatus: result.byStatus,
+        reused: result.reused,
+        // 性能画像：外部检索调用 / 缓存 / 按 provider（run checkpoint 持久化）
+        lookup: {
+          providerCalls: result.telemetry.providerCalls,
+          cacheHits: result.telemetry.cacheHits,
+          retries: result.telemetry.retries,
+          softwareCalls: result.profile.software.apiCalls + result.profile.software.htmlCalls,
+          byProvider: result.profile.byProvider,
+        },
+      };
     },
   };
 }
@@ -1161,7 +1177,19 @@ function citationClaimsStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
       const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId, { signal: ctx.signal });
-      return { summary: result.summary, reused: result.reused };
+      return {
+        summary: result.summary,
+        reused: result.reused,
+        // 性能画像：模型调用 / 确定性短路（run checkpoint 持久化）
+        modelTelemetry: {
+          modelCalls: result.telemetry.modelCalls,
+          skippedNoMetadata: result.telemetry.skippedNoMetadata,
+          skippedNoEvidence: result.telemetry.skippedNoEvidence,
+          failed: result.telemetry.failed,
+          approxPromptChars: result.telemetry.approxPromptChars,
+          totalModelMs: result.telemetry.totalModelMs,
+        },
+      };
     },
   };
 }
@@ -1280,6 +1308,14 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
         parseFailures,
         dropped,
         findings,
+        // 性能画像：每节一次模型调用（含节内重试），prompt/输出规模（run checkpoint 持久化）
+        modelTelemetry: services.paper.sectionReview.lastTelemetry ?? {
+          calls: 0,
+          failed: 0,
+          totalMs: 0,
+          approxPromptChars: 0,
+          outputChars: 0,
+        },
       };
     },
     // DoD 由 review.aggregate 的文件级校验兜底（verifyDod 运行时本次产出

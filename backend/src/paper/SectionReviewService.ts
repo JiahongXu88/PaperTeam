@@ -147,6 +147,9 @@ export class SectionReviewService {
   private readonly reviewerAgentId: string;
   private readonly now: () => Date;
 
+  /** 最近一批 reviewSection 的 telemetry（性能诊断用） */
+  lastTelemetry: { calls: number; failed: number; totalMs: number; approxPromptChars: number; outputChars: number } | undefined;
+
   constructor(options: SectionReviewServiceOptions) {
     this.runtime = options.runtime;
     this.reviewerAgentId = options.reviewerAgentId;
@@ -160,40 +163,59 @@ export class SectionReviewService {
     /** Workflow 取消信号：中断在途模型调用 */
     signal?: AbortSignal;
   }): Promise<SectionReviewOutcome> {
-    const task = await this.runtime.runAgent({
-      agentId: this.reviewerAgentId,
-      projectId: input.projectId,
-      contextScope: input.context.contextScope,
-      task: input.context.prompt,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      metadata: { role: "reviewer", pass: "section-review" },
-    });
-    const output = task.output ?? "";
-    if (task.status !== "completed" || output.trim() === "") {
-      throw new AgentRunFailedError(task.error ?? "审阅任务未返回结果");
-    }
-    const parsed = parseSectionFindingsOutput(output);
-    const timestamp = this.now().toISOString();
-    const findings = parsed.findings.map((candidate, index) =>
-      createFinding({
-        findingId: `f-${input.runId}-${input.context.sectionId}-${index + 1}`.toLowerCase(),
-        category: candidate.category,
-        severity: candidate.severity,
-        message: candidate.message,
-        source: "section-review",
-        now: timestamp,
+    const startedAt = Date.now();
+    try {
+      const task = await this.runtime.runAgent({
+        agentId: this.reviewerAgentId,
+        projectId: input.projectId,
+        contextScope: input.context.contextScope,
+        task: input.context.prompt,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        metadata: { role: "reviewer", pass: "section-review" },
+      });
+      const output = task.output ?? "";
+      if (task.status !== "completed" || output.trim() === "") {
+        throw new AgentRunFailedError(task.error ?? "审阅任务未返回结果");
+      }
+      this.lastTelemetry = {
+        calls: (this.lastTelemetry?.calls ?? 0) + 1,
+        failed: this.lastTelemetry?.failed ?? 0,
+        totalMs: (this.lastTelemetry?.totalMs ?? 0) + (Date.now() - startedAt),
+        approxPromptChars: (this.lastTelemetry?.approxPromptChars ?? 0) + input.context.prompt.length,
+        outputChars: (this.lastTelemetry?.outputChars ?? 0) + output.length,
+      };
+      const parsed = parseSectionFindingsOutput(output);
+      const timestamp = this.now().toISOString();
+      const findings = parsed.findings.map((candidate, index) =>
+        createFinding({
+          findingId: `f-${input.runId}-${input.context.sectionId}-${index + 1}`.toLowerCase(),
+          category: candidate.category,
+          severity: candidate.severity,
+          message: candidate.message,
+          source: "section-review",
+          now: timestamp,
+          sectionId: input.context.sectionId,
+          ...(candidate.page !== undefined ? { page: candidate.page } : {}),
+          ...(candidate.chunkId !== undefined ? { chunkId: candidate.chunkId } : {}),
+          ...(candidate.claimText !== undefined ? { claimText: candidate.claimText } : {}),
+          ...(candidate.suggestion !== undefined ? { suggestion: candidate.suggestion } : {}),
+        }),
+      );
+      return {
         sectionId: input.context.sectionId,
-        ...(candidate.page !== undefined ? { page: candidate.page } : {}),
-        ...(candidate.chunkId !== undefined ? { chunkId: candidate.chunkId } : {}),
-        ...(candidate.claimText !== undefined ? { claimText: candidate.claimText } : {}),
-        ...(candidate.suggestion !== undefined ? { suggestion: candidate.suggestion } : {}),
-      }),
-    );
-    return {
-      sectionId: input.context.sectionId,
-      findings,
-      parseFailed: parsed.parseFailed,
-      dropped: parsed.dropped,
-    };
+        findings,
+        parseFailed: parsed.parseFailed,
+        dropped: parsed.dropped,
+      };
+    } catch (error) {
+      this.lastTelemetry = {
+        calls: (this.lastTelemetry?.calls ?? 0) + 1,
+        failed: (this.lastTelemetry?.failed ?? 0) + 1,
+        totalMs: (this.lastTelemetry?.totalMs ?? 0) + (Date.now() - startedAt),
+        approxPromptChars: (this.lastTelemetry?.approxPromptChars ?? 0) + input.context.prompt.length,
+        outputChars: this.lastTelemetry?.outputChars ?? 0,
+      };
+      throw error;
+    }
   }
 }
