@@ -57,7 +57,13 @@ export class ReferenceExtractor {
     const units: Array<{ page: number; chunkId: string; text: string }> = [];
     for (const chunk of chunks) {
       for (const part of chunk.text.split(/\n{2,}/)) {
-        const text = part.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
+        // 行尾断词连字符（"Byte-\ntrack"）：去掉换行只留连字符。标题匹配会忽略连字符，
+        // 真实复合词（state-of-the-art）也不受影响
+        const text = part
+          .replace(/(\p{L})-\n\s*(\p{Ll})/gu, "$1-$2")
+          .replace(/\n/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
         if (text !== "") {
           units.push({ page: chunk.pageStart, chunkId: chunk.chunkId, text });
         }
@@ -213,7 +219,7 @@ function toReferenceEntry(
 }
 
 /** title/year/doi/arxiv/authors/venue best-effort（解析失败的字段留空，不猜） */
-function parseReferenceFields(text: string): Partial<ReferenceEntry> {
+export function parseReferenceFields(text: string): Partial<ReferenceEntry> {
   const out: Partial<ReferenceEntry> = {};
 
   const doiMatch = /(?:doi:|https?:\/\/doi\.org\/|DOI:\s*)?(10\.\d{4,9}\/[^\s"<>[\]]+)/i.exec(text);
@@ -231,38 +237,110 @@ function parseReferenceFields(text: string): Partial<ReferenceEntry> {
     out.year = years[years.length - 1]; // 条目末尾年份通常是出版年
   }
 
-  // 分段启发：作者段在最前；标题段 = 首个非作者形态的 ≥4 词段
-  const segments = text
-    .split(/(?<=[.!?])\s+|\.\s+/)
-    .map((segment) => segment.trim())
-    .filter((segment) => segment !== "");
-  if (segments.length >= 2) {
-    const authorSegment = segments[0] ?? "";
-    out.authors = splitAuthors(authorSegment);
-    const titleSegment = segments
-      .slice(1)
-      .find(
-        (segment) =>
-          countWords(segment) >= 4 &&
-          !/^(in|proceedings|vol|no|pp|pages|arxiv|corr|abs\/)/i.test(segment) &&
-          !/^\d{4}$/.test(segment) &&
-          !/\b(?:et al|editor|Proceedings of the)\b/i.test(segment),
-      );
-    if (titleSegment !== undefined) {
-      out.title = titleSegment.replace(/["“”]/g, "").trim();
+  const structured = parseQuotedTitleStyle(text) ?? parseGbt7714Style(text);
+  if (structured !== null) {
+    if (structured.authors !== undefined) {
+      out.authors = structured.authors;
     }
-    const venueSegment = segments
-      .slice(1)
-      .find((segment) =>
-        /\b(proceedings|journal|transactions|letters|review|conference|workshop|symposium|nature|science|ieee|acm|springer|elsevier|corr|abs\/)\b/i.test(
-          segment,
-        ),
-      );
-    if (venueSegment !== undefined) {
-      out.venue = venueSegment.replace(/\s*\(\d{4}\)\s*$/, "").trim().slice(0, 200);
+    out.title = structured.title;
+  } else {
+    // 分段启发：作者段在最前；标题段 = 首个非作者形态的 ≥4 词段。
+    // 先按"不切姓名首字母"的规则分段（IEEE 的 C.-Y. Wang），找不到标题再退回朴素句点分段（APA 的 Surname, I. Title）
+    const guarded = segmentsOf(text, /(?<=[a-z)\]”"])[.!?]\s+/);
+    const plain = segmentsOf(text, /(?<=[.!?])\s+|\.\s+/);
+    const picked = pickTitleSegment(guarded) ?? pickTitleSegment(plain);
+    if (picked !== undefined) {
+      out.authors = splitAuthors(picked.authorSegment);
+      out.title = picked.title;
     }
   }
+
+  // 出版物段：去掉已识别的标题后再找（否则含 "Conference" 的标题会被当成 venue）
+  const withoutTitle = out.title !== undefined ? text.replace(out.title, " ") : text;
+  const venueMatch = segmentsOf(withoutTitle, /(?<=[a-z)\]”"])[.,]\s+/)
+    .slice(1)
+    .find((segment) =>
+      /\b(proceedings|journal|transactions|letters|review|conference|workshop|symposium|nature|science|ieee|acm|springer|elsevier|corr|abs\/)\b/i.test(
+        segment,
+      ),
+    );
+  if (venueMatch !== undefined) {
+    out.venue = venueMatch
+      .replace(/^[“”",.\s]+/, "")
+      .replace(/\s*\(\d{4}\)\s*$/, "")
+      .trim()
+      .slice(0, 200);
+  }
   return out;
+}
+
+function segmentsOf(text: string, splitter: RegExp): string[] {
+  return text
+    .split(splitter)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "");
+}
+
+/** 首段视为作者；其后首个 ≥4 词且不像出版信息的段视为标题 */
+function pickTitleSegment(segments: string[]): { authorSegment: string; title: string } | undefined {
+  if (segments.length < 2) {
+    return undefined;
+  }
+  const titleSegment = segments
+    .slice(1)
+    .find(
+      (segment) =>
+        countWords(segment) >= 4 &&
+        !/^(in|proceedings|vol|no|pp|pages|arxiv|corr|abs\/)/i.test(segment) &&
+        !/^\d{4}$/.test(segment) &&
+        !/\b(?:et al|editor|Proceedings of the)\b/i.test(segment),
+    );
+  if (titleSegment === undefined) {
+    return undefined;
+  }
+  return { authorSegment: segments[0] ?? "", title: titleSegment.replace(/["“”]/g, "").trim() };
+}
+
+/**
+ * IEEE / ACM 风格：`A. Author, B. Author, and C. Author, “Title,” Venue, year.`
+ * 引号内就是标题（弯引号 / 直引号都算），引号前是作者段。
+ */
+function parseQuotedTitleStyle(text: string): { authors?: string[]; title: string } | null {
+  const match = /^(.*?)[,.]?\s*[“"]([^”"]{8,400})[,.]?[”"]/.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const title = (match[2] ?? "").replace(/[,.\s]+$/, "").trim();
+  if (countWords(title) < 2 && title.length < 12) {
+    return null;
+  }
+  const authors = splitAuthors((match[1] ?? "").trim());
+  return { ...(authors !== undefined ? { authors } : {}), title };
+}
+
+/**
+ * GB/T 7714（中文论文常见）：`张三, 李四. 标题[J]. 期刊, 2021, 44(3): 1-20.`
+ * 文献类型标识 [J]/[C]/[M]/[D]/[EB/OL]… 前面是标题，再往前以句点分隔的是作者段。
+ */
+function parseGbt7714Style(text: string): { authors?: string[]; title: string } | null {
+  const match = /^(.*?)[.．]\s*([^.．\[]{4,300}?)\s*\[(?:J|C|M|D|N|P|R|S|EB\/OL|DB\/OL|J\/OL|C\/OL)\]/.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const title = (match[2] ?? "").trim();
+  if (title === "") {
+    return null;
+  }
+  const authors = splitChineseAuthors((match[1] ?? "").trim());
+  return { ...(authors !== undefined ? { authors } : {}), title };
+}
+
+function splitChineseAuthors(segment: string): string[] | undefined {
+  const names = segment
+    .split(/[,，;；]|\s+and\s+|\s+等/)
+    .map((name) => name.trim())
+    .filter((name) => name !== "" && name.length <= 40 && !/\d/.test(name));
+  return names.length >= 1 && names.length <= 15 ? names : undefined;
 }
 
 function normalizeDoi(raw: string): string {

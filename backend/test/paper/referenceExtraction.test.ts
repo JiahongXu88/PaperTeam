@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { ReferenceExtractor, expandNumericList } from "../../src/paper/ReferenceExtractor.js";
+import { ReferenceExtractor, expandNumericList, parseReferenceFields } from "../../src/paper/ReferenceExtractor.js";
 import type { PaperDocument } from "../../src/paper/types.js";
 import type { CitationCallout, ReferenceEntry } from "../../src/citation/integrity.js";
 import { startTestStack, scriptedIdeaRuntime, type TestStack } from "../helpers/testStack.js";
@@ -216,5 +216,33 @@ describe("M4.3.3 真实 PDF 提取（attention.pdf → service + HTTP）", () =>
     expect(summary["references"]).toBe(references.length);
     expect(summary["callouts"]).toBe(callouts.length);
     expect(summary["resolvedRelations"]).toBe(resolved.length);
+  });
+});
+
+describe("parseReferenceFields：常见著录格式", () => {
+  it("IEEE（弯引号标题 + 缩写作者）：标题取引号内，作者首字母不被切碎，venue 不含标题", () => {
+    const fields = parseReferenceFields(
+      "C.-Y. Wang, A. Bochkovskiy, and H.-Y. M. Liao, “Yolov7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors,” in Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition, 2023, pp. 7464–7475.",
+    );
+    expect(fields.title).toBe("Yolov7: Trainable bag-of-freebies sets new state-of-the-art for real-time object detectors");
+    expect(fields.authors).toEqual(["C.-Y. Wang", "A. Bochkovskiy", "H.-Y. M. Liao"]);
+    expect(fields.year).toBe(2023);
+    expect(fields.venue).toContain("Proceedings of the IEEE/CVF Conference");
+    expect(fields.venue).not.toContain("Yolov7");
+  });
+
+  it("GB/T 7714（中文）：文献类型标识前是标题，作者按中文逗号切分", () => {
+    const fields = parseReferenceFields("张三, 李四. 基于检测的多目标跟踪综述[J]. 计算机学报, 2021, 44(3): 1-20.");
+    expect(fields.title).toBe("基于检测的多目标跟踪综述");
+    expect(fields.authors).toEqual(["张三", "李四"]);
+    expect(fields.year).toBe(2021);
+  });
+
+  it("APA 风格（Surname, I. Title.）仍能取到标题", () => {
+    const fields = parseReferenceFields(
+      "Vaswani, A., Shazeer, N., Parmar, N. Attention is all you need. In Advances in Neural Information Processing Systems, 2017.",
+    );
+    expect(fields.title).toBe("Attention is all you need");
+    expect(fields.year).toBe(2017);
   });
 });
