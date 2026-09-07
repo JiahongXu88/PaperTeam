@@ -1,8 +1,8 @@
 /**
- * WorkflowOrchestrator —— 确定性 Workflow 编排引擎（M3.0，D-0008）。
+ * WorkflowOrchestrator —— 确定性 Workflow 编排引擎（D-0008）。
  *
  * 职责（代码负责流程纪律，LLM 只负责内容）：
- *   stage sequencing / branch / retry / timeout / bounded loop（由 plan() 表达）
+ *   stage sequencing / branch / retry / timeout / bounded loop（由 plan 表达）
  *   checkpoint / resume / awaiting_input / cancellation / hard gate / domain event
  *
  * 引擎不认识任何业务 Stage：WorkflowDefinition 提供 stage 注册表与确定性规划器
@@ -11,7 +11,7 @@
  *   createRun → (后台) runLoop：
  *     plan(state)
  *       ├─ stage（执行型）→ timeout+retry 包裹 execute → DoD 校验 → 记录 + checkpoint
- *       ├─ stage（HITL） → status=awaiting_input → checkpoint → 暂停（resume() 重入）
+ *       ├─ stage（HITL） → status=awaiting_input → checkpoint → 暂停（resume 重入）
  *       ├─ complete      → status=completed + completion
  *       └─ fail          → status=failed + error
  *   cancel → 协作式：标记后立即 abort 在途 stage 并在下个边界生效；
@@ -395,8 +395,8 @@ export class WorkflowOrchestrator {
     const { state, definition } = handle;
 
     if (state.status === "cancelled" || state.status === "completed" || state.status === "failed") {
-      // resume() 会先同步置回 running 再 startLoop，但其间仍有 await 窗口；
-      // 若 cancel() 已在该窗口内终结 run，这里直接退出，避免把终态复活为 running。
+      // resume 会先同步置回 running 再 startLoop，但其间仍有 await 窗口；
+      // 若 cancel 已在该窗口内终结 run，这里直接退出，避免把终态复活为 running。
       return;
     }
 
@@ -471,7 +471,7 @@ export class WorkflowOrchestrator {
         }
       }
     } catch (error) {
-      // plan()/引擎自身的异常兜底：run 失败
+      // plan/引擎自身的异常兜底：run 失败
       const businessError =
         error instanceof BusinessError
           ? error

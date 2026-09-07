@@ -1,5 +1,5 @@
 /**
- * Section Summary（M4.3.2）：PaperMap 内嵌的章节摘要状态。
+ * Section Summary：PaperMap 内嵌的章节摘要状态。
  *
  * 摘要由模型生成、单独持久化、可独立重跑——摘要失败不影响 parsed 原始数据
  * （PaperMap 由确定性数据 + 可选摘要组成）。

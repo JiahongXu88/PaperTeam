@@ -1,5 +1,5 @@
 /**
- * Review 聚合层（M3.2）—— 确定性代码，不是 LLM。
+ * Review 聚合层—— 确定性代码，不是 LLM。
  *
  * 汇总 fact / academic / style 三路 review 的结构化结果：
  * - issue 去重（同 category+section+description 只保留一条）

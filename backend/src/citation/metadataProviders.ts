@@ -1,5 +1,5 @@
 /**
- * Citation metadata verification providers（Layer 2，M3.1）。
+ * Citation metadata verification providers（Layer 2）。
  *
  * Provider abstraction：CrossRef / OpenAlex / arXiv —— 均为无凭据可用的公开接口。
  * 纪律：

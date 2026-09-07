@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Browser QA driver（Project Entry & Lifecycle UX 2026-09）。
+ * Browser QA driver。
  *
  * 用 Chrome DevTools Protocol 直接驱动本机 Chrome（无 playwright 依赖）：
  * 导航 / 视口尺寸 / DOM 断言 / 截图 / 文件上传。截图写入 .qa-shots/。

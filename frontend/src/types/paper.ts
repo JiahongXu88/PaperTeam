@@ -1,9 +1,9 @@
 /**
- * PDF Review / Citation Integrity / Skills 的前端视图类型（M4.3.7）。
+ * PDF Review / Citation Integrity / Skills 的前端视图类型。
  * 与 Backend API 响应一一对应（server state，只经 TanStack Query 流动）。
  */
 
-// ---- Paper（M4.3.1/2） ----
+// ---- Paper ----
 
 export interface PaperDocSummary {
   projectId: string;
@@ -46,7 +46,7 @@ export interface PaperResponse {
   note?: string;
 }
 
-// ---- Citations（M4.3.3-5） ----
+// ---- Citations ----
 
 export interface ExtractionSummary {
   extracted: boolean;
@@ -118,7 +118,7 @@ export interface IntegrityReportView {
   };
 }
 
-// ---- Skills（M4.3.6） ----
+// ---- Skills ----
 
 export interface SkillView {
   id: string;

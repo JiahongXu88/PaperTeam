@@ -1,5 +1,5 @@
 /**
- * Model Settings 服务（M4.3.7.5）：Settings UI 的后端编排层。
+ * Model Settings 服务：Settings UI 的后端编排层。
  *
  * 职责（全部经 Pi 官方公开 API，不 deep import、不自建第二套 credential）：
  * - 状态读取：生效配置解析（env > stored）、provider 凭据就绪（不含 key 本体）

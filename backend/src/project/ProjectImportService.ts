@@ -1,5 +1,5 @@
 /**
- * 已有论文 PDF 导入服务（Project Entry & Lifecycle UX，2026-09）。
+ * 已有论文 PDF 导入服务（Project Entry & Lifecycle UX）。
  *
  * File First：用户不再先创建空项目再进工作区上传——一次调用完成
  *   验证 PDF → 创建 project → ingest/parse → 提取标题 → 更新 metadata

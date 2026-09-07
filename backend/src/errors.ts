@@ -1,5 +1,5 @@
 /**
- * PaperTeam 业务层错误模型（M2）。
+ * PaperTeam 业务层错误模型。
  *
  * 原则：
  * - 业务层只抛出本文件中的错误类型，底层细节（ECONNRESET、
@@ -176,7 +176,7 @@ export class LatexCompileTimeoutError extends BusinessError {
   }
 }
 
-// ---- Workflow（M3.0） ----
+// ---- Workflow ----
 
 export class WorkflowNotFoundError extends BusinessError {
   constructor(runId: string) {
@@ -223,7 +223,7 @@ export class StageContractViolationError extends BusinessError {
 }
 
 /**
- * Stage 失败分类（决定是否重试，M3.0）：
+ * Stage 失败分类（决定是否重试）：
  * - transient          瞬时失败（Agent 输出异常、模型抖动）→ 可重试
  * - timeout            超时 → 可重试
  * - runtime_unavailable Runtime 不可用（Runtime 初始化失败 / 已关闭）→ 可重试
@@ -248,7 +248,7 @@ export class AwaitingInputSignal extends BusinessError {
   }
 }
 
-// ---- Evidence / Citation（M3.1） ----
+// ---- Evidence / Citation ----
 
 export class EvidenceValidationError extends BusinessError {
   constructor(reason: string) {
@@ -262,7 +262,7 @@ export class CitationVerificationError extends BusinessError {
   }
 }
 
-// ---- Quality Gate（M3.2；判定结果本身不是 HTTP 错误，此类型供内部复用） ----
+// ---- Quality Gate（判定结果本身不是 HTTP 错误，此类型供内部复用） ----
 
 export class QualityGateFailedError extends BusinessError {
   readonly reasons: readonly string[];
@@ -272,7 +272,7 @@ export class QualityGateFailedError extends BusinessError {
   }
 }
 
-// ---- 导入（M3.2 Existing-LaTeX） ----
+// ---- 导入（Existing-LaTeX） ----
 
 export class ImportValidationError extends BusinessError {
   constructor(reason: string) {
@@ -304,7 +304,7 @@ export class PdfParserUnavailableError extends BusinessError {
   }
 }
 
-// ---- Model Settings（M4.3.7.5） ----
+// ---- Model Settings ----
 
 /** 配置变更时存在在途 Agent Run（不中断活跃 run；等待完成后再保存/清除） */
 export class ModelConfigBusyError extends BusinessError {

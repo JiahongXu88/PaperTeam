@@ -1,5 +1,5 @@
 /**
- * Researcher 业务角色（M3.1）。
+ * Researcher 业务角色。
  *
  * 职责（PRD §7.2）：Idea Research —— 领域现状、Related Work 方向、Research Gap、
  * 潜在贡献、研究问题、文献检索计划；并从项目文献库提取候选 Evidence 与
@@ -89,7 +89,7 @@ export class ResearcherService {
       task: buildResearchPrompt(project, sourceDigest, params.extraInstructions),
       projectId: params.projectId,
       contextScope: "research",
-      metadata: { role: "researcher", milestone: "M3.1" },
+      metadata: { role: "researcher" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `Researcher 任务以 ${task.status} 状态结束`);
@@ -165,7 +165,7 @@ export class ResearcherService {
   }
 
   /**
-   * Existing-Paper：论文理解（M3.2）。
+   * Existing-Paper：论文理解。
    * 读取导入的 LaTeX 项目，产出结构化理解（贡献 / 论证 / 实验组织 / 弱点），
    * 映射为 ResearchReport 形状供后续 Feasibility 与改进计划复用。
    */
@@ -202,7 +202,7 @@ export class ResearcherService {
       ].join("\n"),
       projectId: params.projectId,
       contextScope: "research/existing-analysis",
-      metadata: { role: "researcher", skill: "paper-understanding", milestone: "M3.2" },
+      metadata: { role: "researcher", skill: "paper-understanding" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `论文理解任务以 ${task.status} 状态结束`);

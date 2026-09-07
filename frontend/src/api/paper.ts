@@ -1,5 +1,5 @@
 /**
- * PDF / Citation Integrity API（M4.3.7）。
+ * PDF / Citation Integrity API。
  *
  *   GET  /api/projects/:id/paper                  → PaperResponse
  *   POST /api/projects/:id/paper/pdf              → 上传 + 解析 Final PDF
@@ -30,6 +30,11 @@ export async function uploadPaperPdf(
   input: { fileName: string; contentBase64: string },
 ): Promise<{ document: PaperResponse["document"]; unchanged: boolean }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/paper/pdf`, input);
+}
+
+/** 用已上传的原始 PDF 重新解析（解析器升级后无需重新上传） */
+export async function reparsePaperPdf(projectId: string): Promise<{ document: PaperResponse["document"] }> {
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/paper/reparse`);
 }
 
 export async function listCitations(

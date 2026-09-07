@@ -20,6 +20,7 @@ import {
   getPaper,
   getPaperReviewReport,
   listCitations,
+  reparsePaperPdf,
   uploadPaperPdf,
   verifyClaims,
   verifyMetadata,
@@ -230,6 +231,20 @@ export function useUploadPaperPdf(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (input: { fileName: string; contentBase64: string }) => uploadPaperPdf(projectId ?? "", input),
+    onSuccess: () => {
+      const id = projectId ?? "";
+      void queryClient.invalidateQueries({ queryKey: queryKeys.paper(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.citations(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.paperReview(id) });
+    },
+  });
+}
+
+/** 重新解析已上传的 PDF（清空派生产物：引用 / Review 需重跑） */
+export function useReparsePaperPdf(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => reparsePaperPdf(projectId ?? ""),
     onSuccess: () => {
       const id = projectId ?? "";
       void queryClient.invalidateQueries({ queryKey: queryKeys.paper(id) });

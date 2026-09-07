@@ -1,5 +1,5 @@
 /**
- * Target Feasibility Assessment（M3.1，D-0011 产品红线）。
+ * Target Feasibility Assessment（D-0011 产品红线）。
  *
  * 基于 Idea、Research 结果、Evidence 与目标定位（documentType / targetProfile /
  * targetVenue）诚实评估目标论文层级能否被支撑：
@@ -90,7 +90,7 @@ export class FeasibilityService {
       ),
       projectId: params.projectId,
       contextScope: "research/feasibility",
-      metadata: { role: "researcher", skill: "feasibility", milestone: "M3.1" },
+      metadata: { role: "researcher", skill: "feasibility" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `Feasibility 任务以 ${task.status} 状态结束`);

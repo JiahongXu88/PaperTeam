@@ -1,5 +1,5 @@
 /**
- * Final PDF 持久化（M4.3.1）：项目 workspace 内的 paper/ 子树。
+ * Final PDF 持久化：项目 workspace 内的 paper/ 子树。
  *
  * 布局（原子写，遵循 ProjectStore 文件持久化约定，不引入数据库）：
  *   {project}/paper/
@@ -8,9 +8,9 @@
  *     parsed/pages/P00N.json      单页文本
  *     parsed/sections.json        章节区间
  *     parsed/chunks.jsonl         chunk（每行一个）
- *     paper-map.json              PaperMap（M4.3.2）
+ *     paper-map.json              PaperMap
  *     stages.json                 粗粒度 stage 指纹/状态（可恢复执行）
- *     citation/                   引用核验产物（M4.3.3+）
+ *     citation/                   引用核验产物
  *
  * 加载时各部分合并重建完整 PaperDocument；任一部分损坏 → null（重新 ingest）。
  */
@@ -76,7 +76,7 @@ export class PaperStore {
     return join(this.root(projectId), "citation");
   }
 
-  // ---- 引用核验产物（M4.3.3+：references / callouts / metadata / claims） ----
+  // ---- 引用核验产物（references / callouts / metadata / claims） ----
 
   async saveExtraction(
     projectId: string,

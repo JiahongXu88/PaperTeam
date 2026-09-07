@@ -1,11 +1,11 @@
 /**
- * ReviewFinding（M4.3.0）：结构化审稿结论的统一载体。
+ * ReviewFinding：结构化审稿结论的统一载体。
  *
- * 与既有 ReviewIssue（M3.2 三路审稿的 workflow 内部结构）的区别：
+ * 与既有 ReviewIssue（三路审稿的 workflow 内部结构）的区别：
  * ReviewFinding 是跨 review pass 持久化的领域事实——每条 finding 都带
  * section / page / chunk provenance 与状态机（open → resolved / dismissed），
  * 是 Citation Integrity Gate 与后续聚合层的输入。
- * 禁止让模型输出一坨 Markdown 作为唯一事实源（M4.3 原则）。
+ * 禁止让模型输出一坨 Markdown 作为唯一事实源。
  */
 
 export const FINDING_CATEGORIES = ["fact", "academic", "style", "citation", "consistency"] as const;

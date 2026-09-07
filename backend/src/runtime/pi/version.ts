@@ -1,5 +1,5 @@
 /**
- * Pi Runtime 版本锁定（M3.7 Feasibility baseline）。
+ * Pi Runtime 版本锁定。
  *
  * 与 backend/package.json 的 @earendil-works/pi-coding-agent 精确 pin
  * 保持一致（禁止 ^ / ~ / latest）；诊断服务展示用。

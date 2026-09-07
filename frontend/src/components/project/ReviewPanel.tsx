@@ -29,6 +29,13 @@ const REVIEW_STAGES = ["paper.ensure", "citation.extract", "citation.metadata", 
 
 type SeverityFilter = "all" | ReviewFindingView["severity"];
 
+/** 未审阅章节的原因说明：无正文的章节标题 vs 超出单轮章节上限 */
+function describeSkipped(skipped: number, empty: number): string {
+  const overCap = skipped - empty;
+  const parts = [empty > 0 ? `${empty} 节只有标题没有正文` : undefined, overCap > 0 ? `${overCap} 节超出单轮上限` : undefined];
+  return parts.filter((part): part is string => part !== undefined).join("，");
+}
+
 function progressOf(run: WorkflowRunView): { index: number; total: number } | undefined {
   const data = run.progress?.data;
   const index = data?.["index"];
@@ -205,7 +212,9 @@ function ReportBlock({
       <div className="review-summary">
         <span className="review-summary-scope">
           已审阅 {review.sectionsReviewed} / {review.sectionsTotal} 节
-          {review.skippedSections !== undefined && review.skippedSections > 0 ? `（${review.skippedSections} 节超出单轮上限未审）` : ""}
+          {review.skippedSections !== undefined && review.skippedSections > 0
+            ? `（${review.skippedSections} 节未审阅：${describeSkipped(review.skippedSections, review.emptySections ?? 0)}）`
+            : ""}
         </span>
         <div className="ledger">
           {SEVERITY_ORDER.map((severity) => {

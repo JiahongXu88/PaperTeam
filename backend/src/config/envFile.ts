@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 
 /**
- * 极简 .env 文件支持（M1）。
+ * 极简 .env 文件支持。
  *
  * 语法约定（有意保持最小，不引第三方依赖）：
  * - 每行一条 `KEY=VALUE`，允许可选 `export ` 前缀

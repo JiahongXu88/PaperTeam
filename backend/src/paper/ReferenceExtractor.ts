@@ -1,5 +1,5 @@
 /**
- * Reference / Citation Callout 提取（M4.3.3）。
+ * Reference / Citation Callout 提取。
  *
  * 从解析产物（非模型、确定性）提取：
  *   ReferenceEntry —— References 章节条目（numeric [n] 分割为主，
@@ -7,7 +7,7 @@
  *   CitationCallout —— 正文引用标记：[1] / [2,3] / [4-7]（range 展开为
  *                     多条 relation）+ author-year best-effort
  *
- * 纪律（M4.3 原则）：
+ * 纪律：
  * - 关联不上就标 unresolved / invalid——绝不猜；
  * - [4-7] 展开成 4 条 reference relation，不是字符串；
  * - 全部 provenance（page / sectionId / chunkId）回链。

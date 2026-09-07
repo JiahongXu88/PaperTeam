@@ -1,7 +1,7 @@
 import type { ApiErrorBody } from "../types/api.js";
 
 /**
- * 统一 API Client（M4.1）：所有 HTTP 访问唯一入口。
+ * 统一 API Client：所有 HTTP 访问唯一入口。
  *
  * - Base URL 缺省为同源相对路径（dev 由 Vite proxy 转发到 Backend，
  *   覆盖用 VITE_API_BASE_URL）；

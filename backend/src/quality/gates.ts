@@ -1,5 +1,5 @@
 /**
- * Build Gate 与 Quality Gate（M3.2，D-0015）。
+ * Build Gate 与 Quality Gate（D-0015）。
  *
  * Build Gate：文档能否构建（编译结果 / include 文件存在 / bib 可用）。
  * Quality Gate：论文质量能否进入 Final（确定性判定器，消费 Review /
@@ -113,7 +113,7 @@ export interface QualityGateInput {
   feasibility: FeasibilityReport | null;
   /** HITL 明示接受已知差距（仍按目标标准执行，仅降低口径说明；不改判定） */
   acceptedKnownGaps?: boolean;
-  /** M4.3 Citation Integrity Gate 输入（PDF Review 流程；缺省不启用这组规则） */
+  /** Citation Integrity Gate 输入（PDF Review 流程；缺省不启用这组规则） */
   citationIntegrity?: {
     probableFabricated: number;
     notFoundObligatory: number;
@@ -218,7 +218,7 @@ export function evaluateQualityGate(
     detail: feasibility === null ? "未评估（跳过）" : `feasibility=${feasibility.level}`,
   });
 
-  // 10-13. Citation Integrity（M4.3；并入同一 Gate Engine，不另造平行体系）
+  // 10-13. Citation Integrity（并入同一 Gate Engine，不另造平行体系）
   if (input.citationIntegrity !== undefined) {
     const integrity = input.citationIntegrity;
     rules.push({

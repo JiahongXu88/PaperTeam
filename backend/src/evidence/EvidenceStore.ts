@@ -1,5 +1,5 @@
 /**
- * EvidenceStore（M3.1，file-first）。
+ * EvidenceStore（file-first）。
  *
  * 存储：项目级 evidence/evidence.jsonl（每行一条 Evidence；PRD §6.9）。
  * - append 走追加写；updateVerification / markUsage 走全量原子重写

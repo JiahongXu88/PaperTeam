@@ -1,5 +1,5 @@
 /**
- * Citation 静态核验（Layer 1，M3.1）。
+ * Citation 静态核验（Layer 1）。
  *
  * 纯确定性检查（不依赖 LLM、不依赖网络）：
  *   LaTeX \cite 族引用 ↔ references.bib 条目

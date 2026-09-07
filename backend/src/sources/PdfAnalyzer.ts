@@ -1,5 +1,5 @@
 /**
- * Reference PDF 分析（M3.1）。
+ * Reference PDF 分析。
  *
  * 分层设计：
  * - Layer 1（确定性，本文件 BuiltinPdfAnalyzer）：零依赖文本/结构层分析 ——
@@ -201,7 +201,7 @@ export class AgentMultimodalAnalyzer implements MultimodalAnalyzer {
         ].join("\n"),
         projectId: params.projectId,
         contextScope: "sources/pdf-analysis",
-        metadata: { role: "researcher", skill: "pdf-analysis", milestone: "M3.1" },
+        metadata: { role: "researcher", skill: "pdf-analysis" },
       });
     } catch (error) {
       base.note = `multimodal 分析调用失败：${

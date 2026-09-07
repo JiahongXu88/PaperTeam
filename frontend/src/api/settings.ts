@@ -6,7 +6,7 @@ import type {
 } from "../types/api.js";
 
 /**
- * Model Settings API（M4.3.7.5）。
+ * Model Settings API。
  *
  *   GET    /api/settings/model          → { settings }（无 key 本体）
  *   PUT    /api/settings/model          → { settings }（apiKey 省略 = 保持原 Key）

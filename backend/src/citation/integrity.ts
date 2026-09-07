@@ -1,7 +1,7 @@
 /**
- * Citation Integrity 领域类型（M4.3.0）。
+ * Citation Integrity 领域类型。
  *
- * 两层核验严格分离（M4.3 核心原则）：
+ * 两层核验严格分离（核心原则）：
  *   Layer 1 文献真实性（metadata verification，确定性代码 + 外部学术库）
  *   Layer 2 文献是否支持 claim（semantic verification，LLM judge + 真实检索证据）
  * 「查无此文」(NOT_FOUND) 与「文献不支持论断」(UNSUPPORTED) 是两个不同问题；

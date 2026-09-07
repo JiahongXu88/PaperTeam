@@ -18,7 +18,7 @@ export type WorkflowKind =
 /** 项目状态（project.json status） */
 export type ProjectStatus = "created" | "generated" | "failed";
 
-/** 项目列表条目 / 项目详情（Backend project.json 全量返回，M4.0 两者同形） */
+/** 项目列表条目 / 项目详情（Backend project.json 全量返回，两者同形） */
 export interface ProjectView {
   id: string;
   title: string;
@@ -71,7 +71,7 @@ export interface ImportProjectPdfResult {
   titleSource: "pdf" | "filename";
 }
 
-// ---- WorkflowRun（M4.2 只消费列表级摘要；完整 Live View 属于 M4.3） ----
+// ---- WorkflowRun（前端只消费列表级摘要） ----
 
 export type WorkflowRunStatus =
   | "pending"
@@ -124,6 +124,8 @@ export interface ExistingReviewReportView {
     sectionsReviewed: number;
     sectionsTotal: number;
     skippedSections?: number;
+    /** 没有正文的章节（只有标题，如仅含子节的章）：计入 skippedSections */
+    emptySections?: number;
     findingsTotal: number;
     parseFailures?: number;
     dropped?: number;
@@ -138,7 +140,7 @@ export interface ExistingReviewReportView {
   findings: ReviewFindingView[];
 }
 
-// ---- Runtime Status（M3.8 去 Gateway 化后的 Pi schema） ----
+// ---- Runtime Status（Pi schema） ----
 
 export interface RuntimeStatusView {
   backend: { ok: true };
@@ -173,7 +175,7 @@ export interface RuntimeStatusView {
   };
 }
 
-// ---- Model Settings（M4.3.7.5；GET 永不返回 key 本体） ----
+// ---- Model Settings（GET 永不返回 key 本体） ----
 
 /** 模型配置生效来源（env > 本地保存 > 未配置） */
 export type ModelConfigurationSource = "environment" | "stored" | "not_configured";

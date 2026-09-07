@@ -1,5 +1,5 @@
 /**
- * 模型偏好持久化（M4.3.7.5）：`<runtimeRoot>/settings/model.json`。
+ * 模型偏好持久化：`<runtimeRoot>/settings/model.json`。
  *
  * 只存非敏感的模型偏好（"provider/model-id"）；API Key 一律走 Pi 官方
  * credential storage（agentDir 下 auth.json，经 ModelRuntime.login/logout，

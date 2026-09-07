@@ -1,7 +1,7 @@
 /**
- * 论文生成最小工作流（M2）：
+ * 论文生成最小工作流：
  *
- *   ProjectService → WriterService → AgentRuntime.runAgent()
+ *   ProjectService → WriterService → AgentRuntime.runAgent
  *   → PiRuntimeAdapter → Writer 返回 LaTeX
  *   → 写入 manuscript/main.tex → LatexCompiler → build/paper.pdf
  *
@@ -56,7 +56,7 @@ export class GenerationService {
   /**
    * 对已存在的项目执行一次「Writer 写作 + LaTeX 编译」。
    * 项目不存在 / Writer 失败 / 编译失败分别抛对应业务错误。
-   * 会话连续性（M2.1）：把 project.json 里的 runtimeSessionKey 传给 Writer
+   * 会话连续性：把 project.json 里的 runtimeSessionKey 传给 Writer
    * 复用；成功后把本次实际使用的会话引用写回，失败不改变已存引用。
    */
   async generate(params: { projectId: string; prompt: string }): Promise<GenerationResult> {

@@ -1,10 +1,10 @@
 /**
- * 论文项目最小文件系统存储（M2）。
+ * 论文项目最小文件系统存储。
  *
  * 目录约定（PRD §5.1 的 M2 子集，不为未来功能预建更多空目录）：
  *   {root}/{project-id}/
  *   ├── manuscript/   论文正文（main.tex）
- *   ├── sources/      用户上传与文献原始文件（M3 起使用）
+ *   ├── sources/      用户上传与文献原始文件（使用）
  *   ├── evidence/     Evidence Store（后续里程碑使用）
  *   ├── reviews/      审稿结果（后续里程碑使用）
  *   ├── build/        LaTeX 编译输出（paper.pdf 等）
@@ -26,7 +26,7 @@ import {
 import { writeJsonAtomic } from "../util/atomic.js";
 import { isWorkflowKind, type WorkflowKind } from "../workflow/kinds.js";
 
-/** 项目状态（M2 只区分创建与一次生成的结果） */
+/** 项目状态 */
 export type ProjectStatus = "created" | "generated" | "failed";
 
 /** 项目记录的一级工作流类型（与编排层同一组常量） */
@@ -69,20 +69,20 @@ export interface ProjectMetadata {
   updatedAt: string;
   status: ProjectStatus;
   /**
-   * Runtime 会话引用（M2.1，Runtime-neutral）。
+   * Runtime 会话引用（Runtime-neutral）。
    * 指向上次生成任务落到的 Agent Runtime 会话（sessionKey），
    * 下次生成原样复用，保证同一 Project 上下文连续、不同 Project 隔离。
    * Project 与 Runtime Session 是两个概念：这里是引用，不是合并。
    */
   runtimeSessionKey?: string;
-  /** 一级工作流类型（M3.1；缺省视为 idea_to_paper，向后兼容） */
+  /** 一级工作流类型（缺省视为 idea_to_paper，向后兼容） */
   workflowKind?: ProjectWorkflowKind;
   /**
    * 生命周期：归档时间（独立于 status 的业务执行状态）。
    * 存在 = 已归档（默认项目列表不显示）；清除 = 恢复为活跃项目。
    */
   archivedAt?: string;
-  /** 研究资料元数据（M3.1，PRD §5.2） */
+  /** 研究资料元数据（PRD §5.2） */
   researchIdea?: string;
   researchField?: string;
   documentType?: string;
@@ -259,7 +259,7 @@ export class ProjectStore {
   }
 
   /**
-   * 记录 / 更新 Runtime 会话引用（M2.1）：传入 undefined 清除引用。
+   * 记录 / 更新 Runtime 会话引用：传入 undefined 清除引用。
    * 值由 Runtime 层产生（sessionKey），ProjectStore 只做存储，不理解其格式。
    */
   updateRuntimeSessionKey(
@@ -360,10 +360,10 @@ export class ProjectStore {
   }
 
   /**
-   * 列出项目元数据（M4.0：GET /api/projects 用）。
+   * 列出项目元数据（GET /api/projects 用）。
    * scope：active（默认，未归档）/ archived（已归档）/ all。
    * 按 updatedAt 降序（最近更新在前，id 作稳定 tie-break）；
-   * project.json 损坏的目录静默跳过（与 list() 一致）。
+   * project.json 损坏的目录静默跳过（与 list 一致）。
    */
   async listMetadata(
     scope: "active" | "archived" | "all" = "active",
@@ -490,7 +490,7 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   ) {
     return null;
   }
-  // M3.1 可选研究定位字段：只在合法时保留，非法值静默丢弃（防御性读取）
+  // 可选研究定位字段：只在合法时保留，非法值静默丢弃（防御性读取）
   const research = readOptionalResearchFields(record);
   const workflowKind = isWorkflowKind(record["workflowKind"])
     ? record["workflowKind"]

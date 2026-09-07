@@ -1,5 +1,5 @@
 /**
- * ReviewContextBuilder（M4.3.2）：section review 的受控上下文组装。
+ * ReviewContextBuilder：section review 的受控上下文组装。
  *
  * 给任何 section review 任务组装且仅组装：
  *   1. 论文概览（标题 + 摘要，截断）
@@ -65,18 +65,22 @@ export class ReviewContextBuilder {
 
   /** 全部可审阅 section 的稳定 contextScope（短生命周期 review task 的会话键） */
   async listSectionScopes(projectId: string): Promise<
-    Array<{ contextScope: string; sectionId: string; title: string; chunkCount: number }>
+    Array<{ contextScope: string; sectionId: string; title: string; chunkCount: number; charCount: number }>
   > {
     const document = await this.store.loadDocument(projectId);
     if (document === null) {
       return [];
     }
-    return document.sections.map((section) => ({
-      contextScope: `review/section/${section.sectionId.toLowerCase()}`,
-      sectionId: section.sectionId,
-      title: section.title,
-      chunkCount: document.chunks.filter((chunk) => chunk.sectionId === section.sectionId).length,
-    }));
+    return document.sections.map((section) => {
+      const chunks = document.chunks.filter((chunk) => chunk.sectionId === section.sectionId);
+      return {
+        contextScope: `review/section/${section.sectionId.toLowerCase()}`,
+        sectionId: section.sectionId,
+        title: section.title,
+        chunkCount: chunks.length,
+        charCount: chunks.reduce((sum, chunk) => sum + chunk.charCount, 0),
+      };
+    });
   }
 
   /**

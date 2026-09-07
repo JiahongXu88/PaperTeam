@@ -1,5 +1,5 @@
 /**
- * 项目文献库 SourceStore（M3.1）。
+ * 项目文献库 SourceStore。
  *
  * 存储布局（PRD §5.5 / §6）：
  *   sources/papers/<sourceId>-<安全文件名>   原始文件（PDF / BibTeX 等）

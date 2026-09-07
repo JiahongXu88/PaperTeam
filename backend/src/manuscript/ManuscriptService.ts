@@ -1,5 +1,5 @@
 /**
- * Section-based Manuscript 管理（M3.1）。
+ * Section-based Manuscript 管理。
  *
  * 把写作从「一个巨大 main.tex」升级为：
  *   manuscript/main.tex        确定性生成（\input 各 section，不交给 LLM）

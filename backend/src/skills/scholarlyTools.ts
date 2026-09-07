@@ -1,5 +1,5 @@
 /**
- * 受控学术检索工具（M4.3.6）：Pi Session 的 customTools。
+ * 受控学术检索工具：Pi Session 的 customTools。
  *
  * paper-search skill 的方法层告诉 Agent「什么时候搜索、怎么验证」；
  * 真正的检索由 PaperTeam 后端的 ScholarlyResolver 受控执行

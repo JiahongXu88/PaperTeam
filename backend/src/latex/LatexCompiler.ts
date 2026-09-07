@@ -1,5 +1,5 @@
 /**
- * LaTeX 编译器（M2）。
+ * LaTeX 编译器。
  *
  * 职责：manuscript/main.tex → build/paper.pdf。
  *

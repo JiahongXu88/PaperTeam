@@ -1,17 +1,17 @@
 /**
- * AgentRuntime 统一契约 v2（M3.8，对应 docs/ARCHITECTURE.md §2.1 与 PRD §12）。
+ * AgentRuntime 统一契约 v2（对应 docs/ARCHITECTURE.md §2.1 与 PRD §12）。
  *
  * 业务层只依赖本文件中的类型与接口，不允许 import Pi SDK 相关实现。
  *
- * v1 → v2 的核心变化（动机见 M3.7 报告 §7）：
- *   v1 runAgent() 阻塞到任务终态才返回 AgentTask，调用方在运行期间拿不到
+ * v1 → v2 的核心变化：
+ *   v1 runAgent 阻塞到任务终态才返回 AgentTask，调用方在运行期间拿不到
  *   taskId，导致 cancelTask / streamEvents 对上层天然不可达。
  *
  *   v2 startAgent(input) 立即返回 AgentRunHandle：
  *     - taskId 在执行开始时即可获得
- *     - events() 可在运行期间消费（replay + live，settle 后自然结束）
- *     - cancel() 可在运行期间调用（幂等）
- *     - result() 单独 await 终态（Promise 缓存，可重复 await）
+ *     - events 可在运行期间消费（replay + live，settle 后自然结束）
+ *     - cancel 可在运行期间调用（幂等）
+ *     - result 单独 await 终态（Promise 缓存，可重复 await）
  *
  *   runAgent(input) 保留为 convenience helper（= startAgent + await result），
  *   供既有同步语义业务路径（Writer/Reviewer/Researcher 等）零改动使用；
@@ -21,7 +21,7 @@
 /**
  * Agent Runtime 提供方标识。
  * - pi：@earendil-works/pi-coding-agent 的 in-process SDK Runtime
- *   （M3.8 起为唯一正式 Runtime baseline；OpenClaw 为 M3.6 历史基线）
+ *   （唯一正式 Runtime；OpenClaw 为历史基线）
  */
 export type RuntimeProvider = "pi";
 
@@ -56,7 +56,7 @@ export interface RuntimeHealth {
   checkedAt: string;
 }
 
-/** 发起一次 Agent 任务（M3.8 起由 PiRuntimeAdapter 真实执行） */
+/** 发起一次 Agent 任务（由 PiRuntimeAdapter 真实执行） */
 export interface RunAgentInput {
   agentId: string;
   task: string;
@@ -88,7 +88,7 @@ export interface RunAgentInput {
 }
 
 /**
- * Agent 任务终态（runAgent()/handle.result() resolve 时任务已达终态）。
+ * Agent 任务终态（runAgent/handle.result resolve 时任务已达终态）。
  * 诊断标识保存在 metadata 字段中：
  *   - sessionKey 运行落到的 Runtime 会话（跨任务复用，见 RunAgentInput.sessionKey）
  *   - model     实际使用的模型标签（provider/model-id）
@@ -124,8 +124,8 @@ export interface AgentEvent {
 /**
  * 一次 Agent 运行的句柄（AgentRuntime Contract v2 核心）。
  *
- * 生命周期：startAgent() 返回 handle 时任务已在后台启动（或已结构化失败）；
- * events() 在 settle 后自然结束；cancel() 幂等；result() 缓存终态。
+ * 生命周期：startAgent 返回 handle 时任务已在后台启动（或已结构化失败）；
+ * events 在 settle 后自然结束；cancel 幂等；result 缓存终态。
  */
 export interface AgentRunHandle {
   /** 任务标识（startAgent 返回时即已生成，不等任务结束） */

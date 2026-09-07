@@ -1,5 +1,5 @@
 /**
- * 指纹工具（M4.3）：stage 复用与内容变更检测的统一 sha256 指纹。
+ * 指纹工具：stage 复用与内容变更检测的统一 sha256 指纹。
  */
 
 import { createHash } from "node:crypto";

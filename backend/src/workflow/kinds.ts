@@ -4,7 +4,7 @@
  *
  * - idea_to_paper               从研究想法到论文
  * - existing_paper_improvement  已有 LaTeX / PDF 论文的系统性改进
- * - existing_paper_review       已有论文只读 Review（2026-09）
+ * - existing_paper_review       已有论文只读 Review
  */
 export const WORKFLOW_KINDS = [
   "idea_to_paper",

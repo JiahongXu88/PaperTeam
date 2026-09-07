@@ -1,12 +1,12 @@
 /**
- * Skill Registry 领域类型（M4.3.6）。
+ * Skill Registry 领域类型。
  *
  * PaperTeam 不重新发明 Skill 执行引擎（Pi 官方已有发现 / progressive
  * disclosure / 按需读取）。PaperTeam 负责：发现、元数据、来源与 license
  * provenance、中文简介、Agent 绑定、前端展示——以及未来安装管理的基础模型。
  *
  * 第三方 Skill ≠ 自动可信：只有经过源码审计的白名单 skill 才允许进入
- * Skill Store（M4.3 仅两项 Academic Skill，均 pin revision + 保留 LICENSE）。
+ * Skill Store（两项 Academic Skill，均 pin revision + 保留 LICENSE）。
  */
 
 export type SkillSourceType = "builtin" | "external" | "local";

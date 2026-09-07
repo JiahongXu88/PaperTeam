@@ -1,5 +1,5 @@
 /**
- * PDF Review 领域模型（M4.3.0）：解析产物与 PaperMap 的类型冻结。
+ * PDF Review 领域模型：解析产物与 PaperMap 的类型冻结。
  *
  * 设计约束：
  * - 全部字段 JSON 可序列化（无 Date / Buffer / 类实例），可直接落盘与过 HTTP；
@@ -60,7 +60,7 @@ export interface PaperChunk {
 }
 
 /**
- * PaperMap：长文档 Review 的导航图（M4.3.2）。
+ * PaperMap：长文档 Review 的导航图。
  * Agent 不重新阅读整篇 PDF——按 section 取 Map 摘要 + 目标 section chunks。
  */
 export interface PaperMapSection {

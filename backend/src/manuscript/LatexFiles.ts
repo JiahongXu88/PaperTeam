@@ -1,5 +1,5 @@
 /**
- * LaTeX 项目文件收集（M3.1）。
+ * LaTeX 项目文件收集。
  *
  * 从 manuscript/main.tex 出发，沿 \input / \include 递归收集全部 .tex，
  * 并定位 references.bib。供 Citation 核验、Build Gate、导入解析共用。

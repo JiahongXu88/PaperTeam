@@ -1,5 +1,5 @@
 /**
- * ScholarlyResolver（M4.3.4）：文献真实性核验（确定性，无 LLM）。
+ * ScholarlyResolver：文献真实性核验（确定性，无 LLM）。
  *
  * 原则：
  * - LLM 不负责决定「文献是否真实存在」——全部由外部学术库回答；

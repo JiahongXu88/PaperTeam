@@ -1,5 +1,5 @@
 /**
- * Runtime 状态诊断（M3.8）：GET /api/runtime/status 的实现。
+ * Runtime 状态诊断：GET /api/runtime/status 的实现。
  *
  * Pi 为 in-process Runtime 后，诊断不再有 Gateway / WebSocket / RPC 链路，
  * 一次诊断回答四个问题（全部只读，不泄露 token / 密钥 / 敏感路径）：

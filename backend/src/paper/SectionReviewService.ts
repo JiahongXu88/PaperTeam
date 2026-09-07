@@ -1,8 +1,8 @@
 /**
- * Section Review 消费者（M4.3.8 前置，2026-09）：把 ReviewContextBuilder
+ * Section Review 消费者：把 ReviewContextBuilder
  * 组装好的受控上下文交给 Reviewer Agent，输出结构化 ReviewFinding。
  *
- * 纪律（与 M4.3 Foundation 一致）：
+ * 纪律：
  * - 每节一个短生命周期任务（独立 contextScope：review/section/{id}），
  *   绝不把全文塞进一个不断增长的会话；
  * - 模型输出必须解析为结构化 findings（createFinding 强制 provenance），

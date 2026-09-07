@@ -1,5 +1,5 @@
 /**
- * SkillSummaryService（M4.3.6）：中文简介一次生成、持久化。
+ * SkillSummaryService：中文简介一次生成、持久化。
  *
  * - 只对 summaryStatus != ok 的 skill 调用模型（2-3 句：干什么/什么时候有用）；
  * - 模型不可用/失败 → 保持 summary_pending，Skill discovery 照常成功
@@ -68,7 +68,7 @@ export class SkillSummaryService {
           agentId: this.agentId,
           contextScope: `skills/summary/${skill.id}`,
           task: lines.join("\n"),
-          metadata: { role: "default", milestone: "M4.3" },
+          metadata: { role: "default" },
         });
         if (task.status !== "completed" || (task.output ?? "").trim() === "") {
           throw new Error(task.error ?? "模型未返回简介");

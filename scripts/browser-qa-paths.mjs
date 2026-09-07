@@ -1,5 +1,5 @@
 /**
- * Browser QA 路径脚本（Project Entry & Lifecycle UX 2026-09）。
+ * Browser QA 路径脚本。
  *
  * 路径 1：新建项目 → 从研究想法开始（表单可见，不提交）
  * 路径 2：导入已有论文 → PDF → 快速 Review（自动导航 Review 页）

@@ -1,10 +1,10 @@
 /**
- * Citation Integrity 编排服务（M4.3.3 起）。
+ * Citation Integrity 编排服务。
  *
  * Stage 化流水线（每个 stage 有输入指纹 + 产物持久化 + 可独立重跑）：
  *   extract   引用条目 + 正文 callout（确定性，本文件）
- *   metadata  文献真实性核验（M4.3.4，ScholarlyResolver）
- *   semantic  (claim, citation) 语义核验（M4.3.5）
+ *   metadata  文献真实性核验（ScholarlyResolver）
+ *   semantic  (claim, citation) 语义核验
  *
  * 第 37 篇引用检索失败不会要求重新 parse PDF——文件粒度记录 + 指纹跳过。
  */
@@ -183,7 +183,7 @@ export class CitationIntegrityService {
     await this.store.saveStage(projectId, record);
   }
 
-  // ---- metadata 核验 stage（M4.3.4：确定性外部核验，无 LLM） ----
+  // ---- metadata 核验 stage（确定性外部核验，无 LLM） ----
 
   /**
    * 逐条核验（文件粒度持久化 + 指纹跳过：第 37 条失败不影响前 36 条，
@@ -329,7 +329,7 @@ export class CitationIntegrityService {
     return records;
   }
 
-  // ---- semantic verification stage（M4.3.5：(claim, citation) 单记录） ----
+  // ---- semantic verification stage（(claim, citation) 单记录） ----
 
   /**
    * 逐条语义核验。确定性短路优先（真实性未确立 → SKIPPED；无证据 →
@@ -496,7 +496,7 @@ export class CitationIntegrityService {
         projectId,
         contextScope: `citation/semantic/${claim.claimCitationId.toLowerCase()}`,
         task: prompt,
-        metadata: { role: "citation", milestone: "M4.3" },
+        metadata: { role: "citation" },
       });
       if (task.status !== "completed") {
         throw new Error(task.error ?? "judge 任务未完成");

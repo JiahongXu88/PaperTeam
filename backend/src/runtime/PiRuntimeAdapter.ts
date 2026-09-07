@@ -1,5 +1,5 @@
 /**
- * PiRuntimeAdapter —— AgentRuntime Contract v2 的 Pi 实现（M3.8 正式 baseline）。
+ * PiRuntimeAdapter —— AgentRuntime Contract v2 的 Pi 实现。
  *
  * 架构：
  *
@@ -17,7 +17,7 @@
  *     （resolve 即本轮 agent run 已 settle；失败/中断不 reject，
  *       而是落进 transcript 的 assistant 消息 stopReason:
  *       "error" / "aborted"，见 pi-agent-core Agent.handleRunFailure）
- *   session.abort() / waitForIdle() / dispose()
+ *   session.abort / waitForIdle / dispose
  *   session.subscribe(listener) → unsubscribe
  *   ToolDefinition.execute(toolCallId, params, signal, ...) —— 工具执行
  *     收到协作式 AbortSignal（cancel 传导验证点）
@@ -38,16 +38,16 @@
  * - healthCheck 语义：SDK 已加载 + Adapter 未关闭 + ModelRuntime 初始化
  *   成功 = healthy。「未配置 API Key」不是 Runtime 不健康，而是模型
  *   未就绪（modelStatus 单独报告，供 statusService 分区展示）。
- * - timeout：Pi SDK 无内建 run 超时，Adapter 用定时器 + session.abort()
- *   实现 runTimeoutMs 语义（handle.result() 以 AgentTimeoutError reject，
+ * - timeout：Pi SDK 无内建 run 超时，Adapter 用定时器 + session.abort
+ *   实现 runTimeoutMs 语义（handle.result 以 AgentTimeoutError reject，
  *   与业务错误映射口径一致）。
  * - 事件：会话创建时挂持久 listener，Pi 事件映射为 PaperTeam AgentEvent
- *   （原始事件对象不透传业务层）。handle.events() 为「replay + live」
+ *   （原始事件对象不透传业务层）。handle.events 为「replay + live」
  *   语义：订阅即从头回放已缓存事件，随后 live 消费，settle 后迭代
  *   自然结束；多次订阅互相独立。
  * - cancel：幂等。排队中（未获得 session）的任务置取消标记，获得
  *   session 后直接 settle cancelled（不触发 prompt，也不误伤同会话
- *   正在运行的其他任务）；运行中的任务执行真实 session.abort()（协作式：
+ *   正在运行的其他任务）；运行中的任务执行真实 session.abort（协作式：
  *   LLM 流中断、tool 执行收到 AbortSignal）。
  */
 
@@ -111,7 +111,7 @@ export interface PiRuntimeOptions {
   /**
    * 模型规格 "provider/model-id"（如 "anthropic/claude-opus-4-5"）。
    * 缺省时 Runtime 健康但模型未配置：startAgent 结构化失败
-   * （result() resolve status="failed"），不伪造成功。
+   * （result resolve status="failed"），不伪造成功。
    */
   modelSpec?: string;
   /**
@@ -128,7 +128,7 @@ export interface PiRuntimeOptions {
   agentDir: string;
   /** 项目 workspace 根目录（projectId → 工作目录解析用） */
   workspaceRoot: string;
-  /** 无 projectId 调用的工作目录兜底（默认 process.cwd()） */
+  /** 无 projectId 调用的工作目录兜底（默认 process.cwd） */
   defaultCwd?: string;
   /** 单次 runAgent 的整体超时（毫秒），默认 300000 */
   runTimeoutMs?: number;
@@ -154,7 +154,7 @@ export interface PiRuntimeOptions {
    */
   customTools?: ToolDefinition[];
   /**
-   * 按角色注入的 skill 目录（M4.3.6 Skill Store）。Pi 会话经
+   * 按角色注入的 skill 目录。Pi 会话经
    * noSkills + additionalSkillPaths 完全由 PaperTeam 控制技能面：
    * 只有 assigned 且 installed 的 skill 进入该角色的
    * <available_skills>（progressive disclosure：仅 name/description/location
@@ -198,7 +198,7 @@ interface RunState {
   startedAt: string;
   /** 映射后的任务事件（单一事实源；迭代器按游标回放） */
   events: AgentEvent[];
-  /** events() 迭代器的唤醒回调（事件新增 / settle 时全部唤醒后清空） */
+  /** events 迭代器的唤醒回调（事件新增 / settle 时全部唤醒后清空） */
   eventWaiters: Set<() => void>;
   /** 任务是否已达终态（result 已 resolve/reject） */
   settled: boolean;
@@ -206,7 +206,7 @@ interface RunState {
   task?: AgentTask;
   /** reject 路径错误（timeout / runtime 异常 / 空输出） */
   failure?: unknown;
-  /** result() 的缓存 promise（settle 时 resolve/reject，可重复 await） */
+  /** result 的缓存 promise（settle 时 resolve/reject，可重复 await） */
   resultPromise: Promise<AgentTask>;
   resolveResult: (task: AgentTask) => void;
   rejectResult: (error: unknown) => void;
@@ -223,7 +223,7 @@ interface TaskRecord {
   task: AgentTask;
 }
 
-/** events() 返回的迭代器（独立游标；break 经 return() 清理订阅） */
+/** events 返回的迭代器（独立游标；break 经 return 清理订阅） */
 class AgentEventIterator implements AsyncIterator<AgentEvent>, AsyncIterable<AgentEvent> {
   private readonly state: RunState;
   private cursor = 0;
@@ -469,7 +469,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
         latencyMs,
       };
     }
-    // Runtime 健康；模型就绪度单独报告（见 modelStatus()）
+    // Runtime 健康；模型就绪度单独报告（见 modelStatus）
     return {
       ...base,
       ok: true,
@@ -498,7 +498,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   }
 
   /**
-   * 运行时重载模型配置（M4.3.7.5 Settings UI）：按新的 modelSpec 重新解析
+   * 运行时重载模型配置（Settings UI）：按新的 modelSpec 重新解析
    * 模型并释放既有 AgentSession。只影响新的 Agent Run：
    * - 存在在途 run 时拒绝（ModelConfigBusyError → 409），不中断活跃任务；
    * - 释放的会话必然空闲（Workspace/checkpoint 是事实源，Runtime session
@@ -777,11 +777,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
       });
     }
 
-    // prompt() 正常 resolve：终态落在 transcript 的最后一条 assistant 消息
+    // prompt 正常 resolve：终态落在 transcript 的最后一条 assistant 消息
     const last = lastAssistantMessage(managed.session);
     const stopReason = last?.stopReason;
 
-    // 工具执行中 abort 的实测路径（M3.8 §14）：SDK 将终态记为
+    // 工具执行中 abort 的实测路径：SDK 将终态记为
     // stopReason="error" + errorMessage="This operation was aborted"
     // （LLM 流中断才是 "aborted"）。以 Adapter 侧的取消意图为准归因，
     // 不依赖 SDK 的 stopReason 编码差异。
@@ -929,7 +929,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const cwd = this.resolveWorkspaceCwd(input.projectId);
     await mkdir(cwd, { recursive: true }).catch(() => {});
 
-    // M4.3.6 技能面完全自控：关闭全部默认发现（workspace/.pi、~/.pi 等），
+    // 技能面完全自控：关闭全部默认发现（workspace/.pi、~/.pi 等），
     // 只注入 PaperTeam Skill Store 中该角色 assigned 的 skill 目录。
     const skillDirs = this.roleSkillDirs?.(role.role) ?? [];
     const resourceLoader = new DefaultResourceLoader({
@@ -1054,7 +1054,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
   // ---- 任务级接口 ----
 
-  /** 查询已完结任务（运行中任务经 handle.result() 获取终态） */
+  /** 查询已完结任务（运行中任务经 handle.result 获取终态） */
   async getTask(taskId: string): Promise<AgentTask> {
     const record = this.taskRecords.get(taskId);
     if (record !== undefined) {
@@ -1090,7 +1090,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
    *   agent:{agentId}:paperteam-{projectId}          （无 scope）
    *   agent:{agentId}:paperteam-{projectId}--{scope} （有 scope）
    * 按 projectId 边界精确匹配（p-x1 不误伤 p-x12）。
-   * 语义与 close() 相同但只作用于该项目：取消其在途 run → 等收敛 → dispose 会话。
+   * 语义与 close 相同但只作用于该项目：取消其在途 run → 等收敛 → dispose 会话。
    * Workspace/checkpoint 是事实源，会话只是可丢弃执行上下文。
    */
   async releaseProjectSessions(projectId: string): Promise<number> {

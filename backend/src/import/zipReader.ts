@@ -1,5 +1,5 @@
 /**
- * 极简 ZIP 读取器（M3.2，零第三方依赖）。
+ * 极简 ZIP 读取器（零第三方依赖）。
  *
  * 只支持 ZIP 常见的 stored（0）与 deflate（8）条目，按 Local File Header
  * 顺序读取。安全约束（防 Zip Slip）由 readZipEntries 强制：

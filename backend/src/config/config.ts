@@ -1,5 +1,5 @@
 /**
- * PaperTeam Backend 配置（M3.8 起 Runtime = Pi in-process，无 Gateway 配置）。
+ * PaperTeam Backend 配置（Runtime = Pi in-process，无 Gateway 配置）。
  *
  * 配置来源：环境变量（可选地从仓库根 / backend 目录的 .env 文件补缺）。
  * 语义与根目录 .env.example 保持一致，不引入新的必填项。
@@ -71,7 +71,7 @@ export interface AppConfig {
   port: number;
   /** PaperTeam 用户级 Runtime 根目录（skills store 等挂在其下） */
   runtimeRoot: string;
-  /** Pi Runtime 配置（唯一 Runtime，M3.8） */
+  /** Pi Runtime 配置（唯一 Runtime） */
   pi: PiRuntimeConfig;
   /** 各业务 Agent 的会话标识（sessionKey 组成段与诊断标签；Pi 无 agent 注册表） */
   agents: AgentIds;
@@ -97,7 +97,7 @@ const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
 const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
-const DEFAULT_CITATION_MAX_LOOKUPS = 20;
+const DEFAULT_CITATION_MAX_LOOKUPS = 40;
 const DEFAULT_CITATION_TIMEOUT_MS = 8_000;
 const DEFAULT_MAX_REVISION_ROUNDS = 2;
 const DEFAULT_ACADEMIC_PASS_SCORE = 80;
@@ -156,7 +156,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       }),
     },
     agents: {
-      // 会话标识默认沿用 M3.7 验证基线（main）：业务角色
+      // 会话标识默认为 main：业务角色
       // （Researcher/Writer/Reviewer/Citation）靠 prompt + contextScope 隔离
       // 会话（方案 A，见 docs/DECISIONS.md D-0018）。Pi 无 agent 注册表，
       // 此值仅作为 sessionKey 组成段与诊断标签；需要区分会话键时用环境变量覆盖。

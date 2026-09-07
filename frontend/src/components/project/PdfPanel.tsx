@@ -5,7 +5,7 @@ import { RegistryStatus } from "../common/StatusBadge.js";
 import { EXTRACTION_QUALITY_STYLES, statusStyleOf } from "../common/status.js";
 import { formatDateTime } from "../../utils/format.js";
 import { fileToBase64, MAX_PDF_UPLOAD_BYTES, validatePdfFile } from "../../utils/file.js";
-import { useExtractCitations, usePaper, useUploadPaperPdf } from "../../hooks/queries.js";
+import { useExtractCitations, usePaper, useReparsePaperPdf, useUploadPaperPdf } from "../../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import type { PaperSectionView } from "../../types/paper.js";
 
@@ -50,6 +50,7 @@ function StructureRow({ section }: { section: PaperSectionView }) {
 export function PdfPanel({ projectId }: { projectId: string }) {
   const { data, isPending, isError, error, refetch } = usePaper(projectId);
   const upload = useUploadPaperPdf(projectId);
+  const reparse = useReparsePaperPdf(projectId);
   const extract = useExtractCitations(projectId);
   const fileInput = useRef<HTMLInputElement>(null);
   const [encoding, setEncoding] = useState(false);
@@ -93,7 +94,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
     return <ErrorState title="PDF 状态加载失败" message={formatApiError(error)} detail={formatApiErrorDetail(error)} onRetry={() => void refetch()} />;
   }
 
-  const busy = encoding || upload.isPending;
+  const busy = encoding || upload.isPending || reparse.isPending;
   const uploadErrors = (
     <>
       {upload.isError ? (
@@ -189,6 +190,15 @@ export function PdfPanel({ projectId }: { projectId: string }) {
           </details>
         ) : null}
         <div className="action-row" style={{ marginTop: "var(--s-4)" }}>
+          <button
+            type="button"
+            className="btn btn-small"
+            onClick={() => reparse.mutate()}
+            disabled={busy}
+            title="用已上传的文件重新解析（解析器更新后使用；引用与 Review 结果会清空，需要重跑）"
+          >
+            {reparse.isPending ? "重新解析中…" : "重新解析"}
+          </button>
           <label className={`btn btn-small${busy ? " is-disabled" : ""}`}>
             {encoding ? "读取中…" : upload.isPending ? "替换中…" : "替换 PDF"}
             <input
@@ -204,6 +214,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
         </div>
         <div className="panel-stack" style={{ marginTop: "var(--s-3)" }}>
           {uploadErrors}
+          {reparse.isError ? <ErrorState title="重新解析失败" message={formatApiError(reparse.error)} detail={formatApiErrorDetail(reparse.error)} /> : null}
         </div>
       </aside>
 

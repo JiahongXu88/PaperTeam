@@ -1,5 +1,5 @@
 /**
- * Workflow 定义（M3.2）。
+ * Workflow 定义。
  *
  * 两条一级工作流共享后段（D-0010）：
  *
@@ -18,7 +18,7 @@
  *                            └ accept_draft → build.draft → Draft
  *     build 失败（质量问题不阻塞构建；构建失败进入修订或 HITL）
  *
- * 流程纪律全部在本文件的确定性 plan()/onInput() 中；LLM 只产出内容，
+ * 流程纪律全部在本文件的确定性 plan/onInput 中；LLM 只产出内容，
  * 其输出必须通过各 Stage 的 DoD 校验。
  */
 
@@ -77,7 +77,7 @@ export interface WorkflowServices {
   writer: WriterService;
   citation: CitationService;
   latex: LatexCompiler;
-  /** M4.3 PDF Review Foundation 服务束（existing_paper_review 用） */
+  /** PDF Review Foundation 服务束（existing_paper_review 用） */
   paper: PaperReviewServices;
   /** reviews/ 产物读写（round 编号、最新汇总） */
   reviewArtifacts: ReviewArtifactStore;
@@ -91,7 +91,7 @@ export interface WorkflowServices {
   };
 }
 
-/** M4.3 PDF Review Foundation：PaperMap / ReviewContext / Citation Integrity / Section Review */
+/** PDF Review Foundation：PaperMap / ReviewContext / Citation Integrity / Section Review */
 export interface PaperReviewServices {
   store: PaperStore;
   map: PaperMapService;
@@ -108,6 +108,8 @@ const MAX_PLAN_REVISIONS = 3;
 const MAX_MANUAL_REVISION_ROUNDS = 3;
 /** 单轮 section review 的章节上限（超出部分如实记录为 skipped） */
 const MAX_REVIEW_SECTIONS = 40;
+/** 少于此字符数的章节只是标题行 / 编号，没有可审阅的内容 */
+const MIN_REVIEW_SECTION_CHARS = 80;
 
 const QUALITY_THRESHOLDS = (services: WorkflowServices): QualityGateThresholds => ({
   academicPassScore: services.review.academicPassScore,
@@ -1048,12 +1050,12 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
 }
 
 // ============================================================
-// Existing-Paper Review（PDF 只读快速 Review，2026-09）定义
+// Existing-Paper Review（PDF 只读快速 Review）定义
 // ============================================================
 
 /**
  * 与旧 POST /api/projects/:id/review（manuscriptDigest + Evidence + 旧
- * Citation report 的三路审稿）是两条不同链路：本定义走 M4.3 PDF Review
+ * Citation report 的三路审稿）是两条不同链路：本定义走 PDF Review
  * Foundation——Final PDF → PaperMap → Citation Integrity artifacts →
  * 分章节 Review（ReviewContextBuilder 受控上下文）→ ReviewFinding →
  * 聚合报告（reviews/existing-review-r*.json）。只读，不改正文。
@@ -1151,12 +1153,16 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
     timeoutMs: services.stageTimeoutMs * 4,
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
-      const scopes = await services.paper.reviewContext.listSectionScopes(ctx.projectId);
+      const allScopes = await services.paper.reviewContext.listSectionScopes(ctx.projectId);
+      // 只有章节标题、没有正文的章节（如仅含子节的"3 实验与结果"）没有可审阅的内容：
+      // 记为跳过，而不是让整个 run 失败
+      const scopes = allScopes.filter((scope) => scope.chunkCount > 0 && scope.charCount >= MIN_REVIEW_SECTION_CHARS);
+      const emptySections = allScopes.length - scopes.length;
       if (scopes.length === 0) {
-        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "论文没有可审阅的章节");
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "论文没有可审阅的章节（所有章节都没有文本）");
       }
       const capped = scopes.slice(0, MAX_REVIEW_SECTIONS);
-      const skipped = scopes.length - capped.length;
+      const skipped = scopes.length - capped.length + emptySections;
 
       // 本节引用上下文：callout 关联到 reference 条目 + metadata 核验状态
       const callouts = await services.paper.store.loadCallouts<CitationCallout>(ctx.projectId);
@@ -1207,8 +1213,9 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
       }
       return {
         sectionsReviewed: reviewed.length,
-        sectionsTotal: scopes.length,
+        sectionsTotal: allScopes.length,
         skippedSections: skipped,
+        emptySections,
         findingsTotal: findings.length,
         parseFailures,
         dropped,
@@ -1260,6 +1267,7 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
           sectionsReviewed: Number(sections["sectionsReviewed"] ?? 0),
           sectionsTotal: Number(sections["sectionsTotal"] ?? 0),
           skippedSections: Number(sections["skippedSections"] ?? 0),
+          emptySections: Number(sections["emptySections"] ?? 0),
           findingsTotal: findings.length,
           parseFailures: Number(sections["parseFailures"] ?? 0),
           dropped: Number(sections["dropped"] ?? 0),

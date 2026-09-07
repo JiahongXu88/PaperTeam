@@ -1,5 +1,5 @@
 /**
- * Skill Registry（M4.3.6）：Skill 作为 PaperTeam 一级资源。
+ * Skill Registry：Skill 作为 PaperTeam 一级资源。
  *
  * PaperTeam 不重新发明 Skill 执行引擎（Pi 官方已有发现 / progressive
  * disclosure / 按需读取）。本层负责：安装（从仓库内审计过的 seed，pin

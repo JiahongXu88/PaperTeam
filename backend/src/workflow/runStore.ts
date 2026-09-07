@@ -1,5 +1,5 @@
 /**
- * WorkflowRun 持久化（M3.0，file-first）。
+ * WorkflowRun 持久化（file-first）。
  *
  * 每个 run 一个目录（project-scoped，PRD §5.5 workflow/）：
  *   projects/<projectId>/workflow/runs/<runId>/

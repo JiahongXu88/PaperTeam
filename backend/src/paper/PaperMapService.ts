@@ -1,5 +1,5 @@
 /**
- * PaperMapService（M4.3.2）：PaperMap 的构建与章节摘要。
+ * PaperMapService：PaperMap 的构建与章节摘要。
  *
  * 长文档 Review 反模式（本轮要解决的核心问题）：
  *   整篇 PDF + 全部历史 + 全部 Evidence 塞进一个不断增长的 Agent Session
@@ -176,7 +176,7 @@ export class PaperMapService {
           "章节内容：",
           input,
         ].join("\n"),
-        metadata: { role: "reviewer", milestone: "M4.3" },
+        metadata: { role: "reviewer" },
       });
       if (task.status !== "completed" || (task.output ?? "").trim() === "") {
         return {

@@ -1,5 +1,5 @@
 /**
- * 解析产物 → 领域结构组装（M4.3.1）：pages / sections / chunks / 质量评级。
+ * 解析产物 → 领域结构组装：pages / sections / chunks / 质量评级。
  *
  * 纯 TypeScript 确定性代码（不依赖 Python，单测直接喂 RawPdfExtraction）：
  * - sections：PDF TOC outline（权威）> 页内标题正则 > 整档兜底；
@@ -221,20 +221,98 @@ interface BlockWithSection {
   sectionId: string;
 }
 
-/** block → section：页落在区间内的最后一个（文档顺序最靠后/最深）section */
+/**
+ * block → section。
+ *
+ * TOC 只有页级粒度：同一页上常有多个章节（中文论文尤其密集，26 页 36 节）。
+ * 只按页区间归属会把整页文本都记到最后一个开始于该页的章节上，其余章节变成
+ * "无文本"而被审阅跳过。这里按文档顺序扫描 block：进入新页时先把该页开始的
+ * 章节按顺序排队，遇到与队首章节标题匹配的标题行就切换归属；找不到标题行时
+ * 退回页级归属（该页最后开始的章节）。
+ */
 function assignBlocksToSections(
   blocks: Array<{ page: number; text: string }>,
   sections: PaperSection[],
 ): BlockWithSection[] {
-  return blocks.map((block) => {
-    let chosen = sections[0]!;
-    for (const section of sections) {
-      if (block.page >= section.pageStart && block.page <= section.pageEnd) {
-        chosen = section;
+  if (sections.length === 0) {
+    return [];
+  }
+  const startingOnPage = new Map<number, PaperSection[]>();
+  for (const section of sections) {
+    startingOnPage.set(section.pageStart, [...(startingOnPage.get(section.pageStart) ?? []), section]);
+  }
+
+  const result: BlockWithSection[] = [];
+  let current: PaperSection | undefined;
+  let pending: PaperSection[] = [];
+  let currentPage = -1;
+
+  for (const block of blocks) {
+    if (block.page !== currentPage) {
+      currentPage = block.page;
+      pending = [...(startingOnPage.get(block.page) ?? [])];
+      // 跨页延续：上一页的归属章节若仍覆盖本页则沿用，否则取覆盖本页且最早开始的章节
+      if (current === undefined || block.page > current.pageEnd) {
+        current = sections.find((section) => block.page >= section.pageStart && block.page <= section.pageEnd) ?? current;
+      }
+      // 本页只有一个（或没有）新章节且当前章节不覆盖本页：直接切换，不必等标题行
+      if (pending.length === 1 && (current === undefined || block.page > current.pageEnd || current.pageStart < block.page)) {
+        const only = pending[0]!;
+        if (current === undefined || only.pageStart > current.pageStart) {
+          current = only;
+          pending = [];
+        }
       }
     }
-    return { page: block.page, text: block.text, sectionId: chosen.sectionId };
-  });
+    // 标题行匹配：队列里排在前面的章节先生效（顺序即文档顺序）。
+    // 页眉 / 页脚（"3 实验与结果 10"：章节名 + 页码）会命中本页将开始的章节名，必须跳过
+    const headingIndex = isRunningHeader(block.text) ? -1 : pending.findIndex((section) => isHeadingBlock(block.text, section.title));
+    if (headingIndex !== -1) {
+      current = pending[headingIndex]!;
+      pending = pending.slice(headingIndex + 1);
+    }
+    if (current === undefined) {
+      current = sections[0]!;
+    }
+    result.push({ page: block.page, text: block.text, sectionId: current.sectionId });
+  }
+  return result;
+}
+
+/**
+ * block 是否就是某章节的标题（去编号 / 空白 / 全角标点后前缀相等，且块很短）。
+ * pymupdf 常把编号与标题拆成两行（"2.2\nYOLOv11 …"），所以按整块比较而不是首行。
+ * 页眉（"2 方法 7"）也会命中章节名，但只对"本页开始的章节"做匹配，所以不会误切。
+ */
+function isHeadingBlock(blockText: string, sectionTitle: string): boolean {
+  if (blockText.length > 120) {
+    return false;
+  }
+  const normalizedBlock = normalizeHeading(blockText);
+  const normalizedTitle = normalizeHeading(sectionTitle);
+  if (normalizedTitle.length < 2 || normalizedBlock.length === 0) {
+    return false;
+  }
+  return normalizedBlock === normalizedTitle || normalizedBlock.startsWith(normalizedTitle) || normalizedTitle.startsWith(normalizedBlock);
+}
+
+/** 页眉 / 页脚：2-3 行，末行只是页码 */
+function isRunningHeader(blockText: string): boolean {
+  const lines = blockText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  const isPageNumber = (line: string) => /^\d{1,4}$/.test(line);
+  // 页码在末行（"3 / 实验与结果 / 10"）；编号标题是编号在首行、标题在末行（"2 / 方法"），不能误判
+  const last = lines[lines.length - 1] ?? "";
+  return lines.length >= 2 && lines.length <= 3 && isPageNumber(last) && lines.some((line) => !isPageNumber(line));
+}
+
+function normalizeHeading(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/^\s*(?:第[一二三四五六七八九十\d]{1,3}[章节]|[\d.．]+|[ivx]+\.)\s*/i, "")
+    .replace(/[\s\u3000:：、,，.。()（）\-—–_]/g, "");
 }
 
 /** 连续同 section block 聚合为 chunk（目标 ~1800、硬上限 2600 字符） */

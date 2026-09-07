@@ -1,5 +1,5 @@
 /**
- * Workflow 层核心类型（M3.0）。
+ * Workflow 层核心类型。
  *
  * 设计约束（docs/ARCHITECTURE.md §3、DECISIONS D-0008 / D-0013 / D-0014）：
  * - WorkflowOrchestrator 是确定性 TypeScript 代码，不是 Agent，不调用 LLM；
@@ -175,7 +175,7 @@ export type PlanDecision =
 
 /**
  * Workflow 定义：stage 注册表 + 确定性规划器 + HITL 输入处理。
- * plan() 必须是 state 的纯函数（可从 checkpoint 重放）；流程纪律全部在这里。
+ * plan 必须是 state 的纯函数（可从 checkpoint 重放）；流程纪律全部在这里。
  */
 export interface WorkflowDefinition {
   readonly kind: WorkflowKind;

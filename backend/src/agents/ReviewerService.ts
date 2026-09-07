@@ -1,5 +1,5 @@
 /**
- * Reviewer 业务角色（M3.2，PRD §7.4）。
+ * Reviewer 业务角色（PRD §7.4）。
  *
  * 一个 Agent，三类 review skill（fact / academic / style），可并行 fan-out：
  *   - fact：正文 claim ↔ Evidence 核验（SUPPORTED / PARTIALLY_SUPPORTED /
@@ -134,7 +134,7 @@ export class ReviewerService {
       task: buildReviewPrompt(params),
       projectId: params.projectId,
       contextScope: `review/${params.mode}`,
-      metadata: { role: "reviewer", skill: params.mode, milestone: "M3.2" },
+      metadata: { role: "reviewer", skill: params.mode },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(

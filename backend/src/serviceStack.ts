@@ -1,5 +1,5 @@
 /**
- * Backend 服务栈装配（M3.1）。
+ * Backend 服务栈装配。
  *
  * 把 ProjectStore / 各业务 Service / WorkflowServices 组装为单一入口，
  * 供 index.ts（生产）与测试共用，保证两侧装配一致。
@@ -54,7 +54,7 @@ export interface ServiceStackOptions {
     contactEmail?: string;
     /** 可注入 fetch（测试） */
     fetchImpl?: typeof fetch;
-    /** M4.3.4 scholarly resolver（PDF 引用核验；测试注入 providers/fetch） */
+    /** scholarly resolver（PDF 引用核验；测试注入 providers/fetch） */
     scholarly?: ScholarlyResolverOptions;
   };
   /** Final PDF parser 注入（测试用 fake parser；缺省 PyMuPdfParser） */

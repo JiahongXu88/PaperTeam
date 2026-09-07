@@ -1,9 +1,9 @@
 /**
- * Writer Agent（M2 基础 + M3.1 分节扩展）。
+ * Writer Agent：整篇写作 + 分节写作 / 修订。
  *
- * - write()：M2 完整文档形态（legacy generate API 使用）
- * - planOutline()：基于调研与 Evidence 产出结构化大纲（JSON，经确定性校验）
- * - writeSection()：逐节写作（LaTeX 片段，禁止 \documentclass / \begin{document}）
+ * - write：M2 完整文档形态（legacy generate API 使用）
+ * - planOutline：基于调研与 Evidence 产出结构化大纲（JSON，经确定性校验）
+ * - writeSection：逐节写作（LaTeX 片段，禁止 \documentclass / \begin{document}）
  *
  * 输出校验失败抛业务错误（Agent 返回文本 ≠ 成功）。
  */
@@ -65,7 +65,7 @@ export class WriterService {
       task: buildWriterPrompt(prompt),
       projectId: params.projectId,
       ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
-      metadata: { role: "writer", milestone: "M2" },
+      metadata: { role: "writer" },
     });
 
     if (task.status !== "completed") {
@@ -90,7 +90,7 @@ export class WriterService {
     return { task, latex };
   }
 
-  // ---- M3.1：分节写作 ----
+  // ---- 分节写作 ----
 
   /**
    * 产出结构化大纲（JSON）。校验：至少 3 节、文件名合法、id 唯一。
@@ -114,7 +114,7 @@ export class WriterService {
       task: buildOutlinePrompt(params),
       projectId: params.projectId,
       contextScope: "writing/outline",
-      metadata: { role: "writer", skill: "outline", milestone: "M3.1" },
+      metadata: { role: "writer", skill: "outline" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `大纲任务以 ${task.status} 状态结束`);
@@ -156,7 +156,7 @@ export class WriterService {
       task: buildSectionPrompt(params),
       projectId: params.projectId,
       contextScope: "writing/sections",
-      metadata: { role: "writer", skill: "section", milestone: "M3.1" },
+      metadata: { role: "writer", skill: "section" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(
@@ -178,7 +178,7 @@ export class WriterService {
     return { latex, taskId: task.taskId };
   }
 
-  // ---- M3.2：修订 ----
+  // ---- 修订 ----
 
   /**
    * 依据汇总的 review issues / 改进计划修订单个章节（有界修改闭环中的一环）。
@@ -204,7 +204,7 @@ export class WriterService {
       task: buildRevisePrompt(params),
       projectId: params.projectId,
       contextScope: "writing/revision",
-      metadata: { role: "writer", skill: "revision", milestone: "M3.2" },
+      metadata: { role: "writer", skill: "revision" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(
@@ -267,7 +267,7 @@ export class WriterService {
       ].join("\n"),
       projectId: params.projectId,
       contextScope: "writing/improvement-plan",
-      metadata: { role: "writer", skill: "improvement-plan", milestone: "M3.2" },
+      metadata: { role: "writer", skill: "improvement-plan" },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `改进计划任务以 ${task.status} 状态结束`);

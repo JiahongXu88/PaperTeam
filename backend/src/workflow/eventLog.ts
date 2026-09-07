@@ -1,5 +1,5 @@
 /**
- * Domain Event JSONL 日志（M3.0）。
+ * Domain Event JSONL 日志。
  *
  * 每个 run 一份 events.jsonl（追加写）。读取时容忍损坏行：
  * 损坏行计入 skipped、不中断（日志是进度记录，不是判定依据）。

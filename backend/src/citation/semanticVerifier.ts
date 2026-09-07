@@ -1,5 +1,5 @@
 /**
- * Claim-Citation Semantic Verification（M4.3.5）。
+ * Claim-Citation Semantic Verification。
  *
  * ONE RECORD 原则（借鉴 RefWarden, MIT, pin ae85ae3）：同一文献被引用 N 次
  * = N 条 ClaimCitationRecord（主键 citationId+referenceId）——只验证一次

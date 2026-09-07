@@ -1,5 +1,5 @@
 /**
- * PaperTeam 业务角色 → Pi AgentSession 配置映射（M3.7）。
+ * PaperTeam 业务角色 → Pi AgentSession 配置映射。
  *
  * 设计原则（延续方案 A，docs/DECISIONS.md D-0018）：
  * - 所有角色共用同一 Runtime（历史 OpenClaw 路径默认 agent main，靠
