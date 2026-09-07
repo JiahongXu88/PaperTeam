@@ -18,7 +18,7 @@ import type { ReviewSummary } from "../review/ReviewAggregator.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { collectLatexFiles } from "../manuscript/LatexFiles.js";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../util/atomic.js";
 

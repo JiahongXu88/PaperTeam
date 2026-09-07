@@ -15,7 +15,7 @@
 
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { BusinessError } from "../errors.js";
-import type { PaperChunk, PaperMap } from "./types.js";
+import type { PaperChunk } from "./types.js";
 import type { PaperStore } from "./PaperStore.js";
 
 /** 各部分预算（字符）——超限截断并在 budget 中如实反映 */

@@ -112,7 +112,7 @@ describe("EvidenceStore：query / updateVerification / markUsage", () => {
 
     await expect(
       evidence.updateVerification(projectId, "E999", { verificationStatus: "verified" }),
-    ).rejects.toBeInstanceOf(EvidenceValidationError);
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
   it("stats 汇总各状态计数", async () => {

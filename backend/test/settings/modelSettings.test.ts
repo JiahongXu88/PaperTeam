@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 
 import { BusinessError, ModelConfigBusyError } from "../../src/errors.js";
 import { PiRuntimeAdapter } from "../../src/runtime/PiRuntimeAdapter.js";

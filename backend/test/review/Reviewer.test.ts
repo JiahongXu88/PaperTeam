@@ -17,7 +17,7 @@ import {
 } from "../../src/agents/ReviewerService.js";
 import { aggregateReviews } from "../../src/review/ReviewAggregator.js";
 import { AgentRunFailedError } from "../../src/errors.js";
-import type { AgentRuntime, AgentTask } from "../../src/runtime/types.js";
+import type { AgentRuntime } from "../../src/runtime/types.js";
 import { makeAgentTask } from "../helpers/fakeRuntime.js";
 
 const tempRoots: string[] = [];

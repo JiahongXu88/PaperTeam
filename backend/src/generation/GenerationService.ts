@@ -88,7 +88,10 @@ export class GenerationService {
       };
     } catch (error) {
       const businessError = toBusinessError(error);
-      this.log(`[generation] ${project.id} 生成失败：${businessError.code} ${businessError.message}`);
+      this.log(
+        `[generation] ${project.id} 生成失败：${businessError.code} ${businessError.message}` +
+          (businessError !== error ? `（原始错误：${errorText(error)}）` : ""),
+      );
       await this.safeUpdateStatus(project.id, "failed");
       throw businessError;
     }
@@ -111,7 +114,10 @@ export class GenerationService {
     } catch (error) {
       // 工具缺失 / 编译失败 / 超时 → 结构化带回，不中断响应
       const businessError = toBusinessError(error);
-      this.log(`[generation] ${projectId} 编译失败：${businessError.code} ${businessError.message}`);
+      this.log(
+        `[generation] ${projectId} 编译失败：${businessError.code} ${businessError.message}` +
+          (businessError !== error ? `（原始错误：${errorText(error)}）` : ""),
+      );
       return {
         ok: false,
         tool: "unknown",
@@ -134,7 +140,7 @@ export class GenerationService {
       await this.projects.updateStatus(projectId, status);
     } catch (error) {
       // 状态更新失败不影响主流程，只记日志
-      this.log(`[generation] ${projectId} 状态更新失败：${String(error)}`);
+      this.log(`[generation] ${projectId} 状态更新失败：${errorText(error)}`);
     }
   }
 
@@ -146,7 +152,11 @@ export class GenerationService {
     try {
       await this.projects.updateRuntimeSessionKey(projectId, sessionKey);
     } catch (error) {
-      this.log(`[generation] ${projectId} 会话引用写回失败：${String(error)}`);
+      this.log(`[generation] ${projectId} 会话引用写回失败：${errorText(error)}`);
     }
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

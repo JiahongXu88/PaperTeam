@@ -274,7 +274,7 @@ export class ModelSettingsService {
         }
         throw new BusinessError(
           "INTERNAL_ERROR",
-          `保存 ${provider} 的凭据失败：${redact(errorText(error), [apiKey])}`,
+          `保存 ${provider} 的凭据失败：${redact(errorText(error), [apiKey, ...this.knownSecrets()])}`,
         );
       }
       this.log(`[model-settings] 已保存 ${provider} 的 API Key（写入 agentDir auth.json）`);
@@ -315,7 +315,8 @@ export class ModelSettingsService {
       if (error instanceof BusinessError) {
         throw error;
       }
-      throw new BusinessError("INTERNAL_ERROR", `清除 ${provider} 凭据失败：${errorText(error)}`);
+      // SDK 凭据错误对象可能内嵌 key：只保留消息文本，且不带 key 本体
+      throw new BusinessError("INTERNAL_ERROR", `清除 ${provider} 凭据失败：${redact(errorText(error), this.knownSecrets())}`);
     }
     this.log(`[model-settings] 已清除 ${provider} 的本地保存 API Key`);
     // 重载：startup env key（如有）重新注入；auth.json 变化同步到快照
@@ -399,7 +400,7 @@ export class ModelSettingsService {
     if (stopReason === "error" || stopReason === "aborted") {
       const rawDetail = message.errorMessage ?? `stopReason=${stopReason}`;
       const code = aborted || signal.aborted ? "TIMEOUT" : classifyFailure(rawDetail);
-      const detail = redact(truncate(rawDetail, DETAIL_MAX_CHARS), [apiKey]);
+      const detail = redact(truncate(rawDetail, DETAIL_MAX_CHARS), [apiKey, ...this.knownSecrets()]);
       this.log(
         `[model-settings] Test Connection 失败：${provider}/${modelId} code=${code}` +
           `（不打印请求体与 key）`,
@@ -433,6 +434,11 @@ export class ModelSettingsService {
         `Runtime 模型配置重载失败：${redact(errorText(error), secrets)}`,
       );
     }
+  }
+
+  /** 进程内已知的 secret（env 注入的 key）：错误文本脱敏时一并抹除 */
+  private knownSecrets(): (string | undefined)[] {
+    return [this.env.piApiKey];
   }
 
   /** 存在在途 Agent Run 时拒绝配置变更（409；不中断活跃任务） */

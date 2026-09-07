@@ -10,8 +10,16 @@
  * - 本服务不读磁盘、不编排流程——只做「context → agent → findings」。
  */
 
+import { AgentRunFailedError } from "../errors.js";
 import type { AgentRuntime } from "../runtime/types.js";
-import { createFinding, type FindingCategory, type FindingSeverity, type ReviewFinding } from "../review/finding.js";
+import {
+  createFinding,
+  FINDING_CATEGORIES,
+  FINDING_SEVERITIES,
+  type FindingCategory,
+  type FindingSeverity,
+  type ReviewFinding,
+} from "../review/finding.js";
 import type { SectionReviewContext } from "./ReviewContextBuilder.js";
 
 /** 单次 section review 的任务指令（附加在 context 之后；要求 JSON 输出） */
@@ -22,8 +30,8 @@ export const SECTION_REVIEW_INSTRUCTION = [
   "只报告能在当前章节文本中定位的问题；无法核验的内容明确写「无法核验」；无问题输出 {\"findings\": []}。",
 ].join("\n");
 
-const VALID_CATEGORIES: ReadonlySet<string> = new Set(["fact", "academic", "style", "citation", "consistency"]);
-const VALID_SEVERITIES: ReadonlySet<string> = new Set(["critical", "major", "minor", "info"]);
+const VALID_CATEGORIES: ReadonlySet<string> = new Set(FINDING_CATEGORIES);
+const VALID_SEVERITIES: ReadonlySet<string> = new Set(FINDING_SEVERITIES);
 
 /** 模型原始输出 → 规范化 finding 候选（纯函数，测试直接覆盖） */
 export interface ParsedFindingCandidate {
@@ -149,18 +157,22 @@ export class SectionReviewService {
     projectId: string;
     runId: string;
     context: SectionReviewContext;
+    /** Workflow 取消信号：中断在途模型调用 */
+    signal?: AbortSignal;
   }): Promise<SectionReviewOutcome> {
     const task = await this.runtime.runAgent({
       agentId: this.reviewerAgentId,
       projectId: input.projectId,
       contextScope: input.context.contextScope,
       task: input.context.prompt,
-      metadata: { role: "reviewer", milestone: "M4.3", pass: "section-review" },
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+      metadata: { role: "reviewer", pass: "section-review" },
     });
-    if (task.status !== "completed" || (task.output ?? "").trim() === "") {
-      throw new Error(task.error ?? "审阅任务未返回结果");
+    const output = task.output ?? "";
+    if (task.status !== "completed" || output.trim() === "") {
+      throw new AgentRunFailedError(task.error ?? "审阅任务未返回结果");
     }
-    const parsed = parseSectionFindingsOutput(task.output!);
+    const parsed = parseSectionFindingsOutput(output);
     const timestamp = this.now().toISOString();
     const findings = parsed.findings.map((candidate, index) =>
       createFinding({

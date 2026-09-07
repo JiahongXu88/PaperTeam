@@ -18,17 +18,14 @@
  * - severity 由 deriveClaimSeverity 确定性派生，模型不定级。
  */
 
-import type { AgentRuntime } from "../runtime/types.js";
 import { extractJsonObject } from "../agents/outputParsing.js";
 import { AgentRunFailedError } from "../errors.js";
 import { fingerprintJson } from "../util/hash.js";
 import {
-  deriveClaimSeverity,
   type ClaimCitationRecord,
   type ClaimPriority,
   type ClaimSupportVerdict,
   type CitationCallout,
-  type CitationMetadataStatus,
   type CitationVerificationRecord,
   type EvidenceRecord,
   type ReferenceEntry,

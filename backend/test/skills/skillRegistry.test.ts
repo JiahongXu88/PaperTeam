@@ -235,7 +235,7 @@ describe("M4.3.6 中文简介（SkillSummaryService + HTTP）", () => {
       expect((detail.body["skill"] as Record<string, unknown>)["sourceRevision"]).toMatch(/^[0-9a-f]{40}$/);
 
       const missing = await stack.request("GET", "/api/skills/no-such");
-      expect(missing.status).toBe(400);
+      expect(missing.status).toBe(404);
 
       const regenerate = await stack.request("POST", "/api/skills/paper-search/summary");
       expect(regenerate.status).toBe(200);

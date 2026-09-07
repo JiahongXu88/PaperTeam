@@ -20,7 +20,6 @@ import {
   extractJsonObject,
   readOptionalStringArray,
   readRequiredEnum,
-  readRequiredString,
   readRequiredStringArray,
 } from "./outputParsing.js";
 import type { ResearchReport } from "./ResearcherService.js";

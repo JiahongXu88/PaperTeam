@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 
 import { createBackendHttpServer } from "../src/httpServer.js";
 import { LatexCompiler, type CommandRunner } from "../src/latex/LatexCompiler.js";

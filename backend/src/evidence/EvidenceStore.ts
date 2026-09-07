@@ -17,7 +17,7 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { EvidenceValidationError } from "../errors.js";
+import { EvidenceValidationError, NotFoundError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeFileAtomic } from "../util/atomic.js";
 
@@ -101,7 +101,7 @@ export interface EvidenceStoreOptions {
   now?: () => Date;
 }
 
-const VERIFICATION_STATUSES: readonly VerificationStatus[] = [
+export const VERIFICATION_STATUSES: readonly VerificationStatus[] = [
   "unverified",
   "verified",
   "plausible",
@@ -110,14 +110,14 @@ const VERIFICATION_STATUSES: readonly VerificationStatus[] = [
   "not_found",
 ];
 
-const SUPPORT_STRENGTHS: readonly SupportStrength[] = [
+export const SUPPORT_STRENGTHS: readonly SupportStrength[] = [
   "direct",
   "partial",
   "indirect",
   "contradictory",
 ];
 
-const VERIFICATION_LEVELS: readonly VerificationLevel[] = [
+export const VERIFICATION_LEVELS: readonly VerificationLevel[] = [
   "metadata",
   "abstract",
   "fulltext",
@@ -246,7 +246,7 @@ export class EvidenceStore {
     const { records } = await this.loadAll(projectId);
     const index = records.findIndex((record) => record.id === id);
     if (index === -1) {
-      throw new EvidenceValidationError(`Evidence 不存在：${id}`);
+      throw new NotFoundError("Evidence", id);
     }
     const current = records[index]!;
     const updated: EvidenceRecord = {
@@ -291,7 +291,7 @@ export class EvidenceStore {
     const { records } = await this.loadAll(projectId);
     const index = records.findIndex((record) => record.id === id);
     if (index === -1) {
-      throw new EvidenceValidationError(`Evidence 不存在：${id}`);
+      throw new NotFoundError("Evidence", id);
     }
     const current = records[index]!;
     const updated: EvidenceRecord = {
@@ -329,8 +329,12 @@ export class EvidenceStore {
     let raw: string;
     try {
       raw = await readFile(this.filePath(projectId), "utf8");
-    } catch {
-      return { records: [], skippedLines: 0 };
+    } catch (error) {
+      // 只有「尚无文件」等于空库；读失败（权限 / IO）必须冒泡，否则下一次 rewrite 会把旧记录清空
+      if ((error as { code?: string }).code === "ENOENT") {
+        return { records: [], skippedLines: 0 };
+      }
+      throw error;
     }
     const records: EvidenceRecord[] = [];
     let skippedLines = 0;

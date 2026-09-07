@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { isAbsolute, join, resolve, sep } from "node:path";
 
 import {
@@ -23,15 +23,14 @@ import {
   InvalidProjectTitleError,
   ProjectNotFoundError,
 } from "../errors.js";
+import { writeJsonAtomic } from "../util/atomic.js";
+import { isWorkflowKind, type WorkflowKind } from "../workflow/kinds.js";
 
 /** 项目状态（M2 只区分创建与一次生成的结果） */
 export type ProjectStatus = "created" | "generated" | "failed";
 
-/** 一级工作流类型（PRD §5.1；existing_paper_review = PDF 只读 Review，M4.3.8 前置） */
-export type ProjectWorkflowKind =
-  | "idea_to_paper"
-  | "existing_paper_improvement"
-  | "existing_paper_review";
+/** 项目记录的一级工作流类型（与编排层同一组常量） */
+export type ProjectWorkflowKind = WorkflowKind;
 
 /**
  * 目标定位（PRD §5.4）：三个维度分开表达，不使用单一 paperLevel。
@@ -126,12 +125,17 @@ export interface ProjectStoreOptions {
   now?: () => Date;
   /** 可注入 id 生成器（测试用） */
   idFactory?: () => string;
+  /** 损坏的 project.json 等只能跳过的问题在此记录（缺省静默） */
+  log?: (message: string) => void;
 }
 
 export class ProjectStore {
   private readonly root: string;
   private readonly now: () => Date;
   private readonly idFactory: () => string;
+  private readonly log: (message: string) => void;
+  /** 每个项目的 read-modify-write 串行队列（并发 PATCH / 状态更新不互相覆盖） */
+  private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(options: ProjectStoreOptions) {
     if (!isAbsolute(options.root)) {
@@ -140,6 +144,7 @@ export class ProjectStore {
     this.root = resolve(options.root);
     this.now = options.now ?? (() => new Date());
     this.idFactory = options.idFactory ?? defaultProjectId;
+    this.log = options.log ?? (() => {});
   }
 
   /** 根目录（绝对路径） */
@@ -198,22 +203,30 @@ export class ProjectStore {
     return metadata;
   }
 
-  /** 读取项目元数据；不存在返回 null */
+  /** 读取项目元数据；不存在返回 null（project.json 损坏同样视为不存在，但记录日志） */
   async get(projectId: string): Promise<ProjectMetadata | null> {
     const dir = this.projectDir(projectId);
     let raw: string;
     try {
       raw = await readFile(join(dir, "project.json"), "utf8");
-    } catch {
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        this.log(`[projects] 读取 ${projectId}/project.json 失败：${errorText(error)}`);
+      }
       return null;
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
+      this.log(`[projects] ${projectId}/project.json 不是合法 JSON，已跳过`);
       return null;
     }
-    return normalizeMetadata(parsed);
+    const metadata = normalizeMetadata(parsed);
+    if (metadata === null) {
+      this.log(`[projects] ${projectId}/project.json 缺少必需字段，已跳过`);
+    }
+    return metadata;
   }
 
   /** 读取项目元数据；不存在或 id 非法时抛业务错误 */
@@ -226,15 +239,8 @@ export class ProjectStore {
   }
 
   /** 更新项目状态（写回 project.json） */
-  async updateStatus(projectId: string, status: ProjectStatus): Promise<ProjectMetadata> {
-    const metadata = await this.getRequired(projectId);
-    const updated: ProjectMetadata = {
-      ...metadata,
-      status,
-      updatedAt: this.now().toISOString(),
-    };
-    await this.writeMetadata(updated);
-    return updated;
+  updateStatus(projectId: string, status: ProjectStatus): Promise<ProjectMetadata> {
+    return this.mutate(projectId, (metadata) => ({ ...metadata, status }));
   }
 
   /** 更新研究定位字段（PATCH 语义：只改传入的字段；title 一并可改） */
@@ -242,64 +248,50 @@ export class ProjectStore {
     projectId: string,
     patch: ProjectResearchMetaInput & { title?: string },
   ): Promise<ProjectMetadata> {
-    const metadata = await this.getRequired(projectId);
+    // 先校验再进队列：非法输入不占用写锁
     const normalized = normalizeResearchMeta(patch);
-    const updated: ProjectMetadata = {
+    const title = patch.title !== undefined ? normalizeTitle(patch.title) : undefined;
+    return this.mutate(projectId, (metadata) => ({
       ...metadata,
-      ...(patch.title !== undefined ? { title: normalizeTitle(patch.title) } : {}),
+      ...(title !== undefined ? { title } : {}),
       ...normalized,
-      updatedAt: this.now().toISOString(),
-    };
-    await this.writeMetadata(updated);
-    return updated;
+    }));
   }
 
   /**
-   * 记录 / 更新 Runtime 会话引用（M2.1）。
-   * 传入 undefined 清除引用。值由 Runtime 层产生（sessionKey），
-   * ProjectStore 只做存储，不理解其格式。
+   * 记录 / 更新 Runtime 会话引用（M2.1）：传入 undefined 清除引用。
+   * 值由 Runtime 层产生（sessionKey），ProjectStore 只做存储，不理解其格式。
    */
-  async updateRuntimeSessionKey(
+  updateRuntimeSessionKey(
     projectId: string,
     runtimeSessionKey: string | undefined,
   ): Promise<ProjectMetadata> {
-    const metadata = await this.getRequired(projectId);
-    const updated: ProjectMetadata = {
-      ...metadata,
-      ...(runtimeSessionKey !== undefined ? { runtimeSessionKey } : {}),
-      updatedAt: this.now().toISOString(),
-    };
-    await this.writeMetadata(updated);
-    return updated;
+    return this.mutate(projectId, (metadata) => {
+      const { runtimeSessionKey: _previous, ...rest } = metadata;
+      return runtimeSessionKey !== undefined ? { ...rest, runtimeSessionKey } : rest;
+    });
   }
 
   // ---- 生命周期：归档 / 恢复 / 永久删除 ----
 
   /** 归档项目（幂等：已归档时保持原 archivedAt 不变） */
-  async archive(projectId: string): Promise<ProjectMetadata> {
-    const metadata = await this.getRequired(projectId);
-    if (metadata.archivedAt !== undefined) {
-      return metadata;
-    }
-    const updated: ProjectMetadata = {
-      ...metadata,
-      archivedAt: this.now().toISOString(),
-      updatedAt: this.now().toISOString(),
-    };
-    await this.writeMetadata(updated);
-    return updated;
+  archive(projectId: string): Promise<ProjectMetadata> {
+    return this.mutate(projectId, (metadata) =>
+      metadata.archivedAt !== undefined
+        ? null
+        : { ...metadata, archivedAt: this.now().toISOString() },
+    );
   }
 
   /** 恢复项目（幂等：未归档时原样返回） */
-  async restore(projectId: string): Promise<ProjectMetadata> {
-    const metadata = await this.getRequired(projectId);
-    if (metadata.archivedAt === undefined) {
-      return metadata;
-    }
-    const { archivedAt: _archivedAt, ...rest } = metadata;
-    const updated: ProjectMetadata = { ...rest, updatedAt: this.now().toISOString() };
-    await this.writeMetadata(updated);
-    return updated;
+  restore(projectId: string): Promise<ProjectMetadata> {
+    return this.mutate(projectId, (metadata) => {
+      if (metadata.archivedAt === undefined) {
+        return null;
+      }
+      const { archivedAt: _archivedAt, ...rest } = metadata;
+      return rest;
+    });
   }
 
   /**
@@ -364,23 +356,7 @@ export class ProjectStore {
 
   /** 列出全部项目 id（依据目录名 + project.json 可解析） */
   async list(): Promise<string[]> {
-    let entries: readonly string[];
-    try {
-      entries = await readdir(this.root);
-    } catch {
-      return [];
-    }
-    const projects: string[] = [];
-    for (const entry of entries) {
-      if (!PROJECT_ID_PATTERN.test(entry)) {
-        continue;
-      }
-      const metadata = await this.get(entry);
-      if (metadata !== null) {
-        projects.push(metadata.id);
-      }
-    }
-    return projects.sort();
+    return (await this.readAll()).map((metadata) => metadata.id);
   }
 
   /**
@@ -392,17 +368,10 @@ export class ProjectStore {
   async listMetadata(
     scope: "active" | "archived" | "all" = "active",
   ): Promise<ProjectMetadata[]> {
-    const ids = await this.list();
     const metadata: ProjectMetadata[] = [];
-    for (const id of ids) {
-      const project = await this.get(id);
-      if (project === null) {
-        continue;
-      }
-      if (scope === "archived" && project.archivedAt === undefined) {
-        continue;
-      }
-      if (scope === "active" && project.archivedAt !== undefined) {
+    for (const project of await this.readAll()) {
+      const archived = project.archivedAt !== undefined;
+      if ((scope === "archived" && !archived) || (scope === "active" && archived)) {
         continue;
       }
       metadata.push(project);
@@ -412,10 +381,58 @@ export class ProjectStore {
     );
   }
 
-  /** 写入 project.json */
+  /** 读取全部可解析的 project.json（目录名非法 / 文件损坏的跳过） */
+  private async readAll(): Promise<ProjectMetadata[]> {
+    let entries: readonly string[];
+    try {
+      entries = await readdir(this.root);
+    } catch {
+      return [];
+    }
+    const projects: ProjectMetadata[] = [];
+    for (const entry of entries.filter((name) => PROJECT_ID_PATTERN.test(name)).sort()) {
+      const metadata = await this.get(entry);
+      if (metadata !== null) {
+        projects.push(metadata);
+      }
+    }
+    return projects;
+  }
+
+  /**
+   * 串行化的 read-modify-write：同一项目的并发更新排队执行，后者基于前者的
+   * 落盘结果计算。apply 返回 null 表示无需写入（幂等短路）。
+   */
+  private mutate(
+    projectId: string,
+    apply: (metadata: ProjectMetadata) => ProjectMetadata | null,
+  ): Promise<ProjectMetadata> {
+    const previous = this.writeQueues.get(projectId) ?? Promise.resolve();
+    const task = previous
+      .catch(() => {})
+      .then(async () => {
+        const metadata = await this.getRequired(projectId);
+        const next = apply(metadata);
+        if (next === null) {
+          return metadata;
+        }
+        const updated: ProjectMetadata = { ...next, updatedAt: this.now().toISOString() };
+        await this.writeMetadata(updated);
+        return updated;
+      });
+    this.writeQueues.set(projectId, task);
+    const cleanup = () => {
+      if (this.writeQueues.get(projectId) === task) {
+        this.writeQueues.delete(projectId);
+      }
+    };
+    task.then(cleanup, cleanup);
+    return task;
+  }
+
+  /** 写入 project.json（原子：tmp → fsync → rename） */
   private async writeMetadata(metadata: ProjectMetadata): Promise<void> {
-    const dir = this.projectDir(metadata.id);
-    await writeFile(join(dir, "project.json"), JSON.stringify(metadata, null, 2) + "\n", "utf8");
+    await writeJsonAtomic(join(this.projectDir(metadata.id), "project.json"), metadata);
   }
 }
 
@@ -475,8 +492,8 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   }
   // M3.1 可选研究定位字段：只在合法时保留，非法值静默丢弃（防御性读取）
   const research = readOptionalResearchFields(record);
-  const workflowKind = isProjectWorkflowKind(record["workflowKind"])
-    ? (record["workflowKind"] as ProjectWorkflowKind)
+  const workflowKind = isWorkflowKind(record["workflowKind"])
+    ? record["workflowKind"]
     : undefined;
   return {
     schemaVersion: 1,
@@ -492,63 +509,60 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   };
 }
 
-function isProjectWorkflowKind(value: unknown): boolean {
-  return (
-    value === "idea_to_paper" ||
-    value === "existing_paper_improvement" ||
-    value === "existing_paper_review"
-  );
-}
+
+/**
+ * 研究定位字段长度上限：写入校验与读取校验共用同一张表
+ * （两处不一致会让合法写入的值在下次读取时被静默丢弃）。
+ */
+export const RESEARCH_FIELD_LIMITS = {
+  researchIdea: 8000,
+  researchField: 200,
+  documentType: 100,
+  targetProfile: 100,
+  targetVenue: 300,
+  language: 50,
+} as const;
+
+type ResearchField = keyof typeof RESEARCH_FIELD_LIMITS;
 
 /** 读取可选研究定位字段（类型与长度校验，非法返回不包含该字段） */
 function readOptionalResearchFields(record: Record<string, unknown>): Partial<ProjectMetadata> {
   const out: Partial<ProjectMetadata> = {};
-  const stringFields = [
-    "researchIdea",
-    "researchField",
-    "documentType",
-    "targetProfile",
-    "targetVenue",
-    "language",
-  ] as const;
-  for (const field of stringFields) {
+  for (const field of Object.keys(RESEARCH_FIELD_LIMITS) as ResearchField[]) {
     const raw = record[field];
-    if (typeof raw === "string" && raw.trim() !== "" && raw.length <= META_MAX_LENGTH) {
+    if (typeof raw === "string" && raw.trim() !== "" && raw.trim().length <= RESEARCH_FIELD_LIMITS[field]) {
       out[field] = raw.trim();
     }
   }
   return out;
 }
 
-/** 研究定位字段长度上限 */
-const META_MAX_LENGTH = 4000;
-
 function isDirectoryExistsError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    (error as { code?: unknown }).code === "EEXIST"
-  );
+  return errorCode(error) === "EEXIST";
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return errorCode(error) === "ENOENT";
+}
+
+function errorCode(error: unknown): unknown {
+  return typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** 校验并归一化研究定位输入（非法值直接抛业务错误） */
 function normalizeResearchMeta(meta: ProjectResearchMetaInput): Partial<ProjectMetadata> {
   const out: Partial<ProjectMetadata> = {};
   if (meta.workflowKind !== undefined) {
-    if (!isProjectWorkflowKind(meta.workflowKind)) {
+    if (!isWorkflowKind(meta.workflowKind)) {
       throw new BusinessError("INVALID_REQUEST", `非法的 workflowKind："${meta.workflowKind}"`);
     }
     out.workflowKind = meta.workflowKind;
   }
-  const entries: [keyof ProjectResearchMetaInput, number][] = [
-    ["researchIdea", 8000],
-    ["researchField", 200],
-    ["documentType", 100],
-    ["targetProfile", 100],
-    ["targetVenue", 300],
-    ["language", 50],
-  ];
-  for (const [field, maxLength] of entries) {
+  for (const [field, maxLength] of Object.entries(RESEARCH_FIELD_LIMITS) as [ResearchField, number][]) {
     const raw = meta[field];
     if (raw === undefined) {
       continue;

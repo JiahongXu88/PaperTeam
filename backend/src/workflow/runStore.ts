@@ -23,9 +23,11 @@ export const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export class WorkflowRunStore {
   private readonly projects: ProjectStore;
+  private readonly log: (message: string) => void;
 
-  constructor(projects: ProjectStore) {
+  constructor(projects: ProjectStore, options: { log?: (message: string) => void } = {}) {
     this.projects = projects;
+    this.log = options.log ?? (() => {});
   }
 
   /** run 目录（校验 runId，防路径穿越） */
@@ -56,12 +58,15 @@ export class WorkflowRunStore {
     await writeJsonAtomic(path, state);
   }
 
-  /** 读取 checkpoint；不存在 / 损坏返回 null */
+  /** 读取 checkpoint；不存在返回 null；损坏同样返回 null 但记录日志（run 会从列表消失，必须可追查） */
   async loadCheckpoint(projectId: string, runId: string): Promise<WorkflowState | null> {
     let raw: string;
     try {
       raw = await readFile(this.checkpointPath(projectId, runId), "utf8");
-    } catch {
+    } catch (error) {
+      if ((error as { code?: string }).code !== "ENOENT") {
+        this.log(`[run-store] 读取 checkpoint 失败（${projectId}/${runId}）：${errorText(error)}`);
+      }
       return null;
     }
     try {
@@ -69,8 +74,10 @@ export class WorkflowRunStore {
       if (typeof parsed === "object" && parsed !== null && parsed.runId === runId) {
         return parsed;
       }
+      this.log(`[run-store] checkpoint 内容与 runId 不符，已忽略（${projectId}/${runId}）`);
       return null;
     } catch {
+      this.log(`[run-store] checkpoint 不是合法 JSON，已忽略（${projectId}/${runId}）`);
       return null;
     }
   }
@@ -111,4 +118,8 @@ export class WorkflowRunStore {
     }
     return null;
   }
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

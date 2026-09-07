@@ -201,14 +201,15 @@ describe("evidence 管理", () => {
       `/api/projects/${project.id}/evidence/${record.id}/verify`,
       { verificationStatus: "bogus" },
     );
-    expect(bad.status).toBe(422); // EVIDENCE_VALIDATION
+    expect(bad.status).toBe(400); // 枚举字段非法：请求错误（INVALID_REQUEST）
 
     const missing = await stack.request(
       "POST",
       `/api/projects/${project.id}/evidence/E999/verify`,
       { verificationStatus: "verified" },
     );
-    expect(missing.status).toBe(422);
+    expect(missing.status).toBe(404); // NOT_FOUND：不存在的资源不是请求体错误
+    expect((missing.body["error"] as { code: string }).code).toBe("NOT_FOUND");
   });
 });
 

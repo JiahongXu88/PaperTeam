@@ -106,8 +106,9 @@ export class CrossRefProvider implements CitationMetadataProvider {
     if (!entry.doi && !entry.title) {
       return { ...base, status: "unverifiable", note: "缺少 DOI 与标题，无法查询" };
     }
-    const url = entry.doi
-      ? `https://api.crossref.org/works/${entry.doi.replace(/^doi:/i, "")}`
+    const doi = entry.doi !== undefined ? normalizeDoi(entry.doi) : undefined;
+    const url = doi !== undefined
+      ? `https://api.crossref.org/works/${encodeURIComponent(doi)}`
       : `https://api.crossref.org/works?query.bibliographic=${encodeURIComponent(entry.title ?? "")}&rows=3`;
     const result = await fetchJson(url, ctx, "PaperTeam/0.1 (citation verification)");
     if (!result.ok) {
@@ -117,7 +118,7 @@ export class CrossRefProvider implements CitationMetadataProvider {
       }
       return { ...base, status: "unverifiable", note: `查询失败：${result.reason}` };
     }
-    const record = findCrossRefRecord(result.body, entry.doi !== undefined);
+    const record = findCrossRefRecord(result.body, doi !== undefined, entry.title);
     if (record === null) {
       return { ...base, status: "not_found", note: "CrossRef 中未找到匹配记录" };
     }
@@ -141,9 +142,26 @@ export class CrossRefProvider implements CitationMetadataProvider {
   }
 }
 
+/**
+ * DOI 归一化：去掉 doi: 前缀与 https://doi.org/ 等 resolver 前缀，只保留 10.xxxx/… 本体。
+ * bib 里三种写法都常见；不归一化会把合法 DOI 查成 404 → not_found。
+ */
+export function normalizeDoi(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^doi:\s*/i, "")
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//i, "")
+    .trim();
+}
+
+/**
+ * CrossRef 响应 → 记录。DOI 查询返回单条；标题检索返回候选列表——只取标题匹配的
+ * 那一条（列表第一条不一定是它，检索结果里排第一的无关论文不能当成「元数据不一致」）。
+ */
 function findCrossRefRecord(
   body: unknown,
   byDoi: boolean,
+  expectedTitle: string | undefined,
 ): { title?: unknown } | null {
   if (typeof body !== "object" || body === null) {
     return null;
@@ -159,7 +177,25 @@ function findCrossRefRecord(
   if (!Array.isArray(list) || list.length === 0) {
     return null;
   }
-  return list[0] as Record<string, unknown>;
+  return pickMatchingCandidate(list as Record<string, unknown>[], expectedTitle);
+}
+
+/** 候选列表中标题匹配的第一条；无标题可比时退回第一条 */
+function pickMatchingCandidate(
+  candidates: Record<string, unknown>[],
+  expectedTitle: string | undefined,
+): Record<string, unknown> | null {
+  if (expectedTitle === undefined) {
+    return candidates[0] ?? null;
+  }
+  for (const candidate of candidates) {
+    const title = candidate["title"];
+    const text = Array.isArray(title) ? title[0] : title;
+    if (typeof text === "string" && titlesMatch(expectedTitle, text)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 // ---- OpenAlex ----
@@ -175,14 +211,15 @@ export class OpenAlexProvider implements CitationMetadataProvider {
     if (!entry.doi && !entry.title) {
       return { ...base, status: "unverifiable", note: "缺少 DOI 与标题，无法查询" };
     }
-    const url = entry.doi
-      ? `https://api.openalex.org/works/https://doi.org/${entry.doi}`
+    const doi = entry.doi !== undefined ? normalizeDoi(entry.doi) : undefined;
+    const url = doi !== undefined
+      ? `https://api.openalex.org/works/https://doi.org/${encodeURIComponent(doi)}`
       : `https://api.openalex.org/works?search=${encodeURIComponent(entry.title ?? "")}&per-page=3`;
     const result = await fetchJson(url, ctx, "PaperTeam/0.1 (citation verification)");
     if (!result.ok) {
       return { ...base, status: "unverifiable", note: `查询失败：${result.reason}` };
     }
-    const record = findOpenAlexRecord(result.body, entry.doi !== undefined);
+    const record = findOpenAlexRecord(result.body, doi !== undefined, entry.title);
     if (record === null) {
       return { ...base, status: "not_found", note: "OpenAlex 中未找到匹配记录" };
     }
@@ -202,7 +239,11 @@ export class OpenAlexProvider implements CitationMetadataProvider {
   }
 }
 
-function findOpenAlexRecord(body: unknown, byDoi: boolean): Record<string, unknown> | null {
+function findOpenAlexRecord(
+  body: unknown,
+  byDoi: boolean,
+  expectedTitle: string | undefined,
+): Record<string, unknown> | null {
   if (typeof body !== "object" || body === null) {
     return null;
   }
@@ -214,7 +255,7 @@ function findOpenAlexRecord(body: unknown, byDoi: boolean): Record<string, unkno
   if (!Array.isArray(results) || results.length === 0) {
     return null;
   }
-  return results[0] as Record<string, unknown>;
+  return pickMatchingCandidate(results as Record<string, unknown>[], expectedTitle);
 }
 
 // ---- arXiv ----

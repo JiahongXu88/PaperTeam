@@ -22,6 +22,9 @@ import type { AgentRuntime } from "../runtime/types.js";
 import { AgentRunFailedError } from "../errors.js";
 import { extractJsonObject } from "../agents/outputParsing.js";
 
+/** 单个内容流解压上限：文本层分析不需要完整解出超大流，且防 zip bomb 式膨胀 */
+const MAX_STREAM_INFLATE_BYTES = 8 * 1024 * 1024;
+
 /** PDF 分析结果（存储于 sources/parsed/<sourceId>.json） */
 export interface PdfAnalysis {
   analyzer: string;
@@ -270,12 +273,12 @@ function extractPdfText(buffer: Buffer): string {
     const segment = Buffer.from(raw.slice(start, end), "latin1");
     let decoded: string | undefined;
     try {
-      decoded = inflateSync(segment).toString("latin1");
+      decoded = inflateSync(segment, { maxOutputLength: MAX_STREAM_INFLATE_BYTES }).toString("latin1");
     } catch {
       try {
-        decoded = inflateSync(segment.subarray(2)).toString("latin1");
+        decoded = inflateSync(segment.subarray(2), { maxOutputLength: MAX_STREAM_INFLATE_BYTES }).toString("latin1");
       } catch {
-        decoded = undefined; // 未压缩或其他滤波器
+        decoded = undefined; // 未压缩、其他滤波器，或超出解压上限
       }
     }
     const content = decoded ?? segment.toString("latin1");

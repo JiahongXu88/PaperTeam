@@ -19,7 +19,7 @@ import type {
   CitationFieldMismatch,
   ScholarlyProvider as ScholarlyProviderName,
 } from "./integrity.js";
-import { normalizeTitleForMatch, titlesMatch } from "./metadataProviders.js";
+import { titlesMatch } from "./metadataProviders.js";
 import { fingerprintJson } from "../util/hash.js";
 
 // ---- 查询与结果 ----

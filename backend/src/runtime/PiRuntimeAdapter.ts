@@ -86,6 +86,7 @@ import type {
   AgentTask,
   RunAgentInput,
   RuntimeHealth,
+  RuntimeModelStatus,
   RuntimeProvider,
 } from "./types.js";
 
@@ -167,12 +168,7 @@ export interface PiRuntimeOptions {
 }
 
 /** 模型就绪摘要（statusService 读取；与 RuntimeHealth 分区） */
-export interface PiModelStatus {
-  phase: "configured" | "not_configured" | "unknown";
-  /** 已配置凭据的 provider 名单（不含任何 key） */
-  providers: string[];
-  detail: string;
-}
+export type PiModelStatus = RuntimeModelStatus;
 
 /** 进程内受管会话（一个逻辑 sessionKey 一个 Pi AgentSession） */
 interface ManagedSession {
@@ -627,10 +623,26 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return this.makeHandle(state);
   }
 
-  /** convenience：startAgent + await result（同步终态语义，业务层零改动） */
+  /** convenience：startAgent + await result（同步终态语义，业务层零改动）；input.signal 触发即 cancel */
   async runAgent(input: RunAgentInput): Promise<AgentTask> {
     const handle = await this.startAgent(input);
-    return handle.result();
+    const signal = input.signal;
+    if (signal === undefined) {
+      return handle.result();
+    }
+    if (signal.aborted) {
+      await handle.cancel();
+      return handle.result();
+    }
+    const onAbort = () => {
+      void handle.cancel();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    try {
+      return await handle.result();
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
   }
 
   private createRunState(taskId: string, sessionKey: string): RunState {

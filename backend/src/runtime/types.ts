@@ -78,6 +78,11 @@ export interface RunAgentInput {
   inputFiles?: string[];
   /** 本次任务的整体超时（毫秒）；缺省使用 Runtime 配置的默认值 */
   timeoutMs?: number;
+  /**
+   * 协作式取消信号（如 Workflow stage 的 ctx.signal）。触发后 Runtime 中断在途
+   * 生成 / 工具执行并以 cancelled 终态收尾，而不是等到 timeoutMs 才释放。
+   */
+  signal?: AbortSignal;
   /** 附加到任务的业务侧标记（透传给 Adapter 诊断日志，不参与 Runtime 协议） */
   metadata?: Record<string, unknown>;
 }
@@ -184,4 +189,25 @@ export interface AgentRuntime {
    * （幂等；进程 shutdown 时调用），保证进程可退出。
    */
   close(): Promise<void>;
+
+  // ---- 诊断面（可选；GET /api/runtime/status 消费，缺省视为 unknown / 0） ----
+
+  /** 模型就绪摘要（Runtime 健康 ≠ 模型就绪） */
+  modelStatusSnapshot?(): Promise<RuntimeModelStatus>;
+  /** 已解析生效的模型标签 "provider/model-id"（未配置时 undefined） */
+  readonly resolvedModel?: string;
+  /** 在途 run 与受管会话数量（进程内诊断） */
+  runtimeStats?(): RuntimeSessionStats;
+}
+
+export interface RuntimeModelStatus {
+  phase: "configured" | "not_configured" | "unknown";
+  /** 已配置凭据的 provider 名单（不含任何 key） */
+  providers: string[];
+  detail: string;
+}
+
+export interface RuntimeSessionStats {
+  activeRuns: number;
+  managedSessions: number;
 }

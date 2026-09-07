@@ -12,10 +12,11 @@
  * system prompt，正文由 Agent 按需 read）。
  */
 
-import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import {
   parseSkillFrontmatter,
@@ -102,7 +103,12 @@ export class SkillRegistry {
     const seeds = await this.listSeeds();
     const installed: SkillMetadata[] = [];
     for (const seed of seeds) {
-      installed.push(await this.installSeed(seed));
+      // 单个 seed 损坏（缺 SKILL.md / skill.json 非法）只跳过该 skill，不阻塞 Backend 启动
+      try {
+        installed.push(await this.installSeed(seed));
+      } catch (error) {
+        this.log(`[skills] seed ${seed} 安装失败，已跳过：${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     await this.list();
     return installed;
@@ -276,11 +282,7 @@ export class SkillRegistry {
 
   private async writeMetadata(id: string, metadata: SkillMetadata): Promise<void> {
     await mkdir(join(this.installedRoot, id), { recursive: true });
-    await writeFile(
-      join(this.installedRoot, id, "skill.json"),
-      JSON.stringify(metadata, null, 2) + "\n",
-      "utf8",
-    );
+    await writeJsonAtomic(join(this.installedRoot, id, "skill.json"), metadata);
   }
 
   /** 现场校验：SKILL.md 实际 hash 与记录不符 → summary stale / status disabled */

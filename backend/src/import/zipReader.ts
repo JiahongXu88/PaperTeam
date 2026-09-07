@@ -68,8 +68,12 @@ export function readZipEntries(buffer: Buffer, limits: ZipLimits = DEFAULT_ZIP_L
       data = Buffer.from(rawData);
     } else if (method === 8) {
       try {
-        data = inflateRawSync(rawData);
-      } catch {
+        // 先限输出再解压：否则 1MB 的 zip bomb 可以在校验前膨胀出上 GB 内存
+        data = inflateRawSync(rawData, { maxOutputLength: limits.maxFileBytes + 1 });
+      } catch (error) {
+        if ((error as { code?: string }).code === "ERR_BUFFER_TOO_LARGE") {
+          throw new Error(`ZIP 条目 "${safeName}" 超过单文件上限（${limits.maxFileBytes} 字节）`);
+        }
         throw new Error(`ZIP 条目 "${safeName}" 解压失败（deflate 数据损坏）`);
       }
     } else {

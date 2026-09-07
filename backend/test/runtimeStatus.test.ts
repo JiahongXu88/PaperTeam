@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
 
 import { RuntimeStatusService } from "../src/runtime/statusService.js";
 import { PI_RUNTIME_VERSION } from "../src/runtime/pi/version.js";

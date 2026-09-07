@@ -19,11 +19,9 @@ export type WorkflowRunStatus =
   | "failed"
   | "cancelled";
 
-/** 一级工作流类型（PRD §9.1；existing_paper_review = 已有论文只读 Review，2026-09） */
-export type WorkflowKind =
-  | "idea_to_paper"
-  | "existing_paper_improvement"
-  | "existing_paper_review";
+import type { WorkflowKind } from "./kinds.js";
+
+export type { WorkflowKind } from "./kinds.js";
 
 // ---- Stage 与 StageContract ----
 

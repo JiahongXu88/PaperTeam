@@ -32,7 +32,6 @@ async function createProject(title: string): Promise<string> {
 }
 
 async function waitRunTerminal(
-  projectId: string,
   runId: string,
   options: { cancel?: boolean } = {},
 ): Promise<Record<string, unknown>> {
@@ -163,7 +162,7 @@ describe("项目归档 / 恢复 / 永久删除（HTTP）", () => {
     expect(started.status).toBe(202);
     // 清理：取消 run，避免影响后续用例的 busy 判定
     const runId = started.body["runId"] as string;
-    await waitRunTerminal(id, runId, { cancel: true });
+    await waitRunTerminal(runId, { cancel: true });
   });
 
   it("PATCH title 重命名（标题可后改：PDF metadata 可能识别错误）", async () => {

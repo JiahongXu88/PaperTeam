@@ -241,7 +241,7 @@ describe("LatexImporter", () => {
     const { store, projectId } = await newImporter();
     const latex = new LatexCompiler({
       timeoutMs: 5_000,
-      runner: async (command, args) => {
+      runner: async (_command, args) => {
         if (args.includes("--version")) {
           return { code: 0, stdout: "1.0", stderr: "" };
         }

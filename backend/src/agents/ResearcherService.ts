@@ -22,7 +22,6 @@ import {
   readOptionalStringArray,
   readRequiredString,
   readRequiredStringArray,
-  stripCodeFence,
 } from "./outputParsing.js";
 
 export interface ResearchReport {

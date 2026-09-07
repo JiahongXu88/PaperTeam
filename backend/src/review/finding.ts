@@ -8,11 +8,18 @@
  * 禁止让模型输出一坨 Markdown 作为唯一事实源（M4.3 原则）。
  */
 
-export type FindingCategory = "fact" | "academic" | "style" | "citation" | "consistency";
+export const FINDING_CATEGORIES = ["fact", "academic", "style", "citation", "consistency"] as const;
+export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
-export type FindingSeverity = "critical" | "major" | "minor" | "info";
+export const FINDING_SEVERITIES = ["critical", "major", "minor", "info"] as const;
+export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 
-export type FindingStatus = "open" | "resolved" | "dismissed";
+export const FINDING_STATUSES = ["open", "resolved", "dismissed"] as const;
+export type FindingStatus = (typeof FINDING_STATUSES)[number];
+
+function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === "string" && (values as readonly string[]).includes(value);
+}
 
 export interface ReviewFinding {
   findingId: string;
@@ -119,16 +126,30 @@ export function readFinding(value: unknown): ReviewFinding | undefined {
     message === undefined ||
     source === undefined ||
     createdAt === undefined ||
-    (category !== "fact" &&
-      category !== "academic" &&
-      category !== "style" &&
-      category !== "citation" &&
-      category !== "consistency") ||
-    (severity !== "critical" && severity !== "major" && severity !== "minor" && severity !== "info") ||
-    (status !== "open" && status !== "resolved" && status !== "dismissed") ||
-    record["sectionId"] === undefined && record["page"] === undefined && record["chunkId"] === undefined
+    !isOneOf(FINDING_CATEGORIES, category) ||
+    !isOneOf(FINDING_SEVERITIES, severity) ||
+    !isOneOf(FINDING_STATUSES, status) ||
+    (record["sectionId"] === undefined && record["page"] === undefined && record["chunkId"] === undefined)
   ) {
     return undefined;
   }
   return value as ReviewFinding;
+}
+
+/** 读取一组 finding（checkpoint / 报告 JSON），损坏条目丢弃并计数 */
+export function readFindings(value: unknown): { findings: ReviewFinding[]; dropped: number } {
+  if (!Array.isArray(value)) {
+    return { findings: [], dropped: 0 };
+  }
+  const findings: ReviewFinding[] = [];
+  let dropped = 0;
+  for (const entry of value) {
+    const finding = readFinding(entry);
+    if (finding === undefined) {
+      dropped += 1;
+    } else {
+      findings.push(finding);
+    }
+  }
+  return { findings, dropped };
 }

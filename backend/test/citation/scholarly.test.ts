@@ -16,7 +16,7 @@ import {
   type ScholarlyProvider,
   type ScholarlyQuery,
 } from "../../src/citation/scholarly.js";
-import type { CanonicalPaperRecord, CitationVerificationRecord } from "../../src/citation/integrity.js";
+import type { CanonicalPaperRecord } from "../../src/citation/integrity.js";
 import { CitationIntegrityService } from "../../src/citation/CitationIntegrityService.js";
 import { PaperStore } from "../../src/paper/PaperStore.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";

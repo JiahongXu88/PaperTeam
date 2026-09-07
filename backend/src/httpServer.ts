@@ -2,78 +2,66 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { BusinessError, ProjectBusyError, ProjectNotArchivedError, toBusinessError } from "./errors.js";
+import {
+  BusinessError,
+  NotFoundError,
+  ProjectBusyError,
+  ProjectNotArchivedError,
+  toBusinessError,
+} from "./errors.js";
+import {
+  SUPPORT_STRENGTHS,
+  VERIFICATION_LEVELS,
+  VERIFICATION_STATUSES,
+  type EvidenceLocation,
+  type EvidenceSourceRef,
+} from "./evidence/EvidenceStore.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
+import { MAX_PAPER_PDF_BYTES } from "./paper/PaperIngestService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import { readExistingPaperGoal } from "./project/ProjectImportService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import type { RuntimeStatusService } from "./runtime/statusService.js";
 import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
+import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
 import type { SkillRegistry } from "./skills/SkillRegistry.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
-import { aggregateReviews, type ReviewSummary } from "./review/ReviewAggregator.js";
+import { aggregateReviews } from "./review/ReviewAggregator.js";
 import {
   evaluateQualityGate,
   runBuildGate,
   saveQualityGateReport,
 } from "./quality/gates.js";
 import { collectLatexFiles } from "./manuscript/LatexFiles.js";
-import { writeJsonAtomic } from "./util/atomic.js";
-import type { WorkflowDomainEvent, WorkflowKind } from "./workflow/types.js";
+import { isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
+import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
 /**
  * Backend 自身的轻量 HTTP 服务（Node 原生 http，无 Web 框架）。
  *
- * M3 端点：
- *   GET    /health                                  存活探针（含 Pi Runtime 实时健康）
- *   GET    /api/runtime/status                      Runtime 状态诊断（权威运行状态）
- *   GET    /api/settings/model                      Model Settings 状态（M4.3.7.5，不含 key）
- *   PUT    /api/settings/model                      保存模型偏好 + 可选 API Key
- *   DELETE /api/settings/model/key                  清除本地保存的 API Key
- *   GET    /api/settings/model/options              模型目录（providers / ?provider= 模型列表）
- *   POST   /api/settings/model/test                 Test Connection（最小真实调用）
- *   GET    /api/projects                            项目列表（M4.0：updatedAt 降序；?scope=active|archived|all，默认 active）
- *   POST   /api/projects                            创建论文项目 {title, researchIdea?, …}
- *   POST   /api/projects/import-pdf                 已有论文 File-First 导入 {fileName, contentBase64, goal, …}
- *                                               → 建项目 + 解析 + 自动标题（失败回滚，无半成品）
- *   GET    /api/projects/:id                        查询项目元数据
- *   PATCH  /api/projects/:id                        更新研究定位字段（含 title 重命名）
- *   POST   /api/projects/:id/archive                归档项目（有进行中任务 → 409 PROJECT_BUSY）
- *   POST   /api/projects/:id/restore                恢复已归档项目
- *   DELETE /api/projects/:id                        永久删除（仅已归档项目；否则 409 PROJECT_NOT_ARCHIVED）
- *   POST   /api/projects/:id/generate               Writer 写作 + LaTeX 编译（M2 同步形态，保留兼容）
- *   POST   /api/projects/:id/workflows              创建异步 WorkflowRun {kind, prompt?} → {runId}
- *   GET    /api/runs?projectId=xxx                  项目 run 列表
- *   GET    /api/runs/:runId                         run 状态 / 当前 stage / 待办 / 错误
- *   GET    /api/runs/:runId/events                  SSE：Domain Event replay + 实时推送
- *   POST   /api/runs/:runId/resume                  提交 HITL 输入 {decision, payload?}
- *   POST   /api/runs/:runId/cancel                  取消 run
- *   POST   /api/projects/:id/sources                上传文献（JSON + base64；sourceRole）
- *   GET    /api/projects/:id/sources                文献列表
- *   GET    /api/projects/:id/sources/:sid           文献详情
- *   PATCH  /api/projects/:id/sources/:sid           更新 sourceRole / preferred / metadata
- *   DELETE /api/projects/:id/sources/:sid           删除文献
- *   POST   /api/projects/:id/sources/:sid/analyze   PDF 分析（builtin / multimodal）
- *   GET    /api/projects/:id/evidence               Evidence 列表（支持查询参数过滤）
- *   POST   /api/projects/:id/evidence               手工添加 Evidence
- *   POST   /api/projects/:id/evidence/:eid/verify   更新 Evidence 核验状态
- *   GET    /api/projects/:id/feasibility            最近一次可行性报告
- *   POST   /api/projects/:id/citation-check         执行引用核验（静态 + metadata）
- *   GET    /api/projects/:id/citation-report        最近一次引用核验报告
- *   GET    /api/projects/:id/manuscript             大纲 + 章节状态
- *   GET    /api/projects/:id/context                Derived Context（?rebuild=true 强制重建）
+ * 端点清单与 DTO 以 docs/API_CONTRACT.md 为准；本文件只做三件事：
+ * 路由匹配与方法校验、请求体解析与字段校验、把服务层结果与 BusinessError
+ * 映射为 JSON 响应。业务逻辑与文件 I/O 一律在服务层（ServiceStack）。
+ *
+ * 错误约定：BusinessError → 其 httpStatus + {status:"error", error:{code,message,detail?}}；
+ * 其它异常统一 500 且不透传内部消息（原始错误只进日志）。
  */
 
-/** 默认请求体大小上限（字节） */
+/** 普通 JSON 请求体上限（字节） */
 const MAX_BODY_BYTES = 1024 * 1024;
 
-/** 文献上传（base64 内容）请求体上限：原始 20MB × base64 膨胀 ≈ 28MB */
-const MAX_UPLOAD_BODY_BYTES = 28 * 1024 * 1024;
+/**
+ * base64 上传请求体上限：原始文件上限 × 4/3 膨胀 + JSON 包装余量。
+ * 与服务层的文件大小上限联动，否则「50MB」只是文档上的数字。
+ */
+const UPLOAD_BODY_SLACK_BYTES = 1024 * 1024;
+const MAX_SOURCE_UPLOAD_BODY_BYTES = Math.ceil((MAX_SOURCE_BYTES * 4) / 3) + UPLOAD_BODY_SLACK_BYTES;
+const MAX_PAPER_UPLOAD_BODY_BYTES = Math.ceil((MAX_PAPER_PDF_BYTES * 4) / 3) + UPLOAD_BODY_SLACK_BYTES;
 
 /** SSE 心跳间隔（毫秒） */
 const SSE_HEARTBEAT_MS = 15_000;
@@ -83,16 +71,16 @@ export interface BackendHttpServerOptions {
   projects: ProjectStore;
   generation: GenerationService;
   orchestrator: WorkflowOrchestrator;
-  /** M3.1 业务服务栈（文献 / Evidence / 引用 / 手稿） */
+  /** 业务服务栈（文献 / Evidence / 引用 / 手稿 / PDF Review） */
   stack?: ServiceStack;
-  /** M3.2 Existing-LaTeX 导入器 */
+  /** Existing-LaTeX 导入器 */
   importer?: LatexImporter;
-  /** M3.5 Runtime 状态诊断（GET /api/runtime/status） */
+  /** Runtime 状态诊断（GET /api/runtime/status） */
   runtimeStatus?: RuntimeStatusService;
-  /** M4.3.6 Skill Registry（GET /api/skills） */
+  /** Skill Registry（GET /api/skills） */
   skills?: SkillRegistry;
   skillSummaries?: SkillSummaryService;
-  /** M4.3.7.5 Model Settings（/api/settings/model） */
+  /** Model Settings（/api/settings/model） */
   modelSettings?: ModelSettingsService;
 }
 
@@ -120,19 +108,18 @@ export function createBackendHttpServer({
       skills,
       skillSummaries,
       modelSettings,
-    }).catch(
-      (error: unknown) => {
-        const businessError = toBusinessError(error);
-        if (businessError.code === "INTERNAL_ERROR") {
-          console.error("[http] 未处理错误:", error);
-        }
-        if (!res.headersSent) {
-          sendBusinessError(res, businessError);
-        } else {
-          res.end();
-        }
-      },
-    );
+    }).catch((error: unknown) => {
+      const businessError = toBusinessError(error);
+      if (businessError !== error) {
+        // 未归类异常：完整原因只进日志，响应体只给稳定的 INTERNAL_ERROR
+        console.error(`[http] 未处理错误（${req.method ?? "?"} ${req.url ?? "?"}）:`, error);
+      }
+      if (!res.headersSent) {
+        sendBusinessError(res, businessError);
+      } else {
+        res.end();
+      }
+    });
   });
   // SSE 长连接需要禁用请求级超时（keep-alive 由心跳维持）
   server.requestTimeout = 0;
@@ -183,7 +170,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- GET /api/runtime/status（M3.5 Runtime 诊断） ----
+  // ---- GET /api/runtime/status ----
   if (pathname === "/api/runtime/status") {
     if (method !== "GET") {
       res.setHeader("Allow", "GET");
@@ -199,7 +186,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- /api/skills（M4.3.6 全局 Skill 资源，只读 API + 摘要重生成） ----
+  // ---- /api/skills（全局 Skill 资源：只读 + 摘要重生成） ----
   if (pathname === "/api/skills" || pathname.startsWith("/api/skills/")) {
     if (services.skills === undefined) {
       sendJson(res, 503, { status: "unavailable", detail: "Skill Registry 未配置" });
@@ -218,35 +205,39 @@ async function handleRequest(
     }
     const skillId = skillMatch[1] ?? "";
     const isSummary = skillMatch[2] === "/summary";
-    if (!isSummary && method === "GET") {
+    if (!isSummary) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return;
+      }
       const skill = await services.skills.get(skillId);
       if (skill === null) {
-        throw new BusinessError("INVALID_REQUEST", `Skill 不存在：${skillId}`);
+        throw new NotFoundError("Skill", skillId);
       }
       sendJson(res, 200, { skill });
       return;
     }
-    if (isSummary && method === "POST") {
-      if (services.skillSummaries === undefined) {
-        throw new BusinessError("INVALID_REQUEST", "Skill 摘要服务未配置（模型不可用）");
-      }
-      const skill = await services.skills.get(skillId);
-      if (skill === null) {
-        throw new BusinessError("INVALID_REQUEST", `Skill 不存在：${skillId}`);
-      }
-      const { generated, failed } = await services.skillSummaries.generateMissing({ only: skillId });
-      if (failed.includes(skillId) || generated.length === 0) {
-        throw new BusinessError("INVALID_REQUEST", `简介生成失败（模型可能未配置）：${skillId}`);
-      }
-      const updated = await services.skills.get(skillId);
-      sendJson(res, 200, { skill: updated });
+    if (method !== "POST") {
+      sendMethodNotAllowed(res, "POST", method);
       return;
     }
-    sendJson(res, 404, { status: "not_found", path: pathname });
+    if (services.skillSummaries === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "Skill 摘要服务未配置" });
+      return;
+    }
+    const skill = await services.skills.get(skillId);
+    if (skill === null) {
+      throw new NotFoundError("Skill", skillId);
+    }
+    const { generated, failed } = await services.skillSummaries.generateMissing({ only: skillId });
+    if (failed.includes(skillId) || generated.length === 0) {
+      throw new BusinessError("AGENT_RUN_FAILED", `简介生成失败（模型可能未配置）：${skillId}`);
+    }
+    sendJson(res, 200, { skill: await services.skills.get(skillId) });
     return;
   }
 
-  // ---- /api/settings/model（M4.3.7.5 Model Settings） ----
+  // ---- /api/settings/model ----
   if (pathname === "/api/settings/model" || pathname.startsWith("/api/settings/model/")) {
     if (services.modelSettings === undefined) {
       sendJson(res, 503, { status: "unavailable", detail: "Model Settings 服务未配置" });
@@ -270,7 +261,7 @@ async function handleRequest(
   // ---- /api/projects ----
   if (pathname === "/api/projects") {
     if (method === "GET") {
-      // M4.0：项目列表（updatedAt 降序）；默认只返回未归档项目
+      // 项目列表（updatedAt 降序）；默认只返回未归档项目
       const scope = url.searchParams.get("scope") ?? "active";
       if (scope !== "active" && scope !== "archived" && scope !== "all") {
         throw new BusinessError("INVALID_REQUEST", "scope 只能是 active / archived / all");
@@ -294,7 +285,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- POST /api/projects/import-pdf（已有论文 File-First 导入，2026-09） ----
+  // ---- POST /api/projects/import-pdf（已有论文 File-First 导入） ----
   if (pathname === "/api/projects/import-pdf") {
     if (method !== "POST") {
       res.setHeader("Allow", "POST");
@@ -305,18 +296,7 @@ async function handleRequest(
       sendJson(res, 503, { status: "unavailable", detail: "业务服务栈未配置" });
       return;
     }
-    const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
-    const fileName = readStringField(body, "fileName");
-    const contentBase64 = readStringField(body, "contentBase64");
-    if (fileName === undefined || contentBase64 === undefined) {
-      throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
-    }
-    let content: Buffer;
-    try {
-      content = Buffer.from(contentBase64, "base64");
-    } catch {
-      throw new BusinessError("INVALID_REQUEST", "contentBase64 不是合法 base64");
-    }
+    const { body, fileName, content } = await readUploadBody(req, MAX_PAPER_UPLOAD_BODY_BYTES);
     const goal = readExistingPaperGoal(body["goal"]);
     const result = await services.stack.projectImport.importPdf({
       fileName,
@@ -343,9 +323,10 @@ async function handleRequest(
     }
     if (method === "PATCH") {
       const body = await readJsonBody(req);
+      const title = readOptionalTitle(body);
       const project = await services.projects.updateMeta(projectId, {
         ...readResearchMeta(body, true),
-        ...(readOptionalTitle(body) !== undefined ? { title: readOptionalTitle(body)! } : {}),
+        ...(title !== undefined ? { title } : {}),
       });
       sendJson(res, 200, { project });
       return;
@@ -360,7 +341,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- POST /api/projects/:id/archive | /restore（生命周期，2026-09） ----
+  // ---- POST /api/projects/:id/archive | /restore ----
   const lifecycleMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/(archive|restore)$/.exec(pathname);
   if (lifecycleMatch) {
     const projectId = lifecycleMatch[1] ?? "";
@@ -385,7 +366,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- POST /api/projects/:id/generate（M2 同步形态，保留兼容） ----
+  // ---- POST /api/projects/:id/generate（同步形态，保留兼容） ----
   const generateMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/generate$/.exec(pathname);
   if (generateMatch) {
     const projectId = generateMatch[1] ?? "";
@@ -404,7 +385,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- POST /api/projects/:id/workflows（M3.0：异步 WorkflowRun） ----
+  // ---- POST /api/projects/:id/workflows（异步 WorkflowRun） ----
   const workflowsMatch = /^\/api\/projects\/([a-z0-9][a-z0-9-]{0,63})\/workflows$/.exec(pathname);
   if (workflowsMatch) {
     const projectId = workflowsMatch[1] ?? "";
@@ -497,7 +478,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- M3.1/M3.2 资源路由（需要服务栈） ----
+  // ---- 项目下资源路由（需要服务栈） ----
   if (services.stack !== undefined) {
     const handled = await handleProjectResourceRoutes(
       req,
@@ -517,7 +498,7 @@ async function handleRequest(
 }
 
 /**
- * /api/settings/model 路由组（M4.3.7.5）：
+ * /api/settings/model 路由组：
  *   GET    /api/settings/model                 状态（不含任何 key）
  *   PUT    /api/settings/model                 保存 {model, apiKey?}（apiKey 省略 = 保持原 Key）
  *   DELETE /api/settings/model/key             清除本地保存的 API Key
@@ -626,43 +607,28 @@ async function handleProjectResourceRoutes(
   if (resource === "sources") {
     if (rest === "") {
       if (method === "POST") {
-        const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
-        const fileName = readStringField(body, "fileName");
-        const contentBase64 = readStringField(body, "contentBase64");
-        if (fileName === undefined || contentBase64 === undefined) {
-          throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
-        }
-        let content: Buffer;
-        try {
-          content = Buffer.from(contentBase64, "base64");
-        } catch {
-          throw new BusinessError("INVALID_REQUEST", "contentBase64 不是合法 base64");
-        }
-        if (content.byteLength === 0) {
-          throw new BusinessError("INVALID_REQUEST", "contentBase64 解码后为空");
-        }
+        const { body, fileName, content } = await readUploadBody(req, MAX_SOURCE_UPLOAD_BODY_BYTES);
+        const sourceRole = readSourceRole(body);
         const item = await stack.sources.add(projectId, {
           fileName,
           content,
-          ...(readSourceRole(body) !== undefined ? { sourceRole: readSourceRole(body) } : {}),
+          ...(sourceRole !== undefined ? { sourceRole } : {}),
           metadata: readSourceMetadata(body),
           ...(body["preferred"] === true ? { preferred: true } : {}),
         });
-        // PDF 自动跑确定性分析（失败不阻塞上传）
+        // PDF 自动跑确定性文本层分析；分析失败不影响上传成功（原始文件已落盘）
+        let source = item;
         if (item.fileName.toLowerCase().endsWith(".pdf")) {
           try {
             const analysis = await stack.pdfAnalyzer.analyzeFile(
               await stack.sources.filePath(projectId, item.sourceId),
             );
-            const updated = await stack.sources.setAnalysis(projectId, item.sourceId, analysis);
-            sendJson(res, 201, { source: updated });
-            return true;
-          } catch {
-            sendJson(res, 201, { source: item });
-            return true;
+            source = await stack.sources.setAnalysis(projectId, item.sourceId, analysis);
+          } catch (error) {
+            console.error(`[http] 文献 ${item.sourceId} 自动分析失败（不影响上传）:`, errorText(error));
           }
         }
-        sendJson(res, 201, { source: item });
+        sendJson(res, 201, { source });
         return true;
       }
       if (method === "GET") {
@@ -685,8 +651,9 @@ async function handleProjectResourceRoutes(
       }
       if (method === "PATCH") {
         const body = await readJsonBody(req);
+        const sourceRole = readSourceRole(body);
         const item = await stack.sources.update(projectId, sourceId, {
-          ...(readSourceRole(body) !== undefined ? { sourceRole: readSourceRole(body)! } : {}),
+          ...(sourceRole !== undefined ? { sourceRole } : {}),
           ...(typeof body["preferred"] === "boolean" ? { preferred: body["preferred"] } : {}),
           metadata: readSourceMetadata(body),
         });
@@ -704,11 +671,14 @@ async function handleProjectResourceRoutes(
     }
 
     const analyzeMatch = /^\/([A-Z]\d{2,})\/analyze$/.exec(rest);
-    if (analyzeMatch && method === "POST") {
+    if (analyzeMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
       const sourceId = analyzeMatch[1] ?? "";
-      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const body = await readOptionalJsonBody(req);
       const mode = body["mode"] === "multimodal" ? "multimodal" : "builtin";
-      const item = await stack.sources.getRequired(projectId, sourceId);
       const path = await stack.sources.filePath(projectId, sourceId);
       const analysis =
         mode === "multimodal"
@@ -731,16 +701,13 @@ async function handleProjectResourceRoutes(
   if (resource === "evidence") {
     if (rest === "") {
       if (method === "GET") {
+        const status = url.searchParams.get("status");
+        const sourceId = url.searchParams.get("sourceId");
+        const section = url.searchParams.get("section");
         const filter = {
-          ...(url.searchParams.get("status") !== null
-            ? { status: url.searchParams.get("status") as never }
-            : {}),
-          ...(url.searchParams.get("sourceId") !== null
-            ? { sourceId: url.searchParams.get("sourceId") ?? undefined }
-            : {}),
-          ...(url.searchParams.get("section") !== null
-            ? { section: url.searchParams.get("section") ?? undefined }
-            : {}),
+          ...(status !== null ? { status: requireEnumParam(status, VERIFICATION_STATUSES, "status") } : {}),
+          ...(sourceId !== null ? { sourceId } : {}),
+          ...(section !== null ? { section } : {}),
         };
         const records = Object.keys(filter).length
           ? await stack.evidence.query(projectId, filter)
@@ -750,14 +717,21 @@ async function handleProjectResourceRoutes(
       }
       if (method === "POST") {
         const body = await readJsonBody(req);
+        const claim = readStringField(body, "claim");
+        if (claim === undefined) {
+          throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 claim");
+        }
+        // source / location 的字段级校验在 EvidenceStore.append 内完成，这里只保证是对象
+        const source = body["source"];
+        const location = body["location"];
         const record = await stack.evidence.append(
           projectId,
           {
-            claim: String(body["claim"] ?? ""),
+            claim,
             ...(typeof body["summary"] === "string" ? { summary: body["summary"] } : {}),
             ...(typeof body["quote"] === "string" ? { quote: body["quote"] } : {}),
-            ...(isRecord(body["source"]) ? { source: body["source"] as never } : {}),
-            ...(isRecord(body["location"]) ? { location: body["location"] as never } : {}),
+            ...(isRecord(source) ? { source: source as EvidenceSourceRef } : {}),
+            ...(isRecord(location) ? { location: location as EvidenceLocation } : {}),
           },
           "user",
         );
@@ -773,44 +747,49 @@ async function handleProjectResourceRoutes(
     if (evidenceMatch) {
       const evidenceId = evidenceMatch[1] ?? "";
       const isVerify = evidenceMatch[2] === "/verify";
-      if (!isVerify && method === "GET") {
+      if (!isVerify) {
+        if (method !== "GET") {
+          sendMethodNotAllowed(res, "GET", method);
+          return true;
+        }
         const record = await stack.evidence.get(projectId, evidenceId);
         if (record === null) {
-          throw new BusinessError("INVALID_REQUEST", `Evidence 不存在：${evidenceId}`);
+          throw new NotFoundError("Evidence", evidenceId);
         }
         sendJson(res, 200, { evidence: record });
         return true;
       }
-      if (isVerify && method === "POST") {
-        const body = await readJsonBody(req);
-        const status = readStringField(body, "verificationStatus");
-        if (status === undefined) {
-          throw new BusinessError("INVALID_REQUEST", "请求体必须包含 verificationStatus");
-        }
-        const record = await stack.evidence.updateVerification(projectId, evidenceId, {
-          verificationStatus: status as never,
-          ...(typeof body["verificationMethod"] === "string"
-            ? { verificationMethod: body["verificationMethod"] }
-            : {}),
-          ...(typeof body["verificationLevel"] === "string"
-            ? { verificationLevel: body["verificationLevel"] as never }
-            : {}),
-          ...(typeof body["supportStrength"] === "string"
-            ? { supportStrength: body["supportStrength"] as never }
-            : {}),
-        });
-        sendJson(res, 200, { evidence: record });
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
         return true;
       }
-      return false;
+      const body = await readJsonBody(req);
+      const status = readStringField(body, "verificationStatus");
+      if (status === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含 verificationStatus");
+      }
+      const record = await stack.evidence.updateVerification(projectId, evidenceId, {
+        verificationStatus: requireEnumField(status, VERIFICATION_STATUSES, "verificationStatus"),
+        ...(typeof body["verificationMethod"] === "string"
+          ? { verificationMethod: body["verificationMethod"] }
+          : {}),
+        ...(typeof body["verificationLevel"] === "string"
+          ? { verificationLevel: requireEnumField(body["verificationLevel"], VERIFICATION_LEVELS, "verificationLevel") }
+          : {}),
+        ...(typeof body["supportStrength"] === "string"
+          ? { supportStrength: requireEnumField(body["supportStrength"], SUPPORT_STRENGTHS, "supportStrength") }
+          : {}),
+      });
+      sendJson(res, 200, { evidence: record });
+      return true;
     }
     return false;
   }
 
-  // ---- citations（M4.3.3+ PDF 引用完整性） ----
+  // ---- citations（PDF 引用完整性） ----
   if (resource === "citations") {
     if (rest === "/extract" && method === "POST") {
-      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const body = await readOptionalJsonBody(req);
       const { result, reused } = await stack.citationIntegrity.extract(projectId, {
         ...(body["force"] === true ? { force: true } : {}),
       });
@@ -827,7 +806,7 @@ async function handleProjectResourceRoutes(
       return true;
     }
     if (rest === "/verify-metadata" && method === "POST") {
-      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const body = await readOptionalJsonBody(req);
       const result = await stack.citationIntegrity.verifyMetadata(projectId, {
         ...(body["force"] === true ? { force: true } : {}),
       });
@@ -841,10 +820,11 @@ async function handleProjectResourceRoutes(
       return true;
     }
     if (rest === "/verify-claims" && method === "POST") {
-      const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+      const body = await readOptionalJsonBody(req);
+      const limit = readOptionalPositiveInt(body, "limit");
       const result = await stack.citationIntegrity.verifyClaims(projectId, {
         ...(body["force"] === true ? { force: true } : {}),
-        ...(typeof body["limit"] === "number" ? { limit: body["limit"] } : {}),
+        ...(limit !== undefined ? { limit } : {}),
       });
       sendJson(res, 200, {
         summary: result.summary,
@@ -876,24 +856,21 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { summary, references });
       return true;
     }
-    return false;
+    return sendMethodNotAllowedIfKnown(res, method, rest, {
+      "/extract": "POST",
+      "/verify-metadata": "POST",
+      "/verify-claims": "POST",
+      "/claims": "GET",
+      "/integrity": "GET",
+      "/metadata": "GET",
+      "": "GET",
+    });
   }
 
-  // ---- paper（M4.3.1 Final PDF Review 输入） ----
+  // ---- paper（Final PDF Review 输入） ----
   if (resource === "paper") {
     if (rest === "/pdf" && method === "POST") {
-      const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
-      const fileName = readStringField(body, "fileName");
-      const contentBase64 = readStringField(body, "contentBase64");
-      if (fileName === undefined || contentBase64 === undefined) {
-        throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
-      }
-      let content: Buffer;
-      try {
-        content = Buffer.from(contentBase64, "base64");
-      } catch {
-        throw new BusinessError("INVALID_REQUEST", "contentBase64 不是合法 base64");
-      }
+      const { fileName, content } = await readUploadBody(req, MAX_PAPER_UPLOAD_BODY_BYTES);
       const result = await stack.paperIngest.ingest(projectId, { fileName, content });
       sendJson(res, 201, {
         document: toPaperDocumentSummary(result.document),
@@ -908,7 +885,7 @@ async function handleProjectResourceRoutes(
         return true;
       }
       if (method === "POST") {
-        const body = await readJsonBody(req).catch(() => ({}) as Record<string, unknown>);
+        const body = await readOptionalJsonBody(req);
         const refreshSummaries = body["refreshSummaries"] !== false;
         const map = await stack.paperMap.ensureMap(projectId, { refreshSummaries });
         sendJson(res, 200, { map });
@@ -979,12 +956,20 @@ async function handleProjectResourceRoutes(
       });
       return true;
     }
-    return false;
+    return sendMethodNotAllowedIfKnown(res, method, rest, {
+      "/pdf": "POST",
+      "/review-context": "GET",
+      "/reparse": "POST",
+    });
   }
 
-  // ---- paper-review（existing_paper_review 聚合报告，2026-09） ----
-  if (resource === "paper-review" && method === "GET" && rest === "") {
-    const report = await latestExistingReviewReport(stack, projectId);
+  // ---- paper-review（existing_paper_review 聚合报告） ----
+  if (resource === "paper-review" && rest === "") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    const report = await stack.reviewArtifacts.latestExistingReview(projectId);
     sendJson(res, 200, { report });
     return true;
   }
@@ -1037,7 +1022,7 @@ async function handleProjectResourceRoutes(
     return true;
   }
 
-  // ---- M3.2：review / quality-gate / build / import ----
+  // ---- review / quality-gate / build / import ----
 
   if (resource === "review" || resource === "reviews") {
     if (method === "POST") {
@@ -1057,44 +1042,18 @@ async function handleProjectResourceRoutes(
             }
           : {}),
       });
-      const { readdir } = await import("node:fs/promises");
-      let round = 1;
-      try {
-        const names = await readdir(stack.projects.reviewsDir(projectId));
-        round =
-          names
-            .map((name) => /^review-summary-r(\d+)\.json$/.exec(name))
-            .filter((match): match is RegExpExecArray => match !== null)
-            .reduce((max, match) => Math.max(max, Number(match[1])), 0) + 1;
-      } catch {
-        // 无历史
-      }
+      const round = await stack.reviewArtifacts.nextSummaryRound(projectId);
       const reportPaths: string[] = [];
       for (const result of results) {
         reportPaths.push(await stack.reviewer.saveReport(projectId, round, result));
       }
       const summary = aggregateReviews(results, round, reportPaths);
-      await writeJsonAtomic(
-        join(stack.projects.reviewsDir(projectId), `review-summary-r${round}.json`),
-        summary,
-      );
+      await stack.reviewArtifacts.saveSummary(projectId, round, summary);
       sendJson(res, 200, { summary });
       return true;
     }
     if (method === "GET") {
-      const { readdir } = await import("node:fs/promises");
-      const summaries: unknown[] = [];
-      try {
-        const names = (await readdir(stack.projects.reviewsDir(projectId))).sort();
-        for (const name of names) {
-          if (/^review-summary-r\d+\.json$/.test(name)) {
-            summaries.push(JSON.parse(await readFile(join(stack.projects.reviewsDir(projectId), name), "utf8")));
-          }
-        }
-      } catch {
-        // 无 reviews 目录
-      }
-      sendJson(res, 200, { reviews: summaries });
+      sendJson(res, 200, { reviews: await stack.reviewArtifacts.listSummaries(projectId) });
       return true;
     }
     res.setHeader("Allow", "GET, POST");
@@ -1104,7 +1063,7 @@ async function handleProjectResourceRoutes(
 
   if (resource === "quality-gate" && method === "POST") {
     // 从最新 artifacts 确定性评估（缺 review 时如实报错）
-    const summary = await latestReviewSummaryFrom(stack, projectId);
+    const summary = await stack.reviewArtifacts.latestSummary(projectId);
     if (summary === null) {
       throw new BusinessError("INVALID_REQUEST", "尚无 review 结果（先执行 review 或 workflow）");
     }
@@ -1141,19 +1100,17 @@ async function handleProjectResourceRoutes(
     return true;
   }
 
-  if (resource === "import" && importer !== undefined) {
+  if (resource === "import") {
+    if (importer === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "LaTeX 导入器未配置" });
+      return true;
+    }
     if (method === "POST") {
-      const body = await readJsonBody(req, MAX_UPLOAD_BODY_BYTES);
-      const archiveBase64 = readStringField(body, "archiveBase64");
+      const body = await readJsonBody(req, MAX_SOURCE_UPLOAD_BODY_BYTES);
       const files = body["files"];
       let report;
-      if (archiveBase64 !== undefined) {
-        let archive: Buffer;
-        try {
-          archive = Buffer.from(archiveBase64, "base64");
-        } catch {
-          throw new BusinessError("INVALID_REQUEST", "archiveBase64 不是合法 base64");
-        }
+      if (body["archiveBase64"] !== undefined) {
+        const archive = readBase64Field(body, "archiveBase64");
         report = await importer.importFromArchive(projectId, archive);
       } else if (Array.isArray(files)) {
         report = await importer.importFromFiles(projectId, files as never);
@@ -1237,60 +1194,6 @@ async function buildReviewDigest(stack: ServiceStack, projectId: string): Promis
   return parts.join("\n\n").slice(0, 40_000);
 }
 
-/** 最新 existing_paper_review 聚合报告（round 最大；无报告返回 null） */
-async function latestExistingReviewReport(
-  stack: ServiceStack,
-  projectId: string,
-): Promise<Record<string, unknown> | null> {
-  const { readdir } = await import("node:fs/promises");
-  try {
-    const names = await readdir(stack.projects.reviewsDir(projectId));
-    const rounds = names
-      .map((name) => /^existing-review-r(\d+)\.json$/.exec(name))
-      .filter((match): match is RegExpExecArray => match !== null)
-      .map((match) => Number(match[1]))
-      .sort((a, b) => b - a);
-    if (rounds.length === 0) {
-      return null;
-    }
-    return JSON.parse(
-      await readFile(
-        join(stack.projects.reviewsDir(projectId), `existing-review-r${rounds[0]}.json`),
-        "utf8",
-      ),
-    ) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-/** 最新 review 汇总（round 最大） */
-async function latestReviewSummaryFrom(
-  stack: ServiceStack,
-  projectId: string,
-): Promise<ReviewSummary | null> {
-  const { readdir } = await import("node:fs/promises");
-  try {
-    const names = await readdir(stack.projects.reviewsDir(projectId));
-    const rounds = names
-      .map((name) => /^review-summary-r(\d+)\.json$/.exec(name))
-      .filter((match): match is RegExpExecArray => match !== null)
-      .map((match) => Number(match[1]))
-      .sort((a, b) => b - a);
-    if (rounds.length === 0) {
-      return null;
-    }
-    return JSON.parse(
-      await readFile(
-        join(stack.projects.reviewsDir(projectId), `review-summary-r${rounds[0]}.json`),
-        "utf8",
-      ),
-    ) as ReviewSummary;
-  } catch {
-    return null;
-  }
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1315,17 +1218,10 @@ function readResearchMeta(body: Record<string, unknown>, forPatch = false): Reco
     }
   }
   const workflowKind = body["workflowKind"];
-  if (
-    workflowKind === "idea_to_paper" ||
-    workflowKind === "existing_paper_improvement" ||
-    workflowKind === "existing_paper_review"
-  ) {
+  if (isWorkflowKind(workflowKind)) {
     meta["workflowKind"] = workflowKind;
   } else if (workflowKind !== undefined) {
-    throw new BusinessError(
-      "INVALID_REQUEST",
-      "workflowKind 只能是 idea_to_paper、existing_paper_improvement 或 existing_paper_review",
-    );
+    throw new BusinessError("INVALID_REQUEST", `workflowKind 只能是 ${WORKFLOW_KINDS.join("、")}`);
   }
   return meta;
 }
@@ -1379,63 +1275,88 @@ async function handleRunEventsSse(
   let replayDone = false;
   let lastSeq = 0;
   let closed = false;
-
   let unsubscribe: (() => void) | null = null;
-  // run 不存在时 subscribe 抛 WORKFLOW_NOT_FOUND（headers 未发送，安全映射 404）
-  unsubscribe = await orchestrator.subscribe(runId, (event) => {
+  let heartbeat: NodeJS.Timeout | null = null;
+
+  // 客户端可能在 subscribe / readEvents 的 await 期间断开：清理逻辑必须在第一个 await 之前挂好，
+  // 否则心跳定时器与编排器监听器会一直挂着
+  const cleanup = () => {
     if (closed) {
       return;
     }
-    if (replayDone) {
-      if (event.seq > lastSeq) {
-        lastSeq = event.seq;
-        writeSseEvent(res, event);
-      }
-    } else {
-      buffered.push(event);
+    closed = true;
+    if (heartbeat !== null) {
+      clearInterval(heartbeat);
     }
-  });
+    unsubscribe?.();
+    unsubscribe = null;
+  };
+  req.on("close", cleanup);
+  res.on("close", cleanup);
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream; charset=utf-8",
-    "Cache-Control": "no-store",
-    Connection: "keep-alive",
-    "X-Accel-Buffering": "no",
-  });
-  res.write(": connected\n\n");
-
-  const { events, skippedLines } = await orchestrator.readEvents(runId);
-  for (const event of events) {
-    writeSseEvent(res, event);
-    lastSeq = Math.max(lastSeq, event.seq);
-  }
-  if (skippedLines > 0) {
-    res.write(`: replay 完成（${events.length} 条事件，${skippedLines} 行损坏已跳过）\n\n`);
-  } else {
-    res.write(`: replay 完成（${events.length} 条事件）\n\n`);
-  }
-  replayDone = true;
-  // 补发订阅缓冲中比 replay 更新的事件（seq 去重）
-  buffered.sort((a, b) => a.seq - b.seq);
-  for (const event of buffered) {
-    if (event.seq > lastSeq) {
+  const send = (event: WorkflowDomainEvent) => {
+    if (!closed && event.seq > lastSeq) {
       lastSeq = event.seq;
       writeSseEvent(res, event);
     }
-  }
+  };
 
-  // 心跳：保活 + 代理缓冲提示；连接断开时清理干净（不影响 workflow 执行）
-  const heartbeat = setInterval(() => {
+  try {
+    // run 不存在时 subscribe 抛 WORKFLOW_NOT_FOUND（headers 未发送，安全映射 404）
+    unsubscribe = await orchestrator.subscribe(runId, (event) => {
+      if (closed) {
+        return;
+      }
+      if (replayDone) {
+        send(event);
+      } else {
+        buffered.push(event);
+      }
+    });
+    if (closed) {
+      cleanup();
+      unsubscribe?.();
+      return;
+    }
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(": connected\n\n");
+
+    const { events, skippedLines } = await orchestrator.readEvents(runId);
+    for (const event of events) {
+      send(event);
+    }
+    if (!closed) {
+      res.write(
+        skippedLines > 0
+          ? `: replay 完成（${events.length} 条事件，${skippedLines} 行损坏已跳过）\n\n`
+          : `: replay 完成（${events.length} 条事件）\n\n`,
+      );
+    }
+    replayDone = true;
+    buffered.sort((a, b) => a.seq - b.seq);
+    for (const event of buffered) {
+      send(event);
+    }
     if (closed) {
       return;
     }
-    res.write(": ping\n\n");
-  }, SSE_HEARTBEAT_MS);
-  req.on("close", () => {
-    closed = true;
-    clearInterval(heartbeat);
-    unsubscribe?.();
-  });
+
+    // 心跳：保活 + 代理缓冲提示；连接断开由 cleanup 收尾（不影响 workflow 执行）
+    heartbeat = setInterval(() => {
+      if (!closed) {
+        res.write(": ping\n\n");
+      }
+    }, SSE_HEARTBEAT_MS);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 function writeSseEvent(res: ServerResponse, event: WorkflowDomainEvent): void {
@@ -1462,6 +1383,31 @@ async function readJsonBody(
   if (text === "") {
     throw new BusinessError("INVALID_REQUEST", "请求体不能为空（需要 JSON 对象）");
   }
+  return parseJsonObject(text);
+}
+
+/**
+ * 可选请求体：空 body 视为 {}；非空则必须是合法 JSON 对象（解析错误 / 超限如实报 400，
+ * 不能把 `{"force": tru` 静默当成没有参数）。
+ */
+async function readOptionalJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).byteLength;
+    if (size > MAX_BODY_BYTES) {
+      throw new BusinessError("INVALID_REQUEST", `请求体超过 ${MAX_BODY_BYTES} 字节上限`);
+    }
+    chunks.push(chunk as Buffer);
+  }
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  if (text === "") {
+    return {};
+  }
+  return parseJsonObject(text);
+}
+
+function parseJsonObject(text: string): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -1474,9 +1420,70 @@ async function readJsonBody(
   return parsed as Record<string, unknown>;
 }
 
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * base64 字段 → Buffer。Buffer.from(str, "base64") 从不抛错、会静默丢弃非法字符，
+ * 所以必须先校验字符集，否则损坏的上传会变成一份"看起来解析失败"的乱码文件。
+ */
+function readBase64Field(body: Record<string, unknown>, field: string): Buffer {
+  const value = body[field];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new BusinessError("INVALID_REQUEST", `请求体必须包含非空字符串字段 ${field}`);
+  }
+  const compact = value.replace(/\s+/g, "");
+  if (!BASE64_PATTERN.test(compact)) {
+    throw new BusinessError("INVALID_REQUEST", `${field} 不是合法 base64`);
+  }
+  const content = Buffer.from(compact, "base64");
+  if (content.byteLength === 0) {
+    throw new BusinessError("INVALID_REQUEST", `${field} 解码后为空`);
+  }
+  return content;
+}
+
+/** 文件上传请求体（{fileName, contentBase64, …}）的公共解析 */
+async function readUploadBody(
+  req: IncomingMessage,
+  maxBytes: number,
+): Promise<{ body: Record<string, unknown>; fileName: string; content: Buffer }> {
+  const body = await readJsonBody(req, maxBytes);
+  const fileName = readStringField(body, "fileName");
+  if (fileName === undefined) {
+    throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
+  }
+  return { body, fileName, content: readBase64Field(body, "contentBase64") };
+}
+
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {
   const value = body[field];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** 可选正整数字段（缺省 undefined；非正整数 → 400） */
+function readOptionalPositiveInt(body: Record<string, unknown>, field: string): number | undefined {
+  const value = body[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new BusinessError("INVALID_REQUEST", `字段 ${field} 必须是正整数`);
+  }
+  return value;
+}
+
+function requireEnumField<T extends string>(value: unknown, allowed: readonly T[], field: string): T {
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new BusinessError("INVALID_REQUEST", `字段 ${field} 只能是 ${allowed.join(" / ")}`);
+}
+
+function requireEnumParam<T extends string>(value: string, allowed: readonly T[], param: string): T {
+  if ((allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new BusinessError("INVALID_REQUEST", `查询参数 ${param} 只能是 ${allowed.join(" / ")}`);
 }
 
 function readPayloadField(
@@ -1498,16 +1505,12 @@ function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
   if (kind === undefined) {
     return "idea_to_paper";
   }
-  if (
-    kind === "idea_to_paper" ||
-    kind === "existing_paper_improvement" ||
-    kind === "existing_paper_review"
-  ) {
+  if (isWorkflowKind(kind)) {
     return kind;
   }
   throw new BusinessError(
     "INVALID_REQUEST",
-    "字段 kind 只能是 idea_to_paper、existing_paper_improvement 或 existing_paper_review（缺省 idea_to_paper）",
+    `字段 kind 只能是 ${WORKFLOW_KINDS.join("、")}（缺省 idea_to_paper）`,
   );
 }
 
@@ -1555,4 +1558,31 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(body));
+}
+
+function sendMethodNotAllowed(res: ServerResponse, allowed: string, method: string): void {
+  res.setHeader("Allow", allowed);
+  sendJson(res, 405, { status: "method_not_allowed", method });
+}
+
+/**
+ * 子路径已知但方法不对 → 405（带 Allow）；子路径未知 → 交给上层 404。
+ * 用于 citations / paper 这类「一个资源前缀下多个动作」的路由组。
+ */
+function sendMethodNotAllowedIfKnown(
+  res: ServerResponse,
+  method: string,
+  rest: string,
+  allowedByPath: Record<string, string>,
+): boolean {
+  const allowed = allowedByPath[rest];
+  if (allowed === undefined) {
+    return false;
+  }
+  sendMethodNotAllowed(res, allowed, method);
+  return true;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

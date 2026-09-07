@@ -68,6 +68,8 @@ interface RunHandle {
   state: WorkflowState;
   definition: WorkflowDefinition;
   cancelRequested: boolean;
+  /** resume 的 onInput 正在执行（拒绝并发 resume） */
+  resuming: boolean;
   /** 当前执行循环的 Promise（无循环时为 null：awaiting_input / 已终止 / 未启动） */
   loop: Promise<void> | null;
   listeners: Set<WorkflowEventListener>;
@@ -88,6 +90,8 @@ export class WorkflowOrchestrator {
   private readonly retryDelayMs: number;
   private readonly log: (message: string) => void;
   private readonly handles = new Map<string, RunHandle>();
+  /** 正在创建 run 的项目：磁盘扫描 → 落盘之间的窗口内拒绝同项目并发创建 */
+  private readonly creatingProjects = new Set<string>();
   private closed = false;
 
   constructor(options: WorkflowOrchestratorOptions) {
@@ -118,38 +122,44 @@ export class WorkflowOrchestrator {
     await this.projects.getRequired(projectId);
     const definition = this.definitionFactory(kind);
 
-    if (await this.hasActiveRun(projectId)) {
-      const active = (await this.listRuns(projectId)).find((state) =>
-        state.status === "pending" || state.status === "running" || state.status === "awaiting_input",
-      );
-      throw new WorkflowInvalidStateError(
-        active?.runId ?? "(unknown)",
-        active?.status ?? "active",
-        "创建新 run（同一项目已有进行中的 WorkflowRun）",
-      );
+    if (this.creatingProjects.has(projectId)) {
+      throw new WorkflowInvalidStateError("(creating)", "pending", "创建新 run（同一项目正在创建另一个 WorkflowRun）");
     }
+    this.creatingProjects.add(projectId);
+    try {
+      if (await this.hasActiveRun(projectId)) {
+        const active = (await this.listRuns(projectId)).find((state) => isActiveStatus(state.status));
+        throw new WorkflowInvalidStateError(
+          active?.runId ?? "(unknown)",
+          active?.status ?? "active",
+          "创建新 run（同一项目已有进行中的 WorkflowRun）",
+        );
+      }
 
-    const timestamp = this.now().toISOString();
-    const state: WorkflowState = {
-      schemaVersion: 1,
-      runId: this.idFactory(),
-      projectId,
-      workflowKind: kind,
-      status: "pending",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      ...(Object.keys(request).length > 0 ? { request } : {}),
-      completedStages: [],
-      stageResults: {},
-      stageHistory: [],
-      inputs: {},
-      counters: {},
-      eventsSeq: 0,
-    };
-    await this.runStore.saveCheckpoint(state);
-    this.registerHandle(state, definition);
-    this.startLoop(state.runId);
-    return structuredClone(state);
+      const timestamp = this.now().toISOString();
+      const state: WorkflowState = {
+        schemaVersion: 1,
+        runId: this.idFactory(),
+        projectId,
+        workflowKind: kind,
+        status: "pending",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        ...(Object.keys(request).length > 0 ? { request } : {}),
+        completedStages: [],
+        stageResults: {},
+        stageHistory: [],
+        inputs: {},
+        counters: {},
+        eventsSeq: 0,
+      };
+      await this.runStore.saveCheckpoint(state);
+      this.registerHandle(state, definition);
+      this.startLoop(state.runId);
+      return structuredClone(state);
+    } finally {
+      this.creatingProjects.delete(projectId);
+    }
   }
 
   /** 查询 run（内存优先，磁盘兜底；不存在抛 WORKFLOW_NOT_FOUND） */
@@ -183,14 +193,16 @@ export class WorkflowOrchestrator {
     return states.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
-  /** 是否存在进行中的 run（pending / running / awaiting_input） */
+  /** 是否存在进行中的 run（pending / running / awaiting_input）；内存句柄优先，磁盘兜底 */
   async hasActiveRun(projectId: string): Promise<boolean> {
+    for (const handle of this.handles.values()) {
+      if (handle.state.projectId === projectId && isActiveStatus(handle.state.status)) {
+        return true;
+      }
+    }
     for (const runId of await this.runStore.listRunIds(projectId)) {
       const state = await this.loadState(projectId, runId);
-      if (
-        state !== null &&
-        (state.status === "pending" || state.status === "running" || state.status === "awaiting_input")
-      ) {
+      if (state !== null && isActiveStatus(state.status)) {
         return true;
       }
     }
@@ -202,15 +214,22 @@ export class WorkflowOrchestrator {
   /** 提交 HITL 输入：awaiting_input → running 并继续执行 */
   async resume(runId: string, input: ResumeInput): Promise<WorkflowState> {
     const handle = await this.requireHandle(runId);
-    if (handle.state.status !== "awaiting_input" || handle.state.awaiting === undefined) {
+    if (handle.state.status !== "awaiting_input" || handle.state.awaiting === undefined || handle.resuming) {
       throw new WorkflowInvalidStateError(
         runId,
-        handle.state.status,
+        handle.resuming ? "resuming" : handle.state.status,
         "resume（仅在 awaiting_input 状态可恢复）",
       );
     }
     const stageId = handle.state.awaiting.stageId;
-    const outcome = await handle.definition.onInput(handle.state, stageId, input);
+    // onInput 可能 await（校验 / 落盘）：期间第二个 resume 必须被拒绝，否则 inputs 被覆盖、事件重复
+    handle.resuming = true;
+    let outcome: void | "cancel";
+    try {
+      outcome = await handle.definition.onInput(handle.state, stageId, input);
+    } finally {
+      handle.resuming = false;
+    }
     handle.state.inputs[stageId] = input;
     if (outcome === "cancel") {
       // 用户决策为取消：直接终结（保持 awaiting 清理与事件一致）
@@ -355,12 +374,17 @@ export class WorkflowOrchestrator {
     if (!handle || handle.loop !== null) {
       return;
     }
-    handle.loop = this.runLoop(runId).finally(() => {
-      const current = this.handles.get(runId);
-      if (current) {
-        current.loop = null;
-      }
-    });
+    handle.loop = this.runLoop(runId)
+      .catch((error: unknown) => {
+        // runLoop 内部已尽力落盘终态；到这里说明连 finalize 都失败（磁盘不可写等），只能记录
+        this.log(`[workflow ${runId}] 执行循环异常退出：${errorText(error)}`);
+      })
+      .finally(() => {
+        const current = this.handles.get(runId);
+        if (current) {
+          current.loop = null;
+        }
+      });
   }
 
   private async runLoop(runId: string): Promise<void> {
@@ -376,24 +400,24 @@ export class WorkflowOrchestrator {
       return;
     }
 
-    if (state.status === "pending") {
-      state.status = "running";
-      state.startedAt = this.now().toISOString();
-      this.touch(state);
-      if (!handle.recovered) {
-        await this.emit(handle, {
-          type: "workflow.started",
-          message: `Workflow 启动（${definition.description}）`,
-          data: { workflowKind: state.workflowKind },
-        });
-      }
-      await this.runStore.saveCheckpoint(state);
-    } else {
-      state.status = "running";
-      this.touch(state);
-    }
-
     try {
+      if (state.status === "pending") {
+        state.status = "running";
+        state.startedAt = this.now().toISOString();
+        this.touch(state);
+        if (!handle.recovered) {
+          await this.emit(handle, {
+            type: "workflow.started",
+            message: `Workflow 启动（${definition.description}）`,
+            data: { workflowKind: state.workflowKind },
+          });
+        }
+        await this.runStore.saveCheckpoint(state);
+      } else {
+        state.status = "running";
+        this.touch(state);
+      }
+
       for (;;) {
         if (handle.cancelRequested) {
           await this.finalizeCancelled(handle);
@@ -534,6 +558,8 @@ export class WorkflowOrchestrator {
         } else if (error instanceof StageFailedError) {
           outcome = { ok: false, category: error.category, code: error.code, message: error.message };
         } else if (error instanceof TimeoutSignal) {
+          // 超时的 stage 仍在运行：必须 abort，否则重试的第二次尝试会与它并发（同一会话 / 同一产物目录）
+          controller.abort();
           outcome = { ok: false, category: "timeout", code: "STAGE_FAILED", message: error.message };
         } else if (error instanceof BusinessError) {
           outcome = {
@@ -550,6 +576,20 @@ export class WorkflowOrchestrator {
       }
 
       const finishedAt = this.now().toISOString();
+
+      // stage 在收到 abort 后通常以 WORKFLOW_CANCELLED 或任意异常收尾：取消意图优先于失败分类
+      if (!outcome.ok && handle.cancelRequested) {
+        state.stageHistory.push({
+          stageId: stage.id,
+          attempt,
+          status: "failed",
+          startedAt,
+          finishedAt,
+          error: { category: "permanent", code: "WORKFLOW_CANCELLED", message: "已取消" },
+        });
+        await this.finalizeCancelled(handle);
+        return false;
+      }
 
       if (outcome.ok) {
         const record: StageRecord = {
@@ -734,8 +774,9 @@ export class WorkflowOrchestrator {
       type: WorkflowDomainEventType;
     },
   ): Promise<void> {
-    // 串行化追加，保证 seq 单调、文件有序
-    handle.emitChain = handle.emitChain.then(async () => {
+    // 串行化追加，保证 seq 单调、文件有序。链本身吞掉失败（否则一次磁盘写失败会让
+    // 之后所有 emit 都抛同一个错误），失败仍向本次调用方抛出
+    const attempt = handle.emitChain.then(async () => {
       const { state } = handle;
       state.eventsSeq += 1;
       const full: WorkflowDomainEvent = {
@@ -754,7 +795,10 @@ export class WorkflowOrchestrator {
         }
       }
     });
-    await handle.emitChain;
+    handle.emitChain = attempt.catch((error: unknown) => {
+      this.log(`[workflow ${handle.state.runId}] 事件追加失败：${errorText(error)}`);
+    });
+    await attempt;
   }
 
   private registerHandle(state: WorkflowState, definition: WorkflowDefinition): RunHandle {
@@ -762,6 +806,7 @@ export class WorkflowOrchestrator {
       state,
       definition,
       cancelRequested: false,
+      resuming: false,
       loop: null,
       listeners: new Set(),
       emitChain: Promise.resolve(),
@@ -823,6 +868,10 @@ export class WorkflowOrchestrator {
 
 // ---- 辅助 ----
 
+function isActiveStatus(status: WorkflowState["status"]): boolean {
+  return status === "pending" || status === "running" || status === "awaiting_input";
+}
+
 /** 超时信号（内部；用于区分超时与其他错误） */
 class TimeoutSignal extends Error {}
 
@@ -860,6 +909,8 @@ export function classifyBusinessError(error: BusinessError): StageFailureCategor
     case "EVIDENCE_VALIDATION":
     case "IMPORT_VALIDATION":
       return "contract_violation";
+    case "PDF_PARSER_UNAVAILABLE":
+      return "runtime_unavailable";
     default:
       return "permanent";
   }

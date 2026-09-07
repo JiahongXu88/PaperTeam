@@ -38,7 +38,6 @@ export interface PaperMapServiceOptions {
 }
 
 export class PaperMapService {
-  private readonly projects: ProjectStore;
   private readonly store: PaperStore;
   private readonly runtime: AgentRuntime;
   private readonly reviewerAgentId: string;
@@ -49,7 +48,6 @@ export class PaperMapService {
   lastTelemetry: { modelCalls: number; summariesRefreshed: number; failures: number } | undefined;
 
   constructor(options: PaperMapServiceOptions) {
-    this.projects = options.projects;
     this.store = options.store;
     this.runtime = options.runtime;
     this.reviewerAgentId = options.reviewerAgentId;

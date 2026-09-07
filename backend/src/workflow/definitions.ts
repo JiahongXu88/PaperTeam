@@ -45,8 +45,9 @@ import type { PaperStore } from "../paper/PaperStore.js";
 import type { PaperMapService } from "../paper/PaperMapService.js";
 import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
 import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
-import type { ReviewFinding, FindingCategory, FindingSeverity } from "../review/finding.js";
+import { readFindings, type ReviewFinding, type FindingCategory, type FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
+import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import {
   evaluateQualityGate,
   runBuildGate,
@@ -78,6 +79,8 @@ export interface WorkflowServices {
   latex: LatexCompiler;
   /** M4.3 PDF Review Foundation 服务束（existing_paper_review 用） */
   paper: PaperReviewServices;
+  /** reviews/ 产物读写（round 编号、最新汇总） */
+  reviewArtifacts: ReviewArtifactStore;
   stageTimeoutMs: number;
   stageMaxAttempts: number;
   /** bounded loop 与 Quality Gate 阈值 */
@@ -169,11 +172,7 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         reportPaths.push(await services.reviewer.saveReport(ctx.projectId, round, result));
       }
       const summary = aggregateReviews(results, round, reportPaths);
-      const summaryPath = `reviews/review-summary-r${round}.json`;
-      await writeJsonAtomic(
-        join(services.projects.reviewsDir(ctx.projectId), `review-summary-r${round}.json`),
-        summary,
-      );
+      await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       return {
         round,
         issues: summary.counts.critical + summary.counts.major + summary.counts.minor,
@@ -187,15 +186,8 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
     },
     async verifyDod(ctx) {
       const round = countCompletions(ctx.state, "review.run") + 1;
-      try {
-        await readFile(
-          join(services.projects.reviewsDir(ctx.projectId), `review-summary-r${round}.json`),
-          "utf8",
-        );
-        return [];
-      } catch {
-        return [`reviews/review-summary-r${round}.json 不存在`];
-      }
+      const fileName = services.reviewArtifacts.summaryFileName(round);
+      return (await services.reviewArtifacts.exists(ctx.projectId, fileName)) ? [] : [`reviews/${fileName} 不存在`];
     },
   };
 }
@@ -1200,6 +1192,7 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
           projectId: ctx.projectId,
           runId: ctx.runId,
           context,
+          signal: ctx.signal,
         });
         findings.push(...outcome.findings);
         reviewed.push(scope.sectionId);
@@ -1238,7 +1231,11 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
     retryable: [],
     async execute(ctx) {
       const sections = ctx.state.stageResults["review.sections"] ?? {};
-      const findings = (sections["findings"] as ReviewFinding[] | undefined) ?? [];
+      // findings 来自 checkpoint JSON（可能被手工编辑 / 损坏）：逐条校验，不盲信结构
+      const { findings, dropped: corrupted } = readFindings(sections["findings"]);
+      if (corrupted > 0) {
+        ctx.log(`review.aggregate：checkpoint 中 ${corrupted} 条 finding 结构损坏，已丢弃`);
+      }
       const integrity = await services.paper.citationIntegrity.integrityReport(ctx.projectId);
       const map = await services.paper.store.loadMap(ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
@@ -1276,26 +1273,18 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
         },
         findings,
       };
-      const fileName = `existing-review-r${round}.json`;
-      await writeJsonAtomic(join(services.projects.reviewsDir(ctx.projectId), fileName), report);
+      const reportPath = await services.reviewArtifacts.saveExistingReview(ctx.projectId, round, report);
       return {
         round,
         findingsTotal: findings.length,
         bySeverity,
-        reportPath: `reviews/${fileName}`,
+        reportPath,
       };
     },
     async verifyDod(ctx) {
       const round = countCompletions(ctx.state, "review.aggregate") + 1;
-      try {
-        await readFile(
-          join(services.projects.reviewsDir(ctx.projectId), `existing-review-r${round}.json`),
-          "utf8",
-        );
-        return [];
-      } catch {
-        return [`reviews/existing-review-r${round}.json 不存在`];
-      }
+      const fileName = services.reviewArtifacts.existingReviewFileName(round);
+      return (await services.reviewArtifacts.exists(ctx.projectId, fileName)) ? [] : [`reviews/${fileName} 不存在`];
     },
   };
 }
@@ -1472,11 +1461,6 @@ async function applyPlanDecision(state: WorkflowState, input: ResumeInput): Prom
 // 辅助
 // ============================================================
 
-/** revision_overflow payload 内禁止访问闭包 services —— 占位（实际从 checkpoint 读） */
-function ctxServices(): never {
-  throw new BusinessError("INTERNAL_ERROR", "ctxServices 不应被调用");
-}
-
 async function requireResearchArtifact(
   services: WorkflowServices,
   projectId: string,
@@ -1554,30 +1538,11 @@ async function buildManuscriptDigest(services: WorkflowServices, projectId: stri
 }
 
 /** 读取最新 review 汇总（按 round 编号最大） */
-async function latestReviewSummary(
+function latestReviewSummary(
   services: WorkflowServices,
   projectId: string,
 ): Promise<ReviewSummary | null> {
-  const { readdir } = await import("node:fs/promises");
-  try {
-    const names = await readdir(services.projects.reviewsDir(projectId));
-    const rounds = names
-      .map((name) => /^review-summary-r(\d+)\.json$/.exec(name))
-      .filter((match): match is RegExpExecArray => match !== null)
-      .map((match) => Number(match[1]))
-      .sort((a, b) => b - a);
-    if (rounds.length === 0) {
-      return null;
-    }
-    return JSON.parse(
-      await readFile(
-        join(services.projects.reviewsDir(projectId), `review-summary-r${rounds[0]}.json`),
-        "utf8",
-      ),
-    ) as ReviewSummary;
-  } catch {
-    return null;
-  }
+  return services.reviewArtifacts.latestSummary(projectId);
 }
 
 /** 修订指令：以 ReviewIssue 形式表达，可按目标章节匹配 */

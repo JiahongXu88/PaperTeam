@@ -22,7 +22,8 @@ import {
   titlesMatch,
   type MetadataProviderContext,
 } from "../../src/citation/metadataProviders.js";
-import { CitationService } from "../../src/citation/CitationService.js";
+import { CitationService, decideMetadataResult } from "../../src/citation/CitationService.js";
+import { normalizeDoi } from "../../src/citation/metadataProviders.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 
 const tempRoots: string[] = [];
@@ -122,6 +123,36 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+describe("decideMetadataResult（多来源 → 单结论）", () => {
+  const r = (provider: string, status: "verified" | "mismatch" | "not_found" | "unverifiable") => ({
+    provider,
+    entryKey: "k",
+    status,
+  });
+
+  it("verified / mismatch 直接采用", () => {
+    expect(decideMetadataResult([r("crossref", "not_found"), r("openalex", "verified")])?.status).toBe("verified");
+    expect(decideMetadataResult([r("crossref", "mismatch")])?.status).toBe("mismatch");
+  });
+
+  it("单一来源 not_found 不足以判定 → unverifiable", () => {
+    const decided = decideMetadataResult([r("crossref", "not_found"), r("openalex", "unverifiable"), r("arxiv", "unverifiable")]);
+    expect(decided?.status).toBe("unverifiable");
+  });
+
+  it("≥2 来源 not_found 且无查询失败 → not_found；有一个来源查询失败则降级 unverifiable", () => {
+    expect(decideMetadataResult([r("crossref", "not_found"), r("openalex", "not_found"), r("arxiv", "not_found")])?.status).toBe("not_found");
+    expect(decideMetadataResult([r("crossref", "not_found"), r("openalex", "not_found"), r("arxiv", "unverifiable")])?.status).toBe("unverifiable");
+  });
+
+  it("normalizeDoi 去掉 doi: / https://doi.org/ 前缀", () => {
+    expect(normalizeDoi("doi:10.1000/xyz")).toBe("10.1000/xyz");
+    expect(normalizeDoi("https://doi.org/10.1000/xyz")).toBe("10.1000/xyz");
+    expect(normalizeDoi("http://dx.doi.org/10.1000/xyz ")).toBe("10.1000/xyz");
+    expect(normalizeDoi("10.1000/xyz")).toBe("10.1000/xyz");
+  });
+});
+
 describe("CrossRefProvider", () => {
   const provider = new CrossRefProvider();
   const entry = {
@@ -133,7 +164,7 @@ describe("CrossRefProvider", () => {
   };
 
   it("DOI 查询且标题匹配 → verified", async () => {
-    const ctx = makeCtx(async (url) =>
+    const ctx = makeCtx(async () =>
       jsonResponse({
         status: "ok",
         message: { title: "Retrieval-Augmented Generation: A Survey" },
@@ -315,7 +346,7 @@ describe("CitationService", () => {
       maxMetadataLookups: 10,
       metadataTimeoutMs: 500,
       fetchImpl: async (url) => {
-        const urlText = String(url);
+        const urlText = decodeURIComponent(String(url));
         if (urlText.includes("10.1/good")) {
           return jsonResponse({ status: "ok", message: { title: "Good Paper Title" } });
         }

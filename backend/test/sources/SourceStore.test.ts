@@ -102,6 +102,27 @@ describe("SourceStore", () => {
     expect(await sources.list(projectId)).toHaveLength(0);
   });
 
+  it("删除中间条目后新增：sourceId 按最大编号递增，不复用已删除的 id", async () => {
+    const { sources, projectId } = await newStore();
+    await sources.add(projectId, { fileName: "a.txt", content: Buffer.from("a") });
+    await sources.add(projectId, { fileName: "b.txt", content: Buffer.from("b") });
+    await sources.remove(projectId, "S001");
+    const third = await sources.add(projectId, { fileName: "c.txt", content: Buffer.from("c") });
+    expect(third.sourceId).toBe("S003");
+    expect((await sources.list(projectId)).map((item) => item.sourceId)).toEqual(["S002", "S003"]);
+    await expect(sources.getRequired(projectId, "S001")).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("索引损坏（非法 JSON）→ 报错而不是当成空库", async () => {
+    const { sources, projectId, root } = await newStore();
+    await sources.add(projectId, { fileName: "a.txt", content: Buffer.from("a") });
+    await writeFile(join(root, projectId, "sources", "index.json"), "{ not json", "utf8");
+    await expect(sources.list(projectId)).rejects.toMatchObject({ code: "INTERNAL_ERROR" });
+    await expect(sources.add(projectId, { fileName: "b.txt", content: Buffer.from("b") })).rejects.toMatchObject({
+      code: "INTERNAL_ERROR",
+    });
+  });
+
   it("非法文件名 / 空内容 / 超限拒绝", async () => {
     const { sources, projectId } = await newStore();
     await expect(

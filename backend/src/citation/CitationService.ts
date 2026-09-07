@@ -11,17 +11,13 @@
  *   即 hallucinated citation 候选）。
  */
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { collectLatexFiles } from "../manuscript/LatexFiles.js";
-import {
-  checkCitations,
-  type BibEntrySummary,
-  type CitationCheckResult,
-} from "./StaticCitationChecker.js";
+import { checkCitations, type CitationCheckResult } from "./StaticCitationChecker.js";
 import {
   CrossRefProvider,
   OpenAlexProvider,
@@ -136,11 +132,8 @@ export class CitationService {
             break; // 有明确比对结论即停止
           }
         }
-        const decisive =
-          perProvider.find((r) => r.status === "verified" || r.status === "mismatch") ??
-          perProvider.find((r) => r.status === "not_found") ??
-          perProvider[perProvider.length - 1];
-        if (decisive) {
+        const decisive = decideMetadataResult(perProvider);
+        if (decisive !== undefined) {
           results.push(decisive);
         }
       }
@@ -194,4 +187,43 @@ export class CitationService {
       return null;
     }
   }
+}
+
+/** 单个来源 not_found 视为权威所需的最少来源数（与 ScholarlyResolver 同一口径） */
+const NOT_FOUND_QUORUM = 2;
+
+/**
+ * 多来源结果 → 单条结论。
+ * verified / mismatch 是明确比对结论，直接采用；not_found 只有在至少两个来源都
+ * 未找到、且没有任何来源查询失败时才成立——一个来源覆盖不全（如 arXiv 之于期刊
+ * 论文）或网络抖动都不能把真实文献判成 hallucinated（该字段会让 Quality Gate 硬失败）。
+ */
+export function decideMetadataResult(
+  perProvider: readonly MetadataVerificationResult[],
+): MetadataVerificationResult | undefined {
+  const decisive = perProvider.find((r) => r.status === "verified" || r.status === "mismatch");
+  if (decisive !== undefined) {
+    return decisive;
+  }
+  const notFound = perProvider.filter((r) => r.status === "not_found");
+  const unverifiable = perProvider.filter((r) => r.status === "unverifiable");
+  if (notFound.length >= NOT_FOUND_QUORUM && unverifiable.length === 0) {
+    return {
+      ...notFound[0]!,
+      provider: notFound.map((r) => r.provider).join("+"),
+      note: `${notFound.length} 个来源均未找到（${notFound.map((r) => r.provider).join("、")}）`,
+    };
+  }
+  const fallback = unverifiable[0] ?? notFound[0] ?? perProvider[perProvider.length - 1];
+  if (fallback === undefined) {
+    return undefined;
+  }
+  if (fallback.status === "not_found") {
+    return {
+      ...fallback,
+      status: "unverifiable",
+      note: `仅 ${notFound.length} 个来源未找到，不足以判定不存在（需要 ${NOT_FOUND_QUORUM} 个来源一致且无查询失败）`,
+    };
+  }
+  return fallback;
 }

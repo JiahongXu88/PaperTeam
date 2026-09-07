@@ -13,7 +13,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { BusinessError } from "../errors.js";
+import { BusinessError, NotFoundError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import type { PdfAnalysis } from "./PdfAnalyzer.js";
@@ -118,7 +118,13 @@ export class SourceStore {
     }
 
     const items = await this.list(projectId);
-    const sourceId = `S${String(items.length + 1).padStart(3, "0")}`;
+    // 按已有最大编号递增（不是 length+1）：删除中间条目后新条目不得复用旧 id，
+    // 否则 parsed/<id>.json 与索引会串到别的文献上
+    const maxId = items.reduce((max, item) => {
+      const match = /^S(\d+)$/.exec(item.sourceId);
+      return match !== null ? Math.max(max, Number(match[1])) : max;
+    }, 0);
+    const sourceId = `S${String(maxId + 1).padStart(3, "0")}`;
     const timestamp = this.now().toISOString();
     const item: SourceItem = {
       sourceId,
@@ -147,24 +153,35 @@ export class SourceStore {
   async getRequired(projectId: string, sourceId: string): Promise<SourceItem> {
     const item = await this.get(projectId, sourceId);
     if (item === null) {
-      throw new BusinessError("INVALID_REQUEST", `文献不存在：${sourceId}`);
+      throw new NotFoundError("文献", sourceId);
     }
     return item;
   }
 
   async list(projectId: string): Promise<SourceItem[]> {
+    let raw: string;
     try {
-      const raw = await readFile(this.indexPath(projectId), "utf8");
-      const parsed = JSON.parse(raw) as { items?: SourceItem[] };
-      if (typeof parsed === "object" && parsed !== null && Array.isArray(parsed.items)) {
-        return parsed.items.filter(
-          (item) => typeof item === "object" && item !== null && typeof item.sourceId === "string",
-        );
+      raw = await readFile(this.indexPath(projectId), "utf8");
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") {
+        return [];
       }
-      return [];
-    } catch {
-      return [];
+      throw error;
     }
+    // 索引损坏不能当成「空库」：下一次 add 会用单条目覆盖掉全部历史
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new BusinessError("INTERNAL_ERROR", `文献索引损坏（${projectId}/sources/index.json 不是合法 JSON）`);
+    }
+    const items = (parsed as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) {
+      throw new BusinessError("INTERNAL_ERROR", `文献索引损坏（${projectId}/sources/index.json 缺少 items）`);
+    }
+    return items.filter(
+      (item): item is SourceItem => typeof item === "object" && item !== null && typeof (item as SourceItem).sourceId === "string",
+    );
   }
 
   /** 原始文件绝对路径（供分析器 / Agent 读取） */
@@ -182,7 +199,7 @@ export class SourceStore {
     const items = await this.list(projectId);
     const index = items.findIndex((item) => item.sourceId === sourceId);
     if (index === -1) {
-      throw new BusinessError("INVALID_REQUEST", `文献不存在：${sourceId}`);
+      throw new NotFoundError("文献", sourceId);
     }
     const current = items[index]!;
     const updated: SourceItem = {
@@ -216,7 +233,7 @@ export class SourceStore {
     const items = await this.list(projectId);
     const index = items.findIndex((item) => item.sourceId === sourceId);
     if (index === -1) {
-      throw new BusinessError("INVALID_REQUEST", `文献不存在：${sourceId}`);
+      throw new NotFoundError("文献", sourceId);
     }
     await mkdir(this.parsedDir(projectId), { recursive: true });
     await writeJsonAtomic(
@@ -241,7 +258,7 @@ export class SourceStore {
     const items = await this.list(projectId);
     const item = items.find((candidate) => candidate.sourceId === sourceId);
     if (item === undefined) {
-      throw new BusinessError("INVALID_REQUEST", `文献不存在：${sourceId}`);
+      throw new NotFoundError("文献", sourceId);
     }
     await rm(join(this.papersDir(projectId), item.fileName), { force: true });
     await rm(join(this.parsedDir(projectId), `${sourceId}.json`), { force: true });
