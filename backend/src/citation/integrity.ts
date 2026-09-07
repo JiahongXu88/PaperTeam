@@ -132,6 +132,12 @@ export interface CitationVerificationRecord {
   checkedAt: string;
   /** 输入指纹 = ReferenceEntry.fingerprint（复用判据） */
   fingerprint: string;
+  /**
+   * 核验算法版本（归一化 / 打分 / query plan）。与当前版本不一致的记录视为过期，
+   * 下次核验自动重查——算法升级后旧 NOT_FOUND 不会因条目原文未变而被沿用。
+   * 旧记录无此字段 → 过期。
+   */
+  algorithmVersion?: string;
   error?: string;
 }
 

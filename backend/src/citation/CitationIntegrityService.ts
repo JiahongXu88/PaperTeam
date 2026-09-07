@@ -23,7 +23,8 @@ import type {
   ReferenceEntry,
 } from "./integrity.js";
 import { deriveClaimSeverity } from "./integrity.js";
-import { ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
+import { METADATA_VERIFICATION_VERSION, ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
+import { REFERENCE_EXTRACTION_VERSION } from "../paper/ReferenceExtractor.js";
 import {
   buildClaimRecords,
   buildEvidence,
@@ -99,7 +100,9 @@ export class CitationIntegrityService {
     if (document === null) {
       throw new BusinessError("INVALID_REQUEST", "尚未上传/解析 Final PDF（先上传 PDF 再提取引用）");
     }
+    // 提取算法版本纳入指纹：extractor 修复（如断词恢复）后旧条目自动重提，不必用户删 workspace
     const inputFingerprint = fingerprintJson({
+      extractorVersion: REFERENCE_EXTRACTION_VERSION,
       referencesSectionId: document.referencesSectionId ?? null,
       chunks: document.chunks.map((chunk) => `${chunk.chunkId}:${chunk.text}`),
     });
@@ -220,7 +223,15 @@ export class CitationIntegrityService {
         "metadata",
         reference.referenceId,
       );
-      if (!options.force && existing !== null && existing.fingerprint === reference.fingerprint) {
+      // 复用条件：条目原文未变 且 核验算法版本一致（旧算法的 NOT_FOUND 不能沿用）；
+      // UNRESOLVED 是 provider 瞬时失败（限流/超时），不是结论——下次核验必须重试
+      if (
+        !options.force &&
+        existing !== null &&
+        existing.fingerprint === reference.fingerprint &&
+        existing.algorithmVersion === METADATA_VERIFICATION_VERSION &&
+        existing.status !== "UNRESOLVED"
+      ) {
         byStatus[existing.status] += 1;
         records.push(existing);
         reused += 1;
@@ -233,7 +244,10 @@ export class CitationIntegrityService {
     await this.saveStage(projectId, {
       stage: "metadata",
       status: "ok",
-      inputFingerprint: fingerprintJson(targets.map((r) => `${r.referenceId}:${r.fingerprint}`)),
+      inputFingerprint: fingerprintJson({
+        algorithmVersion: METADATA_VERIFICATION_VERSION,
+        references: targets.map((r) => `${r.referenceId}:${r.fingerprint}`),
+      }),
       outputSummary: { ...byStatus, checked: targets.length },
       updatedAt: this.now().toISOString(),
     });
@@ -307,6 +321,7 @@ export class CitationIntegrityService {
       })),
       checkedAt: this.now().toISOString(),
       fingerprint: reference.fingerprint,
+      algorithmVersion: METADATA_VERIFICATION_VERSION,
       ...(verdict.outcome === "unresolved"
         ? { error: verdict.attempts.find((a) => a.outcome === "error")?.note ?? "多源检索未获结论" }
         : {}),
