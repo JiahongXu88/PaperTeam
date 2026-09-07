@@ -72,16 +72,35 @@ export interface ReferenceView {
   page: number;
 }
 
+/** 引用条目类型（software 经官方 repository/docs 核验，学术库未收录 ≠ 未找到） */
+export type ReferenceKindView =
+  | "scholarly_paper"
+  | "software"
+  | "dataset"
+  | "documentation"
+  | "web_resource"
+  | "unknown";
+
 export type MetadataStatus =
   | "VERIFIED"
   | "METADATA_MISMATCH"
   | "AMBIGUOUS"
   | "NOT_FOUND"
+  | "PROVIDER_ERROR"
   | "UNRESOLVED";
+
+export interface SoftwareSourceView {
+  repositoryUrl: string;
+  homepage?: string;
+  description?: string;
+  stars?: number;
+  pushedAt?: string;
+}
 
 export interface MetadataRecordView {
   referenceId: string;
   status: MetadataStatus;
+  kind?: ReferenceKindView;
   probableFabrication: boolean;
   canonical?: {
     provider: string;
@@ -91,8 +110,10 @@ export interface MetadataRecordView {
     year?: number;
     venue?: string;
     doi?: string;
+    url?: string;
+    software?: SoftwareSourceView;
   };
-  mismatches?: Array<{ field: string; expected?: string; actual?: string }>;
+  mismatches?: Array<{ field: string; expected?: string; actual?: string; note?: string }>;
   /** 各学术库查询结果（核验详情用；note 是后端诊断信息，不在 UI 展示） */
   attempts?: Array<{ provider: string; outcome: string; note?: string }>;
   checkedAt?: string;
@@ -105,6 +126,54 @@ export type SemanticVerdict =
   | "CONTRADICTED"
   | "INSUFFICIENT_EVIDENCE"
   | "SKIPPED";
+
+/** 证据不足 / 跳过的结构化原因（有限枚举） */
+export type InsufficientReasonCodeView =
+  | "NO_EVIDENCE"
+  | "ABSTRACT_ONLY"
+  | "FULLTEXT_UNAVAILABLE"
+  | "PROVIDER_ERROR"
+  | "REFERENCE_UNVERIFIED"
+  | "LOW_RELEVANCE";
+
+export type EvidenceLevelView =
+  | "abstract"
+  | "metadata"
+  | "snippet"
+  | "web"
+  | "fulltext"
+  | "repository"
+  | "official_docs";
+
+export interface EvidenceRecordView {
+  source: string;
+  text: string;
+  evidenceLevel: EvidenceLevelView;
+  page?: number;
+  url?: string;
+  doi?: string;
+}
+
+/** 一条 (claim, citation) 语义核验记录（同文献多处被引 = 多条记录） */
+export interface ClaimRecordView {
+  claimCitationId: string;
+  citationId: string;
+  referenceId: string;
+  claimText: string;
+  sectionId: string;
+  page: number;
+  priority: "obligatory" | "helpful";
+  metadataStatus: MetadataStatus | "SKIPPED_NO_METADATA";
+  verdict: SemanticVerdict;
+  reason?: string;
+  reasonCode?: InsufficientReasonCodeView;
+  evidence: EvidenceRecordView[];
+  severity: "critical" | "major" | "minor" | "info";
+  status: "pending" | "verified" | "skipped" | "failed";
+  model?: string;
+  error?: string;
+  verifiedAt?: string;
+}
 
 export interface IntegrityReportView {
   metadataByStatus: Record<MetadataStatus, number>;

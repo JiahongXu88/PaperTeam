@@ -746,6 +746,29 @@
   white-space: nowrap;
 }
 
+/* 可点击的统计项（语义核验 → 过滤明细）：按钮语义但保持 ledger 视觉 */
+.ledger-item-button {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed currentColor;
+}
+
+.ledger-item-button:hover,
+.ledger-item-button:focus-visible {
+  border-bottom-style: solid;
+}
+
+.ledger-item-active {
+  font-weight: 600;
+  outline: 1px solid currentColor;
+  outline-offset: 2px;
+}
+
 .ledger-bar {
   display: flex;
   height: 4px;
@@ -962,6 +985,79 @@
 .finding-suggestion {
   font-size: var(--fs-meta);
   color: var(--ink-2);
+}
+
+/* ---------- 语义核验明细 ---------- */
+
+.claim-row .finding-claim {
+  margin: var(--s-2) 0;
+}
+
+.claim-ref {
+  margin: 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+}
+
+.claim-reason {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+}
+
+.claim-evidence-empty {
+  margin: var(--s-1) 0 0;
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.claim-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin: var(--s-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.claim-evidence-meta {
+  display: block;
+  font-size: var(--fs-meta);
+  color: var(--ink-3);
+}
+
+.claim-evidence-list blockquote {
+  margin: var(--s-1) 0;
+  padding: var(--s-2) var(--s-3);
+  border-left: 2px solid var(--line-strong);
+  font-size: var(--fs-meta);
+  color: var(--ink-2);
+}
+
+.claim-evidence-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  font-size: var(--fs-meta);
+  word-break: break-all;
+}
+
+.claim-unsupported .gutter-num,
+.claim-contradicted .gutter-num {
+  color: var(--danger);
+  border-right-color: var(--danger);
+}
+
+.ref-software {
+  display: block;
+  margin-top: var(--s-1);
+  font-size: var(--fs-meta);
+  word-break: break-all;
+}
+
+.ref-software .ref-source {
+  margin-left: var(--s-3);
 }
 
 .finding-critical .gutter-num {

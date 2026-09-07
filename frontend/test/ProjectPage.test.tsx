@@ -33,6 +33,8 @@ vi.mock("../src/api/paper.js", () => ({
   verifyClaims: vi.fn(),
   getCitationIntegrity: vi.fn(),
   getMetadataRecords: vi.fn(),
+  getClaimRecords: vi.fn(async () => []),
+  exportReviewReport: vi.fn(),
 }));
 
 const { getProject } = await import("../src/api/projects.js");

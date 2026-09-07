@@ -25,6 +25,8 @@ vi.mock("../src/api/paper.js", () => ({
   verifyClaims: vi.fn(),
   getCitationIntegrity: vi.fn(),
   getMetadataRecords: vi.fn(),
+  getClaimRecords: vi.fn(async () => []),
+  exportReviewReport: vi.fn(),
 }));
 
 const { listSkills } = await import("../src/api/skills.js");
@@ -229,6 +231,7 @@ describe("CitationsPanel（M4.3.7）", () => {
           METADATA_MISMATCH: 0,
           AMBIGUOUS: 0,
           NOT_FOUND: 1,
+          PROVIDER_ERROR: 0,
           UNRESOLVED: 0,
         },
         probableFabrications: ["R002"],

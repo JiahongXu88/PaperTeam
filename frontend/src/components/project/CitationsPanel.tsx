@@ -1,9 +1,15 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { ErrorState, Loading } from "../common/StateViews.js";
-import { METADATA_STATUS_STYLES, SEMANTIC_VERDICT_STYLES, statusStyleOf } from "../common/status.js";
+import {
+  METADATA_STATUS_STYLES,
+  REFERENCE_KIND_LABELS,
+  SEMANTIC_VERDICT_STYLES,
+  statusStyleOf,
+} from "../common/status.js";
 import {
   SEMANTIC_VERIFY_LIMIT,
+  useClaimRecords,
   useCitationIntegrity,
   useCitations,
   useExtractCitations,
@@ -13,20 +19,48 @@ import {
 } from "../../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import type { MetadataRecordView, MetadataStatus, ReferenceView, SemanticVerdict } from "../../types/paper.js";
+import { SemanticClaimsSection, type ClaimFilter } from "./SemanticClaims.js";
 
 /**
  * 引用核验：三段"登记簿"（提取 / 真实性 / 语义）各带自己的操作，账目对平：
  * Σ 各状态 + 未核验 = 参考文献总数。两层核验严格区分——文献真实性 ≠ 文献支持论断；
- * 查无此文 ≠ 捏造，证据不足 ≠ 不支持。参考文献列表：编号在左侧栏位，状态在右。
+ * 查无此文 ≠ 捏造，证据不足 ≠ 不支持。语义核验的统计数字可点击——直接过滤明细列表。
+ * 参考文献列表：编号在左侧栏位，状态在右。
  */
 
-const METADATA_ORDER: readonly MetadataStatus[] = ["VERIFIED", "METADATA_MISMATCH", "AMBIGUOUS", "NOT_FOUND", "UNRESOLVED"];
+const METADATA_ORDER: readonly MetadataStatus[] = ["VERIFIED", "METADATA_MISMATCH", "AMBIGUOUS", "NOT_FOUND", "PROVIDER_ERROR", "UNRESOLVED"];
 const VERDICT_ORDER: readonly SemanticVerdict[] = ["SUPPORTED", "PARTIALLY_SUPPORTED", "UNSUPPORTED", "CONTRADICTED", "INSUFFICIENT_EVIDENCE", "SKIPPED"];
 
 type ReferenceFilter = "all" | "flagged" | "unchecked";
 
 function LedgerItem({ label, tone, count }: { label: string; tone: string; count: number }) {
   return <span className={`ledger-item status status-tone-${tone}`}>{`${label} ${count}`}</span>;
+}
+
+/** 可点击的统计项（语义核验）：点击即过滤下方明细列表并滚动过去 */
+function LedgerFilterItem({
+  label,
+  tone,
+  count,
+  active,
+  onClick,
+}: {
+  label: string;
+  tone: string;
+  count: number;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`ledger-item ledger-item-button status status-tone-${tone}${active ? " ledger-item-active" : ""}`}
+      onClick={onClick}
+      data-testid={`ledger-filter-${label}`}
+    >
+      {`${label} ${count}`}
+    </button>
+  );
 }
 
 /** 分布比例条（宽度为 0 的段不渲染；纯视觉，不承载信息） */
@@ -69,6 +103,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   openalex: "OpenAlex",
   "semantic-scholar": "Semantic Scholar",
   arxiv: "arXiv",
+  github: "GitHub（官方仓库）",
 };
 
 function providerLabel(provider: string): string {
@@ -79,10 +114,13 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
   const citations = useCitations(projectId);
   const integrity = useCitationIntegrity(projectId);
   const metadataRecords = useMetadataRecords(projectId);
+  const claimRecords = useClaimRecords(projectId);
   const extract = useExtractCitations(projectId);
   const verifyMeta = useVerifyMetadata(projectId);
   const verifyClaims = useVerifyClaims(projectId);
   const [filter, setFilter] = useState<ReferenceFilter>("all");
+  const [claimFilter, setClaimFilter] = useState<ClaimFilter>("all");
+  const claimsHeadingRef = useRef<HTMLDivElement | null>(null);
 
   const recordsById = useMemo(() => {
     const map = new Map<string, MetadataRecordView>();
@@ -91,6 +129,12 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
     }
     return map;
   }, [metadataRecords.data]);
+
+  /** 点击语义核验统计 → 过滤明细并滚动到列表 */
+  const filterClaims = (verdict: ClaimFilter) => {
+    setClaimFilter(verdict);
+    claimsHeadingRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   if (citations.isPending) {
     return <Loading label="加载引用数据…" />;
@@ -144,7 +188,12 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
   const unchecked = Math.max(0, summary.references - checkedTotal);
 
   const isFlagged = (record: MetadataRecordView | undefined) =>
-    record !== undefined && (record.status === "NOT_FOUND" || record.status === "METADATA_MISMATCH" || record.probableFabrication);
+    record !== undefined &&
+    (record.status === "NOT_FOUND" ||
+      record.status === "METADATA_MISMATCH" ||
+      record.status === "PROVIDER_ERROR" ||
+      record.status === "UNRESOLVED" ||
+      record.probableFabrication);
   const visibleReferences = references.filter((reference) => {
     const record = recordsById.get(reference.referenceId);
     if (filter === "flagged") {
@@ -228,7 +277,16 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
             {report !== undefined && report.semantic.total > 0 ? (
               VERDICT_ORDER.filter((verdict) => (report.semantic.byVerdict[verdict] ?? 0) > 0).map((verdict) => {
                 const style = statusStyleOf(SEMANTIC_VERDICT_STYLES, verdict);
-                return <LedgerItem key={verdict} label={style.label} tone={style.tone} count={report.semantic.byVerdict[verdict] ?? 0} />;
+                return (
+                  <LedgerFilterItem
+                    key={verdict}
+                    label={style.label}
+                    tone={style.tone}
+                    count={report.semantic.byVerdict[verdict] ?? 0}
+                    active={claimFilter === verdict}
+                    onClick={() => filterClaims(claimFilter === verdict ? "all" : verdict)}
+                  />
+                );
               })
             ) : (
               <span className="ledger-item muted">
@@ -242,6 +300,17 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
             </p>
           ) : null}
         </section>
+      </div>
+
+      <div ref={claimsHeadingRef}>
+        <SemanticClaimsSection
+          projectId={projectId}
+          claims={claimRecords.data ?? []}
+          references={references}
+          metadataById={recordsById}
+          filter={claimFilter}
+          onFilterChange={setClaimFilter}
+        />
       </div>
 
       <section className="section-block">
@@ -286,6 +355,8 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
 
 function ReferenceRow({ reference, record }: { reference: ReferenceView; record?: MetadataRecordView }) {
   const canonicalDoi = record?.canonical?.doi ?? reference.doi;
+  const software = record?.canonical?.software;
+  const kind = record?.kind;
   const title = displayTitle(reference.title);
   const author = reference.authors?.[0];
   const metaParts = [
@@ -304,7 +375,14 @@ function ReferenceRow({ reference, record }: { reference: ReferenceView; record?
       </span>
       <div className="gutter-body">
         {title !== undefined ? (
-          <span className="ref-title">{title}</span>
+          <span className="ref-title">
+            {title}
+            {kind !== undefined && kind !== "scholarly_paper" ? (
+              <span className="chip" title="引用类型（核验语义不同：软件经官方仓库核验）">
+                {REFERENCE_KIND_LABELS[kind] ?? kind}
+              </span>
+            ) : null}
+          </span>
         ) : (
           <span className="ref-rawtext" title={stripSoftHyphens(reference.rawText)}>
             {stripSoftHyphens(reference.rawText)}
@@ -319,7 +397,23 @@ function ReferenceRow({ reference, record }: { reference: ReferenceView; record?
             ))}
           </span>
         ) : null}
-        {canonicalDoi !== undefined ? (
+        {software !== undefined ? (
+          <span className="ref-software mono">
+            <a href={software.repositoryUrl} target="_blank" rel="noreferrer">
+              {software.repositoryUrl.replace(/^https?:\/\//, "")}
+            </a>
+            {software.homepage !== undefined && software.homepage !== "" ? (
+              <>
+                {" · "}
+                <a href={software.homepage} target="_blank" rel="noreferrer">
+                  官方文档
+                </a>
+              </>
+            ) : null}
+            {software.stars !== undefined ? <span className="muted"> · ★ {software.stars.toLocaleString()}</span> : null}
+            <span className="muted ref-source">官方来源 GitHub</span>
+          </span>
+        ) : canonicalDoi !== undefined ? (
           <span className="ref-doi mono">
             {canonicalDoi}
             {record?.canonical !== undefined ? <span className="muted ref-source">来源 {record.canonical.provider}</span> : null}
@@ -332,7 +426,7 @@ function ReferenceRow({ reference, record }: { reference: ReferenceView; record?
         {record?.probableFabrication === true ? <span className="ref-flag ref-flag-danger">多个学术库一致查无此文（疑似捏造，需人工确认）</span> : null}
         {record?.mismatches !== undefined && record.mismatches.length > 0 ? (
           <span className="ref-flag ref-flag-warn">
-            差异：{record.mismatches.map((m) => `${m.field}：文中 ${m.expected ?? "?"}，库中 ${m.actual ?? "?"}`).join("；")}
+            差异：{record.mismatches.map((m) => `${m.field}：文中 ${m.expected ?? "?"}，库中 ${m.actual ?? "?"}${m.note !== undefined ? `（${m.note}）` : ""}`).join("；")}
           </span>
         ) : null}
         {record !== undefined ? <VerificationDetails record={record} /> : null}

@@ -14,8 +14,10 @@ import {
 import { getRuntimeStatus } from "../api/runtime.js";
 import { createWorkflowRun, listProjectRuns } from "../api/runs.js";
 import {
+  exportReviewReport,
   extractCitations,
   getCitationIntegrity,
+  getClaimRecords,
   getMetadataRecords,
   getPaper,
   getPaperReviewReport,
@@ -55,6 +57,7 @@ export const queryKeys = {
   citations: (projectId: string) => ["project", projectId, "citations"] as const,
   citationIntegrity: (projectId: string) => ["project", projectId, "citations", "integrity"] as const,
   metadataRecords: (projectId: string) => ["project", projectId, "citations", "metadata"] as const,
+  claimRecords: (projectId: string) => ["project", projectId, "citations", "claims"] as const,
   runtimeStatus: ["runtime-status"] as const,
   skills: ["skills"] as const,
   modelSettings: ["model-settings"] as const,
@@ -210,6 +213,23 @@ export function usePaperReviewReport(projectId: string | undefined) {
   });
 }
 
+/** 导出完整 Review Markdown 报告（浏览器下载 .md；完整报告不受前端筛选影响） */
+export function useExportReviewReport(projectId: string | undefined) {
+  return useMutation({
+    mutationFn: async () => {
+      const { blob, fileName } = await exportReviewReport(projectId ?? "");
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName ?? "PaperTeam-Review.md";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    },
+  });
+}
+
 // ---- 运行环境 ----
 
 /** Runtime / 模型 / PDF 工具链状态：30s 轮询 + 窗口聚焦刷新 */
@@ -278,6 +298,15 @@ export function useMetadataRecords(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.metadataRecords(projectId ?? ""),
     queryFn: ({ signal }) => getMetadataRecords(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 逐条 (claim, citation) 语义核验记录（语义核验明细列表） */
+export function useClaimRecords(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.claimRecords(projectId ?? ""),
+    queryFn: ({ signal }) => getClaimRecords(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
   });
 }

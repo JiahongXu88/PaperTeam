@@ -20,15 +20,17 @@ vi.mock("../src/api/paper.js", () => ({
   verifyClaims: vi.fn(),
   getCitationIntegrity: vi.fn(),
   getMetadataRecords: vi.fn(),
+  getClaimRecords: vi.fn(),
+  exportReviewReport: vi.fn(),
 }));
 
-const { listCitations, getCitationIntegrity, getMetadataRecords } = await import("../src/api/paper.js");
+const { listCitations, getCitationIntegrity, getMetadataRecords, getClaimRecords } = await import("../src/api/paper.js");
 
 const SOFT_HYPHEN = "\u00AD";
 
 function report(byStatus: Partial<Record<MetadataStatus, number>>): IntegrityReportView {
   return {
-    metadataByStatus: { VERIFIED: 0, METADATA_MISMATCH: 0, AMBIGUOUS: 0, NOT_FOUND: 0, UNRESOLVED: 0, ...byStatus },
+    metadataByStatus: { VERIFIED: 0, METADATA_MISMATCH: 0, AMBIGUOUS: 0, NOT_FOUND: 0, PROVIDER_ERROR: 0, UNRESOLVED: 0, ...byStatus },
     probableFabrications: [],
     semantic: {
       total: 0,
@@ -135,22 +137,24 @@ function mockPanelData() {
   });
   vi.mocked(getCitationIntegrity).mockResolvedValue({ report: report({ VERIFIED: 1, METADATA_MISMATCH: 1, UNRESOLVED: 1, NOT_FOUND: 1 }) });
   vi.mocked(getMetadataRecords).mockResolvedValue(RECORDS);
+  vi.mocked(getClaimRecords).mockResolvedValue([]);
 }
 
 describe("引用真实性状态文案（后端枚举 → 中文，无特判）", () => {
-  it("五种 status 各有唯一文案；UNRESOLVED 是「待确认」而不是「未找到」", () => {
+  it("各 status 有唯一文案；查询失败是「核验暂未完成」而不是「未找到」", () => {
     expect(statusStyleOf(METADATA_STATUS_STYLES, "VERIFIED").label).toBe("已验证");
     expect(statusStyleOf(METADATA_STATUS_STYLES, "METADATA_MISMATCH").label).toBe("元数据不一致");
     expect(statusStyleOf(METADATA_STATUS_STYLES, "NOT_FOUND").label).toBe("未找到");
-    expect(statusStyleOf(METADATA_STATUS_STYLES, "UNRESOLVED").label).toBe("待确认");
-    expect(statusStyleOf(METADATA_STATUS_STYLES, "AMBIGUOUS").label).toBe("待定");
+    expect(statusStyleOf(METADATA_STATUS_STYLES, "PROVIDER_ERROR").label).toBe("核验暂未完成");
+    expect(statusStyleOf(METADATA_STATUS_STYLES, "UNRESOLVED").label).toBe("核验暂未完成");
+    expect(statusStyleOf(METADATA_STATUS_STYLES, "AMBIGUOUS").label).toBe("待确认");
     expect(statusStyleOf(METADATA_STATUS_STYLES, "UNRESOLVED").tone).not.toBe("danger");
     expect(statusStyleOf(METADATA_STATUS_STYLES, "SOMETHING_NEW").label).toBe("SOMETHING_NEW"); // 未知值原样
   });
 });
 
 describe("CitationsPanel：状态行与核验详情", () => {
-  it("每条文献按后端 status 显示；provider 失败的条目显示「待确认」，不显示「未找到」", async () => {
+  it("每条文献按后端 status 显示；provider 失败的条目显示「核验暂未完成」，不显示「未找到」", async () => {
     mockPanelData();
     renderWithProviders(<CitationsPanel projectId="p-x1" />);
 
@@ -159,14 +163,14 @@ describe("CitationsPanel：状态行与核验详情", () => {
     expect(within(await rowOf("R006")).getByText("元数据不一致")).toBeInTheDocument();
     expect(within(await rowOf("R006")).getByText(/year：文中 2019，库中 2023/)).toBeInTheDocument();
     const unresolved = await rowOf("R020");
-    expect(within(unresolved).getByText("待确认")).toBeInTheDocument();
+    expect(within(unresolved).getByText("核验暂未完成")).toBeInTheDocument();
     expect(within(unresolved).queryByText("未找到")).toBeNull();
     const ghost = await rowOf("R099");
     expect(within(ghost).getByText("未找到")).toBeInTheDocument();
     expect(within(ghost).getByText(/疑似捏造/)).toBeInTheDocument();
     // 账目：登记簿 chips
     expect(screen.getByText("已验证 1")).toBeInTheDocument();
-    expect(screen.getByText("待确认 1")).toBeInTheDocument();
+    expect(screen.getByText("核验暂未完成 1")).toBeInTheDocument();
   });
 
   it("标题中的断词标记（U+00AD）不进入展示文本", async () => {

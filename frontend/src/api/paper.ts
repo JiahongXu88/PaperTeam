@@ -11,8 +11,9 @@
  *   GET  /api/projects/:id/citations/integrity    → 汇总报告
  */
 
-import { apiClient } from "./client.js";
+import { apiClient, apiDownload } from "./client.js";
 import type {
+  ClaimRecordView,
   IntegrityReportView,
   MetadataRecordView,
   PaperResponse,
@@ -103,6 +104,26 @@ export async function getMetadataRecords(
     signal,
   );
   return body.records ?? [];
+}
+
+/** 逐条 (claim, citation) 语义核验记录（语义核验明细列表数据源） */
+export async function getClaimRecords(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ClaimRecordView[]> {
+  const body = await apiClient.get<{ records: ClaimRecordView[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/citations/claims`,
+    signal,
+  );
+  return body.records ?? [];
+}
+
+/** 导出完整 Review Markdown 报告（与 Web UI 同源的结构化数据；404 = 尚无报告） */
+export async function exportReviewReport(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; fileName?: string }> {
+  return apiDownload(`/api/projects/${encodeURIComponent(projectId)}/paper-review/export.md`, signal);
 }
 
 /** 最新快速 Review 聚合报告（existing_paper_review；尚无报告为 null） */

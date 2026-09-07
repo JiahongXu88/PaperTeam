@@ -26,13 +26,14 @@ export const RUN_STATUS_STYLES: Record<string, StatusStyle> = {
   cancelled: { label: "已取消", tone: "neutral" },
 };
 
-/** 引用真实性（外部学术库确定性核验） */
+/** 引用真实性（外部权威源确定性核验：学术库 + 软件官方仓库） */
 export const METADATA_STATUS_STYLES: Record<string, StatusStyle> = {
   VERIFIED: { label: "已验证", tone: "ok" },
   METADATA_MISMATCH: { label: "元数据不一致", tone: "warn" },
-  AMBIGUOUS: { label: "待定", tone: "neutral" },
+  AMBIGUOUS: { label: "待确认", tone: "neutral" },
   NOT_FOUND: { label: "未找到", tone: "danger" },
-  UNRESOLVED: { label: "待确认", tone: "neutral" },
+  PROVIDER_ERROR: { label: "核验暂未完成", tone: "warn" },
+  UNRESOLVED: { label: "核验暂未完成", tone: "warn" },
 };
 
 /** (claim, citation) 语义核验 verdict */
@@ -43,6 +44,37 @@ export const SEMANTIC_VERDICT_STYLES: Record<string, StatusStyle> = {
   CONTRADICTED: { label: "存在矛盾", tone: "danger" },
   INSUFFICIENT_EVIDENCE: { label: "证据不足", tone: "neutral" },
   SKIPPED: { label: "跳过", tone: "neutral" },
+};
+
+/** 证据不足 / 跳过的结构化原因（与后端 InsufficientReasonCode 对应） */
+export const REASON_CODE_LABELS: Record<string, string> = {
+  NO_EVIDENCE: "只获取到书目 metadata，没有摘要/正文等可判证据",
+  ABSTRACT_ONLY: "仅有摘要（或仓库描述）级证据，论断超出其支持范围",
+  FULLTEXT_UNAVAILABLE: "全文无法获取",
+  PROVIDER_ERROR: "模型/检索 provider 查询失败",
+  REFERENCE_UNVERIFIED: "文献真实性未确立，语义核验跳过",
+  LOW_RELEVANCE: "现有证据与论断相关性不足",
+};
+
+/** 引用条目类型 */
+export const REFERENCE_KIND_LABELS: Record<string, string> = {
+  scholarly_paper: "学术论文",
+  software: "软件",
+  dataset: "数据集",
+  documentation: "文档",
+  web_resource: "网络资源",
+  unknown: "未知类型",
+};
+
+/** 证据等级 */
+export const EVIDENCE_LEVEL_LABELS: Record<string, string> = {
+  abstract: "摘要",
+  metadata: "书目元数据",
+  snippet: "检索片段",
+  web: "网页",
+  fulltext: "全文",
+  repository: "官方仓库",
+  official_docs: "官方文档",
 };
 
 export const EXTRACTION_QUALITY_STYLES: Record<string, StatusStyle> = {
