@@ -33,6 +33,7 @@ export const CLAIM_FILTER_ORDER: readonly ClaimFilter[] = [
   "CONTRADICTED",
   "INSUFFICIENT_EVIDENCE",
   "SKIPPED",
+  "NO_CONTRADICTION_DETECTED",
 ];
 
 /** 后端把 PDF 行尾断词编码为软连字符（U+00AD）；展示时去掉 */

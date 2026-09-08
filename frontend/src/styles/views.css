@@ -1159,6 +1159,40 @@
   font-size: var(--fs-section-title);
 }
 
+/* 开始/重新 Review 的启动控制：按钮行 + 折叠的高级选项（语义核验模式） */
+.review-start-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s-1);
+}
+
+.review-start-advanced {
+  padding: var(--s-1) 0 0;
+}
+
+.review-semantic-mode-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-top: var(--s-2);
+}
+
+.review-semantic-mode-field label {
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.review-semantic-mode-field select {
+  max-width: 220px;
+}
+
+.review-semantic-mode-field .field-help {
+  max-width: 260px;
+  text-align: right;
+}
+
 /* 概要卡：进度环 / 状态说明 / 严重度统计 */
 .review-summary {
   display: grid;

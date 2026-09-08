@@ -192,3 +192,104 @@ describe("ReviewPanel 报告视图", () => {
     expect(screen.getByTestId("start-review")).toHaveTextContent("重新 Review");
   });
 });
+
+describe("ReviewPanel 引用语义核验模式", () => {
+  it("高级选项默认关闭；启动 payload 携带所选模式（off / contradiction_only / full）", async () => {
+    const createWorkflowRun = vi.mocked(runsApi.createWorkflowRun);
+    createWorkflowRun.mockResolvedValue({ runId: "w-2", status: "pending", workflowKind: "existing_paper_review" });
+    renderReview();
+    await screen.findByTestId("review-report");
+    const user = userEvent.setup();
+
+    const select = screen.getByTestId("semantic-mode-select") as HTMLSelectElement;
+    expect(select.value).toBe("off"); // 默认关闭（推荐）
+    const labels = within(select)
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+    expect(labels).toEqual(["关闭（推荐）", "仅检查明显冲突", "完整核验"]);
+
+    await user.click(screen.getByTestId("start-review"));
+    expect(createWorkflowRun).toHaveBeenLastCalledWith("p-review0001", "existing_paper_review", {
+      citationSemanticMode: "off",
+    });
+
+    await user.selectOptions(select, "contradiction_only");
+    await user.click(screen.getByTestId("start-review"));
+    expect(createWorkflowRun).toHaveBeenLastCalledWith("p-review0001", "existing_paper_review", {
+      citationSemanticMode: "contradiction_only",
+    });
+
+    await user.selectOptions(select, "full");
+    await user.click(screen.getByTestId("start-review"));
+    expect(createWorkflowRun).toHaveBeenLastCalledWith("p-review0001", "existing_paper_review", {
+      citationSemanticMode: "full",
+    });
+  });
+
+  it("off 轮报告：克制的「引用语义核验未开启」+ 低权重「进行语义核验」入口；不显示语义统计", async () => {
+    vi.mocked(paperApi.getPaper).mockResolvedValue(paper);
+    vi.mocked(paperApi.getPaperReviewReport).mockResolvedValue({
+      ...report,
+      citationSemanticMode: "off",
+      citationIntegrity: { metadataByStatus: { VERIFIED: 24, NOT_FOUND: 1 }, probableFabrications: [] },
+    });
+    vi.mocked(runsApi.listProjectRuns).mockResolvedValue([completedRun]);
+    const onOpenTab = vi.fn();
+    renderWithProviders(<ReviewPanel projectId="p-review0001" onOpenTab={onOpenTab} />);
+
+    const reportBlock = await screen.findByTestId("review-report");
+    const note = within(reportBlock).getByTestId("semantic-mode-note");
+    expect(note).toHaveTextContent("引用语义核验未开启");
+    // 不渲染「支持 0 / 不支持 0 / 证据不足 0」这类无意义统计
+    expect(reportBlock.textContent).not.toContain("支持 0");
+    expect(reportBlock.textContent).not.toContain("证据不足 0");
+    await userEvent.setup().click(within(note).getByRole("button", { name: "进行语义核验" }));
+    expect(onOpenTab).toHaveBeenCalledWith("citations");
+  });
+
+  it("contradiction_only 轮报告：展示模式与明显矛盾计数", async () => {
+    vi.mocked(paperApi.getPaper).mockResolvedValue(paper);
+    vi.mocked(paperApi.getPaperReviewReport).mockResolvedValue({
+      ...report,
+      citationSemanticMode: "contradiction_only",
+      citationIntegrity: {
+        probableFabrications: [],
+        semantic: { byVerdict: { CONTRADICTED: 2, NO_CONTRADICTION_DETECTED: 22 } },
+      },
+    });
+    vi.mocked(runsApi.listProjectRuns).mockResolvedValue([completedRun]);
+    renderWithProviders(<ReviewPanel projectId="p-review0001" onOpenTab={() => {}} />);
+
+    const reportBlock = await screen.findByTestId("review-report");
+    const note = within(reportBlock).getByTestId("semantic-mode-note");
+    expect(note).toHaveTextContent("仅检查明显冲突");
+    expect(note).toHaveTextContent("明显矛盾 2");
+  });
+
+  it("旧 full 报告（无 mode 字段）不渲染 off 注记——历史语义结果照常展示", async () => {
+    renderReview(); // fixture 无 citationSemanticMode
+    const reportBlock = await screen.findByTestId("review-report");
+    expect(within(reportBlock).queryByTestId("semantic-mode-note")).toBeNull();
+  });
+
+  it("off run 运行中的阶段清单不含「核验论断与引用一致性」", async () => {
+    vi.mocked(paperApi.getPaper).mockResolvedValue(paper);
+    vi.mocked(paperApi.getPaperReviewReport).mockResolvedValue(null);
+    vi.mocked(runsApi.listProjectRuns).mockResolvedValue([
+      {
+        ...completedRun,
+        status: "running",
+        currentStage: "review.sections",
+        citationSemanticMode: "off",
+        progress: { stageId: "review.sections", data: { completed: 1, total: 3 }, updatedAt: "2026-09-07T06:47:46.398Z" },
+      },
+    ]);
+    renderWithProviders(<ReviewPanel projectId="p-review0001" onOpenTab={() => {}} />);
+    const running = await screen.findByTestId("review-running");
+    const stagesText = running.textContent ?? "";
+    for (const label of ["解析论文结构", "提取引用", "核验引用真实性", "分章节审阅", "生成 Review 报告"]) {
+      expect(stagesText).toContain(label);
+    }
+    expect(stagesText).not.toContain("核验论断与引用一致性");
+  });
+});

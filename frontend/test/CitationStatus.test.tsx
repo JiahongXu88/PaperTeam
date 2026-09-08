@@ -34,7 +34,7 @@ function report(byStatus: Partial<Record<MetadataStatus, number>>): IntegrityRep
     probableFabrications: [],
     semantic: {
       total: 0,
-      byVerdict: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 0, CONTRADICTED: 0, INSUFFICIENT_EVIDENCE: 0, SKIPPED: 0 },
+      byVerdict: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 0, CONTRADICTED: 0, INSUFFICIENT_EVIDENCE: 0, SKIPPED: 0, NO_CONTRADICTION_DETECTED: 0 },
       gate: { probableFabricated: 0, notFoundObligatory: 0, unsupportedCritical: 0, mismatchCritical: 0, insufficientEvidence: 0 },
     },
   };

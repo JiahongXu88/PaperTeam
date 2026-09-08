@@ -244,6 +244,7 @@ describe("CitationsPanel（M4.3.7）", () => {
             CONTRADICTED: 0,
             INSUFFICIENT_EVIDENCE: 0,
             SKIPPED: 0,
+            NO_CONTRADICTION_DETECTED: 0,
           },
           gate: {
             probableFabricated: 1,

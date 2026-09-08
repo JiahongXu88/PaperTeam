@@ -15,6 +15,12 @@ export type WorkflowKind =
   | "existing_paper_improvement"
   | "existing_paper_review";
 
+/**
+ * 引用语义核验模式（Claim-Citation 一致性核验档位；Backend citation/semanticMode.ts）。
+ * 引用真实性 / metadata 核验不受此模式影响（始终执行）。
+ */
+export type CitationSemanticMode = "off" | "contradiction_only" | "full";
+
 /** 项目状态（project.json status） */
 export type ProjectStatus = "created" | "generated" | "failed";
 
@@ -95,6 +101,8 @@ export interface WorkflowRunView {
   completion?: { label: "final" | "draft" | "review" } | null;
   /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
+  /** 语义核验模式（existing_paper_review run 的 request 快照；旧 run 缺省 full） */
+  citationSemanticMode?: CitationSemanticMode;
 }
 
 // ---- Existing-Paper Review（existing_paper_review 聚合报告） ----
@@ -119,6 +127,8 @@ export interface ExistingReviewReportView {
   kind: "existing_paper_review";
   round: number;
   generatedAt: string;
+  /** 本轮语义核验模式（off 轮不携带 semantic 统计；旧报告缺省视为 full） */
+  citationSemanticMode?: CitationSemanticMode;
   paper: { title: string; pageCount?: number; sections?: number };
   review: {
     sectionsReviewed: number;

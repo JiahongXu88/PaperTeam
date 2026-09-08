@@ -14,6 +14,7 @@ import {
   useCitations,
   useExtractCitations,
   useMetadataRecords,
+  usePaperReviewReport,
   useVerifyClaims,
   useVerifyMetadata,
 } from "../../hooks/queries.js";
@@ -115,6 +116,7 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
   const integrity = useCitationIntegrity(projectId);
   const metadataRecords = useMetadataRecords(projectId);
   const claimRecords = useClaimRecords(projectId);
+  const reviewReport = usePaperReviewReport(projectId);
   const extract = useExtractCitations(projectId);
   const verifyMeta = useVerifyMetadata(projectId);
   const verifyClaims = useVerifyClaims(projectId);
@@ -153,6 +155,9 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
   const summary = citations.data.summary;
   const references = citations.data.references;
   const report = integrity.data?.report;
+  // 最近一轮 Review 的语义核验模式：off 时下方统计（如有）只是历史轮遗留的登记记录，
+  // 不是本轮 Review 的产物——如实标注，避免误读为当前轮结果
+  const latestReviewModeOff = reviewReport.data?.citationSemanticMode === "off";
 
   if (!summary.extracted) {
     return (
@@ -275,19 +280,26 @@ export function CitationsPanel({ projectId }: { projectId: string }) {
           </div>
           <div className="ledger">
             {report !== undefined && report.semantic.total > 0 ? (
-              VERDICT_ORDER.filter((verdict) => (report.semantic.byVerdict[verdict] ?? 0) > 0).map((verdict) => {
-                const style = statusStyleOf(SEMANTIC_VERDICT_STYLES, verdict);
-                return (
-                  <LedgerFilterItem
-                    key={verdict}
-                    label={style.label}
-                    tone={style.tone}
-                    count={report.semantic.byVerdict[verdict] ?? 0}
-                    active={claimFilter === verdict}
-                    onClick={() => filterClaims(claimFilter === verdict ? "all" : verdict)}
-                  />
-                );
-              })
+              <>
+                {latestReviewModeOff ? (
+                  <span className="ledger-item muted" title="以下为历史核验记录；最近一轮 Review 未开启语义核验">
+                    最近一轮 Review 未开启语义核验（历史记录）
+                  </span>
+                ) : null}
+                {VERDICT_ORDER.filter((verdict) => (report.semantic.byVerdict[verdict] ?? 0) > 0).map((verdict) => {
+                  const style = statusStyleOf(SEMANTIC_VERDICT_STYLES, verdict);
+                  return (
+                    <LedgerFilterItem
+                      key={verdict}
+                      label={style.label}
+                      tone={style.tone}
+                      count={report.semantic.byVerdict[verdict] ?? 0}
+                      active={claimFilter === verdict}
+                      onClick={() => filterClaims(claimFilter === verdict ? "all" : verdict)}
+                    />
+                  );
+                })}
+              </>
             ) : (
               <span className="ledger-item muted">
                 {report === undefined || checkedTotal === 0 ? "需先完成真实性核验" : `尚未语义核验（每次最多 ${SEMANTIC_VERIFY_LIMIT} 条，需要已配置模型）`}

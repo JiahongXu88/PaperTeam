@@ -38,7 +38,14 @@ import {
   saveModelSettings,
   testModelConnection,
 } from "../api/settings.js";
-import type { CreateProjectInput, CustomProviderInput, ImportProjectPdfInput, WorkflowKind, WorkflowRunView } from "../types/api.js";
+import type {
+  CitationSemanticMode,
+  CreateProjectInput,
+  CustomProviderInput,
+  ImportProjectPdfInput,
+  WorkflowKind,
+  WorkflowRunView,
+} from "../types/api.js";
 
 /**
  * Server state 全部经 TanStack Query 流动；Zustand 只保存纯 UI 状态。
@@ -182,11 +189,20 @@ export function useDeleteProject() {
 
 // ---- Workflow ----
 
-/** 启动 WorkflowRun（快速 Review = existing_paper_review）；成功后刷新该项目的 run 列表 */
+/** 启动 WorkflowRun（快速 Review = existing_paper_review）；成功后刷新该项目的 run 列表。
+ * citationSemanticMode 缺省 off（后端同语义）；仅 existing_paper_review 消费。 */
 export function useCreateWorkflowRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ projectId, kind }: { projectId: string; kind: WorkflowKind }) => createWorkflowRun(projectId, kind),
+    mutationFn: ({
+      projectId,
+      kind,
+      citationSemanticMode,
+    }: {
+      projectId: string;
+      kind: WorkflowKind;
+      citationSemanticMode?: CitationSemanticMode;
+    }) => createWorkflowRun(projectId, kind, { ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}) }),
     onSuccess: (_run, { projectId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId) });
     },

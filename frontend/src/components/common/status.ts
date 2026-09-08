@@ -44,6 +44,37 @@ export const SEMANTIC_VERDICT_STYLES: Record<string, StatusStyle> = {
   CONTRADICTED: { label: "存在矛盾", tone: "danger" },
   INSUFFICIENT_EVIDENCE: { label: "证据不足", tone: "neutral" },
   SKIPPED: { label: "跳过", tone: "neutral" },
+  NO_CONTRADICTION_DETECTED: { label: "未发现明显矛盾", tone: "ok" },
+};
+
+/** 引用语义核验模式（off = 不执行；真实性核验不受影响，始终执行） */
+export const CITATION_SEMANTIC_MODE_OPTIONS: ReadonlyArray<{
+  value: "off" | "contradiction_only" | "full";
+  label: string;
+  help: string;
+}> = [
+  {
+    value: "off",
+    label: "关闭（推荐）",
+    help: "仅核验参考文献真实性和元数据，不判断引用内容是否支持正文。",
+  },
+  {
+    value: "contradiction_only",
+    label: "仅检查明显冲突",
+    help: "仅检查引用来源是否与正文论断存在明显矛盾。",
+  },
+  {
+    value: "full",
+    label: "完整核验",
+    help: "逐条判断引用是否支持正文论断，耗时更长。",
+  },
+];
+
+/** 语义核验模式 → 简短状态文案（Review 报告 / 运行中的克制展示） */
+export const CITATION_SEMANTIC_MODE_LABELS: Record<string, string> = {
+  off: "引用语义核验未开启",
+  contradiction_only: "引用语义核验：仅检查明显冲突",
+  full: "引用语义核验：完整核验",
 };
 
 /** 证据不足 / 跳过的结构化原因（与后端 InsufficientReasonCode 对应） */

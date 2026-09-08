@@ -3,11 +3,12 @@ import { Link, useNavigate } from "react-router-dom";
 
 import { ErrorState } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
+import { CITATION_SEMANTIC_MODE_OPTIONS } from "../components/common/status.js";
 import { DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import { useCreateProject, useCreateWorkflowRun, useImportProjectPdf, useRuntimeStatus } from "../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
 import { fileToBase64, MAX_PDF_UPLOAD_BYTES, validatePdfFile } from "../utils/file.js";
-import type { CreateProjectInput, ExistingPaperGoal, ImportProjectPdfInput } from "../types/api.js";
+import type { CitationSemanticMode, CreateProjectInput, ExistingPaperGoal, ImportProjectPdfInput } from "../types/api.js";
 
 /**
  * 新建项目：顶层只问一件事——你想做什么？
@@ -260,6 +261,8 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [goal, setGoal] = useState<ExistingPaperGoal>("review_only");
+  // 快速 Review 高级选项：引用语义核验（默认关闭——默认用户无需理解这个概念）
+  const [semanticMode, setSemanticMode] = useState<CitationSemanticMode>("off");
   const [advanced, setAdvanced] = useState<Pick<FormState, "researchField" | "targetVenue" | "targetProfile" | "language">>({
     researchField: "",
     targetVenue: "",
@@ -330,7 +333,7 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
         if (goal === "review_only" && runtimeStatus.data?.model.phase === "configured") {
           // 快速 Review：模型已配置时导入完成即自动开始；启动失败不阻断导航，Review 页会给出手动入口
           try {
-            await startReview.mutateAsync({ projectId: project.id, kind: "existing_paper_review" });
+            await startReview.mutateAsync({ projectId: project.id, kind: "existing_paper_review", citationSemanticMode: semanticMode });
           } catch {
             // Review 页展示「开始 Review」按钮与失败原因
           }
@@ -414,6 +417,24 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
           <div className="field">
             <label htmlFor="import-language">写作语言</label>
             <input id="import-language" value={advanced.language} onChange={(e) => setAdvanced((a) => ({ ...a, language: e.target.value }))} placeholder="如：中文 / English（可选）" maxLength={LIMITS.language + 1} />
+          </div>
+          <div className="field">
+            <label htmlFor="import-semantic-mode">引用语义核验{goal === "review_only" ? "" : "（仅快速 Review 使用）"}</label>
+            <select
+              id="import-semantic-mode"
+              value={semanticMode}
+              onChange={(e) => setSemanticMode(e.target.value as CitationSemanticMode)}
+              data-testid="import-semantic-mode"
+            >
+              {CITATION_SEMANTIC_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <span className="field-help">
+              {CITATION_SEMANTIC_MODE_OPTIONS.find((option) => option.value === semanticMode)?.help}
+            </span>
           </div>
         </div>
       </details>

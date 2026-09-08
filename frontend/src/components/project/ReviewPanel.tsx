@@ -4,7 +4,15 @@ import { Link } from "react-router-dom";
 import { Icon, type IconName } from "../common/Icon.js";
 import { Loading } from "../common/StateViews.js";
 import { RunStatusBadge } from "./Badges.js";
-import { FINDING_CATEGORY_LABELS, SEVERITY_ORDER, SEVERITY_STYLES, stageLabel, statusStyleOf } from "../common/status.js";
+import {
+  CITATION_SEMANTIC_MODE_LABELS,
+  CITATION_SEMANTIC_MODE_OPTIONS,
+  FINDING_CATEGORY_LABELS,
+  SEVERITY_ORDER,
+  SEVERITY_STYLES,
+  stageLabel,
+  statusStyleOf,
+} from "../common/status.js";
 import {
   isRunActive,
   useCreateWorkflowRun,
@@ -17,7 +25,7 @@ import {
 } from "../../hooks/queries.js";
 import { formatApiError, summarizeRunError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
-import type { ExistingReviewReportView, ReviewFindingView, WorkflowRunView } from "../../types/api.js";
+import type { CitationSemanticMode, ExistingReviewReportView, ReviewFindingView, WorkflowRunView } from "../../types/api.js";
 import type { PaperSectionView } from "../../types/paper.js";
 
 /**
@@ -29,6 +37,11 @@ import type { PaperSectionView } from "../../types/paper.js";
  */
 
 const REVIEW_STAGES = ["paper.ensure", "citation.extract", "citation.metadata", "citation.claims", "review.sections", "review.aggregate"] as const;
+
+/** off 模式不进入 citation.claims stage——进度清单与实际执行保持一致 */
+function stagesForMode(mode: CitationSemanticMode | undefined): readonly string[] {
+  return mode === "off" ? REVIEW_STAGES.filter((stage) => stage !== "citation.claims") : REVIEW_STAGES;
+}
 
 type Severity = ReviewFindingView["severity"];
 type SeverityFilter = "all" | Severity;
@@ -70,6 +83,8 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
   const runtimeStatus = useRuntimeStatus();
   const startReview = useCreateWorkflowRun();
   const invalidateOutputs = useInvalidateReviewOutputs(projectId);
+  // 语义核验模式（Review 高级选项）：每次进入默认关闭，不跨项目/会话沿用
+  const [semanticMode, setSemanticMode] = useState<CitationSemanticMode>("off");
 
   const reviewRun = runs.data?.find((run) => run.workflowKind === "existing_paper_review");
   const active = isRunActive(reviewRun);
@@ -111,30 +126,53 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
   const hasReport = report.data !== null && report.data !== undefined;
 
   const actions = !active ? (
-          <div className="action-row">
-            {hasReport ? (
+          <div className="review-start-controls">
+            <div className="action-row">
+              {hasReport ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => exportReport.mutate()}
+                  disabled={exportReport.isPending}
+                  title="下载完整 Review 报告（Markdown，UTF-8；与页面同一套结构化数据，不受筛选影响）"
+                  data-testid="export-report"
+                >
+                  <Icon name="download" />
+                  {exportReport.isPending ? "导出中…" : "导出报告"}
+                </button>
+              ) : null}
               <button
                 type="button"
-                className="btn"
-                onClick={() => exportReport.mutate()}
-                disabled={exportReport.isPending}
-                title="下载完整 Review 报告（Markdown，UTF-8；与页面同一套结构化数据，不受筛选影响）"
-                data-testid="export-report"
+                className="btn btn-primary"
+                onClick={() => startReview.mutate({ projectId, kind: "existing_paper_review", citationSemanticMode: semanticMode })}
+                disabled={startReview.isPending || modelNotConfigured}
+                data-testid="start-review"
               >
-                <Icon name="download" />
-                {exportReport.isPending ? "导出中…" : "导出报告"}
+                <Icon name={hasReport ? "refresh" : "play"} />
+                {startReview.isPending ? "启动中…" : hasReport ? "重新 Review" : "开始 Review"}
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={() => startReview.mutate({ projectId, kind: "existing_paper_review" })}
-              disabled={startReview.isPending || modelNotConfigured}
-              data-testid="start-review"
-            >
-              <Icon name={hasReport ? "refresh" : "play"} />
-              {startReview.isPending ? "启动中…" : hasReport ? "重新 Review" : "开始 Review"}
-            </button>
+            </div>
+            <details className="advanced-options review-start-advanced">
+              <summary>高级选项</summary>
+              <div className="review-semantic-mode-field">
+                <label htmlFor="review-semantic-mode">引用语义核验</label>
+                <select
+                  id="review-semantic-mode"
+                  value={semanticMode}
+                  onChange={(event) => setSemanticMode(event.target.value as CitationSemanticMode)}
+                  data-testid="semantic-mode-select"
+                >
+                  {CITATION_SEMANTIC_MODE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+                <span className="field-help">
+                  {CITATION_SEMANTIC_MODE_OPTIONS.find((option) => option.value === semanticMode)?.help}
+                </span>
+              </div>
+            </details>
           </div>
         ) : null;
 
@@ -146,7 +184,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
             <h2>快速 Review</h2>
             {reviewRun !== undefined ? <RunStatusBadge status={reviewRun.status} /> : null}
           </div>
-          <p className="panel-sub">只读分析：引用真实性核验 → 论断与引用一致性 → 分章节审阅 → Review 报告。不修改论文正文。</p>
+          <p className="panel-sub">只读分析：引用真实性核验 → 分章节审阅 → Review 报告。不修改论文正文。引用语义核验默认关闭，可在高级选项中开启。</p>
         </div>
         {actions}
       </div>}
@@ -242,9 +280,10 @@ function ProgressRing({ value, total, caption }: { value: number; total: number;
   );
 }
 
-/** 运行中：阶段清单（已完成 / 当前 / 待执行）+ 章节进度 */
+/** 运行中：阶段清单（已完成 / 当前 / 待执行）+ 章节进度（off 模式不含语义核验阶段） */
 function RunProgress({ run }: { run: WorkflowRunView }) {
-  const currentIndex = REVIEW_STAGES.indexOf((run.currentStage ?? "") as (typeof REVIEW_STAGES)[number]);
+  const stages = stagesForMode(run.citationSemanticMode);
+  const currentIndex = stages.indexOf(run.currentStage ?? "");
   const progress = progressOf(run);
   const findings = run.progress?.data["findings"];
   return (
@@ -252,7 +291,7 @@ function RunProgress({ run }: { run: WorkflowRunView }) {
       <ProgressRing value={progress?.index ?? 0} total={progress?.total ?? 0} caption="章节完成" />
       <div>
         <ol className="stage-list">
-          {REVIEW_STAGES.map((stage, index) => {
+          {stages.map((stage, index) => {
             const state = index < currentIndex ? "done" : index === currentIndex ? "current" : "todo";
             return (
               <li key={stage} className={`stage-item stage-${state}`}>
@@ -305,6 +344,12 @@ function ReportBlock({
   const [query, setQuery] = useState("");
   const { review, findings, paper: paperMeta } = report;
   const fabrications = report.citationIntegrity.probableFabrications ?? [];
+  // 本轮语义核验模式：off 轮报告不携带 semantic 统计——绝不显示「支持 0 / 证据不足 0」
+  // 这类无意义计数；旧报告无该字段视为 full（历史轮语义不变）
+  const semanticMode: CitationSemanticMode = report.citationSemanticMode ?? "full";
+  const semanticByVerdict = (report.citationIntegrity.semantic as { byVerdict?: Record<string, number> } | undefined)
+    ?.byVerdict;
+  const contradicted = semanticByVerdict?.["CONTRADICTED"] ?? 0;
   const sectionTitle = useMemo(() => new Map(sections.map((section) => [section.sectionId, section.title])), [sections]);
   const sectionOrder = useMemo(() => new Map(sections.map((section, index) => [section.sectionId, index])), [sections]);
 
@@ -366,6 +411,24 @@ function ReportBlock({
               </>
             ) : null}
           </span>
+          {semanticMode === "off" ? (
+            <span className="review-summary-meta" data-testid="semantic-mode-note">
+              {CITATION_SEMANTIC_MODE_LABELS["off"]}
+              {" · "}
+              <button type="button" className="btn-link" onClick={() => onOpenTab("citations")} title="在「引用核验」中手动运行语义核验（不重跑 Review）">
+                进行语义核验
+              </button>
+            </span>
+          ) : semanticMode === "contradiction_only" ? (
+            <span className={`review-summary-meta${contradicted > 0 ? " run-error" : ""}`} data-testid="semantic-mode-note">
+              {CITATION_SEMANTIC_MODE_LABELS["contradiction_only"]}
+              {contradicted > 0 ? ` · 明显矛盾 ${contradicted}` : " · 未发现明显矛盾"}
+              {" · "}
+              <button type="button" className="btn-link" onClick={() => onOpenTab("citations")}>
+                查看明细
+              </button>
+            </span>
+          ) : null}
           <div className="review-summary-actions">{actions}</div>
         </div>
         <div className="review-summary-stats">

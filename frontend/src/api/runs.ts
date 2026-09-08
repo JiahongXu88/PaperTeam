@@ -1,11 +1,11 @@
 import { apiClient } from "./client.js";
-import type { WorkflowKind, WorkflowRunStatus, WorkflowRunView } from "../types/api.js";
+import type { CitationSemanticMode, WorkflowKind, WorkflowRunStatus, WorkflowRunView } from "../types/api.js";
 
 /**
  * WorkflowRun API。
  *
  *   GET  /api/runs?projectId=xxx → { runs: WorkflowState[] }
- *   POST /api/projects/:id/workflows { kind } → 202 { runId }
+ *   POST /api/projects/:id/workflows { kind, citationSemanticMode? } → 202 { runId }
  *
  * Backend 返回完整 WorkflowState（checkpoint 全量）；这里逐字段校验后映射为
  * WorkflowRunView 子集，前端不依赖 stageResults / inputs 等内部字段。
@@ -15,6 +15,12 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<WorkflowKind>([
   "idea_to_paper",
   "existing_paper_improvement",
   "existing_paper_review",
+]);
+
+const KNOWN_SEMANTIC_MODES: ReadonlySet<string> = new Set<CitationSemanticMode>([
+  "off",
+  "contradiction_only",
+  "full",
 ]);
 
 const KNOWN_STATUSES: ReadonlySet<string> = new Set<WorkflowRunStatus>([
@@ -67,9 +73,25 @@ function readProgress(value: unknown): WorkflowRunView["progress"] {
   };
 }
 
+/** 语义核验模式（run.request 快照；旧 run 无该字段 → full，与后端兼容语义一致） */
+function readSemanticMode(raw: Record<string, unknown>): CitationSemanticMode | undefined {
+  const request = raw["request"];
+  if (typeof request !== "object" || request === null || Array.isArray(request)) {
+    return "full";
+  }
+  const mode = (request as Record<string, unknown>)["citationSemanticMode"];
+  if (mode === undefined) {
+    return "full"; // 旧版本创建的 run 实际始终执行完整语义核验
+  }
+  return typeof mode === "string" && KNOWN_SEMANTIC_MODES.has(mode as CitationSemanticMode)
+    ? (mode as CitationSemanticMode)
+    : undefined;
+}
+
 function toRunView(raw: Record<string, unknown>): WorkflowRunView {
   const kind = raw["workflowKind"];
   const status = raw["status"];
+  const citationSemanticMode = readSemanticMode(raw);
   return {
     runId: String(raw["runId"] ?? ""),
     projectId: String(raw["projectId"] ?? ""),
@@ -82,6 +104,7 @@ function toRunView(raw: Record<string, unknown>): WorkflowRunView {
     error: readError(raw["error"]),
     completion: readCompletion(raw["completion"]),
     progress: readProgress(raw["progress"]),
+    ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}),
   };
 }
 
@@ -96,11 +119,15 @@ export async function listProjectRuns(
   return (body.runs ?? []).map(toRunView);
 }
 
-/** 启动 WorkflowRun（existing_paper_review = PDF 快速 Review） */
+/** 启动 WorkflowRun（existing_paper_review = PDF 快速 Review；citationSemanticMode 缺省 off） */
 export async function createWorkflowRun(
   projectId: string,
   kind: WorkflowKind,
+  options: { citationSemanticMode?: CitationSemanticMode } = {},
 ): Promise<{ runId: string; status: string; workflowKind: WorkflowKind }> {
-  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/workflows`, { kind });
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/workflows`, {
+    kind,
+    ...(options.citationSemanticMode !== undefined ? { citationSemanticMode: options.citationSemanticMode } : {}),
+  });
 }
 

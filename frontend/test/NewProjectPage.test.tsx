@@ -200,13 +200,50 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const payload = vi.mocked(importProjectPdf).mock.calls[0]![0];
     expect(payload.fileName).toBe("MRG-DTM-final.pdf");
     expect(payload.goal).toBe("review_only");
-    // 模型已配置 → 自动启动快速 Review
+    // 模型已配置 → 自动启动快速 Review（语义核验缺省关闭，不阻碍快速导入）
     await waitFor(() =>
-      expect(createWorkflowRun).toHaveBeenCalledWith(imported.id, "existing_paper_review"),
+      expect(createWorkflowRun).toHaveBeenCalledWith(imported.id, "existing_paper_review", {
+        citationSemanticMode: "off",
+      }),
     );
     // 落到 Review Tab（工作区出现 Review 面板）
     await waitFor(() =>
       expect(screen.getByTestId("review-panel")).toBeInTheDocument(),
+    );
+  });
+
+  it("导入高级选项：引用语义核验默认关闭，可切换后随自动 Review 一起提交", async () => {
+    const imported: ProjectView = {
+      ...created,
+      title: "Attention Is All You Need",
+      workflowKind: "existing_paper_review",
+    };
+    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
+    vi.mocked(getProject).mockResolvedValue(imported);
+    vi.mocked(importProjectPdf).mockClear();
+    vi.mocked(createWorkflowRun).mockClear();
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.upload(screen.getByLabelText("选择论文 PDF（.pdf）"), pdfFile);
+
+    // 高级选项默认折叠；展开后语义核验默认「关闭（推荐）」
+    const advanced = screen.getByText("高级选项（研究领域、目标期刊等，可选）");
+    expect((advanced.closest("details") as HTMLDetailsElement).open).toBe(false);
+    await user.click(advanced);
+    const modeSelect = screen.getByTestId("import-semantic-mode") as HTMLSelectElement;
+    expect(modeSelect.value).toBe("off");
+    expect(screen.getByText("仅核验参考文献真实性和元数据，不判断引用内容是否支持正文。")).toBeInTheDocument();
+
+    await user.selectOptions(modeSelect, "contradiction_only");
+    await user.click(screen.getByRole("button", { name: "导入论文" }));
+
+    await waitFor(() => expect(importProjectPdf).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(createWorkflowRun).toHaveBeenCalledWith(imported.id, "existing_paper_review", {
+        citationSemanticMode: "contradiction_only",
+      }),
     );
   });
 

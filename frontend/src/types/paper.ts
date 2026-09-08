@@ -125,7 +125,8 @@ export type SemanticVerdict =
   | "UNSUPPORTED"
   | "CONTRADICTED"
   | "INSUFFICIENT_EVIDENCE"
-  | "SKIPPED";
+  | "SKIPPED"
+  | "NO_CONTRADICTION_DETECTED";
 
 /** 证据不足 / 跳过的结构化原因（有限枚举） */
 export type InsufficientReasonCodeView =
