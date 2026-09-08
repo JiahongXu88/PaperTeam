@@ -1,12 +1,29 @@
-# Review 性能画像（2026-09-07，真实论文实测）
+# Review 性能画像（2026-09-07 实测；2026-09-08 并发优化后更新）
 
-> 本轮只做诊断与必要 telemetry，不做大规模性能重构。数据来源：
-> 1. **冷启动全量运行**（本次诊断）：真实论文（26 页 / 36 节 / 25 条引用 / 63 条 claim-citation），
+> 诊断数据来源：
+> 1. **冷启动全量运行**（2026-09-07 优化前基线）：真实论文（26 页 / 36 节 / 25 条引用 / 63 条 claim-citation），
 >    全新 workspace，模型 `zai-coding-cn/glm-5.3`，阶段耗时与调用画像来自 run checkpoint
 >    （stageHistory startedAt/finishedAt + stageResults 内新增 telemetry）。
 > 2. **用户日常运行**（对照）：同一论文在上一个 workspace 的最近一次 completed run。
+> 3. **并发优化后**（2026-09-08）：同一论文、同一模型，`scripts/benchmark-review.mjs`
+>    真实 A/B（1/2/3/4 × 前 12 节）+ 全量 33 节验证。
 
-## 1. 冷启动全量运行（本次实测）
+## 0. 优化后速览（2026-09-08，并发化落地）
+
+| Stage | 优化前 | 优化后（C=3 全量实测） | 加速 |
+| --- | ---: | ---: | ---: |
+| paper.ensure | 317.6s | 127.6s | 2.5×（章节摘要并发 3） |
+| citation.metadata | 36.3s | 23.3s | —（未改；当日网络更快） |
+| citation.claims | 99.7s | 99s | —（按纪律不动） |
+| **review.sections** | **2763.8s（串行）** | **985.3s（并发 3）** | **2.81×** |
+| review.aggregate | <1s | <1s | — |
+| **Total** | **3217.5s（53.6 min）** | **1234.6s（20.6 min）** | **2.61×** |
+
+优化后全量 run：33/33 节完成、0 失败、0 重试、0 次 429；156 条 findings
+按论文顺序输出（并发完成顺序乱序，最终输出确定性有序）；每节完成即写
+per-section journal（`paper/review-sections/<runId>/<sectionId>.json`，33 个文件）。
+
+## 1. 冷启动全量运行（优化前基线，2026-09-07）
 
 run `w-9d475ea05dc3`（2026-09-07 23:01–23:54，completed）：
 
@@ -76,27 +93,82 @@ run `w-9d475ea05dc3`（2026-09-07 23:01–23:54，completed）：
 - 本轮无 429/503；无 API Rate Limit 问题。语义 judge 与 scholarly 限流是两类不同问题，
   本论文只命中前者（模型延迟）。
 
-## 6. Performance Optimization Backlog（本轮不实施）
+## 6. Review 并发 Benchmark（2026-09-08 真实 A/B）
+
+方法：`scripts/benchmark-review.mjs --levels 1,2,3,4 --limit 12`（每档独立
+backend + 独立 PROJECTS_ROOT 命名空间；首档冷启动后，后续档复制 paper-map +
+citation 产物预热，把测量窗口隔离到 review.sections；同一批固定代表章节
+= 文档前 12 节；模型 `zai-coding-cn/glm-5.3`）。
+
+| C | wall(s) | speedup | sum(s) | 单请求 avg(s) | p95 排队(s) | maxObserved | 重试 | 429 | 失败 |
+| --: | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| 1 | 1086 | 1.00× | 1086 | 90.5 | 940 | 1 | 0 | 0 | 0 |
+| 2 | 567 | 1.92× | 1116 | 93.0 | 474 | 2 | 0 | 0 | 0 |
+| 3 | 364 | 2.98× | 1016 | 84.7 | 270 | 3 | 0 | 0 | 0 |
+| 4 | 303 | 3.58× | 1127 | 93.9 | 209 | 4 | 0 | 0 | 0 |
+
+全量验证（C=3，33 节，冷启动端到端）：review.sections 985s（sum 2674s，
+有效并发 2.71×）、run 总时长 1234.6s、33 calls / 0 失败 / 0 重试、
+findings 156 条按论文顺序、journal 33 文件。
+
+### 默认并发度 = 3（`PAPERTEAM_REVIEW_CONCURRENCY`，范围 1-8）
+
+选择依据（不只看 wall time）：
+
+- C=1→2→3 近乎线性加速（1.92× / 2.98×），且 **C=3 的单请求平均延迟最低**
+  （84.7s < 基线 90.5s）——provider 侧零排队迹象。
+- C=4 在 12 节窗口内再快 17%（364→303s），但单请求平均延迟升到四档最高
+  （93.9s，比 C=3 高 10.6%）——provider 侧串行化的第一个信号；且 12 节零
+  429 不能证明 33 节持续压力下的稳定（本轮无重复采样，10% 级差异在噪声内）。
+- 按「速度 + 429 + 失败率 + p95 + 稳定性」的综合标准，C=3 是带安全余量的
+  甜点；需要极限速度的用户可显式设 `PAPERTEAM_REVIEW_CONCURRENCY=4`。
+
+## 7. 并发化实现要点（2026-09-08）
+
+- `util/concurrency.ts` 的 `mapWithConcurrency`：固定 runner 池，任务开始受
+  limit 约束（backpressure：不是先建 N 个 Promise 再压住）；worker 异常不
+  泄漏 permit、不传染其它节；AbortSignal 停止调度并等 running settle；
+  结果按输入顺序（执行顺序不确定，输出确定）。
+- `paper/SectionReviewScheduler.ts`：每节独立 contextScope（`review/section/<id>`
+  → 独立 Pi session，sessionKey = projectId × agentId × scope）；节内 3 次
+  退避重试（429/503，可被取消信号打断）；单节最终失败 → failedSections、
+  其余节继续；全部失败才 transient 上抛；取消时 queued 停止派发 + active 经
+  signal→AgentRunHandle.cancel() 协作式中断。
+- per-section journal：一节一文件原子写（无共享 read-modify-write，并发天然
+  安全）；stage 重试 / 崩溃恢复（同 runId）按指纹复用已完成节，零模型调用。
+- PaperMap 摘要（paper.ensure）同样并发（`PAPERTEAM_SUMMARY_CONCURRENCY=3`，
+  复用同一原语）；citation 链路按纪律不动。
+- telemetry（run checkpoint 持久化）：maxObservedConcurrency / sections* /
+  queueWaitMs p50-p95 / reviewSectionsWallMs vs sumSectionDurationMs / 429
+  启发式计数；进度事件从「第 N 节」改为「已完成 N / total」。
+
+## 8. Performance Optimization Backlog（剩余项，未实施）
+
+> P0「Section Review 有界并发」与 P1「PaperMap 摘要有界并发」已于 2026-09-08
+> 落地（见 §6/§7），从 backlog 移除。
 
 | 优先级 | 项 | 预计收益 | 风险 | 改动范围 |
 | --- | --- | --- | --- | --- |
-| P0 | **Section Review 有界并发**（如 3 路-worker 小池；findings 收集后确定性重排） | 33×84s → ~15-18 min（−65% 总时长） | Provider 限流（需并发≤3 + 429 退避复用现有节内重试）；进度事件语义从"第 N 节"改为"已完成 N 节" | `reviewSectionsStage`（单文件，~40 行） |
-| P1 | **PaperMap 摘要有界并发**（仅冷启动收益） | 5.3 min → ~1.5-2 min | 同上（低：摘要无顺序依赖） | `PaperMapService.ensureMap` |
 | P1 | **证据预取（abstract enrichment）**：crossref 命中但无 abstract 时补查 OpenAlex/S2 摘要 | 产品价值 > 性能：57 条 INSUFFICIENT_EVIDENCE 大部分可转为真实 verdict；顺带提升语义核验覆盖率 | +20 次外部查询（~25s 串行）；provider 限流 | `CitationIntegrityService.verifyScholarlyReference`（+1 步 enrichment） |
 | P1 | **语义 judge claim batching**（多条 claim 一次判定，仅同 reference 同证据） | 当前只 6 次调用，收益小；证据预取落地后放大 | verdict 归因正确性（需逐条校验）；中 | `semanticVerifier` |
-| P2 | **metadata 并行 / 持久 resolver 缓存** | 冷启动 116s → ~40s；暖运行已 ~0 | 限流风险 > 收益；磁盘记录已去重 | 低价值，暂缓 |
-| P2 | **章节审阅换非推理/小模型** | 平均 83.7s/节主要是模型推理延迟（prompt 仅 4.8k chars）；换快速模型可能 3-5× | verdict/finding 质量；必须先 A/B 对照 | 配置化（按 stage 选模型） |
-| P2 | **章节 prompt 预算收紧**（其它节摘要截断） | 平均 84s 中上下文规模占比小，收益有限 | 上下文缺失可能漏报；需 A/B | `ReviewContextBuilder` |
+| P2 | **metadata 并行 / 持久 resolver 缓存** | 冷启动 ~23-36s；暖运行已 ~0 | 限流风险 > 收益；磁盘记录已去重 | 低价值，暂缓 |
+| P2 | **章节审阅换非推理/小模型（model routing）** | 平均 81-94s/节主要是模型推理延迟（prompt 仅 ~4.9k chars）；换快速模型可能 3-5× | verdict/finding 质量；必须先 A/B 对照 | 配置化（按 stage 选模型） |
+| P2 | **章节 prompt 预算收紧**（其它节摘要截断） | 平均延迟中上下文规模占比小，收益有限 | 上下文缺失可能漏报；需 A/B | `ReviewContextBuilder` |
+| P2 | **C=4 默认值再评估**（多采样 + 全量持续压力数据后） | 12 节窗口 C=4 比 C=3 快 17%；若持续压力下 429 仍为 0 且 avg 延迟不涨，可上调默认 | provider 限流；单采样证据不足 | 只改默认值 |
 
-**本轮已顺手修复的确定性性能 bug**：语义核验上限此前按"处理条数"计——
+**2026-09-07 顺手修复的确定性性能 bug**：语义核验上限此前按"处理条数"计——
 57 条零模型短路也会占 30 条额度（两轮才能刷新完）；现改为**只约束模型调用**，
 确定性短路全部免费完成（`verifyClaims` modelBudget 语义）。
 
-## 7. 复现方式
+## 9. 复现方式
 
 ```bash
-# 冷启动全量（全新 workspace）
-PROJECTS_ROOT=<empty-dir> PAPERTEAM_PORT=3210 node backend/dist/index.js
-# → POST /api/projects → POST paper/pdf（D:\Tmp\paper.pdf）→ POST workflows kind=existing_paper_review
+# 并发 A/B（前 12 节，1/2/3/4 四档；结果写 D:/Tmp/pt-benchmark/<ts>/）
+node scripts/benchmark-review.mjs --levels 1,2,3,4 --limit 12
+# 全量 33 节单档验证（冷启动端到端）
+node scripts/benchmark-review.mjs --full --concurrency 3
+# 手动单跑（全新 workspace）
+PROJECTS_ROOT=<empty-dir> PAPERTEAM_PORT=3210 PAPERTEAM_REVIEW_CONCURRENCY=3 node backend/dist/index.js
+# → POST /api/projects/import-pdf（D:\Tmp\paper.pdf）→ POST workflows kind=existing_paper_review
 # → 完成后读 workflow/runs/<runId>/checkpoint.json 的 stageHistory + stageResults telemetry
 ```

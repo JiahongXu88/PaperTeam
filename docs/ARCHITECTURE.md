@@ -191,8 +191,11 @@ Research → Evidence → Outline → Human Checkpoint → Draft → Compile →
                   → 失败 → Revise → Re-verify →（loop ≤ N）→ Human Checkpoint
 ```
 
-fan-out / join 的使用点：三类 review skill 并行、多节 Revision 并行、多文献解析并行；
-并发上限可配置。
+fan-out / join 的使用点：三类 review skill 并行、多节 Revision 并行、多文献解析并行、
+分章节 Review 有界并发（`SectionReviewScheduler` + `util/concurrency.ts` 的
+`mapWithConcurrency`：活跃模型调用 ≤ `PAPERTEAM_REVIEW_CONCURRENCY`，每节独立
+contextScope/Pi session，单节失败隔离，结果按论文顺序确定性重排，每节完成即写
+per-section journal 供 stage 重试/崩溃恢复复用）；并发上限可配置。
 
 ### 3.4 StageContract（M3.0 核心抽象）
 
