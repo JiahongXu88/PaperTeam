@@ -1,11 +1,13 @@
 # PaperTeam 系统架构
 
-> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0020）整理。
+> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0026）整理。
 > **M1 ~ M3.8（Backend：Workflow / Evidence / Review / Pi Runtime）与 M4.0-M4.2（React Web
 > Workbench）已实现**；Pi SDK 为唯一正式 Agent Runtime（in-process），AgentRuntime 契约 v2。
 > 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
 > 前端 M4.3+ 页面（Workflow Live View / HITL / Evidence / Review / PDF）、Visual Reviewer、
-> LaTeX repair loop、完整版本管理、Docker 部署为 Planned。
+> LaTeX repair loop、完整版本管理、Docker 部署为 Planned；
+> **Iterative Writer–Reviewer Outer Review Loop（§13，D-0026）为已接受的架构方向，
+> 增强实现 Planned——当前已实现基线为 M3.2 bounded revision loop（§7）**。
 
 ## 1. 总体架构
 
@@ -546,6 +548,11 @@ PiRuntimeAdapter
 - 版本标记：Draft（Build Gate 通过即可）/ Final（双 Gate 通过）；completion.label 记录于
   run 结果（完整版本管理体验属 M4+）。
 
+> 以上为 **M3.2 已实现基线**。下一阶段将其升级为 Reviewer 结构化评价驱动的
+> Iterative Writer–Reviewer Outer Review Loop（D-0026）：架构、Review Scorecard、
+> Revision Plan、终止语义与迭代可观测性见 §13；两层 loop（Pi inner vs
+> PaperTeam outer）的边界亦见 §13.1。
+
 ## 8. 前端（M4.0-M4.2 已落地 React Web Workbench）
 
 ### 8.1 技术栈与目录（M4.1）
@@ -722,3 +729,234 @@ context 从磁盘确定性重建**；**逐条记录文件持久化 + 指纹跳�
 Pi Session（`noSkills + additionalSkillPaths`；progressive disclosure 保持）。
 `search_papers`/`lookup_paper` 为 PaperTeam 受控 customTools（researcher/citation
 角色），共享 ScholarlyResolver（缓存/重试/telemetry）。写操作（install 等）M5。
+
+## 13. Outer Review Loop：Writer–Reviewer 迭代质量闭环（D-0026）
+
+本章定义 PaperTeam 的核心 Outer Agent Loop——Reviewer 结构化评价驱动的
+Iterative Writer–Reviewer Quality Loop。**CURRENT 与 PLANNED 边界**：M3.2
+bounded revision loop（§7、§13.2）是已实现基线；本节其余内容（scorecard 一等
+化、Revision Plan 一等 artifact、CONVERGED / REGRESSION 终止、迭代历史）为
+已接受的架构方向（D-0026，accepted / implementation planned），未实现部分
+均如实标注，不冒充现状。
+
+### 13.1 两层 loop 的边界（架构红线）
+
+PaperTeam 中存在两层性质完全不同的循环，不得混用或互相越权：
+
+```text
+Pi Agent Loop（inner，Pi SDK 职责）
+  LLM → tool call → tool execution → tool result → LLM → …（直到 settle）
+  回答的问题：单个 Agent 如何完成一次任务
+
+PaperTeam Outer Research / Review Loop（outer，WorkflowOrchestrator 职责）
+  Writer → Reviewer → Quality Gate → Writer → Reviewer → …（有界）
+  回答的问题：多个专业 Agent 如何协作、Workflow 状态如何推进
+```
+
+- **PaperTeam 不重新实现 Pi 的 tool-calling agent loop**。单个 Agent 内部的
+  推理、工具调用与结果消费完全由 Pi SDK（经 §6.4 Adapter）承担。
+- **WorkflowOrchestrator 只负责 outer loop 层面的确定性职责**：角色调用
+  （何时调用 Writer / Reviewer / Citation）、状态机与 stage 推进、循环与
+  分支、checkpoint / resume、cancel、backpressure、Quality Gate 判定入口、
+  artifact 与 version 的关联。它不做内容理解与语义判断（D-0008）。
+- Agent 的输出必须落盘为结构化 artifact 并通过 DoD / 结构化校验后才进入
+  outer loop 的状态转移（§4.3 红线不变）。
+
+### 13.2 已实现基线（CURRENT：M3.2 bounded revision loop）
+
+共享后段（§3.2）中已实现的审稿-修订闭环：
+
+```text
+review.run（fact / academic / style 三路并行，独立 contextScope 会话）
+  → ReviewAggregator 确定性聚合 → ReviewSummary（round 编号）
+  → quality.gate 确定性判定（9 基础规则 + Citation Integrity 规则）
+  → 失败 → revision.revise（Writer 逐节修订，仅动有问题的章节）
+      修订指令 = 执行期从最新 ReviewSummary issues + 引用报告确定性派生
+  → 回到 citation.verify → review.run → quality.gate（循环）
+  → 循环 ≤ maxRevisionRounds（默认 2）+ HITL revise_more（≤3）
+  → 超限 → hitl.revision_overflow（accept_draft / revise_more / cancel）
+```
+
+已按轮落盘的 artifact（round 从 1 递增，「最新」= 编号最大）：
+
+```text
+reviews/review-r{round}-{mode}.json     单 lens 结构化结果
+reviews/review-summary-r{round}.json    确定性聚合（ReviewSummary）
+reviews/quality-gate-r{round}.json      Quality Gate 结果（含 thresholds / rules）
+reviews/existing-review-r{round}.json   已有论文只读 Review 聚合（M4.3）
+```
+
+循环推进由 `definitions.ts` 的 plan() 纯函数表达，可从 checkpoint 重放；
+Quality Gate 的全部规则（9 条基础规则 + Citation Integrity 硬规则）均为确定性
+判定，评分只是其中两条——blocking issue、unsupported critical claim、
+捏造 / not_found 引用等硬规则不因总分高而豁免。
+
+### 13.3 目标架构（PLANNED）：Iterative Writer–Reviewer Quality Loop
+
+在 13.2 基线之上，把「Quality Gate 失败后的有限 revision」升级为「Reviewer
+结构化评价驱动的迭代质量闭环」：
+
+```text
+Manuscript vN
+  ↓
+Review Fan-out（inner stage，有界并发；见 13.9）
+  ├─ fact / evidence
+  ├─ academic / methodology
+  ├─ citation
+  └─ style
+  ↓
+Deterministic Review Aggregation（确定性聚合，无 LLM）
+  ↓
+Review Scorecard + Findings（13.4）
+  ↓
+Quality Gate（确定性最终权威，13.4）
+  ├─ PASS → Finalization
+  │
+  └─ FAIL
+        ↓
+Revision Plan（确定性业务 artifact，13.5）
+  ↓
+Writer Revision（仅动 Revision Plan 指向的章节）
+  ↓
+Manuscript vN+1
+  ↓
+Re-review（必须重新 Review，不自评通过）
+  └────────────→ loop（终止条件见 13.6）
+```
+
+升级的本质：review 轮次从「修订的附带步骤」变为驱动循环的一等输入——每轮
+聚合产物（scorecard + findings）既决定下一轮 Revision Plan 的内容，也参与
+终止判定（收敛 / 退化检测），并全部按轮落盘可回放。
+
+### 13.4 Review Scorecard（结构化评价；score 是信号，不是最终权威）
+
+概念上，每轮 Review 产出一张 **Review Scorecard**：多维评价 + 分级问题清单，
+而不是一个模糊的 82/100。第一版沿用既有领域模型（`ReviewSummary` /
+`ReviewIssue` / fact claims），不新造类型：
+
+| Scorecard 概念 | 既有字段（源码为准） | 状态 |
+|---|---|---|
+| academic quality | `scores.academicScore` + academic 模式五维分（问题定义 / 方法合理性 / 实验充分性 / 论证逻辑 / 写作质量） | CURRENT |
+| fact / evidence reliability | `scores.factVerdicts`（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED 计数）+ `unsupportedCriticalClaims` | CURRENT |
+| citation integrity | CitationReport summary + Citation Integrity 记录（NOT_FOUND ≠ 捏造 ≠ 检索失败） | CURRENT |
+| style risk | `scores.styleRisk`（0-100） | CURRENT |
+| critical / major / minor findings | `counts.critical / major / minor`、`issues[]`（含 `suggestedAction`） | CURRENT |
+| blocking issues | `counts.blocking`、`issue.blocking` | CURRENT |
+| affected sections | `issue.section` | CURRENT |
+| actionable recommendations | `issue.suggestedAction` | CURRENT |
+| 跨轮维度变化（本轮 vs 上轮：哪些问题修复 / 仍存在 / 新增 / 哪些维度退化） | — | PLANNED |
+
+**判定权威**：Quality Gate 仍然是最终确定性权威。score 达标 ≠ PASS——存在
+critical factual error、unsupported critical claim、hallucinated / invalid
+citation、unresolved blocking issue、target requirement 未满足时，即使总分高
+也必须 FAIL（§2.4 / §7，D-0015）。分数与维度评价用于驱动 Revision Plan、
+收敛 / 退化检测与用户呈现，不用于豁免硬规则。
+
+### 13.5 Revision Plan（确定性业务 artifact，不新增 Agent）
+
+Revision Plan 是 WorkflowOrchestrator 在 Quality Gate 失败后，根据结构化
+Review Findings、Citation 问题与 Quality Gate blockers **确定性生成**的业务
+artifact / task contract，交给 Writer 执行：
+
+- 内容：本轮必须处理的问题清单（按章节归属，映射到 Writer 修订目标）、
+  对应的 Quality Gate 阻止项、以及「不允许新造文献」等修订纪律。
+- **不新增 RevisionPlanner Agent**（D-0009 / D-0026）：Agent Team 保持
+  Researcher / Writer / Reviewer / Citation 四角色；planning 是确定性代码的
+  职责。未来若确需 LLM 做复杂 revision planning（例如跨章节重构策略），
+  再单独做设计决策。
+- CURRENT 等价物：修订指令在 `revision.revise` 执行期从最新 ReviewSummary +
+  引用报告确定性派生（`collectRevisionDirectives`），语义正确但**不是一等
+  落盘 artifact**。PLANNED：Revision Plan 固化为 `reviews/` 下的按轮产物
+  （如 `revision-plan-r{round}.json`），与该轮 scorecard、gate 结果、下一轮
+  review 关联，供 UI 展示与事后审计。
+
+### 13.6 终止语义（有界循环，四态）
+
+Outer loop 不无限循环。终止语义：
+
+| 终止态 | 含义 | 去向 | 状态 |
+|---|---|---|---|
+| PASS | Quality Gate 通过 | Finalization（双 Gate 通过标记 Final） | CURRENT |
+| MAX_ITERATIONS | 达到配置的最大自动迭代轮数 | Human Checkpoint（现有形态：超限 HITL accept_draft / revise_more / cancel） | CURRENT（默认自动修订 ≤2 轮 + revise_more ≤3） |
+| CONVERGED | 连续若干轮改善低于合理阈值，继续消耗模型成本价值很低 | Human Checkpoint（呈报收敛证据） | PLANNED（阈值 configurable） |
+| REGRESSION | Revision 修复部分问题但导致重要质量维度明显退化 | 停止盲目继续修改；保留 / 恢复较优版本供人工决策 | PLANNED（判定口径与阈值待定） |
+
+CONVERGED / REGRESSION 是在 MAX_ITERATIONS 之前的「更聪明的停止」：前者
+省成本，后者防止越修越差。其判定基于跨轮 scorecard / findings 的确定性比较，
+具体阈值（连续几轮、改善幅度、哪些维度算「重要」）为 planned / configurable，
+在实现前不在文档中伪造具体数值。
+
+### 13.7 版本与可观测性（每轮关联与迭代历史）
+
+每一轮的结果**不覆盖**上一轮，概念上形成交替序列：
+
+```text
+Revision 0 → Review 0 →（FAIL）Revision Plan 0 → Revision 1 → Review 1 → …
+```
+
+每轮至少可关联（CURRENT 部分已由 round 编号产物 + run stageHistory 天然满足，
+PLANNED 部分为一等化查询视图）：
+
+| 关联对象 | 现状 |
+|---|---|
+| manuscript revision（本轮修订了哪些章节） | CURRENT（stageResults 记录 revised sections） |
+| review result（三 lens 原始结果） | CURRENT（`review-r{round}-{mode}.json`） |
+| scorecard（聚合评价） | CURRENT（`review-summary-r{round}.json`） |
+| findings（问题清单） | CURRENT（ReviewSummary.issues） |
+| revision plan | PLANNED（一等 artifact，13.5） |
+| quality gate result | CURRENT（`quality-gate-r{round}.json`） |
+| workflow iteration（第几轮、终止原因） | CURRENT（stageHistory）/ PLANNED（一等 iteration 视图） |
+| agent / model execution trace | CURRENT（AgentTask / telemetry）；PLANNED（按轮聚合呈现） |
+
+PLANNED（产品 UI，见 PRD §12.3 / §13）：迭代历史展示轮次分数走势
+（Round 1 72 → Round 2 81 → Round 3 87 → Round 4 91 PASS）、哪些问题被修复 /
+仍存在 / 新增、哪些维度提高 / 发生 regression、每轮的 Revision Plan 与 gate
+阻止项。前端未实现上述界面，均为规划。
+
+### 13.8 Session 隔离与恢复（reviewer 上下文纪律）
+
+- Writer 与 Reviewer 是不同专业角色，沿用 `projectId × agentId × contextScope`
+  隔离（§6.3，D-0016）；**不在一个 Agent Session 里切换 system prompt 模拟
+  多角色**。
+- Workspace / manuscript / evidence / review artifacts / workflow checkpoint
+  是事实来源（§2.1，D-0013）：Review Loop 必须能在 Runtime Session 丢失后从
+  磁盘事实状态恢复（分章节 Review 的「Session 全弃后从磁盘确定性重建」已实证，
+  §12.1）。
+- **Reviewer 每轮以当前 manuscript + 当前 evidence + 当前 rubric 为评价依据**，
+  不依赖「上一轮聊天记忆」才能成立——避免 reviewer anchoring 与不可复现。
+  已有论文分章节 Review（D-0024）即按此纪律实现（短生命周期 section task、
+  受控上下文、从磁盘重建）。Idea-to-Paper 三路审稿当前按固定 scope
+  （`review/fact|academic|style`）复用会话；**是否引入 round-scoped
+  sessionKey 属于实现细节，本轮不冻结**（D-0026），冻结前不声称已存在。
+
+### 13.9 Review 并发与 outer loop 的关系（bounded fan-in / out）
+
+并发只发生在 inner review stage，不发生在 outer iteration：
+
+```text
+outer loop（串行，按版本顺序）：
+  vN review → revision → vN+1 review → …
+  下一轮 review 必须以上一轮 revision 的产物为输入，天然不可并行
+
+inner review stage（有界并发 fan-out）：
+  不同 section / review lens 并行，bounded concurrency，不是无界 Promise.all
+```
+
+CURRENT（已实现）：
+
+- 三路 manuscript review：fact / academic / style 三个固定 lens，各持独立
+  contextScope 会话并行（lens 数固定为 3，天然有界）。
+- 分章节 Review（existing_paper_review）：`SectionReviewScheduler` +
+  `mapWithConcurrency` 有界并发（`PAPERTEAM_REVIEW_CONCURRENCY`，默认 3，
+  范围 1-8）；固定 runner 池（任务开始受 limit 约束，具备 backpressure 语义）；
+  每节独立 contextScope / Pi session；单节失败隔离（failedSections 继续）；
+  节内退避重试；取消信号停止派发并中断在途模型调用；结果按论文顺序确定性
+  重排；每节完成即写 per-section journal 供 stage 重试 / 崩溃恢复复用。
+  真实 benchmark：review.sections 2.81×、run 总时长 2.61×（默认 C=3，
+  见 `docs/REVIEW_PERFORMANCE_PROFILE.md`）。PaperMap 章节摘要同为有界并发
+  （`PAPERTEAM_SUMMARY_CONCURRENCY`）。
+- Stage 空闲超时（连续无进度才判超时）+ `run.progress` 分节进度快照。
+
+PLANNED（增强方向）：provider / model capacity 感知的动态并发上限、跨 stage
+统一的 backpressure 策略、partial progress 的产品化呈现、按轮 review telemetry
+聚合（13.7）。

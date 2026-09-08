@@ -7,8 +7,13 @@
 核心链路：
 
 ```text
-Idea → Research → Feasibility → Evidence → Writing → Review → Revision → LaTeX / PDF
+Idea → Research → Feasibility → Evidence → Writing → Iterative Review / Revision Loop → Quality Gate → LaTeX / PDF
 ```
+
+> 审稿-修订闭环当前为 **bounded revision baseline**（Review 聚合 → Quality Gate →
+> 修订 ≤2 轮 / 超限 HITL，M3.2 已实现）；Reviewer 结构化评价驱动的增强版
+> score-driven loop（Review Scorecard、Revision Plan、收敛 / 退化终止）为下一
+> 阶段方向（[D-0026](docs/DECISIONS.md)）。
 
 支持三类一级工作流：
 
@@ -20,6 +25,7 @@ Idea → Research → Feasibility → Evidence → Writing → Review → Revisi
 
 - **Target Feasibility Assessment**：系统基于 Idea、Novelty、Evidence 与实验条件诚实评估目标论文层级是否可被支撑，不承诺无法达到的目标（如"一键生成顶会论文"）。
 - **少量专业 Agent + Skill**：M3 Agent Team 为 Researcher / Writer / Reviewer / Citation；流程编排由后端确定性的 TypeScript WorkflowOrchestrator 负责，不使用 LLM Agent 做流程控制。
+- **Iterative Quality Loop（有界）**：Writer ↔ Reviewer 迭代审稿-修订是核心外层循环（Reviewer 结构化评价 → 确定性聚合 → Quality Gate → Revision Plan → Writer 修订 → 再审）；循环有界、可观测。评分是信号，Quality Gate 是最终确定性权威（[D-0026](docs/DECISIONS.md)；当前为 bounded baseline，增强见各文档 PLANNED 标注）。
 - **Workspace / Evidence / Artifacts 是事实来源**：Runtime Session 只是可重建的执行上下文，业务恢复不依赖 Chat History。
 - **Build Gate 与 Quality Gate 分离**：Draft PDF 只要求可构建；标记 Final 必须通过事实、引用与审稿质量门。
 

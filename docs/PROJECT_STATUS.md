@@ -1,6 +1,7 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-07（Project Hardening & Real Paper E2E 完成后）
+> 更新日期：2026-09-08（Review 并发优化完成后；新增下一阶段规划「M4.9
+> Iterative Review Loop / Review Quality Optimization」）
 
 ## 当前阶段
 
@@ -23,6 +24,68 @@ List / Create Project（双模式）/ Project Workspace 基础壳就绪。
 `zai-coding-cn/glm-5.3` 经运行中 Backend 全链路验证（单 Agent smoke /
 live SSE / Workflow 至首个 HITL / 真实 cancel），L3 Live Provider E2E
 verified（见下）。下一阶段：M4.3 Workflow Live View + SSE + Cancel。**
+
+**Review 并发优化完成（2026-09-08）**：分章节 Review 有界并发落地
+（`SectionReviewScheduler` + `PAPERTEAM_REVIEW_CONCURRENCY`，默认 3；真实
+benchmark：review.sections 2.81×、run 总时长 2.61×，详见
+`docs/REVIEW_PERFORMANCE_PROFILE.md` 与「历史」）。**2026-09-08 文档轮**：
+确立下一阶段核心架构方向——Iterative Writer–Reviewer Outer Review Loop
+（[D-0026](DECISIONS.md)，见下节规划）。
+
+## 下一阶段规划 — M4.9 Iterative Review Loop / Review Quality Optimization（planned，未实现）
+
+> 2026-09-08 文档轮确立（DECISIONS D-0026、PRD §9.5、ARCHITECTURE §13）。
+> **本节为规划，尚未实现**；里程碑编号在既有 M4.4-M4.8 前端页面预留号
+> （见 ARCHITECTURE §8.3）之后顺延取 M4.9，实际优先级与执行顺序由后续
+> M4/M5 规划决定，不因编号隐含排序。
+
+已具备的基线（CURRENT，非本里程碑交付）：
+
+- **M3.2 bounded revision loop（baseline）**：Review（fact / academic /
+  style 三路并行，独立 contextScope 会话）→ 确定性聚合（ReviewSummary 按
+  round 落盘）→ Quality Gate（9 条基础规则 + Citation Integrity 硬规则，
+  全部确定性判定）→ Writer 逐节修订（修订指令在执行期从最新审稿汇总 + 引用报告确定性
+  派生；不允许新造文献）→ 回到引用核验 / 三路审稿 / Gate → 自动修订 ≤2 轮
+  + HITL revise_more ≤3 → 超限 HITL（accept_draft / revise_more / cancel）。
+  评分只是 Gate 的两条规则——blocking issue、unsupported critical claim、
+  捏造 / not_found 引用等硬规则不因总分高而豁免。
+- **Review 有界并发（2026-09-08 完成）**：分章节 Review 经
+  `SectionReviewScheduler` + `mapWithConcurrency` 有界并发
+  （`PAPERTEAM_REVIEW_CONCURRENCY` 默认 3、范围 1-8；固定 runner 池——
+  任务开始受 limit 约束，backpressure 语义而非无界 Promise.all；每节独立
+  contextScope / Pi session；单节失败隔离（failedSections 继续）；节内
+  退避重试；取消停止派发并中断在途模型调用；结果按论文顺序确定性重排；
+  每节完成即写 per-section journal 供 stage 重试 / 崩溃恢复）；PaperMap
+  章节摘要同为有界并发（`PAPERTEAM_SUMMARY_CONCURRENCY`）。三路
+  manuscript review 为 3 个固定 lens 并行（天然有界）。真实 benchmark
+  （C=3，全量 33 节）：review.sections 2763.8s → 985.3s（2.81×）、run
+  总时长 3217.5s → 1234.6s（2.61×），0 失败 / 0 重试 / 0 次 429。
+- **按轮产物**：`reviews/review-r{n}-{mode}.json`、`review-summary-r{n}.json`、
+  `quality-gate-r{n}.json`、`existing-review-r{n}.json`（round 从 1 递增）。
+
+规划内容（PLANNED，均未实现）：
+
+- **score-driven Writer ↔ Reviewer loop**：review 轮次从「修订的附带步骤」
+  升级为驱动循环的一等输入——每轮 scorecard 既决定下一轮 Revision Plan，
+  也参与终止判定
+- **structured review scorecard 一等化**：跨轮维度变化对比（哪些问题被
+  修复 / 仍存在 / 新增、哪些维度提高 / 退化）；score 保持为信号，
+  Quality Gate 仍是最终确定性权威
+- **revision-plan-driven Writer**：Revision Plan 固化为一等落盘 artifact /
+  task contract（与该轮 scorecard、gate 结果关联；当前为执行期派生指令）；
+  **不新增 RevisionPlanner Agent**
+- **re-review 强制**：修订后的版本必须重新 Review，不自评通过
+- **convergence / regression / max iteration 停止条件**：新增 CONVERGED
+  （连续轮改善低于阈值 → Human Checkpoint）与 REGRESSION（重要维度明显
+  退化 → 停止盲目修改并保留 / 恢复较优版本）终止态，阈值 configurable；
+  PASS / MAX_ITERATIONS 已在 baseline 实现
+- **review parallelism & backpressure 增强**：provider / model capacity
+  感知的动态并发上限、跨 stage 统一 backpressure、partial progress 产品化
+  呈现
+- **iteration history / observability**：每轮 revision / review / scorecard /
+  findings / revision plan / gate 结果 / workflow iteration / agent 执行
+  trace 的关联与查询；前端迭代历史 UI（Round N 分数走势、问题演化、
+  REGRESSION 时恢复较优版本）
 
 ## M4.3 — PDF Review + Citation Integrity + Skill Registry（✅ Foundation Complete，2026-09-06）
 
@@ -305,6 +368,15 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 历史
 
+- **Review 并发优化（2026-09-08）**：profiling telemetry（e940607）→ 分章节
+  Review 有界并发（`SectionReviewScheduler`，e4e8deb）+ PaperMap 章节摘要并发
+  （0b9fcc1）；可重复真实 A/B benchmark harness（`scripts/benchmark-review.mjs`，
+  8da4d83）。全量 33 节实测（C=3）：review.sections 2.81×、run 总时长 2.61×，
+  0 失败 / 0 重试 / 0 次 429；默认并发度定为 3（依据见
+  `docs/REVIEW_PERFORMANCE_PROFILE.md`）。
+- **Outer Review Loop 架构方向冻结（2026-09-08，纯文档）**：D-0026 确立
+  Iterative Writer–Reviewer Outer Review Loop（bounded baseline 之上的
+  score-driven 增强；详见「下一阶段规划」节）。
 - **Project Hardening & Real Paper E2E（2026-09-07）**：见上节。
 - **Project Entry & Lifecycle UX（2026-09-07）**：见上节。
 - **M4.3 PDF Review + Citation Integrity + Skill Registry**：Final PDF 成为 Existing Paper 正式 Review 输入；确定性解析（pymupdf 子进程）→ pages/sections/chunks；PaperMap + 受控 section context（隔离证明 + 会话无关重建证明）；引用提取（range 展开/不猜语义）；两层核验（NOT_FOUND≠捏造≠检索失败；语义 judge 禁止凭记忆、伪造引文剥离、确定性 severity）；Citation Integrity 规则并入 QualityGate；Skill Registry（两项 MIT 审计 skill pin revision 入库、按角色注入、中文简介持久化）；最小前端三视图；真实 PDF + 真实学术库 live smoke；285+34 测试。

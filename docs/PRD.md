@@ -3,6 +3,8 @@
 > 2026-09-03 产品设计冻结版：明确"从研究 Idea 到论文交付 + 已有论文改造"的双工作流定位、
 > Target Feasibility Assessment、少量专业 Agent + Skill、确定性 Workflow 编排与
 > Build Gate / Quality Gate 分离。已实现范围以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
+> 2026-09-08 增补：Iterative Writer–Reviewer Loop 正式定义为核心产品机制（9.5，
+> D-0026；当前为 bounded revision baseline，增强项见各节 planned 标注）。
 
 ## 1. 产品概述
 
@@ -17,13 +19,19 @@ PaperTeam 是一个**从研究 Idea 到论文交付、以及已有论文系统�
 核心链路：
 
 ```text
-Idea → Research → Feasibility → Evidence → Writing → Review → Revision → LaTeX / PDF
+Idea → Research → Feasibility → Evidence → Writing → Iterative Review / Revision Loop → Quality Gate → LaTeX / PDF
 ```
 
 系统不只是"论文写作 Agent"。写作只是链路的一环：在写作之前，系统先做领域调研、
 Related Work、Research Gap、Novelty / Contribution 分析与目标可行性评估；在写作之后，
 系统做引用核验、学术审稿、文风审查与有界修改闭环。对已有论文，系统支持导入、
 理解、审计与逐节改造。
+
+其中「Iterative Review / Revision Loop」指 Writer ↔ Reviewer 迭代质量闭环
+（见 9.5）：**当前已实现的是 bounded revision baseline**（Review 聚合 →
+Quality Gate → 修订 ≤2 轮 / 超限 HITL）；Reviewer 结构化评价驱动的增强版
+score-driven loop（Review Scorecard、Revision Plan、收敛 / 退化终止）为下一
+阶段方向（[DECISIONS D-0026](DECISIONS.md)）。
 
 系统支持三类一级工作流：
 
@@ -67,6 +75,9 @@ Related Work、Research Gap、Novelty / Contribution 分析与目标可行性评
 6. **Build Gate 与 Quality Gate 分离**：能否编译与是否达到质量要求是两个独立判定；
    Quality Gate 失败不阻止 Draft PDF 生成，但阻止标记 Final（见第 10 章）。
 7. **有界迭代**：修改循环必须有最大轮数上限，超限进入 Human Checkpoint，不无限自动循环。
+   下一阶段在此之上增加收敛（CONVERGED）与退化（REGRESSION）停止语义：连续改善
+   低于阈值时停止消耗模型成本，重要质量维度明显退化时停止盲目修改并保留较优
+   版本（见 9.5；planned）。
 8. **可恢复**：WorkflowRun 记录 checkpoint，失败/中断后可 resume；恢复依据是 Workspace
    状态而非对话历史。
 
@@ -683,7 +694,9 @@ Style Profile 供 Writer（章节规划与呈现方式）与 Reviewer（结构�
 - 不得为了完成文字而虚构论文、数据或引用
 - 缺乏可靠来源时，显式标记证据不足，不强行生成看似有据的内容
 - 输出 LaTeX，使用统一引用格式，保持章节结构和术语一致性
-- **Revision**：根据 Reviewer 汇总意见逐节修改论文（有界修改闭环中的一环，见 9.5）
+- **Revision**：根据 Reviewer 汇总意见逐节修改论文（有界修改闭环中的一环，见 9.5）。
+  下一阶段升级为按 **Revision Plan**（确定性修订任务契约，见 9.5.4）执行修订；
+  只修改计划指向的章节，无问题的章节不动。
 
 ## 7.4 Reviewer
 
@@ -728,6 +741,20 @@ Reviewer 是一个 Agent，通过**不同 Skill** 承担三类审稿视角；三
 - 检查模板化表达、连接词滥用、重复句式、段落结构机械化、空洞评价、信息密度、
   无证据评价词、不必要总结
 - 输出 AI 文风风险评分（0~100）、问题位置、问题类型、修改建议
+
+### 结构化评价（Review Scorecard，9.5.3）
+
+Reviewer 的输出是**结构化评价 + 分级问题清单**，不是只返回一个模糊的 82/100。
+每轮 Review 概念上形成一张 Review Scorecard，覆盖：学术质量（含分维度评分）、
+事实 / 证据可靠性、引用完整性、文风风险，以及 critical / major / minor 分级
+findings、blocking issues、受影响章节与可执行修改建议。第一版沿用现有领域
+模型（academicScore / styleRisk / fact verdicts / issue severity 与 blocking），
+跨轮维度变化（哪些问题被修复 / 仍存在 / 新增）属于下一阶段（见 9.5）。
+
+**评分是信号，不是最终判定权威**：分数用于驱动修订计划、收敛 / 退化检测与
+用户呈现；能否标记 Final 始终由确定性 Quality Gate 决定——存在 critical
+factual error、unsupported critical claim、捏造 / 失效引用、未解决 blocking
+issue 或 target requirement 未满足时，即使总分高也必须失败（见第 10 章）。
 
 ## 7.5 Citation
 
@@ -956,7 +983,7 @@ MVP 阶段仅支持 LaTeX 项目导入；不支持 DOCX → LaTeX 转换。
 
 - **线性主干**（stage 依次推进）
 - **有限条件分支**（如 Quality Gate 通过 / 失败）
-- **bounded loop**（修改循环最多 N 轮，默认 3，可配置）
+- **bounded loop**（修改循环最多 N 轮，当前实现默认 2，可配置）
 - **少量并行 fan-out / join**（如三类 review skill 并行、多节 Revision 并行）
 
 每个 Stage 的契约由 **StageContract** 描述（M3.0 核心抽象，详见
@@ -976,21 +1003,128 @@ MVP 阶段仅支持 LaTeX 项目导入；不支持 DOCX → LaTeX 转换。
 - produces：`sections/introduction.tex` 等分节文件
 - DoD：文件存在、非空、LaTeX 格式合法
 
-## 9.5 修改闭环（有界）
+## 9.5 修改闭环与 Iterative Writer–Reviewer Loop（D-0026）
+
+修改闭环是 PaperTeam 的核心质量机制：**Writer 修改 → Reviewer 评价 → 确定性
+聚合 → Quality Gate → 修订计划 → 再修改** 的有界循环。当前已实现 bounded
+revision baseline；下一阶段升级为 Reviewer 结构化评价驱动的 Iterative
+Writer–Reviewer Quality Loop。两者边界如下。
+
+### 9.5.1 当前已实现（CURRENT：bounded revision baseline，M3.2）
 
 ```text
-Review（fact / academic / style + Citation）
+Review（fact / academic / style 三路并行 + Citation 核验）
   ↓
-Review Aggregation（汇总为结构化问题清单）
+Review Aggregation（确定性聚合为结构化问题清单，按轮落盘）
   ↓
-Quality Gate 判定
+Quality Gate 判定（确定性，见第 10 章）
   ↓
-未通过 → Writer 逐节 Revision → Re-verify（fact skill + Citation 复核）
+未通过 → Writer 逐节 Revision（仅动有问题的章节；审稿意见 + 引用核验问题
+         进入修订指令；不允许新造文献）
+       → Re-verify（回到引用核验 → 三路审稿 → Quality Gate）
   ↓
-循环计数 +1；达到最大轮数 N → Human Checkpoint（呈报剩余问题，由用户决策）
+循环计数 +1；达到最大轮数（默认 2，可配置；HITL 可再授权 ≤3 轮）
+  → Human Checkpoint（呈报剩余问题：accept_draft / revise_more / cancel）
   ↓
 通过 → 可标记 Final
 ```
+
+### 9.5.2 下一阶段（PLANNED）：score-driven Iterative Review Loop
+
+把「Quality Gate 失败后的有限 revision」升级为「Reviewer 结构化评价驱动的
+迭代质量闭环」——review 轮次从修订的附带步骤变为驱动循环的一等输入：
+
+```text
+Manuscript vN
+  ↓
+Review Fan-out（fact / academic / citation / style，有界并发）
+  ↓
+Deterministic Review Aggregation（确定性聚合）
+  ↓
+Review Scorecard + Findings（9.5.3）
+  ↓
+Quality Gate（确定性最终权威）
+  ├─ PASS → Finalization
+  │
+  └─ FAIL
+        ↓
+Revision Plan（确定性修订任务契约，9.5.4）
+  ↓
+Writer Revision
+  ↓
+Manuscript vN+1
+  ↓
+Re-review（必须重新 Review，不自评通过）
+  └────────────→ loop（终止条件见 9.5.5）
+```
+
+### 9.5.3 Review Scorecard
+
+每轮 Review 产出一张结构化 Scorecard（多维评价 + 分级问题清单），而不是一个
+模糊的总分。第一版沿用现有领域概念：overall / academic quality（学术评分与
+分维度评分）、fact / evidence reliability（claim 核验结论分布）、citation
+integrity（引用完整性）、style risk（文风风险）、critical / major / minor
+findings、blocking issues、affected sections、actionable recommendations。
+
+**评分不是唯一 Final 判定依据**：score 达标 ≠ 一定 PASS。存在以下问题时，
+即使总分高也必须失败（Quality Gate 仍是最终确定性权威，见第 10 章）：
+
+- critical factual error
+- unsupported / contradictory critical claim
+- hallucinated / invalid citation
+- unresolved blocking issue
+- target requirement（targetProfile / targetVenue）未满足
+
+跨轮维度变化（哪些问题被修复 / 仍存在 / 新增、哪些维度提高 / 退化）依赖
+scorecard 的按轮落盘与比较，属下一阶段实现。
+
+### 9.5.4 Revision Plan（不新增 RevisionPlanner Agent）
+
+Quality Gate 失败后，系统根据结构化 Review Findings、Citation 问题与
+Quality Gate blockers **确定性生成 Revision Plan**——一个明确的业务
+artifact / task contract，交给 Writer 执行：本轮必须处理的问题（按章节
+归属）、对应的 Gate 阻止项与修订纪律（如不允许新造文献）。
+
+继续遵守「少量专业 Agent + Skill + 确定性 Workflow 编排」原则：Revision
+Plan 由 WorkflowOrchestrator 生成，**不新增 RevisionPlanner Agent**。当前
+实现以「修订指令在执行期从最新审稿汇总 + 引用报告确定性派生」为等价物；
+把 Revision Plan 固化为一等落盘产物（与该轮 scorecard、gate 结果关联，
+可在 UI 展示与审计）属下一阶段。未来若确需 LLM 做复杂 revision planning，
+再单独做设计决策。
+
+### 9.5.5 Loop 终止条件（不无限循环）
+
+| 终止态 | 含义 | 去向 | 状态 |
+|---|---|---|---|
+| PASS | Quality Gate 通过 | Finalization | 已实现 |
+| MAX_ITERATIONS | 达到配置的最大自动迭代轮数（当前默认 2） | Human Checkpoint | 已实现 |
+| CONVERGED | 连续若干轮改善低于合理阈值，继续消耗模型成本价值很低 | Human Checkpoint（呈报收敛证据） | planned，阈值 configurable |
+| REGRESSION | Revision 修复部分问题但导致重要质量维度明显退化 | 停止盲目继续修改；保留 / 恢复较优版本供用户决策 | planned，判定口径与阈值待定 |
+
+已实现参数如实记录：自动修订默认 ≤2 轮（可配置）、超限 HITL 中 revise_more
+再授权 ≤3 轮。CONVERGED / REGRESSION 的具体阈值（连续几轮、改善幅度、哪些
+维度算「重要」）在实现前不在本文档伪造。
+
+### 9.5.6 版本与质量历史
+
+每一轮的结果不简单覆盖，概念上形成交替序列：Revision 0 → Review 0 →
+Revision 1 → Review 1 → …。每轮至少可关联：manuscript revision、review
+result、scorecard、findings、revision plan、quality gate result、workflow
+iteration 与 agent / model execution trace（详见 ARCHITECTURE §13.7 的
+CURRENT / PLANNED 边界）。
+
+产品 UI 后续可展示迭代历史（planned，见 12.3 / 第 13 章）：
+
+```text
+Round 1   72
+Round 2   81
+Round 3   87
+Round 4   91   PASS
+
+哪些问题被修复 · 哪些仍存在 · 哪些维度提高 · 哪些发生 regression
+```
+
+### Quality Gate 默认规则
 
 建议默认通过条件（Quality Gate 默认规则，阈值可按 targetProfile 配置）：
 
@@ -1012,7 +1146,8 @@ Workflow 在关键节点进入 `awaiting_input` 状态，暂停等待用户输�
 - Target Feasibility 评估后的方向确认（Idea-to-Paper）
 - Improvement Plan 确认（Existing-Paper Improvement）
 - Outline 确认（可选）
-- bounded loop 达到最大轮数后的介入决策
+- bounded loop 达到最大轮数后的介入决策（planned：CONVERGED / REGRESSION
+  终止同样进入 Human Checkpoint，见 9.5.5）
 
 HITL 约定：
 
@@ -1187,6 +1322,17 @@ Major Issues     3
 - Critical / Major / Minor 问题数量
 - Quality Gate 状态与阻止项清单
 
+迭代历史（planned，属 9.5 的增强版 loop，未实现）：按轮展示分数走势与
+问题演化——
+
+```text
+Round 1   72     Round 2   81     Round 3   87     Round 4   91  PASS
+
+本轮修复：12 条（critical 0 / major 5 / minor 7）
+仍存在：3 条    新增：1 条
+维度变化：学术 +6 · 事实 +4 · 文风风险 -9 · 引用不变
+```
+
 问题卡片：
 
 ```text
@@ -1269,6 +1415,11 @@ V14（Final）
 
 Existing-Paper Improvement 项目的初始导入快照是一个特殊版本（baseline）。
 
+与迭代闭环的关系（9.5.6，planned）：审稿-修订的每一轮（Revision N ↔ Review N）
+与业务版本关联，形成可回放的质量历史——哪轮修复了什么、分数如何变化、
+REGRESSION 时可恢复到较优版本。当前实现已按轮落盘审稿聚合与 Gate 结果
+（round 编号产物）；一等化的版本-轮次查询视图与 UI 属下一阶段。
+
 ---
 
 ## 14. AgentRuntime 与 Session
@@ -1329,11 +1480,13 @@ PaperTeam Backend 通过统一 Runtime 接口（AgentRuntime Contract v2）调�
 
 支持配置：
 
-- 修改闭环最大轮数（bounded loop N）
+- 修改闭环最大轮数（bounded loop N；当前实现默认 2）
 - Quality Gate 阈值（Academic Pass Score、Style Risk Max、引用与事实硬规则开关）
 - 各 Stage 重试策略
-- 并发数（fan-out 上限）
+- 并发数（fan-out 上限；分章节 Review 并发 `PAPERTEAM_REVIEW_CONCURRENCY` 已可配置，默认 3）
 - 资料检索范围默认值
+- （planned，随 9.5 增强版 loop）收敛判定阈值（连续轮数 / 最小改善幅度）与
+  退化判定口径（哪些质量维度、退化多少触发 REGRESSION）
 
 ## 15.5 WorkflowRun / Session
 
@@ -1527,6 +1680,16 @@ ReviewReport
 Issue
   issue_id, review_id, section, severity (critical|major|minor),
   description, claim_ref?, evidence_ref?, status (open|resolved|waived)
+
+RevisionPlan（planned，9.5.4）
+  plan_id, round, gate_blockers[], directives[]（按章节归属的问题映射与修订纪律）,
+  status, createdAt —— 一等落盘 artifact；当前实现为执行期派生的修订指令，
+  尚未作为独立模型持久化
+
+ReviewIteration（planned，9.5.6）
+  iteration_index, revision_refs, review_ref, scorecard_ref, gate_ref,
+  termination (pass|max_iterations|converged|regression) —— 跨轮关联视图；
+  当前以 round 编号产物 + run stageHistory 承载
 
 CitationRecord
   citation_key, bib_entry, verificationStatus, evidence_refs[], usedIn[]
@@ -1774,6 +1937,11 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 
 ### M4+
 
+- **Iterative Review Loop / Review Quality Optimization**（D-0026；在 M3.2
+  bounded revision baseline 之上的增强版 score-driven Writer ↔ Reviewer loop：
+  Review Scorecard 一等化、Revision Plan 驱动 Writer、re-review、
+  convergence / regression / max iteration 停止、review 并发与 backpressure
+  增强、iteration history / 可观测性与 UI）
 - Workflow Live View（SSE 实时视图 / cancel UI）
 - Visual Reviewer（视觉审稿）
 - LaTeX repair loop（确定性修复工具链）
