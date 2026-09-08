@@ -20,6 +20,7 @@ import type { AgentRuntime } from "../runtime/types.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { BusinessError } from "../errors.js";
 import { fingerprintJson } from "../util/hash.js";
+import { assertValidConcurrency, mapWithConcurrency } from "../util/concurrency.js";
 import type { PaperMap } from "./types.js";
 import { summaryNeedsRefresh, type PaperSectionSummary } from "./sectionSummary.js";
 import type { PaperStore } from "./PaperStore.js";
@@ -33,6 +34,8 @@ export interface PaperMapServiceOptions {
   runtime: AgentRuntime;
   /** Reviewer agent id（摘要生成走 reviewer 角色 scope） */
   reviewerAgentId: string;
+  /** 章节摘要有界并发度（活跃模型调用上限；PAPERTEAM_SUMMARY_CONCURRENCY） */
+  concurrency?: number;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -41,16 +44,30 @@ export class PaperMapService {
   private readonly store: PaperStore;
   private readonly runtime: AgentRuntime;
   private readonly reviewerAgentId: string;
+  private readonly concurrency: number;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
 
   /** 最近一次 ensureMap 的 telemetry（模型调用数等；诊断用） */
-  lastTelemetry: { modelCalls: number; summariesRefreshed: number; failures: number } | undefined;
+  lastTelemetry:
+    | {
+        modelCalls: number;
+        summariesRefreshed: number;
+        failures: number;
+        /** 本轮摘要并发度（1 = 串行） */
+        concurrency: number;
+        wallMs: number;
+        /** 各节摘要时长之和（与 wallMs 的比值 ≈ 有效并发度） */
+        sumSectionDurationMs: number;
+      }
+    | undefined;
 
   constructor(options: PaperMapServiceOptions) {
     this.store = options.store;
     this.runtime = options.runtime;
     this.reviewerAgentId = options.reviewerAgentId;
+    this.concurrency = options.concurrency ?? 3;
+    assertValidConcurrency(this.concurrency, "summaryConcurrency");
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
   }
@@ -58,7 +75,8 @@ export class PaperMapService {
   /**
    * 构建/刷新 PaperMap：
    * 1. 确定性骨架（sections/counts/指纹）——总是重算落盘；
-   * 2. 章节摘要——仅刷新缺失/失败/stale 的（已有摘要按指纹复用，不重复烧 token）。
+   * 2. 章节摘要——仅刷新缺失/失败/stale 的（已有摘要按指纹复用，不重复烧 token），
+   *    有界并发执行（各节输入独立：单节 chunks；失败不阻塞其它节，Map 照常落盘）。
    */
   async ensureMap(
     projectId: string,
@@ -78,42 +96,65 @@ export class PaperMapService {
         .map((section) => [section.sectionId, section.summary!]),
     );
 
+    const startedAt = Date.now();
     const telemetry = { modelCalls: 0, summariesRefreshed: 0, failures: 0 };
-    const sections: PaperMap["sections"] = [];
-    for (const section of document.sections) {
-      const chunks = document.chunks.filter((chunk) => chunk.sectionId === section.sectionId);
-      const fingerprint = fingerprintJson(
-        chunks.map((chunk) => chunk.chunkId + ":" + chunk.text),
-      );
-      const prior = previousSummaries.get(section.sectionId);
-      let summary: PaperSectionSummary | undefined;
-      if (prior !== undefined && !summaryNeedsRefresh(prior, fingerprint)) {
-        summary = prior; // 指纹一致：复用，不重跑
-      } else if (options.refreshSummaries !== false) {
-        if (options.signal?.aborted === true) {
-          throw new BusinessError("WORKFLOW_CANCELLED", "PaperMap 摘要生成已被取消");
-        }
-        summary = await this.summarizeSection(projectId, section.sectionId, section.title, chunks, fingerprint, options.signal);
-        telemetry.modelCalls += 1;
-        if (summary.status === "ok") {
-          telemetry.summariesRefreshed += 1;
+    const sectionDurations: number[] = [];
+
+    // worker 返回该节的 Map entry；失败在 worker 内部消化为 status=failed（既有语义：
+    // 摘要失败不阻塞 Map 骨架落盘），不向上抛——mapWithConcurrency 的单节失败不传染
+    const outcomes = await mapWithConcurrency(
+      document.sections,
+      this.concurrency,
+      async (section) => {
+        const chunks = document.chunks.filter((chunk) => chunk.sectionId === section.sectionId);
+        const fingerprint = fingerprintJson(
+          chunks.map((chunk) => chunk.chunkId + ":" + chunk.text),
+        );
+        const prior = previousSummaries.get(section.sectionId);
+        let summary: PaperSectionSummary | undefined;
+        if (prior !== undefined && !summaryNeedsRefresh(prior, fingerprint)) {
+          summary = prior; // 指纹一致：复用，不重跑
+        } else if (options.refreshSummaries !== false) {
+          const sectionStartedAt = Date.now();
+          summary = await this.summarizeSection(
+            projectId,
+            section.sectionId,
+            section.title,
+            chunks,
+            fingerprint,
+            options.signal,
+          );
+          sectionDurations.push(Date.now() - sectionStartedAt);
+          telemetry.modelCalls += 1;
+          if (summary.status === "ok") {
+            telemetry.summariesRefreshed += 1;
+          } else {
+            telemetry.failures += 1;
+          }
         } else {
-          telemetry.failures += 1;
+          summary = { sectionId: section.sectionId, status: "pending", sourceFingerprint: fingerprint };
         }
-      } else {
-        summary = { sectionId: section.sectionId, status: "pending", sourceFingerprint: fingerprint };
-      }
-      sections.push({
-        sectionId: section.sectionId,
-        title: section.title,
-        level: section.level,
-        pageStart: section.pageStart,
-        pageEnd: section.pageEnd,
-        chunkCount: chunks.length,
-        charCount: section.charCount,
-        ...(summary !== undefined ? { summary } : {}),
-      });
+        return {
+          sectionId: section.sectionId,
+          title: section.title,
+          level: section.level,
+          pageStart: section.pageStart,
+          pageEnd: section.pageEnd,
+          chunkCount: chunks.length,
+          charCount: section.charCount,
+          ...(summary !== undefined ? { summary } : {}),
+        };
+      },
+      { signal: options.signal },
+    );
+
+    if (options.signal?.aborted === true) {
+      // 与串行版口径一致：取消时不再落盘半成品 Map
+      throw new BusinessError("WORKFLOW_CANCELLED", "PaperMap 摘要生成已被取消");
     }
+
+    // 结果按文档顺序组装（worker 完成顺序不确定，Map 顺序必须确定）
+    const sections = outcomes.flatMap((outcome) => (outcome.ok ? [outcome.value] : []));
 
     const map: PaperMap = {
       schemaVersion: 1,
@@ -131,7 +172,12 @@ export class PaperMapService {
       sourceFingerprint: document.sha256,
     };
     await this.store.saveMap(projectId, map);
-    this.lastTelemetry = telemetry;
+    this.lastTelemetry = {
+      ...telemetry,
+      concurrency: this.concurrency,
+      wallMs: Date.now() - startedAt,
+      sumSectionDurationMs: sectionDurations.reduce((sum, value) => sum + value, 0),
+    };
     this.log(
       `[paper-map] projectId=${projectId} sections=${sections.length} summaries刷新=${telemetry.summariesRefreshed} 失败=${telemetry.failures}`,
     );
