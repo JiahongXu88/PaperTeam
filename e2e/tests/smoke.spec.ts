@@ -80,7 +80,8 @@ test.describe.serial("PaperTeam 用户路径 smoke", () => {
 
   test("7 引用核验：提取是确定性的，无需模型", async ({ page }) => {
     await page.goto(`/projects/${importedProjectId}?tab=citations`);
-    const extractButton = page.getByRole("button", { name: /提取引用|重新提取/ });
+    // 右侧栏「快捷操作」也有提取入口；smoke 走标签页内的主入口
+    const extractButton = page.getByRole("tabpanel").getByRole("button", { name: /提取引用|重新提取/ });
     await extractButton.click();
     await expect(page.getByRole("heading", { name: "参考文献" })).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText(/参考文献 \d+/)).toBeVisible();
