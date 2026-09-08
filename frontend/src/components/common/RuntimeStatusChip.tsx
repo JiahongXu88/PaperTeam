@@ -1,7 +1,7 @@
 import { useRuntimeStatus } from "../../hooks/queries.js";
 
 /**
- * 侧栏底部的环境指示：Runtime / 模型 / PDF 解析依赖各一行（dot + 文字）。
+ * 侧栏底部的运行环境指示：Runtime / 模型 / PDF 解析依赖各一行（dot + 文字）。
  * Backend 不可达时只显示一行「服务未连接」。
  */
 
@@ -22,6 +22,7 @@ export function RuntimeStatusChip() {
   if (isPending) {
     return (
       <div className="sidebar-runtime" data-testid="runtime-chip">
+        <span className="sidebar-runtime-title">运行环境</span>
         <Line tone="muted" text="正在检测运行环境…" />
       </div>
     );
@@ -29,6 +30,7 @@ export function RuntimeStatusChip() {
   if (isError || data === undefined) {
     return (
       <div className="sidebar-runtime" data-testid="runtime-chip">
+        <span className="sidebar-runtime-title">运行环境</span>
         <Line tone="error" text="服务未连接" title="无法连接 PaperTeam 后端服务，请确认服务已启动" />
       </div>
     );
@@ -44,18 +46,11 @@ export function RuntimeStatusChip() {
 
   return (
     <div className="sidebar-runtime" data-testid="runtime-chip">
-      <Line
-        tone={data.runtime.phase === "healthy" ? "ok" : "error"}
-        text={`Pi Runtime ${data.runtime.version}`}
-        title={data.runtime.detail}
-      />
+      <span className="sidebar-runtime-title">运行环境</span>
+      <Line tone={data.runtime.phase === "healthy" ? "ok" : "error"} text={`Pi Runtime ${data.runtime.version}`} title={data.runtime.detail} />
       <Line tone={data.model.phase === "configured" ? "ok" : "warn"} text={modelText} title={data.model.detail} />
       {pdf !== undefined && pdf.phase !== "unknown" ? (
-        <Line
-          tone={pdf.phase === "ready" ? "ok" : "error"}
-          text={pdf.phase === "ready" ? "PDF 解析可用" : "PDF 解析依赖缺失"}
-          title={pdf.detail}
-        />
+        <Line tone={pdf.phase === "ready" ? "ok" : "error"} text={pdf.phase === "ready" ? "PDF 解析可用" : "PDF 解析依赖缺失"} title={pdf.detail} />
       ) : null}
     </div>
   );

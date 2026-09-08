@@ -12,7 +12,7 @@ export interface StatusStyle {
 }
 
 export const PROJECT_STATUS_STYLES: Record<string, StatusStyle> = {
-  created: { label: "已创建", tone: "neutral" },
+  created: { label: "已创建", tone: "ok" },
   generated: { label: "已生成", tone: "ok" },
   failed: { label: "失败", tone: "danger" },
 };
@@ -88,11 +88,11 @@ export const SKILL_STATUS_STYLES: Record<string, StatusStyle> = {
   disabled: { label: "已停用", tone: "warn" },
 };
 
-/** Review finding 严重度 */
+/** Review finding 严重度（tone 用于旧式 status 药丸；卡片 / 统计块用 severity 自己的语义色类） */
 export const SEVERITY_STYLES: Record<string, StatusStyle> = {
   critical: { label: "严重", tone: "danger" },
   major: { label: "主要", tone: "warn" },
-  minor: { label: "次要", tone: "neutral" },
+  minor: { label: "次要", tone: "info" },
   info: { label: "提示", tone: "neutral" },
 };
 

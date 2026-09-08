@@ -1,65 +1,93 @@
 /**
- * PaperTeam Design Tokens —— 全部颜色、字号、间距的唯一来源。
+ * PaperTeam Design Tokens —— 颜色、字号、间距、圆角、阴影的唯一来源。
  *
- * 方向：编辑部校对台。档案白纸面 + 墨水靛蓝作为唯一强调色，状态色取
- * 铜绿 / 赭石 / 朱砂三种"批注色"，衬线只用于论文标题与页面标题，
- * 数字统一用等宽数字（tabular-nums）落在左侧栏位——参考文献编号、页码、
- * 章节页范围都在同一条竖线上对齐。
+ * 方向：Modern Academic Research Workbench（对齐已批准的 Light / Dark 原型）。
+ * 深色侧栏 + 偏暖浅色主体 + 白色卡片分层；橙红作为唯一主强调色（选中、主按钮、进度），
+ * 蓝色作为次级信息色（次要级别、分类标签）；严重度用语义色小面积表达。
  *
- * 亮色 = :root；暗色 = [data-theme="dark"] 覆盖同名变量（阅览室夜灯，不是纯黑反色）。
+ * 亮色 = :root；暗色 = [data-theme="dark"] 覆盖同名语义变量（墨黑 / 深蓝黑分层，不是简单反色）。
  * 组件只引用语义 token，不直接写十六进制。
  */
 
 :root {
-  /* ---- 纸面 / 表面 ---- */
-  --paper: #f4f4f1; /* 应用底：档案白（冷调，非奶油） */
-  --surface: #ffffff; /* 内容表面：表单、弹层、侧栏 */
-  --surface-raised: #fbfbf9; /* 轻微抬起：hover 行、次级块 */
-  --surface-sunken: #ececE7; /* 下沉：代码、输入禁用态 */
-  --line: #e2e3df; /* 发丝线 */
-  --line-strong: #c9cbc4; /* 强分隔 / 输入边框 */
+  /* ---- 背景 / 表面 ---- */
+  --bg-app: #f4f3f0; /* 应用底：偏暖浅灰 */
+  --bg-surface: #ffffff; /* 卡片、面板、输入框 */
+  --bg-surface-muted: #f6f6f4; /* 卡片内的次级块（建议框、hover 行） */
+  --bg-surface-sunken: #eeeeeb; /* 下沉：进度条轨道、禁用输入 */
+  --bg-surface-elevated: #ffffff; /* 浮层 */
+  --bg-input: #ffffff;
+  --bg-hover: rgba(20, 22, 30, 0.04);
+  --bg-selected: #fdefe9; /* 主强调色的选中底 */
 
-  /* ---- 墨阶（文字） ---- */
-  --ink: #1c2027; /* 正文 */
-  --ink-2: #4a505a; /* 次级 */
-  --ink-3: #6f7681; /* 辅助 */
-  --ink-4: #9aa0a9; /* 弱化：时间戳、占位 */
+  /* ---- 侧栏（Light / Dark 都是深色） ---- */
+  --bg-sidebar: #26272c;
+  --bg-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --bg-sidebar-active: rgba(255, 255, 255, 0.1);
+  --border-sidebar: rgba(255, 255, 255, 0.08);
+  --text-sidebar: #d5d6db;
+  --text-sidebar-muted: #8e919a;
+  --text-sidebar-strong: #ffffff;
 
-  /* ---- 强调：墨水靛蓝（品牌 / 链接 / 主按钮 / 选中） ---- */
-  --accent: #34437a;
-  --accent-strong: #283461;
-  --accent-ink: #ffffff; /* accent 实底上的文字 */
-  --accent-soft: #eceff8; /* 选中底 / 强调块底 */
-  --accent-line: #c6cde6;
+  /* ---- 文字 ---- */
+  --text-primary: #1b1d23;
+  --text-secondary: #4a4f5c;
+  --text-muted: #767b88;
+  --text-faint: #a2a6b0;
+  --text-on-accent: #ffffff;
 
-  /* ---- 批注色（状态；浅底深字，长时阅读安全） ---- */
-  --ok: #2e7d5b;
-  --ok-soft: #e6f2ec;
-  --warn: #9a6b12;
-  --warn-soft: #f8f0dc;
-  --warn-line: #e6d5a8;
-  --danger: #b23a2e;
-  --danger-soft: #f9ebe9;
-  --danger-line: #ead0cc;
-  --info: #3b5a8a;
-  --info-soft: #e9eef6;
-  --neutral: #7a818c;
-  --neutral-soft: #eeeeeb;
+  /* ---- 边框 ---- */
+  --border-default: #e5e4e0;
+  --border-subtle: #eeedea;
+  --border-strong: #d2d1cc;
 
-  /* ---- 字体角色 ---- */
-  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
-  --font-display: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", Georgia, "Times New Roman", serif;
-  --font-mono: Consolas, "Cascadia Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  /* ---- 主强调：橙红 ---- */
+  --accent-primary: #f0582b;
+  --accent-primary-hover: #dd4c22;
+  --accent-primary-soft: #fdeee8;
+  --accent-primary-text: #cf4519;
+  --accent-primary-gradient: linear-gradient(135deg, #f7773a 0%, #ef4f27 100%);
+
+  /* ---- 次级强调：蓝 ---- */
+  --accent-secondary: #2f7cf6;
+  --accent-secondary-soft: #e8f0fe;
+  --accent-secondary-text: #2160c9;
+
+  /* ---- 语义状态 ---- */
+  --success: #1f9d5a;
+  --success-soft: #e6f6ec;
+  --warning: #e8861a;
+  --warning-soft: #fdf1e2;
+  --danger: #e5484d;
+  --danger-soft: #fdebeb;
+  --info: #6b7280;
+  --info-soft: #eeeff2;
+
+  /* ---- 严重度（映射到语义色） ---- */
+  --sev-critical: var(--danger);
+  --sev-critical-soft: var(--danger-soft);
+  --sev-major: var(--warning);
+  --sev-major-soft: var(--warning-soft);
+  --sev-minor: var(--accent-secondary);
+  --sev-minor-soft: var(--accent-secondary-soft);
+  --sev-info: var(--info);
+  --sev-info-soft: var(--info-soft);
+
+  /* ---- 字体 ---- */
+  --font-ui: "Inter", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
   /* ---- 字号 / 行高 ---- */
-  --fs-display: 24px;
-  --lh-display: 1.35;
-  --fs-title: 17px;
+  --fs-page-title: 26px;
+  --lh-page-title: 1.3;
+  --fs-section-title: 16px;
+  --fs-item-title: 15px;
   --fs-body: 14px;
-  --lh-body: 1.65;
-  --fs-reading: 15px; /* 论文标题、研究想法等阅读型内容 */
+  --lh-body: 1.7;
+  --fs-secondary: 13px;
   --fs-meta: 12.5px;
   --fs-label: 12px;
+  --fs-stat: 24px;
   --fs-code: 12.5px;
 
   /* ---- 间距（4px 网格） ---- */
@@ -74,55 +102,77 @@
   --s-12: 48px;
 
   /* ---- 圆角 / 阴影 / 动效 ---- */
-  --r-sm: 3px;
-  --r-md: 5px;
-  --r-lg: 8px;
-  --shadow-pop: 0 6px 24px rgba(28, 32, 39, 0.12), 0 1px 3px rgba(28, 32, 39, 0.08); /* 仅浮层 */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --r-xl: 18px;
+  --r-pill: 999px;
+  --shadow-card: 0 1px 2px rgba(20, 22, 30, 0.04), 0 4px 16px rgba(20, 22, 30, 0.04);
+  --shadow-pop: 0 8px 28px rgba(20, 22, 30, 0.14), 0 2px 6px rgba(20, 22, 30, 0.08);
+  --shadow-accent: 0 6px 18px rgba(240, 88, 43, 0.28);
   --t-fast: 120ms ease;
   --t-med: 180ms ease;
 
   /* ---- 结构 ---- */
-  --sidebar-w: 232px;
-  --content-max: 1120px;
-  --gutter-w: 56px; /* 左侧数字栏位：参考文献编号 / 页码 / 序号 */
-  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent);
+  --sidebar-w: 248px;
+  --aside-w: 280px;
+  --content-max: 1600px;
+  --gutter-w: 52px; /* 左侧数字栏位：参考文献编号 / 页码 */
+  --focus-ring: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent-primary);
 
   color-scheme: light;
 }
 
 [data-theme="dark"] {
-  --paper: #14161b;
-  --surface: #1b1e25;
-  --surface-raised: #21252d;
-  --surface-sunken: #111318;
-  --line: #2a2f39;
-  --line-strong: #3a404c;
+  --bg-app: #0f1116;
+  --bg-surface: #171b23;
+  --bg-surface-muted: #1e232d;
+  --bg-surface-sunken: #12151c;
+  --bg-surface-elevated: #1d222c;
+  --bg-input: #12161d;
+  --bg-hover: rgba(255, 255, 255, 0.05);
+  --bg-selected: #33221b;
 
-  --ink: #e7e8eb;
-  --ink-2: #b4b9c3;
-  --ink-3: #8b919d;
-  --ink-4: #656b77;
+  --bg-sidebar: #12161e;
+  --bg-sidebar-hover: rgba(255, 255, 255, 0.05);
+  --bg-sidebar-active: rgba(255, 255, 255, 0.08);
+  --border-sidebar: rgba(255, 255, 255, 0.07);
+  --text-sidebar: #c9ced8;
+  --text-sidebar-muted: #7d8493;
+  --text-sidebar-strong: #ffffff;
 
-  --accent: #9aabf0;
-  --accent-strong: #b7c3f5;
-  --accent-ink: #12162a;
-  --accent-soft: #232a45;
-  --accent-line: #394570;
+  --text-primary: #e8eaf0;
+  --text-secondary: #aab0bd;
+  --text-muted: #7b8291;
+  --text-faint: #565c69;
+  --text-on-accent: #ffffff;
 
-  --ok: #6fc094;
-  --ok-soft: #1c2f27;
-  --warn: #dba848;
-  --warn-soft: #2f2816;
-  --warn-line: #4d3f1c;
-  --danger: #e3837a;
-  --danger-soft: #34201e;
-  --danger-line: #55302c;
-  --info: #8fb0e0;
-  --info-soft: #1f2836;
-  --neutral: #8e95a1;
-  --neutral-soft: #262a33;
+  --border-default: #262c37;
+  --border-subtle: #1f242e;
+  --border-strong: #343b48;
 
-  --shadow-pop: 0 8px 28px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --accent-primary: #f2652f;
+  --accent-primary-hover: #ff7a45;
+  --accent-primary-soft: #3a2318;
+  --accent-primary-text: #ff8d5f;
+  --accent-primary-gradient: linear-gradient(135deg, #ff7e3f 0%, #f0532a 100%);
+
+  --accent-secondary: #4a8dff;
+  --accent-secondary-soft: #172742;
+  --accent-secondary-text: #86b4ff;
+
+  --success: #34c26f;
+  --success-soft: #14301f;
+  --warning: #f59a2b;
+  --warning-soft: #362512;
+  --danger: #f0565b;
+  --danger-soft: #3a1c1e;
+  --info: #8a919f;
+  --info-soft: #242a33;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.3);
+  --shadow-pop: 0 10px 32px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --shadow-accent: 0 6px 18px rgba(242, 101, 47, 0.32);
 
   color-scheme: dark;
 }

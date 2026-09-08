@@ -17,15 +17,15 @@ body {
 }
 
 html {
-  background: var(--paper);
+  background: var(--bg-app);
 }
 
 body {
   font-family: var(--font-ui);
   font-size: var(--fs-body);
   line-height: var(--lh-body);
-  color: var(--ink);
-  background: var(--paper);
+  color: var(--text-primary);
+  background: var(--bg-app);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   font-variant-numeric: tabular-nums;
@@ -63,14 +63,13 @@ ol {
 }
 
 a {
-  color: var(--accent);
+  color: var(--accent-secondary-text);
   text-decoration: none;
   text-underline-offset: 3px;
   transition: color var(--t-fast);
 }
 
 a:hover {
-  color: var(--accent-strong);
   text-decoration: underline;
 }
 
@@ -97,18 +96,18 @@ kbd,
   font-size: var(--fs-code);
 }
 
-/* 论文标题、研究想法等阅读型内容：正文字体、略大字号与行距（衬线只留给页面级标题） */
+/* 论文标题、研究想法等阅读型内容：略大字号与行距 */
 .reading {
-  font-size: var(--fs-reading);
-  line-height: 1.6;
+  font-size: var(--fs-item-title);
+  line-height: 1.65;
 }
 
 .muted {
-  color: var(--ink-3);
+  color: var(--text-muted);
 }
 
 .faint {
-  color: var(--ink-4);
+  color: var(--text-faint);
 }
 
 .prewrap {
@@ -136,8 +135,8 @@ kbd,
 }
 
 ::selection {
-  background: var(--accent-soft);
-  color: var(--ink);
+  background: var(--accent-primary-soft);
+  color: var(--text-primary);
 }
 
 @media (prefers-reduced-motion: reduce) {

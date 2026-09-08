@@ -13,3 +13,14 @@ export function formatDateTime(iso: string | undefined): string | undefined {
     `${pad(date.getHours())}:${pad(date.getMinutes())}`
   );
 }
+
+/** 文件大小：B / KB / MB（保留一位小数） */
+export function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${bytes} B`;
+}
