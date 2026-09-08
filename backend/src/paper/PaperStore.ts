@@ -142,6 +142,57 @@ export class PaperStore {
     }
   }
 
+  // ---- section review journal（per-section 完成记录；run 级隔离） ----
+
+  /**
+   * 分章节审阅的完成记录：一节一文件（paper/review-sections/<runId>/<sectionId>.json）。
+   *
+   * 并发写入安全：每个 section 写自己的文件（原子写），没有跨 worker 的
+   * read-modify-write——LLM 调用完全并发，磁盘 commit 天然无竞争，无需
+   * 串行化队列。runId 维度隔离：stage 重试 / 进程崩溃恢复（同一 runId）
+   * 可复用已完成章节；新的 workflow run（新 runId）从头审阅，不串台。
+   */
+  async saveSectionReviewRecord(
+    projectId: string,
+    runId: string,
+    record: { sectionId: string } & Record<string, unknown>,
+  ): Promise<void> {
+    const dir = join(this.root(projectId), "review-sections", runId);
+    await mkdir(dir, { recursive: true });
+    await writeJsonAtomic(join(dir, `${sanitizeId(record.sectionId)}.json`), record);
+  }
+
+  /** 读取某个 run 的全部 section review 完成记录（损坏文件跳过；不存在的 run 返回空表） */
+  async loadSectionReviewRecords(
+    projectId: string,
+    runId: string,
+  ): Promise<Map<string, Record<string, unknown>>> {
+    const out = new Map<string, Record<string, unknown>>();
+    const dir = join(this.root(projectId), "review-sections", runId);
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return out;
+    }
+    for (const name of names) {
+      const id = /^([A-Za-z0-9_-]+)\.json$/.exec(name)?.[1];
+      if (id === undefined) {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(await readFile(join(dir, name), "utf8")) as Record<string, unknown>;
+        // 以记录体内的 sectionId 为准（文件名只是寻址），保证恢复语义不受改名影响
+        if (typeof parsed["sectionId"] === "string" && parsed["sectionId"] !== "") {
+          out.set(parsed["sectionId"], parsed);
+        }
+      } catch {
+        // 单条损坏不牵连其它章节记录
+      }
+    }
+    return out;
+  }
+
   // ---- ingest（写入全部产物） ----
 
   async saveIngest(projectId: string, document: PaperDocument): Promise<void> {
@@ -295,6 +346,12 @@ export class PaperStore {
     await rm(this.parsedDir(projectId), { recursive: true, force: true });
     await rm(this.mapPath(projectId), { force: true });
     await rm(this.citationDir(projectId), { recursive: true, force: true });
+    await rm(join(this.root(projectId), "review-sections"), { recursive: true, force: true });
     await rm(this.stagesPath(projectId), { force: true });
   }
+}
+
+/** 记录文件名安全化（sectionId 实际恒为 SEC01 形态；此处防御性兜底） */
+function sanitizeId(id: string): string {
+  return id.replaceAll(/[^A-Za-z0-9_-]/g, "_");
 }

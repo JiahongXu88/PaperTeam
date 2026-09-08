@@ -48,6 +48,12 @@ export interface ReviewConfig {
   academicPassScore: number;
   /** Quality Gate：AI 文风风险上限 */
   styleRiskMax: number;
+  /** section review 有界并发度（PAPERTEAM_REVIEW_CONCURRENCY；无效值回退默认，不报错） */
+  reviewConcurrency: number;
+  /** PaperMap 章节摘要有界并发度（PAPERTEAM_SUMMARY_CONCURRENCY；无效值回退默认） */
+  summaryConcurrency: number;
+  /** 单次 review.sections 最多审阅的章节数（benchmark / 诊断用；0 = 不限制） */
+  reviewSectionLimit: number;
 }
 
 export interface PiRuntimeConfig {
@@ -102,6 +108,13 @@ const DEFAULT_CITATION_TIMEOUT_MS = 8_000;
 const DEFAULT_MAX_REVISION_ROUNDS = 2;
 const DEFAULT_ACADEMIC_PASS_SCORE = 80;
 const DEFAULT_STYLE_RISK_MAX = 35;
+const DEFAULT_REVIEW_CONCURRENCY = 3;
+const DEFAULT_SUMMARY_CONCURRENCY = 3;
+/** 并发度允许范围：1（纯串行）到 8（Provider 限流压力已明显） */
+const CONCURRENCY_MIN = 1;
+const CONCURRENCY_MAX = 8;
+const DEFAULT_REVIEW_SECTION_LIMIT = 0;
+const REVIEW_SECTION_LIMIT_MAX = 40;
 
 const RUN_TIMEOUT_MIN_MS = 1_000;
 const RUN_TIMEOUT_MAX_MS = 3_600_000;
@@ -217,6 +230,23 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: 100,
       }),
+      // 并发度是性能调优项，不是正确性约束：0 / 负数 / 超上限 / 非数字一律
+      // 回退默认值继续跑（不让一次手滑让整个后端拒绝启动）
+      reviewConcurrency: readIntWithFallback(source, "PAPERTEAM_REVIEW_CONCURRENCY", {
+        default: DEFAULT_REVIEW_CONCURRENCY,
+        min: CONCURRENCY_MIN,
+        max: CONCURRENCY_MAX,
+      }),
+      summaryConcurrency: readIntWithFallback(source, "PAPERTEAM_SUMMARY_CONCURRENCY", {
+        default: DEFAULT_SUMMARY_CONCURRENCY,
+        min: CONCURRENCY_MIN,
+        max: CONCURRENCY_MAX,
+      }),
+      reviewSectionLimit: readIntWithFallback(source, "PAPERTEAM_REVIEW_SECTION_LIMIT", {
+        default: DEFAULT_REVIEW_SECTION_LIMIT,
+        min: 0,
+        max: REVIEW_SECTION_LIMIT_MAX,
+      }),
     },
     pdf: {
       ...(readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") !== undefined
@@ -303,6 +333,26 @@ function readInt(
     throw new ConfigError(
       `${key} 必须是 ${bounds.min}-${bounds.max} 的整数，当前为 "${raw.trim()}"`,
     );
+  }
+  return value;
+}
+
+/**
+ * 宽松整型配置读取（性能调优项专用）：非法值静默回退默认值。
+ * 与 readInt 的区别：readInt 报错（正确性约束），这里不报（调优项不阻断启动）。
+ */
+function readIntWithFallback(
+  source: Record<string, string | undefined>,
+  key: string,
+  bounds: { default: number; min: number; max: number },
+): number {
+  const raw = source[key];
+  if (raw === undefined || raw.trim() === "") {
+    return bounds.default;
+  }
+  const value = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+    return bounds.default;
   }
   return value;
 }

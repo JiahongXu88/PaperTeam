@@ -47,7 +47,13 @@ export interface ServiceStackOptions {
     academicPassScore?: number;
     styleRiskMax?: number;
     sectionRetryBackoffMs?: readonly number[];
+    /** section review 有界并发度（缺省 3） */
+    reviewConcurrency?: number;
+    /** benchmark / 诊断：限制单次审阅章节数（缺省 0 = 不限制） */
+    reviewSectionLimit?: number;
   };
+  /** PaperMap 章节摘要并发度（缺省 3） */
+  summaryConcurrency?: number;
   citation?: {
     metadataEnabled?: boolean;
     maxMetadataLookups?: number;
@@ -162,6 +168,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     store: paperStore,
     runtime: options.runtime,
     reviewerAgentId: options.agentIds.reviewer,
+    ...(options.summaryConcurrency !== undefined ? { concurrency: options.summaryConcurrency } : {}),
     log,
   });
   const reviewContext = new ReviewContextBuilder({ projects: options.projects, store: paperStore });
@@ -244,6 +251,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         ...(options.review?.sectionRetryBackoffMs !== undefined
           ? { sectionRetryBackoffMs: options.review.sectionRetryBackoffMs }
           : {}),
+        reviewConcurrency: options.review?.reviewConcurrency ?? 3,
+        reviewSectionLimit: options.review?.reviewSectionLimit ?? 0,
       },
     },
   };

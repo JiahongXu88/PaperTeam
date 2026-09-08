@@ -43,8 +43,9 @@ function describeSkipped(skipped: number, empty: number, failed: number): string
 
 function progressOf(run: WorkflowRunView): { index: number; total: number } | undefined {
   const data = run.progress?.data;
-  const index = data?.["index"];
   const total = data?.["total"];
+  // 并发审阅后进度口径是「已完成节数」（completed）；index 为旧串行版的字段名，兼容读取
+  const index = data?.["completed"] ?? data?.["index"];
   return typeof index === "number" && typeof total === "number" && total > 0 ? { index, total } : undefined;
 }
 

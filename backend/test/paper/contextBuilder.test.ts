@@ -181,7 +181,7 @@ describe("M4.3.2 PaperMap + ReviewContextBuilder（长文档 context 隔离）",
     expect(map.sections.every((s) => s.summary?.status === "ok")).toBe(true);
     expect(map.sections[0]!.summary!.summary).toContain("中文摘要");
     expect(runtime.calls).toHaveLength(4);
-    expect(mapService.lastTelemetry).toEqual({ modelCalls: 4, summariesRefreshed: 4, failures: 0 });
+    expect(mapService.lastTelemetry).toMatchObject({ modelCalls: 4, summariesRefreshed: 4, failures: 0, concurrency: 3 });
     // 持久化
     const reloaded = await store.loadMap(projectId);
     expect(reloaded?.sections[1]!.summary?.status).toBe("ok");
@@ -212,7 +212,7 @@ describe("M4.3.2 PaperMap + ReviewContextBuilder（长文档 context 隔离）",
       expect(map.sections).toHaveLength(4); // Map 骨架完整
       expect(map.sections.find((s) => s.sectionId === "SEC02")!.summary?.status).toBe("failed");
       expect(map.sections.find((s) => s.sectionId === "SEC01")!.summary?.status).toBe("ok");
-      expect(service2.lastTelemetry).toEqual({ modelCalls: 4, summariesRefreshed: 3, failures: 1 });
+      expect(service2.lastTelemetry).toMatchObject({ modelCalls: 4, summariesRefreshed: 3, failures: 1, concurrency: 3 });
     } finally {
       await rm(failRoot, { recursive: true, force: true });
     }

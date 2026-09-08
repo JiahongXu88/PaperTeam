@@ -123,7 +123,10 @@ export async function startBackend(): Promise<void> {
       maxRevisionRounds: config.review.maxRevisionRounds,
       academicPassScore: config.review.academicPassScore,
       styleRiskMax: config.review.styleRiskMax,
+      reviewConcurrency: config.review.reviewConcurrency,
+      reviewSectionLimit: config.review.reviewSectionLimit,
     },
+    summaryConcurrency: config.review.summaryConcurrency,
     citation: {
       metadataEnabled: config.citation.metadataEnabled,
       maxMetadataLookups: config.citation.maxMetadataLookups,

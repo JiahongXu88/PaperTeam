@@ -53,16 +53,16 @@ function tabFromParam(param: string | null, visible: ReadonlyArray<{ id: TabId }
   return visible.find((entry) => entry.id === param)?.id ?? "overview";
 }
 
-/** 分章节审阅进度（stage.progress 快照：index / total） */
+/** 分章节审阅进度（stage.progress 快照：completed（并发版）/ index（旧串行版） + total） */
 function runProgressText(run: WorkflowRunView): string | undefined {
   const progress = run.progress;
   if (progress === null || progress === undefined) {
     return undefined;
   }
-  const index = progress.data["index"];
+  const index = progress.data["completed"] ?? progress.data["index"];
   const total = progress.data["total"];
   if (typeof index === "number" && typeof total === "number" && total > 0) {
-    return `第 ${index} / ${total} 节`;
+    return `已完成 ${index} / ${total} 节`;
   }
   return undefined;
 }

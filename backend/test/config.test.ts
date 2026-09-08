@@ -36,6 +36,26 @@ describe("loadConfig", () => {
       reviewer: "main",
       citation: "main",
     });
+    // 并发度默认（性能调优项，缺省即默认值）
+    expect(config.review.reviewConcurrency).toBe(3);
+    expect(config.review.summaryConcurrency).toBe(3);
+    expect(config.review.reviewSectionLimit).toBe(0);
+  });
+
+  it("并发度配置：合法值被采用；非法值回退默认（不阻断启动）", () => {
+    expect(loadConfig({ PAPERTEAM_REVIEW_CONCURRENCY: "1" }).review.reviewConcurrency).toBe(1);
+    expect(loadConfig({ PAPERTEAM_REVIEW_CONCURRENCY: "8" }).review.reviewConcurrency).toBe(8);
+    expect(loadConfig({ PAPERTEAM_SUMMARY_CONCURRENCY: "2" }).review.summaryConcurrency).toBe(2);
+    expect(loadConfig({ PAPERTEAM_REVIEW_SECTION_LIMIT: "12" }).review.reviewSectionLimit).toBe(12);
+    // 0 / 负数 / 超上限 / 非数字：静默回退默认（与 readInt 的报错语义相反——
+    // 并发度是调优项，手滑不应让后端拒绝启动；"1.5" 按 parseInt 语义取 1，合法）
+    for (const bad of ["0", "-3", "9", "1000", "abc"]) {
+      expect(loadConfig({ PAPERTEAM_REVIEW_CONCURRENCY: bad }).review.reviewConcurrency).toBe(3);
+      expect(loadConfig({ PAPERTEAM_SUMMARY_CONCURRENCY: bad }).review.summaryConcurrency).toBe(3);
+    }
+    for (const bad of ["-1", "41", "xyz"]) {
+      expect(loadConfig({ PAPERTEAM_REVIEW_SECTION_LIMIT: bad }).review.reviewSectionLimit).toBe(0);
+    }
   });
 
   it("PAPERTEAM_PI_AGENT_DIR 显式指定时被采用", () => {

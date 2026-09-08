@@ -593,6 +593,61 @@ describe("PiRuntimeAdapter（Level 1：fake session）", () => {
   });
 });
 
+describe("PiRuntimeAdapter（Level 1：并发 section review 语义）", () => {
+  it("三个 scope 同时 active：3 个独立会话（sessionKey 互异）、activeRuns=3、全部 settle", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const handles = await Promise.all(
+      ["review/section/s1", "review/section/s2", "review/section/s3"].map((scope) =>
+        adapter.startAgent({ agentId: "reviewer", task: "review", projectId: "p-conc", contextScope: scope }),
+      ),
+    );
+    // 句柄立即返回且 sessionKey 各不相同（projectId × agentId × contextScope）
+    const keys = handles.map((handle) => handle.sessionKey);
+    expect(new Set(keys).size).toBe(3);
+    expect(adapter.runtimeStats().activeRuns).toBe(3);
+    // 会话创建在后台链异步完成：等到 3 个会话都已建好并开始 prompt（真正 running）
+    const deadline = Date.now() + 5_000;
+    while (
+      (factory.created.length < 3 || factory.created.some((entry) => entry.session.prompts.length < 1)) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(adapter.runtimeStats().managedSessions).toBe(3);
+    expect(adapter.runtimeStats().activeRuns).toBe(3);
+    await Promise.all(handles.map((handle) => handle.cancel()));
+    expect(adapter.runtimeStats().activeRuns).toBe(0);
+    for (const handle of handles) {
+      const task = await handle.result();
+      expect(task.status).toBe("cancelled");
+    }
+    await adapter.close();
+  });
+
+  it("并发 review 在途时 reconfigure → MODEL_CONFIG_BUSY（409 语义不回归）；settle 后可重配", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const handles = await Promise.all(
+      ["review/section/s1", "review/section/s2", "review/section/s3"].map((scope) =>
+        adapter.startAgent({ agentId: "reviewer", task: "review", projectId: "p-busy", contextScope: scope }),
+      ),
+    );
+    expect(adapter.runtimeStats().activeRuns).toBe(3);
+    // activeRuns > 0：Save 必须被拒绝，且不中断在途任务
+    await expect(adapter.reconfigure("fake/fake-2")).rejects.toMatchObject({
+      code: "MODEL_CONFIG_BUSY",
+    });
+    expect(adapter.runtimeStats().activeRuns).toBe(3);
+    await Promise.all(handles.map((handle) => handle.cancel()));
+    // 全部 settle 后重配不再拒绝（session 释放语义不变）
+    await expect(adapter.reconfigure("fake/fake-2")).resolves.toMatchObject({ phase: "configured" });
+    await adapter.close();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 角色映射（纯函数）
 // ---------------------------------------------------------------------------

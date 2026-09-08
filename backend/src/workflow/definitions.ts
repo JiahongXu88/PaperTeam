@@ -25,7 +25,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { AgentRunFailedError, BusinessError, WorkflowInvalidStateError } from "../errors.js";
+import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
@@ -45,7 +45,8 @@ import type { PaperStore } from "../paper/PaperStore.js";
 import type { PaperMapService } from "../paper/PaperMapService.js";
 import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
 import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
-import { readFindings, type ReviewFinding, type FindingCategory, type FindingSeverity } from "../review/finding.js";
+import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
+import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import {
@@ -60,7 +61,6 @@ import { writeJsonAtomic } from "../util/atomic.js";
 import type {
   PlanDecision,
   ResumeInput,
-  StageRunContext,
   StageSpec,
   WorkflowDefinition,
   WorkflowState,
@@ -91,6 +91,10 @@ export interface WorkflowServices {
     styleRiskMax: number;
     /** 单节审阅节内重试的退避（毫秒；缺省 SECTION_REVIEW_BACKOFF_MS，测试可置 0） */
     sectionRetryBackoffMs?: readonly number[];
+    /** section review 有界并发度（PAPERTEAM_REVIEW_CONCURRENCY；活跃模型调用上限） */
+    reviewConcurrency: number;
+    /** benchmark / 诊断：限制单次审阅的章节数（0 = 不限制） */
+    reviewSectionLimit: number;
   };
 }
 
@@ -116,23 +120,6 @@ const MIN_REVIEW_SECTION_CHARS = 80;
 /** 单节审阅的节内重试次数与退避（Provider 503 / 限流常在几秒到几十秒内恢复） */
 const SECTION_REVIEW_ATTEMPTS = 3;
 const SECTION_REVIEW_BACKOFF_MS = [5_000, 20_000];
-
-/** 可被取消信号打断的等待 */
-function waitOrAbort(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) {
-      resolve();
-      return;
-    }
-    const timer = setTimeout(done, ms);
-    function done() {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
-    signal.addEventListener("abort", done, { once: true });
-  });
-}
 
 const QUALITY_THRESHOLDS = (services: WorkflowServices): QualityGateThresholds => ({
   academicPassScore: services.review.academicPassScore,
@@ -1212,7 +1199,11 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
       if (scopes.length === 0) {
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "论文没有可审阅的章节（所有章节都没有文本）");
       }
-      const capped = scopes.slice(0, MAX_REVIEW_SECTIONS);
+      const sectionLimit =
+        services.review.reviewSectionLimit > 0
+          ? Math.min(services.review.reviewSectionLimit, MAX_REVIEW_SECTIONS)
+          : MAX_REVIEW_SECTIONS;
+      const capped = scopes.slice(0, sectionLimit);
       const skipped = scopes.length - capped.length + emptySections;
 
       // 本节引用上下文：callout 关联到 reference 条目 + metadata 核验状态
@@ -1221,46 +1212,10 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
       const metadataRecords = await services.paper.citationIntegrity.listMetadataRecords(ctx.projectId);
       const statusByReference = new Map(metadataRecords.map((record) => [record.referenceId, record.status]));
       const rawTextByReference = new Map(references.map((entry) => [entry.referenceId, entry.rawText]));
-
-      const findings: ReviewFinding[] = [];
-      const reviewed: string[] = [];
-      const failedSections: string[] = [];
-      let lastSectionError = "";
-      let parseFailures = 0;
-      let dropped = 0;
-      const reviewSectionWithRetry = async (
-        svc: WorkflowServices,
-        stageCtx: StageRunContext,
-        context: Awaited<ReturnType<ReviewContextBuilder["buildSectionContext"]>>,
-        sectionId: string,
-      ) => {
-        for (let attempt = 1; attempt <= SECTION_REVIEW_ATTEMPTS; attempt += 1) {
-          try {
-            return await svc.paper.sectionReview.reviewSection({
-              projectId: stageCtx.projectId,
-              runId: stageCtx.runId,
-              context,
-              signal: stageCtx.signal,
-            });
-          } catch (error) {
-            if (stageCtx.signal.aborted || (error instanceof BusinessError && error.code === "WORKFLOW_CANCELLED")) {
-              throw error;
-            }
-            lastSectionError = error instanceof Error ? error.message : String(error);
-            stageCtx.log(`章节 ${sectionId} 审阅第 ${attempt} 次失败：${lastSectionError.slice(0, 200)}`);
-            if (attempt < SECTION_REVIEW_ATTEMPTS) {
-              const backoff = svc.review.sectionRetryBackoffMs ?? SECTION_REVIEW_BACKOFF_MS;
-              await waitOrAbort(backoff[attempt - 1] ?? 5_000, stageCtx.signal);
-            }
-          }
-        }
-        return null;
-      };
-      for (const [index, scope] of capped.entries()) {
-        if (ctx.signal.aborted) {
-          throw new BusinessError("WORKFLOW_CANCELLED", "分章节审阅已被取消");
-        }
-        const citations: CitationContextEntry[] = callouts
+      const jobs = capped.map((scope) => ({
+        sectionId: scope.sectionId,
+        contextScope: scope.contextScope,
+        citations: callouts
           .filter((callout) => callout.sectionId === scope.sectionId)
           .flatMap((callout) => callout.references)
           .filter((relation) => relation.referenceId !== undefined)
@@ -1270,44 +1225,38 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
             ...(statusByReference.get(relation.referenceId!) !== undefined
               ? { status: String(statusByReference.get(relation.referenceId!)) }
               : {}),
-          }));
-        const context = await services.paper.reviewContext.buildSectionContext(ctx.projectId, scope.sectionId, {
-          instruction: SECTION_REVIEW_INSTRUCTION,
-          ...(citations.length > 0 ? { citations } : {}),
-        });
-        // 单节失败（模型 503 / 抖动）先在节内退避重试；仍失败则记为失败章节继续下一节，
-        // 而不是让整个 stage 从第 1 节重跑（几十节的审阅不能因一次网络抖动全部作废）
-        const outcome = await reviewSectionWithRetry(services, ctx, context, scope.sectionId);
-        if (outcome === null) {
-          failedSections.push(scope.sectionId);
-        } else {
-          findings.push(...outcome.findings);
-          reviewed.push(scope.sectionId);
-          parseFailures += outcome.parseFailed ? 1 : 0;
-          dropped += outcome.dropped;
-        }
-        await ctx.emitProgress({
-          section: scope.sectionId,
-          index: index + 1,
-          total: capped.length,
-          findings: findings.length,
-          failed: failedSections.length,
-        });
-      }
-      if (reviewed.length === 0) {
-        // 一节都没审成：多半是模型 / Provider 整体不可用，按 transient 交给 stage 级重试
-        throw new AgentRunFailedError(`分章节审阅全部失败（${failedSections.length} 节），最近错误：${lastSectionError}`);
-      }
+          })) as CitationContextEntry[],
+      }));
+
+      // 有界并发调度（backpressure：活跃模型调用 <= reviewConcurrency；单节失败
+      // 不推翻整个池；每节完成立即落 journal；结果按论文顺序重排）。
+      // 纯串行代码路径 = reviewConcurrency 1（语义与旧版一致）。
+      const scheduler = new SectionReviewScheduler({
+        store: services.paper.store,
+        reviewContext: services.paper.reviewContext,
+        sectionReview: services.paper.sectionReview,
+        concurrency: services.review.reviewConcurrency,
+        attempts: SECTION_REVIEW_ATTEMPTS,
+        backoffMs: services.review.sectionRetryBackoffMs ?? SECTION_REVIEW_BACKOFF_MS,
+        instruction: SECTION_REVIEW_INSTRUCTION,
+        log: (message) => ctx.log(message),
+      });
+      const result = await scheduler.run(jobs, {
+        projectId: ctx.projectId,
+        runId: ctx.runId,
+        signal: ctx.signal,
+        emitProgress: ctx.emitProgress,
+      });
       return {
-        sectionsReviewed: reviewed.length,
+        sectionsReviewed: result.reviewed.length,
         sectionsTotal: allScopes.length,
         skippedSections: skipped,
         emptySections,
-        failedSections,
-        findingsTotal: findings.length,
-        parseFailures,
-        dropped,
-        findings,
+        failedSections: result.failedSections,
+        findingsTotal: result.findings.length,
+        parseFailures: result.parseFailures,
+        dropped: result.dropped,
+        findings: result.findings,
         // 性能画像：每节一次模型调用（含节内重试），prompt/输出规模（run checkpoint 持久化）
         modelTelemetry: services.paper.sectionReview.lastTelemetry ?? {
           calls: 0,
@@ -1316,6 +1265,8 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
           approxPromptChars: 0,
           outputChars: 0,
         },
+        // 性能画像：并发度 / 队列等待 / wall vs sum-duration（run checkpoint 持久化）
+        concurrencyTelemetry: result.telemetry,
       };
     },
     // DoD 由 review.aggregate 的文件级校验兜底（verifyDod 运行时本次产出
