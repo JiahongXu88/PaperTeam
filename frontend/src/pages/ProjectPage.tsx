@@ -2,32 +2,24 @@ import { useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useSearchParams, useParams } from "react-router-dom";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
+import { Icon } from "../components/common/Icon.js";
 import { InlineConfirm, InlineRename, RowMenu } from "../components/common/RowMenu.js";
-import { RegistryStatus } from "../components/common/StatusBadge.js";
-import { COMPLETION_LABELS, EXTRACTION_QUALITY_STYLES, stageLabel, statusStyleOf } from "../components/common/status.js";
+import { COMPLETION_LABELS, stageLabel } from "../components/common/status.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
+import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
-import {
-  isRunActive,
-  useArchiveProject,
-  useCitations,
-  useCitationIntegrity,
-  usePaper,
-  usePaperReviewReport,
-  useProject,
-  useProjectRuns,
-  useRenameProject,
-} from "../hooks/queries.js";
+import { isRunActive, useArchiveProject, useProject, useProjectRuns, useRenameProject } from "../hooks/queries.js";
 import { ApiError } from "../api/client.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
 import { formatDateTime } from "../utils/format.js";
 import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js";
 
 /**
- * 项目工作区：标题（可重命名）+ 类型 / 状态 → 标签页（只暴露真正可用的模块）→ 内容。
+ * 项目工作区：标题（可重命名）+ 类型 / 状态 / 时间 / ID → 标签页（只暴露真正可用的模块）
+ * → 主内容 + 右侧栏（论文信息、下一步、快捷操作、引用概况）。
  * 已有论文类项目多一个「Review」标签。标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
@@ -40,10 +32,6 @@ const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> 
   { id: "citations", label: "引用核验" },
   { id: "review", label: "Review", existingOnly: true },
 ];
-
-function isExistingPaper(kind: WorkflowKind | undefined): boolean {
-  return kind === "existing_paper_improvement" || kind === "existing_paper_review";
-}
 
 function visibleTabs(kind: WorkflowKind | undefined) {
   return TABS.filter((entry) => entry.existingOnly !== true || isExistingPaper(kind));
@@ -118,139 +106,7 @@ function ProjectRunsPanel({ projectId }: { projectId: string }) {
   );
 }
 
-/** 右侧概要：下一步建议 + PDF / 引用状态（真实查询；标题可跳到对应标签页） */
-function WorkspaceAside({ project, onOpenTab }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void }) {
-  const paper = usePaper(project.id);
-  const citations = useCitations(project.id);
-  const integrity = useCitationIntegrity(project.id);
-  const reviewReport = usePaperReviewReport(project.id);
-
-  const doc = paper.data?.document;
-  const summary = citations.data?.summary;
-  const citationsReady = summary !== undefined && summary.extracted;
-  const semanticTotal = integrity.data?.report?.semantic.total ?? 0;
-  const hasReport = reviewReport.data !== null && reviewReport.data !== undefined;
-  const reviewAvailable = isExistingPaper(project.workflowKind);
-
-  const nextSteps: Array<{ label: string; tab: OpenableTab }> = [];
-  if (!paper.isPending && (doc === null || doc === undefined)) {
-    nextSteps.push({ label: "上传论文 PDF", tab: "pdf" });
-  } else if (reviewAvailable && !reviewReport.isPending && !hasReport) {
-    nextSteps.push({ label: "开始 Review（引用核验 + 分章节审阅）", tab: "review" });
-  }
-  if (doc !== null && doc !== undefined && !citations.isPending && !citationsReady) {
-    nextSteps.push({ label: "提取并核验引用", tab: "citations" });
-  }
-  if (citationsReady && !integrity.isPending && semanticTotal === 0) {
-    nextSteps.push({ label: "语义核验引用是否支持论断", tab: "citations" });
-  }
-
-  return (
-    <aside className="workspace-aside" aria-label="项目概要">
-      {nextSteps.length > 0 ? (
-        <section className="aside-block">
-          <h2 className="aside-title">下一步</h2>
-          <div className="aside-next">
-            {nextSteps.slice(0, 2).map((step) => (
-              <button key={step.label} type="button" className="aside-next-item" onClick={() => onOpenTab(step.tab)}>
-                {step.label}
-                <span className="aside-next-arrow" aria-hidden="true">
-                  ›
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <section className="aside-block">
-        <h2 className="aside-title">
-          <button type="button" className="aside-title-link" onClick={() => onOpenTab("pdf")}>
-            论文 PDF
-          </button>
-        </h2>
-        <dl className="kv">
-          {paper.isPending ? (
-            <div className="kv-row">
-              <dt>状态</dt>
-              <dd className="muted">加载中…</dd>
-            </div>
-          ) : doc === null || doc === undefined ? (
-            <div className="kv-row">
-              <dt>状态</dt>
-              <dd>
-                <span className="status">未上传</span>
-              </dd>
-            </div>
-          ) : (
-            <>
-              <div className="kv-row">
-                <dt>规模</dt>
-                <dd>
-                  {doc.pageCount} 页，{doc.sectionCount} 节
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>文件</dt>
-                <dd className="mono" title={doc.originalFileName}>
-                  {doc.originalFileName}
-                </dd>
-              </div>
-              <div className="kv-row">
-                <dt>解析质量</dt>
-                <dd>
-                  <RegistryStatus style={statusStyleOf(EXTRACTION_QUALITY_STYLES, doc.parse.extractionQuality)} />
-                </dd>
-              </div>
-            </>
-          )}
-        </dl>
-      </section>
-
-      <section className="aside-block">
-        <h2 className="aside-title">
-          <button type="button" className="aside-title-link" onClick={() => onOpenTab("citations")}>
-            引用核验
-          </button>
-        </h2>
-        <dl className="kv">
-          {citations.isPending ? (
-            <div className="kv-row">
-              <dt>状态</dt>
-              <dd className="muted">加载中…</dd>
-            </div>
-          ) : !citationsReady ? (
-            <div className="kv-row">
-              <dt>状态</dt>
-              <dd>
-                <span className="status">未提取</span>
-              </dd>
-            </div>
-          ) : (
-            <>
-              <div className="kv-row">
-                <dt>参考文献</dt>
-                <dd>{summary.references} 条</dd>
-              </div>
-              <div className="kv-row">
-                <dt>正文引用</dt>
-                <dd>{summary.callouts} 处</dd>
-              </div>
-              {summary.unresolvedRelations > 0 ? (
-                <div className="kv-row">
-                  <dt>待关联</dt>
-                  <dd>{summary.unresolvedRelations}</dd>
-                </div>
-              ) : null}
-            </>
-          )}
-        </dl>
-      </section>
-    </aside>
-  );
-}
-
-function OverviewTab({ project, onOpenTab }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void }) {
+function OverviewTab({ project }: { project: ProjectView }) {
   const meta: Array<[string, string]> = [];
   if (project.researchField) {
     meta.push(["研究领域", project.researchField]);
@@ -271,51 +127,47 @@ function OverviewTab({ project, onOpenTab }: { project: ProjectView; onOpenTab: 
   }
 
   return (
-    <div className="workspace-grid">
-      <div className="panel-stack">
-        <section className="section-block">
-          <div className="section-head">
-            <h2>研究定位</h2>
+    <div className="panel-stack">
+      <section className="panel section-block">
+        <div className="section-head">
+          <h2>研究定位</h2>
+        </div>
+        {meta.length > 0 ? (
+          <dl className="meta-list meta-list-2col">
+            {meta.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <p className="panel-empty">尚未填写研究定位字段。</p>
+        )}
+        {project.researchIdea ? (
+          <div className="idea-block">
+            <h3>研究想法</h3>
+            <p className="prewrap reading">{project.researchIdea}</p>
           </div>
-          {meta.length > 0 ? (
-            <dl className="meta-list meta-list-2col">
-              {meta.map(([label, value]) => (
-                <div key={label}>
-                  <dt>{label}</dt>
-                  <dd>{value}</dd>
-                </div>
-              ))}
-            </dl>
-          ) : (
-            <p className="panel-empty">尚未填写研究定位字段。</p>
-          )}
-          {project.researchIdea ? (
-            <div className="idea-block">
-              <h3>研究想法</h3>
-              <p className="prewrap reading">{project.researchIdea}</p>
-            </div>
-          ) : null}
-          {project.workflowKind === "existing_paper_improvement" ? (
-            <p className="note note-info" style={{ marginTop: "var(--s-4)" }}>
-              <span>系统性改进：第一阶段先完成「Review」建立基线（引用核验 + 分章节审阅），后续改进流程基于 Review 发现进行，不会直接重写论文。</span>
-            </p>
-          ) : null}
-          {project.workflowKind === "existing_paper_review" ? (
-            <p className="note note-info" style={{ marginTop: "var(--s-4)" }}>
-              <span>快速 Review：只读分析现有论文，不修改正文。结论与报告在「Review」标签页查看。</span>
-            </p>
-          ) : null}
-        </section>
+        ) : null}
+        {project.workflowKind === "existing_paper_improvement" ? (
+          <p className="note note-info" style={{ marginTop: "var(--s-4)" }}>
+            <span>系统性改进：第一阶段先完成「Review」建立基线（引用核验 + 分章节审阅），后续改进流程基于 Review 发现进行，不会直接重写论文。</span>
+          </p>
+        ) : null}
+        {project.workflowKind === "existing_paper_review" ? (
+          <p className="note note-info" style={{ marginTop: "var(--s-4)" }}>
+            <span>快速 Review：只读分析现有论文，不修改正文。结论与报告在「Review」标签页查看。</span>
+          </p>
+        ) : null}
+      </section>
 
-        <section className="section-block">
-          <div className="section-head">
-            <h2>任务记录</h2>
-          </div>
-          <ProjectRunsPanel projectId={project.id} />
-        </section>
-      </div>
-
-      <WorkspaceAside project={project} onOpenTab={onOpenTab} />
+      <section className="panel section-block">
+        <div className="section-head">
+          <h2>任务记录</h2>
+        </div>
+        <ProjectRunsPanel projectId={project.id} />
+      </section>
     </div>
   );
 }
@@ -337,6 +189,11 @@ export function ProjectPage() {
     // 标签切换用 replace：浏览器"后退"回到上一个页面，而不是逐个回退标签
     setSearchParams(next === "overview" ? {} : { tab: next }, { replace: true });
   };
+  const openTab = (next: OpenableTab) => {
+    if (visible.some((entry) => entry.id === next)) {
+      setTab(next);
+    }
+  };
 
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     const delta = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
@@ -344,10 +201,11 @@ export function ProjectPage() {
       return;
     }
     event.preventDefault();
-    const next = visible[(index + delta + visible.length) % visible.length];
+    const nextIndex = (index + delta + visible.length) % visible.length;
+    const next = visible[nextIndex];
     if (next !== undefined) {
       setTab(next.id);
-      (event.currentTarget.parentElement?.children[(index + delta + visible.length) % visible.length] as HTMLElement | undefined)?.focus();
+      (event.currentTarget.parentElement?.children[nextIndex] as HTMLElement | undefined)?.focus();
     }
   };
 
@@ -407,9 +265,7 @@ export function ProjectPage() {
                 data-testid="rename-project"
                 onClick={() => setEditingTitle(true)}
               >
-                <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                  <path d="M11.5 2.5l2 2L5 13H3v-2z" strokeLinejoin="round" />
-                </svg>
+                <Icon name="edit" />
               </button>
               <RowMenu
                 label="项目的更多操作"
@@ -425,10 +281,13 @@ export function ProjectPage() {
         <div className="workspace-meta">
           <WorkflowKindBadge kind={project.workflowKind} />
           <ProjectStatusBadge status={project.status} />
-          <span className="workspace-dates">
-            创建于 {formatDateTime(project.createdAt)}，更新于 {formatDateTime(project.updatedAt)}
-          </span>
+          <span className="workspace-meta-sep" aria-hidden="true" />
+          <span className="workspace-dates">创建于 {formatDateTime(project.createdAt)}</span>
+          <span className="workspace-meta-sep" aria-hidden="true" />
+          <span className="workspace-dates">更新于 {formatDateTime(project.updatedAt)}</span>
+          <span className="workspace-meta-sep" aria-hidden="true" />
           <span className="id-chip" title="项目 ID">
+            <Icon name="hash" />
             {project.id}
           </span>
         </div>
@@ -486,16 +345,19 @@ export function ProjectPage() {
         ))}
       </nav>
 
-      <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`} className="tabpanel">
-        {tab === "overview" ? (
-          <OverviewTab project={project} onOpenTab={setTab} />
-        ) : tab === "pdf" ? (
-          <PdfPanel projectId={project.id} />
-        ) : tab === "citations" ? (
-          <CitationsPanel projectId={project.id} />
-        ) : (
-          <ReviewPanel projectId={project.id} onOpenTab={setTab} />
-        )}
+      <div className="workspace-body">
+        <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`} className="tabpanel">
+          {tab === "overview" ? (
+            <OverviewTab project={project} />
+          ) : tab === "pdf" ? (
+            <PdfPanel projectId={project.id} />
+          ) : tab === "citations" ? (
+            <CitationsPanel projectId={project.id} />
+          ) : (
+            <ReviewPanel projectId={project.id} onOpenTab={openTab} />
+          )}
+        </div>
+        <ProjectAside project={project} onOpenTab={openTab} />
       </div>
     </section>
   );
