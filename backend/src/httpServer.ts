@@ -39,6 +39,12 @@ import {
 } from "./quality/gates.js";
 import { collectLatexFiles } from "./manuscript/LatexFiles.js";
 import { isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
+import {
+  CITATION_SEMANTIC_MODES,
+  DEFAULT_CITATION_SEMANTIC_MODE,
+  isCitationSemanticMode,
+  type CitationSemanticMode,
+} from "./citation/semanticMode.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -404,6 +410,9 @@ async function handleRequest(
     }
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
+      // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
+      // 按 full 解释，两个默认值不共用同一条兜底路径）
+      ...(kind === "existing_paper_review" ? { citationSemanticMode: readCitationSemanticMode(body) } : {}),
     });
     sendJson(res, 202, { runId: run.runId, status: run.status, workflowKind: run.workflowKind });
     return;
@@ -1047,6 +1056,10 @@ async function handleProjectResourceRoutes(
       const exporter = new ReviewReportExporter();
       const result = exporter.export({
         report: report as never,
+        // 报告按轮记录模式：off 轮不展示历史 claim records（按轮隔离）
+        citationSemanticMode: isCitationSemanticMode(report["citationSemanticMode"])
+          ? report["citationSemanticMode"]
+          : undefined,
         project: { title: project.title },
         document:
           document !== null
@@ -1667,6 +1680,21 @@ function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
   throw new BusinessError(
     "INVALID_REQUEST",
     `字段 kind 只能是 ${WORKFLOW_KINDS.join("、")}（缺省 idea_to_paper）`,
+  );
+}
+
+/** 语义核验模式（existing_paper_review 专用）：非法值 400；缺省 off（新 run 默认关闭） */
+function readCitationSemanticMode(body: Record<string, unknown>): CitationSemanticMode {
+  const value = body["citationSemanticMode"];
+  if (value === undefined) {
+    return DEFAULT_CITATION_SEMANTIC_MODE;
+  }
+  if (isCitationSemanticMode(value)) {
+    return value;
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    `字段 citationSemanticMode 只能是 ${CITATION_SEMANTIC_MODES.join("、")}（缺省 ${DEFAULT_CITATION_SEMANTIC_MODE}）`,
   );
 }
 

@@ -12,6 +12,7 @@
  */
 
 import type { CitationReport } from "../citation/CitationService.js";
+import type { CitationSemanticMode } from "../citation/semanticMode.js";
 import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import type { FeasibilityReport } from "../agents/FeasibilityService.js";
 import type { ReviewSummary } from "../review/ReviewAggregator.js";
@@ -121,6 +122,11 @@ export interface QualityGateInput {
     mismatchCritical: number;
     insufficientEvidence: number;
   };
+  /**
+   * 语义核验模式（与 citationIntegrity 配套）。off 时语义类 Gate 规则不参与——
+   * 不能因为「本轮没有 semantic records」而 FAIL；缺省按 full 解释（历史行为）。
+   */
+  citationSemanticMode?: CitationSemanticMode;
 }
 
 export interface QualityGateResult {
@@ -221,6 +227,7 @@ export function evaluateQualityGate(
   // 10-13. Citation Integrity（并入同一 Gate Engine，不另造平行体系）
   if (input.citationIntegrity !== undefined) {
     const integrity = input.citationIntegrity;
+    // Layer 1（真实性 / metadata）规则始终参与——off 只关掉语义层
     rules.push({
       rule: "citation_fabrication_zero",
       passed: integrity.probableFabricated === 0,
@@ -232,21 +239,32 @@ export function evaluateQualityGate(
       detail: `NOT_FOUND obligatory citation ${integrity.notFoundObligatory} 条（需人工判定）`,
     });
     rules.push({
-      rule: "citation_unsupported_critical_zero",
-      passed: integrity.unsupportedCritical === 0,
-      detail: `critical claim UNSUPPORTED/CONTRADICTED ${integrity.unsupportedCritical} 条`,
-    });
-    rules.push({
       rule: "citation_metadata_mismatch_critical_zero",
       passed: integrity.mismatchCritical === 0,
       detail: `title/DOI 级 mismatch ${integrity.mismatchCritical} 条`,
     });
-    // INSUFFICIENT_EVIDENCE ≠ fabricated：不阻断，要求补证据/人工复核
-    rules.push({
-      rule: "citation_insufficient_evidence_review",
-      passed: true,
-      detail: `INSUFFICIENT_EVIDENCE ${integrity.insufficientEvidence} 条（人工复核，不阻断）`,
-    });
+    // Layer 2（语义）规则只在语义核验开启时参与：off 时不因「没有 semantic records」
+    // FAIL；contradiction_only 时 unsupportedCritical 天然只统计 CONTRADICTED
+    const semanticMode = input.citationSemanticMode ?? "full";
+    if (semanticMode === "off") {
+      rules.push({
+        rule: "citation_semantic_verification_off",
+        passed: true,
+        detail: "本轮未开启引用语义核验（语义类规则不参与判定）",
+      });
+    } else {
+      rules.push({
+        rule: "citation_unsupported_critical_zero",
+        passed: integrity.unsupportedCritical === 0,
+        detail: `critical claim UNSUPPORTED/CONTRADICTED ${integrity.unsupportedCritical} 条`,
+      });
+      // INSUFFICIENT_EVIDENCE ≠ fabricated：不阻断，要求补证据/人工复核
+      rules.push({
+        rule: "citation_insufficient_evidence_review",
+        passed: true,
+        detail: `INSUFFICIENT_EVIDENCE ${integrity.insufficientEvidence} 条（人工复核，不阻断）`,
+      });
+    }
   }
 
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);

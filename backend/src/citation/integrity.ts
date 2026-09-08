@@ -186,6 +186,8 @@ export interface CitationVerificationRecord {
 /**
  * 文献是否支持正文论断（verdict 枚举冻结，不随意扩展）。
  * INSUFFICIENT_EVIDENCE ≠ 不支持——只表示证据不足以判定（如仅拿到 abstract）。
+ * NO_CONTRADICTION_DETECTED 仅在 contradiction_only 模式产生：检查过证据、
+ * 未发现明显矛盾（不是「支持」的判断）。
  */
 export type ClaimSupportVerdict =
   | "SUPPORTED"
@@ -193,7 +195,8 @@ export type ClaimSupportVerdict =
   | "UNSUPPORTED"
   | "CONTRADICTED"
   | "INSUFFICIENT_EVIDENCE"
-  | "SKIPPED";
+  | "SKIPPED"
+  | "NO_CONTRADICTION_DETECTED";
 
 /** 证据等级（诚实标注，不假装 full-text verified） */
 export type EvidenceLevel =
@@ -279,7 +282,8 @@ export interface ClaimCitationRecord {
  *   PARTIALLY_SUPPORTED + obligatory       → major
  *   PARTIALLY_SUPPORTED + helpful          → minor
  *   INSUFFICIENT_EVIDENCE                  → minor（不等于捏造；要求补证据/人工复核）
- *   SUPPORTED / SKIPPED                    → info（不构成问题）
+ *   SUPPORTED / SKIPPED /
+ *   NO_CONTRADICTION_DETECTED              → info（不构成问题）
  */
 export function deriveClaimSeverity(input: {
   probableFabrication: boolean;

@@ -113,6 +113,53 @@ describe("evaluateQualityGate：通过路径", () => {
   });
 });
 
+describe("evaluateQualityGate：citationSemanticMode 语义分层", () => {
+  const base = {
+    review: passingReview,
+    citation: cleanCitation(),
+    evidence: cleanEvidence,
+    feasibility: highFeasibility,
+  };
+  /** 语义层有硬伤的 integrity 输入（Layer 1 全干净） */
+  const semanticHits = {
+    probableFabricated: 0,
+    notFoundObligatory: 0,
+    unsupportedCritical: 2,
+    mismatchCritical: 0,
+    insufficientEvidence: 54,
+  };
+
+  it("off：语义规则不参与——没有 semantic records 不导致 FAIL", () => {
+    const gate = evaluateQualityGate(
+      { ...base, citationIntegrity: { ...semanticHits, unsupportedCritical: 0, insufficientEvidence: 0 }, citationSemanticMode: "off" },
+    );
+    const ruleNames = gate.rules.map((rule) => rule.rule);
+    expect(ruleNames).not.toContain("citation_unsupported_critical_zero");
+    expect(ruleNames).not.toContain("citation_insufficient_evidence_review");
+    expect(ruleNames).toContain("citation_semantic_verification_off");
+    expect(gate.passed).toBe(true);
+  });
+
+  it("full（缺省解释）：语义硬伤照常 FAIL（旧行为不变）", () => {
+    const gate = evaluateQualityGate({ ...base, citationIntegrity: semanticHits });
+    expect(gate.passed).toBe(false);
+    expect(gate.reasons.join("\n")).toContain("citation_unsupported_critical_zero");
+  });
+
+  it("contradiction_only：只有明确矛盾（unsupportedCritical）参与判定", () => {
+    const contradicted = evaluateQualityGate(
+      { ...base, citationIntegrity: semanticHits, citationSemanticMode: "contradiction_only" },
+    );
+    expect(contradicted.passed).toBe(false); // CONTRADICTED 计入 unsupportedCritical
+    expect(contradicted.reasons.join("\n")).toContain("citation_unsupported_critical_zero");
+    // 没有矛盾时不因「没有 SUPPORTED」失败
+    const clean = evaluateQualityGate(
+      { ...base, citationIntegrity: { ...semanticHits, unsupportedCritical: 0 }, citationSemanticMode: "contradiction_only" },
+    );
+    expect(clean.passed).toBe(true);
+  });
+});
+
 describe("evaluateQualityGate：各规则独立触发失败", () => {
   const base = {
     review: passingReview,

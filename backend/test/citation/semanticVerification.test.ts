@@ -27,7 +27,7 @@ const R001_ABSTRACT =
 
 class FakeJudgeRuntime implements AgentRuntime {
   readonly provider = "pi" as const;
-  readonly calls: Array<{ scope: string; taskChars: number }> = [];
+  readonly calls: Array<{ scope: string; taskChars: number; task: string }> = [];
   /** claimCitationId → judge JSON 输出；未配置的 claim 抛错 */
   readonly scripted = new Map<string, string>();
   failAll = false;
@@ -47,7 +47,7 @@ class FakeJudgeRuntime implements AgentRuntime {
   async runAgent(input: { agentId: string; contextScope?: string; task: string }): Promise<AgentTask> {
     this.counter += 1;
     const scope = input.contextScope ?? "";
-    this.calls.push({ scope, taskChars: input.task.length });
+    this.calls.push({ scope, taskChars: input.task.length, task: input.task });
     if (this.failAll) {
       throw new Error("fake model unavailable");
     }
@@ -386,6 +386,45 @@ describe("M4.3.5 (claim, citation) 语义核验（Fake Runtime）", () => {
       { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: false },
     );
     expect(clean.passed).toBe(true); // INSUFFICIENT_EVIDENCE 不等于 fabricated，不阻断
+  });
+
+  it("contradiction_only：full 记录不沿用（模式进指纹）；judge 只接受两种 verdict；无证据 → SKIPPED 而非 INSUFFICIENT", async () => {
+    runtime.scripted.set("CT001-R001", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
+    runtime.scripted.set("CT002-R001", JSON.stringify({ verdict: "CONTRADICTED", reason: "证据明确相反" }));
+    runtime.scripted.set("CT003-R002", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
+    runtime.scripted.set("CT004-R002", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
+    // full 口径的 verdict 在 contradiction 模式非法 → 该条 failed（严格解析，不静默降级）
+    runtime.scripted.set("CT008-R001", JSON.stringify({ verdict: "SUPPORTED", reason: "不该出现" }));
+
+    const result = await service.verifyClaims(projectId, { mode: "contradiction_only" });
+    expect(result.mode).toBe("contradiction_only");
+    expect(result.reused).toBe(0); // full 模式的旧记录一律重跑（指纹含 mode）
+    expect(result.telemetry.modelCalls).toBe(5); // 有证据的 5 条；短路零调用
+    expect(result.telemetry.failed).toBe(1);
+
+    const byId = new Map(result.records.map((r) => [r.claimCitationId, r]));
+    // 无证据（R005 无摘要）→ SKIPPED，不产生 INSUFFICIENT_EVIDENCE 噪音
+    const noEvidence = byId.get("CT007-R005")!;
+    expect(noEvidence.verdict).toBe("SKIPPED");
+    expect(noEvidence.status).toBe("skipped");
+    expect(noEvidence.reason).toContain("矛盾");
+    // CONTRADICTED + obligatory（CT002 在 Method 节）→ critical；NO_CONTRADICTION → info
+    expect(byId.get("CT002-R001")!.verdict).toBe("CONTRADICTED");
+    expect(byId.get("CT002-R001")!.severity).toBe("critical");
+    expect(byId.get("CT001-R001")!.verdict).toBe("NO_CONTRADICTION_DETECTED");
+    expect(byId.get("CT001-R001")!.severity).toBe("info");
+    // 非法 verdict → failed（可重试），不虚构结论
+    expect(byId.get("CT008-R001")!.status).toBe("failed");
+    // contradiction prompt 口径（calls 累积了此前 full 模式的调用——取最近一次）
+    const ct002Calls = runtime.calls.filter((call) => call.scope.toLowerCase().endsWith("ct002-r001"));
+    const semanticCall = ct002Calls[ct002Calls.length - 1];
+    expect(semanticCall).toBeDefined();
+    expect(semanticCall!.task).toContain("明显矛盾");
+    expect(semanticCall!.task).toContain("CONTRADICTED / NO_CONTRADICTION_DETECTED");
+
+    // 汇总：CONTRADICTED/NO_CONTRADICTION_DETECTED 各自计数
+    expect(result.summary.byVerdict.CONTRADICTED).toBe(1);
+    expect(result.summary.byVerdict.NO_CONTRADICTION_DETECTED).toBe(3);
   });
 });
 

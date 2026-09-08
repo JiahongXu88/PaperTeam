@@ -18,6 +18,7 @@ import type {
   EvidenceLevel,
   ReferenceEntry,
 } from "../citation/integrity.js";
+import type { CitationSemanticMode } from "../citation/semanticMode.js";
 import type { ReviewFinding } from "./finding.js";
 
 export const REVIEW_EXPORT_VERSION = 1;
@@ -39,6 +40,7 @@ const VERDICT_LABELS: Record<string, string> = {
   CONTRADICTED: "存在矛盾",
   INSUFFICIENT_EVIDENCE: "证据不足",
   SKIPPED: "跳过",
+  NO_CONTRADICTION_DETECTED: "未发现明显矛盾",
 };
 
 const SEVERITY_LABELS: Record<string, string> = {
@@ -100,6 +102,7 @@ const VERDICT_EMOJI: Record<string, string> = {
   CONTRADICTED: "❌",
   INSUFFICIENT_EVIDENCE: "❔",
   SKIPPED: "⏭️",
+  NO_CONTRADICTION_DETECTED: "✅",
 };
 
 /** 正文 claim 截断（报告紧凑性；全文在 UI 明细可查） */
@@ -111,6 +114,8 @@ export interface ReviewExportInput {
   report: {
     round: number;
     generatedAt: string;
+    /** 本轮语义核验模式（off 时报告不携带语义统计；缺省按 full 解释——旧轮兼容） */
+    citationSemanticMode?: CitationSemanticMode;
     paper: { title: string; pageCount?: number; sections?: number };
     review: {
       sectionsReviewed: number;
@@ -141,6 +146,12 @@ export interface ReviewExportInput {
   metadataRecords: CitationVerificationRecord[];
   claims: ClaimCitationRecord[];
   calloutCount: number;
+  /**
+   * 本轮语义核验模式（调用方从 run/report 解析；优先于 report.citationSemanticMode）。
+   * off：报告写明「本轮未开启」，不输出 支持 0 / 证据不足 0 之类的空统计，
+   * 也不把项目里历史遗留的 claim records 混入本轮报告。
+   */
+  citationSemanticMode?: CitationSemanticMode;
   /** 最近一次 existing_paper_review run（阶段耗时 / 总时长） */
   run?: {
     runId: string;
@@ -299,48 +310,80 @@ export class ReviewReportExporter {
     }
 
     // ---- 语义核验 ----
-    push("## 语义核验（Layer 2：论断与引用一致性）", "");
-    const verdictOrder = [
-      "SUPPORTED",
-      "PARTIALLY_SUPPORTED",
-      "UNSUPPORTED",
-      "CONTRADICTED",
-      "INSUFFICIENT_EVIDENCE",
-      "SKIPPED",
-    ] as const;
-    const byVerdict = new Map<string, ClaimCitationRecord[]>();
-    for (const claim of claims) {
-      byVerdict.set(claim.verdict, [...(byVerdict.get(claim.verdict) ?? []), claim]);
-    }
-    push("| 结论 | 数量 |", "| --- | --- |");
-    for (const verdict of verdictOrder) {
-      const list = byVerdict.get(verdict) ?? [];
-      if (list.length > 0) {
-        push(`| ${VERDICT_EMOJI[verdict] ?? ""} ${verdictLabel(verdict)} | ${list.length} |`);
+    // 模式决定本节形态：off → 一句话说明（不输出空统计、不混入历史 records）；
+    // contradiction_only → 标注模式，仅展开明确矛盾；full → 完整统计 + 明细
+    const semanticMode = input.citationSemanticMode ?? report.citationSemanticMode ?? "full";
+    let pending = 0;
+    let insufficient: ClaimCitationRecord[] = [];
+    if (semanticMode === "off") {
+      push("## 引用语义核验", "");
+      push("本轮未开启引用语义核验（仅执行引用真实性与元数据核验）。", "");
+    } else {
+      push(
+        semanticMode === "contradiction_only"
+          ? "## 语义核验（Layer 2：仅检查明显冲突）"
+          : "## 语义核验（Layer 2：论断与引用一致性）",
+        "",
+      );
+      if (semanticMode === "contradiction_only") {
+        push("模式：仅检查明显冲突——只报告与正文论断明确矛盾的引用，不判断引用是否充分支持论断。", "");
       }
-    }
-    const pending = claims.filter((c) => c.status === "pending").length;
-    if (pending > 0) {
-      push(`| 待核验（本轮未处理） | ${pending} |`);
-    }
-    push("");
+      const verdictOrder = [
+        "SUPPORTED",
+        "PARTIALLY_SUPPORTED",
+        "UNSUPPORTED",
+        "CONTRADICTED",
+        "INSUFFICIENT_EVIDENCE",
+        "SKIPPED",
+        "NO_CONTRADICTION_DETECTED",
+      ] as const;
+      const byVerdict = new Map<string, ClaimCitationRecord[]>();
+      for (const claim of claims) {
+        byVerdict.set(claim.verdict, [...(byVerdict.get(claim.verdict) ?? []), claim]);
+      }
+      push("| 结论 | 数量 |", "| --- | --- |");
+      for (const verdict of verdictOrder) {
+        const list = byVerdict.get(verdict) ?? [];
+        if (list.length > 0) {
+          push(`| ${VERDICT_EMOJI[verdict] ?? ""} ${verdictLabel(verdict)} | ${list.length} |`);
+        }
+      }
+      pending = claims.filter((c) => c.status === "pending").length;
+      if (pending > 0) {
+        push(`| 待核验（本轮未处理） | ${pending} |`);
+      }
+      push("");
 
-    const detailVerdicts: Array<(typeof verdictOrder)[number]> = ["UNSUPPORTED", "CONTRADICTED"];
-    for (const verdict of detailVerdicts) {
-      const list = byVerdict.get(verdict) ?? [];
-      if (list.length === 0) {
-        continue;
-      }
-      push(`### ${verdictLabel(verdict)}（${list.length} 条）`, "");
-      for (const claim of list) {
-        push(this.describeClaim(claim, referenceById, sectionTitle, metadataById, true));
-      }
-    }
-    const insufficient = byVerdict.get("INSUFFICIENT_EVIDENCE") ?? [];
-    if (insufficient.length > 0) {
-      push(`### 证据不足（${insufficient.length} 条，全部保留——二次分析重点）`, "");
-      for (const claim of insufficient) {
-        push(this.describeClaim(claim, referenceById, sectionTitle, metadataById, false));
+      if (semanticMode === "contradiction_only") {
+        // 只展开明确矛盾；未发现矛盾不逐条铺开（避免噪音）
+        const contradicted = byVerdict.get("CONTRADICTED") ?? [];
+        if (contradicted.length === 0) {
+          push("未发现正文论断与引用来源存在明显矛盾。", "");
+        } else {
+          push(`### 存在矛盾（${contradicted.length} 条）`, "");
+          for (const claim of contradicted) {
+            push(this.describeClaim(claim, referenceById, sectionTitle, metadataById, true));
+          }
+        }
+      } else {
+        const detailVerdicts: Array<(typeof verdictOrder)[number]> = ["UNSUPPORTED", "CONTRADICTED"];
+        for (const verdict of detailVerdicts) {
+          const list = byVerdict.get(verdict) ?? [];
+          if (list.length === 0) {
+            continue;
+          }
+          push(`### ${verdictLabel(verdict)}（${list.length} 条）`, "");
+          for (const claim of list) {
+            push(this.describeClaim(claim, referenceById, sectionTitle, metadataById, true));
+          }
+        }
+        insufficient = byVerdict.get("INSUFFICIENT_EVIDENCE") ?? [];
+        if (insufficient.length > 0) {
+          push(`### 证据不足（${insufficient.length} 条，全部保留——二次分析重点）`, "");
+          for (const claim of insufficient) {
+            push(this.describeClaim(claim, referenceById, sectionTitle, metadataById, false));
+          }
+        }
       }
     }
 
@@ -448,10 +491,14 @@ export class ReviewReportExporter {
 
     // ---- 运行信息 ----
     push("## 运行信息", "");
-    const modelLabels = [...new Set(claims.map((c) => c.model).filter((m): m is string => m !== undefined))];
-    push(`- 语义核验 judge 模型：${modelLabels.length > 0 ? modelLabels.join("、") : "（未记录）"}`);
-    const modelCalls = claims.filter((c) => c.model !== undefined).length;
-    push(`- 模型调用（语义 judge）：${modelCalls} 次；分章节审阅：${report.review.sectionsReviewed} 次（每节一次，含重试另计）`);
+    if (semanticMode === "off") {
+      push(`- 引用语义核验：未开启（语义模型调用 0 次）`);
+    } else {
+      const modelLabels = [...new Set(claims.map((c) => c.model).filter((m): m is string => m !== undefined))];
+      push(`- 语义核验 judge 模型：${modelLabels.length > 0 ? modelLabels.join("、") : "（未记录）"}`);
+      const modelCalls = claims.filter((c) => c.model !== undefined).length;
+      push(`- 模型调用（语义 judge）：${modelCalls} 次；分章节审阅：${report.review.sectionsReviewed} 次（每节一次，含重试另计）`);
+    }
     const resolverCalls = metadataRecords.reduce((sum, r) => sum + r.attempts.length, 0);
     push(`- 外部权威源查询：${resolverCalls} 次（学术库 + 软件仓库；含重试）`);
     push(`- PDF 解析：${input.document?.parse.parserId ?? "—"}（${input.document?.parse.durationMs ?? "—"} ms，质量 ${input.document?.parse.extractionQuality ?? "—"}）`);

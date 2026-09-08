@@ -41,6 +41,7 @@ import type { CitationService, CitationReport } from "../citation/CitationServic
 import { extractCitationKeys } from "../citation/StaticCitationChecker.js";
 import type { CitationIntegrityService } from "../citation/CitationIntegrityService.js";
 import type { CitationCallout, ReferenceEntry } from "../citation/integrity.js";
+import { readSemanticMode } from "../citation/semanticMode.js";
 import type { PaperStore } from "../paper/PaperStore.js";
 import type { PaperMapService } from "../paper/PaperMapService.js";
 import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
@@ -1156,18 +1157,24 @@ function citationMetadataStage(services: WorkflowServices): StageSpec {
 function citationClaimsStage(services: WorkflowServices): StageSpec {
   return {
     id: "citation.claims",
-    description: "Claim-Citation 一致性核验（语义判断，逐条记录）",
+    description: "Claim-Citation 一致性核验（语义判断，逐条记录；contradiction_only 仅检查明显矛盾）",
     requiredInputs: ["citation.extract"],
     producedOutputs: ["paper/citation/claims/*.json"],
     maxAttempts: services.stageMaxAttempts,
     timeoutMs: services.stageTimeoutMs,
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
-      const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId, { signal: ctx.signal });
+      // 模式来自 run request（off 时 planner 不会进入本 stage；历史 run 缺省 full）
+      const mode = readSemanticMode(ctx.state.request);
+      const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId, {
+        signal: ctx.signal,
+        mode,
+      });
       return {
+        mode,
         summary: result.summary,
         reused: result.reused,
-        // 性能画像：模型调用 / 确定性短路（run checkpoint 持久化）
+        // 性能画像：模式 / 模型调用 / 确定性短路 / 墙钟耗时（run checkpoint 持久化）
         modelTelemetry: {
           modelCalls: result.telemetry.modelCalls,
           skippedNoMetadata: result.telemetry.skippedNoMetadata,
@@ -1176,6 +1183,7 @@ function citationClaimsStage(services: WorkflowServices): StageSpec {
           approxPromptChars: result.telemetry.approxPromptChars,
           totalModelMs: result.telemetry.totalModelMs,
         },
+        durationMs: result.durationMs,
       };
     },
   };
@@ -1293,6 +1301,9 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
       const integrity = await services.paper.citationIntegrity.integrityReport(ctx.projectId);
       const map = await services.paper.store.loadMap(ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
+      // 本轮语义核验模式（run request；历史 run 缺省 full）。off 时绝不把项目里
+      // 历史遗留的 claim records 汇总成本轮语义统计——按轮隔离，旧记录只属于旧轮
+      const citationSemanticMode = readSemanticMode(ctx.state.request);
 
       const bySeverity: Record<FindingSeverity, number> = { critical: 0, major: 0, minor: 0, info: 0 };
       const byCategory: Partial<Record<FindingCategory, number>> = {};
@@ -1306,6 +1317,7 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
         kind: "existing_paper_review",
         round,
         generatedAt: new Date().toISOString(),
+        citationSemanticMode,
         paper: {
           title: map?.documentTitle ?? project.title,
           ...(map !== null ? { pageCount: map.pageCount, sections: map.sections.length } : {}),
@@ -1324,7 +1336,9 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
         },
         citationIntegrity: {
           metadataByStatus: integrity.metadataByStatus,
-          semantic: integrity.semantic,
+          ...(citationSemanticMode === "off"
+            ? {}
+            : { semantic: integrity.semantic }),
           probableFabrications: integrity.probableFabrications,
         },
         findings,
@@ -1367,10 +1381,16 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
   return {
     kind: "existing_paper_review",
     description:
-      "Existing-Paper Review：PaperMap → 引用提取 → 真实性核验 → 论断-引用一致性 → 分章节审阅 → 聚合审阅报告（只读，不修改论文）",
+      "Existing-Paper Review：PaperMap → 引用提取 → 真实性核验 →（语义核验：按模式）→ 分章节审阅 → 聚合审阅报告（只读，不修改论文）",
     stages,
     plan(state: WorkflowState): PlanDecision {
-      for (const stageId of front) {
+      // 语义核验可配置（citationSemanticMode，随 run request 持久化）：
+      //   off                跳过 citation.claims（不进入 stage，非「跑完再隐藏」）
+      //   contradiction_only / full  执行 claims stage（服务内部按模式判定）
+      // 历史 run（request 无该字段）→ full，保持升级前的 resume 语义。
+      const mode = readSemanticMode(state.request);
+      const sequence = mode === "off" ? front.filter((stageId) => stageId !== "citation.claims") : front;
+      for (const stageId of sequence) {
         if (!(stageId in state.stageResults)) {
           return { kind: "stage", stageId };
         }
@@ -1384,6 +1404,7 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
           findingsTotal: aggregate["findingsTotal"] ?? 0,
           sectionsReviewed: state.stageResults["review.sections"]?.["sectionsReviewed"] ?? 0,
           reportPath: aggregate["reportPath"] ?? null,
+          citationSemanticMode: mode,
         },
       };
     },

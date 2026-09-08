@@ -228,6 +228,54 @@ function exportInput(overrides: Partial<ReviewExportInput> = {}): ReviewExportIn
 
 // ---- service 层 ----
 
+describe("ReviewReportExporter：citationSemanticMode 三种模式", () => {
+  const exporter = new ReviewReportExporter();
+
+  it("off：写明本轮未开启；不输出语义统计、不混入历史 claims", () => {
+    const { markdown } = exporter.export(exportInput({ citationSemanticMode: "off" }));
+    expect(markdown).toContain("## 引用语义核验");
+    expect(markdown).toContain("本轮未开启引用语义核验");
+    expect(markdown).toContain("引用语义核验：未开启（语义模型调用 0 次）");
+    expect(markdown).not.toContain("## 语义核验（Layer 2");
+    expect(markdown).not.toContain("| ✅ 支持 |");
+    expect(markdown).not.toContain("证据不足（");
+    expect(markdown).not.toContain("正文论断 CT001"); // 历史 claims 不进 off 轮报告
+  });
+
+  it("contradiction_only：标注模式；只展开明确矛盾", () => {
+    const { markdown } = exporter.export(
+      exportInput({
+        citationSemanticMode: "contradiction_only",
+        claims: [
+          claimFixture("CT001-R001", "R001", {
+            verdict: "NO_CONTRADICTION_DETECTED",
+            reason: "证据未发现与论断相反的结论",
+          }),
+          claimFixture("CT002-R001", "R001", {
+            verdict: "CONTRADICTED",
+            reason: "证据明确报告相反结论",
+            severity: "critical",
+          }),
+        ],
+      }),
+    );
+    expect(markdown).toContain("## 语义核验（Layer 2：仅检查明显冲突）");
+    expect(markdown).toContain("模式：仅检查明显冲突");
+    expect(markdown).toContain("| ✅ 未发现明显矛盾 | 1 |");
+    expect(markdown).toContain("### 存在矛盾（1 条）");
+    expect(markdown).toContain("证据明确报告相反结论");
+    expect(markdown).not.toContain("### 证据不足（");
+    expect(markdown).not.toContain("### 不支持（");
+  });
+
+  it("full（缺省）：旧输入无 mode 字段按 full——完整统计与明细不变", () => {
+    const { markdown } = exporter.export(exportInput());
+    expect(markdown).toContain("## 语义核验（Layer 2：论断与引用一致性）");
+    expect(markdown).toContain("### 不支持（1 条）");
+    expect(markdown).toContain("### 证据不足（1 条");
+  });
+});
+
 describe("ReviewReportExporter（service 层）", () => {
   const exporter = new ReviewReportExporter();
 

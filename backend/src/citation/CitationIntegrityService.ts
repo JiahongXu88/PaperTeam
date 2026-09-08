@@ -26,6 +26,7 @@ import { deriveClaimSeverity } from "./integrity.js";
 import { METADATA_VERIFICATION_VERSION, ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
 import { SoftwareReferenceResolver, type SoftwareResolverOptions } from "./softwareResolver.js";
 import { extractRepositoryRef, inferReferenceKind } from "./referenceKinds.js";
+import type { CitationSemanticMode } from "./semanticMode.js";
 import { REFERENCE_EXTRACTION_VERSION } from "../paper/ReferenceExtractor.js";
 import {
   buildClaimRecords,
@@ -483,20 +484,29 @@ export class CitationIntegrityService {
   /**
    * 逐条语义核验。确定性短路优先（真实性未确立 → SKIPPED；无证据 →
    * INSUFFICIENT_EVIDENCE，零模型调用），只有真实证据在手才调用 judge。
+   *
+   * mode：full = 完整逐条核验；contradiction_only = 仅检查明显矛盾
+   * （无证据 → SKIPPED，不产生 INSUFFICIENT_EVIDENCE 噪音；judge 只回答
+   * CONTRADICTED / NO_CONTRADICTION_DETECTED）。off 由调用方（workflow /
+   * API）负责——本方法不应该是 off 的入口。
    */
   async verifyClaims(
     projectId: string,
-    options: { force?: boolean; limit?: number; signal?: AbortSignal } = {},
+    options: { force?: boolean; limit?: number; signal?: AbortSignal; mode?: CitationSemanticMode } = {},
   ): Promise<{
     summary: SemanticSummary;
     verified: number;
     reused: number;
     records: ClaimCitationRecord[];
     telemetry: SemanticTelemetry;
+    mode: CitationSemanticMode;
+    /** 本次 verifyClaims 的墙钟耗时（ms；性能画像用） */
+    durationMs: number;
   }> {
     if (this.runtime === undefined || this.citationAgentId === undefined) {
       throw new BusinessError("INVALID_REQUEST", "semantic 核验需要 Runtime（服务未配置 runtime）");
     }
+    const mode: CitationSemanticMode = options.mode ?? "full";
     await this.projects.getRequired(projectId);
     const [references, callouts, document, metadataRaw] = await Promise.all([
       this.store.loadReferences<ReferenceEntry>(projectId),
@@ -521,6 +531,7 @@ export class CitationIntegrityService {
       metadataRecords,
       sectionTitles,
       this.now().toISOString(),
+      mode,
     );
 
     const telemetry = {
@@ -536,6 +547,7 @@ export class CitationIntegrityService {
     let verifiedCount = 0;
     let reused = 0;
     const records: ClaimCitationRecord[] = [];
+    const startedAtMs = Date.now();
     for (const claim of pending) {
       const existing = await this.store.loadRecord<ClaimCitationRecord>(
         projectId,
@@ -558,7 +570,7 @@ export class CitationIntegrityService {
       }
       // 上限只约束模型调用：确定性短路（SKIPPED / 无证据 INSUFFICIENT）零成本，
       // 不占预算——否则 54 条免费短路与真实 judge 抢同一个 30 条额度
-      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry, options.signal, limit);
+      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry, options.signal, limit, mode);
       if (record === null) {
         records.push(claim); // 模型预算耗尽：保持 pending（下一轮继续）
         continue;
@@ -568,6 +580,7 @@ export class CitationIntegrityService {
         verifiedCount += 1;
       }
     }
+    const durationMs = Date.now() - startedAtMs;
 
     const summary = summarizeSemantic(metadataRaw, records);
     await this.saveStage(projectId, {
@@ -579,9 +592,9 @@ export class CitationIntegrityService {
     });
     this.lastSemanticTelemetry = telemetry;
     this.log(
-      `[citation-integrity] projectId=${projectId} semantic 核验：total=${summary.total} verified=${verifiedCount} skipped=${summary.skipped} modelCalls=${telemetry.modelCalls}`,
+      `[citation-integrity] projectId=${projectId} semantic 核验（mode=${mode}）：total=${summary.total} verified=${verifiedCount} skipped=${summary.skipped} modelCalls=${telemetry.modelCalls}`,
     );
-    return { summary, verified: verifiedCount, reused, records, telemetry };
+    return { summary, verified: verifiedCount, reused, records, telemetry, mode, durationMs };
   }
 
   private async verifyClaim(
@@ -591,6 +604,7 @@ export class CitationIntegrityService {
     telemetry: SemanticTelemetry,
     signal?: AbortSignal,
     modelBudget?: number,
+    mode: CitationSemanticMode = "full",
   ): Promise<ClaimCitationRecord | null> {
     const metadata = metadataRecords.get(claim.referenceId);
     const base: ClaimCitationRecord = { ...claim, evidence: [] };
@@ -626,31 +640,49 @@ export class CitationIntegrityService {
     const evidence = buildEvidence(metadata, this.now().toISOString());
     const fabric = metadata.probableFabrication;
 
-    // 无可判证据 → INSUFFICIENT_EVIDENCE（确定性短路，零模型调用）
+    // 无可判证据（确定性短路，零模型调用）：full → INSUFFICIENT_EVIDENCE；
+    // contradiction_only → SKIPPED（矛盾检查没有素材，不构成「证据不足」问题）
     if (evidence.length === 0) {
-      const record: ClaimCitationRecord = {
-        ...base,
-        verdict: "INSUFFICIENT_EVIDENCE",
-        reason: metadata.kind === "software"
-          ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档），证据不足以判断"
-          : "只获取到书目 metadata（学术库记录无摘要），没有正文/摘要等可判证据，证据不足以判断",
-        reasonCode: "NO_EVIDENCE",
-        evidence: [],
-        status: "verified",
-        severity: deriveSeverityFor(claim, metadata),
-        verifiedAt: this.now().toISOString(),
-      };
+      const record: ClaimCitationRecord =
+        mode === "contradiction_only"
+          ? {
+              ...base,
+              verdict: "SKIPPED",
+              reason: metadata.kind === "software"
+                ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档），矛盾检查跳过"
+                : "只获取到书目 metadata（学术库记录无摘要），无证据可判矛盾，跳过",
+              reasonCode: "NO_EVIDENCE",
+              evidence: [],
+              status: "skipped",
+              severity: deriveSeverityFor(claim, metadata),
+              verifiedAt: this.now().toISOString(),
+            }
+          : {
+              ...base,
+              verdict: "INSUFFICIENT_EVIDENCE",
+              reason: metadata.kind === "software"
+                ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档），证据不足以判断"
+                : "只获取到书目 metadata（学术库记录无摘要），没有正文/摘要等可判证据，证据不足以判断",
+              reasonCode: "NO_EVIDENCE",
+              evidence: [],
+              status: "verified",
+              severity: deriveSeverityFor(claim, metadata),
+              verifiedAt: this.now().toISOString(),
+            };
       telemetry.skippedNoEvidence += 1;
       await this.store.saveRecord(projectId, "claims", claim.claimCitationId, record);
       return record;
     }
 
-    const prompt = buildJudgePrompt({
-      claimText: claim.claimText,
-      reference: { rawText: "" } as ReferenceEntry,
-      canonical: metadata.canonical,
-      evidence,
-    });
+    const prompt = buildJudgePrompt(
+      {
+        claimText: claim.claimText,
+        reference: { rawText: "" } as ReferenceEntry,
+        canonical: metadata.canonical,
+        evidence,
+      },
+      mode,
+    );
     // 模型预算耗尽（上限只约束 LLM judge 调用；短路已免费完成）
     if (modelBudget !== undefined && telemetry.modelCalls >= modelBudget) {
       return null;
@@ -673,7 +705,7 @@ export class CitationIntegrityService {
       const callMs = Date.now() - modelCallStartedAt;
       telemetry.modelCallMs.push(callMs);
       telemetry.totalModelMs += callMs;
-      const judged = parseJudgeOutput(task.output ?? "", evidence);
+      const judged = parseJudgeOutput(task.output ?? "", evidence, mode);
       const evidenceWithQuote =
         judged.keyQuote !== undefined
           ? [

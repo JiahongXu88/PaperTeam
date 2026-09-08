@@ -30,6 +30,7 @@ import {
   type EvidenceRecord,
   type ReferenceEntry,
 } from "./integrity.js";
+import type { CitationSemanticMode } from "./semanticMode.js";
 
 /** judge prompt 中证据段上限（token 控制） */
 const EVIDENCE_MAX_CHARS = 4000;
@@ -37,8 +38,9 @@ const EVIDENCE_MAX_CHARS = 4000;
 /**
  * 语义核验算法版本：短路规则 / reasonCode / 证据等级变化即递增，纳入 claim 指纹——
  * 旧记录（无 reasonCode 等）自动重跑，确定性短路零模型调用，代价可忽略。
+ * v3：模式进入指纹（full 与 contradiction_only 的结论不可互相沿用）。
  */
-export const SEMANTIC_VERIFICATION_VERSION = 2;
+export const SEMANTIC_VERIFICATION_VERSION = 3;
 
 export interface ClaimJudgeOutput {
   verdict: ClaimSupportVerdict;
@@ -47,13 +49,14 @@ export interface ClaimJudgeOutput {
   keyQuote?: string;
 }
 
-/** （claim, citation）任务构建：callout × 已解析 reference relation */
+/** （claim, citation）任务构建：callout × 已解析 reference relation（mode 纳入指纹） */
 export function buildClaimRecords(
   callouts: CitationCallout[],
   references: ReferenceEntry[],
   metadataRecords: Map<string, CitationVerificationRecord>,
   sectionTitles: Map<string, string>,
   now: string,
+  mode: CitationSemanticMode = "full",
 ): ClaimCitationRecord[] {
   const records: ClaimCitationRecord[] = [];
   for (const callout of callouts) {
@@ -90,6 +93,7 @@ export function buildClaimRecords(
         status: "pending",
         fingerprint: fingerprintJson({
           semanticVersion: SEMANTIC_VERIFICATION_VERSION,
+          mode,
           claim: callout.sentence,
           referenceId: reference.referenceId,
           canonical: canonicalFingerprint,
@@ -136,13 +140,16 @@ export function buildEvidence(record: CitationVerificationRecord, now: string): 
   ];
 }
 
-/** judge prompt（只含 claim + canonical + 检索证据；禁止记忆判定） */
-export function buildJudgePrompt(input: {
-  claimText: string;
-  reference: ReferenceEntry;
-  canonical?: CitationVerificationRecord["canonical"];
-  evidence: EvidenceRecord[];
-}): string {
+/** judge prompt（只含 claim + canonical + 检索证据；禁止记忆判定；按 mode 切换判定口径） */
+export function buildJudgePrompt(
+  input: {
+    claimText: string;
+    reference: ReferenceEntry;
+    canonical?: CitationVerificationRecord["canonical"];
+    evidence: EvidenceRecord[];
+  },
+  mode: CitationSemanticMode = "full",
+): string {
   const canonicalLines: string[] = [];
   if (input.canonical !== undefined) {
     if (input.canonical.title !== undefined) {
@@ -164,6 +171,29 @@ export function buildJudgePrompt(input: {
   const evidenceLines = input.evidence
     .map((evidence, index) => `【证据${index + 1}】（来源：${evidence.source}，等级：${evidence.evidenceLevel}）\n${evidence.text}`)
     .join("\n\n");
+  const shared = [
+    `【正文论断】\n${input.claimText}`,
+    "",
+    `【被引文献（已经外部学术库核验为真实存在）】\n${canonicalLines.join("\n") || input.reference.rawText}`,
+    "",
+    `【检索证据】\n${evidenceLines || "（无证据）"}`,
+    "",
+    '只输出一个 JSON 对象（无围栏）：{"verdict": "...", "reason": "一句话中文理由", "keyQuote": "证据中最关键的一句"}',
+  ];
+  if (mode === "contradiction_only") {
+    return [
+      "你是引用矛盾检查员。只判断一件事情：下面这篇真实文献的检索证据，是否与论文正文论断存在明显矛盾（证据明确报告相反结论 / 直接冲突）。",
+      "",
+      "严格规则：",
+      "1. 只能依据下方【检索证据】判断；禁止使用你自己的记忆、训练知识或常识推断文献内容；",
+      "2. 只有证据与论断直接相反（如论断称 X 优于 Y，证据明确报告 X 不优于 Y）才回答 CONTRADICTED；证据只是不够充分、未提及、方向不明确，都不算矛盾；",
+      "3. 判断不了时回答 NO_CONTRADICTION_DETECTED，绝不把「证据不足」当成矛盾；",
+      "4. verdict 只能是：CONTRADICTED / NO_CONTRADICTION_DETECTED；",
+      "5. keyQuote 必须逐字复制自【检索证据】原文。",
+      "",
+      ...shared,
+    ].join("\n");
+  }
   return [
     "你是引用语义核验员。判断下面这篇真实文献的检索证据是否支持论文正文中的论断。",
     "",
@@ -173,13 +203,7 @@ export function buildJudgePrompt(input: {
     "3. verdict 只能是：SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED / INSUFFICIENT_EVIDENCE；",
     "4. keyQuote 必须逐字复制自【检索证据】原文。",
     "",
-    `【正文论断】\n${input.claimText}`,
-    "",
-    `【被引文献（已经外部学术库核验为真实存在）】\n${canonicalLines.join("\n") || input.reference.rawText}`,
-    "",
-    `【检索证据】\n${evidenceLines || "（无证据）"}`,
-    "",
-    '只输出一个 JSON 对象（无围栏）：{"verdict": "...", "reason": "一句话中文理由", "keyQuote": "证据中最关键的一句"}',
+    ...shared,
   ].join("\n");
 }
 
@@ -192,21 +216,32 @@ const VERDICTS: readonly ClaimSupportVerdict[] = [
   "SKIPPED",
 ];
 
-/** judge 输出解析 + 引文真实性校验（伪造 quote 一律剥离） */
+const CONTRADICTION_VERDICTS: readonly ClaimSupportVerdict[] = [
+  "CONTRADICTED",
+  "NO_CONTRADICTION_DETECTED",
+];
+
+/** judge 输出解析 + 引文真实性校验（伪造 quote 一律剥离；按 mode 校验合法 verdict） */
 export function parseJudgeOutput(
   raw: string,
   evidence: EvidenceRecord[],
+  mode: CitationSemanticMode = "full",
 ): { verdict: ClaimSupportVerdict; reason: string; keyQuote?: string } {
   const parsed = extractJsonObject(raw, "引用语义核验结果") as unknown as {
     verdict?: unknown;
     reason?: unknown;
     keyQuote?: unknown;
   };
-  const verdict = VERDICTS.includes(parsed.verdict as ClaimSupportVerdict)
+  const allowed = mode === "contradiction_only" ? CONTRADICTION_VERDICTS : VERDICTS;
+  const verdict = allowed.includes(parsed.verdict as ClaimSupportVerdict)
     ? (parsed.verdict as ClaimSupportVerdict)
     : undefined;
   if (verdict === undefined) {
-    throw new AgentRunFailedError("verdict 缺失或非法（必须是六个枚举值之一）");
+    throw new AgentRunFailedError(
+      mode === "contradiction_only"
+        ? "verdict 缺失或非法（必须是 CONTRADICTED / NO_CONTRADICTION_DETECTED 之一）"
+        : "verdict 缺失或非法（必须是六个枚举值之一）",
+    );
   }
   const reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 1000) : "";
   let keyQuote: string | undefined =
@@ -258,6 +293,7 @@ export function summarizeSemantic(
     CONTRADICTED: 0,
     INSUFFICIENT_EVIDENCE: 0,
     SKIPPED: 0,
+    NO_CONTRADICTION_DETECTED: 0,
   };
   const bySeverity = { critical: 0, major: 0, minor: 0, info: 0 };
   const fabrications = new Set(

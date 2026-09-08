@@ -156,6 +156,7 @@ describe("existing_paper_review 工作流（Fake Runtime 全链路）", () => {
   it("从导入的 PDF 跑到聚合报告：completion=review；产物 reviews/existing-review-r1.json", { timeout: 60_000 }, async () => {
     const started = await stack.request("POST", `/api/projects/${projectId}/workflows`, {
       kind: "existing_paper_review",
+      citationSemanticMode: "full",
     });
     expect(started.status).toBe(202);
     const runId = started.body["runId"] as string;
