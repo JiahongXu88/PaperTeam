@@ -43,8 +43,8 @@ export function ProjectManagementSettingsPage() {
   };
 
   return (
-    <div>
-      <PageHeader title="项目管理" sub="已归档项目的恢复与永久删除。归档入口在「论文项目」列表每行的 ··· 菜单。" />
+    <div className="page">
+      <PageHeader level={2} title="项目管理" sub="已归档项目的恢复与永久删除。归档入口在「论文项目」列表每行的 ··· 菜单。" />
 
       {isPending ? (
         <Loading label="加载已归档项目…" />

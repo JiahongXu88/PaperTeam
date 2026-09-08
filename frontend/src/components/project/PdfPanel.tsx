@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { ErrorState, Loading } from "../common/StateViews.js";
 import { RegistryStatus } from "../common/StatusBadge.js";
 import { EXTRACTION_QUALITY_STYLES, statusStyleOf } from "../common/status.js";
-import { formatDateTime } from "../../utils/format.js";
+import { formatBytes, formatDateTime } from "../../utils/format.js";
 import { fileToBase64, MAX_PDF_UPLOAD_BYTES, validatePdfFile } from "../../utils/file.js";
 import { useExtractCitations, usePaper, useReparsePaperPdf, useUploadPaperPdf } from "../../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
@@ -13,16 +13,6 @@ import type { PaperSectionView } from "../../types/paper.js";
  * 「PDF 与结构」：左侧文档信息（文件、解析器、页数、质量、时间），
  * 右侧论文结构——章节按层级缩进，页范围落在右侧栏位。不做 PDF 视觉 viewer。
  */
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${bytes} B`;
-}
 
 /** 结构来源 → 人读标签（只标注非目录识别的例外行，避免刷屏） */
 const SECTION_SOURCE_LABEL: Record<PaperSectionView["source"], string | undefined> = {
@@ -111,7 +101,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
   const document = data.document;
   if (document === null || document === undefined) {
     return (
-      <section className="section-block">
+      <section className="panel section-block">
         <div className="section-head">
           <h2>上传最终 PDF</h2>
         </div>
@@ -143,7 +133,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
 
   return (
     <div className="doc-grid">
-      <aside className="doc-info" aria-label="文档信息">
+      <aside className="doc-info aside-card" aria-label="文档信息">
         <h2 className="aside-title">源文档</h2>
         {document.title !== undefined ? <p className="doc-info-title reading">{document.title}</p> : null}
         <p className="doc-info-file">
@@ -218,7 +208,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
         </div>
       </aside>
 
-      <section className="section-block doc-structure">
+      <section className="panel section-block doc-structure">
         <div className="section-head">
           <h2>论文结构</h2>
           <div className="action-row">

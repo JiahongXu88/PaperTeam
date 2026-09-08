@@ -8,6 +8,7 @@ import type { ProjectView } from "../../types/api.js";
 import { formatDateTime } from "../../utils/format.js";
 import { ProjectStatusBadge, WorkflowKindBadge } from "./Badges.js";
 import { InlineConfirm, InlineRename, RowMenu } from "../common/RowMenu.js";
+import { Icon } from "../common/Icon.js";
 
 /**
  * 项目列表行：标题链接 + 类型 / 定位 + 状态 + 更新时间 + 「···」菜单。
@@ -51,14 +52,19 @@ export function ProjectRow({ project }: { project: ProjectView }) {
           />
         ) : (
           <Link to={`/projects/${project.id}`} className="project-row-link">
-            <span className="project-row-title reading">{project.title}</span>
-            <span className="project-row-meta">
-              <WorkflowKindBadge kind={project.workflowKind} />
-              {meta.map((part, index) => (
-                <span key={`${index}-${part}`} className="meta-part">
-                  {part}
-                </span>
-              ))}
+            <span className="project-row-icon" aria-hidden="true">
+              <Icon name="document" />
+            </span>
+            <span className="project-row-text">
+              <span className="project-row-title">{project.title}</span>
+              <span className="project-row-meta">
+                <WorkflowKindBadge kind={project.workflowKind} />
+                {meta.map((part, index) => (
+                  <span key={`${index}-${part}`} className="meta-part">
+                    {part}
+                  </span>
+                ))}
+              </span>
             </span>
           </Link>
         )}

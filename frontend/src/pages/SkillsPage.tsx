@@ -142,7 +142,7 @@ export function SkillsPage() {
         ))}
       </div>
 
-      <section className="section-block">
+      <section className="panel">
         <div className="section-head">
           <h2>角色绑定</h2>
         </div>

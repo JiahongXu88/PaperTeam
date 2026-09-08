@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 
 import { EmptyState, ErrorState, Loading } from "../components/common/StateViews.js";
+import { Icon } from "../components/common/Icon.js";
 import { PageHeader } from "../components/common/PageHeader.js";
 import { ProjectRow } from "../components/project/ProjectRow.js";
 import { useProjects } from "../hooks/queries.js";
@@ -27,6 +28,7 @@ export function ProjectsPage() {
         }
         actions={
           <Link to="/projects/new" className="btn btn-primary">
+            <Icon name="plus" />
             新建项目
           </Link>
         }

@@ -97,18 +97,7 @@ export function NewProjectPage() {
 
   return (
     <section className="page page-narrow">
-      <PageHeader
-        title="新建项目"
-        breadcrumb={
-          <>
-            <Link to="/projects">论文项目</Link>
-            <span className="crumb-sep" aria-hidden="true">
-              /
-            </span>
-            <span>新建项目</span>
-          </>
-        }
-      />
+      <PageHeader title="新建项目" sub="从研究想法开始写一篇新论文，或导入已有论文 PDF 做 Review。" />
       {mode === "idea" ? <IdeaForm onSwitchMode={() => setMode("existing")} /> : <ExistingPaperForm onSwitchMode={() => setMode("idea")} />}
     </section>
   );

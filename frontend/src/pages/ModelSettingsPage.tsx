@@ -50,16 +50,16 @@ export function ModelSettingsPage() {
 
   if (settingsQuery.isPending) {
     return (
-      <div>
-        <PageHeader title="模型设置" />
+      <div className="page">
+        <PageHeader level={2} title="模型设置" />
         <Loading label="加载模型配置…" />
       </div>
     );
   }
   if (settingsQuery.isError) {
     return (
-      <div>
-        <PageHeader title="模型设置" />
+      <div className="page">
+        <PageHeader level={2} title="模型设置" />
         <ErrorState
           title="模型配置加载失败"
           message={formatApiError(settingsQuery.error)}
@@ -128,8 +128,8 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   };
 
   return (
-    <div>
-      <PageHeader title="模型设置" sub="配置 Agent 使用的模型与 API Key；保存后新的任务立即使用新配置。优先级：环境变量 > 本地保存。" />
+    <div className="page">
+      <PageHeader level={2} title="模型设置" sub="配置 Agent 使用的模型与 API Key；保存后新的任务立即使用新配置。优先级：环境变量 > 本地保存。" />
 
       <div className="settings-grid">
         <section className="settings-block" aria-label="当前配置">
