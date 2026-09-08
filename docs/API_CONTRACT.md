@@ -141,7 +141,7 @@
 
 | 端点 | 说明 | 前端消费方 |
 |---|---|---|
-| `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun `{kind: WorkflowKind}`（kind 含 `existing_paper_review`）；**已归档项目 → 409 PROJECT_BUSY** → 202 `{runId, status, workflowKind}` | ReviewPanel（开始 Review）/ NewProjectPage（导入后自动启动） |
+| `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun `{kind: WorkflowKind, citationSemanticMode?}`（kind 含 `existing_paper_review`）；`citationSemanticMode` 仅 `existing_paper_review` 消费：`"off" \| "contradiction_only" \| "full"`，**缺省 `off`，非法值 → 400**（随 run `request` 持久化；旧 run 无该字段按 `full` 解释）；**已归档项目 → 409 PROJECT_BUSY** → 202 `{runId, status, workflowKind}` | ReviewPanel（开始 Review，高级选项）/ NewProjectPage（导入后自动启动） |
 | `POST /api/projects/:id/archive` | 归档项目（幂等）：设 `archivedAt`（独立于 status 的生命周期字段）。**存在 pending/running/awaiting_input run → 409 PROJECT_BUSY**（不静默归档、不自动取消）→ `{project}` | ProjectRow / ProjectPage Header（··· 菜单） |
 | `POST /api/projects/:id/restore` | 恢复归档（幂等）：清除 `archivedAt`，项目回到默认列表与最近项目 → `{project}` | Settings → 项目管理 |
 | `DELETE /api/projects/:id` | **永久删除整个工作区**（PDF/parsed/citations/reviews/workflow checkpoints/manuscript/build/元数据；并释放 Runtime 内该项目的 idle Agent Session）。前置校验：**必须已归档（否则 409 PROJECT_NOT_ARCHIVED）**、无进行中任务（否则 409 PROJECT_BUSY）→ `{status:"deleted"}` | Settings → 项目管理（输入完整标题确认后） |
@@ -158,6 +158,22 @@
 >   `POST /api/projects/:id/review`（manuscriptDigest 三路审稿）互不复用。
 > - 快速 Review 只读，不修改论文正文；系统性改进（existing_paper_improvement）
 >   第一阶段同样是先建立 Review 基线。
+>
+> 2026-09-08 引用语义核验分层（CitationSemanticMode）：
+> - 两层核验中 **Layer 1（引用真实性 / metadata 核验）始终执行，不可关闭**；
+>   Layer 2（Claim-Citation 语义核验）按 `citationSemanticMode` 配置：
+>   `off`（新 Review 缺省）＝ 不进入 `citation.claims` stage（真实跳过，
+>   语义模型调用 0）；`contradiction_only` ＝ 仅检查明显矛盾（judge 只回答
+>   `CONTRADICTED / NO_CONTRADICTION_DETECTED`，无证据 → `SKIPPED` 而非
+>   `INSUFFICIENT_EVIDENCE`）；`full` ＝ 完整逐条核验（旧行为）。
+> - 模式随 run `request` 持久化并写入聚合报告 `citationSemanticMode` 字段；
+>   `off` 轮报告不携带 `citationIntegrity.semantic`（历史轮语义记录不污染本轮），
+>   Markdown 导出同理（off → 「本轮未开启引用语义核验」）。
+> - 兼容默认值分两个方向：**新 run 缺省 `off`**；**旧持久化 run（request 无该
+>   字段）解释为 `full`**（旧版本实际始终执行完整语义核验）。
+> - Quality Gate：`off` 时语义类规则（`citation_unsupported_critical_zero` 等）
+>   不参与判定——不能因「本轮没有 semantic records」FAIL；Layer 1 规则
+>   （捏造 / NOT_FOUND / mismatch）不受模式影响。
 
 ### 1.4 已知缺口
 
@@ -221,9 +237,11 @@ interface WorkflowRunView {                      // WorkflowState → UI 子集�
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
 }
 
-// GET /api/projects/:id/paper-review（2026-09-07）
+// GET /api/projects/:id/paper-review（2026-09-07；2026-09-08 增 citationSemanticMode）
+type CitationSemanticMode = "off" | "contradiction_only" | "full";  // 新 run 缺省 off；旧报告缺省视为 full
 interface ExistingReviewReportView {
   schemaVersion: number; kind: "existing_paper_review"; round: number; generatedAt: string;
+  citationSemanticMode?: CitationSemanticMode;   // 本轮语义核验模式（off 轮不携带 semantic 统计）
   paper: { title: string; pageCount?: number; sections?: number };
   review: {
     sectionsReviewed: number; sectionsTotal: number; skippedSections?: number;

@@ -8,6 +8,18 @@
 > 3. **并发优化后**（2026-09-08）：同一论文、同一模型，`scripts/benchmark-review.mjs`
 >    真实 A/B（1/2/3/4 × 前 12 节）+ 全量 33 节验证。
 
+> **2026-09-08 起引用语义核验默认关闭（CitationSemanticMode，见
+> API_CONTRACT / PRD）**：新 Review 缺省 `off`——`citation.claims` stage 不再
+> 进入，上表中的 citation.claims 行与"6 次语义 judge"调用在默认配置下为 0。
+> 需要注意：**关闭语义核验不会解决 Review 的最大性能问题**——按本画像，
+> citation.claims 仅占 3.1%（冷）/ 2.0%（暖），且其中 57 条 INSUFFICIENT_
+> EVIDENCE 本就是零模型调用的确定性短路，真实省掉的只有 6 次 judge
+> （≈99.6s 冷启动）。**最大瓶颈仍然是 `review.sections`（85.9%）**。本功能的
+> 目的定位是：减少非必要的 Citation Audit、降低信息噪音、贴合真实科研
+> Review 使用习惯，而非加速。`contradiction_only` 模式的 judge 调用次数与
+> `full` 相同（只有拿到真实证据的 claim 才调用），变化只在判定口径与报告
+> 噪音。
+
 ## 0. 优化后速览（2026-09-08，并发化落地）
 
 | Stage | 优化前 | 优化后（C=3 全量实测） | 加速 |

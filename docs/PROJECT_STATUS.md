@@ -1,9 +1,29 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-08（Review 并发优化完成后；新增下一阶段规划「M4.9
-> Iterative Review Loop / Review Quality Optimization」）
+> 更新日期：2026-09-09（引用语义核验改为可配置后；前次 2026-09-08 Review
+> 并发优化 + M4.9 规划见历史）
 
 ## 当前阶段
+
+**引用语义核验可配置（CitationSemanticMode，2026-09-09 完成）**：引用两层
+核验明确分层——Layer 1 真实性 / metadata 核验**始终执行**；Layer 2
+Claim-Citation 语义核验改为 Review Run 配置（`off` / `contradiction_only` /
+`full`），**新 Review 缺省 `off`**（`citation.claims` stage 真实跳过、语义
+模型调用 0；旧持久化 run 无字段按 `full` 解释）。模式随 run `request`
+持久化并写入每轮聚合报告，off 轮不携带语义统计（历史轮记录按 run 隔离，
+不污染本轮报告 / Markdown 导出）；Quality Gate 语义类规则仅在 mode ≠ off
+时参与（contradiction_only 下只有明确矛盾参与判定）。`contradiction_only`
+为保守中间档：judge 只回答 `CONTRADICTED / NO_CONTRADICTION_DETECTED`，
+无证据 → `SKIPPED`（不产生 INSUFFICIENT_EVIDENCE 噪音），模式进入 claim
+指纹（与 full 记录不互相沿用）。前端在「开始 Review」与导入页的高级选项
+提供配置（默认关闭，含帮助文案），off 轮报告显示克制的「引用语义核验
+未开启」+ 低权重「进行语义核验」入口（跳转引用核验面板手动补跑）。
+性能语义如实记录：关闭语义核验只省 ~3.1% 冷启动耗时（6 次 judge），
+最大瓶颈仍是 review.sections（见 REVIEW_PERFORMANCE_PROFILE.md）。
+测试：backend 482（新增 citationSemanticMode 全链路 9 例 + Gate 3 例 +
+导出 3 例 + 服务级 contradiction 路径）+ frontend 98（ReviewPanel 模式
+UI 5 例、导入高级选项 1 例）全部 PASS；真实论文 PDF（26 页 / 25 引用）
+Fake-Runtime smoke 验证 off 轮语义模型调用 = 0。
 
 **Project Hardening & Real Paper E2E 完成（2026-09-07）：M4.3 全部子里程碑含 M4.3.8 真实用户论文 E2E 收口，产品进入可用状态；下一步 M4/M5 规划另行决定。** 此前基线——M4.3 Foundation Complete（M4.3.0 Review Domain Model → M4.3.7 Minimal UI）。 Final PDF 正式成为 Existing
 Paper 的 Review 输入：PDF → pymupdf 确定性解析 → pages/sections/chunks（页

@@ -1929,6 +1929,16 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - 引用完整性两层核验：文献真实性（外部学术库确定性核验，NOT_FOUND≠捏造≠
   检索失败）与 (claim,citation) 语义核验（模型禁止凭记忆、证据引文逐字校验、
   severity 确定性派生）；Citation Integrity 规则并入 Quality Gate
+- **语义核验可配置（CitationSemanticMode，2026-09-08）**：Layer 1 真实性 /
+  metadata 核验**始终执行、不可关闭**；Layer 2 语义核验按 Review Run 配置——
+  `off`（新 Review 缺省：不进入 citation.claims stage，语义模型调用 0）、
+  `contradiction_only`（仅检查明显矛盾，verdict 只有 CONTRADICTED /
+  NO_CONTRADICTION_DETECTED，无证据 → SKIPPED 而非 INSUFFICIENT_EVIDENCE）、
+  `full`（完整逐条核验，旧行为）。模式随 run request 持久化并写入每轮报告，
+  off 轮不携带语义统计（历史轮记录不污染本轮）；Quality Gate 的语义类规则
+  仅在 mode ≠ off 时参与。UI 入口在「开始 Review」高级选项（默认关闭）与
+  导入页高级选项；off 轮报告提供低权重「进行语义核验」入口（引用核验面板
+  手动补跑，不重跑 Review）。旧持久化 run（无该字段）按 full 解释。
 - Skill Registry（审计 seed + pin revision + LICENSE/PROVENANCE，按角色注入
   Pi 会话；首批 verify-citations 与 paper-search 两项 MIT Academic Skill；
   中文简介一次生成持久化）；受控 search_papers / lookup_paper 工具
