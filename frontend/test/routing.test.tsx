@@ -75,8 +75,9 @@ describe("routing", () => {
     renderAt("/projects");
     expect(await screen.findByText("PaperTeam")).toBeInTheDocument();
     const chip = await screen.findByTestId("runtime-chip");
-    expect(chip).toHaveTextContent("Pi Runtime 0.84.4");
-    expect(chip).toHaveTextContent("模型已配置");
+    expect(chip).toHaveTextContent("研究环境就绪");
+    expect(chip).toHaveAttribute("title", expect.stringContaining("Pi Runtime 0.84.4"));
+
   });
 
   it("Brand：PaperTeam 是返回论文项目的主页入口；不再出现 Research Workbench", async () => {

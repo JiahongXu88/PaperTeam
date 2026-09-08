@@ -1,3 +1,4 @@
+import { PaperPreview } from "./PaperPreview.js";
 import { useRef, useState } from "react";
 
 import { ErrorState, Loading } from "../common/StateViews.js";
@@ -135,6 +136,7 @@ export function PdfPanel({ projectId }: { projectId: string }) {
     <div className="doc-grid">
       <aside className="doc-info aside-card" aria-label="文档信息">
         <h2 className="aside-title">源文档</h2>
+        <PaperPreview title={document.title ?? document.originalFileName} />
         {document.title !== undefined ? <p className="doc-info-title reading">{document.title}</p> : null}
         <p className="doc-info-file">
           <span className="mono">{document.originalFileName}</span>

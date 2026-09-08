@@ -4,13 +4,13 @@ import { resolve } from "node:path";
 import { expect, primeTheme, RESOLUTIONS, test, THEMES } from "./fixtures.js";
 
 /**
- * 视觉走查：主要页面 × 4 种视口 × 浅色 / 深色 截图到 e2e/shots/（gitignore）。
+ * 视觉走查：主要页面 × 5 种视口 × 浅色 / 深色，截图目录可通过环境变量指定。
  * 同时做两条硬断言：无水平溢出、深色主题真实生效（不是 filter/invert）。
  *
  * 需要一个已存在的项目；用 PAPERTEAM_E2E_PROJECT_ID 指定，否则取列表第一个（没有则只截无项目页面）。
  */
 
-const SHOTS_DIR = resolve(import.meta.dirname, "..", "shots");
+const SHOTS_DIR = process.env.PAPERTEAM_E2E_SHOTS_DIR ?? resolve(import.meta.dirname, "..", "shots");
 
 async function firstProjectId(request: Parameters<Parameters<typeof test>[2]>[0]["request"]): Promise<string | null> {
   const fromEnv = process.env.PAPERTEAM_E2E_PROJECT_ID;

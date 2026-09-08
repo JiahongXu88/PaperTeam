@@ -21,6 +21,7 @@ export function resolvePdfPath(): string {
 export const RESOLUTIONS = [
   { name: "1366x768", width: 1366, height: 768 },
   { name: "1440x900", width: 1440, height: 900 },
+  { name: "1536x1024", width: 1536, height: 1024 },
   { name: "1920x1080", width: 1920, height: 1080 },
   { name: "1100w", width: 1100, height: 800 },
 ] as const;

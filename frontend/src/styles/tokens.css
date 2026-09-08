@@ -11,7 +11,7 @@
 
 :root {
   /* ---- 背景 / 表面 ---- */
-  --bg-app: #f4f3f0; /* 应用底：偏暖浅灰 */
+  --bg-app: #f3f4f6; /* 应用底：偏暖浅灰 */
   --bg-surface: #ffffff; /* 卡片、面板、输入框 */
   --bg-surface-muted: #f6f6f4; /* 卡片内的次级块（建议框、hover 行） */
   --bg-surface-sunken: #eeeeeb; /* 下沉：进度条轨道、禁用输入 */
@@ -21,7 +21,7 @@
   --bg-selected: #fdefe9; /* 主强调色的选中底 */
 
   /* ---- 侧栏（Light / Dark 都是深色） ---- */
-  --bg-sidebar: #26272c;
+  --bg-sidebar: #2a303a;
   --bg-sidebar-hover: rgba(255, 255, 255, 0.06);
   --bg-sidebar-active: rgba(255, 255, 255, 0.1);
   --border-sidebar: rgba(255, 255, 255, 0.08);
@@ -32,7 +32,7 @@
   /* ---- 文字 ---- */
   --text-primary: #1b1d23;
   --text-secondary: #4a4f5c;
-  --text-muted: #767b88;
+  --text-muted: #6e798c;
   --text-faint: #a2a6b0;
   --text-on-accent: #ffffff;
 
@@ -74,7 +74,7 @@
   --sev-info-soft: var(--info-soft);
 
   /* ---- 字体 ---- */
-  --font-ui: "Inter", -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-ui: "Segoe UI", "Microsoft YaHei", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", Consolas, "Cascadia Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
 
   /* ---- 字号 / 行高 ---- */
@@ -105,7 +105,7 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
-  --r-xl: 18px;
+  --r-xl: 12px;
   --r-pill: 999px;
   --shadow-card: 0 1px 2px rgba(20, 22, 30, 0.04), 0 4px 16px rgba(20, 22, 30, 0.04);
   --shadow-pop: 0 8px 28px rgba(20, 22, 30, 0.14), 0 2px 6px rgba(20, 22, 30, 0.08);
@@ -114,26 +114,37 @@
   --t-med: 180ms ease;
 
   /* ---- 结构 ---- */
-  --sidebar-w: 248px;
-  --aside-w: 280px;
+  --sidebar-w: 232px;
+  --aside-w: 270px;
   --content-max: 1600px;
   --gutter-w: 52px; /* 左侧数字栏位：参考文献编号 / 页码 */
   --focus-ring: 0 0 0 2px var(--bg-surface), 0 0 0 4px var(--accent-primary);
 
+  --brand-landscape: url("../assets/brand/mountain-light.png");
+  --brand-landscape-opacity: .54;
+  --brand-card-image: url("../assets/brand/mountain-dark.png");
+  --paper-bg: #fffefa;
+  --paper-ink: #4d5765;
+  --paper-line: #b5bcc4;
+  --paper-stage: #e7ebef;
+  --brand-orb: linear-gradient(125deg, #ffdf9c, #ff976a 48%, #ff614b);
+  --surface-glow: rgba(255,255,255,.62);
+  --brand-warm: rgba(247,119,58,.1);
+  --shadow-paper: 0 12px 22px rgba(24,36,55,.16), 0 1px 3px rgba(24,36,55,.12);
   color-scheme: light;
 }
 
 [data-theme="dark"] {
-  --bg-app: #0f1116;
-  --bg-surface: #171b23;
-  --bg-surface-muted: #1e232d;
+  --bg-app: #10171e;
+  --bg-surface: #192129;
+  --bg-surface-muted: #202a34;
   --bg-surface-sunken: #12151c;
   --bg-surface-elevated: #1d222c;
   --bg-input: #12161d;
   --bg-hover: rgba(255, 255, 255, 0.05);
   --bg-selected: #33221b;
 
-  --bg-sidebar: #12161e;
+  --bg-sidebar: #18212a;
   --bg-sidebar-hover: rgba(255, 255, 255, 0.05);
   --bg-sidebar-active: rgba(255, 255, 255, 0.08);
   --border-sidebar: rgba(255, 255, 255, 0.07);
@@ -143,12 +154,12 @@
 
   --text-primary: #e8eaf0;
   --text-secondary: #aab0bd;
-  --text-muted: #7b8291;
-  --text-faint: #565c69;
+  --text-muted: #98a4b4;
+  --text-faint: #738094;
   --text-on-accent: #ffffff;
 
-  --border-default: #262c37;
-  --border-subtle: #1f242e;
+  --border-default: #303b47;
+  --border-subtle: #26313c;
   --border-strong: #343b48;
 
   --accent-primary: #f2652f;
@@ -174,5 +185,11 @@
   --shadow-pop: 0 10px 32px rgba(0, 0, 0, 0.6), 0 2px 6px rgba(0, 0, 0, 0.4);
   --shadow-accent: 0 6px 18px rgba(242, 101, 47, 0.32);
 
+  --brand-landscape: url("../assets/brand/mountain-dark.png");
+  --brand-landscape-opacity: .60;
+  --paper-stage: #222d38;
+  --surface-glow: rgba(184,205,230,.025);
+  --brand-warm: rgba(247,119,58,.08);
+  --shadow-card: 0 4px 18px rgba(0,0,0,.10);
   color-scheme: dark;
 }

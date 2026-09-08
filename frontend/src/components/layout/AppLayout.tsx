@@ -169,10 +169,12 @@ export function AppLayout() {
         </nav>
         <SidebarRecent />
         <div className="sidebar-footer">
-          <RuntimeStatusChip />
+          <div className="sidebar-brand-card" aria-hidden="true"><span>Better<br />Research<br />Higher Impact</span><small>探索，从未止步。</small></div>
+          <div className="sidebar-bottom"><RuntimeStatusChip /><Link to="/settings/appearance" aria-label="外观设置"><Icon name="gear" /></Link></div>
         </div>
       </aside>
-      <div className="app-body">
+      <div className={`app-body${location.pathname === "/projects" ? " app-body-home" : ""}`}>
+        <div className="workspace-landscape" aria-hidden="true"><span>Better Research<br />Higher Impact</span></div>
         <header className="topbar">
           <TopbarBreadcrumb />
           <div className="topbar-actions">

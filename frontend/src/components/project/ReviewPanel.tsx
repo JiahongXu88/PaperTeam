@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { Icon, type IconName } from "../common/Icon.js";
@@ -110,17 +110,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
   const modelNotConfigured = runtimeStatus.data?.model.phase === "not_configured";
   const hasReport = report.data !== null && report.data !== undefined;
 
-  return (
-    <section className="review-panel" data-testid="review-panel">
-      <div className="review-intro">
-        <div className="review-intro-text">
-          <div className="review-intro-title">
-            <h2>快速 Review</h2>
-            {reviewRun !== undefined ? <RunStatusBadge status={reviewRun.status} /> : null}
-          </div>
-          <p className="panel-sub">只读分析：引用真实性核验 → 论断与引用一致性 → 分章节审阅 → Review 报告。不修改论文正文。</p>
-        </div>
-        {!active ? (
+  const actions = !active ? (
           <div className="action-row">
             {hasReport ? (
               <button
@@ -146,8 +136,20 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
               {startReview.isPending ? "启动中…" : hasReport ? "重新 Review" : "开始 Review"}
             </button>
           </div>
-        ) : null}
-      </div>
+        ) : null;
+
+  return (
+    <section className="review-panel" data-testid="review-panel">
+      {!hasReport && <div className="review-intro">
+        <div className="review-intro-text">
+          <div className="review-intro-title">
+            <h2>快速 Review</h2>
+            {reviewRun !== undefined ? <RunStatusBadge status={reviewRun.status} /> : null}
+          </div>
+          <p className="panel-sub">只读分析：引用真实性核验 → 论断与引用一致性 → 分章节审阅 → Review 报告。不修改论文正文。</p>
+        </div>
+        {actions}
+      </div>}
 
       {active && reviewRun !== undefined ? <RunProgress run={reviewRun} /> : null}
 
@@ -178,7 +180,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
       ) : null}
 
       {hasReport && report.data !== null && report.data !== undefined ? (
-        <ReportBlock report={report.data} sections={paper.data?.sections ?? []} onOpenTab={onOpenTab} />
+        <ReportBlock actions={actions} report={report.data} sections={paper.data?.sections ?? []} onOpenTab={onOpenTab} />
       ) : !active ? (
         <p className="panel-empty">{reviewRun?.status === "completed" ? "Review 已完成，正在载入报告…" : "尚未开始 Review。"}</p>
       ) : null}
@@ -207,7 +209,8 @@ function RunFailure({ run }: { run: WorkflowRunView }) {
 
 /** 进度环：value / total，中心显示数字与说明 */
 function ProgressRing({ value, total, caption }: { value: number; total: number; caption: string }) {
-  const size = 112;
+  const gradientId = useId();
+  const size = 128;
   const stroke = 12;
   const radius = (size - stroke) / 2;
   const circumference = 2 * Math.PI * radius;
@@ -215,9 +218,11 @@ function ProgressRing({ value, total, caption }: { value: number; total: number;
   return (
     <div className="ring" role="img" aria-label={`${caption} ${value} / ${total}`}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+        <defs><linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="var(--accent-primary)" /><stop offset="100%" stopColor="var(--warning)" /></linearGradient></defs>
         <circle className="ring-track" cx={size / 2} cy={size / 2} r={radius} fill="none" strokeWidth={stroke} />
         <circle
           className="ring-value"
+          style={{ stroke: `url(#${gradientId})` }}
           cx={size / 2}
           cy={size / 2}
           r={radius}
@@ -284,10 +289,12 @@ function matchesQuery(finding: ReviewFindingView, query: string, sectionTitle: s
 }
 
 function ReportBlock({
+  actions,
   report,
   sections,
   onOpenTab,
 }: {
+  actions: ReactNode;
   report: ExistingReviewReportView;
   sections: PaperSectionView[];
   onOpenTab: (tab: "pdf" | "citations") => void;
@@ -334,6 +341,7 @@ function ReportBlock({
       <div className="review-summary">
         <ProgressRing value={review.sectionsReviewed} total={review.sectionsTotal} caption="章节完成" />
         <div className="review-summary-text">
+          <span className="status status-tone-ok">审阅报告已生成</span>
           <span className="review-summary-scope">
             已审阅 {review.sectionsReviewed} / {review.sectionsTotal} 节
             {(review.skippedSections ?? 0) + (review.failedSections ?? 0) > 0
@@ -358,6 +366,7 @@ function ReportBlock({
               </>
             ) : null}
           </span>
+          <div className="review-summary-actions">{actions}</div>
         </div>
         <div className="review-summary-stats">
           <div className="review-stat-grid">

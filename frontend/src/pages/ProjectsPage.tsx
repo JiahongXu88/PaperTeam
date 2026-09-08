@@ -1,3 +1,4 @@
+import { RecentActivity } from "../components/project/ProjectInsights.js";
 import { Link } from "react-router-dom";
 
 import { EmptyState, ErrorState, Loading } from "../components/common/StateViews.js";
@@ -13,13 +14,13 @@ export function ProjectsPage() {
   const failedCount = data?.filter((project) => project.status === "failed").length ?? 0;
 
   return (
-    <section className="page">
+    <section className="page research-home">
       <PageHeader
         title="论文项目"
         sub={
           data !== undefined && data.length > 0 ? (
             <>
-              共 {data.length} 个项目
+              让每一次审阅，都推动研究向前。共 {data.length} 个项目
               {failedCount > 0 ? <span className="page-sub-warn">，{failedCount} 个上次任务失败</span> : null}
             </>
           ) : (
@@ -53,8 +54,19 @@ export function ProjectsPage() {
           </Link>
         </EmptyState>
       ) : (
-        <div className="project-list">
-          {data?.map((project) => <ProjectRow key={project.id} project={project} />)}
+        <div className="home-layout">
+          <div className="home-projects">
+            <div className="section-head"><h2>继续工作</h2><span className="section-note">最近更新的论文</span></div>
+            <div className="project-list">{data?.map((project, index) => <div key={project.id} className={index === 0 ? "home-current" : "home-recent"}>{index === 1 && <h2 className="home-recent-heading">最近项目</h2>}<ProjectRow project={project} /></div>)}</div>
+            <div className="home-entry-grid">
+              <Link to="/projects/new" className="home-entry"><Icon name="upload" /><h3>让论文更进一步</h3><p>导入 PDF，梳理结构、核验引用、获取审阅建议。</p><span>导入或创建论文 <Icon name="chevron-right" /></span></Link>
+              <Link to="/skills" className="home-entry"><Icon name="layers" /><h3>研究能力，随时就绪</h3><p>了解 Agent 使用的 Skill，让调研与审阅各有所长。</p><span>浏览 Skills <Icon name="chevron-right" /></span></Link>
+            </div>
+          </div>
+          <div className="home-support">
+            <div className="home-brand" aria-hidden="true"><span>Better Research<br />Higher Impact</span><small>从每一个值得追问的问题开始。</small></div>
+            {data?.[0] && <RecentActivity projectId={data[0].id} createdAt={data[0].createdAt} />}
+          </div>
         </div>
       )}
     </section>

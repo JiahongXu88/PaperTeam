@@ -1,3 +1,4 @@
+import { PaperPreview } from "./PaperPreview.js";
 import { Link } from "react-router-dom";
 
 import { Icon } from "../common/Icon.js";
@@ -92,6 +93,7 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
             </span>
           </div>
         </div>
+        {hasDoc && <PaperPreview title={doc.title ?? project.title} />}
         <dl className="info-rows">
           {hasDoc ? (
             <>
@@ -126,6 +128,7 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
           <dt>更新时间</dt>
           <dd>{formatDateTime(project.updatedAt) ?? "—"}</dd>
         </dl>
+        {hasDoc && <button type="button" className="btn btn-primary btn-block" onClick={() => onOpenTab("pdf")}><Icon name="book" />查看论文结构</button>}
         {!paper.isPending && !hasDoc ? (
           <button type="button" className="btn btn-primary btn-block" onClick={() => onOpenTab("pdf")}>
             <Icon name="upload" />
