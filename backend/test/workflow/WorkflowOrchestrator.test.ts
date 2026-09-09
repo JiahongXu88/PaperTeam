@@ -460,6 +460,70 @@ describe("WorkflowOrchestrator：HITL awaiting_input 与 resume", () => {
       { code: "WORKFLOW_INVALID_STATE" },
     );
   });
+
+  it("并发 double resume：恰好一个成功，另一个 409；awaiting 全程至多一个", async () => {
+    // onInput 慢速（await 一个受控 promise）：两个 resume 在 awaiting_input 上并发发出
+    let releaseInput: (() => void) | undefined;
+    const slowDefinition = (): WorkflowDefinition => {
+      const stages: StageSpec[] = [
+        {
+          id: "hitl.gate",
+          description: "确认后继续",
+          requiredInputs: [],
+          producedOutputs: ["decision"],
+          hitl: { prompt: "请确认", options: ["approve", "cancel"] },
+        },
+        stepStage("after"),
+      ];
+      return {
+        kind: "idea_to_paper",
+        description: "慢速 onInput 的 HITL workflow",
+        stages,
+        plan(state) {
+          if ("after" in state.stageResults) {
+            return { kind: "complete", label: "draft", summary: {} };
+          }
+          if ("hitl.gate" in state.stageResults) {
+            return { kind: "stage", stageId: "after" };
+          }
+          return { kind: "stage", stageId: "hitl.gate" };
+        },
+        async onInput(state, stageId, input) {
+          if (input.decision !== "approve") {
+            throw new WorkflowInvalidStateError(state.runId, state.status, `decision=${input.decision}`);
+          }
+          await new Promise<void>((resolve) => {
+            releaseInput = resolve;
+          });
+          state.stageResults[stageId] = { decision: input.decision };
+        },
+      };
+    };
+    const harness = await createHarness(slowDefinition);
+    const run = await harness.orchestrator.createRun(harness.projectId, "idea_to_paper");
+    const awaiting = await waitForStatus(harness.orchestrator, run.runId, ["awaiting_input"]);
+
+    // invariant：单 active HITL —— checkpoint 的 awaiting 字段唯一且指向当前节点
+    expect(awaiting.awaiting?.stageId).toBe("hitl.gate");
+
+    const first = harness.orchestrator.resume(run.runId, { decision: "approve" });
+    // 微任务让第一个 resume 进入 onInput（置 resuming=true）后再发第二个
+    await delay(5);
+    const second = harness.orchestrator.resume(run.runId, { decision: "approve" });
+    await expect(second).rejects.toMatchObject({ code: "WORKFLOW_INVALID_STATE" });
+
+    releaseInput?.();
+    const resumed = await first;
+    expect(resumed.status).toBe("running");
+    await waitForStatus(harness.orchestrator, run.runId, ["completed"]);
+
+    // 只推进了一次：workflow.resumed 事件与 inputs 记录都只有一份
+    const { events } = await harness.orchestrator.readEvents(run.runId);
+    expect(events.filter((event) => event.type === "workflow.resumed")).toHaveLength(1);
+    const finished = await harness.orchestrator.getRun(run.runId);
+    expect(finished.inputs["hitl.gate"]?.decision).toBe("approve");
+    expect(finished.completedStages).toEqual(["hitl.gate", "after"]);
+  });
 });
 
 describe("WorkflowOrchestrator：取消", () => {

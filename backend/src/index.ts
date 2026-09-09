@@ -5,6 +5,7 @@ import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
+import { createScriptedRuntime } from "./runtime/scriptedRuntime.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { CustomProviderStore } from "./settings/CustomProviderStore.js";
@@ -42,6 +43,11 @@ export async function startBackend(): Promise<void> {
 
   loadDotEnvBestEffort();
 
+  // 测试专用 seam：PAPERTEAM_TEST_RUNTIME=scripted 时用确定性脚本 Runtime 替换
+  // PiRuntimeAdapter（浏览器级 E2E 驱动完整真实链路：编排器 / checkpoint / SSE /
+  // HTTP / React 全部真实，只有「模型输出」是脚本）。正式环境不设置该变量。
+  const useScriptedRuntime = process.env["PAPERTEAM_TEST_RUNTIME"]?.trim() === "scripted";
+
   let config;
   try {
     config = loadConfig();
@@ -53,6 +59,9 @@ export async function startBackend(): Promise<void> {
   }
 
   console.log(`  env:          ${config.env}`);
+  if (useScriptedRuntime) {
+    console.log(`  runtime:      SCRIPTED（PAPERTEAM_TEST_RUNTIME=scripted，测试专用：不访问任何模型）`);
+  }
   console.log(`  runtime:      pi（in-process，@earendil-works/pi-coding-agent）`);
   console.log(`  pi:           model=${config.pi.model ?? "(未配置)"} agentDir=${config.pi.agentDir}`);
   console.log(`  projectsRoot: ${config.projectsRoot}`);
@@ -95,20 +104,25 @@ export async function startBackend(): Promise<void> {
   if (customProviderCount > 0) {
     console.log(`  providers:    ${customProviderCount} 个自定义提供商已注入 Runtime`);
   }
-  const runtime = new PiRuntimeAdapter({
-    ...(effectiveModelSpec !== undefined ? { modelSpec: effectiveModelSpec } : {}),
-    ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
-    agentDir: config.pi.agentDir,
-    workspaceRoot: config.projectsRoot,
-    runTimeoutMs: config.pi.runTimeoutMs,
-    modelRuntime,
-    // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
-    roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),
-    roleCustomTools: (role) =>
-      (role === "researcher" || role === "citation") && stackRef !== undefined
-        ? createScholarlyTools(stackRef.citationIntegrity.scholarlyResolver)
-        : [],
-  });
+  // scripted 实现含 no-op reconfigure / unknown 模型状态；两边都满足
+  // AgentRuntime ∩ ModelSettingsRuntime，下游（服务栈 / Settings）无需感知差异
+  const runtime: AgentRuntime & import("./settings/ModelSettingsService.js").ModelSettingsRuntime =
+    useScriptedRuntime
+      ? createScriptedRuntime().runtime
+      : new PiRuntimeAdapter({
+          ...(effectiveModelSpec !== undefined ? { modelSpec: effectiveModelSpec } : {}),
+          ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
+          agentDir: config.pi.agentDir,
+          workspaceRoot: config.projectsRoot,
+          runTimeoutMs: config.pi.runTimeoutMs,
+          modelRuntime,
+          // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
+          roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),
+          roleCustomTools: (role) =>
+            (role === "researcher" || role === "citation") && stackRef !== undefined
+              ? createScholarlyTools(stackRef.citationIntegrity.scholarlyResolver)
+              : [],
+        });
 
   const projects = new ProjectStore({ root: config.projectsRoot });
   const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
@@ -139,23 +153,26 @@ export async function startBackend(): Promise<void> {
   const importer = new LatexImporter({ projects, latex, log: (message) => console.log(message) });
   stackRef = stack;
 
-  // 中文简介：模型可用时补齐（一次生成、持久化；失败保持 summary_pending）
+  // 中文简介：模型可用时补齐（一次生成、持久化；失败保持 summary_pending）。
+  // scripted 测试栈跳过（输出无意义且会污染 skill store）
   const skillSummaries = new SkillSummaryService({
     registry: skillRegistry,
     runtime,
     agentId: config.agents.researcher,
     log: (message) => console.log(message),
   });
-  void skillSummaries
-    .generateMissing()
-    .then(({ generated, failed }) => {
-      if (generated.length > 0 || failed.length > 0) {
-        console.log(
-          `  skills:       中文简介 generated=${generated.length} pending=${failed.length}`,
-        );
-      }
-    })
-    .catch(() => {});
+  if (!useScriptedRuntime) {
+    void skillSummaries
+      .generateMissing()
+      .then(({ generated, failed }) => {
+        if (generated.length > 0 || failed.length > 0) {
+          console.log(
+            `  skills:       中文简介 generated=${generated.length} pending=${failed.length}`,
+          );
+        }
+      })
+      .catch(() => {});
+  }
 
   const health = await runtime.healthCheck();
   reportRuntimeHealth(health);

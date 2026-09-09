@@ -19,6 +19,7 @@ vi.mock("../src/api/runs.js", () => ({
   listProjectRuns: vi.fn(),
   cancelWorkflowRun: vi.fn(),
   createWorkflowRun: vi.fn(),
+  resumeWorkflowRun: vi.fn(),
 }));
 
 vi.mock("../src/api/paper.js", () => ({
@@ -152,7 +153,7 @@ describe("WorkflowPanel 终态", () => {
     expect(failed).toHaveTextContent("重新开始");
   });
 
-  it("awaiting_input：等待确认 + 提示 + 下一阶段说明 + 取消入口", async () => {
+  it("awaiting_input：HITL 决策面板 + 时间线等待确认（M4.5）", async () => {
     mockRuns([
       runFixture({
         workflowKind: "idea_to_paper",
@@ -164,11 +165,11 @@ describe("WorkflowPanel 终态", () => {
       }),
     ]);
     renderWithProviders(<WorkflowPanel projectId="p-flow0001" onOpenTab={noop} connection="open" />);
-    const awaiting = await screen.findByTestId("workflow-awaiting");
-    expect(awaiting).toHaveTextContent("任务正在等待你的确认");
-    expect(awaiting).toHaveTextContent("可行性评估完成，请确认");
-    expect(awaiting).toHaveTextContent("下一阶段");
-    expect(screen.getByTestId("cancel-run-awaiting")).toBeEnabled();
+    const hitl = await screen.findByTestId("hitl-panel");
+    expect(hitl).toHaveTextContent("等待你的确认");
+    expect(hitl).toHaveTextContent("可行性评估完成，请确认");
+    expect(hitl).toHaveTextContent("等待确认可行性");
+    expect(screen.getByTestId("hitl-approve")).toBeEnabled();
     const timeline = screen.getByTestId("stage-timeline");
     expect(timeline.querySelector('[data-stage="hitl.feasibility_confirm"]')?.getAttribute("data-stage-state")).toBe("awaiting");
   });
