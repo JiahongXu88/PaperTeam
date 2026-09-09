@@ -332,3 +332,67 @@ describe("ReviewPanel 导出报告", () => {
     expect(screen.queryByTestId("export-report")).toBeNull();
   });
 });
+
+describe("引用组与视觉分级（v4 记录形态 / v5 语义收口）", () => {
+  it("引用组记录：组 chip（rawText 不丢失）+ 共同承担 + 排除成员 + 来源句折叠", async () => {
+    mockPanelData([
+      claim({
+        claimCitationId: "CT009-AC1",
+        citationId: "CT009",
+        referenceId: "R001",
+        referenceIds: ["R001", "R002"],
+        groupRawText: "[1, 2]",
+        claimText: "门控 RNN 在序列转导任务上达到先进水平。",
+        sourceSentence: "The RNN approaches [1, 2] achieved state of the art.",
+        page: 3,
+        verdict: "PARTIALLY_SUPPORTED",
+        reason: "组证据支撑了一部分",
+        excludedReferenceIds: ["R002"],
+      }),
+      claim({}),
+    ]);
+    renderWithProviders(<CitationsPanel projectId="p-s1" />);
+
+    const section = await screen.findByTestId("semantic-claims");
+    const chip = within(section).getByTestId("citation-group-chip");
+    expect(chip.textContent).toContain("[1, 2]");
+    expect(chip.textContent).toContain("共同核验");
+    const row = chip.closest("article")!;
+    expect(within(row).getByText(/2 篇共同承担支撑责任/)).toBeInTheDocument();
+    expect(within(row).getByText(/未参与核验/)).toBeInTheDocument();
+
+    // 来源句（含引用标记）折叠区
+    fireEvent.click(within(row).getByText("来源句（含引用标记）"));
+    expect(within(row).getByText(/achieved state of the art/)).toBeInTheDocument();
+  });
+
+  it("视觉分级：UNSUPPORTED 是 danger 药丸，INSUFFICIENT_EVIDENCE 是中性药丸且弱于问题级", async () => {
+    mockPanelData([
+      claim({ claimCitationId: "CT010-R001", citationId: "CT010", page: 1, verdict: "UNSUPPORTED", reason: "证据不足以下此论断" }),
+      claim({
+        claimCitationId: "CT011-R001",
+        citationId: "CT011",
+        page: 2,
+        verdict: "INSUFFICIENT_EVIDENCE",
+        reasonCode: "NO_EVIDENCE",
+      }),
+    ]);
+    renderWithProviders(<CitationsPanel projectId="p-s1" />);
+
+    const section = await screen.findByTestId("semantic-claims");
+    const rows = within(section).getAllByTestId("claim-row");
+    const unsupportedRow = rows.find((row) => within(row).queryByText("不支持") !== null)!;
+    const insufficientRow = rows.find((row) => within(row).queryByText("无法自动判断") !== null)!;
+
+    const dangerBadge = within(unsupportedRow).getByText("不支持").closest(".status")!;
+    expect(dangerBadge.className).toContain("status-tone-danger");
+
+    // INSUFFICIENT_EVIDENCE 绝不进入 danger/warn 的问题级视觉，只有中性
+    const neutralBadge = within(insufficientRow).getByText("无法自动判断").closest(".status")!;
+    expect(neutralBadge.className).toContain("status-tone-neutral");
+    expect(neutralBadge.className).not.toContain("status-tone-danger");
+    expect(neutralBadge.className).not.toContain("status-tone-warn");
+    // tooltip 明示「不是论文问题」
+    expect(neutralBadge.getAttribute("title")).toContain("不代表引用存在错误");
+  });
+});
