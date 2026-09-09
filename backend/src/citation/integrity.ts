@@ -40,14 +40,17 @@ export interface ReferenceEntry {
 }
 
 /**
- * 正文引用标记（callout）。
- * [4-7] / [2,3] 展开为 references[] 多条 relation，不保留区间字符串。
+ * 正文引用标记（callout）。一个 callout = 一次方括号/圆括号引用 = 一个 citation
+ * group：[35, 2, 5] 是「三篇文献共同支撑紧邻论断」的一个组，不是三条独立引用。
+ * range 展开进 references[]，rawText 保留原始标记（组信息不丢失）。
  */
 export interface CitationCallout {
   citationId: string;
   style: "numeric" | "author-year";
   /** 展开后的每个被引用对象一条 relation；无法可靠关联 → status=unresolved（不猜） */
   references: CitationCalloutReference[];
+  /** 原始标记文本（如 "[35, 2, 5]" / "(Vaswani et al., 2017)"）；v3 前的旧记录无此字段 */
+  rawText?: string;
   page: number;
   sectionId: string;
   chunkId: string;
@@ -235,32 +238,63 @@ export type ClaimCitationStatus = "pending" | "verified" | "skipped" | "failed";
  *   REFERENCE_UNVERIFIED 文献真实性未确立（NOT_FOUND/PROVIDER_ERROR 等），语义核验跳过
  *   LOW_RELEVANCE        现有证据与 claim 相关性不足（预留：相关性打分）
  */
+/**
+ * 证据不足 / 跳过的结构化原因（有限枚举，UI 可按类别解释；不做自由文本归因）：
+ *   NO_EVIDENCE            只获取到书目 metadata，没有摘要/正文/仓库描述等可判证据
+ *   ABSTRACT_ONLY          只有 abstract（或 repository 描述）级证据，claim 超出其支持范围
+ *   FULLTEXT_UNAVAILABLE   全文无法获取（预留：fulltext 证据链路）
+ *   PROVIDER_ERROR         模型 / 检索 provider 查询失败
+ *   REFERENCE_UNVERIFIED   文献真实性未确立（NOT_FOUND/PROVIDER_ERROR 等），语义核验跳过
+ *   LOW_RELEVANCE          现有证据与 claim 相关性不足（预留：相关性打分）
+ *   UNQUOTED_CONTRADICTION judge 判 CONTRADICTED 但引不出逐字反向引文——矛盾结论
+ *                          不可采信，确定性降级为 INSUFFICIENT_EVIDENCE
+ */
 export type InsufficientReasonCode =
   | "NO_EVIDENCE"
   | "ABSTRACT_ONLY"
   | "FULLTEXT_UNAVAILABLE"
   | "PROVIDER_ERROR"
   | "REFERENCE_UNVERIFIED"
-  | "LOW_RELEVANCE";
+  | "LOW_RELEVANCE"
+  | "UNQUOTED_CONTRADICTION";
 
-/** 一条 (claim, citation) 语义核验记录（同文献多处被引 = 多条记录） */
+/**
+ * 一条 (atomic claim, citation group) 语义核验记录。
+ *
+ * 记录粒度 = 原子论断 × 引用组（v4 起）：一个引用组（如 [35, 2, 5]）对一条
+ * 原子论断产生一条记录，组内成员在 referenceIds 中共同承担支撑责任；
+ * 不再是「句子 × 每篇文献」的笛卡尔积——不要求组内每篇单独覆盖整个论断。
+ * referenceId 保留为首成员（anchor，兼容旧 UI / 导出定位）。
+ */
 export interface ClaimCitationRecord {
   claimCitationId: string;
+  /** 引用组锚点 callout（组的 citationId） */
   citationId: string;
+  /** anchor 成员（referenceIds[0]；兼容单引用展示） */
   referenceId: string;
-  /** 正文论断（callout 所在句子） */
+  /** 引用组全部成员（共同支撑；单引用 = 长度 1） */
+  referenceIds: string[];
+  /** 原始引用标记（如 "[35, 2, 5]"；旧记录缺省 = 单引用） */
+  groupRawText?: string;
+  /** 该论断在句内拆解后的序号（1 起；单论断句子为 1） */
+  claimIndex?: number;
+  /** 原子论断（可独立判断真假的单一命题；拆解自 callout 所在句子） */
   claimText: string;
+  /** 拆解来源句（展示/追溯用；marker 原样） */
+  sourceSentence?: string;
   sectionId: string;
   page: number;
   chunkId: string;
   priority: ClaimPriority;
-  /** 前置 Layer 1 结论快照（NOT_FOUND/PROVIDER_ERROR 等 → semantic SKIPPED） */
+  /** 前置 Layer 1 结论快照（anchor 成员；NOT_FOUND/PROVIDER_ERROR 等 → semantic SKIPPED） */
   metadataStatus: CitationMetadataStatus | "SKIPPED_NO_METADATA";
   verdict: ClaimSupportVerdict;
   reason?: string;
   /** INSUFFICIENT_EVIDENCE / SKIPPED / failed 的结构化原因（有限枚举） */
   reasonCode?: InsufficientReasonCode;
   evidence: EvidenceRecord[];
+  /** 组内被排除出证据的成员（真实性未确立 / 无摘要），追溯用 */
+  excludedReferenceIds?: string[];
   /** 确定性派生（deriveClaimSeverity），模型不凭感觉定级 */
   severity: FindingSeverity;
   status: ClaimCitationStatus;
@@ -268,8 +302,10 @@ export interface ClaimCitationRecord {
   model?: string;
   error?: string;
   verifiedAt?: string;
-  /** 输入指纹（claim+reference canonical 指纹） */
+  /** 输入指纹（atomic claim + 引用组 canonical 指纹 + 模式） */
   fingerprint: string;
+  /** 写入时的语义核验算法版本（SEMANTIC_VERIFICATION_VERSION；旧版本记录视为过期缓存） */
+  semanticVersion?: number;
 }
 
 // ---- 确定性 severity 派生（RefWarden derive_severity 规则适配） ----
@@ -281,7 +317,8 @@ export interface ClaimCitationRecord {
  *   UNSUPPORTED/CONTRADICTED + helpful      → minor
  *   PARTIALLY_SUPPORTED + obligatory       → major
  *   PARTIALLY_SUPPORTED + helpful          → minor
- *   INSUFFICIENT_EVIDENCE                  → minor（不等于捏造；要求补证据/人工复核）
+ *   INSUFFICIENT_EVIDENCE                  → info（自动核验无法判断 ≠ 论文问题，
+ *                                          不构成任何级别的论文 Finding，仅诊断展示）
  *   SUPPORTED / SKIPPED /
  *   NO_CONTRADICTION_DETECTED              → info（不构成问题）
  */
@@ -298,9 +335,6 @@ export function deriveClaimSeverity(input: {
   }
   if (input.verdict === "PARTIALLY_SUPPORTED") {
     return input.priority === "obligatory" ? "major" : "minor";
-  }
-  if (input.verdict === "INSUFFICIENT_EVIDENCE") {
-    return "minor";
   }
   return "info";
 }

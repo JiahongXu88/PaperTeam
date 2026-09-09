@@ -38,7 +38,7 @@ const VERDICT_LABELS: Record<string, string> = {
   PARTIALLY_SUPPORTED: "部分支持",
   UNSUPPORTED: "不支持",
   CONTRADICTED: "存在矛盾",
-  INSUFFICIENT_EVIDENCE: "证据不足",
+  INSUFFICIENT_EVIDENCE: "无法自动判断（证据不足）",
   SKIPPED: "跳过",
   NO_CONTRADICTION_DETECTED: "未发现明显矛盾",
 };
@@ -74,6 +74,7 @@ const REASON_CODE_LABELS: Record<string, string> = {
   PROVIDER_ERROR: "模型/检索 provider 查询失败",
   REFERENCE_UNVERIFIED: "文献真实性未确立，语义核验跳过",
   LOW_RELEVANCE: "现有证据与论断相关性不足",
+  UNQUOTED_CONTRADICTION: "judge 判矛盾但引不出逐字反向引文，矛盾结论不可采信",
 };
 
 const EVIDENCE_LEVEL_LABELS: Record<string, string> = {
@@ -379,7 +380,10 @@ export class ReviewReportExporter {
         }
         insufficient = byVerdict.get("INSUFFICIENT_EVIDENCE") ?? [];
         if (insufficient.length > 0) {
-          push(`### 证据不足（${insufficient.length} 条，全部保留——二次分析重点）`, "");
+          push(
+            `### 无法自动判断（证据不足，${insufficient.length} 条——只表示未获取到足够摘要/正文证据，不代表引用存在问题）`,
+            "",
+          );
           for (const claim of insufficient) {
             push(this.describeClaim(claim, referenceById, sectionTitle, metadataById, false));
           }
@@ -476,7 +480,9 @@ export class ReviewReportExporter {
       unresolved.push(`- 疑似虚构引用：${fabrications.length} 条（${fabrications.map((r) => `[${referenceById.get(r.referenceId)?.number ?? r.referenceId}]`).join("、")}）`);
     }
     if (insufficient.length > 0) {
-      unresolved.push(`- 证据不足的论断-引用对：${insufficient.length} 条（见上文语义核验明细）`);
+      unresolved.push(
+        `- 无法自动判断（证据不足）的论断-引用对：${insufficient.length} 条（只表示未获取到足够摘要/正文证据，不是论文缺陷；见上文语义核验明细）`,
+      );
     }
     if (pending > 0) {
       unresolved.push(`- 待核验的论断-引用对：${pending} 条（超出本轮处理上限，再次运行 Review 可补齐）`);
@@ -572,7 +578,7 @@ export class ReviewReportExporter {
     return lines.join("\n");
   }
 
-  /** 单条 claim-citation 记录（详细 / 紧凑两种形态） */
+  /** 单条 claim-citation 记录（详细 / 紧凑两种形态；v4 记录 = 原子论断 × 引用组） */
   private describeClaim(
     claim: ClaimCitationRecord,
     referenceById: Map<string, ReferenceEntry>,
@@ -580,14 +586,24 @@ export class ReviewReportExporter {
     metadataById: Map<string, CitationVerificationRecord>,
     detailed: boolean,
   ): string {
-    const reference = referenceById.get(claim.referenceId);
+    const references = (claim.referenceIds ?? [claim.referenceId]).map(
+      (referenceId) => referenceById.get(referenceId),
+    );
+    const reference = references[0];
     const metadata = metadataById.get(claim.referenceId);
     const section = sectionTitle.get(claim.sectionId) ?? claim.sectionId;
+    const numbers = references
+      .map((ref) => ref?.number ?? (ref !== undefined ? ref.referenceId : "?"))
+      .join(", ");
     const number = reference?.number ?? claim.referenceId;
+    const groupLabel =
+      (claim.referenceIds?.length ?? 1) > 1
+        ? `引用组 ${claim.groupRawText ?? `[${numbers}]`}（${claim.referenceIds!.length} 篇共同支撑）`
+        : `引用 [${number}]`;
     const lines: string[] = [];
-    const headline = `p${claim.page}｜${section}｜引用 [${number}] → 状态：${VERDICT_EMOJI[claim.verdict] ?? ""} ${verdictLabel(claim.verdict)}`;
+    const headline = `p${claim.page}｜${section}｜${groupLabel} → 状态：${VERDICT_EMOJI[claim.verdict] ?? ""} ${verdictLabel(claim.verdict)}`;
     if (!detailed) {
-      // 紧凑形态（证据不足全量保留时控制篇幅）；reasonCode 后缀与理由重复时不再追加
+      // 紧凑形态（无法自动判断全量保留时控制篇幅）；reasonCode 后缀与理由重复时不再追加
       const reasonCodeLabel =
         claim.reasonCode !== undefined ? (REASON_CODE_LABELS[claim.reasonCode] ?? claim.reasonCode) : undefined;
       const reasonSuffix =
@@ -598,7 +614,7 @@ export class ReviewReportExporter {
       lines.push(
         `- **${headline}**`,
         `  - 论断：「${esc(truncate(claim.claimText, CLAIM_MAX_CHARS))}」`,
-        `  - 被引文献：[${number}] ${esc(truncate(refTitle, 100))}`,
+        `  - 被引文献：${esc(truncate(refTitle, 100))}${(claim.referenceIds?.length ?? 1) > 1 ? ` 等 ${claim.referenceIds!.length} 篇` : ""}`,
         `  - 理由：${esc(truncate(claim.reason ?? "—", 200))}${reasonSuffix}`,
       );
       if (claim.evidence.length > 0) {
@@ -607,16 +623,28 @@ export class ReviewReportExporter {
           `  - 证据（${EVIDENCE_LEVEL_LABELS[evidence.evidenceLevel] ?? evidence.evidenceLevel}，${evidence.source}）：${esc(truncate(evidence.text.split("\n")[0] ?? "", EVIDENCE_MAX_CHARS))}`,
         );
       } else {
-        lines.push("  - 证据：当前未获得足够可核验的原文证据。");
+        lines.push("  - 证据：当前未获得足够可核验的原文证据（自动核验无法判断，不代表引用存在错误）。");
       }
     } else {
-      lines.push(`- **${headline}**`);
-      lines.push(`  - 正文论断：「${esc(truncate(claim.claimText, CLAIM_MAX_CHARS))}」`);
       lines.push(
-        `  - 被引文献：[${number}] ${esc(truncate(reference?.title ?? "（无标题）", 120))}${reference?.year !== undefined ? `（${reference.year}）` : ""}`,
+        `- **${headline}**`,
+        `  - 原子论断：「${esc(truncate(claim.claimText, CLAIM_MAX_CHARS))}」`,
+        ...(claim.sourceSentence !== undefined
+          ? [`  - 来源句：「${esc(truncate(claim.sourceSentence, CLAIM_MAX_CHARS))}」`]
+          : []),
+        (claim.referenceIds?.length ?? 1) > 1
+          ? `  - 被引文献组：${claim.groupRawText ?? `[${numbers}]`}（${claim.referenceIds!.length} 篇共同支撑，成员 [${numbers}]）`
+          : `  - 被引文献：[${numbers}]`,
         `  - 文献真实性：${statusLabel(metadata?.status ?? "SKIPPED_NO_METADATA")}`,
         `  - 理由：${esc(claim.reason ?? "—")}`,
       );
+      if (claim.excludedReferenceIds !== undefined && claim.excludedReferenceIds.length > 0) {
+        lines.push(
+          `  - 未参与核验的组员：[${claim.excludedReferenceIds
+            .map((referenceId) => referenceById.get(referenceId)?.number ?? referenceId)
+            .join(", ")}]（真实性未确立或无摘要）`,
+        );
+      }
       if (claim.evidence.length > 0) {
         for (const evidence of claim.evidence) {
           lines.push(
@@ -628,7 +656,7 @@ export class ReviewReportExporter {
           );
         }
       } else {
-        lines.push("  - 证据：当前未获得足够可核验的原文证据。");
+        lines.push("  - 证据：当前未获得足够可核验的原文证据（自动核验无法判断，不代表引用存在错误）。");
       }
     }
     return lines.join("\n");

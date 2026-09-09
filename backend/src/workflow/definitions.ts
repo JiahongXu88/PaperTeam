@@ -1176,7 +1176,7 @@ function citationClaimsStage(services: WorkflowServices): StageSpec {
         mode,
         summary: result.summary,
         reused: result.reused,
-        // 性能画像：模式 / 模型调用 / 确定性短路 / 墙钟耗时（run checkpoint 持久化）
+        // 性能画像：模式 / 模型调用 / 确定性短路 / 拆解层 / 墙钟耗时（run checkpoint 持久化）
         modelTelemetry: {
           modelCalls: result.telemetry.modelCalls,
           skippedNoMetadata: result.telemetry.skippedNoMetadata,
@@ -1184,6 +1184,10 @@ function citationClaimsStage(services: WorkflowServices): StageSpec {
           failed: result.telemetry.failed,
           approxPromptChars: result.telemetry.approxPromptChars,
           totalModelMs: result.telemetry.totalModelMs,
+          decompositionCalls: result.telemetry.decompositionCalls,
+          decompositionCacheHits: result.telemetry.decompositionCacheHits,
+          fallbackSentencePlans: result.telemetry.fallbackSentencePlans,
+          sentencesPlanned: result.telemetry.sentencesPlanned,
         },
         durationMs: result.durationMs,
       };

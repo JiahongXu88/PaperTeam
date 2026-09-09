@@ -18,9 +18,11 @@ import type {
 } from "../../types/paper.js";
 
 /**
- * 语义核验明细：逐条 (claim, citation) 记录，可按 verdict 筛选（顶部统计数字
- * 点击即过滤到这里）。每条显示正文位置（页/章节）、被核验论断、被引文献、
- * verdict、理由（含结构化 reasonCode）与真实证据；无证据时明示，不只有一个状态词。
+ * 语义核验明细：逐条 (atomic claim, citation group) 记录，可按 verdict 筛选
+ * （顶部统计数字点击即过滤到这里）。每条显示正文位置（页/章节）、原子论断
+ * （复合句拆解产物；来源句可展开）、引用组（组内文献共同核验）、verdict、
+ * 理由（含结构化 reasonCode）与真实证据；无证据时明示「无法自动判断，
+ * 不代表引用存在错误」，不只有一个状态词。
  */
 
 export type ClaimFilter = SemanticVerdict | "all";
@@ -115,6 +117,7 @@ export function SemanticClaimsSection({
             <ClaimRow
               key={claim.claimCitationId}
               claim={claim}
+              references={references}
               reference={referenceById.get(claim.referenceId)}
               metadata={metadataById.get(claim.referenceId)}
               sectionTitle={sectionTitle.get(claim.sectionId) ?? claim.sectionId}
@@ -129,11 +132,13 @@ export function SemanticClaimsSection({
 function ClaimRow({
   claim,
   reference,
+  references,
   metadata,
   sectionTitle,
 }: {
   claim: ClaimRecordView;
   reference?: ReferenceView;
+  references: ReferenceView[];
   metadata?: MetadataRecordView;
   sectionTitle: string;
 }) {
@@ -149,6 +154,16 @@ function ClaimRow({
       : undefined,
     reference?.year !== undefined ? String(reference.year) : undefined,
   ].filter((part): part is string => part !== undefined);
+  // 引用组（v4）：组内成员共同支撑论断（如 [35, 2, 5]）；旧记录 / 单引用 = 单成员
+  const groupMembers = claim.referenceIds ?? [claim.referenceId];
+  const isGroup = groupMembers.length > 1;
+  const referenceById = new Map(references.map((r) => [r.referenceId, r]));
+  const groupNumbers = groupMembers
+    .map((referenceId) => referenceById.get(referenceId)?.number ?? referenceId)
+    .join(", ");
+  const excludedNumbers = (claim.excludedReferenceIds ?? [])
+    .map((referenceId) => referenceById.get(referenceId)?.number ?? referenceId)
+    .join(", ");
 
   return (
     <article className={`gutter-row claim-row claim-${claim.verdict.toLowerCase()}`} data-testid="claim-row">
@@ -157,12 +172,28 @@ function ClaimRow({
       </span>
       <div className="gutter-body">
         <div className="finding-tags">
-          <span className={`status status-tone-${verdictStyle.tone}`}>
+          <span
+            className={`status status-tone-${verdictStyle.tone}`}
+            title={
+              claim.verdict === "INSUFFICIENT_EVIDENCE"
+                ? "当前未获取到足够摘要或正文证据，不代表引用存在错误"
+                : undefined
+            }
+          >
             {verdictStyle.label}
           </span>
           {claim.reasonCode !== undefined ? (
             <span className="chip" title={claim.reasonCode}>
               {REASON_CODE_LABELS[claim.reasonCode] ?? claim.reasonCode}
+            </span>
+          ) : null}
+          {isGroup ? (
+            <span
+              className="chip"
+              title="引用组：这些文献共同支撑该论断，不要求每篇单独覆盖论断全部内容"
+              data-testid="citation-group-chip"
+            >
+              引用组 {claim.groupRawText ?? `[${groupNumbers}]`} 共同核验
             </span>
           ) : null}
           <span className="chip">{claim.priority === "obligatory" ? "关键论断" : "辅助论断"}</span>
@@ -176,9 +207,25 @@ function ClaimRow({
           {claim.status === "failed" ? <span className="chip chip-tone-danger">模型调用失败（可重试）</span> : null}
         </div>
         <blockquote className="finding-claim reading">「{stripSoftHyphens(claim.claimText)}」</blockquote>
+        {claim.sourceSentence !== undefined && claim.sourceSentence !== claim.claimText ? (
+          <details className="ref-details">
+            <summary>来源句（含引用标记）</summary>
+            <blockquote className="reading">{stripSoftHyphens(claim.sourceSentence)}</blockquote>
+          </details>
+        ) : null}
         <p className="claim-ref">
           正文位置：第 {claim.page} 页 · {sectionTitle}
-          {reference !== undefined ? (
+          {isGroup ? (
+            <>
+              ；引用组 <span className="mono">{claim.groupRawText ?? `[${groupNumbers}]`}</span>（
+              {groupMembers.length} 篇共同承担支撑责任）
+              {excludedNumbers !== "" ? (
+                <>
+                  ；未参与核验：<span className="mono">[{excludedNumbers}]</span>（真实性未确立或无摘要）
+                </>
+              ) : null}
+            </>
+          ) : reference !== undefined ? (
             <>
               ；引用 <span className="mono">[{reference.number ?? claim.referenceId}]</span>{" "}
               {title ?? stripSoftHyphens(reference.rawText).slice(0, 100)}
@@ -206,7 +253,11 @@ function ClaimRow({
 /** 证据区：有则列出（来源/等级/片段/DOI/URL/页码），无则明示 */
 function ClaimEvidence({ evidence, repositoryUrl }: { evidence: EvidenceRecordView[]; repositoryUrl?: string }) {
   if (evidence.length === 0) {
-    return <p className="claim-evidence-empty">当前未获得足够可核验的原文证据。</p>;
+    return (
+      <p className="claim-evidence-empty" title="INSUFFICIENT_EVIDENCE 不是论文问题">
+        当前未获得足够可核验的原文证据——自动核验无法判断，不代表引用存在错误。
+      </p>
+    );
   }
   return (
     <details className="ref-details">

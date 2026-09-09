@@ -36,13 +36,17 @@ export const METADATA_STATUS_STYLES: Record<string, StatusStyle> = {
   UNRESOLVED: { label: "核验暂未完成", tone: "warn" },
 };
 
-/** (claim, citation) 语义核验 verdict */
+/**
+ * (atomic claim, citation group) 语义核验 verdict（v4）。
+ * INSUFFICIENT_EVIDENCE 视觉等级刻意弱于 UNSUPPORTED/CONTRADICTED（中性色）：
+ * 它只表示自动核验无法判断，不是论文问题。
+ */
 export const SEMANTIC_VERDICT_STYLES: Record<string, StatusStyle> = {
   SUPPORTED: { label: "支持", tone: "ok" },
   PARTIALLY_SUPPORTED: { label: "部分支持", tone: "warn" },
   UNSUPPORTED: { label: "不支持", tone: "danger" },
   CONTRADICTED: { label: "存在矛盾", tone: "danger" },
-  INSUFFICIENT_EVIDENCE: { label: "证据不足", tone: "neutral" },
+  INSUFFICIENT_EVIDENCE: { label: "无法自动判断", tone: "neutral" },
   SKIPPED: { label: "跳过", tone: "neutral" },
   NO_CONTRADICTION_DETECTED: { label: "未发现明显矛盾", tone: "ok" },
 };
@@ -85,6 +89,7 @@ export const REASON_CODE_LABELS: Record<string, string> = {
   PROVIDER_ERROR: "模型/检索 provider 查询失败",
   REFERENCE_UNVERIFIED: "文献真实性未确立，语义核验跳过",
   LOW_RELEVANCE: "现有证据与论断相关性不足",
+  UNQUOTED_CONTRADICTION: "判矛盾但引不出逐字反向引文，矛盾结论不可采信",
 };
 
 /** 引用条目类型 */

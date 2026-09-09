@@ -114,13 +114,22 @@ export class PaperStore {
   }
 
   /** 单条核验记录 upsert（文件粒度：第 37 条失败不牵连其他条目） */
-  async saveRecord(projectId: string, kind: "metadata" | "claims", id: string, record: unknown): Promise<void> {
+  async saveRecord(
+    projectId: string,
+    kind: "metadata" | "claims" | "decomposition",
+    id: string,
+    record: unknown,
+  ): Promise<void> {
     const dir = join(this.citationDir(projectId), kind);
     await mkdir(dir, { recursive: true });
     await writeJsonAtomic(join(dir, `${id}.json`), record);
   }
 
-  async loadRecord<T>(projectId: string, kind: "metadata" | "claims", id: string): Promise<T | null> {
+  async loadRecord<T>(
+    projectId: string,
+    kind: "metadata" | "claims" | "decomposition",
+    id: string,
+  ): Promise<T | null> {
     try {
       return JSON.parse(
         await readFile(join(this.citationDir(projectId), kind, `${id}.json`), "utf8"),
@@ -130,7 +139,10 @@ export class PaperStore {
     }
   }
 
-  async listRecordIds(projectId: string, kind: "metadata" | "claims"): Promise<string[]> {
+  async listRecordIds(
+    projectId: string,
+    kind: "metadata" | "claims" | "decomposition",
+  ): Promise<string[]> {
     try {
       const names = await readdir(join(this.citationDir(projectId), kind));
       return names

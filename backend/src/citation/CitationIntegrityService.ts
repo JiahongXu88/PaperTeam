@@ -28,14 +28,32 @@ import { SoftwareReferenceResolver, type SoftwareResolverOptions } from "./softw
 import { extractRepositoryRef, inferReferenceKind } from "./referenceKinds.js";
 import type { CitationSemanticMode } from "./semanticMode.js";
 import { REFERENCE_EXTRACTION_VERSION } from "../paper/ReferenceExtractor.js";
+import { extractJsonObject } from "../agents/outputParsing.js";
+import {
+  CLAIM_DECOMPOSITION_VERSION,
+  DECOMPOSITION_BATCH_SIZE,
+  buildDecompositionPrompt,
+  fallbackPlan,
+  groupCalloutsBySentence,
+  needsDecomposition,
+  parseDecompositionSentence,
+  planFromModelOutput,
+  sentenceHasJudgeableGroup,
+  type SentenceCalloutGroup,
+  type SentenceClaimPlan,
+} from "./claimDecomposition.js";
 import {
   buildClaimRecords,
-  buildEvidence,
+  buildGroupEvidence,
   buildJudgePrompt,
   parseJudgeOutput,
+  SEMANTIC_VERIFICATION_VERSION,
   summarizeSemantic,
   type SemanticSummary,
 } from "./semanticVerifier.js";
+
+/** 拆解模型调用上限（批大小 8 → 覆盖 ~190 句；超限句子走确定性兜底） */
+const MAX_DECOMPOSITION_CALLS = 24;
 
 /** semantic stage telemetry（回答「这次语义核验烧了多少 token」） */
 export interface SemanticTelemetry {
@@ -48,6 +66,11 @@ export interface SemanticTelemetry {
   totalModelMs: number;
   /** 每次模型调用耗时样本（ms；p50/p95 统计用，不落盘） */
   modelCallMs: number[];
+  /** claim 拆解（v4）：批量模型调用次数 / 缓存命中 / 确定性兜底句子数 / 规划句子总数 */
+  decompositionCalls: number;
+  decompositionCacheHits: number;
+  fallbackSentencePlans: number;
+  sentencesPlanned: number;
 }
 
 /** metadata stage 的外部检索画像（性能诊断：谁被查了几次、花了多久） */
@@ -487,13 +510,17 @@ export class CitationIntegrityService {
   // ---- semantic verification stage（(claim, citation) 单记录） ----
 
   /**
-   * 逐条语义核验。确定性短路优先（真实性未确立 → SKIPPED；无证据 →
-   * INSUFFICIENT_EVIDENCE，零模型调用），只有真实证据在手才调用 judge。
+   * 逐条语义核验（v4：atomic claim × citation group）。
+   *
+   * 流程：callout 按句归组 → 句子拆解成原子论断（model 批量 / 确定性兜底，
+   * 版本化缓存）→ (原子论断 × 引用组) 记录构建 → 确定性短路优先（组内可判
+   * 成员为零 → SKIPPED；组证据为空 → INSUFFICIENT_EVIDENCE，均零模型调用）
+   * → 组证据合并 judge。
    *
    * mode：full = 完整逐条核验；contradiction_only = 仅检查明显矛盾
    * （无证据 → SKIPPED，不产生 INSUFFICIENT_EVIDENCE 噪音；judge 只回答
-   * CONTRADICTED / NO_CONTRADICTION_DETECTED）。off 由调用方（workflow /
-   * API）负责——本方法不应该是 off 的入口。
+   * CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE）。
+   * off 由调用方（workflow / API）负责——本方法不应该是 off 的入口。
    */
   async verifyClaims(
     projectId: string,
@@ -530,16 +557,8 @@ export class CitationIntegrityService {
     }
     const metadataRecords = new Map(metadataRaw.map((record) => [record.referenceId, record]));
     const sectionTitles = new Map((document?.sections ?? []).map((s) => [s.sectionId, s.title]));
-    const pending = buildClaimRecords(
-      callouts,
-      references,
-      metadataRecords,
-      sectionTitles,
-      this.now().toISOString(),
-      mode,
-    );
 
-    const telemetry = {
+    const telemetry: SemanticTelemetry = {
       modelCalls: 0,
       skippedNoMetadata: 0,
       skippedNoEvidence: 0,
@@ -547,12 +566,35 @@ export class CitationIntegrityService {
       approxPromptChars: 0,
       totalModelMs: 0,
       modelCallMs: [] as number[],
+      decompositionCalls: 0,
+      decompositionCacheHits: 0,
+      fallbackSentencePlans: 0,
+      sentencesPlanned: 0,
     };
+    const startedAtMs = Date.now();
+    const sentenceGroups = groupCalloutsBySentence(callouts);
+    const plans = await this.planSentenceClaims(
+      projectId,
+      sentenceGroups,
+      references,
+      metadataRecords,
+      options,
+      telemetry,
+    );
+    telemetry.sentencesPlanned = sentenceGroups.length;
+    const pending = buildClaimRecords(
+      sentenceGroups,
+      plans,
+      references,
+      metadataRecords,
+      sectionTitles,
+      mode,
+    );
+
     const limit = options.limit ?? this.maxSemantic;
     let verifiedCount = 0;
     let reused = 0;
     const records: ClaimCitationRecord[] = [];
-    const startedAtMs = Date.now();
     for (const claim of pending) {
       const existing = await this.store.loadRecord<ClaimCitationRecord>(
         projectId,
@@ -575,7 +617,16 @@ export class CitationIntegrityService {
       }
       // 上限只约束模型调用：确定性短路（SKIPPED / 无证据 INSUFFICIENT）零成本，
       // 不占预算——否则 54 条免费短路与真实 judge 抢同一个 30 条额度
-      const record = await this.verifyClaim(projectId, claim, metadataRecords, telemetry, options.signal, limit, mode);
+      const record = await this.verifyClaim(
+        projectId,
+        claim,
+        references,
+        metadataRecords,
+        telemetry,
+        options.signal,
+        limit,
+        mode,
+      );
       if (record === null) {
         records.push(claim); // 模型预算耗尽：保持 pending（下一轮继续）
         continue;
@@ -602,32 +653,169 @@ export class CitationIntegrityService {
     return { summary, verified: verifiedCount, reused, records, telemetry, mode, durationMs };
   }
 
+  /**
+   * 句子 → 原子论断规划（拆解层）。
+   *
+   * 确定性优先：句内没有任何可判证据的引用组 → 不拆（全组短路，零模型调用）；
+   * 简单句（单组、短、无复合结构）→ 整句单论断兜底（零模型调用）。
+   * 其余句子批量走模型结构化拆解（版本化缓存 + 批大小 + 总量上限），
+   * 单句解析失败单独退回确定性兜底，不拖垮整批。
+   */
+  private async planSentenceClaims(
+    projectId: string,
+    sentenceGroups: SentenceCalloutGroup[],
+    references: ReferenceEntry[],
+    metadataRecords: Map<string, CitationVerificationRecord>,
+    options: { force?: boolean; signal?: AbortSignal },
+    telemetry: SemanticTelemetry,
+  ): Promise<Map<string, SentenceClaimPlan>> {
+    const plans = new Map<string, SentenceClaimPlan>();
+    const hasEvidence = (referenceId: string): boolean => {
+      const metadata = metadataRecords.get(referenceId);
+      if (
+        metadata === undefined ||
+        metadata.status === "NOT_FOUND" ||
+        metadata.status === "PROVIDER_ERROR" ||
+        metadata.status === "UNRESOLVED" ||
+        metadata.status === "AMBIGUOUS"
+      ) {
+        return false;
+      }
+      return (metadata.canonical?.abstract ?? "").trim() !== "";
+    };
+    const decomposeTargets: SentenceCalloutGroup[] = [];
+    for (const group of sentenceGroups) {
+      // 句内所有引用组都无 judgeable 证据 → 不拆解（下游全组确定性短路）
+      if (!sentenceHasJudgeableGroup(group, references, hasEvidence)) {
+        plans.set(group.sentenceKey, fallbackPlan(group));
+        telemetry.fallbackSentencePlans += 1;
+        continue;
+      }
+      if (!needsDecomposition(group.sentence, group.groups.length)) {
+        plans.set(group.sentenceKey, fallbackPlan(group));
+        telemetry.fallbackSentencePlans += 1;
+        continue;
+      }
+      const planFingerprint = fingerprintJson({
+        version: CLAIM_DECOMPOSITION_VERSION,
+        sentence: group.sentence,
+        groups: group.groups.map((callout) => callout.citationId),
+      });
+      const cached = await this.store.loadRecord<SentenceClaimPlan & { planFingerprint?: string }>(
+        projectId,
+        "decomposition",
+        group.sentenceKey,
+      );
+      if (
+        !options.force &&
+        cached !== null &&
+        cached.planFingerprint === planFingerprint &&
+        cached.decompositionVersion === CLAIM_DECOMPOSITION_VERSION &&
+        Array.isArray(cached.claims) &&
+        cached.claims.length > 0 &&
+        cached.claims.every((claim) => typeof claim.claimText === "string" && Array.isArray(claim.citationIds))
+      ) {
+        plans.set(group.sentenceKey, cached);
+        telemetry.decompositionCacheHits += 1;
+        continue;
+      }
+      decomposeTargets.push(group);
+    }
+
+    for (let index = 0; index < decomposeTargets.length; index += DECOMPOSITION_BATCH_SIZE) {
+      if (telemetry.decompositionCalls >= MAX_DECOMPOSITION_CALLS) {
+        // 预算耗尽：剩余句子走确定性兜底（整句单论断），核验仍然完整
+        for (const group of decomposeTargets.slice(index)) {
+          plans.set(group.sentenceKey, fallbackPlan(group));
+          telemetry.fallbackSentencePlans += 1;
+        }
+        break;
+      }
+      if (options.signal?.aborted === true) {
+        throw new BusinessError("WORKFLOW_CANCELLED", "论断拆解已被取消");
+      }
+      const batch = decomposeTargets.slice(index, index + DECOMPOSITION_BATCH_SIZE);
+      const prompt = buildDecompositionPrompt(batch);
+      telemetry.decompositionCalls += 1;
+      let outputs = new Map<string, unknown>();
+      try {
+        const task = await this.runtime!.runAgent({
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+          agentId: this.citationAgentId!,
+          projectId,
+          contextScope: `citation/decompose/${batch[0]!.sentenceKey.toLowerCase()}`,
+          task: prompt,
+          metadata: { role: "citation" },
+        });
+        if (task.status !== "completed") {
+          throw new Error(task.error ?? "拆解任务未完成");
+        }
+        outputs = parseDecompositionBatch(task.output ?? "");
+      } catch {
+        // 拆解失败不致命：整批退确定性兜底
+      }
+      for (const group of batch) {
+        const claims = parseDecompositionSentence(outputs.get(group.sentenceKey), group);
+        if (claims === null) {
+          plans.set(group.sentenceKey, fallbackPlan(group));
+          telemetry.fallbackSentencePlans += 1;
+          continue;
+        }
+        const plan = planFromModelOutput(group, claims);
+        await this.store.saveRecord(projectId, "decomposition", group.sentenceKey, {
+          ...plan,
+          planFingerprint: fingerprintJson({
+            version: CLAIM_DECOMPOSITION_VERSION,
+            sentence: group.sentence,
+            groups: group.groups.map((callout) => callout.citationId),
+          }),
+        });
+        plans.set(group.sentenceKey, plan);
+      }
+    }
+    return plans;
+  }
+
   private async verifyClaim(
     projectId: string,
     claim: ClaimCitationRecord,
+    references: ReferenceEntry[],
     metadataRecords: Map<string, CitationVerificationRecord>,
     telemetry: SemanticTelemetry,
     signal?: AbortSignal,
     modelBudget?: number,
     mode: CitationSemanticMode = "full",
   ): Promise<ClaimCitationRecord | null> {
-    const metadata = metadataRecords.get(claim.referenceId);
     const base: ClaimCitationRecord = { ...claim, evidence: [] };
 
-    // 真实性 Gate：NOT_FOUND / PROVIDER_ERROR / AMBIGUOUS / 无记录 → semantic SKIPPED
-    if (
-      metadata === undefined ||
-      metadata.status === "NOT_FOUND" ||
-      metadata.status === "PROVIDER_ERROR" ||
-      metadata.status === "UNRESOLVED" ||
-      metadata.status === "AMBIGUOUS"
-    ) {
+    // 组员分级（真实性 Gate）：不可判成员（NOT_FOUND/PROVIDER_ERROR/AMBIGUOUS/
+    // 无记录）排除出证据——Layer 1 会单独报它们的问题，语义层不猜
+    const excluded: string[] = [];
+    const judgeable: string[] = [];
+    for (const referenceId of claim.referenceIds) {
+      const metadata = metadataRecords.get(referenceId);
+      if (
+        metadata === undefined ||
+        metadata.status === "NOT_FOUND" ||
+        metadata.status === "PROVIDER_ERROR" ||
+        metadata.status === "UNRESOLVED" ||
+        metadata.status === "AMBIGUOUS"
+      ) {
+        excluded.push(referenceId);
+      } else {
+        judgeable.push(referenceId);
+      }
+    }
+
+    // 全组真实性未确立 → semantic SKIPPED（不允许验证不存在的文献）
+    if (judgeable.length === 0) {
+      const metadata = metadataRecords.get(claim.referenceIds[0]!);
       const reason =
         metadata === undefined
-          ? "该文献未经 metadata 核验，语义核验跳过"
+          ? "该引用组未经 metadata 核验，语义核验跳过"
           : metadata.status === "PROVIDER_ERROR" || metadata.status === "UNRESOLVED"
-            ? "文献真实性核验暂未完成（provider 查询失败），语义核验跳过——完成核验后自动补跑"
-            : `文献真实性未确立（${metadata.status}），语义核验跳过——不允许验证不存在的文献`;
+            ? "引用组内文献真实性核验暂未完成（provider 查询失败），语义核验跳过——完成核验后自动补跑"
+            : `引用组内文献真实性未确立（${metadata.status}），语义核验跳过——不允许验证不存在的文献`;
       const skipped: ClaimCitationRecord = {
         ...base,
         verdict: "SKIPPED",
@@ -635,6 +823,7 @@ export class CitationIntegrityService {
         reasonCode: "REFERENCE_UNVERIFIED",
         status: "skipped",
         severity: deriveSeverityFor(claim, metadata),
+        excludedReferenceIds: excluded,
         verifiedAt: this.now().toISOString(),
       };
       telemetry.skippedNoMetadata += 1;
@@ -642,36 +831,49 @@ export class CitationIntegrityService {
       return skipped;
     }
 
-    const evidence = buildEvidence(metadata, this.now().toISOString());
-    const fabric = metadata.probableFabrication;
+    const fabric = claim.referenceIds.some(
+      (referenceId) => metadataRecords.get(referenceId)?.probableFabrication ?? false,
+    );
+    const evidence = buildGroupEvidence(judgeable, metadataRecords, this.now().toISOString());
+    // 记录层面：未对核验做出证据贡献的组员（真实性未确立，或可判但无摘要/描述）
+    const nonContributing = claim.referenceIds.filter(
+      (referenceId) => (metadataRecords.get(referenceId)?.canonical?.abstract ?? "").trim() === "",
+    );
 
-    // 无可判证据（确定性短路，零模型调用）：full → INSUFFICIENT_EVIDENCE；
+    // 组内可判成员全部只有书目 metadata（无摘要/描述）：确定性短路，零模型调用。
+    // full → INSUFFICIENT_EVIDENCE（自动核验无法判断，不是论文问题）；
     // contradiction_only → SKIPPED（矛盾检查没有素材，不构成「证据不足」问题）
     if (evidence.length === 0) {
+      const softwareOnly = judgeable.every((id) => metadataRecords.get(id)?.kind === "software");
+      const note = softwareOnly
+        ? judgeable.length === 1
+          ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档）"
+          : `引用组内 ${judgeable.length} 个官方仓库均可访问，但均未获得可判证据（无描述/文档）`
+        : judgeable.length === 1
+          ? "只获取到书目 metadata（学术库记录无摘要），没有正文/摘要等可判证据"
+          : `引用组内 ${judgeable.length} 篇可判文献均只获取到书目 metadata（无摘要/描述），没有可判证据`;
       const record: ClaimCitationRecord =
         mode === "contradiction_only"
           ? {
               ...base,
               verdict: "SKIPPED",
-              reason: metadata.kind === "software"
-                ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档），矛盾检查跳过"
-                : "只获取到书目 metadata（学术库记录无摘要），无证据可判矛盾，跳过",
+              reason: `${note}，矛盾检查跳过`,
               reasonCode: "NO_EVIDENCE",
               evidence: [],
               status: "skipped",
-              severity: deriveSeverityFor(claim, metadata),
+              severity: deriveSeverityFor(claim, metadataRecords.get(claim.referenceIds[0]!)),
+              ...(nonContributing.length > 0 ? { excludedReferenceIds: nonContributing } : {}),
               verifiedAt: this.now().toISOString(),
             }
           : {
               ...base,
               verdict: "INSUFFICIENT_EVIDENCE",
-              reason: metadata.kind === "software"
-                ? "官方仓库可访问，但未获得可判证据（仓库无描述/文档），证据不足以判断"
-                : "只获取到书目 metadata（学术库记录无摘要），没有正文/摘要等可判证据，证据不足以判断",
+              reason: `${note}，自动核验无法判断（不代表引用存在问题）`,
               reasonCode: "NO_EVIDENCE",
               evidence: [],
               status: "verified",
-              severity: deriveSeverityFor(claim, metadata),
+              severity: deriveSeverityFor(claim, metadataRecords.get(claim.referenceIds[0]!)),
+              ...(nonContributing.length > 0 ? { excludedReferenceIds: nonContributing } : {}),
               verifiedAt: this.now().toISOString(),
             };
       telemetry.skippedNoEvidence += 1;
@@ -682,8 +884,10 @@ export class CitationIntegrityService {
     const prompt = buildJudgePrompt(
       {
         claimText: claim.claimText,
-        reference: { rawText: "" } as ReferenceEntry,
-        canonical: metadata.canonical,
+        referenceIds: claim.referenceIds,
+        references,
+        metadataRecords,
+        groupRawText: claim.groupRawText ?? `[${claim.referenceId}]`,
         evidence,
       },
       mode,
@@ -711,6 +915,19 @@ export class CitationIntegrityService {
       telemetry.modelCallMs.push(callMs);
       telemetry.totalModelMs += callMs;
       const judged = parseJudgeOutput(task.output ?? "", evidence, mode);
+      // CONTRADICTED 必须能引用具体 evidence span：judge 引不出逐字 keyQuote
+      // （伪造引文已被剥离）→ 矛盾结论不可采信，确定性降级 INSUFFICIENT_EVIDENCE
+      let verdict = judged.verdict;
+      let reason = judged.reason;
+      let reasonCode: ClaimCitationRecord["reasonCode"] = undefined;
+      if (verdict === "CONTRADICTED" && judged.keyQuote === undefined) {
+        verdict = "INSUFFICIENT_EVIDENCE";
+        reason = `${reason}（judge 未提供逐字反向引文，矛盾结论不可采信，降级为无法自动判断）`.slice(0, 1000);
+        reasonCode = "UNQUOTED_CONTRADICTION";
+      } else if (verdict === "INSUFFICIENT_EVIDENCE") {
+        // judge 依据现有证据无法判定：证据范围限于 abstract / 仓库描述
+        reasonCode = "ABSTRACT_ONLY";
+      }
       const evidenceWithQuote =
         judged.keyQuote !== undefined
           ? [
@@ -722,17 +939,17 @@ export class CitationIntegrityService {
           : evidence;
       const record: ClaimCitationRecord = {
         ...base,
-        verdict: judged.verdict,
-        reason: judged.reason,
-        // judge 依据现有证据无法判定：证据范围限于 abstract / 仓库描述
-        ...(judged.verdict === "INSUFFICIENT_EVIDENCE" ? { reasonCode: "ABSTRACT_ONLY" as const } : {}),
+        verdict,
+        reason,
+        ...(reasonCode !== undefined ? { reasonCode } : {}),
         evidence: evidenceWithQuote,
         status: "verified",
         severity: deriveClaimSeverity({
           probableFabrication: fabric,
-          verdict: judged.verdict,
+          verdict,
           priority: claim.priority,
         }),
+        ...(nonContributing.length > 0 ? { excludedReferenceIds: nonContributing } : {}),
         model: task.metadata?.["model"] as string | undefined,
         verifiedAt: this.now().toISOString(),
       };
@@ -753,14 +970,17 @@ export class CitationIntegrityService {
     }
   }
 
-  /** 全部 claim 记录（API 用） */
+  /**
+   * 全部 claim 记录（API 用）。只返回当前算法版本（semanticVersion 一致）的
+   * 记录——旧版本的过期缓存不删除用户数据，但不再读出（不污染新结论）。
+   */
   async listClaimRecords(projectId: string): Promise<ClaimCitationRecord[]> {
     await this.projects.getRequired(projectId);
     const ids = await this.store.listRecordIds(projectId, "claims");
     const records: ClaimCitationRecord[] = [];
     for (const id of ids) {
       const record = await this.store.loadRecord<ClaimCitationRecord>(projectId, "claims", id);
-      if (record !== null) {
+      if (record !== null && record.semanticVersion === SEMANTIC_VERIFICATION_VERSION) {
         records.push(record);
       }
     }
@@ -805,4 +1025,26 @@ function deriveSeverityFor(
     verdict: "SKIPPED",
     priority: claim.priority,
   });
+}
+
+/**
+ * 拆解批量输出解析：{"sentences":[{"id":"S…","claims":[…]}]} → id → claims 映射。
+ * 顶层非法 / 部分句子缺失都容忍（缺失句走 fallback），只有完全解析不动才全兜底。
+ */
+function parseDecompositionBatch(raw: string): Map<string, unknown> {
+  const outputs = new Map<string, unknown>();
+  const parsed = extractJsonObject(raw, "论断拆解结果") as unknown as { sentences?: unknown };
+  if (!Array.isArray(parsed.sentences)) {
+    return outputs;
+  }
+  for (const item of parsed.sentences) {
+    if (typeof item !== "object" || item === null) {
+      continue;
+    }
+    const id = (item as { id?: unknown }).id;
+    if (typeof id === "string" && id !== "") {
+      outputs.set(id, item);
+    }
+  }
+  return outputs;
 }

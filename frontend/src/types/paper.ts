@@ -135,7 +135,8 @@ export type InsufficientReasonCodeView =
   | "FULLTEXT_UNAVAILABLE"
   | "PROVIDER_ERROR"
   | "REFERENCE_UNVERIFIED"
-  | "LOW_RELEVANCE";
+  | "LOW_RELEVANCE"
+  | "UNQUOTED_CONTRADICTION";
 
 export type EvidenceLevelView =
   | "abstract"
@@ -155,12 +156,25 @@ export interface EvidenceRecordView {
   doi?: string;
 }
 
-/** 一条 (claim, citation) 语义核验记录（同文献多处被引 = 多条记录） */
+/**
+ * 一条 (atomic claim, citation group) 语义核验记录（v4）：
+ * 复合句拆成原子论断，引用组（如 [35, 2, 5]）共同核验——组内成员在
+ * referenceIds 中，不要求每篇单独覆盖论断全部内容。referenceId = 首成员
+ * （anchor，单引用展示兼容）。
+ */
 export interface ClaimRecordView {
   claimCitationId: string;
   citationId: string;
   referenceId: string;
+  /** 引用组全部成员（共同支撑；旧记录 / 单引用缺省 = [referenceId]） */
+  referenceIds?: string[];
+  /** 原始引用标记（如 "[35, 2, 5]"） */
+  groupRawText?: string;
+  /** 句内拆解序号（1 起） */
+  claimIndex?: number;
   claimText: string;
+  /** 拆解来源句（含标记原样） */
+  sourceSentence?: string;
   sectionId: string;
   page: number;
   priority: "obligatory" | "helpful";
@@ -169,6 +183,8 @@ export interface ClaimRecordView {
   reason?: string;
   reasonCode?: InsufficientReasonCodeView;
   evidence: EvidenceRecordView[];
+  /** 组内被排除出证据的成员（真实性未确立 / 无摘要） */
+  excludedReferenceIds?: string[];
   severity: "critical" | "major" | "minor" | "info";
   status: "pending" | "verified" | "skipped" | "failed";
   model?: string;

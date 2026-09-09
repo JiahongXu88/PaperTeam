@@ -21,8 +21,10 @@ import type { PaperChunk, PaperDocument } from "./types.js";
 /**
  * 提取算法版本（纳入 references stage 指纹）：条目切分 / 文本归一化 / 字段解析
  * 任一变化就递增，让旧提取结果在下次 extract 时自动重算。
+ * v3：callout 保留原始标记 rawText（citation group 信息不丢失——[35, 2, 5] 是
+ * 一个组，不再是三条失去组归属的独立 relation）。
  */
-export const REFERENCE_EXTRACTION_VERSION = `v2.n${REFERENCE_NORMALIZATION_VERSION}`;
+export const REFERENCE_EXTRACTION_VERSION = `v3.n${REFERENCE_NORMALIZATION_VERSION}`;
 
 /** range 展开上限（防 [1-999] 之类解析事故） */
 const RANGE_EXPAND_LIMIT = 60;
@@ -166,12 +168,13 @@ export class ReferenceExtractor {
           citationId: `CT${String(callouts.length + 1).padStart(3, "0")}`,
           style: "numeric",
           references: relations,
+          rawText: match[0] ?? "",
           page: chunk.pageStart,
           sectionId: chunk.sectionId,
           chunkId: chunk.chunkId,
           sentence: sentence.sentence,
           ...(sentence.before !== "" ? { contextBefore: sentence.before } : {}),
-          ...(sentence.after !== "" ? { contextAfter: sentence.after } : {}),
+          ...(sentence.after !== "" ? { contextAfter: sentence.after } : ""),
         });
       }
       // author-year：(Surname, 2017) / (Surname et al., 2017) / (Surname and Other, 2017)
@@ -185,6 +188,7 @@ export class ReferenceExtractor {
           citationId: `CT${String(callouts.length + 1).padStart(3, "0")}`,
           style: "author-year",
           references: relations,
+          rawText: match[0] ?? "",
           page: chunk.pageStart,
           sectionId: chunk.sectionId,
           chunkId: chunk.chunkId,

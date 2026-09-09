@@ -1,20 +1,36 @@
 /**
- * Claim-Citation Semantic Verification。
+ * Claim-Citation Semantic Verification（v4：atomic claim × citation group）。
  *
- * ONE RECORD 原则（借鉴 RefWarden, MIT, pin ae85ae3）：同一文献被引用 N 次
- * = N 条 ClaimCitationRecord（主键 citationId+referenceId）——只验证一次
- * bibliography 不能宣告「引用正确」；必须回答这篇真实论文是否支持这一句论断。
+ * 核验粒度升级（v3 及以前的问题）：
+ *   v3（旧）  sentence × every reference：[35, 2, 5] 被展开成三条独立记录，
+ *             每篇文献都被要求单独支撑整个复合句——把「组内分工」错判成
+ *             「单篇不支持」，产生系统性 false positive；
+ *   v4（新）  atomic claim × citation group：复合句先拆成原子论断，每个引用
+ *             组对绑定的论断产生一条记录，组内成员共同承担支撑责任。
  *
- * 链路：Claim → Citation → (Layer1 已 VERIFIED 的) Canonical Paper →
- *       Retrieved Evidence → LLM Judge → Verdict
+ * 链路：Sentence → Atomic Claims（claimDecomposition）→ Citation Group 绑定 →
+ *       (Layer 1 已 VERIFIED 的) Canonical Paper 组 → 组证据合并 → LLM Judge →
+ *       Verdict（组级）
+ *
+ * verdict 语义（收紧后）：
+ *   SUPPORTED             组证据整体明确支撑该原子论断
+ *   PARTIALLY_SUPPORTED   组证据确实支撑论断的一部分，且论断仍有重要未支撑成分
+ *                         （不是因为某篇组员只承担部分责任）
+ *   UNSUPPORTED           证据与论断主题相关且足够具体，可较高置信度确认该组
+ *                         不能支撑论断（不是「没找到足够证据」）
+ *   CONTRADICTED          证据中有与论断明确相反的陈述，且 judge 引出逐字
+ *                         keyQuote（引不出 → 确定性降级 INSUFFICIENT_EVIDENCE）
+ *   INSUFFICIENT_EVIDENCE 证据不足 / 无法判断——只表示自动核验无法判断，
+ *                         绝不是论文问题（severity=info，不进 Finding，不阻 Gate）
  *
  * 硬纪律：
- * - 模型禁止凭记忆判定：prompt 只给 claim + canonical metadata + 真实检索
- *   到的证据引文；judge 引用的 keyQuote 必须逐字来自证据（伪造引文会被剥离）；
- * - 真实性未确立（NOT_FOUND/UNRESOLVED/AMBIGUOUS）→ semantic SKIPPED，
- *   绝不跳过真实性 Gate 去「验证」不存在的文献；
+ * - 模型禁止凭记忆判定（即使它认识这篇论文）：prompt 只给 atomic claim +
+ *   canonical metadata + 真实检索到的证据引文；judge 引用的 keyQuote 必须
+ *   逐字来自证据（伪造引文会被剥离，矛盾结论随之降级）；
+ * - 真实性未确立（NOT_FOUND/UNRESOLVED/AMBIGUOUS/PROVIDER_ERROR）→ 该组员
+ *   被排除出证据；组内全员不可判 → semantic SKIPPED，绝不验证不存在的文献；
  * - 只有 abstract 时 evidenceLevel=abstract，不假装 full-text verified；
- *   证据不足 → INSUFFICIENT_EVIDENCE，绝不 SUPPORTED；
+ *   metadata-only（无摘要）绝不做语义判断 → INSUFFICIENT_EVIDENCE / SKIPPED；
  * - severity 由 deriveClaimSeverity 确定性派生，模型不定级。
  */
 
@@ -31,16 +47,24 @@ import {
   type ReferenceEntry,
 } from "./integrity.js";
 import type { CitationSemanticMode } from "./semanticMode.js";
+import {
+  calloutRawText,
+  type SentenceCalloutGroup,
+  type SentenceClaimPlan,
+} from "./claimDecomposition.js";
 
-/** judge prompt 中证据段上限（token 控制） */
+/** judge prompt 中单条证据上限（token 控制） */
 const EVIDENCE_MAX_CHARS = 4000;
 
+/** judge prompt 纳入的组员上限（更大的组截断并注明——prompt 体量控制） */
+const GROUP_EVIDENCE_MEMBER_LIMIT = 6;
+
 /**
- * 语义核验算法版本：短路规则 / reasonCode / 证据等级变化即递增，纳入 claim 指纹——
- * 旧记录（无 reasonCode 等）自动重跑，确定性短路零模型调用，代价可忽略。
- * v3：模式进入指纹（full 与 contradiction_only 的结论不可互相沿用）。
+ * 语义核验算法版本（纳入 claim 指纹 + 写入每条记录）：
+ * v4：atomic claim × citation group 重构——记录 id / 指纹 / prompt / verdict
+ * 口径全部变化，旧版本记录（semanticVersion<4）视为过期缓存，不再读出。
  */
-export const SEMANTIC_VERIFICATION_VERSION = 3;
+export const SEMANTIC_VERIFICATION_VERSION = 4;
 
 export interface ClaimJudgeOutput {
   verdict: ClaimSupportVerdict;
@@ -49,59 +73,84 @@ export interface ClaimJudgeOutput {
   keyQuote?: string;
 }
 
-/** （claim, citation）任务构建：callout × 已解析 reference relation（mode 纳入指纹） */
+/**
+ * （atomic claim, citation group）任务构建：句子拆解规划 × 绑定的引用组。
+ * 一个组（含单引用组）对一条原子论断 = 一条记录；组内成员不再各自成条。
+ */
 export function buildClaimRecords(
-  callouts: CitationCallout[],
+  groups: SentenceCalloutGroup[],
+  plans: Map<string, SentenceClaimPlan>,
   references: ReferenceEntry[],
   metadataRecords: Map<string, CitationVerificationRecord>,
   sectionTitles: Map<string, string>,
-  now: string,
   mode: CitationSemanticMode = "full",
 ): ClaimCitationRecord[] {
   const records: ClaimCitationRecord[] = [];
-  for (const callout of callouts) {
-    for (const relation of callout.references) {
-      if (relation.status !== "resolved" || relation.referenceId === undefined) {
-        continue; // 未关联/无效标记走 findings（citation-invalid），不进 semantic
-      }
-      const reference = references.find((r) => r.referenceId === relation.referenceId);
-      if (reference === undefined) {
-        continue;
-      }
-      const metadata = metadataRecords.get(reference.referenceId);
-      const metadataStatus: ClaimCitationRecord["metadataStatus"] =
-        metadata?.status ?? "SKIPPED_NO_METADATA";
-      const priority = classifyPriority(sectionTitles.get(callout.sectionId) ?? "");
-      const canonicalFingerprint =
-        metadata?.canonical !== undefined
-          ? fingerprintJson(metadata.canonical)
-          : "no-canonical";
-      records.push({
-        claimCitationId: `${callout.citationId}-${reference.referenceId}`,
-        citationId: callout.citationId,
-        referenceId: reference.referenceId,
-        claimText: callout.sentence,
-        sectionId: callout.sectionId,
-        page: callout.page,
-        chunkId: callout.chunkId,
-        priority,
-        metadataStatus,
-        verdict: "INSUFFICIENT_EVIDENCE",
-        reason: undefined,
-        evidence: [],
-        severity: "info",
-        status: "pending",
-        fingerprint: fingerprintJson({
+  const knownReferenceIds = new Set(references.map((reference) => reference.referenceId));
+  for (const group of groups) {
+    const plan = plans.get(group.sentenceKey);
+    if (plan === undefined) {
+      continue;
+    }
+    const calloutById = new Map(group.groups.map((callout) => [callout.citationId, callout]));
+    for (const claim of plan.claims) {
+      // 绑定引用组：非法 id（模型输出已过滤，防御）→ 句内全部组兜底
+      const boundCallouts = claim.citationIds
+        .map((citationId) => calloutById.get(citationId))
+        .filter((callout): callout is CitationCallout => callout !== undefined);
+      const effective = boundCallouts.length > 0 ? boundCallouts : group.groups;
+      for (const callout of effective) {
+        const members = callout.references
+          .filter(
+            (relation) =>
+              relation.status === "resolved" &&
+              relation.referenceId !== undefined &&
+              knownReferenceIds.has(relation.referenceId),
+          )
+          .map((relation) => relation.referenceId!);
+        if (members.length === 0) {
+          continue; // 组内无可关联文献（unresolved/invalid 走 findings，不进 semantic）
+        }
+        const metadata = metadataRecords.get(members[0]!);
+        const metadataStatus: ClaimCitationRecord["metadataStatus"] =
+          metadata?.status ?? "SKIPPED_NO_METADATA";
+        const priority = classifyPriority(sectionTitles.get(callout.sectionId) ?? "");
+        const canonicalFingerprints = members.map((referenceId) => {
+          const canonical = metadataRecords.get(referenceId)?.canonical;
+          return canonical === undefined ? "no-canonical" : fingerprintJson(canonical);
+        });
+        records.push({
+          claimCitationId: `${callout.citationId}-AC${claim.claimIndex}`,
+          citationId: callout.citationId,
+          referenceId: members[0]!,
+          referenceIds: members,
+          groupRawText: calloutRawText(callout),
+          claimIndex: claim.claimIndex,
+          claimText: claim.claimText,
+          sourceSentence: group.sentence,
+          sectionId: callout.sectionId,
+          page: callout.page,
+          chunkId: callout.chunkId,
+          priority,
+          metadataStatus,
+          verdict: "INSUFFICIENT_EVIDENCE",
+          reason: undefined,
+          evidence: [],
+          severity: "info",
+          status: "pending",
           semanticVersion: SEMANTIC_VERIFICATION_VERSION,
-          mode,
-          claim: callout.sentence,
-          referenceId: reference.referenceId,
-          canonical: canonicalFingerprint,
-        }),
-      });
+          fingerprint: fingerprintJson({
+            semanticVersion: SEMANTIC_VERIFICATION_VERSION,
+            mode,
+            claim: claim.claimText,
+            claimIndex: claim.claimIndex,
+            referenceIds: members,
+            canonicals: canonicalFingerprints,
+          }),
+        });
+      }
     }
   }
-  void now;
   return records;
 }
 
@@ -117,7 +166,7 @@ export function classifyPriority(sectionTitle: string): ClaimPriority {
     : "helpful";
 }
 
-/** 从 canonical record 组装证据（scholarly：abstract 级；software：repository 描述级） */
+/** 单篇 canonical record 组装证据（scholarly：abstract 级；software：repository 描述级） */
 export function buildEvidence(record: CitationVerificationRecord, now: string): EvidenceRecord[] {
   const abstract = record.canonical?.abstract;
   if (abstract === undefined || abstract.trim() === "") {
@@ -140,68 +189,111 @@ export function buildEvidence(record: CitationVerificationRecord, now: string): 
   ];
 }
 
-/** judge prompt（只含 claim + canonical + 检索证据；禁止记忆判定；按 mode 切换判定口径） */
+/** 组证据组装：逐成员取 abstract / 仓库描述（metadata-only 成员天然无证据，不参与判断） */
+export function buildGroupEvidence(
+  referenceIds: string[],
+  metadataRecords: Map<string, CitationVerificationRecord>,
+  now: string,
+): EvidenceRecord[] {
+  const evidence: EvidenceRecord[] = [];
+  for (const referenceId of referenceIds.slice(0, GROUP_EVIDENCE_MEMBER_LIMIT)) {
+    const record = metadataRecords.get(referenceId);
+    if (record === undefined) {
+      continue;
+    }
+    evidence.push(...buildEvidence(record, now));
+  }
+  return evidence;
+}
+
+/** 组成员 canonical 概览行（judge prompt 用：每篇一行，标注 provider） */
+function groupMemberLines(
+  referenceIds: string[],
+  references: ReferenceEntry[],
+  metadataRecords: Map<string, CitationVerificationRecord>,
+): string {
+  const titleByReference = new Map(references.map((reference) => [reference.referenceId, reference]));
+  return referenceIds
+    .slice(0, GROUP_EVIDENCE_MEMBER_LIMIT)
+    .map((referenceId, index) => {
+      const reference = titleByReference.get(referenceId);
+      const canonical = metadataRecords.get(referenceId)?.canonical;
+      const title = canonical?.title ?? reference?.title ?? reference?.rawText.slice(0, 100) ?? referenceId;
+      const year = canonical?.year ?? reference?.year;
+      const provider = canonical?.provider ?? "—";
+      return `- 组员${index + 1}：${title}${year !== undefined ? `（${year}）` : ""}［来源 ${provider}］`;
+    })
+    .join("\n");
+}
+
+/**
+ * judge prompt（v4：atomic claim + citation group 口径；只含 claim + canonical +
+ * 检索证据；禁止记忆判定；verdict 定义收紧；按 mode 切换判定口径）。
+ */
 export function buildJudgePrompt(
   input: {
     claimText: string;
-    reference: ReferenceEntry;
-    canonical?: CitationVerificationRecord["canonical"];
+    /** 组全部成员（含未纳入证据的；展示责任归属） */
+    referenceIds: string[];
+    references: ReferenceEntry[];
+    metadataRecords: Map<string, CitationVerificationRecord>;
+    groupRawText: string;
     evidence: EvidenceRecord[];
   },
   mode: CitationSemanticMode = "full",
 ): string {
-  const canonicalLines: string[] = [];
-  if (input.canonical !== undefined) {
-    if (input.canonical.title !== undefined) {
-      canonicalLines.push(`标题：${input.canonical.title}`);
-    }
-    if (input.canonical.authors !== undefined) {
-      canonicalLines.push(`作者：${input.canonical.authors.join(", ")}`);
-    }
-    if (input.canonical.year !== undefined) {
-      canonicalLines.push(`年份：${input.canonical.year}`);
-    }
-    if (input.canonical.venue !== undefined) {
-      canonicalLines.push(`出处：${input.canonical.venue}`);
-    }
-    if (input.canonical.doi !== undefined) {
-      canonicalLines.push(`DOI：${input.canonical.doi}`);
-    }
-  }
+  const memberLines = groupMemberLines(input.referenceIds, input.references, input.metadataRecords);
   const evidenceLines = input.evidence
     .map((evidence, index) => `【证据${index + 1}】（来源：${evidence.source}，等级：${evidence.evidenceLevel}）\n${evidence.text}`)
     .join("\n\n");
+  const groupIntro = [
+    input.referenceIds.length > 1
+      ? `【被引文献组 ${input.groupRawText}】（${input.referenceIds.length} 篇共同支撑紧邻论断；已经外部学术库核验为真实存在）`
+      : `【被引文献（已经外部学术库核验为真实存在）】 ${input.groupRawText}`,
+    memberLines,
+  ].join("\n");
+
   const shared = [
-    `【正文论断】\n${input.claimText}`,
+    `【正文原子论断】\n${input.claimText}`,
     "",
-    `【被引文献（已经外部学术库核验为真实存在）】\n${canonicalLines.join("\n") || input.reference.rawText}`,
+    groupIntro,
     "",
     `【检索证据】\n${evidenceLines || "（无证据）"}`,
     "",
     '只输出一个 JSON 对象（无围栏）：{"verdict": "...", "reason": "一句话中文理由", "keyQuote": "证据中最关键的一句"}',
   ];
+
   if (mode === "contradiction_only") {
     return [
-      "你是引用矛盾检查员。只判断一件事情：下面这篇真实文献的检索证据，是否与论文正文论断存在明显矛盾（证据明确报告相反结论 / 直接冲突）。",
+      "你是引用矛盾检查员。只判断一件事情：下方引用组的检索证据，是否与论文正文中的这条原子论断存在实质性矛盾（证据明确表达相反结论）。",
       "",
       "严格规则：",
-      "1. 只能依据下方【检索证据】判断；禁止使用你自己的记忆、训练知识或常识推断文献内容；",
-      "2. 只有证据与论断直接相反（如论断称 X 优于 Y，证据明确报告 X 不优于 Y）才回答 CONTRADICTED；证据只是不够充分、未提及、方向不明确，都不算矛盾；",
-      "3. 判断不了时回答 NO_CONTRADICTION_DETECTED，绝不把「证据不足」当成矛盾；",
-      "4. verdict 只能是：CONTRADICTED / NO_CONTRADICTION_DETECTED；",
-      "5. keyQuote 必须逐字复制自【检索证据】原文。",
+      "1. 只能依据下方【检索证据】判断；即使你认识这些文献，也禁止使用自己的记忆、训练知识或常识推断文献内容；",
+      "2. 引用组共同提供证据：组内多篇文献的证据合在一起判断，不要求每篇单独与论断相关；",
+      "3. 只有证据与论断直接相反（如论断称 X 优于 Y，证据明确报告 X 不优于 Y）才回答 CONTRADICTED，且 keyQuote 必须逐字复制该反向陈述；证据只是未提及、不充分、方向不明，都不是矛盾；",
+      "4. 检查过证据且未发现相反内容 → NO_CONTRADICTION_DETECTED；证据与论断主题无关、无法开展矛盾核对 → INSUFFICIENT_EVIDENCE；绝不能把「证据不足」当成矛盾；",
+      "5. verdict 只能是：CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE；",
+      "6. keyQuote 必须逐字复制自【检索证据】原文。",
       "",
       ...shared,
     ].join("\n");
   }
   return [
-    "你是引用语义核验员。判断下面这篇真实文献的检索证据是否支持论文正文中的论断。",
+    "你是引用语义核验员。判断下方引用组的检索证据整体是否支撑论文正文中的这一条原子论断。",
+    "",
+    "背景：论文写作中，引用组（如 [35, 2, 5]）表示组内文献共同支撑紧邻的论断——各篇可以分工承担论断的不同部分，不要求任何一篇单独覆盖论断全部内容。",
     "",
     "严格规则：",
-    "1. 只能依据下方【检索证据】判断；禁止使用你自己的记忆、训练知识或常识推断文献内容；",
-    "2. 证据不足以判断时必须回答 INSUFFICIENT_EVIDENCE，绝不猜测；",
-    "3. verdict 只能是：SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED / INSUFFICIENT_EVIDENCE；",
-    "4. keyQuote 必须逐字复制自【检索证据】原文。",
+    "1. 只能依据下方【检索证据】判断；即使你认识这些文献，也禁止使用自己的记忆、训练知识或常识推断文献内容；",
+    "2. 待判断的是一条原子论断（单一命题），不要按整段话的标准要求证据；",
+    "3. 引用组共同提供支撑：把组内所有证据合在一起判断；某篇组员只支撑了论断的一部分，不构成「不支持」；",
+    "4. SUPPORTED：组证据整体明确支撑该论断；",
+    "5. PARTIALLY_SUPPORTED：组证据确实支撑论断的一部分、但论断中仍有重要成分未被任何证据覆盖（不是因为组内单篇只承担部分责任）；",
+    "6. UNSUPPORTED：证据内容与论断主题明确相关且足够具体，使你能较高置信度确认这组文献并不能支撑该论断。「证据未提及」「证据过于笼统」「主题对不上无法判断」都不是 UNSUPPORTED——那是 INSUFFICIENT_EVIDENCE（没有证据 ≠ 证明不支持）；",
+    "7. CONTRADICTED：证据中有与论断明确相反的陈述，keyQuote 必须逐字复制该反向陈述；不能由「不支持」推出「矛盾」；",
+    "8. 证据不足以判断时必须回答 INSUFFICIENT_EVIDENCE，绝不猜测；",
+    "9. verdict 只能是：SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED / INSUFFICIENT_EVIDENCE；",
+    "10. keyQuote 必须逐字复制自【检索证据】原文。",
     "",
     ...shared,
   ].join("\n");
@@ -219,6 +311,7 @@ const VERDICTS: readonly ClaimSupportVerdict[] = [
 const CONTRADICTION_VERDICTS: readonly ClaimSupportVerdict[] = [
   "CONTRADICTED",
   "NO_CONTRADICTION_DETECTED",
+  "INSUFFICIENT_EVIDENCE",
 ];
 
 /** judge 输出解析 + 引文真实性校验（伪造 quote 一律剥离；按 mode 校验合法 verdict） */
@@ -239,8 +332,8 @@ export function parseJudgeOutput(
   if (verdict === undefined) {
     throw new AgentRunFailedError(
       mode === "contradiction_only"
-        ? "verdict 缺失或非法（必须是 CONTRADICTED / NO_CONTRADICTION_DETECTED 之一）"
-        : "verdict 缺失或非法（必须是六个枚举值之一）",
+        ? "verdict 缺失或非法（必须是 CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE 之一）"
+        : "verdict 缺失或非法（必须是枚举值之一）",
     );
   }
   const reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 1000) : "";
@@ -272,6 +365,10 @@ export interface SemanticSummary {
   skipped: number;
   failed: number;
   pending: number;
+  /** 引用组维度统计（v4）：单引用记录 / 多引用组记录条数 */
+  groupShape: { single: number; group: number };
+  /** 去重后的原子论断条数（同句多条记录共享论断时只计一次） */
+  atomicClaims: number;
   /** Quality Gate 硬规则输入 */
   gate: {
     probableFabricated: number;
@@ -317,9 +414,18 @@ export function summarizeSemantic(
   let unsupportedCritical = 0;
   let notFoundObligatory = 0;
   let insufficient = 0;
+  let single = 0;
+  let group = 0;
+  const claimKeys = new Set<string>();
   for (const claim of claims) {
     byVerdict[claim.verdict] += 1;
     bySeverity[claim.severity] += 1;
+    if ((claim.referenceIds?.length ?? 1) > 1) {
+      group += 1;
+    } else {
+      single += 1;
+    }
+    claimKeys.add(`${claim.chunkId}::${claim.claimIndex ?? 1}::${claim.claimText}`);
     if (claim.status === "skipped") {
       skipped += 1;
     } else if (claim.status === "failed") {
@@ -330,7 +436,10 @@ export function summarizeSemantic(
     if (claim.verdict === "INSUFFICIENT_EVIDENCE") {
       insufficient += 1;
     }
-    if (claim.priority === "obligatory" && notFound.has(claim.referenceId)) {
+    if (
+      claim.priority === "obligatory" &&
+      claim.referenceIds?.some((referenceId) => notFound.has(referenceId)) === true
+    ) {
       notFoundObligatory += 1;
     }
     if (
@@ -348,6 +457,8 @@ export function summarizeSemantic(
     skipped,
     failed,
     pending,
+    groupShape: { single, group },
+    atomicClaims: claimKeys.size,
     gate: {
       probableFabricated: fabrications.size,
       notFoundObligatory,
