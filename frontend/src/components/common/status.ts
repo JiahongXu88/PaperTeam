@@ -137,24 +137,37 @@ export const FINDING_CATEGORY_LABELS: Record<string, string> = {
   consistency: "一致性",
 };
 
-/** Workflow stage → 用户可读名称（未知 stage 原样显示） */
+/** Workflow stage → 用户可读名称（未知 stage 原样显示；与 backend definitions.ts 的 stage id 对齐） */
 export const STAGE_LABELS: Record<string, string> = {
+  // existing_paper_review
   "paper.ensure": "解析论文结构",
   "citation.extract": "提取引用",
   "citation.metadata": "核验引用真实性",
   "citation.claims": "核验论断与引用一致性",
   "review.sections": "分章节审阅",
   "review.aggregate": "生成 Review 报告",
+  // idea_to_paper
   "research.idea": "调研",
   "research.feasibility": "可行性评估",
   "hitl.feasibility_confirm": "等待确认可行性",
   "outline.plan": "规划大纲",
   "hitl.outline_confirm": "等待确认大纲",
-  "write.sections": "分节写作",
+  "writing.sections": "分节写作",
+  // 共享后段（idea_to_paper / existing_paper_improvement）
   "citation.verify": "引用核验",
   "review.run": "三路审阅",
   "quality.gate": "Quality Gate",
-  "build.gate": "Build Gate",
+  "revision.revise": "修订",
+  "revision.apply": "应用改进计划",
+  "hitl.revision_overflow": "等待修订决策",
+  "build.draft": "构建论文",
+  // existing_paper_improvement
+  "import.parse": "校验项目结构",
+  "import.baseline_build": "基线编译",
+  "import.understand": "论文理解",
+  "assessment.target": "目标评估",
+  "plan.improvement": "制定改进计划",
+  "hitl.plan_confirm": "等待确认改进计划",
 };
 
 export const COMPLETION_LABELS: Record<string, string> = {
@@ -165,6 +178,67 @@ export const COMPLETION_LABELS: Record<string, string> = {
 
 export function stageLabel(stageId: string | undefined): string | undefined {
   return stageId === undefined ? undefined : (STAGE_LABELS[stageId] ?? stageId);
+}
+
+/**
+ * 各 WorkflowKind 的 stage 顺序模板（时间线展示用）。
+ * 与 backend definitions.ts 的 plan() 顺序一致；hitl = 等待用户输入的节点；
+ * conditional = 按运行条件可能跳过 / 重复（展示为「按需」）。
+ * 集中在这里维护，组件不得各自散落 switch。
+ */
+export interface StageSequenceEntry {
+  stageId: string;
+  hitl?: boolean;
+  conditional?: boolean;
+}
+
+export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntry[]> = {
+  existing_paper_review: [
+    { stageId: "paper.ensure" },
+    { stageId: "citation.extract" },
+    { stageId: "citation.metadata" },
+    { stageId: "citation.claims", conditional: true },
+    { stageId: "review.sections" },
+    { stageId: "review.aggregate" },
+  ],
+  idea_to_paper: [
+    { stageId: "research.idea" },
+    { stageId: "research.feasibility" },
+    { stageId: "hitl.feasibility_confirm", hitl: true },
+    { stageId: "outline.plan" },
+    { stageId: "hitl.outline_confirm", hitl: true },
+    { stageId: "writing.sections" },
+    { stageId: "citation.verify" },
+    { stageId: "review.run" },
+    { stageId: "quality.gate" },
+    { stageId: "revision.revise", conditional: true },
+    { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
+    { stageId: "build.draft", conditional: true },
+  ],
+  existing_paper_improvement: [
+    { stageId: "import.parse" },
+    { stageId: "import.baseline_build" },
+    { stageId: "import.understand" },
+    { stageId: "citation.verify" },
+    { stageId: "review.run" },
+    { stageId: "assessment.target" },
+    { stageId: "plan.improvement" },
+    { stageId: "hitl.plan_confirm", hitl: true },
+    { stageId: "revision.apply" },
+    { stageId: "quality.gate" },
+    { stageId: "revision.revise", conditional: true },
+    { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
+    { stageId: "build.draft", conditional: true },
+  ],
+};
+
+/** existing_paper_review：citationSemanticMode=off 时真实跳过 citation.claims（与后端 plan 一致） */
+export function stageSequenceFor(kind: string | undefined, citationSemanticMode?: string): readonly StageSequenceEntry[] {
+  const sequence = WORKFLOW_STAGE_SEQUENCES[kind ?? "idea_to_paper"] ?? [];
+  if (kind === "existing_paper_review" && citationSemanticMode === "off") {
+    return sequence.filter((entry) => entry.stageId !== "citation.claims");
+  }
+  return sequence;
 }
 
 /** 未知状态兜底：原样展示、中性色 */

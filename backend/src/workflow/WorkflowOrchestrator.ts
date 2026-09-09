@@ -259,11 +259,16 @@ export class WorkflowOrchestrator {
   /**
    * 请求取消：abort 在途 stage 并标记；执行循环在下个检查点终结并落盘。
    * awaiting_input / pending（无执行循环）立即终结。
+   * 已是 cancelled 的 run 幂等返回当前状态（重复取消不报错）；
+   * completed / failed 是语义错误（无可取消），仍抛 WORKFLOW_INVALID_STATE。
    */
   async cancel(runId: string): Promise<WorkflowState> {
     const handle = await this.requireHandle(runId);
     const status = handle.state.status;
-    if (status === "completed" || status === "failed" || status === "cancelled") {
+    if (status === "cancelled") {
+      return structuredClone(handle.state);
+    }
+    if (status === "completed" || status === "failed") {
       throw new WorkflowInvalidStateError(runId, status, "cancel");
     }
     handle.cancelRequested = true;

@@ -10,20 +10,24 @@ import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
+import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
+import { readSectionProgress } from "../components/project/workflowTimeline.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import { isRunActive, useArchiveProject, useProject, useProjectRuns, useRenameProject } from "../hooks/queries.js";
+import { useWorkflowEvents } from "../hooks/workflowEvents.js";
 import { ApiError } from "../api/client.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
-import { formatDateTime } from "../utils/format.js";
+import { formatDateTime, formatDurationBetween } from "../utils/format.js";
 import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js";
 
 /**
  * 项目工作区：标题（可重命名）+ 类型 / 状态 / 时间 / ID → 标签页（只暴露真正可用的模块）
  * → 主内容 + 右侧栏（论文信息、下一步、快捷操作、引用概况）。
- * 已有论文类项目多一个「Review」标签。标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
+ * 已有论文类项目多一个「Review」标签；「工作流」对所有项目开放（任务实时视图）。
+ * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "pdf" | "citations" | "review";
+type TabId = "overview" | "pdf" | "citations" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> = [
@@ -31,6 +35,7 @@ const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> 
   { id: "pdf", label: "PDF 与结构" },
   { id: "citations", label: "引用核验" },
   { id: "review", label: "Review", existingOnly: true },
+  { id: "workflow", label: "工作流" },
 ];
 
 function visibleTabs(kind: WorkflowKind | undefined) {
@@ -106,7 +111,38 @@ function ProjectRunsPanel({ projectId }: { projectId: string }) {
   );
 }
 
-function OverviewTab({ project }: { project: ProjectView }) {
+/** 概览的当前任务摘要：只显示状态 / 阶段 / 进度 + 入口，完整时间线在「工作流」标签 */
+function CurrentWorkflowCard({ projectId, onOpenTab }: { projectId: string; onOpenTab: (tab: OpenableTab) => void }) {  const { data } = useProjectRuns(projectId);
+  const active = data?.find(isRunActive);
+  if (active === undefined) {
+    return null;
+  }
+  const sectionProgress =
+    active.progress?.stageId === "review.sections" ? readSectionProgress(active.progress.data) : undefined;
+  const elapsed = formatDurationBetween(active.startedAt, undefined);
+  return (
+    <section className="panel section-block workflow-summary-card" data-testid="current-workflow">
+      <div className="section-head">
+        <h2>当前任务</h2>
+        <RunStatusBadge status={active.status} />
+      </div>
+      <p className="workflow-summary-line">
+        {active.status === "awaiting_input"
+          ? "任务正在等待你的确认"
+          : active.currentStage !== undefined
+            ? `正在执行：${stageLabel(active.currentStage) ?? active.currentStage}`
+            : "任务排队中"}
+        {sectionProgress !== undefined ? `（${sectionProgress.completed} / ${sectionProgress.total} 节）` : ""}
+        {active.status === "running" && elapsed !== undefined ? `，已运行 ${elapsed}` : ""}
+      </p>
+      <button type="button" className="btn" onClick={() => onOpenTab("workflow")} data-testid="goto-workflow">
+        查看工作流
+        <Icon name="chevron-right" />
+      </button>    </section>
+  );
+}
+
+function OverviewTab({ project, onOpenTab }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void }) {
   const meta: Array<[string, string]> = [];
   if (project.researchField) {
     meta.push(["研究领域", project.researchField]);
@@ -128,6 +164,7 @@ function OverviewTab({ project }: { project: ProjectView }) {
 
   return (
     <div className="panel-stack">
+      <CurrentWorkflowCard projectId={project.id} onOpenTab={onOpenTab} />
       <section className="panel section-block">
         <div className="section-head">
           <h2>研究定位</h2>
@@ -177,11 +214,21 @@ export function ProjectPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data, isPending, isError, error, refetch } = useProject(projectId);
+  const runs = useProjectRuns(projectId);
   const rename = useRenameProject(projectId);
   const archive = useArchiveProject();
   const [editingTitle, setEditingTitle] = useState(false);
   const [confirmingArchive, setConfirmingArchive] = useState(false);
   const [headerError, setHeaderError] = useState<string | null>(null);
+
+  // 页面级 SSE 订阅：存在活跃 run 时建立实时通道（驱动全部标签页的 run 缓存更新；
+  // 断线自动重连 + replay，活跃时的 3s 轮询作为兜底）
+  const activeRun = runs.data?.find(isRunActive);
+  const connection = useWorkflowEvents({
+    runId: activeRun?.runId,
+    projectId,
+    enabled: activeRun !== undefined,
+  });
 
   const visible = visibleTabs(data?.workflowKind);
   const tab = tabFromParam(searchParams.get("tab"), visible);
@@ -348,11 +395,13 @@ export function ProjectPage() {
       <div className="workspace-body">
         <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`} className="tabpanel">
           {tab === "overview" ? (
-            <OverviewTab project={project} />
+            <OverviewTab project={project} onOpenTab={openTab} />
           ) : tab === "pdf" ? (
             <PdfPanel projectId={project.id} />
           ) : tab === "citations" ? (
             <CitationsPanel projectId={project.id} />
+          ) : tab === "workflow" ? (
+            <WorkflowPanel projectId={project.id} onOpenTab={openTab} connection={connection} />
           ) : (
             <ReviewPanel projectId={project.id} onOpenTab={openTab} />
           )}

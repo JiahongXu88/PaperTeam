@@ -12,7 +12,7 @@ import {
   restoreProject,
 } from "../api/projects.js";
 import { getRuntimeStatus } from "../api/runtime.js";
-import { createWorkflowRun, listProjectRuns } from "../api/runs.js";
+import { cancelWorkflowRun, createWorkflowRun, listProjectRuns } from "../api/runs.js";
 import {
   exportReviewReport,
   extractCitations,
@@ -219,6 +219,26 @@ export function useInvalidateReviewOutputs(projectId: string | undefined) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.project(id) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.projectLists });
   }, [projectId, queryClient]);
+}
+
+/**
+ * 取消 WorkflowRun：成功后把返回状态写回 run 列表缓存。返回状态可能仍是
+ * running（在途模型调用 settle 中，UI 显示「正在取消…」），终态由 SSE /
+ * 轮询推动。重复取消在后端幂等（cancelled → 200 no-op）。
+ */
+export function useCancelWorkflowRun(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) => cancelWorkflowRun(runId),
+    onSuccess: (run) => {
+      if (projectId === undefined) {
+        return;
+      }
+      queryClient.setQueryData<WorkflowRunView[]>(queryKeys.projectRuns(projectId), (prev) =>
+        prev?.map((item) => (item.runId === run.runId ? run : item)),
+      );
+    },
+  });
 }
 
 export function usePaperReviewReport(projectId: string | undefined) {

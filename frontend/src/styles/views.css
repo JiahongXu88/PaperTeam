@@ -1788,3 +1788,277 @@
     width: 100%;
   }
 }
+
+/* ============================================================
+   工作流实时视图（M4.4）：复用 panel / stage-list / note / btn 语言
+   ============================================================ */
+
+.workflow-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+/* 头部：状态 + 元信息 + 取消 / 实时连接 */
+.workflow-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+
+.workflow-head-main {
+  min-width: 260px;
+  flex: 1 1 320px;
+}
+
+.workflow-head-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--s-2);
+}
+
+.workflow-cancelling {
+  font-size: var(--fs-secondary);
+  color: var(--text-muted);
+}
+
+.workflow-live {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.workflow-live-open::before,
+.workflow-live-connecting::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: 1px;
+  background: var(--text-muted);
+}
+
+.workflow-live-open::before {
+  background: var(--success);
+}
+
+.workflow-live-connecting::before {
+  background: var(--warning);
+}
+
+/* 阶段时间线：沿用 stage-list 的点列语言，扩展状态变体 */
+.stage-list-workflow {
+  gap: var(--s-3);
+}
+
+.stage-list-workflow .stage-item {
+  grid-template-columns: 14px minmax(150px, auto) minmax(0, 1fr);
+}
+
+.stage-state-text {
+  margin-left: var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.stage-awaiting {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.stage-awaiting .stage-mark {
+  border-color: var(--warning);
+  background: var(--warning);
+}
+
+.stage-failed {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.stage-failed .stage-mark {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.stage-cancelled .stage-mark {
+  border-color: var(--border-strong);
+  background: transparent;
+}
+
+.stage-list-workflow .stage-failed .stage-state-text,
+.stage-list-workflow .stage-awaiting .stage-state-text {
+  color: inherit;
+  opacity: 0.75;
+}
+
+/* 分章节进度块（时间线内，运行中的 review.sections 下方） */
+.wf-progress {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface-muted);
+}
+
+.wf-progress-main {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.wf-progress-count {
+  font-size: var(--fs-h2);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+  line-height: 1;
+}
+
+.wf-progress-count small {
+  font-size: var(--fs-secondary);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.wf-progress-label {
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.wf-progress-bar {
+  flex: 1 1 160px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border-subtle);
+  overflow: hidden;
+  min-width: 80px;
+}
+
+.wf-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent-primary);
+  transition: width 0.4s ease;
+}
+
+.wf-progress-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-4);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.wf-progress-metrics .run-error {
+  color: var(--danger);
+}
+
+/* 概览的当前任务摘要卡 */
+.workflow-summary-card .workflow-summary-line {
+  margin: 0 0 var(--s-3);
+  font-size: var(--fs-body);
+  color: var(--text-secondary);
+}
+
+/* awaiting / 失败 / 完成块内的补充排版 */
+.workflow-awaiting-prompt {
+  margin: var(--s-2) 0;
+  padding: var(--s-2) var(--s-3);
+  border-left: 3px solid var(--warning);
+  background: var(--bg-surface-muted);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  color: var(--text-secondary);
+  font-size: var(--fs-secondary);
+}
+
+.workflow-awaiting-options {
+  display: block;
+  font-size: var(--fs-secondary);
+  color: var(--text-muted);
+}
+
+.workflow-awaiting-note {
+  display: block;
+  margin-top: var(--s-2);
+  font-size: var(--fs-secondary);
+  color: var(--text-muted);
+}
+
+.workflow-awaiting-actions {
+  display: block;
+  margin-top: var(--s-3);
+}
+
+.workflow-retry-advice {
+  display: block;
+  margin-top: var(--s-2);
+  font-size: var(--fs-secondary);
+}
+
+.workflow-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+/* 历史运行列表：gutter-row 的可点击形态 */
+.gutter-row-button {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.gutter-row-button:hover {
+  background: var(--bg-surface-muted);
+}
+
+.gutter-row-button.selected {
+  background: var(--accent-primary-soft);
+  box-shadow: inset 2px 0 0 var(--accent-primary);
+}
+
+/* 详细信息：开发者字段弱化展示 */
+.workflow-details .details-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.workflow-stage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-secondary);
+}
+
+.workflow-stage-table th,
+.workflow-stage-table td {
+  text-align: left;
+  padding: var(--s-2) var(--s-3) var(--s-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.workflow-stage-table th {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}

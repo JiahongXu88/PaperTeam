@@ -1136,7 +1136,9 @@ function citationMetadataStage(services: WorkflowServices): StageSpec {
     timeoutMs: services.stageTimeoutMs,
     retryable: ["transient", "timeout"],
     async execute(ctx) {
-      const result = await services.paper.citationIntegrity.verifyMetadata(ctx.projectId);
+      const result = await services.paper.citationIntegrity.verifyMetadata(ctx.projectId, {
+        signal: ctx.signal,
+      });
       return {
         checked: result.checked,
         byStatus: result.byStatus,

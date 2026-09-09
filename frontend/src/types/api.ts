@@ -96,13 +96,70 @@ export interface WorkflowRunView {
   currentStage?: string;
   createdAt: string;
   updatedAt: string;
+  /** 实际开始执行 / 终态时间（pending 时无 startedAt；运行中无 finishedAt） */
+  startedAt?: string;
+  finishedAt?: string;
   awaiting?: { stageId: string; prompt: string; options: string[] } | null;
-  error?: { code: string; message: string } | null;
+  error?: { code: string; message: string; stageId?: string } | null;
   completion?: { label: "final" | "draft" | "review" } | null;
   /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
+  /** 已完成 stage id（按完成顺序；重复执行的 stage 只出现一次） */
+  completedStages?: string[];
+  /**
+   * 前端富化字段（非后端 DTO）：当前 stage 的开始时间，来自 SSE stage.started
+   * 事件 ts（含重连 replay），用于运行中阶段的耗时展示；无 SSE 时缺省
+   */
+  currentStageStartedAt?: string;
+  /** 全部尝试记录（时间线 / 详细信息用；summary 只保留白名单数字字段） */
+  stageHistory?: WorkflowStageRecordView[];
   /** 语义核验模式（existing_paper_review run 的 request 快照；旧 run 缺省 full） */
   citationSemanticMode?: CitationSemanticMode;
+}
+
+/** StageRecord 精简视图（不含 findings 等大 payload） */
+export interface WorkflowStageRecordView {
+  stageId: string;
+  attempt: number;
+  status: "completed" | "failed";
+  startedAt: string;
+  finishedAt: string;
+  error?: { code: string; message: string } | null;
+  /** 产出摘要中的数字字段（sectionsReviewed / findingsTotal / durationMs / 并发画像等） */
+  summaryNumbers?: Record<string, number>;
+  /** 并发画像（review.sections 特有：配置并发度 / 实际观测峰值） */
+  concurrency?: { configured: number; maxObserved: number };
+}
+
+// ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----
+
+export type WorkflowDomainEventTypeView =
+  | "workflow.started"
+  | "stage.started"
+  | "stage.progress"
+  | "stage.completed"
+  | "stage.failed"
+  | "workflow.awaiting_input"
+  | "workflow.resumed"
+  | "workflow.recovered"
+  | "workflow.cancelled"
+  | "workflow.completed"
+  | "workflow.failed"
+  | "quality_gate.passed"
+  | "quality_gate.failed"
+  | "build_gate.passed"
+  | "build_gate.failed";
+
+export interface WorkflowDomainEventView {
+  seq: number;
+  type: WorkflowDomainEventTypeView | (string & {});
+  runId: string;
+  projectId: string;
+  stageId?: string;
+  attempt?: number;
+  message?: string;
+  data?: Record<string, unknown>;
+  ts: string;
 }
 
 // ---- Existing-Paper Review（existing_paper_review 聚合报告） ----

@@ -273,6 +273,10 @@ export class SectionReviewScheduler {
         findings: [...findingsBySection.values()].reduce((sum, list) => sum + list.length, 0),
         failed: failedCount,
         reused: telemetry.sectionsReused,
+        // 活跃 / 排队 / 重试口径（前端实时展示）：active = started - completed - failed，
+        // queued = total - started；快照与 emit 时刻一致
+        started: telemetry.sectionsStarted,
+        retried: telemetry.sectionsRetried,
       });
       return "completed";
     };

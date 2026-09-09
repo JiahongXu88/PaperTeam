@@ -1,11 +1,18 @@
 import { apiClient } from "./client.js";
-import type { CitationSemanticMode, WorkflowKind, WorkflowRunStatus, WorkflowRunView } from "../types/api.js";
+import type {
+  CitationSemanticMode,
+  WorkflowKind,
+  WorkflowRunStatus,
+  WorkflowRunView,
+  WorkflowStageRecordView,
+} from "../types/api.js";
 
 /**
  * WorkflowRun API。
  *
  *   GET  /api/runs?projectId=xxx → { runs: WorkflowState[] }
  *   POST /api/projects/:id/workflows { kind, citationSemanticMode? } → 202 { runId }
+ *   POST /api/runs/:runId/cancel → { run }（cancelled 后重复取消幂等 200）
  *
  * Backend 返回完整 WorkflowState（checkpoint 全量）；这里逐字段校验后映射为
  * WorkflowRunView 子集，前端不依赖 stageResults / inputs 等内部字段。
@@ -40,7 +47,11 @@ function readError(value: unknown): WorkflowRunView["error"] {
   if (!isRecord(value) || typeof value["message"] !== "string") {
     return null;
   }
-  return { code: typeof value["code"] === "string" ? value["code"] : "UNKNOWN", message: value["message"] };
+  return {
+    code: typeof value["code"] === "string" ? value["code"] : "UNKNOWN",
+    message: value["message"],
+    ...(typeof value["stageId"] === "string" ? { stageId: value["stageId"] } : {}),
+  };
 }
 
 function readAwaiting(value: unknown): WorkflowRunView["awaiting"] {
@@ -88,10 +99,54 @@ function readSemanticMode(raw: Record<string, unknown>): CitationSemanticMode | 
     : undefined;
 }
 
+/** stageHistory 条目：只保留时间线 / 详细信息需要的字段（summary 提炼数字白名单） */
+function readStageRecord(value: unknown): WorkflowStageRecordView | null {
+  if (!isRecord(value) || typeof value["stageId"] !== "string" || typeof value["status"] !== "string") {
+    return null;
+  }
+  const error = isRecord(value["error"])
+    ? {
+        code: typeof value["error"]["code"] === "string" ? value["error"]["code"] : "",
+        message: typeof value["error"]["message"] === "string" ? value["error"]["message"] : "",
+      }
+    : null;
+  const summary = isRecord(value["summary"]) ? value["summary"] : undefined;
+  const summaryNumbers: Record<string, number> = {};
+  if (summary !== undefined) {
+    for (const [key, entry] of Object.entries(summary)) {
+      if (typeof entry === "number") {
+        summaryNumbers[key] = entry;
+      }
+    }
+  }
+  const telemetry = isRecord(summary?.["concurrencyTelemetry"])
+    ? (summary!["concurrencyTelemetry"] as Record<string, unknown>)
+    : undefined;
+  const concurrency =
+    telemetry !== undefined &&
+    typeof telemetry["reviewConcurrency"] === "number" &&
+    typeof telemetry["maxObservedConcurrency"] === "number"
+      ? { configured: telemetry["reviewConcurrency"], maxObserved: telemetry["maxObservedConcurrency"] }
+      : undefined;
+  return {
+    stageId: value["stageId"],
+    attempt: typeof value["attempt"] === "number" ? value["attempt"] : 1,
+    status: value["status"] === "failed" ? "failed" : "completed",
+    startedAt: typeof value["startedAt"] === "string" ? value["startedAt"] : "",
+    finishedAt: typeof value["finishedAt"] === "string" ? value["finishedAt"] : "",
+    ...(error !== null ? { error } : {}),
+    ...(Object.keys(summaryNumbers).length > 0 ? { summaryNumbers } : {}),
+    ...(concurrency !== undefined ? { concurrency } : {}),
+  };
+}
+
 function toRunView(raw: Record<string, unknown>): WorkflowRunView {
   const kind = raw["workflowKind"];
   const status = raw["status"];
   const citationSemanticMode = readSemanticMode(raw);
+  const stageHistory = Array.isArray(raw["stageHistory"])
+    ? raw["stageHistory"].map(readStageRecord).filter((record): record is WorkflowStageRecordView => record !== null)
+    : [];
   return {
     runId: String(raw["runId"] ?? ""),
     projectId: String(raw["projectId"] ?? ""),
@@ -100,10 +155,20 @@ function toRunView(raw: Record<string, unknown>): WorkflowRunView {
     ...(typeof raw["currentStage"] === "string" ? { currentStage: raw["currentStage"] } : {}),
     createdAt: String(raw["createdAt"] ?? ""),
     updatedAt: String(raw["updatedAt"] ?? ""),
+    ...(typeof raw["startedAt"] === "string" ? { startedAt: raw["startedAt"] } : {}),
+    ...(typeof raw["finishedAt"] === "string" ? { finishedAt: raw["finishedAt"] } : {}),
     awaiting: readAwaiting(raw["awaiting"]),
     error: readError(raw["error"]),
     completion: readCompletion(raw["completion"]),
     progress: readProgress(raw["progress"]),
+    ...(Array.isArray(raw["completedStages"])
+      ? {
+          completedStages: raw["completedStages"].filter(
+            (id): id is string => typeof id === "string",
+          ),
+        }
+      : {}),
+    ...(stageHistory.length > 0 ? { stageHistory } : {}),
     ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}),
   };
 }
@@ -129,5 +194,18 @@ export async function createWorkflowRun(
     kind,
     ...(options.citationSemanticMode !== undefined ? { citationSemanticMode: options.citationSemanticMode } : {}),
   });
+}
+
+/**
+ * 取消 WorkflowRun。后端语义：立即 abort 在途模型调用、停止派发未开始的
+ * 章节 / stage，循环检查点终结后落盘 cancelled。已是 cancelled 的重复取消
+ * 幂等返回当前状态（200）；completed / failed → 409。
+ */
+export async function cancelWorkflowRun(runId: string): Promise<WorkflowRunView> {
+  const body = await apiClient.post<{ run: Record<string, unknown> }>(
+    `/api/runs/${encodeURIComponent(runId)}/cancel`,
+    {},
+  );
+  return toRunView(body.run ?? {});
 }
 

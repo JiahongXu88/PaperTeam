@@ -15,6 +15,11 @@ import type { ApiErrorBody } from "../types/api.js";
 /** Base URL（空串 = 同源相对路径） */
 const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? "";
 
+/** 构造带 Base URL 的完整 API 路径（EventSource 等非 fetch 通道共用） */
+export function apiUrl(path: string): string {
+  return `${BASE_URL}${path}`;
+}
+
 /** 结构化 API 错误（含 Backend 业务错误码；status=0 表示网络层失败） */
 export class ApiError extends Error {
   readonly status: number;

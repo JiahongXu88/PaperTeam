@@ -223,7 +223,7 @@ export class CitationIntegrityService {
    */
   async verifyMetadata(
     projectId: string,
-    options: { force?: boolean } = {},
+    options: { force?: boolean; signal?: AbortSignal } = {},
   ): Promise<{
     byStatus: Record<CitationMetadataStatus, number>;
     checked: number;
@@ -250,6 +250,11 @@ export class CitationIntegrityService {
     const records: CitationVerificationRecord[] = [];
     let reused = 0;
     for (const reference of targets) {
+      // 取消检查（逐条粒度，与 verifyClaims 一致）：已保存的记录保留，
+      // 剩余条目下次核验自动补查（PROVIDER_ERROR / 未查不算结论）
+      if (options.signal?.aborted === true) {
+        throw new BusinessError("WORKFLOW_CANCELLED", "引用真实性核验已被取消");
+      }
       const existing = await this.store.loadRecord<CitationVerificationRecord>(
         projectId,
         "metadata",

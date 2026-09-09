@@ -31,7 +31,7 @@ import type { ProjectView, WorkflowKind } from "../../types/api.js";
  * 不存在的能力（下载 PDF、分享、笔记、对话式分析）不做入口。
  */
 
-export type AsideTab = "pdf" | "citations" | "review";
+export type AsideTab = "pdf" | "citations" | "review" | "workflow";
 
 export function isExistingPaper(kind: WorkflowKind | undefined): boolean {
   return kind === "existing_paper_improvement" || kind === "existing_paper_review";
@@ -169,9 +169,9 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
               </button>
             ) : null}
             {reviewAvailable && reviewActive ? (
-              <button type="button" className="btn btn-block" onClick={() => onOpenTab("review")}>
+              <button type="button" className="btn btn-block" onClick={() => onOpenTab("workflow")}>
                 <Icon name="clock" />
-                查看 Review 进度
+                查看任务进度
               </button>
             ) : null}
             {hasReport ? (

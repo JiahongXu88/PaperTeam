@@ -76,7 +76,7 @@ function progressOf(run: WorkflowRunView): { index: number; total: number } | un
   return typeof index === "number" && typeof total === "number" && total > 0 ? { index, total } : undefined;
 }
 
-export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpenTab: (tab: "pdf" | "citations") => void }) {
+export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpenTab: (tab: "pdf" | "citations" | "workflow") => void }) {
   const paper = usePaper(projectId);
   const runs = useProjectRuns(projectId);
   const report = usePaperReviewReport(projectId);
@@ -189,7 +189,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
         {actions}
       </div>}
 
-      {active && reviewRun !== undefined ? <RunProgress run={reviewRun} /> : null}
+      {active && reviewRun !== undefined ? <RunProgress run={reviewRun} onOpenTab={onOpenTab} /> : null}
 
       {reviewRun?.status === "failed" ? <RunFailure run={reviewRun} /> : null}
       {reviewRun?.status === "cancelled" && !hasReport ? (
@@ -281,7 +281,7 @@ function ProgressRing({ value, total, caption }: { value: number; total: number;
 }
 
 /** 运行中：阶段清单（已完成 / 当前 / 待执行）+ 章节进度（off 模式不含语义核验阶段） */
-function RunProgress({ run }: { run: WorkflowRunView }) {
+function RunProgress({ run, onOpenTab }: { run: WorkflowRunView; onOpenTab: (tab: "pdf" | "citations" | "workflow") => void }) {
   const stages = stagesForMode(run.citationSemanticMode);
   const currentIndex = stages.indexOf(run.currentStage ?? "");
   const progress = progressOf(run);
@@ -309,7 +309,11 @@ function RunProgress({ run }: { run: WorkflowRunView }) {
           })}
         </ol>
         <p className="faint" style={{ marginTop: "var(--s-3)" }}>
-          页面每 3 秒自动刷新；离开页面不影响后台任务。
+          后台任务不受页面影响；实时详情与取消入口在
+          <button type="button" className="btn-link" onClick={() => onOpenTab("workflow")} data-testid="goto-workflow-from-review">
+            工作流
+          </button>
+          标签页。
         </p>
       </div>
     </div>
