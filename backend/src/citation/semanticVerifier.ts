@@ -62,9 +62,11 @@ const GROUP_EVIDENCE_MEMBER_LIMIT = 6;
 /**
  * 语义核验算法版本（纳入 claim 指纹 + 写入每条记录）：
  * v4：atomic claim × citation group 重构——记录 id / 指纹 / prompt / verdict
- * 口径全部变化，旧版本记录（semanticVersion<4）视为过期缓存，不再读出。
+ *     口径全部变化，旧版本记录视为过期缓存，不再读出。
+ * v5：绑定语义收紧——预告性/组织性论断（拆解 markers 为空）不再继承句内
+ *     引用组（model 计划严格绑定；fallback 计划保持全组兜底）。
  */
-export const SEMANTIC_VERIFICATION_VERSION = 4;
+export const SEMANTIC_VERIFICATION_VERSION = 5;
 
 export interface ClaimJudgeOutput {
   verdict: ClaimSupportVerdict;
@@ -94,12 +96,18 @@ export function buildClaimRecords(
     }
     const calloutById = new Map(group.groups.map((callout) => [callout.citationId, callout]));
     for (const claim of plan.claims) {
-      // 绑定引用组：非法 id（模型输出已过滤，防御）→ 句内全部组兜底
       const boundCallouts = claim.citationIds
         .map((citationId) => calloutById.get(citationId))
         .filter((callout): callout is CitationCallout => callout !== undefined);
-      const effective = boundCallouts.length > 0 ? boundCallouts : group.groups;
-      for (const callout of effective) {
+      if (boundCallouts.length === 0) {
+        if (plan.method === "fallback") {
+          continue; // 防御：fallback 单论断本应绑定全部组，空 = 组内无 resolved 成员
+        }
+        // model 计划严格绑定：空绑定 = 拆解判定该论断（预告性/组织性表述）
+        // 不需要引用支撑——不生成核验记录，绝不把结构自述错当被引论断
+        continue;
+      }
+      for (const callout of boundCallouts) {
         const members = callout.references
           .filter(
             (relation) =>

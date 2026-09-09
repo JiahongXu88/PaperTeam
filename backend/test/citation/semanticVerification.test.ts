@@ -46,6 +46,10 @@ const R003_ABSTRACT =
 const R006_ABSTRACT =
   "The dominant sequence transduction models are based on recurrent or convolutional networks that include attention mechanisms. We propose the Transformer, a model architecture relying entirely on attention mechanisms. Our model achieves 28.4 BLEU on the WMT 2014 English-to-German translation task and improves accuracy substantially.";
 
+/** 预告性句子：结构自述 + 标记只归属「对比已引模型」子论断——绑定收紧关键场景 */
+const ROADMAP_SENTENCE =
+  "In the following sections, we will describe system Z, motivate component C and discuss its advantages over models such as [6] and [2].";
+
 /** 复合句：三组引用共存（[1] / [2] / [3, 4, 5]）——v4 关键场景 */
 const COMPOUND_SENTENCE =
   "Architecture A [1] and architecture B [2] have been firmly established as state of the art approaches in sequence modeling and transduction problems such as language modeling and machine translation [3, 4, 5].";
@@ -276,6 +280,8 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
       callout("CT008", "C0002", "SEC02", "[6]", [resolved("6", "R006")], "The cited method reduces accuracy on this benchmark [6].", 2),
       callout("CT009", "C0001", "SEC01", "[6]", [resolved("6", "R006")], "Quantum error correction improves translation quality [6]."),
       callout("CT010", "C0001", "SEC01", "[6]", [resolved("6", "R006")], "The architecture processes images end to end [6]."),
+      callout("CT011", "C0001", "SEC01", "[6]", [resolved("6", "R006")], ROADMAP_SENTENCE),
+      callout("CT012", "C0001", "SEC01", "[2]", [resolved("2", "R002")], ROADMAP_SENTENCE),
     ];
     await store.saveExtraction(projectId, { references, callouts });
 
@@ -300,10 +306,24 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     });
 
     runtime = new FakeJudgeRuntime();
-    // 复合句拆解（按真实 sentenceKey 组装，避免测试硬编码哈希）
+    // 复合句 + 预告句拆解（按真实 sentenceKey 组装，避免测试硬编码哈希）
     compoundGroup = groupCalloutsBySentence(callouts)[0]!;
+    const roadmapGroup = groupCalloutsBySentence(callouts).find(
+      (candidate) => candidate.sentence === ROADMAP_SENTENCE,
+    )!;
     runtime.decomposeOutput = JSON.stringify({
       sentences: [
+        {
+          id: roadmapGroup.sentenceKey,
+          claims: [
+            { text: "In the following sections, we will describe system Z.", markers: [] },
+            { text: "In the following sections, we will motivate component C.", markers: [] },
+            {
+              text: "In the following sections, we will discuss the advantages of system Z over models such as the cited ones.",
+              markers: ["CT011", "CT012"],
+            },
+          ],
+        },
         {
           id: compoundGroup.sentenceKey,
           claims: [
@@ -354,6 +374,15 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
       verdict: "CONTRADICTED",
       reason: "证据报告该方法大幅提升准确率，与「降低准确率」的论断明确相反。",
       keyQuote: "improves accuracy substantially",
+    }));
+    // 预告句的绑定论断（对比已引模型）：R006 / R002 证据可用
+    runtime.scripted.set("CT011-AC3", JSON.stringify({
+      verdict: "SUPPORTED",
+      reason: "证据给出已引模型的序列建模结果，可作为对比对象。",
+    }));
+    runtime.scripted.set("CT012-AC3", JSON.stringify({
+      verdict: "PARTIALLY_SUPPORTED",
+      reason: "证据部分覆盖对比对象。",
     }));
     // 主题无关但证据具体：judge 给出 UNSUPPORTED（收紧口径下合法）
     runtime.scripted.set("CT009-AC1", JSON.stringify({
@@ -408,7 +437,22 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
 
     // 汇总：组形态 + 原子论断数
     expect(result.summary.groupShape).toEqual({ single: result.summary.total - 1, group: 1 });
-    expect(result.summary.atomicClaims).toBe(9); // 10 callouts - CT005（unresolved 无记录）
+    expect(result.summary.atomicClaims).toBe(10); // 预告句两条记录共享同一绑定论断
+  });
+
+  it("预告性/组织性论断不继承引用组：roadmap 句只核验「对比已引模型」子论断", async () => {
+    const result = await service.verifyClaims(projectId);
+    const byId = new Map(result.records.map((r) => [r.claimCitationId, r]));
+
+    // 预告性子论断（描述 system Z / motivate component C）没有记录——
+    // 它们是作者结构自述，标记 [6]/[2] 只归属「对比已引模型」子论断
+    const roadmapRecords = result.records.filter((r) => r.sourceSentence === ROADMAP_SENTENCE);
+    expect(roadmapRecords).toHaveLength(2);
+    expect(roadmapRecords.map((r) => r.claimCitationId).sort()).toEqual(["CT011-AC3", "CT012-AC3"]);
+    expect(roadmapRecords.every((r) => r.claimText.includes("advantages"))).toBe(true);
+    // 绑定论断的 verdict 正常核验
+    expect(byId.get("CT011-AC3")!.verdict).toBe("SUPPORTED");
+    expect(byId.get("CT012-AC3")!.verdict).toBe("PARTIALLY_SUPPORTED");
   });
 
   it("citation group 共同支撑：组级 judge + 组员不完整覆盖不自动 UNSUPPORTED", async () => {
@@ -481,7 +525,7 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     // CT005 组 0 resolved 成员 → buildClaimRecords 直接跳过（不占 skippedNoMetadata）
     // 模型调用 = 拆解 1 批 + judge 8 条
     expect(result.telemetry.decompositionCalls).toBe(1);
-    expect(result.telemetry.modelCalls).toBe(8);
+    expect(result.telemetry.modelCalls).toBe(10); // 8 条常规 + 预告句绑定论断 × 2
   });
 
   it("CONTRADICTED 必须带逐字引文：编造引文 → 剥离并确定性降级 INSUFFICIENT", async () => {
@@ -551,11 +595,11 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     const callsBefore = runtime.calls.length;
     const again = await service.verifyClaims(projectId);
     expect(runtime.calls.length).toBe(callsBefore);
-    expect(again.reused).toBe(9);
+    expect(again.reused).toBe(11);
     expect(again.telemetry.decompositionCalls).toBe(0);
-    expect(again.telemetry.decompositionCacheHits).toBe(1);
+    expect(again.telemetry.decompositionCacheHits).toBe(2); // 复合句 + 预告句
     const persisted = await service.listClaimRecords(projectId);
-    expect(persisted).toHaveLength(9);
+    expect(persisted).toHaveLength(11);
   });
 
   it("拆解失败 → 确定性兜底（整句单论断、绑定全部组）；核验仍完整", async () => {
@@ -572,8 +616,8 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     expect(fallbackClaims[0]!.claimText).not.toContain("[3, 4, 5]");
     expect(fallbackClaims.map((r) => r.citationId).sort()).toEqual(["CT001", "CT002", "CT003"]);
     // 拆解失败：复合句退兜底；简单句本来就走兜底（8 句全部 fallback 计划）
-    expect(result.telemetry.sentencesPlanned).toBe(8);
-    expect(result.telemetry.fallbackSentencePlans).toBe(8);
+    expect(result.telemetry.sentencesPlanned).toBe(9);
+    expect(result.telemetry.fallbackSentencePlans).toBe(9);
     expect(result.telemetry.decompositionCalls).toBe(1); // 调用过但失败（failDecompose）
     // 兜底记录照常核验（judge 收到的是去标记整句）
     const c1 = byId.get("CT001-AC1")!;
@@ -601,6 +645,8 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     runtime.scripted.set("CT008-AC1", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
     runtime.scripted.set("CT009-AC1", JSON.stringify({ verdict: "INSUFFICIENT_EVIDENCE", reason: "证据与论断主题无关，无法核对矛盾" }));
     runtime.scripted.set("CT010-AC1", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
+    runtime.scripted.set("CT011-AC3", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
+    runtime.scripted.set("CT012-AC3", JSON.stringify({ verdict: "NO_CONTRADICTION_DETECTED", reason: "证据未发现相反结论" }));
     // full 口径的 verdict 在 contradiction 模式非法 → 该条 failed（严格解析，不静默降级）
     runtime.scripted.set("CT006-AC1", JSON.stringify({ verdict: "SUPPORTED", reason: "不该出现" }));
 
@@ -621,7 +667,7 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
 
     // 汇总口径：CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE 计数
     expect(result.summary.byVerdict.CONTRADICTED).toBe(1);
-    expect(result.summary.byVerdict.NO_CONTRADICTION_DETECTED).toBe(6);
+    expect(result.summary.byVerdict.NO_CONTRADICTION_DETECTED).toBe(8);
     expect(result.summary.byVerdict.INSUFFICIENT_EVIDENCE).toBe(1); // CT009（证据无关，无法核对矛盾）
     expect(result.summary.byVerdict.SKIPPED).toBe(1); // CT006 无证据短路
     // contradiction prompt：组语义 + 三值口径（取最近一次该 scope 的调用）

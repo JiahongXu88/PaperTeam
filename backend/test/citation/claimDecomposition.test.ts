@@ -131,7 +131,7 @@ describe("parseDecompositionSentence：模型输出防御", () => {
     ],
   };
 
-  it("合法输出：marker 绑定保留；未知 marker 过滤；空绑定兜底全部组", () => {
+  it("合法输出：marker 绑定保留；未知 marker 过滤；空绑定保持为空（预告性论断不继承标记）", () => {
     const claims = parseDecompositionSentence(
       {
         claims: [
@@ -142,21 +142,39 @@ describe("parseDecompositionSentence：模型输出防御", () => {
       group,
     );
     expect(claims).not.toBeNull();
-    expect(claims![0]!.citationIds).toEqual(["CT001"]); // CT999 不在句内 → 过滤
-    expect(claims![1]!.citationIds).toEqual(["CT001", "CT003"]); // 空绑定 → 全部组
+    // CT999 不在句内 → 过滤；CT003 未被任何论断绑定 → 补绑到最后一条已绑定论断
+    expect(claims![0]!.citationIds).toEqual(["CT001", "CT003"]);
+    expect(claims![1]!.citationIds).toEqual([]); // 空绑定 = 不需要引用支撑（预告性表述）
     expect(claims!.map((claim) => claim.claimIndex)).toEqual([1, 2]);
   });
 
-  it("未绑定的组补绑到最后一条论断（组不能凭空消失）", () => {
+  it("未绑定的组补绑到最后一条已绑定论断（组不能凭空消失）", () => {
     const claims = parseDecompositionSentence(
-      { claims: [{ text: "Only architecture A is established for sequence modeling.", markers: ["CT001"] }] },
+      {
+        claims: [
+          { text: "In the following sections, we will describe system Z.", markers: [] },
+          { text: "System Z outperforms the cited prior models.", markers: ["CT001"] },
+        ],
+      },
       group,
     );
-    expect(claims![0]!.citationIds).toEqual(["CT001", "CT003"]);
+    expect(claims![0]!.citationIds).toEqual([]); // 预告性论断保持未绑定
+    expect(claims![1]!.citationIds).toEqual(["CT001", "CT003"]); // 未覆盖的组补绑到这里
+  });
+
+  it("整句预告性表述：claims 空数组 = 合法结果（零记录），不是解析失败", () => {
+    expect(parseDecompositionSentence({ claims: [] }, group)).toEqual([]);
+  });
+
+  it("全部论断未绑定（纯预告句）：组无处补绑，保持空绑定（该句零记录）", () => {
+    const claims = parseDecompositionSentence(
+      { claims: [{ text: "In the following sections, we will describe system Z.", markers: [] }] },
+      group,
+    );
+    expect(claims![0]!.citationIds).toEqual([]);
   });
 
   it("残片 / 超量 / 结构损坏 → null（整句走确定性兜底）", () => {
-    expect(parseDecompositionSentence({ claims: [] }, group)).toBeNull();
     expect(parseDecompositionSentence({ claims: [{ text: "Tiny.", markers: ["CT001"] }] }, group)).toBeNull();
     expect(
       parseDecompositionSentence(
@@ -197,5 +215,6 @@ describe("fallbackPlan + buildDecompositionPrompt", () => {
     expect(prompt).toContain("原子论断");
     expect(prompt).toContain('"markers"');
     expect(prompt).toContain("最多拆 6 条");
+    expect(prompt).toContain("预告性"); // 预告/组织性表述不绑定标记
   });
 });

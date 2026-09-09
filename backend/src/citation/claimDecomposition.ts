@@ -24,7 +24,7 @@ import { sha256Hex } from "../util/hash.js";
 import type { CitationCallout, ReferenceEntry } from "./integrity.js";
 
 /** 拆解算法版本（进缓存指纹：规则变化后旧拆解自动失效） */
-export const CLAIM_DECOMPOSITION_VERSION = 1;
+export const CLAIM_DECOMPOSITION_VERSION = 2;
 
 /** 批量拆解：一次模型调用处理的句子数上限（prompt 体量控制） */
 export const DECOMPOSITION_BATCH_SIZE = 8;
@@ -56,7 +56,7 @@ export interface AtomicClaimDraft {
   claimIndex: number;
   /** 原子论断文本（无引用标记） */
   claimText: string;
-  /** 绑定的 citation group（citationId 列表；空 = 兜底绑定句内全部组） */
+  /** 绑定的 citation group（citationId 列表；空 = 该论断不需要引用支撑，如预告性/组织性表述） */
   citationIds: string[];
 }
 
@@ -187,7 +187,7 @@ export function buildDecompositionPrompt(batch: SentenceCalloutGroup[]): string 
   const sentenceBlocks = batch
     .map((group) => {
       const groupList = group.groups.map((callout) => calloutRawText(callout)).join(" ");
-      return `[${group.sentenceKey}]\n标记说明：${groupList}\n句子：${tagMarkers(group).slice(0, SENTENCE_MAX_CHARS)}`;
+      return `[${group.sentenceKey}]\n标记说明：${groupList}\n句子：${tagMarkers(group).slice(0, SENTENCE_MAX_CHARS)}`
     })
     .join("\n\n");
   return [
@@ -197,9 +197,10 @@ export function buildDecompositionPrompt(batch: SentenceCalloutGroup[]): string 
     "1. 每条原子论断 = 一个可独立判断真假的单一命题；复合句（多个主语/多个谓语/多个并列成分）必须拆开；",
     "2. 忠于原文：只重组句内已有信息，不得添加、推断或改写含义；",
     "3. 拆分共享成分时要补全主语/谓语（如 “LSTM 与 GRU 已被确立为 SOTA” 拆成 “LSTM 已被确立为 SOTA” 和 “GRU 已被确立为 SOTA”），使每条论断独立可读；",
-    "4. 绑定：引用标记通常支撑它紧邻（其后或其前）的子论断；一条论断可绑定多个标记；一条论断确实没有可绑定的标记时绑定句内全部标记；",
-    "5. 论断文本不包含 ⟦…⟧ 标记和 [数字] 引用编号；",
-    `6. 每句最多拆 6 条论断；简单句保持 1 条即可，不要为拆而拆。`,
+    "4. 绑定：引用标记支撑它紧邻（其后或其前）的子论断；一条论断可绑定多个标记。只有标记确实支撑某论断时才绑定——**预告性 / 组织性表述**（如「下文将描述 X」「第 3 节介绍 Y」「如前所述」）是作者对文章结构的自述，不是需要引用支撑的论断，不要为它们绑定标记（markers 留空数组）；",
+    "5. 需要引用支撑的论断却没有任何可绑定标记时（标记语义归属不明），markers 也留空数组，不要猜测；",
+    "6. 论断文本不包含 ⟦…⟧ 标记和 [数字] 引用编号；",
+    "7. 每句最多拆 6 条论断；简单句保持 1 条即可，不要为拆而拆；整句都是预告性 / 组织性表述（没有任何需要引用支撑的命题）时 claims 返回空数组。",
     "",
     "只输出一个 JSON 对象（无围栏）：",
     '{"sentences":[{"id":"S…","claims":[{"text":"原子论断","markers":["CT003"]}]}]}',
@@ -208,7 +209,11 @@ export function buildDecompositionPrompt(batch: SentenceCalloutGroup[]): string 
   ].join("\n");
 }
 
-/** 拆解输出解析：单句解析失败返回 null（该句走 fallback，不拖垮整批） */
+/**
+ * 拆解输出解析：单句解析失败返回 null（该句走 fallback，不拖垮整批）。
+ * claims 为空数组 = 模型判定整句没有需要引用支撑的命题（预告性/组织性
+ * 表述）——合法结果（该句零记录），不等于解析失败。
+ */
 export function parseDecompositionSentence(
   raw: unknown,
   group: SentenceCalloutGroup,
@@ -217,7 +222,13 @@ export function parseDecompositionSentence(
     return null;
   }
   const claimsRaw = (raw as { claims?: unknown }).claims;
-  if (!Array.isArray(claimsRaw) || claimsRaw.length === 0 || claimsRaw.length > 6) {
+  if (!Array.isArray(claimsRaw)) {
+    return null;
+  }
+  if (claimsRaw.length === 0) {
+    return []; // 整句预告性 / 组织性表述：无需要引用支撑的论断
+  }
+  if (claimsRaw.length > 6) {
     return null;
   }
   const validIds = new Set(group.groups.map((callout) => callout.citationId));
@@ -235,20 +246,24 @@ export function parseDecompositionSentence(
     const markers = Array.isArray(markersRaw)
       ? markersRaw.map(String).filter((id) => validIds.has(id))
       : [];
+    // 空绑定 = 模型判定该论断不需要引用支撑（预告性表述 / 归属不明）——
+    // 保持为空，不强制继承句内标记（那会把结构自述错当被引论断核验）
     claims.push({
       claimIndex: claims.length + 1,
       claimText: text,
-      // 绑定为空 / 全部非法 → 兜底绑全部组（不猜丢失绑定）
-      citationIds: markers.length > 0 ? [...new Set(markers)] : allIds,
+      citationIds: [...new Set(markers)],
     });
   }
-  // 有效性检查：句内每个 citation group 至少被一条论断绑定（未被绑定的组
-  // 补绑到最后一条论断——组不能凭空消失）
+  // 组覆盖兜底：句内每个 citation group 至少被一条「已绑定」论断覆盖——
+  // 未被任何论断绑定的组补绑到最后一条已绑定论断（组不能凭空消失）；
+  // 全部论断都未绑定（纯预告句）则整句零记录
   const bound = new Set(claims.flatMap((claim) => claim.citationIds));
   const unbound = allIds.filter((id) => !bound.has(id));
-  if (unbound.length > 0 && claims.length > 0) {
-    const last = claims[claims.length - 1]!;
-    last.citationIds = [...new Set([...last.citationIds, ...unbound])];
+  if (unbound.length > 0) {
+    const lastBound = [...claims].reverse().find((claim) => claim.citationIds.length > 0);
+    if (lastBound !== undefined) {
+      lastBound.citationIds = [...new Set([...lastBound.citationIds, ...unbound])];
+    }
   }
   return claims;
 }
