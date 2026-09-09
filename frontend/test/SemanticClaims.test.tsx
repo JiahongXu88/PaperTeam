@@ -15,7 +15,7 @@ import { renderWithProviders } from "./helpers.js";
 /**
  * 语义核验可用性（2026-09 Review Usability）：
  * - 明细列表逐条可定位（页码 / 章节 / 论断 / 引用 / 理由 / 证据或明示无证据）；
- * - 顶部统计数字可点击 → 直接过滤明细（证据不足 N → 只看证据不足）；
+ * - 顶部统计数字可点击 → 直接过滤明细（无法自动判断 N → 只看该类记录）；
  * - Review 页「导出报告」触发 Markdown 下载。
  */
 
@@ -219,11 +219,11 @@ describe("语义核验明细（CitationsPanel）", () => {
     // 无证据记录：明示「当前未获得…」，且给出结构化原因（chip + 理由后缀都可能出现）
     const noEvidence = rows.find((row) => within(row).queryAllByText(/只获取到书目 metadata/).length > 0)!;
     expect(noEvidence).toBeDefined();
-    expect(within(noEvidence).getByText("当前未获得足够可核验的原文证据。")).toBeInTheDocument();
+    expect(within(noEvidence).getByText(/当前未获得足够可核验的原文证据——自动核验无法判断/)).toBeInTheDocument();
     expect(within(noEvidence).getByText(/正文位置：第 6 页 · 实验与分析/)).toBeInTheDocument();
     expect(within(noEvidence).getByText("[1]")).toBeInTheDocument();
     expect(within(noEvidence).getByText(/ByteTrack: Multi-object tracking/)).toBeInTheDocument();
-    expect(within(noEvidence).getByText("证据不足")).toBeInTheDocument();
+    expect(within(noEvidence).getByText("无法自动判断")).toBeInTheDocument();
 
     // 有证据记录：证据折叠区含来源 / 等级 / 片段
     const withEvidence = rows.find((row) => within(row).queryByText("支持") !== null)!;
@@ -242,13 +242,13 @@ describe("语义核验明细（CitationsPanel）", () => {
     expect(within(unsupported).getByText(/证据没有提及完全解决/)).toBeInTheDocument();
   });
 
-  it("点击统计「证据不足 2」→ 只显示证据不足记录；再点回全部", async () => {
+  it("点击统计「无法自动判断 2」→ 只显示对应记录；再点回全部", async () => {
     mockPanelData();
     renderWithProviders(<CitationsPanel projectId="p-s1" />);
 
     await screen.findByTestId("semantic-claims");
-    const ledgerButton = screen.getByTestId("ledger-filter-证据不足");
-    expect(ledgerButton.textContent).toBe("证据不足 2");
+    const ledgerButton = screen.getByTestId("ledger-filter-无法自动判断");
+    expect(ledgerButton.textContent).toBe("无法自动判断 2");
     fireEvent.click(ledgerButton);
 
     const section = screen.getByTestId("semantic-claims");
@@ -257,11 +257,11 @@ describe("语义核验明细（CitationsPanel）", () => {
     expect(within(section).queryByText("支持")).toBeNull();
 
     // 过滤器单选联动
-    const checked = within(section).getByLabelText(/证据不足 2/) as HTMLInputElement;
+    const checked = within(section).getByLabelText(/无法自动判断 2/) as HTMLInputElement;
     expect(checked.checked).toBe(true);
 
     // 点击已选中的统计 → 回到全部
-    fireEvent.click(screen.getByTestId("ledger-filter-证据不足"));
+    fireEvent.click(screen.getByTestId("ledger-filter-无法自动判断"));
     expect(await within(screen.getByTestId("semantic-claims")).findAllByTestId("claim-row")).toHaveLength(4);
   });
 

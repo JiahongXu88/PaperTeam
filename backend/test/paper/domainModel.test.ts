@@ -128,6 +128,7 @@ function sampleClaimRecord(): ClaimCitationRecord {
     claimCitationId: "CC0001",
     citationId: "CT001",
     referenceId: "R001",
+    referenceIds: ["R001"],
     claimText: "Convolutional approaches dominated previous work.",
     sectionId: "SEC01",
     page: 1,
@@ -299,14 +300,14 @@ describe("M4.3.0 domain model", () => {
     expect(
       deriveClaimSeverity({ probableFabrication: false, verdict: "PARTIALLY_SUPPORTED", priority: "helpful" }),
     ).toBe("minor");
-    // INSUFFICIENT_EVIDENCE 不等于捏造：minor + 人工复核
+    // INSUFFICIENT_EVIDENCE 不是论文问题：info——不构成 Finding，只作诊断展示
     expect(
       deriveClaimSeverity({
         probableFabrication: false,
         verdict: "INSUFFICIENT_EVIDENCE",
         priority: "obligatory",
       }),
-    ).toBe("minor");
+    ).toBe("info");
     expect(
       deriveClaimSeverity({ probableFabrication: false, verdict: "SUPPORTED", priority: "obligatory" }),
     ).toBe("info");

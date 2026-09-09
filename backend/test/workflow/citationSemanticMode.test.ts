@@ -16,6 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { PdfParser, RawPdfExtraction } from "../../src/paper/PdfParser.js";
 import type { AgentRuntime, AgentTask, RunAgentInput } from "../../src/runtime/types.js";
 import type { ScholarlyProvider, ScholarlyQuery, LookupOutcome } from "../../src/citation/scholarly.js";
+import { SEMANTIC_VERIFICATION_VERSION } from "../../src/citation/semanticVerifier.js";
 import { startTestStack, type TestStack } from "../helpers/testStack.js";
 import { createExistingPaperReviewDefinition } from "../../src/workflow/definitions.js";
 import { readSemanticMode } from "../../src/citation/semanticMode.js";
@@ -241,11 +242,13 @@ describe("citationSemanticMode：缺省 off（真跳过 semantic stage）", () =
   });
 
   it("上一轮遗留 full 语义 records 不会显示进 off 轮报告（第二轮 off 干净）", { timeout: 60_000 }, async () => {
-    // 手动补一份语义记录（模拟上一轮 full 的历史遗留——如手动「语义核验」）
+    // 手动补一份语义记录（模拟上一轮 full 的历史遗留——如手动「语义核验」；
+    // 带当前算法版本：v4 的过期过滤只剔除旧版本记录，同版本遗留靠按轮隔离）
     const claim = {
       claimCitationId: "legacy-claim",
       citationId: "legacy",
       referenceId: "R001",
+      referenceIds: ["R001"],
       claimText: "legacy claim",
       sectionId: "sec01",
       page: 1,
@@ -257,11 +260,21 @@ describe("citationSemanticMode：缺省 off（真跳过 semantic stage）", () =
       severity: "minor",
       status: "verified",
       fingerprint: "fp-legacy",
+      semanticVersion: SEMANTIC_VERIFICATION_VERSION,
       verifiedAt: "2026-09-07T00:00:00.000Z",
     };
     await stack.stack.paperStore.saveRecord(projectId, "claims", "legacy-claim", claim);
     const before = await stack.request("GET", `/api/projects/${projectId}/citations/integrity`);
     expect(((before.body["report"] as Record<string, unknown>)["semantic"] as Record<string, unknown>)["total"]).toBe(1);
+    // 旧算法版本（无 semanticVersion 字段）的记录：过期缓存，读不出来（不污染新结论）
+    const { semanticVersion: _drop, ...staleClaim } = claim;
+    void _drop;
+    await stack.stack.paperStore.saveRecord(projectId, "claims", "stale-v3-claim", {
+      ...staleClaim,
+      claimCitationId: "stale-v3-claim",
+    });
+    const filtered = (await stack.request("GET", `/api/projects/${projectId}/citations/claims`)).body["records"] as Array<Record<string, unknown>>;
+    expect(filtered.some((record) => record["claimCitationId"] === "stale-v3-claim")).toBe(false);
 
     // 第二轮显式 off（run 内 round 重新从 1 计：报告文件被本轮覆盖，最新报告即本轮）
     const started = await stack.request("POST", `/api/projects/${projectId}/workflows`, {
@@ -311,8 +324,8 @@ describe("citationSemanticMode：contradiction_only（仅检查明显冲突）",
 
     const semanticCalls = modeRuntime.calls.filter((call) => (call.contextScope ?? "").startsWith("citation/semantic/"));
     expect(semanticCalls.length).toBeGreaterThanOrEqual(2);
-    // contradiction prompt：明确「只判断明显矛盾」的口径
-    expect(semanticCalls.every((call) => call.task.includes("是否与论文正文论断存在明显矛盾"))).toBe(true);
+    // contradiction prompt：明确「实质性矛盾」的口径（v4：原子论断 + 引用组）
+    expect(semanticCalls.every((call) => call.task.includes("实质性矛盾"))).toBe(true);
     expect(semanticCalls.every((call) => call.task.includes("CONTRADICTED / NO_CONTRADICTION_DETECTED"))).toBe(true);
 
     // 记录与报告：1 条 CONTRADICTED + 1 条 NO_CONTRADICTION_DETECTED

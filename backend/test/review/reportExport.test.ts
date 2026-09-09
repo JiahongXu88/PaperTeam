@@ -60,6 +60,7 @@ function claimFixture(id: string, referenceId: string, overrides: Partial<ClaimC
     claimCitationId: id,
     citationId: id.split("-")[0]!,
     referenceId,
+    referenceIds: [referenceId],
     claimText: `正文论断 ${id}`,
     sectionId: "SEC02",
     page: 3,
@@ -264,7 +265,7 @@ describe("ReviewReportExporter：citationSemanticMode 三种模式", () => {
     expect(markdown).toContain("| ✅ 未发现明显矛盾 | 1 |");
     expect(markdown).toContain("### 存在矛盾（1 条）");
     expect(markdown).toContain("证据明确报告相反结论");
-    expect(markdown).not.toContain("### 证据不足（");
+    expect(markdown).not.toContain("### 无法自动判断（证据不足，");
     expect(markdown).not.toContain("### 不支持（");
   });
 
@@ -272,7 +273,7 @@ describe("ReviewReportExporter：citationSemanticMode 三种模式", () => {
     const { markdown } = exporter.export(exportInput());
     expect(markdown).toContain("## 语义核验（Layer 2：论断与引用一致性）");
     expect(markdown).toContain("### 不支持（1 条）");
-    expect(markdown).toContain("### 证据不足（1 条");
+    expect(markdown).toContain("### 无法自动判断（证据不足，1 条");
   });
 });
 
@@ -296,7 +297,7 @@ describe("ReviewReportExporter（service 层）", () => {
     expect(markdown).toContain("✅ 已验证");
     expect(markdown).toContain("状态：❌ 未找到");
     expect(markdown).toContain("状态：❌ 不支持");
-    expect(markdown).toContain("状态：❔ 证据不足");
+    expect(markdown).toContain("状态：❔ 无法自动判断（证据不足）");
     expect(markdown).toContain("⏭️ 跳过");
   });
 
@@ -312,8 +313,8 @@ describe("ReviewReportExporter（service 层）", () => {
 
   it("INSUFFICIENT_EVIDENCE 全量保留 + 无证据明示；UNSUPPORTED 逐条详细", () => {
     const { markdown } = exporter.export(exportInput());
-    expect(markdown).toContain("### 证据不足（1 条，全部保留——二次分析重点）");
-    expect(markdown).toContain("当前未获得足够可核验的原文证据。");
+    expect(markdown).toContain("### 无法自动判断（证据不足，1 条——只表示未获取到足够摘要/正文证据，不代表引用存在问题）");
+    expect(markdown).toContain("当前未获得足够可核验的原文证据（自动核验无法判断，不代表引用存在错误）。");
     expect(markdown).toContain("只获取到书目 metadata，没有摘要/正文等可判证据");
     expect(markdown).toContain("### 不支持（1 条）");
     expect(markdown).toContain("证据没有提及该数字");
