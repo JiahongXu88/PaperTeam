@@ -1,9 +1,61 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-09（引用语义核验改为可配置后；前次 2026-09-08 Review
-> 并发优化 + M4.9 规划见历史）
+> 更新日期：2026-09-09（M4.4 Workflow Live View + SSE + Cancel + Progress 完成；
+> 同日早前：引用语义核验可配置；2026-09-08 Review 并发优化 + M4.9 规划见历史）
 
 ## 当前阶段
+
+**M4.4 — Workflow Live View + SSE + Cancel + Progress（✅ 完成，2026-09-09）**：
+把 Backend 既有 Workflow / Domain Event SSE / 取消 / 进度能力正式产品化到前端。
+
+- **Workflow Live View（项目工作区「工作流」标签）**：当前任务卡（类型 / 状态 /
+  开始时间 + 客户端 timer 已运行时长 / 阶段进度）+ **Stage Timeline**
+  （completed / running / awaiting / failed / cancelled / pending 六态；每行带
+  状态文字不只靠颜色；条件 stage 标「按需」；stage → 中文标签与三种 kind 的
+  顺序模板集中在 `status.ts`，与 backend definitions.ts 对齐）+ 最近运行历史
+  （可点击切换查看）。runId / 时间戳 / 每阶段尝试与耗时 / 并发画像收进折叠
+  「详细信息」。
+- **分章节 Review 进度**：`17 / 33` 确定性计数 + 细进度条（completed/total，
+  非虚假百分比）+ `运行中 N / 等待 M / 已重试 R / 失败 F`（backend
+  `stage.progress` 载荷新增 `started` / `retried`；active = started -
+  completed - failed，queued = total - started）。`maxObservedConcurrency`
+  只在详细信息（Performance Details）展示。
+- **SSE 数据层 `useWorkflowEvents`**：页面级订阅（存在活跃 run 时建立），
+  先订阅后 replay、seq 去重（重连 replay 不重复应用）、`stage.*` 事件直接
+  增量更新 TanStack Query 缓存（run 列表），`awaiting_input` / 终态走
+  invalidate 取权威状态（review 类 run 终态连带失效报告 / 引用 / 项目缓存）；
+  终态关闭连接；活跃时 3s 轮询保留为 SSE 故障兜底。耗时用客户端 timer 基于
+  server 时间戳，不轮询后端。
+- **取消**：`取消任务`（btn-danger 描边样式）→ 行内确认（文案如实：
+  已完成阶段与结果保留、未开始不执行、进行中调用被中断）→ pending 禁用
+  → settle 窗口显示「正在取消…」→ 终态「已取消」。**Backend 两处最小修复**：
+  ① `cancel()` 对已 cancelled 的 run 幂等返回（completed/failed 仍 409）；
+  ② `verifyMetadata` 接受 AbortSignal 逐条循环检查中止（此前引用真实性核验
+  全程不响应取消，e2e 实测取消要等整轮网络扫描 ~90s+）。AgentRun 级取消
+  （queued 停止派发 + active abort）经审计确认 Review 并发版本已解决（既有
+  专项测试），无需改动。
+- **awaiting_input / failed / completed**：等待确认块（prompt + options +
+  「交互处理将在下一阶段提供」的如实说明 + 真实可用的取消入口，不做假
+  approve 按钮）；失败块（稳定中文文案 + 失败阶段 + 重试建议 + 折叠技术
+  detail）；完成块（总耗时 / 阶段数 / 已审阅 N/M 节 + 查看 Review / 查看引用
+  核验 / 导出报告真实入口）。
+- **联动**：概览新增「当前任务」摘要卡（状态 + 阶段 + 进度 + 查看工作流）；
+  Review 页运行中显示阶段清单 + 「工作流」入口；Review 完成后报告缓存经
+  SSE 终态失效自动刷新；右侧栏「查看任务进度」指向工作流。
+- **验证**：Backend 486（新增 SSE 重连 replay 去重 ×2 + cancel 幂等 +
+  verifyMetadata 取消 + progress 载荷断言）+ Frontend 112（新增
+  workflowEvents 7 + WorkflowPanel 7）全部 PASS；Playwright 新增
+  `workflow.spec.ts`（无模型栈：时间线 SSE 推进 / 取消 / reload 恢复 / 失败态
+  / 联动入口；模型门控：小论文完整链路 → completed → 报告就绪，单节短调用量级）
+  + visual.spec 增 `project-workflow` 路由（浅/深 × 5 视口）；真实 GLM 小论文
+  smoke（1 页 / 1 节 / 3 引用，58s 完成）验证真实 SSE → 前端实时更新 → 报告。
+  浏览器视觉 review：浅/深 × 1366/1440/1920/1100w 运行中 / 终态 / 详情截图
+  检查，修复亚秒耗时「00:00」噪音。
+
+**下一阶段：M4.5 HITL UI**（awaiting_input 的 approve / adjust / revise 交互；
+backend resume API 与事件载荷已就绪，前端结构已预留等待确认块）。
+
+---
 
 **引用语义核验可配置（CitationSemanticMode，2026-09-09 完成）**：引用两层
 核验明确分层——Layer 1 真实性 / metadata 核验**始终执行**；Layer 2
@@ -43,7 +95,8 @@ List / Create Project（双模式）/ Project Workspace 基础壳就绪。
 **M4.2.5 Live Model Integration Gate ✅（2026-09-05）：真实 Provider
 `zai-coding-cn/glm-5.3` 经运行中 Backend 全链路验证（单 Agent smoke /
 live SSE / Workflow 至首个 HITL / 真实 cancel），L3 Live Provider E2E
-verified（见下）。下一阶段：M4.3 Workflow Live View + SSE + Cancel。**
+verified（见下）。当时的下一阶段「Workflow Live View + SSE + Cancel」
+已于 M4.4（2026-09-09）完成。**
 
 **Review 并发优化完成（2026-09-08）**：分章节 Review 有界并发落地
 （`SectionReviewScheduler` + `PAPERTEAM_REVIEW_CONCURRENCY`，默认 3；真实
@@ -326,7 +379,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **当前：Backend 382（+4 个默认跳过的 live smoke）+ Frontend 77 + 浏览器级 E2E 15（Playwright，`e2e/`，需运行中的 dev 栈）全部通过（2026-09-07）。**
+- **当前：Backend 486（+7 个默认跳过的 live smoke）+ Frontend 112 + 浏览器级 E2E 22（Playwright，`e2e/`，需运行中的 dev 栈；模型门控用例在模型未配置时自动跳过）全部通过（2026-09-09，M4.4）。**
 - 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。
@@ -387,6 +440,9 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 - **验收**：Backend 338 + Frontend 73 测试（新增 import 回滚/自动标题/goal 映射/archive 过滤/restore/仅归档可删/忙碌保护/会话释放/Review 全链路 Fake Runtime）；build/typecheck 通过；Chrome 真实浏览器 8 条用户路径 × 3 分辨率（当时为手写 CDP 脚本，已被 `e2e/` Playwright 套件取代）全部通过。
 
 ## 历史
+
+- **M4.4 Workflow Live View + SSE + Cancel + Progress（2026-09-09）**：见「当前阶段」节。
+- **引用语义核验可配置（2026-09-09）**：见「当前阶段」节。
 
 - **Review 并发优化（2026-09-08）**：profiling telemetry（e940607）→ 分章节
   Review 有界并发（`SectionReviewScheduler`，e4e8deb）+ PaperMap 章节摘要并发

@@ -3,7 +3,9 @@
 > 冻结日期：2026-09-04（M4.0）；M4.3 增补 PDF / Citations / Skills 端点（2026-09-06）；
 > 2026-09-07 增补 Project Entry & Lifecycle（import-pdf / archive / restore / DELETE / scope / paper-review）；
 > 2026-09-07 Hardening：错误码 `NOT_FOUND` / `PDF_PARSE_FAILED` / `PDF_PARSER_UNAVAILABLE`、
-> `RuntimeStatusView.tools.pdfParser`、`WorkflowRunView.progress`、`ImportProjectPdfResult.document`（见 §0 / §2）。
+> `RuntimeStatusView.tools.pdfParser`、`WorkflowRunView.progress`、`ImportProjectPdfResult.document`（见 §0 / §2）；
+> 2026-09-09 M4.4：Workflow Live View 正式消费（§1.4 / §3 增补：`POST /cancel`
+> 幂等语义、`stage.progress` 载荷的 `started` / `retried`、`WorkflowRunView` 时间线字段）。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -58,9 +60,9 @@
 |---|---|---|
 | `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun → 202 `{runId, status, workflowKind}` | M4.3 |
 | `GET /api/runs/:runId` | run 状态 / 当前 stage / awaiting 待办 / 错误 / completion | M4.3 |
-| `GET /api/runs/:runId/events` | SSE：Domain Event replay + 实时（事件类型见 §3） | M4.3 |
-| `POST /api/runs/:runId/resume` | HITL 输入 `{decision, payload?}` | M4.4 |
-| `POST /api/runs/:runId/cancel` | 取消 run（Runtime v2 真实取消） | M4.3 |
+| `GET /api/runs/:runId/events` | SSE：Domain Event replay + 实时（事件类型见 §3）；断线重连后服务端全量 replay，前端按 `seq` 去重 | ✅ M4.4（useWorkflowEvents，页面级订阅） |
+| `POST /api/runs/:runId/resume` | HITL 输入 `{decision, payload?}` | M4.5 |
+| `POST /api/runs/:runId/cancel` | 取消 run：立即 abort 在途模型调用（AgentRun / 分章节审阅 / 语义核验 / 引用真实性核验逐条循环），停止派发未开始项，循环检查点终结落盘。**已 cancelled 的重复取消幂等 200**（返回当前状态）；completed / failed → 409 | ✅ M4.4（工作流页「取消任务」） |
 | `GET/POST /api/projects/:id/sources`、`GET/PATCH/DELETE …/:sid`、`POST …/:sid/analyze` | 文献库 CRUD + PDF 分析 | M4.5 |
 | `GET/POST /api/projects/:id/evidence`、`GET …/:eid`、`POST …/:eid/verify` | Evidence CRUD + 核验 | M4.5 |
 | `GET /api/projects/:id/feasibility` | 最近可行性报告（HITL 上下文） | M4.4 |
@@ -230,12 +232,21 @@ interface WorkflowRunView {                      // WorkflowState → UI 子集�
   workflowKind: WorkflowKind; status: WorkflowRunStatus;
   currentStage?: string;
   createdAt: string; updatedAt: string;
+  startedAt?: string; finishedAt?: string;      // M4.4：耗时 / 时间线展示（pending 无 startedAt）
   awaiting?: { stageId: string; prompt: string; options: string[] } | null;
-  error?: { code: string; message: string } | null;
+  error?: { code: string; message: string; stageId?: string } | null;   // M4.4：stageId 指向失败阶段
   completion?: { label: "final" | "draft" | "review" } | null;
-  /** 当前 stage 最近一次 stage.progress 快照（如分章节审阅 {section,index,total,findings}；2026-09-07） */
+  /** 当前 stage 最近一次 stage.progress 快照（分章节审阅字段见下；2026-09-07） */
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
+  completedStages?: string[];                   // M4.4：已完成 stage id（时间线状态推导）
+  stageHistory?: WorkflowStageRecordView[];     // M4.4：全部尝试记录（summary 只保留数字白名单，无 findings 大 payload）
+  currentStageStartedAt?: string;               // 前端富化（非后端 DTO）：SSE stage.started 的 ts，用于运行中阶段耗时
 }
+
+// M4.4 stage.progress 载荷（review.sections）——前端据此展示 17/33 + 运行中 / 等待 / 重试：
+//   { section, completed, total, findings, failed, reused, started, retried }
+//   active = started - completed - failed；queued = total - started（快照口径）
+//   started / retried 为 2026-09-09 新增；旧 run 的 payload 无这两个字段时前端只显示 completed / total
 
 // GET /api/projects/:id/paper-review（2026-09-07；2026-09-08 增 citationSemanticMode）
 type CitationSemanticMode = "off" | "contradiction_only" | "full";  // 新 run 缺省 off；旧报告缺省视为 full
@@ -327,9 +338,10 @@ interface WorkflowDomainEvent {
 }
 ```
 
-**结论（M4.0 审计）**：现有 SSE contract（replay + 实时 + 心跳 + seq 去重 +
-`workflow.awaiting_input` 携带待办）已足以支撑 M4.3 Workflow Live View 与 M4.4
-HITL，无需提前重写事件系统。
+**结论（M4.0 审计；2026-09-09 M4.4 实证）**：现有 SSE contract（replay + 实时 + 心跳 + seq 去重 +
+`workflow.awaiting_input` 携带待办）已足以支撑 Workflow Live View（M4.4 已消费：
+`useWorkflowEvents` 页面级订阅 → seq 去重 → TanStack Query 缓存增量更新，
+断线重连 / 刷新恢复 / 终态失效均有浏览器级 E2E 覆盖）与 M4.5 HITL，无需重写事件系统。
 
 ## 4. 变更纪律
 

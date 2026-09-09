@@ -95,8 +95,15 @@ PDF、失败回滚不留半成品）；`existing_paper_review` 快速 Review 工
 深色，设置 → 外观）；App 错误边界；Playwright 浏览器级 E2E（`e2e/`）。真实用户论文
 （26 页中文论文）已完成导入 → 引用核验 → 分章节 Review 全链路。
 
-**未实现（M4.4+）**：Workflow Live View（SSE / Cancel）、HITL UI、Evidence /
-Review 界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
+**M4.4 Workflow Live View（2026-09-09）已落地**：项目工作区「工作流」标签——
+Stage Timeline（六态 + 集中中文标签映射）、分章节进度（17/33 + 运行中 / 等待 /
+重试 / 失败）、SSE 实时更新（`useWorkflowEvents`：replay + seq 去重 + 重连恢复 +
+刷新恢复）、取消任务（行内确认 + 「正在取消…」过渡态 + 后端幂等）、失败 /
+等待确认 / 完成态的可读呈现与真实结果入口；概览「当前任务」摘要卡与 Review
+页运行中入口联动。
+
+**未实现（M4.5+）**：HITL 交互 UI（approve / adjust / revise）、Evidence /
+Review 扩展界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
 系统管理后台、Docker 部署。
 
 ## 文档

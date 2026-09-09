@@ -4,7 +4,7 @@
 > **M1 ~ M3.8（Backend：Workflow / Evidence / Review / Pi Runtime）与 M4.0-M4.2（React Web
 > Workbench）已实现**；Pi SDK 为唯一正式 Agent Runtime（in-process），AgentRuntime 契约 v2。
 > 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
-> 前端 M4.3+ 页面（Workflow Live View / HITL / Evidence / Review / PDF）、Visual Reviewer、
+> 前端 M4.5+ 页面（HITL / Evidence / Review 扩展）、Visual Reviewer、
 > LaTeX repair loop、完整版本管理、Docker 部署为 Planned；
 > **Iterative Writer–Reviewer Outer Review Loop（§13，D-0026）为已接受的架构方向，
 > 增强实现 Planned——当前已实现基线为 M3.2 bounded revision loop（§7）**。
@@ -93,7 +93,8 @@ completion label=`review`，与旧 manuscript review 三路审稿互不复用）
 列表 / 新建项目（二选一入口 + PDF File-First 导入）/ 项目工作区（含 Review Tab）/
 Skills / Settings（模型设置 + 项目管理）。项目生命周期含 归档 / 恢复 / 永久删除
 （`archivedAt` 独立生命周期字段；删除时释放 Runtime 项目会话
-`releaseProjectSessions`）。尚未实现：Workflow Live View / HITL 等 M4.4+ 前端页面、
+`releaseProjectSessions`）；工作流实时视图（M4.4：Stage Timeline / SSE 实时 / 取消 /
+分章节进度 / 最近运行，SSE 数据层 `useWorkflowEvents` 页面级订阅）。尚未实现：HITL 等 M4.5+ 前端页面、
 Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
 
 ## 2. 核心概念区分（架构红线）
@@ -618,8 +619,8 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
 ### 8.3 双模式目标（PRD；系统管理后台 M4.8+）
 
 - **论文工作台**（普通用户）：My Papers（两类项目）、New Project（两类入口）、
-  Workflow 实时视图（M4.3）、HITL 待办（M4.4）、文献与证据（M4.5）、审稿 /
-  Quality Gate（M4.6）、PDF 查看（M4.7）。隐藏 session / agentId / runId / Runtime
+  Workflow 实时视图（M4.4 已实现）、HITL 待办（M4.5）、文献与证据（M4.6）、审稿 /
+  Quality Gate（M4.7）、PDF 查看（M4.8）。隐藏 session / agentId / runId / Runtime
   技术细节，只展示业务阶段与 awaiting_input 待办。
 - **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、日志、
   系统诊断（M4.8+）。
