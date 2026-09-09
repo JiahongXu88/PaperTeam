@@ -86,8 +86,9 @@ describe("ProjectPage Tab 导航（UX Polish 2026-09）", () => {
     expect(screen.getByRole("tab", { name: "概览" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "PDF 与结构" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "引用核验" })).toBeInTheDocument();
+    // M4.4：工作流 tab 正式开放（所有项目）
+    expect(screen.getByRole("tab", { name: "工作流" })).toBeInTheDocument();
     // 未开放模块不占一级导航
-    expect(screen.queryByRole("tab", { name: /工作流/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /证据/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: /审稿/ })).not.toBeInTheDocument();
     expect(screen.queryByText("Soon")).not.toBeInTheDocument();
@@ -111,7 +112,7 @@ describe("ProjectPage Tab 导航（UX Polish 2026-09）", () => {
   });
 
   it("无效 / 未开放 tab 回退概览", async () => {
-    const view = renderProjectAt("/projects/p-tab00000001?tab=workflow");
+    const view = renderProjectAt("/projects/p-tab00000001?tab=evidence");
     expect(await screen.findByText("研究定位")).toBeInTheDocument();
     view.unmount();
 

@@ -337,4 +337,14 @@ describe("M4.3.4 CitationIntegrityService.verifyMetadata（持久化/指纹跳�
     expect(crossref.callCount).toBe(callsBefore);
     expect(again.byStatus.VERIFIED).toBe(1);
   });
+
+  it("取消信号：逐条循环检查中止 → WORKFLOW_CANCELLED（不做任何检索）", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const callsBefore = crossref.callCount;
+    await expect(service.verifyMetadata(projectId, { signal: controller.signal })).rejects.toMatchObject({
+      code: "WORKFLOW_CANCELLED",
+    });
+    expect(crossref.callCount).toBe(callsBefore);
+  });
 });

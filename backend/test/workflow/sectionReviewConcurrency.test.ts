@@ -438,6 +438,36 @@ describe("review.sections retry / 429（节内重试、失败隔离、permit 不
       const review = report["review"] as Record<string, unknown>;
       expect(review["sectionsReviewed"]).toBe(7);
       expect(review["failedSections"]).toBe(1);
+
+      // stage.progress 载荷（Live View 契约）：completed / total / failed / started / retried。
+      // 活跃 = started - completed - failed（快照口径）恒在 [0, concurrency] 内
+      const eventLog = await readFile(
+        join(stack.root, projectId, "workflow", "runs", runId, "events.jsonl"),
+        "utf8",
+      );
+      const progressEvents = eventLog
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { type?: string; stageId?: string; data?: Record<string, number> })
+        .filter((event) => event.type === "stage.progress" && event.stageId === "review.sections");
+      expect(progressEvents.length).toBeGreaterThan(0);
+      for (const event of progressEvents) {
+        const data: Record<string, number> = event.data ?? {};
+        expect(data["total"]).toBe(SECTION_COUNT);
+        expect(data["started"] ?? 0).toBeGreaterThanOrEqual(data["completed"] ?? 0);
+        const active = (data["started"] ?? 0) - (data["completed"] ?? 0) - (data["failed"] ?? 0);
+        expect(active).toBeGreaterThanOrEqual(0);
+        expect(active).toBeLessThanOrEqual(3);
+      }
+      const last = progressEvents.at(-1)?.data ?? {};
+      expect(last["completed"]).toBe(7);
+      expect(last["started"]).toBe(8);
+      expect(last["failed"] ?? 0).toBeLessThanOrEqual(1);
+      // sec02 节内重试至少在一次进度快照中可见（sectionsRetried 累计口径）
+      const retriedMax = Math.max(
+        ...progressEvents.map((event) => event.data?.["retried"]).filter((value): value is number => typeof value === "number"),
+      );
+      expect(retriedMax).toBeGreaterThanOrEqual(1);
     },
   );
 });

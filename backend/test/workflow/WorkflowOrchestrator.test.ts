@@ -493,9 +493,9 @@ describe("WorkflowOrchestrator：取消", () => {
     const cancelled = await harness.orchestrator.cancel(run.runId);
     expect(cancelled.status).toBe("cancelled");
 
-    await expect(harness.orchestrator.cancel(run.runId)).rejects.toMatchObject({
-      code: "WORKFLOW_INVALID_STATE",
-    });
+    // 重复取消幂等（M4.4）：已 cancelled 的 run 再 cancel 返回当前状态而非报错
+    const again = await harness.orchestrator.cancel(run.runId);
+    expect(again.status).toBe("cancelled");
   });
 
   it("stage 执行中取消：协作式在边界生效（signal 传播给 stage）", async () => {
