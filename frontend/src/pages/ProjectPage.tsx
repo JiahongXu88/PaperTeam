@@ -128,15 +128,24 @@ function CurrentWorkflowCard({ projectId, onOpenTab }: { projectId: string; onOp
       </div>
       <p className="workflow-summary-line">
         {active.status === "awaiting_input"
-          ? "任务正在等待你的确认"
+          ? `任务正在等待你的确认${
+              stageLabel(active.awaiting?.stageId ?? active.currentStage) !== undefined
+                ? `：${stageLabel(active.awaiting?.stageId ?? active.currentStage)}`
+                : ""
+            }`
           : active.currentStage !== undefined
             ? `正在执行：${stageLabel(active.currentStage) ?? active.currentStage}`
             : "任务排队中"}
         {sectionProgress !== undefined ? `（${sectionProgress.completed} / ${sectionProgress.total} 节）` : ""}
         {active.status === "running" && elapsed !== undefined ? `，已运行 ${elapsed}` : ""}
       </p>
-      <button type="button" className="btn" onClick={() => onOpenTab("workflow")} data-testid="goto-workflow">
-        查看工作流
+      <button
+        type="button"
+        className={active.status === "awaiting_input" ? "btn btn-primary" : "btn"}
+        onClick={() => onOpenTab("workflow")}
+        data-testid="goto-workflow"
+      >
+        {active.status === "awaiting_input" ? "前往处理" : "查看工作流"}
         <Icon name="chevron-right" />
       </button>    </section>
   );

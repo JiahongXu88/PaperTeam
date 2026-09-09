@@ -200,7 +200,19 @@ export function InlineConfirm({
     confirmRef.current?.focus();
   }, []);
   return (
-    <span className="inline-confirm" role="group" aria-label={message} data-testid={testId}>
+    <span
+      className="inline-confirm"
+      role="group"
+      aria-label={message}
+      data-testid={testId}
+      onKeyDown={(event) => {
+        // Escape 关闭确认（回到安全态）；Tab 在按钮间正常移动
+        if (event.key === "Escape" && !pending) {
+          event.stopPropagation();
+          onCancel();
+        }
+      }}
+    >
       <span>{message}</span>
       <button
         ref={confirmRef}

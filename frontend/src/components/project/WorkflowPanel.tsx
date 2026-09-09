@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "../common/Icon.js";
 import { Loading } from "../common/StateViews.js";
 import { InlineConfirm } from "../common/RowMenu.js";
+import { HitlPanel } from "./HitlPanel.js";
 import { COMPLETION_LABELS, stageLabel } from "../common/status.js";
 import { RunStatusBadge } from "./Badges.js";
 import { WORKFLOW_KIND_LABELS } from "../../constants/projectMeta.js";
@@ -323,7 +324,7 @@ function RunDetail({
         </p>
       ) : null}
 
-      {run.status === "awaiting_input" ? <AwaitingBlock run={run} cancelling={cancelling} onAskCancel={onAskCancel} /> : null}
+      {run.status === "awaiting_input" ? <HitlPanel run={run} /> : null}
       {run.status === "failed" ? <FailedBlock run={run} /> : null}
       {run.status === "cancelled" ? (
         <p className="note note-info" role="status" data-testid="workflow-cancelled">
@@ -436,33 +437,6 @@ function SectionProgressBlock({ item, now }: { item: StageTimelineItem; now: num
         {progress.findings !== undefined ? <span>已记录发现 {progress.findings}</span> : null}
         {stageElapsed !== undefined ? <span className="muted">elapsed {stageElapsed}</span> : null}
       </div>
-    </div>
-  );
-}
-
-function AwaitingBlock({ run, cancelling, onAskCancel }: { run: WorkflowRunView; cancelling: boolean; onAskCancel: () => void }) {
-  const awaiting = run.awaiting;
-  return (
-    <div className="note note-warn" role="status" data-testid="workflow-awaiting">
-      <span>
-        <span className="note-mark">●</span> 任务正在等待你的确认。
-        {awaiting !== null && awaiting !== undefined ? (
-          <>
-            <blockquote className="workflow-awaiting-prompt">{awaiting.prompt}</blockquote>
-            {awaiting.options.length > 0 ? (
-              <span className="workflow-awaiting-options">
-                可选操作：{awaiting.options.map((option) => `「${option}」`).join(" / ")}
-              </span>
-            ) : null}
-          </>
-        ) : null}
-        <span className="workflow-awaiting-note">确认与调整的交互处理将在下一阶段提供；当前可先取消任务。</span>
-        <span className="workflow-awaiting-actions">
-          <button type="button" className="btn btn-small btn-danger" data-testid="cancel-run-awaiting" disabled={cancelling} onClick={onAskCancel}>
-            取消任务
-          </button>
-        </span>
-      </span>
     </div>
   );
 }

@@ -61,6 +61,11 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
   const modelConfigured = runtimeStatus.data?.model.phase === "configured";
 
   const nextSteps: Array<{ label: string; tab: AsideTab }> = [];
+  // HITL 待确认最优先：任何工作流停在 awaiting_input 时，进入项目即可看到入口
+  const awaitingRun = runs.data?.find((run) => isRunActive(run) && run.status === "awaiting_input");
+  if (awaitingRun !== undefined) {
+    nextSteps.push({ label: "有 1 个任务等待确认", tab: "workflow" });
+  }
   if (!paper.isPending && !hasDoc) {
     nextSteps.push({ label: "上传论文 PDF", tab: "pdf" });
   } else if (reviewAvailable && !reviewReport.isPending && !hasReport && !reviewActive) {

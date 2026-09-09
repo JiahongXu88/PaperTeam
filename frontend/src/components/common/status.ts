@@ -26,6 +26,14 @@ export const RUN_STATUS_STYLES: Record<string, StatusStyle> = {
   cancelled: { label: "已取消", tone: "neutral" },
 };
 
+/** 目标可行性等级（research.feasibility / assessment.target / HITL payload 携带） */
+export const FEASIBILITY_LEVEL_STYLES: Record<string, StatusStyle> = {
+  HIGH: { label: "高", tone: "ok" },
+  MEDIUM: { label: "中", tone: "info" },
+  LOW: { label: "低", tone: "warn" },
+  INSUFFICIENT: { label: "证据不足", tone: "danger" },
+};
+
 /** 引用真实性（外部权威源确定性核验：学术库 + 软件官方仓库） */
 export const METADATA_STATUS_STYLES: Record<string, StatusStyle> = {
   VERIFIED: { label: "已验证", tone: "ok" },

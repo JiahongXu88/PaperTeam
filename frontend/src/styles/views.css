@@ -1982,21 +1982,161 @@
   font-size: var(--fs-secondary);
 }
 
-.workflow-awaiting-options {
-  display: block;
+/* ============================================================
+   HITL 决策面板（M4.5）：等待确认的统一交互壳。
+   复用 panel / note / btn / field 语言，只加布局与 warning 强调
+   ============================================================ */
+
+.hitl-panel {
+  border-left: 3px solid var(--warning);
+}
+
+.hitl-lead {
+  margin: 0 0 var(--s-2);
   font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.hitl-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+.hitl-actions .inline-confirm {
+  flex-basis: 100%;
+}
+
+/* payload 展示（可行性结论 / 大纲 / 改进计划 / Gate 摘要） */
+.hitl-payload {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface-muted);
+}
+
+.hitl-payload-level {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin: 0;
+  font-size: var(--fs-secondary);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hitl-list h3,
+.hitl-form .form-section h3 {
+  margin: 0 0 var(--s-1);
+  font-size: var(--fs-meta);
+  font-weight: 600;
   color: var(--text-muted);
 }
 
-.workflow-awaiting-note {
-  display: block;
-  margin-top: var(--s-2);
+.hitl-list ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: var(--fs-secondary);
-  color: var(--text-muted);
+  color: var(--text-secondary);
 }
 
-.workflow-awaiting-actions {
-  display: block;
+.hitl-list ul.hitl-list-warn li::marker {
+  color: var(--warning);
+}
+
+.hitl-outline-title {
+  margin: 0;
+  font-size: var(--fs-section-title);
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.hitl-outline-abstract {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+  line-height: var(--lh-body);
+}
+
+.hitl-outline-list,
+.hitl-plan-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.hitl-outline-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+.hitl-outline-list .muted {
+  font-size: var(--fs-meta);
+}
+
+.hitl-outline-section-title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hitl-plan-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-3);
+  flex-wrap: wrap;
+}
+
+.hitl-plan-section {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.hitl-plan-action {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+/* 决策表单（adjust / revise） */
+.hitl-form {
+  margin-top: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.hitl-form .form-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.hitl-form textarea {
+  min-height: 96px;
+}
+
+.hitl-error {
   margin-top: var(--s-3);
 }
 

@@ -12,7 +12,7 @@ import {
   restoreProject,
 } from "../api/projects.js";
 import { getRuntimeStatus } from "../api/runtime.js";
-import { cancelWorkflowRun, createWorkflowRun, listProjectRuns } from "../api/runs.js";
+import { cancelWorkflowRun, createWorkflowRun, listProjectRuns, resumeWorkflowRun } from "../api/runs.js";
 import {
   exportReviewReport,
   extractCitations,
@@ -42,6 +42,7 @@ import type {
   CitationSemanticMode,
   CreateProjectInput,
   CustomProviderInput,
+  HitlDecisionInput,
   ImportProjectPdfInput,
   WorkflowKind,
   WorkflowRunView,
@@ -230,6 +231,28 @@ export function useCancelWorkflowRun(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (runId: string) => cancelWorkflowRun(runId),
+    onSuccess: (run) => {
+      if (projectId === undefined) {
+        return;
+      }
+      queryClient.setQueryData<WorkflowRunView[]>(queryKeys.projectRuns(projectId), (prev) =>
+        prev?.map((item) => (item.runId === run.runId ? run : item)),
+      );
+    },
+  });
+}
+
+/**
+ * 提交 HITL 决策（approve / adjust / revise / accept_draft / revise_more / cancel）：
+ * 成功后把返回状态写回 run 列表缓存（awaiting 清空、status 变化），后续推进由
+ * SSE / 轮询推动。错误（409 非法决策 / 过期请求等）由调用方映射中文提示；
+ * 过期请求场景调用方应失效 run 列表取回权威状态。
+ */
+export function useResumeWorkflowRun(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, input }: { runId: string; input: HitlDecisionInput }) =>
+      resumeWorkflowRun(runId, input),
     onSuccess: (run) => {
       if (projectId === undefined) {
         return;

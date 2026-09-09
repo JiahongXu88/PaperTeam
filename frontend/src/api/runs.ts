@@ -1,6 +1,7 @@
 import { apiClient } from "./client.js";
 import type {
   CitationSemanticMode,
+  HitlDecisionInput,
   WorkflowKind,
   WorkflowRunStatus,
   WorkflowRunView,
@@ -12,6 +13,7 @@ import type {
  *
  *   GET  /api/runs?projectId=xxx → { runs: WorkflowState[] }
  *   POST /api/projects/:id/workflows { kind, citationSemanticMode? } → 202 { runId }
+ *   POST /api/runs/:runId/resume { decision, payload? } → { run }（HITL 决策）
  *   POST /api/runs/:runId/cancel → { run }（cancelled 后重复取消幂等 200）
  *
  * Backend 返回完整 WorkflowState（checkpoint 全量）；这里逐字段校验后映射为
@@ -62,6 +64,9 @@ function readAwaiting(value: unknown): WorkflowRunView["awaiting"] {
     stageId: value["stageId"],
     prompt: typeof value["prompt"] === "string" ? value["prompt"] : "",
     options: Array.isArray(value["options"]) ? value["options"].filter((o): o is string => typeof o === "string") : [],
+    // 业务上下文（可行性结论 / 大纲 / 改进计划 / Gate 摘要）：结构由各 HITL 节点
+    // 定义，前端按 stageId 防御性读取；损坏时不展示而不是报错
+    ...(isRecord(value["payload"]) ? { payload: value["payload"] } : {}),
   };
 }
 
@@ -205,6 +210,23 @@ export async function cancelWorkflowRun(runId: string): Promise<WorkflowRunView>
   const body = await apiClient.post<{ run: Record<string, unknown> }>(
     `/api/runs/${encodeURIComponent(runId)}/cancel`,
     {},
+  );
+  return toRunView(body.run ?? {});
+}
+
+/**
+ * 提交 HITL 决策（awaiting_input → running / cancelled）。
+ * action 必须在当前 awaiting.options 内（后端按 WorkflowDefinition 校验）；
+ * 缺 payload（如 revise 无 feedback）→ 409 WORKFLOW_INVALID_STATE。
+ * 重复提交 / 过期请求：状态已不在 awaiting_input → 409。
+ */
+export async function resumeWorkflowRun(
+  runId: string,
+  input: HitlDecisionInput,
+): Promise<WorkflowRunView> {
+  const body = await apiClient.post<{ run: Record<string, unknown> }>(
+    `/api/runs/${encodeURIComponent(runId)}/resume`,
+    { decision: input.action, ...("payload" in input ? { payload: input.payload } : {}) },
   );
   return toRunView(body.run ?? {});
 }

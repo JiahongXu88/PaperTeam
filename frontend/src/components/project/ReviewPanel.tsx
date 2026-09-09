@@ -88,6 +88,10 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
 
   const reviewRun = runs.data?.find((run) => run.workflowKind === "existing_paper_review");
   const active = isRunActive(reviewRun);
+  // 其它工作流（如系统性改进）停在 HITL 时：本页只做提醒 + 跳转，决策统一在工作流页
+  const awaitingRun = runs.data?.find(
+    (run) => isRunActive(run) && run.status === "awaiting_input" && run.runId !== reviewRun?.runId,
+  );
   const exportReport = useExportReviewReport(projectId);
 
   // 活跃 → 终态的边沿：刷新派生数据
@@ -190,6 +194,21 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
       </div>}
 
       {active && reviewRun !== undefined ? <RunProgress run={reviewRun} onOpenTab={onOpenTab} /> : null}
+
+      {awaitingRun !== undefined ? (
+        <div className="note note-warn" role="status" data-testid="review-awaiting">
+          <span>
+            <span className="note-mark">●</span> 当前任务正在等待确认
+            {stageLabel(awaitingRun.awaiting?.stageId) !== undefined
+              ? `（${stageLabel(awaitingRun.awaiting?.stageId)}）`
+              : ""}
+            ，确认后才会继续。
+            <button type="button" className="btn-link" onClick={() => onOpenTab("workflow")} data-testid="goto-workflow-from-review">
+              前往处理
+            </button>
+          </span>
+        </div>
+      ) : null}
 
       {reviewRun?.status === "failed" ? <RunFailure run={reviewRun} /> : null}
       {reviewRun?.status === "cancelled" && !hasReport ? (

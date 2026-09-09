@@ -99,7 +99,16 @@ export interface WorkflowRunView {
   /** 实际开始执行 / 终态时间（pending 时无 startedAt；运行中无 finishedAt） */
   startedAt?: string;
   finishedAt?: string;
-  awaiting?: { stageId: string; prompt: string; options: string[] } | null;
+  /**
+   * HITL 待办（checkpoint 持久化，刷新 / 重启后仍在）：stageId + 提示 + 允许的
+   * decision + 该节点的业务上下文（如可行性结论 / 大纲 / 改进计划摘要）
+   */
+  awaiting?: {
+    stageId: string;
+    prompt: string;
+    options: string[];
+    payload?: Record<string, unknown>;
+  } | null;
   error?: { code: string; message: string; stageId?: string } | null;
   completion?: { label: "final" | "draft" | "review" } | null;
   /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
@@ -130,6 +139,27 @@ export interface WorkflowStageRecordView {
   /** 并发画像（review.sections 特有：配置并发度 / 实际观测峰值） */
   concurrency?: { configured: number; maxObserved: number };
 }
+
+// ---- HITL Decision（POST /api/runs/:runId/resume 的前端侧类型） ----
+
+/**
+ * HITL 决策输入：action 严格来自当前 awaiting.options（后端按 WorkflowDefinition
+ * 校验，非法 decision / 缺 payload → 409 WORKFLOW_INVALID_STATE）。
+ * 各节点真实契约（backend workflow/definitions.ts）：
+ *   approve       继续下一阶段（无 payload）
+ *   adjust        仅 hitl.feasibility_confirm：targetProfile / targetVenue 至少一项
+ *   revise        仅 hitl.outline_confirm / hitl.plan_confirm：非空 feedback
+ *   accept_draft  仅 hitl.revision_overflow：知情接受当前稿
+ *   revise_more   仅 hitl.revision_overflow：人工授权追加一轮修订
+ *   cancel        取消整个 run（经 decision 通道，留档 inputs）
+ */
+export type HitlDecisionInput =
+  | { action: "approve" }
+  | { action: "adjust"; payload: { targetProfile?: string; targetVenue?: string } }
+  | { action: "revise"; payload: { feedback: string } }
+  | { action: "accept_draft" }
+  | { action: "revise_more" }
+  | { action: "cancel" };
 
 // ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----
 
