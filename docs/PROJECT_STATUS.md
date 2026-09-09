@@ -16,10 +16,12 @@ You Need PDF（arXiv 1706.03762）完整 E2E 验证。
   分工被错判成「单篇不支持」（真实复现：[2] Bahdanau 被判 UNSUPPORTED，
   理由是「未提及 RNN/LSTM/GRU 被确立为 SOTA」）；且 callout 展开后丢失
   组归属（rawText 不保留）。
-- **新算法（v4）**：句子 → 原子论断（`claimDecomposition.ts`：结构化模型
+- **新算法（v4 → v5）**：句子 → 原子论断（`claimDecomposition.ts`：结构化模型
   批量拆解，批 8 句 / 上限 24 调用 / 版本化缓存；简单句与无证据句零拆解
   调用；任何失败退确定性兜底=整句单论断）→ 论断绑定邻近引用组（按标记
-  位置；空绑定兜底全组）→ (原子论断 × 引用组) 一条记录（`referenceIds`
+  位置；v5 收紧：预告性/组织性表述——「下文将描述 X」——markers 留空，
+  不继承句内引用组；model 计划严格绑定，fallback 计划保持全组兜底）→
+  (原子论断 × 引用组) 一条记录（`referenceIds`
   全组成员共同承担；anchor=首成员兼容旧展示；`groupRawText` 保留
   `[35, 2, 5]` 原文）→ 组证据合并 judge（每成员 abstract/repo 描述，
   上限 6 篇）。
@@ -35,10 +37,10 @@ You Need PDF（arXiv 1706.03762）完整 E2E 验证。
 - **组员分层**：真实性未确立（NOT_FOUND/PROVIDER_ERROR/AMBIGUOUS）或无摘要
   的组员不参与证据（记 `excludedReferenceIds`，Layer 1 单独报问题）；全员
   不可判 → SKIPPED；组内可判成员全无摘要 → 确定性短路（零模型调用）。
-- **缓存失效**：`SEMANTIC_VERIFICATION_VERSION` 3 → 4 进指纹 + 记录新增
+- **缓存失效**：`SEMANTIC_VERIFICATION_VERSION` 3 → 5 进指纹 + 记录新增
   `semanticVersion` 字段；`listClaimRecords` 只返回当前版本记录（旧版本
   记录保留在磁盘、不删除用户数据，但不再读出）；提取层 v3（callout
-  rawText）与拆解层 v1 各自独立指纹。
+  rawText）与拆解层 v2 各自独立指纹。
 - **真实 E2E**：arXiv 官方 PDF（D:\Tmp\attention-is-all-you-need.pdf，15 页，
   sha256 bdfaa68d…df697，不入库）；真实产品链路（import-pdf API →
   existing_paper_review 工作流 citationSemanticMode=full）+ 真实模型

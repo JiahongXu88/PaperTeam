@@ -1934,6 +1934,9 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
   零拆解调用），每个引用组（如 `[35, 2, 5]`，原始标记 rawText 不丢失）对
   绑定的论断产生一条记录，组内文献**共同**承担支撑责任——不再是
   「sentence × 每篇文献」笛卡尔积（那会把组内分工错判成单篇不支持）。
+  绑定规则（v5）：标记只绑定它确实支撑的子论断；预告性/组织性表述
+  （「下文将描述 X」）是作者结构自述，markers 留空、不生成核验记录；
+  整句皆预告性表述 → 零记录；确定性兜底路径保持全组绑定。
   verdict 口径收紧：UNSUPPORTED 仅当证据与论断主题相关且足够具体、可较高
   置信度确认该组不能支撑（证据未提及/笼统/无关到无法判断 =>
   INSUFFICIENT_EVIDENCE）；CONTRADICTED 必须给出逐字来自证据的反向引文
@@ -1941,7 +1944,7 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
   只表示「自动核验无法判断」，severity=info，不构成论文 Finding、不阻断
   Quality Gate（UI 中性色「无法自动判断」）。`contradiction_only` 的 judge
   口径为 CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE
-  三值。记录带 `semanticVersion`（SEMANTIC_VERIFICATION_VERSION=4）：
+  三值。记录带 `semanticVersion`（SEMANTIC_VERIFICATION_VERSION=5）：
   旧版本记录视为过期缓存，不删除用户数据但不再读出。
 - **语义核验可配置（CitationSemanticMode，2026-09-08）**：Layer 1 真实性 /
   metadata 核验**始终执行、不可关闭**；Layer 2 语义核验按 Review Run 配置——
