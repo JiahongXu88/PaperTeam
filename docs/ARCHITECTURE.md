@@ -704,8 +704,10 @@ Final PDF（只读输入）
   → PaperMap（导航图 + 单 section 摘要，指纹缓存）
   → ReviewContextBuilder（受控 section context：概览+他节摘要+本节 chunks+引用）
   → 短生命周期 review task（scope review/section/<id>，Session 可丢弃）
-  → 引用提取（numeric 展开 / 不猜）→ metadata 核验（外部学术库，确定性）
-  → (claim,citation) 语义核验（judge 只见真实证据；确定性 severity）
+  → 引用提取（numeric 展开 / 不猜；citation group 原始标记 rawText 保留）→ metadata 核验（外部学术库，确定性）
+  → 句子 → 原子论断拆解（claimDecomposition：结构化模型批量 / 确定性兜底，版本化缓存）
+  → (atomic claim, citation group) 语义核验（judge 只见组内合并真实证据；
+     组共同支撑、不要求单篇覆盖；CONTRADICTED 需逐字引文；确定性 severity）
   → Citation Integrity 规则并入 QualityGate
 ```
 
@@ -721,7 +723,7 @@ context 从磁盘确定性重建**；**逐条记录文件持久化 + 指纹跳�
 | NOT_FOUND | ≥2 权威来源检索成功但均无 | 确定性代码（**非模型**） |
 | UNRESOLVED | 检索暂时失败（网络/限流/超时） | 确定性代码 |
 | probable fabrication | ≥3 全一致 not_found + 零 error + 有可查字段 | 确定性代码（强证据才标） |
-| 语义 verdict 六值 | SUPPORTED…/SKIPPED | LLM judge（仅凭真实证据；引文逐字校验） |
+| 语义 verdict | SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED / INSUFFICIENT_EVIDENCE / SKIPPED（NO_CONTRADICTION_DETECTED 仅 contradiction_only） | LLM judge（仅凭真实证据；引文逐字校验；UNSUPPORTED 需证据相关且具体；CONTRADICTED 需逐字反向引文；INSUFFICIENT=无法判断≠论文问题，info 不进 Finding） |
 
 ### 12.3 Skill Registry
 

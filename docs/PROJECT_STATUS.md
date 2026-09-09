@@ -1,9 +1,57 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-09（M4.4 Workflow Live View + SSE + Cancel + Progress 完成；
-> 同日早前：引用语义核验可配置；2026-09-08 Review 并发优化 + M4.9 规划见历史）
+> 更新日期：2026-09-09（Citation Semantic Correctness Hardening：atomic claim ×
+> citation group + Attention Is All You Need 真实 E2E；同日早前：M4.4 Workflow
+> Live View；引用语义核验可配置；2026-09-08 Review 并发优化 + M4.9 规划见历史）
 
 ## 当前阶段
+
+**Citation Semantic Verification Correctness Hardening（✅ 2026-09-09）**：
+语义核验粒度从「sentence × every reference」升级为「**atomic claim ×
+citation group**」，修正系统性 false positive，并用真实 Attention Is All
+You Need PDF（arXiv 1706.03762）完整 E2E 验证。
+
+- **根因**：旧 `buildClaimRecords` 把 callout 句子整句绑到组内每篇文献
+  （`[35, 2, 5]` 展开成 3 条记录，每篇被要求单独支撑整个复合句）——组内
+  分工被错判成「单篇不支持」（真实复现：[2] Bahdanau 被判 UNSUPPORTED，
+  理由是「未提及 RNN/LSTM/GRU 被确立为 SOTA」）；且 callout 展开后丢失
+  组归属（rawText 不保留）。
+- **新算法（v4）**：句子 → 原子论断（`claimDecomposition.ts`：结构化模型
+  批量拆解，批 8 句 / 上限 24 调用 / 版本化缓存；简单句与无证据句零拆解
+  调用；任何失败退确定性兜底=整句单论断）→ 论断绑定邻近引用组（按标记
+  位置；空绑定兜底全组）→ (原子论断 × 引用组) 一条记录（`referenceIds`
+  全组成员共同承担；anchor=首成员兼容旧展示；`groupRawText` 保留
+  `[35, 2, 5]` 原文）→ 组证据合并 judge（每成员 abstract/repo 描述，
+  上限 6 篇）。
+- **verdict 收紧**：UNSUPPORTED 仅当证据与论断主题相关且足够具体（未提及/
+  笼统/无法判断 => INSUFFICIENT_EVIDENCE）；CONTRADICTED 必须带逐字来自
+  证据的反向 keyQuote（引不出 => 确定性降级 INSUFFICIENT_EVIDENCE +
+  reasonCode UNQUOTED_CONTRADICTION）；PARTIALLY_SUPPORTED 不因组内单篇
+  只承担部分责任而触发；**INSUFFICIENT_EVIDENCE = 无法自动判断 ≠ 论文
+  问题**：severity 由 minor → **info**（不构成任何级别 Finding），UI 标签
+  「无法自动判断」中性色 + 帮助文案，导出标题/未解决列表改为「不代表引用
+  存在问题」口径；contradiction_only judge 三值
+  （CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE）。
+- **组员分层**：真实性未确立（NOT_FOUND/PROVIDER_ERROR/AMBIGUOUS）或无摘要
+  的组员不参与证据（记 `excludedReferenceIds`，Layer 1 单独报问题）；全员
+  不可判 → SKIPPED；组内可判成员全无摘要 → 确定性短路（零模型调用）。
+- **缓存失效**：`SEMANTIC_VERIFICATION_VERSION` 3 → 4 进指纹 + 记录新增
+  `semanticVersion` 字段；`listClaimRecords` 只返回当前版本记录（旧版本
+  记录保留在磁盘、不删除用户数据，但不再读出）；提取层 v3（callout
+  rawText）与拆解层 v1 各自独立指纹。
+- **真实 E2E**：arXiv 官方 PDF（D:\Tmp\attention-is-all-you-need.pdf，15 页，
+  sha256 bdfaa68d…df697，不入库）；真实产品链路（import-pdf API →
+  existing_paper_review 工作流 citationSemanticMode=full）+ 真实模型
+  zai-coding-cn/glm-5.3 + 真实 Crossref/OpenAlex/S2/arXiv 检索；Introduction
+  的 RNN/LSTM/GRU/MT 复合句拆出原子论断、`[35,2,5]` 组级共同核验——
+  修复前 [2] 单篇 UNSUPPORTED 的 false positive 消除（详见本轮报告）。
+- **测试**：backend 503（新增 claimDecomposition 11 例 + 语义核验 v4 重写
+  11 例：复合句分组 / 组共同支撑 / 组员不完整不自动 UNSUPPORTED /
+  metadata-only / 证据不足不进 Finding / 逐字引文矛盾 / 无证据零模型调用 /
+  拆解兜底与缓存 / contradiction 三值）+ frontend 112 全部 PASS；无任何
+  特定论文特判（grep 审计）。
+
+---
 
 **M4.4 — Workflow Live View + SSE + Cancel + Progress（✅ 完成，2026-09-09）**：
 把 Backend 既有 Workflow / Domain Event SSE / 取消 / 进度能力正式产品化到前端。
@@ -172,7 +220,7 @@ benchmark：review.sections 2.81×、run 总时长 2.61×，详见
 | M4.3.2 Long-document Context | ✅ | `PaperMapService`（骨架确定性 + 单 section 摘要一次调用、指纹缓存、失败容忍）+ `ReviewContextBuilder`（论文概览 + 全文导航摘要 + 仅当前章节 chunks + 可选引用注入；分项 budget）。**隔离证明**：Method 上下文不含其他章节全文；**会话无关证明**：Runtime Session 全弃后从磁盘确定性重建 |
 | M4.3.3 Citation Extraction | ✅ | `ReferenceExtractor`（numeric [n] 条目 + 跨行合并 + 章节边界正文剥离；title/authors/year/venue/doi/arXiv best-effort；Unicode 安全）+ callout（[1]/[2,3]/[4-7] 展开为逐条 relation；范围内空缺=unresolved、超范围=invalid，不猜；author-year best-effort）；真实 PDF 40 条 references / 51 callouts / 关联可追踪 |
 | M4.3.4 Metadata Verification | ✅ | `ScholarlyResolver`（crossref/openalex/semantic-scholar/arxiv 轻量 connector；标题+作者重合+年份±1 门控；重复收录合并；DOI 精确优先；重试×1 + LRU 查询缓存 + 礼貌间隔 + telemetry）。**失败语义**：网络/5xx/超时=error→UNRESOLVED（绝不 NOT_FOUND）；≥2 权威 not_found=NOT_FOUND；≥3 全一致零 error 才 probable fabrication。逐条文件持久化 + 指纹跳过。live：真实论文 VERIFIED / 虚构文献 not_found / S2 429 优雅降级 |
-| M4.3.5 Semantic Verification | ✅ | judge 链路 claim→citation→已核验 canonical→真实检索证据→LLM→verdict；真实性未确立→SKIPPED（不验证不存在的文献）；无摘要→INSUFFICIENT_EVIDENCE 确定性短路（零模型调用）；**judge 伪造引文剥离**（keyQuote 必须逐字来自证据）；severity 确定性派生；Citation Integrity 4 硬规则并入 QualityGate（INSUFFICIENT_EVIDENCE 不阻断只标人工复核）；citation 角色（scope citation/*）；模型调用/上下文规模 telemetry |
+| M4.3.5 Semantic Verification | ✅ | judge 链路 atomic claim × citation group（v4，2026-09-09）：句子→原子论断拆解（模型批量+确定性兜底+版本化缓存）→ 论断绑定邻近引用组 → 组证据合并→LLM→verdict；组内文献共同支撑（不再 sentence×每篇 笛卡尔积）；真实性未确立组员排除（Layer 1 单独报）；无摘要→INSUFFICIENT_EVIDENCE 确定性短路（零模型调用，含拆解层）；**judge 伪造引文剥离**（keyQuote 必须逐字来自证据；CONTRADICTED 引不出逐字引文→降级 INSUFFICIENT）；UNSUPPORTED 需证据相关且具体；INSUFFICIENT=无法判断≠论文问题（info 不进 Finding）；severity 确定性派生；Citation Integrity 4 硬规则并入 QualityGate（INSUFFICIENT_EVIDENCE 不阻断只标人工复核）；citation 角色（scope citation/*）；模型调用/拆解/上下文规模 telemetry；记录带 semanticVersion（旧版本=过期缓存不读出） |
 | M4.3.6 Skill Registry | ✅ | `SkillRegistry`（仓库内审计 seed → `<runtimeRoot>/skills/installed`，contentHash 幂等、变化标 stale；LICENSE/PROVENANCE 随附）；seeds：**verify-citations**（Agents4Academia-AI/citation_verification, MIT, pin `ae85ae3` 原件 verbatim）+ **paper-search**（openags/paper-search-mcp, MIT, pin `234678a`，PaperTeam 兼容 wrapper + UPSTREAM_SKILL.md 原件保留）；绑定 researcher→paper-search、citation→双、reviewer→verify-citations、writer→无；Pi 注入 `DefaultResourceLoader({noSkills, additionalSkillPaths})`（用户 ~/.pi 不受影响）；`search_papers`/`lookup_paper` 受控工具（共享 resolver 缓存）；中文简介一次生成持久化（模型未配置→summary_pending 不失败） |
 | M4.3.7 Minimal UI | ✅ | ProjectPage 新增 PDF / Structure 与 Citations 标签（上传/解析状态/sections 表；两层核验摘要 chips + 逐条 status/canonical/疑似捏造告警 + 分步操作）；全局 Skills 页（中文简介为主、原始描述折叠、来源@revision/license/绑定，**无未实现的 Install/Uninstall 按钮**）；全部 server state 走 TanStack Query |
 | M4.3.7.5 Model Settings UI | ✅ | `Settings → Model`（/settings/model）：前端配置模型与 API Key，无需手工环境变量。后端 `ModelSettingsService` + `/api/settings/model` 路由组（GET 状态/PUT 保存/DELETE key/GET options/POST test）；存储完全复用 Pi 官方能力——偏好 `<runtimeRoot>/settings/model.json`（原子写，非敏感），Key 经 `ModelRuntime.login/logout` 落 `agentDir/auth.json`（不自建第二套 credential，无 deep import）；优先级 env（PAPERTEAM_PI_*）> stored，env 覆盖时 UI 明示且 savedModel 如实展示；`reconfigure()` 只影响新 Agent Run（在途 run>0 → 409 MODEL_CONFIG_BUSY，前置检查先于落盘）；Test Connection 走 `completeSimple` 最小真实调用（可携带未保存 Key 覆盖式注入，失败六分类+脱敏）；**Key 只进不出**：任何 GET 无 key 字段、日志零请求体、sentinel 回归测试覆盖；重启持久化（启动装配 resolveStartupModelSpec：env 缺省时 stored 自动生效，smoke 实证） |

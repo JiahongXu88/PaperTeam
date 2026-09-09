@@ -106,9 +106,13 @@
 >
 > M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **PROVIDER_ERROR**
 > （检索暂时失败）≠ probable fabrication（≥3 源全一致零 error 才标记）；
-> 语义 verdict 六值固定（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED /
-> CONTRADICTED / INSUFFICIENT_EVIDENCE / SKIPPED）；INSUFFICIENT_EVIDENCE 不进入
-> 阻断性 gate（人工复核）。Skill 写操作（install/uninstall/update/绑定编辑）为
+> 语义 verdict 固定（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED /
+> CONTRADICTED / INSUFFICIENT_EVIDENCE / SKIPPED，另有 contradiction_only 专属
+> NO_CONTRADICTION_DETECTED）；**记录粒度 = atomic claim × citation group**
+> （v4：`referenceIds` 组内共同支撑 + `groupRawText` 原始标记 + `claimIndex` /
+> `sourceSentence`；无这些字段的旧记录 = 过期缓存，后端不再返回）；
+> INSUFFICIENT_EVIDENCE = 自动核验无法判断（≠ 论文问题，severity=info，
+> 不进入阻断性 gate）。Skill 写操作（install/uninstall/update/绑定编辑）为
 > M5 范围，本轮无对应端点、前端也不显示假按钮。
 
 ### 1.2c M4.3.7.5 已消费 ✅（Model Settings）

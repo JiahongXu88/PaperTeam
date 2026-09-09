@@ -1929,16 +1929,30 @@ Agent Runtime 通过 AgentRuntimeAdapter 与业务系统隔离。
 - 引用完整性两层核验：文献真实性（外部学术库确定性核验，NOT_FOUND≠捏造≠
   检索失败）与 (claim,citation) 语义核验（模型禁止凭记忆、证据引文逐字校验、
   severity 确定性派生）；Citation Integrity 规则并入 Quality Gate
+- **语义核验粒度 = atomic claim × citation group（v4，2026-09-09）**：
+  复合句先拆成原子论断（结构化模型拆解 + 确定性兜底，版本化缓存；简单句
+  零拆解调用），每个引用组（如 `[35, 2, 5]`，原始标记 rawText 不丢失）对
+  绑定的论断产生一条记录，组内文献**共同**承担支撑责任——不再是
+  「sentence × 每篇文献」笛卡尔积（那会把组内分工错判成单篇不支持）。
+  verdict 口径收紧：UNSUPPORTED 仅当证据与论断主题相关且足够具体、可较高
+  置信度确认该组不能支撑（证据未提及/笼统/无关到无法判断 =>
+  INSUFFICIENT_EVIDENCE）；CONTRADICTED 必须给出逐字来自证据的反向引文
+  （引不出 => 确定性降级 INSUFFICIENT_EVIDENCE）；INSUFFICIENT_EVIDENCE
+  只表示「自动核验无法判断」，severity=info，不构成论文 Finding、不阻断
+  Quality Gate（UI 中性色「无法自动判断」）。`contradiction_only` 的 judge
+  口径为 CONTRADICTED / NO_CONTRADICTION_DETECTED / INSUFFICIENT_EVIDENCE
+  三值。记录带 `semanticVersion`（SEMANTIC_VERIFICATION_VERSION=4）：
+  旧版本记录视为过期缓存，不删除用户数据但不再读出。
 - **语义核验可配置（CitationSemanticMode，2026-09-08）**：Layer 1 真实性 /
   metadata 核验**始终执行、不可关闭**；Layer 2 语义核验按 Review Run 配置——
   `off`（新 Review 缺省：不进入 citation.claims stage，语义模型调用 0）、
-  `contradiction_only`（仅检查明显矛盾，verdict 只有 CONTRADICTED /
-  NO_CONTRADICTION_DETECTED，无证据 → SKIPPED 而非 INSUFFICIENT_EVIDENCE）、
-  `full`（完整逐条核验，旧行为）。模式随 run request 持久化并写入每轮报告，
-  off 轮不携带语义统计（历史轮记录不污染本轮）；Quality Gate 的语义类规则
-  仅在 mode ≠ off 时参与。UI 入口在「开始 Review」高级选项（默认关闭）与
-  导入页高级选项；off 轮报告提供低权重「进行语义核验」入口（引用核验面板
-  手动补跑，不重跑 Review）。旧持久化 run（无该字段）按 full 解释。
+  `contradiction_only`（仅检查明显矛盾，无证据 → SKIPPED 而非
+  INSUFFICIENT_EVIDENCE）、`full`（完整逐条核验，旧行为）。模式随 run
+  request 持久化并写入每轮报告，off 轮不携带语义统计（历史轮记录不污染
+  本轮）；Quality Gate 的语义类规则仅在 mode ≠ off 时参与。UI 入口在
+  「开始 Review」高级选项（默认关闭）与导入页高级选项；off 轮报告提供
+  低权重「进行语义核验」入口（引用核验面板手动补跑，不重跑 Review）。
+  旧持久化 run（无该字段）按 full 解释。
 - Skill Registry（审计 seed + pin revision + LICENSE/PROVENANCE，按角色注入
   Pi 会话；首批 verify-citations 与 paper-search 两项 MIT Academic Skill；
   中文简介一次生成持久化）；受控 search_papers / lookup_paper 工具
