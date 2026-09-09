@@ -524,7 +524,14 @@ export class CitationIntegrityService {
    */
   async verifyClaims(
     projectId: string,
-    options: { force?: boolean; limit?: number; signal?: AbortSignal; mode?: CitationSemanticMode } = {},
+    options: {
+      force?: boolean;
+      limit?: number;
+      signal?: AbortSignal;
+      mode?: CitationSemanticMode;
+      /** 进度回调（已完成条数 / 总条数）——长批 judge 期间喂 stage 空闲超时看门狗 */
+      onProgress?: (done: number, total: number) => void | Promise<void>;
+    } = {},
   ): Promise<{
     summary: SemanticSummary;
     verified: number;
@@ -580,6 +587,7 @@ export class CitationIntegrityService {
       metadataRecords,
       options,
       telemetry,
+      (planned) => options.onProgress?.(planned, sentenceGroups.length),
     );
     telemetry.sentencesPlanned = sentenceGroups.length;
     const pending = buildClaimRecords(
@@ -635,6 +643,7 @@ export class CitationIntegrityService {
       if (record.status === "verified" || record.status === "skipped") {
         verifiedCount += 1;
       }
+      await options.onProgress?.(records.length, pending.length);
     }
     const durationMs = Date.now() - startedAtMs;
 
@@ -668,6 +677,7 @@ export class CitationIntegrityService {
     metadataRecords: Map<string, CitationVerificationRecord>,
     options: { force?: boolean; signal?: AbortSignal },
     telemetry: SemanticTelemetry,
+    onPlanned?: (planned: number) => void | Promise<void>,
   ): Promise<Map<string, SentenceClaimPlan>> {
     const plans = new Map<string, SentenceClaimPlan>();
     const hasEvidence = (referenceId: string): boolean => {
@@ -734,6 +744,7 @@ export class CitationIntegrityService {
       if (options.signal?.aborted === true) {
         throw new BusinessError("WORKFLOW_CANCELLED", "论断拆解已被取消");
       }
+      await onPlanned?.(plans.size);
       const batch = decomposeTargets.slice(index, index + DECOMPOSITION_BATCH_SIZE);
       const prompt = buildDecompositionPrompt(batch);
       telemetry.decompositionCalls += 1;

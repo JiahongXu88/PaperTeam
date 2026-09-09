@@ -1171,6 +1171,10 @@ function citationClaimsStage(services: WorkflowServices): StageSpec {
       const result = await services.paper.citationIntegrity.verifyClaims(ctx.projectId, {
         signal: ctx.signal,
         mode,
+        // 长批 judge / 拆解期间逐条汇报进度（喂空闲超时看门狗；30 条 judge × 40s+
+        // 真实模型会超过 15min 无进展窗口，此前 stage 被误判超时后靠重试续跑）
+        onProgress: (done, total) =>
+          ctx.emitProgress({ phase: "semantic", done, total }),
       });
       return {
         mode,
