@@ -1,10 +1,66 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-09（Citation Semantic Correctness Hardening：atomic claim ×
-> citation group + Attention Is All You Need 真实 E2E；同日早前：M4.4 Workflow
-> Live View；引用语义核验可配置；2026-09-08 Review 并发优化 + M4.9 规划见历史）
+> 更新日期：2026-09-09（M4.5 HITL UI：awaiting_input 决策产品化；同日早前：
+> Citation Semantic Correctness Hardening / M4.4 Workflow Live View / 引用语义
+> 核验可配置；2026-09-08 Review 并发优化 + M4.9 规划见历史）
 
 ## 当前阶段
+
+**M4.5 — HITL UI（✅ 完成，2026-09-09）**：把 Backend 既有的
+`awaiting_input` / resume / cancel 产品化到前端——用户能看懂「为什么停住」，
+并可 继续 / 调整 / 修改 / 取消，Workflow 正确恢复。**Backend 引擎零改动**
+（审计确认 awaiting 已随 checkpoint 持久化、resume 有并发与状态防护、
+SSE 事件与 replay 齐备）；本轮新增的是前端决策面板与 scripted E2E 栈。
+
+- **HITL 决策面板 `HitlPanel`**（统一 shell + 按 `awaiting.stageId` 差异化
+  payload renderer，不做每 Stage 一套）：prompt（为什么暂停）+ 业务上下文
+  （可行性结论等级徽章 / 理由 / 缺口 / 实验 / 建议；大纲标题 + 摘要 + 章节
+  列表；改进计划条目 + 优先级；修订耗尽的 Gate 结论 + 审稿规模）+ 动作
+  **严格按 `awaiting.options` 渲染**（未提供的动作不出现，杜绝「前端四个
+  按钮、后端 400」）。
+- **真实 decision 契约**（前端 `HitlDecisionInput` 类型化 union，与
+  backend definitions.ts 一致）：`approve`（继续）/ `adjust`（仅可行性节点：
+  targetProfile / targetVenue ≥一项，评估建议来自 payload）/ `revise`
+  （仅大纲 / 改进计划节点：非空 feedback，本地校验前置拦截空提交）/
+  `accept_draft` + `revise_more`（仅修订耗尽节点）/ `cancel`（走 decision
+  通道留档 `inputs`，行内确认，终态来自 Backend）。表单空值禁用提交 +
+  文案提示；pending 期间全部动作禁用（防双击重复 resume）。
+- **过期请求与错误 UX**：resume 409（WORKFLOW_INVALID_STATE，含并发重复 /
+  已在其它页面 resume）→ 展示 Backend 中文 message + 折叠 detail，并失效
+  run 列表取权威状态——待办已处理则面板自然消失，页面不卡死。
+- **恢复语义**：待办数据全部来自 `GET /api/runs`（checkpoint 持久化），
+  **浏览器刷新与 Backend 重启均可恢复 awaiting**（e2e 覆盖刷新；真实模型
+  smoke 覆盖重启）；SSE `workflow.awaiting_input` / `workflow.resumed`
+  驱动面板出现 / 消失，无需手动刷新。
+- **联动**：概览「当前任务」卡 awaiting 时显示等待确认 + 「前往处理」主
+  按钮；侧栏「下一步」首项「有 1 个任务等待确认」；Review 页对其它工作流
+  的 awaiting 显示提醒 + 跳转（决策统一在工作流页）；Timeline awaiting
+  一等化（M4.4 已有，填充等待点 + 状态文字）。
+- **测试**：Backend 507（新增并发 double-resume：慢速 onInput 下两个
+  resume 恰好一个成功一个 409、workflow.resumed 事件唯一、单 awaiting
+  invariant）+ Frontend 124（新增 HitlPanel 10：payload 渲染 / options
+  严格渲染 / approve / adjust / revise 校验与 payload 裁剪 / cancel 走
+  decision 通道 / 409 stale 处理 / 重新挂载恢复）全部 PASS。
+- **E2E（`e2e/hitl.spec.ts`，7 例）**：新增 `PAPERTEAM_TEST_RUNTIME=scripted`
+  测试栈（`src/runtime/scriptedRuntime.ts`：编排器 / checkpoint / SSE / HTTP /
+  React 全真实，仅模型输出为确定性脚本；testStack.ts 改为复用同一实现，
+  单一事实源）——A approve→自动恢复 B revise→重规划 C 刷新恢复 D cancel
+  E 他端 resume 后旧页面让位 F/G Light+Dark 视觉 + 1100px 无横向溢出。
+  无模型栈全套 e2e 同步复验无回归（21 passed / 8 skipped）。
+- **真实 smoke**：真实 zai-coding-cn/glm-5.3 idea_to_paper → 真实推进至
+  `hitl.feasibility_confirm`（awaiting payload 携带真实可行性结论）→
+  **Backend 重启后 GET run 仍 awaiting** → resume approve → outline.plan
+  真实重规划 → cancel 终态；inputs / events 留档验证。
+- **视觉**：5 张截图（可行性 Light/Dark、大纲 + revise 表单 Light、大纲
+  Dark、取消确认 Dark）人工 review——与现有 Panel / Chip / Note / Btn 语言
+  一致，warning 强调（非 danger），无临时后台感。
+
+**下一阶段：M4.6 Evidence + Quality Gate**（Evidence Workbench / Quality
+Gate UI；M4.5 已停，未开始）。
+
+---
+
+**Citation Semantic Verification Correctness Hardening（✅ 2026-09-09）**：
 
 **Citation Semantic Verification Correctness Hardening（✅ 2026-09-09）**：
 语义核验粒度从「sentence × every reference」升级为「**atomic claim ×
@@ -429,7 +485,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **当前：Backend 486（+7 个默认跳过的 live smoke）+ Frontend 112 + 浏览器级 E2E 22（Playwright，`e2e/`，需运行中的 dev 栈；模型门控用例在模型未配置时自动跳过）全部通过（2026-09-09，M4.4）。**
+- **当前：Backend 507（+7 个默认跳过的 live smoke）+ Frontend 124 + 浏览器级 E2E 29（Playwright，`e2e/`，需运行中的 dev 栈；模型门控用例在模型未配置时自动跳过；HITL 套件 7 例需 `PAPERTEAM_TEST_RUNTIME=scripted` + `PAPERTEAM_E2E_HITL=1` 的脚本化栈，其它环境自动跳过；两栈合计 28 passed）全部通过（2026-09-09，M4.5）。**
 - 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。
@@ -440,7 +496,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 以下为**环境验证缺口，不是设计决策，不阻塞代码交付**：
 
-1. **带真实模型凭据的完整 Idea-to-Paper E2E**：M3.7/M3.8 已用真实 Pi SDK + 官方 fauxProvider 验证全部 Runtime 语义（初始化 / 单轮 / 事件 / 取消 / 工具取消 / 并发 / 隔离）；**L3 Live Provider E2E 已于 M4.2.5（2026-09-05）verified**——真实 `zai-coding-cn/glm-5.3` 经运行中 Backend 验证单 Agent / SSE / Workflow 至首个 HITL / cancel（见 M4.2.5 节）。HITL resume 之后的完整论文链（Outline → 写作 → 审稿 → 修订 → PDF）仍未跑真实模型（有意节省额度，M4.3+ 按需）。
+1. **带真实模型凭据的完整 Idea-to-Paper E2E**：M3.7/M3.8 已用真实 Pi SDK + 官方 fauxProvider 验证全部 Runtime 语义（初始化 / 单轮 / 事件 / 取消 / 工具取消 / 并发 / 隔离）；**L3 Live Provider E2E 已于 M4.2.5（2026-09-05）verified**——真实 `zai-coding-cn/glm-5.3` 经运行中 Backend 验证单 Agent / SSE / Workflow 至首个 HITL / cancel（见 M4.2.5 节）。**M4.5（2026-09-09）已用真实模型验证 HITL 决策链**：真实推进至 feasibility awaiting → Backend 重启恢复 → resume approve → outline 重规划 → cancel。HITL resume 之后的完整论文链（写作 → 审稿 → 修订 → PDF）仍未跑真实模型（有意节省额度，按需）。
 2. **TeX Live 真实编译**：本机未安装 pdflatex/xelatex/latexmk；LatexCompiler 与 Build Gate 的编译路径经注入式 runner 覆盖，真实 PDF 编译待有 TeX 环境的机器验证。
 3. **多模态 PDF 视觉级分析 E2E**：依赖具备视觉/PDF 能力的模型与沙箱路径授权，当前环境无法真实跑通（返回 capability-gap 如实报告，不伪造成功）。
 4. **Citation metadata providers 真实网络**：M4.3 已用真实 crossref/openalex/arxiv 跑通 live smoke（含 S2 429 降级、虚构文献 not_found）；长期限流形态待部署环境观察。

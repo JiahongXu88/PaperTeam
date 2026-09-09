@@ -71,6 +71,10 @@ desktop.ini
 .vscode/
 *.swp
 
+# ===== QA / E2E 临时产物（历史会话残留的浏览器 profile 与截图） =====
+.qa-chrome-profile/
+.qa-shots/
+
 # ===== Playwright E2E 产物（e2e/） =====
 e2e/report/
 e2e/test-results/

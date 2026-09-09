@@ -102,9 +102,18 @@ Stage Timeline（六态 + 集中中文标签映射）、分章节进度（17/33 
 等待确认 / 完成态的可读呈现与真实结果入口；概览「当前任务」摘要卡与 Review
 页运行中入口联动。
 
-**未实现（M4.5+）**：HITL 交互 UI（approve / adjust / revise）、Evidence /
-Review 扩展界面、Visual Reviewer、LaTeX repair loop、完整版本管理体验、
-系统管理后台、Docker 部署。
+**M4.5 HITL UI（2026-09-09）已落地**：Workflow 停在 `awaiting_input` 时，
+工作流页显示统一决策面板（`HitlPanel`）——为什么暂停（prompt + 业务上下文：
+可行性结论 / 大纲 / 改进计划 / 修订耗尽摘要）+ 严格按后端契约的动作：
+继续（approve）/ 调整目标（adjust：targetProfile / targetVenue）/ 提出修改意见
+（revise：feedback，重做当前产物）/ 接受为草稿 / 再修一轮 / 取消；重复提交与
+过期请求（409）如实处理；待办随 checkpoint 持久化，浏览器刷新与 Backend 重启
+后均恢复；概览「前往处理」、侧栏「有 1 个任务等待确认」、Review 页提醒联动。
+E2E（`e2e/hitl.spec.ts`）经 `PAPERTEAM_TEST_RUNTIME=scripted` 脚本化模型栈
+驱动完整真实链路（编排器 / checkpoint / SSE / HTTP / React 全真）。
+
+**未实现（M4.6+）**：Evidence Workbench、Quality Gate UI、Draft / Final /
+版本管理、Visual Reviewer、LaTeX repair loop、系统管理后台、Docker 部署。
 
 ## 文档
 

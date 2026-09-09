@@ -5,7 +5,9 @@
 > 2026-09-07 Hardening：错误码 `NOT_FOUND` / `PDF_PARSE_FAILED` / `PDF_PARSER_UNAVAILABLE`、
 > `RuntimeStatusView.tools.pdfParser`、`WorkflowRunView.progress`、`ImportProjectPdfResult.document`（见 §0 / §2）；
 > 2026-09-09 M4.4：Workflow Live View 正式消费（§1.4 / §3 增补：`POST /cancel`
-> 幂等语义、`stage.progress` 载荷的 `started` / `retried`、`WorkflowRunView` 时间线字段）。
+> 幂等语义、`stage.progress` 载荷的 `started` / `retried`、`WorkflowRunView` 时间线字段）；
+> 2026-09-09 M4.5：HITL 决策正式消费（§1.4 / §2 增补：`POST /resume` decision 契约、
+> `awaiting.payload`、stale / 重复提交的 409 语义）。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -61,7 +63,7 @@
 | `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun → 202 `{runId, status, workflowKind}` | M4.3 |
 | `GET /api/runs/:runId` | run 状态 / 当前 stage / awaiting 待办 / 错误 / completion | M4.3 |
 | `GET /api/runs/:runId/events` | SSE：Domain Event replay + 实时（事件类型见 §3）；断线重连后服务端全量 replay，前端按 `seq` 去重 | ✅ M4.4（useWorkflowEvents，页面级订阅） |
-| `POST /api/runs/:runId/resume` | HITL 输入 `{decision, payload?}` | M4.5 |
+| `POST /api/runs/:runId/resume` | HITL 决策 `{decision, payload?}`（仅 `awaiting_input` 可调用）。decision 必须在当前 `awaiting.options` 内，payload 按节点契约：`hitl.feasibility_confirm` 的 `adjust` 需 `targetProfile` 或 `targetVenue`（≥一项）；`hitl.outline_confirm` / `hitl.plan_confirm` 的 `revise` 需非空 `feedback`；`hitl.revision_overflow` 为 `accept_draft` / `revise_more`（无 payload）；`cancel` 走 decision 通道留档 `inputs`。成功 → 200 `{run}`（decision=cancel 时终态 cancelled）。**409 WORKFLOW_INVALID_STATE**：非法 decision / 缺 payload / 重复提交（含并发）/ 过期请求（已 resume）；重复 cancel 幂等走 `POST /cancel` | ✅ M4.5（HitlPanel 决策面板） |
 | `POST /api/runs/:runId/cancel` | 取消 run：立即 abort 在途模型调用（AgentRun / 分章节审阅 / 语义核验 / 引用真实性核验逐条循环），停止派发未开始项，循环检查点终结落盘。**已 cancelled 的重复取消幂等 200**（返回当前状态）；completed / failed → 409 | ✅ M4.4（工作流页「取消任务」） |
 | `GET/POST /api/projects/:id/sources`、`GET/PATCH/DELETE …/:sid`、`POST …/:sid/analyze` | 文献库 CRUD + PDF 分析 | M4.5 |
 | `GET/POST /api/projects/:id/evidence`、`GET …/:eid`、`POST …/:eid/verify` | Evidence CRUD + 核验 | M4.5 |
@@ -237,7 +239,10 @@ interface WorkflowRunView {                      // WorkflowState → UI 子集�
   currentStage?: string;
   createdAt: string; updatedAt: string;
   startedAt?: string; finishedAt?: string;      // M4.4：耗时 / 时间线展示（pending 无 startedAt）
-  awaiting?: { stageId: string; prompt: string; options: string[] } | null;
+  awaiting?: {                                    // M4.5：HITL 待办（checkpoint 持久化，刷新 / 重启后仍在）
+    stageId: string; prompt: string; options: string[];
+    payload?: Record<string, unknown>;            // 节点业务上下文：可行性结论 / 大纲 / 改进计划 / Gate 摘要
+  } | null;
   error?: { code: string; message: string; stageId?: string } | null;   // M4.4：stageId 指向失败阶段
   completion?: { label: "final" | "draft" | "review" } | null;
   /** 当前 stage 最近一次 stage.progress 快照（分章节审阅字段见下；2026-09-07） */
