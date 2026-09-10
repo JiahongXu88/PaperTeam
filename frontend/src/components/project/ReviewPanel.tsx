@@ -164,7 +164,26 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
                 <Icon name={hasReport ? "refresh" : "play"} />
                 {startReview.isPending ? "启动中…" : hasReport ? "重新 Review" : "开始 Review"}
               </button>
+              {workflowKind === "existing_paper_improvement" ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => startReview.mutate({ projectId, kind: "existing_paper_improvement" })}
+                  disabled={startReview.isPending || modelNotConfigured}
+                  title="系统性改进：PDF 重建为可修订稿件（文本级）→ 审稿 → 改进计划确认 → 逐节修订 → 质量门禁 → Draft / Final"
+                  data-testid="start-improvement"
+                >
+                  <Icon name="play" />
+                  开始系统性改进
+                </button>
+              ) : null}
             </div>
+            {workflowKind === "existing_paper_improvement" ? (
+              <p className="field-help">
+                「开始 Review」是只读分析；「开始系统性改进」会把论文 PDF 重建为可修订稿件（文本级，
+                不含原图），经审稿与确认后逐节修订，最终产出 Draft / Final。
+              </p>
+            ) : null}
             <details className="advanced-options review-start-advanced">
               <summary>高级选项</summary>
               <div className="review-semantic-mode-field">

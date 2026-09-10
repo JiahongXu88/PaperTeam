@@ -333,6 +333,26 @@ export const ITERATION_OUTCOME_STYLES: Record<string, StatusStyle> = {
   REGRESSION: { label: "出现退化", tone: "danger" },
 };
 
+/** 修订来源（ManuscriptVersionDTO.source）的中文标签：用户看到的是业务动作，不是工程标识 */
+export const REVISION_SOURCE_LABELS: Record<string, string> = {
+  baseline: "初始基线",
+  "outline.plan": "大纲定稿",
+  "writing.sections": "初稿写作",
+  "review.snapshot": "审稿快照",
+  "revision.revise": "审稿修订",
+  "revision.apply": "应用改进计划",
+  "revision.repair_latex": "编译修复",
+  "revision.restore": "版本恢复",
+};
+
+/** 版本比较的章节状态标签（确定性 diff 结果） */
+export const COMPARE_STATUS_STYLES: Record<string, StatusStyle> = {
+  unchanged: { label: "未变化", tone: "neutral" },
+  modified: { label: "已修改", tone: "info" },
+  added: { label: "新增", tone: "ok" },
+  removed: { label: "已移除", tone: "warn" },
+};
+
 export function stageLabel(stageId: string | undefined): string | undefined {
   return stageId === undefined ? undefined : (STAGE_LABELS[stageId] ?? stageId);
 }

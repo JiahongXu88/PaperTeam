@@ -20,6 +20,7 @@ import {
   runBuild,
 } from "../api/artifacts.js";
 import { cancelWorkflowRun, createWorkflowRun, listProjectRuns, resumeWorkflowRun } from "../api/runs.js";
+import { compareVersions, listVersions, restoreRevision } from "../api/versions.js";
 import {
   confirmEvidenceVerified,
   getQualityGate,
@@ -83,6 +84,9 @@ export const queryKeys = {
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
+  versions: (projectId: string) => ["project", projectId, "versions"] as const,
+  versionCompare: (projectId: string, from: number, to: number) =>
+    ["project", projectId, "versions", "compare", from, to] as const,
   buildLog: (projectId: string) => ["project", projectId, "build", "log"] as const,
   iterations: (projectId: string) => ["project", projectId, "iterations"] as const,
   /** round 缺省 = 最新（后端决定；不在前端缓存「最新」的轮次号，避免轮次漂移） */
@@ -519,6 +523,45 @@ export function useFinalizeProject(projectId: string | undefined) {
       const id = projectId ?? "";
       void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(id) });
+    },
+  });
+}
+
+// ---- Manuscript Versions（M4.8：历史 / 比较 / 恢复；事实全部来自 Backend） ----
+
+/** 版本历史（ManuscriptVersionDTO 列表，最新在前） */
+export function useVersions(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.versions(projectId ?? ""),
+    queryFn: ({ signal }) => listVersions(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 两修订确定性比较（按需加载：只在面板展开比较时请求） */
+export function useVersionCompare(
+  projectId: string | undefined,
+  from: number | null,
+  to: number | null,
+) {
+  return useQuery({
+    queryKey: queryKeys.versionCompare(projectId ?? "", from ?? 0, to ?? 0),
+    queryFn: ({ signal }) => compareVersions(projectId ?? "", from as number, to as number, signal),
+    enabled: isNonEmpty(projectId) && from !== null && to !== null,
+  });
+}
+
+/** 恢复历史修订（= 创建新修订）：成功后版本 / 产物 / 构建状态一起失效 */
+export function useRestoreRevision(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (revision: number) => restoreRevision(projectId ?? "", revision),
+    onSuccess: () => {
+      const id = projectId ?? "";
+      void queryClient.invalidateQueries({ queryKey: queryKeys.versions(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.buildStatus(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.iterations(id) });
     },
   });
 }

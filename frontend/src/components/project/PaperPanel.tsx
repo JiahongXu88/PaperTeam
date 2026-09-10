@@ -22,6 +22,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../../api/client.js";
 import { formatApiError } from "../../utils/errors.js";
 import { formatBytes, formatDateTime, formatDurationMs } from "../../utils/format.js";
+import { VersionHistoryCard } from "./VersionHistory.js";
 import type {
   BuildGateRecordView,
   PaperArtifactView,
@@ -116,6 +117,7 @@ export function PaperPanel({ projectId }: { projectId: string }) {
       </section>
 
       <BuildStatusCard projectId={projectId} />
+      <VersionHistoryCard projectId={projectId} />
       <IterationsCard projectId={projectId} />
     </div>
   );
@@ -184,7 +186,10 @@ function FinalCard({
       </dl>
       {!finalUpToDate ? (
         <p className="note note-warn" role="status" data-testid="final-stale">
-          <span>冻结后又有了新修订：这份 Final 保持不变；新修订需复审并通过双门禁后，才能冻结新的 Final。</span>
+          <span>
+            最终版本仍是 修订 {latestFinal.revision} 的 Final（保持不变）；当前工作版本是 修订{" "}
+            {currentRevision}，尚未 Final——复审并通过双门禁后，才能冻结新的 Final。
+          </span>
         </p>
       ) : null}
       <div className="artifact-actions">

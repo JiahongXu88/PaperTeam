@@ -177,7 +177,8 @@ describe("PaperPanel：产物卡片", () => {
       },
     });
     renderWithProviders(<PaperPanel projectId="p-paper0001" />);
-    expect(await screen.findByTestId("final-stale")).toHaveTextContent("冻结后又有了新修订");
+    expect(await screen.findByTestId("final-stale")).toHaveTextContent(/最终版本仍是 修订 2 的 Final/);
+    expect(screen.getByTestId("final-stale")).toHaveTextContent(/当前工作版本是 修订 3，尚未 Final/);
     expect(screen.getByTestId("draft-card")).toHaveTextContent("尚无 PDF");
   });
 

@@ -2753,3 +2753,153 @@
 .hitl-scorecard-current td {
   font-weight: 600;
 }
+
+/* ---- 版本历史（M4.8：时间线 / 确定性比较 / 不可变恢复） ---- */
+
+.version-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.version-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--r-md);
+}
+
+.version-item-current {
+  border-left-color: var(--accent-primary);
+}
+
+.version-item-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.version-rev {
+  font-weight: 600;
+}
+
+.version-item-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.version-source {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.version-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.version-restore-confirm {
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-muted);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/* 版本比较 */
+.version-compare {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--r-md);
+}
+
+.version-compare-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.version-compare-controls select {
+  min-width: 8rem;
+}
+
+.field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.version-compare-arrow {
+  color: var(--text-muted);
+}
+
+.version-compare-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.version-compare-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-secondary);
+}
+
+.version-compare-table th,
+.version-compare-table td {
+  padding: var(--s-2) var(--s-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 400;
+  vertical-align: top;
+}
+
+.version-compare-table thead th {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.version-compare-table td:first-child {
+  display: table-cell;
+}
+
+.version-compare-path {
+  display: block;
+  margin-top: var(--s-1);
+  font-size: var(--fs-meta);
+}
+
+.version-compare-delta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  border-left: 3px solid var(--border-strong);
+  background: var(--bg-hover);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}

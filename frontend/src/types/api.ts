@@ -427,6 +427,85 @@ export interface RevisionIterationView {
   };
 }
 
+// ---- Manuscript Versions（M4.8：关联只由 Backend 完成，前端只展示） ----
+
+export interface VersionReviewFactView {
+  round: number;
+  reviewedRevision: number;
+  critical: number;
+  major: number;
+  blocking: number;
+  academicScore: number | null;
+}
+
+export interface VersionGateFactView {
+  round: number;
+  passed: boolean;
+  failedRuleIds: string[];
+}
+
+export interface VersionBuildFactView {
+  passed: boolean;
+  checkedAt: string;
+  revision: number;
+}
+
+/** 一条论文版本（Backend 组装的稳定 DTO；前端不拼装猜测关系） */
+export interface ManuscriptVersionView {
+  revision: number;
+  createdAt: string;
+  source: string;
+  runId?: string;
+  /** source=revision.restore 时的恢复来源 */
+  restoredFrom?: number;
+  isCurrent: boolean;
+  isFinal: boolean;
+  hasDraft: boolean;
+  review: VersionReviewFactView | null;
+  qualityGate: VersionGateFactView | null;
+  build: VersionBuildFactView | null;
+  artifacts: { artifactId: string; kind: "draft" | "final" }[];
+  revisionPlan: { planId: string; round: number; planned: number; skipped: number } | null;
+  iteration: { outcome: string | null; gateRound: number } | null;
+}
+
+export interface VersionListView {
+  current: number;
+  versions: ManuscriptVersionView[];
+}
+
+export interface CompareSectionView {
+  path: string;
+  title: string;
+  status: "unchanged" | "modified" | "added" | "removed";
+  fromLines: number | null;
+  toLines: number | null;
+  added: number | null;
+  removed: number | null;
+}
+
+/** 两个修订的确定性比较（零 LLM；差异计算完全在 Backend） */
+export interface VersionCompareView {
+  from: { revision: number; createdAt: string; source: string };
+  to: { revision: number; createdAt: string; source: string };
+  sections: CompareSectionView[];
+  summary: { unchanged: number; modified: number; added: number; removed: number };
+  reviewDelta: {
+    from: VersionReviewFactView | null;
+    to: VersionReviewFactView | null;
+    fromGate: VersionGateFactView | null;
+    toGate: VersionGateFactView | null;
+  };
+}
+
+/** Restore 结果：恢复 = 新修订（历史不动） */
+export interface VersionRestoreResultView {
+  revision: number;
+  created: boolean;
+  restoredFrom: number;
+  current: number;
+}
+
 // ---- Runtime Status（Pi schema） ----
 
 export interface RuntimeStatusView {
