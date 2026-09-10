@@ -238,7 +238,7 @@ export interface ScriptedAgentRuntime extends AgentRuntime {
 export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): ScriptedRuntime {
   const calls: { agentId: string; contextScope?: string }[] = [];
   const feasibilitySequence = options.feasibilitySequence ?? [FEASIBILITY_HIGH_JSON];
-  const reviewSequence = options.reviewSequence ?? ["pass"];
+  const reviewSequence = options.reviewSequence ?? reviewSequenceFromEnv() ?? ["pass"];
   let feasibilityIndex = 0;
   let reviewCallIndex = 0; // 每 3 次为一轮
   let hangResolve: (() => void) | undefined;
@@ -330,6 +330,23 @@ function makeHealth(ok: boolean): RuntimeHealth {
     latencyMs: ok ? 5 : null,
     checkedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * PAPERTEAM_TEST_RUNTIME_REVIEW="fail,pass" → 依次产出 fail / pass 审稿轮
+ * （浏览器级 E2E 驱动真实 Quality Gate FAIL→修订→PASS 链路用；显式传入
+ * reviewSequence 选项时以选项为准）。非法值忽略，保持全 pass 缺省。
+ */
+function reviewSequenceFromEnv(): ("pass" | "fail")[] | undefined {
+  const raw = process.env["PAPERTEAM_TEST_RUNTIME_REVIEW"]?.trim();
+  if (raw === undefined || raw === "") {
+    return undefined;
+  }
+  const parsed = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry): entry is "pass" | "fail" => entry === "pass" || entry === "fail");
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 /** v2 handle（终态任务；events 为空流；cancel 幂等 no-op）——测试辅助用 */

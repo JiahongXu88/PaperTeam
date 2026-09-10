@@ -4,6 +4,7 @@
  * 文件命名：
  *   review-summary-r{n}.json    三路审稿聚合（idea_to_paper / existing_paper_improvement）
  *   existing-review-r{n}.json   已有论文只读 Review 聚合报告（existing_paper_review）
+ *   quality-gate-r{n}.json      按轮 Quality Gate 结果（{gate, reviewSummary} 同轮配对）
  * round 从 1 递增；「最新」= 编号最大。
  */
 
@@ -12,10 +13,20 @@ import { join } from "node:path";
 
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
+import type { QualityGateResult } from "../quality/gates.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
+const GATE_PATTERN = /^quality-gate-r(\d+)\.json$/;
+
+/** 按轮落盘的 Quality Gate 产物（saveQualityGateReport 的结构） */
+export interface QualityGateArtifact {
+  round: number;
+  gate: QualityGateResult;
+  /** 评估时消费的同轮审稿汇总（round 配对由文件结构保证，不跨轮拼装） */
+  reviewSummary: ReviewSummary;
+}
 
 export class ReviewArtifactStore {
   constructor(private readonly projects: ProjectStore) {}
@@ -69,6 +80,64 @@ export class ReviewArtifactStore {
     return `reviews/${fileName}`;
   }
 
+  // ---- Quality Gate 产物（按轮） ----
+
+  gateFileName(round: number): string {
+    return `quality-gate-r${round}.json`;
+  }
+
+  /** 已落盘的 gate 轮次编号，降序（最新在前） */
+  async gateRounds(projectId: string): Promise<number[]> {
+    return this.rounds(projectId, GATE_PATTERN);
+  }
+
+  /**
+   * 读取某一轮的 gate 产物（无文件或结构损坏 → null）。
+   * 防御性校验与 readFinding 同一思路：磁盘 JSON 不盲信。
+   */
+  async loadGate(projectId: string, round: number): Promise<QualityGateArtifact | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.gateFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (typeof parsed !== "object" || parsed === null) {
+      return null;
+    }
+    const record = parsed as Record<string, unknown>;
+    const gate = readGateResult(record["gate"]);
+    const reviewSummary = record["reviewSummary"];
+    if (
+      gate === null ||
+      typeof reviewSummary !== "object" ||
+      reviewSummary === null ||
+      typeof (reviewSummary as Record<string, unknown>)["round"] !== "number"
+    ) {
+      return null;
+    }
+    return {
+      round,
+      gate,
+      reviewSummary: reviewSummary as ReviewSummary,
+    };
+  }
+
+  /** 全部轮次的 gate 产物（按 round 降序；损坏轮次跳过） */
+  async listGates(projectId: string): Promise<QualityGateArtifact[]> {
+    const rounds = await this.gateRounds(projectId);
+    const artifacts: QualityGateArtifact[] = [];
+    for (const round of rounds) {
+      const artifact = await this.loadGate(projectId, round);
+      if (artifact !== null) {
+        artifacts.push(artifact);
+      }
+    }
+    return artifacts;
+  }
+
   /** 最新已有论文 Review 聚合报告（无则 null） */
   async latestExistingReview(projectId: string): Promise<Record<string, unknown> | null> {
     const rounds = await this.rounds(projectId, EXISTING_REVIEW_PATTERN);
@@ -111,4 +180,33 @@ export class ReviewArtifactStore {
       return null;
     }
   }
+}
+
+/** QualityGateResult 的防御性读取（结构损坏 → null，不盲信磁盘 JSON） */
+function readGateResult(value: unknown): QualityGateResult | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record["passed"] !== "boolean" ||
+    !Array.isArray(record["reasons"]) ||
+    !Array.isArray(record["rules"]) ||
+    !record["rules"].every(
+      (rule) =>
+        typeof rule === "object" &&
+        rule !== null &&
+        typeof (rule as Record<string, unknown>)["rule"] === "string" &&
+        typeof (rule as Record<string, unknown>)["passed"] === "boolean" &&
+        typeof (rule as Record<string, unknown>)["detail"] === "string",
+    ) ||
+    typeof record["checkedAt"] !== "string" ||
+    typeof record["thresholds"] !== "object" ||
+    record["thresholds"] === null ||
+    typeof (record["thresholds"] as Record<string, unknown>)["academicPassScore"] !== "number" ||
+    typeof (record["thresholds"] as Record<string, unknown>)["styleRiskMax"] !== "number"
+  ) {
+    return null;
+  }
+  return value as QualityGateResult;
 }

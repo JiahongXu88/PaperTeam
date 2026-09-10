@@ -211,6 +211,31 @@ describe("evidence 管理", () => {
     expect(missing.status).toBe(404); // NOT_FOUND：不存在的资源不是请求体错误
     expect((missing.body["error"] as { code: string }).code).toBe("NOT_FOUND");
   });
+
+  it("手工登记可携带已知核验结论（status / level / strength）；非法枚举 400（M4.6）", async () => {
+    const stack = await newStack();
+    const project = await stack.store.create("Evidence 核验字段");
+    const added = await stack.request("POST", `/api/projects/${project.id}/evidence`, {
+      claim: "用户人工核对过的结论",
+      verificationStatus: "mismatch",
+      verificationLevel: "fulltext",
+      supportStrength: "contradictory",
+      source: { title: "Known Paper", doi: "10.1000/known" },
+    });
+    expect(added.status).toBe(201);
+    expect(added.body["evidence"]).toMatchObject({
+      verificationStatus: "mismatch",
+      verificationLevel: "fulltext",
+      supportStrength: "contradictory",
+    });
+
+    const bad = await stack.request("POST", `/api/projects/${project.id}/evidence`, {
+      claim: "非法支撑强度",
+      supportStrength: "bogus",
+    });
+    expect(bad.status).toBe(400);
+    expect((bad.body["error"] as { code: string }).code).toBe("INVALID_REQUEST");
+  });
 });
 
 describe("citation-check / manuscript / context / feasibility", () => {

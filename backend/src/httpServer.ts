@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -776,7 +776,8 @@ async function handleProjectResourceRoutes(
         if (claim === undefined) {
           throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 claim");
         }
-        // source / location 的字段级校验在 EvidenceStore.append 内完成，这里只保证是对象
+        // source / location 的字段级校验在 EvidenceStore.append 内完成，这里只保证是对象；
+        // 核验字段（人工登记时已知的核验结论）走枚举校验
         const source = body["source"];
         const location = body["location"];
         const record = await stack.evidence.append(
@@ -787,6 +788,27 @@ async function handleProjectResourceRoutes(
             ...(typeof body["quote"] === "string" ? { quote: body["quote"] } : {}),
             ...(isRecord(source) ? { source: source as EvidenceSourceRef } : {}),
             ...(isRecord(location) ? { location: location as EvidenceLocation } : {}),
+            ...(typeof body["verificationStatus"] === "string"
+              ? {
+                  verificationStatus: requireEnumField(
+                    body["verificationStatus"],
+                    VERIFICATION_STATUSES,
+                    "verificationStatus",
+                  ),
+                }
+              : {}),
+            ...(typeof body["verificationLevel"] === "string"
+              ? {
+                  verificationLevel: requireEnumField(
+                    body["verificationLevel"],
+                    VERIFICATION_LEVELS,
+                    "verificationLevel",
+                  ),
+                }
+              : {}),
+            ...(typeof body["supportStrength"] === "string"
+              ? { supportStrength: requireEnumField(body["supportStrength"], SUPPORT_STRENGTHS, "supportStrength") }
+              : {}),
           },
           "user",
         );
@@ -1188,25 +1210,66 @@ async function handleProjectResourceRoutes(
     return true;
   }
 
-  if (resource === "quality-gate" && method === "POST") {
-    // 从最新 artifacts 确定性评估（缺 review 时如实报错）
-    const summary = await stack.reviewArtifacts.latestSummary(projectId);
-    if (summary === null) {
-      throw new BusinessError("INVALID_REQUEST", "尚无 review 结果（先执行 review 或 workflow）");
+  if (resource === "quality-gate") {
+    if (method === "GET") {
+      // 只读：按轮读取已落盘的 gate 产物（latest + 全轮次摘要 + 新鲜度信号）。
+      // 正常情况下 workflow 的 quality.gate stage 自动产出；POST 才是重新评估。
+      const rounds = await stack.reviewArtifacts.gateRounds(projectId); // 降序
+      const roundParam = url.searchParams.get("round");
+      let round = rounds[0] ?? null;
+      if (roundParam !== null) {
+        const requested = Number(roundParam);
+        if (!Number.isInteger(requested) || requested <= 0) {
+          throw new BusinessError("INVALID_REQUEST", "查询参数 round 必须是正整数");
+        }
+        if (!rounds.includes(requested)) {
+          throw new NotFoundError(`Quality Gate（第 ${requested} 轮）`, projectId);
+        }
+        round = requested;
+      }
+      const artifact = round !== null ? await stack.reviewArtifacts.loadGate(projectId, round) : null;
+      const summaries = await stack.reviewArtifacts.listGates(projectId);
+      const latestReviewRound = (await stack.reviewArtifacts.latestSummary(projectId))?.round ?? null;
+      sendJson(res, 200, {
+        rounds: summaries.map((item) => ({
+          round: item.round,
+          passed: item.gate.passed,
+          checkedAt: item.gate.checkedAt,
+          blockerCount: item.gate.reasons.length,
+        })),
+        round: artifact?.round ?? null,
+        gate: artifact?.gate ?? null,
+        /** 同轮审稿汇总快照（gate 评估时消费的输入；round 配对由产物结构保证） */
+        reviewSummary: artifact?.reviewSummary ?? null,
+        /** 最新三路审稿轮次（gate 落后于它 → gate 结果可能已过期） */
+        latestReviewRound,
+        stale: artifact !== null && latestReviewRound !== null && latestReviewRound > artifact.round,
+      });
+      return true;
     }
-    const citation = await stack.citation.latestReport(projectId);
-    const evidence = await stack.evidence.stats(projectId);
-    const feasibility = (await readFeasibilityReport(stack.projects, projectId))?.report ?? null;
-    const gate = evaluateQualityGate(
-      { review: summary, citation, evidence, feasibility },
-      {
-        academicPassScore: stack.workflowServices.review.academicPassScore,
-        styleRiskMax: stack.workflowServices.review.styleRiskMax,
-        requireFeasibility: true,
-      },
-    );
-    await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary);
-    sendJson(res, 200, { gate });
+    if (method === "POST") {
+      // 从最新 artifacts 确定性评估（缺 review 时如实报错）
+      const summary = await stack.reviewArtifacts.latestSummary(projectId);
+      if (summary === null) {
+        throw new BusinessError("INVALID_REQUEST", "尚无 review 结果（先执行 review 或 workflow）");
+      }
+      const citation = await stack.citation.latestReport(projectId);
+      const evidence = await stack.evidence.stats(projectId);
+      const feasibility = (await readFeasibilityReport(stack.projects, projectId))?.report ?? null;
+      const gate = evaluateQualityGate(
+        { review: summary, citation, evidence, feasibility },
+        {
+          academicPassScore: stack.workflowServices.review.academicPassScore,
+          styleRiskMax: stack.workflowServices.review.styleRiskMax,
+          requireFeasibility: true,
+        },
+      );
+      await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary);
+      sendJson(res, 200, { gate, round: summary.round });
+      return true;
+    }
+    res.setHeader("Allow", "GET, POST");
+    sendJson(res, 405, { status: "method_not_allowed", method });
     return true;
   }
 
@@ -1330,41 +1393,20 @@ async function readLatestQualityGate(
   stack: ServiceStack,
   projectId: string,
 ): Promise<{ passed: boolean; reasons: string[]; rules: Array<{ rule: string; passed: boolean; detail: string }> } | null> {
-  let names: string[];
-  try {
-    names = await readdir(stack.projects.reviewsDir(projectId));
-  } catch {
-    return null;
-  }
-  const rounds = names
-    .map((name) => /^quality-gate-r(\d+)\.json$/.exec(name))
-    .filter((match): match is RegExpExecArray => match !== null)
-    .map((match) => Number(match[1]))
-    .sort((a, b) => b - a);
+  const rounds = await stack.reviewArtifacts.gateRounds(projectId);
   const latest = rounds[0];
   if (latest === undefined) {
     return null;
   }
-  try {
-    const parsed = JSON.parse(
-      await readFile(join(stack.projects.reviewsDir(projectId), `quality-gate-r${latest}.json`), "utf8"),
-    ) as { gate?: { passed?: unknown; reasons?: unknown; rules?: unknown } };
-    const gate = parsed.gate;
-    if (gate === undefined || typeof gate.passed !== "boolean" || !Array.isArray(gate.reasons)) {
-      return null;
-    }
-    return {
-      passed: gate.passed,
-      reasons: gate.reasons.filter((r): r is string => typeof r === "string"),
-      rules: (Array.isArray(gate.rules) ? gate.rules : []).filter(isRecord).map((rule) => ({
-        rule: String(rule["rule"] ?? ""),
-        passed: rule["passed"] === true,
-        detail: String(rule["detail"] ?? ""),
-      })),
-    };
-  } catch {
+  const artifact = await stack.reviewArtifacts.loadGate(projectId, latest);
+  if (artifact === null) {
     return null;
   }
+  return {
+    passed: artifact.gate.passed,
+    reasons: artifact.gate.reasons,
+    rules: artifact.gate.rules,
+  };
 }
 
 /** 读取创建/更新项目时的研究定位字段 */
