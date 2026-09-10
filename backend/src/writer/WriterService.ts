@@ -383,6 +383,8 @@ function buildRepairPrompt(params: {
     "1. 只输出修复后的该章节完整 LaTeX 正文片段；不要文档骨架、不要解释。",
     "2. 只做让编译通过所需的最小修改（修正语法 / 未定义命令 / 环境配对 / 数学模式）。",
     "3. 不改变论述内容，不增删 \\cite 引用，不新增宏包或参考文献。",
+    "4. 可用宏包只有 amsmath / amssymb / natbib；诊断指向 tikz 等未定义环境时，"
+      + "把该环境整体替换为文字描述或删除（前导不会为它加包）。",
     "",
     "===== 编译错误摘要 =====",
     params.buildError.slice(0, 500),
@@ -419,6 +421,7 @@ function buildRevisePrompt(params: {
       "输出要求：",
       "1. 只输出修订后的摘要纯文本（100–200 字）；不要 LaTeX 命令、不要解释。",
       "2. 逐条解决下列针对摘要的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
+      "3. 摘要是纯文本：不使用任何 LaTeX 命令、宏包或数学环境。",
       "",
       "===== 当前摘要 =====",
       params.currentLatex.slice(0, 4000),
@@ -444,12 +447,14 @@ function buildRevisePrompt(params: {
     "输出要求：",
     "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
     "2. 逐条解决下列针对本章节的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
-    "3. 只允许引用以下参考文献 key：" +
+    "3. 可用宏包只有 amsmath / amssymb / natbib（ctexart 文档类）；不要使用 tikz 等"
+      + "其他宏包的环境或命令（图形以文字描述或 table 呈现），否则无法编译。",
+    "4. 只允许引用以下参考文献 key：" +
       (params.bibliography.length > 0
         ? params.bibliography.map((entry) => entry.key).join(", ")
         : "（无：不要使用 \\cite）"),
     ...(params.buildError
-      ? ["4. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
+      ? ["5. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
       : []),
     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
     "",
