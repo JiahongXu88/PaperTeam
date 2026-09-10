@@ -181,12 +181,28 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     paperIngest,
     log,
   });
+  // CITATION_METADATA_* 配置对 PDF 引用核验（citationIntegrity）同样生效——
+  // 此前只接到旧 CitationService，quick review 的 citation.metadata stage 仍会真实外呼：
+  //   metadataEnabled=false 且未显式注入 providers → 空 provider 集（逐条 UNRESOLVED，不外呼）
+  //   metadataTimeoutMs / contactEmail → 传给 resolver（与旧 CitationService 同语义）
+  // 显式注入的 scholarly.providers 优先于 disable（测试用 fake provider 提供 metadata 记录
+  // 以驱动语义核验，见 citationSemanticMode.test）。
+  const scholarlyOptions: ScholarlyResolverOptions = {
+    ...(options.citation?.metadataTimeoutMs !== undefined
+      ? { timeoutMs: options.citation.metadataTimeoutMs }
+      : {}),
+    ...(options.citation?.contactEmail !== undefined ? { contactEmail: options.citation.contactEmail } : {}),
+    ...(options.citation?.scholarly ?? {}),
+  };
   const citationIntegrity = new CitationIntegrityService({
     projects: options.projects,
     store: paperStore,
     runtime: options.runtime,
     citationAgentId: options.agentIds.citation,
-    ...(options.citation?.scholarly !== undefined ? { scholarly: options.citation.scholarly } : {}),
+    scholarly:
+      options.citation?.scholarly?.providers === undefined && options.citation?.metadataEnabled === false
+        ? { ...scholarlyOptions, providers: [] }
+        : scholarlyOptions,
     ...(options.citation?.maxMetadataLookups !== undefined
       ? { maxMetadataLookups: options.citation.maxMetadataLookups }
       : {}),
