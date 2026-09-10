@@ -1,10 +1,75 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-09（M4.5 HITL UI：awaiting_input 决策产品化；同日早前：
-> Citation Semantic Correctness Hardening / M4.4 Workflow Live View / 引用语义
-> 核验可配置；2026-09-08 Review 并发优化 + M4.9 规划见历史）
+> 更新日期：2026-09-10（M4.6 Evidence Workbench + Quality Gate UI：证据工作台
+> / 质量门禁产品化；2026-09-09：M4.5 HITL UI / Citation Semantic Hardening /
+> M4.4 Workflow Live View；2026-09-08 Review 并发优化 + M4.9 规划见历史）
 
 ## 当前阶段
+
+**M4.6 — Evidence Workbench + Quality Gate UI（✅ 完成，2026-09-10）**：
+把「这篇论文里的核心论断，依据是什么？可靠吗？」做成一等公民页面——
+Evidence 工作台 tab + 质量门禁面板。**后端只做最小补口**（审计先行：
+Evidence / Review / Citation / QualityGate 四域产物与关系全部核对），
+前端严格只渲染后端事实，不自行推断。
+
+- **后端最小补口（无新架构）**：`ReviewArtifactStore` 新增 gate 产物读取
+  （`gateFileName` / `gateRounds` / `loadGate` 防御式校验）；HTTP 新增
+  `GET /api/projects/:id/quality-gate`（?round= 历史轮，返回
+  `{rounds[], round, gate, reviewSummary, latestReviewRound, stale}`，
+  round 隔离由产物结构保证——quality-gate-r{n}.json 内嵌同轮
+  reviewSummary）；`POST /evidence` 支持可选核验字段
+  （verificationStatus / verificationLevel / supportStrength，枚举校验 400）。
+  QualityGate 评估逻辑零改动（仍为确定性代码，前端绝不重算 PASS/FAIL）。
+- **修复（既有接线缺口）**：`CITATION_METADATA_ENABLED=0` 此前只接到旧
+  CitationService，quick review 的 `citation.metadata` stage 仍会真实外呼
+  Crossref/OpenAlex（网络慢时整条 run 停滞，e2e 偶发超时根因）——现在
+  serviceStack 把 metadataEnabled / metadataTimeoutMs / contactEmail 一并
+  接到 citationIntegrity 的 resolver（disabled → 空 provider 集逐条
+  UNRESOLVED，不外呼；显式注入的测试 providers 优先）。
+- **Evidence 工作台**（`EvidencePanel`，项目 tab「证据」，URL state）：
+  ledger 概况（总数 / 已核验 / 待核验 / 需注意 / 被正文使用 / 来源）+
+  本地筛选（状态 segmented / 章节 / 来源 / 搜索 id-claim-摘要-引文-DOI）+
+  行内截断展开 + 详情 provenance（文献 / DOI / 页码 / 章节 / 核验方式 /
+  使用记录）+ 低重量「确认已核验」（unverified 行才出现）。中文状态标签
+  （unverified 待核验 / verified 已核验 / plausible 大体可信 / mismatch
+  与来源不符 / unverifiable 无法核验 / not_found 未找到来源），Domain 枚举
+  不动；mismatch/not_found/unverifiable + contradictory 计入「需注意」，
+  INSUFFICIENT/无法核验用中性/警示色不用红色；未落库的字段（如 finding
+  的 evidenceIds）只防御性渲染、不虚构。
+- **质量门禁 UI**（`QualityGatePanel`，挂在 WorkflowPanel 内；Overview
+  克制质量状态卡；Review tab 仅 improvement 类型显示结论条）：结论徽标 +
+  阈值行 + 阻止项清单（ruleId → 中文注册表 + 前往处理深链 `?tab=evidence
+  &attention=1` 等，按 ruleId 映射不按 reason 字符串匹配）+ 15 条规则清单
+  （通过 / 未通过 / 不参与判定；citationIntegrity 4 条与
+  citation_semantic_verification_off 中性展示）+ 同轮审稿上下文（round
+  隔离可视化）+ 历史轮次切换（轻量 select，逐轮 refetch）+ 过期提示
+  （stale = gate 轮次 < 最新 review 轮次，手动重评按钮）+ Draft/Final 边界
+  文案（未通过 ≠ 不能生成 PDF）。semanticMode=off 的快速 Review 项目如实
+  显示「不运行门禁」空态，Overview 不显示质量卡。
+- **集成**：阶段时间线 quality.gate 完成行「查看门禁详情」滚动入口；HITL
+  修订耗尽 payload「查看详细问题」入口；Overview 质量状态卡（含过期 /
+  未评估态）。
+- **测试**：Backend 514（新增 GateApi 3：空态 shape / fail→pass 两轮 rounds
+  desc / ?round= 隔离与 404/400 / 9 条基础规则集；httpResources +1 手工登记
+  核验字段；serviceStack 3：metadata 接线回归）+ Frontend 141（新增
+  EvidencePanel 7 / QualityGatePanel 10）全部 PASS。
+- **E2E（`e2e/evidence-gate.spec.ts`，7 例，scripted 栈）**：A1 完整
+  idea_to_paper（fail→pass 修订环）产出两轮 gate；A2 工作台全交互（筛选 /
+  搜索 / 详情 provenance / 确认已核验 / URL 保持）；B r1 FAIL（可解释阻止
+  项 / academicScore=66 实际值 / 9 规则 / Overview 卡 / 时间线入口）；C r2
+  PASS 轮次切换（同轮 review 一起切）；D 真实矛盾证据 → gate FAIL → 深链
+  证据页需注意筛选；E semanticMode=off 空态不出现假 0/0 或误 FAIL；F
+  Light/Dark × 1440/1100 无横向溢出截图留档。全套 7/7（scripted 栈离线化
+  后 13s）。既有套件复验：hitl 7/7、smoke 7/7（默认栈）、workflow 4+1skip
+  （无模型栈）+ 模型门控 E 真实链路通过、visual 10/10（含新
+  project-evidence 路由，5 视口 × 2 主题）。
+- **视觉 QA**：6 张 m46 截图（Light/Dark × 证据页 / 门禁 FAIL / 门禁 PASS）
+  模型走查两轮——克制红色（仅徽标 + 阻止项描边 + 单条未通过 pill）、PASS
+  不满屏绿、深色主题真实生效；Pass 1 发现「查看门禁详情」竖排（grid 列约
+  束）与阈值行对比度不足，修复后复验通过。
+- **真实数据只读 smoke**：默认栈全部真实项目（6 个，均为 quick-review
+  类型）× 新端点全部 200——如实空态（无 evidence.jsonl / gate 产物，不虚
+  构）；当前无 idea/improvement 类型真实项目，带产物路径由 e2e + 单测覆盖。
 
 **M4.5 — HITL UI（✅ 完成，2026-09-09）**：把 Backend 既有的
 `awaiting_input` / resume / cancel 产品化到前端——用户能看懂「为什么停住」，
@@ -55,8 +120,8 @@ SSE 事件与 replay 齐备）；本轮新增的是前端决策面板与 scripte
   Dark、取消确认 Dark）人工 review——与现有 Panel / Chip / Note / Btn 语言
   一致，warning 强调（非 danger），无临时后台感。
 
-**下一阶段：M4.6 Evidence + Quality Gate**（Evidence Workbench / Quality
-Gate UI；M4.5 已停，未开始）。
+**下一阶段：M4.7 Draft / Final + Writer–Reviewer Closure**（Draft/Final 状态
+页与标记流、版本管理入口；当前只做分析不动手。M4.6 已停）。
 
 ---
 
@@ -456,6 +521,7 @@ GET    /api/projects/:id/citation-report          最近引用报告
 POST   /api/projects/:id/review                   独立全面审稿（三路并行 + 聚合）
 GET    /api/projects/:id/reviews                  审稿汇总列表
 POST   /api/projects/:id/quality-gate             Quality Gate 评估（基于最新 artifacts）
+GET    /api/projects/:id/quality-gate?round=N     gate 轮次读取：rounds 列表 + 指定轮 gate + 同轮 reviewSummary + stale（M4.6）
 POST   /api/projects/:id/build                    Build Gate + Draft PDF
 GET    /api/projects/:id/manuscript               大纲 + 章节状态
 GET    /api/projects/:id/context?rebuild=true     Derived Context
@@ -485,7 +551,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **当前：Backend 507（+7 个默认跳过的 live smoke）+ Frontend 124 + 浏览器级 E2E 29（Playwright，`e2e/`，需运行中的 dev 栈；模型门控用例在模型未配置时自动跳过；HITL 套件 7 例需 `PAPERTEAM_TEST_RUNTIME=scripted` + `PAPERTEAM_E2E_HITL=1` 的脚本化栈，其它环境自动跳过；两栈合计 28 passed）全部通过（2026-09-09，M4.5）。**
+- **当前：Backend 514（+7 个默认跳过的 live smoke）+ Frontend 141 + 浏览器级 E2E 36（Playwright，`e2e/`，需运行中的 dev 栈；模型门控用例在模型未配置时自动跳过；HITL 套件 7 例需 `PAPERTEAM_TEST_RUNTIME=scripted` + `PAPERTEAM_E2E_HITL=1`、Evidence/门禁套件 7 例需 `PAPERTEAM_E2E_EVIDENCE_GATE=1`（scripted 栈 + `PAPERTEAM_TEST_RUNTIME_REVIEW=fail,pass` 驱动两轮 gate），其它环境自动跳过；M4.6 复验：smoke 7 + workflow 4+1skip + hitl 7 + evidence-gate 7 + visual 10 全部通过）全部通过（2026-09-10，M4.6）。**
 - 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。

@@ -619,9 +619,10 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
 ### 8.3 双模式目标（PRD；系统管理后台 M4.8+）
 
 - **论文工作台**（普通用户）：My Papers（两类项目）、New Project（两类入口）、
-  Workflow 实时视图（M4.4 已实现）、HITL 待办（M4.5）、文献与证据（M4.6）、审稿 /
-  Quality Gate（M4.7）、PDF 查看（M4.8）。隐藏 session / agentId / runId / Runtime
-  技术细节，只展示业务阶段与 awaiting_input 待办。
+  Workflow 实时视图（M4.4 已实现）、HITL 待办（M4.5）、文献与证据（M4.6
+  已实现：证据工作台 tab）、审稿 / Quality Gate（M4.6 已实现门禁面板，
+  Draft/Final 标记流 M4.7）、PDF 查看（M4.8）。隐藏 session / agentId /
+  runId / Runtime 技术细节，只展示业务阶段与 awaiting_input 待办。
 - **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、日志、
   系统诊断（M4.8+）。
 

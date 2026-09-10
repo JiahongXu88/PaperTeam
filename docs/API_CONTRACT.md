@@ -7,7 +7,9 @@
 > 2026-09-09 M4.4：Workflow Live View 正式消费（§1.4 / §3 增补：`POST /cancel`
 > 幂等语义、`stage.progress` 载荷的 `started` / `retried`、`WorkflowRunView` 时间线字段）；
 > 2026-09-09 M4.5：HITL 决策正式消费（§1.4 / §2 增补：`POST /resume` decision 契约、
-> `awaiting.payload`、stale / 重复提交的 409 语义）。
+> `awaiting.payload`、stale / 重复提交的 409 语义）；
+> 2026-09-10 M4.6：Evidence Workbench + Quality Gate UI 正式消费（§1.2d / §2 增补：
+> `GET /api/projects/:id/quality-gate?round=`、Evidence 核验字段、gate / evidence DTO）。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -66,9 +68,9 @@
 | `POST /api/runs/:runId/resume` | HITL 决策 `{decision, payload?}`（仅 `awaiting_input` 可调用）。decision 必须在当前 `awaiting.options` 内，payload 按节点契约：`hitl.feasibility_confirm` 的 `adjust` 需 `targetProfile` 或 `targetVenue`（≥一项）；`hitl.outline_confirm` / `hitl.plan_confirm` 的 `revise` 需非空 `feedback`；`hitl.revision_overflow` 为 `accept_draft` / `revise_more`（无 payload）；`cancel` 走 decision 通道留档 `inputs`。成功 → 200 `{run}`（decision=cancel 时终态 cancelled）。**409 WORKFLOW_INVALID_STATE**：非法 decision / 缺 payload / 重复提交（含并发）/ 过期请求（已 resume）；重复 cancel 幂等走 `POST /cancel` | ✅ M4.5（HitlPanel 决策面板） |
 | `POST /api/runs/:runId/cancel` | 取消 run：立即 abort 在途模型调用（AgentRun / 分章节审阅 / 语义核验 / 引用真实性核验逐条循环），停止派发未开始项，循环检查点终结落盘。**已 cancelled 的重复取消幂等 200**（返回当前状态）；completed / failed → 409 | ✅ M4.4（工作流页「取消任务」） |
 | `GET/POST /api/projects/:id/sources`、`GET/PATCH/DELETE …/:sid`、`POST …/:sid/analyze` | 文献库 CRUD + PDF 分析 | M4.5 |
-| `GET/POST /api/projects/:id/evidence`、`GET …/:eid`、`POST …/:eid/verify` | Evidence CRUD + 核验 | M4.5 |
+| `GET/POST /api/projects/:id/evidence`、`GET …/:eid`、`POST …/:eid/verify` | Evidence CRUD + 核验 | ✅ M4.6（Evidence Workbench；POST body 增可选核验字段，见 §1.2d） |
 | `GET /api/projects/:id/feasibility` | 最近可行性报告（HITL 上下文） | M4.4 |
-| `GET/POST /api/projects/:id/review`、`POST /api/projects/:id/quality-gate` | 三路审稿 / Quality Gate | M4.6 |
+| `GET/POST /api/projects/:id/review`、`POST /api/projects/:id/quality-gate` | 三路审稿（`POST /review` 由后端编排触发，前端不直接调用）/ Quality Gate 评估 | POST /quality-gate ✅ M4.6（stale 重评）；GET /quality-gate 见 §1.2d ✅ M4.6 |
 | `POST /api/projects/:id/build` | Build Gate + Draft PDF | M4.7 |
 | `GET/POST /api/projects/:id/import` | Existing-LaTeX 导入（archiveBase64 / files） | M4.5 |
 | `GET /api/projects/:id/manuscript`、`GET …/context`、`POST …/citation-check`、`GET …/citation-report` | 手稿 / 派生上下文 / 引用核验 | M4.5-M4.7 |
@@ -144,6 +146,37 @@
 >   不进仓库；重启后由启动装配恢复（env 缺省时 stored 生效）。
 > - Test Connection 不创建 AgentSession / 不写 Workspace / 不污染会话历史；
 >   携带未保存 Key 时经 `options.apiKey` 覆盖式注入（不落盘）。
+
+### 1.2d M4.6 已消费 ✅（Evidence Workbench / Quality Gate UI）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/quality-gate` | gate 轮次读取（**只读**，不触发评估）。响应 `{rounds: [{round, passed, checkedAt, blockerCount}]（降序）, round: number\|null, gate: QualityGateResultView\|null, reviewSummary: ReviewSummaryView\|null, latestReviewRound: number\|null, stale: boolean}`。无产物 → rounds=[] / round=null / stale=false（如实空态，不虚构 0/0）。`?round=N` 读历史轮（round 隔离：gate 与其评估时的**同轮** reviewSummary 成对返回，产物结构保证）；非正整数 → 400，未知轮 → 404 | QualityGatePanel（结论 / 阻止项 / 规则 / 轮次切换）/ Overview 质量状态卡 |
+| `POST /api/projects/:id/quality-gate` | 确定性评估（既有端点；M4.6 起响应含 `round`）。前端仅在 `stale=true`（gate 轮次落后于最新 review 轮次）时提供「按最新审稿重新评估」 | QualityGatePanel（stale 重评） |
+| `GET /api/projects/:id/evidence` | Evidence 列表（一次返回全部字段，前端本地筛选 / 搜索 / 截断，无 N+1） | EvidencePanel |
+| `GET /api/projects/:id/evidence/:eid` | 单条详情（provenance 全字段） | EvidencePanel 行内展开 |
+| `POST /api/projects/:id/evidence/:eid/verify` | 更新核验状态（既有端点；工作台「确认已核验」= `{verificationStatus:"verified", verificationLevel:"user_confirmed", verificationMethod:"user_confirmed"}`） | EvidencePanel |
+| `POST /api/projects/:id/evidence` | 手工登记（既有端点；M4.6 起接受可选核验结论字段 `verificationStatus` / `verificationLevel` / `supportStrength`——人工核对来源后登记可携带结论；非法枚举 → 400） | （API 层；表单 UI 后续里程碑） |
+
+> 2026-09-10 M4.6 语义约定：
+> - **PASS/FAIL 只来自后端 `QualityGateResult`**：前端不根据 findings 数量 / 分数 /
+>   引用计数自行判定；`rules[].ruleId` 是稳定标识（ruleId → 中文与跳转 tab 的注册表
+>   在前端维护，**不做 reason 字符串匹配**）。
+> - **轮次隔离**：`quality-gate-r{n}.json` 内嵌评估时的同轮 `reviewSummary`，
+>   `GET ?round=N` 成对返回——切历史轮不会混入新审稿分数；`stale` = 最新 review
+>   轮次 > gate 轮次（最小口径，无指纹机制）。
+> - **快速 Review（existing_paper_review）永不产生 gate**：GET 返回如实空态；
+>   前端显示「不运行门禁」说明，Overview 不显示质量卡（避免永久「尚未评估」噪音）。
+> - **Evidence 状态枚举**（后端 Domain 枚举不变，前端只做中文标签）：
+>   `verificationStatus: unverified \| verified \| plausible \| mismatch \| unverifiable \| not_found`；
+>   `supportStrength: direct \| partial \| indirect \| contradictory`；
+>   `verificationLevel: abstract \| metadata \| fulltext \| user_confirmed`。
+>   mismatch / not_found / unverifiable 与 contradictory 计入「需注意」（警示色），
+>   不代表论文错误，不用红色错误样式。
+> - **接线修复**：`CITATION_METADATA_ENABLED=0` 现在同时作用于 quick review 的
+>   `citation.metadata` stage（空 provider 集 → 逐条 UNRESOLVED，不外呼；
+>   显式注入的测试 providers 优先）；`CITATION_METADATA_TIMEOUT_MS` /
+>   `CITATION_CONTACT_EMAIL` 一并传入该 resolver。
 
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
@@ -314,14 +347,60 @@ interface ModelTestResultView {
   code?: "AUTH_FAILED" | "MODEL_NOT_FOUND" | "PROVIDER_UNAVAILABLE" | "RATE_LIMITED" | "TIMEOUT" | "UNKNOWN";  // ok=false
   detail?: string;                            // 截断 + 脱敏（不含 key）
 }
+// ---- M4.6（2026-09-10）：Evidence Workbench / Quality Gate ----
+
+type EvidenceVerificationStatus =
+  | "unverified" | "verified" | "plausible" | "mismatch" | "unverifiable" | "not_found";
+type EvidenceSupportStrength = "direct" | "partial" | "indirect" | "contradictory";
+type EvidenceVerificationLevel = "metadata" | "abstract" | "fulltext" | "user_confirmed";
+
+// GET /api/projects/:id/evidence 单条（列表与详情同形；一次请求返回列表所需全部字段）
+interface EvidenceRecordView {
+  id: string; claim: string;
+  summary?: string; quote?: string;
+  source?: { sourceId?: string; title?: string; authors?: string[]; year?: number; doi?: string; url?: string };
+  location?: { page?: number; section?: string; chunk?: string };
+  verificationStatus: EvidenceVerificationStatus;
+  verificationMethod?: string;
+  supportStrength?: EvidenceSupportStrength;
+  verificationLevel?: EvidenceVerificationLevel;
+  confidence?: number;                         // 辅助参考（0-1），不参与 gate 判定
+  relatedSections?: string[];
+  usedBy?: string[];                           // 使用记录（run / 手工 markUsage）
+  createdBy: string; createdAt: string; updatedAt?: string;
+}
+
+// 确定性判定结果——frontend 只展示，绝不重算 PASS/FAIL
+interface QualityGateRuleView { rule: string; passed: boolean; detail: string }
+interface QualityGateResultView {
+  passed: boolean; reasons: string[];          // reasons = 阻止项（blocker）
+  rules: QualityGateRuleView[];
+  thresholds: { academicPassScore: number; styleRiskMax: number; requireFeasibility: boolean };
+  checkedAt: string;
+}
+interface QualityGateRoundView { round: number; passed: boolean; checkedAt: string; blockerCount: number }
+interface ReviewSummaryView {                   // gate 评估时消费的同轮审稿汇总（round 配对由产物结构保证）
+  generatedAt: string; round: number;
+  counts: { critical: number; major: number; minor: number; blocking: number };
+  scores: { academicScore: number | null; styleRisk: number | null };
+  openCritical: number; openMajor: number; unsupportedCriticalClaims: number;
+}
+interface QualityGateResponseView {             // GET /quality-gate[?round=N]；无产物时 round/gate/reviewSummary 为 null
+  rounds: QualityGateRoundView[];
+  round: number | null;
+  gate: QualityGateResultView | null;
+  reviewSummary: ReviewSummaryView | null;
+  latestReviewRound: number | null;            // > 当前 gate 轮次 → stale
+  stale: boolean;
+}
 ```
 
 ### 2.1 后续里程碑预留（M4.0 只定义边界，不实现）
 
 - `WorkflowRunDetailView / WorkflowStageView / WorkflowEventView`：M4.3（Live View + SSE）；
-  Domain Event 类型见 §3，不透传 Pi 事件。
-- `CheckpointView`：M4.4（HITL 配置化：`awaiting{stageId, prompt, options, payload}`）。
-- `EvidenceView / SourceView`：M4.5；`ReviewView / QualityGateView`：M4.6；
+  Domain Event 类型见 §3，不透传 Pi 事件。✅（M4.4 消费）
+- `CheckpointView`：M4.4（HITL 配置化：`awaiting{stageId, prompt, options, payload}`）。✅（M4.5 消费）
+- `EvidenceView / SourceView`：M4.5-M4.6；`ReviewView / QualityGateView`：M4.6。✅（M4.6 消费，见 §2 M4.6 块；SourceView 文献库 UI 后续里程碑）
   `ArtifactView`（Draft/Final PDF）：M4.7。
 
 ## 3. Workflow Domain Event（SSE 载荷，M4.3 消费）

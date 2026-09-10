@@ -112,8 +112,22 @@ Stage Timeline（六态 + 集中中文标签映射）、分章节进度（17/33 
 E2E（`e2e/hitl.spec.ts`）经 `PAPERTEAM_TEST_RUNTIME=scripted` 脚本化模型栈
 驱动完整真实链路（编排器 / checkpoint / SSE / HTTP / React 全真）。
 
-**未实现（M4.6+）**：Evidence Workbench、Quality Gate UI、Draft / Final /
-版本管理、Visual Reviewer、LaTeX repair loop、系统管理后台、Docker 部署。
+**M4.6 Evidence Workbench + Quality Gate UI（2026-09-10）已落地**：项目工作区
+新增「证据」标签——回答「这篇论文里的核心论断，依据是什么？可靠吗？」：
+ledger 概况统计、状态 / 章节 / 来源 / 关键词本地筛选、行内截断与详情
+provenance（文献 / DOI / 页码 / 核验方式 / 使用记录）、低重量「确认已核验」；
+中文状态标签（待核验 / 已核验 / 大体可信 / 与来源不符 / 无法核验 / 未找到
+来源），无法核验 ≠ 红色错误。质量门禁面板（工作流页）：结论徽标（后端
+确定性 `QualityGateResult`，前端绝不重算）、可解释阻止项 + ruleId → 中文
+注册表 + 「前往处理」深链（证据页需注意筛选）、9+4 规则清单（通过 /
+未通过 / 不参与判定）、历史轮次切换（round 隔离：gate 与同轮审稿成对）、
+过期提示与手动重评、Draft / Final 边界文案（未通过 ≠ 不能生成 PDF）；
+Overview 克制质量状态卡 + 时间线 / HITL 入口联动。快速 Review（只读分析）
+如实显示「不运行门禁」。E2E（`e2e/evidence-gate.spec.ts`）在 scripted 栈
+覆盖两轮 gate（fail→pass）、证据全交互、深链与 Light / Dark 视觉。
+
+**未实现（M4.7+）**：Draft / Final 状态页与标记流、版本管理、Visual
+Reviewer、LaTeX repair loop、系统管理后台、Docker 部署。
 
 ## 文档
 
@@ -266,6 +280,7 @@ POST   /api/projects/:id/sources              上传文献 PDF（sourceRole: evi
 POST   /api/projects/:id/citation-check       引用核验（静态 + 公开元数据）
 POST   /api/projects/:id/review               全面审稿（fact/academic/style 并行）
 POST   /api/projects/:id/quality-gate         Quality Gate 评估
+GET    /api/projects/:id/quality-gate         gate 轮次读取（?round= 历史轮；M4.6）
 POST   /api/projects/:id/build                Build Gate + Draft PDF
 POST   /api/projects/:id/generate             M2 同步写作+编译（deprecated，保留兼容）
 （另有 sources/evidence/feasibility/citation-report/reviews/manuscript/context 查询端点）
