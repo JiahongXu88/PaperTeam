@@ -12,7 +12,7 @@
 Draft 即时冻结、Final 双 Gate 校验后冻结、产物不可变可下载；(B) **Writer–
 Reviewer 修订闭环**：审稿意见 → 确定性修订计划 → Writer 逐节修订 → 强制
 复审 → 确定性收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION），不收敛
-与超限交给 HITL。6 个 commit（a1f5df8 → eb9ec9c）。
+与超限交给 HITL。7 个 commit（a1f5df8 → ed51b2e）。
 
 - **manuscript 修订域（Authoritative）**：`ManuscriptRevisionStore`——每个
   改稿动作（outline.plan / writing.sections / revision.revise / apply /
