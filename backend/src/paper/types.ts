@@ -98,6 +98,8 @@ export interface PaperDocument {
   /** 项目内最终 PDF 的逻辑 id（第一版单文档：固定 "paper-1"） */
   documentId: string;
   title?: string;
+  /** 解析器提取的论文摘要原文（M4.8 重建用；部分版式无摘要 → 缺省） */
+  abstract?: string;
   originalFileName: string;
   bytes: number;
   /** source/paper.pdf 内容指纹（重复上传判定依据） */
@@ -226,6 +228,7 @@ export function readPaperDocument(value: unknown): PaperDocument | null {
     return null;
   }
   const projectId = readString(value, "projectId");
+  const abstract = readString(value, "abstract");
   const documentId = readString(value, "documentId");
   const originalFileName = readString(value, "originalFileName");
   const sha256 = readString(value, "sha256");
@@ -269,6 +272,7 @@ export function readPaperDocument(value: unknown): PaperDocument | null {
   return {
     schemaVersion: 1,
     projectId,
+    ...(abstract !== undefined ? { abstract } : {}),
     documentId,
     ...(readString(value, "title") !== undefined ? { title: readString(value, "title") } : {}),
     originalFileName,

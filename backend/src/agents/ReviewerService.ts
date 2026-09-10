@@ -311,7 +311,7 @@ export function buildReviewPrompt(params: {
     "{",
     '  "summary": "总体评价（100 字内）",',
     '  "issues": [{"category": "fact|academic|style|citation|evidence_gap|build",',
-    '    "severity": "critical|major|minor", "section": "sections/xxx.tex 或章节名",',
+    '    "severity": "critical|major|minor", "section": "sections/xxx.tex、abstract（摘要问题归这里）或章节名",',
     '    "description": "问题描述", "evidenceRef": "E001（如有）",',
     '    "suggestedAction": "修改建议", "blocking": false}]',
     "}",

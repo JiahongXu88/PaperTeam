@@ -12,6 +12,7 @@ import { ManuscriptService } from "./manuscript/ManuscriptService.js";
 import { ManuscriptRevisionStore } from "./manuscript/RevisionStore.js";
 import { PaperArtifactStore } from "./artifacts/ArtifactStore.js";
 import { FinalizeService } from "./artifacts/FinalizeService.js";
+import { VersionService } from "./version/VersionService.js";
 import { PaperIngestService } from "./paper/PaperIngestService.js";
 import { PaperMapService } from "./paper/PaperMapService.js";
 import { PaperStore } from "./paper/PaperStore.js";
@@ -105,6 +106,8 @@ export interface ServiceStack {
   artifacts: PaperArtifactStore;
   /** Finalize：双 Gate 对齐校验 + Final 冻结（M4.7） */
   finalize: FinalizeService;
+  /** 版本体验：ManuscriptVersionDTO / 确定性 Compare / Restore（M4.8） */
+  versions: VersionService;
   workflowServices: WorkflowServices;
 }
 
@@ -232,6 +235,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     artifacts,
     revisions,
   });
+  const versions = new VersionService({
+    projects: options.projects,
+    revisions,
+    artifacts,
+    reviewArtifacts,
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -258,6 +267,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     revisions,
     artifacts,
     finalize,
+    versions,
     workflowServices: {
       projects: options.projects,
       generation,

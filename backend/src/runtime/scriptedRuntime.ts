@@ -106,6 +106,10 @@ export const REVISED_SECTION_TEX = [
   "修订后的论述：基于已核验证据的稳健表述，避免无证据的强论断。",
 ].join("\n");
 
+/** 摘要修订输出（M4.8：纯文本，无任何 LaTeX 命令——载体是 outline.abstract） */
+export const REVISED_ABSTRACT_TEXT =
+  "修订后的摘要：本文在已核验证据的基础上提出改进方法，并通过可复现实验验证其有效性，结论表述与证据强度一致。";
+
 /** 编译错误修复输出（合法：无文档骨架、花括号配对；只修语法不改内容 / 引用） */
 export const REPAIRED_SECTION_TEX = [
   "\\section{章节标题}",
@@ -340,6 +344,9 @@ export interface ScriptedRuntimeOptions {
  */
 const REVIEW_MARKER = /\[review:([a-z0-9,\s]+)\]/;
 const LATEX_MARKER = /\[latex:(broken|unfixable)\]/;
+/** M4.8 摘要修订回归标记：首轮 review/fact 附加一条「main.tex（摘要）」critical finding，
+ *  复现真实 Reviewer 的非常规归属，验证它被路由到摘要目标而不是组装根。 */
+const ABSTRACT_MARKER = /\[abstract:finding\]/;
 /** 未定义命令：真实 xelatex 报 "! Undefined control sequence." 并按 l.N 定位行号 */
 export const UNDEFINED_MACRO_TEX = "\\paperTeamUndefinedMacro";
 
@@ -389,6 +396,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectReviewSequences = new Map<string, ReviewOutcomeName[]>();
   const projectReviewCalls = new Map<string, number>();
   const projectLatexModes = new Map<string, LatexMode>();
+  const projectAbstractFindings = new Set<string>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -420,6 +428,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           if (latexMarker !== null) {
             projectLatexModes.set(projectId, latexMarker[1] as LatexMode);
           }
+          if (ABSTRACT_MARKER.test(input.task)) {
+            projectAbstractFindings.add(projectId);
+          }
         }
         output = RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
@@ -440,18 +451,36 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
         // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
         // 完整骨架并被 DoD 拒绝。脚本化 Writer 镜象该行为，防止此类回归静默通过。
-        output = input.task.includes("\\documentclass")
-          ? LATEX_DOC
-          : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
-            ? `${REVISED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
-            : REVISED_SECTION_TEX;
+        output = input.task.includes("修订论文摘要")
+          ? REVISED_ABSTRACT_TEXT
+          : input.task.includes("\\documentclass")
+            ? LATEX_DOC
+            : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
+              ? `${REVISED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
+              : REVISED_SECTION_TEX;
       } else if (scope === "writing/repair") {
         output =
           projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
             ? `${REPAIRED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
             : REPAIRED_SECTION_TEX;
       } else if (scope === "writing/improvement-plan") {
-        output = IMPROVEMENT_PLAN_JSON;
+        // 改进计划条目必须指向真实章节文件：prompt 现在携带「现有章节文件」清单
+        // （M4.8；PDF 重建项目为 sections/secNN.tex）——脚本从中取前两个，
+        // 提取不到时保持静态 fixture（兼容旧 prompt 形态的用例）
+        const sectionFiles = [...input.task.matchAll(/^\s*- (sections\/[a-z0-9-]+\.tex)$/gm)].map(
+          (match) => match[1] ?? "",
+        );
+        output =
+          sectionFiles.length >= 2
+            ? JSON.stringify({
+                plan: sectionFiles.slice(0, 2).map((section, index) => ({
+                  section,
+                  action: index === 0 ? "补充关键论证并收敛过强表述" : "补全与相关工作的对比讨论",
+                  rationale: "基于审稿发现与目标差距",
+                  priority: index === 0 ? "high" : "medium",
+                })),
+              })
+            : IMPROVEMENT_PLAN_JSON;
       } else if (scope.startsWith("review/section/")) {
         // 快速 Review 的分章节审阅（M4.7 只读红线 E2E：合法 findings，产出零 PDF）
         output = SECTION_FINDINGS_JSON;
@@ -478,6 +507,17 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = scope === "review/fact" ? pack.fact : scope === "review/academic" ? pack.academic : pack.style;
         if (scope === "review/fact" && round === 0 && options.firstRoundFactIssue !== undefined) {
           output = appendReviewIssue(output, options.firstRoundFactIssue);
+        }
+        if (scope === "review/fact" && round === 0 && projectAbstractFindings.has(projectId)) {
+          // M4.8 摘要回归：真实 Reviewer 曾把摘要 critical finding 归到「main.tex（摘要）」
+          output = appendReviewIssue(output, {
+            category: "academic",
+            severity: "critical",
+            section: "main.tex（摘要）",
+            description: "摘要承诺了正文未充分支撑的贡献，表述过强。",
+            suggestedAction: "弱化摘要表述，与证据强度一致。",
+            blocking: true,
+          });
         }
       }
       const now = new Date().toISOString();

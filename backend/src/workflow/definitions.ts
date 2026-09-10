@@ -42,6 +42,10 @@ import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
 import { diagnosticFiles, type LatexDiagnostic } from "../latex/diagnostics.js";
+import {
+  reconstructManuscriptFromPaper,
+  writeReconstructionReport,
+} from "../import/PaperReconstructor.js";
 import type { WriterService } from "../writer/WriterService.js";
 import type { ResearcherService, ResearchArtifact } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
@@ -620,12 +624,13 @@ function revisionReviseStage(
         }
         // 章节人类标题（大纲 id → title；缺大纲时回退 id）：修订 prompt 以标题称呼章节
         const sectionMeta = outline?.sections.find((section) => section.id === target.key);
+        const isAbstractTarget = target.key === "abstract";
         const result = await services.writer.reviseSection({
           projectId: ctx.projectId,
           section: {
             id: target.key,
             file: target.relativePath.replaceAll("\\", "/").split("/").pop() ?? target.key,
-            title: sectionMeta?.title ?? target.key,
+            title: isAbstractTarget ? "摘要" : (sectionMeta?.title ?? target.key),
           },
           outline: outline ?? { title: project.title, sections: [] },
           currentLatex: target.currentLatex,
@@ -634,11 +639,19 @@ function revisionReviseStage(
           bibliography,
           ...(buildError !== undefined ? { buildError } : {}),
         });
-        await writeFile(
-          join(services.projects.manuscriptDir(ctx.projectId), target.relativePath),
-          result.latex.trim() + "\n",
-          "utf8",
-        );
+        if (isAbstractTarget) {
+          // 摘要修订写回 outline.abstract（独立可写载体）；后续 writeMainTex 重组时生效
+          if (outline !== null) {
+            outline.abstract = result.latex.trim();
+            await services.manuscript.saveOutline(ctx.projectId, outline);
+          }
+        } else {
+          await writeFile(
+            join(services.projects.manuscriptDir(ctx.projectId), target.relativePath),
+            result.latex.trim() + "\n",
+            "utf8",
+          );
+        }
         revised.push(target.key);
         await ctx.emitProgress({
           section: target.key,
@@ -1334,7 +1347,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
 function importParseStage(services: WorkflowServices): StageSpec {
   return {
     id: "import.parse",
-    description: "校验已导入的 LaTeX 项目结构（入口 / 章节 / bib / 图表）",
+    description: "校验已导入的 LaTeX 项目结构（PDF 导入项目先确定性重建为可修订稿件）",
     requiredInputs: [],
     producedOutputs: ["结构校验结果"],
     maxAttempts: 1,
@@ -1342,18 +1355,44 @@ function importParseStage(services: WorkflowServices): StageSpec {
     retryable: [],
     async execute(ctx) {
       const report = await readImportReport(services, ctx.projectId);
-      const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      let files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      // PDF 导入（goal=improvement）项目：无 LaTeX 输入时从已解析的 PaperDocument
+      // 确定性重建 outline / sections / references.bib / 组装根（零 LLM，M4.8）
+      let reconstruction: null | { sections: number; references: number; citationsMapped: number; warnings: string[] } = null;
+      if (files.mainTex === null) {
+        const project = await services.projects.getRequired(ctx.projectId);
+        const result = await reconstructManuscriptFromPaper({
+          projects: services.projects,
+          paper: services.paper.store,
+          manuscript: services.manuscript,
+          projectId: ctx.projectId,
+          projectTitle: project.title,
+        });
+        if (result !== null) {
+          await writeReconstructionReport(services.projects, ctx.projectId, result);
+          reconstruction = result;
+          files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+        }
+      }
       if (files.mainTex === null) {
         throw new BusinessError(
           "IMPORT_VALIDATION",
-          "项目缺少可解析的 main.tex（请先调用 POST /api/projects/:id/import 导入 LaTeX 项目）",
+          "项目缺少可解析的 main.tex（LaTeX 导入未完成，且没有可重建的 PDF 解析结果）",
         );
       }
       return {
         entryFile: report?.structure.entryFile ?? "main.tex",
         texFiles: files.allTex.length,
         bibFile: report?.structure.bibFile ?? null,
-        warnings: files.warnings.slice(0, 5),
+        ...(reconstruction !== null
+          ? {
+              reconstructedFromPdf: true,
+              reconstructedSections: reconstruction.sections,
+              reconstructedReferences: reconstruction.references,
+              reconstructedCitations: reconstruction.citationsMapped,
+            }
+          : {}),
+        warnings: (reconstruction?.warnings ?? files.warnings).slice(0, 5),
       };
     },
   };
@@ -1429,12 +1468,15 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
       const artifact = await requireResearchArtifact(services, ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
       const feedback = readFeedback(ctx.state.inputs["hitl.plan_confirm"]?.payload);
+      const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
       const plan = await services.writer.planImprovement({
         projectId: ctx.projectId,
         issues: review?.issues ?? [],
         analysisDigest: `${artifact.report.domainOverview.slice(0, 400)}\n弱点：${artifact.report.researchGaps.slice(0, 5).join("；")}`,
         feasibilityLevel: feasibility?.level ?? "未评估",
         targetProfile: project.targetProfile,
+        // 计划条目必须指向真实存在的章节文件（PDF 重建项目为 sections/secNN.tex）
+        sectionFiles: files.sections.map((file) => file.relativePath).slice(0, 20),
         ...(feedback !== undefined ? { feedback } : {}),
       });
       await writeJsonAtomic(
@@ -2099,8 +2141,19 @@ async function safeMarkUsage(
 /** 构建审稿 / 理解用的稿件摘要（大纲 + 各节内容截断；或导入项目全部 tex） */
 async function buildManuscriptDigest(services: WorkflowServices, projectId: string): Promise<string> {
   const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  const outline = await services.manuscript.loadOutline(projectId);
   const parts: string[] = [];
-  if (files.mainTex !== null) {
+  if (outline !== null) {
+    // 有大纲时 main.tex 是确定性组装产物（无审稿价值）；摘要单独成块（M4.8），
+    // 摘要类 finding 应归到 "abstract" 而不是 main.tex
+    const inputs = outline.sections.map((section) => `sections/${section.file.replace(/\.tex$/, "")}`).join("、");
+    parts.push(
+      `[main.tex]（组装根：\\documentclass + 标题 + 摘要 + \\input 各节；由系统生成，不要把问题归到这里）\n\\input 清单：${inputs}`,
+    );
+    if ((outline.abstract ?? "").trim() !== "") {
+      parts.push(`[abstract]（论文摘要，独立可修订）\n${(outline.abstract ?? "").slice(0, 2000)}`);
+    }
+  } else if (files.mainTex !== null) {
     parts.push(`[main.tex]\n${files.mainTex.content.slice(0, 2000)}`);
   }
   for (const section of files.sections.slice(0, 15)) {
@@ -2297,10 +2350,28 @@ function planItemToIssue(item: {
   };
 }
 
+/**
+ * 摘要类 section 引用（M4.8）：Reviewer 可能把摘要 finding 归到
+ * 「main.tex（摘要）」「摘要」「abstract」等——这些引用只允许路由到摘要
+ * 修订目标（outline.abstract 的独立载体），绝不落入组装根 main.tex 或
+ * 任何章节文件（M4.7 修复的回归方向）。
+ */
+function isAbstractSectionRef(sectionRef: string): boolean {
+  const ref = sectionRef.trim().toLowerCase();
+  return ref !== "" && (ref.includes("摘要") || ref.includes("abstract"));
+}
+
 /** issue/plan 的 section 字段与修订目标的模糊匹配（路径 / id / 文件名） */
 function sectionMatches(sectionRef: string, target: RevisionTarget): boolean {
   const ref = sectionRef.trim().replaceAll("\\", "/").toLowerCase();
   if (ref === "") {
+    return false;
+  }
+  // 摘要引用与普通目标互斥：摘要只进摘要目标，章节引用不进摘要目标
+  if (target.key === "abstract") {
+    return isAbstractSectionRef(ref);
+  }
+  if (isAbstractSectionRef(ref)) {
     return false;
   }
   const path = target.relativePath.replaceAll("\\", "/").toLowerCase();
@@ -2339,6 +2410,11 @@ function listRevisionTargets(
     targets.push({ key, relativePath, currentLatex: content });
   };
   if (outline !== null && outline.sections.length > 0) {
+    // 摘要是一等修订目标（M4.8）：载体是 outline.abstract（virtualPath "abstract"，
+    // 写回 outline.json 而不是 manuscript/ 下的文件；由修订 stage 特判）
+    if ((outline.abstract ?? "").trim() !== "") {
+      targets.push({ key: "abstract", relativePath: "abstract", currentLatex: outline.abstract ?? "" });
+    }
     for (const section of outline.sections) {
       add(section.id, `sections/${section.file}`, contentByPath.get(`sections/${section.file}`));
     }

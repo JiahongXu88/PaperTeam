@@ -151,6 +151,7 @@ export class PaperIngestService {
         pages: assembled.pages,
         sections: assembled.sections,
         chunks: assembled.chunks,
+        ...(assembled.abstract !== "" ? { abstract: assembled.abstract } : {}),
         ...(assembled.abstractSectionId !== undefined
           ? { abstractSectionId: assembled.abstractSectionId }
           : {}),

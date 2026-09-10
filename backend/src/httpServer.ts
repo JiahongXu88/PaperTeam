@@ -1208,13 +1208,58 @@ async function handleProjectResourceRoutes(
   }
 
   // revisions：manuscript 修订事实（Authoritative）
-  if (resource === "revisions" && rest === "") {
-    if (method !== "GET") {
-      sendMethodNotAllowed(res, "GET", method);
+  if (resource === "revisions") {
+    if (rest === "") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const state = await stack.revisions.load(projectId);
+      sendJson(res, 200, { current: state.current, revisions: revisionViews(state) });
       return true;
     }
-    const state = await stack.revisions.load(projectId);
-    sendJson(res, 200, { current: state.current, revisions: revisionViews(state) });
+    // restore：恢复历史修订 → 创建新的不可变修订（历史不动；旧 Gate 自然 stale）
+    const restoreMatch = /^\/(\d+)\/restore$/.exec(rest);
+    if (restoreMatch !== null) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      if (orchestrator !== undefined && (await orchestrator.hasActiveRun(projectId))) {
+        throw new ProjectBusyError("项目有进行中的 workflow run，结束后再恢复版本");
+      }
+      const result = await stack.versions.restore(projectId, Number(restoreMatch[1]));
+      sendJson(res, 200, result);
+      return true;
+    }
+    sendJson(res, 404, { error: { code: "NOT_FOUND", message: "未知的 revisions 子资源" } });
+    return true;
+  }
+
+  // versions：版本体验（M4.8）——ManuscriptVersionDTO 历史 + 确定性 Compare
+  if (resource === "versions") {
+    if (rest === "") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      sendJson(res, 200, await stack.versions.listVersions(projectId));
+      return true;
+    }
+    if (rest === "/compare") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const from = url.searchParams.get("from");
+      const to = url.searchParams.get("to");
+      if (from === null || to === null || !/^\d+$/.test(from) || !/^\d+$/.test(to)) {
+        throw new BusinessError("INVALID_REQUEST", "查询参数 from / to 必须是修订编号");
+      }
+      sendJson(res, 200, await stack.versions.compare(projectId, Number(from), Number(to)));
+      return true;
+    }
+    sendJson(res, 404, { error: { code: "NOT_FOUND", message: "未知的 versions 子资源" } });
     return true;
   }
 

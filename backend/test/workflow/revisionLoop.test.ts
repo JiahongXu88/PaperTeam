@@ -226,7 +226,7 @@ describe("bounded revision loop（idea_to_paper）", () => {
     expect(cancelled.status).toBe("cancelled");
   });
 
-  it("Reviewer 把 finding 归到 main.tex（摘要）：根文件不作为修订目标，修订不失败（2026-09-10 真实 smoke 回归）", async () => {
+  it("Reviewer 把 finding 归到 main.tex（摘要）：路由到摘要目标（M4.8），组装根绝不被修订", async () => {
     const stack = await newStack({
       reviewSequence: ["fail", "pass"],
       firstRoundFactIssue: {
@@ -242,31 +242,73 @@ describe("bounded revision loop（idea_to_paper）", () => {
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
 
-    // 修复前：sectionMatches 的 ref.includes(stem)（stem="main"）把 main.tex（摘要）
+    // 修复前（M4.7）：sectionMatches 的 ref.includes(stem)（stem="main"）把 main.tex（摘要）
     // 匹配到组装根 main.tex → Writer 收到 \documentclass 全文 → 镜像返回完整骨架
-    // → INVALID_LATEX_OUTPUT 2/2 → run failed。修复后整条链路正常完成。
+    // → INVALID_LATEX_OUTPUT 2/2 → run failed。M4.7 先挡住组装根；M4.8 治本：
+    // 摘要引用路由到摘要目标（outline.abstract 独立载体），finding 真正被修复。
     await approveTwice(stack, runId);
     const finished = await pollRun(stack, runId, ["completed", "failed", "awaiting_input"]);
 
     expect(finished.status).toBe("completed");
     expect(finished.completion?.label).toBe("final");
-    // 组装根 main.tex 绝不出现在修订目标里（revised key 为 outline section id）
+    // 组装根 main.tex 绝不出现在修订目标里（revised key 为 outline section id / abstract）
     const revisedKeys = finished.stageHistory
       .filter((record) => record.stageId === "revision.revise" && record.status === "completed")
       .flatMap((record) => (record.summary?.["sections"] as string[]) ?? []);
     expect(revisedKeys.length).toBeGreaterThan(0);
     expect(revisedKeys).not.toContain("main.tex");
-    // finding 仍进入确定性计划（记录在案、复审可见），只是不派发给组装根
+    // 摘要 finding 进入确定性计划并被派发到摘要目标
     const plan = JSON.parse(
       await readFile(join(stack.root, project.id, "reviews", "revision-plan-r1.json"), "utf8"),
     ) as { items?: { section: string; status: string }[] };
     const mainTexItem = (plan.items ?? []).find((item) => item.section === "main.tex（摘要）");
     expect(mainTexItem).toBeDefined();
     expect(mainTexItem?.status).toBe("planned");
-    // 修订后组装根完好（writeMainTex 重组，未被片段覆盖）
+    expect(revisedKeys).toContain("abstract");
+    // 摘要载体被写回 outline.abstract；组装根由 writeMainTex 重组（含新摘要，骨架完好）
+    const outline = JSON.parse(
+      await readFile(join(stack.root, project.id, "manuscript", "outline.json"), "utf8"),
+    ) as { abstract?: string };
+    expect(outline.abstract).toBe(
+      "修订后的摘要：本文在已核验证据的基础上提出改进方法，并通过可复现实验验证其有效性，结论表述与证据强度一致。",
+    );
     const mainTex = await readFile(join(stack.root, project.id, "manuscript", "main.tex"), "utf8");
     expect(mainTex).toContain("\\documentclass");
     expect(mainTex).toContain("\\input{sections/introduction}");
+    expect(mainTex).toContain(outline.abstract ?? "");
+    // 章节文件仍是合法正文片段（无文档骨架——绝无「整篇论文骨架当 Writer 输出」）
+    const introduction = await readFile(
+      join(stack.root, project.id, "manuscript", "sections", "introduction.tex"),
+      "utf8",
+    );
+    expect(introduction).not.toContain("\\documentclass");
+  });
+
+  it("M4.8 摘要归属的其它写法（摘要 / abstract）同样路由摘要目标；digest 单列摘要块", async () => {
+    const stack = await newStack({
+      reviewSequence: ["fail", "pass"],
+      firstRoundFactIssue: {
+        category: "academic",
+        severity: "critical",
+        section: "摘要",
+        description: "摘要与结论不一致",
+        suggestedAction: "对齐摘要与结论",
+        blocking: true,
+      },
+    });
+    const project = await stack.store.create("摘要归属回归");
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
+    const runId = created.body["runId"] as string;
+    await approveTwice(stack, runId);
+    const finished = await pollRun(stack, runId, ["completed", "failed", "awaiting_input"]);
+
+    expect(finished.status).toBe("completed");
+    expect(finished.completion?.label).toBe("final");
+    const revisedKeys = finished.stageHistory
+      .filter((record) => record.stageId === "revision.revise" && record.status === "completed")
+      .flatMap((record) => (record.summary?.["sections"] as string[]) ?? []);
+    expect(revisedKeys).toContain("abstract");
+    expect(revisedKeys).not.toContain("main.tex");
   });
 
   it("review fail 但 feasibility INSUFFICIENT 的组合：gate 失败原因包含 target_feasibility", async () => {

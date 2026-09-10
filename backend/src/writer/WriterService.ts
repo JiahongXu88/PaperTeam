@@ -220,6 +220,12 @@ export class WriterService {
         `章节 ${params.section.id} 修订返回了完整文档骨架（应为正文片段）`,
       );
     }
+    if (params.section.id === "abstract" && /(\\section|\\begin\{)/.test(latex)) {
+      // 摘要载体是纯文本：返回 LaTeX 结构说明 Writer 误解了目标
+      throw new InvalidLatexOutputError(
+        `摘要修订返回了 LaTeX 结构（应为纯文本摘要）`,
+      );
+    }
     if (!hasBalancedBraces(latex)) {
       throw new InvalidLatexOutputError(`章节 ${params.section.id} 修订花括号不配对`);
     }
@@ -277,6 +283,8 @@ export class WriterService {
     feasibilityLevel: string;
     targetProfile?: string;
     feedback?: string;
+    /** 现有章节文件（相对 manuscript/ 的 POSIX 路径；section 字段必须从中选择） */
+    sectionFiles: string[];
   }): Promise<ImprovementPlan> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -287,7 +295,10 @@ export class WriterService {
         '{"plan": [{"section": "sections/xxx.tex", "action": "具体改法", "rationale": "对应的问题或差距", "priority": "high|medium|low"}]}',
         "",
         "要求：",
-        "1. plan 至少 1 项、至多 20 项；section 必须是现有章节文件之一。",
+        "1. plan 至少 1 项、至多 20 项；section 必须是以下现有章节文件之一：",
+        ...(params.sectionFiles.length > 0
+          ? params.sectionFiles.map((file) => `   - ${file}`)
+          : ["   - （未识别到章节文件：section 使用 main.tex）"]),
         "2. 优先处理 critical / blocking 问题与编译错误。",
         "3. 证据不足的论断计划为「弱化或删除」，不允许计划编造实验或引用。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
@@ -400,6 +411,33 @@ function buildRevisePrompt(params: {
   buildError?: string;
   extraInstructions?: string;
 }): string {
+  // 摘要目标（M4.8）：载体是 outline.abstract 纯文本，不是 LaTeX 片段
+  if (params.section.id === "abstract") {
+    return [
+      "你是一名学术论文写手（Writer）。请修订论文摘要（abstract）。",
+      "",
+      "输出要求：",
+      "1. 只输出修订后的摘要纯文本（100–200 字）；不要 LaTeX 命令、不要解释。",
+      "2. 逐条解决下列针对摘要的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
+      "",
+      "===== 当前摘要 =====",
+      params.currentLatex.slice(0, 4000),
+      "",
+      "===== 针对摘要的问题 =====",
+      ...(params.issues.length > 0
+        ? params.issues.map(
+            (issue) =>
+              `- [${issue.severity}${issue.blocking ? "/blocking" : ""}] ${issue.description}` +
+              (issue.suggestedAction ? `（建议：${issue.suggestedAction}）` : ""),
+          )
+        : ["（无审稿问题）"]),
+      "",
+      "===== 可用 Evidence =====",
+      ...params.evidence
+        .slice(0, 15)
+        .map((record) => `- [${record.id}] ${record.claim.slice(0, 140)}`),
+    ].join("\n");
+  }
   return [
     `你是一名学术论文写手（Writer）。请修订论文章节「${params.section.title}」。`,
     "",
