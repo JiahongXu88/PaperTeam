@@ -6,6 +6,7 @@ import { InlineConfirm } from "../common/RowMenu.js";
 import { RegistryStatus } from "../common/StatusBadge.js";
 import {
   FEASIBILITY_LEVEL_STYLES,
+  ITERATION_OUTCOME_STYLES,
   stageLabel,
   statusStyleOf,
 } from "../common/status.js";
@@ -387,6 +388,8 @@ function HitlPayload({ stageId, payload }: { stageId: string; payload: Record<st
       return <PlanPayload payload={payload} />;
     case "hitl.revision_overflow":
       return <OverflowPayload payload={payload} />;
+    case "hitl.revision_stalled":
+      return <StalledPayload payload={payload} />;
     default:
       // 未知 HITL 节点：不虚构内容，prompt 已说明情况
       return null;
@@ -544,6 +547,108 @@ function OverflowPayload({ payload }: { payload: Record<string, unknown> }) {
       </p>
     </div>
   );
+}
+
+/** 修订不收敛（CONVERGED / REGRESSION / 计划无可派发条目）：结论 + 前后记分卡对比 + 计划规模 */
+function StalledPayload({ payload }: { payload: Record<string, unknown> }) {
+  const outcome = typeof payload["outcome"] === "string" ? payload["outcome"] : undefined;
+  const gateReasons = readStringArray(payload["gateReasons"]);
+  const scorecard = payload["scorecard"];
+  const current = readScorecard(scorecard, "current");
+  const previous = readScorecard(scorecard, "previous");
+  const plan = payload["plan"];
+  const planned = typeof (plan as Record<string, unknown> | undefined)?.["planned"] === "number" ? (plan as Record<string, number>)["planned"] : null;
+  const skipped = typeof (plan as Record<string, unknown> | undefined)?.["skipped"] === "number" ? (plan as Record<string, number>)["skipped"] : null;
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-stalled">
+      {outcome !== undefined ? (
+        <p className="hitl-payload-level">
+          收敛判定：
+          <RegistryStatus style={statusStyleOf(ITERATION_OUTCOME_STYLES, outcome, outcome)} />
+          <span className="field-help">{stalledOutcomeAdvice(outcome)}</span>
+        </p>
+      ) : null}
+      {current !== null || previous !== null ? (
+        <div className="hitl-scorecard" data-testid="hitl-scorecard">
+          <h3>两轮对比</h3>
+          <table className="hitl-scorecard-table">
+            <caption className="visually-hidden">本轮与上一轮审稿对比</caption>
+            <thead>
+              <tr>
+                <th scope="col">轮次</th>
+                <th scope="col">严重</th>
+                <th scope="col">主要</th>
+                <th scope="col">阻断</th>
+                <th scope="col">学术评分</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previous !== null ? (
+                <tr>
+                  <th scope="row">第 {previous.round} 轮</th>
+                  <td>{previous.critical}</td>
+                  <td>{previous.major}</td>
+                  <td>{previous.blocking}</td>
+                  <td>{previous.academicScore ?? "—"}</td>
+                </tr>
+              ) : null}
+              {current !== null ? (
+                <tr className="hitl-scorecard-current">
+                  <th scope="row">第 {current.round} 轮</th>
+                  <td>{current.critical}</td>
+                  <td>{current.major}</td>
+                  <td>{current.blocking}</td>
+                  <td>{current.academicScore ?? "—"}</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      <HitlList title="当前门禁未通过的原因" items={gateReasons} tone="warn" empty="—" />
+      {planned !== null || skipped !== null ? (
+        <p className="field-help">
+          修订计划：{planned !== null ? `${planned} 项已派发` : ""}
+          {planned !== null && skipped !== null ? "，" : ""}
+          {skipped !== null ? `${skipped} 项仅记录（次要问题不自动修改）` : ""}。
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+interface StalledScorecard {
+  round: number;
+  critical: number;
+  major: number;
+  blocking: number;
+  academicScore: number | null;
+}
+
+function readScorecard(value: unknown, key: "current" | "previous"): StalledScorecard | null {
+  const entry = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+  if (typeof entry !== "object" || entry === null) {
+    return null;
+  }
+  const record = entry as Record<string, unknown>;
+  const numberField = (field: string): number => (typeof record[field] === "number" ? (record[field] as number) : 0);
+  return {
+    round: numberField("round"),
+    critical: numberField("critical"),
+    major: numberField("major"),
+    blocking: numberField("blocking"),
+    academicScore: typeof record["academicScore"] === "number" ? (record["academicScore"] as number) : null,
+  };
+}
+
+function stalledOutcomeAdvice(outcome: string): string {
+  if (outcome === "CONVERGED") {
+    return "连续两轮修订没有实质改善，继续自动修改可能只是重复。";
+  }
+  if (outcome === "REGRESSION") {
+    return "本轮修订后出现了新的严重问题或评分大幅下滑。";
+  }
+  return "";
 }
 
 function HitlList({

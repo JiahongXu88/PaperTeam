@@ -2541,3 +2541,215 @@
     align-self: flex-start;
   }
 }
+
+/* ============================================================
+   论文产出（M4.7）：Draft / Final 卡片 + 构建状态 + 修订迭代
+   ============================================================ */
+
+.artifact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-4);
+}
+
+.artifact-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.artifact-card-empty {
+  border-style: dashed;
+}
+
+.artifact-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.artifact-card-head h3 {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.artifact-card-note {
+  margin: 0;
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.artifact-card .note {
+  margin: 0;
+}
+
+.artifact-meta {
+  font-size: var(--fs-meta);
+}
+
+.artifact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: auto;
+}
+
+.artifact-history {
+  margin-top: var(--s-2);
+}
+
+.artifact-history-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.artifact-history-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  font-size: var(--fs-secondary);
+}
+
+.artifact-history-id {
+  font-size: var(--fs-meta);
+}
+
+.finalize-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin-top: var(--s-4);
+}
+
+.finalize-row .form-error,
+.finalize-row .note {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.build-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+  margin-top: var(--s-4);
+}
+
+.build-log-body {
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: var(--fs-label);
+}
+
+.build-diagnostic-context {
+  margin: 0;
+  padding: var(--s-2);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-muted);
+  font-size: var(--fs-label);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.iteration-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.iteration-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--r-md);
+}
+
+.iteration-tone-ok {
+  border-left-color: var(--success);
+}
+
+.iteration-tone-info {
+  border-left-color: var(--accent-secondary);
+}
+
+.iteration-tone-warn {
+  border-left-color: var(--warning);
+}
+
+.iteration-tone-danger {
+  border-left-color: var(--danger);
+}
+
+.iteration-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.iteration-round {
+  font-weight: 600;
+}
+
+.iteration-meta {
+  font-size: var(--fs-meta);
+}
+
+.iteration-scorecard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-4);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+/* HITL 修订不收敛：前后两轮记分卡对比表 */
+.hitl-scorecard h3 {
+  margin: 0 0 var(--s-2);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.hitl-scorecard-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-secondary);
+}
+
+.hitl-scorecard-table th,
+.hitl-scorecard-table td {
+  padding: var(--s-1) var(--s-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 400;
+}
+
+.hitl-scorecard-table thead th {
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.hitl-scorecard-current th,
+.hitl-scorecard-current td {
+  font-weight: 600;
+}

@@ -298,10 +298,14 @@ export const STAGE_LABELS: Record<string, string> = {
   "citation.verify": "引用核验",
   "review.run": "三路审阅",
   "quality.gate": "Quality Gate",
+  "revision.plan": "生成修订计划",
   "revision.revise": "修订",
   "revision.apply": "应用改进计划",
+  "revision.repair_latex": "修复编译错误",
+  "hitl.revision_stalled": "等待修订决策",
   "hitl.revision_overflow": "等待修订决策",
   "build.draft": "构建论文",
+  "build.final": "生成 Final",
   // existing_paper_improvement
   "import.parse": "校验项目结构",
   "import.baseline_build": "基线编译",
@@ -315,6 +319,18 @@ export const COMPLETION_LABELS: Record<string, string> = {
   final: "最终稿",
   draft: "草稿",
   review: "Review 报告",
+};
+
+/**
+ * 修订迭代收敛结论（iteration-history outcome；确定性判定，无 LLM）。
+ * PASS / IMPROVED = 继续推进；CONVERGED（连续无实质改善）/ REGRESSION（退化）
+ * = 转 HITL；MAX 迭代由 overflow HITL 承载（不在 outcome 枚举中）。
+ */
+export const ITERATION_OUTCOME_STYLES: Record<string, StatusStyle> = {
+  PASS: { label: "已通过", tone: "ok" },
+  IMPROVED: { label: "有实质改善", tone: "info" },
+  CONVERGED: { label: "不再收敛", tone: "warn" },
+  REGRESSION: { label: "出现退化", tone: "danger" },
 };
 
 export function stageLabel(stageId: string | undefined): string | undefined {
@@ -352,9 +368,13 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "citation.verify" },
     { stageId: "review.run" },
     { stageId: "quality.gate" },
+    { stageId: "revision.plan", conditional: true },
     { stageId: "revision.revise", conditional: true },
+    { stageId: "hitl.revision_stalled", hitl: true, conditional: true },
     { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
     { stageId: "build.draft", conditional: true },
+    { stageId: "revision.repair_latex", conditional: true },
+    { stageId: "build.final", conditional: true },
   ],
   existing_paper_improvement: [
     { stageId: "import.parse" },
@@ -367,9 +387,13 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "hitl.plan_confirm", hitl: true },
     { stageId: "revision.apply" },
     { stageId: "quality.gate" },
+    { stageId: "revision.plan", conditional: true },
     { stageId: "revision.revise", conditional: true },
+    { stageId: "hitl.revision_stalled", hitl: true, conditional: true },
     { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
     { stageId: "build.draft", conditional: true },
+    { stageId: "revision.repair_latex", conditional: true },
+    { stageId: "build.final", conditional: true },
   ],
 };
 

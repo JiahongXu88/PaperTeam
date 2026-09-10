@@ -12,6 +12,13 @@ import {
   restoreProject,
 } from "../api/projects.js";
 import { getRuntimeStatus } from "../api/runtime.js";
+import {
+  finalizeProject,
+  getBuildStatus,
+  listArtifacts,
+  listIterations,
+  runBuild,
+} from "../api/artifacts.js";
 import { cancelWorkflowRun, createWorkflowRun, listProjectRuns, resumeWorkflowRun } from "../api/runs.js";
 import {
   confirmEvidenceVerified,
@@ -73,6 +80,11 @@ export const queryKeys = {
   metadataRecords: (projectId: string) => ["project", projectId, "citations", "metadata"] as const,
   claimRecords: (projectId: string) => ["project", projectId, "citations", "claims"] as const,
   evidence: (projectId: string) => ["project", projectId, "evidence"] as const,
+  /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
+  artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
+  buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
+  buildLog: (projectId: string) => ["project", projectId, "build", "log"] as const,
+  iterations: (projectId: string) => ["project", projectId, "iterations"] as const,
   /** round 缺省 = 最新（后端决定；不在前端缓存「最新」的轮次号，避免轮次漂移） */
   qualityGate: (projectId: string, round?: number) =>
     ["project", projectId, "quality-gate", ...(round !== undefined ? [round] : ["latest"])] as const,
@@ -452,6 +464,62 @@ export function useVerifyClaims(projectId: string | undefined) {
   return useMutation({
     mutationFn: () => verifyClaims(projectId ?? "", { limit: SEMANTIC_VERIFY_LIMIT }),
     onSuccess: invalidate,
+  });
+}
+
+// ---- Paper Artifacts / Build / Finalize（M4.7；判定永远来自 Backend） ----
+
+/** Draft / Final 产物列表 + 最新标记 + finalUpToDate */
+export function useArtifacts(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.artifacts(projectId ?? ""),
+    queryFn: ({ signal }) => listArtifacts(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** Build Gate 记录 + stale 信号（构建状态卡片数据源） */
+export function useBuildStatus(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.buildStatus(projectId ?? ""),
+    queryFn: ({ signal }) => getBuildStatus(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 修订迭代收敛历史（每轮 gate 的 scorecard / outcome） */
+export function useIterations(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.iterations(projectId ?? ""),
+    queryFn: ({ signal }) => listIterations(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 手动构建（Build Gate + Draft 冻结）：完成后构建 / 产物一起失效 */
+export function useRunBuild(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => runBuild(projectId ?? ""),
+    onSuccess: () => {
+      const id = projectId ?? "";
+      void queryClient.invalidateQueries({ queryKey: queryKeys.buildStatus(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.buildLog(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(id) });
+    },
+  });
+}
+
+/** 标记 Final（后端确定性判定；错误由调用方映射中文提示）：成功后失效产物 */
+export function useFinalizeProject(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => finalizeProject(projectId ?? ""),
+    onSuccess: () => {
+      const id = projectId ?? "";
+      void queryClient.invalidateQueries({ queryKey: queryKeys.artifacts(id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(id) });
+    },
   });
 }
 

@@ -330,6 +330,103 @@ export interface QualityGateResponseView {
   stale: boolean;
 }
 
+// ---- Paper Artifacts / Build / Finalize（M4.7 Draft-Final 闭环） ----
+
+/** 冻结的 Draft / Final 产物（Backend PaperArtifact） */
+export interface PaperArtifactView {
+  artifactId: string;
+  kind: "draft" | "final";
+  /** 冻结时对应的 manuscript 修订（Final revision 精确等于通过双 Gate 的修订） */
+  revision: number;
+  createdAt: string;
+  buildGate: { passed: boolean; checkedAt: string; revision: number };
+  /** Final 产物必带（Draft 不携带质量结论：Draft 只要求 Build Gate） */
+  qualityGate?: { passed: boolean; round: number; checkedAt: string; reviewedRevision: number };
+  file: { name: string; mimeType: "application/pdf"; bytes: number };
+  sourceRunId?: string;
+}
+
+/** GET /api/projects/:id/artifacts（产物列表 + 最新标记 + 新鲜度） */
+export interface ArtifactsResponseView {
+  artifacts: PaperArtifactView[];
+  latestDraft: PaperArtifactView | null;
+  latestFinal: PaperArtifactView | null;
+  currentRevision: number;
+  /** Final 是否对齐当前修订（false = 修订后尚未重新 Finalize；旧 Final 仍可下载） */
+  finalUpToDate: boolean;
+}
+
+/** 结构化编译诊断（Backend LatexDiagnostic；失败时从 compile.log 解析） */
+export interface LatexDiagnosticView {
+  file: string | null;
+  line: number | null;
+  message: string;
+  contextLines: string[];
+}
+
+/** Build Gate 记录（LaTeX 编译结论；质量语义不参与构建——D-0015） */
+export interface BuildGateRecordView {
+  passed: boolean;
+  reasons: string[];
+  checkedAt: string;
+  /** 编译时的 manuscript 修订（≠ 当前修订 → stale，需重新构建） */
+  revision: number;
+  compile: {
+    ok: boolean;
+    tool: string;
+    durationMs: number;
+    exitCode: number | null;
+    pdfPath: string | null;
+    logPath: string | null;
+    error?: string;
+  };
+  diagnostics: LatexDiagnosticView[];
+}
+
+/** GET /api/projects/:id/build（构建状态卡片数据源） */
+export interface BuildStatusView {
+  build: BuildGateRecordView | null;
+  currentRevision: number;
+  stale: boolean;
+}
+
+/** POST /api/projects/:id/build（手动构建 + Draft 冻结） */
+export interface BuildRunResultView {
+  revision: number;
+  build: BuildGateRecordView;
+  draftArtifactId: string | null;
+  diagnosticsCount: number;
+  compile: BuildGateRecordView["compile"];
+}
+
+/** POST /api/projects/:id/finalize（后端确定性判定；任何不满足 → 4xx BusinessError） */
+export interface FinalizeResultView {
+  final: PaperArtifactView;
+  draft: PaperArtifactView;
+  revision: number;
+  gateRound: number;
+}
+
+/** 修订迭代收敛历史的一条记录（iteration-history；确定性判定，无 LLM） */
+export interface RevisionIterationView {
+  revision: number;
+  reviewRound: number;
+  gateRound: number;
+  /** PASS / IMPROVED / CONVERGED（→ HITL）/ REGRESSION（→ HITL）；首轮 null */
+  outcome: string | null;
+  planId?: string;
+  completedAt: string;
+  scorecard: {
+    gatePassed: boolean;
+    failedRuleIds: string[];
+    critical: number;
+    major: number;
+    blocking: number;
+    academicScore: number | null;
+    styleRisk: number | null;
+  };
+}
+
 // ---- Runtime Status（Pi schema） ----
 
 export interface RuntimeStatusView {

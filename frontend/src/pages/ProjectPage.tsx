@@ -8,6 +8,7 @@ import { COMPLETION_LABELS, stageLabel } from "../components/common/status.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { EvidencePanel } from "../components/project/EvidencePanel.js";
+import { PaperPanel } from "../components/project/PaperPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
 import { QualityGateSummaryLink } from "../components/project/QualityGatePanel.js";
@@ -29,11 +30,12 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "pdf" | "evidence" | "citations" | "review" | "workflow";
+type TabId = "overview" | "paper" | "pdf" | "evidence" | "citations" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
-const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> = [
+const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean }> = [
   { id: "overview", label: "概览" },
+  { id: "paper", label: "论文产出", notReviewOnly: true },
   { id: "pdf", label: "PDF 与结构" },
   { id: "evidence", label: "证据" },
   { id: "citations", label: "引用核验" },
@@ -42,7 +44,12 @@ const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> 
 ];
 
 function visibleTabs(kind: WorkflowKind | undefined) {
-  return TABS.filter((entry) => entry.existingOnly !== true || isExistingPaper(kind));
+  return TABS.filter(
+    (entry) =>
+      (entry.existingOnly !== true || isExistingPaper(kind)) &&
+      // 论文产出只对写稿 / 系统性改进开放：快速 Review 只读，不产出 Draft / Final
+      (entry.notReviewOnly !== true || kind !== "existing_paper_review"),
+  );
 }
 
 function tabFromParam(param: string | null, visible: ReadonlyArray<{ id: TabId }>): TabId {
@@ -413,6 +420,8 @@ export function ProjectPage() {
         <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`} className="tabpanel">
           {tab === "overview" ? (
             <OverviewTab project={project} onOpenTab={openTab} onOpenGate={() => setTab("workflow")} />
+          ) : tab === "paper" ? (
+            <PaperPanel projectId={project.id} />
           ) : tab === "pdf" ? (
             <PdfPanel projectId={project.id} />
           ) : tab === "evidence" ? (

@@ -179,6 +179,44 @@ describe("HitlPanel：payload 渲染（统一 shell，按 stageId 差异化）",
     expect(screen.queryByTestId("hitl-approve")).toBeNull();
   });
 
+  it("修订不收敛节点（M4.7）：收敛结论 + 两轮记分卡对比 + 计划规模 + 决策动作", async () => {
+    renderHitl(
+      hitlRunFixture({
+        currentStage: "hitl.revision_stalled",
+        awaiting: {
+          stageId: "hitl.revision_stalled",
+          prompt: "连续两轮修订没有实质改善，请决策",
+          options: ["accept_draft", "revise_more", "cancel"],
+          payload: {
+            outcome: "CONVERGED",
+            gateReasons: ["academicScore 72 < 80", "major 问题 2 项"],
+            scorecard: {
+              previous: { round: 1, critical: 1, major: 3, blocking: 1, academicScore: 70 },
+              current: { round: 2, critical: 1, major: 2, blocking: 1, academicScore: 72 },
+            },
+            plan: { planned: 4, skipped: 6 },
+          },
+        },
+      }),
+    );
+    const stalled = await screen.findByTestId("hitl-payload-stalled");
+    expect(stalled).toHaveTextContent("不再收敛");
+    expect(stalled).toHaveTextContent("连续两轮修订没有实质改善");
+    // 两轮对比表：上一轮 + 本轮（当前行加粗）
+    const table = screen.getByTestId("hitl-scorecard");
+    expect(table).toHaveTextContent("第 1 轮");
+    expect(table).toHaveTextContent("第 2 轮");
+    expect(table.querySelector(".hitl-scorecard-current")).not.toBeNull();
+    expect(table).toHaveTextContent("72");
+    // 计划规模：已派发 + 仅记录（次要问题不自动修改）
+    expect(stalled).toHaveTextContent("4 项已派发");
+    expect(stalled).toHaveTextContent("6 项仅记录");
+    // 决策动作与 overflow 相同
+    expect(screen.getByTestId("hitl-accept-draft")).toBeInTheDocument();
+    expect(screen.getByTestId("hitl-revise-more")).toBeInTheDocument();
+    expect(screen.queryByTestId("hitl-approve")).toBeNull();
+  });
+
   it("未知 stageId / 无 payload：只显示 prompt，不虚构内容", async () => {
     renderHitl(
       hitlRunFixture({
