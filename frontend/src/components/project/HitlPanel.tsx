@@ -521,6 +521,19 @@ function OverflowPayload({ payload }: { payload: Record<string, unknown> }) {
         />
       </p>
       <HitlList title="未通过的原因" items={gatePassed ? [] : gateReasons} tone="warn" empty="—" />
+      {!gatePassed ? (
+        <p className="field-help">
+          <button
+            type="button"
+            className="btn-link"
+            onClick={() => document.getElementById("quality-gate-panel")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            data-testid="hitl-goto-gate"
+          >
+            查看详细判定与处理入口
+          </button>
+          （本页下方的质量门禁面板）
+        </p>
+      ) : null}
       {counts !== undefined ? (
         <p className="field-help">
           当前审稿意见规模：严重 {counts.critical} / 主要 {counts.major} / 阻断性 {counts.blocking}。

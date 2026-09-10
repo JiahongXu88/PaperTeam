@@ -239,6 +239,97 @@ export interface ExistingReviewReportView {
   findings: ReviewFindingView[];
 }
 
+// ---- Evidence（EvidenceStore 记录；Evidence Workbench 消费） ----
+
+/** 证据核验状态（Backend EvidenceStore VerificationStatus；UI 标签集中映射，不改 Domain 枚举） */
+export type EvidenceVerificationStatus =
+  | "unverified"
+  | "verified"
+  | "plausible"
+  | "mismatch"
+  | "unverifiable"
+  | "not_found";
+
+/** 支撑强度（Quality Gate 的 no_contradictory_evidence 规则依据 contradictory） */
+export type EvidenceSupportStrength = "direct" | "partial" | "indirect" | "contradictory";
+
+/** 核验深度 */
+export type EvidenceVerificationLevel = "metadata" | "abstract" | "fulltext" | "user_confirmed";
+
+/** GET /api/projects/:id/evidence 的单条记录（列表与详情同形；一次请求返回列表所需全部字段） */
+export interface EvidenceRecordView {
+  id: string;
+  claim: string;
+  summary?: string;
+  quote?: string;
+  source?: {
+    sourceId?: string;
+    title?: string;
+    authors?: string[];
+    year?: number;
+    doi?: string;
+    url?: string;
+  };
+  location?: { page?: number; section?: string; chunk?: string };
+  verificationStatus: EvidenceVerificationStatus;
+  verificationMethod?: string;
+  supportStrength?: EvidenceSupportStrength;
+  verificationLevel?: EvidenceVerificationLevel;
+  /** 辅助字段（0-1）；不参与 Quality Gate 判定，仅参考展示 */
+  confidence?: number;
+  relatedSections?: string[];
+  usedBy?: string[];
+  createdBy: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+// ---- Quality Gate（确定性判定结果；frontend 只展示，不重算） ----
+
+export interface QualityGateRuleView {
+  rule: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface QualityGateResultView {
+  passed: boolean;
+  reasons: string[];
+  rules: QualityGateRuleView[];
+  thresholds: { academicPassScore: number; styleRiskMax: number; requireFeasibility: boolean };
+  checkedAt: string;
+}
+
+/** 每轮 gate 摘要（轮次切换器数据源；blockerCount = reasons.length） */
+export interface QualityGateRoundView {
+  round: number;
+  passed: boolean;
+  checkedAt: string;
+  blockerCount: number;
+}
+
+/** gate 评估时消费的同轮三路审稿汇总（round 配对由产物结构保证） */
+export interface ReviewSummaryView {
+  generatedAt: string;
+  round: number;
+  counts: { critical: number; major: number; minor: number; blocking: number };
+  scores: { academicScore: number | null; styleRisk: number | null };
+  openCritical: number;
+  openMajor: number;
+  unsupportedCriticalClaims: number;
+}
+
+/** GET /api/projects/:id/quality-gate[?round=N] 的响应（尚无产物时 gate / reviewSummary / round 为 null） */
+export interface QualityGateResponseView {
+  rounds: QualityGateRoundView[];
+  round: number | null;
+  gate: QualityGateResultView | null;
+  reviewSummary: ReviewSummaryView | null;
+  /** 最新三路审稿轮次；大于当前 gate 轮次 → gate 结果已过期（stale） */
+  latestReviewRound: number | null;
+  stale: boolean;
+}
+
 // ---- Runtime Status（Pi schema） ----
 
 export interface RuntimeStatusView {

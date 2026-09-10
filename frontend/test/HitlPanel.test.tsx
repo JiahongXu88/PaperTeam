@@ -29,6 +29,22 @@ vi.mock("../src/api/paper.js", () => ({
   exportReviewReport: vi.fn(),
 }));
 
+// M4.6：WorkflowPanel 内嵌质量门禁面板；HITL 用例默认空态
+vi.mock("../src/api/evidence.js", () => ({
+  listEvidence: vi.fn(async () => []),
+  getEvidence: vi.fn(),
+  confirmEvidenceVerified: vi.fn(),
+  getQualityGate: vi.fn(async () => ({
+    rounds: [],
+    round: null,
+    gate: null,
+    reviewSummary: null,
+    latestReviewRound: null,
+    stale: false,
+  })),
+  reevaluateQualityGate: vi.fn(),
+}));
+
 const runsApi = await import("../src/api/runs.js");
 const noop = () => {};
 

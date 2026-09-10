@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import { Icon, type IconName } from "../common/Icon.js";
 import { Loading } from "../common/StateViews.js";
 import { RunStatusBadge } from "./Badges.js";
+import { QualityGateSummaryLink } from "./QualityGatePanel.js";
 import {
   CITATION_SEMANTIC_MODE_LABELS,
   CITATION_SEMANTIC_MODE_OPTIONS,
@@ -25,7 +26,7 @@ import {
 } from "../../hooks/queries.js";
 import { formatApiError, summarizeRunError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
-import type { CitationSemanticMode, ExistingReviewReportView, ReviewFindingView, WorkflowRunView } from "../../types/api.js";
+import type { CitationSemanticMode, ExistingReviewReportView, ReviewFindingView, WorkflowKind, WorkflowRunView } from "../../types/api.js";
 import type { PaperSectionView } from "../../types/paper.js";
 
 /**
@@ -76,7 +77,7 @@ function progressOf(run: WorkflowRunView): { index: number; total: number } | un
   return typeof index === "number" && typeof total === "number" && total > 0 ? { index, total } : undefined;
 }
 
-export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpenTab: (tab: "pdf" | "citations" | "workflow") => void }) {
+export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId: string; workflowKind?: WorkflowKind; onOpenTab: (tab: "pdf" | "citations" | "workflow") => void }) {
   const paper = usePaper(projectId);
   const runs = useProjectRuns(projectId);
   const report = usePaperReviewReport(projectId);
@@ -108,21 +109,29 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
     return <Loading label="加载 Review 状态…" />;
   }
 
+  // 系统性改进项目：顶部克制门禁状态（完整规则在工作流页）；快速 Review 流程不运行门禁，不显示
+  const gateStrip = workflowKind === "existing_paper_improvement" ? (
+    <QualityGateSummaryLink projectId={projectId} onOpenTab={() => onOpenTab("workflow")} />
+  ) : null;
+
   if (doc === null || doc === undefined) {
     return (
-      <section className="section-block" data-testid="review-panel">
-        <div className="section-head">
-          <h2>快速 Review</h2>
-        </div>
-        <div className="state-block state-empty">
-          <strong>尚未导入论文 PDF</strong>
-          <span>Review 以论文 PDF 为输入：先上传，再开始引用核验与分章节审阅。</span>
-          <button type="button" className="btn btn-primary" onClick={() => onOpenTab("pdf")}>
-            <Icon name="upload" />
-            前往上传 PDF
-          </button>
-        </div>
-      </section>
+      <>
+        {gateStrip}
+        <section className="section-block" data-testid="review-panel">
+          <div className="section-head">
+            <h2>快速 Review</h2>
+          </div>
+          <div className="state-block state-empty">
+            <strong>尚未导入论文 PDF</strong>
+            <span>Review 以论文 PDF 为输入：先上传，再开始引用核验与分章节审阅。</span>
+            <button type="button" className="btn btn-primary" onClick={() => onOpenTab("pdf")}>
+              <Icon name="upload" />
+              前往上传 PDF
+            </button>
+          </div>
+        </section>
+      </>
     );
   }
 
@@ -182,6 +191,7 @@ export function ReviewPanel({ projectId, onOpenTab }: { projectId: string; onOpe
 
   return (
     <section className="review-panel" data-testid="review-panel">
+      {gateStrip}
       {!hasReport && <div className="review-intro">
         <div className="review-intro-text">
           <div className="review-intro-title">

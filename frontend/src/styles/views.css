@@ -2202,3 +2202,342 @@
   color: var(--text-muted);
   font-size: var(--fs-meta);
 }
+
+/* ============================================================
+   证据工作台（M4.6）：复用 ledger / gutter-list / status 语言
+   ============================================================ */
+
+.evidence-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-6);
+}
+
+.evidence-list {
+  padding: 0 var(--s-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.evidence-row {
+  align-items: flex-start;
+}
+
+.evidence-claim {
+  font-weight: 500;
+  line-height: 1.6;
+}
+
+/* 列表态截断长引文 / 摘要（展开后完整显示） */
+.evidence-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--fs-secondary);
+  line-height: 1.6;
+}
+
+.evidence-row-open .evidence-text {
+  display: block;
+  -webkit-line-clamp: unset;
+}
+
+.evidence-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.evidence-source-title {
+  color: var(--text-secondary);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.evidence-doi {
+  font-size: var(--fs-label);
+  overflow-wrap: anywhere;
+}
+
+.evidence-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.evidence-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1) var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.evidence-expand {
+  padding: 0;
+  font-size: var(--fs-meta);
+}
+
+.evidence-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  margin-top: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface-sunken);
+}
+
+.evidence-detail-block h4 {
+  margin: 0 0 var(--s-2);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.evidence-detail .prewrap {
+  font-size: var(--fs-secondary);
+  line-height: 1.7;
+}
+
+.evidence-usedby {
+  display: inline-block;
+  margin-right: var(--s-2);
+}
+
+.support-chip {
+  font-size: var(--fs-label);
+}
+
+/* ============================================================
+   质量门禁（M4.6）：克制呈现——红色只出现在结论徽标与阻止项
+   ============================================================ */
+
+.quality-gate-panel {
+  scroll-margin-top: var(--s-6);
+}
+
+.gate-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.gate-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-4);
+}
+
+.gate-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  font-weight: 600;
+}
+
+.gate-summary-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.gate-summary-thresholds {
+  font-size: var(--fs-meta);
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.gate-blockers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.gate-blockers h3 {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.gate-blocker-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: gate-blocker;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.gate-blocker {
+  counter-increment: gate-blocker;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.gate-blocker::before {
+  content: counter(gate-blocker);
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  font-size: var(--fs-label);
+  color: var(--text-secondary);
+}
+
+.gate-blocker-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gate-blocker-main strong {
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.gate-blocker-detail {
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.gate-blocker-action {
+  font-size: var(--fs-meta);
+}
+
+.gate-review-context {
+  font-size: var(--fs-meta);
+}
+
+.gate-rules {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.gate-rules-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.gate-rules-head h3 {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.gate-rule-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.gate-rule {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.gate-rule:last-child {
+  border-bottom: none;
+}
+
+.gate-rule-status {
+  flex: none;
+  width: 6.5em;
+  justify-content: center;
+  text-align: center;
+}
+
+.gate-rule-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  min-width: 0;
+}
+
+.gate-rule-name {
+  font-weight: 500;
+}
+
+.gate-rule-detail {
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.gate-rule-id {
+  font-size: var(--fs-label);
+}
+
+/* Overview / Review 的克制质量状态行 */
+.quality-status-card {
+  padding: var(--s-4) var(--s-5);
+}
+
+.quality-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2) var(--s-3);
+}
+
+.quality-status-row h2 {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.stage-goto-gate {
+  font-size: var(--fs-meta);
+  margin-left: var(--s-2);
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .gate-summary-thresholds {
+    margin-left: 0;
+  }
+
+  .gate-blocker {
+    flex-direction: column;
+  }
+
+  .gate-rule {
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+
+  .gate-rule-status {
+    width: auto;
+    align-self: flex-start;
+  }
+}

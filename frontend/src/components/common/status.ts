@@ -110,6 +110,108 @@ export const REFERENCE_KIND_LABELS: Record<string, string> = {
   unknown: "未知类型",
 };
 
+// ---- Quality Gate（ruleId 集中注册；判定永远来自 Backend，这里只做展示映射） ----
+
+/** gate 规则的展示与导航属性；target = 失败时可跳转的处理入口（按稳定 ruleId 派生，不解析 reason 文本） */
+export interface GateRuleStyle {
+  label: string;
+  /** 该规则检查什么（一句话；FAIL 时帮助用户理解为什么这是 blocker） */
+  description: string;
+  /** blocker 的处理入口（缺省 = 留在门禁面板，看同轮审稿上下文 / 继续修订流程） */
+  target?: { tab: "citations" | "evidence" | "overview"; evidenceAttention?: boolean };
+}
+
+export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
+  // 基础 9 条（quality/gates.ts；两条 workflow 与手动 API 都会产出）
+  hallucinated_citations_zero: {
+    label: "无虚构引用",
+    description: "参考文献在公开学术库中不应被多源判定为查无此文。",
+    target: { tab: "citations" },
+  },
+  citation_structure_valid: {
+    label: "引用结构完整",
+    description: "正文 \\cite 与参考文献一一对应，无缺失 / 重复 / 坏引用。",
+    target: { tab: "citations" },
+  },
+  no_contradictory_evidence: {
+    label: "无矛盾证据",
+    description: "证据库中不存在与论文论断相矛盾的已核验证据。",
+    target: { tab: "evidence", evidenceAttention: true },
+  },
+  unsupported_critical_claims_zero: {
+    label: "关键论断有支撑",
+    description: "事实审稿不应发现无支撑或被反驳的关键论断。",
+  },
+  blocking_issues_zero: {
+    label: "无阻断性问题",
+    description: "审稿意见中不应存在标记为阻断（blocking）的问题。",
+  },
+  open_critical_major_zero: {
+    label: "严重与主要问题清零",
+    description: "未解决的 critical / major 审稿问题应为 0。",
+  },
+  academic_score_threshold: {
+    label: "学术评分达标",
+    description: "学术审稿总分需达到当前目标的最低分（阈值见门禁设置）。",
+  },
+  style_risk_threshold: {
+    label: "文风风险可控",
+    description: "文风风险分不应超过当前目标的上限（阈值见门禁设置）。",
+  },
+  target_feasibility: {
+    label: "目标可行性达标",
+    description: "研究目标相对当前证据基础的可行性不应为低或证据不足。",
+    target: { tab: "overview" },
+  },
+  // Citation Integrity 组（仅当 gate 输入包含引用完整性统计时出现；当前 workflow 不注入）
+  citation_fabrication_zero: {
+    label: "无疑似捏造引用",
+    description: "多个学术库一致查无此文的引用应为 0（需人工确认后修复）。",
+    target: { tab: "citations" },
+  },
+  citation_not_found_obligatory_zero: {
+    label: "必需引用可查证",
+    description: "支撑关键论断的引用不应处于「学术库未找到」状态。",
+    target: { tab: "citations" },
+  },
+  citation_metadata_mismatch_critical_zero: {
+    label: "关键元数据一致",
+    description: "标题 / DOI 级别与学术库不符的引用应为 0。",
+    target: { tab: "citations" },
+  },
+  citation_unsupported_critical_zero: {
+    label: "关键论断引用有支撑",
+    description: "语义核验判为不支持 / 矛盾的关键论断引用应为 0。",
+    target: { tab: "citations" },
+  },
+  citation_semantic_verification_off: {
+    label: "引用语义核验未开启",
+    description: "本轮未开启引用语义核验，语义类规则不参与判定（不是失败）。",
+    target: { tab: "citations" },
+  },
+  citation_insufficient_evidence_review: {
+    label: "证据不足人工复核",
+    description: "自动核验无法判断的引用需要人工复核，但不阻断进入 Final。",
+    target: { tab: "citations" },
+  },
+};
+
+/**
+ * 语义为「不参与判定 / 人工复核」的规则（后端恒 passed:true）：展示为中性
+ * 「未参与」而不是绿色「通过」，避免把「没检查」误读成「检查了且没问题」。
+ * INSUFFICIENT_EVIDENCE ≠ 论文错误，刻意不用 danger 色。
+ */
+export const GATE_RULES_NEUTRAL: ReadonlySet<string> = new Set([
+  "citation_semantic_verification_off",
+  "citation_insufficient_evidence_review",
+]);
+
+/** gate 整体结论（PASS 只表示允许进入 Final，不是「论文完美」） */
+export const GATE_OUTCOME_STYLES: Record<string, StatusStyle> = {
+  passed: { label: "通过", tone: "ok" },
+  failed: { label: "未通过", tone: "danger" },
+};
+
 /** 证据等级 */
 export const EVIDENCE_LEVEL_LABELS: Record<string, string> = {
   abstract: "摘要",
@@ -130,6 +232,32 @@ export const EXTRACTION_QUALITY_STYLES: Record<string, StatusStyle> = {
 export const SKILL_STATUS_STYLES: Record<string, StatusStyle> = {
   installed: { label: "已安装", tone: "ok" },
   disabled: { label: "已停用", tone: "warn" },
+};
+
+/** Evidence 核验状态（EvidenceStore VerificationStatus；与 Citation 的核验状态是两套语义） */
+export const EVIDENCE_VERIFICATION_STYLES: Record<string, StatusStyle> = {
+  unverified: { label: "待核验", tone: "neutral" },
+  verified: { label: "已核验", tone: "ok" },
+  plausible: { label: "大体可信", tone: "info" },
+  mismatch: { label: "与来源不符", tone: "danger" },
+  unverifiable: { label: "无法核验", tone: "warn" },
+  not_found: { label: "未找到来源", tone: "danger" },
+};
+
+/** 证据支撑强度（contradictory 是 Quality Gate 的 no_contradictory_evidence 依据） */
+export const SUPPORT_STRENGTH_STYLES: Record<string, StatusStyle> = {
+  direct: { label: "直接支撑", tone: "ok" },
+  partial: { label: "部分支撑", tone: "info" },
+  indirect: { label: "间接相关", tone: "neutral" },
+  contradictory: { label: "与论断矛盾", tone: "danger" },
+};
+
+/** 证据核验深度 */
+export const VERIFICATION_LEVEL_LABELS: Record<string, string> = {
+  metadata: "书目信息",
+  abstract: "摘要级",
+  fulltext: "全文级",
+  user_confirmed: "人工确认",
 };
 
 /** Review finding 严重度（tone 用于旧式 status 药丸；卡片 / 统计块用 severity 自己的语义色类） */

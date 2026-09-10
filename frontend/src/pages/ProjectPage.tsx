@@ -7,8 +7,10 @@ import { InlineConfirm, InlineRename, RowMenu } from "../components/common/RowMe
 import { COMPLETION_LABELS, stageLabel } from "../components/common/status.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
+import { EvidencePanel } from "../components/project/EvidencePanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
+import { QualityGateSummaryLink } from "../components/project/QualityGatePanel.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
 import { readSectionProgress } from "../components/project/workflowTimeline.js";
@@ -27,12 +29,13 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "pdf" | "citations" | "review" | "workflow";
+type TabId = "overview" | "pdf" | "evidence" | "citations" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean }> = [
   { id: "overview", label: "概览" },
   { id: "pdf", label: "PDF 与结构" },
+  { id: "evidence", label: "证据" },
   { id: "citations", label: "引用核验" },
   { id: "review", label: "Review", existingOnly: true },
   { id: "workflow", label: "工作流" },
@@ -151,7 +154,7 @@ function CurrentWorkflowCard({ projectId, onOpenTab }: { projectId: string; onOp
   );
 }
 
-function OverviewTab({ project, onOpenTab }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void }) {
+function OverviewTab({ project, onOpenTab, onOpenGate }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void; onOpenGate: () => void }) {
   const meta: Array<[string, string]> = [];
   if (project.researchField) {
     meta.push(["研究领域", project.researchField]);
@@ -174,6 +177,9 @@ function OverviewTab({ project, onOpenTab }: { project: ProjectView; onOpenTab: 
   return (
     <div className="panel-stack">
       <CurrentWorkflowCard projectId={project.id} onOpenTab={onOpenTab} />
+      {project.workflowKind !== "existing_paper_review" ? (
+        <QualityGateSummaryLink projectId={project.id} onOpenTab={() => onOpenGate()} />
+      ) : null}
       <section className="panel section-block">
         <div className="section-head">
           <h2>研究定位</h2>
@@ -241,13 +247,15 @@ export function ProjectPage() {
 
   const visible = visibleTabs(data?.workflowKind);
   const tab = tabFromParam(searchParams.get("tab"), visible);
-  const setTab = (next: TabId) => {
-    // 标签切换用 replace：浏览器"后退"回到上一个页面，而不是逐个回退标签
-    setSearchParams(next === "overview" ? {} : { tab: next }, { replace: true });
+  // 标签切换用 replace：浏览器"后退"回到上一个页面，而不是逐个回退标签；
+  // extra 携带跨页上下文（如门禁 blocker → 证据页的「需注意」筛选）
+  const setTab = (next: TabId, extra?: Record<string, string>) => {
+    const params = { tab: next, ...extra };
+    setSearchParams(next === "overview" && extra === undefined ? {} : params, { replace: true });
   };
-  const openTab = (next: OpenableTab) => {
+  const openTab = (next: TabId, extra?: Record<string, string>) => {
     if (visible.some((entry) => entry.id === next)) {
-      setTab(next);
+      setTab(next, extra);
     }
   };
 
@@ -404,15 +412,22 @@ export function ProjectPage() {
       <div className="workspace-body">
         <div role="tabpanel" id={`tabpanel-${tab}`} aria-labelledby={`tab-${tab}`} className="tabpanel">
           {tab === "overview" ? (
-            <OverviewTab project={project} onOpenTab={openTab} />
+            <OverviewTab project={project} onOpenTab={openTab} onOpenGate={() => setTab("workflow")} />
           ) : tab === "pdf" ? (
             <PdfPanel projectId={project.id} />
+          ) : tab === "evidence" ? (
+            <EvidencePanel
+              projectId={project.id}
+              workflowKind={project.workflowKind}
+              onOpenTab={openTab}
+              initialAttention={searchParams.get("attention") === "1"}
+            />
           ) : tab === "citations" ? (
             <CitationsPanel projectId={project.id} />
           ) : tab === "workflow" ? (
-            <WorkflowPanel projectId={project.id} onOpenTab={openTab} connection={connection} />
+            <WorkflowPanel projectId={project.id} project={project} onOpenTab={openTab} connection={connection} />
           ) : (
-            <ReviewPanel projectId={project.id} onOpenTab={openTab} />
+            <ReviewPanel projectId={project.id} workflowKind={project.workflowKind} onOpenTab={openTab} />
           )}
         </div>
         <ProjectAside project={project} onOpenTab={openTab} />

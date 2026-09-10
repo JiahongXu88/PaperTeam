@@ -4,6 +4,7 @@ import { Icon } from "../common/Icon.js";
 import { Loading } from "../common/StateViews.js";
 import { InlineConfirm } from "../common/RowMenu.js";
 import { HitlPanel } from "./HitlPanel.js";
+import { QualityGatePanel } from "./QualityGatePanel.js";
 import { COMPLETION_LABELS, stageLabel } from "../common/status.js";
 import { RunStatusBadge } from "./Badges.js";
 import { WORKFLOW_KIND_LABELS } from "../../constants/projectMeta.js";
@@ -17,7 +18,7 @@ import {
 import type { WorkflowEventConnection } from "../../hooks/workflowEvents.js";
 import { formatApiError, summarizeRunError } from "../../utils/errors.js";
 import { formatDateTime, formatDurationBetween, formatStageDuration } from "../../utils/format.js";
-import type { WorkflowRunView } from "../../types/api.js";
+import type { ProjectView, WorkflowRunView } from "../../types/api.js";
 
 /**
  * 工作流实时视图：当前 run 状态 + Stage Timeline + 分章节进度 + 取消 + 结果入口。
@@ -25,7 +26,7 @@ import type { WorkflowRunView } from "../../types/api.js";
  * 活跃时 3s 轮询兜底）；耗时用客户端 timer 基于 server 时间戳计算，不轮询后端。
  */
 
-type OpenableTab = "pdf" | "citations" | "review";
+type OpenableTab = "pdf" | "evidence" | "citations" | "review" | "overview";
 
 /** 客户端秒级 tick（仅运行中启用；驱动 elapsed 展示，不请求后端） */
 function useNowTick(active: boolean): number {
@@ -63,11 +64,14 @@ function retryAdvice(run: WorkflowRunView): string {
 
 export function WorkflowPanel({
   projectId,
+  project,
   onOpenTab,
   connection,
 }: {
   projectId: string;
-  onOpenTab: (tab: OpenableTab) => void;
+  /** 项目元数据（质量门禁需要 workflowKind 判定空态文案；缺省按未知类型处理） */
+  project?: ProjectView;
+  onOpenTab: (tab: OpenableTab, extra?: Record<string, string>) => void;
   connection: WorkflowEventConnection;
 }) {
   const runs = useProjectRuns(projectId);
@@ -108,11 +112,15 @@ export function WorkflowPanel({
   }
   if (runs.data === undefined || runs.data.length === 0) {
     return (
-      <section className="section-block" data-testid="workflow-panel">
-        <div className="section-head">
-          <h2>工作流</h2>
-        </div>
-        <p className="panel-empty">还没有运行过任务。</p>
+      <section className="workflow-panel" data-testid="workflow-panel">
+        <section className="panel section-block">
+          <div className="section-head">
+            <h2>工作流</h2>
+          </div>
+          <p className="panel-empty">还没有运行过任务。</p>
+        </section>
+        {/* 门禁产物独立于 run 存在（如手动 review + gate）；无 run 也要可见 */}
+        <QualityGatePanel projectId={projectId} workflowKind={project?.workflowKind} onOpenTab={onOpenTab} />
       </section>
     );
   }
@@ -151,6 +159,9 @@ export function WorkflowPanel({
           exportError={exportReport.isError ? formatApiError(exportReport.error) : null}
         />
       ) : null}
+
+      {/* 质量门禁（项目级产物，按轮落盘；工作流的 quality.gate 阶段自动产出） */}
+      <QualityGatePanel projectId={projectId} workflowKind={project?.workflowKind} onOpenTab={onOpenTab} />
 
       {runs.data.length > 1 ? (
         <section className="panel section-block">
@@ -379,6 +390,16 @@ function TimelineRow({ item, now }: { item: StageTimelineItem; now: number }) {
         {item.state === "cancelled" ? "中断于此" : null}
         {item.state === "pending" && item.conditional ? "按需执行" : null}
         {duration !== undefined && item.state !== "pending" ? <span className="muted">{duration}</span> : null}
+        {item.stageId === "quality.gate" && item.state === "completed" ? (
+          <button
+            type="button"
+            className="btn-link stage-goto-gate"
+            onClick={() => document.getElementById("quality-gate-panel")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+            data-testid="stage-goto-gate"
+          >
+            查看门禁详情
+          </button>
+        ) : null}
       </span>
       {item.state === "running" && item.stageId === "review.sections" ? <SectionProgressBlock item={item} now={now} /> : null}
     </li>

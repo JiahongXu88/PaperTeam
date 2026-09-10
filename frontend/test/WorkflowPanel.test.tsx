@@ -26,6 +26,22 @@ vi.mock("../src/api/paper.js", () => ({
   exportReviewReport: vi.fn(),
 }));
 
+// M4.6：内嵌质量门禁面板；默认空态（需要 gate 数据的用例单独覆写）
+vi.mock("../src/api/evidence.js", () => ({
+  listEvidence: vi.fn(async () => []),
+  getEvidence: vi.fn(),
+  confirmEvidenceVerified: vi.fn(),
+  getQualityGate: vi.fn(async () => ({
+    rounds: [],
+    round: null,
+    gate: null,
+    reviewSummary: null,
+    latestReviewRound: null,
+    stale: false,
+  })),
+  reevaluateQualityGate: vi.fn(),
+}));
+
 const runsApi = await import("../src/api/runs.js");
 
 function runFixture(overrides: Partial<WorkflowRunView> = {}): WorkflowRunView {

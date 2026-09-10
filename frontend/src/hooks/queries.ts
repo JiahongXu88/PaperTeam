@@ -14,6 +14,12 @@ import {
 import { getRuntimeStatus } from "../api/runtime.js";
 import { cancelWorkflowRun, createWorkflowRun, listProjectRuns, resumeWorkflowRun } from "../api/runs.js";
 import {
+  confirmEvidenceVerified,
+  getQualityGate,
+  listEvidence,
+  reevaluateQualityGate,
+} from "../api/evidence.js";
+import {
   exportReviewReport,
   extractCitations,
   getCitationIntegrity,
@@ -66,6 +72,10 @@ export const queryKeys = {
   citationIntegrity: (projectId: string) => ["project", projectId, "citations", "integrity"] as const,
   metadataRecords: (projectId: string) => ["project", projectId, "citations", "metadata"] as const,
   claimRecords: (projectId: string) => ["project", projectId, "citations", "claims"] as const,
+  evidence: (projectId: string) => ["project", projectId, "evidence"] as const,
+  /** round 缺省 = 最新（后端决定；不在前端缓存「最新」的轮次号，避免轮次漂移） */
+  qualityGate: (projectId: string, round?: number) =>
+    ["project", projectId, "quality-gate", ...(round !== undefined ? [round] : ["latest"])] as const,
   runtimeStatus: ["runtime-status"] as const,
   skills: ["skills"] as const,
   modelSettings: ["model-settings"] as const,
@@ -210,13 +220,15 @@ export function useCreateWorkflowRun() {
   });
 }
 
-/** Review run 结束后要刷新的派生数据（报告 / 引用 / 项目状态） */
+/** Review run 结束后要刷新的派生数据（报告 / 引用 / 质量门禁 / 证据 / 项目状态） */
 export function useInvalidateReviewOutputs(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return useCallback(() => {
     const id = projectId ?? "";
     void queryClient.invalidateQueries({ queryKey: queryKeys.paperReview(id) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.citations(id) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.evidence(id) });
+    void queryClient.invalidateQueries({ queryKey: ["project", id, "quality-gate"] });
     void queryClient.invalidateQueries({ queryKey: queryKeys.project(id) });
     void queryClient.invalidateQueries({ queryKey: queryKeys.projectLists });
   }, [projectId, queryClient]);
@@ -376,6 +388,50 @@ function useCitationInvalidation(projectId: string | undefined) {
   return () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.citations(projectId ?? "") });
   };
+}
+
+// ---- Evidence（Workbench；server state，不复制进 Zustand） ----
+
+/** 证据全量列表（规模内一次取回；筛选 / 搜索 / 摘要统计都在这份数据上派生，无 N+1） */
+export function useEvidence(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.evidence(projectId ?? ""),
+    queryFn: ({ signal }) => listEvidence(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 人工确认核验（user_confirmed）：完成后失效证据列表（含摘要统计） */
+export function useConfirmEvidenceVerified(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (evidenceId: string) => confirmEvidenceVerified(projectId ?? "", evidenceId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.evidence(projectId ?? "") });
+    },
+  });
+}
+
+// ---- Quality Gate（只读展示；判定永远来自 Backend，前端不重算） ----
+
+/** 按轮读取 gate 产物（缺省最新；多轮时切换器显式传 round） */
+export function useQualityGate(projectId: string | undefined, round?: number) {
+  return useQuery({
+    queryKey: queryKeys.qualityGate(projectId ?? "", round),
+    queryFn: ({ signal }) => getQualityGate(projectId ?? "", round, signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 手动重新评估（仅 gate 过期时提示使用；正常由 workflow 的 quality.gate stage 自动产出） */
+export function useReevaluateQualityGate(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => reevaluateQualityGate(projectId ?? ""),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["project", projectId ?? "", "quality-gate"] });
+    },
+  });
 }
 
 export function useExtractCitations(projectId: string | undefined) {
