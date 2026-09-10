@@ -207,7 +207,8 @@ export type WorkflowDomainEventType =
   | "quality_gate.passed"
   | "quality_gate.failed"
   | "build_gate.passed"
-  | "build_gate.failed";
+  | "build_gate.failed"
+  | "final.created";
 
 export interface WorkflowDomainEvent {
   seq: number;

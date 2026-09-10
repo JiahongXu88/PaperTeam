@@ -1,11 +1,10 @@
 /**
- * Bounded revision loop e2e 测试（M3.2）：
- * - review fail×2 → pass：两轮自动修订后 Final
- * - 默认最多 2 轮自动修订（第三轮失败 → HITL）
- * - 第三次失败 → awaiting_input → accept_draft → Draft（Build Gate 仍执行）
+ * Bounded revision loop e2e 测试（M3.2；M4.7 收敛语义更新）：
+ * - fail → fail2（有改善）→ pass：两轮自动修订后 Final（IMPROVED 轨迹）
+ * - fail → fail2 → fail3（持续改善但不过线）：预算耗尽 → overflow HITL → accept_draft → Draft
+ * - overflow revise_more 人工授权追加一轮 → 再无改善（CONVERGED）→ stalled HITL → accept_draft
  * - Quality 失败不阻止 Draft 构建（D-0015）
- * - 编译失败也进入修订循环（带编译错误上下文）
- * - revisionOverflow revise_more 人工授权再修一轮
+ * - 连续两轮完全相同的 fail → CONVERGED → stalled HITL（不盲目继续烧 Token）
  */
 
 import { readFile } from "node:fs/promises";
@@ -28,7 +27,7 @@ afterAll(async () => {
 });
 
 async function newStack(
-  options: { reviewSequence?: ("pass" | "fail")[]; latexRunner?: never } = {},
+  options: { reviewSequence?: ("pass" | "fail" | "fail2" | "fail3")[]; latexRunner?: never } = {},
 ): Promise<TestStack> {
   const scripted = scriptedIdeaRuntime({
     ...(options.reviewSequence ? { reviewSequence: options.reviewSequence } : {}),
@@ -66,8 +65,8 @@ async function approveTwice(stack: TestStack, runId: string): Promise<void> {
 }
 
 describe("bounded revision loop（idea_to_paper）", () => {
-  it("fail, fail → pass：两轮自动修订后 Final；修订轮数受控", async () => {
-    const stack = await newStack({ reviewSequence: ["fail", "fail", "pass"] });
+  it("fail → fail2（改善）→ pass：两轮自动修订后 Final；修订轮数受控", async () => {
+    const stack = await newStack({ reviewSequence: ["fail", "fail2", "pass"] });
     const project = await stack.store.create("修订循环测试");
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
@@ -82,14 +81,28 @@ describe("bounded revision loop（idea_to_paper）", () => {
       (record) => record.stageId === "revision.revise" && record.status === "completed",
     );
     expect(revisions).toHaveLength(2);
-    // 三轮 review（r1/r2/r3 落盘）
+    // 每轮失败后都有确定性修订计划落盘（r1/r2）
     const reviewsDir = join(stack.root, project.id, "reviews");
+    for (const round of [1, 2]) {
+      const plan = JSON.parse(
+        await readFile(join(reviewsDir, `revision-plan-r${round}.json`), "utf8"),
+      ) as { planId?: string; summary?: { planned?: number } };
+      expect(plan.planId).toBe(`plan-r${round}-rev${round === 1 ? 2 : 3}`);
+      expect((plan.summary?.planned ?? 0)).toBeGreaterThan(0);
+    }
+    // 三轮 review（r1/r2/r3 落盘）+ 收敛历史（IMPROVED 轨迹）
     for (const round of [1, 2, 3]) {
       const summary = JSON.parse(
         await readFile(join(reviewsDir, `review-summary-r${round}.json`), "utf8"),
-      ) as { scores?: { academicScore?: number } };
+      ) as { scores?: { academicScore?: number }; reviewedRevision?: number };
       expect(summary.scores?.academicScore).toBeDefined();
+      expect(typeof summary.reviewedRevision).toBe("number");
     }
+    const iterations = JSON.parse(
+      await readFile(join(reviewsDir, "iteration-history.json"), "utf8"),
+    ) as { iterations?: { gateRound: number; outcome: string | null }[] };
+    const outcomes = (iterations.iterations ?? []).map((record) => record.outcome);
+    expect(outcomes).toEqual([null, "IMPROVED", "PASS"]);
     // 事件包含 quality_gate.failed / passed
     const { events } = await stack.orchestrator.readEvents(runId);
     const types = events.map((event) => event.type);
@@ -97,8 +110,8 @@ describe("bounded revision loop（idea_to_paper）", () => {
     expect(types).toContain("quality_gate.passed");
   });
 
-  it("fail×3：自动轮数耗尽 → awaiting_input（不无限烧 Token）→ accept_draft → Draft", async () => {
-    const stack = await newStack({ reviewSequence: ["fail"] });
+  it("fail → fail2 → fail3（持续改善但不过线）：预算耗尽 → overflow HITL → accept_draft → Draft", async () => {
+    const stack = await newStack({ reviewSequence: ["fail", "fail2", "fail3"] });
     const project = await stack.store.create("超限测试");
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
@@ -117,6 +130,7 @@ describe("bounded revision loop（idea_to_paper）", () => {
     expect(finished.completion?.label).toBe("draft");
     expect(finished.completion?.summary?.["qualityGatePassed"]).toBe(false);
     expect(finished.completion?.summary?.["buildOk"]).toBe(true); // Draft PDF 已产出
+    expect(typeof finished.completion?.summary?.["draftArtifactId"]).toBe("string");
     const revisions = finished.stageHistory.filter(
       (record) => record.stageId === "revision.revise" && record.status === "completed",
     );
@@ -125,23 +139,32 @@ describe("bounded revision loop（idea_to_paper）", () => {
     expect(pdf).toContain("%PDF-1.5");
   });
 
-  it("超限后 revise_more：人工授权追加一轮；仍有绝对上限", async () => {
-    const stack = await newStack({ reviewSequence: ["fail"] });
+  it("超限后 revise_more：追加一轮仍无改善（CONVERGED）→ stalled HITL → accept_draft", async () => {
+    const stack = await newStack({ reviewSequence: ["fail", "fail2", "fail3"] });
     const project = await stack.store.create("人工追加测试");
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
 
     await approveTwice(stack, runId);
-    await pollRun(stack, runId, ["awaiting_input"]);
+    const overflow = await pollRun(stack, runId, ["awaiting_input"]);
+    expect(overflow.awaiting?.stageId).toBe("hitl.revision_overflow");
 
     await stack.request("POST", `/api/runs/${runId}/resume`, {
       decision: "revise_more",
       payload: { feedback: "重点补实验" },
     });
-    // 追加一轮修订 → 再失败 → 再次 awaiting
-    const overflowAgain = await pollRun(stack, runId, ["awaiting_input"]);
-    expect(overflowAgain.awaiting?.stageId).toBe("hitl.revision_overflow");
-    const revisions = overflowAgain.stageHistory.filter(
+    // 追加一轮修订 → 第四轮 review 与第三轮完全相同（序列耗尽重复 fail3）→ CONVERGED → stalled HITL
+    const stalled = await pollRun(stack, runId, ["awaiting_input"]);
+    expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
+    expect(stalled.awaiting?.options).toEqual(["accept_draft", "revise_more", "cancel"]);
+    expect(stalled.awaiting?.payload?.["outcome"]).toBe("CONVERGED");
+    const scorecard = stalled.awaiting?.payload?.["scorecard"] as {
+      current: { critical: number } | null;
+      previous: { critical: number } | null;
+    };
+    expect(scorecard.current).not.toBeNull();
+    expect(scorecard.previous).not.toBeNull();
+    const revisions = stalled.stageHistory.filter(
       (record) => record.stageId === "revision.revise" && record.status === "completed",
     );
     expect(revisions).toHaveLength(3); // 2 自动 + 1 人工
@@ -151,8 +174,30 @@ describe("bounded revision loop（idea_to_paper）", () => {
     expect(finished.completion?.label).toBe("draft");
   });
 
-  it("review fail 但 feasibility INSUFFICIENT 的组合：gate 失败原因包含 target_feasibility", async () => {
+  it("连续两轮完全相同的 fail → CONVERGED → stalled HITL（不盲目继续）", async () => {
     const stack = await newStack({ reviewSequence: ["fail"] });
+    const project = await stack.store.create("不收敛测试");
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
+    const runId = created.body["runId"] as string;
+
+    await approveTwice(stack, runId);
+    const stalled = await pollRun(stack, runId, ["awaiting_input"]);
+    expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
+    expect(stalled.awaiting?.payload?.["outcome"]).toBe("CONVERGED");
+
+    // revise_more：人工授权再试一轮（下一轮 gate 仍相同 → 重新询问，不无限继续）
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "revise_more" });
+    const asked = await pollRun(stack, runId, ["awaiting_input"]);
+    expect(asked.awaiting?.stageId).toBe("hitl.revision_stalled");
+    expect(asked.awaiting?.payload?.["outcome"]).toBe("CONVERGED");
+
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "cancel" });
+    const cancelled = await pollRun(stack, runId, ["cancelled", "completed"]);
+    expect(cancelled.status).toBe("cancelled");
+  });
+
+  it("review fail 但 feasibility INSUFFICIENT 的组合：gate 失败原因包含 target_feasibility", async () => {
+    const stack = await newStack({ reviewSequence: ["fail", "fail2", "fail3"] });
     const project = await stack.store.create("组合失败测试");
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;

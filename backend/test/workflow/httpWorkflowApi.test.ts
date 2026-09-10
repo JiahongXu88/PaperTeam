@@ -181,6 +181,7 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
       "review.run",
       "quality.gate",
       "build.draft",
+      "build.final",
     ]);
     expect(run.completion?.summary?.["qualityGatePassed"]).toBe(true);
     expect(run.completion?.summary?.["buildOk"]).toBe(true);

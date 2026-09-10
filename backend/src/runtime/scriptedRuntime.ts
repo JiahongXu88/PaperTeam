@@ -209,11 +209,92 @@ const REVIEW_FAIL = {
   }),
 };
 
+const REVIEW_FAIL2 = {
+  fact: JSON.stringify({
+    summary: "关键论断有证据支撑。",
+    claims: [
+      { section: "sections/introduction.tex", claim: "RAG 降低幻觉率", verdict: "SUPPORTED", evidenceId: "E001" },
+    ],
+    issues: [],
+  }),
+  academic: JSON.stringify({
+    summary: "实验充分性仍不足（有改善）。",
+    scores: { 问题定义: 75, 方法合理性: 72, 实验充分性: 68, 论证逻辑: 74, 写作质量: 78 },
+    overallScore: 73,
+    issues: [
+      {
+        category: "academic",
+        severity: "major",
+        section: "sections/experiments.tex",
+        description: "缺少消融实验",
+        suggestedAction: "补充消融",
+        blocking: false,
+      },
+      {
+        category: "academic",
+        severity: "major",
+        section: "sections/experiments.tex",
+        description: "缺少与基线方法的对比实验",
+        suggestedAction: "补充对比实验",
+        blocking: false,
+      },
+    ],
+  }),
+  style: JSON.stringify({
+    summary: "表达仍有模板化痕迹（有改善）。",
+    riskScore: 50,
+    issues: [
+      {
+        category: "style",
+        severity: "minor",
+        section: "sections/related-work.tex",
+        description: "连接词较多",
+        suggestedAction: "改写过渡句",
+        blocking: false,
+      },
+    ],
+  }),
+};
+
+const REVIEW_FAIL3 = {
+  fact: JSON.stringify({
+    summary: "关键论断均有证据支撑。",
+    claims: [
+      { section: "sections/introduction.tex", claim: "RAG 降低幻觉率", verdict: "SUPPORTED", evidenceId: "E001" },
+    ],
+    issues: [],
+  }),
+  academic: JSON.stringify({
+    summary: "结构与论证已改善，但总分未过线。",
+    scores: { 问题定义: 80, 方法合理性: 78, 实验充分性: 74, 论证逻辑: 79, 写作质量: 82 },
+    overallScore: 78,
+    issues: [
+      {
+        category: "academic",
+        severity: "major",
+        section: "sections/experiments.tex",
+        description: "缺少与基线方法的对比实验",
+        suggestedAction: "补充对比实验",
+        blocking: false,
+      },
+    ],
+  }),
+  style: JSON.stringify({
+    summary: "表达已较自然，风险分仍偏高。",
+    riskScore: 40,
+    issues: [],
+  }),
+};
+
 export interface ScriptedRuntimeOptions {
   /** feasibility 输出序列（依次消费；耗尽后用最后一个） */
   feasibilitySequence?: string[];
-  /** review 轮次结果序列（每轮 = fact+academic+style 三路；耗尽后用最后一个），默认全 pass */
-  reviewSequence?: ("pass" | "fail")[];
+  /**
+   * review 轮次结果序列（每轮 = fact+academic+style 三路；耗尽后用最后一个），默认全 pass。
+   * fail（重问题）/ fail2（中等问题，较 fail 有改善）/ fail3（轻问题，较 fail2 有改善，
+   * 仍因阈值不过线）：用于构造 IMPROVED 收敛轨迹，避免连续相同 fail 直接 CONVERGED。
+   */
+  reviewSequence?: ("pass" | "fail" | "fail2" | "fail3")[];
   /** 是否挂起第一次 runAgent（cancel / 并发测试） */
   hangFirstCall?: boolean;
 }
@@ -278,7 +359,14 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         const round = Math.floor(reviewCallIndex / 3);
         reviewCallIndex += 1;
         const outcome = reviewSequence[Math.min(round, reviewSequence.length - 1)] ?? "pass";
-        const pack = outcome === "pass" ? REVIEW_PASS : REVIEW_FAIL;
+        const pack =
+          outcome === "pass"
+            ? REVIEW_PASS
+            : outcome === "fail2"
+              ? REVIEW_FAIL2
+              : outcome === "fail3"
+                ? REVIEW_FAIL3
+                : REVIEW_FAIL;
         output = scope === "review/fact" ? pack.fact : scope === "review/academic" ? pack.academic : pack.style;
       }
       const now = new Date().toISOString();
@@ -333,11 +421,12 @@ function makeHealth(ok: boolean): RuntimeHealth {
 }
 
 /**
- * PAPERTEAM_TEST_RUNTIME_REVIEW="fail,pass" → 依次产出 fail / pass 审稿轮
- * （浏览器级 E2E 驱动真实 Quality Gate FAIL→修订→PASS 链路用；显式传入
+ * PAPERTEAM_TEST_RUNTIME_REVIEW="fail,fail2,pass" → 依次产出对应审稿轮
+ * （浏览器级 E2E 驱动真实 Quality Gate FAIL→修订→PASS 链路用；fail2/fail3 为
+ * 「有改善但未过线」的失败档，用于构造 IMPROVED 收敛轨迹；显式传入
  * reviewSequence 选项时以选项为准）。非法值忽略，保持全 pass 缺省。
  */
-function reviewSequenceFromEnv(): ("pass" | "fail")[] | undefined {
+function reviewSequenceFromEnv(): ("pass" | "fail" | "fail2" | "fail3")[] | undefined {
   const raw = process.env["PAPERTEAM_TEST_RUNTIME_REVIEW"]?.trim();
   if (raw === undefined || raw === "") {
     return undefined;
@@ -345,7 +434,9 @@ function reviewSequenceFromEnv(): ("pass" | "fail")[] | undefined {
   const parsed = raw
     .split(",")
     .map((entry) => entry.trim())
-    .filter((entry): entry is "pass" | "fail" => entry === "pass" || entry === "fail");
+    .filter((entry): entry is "pass" | "fail" | "fail2" | "fail3" =>
+      entry === "pass" || entry === "fail" || entry === "fail2" || entry === "fail3",
+    );
   return parsed.length > 0 ? parsed : undefined;
 }
 

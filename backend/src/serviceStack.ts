@@ -9,6 +9,9 @@ import { EvidenceStore } from "./evidence/EvidenceStore.js";
 import { GenerationService } from "./generation/GenerationService.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ManuscriptService } from "./manuscript/ManuscriptService.js";
+import { ManuscriptRevisionStore } from "./manuscript/RevisionStore.js";
+import { PaperArtifactStore } from "./artifacts/ArtifactStore.js";
+import { FinalizeService } from "./artifacts/FinalizeService.js";
 import { PaperIngestService } from "./paper/PaperIngestService.js";
 import { PaperMapService } from "./paper/PaperMapService.js";
 import { PaperStore } from "./paper/PaperStore.js";
@@ -96,6 +99,12 @@ export interface ServiceStack {
   /** 已有论文 PDF 导入（File First：一次调用建项目 + 解析 + 定标题） */
   projectImport: ProjectImportService;
   reviewArtifacts: ReviewArtifactStore;
+  /** manuscript 修订提交（M4.7） */
+  revisions: ManuscriptRevisionStore;
+  /** Draft / Final 产物存储（M4.7） */
+  artifacts: PaperArtifactStore;
+  /** Finalize：双 Gate 对齐校验 + Final 冻结（M4.7） */
+  finalize: FinalizeService;
   workflowServices: WorkflowServices;
 }
 
@@ -215,6 +224,14 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const reviewArtifacts = new ReviewArtifactStore(options.projects);
+  const revisions = new ManuscriptRevisionStore({ projects: options.projects });
+  const artifacts = new PaperArtifactStore({ projects: options.projects });
+  const finalize = new FinalizeService({
+    projects: options.projects,
+    reviewArtifacts,
+    artifacts,
+    revisions,
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -238,6 +255,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     reviewContext,
     projectImport,
     reviewArtifacts,
+    revisions,
+    artifacts,
+    finalize,
     workflowServices: {
       projects: options.projects,
       generation,
@@ -258,6 +278,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         sectionReview,
       },
       reviewArtifacts,
+      revisions,
+      artifacts,
+      finalize,
       stageTimeoutMs: options.stageTimeoutMs ?? 900_000,
       stageMaxAttempts: options.stageMaxAttempts ?? 2,
       review: {

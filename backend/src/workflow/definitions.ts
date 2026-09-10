@@ -10,20 +10,28 @@
  *     import.parse → import.baseline_build → import.understand → citation.verify
  *     → review.run → assessment.target → plan.improvement → HITL(plan) → revision.apply
  *
- *   共享后段（bounded revision loop，PRD §9.5）：
- *     citation.verify（新鲜时跳过）→ review.run（fact/academic/style 并行）
- *     → quality.gate ─ 通过 → build.draft → Final（双 Gate 通过）
- *                   └ 失败 → revision.revise（≤ maxRounds 轮）→ 回到 citation.verify
- *                            超限 → HITL(revision_overflow: accept_draft/revise_more/cancel)
- *                            └ accept_draft → build.draft → Draft
- *     build 失败（质量问题不阻塞构建；构建失败进入修订或 HITL）
+ *   共享后段（bounded revision loop，PRD §9.5 / D-0026）：
+ *     citation.verify（新鲜时跳过）→ review.run（fact/academic/style 并行，跨 run 轮次递增）
+ *     → quality.gate（对齐 review 轮次 + 收敛判定）─ 通过 → build.draft → build.final（Finalize）
+ *                                        └ 失败 → revision.plan（确定性派生）→ revision.revise
+ *                                             → 回到 citation.verify（≤ maxRounds 轮）
+ *                                             不收敛（CONVERGED/REGRESSION/计划空）→ HITL(revision_stalled)
+ *                                             超限 → HITL(revision_overflow: accept_draft/revise_more/cancel)
+ *                                             └ accept_draft → build.draft → Draft
+ *     build 失败（质量问题不阻塞构建）→ revision.repair_latex（≤ 2 次，最小上下文修复）
+ *                                    → 耗尽 → 带错误上下文修订或 HITL
+ *
+ * 修订版本纪律（M4.7）：每个改稿动作（outline.plan / writing.sections /
+ * revision.revise / revision.apply / revision.repair_latex / review 快照）都会
+ * 经 ManuscriptRevisionStore 提交不可变修订；gate / build / artifact 记录各自
+ * 携带对齐的 revision，Finalize 据此拒绝 stale 结论。
  *
  * 流程纪律全部在本文件的确定性 plan/onInput 中；LLM 只产出内容，
  * 其输出必须通过各 Stage 的 DoD 校验。
  */
 
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
 import type { GenerationService } from "../generation/GenerationService.js";
@@ -31,7 +39,9 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
+import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
+import { diagnosticFiles, type LatexDiagnostic } from "../latex/diagnostics.js";
 import type { WriterService } from "../writer/WriterService.js";
 import type { ResearcherService, ResearchArtifact } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
@@ -50,9 +60,19 @@ import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
 import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
+import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
+import {
+  judgeOutcome,
+  scorecardOf,
+  MAX_AUTO_LATEX_REPAIRS,
+} from "../review/revisionOutcome.js";
+import type { PaperArtifactStore } from "../artifacts/ArtifactStore.js";
+import type { FinalizeService } from "../artifacts/FinalizeService.js";
 import {
   evaluateQualityGate,
   runBuildGate,
+  runBuildGateForRevision,
+  loadBuildGateRecord,
   saveQualityGateReport,
   type QualityGateThresholds,
 } from "../quality/gates.js";
@@ -83,6 +103,12 @@ export interface WorkflowServices {
   paper: PaperReviewServices;
   /** reviews/ 产物读写（round 编号、最新汇总） */
   reviewArtifacts: ReviewArtifactStore;
+  /** manuscript 修订提交（M4.7：gate / build / artifact 的对齐基准） */
+  revisions: ManuscriptRevisionStore;
+  /** Draft / Final 产物存储（M4.7） */
+  artifacts: PaperArtifactStore;
+  /** Finalize：双 Gate 对齐校验 + Final 冻结（确定性，无 LLM） */
+  finalize: FinalizeService;
   stageTimeoutMs: number;
   stageMaxAttempts: number;
   /** bounded loop 与 Quality Gate 阈值 */
@@ -163,6 +189,9 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
     async execute(ctx) {
       const digest = await buildManuscriptDigest(services, ctx.projectId);
+      // 审稿前固化修订版本：本轮 review 审阅的就是这个不可变修订（幂等提交，
+      // 未变化的 manuscript 不产生新修订号）。gate / Finalize 据此对齐。
+      const { revision } = await services.revisions.commit(ctx.projectId, "review.snapshot", ctx.runId);
       const evidence = await usableEvidence(services, ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
       const citationReport = await services.citation.latestReport(ctx.projectId);
@@ -179,15 +208,19 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         ...(citationDigest !== undefined ? { citationDigest } : {}),
       });
 
-      const round = countCompletions(ctx.state, "review.run") + 1;
+      // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
+      // 「countCompletions + 1」在第二个 run 里与既有文件名撞号的问题
+      const round = await services.reviewArtifacts.nextSummaryRound(ctx.projectId);
       const reportPaths: string[] = [];
       for (const result of results) {
         reportPaths.push(await services.reviewer.saveReport(ctx.projectId, round, result));
       }
       const summary = aggregateReviews(results, round, reportPaths);
+      summary.reviewedRevision = revision;
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       return {
         round,
+        revision,
         issues: summary.counts.critical + summary.counts.major + summary.counts.minor,
         critical: summary.counts.critical,
         major: summary.counts.major,
@@ -198,9 +231,15 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
       };
     },
     async verifyDod(ctx) {
-      const round = countCompletions(ctx.state, "review.run") + 1;
-      const fileName = services.reviewArtifacts.summaryFileName(round);
-      return (await services.reviewArtifacts.exists(ctx.projectId, fileName)) ? [] : [`reviews/${fileName} 不存在`];
+      // execute 用 nextSummaryRound 分配轮次（磁盘已有 + 1），此处重算会得到
+      // 「下一轮」的编号：改为校验最新汇总存在且携带修订对齐信息
+      const summary = await services.reviewArtifacts.latestSummary(ctx.projectId);
+      if (summary === null) {
+        return ["reviews/review-summary-r*.json 不存在"];
+      }
+      return typeof summary.reviewedRevision === "number"
+        ? []
+        : ["最新审稿汇总缺少修订对齐信息（reviewedRevision）"];
     },
   };
 }
@@ -226,8 +265,23 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         { review, citation, evidence, feasibility },
         QUALITY_THRESHOLDS(services),
       );
-      const round = countCompletions(ctx.state, "review.run");
+      // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
+      const round = review.round;
       await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review);
+      // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
+      // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
+      const scorecard = scorecardOf(gate, review);
+      const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
+      const previous = iterations.at(-1)?.scorecard ?? null;
+      const outcome = judgeOutcome(scorecard, previous);
+      await services.reviewArtifacts.appendIteration(ctx.projectId, {
+        revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
+        reviewRound: review.round,
+        gateRound: round,
+        outcome,
+        completedAt: new Date().toISOString(),
+        scorecard,
+      });
       await ctx.emitDomain(
         gate.passed ? "quality_gate.passed" : "quality_gate.failed",
         {
@@ -238,15 +292,264 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
           major: review.counts.major,
           academicScore: review.scores.academicScore,
           styleRisk: review.scores.styleRisk,
+          outcome,
         },
-        gate.passed ? "Quality Gate 通过" : `Quality Gate 未通过：${gate.reasons.length} 项阻止`,
+        gate.passed
+          ? "Quality Gate 通过"
+          : `Quality Gate 未通过：${gate.reasons.length} 项阻止（${outcome ?? "首轮无对比"}）`,
       );
       return {
         passed: gate.passed,
         reasonCount: gate.reasons.length,
         reasons: gate.reasons.slice(0, 8),
         round,
+        outcome,
+        revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
       };
+    },
+  };
+}
+
+// ============================================================
+// Revision Plan / LaTeX 修复 / Finalize / 不收敛 HITL（M4.7）
+// ============================================================
+
+/**
+ * 确定性派生修订计划（reviews/revision-plan-r{round}.json）：
+ * critical/major finding 与引用缺失 → 派发；minor 只记录不修（避免非收敛）。
+ * 纯代码，无 LLM——Writer 只是计划的执行者。
+ */
+function revisionPlanStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.plan",
+    description: "确定性派生修订计划（critical/major 派发，minor 只记录）",
+    requiredInputs: ["quality.gate"],
+    producedOutputs: ["reviews/revision-plan-r{round}.json"],
+    maxAttempts: 1, // 纯确定性派生，重试无意义
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
+      }
+      const sourceRevision =
+        typeof summary.reviewedRevision === "number"
+          ? summary.reviewedRevision
+          : await services.revisions.currentRevision(ctx.projectId);
+      // gate 阻止项：来自同轮 gate 产物（无章节归属 → 记录不派发）
+      const gateRounds = await services.reviewArtifacts.gateRounds(ctx.projectId);
+      const gateRound = gateRounds[0];
+      const gateArtifact =
+        gateRound !== undefined ? await services.reviewArtifacts.loadGate(ctx.projectId, gateRound) : null;
+      const gateBlockers = (gateArtifact?.gate.rules ?? [])
+        .filter((rule) => !rule.passed)
+        .map((rule) => ({ rule: rule.rule, detail: rule.detail }));
+      const buildErrorValue = readBuildError(ctx.state);
+      const plan = buildRevisionPlan({
+        projectId: ctx.projectId,
+        sourceRevision,
+        reviewRound: summary.round,
+        summary,
+        citationMissing: await citationMissingTargets(services, ctx.projectId),
+        ...(buildErrorValue !== undefined
+          ? { buildError: { message: buildErrorValue.slice(0, 500) } }
+          : {}),
+        ...(gateBlockers.length > 0 ? { gateBlockers } : {}),
+      });
+      await services.reviewArtifacts.savePlan(ctx.projectId, plan);
+      // 回填本轮 iteration 记录的 planId（UI / 审计可从轮次回溯计划）
+      const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
+      const currentIteration = iterations.find((record) => record.gateRound === summary.round);
+      if (currentIteration !== undefined && currentIteration.planId !== plan.planId) {
+        await services.reviewArtifacts.appendIteration(ctx.projectId, {
+          ...currentIteration,
+          planId: plan.planId,
+        });
+      }
+      return {
+        planId: plan.planId,
+        round: summary.round,
+        items: plan.items.length,
+        planned: plan.summary.planned,
+        skipped: plan.summary.skipped,
+      };
+    },
+    async verifyDod(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        return ["缺少 review 汇总"];
+      }
+      const plan = await services.reviewArtifacts.loadPlan(ctx.projectId, summary.round);
+      return plan === null
+        ? [`reviews/${services.reviewArtifacts.planFileName(summary.round)} 不存在`]
+        : [];
+    },
+  };
+}
+
+/**
+ * Writer 修复编译错误（bounded repair loop）：每项目自动修复 ≤ MAX_AUTO_LATEX_REPAIRS 次。
+ * 上下文刻意最小：只给受影响文件 + 结构化诊断（文件/行号/错误/附近行），
+ * 绝不整篇论文 + 整份日志。修复只动语法，不改内容 / 引用。
+ * 修复产生新修订 → 先前的 gate/build 结论自然过期，复审后才能 Final。
+ */
+function revisionRepairStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.repair_latex",
+    description: `Writer 修复编译错误（bounded：≤ ${MAX_AUTO_LATEX_REPAIRS} 次）`,
+    requiredInputs: ["build.draft"],
+    producedOutputs: ["manuscript/sections/*.tex（语法修复）"],
+    maxAttempts: 1,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: [],
+    async execute(ctx) {
+      const build = ctx.state.stageResults["build.draft"] ?? {};
+      const buildError = readBuildError(ctx.state);
+      if (build["buildOk"] === true || buildError === undefined) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有可修复的编译错误（planner 误派发）");
+      }
+      const record = await loadBuildGateRecord(services.projects, ctx.projectId);
+      const diagnostics = record?.diagnostics ?? [];
+      const files = repairTargetFiles(services, ctx.projectId, diagnostics);
+      if (files.length === 0) {
+        throw new BusinessError(
+          "STAGE_CONTRACT_VIOLATION",
+          "编译诊断没有定位到 manuscript 内可修复的 .tex 文件",
+        );
+      }
+      const repaired: string[] = [];
+      for (const file of files) {
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "修复已被取消");
+        }
+        const absolute = safeManuscriptFile(services, ctx.projectId, file);
+        if (absolute === null) {
+          continue;
+        }
+        let current: string;
+        try {
+          current = await readFile(absolute, "utf8");
+        } catch {
+          continue; // 诊断指向的文件已不存在：跳过
+        }
+        const result = await services.writer.repairSection({
+          projectId: ctx.projectId,
+          sectionFile: file,
+          currentLatex: current,
+          buildError,
+          diagnostics: diagnostics.filter((diagnostic) => diagnostic.file === file),
+        });
+        await writeFile(absolute, result.latex.trim() + "\n", "utf8");
+        repaired.push(file);
+        await ctx.emitProgress({ file, repairedCount: repaired.length });
+      }
+      // 修复即改稿：提交修订（幂等；Writer 输出与原文相同则不产生新修订号）
+      const commit = await services.revisions.commit(ctx.projectId, "revision.repair_latex", ctx.runId);
+      return {
+        repairedFiles: repaired,
+        attempt: countCompletions(ctx.state, "revision.repair_latex") + 1,
+        revision: commit.revision,
+        changed: commit.created,
+      };
+    },
+  };
+}
+
+/** 不收敛 HITL：CONVERGED / REGRESSION / 计划无可派发条目 → 交给用户决策 */
+function revisionStalledStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.revision_stalled",
+    description: "修订迭代不收敛（无实质改善 / 退化 / 无可派发条目），等待用户决策",
+    requiredInputs: ["quality.gate"],
+    producedOutputs: ["用户决策"],
+    hitl: {
+      prompt:
+        "修订迭代不再收敛（连续无实质改善 / 出现退化 / 计划无可派发条目），继续自动修订可能无意义。请决策：接受为 Draft / 人工再修一轮 / 取消",
+      options: ["accept_draft", "revise_more", "cancel"],
+      payload: async (ctx) => {
+        const gate = ctx.state.stageResults["quality.gate"] ?? {};
+        const review = ctx.state.stageResults["review.run"] ?? {};
+        const plan = ctx.state.stageResults["revision.plan"] ?? {};
+        const gateRound = typeof gate["round"] === "number" ? gate["round"] : null;
+        // 前后两轮记分卡对比（iteration-history；payload 允许 async 读产物）
+        const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
+        const currentIteration =
+          gateRound !== null ? iterations.find((record) => record.gateRound === gateRound) : undefined;
+        const previousIteration =
+          gateRound !== null ? iterations.filter((record) => record.gateRound < gateRound).at(-1) : undefined;
+        const compare = (record: typeof currentIteration) =>
+          record === undefined
+            ? null
+            : {
+                round: record.gateRound,
+                critical: record.scorecard.critical,
+                major: record.scorecard.major,
+                blocking: record.scorecard.blocking,
+                academicScore: record.scorecard.academicScore,
+                failedRuleIds: record.scorecard.failedRuleIds,
+              };
+        return {
+          outcome: typeof gate["outcome"] === "string" ? gate["outcome"] : null,
+          gateRound,
+          gateReasons: gate["reasons"] ?? [],
+          review: {
+            critical: review["critical"] ?? 0,
+            major: review["major"] ?? 0,
+            blocking: review["blocking"] ?? 0,
+          },
+          plan: {
+            planned: typeof plan["planned"] === "number" ? plan["planned"] : null,
+            skipped: typeof plan["skipped"] === "number" ? plan["skipped"] : null,
+          },
+          scorecard: { current: compare(currentIteration), previous: compare(previousIteration) },
+        };
+      },
+    },
+  };
+}
+
+/**
+ * Finalize：双 Gate 对齐校验后冻结 Final PDF（纯确定性，无 LLM；
+ * 校验全部在 FinalizeService 内：gate/build 必须通过且对齐当前修订）。
+ */
+function buildFinalStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "build.final",
+    description: "Finalize：双 Gate 对齐校验后冻结 Final PDF（确定性）",
+    requiredInputs: ["build.draft"],
+    producedOutputs: ["artifacts/art-final-rev{revision}.pdf"],
+    maxAttempts: 1, // 幂等确定性操作；失败即业务条件不满足（如实上抛）
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const result = await services.finalize.finalize(ctx.projectId, ctx.runId);
+      await ctx.emitDomain(
+        "final.created",
+        {
+          artifactId: result.final.artifactId,
+          revision: result.revision,
+          gateRound: result.gateRound,
+          bytes: result.final.file.bytes,
+        },
+        `Final 产物已冻结（${result.final.artifactId}）`,
+      );
+      return {
+        finalArtifactId: result.final.artifactId,
+        draftArtifactId: result.draft.artifactId,
+        revision: result.revision,
+        gateRound: result.gateRound,
+      };
+    },
+    async verifyDod(ctx) {
+      const { final } = await services.artifacts.latest(ctx.projectId);
+      if (final === null) {
+        return ["artifacts/ 中没有 Final 产物"];
+      }
+      const revision = await services.revisions.currentRevision(ctx.projectId);
+      return final.revision === revision
+        ? []
+        : [`Final 产物 revision（${final.revision}）≠ 当前修订（${revision}）`];
     },
   };
 }
@@ -278,8 +581,12 @@ function revisionReviseStage(
       const bibliography = artifact?.bibliography ?? [];
       const project = await services.projects.getRequired(ctx.projectId);
 
-      // 修订指令：shared loop 用最新 review 汇总；apply 用改进计划（映射为 issue）
-      const directives = await collectRevisionDirectives(services, ctx.projectId, stageId);
+      // 修订指令：shared loop 以落盘的确定性修订计划为准（计划缺失时回退执行期派生）；
+      // apply 仍用改进计划（映射为 issue）
+      const directives =
+        stageId === "revision.apply"
+          ? await collectRevisionDirectives(services, ctx.projectId, stageId)
+          : await collectPlanDirectives(services, ctx.projectId);
 
       const targets = listRevisionTargets(outline, files, directives);
       const revised: string[] = [];
@@ -325,7 +632,14 @@ function revisionReviseStage(
           evidenceStats: await services.evidence.stats(ctx.projectId),
         });
       }
-      return { revisedSections: revised.length, sections: revised };
+      // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
+      const revision = await services.revisions.commit(ctx.projectId, stageId, ctx.runId);
+      return {
+        revisedSections: revised.length,
+        sections: revised,
+        revision: revision.revision,
+        changed: revision.created,
+      };
     },
     async verifyDod(ctx) {
       const violations: string[] = [];
@@ -377,31 +691,49 @@ function revisionOverflowStage(): StageSpec {
 function buildDraftStage(services: WorkflowServices): StageSpec {
   return {
     id: "build.draft",
-    description: "Build Gate：LaTeX 编译产出 PDF（质量语义不阻塞构建）",
+    description: "Build Gate：LaTeX 编译产出 PDF（质量语义不阻塞构建；D-0015）",
     requiredInputs: [],
-    producedOutputs: ["build/paper.pdf", "build/compile.log"],
+    producedOutputs: ["build/paper.pdf", "build/compile.log", "build/build-gate.json"],
     maxAttempts: services.stageMaxAttempts,
     timeoutMs: services.stageTimeoutMs,
     retryable: ["transient", "timeout"],
     async execute(ctx) {
-      const { build, compile } = await runBuildGate(services.projects, services.latex, ctx.projectId);
+      // 编译前读取当前修订：record.revision 是 Finalize 的新鲜度依据
+      const revision = await services.revisions.currentRevision(ctx.projectId);
+      const { build, compile, record } = await runBuildGateForRevision(
+        services.projects,
+        services.latex,
+        ctx.projectId,
+        revision,
+      );
       await ctx.emitDomain(
         build.passed ? "build_gate.passed" : "build_gate.failed",
         {
+          revision,
           reasons: build.reasons.slice(0, 5),
           tool: compile.tool,
           durationMs: compile.durationMs,
         },
         build.passed ? "Build Gate 通过（PDF 已产出）" : `Build Gate 失败：${build.reasons[0] ?? "编译失败"}`,
       );
+      // Build 通过即冻结 Draft（幂等；质量 Gate 不参与 Draft 判定）
+      let draftArtifactId: string | undefined;
+      if (build.passed) {
+        const draft = await services.artifacts.ensureDraft(ctx.projectId, revision, record, ctx.runId);
+        draftArtifactId = draft.artifactId;
+      }
       return {
         buildOk: build.passed,
+        revision,
         buildGateReasons: build.reasons.slice(0, 5),
         tool: compile.tool,
         durationMs: compile.durationMs,
         ...(compile.pdfPath !== null ? { pdfPath: "build/paper.pdf" } : {}),
         ...(compile.logPath !== null ? { logPath: "build/compile.log" } : {}),
         ...(compile.error !== undefined ? { buildError: compile.error } : {}),
+        diagnosticsCount: record.diagnostics.length,
+        diagnosticFiles: diagnosticFiles(record.diagnostics),
+        ...(draftArtifactId !== undefined ? { draftArtifactId } : {}),
       };
     },
   };
@@ -429,20 +761,39 @@ function revisionBudget(state: WorkflowState, services: WorkflowServices): numbe
   return services.review.maxRevisionRounds + (state.counters?.["revision.manual_rounds"] ?? 0);
 }
 
+/** HITL marker（stageResults 中的 {decision, ...}）的 decision 字段 */
+function readMarkerDecision(state: WorkflowState, stageId: string): string | null {
+  const value = state.stageResults[stageId];
+  if (value === undefined || typeof value !== "object") {
+    return null;
+  }
+  const decision = (value as Record<string, unknown>)["decision"];
+  return typeof decision === "string" ? decision : null;
+}
+
 /**
  * 共享后段：返回下一个 stage 或完成决策。
  * 前置条件：调用方保证前段已完成。
+ *
+ * 新鲜度规则（M4.7）：任何改稿动作（revision.revise / apply / repair_latex）
+ * 都使先前的 citation / review / gate / build 结论过期，尾部整段重走；
+ * gate 通过后的修复同理（修复产生的修订必须复审后才能 Final）。
  */
 function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanDecision {
   const has = (id: string) => id in state.stageResults;
   const reviseIdx = lastRevisionIndex(state);
+  const repairIdx = lastCompletionIndex(state, "revision.repair_latex");
+  // 任何改稿动作（修订 / 编译修复都写入 manuscript）
+  const contentIdx = Math.max(reviseIdx, repairIdx);
   const citationIdx = lastCompletionIndex(state, "citation.verify");
   const reviewIdx = lastCompletionIndex(state, "review.run");
   const gateIdx = lastCompletionIndex(state, "quality.gate");
   const buildIdx = lastCompletionIndex(state, "build.draft");
+  const planIdx = lastCompletionIndex(state, "revision.plan");
+  const finalIdx = lastCompletionIndex(state, "build.final");
 
-  // 1. 引用核验须新于最近一次修订
-  if (!has("citation.verify") || citationIdx < reviseIdx) {
+  // 1. 引用核验须新于最近一次改稿
+  if (!has("citation.verify") || citationIdx < contentIdx) {
     return { kind: "stage", stageId: "citation.verify" };
   }
   // 2. review 须新于其消费的 citation
@@ -454,11 +805,24 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     return { kind: "stage", stageId: "quality.gate" };
   }
 
-  const gatePassed = state.stageResults["quality.gate"]?.["passed"] === true;
+  const gateResult = state.stageResults["quality.gate"] ?? {};
+  const gatePassed = gateResult["passed"] === true;
+  const gateRound = typeof gateResult["round"] === "number" ? gateResult["round"] : 0;
+  const outcome = typeof gateResult["outcome"] === "string" ? gateResult["outcome"] : null;
   const overflowAnswered = "hitl.revision_overflow" in state.stageResults;
   const roundsLeft = revisionRoundsUsed(state) < revisionBudget(state, services);
   const build = state.stageResults["build.draft"] ?? {};
   const buildOk = build["buildOk"] === true;
+
+  // HITL resume 不产生 stageHistory：stalled 的回答新鲜度以 marker 中的 gateRound
+  // 判定（只在「本轮 gate 之后」算已回答；下一轮 gate 失败会重新询问）
+  const stalledMarker = state.stageResults["hitl.revision_stalled"] as Record<string, unknown> | undefined;
+  const stalledGateRound =
+    stalledMarker !== undefined && typeof stalledMarker["gateRound"] === "number"
+      ? stalledMarker["gateRound"]
+      : -1;
+  const stalledDecision = stalledMarker !== undefined ? readMarkerDecision(state, "hitl.revision_stalled") : null;
+  const stalledAnswered = stalledDecision !== null && stalledGateRound >= gateRound;
 
   const completion = (label: "final" | "draft") =>
     ({
@@ -468,20 +832,47 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         buildOk,
         buildGateReasons: build["buildGateReasons"] ?? [],
         qualityGatePassed: gatePassed,
-        qualityGateReasons: state.stageResults["quality.gate"]?.["reasons"] ?? [],
+        qualityGateReasons: gateResult["reasons"] ?? [],
         revisionRounds: revisionRoundsUsed(state),
+        draftArtifactId: build["draftArtifactId"] ?? null,
+        ...(label === "final"
+          ? { finalArtifactId: state.stageResults["build.final"]?.["finalArtifactId"] ?? null }
+          : {}),
       },
     }) satisfies PlanDecision;
 
+  // accept_draft（overflow 或 stalled 的回答）→ 构建 Draft PDF 后完成
+  const draftPath = (): PlanDecision => {
+    if (!has("build.draft") || buildIdx < contentIdx) {
+      return { kind: "stage", stageId: "build.draft" };
+    }
+    return completion("draft");
+  };
+
   if (gatePassed) {
-    if (!has("build.draft") || buildIdx < reviseIdx || buildIdx < gateIdx) {
+    // gate 通过后若有改稿（含编译修复）：结论已过期，回到尾部重新评审
+    // （通常已被规则 1 覆盖；显式双保险）
+    if (gateIdx < contentIdx) {
+      return { kind: "stage", stageId: "citation.verify" };
+    }
+    // 构建须新于 gate 与最近改稿
+    if (!has("build.draft") || buildIdx < contentIdx || buildIdx < gateIdx) {
       return { kind: "stage", stageId: "build.draft" };
     }
     if (buildOk) {
-      // 双 Gate 通过 → Final（PRD §10.2）
+      // 双 Gate 通过且对齐当前修订 → 确定性 Finalize（一次；重构建后重冻结）
+      if (!has("build.final") || finalIdx < buildIdx) {
+        return { kind: "stage", stageId: "build.final" };
+      }
       return completion("final");
     }
-    // 构建失败：仍有修订预算 → 修（带编译错误上下文）；否则 HITL
+    // 构建失败：bounded 修复（诊断须定位到 manuscript 内文件）
+    const repairAttempts = countCompletions(state, "revision.repair_latex");
+    const diagnosticFilesValue = Array.isArray(build["diagnosticFiles"]) ? build["diagnosticFiles"] : [];
+    if (repairAttempts < MAX_AUTO_LATEX_REPAIRS && diagnosticFilesValue.length > 0) {
+      return { kind: "stage", stageId: "revision.repair_latex" };
+    }
+    // 修复预算耗尽：仍有修订预算 → 带编译错误上下文修订（复审随之重走）
     if (roundsLeft) {
       return { kind: "stage", stageId: "revision.revise" };
     }
@@ -491,18 +882,36 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     return completion("draft"); // 用户知情接受（无 PDF 产出，buildOk=false 如实记录）
   }
 
-  // Quality Gate 失败：质量语义不阻塞 Draft 构建，但 Final 必须通过
-  if (roundsLeft) {
-    return { kind: "stage", stageId: "revision.revise" };
+  // ---- Quality Gate 失败：质量语义不阻塞 Draft，但 Final 必须通过 ----
+  // 不收敛（连续无实质改善 / 退化）优先于预算判定：预算耗尽时也按「不收敛」
+  // 向用户说明（而不是误导性的「轮数用完」）；回答只对本轮 gate 有效
+  if ((outcome === "CONVERGED" || outcome === "REGRESSION") && !stalledAnswered) {
+    return { kind: "stage", stageId: "hitl.revision_stalled" };
   }
-  if (!overflowAnswered) {
+  if (roundsLeft) {
+    // 先确保有针对本轮 gate 的确定性计划（计划新鲜 = 晚于本轮 gate 且轮次一致）
+    const planResult = state.stageResults["revision.plan"] ?? {};
+    const planFresh =
+      has("revision.plan") && planIdx > gateIdx && planResult["round"] === gateRound;
+    if (!planFresh) {
+      return { kind: "stage", stageId: "revision.plan" };
+    }
+    const planned = typeof planResult["planned"] === "number" ? planResult["planned"] : 0;
+    // 计划无可派发条目（仅剩 minor / gate 阻止项）→ 同样按不收敛处理
+    if (planned === 0 && !stalledAnswered) {
+      return { kind: "stage", stageId: "hitl.revision_stalled" };
+    }
+    if (planned > 0 || stalledDecision === "revise_more") {
+      return { kind: "stage", stageId: "revision.revise" };
+    }
+    // stalled 且用户 accept_draft → 构建 Draft 后完成
+    return draftPath();
+  }
+  // 预算耗尽：overflow HITL（本轮 stalled 已 accept_draft 时不重复追问）
+  if (!overflowAnswered && !(stalledAnswered && stalledDecision === "accept_draft")) {
     return { kind: "stage", stageId: "hitl.revision_overflow" };
   }
-  // accept_draft → 先构建 Draft PDF（Build Gate 通过即可）
-  if (!has("build.draft") || buildIdx < reviseIdx) {
-    return { kind: "stage", stageId: "build.draft" };
-  }
-  return completion("draft");
+  return draftPath();
 }
 
 /** 共享 HITL 决策：revision_overflow */
@@ -527,6 +936,43 @@ async function applyOverflowDecision(
       );
     }
     state.counters = { ...state.counters, "revision.manual_rounds": manual + 1 };
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 accept_draft / revise_more / cancel（当前 "${input.decision}"）`,
+  );
+}
+
+/**
+ * 共享 HITL 决策：revision_stalled。
+ * 回答记录本轮 gateRound（planner 据此判断「本轮已回答」；下一轮 gate 不复用旧回答）。
+ */
+async function applyStalledDecision(
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  const gate = state.stageResults["quality.gate"] ?? {};
+  const gateRound = typeof gate["round"] === "number" ? gate["round"] : 0;
+  if (input.decision === "accept_draft") {
+    state.stageResults["hitl.revision_stalled"] = { decision: "accept_draft", gateRound };
+    return;
+  }
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision === "revise_more") {
+    const manual = state.counters?.["revision.manual_rounds"] ?? 0;
+    if (manual >= MAX_MANUAL_REVISION_ROUNDS) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        `人工追加修订已达上限（${MAX_MANUAL_REVISION_ROUNDS} 轮），请 accept_draft 或 cancel`,
+      );
+    }
+    state.counters = { ...state.counters, "revision.manual_rounds": manual + 1 };
+    state.stageResults["hitl.revision_stalled"] = { decision: "revise_more", gateRound };
     return;
   }
   throw new WorkflowInvalidStateError(
@@ -669,10 +1115,13 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
       await services.manuscript.saveOutline(ctx.projectId, outline);
       await services.manuscript.writeBibliography(ctx.projectId, artifact.bibliography);
       await services.manuscript.writeMainTex(ctx.projectId, outline, artifact.bibliography.length > 0);
+      // 大纲骨架也是 manuscript 状态：提交修订（后续 gate/build 对齐基准）
+      const revision = await services.revisions.commit(ctx.projectId, "outline.plan", ctx.runId);
       return {
         sections: outline.sections.length,
         title: outline.title,
         references: artifact.bibliography.length,
+        revision: revision.revision,
       };
     },
     async verifyDod(ctx) {
@@ -770,7 +1219,9 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       await services.manuscript.rebuildContext(ctx.projectId, {
         evidenceStats: await services.evidence.stats(ctx.projectId),
       });
-      return { sectionsWritten: written.length, sections: written, bytesTotal };
+      // 初稿完成：提交首个内容修订
+      const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
+      return { sectionsWritten: written.length, sections: written, bytesTotal, revision: revision.revision };
     },
     async verifyDod(ctx) {
       const violations: string[] = [];
@@ -803,9 +1254,13 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     citationVerifyStage(services),
     reviewRunStage(services),
     qualityGateStage(services),
+    revisionPlanStage(services),
     revisionReviseStage(services, "revision.revise"),
+    revisionRepairStage(services),
     revisionOverflowStage(),
+    revisionStalledStage(services),
     buildDraftStage(services),
+    buildFinalStage(services),
   ];
 
   const front = [
@@ -838,6 +1293,8 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
           return applyOutlineDecision(state, input);
         case "hitl.revision_overflow":
           return applyOverflowDecision(state, input);
+        case "hitl.revision_stalled":
+          return applyStalledDecision(state, input);
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }
@@ -1017,9 +1474,13 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     planConfirmStage(services),
     revisionReviseStage(services, "revision.apply"),
     revisionReviseStage(services, "revision.revise"),
+    revisionPlanStage(services),
+    revisionRepairStage(services),
     revisionOverflowStage(),
+    revisionStalledStage(services),
     buildDraftStage(services),
     qualityGateStage(services),
+    buildFinalStage(services),
   ];
 
   const front = [
@@ -1053,6 +1514,8 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
           return applyPlanDecision(state, input);
         case "hitl.revision_overflow":
           return applyOverflowDecision(state, input);
+        case "hitl.revision_stalled":
+          return applyStalledDecision(state, input);
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }
@@ -1644,6 +2107,46 @@ export interface RevisionTarget {
   currentLatex: string;
 }
 
+/** shared loop：以落盘的确定性修订计划为准（计划缺失时回退执行期派生） */
+async function collectPlanDirectives(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<RevisionDirective[]> {
+  const summary = await latestReviewSummary(services, projectId);
+  if (summary === null) {
+    return [];
+  }
+  const plan = await services.reviewArtifacts.loadPlan(projectId, summary.round);
+  if (plan === null) {
+    // 旧 run resume / 计划文件缺失：回退到执行期派生（语义等价，仅少了落盘计划）
+    return collectRevisionDirectives(services, projectId, "revision.revise");
+  }
+  const directives: RevisionDirective[] = [];
+  for (const item of plan.items) {
+    if (item.status !== "planned") {
+      continue; // minor / gate 阻止项：记录但不派发（D-0026 收敛纪律）
+    }
+    const issue = revisionPlanItemToIssue(item);
+    directives.push({
+      match: (target: RevisionTarget) => (sectionMatches(item.section, target) ? issue : null),
+    });
+  }
+  return directives;
+}
+
+/** 修订计划条目 → ReviewIssue（Writer 修订 prompt 的输入形态） */
+function revisionPlanItemToIssue(item: RevisionPlanItem): ReviewIssue {
+  const severity = item.priority === "high" ? "critical" : item.priority === "low" ? "minor" : "major";
+  return {
+    category: item.kind === "citation_missing" ? "citation" : "academic",
+    severity,
+    section: item.section,
+    description: `${item.problem}（计划要求：${item.instruction}）`,
+    suggestedAction: item.instruction,
+    blocking: item.priority === "high",
+  };
+}
+
 /** shared loop：最新 review 汇总的问题 + 引用核验问题；apply：改进计划条目 */
 async function collectRevisionDirectives(
   services: WorkflowServices,
@@ -1674,29 +2177,84 @@ async function collectRevisionDirectives(
     });
   }
   // 引用核验问题也进入修订指令：Writer 移除 / 修正无法支撑的引用（不允许新造文献）
-  const citation = await services.citation.latestReport(projectId);
-  if (citation !== null && citation.static.missingKeys.length > 0) {
-    const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
-    for (const key of citation.static.missingKeys) {
-      const issue: ReviewIssue = {
-        category: "citation",
-        severity: "critical",
-        section: "(unknown)",
-        description: `引用 \\cite{${key}} 在 references.bib 中不存在：删除该引用，或改为只基于现有文献的表述`,
-        suggestedAction: "删除或修正引用",
-        blocking: true,
-      };
-      for (const file of files.allTex) {
-        if (extractCitationKeys(file.relativePath, file.content).keys.includes(key)) {
-          directives.push({
-            match: (target: RevisionTarget) =>
-              target.relativePath === file.relativePath ? issue : null,
-          });
-        }
-      }
+  for (const missing of await citationMissingTargets(services, projectId)) {
+    const issue: ReviewIssue = {
+      category: "citation",
+      severity: "critical",
+      section: "(unknown)",
+      description: `引用 \\cite{${missing.key}} 在 references.bib 中不存在：删除该引用，或改为只基于现有文献的表述`,
+      suggestedAction: "删除或修正引用",
+      blocking: true,
+    };
+    for (const file of missing.files) {
+      directives.push({
+        match: (target: RevisionTarget) => (target.relativePath === file ? issue : null),
+      });
     }
   }
   return directives;
+}
+
+/** 引用缺失的确定性定位：missing key → 出现该引用的 tex 文件（revision.plan / 修订指令共用） */
+async function citationMissingTargets(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<{ key: string; files: string[] }[]> {
+  const citation = await services.citation.latestReport(projectId);
+  if (citation === null || citation.static.missingKeys.length === 0) {
+    return [];
+  }
+  const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  return citation.static.missingKeys.map((key) => ({
+    key,
+    files: files.allTex
+      .filter((file) => extractCitationKeys(file.relativePath, file.content).keys.includes(key))
+      .map((file) => file.relativePath),
+  }));
+}
+
+/**
+ * 诊断给出的章节文件（TeX 日志解析结果，不可信输入）→ 受控 manuscript 内
+ * 绝对路径。防 path traversal：resolve 后必须仍在 manuscript 目录内，且只接受 .tex。
+ */
+function safeManuscriptFile(
+  services: WorkflowServices,
+  projectId: string,
+  relativeFile: string,
+): string | null {
+  const manuscriptDir = services.projects.manuscriptDir(projectId);
+  const normalized = relativeFile.replaceAll("\\", "/").replace(/^\.\//, "");
+  if (!normalized.endsWith(".tex")) {
+    return null;
+  }
+  const absolute = resolve(manuscriptDir, normalized);
+  if (!(absolute + sep).startsWith(manuscriptDir + sep)) {
+    return null;
+  }
+  return absolute;
+}
+
+/** 修复目标：诊断定位到的文件（去重、按首个诊断排序、≤ 3 个） */
+function repairTargetFiles(
+  services: WorkflowServices,
+  projectId: string,
+  diagnostics: LatexDiagnostic[],
+): string[] {
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.file === null) {
+      continue;
+    }
+    if (safeManuscriptFile(services, projectId, diagnostic.file) === null) {
+      continue;
+    }
+    if (!seen.has(diagnostic.file)) {
+      seen.add(diagnostic.file);
+      files.push(diagnostic.file);
+    }
+  }
+  return files.slice(0, 3);
 }
 
 function planItemToIssue(item: {
