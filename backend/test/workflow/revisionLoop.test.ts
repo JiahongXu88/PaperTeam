@@ -174,6 +174,29 @@ describe("bounded revision loop（idea_to_paper）", () => {
     expect(finished.completion?.label).toBe("draft");
   });
 
+  it("REGRESSION → stalled HITL → accept_draft：预算尚余也尊重用户回答，不再自动修订", async () => {
+    const stack = await newStack({ reviewSequence: ["fail2", "fail"] });
+    const project = await stack.store.create("退化接受草稿测试");
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
+    const runId = created.body["runId"] as string;
+
+    await approveTwice(stack, runId);
+    const stalled = await pollRun(stack, runId, ["awaiting_input"]);
+    expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
+    expect(stalled.awaiting?.payload?.["outcome"]).toBe("REGRESSION");
+
+    // 修订预算还剩 1 轮，但用户已明确接受为草稿：直接收尾为 Draft
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
+    const finished = await pollRun(stack, runId, ["completed"]);
+    expect(finished.completion?.label).toBe("draft");
+    expect(finished.completion?.summary?.["qualityGatePassed"]).toBe(false);
+    expect(finished.completion?.summary?.["buildOk"]).toBe(true);
+    const revisions = finished.stageHistory.filter(
+      (record) => record.stageId === "revision.revise" && record.status === "completed",
+    );
+    expect(revisions).toHaveLength(1); // 只发生第 1 轮后的自动修订；第 2 轮因 accept 不再修
+  });
+
   it("连续两轮完全相同的 fail → CONVERGED → stalled HITL（不盲目继续）", async () => {
     const stack = await newStack({ reviewSequence: ["fail"] });
     const project = await stack.store.create("不收敛测试");

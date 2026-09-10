@@ -115,6 +115,19 @@ export const REPAIRED_SECTION_TEX = [
   "修复后的表述：已按结构化诊断修正语法，内容与引用保持不变。",
 ].join("\n");
 
+/** Existing-Paper 分章节 Review 输出（SectionReviewService 的 findings 契约） */
+export const SECTION_FINDINGS_JSON = JSON.stringify({
+  findings: [
+    {
+      category: "academic",
+      severity: "minor",
+      page: 1,
+      message: "脚本化审阅发现：论断表述偏强，建议补充限定条件。",
+      suggestion: "弱化表述或补充实验支撑",
+    },
+  ],
+});
+
 /** Existing-Paper 论文理解输出 */
 export const EXISTING_ANALYSIS_JSON = JSON.stringify({
   domainOverview:
@@ -308,6 +321,41 @@ export interface ScriptedRuntimeOptions {
   hangFirstCall?: boolean;
 }
 
+/**
+ * 浏览器级 E2E 的按项目转向（单栈跑多场景用）：标记随 researchIdea 进入
+ * research prompt，由 runAgent 在 scope==="research" 时解析并按 projectId 记忆。
+ *
+ *   [review:fail,fail2,pass]  本项目 review 轮次序列（语法同 PAPERTEAM_TEST_RUNTIME_REVIEW）
+ *   [latex:broken]            introduction.tex 写入未定义命令 → 真实编译失败；
+ *                             修复（writing/repair）输出正常内容 → 修复后编译通过
+ *   [latex:unfixable]         修复 / 修订输出也带未定义命令 → repair loop 耗尽 → Build FAIL
+ *
+ * 未携带标记的项目保持既有行为（env 序列 / 全 pass），后端 vitest 不受影响。
+ */
+const REVIEW_MARKER = /\[review:([a-z0-9,\s]+)\]/;
+const LATEX_MARKER = /\[latex:(broken|unfixable)\]/;
+/** 未定义命令：真实 xelatex 报 "! Undefined control sequence." 并按 l.N 定位行号 */
+export const UNDEFINED_MACRO_TEX = "\\paperTeamUndefinedMacro";
+
+type ReviewOutcomeName = "pass" | "fail" | "fail2" | "fail3";
+type LatexMode = "broken" | "unfixable";
+
+function parseReviewSequence(raw: string): ReviewOutcomeName[] | undefined {
+  const parsed = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry): entry is ReviewOutcomeName =>
+      entry === "pass" || entry === "fail" || entry === "fail2" || entry === "fail3",
+    );
+  return parsed.length > 0 ? parsed : undefined;
+}
+
+/** 当前写作调用是否作用于 introduction（脚本只破坏引言：halt-on-error 一次定位一个文件） */
+function targetsIntroduction(task: string): boolean {
+  // writing/sections 与 writing/repair 的 prompt 携带 introduction.tex；writing/revision 携带「引言」
+  return task.includes("introduction.tex") || task.includes("「引言」");
+}
+
 export interface ScriptedRuntime {
   runtime: ScriptedAgentRuntime;
   calls: { agentId: string; contextScope?: string }[];
@@ -331,6 +379,10 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const reviewSequence = options.reviewSequence ?? reviewSequenceFromEnv() ?? ["pass"];
   let feasibilityIndex = 0;
   let reviewCallIndex = 0; // 每 3 次为一轮
+  // 按项目转向（E2E 标记；见 ScriptedRuntimeOptions 上方说明）
+  const projectReviewSequences = new Map<string, ReviewOutcomeName[]>();
+  const projectReviewCalls = new Map<string, number>();
+  const projectLatexModes = new Map<string, LatexMode>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -346,8 +398,23 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         hangConsumed = true;
       }
       const scope = input.contextScope ?? "";
+      const projectId = input.projectId ?? "";
       let output = LATEX_DOC;
       if (scope === "research") {
+        // research prompt 内嵌 researchIdea：解析 E2E 转向标记并按项目记忆
+        if (projectId !== "") {
+          const reviewMarker = REVIEW_MARKER.exec(input.task);
+          if (reviewMarker !== null) {
+            const sequence = parseReviewSequence(reviewMarker[1] ?? "");
+            if (sequence !== undefined) {
+              projectReviewSequences.set(projectId, sequence);
+            }
+          }
+          const latexMarker = LATEX_MARKER.exec(input.task);
+          if (latexMarker !== null) {
+            projectLatexModes.set(projectId, latexMarker[1] as LatexMode);
+          }
+        }
         output = RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
         output = EXISTING_ANALYSIS_JSON;
@@ -359,17 +426,37 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "writing/outline") {
         output = OUTLINE_JSON;
       } else if (scope === "writing/sections") {
-        output = SECTION_TEX;
+        output =
+          projectLatexModes.get(projectId) !== undefined && targetsIntroduction(input.task)
+            ? `${SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
+            : SECTION_TEX;
       } else if (scope === "writing/revision") {
-        output = REVISED_SECTION_TEX;
+        output =
+          projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
+            ? `${REVISED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
+            : REVISED_SECTION_TEX;
       } else if (scope === "writing/repair") {
-        output = REPAIRED_SECTION_TEX;
+        output =
+          projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
+            ? `${REPAIRED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
+            : REPAIRED_SECTION_TEX;
       } else if (scope === "writing/improvement-plan") {
         output = IMPROVEMENT_PLAN_JSON;
+      } else if (scope.startsWith("review/section/")) {
+        // 快速 Review 的分章节审阅（M4.7 只读红线 E2E：合法 findings，产出零 PDF）
+        output = SECTION_FINDINGS_JSON;
       } else if (scope.startsWith("review/")) {
+        // 轮次计数按项目隔离（E2E 单栈多项目互不串台；无 projectId 时退回全局计数）
+        if (projectId !== "") {
+          reviewCallIndex = projectReviewCalls.get(projectId) ?? 0;
+        }
         const round = Math.floor(reviewCallIndex / 3);
         reviewCallIndex += 1;
-        const outcome = reviewSequence[Math.min(round, reviewSequence.length - 1)] ?? "pass";
+        if (projectId !== "") {
+          projectReviewCalls.set(projectId, reviewCallIndex);
+        }
+        const sequence = projectReviewSequences.get(projectId) ?? reviewSequence;
+        const outcome = sequence[Math.min(round, sequence.length - 1)] ?? "pass";
         const pack =
           outcome === "pass"
             ? REVIEW_PASS

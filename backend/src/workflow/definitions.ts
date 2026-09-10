@@ -604,12 +604,14 @@ function revisionReviseStage(
         if (issues.length === 0 && buildError === undefined) {
           continue; // 无问题的章节不动（不烧 Token）
         }
+        // 章节人类标题（大纲 id → title；缺大纲时回退 id）：修订 prompt 以标题称呼章节
+        const sectionMeta = outline?.sections.find((section) => section.id === target.key);
         const result = await services.writer.reviseSection({
           projectId: ctx.projectId,
           section: {
             id: target.key,
             file: target.relativePath.replaceAll("\\", "/").split("/").pop() ?? target.key,
-            title: target.key,
+            title: sectionMeta?.title ?? target.key,
           },
           outline: outline ?? { title: project.title, sections: [] },
           currentLatex: target.currentLatex,
@@ -893,6 +895,11 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     return { kind: "stage", stageId: "hitl.revision_stalled" };
   }
   if (roundsLeft) {
+    // stalled 已回答 accept_draft：用户明确接受当前稿为 Draft——即使本轮计划仍
+    // 可派发也不再自动修订（回答只对本轮 gate 有效；下一轮 gate 重新判定）
+    if (stalledAnswered && stalledDecision === "accept_draft") {
+      return draftPath();
+    }
     // 先确保有针对本轮 gate 的确定性计划（计划新鲜 = 晚于本轮 gate 且轮次一致）
     const planResult = state.stageResults["revision.plan"] ?? {};
     const planFresh =
