@@ -209,8 +209,14 @@ export function parseModeReview(
 
 function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIssue[] {
   const raw = parsed["issues"];
+  if (raw === undefined || raw === null) {
+    // 真实模型偶发省略 issues 字段（如学术维度给了评分但无逐条发现）——
+    // 按「无发现」处理，不作废整轮昂贵审稿；字段存在但不是数组仍是结构
+    // 错误（拒绝，不猜）。2026-09-10 真实 Improvement smoke 曾因此 2/2 失败。
+    return [];
+  }
   if (!Array.isArray(raw)) {
-    throw new AgentRunFailedError(`${context}：缺少 issues 数组`);
+    throw new AgentRunFailedError(`${context}：issues 不是数组`);
   }
   const issues: ReviewIssue[] = [];
   for (const item of raw.slice(0, 100)) {

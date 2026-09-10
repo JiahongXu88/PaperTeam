@@ -69,6 +69,16 @@ describe("parseModeReview（结构化校验）", () => {
 
   it("academic：缺 scores 拒绝；overallScore 可从维度平均补全", () => {
     expect(() => parseModeReview("academic", { summary: "x", issues: [] })).toThrow(AgentRunFailedError);
+    // M4.8 真实 smoke 回归：issues 字段省略 / null = 无发现（不作废整轮审稿）；
+    // 存在但非数组仍拒绝（不猜）
+    const omitted = parseModeReview("academic", {
+      summary: "结构完整，无逐条发现。",
+      scores: { 论证逻辑: 84 },
+    });
+    expect(omitted.issues).toEqual([]);
+    expect(() =>
+      parseModeReview("academic", { summary: "x", issues: "见上文", scores: { a: 80 } }),
+    ).toThrow(AgentRunFailedError);
     const noOverall = parseModeReview("academic", {
       summary: "x",
       scores: { a: 80, b: 90 },
