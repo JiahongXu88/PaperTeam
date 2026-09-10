@@ -208,6 +208,29 @@
 >   `accept_draft / revise_more / cancel`；`accept_draft` 为用户知情接受
 >   （buildOk=false 时如实记录无 PDF）。
 
+### 1.2f M4.8 已消费 ✅（版本体验：历史 / 比较 / 恢复）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/versions` | 版本历史 → `{current, versions: ManuscriptVersionView[]}`（最新在前）。每条携带 revision / createdAt / source / restoredFrom? / isCurrent / isFinal / hasDraft / review / qualityGate / build / artifacts / revisionPlan / iteration——**修订与 review / gate / 产物的关联只由后端组装**（对齐口径与 FinalizeService 一致），前端不拼装猜测 | VersionHistoryCard（版本时间线） |
+| `GET /api/projects/:id/versions/compare?from=N&to=M` | 两修订**确定性比较（零 LLM）**：快照逐文件内容对比（modified / unchanged / added / removed）+ 行级增删规模（LCS，超界退化为行数差）+ 两端 review / gate 记分对照 → `{from, to, sections, summary, reviewDelta}`。from/to 必须是修订编号且互异（400）；任一不存在 → 404 | VersionHistoryCard（版本比较） |
+| `POST /api/projects/:id/revisions/:revision/restore` | **恢复历史修订 = 创建新的不可变修订**：后端把 rev{n} 快照复制回工作树并以 `source=revision.restore` + `restoredFrom={n}` 提交新修订；历史修订与旧 Final 产物永不改动，旧 review / gate / build 结论因修订前进自然 stale → `{revision, created, restoredFrom, current}`。活跃 run 期间 → 409 PROJECT_BUSY；修订不存在 → 404；内容与当前一致 → `created=false`（幂等事实，不虚增修订） | VersionHistoryCard「恢复此版本」（行内确认） |
+
+> 2026-09-10 M4.8 语义约定：
+> - **版本是论文修订，不是 Git**：用户可见词汇为 修订 / 审阅轮次 / Draft /
+>   Final / 质量状态；`source` 为稳定业务动作标识（baseline / outline.plan /
+>   writing.sections / review.snapshot / revision.revise / revision.apply /
+>   revision.repair_latex / revision.restore），中文标签在前端注册表。
+> - **恢复永远不覆盖历史**：恢复 rev2 产生新修订 rev{n+1}，revisions.json
+>   只追加；恢复后需重新构建 + 重新审稿才能再次 Final（Finalize 以对齐
+>   修订校验，拒绝偷用旧结论）。
+> - **列表性能**：versions 只读登记表 / 轮次清单等元数据；快照内容只在
+>   compare 与 restore 内部读取。
+> - **Existing Paper Improvement 的浏览器可达性**（同一里程碑收口）：
+>   PDF 导入（goal=improvement）项目在 `import.parse` 无 main.tex 时由
+>   `PaperReconstructor` 确定性重建可修订稿件（outline / sections / bib /
+>   组装根；文本级，不含原图）；改进计划 prompt 携带真实章节文件清单。
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |

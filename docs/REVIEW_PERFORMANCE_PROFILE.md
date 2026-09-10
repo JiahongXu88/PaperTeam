@@ -175,12 +175,12 @@ findings 156 条按论文顺序、journal 33 文件。
 ## 9. 复现方式
 
 ```bash
-# 并发 A/B（前 12 节，1/2/3/4 四档；结果写 D:/Tmp/pt-benchmark/<ts>/）
+# 并发 A/B（前 12 节，1/2/3/4 四档；结果写本地临时目录 pt-benchmark/<ts>/）
 node scripts/benchmark-review.mjs --levels 1,2,3,4 --limit 12
 # 全量 33 节单档验证（冷启动端到端）
 node scripts/benchmark-review.mjs --full --concurrency 3
 # 手动单跑（全新 workspace）
 PROJECTS_ROOT=<empty-dir> PAPERTEAM_PORT=3210 PAPERTEAM_REVIEW_CONCURRENCY=3 node backend/dist/index.js
-# → POST /api/projects/import-pdf（D:\Tmp\paper.pdf）→ POST workflows kind=existing_paper_review
+# → POST /api/projects/import-pdf（<本地论文 PDF 路径>）→ POST workflows kind=existing_paper_review
 # → 完成后读 workflow/runs/<runId>/checkpoint.json 的 stageHistory + stageResults telemetry
 ```

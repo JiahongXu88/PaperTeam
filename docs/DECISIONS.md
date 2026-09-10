@@ -282,7 +282,7 @@ Reviewer / Citation）是否需要在 OpenClaw 注册四个独立 agent——此
    启动。OpenClaw 版本精确 pin 在根 package.json（当前 2026.9.1，与
    `@openclaw/gateway-client` / `gateway-protocol` 同版本，protocol v4），以项目本地
    npm 安装获取，不 vendoring 源码、不依赖全局安装、不依赖任何 OpenClaw 源码
-   checkout（如 `D:\Projects\openclaw`）。
+   checkout（本地任意目录）。
 3. **模型凭据边界**：Bootstrap 绝不搬运或复用任何其他项目的凭据；Gateway 无凭据
    也能健康启动，模型未配置由 `GET /api/runtime/status` 如实上报
    （`runtime.phase = model_not_configured`），不阻塞 dev 启动。用户为 PaperTeam
@@ -493,3 +493,63 @@ ARCHITECTURE（Outer Review Loop 章节）与 PROJECT_STATUS（下一阶段规�
 决策对齐；版本与可观测性（每轮 revision / review / scorecard / findings /
 revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展示列入下一
 阶段规划。
+
+## D-0027 版本恢复（Restore）= 创建新的不可变修订，绝不改写历史
+
+- **状态**：accepted（2026-09-10，M4.8 实现）
+- **背景**：M4.7 建立了 manuscript 不可变修订链（ManuscriptRevisionStore，内容哈希
+  幂等）与 Draft / Final 产物闭环；M4.8 补版本体验时需要「回到历史版本」的能力。
+  常见做法是回滚（删除后续修订 / 把旧内容标记为 current），但这会破坏
+  「review / gate / artifact 按 revision 对齐」的整套事实体系。
+- **决策**：`POST /api/projects/:id/revisions/:n/restore` 把 rev{n} 快照复制回
+  工作树，随后以 `source=revision.restore` + `restoredFrom={n}` 走正常 commit
+  流程产生**新的**修订号。历史修订登记与快照、旧 Draft / Final 产物永不改动；
+  旧 review / gate / build 结论因修订前进自然 stale，恢复后的版本必须重新
+  构建 + 重新审稿才能再次 Final（Finalize 对齐校验天然拒绝偷用旧结论）。
+  内容与当前一致时返回 `created=false`（幂等事实，不虚增修订）。
+- **理由**：版本对齐（reviewedRevision / build.revision / artifact.revision）是
+  M4.7 全部 stale 防护的基础；任何「覆盖式回滚」都会让历史结论失去可信锚点。
+  追加式恢复让「恢复过什么」本身成为可审计的历史事实。
+- **影响**：VersionService.restore / RevisionStore.restore；版本历史 UI 的
+  「恢复此版本」确认文案（「创建新的当前修订，现有版本历史不会被删除」）；
+  e2e version.spec C/D。
+
+## D-0028 Existing Paper Improvement 的 PDF 输入经确定性重建进入改进闭环（不引入新 Agent）
+
+- **状态**：accepted（2026-09-10，M4.8 实现）
+- **背景**：PDF 导入 + goal=improvement 的项目此前在 `import.parse` 处必失败
+  （缺 main.tex），且改进工作流没有任何浏览器入口——「系统性改进」对 PDF
+  用户是死路。两条可选路径：(a) 新增「PDF 理解 Agent」把论文改写为 LaTeX；
+  (b) 确定性代码把已解析的 PaperDocument 重建为可修订稿件。
+- **决策**：采用 (b)。`PaperReconstructor`（零 LLM）从 PaperDocument 重建
+  outline / sections/secNN.tex / references.bib / 组装根：正文与摘要经 LaTeX
+  特殊字符转义，`[n]` 引用标记按提取器 relations 映射为 `\cite{refN}`，子章节
+  合并以满足大纲上限。改进计划 prompt 携带真实章节文件清单（此前的「section
+  必须是现有章节文件之一」在无清单时无法执行）。前端 Review tab 提供改进入口。
+  **如实边界**：重建是文本级的（不含原图 / 原版式，公式以转义文本呈现），
+  UI 文案与 Known Limitations 明示。
+- **理由**：重建是结构搬运不是内容生成——LLM 参与只会引入改写风险与成本；
+  Writer 的逐节修订本就是改进闭环的内容工作。确定性重建可从 checkpoint 幂等
+  重放（import.parse 结果可复现）。
+- **影响**：import.parse 阶段内嵌重建（结果携带 reconstructedFromPdf 事实）；
+  PaperDocument 新增解析器摘要持久化；e2e improvement.spec 全链路与真实模型
+  smoke 走同一条代码路径。
+
+## D-0029 摘要（abstract）是一等修订目标：载体 outline.abstract，禁止路由到组装根 main.tex
+
+- **状态**：accepted（2026-09-10，M4.8 实现；取代 M4.7 的「留在计划不派发」过渡处理）
+- **背景**：M4.7 真实 smoke 暴露 Reviewer 把摘要类 finding 归到
+  `main.tex（摘要）`，`sectionMatches` 的 `ref.includes(stem)` 把它路由到组装根
+  → Writer 收到 `\documentclass` 全文 → DoD 拒绝。M4.7 的修复是「组装根绝不
+  作为修订目标，该 finding 留在计划里」——防住了失败，但摘要问题永远修不了。
+- **决策**：摘要类 section 引用（摘要 / abstract / main.tex（摘要））只路由到
+  摘要修订目标；目标的独立可写载体是 `outline.abstract`（修订写回 outline.json，
+  `writeMainTex` 重组时生效），写入路径绝不指向 main.tex。digest 有大纲时单列
+  `[abstract]` 块（组装根只留结构说明），Reviewer prompt 明确摘要归 "abstract"。
+  Writer 摘要修订输出纯文本（结构化校验拒绝 LaTeX 结构）。
+- **理由**：组装根是确定性产物（含摘要的渲染位），把它当 Writer 目标必然产生
+  「整篇骨架当章节输出」的 DoD 失败；摘要需要的是稳定 identity + 独立载体，
+  而不是更宽松的模糊匹配。
+- **影响**：definitions.ts（digest / sectionMatches / listRevisionTargets /
+  revise 写回）、WriterService（摘要修订 prompt 与校验）、revisionLoop 回归
+  测试（main.tex（摘要）/ 摘要 两种归属写法）。

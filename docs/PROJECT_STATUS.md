@@ -1,13 +1,76 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-10（M4.7 Draft / Final + Writer–Reviewer Closure：产物
-> 闭环 + 有界修订闭环；同日 M4.6 Evidence Workbench；2026-09-09：M4.5 HITL
-> UI / Citation Semantic Hardening / M4.4 Workflow Live View；2026-09-08 Review
-> 并发优化见历史）
+> 更新日期：2026-09-10（**M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
+> M4.7 Draft/Final + Writer–Reviewer Closure；M4.6 Evidence Workbench；
+> 2026-09-09：M4.5 HITL UI / M4.4 Workflow Live View；更早见历史）
 
 ## 当前阶段
 
-**M4.7 — Draft / Final + Writer–Reviewer Closure（✅ 完成，2026-09-10）**：
+**M4 — MVP Complete（✅，2026-09-10，v0.1.0-mvp）**：M4.8 Product Closure +
+Version Experience + Public Repository Readiness 收口后，M4 全部完成。定位
+**MVP / Alpha**（非 Production Stable）。下一阶段为 M5（Optional / Future，
+未开始）：Visual Reviewer、Skill install/update、Deployment、System Admin。
+
+**M4.8 — Product Closure + Version Experience + Public Repository Readiness
+（✅ 完成，2026-09-10）**：
+**M4.8 — Product Closure + Version Experience + Public Repository Readiness
+（✅ 完成，2026-09-10）**：
+M4 收口三件事——(A) **版本体验**：版本历史 / 确定性比较 / 不可变恢复；
+(B) **产品闭环**：Existing Paper Improvement 浏览器全链路可达（PDF 确定性
+重建 + 改进入口）+ 摘要成为一等修订目标（治本 M4.7 遗留）；(C) **公开仓库
+收口**：README / 架构图 / 截图 / Quick Start / Known Limitations / Release。
+
+- **版本域（后端权威）**：`VersionService` 把修订链（`ManuscriptRevisionStore`）
+  与 review / gate / build / artifact / iteration / plan 关联成
+  `ManuscriptVersionDTO`（对齐口径与 FinalizeService 一致；前端拿到即展示、
+  绝不拼装猜测）。HTTP：`GET /versions`、`GET /versions/compare?from=&to=`、
+  `POST /revisions/:n/restore`（活跃 run 409）。
+- **确定性 Compare（零 LLM，D-0028 相关纪律）**：两修订快照逐文件内容对比
+  （modified / unchanged / added / removed）+ LCS 行级增删规模（超界退化为
+  行数差）+ 两端 review / gate 记分对照；章节标题取自该修订快照内的大纲。
+- **Restore = 新修订（D-0027）**：把 rev{n} 快照复制回工作树，以
+  `source=revision.restore` + `restoredFrom={n}` 走正常 commit 流程产生新修订；
+  历史登记与快照、旧 Draft / Final 产物永不改动；旧 review / gate / build
+  结论因修订前进自然 stale（Finalize 对齐校验拒绝偷用旧结论）；内容与当前
+  一致时 `created=false`（幂等事实）。
+- **版本 UI（论文产出 tab 内，无新一级导航）**：版本时间线（修订号 / 当前
+  版本 / Final / Draft / 恢复来源 / 审稿轮次 / 门禁结论 / 迭代 outcome /
+  计划计数）+ 比较（双下拉 + 章节状态表 + 记分对照）+「恢复此版本」行内
+  确认（文案如实：创建新修订、历史不删除、旧门禁过期需复审）。Final 后
+  继续修订的语义：Final 卡明确「最终版本 修订 N 的 Final / 当前工作版本
+  修订 M 尚未 Final」双事实；两份 Final 可并存为历史。
+- **摘要治本（D-0029）**：digest 有大纲时单列 `[abstract]` 块（组装根只留
+  结构说明）；摘要类 section 引用（摘要 / abstract / main.tex（摘要））只
+  路由到摘要目标——载体 `outline.abstract`（修订写回 outline.json，
+  writeMainTex 重组生效），绝不落入组装根；Writer 摘要修订输出纯文本
+  （结构校验拒绝 LaTeX 结构）。
+- **Improvement 浏览器闭环（D-0028）**：PDF 导入（goal=improvement）项目在
+  `import.parse` 无 main.tex 时由 `PaperReconstructor` 确定性重建（零 LLM）：
+  outline / sections/secNN.tex / references.bib / 组装根；LaTeX 特殊字符
+  转义、`[n]` 标记按提取器 relations 映射 `\cite{refN}`、子章节合并 ≤20；
+  **如实边界：文本级重建，不含原图 / 原版式**。改进计划 prompt 携带真实
+  章节文件清单（此前「必须是现有章节文件之一」无清单无法执行）。Review
+  tab 新增「开始系统性改进」入口（此前该路径从浏览器不可达）。
+- **测试**：Backend 566 passed（新增 版本域 7 / 重建与 Improvement 全链路 3 /
+  摘要路由 2 / 版本域重启恢复 1）+ Frontend 161（新增 VersionHistory 5）；
+  build / typecheck 双侧干净。
+- **E2E**：`e2e/tests/version.spec.ts`（A–F + V，7 例：历史展示 / 比较 /
+  恢复新修订与历史不变（API 权威核验）/ 恢复后 Finalize 409 如实拒绝 /
+  Final 后继续修订双事实 / 重新过 Gate 两份 Final 并存 / Light-Dark 视觉）；
+  `e2e/tests/improvement.spec.ts`（I + V，2 例：浏览器全链路 PDF 导入 UI →
+  改进入口 → 重建 → 计划 HITL 面板确认 → 修订 → 真实 latexmk 构建 →
+  Draft → 复审 → Gate → Final → 查看 / 下载；视觉 + 1100px 无溢出）。
+  既有套件复验零回归（hitl 7 / evidence-gate 7 / paper-artifacts 10 全绿）。
+- **重启恢复**：`versionRestart` 集成测试——同一 projects 根两栈先后运行，
+  awaiting HITL 跨进程恢复（recoverInterruptedRuns 同 index.ts 入口）、
+  resume 推进到 Final、版本 / 计划 / 迭代 / 产物清单跨栈一致、重启后
+  restore 语义不变。
+- **公开仓库收口**：README 重写（30 秒理解定位 / 核心能力 / Mermaid 架构与
+  产品流程图 / 截图 / Quick Start / Known Limitations 真实清单 / M4 MVP
+  定位）；ARCHITECTURE / API_CONTRACT（§1.2f）/ DECISIONS（D-0027~D-0029）
+  同步；secret / 私密数据 / 绝对路径扫描清洁；`v0.1.0-mvp` tag +
+  Release Notes（docs/RELEASE_NOTES_M4.md）。
+
 两个闭环落地——(A) **Draft / Final 产物闭环**：Build Gate 产出真实 PDF、
 Draft 即时冻结、Final 双 Gate 校验后冻结、产物不可变可下载；(B) **Writer–
 Reviewer 修订闭环**：审稿意见 → 确定性修订计划 → Writer 逐节修订 → 强制
@@ -204,8 +267,7 @@ SSE 事件与 replay 齐备）；本轮新增的是前端决策面板与 scripte
   Dark、取消确认 Dark）人工 review——与现有 Panel / Chip / Note / Btn 语言
   一致，warning 强调（非 danger），无临时后台感。
 
-**下一阶段：M4.7 Draft / Final + Writer–Reviewer Closure**——已完成（见顶部
-M4.7 章节）；其后 M4.8（生产部署形态 / 静态资源托管决策）。
+**M4.7 已完成（见顶部章节）；M4.8 见顶部章节；M4 已 COMPLETE。**
 
 ---
 
@@ -360,7 +422,12 @@ benchmark：review.sections 2.81×、run 总时长 2.61×，详见
 确立下一阶段核心架构方向——Iterative Writer–Reviewer Outer Review Loop
 （[D-0026](DECISIONS.md)，见下节规划）。
 
-## 下一阶段规划 — M4.9 Iterative Review Loop / Review Quality Optimization（planned，未实现）
+## M4.9 Iterative Review Loop / Review Quality Optimization（✅ 已由 M4.7 实现，本节保留为当时的规划记录）
+
+> **2026-09-10 注**：本节 2026-09-08 冻结的规划（score-driven loop / scorecard
+> 一等化 / revision-plan-driven Writer / 强制复审 / 收敛终止 / 并发增强 /
+> iteration history）已由 **M4.7 全部实现**（D-0026；见顶部 M4.7 章节），
+> 下列「PLANNED」标注为历史记录。
 
 > 2026-09-08 文档轮确立（DECISIONS D-0026、PRD §9.5、ARCHITECTURE §13）。
 > **本节为规划，尚未实现**；里程碑编号在既有 M4.4-M4.8 前端页面预留号
@@ -635,7 +702,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **当前：Backend 514（+7 个默认跳过的 live smoke）+ Frontend 141 + 浏览器级 E2E 36（Playwright，`e2e/`，需运行中的 dev 栈；模型门控用例在模型未配置时自动跳过；HITL 套件 7 例需 `PAPERTEAM_TEST_RUNTIME=scripted` + `PAPERTEAM_E2E_HITL=1`、Evidence/门禁套件 7 例需 `PAPERTEAM_E2E_EVIDENCE_GATE=1`（scripted 栈 + `PAPERTEAM_TEST_RUNTIME_REVIEW=fail,pass` 驱动两轮 gate），其它环境自动跳过；M4.6 复验：smoke 7 + workflow 4+1skip + hitl 7 + evidence-gate 7 + visual 10 全部通过）全部通过（2026-09-10，M4.6）。**
+- **当前（2026-09-10，M4.8）：Backend 566 passed（+7 个默认跳过的 live smoke）+ Frontend 161 + 浏览器级 E2E（Playwright，`e2e/`，需运行中的 dev 栈）**：默认栈 smoke 7 / visual 全通过；无模型栈 workflow 4+1skip（D 模型未配置失败路径 + E 模型门控）；scripted 栈 hitl 7 / evidence-gate 7（需 `PAPERTEAM_TEST_RUNTIME_REVIEW=fail,pass` 驱动两轮 gate）/ paper-artifacts 10（本机真实 MiKTeX）/ **version 7（M4.8，`PAPERTEAM_E2E_VERSION=1`）/ improvement 2（M4.8，`PAPERTEAM_E2E_IMPROVEMENT=1`）全部通过**。
 - 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。

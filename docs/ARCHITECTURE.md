@@ -1,13 +1,15 @@
 # PaperTeam 系统架构
 
 > 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0026）整理。
-> **M1 ~ M3.8（Backend：Workflow / Evidence / Review / Pi Runtime）与 M4.0-M4.2（React Web
-> Workbench）已实现**；Pi SDK 为唯一正式 Agent Runtime（in-process），AgentRuntime 契约 v2。
-> 实现进度与测试 / 环境验证缺口以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；
-> 前端 M4.5+ 页面（HITL / Evidence / Review 扩展）、Visual Reviewer、
-> LaTeX repair loop、完整版本管理、Docker 部署为 Planned；
-> **Iterative Writer–Reviewer Outer Review Loop（§13，D-0026）为已接受的架构方向，
-> 增强实现 Planned——当前已实现基线为 M3.2 bounded revision loop（§7）**。
+> **M1 ~ M3.8（Backend：Workflow / Evidence / Review / Pi Runtime）与 M4.0-M4.8
+> （React Web Workbench + HITL / Workflow Live View / Evidence / 质量门禁 /
+> Draft-Final 产物闭环 / 版本体验）已实现**；Pi SDK 为唯一正式 Agent Runtime
+> （in-process），AgentRuntime 契约 v2。实现进度与测试 / 环境验证缺口以
+> [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；Visual Reviewer、Skill
+> install/update、系统管理后台、Docker 部署为 M5+ Planned。
+> **Iterative Writer–Reviewer Outer Review Loop（§13，D-0026）已于 M4.7 实现**
+> （score-driven loop / Revision Plan / 收敛判定 / iteration history），
+> M4.8 补齐版本体验（历史 / 比较 / 不可变恢复）。
 
 ## 1. 总体架构
 
@@ -59,7 +61,7 @@ PaperTeam Backend（backend/）
    ├── Runtime             AgentRuntimeAdapter（唯一 Agent 入口）
    ├── LaTeX               XeLaTeX / latexmk 编译 + Build Gate 判定
    ├── PDF                 编译输出与页面渲染
-   ├── File / Version      文件上传与 Git 版本管理
+   ├── File / Version      文件上传与版本管理（当前实现：ManuscriptRevisionStore 不可变修订快照，非 Git）
    └── Admin               系统管理后台
    │
    ▼
@@ -94,8 +96,12 @@ completion label=`review`，与旧 manuscript review 三路审稿互不复用）
 Skills / Settings（模型设置 + 项目管理）。项目生命周期含 归档 / 恢复 / 永久删除
 （`archivedAt` 独立生命周期字段；删除时释放 Runtime 项目会话
 `releaseProjectSessions`）；工作流实时视图（M4.4：Stage Timeline / SSE 实时 / 取消 /
-分章节进度 / 最近运行，SSE 数据层 `useWorkflowEvents` 页面级订阅）。尚未实现：HITL 等 M4.5+ 前端页面、
-Visual Reviewer、LaTeX repair loop、Git 版本管理体验、Admin 后台、Docker 部署。
+分章节进度 / 最近运行，SSE 数据层 `useWorkflowEvents` 页面级订阅）、HITL 决策面板
+（M4.5）、Evidence 工作台 + 质量门禁面板（M4.6）、Draft/Final 产物闭环 + Writer–
+Reviewer 修订闭环 + bounded LaTeX repair（M4.7）、版本体验（M4.8：版本历史 /
+确定性比较 / 不可变恢复，`ManuscriptRevisionStore` 不可变修订链 + VersionService）。
+论文版本以不可变修订快照实现（非 Git）；尚未实现：Visual Reviewer、Skill
+install/update、Admin 后台、Docker 部署（M5+）。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -625,7 +631,7 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
 `visual.spec.ts` 做 4 视口 × 双主题截图与无溢出 / 深色生效断言。CDP 只是开发 / 测试
 工具，不进入 Backend 产品代码。
 
-### 8.3 双模式目标（PRD；系统管理后台 M4.8+）
+### 8.3 双模式目标（PRD；系统管理后台 M5+）
 
 - **论文工作台**（普通用户）：My Papers（两类项目）、New Project（两类入口）、
   Workflow 实时视图（M4.4 已实现）、HITL 待办（M4.5）、文献与证据（M4.6
@@ -633,7 +639,7 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
   Draft/Final 标记流 M4.7）、PDF 查看（M4.8）。隐藏 session / agentId /
   runId / Runtime 技术细节，只展示业务阶段与 awaiting_input 待办。
 - **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、日志、
-  系统诊断（M4.8+）。
+  系统诊断（M5+）。
 
 实时通信：SSE（WorkflowRun 进度 / Domain Event）；M4.3 起订阅
 `GET /api/runs/:runId/events`（replay + 实时 + 心跳 + seq 去重，契约已审计足够）。
@@ -815,7 +821,7 @@ Quality Gate 的全部规则（9 条基础规则 + Citation Integrity 硬规则�
 判定，评分只是其中两条——blocking issue、unsupported critical claim、
 捏造 / not_found 引用等硬规则不因总分高而豁免。
 
-### 13.3 目标架构（PLANNED）：Iterative Writer–Reviewer Quality Loop
+### 13.3 目标架构（M4.7 已实现）：Iterative Writer–Reviewer Quality Loop
 
 在 13.2 基线之上，把「Quality Gate 失败后的有限 revision」升级为「Reviewer
 结构化评价驱动的迭代质量闭环」：
