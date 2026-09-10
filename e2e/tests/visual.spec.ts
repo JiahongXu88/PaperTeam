@@ -41,6 +41,7 @@ for (const theme of THEMES) {
           ? [
               { name: "project-overview", path: `/projects/${projectId}` },
               { name: "project-pdf", path: `/projects/${projectId}?tab=pdf` },
+              { name: "project-evidence", path: `/projects/${projectId}?tab=evidence` },
               { name: "project-citations", path: `/projects/${projectId}?tab=citations` },
               { name: "project-review", path: `/projects/${projectId}?tab=review` },
               { name: "project-workflow", path: `/projects/${projectId}?tab=workflow` },
