@@ -15,6 +15,8 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import type { QualityGateResult } from "../quality/gates.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
+import type { RevisionPlan } from "./revisionPlan.js";
+import type { IterationRecord } from "./revisionOutcome.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
@@ -26,6 +28,8 @@ export interface QualityGateArtifact {
   gate: QualityGateResult;
   /** 评估时消费的同轮审稿汇总（round 配对由文件结构保证，不跨轮拼装） */
   reviewSummary: ReviewSummary;
+  /** 该轮 review 审阅的 manuscript 修订（M4.7 stale 防护；旧产物缺省） */
+  reviewedRevision?: number;
 }
 
 export class ReviewArtifactStore {
@@ -122,6 +126,9 @@ export class ReviewArtifactStore {
       round,
       gate,
       reviewSummary: reviewSummary as ReviewSummary,
+      ...(typeof record["reviewedRevision"] === "number"
+        ? { reviewedRevision: record["reviewedRevision"] }
+        : {}),
     };
   }
 
@@ -146,6 +153,63 @@ export class ReviewArtifactStore {
       return null;
     }
     return this.readJson<Record<string, unknown>>(projectId, this.existingReviewFileName(latest));
+  }
+
+  // ---- Revision Plan 与迭代历史（M4.7） ----
+
+  planFileName(round: number): string {
+    return `revision-plan-r${round}.json`;
+  }
+
+  async savePlan(projectId: string, plan: RevisionPlan): Promise<string> {
+    const fileName = this.planFileName(plan.reviewRound);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), plan);
+    return `reviews/${fileName}`;
+  }
+
+  /** 读取某一轮的修订计划（无文件 / 结构损坏 → null） */
+  async loadPlan(projectId: string, round: number): Promise<RevisionPlan | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.planFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>)["planId"] !== "string" ||
+      !Array.isArray((parsed as Record<string, unknown>)["items"])
+    ) {
+      return null;
+    }
+    return parsed as RevisionPlan;
+  }
+
+  /** 迭代历史（reviews/iteration-history.json；quality.gate 逐轮追加） */
+  async loadIterations(projectId: string): Promise<IterationRecord[]> {
+    try {
+      const parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), "iteration-history.json"), "utf8"),
+      ) as { iterations?: unknown };
+      return Array.isArray(parsed["iterations"]) ? (parsed["iterations"] as IterationRecord[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async appendIteration(projectId: string, record: IterationRecord): Promise<void> {
+    const iterations = await this.loadIterations(projectId);
+    // 幂等：同一 gateRound 只保留一条（stage 重放不重复追加）
+    const next = iterations.filter((item) => item.gateRound !== record.gateRound);
+    next.push(record);
+    next.sort((a, b) => a.gateRound - b.gateRound);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), "iteration-history.json"), {
+      schemaVersion: 1,
+      iterations: next,
+    });
   }
 
   async exists(projectId: string, fileName: string): Promise<boolean> {

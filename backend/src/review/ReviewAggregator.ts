@@ -14,6 +14,9 @@ import type { FactVerdict, ModeReviewResult, ReviewIssue } from "../agents/Revie
 export interface ReviewSummary {
   generatedAt: string;
   round: number;
+  /** 本轮 review 审阅的 manuscript 修订（M4.7；由 review.run stage 写入。
+   *  旧产物无此字段 → 下游按「未对齐」处理，不盲信） */
+  reviewedRevision?: number;
   issues: ReviewIssue[];
   counts: {
     critical: number;

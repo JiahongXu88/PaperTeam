@@ -227,6 +227,46 @@ export class WriterService {
   }
 
   /**
+   * 修复编译错误（M4.7 bounded repair loop）。
+   * 上下文刻意最小化：只给受影响章节的当前内容 + 结构化编译诊断
+   * （文件 / 行号 / 错误 / 附近行），绝不整篇论文 + 整份日志。
+   * 只允许修语法 / 结构，不允许改变论述内容或引用。
+   */
+  async repairSection(params: {
+    projectId: string;
+    sectionFile: string;
+    currentLatex: string;
+    buildError: string;
+    diagnostics: { file: string | null; line: number | null; message: string; contextLines: string[] }[];
+  }): Promise<{ latex: string; taskId: string }> {
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      task: buildRepairPrompt(params),
+      projectId: params.projectId,
+      contextScope: "writing/repair",
+      metadata: { role: "writer", skill: "repair" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(
+        task.error ?? `章节 ${params.sectionFile} 编译修复任务以 ${task.status} 状态结束`,
+      );
+    }
+    const latex = stripCodeFence(task.output ?? "").trim();
+    if (latex === "") {
+      throw new AgentRunFailedError(`章节 ${params.sectionFile} 修复没有返回内容`);
+    }
+    if (latex.includes("\\documentclass") || latex.includes("\\begin{document}")) {
+      throw new InvalidLatexOutputError(
+        `章节 ${params.sectionFile} 修复返回了完整文档骨架（应为正文片段）`,
+      );
+    }
+    if (!hasBalancedBraces(latex)) {
+      throw new InvalidLatexOutputError(`章节 ${params.sectionFile} 修复后花括号不配对`);
+    }
+    return { latex, taskId: task.taskId };
+  }
+
+  /**
    * Existing-Paper Improvement：依据审稿问题与目标差距生成分节改进计划。
    * 输出为结构化 plan（经校验），不改写正文。
    */
@@ -317,6 +357,37 @@ export interface ImprovementPlanItem {
 
 export interface ImprovementPlan {
   items: ImprovementPlanItem[];
+}
+
+function buildRepairPrompt(params: {
+  sectionFile: string;
+  currentLatex: string;
+  buildError: string;
+  diagnostics: { file: string | null; line: number | null; message: string; contextLines: string[] }[];
+}): string {
+  return [
+    `你是一名 LaTeX 编辑。论文章节文件「${params.sectionFile}」存在编译错误，请修复它。`,
+    "",
+    "输出要求：",
+    "1. 只输出修复后的该章节完整 LaTeX 正文片段；不要文档骨架、不要解释。",
+    "2. 只做让编译通过所需的最小修改（修正语法 / 未定义命令 / 环境配对 / 数学模式）。",
+    "3. 不改变论述内容，不增删 \\cite 引用，不新增宏包或参考文献。",
+    "",
+    "===== 编译错误摘要 =====",
+    params.buildError.slice(0, 500),
+    "",
+    "===== 结构化诊断（文件 / 行号 / 错误 / 附近行）=====",
+    ...(params.diagnostics.length > 0
+      ? params.diagnostics.map(
+          (diagnostic) =>
+            `- ${diagnostic.file ?? "(未定位)"}${diagnostic.line !== null ? `:${diagnostic.line}` : ""} ${diagnostic.message}` +
+            (diagnostic.contextLines.length > 0 ? `（附近：${diagnostic.contextLines.join(" ⏎ ").slice(0, 200)}）` : ""),
+        )
+      : ["（诊断未解析出行号；按错误摘要定位）"]),
+    "",
+    "===== 本章节当前内容 =====",
+    params.currentLatex.slice(0, 12_000),
+  ].join("\n");
 }
 
 function buildRevisePrompt(params: {

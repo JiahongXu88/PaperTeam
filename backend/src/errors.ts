@@ -32,6 +32,9 @@ export type BusinessErrorCode =
   | "EVIDENCE_VALIDATION"
   | "CITATION_VERIFICATION"
   | "QUALITY_GATE_FAILED"
+  | "QUALITY_GATE_STALE"
+  | "BUILD_GATE_FAILED"
+  | "BUILD_GATE_STALE"
   | "IMPORT_VALIDATION"
   | "MODEL_CONFIG_BUSY"
   | "PDF_PARSE_FAILED"
@@ -63,6 +66,9 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   EVIDENCE_VALIDATION: 422,
   CITATION_VERIFICATION: 502,
   QUALITY_GATE_FAILED: 422,
+  QUALITY_GATE_STALE: 409,
+  BUILD_GATE_FAILED: 422,
+  BUILD_GATE_STALE: 409,
   IMPORT_VALIDATION: 422,
   MODEL_CONFIG_BUSY: 409,
   PDF_PARSE_FAILED: 422,
@@ -269,6 +275,25 @@ export class QualityGateFailedError extends BusinessError {
   constructor(reasons: readonly string[]) {
     super("QUALITY_GATE_FAILED", `Quality Gate 未通过：${reasons.join("；")}`);
     this.reasons = reasons;
+  }
+}
+
+/** Gate / Build 产物与当前 manuscript 修订不对齐（Finalize 的 stale 防护；409） */
+export class QualityGateStaleError extends BusinessError {
+  constructor(message: string, detail?: string) {
+    super("QUALITY_GATE_STALE", `Quality Gate 结果已过期：${message}`, detail);
+  }
+}
+
+export class BuildGateFailedError extends BusinessError {
+  constructor(message: string, detail?: string) {
+    super("BUILD_GATE_FAILED", `Build Gate 未通过：${message}`, detail);
+  }
+}
+
+export class BuildGateStaleError extends BusinessError {
+  constructor(message: string, detail?: string) {
+    super("BUILD_GATE_STALE", `构建记录已过期：${message}`, detail);
   }
 }
 
