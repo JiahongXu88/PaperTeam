@@ -108,10 +108,12 @@ export async function startTestStack(
     skills?: { registry: import("../../src/skills/SkillRegistry.js").SkillRegistry; summaries?: import("../../src/skills/SkillSummaryService.js").SkillSummaryService };
     /** Final PDF parser 注入（import-pdf / existing_paper_review 测试用） */
     paperParser?: import("../../src/paper/PdfParser.js").PdfParser;
+    /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
+    root?: string;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
   } = {},
 ): Promise<TestStack> {
-  const root = await mkdtemp(join(tmpdir(), "paperteam-stack-"));
+  const root = options.root ?? (await mkdtemp(join(tmpdir(), "paperteam-stack-")));
   const store = new ProjectStore({ root });
   const latex = new LatexCompiler({
     timeoutMs: 10_000,
@@ -169,7 +171,9 @@ export async function startTestStack(
   const cleanup = async () => {
     await orchestrator.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
-    await rm(root, { recursive: true, force: true });
+    if (options.root === undefined) {
+      await rm(root, { recursive: true, force: true });
+    }
   };
   options.registerCleanup?.(cleanup);
   return {
