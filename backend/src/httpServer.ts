@@ -34,10 +34,12 @@ import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
 import {
   evaluateQualityGate,
-  runBuildGate,
+  runBuildGateForRevision,
+  loadBuildGateRecord,
   saveQualityGateReport,
 } from "./quality/gates.js";
 import { collectLatexFiles } from "./manuscript/LatexFiles.js";
+import { revisionViews } from "./manuscript/RevisionStore.js";
 import { isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
 import {
   CITATION_SEMANTIC_MODES,
@@ -72,6 +74,9 @@ const MAX_PAPER_UPLOAD_BODY_BYTES = Math.ceil((MAX_PAPER_PDF_BYTES * 4) / 3) + U
 
 /** SSE 心跳间隔（毫秒） */
 const SSE_HEARTBEAT_MS = 15_000;
+
+/** GET /build/log 响应的日志上限（字符；只保留尾部——错误通常在末尾） */
+const MAX_BUILD_LOG_RESPONSE_CHARS = 64 * 1024;
 
 export interface BackendHttpServerOptions {
   runtime: AgentRuntime;
@@ -1123,6 +1128,193 @@ async function handleProjectResourceRoutes(
     return false;
   }
 
+  // ---- artifacts / finalize / revisions / iterations / build（M4.7 Draft-Final 闭环）----
+
+  // artifacts：Draft / Final 产物（manifest 解析；下载不接受任何路径参数）
+  if (resource === "artifacts") {
+    if (rest === "") {
+      if (method === "GET") {
+        const artifacts = await stack.artifacts.list(projectId);
+        const latest = await stack.artifacts.latest(projectId);
+        const revision = await stack.revisions.currentRevision(projectId);
+        sendJson(res, 200, {
+          artifacts,
+          latestDraft: latest.draft,
+          latestFinal: latest.final,
+          currentRevision: revision,
+          /** Final 是否对齐当前修订（false = 修订后尚未重新 Finalize） */
+          finalUpToDate: latest.final !== null && latest.final.revision === revision,
+        });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+
+    const itemMatch = /^\/([a-z0-9-]+)$/.exec(rest);
+    if (itemMatch) {
+      if (method === "GET") {
+        sendJson(res, 200, { artifact: await stack.artifacts.get(projectId, itemMatch[1] ?? "") });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+
+    const downloadMatch = /^\/([a-z0-9-]+)\/download$/.exec(rest);
+    if (downloadMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      // 下载只经 manifest 解析（projectId + artifactId → 受控 artifacts/ 路径），
+      // 不接受任何文件系统路径参数（防 path traversal）
+      const artifact = await stack.artifacts.get(projectId, downloadMatch[1] ?? "");
+      const buffer = await readFile(stack.artifacts.filePath(projectId, artifact));
+      res.statusCode = 200;
+      res.setHeader("Content-Type", artifact.file.mimeType);
+      res.setHeader("Content-Length", String(buffer.length));
+      res.setHeader("Cache-Control", "no-store");
+      // 默认 inline：浏览器原生 viewer 新标签页查看；?disposition=attachment 才落盘
+      const asAttachment = url.searchParams.get("disposition") === "attachment";
+      res.setHeader(
+        "Content-Disposition",
+        `${asAttachment ? "attachment" : "inline"}; filename="${artifact.file.name}"`,
+      );
+      res.end(buffer);
+      return true;
+    }
+    return false;
+  }
+
+  // finalize：标记 Final（纯确定性：FinalizeService 双 Gate 对齐校验，零 LLM）
+  if (resource === "finalize" && rest === "") {
+    if (method !== "POST") {
+      sendMethodNotAllowed(res, "POST", method);
+      return true;
+    }
+    // 与 workflow 内的 build.final 互斥：活跃 run 期间拒绝（409）
+    if (orchestrator !== undefined && (await orchestrator.hasActiveRun(projectId))) {
+      throw new ProjectBusyError("项目有进行中的 workflow run，结束后再标记 Final");
+    }
+    const result = await stack.finalize.finalize(projectId);
+    sendJson(res, 200, {
+      final: result.final,
+      draft: result.draft,
+      revision: result.revision,
+      gateRound: result.gateRound,
+    });
+    return true;
+  }
+
+  // revisions：manuscript 修订事实（Authoritative）
+  if (resource === "revisions" && rest === "") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    const state = await stack.revisions.load(projectId);
+    sendJson(res, 200, { current: state.current, revisions: revisionViews(state) });
+    return true;
+  }
+
+  // iterations：修订迭代收敛历史（每轮 gate 的 scorecard / outcome / planId）
+  if (resource === "iterations" && rest === "") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    sendJson(res, 200, { iterations: await stack.reviewArtifacts.loadIterations(projectId) });
+    return true;
+  }
+
+  // revision-plan：确定性修订计划（缺省最新轮；?round=N 指定轮）
+  if (resource === "revision-plan" && rest === "") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    const roundParam = url.searchParams.get("round");
+    if (roundParam !== null && (!/^\d+$/.test(roundParam) || Number(roundParam) <= 0)) {
+      throw new BusinessError("INVALID_REQUEST", "查询参数 round 必须是正整数");
+    }
+    const round =
+      roundParam !== null
+        ? Number(roundParam)
+        : (await stack.reviewArtifacts.latestSummary(projectId))?.round ?? null;
+    const plan = round !== null ? await stack.reviewArtifacts.loadPlan(projectId, round) : null;
+    sendJson(res, 200, { round, plan });
+    return true;
+  }
+
+  // build：Build Gate（质量语义不影响构建；D-0015）+ Draft 冻结 + 记录 / 日志
+  if (resource === "build") {
+    if (rest === "/log" && method === "GET") {
+      // 编译日志（UI 可展开诊断；只回尾部，超大日志不拖垮响应）
+      let log = "";
+      try {
+        const full = await readFile(join(stack.projects.buildDir(projectId), "compile.log"), "utf8");
+        log = full.length > MAX_BUILD_LOG_RESPONSE_CHARS ? full.slice(-MAX_BUILD_LOG_RESPONSE_CHARS) : full;
+      } catch {
+        log = "";
+      }
+      sendJson(res, 200, { log });
+      return true;
+    }
+    if (rest === "") {
+      if (method === "GET") {
+        // Build Gate 记录 + 新鲜度（UI 构建状态卡片数据源）
+        const record = await loadBuildGateRecord(stack.projects, projectId);
+        const revision = await stack.revisions.currentRevision(projectId);
+        sendJson(res, 200, {
+          build: record,
+          currentRevision: revision,
+          stale: record !== null && record.revision !== revision,
+        });
+        return true;
+      }
+      if (method === "POST") {
+        // Build Gate + Draft PDF 冻结（Quality Gate 不参与 Draft 判定）
+        let revision = await stack.revisions.currentRevision(projectId);
+        if (revision === 0) {
+          // 导入后还没有修订事实（无 review 的独立构建）：先提交基线；
+          // 空 manuscript 交给编译如实失败（保持「构建失败」而非 5xx）
+          revision = await stack.revisions.ensureBaseline(projectId).catch(() => 0);
+        }
+        const { build, compile, record } = await runBuildGateForRevision(
+          stack.projects,
+          stack.latex,
+          projectId,
+          revision,
+        );
+        // Build 通过即冻结 Draft（幂等）
+        let draftArtifactId: string | null = null;
+        if (build.passed) {
+          draftArtifactId = (await stack.artifacts.ensureDraft(projectId, revision, record)).artifactId;
+        }
+        sendJson(res, 200, {
+          revision,
+          build,
+          draftArtifactId,
+          diagnosticsCount: record.diagnostics.length,
+          compile: {
+            ok: compile.ok,
+            tool: compile.tool,
+            durationMs: compile.durationMs,
+            ...(compile.pdfPath !== null ? { pdfPath: "build/paper.pdf" } : {}),
+            ...(compile.logPath !== null ? { logPath: "build/compile.log" } : {}),
+            ...(compile.error !== undefined ? { error: compile.error } : {}),
+          },
+        });
+        return true;
+      }
+      res.setHeader("Allow", "GET, POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+    return false;
+  }
+
   // ---- feasibility / citation / manuscript / context ----
   if (rest !== "") {
     return false;
@@ -1175,7 +1367,10 @@ async function handleProjectResourceRoutes(
 
   if (resource === "review" || resource === "reviews") {
     if (method === "POST") {
-      // 独立全面审稿：三路并行 + 确定性聚合（同 workflow 内的 review.run）
+      // 独立全面审稿：三路并行 + 确定性聚合（同 workflow 内的 review.run）。
+      // 同样先固化修订版本（review.snapshot），使 gate / Finalize 的修订对齐
+      // 在 HTTP 独立调用路径上与 workflow 路径一致
+      const { revision } = await stack.revisions.commit(projectId, "review.snapshot");
       const digest = await buildReviewDigest(stack, projectId);
       const evidence = await stack.evidence.list(projectId);
       const project = await stack.projects.getRequired(projectId);
@@ -1197,6 +1392,7 @@ async function handleProjectResourceRoutes(
         reportPaths.push(await stack.reviewer.saveReport(projectId, round, result));
       }
       const summary = aggregateReviews(results, round, reportPaths);
+      summary.reviewedRevision = revision;
       await stack.reviewArtifacts.saveSummary(projectId, round, summary);
       sendJson(res, 200, { summary });
       return true;
@@ -1270,23 +1466,6 @@ async function handleProjectResourceRoutes(
     }
     res.setHeader("Allow", "GET, POST");
     sendJson(res, 405, { status: "method_not_allowed", method });
-    return true;
-  }
-
-  if (resource === "build" && method === "POST") {
-    // Build Gate + Draft PDF（质量语义不影响构建）
-    const { build, compile } = await runBuildGate(stack.projects, stack.latex, projectId);
-    sendJson(res, 200, {
-      build,
-      compile: {
-        ok: compile.ok,
-        tool: compile.tool,
-        durationMs: compile.durationMs,
-        ...(compile.pdfPath !== null ? { pdfPath: "build/paper.pdf" } : {}),
-        ...(compile.logPath !== null ? { logPath: "build/compile.log" } : {}),
-        ...(compile.error !== undefined ? { error: compile.error } : {}),
-      },
-    });
     return true;
   }
 

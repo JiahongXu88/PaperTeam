@@ -440,6 +440,10 @@ function revisionRepairStage(services: WorkflowServices): StageSpec {
           buildError,
           diagnostics: diagnostics.filter((diagnostic) => diagnostic.file === file),
         });
+        // 模型调用返回后立即检查取消：已取消的修复结果不落盘（不留半个修复）
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "修复已被取消");
+        }
         await writeFile(absolute, result.latex.trim() + "\n", "utf8");
         repaired.push(file);
         await ctx.emitProgress({ file, repairedCount: repaired.length });

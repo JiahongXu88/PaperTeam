@@ -106,6 +106,15 @@ export const REVISED_SECTION_TEX = [
   "修订后的论述：基于已核验证据的稳健表述，避免无证据的强论断。",
 ].join("\n");
 
+/** 编译错误修复输出（合法：无文档骨架、花括号配对；只修语法不改内容 / 引用） */
+export const REPAIRED_SECTION_TEX = [
+  "\\section{章节标题}",
+  "",
+  "本章节论述基于证据的核心观点 \\cite{gao2023survey}。",
+  "",
+  "修复后的表述：已按结构化诊断修正语法，内容与引用保持不变。",
+].join("\n");
+
 /** Existing-Paper 论文理解输出 */
 export const EXISTING_ANALYSIS_JSON = JSON.stringify({
   domainOverview:
@@ -353,6 +362,8 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = SECTION_TEX;
       } else if (scope === "writing/revision") {
         output = REVISED_SECTION_TEX;
+      } else if (scope === "writing/repair") {
+        output = REPAIRED_SECTION_TEX;
       } else if (scope === "writing/improvement-plan") {
         output = IMPROVEMENT_PLAN_JSON;
       } else if (scope.startsWith("review/")) {
