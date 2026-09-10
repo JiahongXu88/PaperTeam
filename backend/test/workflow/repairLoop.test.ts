@@ -5,6 +5,7 @@
  * - G：首轮编译失败（诊断定位到 sections/*.tex）→ 修复 1 次 → 复审 → 重编译通过 → Final
  * - H：持续编译失败 → 修复上限（2 次）后不再修复，转修订预算 → 耗尽 → overflow
  *      accept_draft → Draft（buildOk=false 如实记录，不产 PDF）
+ * - 诊断只指向组装根 main.tex → 修复空尝试（不覆盖组装产物，预算照耗 → overflow）
  * - 取消：修复执行中协作式取消生效
  *
  * 编译失败通过注入 CommandRunner 模拟：stdout 携带 TeX 形态的文件栈 + "! Error" + l.N
@@ -63,6 +64,20 @@ function flakyRunner(failFirst: number): CommandRunner {
   };
 }
 
+/** 编译失败且诊断只指向组装根 main.tex（文件栈没有更深的 section 文件） */
+function rootOnlyRunner(): CommandRunner {
+  return async (command, args) => {
+    if (args.includes("--version")) {
+      return { code: 0, stdout: `${command} 1.0`, stderr: "" };
+    }
+    return {
+      code: 1,
+      stdout: ["(./main.tex", "! Undefined control sequence.", "l.5 \\badcommand", ""].join("\n"),
+      stderr: "",
+    };
+  };
+}
+
 /** 首个 writing/repair 模型调用挂起（修复中取消用） */
 function hangOnRepairRuntime(base: AgentRuntime): { runtime: AgentRuntime; release: () => void } {
   let releaseHang: (() => void) | undefined;
@@ -83,10 +98,10 @@ function hangOnRepairRuntime(base: AgentRuntime): { runtime: AgentRuntime; relea
 }
 
 async function newStack(
-  options: { failFirst?: number; hangRepair?: boolean } = {},
+  options: { failFirst?: number; hangRepair?: boolean; rootOnly?: boolean } = {},
 ): Promise<{ stack: TestStack; release: () => void }> {
   const scripted = scriptedIdeaRuntime(); // review 全 pass：聚焦编译-修复链路
-  const latexRunner = flakyRunner(options.failFirst ?? 0);
+  const latexRunner = options.rootOnly === true ? rootOnlyRunner() : flakyRunner(options.failFirst ?? 0);
   let runtime: AgentRuntime = scripted.runtime;
   let release = scripted.release;
   if (options.hangRepair === true) {
@@ -185,6 +200,37 @@ describe("bounded LaTeX repair loop", () => {
     expect(finished.completion?.summary?.["draftArtifactId"]).toBeNull();
     // 修复次数不因 accept_draft 之后再增加
     expect(completions(finished, "revision.repair_latex")).toBe(2);
+  });
+
+  it("诊断只指向组装根 main.tex：修复跳过根文件（不覆盖组装产物），预算照耗 → overflow", async () => {
+    const { stack } = await newStack({ rootOnly: true });
+    const project = await stack.store.create("组装根诊断测试");
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
+    const runId = created.body["runId"] as string;
+
+    await approveTwice(stack, runId);
+    // 修复 stage 对组装根只能「空尝试」：不失败、不覆盖 main.tex，走既有耗尽路径
+    const overflow = await pollRun(stack, runId, ["awaiting_input", "failed"]);
+    expect(overflow.status).toBe("awaiting_input");
+    expect(overflow.awaiting?.stageId).toBe("hitl.revision_overflow");
+
+    const repairs = overflow.stageHistory.filter(
+      (record) => record.stageId === "revision.repair_latex" && record.status === "completed",
+    );
+    expect(repairs).toHaveLength(2); // bounded 预算照常消耗
+    for (const record of repairs) {
+      expect(record.summary?.["repairedFiles"]).toEqual([]);
+      expect(record.summary?.["skippedAssembledRoot"]).toBe(true);
+    }
+    // 组装根从未被修复输出覆盖（仍是 writeMainTex 的确定性组装形态）
+    const mainTex = await readFile(join(stack.root, project.id, "manuscript", "main.tex"), "utf8");
+    expect(mainTex).toContain("\\documentclass");
+    expect(mainTex).toContain("\\input{sections/introduction}");
+
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
+    const finished = await pollRun(stack, runId, ["completed"]);
+    expect(finished.completion?.label).toBe("draft");
+    expect(finished.completion?.summary?.["buildOk"]).toBe(false); // 如实：没有 PDF
   });
 
   it("修复执行中协作式取消：cancel 请求登记后生效，无修复完成记录", async () => {

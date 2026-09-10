@@ -411,12 +411,26 @@ function revisionRepairStage(services: WorkflowServices): StageSpec {
       }
       const record = await loadBuildGateRecord(services.projects, ctx.projectId);
       const diagnostics = record?.diagnostics ?? [];
-      const files = repairTargetFiles(services, ctx.projectId, diagnostics);
+      // 有大纲时根 main.tex 是确定性组装产物：修复它要么必被重组覆盖（无意义），
+      // 要么模型返回片段覆盖根文件（破坏组装）。诊断只指向组装根 → 本次修复
+      // 记一次空尝试（bounded 预算照耗），走既有耗尽路径（带错误修订 / HITL / Build FAIL）。
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      const files = repairTargetFiles(services, ctx.projectId, diagnostics).filter((file) => {
+        const normalized = file.replaceAll("\\", "/").replace(/^\.\//, "");
+        return !(outline !== null && normalized === "main.tex");
+      });
       if (files.length === 0) {
-        throw new BusinessError(
-          "STAGE_CONTRACT_VIOLATION",
-          "编译诊断没有定位到 manuscript 内可修复的 .tex 文件",
-        );
+        if (repairTargetFiles(services, ctx.projectId, diagnostics).length === 0) {
+          throw new BusinessError(
+            "STAGE_CONTRACT_VIOLATION",
+            "编译诊断没有定位到 manuscript 内可修复的 .tex 文件",
+          );
+        }
+        return {
+          repairedFiles: [],
+          skippedAssembledRoot: true,
+          attempt: countCompletions(ctx.state, "revision.repair_latex") + 1,
+        };
       }
       const repaired: string[] = [];
       for (const file of files) {
@@ -2333,8 +2347,15 @@ function listRevisionTargets(
       add(file.relativePath, file.relativePath, file.content);
     }
   }
-  // 指令引用了不在目标中的现有文件（如导入项目的自定义路径）→ 追加
+  // 指令引用了不在目标中的现有文件（如导入项目的自定义路径）→ 追加。
+  // 有大纲时根 main.tex 是 writeMainTex 的确定性组装产物（含 outline.abstract），
+  // 本 stage 收尾即被重组覆盖 —— 绝不作为修订目标；Reviewer 把摘要类 finding
+  // 归到 main.tex 时该条留在计划里不派发（复审仍可见，最坏走收敛 HITL）。
+  // 无大纲的导入项目 main.tex 是用户内容，维持可修订（writeMainTex 不会运行）。
   for (const file of files.allTex) {
+    if (outline !== null && file.relativePath === "main.tex") {
+      continue;
+    }
     const pseudoTarget: RevisionTarget = {
       key: file.relativePath,
       relativePath: file.relativePath,

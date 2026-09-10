@@ -28,10 +28,9 @@ Related Work、Research Gap、Novelty / Contribution 分析与目标可行性评
 理解、审计与逐节改造。
 
 其中「Iterative Review / Revision Loop」指 Writer ↔ Reviewer 迭代质量闭环
-（见 9.5）：**当前已实现的是 bounded revision baseline**（Review 聚合 →
-Quality Gate → 修订 ≤2 轮 / 超限 HITL）；Reviewer 结构化评价驱动的增强版
-score-driven loop（Review Scorecard、Revision Plan、收敛 / 退化终止）为下一
-阶段方向（[DECISIONS D-0026](DECISIONS.md)）。
+（见 9.5）：**M4.7 已实现 score-driven 完整形态**（Review 聚合 → Quality
+Gate → 确定性 Revision Plan → 按计划修订 → 强制复审 → 收敛 / 退化终止 →
+Draft / Final 产物闭环；[DECISIONS D-0026](DECISIONS.md)）。
 
 系统支持三类一级工作流：
 
@@ -75,9 +74,9 @@ score-driven loop（Review Scorecard、Revision Plan、收敛 / 退化终止）�
 6. **Build Gate 与 Quality Gate 分离**：能否编译与是否达到质量要求是两个独立判定；
    Quality Gate 失败不阻止 Draft PDF 生成，但阻止标记 Final（见第 10 章）。
 7. **有界迭代**：修改循环必须有最大轮数上限，超限进入 Human Checkpoint，不无限自动循环。
-   下一阶段在此之上增加收敛（CONVERGED）与退化（REGRESSION）停止语义：连续改善
+   收敛（CONVERGED）与退化（REGRESSION）停止语义已实现（M4.7）：连续改善
    低于阈值时停止消耗模型成本，重要质量维度明显退化时停止盲目修改并保留较优
-   版本（见 9.5；planned）。
+   版本（见 9.5）。
 8. **可恢复**：WorkflowRun 记录 checkpoint，失败/中断后可 resume；恢复依据是 Workspace
    状态而非对话历史。
 
@@ -1010,26 +1009,30 @@ MVP 阶段仅支持 LaTeX 项目导入；不支持 DOCX → LaTeX 转换。
 revision baseline；下一阶段升级为 Reviewer 结构化评价驱动的 Iterative
 Writer–Reviewer Quality Loop。两者边界如下。
 
-### 9.5.1 当前已实现（CURRENT：bounded revision baseline，M3.2）
+### 9.5.1 当前已实现（CURRENT：score-driven loop，M4.7）
 
 ```text
-Review（fact / academic / style 三路并行 + Citation 核验）
+Review（fact / academic / style 三路并行 + Citation 核验；reviewedRevision 对齐）
   ↓
 Review Aggregation（确定性聚合为结构化问题清单，按轮落盘）
   ↓
-Quality Gate 判定（确定性，见第 10 章）
+Quality Gate 判定（确定性，见第 10 章）+ 收敛判定（对比上一轮 scorecard）
   ↓
-未通过 → Writer 逐节 Revision（仅动有问题的章节；审稿意见 + 引用核验问题
-         进入修订指令；不允许新造文献）
-       → Re-verify（回到引用核验 → 三路审稿 → Quality Gate）
+未通过 → Revision Plan（确定性派发：critical/major 派发、minor 只记录；
+         一等落盘 artifact revision-plan-r{round}.json）
+       → Writer 按计划逐节 Revision（仅动计划指向的章节；不允许新造文献）
+       → Re-verify（回到引用核验 → 三路审稿 → Quality Gate；强制复审）
   ↓
 循环计数 +1；达到最大轮数（默认 2，可配置；HITL 可再授权 ≤3 轮）
   → Human Checkpoint（呈报剩余问题：accept_draft / revise_more / cancel）
   ↓
-通过 → 可标记 Final
+CONVERGED（失败规则集相同且问题数未降）/ REGRESSION（新增 critical /
+  blocking 增加 / 学分大幅下滑）→ Human Checkpoint（两轮记分卡对比）
+  ↓
+通过 → Build Gate（失败自动修复 ≤2 次）→ Finalize（双 Gate 对齐校验，确定性）
 ```
 
-### 9.5.2 下一阶段（PLANNED）：score-driven Iterative Review Loop
+### 9.5.2 迭代形态（score-driven Iterative Review Loop；M4.7 已实现）
 
 把「Quality Gate 失败后的有限 revision」升级为「Reviewer 结构化评价驱动的
 迭代质量闭环」——review 轮次从修订的附带步骤变为驱动循环的一等输入：
@@ -1086,11 +1089,12 @@ artifact / task contract，交给 Writer 执行：本轮必须处理的问题（
 归属）、对应的 Gate 阻止项与修订纪律（如不允许新造文献）。
 
 继续遵守「少量专业 Agent + Skill + 确定性 Workflow 编排」原则：Revision
-Plan 由 WorkflowOrchestrator 生成，**不新增 RevisionPlanner Agent**。当前
-实现以「修订指令在执行期从最新审稿汇总 + 引用报告确定性派生」为等价物；
-把 Revision Plan 固化为一等落盘产物（与该轮 scorecard、gate 结果关联，
-可在 UI 展示与审计）属下一阶段。未来若确需 LLM 做复杂 revision planning，
-再单独做设计决策。
+Plan 由 WorkflowOrchestrator 生成，**不新增 RevisionPlanner Agent**。M4.7
+已将 Revision Plan 固化为一等落盘产物（`reviews/revision-plan-r{round}.json`，
+planId 与该轮 scorecard / gate 结果 / iteration 关联，可在 UI 展示与审计，
+`GET /api/projects/:id/revision-plan`）；critical / major 派发，minor 与
+gate 阻止项只记录不派发（防非收敛循环）。未来若确需 LLM 做复杂 revision
+planning，再单独做设计决策。
 
 ### 9.5.5 Loop 终止条件（不无限循环）
 
@@ -1098,8 +1102,8 @@ Plan 由 WorkflowOrchestrator 生成，**不新增 RevisionPlanner Agent**。当
 |---|---|---|---|
 | PASS | Quality Gate 通过 | Finalization | 已实现 |
 | MAX_ITERATIONS | 达到配置的最大自动迭代轮数（当前默认 2） | Human Checkpoint | 已实现 |
-| CONVERGED | 连续若干轮改善低于合理阈值，继续消耗模型成本价值很低 | Human Checkpoint（呈报收敛证据） | planned，阈值 configurable |
-| REGRESSION | Revision 修复部分问题但导致重要质量维度明显退化 | 停止盲目继续修改；保留 / 恢复较优版本供用户决策 | planned，判定口径与阈值待定 |
+| CONVERGED | 连续若干轮改善低于合理阈值，继续消耗模型成本价值很低 | Human Checkpoint（呈报收敛证据） | 已实现（M4.7：失败规则集与上轮相同且 critical+major 未下降 → stalled HITL，两轮记分卡对比） |
+| REGRESSION | Revision 修复部分问题但导致重要质量维度明显退化 | 停止盲目继续修改；保留 / 恢复较优版本供用户决策 | 已实现（M4.7：新增 critical / blocking 增加 / 学分下滑 >10 → stalled HITL） |
 
 已实现参数如实记录：自动修订默认 ≤2 轮（可配置）、超限 HITL 中 revise_more
 再授权 ≤3 轮。CONVERGED / REGRESSION 的具体阈值（连续几轮、改善幅度、哪些

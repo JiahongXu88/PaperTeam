@@ -1,10 +1,94 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-10（M4.6 Evidence Workbench + Quality Gate UI：证据工作台
-> / 质量门禁产品化；2026-09-09：M4.5 HITL UI / Citation Semantic Hardening /
-> M4.4 Workflow Live View；2026-09-08 Review 并发优化 + M4.9 规划见历史）
+> 更新日期：2026-09-10（M4.7 Draft / Final + Writer–Reviewer Closure：产物
+> 闭环 + 有界修订闭环；同日 M4.6 Evidence Workbench；2026-09-09：M4.5 HITL
+> UI / Citation Semantic Hardening / M4.4 Workflow Live View；2026-09-08 Review
+> 并发优化见历史）
 
 ## 当前阶段
+
+**M4.7 — Draft / Final + Writer–Reviewer Closure（✅ 完成，2026-09-10）**：
+两个闭环落地——(A) **Draft / Final 产物闭环**：Build Gate 产出真实 PDF、
+Draft 即时冻结、Final 双 Gate 校验后冻结、产物不可变可下载；(B) **Writer–
+Reviewer 修订闭环**：审稿意见 → 确定性修订计划 → Writer 逐节修订 → 强制
+复审 → 确定性收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION），不收敛
+与超限交给 HITL。6 个 commit（a1f5df8 → eb9ec9c）。
+
+- **manuscript 修订域（Authoritative）**：`ManuscriptRevisionStore`——每个
+  改稿动作（outline.plan / writing.sections / revision.revise / apply /
+  repair_latex / review 快照）提交**内容哈希幂等**的不可变修订号；gate /
+  build / artifact 记录各自携带对齐修订，Finalize 据此拒绝 stale 结论。
+- **确定性修订计划（D-0026）**：`revision.plan` stage 纯代码派发
+  critical/major finding 与引用缺失（`reviews/revision-plan-r{round}.json`
+  落盘）；minor / gate 阻止项只记录不派发（防非收敛循环）。Writer 只是
+  计划的执行者，禁止凭空新造文献。
+- **收敛判定（确定性无 LLM）**：每轮 gate 与上一轮 scorecard 对比得
+  PASS / IMPROVED / CONVERGED / REGRESSION，逐轮追加 iteration-history；
+  CONVERGED / REGRESSION / 计划空 → `hitl.revision_stalled`（两轮记分卡
+  对比 payload）；预算耗尽（默认 2 轮 + HITL revise_more ≤3）→
+  `hitl.revision_overflow`。两节点均 accept_draft / revise_more / cancel；
+  **accept_draft 在预算尚余时也被尊重**（E2E 驱动出的修复）。
+- **LaTeX 诊断 + bounded repair loop**：compile.log 结构化解析（文件 / 行号
+  / 错误 / 附近行）→ `revision.repair_latex` 每项目自动修复 ≤2 次，最小
+  上下文（只给受影响文件 + 诊断，绝不整篇论文 + 整份日志），可取消；
+  修复即改稿 → 既有结论过期，复审后才能 Final。
+- **Draft / Final 产物域**：`artifacts/` 不可变 manifest
+  （art-draft-rev{n}.pdf / art-final-rev{n}.pdf）；**Build 通过即冻结 Draft
+  （质量语义不参与，D-0015）**；`FinalizeService` 纯确定性双 Gate 校验
+  （零 LLM：不允许「Final Reviewer Agent 判断能不能 Final」）。
+- **HTTP（见 API_CONTRACT §1.2e）**：artifacts 清单 / 元数据 / download
+  （**只经 manifest 解析，不接受任何路径参数，防 path traversal**；inline
+  缺省 = 浏览器原生 viewer，`?disposition=attachment` 才落盘）/ finalize
+  （活跃 run 409；条件不满足 422 可行动文案）/ build 记录 / build/log /
+  revisions / iterations / revision-plan。
+- **前端 PaperPanel**（项目 tab「论文产出」，quick-review 项目不显示）：
+  Final 卡（冻结修订 / 通过轮次 / 查看 / 下载）+ Draft 卡（可用性 + 「当前
+  版本可以作为 Draft，但尚未满足 Final 要求」边界文案）+ 构建状态卡
+  （工具 / 耗时 / 对齐修订 / 结构化诊断 / 编译日志折叠）+ 迭代历史卡
+  （每轮 outcome：首轮 / 有实质改善 / 已通过 / 不再收敛 / 出现退化）+
+  产物历史（不可变清单）。标记 Final 按钮**永远可点**，资格由后端判定，
+  422 拒绝如实呈现——绝无前端 `if (buildOk && qualityOk)` 自行产生 Final
+  的路径。
+- **测试**：Backend 553 passed（新增 revisionLoop 收敛语义 6 + 组装根
+  main.tex 修订 / 修复两条回归、FinalizeService / ArtifactStore / repair loop /
+  修订幂等等 suites）+ Frontend（PaperPanel / API 层）；`npm run typecheck`
+  双侧干净。
+- **E2E（`e2e/paper-artifacts.spec.ts`，10 例，scripted 栈 + 本机真实
+  MiKTeX latexmk）**：A gate 通过 → 真实编译 → Final 冻结（inline 查看 /
+  attachment 下载 / 产物历史）；C fail→修订→复审通过→Final；D REGRESSION
+  / E CONVERGED → stalled HITL → accept → Draft；F 预算耗尽 → overflow →
+  accept；B 复用其终态验证 Draft 语义（质量门禁不阻塞 Draft；finalize 422
+  拒绝且**不出现「因此 PDF 无法生成」错误语义**）；G 真实编译失败 → bounded
+  修复成功 → 复审 → Final；H 修复耗尽 → Build FAIL → overflow（buildOk=false）
+  → 无 PDF + finalize BUILD 拒绝；I 快速 Review 只读红线（无论文产出 tab、
+  完成后零产物）；J Light/Dark + 1100px 无横向溢出。全套 10/10（1.1m）。
+- **E2E 驱动出的两处真实修复**：stalled accept_draft 在修订预算尚余时被
+  忽略（planner 仍自动再修一轮）；revision.revise 修订 prompt 章节标题用
+  了大纲 id 而非人类标题。均先以 E2E 复现、再修、再全量回归。
+- **真实模型 smoke 驱动出的修复（2026-09-10）**：真实 Reviewer 会把摘要类
+  finding 归到 `main.tex（摘要）`，`sectionMatches` 的宽松匹配
+  （`ref.includes(stem)`，stem="main"）把它路由到组装根 main.tex → Writer
+  收到 `\documentclass` 全文、按指令返回完整骨架 → DoD 拒绝（2/2）→ run
+  failed。修复：**有大纲时组装根 main.tex 绝不作为修订目标 / 修复目标**
+  （`listRevisionTargets` 跳过；repair 侧同样过滤，诊断只指向组装根时记一次
+  空尝试走既有耗尽路径）；该条 finding 留在计划里不派发（复审可见，最坏走
+  收敛 HITL）。scripted Writer 增加「修订 prompt 含 \documentclass → 返回
+  完整骨架」镜像 + 回归测试，防此类回归静默通过。
+- **真实模型 smoke（2026-09-10，zai-coding-cn/glm-5.3 + 本机 MiKTeX
+  latexmk 4.88，run w-b974e4333932）**：真实小论文全链路（研究主题：中文
+  商品评论情感分类的少样本示例选择策略实证研究）——调研 2.5min（5 gaps /
+  bibliography）→ 可行性 MEDIUM → HITL → 大纲（8 节）→ HITL → 分节写作 →
+  引用核验（hallucinated=0）→ **三轮审稿 × 两轮修订**（iteration：
+  首轮 null → IMPROVED（critical 2/major 8/学分 42 → 2/3/47）→ CONVERGED
+  （2/4/49，失败规则集相同））→ `hitl.revision_stalled`（outcome=CONVERGED，
+  呈报两轮记分卡）→ accept_draft → **真实 latexmk 编译（5.6s，exitCode 0）
+  产出 165KB PDF** → Draft 冻结（art-draft-rev4）。**诚实结果：Draft PASS，
+  Final correctly blocked**——论文无真实实验（Writer 如实以「待实验产出后
+  填充」占位而非编造数据），academicScore=49 < 80 等五项 gate 阻止如实
+  上报；`POST /finalize` 422 QUALITY_GATE_FAILED（可行动文案）；产物下载
+  200 inline（浏览器原生 viewer）；`..%2f` 路径穿越 404。本 run 的 reviewer
+  再次把摘要 critical finding 归到 `main.tex（摘要）`——修复后正确留在计划
+  里不派发，revision.revise 顺利完成，组装根完好。
 
 **M4.6 — Evidence Workbench + Quality Gate UI（✅ 完成，2026-09-10）**：
 把「这篇论文里的核心论断，依据是什么？可靠吗？」做成一等公民页面——
@@ -120,8 +204,8 @@ SSE 事件与 replay 齐备）；本轮新增的是前端决策面板与 scripte
   Dark、取消确认 Dark）人工 review——与现有 Panel / Chip / Note / Btn 语言
   一致，warning 强调（非 danger），无临时后台感。
 
-**下一阶段：M4.7 Draft / Final + Writer–Reviewer Closure**（Draft/Final 状态
-页与标记流、版本管理入口；当前只做分析不动手。M4.6 已停）。
+**下一阶段：M4.7 Draft / Final + Writer–Reviewer Closure**——已完成（见顶部
+M4.7 章节）；其后 M4.8（生产部署形态 / 静态资源托管决策）。
 
 ---
 

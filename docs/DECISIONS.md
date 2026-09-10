@@ -192,7 +192,9 @@
 ## D-0015 Build Gate 与 Quality Gate 分离；Draft 可在 Quality Gate 失败时构建，Final 必须全部 Gate 通过
 
 - **日期**：2026-09-03
-- **状态**：accepted
+- **状态**：accepted（**M4.7 已实现**：`artifacts/` 产物域 + FinalizeService
+  双 Gate 对齐校验；Build 通过即冻结 Draft PDF，`POST /finalize` 在条件不
+  满足时 422 拒绝；见 API_CONTRACT §1.2e）
 
 **背景**：文档能否构建与论文质量是否达标是两个独立问题。若把质量语义塞进编译门（如 not_found citation 禁止编译），用户将无法获得任何产物来评估与迭代，调试与审稿流程被阻断。
 
@@ -429,8 +431,11 @@ Agent shell。中文简介一次生成持久化（模型不可用 → summary_pe
 ## D-0026 PaperTeam 在 Pi 之上确立有界 Writer–Reviewer Outer Review Loop
 
 - **日期**：2026-09-08
-- **状态**：accepted（架构方向冻结；增强实现 planned——当前已实现基线为
-  M3.2 bounded revision loop，见 PROJECT_STATUS「下一阶段规划」）
+- **状态**：accepted（**M4.7 已实现**：Revision Plan 一等落盘 artifact
+  `revision-plan-r{round}.json`；CONVERGED / REGRESSION 确定性终止
+  （`review/revisionOutcome.ts`）→ `hitl.revision_stalled`；iteration-history
+  每轮 scorecard / outcome / planId；强制复审 + gate/build 结论与修订对齐。
+  见 ARCHITECTURE §7 / §13）
 
 **背景**：Pi SDK in-process 成为唯一 Runtime（D-0020）后，需要明确 PaperTeam
 自身的核心质量迭代机制如何分层。Pi 负责单 Agent 内部的 agent loop（LLM →

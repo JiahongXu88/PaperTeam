@@ -126,8 +126,23 @@ Overview 克制质量状态卡 + 时间线 / HITL 入口联动。快速 Review�
 如实显示「不运行门禁」。E2E（`e2e/evidence-gate.spec.ts`）在 scripted 栈
 覆盖两轮 gate（fail→pass）、证据全交互、深链与 Light / Dark 视觉。
 
-**未实现（M4.7+）**：Draft / Final 状态页与标记流、版本管理、Visual
-Reviewer、LaTeX repair loop、系统管理后台、Docker 部署。
+**M4.7 Draft / Final + Writer–Reviewer Closure（2026-09-10）已落地**：
+论文产出闭环（项目工作区「论文产出」标签）——Build Gate 真实编译（latexmk /
+xelatex）产出 PDF，**Build 通过即冻结 Draft（质量门禁不阻塞）**；Final 由
+FinalizeService 纯确定性双 Gate 对齐校验后冻结（零 LLM，修订后结论过期须复审）；
+产物不可变（art-draft/final-rev{n}.pdf）+ 查看（浏览器原生 viewer）/ 下载 /
+产物历史。Writer–Reviewer 修订闭环：审稿意见 → 确定性修订计划
+（revision-plan-r{round}.json，critical/major 派发、minor 只记录）→ Writer
+按计划逐节修订 → 强制复审 → 收敛判定（PASS / IMPROVED / CONVERGED /
+REGRESSION，纯确定性）→ 不收敛 / 超限 HITL（两轮记分卡对比 / 预算耗尽，
+accept_draft / revise_more / cancel）。LaTeX 编译失败自动修复 ≤2 次（最小
+上下文：受影响文件 + 结构化诊断，可取消）。manuscript 修订链内容哈希幂等
+不可变；下载 API 只经 manifest 解析（防 path traversal）。E2E
+（`e2e/paper-artifacts.spec.ts`，scripted 栈 + 本机真实 MiKTeX）覆盖 A–J
+十场景（含 Draft 语义红线、修复耗尽、快速 Review 只读、Light/Dark）。
+
+**未实现（M4.8+）**：版本管理 UI 深化（分数走势 / 修订计划视图）、Visual
+Reviewer、系统管理后台、Docker 部署。
 
 ## 文档
 
@@ -281,14 +296,23 @@ POST   /api/projects/:id/citation-check       引用核验（静态 + 公开元�
 POST   /api/projects/:id/review               全面审稿（fact/academic/style 并行）
 POST   /api/projects/:id/quality-gate         Quality Gate 评估
 GET    /api/projects/:id/quality-gate         gate 轮次读取（?round= 历史轮；M4.6）
-POST   /api/projects/:id/build                Build Gate + Draft PDF
+POST   /api/projects/:id/build                Build Gate + Draft PDF 冻结
+GET    /api/projects/:id/build                Build Gate 记录 + 新鲜度（M4.7）
+GET    /api/projects/:id/build/log            编译日志尾部（M4.7）
+GET    /api/projects/:id/artifacts            Draft/Final 产物清单 + finalUpToDate（M4.7）
+GET    /api/projects/:id/artifacts/:aid/download  产物下载（inline 缺省；?disposition=attachment；M4.7）
+POST   /api/projects/:id/finalize             标记 Final（纯确定性双 Gate 校验；M4.7）
+GET    /api/projects/:id/revisions            manuscript 不可变修订链（M4.7）
+GET    /api/projects/:id/iterations           修订迭代收敛历史（M4.7）
+GET    /api/projects/:id/revision-plan        确定性修订计划（?round=；M4.7）
 POST   /api/projects/:id/generate             M2 同步写作+编译（deprecated，保留兼容）
 （另有 sources/evidence/feasibility/citation-report/reviews/manuscript/context 查询端点）
 ```
 
 `workflows` 的内部链路（Idea-to-Paper）：`WorkflowOrchestrator` 确定性推进
 `research.idea → research.feasibility → HITL 确认 → outline → HITL 确认 → 分节写作
-→ 引用核验 → 三路审稿 → Quality Gate →（bounded 修订 ≤2 轮 / 超限 HITL）→ Build Gate`；
+→ 引用核验 → 三路审稿 → Quality Gate →（revision.plan → 修订 → 强制复审，≤2 轮 /
+收敛判定 / 不收敛与超限 HITL）→ Build Gate（失败自动修复 ≤2 次）→ Finalize`；
 所有 Agent 产出必须通过 Stage DoD 校验才算完成；进程中断后从 checkpoint 恢复，
 已成功 stage 不重复执行。
 

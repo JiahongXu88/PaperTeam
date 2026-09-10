@@ -319,6 +319,12 @@ export interface ScriptedRuntimeOptions {
   reviewSequence?: ("pass" | "fail" | "fail2" | "fail3")[];
   /** 是否挂起第一次 runAgent（cancel / 并发测试） */
   hangFirstCall?: boolean;
+  /**
+   * 仅附加到第一轮 review/fact 载荷的 issue（回归用）：模拟真实 Reviewer 的
+   * 非常规 section 归属（如「main.tex（摘要）」——2026-09-10 真实 smoke 暴露）；
+   * 后续轮次不再出现，便于构造 fail → pass 轨迹。
+   */
+  firstRoundFactIssue?: Record<string, unknown>;
 }
 
 /**
@@ -431,8 +437,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
             ? `${SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
             : SECTION_TEX;
       } else if (scope === "writing/revision") {
-        output =
-          projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
+        // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
+        // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
+        // 完整骨架并被 DoD 拒绝。脚本化 Writer 镜象该行为，防止此类回归静默通过。
+        output = input.task.includes("\\documentclass")
+          ? LATEX_DOC
+          : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
             ? `${REVISED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
             : REVISED_SECTION_TEX;
       } else if (scope === "writing/repair") {
@@ -466,6 +476,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                 ? REVIEW_FAIL3
                 : REVIEW_FAIL;
         output = scope === "review/fact" ? pack.fact : scope === "review/academic" ? pack.academic : pack.style;
+        if (scope === "review/fact" && round === 0 && options.firstRoundFactIssue !== undefined) {
+          output = appendReviewIssue(output, options.firstRoundFactIssue);
+        }
       }
       const now = new Date().toISOString();
       const task: AgentTask = {
@@ -505,6 +518,20 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
     calls,
     release: () => hangResolve?.(),
   };
+}
+
+/**
+ * 向 review/fact 载荷追加一条 issue（firstRoundFactIssue 用）。载荷是
+ * JSON 字符串：解析失败时原样返回（不破坏既有脚本行为）。
+ */
+function appendReviewIssue(payload: string, issue: Record<string, unknown>): string {
+  try {
+    const parsed = JSON.parse(payload) as { issues?: unknown[] };
+    parsed.issues = [...(Array.isArray(parsed.issues) ? parsed.issues : []), issue];
+    return JSON.stringify(parsed);
+  } catch {
+    return payload;
+  }
 }
 
 function makeHealth(ok: boolean): RuntimeHealth {

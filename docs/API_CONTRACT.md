@@ -71,7 +71,7 @@
 | `GET/POST /api/projects/:id/evidence`、`GET …/:eid`、`POST …/:eid/verify` | Evidence CRUD + 核验 | ✅ M4.6（Evidence Workbench；POST body 增可选核验字段，见 §1.2d） |
 | `GET /api/projects/:id/feasibility` | 最近可行性报告（HITL 上下文） | M4.4 |
 | `GET/POST /api/projects/:id/review`、`POST /api/projects/:id/quality-gate` | 三路审稿（`POST /review` 由后端编排触发，前端不直接调用）/ Quality Gate 评估 | POST /quality-gate ✅ M4.6（stale 重评）；GET /quality-gate 见 §1.2d ✅ M4.6 |
-| `POST /api/projects/:id/build` | Build Gate + Draft PDF | M4.7 |
+| `POST /api/projects/:id/build` | Build Gate + Draft PDF | ✅ M4.7（见 §1.2e） |
 | `GET/POST /api/projects/:id/import` | Existing-LaTeX 导入（archiveBase64 / files） | M4.5 |
 | `GET /api/projects/:id/manuscript`、`GET …/context`、`POST …/citation-check`、`GET …/citation-report` | 手稿 / 派生上下文 / 引用核验 | M4.5-M4.7 |
 | `PATCH /api/projects/:id` | 更新研究定位字段 | M4.x（编辑表单） |
@@ -177,6 +177,36 @@
 >   `citation.metadata` stage（空 provider 集 → 逐条 UNRESOLVED，不外呼；
 >   显式注入的测试 providers 优先）；`CITATION_METADATA_TIMEOUT_MS` /
 >   `CITATION_CONTACT_EMAIL` 一并传入该 resolver。
+
+### 1.2e M4.7 已消费 ✅（Draft / Final 产物闭环）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/artifacts` | 产物清单（不可变 manifest）→ `{artifacts: PaperArtifactView[], latestDraft, latestFinal, currentRevision, finalUpToDate}`；`finalUpToDate=false` = 修订后尚未重新 Finalize | PaperPanel（Draft/Final 卡片 + 产物历史） |
+| `GET /api/projects/:id/artifacts/:artifactId` | 单条产物元数据 → `{artifact}`；未知 id → 404 | （API 层） |
+| `GET /api/projects/:id/artifacts/:artifactId/download` | **只经 manifest 解析（projectId + artifactId → 受控 artifacts/ 路径），不接受任何文件系统路径参数（防 path traversal）**。缺省 `Content-Disposition: inline`（浏览器原生 viewer 新标签页查看，不落盘）；`?disposition=attachment` 才下载 | PaperPanel「查看」（新标签页）/「下载」 |
+| `POST /api/projects/:id/finalize` | 标记 Final（**纯确定性，零 LLM**：FinalizeService 双 Gate 校验——quality gate 与 build gate 必须 PASS 且对齐当前修订）。活跃 run 期间 → 409 PROJECT_BUSY；条件不满足 → 422（`QUALITY_GATE_NOT_PASSED` / `BUILD_GATE_NOT_PASSED` / 结论过期等，message 为可行动中文文案）→ `{final, draft, revision, gateRound}` | PaperPanel「标记为 Final」（按钮永远可点，资格由后端判定） |
+| `GET /api/projects/:id/build` | Build Gate 记录 + 新鲜度 → `{build: BuildGateRecordView\|null, currentRevision, stale}`（`stale` = 记录修订 ≠ 当前修订） | PaperPanel 构建状态卡 |
+| `POST /api/projects/:id/build` | Build Gate + Draft PDF 冻结（**质量语义不参与 Draft 判定**，D-0015）→ `{revision, build, draftArtifactId, compile}` | PaperPanel「重新构建」（API 层） |
+| `GET /api/projects/:id/build/log` | 编译日志尾部（上限字符，错误通常在末尾）→ `{log}` | PaperPanel 构建日志折叠区 |
+| `GET /api/projects/:id/revisions` | manuscript 修订事实（Authoritative）→ `{current, revisions: [{revision, stage, runId, createdAt, contentHash}]}` | （审计 / 后续版本管理 UI） |
+| `GET /api/projects/:id/iterations` | 修订迭代收敛历史（每轮 gate 的 scorecard / outcome / planId）→ `{iterations: RevisionIterationView[]}` | PaperPanel 迭代历史卡 |
+| `GET /api/projects/:id/revision-plan?round=N` | 确定性修订计划（缺省最新轮）→ `{round, plan}`；非正整数 round → 400 | （审计 / 后续修订计划 UI） |
+
+> 2026-09-10 M4.7 语义约定：
+> - **Draft 语义**：Quality Gate FAIL **不阻塞** Draft——Build 通过即冻结
+>   `art-draft-rev{n}.pdf`；UI 文案固定「当前版本可以作为 Draft，但尚未满足
+>   Final 要求」，绝不出现「因此 PDF 无法生成」类错误语义。
+> - **Final 语义**：双 Gate（quality + build）PASS 且对齐当前修订才冻结
+>   `art-final-rev{n}.pdf`；任何改稿动作（revise / repair）使既有结论过期，
+>   复审后才能 Final。前端不自行推断资格（无 `if (buildOk && qualityOk)`
+>   产生 Final 的路径），finalize 422 拒绝如实呈现。
+> - **产物不可变**：Draft/Final PDF 以 revision 编号落盘（rev{n}），重构建 /
+>   重冻结产生新文件，不改写历史；manifest 只增不改。
+> - **修订 HITL 决策**：`hitl.revision_stalled`（CONVERGED / REGRESSION /
+>   计划空）与 `hitl.revision_overflow`（预算耗尽）均为
+>   `accept_draft / revise_more / cancel`；`accept_draft` 为用户知情接受
+>   （buildOk=false 时如实记录无 PDF）。
 
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
@@ -413,7 +443,7 @@ type WorkflowDomainEventType =
   | "stage.failed" | "workflow.awaiting_input" | "workflow.resumed"
   | "workflow.recovered" | "workflow.cancelled" | "workflow.completed"
   | "workflow.failed" | "quality_gate.passed" | "quality_gate.failed"
-  | "build_gate.passed" | "build_gate.failed";
+  | "build_gate.passed" | "build_gate.failed" | "final.created";
 
 interface WorkflowDomainEvent {
   seq: number;                       // 单调递增，重连去重依据

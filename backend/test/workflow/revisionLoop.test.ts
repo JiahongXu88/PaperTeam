@@ -5,6 +5,7 @@
  * - overflow revise_more 人工授权追加一轮 → 再无改善（CONVERGED）→ stalled HITL → accept_draft
  * - Quality 失败不阻止 Draft 构建（D-0015）
  * - 连续两轮完全相同的 fail → CONVERGED → stalled HITL（不盲目继续烧 Token）
+ * - Reviewer 把 finding 归到 main.tex（摘要）→ 组装根不作为修订目标（2026-09-10 真实 smoke 回归）
  */
 
 import { readFile } from "node:fs/promises";
@@ -27,10 +28,16 @@ afterAll(async () => {
 });
 
 async function newStack(
-  options: { reviewSequence?: ("pass" | "fail" | "fail2" | "fail3")[]; latexRunner?: never } = {},
+  options: {
+    reviewSequence?: ("pass" | "fail" | "fail2" | "fail3")[];
+    /** 仅附加到第一轮 review/fact 的 issue（回归用，见 scriptedRuntime 同名选项） */
+    firstRoundFactIssue?: Record<string, unknown>;
+    latexRunner?: never;
+  } = {},
 ): Promise<TestStack> {
   const scripted = scriptedIdeaRuntime({
     ...(options.reviewSequence ? { reviewSequence: options.reviewSequence } : {}),
+    ...(options.firstRoundFactIssue ? { firstRoundFactIssue: options.firstRoundFactIssue } : {}),
   });
   return startTestStack(scripted.runtime, {
     registerCleanup: (cleanup) => cleanups.push(cleanup),
@@ -217,6 +224,49 @@ describe("bounded revision loop（idea_to_paper）", () => {
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "cancel" });
     const cancelled = await pollRun(stack, runId, ["cancelled", "completed"]);
     expect(cancelled.status).toBe("cancelled");
+  });
+
+  it("Reviewer 把 finding 归到 main.tex（摘要）：根文件不作为修订目标，修订不失败（2026-09-10 真实 smoke 回归）", async () => {
+    const stack = await newStack({
+      reviewSequence: ["fail", "pass"],
+      firstRoundFactIssue: {
+        category: "fact",
+        severity: "critical",
+        section: "main.tex（摘要）",
+        description: "摘要宣称准确率提升 12.4%，Evidence 只支持 8.7%",
+        suggestedAction: "弱化摘要表述",
+        blocking: true,
+      },
+    });
+    const project = await stack.store.create("main.tex 归属回归");
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
+    const runId = created.body["runId"] as string;
+
+    // 修复前：sectionMatches 的 ref.includes(stem)（stem="main"）把 main.tex（摘要）
+    // 匹配到组装根 main.tex → Writer 收到 \documentclass 全文 → 镜像返回完整骨架
+    // → INVALID_LATEX_OUTPUT 2/2 → run failed。修复后整条链路正常完成。
+    await approveTwice(stack, runId);
+    const finished = await pollRun(stack, runId, ["completed", "failed", "awaiting_input"]);
+
+    expect(finished.status).toBe("completed");
+    expect(finished.completion?.label).toBe("final");
+    // 组装根 main.tex 绝不出现在修订目标里（revised key 为 outline section id）
+    const revisedKeys = finished.stageHistory
+      .filter((record) => record.stageId === "revision.revise" && record.status === "completed")
+      .flatMap((record) => (record.summary?.["sections"] as string[]) ?? []);
+    expect(revisedKeys.length).toBeGreaterThan(0);
+    expect(revisedKeys).not.toContain("main.tex");
+    // finding 仍进入确定性计划（记录在案、复审可见），只是不派发给组装根
+    const plan = JSON.parse(
+      await readFile(join(stack.root, project.id, "reviews", "revision-plan-r1.json"), "utf8"),
+    ) as { items?: { section: string; status: string }[] };
+    const mainTexItem = (plan.items ?? []).find((item) => item.section === "main.tex（摘要）");
+    expect(mainTexItem).toBeDefined();
+    expect(mainTexItem?.status).toBe("planned");
+    // 修订后组装根完好（writeMainTex 重组，未被片段覆盖）
+    const mainTex = await readFile(join(stack.root, project.id, "manuscript", "main.tex"), "utf8");
+    expect(mainTex).toContain("\\documentclass");
+    expect(mainTex).toContain("\\input{sections/introduction}");
   });
 
   it("review fail 但 feasibility INSUFFICIENT 的组合：gate 失败原因包含 target_feasibility", async () => {
