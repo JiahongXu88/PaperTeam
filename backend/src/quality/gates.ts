@@ -17,9 +17,11 @@ import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import type { FeasibilityReport } from "../agents/FeasibilityService.js";
 import type { ReviewSummary } from "../review/ReviewAggregator.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
+import type { LatexDiagnostic } from "../latex/diagnostics.js";
+import { parseLatexDiagnostics } from "../latex/diagnostics.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { collectLatexFiles } from "../manuscript/LatexFiles.js";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeJsonAtomic } from "../util/atomic.js";
 
@@ -90,6 +92,128 @@ export async function runBuildGate(
   }
   const build = evaluateBuildGate({ compile, missingIncludes, bibMissing });
   return { build, compile };
+}
+
+// ---- Build Gate 持久化记录（M4.7：Finalize 的新鲜度依据；Build UI 的数据源） ----
+
+export const BUILD_GATE_RECORD_FILE = "build-gate.json";
+
+/** build/build-gate.json 的结构（runBuildGateForRevision 写入） */
+export interface BuildGateRecord {
+  passed: boolean;
+  reasons: string[];
+  checkedAt: string;
+  /** 编译时的 manuscript 修订（Finalize 校验：record.revision 必须等于当前 revision） */
+  revision: number;
+  compile: {
+    ok: boolean;
+    tool: string;
+    durationMs: number;
+    exitCode: number | null;
+    pdfPath: string | null;
+    logPath: string | null;
+    error?: string;
+  };
+  /** 结构化编译诊断（失败时从 compile.log 解析；供 UI 摘要与 Writer 修复上下文） */
+  diagnostics: LatexDiagnostic[];
+}
+
+/** 每项目编译互斥（并发编译同一项目会互相覆盖 build/ 输出；跨项目不受影响） */
+const compileLocks = new Map<string, Promise<unknown>>();
+
+/** 在项目编译锁内执行（per-project serial；失败不阻塞后续编译） */
+export function withCompileLock<T>(projectId: string, task: () => Promise<T>): Promise<T> {
+  const previous = compileLocks.get(projectId) ?? Promise.resolve();
+  const next = previous.then(task, task);
+  compileLocks.set(
+    projectId,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
+/**
+ * 编译 + Build Gate 判定 + 落盘 build/build-gate.json（M4.7 主入口）。
+ * - revision 由调用方传入（编译前读取的 manuscript 当前修订）；
+ * - 编译在 per-project 锁内串行执行；
+ * - 失败时解析 compile.log 为结构化诊断（文件 / 行号 / 错误 / 附近行）。
+ */
+export async function runBuildGateForRevision(
+  projects: ProjectStore,
+  latex: LatexCompiler,
+  projectId: string,
+  revision: number,
+): Promise<{ build: BuildGateResult; compile: LatexCompileResult; record: BuildGateRecord }> {
+  return withCompileLock(projectId, async () => {
+    const { build, compile } = await runBuildGate(projects, latex, projectId);
+    const diagnostics = await readCompileDiagnostics(projects, projectId);
+    const record: BuildGateRecord = {
+      passed: build.passed,
+      reasons: build.reasons,
+      checkedAt: build.checkedAt,
+      revision,
+      compile: {
+        ok: compile.ok,
+        tool: compile.tool,
+        durationMs: compile.durationMs,
+        exitCode: compile.exitCode,
+        pdfPath: compile.pdfPath !== null ? "build/paper.pdf" : null,
+        logPath: compile.logPath !== null ? "build/compile.log" : null,
+        ...(compile.error !== undefined ? { error: compile.error } : {}),
+      },
+      diagnostics,
+    };
+    await mkdir(projects.buildDir(projectId), { recursive: true });
+    await writeJsonAtomic(
+      join(projects.buildDir(projectId), BUILD_GATE_RECORD_FILE),
+      record,
+    );
+    return { build, compile, record };
+  });
+}
+
+/** 读取已落盘的 Build Gate 记录（无 / 损坏 → null，防御性校验） */
+export async function loadBuildGateRecord(
+  projects: ProjectStore,
+  projectId: string,
+): Promise<BuildGateRecord | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      await readFile(join(projects.buildDir(projectId), BUILD_GATE_RECORD_FILE), "utf8"),
+    );
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    typeof record["passed"] !== "boolean" ||
+    !Array.isArray(record["reasons"]) ||
+    typeof record["checkedAt"] !== "string" ||
+    typeof record["revision"] !== "number" ||
+    typeof record["compile"] !== "object" ||
+    record["compile"] === null ||
+    !Array.isArray(record["diagnostics"])
+  ) {
+    return null;
+  }
+  return parsed as BuildGateRecord;
+}
+
+/** 编译日志 → 结构化诊断（编译抛错时 LatexCompiler 仍已写出 compile.log） */
+async function readCompileDiagnostics(
+  projects: ProjectStore,
+  projectId: string,
+): Promise<LatexDiagnostic[]> {
+  try {
+    const log = await readFile(join(projects.buildDir(projectId), "compile.log"), "utf8");
+    return parseLatexDiagnostics(log);
+  } catch {
+    return [];
+  }
 }
 
 // ---- Quality Gate ----
@@ -277,7 +401,13 @@ export function evaluateQualityGate(
   };
 }
 
-/** Quality Gate 结果落盘（reviews/quality-gate-<round>.json） */
+/**
+ * Quality Gate 结果落盘（reviews/quality-gate-r{round}.json）。
+ * M4.7 起附带修订对齐信息（Finalize 的 stale 防护依据）：
+ *   revision         评估时的 manuscript 当前修订
+ *   reviewedRevision 该轮 review 审阅的修订（summary.reviewedRevision）
+ * 旧产物无这两个字段 → Finalize 视为不可信（重新评估后才能 Final）。
+ */
 export async function saveQualityGateReport(
   projects: ProjectStore,
   projectId: string,
@@ -288,6 +418,12 @@ export async function saveQualityGateReport(
   const dir = projects.reviewsDir(projectId);
   await mkdir(dir, { recursive: true });
   const file = `quality-gate-r${round}.json`;
-  await writeJsonAtomic(join(dir, file), { gate: result, reviewSummary: summary });
+  await writeJsonAtomic(join(dir, file), {
+    gate: result,
+    reviewSummary: summary,
+    ...(typeof summary.reviewedRevision === "number"
+      ? { revision: summary.reviewedRevision, reviewedRevision: summary.reviewedRevision }
+      : {}),
+  });
   return `reviews/${file}`;
 }

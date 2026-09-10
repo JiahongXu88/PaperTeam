@@ -116,6 +116,7 @@ export const PROJECT_DIRECTORIES: readonly string[] = [
   "build",
   "workflow",
   "research",
+  "artifacts",
 ];
 
 export interface ProjectStoreOptions {
@@ -339,6 +340,11 @@ export class ProjectStore {
 
   researchDir(projectId: string): string {
     return join(this.projectDir(projectId), "research");
+  }
+
+  /** Draft / Final 产物（冻结 PDF + manifest；M4.7。旧项目无此目录：写入方 mkdir） */
+  artifactsDir(projectId: string): string {
+    return join(this.projectDir(projectId), "artifacts");
   }
 
   /** WorkflowRun 状态根目录（Authoritative State，PRD §5.5 workflow/） */
