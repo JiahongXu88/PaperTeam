@@ -1,6 +1,7 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-10（**M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
+> 更新日期：2026-09-11（**M5 启动：M5.0 计划冻结**；2026-09-10
+> **M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
 > M4.7 Draft/Final + Writer–Reviewer Closure；M4.6 Evidence Workbench；
 > 2026-09-09：M4.5 HITL UI / M4.4 Workflow Live View；更早见历史）
 
@@ -8,8 +9,57 @@
 
 **M4 — MVP Complete（✅，2026-09-10，v0.1.0-mvp）**：M4.8 Product Closure +
 Version Experience + Public Repository Readiness 收口后，M4 全部完成。定位
-**MVP / Alpha**（非 Production Stable）。下一阶段为 M5（Optional / Future，
-未开始）：Visual Reviewer、Skill install/update、Deployment、System Admin。
+**MVP / Alpha**（非 Production Stable）。
+
+**M5 — Chinese Academic Quality & Long-Running Reliability（🚧 进行中，
+2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
+中文论文质量、长程 Runtime 可靠性（M5.1）、Skill 受控接入（M5.3）、
+Style Revision Loop（M5.4）、单机 Linux / Docker 部署（M5.5）、真实论文
+A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer / Skill / Deployment /
+System Admin（可选方向）」的表述已被取代：Visual Reviewer 与 System
+Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
+
+**M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
+AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
+`event_gap` 合成事件类型），`PiRuntimeAdapter` 三项可靠性修复，全部先以
+红测试证明缺陷再修复：
+
+- **AbortSignal 语义统一（任务 B）**：`RunAgentInput.signal` 改由
+  `startAgent()` 统一消费（新增唯一消费点 `attachAbortSignal`：pre-aborted
+  立即进入取消语义 / 排队中短路 / 运行中 `session.abort()` 传导；监听器
+  `{once}` + settle 后显式移除双保险，无 leak）。`runAgent()` 退化为
+  `startAgent + await result` 的纯 convenience，删除了原先只在 wrapper 层
+  监听 signal 的第二套实现（直接调用 startAgent 时 signal 被完全忽略的
+  缺陷由此消除）。cancel 幂等增强：并发 cancel（signal + handle.cancel）
+  经 `abortRequested` 防重复触发 `session.abort()`。
+- **事件缓冲慢消费者修复（任务 C）**：修复前 events 数组「既做 replay
+  buffer 又丢最旧」而消费者用数组下标当游标——前部裁剪后下标错位，
+  慢消费者**静默漏事件**（红测试实证：读 10 条后缓冲裁剪，第 11 条交付
+  直接跳到缓冲头，漏 ~700 条无任何提示）；另有迭代器「唤醒先于注册」
+  竞态可致消费者永久悬挂（红测试超时实证）。修复：事件带任务内单调
+  递增 `seq`，缓冲前部裁剪以 `bufferStartSeq` 记账，每订阅者独立逻辑
+  游标；消费者落后于淘汰窗口（或订阅晚于截断）时先交付
+  `type="event_gap"` 合成事件（data: missedFrom/missedTo/missedCount），
+  再从缓冲头继续——缺口绝不静默。等待路径注册后复查，消除竞态悬挂。
+  缓冲上限保持 500；settle 后 drain、多订阅独立、提前 break 清理全部
+  保持（1203 事件快消费者零 gap 全量 / 慢消费者精确 gap 等场景覆盖）。
+- **queued cancellation（任务 D）**：修复前排队的任务即使早已 cancel，
+  也要等前序 run 完成获得 session 后才 settle（红测试实证：A 挂起 10
+  分钟场景下 B 的 cancel 同样卡 10 分钟）。per-session 调度从
+  `queueTail` promise 链改为**显式 FIFO 队列 + 泵**（`pumpSessionQueue`）：
+  cancelRun 对 queued 任务直接从队列摘除并即时终态 cancelled（不等前序
+  run，不 abort 正在运行的任务，不阻塞后续排队者）；「取消先于入队」
+  与「派发交接窗口」两个竞态路径分别由 acquireSession 入队前检查与后台
+  链取消检查兜底；close / releaseProjectSessions 同步即时收敛 queued
+  任务，close 增加迟到会话清扫（close 窗口内并发创建的会话不再泄漏）。
+- **测试**：PiRuntimeAdapter 专项 32 → 51 用例（新增 AbortSignal 8 /
+  事件缓冲 7 / queued cancel 4，均含红→绿过程）；`npm run build` /
+  `typecheck` / `npm test` 全绿（Backend 565 → 584 passed，Frontend 161
+  不变）。业务层零改动（全部走 runAgent，signal 语义由 startAgent 内建
+  自动生效）。
+- **M5.1 后续批次（未做，按 M5_PLAN）**：timeout 分层、token usage /
+  cost 统计、context budget、session rotation / TTL / GC、global
+  concurrency。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

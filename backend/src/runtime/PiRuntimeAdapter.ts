@@ -28,10 +28,11 @@
  *   持久化。sessionKey 派生（./sessionKey.ts）保持稳定，
  *   GenerationService 的显式 sessionKey 透传/回写语义保持兼容。
  * - 每个逻辑会话一个 AgentSession；Pi 的 Agent 单会话一次只允许一个
- *   run（"Agent is already processing"），Adapter 用 per-session 串行
- *   队列保证；不同 sessionKey 完全并发（Reviewer 三路 fan-out 即三个
- *   独立 AgentSession）。排队发生在 startAgent 返回句柄之后——taskId
- *   的立即可得性不依赖队列位置。
+ *   run（"Agent is already processing"），Adapter 用 per-session 显式
+ *   FIFO 队列保证（排队任务被取消可直接摘除并即时终态，不等前序 run，
+ *   也不阻塞后续排队者）；不同 sessionKey 完全并发（Reviewer 三路
+ *   fan-out 即三个独立 AgentSession）。排队发生在 startAgent 返回句柄
+ *   之后——taskId 的立即可得性不依赖队列位置。
  * - auto-compaction 经 SettingsManager.inMemory({compaction:{enabled:false}})
  *   关闭：M3 流程不依赖 compaction（manual compact 未使用，其 abort
  *   边界不在验证范围内，记录为上游边界）。
@@ -44,11 +45,19 @@
  * - 事件：会话创建时挂持久 listener，Pi 事件映射为 PaperTeam AgentEvent
  *   （原始事件对象不透传业务层）。handle.events 为「replay + live」
  *   语义：订阅即从头回放已缓存事件，随后 live 消费，settle 后迭代
- *   自然结束；多次订阅互相独立。
- * - cancel：幂等。排队中（未获得 session）的任务置取消标记，获得
- *   session 后直接 settle cancelled（不触发 prompt，也不误伤同会话
- *   正在运行的其他任务）；运行中的任务执行真实 session.abort（协作式：
- *   LLM 流中断、tool 执行收到 AbortSignal）。
+ *   自然结束；多次订阅互相独立。缓冲有界（保尾部 TASK_EVENT_BUFFER_LIMIT
+ *   条）：真实事件带单调递增 seq；消费者落后于淘汰窗口或订阅晚于截断
+ *   时，先交付 type="event_gap" 合成事件显式报告被淘汰区间（M5.1），
+ *   绝不静默漏事件。
+ * - cancel：幂等。排队中（未获得 session）的任务直接从 per-session 队列
+ *   摘除并即时终态 cancelled（不等前序 run，不触发 prompt，也不误伤同
+ *   会话正在运行的其他任务）；运行中的任务执行真实 session.abort
+ *   （协作式：LLM 流中断、tool 执行收到 AbortSignal）。
+ * - AbortSignal：RunAgentInput.signal 由 startAgent 统一消费（M5.1），
+ *   与 handle.cancel() 同一条取消链路：pre-aborted / 排队中 / 运行中
+ *   三态都进入取消语义；监听器 once + settle 后移除，不泄漏。
+ *   runAgent 只是 startAgent + await result 的 convenience wrapper，
+ *   不再有第二套 signal 实现。
  */
 
 import { randomUUID } from "node:crypto";
@@ -96,7 +105,7 @@ type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
 /** Pi ModelRuntime 实例类型（pi-coding-agent 公开导出；构造器私有，用类名取实例类型） */
 type PiModelRuntime = ModelRuntime;
 
-/** 每任务事件缓冲上限（超出丢最旧，保尾部；诊断用途足够） */
+/** 每任务事件缓冲上限（超出丢最旧保尾部；缺口经 event_gap 显式暴露，见 AgentEventIterator） */
 const TASK_EVENT_BUFFER_LIMIT = 500;
 
 /** 已完结任务记录上限（getTask 可回溯的窗口） */
@@ -179,25 +188,45 @@ interface ManagedSession {
   createdAt: string;
   lastUsedAt: string;
   runCount: number;
-  /** per-session 串行队列尾（Pi Agent 单会话同时只允许一个 run） */
-  queueTail: Promise<unknown>;
-  /** 当前在该会话上运行的任务（事件归属用） */
+  /**
+   * per-session 显式 FIFO 排队（Pi Agent 单会话同时只允许一个 run）。
+   * 显式队列（而非 promise 链）使排队任务被取消时可直接摘除并即时终态，
+   * 不等待前序 run（M5.1 queued cancellation）。
+   */
+  queue: SessionQueueEntry[];
+  /** 当前在该会话上运行的任务（事件归属 + 互斥判定；由队列泵管理） */
   activeTaskId?: string;
   /** 会话级事件订阅的退订函数（close/dispose 兜底） */
   unsubscribe?: () => void;
 }
 
+/** per-session 排队项：state 与「获得独占权」的 resolver */
+interface SessionQueueEntry {
+  state: RunState;
+  resolveAcquire: (release: () => void) => void;
+}
+
+/** 排队期间被取消的任务的 acquire 释放函数（不 pump：其后的排队者由泵续派） */
+const NOOP_RELEASE = (): void => {};
+
 /**
  * 任务运行状态：v2 handle 的事实源。
- * 事件以 events 数组为单一事实源，迭代器各自持游标回放。
+ * 事件以 events 数组为单一事实源（有界，保尾部）；消费者用 seq 逻辑游标
+ * 回放，缓冲前部裁剪由 bufferStartSeq 显式记账，缺口经 event_gap 暴露。
  */
 interface RunState {
   taskId: string;
   sessionKey: string;
+  /** 发起任务的角色标识（排队取消路径构建终态用） */
+  agentId: string;
   /** 后台链启动时刻（诊断） */
   startedAt: string;
-  /** 映射后的任务事件（单一事实源；迭代器按游标回放） */
+  /** 映射后的任务事件（单一事实源；只保留最近 TASK_EVENT_BUFFER_LIMIT 条） */
   events: AgentEvent[];
+  /** events[0] 的事件 seq（events 为空时 === nextSeq；前部裁剪后右移） */
+  bufferStartSeq: number;
+  /** 下一个待分配的事件 seq（单调递增，从 1 开始） */
+  nextSeq: number;
   /** events 迭代器的唤醒回调（事件新增 / settle 时全部唤醒后清空） */
   eventWaiters: Set<() => void>;
   /** 任务是否已达终态（result 已 resolve/reject） */
@@ -212,8 +241,10 @@ interface RunState {
   rejectResult: (error: unknown) => void;
   /** queued：等待 per-session 队列；running：已独占 session 执行中 */
   phase: "queued" | "running";
-  /** cancel 请求（幂等标记；queued 任务获得 session 后生效） */
+  /** cancel 请求（幂等标记；queued 任务据此即时终态或由队列泵/后台链兜底短路） */
   cancelRequested: boolean;
+  /** running 阶段已触发过 session.abort（防并发 cancel 重复 abort） */
+  abortRequested: boolean;
   /** 后台 run 链完全收敛（cancel/close 等待用） */
   runSettled: Promise<void>;
 }
@@ -223,10 +254,11 @@ interface TaskRecord {
   task: AgentTask;
 }
 
-/** events 返回的迭代器（独立游标；break 经 return 清理订阅） */
+/** events 返回的迭代器（独立 seq 逻辑游标；break 经 return 清理订阅） */
 class AgentEventIterator implements AsyncIterator<AgentEvent>, AsyncIterable<AgentEvent> {
   private readonly state: RunState;
-  private cursor = 0;
+  /** 逻辑游标（下一个待读事件的 seq；-1 = 未初始化，首次 next 取 bufferStartSeq） */
+  private cursor = -1;
   private waiter: (() => void) | null = null;
 
   constructor(state: RunState) {
@@ -239,24 +271,44 @@ class AgentEventIterator implements AsyncIterator<AgentEvent>, AsyncIterable<Age
 
   async next(): Promise<IteratorResult<AgentEvent>> {
     const state = this.state;
+    if (this.cursor === -1) {
+      this.cursor = state.bufferStartSeq;
+      if (this.cursor > 1) {
+        // 订阅晚于截断：先显式报告头部缺口，再从缓冲头开始
+        return { done: false, value: gapEvent(state.taskId, 1, this.cursor - 1) };
+      }
+    }
     // replay（已缓存）与 live（新事件）走同一游标逻辑；不变量：
     // settle 后 events 不再增长，排空即 done。
     while (true) {
-      if (this.cursor < state.events.length) {
-        const event = state.events[this.cursor];
+      if (this.cursor < state.bufferStartSeq) {
+        // 消费者落后于淘汰窗口：显式报告被淘汰区间，再从缓冲头继续——
+        // 绝不静默跳过（数组前部裁剪移动的是物理下标，逻辑位置由 seq 保证）
+        const missedFrom = this.cursor;
+        const missedTo = state.bufferStartSeq - 1;
+        this.cursor = state.bufferStartSeq;
+        return { done: false, value: gapEvent(state.taskId, missedFrom, missedTo) };
+      }
+      const index = this.cursor - state.bufferStartSeq;
+      const event = index < state.events.length ? state.events[index] : undefined;
+      if (event !== undefined) {
         this.cursor += 1;
-        if (event !== undefined) {
-          return { done: false, value: structuredClone(event) };
-        }
-        continue;
+        return { done: false, value: structuredClone(event) };
       }
       if (state.settled) {
         return { done: true, value: undefined };
       }
-      // 等待新事件或 settle（唤醒回调在 break 后不再注册，悬挂 promise 由 GC 回收）
+      // 等待新事件或 settle；注册后立即复查，杜绝「唤醒先于注册」的竞态悬挂
       await new Promise<void>((resolve) => {
-        this.waiter = resolve;
-        state.eventWaiters.add(resolve);
+        const wake = (): void => {
+          state.eventWaiters.delete(wake);
+          resolve();
+        };
+        this.waiter = wake;
+        state.eventWaiters.add(wake);
+        if (this.cursor < state.nextSeq || state.settled) {
+          wake();
+        }
       });
       this.waiter = null;
     }
@@ -269,6 +321,16 @@ class AgentEventIterator implements AsyncIterator<AgentEvent>, AsyncIterable<Age
     }
     return { done: true, value: undefined };
   }
+}
+
+/** 缓冲淘汰缺口的显式标记（合成事件；不携带 seq，见 AgentEvent） */
+function gapEvent(taskId: string, missedFrom: number, missedTo: number): AgentEvent {
+  return {
+    taskId,
+    type: "event_gap",
+    ts: new Date().toISOString(),
+    data: { missedFrom, missedTo, missedCount: missedTo - missedFrom + 1 },
+  };
 }
 
 export class PiRuntimeAdapter implements AgentRuntime {
@@ -557,7 +619,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       resolveSessionKey(input) ?? adhocSessionKey(input.agentId || "default");
     const scope = sanitizeContextScope(input.contextScope);
     const taskId = `pi-${randomUUID()}`;
-    const state = this.createRunState(taskId, sessionKey);
+    const state = this.createRunState(taskId, sessionKey, input.agentId || "default");
 
     // 模型未配置：句柄立即结构化失败（不进 session；口径与 v1 runAgent 一致）
     if (this.model === undefined) {
@@ -579,17 +641,21 @@ export class PiRuntimeAdapter implements AgentRuntime {
     // startAgent 不 await 这条链——taskId 与句柄立即对上层可见。
     state.runSettled = (async () => {
       let release: (() => void) | undefined;
-      let managed: ManagedSession | undefined;
       try {
-        managed = await this.getOrCreateSession(sessionKey, input, scope);
-        release = await this.acquireSession(managed);
+        const managed = await this.getOrCreateSession(sessionKey, input, scope);
+        release = await this.acquireSession(managed, state);
+        if (state.settled) {
+          // 排队期间被取消并已即时终态（出队路径，见 trySettleQueuedCancel）：
+          // 不入场执行（activeTaskId 由队列泵管理，此时也未被置位）
+          return;
+        }
         state.phase = "running";
-        managed.activeTaskId = taskId;
         managed.runCount += 1;
         managed.lastUsedAt = new Date().toISOString();
 
         if (state.cancelRequested) {
-          // 排队期间被取消：不触发 prompt（也不误伤同会话前序 run）
+          // 派发交接窗口内的取消（尚未及从队列摘除）：不触发 prompt，
+          // 也不误伤同会话前序 / 后续任务
           this.log(`[pi-runtime] startAgent ${taskId} 在排队期间被取消，直接终态`);
           this.settleTask(
             state,
@@ -609,43 +675,52 @@ export class PiRuntimeAdapter implements AgentRuntime {
       } catch (error) {
         this.settleFailure(state, error);
       } finally {
-        if (managed !== undefined) {
-          if (managed.activeTaskId === taskId) {
-            managed.activeTaskId = undefined;
-          }
-        }
         release?.();
         this.inFlight.delete(taskId);
       }
     })();
     this.inFlight.set(taskId, state);
 
+    // input.signal 统一在 startAgent 消费（M5.1）：runAgent 只是
+    // startAgent + await result，不再有第二套 signal 实现。
+    this.attachAbortSignal(state, input.signal);
+
     return this.makeHandle(state);
   }
 
-  /** convenience：startAgent + await result（同步终态语义，业务层零改动）；input.signal 触发即 cancel */
+  /**
+   * convenience：startAgent + await result（同步终态语义，业务层零改动）。
+   * input.signal 的取消语义由 startAgent 内建（见 attachAbortSignal）。
+   */
   async runAgent(input: RunAgentInput): Promise<AgentTask> {
     const handle = await this.startAgent(input);
-    const signal = input.signal;
-    if (signal === undefined) {
-      return handle.result();
-    }
-    if (signal.aborted) {
-      await handle.cancel();
-      return handle.result();
-    }
-    const onAbort = () => {
-      void handle.cancel();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    try {
-      return await handle.result();
-    } finally {
-      signal.removeEventListener("abort", onAbort);
-    }
+    return handle.result();
   }
 
-  private createRunState(taskId: string, sessionKey: string): RunState {
+  /**
+   * RunAgentInput.signal 的唯一消费点：
+   * - pre-aborted：立即走取消语义（queued 短路 / running abort）
+   * - 监听器 { once } + settle 后显式移除，双保险不泄漏
+   * - settle 后到达的 abort 是幂等 no-op（cancelRun 对终态任务直接返回）
+   */
+  private attachAbortSignal(state: RunState, signal: AbortSignal | undefined): void {
+    if (signal === undefined) {
+      return;
+    }
+    const trigger = () => {
+      void this.cancelRun(state).catch(() => {});
+    };
+    if (signal.aborted) {
+      trigger();
+      return;
+    }
+    signal.addEventListener("abort", trigger, { once: true });
+    void state.runSettled.then(() => {
+      signal.removeEventListener("abort", trigger);
+    });
+  }
+
+  private createRunState(taskId: string, sessionKey: string, agentId: string): RunState {
     let resolveResult!: (task: AgentTask) => void;
     let rejectResult!: (error: unknown) => void;
     const resultPromise = new Promise<AgentTask>((resolve, reject) => {
@@ -655,8 +730,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return {
       taskId,
       sessionKey,
+      agentId,
       startedAt: new Date().toISOString(),
       events: [],
+      bufferStartSeq: 1,
+      nextSeq: 1,
       eventWaiters: new Set(),
       settled: false,
       resultPromise,
@@ -664,6 +742,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       rejectResult,
       phase: "queued",
       cancelRequested: false,
+      abortRequested: false,
       runSettled: Promise.resolve(),
     };
   }
@@ -708,19 +787,30 @@ export class PiRuntimeAdapter implements AgentRuntime {
     }
   }
 
-  /** 取消单个 run（幂等；handle.cancel 与 close 共用） */
+  /** 取消单个 run（幂等；handle.cancel、input.signal、close 共用） */
   private async cancelRun(state: RunState): Promise<void> {
     if (state.settled) {
       return; // 已完成 / 已取消 / 已失败：幂等 no-op
     }
     state.cancelRequested = true;
     if (state.phase === "running") {
-      const managed = this.sessions.get(state.sessionKey);
-      if (managed !== undefined) {
-        await managed.session.abort().catch(() => {});
+      // 并发 cancel（signal + handle.cancel）只触发一次真实 abort
+      if (!state.abortRequested) {
+        state.abortRequested = true;
+        const managed = this.sessions.get(state.sessionKey);
+        if (managed !== undefined) {
+          await managed.session.abort().catch(() => {});
+        }
       }
+      await state.runSettled;
+      return;
     }
-    // queued 任务：标记已置位，获得 session 后直接终态（见 startAgent 后台链）
+    // queued 任务：优先从队列即时摘除终态（不等前序 run）；
+    // 会话创建中 / 派发交接窗口内则由后台链兜底。
+    if (this.trySettleQueuedCancel(state)) {
+      await state.runSettled;
+      return;
+    }
     await state.runSettled;
   }
 
@@ -986,7 +1076,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       createdAt: now,
       lastUsedAt: now,
       runCount: 0,
-      queueTail: Promise.resolve(),
+      queue: [],
     };
     managed.unsubscribe = this.wireSessionEvents(managed);
     this.sessions.set(sessionKey, managed);
@@ -1009,15 +1099,84 @@ export class PiRuntimeAdapter implements AgentRuntime {
   }
 
   /** per-session 互斥（Pi Agent 单会话一次一个 run；跨会话完全并发） */
-  private async acquireSession(managed: ManagedSession): Promise<() => void> {
-    const previous = managed.queueTail;
-    let release!: () => void;
-    const gate = new Promise<void>((resolveGate) => {
-      release = resolveGate;
+  private acquireSession(managed: ManagedSession, state: RunState): Promise<() => void> {
+    return new Promise((resolveAcquire) => {
+      // 取消先于入队到达（signal/abort 与后台链竞态）且会话忙：泵不会
+      // 扫描忙会话的队列，直接不排队、即时终态
+      if (state.cancelRequested && managed.activeTaskId !== undefined) {
+        this.dispatchCancelAtQueue({ state, resolveAcquire });
+        return;
+      }
+      managed.queue.push({ state, resolveAcquire });
+      this.pumpSessionQueue(managed);
     });
-    managed.queueTail = gate;
-    await previous;
-    return release;
+  }
+
+  /**
+   * 会话队列泵：空闲即派发队首；排队期间已被取消的条目直接以 cancelled
+   * 终态出队（不入场执行），并继续检查后续排队者——被取消条目不阻塞队列。
+   */
+  private pumpSessionQueue(managed: ManagedSession): void {
+    while (managed.activeTaskId === undefined) {
+      const entry = managed.queue.shift();
+      if (entry === undefined) {
+        return;
+      }
+      if (entry.state.settled || entry.state.cancelRequested) {
+        this.dispatchCancelAtQueue(entry);
+        continue;
+      }
+      managed.activeTaskId = entry.state.taskId;
+      const state = entry.state;
+      entry.resolveAcquire(() => {
+        if (managed.activeTaskId === state.taskId) {
+          managed.activeTaskId = undefined;
+        }
+        this.pumpSessionQueue(managed);
+      });
+      return;
+    }
+  }
+
+  /** 队列中的任务以取消终态收场：settle + 释放其 acquire（noop，不重复泵） */
+  private dispatchCancelAtQueue(entry: SessionQueueEntry): void {
+    if (!entry.state.settled) {
+      this.log(
+        `[pi-runtime] startAgent ${entry.state.taskId} 在排队中被取消，直接终态（不等待前序 run）`,
+      );
+      this.settleTask(
+        entry.state,
+        this.buildTask({
+          taskId: entry.state.taskId,
+          agentId: entry.state.agentId,
+          status: "cancelled",
+          sessionKey: entry.state.sessionKey,
+          error: "任务已取消（开始执行前）",
+        }),
+      );
+    }
+    entry.resolveAcquire(NOOP_RELEASE);
+  }
+
+  /**
+   * queued 任务被取消：直接从所属会话队列摘除并即时终态。
+   * 返回 false 表示尚未进入任何队列（会话创建中 / 正在派发交接），
+   * 由后台链获得会话后的取消检查兜底。
+   */
+  private trySettleQueuedCancel(state: RunState): boolean {
+    const managed = this.sessions.get(state.sessionKey);
+    if (managed === undefined) {
+      return false;
+    }
+    const index = managed.queue.findIndex((entry) => entry.state === state);
+    if (index < 0) {
+      return false;
+    }
+    const [entry] = managed.queue.splice(index, 1);
+    if (entry !== undefined) {
+      this.dispatchCancelAtQueue(entry);
+    }
+    return true;
   }
 
   // ---- 事件（Pi → PaperTeam AgentEvent 映射；写入 RunState 事实源） ----
@@ -1033,9 +1192,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
       if (mapped === undefined) {
         return;
       }
+      mapped.seq = state.nextSeq;
+      state.nextSeq += 1;
       state.events.push(mapped);
       if (state.events.length > TASK_EVENT_BUFFER_LIMIT) {
-        state.events.splice(0, state.events.length - TASK_EVENT_BUFFER_LIMIT);
+        const dropped = state.events.length - TASK_EVENT_BUFFER_LIMIT;
+        state.events.splice(0, dropped);
+        state.bufferStartSeq += dropped;
       }
       this.wakeEventWaiters(state);
     });
@@ -1109,6 +1272,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
         void this.sessions.get(state.sessionKey)?.session.abort().catch(() => {});
       }
     }
+    // queued 任务即时终态（不等同项目前序 run 收敛）
+    for (const state of matchingRuns) {
+      if (state.phase === "queued") {
+        this.trySettleQueuedCancel(state);
+      }
+    }
     await Promise.allSettled(matchingRuns.map((state) => state.runSettled));
     for (const managed of matchingSessions) {
       this.sessions.delete(managed.key);
@@ -1138,6 +1307,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
         }
       }
     }
+    // queued 任务即时终态（不等前序 run 收敛）；派发交接中的由后台链兜底
+    for (const state of states) {
+      if (state.phase === "queued") {
+        this.trySettleQueuedCancel(state);
+      }
+    }
     // 等全部 run 收敛（含 queued 任务的直接终态路径）
     await Promise.allSettled(states.map((state) => state.runSettled));
 
@@ -1146,6 +1321,15 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.eventForwarders.clear();
     await Promise.allSettled(
       sessions.map(async (managed) => {
+        managed.unsubscribe?.();
+        managed.session.dispose();
+      }),
+    );
+    // 兜底：close 窗口内并发创建、晚于上方快照落位的会话一并释放（防泄漏）
+    const lateSessions = [...this.sessions.values()];
+    this.sessions.clear();
+    await Promise.allSettled(
+      lateSessions.map(async (managed) => {
         managed.unsubscribe?.();
         managed.session.dispose();
       }),

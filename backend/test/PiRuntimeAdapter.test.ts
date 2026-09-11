@@ -13,6 +13,7 @@
  */
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -29,6 +30,7 @@ import { Type } from "typebox";
 
 import { PiRuntimeAdapter } from "../src/runtime/PiRuntimeAdapter.js";
 import type { PiRuntimeOptions } from "../src/runtime/PiRuntimeAdapter.js";
+import type { AgentEvent } from "../src/runtime/types.js";
 import { resolveRoleConfig } from "../src/runtime/pi/roleConfig.js";
 import {
   AgentRunFailedError,
@@ -43,7 +45,7 @@ type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
 // ---------------------------------------------------------------------------
 
 type FakeBehavior =
-  | { kind: "complete"; output: string }
+  | { kind: "complete"; output: string; streamEvents?: number; streamGapMs?: number }
   | { kind: "errorStop"; message: string }
   | { kind: "preflightReject"; message: string }
   | { kind: "hangUntilAbort" };
@@ -117,11 +119,30 @@ class FakeAgentSession {
         stopReason: isError ? "error" : "stop",
         ...(isError ? { errorMessage: behavior.message } : {}),
       };
-      this.emit({
-        type: "message_update",
-        message,
-        assistantMessageEvent: { type: "text_delta", delta: text2.slice(0, 10) },
-      } as unknown as AgentSessionEvent);
+      if (behavior.kind === "complete" && behavior.streamEvents !== undefined) {
+        // 批量流事件（事件缓冲测试）：每条 delta 唯一编号 e-<i>。
+        // streamGapMs：undefined=同步突发（一个 tick 内全部落盘）；
+        // 0=setImmediate 逐条让出事件循环（消费者可实时跟读）；
+        // >0=setTimeout(ms) 间隔。
+        for (let index = 0; index < behavior.streamEvents; index += 1) {
+          this.emit({
+            type: "message_update",
+            message,
+            assistantMessageEvent: { type: "text_delta", delta: `e-${index}` },
+          } as unknown as AgentSessionEvent);
+          if (behavior.streamGapMs === 0) {
+            await new Promise((resolve) => setImmediate(resolve));
+          } else if ((behavior.streamGapMs ?? 0) > 0) {
+            await new Promise((resolve) => setTimeout(resolve, behavior.streamGapMs));
+          }
+        }
+      } else {
+        this.emit({
+          type: "message_update",
+          message,
+          assistantMessageEvent: { type: "text_delta", delta: text2.slice(0, 10) },
+        } as unknown as AgentSessionEvent);
+      }
       this.messages.push(message);
       this.emit({ type: "agent_end", messages: [message], willRetry: false } as AgentSessionEvent);
       this.emit({ type: "agent_settled" } as AgentSessionEvent);
@@ -149,6 +170,24 @@ class FakeAgentSession {
   }
 
   async waitForIdle(): Promise<void> {}
+
+  /** 测试辅助：让 hangUntilAbort 挂起中的 prompt 以正常输出收尾（模拟 A 正常完成） */
+  completePending(output: string): void {
+    if (this.releasePending !== undefined) {
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: output }],
+        stopReason: "stop",
+      };
+      this.messages.push(message);
+      this.emit({ type: "agent_end", messages: [message], willRetry: false } as AgentSessionEvent);
+      this.emit({ type: "agent_settled" } as AgentSessionEvent);
+      const release = this.releasePending;
+      this.releasePending = undefined;
+      this.pending = false;
+      release();
+    }
+  }
 
   dispose(): void {
     this.disposed = true;
@@ -645,6 +684,550 @@ describe("PiRuntimeAdapter（Level 1：并发 section review 语义）", () => {
     // 全部 settle 后重配不再拒绝（session 释放语义不变）
     await expect(adapter.reconfigure("fake/fake-2")).resolves.toMatchObject({ phase: "configured" });
     await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AbortSignal 语义（M5.1 任务 B：startAgent 与 runAgent 两入口统一）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（AbortSignal 语义：startAgent 统一消费 input.signal）", () => {
+  it("startAgent + pre-aborted signal：不执行 prompt，终态 cancelled", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    controller.abort();
+    const handle = await adapter.startAgent({
+      agentId: "writer",
+      task: "永远不该执行",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    const task = await handle.result();
+    expect(task.status).toBe("cancelled");
+    // prompt 从未执行；abort 从未触发（任务没进 running）
+    expect(factory.created[0]?.session.prompts).toEqual([]);
+    expect(factory.created[0]?.session.abortedCount).toBe(0);
+    await adapter.close();
+  });
+
+  it("startAgent 运行中 abort signal → session.abort 传导 → cancelled", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    const handle = await adapter.startAgent({
+      agentId: "reviewer",
+      task: "慢审稿",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(factory.created[0]?.session.pending).toBe(true);
+    controller.abort();
+    const task = await handle.result();
+    expect(task.status).toBe("cancelled");
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+    await adapter.close();
+  });
+
+  it("startAgent 排队中 abort signal（同会话前序任务运行中）：进入取消语义，前序不误伤", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "第一个",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const controller = new AbortController();
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "第二个",
+      projectId: "p",
+      contextScope: "writing/x",
+      signal: controller.signal,
+    });
+    controller.abort();
+    // 前序任务未受影响（仍 pending）；随后正常收敛
+    expect(factory.created[0]?.session.pending).toBe(true);
+    await first.cancel();
+    const secondTask = await second.result();
+    expect(secondTask.status).toBe("cancelled");
+    expect((await first.result()).status).toBe("cancelled");
+    expect(factory.created[0]?.session.prompts).toEqual(["第一个"]);
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+    await adapter.close();
+  });
+
+  it("runAgent + pre-aborted signal：终态 cancelled（与 startAgent 同一语义）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "不该出现" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    controller.abort();
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "x",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    expect(task.status).toBe("cancelled");
+    expect(factory.created[0]?.session.prompts).toEqual([]);
+    await adapter.close();
+  });
+
+  it("runAgent 运行中 abort → cancelled + abort 传导", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    const taskPromise = adapter.runAgent({
+      agentId: "writer",
+      task: "慢任务",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    controller.abort();
+    const task = await taskPromise;
+    expect(task.status).toBe("cancelled");
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+    await adapter.close();
+  });
+
+  it("cancel 幂等：signal abort 与 handle.cancel 并发只触发一次 session.abort；settle 后 abort 无副作用", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    const handle = await adapter.startAgent({
+      agentId: "w",
+      task: "慢",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    controller.abort();
+    await handle.cancel(); // 并发重复取消
+    const task = await handle.result();
+    expect(task.status).toBe("cancelled");
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+    await handle.cancel(); // 终态后再次 cancel：幂等 no-op
+    expect((await handle.result()).status).toBe("cancelled");
+    await adapter.close();
+  });
+
+  it("监听器清理：运行期间恰好一个 abort listener，settle 后归零（无 leak）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    const handle = await adapter.startAgent({
+      agentId: "w",
+      task: "慢",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(1);
+    controller.abort();
+    const task = await handle.result();
+    expect(task.status).toBe("cancelled");
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    await adapter.close();
+  });
+
+  it("任务正常完成后 signal 才 abort：终态不被改变，监听器已被移除", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done" });
+    const adapter = await makeLevel1Adapter(factory);
+    const controller = new AbortController();
+    const task = await adapter.runAgent({
+      agentId: "w",
+      task: "x",
+      projectId: "p",
+      signal: controller.signal,
+    });
+    expect(task.status).toBe("completed");
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0);
+    controller.abort(); // settle 后的 abort：不抛错、不改变终态
+    expect((await adapter.getTask(task.taskId)).status).toBe("completed");
+    await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 事件缓冲（M5.1 任务 C：seq 逻辑游标 + gap 显式暴露）
+// ---------------------------------------------------------------------------
+
+/** 收集一个迭代器的全部剩余事件（到 done 为止） */
+async function drainEvents(iterable: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
+  const collected: AgentEvent[] = [];
+  for await (const event of iterable) {
+    collected.push(event);
+  }
+  return collected;
+}
+
+/**
+ * 断言事件交付序列按 seq 连续：真实事件 seq 逐 +1；缺口只能以 event_gap
+ * 标记出现，且必须紧跟其后精确报告被跳过的区间——「静默跳到缓冲头」
+ * （M5.1 修复前的缺陷）无法通过本断言。startAfter：流中间开始的序列
+ * （如慢消费者 gap 后的尾部）传入其前一个已读 seq。
+ */
+function expectContiguousSeq(events: AgentEvent[], startAfter = 0): void {
+  let expected = startAfter;
+  for (const event of events) {
+    if (event.type === "event_gap") {
+      const missedFrom = event.data?.["missedFrom"];
+      const missedTo = event.data?.["missedTo"];
+      const missedCount = event.data?.["missedCount"];
+      expect(missedFrom).toBe(expected + 1);
+      expect(missedTo).toBeGreaterThan(missedFrom as number);
+      expect(missedCount).toBe((missedTo as number) - (missedFrom as number) + 1);
+      expected = missedTo as number;
+      continue;
+    }
+    const seq = event.seq;
+    expect(typeof seq).toBe("number");
+    expect(seq).toBe(expected + 1);
+    expected = seq as number;
+  }
+}
+
+describe("PiRuntimeAdapter（事件缓冲：慢消费者不静默漏事件）", () => {
+  it("消费者已订阅但停读，缓冲整体轮转后：先收到头部 gap（1..703），再连续读尾部", async () => {
+    // 无 pacing：1203 个事件在一个同步突发内落盘（共 1 agent_start +
+    // 1200 update + agent_end + agent_settled），消费者首读发生在裁剪之后。
+    // 修复前：cursor 是数组下标，静默从缓冲头（704）继续，漏 703 条无提示。
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 1200 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    const iterator = handle.events()[Symbol.asyncIterator]();
+    // 读 10 个交付：第一个必须是显式 gap（订阅后未读区间 1..703 已被淘汰）
+    const head: AgentEvent[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const step = await iterator.next();
+      expect(step.done).toBe(false);
+      head.push(step.value as AgentEvent);
+    }
+    const task = await handle.result();
+    expect(task.status).toBe("completed");
+    expect(head[0]?.type).toBe("event_gap");
+    expect(head[0]?.data).toMatchObject({ missedFrom: 1, missedTo: 703, missedCount: 703 });
+    // 排空到结束：全部交付（含 gap 标记）按 seq 连续，终结于 1203
+    const tail: AgentEvent[] = [];
+    while (true) {
+      const step = await iterator.next();
+      if (step.done) {
+        break;
+      }
+      tail.push(step.value as AgentEvent);
+    }
+    expectContiguousSeq([...head, ...tail]);
+    expect(tail[tail.length - 1]?.seq).toBe(1203);
+    await adapter.close();
+  });
+
+  it("慢消费者读 10 个后停读（逐条 pacing）：gap 精确报告 11..703，再从 704 连续到底", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 1200, streamGapMs: 0 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    const iterator = handle.events()[Symbol.asyncIterator]();
+    const head: AgentEvent[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const step = await iterator.next();
+      head.push(step.value as AgentEvent);
+    }
+    // 此时确实读到了 seq 1..10（逐条 pacing 下实时跟读）
+    expectContiguousSeq(head);
+    expect(head[head.length - 1]?.seq).toBe(10);
+    await handle.result();
+    const tail: AgentEvent[] = [];
+    while (true) {
+      const step = await iterator.next();
+      if (step.done) {
+        break;
+      }
+      tail.push(step.value as AgentEvent);
+    }
+    // 第 11 个交付：gap 精确报告 11..703（693 条被淘汰）
+    expect(tail[0]?.type).toBe("event_gap");
+    expect(tail[0]?.data).toMatchObject({ missedFrom: 11, missedTo: 703, missedCount: 693 });
+    // gap 后从 704 连续到 1203；settle 后排空即结束（头部已读到 seq 10）
+    expectContiguousSeq(tail, 10);
+    expect(tail[tail.length - 1]?.seq).toBe(1203);
+    expect(tail).toHaveLength(1 + 500);
+    await adapter.close();
+  }, 30_000);
+
+  it("快消费者（live 跟读）：>1000 事件全部送达，seq 1..N 连续、零 gap", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 1200, streamGapMs: 0 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    const events = await drainEvents(handle.events());
+    const task = await handle.result();
+    expect(task.status).toBe("completed");
+    // agent_start + 1200 message_update + agent_end + agent_settled
+    expect(events).toHaveLength(1203);
+    expect(events.some((event) => event.type === "event_gap")).toBe(false);
+    expectContiguousSeq(events);
+    expect(events[0]?.type).toBe("agent_start");
+    expect(events[events.length - 1]?.seq).toBe(1203);
+    expect(events[events.length - 1]?.type).toBe("agent_settled");
+    await adapter.close();
+  }, 30_000);
+
+  it("订阅晚于截断（settle 后 drain）：先收到头部 gap（1..103），再 replay 尾部 500", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 600 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    await handle.result();
+    const events = await drainEvents(handle.events());
+    // 603 事件 → 缓冲保留 104..603；首个交付显式报告 1..103 已被淘汰
+    expect(events[0]?.type).toBe("event_gap");
+    expect(events[0]?.data).toMatchObject({ missedFrom: 1, missedTo: 103, missedCount: 103 });
+    expectContiguousSeq(events);
+    expect(events[events.length - 1]?.seq).toBe(603);
+    expect(events).toHaveLength(1 + 500);
+    await adapter.close();
+  });
+
+  it("同一 run 两个速度不同的消费者互不干扰：快者零 gap 全量、慢者 gap + 尾部", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 600, streamGapMs: 0 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    // 快消费者：live 跟读全部
+    const fastPromise = drainEvents(handle.events());
+    // 慢消费者：读 3 个后停下等任务结束
+    const slowIterator = handle.events()[Symbol.asyncIterator]();
+    const slowHead: AgentEvent[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const step = await slowIterator.next();
+      slowHead.push(step.value as AgentEvent);
+    }
+    await handle.result();
+    const slowTail: AgentEvent[] = [];
+    while (true) {
+      const step = await slowIterator.next();
+      if (step.done) {
+        break;
+      }
+      slowTail.push(step.value as AgentEvent);
+    }
+    const fast = await fastPromise;
+    // 快消费者：603 个事件、seq 1..603、零 gap
+    expect(fast).toHaveLength(603);
+    expect(fast.some((event) => event.type === "event_gap")).toBe(false);
+    expectContiguousSeq(fast);
+    // 慢消费者：3 个（seq 1..3）+ gap（4..103）+ 尾部 104..603
+    expectContiguousSeq(slowHead);
+    expect(slowHead[slowHead.length - 1]?.seq).toBe(3);
+    expect(slowTail[0]?.data).toMatchObject({ missedFrom: 4, missedTo: 103, missedCount: 100 });
+    expectContiguousSeq(slowTail, 3);
+    expect(slowTail[slowTail.length - 1]?.seq).toBe(603);
+    await adapter.close();
+  }, 30_000);
+
+  it("settle 后 drain（无截断的小任务）：全量 replay、seq 连续、自然结束", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 8 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    await handle.result();
+    const events = await drainEvents(handle.events());
+    expect(events.some((event) => event.type === "event_gap")).toBe(false);
+    expectContiguousSeq(events);
+    expect(events).toHaveLength(11); // agent_start + 8 update + agent_end + agent_settled
+    await adapter.close();
+  });
+
+  it("迭代器提前 break：waiter 清理、settle 不悬挂、后续新订阅可正常 replay", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done", streamEvents: 50, streamGapMs: 0 });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "main", task: "x", projectId: "p" });
+    let consumed = 0;
+    for await (const _event of handle.events()) {
+      consumed += 1;
+      if (consumed === 5) {
+        break; // 触发 iterator.return()：清理 waiter
+      }
+    }
+    expect(consumed).toBe(5);
+    const task = await handle.result(); // settle 不受悬挂 waiter 影响
+    expect(task.status).toBe("completed");
+    // 新订阅：完整 replay（53 事件 < 500，无截断）
+    const events = await drainEvents(handle.events());
+    expect(events).toHaveLength(53);
+    expectContiguousSeq(events);
+    await adapter.close();
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// queued cancellation（M5.1 任务 D：排队任务取消不等前序 run）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（queued cancellation：取消排队任务无需等待前序 run）", () => {
+  it("A running / B queued / cancel B → B 在 A 结束前得到 cancelled 终态；A 不受影响", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(factory.created[0]?.session.pending).toBe(true);
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    const secondCancelled = second.cancel();
+    // 关键断言：B 不等 A（A 仍 pending 时 B 已终态 cancelled）
+    const secondTask = await Promise.race([
+      second.result(),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("排队任务 B 未在前序 run 完成前终态")), 1_000).unref?.();
+      }),
+    ]);
+    expect(secondTask.status).toBe("cancelled");
+    // A 未被误伤：仍 pending、从未被 abort
+    expect(factory.created[0]?.session.pending).toBe(true);
+    expect(factory.created[0]?.session.abortedCount).toBe(0);
+    await secondCancelled;
+    // 随后 A 正常收敛
+    await first.cancel();
+    expect((await first.result()).status).toBe("cancelled");
+    expect(factory.created[0]?.session.prompts).toEqual(["A"]);
+    await adapter.close();
+  });
+
+  it("A running / B queued / C queued / cancel B / A 正常完成 → C 照常执行", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    const third = await adapter.startAgent({
+      agentId: "w",
+      task: "C",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    await second.cancel();
+    expect((await second.result()).status).toBe("cancelled");
+    // A 正常完成（非 abort）；C 随后以正常行为执行
+    factory.setBehavior({ kind: "complete", output: "C done" });
+    factory.created[0]?.session.completePending("A done");
+    expect((await first.result()).status).toBe("completed");
+    // C 排在 B 之后，B 被摘除后 C 正常获得会话并执行
+    const session = factory.created[0];
+    expect(session).toBeDefined();
+    for (let attempt = 0; attempt < 100 && session!.session.prompts.length < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const thirdTask = await third.result();
+    expect(thirdTask.status).toBe("completed");
+    expect(factory.created[0]?.session.prompts).toEqual(["A", "C"]);
+    expect(factory.created[0]?.session.abortedCount).toBe(0);
+    await adapter.close();
+  });
+
+  it("runAgent(input.signal) 触发排队取消：同样不等前序 run", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    for (let attempt = 0; attempt < 100 && !factory.created[0]?.session.pending; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const controller = new AbortController();
+    const secondTaskPromise = adapter.runAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+      signal: controller.signal,
+    });
+    controller.abort();
+    const secondTask = await Promise.race([
+      secondTaskPromise,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("signal 取消的排队任务未在前序 run 完成前终态")), 1_000).unref?.();
+      }),
+    ]);
+    expect(secondTask.status).toBe("cancelled");
+    expect(factory.created[0]?.session.pending).toBe(true);
+    expect(factory.created[0]?.session.prompts).toEqual(["A"]);
+    await first.cancel();
+    await adapter.close();
+  });
+
+  it("close：排队中任务即时收敛 cancelled（不等前序），无遗留 active run", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    await adapter.close();
+    expect((await first.result()).status).toBe("cancelled");
+    expect((await second.result()).status).toBe("cancelled");
+    expect(adapter.listActiveTasks()).toHaveLength(0);
   });
 });
 

@@ -79,8 +79,12 @@ export interface RunAgentInput {
   /** 本次任务的整体超时（毫秒）；缺省使用 Runtime 配置的默认值 */
   timeoutMs?: number;
   /**
-   * 协作式取消信号（如 Workflow stage 的 ctx.signal）。触发后 Runtime 中断在途
-   * 生成 / 工具执行并以 cancelled 终态收尾，而不是等到 timeoutMs 才释放。
+   * 协作式取消信号（如 Workflow stage 的 ctx.signal）。由 startAgent 统一
+   * 消费（M5.1 起与 handle.cancel 同一条取消链路；runAgent 只是
+   * startAgent + await result，不含第二套 signal 实现）：触发后 Runtime
+   * 中断在途生成 / 工具执行并以 cancelled 终态收尾，而不是等到 timeoutMs
+   * 才释放；pre-aborted 信号同样生效（任务直接进入取消语义）。运行期间
+   * 恰好挂一个监听器，任务 settle 后即移除。
    */
   signal?: AbortSignal;
   /** 附加到任务的业务侧标记（透传给 Adapter 诊断日志，不参与 Runtime 协议） */
@@ -113,12 +117,21 @@ export interface AgentTask {
 /**
  * Agent 事件流事件（Runtime 实现 → 业务层的稳定映射；底层 Runtime 的
  * 原始事件对象不得透传到业务层）。
+ *
+ * seq / event_gap 语义（M5.1）：
+ * - 每个真实事件携带任务内单调递增的可选 seq（从 1 开始）；
+ * - Runtime 的事件缓冲有界（保尾部）；当消费者需要的事件已被淘汰
+ *   （落后太多或订阅晚于截断）时，以 type="event_gap" 的合成事件
+ *   显式报告被淘汰区间（data: { missedFrom, missedTo, missedCount }），
+ *   绝不静默跳过。gap 标记本身不携带 seq。
  */
 export interface AgentEvent {
   taskId: string;
   type: string;
   data?: Record<string, unknown>;
   ts: string;
+  /** 任务内单调递增序号（从 1 开始；Runtime 赋值，可选） */
+  seq?: number;
 }
 
 /**
@@ -138,6 +151,10 @@ export interface AgentRunHandle {
    * 任务 settle 且事件排空后迭代自然结束（不抛错）。
    * 多次调用返回独立迭代器（各自 replay）。消费方提前 break 会清理
    * 订阅，不造成泄漏。
+   *
+   * 事件缓冲有界（保尾部）：真实事件带单调递增 seq；消费者落后于淘汰
+   * 窗口或订阅晚于截断时，先收到 type="event_gap" 合成事件（报告被淘汰
+   * 区间），再从当前缓冲头继续——缺口绝不静默（见 AgentEvent）。
    */
   events(): AsyncIterable<AgentEvent>;
 
