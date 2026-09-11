@@ -1,6 +1,7 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-11（**M5 启动：M5.0 计划冻结**；2026-09-10
+> 更新日期：2026-09-11（**M5.2 全局并发与有界受理完成**；同日 M5.1
+> 两批完成、**M5 启动：M5.0 计划冻结**；2026-09-10
 > **M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
 > M4.7 Draft/Final + Writer–Reviewer Closure；M4.6 Evidence Workbench；
 > 2026-09-09：M4.5 HITL UI / M4.4 Workflow Live View；更早见历史）
@@ -103,6 +104,48 @@ timeout 分层 + 统一结构化终态 + run 级 usage 基础采集（M5.2 第�
 - **M5.1/M5.2 剩余（未做，按 M5_PLAN）**：context budget、session
   rotation / TTL / GC、global concurrency 与背压（usage 的 Dashboard /
   Pricing 展示层同属后续）。
+
+**M5.2 Long-Running Governance — 全局并发与有界受理（✅ 2026-09-11）**：
+Runtime 层最后一道全局 admission / execution guard 进驻
+`PiRuntimeAdapter`（进程内实现，无 Redis / BullMQ / 外部 scheduler），
+跨 project / agentId / contextScope / Reviewer 类型 / Workflow 统一生效，
+73 → 83 专项用例：
+
+- **两层语义**：既有 per-session FIFO（同 sessionKey 串行）不变，新增
+  全局 execution permit——整个进程同时真实进入 `session.prompt` 的 run
+  数 ≤ `maxConcurrentRuns`（FIFO 派发）。关键不变量：permit 只在任务
+  **到达 session 队头后**申请，同 session 的排队任务不提前占用全局
+  permit（A1 运行 / A2 同会话排队 / B1 异会话 → A1+B1 并行，A2 不挡路）。
+- **有界受理（bounded admission）**：已受理未执行任务（等待会话创建 /
+  per-session FIFO / 全局 permit 三种执行前等待合计）≤ `maxQueuedRuns`；
+  占满后 startAgent 立即结构化失败 `failed(RUNTIME_QUEUE_FULL)`（句柄
+  返回 + getTask 可回溯，错误含 queued/active/maxQueued/maxConcurrent
+  四个数字；不建会话、不进队列、不伪装成 QUEUE_TIMEOUT）。
+- **QUEUE_TIMEOUT 协作**：全局 permit 等待属于 queue 阶段，由既有的
+  `queueTimeoutMs` 统一覆盖；deadline 自进入 session 队列起算，**跨
+  FIFO → permit 阶段切换不重置**（排队时长是原始 deadline 的证据，
+  测试以 queueDurationMs ≈ timeout 而非 timeout+前段等待 断言）。
+- **记账收口在 settle（first-wins）**：completed / failed（含
+  PROMPT_REJECTED / RUN_FAILED）/ cancelled（排队取消、AbortSignal、
+  close）/ timed_out（queue / execution）全路径经
+  `releaseAdmission` 释放 permit 或等待容量并 FIFO 唤醒后继，无槽位
+  泄漏；取消 permit 等待者立即从等待队列摘除、永不「复活」。
+- **配置与诊断**：`PAPERTEAM_PI_MAX_CONCURRENT_RUNS`（默认 4，1-64；
+  ≥ Reviewer 三路 fan-out + 一路余量）/ `PAPERTEAM_PI_MAX_QUEUED_RUNS`
+  （默认 32，0-1024，0=不允许等待）；非法值 ConfigError 拒绝启动
+  （容量契约是正确性约束，不同于可静默回退的并发调优项）。
+  `runtimeStats()` / `GET /api/runtime/status` 新增 maxConcurrentRuns /
+  maxQueuedRuns / activeExecutions / queuedRuns（可选字段，实现未暴露
+  时缺省）；不做前端设置 UI。
+- **测试**：PiRuntimeAdapter 专项 73 → 83（新增 10：全局并发上限采样
+  断言、同会话不占 permit、有界受理、AbortSignal 取消等待者、
+  QUEUE_TIMEOUT 沿用原 deadline、execution timeout / 两种 failure 路径
+  释放 permit、close 收敛记账归零、非法构造拒绝）；config 新增 1、
+  runtimeStatus 透传 1。Backend 606 → 618 passed，Frontend 161 不变；
+  build / typecheck / test 全绿（M5.1 cancel / timeout / usage 与
+  Workflow reviewer concurrency 全部保持通过）。
+- **M5.2 剩余（未做，按 M5_PLAN）**：context budget、session rotation /
+  TTL / GC、长时间运行观测面与自愈补齐。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

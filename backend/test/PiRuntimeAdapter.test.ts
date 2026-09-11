@@ -15,7 +15,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type {
@@ -262,6 +262,25 @@ class FakeAgentSession {
       };
       this.messages.push(message);
       this.emit({ type: "agent_end", messages: [message], willRetry: false } as AgentSessionEvent);
+      this.emit({ type: "agent_settled" } as AgentSessionEvent);
+      const release = this.releasePending;
+      this.releasePending = undefined;
+      this.pending = false;
+      release();
+    }
+  }
+
+  /** 测试辅助：让 hangUntilAbort 挂起中的 prompt 以 error 终态收尾（模拟 A 运行中失败） */
+  failPending(message: string): void {
+    if (this.releasePending !== undefined) {
+      const failed = {
+        role: "assistant",
+        content: [{ type: "text", text: "" }],
+        stopReason: "error",
+        errorMessage: message,
+      };
+      this.messages.push(failed);
+      this.emit({ type: "agent_end", messages: [failed], willRetry: false } as AgentSessionEvent);
       this.emit({ type: "agent_settled" } as AgentSessionEvent);
       const release = this.releasePending;
       this.releasePending = undefined;
@@ -1946,6 +1965,346 @@ describe("PiRuntimeAdapter（Run 级 usage 采集：Level 1）", () => {
       assistantTurns: 1,
     });
     await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 全局并发与有界受理（M5.2：Runtime 层最后一道 admission / execution guard）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（全局并发与有界受理：M5.2）", () => {
+  /** 周期采样活跃数（hangUntilAbort 场景下 pending ≙ 正在 prompt） */
+  function startActiveProbe(
+    factory: ReturnType<typeof createFakeFactory>,
+  ): { maxActive: () => number; stop: () => void } {
+    let maxActive = 0;
+    const timer = setInterval(() => {
+      const active = factory.created.filter(({ session }) => session.pending).length;
+      maxActive = Math.max(maxActive, active);
+    }, 5);
+    return { maxActive: () => maxActive, stop: () => clearInterval(timer) };
+  }
+
+  it("Case 1 全局并发上限：maxConcurrentRuns=2 时任意时刻真实 prompt <= 2，FIFO 续跑", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 2, maxQueuedRuns: 8 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    const probe = startActiveProbe(factory);
+    try {
+      // A/B 先占满 2 个 permit（真实执行、挂起中）
+      const [a, b] = await Promise.all([
+        adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" }),
+        adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" }),
+      ]);
+      expect(await waitFor(() => sessionOf("p-a")?.pending === true && sessionOf("p-b")?.pending === true)).toBe(true);
+      expect(adapter.runtimeStats().activeExecutions).toBe(2);
+      // C/D 顺序启动（间隔一个 settle 周期，保证 C 先注册为 permit 等待者：
+      // 等待 FIFO 按「就绪顺序」派发，会话创建完成的先后不保证与启动顺序一致）
+      const c = await adapter.startAgent({ agentId: "w", task: "C", projectId: "p-c", contextScope: "writing/x" });
+      expect(await waitFor(() => sessionOf("p-c") !== undefined && adapter.runtimeStats().queuedRuns === 1)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      const d = await adapter.startAgent({ agentId: "w", task: "D", projectId: "p-d", contextScope: "writing/x" });
+      expect(await waitFor(() => sessionOf("p-d") !== undefined && adapter.runtimeStats().queuedRuns === 2)).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      // C/D 会话已创建（会话创建不受 permit 限制），但绝不 prompt
+      expect(factory.created).toHaveLength(4);
+      expect(sessionOf("p-a")?.prompts).toHaveLength(1);
+      expect(sessionOf("p-b")?.prompts).toHaveLength(1);
+      expect(sessionOf("p-c")?.prompts).toHaveLength(0);
+      expect(sessionOf("p-d")?.prompts).toHaveLength(0);
+      // 完成 A → C（先注册的等待者，FIFO）续跑；D 仍未 prompt
+      sessionOf("p-a")?.completePending("A done");
+      expect(await waitFor(() => sessionOf("p-c")?.pending === true)).toBe(true);
+      expect(sessionOf("p-d")?.prompts).toHaveLength(0);
+      // 完成 B → D 续跑
+      sessionOf("p-b")?.completePending("B done");
+      expect(await waitFor(() => sessionOf("p-d")?.pending === true)).toBe(true);
+      // 全程任意时刻真实并发 <= 2（若无限流，开局即 4）
+      expect(probe.maxActive()).toBeLessThanOrEqual(2);
+      sessionOf("p-c")?.completePending("C done");
+      sessionOf("p-d")?.completePending("D done");
+      const [aTask, bTask, cTask, dTask] = await Promise.all([
+        a.result(),
+        b.result(),
+        c.result(),
+        d.result(),
+      ]);
+      expect([aTask.status, bTask.status, cTask.status, dTask.status]).toEqual([
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+      ]);
+      expect(adapter.runtimeStats().activeExecutions).toBe(0);
+      expect(adapter.runtimeStats().queuedRuns).toBe(0);
+      await adapter.close();
+    } finally {
+      probe.stop();
+    }
+  });
+
+  it("Case 2 同 session 排队任务不提前占用全局 permit：A1+A2 同会话 / B1 立即并行", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 2, maxQueuedRuns: 8 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    // A1 先占住 p-a 会话与 1 个 permit（确定性：等待真实挂起后再启动后续任务）
+    const a1 = await adapter.startAgent({ agentId: "w", task: "A1", projectId: "p-a", contextScope: "writing/x" });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true)).toBe(true);
+    // 同 sessionKey（p-a × writing/x）：A2 在 per-session FIFO 中排在 A1 后
+    const a2 = await adapter.startAgent({ agentId: "w", task: "A2", projectId: "p-a", contextScope: "writing/x" });
+    const b1 = await adapter.startAgent({ agentId: "w", task: "B1", projectId: "p-b", contextScope: "writing/x" });
+    // 关键：A2 虽排不上队，但绝不提前占走第二个 permit —— B1 照常并行执行
+    expect(await waitFor(() => sessionOf("p-b")?.pending === true)).toBe(true);
+    expect(sessionOf("p-a")?.prompts).toEqual(["A1"]);
+    expect(adapter.runtimeStats().activeExecutions).toBe(2);
+    expect(adapter.runtimeStats().queuedRuns).toBe(1); // 只有 A2 在等待
+    // A1 完成 → A2 经会话队列泵 + 空闲 permit 正常接续
+    sessionOf("p-a")?.completePending("A1 done");
+    expect(await waitFor(() => sessionOf("p-a")?.prompts.length === 2)).toBe(true);
+    sessionOf("p-b")?.completePending("B1 done");
+    sessionOf("p-a")?.completePending("A2 done");
+    const [t1, t2, t3] = await Promise.all([a1.result(), a2.result(), b1.result()]);
+    expect([t1.status, t2.status, t3.status]).toEqual(["completed", "completed", "completed"]);
+    await adapter.close();
+  });
+
+  it("Case 3 有界受理：maxQueuedRuns 占满后新任务立即 RUNTIME_QUEUE_FULL（不建会话不 prompt）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 2, maxQueuedRuns: 2 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    // A/B 占满执行容量（真实运行中），等待容量此刻为 0
+    const a = await adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true && sessionOf("p-b")?.pending === true)).toBe(true);
+    expect(adapter.runtimeStats().queuedRuns).toBe(0);
+    // C/D：占满 2 个等待容量（等全局 permit）
+    const c = await adapter.startAgent({ agentId: "w", task: "C", projectId: "p-c", contextScope: "writing/x" });
+    const d = await adapter.startAgent({ agentId: "w", task: "D", projectId: "p-d", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 2)).toBe(true);
+    // E：等待容量已满 → 立即结构化失败（句柄返回，result resolve failed 任务）
+    const e = await adapter.startAgent({ agentId: "w", task: "E", projectId: "p-e", contextScope: "writing/x" });
+    const eTask = await e.result();
+    expect(eTask.status).toBe("failed");
+    expect(eTask.errorCode).toBe("RUNTIME_QUEUE_FULL");
+    expect(eTask.error).toContain("queued=2/2");
+    expect(eTask.error).toContain("active=2/2");
+    // 不创建会话、不进入任何队列、不 prompt（C/D 会话在等 permit，E 的会话从未创建）
+    expect(await waitFor(() => factory.created.length === 4)).toBe(true);
+    expect(factory.created.every(({ session }) => session.prompts.length <= 1)).toBe(true);
+    // getTask 可回溯该结构化失败
+    const fetched = await adapter.getTask(e.taskId);
+    expect(fetched.status).toBe("failed");
+    expect(fetched.errorCode).toBe("RUNTIME_QUEUE_FULL");
+    // 释放一个等待容量（取消 C）后，新任务恢复受理（不被 QUEUE_FULL 拒绝）
+    await c.cancel();
+    expect(adapter.runtimeStats().queuedRuns).toBe(1);
+    const f = await adapter.startAgent({ agentId: "w", task: "F", projectId: "p-f", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 2)).toBe(true);
+    await Promise.all([a.cancel(), b.cancel(), d.cancel(), f.cancel()]);
+    expect(adapter.runtimeStats().activeExecutions).toBe(0);
+    expect(adapter.runtimeStats().queuedRuns).toBe(0);
+    await adapter.close();
+  });
+
+  it("Case 4 cancel 全局 permit 等待者（AbortSignal）：立即 cancelled、释放受理容量、永不复活", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 2, maxQueuedRuns: 4 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    const a = await adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true && sessionOf("p-b")?.pending === true)).toBe(true);
+    const controller = new AbortController();
+    const c = await adapter.startAgent({
+      agentId: "w",
+      task: "C",
+      projectId: "p-c",
+      contextScope: "writing/x",
+      signal: controller.signal,
+    });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 1 && sessionOf("p-c") !== undefined)).toBe(true);
+    // signal abort 与 handle.cancel 同一取消链路：等待中的 C 立即终态
+    controller.abort();
+    const cTask = await c.result();
+    expect(cTask.status).toBe("cancelled");
+    expect(sessionOf("p-c")?.prompts).toHaveLength(0);
+    expect(adapter.runtimeStats().queuedRuns).toBe(0);
+    // 释放出来的受理容量可被新任务 D 占用（不被 QUEUE_FULL 拒绝）
+    const d = await adapter.startAgent({ agentId: "w", task: "D", projectId: "p-d", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 1)).toBe(true);
+    // A 完成 → D 获得 permit 执行；C 不复活（从未 prompt）
+    sessionOf("p-a")?.completePending("A done");
+    expect(await waitFor(() => sessionOf("p-d")?.pending === true)).toBe(true);
+    expect(sessionOf("p-c")?.prompts).toHaveLength(0);
+    const aTask = await a.result();
+    expect(aTask.status).toBe("completed");
+    sessionOf("p-b")?.completePending("B done");
+    sessionOf("p-d")?.completePending("D done");
+    const [bTask, dTask] = await Promise.all([b.result(), d.result()]);
+    expect([bTask.status, dTask.status]).toEqual(["completed", "completed"]);
+    await adapter.close();
+  });
+
+  it("Case 5 QUEUE_TIMEOUT 覆盖全局 permit 等待：沿用原 deadline（不因转入 permit 队列重置）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, {
+      maxConcurrentRuns: 2,
+      maxQueuedRuns: 8,
+      queueTimeoutMs: 600,
+    });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    // A/B 占满 2 个 permit
+    const a = await adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true && sessionOf("p-b")?.pending === true)).toBe(true);
+    // C（独立会话）注册为 permit 等待者；A2 在 A 的会话 FIFO 排队（deadline 同刻起算）
+    const c = await adapter.startAgent({ agentId: "w", task: "C", projectId: "p-c", contextScope: "writing/x" });
+    const a2 = await adapter.startAgent({ agentId: "w", task: "A2", projectId: "p-a", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 2)).toBe(true);
+    expect(sessionOf("p-a")?.prompts).toEqual(["A"]);
+    // t≈250ms：A 完成 → 释放的 permit 按 FIFO 给 C（先注册的等待者）
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    sessionOf("p-a")?.completePending("A done");
+    expect(await waitFor(() => sessionOf("p-c")?.pending === true)).toBe(true);
+    // A2 此刻才从会话队列出队、转入 permit 等待（B/C 占满）——deadline 仍是入队起算的 600ms
+    await expect(a2.result()).rejects.toMatchObject({ phase: "queue" });
+    const a2Task = await adapter.getTask(a2.taskId);
+    expect(a2Task.status).toBe("timed_out");
+    expect(a2Task.errorCode).toBe("QUEUE_TIMEOUT");
+    expect(a2Task.timeoutPhase).toBe("queue");
+    // 原始 deadline 的证据：排队时长 ≈ 600ms（若转入 permit 队列时被重置，将 ≥ 850ms）
+    expect(a2Task.queueDurationMs).toBeGreaterThanOrEqual(550);
+    expect(a2Task.queueDurationMs).toBeLessThan(820);
+    // A/B/C 不受影响；记账无泄漏
+    expect(sessionOf("p-c")?.prompts).toEqual(["C"]);
+    sessionOf("p-b")?.completePending("B done");
+    sessionOf("p-c")?.completePending("C done");
+    const [aTask, bTask, cTask] = await Promise.all([a.result(), b.result(), c.result()]);
+    expect([aTask.status, bTask.status, cTask.status]).toEqual(["completed", "completed", "completed"]);
+    expect(adapter.runtimeStats().activeExecutions).toBe(0);
+    expect(adapter.runtimeStats().queuedRuns).toBe(0);
+    await adapter.close();
+  });
+
+  it("Case 6 EXECUTION_TIMEOUT 释放 permit：A 超时 abort 后等待中的 B 接续执行", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 1, maxQueuedRuns: 4 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    const a = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p-a",
+      contextScope: "writing/x",
+      timeoutMs: 250,
+    });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true)).toBe(true);
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 1)).toBe(true);
+    await expect(a.result()).rejects.toBeInstanceOf(AgentTimeoutError);
+    const aTask = await adapter.getTask(a.taskId);
+    expect(aTask.status).toBe("timed_out");
+    expect(aTask.errorCode).toBe("EXECUTION_TIMEOUT");
+    expect(sessionOf("p-a")?.abortedCount).toBe(1);
+    // permit 已随超时终态释放：B 立即开始
+    expect(await waitFor(() => sessionOf("p-b")?.pending === true)).toBe(true);
+    expect(adapter.runtimeStats().activeExecutions).toBe(1);
+    sessionOf("p-b")?.completePending("B done");
+    const bTask = await b.result();
+    expect(bTask.status).toBe("completed");
+    expect(adapter.runtimeStats().activeExecutions).toBe(0);
+    await adapter.close();
+  });
+
+  it("Case 7a failure 释放 permit（prompt 前置 throw → PROMPT_REJECTED）：后续任务照常执行", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "preflightReject", message: "No API key for fake/x" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 1, maxQueuedRuns: 4 });
+    const first = await adapter.runAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    expect(first.status).toBe("failed");
+    expect(first.errorCode).toBe("PROMPT_REJECTED");
+    // throw 路径没有卡死 permit：第二个任务仍被受理并真实执行（同样 throw）
+    const second = await adapter.runAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(second.status).toBe("failed");
+    expect(second.errorCode).toBe("PROMPT_REJECTED");
+    expect(factory.created[1]?.session.prompts).toHaveLength(1);
+    expect(adapter.runtimeStats().activeExecutions).toBe(0);
+    await adapter.close();
+  });
+
+  it("Case 7b failure 释放 permit（运行中 errorStop → RUN_FAILED）：等待中的 B 接续", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 1, maxQueuedRuns: 4 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    const a = await adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true)).toBe(true);
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 1)).toBe(true);
+    // A 在运行中失败（transcript stopReason=error）
+    sessionOf("p-a")?.failPending("provider 502");
+    const aTask = await a.result();
+    expect(aTask.status).toBe("failed");
+    expect(aTask.errorCode).toBe("RUN_FAILED");
+    expect(await waitFor(() => sessionOf("p-b")?.pending === true)).toBe(true);
+    sessionOf("p-b")?.completePending("B done");
+    const bTask = await b.result();
+    expect(bTask.status).toBe("completed");
+    expect(adapter.runtimeStats().activeExecutions).toBe(0);
+    await adapter.close();
+  });
+
+  it("Case 8 close：运行中 abort、等待者即时终态、记账归零、无悬挂", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxConcurrentRuns: 2, maxQueuedRuns: 8 });
+    const sessionOf = (pid: string) =>
+      factory.created.find(({ params }) => params.cwd.split(sep).pop() === pid)?.session;
+    const a = await adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    expect(await waitFor(() => sessionOf("p-a")?.pending === true && sessionOf("p-b")?.pending === true)).toBe(true);
+    const c = await adapter.startAgent({ agentId: "w", task: "C", projectId: "p-c", contextScope: "writing/x" });
+    const d = await adapter.startAgent({ agentId: "w", task: "D", projectId: "p-d", contextScope: "writing/x" });
+    expect(await waitFor(() => adapter.runtimeStats().queuedRuns === 2)).toBe(true);
+    // close 必须收敛返回（等待者即时终态，不依赖运行中任务）
+    await adapter.close();
+    const [aTask, bTask, cTask, dTask] = await Promise.all([
+      a.result(),
+      b.result(),
+      c.result(),
+      d.result(),
+    ]);
+    expect([aTask.status, bTask.status, cTask.status, dTask.status]).toEqual([
+      "cancelled",
+      "cancelled",
+      "cancelled",
+      "cancelled",
+    ]);
+    expect(sessionOf("p-c")?.prompts).toHaveLength(0);
+    expect(sessionOf("p-d")?.prompts).toHaveLength(0);
+    // 调度记账最终归零；会话全部 dispose
+    const stats = adapter.runtimeStats();
+    expect(stats.activeRuns).toBe(0);
+    expect(stats.activeExecutions).toBe(0);
+    expect(stats.queuedRuns).toBe(0);
+    expect(factory.created.every(({ session }) => session.disposed)).toBe(true);
+  });
+
+  it("maxConcurrentRuns / maxQueuedRuns 非法构造直接拒绝（容量契约是正确性约束）", async () => {
+    const factory = createFakeFactory();
+    await expect(makeLevel1Adapter(factory, { maxConcurrentRuns: 0 })).rejects.toThrow(RangeError);
+    await expect(makeLevel1Adapter(factory, { maxQueuedRuns: -1 })).rejects.toThrow(RangeError);
   });
 });
 

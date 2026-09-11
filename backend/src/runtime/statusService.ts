@@ -58,6 +58,14 @@ export interface RuntimeStatus {
     activeRuns: number;
     /** 受管 AgentSession 数（进程内、按 sessionKey） */
     managedSessions: number;
+    /**
+     * M5.2 全局调度（Runtime 实现暴露时携带，缺省视为不限）：
+     * 全局并发/等待上限与当前 permit / 等待计数，见 RuntimeSessionStats。
+     */
+    maxConcurrentRuns?: number;
+    maxQueuedRuns?: number;
+    activeExecutions?: number;
+    queuedRuns?: number;
   };
   /** 外部工具链就绪度（缺失时前端可提前提示，而不是等上传失败） */
   tools: {

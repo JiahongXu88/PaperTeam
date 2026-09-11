@@ -33,6 +33,18 @@
  *   也不阻塞后续排队者）；不同 sessionKey 完全并发（Reviewer 三路
  *   fan-out 即三个独立 AgentSession）。排队发生在 startAgent 返回句柄
  *   之后——taskId 的立即可得性不依赖队列位置。
+ * - 全局并发与有界受理（M5.2）：进程内全局 execution guard——整个
+ *   Adapter 同时真实执行（进入 session.prompt）的 run 数 <=
+ *   maxConcurrentRuns（FIFO permit 派发，不 LIFO / 不插队）；已受理
+ *   未执行（等待会话创建 / per-session FIFO / 全局 permit）的 run 数
+ *   <= maxQueuedRuns，占满后 startAgent 立即 failed(RUNTIME_QUEUE_FULL)
+ *   结构化失败（不建会话、不排队；与 QUEUE_TIMEOUT 的「已进入等待但
+ *   超过 deadline」语义互斥，绝不互相伪装）。permit 在任务到达 session
+ *   队头后才申请——同 session 的排队任务不提前占用全局 permit（不会
+ *   出现「跑不了却占坑」阻塞其他 session）。permit 等待属于 queue 阶段：
+ *   由统一的 queueTimeoutMs deadline 覆盖（入队时武装、跨阶段切换不
+ *   重置）。记账收口在 settle（first-wins）：completed / failed /
+ *   cancelled / timed_out / close 全路径都释放 permit 与等待容量。
  * - auto-compaction 经 SettingsManager.inMemory({compaction:{enabled:false}})
  *   关闭：M3 流程不依赖 compaction（manual compact 未使用，其 abort
  *   边界不在验证范围内，记录为上游边界）。
@@ -98,6 +110,7 @@ import {
   AgentTimeoutError,
   ModelConfigBusyError,
 } from "../errors.js";
+import { assertValidConcurrency } from "../util/concurrency.js";
 import { resolveRoleConfig, type PiRoleConfig, type PiRoleKey } from "./pi/roleConfig.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
 import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
@@ -112,6 +125,7 @@ import type {
   RuntimeHealth,
   RuntimeModelStatus,
   RuntimeProvider,
+  RuntimeSessionStats,
 } from "./types.js";
 
 /** Pi 模型类型（不直接依赖 pi-ai：经 pi-coding-agent 的公开选项类型提取） */
@@ -125,6 +139,15 @@ const TASK_EVENT_BUFFER_LIMIT = 500;
 
 /** 已完结任务记录上限（getTask 可回溯的窗口） */
 const TASK_RECORD_LIMIT = 200;
+
+/**
+ * 全局最大同时执行数默认值（M5.2）：>= Reviewer 三路 fan-out（3 路
+ * scope 并行是既有正常形态），再留一路余量吸收跨 stage 交叠。
+ */
+const DEFAULT_MAX_CONCURRENT_RUNS = 4;
+
+/** 全局最大等待任务数默认值（M5.2）：单机单用户，32 足以吸收 Workflow 级排队 */
+const DEFAULT_MAX_QUEUED_RUNS = 32;
 
 /** 无 projectId 时的会话兜底键（对应 v1 的「默认会话」语义） */
 function adhocSessionKey(agentId: string): string {
@@ -182,6 +205,19 @@ export interface PiRuntimeOptions {
    * 缺省不限。
    */
   initTimeoutMs?: number;
+  /**
+   * 全局最大同时执行数（M5.2）：整个 Adapter 同时真实进入 session.prompt
+   * 的 run 数上限（FIFO permit，跨 project / agentId / contextScope /
+   * Reviewer 类型 / Workflow 统一生效）。缺省 4；必须 >= 1（构造校验）。
+   */
+  maxConcurrentRuns?: number;
+  /**
+   * 全局最大等待任务数（M5.2）：已受理、尚未开始执行的 run 数上限（含
+   * 等待会话创建 / per-session FIFO / 全局 permit 三种执行前等待）。
+   * 占满后 startAgent 立即 failed(RUNTIME_QUEUE_FULL)。缺省 32；
+   * 0 = 不允许任何等待；必须 >= 0（构造校验）。
+   */
+  maxQueuedRuns?: number;
   /** 测试注入：现成的 ModelRuntime（Level 2 fake provider 用） */
   modelRuntime?: PiModelRuntime;
   /** 测试注入：现成模型对象（优先于 modelSpec 解析） */
@@ -308,6 +344,19 @@ interface RunState {
   abortInitiator?: "timeout" | "cancel";
   /** 排队阶段超时定时器（入队时武装，出队/取消/超时/settle 时清理） */
   queueTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * 全局 admission 记账（M5.2）：queued = 已受理、占用全局等待容量
+   * （等待会话创建 / per-session FIFO / 全局 permit 任一）；
+   * executing = 已持有全局执行 permit；undefined = 未受理（受理前结构化
+   * 失败）或已释放（settle 收口，见 releaseAdmission）。
+   */
+  admission?: "queued" | "executing";
+  /**
+   * 等待全局执行 permit 的唤醒函数（注册于 acquireExecutionPermit）。
+   * settle 收口统一以 false 唤醒（取消 / QUEUE_TIMEOUT / close 即时终态
+   * 后后台链据此短路返回，不悬挂）；permit 授予时以 true 唤醒并清空。
+   */
+  permitWaitResolve?: (granted: boolean) => void;
   /** 本 run 新产生的 usage 累计（M5.2；首个 usage-bearing message_end 时创建） */
   usage?: AgentRunUsage;
   /** 后台 run 链完全收敛（cancel/close 等待用） */
@@ -415,6 +464,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly sessionTimeoutMs: number | undefined;
   /** Runtime 懒初始化阶段超时（缺省不限） */
   private readonly initTimeoutMs: number | undefined;
+  /** 全局最大同时执行数（M5.2；跨一切维度的 execution permit 上限） */
+  private readonly maxConcurrentRuns: number;
+  /** 全局最大等待任务数（M5.2；已受理未执行的 admission 上限） */
+  private readonly maxQueuedRuns: number;
   private readonly injectedModelRuntime: PiModelRuntime | undefined;
   private readonly injectedModel: PiModel | undefined;
   private readonly createSessionImpl: NonNullable<PiRuntimeOptions["createSession"]> | undefined;
@@ -428,6 +481,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly sessionCreations = new Map<string, SessionCreationSlot>();
   private readonly inFlight = new Map<string, RunState>();
   private readonly taskRecords = new Map<string, TaskRecord>();
+  /** 当前持有全局执行 permit 的 run 数（真实执行中；M5.2） */
+  private activeExecutions = 0;
+  /** 当前已受理、尚未开始执行的 run 数（全部执行前等待合计；M5.2） */
+  private queuedAdmission = 0;
+  /** FIFO：到达 session 队头、等待全局执行 permit 的任务（M5.2） */
+  private readonly permitWaiters: RunState[] = [];
 
   private settingsManager?: SettingsManager;
   private modelRuntime?: PiModelRuntime;
@@ -449,6 +508,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.queueTimeoutMs = options.queueTimeoutMs;
     this.sessionTimeoutMs = options.sessionTimeoutMs;
     this.initTimeoutMs = options.initTimeoutMs;
+    // M5.2 全局并发 / 受理上限：容量约束是正确性契约（不是可静默回退的
+    // 调优项），非法值在构造期立即拒绝
+    this.maxConcurrentRuns = options.maxConcurrentRuns ?? DEFAULT_MAX_CONCURRENT_RUNS;
+    this.maxQueuedRuns = options.maxQueuedRuns ?? DEFAULT_MAX_QUEUED_RUNS;
+    assertValidConcurrency(this.maxConcurrentRuns, "maxConcurrentRuns");
+    if (!Number.isInteger(this.maxQueuedRuns) || this.maxQueuedRuns < 0) {
+      throw new RangeError(`maxQueuedRuns 必须是 >= 0 的整数，当前为 ${this.maxQueuedRuns}`);
+    }
     this.injectedModelRuntime = options.modelRuntime;
     this.injectedModel = options.model;
     this.createSessionImpl = options.createSession;
@@ -748,8 +815,33 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return this.makeHandle(state);
     }
 
-    // 后台链：会话获取（含排队）→ 独占执行 → 终态归因。
-    // startAgent 不 await 这条链——taskId 与句柄立即对上层可见。
+    // M5.2 全局受理闸门：已受理未执行任务（等待会话创建 / per-session
+    // FIFO / 全局 permit）达到 maxQueuedRuns 时立即结构化拒绝——不创建
+    // 会话、不进任何队列、不占用 permit。RUNTIME_QUEUE_FULL（受理容量已
+    // 满，立即失败）与 QUEUE_TIMEOUT（已进入等待但超过 deadline）语义
+    // 互斥，绝不互相伪装。
+    if (this.queuedAdmission >= this.maxQueuedRuns) {
+      const capacity = `queued=${this.queuedAdmission}/${this.maxQueuedRuns} active=${this.activeExecutions}/${this.maxConcurrentRuns}`;
+      this.log(`[pi-runtime] startAgent 拒绝（等待队列已满，${capacity}）：sessionKey=${sessionKey}`);
+      this.settleTask(
+        state,
+        this.buildTask({
+          taskId,
+          agentId: input.agentId,
+          status: "failed",
+          sessionKey,
+          error: `Runtime 等待队列已满（${capacity}）：请稍后重试，或调大 PAPERTEAM_PI_MAX_QUEUED_RUNS`,
+          errorCode: "RUNTIME_QUEUE_FULL",
+        }),
+      );
+      return this.makeHandle(state);
+    }
+    this.queuedAdmission += 1;
+    state.admission = "queued";
+
+    // 后台链：会话获取（含排队）→ session 队头 → 全局执行 permit（M5.2）
+    // → 独占执行 → 终态归因。startAgent 不 await 这条链——taskId 与句柄
+    // 立即对上层可见。
     state.runSettled = (async () => {
       let release: (() => void) | undefined;
       try {
@@ -764,8 +856,38 @@ export class PiRuntimeAdapter implements AgentRuntime {
           // 不入场执行（activeTaskId 由队列泵管理，此时也未被置位）
           return;
         }
+        // 到达 session 队头：等待全局执行 permit（M5.2）。同 session 的后续
+        // 排队任务仍留在会话队列里，不会提前走到这里——不浪费 permit。
+        // 等待属于 queue 阶段，由入队时武装的 queue deadline 覆盖（不重置）。
+        const granted = await this.acquireExecutionPermit(state);
+        if (!granted) {
+          // 派发交接窗口内的取消（未及注册等待）：与排队取消同口径即时终态；
+          // 等待期间的取消 / QUEUE_TIMEOUT / close 已由对应路径即时 settle。
+          if (!state.settled) {
+            this.log(`[pi-runtime] startAgent ${taskId} 在获得执行许可前被取消，直接终态`);
+            this.settleTask(
+              state,
+              this.buildTask({
+                taskId,
+                agentId: input.agentId,
+                status: "cancelled",
+                sessionKey,
+                error: "任务已取消（开始执行前）",
+              }),
+            );
+          }
+          return;
+        }
+        if (state.settled) {
+          // permit 授予与取消/超时并发的双保险（授予即从等待队列摘除，
+          // 正常不可能到达；到达则 permit 已由该终态的 settle 收口释放）
+          return;
+        }
         state.phase = "running";
         state.runningAtMs = Date.now();
+        // 排队阶段（per-session FIFO + 全局 permit 等待）全部收敛：queue
+        // 定时器退役，执行阶段有独立超时
+        this.clearQueueTimer(state);
         managed.runCount += 1;
         managed.lastUsedAt = new Date().toISOString();
 
@@ -884,6 +1006,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.settled = true;
     state.settledAtMs = Date.now();
     this.clearQueueTimer(state);
+    this.releaseAdmission(state);
     const final = this.withTerminalDiagnostics(state, task);
     state.task = final;
     this.rememberTask(final.taskId, final);
@@ -903,6 +1026,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.settled = true;
     state.settledAtMs = Date.now();
     this.clearQueueTimer(state);
+    this.releaseAdmission(state);
     state.failure = error;
     const final = this.withTerminalDiagnostics(state, this.buildFailureTask(state, error));
     state.task = final;
@@ -1015,6 +1139,75 @@ export class PiRuntimeAdapter implements AgentRuntime {
     if (state.queueTimer !== undefined) {
       clearTimeout(state.queueTimer);
       state.queueTimer = undefined;
+    }
+  }
+
+  // ---- 全局并发与有界受理（M5.2；进程内 admission / execution guard） ----
+
+  /**
+   * 申请全局执行 permit：到达 session 队头、即将进入 session.prompt 的
+   * 任务在此受限——同一时刻全 Runtime 真实执行的 run 数 <=
+   * maxConcurrentRuns。FIFO 派发（先到先得，不 LIFO / 不插队）。
+   * 返回 false = 等待前已被取消（派发交接窗口）或等待期间已被取消 /
+   * QUEUE_TIMEOUT / close 即时终态（后台链据此短路返回，绝不悬挂）。
+   */
+  private async acquireExecutionPermit(state: RunState): Promise<boolean> {
+    if (state.settled || state.cancelRequested) {
+      return false;
+    }
+    return new Promise<boolean>((resolve) => {
+      state.permitWaitResolve = resolve;
+      this.permitWaiters.push(state);
+      this.dispatchPermits();
+    });
+  }
+
+  /** FIFO 派发 permit：容量可用时按等待顺序授予（记账与状态同拍更新） */
+  private dispatchPermits(): void {
+    while (this.activeExecutions < this.maxConcurrentRuns && this.permitWaiters.length > 0) {
+      const waiter = this.permitWaiters.shift();
+      if (waiter === undefined) {
+        return;
+      }
+      if (waiter.settled) {
+        // 防御：已被终态但尚未摘除的等待者（正常路径由 releaseAdmission
+        // 同步摘除，其后台链已被以 false 唤醒，这里只跳过不授予）
+        continue;
+      }
+      this.queuedAdmission -= 1;
+      this.activeExecutions += 1;
+      waiter.admission = "executing";
+      const resolve = waiter.permitWaitResolve;
+      waiter.permitWaitResolve = undefined;
+      resolve?.(true);
+    }
+  }
+
+  /**
+   * admission / execution 记账收口：每个已受理任务恰好一次（settle 的
+   * first-wins 守卫之上，admission 字段一次性清空保证幂等）。
+   * - executing：归还执行 permit，并立即 FIFO 派发给下一个等待者；
+   * - queued：归还等待容量，从 permit 等待队列摘除，并唤醒其后台链。
+   * completed / failed / cancelled / timed_out / close 全部经此释放，
+   * 任何路径都不泄漏容量。
+   */
+  private releaseAdmission(state: RunState): void {
+    if (state.admission === "executing") {
+      state.admission = undefined;
+      this.activeExecutions -= 1;
+      this.dispatchPermits();
+      return;
+    }
+    if (state.admission === "queued") {
+      state.admission = undefined;
+      const index = this.permitWaiters.indexOf(state);
+      if (index >= 0) {
+        this.permitWaiters.splice(index, 1);
+      }
+      this.queuedAdmission -= 1;
+      const resolve = state.permitWaitResolve;
+      state.permitWaitResolve = undefined;
+      resolve?.(false);
     }
   }
 
@@ -1381,8 +1574,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
       }
       state.queuedAtMs = Date.now();
       if (this.queueTimeoutMs !== undefined) {
-        // 排队阶段超时（M5.1 分层）：到点仍未获得独占权 → 从队列即时摘除，
-        // timed_out(QUEUE_TIMEOUT) 终态，不等前序 run、不误伤后续排队者
+        // 排队阶段超时（M5.1 分层；M5.2 起覆盖至开始执行）：到点仍未进入
+        // 执行（含 per-session FIFO 等待与队头等全局 permit）→ 即时
+        // timed_out(QUEUE_TIMEOUT) 终态，不等前序 run、不误伤后续排队者。
+        // deadline 从入队起算，跨 FIFO → permit 等待的阶段切换不重置。
         const queueTimeoutMs = this.queueTimeoutMs;
         state.queueTimer = setTimeout(() => {
           state.queueTimer = undefined;
@@ -1413,8 +1608,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
         continue;
       }
       managed.activeTaskId = entry.state.taskId;
-      // 出队进入执行：排队超时定时器退役（执行阶段有独立超时）
-      this.clearQueueTimer(entry.state);
+      // 出队后先等全局执行 permit（M5.2）：排队超时定时器保持武装——
+      // permit 等待仍属 queue 阶段（同一 deadline 覆盖），直到真正进入
+      // 执行（phase=running）才在后台链退役
       const state = entry.state;
       entry.resolveAcquire(() => {
         if (managed.activeTaskId === state.taskId) {
@@ -1448,30 +1644,47 @@ export class PiRuntimeAdapter implements AgentRuntime {
   }
 
   /**
-   * queued 任务被取消：直接从所属会话队列摘除并即时终态。
-   * 返回 false 表示尚未进入任何队列（会话创建中 / 正在派发交接），
-   * 由后台链获得会话后的取消检查兜底。
+   * queued 任务被取消：直接从所属会话队列或全局 permit 等待队列摘除并
+   * 即时终态（M5.2 起覆盖 permit 等待者）。返回 false 表示尚未进入任何
+   * 队列（会话创建中 / 正在派发交接），由后台链获得会话后的取消检查兜底。
    */
   private trySettleQueuedCancel(state: RunState): boolean {
     const managed = this.sessions.get(state.sessionKey);
-    if (managed === undefined) {
-      return false;
+    if (managed !== undefined) {
+      const index = managed.queue.findIndex((entry) => entry.state === state);
+      if (index >= 0) {
+        const [entry] = managed.queue.splice(index, 1);
+        if (entry !== undefined) {
+          this.dispatchCancelAtQueue(entry);
+        }
+        return true;
+      }
     }
-    const index = managed.queue.findIndex((entry) => entry.state === state);
-    if (index < 0) {
-      return false;
+    // 等待全局执行 permit 的任务：settle 收口统一完成摘除 / 记账 / 唤醒
+    // 后台链（releaseAdmission），永不「复活」获得 permit
+    if (this.permitWaiters.includes(state)) {
+      this.log(`[pi-runtime] startAgent ${state.taskId} 等待执行许可时被取消，直接终态`);
+      this.settleTask(
+        state,
+        this.buildTask({
+          taskId: state.taskId,
+          agentId: state.agentId,
+          status: "cancelled",
+          sessionKey: state.sessionKey,
+          error: "任务已取消（开始执行前）",
+        }),
+      );
+      return true;
     }
-    const [entry] = managed.queue.splice(index, 1);
-    if (entry !== undefined) {
-      this.dispatchCancelAtQueue(entry);
-    }
-    return true;
+    return false;
   }
 
   /**
-   * queued 任务排队超时：从队列即时摘除，以 timed_out(QUEUE_TIMEOUT)
-   * settle（result reject AgentTimeoutError("queue")，getTask 可查结构化
-   * 终态）。前序 run 与后续排队者完全不受影响。
+   * queued 任务排队超时（M5.2 起覆盖全部执行前等待）：在 per-session
+   * FIFO 中 → 从队列即时摘除；已出队、等待全局执行 permit（或派发交接
+   * 窗口）→ 同一 QUEUE_TIMEOUT deadline 直接 settle。settle 收口统一
+   * 完成 permit 等待队列摘除 / 记账 / 唤醒后台链（releaseAdmission）。
+   * 前序 run 与后续排队者完全不受影响。
    */
   private trySettleQueuedTimeout(state: RunState): boolean {
     const queueTimeoutMs = this.queueTimeoutMs;
@@ -1479,24 +1692,32 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return false;
     }
     const managed = this.sessions.get(state.sessionKey);
-    if (managed === undefined) {
-      return false;
+    if (managed !== undefined) {
+      const index = managed.queue.findIndex((entry) => entry.state === state);
+      if (index >= 0) {
+        const [entry] = managed.queue.splice(index, 1);
+        this.clearQueueTimer(state);
+        if (entry === undefined) {
+          return false;
+        }
+        this.log(
+          `[pi-runtime] startAgent ${state.taskId} 排队超时（${queueTimeoutMs}ms），即时终态（不等待前序 run）`,
+        );
+        this.settleFailure(state, new AgentTimeoutError(queueTimeoutMs, "queue"));
+        entry.resolveAcquire(NOOP_RELEASE);
+        return true;
+      }
     }
-    const index = managed.queue.findIndex((entry) => entry.state === state);
-    if (index < 0) {
-      return false;
+    // 已出会话队列：等待全局执行 permit，或处于派发交接窗口。deadline
+    // 自入队起算（未因阶段切换重置）——permit 等待就是排队等待的延续。
+    if (!state.settled && state.phase !== "running" && state.admission === "queued") {
+      this.log(
+        `[pi-runtime] startAgent ${state.taskId} 排队超时（含全局执行许可等待，${queueTimeoutMs}ms），即时终态`,
+      );
+      this.settleFailure(state, new AgentTimeoutError(queueTimeoutMs, "queue"));
+      return true;
     }
-    const [entry] = managed.queue.splice(index, 1);
-    this.clearQueueTimer(state);
-    if (entry === undefined) {
-      return false;
-    }
-    this.log(
-      `[pi-runtime] startAgent ${state.taskId} 排队超时（${queueTimeoutMs}ms），即时终态（不等待前序 run）`,
-    );
-    this.settleFailure(state, new AgentTimeoutError(queueTimeoutMs, "queue"));
-    entry.resolveAcquire(NOOP_RELEASE);
-    return true;
+    return false;
   }
 
   // ---- 事件（Pi → PaperTeam AgentEvent 映射；写入 RunState 事实源） ----
@@ -1568,8 +1789,16 @@ export class PiRuntimeAdapter implements AgentRuntime {
   }
 
   /** 会话/在途诊断快照（非 AgentRuntime 契约；RuntimeStatusService 读取） */
-  runtimeStats(): { activeRuns: number; managedSessions: number } {
-    return { activeRuns: this.inFlight.size, managedSessions: this.sessions.size };
+  runtimeStats(): RuntimeSessionStats {
+    return {
+      activeRuns: this.inFlight.size,
+      managedSessions: this.sessions.size,
+      // M5.2 全局调度状态（生效上限 + 实时计数；GET /api/runtime/status 透传）
+      maxConcurrentRuns: this.maxConcurrentRuns,
+      maxQueuedRuns: this.maxQueuedRuns,
+      activeExecutions: this.activeExecutions,
+      queuedRuns: this.queuedAdmission,
+    };
   }
 
   /**

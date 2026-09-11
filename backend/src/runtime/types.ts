@@ -307,4 +307,18 @@ export interface RuntimeModelStatus {
 export interface RuntimeSessionStats {
   activeRuns: number;
   managedSessions: number;
+  /**
+   * 全局并发上限（M5.2 admission / execution guard；实现未暴露时缺省，
+   * 视为不限）。四个字段刻画 Runtime 进程内的全局调度状态：
+   * 同时真实进入 session.prompt 的 run 数 <= maxConcurrentRuns；
+   * 已受理未执行（等待会话创建 / per-session FIFO / 全局 permit）的
+   * run 数 <= maxQueuedRuns，占满后新任务立即 RUNTIME_QUEUE_FULL。
+   */
+  maxConcurrentRuns?: number;
+  /** 全局等待队列容量上限（M5.2；与 maxConcurrentRuns 成对） */
+  maxQueuedRuns?: number;
+  /** 当前持有全局执行 permit 的 run 数（真实执行中） */
+  activeExecutions?: number;
+  /** 当前已受理、尚未开始执行的 run 数（全部执行前等待合计） */
+  queuedRuns?: number;
 }

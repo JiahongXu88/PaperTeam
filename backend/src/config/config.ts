@@ -76,6 +76,19 @@ export interface PiRuntimeConfig {
   sessionTimeoutMs?: number;
   /** Runtime 懒初始化阶段超时（毫秒；PAPERTEAM_PI_INIT_TIMEOUT_MS；缺省不限） */
   initTimeoutMs?: number;
+  /**
+   * 全局最大同时执行数（PAPERTEAM_PI_MAX_CONCURRENT_RUNS；默认 4）。
+   * 整个进程同时真实执行的 run 数上限（Runtime 层最后一道 admission /
+   * execution guard，跨一切业务维度生效）。非法值启动报错（容量约束是
+   * 正确性契约，不同于可静默回退的并发调优项）。
+   */
+  maxConcurrentRuns: number;
+  /**
+   * 全局最大等待任务数（PAPERTEAM_PI_MAX_QUEUED_RUNS；默认 32；0 = 不
+   * 允许任何等待）。已受理未执行任务达到上限后新任务立即结构化失败
+   * （RUNTIME_QUEUE_FULL）。非法值启动报错。
+   */
+  maxQueuedRuns: number;
 }
 
 export interface PdfConfig {
@@ -126,6 +139,14 @@ const CONCURRENCY_MIN = 1;
 const CONCURRENCY_MAX = 8;
 const DEFAULT_REVIEW_SECTION_LIMIT = 0;
 const REVIEW_SECTION_LIMIT_MAX = 40;
+/** Runtime 全局并发上限（M5.2）：>= Reviewer 三路 fan-out + 一路余量 */
+const DEFAULT_PI_MAX_CONCURRENT_RUNS = 4;
+const PI_MAX_CONCURRENT_MIN = 1;
+const PI_MAX_CONCURRENT_MAX = 64;
+/** Runtime 全局等待队列容量（M5.2）：单机单用户的 Workflow 级排队余量 */
+const DEFAULT_PI_MAX_QUEUED_RUNS = 32;
+const PI_MAX_QUEUED_MIN = 0;
+const PI_MAX_QUEUED_MAX = 1024;
 
 const RUN_TIMEOUT_MIN_MS = 1_000;
 const RUN_TIMEOUT_MAX_MS = 3_600_000;
@@ -193,6 +214,19 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       initTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_INIT_TIMEOUT_MS", {
         min: RUN_TIMEOUT_MIN_MS,
         max: RUN_TIMEOUT_MAX_MS,
+      }),
+      // 容量上限（M5.2）用严格 readInt：非法值报 ConfigError 拒绝启动
+      //（区别于 reviewConcurrency 等可静默回退的性能调优项——容量契约
+      //  被静默放大/缩小会掩盖背压语义）
+      maxConcurrentRuns: readInt(source, "PAPERTEAM_PI_MAX_CONCURRENT_RUNS", {
+        default: DEFAULT_PI_MAX_CONCURRENT_RUNS,
+        min: PI_MAX_CONCURRENT_MIN,
+        max: PI_MAX_CONCURRENT_MAX,
+      }),
+      maxQueuedRuns: readInt(source, "PAPERTEAM_PI_MAX_QUEUED_RUNS", {
+        default: DEFAULT_PI_MAX_QUEUED_RUNS,
+        min: PI_MAX_QUEUED_MIN,
+        max: PI_MAX_QUEUED_MAX,
       }),
     },
     agents: {

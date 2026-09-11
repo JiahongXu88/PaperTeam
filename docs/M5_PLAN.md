@@ -62,6 +62,11 @@ AgentRuntime 契约 v2（`backend/src/runtime/types.ts`）不变更的前提下�
 周期管理（rotation、空闲回收）、全局并发与背压、长时间运行的观测面
 与自愈（进程重启恢复已有 checkpoint 机制，补齐运行时侧语义）。
 
+> 进度：timeout 分层与 run 级 usage 基础采集已随 M5.1 第二批提前落地；
+> 全局并发与有界受理（Runtime 层 global concurrency + bounded
+> admission）已于 2026-09-11 完成（见 PROJECT_STATUS.md）。剩余：context
+> budget、session rotation / TTL / GC、观测面与自愈补齐。
+
 ### M5.3 Controlled Skill Integration
 
 Skill install / update 的受控路径：保留「仓库内审计 + pin revision +

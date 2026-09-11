@@ -25,6 +25,13 @@ function makeRuntime(options: {
   providers?: string[];
   activeRuns?: number;
   managedSessions?: number;
+  /** M5.2 全局调度状态（缺省 = 实现未暴露，字段不出现） */
+  scheduler?: {
+    maxConcurrentRuns: number;
+    maxQueuedRuns: number;
+    activeExecutions: number;
+    queuedRuns: number;
+  };
 }): AgentRuntime {
   const healthy = options.healthy ?? true;
   const modelPhase = options.modelPhase ?? (healthy ? "configured" : "unknown");
@@ -62,6 +69,7 @@ function makeRuntime(options: {
     runtimeStats: () => ({
       activeRuns: options.activeRuns ?? 0,
       managedSessions: options.managedSessions ?? 0,
+      ...(options.scheduler !== undefined ? { ...options.scheduler } : {}),
     }),
   } as AgentRuntime;
 }
@@ -101,6 +109,26 @@ describe("RuntimeStatusService（Pi 形状）", () => {
     expect(serialized).not.toContain("not_applicable");
     expect(serialized).not.toContain("token");
     expect(serialized).not.toContain("apiKey");
+  });
+
+  it("sessions 透传 M5.2 全局调度状态；实现未暴露时字段缺省（不伪造）", async () => {
+    const withScheduler = await makeService(
+      makeRuntime({
+        activeRuns: 2,
+        managedSessions: 3,
+        scheduler: { maxConcurrentRuns: 4, maxQueuedRuns: 32, activeExecutions: 2, queuedRuns: 0 },
+      }),
+    ).getStatus();
+    expect(withScheduler.sessions).toEqual({
+      activeRuns: 2,
+      managedSessions: 3,
+      maxConcurrentRuns: 4,
+      maxQueuedRuns: 32,
+      activeExecutions: 2,
+      queuedRuns: 0,
+    });
+    const without = await makeService(makeRuntime({})).getStatus();
+    expect(without.sessions).toEqual({ activeRuns: 0, managedSessions: 0 });
   });
 
   it("Runtime 健康 ≠ 模型就绪：无 Key 时 runtime=healthy、model=not_configured", async () => {

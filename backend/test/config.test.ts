@@ -105,6 +105,23 @@ describe("loadConfig", () => {
     expect(config.pi.runTimeoutMs).toBe(2000);
   });
 
+  it("Runtime 全局并发/受理容量（M5.2）：默认 4/32；合法值采用；非法报 ConfigError（容量契约不静默回退）", () => {
+    expect(loadConfig({}).pi.maxConcurrentRuns).toBe(4);
+    expect(loadConfig({}).pi.maxQueuedRuns).toBe(32);
+    expect(loadConfig({ PAPERTEAM_PI_MAX_CONCURRENT_RUNS: "1" }).pi.maxConcurrentRuns).toBe(1);
+    expect(loadConfig({ PAPERTEAM_PI_MAX_CONCURRENT_RUNS: "64" }).pi.maxConcurrentRuns).toBe(64);
+    expect(loadConfig({ PAPERTEAM_PI_MAX_QUEUED_RUNS: "0" }).pi.maxQueuedRuns).toBe(0);
+    expect(loadConfig({ PAPERTEAM_PI_MAX_QUEUED_RUNS: "256" }).pi.maxQueuedRuns).toBe(256);
+    // 并发上限：0 / 负数 / 非数字 / 超上限 → 启动报错
+    for (const bad of ["0", "-1", "abc", "65"]) {
+      expect(() => loadConfig({ PAPERTEAM_PI_MAX_CONCURRENT_RUNS: bad })).toThrow(ConfigError);
+    }
+    // 等待容量：负数 / 非数字 / 超上限 → 启动报错（0 合法 = 不允许等待）
+    for (const bad of ["-1", "abc", "1025"]) {
+      expect(() => loadConfig({ PAPERTEAM_PI_MAX_QUEUED_RUNS: bad })).toThrow(ConfigError);
+    }
+  });
+
   it("模型规格不做格式前置校验（由 Runtime 层结构化报告）", () => {
     const config = loadConfig({ PAPERTEAM_PI_MODEL: "anything" });
     expect(config.pi.model).toBe("anything");
