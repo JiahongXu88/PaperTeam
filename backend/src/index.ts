@@ -115,6 +115,18 @@ export async function startBackend(): Promise<void> {
           agentDir: config.pi.agentDir,
           workspaceRoot: config.projectsRoot,
           runTimeoutMs: config.pi.runTimeoutMs,
+          ...(config.pi.executionTimeoutMs !== undefined
+            ? { executionTimeoutMs: config.pi.executionTimeoutMs }
+            : {}),
+          ...(config.pi.queueTimeoutMs !== undefined
+            ? { queueTimeoutMs: config.pi.queueTimeoutMs }
+            : {}),
+          ...(config.pi.sessionTimeoutMs !== undefined
+            ? { sessionTimeoutMs: config.pi.sessionTimeoutMs }
+            : {}),
+          ...(config.pi.initTimeoutMs !== undefined
+            ? { initTimeoutMs: config.pi.initTimeoutMs }
+            : {}),
           modelRuntime,
           // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
           roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),

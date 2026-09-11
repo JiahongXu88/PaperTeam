@@ -63,8 +63,19 @@ export interface PiRuntimeConfig {
   apiKey?: string;
   /** Pi 全局配置目录（auth.json / models.json；默认 <PAPERTEAM_RUNTIME_ROOT>/runtime/pi/agent） */
   agentDir: string;
-  /** 单次 runAgent 的整体超时（毫秒） */
+  /**
+   * 单次 runAgent 的整体超时（毫秒；M5.1 兼容字段）：未设置
+   * executionTimeoutMs 时作为执行阶段超时的默认值。
+   */
   runTimeoutMs: number;
+  /** 执行阶段超时（毫秒；PAPERTEAM_PI_EXECUTION_TIMEOUT_MS；缺省回退 runTimeoutMs） */
+  executionTimeoutMs?: number;
+  /** 排队阶段超时（毫秒；PAPERTEAM_PI_QUEUE_TIMEOUT_MS；缺省不限） */
+  queueTimeoutMs?: number;
+  /** 会话创建阶段超时（毫秒；PAPERTEAM_PI_SESSION_TIMEOUT_MS；缺省不限） */
+  sessionTimeoutMs?: number;
+  /** Runtime 懒初始化阶段超时（毫秒；PAPERTEAM_PI_INIT_TIMEOUT_MS；缺省不限） */
+  initTimeoutMs?: number;
 }
 
 export interface PdfConfig {
@@ -164,6 +175,22 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         join(resolveRuntimeRoot(source), "runtime", "pi", "agent"),
       runTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_RUN_TIMEOUT_MS", {
         default: DEFAULT_RUN_TIMEOUT_MS,
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+      executionTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_EXECUTION_TIMEOUT_MS", {
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+      queueTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_QUEUE_TIMEOUT_MS", {
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+      sessionTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_SESSION_TIMEOUT_MS", {
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+      initTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_INIT_TIMEOUT_MS", {
         min: RUN_TIMEOUT_MIN_MS,
         max: RUN_TIMEOUT_MAX_MS,
       }),
@@ -290,6 +317,25 @@ function readTimeoutMs(
   const raw = source[key];
   if (raw === undefined || raw.trim() === "") {
     return bounds.default;
+  }
+  const ms = Number.parseInt(raw.trim(), 10);
+  if (!Number.isInteger(ms) || ms < bounds.min || ms > bounds.max) {
+    throw new ConfigError(
+      `${key} 必须是 ${bounds.min}-${bounds.max} 的整数（毫秒），当前为 "${raw.trim()}"`,
+    );
+  }
+  return ms;
+}
+
+/** 可选整型超时配置读取（缺省/空 = 不配置 = 不限；设置了则校验范围） */
+function readOptionalTimeoutMs(
+  source: Record<string, string | undefined>,
+  key: string,
+  bounds: { min: number; max: number },
+): number | undefined {
+  const raw = source[key];
+  if (raw === undefined || raw.trim() === "") {
+    return undefined;
   }
   const ms = Number.parseInt(raw.trim(), 10);
   if (!Number.isInteger(ms) || ms < bounds.min || ms > bounds.max) {

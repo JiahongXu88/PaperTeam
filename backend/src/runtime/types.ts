@@ -25,8 +25,28 @@
  */
 export type RuntimeProvider = "pi";
 
-/** 任务状态（PRD §12.3 统一口径） */
-export type AgentTaskStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+/**
+ * 任务状态（PRD §12.3 统一口径）。
+ * M5.1 起 timed_out 从「Promise reject + 状态丢失」升级为独立终态：
+ * 超时任务同样可经 getTask / handle.result 查询结构化终态。
+ */
+export type AgentTaskStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "timed_out";
+
+/**
+ * 超时归属阶段（M5.1 timeout 分层）。timed_out 任务的 timeoutPhase 必填，
+ * 对应真实生命周期阶段（不人为制造不存在的阶段）：
+ * - init      Runtime 懒初始化（ensureInitialized）超时
+ * - session   会话获取/创建（getOrCreateSession）超时
+ * - queue     等待同会话独占权（per-session FIFO）超时
+ * - execution 进入 session.prompt 后的执行超时
+ */
+export type AgentTimeoutPhase = "init" | "session" | "queue" | "execution";
 
 /**
  * Runtime 健康状态（Runtime 健康 ≠ 模型就绪，见 healthCheck）：
@@ -76,7 +96,11 @@ export interface RunAgentInput {
    */
   contextScope?: string;
   inputFiles?: string[];
-  /** 本次任务的整体超时（毫秒）；缺省使用 Runtime 配置的默认值 */
+  /**
+   * 执行阶段超时（毫秒）——任务进入 session.prompt 之后才计时（M5.1
+   * timeout 分层）；排队等待不计入。缺省使用 Runtime 配置的执行阶段默认值
+   * （兼容历史 runTimeoutMs 语义）。
+   */
   timeoutMs?: number;
   /**
    * 协作式取消信号（如 Workflow stage 的 ctx.signal）。由 startAgent 统一
@@ -98,6 +122,12 @@ export interface RunAgentInput {
  *   - model     实际使用的模型标签（provider/model-id）
  *   - role      Pi 角色映射键（researcher/writer/reviewer/default）
  * 业务层不得依赖 metadata 的具体结构。
+ *
+ * M5.1 结构化终态：无论 result Promise resolve 还是 reject，Runtime 都在
+ * taskRecords 留下可查询的完整终态（getTask 对 timed_out / failed 同样
+ * 可查）。计时字段（queuedAt / queueDurationMs / executionDurationMs /
+ * totalDurationMs）由 Runtime 在 settle 时一次性写入，保证非负；未到达的
+ * 阶段不携带对应字段（如排队即超时的任务没有 executionDurationMs）。
  */
 export interface AgentTask {
   taskId: string;
@@ -105,13 +135,59 @@ export interface AgentTask {
   status: AgentTaskStatus;
   createdAt: string;
   updatedAt: string;
-  /** 任务实际执行的开始/结束时间（ISO 8601） */
+  /** 任务实际执行的开始/结束时间（ISO 8601）；未进入执行的终态（排队取消/
+   *  排队超时/会话阶段超时）不携带 startedAt。completedAt 恒为 settle 时间。 */
   startedAt?: string;
   completedAt?: string;
+  /** 任务进入 per-session 队列的时刻（会话已就绪、等待独占；ISO 8601） */
+  queuedAt?: string;
+  /**
+   * 结构化错误码（failed / timed_out 终态携带；completed/cancelled 不携带）。
+   * timed_out：INIT_TIMEOUT / SESSION_TIMEOUT / QUEUE_TIMEOUT / EXECUTION_TIMEOUT。
+   */
+  errorCode?: string;
+  /** 超时归属阶段（仅 timed_out 终态携带，见 AgentTimeoutPhase） */
+  timeoutPhase?: AgentTimeoutPhase;
+  /** 排队等待时长（毫秒；进入过队列的任务携带） */
+  queueDurationMs?: number;
+  /** 执行时长（毫秒；进入过 session.prompt 的任务携带） */
+  executionDurationMs?: number;
+  /** 任务总时长（毫秒；从 startAgent 受理到 settle） */
+  totalDurationMs?: number;
   output?: string;
   error?: string;
+  /**
+   * 本次 run 新产生的 assistant turn usage 汇总（M5.2 基础采集）。
+   * 只统计本 run 期间 message_end 送达的 assistant 消息（会话复用不重复
+   * 计算历史 turn）；provider 未返回 usage 时整个字段缺省，不伪造 0 成本。
+   */
+  usage?: AgentRunUsage;
   /** 诊断元数据（内容由 Runtime 实现决定，仅用于排障） */
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * Run 级 token / cost 用量（来自 Pi AssistantMessage.usage 的原生语义）。
+ *
+ * 语义口径（pi-ai Usage，0.84.4）：
+ * - input/output/cacheRead/cacheWrite 为「本条 assistant 消息（本次 LLM
+ *   请求）」的增量，跨 turn 累加即为 run 总量；
+ * - totalTokens 是「本次请求时的上下文规模」快照（近似等于该 turn 各项
+ *   之和），跨 turn 累加没有意义——contextTokens 只保留最后一个有效值；
+ * - cost 是 Pi/provider 按 list-price 的估算（estimatedCost），不一定等于
+ *   用户 Coding Plan / 企业账号的实际付款；provider 未返回时缺省。
+ */
+export interface AgentRunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** 上下文规模快照（最后一个 assistant turn 的 totalTokens；不跨 turn 累加） */
+  contextTokens: number;
+  /** Pi/provider 返回的 list-price 成本估算（未返回时缺省，不自行计算） */
+  estimatedCost?: number;
+  /** 已累计 usage 的 assistant turn 数（0 值 usage 也计入） */
+  assistantTurns: number;
 }
 
 /**
@@ -168,7 +244,8 @@ export interface AgentRunHandle {
   /**
    * 任务终态：正常/结构化失败 resolve AgentTask；超时、Runtime 异常等
    * 以业务错误 reject（与 v1 runAgent 抛错口径一致）。Promise 缓存，
-   * 可重复 await。
+   * 可重复 await。reject 不丢失状态：timed_out / failed 的结构化终态
+   * 同样写入 Runtime 任务记录，可经 getTask 查询（M5.1）。
    */
   result(): Promise<AgentTask>;
 }
@@ -189,7 +266,10 @@ export interface AgentRuntime {
    */
   runAgent(input: RunAgentInput): Promise<AgentTask>;
 
-  /** 查询已完结任务（超出回溯窗口或不存在时报错；运行中任务经 handle 查询） */
+  /**
+   * 查询已完结任务（超出回溯窗口或不存在时报错；运行中任务经 handle 查询）。
+   * M5.1 起 reject 路径（timed_out / runtime 异常）也留有结构化终态记录。
+   */
   getTask(taskId: string): Promise<AgentTask>;
 
   healthCheck(): Promise<RuntimeHealth>;

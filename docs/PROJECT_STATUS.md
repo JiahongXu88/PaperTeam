@@ -57,9 +57,52 @@ AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字
   `typecheck` / `npm test` 全绿（Backend 565 → 584 passed，Frontend 161
   不变）。业务层零改动（全部走 runAgent，signal 语义由 startAgent 内建
   自动生效）。
-- **M5.1 后续批次（未做，按 M5_PLAN）**：timeout 分层、token usage /
-  cost 统计、context budget、session rotation / TTL / GC、global
-  concurrency。
+
+**M5.1 Runtime Lifecycle Reliability — 第二批（✅ 2026-09-11）**：
+timeout 分层 + 统一结构化终态 + run 级 usage 基础采集（M5.2 第一步
+提前落地）三项，51 → 73 专项用例：
+
+- **Timeout 分层（任务 E）**：按真实生命周期阶段分层计时——
+  `init`（懒初始化）→ `session`（会话获取/创建）→ `queue`（等待同会话
+  独占权）→ `execution`（session.prompt 开始后）。配置兼容：
+  `runTimeoutMs` 保留为 execution 阶段兼容默认值
+  （`executionTimeoutMs ?? runTimeoutMs ?? 300000`），新增可选
+  `PAPERTEAM_PI_{EXECUTION,QUEUE,SESSION,INIT}_TIMEOUT_MS`（queue /
+  session / init 缺省不限，保持既有行为）。QUEUE_TIMEOUT 到点从队列
+  即时摘除（不等前序 run、不误伤后续排队者）；EXECUTION_TIMEOUT 真实
+  调用 `session.abort()`；SESSION_TIMEOUT 识别迟到成功的创建并销毁
+  不入池（等待者计数，无幽灵会话）；INIT_TIMEOUT 超时后共享
+  initPromise 继续后台收敛、惠及后续任务。timeout 与 manual cancel
+  竞态以「首个 session.abort 发起者」唯一归因（`abortInitiator` 只记
+  首个；cancel 先到 → cancelled，deadline 先到 → timed_out），close /
+  releaseProjectSessions 并发时同样不双 abort、不覆盖归因。
+- **统一结构化终态（任务 F）**：`AgentTaskStatus` 新增 `timed_out`；
+  无论 result resolve 还是 reject，全部终态写入任务记录（**reject 不再
+  丢状态**——修复前 timed_out 任务 getTask 报「不存在」）。终态携带
+  `errorCode`（`*_TIMEOUT` / `RUN_FAILED` / `PROMPT_REJECTED` /
+  `MODEL_NOT_CONFIGURED`）、`timeoutPhase`、`queuedAt` 与
+  `queueDurationMs` / `executionDurationMs` / `totalDurationMs`（settle
+  时统一注入，非负；未到达的阶段不携带字段）。settle first-wins 由
+  既有 `settled` 守卫保证；reject 通道语义不变（AgentTimeoutError 携
+  phase，HTTP 504 / Stage timeout 分类不受影响）。
+- **Run 级 usage 基础采集（任务 G，M5.2 第一步）**：`message_end` 送达
+  的 assistant 消息按 Pi 原生 usage（pi-ai 0.84.4 `Usage`）累计进
+  `AgentTask.usage`（inputTokens / outputTokens / cacheReadTokens /
+  cacheWriteTokens 增量求和；**totalTokens 是上下文规模快照 →
+  contextTokens 取最后一个有效值，绝不跨 turn 累加**；estimatedCost
+  为 provider list-price 估算求和，未返回则缺省不伪造）。forwarder 仅
+  在本 run 独占会话期间挂载 + Pi subscribe 纯 live 无 replay → 会话
+  复用不重复计算历史 turn。cancelled / timed_out / failed run 保留已
+  产生的 usage；无 usage 的 run 整个字段缺省。不做 Dashboard /
+  Pricing Service / Context Rotation（按 M5_PLAN 边界）。
+- **测试**：PiRuntimeAdapter 专项 51 → 73（新增 timeout 分层 11 /
+  结构化终态 2 / usage 9，其中 Level 2 真实 SDK 链路 2）；Backend
+  584 → 606 passed，Frontend 161 不变；build / typecheck / test 全绿。
+  兼容性：`runAgent(input.timeoutMs)` 语义不变（execution 阶段），
+  业务层（Writer/Reviewer/Researcher 等 runAgent 调用方）零改动。
+- **M5.1/M5.2 剩余（未做，按 M5_PLAN）**：context budget、session
+  rotation / TTL / GC、global concurrency 与背压（usage 的 Dashboard /
+  Pricing 展示层同属后续）。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

@@ -5,8 +5,9 @@
 > （React Web Workbench + HITL / Workflow Live View / Evidence / 质量门禁 /
 > Draft-Final 产物闭环 / 版本体验）已实现**；Pi SDK 为唯一正式 Agent Runtime
 > （in-process），AgentRuntime 契约 v2。实现进度与测试 / 环境验证缺口以
-> [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；Visual Reviewer、Skill
-> install/update、系统管理后台、Docker 部署为 M5+ Planned。
+> [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准；M5 范围以
+> [M5_PLAN.md](M5_PLAN.md) 为准——M5.3 Skill 受控接入、M5.5 单机 Linux /
+> Docker 部署在列；Visual Reviewer 与系统管理后台移出 M5（M5_PLAN §2）。
 > **Iterative Writer–Reviewer Outer Review Loop（§13，D-0026）已于 M4.7 实现**
 > （score-driven loop / Revision Plan / 收敛判定 / iteration history），
 > M4.8 补齐版本体验（历史 / 比较 / 不可变恢复）。
@@ -100,8 +101,9 @@ Skills / Settings（模型设置 + 项目管理）。项目生命周期含 归�
 （M4.5）、Evidence 工作台 + 质量门禁面板（M4.6）、Draft/Final 产物闭环 + Writer–
 Reviewer 修订闭环 + bounded LaTeX repair（M4.7）、版本体验（M4.8：版本历史 /
 确定性比较 / 不可变恢复，`ManuscriptRevisionStore` 不可变修订链 + VersionService）。
-论文版本以不可变修订快照实现（非 Git）；尚未实现：Visual Reviewer、Skill
-install/update、Admin 后台、Docker 部署（M5+）。
+论文版本以不可变修订快照实现（非 Git）；尚未实现：Visual Reviewer（M5 未含）、
+Admin 后台（M5 未含）；Skill install/update（M5.3）与单机 Linux / Docker
+部署（M5.5）在 M5 范围内（见 M5_PLAN.md）。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -275,8 +277,8 @@ pending → running → awaiting_input → running → … → completed
 ### 4.2 拆分准则（D-0009）
 
 角色细化优先用 Skill。仅当需要不同模型 / 独立长期上下文 / 不同权限 / 真正独立并行
-资源时才拆独立 Agent。LaTeX 修复是确定性工具（M4+）；Visual Reviewer、Experiment
-subsystem 均在 M4+ / backlog。
+资源时才拆独立 Agent。LaTeX 修复是确定性工具（M4 已实现）；Visual
+Reviewer、Experiment subsystem 均在 backlog（M5 未含，见 M5_PLAN §2）。
 
 ### 4.3 Agent 与确定性组件的边界
 
@@ -631,7 +633,7 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
 `visual.spec.ts` 做 4 视口 × 双主题截图与无溢出 / 深色生效断言。CDP 只是开发 / 测试
 工具，不进入 Backend 产品代码。
 
-### 8.3 双模式目标（PRD；系统管理后台 M5+）
+### 8.3 双模式目标（PRD；系统管理后台为 backlog，M5 未含）
 
 - **论文工作台**（普通用户）：My Papers（两类项目）、New Project（两类入口）、
   Workflow 实时视图（M4.4 已实现）、HITL 待办（M4.5）、文献与证据（M4.6
@@ -639,7 +641,7 @@ TanStack Query；Zustand 只放跨页面纯 UI 状态，禁止复制 API 数据�
   Draft/Final 标记流 M4.7）、PDF 查看（M4.8）。隐藏 session / agentId /
   runId / Runtime 技术细节，只展示业务阶段与 awaiting_input 待办。
 - **系统管理**（管理员）：系统状态、Runtime/模型管理、Workflow 配置、日志、
-  系统诊断（M5+）。
+  系统诊断（backlog，M5 未含，见 M5_PLAN §2）。
 
 实时通信：SSE（WorkflowRun 进度 / Domain Event）；M4.3 起订阅
 `GET /api/runs/:runId/events`（replay + 实时 + 心跳 + seq 去重，契约已审计足够）。

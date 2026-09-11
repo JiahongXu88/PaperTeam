@@ -45,10 +45,44 @@ type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
 // ---------------------------------------------------------------------------
 
 type FakeBehavior =
-  | { kind: "complete"; output: string; streamEvents?: number; streamGapMs?: number }
-  | { kind: "errorStop"; message: string }
+  | {
+      kind: "complete";
+      output: string;
+      streamEvents?: number;
+      streamGapMs?: number;
+      /** 每个 assistant turn 的 usage（message_end 携带；undefined = 该 turn 无 usage） */
+      usageTurns?: (FakeUsage | undefined)[];
+    }
+  | { kind: "errorStop"; message: string; usageTurns?: (FakeUsage | undefined)[] }
   | { kind: "preflightReject"; message: string }
-  | { kind: "hangUntilAbort" };
+  | { kind: "hangUntilAbort" }
+  /** 先产出若干带 usage 的 assistant turn（message_end），再挂起直到 abort（usage 保留路径测试） */
+  | { kind: "turnsThenHang"; turnUsages: FakeUsage[] };
+
+/** 单个 assistant turn 的 Pi 风格 usage（Level 1 usage 采集测试；结构对应 pi-ai Usage） */
+interface FakeUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  /** provider 返回的 list-price 成本；undefined = provider 未返回 cost */
+  cost?: number;
+}
+
+/** FakeUsage → pi-ai Usage 形状（cost 缺省时整个 cost 对象缺省，模拟 provider 未返回） */
+function toPiUsage(usage: FakeUsage): Record<string, unknown> {
+  return {
+    input: usage.input,
+    output: usage.output,
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+    totalTokens: usage.totalTokens,
+    ...(usage.cost !== undefined
+      ? { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage.cost } }
+      : {}),
+  };
+}
 
 interface FakeSessionState {
   prompts: string[];
@@ -111,40 +145,87 @@ class FakeAgentSession {
         this.pending = false;
         return;
       }
+      if (behavior.kind === "turnsThenHang") {
+        // 先产出带 usage 的 assistant turn（message_end + transcript），再挂起：
+        // cancel / execution timeout 路径的「usage 保留」断言依赖这些先落盘
+        behavior.turnUsages.forEach((usage, index) => {
+          const message = {
+            role: "assistant",
+            content: [{ type: "text", text: `turn-${index + 1}` }],
+            stopReason: "stop",
+            usage: toPiUsage(usage),
+          };
+          this.emit({ type: "message_end", message } as unknown as AgentSessionEvent);
+          this.messages.push(message);
+        });
+        this.pending = true;
+        await new Promise<void>((resolve) => {
+          this.releasePending = resolve;
+        });
+        this.pending = false;
+        return;
+      }
       const isError = behavior.kind === "errorStop";
       const text2 = isError ? "" : behavior.kind === "complete" ? behavior.output : "";
-      const message = {
-        role: "assistant",
-        content: [{ type: "text", text: text2 }],
-        stopReason: isError ? "error" : "stop",
-        ...(isError ? { errorMessage: behavior.message } : {}),
-      };
-      if (behavior.kind === "complete" && behavior.streamEvents !== undefined) {
-        // 批量流事件（事件缓冲测试）：每条 delta 唯一编号 e-<i>。
-        // streamGapMs：undefined=同步突发（一个 tick 内全部落盘）；
-        // 0=setImmediate 逐条让出事件循环（消费者可实时跟读）；
-        // >0=setTimeout(ms) 间隔。
-        for (let index = 0; index < behavior.streamEvents; index += 1) {
+      const usageTurns =
+        behavior.kind === "complete"
+          ? behavior.usageTurns
+          : behavior.kind === "errorStop"
+            ? behavior.usageTurns
+            : undefined;
+      if (usageTurns !== undefined && usageTurns.length > 0) {
+        // 多 assistant turn（usage 采集测试）：每 turn 一条 message_end；
+        // 最后一条承载最终输出/错误语义（与既有断言兼容）
+        usageTurns.forEach((usage, index) => {
+          const isLast = index === usageTurns.length - 1;
+          const message = {
+            role: "assistant",
+            content: [{ type: "text", text: isLast && !isError ? text2 : `turn-${index + 1}` }],
+            stopReason: isError ? "error" : "stop",
+            ...(isError ? { errorMessage: (behavior as { message: string }).message } : {}),
+            ...(usage !== undefined ? { usage: toPiUsage(usage) } : {}),
+          };
+          this.emit({ type: "message_end", message } as unknown as AgentSessionEvent);
+          this.messages.push(message);
+        });
+      } else {
+        const message = {
+          role: "assistant",
+          content: [{ type: "text", text: text2 }],
+          stopReason: isError ? "error" : "stop",
+          ...(isError ? { errorMessage: behavior.message } : {}),
+        };
+        if (behavior.kind === "complete" && behavior.streamEvents !== undefined) {
+          // 批量流事件（事件缓冲测试）：每条 delta 唯一编号 e-<i>。
+          // streamGapMs：undefined=同步突发（一个 tick 内全部落盘）；
+          // 0=setImmediate 逐条让出事件循环（消费者可实时跟读）；
+          // >0=setTimeout(ms) 间隔。
+          for (let index = 0; index < behavior.streamEvents; index += 1) {
+            this.emit({
+              type: "message_update",
+              message,
+              assistantMessageEvent: { type: "text_delta", delta: `e-${index}` },
+            } as unknown as AgentSessionEvent);
+            if (behavior.streamGapMs === 0) {
+              await new Promise((resolve) => setImmediate(resolve));
+            } else if ((behavior.streamGapMs ?? 0) > 0) {
+              await new Promise((resolve) => setTimeout(resolve, behavior.streamGapMs));
+            }
+          }
+        } else {
           this.emit({
             type: "message_update",
             message,
-            assistantMessageEvent: { type: "text_delta", delta: `e-${index}` },
+            assistantMessageEvent: { type: "text_delta", delta: text2.slice(0, 10) },
           } as unknown as AgentSessionEvent);
-          if (behavior.streamGapMs === 0) {
-            await new Promise((resolve) => setImmediate(resolve));
-          } else if ((behavior.streamGapMs ?? 0) > 0) {
-            await new Promise((resolve) => setTimeout(resolve, behavior.streamGapMs));
-          }
         }
-      } else {
-        this.emit({
-          type: "message_update",
-          message,
-          assistantMessageEvent: { type: "text_delta", delta: text2.slice(0, 10) },
-        } as unknown as AgentSessionEvent);
+        this.messages.push(message);
       }
-      this.messages.push(message);
-      this.emit({ type: "agent_end", messages: [message], willRetry: false } as AgentSessionEvent);
+      this.emit({
+        type: "agent_end",
+        messages: [...this.messages],
+        willRetry: false,
+      } as AgentSessionEvent);
       this.emit({ type: "agent_settled" } as AgentSessionEvent);
     } finally {
       this.active -= 1;
@@ -270,8 +351,37 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+/** Level 1 会话创建闸门工厂：创建挂起直到测试显式放行（session 阶段超时测试用） */
+function createGatedFactory() {
+  const pendingResolvers: Array<(session: FakeAgentSession) => void> = [];
+  const createdSessions: FakeAgentSession[] = [];
+  let requestedCount = 0;
+  return {
+    get created(): FakeAgentSession[] {
+      return createdSessions;
+    },
+    /** factory 已被调用的次数（创建请求已发起、等待放行） */
+    get requested(): number {
+      return requestedCount;
+    },
+    /** 放行一次挂起的创建（迟到的会话由此刻才真正诞生） */
+    release(): FakeAgentSession {
+      const session = new FakeAgentSession({ kind: "complete", output: "late ok" });
+      createdSessions.push(session);
+      pendingResolvers.shift()?.(session);
+      return session;
+    },
+    factory: () => {
+      requestedCount += 1;
+      return new Promise((resolve) => {
+        pendingResolvers.push((session) => resolve(session as unknown as AgentSession));
+      });
+    },
+  };
+}
+
 async function makeLevel1Adapter(
-  factory: ReturnType<typeof createFakeFactory>,
+  factoryLike: { factory: unknown },
   extra: Partial<PiRuntimeOptions> = {},
 ): Promise<PiRuntimeAdapter> {
   const agentDir = await makeTempDir("pi-l1-agent-");
@@ -281,10 +391,19 @@ async function makeLevel1Adapter(
     workspaceRoot,
     modelRuntime: stubModelRuntime(),
     model: { provider: "fake", id: "fake-1" } as PiModel,
-    createSession: factory.factory as NonNullable<PiRuntimeOptions["createSession"]>,
+    createSession: factoryLike.factory as NonNullable<PiRuntimeOptions["createSession"]>,
     log: () => {},
     ...extra,
   });
+}
+
+/** 轮询等待条件成立（默认 5s；超时返回 false，由调用方断言失败原因） */
+async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return condition();
 }
 
 // ---------------------------------------------------------------------------
@@ -1232,6 +1351,605 @@ describe("PiRuntimeAdapter（queued cancellation：取消排队任务无需等�
 });
 
 // ---------------------------------------------------------------------------
+// Timeout 分层（M5.1 任务 E：queue / execution / session / init 四阶段归因）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（Timeout 分层：queue / execution 阶段）", () => {
+  it("QUEUE_TIMEOUT：A running / B queued(超时) / C queued → B 即时 timed_out，A/C 不受影响", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { queueTimeoutMs: 200 });
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    const third = await adapter.startAgent({
+      agentId: "w",
+      task: "C",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    // B 不等 A：A 仍 pending 时 B 已 timed_out（reject 通道）
+    const bFailure = await second.result().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(bFailure).toBeInstanceOf(AgentTimeoutError);
+    expect((bFailure as AgentTimeoutError).phase).toBe("queue");
+    expect(factory.created[0]?.session.pending).toBe(true); // A 未被误伤
+    expect(factory.created[0]?.session.abortedCount).toBe(0); // B 的超时不 abort 会话
+    // 结构化终态可查：QUEUE_TIMEOUT + queue 归因 + 计时
+    const bTask = await adapter.getTask(second.taskId);
+    expect(bTask.status).toBe("timed_out");
+    expect(bTask.errorCode).toBe("QUEUE_TIMEOUT");
+    expect(bTask.timeoutPhase).toBe("queue");
+    expect(bTask.queueDurationMs).toBeGreaterThanOrEqual(150);
+    expect(bTask.startedAt).toBeUndefined(); // 从未进入执行
+    expect(bTask.executionDurationMs).toBeUndefined();
+    expect(bTask.totalDurationMs).toBeGreaterThanOrEqual(bTask.queueDurationMs ?? 0);
+    // A 正常完成后 C 照常执行（B 被摘除不阻塞队列）
+    factory.setBehavior({ kind: "complete", output: "C done" });
+    factory.created[0]?.session.completePending("A done");
+    expect((await first.result()).status).toBe("completed");
+    expect((await third.result()).status).toBe("completed");
+    expect(factory.created[0]?.session.prompts).toEqual(["A", "C"]);
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    await adapter.close();
+    expect(adapter.listActiveTasks()).toHaveLength(0);
+  });
+
+  it("QUEUE_TIMEOUT 与 manual cancel 竞态（cancel 先到）：终态保持 cancelled，超时定时器不翻案", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { queueTimeoutMs: 250 });
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    await second.cancel();
+    expect((await second.result()).status).toBe("cancelled");
+    // 穿过超时窗口后终态不被定时器改写（settle 只发生一次）
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const bTask = await adapter.getTask(second.taskId);
+    expect(bTask.status).toBe("cancelled");
+    expect(bTask.errorCode).toBeUndefined();
+    await first.cancel();
+    await adapter.close();
+  });
+
+  it("QUEUE_TIMEOUT 与 manual cancel 竞态（timeout 先到）：终态保持 timed_out，cancel 幂等 no-op", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { queueTimeoutMs: 150 });
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    await expect(second.result()).rejects.toMatchObject({ phase: "queue" });
+    await second.cancel(); // 超时后的 cancel：幂等 no-op
+    const bTask = await adapter.getTask(second.taskId);
+    expect(bTask.status).toBe("timed_out");
+    expect(bTask.errorCode).toBe("QUEUE_TIMEOUT");
+    await first.cancel();
+    await adapter.close();
+  });
+
+  it("EXECUTION_TIMEOUT：真实 session.abort + timed_out 终态可查（含计时）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({
+      agentId: "writer",
+      task: "慢任务",
+      projectId: "p",
+      timeoutMs: 150,
+    });
+    const failure = await handle.result().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AgentTimeoutError);
+    expect((failure as AgentTimeoutError).phase).toBe("execution");
+    expect(factory.created[0]?.session.abortedCount).toBe(1); // 真实调用 Pi session.abort
+    const task = await adapter.getTask(handle.taskId);
+    expect(task.status).toBe("timed_out");
+    expect(task.errorCode).toBe("EXECUTION_TIMEOUT");
+    expect(task.timeoutPhase).toBe("execution");
+    expect(task.startedAt).toBeDefined(); // 进入过执行
+    expect(task.executionDurationMs).toBeGreaterThanOrEqual(100);
+    expect(task.queueDurationMs).toBeDefined(); // 经历过（瞬时）排队
+    expect(task.totalDurationMs).toBeGreaterThanOrEqual(task.executionDurationMs ?? 0);
+    await adapter.close();
+  });
+
+  it("EXECUTION_TIMEOUT 与 cancel 竞态（cancel 先到 abort）：归因 cancelled，deadline 到点不翻案", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({
+      agentId: "w",
+      task: "慢",
+      projectId: "p",
+      timeoutMs: 200,
+    });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    await handle.cancel(); // 先于 deadline 发起 abort → 归因 cancel
+    const task = await handle.result();
+    expect(task.status).toBe("cancelled");
+    expect(task.errorCode).toBeUndefined();
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+    // 穿过 deadline 后终态不变（首个 abort 发起者唯一归因）
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect((await adapter.getTask(handle.taskId)).status).toBe("cancelled");
+    await adapter.close();
+  });
+
+  it("EXECUTION_TIMEOUT 与 cancel 竞态（timeout 先到 abort）：归因 timed_out，随后 cancel no-op", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({
+      agentId: "w",
+      task: "慢",
+      projectId: "p",
+      timeoutMs: 120,
+    });
+    await expect(handle.result()).rejects.toMatchObject({ phase: "execution" });
+    await handle.cancel(); // timeout 已发起 abort：cancel 不重复 abort、不覆盖归因
+    expect(factory.created[0]?.session.abortedCount).toBe(1);
+    const task = await adapter.getTask(handle.taskId);
+    expect(task.status).toBe("timed_out");
+    expect(task.errorCode).toBe("EXECUTION_TIMEOUT");
+    await adapter.close();
+  });
+
+  it("任务在 deadline 前完成：completed（定时器不产生任何影响）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "done" });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({
+      agentId: "w",
+      task: "快任务",
+      projectId: "p",
+      timeoutMs: 10_000,
+    });
+    expect(task.status).toBe("completed");
+    expect(task.output).toBe("done");
+    expect(task.errorCode).toBeUndefined();
+    expect((await adapter.getTask(task.taskId)).status).toBe("completed");
+    await adapter.close();
+  });
+
+  it("close 与 execution timeout 并发：单一归因（先 close → cancelled；先 timeout → timed_out）", async () => {
+    // 先 close（deadline 未到）：取消归因
+    {
+      const factory = createFakeFactory();
+      factory.setBehavior({ kind: "hangUntilAbort" });
+      const adapter = await makeLevel1Adapter(factory);
+      const handle = await adapter.startAgent({
+        agentId: "w",
+        task: "慢",
+        projectId: "p",
+        timeoutMs: 5_000,
+      });
+      expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+      await adapter.close();
+      const task = await handle.result();
+      expect(task.status).toBe("cancelled");
+      expect(task.errorCode).toBeUndefined();
+    }
+    // 先 timeout 再 close：超时归因不被 close 覆盖
+    {
+      const factory = createFakeFactory();
+      factory.setBehavior({ kind: "hangUntilAbort" });
+      const adapter = await makeLevel1Adapter(factory);
+      const handle = await adapter.startAgent({
+        agentId: "w",
+        task: "慢",
+        projectId: "p",
+        timeoutMs: 120,
+      });
+      await expect(handle.result()).rejects.toBeInstanceOf(AgentTimeoutError);
+      await adapter.close();
+      const task = await adapter.getTask(handle.taskId);
+      expect(task.status).toBe("timed_out");
+      expect(task.errorCode).toBe("EXECUTION_TIMEOUT");
+    }
+  });
+});
+
+describe("PiRuntimeAdapter（Timeout 分层：session 创建阶段）", () => {
+  it("SESSION_TIMEOUT：创建挂起超时 → timed_out；迟到会话销毁不入池；后续任务正常", async () => {
+    const gated = createGatedFactory();
+    const adapter = await makeLevel1Adapter(gated, { sessionTimeoutMs: 150 });
+    const handle = await adapter.startAgent({
+      agentId: "w",
+      task: "等会话",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    const failure = await handle.result().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AgentTimeoutError);
+    expect((failure as AgentTimeoutError).phase).toBe("session");
+    const task = await adapter.getTask(handle.taskId);
+    expect(task.status).toBe("timed_out");
+    expect(task.errorCode).toBe("SESSION_TIMEOUT");
+    expect(task.timeoutPhase).toBe("session");
+    expect(task.startedAt).toBeUndefined(); // 从未获得会话
+    expect(task.queuedAt).toBeUndefined(); // 从未进入队列
+    expect(task.executionDurationMs).toBeUndefined();
+    expect(task.queueDurationMs).toBeUndefined();
+
+    // 迟到的创建成功：识别为已被放弃 → 销毁、不入池（无幽灵会话）
+    gated.release();
+    expect(await waitFor(() => gated.created[0]?.disposed === true)).toBe(true);
+    expect(adapter.runtimeStats().managedSessions).toBe(0);
+
+    // 后续任务不受影响：新创建请求发起 → 放行 → 入池执行
+    const next = adapter.runAgent({
+      agentId: "w",
+      task: "第二次",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    expect(await waitFor(() => gated.requested >= 2)).toBe(true);
+    gated.release();
+    const nextTask = await next;
+    expect(nextTask.status).toBe("completed");
+    expect(nextTask.output).toBe("late ok");
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    expect(gated.created[1]?.disposed).toBe(false);
+    await adapter.close();
+  });
+
+  it("会话创建共享：一个等待者超时离开后仍有新等待者 → 迟到会话正常入池不被销毁", async () => {
+    const gated = createGatedFactory();
+    const adapter = await makeLevel1Adapter(gated, { sessionTimeoutMs: 150 });
+    // A 先发起（150ms 后将超时放弃）
+    const first = await adapter.startAgent({
+      agentId: "w",
+      task: "A",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    await expect(first.result()).rejects.toMatchObject({ phase: "session" });
+    // B 在 A 放弃后、创建完成前加入同一创建槽
+    const second = await adapter.startAgent({
+      agentId: "w",
+      task: "B",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    gated.release(); // 仍有等待者（B）→ 入池
+    const secondTask = await second.result();
+    expect(secondTask.status).toBe("completed");
+    expect(gated.created[0]?.disposed).toBe(false);
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    const firstTask = await adapter.getTask(first.taskId);
+    expect(firstTask.status).toBe("timed_out");
+    expect(firstTask.errorCode).toBe("SESSION_TIMEOUT");
+    await adapter.close();
+  });
+});
+
+describe("PiRuntimeAdapter（Timeout 分层：Runtime 初始化阶段）", () => {
+  it("INIT_TIMEOUT：初始化挂起超时 → timed_out(INIT_TIMEOUT)；迟到初始化惠及后续任务", async () => {
+    let releaseInit!: () => void;
+    const initGate = new Promise<void>((resolve) => {
+      releaseInit = resolve;
+    });
+    // 受控初始化：挂起直到测试放行，随后走真实初始化路径（注入 model 生效）
+    class HangingInitAdapter extends PiRuntimeAdapter {
+      protected override async doInitialize(): Promise<void> {
+        await initGate;
+        await super.doInitialize();
+      }
+    }
+    const agentDir = await makeTempDir("pi-l1-initgate-");
+    const workspaceRoot = await makeTempDir("pi-l1-ws-");
+    const adapter = new HangingInitAdapter({
+      agentDir,
+      workspaceRoot,
+      modelRuntime: stubModelRuntime(),
+      model: { provider: "fake", id: "fake-1" } as PiModel,
+      createSession:
+        createFakeFactory().factory as NonNullable<PiRuntimeOptions["createSession"]>,
+      initTimeoutMs: 150,
+      log: () => {},
+    });
+    // 超时：句柄仍返回，result reject + 结构化终态可查
+    const handle = await adapter.startAgent({ agentId: "w", task: "x", projectId: "p" });
+    const failure = await handle.result().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AgentTimeoutError);
+    expect((failure as AgentTimeoutError).phase).toBe("init");
+    const task = await adapter.getTask(handle.taskId);
+    expect(task.status).toBe("timed_out");
+    expect(task.errorCode).toBe("INIT_TIMEOUT");
+    expect(task.timeoutPhase).toBe("init");
+    expect(task.startedAt).toBeUndefined();
+    // 迟到初始化（共享 initPromise）完成 → 后续任务正常执行
+    releaseInit();
+    const next = await adapter.runAgent({ agentId: "w", task: "y", projectId: "p" });
+    expect(next.status).toBe("completed");
+    await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 结构化终态（M5.1 任务 F：reject 不丢状态、全终态可查、计时非负）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（结构化终态：completed / cancelled / failed / timed_out 全可查）", () => {
+  it("四种终态都可经 getTask 查询；计时字段非负、ISO 时间可解析、单调", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+
+    const assertTimingSound = (task: {
+      totalDurationMs?: number;
+      queueDurationMs?: number;
+      executionDurationMs?: number;
+      createdAt: string;
+      completedAt?: string;
+    }): void => {
+      expect(task.totalDurationMs).toBeGreaterThanOrEqual(0);
+      for (const ms of [task.queueDurationMs, task.executionDurationMs]) {
+        if (ms !== undefined) {
+          expect(ms).toBeGreaterThanOrEqual(0);
+        }
+      }
+      expect(new Date(task.createdAt).getTime()).not.toBeNaN();
+      expect(new Date(task.completedAt ?? "").getTime()).not.toBeNaN();
+    };
+
+    // completed
+    factory.setBehavior({ kind: "complete", output: "ok" });
+    const done = await adapter.runAgent({ agentId: "w", task: "1", projectId: "p" });
+    const doneFetched = await adapter.getTask(done.taskId);
+    expect(doneFetched.status).toBe("completed");
+    expect(doneFetched.startedAt).toBeDefined();
+    assertTimingSound(doneFetched);
+
+    // failed（transcript stopReason=error）
+    factory.setBehavior({ kind: "errorStop", message: "provider 502" });
+    const failed = await adapter.runAgent({ agentId: "w", task: "2", projectId: "p" });
+    expect(failed.status).toBe("failed");
+    const failedFetched = await adapter.getTask(failed.taskId);
+    expect(failedFetched.status).toBe("failed");
+    expect(failedFetched.errorCode).toBe("RUN_FAILED");
+    expect(failedFetched.error).toContain("provider 502");
+    assertTimingSound(failedFetched);
+
+    // cancelled（运行中取消）
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const cancelHandle = await adapter.startAgent({ agentId: "w", task: "3", projectId: "p" });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    await cancelHandle.cancel();
+    const cancelledFetched = await adapter.getTask(cancelHandle.taskId);
+    expect(cancelledFetched.status).toBe("cancelled");
+    expect(cancelledFetched.errorCode).toBeUndefined();
+    expect(cancelledFetched.startedAt).toBeDefined();
+    assertTimingSound(cancelledFetched);
+
+    // timed_out（reject 路径也不丢状态）
+    const timeoutHandle = await adapter.startAgent({
+      agentId: "w",
+      task: "4",
+      projectId: "p",
+      timeoutMs: 120,
+    });
+    await expect(timeoutHandle.result()).rejects.toBeInstanceOf(AgentTimeoutError);
+    const timedOutFetched = await adapter.getTask(timeoutHandle.taskId);
+    expect(timedOutFetched.status).toBe("timed_out");
+    expect(timedOutFetched.errorCode).toBe("EXECUTION_TIMEOUT");
+    assertTimingSound(timedOutFetched);
+    await adapter.close();
+  });
+
+  it("模型未配置的立即失败：结构化 failed（MODEL_NOT_CONFIGURED）可查，不进会话", async () => {
+    const agentDir = await makeTempDir("pi-l1-nomodel2-");
+    const workspaceRoot = await makeTempDir("pi-l1-ws-");
+    const adapter = new PiRuntimeAdapter({ agentDir, workspaceRoot, log: () => {} });
+    const handle = await adapter.startAgent({ agentId: "w", task: "x", projectId: "p" });
+    const task = await handle.result();
+    expect(task.status).toBe("failed");
+    expect(task.errorCode).toBe("MODEL_NOT_CONFIGURED");
+    expect((await adapter.getTask(handle.taskId)).status).toBe("failed");
+    expect(adapter.runtimeStats().managedSessions).toBe(0);
+    await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run 级 usage 采集（M5.2 第一步：Pi 原生 usage，跨 turn 累加 / 快照不累加）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（Run 级 usage 采集：Level 1）", () => {
+  // 与任务书示例同构的两 turn 数据：contextTokens 必须取 310（最后一个
+  // 有效 totalTokens），绝不能跨 turn 累加成 470
+  const turn1: FakeUsage = {
+    input: 100,
+    output: 20,
+    cacheRead: 30,
+    cacheWrite: 10,
+    totalTokens: 160,
+    cost: 0.01,
+  };
+  const turn2: FakeUsage = {
+    input: 200,
+    output: 40,
+    cacheRead: 50,
+    cacheWrite: 20,
+    totalTokens: 310,
+    cost: 0.02,
+  };
+
+  it("两个 assistant turn：增量项求和、contextTokens 取最后值、assistantTurns=2", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({
+      kind: "complete",
+      output: "最终输出",
+      usageTurns: [turn1, turn2],
+    });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "w", task: "x", projectId: "p" });
+    expect(task.status).toBe("completed");
+    expect(task.output).toBe("最终输出");
+    expect(task.usage).toMatchObject({
+      inputTokens: 300,
+      outputTokens: 60,
+      cacheReadTokens: 80,
+      cacheWriteTokens: 30,
+      contextTokens: 310, // 不是 470：totalTokens 是上下文规模快照
+      assistantTurns: 2,
+    });
+    expect(task.usage?.estimatedCost).toBeCloseTo(0.03, 10);
+    await adapter.close();
+  });
+
+  it("provider 未返回 cost：estimatedCost 缺省，token 统计不受影响（不伪造 0 成本结论）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({
+      kind: "complete",
+      output: "ok",
+      usageTurns: [{ ...turn1, cost: undefined }, { ...turn2, cost: undefined }],
+    });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "w", task: "x", projectId: "p" });
+    expect(task.usage).toBeDefined();
+    expect(task.usage?.estimatedCost).toBeUndefined();
+    expect(task.usage?.inputTokens).toBe(300);
+    await adapter.close();
+  });
+
+  it("message_end 不携带 usage：task.usage 整体缺省（不伪造 0）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({
+      kind: "complete",
+      output: "ok",
+      usageTurns: [undefined, undefined],
+    });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "w", task: "x", projectId: "p" });
+    expect(task.status).toBe("completed");
+    expect(task.usage).toBeUndefined();
+    // getTask 回溯同样不携带
+    expect((await adapter.getTask(task.taskId)).usage).toBeUndefined();
+    await adapter.close();
+  });
+
+  it("cancelled run 保留已产生的 usage（cancel 前的 turn 已累计）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "turnsThenHang", turnUsages: [turn1, turn2] });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({ agentId: "w", task: "x", projectId: "p" });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    await handle.cancel();
+    const task = await handle.result();
+    expect(task.status).toBe("cancelled");
+    expect(task.usage).toMatchObject({ inputTokens: 300, outputTokens: 60, contextTokens: 310 });
+    await adapter.close();
+  });
+
+  it("timed_out run 保留已产生的 usage", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "turnsThenHang", turnUsages: [turn1, turn2] });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({
+      agentId: "w",
+      task: "x",
+      projectId: "p",
+      timeoutMs: 150,
+    });
+    await expect(handle.result()).rejects.toBeInstanceOf(AgentTimeoutError);
+    const task = await adapter.getTask(handle.taskId);
+    expect(task.status).toBe("timed_out");
+    expect(task.usage).toMatchObject({ inputTokens: 300, outputTokens: 60, contextTokens: 310 });
+    await adapter.close();
+  });
+
+  it("failed run 保留已产生的 usage（stopReason=error 的 turn 也消耗了 token）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({
+      kind: "errorStop",
+      message: "provider 502",
+      usageTurns: [turn1],
+    });
+    const adapter = await makeLevel1Adapter(factory);
+    const task = await adapter.runAgent({ agentId: "w", task: "x", projectId: "p" });
+    expect(task.status).toBe("failed");
+    expect(task.usage).toMatchObject({
+      inputTokens: 100,
+      outputTokens: 20,
+      contextTokens: 160,
+      assistantTurns: 1,
+    });
+    await adapter.close();
+  });
+
+  it("会话复用：第二个 run 只统计本 run 新 turn（历史 usage 不重复计入）", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    factory.setBehavior({ kind: "complete", output: "第一轮", usageTurns: [turn1] });
+    const first = await adapter.runAgent({
+      agentId: "w",
+      task: "1",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    expect(first.usage).toMatchObject({ inputTokens: 100, contextTokens: 160 });
+    factory.setBehavior({ kind: "complete", output: "第二轮", usageTurns: [turn2] });
+    const second = await adapter.runAgent({
+      agentId: "w",
+      task: "2",
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    // 同一会话（created 仍为 1）；第二轮 usage 只含 turn2，绝不是 turn1+turn2
+    expect(factory.created).toHaveLength(1);
+    expect(second.usage).toMatchObject({
+      inputTokens: 200,
+      outputTokens: 40,
+      contextTokens: 310,
+      assistantTurns: 1,
+    });
+    await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 角色映射（纯函数）
 // ---------------------------------------------------------------------------
 
@@ -1581,4 +2299,58 @@ describe("PiRuntimeAdapter（Level 2：真实 SDK + faux model）", () => {
     expect(task.status).toBe("failed");
     await adapter.close();
   }, 30_000);
+
+  it("usage（真实 SDK 链路）：faux provider 的原生 usage 进入 run 级统计", async () => {
+    const { adapter, faux } = await makeLevel2Adapter();
+    faux.setResponses([fauxAssistantMessage([fauxText("一段真实链路的输出")])]);
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "写",
+      projectId: "p-usage",
+      contextScope: "writing/x",
+    });
+    expect(task.status).toBe("completed");
+    // faux 按文本长度估算 token（list-price 成本恒 0）——验证的是「Pi 原生
+    // usage 直通 run 级统计」，不是具体数值
+    expect(task.usage).toBeDefined();
+    expect(task.usage?.inputTokens).toBeGreaterThan(0);
+    expect(task.usage?.outputTokens).toBeGreaterThan(0);
+    expect(task.usage?.contextTokens).toBeGreaterThan(0);
+    expect(task.usage?.assistantTurns).toBe(1);
+    expect(task.usage?.estimatedCost).toBe(0); // faux 的 list-price 为 0，如实透传
+    await adapter.close();
+  }, 30_000);
+
+  it("usage 多 turn（真实 SDK + 工具调用）：两个 assistant turn 正确累计", async () => {
+    // 简单 echo 工具：第一轮模型请求调用工具，第二轮输出文本（真实 agent loop
+    // 产生两条 assistant message_end）
+    const echoTool = defineTool({
+      name: "paperteam_echo",
+      label: "Echo（测试专用）",
+      description: "测试专用：原样返回 text",
+      parameters: Type.Object({ text: Type.String() }),
+      execute: async (_toolCallId, params) => {
+        return { content: [{ type: "text", text: params.text }], details: {} };
+      },
+    });
+    const { adapter, faux } = await makeLevel2Adapter({
+      adapterExtra: { customTools: [echoTool as ToolDefinition] },
+    });
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("paperteam_echo", { text: "ping" })]),
+      fauxAssistantMessage([fauxText("两轮完成")]),
+    ]);
+    const task = await adapter.runAgent({
+      agentId: "researcher",
+      task: "先调工具再回答",
+      projectId: "p-usage-2",
+      contextScope: "research",
+    });
+    expect(task.status).toBe("completed");
+    expect(task.output).toContain("两轮完成");
+    expect(task.usage?.assistantTurns).toBe(2);
+    expect(task.usage?.inputTokens).toBeGreaterThan(0);
+    expect(task.usage?.outputTokens).toBeGreaterThan(0);
+    await adapter.close();
+  }, 60_000);
 });

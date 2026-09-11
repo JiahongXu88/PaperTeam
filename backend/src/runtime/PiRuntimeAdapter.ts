@@ -39,9 +39,22 @@
  * - healthCheck 语义：SDK 已加载 + Adapter 未关闭 + ModelRuntime 初始化
  *   成功 = healthy。「未配置 API Key」不是 Runtime 不健康，而是模型
  *   未就绪（modelStatus 单独报告，供 statusService 分区展示）。
- * - timeout：Pi SDK 无内建 run 超时，Adapter 用定时器 + session.abort
- *   实现 runTimeoutMs 语义（handle.result 以 AgentTimeoutError reject，
- *   与业务错误映射口径一致）。
+ * - timeout（M5.1 分层）：Pi SDK 无内建 run 超时，Adapter 按真实生命周期
+ *   阶段分层计时：init（懒初始化）→ session（会话获取/创建）→ queue
+ *   （等待同会话独占权）→ execution（session.prompt 开始后）。每阶段可
+ *   独立配置超时（缺省兼容：execution 回退 runTimeoutMs；其余阶段不限）。
+ *   超时统一以 AgentTimeoutError(phase) reject，同时留下 timed_out 结构化
+ *   终态（errorCode=*_TIMEOUT + timeoutPhase，getTask 可查）。timeout 与
+ *   manual cancel 竞态以「首个 abort 发起者」定归因（abortInitiator），
+ *   first-settle-wins，绝不双重归因。
+ * - 终态（M5.1）：无论 result resolve 还是 reject，全部终态（completed /
+ *   cancelled / failed / timed_out）都写入任务记录（getTask 可回溯），
+ *   携带 queuedAt / startedAt / queueDurationMs / executionDurationMs /
+ *   totalDurationMs（settle 时计算，保证非负）。
+ * - usage（M5.2 基础采集）：message_end 送达的 assistant 消息按 Pi 原生
+ *   usage 累计（input/output/cacheRead/cacheWrite/cost 为增量求和；
+ *   totalTokens 是上下文规模快照 → contextTokens 取最后一个有效值）。
+ *   forwarder 仅在本 run 独占会话期间挂载，会话复用不重复计入历史 turn。
  * - 事件：会话创建时挂持久 listener，Pi 事件映射为 PaperTeam AgentEvent
  *   （原始事件对象不透传业务层）。handle.events 为「replay + live」
  *   语义：订阅即从头回放已缓存事件，随后 live 消费，settle 后迭代
@@ -92,7 +105,9 @@ import type {
   AgentEvent,
   AgentRuntime,
   AgentRunHandle,
+  AgentRunUsage,
   AgentTask,
+  AgentTimeoutPhase,
   RunAgentInput,
   RuntimeHealth,
   RuntimeModelStatus,
@@ -139,8 +154,34 @@ export interface PiRuntimeOptions {
   workspaceRoot: string;
   /** 无 projectId 调用的工作目录兜底（默认 process.cwd） */
   defaultCwd?: string;
-  /** 单次 runAgent 的整体超时（毫秒），默认 300000 */
+  /**
+   * 执行阶段超时（毫秒）——任务进入 session.prompt 后才开始计时（排队
+   * 等待不计入）。兼容默认值链：executionTimeoutMs ?? runTimeoutMs ?? 300000
+   * （未引入新配置时行为与历史 runTimeoutMs 完全一致）。
+   */
+  executionTimeoutMs?: number;
+  /**
+   * 单次 run 的整体超时（毫秒；兼容字段，M5.1 前的唯一超时）。
+   * 未设置 executionTimeoutMs 时作为执行阶段超时的默认值；本身缺省 300000。
+   */
   runTimeoutMs?: number;
+  /**
+   * 排队阶段超时（毫秒）：任务在 per-session FIFO 中等待独占权超过该值
+   * 即以 timed_out(QUEUE_TIMEOUT) 即时终态（从队列摘除，不等前序 run）。
+   * 缺省不限（保持既有行为——排队等待无上限，由上层 stage 超时兜底）。
+   */
+  queueTimeoutMs?: number;
+  /**
+   * 会话获取/创建阶段超时（毫秒）：超过即 timed_out(SESSION_TIMEOUT)。
+   * 缺省不限。迟到成功的创建会被识别并销毁（不入池、无幽灵会话）。
+   */
+  sessionTimeoutMs?: number;
+  /**
+   * Runtime 懒初始化阶段超时（毫秒）：超过即 timed_out(INIT_TIMEOUT)，
+   * 初始化本身继续后台收敛（共享 initPromise，后续任务不受影响）。
+   * 缺省不限。
+   */
+  initTimeoutMs?: number;
   /** 测试注入：现成的 ModelRuntime（Level 2 fake provider 用） */
   modelRuntime?: PiModelRuntime;
   /** 测试注入：现成模型对象（优先于 modelSpec 解析） */
@@ -209,6 +250,18 @@ interface SessionQueueEntry {
 /** 排队期间被取消的任务的 acquire 释放函数（不 pump：其后的排队者由泵续派） */
 const NOOP_RELEASE = (): void => {};
 
+/** 会话创建的 in-flight 去重槽（并发同 key 只创建一次；M5.1 起带等待者计数） */
+interface SessionCreationSlot {
+  promise: Promise<ManagedSession>;
+  /**
+   * 仍在等待本创建的任务数：获得会话或提前放弃（session 阶段超时）时递减。
+   * 创建迟到成功而等待者已归零 → 会话直接销毁，不入池（无幽灵会话）。
+   */
+  waiting: number;
+  /** promise 已收敛（成功入池 / 迟到销毁 / 失败）；此后新请求走新创建 */
+  done: boolean;
+}
+
 /**
  * 任务运行状态：v2 handle 的事实源。
  * 事件以 events 数组为单一事实源（有界，保尾部）；消费者用 seq 逻辑游标
@@ -219,8 +272,14 @@ interface RunState {
   sessionKey: string;
   /** 发起任务的角色标识（排队取消路径构建终态用） */
   agentId: string;
-  /** 后台链启动时刻（诊断） */
-  startedAt: string;
+  /** startAgent 受理时刻（epoch ms；计时字段唯一事实源） */
+  requestedAt: number;
+  /** 进入 per-session 队列时刻（epoch ms；未入队任务缺省） */
+  queuedAtMs?: number;
+  /** 进入执行（session.prompt 开始）时刻（epoch ms；未执行任务缺省） */
+  runningAtMs?: number;
+  /** settle 时刻（epoch ms；settle 路径写入） */
+  settledAtMs?: number;
   /** 映射后的任务事件（单一事实源；只保留最近 TASK_EVENT_BUFFER_LIMIT 条） */
   events: AgentEvent[];
   /** events[0] 的事件 seq（events 为空时 === nextSeq；前部裁剪后右移） */
@@ -243,8 +302,14 @@ interface RunState {
   phase: "queued" | "running";
   /** cancel 请求（幂等标记；queued 任务据此即时终态或由队列泵/后台链兜底短路） */
   cancelRequested: boolean;
-  /** running 阶段已触发过 session.abort（防并发 cancel 重复 abort） */
+  /** running 阶段已触发过 session.abort（防并发 cancel/timeout 重复 abort） */
   abortRequested: boolean;
+  /** 首个发起 session.abort 的归因方（timeout/cancel 竞态的唯一裁决依据） */
+  abortInitiator?: "timeout" | "cancel";
+  /** 排队阶段超时定时器（入队时武装，出队/取消/超时/settle 时清理） */
+  queueTimer?: ReturnType<typeof setTimeout>;
+  /** 本 run 新产生的 usage 累计（M5.2；首个 usage-bearing message_end 时创建） */
+  usage?: AgentRunUsage;
   /** 后台 run 链完全收敛（cancel/close 等待用） */
   runSettled: Promise<void>;
 }
@@ -342,7 +407,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly agentDir: string;
   private readonly workspaceRoot: string;
   private readonly defaultCwd: string;
-  private readonly runTimeoutMs: number;
+  /** 执行阶段超时（executionTimeoutMs ?? runTimeoutMs ?? 300000；兼容解析） */
+  private readonly executionTimeoutMs: number;
+  /** 排队阶段超时（缺省不限） */
+  private readonly queueTimeoutMs: number | undefined;
+  /** 会话创建阶段超时（缺省不限） */
+  private readonly sessionTimeoutMs: number | undefined;
+  /** Runtime 懒初始化阶段超时（缺省不限） */
+  private readonly initTimeoutMs: number | undefined;
   private readonly injectedModelRuntime: PiModelRuntime | undefined;
   private readonly injectedModel: PiModel | undefined;
   private readonly createSessionImpl: NonNullable<PiRuntimeOptions["createSession"]> | undefined;
@@ -352,8 +424,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly log: (message: string) => void;
 
   private readonly sessions = new Map<string, ManagedSession>();
-  /** 会话创建的 in-flight 去重（并发同 key 时只创建一次） */
-  private readonly sessionCreations = new Map<string, Promise<ManagedSession>>();
+  /** 会话创建的 in-flight 去重（并发同 key 时只创建一次；带等待者计数） */
+  private readonly sessionCreations = new Map<string, SessionCreationSlot>();
   private readonly inFlight = new Map<string, RunState>();
   private readonly taskRecords = new Map<string, TaskRecord>();
 
@@ -372,7 +444,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.agentDir = resolve(options.agentDir);
     this.workspaceRoot = resolve(options.workspaceRoot);
     this.defaultCwd = resolve(options.defaultCwd ?? process.cwd());
-    this.runTimeoutMs = options.runTimeoutMs ?? 300_000;
+    // 兼容解析：未引入 executionTimeoutMs 时沿用 runTimeoutMs 语义
+    this.executionTimeoutMs = options.executionTimeoutMs ?? options.runTimeoutMs ?? 300_000;
+    this.queueTimeoutMs = options.queueTimeoutMs;
+    this.sessionTimeoutMs = options.sessionTimeoutMs;
+    this.initTimeoutMs = options.initTimeoutMs;
     this.injectedModelRuntime = options.modelRuntime;
     this.injectedModel = options.model;
     this.createSessionImpl = options.createSession;
@@ -396,7 +472,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return this.initPromise;
   }
 
-  private async doInitialize(): Promise<void> {
+  /** protected：测试可用子类注入受控初始化（init 阶段超时验证） */
+  protected async doInitialize(): Promise<void> {
     const startedAt = Date.now();
     await mkdir(this.agentDir, { recursive: true });
 
@@ -610,16 +687,49 @@ export class PiRuntimeAdapter implements AgentRuntime {
     if (this.closed) {
       throw new AgentRuntimeUnavailableError("Runtime 已关闭", "adapter closed");
     }
-    await this.ensureInitialized();
-    if (this.initError !== undefined) {
-      throw new AgentRuntimeUnavailableError("Pi Runtime 初始化失败", this.initError);
-    }
 
     const sessionKey =
       resolveSessionKey(input) ?? adhocSessionKey(input.agentId || "default");
     const scope = sanitizeContextScope(input.contextScope);
     const taskId = `pi-${randomUUID()}`;
     const state = this.createRunState(taskId, sessionKey, input.agentId || "default");
+
+    // init 阶段（懒初始化）：缺省不限时（历史行为）；配置 initTimeoutMs 时
+    // 超时 → 句柄仍返回，result 以 AgentTimeoutError("init") reject +
+    // timed_out(INIT_TIMEOUT) 结构化终态。初始化本身继续后台收敛——
+    // initPromise 全局共享，迟到成功惠及后续任务，不属于本任务。
+    if (this.initTimeoutMs === undefined) {
+      await this.ensureInitialized();
+    } else {
+      const initTimeoutMs = this.initTimeoutMs;
+      let initTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          this.ensureInitialized(),
+          new Promise<never>((_, reject) => {
+            initTimer = setTimeout(
+              () => reject(new AgentTimeoutError(initTimeoutMs, "init")),
+              initTimeoutMs,
+            );
+            initTimer.unref?.();
+          }),
+        ]);
+      } catch (error) {
+        if (error instanceof AgentTimeoutError && error.phase === "init") {
+          this.log(`[pi-runtime] startAgent ${taskId} 初始化超时（${initTimeoutMs}ms）`);
+          this.settleFailure(state, error);
+          return this.makeHandle(state);
+        }
+        throw error;
+      } finally {
+        if (initTimer !== undefined) {
+          clearTimeout(initTimer);
+        }
+      }
+    }
+    if (this.initError !== undefined) {
+      throw new AgentRuntimeUnavailableError("Pi Runtime 初始化失败", this.initError);
+    }
 
     // 模型未配置：句柄立即结构化失败（不进 session；口径与 v1 runAgent 一致）
     if (this.model === undefined) {
@@ -632,6 +742,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
           status: "failed",
           sessionKey,
           error: `Pi 模型未配置：${this.modelStatus.detail}`,
+          errorCode: "MODEL_NOT_CONFIGURED",
         }),
       );
       return this.makeHandle(state);
@@ -642,7 +753,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.runSettled = (async () => {
       let release: (() => void) | undefined;
       try {
-        const managed = await this.getOrCreateSession(sessionKey, input, scope);
+        const managed = await this.obtainSession(sessionKey, input, scope, state);
+        if (state.settled) {
+          // session 阶段已超时（或排队期间被取消并已即时终态）：不入场执行
+          return;
+        }
         release = await this.acquireSession(managed, state);
         if (state.settled) {
           // 排队期间被取消并已即时终态（出队路径，见 trySettleQueuedCancel）：
@@ -650,6 +765,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
           return;
         }
         state.phase = "running";
+        state.runningAtMs = Date.now();
         managed.runCount += 1;
         managed.lastUsedAt = new Date().toISOString();
 
@@ -731,7 +847,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       taskId,
       sessionKey,
       agentId,
-      startedAt: new Date().toISOString(),
+      requestedAt: Date.now(),
       events: [],
       bufferStartSeq: 1,
       nextSeq: 1,
@@ -757,26 +873,102 @@ export class PiRuntimeAdapter implements AgentRuntime {
     };
   }
 
-  /** 终态归因 resolve 路径：记录 + 唤醒全部等待方 */
+  /**
+   * 终态统一收口（resolve 路径；first-settle-wins）：计时 / usage 注入 →
+   * 任务记录（getTask 可回溯）→ resolve → 唤醒全部等待方。
+   */
   private settleTask(state: RunState, task: AgentTask): void {
     if (state.settled) {
       return;
     }
     state.settled = true;
-    state.task = task;
-    state.resolveResult(task);
+    state.settledAtMs = Date.now();
+    this.clearQueueTimer(state);
+    const final = this.withTerminalDiagnostics(state, task);
+    state.task = final;
+    this.rememberTask(final.taskId, final);
+    state.resolveResult(final);
     this.wakeEventWaiters(state);
   }
 
-  /** 终态归因 reject 路径（timeout / runtime 异常 / 空输出；错误口径与 v1 一致） */
+  /**
+   * 终态统一收口（reject 路径：timeout / runtime 异常 / 空输出）。
+   * reject 不丢状态：错误分类为 timed_out（*_TIMEOUT + timeoutPhase）或
+   * failed 后同样写入任务记录（M5.1 结构化终态），再 reject。
+   */
   private settleFailure(state: RunState, error: unknown): void {
     if (state.settled) {
       return;
     }
     state.settled = true;
+    state.settledAtMs = Date.now();
+    this.clearQueueTimer(state);
     state.failure = error;
+    const final = this.withTerminalDiagnostics(state, this.buildFailureTask(state, error));
+    state.task = final;
+    this.rememberTask(final.taskId, final);
     state.rejectResult(error);
     this.wakeEventWaiters(state);
+  }
+
+  /**
+   * settle 时一次性注入结构化诊断：createdAt/queuedAt/startedAt/completedAt
+   * 由 RunState 时钟（epoch ms）派生；duration 非负（Math.max(0, …)）；
+   * 未到达的阶段不携带对应字段。usage 为本 run 累计（可能缺省）。
+   */
+  private withTerminalDiagnostics(state: RunState, task: AgentTask): AgentTask {
+    const settledAtMs = state.settledAtMs ?? Date.now();
+    const enriched: AgentTask = {
+      ...task,
+      createdAt: new Date(state.requestedAt).toISOString(),
+      updatedAt: new Date(settledAtMs).toISOString(),
+      completedAt: new Date(settledAtMs).toISOString(),
+      totalDurationMs: Math.max(0, settledAtMs - state.requestedAt),
+      ...(state.queuedAtMs !== undefined
+        ? { queuedAt: new Date(state.queuedAtMs).toISOString() }
+        : {}),
+      ...(state.runningAtMs !== undefined
+        ? { startedAt: new Date(state.runningAtMs).toISOString() }
+        : {}),
+      ...(state.queuedAtMs !== undefined
+        ? {
+            queueDurationMs: Math.max(
+              0,
+              (state.runningAtMs ?? settledAtMs) - state.queuedAtMs,
+            ),
+          }
+        : {}),
+      ...(state.runningAtMs !== undefined
+        ? { executionDurationMs: Math.max(0, settledAtMs - state.runningAtMs) }
+        : {}),
+      ...(state.usage !== undefined ? { usage: { ...state.usage } } : {}),
+    };
+    return enriched;
+  }
+
+  /** reject 路径错误 → 结构化终态（timed_out 携带 phase 归因，failed 携带错误码） */
+  private buildFailureTask(state: RunState, error: unknown): AgentTask {
+    if (error instanceof AgentTimeoutError) {
+      const phase: AgentTimeoutPhase = error.phase ?? "execution";
+      return this.buildTask({
+        taskId: state.taskId,
+        agentId: state.agentId,
+        status: "timed_out",
+        sessionKey: state.sessionKey,
+        error: error.message,
+        errorCode: timeoutErrorCode(phase),
+        timeoutPhase: phase,
+      });
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    return this.buildTask({
+      taskId: state.taskId,
+      agentId: state.agentId,
+      status: "failed",
+      sessionKey: state.sessionKey,
+      error: message,
+      errorCode: "RUN_FAILED",
+    });
   }
 
   private wakeEventWaiters(state: RunState): void {
@@ -790,13 +982,17 @@ export class PiRuntimeAdapter implements AgentRuntime {
   /** 取消单个 run（幂等；handle.cancel、input.signal、close 共用） */
   private async cancelRun(state: RunState): Promise<void> {
     if (state.settled) {
-      return; // 已完成 / 已取消 / 已失败：幂等 no-op
+      return; // 已完成 / 已取消 / 已失败 / 已超时：幂等 no-op
     }
     state.cancelRequested = true;
     if (state.phase === "running") {
-      // 并发 cancel（signal + handle.cancel）只触发一次真实 abort
+      // 并发 cancel（signal + handle.cancel）只触发一次真实 abort；
+      // timeout 已先发起 abort 时归因保持 timeout（abortInitiator 只记首个）
       if (!state.abortRequested) {
         state.abortRequested = true;
+        if (state.abortInitiator === undefined) {
+          state.abortInitiator = "cancel";
+        }
         const managed = this.sessions.get(state.sessionKey);
         if (managed !== undefined) {
           await managed.session.abort().catch(() => {});
@@ -814,6 +1010,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
     await state.runSettled;
   }
 
+  /** 排队超时定时器清理（出队 / 取消 / settle 等所有离开排队阶段的路径） */
+  private clearQueueTimer(state: RunState): void {
+    if (state.queueTimer !== undefined) {
+      clearTimeout(state.queueTimer);
+      state.queueTimer = undefined;
+    }
+  }
+
   /** 在已独占的会话上执行一次 run（超时 / abort / 终态归因都在这里收敛） */
   private async runOnSession(
     managed: ManagedSession,
@@ -826,16 +1030,23 @@ export class PiRuntimeAdapter implements AgentRuntime {
     },
   ): Promise<AgentTask> {
     const { taskId, input, message, state, sessionKey } = context;
-    const createdAt = new Date().toISOString();
     this.attachEventForwarder(managed, taskId, state);
 
-    const runTimeoutMs = input.timeoutMs ?? this.runTimeoutMs;
-    let timedOut = false;
+    // 执行阶段超时（M5.1 分层）：只在 session.prompt 开始后计时。
+    // timeout 与 cancel 竞态的归因规则：abortInitiator 只记首个发起
+    // session.abort 的一方——deadline 先到 → timed_out；cancel 先到 →
+    // cancelled（即便底层 Pi 都表现为 abort）。
+    const executionTimeoutMs = input.timeoutMs ?? this.executionTimeoutMs;
     const timer = setTimeout(() => {
-      timedOut = true;
-      this.log(`[pi-runtime] runAgent ${taskId} 超时（${runTimeoutMs}ms），执行 abort`);
+      if (state.settled || state.abortInitiator !== undefined) {
+        // 任务已终态，或 cancel 已先发起 abort（归因归 cancel）：不重复 abort
+        return;
+      }
+      state.abortRequested = true;
+      state.abortInitiator = "timeout";
+      this.log(`[pi-runtime] runAgent ${taskId} 执行超时（${executionTimeoutMs}ms），执行 abort`);
       void managed.session.abort().catch(() => {});
-    }, runTimeoutMs);
+    }, executionTimeoutMs);
     timer.unref?.();
 
     let promptError: unknown;
@@ -848,9 +1059,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
       this.eventForwarders.delete(taskId);
     }
 
-    if (timedOut) {
+    if (state.abortInitiator === "timeout") {
       await managed.session.waitForIdle().catch(() => {});
-      throw new AgentTimeoutError(runTimeoutMs);
+      throw new AgentTimeoutError(executionTimeoutMs, "execution");
     }
 
     if (promptError !== undefined) {
@@ -862,8 +1073,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
         agentId: input.agentId,
         status: "failed",
         sessionKey,
-        createdAt,
         error: `Pi AgentSession 拒绝执行：${detail}`,
+        errorCode: "PROMPT_REJECTED",
       });
     }
 
@@ -882,7 +1093,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
         agentId: input.agentId,
         status: "cancelled",
         sessionKey,
-        createdAt,
         error: "任务已取消（session.abort）",
       });
     }
@@ -895,8 +1105,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
         agentId: input.agentId,
         status: "failed",
         sessionKey,
-        createdAt,
         error: errorText,
+        errorCode: "RUN_FAILED",
       });
     }
 
@@ -908,7 +1118,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
         agentId: input.agentId,
         status: "cancelled",
         sessionKey,
-        createdAt,
         error: "任务已取消（session.abort）",
       });
     }
@@ -926,7 +1135,6 @@ export class PiRuntimeAdapter implements AgentRuntime {
       agentId: input.agentId,
       status: "completed",
       sessionKey,
-      createdAt,
       output,
       model: this.resolvedModelLabel,
       role: managed.role.role,
@@ -938,31 +1146,34 @@ export class PiRuntimeAdapter implements AgentRuntime {
     agentId: string;
     status: AgentTask["status"];
     sessionKey: string;
-    createdAt?: string;
     output?: string;
     error?: string;
+    /** 结构化错误码（failed/timed_out 携带；completed/cancelled 不携带） */
+    errorCode?: string;
+    /** 超时归属阶段（仅 timed_out 携带） */
+    timeoutPhase?: AgentTimeoutPhase;
     model?: string;
     role?: string;
   }): AgentTask {
-    const createdAt = fields.createdAt ?? new Date().toISOString();
+    // createdAt / startedAt / completedAt 等计时字段由 settle 路径统一注入
+    // （withTerminalDiagnostics），这里只占位保证类型完整
     const now = new Date().toISOString();
     const task: AgentTask = {
       taskId: fields.taskId,
       agentId: fields.agentId,
       status: fields.status,
-      createdAt,
+      createdAt: now,
       updatedAt: now,
-      startedAt: createdAt,
-      completedAt: now,
       ...(fields.output !== undefined ? { output: fields.output } : {}),
       ...(fields.error !== undefined ? { error: fields.error } : {}),
+      ...(fields.errorCode !== undefined ? { errorCode: fields.errorCode } : {}),
+      ...(fields.timeoutPhase !== undefined ? { timeoutPhase: fields.timeoutPhase } : {}),
       metadata: {
         sessionKey: fields.sessionKey,
         ...(fields.model !== undefined ? { model: fields.model } : {}),
         ...(fields.role !== undefined ? { role: fields.role } : {}),
       },
     };
-    this.rememberTask(fields.taskId, task);
     return task;
   }
 
@@ -979,35 +1190,95 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
   // ---- 会话管理（进程内 registry；per-session 串行、跨 session 并发） ----
 
-  private getOrCreateSession(
+  /**
+   * 任务链的会话获取入口（M5.1 起含 session 阶段超时）：
+   * - 命中池内会话 → 直接返回（无阶段开销）；
+   * - 否则加入（或发起）该 key 的 in-flight 创建，配置了 sessionTimeoutMs
+   *   时与定时器竞速：超时 → AgentTimeoutError("session") reject（由后台链
+   *   catch 收敛为 timed_out(SESSION_TIMEOUT) 终态），创建继续后台收敛；
+   * - 等待者计数保证「迟到成功的创建」可识别：所有等待者都已放弃时，
+   *   迟到会话直接销毁、不入池（无幽灵会话，见 createSessionSlot）。
+   */
+  private async obtainSession(
     sessionKey: string,
     input: RunAgentInput,
     scope: string | undefined,
+    state: RunState,
   ): Promise<ManagedSession> {
+    void state; // 归因走异常通道（AgentTimeoutError.phase），state 仅备用
     const existing = this.sessions.get(sessionKey);
     if (existing !== undefined) {
-      return Promise.resolve(existing);
+      return existing;
     }
-    // 并发同 key（如 reviewer fan-out 之外的同一 scope 并发调用）：
-    // 创建过程 in-flight 去重，避免重复建 AgentSession
-    let creation = this.sessionCreations.get(sessionKey);
-    if (creation === undefined) {
-      creation = this.doCreateSession(sessionKey, input, scope)
-        .then(
-          (managed) => {
-            this.sessions.set(sessionKey, managed);
-            return managed;
-          },
-          (error: unknown) => {
-            throw error;
-          },
-        )
-        .finally(() => {
+    let slot = this.sessionCreations.get(sessionKey);
+    if (slot === undefined || slot.done) {
+      slot = this.createSessionSlot(sessionKey, input, scope);
+      this.sessionCreations.set(sessionKey, slot);
+    }
+    const creation = slot;
+    creation.waiting += 1;
+    const timeoutMs = this.sessionTimeoutMs;
+    if (timeoutMs === undefined) {
+      try {
+        return await creation.promise;
+      } finally {
+        creation.waiting -= 1;
+      }
+    }
+    let phaseTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await new Promise<ManagedSession>((resolve, reject) => {
+        phaseTimer = setTimeout(() => reject(new AgentTimeoutError(timeoutMs, "session")), timeoutMs);
+        phaseTimer.unref?.();
+        creation.promise.then(resolve, reject);
+      });
+    } finally {
+      if (phaseTimer !== undefined) {
+        clearTimeout(phaseTimer);
+      }
+      creation.waiting -= 1;
+    }
+  }
+
+  /**
+   * 发起一次会话创建（去重槽）。成功时若仍有等待者（waiting > 0）→ 正常
+   * 入池；等待者已全部放弃（超时离开）→ 迟到会话销毁并不入池，promise 以
+   * AgentRunFailedError reject（此刻已无人等待，仅作槽收敛信号）。
+   */
+  private createSessionSlot(
+    sessionKey: string,
+    input: RunAgentInput,
+    scope: string | undefined,
+  ): SessionCreationSlot {
+    const slot = {} as SessionCreationSlot;
+    slot.waiting = 0;
+    slot.done = false;
+    slot.promise = this.doCreateSession(sessionKey, input, scope)
+      .then(
+        (managed) => {
+          slot.done = true;
+          if (slot.waiting <= 0 && !this.closed) {
+            this.log(
+              `[pi-runtime] 迟到会话销毁（等待者已全部因 session 超时放弃）：sessionKey=${sessionKey}`,
+            );
+            managed.unsubscribe?.();
+            managed.session.dispose();
+            throw new AgentRunFailedError(`会话创建迟到（等待者已放弃）：sessionKey=${sessionKey}`);
+          }
+          this.sessions.set(sessionKey, managed);
+          return managed;
+        },
+        (error: unknown) => {
+          slot.done = true;
+          throw error;
+        },
+      )
+      .finally(() => {
+        if (this.sessionCreations.get(sessionKey) === slot) {
           this.sessionCreations.delete(sessionKey);
-        });
-      this.sessionCreations.set(sessionKey, creation);
-    }
-    return creation;
+        }
+      });
+    return slot;
   }
 
   private async doCreateSession(
@@ -1079,7 +1350,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
       queue: [],
     };
     managed.unsubscribe = this.wireSessionEvents(managed);
-    this.sessions.set(sessionKey, managed);
+    // 入池由 createSessionSlot 决定（迟到成功的会话在等待者已全部放弃时
+    // 直接销毁，不入池——无幽灵会话）
     this.log(
       `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${[...role.tools, ...allCustomTools.map((tool) => tool.name)].join(",")}] skills=[${skillDirs.length}] cwd=${cwd}`,
     );
@@ -1107,14 +1379,28 @@ export class PiRuntimeAdapter implements AgentRuntime {
         this.dispatchCancelAtQueue({ state, resolveAcquire });
         return;
       }
+      state.queuedAtMs = Date.now();
+      if (this.queueTimeoutMs !== undefined) {
+        // 排队阶段超时（M5.1 分层）：到点仍未获得独占权 → 从队列即时摘除，
+        // timed_out(QUEUE_TIMEOUT) 终态，不等前序 run、不误伤后续排队者
+        const queueTimeoutMs = this.queueTimeoutMs;
+        state.queueTimer = setTimeout(() => {
+          state.queueTimer = undefined;
+          if (state.settled || state.phase === "running") {
+            return;
+          }
+          this.trySettleQueuedTimeout(state);
+        }, queueTimeoutMs);
+        state.queueTimer.unref?.();
+      }
       managed.queue.push({ state, resolveAcquire });
       this.pumpSessionQueue(managed);
     });
   }
 
   /**
-   * 会话队列泵：空闲即派发队首；排队期间已被取消的条目直接以 cancelled
-   * 终态出队（不入场执行），并继续检查后续排队者——被取消条目不阻塞队列。
+   * 会话队列泵：空闲即派发队首；排队期间已被取消/超时的条目直接以对应
+   * 终态出队（不入场执行），并继续检查后续排队者——被摘除条目不阻塞队列。
    */
   private pumpSessionQueue(managed: ManagedSession): void {
     while (managed.activeTaskId === undefined) {
@@ -1127,6 +1413,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
         continue;
       }
       managed.activeTaskId = entry.state.taskId;
+      // 出队进入执行：排队超时定时器退役（执行阶段有独立超时）
+      this.clearQueueTimer(entry.state);
       const state = entry.state;
       entry.resolveAcquire(() => {
         if (managed.activeTaskId === state.taskId) {
@@ -1140,6 +1428,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
   /** 队列中的任务以取消终态收场：settle + 释放其 acquire（noop，不重复泵） */
   private dispatchCancelAtQueue(entry: SessionQueueEntry): void {
+    this.clearQueueTimer(entry.state);
     if (!entry.state.settled) {
       this.log(
         `[pi-runtime] startAgent ${entry.state.taskId} 在排队中被取消，直接终态（不等待前序 run）`,
@@ -1179,6 +1468,37 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return true;
   }
 
+  /**
+   * queued 任务排队超时：从队列即时摘除，以 timed_out(QUEUE_TIMEOUT)
+   * settle（result reject AgentTimeoutError("queue")，getTask 可查结构化
+   * 终态）。前序 run 与后续排队者完全不受影响。
+   */
+  private trySettleQueuedTimeout(state: RunState): boolean {
+    const queueTimeoutMs = this.queueTimeoutMs;
+    if (queueTimeoutMs === undefined) {
+      return false;
+    }
+    const managed = this.sessions.get(state.sessionKey);
+    if (managed === undefined) {
+      return false;
+    }
+    const index = managed.queue.findIndex((entry) => entry.state === state);
+    if (index < 0) {
+      return false;
+    }
+    const [entry] = managed.queue.splice(index, 1);
+    this.clearQueueTimer(state);
+    if (entry === undefined) {
+      return false;
+    }
+    this.log(
+      `[pi-runtime] startAgent ${state.taskId} 排队超时（${queueTimeoutMs}ms），即时终态（不等待前序 run）`,
+    );
+    this.settleFailure(state, new AgentTimeoutError(queueTimeoutMs, "queue"));
+    entry.resolveAcquire(NOOP_RELEASE);
+    return true;
+  }
+
   // ---- 事件（Pi → PaperTeam AgentEvent 映射；写入 RunState 事实源） ----
 
   private eventForwarders = new Map<string, (event: AgentSessionEvent) => void>();
@@ -1188,6 +1508,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
     // 会话创建时已挂持久 listener（见 wireSessionEvents）；
     // 这里登记当前任务的事件转发器，listener 按 activeTaskId 分发。
     this.eventForwarders.set(taskId, (event) => {
+      if (event.type === "message_end") {
+        // run 级 usage 累计（M5.2 基础采集）：只统计本 run 期间送达的
+        // assistant 消息——forwarder 仅在独占会话期间挂载，会话复用不会
+        // 重复计入历史 turn（见 accumulateRunUsage 的语义注释）
+        accumulateRunUsage(state, event);
+      }
       const mapped = mapPiEvent(taskId, event);
       if (mapped === undefined) {
         return;
@@ -1233,11 +1559,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
    * 查询在途任务（非 AgentRuntime 契约；诊断用）。
    */
   listActiveTasks(): { taskId: string; sessionKey: string; phase: "queued" | "running"; startedAt: string }[] {
-    return [...this.inFlight.values()].map(({ taskId, sessionKey, phase, startedAt }) => ({
+    return [...this.inFlight.values()].map(({ taskId, sessionKey, phase, requestedAt }) => ({
       taskId,
       sessionKey,
       phase,
-      startedAt,
+      startedAt: new Date(requestedAt).toISOString(),
     }));
   }
 
@@ -1268,7 +1594,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const matchingRuns = [...this.inFlight.values()].filter((state) => owned(state.sessionKey));
     for (const state of matchingRuns) {
       state.cancelRequested = true;
-      if (state.phase === "running") {
+      if (state.phase === "running" && !state.abortRequested) {
+        state.abortRequested = true;
+        if (state.abortInitiator === undefined) {
+          state.abortInitiator = "cancel";
+        }
         void this.sessions.get(state.sessionKey)?.session.abort().catch(() => {});
       }
     }
@@ -1300,7 +1630,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const states = [...this.inFlight.values()];
     for (const state of states) {
       state.cancelRequested = true;
-      if (state.phase === "running") {
+      if (state.phase === "running" && !state.abortRequested) {
+        // close 窗口内与执行超时并发时归因仍唯一：abort 已被 timeout 发起
+        // 则保持 timeout 归因（timed_out），close 的取消意图不覆盖
+        state.abortRequested = true;
+        if (state.abortInitiator === undefined) {
+          state.abortInitiator = "cancel";
+        }
         const managed = this.sessions.get(state.sessionKey);
         if (managed !== undefined) {
           void managed.session.abort().catch(() => {});
@@ -1338,6 +1674,76 @@ export class PiRuntimeAdapter implements AgentRuntime {
 }
 
 // ---- 辅助函数 ----
+
+/** 超时阶段 → 结构化错误码（timed_out 终态的 errorCode） */
+function timeoutErrorCode(phase: AgentTimeoutPhase): string {
+  return `${phase.toUpperCase()}_TIMEOUT`;
+}
+
+/**
+ * message_end → run 级 usage 累计（M5.2 基础采集）。
+ *
+ * Pi 原生语义（@earendil-works/pi-ai Usage，0.84.4）：
+ * - input / output / cacheRead / cacheWrite 是「本条 assistant 消息（本次
+ *   LLM 请求）」的增量 → 跨 turn 求和即 run 总量；
+ * - totalTokens 是「本次请求时的上下文规模」快照 → contextTokens 只保留
+ *   最后一个有效值，绝不跨 turn 累加；
+ * - cost.total 是 provider 按 list-price 的估算 → estimatedCost 求和，
+ *   provider 未返回则整体缺省（不自行计价、不伪造 0 成本结论）。
+ *
+ * 防重复计数：只在 run 独占会话期间的 message_end 事件上累计（调用点
+ * attachEventForwarder → runOnSession finally 摘除）；Pi subscribe 为纯
+ * live 事件流（无 replay），会话复用时历史 turn 不会再次送达。
+ * 非 assistant 消息、usage 缺失或字段非法 → 跳过该 turn（不伪造数据）。
+ */
+function accumulateRunUsage(state: RunState, event: AgentSessionEvent): void {
+  const message = (event as { message?: { role?: unknown; usage?: unknown } }).message;
+  if (message === undefined || message.role !== "assistant") {
+    return;
+  }
+  const usage = message.usage;
+  if (typeof usage !== "object" || usage === null) {
+    return;
+  }
+  const readNumber = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  const record = usage as {
+    input?: unknown;
+    output?: unknown;
+    cacheRead?: unknown;
+    cacheWrite?: unknown;
+    totalTokens?: unknown;
+    cost?: { total?: unknown };
+  };
+  const input = readNumber(record.input);
+  const output = readNumber(record.output);
+  const cacheRead = readNumber(record.cacheRead);
+  const cacheWrite = readNumber(record.cacheWrite);
+  const totalTokens = readNumber(record.totalTokens);
+  const cost = readNumber(record.cost?.total);
+  if (state.usage === undefined) {
+    state.usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      contextTokens: 0,
+      assistantTurns: 0,
+    };
+  }
+  const acc = state.usage;
+  acc.inputTokens += input ?? 0;
+  acc.outputTokens += output ?? 0;
+  acc.cacheReadTokens += cacheRead ?? 0;
+  acc.cacheWriteTokens += cacheWrite ?? 0;
+  if (cost !== undefined) {
+    acc.estimatedCost = (acc.estimatedCost ?? 0) + cost;
+  }
+  if (totalTokens !== undefined) {
+    acc.contextTokens = totalTokens;
+  }
+  acc.assistantTurns += 1;
+}
 
 /**
  * "provider/model-id" 解析（首段为 provider，其余整体为 model-id；均非空）。

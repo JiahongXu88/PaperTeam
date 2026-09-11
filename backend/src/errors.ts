@@ -150,9 +150,28 @@ export class AgentRunFailedError extends BusinessError {
   }
 }
 
+/**
+ * Agent 任务超时（M5.1 分层：init/session/queue/execution 四个真实生命周期
+ * 阶段；缺省 phase 保持既有消息形态——历史调用方只按 code 判定）。结构化
+ * 归因以任务终态的 errorCode（*_TIMEOUT）+ timeoutPhase 为准，本错误只负责
+ * reject 通道的业务错误语义（HTTP 504 / Stage 分类 timeout）。
+ */
 export class AgentTimeoutError extends BusinessError {
-  constructor(timeoutMs: number) {
-    super("AGENT_TIMEOUT", `Agent 任务超时（${timeoutMs}ms）未完成`);
+  /** 超时归属阶段（与 AgentTask.timeoutPhase 同一枚举） */
+  readonly phase?: "init" | "session" | "queue" | "execution";
+  constructor(timeoutMs: number, phase?: "init" | "session" | "queue" | "execution") {
+    const phaseLabel =
+      phase === "init"
+        ? "Runtime 初始化阶段，"
+        : phase === "session"
+          ? "会话创建阶段，"
+          : phase === "queue"
+            ? "排队等待阶段，"
+            : phase === "execution"
+              ? "执行阶段，"
+              : "";
+    super("AGENT_TIMEOUT", `Agent 任务超时（${phaseLabel}${timeoutMs}ms）未完成`);
+    this.phase = phase;
   }
 }
 
