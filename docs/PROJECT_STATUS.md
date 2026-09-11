@@ -51,9 +51,9 @@ M4 收口三件事——(A) **版本体验**：版本历史 / 确定性比较 / 
   **如实边界：文本级重建，不含原图 / 原版式**。改进计划 prompt 携带真实
   章节文件清单（此前「必须是现有章节文件之一」无清单无法执行）。Review
   tab 新增「开始系统性改进」入口（此前该路径从浏览器不可达）。
-- **测试**：Backend 566 passed（新增 版本域 7 / 重建与 Improvement 全链路 3 /
-  摘要路由 2 / 版本域重启恢复 1）+ Frontend 161（新增 VersionHistory 5）；
-  build / typecheck 双侧干净。
+- **测试**：Backend 565 passed（新增 版本域 7 / 重建与 Improvement 全链路 3 /
+  摘要路由 1 / 版本域重启恢复 1 / 真实 smoke 回归 issues-omission 1）+
+  Frontend 161（新增 VersionHistory 5）；build / typecheck 双侧干净。
 - **E2E**：`e2e/tests/version.spec.ts`（A–F + V，7 例：历史展示 / 比较 /
   恢复新修订与历史不变（API 权威核验）/ 恢复后 Finalize 409 如实拒绝 /
   Final 后继续修订双事实 / 重新过 Gate 两份 Final 并存 / Light-Dark 视觉）；
@@ -70,6 +70,36 @@ M4 收口三件事——(A) **版本体验**：版本历史 / 确定性比较 / 
   定位）；ARCHITECTURE / API_CONTRACT（§1.2f）/ DECISIONS（D-0027~D-0029）
   同步；secret / 私密数据 / 绝对路径扫描清洁；`v0.1.0-mvp` tag +
   Release Notes（docs/RELEASE_NOTES_M4.md）。
+- **真实模型 Improvement smoke（2026-09-10/11，zai-coding-cn/glm-5.3 + 本机
+  MiKTeX latexmk 4.88；输入 arXiv 1706.03762「Attention Is All You Need」
+  15 页 PDF，4 个 run / 7 个修订 / 约 2 小时模型时间）**：
+  - **全链路真实达成**：PDF 导入 → `import.parse` 确定性重建（23 节→10
+    个一级章节，40 条 references→bib，callout→`\cite` 映射）→ `import.
+    baseline_build` 真实 latexmk 编译重建稿通过 → Researcher 论文理解
+    （13 weaknesses，真实工具调用 ~15min）→ citation.verify（40 条真实
+    metadata 核验）→ 三路审稿 ×6 轮 → 可行性 INSUFFICIENT（诚实）→ 改进
+    计划 → HITL approve → Writer 真实逐节修订（revision.apply，rev2/4/7）→
+    bounded revision.revise → 复审 → **Quality Gate FAIL（可解释 5 阻止项：
+    16 条 UNSUPPORTED claims / 8 blocking / critical 8 major 15 / 学分
+    73<80 / 可行性 INSUFFICIENT）** → stalled HITL `accept_draft`（真实
+    CONVERGED 路径）→ **真实 latexmk 构建（7.9s）→ Draft 冻结
+    art-draft-rev7** → `POST /finalize` 422 如实拒绝（不降 Gate、不伪造）→
+    restore rev1 → rev3/rev6（历史不动）。
+  - **真实 smoke 驱动出的两处产品修复**：① 真实 Reviewer 复审偶发省略
+    `issues` 字段 → 旧解析判结构失败、整轮昂贵审稿作废（run 1 以此失败
+    2/2）——修复为 issues 缺省/null = 无发现（与 claims 口径一致，存在但
+    非数组仍拒绝）；② 真实 Writer 按论文原内容重写章节时重新引入
+    `tikzpicture`，而 ctexart 组装前导只含 amsmath/amssymb/natbib →
+    "Environment tikzpicture undefined" → 修复循环未除净 → Build FAIL 无
+    Draft（run 3 以此结束）——修复为修订 / 修复 prompt 明示可用宏包契约
+    （图形以文字描述或 table 呈现），修复后 run 4 的 revision.apply 输出
+    tikz-free，手动真实构建（同一生产代码路径 `POST /build`）通过并冻结
+    Draft。
+  - **诚实边界（如实记录）**：run 4 的 bounded `revision.revise` 因单次
+    Agent 调用超时（默认 300s）失败 2/2——真实模型在本机延迟下重写大
+    章节可超时（可用 `PAPERTEAM_PI_RUN_TIMEOUT_MS` 调大）；该 stage 的
+    完成路径由 run 3 真实验证（两轮自动修订 → 收敛 HITL）。最终版本链
+    rev1-7 完整保留四类来源（审稿快照 / 应用改进 / 自动修订 / 版本恢复）。
 
 两个闭环落地——(A) **Draft / Final 产物闭环**：Build Gate 产出真实 PDF、
 Draft 即时冻结、Final 双 Gate 校验后冻结、产物不可变可下载；(B) **Writer–
@@ -702,7 +732,7 @@ POST   /api/skills/:id/summary                    重新生成中文简介（M4.
 
 ## 测试与验证
 
-- **当前（2026-09-10，M4.8）：Backend 566 passed（+7 个默认跳过的 live smoke）+ Frontend 161 + 浏览器级 E2E（Playwright，`e2e/`，需运行中的 dev 栈）**：默认栈 smoke 7 / visual 全通过；无模型栈 workflow 4+1skip（D 模型未配置失败路径 + E 模型门控）；scripted 栈 hitl 7 / evidence-gate 7（需 `PAPERTEAM_TEST_RUNTIME_REVIEW=fail,pass` 驱动两轮 gate）/ paper-artifacts 10（本机真实 MiKTeX）/ **version 7（M4.8，`PAPERTEAM_E2E_VERSION=1`）/ improvement 2（M4.8，`PAPERTEAM_E2E_IMPROVEMENT=1`）全部通过**。
+- **当前（2026-09-10，M4.8）：Backend 565 passed（+7 个默认跳过的 live smoke）+ Frontend 161 + 浏览器级 E2E（Playwright，`e2e/`，需运行中的 dev 栈）**：默认栈 smoke 7 / visual 全通过；无模型栈 workflow 4+1skip（D 模型未配置失败路径 + E 模型门控）；scripted 栈 hitl 7 / evidence-gate 7（需 `PAPERTEAM_TEST_RUNTIME_REVIEW=fail,pass` 驱动两轮 gate）/ paper-artifacts 10（本机真实 MiKTeX）/ **version 7（M4.8，`PAPERTEAM_E2E_VERSION=1`）/ improvement 2（M4.8，`PAPERTEAM_E2E_IMPROVEMENT=1`）全部通过**。
 - 历史基线（M4.3）：**Backend 285 + Frontend 34 个测试全部通过**（vitest；backend 29 个测试文件 + 1 个默认跳过的 live smoke（`PAPERTEAM_LIVE_SMOKE=1` 显式启用，真实公网）；frontend 6 个测试文件。M4.3 新增 51 个 backend 测试：domain model 9 / PDF 真实 PDF e2e 8 / context builder 7 / 引用提取 4 / scholarly 10 + live 4 / 语义核验 4 / skill registry 9；frontend 新增 10：skills/pdf/citations 视图）。构成：M1/M2 业务与 Project/LaTeX/HTTP、M3 Workflow / Evidence / Review / Revision / HITL / Quality Gate / Domain Event / SSE / checkpoint、M3.8 Runtime 层（PiRuntimeAdapter L1 fake session 纯单元 + L2 真实 SDK × 官方 fauxProvider、contextScope 派生、RuntimeStatus Pi 形状、config Pi 块）、M4.0 Project List API。
   M3.8 新增/强化覆盖——Contract v2（`startAgent` 立即返回句柄、运行中 `events()` 消费 replay+live+settle 终止、多订阅独立、`cancel()` 幂等含已完成/已取消、排队任务取消不误伤同会话前序 run、`result()` Promise 缓存、timeout 路径 reject 一致、`close()` 收敛全部在途 run 并 dispose、getTask 运行中/已完结语义）；**tool execution abort 专项**（真实 SDK：工具执行中 cancel → AbortSignal 传导 → 工具停止 → cancelled）；OpenClaw 架构专属测试（mock Gateway 集成 / bootstrap / supervisor / versionPins）随架构删除，业务测试全部迁到 v2 fake runtime。
 - `npm run typecheck`、`npm run build` 通过（backend 与根入口均验证）；无 lint 脚本（package.json 未定义）。

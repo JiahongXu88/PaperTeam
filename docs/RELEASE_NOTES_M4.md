@@ -64,7 +64,7 @@ LaTeX / PDF 论文交付，以及已有论文的快速审阅与系统性改进�
 
 ## 验证
 
-- Backend 566 + Frontend 161 vitest；`build` / `typecheck` 干净。
+- Backend 565 + Frontend 161 vitest；`build` / `typecheck` 干净。
 - Playwright 浏览器级 E2E：smoke / visual（默认栈）、workflow（无模型栈）、
   hitl / evidence-gate / paper-artifacts / **version / improvement**（scripted
   栈 + 本机真实 MiKTeX）全部通过。

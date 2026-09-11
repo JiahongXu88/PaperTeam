@@ -32,6 +32,8 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 | Draft / Final | Build Gate（LaTeX 真实编译）通过即冻结 Draft；Final 要求双 Gate 通过且对齐当前修订；产物不可变、可查看 / 下载；编译失败自动修复 ≤2 次 |
 | 版本体验 | 论文修订的不可变版本链：版本历史（修订号 / 来源 / 审稿轮次 / 门禁结论 / 产物）、两修订确定性比较（章节级差异 + 记分对照，零 LLM）、恢复历史版本（= 创建新修订，历史与旧 Final 永不删除） |
 
+![论文产出与版本历史](docs/images/paper-output-light.png)
+
 ## 架构
 
 ```mermaid
