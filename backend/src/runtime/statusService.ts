@@ -16,7 +16,13 @@
 
 import type { PdfToolchainStatus } from "../paper/pdfToolchain.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
-import type { AgentRuntime, RuntimeHealth, RuntimeModelStatus, RuntimeSessionStats } from "./types.js";
+import type {
+  AgentRuntime,
+  RuntimeHealth,
+  RuntimeModelStatus,
+  RuntimeSessionStats,
+  SessionDiagnosticEntry,
+} from "./types.js";
 
 /** Runtime 相位 */
 export type RuntimePhase = "healthy" | "unhealthy";
@@ -66,6 +72,19 @@ export interface RuntimeStatus {
     maxQueuedRuns?: number;
     activeExecutions?: number;
     queuedRuns?: number;
+    /**
+     * M5.2 长程治理（实现暴露时携带）：busy/idle 会话数、会话上限与
+     * rotation / GC / context budget 累计计数，见 RuntimeSessionStats。
+     */
+    busySessions?: number;
+    idleSessions?: number;
+    maxSessions?: number;
+    sessionRotations?: number;
+    sessionGcEvictions?: number;
+    contextBudgetRejects?: number;
+    contextPressureSessions?: number;
+    /** 逐会话生命周期诊断（实现暴露时携带；有界，不含敏感内容） */
+    details?: SessionDiagnosticEntry[];
   };
   /** 外部工具链就绪度（缺失时前端可提前提示，而不是等上传失败） */
   tools: {
@@ -107,6 +126,7 @@ export class RuntimeStatusService {
     const health: RuntimeHealth = await this.runtime.healthCheck();
     const [modelSnapshot, pdfParser] = await Promise.all([this.piModelStatus(), this.pdfParserStatus()]);
     const sessions = this.runtimeSessions();
+    const details = this.sessionDetails();
     return {
       backend: { ok: true },
       runtime: {
@@ -131,7 +151,10 @@ export class RuntimeStatusService {
           status: "configured" as const,
         })),
       },
-      sessions,
+      sessions: {
+        ...sessions,
+        ...(details !== undefined ? { details } : {}),
+      },
       tools: { pdfParser },
     };
   }
@@ -180,6 +203,19 @@ export class RuntimeStatusService {
       return this.runtime.runtimeStats();
     } catch {
       return { activeRuns: 0, managedSessions: 0 };
+    }
+  }
+
+  /** 逐会话诊断（Runtime 未实现 / 读取失败时缺省，不伪造） */
+  private sessionDetails(): SessionDiagnosticEntry[] | undefined {
+    if (this.runtime.sessionDiagnostics === undefined) {
+      return undefined;
+    }
+    try {
+      return this.runtime.sessionDiagnostics();
+    } catch (error) {
+      this.log(`[runtime-status] 会话诊断读取失败：${errorText(error)}`);
+      return undefined;
     }
   }
 }

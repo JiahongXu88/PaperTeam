@@ -1,8 +1,9 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-11（**M5.2 全局并发与有界受理完成**；同日 M5.1
-> 两批完成、**M5 启动：M5.0 计划冻结**；2026-09-10
-> **M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
+> 更新日期：2026-09-12（**M5.2 Long-Running Governance ✅ COMPLETE 收口**：
+> context budget / session rotation / TTL·GC·容量 / 观测面与安全自愈；
+> 09-11 M5.2 全局并发与有界受理、M5.1 两批完成、**M5 启动：M5.0 计划
+> 冻结**；2026-09-10 **M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
 > M4.7 Draft/Final + Writer–Reviewer Closure；M4.6 Evidence Workbench；
 > 2026-09-09：M4.5 HITL UI / M4.4 Workflow Live View；更早见历史）
 
@@ -14,11 +15,11 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 
 **M5 — Chinese Academic Quality & Long-Running Reliability（🚧 进行中，
 2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
-中文论文质量、长程 Runtime 可靠性（M5.1）、Skill 受控接入（M5.3）、
-Style Revision Loop（M5.4）、单机 Linux / Docker 部署（M5.5）、真实论文
-A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer / Skill / Deployment /
-System Admin（可选方向）」的表述已被取代：Visual Reviewer 与 System
-Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
+中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、Skill 受控
+接入（M5.3）、Style Revision Loop（M5.4）、单机 Linux / Docker 部署
+（M5.5）、真实论文 A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer /
+Skill / Deployment / System Admin（可选方向）」的表述已被取代：
+Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
@@ -101,9 +102,9 @@ timeout 分层 + 统一结构化终态 + run 级 usage 基础采集（M5.2 第�
   584 → 606 passed，Frontend 161 不变；build / typecheck / test 全绿。
   兼容性：`runAgent(input.timeoutMs)` 语义不变（execution 阶段），
   业务层（Writer/Reviewer/Researcher 等 runAgent 调用方）零改动。
-- **M5.1/M5.2 剩余（未做，按 M5_PLAN）**：context budget、session
-  rotation / TTL / GC、global concurrency 与背压（usage 的 Dashboard /
-  Pricing 展示层同属后续）。
+- **M5.1/M5.2 剩余**：context budget、session rotation / TTL / GC 已随
+  M5.2 收口完成（见下节与 2026-09-12 记录）；global concurrency 与
+  背压已于 09-11 完成；usage 的 Dashboard / Pricing 展示层仍属后续。
 
 **M5.2 Long-Running Governance — 全局并发与有界受理（✅ 2026-09-11）**：
 Runtime 层最后一道全局 admission / execution guard 进驻
@@ -144,8 +145,93 @@ Runtime 层最后一道全局 admission / execution guard 进驻
   runtimeStatus 透传 1。Backend 606 → 618 passed，Frontend 161 不变；
   build / typecheck / test 全绿（M5.1 cancel / timeout / usage 与
   Workflow reviewer concurrency 全部保持通过）。
-- **M5.2 剩余（未做，按 M5_PLAN）**：context budget、session rotation /
-  TTL / GC、长时间运行观测面与自愈补齐。
+
+**M5.2 Long-Running Governance — Context Budget / Rotation / TTL·GC·容量 /
+观测面与自愈（✅ 2026-09-12，M5.2 收口）**：
+
+- **Context Budget（任务 H；`runtime/pi/contextBudget.ts` + Adapter
+  preflight）**：事实源唯一——`contextWindow` / `maxTokens` 直接取
+  resolved Pi Model（pi-ai `Model` 必填字段），PaperTeam 不维护模型
+  上下文表。**当前占用三态**：measured（上一 run provider 实测
+  `usage.totalTokens` 回写，最可靠）> estimated（CJK 感知会话消息估算，
+  1.5 token/CJK 字符 vs Pi chars/4 对中文低估 3-6 倍的修正）> unknown
+  （消息面不可读；绝不伪装成 0，诊断面如实 `contextTokens: null`）。
+  **输出预留公式** `reserve = min(maxTokens, ⌈contextWindow×25%⌉, 32768)`
+  （可配 `PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS`，1024-262144，恒被夹紧到
+  模型真实能力内；参照 Pi 自身 compaction 默认 reserve 16384 与长论文
+  单轮输出形态，200k 窗口 + 128k maxTokens 模型只预留 32k，不机械
+  预留完整 maxTokens）。**preflight**（任务成为会话队头、prompt 之前）：
+  `当前占用 + 下次输入估算 + 输出预留 > contextWindow` → rotation；
+  **oversized 单输入**（`估算输入 + 预留 > 窗口`，即使全新会话也装不下）
+  在 startAgent 受理前即 `failed(CONTEXT_BUDGET_EXCEEDED)`（不建会话、
+  不排队、不调用 provider、不静默截断 Evidence / 稿件 / Review；错误
+  含 contextWindow / estimatedInputTokens / reservedOutputTokens /
+  availableTokens 四个数字，不落 prompt 内容）。
+- **Session Rotation（任务 I）**：`ManagedSession` 是稳定调度容器
+  （sessionKey / FIFO 队列 / activeTaskId 不变），内部 Pi AgentSession
+  按 `generation`（1 起，rotation +1）替换——rotation 只发生在安全边界
+  （本任务已独占会话队头 + 持有全局 permit + 尚未 prompt），绝不 dispose
+  正被他人使用的会话。触发条件：(1) context budget 压力（measured /
+  estimated 基准）；(2) **runCount ≥ maxRunsPerSession 兜底**——仅当
+  context 占用不可得（模型无窗口元数据 / unknown 基准；contextWindow
+  可靠时 context budget 优先）；(3) `needsRotation` 自愈标记。不做摘要
+  迁移（old conversation → LLM summary → new conversation）：Workspace /
+  checkpoint + 本轮业务 prompt 是新会话的完整事实源。rotation 重建失败
+  → 当前任务结构化失败，容器标记待重建，下一安全边界重试（绝不复用
+  已 dispose 的旧会话）；重建与 `sessionTimeoutMs` 竞速。
+- **TTL / GC / 容量（任务 J）**：会话 idle 判定 = 无 activeTaskId + 无
+  排队 + 无「已命中会话尚未入队」的在途任务（`pendingArrivals` 计数
+  覆盖 obtainSession → 入队 的 microtask 窗口）——active / queued / 到达
+  中的会话绝不被回收。TTL 过期（默认 30 分钟，`PAPERTEAM_PI_SESSION_
+  IDLE_TTL_MS` 60s-24h）→ unsubscribe + dispose + 出池（GC 计数
+  reason=idle_ttl）；GC 由周期定时器（unref，不阻止退出；间隔
+  clamp(TTL/4, 1s, 60s)）+ 任务 settle 机会式 + 容量闸门三路触发，
+  测试经注入时钟 / 显式 `sweepIdleSessions()` 驱动。**容量硬上限**
+  （默认 16，`PAPERTEAM_PI_MAX_SESSIONS` 1-256）：新建会话时池内 + 在建
+  达上限 → 先收 TTL 过期、再 LRU 淘汰 idle；全部忙 →
+  `failed(RUNTIME_SESSION_CAPACITY)`（结构化拒绝，绝不取消 active run /
+  删除有排队的会话）。`reconfigure` / `releaseProjectSessions` / `close`
+  与 GC / rotation 的竞态由容器级幂等 `disposeManaged`（disposed 标记）
+  保证不双重释放、无幽灵会话。
+- **观测面（任务 K1/K2）**：`runtimeStats()` 新增 busySessions /
+  idleSessions / maxSessions / sessionRotations / sessionGcEvictions /
+  contextBudgetRejects / contextPressureSessions（占用 ≥75% 的会话数；
+  全部可选字段向后兼容）；`sessionDiagnostics()` 逐会话暴露 sessionKey /
+  role / generation / runCount / 创建与最近使用时间 / idleMs / busy /
+  queueDepth / contextTokens·Window·Basis·Percent / needsRotation /
+  lastRotationReason——不含 prompt 内容 / 工具输出 / 密钥 / 工作区路径；
+  `GET /api/runtime/status` 经 `sessions.details` 透传（有界 ≤ maxSessions）。
+- **安全自愈（任务 K3）与真实边界（K4）**：仅确定性低风险自愈——
+  execution timeout 或 prompt 异常后底层会话状态不确定 → 标记
+  `needsRotation`，下一安全边界重建（manual cancel 不触发：M3.8 已验证
+  abort 后会话可继续使用）。**绝不自动重试业务任务**（Writer 修订 /
+  Reviewer 调用失败不复活、failed 不改 success）——自愈只恢复 Runtime
+  后续可用性。进程 crash 边界如实：内存中 AgentSession / 在-flight 模型
+  调用无法迁移，不伪造恢复；已完成 stage 由 Workspace/checkpoint 保留，
+  未完成调用由 Workflow 层按既有语义处理；Runtime 重启后从空会话池
+  开始，无脏恢复。
+- **Soak 回归（任务 L；`test/runtime/LongRunningGovernance.test.ts`）**：
+  planner 驱动 fake provider 模拟 160 runs（4 project × 2 scope ×
+  2 agent，completed / cancelled / failed / timed_out / RUNTIME_QUEUE_FULL
+  混合），全程采样断言：activeExecutions ≤ maxConcurrentRuns、
+  queuedRuns ≤ maxQueuedRuns、managedSessions ≤ maxSessions、单会话
+  maxConcurrent ≤ 1、dispose-后-prompt 与 pending-中-dispose 两哨兵
+  全程零违规、同 sessionKey 的实际执行顺序是提交顺序的严格子序列
+  （rotation 不破坏 FIFO）、160 runs 后 activeExecutions / queuedRuns /
+  activeRuns 全部归零、事件迭代器自然排空、GC 周期回收 idle 会话至零、
+  close 后每会话 disposeCount 恰为 1、无 unhandled rejection。
+- **测试与配置**：新增 34 个后端用例（Level 1：context budget 6 +
+  rotation 3 + TTL/GC/容量 6 + 观测面 1；Level 2 真实 SDK：getContextUsage
+  measured 链路 / 小窗 rotation 保 sessionKey / oversized provider 零调用
+  3；纯函数 contextBudget 12；soak 1；config 1；runtimeStatus 1）。
+  配置新增（全部严格校验，非法 ConfigError）：
+  `PAPERTEAM_PI_MAX_RUNS_PER_SESSION`（默认 32）/ `PAPERTEAM_PI_SESSION_
+  IDLE_TTL_MS`（默认 1800000）/ `PAPERTEAM_PI_MAX_SESSIONS`（默认 16）/
+  `PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS`（可选）。Backend 618 → 652
+  passed，Frontend 161 不变；build / typecheck / test 全绿。真实 Pi SDK
+  Level 2 用 faux provider（原生 usage 语义）验证 context usage 读取 /
+  rotation / dispose-重建，无需真实模型烧 token。auto-compaction 全程
+  保持关闭（`SettingsManager.inMemory({compaction:{enabled:false}})`）。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

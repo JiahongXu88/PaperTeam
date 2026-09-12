@@ -83,6 +83,32 @@
  *   三态都进入取消语义；监听器 once + settle 后移除，不泄漏。
  *   runAgent 只是 startAgent + await result 的 convenience wrapper，
  *   不再有第二套 signal 实现。
+ * - 长程治理（M5.2 收口，任务 H/I/J/K）：
+ *   - Context Budget：contextWindow / maxTokens 只取 resolved Pi Model
+ *     （不维护模型表）。任务成为会话队头、prompt 之前做 preflight：
+ *     当前上下文（上一 run 的 provider 实测 usage.totalTokens 优先，
+ *     CJK 感知估算兜底）+ 下次输入估算 + 输出预留
+ *     （min(maxTokens, ⌈window×25%⌉, 32768)，可配置）超窗 → rotation；
+ *     即使全新会话也装不下 → failed(CONTEXT_BUDGET_EXCEEDED)（不调
+ *     provider、不静默截断 Evidence/稿件）。usage 不可得时 runCount
+ *     上限兜底。auto-compaction 保持关闭。
+ *   - Session Rotation：ManagedSession 是稳定调度容器（sessionKey /
+ *     FIFO 队列 / activeTaskId 不变），内部 Pi AgentSession 按
+ *     generation 替换。rotation 只发生在安全边界（队头任务独占会话、
+ *     已持有全局 permit、尚未 prompt），绝不 dispose 正被他人使用的
+ *     会话。不做摘要迁移：Workspace/checkpoint + 本轮业务 prompt 是
+ *     新会话的完整事实源。
+ *   - TTL / GC / 容量：idle（无 active、无排队、无到达中任务）超过
+ *     TTL 的会话由 GC 回收（周期定时器 unref + settle/容量机会式触发）；
+ *     池内会话 + 在建槽位达到 maxSessions 时先收 TTL、再 LRU 淘汰
+ *     idle，全忙则 failed(RUNTIME_SESSION_CAPACITY)。active / queued /
+ *     到达中的会话绝不被回收（pendingArrivals 覆盖「命中会话 → 入队」
+ *     的 microtask 窗口）。
+ *   - Self-healing：execution timeout / prompt 异常后会话状态不确定 →
+ *     标记 needsRotation，下一安全边界重建底层会话。只恢复 Runtime
+ *     后续可用性，绝不自动重试业务任务。进程崩溃的边界如实：内存中的
+ *     AgentSession 无法迁移，Workspace/checkpoint 语义不变（已完成
+ *     stage 保留，未完成调用由 Workflow 层处理）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -111,6 +137,11 @@ import {
   ModelConfigBusyError,
 } from "../errors.js";
 import { assertValidConcurrency } from "../util/concurrency.js";
+import {
+  computeOutputReserve,
+  estimatePromptTokens,
+  estimateSessionContextTokens,
+} from "./pi/contextBudget.js";
 import { resolveRoleConfig, type PiRoleConfig, type PiRoleKey } from "./pi/roleConfig.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
 import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
@@ -126,6 +157,7 @@ import type {
   RuntimeModelStatus,
   RuntimeProvider,
   RuntimeSessionStats,
+  SessionDiagnosticEntry,
 } from "./types.js";
 
 /** Pi 模型类型（不直接依赖 pi-ai：经 pi-coding-agent 的公开选项类型提取） */
@@ -148,6 +180,33 @@ const DEFAULT_MAX_CONCURRENT_RUNS = 4;
 
 /** 全局最大等待任务数默认值（M5.2）：单机单用户，32 足以吸收 Workflow 级排队 */
 const DEFAULT_MAX_QUEUED_RUNS = 32;
+
+/**
+ * 单会话 run 数回转上限默认值（M5.2 任务 I）：context usage 不可得/
+ * 非实测时的生命周期 fallback。依据：PaperTeam 单 scope 的正常 run 密度
+ * 约 5-15 次（调研/成文/复审），32 已覆盖 P95；按每 run 2-8k token 的
+ * 典型增量，32 run 累计 64-256k，恰好在主流模型上下文上限附近封顶。
+ */
+const DEFAULT_MAX_RUNS_PER_SESSION = 32;
+
+/**
+ * 会话空闲 TTL 默认值（M5.2 任务 J）：30 分钟。依据：多轮审稿-修订
+ * 工作流的 stage 间隔通常在分钟级（LaTeX 编译 / Quality Gate / HITL），
+ * 空闲 30 分钟意味着该 scope 的本轮工作确实结束；期间到达的任务会刷新
+ * lastUsedAt，活跃 scope 不会被误回收。
+ */
+const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60_000;
+
+/**
+ * 受管会话数上限默认值（M5.2 任务 J）：16。依据：4 角色 ×（默认 + 至多
+ * 3 个 contextScope）× 单活跃项目 ≈ 12-16；多项目长期驻留的会话由
+ * idle TTL 兜底回收，容量上限只防无界增长。
+ */
+const DEFAULT_MAX_SESSIONS = 16;
+
+/** GC 周期扫描间隔（未显式注入时按 TTL/4 推导，并夹紧到 [1s, 60s]） */
+const GC_SWEEP_MIN_INTERVAL_MS = 1_000;
+const GC_SWEEP_MAX_INTERVAL_MS = 60_000;
 
 /** 无 projectId 时的会话兜底键（对应 v1 的「默认会话」语义） */
 function adhocSessionKey(agentId: string): string {
@@ -218,6 +277,39 @@ export interface PiRuntimeOptions {
    * 0 = 不允许任何等待；必须 >= 0（构造校验）。
    */
   maxQueuedRuns?: number;
+  /**
+   * 单会话 run 数回转上限（M5.2 任务 I）：context usage 不可得或非实测
+   * （provider 不返回 usage）时的 rotation fallback。实测 basis 下 context
+   * budget 优先，不按 run 数回转。缺省 32；必须 >= 1（构造校验）。
+   */
+  maxRunsPerSession?: number;
+  /**
+   * 会话空闲 TTL（毫秒，M5.2 任务 J）：会话无在途 run、无排队、无到达中
+   * 任务持续该时长后由 GC 回收（unsubscribe + dispose + 出池）。缺省
+   * 30 分钟；必须 >= 1（config 层对 env 来源另设 >= 60s 下限）。
+   */
+  sessionIdleTtlMs?: number;
+  /**
+   * 受管会话数硬上限（M5.2 任务 J）：新建会话时若池内会话 + 在建槽位达到
+   * 上限，先回收 TTL 过期的空闲会话，再按 LRU 淘汰空闲会话；全部忙则
+   * failed(RUNTIME_SESSION_CAPACITY)。缺省 16；必须 >= 1（构造校验）。
+   */
+  maxSessions?: number;
+  /**
+   * 输出预留 token 数（M5.2 任务 H3）：下次 prompt 前为模型输出保留的
+   * 空间。缺省按公式 min(maxTokens, ceil(contextWindow×25%), 32768) 从
+   * resolved model 推导；显式配置时仍夹紧到 [1024, 262144] 且不超过
+   * model.maxTokens。
+   */
+  outputReserveTokens?: number;
+  /**
+   * GC 周期扫描间隔（毫秒；测试注入用）。缺省 clamp(TTL/4, 1s, 60s)。
+   * 定时器 unref，不阻止进程退出；除定时器外 GC 也在任务 settle 与
+   * 容量闸门处机会式触发。
+   */
+  gcSweepIntervalMs?: number;
+  /** 时钟注入（测试用受控 now；缺省 Date.now） */
+  now?: () => number;
   /** 测试注入：现成的 ModelRuntime（Level 2 fake provider 用） */
   modelRuntime?: PiModelRuntime;
   /** 测试注入：现成模型对象（优先于 modelSpec 解析） */
@@ -256,15 +348,48 @@ export interface PiRuntimeOptions {
 /** 模型就绪摘要（statusService 读取；与 RuntimeHealth 分区） */
 export type PiModelStatus = RuntimeModelStatus;
 
+/**
+ * 会话上下文快照（M5.2 任务 H）：当前 generation 的上下文占用视图。
+ * - measured：来自上一 run provider 返回的 usage.totalTokens（最可靠）；
+ * - estimated：PaperTeam CJK 感知估算（provider 未返回 usage 时）；
+ * - unknown：消息面不可读且 Pi getContextUsage 不可用（runCount fallback）。
+ */
+interface SessionContextSnapshot {
+  contextWindow: number;
+  /** 当前上下文占用（estimate 或 measured 快照；null = unknown） */
+  contextTokens: number | null;
+  basis: "measured" | "estimated" | "unknown";
+  updatedAt: string;
+}
+
 /** 进程内受管会话（一个逻辑 sessionKey 一个 Pi AgentSession） */
 interface ManagedSession {
   key: string;
   session: AgentSession;
   role: PiRoleConfig;
   cwd: string;
+  /** 逻辑会话创建时间（容器创建；rotation 不重置——业务 sessionKey 稳定） */
   createdAt: string;
   lastUsedAt: string;
+  /** lastUsedAt 的 epoch ms（TTL/GC 判定唯一时钟事实源） */
+  lastUsedAtMs: number;
+  /** 本 generation 内真实执行的 run 数（rotation 时归零） */
   runCount: number;
+  /**
+   * 会话 generation（从 1 开始；rotation +1）。ManagedSession 容器与业务
+   * sessionKey 稳定不变，只有内部 Pi AgentSession 按代替换。
+   */
+  generation: number;
+  /** 最近一次 rotation 原因（诊断面；未回转为 undefined） */
+  lastRotationReason?: string;
+  /**
+   * self-healing 标记（M5.2 任务 K3）：底层会话被认为不宜继续复用
+   * （execution timeout / prompt 异常 / rotation 重建失败），下一个
+   * 安全边界（队头任务 prompt 前）强制重建。容器在池内保持可用。
+   */
+  needsRotation: boolean;
+  /** 待重建原因（needsRotation 的伴随记账；成功 rotation 后清空） */
+  needsRotationReason?: string;
   /**
    * per-session 显式 FIFO 排队（Pi Agent 单会话同时只允许一个 run）。
    * 显式队列（而非 promise 链）使排队任务被取消时可直接摘除并即时终态，
@@ -275,6 +400,17 @@ interface ManagedSession {
   activeTaskId?: string;
   /** 会话级事件订阅的退订函数（close/dispose 兜底） */
   unsubscribe?: () => void;
+  /**
+   * 已命中本池内会话、尚未入队的在途任务数（M5.2 任务 J1）：covering
+   * obtainSession 返回 → acquireSession 入队之间的 microtask 窗口，
+   * 防止 GC 在该窗口误回收「即将被使用」的会话。入队后由 queue/
+   * activeTaskId 表达占用；本计数在任务 settle 时统一释放。
+   */
+  pendingArrivals: number;
+  /** 容器级 dispose 幂等标记（GC / close / reconfigure / release 共用） */
+  disposed: boolean;
+  /** 当前 generation 的上下文快照（尚未执行过 run 时缺省） */
+  context?: SessionContextSnapshot;
 }
 
 /** per-session 排队项：state 与「获得独占权」的 resolver */
@@ -285,6 +421,17 @@ interface SessionQueueEntry {
 
 /** 排队期间被取消的任务的 acquire 释放函数（不 pump：其后的排队者由泵续派） */
 const NOOP_RELEASE = (): void => {};
+
+/**
+ * 受管会话容量已满且无可淘汰的空闲会话（M5.2 任务 J3）。经 run 链 catch
+ * 转为 failed(RUNTIME_SESSION_CAPACITY) 结构化终态（与 BusinessError 的
+ * code 体系分离：这是 AgentTask.errorCode）。
+ */
+class SessionCapacityError extends AgentRunFailedError {
+  constructor(detail: string) {
+    super(detail);
+  }
+}
 
 /** 会话创建的 in-flight 去重槽（并发同 key 只创建一次；M5.1 起带等待者计数） */
 interface SessionCreationSlot {
@@ -359,6 +506,11 @@ interface RunState {
   permitWaitResolve?: (granted: boolean) => void;
   /** 本 run 新产生的 usage 累计（M5.2；首个 usage-bearing message_end 时创建） */
   usage?: AgentRunUsage;
+  /**
+   * 本任务占用的 pendingArrivals 配额所属会话（M5.2 任务 J1）：settle 时
+   * 统一释放，保证 GC 的 idle 判定不漏掉「已命中会话但尚未入队」的任务。
+   */
+  arrivalSession?: ManagedSession;
   /** 后台 run 链完全收敛（cancel/close 等待用） */
   runSettled: Promise<void>;
 }
@@ -468,6 +620,18 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly maxConcurrentRuns: number;
   /** 全局最大等待任务数（M5.2；已受理未执行的 admission 上限） */
   private readonly maxQueuedRuns: number;
+  /** 单会话 run 数回转上限（M5.2 任务 I；context usage 缺失时的 fallback） */
+  private readonly maxRunsPerSession: number;
+  /** 会话空闲 TTL（M5.2 任务 J） */
+  private readonly sessionIdleTtlMs: number;
+  /** 受管会话数硬上限（M5.2 任务 J） */
+  private readonly maxSessions: number;
+  /** 输出预留 token（M5.2 任务 H3；缺省按 resolved model 推导） */
+  private readonly outputReserveTokens: number | undefined;
+  /** GC 周期扫描间隔（测试可注入） */
+  private readonly gcSweepIntervalMs: number;
+  /** 时钟（测试可注入；TTL/GC/诊断统一使用） */
+  private readonly now: () => number;
   private readonly injectedModelRuntime: PiModelRuntime | undefined;
   private readonly injectedModel: PiModel | undefined;
   private readonly createSessionImpl: NonNullable<PiRuntimeOptions["createSession"]> | undefined;
@@ -487,6 +651,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private queuedAdmission = 0;
   /** FIFO：到达 session 队头、等待全局执行 permit 的任务（M5.2） */
   private readonly permitWaiters: RunState[] = [];
+  /** 累计 session rotation 次数（M5.2 任务 I；观测面） */
+  private sessionRotations = 0;
+  /** 累计会话 GC 回收次数（idle_ttl + 容量 LRU 淘汰；M5.2 任务 J） */
+  private sessionGcEvictions = 0;
+  /** 累计 CONTEXT_BUDGET_EXCEEDED 结构化拒绝数（M5.2 任务 H5） */
+  private contextBudgetRejects = 0;
+  /** GC 周期扫描定时器（unref；首个会话入池时启动，close 清理） */
+  private gcTimer?: ReturnType<typeof setInterval>;
 
   private settingsManager?: SettingsManager;
   private modelRuntime?: PiModelRuntime;
@@ -516,6 +688,37 @@ export class PiRuntimeAdapter implements AgentRuntime {
     if (!Number.isInteger(this.maxQueuedRuns) || this.maxQueuedRuns < 0) {
       throw new RangeError(`maxQueuedRuns 必须是 >= 0 的整数，当前为 ${this.maxQueuedRuns}`);
     }
+    // M5.2 长程治理容量约束（任务 I/J/H）：同上，非法值构造期拒绝
+    this.maxRunsPerSession = options.maxRunsPerSession ?? DEFAULT_MAX_RUNS_PER_SESSION;
+    if (!Number.isInteger(this.maxRunsPerSession) || this.maxRunsPerSession < 1) {
+      throw new RangeError(`maxRunsPerSession 必须是 >= 1 的整数，当前为 ${this.maxRunsPerSession}`);
+    }
+    this.sessionIdleTtlMs = options.sessionIdleTtlMs ?? DEFAULT_SESSION_IDLE_TTL_MS;
+    if (!Number.isInteger(this.sessionIdleTtlMs) || this.sessionIdleTtlMs < 1) {
+      throw new RangeError(`sessionIdleTtlMs 必须是 >= 1 的整数（毫秒），当前为 ${this.sessionIdleTtlMs}`);
+    }
+    this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS;
+    if (!Number.isInteger(this.maxSessions) || this.maxSessions < 1) {
+      throw new RangeError(`maxSessions 必须是 >= 1 的整数，当前为 ${this.maxSessions}`);
+    }
+    this.outputReserveTokens = options.outputReserveTokens;
+    if (
+      this.outputReserveTokens !== undefined &&
+      (!Number.isInteger(this.outputReserveTokens) ||
+        this.outputReserveTokens < 1_024 ||
+        this.outputReserveTokens > 262_144)
+    ) {
+      throw new RangeError(
+        `outputReserveTokens 必须是 1024-262144 的整数（token），当前为 ${this.outputReserveTokens}`,
+      );
+    }
+    this.gcSweepIntervalMs =
+      options.gcSweepIntervalMs ??
+      Math.min(
+        Math.max(Math.floor(this.sessionIdleTtlMs / 4), GC_SWEEP_MIN_INTERVAL_MS),
+        GC_SWEEP_MAX_INTERVAL_MS,
+      );
+    this.now = options.now ?? (() => Date.now());
     this.injectedModelRuntime = options.modelRuntime;
     this.injectedModel = options.model;
     this.createSessionImpl = options.createSession;
@@ -732,12 +935,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
     }
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.allSettled(
-      sessions.map(async (managed) => {
-        managed.unsubscribe?.();
-        managed.session.dispose();
-      }),
-    );
+    for (const managed of sessions) {
+      // 幂等释放（disposed 标记防 GC timer / 本路径双重 dispose）
+      this.disposeManaged(managed);
+    }
     this.modelSpec = nextSpec;
     await this.applyModelConfig();
     this.log(`[pi-runtime] 模型配置已重载：${this.resolvedModelLabel ?? "(未配置)"}`);
@@ -815,6 +1016,15 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return this.makeHandle(state);
     }
 
+    // M5.2 oversized 单输入预算检查（任务 H5）：估算输入 + 输出预留超过
+    // contextWindow 时立即结构化失败——不创建会话、不排队、不调用
+    // provider、不静默截断任务内容。
+    const oversized = this.checkContextBudget(message, sessionKey, input.agentId, state);
+    if (oversized !== undefined) {
+      this.settleTask(state, oversized);
+      return this.makeHandle(state);
+    }
+
     // M5.2 全局受理闸门：已受理未执行任务（等待会话创建 / per-session
     // FIFO / 全局 permit）达到 maxQueuedRuns 时立即结构化拒绝——不创建
     // 会话、不进任何队列、不占用 permit。RUNTIME_QUEUE_FULL（受理容量已
@@ -884,16 +1094,22 @@ export class PiRuntimeAdapter implements AgentRuntime {
           return;
         }
         state.phase = "running";
-        state.runningAtMs = Date.now();
+        state.runningAtMs = this.now();
         // 排队阶段（per-session FIFO + 全局 permit 等待）全部收敛：queue
         // 定时器退役，执行阶段有独立超时
         this.clearQueueTimer(state);
-        managed.runCount += 1;
-        managed.lastUsedAt = new Date().toISOString();
+
+        // M5.2 会话生命周期安全边界（任务 I）：本任务已独占该逻辑会话队头
+        // 且持有全局执行 permit，尚未 prompt——在这里做 self-healing 重建、
+        // context budget preflight 与 session rotation。rotation 只替换
+        // ManagedSession 内部的 Pi AgentSession（generation +1），容器、
+        // FIFO 队列、sessionKey、Workspace 全部不变。oversized 输入已在
+        // startAgent 受理前拦截（checkContextBudget）。
+        await this.sessionPreflight(managed, message);
 
         if (state.cancelRequested) {
-          // 派发交接窗口内的取消（尚未及从队列摘除）：不触发 prompt，
-          // 也不误伤同会话前序 / 后续任务
+          // 派发交接窗口内的取消（含 preflight/rotation 等待期间）：不触发
+          // prompt，也不误伤同会话前序 / 后续任务
           this.log(`[pi-runtime] startAgent ${taskId} 在排队期间被取消，直接终态`);
           this.settleTask(
             state,
@@ -908,13 +1124,50 @@ export class PiRuntimeAdapter implements AgentRuntime {
           return;
         }
 
+        managed.runCount += 1;
+        managed.lastUsedAt = new Date(this.now()).toISOString();
+        managed.lastUsedAtMs = this.now();
+
         const task = await this.runOnSession(managed, { taskId, input, message, state, sessionKey });
+        // 实测 usage 回写（M5.2 任务 H2）：provider 返回的 totalTokens 是
+        // 「本次请求时的上下文规模」快照——它是下一 run preflight 的
+        // measured 基准（优先级高于一切估算；失败/取消 run 已产生的 turn
+        // 同样占用上下文，照常回写）。
+        const measured = state.usage?.contextTokens;
+        if (measured !== undefined && measured > 0) {
+          const contextWindow = this.model?.contextWindow ?? 0;
+          managed.context = {
+            contextWindow,
+            contextTokens: measured,
+            basis: "measured",
+            updatedAt: new Date(this.now()).toISOString(),
+          };
+        }
         this.settleTask(state, task);
       } catch (error) {
+        if (error instanceof SessionCapacityError && !state.settled) {
+          // RUNTIME_SESSION_CAPACITY（M5.2 任务 J3）：全部会话忙且已达硬上限
+          // → 结构化 failed（resolve 通道，与 RUNTIME_QUEUE_FULL 同口径）
+          this.log(`[pi-runtime] startAgent ${taskId} 被拒绝（会话容量已满）：${error.message}`);
+          this.settleTask(
+            state,
+            this.buildTask({
+              taskId,
+              agentId: input.agentId,
+              status: "failed",
+              sessionKey,
+              error: error.message,
+              errorCode: "RUNTIME_SESSION_CAPACITY",
+            }),
+          );
+          return;
+        }
         this.settleFailure(state, error);
       } finally {
         release?.();
         this.inFlight.delete(taskId);
+        // 机会式 GC（M5.2 任务 J）：任务 settle 后扫一遍空闲超时会话
+        this.sweepIdleSessions();
       }
     })();
     this.inFlight.set(taskId, state);
@@ -1004,9 +1257,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return;
     }
     state.settled = true;
-    state.settledAtMs = Date.now();
+    state.settledAtMs = this.now();
     this.clearQueueTimer(state);
     this.releaseAdmission(state);
+    this.releaseArrivalToken(state);
     const final = this.withTerminalDiagnostics(state, task);
     state.task = final;
     this.rememberTask(final.taskId, final);
@@ -1024,9 +1278,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return;
     }
     state.settled = true;
-    state.settledAtMs = Date.now();
+    state.settledAtMs = this.now();
     this.clearQueueTimer(state);
     this.releaseAdmission(state);
+    this.releaseArrivalToken(state);
     state.failure = error;
     const final = this.withTerminalDiagnostics(state, this.buildFailureTask(state, error));
     state.task = final;
@@ -1211,6 +1466,319 @@ export class PiRuntimeAdapter implements AgentRuntime {
     }
   }
 
+  /** 释放任务占用的会话到达配额（settle 收口；每任务至多一次） */
+  private releaseArrivalToken(state: RunState): void {
+    const managed = state.arrivalSession;
+    if (managed !== undefined) {
+      state.arrivalSession = undefined;
+      managed.pendingArrivals = Math.max(0, managed.pendingArrivals - 1);
+    }
+  }
+
+  // ---- 会话生命周期治理（M5.2 任务 H/I/J/K：preflight / rotation / GC / 容量） ----
+
+  /**
+   * 会话队头安全边界 preflight（M5.2）：调用方保证本任务已独占该逻辑会话
+   * 且持有全局执行 permit、尚未 prompt。按序执行：
+   * 1. needsRotation（self-healing）→ 重建底层 AgentSession；
+   * 2. oversized 单输入检查（任务 H5）——即使全新会话也装不下时立即
+   *    CONTEXT_BUDGET_EXCEEDED 结构化失败（不调用 provider、不截断）；
+   * 3. context budget 压力检查（任务 H2/H3）——超限则 rotation；
+   * 4. context usage 不可得/非实测时的 runCount fallback（任务 I1）。
+   * 返回 "ready"（可 prompt，会话可能已换代）或 "budget_exceeded"
+   * （已 settle，调用方直接返回）。
+   */
+  private async sessionPreflight(managed: ManagedSession, message: string): Promise<void> {
+    if (managed.needsRotation) {
+      await this.rotateSession(managed, managed.needsRotationReason ?? "marked_unhealthy");
+    }
+    // 事实源：resolved Pi Model（任务 H1；PaperTeam 不维护模型上下文表）
+    const contextWindow = this.model?.contextWindow ?? 0;
+    if (contextWindow > 0) {
+      const maxTokens = this.model?.maxTokens ?? 0;
+      const reserve = computeOutputReserve(contextWindow, maxTokens, this.outputReserveTokens);
+      const nextInputEstimate = estimatePromptTokens(message);
+      // oversized 已在 startAgent 受理前拦截（见 checkContextBudget），能走到
+      // 这里的输入在全新会话中必然可容纳；这里只判断「当前会话是否还装得下」
+      const usage = this.currentContextUsage(managed);
+      if (usage !== undefined) {
+        managed.context = {
+          contextWindow,
+          contextTokens: usage.tokens,
+          basis: usage.basis,
+          updatedAt: new Date(this.now()).toISOString(),
+        };
+        if (usage.tokens + nextInputEstimate + reserve > contextWindow) {
+          await this.rotateSession(managed, "context_budget");
+        }
+      } else {
+        // context usage unknown：runCount fallback（任务 I1）
+        managed.context = {
+          contextWindow,
+          contextTokens: null,
+          basis: "unknown",
+          updatedAt: new Date(this.now()).toISOString(),
+        };
+        if (managed.runCount >= this.maxRunsPerSession) {
+          await this.rotateSession(managed, "run_count_limit");
+        }
+      }
+    } else {
+      // 模型上下文窗口不可知（未配置 / 元数据缺失）：只做 runCount fallback
+      if (managed.runCount >= this.maxRunsPerSession) {
+        await this.rotateSession(managed, "run_count_limit");
+      }
+    }
+  }
+
+  /**
+   * oversized 单输入检查（任务 H5；startAgent 受理前调用，会话尚未创建）：
+   * next prompt 估算 + 输出预留本身超过 contextWindow 时，任何会话（含
+   * 全新）都不可能安全执行——立即结构化失败，绝不调用 provider、绝不
+   * 静默截断 Evidence / 稿件 / Review 内容。返回 undefined = 可继续受理。
+   */
+  private checkContextBudget(
+    message: string,
+    sessionKey: string,
+    agentId: string,
+    state: RunState,
+  ): AgentTask | undefined {
+    const contextWindow = this.model?.contextWindow ?? 0;
+    if (contextWindow <= 0) {
+      return undefined; // 模型窗口不可知：预算 guard 不生效（不伪造数字）
+    }
+    const reserve = computeOutputReserve(
+      contextWindow,
+      this.model?.maxTokens ?? 0,
+      this.outputReserveTokens,
+    );
+    const nextInputEstimate = estimatePromptTokens(message);
+    if (nextInputEstimate + reserve <= contextWindow) {
+      return undefined;
+    }
+    this.contextBudgetRejects += 1;
+    const available = Math.max(0, contextWindow - reserve);
+    this.log(
+      `[pi-runtime] startAgent ${state.taskId} 拒绝（单次输入超上下文预算）：` +
+        `contextWindow=${contextWindow} estimatedInput=${nextInputEstimate} ` +
+        `reservedOutput=${reserve} available=${available}`,
+    );
+    return this.buildTask({
+      taskId: state.taskId,
+      agentId,
+      status: "failed",
+      sessionKey,
+      error:
+        `单次任务输入超过模型上下文预算（估算）：contextWindow=${contextWindow}，` +
+        `estimatedInputTokens=${nextInputEstimate}，reservedOutputTokens=${reserve}，` +
+        `availableTokens=${available}。请缩小任务输入（分节 / 摘要 / 拆分）后重试`,
+      errorCode: "CONTEXT_BUDGET_EXCEEDED",
+    });
+  }
+
+  /**
+   * 当前会话上下文占用（任务 H2）。优先级：
+   * 1. 上一 run 的 provider 实测 usage.totalTokens（measured，最可靠）；
+   * 2. 会话消息面的 CJK 感知估算（estimated；provider 未返回 usage 时）；
+   * 3. Pi 公开 AgentSession.getContextUsage()（estimated 兜底）；
+   * 4. undefined（unknown）——runCount fallback 接管。
+   * unknown 绝不伪装成 0。
+   */
+  private currentContextUsage(
+    managed: ManagedSession,
+  ): { tokens: number; basis: "measured" | "estimated" } | undefined {
+    const tracked = managed.context;
+    if (
+      tracked !== undefined &&
+      tracked.basis === "measured" &&
+      typeof tracked.contextTokens === "number" &&
+      tracked.contextTokens >= 0
+    ) {
+      return { tokens: tracked.contextTokens, basis: "measured" };
+    }
+    const messages = readableSessionMessages(managed.session);
+    if (messages !== undefined) {
+      const estimated = estimateSessionContextTokens(messages);
+      // 空会话估 0 是准确的（无任何对话内容），不是 unknown→0 的伪装
+      return { tokens: estimated ?? 0, basis: "estimated" };
+    }
+    const piUsage = readContextUsage(managed.session);
+    if (piUsage !== undefined && typeof piUsage.tokens === "number") {
+      return { tokens: piUsage.tokens, basis: "estimated" };
+    }
+    return undefined;
+  }
+
+  /**
+   * 会话 rotation（M5.2 任务 I2/I3/I4）：只替换 ManagedSession 内部的 Pi
+   * AgentSession。调用方保证当前任务已独占该逻辑会话（activeTaskId 已置位），
+   * 因此：
+   * - FIFO 队列 / 排队任务完全不受影响（容器不动）；
+   * - 业务 sessionKey 不变（generation 内部记账）；
+   * - 旧 session 先 unsubscribe 再 dispose（此刻它必然空闲：上一 run 已
+   *   settle，本 run 尚未 prompt）；
+   * - runCount / context 快照随 generation 重置。
+   * 重建失败：容器标记 needsRotation（下一安全边界重试重建），当前错误
+   * 向上抛出由 run 链收敛为结构化失败——绝不复用已 dispose 的旧会话。
+   */
+  /** 标记会话需要重建（self-healing；原因随标记保存，成功 rotation 后清空） */
+  private markNeedsRotation(managed: ManagedSession, reason: string): void {
+    managed.needsRotation = true;
+    managed.needsRotationReason = reason;
+  }
+
+  private async rotateSession(managed: ManagedSession, reason: string): Promise<void> {
+    this.sessionRotations += 1;
+    const previous = managed.session;
+    managed.unsubscribe?.();
+    managed.unsubscribe = undefined;
+    try {
+      previous.dispose();
+    } catch {
+      // dispose 不允许抛出中断 rotation
+    }
+    managed.generation += 1;
+    managed.runCount = 0;
+    try {
+      const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd);
+      managed.session = fresh;
+      managed.unsubscribe = this.wireSessionEvents(managed);
+      const contextWindow = this.model?.contextWindow ?? 0;
+      managed.context = {
+        contextWindow,
+        // 全新会话：无任何对话内容，0 是准确值（estimated 基准）
+        contextTokens: 0,
+        basis: "estimated",
+        updatedAt: new Date(this.now()).toISOString(),
+      };
+      managed.needsRotation = false;
+      managed.needsRotationReason = undefined;
+      managed.lastRotationReason = reason;
+      this.log(
+        `[pi-runtime] 会话轮换 sessionKey=${managed.key} generation=${managed.generation} reason=${reason}`,
+      );
+    } catch (error) {
+      // 重建失败：旧会话已销毁，容器保持待重建标记（沿用本次原因，下一安全
+      // 边界重试）；本任务按 RUN_FAILED 收敛——绝不复用已 dispose 的旧会话
+      managed.needsRotation = true;
+      managed.needsRotationReason = reason;
+      managed.lastRotationReason = `rotation_failed:${reason}`;
+      this.log(
+        `[pi-runtime] 会话轮换失败（已标记待重建）sessionKey=${managed.key} reason=${reason}: ${errorText(error)}`,
+      );
+      throw error;
+    }
+  }
+
+  /** rotation 的会话重建（配置了 sessionTimeoutMs 时与之竞速，防重建悬挂） */
+  private async createPiSessionWithTimeout(
+    role: PiRoleConfig,
+    cwd: string,
+  ): Promise<AgentSession> {
+    const timeoutMs = this.sessionTimeoutMs;
+    if (timeoutMs === undefined) {
+      return this.createPiSession(role, cwd);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        this.createPiSession(role, cwd),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new AgentTimeoutError(timeoutMs, "session")), timeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    }
+  }
+
+  /**
+   * 会话是否空闲（M5.2 任务 J1）：activeTaskId 空 + 无排队 + 无「已命中
+   * 会话但尚未入队」的在途任务。三个条件缺一不可——active / queued /
+   * 到达中的会话绝不被 GC。
+   */
+  private isSessionIdle(managed: ManagedSession): boolean {
+    return (
+      managed.activeTaskId === undefined &&
+      managed.queue.length === 0 &&
+      managed.pendingArrivals === 0
+    );
+  }
+
+  /** 容器级幂等释放（GC / close / reconfigure / releaseProjectSessions 共用） */
+  private disposeManaged(managed: ManagedSession): void {
+    if (managed.disposed) {
+      return;
+    }
+    managed.disposed = true;
+    managed.unsubscribe?.();
+    managed.unsubscribe = undefined;
+    try {
+      managed.session.dispose();
+    } catch {
+      // dispose 不允许抛出（进程退出路径）
+    }
+  }
+
+  /**
+   * 空闲会话 GC（M5.2 任务 J2；public 供诊断/测试显式触发）：
+   * idle 超过 TTL 的会话 unsubscribe + dispose + 出池，reason=idle_ttl。
+   * 绝不触碰 Workspace；active / queued / 到达中的会话天然被 idle 判定排除。
+   */
+  sweepIdleSessions(): number {
+    if (this.closed) {
+      return 0;
+    }
+    const nowMs = this.now();
+    let evicted = 0;
+    for (const managed of [...this.sessions.values()]) {
+      if (!this.isSessionIdle(managed)) {
+        continue;
+      }
+      if (nowMs - managed.lastUsedAtMs < this.sessionIdleTtlMs) {
+        continue;
+      }
+      this.sessions.delete(managed.key);
+      this.disposeManaged(managed);
+      this.sessionGcEvictions += 1;
+      evicted += 1;
+      this.log(
+        `[pi-runtime] GC 会话（idle_ttl=${this.sessionIdleTtlMs}ms）sessionKey=${managed.key} ` +
+          `generation=${managed.generation} runs=${managed.runCount}`,
+      );
+    }
+    return evicted;
+  }
+
+  /** 周期 GC 定时器（unref；首个会话入池时启动，close 清理） */
+  private ensureGcTimer(): void {
+    if (this.gcTimer !== undefined || this.closed) {
+      return;
+    }
+    const timer = setInterval(() => {
+      this.sweepIdleSessions();
+    }, this.gcSweepIntervalMs);
+    timer.unref?.();
+    this.gcTimer = timer;
+  }
+
+  /** 容量闸门下最久未使用的空闲会话（LRU 淘汰候选；无候选返回 undefined） */
+  private leastRecentlyUsedIdleSession(): ManagedSession | undefined {
+    let candidate: ManagedSession | undefined;
+    for (const managed of this.sessions.values()) {
+      if (!this.isSessionIdle(managed)) {
+        continue;
+      }
+      if (candidate === undefined || managed.lastUsedAtMs < candidate.lastUsedAtMs) {
+        candidate = managed;
+      }
+    }
+    return candidate;
+  }
+
   /** 在已独占的会话上执行一次 run（超时 / abort / 终态归因都在这里收敛） */
   private async runOnSession(
     managed: ManagedSession,
@@ -1254,13 +1822,19 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
     if (state.abortInitiator === "timeout") {
       await managed.session.waitForIdle().catch(() => {});
+      // self-healing（M5.2 任务 K3）：执行超时后底层会话状态不确定
+      //（waitForIdle 已收敛，但流中断点后的会话复用没有上游保证），
+      // 标记下一安全边界重建——只恢复 Runtime 后续可用性，不重试本任务
+      this.markNeedsRotation(managed, "execution_timeout");
       throw new AgentTimeoutError(executionTimeoutMs, "execution");
     }
 
     if (promptError !== undefined) {
-      // prompt 前置校验 / compaction 互斥等同步拒绝：结构化失败（底层细节只进日志）
+      // prompt 前置校验 / compaction 互斥等同步拒绝：结构化失败（底层细节只进日志）。
+      // prompt 抛异常意味着会话状态不确定 → 标记待重建（self-healing）
       const detail = promptError instanceof Error ? promptError.message : String(promptError);
       this.log(`[pi-runtime] runAgent ${taskId} prompt 被拒绝：${detail}`);
+      this.markNeedsRotation(managed, "prompt_exception");
       return this.buildTask({
         taskId,
         agentId: input.agentId,
@@ -1401,6 +1975,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
     void state; // 归因走异常通道（AgentTimeoutError.phase），state 仅备用
     const existing = this.sessions.get(sessionKey);
     if (existing !== undefined) {
+      // 命中池内会话：占一个到达配额，覆盖「返回 → 入队」之间的窗口，
+      // 防止 GC 在该窗口把「即将被使用」的会话回收（settle 时统一释放）
+      existing.pendingArrivals += 1;
+      state.arrivalSession = existing;
       return existing;
     }
     let slot = this.sessionCreations.get(sessionKey);
@@ -1437,12 +2015,40 @@ export class PiRuntimeAdapter implements AgentRuntime {
    * 发起一次会话创建（去重槽）。成功时若仍有等待者（waiting > 0）→ 正常
    * 入池；等待者已全部放弃（超时离开）→ 迟到会话销毁并不入池，promise 以
    * AgentRunFailedError reject（此刻已无人等待，仅作槽收敛信号）。
+   *
+   * M5.2 任务 J3 容量闸门（建槽前执行）：池内会话 + 在建槽位达到
+   * maxSessions 时，先收 TTL 过期的空闲会话，再按 LRU 淘汰空闲会话；
+   * 仍然满（全部忙）→ SessionCapacityError（run 链收敛为
+   * failed(RUNTIME_SESSION_CAPACITY)）。绝不为腾空间取消 active run 或
+   * 删除有排队任务的会话（LRU 候选仅限 idle 会话）。
    */
   private createSessionSlot(
     sessionKey: string,
     input: RunAgentInput,
     scope: string | undefined,
   ): SessionCreationSlot {
+    if (this.sessions.size + this.sessionCreations.size >= this.maxSessions) {
+      this.sweepIdleSessions();
+      while (this.sessions.size + this.sessionCreations.size >= this.maxSessions) {
+        const victim = this.leastRecentlyUsedIdleSession();
+        if (victim === undefined) {
+          break;
+        }
+        this.sessions.delete(victim.key);
+        this.disposeManaged(victim);
+        this.sessionGcEvictions += 1;
+        this.log(
+          `[pi-runtime] 会话容量淘汰（LRU idle）sessionKey=${victim.key} ` +
+            `sessions=${this.sessions.size}/${this.maxSessions}`,
+        );
+      }
+    }
+    if (this.sessions.size + this.sessionCreations.size >= this.maxSessions) {
+      throw new SessionCapacityError(
+        `Runtime 受管会话已达上限（${this.sessions.size}/${this.maxSessions}）且全部忙：` +
+          `请稍后重试，或调大 PAPERTEAM_PI_MAX_SESSIONS`,
+      );
+    }
     const slot = {} as SessionCreationSlot;
     slot.waiting = 0;
     slot.done = false;
@@ -1459,6 +2065,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
             throw new AgentRunFailedError(`会话创建迟到（等待者已放弃）：sessionKey=${sessionKey}`);
           }
           this.sessions.set(sessionKey, managed);
+          this.ensureGcTimer();
           return managed;
         },
         (error: unknown) => {
@@ -1481,11 +2088,46 @@ export class PiRuntimeAdapter implements AgentRuntime {
   ): Promise<ManagedSession> {
     const role = resolveRoleConfig(scope);
     const cwd = this.resolveWorkspaceCwd(input.projectId);
-    await mkdir(cwd, { recursive: true }).catch(() => {});
+    const session = await this.createPiSession(role, cwd);
+    const nowMs = this.now();
+    const now = new Date(nowMs).toISOString();
+    const managed: ManagedSession = {
+      key: sessionKey,
+      session,
+      role,
+      cwd,
+      createdAt: now,
+      lastUsedAt: now,
+      lastUsedAtMs: nowMs,
+      runCount: 0,
+      generation: 1,
+      needsRotation: false,
+      queue: [],
+      pendingArrivals: 0,
+      disposed: false,
+    };
+    managed.unsubscribe = this.wireSessionEvents(managed);
+    // 入池由 createSessionSlot 决定（迟到成功的会话在等待者已全部放弃时
+    // 直接销毁，不入池——无幽灵会话）
+    this.log(
+      `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${role.tools.join(",")}] cwd=${cwd}`,
+    );
+    return managed;
+  }
 
+  /**
+   * 创建底层 Pi AgentSession（doCreateSession 与 rotation 共用）：角色
+   * resourceLoader + in-memory SessionManager + 工具白名单。rotation 复用
+   * 时传入原 ManagedSession 的 role/cwd——角色配置与工作目录随会话稳定。
+   */
+  private async createPiSession(role: PiRoleConfig, cwd: string): Promise<AgentSession> {
+    await mkdir(cwd, { recursive: true }).catch(() => {});
     // 技能面完全自控：关闭全部默认发现（workspace/.pi、~/.pi 等），
     // 只注入 PaperTeam Skill Store 中该角色 assigned 的 skill 目录。
     const skillDirs = this.roleSkillDirs?.(role.role) ?? [];
+    if (skillDirs.length > 0) {
+      this.log(`[pi-runtime] 会话技能注入 role=${role.role} skills=[${skillDirs.length}]`);
+    }
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir: this.agentDir,
@@ -1530,25 +2172,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
               ...(allCustomTools.length > 0 ? { customTools: allCustomTools } : {}),
             })
           ).session;
-
-    const now = new Date().toISOString();
-    const managed: ManagedSession = {
-      key: sessionKey,
-      session,
-      role,
-      cwd,
-      createdAt: now,
-      lastUsedAt: now,
-      runCount: 0,
-      queue: [],
-    };
-    managed.unsubscribe = this.wireSessionEvents(managed);
-    // 入池由 createSessionSlot 决定（迟到成功的会话在等待者已全部放弃时
-    // 直接销毁，不入池——无幽灵会话）
-    this.log(
-      `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${[...role.tools, ...allCustomTools.map((tool) => tool.name)].join(",")}] skills=[${skillDirs.length}] cwd=${cwd}`,
-    );
-    return managed;
+    return session;
   }
 
   /** projectId → workspace 子目录（含路径包含性防越界，与 ProjectStore.projectDir 同规则） */
@@ -1790,6 +2414,22 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
   /** 会话/在途诊断快照（非 AgentRuntime 契约；RuntimeStatusService 读取） */
   runtimeStats(): RuntimeSessionStats {
+    let busySessions = 0;
+    let contextPressureSessions = 0;
+    for (const managed of this.sessions.values()) {
+      if (!this.isSessionIdle(managed)) {
+        busySessions += 1;
+      }
+      const context = managed.context;
+      if (
+        context !== undefined &&
+        typeof context.contextTokens === "number" &&
+        context.contextWindow > 0 &&
+        context.contextTokens / context.contextWindow >= 0.75
+      ) {
+        contextPressureSessions += 1;
+      }
+    }
     return {
       activeRuns: this.inFlight.size,
       managedSessions: this.sessions.size,
@@ -1798,7 +2438,54 @@ export class PiRuntimeAdapter implements AgentRuntime {
       maxQueuedRuns: this.maxQueuedRuns,
       activeExecutions: this.activeExecutions,
       queuedRuns: this.queuedAdmission,
+      // M5.2 长程治理（任务 J/K）：会话生命周期与预算观测面
+      busySessions,
+      idleSessions: this.sessions.size - busySessions,
+      maxSessions: this.maxSessions,
+      sessionRotations: this.sessionRotations,
+      sessionGcEvictions: this.sessionGcEvictions,
+      contextBudgetRejects: this.contextBudgetRejects,
+      contextPressureSessions,
     };
+  }
+
+  /**
+   * 逐会话诊断快照（M5.2 任务 K2；非 AgentRuntime 契约，RuntimeStatusService
+   * 读取）。只暴露生命周期与预算计数，不含 prompt 内容 / 工具输出 / 密钥 /
+   * 工作区路径。
+   */
+  sessionDiagnostics(): SessionDiagnosticEntry[] {
+    const nowMs = this.now();
+    return [...this.sessions.values()].map((managed) => {
+      const context = managed.context;
+      const contextTokens =
+        context !== undefined && typeof context.contextTokens === "number"
+          ? context.contextTokens
+          : null;
+      const contextWindow = context?.contextWindow ?? null;
+      return {
+        sessionKey: managed.key,
+        role: managed.role.role,
+        generation: managed.generation,
+        runCount: managed.runCount,
+        createdAt: managed.createdAt,
+        lastUsedAt: managed.lastUsedAt,
+        idleMs: Math.max(0, nowMs - managed.lastUsedAtMs),
+        busy: !this.isSessionIdle(managed),
+        queueDepth: managed.queue.length,
+        contextTokens,
+        contextWindow,
+        contextBasis: context?.basis ?? "unknown",
+        contextPercent:
+          contextTokens !== null && contextWindow !== null && contextWindow > 0
+            ? Math.round((contextTokens / contextWindow) * 1000) / 10
+            : null,
+        needsRotation: managed.needsRotation,
+        ...(managed.lastRotationReason !== undefined
+          ? { lastRotationReason: managed.lastRotationReason }
+          : {}),
+      };
+    });
   }
 
   /**
@@ -1840,8 +2527,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
     await Promise.allSettled(matchingRuns.map((state) => state.runSettled));
     for (const managed of matchingSessions) {
       this.sessions.delete(managed.key);
-      managed.unsubscribe?.();
-      managed.session.dispose();
+      // rotation 与 release 竞态的兜底：此刻 managed.session 可能已是新一代，
+      // disposeManaged 释放的是当前 generation（幂等，不双重释放）
+      this.disposeManaged(managed);
     }
     if (matchingSessions.length > 0) {
       this.log(
@@ -1856,6 +2544,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
   /** 取消/收敛全部在途 run 并释放所有 AgentSession（幂等；进程 shutdown 时调用） */
   async close(): Promise<void> {
     this.closed = true;
+    // GC 定时器先行退役（unref 定时器不阻止退出，但显式清理更干净）
+    if (this.gcTimer !== undefined) {
+      clearInterval(this.gcTimer);
+      this.gcTimer = undefined;
+    }
     const states = [...this.inFlight.values()];
     for (const state of states) {
       state.cancelRequested = true;
@@ -1884,21 +2577,16 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
     this.eventForwarders.clear();
-    await Promise.allSettled(
-      sessions.map(async (managed) => {
-        managed.unsubscribe?.();
-        managed.session.dispose();
-      }),
-    );
-    // 兜底：close 窗口内并发创建、晚于上方快照落位的会话一并释放（防泄漏）
+    for (const managed of sessions) {
+      this.disposeManaged(managed);
+    }
+    // 兜底：close 窗口内并发创建、晚于上方快照落位的会话一并释放（防泄漏；
+    // disposeManaged 幂等，与上方快照重叠也不双重释放）
     const lateSessions = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.allSettled(
-      lateSessions.map(async (managed) => {
-        managed.unsubscribe?.();
-        managed.session.dispose();
-      }),
-    );
+    for (const managed of lateSessions) {
+      this.disposeManaged(managed);
+    }
   }
 }
 
@@ -1997,7 +2685,10 @@ export function parseModelSpec(spec: string): { provider: string; modelId: strin
 function lastAssistantMessage(
   session: AgentSession,
 ): { stopReason?: string; errorMessage?: string } | undefined {
-  const messages: readonly unknown[] = session.agent.state.messages;
+  const messages = readableSessionMessages(session);
+  if (messages === undefined) {
+    return undefined;
+  }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const candidate = messages[index];
     if (
@@ -2009,6 +2700,53 @@ function lastAssistantMessage(
     }
   }
   return undefined;
+}
+
+/**
+ * 会话消息面读取（防御性 duck-typing）：fake/最小 AgentSession 实现可能
+ * 没有可读的 agent.state.messages，此时返回 undefined（调用方进入 unknown
+ * 状态，绝不猜测）。
+ */
+function readableSessionMessages(session: AgentSession): readonly unknown[] | undefined {
+  const messages: unknown = (session as { agent?: { state?: { messages?: unknown } } }).agent?.state
+    ?.messages;
+  return Array.isArray(messages) ? (messages as readonly unknown[]) : undefined;
+}
+
+/** Pi AgentSession.getContextUsage 的防御性 duck-typing 读取（公开 API） */
+function readContextUsage(
+  session: AgentSession,
+): { tokens: number | null; contextWindow: number; percent: number | null } | undefined {
+  const getter = (session as { getContextUsage?: () => unknown }).getContextUsage;
+  if (typeof getter !== "function") {
+    return undefined;
+  }
+  try {
+    const usage = getter.call(session) as {
+      tokens?: unknown;
+      contextWindow?: unknown;
+      percent?: unknown;
+    } | undefined;
+    if (
+      typeof usage !== "object" ||
+      usage === null ||
+      typeof usage.contextWindow !== "number"
+    ) {
+      return undefined;
+    }
+    return {
+      tokens: typeof usage.tokens === "number" ? usage.tokens : null,
+      contextWindow: usage.contextWindow,
+      percent: typeof usage.percent === "number" ? usage.percent : null,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** 错误消息提取（诊断日志用，不含堆栈） */
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**

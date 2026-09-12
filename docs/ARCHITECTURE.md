@@ -547,6 +547,48 @@ PiRuntimeAdapter
   `npm run dev` 直启 Backend（§6.0）。
 - **诊断**：`GET /api/runtime/status` 为 Pi 形状（§6.0.2）。
 
+### 6.5 长程运行治理（M5.1/M5.2 已实现）
+
+`PiRuntimeAdapter` 在 AgentRuntime 契约 v2 之上叠加的四层治理（全部进程内
+实现，无 Redis / BullMQ / 外部 scheduler / 数据库）：
+
+- **分层 timeout（M5.1）**：init / session / queue / execution 四个真实生命
+  周期阶段独立计时，超时统一 `AgentTimeoutError(phase)` + `timed_out` 结构化
+  终态（`*_TIMEOUT` errorCode + timeoutPhase 可经 getTask 回溯）；queue 阶段
+  deadline 跨 FIFO → 全局 permit 等待不重置。
+- **全局并发与有界受理（M5.2 第一批）**：进程级 execution permit
+  （≤ `maxConcurrentRuns`，FIFO 派发，任务到达 session 队头后才申请）+
+  admission 上限（已受理未执行 ≤ `maxQueuedRuns`，占满即
+  `failed(RUNTIME_QUEUE_FULL)`）。记账在 settle 收口（first-wins），全路径
+  无槽位泄漏。
+- **Context Budget（M5.2 收口）**：`contextWindow` / `maxTokens` 只取
+  resolved Pi Model（不维护模型表）。当前占用三态：measured（上一 run
+  provider 实测 `usage.totalTokens`）> estimated（CJK 感知消息估算，
+  `runtime/pi/contextBudget.ts`）> unknown（如实为 null，绝不伪装 0）。
+  输出预留 `min(maxTokens, ⌈window×25%⌉, 32768)`（可配置）。会话队头
+  preflight：`占用 + 输入估算 + 预留 > 窗口` → rotation；单次输入即使
+  全新会话也装不下 → 受理前 `failed(CONTEXT_BUDGET_EXCEEDED)`（不调
+  provider、不静默截断 Evidence / 稿件 / Review）。auto-compaction 保持
+  关闭——治理策略是「受控上下文 + 必要时新建 Session」，不是自动摘要压缩。
+- **Session Rotation（M5.2 收口）**：ManagedSession 为稳定调度容器
+  （sessionKey / FIFO / activeTaskId 不变），内部 Pi AgentSession 按
+  generation 换代；rotation 只在安全边界（队头独占 + permit 已持有 +
+  未 prompt）。触发：context 压力（measured/estimated）/ runCount 兜底
+  （仅 context 不可知时）/ needsRotation 自愈标记。不做摘要迁移——
+  Workspace/checkpoint + 本轮业务 prompt 是新会话完整事实源（§2.1 红线）。
+- **TTL / GC / 容量（M5.2 收口）**：idle（无 active / 无排队 / 无到达中
+  任务）超过 TTL → GC 回收；`maxSessions` 硬上限（先 TTL 后 LRU 淘汰
+  idle，全忙 → `failed(RUNTIME_SESSION_CAPACITY)`）。active / queued /
+  到达中的会话绝不被回收；reconfigure / release / close 与 GC / rotation
+  竞态由容器级幂等 dispose 保证不双重释放。
+- **观测与自愈（M5.2 收口）**：`runtimeStats()` 全局计数（含 rotation /
+  GC / 预算拒绝）+ `sessionDiagnostics()` 逐会话生命周期与上下文占用
+  （不含 prompt / 密钥），经 `GET /api/runtime/status` 透传。自愈仅限
+  确定性场景（execution timeout / prompt 异常 → 下一安全边界重建底层
+  会话），**不自动重试业务任务**。进程 crash 边界如实：内存中会话与
+  在-flight 调用不迁移；Workspace/checkpoint 保留已完成 stage，未完成
+  调用由 Workflow 层处理；Runtime 重启从空会话池开始，无脏恢复。
+
 ## 7. 质量与构建（M3.2 已实现）
 
 - **Build Gate**（`quality/gates.ts`）：由 LatexCompiler 编译 + 结构检查（include 文件存在、

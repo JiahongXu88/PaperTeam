@@ -89,6 +89,30 @@ export interface PiRuntimeConfig {
    * （RUNTIME_QUEUE_FULL）。非法值启动报错。
    */
   maxQueuedRuns: number;
+  /**
+   * 单会话 run 数回转上限（PAPERTEAM_PI_MAX_RUNS_PER_SESSION；默认 32）。
+   * context usage 不可得/非实测时（provider 不返回 usage）的 session
+   * rotation fallback。非法值启动报错。
+   */
+  maxRunsPerSession: number;
+  /**
+   * 会话空闲 TTL（PAPERTEAM_PI_SESSION_IDLE_TTL_MS；默认 1800000 = 30 分钟；
+   * 60s-24h）。空闲会话（无在途/排队/到达中任务）超时后由 GC 回收。
+   * 非法值启动报错。
+   */
+  sessionIdleTtlMs: number;
+  /**
+   * 受管会话数硬上限（PAPERTEAM_PI_MAX_SESSIONS；默认 16；1-256）。达到
+   * 上限时先回收空闲会话（TTL → LRU），全忙则新任务结构化失败
+   * （RUNTIME_SESSION_CAPACITY）。非法值启动报错。
+   */
+  maxSessions: number;
+  /**
+   * 输出预留 token 数（PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS；可选，缺省按
+   * resolved model 推导：min(maxTokens, ⌈contextWindow×25%⌉, 32768)）。
+   * 设置后仍被夹紧到模型真实能力内。非法值启动报错。
+   */
+  outputReserveTokens?: number;
 }
 
 export interface PdfConfig {
@@ -147,6 +171,21 @@ const PI_MAX_CONCURRENT_MAX = 64;
 const DEFAULT_PI_MAX_QUEUED_RUNS = 32;
 const PI_MAX_QUEUED_MIN = 0;
 const PI_MAX_QUEUED_MAX = 1024;
+/** 单会话 run 回转上限（M5.2 任务 I）：context usage 缺失时的 fallback */
+const DEFAULT_PI_MAX_RUNS_PER_SESSION = 32;
+const PI_MAX_RUNS_PER_SESSION_MIN = 1;
+const PI_MAX_RUNS_PER_SESSION_MAX = 10_000;
+/** 会话空闲 TTL（M5.2 任务 J）：默认 30 分钟（stage 间隔分钟级，30min = 本轮工作确实结束） */
+const DEFAULT_PI_SESSION_IDLE_TTL_MS = 30 * 60_000;
+const PI_SESSION_IDLE_TTL_MIN_MS = 60_000;
+const PI_SESSION_IDLE_TTL_MAX_MS = 24 * 60 * 60_000;
+/** 受管会话数上限（M5.2 任务 J）：4 角色 × ≤4 scope × 单活跃项目 */
+const DEFAULT_PI_MAX_SESSIONS = 16;
+const PI_MAX_SESSIONS_MIN = 1;
+const PI_MAX_SESSIONS_MAX = 256;
+/** 输出预留 token（M5.2 任务 H3）：与 runtime/pi/contextBudget.ts 同口径 */
+const PI_OUTPUT_RESERVE_MIN = 1_024;
+const PI_OUTPUT_RESERVE_MAX = 262_144;
 
 const RUN_TIMEOUT_MIN_MS = 1_000;
 const RUN_TIMEOUT_MAX_MS = 3_600_000;
@@ -228,6 +267,32 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: PI_MAX_QUEUED_MIN,
         max: PI_MAX_QUEUED_MAX,
       }),
+      // M5.2 长程治理（任务 H/I/J）：容量类约束同用严格 readInt（非法值
+      // ConfigError 拒绝启动，不静默回退）
+      maxRunsPerSession: readInt(source, "PAPERTEAM_PI_MAX_RUNS_PER_SESSION", {
+        default: DEFAULT_PI_MAX_RUNS_PER_SESSION,
+        min: PI_MAX_RUNS_PER_SESSION_MIN,
+        max: PI_MAX_RUNS_PER_SESSION_MAX,
+      }),
+      sessionIdleTtlMs: readTimeoutMs(source, "PAPERTEAM_PI_SESSION_IDLE_TTL_MS", {
+        default: DEFAULT_PI_SESSION_IDLE_TTL_MS,
+        min: PI_SESSION_IDLE_TTL_MIN_MS,
+        max: PI_SESSION_IDLE_TTL_MAX_MS,
+      }),
+      maxSessions: readInt(source, "PAPERTEAM_PI_MAX_SESSIONS", {
+        default: DEFAULT_PI_MAX_SESSIONS,
+        min: PI_MAX_SESSIONS_MIN,
+        max: PI_MAX_SESSIONS_MAX,
+      }),
+      ...(readOptionalValue(source, "PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS") !== undefined
+        ? {
+            outputReserveTokens: readInt(source, "PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS", {
+              default: 16_384,
+              min: PI_OUTPUT_RESERVE_MIN,
+              max: PI_OUTPUT_RESERVE_MAX,
+            }),
+          }
+        : {}),
     },
     agents: {
       // 会话标识默认为 main：业务角色

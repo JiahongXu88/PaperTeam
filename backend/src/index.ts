@@ -130,6 +130,13 @@ export async function startBackend(): Promise<void> {
           // M5.2 全局并发与有界受理（恒有默认值，直接透传）
           maxConcurrentRuns: config.pi.maxConcurrentRuns,
           maxQueuedRuns: config.pi.maxQueuedRuns,
+          // M5.2 长程治理：rotation fallback / 会话 TTL / 容量 / 输出预留
+          maxRunsPerSession: config.pi.maxRunsPerSession,
+          sessionIdleTtlMs: config.pi.sessionIdleTtlMs,
+          maxSessions: config.pi.maxSessions,
+          ...(config.pi.outputReserveTokens !== undefined
+            ? { outputReserveTokens: config.pi.outputReserveTokens }
+            : {}),
           modelRuntime,
           // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
           roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),

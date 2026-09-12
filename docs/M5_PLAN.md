@@ -62,10 +62,15 @@ AgentRuntime 契约 v2（`backend/src/runtime/types.ts`）不变更的前提下�
 周期管理（rotation、空闲回收）、全局并发与背压、长时间运行的观测面
 与自愈（进程重启恢复已有 checkpoint 机制，补齐运行时侧语义）。
 
-> 进度：timeout 分层与 run 级 usage 基础采集已随 M5.1 第二批提前落地；
-> 全局并发与有界受理（Runtime 层 global concurrency + bounded
-> admission）已于 2026-09-11 完成（见 PROJECT_STATUS.md）。剩余：context
-> budget、session rotation / TTL / GC、观测面与自愈补齐。
+> 进度：**COMPLETE（2026-09-12）**。M5.1 第二批提前落地 timeout 分层与
+> run 级 usage；2026-09-11 完成全局并发与有界受理；2026-09-12 收口
+> context budget（oversized 拒绝 / 输出预留 / measured-estimated-unknown
+> 三态占用）、session rotation（安全边界换代、sessionKey 稳定、FIFO
+> 保持）、TTL / GC / 会话容量（idle 回收、LRU 淘汰、容量结构化拒绝）
+> 与观测面 / 安全自愈（runtimeStats 扩展、逐会话诊断、execution
+> timeout / prompt 异常后的下一边界重建）。auto-compaction 保持关闭。
+> 真实边界如实：后端进程 crash 时内存中的 AgentSession 无法迁移，
+> Workspace/checkpoint 语义不变（见 PROJECT_STATUS.md M5.2 收口记录）。
 
 ### M5.3 Controlled Skill Integration
 

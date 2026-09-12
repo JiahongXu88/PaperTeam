@@ -122,6 +122,32 @@ describe("loadConfig", () => {
     }
   });
 
+  it("M5.2 长程治理容量（rotation/TTL/会话数/预留）：默认采用；非法报 ConfigError", () => {
+    const defaults = loadConfig({}).pi;
+    expect(defaults.maxRunsPerSession).toBe(32);
+    expect(defaults.sessionIdleTtlMs).toBe(1_800_000); // 30 分钟
+    expect(defaults.maxSessions).toBe(16);
+    expect(defaults.outputReserveTokens).toBeUndefined(); // 缺省按 resolved model 推导
+    // 合法值采用
+    expect(loadConfig({ PAPERTEAM_PI_MAX_RUNS_PER_SESSION: "100" }).pi.maxRunsPerSession).toBe(100);
+    expect(loadConfig({ PAPERTEAM_PI_SESSION_IDLE_TTL_MS: "3600000" }).pi.sessionIdleTtlMs).toBe(3_600_000);
+    expect(loadConfig({ PAPERTEAM_PI_MAX_SESSIONS: "64" }).pi.maxSessions).toBe(64);
+    expect(loadConfig({ PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS: "8192" }).pi.outputReserveTokens).toBe(8192);
+    // 非法值启动报错（容量契约不静默回退）
+    for (const bad of ["0", "-1", "abc", "10001"]) {
+      expect(() => loadConfig({ PAPERTEAM_PI_MAX_RUNS_PER_SESSION: bad })).toThrow(ConfigError);
+    }
+    for (const bad of ["59999", "abc", "90000000"]) {
+      expect(() => loadConfig({ PAPERTEAM_PI_SESSION_IDLE_TTL_MS: bad })).toThrow(ConfigError);
+    }
+    for (const bad of ["0", "-1", "abc", "257"]) {
+      expect(() => loadConfig({ PAPERTEAM_PI_MAX_SESSIONS: bad })).toThrow(ConfigError);
+    }
+    for (const bad of ["1023", "abc", "262145"]) {
+      expect(() => loadConfig({ PAPERTEAM_PI_OUTPUT_RESERVE_TOKENS: bad })).toThrow(ConfigError);
+    }
+  });
+
   it("模型规格不做格式前置校验（由 Runtime 层结构化报告）", () => {
     const config = loadConfig({ PAPERTEAM_PI_MODEL: "anything" });
     expect(config.pi.model).toBe("anything");

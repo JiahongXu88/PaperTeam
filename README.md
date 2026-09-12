@@ -26,7 +26,7 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 | 多 Agent 工作流 | Researcher / Writer / Reviewer / Citation 四角色 + 确定性 TypeScript WorkflowOrchestrator（流程控制不交给 LLM）；Stage DoD 校验、checkpoint 断点恢复、SSE 实时进度、协作式取消 |
 | HITL 人工决策 | 可行性确认 / 大纲确认 / 改进计划确认 / 修订不收敛或超限时的人工决策（approve / adjust / revise / accept_draft / cancel），随 checkpoint 持久化，浏览器刷新与后端重启后可恢复 |
 | 引用完整性 | Layer 1 真实性核验（外部学术库，NOT_FOUND ≠ 捏造 ≠ 检索失败）；Layer 2 论断-引用语义核验（原子论断 × 引用组、judge 禁止凭记忆、伪造引文剥离），可按 run 配置关闭 |
-| 长论文审阅 | PDF 解析 → PaperMap 导航图 + 受控分章节上下文（其他章节全文绝不进入当前审阅上下文），有界并发 + 背压；Runtime 层另有全局并发上限 + 有界等待队列（Workflow 局部并发与 Runtime 全局背压两层治理） |
+| 长论文审阅 | PDF 解析 → PaperMap 导航图 + 受控分章节上下文（其他章节全文绝不进入当前审阅上下文），有界并发 + 背压；Runtime 层另有全局并发上限 + 有界等待队列 + 上下文预算（超限回转/拒绝，绝不静默截断）+ 会话 TTL/GC（Workflow 局部并发与 Runtime 全局治理两层） |
 | 审稿-修订闭环 | Reviewer 三路并行审稿 → 确定性聚合 → Quality Gate → 确定性 Revision Plan → Writer 逐节修订 → 强制复审 → 收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION，纯代码） |
 | 质量门禁 | 13+ 条确定性规则（学术评分 / 引用完整性 / 可行性），结论可解释（ruleId → 中文说明 → 深链处理入口），轮次隔离，修订后过期如实提示 |
 | Draft / Final | Build Gate（LaTeX 真实编译）通过即冻结 Draft；Final 要求双 Gate 通过且对齐当前修订；产物不可变、可查看 / 下载；编译失败自动修复 ≤2 次 |
@@ -117,10 +117,14 @@ cd e2e && npm test     # 各套件按环境门控自动跳过；scripted 栈与�
 （`PAPERTEAM_TEST_RUNTIME=scripted`——Workflow / checkpoint / SSE / HTTP / React /
 LaTeX 编译全真实，只有模型输出是确定性脚本）；另有真实模型 smoke 记录在各里程碑。
 
-## 当前状态：M4 MVP（Alpha）
+## 当前状态：M4 MVP Complete / M5 in progress
 
 M1–M4 已完成（Runtime 迁移到 Pi in-process、React 工作台、三条产品路径、
-质量基础设施与版本体验）；真实模型 / 真实 MiKTeX 的端到端验证记录见
+质量基础设施与版本体验）；M5 进行中——M5.1 Runtime 生命周期可靠性与
+M5.2 长程运行治理（分层超时 / 全局并发与有界受理 / context budget /
+会话 rotation / TTL·GC·容量 / 观测面与安全自愈）已收口，后续为 Skill
+受控接入（M5.3）、中文风格修订回路（M5.4）、Linux / Docker 部署（M5.5）
+与真实论文 A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 
@@ -154,7 +158,7 @@ Production Stable 1.0。
 | 文档 | 说明 |
 | --- | --- |
 | [docs/PRD.md](docs/PRD.md) | 产品需求文档 |
-| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与里程碑记录（M1–M4） |
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与里程碑记录（M1–M5） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构（含架构红线：事实来源 / 会话 / 事件 / 双 Gate） |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Frontend API Contract（端点 / DTO / SSE / 变更纪律） |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 技术决策记录（ADR，D-0001~D-0029） |

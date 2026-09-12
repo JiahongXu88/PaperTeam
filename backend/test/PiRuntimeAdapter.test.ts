@@ -98,6 +98,11 @@ class FakeAgentSession {
   maxConcurrent = 0;
   abortedCount = 0;
   disposed = false;
+  /** dispose 调用次数（M5.2 J5：验证幂等释放，不双重 dispose） */
+  disposeCount = 0;
+  /** 运行时不变量违规（M5.2 soak/rotation：dispose 后 prompt / pending 中 dispose） */
+  promptedAfterDispose = false;
+  disposedWhilePending = false;
   pending = false;
   /** 可变行为（测试中途 setBehavior 会同步更新已建会话） */
   behavior: FakeBehavior;
@@ -129,8 +134,14 @@ class FakeAgentSession {
 
   async prompt(text: string): Promise<void> {
     this.prompts.push(text);
+    if (this.disposed) {
+      this.promptedAfterDispose = true;
+    }
     this.active += 1;
     this.maxConcurrent = Math.max(this.maxConcurrent, this.active);
+    // 用户消息进入 transcript（真实 Pi 语义：messages 含 user 消息；
+    // M5.2 estimated 上下文估算依赖消息面完整性）
+    this.messages.push({ role: "user", content: [{ type: "text", text }] });
     const behavior = this.behavior;
     try {
       if (behavior.kind === "preflightReject") {
@@ -290,6 +301,10 @@ class FakeAgentSession {
   }
 
   dispose(): void {
+    if (this.pending) {
+      this.disposedWhilePending = true;
+    }
+    this.disposeCount += 1;
     this.disposed = true;
     this.listeners.clear();
   }
@@ -2309,6 +2324,433 @@ describe("PiRuntimeAdapter（全局并发与有界受理：M5.2）", () => {
 });
 
 // ---------------------------------------------------------------------------
+// M5.2 长程治理：Context Budget / Session Rotation / TTL·GC·容量 / 观测面
+// ---------------------------------------------------------------------------
+
+/** 带上下文元数据的注入模型（任务 H：contextWindow 来自 resolved Pi Model） */
+function budgetModel(contextWindow: number, maxTokens: number): PiModel {
+  return { provider: "fake", id: "fake-1", contextWindow, maxTokens } as PiModel;
+}
+
+describe("PiRuntimeAdapter（Context Budget：M5.2 任务 H）", () => {
+  it("H1/H2 实测 usage 驱动 rotation：上一 run 的 totalTokens + 下次输入估算 + 输出预留超窗 → 重建会话", async () => {
+    const factory = createFakeFactory();
+    // contextWindow=2000, maxTokens=512 → reserve = min(512, ⌈2000×25%⌉=500, 32768) = 500
+    const adapter = await makeLevel1Adapter(factory, {
+      model: budgetModel(2_000, 512),
+    });
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    // run1：短 prompt（est≈9），fresh 会话 0+9+500 < 2000 → 正常执行；
+    // provider 实测 totalTokens=1200 → managed.context = measured 1200
+    factory.setBehavior({
+      kind: "complete",
+      output: "ok",
+      usageTurns: [{ input: 1100, output: 90, cacheRead: 0, cacheWrite: 0, totalTokens: 1200 }],
+    });
+    const first = await adapter.runAgent({ agentId: "w", task: "短任务一", ...scope });
+    expect(first.status).toBe("completed");
+    expect(factory.created).toHaveLength(1);
+    // run2：中文长 prompt 400 字 → est 600；1200 + 600 + 500 = 2300 > 2000 → rotation
+    const longPrompt = "论".repeat(400);
+    const second = await adapter.runAgent({ agentId: "w", task: longPrompt, ...scope });
+    expect(second.status).toBe("completed");
+    expect(factory.created).toHaveLength(2); // rotation 重建了底层会话
+    expect(factory.created[1]?.session.prompts).toEqual([longPrompt]);
+    // 业务 sessionKey 不变；generation 增加；诊断面记录原因
+    expect(second.metadata?.["sessionKey"]).toBe(first.metadata?.["sessionKey"]);
+    const diag = adapter.sessionDiagnostics();
+    expect(diag).toHaveLength(1);
+    expect(diag[0]).toMatchObject({
+      generation: 2,
+      lastRotationReason: "context_budget",
+      runCount: 1,
+      contextTokens: 1200, // run2 的实测 usage 同样回写
+      contextBasis: "measured",
+    });
+    expect(adapter.runtimeStats().sessionRotations).toBe(1);
+    await adapter.close();
+  });
+
+  it("H5 oversized 单输入：会话创建前即失败（CONTEXT_BUDGET_EXCEEDED，含预算诊断，绝不 prompt）", async () => {
+    const factory = createFakeFactory();
+    // contextWindow=1000, maxTokens=256 → reserve = min(256, 250) = 250
+    const adapter = await makeLevel1Adapter(factory, { model: budgetModel(1_000, 256) });
+    const task = await adapter.runAgent({
+      agentId: "w",
+      task: "论".repeat(600), // est 900；900 + 250 = 1150 > 1000
+      projectId: "p",
+      contextScope: "writing/x",
+    });
+    expect(task.status).toBe("failed");
+    expect(task.errorCode).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(task.error).toContain("contextWindow=1000");
+    expect(task.error).toContain("estimatedInputTokens=900");
+    expect(task.error).toContain("reservedOutputTokens=250");
+    expect(task.error).toContain("availableTokens=750");
+    // 在 provider 调用前失败：无会话、无 prompt、可回溯
+    expect(factory.created).toHaveLength(0);
+    expect((await adapter.getTask(task.taskId)).errorCode).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(adapter.runtimeStats().contextBudgetRejects).toBe(1);
+    expect(adapter.runtimeStats().managedSessions).toBe(0);
+    await adapter.close();
+  });
+
+  it("H4 usage 缺失时由 CJK 感知估算兜底：消息面积累触发 rotation（estimated basis 同样可靠）", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory, { model: budgetModel(2_000, 512) });
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    // provider 不返回 usage（usageTurns 全 undefined）→ 估算从会话消息面累积
+    factory.setBehavior({ kind: "complete", output: "ok", usageTurns: [undefined] });
+    // run1：fresh 0 + est(800字→1200) + 500 = 1700 < 2000 → 执行
+    await adapter.runAgent({ agentId: "w", task: "论".repeat(800), ...scope });
+    expect(factory.created).toHaveLength(1);
+    // run2：est ≈ 1200(user1) + 1(assistant) + 450(user2) ≈ 1650；1650+450+500 > 2000 → rotation
+    await adapter.runAgent({ agentId: "w", task: "论".repeat(300), ...scope });
+    expect(factory.created).toHaveLength(2);
+    const diag = adapter.sessionDiagnostics();
+    expect(diag[0]?.generation).toBe(2);
+    expect(diag[0]?.lastRotationReason).toBe("context_budget");
+    expect(adapter.runtimeStats().sessionRotations).toBe(1);
+    await adapter.close();
+  });
+
+  it("H2 上下文充足时复用同一会话（不 rotation、generation 稳定）", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory, { model: budgetModel(100_000, 8_192) });
+    factory.setBehavior({
+      kind: "complete",
+      output: "ok",
+      usageTurns: [{ input: 500, output: 100, cacheRead: 0, cacheWrite: 0, totalTokens: 600 }],
+    });
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    const first = await adapter.runAgent({ agentId: "w", task: "任务一", ...scope });
+    const second = await adapter.runAgent({ agentId: "w", task: "任务二", ...scope });
+    expect([first.status, second.status]).toEqual(["completed", "completed"]);
+    expect(factory.created).toHaveLength(1);
+    expect(adapter.sessionDiagnostics()[0]).toMatchObject({ generation: 1, runCount: 2 });
+    expect(adapter.runtimeStats().sessionRotations).toBe(0);
+    await adapter.close();
+  });
+
+  it("I1 context usage 不可知（模型无窗口元数据）时 runCount fallback 驱动 rotation", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory, { maxRunsPerSession: 2 });
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    await adapter.runAgent({ agentId: "w", task: "1", ...scope });
+    await adapter.runAgent({ agentId: "w", task: "2", ...scope });
+    expect(factory.created).toHaveLength(1); // runCount 1、2 都未达上限（达到 2 时下一次才回转）
+    const third = await adapter.runAgent({ agentId: "w", task: "3", ...scope });
+    expect(third.status).toBe("completed");
+    expect(factory.created).toHaveLength(2); // run3 前按 run_count_limit 回转
+    expect(adapter.sessionDiagnostics()[0]).toMatchObject({
+      generation: 2,
+      lastRotationReason: "run_count_limit",
+      runCount: 1,
+    });
+    await adapter.close();
+  });
+
+  it("K3/H 预算诊断 unknown 不伪装成 0（无窗口元数据：contextBasis=unknown、contextTokens=null）", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory);
+    await adapter.runAgent({ agentId: "w", task: "x", projectId: "p", contextScope: "writing/x" });
+    const diag = adapter.sessionDiagnostics()[0];
+    expect(diag).toBeDefined();
+    expect(diag?.contextBasis).toBe("unknown");
+    expect(diag?.contextTokens).toBeNull();
+    expect(diag?.contextWindow).toBeNull();
+    await adapter.close();
+  });
+});
+
+describe("PiRuntimeAdapter（Session Rotation：M5.2 任务 I）", () => {
+  it("I2/I3 execution timeout 标记 needsRotation → 下一任务在安全边界重建；FIFO 顺序与 sessionKey 保持", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    // A 运行中超时（底层会话状态不确定 → self-healing 标记）
+    const a = adapter.startAgent({ agentId: "w", task: "A-task", timeoutMs: 150, ...scope });
+    await new Promise((resolve) => setTimeout(resolve, 30)); // 让 A 真实进入 prompt
+    const b = adapter.startAgent({ agentId: "w", task: "B-task", ...scope });
+    const c = adapter.startAgent({ agentId: "w", task: "C-task", ...scope });
+    // rotation 之后创建的新会话必须能正常完成（A 的 prompt 已捕获 hang 行为，
+    // 行为切换不影响在途 run）
+    factory.setBehavior({ kind: "complete", output: "recovered" });
+    const aHandle = await a;
+    await expect(aHandle.result()).rejects.toBeInstanceOf(AgentTimeoutError);
+    const aTask = await adapter.getTask(aHandle.taskId);
+    expect(aTask.status).toBe("timed_out");
+    // B/C 在 A 终态后依次执行；B 到达队头时发现 needsRotation → 先重建再 prompt
+    const [bTask, cTask] = await Promise.all([(await b).result(), (await c).result()]);
+    expect([bTask.status, cTask.status]).toEqual(["completed", "completed"]);
+    expect(factory.created).toHaveLength(2); // 一次 rotation
+    expect(factory.created[0]?.session.disposed).toBe(true); // 旧会话已销毁
+    // FIFO：B 先于 C，且都在新一代会话上执行
+    expect(factory.created[1]?.session.prompts).toEqual(["B-task", "C-task"]);
+    // 业务 sessionKey 三个任务完全一致
+    const keys = [aTask, bTask, cTask].map((t) => String(t.metadata?.["sessionKey"]));
+    expect(new Set(keys).size).toBe(1);
+    expect(adapter.sessionDiagnostics()[0]).toMatchObject({
+      generation: 2,
+      lastRotationReason: "execution_timeout",
+      needsRotation: false,
+    });
+    await adapter.close();
+  });
+
+  it("I/K3 rotation 重建失败：任务结构化失败 + 会话标记待重建，下一任务重试成功（不复用已 dispose 会话）", async () => {
+    // 可控失败的工厂：failNextCreation() 使下一次创建抛错
+    const created: FakeAgentSession[] = [];
+    let failNext = false;
+    const factory = {
+      get created() {
+        return created;
+      },
+      failNextCreation() {
+        failNext = true;
+      },
+      factory: async () => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("simulated create failure");
+        }
+        const session = new FakeAgentSession({ kind: "complete", output: "ok" });
+        created.push(session);
+        return session as unknown as AgentSession;
+      },
+    };
+    const adapter = await makeLevel1Adapter(factory, { maxRunsPerSession: 1 });
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    const first = await adapter.runAgent({ agentId: "w", task: "1", ...scope });
+    expect(first.status).toBe("completed");
+    expect(created).toHaveLength(1);
+    // run2 触发 rotation（runCount 上限），但重建失败 → reject（RUN_FAILED；
+    // 结构化终态经 getTask 回溯，M5.1 reject 通道语义）
+    factory.failNextCreation();
+    const secondHandle = await adapter.startAgent({ agentId: "w", task: "2", ...scope });
+    await expect(secondHandle.result()).rejects.toThrow("simulated create failure");
+    const second = await adapter.getTask(secondHandle.taskId);
+    expect(second.status).toBe("failed");
+    expect(second.errorCode).toBe("RUN_FAILED");
+    // 绝不 prompt 已 dispose 的旧会话
+    expect(created[0]?.promptedAfterDispose).toBe(false);
+    // run3：待重建标记仍在 → 再次 rotation（成功）→ 正常执行
+    const third = await adapter.runAgent({ agentId: "w", task: "3", ...scope });
+    expect(third.status).toBe("completed");
+    expect(created).toHaveLength(2);
+    expect(created[1]?.prompts).toEqual(["3"]);
+    const diag = adapter.sessionDiagnostics()[0];
+    expect(diag?.generation).toBe(3); // 两次 rotation 尝试各 +1
+    expect(diag?.lastRotationReason).toBe("run_count_limit");
+    expect(diag?.needsRotation).toBe(false);
+    await adapter.close();
+  });
+
+  it("K3 manual cancel 不触发 rotation（abort 后会话仍复用，M3.8 语义保持）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    const handle = await adapter.startAgent({ agentId: "w", task: "x", ...scope });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    await handle.cancel();
+    const cancelled = await handle.result();
+    expect(cancelled.status).toBe("cancelled");
+    // 下一任务复用同一会话（generation 不变）
+    factory.setBehavior({ kind: "complete", output: "ok" });
+    const next = await adapter.runAgent({ agentId: "w", task: "y", ...scope });
+    expect(next.status).toBe("completed");
+    expect(factory.created).toHaveLength(1);
+    expect(adapter.sessionDiagnostics()[0]).toMatchObject({ generation: 1, needsRotation: false });
+    expect(adapter.runtimeStats().sessionRotations).toBe(0);
+    await adapter.close();
+  });
+});
+
+describe("PiRuntimeAdapter（Session TTL / GC / 容量：M5.2 任务 J）", () => {
+  it("J2 idle TTL 到期回收（fake clock + 显式 sweep）：dispose、出池、计数、后续任务不受影响", async () => {
+    const factory = createFakeFactory();
+    let clock = 1_000_000;
+    const adapter = await makeLevel1Adapter(factory, {
+      sessionIdleTtlMs: 5_000,
+      now: () => clock,
+    });
+    const task = await adapter.runAgent({ agentId: "w", task: "x", projectId: "p", contextScope: "writing/x" });
+    expect(task.status).toBe("completed");
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    // 未到期：sweep 不回收
+    clock += 4_000;
+    expect(adapter.sweepIdleSessions()).toBe(0);
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    // 到期：回收（dispose 一次、出池、GC 计数）
+    clock += 1_500;
+    expect(adapter.sweepIdleSessions()).toBe(1);
+    expect(adapter.runtimeStats().managedSessions).toBe(0);
+    expect(adapter.runtimeStats().sessionGcEvictions).toBe(1);
+    expect(factory.created[0]?.session.disposeCount).toBe(1);
+    // 后续任务：新会话照常创建并执行
+    const next = await adapter.runAgent({ agentId: "w", task: "y", projectId: "p", contextScope: "writing/x" });
+    expect(next.status).toBe("completed");
+    expect(factory.created).toHaveLength(2);
+    await adapter.close();
+  });
+
+  it("J2 周期 GC 定时器（真实小 TTL）：无需外部触发即可回收；unref 不阻止退出", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory, {
+      sessionIdleTtlMs: 80,
+      gcSweepIntervalMs: 20,
+    });
+    await adapter.runAgent({ agentId: "w", task: "x", projectId: "p", contextScope: "writing/x" });
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    expect(
+      await waitFor(() => adapter.runtimeStats().managedSessions === 0, 3_000),
+    ).toBe(true);
+    expect(adapter.runtimeStats().sessionGcEvictions).toBe(1);
+    await adapter.close();
+  });
+
+  it("J1/J2 active / queued 会话绝不被 GC（TTL 早已过期也不回收）", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    let clock = 1_000_000;
+    const adapter = await makeLevel1Adapter(factory, {
+      sessionIdleTtlMs: 1_000,
+      now: () => clock,
+    });
+    const scope = { projectId: "p", contextScope: "writing/x" };
+    const a = await adapter.startAgent({ agentId: "w", task: "A", ...scope });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    const b = await adapter.startAgent({ agentId: "w", task: "B", ...scope }); // 同会话排队
+    // 时间远超 TTL：active + queued 会话必须原样保留
+    clock += 60_000;
+    expect(adapter.sweepIdleSessions()).toBe(0);
+    expect(adapter.runtimeStats().managedSessions).toBe(1);
+    expect(factory.created[0]?.session.disposed).toBe(false);
+    // 收敛后（idle）才可回收
+    factory.setBehavior({ kind: "complete", output: "done" });
+    factory.created[0]?.session.completePending("A done");
+    expect(await (await a).result()).toMatchObject({ status: "completed" });
+    expect(await (await b).result()).toMatchObject({ status: "completed" });
+    clock += 60_000;
+    expect(adapter.sweepIdleSessions()).toBe(1);
+    expect(adapter.runtimeStats().managedSessions).toBe(0);
+    await adapter.close();
+  });
+
+  it("J3 容量上限：LRU 淘汰最久未用的 idle 会话；不误伤新近使用与在途", async () => {
+    const factory = createFakeFactory();
+    const adapter = await makeLevel1Adapter(factory, { maxSessions: 2 });
+    // S1（p-a，较早使用）→ S2（p-b，较晚使用）
+    await adapter.runAgent({ agentId: "w", task: "a", projectId: "p-a", contextScope: "writing/x" });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await adapter.runAgent({ agentId: "w", task: "b", projectId: "p-b", contextScope: "writing/x" });
+    expect(adapter.runtimeStats().managedSessions).toBe(2);
+    // 新会话 p-c：容量闸门 → LRU 淘汰 S1（最久未用）
+    const task = await adapter.runAgent({ agentId: "w", task: "c", projectId: "p-c", contextScope: "writing/x" });
+    expect(task.status).toBe("completed");
+    expect(factory.created).toHaveLength(3);
+    expect(factory.created[0]?.session.disposed).toBe(true); // S1 被淘汰
+    expect(factory.created[1]?.session.disposed).toBe(false); // S2 保留
+    expect(factory.created[2]?.session.disposed).toBe(false);
+    const stats = adapter.runtimeStats();
+    expect(stats.managedSessions).toBe(2);
+    expect(stats.maxSessions).toBe(2);
+    expect(stats.sessionGcEvictions).toBe(1);
+    await adapter.close();
+  });
+
+  it("J3 容量全忙：RUNTIME_SESSION_CAPACITY 结构化拒绝；释放后恢复受理", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory, { maxSessions: 1 });
+    const a = await adapter.startAgent({ agentId: "w", task: "A", projectId: "p-a", contextScope: "writing/x" });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    // S1 忙（A 运行中）：p-b 的新会话被容量拒绝
+    const b = await adapter.startAgent({ agentId: "w", task: "B", projectId: "p-b", contextScope: "writing/x" });
+    const bTask = await b.result();
+    expect(bTask.status).toBe("failed");
+    expect(bTask.errorCode).toBe("RUNTIME_SESSION_CAPACITY");
+    expect(bTask.error).toContain("PAPERTEAM_PI_MAX_SESSIONS");
+    expect(factory.created).toHaveLength(1); // 未创建 p-b 会话
+    // A 不受影响；settle 后 S1 idle → 新会话可经 LRU 淘汰 S1 后创建
+    factory.setBehavior({ kind: "complete", output: "B2 ok" });
+    factory.created[0]?.session.completePending("A done");
+    expect(await (await a).result()).toMatchObject({ status: "completed" });
+    const retry = await adapter.runAgent({ agentId: "w", task: "B2", projectId: "p-b", contextScope: "writing/x" });
+    expect(retry.status).toBe("completed");
+    expect(factory.created).toHaveLength(2);
+    await adapter.close();
+  });
+
+  it("J5 sweep / reconfigure / close 协同：dispose 恰好一次，无双重释放、无幽灵会话", async () => {
+    const factory = createFakeFactory();
+    let clock = 1_000_000;
+    const adapter = await makeLevel1Adapter(factory, { sessionIdleTtlMs: 1_000, now: () => clock });
+    await adapter.runAgent({ agentId: "w", task: "x", projectId: "p-a", contextScope: "writing/x" });
+    await adapter.runAgent({ agentId: "w", task: "y", projectId: "p-b", contextScope: "writing/x" });
+    clock += 2_000;
+    adapter.sweepIdleSessions(); // 全部回收（每会话 dispose 1 次）
+    adapter.sweepIdleSessions(); // 幂等：无会话可回收
+    // reconfigure 走同一幂等释放路径
+    await adapter.reconfigure("fake/another");
+    for (const { session } of factory.created) {
+      expect(session.disposeCount).toBe(1);
+    }
+    expect(adapter.runtimeStats().managedSessions).toBe(0);
+    // close 幂等；GC 定时器清理后进程可退出（unref 由实现保证）
+    await adapter.close();
+    await adapter.close();
+    expect(factory.created.every(({ session }) => session.disposeCount === 1)).toBe(true);
+    expect(adapter.sessionDiagnostics()).toEqual([]);
+  });
+});
+
+describe("PiRuntimeAdapter（长程观测面：M5.2 任务 K1/K2）", () => {
+  it("runtimeStats busy/idle 与逐会话诊断：计数正确、不泄露 prompt 内容", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "hangUntilAbort" });
+    const adapter = await makeLevel1Adapter(factory);
+    const a = await adapter.startAgent({ agentId: "w", task: "SECRET-PROMPT-A", projectId: "p-a", contextScope: "writing/x" });
+    expect(await waitFor(() => factory.created[0]?.session.pending === true)).toBe(true);
+    const b = await adapter.startAgent({ agentId: "w", task: "SECRET-PROMPT-B", projectId: "p-a", contextScope: "writing/x" });
+    const c = await adapter.startAgent({ agentId: "w", task: "SECRET-PROMPT-C", projectId: "p-b", contextScope: "review/fact" });
+    expect(await waitFor(() => factory.created.length === 2)).toBe(true);
+    // A 运行 + B 排队（p-a busy）；C 运行（p-b busy）→ 两会话都忙
+    expect(await waitFor(() => adapter.runtimeStats().busySessions === 2)).toBe(true);
+    const stats = adapter.runtimeStats();
+    expect(stats).toMatchObject({
+      managedSessions: 2,
+      idleSessions: 0,
+      activeRuns: 3,
+      maxSessions: 16,
+    });
+    // 诊断字段齐全且不含任务文本 / 工作区路径
+    const serialized = JSON.stringify(adapter.sessionDiagnostics());
+    expect(serialized).not.toContain("SECRET-PROMPT");
+    for (const entry of adapter.sessionDiagnostics()) {
+      expect(entry.sessionKey).toMatch(/^agent:w:paperteam-/);
+      expect(["writer", "reviewer"]).toContain(entry.role);
+      expect(entry.generation).toBe(1);
+      expect(typeof entry.createdAt).toBe("string");
+      expect(typeof entry.idleMs).toBe("number");
+      expect(typeof entry.busy).toBe("boolean");
+      expect(typeof entry.queueDepth).toBe("number");
+    }
+    // p-a 会话 queueDepth=1（B 排队）、p-b = 0
+    const paEntry = adapter.sessionDiagnostics().find((e) => e.sessionKey.includes("p-a"));
+    const pbEntry = adapter.sessionDiagnostics().find((e) => e.sessionKey.includes("p-b"));
+    expect(paEntry?.queueDepth).toBe(1);
+    expect(pbEntry?.queueDepth).toBe(0);
+    await Promise.all([a.cancel(), b.cancel(), c.cancel()]);
+    expect(await waitFor(() => adapter.runtimeStats().busySessions === 0)).toBe(true);
+    expect(adapter.runtimeStats().idleSessions).toBe(2);
+    await adapter.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 角色映射（纯函数）
 // ---------------------------------------------------------------------------
 
@@ -2710,6 +3152,85 @@ describe("PiRuntimeAdapter（Level 2：真实 SDK + faux model）", () => {
     expect(task.usage?.assistantTurns).toBe(2);
     expect(task.usage?.inputTokens).toBeGreaterThan(0);
     expect(task.usage?.outputTokens).toBeGreaterThan(0);
+    await adapter.close();
+  }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Level 2 补充：M5.2 Context Budget / Session Rotation（真实 SDK + faux）
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（Level 2：M5.2 context budget / rotation）", () => {
+  it("getContextUsage 链路：真实 SDK run 后 measured 上下文占用可读（faux 原生 usage）", async () => {
+    const { adapter, faux } = await makeLevel2Adapter();
+    faux.setResponses([fauxAssistantMessage([fauxText("预算链路验证输出")])]);
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "写一段预算测试内容",
+      projectId: "p-budget",
+      contextScope: "writing/x",
+    });
+    expect(task.status).toBe("completed");
+    const diag = adapter.sessionDiagnostics();
+    expect(diag).toHaveLength(1);
+    // faux 默认模型 contextWindow=128000（resolved Pi Model 事实源，非 hard-code）
+    expect(diag[0]?.contextWindow).toBe(128_000);
+    expect(diag[0]?.contextTokens).toBeGreaterThan(0);
+    expect(diag[0]?.contextBasis).toBe("measured");
+    expect(diag[0]?.contextPercent).toBeGreaterThan(0);
+    expect(diag[0]?.contextPercent ?? 0).toBeLessThan(100);
+    await adapter.close();
+  }, 60_000);
+
+  it("小上下文窗口：measured 占用增长触发 rotation；sessionKey 不变、后续 run 正常", async () => {
+    // contextWindow=1600, maxTokens=1024 → reserve = min(1024, ⌈1600×25%⌉=400) = 400。
+    // 每次 run 的中文 prompt（500 字 → est 750）在 fresh 会话中 750+400 < 1600 可执行；
+    // faux 实测 totalTokens 随轮次增长（序列化上下文 /4），累计超过 1600−750−400
+    // 后由 preflight 回转。
+    const { adapter, faux } = await makeLevel2Adapter({
+      faux: { models: [{ id: "fx-1", reasoning: false, contextWindow: 1_600, maxTokens: 1_024 }] },
+    });
+    faux.setResponses(
+      Array.from({ length: 8 }, (_, i) => fauxAssistantMessage([fauxText(`第${i + 1}轮输出`)])),
+    );
+    const sessionKeys = new Set<string>();
+    for (let index = 0; index < 8; index += 1) {
+      const task = await adapter.runAgent({
+        agentId: "writer",
+        task: "论".repeat(500),
+        projectId: "p-rot",
+        contextScope: "writing/x",
+      });
+      expect(task.status).toBe("completed");
+      sessionKeys.add(String(task.metadata?.["sessionKey"]));
+    }
+    // 业务 sessionKey 恒定；rotation 在容器内换代
+    expect(sessionKeys.size).toBe(1);
+    const stats = adapter.runtimeStats();
+    expect(stats.sessionRotations).toBeGreaterThanOrEqual(1);
+    expect(stats.managedSessions).toBe(1);
+    const diag = adapter.sessionDiagnostics()[0];
+    expect(diag?.generation).toBeGreaterThanOrEqual(2);
+    expect(diag?.lastRotationReason).toBe("context_budget");
+    expect(diag?.runCount).toBeGreaterThanOrEqual(1);
+    await adapter.close();
+  }, 120_000);
+
+  it("oversized 单输入（真实 SDK）：调用 provider 前结构化失败，faux 不收到任何请求", async () => {
+    const { adapter, faux } = await makeLevel2Adapter({
+      faux: { models: [{ id: "fx-1", reasoning: false, contextWindow: 1_600, maxTokens: 1_024 }] },
+    });
+    const before = faux.state.callCount;
+    const task = await adapter.runAgent({
+      agentId: "writer",
+      task: "论".repeat(1_200), // est 1800 + reserve 400 > 1600
+      projectId: "p-over",
+      contextScope: "writing/x",
+    });
+    expect(task.status).toBe("failed");
+    expect(task.errorCode).toBe("CONTEXT_BUDGET_EXCEEDED");
+    expect(faux.state.callCount).toBe(before); // provider 零调用
+    expect(adapter.runtimeStats().managedSessions).toBe(0); // 会话未创建
     await adapter.close();
   }, 60_000);
 });

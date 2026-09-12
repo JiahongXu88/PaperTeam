@@ -32,6 +32,16 @@ function makeRuntime(options: {
     activeExecutions: number;
     queuedRuns: number;
   };
+  /** M5.2 长程治理观测面（缺省 = 实现未暴露，字段不出现） */
+  governance?: {
+    busySessions: number;
+    idleSessions: number;
+    maxSessions: number;
+    sessionRotations: number;
+    sessionGcEvictions: number;
+    contextBudgetRejects: number;
+    contextPressureSessions: number;
+  };
 }): AgentRuntime {
   const healthy = options.healthy ?? true;
   const modelPhase = options.modelPhase ?? (healthy ? "configured" : "unknown");
@@ -70,6 +80,7 @@ function makeRuntime(options: {
       activeRuns: options.activeRuns ?? 0,
       managedSessions: options.managedSessions ?? 0,
       ...(options.scheduler !== undefined ? { ...options.scheduler } : {}),
+      ...(options.governance !== undefined ? { ...options.governance } : {}),
     }),
   } as AgentRuntime;
 }
@@ -129,6 +140,56 @@ describe("RuntimeStatusService（Pi 形状）", () => {
     });
     const without = await makeService(makeRuntime({})).getStatus();
     expect(without.sessions).toEqual({ activeRuns: 0, managedSessions: 0 });
+  });
+
+  it("sessions 透传 M5.2 长程治理观测面（rotation/GC/预算计数 + 逐会话诊断）", async () => {
+    const details = [
+      {
+        sessionKey: "agent:writer:paperteam-p1--writing/x",
+        role: "writer",
+        generation: 3,
+        runCount: 5,
+        createdAt: "2026-09-12T00:00:00.000Z",
+        lastUsedAt: "2026-09-12T00:10:00.000Z",
+        idleMs: 1200,
+        busy: false,
+        queueDepth: 0,
+        contextTokens: 41000,
+        contextWindow: 128000,
+        contextBasis: "measured",
+        contextPercent: 32,
+        needsRotation: false,
+        lastRotationReason: "context_budget",
+      },
+    ];
+    const runtime = makeRuntime({
+      activeRuns: 1,
+      managedSessions: 1,
+      governance: {
+        busySessions: 0,
+        idleSessions: 1,
+        maxSessions: 16,
+        sessionRotations: 2,
+        sessionGcEvictions: 3,
+        contextBudgetRejects: 1,
+        contextPressureSessions: 0,
+      },
+    });
+    (runtime as { sessionDiagnostics?: () => unknown }).sessionDiagnostics = () => details;
+    const status = await makeService(runtime).getStatus();
+    expect(status.sessions).toMatchObject({
+      activeRuns: 1,
+      managedSessions: 1,
+      busySessions: 0,
+      idleSessions: 1,
+      sessionRotations: 2,
+      sessionGcEvictions: 3,
+      contextBudgetRejects: 1,
+    });
+    expect(status.sessions.details).toEqual(details);
+    // 实现未暴露 sessionDiagnostics 时 details 缺省（不伪造）
+    const plain = await makeService(makeRuntime({})).getStatus();
+    expect(plain.sessions.details).toBeUndefined();
   });
 
   it("Runtime 健康 ≠ 模型就绪：无 Key 时 runtime=healthy、model=not_configured", async () => {

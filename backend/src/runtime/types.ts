@@ -144,6 +144,9 @@ export interface AgentTask {
   /**
    * 结构化错误码（failed / timed_out 终态携带；completed/cancelled 不携带）。
    * timed_out：INIT_TIMEOUT / SESSION_TIMEOUT / QUEUE_TIMEOUT / EXECUTION_TIMEOUT。
+   * M5.2 新增：CONTEXT_BUDGET_EXCEEDED（单次输入 + 输出预留超上下文窗口，
+   * 调用 provider 前拒绝）、RUNTIME_SESSION_CAPACITY（受管会话达硬上限且
+   * 无可淘汰空闲会话）。
    */
   errorCode?: string;
   /** 超时归属阶段（仅 timed_out 终态携带，见 AgentTimeoutPhase） */
@@ -295,6 +298,8 @@ export interface AgentRuntime {
   readonly resolvedModel?: string;
   /** 在途 run 与受管会话数量（进程内诊断） */
   runtimeStats?(): RuntimeSessionStats;
+  /** 逐会话生命周期诊断（M5.2；实现未暴露时缺省） */
+  sessionDiagnostics?(): SessionDiagnosticEntry[];
 }
 
 export interface RuntimeModelStatus {
@@ -321,4 +326,49 @@ export interface RuntimeSessionStats {
   activeExecutions?: number;
   /** 当前已受理、尚未开始执行的 run 数（全部执行前等待合计） */
   queuedRuns?: number;
+  /**
+   * M5.2 长程治理观测面（任务 J/K；实现未暴露时缺省）：
+   * busy = 有在途/排队/到达中任务的会话数；idle 与之互补；
+   * sessionRotations / sessionGcEvictions 为累计计数；
+   * contextBudgetRejects 为 CONTEXT_BUDGET_EXCEEDED 累计拒绝数；
+   * contextPressureSessions 为最近快照上下文占用 >= 75% 的会话数。
+   */
+  busySessions?: number;
+  idleSessions?: number;
+  maxSessions?: number;
+  sessionRotations?: number;
+  sessionGcEvictions?: number;
+  contextBudgetRejects?: number;
+  contextPressureSessions?: number;
+}
+
+/**
+ * 逐会话生命周期诊断（M5.2 任务 K2；只含计数与时间，不含 prompt 内容 /
+ * 工具输出 / 密钥 / 工作区路径）。经 AgentRuntime.sessionDiagnostics 暴露，
+ * GET /api/runtime/status 以 sessions.details 透传（有界：<= maxSessions）。
+ */
+export interface SessionDiagnosticEntry {
+  sessionKey: string;
+  role: string;
+  /** 会话 generation（从 1 开始；rotation +1，业务 sessionKey 不变） */
+  generation: number;
+  /** 本 generation 内真实执行的 run 数 */
+  runCount: number;
+  /** 逻辑会话创建时间（ISO 8601；rotation 不重置） */
+  createdAt: string;
+  lastUsedAt: string;
+  /** 距最近一次真实执行的毫秒数 */
+  idleMs: number;
+  /** 是否忙（active / queued / 到达中任一） */
+  busy: boolean;
+  queueDepth: number;
+  /** 当前上下文占用（快照；null = unknown，绝不伪装成 0） */
+  contextTokens: number | null;
+  contextWindow: number | null;
+  /** 快照基准：measured（provider 实测）/ estimated（CJK 感知估算）/ unknown */
+  contextBasis: "measured" | "estimated" | "unknown";
+  contextPercent: number | null;
+  needsRotation: boolean;
+  /** 最近一次 rotation 原因（未回转时缺省） */
+  lastRotationReason?: string;
 }
