@@ -30,6 +30,14 @@ jobs:
         run: |
           npm --prefix backend ci --no-audit --no-fund
           npm --prefix frontend ci --no-audit --no-fund
+      # 真实 PDF 工具链测试（pdfToolchain / referenceExtraction）需要 Python + pymupdf：
+      # 与 Docker 镜像同一依赖（pymupdf>=1.24），不 mock
+      - name: Install PDF toolchain (python3 + pymupdf)
+        run: |
+          python3 --version
+          python3 -m pip install --user --break-system-packages "pymupdf>=1.24,<2" \
+            || python3 -m pip install --user "pymupdf>=1.24,<2"
+          python3 -c "import pymupdf; print('pymupdf', pymupdf.__version__)"
       - name: Build
         run: npm run build
       - name: Typecheck
