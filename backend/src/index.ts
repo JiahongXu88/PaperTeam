@@ -71,11 +71,14 @@ export async function startBackend(): Promise<void> {
   // PROVENANCE）到 PaperTeam 数据目录的 Skill Store；按角色注入 Pi Session。
   const skillRegistry = new SkillRegistry({
     storeRoot: join(config.runtimeRoot, "skills"),
+    disabledSkillIds: config.skills.disabledSkillIds,
     log: (message) => console.log(message),
   });
   const installedSkills = await skillRegistry.ensureInstalled();
   console.log(
-    `  skills:       ${installedSkills.length} 个已安装（${installedSkills.map((s) => s.id).join(", ")}）`,
+    `  skills:       ${installedSkills.length} 个已安装（${installedSkills
+      .map((s) => `${s.id}@${s.contentHash.slice(0, 8)}${s.disabledByConfig ? "(disabled)" : ""}`)
+      .join(", ")}）`,
   );
 
   // 受控学术检索工具（paper-search skill 的工具面）：闭包延迟引用 stack，
@@ -138,8 +141,9 @@ export async function startBackend(): Promise<void> {
             ? { outputReserveTokens: config.pi.outputReserveTokens }
             : {}),
           modelRuntime,
-          // 只有 assigned 且 installed 的 skill 进入对应角色会话（progressive disclosure）
-          roleSkillDirs: (role) => skillRegistry.skillDirsForAgent(role),
+          // 只有 role + contextScope 路由到、installed 且完整性 ok 的 skill 版本快照进入
+          // 对应会话（progressive disclosure；M5.3 版本固定于 generation）
+          roleSkills: (role, scope) => skillRegistry.skillAssignmentsFor(role, scope),
           roleCustomTools: (role) =>
             (role === "researcher" || role === "citation") && stackRef !== undefined
               ? createScholarlyTools(stackRef.citationIntegrity.scholarlyResolver)

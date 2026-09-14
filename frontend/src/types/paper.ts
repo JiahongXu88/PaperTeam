@@ -215,13 +215,20 @@ export interface SkillView {
   name: string;
   originalDescription: string;
   chineseSummary?: string;
+  /** PaperTeam 撰写的用途说明（审计产物，不依赖模型） */
+  purpose?: string;
   sourceType: "builtin" | "external" | "local";
   sourceRepo?: string;
+  /** pin 的完整 40 位 commit SHA */
   sourceRevision?: string;
+  sourceUrl?: string;
+  upstreamPath?: string;
+  upstreamContentHash?: string;
   version?: string;
   license?: string;
   installedPath: string;
   contentHash: string;
+  bundleHash?: string;
   status: "installed" | "disabled";
   installedAt: string;
   updatedAt: string;
@@ -229,9 +236,69 @@ export interface SkillView {
   allowedTools: string[];
   summaryStatus: "ok" | "summary_pending" | "stale";
   wrapperNote?: string;
+  /** 现场完整性（M5.3）：tampered 时不注入任何会话 */
+  integrity: "ok" | "tampered";
+  /** 由 PAPERTEAM_DISABLED_SKILLS 禁用（不注入） */
+  disabledByConfig: boolean;
+  update?: SkillUpdateStatus;
+}
+
+export interface SkillUpdateStatus {
+  available: boolean;
+  currentHash: string;
+  candidateHash: string;
+  currentRevision?: string;
+  candidateRevision?: string;
+}
+
+/** approved catalog 条目（仓库内审计 seed；可能尚未安装） */
+export interface SkillCatalogEntry {
+  id: string;
+  name: string;
+  purpose?: string;
+  sourceRepo?: string;
+  sourceRevision?: string;
+  license?: string;
+  installed: boolean;
 }
 
 export interface SkillBindingView {
   agentRole: string;
+  /** contextScope 前缀（缺省 = 角色默认绑定） */
+  contextScope?: string;
   skillIds: string[];
+}
+
+export interface SkillFileChangeView {
+  path: string;
+  status: "added" | "removed" | "modified" | "unchanged";
+  currentBytes?: number;
+  candidateBytes?: number;
+}
+
+export interface SkillUpdatePreview {
+  id: string;
+  currentHash: string;
+  candidateHash: string;
+  currentRevision?: string;
+  candidateRevision?: string;
+  currentBundleHash?: string;
+  candidateBundleHash: string;
+  files: SkillFileChangeView[];
+  skillMdDiff: { added: number; removed: number; hunks: string[]; truncated: boolean };
+}
+
+export interface SkillProvenanceView {
+  id: string;
+  contentHash: string;
+  provenance: string;
+  license: string;
+  upstreamSnapshot?: { file: string; sha256: string; matchesRecorded: boolean | null };
+}
+
+export interface SkillsResponse {
+  skills: SkillView[];
+  catalog: SkillCatalogEntry[];
+  bindings: SkillBindingView[];
+  allowedContextScopes: string[];
 }

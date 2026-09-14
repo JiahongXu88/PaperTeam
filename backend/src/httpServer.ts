@@ -28,6 +28,7 @@ import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
 import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
 import type { SkillRegistry } from "./skills/SkillRegistry.js";
+import { ALLOWED_CONTEXT_SCOPES } from "./skills/routing.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
@@ -198,26 +199,38 @@ async function handleRequest(
     return;
   }
 
-  // ---- /api/skills（全局 Skill 资源：只读 + 摘要重生成） ----
+  // ---- /api/skills（全局 Skill 资源：approved catalog 只读 + 受控 install/update + 摘要重生成） ----
   if (pathname === "/api/skills" || pathname.startsWith("/api/skills/")) {
     if (services.skills === undefined) {
       sendJson(res, 503, { status: "unavailable", detail: "Skill Registry 未配置" });
       return;
     }
-    const skillMatch = /^\/api\/skills\/([a-z0-9][a-z0-9-]*)(\/summary)?$/.exec(pathname);
+    const skillMatch =
+      /^\/api\/skills\/([a-z0-9][a-z0-9-]*)(\/(summary|provenance|update-preview|update|install))?$/.exec(
+        pathname,
+      );
     if (skillMatch === null) {
-      if (method === "GET") {
-        const skills = await services.skills.list();
-        sendJson(res, 200, { skills, bindings: services.skills.bindings() });
+      if (pathname === "/api/skills") {
+        if (method === "GET") {
+          const [skills, catalog] = await Promise.all([services.skills.list(), services.skills.catalog()]);
+          sendJson(res, 200, {
+            skills,
+            catalog,
+            bindings: services.skills.bindings(),
+            allowedContextScopes: ALLOWED_CONTEXT_SCOPES,
+          });
+          return;
+        }
+        // 没有开放安装面：POST /api/skills（任意 URL / 路径）不存在
+        res.setHeader("Allow", "GET");
+        sendJson(res, 405, { status: "method_not_allowed", method });
         return;
       }
-      res.setHeader("Allow", "GET");
-      sendJson(res, 405, { status: "method_not_allowed", method });
-      return;
+      throw new NotFoundError("路由", pathname);
     }
     const skillId = skillMatch[1] ?? "";
-    const isSummary = skillMatch[2] === "/summary";
-    if (!isSummary) {
+    const action = skillMatch[3];
+    if (action === undefined) {
       if (method !== "GET") {
         sendMethodNotAllowed(res, "GET", method);
         return;
@@ -229,10 +242,54 @@ async function handleRequest(
       sendJson(res, 200, { skill });
       return;
     }
+    if (action === "provenance") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return;
+      }
+      sendJson(res, 200, { provenance: await services.skills.provenance(skillId) });
+      return;
+    }
+    if (action === "update-preview") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return;
+      }
+      sendJson(res, 200, { preview: await services.skills.previewUpdate(skillId) });
+      return;
+    }
     if (method !== "POST") {
       sendMethodNotAllowed(res, "POST", method);
       return;
     }
+    if (action === "install") {
+      // 只接受 approved catalog 中的 seed id；请求体不接受 url / path 等任何来源字段
+      const body = await readOptionalJsonBody(req);
+      if (body["url"] !== undefined || body["path"] !== undefined || body["repo"] !== undefined) {
+        throw new BusinessError("INVALID_REQUEST", "Skill 只能从 approved catalog 安装，不接受 url / path / repo 输入");
+      }
+      const skill = await services.skills.install(skillId);
+      sendJson(res, 201, { skill });
+      return;
+    }
+    if (action === "update") {
+      const body = await readOptionalJsonBody(req);
+      const expected = typeof body["candidateHash"] === "string" ? body["candidateHash"] : undefined;
+      if (expected !== undefined) {
+        // 应用前确认用户看到的候选 hash 就是当前 seed（防止预览与应用之间 seed 变化）
+        const preview = await services.skills.previewUpdate(skillId);
+        if (preview.candidateHash !== expected) {
+          throw new BusinessError(
+            "INVALID_REQUEST",
+            `候选版本已变化（预览 ${expected.slice(0, 12)} ≠ 当前 ${preview.candidateHash.slice(0, 12)}），请重新预览`,
+          );
+        }
+      }
+      const skill = await services.skills.applyUpdate(skillId);
+      sendJson(res, 200, { skill });
+      return;
+    }
+    // summary
     if (services.skillSummaries === undefined) {
       sendJson(res, 503, { status: "unavailable", detail: "Skill 摘要服务未配置" });
       return;

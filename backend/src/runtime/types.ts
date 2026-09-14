@@ -165,8 +165,47 @@ export interface AgentTask {
    * 计算历史 turn）；provider 未返回 usage 时整个字段缺省，不伪造 0 成本。
    */
   usage?: AgentRunUsage;
+  /**
+   * 本 run 所在会话 generation 注入的 Skill 版本与真实访问观测（M5.3）。
+   * 只有进入过会话的任务携带（排队即取消 / 会话阶段超时的任务缺省）。
+   * assigned ≠ accessed：assigned 是「放进 available_skills」的事实；accessed
+   * 只在 Runtime 观测到 read 工具真实读取了 Skill 快照文件时记录。
+   */
+  skills?: AgentTaskSkills;
   /** 诊断元数据（内容由 Runtime 实现决定，仅用于排障） */
   metadata?: Record<string, unknown>;
+}
+
+/** 注入会话的 Skill 版本引用（可审计最小单位；不含绝对路径） */
+export interface AssignedSkillRef {
+  id: string;
+  /** pin 的上游 commit SHA（external skill 携带） */
+  sourceRevision?: string;
+  /** SKILL.md 内容 hash（版本快照键） */
+  contentHash: string;
+}
+
+/**
+ * Runtime 注入用的 Skill 版本引用（AssignedSkillRef + 不可变快照目录）。
+ * 由 SkillRegistry 解析（role + contextScope）；Runtime 只消费，不理解 Skill 语义。
+ */
+export interface RuntimeSkillAssignment extends AssignedSkillRef {
+  /** 不可变版本快照目录（绝对路径；Pi additionalSkillPaths 的输入） */
+  dir: string;
+}
+
+/**
+ * 任务级 Skill 观测（M5.3）：
+ * - assigned：本 generation 注入的 Skill 版本（可能为空数组 = 该角色 / scope 无绑定）；
+ * - accessBasis=tool_events：本 run 收到了 Pi 事件流，accessed 是 read 工具真实
+ *   命中 Skill 快照文件的 id 集合（空数组 = 确实未读取）；
+ * - accessBasis=unknown：本 run 未观测到任何 Pi 事件（无法区分「未用工具」与
+ *   「事件未送达」），accessed 为 null——绝不伪造 accessed。
+ */
+export interface AgentTaskSkills {
+  assigned: AssignedSkillRef[];
+  accessed: string[] | null;
+  accessBasis: "tool_events" | "unknown";
 }
 
 /**
@@ -371,4 +410,8 @@ export interface SessionDiagnosticEntry {
   needsRotation: boolean;
   /** 最近一次 rotation 原因（未回转时缺省） */
   lastRotationReason?: string;
+  /** 会话的归一化 contextScope（无 scope 会话缺省） */
+  contextScope?: string;
+  /** 当前 generation 注入的 Skill 版本（M5.3；无绑定时为空数组） */
+  assignedSkills?: AssignedSkillRef[];
 }

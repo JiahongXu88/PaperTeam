@@ -1,6 +1,9 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-12（**M5.2 Long-Running Governance ✅ COMPLETE 收口**：
+> 更新日期：2026-09-14（**M5.3 Controlled Academic Skill Integration ✅
+> COMPLETE**：三个学术 Skill 审计入库 + role/contextScope 路由 + 会话级版本
+> 固定 + assigned/accessed 观测 + 受控 install/update + Skills 设置页；
+> 09-12 **M5.2 Long-Running Governance ✅ COMPLETE 收口**：
 > context budget / session rotation / TTL·GC·容量 / 观测面与安全自愈；
 > 09-11 M5.2 全局并发与有界受理、M5.1 两批完成、**M5 启动：M5.0 计划
 > 冻结**；2026-09-10 **M4.8 Product Closure 完成，M4 ✅ COMPLETE**；同日
@@ -15,8 +18,8 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 
 **M5 — Chinese Academic Quality & Long-Running Reliability（🚧 进行中，
 2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
-中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、Skill 受控
-接入（M5.3）、Style Revision Loop（M5.4）、单机 Linux / Docker 部署
+中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
+接入（M5.3 ✅）、Style Revision Loop（M5.4）、单机 Linux / Docker 部署
 （M5.5）、真实论文 A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
@@ -232,6 +235,77 @@ Runtime 层最后一道全局 admission / execution guard 进驻
   Level 2 用 faux provider（原生 usage 语义）验证 context usage 读取 /
   rotation / dispose-重建，无需真实模型烧 token。auto-compaction 全程
   保持关闭（`SettingsManager.inMemory({compaction:{enabled:false}})`）。
+
+**M5.3 Controlled Academic Skill Integration（✅ 2026-09-14）**：范围先在
+M5_PLAN 重定义（从「install / update / diff / 绑定 UI」产品化表面收敛为「三个
+审计、固定版本、学术适配的 Skill 真正进入正确的 Writer / Reviewer 工作流」），
+然后落地：
+
+- **三个 Academic Skill 审计入库**（`backend/skills/seed/`）：
+  `academic-writing-zh`（← K-Dense-AI/scientific-agent-skills
+  `skills/scientific-writing` @ `0b2afe68a5f9379097ad815e028af664f1e222b7`，
+  MIT © K-Dense Inc.）、`academic-review`（← 同仓库 `skills/peer-review`，
+  同 SHA）、`academic-style-zh`（← op7418/Humanizer-zh @
+  `91f3d394db8419c20d67ebe22a96cf8fee0a404b`，MIT © 歸藏）。每个 seed：
+  PaperTeam 适配 SKILL.md（中文工科写作 / 可执行审稿 finding / 中文学术
+  表达；不是 AI detector；不建立第二套事实系统；不使用上游 Python 脚本；
+  不放宽 Reviewer 只读）+ skill.json（`upstreamPath` / `upstreamContentHash`
+  / `purpose`）+ LICENSE 原件 + PROVENANCE.md（commit / 日期 / 源路径 /
+  修改内容 / 上游署名建议如实记录但不自动写进用户论文 bibliography）+
+  UPSTREAM_SKILL.md verbatim 快照。三个 seed 的 SKILL.md 均显式声明不向用户
+  论文参考文献插入上游引用（测试断言）。
+- **SkillRegistry → 受控 Skill Store**：`installed/<id>/`（skill.json + 当前
+  副本）+ `versions/<id>/<contentHash>/`（不可变快照 = 注入路径）。seed 校验
+  拒绝：非 40 位 SHA revision（main / latest / v2）、缺 LICENSE、缺
+  PROVENANCE.md、UPSTREAM_SKILL.md 与记录 hash 不符；hash 行尾归一化
+  （Windows autocrlf 与 Linux 一致）；`bundleHash` 覆盖整目录。篡改
+  （installed 或快照与记录不符）→ `integrity=tampered`、不注入、
+  `ensureInstalled` 从完整一方自愈。已安装 skill 的 seed 变化**不自动
+  应用**（`update.available`），`previewUpdate`（current / candidate hash +
+  revision + 文件级 diff + SKILL.md 行 diff，有界）→ `applyUpdate`（新快照 +
+  切指针 + 安装后重校验）。`catalog()` = approved seed 列表；`install(id)`
+  只接受 seed id。`PAPERTEAM_DISABLED_SKILLS` 配置禁用（可见不注入）。
+- **role + contextScope 路由**（`skills/routing.ts`，最长前缀优先，role-only
+  回退默认绑定）：researcher→paper-search；citation→paper-search +
+  verify-citations；reviewer 默认 / `review/fact`→verify-citations、
+  `review/academic` / `review/section`→academic-review、`review/style`→
+  academic-style-zh；writer 默认 / outline / sections / revision /
+  improvement-plan→academic-writing-zh、`writing/style-polish`→
+  academic-writing-zh + academic-style-zh、`writing/repair`→无。三个
+  Reviewer lens 不拿相同 Skill 集；旧 `skillDirsForAgent(role)` 继续有效。
+- **会话级版本固定 + assigned ≠ accessed**（PiRuntimeAdapter）：新增
+  `roleSkills(role, scope)` 选项；`createPiSession` 在会话创建 / rotation
+  边界解析一次并存入 `ManagedSession.assignedSkills`（generation 内不变，
+  快照目录不可变，运行中任务不会读到新版）；任务终态新增可选
+  `AgentTask.skills = { assigned[{id, sourceRevision, contentHash}],
+  accessed, accessBasis }`——accessed 只在 `tool_execution_start(read)` 的
+  path 落在快照目录内时记录，grep / find 不算；本 run 未收到任何 Pi 事件
+  → `accessBasis=unknown`、`accessed=null`（绝不伪造）。
+  `sessionDiagnostics` 暴露 `contextScope` / `assignedSkills`。契约 v2 只加
+  可选字段。
+- **HTTP**：`GET /api/skills` → `{skills, catalog, bindings(role+scope),
+  allowedContextScopes}`；`GET /api/skills/:id/provenance`；
+  `GET /api/skills/:id/update-preview`；`POST /api/skills/:id/install`
+  （非 approved id 404；带 url / path / repo 400）；`POST /api/skills/:id/
+  update`（body.candidateHash 与当前 seed 不符 400）；`POST /api/skills`
+  405（无任意 URL 安装面）。
+- **Skills 页（最小 Skill Settings UI）**：用途 / 来源 / 固定 revision /
+  content hash 摘要 / 许可证 / 绑定 chips（role · contextScope）/ 状态 chips
+  （有可用更新 / 配置禁用 / 内容被改写）；「预览更新」→ hash / revision /
+  文件表 / 行 diff →「应用更新」（必须先预览，携带预览候选 hash）；
+  approved catalog 未安装项「安装」；「查看来源与许可」拉取 PROVENANCE /
+  LICENSE / 上游快照校验；绑定表新增 contextScope 列。没有 URL 输入框、
+  没有 marketplace。
+- **测试**：backend 新增 `test/skills/academicSkills.test.ts`（18：路由 5、
+  seed 校验 4、install / update / 禁用 / diff 4、adapter 版本固定 +
+  三 lens 不同 Skill + accessed 观测 3、HTTP 2）+ 更新
+  `skillRegistry.test.ts`（9）；frontend 新增 `SkillsPageM53.test.tsx`（3）。
+  Backend 652 → 670 passed（7 skipped 不变），Frontend 161 → 164 passed；
+  build / typecheck / test 全绿。
+- **如实边界**：绑定编辑 UI 未做（路由为代码内控常量，只读展示；如放开只能
+  在 approved catalog + `ALLOWED_CONTEXT_SCOPES` 内选）；旧版本快照保留不
+  GC（纯文本、可审计）；accessed 观测依赖 Pi `read` 工具事件，Agent 若用
+  其他方式读取不会计入（宁缺勿假）；Skill 是否改善产出质量留 M5.6 A/B。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

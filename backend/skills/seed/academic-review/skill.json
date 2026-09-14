@@ -1,0 +1,21 @@
+{
+  "id": "academic-review",
+  "name": "academic-review",
+  "originalDescription": "Prepare evidence-bounded, constructive peer-review drafts and structured manuscript assessments. Use for authorized review of scientific manuscripts, protocols, preprints, or research proposals; reporting-guideline selection; claim–evidence checks; methods, statistics, reproducibility, ethics, figure/table, and citation critique; or revision-response planning.",
+  "purpose": "academic Reviewer 与分章节审阅的审稿方法：finding 必须含位置 / 问题 / 依据 / 影响 / 建议动作 / 严重度，可直接交给 Writer 执行；引用真伪仍由 Citation 核验负责；Reviewer 只读。",
+  "sourceType": "external",
+  "sourceRepo": "K-Dense-AI/scientific-agent-skills",
+  "sourceRevision": "0b2afe68a5f9379097ad815e028af664f1e222b7",
+  "sourceUrl": "https://github.com/K-Dense-AI/scientific-agent-skills",
+  "upstreamPath": "skills/peer-review/SKILL.md",
+  "upstreamContentHash": "3422beafc240aa7d2703e71fe16e3400269a5ea17045d8b390a30efe58c3de67",
+  "version": "2.2+paperteam.1",
+  "license": "MIT",
+  "status": "installed",
+  "assignedAgents": [
+    "reviewer"
+  ],
+  "allowedTools": [],
+  "summaryStatus": "summary_pending",
+  "wrapperNote": "PaperTeam 学术适配版：保留上游证据边界与可执行 finding 原则，改写为 academic lens / 分章节审阅方法；不使用上游 Python 脚本，Reviewer 保持只读，引用真伪由 Citation 核验负责；上游原件保留于 UPSTREAM_SKILL.md"
+}

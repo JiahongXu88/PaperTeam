@@ -1,0 +1,22 @@
+{
+  "id": "academic-style-zh",
+  "name": "academic-style-zh",
+  "originalDescription": "去除文本中的 AI 生成痕迹。适用于编辑或审阅文本，使其听起来更自然、更像人类书写。基于维基百科的\"AI 写作特征\"综合指南。检测并修复以下模式：夸大的象征意义、宣传性语言、以 -ing 结尾的肤浅分析、模糊的归因、破折号过度使用、三段式法则、AI 词汇、否定式排比、过多的连接性短语。",
+  "purpose": "style Reviewer 与 style-only 润色的中文学术表达原则：定位空泛总结 / 重复 / 机械排比 / 模板化 / 模糊归因 / 夸大 / 宣传式 / 翻译腔 / 冗余过渡 / 术语漂移；不是 AI 检测器；修改不得改变数值、单位、公式、citation key、术语、否定与比较方向、结论强度。",
+  "sourceType": "external",
+  "sourceRepo": "op7418/Humanizer-zh",
+  "sourceRevision": "91f3d394db8419c20d67ebe22a96cf8fee0a404b",
+  "sourceUrl": "https://github.com/op7418/Humanizer-zh",
+  "upstreamPath": "SKILL.md",
+  "upstreamContentHash": "e0edbdbc9008644263d5573fb59beac95794e188fd99c35012bfd79e9ae4beeb",
+  "version": "1.0+paperteam.1",
+  "license": "MIT",
+  "status": "installed",
+  "assignedAgents": [
+    "reviewer",
+    "writer"
+  ],
+  "allowedTools": [],
+  "summaryStatus": "summary_pending",
+  "wrapperNote": "PaperTeam 学术适配版：只保留适合中文学术写作的检测与修订原则，明确移除「像人」改写目标（第一人称 / 个人感受 / 题外话 / 故意混乱 / 口语 / 任意细节 / 绕过检测器），新增数值 / 单位 / 公式 / citation key / 术语 / 否定与比较方向 / 结论强度硬约束；不输出 AI 概率；上游原件保留于 UPSTREAM_SKILL.md"
+}

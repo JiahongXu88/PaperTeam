@@ -14,6 +14,10 @@ vi.mock("../src/api/skills.js", () => ({
   listSkills: vi.fn(),
   getSkill: vi.fn(),
   regenerateSkillSummary: vi.fn(),
+  getSkillProvenance: vi.fn(),
+  getSkillUpdatePreview: vi.fn(),
+  applySkillUpdate: vi.fn(),
+  installSkill: vi.fn(),
 }));
 
 vi.mock("../src/api/paper.js", () => ({
@@ -51,6 +55,8 @@ const skills: SkillView[] = [
     assignedAgents: ["citation", "reviewer"],
     allowedTools: [],
     summaryStatus: "ok",
+    integrity: "ok",
+    disabledByConfig: false,
   },
   {
     id: "paper-search",
@@ -69,6 +75,8 @@ const skills: SkillView[] = [
     allowedTools: ["search_papers", "lookup_paper"],
     summaryStatus: "summary_pending",
     wrapperNote: "PaperTeam 兼容版",
+    integrity: "ok",
+    disabledByConfig: false,
   },
 ];
 
@@ -80,6 +88,8 @@ describe("SkillsPage（M4.3.7）", () => {
         { agentRole: "citation", skillIds: ["paper-search", "verify-citations"] },
         { agentRole: "writer", skillIds: [] },
       ],
+      catalog: [],
+      allowedContextScopes: [],
     });
     renderWithProviders(<SkillsPage />, { route: "/skills" });
 
@@ -95,7 +105,7 @@ describe("SkillsPage（M4.3.7）", () => {
   });
 
   it("不显示未实现的 Install / Uninstall 按钮", async () => {
-    vi.mocked(listSkills).mockResolvedValue({ skills, bindings: [] });
+    vi.mocked(listSkills).mockResolvedValue({ skills, bindings: [], catalog: [], allowedContextScopes: [] });
     renderWithProviders(<SkillsPage />, { route: "/skills" });
     await screen.findByText("verify-citations");
     expect(screen.queryByRole("button", { name: /install/i })).not.toBeInTheDocument();

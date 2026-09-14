@@ -136,6 +136,16 @@ export interface AppConfig {
   citation: CitationConfig;
   review: ReviewConfig;
   pdf: PdfConfig;
+  skills: SkillsConfig;
+}
+
+/** Skill Registry 配置（M5.3） */
+export interface SkillsConfig {
+  /**
+   * 由 PAPERTEAM_DISABLED_SKILLS（逗号分隔 skill id）禁用的 Skill：仍显示在
+   * Skills 页但不注入任何会话（A/B 验收「academic Skills disabled」的开关）。
+   */
+  disabledSkillIds: string[];
 }
 
 export interface AgentIds {
@@ -373,6 +383,12 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: REVIEW_SECTION_LIMIT_MAX,
       }),
+    },
+    skills: {
+      disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")
+        .split(",")
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => /^[a-z0-9][a-z0-9-]*$/.test(item)),
     },
     pdf: {
       ...(readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") !== undefined

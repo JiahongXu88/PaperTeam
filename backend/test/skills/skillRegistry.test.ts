@@ -1,7 +1,8 @@
 /**
- * M4.3.6 Skill Registry 测试：seed 安装（pin revision/LICENSE/PROVENANCE）、
- * Pi 兼容性（loadSkillsFromDir 可发现）、角色绑定、中文简介（Fake Runtime）、
- * stale 检测、HTTP API、PiRuntimeAdapter 注入 wiring。
+ * M4.3.6 Skill Registry 测试（M5.3 起按受控 Skill Store 语义更新）：seed 安装
+ * （pin revision/LICENSE/PROVENANCE）、Pi 兼容性（loadSkillsFromDir 可发现）、
+ * 角色绑定、中文简介（Fake Runtime）、stale / 篡改自愈、HTTP API、
+ * PiRuntimeAdapter 注入 wiring。
  */
 
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -12,10 +13,19 @@ import { loadSkillsFromDir } from "@earendil-works/pi-coding-agent";
 
 import { SkillRegistry } from "../../src/skills/SkillRegistry.js";
 import { SkillSummaryService } from "../../src/skills/SkillSummaryService.js";
+import { skillContentHash } from "../../src/skills/types.js";
 import type { AgentRuntime, AgentTask, RuntimeHealth } from "../../src/runtime/types.js";
 import { PiRuntimeAdapter } from "../../src/runtime/PiRuntimeAdapter.js";
 import { startTestStack, scriptedIdeaRuntime } from "../helpers/testStack.js";
-import { sha256Hex } from "../../src/util/hash.js";
+
+/** approved catalog（仓库内审计 seed）的全集 */
+export const CATALOG_IDS = [
+  "academic-review",
+  "academic-style-zh",
+  "academic-writing-zh",
+  "paper-search",
+  "verify-citations",
+] as const;
 
 class FakeSummaryRuntime implements AgentRuntime {
   readonly provider = "pi" as const;
@@ -80,15 +90,18 @@ describe("M4.3.6 SkillRegistry（seed 安装 / provenance / 绑定 / Pi 兼容�
     await rm(root, { recursive: true, force: true });
   });
 
-  it("ensureInstalled：两项 Academic Skill 入库，provenance/license 文件齐全", async () => {
+  it("ensureInstalled：approved catalog 全部入库，provenance/license 文件齐全、revision 为完整 SHA", async () => {
     const installed = await registry.ensureInstalled();
-    expect(installed.map((s) => s.id).sort()).toEqual(["paper-search", "verify-citations"]);
+    expect(installed.map((s) => s.id).sort()).toEqual([...CATALOG_IDS]);
     for (const skill of installed) {
       expect(skill.sourceType).toBe("external");
       expect(skill.license).toBe("MIT");
       expect(skill.sourceRevision).toMatch(/^[0-9a-f]{40}$/);
       expect(skill.status).toBe("installed");
       expect(skill.summaryStatus).toBe("summary_pending");
+      expect(skill.integrity).toBe("ok");
+      expect(skill.bundleHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(skill.update?.available).toBe(false);
     }
     const byId = new Map(installed.map((s) => [s.id, s]));
     expect(byId.get("verify-citations")!.sourceRepo).toBe(
@@ -97,24 +110,25 @@ describe("M4.3.6 SkillRegistry（seed 安装 / provenance / 绑定 / Pi 兼容�
     expect(byId.get("paper-search")!.sourceRepo).toBe("openags/paper-search-mcp");
     expect(byId.get("paper-search")!.wrapperNote).toBeDefined();
 
-    // provenance / license 文件随目录复制
-    for (const id of ["paper-search", "verify-citations"]) {
-      const dir = join(root, "installed", id);
-      const license = await readFile(join(dir, "LICENSE"), "utf8");
-      expect(license).toContain("MIT");
-      const provenance = await readFile(join(dir, "PROVENANCE.md"), "utf8");
-      expect(provenance).toContain("Pin revision");
+    // provenance / license 文件随目录复制（installed 副本 + 不可变版本快照）
+    for (const skill of installed) {
+      for (const dir of [join(root, "installed", skill.id), registry.versionDir(skill.id, skill.contentHash)]) {
+        const license = await readFile(join(dir, "LICENSE"), "utf8");
+        expect(license).toContain("MIT");
+        const provenance = await readFile(join(dir, "PROVENANCE.md"), "utf8");
+        expect(provenance).toContain("Pin revision");
+      }
     }
     // wrapper 保留上游原件
     const upstream = await readFile(join(root, "installed", "paper-search", "UPSTREAM_SKILL.md"), "utf8");
     expect(upstream).toContain("paper-search <command>");
   });
 
-  it("contentHash 与 SKILL.md 一致；frontmatter 名称/描述解析正确", async () => {
+  it("contentHash 与 SKILL.md 一致（行尾归一化）；frontmatter 名称/描述解析正确", async () => {
     const skills = await registry.list();
     for (const skill of skills) {
       const skillMd = await readFile(join(root, skill.installedPath, "SKILL.md"), "utf8");
-      expect(skill.contentHash).toBe(sha256Hex(skillMd));
+      expect(skill.contentHash).toBe(skillContentHash(skillMd));
     }
     const paperSearch = skills.find((s) => s.id === "paper-search")!;
     expect(paperSearch.name).toBe("paper-search");
@@ -123,34 +137,40 @@ describe("M4.3.6 SkillRegistry（seed 安装 / provenance / 绑定 / Pi 兼容�
     expect(verify.originalDescription).toContain("citations");
   });
 
-  it("幂等：重复 ensureInstalled 不改 installedAt；绑定的 skill 目录正确", async () => {
+  it("幂等：重复 ensureInstalled 不改 installedAt；role-only 绑定指向不可变版本快照目录", async () => {
     const before = await registry.list();
     await registry.ensureInstalled();
     const after = await registry.list();
     expect(after.map((s) => s.installedAt)).toEqual(before.map((s) => s.installedAt));
 
-    // 角色绑定（progressive disclosure 的注入面）
-    expect(registry.skillDirsForAgent("citation").sort()).toEqual([
-      join(root, "installed", "paper-search"),
-      join(root, "installed", "verify-citations"),
-    ]);
-    expect(registry.skillDirsForAgent("researcher")).toEqual([join(root, "installed", "paper-search")]);
-    expect(registry.skillDirsForAgent("reviewer")).toEqual([join(root, "installed", "verify-citations")]);
-    expect(registry.skillDirsForAgent("writer")).toEqual([]);
-    expect(registry.bindings()).toContainEqual({ agentRole: "citation", skillIds: ["paper-search", "verify-citations"] });
+    const dirOf = (id: string): string => {
+      const skill = after.find((s) => s.id === id)!;
+      return registry.versionDir(id, skill.contentHash);
+    };
+    // 角色绑定（progressive disclosure 的注入面；旧 role-only 调用继续有效）
+    expect(registry.skillDirsForAgent("citation").sort()).toEqual(
+      [dirOf("paper-search"), dirOf("verify-citations")].sort(),
+    );
+    expect(registry.skillDirsForAgent("researcher")).toEqual([dirOf("paper-search")]);
+    expect(registry.skillDirsForAgent("reviewer")).toEqual([dirOf("verify-citations")]);
+    expect(registry.skillDirsForAgent("writer")).toEqual([dirOf("academic-writing-zh")]);
+    expect(registry.bindings()).toContainEqual({
+      agentRole: "citation",
+      skillIds: ["paper-search", "verify-citations"],
+    });
   });
 
-  it("Pi 兼容性：loadSkillsFromDir 能从 Skill Store 发现两个 skill（真实 SDK 发现）", () => {
+  it("Pi 兼容性：loadSkillsFromDir 能从 Skill Store 发现全部 skill（真实 SDK 发现）", () => {
     const { skills, diagnostics } = loadSkillsFromDir({
       dir: join(root, "installed"),
       source: "paperteam-store",
     });
-    expect(skills.map((s) => s.name).sort()).toEqual(["paper-search", "verify-citations"]);
+    expect(skills.map((s) => s.name).sort()).toEqual([...CATALOG_IDS]);
     expect(diagnostics.filter((d) => d.type === "error")).toHaveLength(0);
     expect(skills.every((s) => s.description.length > 20)).toBe(true);
   });
 
-  it("SKILL.md 内容变化 → summary stale（已有 ok 简介时）", async () => {
+  it("SKILL.md 被改写 → summary stale + integrity tampered + 不注入；ensureInstalled 从版本快照自愈", async () => {
     const { writeFile } = await import("node:fs/promises");
     await registry.saveSummary("verify-citations", "已生成的简介");
     expect((await registry.get("verify-citations"))!.summaryStatus).toBe("ok");
@@ -158,11 +178,17 @@ describe("M4.3.6 SkillRegistry（seed 安装 / provenance / 绑定 / Pi 兼容�
     const original = await readFile(join(dir, "SKILL.md"), "utf8");
     await writeFile(join(dir, "SKILL.md"), original + "\n<!-- edited -->", "utf8");
     const skill = await registry.get("verify-citations");
-    // 记录的 contentHash 与现场不符 → ok 简介变 stale
+    // 记录的 contentHash 与现场不符 → ok 简介变 stale、完整性 tampered
     expect(skill!.summaryStatus).toBe("stale");
-    await registry.ensureInstalled(); // seed hash 不同 → 重装回 seed 内容
+    expect(skill!.integrity).toBe("tampered");
+    await registry.list();
+    expect(registry.skillDirsForAgent("citation")).toHaveLength(1); // 被篡改的不注入
+    await registry.ensureInstalled(); // 自愈：从不可变版本快照恢复
     const restored = await registry.get("verify-citations");
-    expect(restored!.contentHash).toBe(sha256Hex(original));
+    expect(restored!.contentHash).toBe(skillContentHash(original));
+    expect(restored!.integrity).toBe("ok");
+    expect(await readFile(join(dir, "SKILL.md"), "utf8")).toBe(original);
+    expect(registry.skillDirsForAgent("citation")).toHaveLength(2);
   });
 });
 
@@ -186,9 +212,9 @@ describe("M4.3.6 中文简介（SkillSummaryService + HTTP）", () => {
 
   it("生成一次并持久化；再次调用零模型调用", async () => {
     const first = await summaries.generateMissing();
-    expect(first.generated).toHaveLength(2);
+    expect(first.generated).toHaveLength(CATALOG_IDS.length);
     expect(first.failed).toHaveLength(0);
-    expect(runtime.calls).toBe(2);
+    expect(runtime.calls).toBe(CATALOG_IDS.length);
 
     const persisted = await registry.get("paper-search");
     expect(persisted!.chineseSummary).toContain("中文简介");
@@ -208,7 +234,7 @@ describe("M4.3.6 中文简介（SkillSummaryService + HTTP）", () => {
       failRuntime.fail = true;
       const service = new SkillSummaryService({ registry: failRegistry, runtime: failRuntime, agentId: "r" });
       const result = await service.generateMissing();
-      expect(result.failed).toHaveLength(2);
+      expect(result.failed).toHaveLength(CATALOG_IDS.length);
       const skills = await failRegistry.list();
       expect(skills.every((s) => s.summaryStatus === "summary_pending")).toBe(true);
       expect(skills.every((s) => s.chineseSummary === undefined)).toBe(true);
@@ -225,7 +251,7 @@ describe("M4.3.6 中文简介（SkillSummaryService + HTTP）", () => {
       const list = await stack.request("GET", "/api/skills");
       expect(list.status).toBe(200);
       const skills = list.body["skills"] as Array<Record<string, unknown>>;
-      expect(skills).toHaveLength(2);
+      expect(skills).toHaveLength(CATALOG_IDS.length);
       const verify = skills.find((s) => s["id"] === "verify-citations")!;
       expect(verify["license"]).toBe("MIT");
       expect(verify["chineseSummary"]).toContain("中文简介");

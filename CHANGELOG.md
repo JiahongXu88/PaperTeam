@@ -68,6 +68,25 @@ Visual Reviewer、Skill install/update、Docker 部署、系统管理后台未�
 Windows 下 LaTeX 编译超时只终止 shell 进程；单机单用户形态。
 完整清单见 [README](README.md#known-limitations真实清单)。
 
-## [Unreleased]
+## [Unreleased] — M5（进行中）
 
-- M5+（可选方向）：Visual Reviewer、Skill Management、Deployment、System Admin。
+### M5.3 Controlled Academic Skill Integration（2026-09-14）
+
+- 新增三个审计 Skill（MIT，固定上游 commit）：`academic-writing-zh`、
+  `academic-review`（K-Dense-AI/scientific-agent-skills @ `0b2afe6`）、
+  `academic-style-zh`（op7418/Humanizer-zh @ `91f3d39`），均为 PaperTeam 学术
+  适配版（不建立第二套事实系统、不是 AI detector、Reviewer 保持只读）。
+- Skill Store 受控化：完整 SHA / LICENSE / PROVENANCE 校验、不可变版本快照、
+  篡改检测与自愈、update 预览 / 应用、approved catalog 安装；无任意 URL 安装。
+- role + contextScope 路由：fact / academic / style Reviewer 得到不同 Skill 集，
+  Writer 普通写作 vs style-polish 不同；旧 role-only 调用兼容。
+- 会话级 Skill 版本固定（更新只影响新会话 / 新 generation）；任务终态携带
+  `skills.assigned` 与真实观测的 `skills.accessed`（无事件时如实 unknown）。
+- Skills 设置页：用途 / 来源 / 固定 revision / hash / 绑定 / 更新状态；
+  安装 / 预览更新 / 应用更新 / 查看 provenance。
+- 配置：`PAPERTEAM_DISABLED_SKILLS`。
+
+### 其余 M5 阶段
+
+- M5.1 / M5.2 Runtime 生命周期与长程治理（见 docs/PROJECT_STATUS.md）；
+  M5.4 Style Revision Loop、M5.5 Linux / Docker、M5.6 真实论文 A/B 验收进行中。

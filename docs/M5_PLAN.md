@@ -72,11 +72,74 @@ AgentRuntime 契约 v2（`backend/src/runtime/types.ts`）不变更的前提下�
 > 真实边界如实：后端进程 crash 时内存中的 AgentSession 无法迁移，
 > Workspace/checkpoint 语义不变（见 PROJECT_STATUS.md M5.2 收口记录）。
 
-### M5.3 Controlled Skill Integration
+### M5.3 Controlled Academic Skill Integration（✅ COMPLETE，2026-09-14）
 
-Skill install / update 的受控路径：保留「仓库内审计 + pin revision +
-LICENSE / PROVENANCE」纪律（D-0025），补齐安装来源校验、版本升级的
-diff 审计、绑定编辑的 UI；不引入开放 marketplace，不放宽安全边界。
+> 范围修正：原描述偏向「Skill install / update / diff / 绑定 UI」这一产品化
+> 表面。本阶段的核心重新明确为**三个经过审计、固定版本、按 PaperTeam 学术
+> 场景适配的 Skill 真正进入正确的 Writer / Reviewer 工作流**；受控产品化
+> 只保留支撑这一目标的最小能力。
+
+三个 Academic Skill（均 MIT，上游 commit 精确 pin，不以 upstream main 为
+runtime 依赖）：
+
+| PaperTeam id | 上游 | 适配方向 |
+|---|---|---|
+| `academic-writing-zh` | K-Dense-AI/scientific-agent-skills `skills/scientific-writing` | 中文工科论文写作：证据绑定、不补造实验 / 数字 / 引用、claim 强度 ≤ evidence、LaTeX / citation key / 公式 / 图表引用保持 |
+| `academic-review` | 同仓库 `skills/peer-review` | 可执行的审稿 finding（location / issue / evidence-reason / impact / suggestedAction / severity）；引用真实性仍归 Citation infrastructure；Reviewer 只读 |
+| `academic-style-zh` | op7418/Humanizer-zh | 只保留适合中文学术写作的检测 / 修订原则；明确移除「像人」类改写（第一人称、个人感受、题外话、故意混乱、绕过检测器）；硬约束：不改数值 / 单位 / 公式 / citation key / 术语 / 否定与比较方向 / 结论强度 |
+
+具备：
+
+- immutable upstream revision（完整 40 位 commit SHA；拒绝 main / latest / tag）；
+- LICENSE / PROVENANCE 随 seed 入库（缺失即拒绝安装）；上游原件 verbatim 快照
+  （UPSTREAM_SKILL.md）+ PaperTeam adaptation notes；
+- content hash（SKILL.md，行尾归一化）+ bundle hash（整目录）；篡改检测 →
+  不注入、由版本快照自愈；
+- role + contextScope 路由（修复 `skillDirsForAgent(role)` 只有 role 粒度、
+  三个 Reviewer 共用 reviewer 的问题）：fact / academic / style Reviewer 得到
+  不同 Skill 集；Writer 普通写作 vs style-polish 不同；researcher / citation
+  既有路由不退化；旧 role-only 调用继续有效；
+- session 级 Skill 版本固定：Skill 目录以 `versions/<id>/<hash>/` 不可变快照
+  注入，更新只影响新 session / 后续 rotation 后的新 generation；
+- assigned ≠ accessed：任务终态记录 assignedSkills（id / revision /
+  contentHash）；accessed 只在 Pi `tool_execution_start(read)` 事件真实命中
+  Skill 文件时记录，否则如实报告 accessBasis=unknown——绝不把「放进
+  available_skills」等同于「已使用」；
+- controlled install / update：approved catalog = 仓库内审计 seed；
+  安装状态 / pinned revision / contentHash / license / provenance / update
+  available / diff preview / apply audited update；无任意 URL 安装；
+- 最小 Skill Settings UI：名称 / 用途 / 来源 / 固定 revision / 安装状态 /
+  hash 摘要 / 绑定的 role + contextScope / update 状态；install / preview /
+  apply / provenance / bindings。
+
+不做：开放 Marketplace、任意 URL 安装、用户随意执行第三方 Skill 脚本、
+自动从互联网下载未知代码并运行。上游附带的 Python/Bash 工具不进入
+PaperTeam（Reviewer / Writer 权限不放宽）。软件 attribution（LICENSE /
+PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：PaperTeam
+不会因为使用某个 Skill 就自动改动用户论文的参考文献。
+
+> 进度：**COMPLETE（2026-09-14）**。三个 Skill 以审计 seed 入库
+> （`backend/skills/seed/academic-{writing-zh,review,style-zh}/`：SKILL.md
+> 适配正文 + skill.json + LICENSE 原件 + PROVENANCE.md + UPSTREAM_SKILL.md
+> verbatim 快照）；上游 pin：K-Dense-AI/scientific-agent-skills
+> `0b2afe68a5f9379097ad815e028af664f1e222b7`（scientific-writing / peer-review）、
+> op7418/Humanizer-zh `91f3d394db8419c20d67ebe22a96cf8fee0a404b`。SkillRegistry
+> 重构为受控 Skill Store（`installed/` 元数据 + 当前副本、`versions/<id>/<hash>/`
+> 不可变快照；seed 校验拒绝非 40 位 SHA / 缺 LICENSE / 缺 PROVENANCE / 上游快照
+> hash 不符；篡改 → 不注入 + 自愈；已安装 skill 的 seed 变化只标 update
+> available，需预览后应用）；`routing.ts` 提供 role + contextScope 路由
+> （fact→verify-citations、academic / section→academic-review、style→
+> academic-style-zh；writer 默认 / outline / sections / revision→academic-
+> writing-zh，style-polish→+academic-style-zh，repair→无）；PiRuntimeAdapter
+> 在会话创建 / rotation 边界解析注入并在 generation 内固定，任务终态携带
+> `skills.assigned`（id / revision / contentHash）与 `skills.accessed`
+> （仅 read 工具真实命中快照文件；无事件 → accessBasis=unknown、accessed=null）；
+> HTTP：GET /api/skills（skills + catalog + bindings）、/provenance、
+> /update-preview、POST /install（仅 approved id）、/update（候选 hash 校验）；
+> Skills 页展示用途 / 来源 / 固定 revision / hash 摘要 / role+scope 绑定 /
+> 更新状态，支持安装 / 预览 / 应用 / 查看 provenance；`PAPERTEAM_DISABLED_
+> SKILLS` 用于 A/B 关闭学术 Skill。测试：backend 652 → 670 passed（skills
+> 27），frontend 161 → 164 passed。
 
 ### M5.4 Style Revision Loop
 

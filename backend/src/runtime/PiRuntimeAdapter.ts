@@ -113,7 +113,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 
 import {
   createAgentSession,
@@ -147,6 +147,9 @@ import { PI_RUNTIME_VERSION } from "./pi/version.js";
 import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
 import type {
   AgentEvent,
+  AgentTaskSkills,
+  AssignedSkillRef,
+  RuntimeSkillAssignment,
   AgentRuntime,
   AgentRunHandle,
   AgentRunUsage,
@@ -338,7 +341,12 @@ export interface PiRuntimeOptions {
    * <available_skills>（progressive disclosure：仅 name/description/location
    * 进 system prompt，正文由 Agent 按需 read）。
    */
-  roleSkillDirs?: (role: PiRoleKey) => string[];
+  roleSkillDirs?: (role: PiRoleKey, contextScope?: string) => string[];
+  /**
+   * 按 role + contextScope 解析注入的 Skill 版本引用（M5.3；优先于 roleSkillDirs）。
+   * 返回的 dir 必须是不可变版本快照——会话 generation 生命周期内不变。
+   */
+  roleSkills?: (role: PiRoleKey, contextScope?: string) => RuntimeSkillAssignment[];
   /** 按角色注入的自定义工具（如 researcher/citation 的受控学术检索） */
   roleCustomTools?: (role: PiRoleKey) => ToolDefinition[];
   /** 诊断日志输出，默认 console.log */
@@ -368,6 +376,15 @@ interface ManagedSession {
   session: AgentSession;
   role: PiRoleConfig;
   cwd: string;
+  /** 归一化 contextScope（Skill 路由 / 诊断；无 scope 会话缺省） */
+  scope?: string;
+  /**
+   * 当前 generation 注入的 Skill 版本（M5.3 版本固定：创建 / rotation 时解析一次，
+   * generation 内不变；Skill 更新只影响之后创建的 generation）。
+   */
+  assignedSkills: AssignedSkillRef[];
+  /** assignedSkills 对应的不可变快照目录（accessed 观测的匹配基准） */
+  skillDirs: string[];
   /** 逻辑会话创建时间（容器创建；rotation 不重置——业务 sessionKey 稳定） */
   createdAt: string;
   lastUsedAt: string;
@@ -506,6 +523,14 @@ interface RunState {
   permitWaitResolve?: (granted: boolean) => void;
   /** 本 run 新产生的 usage 累计（M5.2；首个 usage-bearing message_end 时创建） */
   usage?: AgentRunUsage;
+  /** 本 run 独占会话时的 Skill 注入快照（M5.3；未进入会话的任务缺省） */
+  skillsAssigned?: AssignedSkillRef[];
+  /** assignedSkills 的快照目录（accessed 匹配基准） */
+  skillDirs?: string[];
+  /** 观测到被 read 工具真实读取的 skill id */
+  skillsAccessed?: Set<string>;
+  /** 本 run 是否收到过任何 Pi 会话事件（accessBasis 的判据） */
+  sawPiEvents?: boolean;
   /**
    * 本任务占用的 pendingArrivals 配额所属会话（M5.2 任务 J1）：settle 时
    * 统一释放，保证 GC 的 idle 判定不漏掉「已命中会话但尚未入队」的任务。
@@ -637,6 +662,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly createSessionImpl: NonNullable<PiRuntimeOptions["createSession"]> | undefined;
   private readonly customTools: ToolDefinition[] | undefined;
   private readonly roleSkillDirs: NonNullable<PiRuntimeOptions["roleSkillDirs"]> | undefined;
+  private readonly roleSkills: NonNullable<PiRuntimeOptions["roleSkills"]> | undefined;
   private readonly roleCustomTools: NonNullable<PiRuntimeOptions["roleCustomTools"]> | undefined;
   private readonly log: (message: string) => void;
 
@@ -724,6 +750,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.createSessionImpl = options.createSession;
     this.customTools = options.customTools;
     this.roleSkillDirs = options.roleSkillDirs;
+    this.roleSkills = options.roleSkills;
     this.roleCustomTools = options.roleCustomTools;
     this.log = options.log ?? ((message) => console.log(message));
   }
@@ -1321,6 +1348,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
         ? { executionDurationMs: Math.max(0, settledAtMs - state.runningAtMs) }
         : {}),
       ...(state.usage !== undefined ? { usage: { ...state.usage } } : {}),
+      ...(state.skillsAssigned !== undefined ? { skills: skillsOf(state) } : {}),
     };
     return enriched;
   }
@@ -1640,8 +1668,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     managed.generation += 1;
     managed.runCount = 0;
     try {
-      const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd);
-      managed.session = fresh;
+      const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd, managed.scope);
+      managed.session = fresh.session;
+      // 新 generation 重新解析 Skill 版本：更新在此边界（且仅在此边界）生效
+      managed.assignedSkills = fresh.assignedSkills;
+      managed.skillDirs = fresh.skillDirs;
       managed.unsubscribe = this.wireSessionEvents(managed);
       const contextWindow = this.model?.contextWindow ?? 0;
       managed.context = {
@@ -1674,15 +1705,16 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private async createPiSessionWithTimeout(
     role: PiRoleConfig,
     cwd: string,
-  ): Promise<AgentSession> {
+    scope: string | undefined,
+  ): Promise<CreatedPiSession> {
     const timeoutMs = this.sessionTimeoutMs;
     if (timeoutMs === undefined) {
-      return this.createPiSession(role, cwd);
+      return this.createPiSession(role, cwd, scope);
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        this.createPiSession(role, cwd),
+        this.createPiSession(role, cwd, scope),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new AgentTimeoutError(timeoutMs, "session")), timeoutMs);
           timer.unref?.();
@@ -2088,14 +2120,17 @@ export class PiRuntimeAdapter implements AgentRuntime {
   ): Promise<ManagedSession> {
     const role = resolveRoleConfig(scope);
     const cwd = this.resolveWorkspaceCwd(input.projectId);
-    const session = await this.createPiSession(role, cwd);
+    const created = await this.createPiSession(role, cwd, scope);
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
     const managed: ManagedSession = {
       key: sessionKey,
-      session,
+      session: created.session,
       role,
       cwd,
+      ...(scope !== undefined ? { scope } : {}),
+      assignedSkills: created.assignedSkills,
+      skillDirs: created.skillDirs,
       createdAt: now,
       lastUsedAt: now,
       lastUsedAtMs: nowMs,
@@ -2110,7 +2145,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
     // 入池由 createSessionSlot 决定（迟到成功的会话在等待者已全部放弃时
     // 直接销毁，不入池——无幽灵会话）
     this.log(
-      `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${role.tools.join(",")}] cwd=${cwd}`,
+      `[pi-runtime] 创建会话 sessionKey=${sessionKey} role=${role.role} tools=[${role.tools.join(",")}] skills=[${created.assignedSkills
+        .map((skill) => `${skill.id}@${skill.contentHash.slice(0, 8)}`)
+        .join(",")}] cwd=${cwd}`,
     );
     return managed;
   }
@@ -2120,13 +2157,35 @@ export class PiRuntimeAdapter implements AgentRuntime {
    * resourceLoader + in-memory SessionManager + 工具白名单。rotation 复用
    * 时传入原 ManagedSession 的 role/cwd——角色配置与工作目录随会话稳定。
    */
-  private async createPiSession(role: PiRoleConfig, cwd: string): Promise<AgentSession> {
+  private async createPiSession(
+    role: PiRoleConfig,
+    cwd: string,
+    scope: string | undefined,
+  ): Promise<CreatedPiSession> {
     await mkdir(cwd, { recursive: true }).catch(() => {});
     // 技能面完全自控：关闭全部默认发现（workspace/.pi、~/.pi 等），
-    // 只注入 PaperTeam Skill Store 中该角色 assigned 的 skill 目录。
-    const skillDirs = this.roleSkillDirs?.(role.role) ?? [];
+    // 只注入 PaperTeam Skill Store 中该 role + contextScope 路由到的不可变
+    // 版本快照目录（M5.3：generation 内固定）。
+    const assignments: RuntimeSkillAssignment[] =
+      this.roleSkills !== undefined
+        ? this.roleSkills(role.role, scope)
+        : (this.roleSkillDirs?.(role.role, scope) ?? []).map((dir) => ({
+            id: basename(dir),
+            contentHash: "unknown",
+            dir,
+          }));
+    const skillDirs = assignments.map((assignment) => resolve(assignment.dir));
+    const assignedSkills: AssignedSkillRef[] = assignments.map((assignment) => ({
+      id: assignment.id,
+      ...(assignment.sourceRevision !== undefined ? { sourceRevision: assignment.sourceRevision } : {}),
+      contentHash: assignment.contentHash,
+    }));
     if (skillDirs.length > 0) {
-      this.log(`[pi-runtime] 会话技能注入 role=${role.role} skills=[${skillDirs.length}]`);
+      this.log(
+        `[pi-runtime] 会话技能注入 role=${role.role} scope=${scope ?? "-"} skills=[${assignedSkills
+          .map((skill) => skill.id)
+          .join(",")}]`,
+      );
     }
     const resourceLoader = new DefaultResourceLoader({
       cwd,
@@ -2172,7 +2231,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
               ...(allCustomTools.length > 0 ? { customTools: allCustomTools } : {}),
             })
           ).session;
-    return session;
+    return { session, assignedSkills, skillDirs };
   }
 
   /** projectId → workspace 子目录（含路径包含性防越界，与 ProjectStore.projectDir 同规则） */
@@ -2349,10 +2408,18 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private eventForwarders = new Map<string, (event: AgentSessionEvent) => void>();
 
   private attachEventForwarder(managed: ManagedSession, taskId: string, state: RunState): void {
-    void managed;
+    // 本 run 独占会话期间的 Skill 注入快照（M5.3：generation 内固定，随任务终态输出）
+    state.skillsAssigned = managed.assignedSkills.map((skill) => ({ ...skill }));
+    state.skillDirs = [...managed.skillDirs];
+    state.skillsAccessed = new Set();
+    state.sawPiEvents = false;
     // 会话创建时已挂持久 listener（见 wireSessionEvents）；
     // 这里登记当前任务的事件转发器，listener 按 activeTaskId 分发。
     this.eventForwarders.set(taskId, (event) => {
+      state.sawPiEvents = true;
+      if (event.type === "tool_execution_start") {
+        recordSkillAccess(state, managed, event);
+      }
       if (event.type === "message_end") {
         // run 级 usage 累计（M5.2 基础采集）：只统计本 run 期间送达的
         // assistant 消息——forwarder 仅在独占会话期间挂载，会话复用不会
@@ -2484,6 +2551,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
         ...(managed.lastRotationReason !== undefined
           ? { lastRotationReason: managed.lastRotationReason }
           : {}),
+        ...(managed.scope !== undefined ? { contextScope: managed.scope } : {}),
+        assignedSkills: managed.assignedSkills.map((skill) => ({ ...skill })),
       };
     });
   }
@@ -2742,6 +2811,61 @@ function readContextUsage(
   } catch {
     return undefined;
   }
+}
+
+/** 底层 Pi AgentSession + 本 generation 的 Skill 注入快照 */
+interface CreatedPiSession {
+  session: AgentSession;
+  assignedSkills: AssignedSkillRef[];
+  skillDirs: string[];
+}
+
+/**
+ * Skill 真实访问观测（M5.3 assigned ≠ accessed）：只有 read 工具的 path 落在
+ * 某个注入的 Skill 快照目录内才记 accessed；grep/find/ls 不算「读取 Skill」。
+ * 路径按绝对路径前缀匹配（相对路径按会话 cwd 解析）。
+ */
+function recordSkillAccess(
+  state: RunState,
+  managed: ManagedSession,
+  event: { toolName: string; args?: unknown },
+): void {
+  if (event.toolName !== "read" || state.skillsAccessed === undefined || state.skillDirs === undefined) {
+    return;
+  }
+  const args = event.args as { path?: unknown; file_path?: unknown } | undefined;
+  const rawPath =
+    typeof args?.path === "string"
+      ? args.path
+      : typeof args?.file_path === "string"
+        ? args.file_path
+        : undefined;
+  if (rawPath === undefined || rawPath.trim() === "") {
+    return;
+  }
+  const target = resolve(managed.cwd, rawPath.trim());
+  state.skillDirs.forEach((dir, index) => {
+    const skill = state.skillsAssigned?.[index];
+    if (skill === undefined) {
+      return;
+    }
+    if (target === dir || target.startsWith(dir + sep)) {
+      state.skillsAccessed!.add(skill.id);
+    }
+  });
+}
+
+/** 任务终态的 Skill 观测块：未收到任何 Pi 事件 → accessBasis=unknown（不伪造 accessed） */
+function skillsOf(state: RunState): AgentTaskSkills {
+  const assigned = (state.skillsAssigned ?? []).map((skill) => ({ ...skill }));
+  if (state.sawPiEvents !== true) {
+    return { assigned, accessed: null, accessBasis: "unknown" };
+  }
+  return {
+    assigned,
+    accessed: [...(state.skillsAccessed ?? [])].sort(),
+    accessBasis: "tool_events",
+  };
 }
 
 /** 错误消息提取（诊断日志用，不含堆栈） */

@@ -553,3 +553,30 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
 - **影响**：definitions.ts（digest / sectionMatches / listRevisionTargets /
   revise 写回）、WriterService（摘要修订 prompt 与校验）、revisionLoop 回归
   测试（main.tex（摘要）/ 摘要 两种归属写法）。
+
+## D-0030 学术 Skill 受控接入：审计 seed + 完整 SHA + 不可变版本快照 + role/contextScope 路由 + assigned ≠ accessed
+
+- **日期**：2026-09-14（M5.3）
+- **决策**：三个学术 Skill（academic-writing-zh / academic-review /
+  academic-style-zh）只以仓库内审计 seed 进入 PaperTeam：external seed 必须
+  pin 完整 40 位 commit SHA（拒绝 main / latest / tag）、随附 LICENSE 原件 +
+  PROVENANCE.md + 上游 verbatim 快照；SKILL.md 为 PaperTeam 学术适配正文
+  （非原样接入）。Skill Store 以 `versions/<id>/<contentHash>/` 不可变快照
+  作为注入路径，会话 generation 内固定；已安装 skill 的 seed 变化只标记
+  update available，需预览 diff 后应用。路由由 role + contextScope 前缀决定
+  （代码内控常量），三个 Reviewer lens 不共享 Skill 集。任务终态区分
+  assigned（放进 available_skills 的版本引用）与 accessed（仅 Pi `read`
+  工具真实命中快照文件时记录；无事件 → unknown），绝不把「注入」当「使用」。
+- **理由**：Skill 只是增强写作 / 审稿方法，事实系统（EvidenceStore /
+  Citation Verification / Quality Gate）必须唯一；上游 Humanizer 的「像人」
+  改写目标与学术写作冲突，上游 Python 工具会诱使放宽 Reviewer 权限；漂移的
+  revision 与运行中换版会让 A/B 与故障归因失去基准；假报 accessed 会污染
+  质量评测结论。
+- **不做**：开放 Marketplace、任意 URL / `skills add <url>` 安装、执行第三方
+  Skill 脚本、自动向用户论文 bibliography 插入上游论文引用（软件 attribution
+  记录于 PROVENANCE / LICENSE，与论文引用分离）。
+- **影响**：`backend/skills/seed/academic-*`、`skills/{types,routing,diff,
+  SkillRegistry}.ts`、`runtime/types.ts`（`AgentTask.skills` /
+  `SessionDiagnosticEntry.assignedSkills` 可选字段）、PiRuntimeAdapter
+  （`roleSkills` / 版本固定 / accessed 观测）、`/api/skills*` 路由、
+  Skills 页、`PAPERTEAM_DISABLED_SKILLS`。

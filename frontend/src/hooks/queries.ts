@@ -41,7 +41,14 @@ import {
   verifyClaims,
   verifyMetadata,
 } from "../api/paper.js";
-import { listSkills, regenerateSkillSummary } from "../api/skills.js";
+import {
+  applySkillUpdate,
+  getSkillProvenance,
+  getSkillUpdatePreview,
+  installSkill,
+  listSkills,
+  regenerateSkillSummary,
+} from "../api/skills.js";
 import {
   clearModelApiKey,
   deleteCustomProvider,
@@ -94,6 +101,8 @@ export const queryKeys = {
     ["project", projectId, "quality-gate", ...(round !== undefined ? [round] : ["latest"])] as const,
   runtimeStatus: ["runtime-status"] as const,
   skills: ["skills"] as const,
+  skillProvenance: (skillId: string) => ["skills", skillId, "provenance"] as const,
+  skillUpdatePreview: (skillId: string) => ["skills", skillId, "update-preview"] as const,
   modelSettings: ["model-settings"] as const,
   modelOptions: ["model-settings", "options"] as const,
   modelOptionsFor: (provider: string) => ["model-settings", "options", provider] as const,
@@ -580,6 +589,49 @@ export function useRegenerateSkillSummary() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (skillId: string) => regenerateSkillSummary(skillId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+    },
+  });
+}
+
+/** 审计材料（PROVENANCE.md / LICENSE / 上游快照校验）：用户展开时才请求 */
+export function useSkillProvenance(skillId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.skillProvenance(skillId),
+    queryFn: ({ signal }) => getSkillProvenance(skillId, signal),
+    enabled,
+    staleTime: CATALOG_STALE_MS,
+  });
+}
+
+/** 更新预览（current / candidate hash + 文件 diff）：用户点击预览时才请求，不缓存过久 */
+export function useSkillUpdatePreview(skillId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.skillUpdatePreview(skillId),
+    queryFn: ({ signal }) => getSkillUpdatePreview(skillId, signal),
+    enabled,
+    staleTime: 0,
+  });
+}
+
+export function useApplySkillUpdate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { skillId: string; candidateHash: string }) =>
+      applySkillUpdate(input.skillId, input.candidateHash),
+    onSuccess: (_skill, input) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillUpdatePreview(input.skillId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillProvenance(input.skillId) });
+    },
+  });
+}
+
+export function useInstallSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (skillId: string) => installSkill(skillId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.skills });
     },

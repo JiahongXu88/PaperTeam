@@ -1,0 +1,21 @@
+{
+  "id": "academic-writing-zh",
+  "name": "academic-writing-zh",
+  "originalDescription": "Draft, revise, and audit scientific manuscripts or reports with explicit evidence provenance, reporting-guideline coverage, authorship accountability, confidentiality controls, and local consistency checks. Use for manuscript sections, references, declarations, tables, figures, or submission preparation when scientific accuracy and traceability matter.",
+  "purpose": "Writer 撰写 / 修订中文工科论文章节与摘要时的写作方法：证据绑定、不补造实验 / 数字 / 引用、claim 强度不超过 Evidence、术语一致、LaTeX / citation key / 公式 / 图表引用保持。",
+  "sourceType": "external",
+  "sourceRepo": "K-Dense-AI/scientific-agent-skills",
+  "sourceRevision": "0b2afe68a5f9379097ad815e028af664f1e222b7",
+  "sourceUrl": "https://github.com/K-Dense-AI/scientific-agent-skills",
+  "upstreamPath": "skills/scientific-writing/SKILL.md",
+  "upstreamContentHash": "f6026e7d79cd3133e9343a7d6e6c5e06f4ad061888efb6a73fcb95e073eebf67",
+  "version": "2.1+paperteam.1",
+  "license": "MIT",
+  "status": "installed",
+  "assignedAgents": [
+    "writer"
+  ],
+  "allowedTools": [],
+  "summaryStatus": "summary_pending",
+  "wrapperNote": "PaperTeam 学术适配版：保留上游证据绑定与不虚构原则，改写为中文工科论文写作方法；不使用上游 Python 脚本与工件模板，事实系统仍由 EvidenceStore / Citation / Quality Gate 保证；上游原件保留于 UPSTREAM_SKILL.md"
+}

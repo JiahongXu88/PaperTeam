@@ -102,8 +102,8 @@ Skills / Settings（模型设置 + 项目管理）。项目生命周期含 归�
 Reviewer 修订闭环 + bounded LaTeX repair（M4.7）、版本体验（M4.8：版本历史 /
 确定性比较 / 不可变恢复，`ManuscriptRevisionStore` 不可变修订链 + VersionService）。
 论文版本以不可变修订快照实现（非 Git）；尚未实现：Visual Reviewer（M5 未含）、
-Admin 后台（M5 未含）；Skill install/update（M5.3）与单机 Linux / Docker
-部署（M5.5）在 M5 范围内（见 M5_PLAN.md）。
+Admin 后台（M5 未含）；受控学术 Skill 接入（M5.3 ✅，见 §12.3）已完成，单机
+Linux / Docker 部署（M5.5）在 M5 范围内（见 M5_PLAN.md）。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -785,13 +785,33 @@ context 从磁盘确定性重建**；**逐条记录文件持久化 + 指纹跳�
 | probable fabrication | ≥3 全一致 not_found + 零 error + 有可查字段 | 确定性代码（强证据才标） |
 | 语义 verdict | SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED / INSUFFICIENT_EVIDENCE / SKIPPED（NO_CONTRADICTION_DETECTED 仅 contradiction_only） | LLM judge（仅凭真实证据；引文逐字校验；UNSUPPORTED 需证据相关且具体；CONTRADICTED 需逐字反向引文；INSUFFICIENT=无法判断≠论文问题，info 不进 Finding） |
 
-### 12.3 Skill Registry
+### 12.3 Skill Registry（M5.3 受控 Skill Store）
 
-仓库内审计 seed（pin revision + LICENSE + PROVENANCE）→ 启动幂等安装到
-`<runtimeRoot>/skills/installed/`（contentHash，变化标 stale）→ 按角色绑定注入
-Pi Session（`noSkills + additionalSkillPaths`；progressive disclosure 保持）。
+approved catalog = 仓库内审计 seed（`backend/skills/seed/<id>/`：SKILL.md +
+skill.json + LICENSE 原件 + PROVENANCE.md [+ UPSTREAM_SKILL.md verbatim 快照]；
+external seed 必须 pin **完整 40 位 commit SHA**，缺 LICENSE / PROVENANCE /
+上游快照 hash 不符 → 拒绝安装）。Skill Store（`<runtimeRoot>/skills/`）：
+`installed/<id>/`（skill.json 元数据 + 当前副本）+ `versions/<id>/<contentHash>/`
+（**不可变快照 = 注入路径**）。contentHash（SKILL.md，行尾归一化）+ bundleHash
+（整目录）；篡改 → `integrity=tampered`、不注入、启动自愈。已安装 skill 的
+seed 变化不自动应用：`update.available` → `previewUpdate`（hash / revision /
+文件级 diff / SKILL.md 行 diff）→ `applyUpdate`（新快照 + 切指针 + 重校验）。
+
+**路由**（`skills/routing.ts`）：role + contextScope 前缀（最长前缀优先，
+role-only 回退默认）——三个 Reviewer lens 分别得到 verify-citations /
+academic-review / academic-style-zh；Writer 默认 / outline / sections /
+revision 得 academic-writing-zh，`writing/style-polish` 追加 academic-style-zh，
+`writing/repair` 无。**版本固定**：PiRuntimeAdapter 在会话创建 / rotation
+边界解析一次（`roleSkills(role, scope)`），generation 内不变；更新只影响新
+会话 / 新 generation。**assigned ≠ accessed**：任务终态 `AgentTask.skills`
+记录 assigned（id / sourceRevision / contentHash）与 accessed（仅 `read`
+工具真实命中快照文件；无 Pi 事件 → `accessBasis=unknown`）。
+`PAPERTEAM_DISABLED_SKILLS` 配置禁用（可见不注入）。
 `search_papers`/`lookup_paper` 为 PaperTeam 受控 customTools（researcher/citation
-角色），共享 ScholarlyResolver（缓存/重试/telemetry）。写操作（install 等）M5。
+角色），共享 ScholarlyResolver（缓存/重试/telemetry）。上游附带的 Python 工具
+不进入 PaperTeam，Reviewer 保持只读；软件 attribution 与用户论文 bibliography
+分离（不自动插入上游引用）。HTTP 见 §API：`/api/skills[/:id[/provenance|
+update-preview|install|update|summary]]`，无任意 URL 安装面。
 
 ## 13. Outer Review Loop：Writer–Reviewer 迭代质量闭环（D-0026）
 

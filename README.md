@@ -122,17 +122,21 @@ LaTeX 编译全真实，只有模型输出是确定性脚本）；另有真实�
 M1–M4 已完成（Runtime 迁移到 Pi in-process、React 工作台、三条产品路径、
 质量基础设施与版本体验）；M5 进行中——M5.1 Runtime 生命周期可靠性与
 M5.2 长程运行治理（分层超时 / 全局并发与有界受理 / context budget /
-会话 rotation / TTL·GC·容量 / 观测面与安全自愈）已收口，后续为 Skill
-受控接入（M5.3）、中文风格修订回路（M5.4）、Linux / Docker 部署（M5.5）
-与真实论文 A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
+会话 rotation / TTL·GC·容量 / 观测面与安全自愈）已收口，M5.3 受控学术
+Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
+审计 seed、固定上游 commit、role + contextScope 路由、会话级版本固定、
+assigned / accessed 观测、受控 install / update + Skills 设置页）已完成，
+后续为中文风格修订回路（M5.4）、Linux / Docker 部署（M5.5）与真实论文
+A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 
 ### Known Limitations（真实清单）
 
 - **Visual Reviewer 未实现**：审阅基于文本层（PDF 图表 / 版式不在审稿上下文内）。
-- **Skill install / update 未实现**：Skill Registry 为仓库内审计 seed（两项 MIT skill，
-  pin revision），无在线安装 / 更新。
+- **Skill 只能从仓库内 approved catalog 安装 / 更新**（有意为之）：五项 MIT skill
+  均为审计 seed + 固定上游 commit；没有任意 URL 安装、没有 marketplace；Skill
+  「已注入」不等于「已被 Agent 读取」（accessed 只按真实 read 事件记录）。
 - **后端进程崩溃时进行中的模型调用无法迁移**：workflow 从 checkpoint 恢复
   （已成功 stage 不重跑），但当次未完成的 Agent 调用会以失败重试。
 - **Windows 下 LaTeX 编译超时只终止 shell 进程**（`shell:true` 的已知遗留）。
