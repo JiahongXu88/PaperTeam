@@ -1,6 +1,9 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-14（**M5.5 Linux / Docker Deployment 🟡 IMPLEMENTED /
+> 更新日期：2026-09-14（**M5.6 Real Paper Acceptance 🟡 PARTIAL**：真实 26 页
+> 中文论文 A/B + Quick Review + 材料不足提案首轮完成，见 docs/M5_ACCEPTANCE.md；
+> 验收驱动修复 Writer 引用回归 / 执行超时默认 / Style Polish Draft 路径；
+> **M5.5 Linux / Docker Deployment 🟡 IMPLEMENTED /
 > AWAITING REAL DOCKER ACCEPTANCE**：Dockerfile / compose / nginx / CI / readiness /
 > 优雅停机 / 跨平台审计已完成并有测试，真实 Docker 验收因本机无 Docker / WSL 未执行；
 > 同日 **M5.4 Chinese Academic Style Revision Loop ✅
@@ -25,7 +28,8 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
 中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
 接入（M5.3 ✅）、Style Revision Loop（M5.4 ✅）、单机 Linux / Docker 部署
-（M5.5 🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）、真实论文 A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer /
+（M5.5 🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）、真实论文 A/B 验收
+（M5.6 🟡 PARTIAL，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。**M5 整体：PARTIAL**。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
 
@@ -435,6 +439,35 @@ ACCEPTANCE，2026-09-14）**：单机单用户 Linux / Docker 部署的代码、
   状态为 **IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE**，验收清单见
   docs/DEPLOYMENT.md §7；CI 的 docker-build job 在 GitHub Actions 上是第一处真实
   构建反馈（push 后查看）。
+
+**M5.6 Real Paper Acceptance & Release（🟡 PARTIAL，2026-09-14）**：完整记录见
+[M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)，Release Notes 见 [RELEASE_NOTES_M5.md](RELEASE_NOTES_M5.md)。
+
+- **材料与方法**：本机已有的 26 页中文工科论文 PDF（本地输入，不入库）；
+  `scripts/m5-acceptance.mjs` 启动独立 backend（arm A：`PAPERTEAM_DISABLED_SKILLS`
+  关闭三个学术 Skill + suggest_only；arm B：Skill 开 + apply_once）、导入 PDF、驱动
+  Improvement run、自动回答 HITL、采集 stage 时间线 / 审稿计数 / gate / 修订 /
+  硬指标（citation key / 数字 / 公式 多重集对比、styleSignals）/ usage（新增
+  `runtimeStats.usageTotals` + per-task usage 日志含 assigned / accessed）。
+- **结果**：第一轮两臂都在默认 300s 执行超时失败（B：带 Skill 的 Reviewer 6–14 轮
+  工具调用；A：Writer 单节修订）→ 改 900s 重跑；第二轮两臂均完成为 **Draft
+  （Build PASS，Quality Gate 如实 FAIL：unsupported claims / blocking / critical+major /
+  academic 56–72 < 80；阈值未动）**；B 末轮 academic 72 vs A 56、styleRisk 30 vs 40，
+  B 成本 +18%、Reviewer 时长 +56%；Skill accessed 观测在生产日志中成立
+  （academic-review / academic-style-zh 被真实读取，verify-citations / paper-search 未读）。
+  Quick Review 34.8 min、177 findings、**revision 0→0、mutatedFiles 0**。材料不足提案：
+  feasibility MEDIUM + 5 项明确缺失，不编造。长程：4 backend 并发 ~1.5h、≥150 run，
+  无 budget / capacity 拒绝。
+- **验收驱动修复**：① Writer 引用回归——Existing-Paper 无 research bibliography 时
+  修订 prompt 写「不要使用 \cite」导致重建稿全部 `\cite` 被删且 Gate 未察觉；改为
+  research artifact ∪ references.bib（`manuscriptBibliography`）+ prompt 保留引用；
+  ② Style Polish 在 Draft 路径（Gate 失败、accept_draft 后）也提供一次（否则真实论文
+  几乎没有润色机会），新增 e2e 测试；③ compose 默认 `PAPERTEAM_PI_RUN_TIMEOUT_MS=900000`；
+  ④ usage 观测面；⑤ CI 装 pymupdf。Backend 696 → 698 passed，Frontend 170。
+- **未完成 / 如实边界**：人工 pairwise 评价未做（模板已备）；Docker E2E 无主机；
+  修复后 A 臂首跑因 provider 429（4 backend 并发）失败，重跑中；B3 / A4 结果以本地
+  summary.json 为准并回填 M5_ACCEPTANCE；Gate 不检查引用保持（靠硬指标发现）。
+  **不打 tag；M5 状态 PARTIAL**。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

@@ -131,7 +131,9 @@ Checker、style-only HITL 修订 + 强制复审、Quick Review 只读红线、M5
 corpus）已完成；M5.5 单机 Linux / Docker 部署的 Dockerfile / compose / nginx / CI /
 `/ready` / 优雅停机已实现并有测试，但**真实 Docker 验收待执行**（开发机无 Docker，
 状态 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE，见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；
-之后是真实论文 A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
+M5.6 首轮真实论文 A/B 验收已完成并如实记录（两臂均 Draft PASS / Final blocked，
+Gate 阈值未动；人工评价与 Docker E2E 未完成，见 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）。
+**M5 整体状态：PARTIAL，未打 tag。**真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 
@@ -179,6 +181,9 @@ XeLaTeX/latexmk/biber + 中文字体，不对外发布）；数据在 `paperteam
 | --- | --- |
 | [docs/PRD.md](docs/PRD.md) | 产品需求文档 |
 | [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与里程碑记录（M1–M5） |
+| [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md) | M5 真实论文 A/B 验收记录（环境 / 指标 / 修复 / 最终判定） |
+| [docs/RELEASE_NOTES_M5.md](docs/RELEASE_NOTES_M5.md) | M5 Release Notes（PARTIAL，未打 tag） |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 单机 Linux / Docker 部署（依赖审计 / 持久化 / 密钥 / 验收清单） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构（含架构红线：事实来源 / 会话 / 事件 / 双 Gate） |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Frontend API Contract（端点 / DTO / SSE / 变更纪律） |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 技术决策记录（ADR，D-0001~D-0029） |

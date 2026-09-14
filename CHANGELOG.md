@@ -110,7 +110,16 @@ Windows 下 LaTeX 编译超时只终止 shell 进程；单机单用户形态。
 - CI：`.github/workflows/ci.yml`（ubuntu build / typecheck / test + docker build smoke）。
 - 真实 `docker compose` 验收待在 Docker 主机执行（开发机无 Docker / WSL）。
 
+### M5.6 Real Paper Acceptance（2026-09-14，PARTIAL）
+
+- 真实 26 页中文工科论文 A/B（glm-5.3）：两臂均 Draft PASS / Final blocked（Gate
+  如实 FAIL）；Quick Review 零写入；材料不足提案不编造；详见 docs/M5_ACCEPTANCE.md。
+- 修复：Writer 修订不再删光 Existing-Paper 重建稿的引用（可引用 key 以
+  references.bib 为事实源 + prompt 保留引用）；Style Polish 在 Draft 路径也提供一次；
+  `runtimeStats.usageTotals` + per-task usage 日志（含 assigned / accessed skills）；
+  compose 默认执行超时 900s；`scripts/m5-acceptance.mjs` 验收执行器。
+- 未完成：人工评价、Docker E2E；M5 不标 COMPLETE，不打 tag。
+
 ### 其余 M5 阶段
 
-- M5.1 / M5.2 Runtime 生命周期与长程治理（见 docs/PROJECT_STATUS.md）；
-  M5.6 真实论文 A/B 验收进行中。
+- M5.1 / M5.2 Runtime 生命周期与长程治理（见 docs/PROJECT_STATUS.md）。

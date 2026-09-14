@@ -47,12 +47,12 @@ import {
   writeReconstructionReport,
 } from "../import/PaperReconstructor.js";
 import type { WriterService } from "../writer/WriterService.js";
-import type { ResearcherService, ResearchArtifact } from "../agents/ResearcherService.js";
+import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readFeasibilityReport, type FeasibilityService } from "../agents/FeasibilityService.js";
 import type { ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
 import type { CitationService, CitationReport } from "../citation/CitationService.js";
-import { extractCitationKeys } from "../citation/StaticCitationChecker.js";
+import { extractCitationKeys, parseBib } from "../citation/StaticCitationChecker.js";
 import type { CitationIntegrityService } from "../citation/CitationIntegrityService.js";
 import type { CitationCallout, ReferenceEntry } from "../citation/integrity.js";
 import { readSemanticMode } from "../citation/semanticMode.js";
@@ -611,7 +611,10 @@ function revisionReviseStage(
       const buildError = readBuildError(ctx.state);
       const evidence = await usableEvidence(services, ctx.projectId);
       const artifact = await readResearchArtifact(services.projects, ctx.projectId);
-      const bibliography = artifact?.bibliography ?? [];
+      // M5.6 真实论文验收暴露的 Writer regression：Existing-Paper 项目没有 research
+      // artifact bibliography，修订 prompt 曾写成「无可用文献：不要使用 \cite」，Writer
+      // 据此删光了重建稿的全部 \cite。可引用 key 必须以 manuscript/references.bib 为准。
+      const bibliography = await manuscriptBibliography(services, ctx.projectId, artifact?.bibliography ?? []);
       const project = await services.projects.getRequired(ctx.projectId);
 
       // 修订指令：shared loop 以落盘的确定性修订计划为准（计划缺失时回退执行期派生）；
@@ -831,7 +834,9 @@ function stylePolishStage(services: WorkflowServices): StageSpec {
       }));
       const targets = listRevisionTargets(outline, files, directives);
       const artifact = await readResearchArtifact(services.projects, ctx.projectId);
-      const bibliographyKeys = (artifact?.bibliography ?? []).map((entry) => entry.key);
+      const bibliographyKeys = (
+        await manuscriptBibliography(services, ctx.projectId, artifact?.bibliography ?? [])
+      ).map((entry) => entry.key);
       const protectedTerms = await loadGlossaryTerms(services.projects.manuscriptDir(ctx.projectId));
       const project = await services.projects.getRequired(ctx.projectId);
 
@@ -932,6 +937,39 @@ function planStylePolish(state: WorkflowState, gateRound: number): PlanDecision 
     return styleMinor > 0 ? { kind: "stage", stageId: "hitl.style_polish" } : null;
   }
   return decision === "apply" ? { kind: "stage", stageId: "revision.style_polish" } : null;
+}
+
+/**
+ * 修订 / 润色可引用的参考文献 = research artifact bibliography ∪ manuscript/references.bib
+ * 条目（按 key 去重；Existing-Paper 重建项目只有后者）。references.bib 是引用 key
+ * 的事实源——Writer prompt 的「只允许引用以下 key」必须覆盖稿件里已有的全部 key，
+ * 否则会把合法引用当成违规删除（2026-09-14 真实论文验收 B2/A2 暴露）。
+ */
+async function manuscriptBibliography(
+  services: WorkflowServices,
+  projectId: string,
+  fromArtifact: readonly BibliographyEntryInput[],
+): Promise<BibliographyEntryInput[]> {
+  const merged = new Map<string, BibliographyEntryInput>();
+  for (const entry of fromArtifact) {
+    merged.set(entry.key, entry);
+  }
+  try {
+    const bib = await readFile(join(services.projects.manuscriptDir(projectId), "references.bib"), "utf8");
+    for (const entry of parseBib(bib).entries) {
+      if (!merged.has(entry.key)) {
+        merged.set(entry.key, {
+          key: entry.key,
+          title: entry.title ?? entry.key,
+          ...(entry.year !== undefined ? { year: entry.year } : {}),
+          ...(entry.doi !== undefined ? { doi: entry.doi } : {}),
+        });
+      }
+    }
+  } catch {
+    // 无 references.bib：只有 artifact bibliography
+  }
+  return [...merged.values()];
 }
 
 /** manuscript/glossary.json（可选）：受保护术语表（["术语", …] 或 {terms: [...]}） */
@@ -1138,8 +1176,14 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
       },
     }) satisfies PlanDecision;
 
-  // accept_draft（overflow 或 stalled 的回答）→ 构建 Draft PDF 后完成
+  // accept_draft（overflow 或 stalled 的回答）→ 构建 Draft PDF 后完成。
+  // M5.4/M5.6：用户显式 apply_once 时，Draft 构建前同样提供一次语言润色（Quality
+  // Gate 未通过 ≠ 不能润色表达；润色产生新修订后尾部照旧重走复审 / gate）
   const draftPath = (): PlanDecision => {
+    const stylePolishBeforeDraft = planStylePolish(state, gateRound);
+    if (stylePolishBeforeDraft !== null) {
+      return stylePolishBeforeDraft;
+    }
     if (!has("build.draft") || buildIdx < contentIdx) {
       return { kind: "stage", stageId: "build.draft" };
     }

@@ -364,7 +364,9 @@ function scriptedStylePolish(task: string, mode: StyleMode | undefined): string 
   if (current === "") {
     return REVISED_SECTION_TEX;
   }
-  let polished = current.replace("本章节论述基于证据的核心观点", "本节围绕已核验证据阐述核心观点");
+  let polished = current
+    .replace("本章节论述基于证据的核心观点", "本节围绕已核验证据阐述核心观点")
+    .replace("修订后的论述：", "修订后的表述：");
   if (mode === "violate") {
     polished = polished.replace(/\\cite\{[^}]*\}/, ""); // 故意破坏 citation key 集合
   }

@@ -83,6 +83,8 @@ export interface RuntimeStatus {
     sessionGcEvictions?: number;
     contextBudgetRejects?: number;
     contextPressureSessions?: number;
+    /** 进程内累计 usage（M5.6；实现暴露时携带） */
+    usageTotals?: import("./types.js").RuntimeUsageTotals;
     /** 逐会话生命周期诊断（实现暴露时携带；有界，不含敏感内容） */
     details?: SessionDiagnosticEntry[];
   };

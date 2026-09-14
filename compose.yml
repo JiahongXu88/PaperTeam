@@ -32,6 +32,9 @@ services:
       PAPERTEAM_PDF_PYTHON: /opt/paperteam-venv/bin/python
       # docker stop 的协作式收敛预算（与 stop_grace_period 对齐，见 index.ts registerShutdown）
       PAPERTEAM_SHUTDOWN_TIMEOUT_MS: "40000"
+      # 单次 Agent run 执行超时：默认 300000 对 20+ 页真实论文的审稿 / 逐节修订过短
+      # （M5.6 真实论文验收：两臂都在 300s 超时），部署默认 15 分钟
+      PAPERTEAM_PI_RUN_TIMEOUT_MS: "900000"
     volumes:
       - paperteam-projects:/data/projects
       - paperteam-runtime:/data/runtime

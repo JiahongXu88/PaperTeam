@@ -197,10 +197,19 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > M5.5 **不标 COMPLETE**，验收清单见 docs/DEPLOYMENT.md §7，需在 Docker 主机
 > 上逐项执行后回填 docs/M5_ACCEPTANCE.md。
 
-### M5.6 Real Paper Acceptance & Release
+### M5.6 Real Paper Acceptance & Release（🟡 PARTIAL，2026-09-14 首轮验收完成）
 
 以 M5.0 建立的口径做真实中文论文 A/B 验收（M5 改动前后的产出质量、
 长程运行稳定性、部署可用性），诚实记录结论；版本发布与 Release Notes。
+
+> 进度：首轮真实验收已执行并记录于 docs/M5_ACCEPTANCE.md（26 页中文工科论文 +
+> glm-5.3；A/B 两臂同模型同阈值）。结果：A/B 两臂均 Draft PASS / Final blocked
+> （Gate 如实 FAIL，阈值未动）；Quick Review 零写入；材料不足提案不编造；长程
+> runtime 有界可观测。验收驱动修复：默认 300s 执行超时对长论文过短（部署默认
+> 900s）、Writer 删光重建稿全部引用（引用 key 事实源改为 references.bib）、
+> Style Polish 在 Draft 路径也提供一次。**未完成**：人工 pairwise 评价、Docker
+> E2E（无 Docker 主机）、修复后 A 臂重跑（provider 429）。**不打 tag，M5 不标
+> COMPLETE**（Release Notes 见 docs/RELEASE_NOTES_M5.md）。
 
 ## 2. M5 明确不做（非目标）
 

@@ -543,9 +543,10 @@ function buildRevisePrompt(params: {
     "4. 只允许引用以下参考文献 key：" +
       (params.bibliography.length > 0
         ? params.bibliography.map((entry) => entry.key).join(", ")
-        : "（无：不要使用 \\cite）"),
+        : "（无：不要新增 \\cite）"),
+    "5. 保留本章节现有的 \\cite 引用及其所支撑的论述（除非某条问题明确要求删除该引用）；不得为了精简而整体删光引用，也不得新增列表之外的 key。",
     ...(params.buildError
-      ? ["5. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
+      ? ["6. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
       : []),
     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
     "",

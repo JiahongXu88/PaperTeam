@@ -148,6 +148,7 @@ import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
 import type {
   AgentEvent,
   AgentTaskSkills,
+  RuntimeUsageTotals,
   AssignedSkillRef,
   RuntimeSkillAssignment,
   AgentRuntime,
@@ -1290,6 +1291,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.releaseArrivalToken(state);
     const final = this.withTerminalDiagnostics(state, task);
     state.task = final;
+    this.accumulateTotals(final);
     this.rememberTask(final.taskId, final);
     state.resolveResult(final);
     this.wakeEventWaiters(state);
@@ -1312,6 +1314,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.failure = error;
     const final = this.withTerminalDiagnostics(state, this.buildFailureTask(state, error));
     state.task = final;
+    this.accumulateTotals(final);
     this.rememberTask(final.taskId, final);
     state.rejectResult(error);
     this.wakeEventWaiters(state);
@@ -2407,6 +2410,44 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
   private eventForwarders = new Map<string, (event: AgentSessionEvent) => void>();
 
+  /** 进程内累计 usage（M5.6 观测面；settle 时累加） */
+  private readonly usageTotals: RuntimeUsageTotals = {
+    runs: 0,
+    runsWithUsage: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    estimatedCost: 0,
+    costRuns: 0,
+    assistantTurns: 0,
+  };
+
+  private accumulateTotals(task: AgentTask): void {
+    this.usageTotals.runs += 1;
+    const usage = task.usage;
+    if (usage === undefined) {
+      return;
+    }
+    this.usageTotals.runsWithUsage += 1;
+    this.usageTotals.inputTokens += usage.inputTokens;
+    this.usageTotals.outputTokens += usage.outputTokens;
+    this.usageTotals.cacheReadTokens += usage.cacheReadTokens;
+    this.usageTotals.cacheWriteTokens += usage.cacheWriteTokens;
+    this.usageTotals.assistantTurns += usage.assistantTurns;
+    if (typeof usage.estimatedCost === "number" && Number.isFinite(usage.estimatedCost)) {
+      this.usageTotals.estimatedCost += usage.estimatedCost;
+      this.usageTotals.costRuns += 1;
+    }
+    this.log(
+      `[pi-runtime] usage taskId=${task.taskId} status=${task.status} in=${usage.inputTokens} out=${usage.outputTokens} cacheR=${usage.cacheReadTokens} cacheW=${usage.cacheWriteTokens} turns=${usage.assistantTurns}${
+        usage.estimatedCost !== undefined ? ` cost=${usage.estimatedCost}` : ""
+      } exec=${task.executionDurationMs ?? "?"}ms role=${String(task.metadata?.["role"] ?? "?")} skills=${task.skills?.assigned.map((skill) => skill.id).join("+") ?? "-"} accessed=${
+        task.skills === undefined ? "-" : task.skills.accessed === null ? "unknown" : task.skills.accessed.join("+") || "none"
+      }`,
+    );
+  }
+
   private attachEventForwarder(managed: ManagedSession, taskId: string, state: RunState): void {
     // 本 run 独占会话期间的 Skill 注入快照（M5.3：generation 内固定，随任务终态输出）
     state.skillsAssigned = managed.assignedSkills.map((skill) => ({ ...skill }));
@@ -2513,6 +2554,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
       sessionGcEvictions: this.sessionGcEvictions,
       contextBudgetRejects: this.contextBudgetRejects,
       contextPressureSessions,
+      // M5.6 验收观测面：进程内累计 usage（GET /api/runtime/status 透传）
+      usageTotals: { ...this.usageTotals },
     };
   }
 

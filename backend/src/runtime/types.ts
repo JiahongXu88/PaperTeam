@@ -379,6 +379,27 @@ export interface RuntimeSessionStats {
   sessionGcEvictions?: number;
   contextBudgetRejects?: number;
   contextPressureSessions?: number;
+  /**
+   * 进程内累计 usage（M5.6 验收观测面；实现暴露时携带）：所有已 settle run 的
+   * token / cost 之和（provider 未返回 usage 的 run 只计入 runs，不伪造 0 成本）。
+   */
+  usageTotals?: RuntimeUsageTotals;
+}
+
+/** 进程内累计 usage（只读观测；不是计费依据） */
+export interface RuntimeUsageTotals {
+  /** 已 settle 的 run 数（含 failed / cancelled / timed_out） */
+  runs: number;
+  /** 携带 usage 的 run 数 */
+  runsWithUsage: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  /** 有 estimatedCost 的 run 的成本之和（缺省 → 0 且 costRuns 不计） */
+  estimatedCost: number;
+  costRuns: number;
+  assistantTurns: number;
 }
 
 /**

@@ -421,6 +421,41 @@ describe("M5.4 Style Revision Loop（scripted workflow e2e）", () => {
     expect(completions(finished, "revision.style_polish")).toBe(0);
   });
 
+  it("apply_once + Quality Gate 持续失败 → overflow accept_draft → Draft 构建前仍提供一次 style polish（M5.6 验收驱动）", async () => {
+    const stack = await newStack(["fail", "fail", "fail"]);
+    const project = await stack.store.create("风格润色-门禁失败仍润色", { researchIdea: "[style:findings] 检索增强生成" });
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, { stylePolicy: "apply_once" });
+    const runId = created.body["runId"] as string;
+    await approveFront(stack, runId);
+    // fail → fail：CONVERGED → stalled HITL → accept_draft → draftPath → style HITL
+    let waiting = await pollRun(stack, runId, ["awaiting_input", "completed", "failed"]);
+    const seen: string[] = [];
+    while (waiting.status === "awaiting_input" && waiting.awaiting?.stageId !== "hitl.style_polish") {
+      seen.push(waiting.awaiting!.stageId);
+      await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
+      waiting = await pollRun(stack, runId, ["awaiting_input", "completed", "failed"]);
+    }
+    expect(waiting.status).toBe("awaiting_input");
+    expect(waiting.awaiting?.stageId).toBe("hitl.style_polish");
+    expect(seen.some((id) => id === "hitl.revision_stalled" || id === "hitl.revision_overflow")).toBe(true);
+    const reviewsBefore = completions(waiting, "review.run");
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "apply" });
+    let finished = await pollRun(stack, runId, ["awaiting_input", "completed", "failed"]);
+    while (finished.status === "awaiting_input") {
+      // 润色后复审仍失败：既有 HITL 照旧（本轮 gate 新一轮），继续 accept_draft
+      expect(finished.awaiting?.stageId).not.toBe("hitl.style_polish"); // 最多一轮
+      await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
+      finished = await pollRun(stack, runId, ["awaiting_input", "completed", "failed"]);
+    }
+    expect(finished.status).toBe("completed");
+    expect(finished.completion?.label).toBe("draft");
+    expect(completions(finished, "revision.style_polish")).toBe(1);
+    expect(finished.stageResults["revision.style_polish"]!["status"]).toBe("applied");
+    expect(completions(finished, "review.run")).toBe(reviewsBefore + 1); // 润色后强制复审
+    const intro = await readFile(join(stack.store.manuscriptDir(project.id), "sections", "introduction.tex"), "utf8");
+    expect(intro).toContain("修订后的表述"); // 只改表达（scripted：「论述」→「表述」）
+  });
+
   it("Quick Review 红线：定义不含任何修订 / 润色 stage；POST 携带 stylePolicy → 400；非法值 → 400", async () => {
     const stack = await newStack(["pass"]);
     const definition = createExistingPaperReviewDefinition(stack.stack.workflowServices);
