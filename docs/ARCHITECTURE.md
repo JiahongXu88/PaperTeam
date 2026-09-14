@@ -102,8 +102,10 @@ Skills / Settings（模型设置 + 项目管理）。项目生命周期含 归�
 Reviewer 修订闭环 + bounded LaTeX repair（M4.7）、版本体验（M4.8：版本历史 /
 确定性比较 / 不可变恢复，`ManuscriptRevisionStore` 不可变修订链 + VersionService）。
 论文版本以不可变修订快照实现（非 Git）；尚未实现：Visual Reviewer（M5 未含）、
-Admin 后台（M5 未含）；受控学术 Skill 接入（M5.3 ✅，见 §12.3）已完成，单机
-Linux / Docker 部署（M5.5）在 M5 范围内（见 M5_PLAN.md）。
+Admin 后台（M5 未含）；受控学术 Skill 接入（M5.3 ✅，见 §12.3）与 Style Revision
+Loop（M5.4 ✅，见 §13.10）已完成；单机 Linux / Docker 部署（M5.5）代码与 CI 已就位、
+真实 Docker 验收待执行（见 docs/DEPLOYMENT.md：web(nginx) + backend 两容器、双 volume
+事实源、`/health` liveness 与 `/ready` readiness、可配置优雅停机）。
 
 ## 2. 核心概念区分（架构红线）
 

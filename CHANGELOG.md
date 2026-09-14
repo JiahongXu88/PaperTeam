@@ -97,7 +97,20 @@ Windows 下 LaTeX 编译超时只终止 shell 进程；单机单用户形态。
 - UI：Improvement 启动的「语言风格建议」选项、HITL 勾选面板、「语言润色」状态卡。
 - M5 eval corpus（A–E 自建样本）+ `styleSignals` 确定性扫描 + 人工评价模板。
 
+### M5.5 Linux / Docker Deployment（2026-09-14，IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）
+
+- `Dockerfile`（多阶段：frontend-build / backend-build / `backend` / `web`）、
+  `compose.yml`（web 唯一对外端口、backend 内部、双 named volume、stop_grace_period）、
+  `docker/nginx.conf`（同源反代，SSE 不缓冲）、`docker/backend-entrypoint.sh`
+  （volume 属主修正 + setpriv 降权）、`.dockerignore`。
+- `GET /ready` readiness（Runtime + 数据根可写 + TeX / Python 状态，degraded 如实）；
+  `/health` 保持 liveness。
+- 优雅停机：`PAPERTEAM_SHUTDOWN_TIMEOUT_MS`（默认 30s）替代固定 5s 硬退出；
+  先停止受理，再取消 / 收敛 / 释放会话。
+- CI：`.github/workflows/ci.yml`（ubuntu build / typecheck / test + docker build smoke）。
+- 真实 `docker compose` 验收待在 Docker 主机执行（开发机无 Docker / WSL）。
+
 ### 其余 M5 阶段
 
 - M5.1 / M5.2 Runtime 生命周期与长程治理（见 docs/PROJECT_STATUS.md）；
-  M5.5 Linux / Docker、M5.6 真实论文 A/B 验收进行中。
+  M5.6 真实论文 A/B 验收进行中。

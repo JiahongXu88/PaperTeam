@@ -178,12 +178,24 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
   plan / reviewer 4、corpus 2、scripted e2e 6），frontend 164 → 170 passed；
   build / typecheck / test 全绿。
 
-### M5.5 Linux / Docker Deployment
+### M5.5 Linux / Docker Deployment（🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE，2026-09-14）
 
 单机 Linux 部署：Backend + Frontend + Pi SDK + TeX 工具链
 （texlive-xetex + 中文字体）的 Docker 镜像与 compose 配置；Windows
 依赖项（pymupdf 子进程、路径处理）的跨平台核验。目标形态是**单机
 单用户**，不做多租户 / K8s / HA。
+
+> 进度：代码与自动化测试 **已完成**（`Dockerfile` 多阶段 backend / web 目标、
+> `compose.yml` 双 named volume + backend 不对外发布 + `stop_grace_period`、
+> `docker/nginx.conf` 同源反代（SSE 不缓冲）、`docker/backend-entrypoint.sh`
+> volume 属主修正 + setpriv 降权、`.dockerignore`、`.github/workflows/ci.yml`
+> ubuntu build / typecheck / test + docker build smoke、`GET /ready` readiness、
+> `PAPERTEAM_SHUTDOWN_TIMEOUT_MS` 可配置优雅停机、Linux 跨平台源码审计；
+> `backend/test/deploy/deployment.test.ts` 9 项；详见 docs/DEPLOYMENT.md）。
+> **真实 `docker compose build / up / restart / down` 与 volume 持久化验收未执行**：
+> 开发机（Windows）没有 Docker Desktop 也没有 WSL，无法在本机完成；按纪律
+> M5.5 **不标 COMPLETE**，验收清单见 docs/DEPLOYMENT.md §7，需在 Docker 主机
+> 上逐项执行后回填 docs/M5_ACCEPTANCE.md。
 
 ### M5.6 Real Paper Acceptance & Release
 

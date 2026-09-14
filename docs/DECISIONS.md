@@ -604,3 +604,24 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   `polishSectionStyle`、definitions（`hitl.style_polish` / `revision.style_polish` /
   planner）、`/api/projects/:id/style-polish`、HitlPanel / ReviewPanel / PaperPanel、
   eval corpus 与人工评价模板。
+
+## D-0032 单机 Docker 形态：web(nginx) + backend 两容器、volume 为事实源、/ready 与 /health 分离、可配置优雅停机
+
+- **日期**：2026-09-14（M5.5）
+- **决策**：单机单用户部署用两容器 compose：`web`（nginx 静态资源 + `/api`
+  `/health` `/ready` 同源反代，唯一对外端口）与 `backend`（只在内部网络 expose）。
+  `PROJECTS_ROOT` / `PAPERTEAM_RUNTIME_ROOT` 各挂 named volume，容器可写层不保存
+  用户数据；镜像不含 `.env` / `auth.json` / Key，密钥经 `.env`（env_file，可缺省）
+  或 Settings UI 注入。TeX 只装模板与导入论文真实需要的包集（不装 texlive-full）。
+  `/health` 只回答「进程活着、Runtime 可初始化」，新增 `/ready` 回答「可工作」
+  （Runtime + 数据根可写 + TeX / Python 状态，缺失记 degraded，不调用模型）。
+  SIGTERM 处理改为「停止受理 → 取消在途 run → checkpoint 落盘 → 释放会话 →
+  退出」，硬退出预算由 `PAPERTEAM_SHUTDOWN_TIMEOUT_MS` 配置并小于 compose
+  `stop_grace_period`。
+- **理由**：Backend 现状不提供静态文件服务，nginx 反代比在 Backend 增加静态服务
+  改动更小且天然满足「Backend 不暴露公网 / 同源 /api」；固定 5s 硬退出会让长任务
+  状态落盘不完整；readiness 与 liveness 混用会让编排器在 TeX 缺失时误判进程死亡。
+- **不做**：K8s / HA / autoscaling / 多租户 / Redis / 外部队列 / 登录 / System Admin；
+  在 readiness 中真实调用 LLM。
+- **如实边界**：开发机无 Docker / WSL，真实 build / up / restart / persistence 验收
+  未执行，M5.5 状态 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE（docs/DEPLOYMENT.md §7）。

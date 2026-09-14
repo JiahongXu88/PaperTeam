@@ -106,6 +106,8 @@ export async function startTestStack(
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
     skills?: { registry: import("../../src/skills/SkillRegistry.js").SkillRegistry; summaries?: import("../../src/skills/SkillSummaryService.js").SkillSummaryService };
+    /** Readiness probe（GET /ready；M5.5） */
+    readiness?: import("../../src/runtime/readiness.js").ReadinessProbe;
     /** Final PDF parser 注入（import-pdf / existing_paper_review 测试用） */
     paperParser?: import("../../src/paper/PdfParser.js").PdfParser;
     /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
@@ -160,6 +162,7 @@ export async function startTestStack(
     orchestrator,
     stack,
     importer,
+    ...(options.readiness !== undefined ? { readiness: options.readiness } : {}),
     ...(options.skills !== undefined
       ? { skills: options.skills.registry, ...(options.skills.summaries !== undefined ? { skillSummaries: options.skills.summaries } : {}) }
       : {}),

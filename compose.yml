@@ -1,0 +1,63 @@
+# PaperTeam 单机单用户部署（M5.5）：docker compose up -d 后访问 http://<host>:8080
+#
+#   web      nginx：Frontend 静态资源 + /api /health /ready 同源反向代理（唯一对外端口）
+#   backend  Node 22 + Pi SDK + Python/pymupdf + XeLaTeX/latexmk/biber（不对外发布端口）
+#
+# 事实源在两个 named volume（删除 / 重建容器后 project / revisions / evidence /
+# checkpoints / artifacts / installed Skills / provenance / runtime settings 仍在）：
+#   paperteam-projects → PROJECTS_ROOT=/data/projects
+#   paperteam-runtime  → PAPERTEAM_RUNTIME_ROOT=/data/runtime
+#
+# 密钥：不写进镜像、不写进本文件。把模型 Key 放在同目录 .env（已被 .gitignore 忽略），
+# 或直接在 Settings → 模型设置 页面保存（落到 runtime volume 的 auth.json）。
+# .env 缺失时也能启动（模型 not_configured，UI 会提示配置）。
+
+name: paperteam
+
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    image: paperteam-backend:local
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      PAPERTEAM_PORT: "3000"
+      PROJECTS_ROOT: /data/projects
+      PAPERTEAM_RUNTIME_ROOT: /data/runtime
+      PAPERTEAM_PDF_PYTHON: /opt/paperteam-venv/bin/python
+      # docker stop 的协作式收敛预算（与 stop_grace_period 对齐，见 index.ts registerShutdown）
+      PAPERTEAM_SHUTDOWN_TIMEOUT_MS: "40000"
+    volumes:
+      - paperteam-projects:/data/projects
+      - paperteam-runtime:/data/runtime
+    expose:
+      - "3000"
+    # SIGTERM → 不接受新任务 → queued 收敛 / running 协作式 abort → checkpoint 落盘 → sessions close → 退出
+    stop_grace_period: 45s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      target: web
+    image: paperteam-web:local
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${PAPERTEAM_WEB_PORT:-8080}:80"
+
+volumes:
+  paperteam-projects:
+  paperteam-runtime:

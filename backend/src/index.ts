@@ -13,6 +13,7 @@ import { ModelSettingsService, registerStoredCustomProviders } from "./settings/
 import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { SkillRegistry } from "./skills/SkillRegistry.js";
+import { ReadinessProbe } from "./runtime/readiness.js";
 import { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { createScholarlyTools } from "./skills/scholarlyTools.js";
 import { LatexImporter } from "./import/LatexImporter.js";
@@ -254,6 +255,17 @@ export async function startBackend(): Promise<void> {
     log: (message) => console.log(message),
   });
 
+  // Readiness（GET /ready）：Runtime 可初始化 + 两个数据根可写 + TeX / Python 工具链状态
+  const readiness = new ReadinessProbe({
+    runtime,
+    paths: [
+      { label: "PROJECTS_ROOT", path: config.projectsRoot },
+      { label: "PAPERTEAM_RUNTIME_ROOT", path: config.runtimeRoot },
+    ],
+    latex,
+    pdfParser: stack.paperParser,
+  });
+
   const server = createBackendHttpServer({
     runtime,
     projects,
@@ -265,6 +277,7 @@ export async function startBackend(): Promise<void> {
     skills: skillRegistry,
     skillSummaries,
     modelSettings,
+    readiness,
   });
   server.listen(config.port, () => {
     console.log(
@@ -275,7 +288,7 @@ export async function startBackend(): Promise<void> {
     );
   });
 
-  registerShutdown(server, runtime, orchestrator);
+  registerShutdown(server, runtime, orchestrator, config.shutdownTimeoutMs);
 }
 
 function loadDotEnvBestEffort(): void {
@@ -305,10 +318,22 @@ function reportRuntimeHealth(health: RuntimeHealth): void {
   console.log(`  reason: ${health.detail}`);
 }
 
+/**
+ * 优雅停机（docker stop → SIGTERM；M5.5 专项审计）：
+ *   1. server.close()：立刻停止接受新连接（新任务不再受理；在途 HTTP / SSE 连接保留）
+ *   2. orchestrator.close()：请求取消活跃 run（queued 即时终态、running 协作式 abort），
+ *      等待循环退出——checkpoint 随每个 stage 落盘，取消不会写出半个 checkpoint
+ *   3. runtime.close()：收敛在途 run、释放全部 AgentSession、清理 GC / 超时定时器
+ *   4. closeAllConnections + 退出码 0
+ * 兜底：任何一步悬挂超过 shutdownTimeoutMs（PAPERTEAM_SHUTDOWN_TIMEOUT_MS，默认 30s，
+ * 应小于 compose 的 stop_grace_period）→ 记录日志并以退出码 1 强制退出；
+ * 旧实现固定 5s 对长任务的状态落盘过短，已改为可配置。
+ */
 function registerShutdown(
   server: import("node:http").Server,
   runtime: AgentRuntime,
   orchestrator: WorkflowOrchestrator,
+  shutdownTimeoutMs: number,
 ): void {
   let shuttingDown = false;
   const shutdown = (signal: string) => {
@@ -316,23 +341,31 @@ function registerShutdown(
       return; // 第二次 Ctrl+C：已在退出流程中，不重复 close
     }
     shuttingDown = true;
-    console.log(`\nPaperTeam Backend shutting down (${signal})...`);
-    // 兜底：任何一步悬挂（keep-alive 连接、未响应 abort 的工具）都在 5s 后强制退出
-    setTimeout(() => process.exit(0), 5000).unref();
-    // 先停编排器（请求取消活跃 run 并等循环退出，checkpoint 已随执行落盘），
-    // 再收敛 Runtime 在途 run / 释放全部 AgentSession，最后关 HTTP 服务
-    // （SSE 长连接会阻止 server.close 完成，主动 closeAllConnections 让退出即时、干净）
+    const startedAt = Date.now();
+    console.log(`\nPaperTeam Backend shutting down (${signal})... budget=${shutdownTimeoutMs}ms`);
+    const hardExit = setTimeout(() => {
+      console.error(
+        `[paperteam] 优雅停机超过 ${shutdownTimeoutMs}ms（编排器 / Runtime 未收敛），强制退出（exit 1）`,
+      );
+      process.exit(1);
+    }, shutdownTimeoutMs);
+    hardExit.unref();
+    // 1. 立即停止接受新连接（不再受理新任务；已建立的连接等下面收敛后统一关闭）
+    server.close();
     void (async () => {
+      // 2. 先停编排器（请求取消活跃 run 并等循环退出，checkpoint 已随执行落盘）
       await orchestrator.close().catch((error: unknown) => {
         console.error("[paperteam] 编排器关闭异常：", errorText(error));
       });
+      // 3. 再收敛 Runtime 在途 run / 释放全部 AgentSession / 清理定时器
       await runtime.close().catch((error: unknown) => {
         console.error("[paperteam] Runtime 关闭异常：", errorText(error));
       });
+      // 4. SSE 长连接会阻止 server.close 完成，主动 closeAllConnections 让退出即时、干净
       server.closeAllConnections?.();
-      server.close(() => {
-        process.exit(0);
-      });
+      clearTimeout(hardExit);
+      console.log(`PaperTeam Backend stopped cleanly in ${Date.now() - startedAt}ms`);
+      process.exit(0);
     })();
   };
   process.on("SIGINT", () => shutdown("SIGINT"));

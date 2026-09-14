@@ -128,7 +128,10 @@ Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
 assigned / accessed 观测、受控 install / update + Skills 设置页）与 M5.4 中文
 学术风格修订回路（stylePolicy suggest_only / apply_once、Style Invariant
 Checker、style-only HITL 修订 + 强制复审、Quick Review 只读红线、M5 eval
-corpus）已完成，后续为 Linux / Docker 部署（M5.5）与真实论文 A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
+corpus）已完成；M5.5 单机 Linux / Docker 部署的 Dockerfile / compose / nginx / CI /
+`/ready` / 优雅停机已实现并有测试，但**真实 Docker 验收待执行**（开发机无 Docker，
+状态 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE，见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；
+之后是真实论文 A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 
@@ -146,6 +149,18 @@ Production Stable 1.0。
 - **单机单用户形态**：无鉴权 / 多租户；Docker 部署与系统管理后台未实现。
 - **分页与规模**：项目 / run 列表无分页；EvidenceStore 为 JSONL 全量读写
   （几十个修订 / 数百条 Evidence 规模内验证）。
+
+## Docker 部署（单机单用户，M5.5）
+
+```bash
+cp .env.example .env        # 可选：模型 Key；缺失也能启动，UI 中配置
+docker compose build && docker compose up -d
+curl -fsS http://localhost:8080/ready
+```
+
+web（nginx，唯一对外端口 8080）+ backend（Node 22 + Pi SDK + Python/pymupdf +
+XeLaTeX/latexmk/biber + 中文字体，不对外发布）；数据在 `paperteam-projects` /
+`paperteam-runtime` 两个 volume。细节、依赖审计与验收清单见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 ## 技术栈
 

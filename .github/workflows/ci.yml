@@ -1,0 +1,83 @@
+name: CI
+
+# M5.5 最低限度 Linux CI：ubuntu + Node 22 → install / build / typecheck / test，
+# 以及 Docker 镜像构建 smoke（只 build，不 push；不做 release pipeline）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build · typecheck · test (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install (backend + frontend)
+        run: |
+          npm --prefix backend ci --no-audit --no-fund
+          npm --prefix frontend ci --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+        env:
+          CI: "true"
+
+  docker-build:
+    name: docker build smoke (backend + web targets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: backend
+          push: false
+          load: true
+          tags: paperteam-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: web
+          push: false
+          load: true
+          tags: paperteam-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke（toolchain 与 /health、/ready）
+        run: |
+          docker run --rm paperteam-backend:ci /opt/paperteam-venv/bin/python -c "import pymupdf; print(pymupdf.__version__)"
+          docker run --rm paperteam-backend:ci latexmk --version | head -n 1
+          docker run --rm paperteam-backend:ci xelatex --version | head -n 1
+          docker run -d --name pt-smoke -e PAPERTEAM_TEST_RUNTIME=scripted paperteam-backend:ci
+          for i in $(seq 1 30); do
+            if docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"; then
+              echo ready; break
+            fi
+            sleep 2
+          done
+          docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(async r=>{console.log(r.status, await r.text()); process.exit(r.status===200?0:1)})"
+          docker stop -t 45 pt-smoke

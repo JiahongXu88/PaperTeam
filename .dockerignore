@@ -1,0 +1,26 @@
+# 构建上下文只带源码与审计产物；密钥 / 依赖 / 运行数据 / 产物一律排除
+.git
+.github
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/coverage
+**/*.log
+projects/
+workspace/
+runtime/
+outputs/
+e2e/
+docs/
+scripts/
+**/test/
+**/*.test.ts
+**/*.test.tsx
+**/auth.json
+**/models.json
+.idea
+.vscode
+.qa-chrome-profile
+.qa-shots

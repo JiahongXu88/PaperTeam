@@ -30,6 +30,7 @@ import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
 import type { SkillRegistry } from "./skills/SkillRegistry.js";
 import { ALLOWED_CONTEXT_SCOPES } from "./skills/routing.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
+import type { ReadinessProbe } from "./runtime/readiness.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
@@ -94,6 +95,8 @@ export interface BackendHttpServerOptions {
   /** Skill Registry（GET /api/skills） */
   skills?: SkillRegistry;
   skillSummaries?: SkillSummaryService;
+  /** Readiness（GET /ready；M5.5：Runtime + 文件系统 + TeX / Python 工具链） */
+  readiness?: ReadinessProbe;
   /** Model Settings（/api/settings/model） */
   modelSettings?: ModelSettingsService;
 }
@@ -109,6 +112,7 @@ export function createBackendHttpServer({
   skills,
   skillSummaries,
   modelSettings,
+  readiness,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     handleRequest(req, res, {
@@ -122,6 +126,7 @@ export function createBackendHttpServer({
       skills,
       skillSummaries,
       modelSettings,
+      readiness,
     }).catch((error: unknown) => {
       const businessError = toBusinessError(error);
       if (businessError !== error) {
@@ -150,6 +155,8 @@ interface Services {
   runtimeStatus?: RuntimeStatusService;
   skills?: SkillRegistry;
   skillSummaries?: SkillSummaryService;
+  /** Readiness（GET /ready；M5.5：Runtime + 文件系统 + TeX / Python 工具链） */
+  readiness?: ReadinessProbe;
   modelSettings?: ModelSettingsService;
 }
 
@@ -161,6 +168,22 @@ async function handleRequest(
   const url = new URL(req.url ?? "/", "http://localhost");
   const pathname = url.pathname;
   const method = (req.method ?? "GET").toUpperCase();
+
+  // ---- GET /ready（M5.5 readiness：可工作 ≠ 进程活着；不调用模型）----
+  if (pathname === "/ready") {
+    if (method !== "GET" && method !== "HEAD") {
+      res.setHeader("Allow", "GET, HEAD");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    if (services.readiness === undefined) {
+      sendJson(res, 503, { ready: false, detail: "readiness 未配置" });
+      return;
+    }
+    const report = await services.readiness.check();
+    sendJson(res, report.ready ? 200 : 503, report);
+    return;
+  }
 
   // ---- GET /health ----
   if (pathname === "/health") {

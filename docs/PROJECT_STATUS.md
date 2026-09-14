@@ -1,6 +1,9 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-14（**M5.4 Chinese Academic Style Revision Loop ✅
+> 更新日期：2026-09-14（**M5.5 Linux / Docker Deployment 🟡 IMPLEMENTED /
+> AWAITING REAL DOCKER ACCEPTANCE**：Dockerfile / compose / nginx / CI / readiness /
+> 优雅停机 / 跨平台审计已完成并有测试，真实 Docker 验收因本机无 Docker / WSL 未执行；
+> 同日 **M5.4 Chinese Academic Style Revision Loop ✅
 > COMPLETE**：stylePolicy suggest_only / apply_once、Style Invariant Checker、
 > style-only HITL + 修订 + 强制复审、Quick Review 只读红线、M5 eval corpus；
 > 同日 **M5.3 Controlled Academic Skill Integration ✅ COMPLETE**：三个学术 Skill 审计入库 + role/contextScope 路由 + 会话级版本
@@ -22,7 +25,7 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
 中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
 接入（M5.3 ✅）、Style Revision Loop（M5.4 ✅）、单机 Linux / Docker 部署
-（M5.5）、真实论文 A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer /
+（M5.5 🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）、真实论文 A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
 
@@ -375,6 +378,63 @@ D-0026「critical / major → planned、minor → skipped」的前提下，增�
   stylePolicy 对其经 API 生效；润色只在 gate PASS 后提供一次（gate 反复
   失败 → 走既有 HITL / Draft 路径，不叠加润色）；语义等价只能靠 invariant +
   复审 + 人审，A/B 质量证据留 M5.6。
+
+**M5.5 Linux / Docker Deployment（🟡 IMPLEMENTED / AWAITING REAL DOCKER
+ACCEPTANCE，2026-09-14）**：单机单用户 Linux / Docker 部署的代码、配置、CI 与
+自动化测试完成；真实 Docker 验收未执行（见末尾如实边界）。
+
+- **依赖审计**（以源码 / doctor 为准，见 docs/DEPLOYMENT.md §2）：Node 22
+  （root engines）、Pi SDK 0.84.4、Python3 + pymupdf（`pdfToolchain` 候选 +
+  `backend/tools/parse_paper_pdf.py`）、latexmk / xelatex（`LatexCompiler`）、TeX 包
+  ctexart / amsmath / amssymb / natbib（模板）+ 导入论文常用 xcolor / graphicx /
+  hyperref / pgf / biblatex、中文字体（Fandol + Noto CJK）、git（Backend 运行时不
+  调用，可选）、Skill seed 与 tools 目录（相对 dist 解析，必须随镜像）。
+- **Dockerfile**（多阶段）：frontend-build → backend-build（tsc + `npm prune
+  --omit=dev`）→ `backend`（`node:22-bookworm-slim` + apt：python3/venv、git、
+  texlive-xetex / latex-base / latex-recommended / lang-chinese / pictures /
+  bibtex-extra、biber、latexmk、fonts-noto-cjk；**不装 texlive-full**；venv 安装
+  pymupdf；`PAPERTEAM_PDF_PYTHON` 指向 venv；`PROJECTS_ROOT=/data/projects`、
+  `PAPERTEAM_RUNTIME_ROOT=/data/runtime`；TEXMFVAR 可写目录；HEALTHCHECK /health；
+  exec 形式 ENTRYPOINT）→ `web`（nginx:1.27-alpine + Frontend dist +
+  `docker/nginx.conf`）。镜像不含 .env / auth.json / 任何 Key（`.dockerignore` +
+  测试断言）。
+- **compose.yml**：`backend`（`expose: 3000`，不 publish；`env_file: .env
+  required:false`；双 named volume `paperteam-projects` / `paperteam-runtime`；
+  `PAPERTEAM_SHUTDOWN_TIMEOUT_MS=40000`；`stop_grace_period: 45s`；healthcheck）+
+  `web`（`${PAPERTEAM_WEB_PORT:-8080}:80`，`depends_on: service_healthy`）。用户
+  只访问一个地址，`/api` 同源；nginx 对 `/api|/health|/ready` 反代、SSE
+  `proxy_buffering off` + 3600s 读超时。
+- **entrypoint**：root 启动只为修正首挂载空 volume 的属主（属主不对才 chown），
+  随后 `setpriv` 降权到 `paperteam` 再 `exec node`（PID 1 = node，SIGTERM 直达）。
+- **Readiness**（`runtime/readiness.ts` + `GET /ready`）：Runtime healthCheck +
+  两个数据根可创建可写（写入并删除探针文件）+ latexmk / xelatex 探测（60s 缓存）
+  + Python / pymupdf；`ready = runtime && filesystem`，TeX / Python 缺失记入
+  `degraded`（能力降级但可服务）；200 / 503；不调用模型。`/health` 保持 liveness。
+- **优雅停机专项审计**（`registerShutdown`）：旧实现固定 5s 硬退出对长任务过短
+  → 改为 ① `server.close()` 停止受理 → ② `orchestrator.close()`（queued 即时
+  终态、running 协作式 abort、checkpoint 随 stage 落盘）→ ③ `runtime.close()`
+  （会话释放、定时器清理）→ ④ `closeAllConnections` + exit 0；兜底
+  `PAPERTEAM_SHUTDOWN_TIMEOUT_MS`（默认 30s，1s-10min）超时 exit 1 并记日志。
+- **Linux 跨平台**：源码审计（测试）——无 cmd.exe / PowerShell 调用；`shell:true`
+  仅 `LatexCompiler` 且由 `IS_WINDOWS` 门控；无硬编码盘符路径；python 候选含
+  `python3`；数据根默认 `~/.paperteam` 在容器由环境变量覆盖。Windows 开发体验不变。
+- **CI**：`.github/workflows/ci.yml`——ubuntu-latest + Node 22：install / build /
+  typecheck / test；`docker-build` job：buildx 构建 backend + web 两目标（不 push）
+  + toolchain smoke（pymupdf / latexmk / xelatex 版本）+ 容器内 `/ready` 探测 +
+  `docker stop -t 45`。
+- **测试**（`test/deploy/deployment.test.ts` 9）：ReadinessProbe（ready / degraded /
+  不可写 / 缓存 / 探针清理）、HTTP /ready 200 / 503 / 未配置 503、停机预算配置
+  默认与范围、Dockerfile / compose / nginx / .dockerignore / .gitignore / CI 契约
+  （无 COPY .env、无 Key、多阶段、非 texlive-full、backend 不 publish、双 volume、
+  grace > 预算、SSE 不缓冲、Linux 路径纯净）、backend 源码跨平台审计。Backend 687
+  → 696 passed，Frontend 170 不变；build / typecheck / test 全绿。
+- **如实边界（阻塞 COMPLETE）**：本开发机（Windows 11）没有 Docker Desktop，也没
+  有 WSL（`docker: command not found`、`wsl.exe` 提示未安装），无法执行
+  `docker compose build / up / restart / down` 与 volume 持久化验收；镜像是否能
+  构建、TeX 包集是否足够、entrypoint 降权是否正确均**未经真实运行验证**。M5.5
+  状态为 **IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE**，验收清单见
+  docs/DEPLOYMENT.md §7；CI 的 docker-build job 在 GitHub Actions 上是第一处真实
+  构建反馈（push 后查看）。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

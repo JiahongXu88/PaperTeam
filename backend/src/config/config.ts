@@ -137,6 +137,13 @@ export interface AppConfig {
   review: ReviewConfig;
   pdf: PdfConfig;
   skills: SkillsConfig;
+  /**
+   * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
+   * 落盘 → 释放会话 → 关 HTTP）的最长等待；超过即强制退出（M5.5；
+   * PAPERTEAM_SHUTDOWN_TIMEOUT_MS，默认 30000，1s-10min；与 docker stop 的
+   * stop_grace_period 对齐）。
+   */
+  shutdownTimeoutMs: number;
 }
 
 /** Skill Registry 配置（M5.3） */
@@ -156,6 +163,7 @@ export interface AgentIds {
 }
 
 const DEFAULT_PORT = 3000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_RUN_TIMEOUT_MS = 300_000;
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
@@ -390,6 +398,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         .map((item) => item.trim().toLowerCase())
         .filter((item) => /^[a-z0-9][a-z0-9-]*$/.test(item)),
     },
+    shutdownTimeoutMs: readTimeoutMs(source, "PAPERTEAM_SHUTDOWN_TIMEOUT_MS", {
+      default: DEFAULT_SHUTDOWN_TIMEOUT_MS,
+      min: 1_000,
+      max: 600_000,
+    }),
     pdf: {
       ...(readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") !== undefined
         ? { pythonCommand: readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") }
