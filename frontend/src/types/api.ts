@@ -21,6 +21,14 @@ export type WorkflowKind =
  */
 export type CitationSemanticMode = "off" | "contradiction_only" | "full";
 
+/**
+ * 语言润色策略（M5.4；idea_to_paper / existing_paper_improvement 的 run 选项）：
+ *   suggest_only（默认）Style Reviewer 只给建议，minor 不进入修订计划
+ *   apply_once          Quality Gate 通过后询问一次，用户选中的 style 建议进入 style-only 修订
+ * existing_paper_review（Quick Review）不接受该选项——它 100% 只读。
+ */
+export type StylePolicy = "suggest_only" | "apply_once";
+
 /** 项目状态（project.json status） */
 export type ProjectStatus = "created" | "generated" | "failed";
 
@@ -124,6 +132,8 @@ export interface WorkflowRunView {
   stageHistory?: WorkflowStageRecordView[];
   /** 语义核验模式（existing_paper_review run 的 request 快照；旧 run 缺省 full） */
   citationSemanticMode?: CitationSemanticMode;
+  /** 语言润色策略（idea / improvement run 的 request 快照；旧 run 缺省 suggest_only） */
+  stylePolicy?: StylePolicy;
 }
 
 /** StageRecord 精简视图（不含 findings 等大 payload） */
@@ -159,6 +169,10 @@ export type HitlDecisionInput =
   | { action: "revise"; payload: { feedback: string } }
   | { action: "accept_draft" }
   | { action: "revise_more" }
+  /** 仅 hitl.style_polish（M5.4）：应用选中的 style 建议（缺省全部） */
+  | { action: "apply"; payload: { selectedFindingIds: string[] } }
+  /** 仅 hitl.style_polish：只保留建议，不修改稿件 */
+  | { action: "skip" }
   | { action: "cancel" };
 
 // ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----
@@ -425,6 +439,50 @@ export interface RevisionIterationView {
     academicScore: number | null;
     styleRisk: number | null;
   };
+}
+
+// ---- Style Polish（M5.4：GET /api/projects/:id/style-polish，只读视图） ----
+
+export interface StyleFindingView {
+  id: string;
+  section: string;
+  issue: string;
+  reason?: string;
+  proposedAction?: string;
+  severity: string;
+}
+
+export interface StylePlanItemView {
+  id: string;
+  section: string;
+  problem: string;
+  instruction: string;
+  status: "planned" | "skipped";
+  revisionReason?: string;
+}
+
+export interface StylePolishResultView {
+  planId: string;
+  reviewRound: number;
+  sourceRevision: number;
+  status: "applied" | "failed" | "noop";
+  revision?: number;
+  selectedFindingIds: string[];
+  sections: Array<{
+    section: string;
+    itemIds: string[];
+    invariantOk: boolean;
+    violations: Array<{ rule: string; detail: string }>;
+  }>;
+  completedAt: string;
+}
+
+export interface StylePolishView {
+  plan: { planId: string; reviewRound: number; sourceRevision: number; items: StylePlanItemView[] } | null;
+  result: StylePolishResultView | null;
+  reviewedRevision: number | null;
+  /** 润色产生的修订是否已被新一轮 review 覆盖（null = 无已应用的润色） */
+  reReviewed: boolean | null;
 }
 
 // ---- Manuscript Versions（M4.8：关联只由 Backend 完成，前端只展示） ----

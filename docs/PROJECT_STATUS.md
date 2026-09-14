@@ -1,7 +1,9 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-14（**M5.3 Controlled Academic Skill Integration ✅
-> COMPLETE**：三个学术 Skill 审计入库 + role/contextScope 路由 + 会话级版本
+> 更新日期：2026-09-14（**M5.4 Chinese Academic Style Revision Loop ✅
+> COMPLETE**：stylePolicy suggest_only / apply_once、Style Invariant Checker、
+> style-only HITL + 修订 + 强制复审、Quick Review 只读红线、M5 eval corpus；
+> 同日 **M5.3 Controlled Academic Skill Integration ✅ COMPLETE**：三个学术 Skill 审计入库 + role/contextScope 路由 + 会话级版本
 > 固定 + assigned/accessed 观测 + 受控 install/update + Skills 设置页；
 > 09-12 **M5.2 Long-Running Governance ✅ COMPLETE 收口**：
 > context budget / session rotation / TTL·GC·容量 / 观测面与安全自愈；
@@ -19,7 +21,7 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 **M5 — Chinese Academic Quality & Long-Running Reliability（🚧 进行中，
 2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
 中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
-接入（M5.3 ✅）、Style Revision Loop（M5.4）、单机 Linux / Docker 部署
+接入（M5.3 ✅）、Style Revision Loop（M5.4 ✅）、单机 Linux / Docker 部署
 （M5.5）、真实论文 A/B 验收（M5.6）。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
@@ -306,6 +308,73 @@ M5_PLAN 重定义（从「install / update / diff / 绑定 UI」产品化表面�
   在 approved catalog + `ALLOWED_CONTEXT_SCOPES` 内选）；旧版本快照保留不
   GC（纯文本、可审计）；accessed 观测依赖 Pi `read` 工具事件，Agent 若用
   其他方式读取不会计入（宁缺勿假）；Skill 是否改善产出质量留 M5.6 A/B。
+
+**M5.4 Chinese Academic Style Revision Loop（✅ 2026-09-14）**：在不破坏
+D-0026「critical / major → planned、minor → skipped」的前提下，增加用户显式
+选择的语言润色目标（D-0031）：
+
+- **stylePolicy**（`review/stylePolicy.ts`；POST /api/projects/:id/workflows 的
+  `stylePolicy` 字段，随 run.request 持久化）：`suggest_only`（默认）只展示
+  建议；`apply_once` 在 Quality Gate 通过后进入 HITL `hitl.style_polish`
+  （payload：style minor finding 列表 location / issue / reason /
+  proposedAction / severity + defaultSelectedIds），用户 apply（可携带
+  `selectedFindingIds`）→ `revision.style_polish` stage：
+  `buildStylePolishPlan`（只含选中的 style minor，`revisionReason=style_polish`、
+  priority low、status planned；`buildRevisionPlan` 默认规则不动）→
+  `WriterService.polishSectionStyle`（contextScope `writing/style-polish` →
+  academic-writing-zh + academic-style-zh；prompt 携带受保护内容清单：citation
+  key / 数字单位 / 数学片段数 / LaTeX 结构 / glossary 术语）→
+  `checkStyleInvariants` 逐章节校验 → **all-or-nothing**：全部通过才写回 +
+  `revisions.commit("revision.style_polish")`；任一失败 → 不覆盖当前修订、
+  结果 `failed` + 具体 invariant 落盘（`reviews/style-polish-r{n}.json`）、
+  不自动重试（maxAttempts 1）。planner：只有 `changed=true` 的润色才算改稿
+  → 尾部 citation.verify / review.run / quality.gate / build 整段重走；skip /
+  failed / noop 直接进入构建；最多一轮（countCompletions）。
+- **Style Invariant Checker**（`review/styleInvariants.ts`）：A citation key
+  多重集；B 数字 literal + 单位（`\%` 归一化）；C 数学片段（$…$ / \[…\] /
+  equation·align 等）；D \ref / \label / \eqref / \begin / \end 多重集；E 受保护
+  术语不减少（`manuscript/glossary.json` 可选）；F 哨兵词（未 / 无法 / 并非 /
+  不能 / 不显著 / 低于 / 高于 / 优于 / 差于 / 增加 / 降低 / 显著 / 导致 / 因此 /
+  证明 / 表明 / 可能 …）计数变化即阻断。如实边界：F 是保守哨兵，不是语义等价
+  证明；文档不夸大为「形式化证明语义相同」。
+- **Style Reviewer 输出**：ReviewIssue 新增可选 `reason`（`proposedAction` 作
+  suggestedAction 别名）；style prompt 要求 location / issue / reason /
+  proposedAction / severity、连接词防误报、禁止 AI 概率类字段；解析只挑已知
+  字段，`FORBIDDEN_DETECTOR_FIELDS` 永不进入结果 / 落盘。
+- **Quick Review 红线**：`createExistingPaperReviewDefinition` 的 stage 集合不含
+  任何 revision.* / writing.* / hitl.style_polish；POST workflows（kind=
+  existing_paper_review）携带 stylePolicy（任何值）→ 400；前端
+  `createWorkflowRun` 对 review kind 不发送该字段。
+- **HTTP / UI**：`GET /api/projects/:id/style-polish` → `{plan, result,
+  reviewedRevision, reReviewed}`；Domain Event `style_polish.applied /
+  style_polish.skipped`；ReviewPanel 高级选项「语言风格建议（仅系统性改进）」
+  select；HitlPanel `hitl.style_polish` 可勾选 finding → 「应用语言润色（N 条）」
+  / 「仅保留建议」；PaperPanel「语言润色」卡（状态 / 选中条数 / rev a → b /
+  invariant 结果 / 复审状态 / 违规明细）；stage 标签与时间线补齐。
+- **M5 eval corpus**（补齐 M5.0 延后项）：`backend/test/fixtures/eval/style-corpus/`
+  五段自建可公开中文工科段落（A 事实完整 / B 材料不足 / C 机械空泛 / D 正常 /
+  E 敏感不变量）+ `review/styleSignals.ts`（确定性表面模式扫描：模板开场 /
+  模糊归因 / 宣传式评价词 / 空泛总结 / 机械排比 / 机械过渡 / 夸大；eval 工具，
+  不进 gate、不是 AI detector；单个「此外 / 然而 / 因此」不计信号）+
+  `docs/eval/M5_STYLE_EVAL_TEMPLATE.md` 人工评价模板（事实保持 / 术语一致 /
+  清晰 / 建议可执行性 / false positive / 过度润色 / 耗时 / token / cost）。
+- **scripted runtime**：`[style:findings]` / `[style:violate]` 项目标记驱动
+  style finding 与 invariant 违反路径（`writing/style-polish` 输出只改表达）。
+- **测试**（`test/review/stylePolish.test.ts` 17）：invariants（纯表达改写通过；
+  citation 删 / 换、数字 / 单位、公式 / label / 环境、术语减少、否定 / 比较 /
+  强度哨兵各阻断）；readStylePolicy；默认 plan minor 仍 skipped；style plan
+  只含选中 minor 且不抬 severity；Reviewer 输出丢弃 AI 概率字段；corpus C 命中
+  / A·B·D 零信号 / 连接词不误报；e2e：suggest_only 不改稿、apply_once 全链路
+  （HITL → 计划 → 润色 → 新修订 → review/gate/citation 各 2 次 → Final，
+  非法 payload 409）、violate 失败保留原稿且不重试仍可 Final、skip、无 finding
+  不询问、Quick Review 400 + 定义无修订 stage。frontend `StylePolish.test.tsx`
+  6（HITL 勾选 / apply payload / skip / 禁用；状态卡 applied / failed / 空；
+  createWorkflowRun 发送规则）。Backend 670 → 687 passed（7 skipped 不变），
+  Frontend 164 → 170 passed；build / typecheck / test 全绿。
+- **如实边界**：idea_to_paper 的启动目前无前端入口（run 由 API 创建），
+  stylePolicy 对其经 API 生效；润色只在 gate PASS 后提供一次（gate 反复
+  失败 → 走既有 HITL / Draft 路径，不叠加润色）；语义等价只能靠 invariant +
+  复审 + 人审，A/B 质量证据留 M5.6。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

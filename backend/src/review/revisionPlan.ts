@@ -28,6 +28,13 @@ export type RevisionPlanItemKind =
 
 export type RevisionPlanItemStatus = "planned" | "skipped";
 
+/**
+ * 派发理由（M5.4）：quality = 质量修订（critical / major / citation / build，
+ * D-0026 既有语义）；style_polish = 用户显式选择（stylePolicy=apply_once）的
+ * 语言润色——不是通过抬高 severity 进入计划，而是由本字段显式携带。
+ */
+export type RevisionReason = "quality" | "style_polish";
+
 export interface RevisionPlanItem {
   /** 稳定 id（finding 指纹 / citation-missing:{key} / build-error / gate:{rule}） */
   id: string;
@@ -43,6 +50,8 @@ export interface RevisionPlanItem {
   needsEvidence?: boolean;
   /** skipped 的原因（记录但不派发） */
   note?: string;
+  /** 派发理由（缺省 quality；style_polish 条目只允许 style-only 修改） */
+  revisionReason?: RevisionReason;
 }
 
 export interface RevisionPlan {
@@ -54,6 +63,10 @@ export interface RevisionPlan {
   /** 计划依据的 review 轮次 */
   reviewRound: number;
   createdAt: string;
+  /** 计划类型（缺省 quality；style_polish 计划由 buildStylePolishPlan 派生） */
+  revisionReason?: RevisionReason;
+  /** style_polish 计划携带触发它的策略（审计） */
+  stylePolicy?: "apply_once";
   summary: {
     critical: number;
     major: number;

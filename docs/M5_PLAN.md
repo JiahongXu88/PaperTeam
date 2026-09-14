@@ -141,12 +141,42 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > SKILLS` 用于 A/B 关闭学术 Skill。测试：backend 652 → 670 passed（skills
 > 27），frontend 161 → 164 passed。
 
-### M5.4 Style Revision Loop
+### M5.4 Chinese Academic Style Revision Loop（✅ COMPLETE，2026-09-14）
 
-中文学术写作风格修订回路：style 维度从「审稿 lens 之一」升级为可配置
-的修订目标（表达自然度、术语一致性、学术措辞、段落衔接），复用
-deterministic Revision Plan + Writer 执行 + 强制复审 + 收敛判定的既有
-闭环（D-0026），不新增 Agent 角色。
+中文学术写作风格修订回路：style 维度从「审稿 lens 之一」升级为**用户显式
+选择**的修订目标，复用 deterministic Revision Plan + Writer 执行 + 强制复审 +
+收敛判定的既有闭环（D-0026），不新增 Agent 角色，不改 minor 的全局语义。
+
+- **stylePolicy**（run 选项，idea_to_paper / existing_paper_improvement）：
+  `suggest_only`（默认）Style Reviewer 只给建议、minor 继续不进 revision plan；
+  `apply_once` Quality Gate 通过后询问一次（HITL `hitl.style_polish`），用户
+  勾选的 style minor finding 生成 style plan（`revisionReason=style_polish`，
+  priority low、status planned——不是把 severity 抬成 major）→ Writer
+  `writing/style-polish`（注入 academic-writing-zh + academic-style-zh，明确
+  style-only）→ **Style Invariant Checker** → 全部通过才写回并提交新修订 →
+  旧 review / gate / build 按既有新鲜度规则 stale → 重新 review / gate / build →
+  Final。默认最多一轮；invariant 失败不覆盖当前修订、不自动重试 Writer。
+- **Style Invariant Checker**（`review/styleInvariants.ts`）：citation key 多重集、
+  数字 + 单位、数学片段、\ref / \label / 环境结构、受保护术语（glossary.json /
+  调用方）不减少、否定 / 比较 / 结论强度哨兵词计数（保守哨兵，不是语义等价
+  证明——最终语义保持仍需 Reviewer 复审 + 人审）。
+- **Style Reviewer 输出**：location / issue / reason / proposedAction / severity；
+  AI 概率 / 检测器分数字段一律丢弃（PaperTeam 不做 AI detector；riskScore 是
+  模板化风险的工程口径）；「此外 / 然而 / 因此」不因出现而报错。
+- **Quick Review 红线**：existing_paper_review 定义不含任何修订 / 润色 stage；
+  POST 携带 stylePolicy → 400；前端对 review kind 不发送该字段。
+- **UI**：Improvement 启动高级选项「语言风格建议：仅展示建议 / 应用语言润色」；
+  HITL 面板可勾选 finding（位置 / 问题 / 原因 / 改法 / 严重度）→ apply / skip；
+  论文面板「语言润色」卡：状态 / 选中条数 / 修订号 / invariant 结果 / 复审状态。
+- **M5 eval corpus**（M5.0 延后项补齐）：`backend/test/fixtures/eval/style-corpus/`
+  A（事实完整）/ B（材料不足）/ C（机械空泛）/ D（正常段落）/ E（数字 / 单位 /
+  公式 / citation / 否定 / 比较敏感段落）自建可公开样本 + deterministic hard
+  checks（invariants / `styleSignals` 表面模式扫描，eval 工具非 gate）+ 人工
+  评价模板 `docs/eval/M5_STYLE_EVAL_TEMPLATE.md`（事实保持 / 术语一致 / 清晰 /
+  可执行性 / false positive / 过度润色 / 耗时 / token / cost）。
+- 测试：backend 670 → 687 passed（stylePolish 17：invariants 5、policy /
+  plan / reviewer 4、corpus 2、scripted e2e 6），frontend 164 → 170 passed；
+  build / typecheck / test 全绿。
 
 ### M5.5 Linux / Docker Deployment
 

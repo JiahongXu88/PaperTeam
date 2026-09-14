@@ -78,3 +78,20 @@ export function artifactDownloadUrl(
   const base = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/download`;
   return apiUrl(disposition === "attachment" ? `${base}?disposition=attachment` : base);
 }
+
+/** M5.4：最新 style plan + 润色结果 + 是否已复审（只读） */
+export async function getStylePolish(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<import("../types/api.js").StylePolishView> {
+  const body = await apiClient.get<Partial<import("../types/api.js").StylePolishView>>(
+    `/api/projects/${encodeURIComponent(projectId)}/style-polish`,
+    signal,
+  );
+  return {
+    plan: body.plan ?? null,
+    result: body.result ?? null,
+    reviewedRevision: body.reviewedRevision ?? null,
+    reReviewed: body.reReviewed ?? null,
+  };
+}

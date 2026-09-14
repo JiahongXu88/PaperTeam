@@ -347,6 +347,29 @@ const LATEX_MARKER = /\[latex:(broken|unfixable)\]/;
 /** M4.8 摘要修订回归标记：首轮 review/fact 附加一条「main.tex（摘要）」critical finding，
  *  复现真实 Reviewer 的非常规归属，验证它被路由到摘要目标而不是组装根。 */
 const ABSTRACT_MARKER = /\[abstract:finding\]/;
+/**
+ * M5.4 Style Polish 标记（随 researchIdea 进入 research prompt，按项目记忆）：
+ *   [style:findings]  每轮 review/style 附加一条 minor style finding（含 reason / suggestedAction，
+ *                     定位 sections/introduction.tex）→ apply_once 时进入 HITL / 润色
+ *   [style:violate]   同上，但 writing/style-polish 输出会删掉一处 \cite → invariant 失败，原稿保留
+ */
+const STYLE_MARKER = /\[style:(findings|violate)\]/;
+type StyleMode = "findings" | "violate";
+
+/** 脚本化 style-only 润色：只改表达（「本章节论述」→「本节论述」），不动引用 / 数字 / 公式 */
+function scriptedStylePolish(task: string, mode: StyleMode | undefined): string {
+  const marker = task.includes("===== 当前摘要 =====") ? "===== 当前摘要 =====" : "===== 本章节当前内容 =====";
+  const index = task.indexOf(marker);
+  const current = index === -1 ? "" : task.slice(index + marker.length).trim();
+  if (current === "") {
+    return REVISED_SECTION_TEX;
+  }
+  let polished = current.replace("本章节论述基于证据的核心观点", "本节围绕已核验证据阐述核心观点");
+  if (mode === "violate") {
+    polished = polished.replace(/\\cite\{[^}]*\}/, ""); // 故意破坏 citation key 集合
+  }
+  return polished;
+}
 /** 未定义命令：真实 xelatex 报 "! Undefined control sequence." 并按 l.N 定位行号 */
 export const UNDEFINED_MACRO_TEX = "\\paperTeamUndefinedMacro";
 
@@ -397,6 +420,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectReviewCalls = new Map<string, number>();
   const projectLatexModes = new Map<string, LatexMode>();
   const projectAbstractFindings = new Set<string>();
+  const projectStyleModes = new Map<string, StyleMode>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -431,6 +455,10 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           if (ABSTRACT_MARKER.test(input.task)) {
             projectAbstractFindings.add(projectId);
           }
+          const styleMarker = STYLE_MARKER.exec(input.task);
+          if (styleMarker !== null) {
+            projectStyleModes.set(projectId, styleMarker[1] as StyleMode);
+          }
         }
         output = RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
@@ -458,6 +486,8 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
             : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
               ? `${REVISED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
               : REVISED_SECTION_TEX;
+      } else if (scope === "writing/style-polish") {
+        output = scriptedStylePolish(input.task, projectStyleModes.get(projectId));
       } else if (scope === "writing/repair") {
         output =
           projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
@@ -507,6 +537,18 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = scope === "review/fact" ? pack.fact : scope === "review/academic" ? pack.academic : pack.style;
         if (scope === "review/fact" && round === 0 && options.firstRoundFactIssue !== undefined) {
           output = appendReviewIssue(output, options.firstRoundFactIssue);
+        }
+        if (scope === "review/style" && projectStyleModes.has(projectId)) {
+          // M5.4：可执行的 style minor finding（位置 / 问题 / 原因 / 改法 / 严重度）
+          output = appendReviewIssue(output, {
+            category: "style",
+            severity: "minor",
+            section: "sections/introduction.tex",
+            description: "「本章节论述基于证据的核心观点」是空泛总结，未说明观点内容",
+            reason: "段首句只宣告有观点而不陈述观点，读者无法获得信息",
+            suggestedAction: "改为直接陈述核心观点，如「本节围绕已核验证据阐述核心观点」",
+            blocking: false,
+          });
         }
         if (scope === "review/fact" && round === 0 && projectAbstractFindings.has(projectId)) {
           // M4.8 摘要回归：真实 Reviewer 曾把摘要 critical finding 归到「main.tex（摘要）」

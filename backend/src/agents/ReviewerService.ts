@@ -40,7 +40,26 @@ export interface ReviewIssue {
   evidenceRef?: string;
   suggestedAction?: string;
   blocking: boolean;
+  /** 为什么是问题（M5.4：style / academic finding 的依据；可执行性要素之一） */
+  reason?: string;
 }
+
+/**
+ * PaperTeam 不做 AI detector：Reviewer 输出中任何「AI 概率 / 人类概率 / 检测器
+ * 分数」字段一律丢弃，不解析、不落盘、不展示（riskScore 是模板化 / 机械化表达
+ * 风险的工程口径，不是生成来源判断）。
+ */
+export const FORBIDDEN_DETECTOR_FIELDS: readonly string[] = [
+  "aiProbability",
+  "ai_probability",
+  "aiGeneratedProbability",
+  "humanProbability",
+  "human_probability",
+  "detectorScore",
+  "detector_score",
+  "aiScore",
+  "aiLikelihood",
+];
 
 export interface FactClaimCheck {
   section: string;
@@ -199,12 +218,18 @@ export function parseModeReview(
         : Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / Object.values(scores).length);
     return { ...base, scores, overallScore: overall };
   }
-  // style
+  // style（AI 概率类字段不进入结果：parseModeReview 只挑选已知字段，
+  // FORBIDDEN_DETECTOR_FIELDS 列出的键即使出现也被丢弃）
   const risk = parsed["riskScore"];
   if (typeof risk !== "number" || risk < 0 || risk > 100) {
     throw new AgentRunFailedError(`${context}：缺少合法的 riskScore（0-100）`);
   }
   return { ...base, riskScore: Math.round(risk) };
+}
+
+/** 输出中是否出现了被禁止的检测器字段（诊断 / 测试用；解析结果本身不会携带它们） */
+export function containsForbiddenDetectorFields(parsed: Record<string, unknown>): string[] {
+  return FORBIDDEN_DETECTOR_FIELDS.filter((field) => field in parsed);
 }
 
 function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIssue[] {
@@ -241,6 +266,11 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
         : {}),
       ...(typeof record["suggestedAction"] === "string" && record["suggestedAction"].trim() !== ""
         ? { suggestedAction: record["suggestedAction"].trim() }
+        : typeof record["proposedAction"] === "string" && record["proposedAction"].trim() !== ""
+          ? { suggestedAction: record["proposedAction"].trim() }
+          : {}),
+      ...(typeof record["reason"] === "string" && record["reason"].trim() !== ""
+        ? { reason: record["reason"].trim() }
         : {}),
       blocking: record["blocking"] === true,
     });
@@ -303,8 +333,11 @@ export function buildReviewPrompt(params: {
       "输出额外字段 scores: {问题定义: 0-100, 方法合理性: 0-100, 实验充分性: 0-100, 论证逻辑: 0-100, 写作质量: 0-100} 与 overallScore。",
     ],
     style: [
-      "你使用 style review skill：检查模板化表达、连接词滥用、重复句式、段落结构机械化、空洞评价、信息密度、无证据评价词。",
-      "输出额外字段 riskScore: 0-100（AI 文风风险，越高越像模板生成）。",
+      "你使用 style review skill（中文学术表达质量，不是 AI 检测）：检查空泛总结、重复表达、机械排比、过度模板化、模糊归因、夸大意义、宣传式措辞、翻译腔 / 不自然表达、段落节奏过度一致、冗余过渡、术语漂移。",
+      "每条 issue 必须同时给出：section（位置）、description（问题，引用原句片段 ≤ 60 字）、reason（为什么是问题：与前后句逻辑不符 / 评价词无数字支撑 / 同段第 N 次重复 等）、suggestedAction（具体到句的改法或删除）、severity（表达问题通常 minor；只有造成理解歧义才 major）。",
+      "「此外 / 然而 / 因此 / 同时」在学术写作中是正常用法：不得仅因出现就报告；只有逻辑关系不符或同段连续多句机械开头才算冗余过渡。正常的中文学术段落应当零或极少 issue。",
+      "禁止输出 AI 概率 / 人类概率 / 检测器分数等字段；不评价作者，不做整体印象式泛评。",
+      "输出额外字段 riskScore: 0-100（模板化 / 机械化表达风险的工程口径，越高表示模板化越重；不是生成来源判断）。",
     ],
   };
 

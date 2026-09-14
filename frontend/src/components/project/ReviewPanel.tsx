@@ -11,6 +11,7 @@ import {
   FINDING_CATEGORY_LABELS,
   SEVERITY_ORDER,
   SEVERITY_STYLES,
+  STYLE_POLICY_OPTIONS,
   stageLabel,
   statusStyleOf,
 } from "../common/status.js";
@@ -26,7 +27,7 @@ import {
 } from "../../hooks/queries.js";
 import { formatApiError, summarizeRunError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
-import type { CitationSemanticMode, ExistingReviewReportView, ReviewFindingView, WorkflowKind, WorkflowRunView } from "../../types/api.js";
+import type { CitationSemanticMode, ExistingReviewReportView, ReviewFindingView, StylePolicy, WorkflowKind, WorkflowRunView } from "../../types/api.js";
 import type { PaperSectionView } from "../../types/paper.js";
 
 /**
@@ -86,6 +87,8 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
   const invalidateOutputs = useInvalidateReviewOutputs(projectId);
   // 语义核验模式（Review 高级选项）：每次进入默认关闭，不跨项目/会话沿用
   const [semanticMode, setSemanticMode] = useState<CitationSemanticMode>("off");
+  // M5.4 语言润色策略：只随「开始系统性改进」发送；快速 Review 只读，不发送
+  const [stylePolicy, setStylePolicy] = useState<StylePolicy>("suggest_only");
 
   const reviewRun = runs.data?.find((run) => run.workflowKind === "existing_paper_review");
   const active = isRunActive(reviewRun);
@@ -168,7 +171,7 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
                 <button
                   type="button"
                   className="btn"
-                  onClick={() => startReview.mutate({ projectId, kind: "existing_paper_improvement" })}
+                  onClick={() => startReview.mutate({ projectId, kind: "existing_paper_improvement", stylePolicy })}
                   disabled={startReview.isPending || modelNotConfigured}
                   title="系统性改进：PDF 重建为可修订稿件（文本级）→ 审稿 → 改进计划确认 → 逐节修订 → 质量门禁 → Draft / Final"
                   data-testid="start-improvement"
@@ -204,6 +207,27 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
                   {CITATION_SEMANTIC_MODE_OPTIONS.find((option) => option.value === semanticMode)?.help}
                 </span>
               </div>
+              {workflowKind === "existing_paper_improvement" ? (
+                <div className="review-semantic-mode-field">
+                  <label htmlFor="review-style-policy">语言风格建议（仅系统性改进）</label>
+                  <select
+                    id="review-style-policy"
+                    value={stylePolicy}
+                    onChange={(event) => setStylePolicy(event.target.value as StylePolicy)}
+                    data-testid="style-policy-select"
+                  >
+                    {STYLE_POLICY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="field-help">
+                    {STYLE_POLICY_OPTIONS.find((option) => option.value === stylePolicy)?.help}
+                    「开始 Review」（快速 Review）始终只读，不受此项影响。
+                  </span>
+                </div>
+              ) : null}
             </details>
           </div>
         ) : null;

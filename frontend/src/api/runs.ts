@@ -2,6 +2,7 @@ import { apiClient } from "./client.js";
 import type {
   CitationSemanticMode,
   HitlDecisionInput,
+  StylePolicy,
   WorkflowKind,
   WorkflowRunStatus,
   WorkflowRunView,
@@ -104,6 +105,16 @@ function readSemanticMode(raw: Record<string, unknown>): CitationSemanticMode | 
     : undefined;
 }
 
+/** 语言润色策略（run.request 快照；旧 run / 缺省 → suggest_only，与后端一致） */
+function readStylePolicy(raw: Record<string, unknown>): StylePolicy {
+  const request = raw["request"];
+  if (typeof request !== "object" || request === null || Array.isArray(request)) {
+    return "suggest_only";
+  }
+  const value = (request as Record<string, unknown>)["stylePolicy"];
+  return value === "apply_once" ? "apply_once" : "suggest_only";
+}
+
 /** stageHistory 条目：只保留时间线 / 详细信息需要的字段（summary 提炼数字白名单） */
 function readStageRecord(value: unknown): WorkflowStageRecordView | null {
   if (!isRecord(value) || typeof value["stageId"] !== "string" || typeof value["status"] !== "string") {
@@ -175,6 +186,7 @@ function toRunView(raw: Record<string, unknown>): WorkflowRunView {
       : {}),
     ...(stageHistory.length > 0 ? { stageHistory } : {}),
     ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}),
+    ...(kind === "existing_paper_review" ? {} : { stylePolicy: readStylePolicy(raw) }),
   };
 }
 
@@ -189,15 +201,20 @@ export async function listProjectRuns(
   return (body.runs ?? []).map(toRunView);
 }
 
-/** 启动 WorkflowRun（existing_paper_review = PDF 快速 Review；citationSemanticMode 缺省 off） */
+/**
+ * 启动 WorkflowRun（existing_paper_review = PDF 快速 Review；citationSemanticMode 缺省 off；
+ * stylePolicy 只对 idea / improvement 有意义——Quick Review 携带该字段会被后端 400 拒绝，
+ * 因此这里对 review kind 一律不发送）
+ */
 export async function createWorkflowRun(
   projectId: string,
   kind: WorkflowKind,
-  options: { citationSemanticMode?: CitationSemanticMode } = {},
+  options: { citationSemanticMode?: CitationSemanticMode; stylePolicy?: StylePolicy } = {},
 ): Promise<{ runId: string; status: string; workflowKind: WorkflowKind }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/workflows`, {
     kind,
     ...(options.citationSemanticMode !== undefined ? { citationSemanticMode: options.citationSemanticMode } : {}),
+    ...(options.stylePolicy !== undefined && kind !== "existing_paper_review" ? { stylePolicy: options.stylePolicy } : {}),
   });
 }
 

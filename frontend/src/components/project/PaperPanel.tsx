@@ -17,6 +17,7 @@ import {
   useFinalizeProject,
   useIterations,
   useRunBuild,
+  useStylePolish,
 } from "../../hooks/queries.js";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../../api/client.js";
@@ -27,6 +28,7 @@ import type {
   BuildGateRecordView,
   PaperArtifactView,
   RevisionIterationView,
+  StylePolishView,
 } from "../../types/api.js";
 
 /**
@@ -119,7 +121,115 @@ export function PaperPanel({ projectId }: { projectId: string }) {
       <BuildStatusCard projectId={projectId} />
       <VersionHistoryCard projectId={projectId} />
       <IterationsCard projectId={projectId} />
+      <StylePolishCard projectId={projectId} />
     </div>
+  );
+}
+
+// ---- 语言润色（M5.4）----
+
+const STYLE_POLISH_STATUS: Record<string, { label: string; tone: string }> = {
+  applied: { label: "已应用", tone: "ok" },
+  failed: { label: "未通过 invariant 检查（原稿保留）", tone: "danger" },
+  noop: { label: "无可应用建议", tone: "neutral" },
+};
+
+/**
+ * 语言润色状态卡：最新 style plan（选中的 finding）/ 润色结果 / invariant 结果 / 修订号 /
+ * 是否已复审。只读展示——修改入口只在 Improvement 工作流的 HITL 决策里。
+ */
+export function StylePolishCard({ projectId }: { projectId: string }) {
+  const polish = useStylePolish(projectId);
+  if (polish.isPending || polish.isError) {
+    return null; // 辅助信息：失败不打断主面板
+  }
+  return <StylePolishCardView view={polish.data} />;
+}
+
+export function StylePolishCardView({ view }: { view: StylePolishView }) {
+  const { plan, result, reReviewed } = view;
+  if (plan === null && result === null) {
+    return null;
+  }
+  const status = result !== null ? (STYLE_POLISH_STATUS[result.status] ?? { label: result.status, tone: "neutral" }) : null;
+  const violations = result?.sections.flatMap((section) => section.violations.map((violation) => ({ section: section.section, ...violation }))) ?? [];
+  return (
+    <section className="panel section-block" data-testid="style-polish-card">
+      <div className="section-head">
+        <h2>语言润色</h2>
+        <span className="faint">style-only 修订：只改表达；数字 / 引用 / 公式 / 术语 / 结论由确定性检查守卫</span>
+      </div>
+      <dl className="meta-list meta-list-2col">
+        <div>
+          <dt>润色状态</dt>
+          <dd>
+            {status !== null ? (
+              <span className={`status status-tone-${status.tone}`} data-testid="style-polish-status">
+                {status.label}
+              </span>
+            ) : (
+              "已生成计划，尚未执行"
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>选中的建议</dt>
+          <dd>
+            {(result?.selectedFindingIds.length ?? plan?.items.length ?? 0)} 条
+            {plan !== null ? `（计划 ${plan.planId}）` : ""}
+          </dd>
+        </div>
+        <div>
+          <dt>修订号</dt>
+          <dd className="mono">
+            {result !== null
+              ? result.status === "applied" && result.revision !== undefined
+                ? `rev ${result.sourceRevision} → rev ${result.revision}`
+                : `rev ${result.sourceRevision}（未改动）`
+              : plan !== null
+                ? `rev ${plan.sourceRevision}`
+                : "—"}
+          </dd>
+        </div>
+        <div>
+          <dt>invariant 检查</dt>
+          <dd data-testid="style-polish-invariant">
+            {result === null
+              ? "—"
+              : violations.length === 0
+                ? `全部通过（${result.sections.length} 个章节）`
+                : `${violations.length} 项未通过`}
+          </dd>
+        </div>
+        <div>
+          <dt>重新审稿</dt>
+          <dd data-testid="style-polish-rereview">
+            {reReviewed === null ? "—（无已应用的润色）" : reReviewed ? "已复审（旧审稿 / 门禁 / 构建结论已过期并重跑）" : "待复审"}
+          </dd>
+        </div>
+      </dl>
+      {violations.length > 0 ? (
+        <ul className="finding-list" data-testid="style-polish-violations">
+          {violations.map((violation, index) => (
+            <li key={`${violation.section}-${violation.rule}-${index}`}>
+              <span className="mono">{violation.section}</span> · <span className="chip chip-tone-danger">{violation.rule}</span> {violation.detail}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {plan !== null && plan.items.length > 0 ? (
+        <details className="details-block">
+          <summary>计划条目（{plan.items.length}）</summary>
+          <ul className="finding-list">
+            {plan.items.map((item) => (
+              <li key={item.id}>
+                <span className="mono">{item.section}</span> {item.problem}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </section>
   );
 }
 

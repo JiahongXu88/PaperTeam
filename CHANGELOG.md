@@ -86,7 +86,18 @@ Windows 下 LaTeX 编译超时只终止 shell 进程；单机单用户形态。
   安装 / 预览更新 / 应用更新 / 查看 provenance。
 - 配置：`PAPERTEAM_DISABLED_SKILLS`。
 
+### M5.4 Chinese Academic Style Revision Loop（2026-09-14）
+
+- run 选项 `stylePolicy`：`suggest_only`（默认，style minor 只是建议）/
+  `apply_once`（Gate 通过后 HITL 勾选 style 建议 → style-only 修订，最多一轮）。
+- Style Invariant Checker：citation key / 数字单位 / 公式 / LaTeX 结构 / 受保护
+  术语 / 否定·比较·强度哨兵；失败不覆盖当前修订、不自动重试。
+- Style Reviewer finding 含 reason / proposedAction；AI 概率类字段一律丢弃。
+- Quick Review 保持 100% 只读：携带 stylePolicy → 400。
+- UI：Improvement 启动的「语言风格建议」选项、HITL 勾选面板、「语言润色」状态卡。
+- M5 eval corpus（A–E 自建样本）+ `styleSignals` 确定性扫描 + 人工评价模板。
+
 ### 其余 M5 阶段
 
 - M5.1 / M5.2 Runtime 生命周期与长程治理（见 docs/PROJECT_STATUS.md）；
-  M5.4 Style Revision Loop、M5.5 Linux / Docker、M5.6 真实论文 A/B 验收进行中。
+  M5.5 Linux / Docker、M5.6 真实论文 A/B 验收进行中。

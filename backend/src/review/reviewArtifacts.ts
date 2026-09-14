@@ -17,6 +17,7 @@ import type { QualityGateResult } from "../quality/gates.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { IterationRecord } from "./revisionOutcome.js";
+import type { StylePolishResult } from "./stylePolicy.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
@@ -186,6 +187,52 @@ export class ReviewArtifactStore {
       return null;
     }
     return parsed as RevisionPlan;
+  }
+
+  // ---- Style polish（M5.4）：与 quality 修订计划分文件，互不覆盖 ----
+
+  stylePlanFileName(round: number): string {
+    return `style-plan-r${round}.json`;
+  }
+
+  stylePolishFileName(round: number): string {
+    return `style-polish-r${round}.json`;
+  }
+
+  async saveStylePlan(projectId: string, plan: RevisionPlan): Promise<string> {
+    const fileName = this.stylePlanFileName(plan.reviewRound);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), plan);
+    return `reviews/${fileName}`;
+  }
+
+  async loadStylePlan(projectId: string, round: number): Promise<RevisionPlan | null> {
+    const parsed = await this.readJson<RevisionPlan>(projectId, this.stylePlanFileName(round));
+    return parsed !== null && typeof parsed.planId === "string" && Array.isArray(parsed.items) ? parsed : null;
+  }
+
+  async saveStylePolishResult(projectId: string, result: StylePolishResult): Promise<string> {
+    const fileName = this.stylePolishFileName(result.reviewRound);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), result);
+    return `reviews/${fileName}`;
+  }
+
+  async loadStylePolishResult(projectId: string, round: number): Promise<StylePolishResult | null> {
+    const parsed = await this.readJson<StylePolishResult>(projectId, this.stylePolishFileName(round));
+    return parsed !== null && typeof parsed.planId === "string" && typeof parsed.status === "string" ? parsed : null;
+  }
+
+  /** 最新一轮 style polish 结果（无则 null） */
+  async latestStylePolishResult(projectId: string): Promise<StylePolishResult | null> {
+    const rounds = await this.rounds(projectId, /^style-polish-r(\d+)\.json$/);
+    const round = rounds[0];
+    return round === undefined ? null : this.loadStylePolishResult(projectId, round);
+  }
+
+  /** 最新一轮 style plan（无则 null） */
+  async latestStylePlan(projectId: string): Promise<RevisionPlan | null> {
+    const rounds = await this.rounds(projectId, /^style-plan-r(\d+)\.json$/);
+    const round = rounds[0];
+    return round === undefined ? null : this.loadStylePlan(projectId, round);
   }
 
   /** 迭代历史（reviews/iteration-history.json；quality.gate 逐轮追加） */

@@ -66,6 +66,15 @@ import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import {
+  buildStylePolishPlan,
+  fingerprintStylePolish,
+  isPolishableStyleIssue,
+  listStyleFindings,
+  readStylePolicy,
+  type StylePolishResult,
+} from "../review/stylePolicy.js";
+import { checkStyleInvariants } from "../review/styleInvariants.js";
+import {
   judgeOutcome,
   scorecardOf,
   MAX_AUTO_LATEX_REPAIRS,
@@ -232,6 +241,8 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         academicScore: summary.scores.academicScore ?? -1,
         styleRisk: summary.scores.styleRisk ?? -1,
         unsupportedCriticalClaims: summary.unsupportedCriticalClaims,
+        // M5.4：可进入语言润色的 style minor finding 数（planner 据此决定是否询问）
+        styleMinor: summary.issues.filter(isPolishableStyleIssue).length,
       };
     },
     async verifyDod(ctx) {
@@ -691,6 +702,253 @@ function revisionReviseStage(
   };
 }
 
+/**
+ * M5.4 Style Polish 决策点（HITL；只在 stylePolicy=apply_once 且存在可润色 style
+ * minor finding 时出现）。用户在此选择要应用的 finding（缺省全部）或只保留建议。
+ * Quick Review（existing_paper_review）永不包含本节点。
+ */
+function stylePolishDecisionStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.style_polish",
+    description: "语言润色决策：选择要应用的 style 建议（apply）或只保留建议（skip）",
+    requiredInputs: ["quality.gate"],
+    producedOutputs: ["用户决策（selectedFindingIds）"],
+    hitl: {
+      prompt:
+        "Quality Gate 已通过。当前有语言风格建议（style / minor）。你选择了「应用语言润色」：请勾选要应用的建议（默认全部）并确认；也可以只保留建议不修改稿件。润色只改表达，不改数字 / 引用 / 公式 / 术语 / 结论；修改后会重新审稿与门禁。",
+      options: ["apply", "skip", "cancel"],
+      payload: async (ctx) => {
+        const summary = await services.reviewArtifacts.latestSummary(ctx.projectId);
+        const gate = ctx.state.stageResults["quality.gate"] ?? {};
+        const findings = summary === null ? [] : listStyleFindings(summary);
+        return {
+          stylePolicy: readStylePolicy(ctx.state.request),
+          gateRound: typeof gate["round"] === "number" ? gate["round"] : null,
+          reviewRound: summary?.round ?? null,
+          reviewedRevision: summary?.reviewedRevision ?? null,
+          findings,
+          defaultSelectedIds: findings.map((finding) => finding.id),
+          maxRounds: 1,
+        };
+      },
+    },
+  };
+}
+
+/**
+ * M5.4 Style Polish 执行：Style ReviewFinding → deterministic style plan（只含被选中的
+ * style minor）→ Writer（writing/style-polish，style-only）→ Style Invariant Checker
+ * → 全部通过才写回并提交新修订；任一章节 invariant 失败则**不覆盖**当前修订，
+ * 记录失败与具体 invariant，不自动重试 Writer。
+ */
+function stylePolishStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.style_polish",
+    description: "语言润色（style-only；invariant 守卫；最多一轮）",
+    requiredInputs: ["hitl.style_polish"],
+    producedOutputs: ["reviews/style-plan-r{round}.json", "reviews/style-polish-r{round}.json", "manuscript（新修订，仅 invariant 全通过时）"],
+    maxAttempts: 1, // 不自动重试 Writer；失败由用户决定是否重试或只看建议
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: [],
+    async execute(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
+      }
+      const marker = ctx.state.stageResults["hitl.style_polish"] ?? {};
+      const selectedRaw = marker["selectedFindingIds"];
+      const selectedFindingIds = Array.isArray(selectedRaw)
+        ? selectedRaw.filter((id): id is string => typeof id === "string")
+        : undefined;
+      const sourceRevision =
+        typeof summary.reviewedRevision === "number"
+          ? summary.reviewedRevision
+          : await services.revisions.currentRevision(ctx.projectId);
+      const plan = buildStylePolishPlan({
+        projectId: ctx.projectId,
+        sourceRevision,
+        reviewRound: summary.round,
+        summary,
+        ...(selectedFindingIds !== undefined ? { selectedFindingIds } : {}),
+      });
+      await services.reviewArtifacts.saveStylePlan(ctx.projectId, plan);
+      const finish = async (
+        status: StylePolishResult["status"],
+        sections: StylePolishResult["sections"],
+        revision?: number,
+      ): Promise<Record<string, unknown>> => {
+        const base: Omit<StylePolishResult, "fingerprint"> = {
+          schemaVersion: 1,
+          planId: plan.planId,
+          projectId: ctx.projectId,
+          reviewRound: plan.reviewRound,
+          sourceRevision,
+          status,
+          ...(revision !== undefined ? { revision } : {}),
+          selectedFindingIds: plan.items.map((item) => item.id),
+          sections,
+          completedAt: new Date().toISOString(),
+        };
+        const result: StylePolishResult = { ...base, fingerprint: fingerprintStylePolish(base) };
+        await services.reviewArtifacts.saveStylePolishResult(ctx.projectId, result);
+        const violations = sections.reduce((sum, section) => sum + section.violations.length, 0);
+        await ctx.emitDomain(
+          status === "applied" ? "style_polish.applied" : "style_polish.skipped",
+          {
+            status,
+            planId: plan.planId,
+            planned: plan.items.length,
+            sections: sections.length,
+            violations,
+            ...(revision !== undefined ? { revision } : {}),
+          },
+          status === "applied"
+            ? `语言润色已应用（修订 ${revision}），将重新审稿与门禁`
+            : status === "failed"
+              ? `语言润色未通过 invariant 检查（${violations} 项），原稿保留`
+              : "没有可应用的语言风格建议",
+        );
+        return {
+          status,
+          changed: status === "applied",
+          planId: plan.planId,
+          round: plan.reviewRound,
+          planned: plan.items.length,
+          sourceRevision,
+          ...(revision !== undefined ? { revision } : {}),
+          polishedSections: sections.filter((section) => section.invariantOk).length,
+          violations,
+        };
+      };
+      if (plan.items.length === 0) {
+        return finish("noop", []);
+      }
+
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      const directives: RevisionDirective[] = plan.items.map((item) => ({
+        match: (target: RevisionTarget) => (sectionMatches(item.section, target) ? revisionPlanItemToIssue(item) : null),
+      }));
+      const targets = listRevisionTargets(outline, files, directives);
+      const artifact = await readResearchArtifact(services.projects, ctx.projectId);
+      const bibliographyKeys = (artifact?.bibliography ?? []).map((entry) => entry.key);
+      const protectedTerms = await loadGlossaryTerms(services.projects.manuscriptDir(ctx.projectId));
+      const project = await services.projects.getRequired(ctx.projectId);
+
+      const outputs: Array<{ target: RevisionTarget; latex: string; itemIds: string[]; report: ReturnType<typeof checkStyleInvariants> }> = [];
+      for (const [index, target] of targets.entries()) {
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "语言润色已被取消");
+        }
+        const items = plan.items.filter((item) => sectionMatches(item.section, target));
+        if (items.length === 0) {
+          continue;
+        }
+        const sectionMeta = outline?.sections.find((section) => section.id === target.key);
+        const isAbstractTarget = target.key === "abstract";
+        const result = await services.writer.polishSectionStyle({
+          projectId: ctx.projectId,
+          section: {
+            id: target.key,
+            file: target.relativePath.replaceAll("\\", "/").split("/").pop() ?? target.key,
+            title: isAbstractTarget ? "摘要" : (sectionMeta?.title ?? target.key),
+          },
+          currentLatex: target.currentLatex,
+          items,
+          protectedTerms,
+          bibliographyKeys,
+        });
+        const report = checkStyleInvariants(target.currentLatex, result.latex, { protectedTerms });
+        outputs.push({ target, latex: result.latex.trim(), itemIds: items.map((item) => item.id), report });
+        await ctx.emitProgress({ section: target.key, index: index + 1, invariantOk: report.ok });
+      }
+      void project;
+      const sections: StylePolishResult["sections"] = outputs.map((output) => ({
+        section: output.target.key,
+        itemIds: output.itemIds,
+        invariantOk: output.report.ok,
+        violations: output.report.violations.map((violation) => ({ rule: violation.rule, detail: violation.detail })),
+      }));
+      if (outputs.length === 0 || outputs.every((output) => output.latex === output.target.currentLatex.trim())) {
+        // 没有可派发章节，或 Writer 判断无需改动（输出与原文逐字相同）：不提交空修订
+        return finish("noop", sections);
+      }
+      if (outputs.some((output) => !output.report.ok)) {
+        // 任一章节 invariant 失败：不覆盖当前修订（all-or-nothing），原稿保留
+        return finish("failed", sections);
+      }
+      for (const output of outputs) {
+        if (output.target.key === "abstract") {
+          if (outline !== null) {
+            outline.abstract = output.latex;
+            await services.manuscript.saveOutline(ctx.projectId, outline);
+          }
+        } else {
+          await writeFile(
+            join(services.projects.manuscriptDir(ctx.projectId), output.target.relativePath),
+            output.latex + "\n",
+            "utf8",
+          );
+        }
+      }
+      if (outline !== null) {
+        await services.manuscript.writeMainTex(ctx.projectId, outline, bibliographyKeys.length > 0);
+        await services.manuscript.rebuildContext(ctx.projectId, {
+          evidenceStats: await services.evidence.stats(ctx.projectId),
+        });
+      }
+      const revision = await services.revisions.commit(ctx.projectId, "revision.style_polish", ctx.runId);
+      return finish("applied", sections, revision.revision);
+    },
+    async verifyDod(ctx) {
+      const result = await services.reviewArtifacts.latestStylePolishResult(ctx.projectId);
+      return result === null ? ["reviews/style-polish-r*.json 不存在"] : [];
+    },
+  };
+}
+
+/**
+ * M5.4 planner 片段：gate 通过后是否进入语言润色（纯函数，只看 state）。
+ * - stylePolicy !== apply_once → 不进入（默认 suggest_only：minor 只是建议）
+ * - 本 run 已执行过 revision.style_polish（无论 applied / failed / noop）→ 不再进入（最多一轮）
+ * - 无可润色 style minor finding（review.run.styleMinor === 0）→ 不询问
+ * - HITL 未回答 / 回答属于旧 gateRound → hitl.style_polish
+ * - 回答 apply（同 gateRound）→ revision.style_polish；skip → 不进入
+ */
+function planStylePolish(state: WorkflowState, gateRound: number): PlanDecision | null {
+  if (readStylePolicy(state.request) !== "apply_once") {
+    return null;
+  }
+  if (countCompletions(state, "revision.style_polish") > 0) {
+    return null;
+  }
+  const review = state.stageResults["review.run"] ?? {};
+  const styleMinor = typeof review["styleMinor"] === "number" ? review["styleMinor"] : 0;
+  const marker = state.stageResults["hitl.style_polish"] as Record<string, unknown> | undefined;
+  const markerRound = marker !== undefined && typeof marker["gateRound"] === "number" ? marker["gateRound"] : -1;
+  const decision = marker !== undefined ? readMarkerDecision(state, "hitl.style_polish") : null;
+  const answered = decision !== null && markerRound === gateRound;
+  if (!answered) {
+    return styleMinor > 0 ? { kind: "stage", stageId: "hitl.style_polish" } : null;
+  }
+  return decision === "apply" ? { kind: "stage", stageId: "revision.style_polish" } : null;
+}
+
+/** manuscript/glossary.json（可选）：受保护术语表（["术语", …] 或 {terms: [...]}） */
+async function loadGlossaryTerms(manuscriptDir: string): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(await readFile(join(manuscriptDir, "glossary.json"), "utf8")) as unknown;
+    const raw = Array.isArray(parsed)
+      ? parsed
+      : typeof parsed === "object" && parsed !== null && Array.isArray((parsed as Record<string, unknown>)["terms"])
+        ? ((parsed as Record<string, unknown>)["terms"] as unknown[])
+        : [];
+    return raw.filter((term): term is string => typeof term === "string" && term.trim() !== "").map((term) => term.trim()).slice(0, 200);
+  } catch {
+    return [];
+  }
+}
+
 function revisionOverflowStage(): StageSpec {
   return {
     id: "hitl.revision_overflow",
@@ -816,8 +1074,14 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const has = (id: string) => id in state.stageResults;
   const reviseIdx = lastRevisionIndex(state);
   const repairIdx = lastCompletionIndex(state, "revision.repair_latex");
-  // 任何改稿动作（修订 / 编译修复都写入 manuscript）
-  const contentIdx = Math.max(reviseIdx, repairIdx);
+  // M5.4 语言润色：只有真正产生新修订（changed=true）才算改稿；invariant 失败 /
+  // 无条目的润色不写稿，不触发尾部重走
+  const polishIdx =
+    state.stageResults["revision.style_polish"]?.["changed"] === true
+      ? lastCompletionIndex(state, "revision.style_polish")
+      : -1;
+  // 任何改稿动作（修订 / 编译修复 / 语言润色都写入 manuscript）
+  const contentIdx = Math.max(reviseIdx, repairIdx, polishIdx);
   const citationIdx = lastCompletionIndex(state, "citation.verify");
   const reviewIdx = lastCompletionIndex(state, "review.run");
   const gateIdx = lastCompletionIndex(state, "quality.gate");
@@ -888,6 +1152,12 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     if (gateIdx < contentIdx) {
       return { kind: "stage", stageId: "citation.verify" };
     }
+    // M5.4 Style Polish（用户显式 apply_once；默认 suggest_only 不进入）：gate 通过后、
+    // 构建之前最多一轮；产生新修订则尾部整段重走（复审 / gate / build 都不得沿用旧结论）
+    const stylePolish = planStylePolish(state, gateRound);
+    if (stylePolish !== null) {
+      return stylePolish;
+    }
     // 构建须新于 gate 与最近改稿
     if (!has("build.draft") || buildIdx < contentIdx || buildIdx < gateIdx) {
       return { kind: "stage", stageId: "build.draft" };
@@ -950,6 +1220,51 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     return { kind: "stage", stageId: "hitl.revision_overflow" };
   }
   return draftPath();
+}
+
+/**
+ * M5.4 HITL 决策：style_polish。apply 可携带 payload.selectedFindingIds（string[]，
+ * 缺省全部）；skip 只保留建议。回答记录 gateRound（下一轮 gate 不复用旧回答）。
+ */
+async function applyStylePolishDecision(
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  const gate = state.stageResults["quality.gate"] ?? {};
+  const gateRound = typeof gate["round"] === "number" ? gate["round"] : 0;
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision === "skip") {
+    state.stageResults["hitl.style_polish"] = { decision: "skip", gateRound };
+    return;
+  }
+  if (input.decision === "apply") {
+    const raw = input.payload?.["selectedFindingIds"];
+    if (raw !== undefined) {
+      if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string" || !/^f-[0-9a-f]{12}$/.test(id))) {
+        throw new WorkflowInvalidStateError(
+          state.runId,
+          state.status,
+          "payload.selectedFindingIds 必须是 finding id 字符串数组（形如 f-xxxxxxxxxxxx）",
+        );
+      }
+      if (raw.length === 0) {
+        throw new WorkflowInvalidStateError(state.runId, state.status, "apply 至少选择一条 style 建议；不修改请选择 skip");
+      }
+    }
+    state.stageResults["hitl.style_polish"] = {
+      decision: "apply",
+      gateRound,
+      ...(raw !== undefined ? { selectedFindingIds: [...(raw as string[])] } : {}),
+    };
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 apply / skip / cancel（当前 "${input.decision}"）`,
+  );
 }
 
 /** 共享 HITL 决策：revision_overflow */
@@ -1297,6 +1612,8 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     revisionRepairStage(services),
     revisionOverflowStage(),
     revisionStalledStage(services),
+    stylePolishDecisionStage(services),
+    stylePolishStage(services),
     buildDraftStage(services),
     buildFinalStage(services),
   ];
@@ -1333,6 +1650,8 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
           return applyOverflowDecision(state, input);
         case "hitl.revision_stalled":
           return applyStalledDecision(state, input);
+        case "hitl.style_polish":
+          return applyStylePolishDecision(state, input);
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }
@@ -1545,6 +1864,8 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     revisionRepairStage(services),
     revisionOverflowStage(),
     revisionStalledStage(services),
+    stylePolishDecisionStage(services),
+    stylePolishStage(services),
     buildDraftStage(services),
     qualityGateStage(services),
     buildFinalStage(services),
@@ -1583,6 +1904,8 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
           return applyOverflowDecision(state, input);
         case "hitl.revision_stalled":
           return applyStalledDecision(state, input);
+        case "hitl.style_polish":
+          return applyStylePolishDecision(state, input);
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }

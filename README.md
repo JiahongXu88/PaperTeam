@@ -125,9 +125,10 @@ M5.2 长程运行治理（分层超时 / 全局并发与有界受理 / context b
 会话 rotation / TTL·GC·容量 / 观测面与安全自愈）已收口，M5.3 受控学术
 Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
 审计 seed、固定上游 commit、role + contextScope 路由、会话级版本固定、
-assigned / accessed 观测、受控 install / update + Skills 设置页）已完成，
-后续为中文风格修订回路（M5.4）、Linux / Docker 部署（M5.5）与真实论文
-A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
+assigned / accessed 观测、受控 install / update + Skills 设置页）与 M5.4 中文
+学术风格修订回路（stylePolicy suggest_only / apply_once、Style Invariant
+Checker、style-only HITL 修订 + 强制复审、Quick Review 只读红线、M5 eval
+corpus）已完成，后续为 Linux / Docker 部署（M5.5）与真实论文 A/B 验收（M5.6）。真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 

@@ -580,3 +580,27 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   `SessionDiagnosticEntry.assignedSkills` 可选字段）、PiRuntimeAdapter
   （`roleSkills` / 版本固定 / accessed 观测）、`/api/skills*` 路由、
   Skills 页、`PAPERTEAM_DISABLED_SKILLS`。
+
+## D-0031 语言润色是用户显式选择的 style-only 修订：stylePolicy + 显式 revisionReason + 确定性 invariant 守卫，不改 minor 全局语义
+
+- **日期**：2026-09-14（M5.4）
+- **决策**：保留 D-0026「critical / major → planned、minor → skipped」；风格问题
+  通常是 minor，不通过抬高 severity 让它进入修订。新增 run 选项 `stylePolicy`
+  （`suggest_only` 默认 / `apply_once`），apply_once 在 Quality Gate 通过后
+  以 HITL 询问一次，用户勾选的 style minor finding 由 `buildStylePolishPlan`
+  生成独立 style plan（`revisionReason=style_polish`），Writer 以 style-only
+  指令（`writing/style-polish`，注入 academic-writing-zh + academic-style-zh）
+  修订，写回前必须通过确定性 Style Invariant Checker（citation key / 数字单位 /
+  公式 / LaTeX 结构 / 受保护术语 / 否定·比较·结论强度哨兵）；任一失败即不覆盖
+  当前修订并记录具体 invariant，不自动重试；通过则提交新修订，旧 review /
+  gate / build 结论按既有新鲜度规则失效并重走。默认最多一轮。
+- **理由**：D-0026 的 minor 不派发是收敛纪律，不能为「让 Writer 改」而破坏；
+  语言润色最大的风险是顺手改事实，必须由代码而非 prompt 守卫；PaperTeam 不做
+  AI detector，style 的目标是可定位、可修改的表达质量问题。
+- **不做**：自动无限润色循环、AI 概率 / 检测器分数、Quick Review 中的任何修改
+  入口（携带 stylePolicy 直接 400）、在文档中把哨兵词计数夸大为语义等价证明。
+- **影响**：`review/{stylePolicy,styleInvariants,styleSignals}.ts`、
+  `RevisionPlan.revisionReason`、`ReviewIssue.reason`、WriterService
+  `polishSectionStyle`、definitions（`hitl.style_polish` / `revision.style_polish` /
+  planner）、`/api/projects/:id/style-polish`、HitlPanel / ReviewPanel / PaperPanel、
+  eval corpus 与人工评价模板。

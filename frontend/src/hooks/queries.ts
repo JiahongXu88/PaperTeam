@@ -17,6 +17,7 @@ import {
   getBuildStatus,
   listArtifacts,
   listIterations,
+  getStylePolish,
   runBuild,
 } from "../api/artifacts.js";
 import { cancelWorkflowRun, createWorkflowRun, listProjectRuns, resumeWorkflowRun } from "../api/runs.js";
@@ -61,6 +62,7 @@ import {
 } from "../api/settings.js";
 import type {
   CitationSemanticMode,
+  StylePolicy,
   CreateProjectInput,
   CustomProviderInput,
   HitlDecisionInput,
@@ -101,6 +103,7 @@ export const queryKeys = {
     ["project", projectId, "quality-gate", ...(round !== undefined ? [round] : ["latest"])] as const,
   runtimeStatus: ["runtime-status"] as const,
   skills: ["skills"] as const,
+  stylePolish: (projectId: string) => ["project", projectId, "style-polish"] as const,
   skillProvenance: (skillId: string) => ["skills", skillId, "provenance"] as const,
   skillUpdatePreview: (skillId: string) => ["skills", skillId, "update-preview"] as const,
   modelSettings: ["model-settings"] as const,
@@ -234,11 +237,18 @@ export function useCreateWorkflowRun() {
       projectId,
       kind,
       citationSemanticMode,
+      stylePolicy,
     }: {
       projectId: string;
       kind: WorkflowKind;
       citationSemanticMode?: CitationSemanticMode;
-    }) => createWorkflowRun(projectId, kind, { ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}) }),
+      /** M5.4 语言润色策略（idea / improvement；Quick Review 不发送） */
+      stylePolicy?: StylePolicy;
+    }) =>
+      createWorkflowRun(projectId, kind, {
+        ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}),
+        ...(stylePolicy !== undefined ? { stylePolicy } : {}),
+      }),
     onSuccess: (_run, { projectId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId) });
     },
@@ -496,6 +506,15 @@ export function useBuildStatus(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.buildStatus(projectId ?? ""),
     queryFn: ({ signal }) => getBuildStatus(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** M5.4 语言润色状态（最新 style plan / 结果 / 是否已复审） */
+export function useStylePolish(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.stylePolish(projectId ?? ""),
+    queryFn: ({ signal }) => getStylePolish(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
   });
 }

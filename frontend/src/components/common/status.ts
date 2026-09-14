@@ -82,6 +82,24 @@ export const CITATION_SEMANTIC_MODE_OPTIONS: ReadonlyArray<{
   },
 ];
 
+/** 语言润色策略（M5.4；只对 Improvement / Idea-to-Paper 生效，Quick Review 始终只读） */
+export const STYLE_POLICY_OPTIONS: ReadonlyArray<{
+  value: "suggest_only" | "apply_once";
+  label: string;
+  help: string;
+}> = [
+  {
+    value: "suggest_only",
+    label: "仅展示建议（默认）",
+    help: "Style Reviewer 只给出语言风格建议，minor 级别的风格问题不进入自动修订。",
+  },
+  {
+    value: "apply_once",
+    label: "应用语言润色（一轮）",
+    help: "Quality Gate 通过后询问一次：你勾选的 style 建议由 Writer 做 style-only 修订（不改数字 / 引用 / 公式 / 术语 / 结论），经确定性 invariant 检查后形成新修订并重新审稿与门禁。",
+  },
+];
+
 /** 语义核验模式 → 简短状态文案（Review 报告 / 运行中的克制展示） */
 export const CITATION_SEMANTIC_MODE_LABELS: Record<string, string> = {
   off: "引用语义核验未开启",
@@ -304,6 +322,8 @@ export const STAGE_LABELS: Record<string, string> = {
   "revision.repair_latex": "修复编译错误",
   "hitl.revision_stalled": "等待修订决策",
   "hitl.revision_overflow": "等待修订决策",
+  "hitl.style_polish": "等待语言润色决策",
+  "revision.style_polish": "语言润色",
   "build.draft": "构建论文",
   "build.final": "生成 Final",
   // existing_paper_improvement
@@ -342,6 +362,7 @@ export const REVISION_SOURCE_LABELS: Record<string, string> = {
   "revision.revise": "审稿修订",
   "revision.apply": "应用改进计划",
   "revision.repair_latex": "编译修复",
+  "revision.style_polish": "语言润色",
   "revision.restore": "版本恢复",
 };
 
@@ -392,6 +413,8 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "revision.revise", conditional: true },
     { stageId: "hitl.revision_stalled", hitl: true, conditional: true },
     { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
+    { stageId: "hitl.style_polish", hitl: true, conditional: true },
+    { stageId: "revision.style_polish", conditional: true },
     { stageId: "build.draft", conditional: true },
     { stageId: "revision.repair_latex", conditional: true },
     { stageId: "build.final", conditional: true },
@@ -411,6 +434,8 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "revision.revise", conditional: true },
     { stageId: "hitl.revision_stalled", hitl: true, conditional: true },
     { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
+    { stageId: "hitl.style_polish", hitl: true, conditional: true },
+    { stageId: "revision.style_polish", conditional: true },
     { stageId: "build.draft", conditional: true },
     { stageId: "revision.repair_latex", conditional: true },
     { stageId: "build.final", conditional: true },

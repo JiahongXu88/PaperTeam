@@ -1,0 +1,7 @@
+\section{结果分析}
+
+在 30 组对照实验中，采用改进策略的组平均响应时间为 12.4 ms，低于基线组的 18.7 ms；吞吐量提高了 33.5\%，但内存占用增加了 2.1 GB。这一差异在 $p < 0.01$ 水平上显著 \cite{smith2020bench, lee2021eval}。式~\eqref{eq:speedup} 定义了加速比：
+\begin{equation}
+  S = \frac{T_{\text{base}}}{T_{\text{new}}} \label{eq:speedup}
+\end{equation}
+当 $S > 1.5$ 时，改进策略优于基线；当负载低于 200 QPS 时，两者差异不显著。改进策略并未降低尾延迟：P99 延迟保持在 45 ms 左右，与基线无显著差异。因此，本文只在中高负载条件下推荐使用改进策略。

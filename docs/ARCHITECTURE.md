@@ -1056,3 +1056,24 @@ CURRENT（已实现）：
 PLANNED（增强方向）：provider / model capacity 感知的动态并发上限、跨 stage
 统一的 backpressure 策略、partial progress 的产品化呈现、按轮 review telemetry
 聚合（13.7）。
+
+### 13.10 Style Revision Loop（M5.4，D-0031）
+
+在 D-0026 之上增加**用户显式选择**的语言润色回路，不改 minor 的全局语义：
+
+```
+stylePolicy=suggest_only（默认） ── style minor 只是建议（revision plan 中 skipped）
+stylePolicy=apply_once ─ quality.gate PASS ─► hitl.style_polish（勾选 finding / skip）
+   ─► revision.style_polish：buildStylePolishPlan（只含选中的 style minor，
+       revisionReason=style_polish）─► Writer writing/style-polish（style-only，
+       受保护内容清单）─► checkStyleInvariants（citation key / 数字单位 / 公式 /
+       \ref \label 环境 / glossary 术语 / 否定·比较·强度哨兵）
+         ├ 全部通过 → 写回 + 新修订 → 旧 citation/review/gate/build stale → 重走 → Final
+         └ 任一失败 → 不覆盖当前修订，结果 failed + 具体 invariant，不自动重试
+最多一轮（countCompletions）；Quick Review 定义永不含本回路，POST 携带 stylePolicy → 400。
+```
+
+产物：`reviews/style-plan-r{n}.json`、`reviews/style-polish-r{n}.json`；
+`GET /api/projects/:id/style-polish`。诚实边界：invariant 是必要条件守卫，
+哨兵词计数不是语义等价证明——最终语义保持依赖复审 + 人审；Reviewer 输出中的
+AI 概率类字段一律丢弃（PaperTeam 不做 AI detector）。

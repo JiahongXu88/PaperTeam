@@ -37,6 +37,8 @@ export function HitlPanel({ run }: { run: WorkflowRunView }) {
   const queryClient = useQueryClient();
   const [openForm, setOpenForm] = useState<OpenForm>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  // M5.4 hitl.style_polish：勾选要应用的 style 建议（null = 尚未改动，取 payload 默认全选）
+  const [styleSelection, setStyleSelection] = useState<string[] | null>(null);
   const formId = useId();
 
   if (awaiting === null || awaiting === undefined) {
@@ -71,8 +73,16 @@ export function HitlPanel({ run }: { run: WorkflowRunView }) {
   const hasRevise = options.includes("revise");
   const hasAcceptDraft = options.includes("accept_draft");
   const hasReviseMore = options.includes("revise_more");
+  const hasApply = options.includes("apply");
+  const hasSkip = options.includes("skip");
   const hasCancel = options.includes("cancel");
   const supportsForm = hasAdjust || hasRevise;
+  const styleFindings = awaiting.stageId === "hitl.style_polish" ? readStyleFindings(awaiting.payload) : [];
+  const defaultStyleIds = readStringArray(awaiting.payload?.["defaultSelectedIds"]);
+  const selectedStyleIds = styleSelection ?? (defaultStyleIds.length > 0 ? defaultStyleIds : styleFindings.map((finding) => finding.id));
+  const toggleStyleFinding = (id: string) => {
+    setStyleSelection(selectedStyleIds.includes(id) ? selectedStyleIds.filter((item) => item !== id) : [...selectedStyleIds, id]);
+  };
 
   return (
     <section className="panel section-block hitl-panel" data-testid="hitl-panel" aria-labelledby={`hitl-title-${formId}`}>
@@ -88,9 +98,39 @@ export function HitlPanel({ run }: { run: WorkflowRunView }) {
       </p>
       <blockquote className="workflow-awaiting-prompt">{awaiting.prompt}</blockquote>
 
-      <HitlPayload stageId={awaiting.stageId} payload={awaiting.payload} />
+      <HitlPayload
+        stageId={awaiting.stageId}
+        payload={awaiting.payload}
+        styleSelection={{ selected: selectedStyleIds, onToggle: toggleStyleFinding }}
+      />
 
       <div className="hitl-actions" data-testid="hitl-actions">
+        {hasApply ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            data-testid="hitl-apply-style"
+            disabled={pending || selectedStyleIds.length === 0}
+            title={selectedStyleIds.length === 0 ? "至少勾选一条建议；不修改请选择「仅保留建议」" : "只改表达，不改数字 / 引用 / 公式 / 术语 / 结论；修改后重新审稿与门禁"}
+            onClick={() => submit({ action: "apply", payload: { selectedFindingIds: selectedStyleIds } })}
+          >
+            <Icon name="edit" />
+            {pending && resume.variables?.input.action === "apply" ? "提交中…" : `应用语言润色（${selectedStyleIds.length} 条）`}
+          </button>
+        ) : null}
+        {hasSkip ? (
+          <button
+            type="button"
+            className="btn"
+            data-testid="hitl-skip-style"
+            disabled={pending}
+            title="不修改稿件，建议仍可在审稿报告中查看"
+            onClick={() => submit({ action: "skip" })}
+          >
+            <Icon name="play" />
+            {pending && resume.variables?.input.action === "skip" ? "提交中…" : "仅保留建议"}
+          </button>
+        ) : null}
         {hasApprove ? (
           <button
             type="button"
@@ -375,11 +415,21 @@ function HitlError({ error }: { error: unknown }) {
 
 // ---- payload renderer（统一 shell，按 stageId 差异化） ----
 
-function HitlPayload({ stageId, payload }: { stageId: string; payload: Record<string, unknown> | undefined }) {
+function HitlPayload({
+  stageId,
+  payload,
+  styleSelection,
+}: {
+  stageId: string;
+  payload: Record<string, unknown> | undefined;
+  styleSelection?: { selected: string[]; onToggle: (id: string) => void };
+}) {
   if (payload === undefined) {
     return null;
   }
   switch (stageId) {
+    case "hitl.style_polish":
+      return <StylePolishPayload payload={payload} selected={styleSelection?.selected ?? []} onToggle={styleSelection?.onToggle ?? (() => {})} />;
     case "hitl.feasibility_confirm":
       return <FeasibilityPayload payload={payload} />;
     case "hitl.outline_confirm":
@@ -550,6 +600,96 @@ function OverflowPayload({ payload }: { payload: Record<string, unknown> }) {
 }
 
 /** 修订不收敛（CONVERGED / REGRESSION / 计划无可派发条目）：结论 + 前后记分卡对比 + 计划规模 */
+/** M5.4 style finding（HITL payload.findings；不含任何 AI 概率字段） */
+interface StyleFindingPayload {
+  id: string;
+  section: string;
+  issue: string;
+  reason?: string;
+  proposedAction?: string;
+  severity: string;
+}
+
+function readStyleFindings(payload: Record<string, unknown> | undefined): StyleFindingPayload[] {
+  const raw = payload?.["findings"];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record["id"] !== "string" || typeof record["issue"] !== "string") {
+      return [];
+    }
+    return [
+      {
+        id: record["id"],
+        section: typeof record["section"] === "string" ? record["section"] : "",
+        issue: record["issue"],
+        ...(typeof record["reason"] === "string" ? { reason: record["reason"] } : {}),
+        ...(typeof record["proposedAction"] === "string" ? { proposedAction: record["proposedAction"] } : {}),
+        severity: typeof record["severity"] === "string" ? record["severity"] : "minor",
+      },
+    ];
+  });
+}
+
+/**
+ * 语言润色决策：可勾选的 style 建议（位置 / 问题 / 原因 / 改法 / 严重度）。
+ * 只出现在 Improvement / Idea-to-Paper 的修订工作流；Quick Review 永不出现此节点。
+ */
+function StylePolishPayload({
+  payload,
+  selected,
+  onToggle,
+}: {
+  payload: Record<string, unknown>;
+  selected: string[];
+  onToggle: (id: string) => void;
+}) {
+  const findings = readStyleFindings(payload);
+  const gateRound = typeof payload["gateRound"] === "number" ? payload["gateRound"] : null;
+  const reviewedRevision = typeof payload["reviewedRevision"] === "number" ? payload["reviewedRevision"] : null;
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-style-polish">
+      <p className="hitl-payload-level">
+        语言风格建议 {findings.length} 条
+        {gateRound !== null ? `（第 ${gateRound} 轮门禁已通过` : ""}
+        {reviewedRevision !== null ? `，基于修订 ${reviewedRevision}）` : gateRound !== null ? "）" : ""}
+        <span className="field-help">最多一轮；只改表达，数字 / 引用 / 公式 / 术语 / 否定与比较方向 / 结论强度由确定性检查守卫，违反则不写回。</span>
+      </p>
+      {findings.length === 0 ? (
+        <p className="muted">没有可应用的建议。</p>
+      ) : (
+        <ul className="hitl-style-findings" data-testid="hitl-style-findings">
+          {findings.map((finding) => {
+            const checked = selected.includes(finding.id);
+            return (
+              <li key={finding.id} className="hitl-style-finding">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => onToggle(finding.id)}
+                    data-testid={`style-finding-${finding.id}`}
+                  />
+                  <span className="mono">{finding.section}</span>
+                  <span className="chip">{finding.severity}</span>
+                </label>
+                <p className="hitl-style-issue">{finding.issue}</p>
+                {finding.reason !== undefined ? <p className="muted">原因：{finding.reason}</p> : null}
+                {finding.proposedAction !== undefined ? <p className="muted">改法：{finding.proposedAction}</p> : null}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function StalledPayload({ payload }: { payload: Record<string, unknown> }) {
   const outcome = typeof payload["outcome"] === "string" ? payload["outcome"] : undefined;
   const gateReasons = readStringArray(payload["gateReasons"]);

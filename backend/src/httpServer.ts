@@ -48,6 +48,7 @@ import {
   isCitationSemanticMode,
   type CitationSemanticMode,
 } from "./citation/semanticMode.js";
+import { DEFAULT_STYLE_POLICY, STYLE_POLICIES, isStylePolicy, type StylePolicy } from "./review/stylePolicy.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -470,11 +471,15 @@ async function handleRequest(
     if (project.archivedAt !== undefined) {
       throw new ProjectBusyError(`项目已归档，不能启动新任务（请先恢复项目 ${projectId}）`);
     }
+    // M5.4 语言润色策略：只对会修改稿件的工作流有意义；Quick Review 100% 只读，
+    // 携带 stylePolicy（任何值）直接 400——不存在「Quick Review 里应用润色」的路径
+    const stylePolicy = readStylePolicyField(body, kind);
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
       // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
       // 按 full 解释，两个默认值不共用同一条兜底路径）
       ...(kind === "existing_paper_review" ? { citationSemanticMode: readCitationSemanticMode(body) } : {}),
+      ...(stylePolicy !== undefined ? { stylePolicy } : {}),
     });
     sendJson(res, 202, { runId: run.runId, status: run.status, workflowKind: run.workflowKind });
     return;
@@ -1330,6 +1335,31 @@ async function handleProjectResourceRoutes(
     return true;
   }
 
+  // style-polish（M5.4）：最新 style plan + 润色结果 + 是否已复审（只读）
+  if (resource === "style-polish" && rest === "") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    const [plan, result, summary] = await Promise.all([
+      stack.reviewArtifacts.latestStylePlan(projectId),
+      stack.reviewArtifacts.latestStylePolishResult(projectId),
+      stack.reviewArtifacts.latestSummary(projectId),
+    ]);
+    const reviewedRevision = typeof summary?.reviewedRevision === "number" ? summary.reviewedRevision : null;
+    sendJson(res, 200, {
+      plan,
+      result,
+      reviewedRevision,
+      // 润色产生的修订是否已被新一轮 review 覆盖（旧 review / gate / build 结论已 stale）
+      reReviewed:
+        result !== null && result.status === "applied" && typeof result.revision === "number" && reviewedRevision !== null
+          ? reviewedRevision >= result.revision
+          : null,
+    });
+    return true;
+  }
+
   // revision-plan：确定性修订计划（缺省最新轮；?round=N 指定轮）
   if (resource === "revision-plan" && rest === "") {
     if (method !== "GET") {
@@ -2003,6 +2033,33 @@ function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
   throw new BusinessError(
     "INVALID_REQUEST",
     `字段 kind 只能是 ${WORKFLOW_KINDS.join("、")}（缺省 idea_to_paper）`,
+  );
+}
+
+/**
+ * 语言润色策略（M5.4；idea_to_paper / existing_paper_improvement 专用）：
+ * 缺省 suggest_only（显式写入 request）；非法值 400；existing_paper_review 携带即 400。
+ */
+function readStylePolicyField(body: Record<string, unknown>, kind: WorkflowKind): StylePolicy | undefined {
+  const value = body["stylePolicy"];
+  if (kind === "existing_paper_review") {
+    if (value !== undefined) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        "existing_paper_review（Quick Review）是只读流程，不接受 stylePolicy；语言润色只在 Improvement / Idea-to-Paper 工作流可用",
+      );
+    }
+    return undefined;
+  }
+  if (value === undefined) {
+    return DEFAULT_STYLE_POLICY;
+  }
+  if (isStylePolicy(value)) {
+    return value;
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    `字段 stylePolicy 只能是 ${STYLE_POLICIES.join("、")}（缺省 ${DEFAULT_STYLE_POLICY}）`,
   );
 }
 

@@ -1,0 +1,9 @@
+\section{实验结果}
+
+本节在 CIFAR-10 与 ImageNet-1k 两个数据集上评估所提方法。表~\ref{tab:main} 给出了主要结果。在 CIFAR-10 上，所提方法的 top-1 准确率为 94.2\%，比基线 ResNet-18 的 93.1\% 高 1.1 个百分点 \cite{he2016resnet}；在 ImageNet-1k 上，top-1 准确率为 76.8\%，训练耗时从 31.5 h 降低到 27.9 h。
+
+当批大小固定为 256 时，学习率按式~\eqref{eq:lr} 调整：
+\begin{equation}
+  \eta_t = \eta_0 \cdot \cos\left(\frac{\pi t}{2T}\right) \label{eq:lr}
+\end{equation}
+其中 $\eta_0 = 0.1$，$T$ 为总迭代步数。消融实验表明，去掉通道注意力模块后 ImageNet-1k 上的准确率下降 0.6 个百分点，去掉残差连接后下降 2.3 个百分点；两项差异在 3 次独立运行的标准差（0.2）之外。上述结果只在本文实验条件下成立，未在更大规模数据集上验证。

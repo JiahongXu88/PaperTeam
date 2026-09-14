@@ -13,6 +13,8 @@ import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
+import type { RevisionPlanItem } from "../review/revisionPlan.js";
+import { protectedInventory } from "../review/styleInvariants.js";
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { validateOutline } from "../manuscript/ManuscriptService.js";
 import { extractJsonObject } from "../agents/outputParsing.js";
@@ -233,6 +235,54 @@ export class WriterService {
   }
 
   /**
+   * Style-only 润色（M5.4 Style Revision Loop）：只按 style plan 条目调整表达，
+   * 不允许改变事实 / 数字 / 引用 / 公式 / 术语 / 结论强度；调用方在写回前执行
+   * deterministic Style Invariant Checker，失败即丢弃输出（原稿保留）。
+   * contextScope=writing/style-polish → 注入 academic-writing-zh + academic-style-zh。
+   */
+  async polishSectionStyle(params: {
+    projectId: string;
+    section: OutlineSection;
+    currentLatex: string;
+    items: RevisionPlanItem[];
+    /** 受保护术语（glossary / 调用方传入；invariant 检查同源） */
+    protectedTerms: string[];
+    bibliographyKeys: string[];
+  }): Promise<{ latex: string; taskId: string }> {
+    if (params.items.length === 0) {
+      return { latex: params.currentLatex, taskId: "(unchanged)" };
+    }
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      task: buildStylePolishPrompt(params),
+      projectId: params.projectId,
+      contextScope: "writing/style-polish",
+      metadata: { role: "writer", skill: "style-polish" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(
+        task.error ?? `章节 ${params.section.id} 语言润色任务以 ${task.status} 状态结束`,
+      );
+    }
+    const latex = stripCodeFence(task.output ?? "").trim();
+    if (latex === "") {
+      throw new AgentRunFailedError(`章节 ${params.section.id} 语言润色没有返回内容`);
+    }
+    if (latex.includes("\\documentclass") || latex.includes("\\begin{document}")) {
+      throw new InvalidLatexOutputError(
+        `章节 ${params.section.id} 语言润色返回了完整文档骨架（应为正文片段）`,
+      );
+    }
+    if (params.section.id === "abstract" && /(\\section|\\begin\{)/.test(latex)) {
+      throw new InvalidLatexOutputError("摘要语言润色返回了 LaTeX 结构（应为纯文本摘要）");
+    }
+    if (!hasBalancedBraces(latex)) {
+      throw new InvalidLatexOutputError(`章节 ${params.section.id} 语言润色后花括号不配对`);
+    }
+    return { latex, taskId: task.taskId };
+  }
+
+  /**
    * 修复编译错误（M4.7 bounded repair loop）。
    * 上下文刻意最小化：只给受影响章节的当前内容 + 结构化编译诊断
    * （文件 / 行号 / 错误 / 附近行），绝不整篇论文 + 整份日志。
@@ -368,6 +418,47 @@ export interface ImprovementPlanItem {
 
 export interface ImprovementPlan {
   items: ImprovementPlanItem[];
+}
+
+function buildStylePolishPrompt(params: {
+  section: OutlineSection;
+  currentLatex: string;
+  items: RevisionPlanItem[];
+  protectedTerms: string[];
+  bibliographyKeys: string[];
+}): string {
+  const inventory = protectedInventory(params.currentLatex);
+  const isAbstract = params.section.id === "abstract";
+  return [
+    `你是一名学术论文写手（Writer）。这是一次 **style-only 语言润色**：只改善论文${isAbstract ? "摘要" : `章节「${params.section.title}」`}中下列指定位置的中文学术表达，不做任何其他修改。`,
+    "",
+    "输出要求：",
+    isAbstract
+      ? "1. 只输出润色后的摘要纯文本；不要 LaTeX 命令、不要解释。"
+      : "1. 只输出润色后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释、不要 Markdown 围栏。",
+    "2. 只修改下列「语言风格问题」指向的句子及为保持通顺所需的最小上下文；其余内容逐字保留。",
+    "3. 绝对不得改变：数值（含小数位 / 百分比 / 区间）与单位、表格事实、数学公式与符号、\\cite 的 key 集合、\\ref / \\label / \\eqref、\\begin / \\end 环境、专业术语、否定关系（不 / 未 / 无 / 并非 / 不显著 …）、比较方向（高于 / 低于 / 优于 / 差于 / 增加 / 降低 …）、因果方向、结论强度（可能 / 表明 / 证明 不互换）。",
+    "4. 不得新增任何事实、数字、例子、引用、实验或结论；不得删除任何承载事实的句子；不得改变段落顺序与章节结构。",
+    "5. 不追求「像人写的」：不加第一人称、个人感受、题外话、口语；只追求清晰、准确、术语一致的中文学术表达。",
+    "6. 如果某条问题无法在不触及第 3 / 4 条的前提下修改，就原样保留该句。",
+    "7. 只允许引用以下参考文献 key（且集合必须与当前内容完全一致）：" +
+      (params.bibliographyKeys.length > 0 ? params.bibliographyKeys.join(", ") : "（当前无引用：不要使用 \\cite）"),
+    "",
+    "===== 受保护内容清单（润色后必须逐项保持）=====",
+    `citation key：${inventory.citationKeys.length > 0 ? inventory.citationKeys.join(", ") : "（无）"}`,
+    `数字 / 单位：${inventory.numbers.length > 0 ? inventory.numbers.join("、") : "（无）"}`,
+    `数学片段：${inventory.mathSegments} 段（内容不得改动）`,
+    `LaTeX 结构：${inventory.structure.length > 0 ? inventory.structure.join(" ") : "（无）"}`,
+    `受保护术语：${params.protectedTerms.length > 0 ? params.protectedTerms.join("、") : "（未提供 glossary；沿用当前内容中的术语，不得替换为近义词）"}`,
+    "",
+    "===== 语言风格问题（只处理这些）=====",
+    ...params.items.map(
+      (item) => `- [${item.id}] ${item.problem}（改法：${item.instruction}）`,
+    ),
+    "",
+    `===== ${isAbstract ? "当前摘要" : "本章节当前内容"} =====`,
+    params.currentLatex.slice(0, 12_000),
+  ].join("\n");
 }
 
 function buildRepairPrompt(params: {
