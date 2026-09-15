@@ -58,14 +58,18 @@ describe("loadConfig", () => {
     }
   });
 
+  // 绝对路径按运行平台取（Linux CI 上 "D:/…" 不是绝对路径）
+  const ABS_AGENT_DIR = process.platform === "win32" ? "D:/pt/pi-agent" : "/srv/pt/pi-agent";
+  const ABS_RUNTIME_ROOT = process.platform === "win32" ? "D:/pt-root" : "/srv/pt-root";
+
   it("PAPERTEAM_PI_AGENT_DIR 显式指定时被采用", () => {
-    const config = loadConfig({ PAPERTEAM_PI_AGENT_DIR: "D:/pt/pi-agent" });
-    expect(config.pi.agentDir).toBe("D:/pt/pi-agent");
+    const config = loadConfig({ PAPERTEAM_PI_AGENT_DIR: ABS_AGENT_DIR });
+    expect(config.pi.agentDir).toBe(ABS_AGENT_DIR);
   });
 
   it("PAPERTEAM_RUNTIME_ROOT 影响 agentDir 默认值；相对路径拒绝", () => {
-    const config = loadConfig({ PAPERTEAM_RUNTIME_ROOT: "D:/pt-root" });
-    expect(config.pi.agentDir).toBe(join("D:/pt-root", "runtime", "pi", "agent"));
+    const config = loadConfig({ PAPERTEAM_RUNTIME_ROOT: ABS_RUNTIME_ROOT });
+    expect(config.pi.agentDir).toBe(join(ABS_RUNTIME_ROOT, "runtime", "pi", "agent"));
     expect(() => loadConfig({ PAPERTEAM_RUNTIME_ROOT: "relative/path" })).toThrow(ConfigError);
   });
 
