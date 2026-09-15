@@ -69,11 +69,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ PAPERTEAM_RUNTIME_ROOT: "relative/path" })).toThrow(ConfigError);
   });
 
-  it("resolveRuntimeRoot：默认 ~/.paperteam；绝对路径覆盖", () => {
+  it("resolveRuntimeRoot：默认 ~/.paperteam；绝对路径覆盖（平台无关：Linux CI 上 H:\\ 不是绝对路径）", () => {
     expect(resolveRuntimeRoot({}, "H:/home")).toBe(join("H:/home", ".paperteam"));
-    expect(resolveRuntimeRoot({ PAPERTEAM_RUNTIME_ROOT: "H:\\custom" }, "H:/home")).toBe(
-      "H:\\custom",
-    );
+    const custom = process.platform === "win32" ? "H:\\custom" : "/srv/paperteam-custom";
+    expect(resolveRuntimeRoot({ PAPERTEAM_RUNTIME_ROOT: custom }, "H:/home")).toBe(custom);
   });
 
   it("会话标识可覆盖且校验字符集", () => {

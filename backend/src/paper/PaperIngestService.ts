@@ -211,9 +211,13 @@ export class PaperIngestService {
   }
 }
 
-/** 上传文件名规范化：取 basename、去控制字符、限长（仅元数据存储，不参与磁盘路径） */
+/**
+ * 上传文件名规范化：取 basename、去控制字符、限长（仅元数据存储，不参与磁盘路径）。
+ * 先把反斜杠归一为 /：Windows 客户端可能上送 "..\\dir\\name.pdf"，而 Linux 的 basename 不把
+ * 反斜杠当分隔符——路径穿越中和必须与运行平台无关（M5.5 Linux CI 暴露）。
+ */
 export function normalizeUploadName(name: string): string {
-  const trimmed = basename(name.trim()).replace(/[\x00-\x1f\x7f]/g, "");
+  const trimmed = basename(name.trim().replaceAll("\\", "/")).replace(/[\x00-\x1f\x7f]/g, "");
   if (trimmed === "" || trimmed === "." || trimmed === "..") {
     throw new BusinessError("INVALID_REQUEST", "非法文件名");
   }
