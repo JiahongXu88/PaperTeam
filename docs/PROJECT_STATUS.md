@@ -1,11 +1,11 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-14（**M5.6 Real Paper Acceptance 🟡 PARTIAL**：真实 26 页
-> 中文论文 A/B + Quick Review + 材料不足提案首轮完成，见 docs/M5_ACCEPTANCE.md；
-> 验收驱动修复 Writer 引用回归 / 执行超时默认 / Style Polish Draft 路径；
-> **M5.5 Linux / Docker Deployment 🟡 IMPLEMENTED /
-> AWAITING REAL DOCKER ACCEPTANCE**：Dockerfile / compose / nginx / CI / readiness /
-> 优雅停机 / 跨平台审计已完成并有测试，真实 Docker 验收因本机无 Docker / WSL 未执行；
+> 更新日期：2026-09-15（**M5.5 ✅ COMPLETE**：WSL2 + Docker Engine 主机上完成 build / up /
+> 持久化 / 容器内 XeLaTeX 与 PyMuPDF / SIGTERM 优雅停机的真实验收；**M5.6 🟡 PARTIAL —
+> awaiting human pairwise evaluation**：Citation Preservation Gate（确定性，Prompt 不是 Gate）、
+> 长论文执行超时分层、CI 首次全绿、修复后真实论文 A/B（A8 / B6 两臂均 Draft、引用丢失 0、
+> Style Polish 真实触发并被 Invariant Checker 挡下）与盲评材料包已完成，人工 pairwise 待真人填写，
+> 见 docs/M5_ACCEPTANCE.md；09-14 首轮验收：真实 26 页中文论文 A/B + Quick Review + 材料不足提案；
 > 同日 **M5.4 Chinese Academic Style Revision Loop ✅
 > COMPLETE**：stylePolicy suggest_only / apply_once、Style Invariant Checker、
 > style-only HITL + 修订 + 强制复审、Quick Review 只读红线、M5 eval corpus；
@@ -28,8 +28,9 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
 中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
 接入（M5.3 ✅）、Style Revision Loop（M5.4 ✅）、单机 Linux / Docker 部署
-（M5.5 🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）、真实论文 A/B 验收
-（M5.6 🟡 PARTIAL，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。**M5 整体：PARTIAL**。旧文档中「M5 = Visual Reviewer /
+（M5.5 ✅ 2026-09-15 真实 Docker 验收）、真实论文 A/B 验收
+（M5.6 🟡 PARTIAL — awaiting human pairwise evaluation，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。
+**M5 整体：PARTIAL**（只差人工盲评；不伪造）。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
 
@@ -383,9 +384,9 @@ D-0026「critical / major → planned、minor → skipped」的前提下，增�
   失败 → 走既有 HITL / Draft 路径，不叠加润色）；语义等价只能靠 invariant +
   复审 + 人审，A/B 质量证据留 M5.6。
 
-**M5.5 Linux / Docker Deployment（🟡 IMPLEMENTED / AWAITING REAL DOCKER
-ACCEPTANCE，2026-09-14）**：单机单用户 Linux / Docker 部署的代码、配置、CI 与
-自动化测试完成；真实 Docker 验收未执行（见末尾如实边界）。
+**M5.5 Linux / Docker Deployment（✅ COMPLETE，2026-09-15 真实 Docker 验收通过）**：
+单机单用户 Linux / Docker 部署的代码、配置、CI 与自动化测试于 09-14 完成；09-15 在
+WSL2 + Docker Engine 主机上对同一 git checkout 完成全部真实验收（见末尾验收记录）。
 
 - **依赖审计**（以源码 / doctor 为准，见 docs/DEPLOYMENT.md §2）：Node 22
   （root engines）、Pi SDK 0.84.4、Python3 + pymupdf（`pdfToolchain` 候选 +
@@ -432,13 +433,19 @@ ACCEPTANCE，2026-09-14）**：单机单用户 Linux / Docker 部署的代码、
   （无 COPY .env、无 Key、多阶段、非 texlive-full、backend 不 publish、双 volume、
   grace > 预算、SSE 不缓冲、Linux 路径纯净）、backend 源码跨平台审计。Backend 687
   → 696 passed，Frontend 170 不变；build / typecheck / test 全绿。
-- **如实边界（阻塞 COMPLETE）**：本开发机（Windows 11）没有 Docker Desktop，也没
-  有 WSL（`docker: command not found`、`wsl.exe` 提示未安装），无法执行
-  `docker compose build / up / restart / down` 与 volume 持久化验收；镜像是否能
-  构建、TeX 包集是否足够、entrypoint 降权是否正确均**未经真实运行验证**。M5.5
-  状态为 **IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE**，验收清单见
-  docs/DEPLOYMENT.md §7；CI 的 docker-build job 在 GitHub Actions 上是第一处真实
-  构建反馈（push 后查看）。
+- **真实 Docker 验收（2026-09-15，✅）**：开发机原本无 Docker / WSL；按「不擅自安装
+  Docker Desktop（公司环境无法确认商业授权）」的纪律，安装 WSL 2.7.14（官方 MSI，
+  Microsoft 签名验证）+ Ubuntu 24.04（官方 rootfs，SHA256 + GPG 验签）+ Docker Engine
+  29.8.0 / Compose v5.5.1 / buildx（官方 apt 包，GPG 指纹验证），对 `/mnt/d/Projects/
+  PaperTeam`（与 Windows 同一 checkout、同一 HEAD）执行 docs/DEPLOYMENT.md §7 全部清单：
+  build 573 s（backend 1.99 GB / web 83.5 MB；deb.debian.org / pypi.org 从该网络几乎不可达
+  → Dockerfile 新增构建期 `APT_MIRROR` / `PIP_INDEX_URL` build-arg，缺省官方源）；
+  up 8 s 健康、`/ready` degraded 空、Windows 主机访问 Web UI 与同源 API；project +
+  marker + 5 个已安装 Skill 经 `restart` 与 `down && up`（不带 -v）持久化；容器内
+  XeLaTeX + ctex + bibtex 产出含中文的 PDF（Fandol 字体）；容器内 Python + PyMuPDF 解析
+  fixture PDF（15 页 / 23 节）；`docker compose stop` → `shutting down (SIGTERM)` →
+  `stopped cleanly`、exit 0、无 zombie / unhandled；日志无 Windows 路径。明细见
+  docs/M5_ACCEPTANCE.md §4.7。
 
 **M5.6 Real Paper Acceptance & Release（🟡 PARTIAL，2026-09-14）**：完整记录见
 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)，Release Notes 见 [RELEASE_NOTES_M5.md](RELEASE_NOTES_M5.md)。
@@ -464,10 +471,23 @@ ACCEPTANCE，2026-09-14）**：单机单用户 Linux / Docker 部署的代码、
   ② Style Polish 在 Draft 路径（Gate 失败、accept_draft 后）也提供一次（否则真实论文
   几乎没有润色机会），新增 e2e 测试；③ compose 默认 `PAPERTEAM_PI_RUN_TIMEOUT_MS=900000`；
   ④ usage 观测面；⑤ CI 装 pymupdf。Backend 696 → 698 passed，Frontend 170。
-- **未完成 / 如实边界**：人工 pairwise 评价未做（模板已备）；Docker E2E 无主机；
-  修复后 A 臂首跑因 provider 429（4 backend 并发）失败，重跑中；B3 / A4 结果以本地
-  summary.json 为准并回填 M5_ACCEPTANCE；Gate 不检查引用保持（靠硬指标发现）。
-  **不打 tag；M5 状态 PARTIAL**。
+- **09-15 收口**（详见 M5_ACCEPTANCE §4.3 / §4.7 / §4.8 / §6.6–6.8）：
+  ① **Citation Preservation Gate**（`quality/citationPreservation.ts`）——以修订快照为事实源，比较
+  被审阅修订与前一修订实际被引用的 key；无计划依据的丢失 → `citation_keys_preserved` FAIL，
+  全部删光 hard fail，历史回归 FAIL；有依据的删除只认结构化计划（citation_missing / 显式点名 /
+  证据不足条目命中章节）；`revision.plan` 派发 `citation_removed` 恢复条目；Draft 路径明确暴露；
+  Quick Review 不受影响；10 类测试 + scripted 回归 + 前端标签。② **长论文执行超时分层**
+  `PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS`（默认 900 s，只给 Writer / Reviewer / Researcher 逐 run
+  覆盖），通用 300 s 与 Runtime 契约不变。③ **CI**：两处 Windows 假设修正后 GitHub Actions
+  ubuntu 首次 success（含 docker-build smoke）。④ **fact verdict 近似值归一**（真实模型输出
+  "CONTRADICTION" 曾让整条 run 失败）。⑤ **修复后真实 A/B（A8 / B6）**：两臂 Draft、引用丢失 0
+  （gate 产物 `citation_keys_preserved` 真实 PASS）、无超时 / 429；B6 Style Polish 真实触发，
+  sec2 / sec3 因丢失公式 / 表格 / ref5 被 Invariant Checker 挡下（原稿保留）；A $1.65 / 51.8 min，
+  B $3.52 / 83 min。⑥ **盲评包** `~/.paperteam-acceptance/pairwise/`（pair-01 = A2 vs B2，
+  pair-02 = A8 vs B6，随机顺序 + 解盲映射隔离）。B3 / A4 与 A5 / B4 / A6 / B5 因主机 Modern
+  Standby 中断（落盘证据仍有效），A7 因 verdict 契约偏差失败——均如实记录。
+- **未完成 / 如实边界**：人工 pairwise 评价必须由真人完成（PaperTeam / Claude 不代填）。
+  **不打 tag；M5 状态 PARTIAL — awaiting human pairwise evaluation**。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

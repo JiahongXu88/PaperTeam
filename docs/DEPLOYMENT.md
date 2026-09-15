@@ -1,10 +1,9 @@
 # PaperTeam 单机 Linux / Docker 部署（M5.5）
 
-> 状态：**IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE**（2026-09-14）。
-> Dockerfile / compose / nginx / CI / readiness / 优雅停机 / 跨平台审计已完成并有自动化
-> 测试（`backend/test/deploy/deployment.test.ts`），但**开发机（Windows，无 Docker Desktop /
-> WSL）无法执行真实 `docker compose build / up / restart / down` 验收**。下面 §7 的
-> 验收清单全部为「待执行」；只有在 Docker 主机上逐项跑通后，M5.5 才能标 COMPLETE。
+> 状态：**✅ COMPLETE（真实 Docker 验收 2026-09-15）**。Docker 主机 = 同一台开发机上的
+> WSL2 Ubuntu 24.04 + Docker Engine 29.8 / Compose v5.5（未安装 Docker Desktop：公司环境
+> 无法确认其商业授权，改用 WSL2 内的 Docker Engine；见 docs/M5_ACCEPTANCE.md §4.7）。
+> §7 清单逐项真实执行并通过；构建期需要 apt / pip 镜像（§3）。
 
 形态：单机、单用户、Linux / Docker。不做 Kubernetes / HA / autoscaling / 多租户 /
 Redis / 外部任务队列 / System Admin / 登录系统。
@@ -109,19 +108,21 @@ root：`docker/backend-entrypoint.sh` 以 root 启动时修正为 `paperteam` �
 academic / style Reviewer）；B3 实测单节修订最长 626 s、单路审稿 315 s。短任务保持 300 s 是为了
 让真正卡死的调用尽早以 `EXECUTION_TIMEOUT` 结构化失败，而不是被长论文口径掩盖。
 
-## 7. 真实 Docker 验收清单（待执行；全部完成后 M5.5 才 COMPLETE）
+## 7. 真实 Docker 验收清单（✅ 2026-09-15 全部通过；明细见 docs/M5_ACCEPTANCE.md §4.7）
 
-在 Docker 主机上、仓库根执行并记录结果（写入 `docs/M5_ACCEPTANCE.md`）：
+Docker 主机：WSL2 Ubuntu 24.04（内核 6.18.33-microsoft-standard-WSL2）+ Docker Engine 29.8.0 /
+Compose v5.5.1 / buildx v0.37.1；仓库 = 同一个 checkout（`/mnt/d/Projects/PaperTeam`，HEAD 与
+Windows 一致）。执行脚本与原始日志保留在本机 `~/.paperteam-acceptance/docker/`。
 
-- [ ] `docker compose build` 成功（记录两镜像大小）
-- [ ] `docker compose up -d`；`/health` 200；`/ready` 200 且 `degraded == []`（TeX + pymupdf 可用）；浏览器打开 `http://<host>:8080` 出现工作台
-- [ ] 新建 project（Idea 或导入 PDF）
-- [ ] PDF parser smoke：导入一份 PDF，PaperMap 解析成功（`GET /api/projects/:id/paper`）
-- [ ] 最小 LaTeX compile：`POST /api/projects/:id/build` 或 Improvement 走到 build.draft，产出 Draft PDF
-- [ ] volume 持久化：`docker compose restart` 后 project / revisions / evidence / checkpoints / artifacts / installed Skills（`GET /api/skills`）/ provenance / settings 仍在
-- [ ] `docker compose down && docker compose up -d`（不带 `-v`）后再次验证以上数据仍在
-- [ ] `docker stop`（45s 内）：日志出现 `stopped cleanly`，无强制退出；重启后 `checkpoints` 完整、中断 run 可恢复
-- [ ] Linux 路径纯净：容器内 `GET /api/runtime/status` 与日志无 `C:\`、反斜杠路径
+- [x] `docker compose build`：573 s（apt / pip 走 USTC / TUNA 镜像）；`paperteam-backend:local` 1.99 GB、`paperteam-web:local` 83.5 MB；镜像内 Node v22.23.2、Python 3.11.2、pymupdf 1.28.2、git 2.39.5、XeTeX 3.141592653-2.6-0.999994（TeX Live 2022/Debian）、latexmk 4.79、biber 2.18、ctexart.cls、FandolSong 字体，进程用户 `paperteam`
+- [x] `docker compose up -d`：8 s 后 `/health` 200；`/ready` 200 且 `degraded == []`（latexmk 可用、python + pymupdf 可用、两个数据根可写）；`/api/runtime/status` runtime healthy（模型 not_configured，未注入 Key 属预期）；Windows 主机 `http://localhost:8080` 首页 / assets / `/api/projects` 均 200
+- [x] 新建 project（`m5-docker-acceptance-<ts>` + researchIdea marker）→ 201，`/data/projects/<id>/project.json` 落 volume；`GET /api/skills` 5 个 Skill 已安装（academic-review / academic-style-zh / academic-writing-zh / paper-search / verify-citations），`/data/runtime/skills/installed` 5 项
+- [x] PDF parser smoke：`POST /api/projects/import-pdf`（仓库 fixture `attention.pdf`，2.2 MB）→ 201，15 页 / 23 节 / 标题来自 PDF——容器内 Python 子进程 + PyMuPDF 真实解析
+- [x] 最小 LaTeX compile：导入 ctexart + amsmath + natbib 中文稿 → `POST /build` passed（latexmk）→ `build/paper.pdf` 32 KB；PyMuPDF 抽文本含中文，main.log 为 XeTeX 且引用 Fandol 字体 10 处，bibtex 生成参考文献 [1]
+- [x] `docker compose restart`（3 s 恢复健康）后 project / marker / 5 个 Skill / runtime 目录仍在
+- [x] `docker compose down && docker compose up -d`（不带 `-v`，容器与网络重建，volume 保留）后同样全部仍在
+- [x] `docker compose stop`：日志 `shutting down (SIGTERM)... budget=40000ms` → `stopped cleanly`，容器 exit code 0，1 s 内完成；`start` 后数据仍在；容器内无 zombie 进程、日志无 unhandled rejection
+- [x] Linux 路径纯净：日志与 `/api/runtime/status` 无 `C:\` / 反斜杠路径
 
 ## 8. 本地开发不受影响
 

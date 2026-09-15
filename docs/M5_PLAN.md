@@ -178,7 +178,7 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
   plan / reviewer 4、corpus 2、scripted e2e 6），frontend 164 → 170 passed；
   build / typecheck / test 全绿。
 
-### M5.5 Linux / Docker Deployment（🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE，2026-09-14）
+### M5.5 Linux / Docker Deployment（✅ COMPLETE，2026-09-15 真实 Docker 验收通过）
 
 单机 Linux 部署：Backend + Frontend + Pi SDK + TeX 工具链
 （texlive-xetex + 中文字体）的 Docker 镜像与 compose 配置；Windows
@@ -192,12 +192,16 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > ubuntu build / typecheck / test + docker build smoke、`GET /ready` readiness、
 > `PAPERTEAM_SHUTDOWN_TIMEOUT_MS` 可配置优雅停机、Linux 跨平台源码审计；
 > `backend/test/deploy/deployment.test.ts` 9 项；详见 docs/DEPLOYMENT.md）。
-> **真实 `docker compose build / up / restart / down` 与 volume 持久化验收未执行**：
-> 开发机（Windows）没有 Docker Desktop 也没有 WSL，无法在本机完成；按纪律
-> M5.5 **不标 COMPLETE**，验收清单见 docs/DEPLOYMENT.md §7，需在 Docker 主机
-> 上逐项执行后回填 docs/M5_ACCEPTANCE.md。
+> **真实验收（2026-09-15）**：在同一台开发机上安装 WSL2（Ubuntu 24.04）+ Docker Engine
+> 29.8 / Compose v5.5（不安装 Docker Desktop：公司环境无法确认其商业授权），对同一
+> git checkout 执行 docs/DEPLOYMENT.md §7 全部清单——build 573 s（apt / pip 需镜像，
+> Dockerfile 新增 `APT_MIRROR` / `PIP_INDEX_URL` build-arg）、up / health / ready
+> （degraded 空）、Windows 主机访问 Web UI 与同源 API、project + 5 个 Skill 经 restart 与
+> down/up 持久化、容器内 XeLaTeX + ctex + bibtex 产出中文 PDF、容器内 Python + PyMuPDF
+> 解析 fixture PDF、SIGTERM 优雅停机（stopped cleanly，exit 0，无 zombie / unhandled）、
+> Linux 路径纯净。明细见 docs/M5_ACCEPTANCE.md §4.7。
 
-### M5.6 Real Paper Acceptance & Release（🟡 PARTIAL，2026-09-14 首轮验收完成）
+### M5.6 Real Paper Acceptance & Release（🟡 PARTIAL — awaiting human pairwise evaluation，2026-09-15）
 
 以 M5.0 建立的口径做真实中文论文 A/B 验收（M5 改动前后的产出质量、
 长程运行稳定性、部署可用性），诚实记录结论；版本发布与 Release Notes。
@@ -207,9 +211,13 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > （Gate 如实 FAIL，阈值未动）；Quick Review 零写入；材料不足提案不编造；长程
 > runtime 有界可观测。验收驱动修复：默认 300s 执行超时对长论文过短（部署默认
 > 900s）、Writer 删光重建稿全部引用（引用 key 事实源改为 references.bib）、
-> Style Polish 在 Draft 路径也提供一次。**未完成**：人工 pairwise 评价、Docker
-> E2E（无 Docker 主机）、修复后 A 臂重跑（provider 429）。**不打 tag，M5 不标
-> COMPLETE**（Release Notes 见 docs/RELEASE_NOTES_M5.md）。
+> Style Polish 在 Draft 路径也提供一次。
+>
+> **2026-09-15 收口**：Citation Preservation Gate（确定性，M5_ACCEPTANCE §6.6）、长论文执行超时
+> 分层（§6.7）、CI 首次全绿（§6.8）、fact verdict 近似值归一；修复后真实 A/B（A8 / B6）两臂 Draft、
+> 引用丢失 0、gate 产物 `citation_keys_preserved` 真实 PASS、Style Polish 真实触发并被 Invariant
+> Checker 挡下（§4.8）；盲评包已生成（§5）。**唯一未完成：人工 pairwise 评价须由真人填写**——
+> 因此 M5.6 保持 PARTIAL，**不打 tag，M5 不标 COMPLETE**（Release Notes 见 docs/RELEASE_NOTES_M5.md）。
 
 ## 2. M5 明确不做（非目标）
 

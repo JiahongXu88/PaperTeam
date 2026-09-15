@@ -34,10 +34,23 @@ AbortSignal 统一、事件 seq + event_gap、queued cancel、timeout 分层、�
 - Quick Review 100% 只读（携带 stylePolicy → 400）。
 - M5 eval corpus + deterministic hard checks + 人工评价模板。
 
-### M5.5 Linux / Docker Deployment（🟡 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）
-Dockerfile（多阶段 backend / web）、compose（双 volume、backend 内部、web 唯一端口）、
-nginx 同源反代、`/ready` readiness、可配置优雅停机、CI（ubuntu + docker build smoke）。
-真实 `docker compose` 验收待 Docker 主机执行。
+### M5.5 Linux / Docker Deployment（✅ 真实 Docker 验收通过，2026-09-15）
+Dockerfile（多阶段 backend / web；受限网络 `APT_MIRROR` / `PIP_INDEX_URL` build-arg）、
+compose（双 volume、backend 内部、web 唯一端口、长论文超时 env）、nginx 同源反代、
+`/ready` readiness、可配置优雅停机、CI（ubuntu + docker build smoke）。在 WSL2 +
+Docker Engine 主机上完成 build / up / health / Web+API / 持久化（restart、down/up）/
+容器内 XeLaTeX 中文 PDF / 容器内 PyMuPDF 解析 / SIGTERM 优雅停机 的真实验收
+（docs/M5_ACCEPTANCE.md §4.7）。
+
+### M5.6 验收驱动修复（2026-09-15）
+- **Citation Preservation Gate**（`quality/citationPreservation.ts`）：修订前后实际被引用的
+  key 按 key 语义比较，无计划依据的丢失 → `citation_keys_preserved` FAIL（全部删光 hard fail、
+  历史回归 FAIL）；`revision.plan` 派发 `citation_removed` 恢复条目；Draft 路径明确暴露；
+  Quick Review 不受影响。Prompt 不是 Gate。
+- **长论文执行超时分层**：新增 `PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS`（默认 900 s）只覆盖
+  Writer / 三路 Reviewer / 分章节 Reviewer / Researcher；通用 300 s 默认与 Runtime 契约不变。
+- **CI 平台无关性**：上传文件名反斜杠归一化、配置测试的绝对路径按平台取——GitHub Actions
+  ubuntu 首次绿。
 
 ### M5.6 Real Paper Acceptance（🟡 首轮完成，PARTIAL）
 - 真实 26 页中文工科论文 A/B（glm-5.3，两臂同模型同阈值）：两臂均 **Draft PASS / Final
