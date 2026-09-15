@@ -115,6 +115,26 @@ export function extractCitationKeys(
   return { keys: [...keys], bad };
 }
 
+/**
+ * 提取 LaTeX 中全部引用 key 的出现序列（多重集；保持出现顺序；只含合法 key）。
+ * 与 extractCitationKeys 共用同一 \cite 族命令表——Citation Preservation Gate 用它
+ * 比较修订前后「实际被引用的 key」，不另造第二份命令清单。
+ */
+export function extractCitationOccurrences(tex: string): string[] {
+  const occurrences: string[] = [];
+  CITE_COMMAND_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = CITE_COMMAND_PATTERN.exec(tex)) !== null) {
+    for (const part of (match[1] ?? "").split(",")) {
+      const key = part.trim();
+      if (key !== "" && /^[A-Za-z0-9_.:+*-]+$/.test(key)) {
+        occurrences.push(key);
+      }
+    }
+  }
+  return occurrences;
+}
+
 /** 静态一致性检查 */
 export function checkCitations(
   texFiles: { file: string; content: string }[],

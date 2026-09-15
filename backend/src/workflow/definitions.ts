@@ -40,6 +40,10 @@ import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
+import {
+  computeCitationPreservation,
+  type CitationPreservationSummary,
+} from "../quality/citationPreservation.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
 import { diagnosticFiles, type LatexDiagnostic } from "../latex/diagnostics.js";
 import {
@@ -276,13 +280,19 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
       const citation: CitationReport | null = await services.citation.latestReport(ctx.projectId);
       const evidence = await services.evidence.stats(ctx.projectId);
       const feasibility = (await readFeasibilityReport(services.projects, ctx.projectId))?.report ?? null;
+      // M5.6 Citation Preservation：被审阅修订 vs 前一修订（快照事实源；无前序修订 → null 中性）
+      const citationPreservation = await computeCitationPreservation(
+        services,
+        ctx.projectId,
+        review.reviewedRevision,
+      );
       const gate = evaluateQualityGate(
-        { review, citation, evidence, feasibility },
+        { review, citation, evidence, feasibility, citationPreservation },
         QUALITY_THRESHOLDS(services),
       );
       // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
       const round = review.round;
-      await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review);
+      await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, { citationPreservation });
       // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
       // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
       const scorecard = scorecardOf(gate, review);
@@ -360,6 +370,13 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       const gateBlockers = (gateArtifact?.gate.rules ?? [])
         .filter((rule) => !rule.passed)
         .map((rule) => ({ rule: rule.rule, detail: rule.detail }));
+      // M5.6：引用保持失败项有明确章节归属（上一修订中的出现位置）→ 派发 Writer 恢复引用，
+      // 不再只是无从下手的 gate_blocker
+      const preservation = gateArtifact?.citationPreservation ?? null;
+      const citationRemoved =
+        preservation !== null && !preservation.ok
+          ? preservation.unexpectedRemoved.map((entry) => ({ key: entry.key, files: entry.files }))
+          : [];
       const buildErrorValue = readBuildError(ctx.state);
       const plan = buildRevisionPlan({
         projectId: ctx.projectId,
@@ -367,6 +384,7 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         reviewRound: summary.round,
         summary,
         citationMissing: await citationMissingTargets(services, ctx.projectId),
+        ...(citationRemoved.length > 0 ? { citationRemoved } : {}),
         ...(buildErrorValue !== undefined
           ? { buildError: { message: buildErrorValue.slice(0, 500) } }
           : {}),
@@ -1035,6 +1053,22 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
         ctx.projectId,
         revision,
       );
+      // M5.6：Draft 不受 Quality Gate 阻塞，但引用保持失败必须在 Draft 路径明确暴露
+      // （Final 被阻止的原因不能只藏在 gate 产物里）
+      const preservationFailure = await latestCitationPreservationFailure(services, ctx.projectId);
+      const preservationView =
+        preservationFailure !== null
+          ? {
+              passed: false,
+              unexpectedRemovedKeys: preservationFailure.unexpectedRemovedKeys.slice(0, 8),
+              previousCount: preservationFailure.previousCount,
+              currentCount: preservationFailure.currentCount,
+            }
+          : null;
+      const preservationNote =
+        preservationFailure !== null
+          ? `；注意：引用保持未通过（无依据删除 ${preservationFailure.unexpectedRemovedKeys.length} 个 key，Final 被阻止）`
+          : "";
       await ctx.emitDomain(
         build.passed ? "build_gate.passed" : "build_gate.failed",
         {
@@ -1042,8 +1076,11 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
           reasons: build.reasons.slice(0, 5),
           tool: compile.tool,
           durationMs: compile.durationMs,
+          ...(preservationView !== null ? { citationPreservation: preservationView } : {}),
         },
-        build.passed ? "Build Gate 通过（PDF 已产出）" : `Build Gate 失败：${build.reasons[0] ?? "编译失败"}`,
+        build.passed
+          ? `Build Gate 通过（PDF 已产出）${preservationNote}`
+          : `Build Gate 失败：${build.reasons[0] ?? "编译失败"}${preservationNote}`,
       );
       // Build 通过即冻结 Draft（幂等；质量 Gate 不参与 Draft 判定）
       let draftArtifactId: string | undefined;
@@ -1063,9 +1100,25 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
         diagnosticsCount: record.diagnostics.length,
         diagnosticFiles: diagnosticFiles(record.diagnostics),
         ...(draftArtifactId !== undefined ? { draftArtifactId } : {}),
+        ...(preservationView !== null ? { citationPreservation: preservationView } : {}),
       };
     },
   };
+}
+
+/** 最新 gate 产物里的引用保持失败明细（通过 / 不可比较 / 无产物 → null） */
+async function latestCitationPreservationFailure(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<CitationPreservationSummary | null> {
+  const rounds = await services.reviewArtifacts.gateRounds(projectId);
+  const latest = rounds[0];
+  if (latest === undefined) {
+    return null;
+  }
+  const artifact = await services.reviewArtifacts.loadGate(projectId, latest);
+  const preservation = artifact?.citationPreservation ?? null;
+  return preservation !== null && !preservation.ok ? preservation : null;
 }
 
 // ============================================================
@@ -2583,7 +2636,7 @@ async function collectPlanDirectives(
 function revisionPlanItemToIssue(item: RevisionPlanItem): ReviewIssue {
   const severity = item.priority === "high" ? "critical" : item.priority === "low" ? "minor" : "major";
   return {
-    category: item.kind === "citation_missing" ? "citation" : "academic",
+    category: item.kind === "citation_missing" || item.kind === "citation_removed" ? "citation" : "academic",
     severity,
     section: item.section,
     description: `${item.problem}（计划要求：${item.instruction}）`,

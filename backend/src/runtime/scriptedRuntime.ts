@@ -99,12 +99,59 @@ export const SECTION_TEX = [
   "\\end{equation}",
 ].join("\n");
 
-/** 修订后的章节片段（不引入新引用：修订只应基于现有 Evidence 收敛表述） */
+/**
+ * 修订后的章节片段基底（不引入新引用）。scriptedRevision 会把修订 prompt 里「本章节当前内容」
+ * 中既有的 \\cite 命令原样追加回来——脚本化 Writer 镜象真实 Writer 的纪律：修订只基于现有
+ * Evidence 收敛表述，不删除既有引用（M5.6 Citation Preservation Gate）。
+ */
 export const REVISED_SECTION_TEX = [
   "\\section{章节标题（修订后）}",
   "",
   "修订后的论述：基于已核验证据的稳健表述，避免无证据的强论断。",
 ].join("\n");
+
+/**
+ * [cite:drop] 项目的调研输出：bibliography 多一条真实可引用的 key（lewis2020rag），让实验
+ * 章节能携带一条「只在该章节出现」的引用——修订删掉它就是无依据丢失（按 key 语义可判定）。
+ * 放在实验章节而不是引言：fail 审稿包对引言的 finding 是 fact（证据不足，计划允许弱化 /
+ * 删除论述，连带引用可删），对实验的 finding 是 academic（无删除依据）。
+ */
+export const RESEARCH_JSON_TWO_REFS = JSON.stringify({
+  ...(JSON.parse(RESEARCH_JSON) as Record<string, unknown>),
+  bibliography: [
+    ...(JSON.parse(RESEARCH_JSON) as { bibliography: unknown[] }).bibliography,
+    {
+      key: "lewis2020rag",
+      title: "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      authors: ["Lewis, Patrick", "Perez, Ethan"],
+      year: 2020,
+    },
+  ],
+});
+
+/** [cite:drop] 项目的实验章节：在 SECTION_TEX 之上多引用一条 lewis2020rag（只在实验章节出现） */
+export const SECTION_TEX_TWO_CITES = `${SECTION_TEX}\n\n开创性工作亦见 \\cite{lewis2020rag}。`;
+
+/** \\cite 族命令（脚本化 Writer 只做「原样保留」，不解析 key） */
+const SCRIPTED_CITE_PATTERN = /\\(?:cite|citep|citet|citealp|citealt|parencite|textcite|autocite)\*?(?:\[[^\]\n]*\])*\{[^{}]*\}/g;
+
+/**
+ * 脚本化修订：基底 + 当前章节内容里的既有引用命令（去重、保持出现顺序）。
+ * dropCitations=true（[cite:drop] 标记）时不保留任何引用——复现 Writer 无计划删光引用的回归。
+ * prompt 里没有「本章节当前内容」块（单元测试直接调用）时只返回基底。
+ */
+export function scriptedRevision(task: string, dropCitations: boolean): string {
+  const marker = "===== 本章节当前内容 =====";
+  const start = task.indexOf(marker);
+  if (dropCitations || start === -1) {
+    return REVISED_SECTION_TEX;
+  }
+  const rest = task.slice(start + marker.length);
+  const end = rest.indexOf("\n=====");
+  const current = end === -1 ? rest : rest.slice(0, end);
+  const cites = [...new Set(current.match(SCRIPTED_CITE_PATTERN) ?? [])];
+  return cites.length === 0 ? REVISED_SECTION_TEX : `${REVISED_SECTION_TEX}\n\n沿用既有引用：${cites.join(" ")}。`;
+}
 
 /** 摘要修订输出（M4.8：纯文本，无任何 LaTeX 命令——载体是 outline.abstract） */
 export const REVISED_ABSTRACT_TEXT =
@@ -355,6 +402,12 @@ const ABSTRACT_MARKER = /\[abstract:finding\]/;
  */
 const STYLE_MARKER = /\[style:(findings|violate)\]/;
 type StyleMode = "findings" | "violate";
+/**
+ * M5.6 Citation Preservation 标记（随 researchIdea 进入 research prompt，按项目记忆）：
+ *   [cite:drop]  writing/revision 输出删光全部 \\cite → quality.gate 的 citation_keys_preserved
+ *                catastrophic FAIL（Final 被阻止），revision.plan 派发 citation_removed 恢复条目
+ */
+const CITE_MARKER = /\[cite:drop\]/;
 
 /** 脚本化 style-only 润色：只改表达（「本章节论述」→「本节论述」），不动引用 / 数字 / 公式 */
 function scriptedStylePolish(task: string, mode: StyleMode | undefined): string {
@@ -394,6 +447,11 @@ function targetsIntroduction(task: string): boolean {
   return task.includes("introduction.tex") || task.includes("「引言」");
 }
 
+/** 当前写作调用是否作用于 experiments（[cite:drop]：只让实验章节多带一条独有引用） */
+function targetsExperiments(task: string): boolean {
+  return task.includes("experiments.tex") || task.includes("「实验」");
+}
+
 export interface ScriptedRuntime {
   runtime: ScriptedAgentRuntime;
   calls: { agentId: string; contextScope?: string }[];
@@ -423,6 +481,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectLatexModes = new Map<string, LatexMode>();
   const projectAbstractFindings = new Set<string>();
   const projectStyleModes = new Map<string, StyleMode>();
+  const projectCiteDrop = new Set<string>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -461,8 +520,11 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           if (styleMarker !== null) {
             projectStyleModes.set(projectId, styleMarker[1] as StyleMode);
           }
+          if (CITE_MARKER.test(input.task)) {
+            projectCiteDrop.add(projectId);
+          }
         }
-        output = RESEARCH_JSON;
+        output = projectCiteDrop.has(projectId) ? RESEARCH_JSON_TWO_REFS : RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
         output = EXISTING_ANALYSIS_JSON;
       } else if (scope === "research/feasibility") {
@@ -476,7 +538,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output =
           projectLatexModes.get(projectId) !== undefined && targetsIntroduction(input.task)
             ? `${SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
-            : SECTION_TEX;
+            : projectCiteDrop.has(projectId) && targetsExperiments(input.task)
+              ? SECTION_TEX_TWO_CITES
+              : SECTION_TEX;
       } else if (scope === "writing/revision") {
         // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
         // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
@@ -486,8 +550,8 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           : input.task.includes("\\documentclass")
             ? LATEX_DOC
             : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
-              ? `${REVISED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
-              : REVISED_SECTION_TEX;
+              ? `${scriptedRevision(input.task, projectCiteDrop.has(projectId))}\n${UNDEFINED_MACRO_TEX}`
+              : scriptedRevision(input.task, projectCiteDrop.has(projectId));
       } else if (scope === "writing/style-polish") {
         output = scriptedStylePolish(input.task, projectStyleModes.get(projectId));
       } else if (scope === "writing/repair") {

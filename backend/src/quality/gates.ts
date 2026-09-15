@@ -16,6 +16,7 @@ import type { CitationSemanticMode } from "../citation/semanticMode.js";
 import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import type { FeasibilityReport } from "../agents/FeasibilityService.js";
 import type { ReviewSummary } from "../review/ReviewAggregator.js";
+import { describeCitationPreservation, type CitationPreservationSummary } from "./citationPreservation.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { LatexDiagnostic } from "../latex/diagnostics.js";
 import { parseLatexDiagnostics } from "../latex/diagnostics.js";
@@ -251,6 +252,13 @@ export interface QualityGateInput {
    * 不能因为「本轮没有 semantic records」而 FAIL；缺省按 full 解释（历史行为）。
    */
   citationSemanticMode?: CitationSemanticMode;
+  /**
+   * Citation Preservation（M5.6）：被审阅修订相对前一修订的引用保持结果。
+   * undefined = 调用方未计算（规则不出现，兼容纯单元输入）；null = 不可比较
+   * （无前序修订等）→ 以 citation_preservation_not_applicable 中性呈现；
+   * summary → citation_keys_preserved 参与判定。
+   */
+  citationPreservation?: CitationPreservationSummary | null;
 }
 
 export interface QualityGateResult {
@@ -391,6 +399,23 @@ export function evaluateQualityGate(
     }
   }
 
+  // 14. Citation Preservation（M5.6 验收驱动）：修订不得无依据丢失既有引用
+  if (input.citationPreservation !== undefined) {
+    if (input.citationPreservation === null) {
+      rules.push({
+        rule: "citation_preservation_not_applicable",
+        passed: true,
+        detail: "无前序修订可比较（首轮 / 快照缺失 / 用户恢复历史修订）；引用保持规则不参与判定",
+      });
+    } else {
+      rules.push({
+        rule: "citation_keys_preserved",
+        passed: input.citationPreservation.ok,
+        detail: describeCitationPreservation(input.citationPreservation),
+      });
+    }
+  }
+
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);
   return {
     passed: reasons.length === 0,
@@ -414,6 +439,7 @@ export async function saveQualityGateReport(
   round: number,
   result: QualityGateResult,
   summary: ReviewSummary,
+  extras: { citationPreservation?: CitationPreservationSummary | null } = {},
 ): Promise<string> {
   const dir = projects.reviewsDir(projectId);
   await mkdir(dir, { recursive: true });
@@ -421,6 +447,8 @@ export async function saveQualityGateReport(
   await writeJsonAtomic(join(dir, file), {
     gate: result,
     reviewSummary: summary,
+    // M5.6：引用保持明细随 gate 产物落盘（revision.plan 据此派发恢复条目；UI 可解释）
+    ...(extras.citationPreservation !== undefined ? { citationPreservation: extras.citationPreservation } : {}),
     ...(typeof summary.reviewedRevision === "number"
       ? { revision: summary.reviewedRevision, reviewedRevision: summary.reviewedRevision }
       : {}),

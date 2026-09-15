@@ -595,9 +595,18 @@ PiRuntimeAdapter
 
 - **Build Gate**（`quality/gates.ts`）：由 LatexCompiler 编译 + 结构检查（include 文件存在、
   bib 可用）实现（确定性）。判定维度不含任何质量语义；编译失败/结构缺失给出 reasons。
-- **Quality Gate**：确定性判定器，9 条规则消费 Reviewer 聚合结果 + Citation 报告 +
+- **Quality Gate**：确定性判定器，9 条基础规则消费 Reviewer 聚合结果 + Citation 报告 +
   Evidence 状态（supportStrength / verificationStatus）+ Feasibility 结论，阈值可配置
   （academic ≥ 80、style ≤ 35、自动修订 ≤ 2 轮）。数值 confidence 不是核心判定依据。
+  **Citation Preservation**（M5.6，`quality/citationPreservation.ts`）：以不可变修订快照为
+  事实源，比较被审阅修订与其前一修订**实际被引用的 key**（按 key 语义；同 key 次数变化不算
+  删除）；无计划依据的丢失 → `citation_keys_preserved` FAIL，全部删光且无显式依据 → hard
+  fail，更早基线有引用而此后一直为 0 → 历史回归 FAIL；有依据的删除只承认结构化计划
+  （`citation_missing` 条目、条目显式点名 `\cite{key}`、证据不足条目命中章节内的引用），
+  无前序修订 / 用户恢复历史修订时以 `citation_preservation_not_applicable` 中性呈现。失败的
+  key 及其上一修订位置随 gate 产物落盘，`revision.plan` 据此派发 `citation_removed` 恢复条目；
+  Draft 路径（`build.draft`）明确暴露该失败，Final 被阻止。Prompt 不是 Gate：Writer 的
+  「保留既有 \cite」指令之外，这是确定性的第二层。
 - **bounded revision loop**：Quality Gate 失败 → `revision.plan`（确定性派发，
   一等落盘 artifact）→ `revision.revise`（Writer 按计划逐节修订）→ 强制复审 →
   收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION）→ 不收敛 / 超限 HITL

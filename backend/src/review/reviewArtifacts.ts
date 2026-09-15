@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import type { QualityGateResult } from "../quality/gates.js";
+import type { CitationPreservationSummary } from "../quality/citationPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { IterationRecord } from "./revisionOutcome.js";
@@ -22,6 +23,7 @@ import type { StylePolishResult } from "./stylePolicy.js";
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
 const GATE_PATTERN = /^quality-gate-r(\d+)\.json$/;
+const PLAN_PATTERN = /^revision-plan-r(\d+)\.json$/;
 
 /** 按轮落盘的 Quality Gate 产物（saveQualityGateReport 的结构） */
 export interface QualityGateArtifact {
@@ -31,6 +33,8 @@ export interface QualityGateArtifact {
   reviewSummary: ReviewSummary;
   /** 该轮 review 审阅的 manuscript 修订（M4.7 stale 防护；旧产物缺省） */
   reviewedRevision?: number;
+  /** 引用保持明细（M5.6；null = 不可比较；旧产物缺省） */
+  citationPreservation?: CitationPreservationSummary | null;
 }
 
 export class ReviewArtifactStore {
@@ -130,6 +134,7 @@ export class ReviewArtifactStore {
       ...(typeof record["reviewedRevision"] === "number"
         ? { reviewedRevision: record["reviewedRevision"] }
         : {}),
+      ...(readCitationPreservation(record["citationPreservation"])),
     };
   }
 
@@ -160,6 +165,11 @@ export class ReviewArtifactStore {
 
   planFileName(round: number): string {
     return `revision-plan-r${round}.json`;
+  }
+
+  /** 已落盘的 quality 修订计划轮次（降序） */
+  async planRounds(projectId: string): Promise<number[]> {
+    return this.rounds(projectId, PLAN_PATTERN);
   }
 
   async savePlan(projectId: string, plan: RevisionPlan): Promise<string> {
@@ -291,6 +301,26 @@ export class ReviewArtifactStore {
       return null;
     }
   }
+}
+
+/** gate 产物中的引用保持明细（null 如实保留；结构损坏 → 视为缺省） */
+function readCitationPreservation(value: unknown): { citationPreservation?: CitationPreservationSummary | null } {
+  if (value === null) {
+    return { citationPreservation: null };
+  }
+  if (typeof value !== "object") {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record["ok"] !== "boolean" ||
+    !Array.isArray(record["unexpectedRemovedKeys"]) ||
+    typeof record["previousCount"] !== "number" ||
+    typeof record["currentCount"] !== "number"
+  ) {
+    return {};
+  }
+  return { citationPreservation: value as CitationPreservationSummary };
 }
 
 /** QualityGateResult 的防御性读取（结构损坏 → null，不盲信磁盘 JSON） */

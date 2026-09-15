@@ -212,6 +212,17 @@ export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
     description: "自动核验无法判断的引用需要人工复核，但不阻断进入 Final。",
     target: { tab: "citations" },
   },
+  // Citation Preservation（M5.6：修订不得无依据丢失上一修订中的既有引用；确定性比较修订快照）
+  citation_keys_preserved: {
+    label: "引用保持",
+    description: "相对上一修订，正文实际引用的 key 不应在没有修订计划依据的情况下消失（全部删光为硬失败）。",
+    target: { tab: "citations" },
+  },
+  citation_preservation_not_applicable: {
+    label: "引用保持不可比较",
+    description: "首轮 / 无前序修订 / 用户恢复历史修订时无法比较引用变化，本规则不参与判定（不是通过）。",
+    target: { tab: "citations" },
+  },
 };
 
 /**
@@ -222,6 +233,7 @@ export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
 export const GATE_RULES_NEUTRAL: ReadonlySet<string> = new Set([
   "citation_semantic_verification_off",
   "citation_insufficient_evidence_review",
+  "citation_preservation_not_applicable",
 ]);
 
 /** gate 整体结论（PASS 只表示允许进入 Final，不是「论文完美」） */

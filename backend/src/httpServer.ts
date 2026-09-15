@@ -40,6 +40,7 @@ import {
   loadBuildGateRecord,
   saveQualityGateReport,
 } from "./quality/gates.js";
+import { computeCitationPreservation } from "./quality/citationPreservation.js";
 import { collectLatexFiles } from "./manuscript/LatexFiles.js";
 import { revisionViews } from "./manuscript/RevisionStore.js";
 import { isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
@@ -1607,15 +1608,21 @@ async function handleProjectResourceRoutes(
       const citation = await stack.citation.latestReport(projectId);
       const evidence = await stack.evidence.stats(projectId);
       const feasibility = (await readFeasibilityReport(stack.projects, projectId))?.report ?? null;
+      // 与 quality.gate stage 同一口径（M5.6 引用保持）：手动重评不能静默少一条规则
+      const citationPreservation = await computeCitationPreservation(
+        { projects: stack.projects, revisions: stack.revisions, reviewArtifacts: stack.reviewArtifacts },
+        projectId,
+        summary.reviewedRevision,
+      );
       const gate = evaluateQualityGate(
-        { review: summary, citation, evidence, feasibility },
+        { review: summary, citation, evidence, feasibility, citationPreservation },
         {
           academicPassScore: stack.workflowServices.review.academicPassScore,
           styleRiskMax: stack.workflowServices.review.styleRiskMax,
           requireFeasibility: true,
         },
       );
-      await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary);
+      await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary, { citationPreservation });
       sendJson(res, 200, { gate, round: summary.round });
       return true;
     }

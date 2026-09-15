@@ -222,6 +222,51 @@ describe("质量门禁面板", () => {
     expect(insufficient!.querySelector(".gate-rule-status")).toHaveTextContent("不参与判定");
   });
 
+  it("citation_keys_preserved 失败 → 中文规则名「引用保持」+ 跳引用核验；不可比较轮中性呈现（M5.6）", async () => {
+    gateApi.get.mockResolvedValue(
+      gateResponse({
+        gate: {
+          passed: false,
+          reasons: ["citation_keys_preserved: rev-1→rev-2 引用 29→0 处，key 20→0：全部引用被删除且无计划依据（无依据删除 20 个 key：ref1,ref10,…）"],
+          rules: [
+            RULE("hallucinated_citations_zero", true, "metadata not_found 引用 0 条"),
+            RULE("citation_keys_preserved", false, "rev-1→rev-2 引用 29→0 处，key 20→0：全部引用被删除且无计划依据（无依据删除 20 个 key：ref1,ref10,…）"),
+          ],
+          thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
+          checkedAt: "2026-09-15T12:00:00.000Z",
+        },
+      }),
+    );
+    renderGate();
+    await screen.findByTestId("gate-blockers");
+    expect(screen.getAllByText(/引用保持/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/全部引用被删除且无计划依据/).length).toBeGreaterThan(0);
+    await userEvent.click(screen.getByTestId("gate-blocker-goto-citations"));
+    expect(onOpenTab).toHaveBeenCalledWith("citations", undefined);
+
+  });
+
+  it("citation_preservation_not_applicable（无前序修订）→ 中性「不参与判定」，不是通过也不是失败", async () => {
+    gateApi.get.mockResolvedValue(
+      gateResponse({
+        gate: {
+          passed: true,
+          reasons: [],
+          rules: [RULE("citation_preservation_not_applicable", true, "无前序修订可比较（首轮 / 快照缺失 / 用户恢复历史修订）；引用保持规则不参与判定")],
+          thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
+          checkedAt: "2026-09-15T12:00:00.000Z",
+        },
+      }),
+    );
+    renderGate();
+    const rules = await screen.findByTestId("gate-rules");
+    const neutral = rules.querySelector('[data-rule="citation_preservation_not_applicable"]');
+    expect(neutral).not.toBeNull();
+    expect(neutral!.querySelector(".gate-rule-status")).toHaveTextContent("不参与判定");
+    expect(neutral!.querySelector(".gate-rule-status")).not.toHaveTextContent("通过");
+    expect(screen.getByText("引用保持不可比较")).toBeVisible();
+  });
+
   it("stale：门禁落后于最新审稿 → 提示 + 手动重新评估（POST 后失效重取）", async () => {
     let call = 0;
     gateApi.get.mockImplementation(async () =>

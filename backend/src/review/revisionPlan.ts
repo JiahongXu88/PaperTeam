@@ -11,6 +11,8 @@
  * - minor finding              → 记录但不自动修（status=skipped，避免非收敛）
  * - 引用 missing key           → kind=citation_missing，critical（只允许删除/弱化，
  *                                永远不允许凭空新造文献条目）
+ * - 引用被无计划删除            → kind=citation_removed，critical（M5.6 Citation Preservation
+ *                                Gate 失败项：恢复上一修订中的既有引用）
  * - 编译错误                    → kind=build_error（修复循环消费）
  * - 无章节归属的 gate 阻止项     → kind=gate_blocker，记录不派发（Writer 无从下手）
  */
@@ -23,6 +25,7 @@ import type { ReviewSummary } from "./ReviewAggregator.js";
 export type RevisionPlanItemKind =
   | "review_finding"
   | "citation_missing"
+  | "citation_removed"
   | "build_error"
   | "gate_blocker";
 
@@ -36,7 +39,7 @@ export type RevisionPlanItemStatus = "planned" | "skipped";
 export type RevisionReason = "quality" | "style_polish";
 
 export interface RevisionPlanItem {
-  /** 稳定 id（finding 指纹 / citation-missing:{key} / build-error / gate:{rule}） */
+  /** 稳定 id（finding 指纹 / citation-missing:{key} / citation-removed:{key} / build-error / gate:{rule}） */
   id: string;
   kind: RevisionPlanItemKind;
   priority: "high" | "medium" | "low";
@@ -95,6 +98,8 @@ export interface BuildRevisionPlanInput {
   summary: ReviewSummary;
   /** 引用核验发现的 missing key → 出现该引用的文件（确定性扫描结果） */
   citationMissing?: { key: string; files: string[] }[];
+  /** Citation Preservation Gate 判定为无依据删除的 key → 上一修订中出现的文件（M5.6） */
+  citationRemoved?: { key: string; files: string[] }[];
   /** 编译错误（修复循环 / 带 buildError 的修订消费） */
   buildError?: { message: string; file?: string };
   /** gate 阻止项（ruleId + detail；无章节归属的记录为 gate_blocker） */
@@ -131,6 +136,21 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         problem: `引用 \\cite{${missing.key}} 在 references.bib 中不存在`,
         instruction: "删除该引用，或改为只基于现有文献的表述；禁止新造参考文献条目",
         expectedOutcome: `章节 ${file} 不再引用缺失 key ${missing.key}`,
+        status: "planned",
+      });
+    }
+  }
+
+  for (const removed of input.citationRemoved ?? []) {
+    for (const file of removed.files.length > 0 ? removed.files : ["(unknown)"]) {
+      items.push({
+        id: `citation-removed:${removed.key}:${file}`,
+        kind: "citation_removed",
+        priority: "high",
+        section: file,
+        problem: `引用 \cite{${removed.key}} 在上一修订的本章节中存在，本次修订被无计划删除`,
+        instruction: `恢复该引用：在原论述处保留 \cite{${removed.key}}（key 必须仍存在于 references.bib）；只有审稿 finding 明确要求删除该论述或该引用时才允许移除`,
+        expectedOutcome: `章节 ${file} 重新引用 ${removed.key}，引用保持规则转为通过`,
         status: "planned",
       });
     }
