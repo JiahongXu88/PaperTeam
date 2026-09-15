@@ -105,6 +105,17 @@ describe("loadConfig", () => {
     expect(config.pi.runTimeoutMs).toBe(2000);
   });
 
+  it("长论文阶段执行超时（M5.6）：PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS 默认 900000，独立于通用 runTimeoutMs；非法值报错", () => {
+    const defaults = loadConfig({});
+    expect(defaults.pi.longRunTimeoutMs).toBe(900_000);
+    expect(defaults.pi.runTimeoutMs).toBe(300_000); // 通用默认不因长论文口径而改变
+    expect(loadConfig({ PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS: "1200000" }).pi.longRunTimeoutMs).toBe(1_200_000);
+    expect(loadConfig({ PAPERTEAM_PI_RUN_TIMEOUT_MS: "120000" }).pi.longRunTimeoutMs).toBe(900_000);
+    expect(() => loadConfig({ PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS: "abc" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS: "10" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS: "3600001" })).toThrow(ConfigError);
+  });
+
   it("Runtime 全局并发/受理容量（M5.2）：默认 4/32；合法值采用；非法报 ConfigError（容量契约不静默回退）", () => {
     expect(loadConfig({}).pi.maxConcurrentRuns).toBe(4);
     expect(loadConfig({}).pi.maxQueuedRuns).toBe(32);

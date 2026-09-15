@@ -130,6 +130,8 @@ function stripCodeFence(text: string): string {
 export interface SectionReviewServiceOptions {
   runtime: AgentRuntime;
   reviewerAgentId: string;
+  /** 逐 run 执行超时覆盖（毫秒；长论文阶段口径，见 config.pi.longRunTimeoutMs）；缺省沿用 Runtime 默认 */
+  runTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -146,6 +148,7 @@ export class SectionReviewService {
   private readonly runtime: AgentRuntime;
   private readonly reviewerAgentId: string;
   private readonly now: () => Date;
+  private readonly timeoutOverride: { timeoutMs: number } | Record<string, never>;
 
   /** 最近一批 reviewSection 的 telemetry（性能诊断用） */
   lastTelemetry: { calls: number; failed: number; totalMs: number; approxPromptChars: number; outputChars: number } | undefined;
@@ -154,6 +157,7 @@ export class SectionReviewService {
     this.runtime = options.runtime;
     this.reviewerAgentId = options.reviewerAgentId;
     this.now = options.now ?? (() => new Date());
+    this.timeoutOverride = options.runTimeoutMs !== undefined ? { timeoutMs: options.runTimeoutMs } : {};
   }
 
   async reviewSection(input: {
@@ -167,6 +171,7 @@ export class SectionReviewService {
     try {
       const task = await this.runtime.runAgent({
         agentId: this.reviewerAgentId,
+        ...this.timeoutOverride,
         projectId: input.projectId,
         contextScope: input.context.contextScope,
         task: input.context.prompt,

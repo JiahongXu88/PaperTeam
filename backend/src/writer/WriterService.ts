@@ -23,6 +23,11 @@ export interface WriterServiceOptions {
   runtime: AgentRuntime;
   /** Writer 对应的 Runtime 会话标识（sessionKey 组成段） */
   agentId: string;
+  /**
+   * 逐 run 执行超时覆盖（毫秒；长论文阶段口径，见 config.pi.longRunTimeoutMs）。
+   * 缺省不覆盖：沿用 Runtime 通用默认（300s），不改 Runtime 全局超时契约。
+   */
+  runTimeoutMs?: number;
   /** 诊断日志 */
   log?: (message: string) => void;
 }
@@ -40,11 +45,14 @@ export class WriterService {
   private readonly runtime: AgentRuntime;
   private readonly agentId: string;
   private readonly log: (message: string) => void;
+  /** 长论文阶段的逐 run 执行超时（RunAgentInput.timeoutMs；缺省不传） */
+  private readonly timeoutOverride: { timeoutMs: number } | Record<string, never>;
 
   constructor(options: WriterServiceOptions) {
     this.runtime = options.runtime;
     this.agentId = options.agentId;
     this.log = options.log ?? (() => {});
+    this.timeoutOverride = options.runTimeoutMs !== undefined ? { timeoutMs: options.runTimeoutMs } : {};
   }
 
   /**
@@ -64,6 +72,7 @@ export class WriterService {
 
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildWriterPrompt(prompt),
       projectId: params.projectId,
       ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
@@ -113,6 +122,7 @@ export class WriterService {
   }): Promise<Outline> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildOutlinePrompt(params),
       projectId: params.projectId,
       contextScope: "writing/outline",
@@ -155,6 +165,7 @@ export class WriterService {
   }): Promise<{ latex: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildSectionPrompt(params),
       projectId: params.projectId,
       contextScope: "writing/sections",
@@ -203,6 +214,7 @@ export class WriterService {
     }
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildRevisePrompt(params),
       projectId: params.projectId,
       contextScope: "writing/revision",
@@ -254,6 +266,7 @@ export class WriterService {
     }
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildStylePolishPrompt(params),
       projectId: params.projectId,
       contextScope: "writing/style-polish",
@@ -297,6 +310,7 @@ export class WriterService {
   }): Promise<{ latex: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildRepairPrompt(params),
       projectId: params.projectId,
       contextScope: "writing/repair",
@@ -338,6 +352,7 @@ export class WriterService {
   }): Promise<ImprovementPlan> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: [
         "你是一名论文写手（Writer）。请基于审稿问题与目标差距，为已有 LaTeX 论文制定分节改进计划（只规划，不写正文）。",
         "",

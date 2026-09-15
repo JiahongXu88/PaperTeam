@@ -87,6 +87,8 @@ export interface ReviewerServiceOptions {
   runtime: AgentRuntime;
   agentId: string;
   projects: ProjectStore;
+  /** 逐 run 执行超时覆盖（毫秒；长论文阶段口径，见 config.pi.longRunTimeoutMs）；缺省沿用 Runtime 默认 */
+  runTimeoutMs?: number;
   log?: (message: string) => void;
 }
 
@@ -111,12 +113,14 @@ export class ReviewerService {
   private readonly agentId: string;
   private readonly projects: ProjectStore;
   private readonly log: (message: string) => void;
+  private readonly timeoutOverride: { timeoutMs: number } | Record<string, never>;
 
   constructor(options: ReviewerServiceOptions) {
     this.runtime = options.runtime;
     this.agentId = options.agentId;
     this.projects = options.projects;
     this.log = options.log ?? (() => {});
+    this.timeoutOverride = options.runTimeoutMs !== undefined ? { timeoutMs: options.runTimeoutMs } : {};
   }
 
   /** 并行 fan-out 三类 review skill（Promise.all；各 mode 独立会话） */
@@ -150,6 +154,7 @@ export class ReviewerService {
   }): Promise<ModeReviewResult> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildReviewPrompt(params),
       projectId: params.projectId,
       contextScope: `review/${params.mode}`,

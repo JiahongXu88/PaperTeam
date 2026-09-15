@@ -51,6 +51,8 @@ export interface ResearcherServiceOptions {
   projects: ProjectStore;
   evidence: EvidenceStore;
   sources: SourceStore;
+  /** 逐 run 执行超时覆盖（毫秒；长论文阶段口径，见 config.pi.longRunTimeoutMs）；缺省沿用 Runtime 默认 */
+  runTimeoutMs?: number;
   log?: (message: string) => void;
 }
 
@@ -61,6 +63,7 @@ export class ResearcherService {
   private readonly evidence: EvidenceStore;
   private readonly sources: SourceStore;
   private readonly log: (message: string) => void;
+  private readonly timeoutOverride: { timeoutMs: number } | Record<string, never>;
 
   constructor(options: ResearcherServiceOptions) {
     this.runtime = options.runtime;
@@ -69,6 +72,7 @@ export class ResearcherService {
     this.evidence = options.evidence;
     this.sources = options.sources;
     this.log = options.log ?? (() => {});
+    this.timeoutOverride = options.runTimeoutMs !== undefined ? { timeoutMs: options.runTimeoutMs } : {};
   }
 
   /**
@@ -86,6 +90,7 @@ export class ResearcherService {
 
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: buildResearchPrompt(project, sourceDigest, params.extraInstructions),
       projectId: params.projectId,
       contextScope: "research",
@@ -176,6 +181,7 @@ export class ResearcherService {
     const project = await this.projects.getRequired(params.projectId);
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
+      ...this.timeoutOverride,
       task: [
         "你是一名学术研究员（Researcher）。请阅读并理解下面这篇已有论文（LaTeX 结构化摘要），做论文理解分析。",
         "",

@@ -46,6 +46,11 @@ export interface ServiceStackOptions {
   };
   stageTimeoutMs?: number;
   stageMaxAttempts?: number;
+  /**
+   * 长论文阶段（Writer / 三路 Reviewer / 分章节 Reviewer / Researcher）的逐 run 执行超时
+   * （PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS）；缺省不覆盖（沿用 Runtime 通用默认）
+   */
+  longRunTimeoutMs?: number;
   review?: {
     maxRevisionRounds?: number;
     academicPassScore?: number;
@@ -114,9 +119,11 @@ export interface ServiceStack {
 export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const log = options.log ?? (() => {});
   const latex = options.latex ?? new LatexCompiler({ timeoutMs: 120_000 });
+  const longRun = options.longRunTimeoutMs !== undefined ? { runTimeoutMs: options.longRunTimeoutMs } : {};
   const writer = new WriterService({
     runtime: options.runtime,
     agentId: options.agentIds.writer,
+    ...longRun,
     log,
   });
   const generation = new GenerationService({
@@ -135,6 +142,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     projects: options.projects,
     evidence,
     sources,
+    ...longRun,
     log,
   });
   const feasibility = new FeasibilityService({
@@ -187,6 +195,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const sectionReview = new SectionReviewService({
     runtime: options.runtime,
     reviewerAgentId: options.agentIds.reviewer,
+    ...longRun,
   });
   const projectImport = new ProjectImportService({
     projects: options.projects,
@@ -224,6 +233,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,
     projects: options.projects,
+    ...longRun,
     log,
   });
   const reviewArtifacts = new ReviewArtifactStore(options.projects);

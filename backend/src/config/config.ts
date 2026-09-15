@@ -70,6 +70,16 @@ export interface PiRuntimeConfig {
   runTimeoutMs: number;
   /** 执行阶段超时（毫秒；PAPERTEAM_PI_EXECUTION_TIMEOUT_MS；缺省回退 runTimeoutMs） */
   executionTimeoutMs?: number;
+  /**
+   * 长论文阶段的执行超时（毫秒；PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS；默认 900000 = 15 分钟；
+   * 1s-1h）。只用于 Writer（章节写作 / 逐节修订 / 润色 / 改进计划 / 编译修复）、三路
+   * Reviewer 与分章节 Reviewer、Researcher 这类以整篇论文为输入的长任务——M5.6 真实
+   * 26 页论文验收实测单节修订最长 626s、单路审稿 315s，通用默认 300s 会高频误超时。
+   * 其余短任务（可行性评估 / PaperMap 摘要 / PDF 分析 / 引用核验 / Skill 简介）仍走
+   * runTimeoutMs / executionTimeoutMs 的通用默认，Runtime 全局超时契约不变：本值只是
+   * 逐 run 的 RunAgentInput.timeoutMs 覆盖，不改 Runtime 缺省。
+   */
+  longRunTimeoutMs: number;
   /** 排队阶段超时（毫秒；PAPERTEAM_PI_QUEUE_TIMEOUT_MS；缺省不限） */
   queueTimeoutMs?: number;
   /** 会话创建阶段超时（毫秒；PAPERTEAM_PI_SESSION_TIMEOUT_MS；缺省不限） */
@@ -165,6 +175,8 @@ export interface AgentIds {
 const DEFAULT_PORT = 3000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_RUN_TIMEOUT_MS = 300_000;
+/** 长论文阶段（Writer / Reviewer / Researcher）的执行超时默认：M5.6 真实论文验收实测口径 */
+const DEFAULT_LONG_RUN_TIMEOUT_MS = 900_000;
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
@@ -257,6 +269,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         max: RUN_TIMEOUT_MAX_MS,
       }),
       executionTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_EXECUTION_TIMEOUT_MS", {
+        min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+      longRunTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS", {
+        default: DEFAULT_LONG_RUN_TIMEOUT_MS,
         min: RUN_TIMEOUT_MIN_MS,
         max: RUN_TIMEOUT_MAX_MS,
       }),
