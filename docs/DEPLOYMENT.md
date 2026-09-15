@@ -57,6 +57,20 @@ open http://localhost:8080                 # Web 工作台
 `.env` 缺失也能启动（模型 `not_configured`，UI 提示到「设置 → 模型设置」保存 Key，
 落到 runtime volume 的 `auth.json`）。`PAPERTEAM_WEB_PORT` 改对外端口。
 
+**受限网络构建**（M5.5 真实验收发现：构建主机到 deb.debian.org 约 20 KB/s、pypi.org 单请求
+25 s，368 MB 的 TeX 包集实际不可完成）：`Dockerfile` 提供两个只在构建期生效的 build-arg，
+compose 从环境变量透传，缺省仍是官方源、镜像内容不变（同一套 Debian / PyPI 包）：
+
+```bash
+PAPERTEAM_APT_MIRROR=http://mirrors.ustc.edu.cn \
+PAPERTEAM_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+docker compose build
+```
+
+`APT_MIRROR` 是主机前缀（替换 `http://deb.debian.org/` 下的 `debian` 与 `debian-security`；
+基础镜像无 ca-certificates，用 http 镜像）。Docker Hub 不可达时在 daemon 侧配 registry mirror，
+与仓库无关。
+
 ## 4. 持久化（事实源 = volume，不是容器可写层）
 
 | volume | 容器路径 | 内容 |
@@ -82,6 +96,18 @@ root：`docker/backend-entrypoint.sh` 以 root 启动时修正为 `paperteam` �
 - `GET /ready`：readiness——`ReadinessProbe`（`backend/src/runtime/readiness.ts`）：Runtime ok + `PROJECTS_ROOT` / `PAPERTEAM_RUNTIME_ROOT` 可创建可写（写入并删除探针文件）+ TeX（`latexmk`/`xelatex` 版本探测，60s 缓存）+ Python/pymupdf 状态。`ready = runtime && filesystem`；TeX / Python 缺失记入 `degraded`（Draft 构建 / PDF 导入会结构化失败，其余能力可用）。返回 200 / 503，不做任何昂贵调用。
 - `GET /api/runtime/status`：模型就绪、会话诊断（含每会话 assignedSkills）。
 - **SIGTERM（docker stop）**：`registerShutdown`（`backend/src/index.ts`）——① `server.close()` 停止接受新连接（新任务不再受理）；② `orchestrator.close()` 取消活跃 run（queued 即时终态、running 协作式 abort；checkpoint 随 stage 落盘，取消不会写半个 checkpoint）；③ `runtime.close()` 收敛在途 run、释放全部 AgentSession、清理 GC / 超时定时器；④ `closeAllConnections` 后 exit 0。兜底 `PAPERTEAM_SHUTDOWN_TIMEOUT_MS`（默认 30s；compose 设 40s）超时强制 exit 1 并记日志；compose `stop_grace_period: 45s` > 预算。旧实现固定 5s 对长任务过短，已改为可配置。
+
+### 6.1 Agent 执行超时分层（M5.6）
+
+| 层 | 配置 | 默认 | 适用 |
+|---|---|---|---|
+| Runtime 通用执行超时 | `PAPERTEAM_PI_RUN_TIMEOUT_MS`（/ `PAPERTEAM_PI_EXECUTION_TIMEOUT_MS`） | 300 s | 可行性评估、PaperMap 章节摘要、PDF 分析、引用核验 Agent、Skill 简介等短任务；Runtime 全局契约，不建议整体抬高 |
+| 长论文阶段执行超时 | `PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS` | 900 s | Writer（章节写作 / 逐节修订 / 润色 / 改进计划 / 编译修复）、三路 Reviewer、分章节 Reviewer、Researcher——以整篇论文为输入；逐 run 以 `RunAgentInput.timeoutMs` 覆盖，不改 Runtime 默认 |
+| Stage 空闲超时 | `WORKFLOW_STAGE_TIMEOUT_MS` | 900 s | 连续无进度汇报即判超时（分章节 stage 按章节汇报，可超过该值） |
+
+依据：M5.6 真实 26 页中文论文验收——第一轮两臂都在 300 s 执行超时失败（Writer 单节修订、
+academic / style Reviewer）；B3 实测单节修订最长 626 s、单路审稿 315 s。短任务保持 300 s 是为了
+让真正卡死的调用尽早以 `EXECUTION_TIMEOUT` 结构化失败，而不是被长论文口径掩盖。
 
 ## 7. 真实 Docker 验收清单（待执行；全部完成后 M5.5 才 COMPLETE）
 

@@ -11,6 +11,9 @@
 # 密钥：不写进镜像、不写进本文件。把模型 Key 放在同目录 .env（已被 .gitignore 忽略），
 # 或直接在 Settings → 模型设置 页面保存（落到 runtime volume 的 auth.json）。
 # .env 缺失时也能启动（模型 not_configured，UI 会提示配置）。
+#
+# 受限网络构建：PAPERTEAM_APT_MIRROR=http://mirrors.ustc.edu.cn PAPERTEAM_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#   docker compose build   （缺省官方源；只影响构建期下载来源，不改变镜像内容）
 
 name: paperteam
 
@@ -19,6 +22,9 @@ services:
     build:
       context: .
       target: backend
+      args:
+        APT_MIRROR: ${PAPERTEAM_APT_MIRROR:-}
+        PIP_INDEX_URL: ${PAPERTEAM_PIP_INDEX_URL:-}
     image: paperteam-backend:local
     restart: unless-stopped
     env_file:
@@ -32,9 +38,10 @@ services:
       PAPERTEAM_PDF_PYTHON: /opt/paperteam-venv/bin/python
       # docker stop 的协作式收敛预算（与 stop_grace_period 对齐，见 index.ts registerShutdown）
       PAPERTEAM_SHUTDOWN_TIMEOUT_MS: "40000"
-      # 单次 Agent run 执行超时：默认 300000 对 20+ 页真实论文的审稿 / 逐节修订过短
-      # （M5.6 真实论文验收：两臂都在 300s 超时），部署默认 15 分钟
-      PAPERTEAM_PI_RUN_TIMEOUT_MS: "900000"
+      # 长论文阶段（Writer / Reviewer / Researcher）的逐 run 执行超时：代码默认已是 900000
+      # （M5.6 真实论文验收：单节修订最长 626s），这里显式写出便于部署时调整；
+      # 通用短任务仍走 PAPERTEAM_PI_RUN_TIMEOUT_MS 默认 300000（不整体抬高）
+      PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS: "900000"
     volumes:
       - paperteam-projects:/data/projects
       - paperteam-runtime:/data/runtime

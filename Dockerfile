@@ -10,6 +10,9 @@
 #   * 事实源是 volume（PROJECTS_ROOT / PAPERTEAM_RUNTIME_ROOT），容器可写层不保存任何用户数据
 #   * TeX 只装 PaperTeam 模板与导入论文真实需要的包集（ctexart + amsmath/amssymb + natbib/biblatex + pgf），不装 texlive-full
 #   * 非 root 运行；HEALTHCHECK 只探 /health（不调用模型）
+#   * 受限网络（M5.5 真实验收：deb.debian.org / pypi.org 从构建主机几乎不可达）可用
+#     --build-arg APT_MIRROR=http://mirrors.example.edu.cn --build-arg PIP_INDEX_URL=https://…/simple
+#     指向镜像站；缺省仍是官方源，镜像内容不变（同一套 Debian / PyPI 包）
 
 ARG NODE_IMAGE=node:22-bookworm-slim
 
@@ -52,7 +55,14 @@ ENV NODE_ENV=production \
 #   texlive-bibtex-extra + biber   biblatex 参考文献（导入论文）
 #   latexmk                 LatexCompiler 首选编译器（fallback xelatex）
 #   fonts-noto-cjk          兜底中文字体（fontspec 按名引用时可用）
-RUN apt-get update \
+# APT_MIRROR：主机前缀（如 http://mirrors.ustc.edu.cn），替换 deb.debian.org 的 debian / debian-security；
+# PIP_INDEX_URL：PyPI simple 索引。两者只在构建期生效，不进入最终镜像的运行环境
+ARG APT_MIRROR=""
+ARG PIP_INDEX_URL=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s#http://deb.debian.org/#${APT_MIRROR%/}/#g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       python3 python3-venv \
@@ -62,7 +72,7 @@ RUN apt-get update \
       fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/* \
  && python3 -m venv /opt/paperteam-venv \
- && /opt/paperteam-venv/bin/pip install --no-cache-dir "pymupdf>=1.24,<2" \
+ && ${PIP_INDEX_URL:+env PIP_INDEX_URL="$PIP_INDEX_URL"} /opt/paperteam-venv/bin/pip install --no-cache-dir "pymupdf>=1.24,<2" \
  && /opt/paperteam-venv/bin/python -c "import pymupdf; print('pymupdf', pymupdf.__version__)" \
  && latexmk --version | head -n 1 \
  && xelatex --version | head -n 1
