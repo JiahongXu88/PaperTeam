@@ -187,6 +187,43 @@ export class ReviewerService {
   }
 }
 
+/**
+ * fact verdict 的近似值归一（M5.6 真实验收：模型两次输出 "CONTRADICTION" 而非 CONTRADICTED，
+ * 整条 review.run 因此结构化失败）。只承认大小写 / 分隔符差异与少数同义写法，语义不放宽：
+ * 其余值仍按 readRequiredEnum 严格拒绝。
+ */
+const VERDICT_ALIASES: Readonly<Record<string, FactVerdict>> = {
+  CONTRADICTION: "CONTRADICTED",
+  CONTRADICTORY: "CONTRADICTED",
+  CONTRADICTS: "CONTRADICTED",
+  PARTIAL: "PARTIALLY_SUPPORTED",
+  PARTIALLY: "PARTIALLY_SUPPORTED",
+  PARTIAL_SUPPORT: "PARTIALLY_SUPPORTED",
+  PARTIALLY_SUPPORT: "PARTIALLY_SUPPORTED",
+  SUPPORT: "SUPPORTED",
+  NOT_SUPPORTED: "UNSUPPORTED",
+  UNSUPPORT: "UNSUPPORTED",
+};
+
+export function normalizeFactVerdict(value: unknown): FactVerdict | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const canonical = value.trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if ((VERDICTS as readonly string[]).includes(canonical)) {
+    return canonical as FactVerdict;
+  }
+  return VERDICT_ALIASES[canonical] ?? null;
+}
+
+function readFactVerdict(record: Record<string, unknown>, context: string): FactVerdict {
+  const normalized = normalizeFactVerdict(record["verdict"]);
+  if (normalized !== null) {
+    return normalized;
+  }
+  return readRequiredEnum(record, "verdict", VERDICTS, context); // 抛出统一的结构化错误
+}
+
 /** 解析并校验单个 mode 的结构化输出 */
 export function parseModeReview(
   mode: ReviewMode,
@@ -301,7 +338,7 @@ function parseClaims(parsed: Record<string, unknown>, context: string): FactClai
     claims.push({
       section: typeof record["section"] === "string" ? record["section"].trim() : "(unknown)",
       claim,
-      verdict: readRequiredEnum(record, "verdict", VERDICTS, context),
+      verdict: readFactVerdict(record, context),
       ...(typeof record["evidenceId"] === "string" && record["evidenceId"].trim() !== ""
         ? { evidenceId: record["evidenceId"].trim() }
         : {}),
