@@ -17,6 +17,7 @@ import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import type { FeasibilityReport } from "../agents/FeasibilityService.js";
 import type { ReviewSummary } from "../review/ReviewAggregator.js";
 import { describeCitationPreservation, type CitationPreservationSummary } from "./citationPreservation.js";
+import { describeFactPreservation, type FactPreservationSummary } from "./factPreservation.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { LatexDiagnostic } from "../latex/diagnostics.js";
 import { parseLatexDiagnostics } from "../latex/diagnostics.js";
@@ -259,6 +260,13 @@ export interface QualityGateInput {
    * summary → citation_keys_preserved 参与判定。
    */
   citationPreservation?: CitationPreservationSummary | null;
+  /**
+   * Fact Preservation（M5.6）：被审阅修订相对前一修订的实验事实保持结果
+   * （表格数值 / 正文数字 / 公式 / 方向结论 / 协议 / 占位回归）。
+   * undefined = 调用方未计算（规则不出现）；null = 不可比较 →
+   * fact_preservation_not_applicable 中性呈现；summary → fact_preservation 参与判定。
+   */
+  factPreservation?: FactPreservationSummary | null;
 }
 
 export interface QualityGateResult {
@@ -416,6 +424,24 @@ export function evaluateQualityGate(
     }
   }
 
+  // 15. Fact Preservation（M5.6 第二层，pair-02 盲评驱动）：修订不得无依据
+  // 改写 / 删除 / 弱化既有实验事实，也不得新增无 Evidence 依据的实验细节
+  if (input.factPreservation !== undefined) {
+    if (input.factPreservation === null) {
+      rules.push({
+        rule: "fact_preservation_not_applicable",
+        passed: true,
+        detail: "无前序修订可比较（首轮 / 快照缺失 / 用户恢复历史修订）；实验事实保持规则不参与判定",
+      });
+    } else {
+      rules.push({
+        rule: "fact_preservation",
+        passed: input.factPreservation.ok,
+        detail: describeFactPreservation(input.factPreservation),
+      });
+    }
+  }
+
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);
   return {
     passed: reasons.length === 0,
@@ -439,7 +465,10 @@ export async function saveQualityGateReport(
   round: number,
   result: QualityGateResult,
   summary: ReviewSummary,
-  extras: { citationPreservation?: CitationPreservationSummary | null } = {},
+  extras: {
+    citationPreservation?: CitationPreservationSummary | null;
+    factPreservation?: FactPreservationSummary | null;
+  } = {},
 ): Promise<string> {
   const dir = projects.reviewsDir(projectId);
   await mkdir(dir, { recursive: true });
@@ -449,6 +478,8 @@ export async function saveQualityGateReport(
     reviewSummary: summary,
     // M5.6：引用保持明细随 gate 产物落盘（revision.plan 据此派发恢复条目；UI 可解释）
     ...(extras.citationPreservation !== undefined ? { citationPreservation: extras.citationPreservation } : {}),
+    // M5.6 第二层：实验事实保持明细（revision.plan 派发恢复条目；build.draft 拦截依据）
+    ...(extras.factPreservation !== undefined ? { factPreservation: extras.factPreservation } : {}),
     ...(typeof summary.reviewedRevision === "number"
       ? { revision: summary.reviewedRevision, reviewedRevision: summary.reviewedRevision }
       : {}),

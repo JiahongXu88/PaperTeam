@@ -44,6 +44,7 @@ import {
   computeCitationPreservation,
   type CitationPreservationSummary,
 } from "../quality/citationPreservation.js";
+import { computeFactPreservation, describeFactPreservation } from "../quality/factPreservation.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
 import { diagnosticFiles, type LatexDiagnostic } from "../latex/diagnostics.js";
 import {
@@ -286,13 +287,22 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         ctx.projectId,
         review.reviewedRevision,
       );
+      // M5.6 Fact Preservation：实验事实保持（表格数值 / 正文数字 / 公式 / 方向结论 / 协议 / 占位回归）
+      const factPreservation = await computeFactPreservation(
+        services,
+        ctx.projectId,
+        review.reviewedRevision,
+      );
       const gate = evaluateQualityGate(
-        { review, citation, evidence, feasibility, citationPreservation },
+        { review, citation, evidence, feasibility, citationPreservation, factPreservation },
         QUALITY_THRESHOLDS(services),
       );
       // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
       const round = review.round;
-      await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, { citationPreservation });
+      await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, {
+        citationPreservation,
+        factPreservation,
+      });
       // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
       // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
       const scorecard = scorecardOf(gate, review);
@@ -377,6 +387,12 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         preservation !== null && !preservation.ok
           ? preservation.unexpectedRemoved.map((entry) => ({ key: entry.key, files: entry.files }))
           : [];
+      // M5.6 Fact Preservation：违规事实按文件聚合派发恢复条目（每文件最多 2 条，防计划爆炸）
+      const factState = gateArtifact?.factPreservation ?? null;
+      const factRegressions =
+        factState !== null && !factState.ok
+          ? summarizeFactRegressions(factState).map((entry) => ({ file: entry.file, detail: entry.detail }))
+          : [];
       const buildErrorValue = readBuildError(ctx.state);
       const plan = buildRevisionPlan({
         projectId: ctx.projectId,
@@ -385,6 +401,7 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         summary,
         citationMissing: await citationMissingTargets(services, ctx.projectId),
         ...(citationRemoved.length > 0 ? { citationRemoved } : {}),
+        ...(factRegressions.length > 0 ? { factRegressions } : {}),
         ...(buildErrorValue !== undefined
           ? { buildError: { message: buildErrorValue.slice(0, 500) } }
           : {}),
@@ -1082,9 +1099,33 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
           ? `Build Gate 通过（PDF 已产出）${preservationNote}`
           : `Build Gate 失败：${build.reasons[0] ?? "编译失败"}${preservationNote}`,
       );
-      // Build 通过即冻结 Draft（幂等；质量 Gate 不参与 Draft 判定）
+      // Build 通过即冻结 Draft（幂等；质量 Gate 不参与 Draft 判定）——除非实验事实被
+      // 无依据篡改（M5.6 Fact Preservation，pair-02 盲评驱动）：与引用保持的「提示不
+      // 拦截」不同，实验数据被改写后冻结的 Draft 本身就是不实结果，必须阻止产出。
       let draftArtifactId: string | undefined;
       if (build.passed) {
+        const factFailure = await latestFactPreservationFailure(services, ctx.projectId);
+        if (factFailure !== null) {
+          const factView = {
+            passed: false,
+            changedFacts: factFailure.changedFacts.length,
+            removedFacts: factFailure.removedFacts.length,
+            addedUnsupportedFacts: factFailure.addedUnsupportedFacts.length,
+            directionalChanges: factFailure.directionalChanges.length,
+            formulaChanges: factFailure.formulaChanges.length,
+            placeholderRegressions: factFailure.placeholderRegressions.length,
+          };
+          await ctx.emitDomain(
+            "fact_preservation.blocked_draft",
+            { revision, ...factView },
+            `实验事实保持未通过（改 ${factView.changedFacts} / 删 ${factView.removedFacts} / 方向反转 ${factView.directionalChanges} / 公式 ${factView.formulaChanges} / 占位 ${factView.placeholderRegressions} / 无依据新增 ${factView.addedUnsupportedFacts} 项），Draft 产物已阻止`,
+          );
+          throw new BusinessError(
+            "FACT_PRESERVATION_FAILED",
+            `实验事实保持未通过，Draft 产物已阻止（修订 ${factFailure.previousRevision}→${factFailure.currentRevision} 存在未经 RevisionPlan/Evidence 授权的事实改写）；请依据修订计划恢复原值，或以 Evidence 支撑的修正重新走审稿`,
+            describeFactPreservation(factFailure),
+          );
+        }
         const draft = await services.artifacts.ensureDraft(ctx.projectId, revision, record, ctx.runId);
         draftArtifactId = draft.artifactId;
       }
@@ -1118,6 +1159,51 @@ async function latestCitationPreservationFailure(
   }
   const artifact = await services.reviewArtifacts.loadGate(projectId, latest);
   const preservation = artifact?.citationPreservation ?? null;
+  return preservation !== null && !preservation.ok ? preservation : null;
+}
+
+/**
+ * Fact Preservation 违规按文件聚合（revision.plan 派发用）：每文件取最多 2 条
+ * 代表性明细（数值 / 公式 / 方向 / 占位优先级依次），总量 ≤ 8 条防计划爆炸。
+ */
+function summarizeFactRegressions(
+  summary: import("../quality/factPreservation.js").FactPreservationSummary,
+): { file: string; detail: string }[] {
+  const byFile = new Map<string, string[]>();
+  const buckets = [
+    ...summary.changedFacts,
+    ...summary.removedFacts,
+    ...summary.formulaChanges,
+    ...summary.directionalChanges,
+    ...summary.placeholderRegressions,
+    ...summary.addedUnsupportedFacts,
+  ];
+  for (const finding of buckets) {
+    const details = byFile.get(finding.file) ?? [];
+    if (details.length < 2) {
+      details.push(
+        `${finding.reason}：${finding.before}${finding.after !== "" ? ` → ${finding.after}` : "（被删除）"}`.slice(0, 240),
+      );
+    }
+    byFile.set(finding.file, details);
+  }
+  return [...byFile.entries()].slice(0, 8).flatMap(([file, details]) =>
+    details.map((detail) => ({ file, detail })),
+  );
+}
+
+/** 最新 gate 产物里的实验事实保持失败明细（通过 / 不可比较 / 无产物 → null） */
+async function latestFactPreservationFailure(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<import("../quality/factPreservation.js").FactPreservationSummary | null> {
+  const rounds = await services.reviewArtifacts.gateRounds(projectId);
+  const latest = rounds[0];
+  if (latest === undefined) {
+    return null;
+  }
+  const artifact = await services.reviewArtifacts.loadGate(projectId, latest);
+  const preservation = artifact?.factPreservation ?? null;
   return preservation !== null && !preservation.ok ? preservation : null;
 }
 

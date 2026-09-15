@@ -15,6 +15,7 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import type { QualityGateResult } from "../quality/gates.js";
 import type { CitationPreservationSummary } from "../quality/citationPreservation.js";
+import type { FactPreservationSummary } from "../quality/factPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { IterationRecord } from "./revisionOutcome.js";
@@ -35,6 +36,8 @@ export interface QualityGateArtifact {
   reviewedRevision?: number;
   /** 引用保持明细（M5.6；null = 不可比较；旧产物缺省） */
   citationPreservation?: CitationPreservationSummary | null;
+  /** 实验事实保持明细（M5.6 第二层；null = 不可比较；旧产物缺省） */
+  factPreservation?: FactPreservationSummary | null;
 }
 
 export class ReviewArtifactStore {
@@ -135,6 +138,7 @@ export class ReviewArtifactStore {
         ? { reviewedRevision: record["reviewedRevision"] }
         : {}),
       ...(readCitationPreservation(record["citationPreservation"])),
+      ...(readFactPreservation(record["factPreservation"])),
     };
   }
 
@@ -321,6 +325,31 @@ function readCitationPreservation(value: unknown): { citationPreservation?: Cita
     return {};
   }
   return { citationPreservation: value as CitationPreservationSummary };
+}
+
+/** gate 产物中的实验事实保持明细（M5.6 第二层；null 如实保留；结构损坏 → 缺省） */
+function readFactPreservation(value: unknown): { factPreservation?: FactPreservationSummary | null } {
+  if (value === null) {
+    return { factPreservation: null };
+  }
+  if (typeof value !== "object") {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record["ok"] !== "boolean" ||
+    typeof record["previousRevision"] !== "number" ||
+    typeof record["currentRevision"] !== "number" ||
+    !Array.isArray(record["changedFacts"]) ||
+    !Array.isArray(record["removedFacts"]) ||
+    !Array.isArray(record["addedUnsupportedFacts"]) ||
+    !Array.isArray(record["directionalChanges"]) ||
+    !Array.isArray(record["formulaChanges"]) ||
+    !Array.isArray(record["placeholderRegressions"])
+  ) {
+    return {};
+  }
+  return { factPreservation: value as FactPreservationSummary };
 }
 
 /** QualityGateResult 的防御性读取（结构损坏 → null，不盲信磁盘 JSON） */

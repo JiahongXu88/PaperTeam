@@ -41,6 +41,7 @@ import {
   saveQualityGateReport,
 } from "./quality/gates.js";
 import { computeCitationPreservation } from "./quality/citationPreservation.js";
+import { computeFactPreservation } from "./quality/factPreservation.js";
 import { collectLatexFiles } from "./manuscript/LatexFiles.js";
 import { revisionViews } from "./manuscript/RevisionStore.js";
 import { isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
@@ -1614,15 +1615,29 @@ async function handleProjectResourceRoutes(
         projectId,
         summary.reviewedRevision,
       );
+      // M5.6 Fact Preservation 同理：手动重评与 stage 同口径
+      const factPreservation = await computeFactPreservation(
+        {
+          projects: stack.projects,
+          revisions: stack.revisions,
+          reviewArtifacts: stack.reviewArtifacts,
+          evidence: stack.evidence,
+        },
+        projectId,
+        summary.reviewedRevision,
+      );
       const gate = evaluateQualityGate(
-        { review: summary, citation, evidence, feasibility, citationPreservation },
+        { review: summary, citation, evidence, feasibility, citationPreservation, factPreservation },
         {
           academicPassScore: stack.workflowServices.review.academicPassScore,
           styleRiskMax: stack.workflowServices.review.styleRiskMax,
           requireFeasibility: true,
         },
       );
-      await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary, { citationPreservation });
+      await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary, {
+        citationPreservation,
+        factPreservation,
+      });
       sendJson(res, 200, { gate, round: summary.round });
       return true;
     }

@@ -208,6 +208,7 @@ export type WorkflowDomainEventType =
   | "quality_gate.failed"
   | "build_gate.passed"
   | "build_gate.failed"
+  | "fact_preservation.blocked_draft"
   | "final.created"
   | "style_polish.applied"
   | "style_polish.skipped";

@@ -26,6 +26,7 @@ export type RevisionPlanItemKind =
   | "review_finding"
   | "citation_missing"
   | "citation_removed"
+  | "fact_preserve"
   | "build_error"
   | "gate_blocker";
 
@@ -100,6 +101,11 @@ export interface BuildRevisionPlanInput {
   citationMissing?: { key: string; files: string[] }[];
   /** Citation Preservation Gate 判定为无依据删除的 key → 上一修订中出现的文件（M5.6） */
   citationRemoved?: { key: string; files: string[] }[];
+  /**
+   * Fact Preservation Gate 判定为无依据改写 / 删除 / 占位化的实验事实 → 发生文件（M5.6）。
+   * detail 为该文件违规明细的摘要（数值 / 公式 / 方向，含 before → after 短片段）。
+   */
+  factRegressions?: { file: string; detail: string }[];
   /** 编译错误（修复循环 / 带 buildError 的修订消费） */
   buildError?: { message: string; file?: string };
   /** gate 阻止项（ruleId + detail；无章节归属的记录为 gate_blocker） */
@@ -154,6 +160,20 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         status: "planned",
       });
     }
+  }
+
+  for (const regression of input.factRegressions ?? []) {
+    items.push({
+      id: `fact-preserve:${regression.file}:${findingCount(items, regression.file) + 1}`,
+      kind: "fact_preserve",
+      priority: "high",
+      section: regression.file,
+      problem: `实验事实被无依据修改：${regression.detail.slice(0, 260)}`,
+      instruction:
+        "恢复上一修订中的实验事实原值（表格数值 / 正文数字与单位 / 公式 / 方向性结论 / 协议表述）。修订不是重写：只有计划明确授权（依据 Evidence 修正数值）时才允许改值，且新值必须逐字来自 Evidence",
+      expectedOutcome: "实验事实保持规则（fact_preservation）转为通过",
+      status: "planned",
+    });
   }
 
   if (input.buildError !== undefined) {
@@ -231,6 +251,11 @@ function findingItem(
 
 function withNote(item: RevisionPlanItem, note: string): RevisionPlanItem {
   return { ...item, note };
+}
+
+/** 同一文件的 fact_preserve 条目计数（稳定 id 用） */
+function findingCount(items: readonly RevisionPlanItem[], file: string): number {
+  return items.filter((item) => item.kind === "fact_preserve" && item.section === file).length;
 }
 
 function needsEvidence(issue: ReviewIssue): boolean {

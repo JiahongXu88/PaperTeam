@@ -18,6 +18,7 @@ import type {
   RuntimeHealth,
   RuntimeModelStatus,
 } from "./types.js";
+import { extractNumericTokens } from "../review/styleInvariants.js";
 
 /** legacy generate 路径的完整 LaTeX 文档（M2 行为） */
 export const LATEX_DOC = [
@@ -134,36 +135,82 @@ export const SECTION_TEX_TWO_CITES = `${SECTION_TEX}\n\n开创性工作亦见 \\
 
 /** \\cite 族命令（脚本化 Writer 只做「原样保留」，不解析 key） */
 const SCRIPTED_CITE_PATTERN = /\\(?:cite|citep|citet|citealp|citealt|parencite|textcite|autocite)\*?(?:\[[^\]\n]*\])*\{[^{}]*\}/g;
+/** 数学环境（equation / align 等；修订输出原样保留——M5.6 Fact Preservation） */
+const SCRIPTED_MATH_ENV_PATTERN =
+  /\\begin\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)}[\s\S]*?\\end\{\1\}/g;
 
 /**
- * 脚本化修订：基底 + 当前章节内容里的既有引用命令（去重、保持出现顺序）。
- * dropCitations=true（[cite:drop] 标记）时不保留任何引用——复现 Writer 无计划删光引用的回归。
+ * 脚本化修订：基底 + 当前章节内容里的既有事实（镜像真实 Writer 的 M5.6 纪律：
+ * 引用命令、数学环境、数字 / 单位 token 原样保留——修订不是重写）。
+ * dropCitations=true（[cite:drop] 标记）时不保留任何引用——复现 Writer 无计划删光
+ * 引用的回归（公式与数字仍保留：该标记只测试引用维度）。
+ * mutateFacts=true（[fact:mutate] 标记）时替换公式常量并新增无依据数值——复现
+ * Writer 篡改实验事实的回归（Fact Preservation Gate 的用例输入）。
  * prompt 里没有「本章节当前内容」块（单元测试直接调用）时只返回基底。
  */
-export function scriptedRevision(task: string, dropCitations: boolean): string {
+export function scriptedRevision(task: string, dropCitations: boolean, mutateFacts = false): string {
   const marker = "===== 本章节当前内容 =====";
   const start = task.indexOf(marker);
-  if (dropCitations || start === -1) {
+  if (start === -1) {
     return REVISED_SECTION_TEX;
   }
   const rest = task.slice(start + marker.length);
   const end = rest.indexOf("\n=====");
   const current = end === -1 ? rest : rest.slice(0, end);
+  if (mutateFacts) {
+    const mutatedMath = (current.match(SCRIPTED_MATH_ENV_PATTERN) ?? [])
+      .join("\n")
+      .replace(/\\alpha/g, "\\beta"); // 公式常量被替换（无计划依据）
+    return [
+      REVISED_SECTION_TEX,
+      "",
+      mutatedMath,
+      "",
+      "修订补充：准确率由 8.7\\% 提升至 12.4\\%，部署协议改为单次窗口验证。", // 无依据数值新增
+    ].join("\n");
+  }
   const cites = [...new Set(current.match(SCRIPTED_CITE_PATTERN) ?? [])];
-  return cites.length === 0 ? REVISED_SECTION_TEX : `${REVISED_SECTION_TEX}\n\n沿用既有引用：${cites.join(" ")}。`;
+  const mathEnvs = current.match(SCRIPTED_MATH_ENV_PATTERN) ?? [];
+  // 数字保持与 Gate 的 prose 口径一致：排除表格区（表格单元格由表格比对覆盖；
+  // 把表格数字复制进 prose 会造成「无依据新增」误报）。数学环境由 extractNumericTokens
+  // 内部的 proseOf 剥离。
+  const proseForNumbers = current
+    .replace(/\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g, " ")
+    .replace(/\\begin\{tabular[xX*]*\}{[^}]*}[\s\S]*?\\end\{tabular[xX*]*\}/g, " ");
+  const numbers = [...extractNumericTokens(proseForNumbers)];
+  const parts = [REVISED_SECTION_TEX];
+  if (mathEnvs.length > 0) {
+    parts.push("", ...mathEnvs);
+  }
+  if (numbers.length > 0) {
+    parts.push("", `既有数值保持：${numbers.join("、")}。`);
+  }
+  if (!dropCitations && cites.length > 0) {
+    parts.push("", `沿用既有引用：${cites.join(" ")}。`);
+  }
+  return parts.join("\n");
 }
 
 /** 摘要修订输出（M4.8：纯文本，无任何 LaTeX 命令——载体是 outline.abstract） */
 export const REVISED_ABSTRACT_TEXT =
   "修订后的摘要：本文在已核验证据的基础上提出改进方法，并通过可复现实验验证其有效性，结论表述与证据强度一致。";
 
-/** 编译错误修复输出（合法：无文档骨架、花括号配对；只修语法不改内容 / 引用） */
+/**
+ * 编译错误修复输出（合法：无文档骨架、花括号配对；只修语法不改内容 / 引用 / 公式——
+ * M5.6 Fact Preservation：修复前的 \eqref 与 equation 环境必须原样保留，否则
+ * 「语法修复」就成了公式丢失的回归通道）
+ */
 export const REPAIRED_SECTION_TEX = [
   "\\section{章节标题}",
   "",
   "本章节论述基于证据的核心观点 \\cite{gao2023survey}。",
+  "检索质量与幻觉率的关系如式 \\eqref{eq:1} 所示。",
   "",
-  "修复后的表述：已按结构化诊断修正语法，内容与引用保持不变。",
+  "\\begin{equation}",
+  "  q = \\alpha r + (1-\\alpha) g",
+  "\\end{equation}",
+  "",
+  "修复后的表述：已按结构化诊断修正语法，内容、引用与公式保持不变。",
 ].join("\n");
 
 /** Existing-Paper 分章节 Review 输出（SectionReviewService 的 findings 契约） */
@@ -408,6 +455,13 @@ type StyleMode = "findings" | "violate";
  *                catastrophic FAIL（Final 被阻止），revision.plan 派发 citation_removed 恢复条目
  */
 const CITE_MARKER = /\[cite:drop\]/;
+/**
+ * M5.6 Fact Preservation 标记（同上按项目记忆）：
+ *   [fact:mutate]  writing/revision 输出替换公式常量（\\alpha→\\beta）并新增无依据数值
+ *                  （8.7%→12.4%）→ quality.gate 的 fact_preservation FAIL（Final 被阻止），
+ *                  revision.plan 派发 fact_preserve 恢复条目；accept_draft 也会被 Draft 拦截
+ */
+const FACT_MARKER = /\[fact:mutate\]/;
 
 /** 脚本化 style-only 润色：只改表达（「本章节论述」→「本节论述」），不动引用 / 数字 / 公式 */
 function scriptedStylePolish(task: string, mode: StyleMode | undefined): string {
@@ -482,6 +536,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectAbstractFindings = new Set<string>();
   const projectStyleModes = new Map<string, StyleMode>();
   const projectCiteDrop = new Set<string>();
+  const projectFactMutate = new Set<string>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -523,6 +578,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           if (CITE_MARKER.test(input.task)) {
             projectCiteDrop.add(projectId);
           }
+          if (FACT_MARKER.test(input.task)) {
+            projectFactMutate.add(projectId);
+          }
         }
         output = projectCiteDrop.has(projectId) ? RESEARCH_JSON_TWO_REFS : RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
@@ -550,8 +608,8 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           : input.task.includes("\\documentclass")
             ? LATEX_DOC
             : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
-              ? `${scriptedRevision(input.task, projectCiteDrop.has(projectId))}\n${UNDEFINED_MACRO_TEX}`
-              : scriptedRevision(input.task, projectCiteDrop.has(projectId));
+              ? `${scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId))}\n${UNDEFINED_MACRO_TEX}`
+              : scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId));
       } else if (scope === "writing/style-polish") {
         output = scriptedStylePolish(input.task, projectStyleModes.get(projectId));
       } else if (scope === "writing/repair") {

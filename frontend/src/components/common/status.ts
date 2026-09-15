@@ -234,6 +234,7 @@ export const GATE_RULES_NEUTRAL: ReadonlySet<string> = new Set([
   "citation_semantic_verification_off",
   "citation_insufficient_evidence_review",
   "citation_preservation_not_applicable",
+  "fact_preservation_not_applicable",
 ]);
 
 /** gate 整体结论（PASS 只表示允许进入 Final，不是「论文完美」） */

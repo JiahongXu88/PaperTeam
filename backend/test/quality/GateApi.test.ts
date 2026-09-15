@@ -168,6 +168,8 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       "target_feasibility",
       // M5.6：单一修订无前序可比 → 引用保持规则以中性 id 出现（不是通过，也不是失败）
       "citation_preservation_not_applicable",
+      // M5.6 第二层：实验事实保持同口径（无前序修订 → 中性呈现）
+      "fact_preservation_not_applicable",
     ]);
   });
 });

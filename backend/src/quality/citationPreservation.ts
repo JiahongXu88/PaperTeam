@@ -280,7 +280,7 @@ export interface CitationPreservationDeps {
 }
 
 /** 快照目录 → tex 文件（沿 main.tex \input 收集；无 main.tex 时退化为目录内全部 .tex） */
-async function readSnapshotTex(dir: string): Promise<CitationTexFile[] | null> {
+export async function readSnapshotTex(dir: string): Promise<CitationTexFile[] | null> {
   const collected = await collectLatexFiles(dir);
   if (collected.mainTex !== null) {
     return collected.allTex.map((file) => ({ file: file.relativePath, content: file.content }));
