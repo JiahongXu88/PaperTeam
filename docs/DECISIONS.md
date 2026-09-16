@@ -674,3 +674,46 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   + workflow 接线）实施顺序冻结（ADR §11）；新增 docs/research/ 目录承载
   调研报告与 ADR 正文；零第三方源码进入 PaperTeam Git（第三方 clone 位于
   仓库外 PaperTeam-M6-Research/）。
+
+## D-0034 M6.2 Literature Library：候选与正式文献分文件持久化 + 分层身份键精确判等 + 条目级元数据可信水位线 + Evidence 引用阻止删除
+
+- **日期**：2026-09-16（M6.2，Project Literature Library）
+- **决策**：在 D-0033 六层架构的 LiteratureLibrary 层落地四项：
+  1. **CandidateSource 与 SourceItem 分文件持久化**：候选（Discovery
+     State，"发现到了可能有价值的资料"）存 `sources/candidates.json`
+     （pending_review → accepted/rejected，accepted 记 promotedSourceId）；
+     正式文献保持 authoritative 的 `sources/index.json` + `papers/` +
+     `parsed/`。引用方向只有 candidate → source 单向：删除候选不影响正式
+     Source；promotion 幂等（重入返回同一条目；library 已有同身份 → merge
+     不复制；目标被删后可重新入库）。候选必须携带可判等键（仅标题拒绝）。
+  2. **SourceIdentity 分层确定性键、精确判等**：DOI > arXiv ID > PMID >
+     归一标题指纹+年份+一作 family > canonical URL；键是精确相等不是相似
+     度。arXiv preprint 与 DOI 正式版是**两个身份两条 Source**（多 Provider
+     检索不会互相覆盖）；版本关系用轻量 workKey + versionType +
+     relatedSourceIds（`POST /sources/:sid/link` 显式建立），不做自动识别、
+     不引入 Knowledge Graph。老项目身份从 metadata 动态推导
+     （identityFromMetadata），不重写旧 index.json（无 migration）。
+  3. **条目级元数据可信水位线 user > resolved > inferred**：低可信 merge
+     只填空缺不覆盖（resolver 正式记录不覆盖用户改过的字段，但纠正 PDF
+     抽取的推测字段）。M6.2 不做字段级 provenance 追踪（已知保守边界：
+     任一字段被 user PATCH 后，条目水位线=user，后续 resolved 数据对该条目
+     只填空缺），够用且可测试；真实需要字段级时再演进。
+  4. **删除语义**：删正式 Source 清理 papers 文件 + parsed 产物 + 索引
+     条目；**被 Evidence 引用（EvidenceSourceRef.sourceId）时 409
+     SOURCE_IN_USE 阻止删除**。选择阻止而非 cascade / tombstone 的理由：
+     Evidence 对 Source 是弱引用（无外键），cascade 会发明本轮不存在的
+     语义，tombstone 需要改 Evidence 读取路径——阻止是最小、正确、可测试
+     的行为；用户先处理引用即可删。
+- **理由**：M6.1 ADR §5 数据流表把 CandidateSource 定为"候选清单是事实、
+  但非 authoritative"——分文件是其在文件系统上的直接表达；PaperTeam 已有
+  SourceStore 布局（papers/parsed/index.json）复用而非另起数据库（D-0013）；
+  promotion 幂等与精确判等防止 M6.3 多 Provider 检索产生重复条目；
+  preprint/正式版独立是学术场景真实需求（arXiv→会议→期刊扩展版）。
+- **不做**：字段级 provenance；自动跨版本识别（需 provider 元数据能力，
+  M6.3+）；cascade / tombstone 删除；metadata-only 条目的全文挂接
+  （FullTextResolver 属 M6.3）；候选的批量导入 UI。
+- **影响**：sources/ 域新增 identity.ts / CandidateStore.ts /
+  SourceImportService.ts / bibtex.ts / metadataMerge.ts；ServiceStack 装配
+  sourceImport（与 citationIntegrity 共享 ScholarlyResolver 实例）；
+  httpServer sources 子资源路由扩展（import / candidates / enrich / link）；
+  全部新字段 optional，M1–M5 项目零迁移可读。

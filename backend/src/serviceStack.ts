@@ -26,6 +26,8 @@ import { ResearcherService } from "./agents/ResearcherService.js";
 import type { AgentRuntime } from "./runtime/types.js";
 import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
+import { CandidateStore } from "./sources/CandidateStore.js";
+import { SourceImportService } from "./sources/SourceImportService.js";
 import { BuiltinPdfAnalyzer } from "./sources/PdfAnalyzer.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
@@ -92,6 +94,10 @@ export interface ServiceStack {
   reviewer: ReviewerService;
   evidence: EvidenceStore;
   sources: SourceStore;
+  /** Discovery 候选（sources/candidates.json；非 authoritative，M6.2） */
+  candidates: CandidateStore;
+  /** 文献入库路径编排（DOI/arXiv/URL/BibTeX 导入 + promotion + enrich；M6.2） */
+  sourceImport: SourceImportService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
   manuscript: ManuscriptService;
   citation: CitationService;
@@ -137,6 +143,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   });
   const evidence = new EvidenceStore(options.projects);
   const sources = new SourceStore(options.projects);
+  const candidates = new CandidateStore(options.projects);
   const pdfAnalyzer = new BuiltinPdfAnalyzer();
   const manuscript = new ManuscriptService(options.projects);
   const researcher = new ResearcherService({
@@ -232,6 +239,17 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       : {}),
     log,
   });
+  // M6.2 文献入库路径：与 citationIntegrity 共享同一个 ScholarlyResolver 实例
+  // （缓存 / 限速礼貌间隔 / telemetry 一体；metadataEnabled=false 的离线部署
+  // 下 resolver 的 provider 集为空 → 导入按 unresolved 如实记录，不外呼）
+  const sourceImport = new SourceImportService({
+    projects: options.projects,
+    sources,
+    candidates,
+    evidence,
+    scholarly: citationIntegrity.scholarlyResolver,
+    log,
+  });
   const reviewer = new ReviewerService({
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,
@@ -266,6 +284,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     reviewer,
     evidence,
     sources,
+    candidates,
+    sourceImport,
     pdfAnalyzer,
     manuscript,
     citation,

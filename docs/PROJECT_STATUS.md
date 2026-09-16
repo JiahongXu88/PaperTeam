@@ -1,9 +1,13 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-16（**M6.1 Search/RAG 架构冻结 COMPLETE**——6 开源项目源码
+> 更新日期：2026-09-16（**M6.2 Project Literature Library COMPLETE**——
+> SourceIdentity 分层身份键 / CandidateSource Discovery 状态 / 五种入库路径
+> （PDF·DOI·arXiv·URL·BibTeX）/ metadata 可信分层 merge / Evidence 引用删除
+> 保护 / 老项目 lazy 兼容；详见下方 M6.2 条目与 DECISIONS.md D-0034；
+> 下一节点 **M6.3 Research Discovery & Academic/Web Search**；同日
+> **M6.1 Search/RAG 架构冻结 COMPLETE**——6 开源项目源码
 > 静态分析 + PaperTeam 盘点 + ADR D-0033 冻结（六层最小接口 / SearXNG 独立服务 /
-> 无 Vector DB / 内部零 MCP），M6.2 Project Literature Library 就绪；同日
-> **M6.0 M5 Baseline Freeze**——M5 冻结为完成基线、全量验证
+> 无 Vector DB / 内部零 MCP）；**M6.0 M5 Baseline Freeze**——M5 冻结为完成基线、全量验证
 > 与文档状态统一，M6 进入准备阶段；**M5.7 最终产品化收口**：per-Agent Provider / Model 配置
 > （Settings agents 字段 + contextScope 确定性路由 + 会话级模型解析 + 失效 override
 > 结构化失败，credential 与 override 解耦）+ 外部专家 / 导师 / 用户修改意见驱动修订
@@ -93,7 +97,75 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
   vs 继承默认的 metadata.model 验证）+ scripted 后端外部意见 conflict 全链路。
 
 **M6 — Research Discovery & RAG（进行中：2026-09-16 M6.0 baseline established；
-2026-09-16 M6.1 架构冻结 COMPLETE）**：
+2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE）**：
+
+- **M6.2 Project Literature Library（✅ 2026-09-16）**：
+  - **范围**：把「文献进入 PaperTeam 后怎么存在」做正确——Source Domain /
+    Identity / Persistence / Import / Candidate lifecycle / Parse lifecycle /
+    HTTP API。**不含任何检索**（Web / Academic Search / Embedding / RAG /
+    Agent 自动检索均属 M6.3+，本轮零实现，符合 D-0033）。
+  - **领域模型**：`SourceIdentity`（`sources/identity.ts`，D-0033 §12 草案落地）：
+    分层确定性键 **DOI > arXiv ID > PMID > 归一标题指纹+年份+一作 family >
+    canonical URL**；键是精确相等不是相似度（仅标题不构成身份）；DOI / arXiv /
+    URL / PMID 各自归一化（`https://doi.org/…` / `doi:…` / 大小写 / 版本号 /
+    utm 追踪参数 / 尾斜杠全部折叠）；**arXiv preprint 与 DOI 正式版是两个
+    身份两条 Source，互不覆盖**——版本关系用轻量 `workKey` + `versionType`
+    （preprint/conference/journal）+ `relatedSourceIds` 表达（`POST
+    /sources/:sid/link` 显式建立；不做自动识别、不引入 Knowledge Graph）。
+  - **CandidateSource ≠ SourceItem**：候选是 **Discovery State**（"发现到了
+    一个可能有价值的资料"），持久化于独立文件 `sources/candidates.json`
+    （pending_review → accepted/rejected；accepted 记 promotedSourceId）；
+    正式文献仍在 authoritative 的 `sources/index.json` + `papers/` +
+    `parsed/`。promotion 幂等（重入返回同一 Source；library 已有同身份 →
+    merge 不复制；目标 Source 被删后可重新入库）。候选必须携带可判等键。
+  - **入库路径（五种）**：PDF 上传（既有，+contentHash sha256 判重：同项目
+    重复上传返回既有条目不新建）／DOI 导入（复用 ScholarlyResolver.lookup，
+    resolved 级元数据；未命中如实记录、不伪造）／arXiv 导入（ID 归一 +
+    resolver）／URL 导入（canonical URL + metadata placeholder，不抓正文
+    ——ContentFetcher 属后续节点）／BibTeX 导入（自研最小 parser：花括号
+    平衡值 / @string·@comment 跳过 / 损坏条目按行报错不中断；条目类型 →
+    versionType 映射）。metadata-only 条目（fileName 为空、status=
+    metadata_only）如实表达「有元数据无全文」。
+  - **Metadata merge**（`sources/metadataMerge.ts`）：条目级可信水位线
+    **user > resolved > inferred**——低可信只填空缺不覆盖（resolved 不覆盖
+    用户改过的 title，但会纠正 PDF 抽取的错标题）；`POST /sources/:sid/enrich`
+    对既有条目做 resolver 补全。
+  - **Parse lifecycle**：沿用 pending → available/partial/failed（+ rejected /
+    metadata_only）；解析产物 `parsed/<id>.json` 绑定 `analysisHash`——内容
+    变化（contentHash 不一致）时拒绝写入旧产物（stale 防护）；老条目无 hash
+    不校验（lazy 兼容）。Chunk 化属 M6.4。
+  - **删除语义（D-0034）**：删候选 ≠ 删正式 Source（引用只有 candidate →
+    source 单向）；删正式 Source 清理 papers 文件 + parsed 产物 + 索引条目，
+    但**被 Evidence 引用时 409 SOURCE_IN_USE 阻止删除**（最小正确：不做
+    cascade / tombstone）。
+  - **HTTP API**：sources 子资源新增 `POST /sources/import/{doi|arxiv|url|
+    bibtex}`、`GET/POST /sources/candidates`、`DELETE /sources/candidates/:cid`、
+    `POST /sources/candidates/:cid/{promote|reject}`、`POST /sources/:sid/
+    {enrich|link}`、PATCH 扩展 versionType；sources 路由补项目存在性校验
+    （修复对不存在项目导入会创建孤儿目录的隐患）。重复上传返回 200+
+    created=false（新建 201）。
+  - **Backward Compatibility**：全部新字段 optional（identity / contentHash /
+    sourceType / workKey / metadataProvenance / arxivId / abstract）；老项目
+    index.json 原样可读，身份从 metadata **动态推导**（identityFromMetadata，
+    不重写旧文件）；无 schema migration。测试覆盖 M5 形状老数据（无新字段
+    条目 + 无 hash 条目）。
+  - **代码组织**：`sources/` 域内新增 identity.ts / CandidateStore.ts /
+    SourceImportService.ts / bibtex.ts / metadataMerge.ts，SourceStore.ts /
+    PdfAnalyzer.ts / ScholarlyResolver.ts（未改）复用；ServiceStack 装配
+    `candidates` + `sourceImport`（与 citationIntegrity **共享同一
+    ScholarlyResolver 实例**，缓存 / 礼貌间隔 / telemetry 一体；离线部署
+    providers=[] → 导入按 unresolved 如实记录不外呼）。未动 Workflow /
+    Runtime / 前端（无 Sources 页面，无需适配）。
+  - **验证**：新增后端测试 **74**（identity 19 / literatureLibrary 域 35 /
+    literatureLibrary.http 13 / bibtex 7）；覆盖指令 20 项行为（项目隔离 /
+    PDF 判重 / DOI·arXiv 归一 / 候选分离与幂等 promotion / merge 分层 /
+    hash 失效 / restart 持久化 / 删除保护 / 老数据兼容 / 越权与非法输入 /
+    BibTeX / URL 归一）。`npm run build` / `typecheck` / `test` 全绿
+    （后端 892 passed / 7 skipped（既有 live smoke skip），前端 184 passed）。
+  - **M6 next step：M6.3 Research Discovery & Academic/Web Search**
+    （`search/` 域 + ProviderHttpClient + AcademicSearchService 真检索语义 +
+    WebSearchService + SearXNG compose + 融合去重 → CandidateSource 产出；
+    实施入口见 ADR §11）。
 
 - **M6.1 Search/RAG Open-source Research & Architecture Freeze（✅ 2026-09-16）**：
   - **范围与纪律**：只读源码静态分析 + 架构冻结；**零业务代码实现、零第三方

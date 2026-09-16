@@ -16,6 +16,19 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.2 Project Literature Library（✅ 2026-09-16）
+
+- 文献入库的领域与持久化基础（检索/RAG 属 M6.3+，本轮零实现，见 D-0033/D-0034）：
+  `SourceIdentity` 分层身份键（DOI > arXiv > PMID > 标题指纹+年份+一作 > URL，
+  精确判等，preprint 与正式版互不覆盖，版本关系 workKey/versionType/
+  relatedSourceIds）；CandidateSource Discovery 状态（candidates.json，
+  pending_review → accepted/rejected，promotion 幂等）；五种入库路径（PDF
+  contentHash 判重 / DOI / arXiv / URL / BibTeX 最小解析器）；metadata 可信
+  水位线 merge（user > resolved > inferred）；解析产物绑定 analysisHash 防失效；
+  Evidence 引用阻止删除（409 SOURCE_IN_USE）。全部新字段 optional，M1–M5
+  项目零迁移。HTTP：`/sources/import/*`、`/sources/candidates*`、
+  `/sources/:sid/{enrich,link}`。新增后端测试 74。
+
 ### M5.1 / M5.2 Runtime 生命周期与长程治理（✅ 2026-09-11/12）
 
 - AbortSignal 统一、事件 seq + event_gap、queued cancel、timeout 分层、结构化终态、

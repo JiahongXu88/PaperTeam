@@ -292,9 +292,10 @@ Reviewer、Experiment subsystem 均在 backlog（M5 未含，见 M5_PLAN §2）�
 ## 5. 数据与文件
 
 - **Workspace（Authoritative State）**：`projects/<id>/` 下 `manuscript/`（main.tex、
-  sections/、revisions.json 不可变修订链）、`sources/`（papers / parsed / metadata）、
-  `evidence/`、`reviews/`、`workflow/`、`figures/`、`tables/`、`data/`、`build/`
-  （compile.log / build-gate.json）、`artifacts/`（manifest.json +
+  sections/、revisions.json 不可变修订链）、`sources/`（papers / parsed / index.json
+  ——正式文献 authoritative；candidates.json——Discovery 候选，非 authoritative，
+  M6.2 / D-0034）、`evidence/`、`reviews/`、`workflow/`、`figures/`、`tables/`、
+  `data/`、`build/`（compile.log / build-gate.json）、`artifacts/`（manifest.json +
   art-draft/final-rev{n}.pdf，不可变产物）、`project.json`。
 - **Evidence Store**（M3.1）：字段与状态模型见 PRD §6.9（verificationStatus /
   supportStrength / verificationLevel；数值 confidence 仅辅助）。存储采用文件优先：
@@ -794,7 +795,12 @@ backend/src/
 │                  Prompt + 结构化输出校验）、outputParsing（防御性 JSON 提取）
 ├── writer/        WriterService（M2 完整文档 + M3 大纲 / 分节 / 修订 / 改进计划）
 ├── evidence/      EvidenceStore（project-scoped JSONL）
-├── sources/       SourceStore（文献库）+ PdfAnalyzer（builtin 文本层 + multimodal 扩展点）
+├── sources/       SourceStore（文献库 authoritative：papers/parsed/index.json）+
+│                  CandidateStore（Discovery 候选 candidates.json，M6.2）+
+│                  SourceImportService（DOI/arXiv/URL/BibTeX 导入 + promotion + enrich）+
+│                  identity（SourceIdentity 分层身份键）+ bibtex（最小解析器）+
+│                  metadataMerge（user>resolved>inferred 水位线）+
+│                  PdfAnalyzer（builtin 文本层 + multimodal 扩展点）
 ├── manuscript/    ManuscriptService（outline / main.tex 组装 / context.yaml）、
 │                  LatexFiles（\input 递归收集）
 ├── citation/      StaticCitationChecker（Layer 1）、metadataProviders（Layer 2：

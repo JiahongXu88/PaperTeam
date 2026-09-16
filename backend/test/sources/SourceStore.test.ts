@@ -75,7 +75,7 @@ describe("sanitizeFileName", () => {
 describe("SourceStore", () => {
   it("添加 / 查询 / 更新角色与 preferred / 删除；原始文件与索引落盘", async () => {
     const { sources, projectId, root } = await newStore();
-    const item = await sources.add(projectId, {
+    const { source: item } = await sources.add(projectId, {
       fileName: "survey.pdf",
       content: minimalPdf("Introduction to RAG survey"),
       sourceRole: "evidence",
@@ -107,7 +107,7 @@ describe("SourceStore", () => {
     await sources.add(projectId, { fileName: "a.txt", content: Buffer.from("a") });
     await sources.add(projectId, { fileName: "b.txt", content: Buffer.from("b") });
     await sources.remove(projectId, "S001");
-    const third = await sources.add(projectId, { fileName: "c.txt", content: Buffer.from("c") });
+    const { source: third } = await sources.add(projectId, { fileName: "c.txt", content: Buffer.from("c") });
     expect(third.sourceId).toBe("S003");
     expect((await sources.list(projectId)).map((item) => item.sourceId)).toEqual(["S002", "S003"]);
     await expect(sources.getRequired(projectId, "S001")).rejects.toMatchObject({ code: "NOT_FOUND" });

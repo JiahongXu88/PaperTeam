@@ -38,6 +38,7 @@ export type BusinessErrorCode =
   | "BUILD_GATE_STALE"
   | "IMPORT_VALIDATION"
   | "MODEL_CONFIG_BUSY"
+  | "SOURCE_IN_USE"
   | "PDF_PARSE_FAILED"
   | "PDF_PARSER_UNAVAILABLE"
   | "NOT_FOUND"
@@ -73,6 +74,7 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   BUILD_GATE_STALE: 409,
   IMPORT_VALIDATION: 422,
   MODEL_CONFIG_BUSY: 409,
+  SOURCE_IN_USE: 409,
   PDF_PARSE_FAILED: 422,
   PDF_PARSER_UNAVAILABLE: 503,
   NOT_FOUND: 404,
@@ -331,6 +333,24 @@ export class ImportValidationError extends BusinessError {
 export class NotFoundError extends BusinessError {
   constructor(resource: string, id: string) {
     super("NOT_FOUND", `${resource}不存在：${id}`);
+  }
+}
+
+// ---- 文献库（M6.2）----
+
+/**
+ * 正式 Source 已被 Evidence 引用，禁止删除（M6.2 架构决定：
+ * 最小正确行为是阻止删除而非 cascade / tombstone——引用关系由 Evidence 侧
+ * 弱引用（EvidenceSourceRef.sourceId），cascade 会发明本轮不存在的语义）。
+ */
+export class SourceInUseError extends BusinessError {
+  readonly referenceCount: number;
+  constructor(sourceId: string, referenceCount: number) {
+    super(
+      "SOURCE_IN_USE",
+      `文献 ${sourceId} 已被 ${referenceCount} 条 Evidence 引用，不能删除（请先处理引用它的 Evidence）`,
+    );
+    this.referenceCount = referenceCount;
   }
 }
 

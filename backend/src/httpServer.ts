@@ -778,32 +778,38 @@ async function handleProjectResourceRoutes(
   const resource = base[2] ?? "";
   const rest = base[3] ?? "";
 
-  // ---- sources ----
+  // ---- sources（M6.2：Project Literature Library——文件上传 / 导入 / 候选 / 版本关系）----
   if (resource === "sources") {
+    // 项目存在性校验：避免对不存在的项目读写（否则 list 返回假空库、
+    // 导入会在磁盘上创建无 project.json 的孤儿目录）
+    await stack.projects.getRequired(projectId);
     if (rest === "") {
       if (method === "POST") {
         const { body, fileName, content } = await readUploadBody(req, MAX_SOURCE_UPLOAD_BODY_BYTES);
         const sourceRole = readSourceRole(body);
-        const item = await stack.sources.add(projectId, {
+        const { source: item, created } = await stack.sources.add(projectId, {
           fileName,
           content,
           ...(sourceRole !== undefined ? { sourceRole } : {}),
           metadata: readSourceMetadata(body),
           ...(body["preferred"] === true ? { preferred: true } : {}),
         });
-        // PDF 自动跑确定性文本层分析；分析失败不影响上传成功（原始文件已落盘）
+        // PDF 自动跑确定性文本层分析；分析失败不影响上传成功（原始文件已落盘）。
+        // 重复上传（created=false）不重复分析——条目已有对应内容的解析产物
         let source = item;
-        if (item.fileName.toLowerCase().endsWith(".pdf")) {
+        if (created && item.fileName !== undefined && item.fileName.toLowerCase().endsWith(".pdf")) {
           try {
             const analysis = await stack.pdfAnalyzer.analyzeFile(
               await stack.sources.filePath(projectId, item.sourceId),
             );
-            source = await stack.sources.setAnalysis(projectId, item.sourceId, analysis);
+            source = await stack.sources.setAnalysis(projectId, item.sourceId, analysis, {
+              ...(item.contentHash !== undefined ? { contentHash: item.contentHash } : {}),
+            });
           } catch (error) {
             console.error(`[http] 文献 ${item.sourceId} 自动分析失败（不影响上传）:`, errorText(error));
           }
         }
-        sendJson(res, 201, { source });
+        sendJson(res, created ? 201 : 200, { source, created });
         return true;
       }
       if (method === "GET") {
@@ -813,6 +819,123 @@ async function handleProjectResourceRoutes(
       }
       res.setHeader("Allow", "GET, POST");
       sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    // ---- 导入路径（M6.2：DOI / arXiv / URL / BibTeX；无网络检索）----
+    if (rest === "/import/doi" || rest === "/import/arxiv" || rest === "/import/url" || rest === "/import/bibtex") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const sourceRole = readSourceRole(body);
+      if (rest === "/import/doi") {
+        const result = await stack.sourceImport.importDoi(projectId, {
+          doi: readStringField(body, "doi") ?? "",
+          ...(sourceRole !== undefined ? { sourceRole } : {}),
+          ...(body["enrich"] === false ? { enrich: false } : {}),
+        });
+        sendJson(res, result.created ? 201 : 200, result);
+        return true;
+      }
+      if (rest === "/import/arxiv") {
+        const result = await stack.sourceImport.importArxiv(projectId, {
+          arxivId: readStringField(body, "arxivId") ?? "",
+          ...(sourceRole !== undefined ? { sourceRole } : {}),
+          ...(body["enrich"] === false ? { enrich: false } : {}),
+        });
+        sendJson(res, result.created ? 201 : 200, result);
+        return true;
+      }
+      if (rest === "/import/url") {
+        const result = await stack.sourceImport.importUrl(projectId, {
+          url: readStringField(body, "url") ?? "",
+          ...(readStringField(body, "title") !== undefined ? { title: readStringField(body, "title") } : {}),
+          ...(sourceRole !== undefined ? { sourceRole } : {}),
+        });
+        sendJson(res, result.created ? 201 : 200, result);
+        return true;
+      }
+      const result = await stack.sourceImport.importBibtex(projectId, {
+        content: readStringField(body, "content") ?? "",
+        ...(sourceRole !== undefined ? { sourceRole } : {}),
+      });
+      sendJson(res, 200, result);
+      return true;
+    }
+
+    // ---- Discovery 候选（CandidateSource；≠ 正式文献）----
+    if (rest === "/candidates") {
+      if (method === "GET") {
+        const status = url.searchParams.get("status");
+        const candidates = await stack.sourceImport.listCandidates(
+          projectId,
+          status === null ? undefined : requireEnumParam(status, ["pending_review", "accepted", "rejected"] as const, "status"),
+        );
+        sendJson(res, 200, { candidates });
+        return true;
+      }
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        const origin = readCandidateOrigin(body);
+        const provider = readStringField(body, "provider");
+        const result = await stack.sourceImport.addCandidate(projectId, {
+          ...(readStringField(body, "doi") !== undefined ? { doi: readStringField(body, "doi") } : {}),
+          ...(readStringField(body, "arxivId") !== undefined ? { arxivId: readStringField(body, "arxivId") } : {}),
+          ...(readStringField(body, "url") !== undefined ? { url: readStringField(body, "url") } : {}),
+          ...(readStringField(body, "title") !== undefined ? { title: readStringField(body, "title") } : {}),
+          ...(Array.isArray(body["authors"]) && body["authors"].every((a) => typeof a === "string")
+            ? { authors: body["authors"] as string[] }
+            : {}),
+          ...(typeof body["year"] === "number" && Number.isInteger(body["year"]) ? { year: body["year"] } : {}),
+          ...(readStringField(body, "venue") !== undefined ? { venue: readStringField(body, "venue") } : {}),
+          ...(readStringField(body, "snippetOrAbstract") !== undefined
+            ? { snippetOrAbstract: readStringField(body, "snippetOrAbstract") }
+            : {}),
+          ...(origin !== undefined ? { origin } : {}),
+          ...(provider !== undefined ? { provider } : {}),
+        });
+        sendJson(res, result.created ? 201 : 200, { candidate: result.candidate, created: result.created });
+        return true;
+      }
+      res.setHeader("Allow", "GET, POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    const candidateMatch = /^\/candidates\/(C\d{2,})$/.exec(rest);
+    if (candidateMatch) {
+      const candidateId = candidateMatch[1] ?? "";
+      if (method === "DELETE") {
+        await stack.sourceImport.deleteCandidate(projectId, candidateId);
+        sendJson(res, 200, { status: "deleted", candidateId });
+        return true;
+      }
+      res.setHeader("Allow", "DELETE");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    const promoteMatch = /^\/candidates\/(C\d{2,})\/(promote|reject)$/.exec(rest);
+    if (promoteMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const candidateId = promoteMatch[1] ?? "";
+      const action = promoteMatch[2] ?? "promote";
+      if (action === "promote") {
+        const body = await readOptionalJsonBody(req);
+        const sourceRole = readSourceRole(body);
+        const result = await stack.sourceImport.promoteCandidate(projectId, candidateId, {
+          ...(sourceRole !== undefined ? { sourceRole } : {}),
+        });
+        sendJson(res, 200, result);
+        return true;
+      }
+      const candidate = await stack.sourceImport.rejectCandidate(projectId, candidateId);
+      sendJson(res, 200, { candidate });
       return true;
     }
 
@@ -831,12 +954,14 @@ async function handleProjectResourceRoutes(
           ...(sourceRole !== undefined ? { sourceRole } : {}),
           ...(typeof body["preferred"] === "boolean" ? { preferred: body["preferred"] } : {}),
           metadata: readSourceMetadata(body),
+          ...(readVersionType(body) !== undefined ? { versionType: readVersionType(body) } : {}),
         });
         sendJson(res, 200, { source: item });
         return true;
       }
       if (method === "DELETE") {
-        await stack.sources.remove(projectId, sourceId);
+        // Evidence 引用保护：被 Evidence 引用的正式 Source 拒绝删除（409）
+        await stack.sourceImport.removeSource(projectId, sourceId);
         sendJson(res, 200, { status: "deleted", sourceId });
         return true;
       }
@@ -865,8 +990,48 @@ async function handleProjectResourceRoutes(
               absolutePath: path,
             })
           : await stack.pdfAnalyzer.analyzeFile(path);
-      const updated = await stack.sources.setAnalysis(projectId, sourceId, analysis);
+      const item = await stack.sources.getRequired(projectId, sourceId);
+      const updated = await stack.sources.setAnalysis(projectId, sourceId, analysis, {
+        ...(item.contentHash !== undefined ? { contentHash: item.contentHash } : {}),
+      });
       sendJson(res, 200, { source: updated });
+      return true;
+    }
+
+    const enrichMatch = /^\/([A-Z]\d{2,})\/enrich$/.exec(rest);
+    if (enrichMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const result = await stack.sourceImport.enrichMetadata(projectId, enrichMatch[1] ?? "");
+      sendJson(res, 200, result);
+      return true;
+    }
+
+    const linkMatch = /^\/([A-Z]\d{2,})\/link$/.exec(rest);
+    if (linkMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const targetSourceId = readStringField(body, "targetSourceId");
+      if (targetSourceId === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 targetSourceId");
+      }
+      const result = await stack.sourceImport.linkSources(
+        projectId,
+        linkMatch[1] ?? "",
+        targetSourceId,
+        {
+          ...(readVersionType(body) !== undefined ? { versionType: readVersionType(body) } : {}),
+          ...(readTargetVersionType(body) !== undefined
+            ? { targetVersionType: readTargetVersionType(body) }
+            : {}),
+        },
+      );
+      sendJson(res, 200, result);
       return true;
     }
     return false;
@@ -1910,16 +2075,56 @@ function readSourceRole(body: Record<string, unknown>): "evidence" | "reference"
   throw new BusinessError("INVALID_REQUEST", "sourceRole 只能是 evidence / reference / both");
 }
 
+/** 候选来源（M6.2 只有 manual；academic_search / web_search 由 M6.3 discovery 写入） */
+function readCandidateOrigin(
+  body: Record<string, unknown>,
+): "academic_search" | "web_search" | "manual" | undefined {
+  const value = body["origin"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === "academic_search" || value === "web_search" || value === "manual") {
+    return value;
+  }
+  throw new BusinessError("INVALID_REQUEST", "候选 origin 只能是 academic_search / web_search / manual");
+}
+
+const SOURCE_VERSION_TYPES = ["preprint", "conference", "journal", "other"] as const;
+
+function readVersionType(body: Record<string, unknown>): (typeof SOURCE_VERSION_TYPES)[number] | undefined {
+  return readVersionTypeField(body, "versionType");
+}
+
+function readTargetVersionType(body: Record<string, unknown>): (typeof SOURCE_VERSION_TYPES)[number] | undefined {
+  return readVersionTypeField(body, "targetVersionType");
+}
+
+function readVersionTypeField(
+  body: Record<string, unknown>,
+  field: "versionType" | "targetVersionType",
+): (typeof SOURCE_VERSION_TYPES)[number] | undefined {
+  const value = body[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value === "string" && (SOURCE_VERSION_TYPES as readonly string[]).includes(value)) {
+    return value as (typeof SOURCE_VERSION_TYPES)[number];
+  }
+  throw new BusinessError("INVALID_REQUEST", `${field} 只能是 ${SOURCE_VERSION_TYPES.join(" / ")}`);
+}
+
 function readSourceMetadata(body: Record<string, unknown>): {
   title?: string;
   authors?: string[];
   year?: number;
   doi?: string;
+  arxivId?: string;
   url?: string;
   venue?: string;
+  abstract?: string;
 } {
   const metadata: Record<string, unknown> = {};
-  for (const field of ["title", "doi", "url", "venue"] as const) {
+  for (const field of ["title", "doi", "arxivId", "url", "venue", "abstract"] as const) {
     const value = body[field];
     if (typeof value === "string" && value.trim() !== "") {
       metadata[field] = value;
