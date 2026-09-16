@@ -607,6 +607,18 @@ PiRuntimeAdapter
   key 及其上一修订位置随 gate 产物落盘，`revision.plan` 据此派发 `citation_removed` 恢复条目；
   Draft 路径（`build.draft`）明确暴露该失败，Final 被阻止。Prompt 不是 Gate：Writer 的
   「保留既有 \cite」指令之外，这是确定性的第二层。
+  **Fact Preservation**（M5.6 第二层，`quality/factPreservation.ts`）：同一快照事实源上保护
+  **实验事实**——表格单元格数值（label / caption / 行标签匹配）、正文数字+单位多重集（按文件）、
+  公式段（归一化空白，双向）、方向性结论（负结果→优势为 hard rule、持平→优势、同指标方向对调）、
+  数据集划分与硬件型号协议哨兵、占位回归（具体事实 →「待回填」）、无依据新增（百分比 / 单位 /
+  r=16 类超参赋值 / 量纲后缀 / 新公式 / 新表行）。授权只认结构化依据：计划点名旧值且（点名新值
+  或 Evidence 含新值）才放行变更；needsEvidence 条目只放行 prose 删除；新增数值必须出现在
+  Evidence 或计划文本。新增审查只作用于 previous 已存在文件（写作阶段的新章节豁免——创作不是
+  篡改）。失败 → `fact_preservation` FAIL；不可比较 → `fact_preservation_not_applicable` 中性。
+  `revision.plan` 派发 `fact_preserve` 恢复条目；**`build.draft` 在事实被篡改时拒绝冻结 Draft**
+  （`FACT_PRESERVATION_FAILED`）——与引用保持的「提示不拦截」不同：被改写的实验数据本身就是
+  不实结果。诚实边界：这是保守的必要条件守卫，方向哨兵只覆盖确定的反转模式，语义改写仍依赖
+  Reviewer 与人审。
 - **bounded revision loop**：Quality Gate 失败 → `revision.plan`（确定性派发，
   一等落盘 artifact）→ `revision.revise`（Writer 按计划逐节修订）→ 强制复审 →
   收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION）→ 不收敛 / 超限 HITL

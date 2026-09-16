@@ -201,7 +201,7 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > 解析 fixture PDF、SIGTERM 优雅停机（stopped cleanly，exit 0，无 zombie / unhandled）、
 > Linux 路径纯净。明细见 docs/M5_ACCEPTANCE.md §4.7。
 
-### M5.6 Real Paper Acceptance & Release（🟡 PARTIAL — awaiting human pairwise evaluation，2026-09-15）
+### M5.6 Real Paper Acceptance & Release（✅ COMPLETE 2026-09-16 — engineering goals achieved, Skill quality gain not consistently demonstrated）
 
 以 M5.0 建立的口径做真实中文论文 A/B 验收（M5 改动前后的产出质量、
 长程运行稳定性、部署可用性），诚实记录结论；版本发布与 Release Notes。
@@ -216,8 +216,22 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > **2026-09-15 收口**：Citation Preservation Gate（确定性，M5_ACCEPTANCE §6.6）、长论文执行超时
 > 分层（§6.7）、CI 首次全绿（§6.8）、fact verdict 近似值归一；修复后真实 A/B（A8 / B6）两臂 Draft、
 > 引用丢失 0、gate 产物 `citation_keys_preserved` 真实 PASS、Style Polish 真实触发并被 Invariant
-> Checker 挡下（§4.8）；盲评包已生成（§5）。**唯一未完成：人工 pairwise 评价须由真人填写**——
-> 因此 M5.6 保持 PARTIAL，**不打 tag，M5 不标 COMPLETE**（Release Notes 见 docs/RELEASE_NOTES_M5.md）。
+> Checker 挡下（§4.8）。
+>
+> **2026-09-16 第二次收口（M5.6.1 Revision Fact Preservation）**：pair-02 独立模型盲评暴露两臂
+> 修订都存在实验事实安全问题（数值改写 / 负结果反转 / 事实占位化 / 无依据新增——引用保持不足以
+> 保证真实论文安全）。新增确定性 **Fact Preservation Gate**（表格数值 / 正文数字 / 公式 / 方向结论 /
+> 数据集划分 / 硬件 / 占位回归 / 无依据新增；授权只认结构化计划 + Evidence；篡改稿拒绝冻结 Draft），
+> Writer 修订契约与三个学术 Skill 同步收紧（**不新增第四个 Skill**，M5 Skill 集固定为
+> academic-writing-zh / academic-review / academic-style-zh）；pair-02 离线回归确认盲评全部主要问题
+> 可被确定性规则命中；最终 A/B（双 Gate 生效，A12/B10，`9280255`）确认真实模型两臂的 fact mutation
+> 都被 Gate FAIL 拦截并以 `FACT_PRESERVATION_FAILED` 拒绝产出 Draft（§4.9）；两轮独立盲评均判
+> Skill 开启臂危害更小（2/2）但两臂都有事实违规，Reviewer academic 分数两轮互为翻转——
+> **Skill 质量增益方向性偏好、不足以宣称稳定提升**（如实记录）。**DoD 调整**：human pairwise →
+> **Independent Model Pairwise Evaluation**（独立外部模型盲评，human review optional；调整原因见
+> M5_ACCEPTANCE §5——不把模型盲评表述为人工评价）。**M5 判定：M5.0–M5.6 全部 COMPLETE**
+> （engineering goals achieved, Skill quality gain not consistently demonstrated）；不打 tag
+> （本语料无 Evidence、Final 无法达成，发布条件不满足）。
 
 ## 2. M5 明确不做（非目标）
 

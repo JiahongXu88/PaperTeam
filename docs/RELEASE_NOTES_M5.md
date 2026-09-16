@@ -52,13 +52,29 @@ Docker Engine 主机上完成 build / up / health / Web+API / 持久化（restar
 - **CI 平台无关性**：上传文件名反斜杠归一化、配置测试的绝对路径按平台取——GitHub Actions
   ubuntu 首次绿。
 
-### M5.6 Real Paper Acceptance（🟡 首轮完成，PARTIAL）
-- 真实 26 页中文工科论文 A/B（glm-5.3，两臂同模型同阈值）：两臂均 **Draft PASS / Final
-  blocked（Gate 如实 FAIL，阈值未动）**；Quick Review 零写入；材料不足提案不编造；
+### M5.6 Real Paper Acceptance（多轮真实执行，记录于 M5_ACCEPTANCE）
+- 真实 26 页中文工科论文 A/B（glm-5.3，两臂同模型同阈值）：首轮两臂均 Draft PASS / Final
+  blocked（Gate 如实 FAIL，阈值未动）；Quick Review 零写入；材料不足提案不编造；
   长程 runtime 有界可观测。
 - 验收驱动修复：Writer 曾删光重建稿全部引用（引用 key 事实源改为 references.bib）、
   默认 300s 执行超时对长论文过短（部署默认 900s）、Style Polish 在 Draft 路径也提供。
-- 未完成：人工 pairwise 评价、Docker E2E、修复后 A 臂重跑（provider 429）。
+- **Citation Preservation Gate**（`citation_keys_preserved`）：修订前后实际引用 key 的确定性
+  比较，无计划依据的丢失 → FAIL；修复后 A/B（A8/B6）两臂引用丢失 0。
+- **Fact Preservation Gate**（`fact_preservation`，pair-02 独立模型盲评驱动）：表格数值 /
+  正文数字 / 公式 / 方向性结论（负结果→优势为 hard rule）/ 数据集划分 / 硬件 / 占位回归 /
+  无依据新增的确定性保护；授权只认结构化计划 + Evidence；**被篡改的稿件拒绝冻结 Draft**
+  （`FACT_PRESERVATION_FAILED`）。真实模型最终 A/B 两臂的 fact mutation 均被 FAIL 拦截，
+  恢复轮由 `fact_preserve` 计划条目驱动（Writer 恢复不彻底时系统如实拒绝产出）。
+- Writer 修订契约与三个学术 Skill（academic-writing-zh / academic-review / academic-style-zh）
+  收紧：修订 ≠ 重写、既有实验事实默认冻结、疑似错误保留原值、负结果不得美化、稿件与 Evidence
+  冲突时报告不调和。**未新增第四个 Skill。**
+- Skill 质量增益：**未证明稳定提升，也未出现「开启臂更差」的证据**——两轮独立盲评（pair-02/03）
+  都判 Skill 开启臂的修订危害更小（2/2），但两臂在两轮中都存在事实违规（本轮全部被 Gate 拦截）；
+  三路 Reviewer 的 academic 分数两轮互为翻转（不可用作结论）。Skill 开启臂稳定更慢更贵
+  （$3.99 vs $1.69、86 vs 47 min）。如实记录：受控接入 / 观测 / 事实安全等工程目标达成，
+  质量收益为「方向性偏好、样本量不足以宣称」。
+- pairwise 评价口径：**Independent Model Pairwise Evaluation**（独立外部模型盲评；
+  human review optional，调整原因见 M5_ACCEPTANCE §5）。
 
 ## Compatibility
 - AgentRuntime 契约 v2 只新增可选字段（`AgentTask.skills`、`RuntimeSessionStats.usageTotals`、

@@ -1,11 +1,15 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-15（**M5.5 ✅ COMPLETE**：WSL2 + Docker Engine 主机上完成 build / up /
-> 持久化 / 容器内 XeLaTeX 与 PyMuPDF / SIGTERM 优雅停机的真实验收；**M5.6 🟡 PARTIAL —
-> awaiting human pairwise evaluation**：Citation Preservation Gate（确定性，Prompt 不是 Gate）、
-> 长论文执行超时分层、CI 首次全绿、修复后真实论文 A/B（A8 / B6 两臂均 Draft、引用丢失 0、
-> Style Polish 真实触发并被 Invariant Checker 挡下）与盲评材料包已完成，人工 pairwise 待真人填写，
-> 见 docs/M5_ACCEPTANCE.md；09-14 首轮验收：真实 26 页中文论文 A/B + Quick Review + 材料不足提案；
+> 更新日期：2026-09-16（**M5.6 事实安全收口**：pair-02 独立模型盲评暴露修订改写实验事实后，
+> 新增确定性 **Fact Preservation Gate**（表格数值 / 正文数字 / 公式 / 方向结论 / 数据集划分 /
+> 硬件 / 占位回归 / 无依据新增；授权只认计划 + Evidence；篡改稿拒绝冻结 Draft）+
+> Writer 修订契约与三个学术 Skill 收紧（不新增第四个 Skill）；真实模型最终 A/B 两臂
+> fact mutation 均被 Gate FAIL 拦截；pair-02 离线回归确认盲评全部主要问题可被确定性规则命中；
+> 09-15 **M5.5 ✅ COMPLETE**：WSL2 + Docker Engine 真实验收；**Citation Preservation Gate**
+> （确定性，Prompt 不是 Gate）、长论文执行超时分层、CI 首次全绿、修复后真实论文 A/B
+> （A8 / B6 两臂均 Draft、引用丢失 0、Style Polish 真实触发并被 Invariant Checker 挡下）；
+> pairwise 口径调整为 **Independent Model Pairwise Evaluation**（独立外部模型盲评，
+> human review optional）；09-14 首轮验收：真实 26 页中文论文 A/B + Quick Review + 材料不足提案；
 > 同日 **M5.4 Chinese Academic Style Revision Loop ✅
 > COMPLETE**：stylePolicy suggest_only / apply_once、Style Invariant Checker、
 > style-only HITL + 修订 + 强制复审、Quick Review 只读红线、M5 eval corpus；
@@ -24,13 +28,16 @@
 Version Experience + Public Repository Readiness 收口后，M4 全部完成。定位
 **MVP / Alpha**（非 Production Stable）。
 
-**M5 — Chinese Academic Quality & Long-Running Reliability（🚧 进行中，
-2026-09-11 启动）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
+**M5 — Chinese Academic Quality & Long-Running Reliability（✅ COMPLETE，2026-09-11 启动 →
+2026-09-16 收口）**：阶段定义与边界见 [M5_PLAN.md](M5_PLAN.md)——主线为
 中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
 接入（M5.3 ✅）、Style Revision Loop（M5.4 ✅）、单机 Linux / Docker 部署
 （M5.5 ✅ 2026-09-15 真实 Docker 验收）、真实论文 A/B 验收
-（M5.6 🟡 PARTIAL — awaiting human pairwise evaluation，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。
-**M5 整体：PARTIAL**（只差人工盲评；不伪造）。旧文档中「M5 = Visual Reviewer /
+（M5.6 ✅ 2026-09-16 — Fact Preservation 收口，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。
+**M5 整体：✅ COMPLETE（2026-09-16）— engineering goals achieved, Skill quality gain not
+consistently demonstrated**（两轮独立盲评均判 Skill 开启臂危害更小（2/2）但两臂都有事实违规且
+都被 Gate 拦截；Reviewer 分数两轮互为翻转；如实记录，不宣称 Skill 已被证明提高论文质量；
+不打 tag——本语料无 Evidence、Final 无法达成）。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
 

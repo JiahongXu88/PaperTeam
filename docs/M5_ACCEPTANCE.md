@@ -18,7 +18,7 @@
 | 模型 / provider | `zai-coding-cn/glm-5.3`（两臂完全相同；Key 经 Settings UI 保存的 auth.json，不在仓库） |
 | Runtime 配置 | 全部默认，除 `PAPERTEAM_PI_RUN_TIMEOUT_MS=900000`（见 §4 第一轮发现）；A 臂 `PAPERTEAM_DISABLED_SKILLS=academic-writing-zh,academic-review,academic-style-zh` |
 | Quality Gate 阈值 | 默认不变：academic ≥ 80、styleRisk ≤ 35、unsupported critical claims = 0、blocking = 0、critical+major = 0、hallucinated = 0（**未降低任何阈值**） |
-| Git SHA（验收代码） | A1/B1/A2/B2/QR/idea：`67efc6d`（+ 未提交的 usage 观测面）；A3/B3/A4：`67efc6d` + Writer 引用修复工作区（= `6edbe47`，pre-gate）；A5/B4：`846dd42`（含 Citation Gate + 超时分层）；A6/B5：`ac67230`；A7/B6：`ac67230`（最终，§4.8） |
+| Git SHA（验收代码） | A1/B1/A2/B2/QR/idea：`67efc6d`（+ 未提交的 usage 观测面）；A3/B3/A4：`67efc6d` + Writer 引用修复工作区（= `6edbe47`，pre-gate）；A5/B4：`846dd42`（含 Citation Gate + 超时分层）；A6/B5：`ac67230`；A7/B6：`ac67230`（§4.8）；A9/B7/A10/B8：`8552851`（含 Fact Gate，§4.9 中断轮）；**A12/B10：`9280255`（最终，§4.9）** |
 | 执行器 | `scripts/m5-acceptance.mjs`（启动独立 backend、导入 PDF、驱动 run、自动回答 HITL、采集指标） |
 
 ## 2. Corpus（本地输入，不入库）
@@ -245,10 +245,106 @@ Skill 质量结论；B 的数字新增更少（5 vs 40）、数学片段更多�
 | A6 / B5（`ac67230`，12:53 起） | 卡在 import.understand 78 min 后 `fetch failed` | 12:53:56 再次进入待机，14:11 开盖唤醒；在途 Researcher 调用以 EXECUTION_TIMEOUT（900 s，exec 4694 s 墙钟）收尾 |
 | A7（`ac67230`，14:13 起） | `failed` @ review.run（2/2 attempts） | fact Reviewer 输出 verdict `"CONTRADICTION"`（非枚举值），严格解析拒绝 → 判定 **C. 模型输出契约偏差**；修复 `fix(review): normalize near-miss fact verdict labels`（大小写 / 分隔符 / 同义别名归一，其余仍严格拒绝）后 A8 重跑成功 |
 
-## 5. Human evaluation（🟡 盲评材料已备，等待真人填写）
+### 4.9 第五轮（2026-09-15/16，含 Fact Preservation Gate）——最终 A/B（fact mutation 全程可判定）
 
-**未完成（需要真人）**。本轮生成了盲评包（生成器 `~/.paperteam-acceptance/pairwise/make-pairwise.mjs`，
-论文内容只在本机，不入库）：
+配置与 §4.8 完全一致（同一 26 页论文、`zai-coding-cn/glm-5.3`、同阈值、每臂独立 backend + 全新
+`--root`、keep-awake 守护）；唯一新增是 Citation + **Fact Preservation 双 Gate 生效**，以及 Writer
+修订契约 / 三个学术 Skill 收紧后的行为。运行编号 A9/B7（2026-09-15 夜，环境中断）与 A10/B8
+（2026-09-16 重跑）。
+
+**核心证据（来自真实模型、两臂、gate r2 产物，A9/B7 即已取得）**：
+
+| 指标 | A 臂（Skill 关）rev-1→rev-2 | B 臂（Skill 开）rev-1→rev-2 |
+|---|---|---|
+| `fact_preservation` | **FAIL** | **FAIL** |
+| `citation_keys_preserved` | PASS | PASS |
+| changedFacts | 30（上限截断） | 7 |
+| removedFacts | 2 | 30（上限截断） |
+| addedUnsupportedFacts | 21（含新增 7 行表） | 1 |
+| placeholderRegressions | 30（上限截断） | 30（上限截断） |
+| 授权变更 / 授权删除 | 7 / 131 | 4 / 108 |
+
+解读：真实 Writer 在两臂都**试图**改写既有实验事实（数值替换 / 删除 / 占位化 / 新增无依据表格），
+即使修订 prompt 已带事实冻结契约；确定性 Gate 在两臂都如实 FAIL 并派发 `fact_preserve` 恢复条目——
+「Writer 试图篡改事实 → Gate 必须 FAIL」成立。授权删除量级大（131/108）来自改进计划里覆盖各章节的
+needsEvidence 条目（「证据未归档」类审稿意见允许弱化 prose 论述）——这部分是计划授权的合法弱化，
+不是违规。
+
+**恢复轮行为（B7 rev-2→rev-3 离线分析，本地材料）**：恢复修订把无授权口径违规从
+（30 changed + 30 placeholder + 21 added）收敛到（14 changed + 18 placeholder + 23 added）；
+带真实计划口径下仍有 13 changed + 4 added 未消除——Writer 恢复不彻底（写了不同的值而不是逐字恢复
+原值）。因此修订循环不会在预算内转绿，overflow → accept_draft 后 `build.draft` 以
+`FACT_PRESERVATION_FAILED` 拒绝冻结 Draft：**系统拒绝把仍携带未授权事实改写的稿件产出为产物**，
+这是 §6.9 的设计行为；代价是该路径下 run 以 failed 终态收场，需要人工恢复原值或以 Evidence 支撑
+修正后重跑。
+
+**未完成运行（2026-09-15/16，如实记录；环境与外部依赖问题，非产品逻辑）**：
+
+| run | 结果 | 原因 |
+|---|---|---|
+| A9（`8552851`，09-15 18:19 起） | 19:18 进入恢复修订 rev-2 后，02:37 `fetch failed` 中断 | 主机整夜合盖 Modern Standby（keep-awake 的 `SetThreadExecutionState` 不能阻止合盖睡眠）；r2 gate 产物完整（fact FAIL 证据如上） |
+| B7（`8552851`，09-15 18:20 起） | 恢复修订 rev-3 完成、r3 review 进行中（02:37）被 90 分钟看门狗取消 | 同上；rev-3 快照完整（恢复轮分析数据来源） |
+| A10 / B8（`8552851`，09-16 14:46 起） | 分别在 r1 / r2 `review.run` 失败（2/2 attempts） | glm-5.3 当日行为漂移：Reviewer 输出**省略 summary 字段**被严格解析拒绝（A10 fact lens / B8 academic lens，两臂同错）。修复：summary 为展示性字段（不参与 Gate 判定），改为从 issues 计数确定性兜底，语义字段（verdict / scores / riskScore / issues）保持严格（`9280255`，同 A7 verdict 归一先例） |
+
+重跑（A12/B9→B10，2026-09-16 15:39 起，`9280255`，`--model-timeout-min 150`）结果：
+
+| 指标 | A12（Skill 关，suggest_only） | B10（Skill 开，apply_once） |
+|---|---|---|
+| 状态 / 终态 | **failed @ build.draft：`FACT_PRESERVATION_FAILED`** | **failed @ build.draft：`FACT_PRESERVATION_FAILED`** |
+| 时间 / 费用 / runs / turns | 47 min / **$1.69** / 21 / 46 | 86 min / **$3.99** / 25 / 90 |
+| Writer（runs / cost） | 10 / $0.97 | 14 / $2.83 |
+| Reviewer（runs / cost） | 9 / $0.61 | 9 / $1.04 |
+| 修订轮 | apply + 1 revise → overflow → accept_draft | apply + 1 revise → overflow → accept_draft → Style Polish（invariant 失败，未写回） |
+| r2 gate `fact_preservation` | **FAIL**（改 5 / 删 30·上限 / 新增 8；授权 137+169） | **FAIL**（改 15 / 删 30·上限 / 新增 11；授权 141+212） |
+| r3 gate `fact_preservation` | **FAIL**（改 4 / 删 1 / 新增 10；IMPROVED） | **FAIL**（改 10 / 删 9 / 新增 5；IMPROVED） |
+| `citation_keys_preserved`（r2/r3） | PASS / PASS | PASS / PASS |
+| 末轮审稿（critical/major/minor，academic，styleRisk，unsupported） | 1/8/16，57，35，11 | 1/5/15，**78**，25，17 |
+| Draft / Final 产物 | **无（被拦截）** | **无（被拦截）** |
+
+**判定（按 §22 验收标准）**：两臂 Writer 在真实模型下都尝试了无依据的事实改写，Fact Gate
+在两臂的全部轮次如实 FAIL，恢复轮（fact_preserve 条目驱动）方向正确（IMPROVED）但不足以
+清零，最终两臂都被 `build.draft` 的硬拦截阻止产出 Draft——**「Writer 试图篡改事实 → Gate 必须
+FAIL」成立，且系统拒绝把篡改稿冻结为产物**。Citation Preservation 在两臂全程 PASS（引用丢失 0）。
+不存在未检测的 fact mutation：所有变更都在 gate 产物中逐项落盘（changed/removed/added 明细）。
+
+**与 A8/B6（pre-fact-gate）的对照**：上一轮两臂均 Draft PASS（引用层安全），本轮两臂 Draft
+被拒（事实层拦截）——差异全部来自 Fact Gate 的引入与 Writer 行为（同模型同论文），说明
+A8/B6 的 Draft 产物在事实层是不安全的（pair-02 盲评已证实），而本轮系统如实拒绝放行。
+
+## 5. Independent Model Pairwise Evaluation（§5 DoD 调整说明 + 盲评记录）
+
+> **DoD 调整（如实说明）**：M5_PLAN 原 M5.6 完成条件包含「人工 pairwise 评价」。截至 2026-09-16，
+> 真人盲评未获得；已完成的 pairwise 评价由 **Claude Code + Fable 5.1（独立会话、盲态）** 执行——
+> 评价时未访问 `.blind/` 映射、run 日志、summary 或任何代码仓库材料，只读 baseline / 两候选稿
+> （PDF 提取文本）。因此文档口径改为 **Independent Model Pairwise Evaluation（独立外部模型盲评）**，
+> human review 保留为 optional 后续动作；本调整的原因是：等待真人评价会无限期阻塞 M5 收口，而
+> 事实安全类问题（数值改写 / 方向反转 / 占位化）是可逐项对照基线客观判定的，外部模型盲评已能
+> 提供可用信号。**任何文档不得把模型盲评表述为人工评价。**
+
+**pair-02 盲评结论（2026-09-15，JUDGE-CF51，驱动了 §6.9 Fact Preservation）**：两候选均不适合直接
+用于硕士论文；稿 1（解盲 = B6，**Skill 开臂**）以删除 / 占位化为主（危害可见、可回填），稿 2
+（解盲 = A8，**Skill 关臂**）出现对己方有利的数值改写与比较方向反转（隐性、更危险）。原始记录：
+`~/.paperteam-acceptance/pairwise-judge/evaluation-form.md`（本机）。该结论的 sanitized 摘要已并入
+§6.9 的驱动证据；逐项问题（表 12 数值改写、部署协议降级、负结果反转、无依据新增）由 §6.9 的
+确定性规则全部覆盖（pair-02 离线回归，§6.9 末段）。
+
+<!-- PAIR-03-EVAL -->
+
+**pair-03 盲评结论（2026-09-16，JUDGE-CF51，最终 A/B = A12 vs B10）**：两稿均不适合直接使用；
+**稿 2 更好**（事实改动少、可定位、方向对己不利易回退——表 4 本文行与表 9 一行被择一覆盖 +
+结论诚实化），稿 1 为全量删除型退化（表 4/5/7/8/9/10 与部署表全部数值 →「待补」、UA-DETRAC
+划分口径反转、负结果消失）。方法章两稿高度重合且质量相当。**解盲：稿 1 = A12（Skill 关臂），
+稿 2 = B10（Skill 开臂）**。与 pair-02 对照：两轮独立盲评**方向一致**——都判 Skill 开启臂的
+修订危害更小（pair-02：B6 删除型可回填 vs A8 数值改写；pair-03：B10 两行可定位覆盖 vs A12
+全量删除）。但两点必须同时记录：(a) **两臂在两轮中都存在事实违规**（本轮全部被 Gate FAIL 并
+阻止产出 Draft，上一轮无 Fact Gate 时全部漏过）；(b) 三路 Reviewer 的 academic 分数两轮互为
+翻转（pair-02 轮 A8=78>B6=43；本轮 B10=78>A12=57）→ 审稿分数不能作为 Skill 质量结论。
+综合口径：n=2 的盲评偏好（2/2 指向 Skill 开启臂危害更小）不足以宣称稳定质量提升，但
+「Skill 开启臂在事实安全上劣于关闭臂」的担忧**未获任何一轮支持**；Skill 开启臂稳定更慢更贵
+（$3.99/$2.83 Writer vs $1.69/$0.97；86 vs 47 min）。原始记录：
+`~/.paperteam-acceptance/pairwise/evaluation-form-03.md`（本机）。
+
+**盲评材料**（生成器 `~/.paperteam-acceptance/pairwise/make-pairwise.mjs`，论文内容只在本机，不入库）：
 
 - `~/.paperteam-acceptance/pairwise/pair-01-baseline.md`（两臂共同的修订前基线 rev-1，4 节、24 处引用）、
   `pair-01-1.md` / `pair-01-2.md`（两臂最终修订正文，**随机决定 1/2 顺序，文件内不标 A/B / Skill**）、
@@ -319,28 +415,113 @@ GitHub Actions ubuntu 自 M5.5 CI job 加入以来一直红，原因是两处 Wi
 config 测试把 `H:\\custom` / `D:/pt-root` 当绝对路径 → 按平台取。修复后 run `34928394022`（`ac67230`）
 **success**（5m37s，含 docker-build smoke job 首次真实跑通）。
 
+### 6.9 Fact Preservation Gate + Writer 修订契约收紧（2026-09-15，`fix(gate): preserve experimental facts across revisions` + `fix(skills)`）
+
+**驱动证据**：pair-02 独立模型盲评（§5）——两个候选稿都在 `citation_keys_preserved` PASS 的前提下
+出现事实安全问题：稿 1（解盲 = B6，Skill 开臂）把 7 张结果表全部数值删为「待回填」、删硬件配置与极端
+场景阈值、改写式(1) 与 UA-DETRAC 数据划分；稿 2（解盲 = A8，Skill 关臂）直接改写表 12 数值
+（IDS 45/47→28/19 等）、把「基本一致」反转为「本文保持优势」、部署协议（3×500 帧、18 分钟）降级为
+「单次窗口、约 15–20 分钟」、新增无基线依据的 λp=λiou=0.5 / r=16 / 71 维。结论：引用保持不足以
+保证真实论文安全，必须有实验事实保持层。
+
+**设计**（`backend/src/quality/factPreservation.ts`，确定性、无 LLM，与 Citation Preservation 同构：
+不可变修订快照为事实源，previous = 被审阅修订的前一修订）：
+
+- **受保护事实**：表格单元格数值（`\begin{table}` 内 tabular，按 `\label` > caption > 序号匹配表、
+  按数值列前标签串联匹配行，占位替换单元格用「| 边界前缀兼容 + 列数相同」兜底）；正文数字+单位
+  多重集（按文件；排除表格与数学环境，与 styleInvariants 共用 token 口径）；数学公式段多重集
+  （归一化空白，缺失与新增双向）；方向性结论（负结果→优势为 hard rule；持平→优势；同指标
+  「高于/低于」等方向词对调）；数据集划分（official↔custom）；硬件型号白名单（RDK X3 / RK / Jetson /
+  RTX / …）；占位回归（待回填/待补充/待验证/待确认/待归档/暂无数据/TBD/TODO 替换既有具体事实）；
+  无依据新增（百分比 / 带单位 / r=16 类超参赋值 / 71 维类量纲后缀 / 新增公式段 / 新增表行）。
+- **授权模型**（authorized fact change 只承认结构化依据，自由文本「优化实验描述」不构成授权）：
+  变更 = 计划条目文本同时点名旧值与新值，或点名旧值且 Evidence 文本含新值；删除 = needsEvidence
+  条目命中章节（只放行 prose，不授权表格 / 公式 / 方向）或计划点名值且明示删除 / 弱化；新增 = 数值
+  出现在 Evidence 或计划文本；公式 / 方向 = 计划文本明确提及。无法可靠判定 → FAIL（宁可 needs_review）。
+- **写作阶段豁免**：新增审查只作用于 previous 已存在的文件——idea 流的 rev-0 只含 main.tex 骨架，
+  writing.sections 产生的新章节文件不参与新增比对（创作不是篡改）；existing-paper 流 rev-0 即全文，
+  所有修订都在审查范围内。
+- **集成**：Quality Gate 新规则 `fact_preservation`（不可比较 → `fact_preservation_not_applicable`
+  中性，前端渲染为「不参与判定」）；`POST /quality-gate` 手动重评同口径；明细随 gate 产物落盘
+  （changedFacts / removedFacts / addedUnsupportedFacts / directionalChanges / formulaChanges /
+  placeholderRegressions，每 finding 含 file / section / before / after / reason，片段截断）；
+  `revision.plan` 派发 `fact_preserve` 恢复条目（section-scoped，指令「恢复原值，新值必须逐字来自
+  Evidence」）；**`build.draft` 在事实被无依据篡改时阻止 Draft 冻结**（`FACT_PRESERVATION_FAILED` +
+  `fact_preservation.blocked_draft` 事件）——与引用保持的「提示不拦截」不同：被改写的实验数据本身
+  就是不实结果，Draft 产物不能携带它。Quick Review 只读不经过 quality.gate，不受影响。
+- **Writer 契约**（`buildRevisePrompt`）：修订 ≠ 重写、实验事实默认冻结、疑似错误保留原值并报告、
+  具体事实不得降级为占位、负结果不得美化、不得新增无依据实验细节、稿件与 Evidence 冲突时报告不调和。
+- **Skill 收紧**（不新增第四个 Skill）：academic-writing-zh §6 新增 6 条修订硬约束 + §4 评价词
+  「数值必须逐字来自材料，否则删除」；academic-review 新增 §5 修订稿事实回归检查（critical blocking，
+  建议动作写「恢复原值」）；academic-style-zh §1 模糊归因改法收紧（style-only 场景不得引入数字）。
+- **测试**：`backend/test/quality/factPreservation.test.ts` 26 例（验收清单 1–15：表格 45→28 /
+  47→19 / Frag 102→51 / 35.9%→38.7% / 整表删除、500帧×3次→单次窗口、18min/621帧/309MB→15–20min、
+  →待回填、基本一致→保持优势、负结果→优势、公式项替换、official→custom split、硬件删除、r=16
+  无 Evidence、计划+Evidence 授权 45→44、模糊授权不通过、needsEvidence 只放行 prose、只改措辞 PASS、
+  新文件豁免、gate 三态）+ `backend/test/workflow/factPreservationGate.test.ts`（scripted
+  `[fact:mutate]`：gate FAIL、plan 派发、accept_draft → run failed FACT_PRESERVATION_FAILED、无
+  Draft/Final 产物；默认脚本照旧 Final + 手动重评同口径）。scripted Writer 修订输出镜像事实纪律
+  （保留数学环境与数字 token）；**顺带修复 scripted 修复件丢失公式**（此前被 styleInvariants 的
+  同侧空提取掩盖——环境内数学的提取在两侧同为空时不可见）。Backend 728 → 757 passed、
+  Frontend 172（GATE_RULES_NEUTRAL 新增 fact_preservation_not_applicable）。
+
+**pair-02 本地回归（本地材料，不入库）**：以 baseline=rev-1、candidate=两臂最终稿、plan=null（无授权）
+运行 analyzer：Candidate 1 → FAIL（placeholder_replacement ≥30（上限）、removed prose numbers ≥30、
+formula_added 27、metric_direction_flip 4、negative_to_advantage、parity_to_advantage、
+dataset_split_changed 1）；Candidate 2 → FAIL（changed ≥30、removed ≥30、placeholder ≥30、
+formula_added 27、metric_direction_flip 5、table_added 3）。盲评指出的主要问题全部有对应规则命中；
+「删除硬件配置」实为删除具体配置数值（硬件型号仍在），由 prose number removal 覆盖。报告：
+`~/.paperteam-acceptance/pair-02-fact-preservation-report.json`。
+
 ## 7. Known limitations
 
 - ~~Quality Gate 不检查「修订是否删除了原有引用」~~ → 09-15 已由 Citation Preservation Gate 覆盖（§6.6）。
+- ~~修订可以无依据改写 / 删除 / 占位化实验事实~~ → 09-16 已由 Fact Preservation Gate 覆盖（§6.9）。
+  该层的诚实边界：方向哨兵只覆盖确定的反转模式（负结果→优势、持平→优势、同指标方向对调），
+  检测不到的语义改写仍依赖 Reviewer 与人审；数字 token 口径存在噪声（字母数字混合 token 如
+  "023survey" 会进入配对），finding 定位用于人审指引而非逐字精确。
+- 真实 Writer 在两轮 fact-gate 运行中都未能把事实恢复到清零（恢复轮 IMPROVED 但仍有残留）——
+  修订循环在事实维度不收敛时的终态是「拒绝产出 Draft + run failed」，需要人工恢复原值或以
+  Evidence 支撑修正后重跑。这是安全优先的正确行为，但意味着全自动闭环在无 Evidence 的
+  既有论文场景下无法产出产物（本轮语料 evidence/ 为空）。
+- needsEvidence 条目授权的 prose 删除量级大（A12/B10 r2 分别 169 与 212 项）——「证据不足允许弱化」
+  与「删除具体实验事实」之间的边界在章节级授权下偏宽，属于确定性代理的已知保守取舍。
+- 占位词表（待回填 / 待补充 / TBD 等）不含「待补」（本轮 A12 实际使用的写法）——
+  「待补」由 prose 数值删除规则覆盖（removedFacts），但 placeholderRegressions 维度对它不敏感。
 - 需要多个 Writer 调用共同删光引用才会触发 catastrophic；单章节内随「证据不足」论述一起删掉的引用被视为
   有计划删除（章节级依据），这是确定性代理而非语义证明——人工 pairwise 仍要看「引用是否被不合理删除」。
 - 硬指标里的「新增数字」只能判「基线不存在」，不能判「编造」——需人工核对。
-- Style Polish 真实模型证据依赖 B3（运行中）；B2 因当时的 Gate-PASS 限制未触发。
+- ~~Style Polish 真实模型证据依赖 B3~~ → B6 / B10 两次真实触发并被 Invariant Checker 挡下（§4.8/§4.9）。
 - 外部学术库（Crossref/OpenAlex）在并发下 PROVIDER_ERROR，引用真实性核验有 9/25 未决。
 - ~~Windows 下无法验证 SIGTERM 优雅停机~~ → 09-15 在 Docker 内验证（§4.7）；Windows 本地 dev 仍是强制终止。
-- 开发机 Modern Standby「Idle Timeout」会冻结所有本地 backend（09-14 B3/A4、09-15 A5/B4/A6/B5 四组运行
-  都因此中断，在途模型调用在唤醒后以 EXECUTION_TIMEOUT 收尾）；最终 A/B 用 `SetThreadExecutionState`
-  keep-awake 守护后才跑完。这是宿主机电源策略，不是产品缺陷，但长程运行在笔记本上必须防休眠。
+- 开发机 Modern Standby「Idle Timeout」会冻结所有本地 backend（09-14 B3/A4、09-15 A5/B4/A6/B5、
+  09-15/16 夜 A9/B7 共六组运行中断）；keep-awake（`SetThreadExecutionState`）**不能阻止合盖睡眠**——
+  长程验收必须在合盖可控的时间窗内执行。这是宿主机电源策略，不是产品缺陷。
+- glm-5.3 的模型输出契约会漂移（09-15 verdict "CONTRADICTION"、09-16 省略 reviewer summary、
+  import.understand 输出非 JSON）——展示性字段已做确定性兜底，语义字段保持严格；外部 provider
+  的行为漂移是长程验收的持续性风险。
 
-## 8. Final verdict
+## 8. Final verdict（2026-09-16 更新）
 
-- 场景 A（完整论文全链路）：**Draft PASS / Final blocked（Gate 如实 FAIL）**，两臂一致，阈值未动。
+- 场景 A（完整论文全链路）：首轮 Draft PASS / Final blocked（Gate 如实 FAIL，阈值未动）；
+  **fact-gate 轮（§4.9）：两臂 run 以 `FACT_PRESERVATION_FAILED` 终止——Writer 的事实改写被
+  Gate 全程拦截，系统拒绝把篡改稿冻结为 Draft（这是设计行为，不是失败）**。
 - 场景 B（材料不足）：**PASS**（明确缺失、不编造）。
 - 场景 C（Quick Review 只读）：**PASS**（零修订、零写入）。
-- 场景 D（Style Polish）：**未在真实模型上触发**（B2 设计限制；B3 待定）。
+- 场景 D（Style Polish）：**PASS**（B6 / B10 两次真实触发；Invariant Checker 分别挡下 sec2/sec3
+  与 sec2/sec4 的违规，原稿保留——M5.4 设计的守卫在真实模型上两次有效）。
 - 场景 E（长程 Runtime）：**PASS**（有界、可观测、结构化终态）。
 - 场景 F（Docker）：**PASS**（09-15 真实验收，§4.7；M5.5 COMPLETE）。
-- 场景 G（Citation Preservation Gate，09-15）：**PASS**——确定性测试矩阵 + 真实模型 A5/A7/B6 的 gate 产物
-  `citation_keys_preserved` 真实参与判定（§4.8）；Writer 删光引用的回归在 scripted 与真实运行中都被阻止 / 未再出现。
-- **M5：M5.3 / M5.4 / M5.5 COMPLETE；M5.6 PARTIAL — awaiting human pairwise evaluation**（盲评包已生成，
-  §5）。不打 tag。
+- 场景 G（Citation Preservation Gate，09-15）：**PASS**——确定性测试矩阵 + 真实模型运行验证
+  （§4.8 / §4.9 两轮引用丢失 0）。
+- 场景 H（Fact Preservation Gate，09-16）：**PASS**——26 例确定性测试矩阵 + pair-02 离线回归
+  （两候选的全部主要盲评问题被规则命中）+ 真实模型最终 A/B 两臂事实改写全部被 FAIL 并阻止产出
+  （§4.9）；Quick Review 不受影响（只读、无 gate 路径）；恢复闭环（fact_preserve 条目 → IMPROVED）
+  真实运转。
+- 独立模型盲评（§5）：pair-02 与 pair-03 两轮完成；两轮均判 Skill 开启臂危害更小（2/2），
+  Reviewer academic 分数两轮互为翻转（不可用作结论）。
+- **M5 判定：M5.0–M5.5 COMPLETE；M5.6 COMPLETE — engineering goals achieved, Skill quality
+  gain not consistently demonstrated**（两臂事实安全均有违规且都被拦截；Skill 质量收益为
+  「方向性盲评偏好、样本量不足以宣称稳定提升」，如实记录，不宣称 Skill 已被证明提高论文质量；
+  human pairwise 保留为 optional——DoD 调整原因见 §5）。**不打 tag**：Final 产物在本语料上
+  无法达成（无 Evidence 支撑的既有论文），发布版本条件不满足（见 RELEASE_NOTES）。

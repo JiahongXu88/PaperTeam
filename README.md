@@ -128,12 +128,14 @@ Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
 assigned / accessed 观测、受控 install / update + Skills 设置页）与 M5.4 中文
 学术风格修订回路（stylePolicy suggest_only / apply_once、Style Invariant
 Checker、style-only HITL 修订 + 强制复审、Quick Review 只读红线、M5 eval
-corpus）已完成；M5.5 单机 Linux / Docker 部署的 Dockerfile / compose / nginx / CI /
-`/ready` / 优雅停机已实现并有测试，但**真实 Docker 验收待执行**（开发机无 Docker，
-状态 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE，见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；
-M5.6 首轮真实论文 A/B 验收已完成并如实记录（两臂均 Draft PASS / Final blocked，
-Gate 阈值未动；人工评价与 Docker E2E 未完成，见 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）。
-**M5 整体状态：PARTIAL，未打 tag。**真实模型 / 真实 MiKTeX 的端到端验证记录见
+corpus）已完成；M5.5 单机 Linux / Docker 部署已于 2026-09-15 完成**真实 Docker 验收**（WSL2 + Docker Engine，
+build / 持久化 / 容器内 XeLaTeX 中文 PDF / PyMuPDF / SIGTERM 优雅停机，见
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；M5.6 真实论文 A/B 验收多轮执行并如实记录：
+**Citation Preservation**（修订不得无依据丢失引用）与 **Fact Preservation**（修订不得无依据
+改写 / 删除 / 占位化实验事实，篡改稿拒绝冻结 Draft）双层确定性 Gate 已上线并被真实模型运行验证
+（两臂 fact mutation 均被 FAIL 拦截）；Skill 质量增益未获稳定证据（如实记录，见
+[docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）。**M5 整体状态见
+[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。**真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 
