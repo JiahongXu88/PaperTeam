@@ -21,7 +21,6 @@ import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import {
   extractJsonObject,
   readRequiredEnum,
-  readRequiredString,
 } from "./outputParsing.js";
 
 export type ReviewMode = "fact" | "academic" | "style";
@@ -224,6 +223,28 @@ function readFactVerdict(record: Record<string, unknown>, context: string): Fact
   return readRequiredEnum(record, "verdict", VERDICTS, context); // 抛出统一的结构化错误
 }
 
+/**
+ * summary 是展示性自由文本（不参与任何 Gate 判定）。真实运行（2026-09-16 A10/B8，
+ * glm-5.3 两臂、不同 lens）出现模型省略 summary 导致整轮 review 失败——与 A7 的
+ * verdict 近似值同类的「模型输出契约漂移」。处置同先例：展示性字段做确定性兜底
+ * （从 issues 计数派生），语义字段（verdict / scores / riskScore / issues）保持严格。
+ */
+function readSummaryOrFallback(parsed: Record<string, unknown>, issues: ReviewIssue[]): string {
+  const value = parsed["summary"];
+  if (typeof value === "string" && value.trim() !== "") {
+    return value.trim();
+  }
+  const counts = issues.reduce(
+    (acc, issue) => {
+      acc[issue.severity] = (acc[issue.severity] ?? 0) + 1;
+      return acc;
+    },
+    {} as Record<string, number>,
+  );
+  const parts = ["critical", "major", "minor"].map((severity) => `${counts[severity] ?? 0} ${severity}`);
+  return `（模型未提供总体评价；确定性兜底）审阅完成：${issues.length} 项 finding（${parts.join(" / ")}）`;
+}
+
 /** 解析并校验单个 mode 的结构化输出 */
 export function parseModeReview(
   mode: ReviewMode,
@@ -235,7 +256,7 @@ export function parseModeReview(
     mode,
     taskId: "",
     issues,
-    summary: readRequiredString(parsed, "summary", context),
+    summary: readSummaryOrFallback(parsed, issues),
   };
   if (mode === "fact") {
     const claims = parseClaims(parsed, context);

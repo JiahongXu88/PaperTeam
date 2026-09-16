@@ -43,3 +43,41 @@ describe("fact verdict 近似值归一", () => {
     expect(result.claims?.filter((c) => c.verdict === "CONTRADICTED")).toHaveLength(1);
   });
 });
+
+/**
+ * 2026-09-16 真实回归（A10/B8 两臂、fact 与 academic 两个 lens）：模型省略
+ * summary 字段 → readRequiredString 拒绝 → review.run 整条失败。summary 是
+ * 展示性自由文本（不参与 Gate 判定），改为确定性兜底；语义字段仍严格。
+ */
+describe("reviewer summary 缺省兜底", () => {
+  it("summary 缺省 / 空串 → 从 issues 计数派生（不抛错）", () => {
+    const academic: Record<string, unknown> = {
+      issues: [
+        { category: "academic", severity: "critical", section: "sections/sec01.tex", description: "x" },
+        { category: "academic", severity: "major", section: "sections/sec02.tex", description: "y" },
+      ],
+      scores: { rigor: 80, clarity: 75 },
+    };
+    for (const summaryValue of [undefined, "", "   "]) {
+      const parsed = { ...academic, ...(summaryValue === undefined ? {} : { summary: summaryValue }) };
+      const result = parseModeReview("academic", parsed);
+      expect(result.summary).toContain("确定性兜底");
+      expect(result.summary).toContain("1 critical");
+      expect(result.summary).toContain("1 major");
+    }
+  });
+
+  it("summary 为合法非空字符串 → 原样保留（不兜底）", () => {
+    const result = parseModeReview("academic", {
+      summary: "结构完整，论述清晰。",
+      issues: [],
+      scores: { rigor: 90 },
+    });
+    expect(result.summary).toBe("结构完整，论述清晰。");
+  });
+
+  it("语义字段缺失仍严格拒绝（scores / riskScore 不兜底）", () => {
+    expect(() => parseModeReview("academic", { summary: "x", issues: [] })).toThrow(AgentRunFailedError);
+    expect(() => parseModeReview("style", { summary: "x", issues: [], riskScore: 120 })).toThrow(AgentRunFailedError);
+  });
+});
