@@ -211,7 +211,8 @@ export type WorkflowDomainEventType =
   | "fact_preservation.blocked_draft"
   | "final.created"
   | "style_polish.applied"
-  | "style_polish.skipped";
+  | "style_polish.skipped"
+  | "external_instructions.updated";
 
 export interface WorkflowDomainEvent {
   seq: number;

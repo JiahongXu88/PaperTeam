@@ -52,6 +52,11 @@ import {
   type CitationSemanticMode,
 } from "./citation/semanticMode.js";
 import { DEFAULT_STYLE_POLICY, STYLE_POLICIES, isStylePolicy, type StylePolicy } from "./review/stylePolicy.js";
+import {
+  EXTERNAL_INSTRUCTION_SOURCES,
+  EXTERNAL_TEXT_MAX_CHARS,
+  type ExternalInstructionSource,
+} from "./review/externalInstructions.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -602,8 +607,10 @@ async function handleRequest(
 
 /**
  * /api/settings/model 路由组：
- *   GET    /api/settings/model                 状态（不含任何 key）
- *   PUT    /api/settings/model                 保存 {model, apiKey?}（apiKey 省略 = 保持原 Key）
+ *   GET    /api/settings/model                 状态（含 per-Agent 视图；不含任何 key）
+ *   PUT    /api/settings/model                 保存 {model, apiKey?, agents?}
+ *                                            （apiKey 省略 = 保持原 Key；agents 省略 =
+ *             保持现有 override，存在时整体替换，键值 null = 继承默认）
  *   DELETE /api/settings/model/key             清除本地保存的 API Key
  *   GET    /api/settings/model/options         provider 列表（?provider= 查该 provider 模型）
  *   POST   /api/settings/model/test            Test Connection {model, apiKey?}
@@ -612,7 +619,8 @@ async function handleRequest(
  *   DELETE /api/settings/model/custom-providers/:id      删除（连同其本地凭据与指向它的模型偏好）
  *
  * 安全约束：所有响应不携带 key 本体；apiKey 只经 PUT/test 请求体进入，
- * 不落任何日志（请求体从不打印）。
+ * 不落任何日志（请求体从不打印）。agents 配置本身不含任何 key——
+ * per-Agent 只保存 provider/model 规格，credential 按 provider 复用。
  */
 async function handleModelSettingsRoutes(
   req: IncomingMessage,
@@ -639,9 +647,29 @@ async function handleModelSettingsRoutes(
       if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
         throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
       }
+      // agents（M5.7 per-Agent override，可选；字段缺省 = 保持现有 override，
+      // 存在时整体替换）：值为 "provider/model-id" 或 null（继承默认）；
+      // 未知键 / 非 null 字符串 → 400
+      const agentsField = body["agents"];
+      if (agentsField !== undefined) {
+        if (typeof agentsField !== "object" || agentsField === null || Array.isArray(agentsField)) {
+          throw new BusinessError("INVALID_REQUEST", "字段 agents 必须是对象（Agent 键 → 模型规格或 null）");
+        }
+        for (const [key, value] of Object.entries(agentsField as Record<string, unknown>)) {
+          if (value !== null && typeof value !== "string") {
+            throw new BusinessError(
+              "INVALID_REQUEST",
+              `agents.${key} 必须是 "provider/model-id" 字符串或 null（继承默认）`,
+            );
+          }
+        }
+      }
       const settings = await service.saveModel({
         model,
         ...(typeof apiKeyField === "string" ? { apiKey: apiKeyField } : {}),
+        ...(agentsField !== undefined
+          ? { agents: agentsField as Record<string, string | null> }
+          : {}),
       });
       sendJson(res, 200, { settings });
       return true;
@@ -1402,6 +1430,84 @@ async function handleProjectResourceRoutes(
     const plan = round !== null ? await stack.reviewArtifacts.loadPlan(projectId, round) : null;
     sendJson(res, 200, { round, plan });
     return true;
+  }
+
+  // external-instructions（M5.7）：外部修改意见（期刊专家 / 编辑 / 导师 / 用户）
+  //   GET    /api/projects/:id/external-instructions            → { instructions, sectionOptions }
+  //   POST   /api/projects/:id/external-instructions            → { instruction, instructions }
+  //   DELETE /api/projects/:id/external-instructions/:id        → { instructions }
+  // 只读写 reviews/external-instructions.json（意见原文逐字保存 + 确定性处理状态）；
+  // 不改稿件、不触发 run、不携带任何凭据。Quick Review 的只读红线不受影响。
+  if (resource === "external-instructions") {
+    const instructions = await stack.externalInstructions.load(projectId);
+    if (rest === "") {
+      if (method === "GET") {
+        sendJson(res, 200, {
+          instructions,
+          sectionOptions: await externalInstructionSectionOptions(stack, projectId),
+        });
+        return true;
+      }
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        const source = body["source"];
+        if (
+          typeof source !== "string" ||
+          !(EXTERNAL_INSTRUCTION_SOURCES as readonly string[]).includes(source)
+        ) {
+          throw new BusinessError(
+            "INVALID_REQUEST",
+            `字段 source 必须是以下之一：${EXTERNAL_INSTRUCTION_SOURCES.join(", ")}`,
+          );
+        }
+        const text = typeof body["text"] === "string" ? body["text"].trim() : "";
+        if (text === "") {
+          throw new BusinessError("INVALID_REQUEST", "字段 text 必须是非空字符串（外部意见原文）");
+        }
+        if (text.length > EXTERNAL_TEXT_MAX_CHARS) {
+          throw new BusinessError(
+            "INVALID_REQUEST",
+            `意见原文过长（${text.length} 字符 > 上限 ${EXTERNAL_TEXT_MAX_CHARS}）：请拆分为多条`,
+          );
+        }
+        const reviewerLabel =
+          typeof body["reviewerLabel"] === "string" && body["reviewerLabel"].trim() !== ""
+            ? body["reviewerLabel"].trim().slice(0, 100)
+            : undefined;
+        const section =
+          typeof body["section"] === "string" && body["section"].trim() !== ""
+            ? body["section"].trim().slice(0, 300)
+            : undefined;
+        const instruction = await stack.externalInstructions.add(projectId, {
+          source: source as ExternalInstructionSource,
+          text,
+          ...(reviewerLabel !== undefined ? { reviewerLabel } : {}),
+          ...(section !== undefined ? { section } : {}),
+        });
+        if (instruction === null) {
+          throw new BusinessError("INVALID_REQUEST", "该意见已存在（相同来源 / 标识 / 原文的幂等指纹）");
+        }
+        sendJson(res, 200, {
+          instruction,
+          instructions: await stack.externalInstructions.load(projectId),
+        });
+        return true;
+      }
+      res.setHeader("Allow", "GET, POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+    const idMatch = /^\/([^/]+)$/.exec(rest);
+    if (idMatch !== null && method === "DELETE") {
+      const instructionId = decodeURIComponent(idMatch[1] ?? "");
+      const next = await stack.externalInstructions.remove(projectId, instructionId);
+      if (next === null) {
+        throw new NotFoundError("外部意见", instructionId);
+      }
+      sendJson(res, 200, { instructions: next });
+      return true;
+    }
+    return false;
   }
 
   // build：Build Gate（质量语义不影响构建；D-0015）+ Draft 冻结 + 记录 / 日志
@@ -2167,6 +2273,23 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(body));
+}
+
+/** 外部意见的「涉及章节」候选（M5.7：大纲优先；无大纲时 manuscript 内非 main 的 tex） */
+async function externalInstructionSectionOptions(
+  stack: ServiceStack,
+  projectId: string,
+): Promise<string[]> {
+  const outline = await stack.manuscript.loadOutline(projectId);
+  if (outline !== null && outline.sections.length > 0) {
+    return outline.sections.map((section) => `sections/${section.file}`);
+  }
+  try {
+    const files = await collectLatexFiles(stack.projects.manuscriptDir(projectId));
+    return files.sections.map((file) => file.relativePath);
+  } catch {
+    return [];
+  }
 }
 
 function sendMethodNotAllowed(res: ServerResponse, allowed: string, method: string): void {

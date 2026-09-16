@@ -21,8 +21,10 @@ import { createHash } from "node:crypto";
 
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
+import { EXTERNAL_SOURCE_LABELS, type ExternalInstruction } from "./externalInstructions.js";
 
 export type RevisionPlanItemKind =
+  | "external_instruction"
   | "review_finding"
   | "citation_missing"
   | "citation_removed"
@@ -39,11 +41,18 @@ export type RevisionPlanItemStatus = "planned" | "skipped";
  */
 export type RevisionReason = "quality" | "style_polish";
 
+/**
+ * 条目优先级。mandatory（M5.7）只用于外部 / 用户修改意见：最高**业务**
+ * 修改优先级（排序与派发都先于内部审稿意见），但不提升任何安全 Gate
+ * 的授权——Fact / Citation Preservation 与 Style Invariant 的判定口径不变。
+ */
+export type RevisionPlanItemPriority = "mandatory" | "high" | "medium" | "low";
+
 export interface RevisionPlanItem {
-  /** 稳定 id（finding 指纹 / citation-missing:{key} / citation-removed:{key} / build-error / gate:{rule}） */
+  /** 稳定 id（finding 指纹 / external:{instructionId} / citation-missing:{key} / citation-removed:{key} / build-error / gate:{rule}） */
   id: string;
   kind: RevisionPlanItemKind;
-  priority: "high" | "medium" | "low";
+  priority: RevisionPlanItemPriority;
   /** 匹配修订目标的章节引用（路径 / id / 文件名；(global) 表示无章节归属） */
   section: string;
   problem: string;
@@ -56,6 +65,14 @@ export interface RevisionPlanItem {
   note?: string;
   /** 派发理由（缺省 quality；style_polish 条目只允许 style-only 修改） */
   revisionReason?: RevisionReason;
+  /** 条目来源（M5.7；缺省 = PaperTeam 内部审稿 / 确定性规则） */
+  source?: "external" | "internal";
+  /** 外部意见的来源标识（如 "Reviewer 2"；source=external 时携带） */
+  reviewerLabel?: string;
+  /** 外部意见原文（逐字保存；模型改写只发生在 instruction 派发文案） */
+  sourceText?: string;
+  /** 外部意见 id（跨轮跟踪，见 review/externalInstructions.ts） */
+  instructionId?: string;
 }
 
 export interface RevisionPlan {
@@ -79,6 +96,8 @@ export interface RevisionPlan {
     minorRecorded: number;
     planned: number;
     skipped: number;
+    /** 外部修改意见条数（M5.7；无外部意见的计划缺省） */
+    external?: number;
   };
   items: RevisionPlanItem[];
 }
@@ -110,12 +129,50 @@ export interface BuildRevisionPlanInput {
   buildError?: { message: string; file?: string };
   /** gate 阻止项（ruleId + detail；无章节归属的记录为 gate_blocker） */
   gateBlockers?: { rule: string; detail: string }[];
+  /**
+   * 外部修改意见（M5.7）：pending / partially_handled / unresolved → mandatory 派发；
+   * conflict → 保留条目但 skipped（不自动改事实）；handled → skipped（留档）。
+   */
+  externalInstructions?: ExternalInstruction[];
   createdAt?: string;
 }
 
 /** 确定性派生修订计划（纯函数：同输入同输出，可测试） */
 export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
   const items: RevisionPlanItem[] = [];
+
+  // M5.7 外部修改意见：最高业务优先级（mandatory），先于内部审稿意见入列
+  for (const instruction of input.externalInstructions ?? []) {
+    const label = instructionLabel(instruction);
+    const firstLine = firstTextLine(instruction.text);
+    items.push({
+      id: `external:${instruction.instructionId}`,
+      kind: "external_instruction",
+      priority: "mandatory",
+      section: instruction.section ?? "(global)",
+      problem: `外部修改意见${label}：${firstLine}`,
+      instruction: externalDispatchText(instruction),
+      expectedOutcome:
+        "该意见在事实 / 引用 / 证据约束内落实；与实验事实冲突时如实报告 CONFLICT，不篡改数据",
+      status:
+        instruction.status === "handled" || instruction.status === "conflict" ? "skipped" : "planned",
+      source: "external",
+      ...(instruction.reviewerLabel !== undefined ? { reviewerLabel: instruction.reviewerLabel } : {}),
+      sourceText: instruction.text,
+      instructionId: instruction.instructionId,
+      ...(instruction.status === "handled"
+        ? { note: "该意见已处理（执行证据见指令状态）" }
+        : {}),
+      ...(instruction.status === "conflict"
+        ? {
+            note: `与稿件实验事实 / Evidence 冲突，不自动执行：${instruction.conflictBasis ?? instruction.statusNote ?? "见外部意见列表"}`,
+          }
+        : {}),
+      ...(instruction.status === "unresolved"
+        ? { note: "上一轮派发未落实，本轮重新派发" }
+        : {}),
+    });
+  }
 
   for (const issue of input.summary.issues) {
     const blocking = issue.blocking;
@@ -204,11 +261,17 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     });
   }
 
-  // 确定性排序：priority（high → medium → low）→ id（稳定 tie-break）
-  const priorityRank = { high: 0, medium: 1, low: 2 } as const;
+  // 确定性排序：priority（mandatory → high → medium → low）→ id（稳定 tie-break）
+  const priorityRank: Record<RevisionPlanItemPriority, number> = {
+    mandatory: 0,
+    high: 1,
+    medium: 2,
+    low: 3,
+  };
   items.sort((a, b) => priorityRank[a.priority] - priorityRank[b.priority] || a.id.localeCompare(b.id));
 
   const planned = items.filter((item) => item.status === "planned").length;
+  const externalCount = (input.externalInstructions ?? []).length;
   return {
     schemaVersion: 1,
     planId: `plan-r${input.reviewRound}-rev${input.sourceRevision}`,
@@ -223,9 +286,39 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       minorRecorded: input.summary.counts.minor,
       planned,
       skipped: items.length - planned,
+      ...(externalCount > 0 ? { external: externalCount } : {}),
     },
     items,
   };
+}
+
+/** 外部意见的展示标签（来源 + Reviewer 标识） */
+function instructionLabel(instruction: ExternalInstruction): string {
+  const source = EXTERNAL_SOURCE_LABELS[instruction.source];
+  return `（${source}${instruction.reviewerLabel !== undefined ? ` · ${instruction.reviewerLabel}` : ""}）`;
+}
+
+/** 意见原文的第一个非空行（problem 展示用；全文在 sourceText） */
+function firstTextLine(text: string): string {
+  const line = text
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry !== "");
+  return (line ?? text).slice(0, 200);
+}
+
+/** 派发给 Writer 的指令文案：保留意见全文（可多行），附执行约束 */
+function externalDispatchText(instruction: ExternalInstruction): string {
+  const target =
+    instruction.section !== undefined
+      ? `（指定章节：${instruction.section}）`
+      : "（未指定章节：只在与本节内容直接相关时在本节落实，其余章节保持原样）";
+  return [
+    `${instructionLabel(instruction)} ${target}`,
+    "意见原文（最高业务优先级，必须优先尝试执行）：",
+    instruction.text,
+    "执行约束：不得突破实验事实 / 引用 / 证据约束——与稿件数字或结论冲突时保留事实并如实报告 CONFLICT（引用具体数值作依据），不得伪造、篡改或美化。",
+  ].join("\n");
 }
 
 function findingItem(

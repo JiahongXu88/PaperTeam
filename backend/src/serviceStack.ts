@@ -31,6 +31,7 @@ import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
 import { ReviewArtifactStore } from "./review/reviewArtifacts.js";
+import { ExternalInstructionStore } from "./review/externalInstructions.js";
 import type { ScholarlyResolverOptions } from "./citation/scholarly.js";
 import type { WorkflowServices } from "./workflow/definitions.js";
 
@@ -105,6 +106,8 @@ export interface ServiceStack {
   /** 已有论文 PDF 导入（File First：一次调用建项目 + 解析 + 定标题） */
   projectImport: ProjectImportService;
   reviewArtifacts: ReviewArtifactStore;
+  /** 外部修改意见存储（M5.7） */
+  externalInstructions: ExternalInstructionStore;
   /** manuscript 修订提交（M4.7） */
   revisions: ManuscriptRevisionStore;
   /** Draft / Final 产物存储（M4.7） */
@@ -237,6 +240,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const reviewArtifacts = new ReviewArtifactStore(options.projects);
+  const externalInstructions = new ExternalInstructionStore(options.projects);
   const revisions = new ManuscriptRevisionStore({ projects: options.projects });
   const artifacts = new PaperArtifactStore({ projects: options.projects });
   const finalize = new FinalizeService({
@@ -274,6 +278,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     reviewContext,
     projectImport,
     reviewArtifacts,
+    externalInstructions,
     revisions,
     artifacts,
     finalize,
@@ -298,6 +303,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         sectionReview,
       },
       reviewArtifacts,
+      externalInstructions,
       revisions,
       artifacts,
       finalize,

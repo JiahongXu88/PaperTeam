@@ -5,6 +5,8 @@ import { Icon, type IconName } from "../common/Icon.js";
 import { Loading } from "../common/StateViews.js";
 import { RunStatusBadge } from "./Badges.js";
 import { QualityGateSummaryLink } from "./QualityGatePanel.js";
+import { ExternalInstructionsPanel } from "./ExternalInstructionsPanel.js";
+import { RevisionPlanPanel } from "./RevisionPlanPanel.js";
 import {
   CITATION_SEMANTIC_MODE_LABELS,
   CITATION_SEMANTIC_MODE_OPTIONS,
@@ -287,6 +289,13 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
         <p className="form-error" role="alert">
           导出失败：{formatApiError(exportReport.error)}
         </p>
+      ) : null}
+
+      {workflowKind === "existing_paper_improvement" ? (
+        <>
+          <ExternalInstructionsPanel projectId={projectId} />
+          <RevisionPlanPanel projectId={projectId} />
+        </>
       ) : null}
 
       {hasReport && report.data !== null && report.data !== undefined ? (

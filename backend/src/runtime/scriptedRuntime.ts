@@ -196,6 +196,41 @@ export const REVISED_ABSTRACT_TEXT =
   "修订后的摘要：本文在已核验证据的基础上提出改进方法，并通过可复现实验验证其有效性，结论表述与证据强度一致。";
 
 /**
+ * M5.7 脚本化 Writer 的外部意见执行报告：修订 prompt 携带「外部修改意见」块时，
+ * 输出末尾追加 %%%PT-OUTCOMES%%% 行（镜像真实 Writer 的报告协议）。
+ * 意见正文包含测试标记 [conflict] 时该条报告 conflict（含依据，不改事实）；
+ * 其余报告 applied。无外部意见块 → null（输出与旧版一致）。
+ */
+export function scriptedExternalOutcomes(task: string): string | null {
+  if (!task.includes("===== 外部修改意见（最高业务优先级）=====")) {
+    return null;
+  }
+  const ids = [...task.matchAll(/^--- 意见 (x-[a-z0-9]+)（/gm)].map((match) => match[1]!);
+  if (ids.length === 0) {
+    return null;
+  }
+  const reports = ids.map((id) => {
+    const start = task.indexOf(`--- 意见 ${id}（`);
+    const next = task.indexOf("\n--- 意见 ", start + 1);
+    const body = task.slice(start, next === -1 ? task.length : next);
+    if (body.includes("[conflict]")) {
+      return {
+        instructionId: id,
+        outcome: "conflict",
+        basis: "Table 10：baseline IDS = 24，本文 IDS = 35——当前数据不支持「优势」表述（脚本化冲突依据）",
+      };
+    }
+    return { instructionId: id, outcome: "applied", basis: "已按意见在本节落实（脚本化报告）" };
+  });
+  return `%%%PT-OUTCOMES%%% ${JSON.stringify(reports)}`;
+}
+
+/** 报告行存在时追加为输出最后一行（无报告 → 原输出） */
+function withExternalOutcomes(output: string, outcomes: string | null): string {
+  return outcomes !== null ? `${output}\n${outcomes}` : output;
+}
+
+/**
  * 编译错误修复输出（合法：无文档骨架、花括号配对；只修语法不改内容 / 引用 / 公式——
  * M5.6 Fact Preservation：修复前的 \eqref 与 equation 环境必须原样保留，否则
  * 「语法修复」就成了公式丢失的回归通道）
@@ -603,13 +638,20 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
         // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
         // 完整骨架并被 DoD 拒绝。脚本化 Writer 镜象该行为，防止此类回归静默通过。
+        const externalOutcomes = scriptedExternalOutcomes(input.task);
         output = input.task.includes("修订论文摘要")
-          ? REVISED_ABSTRACT_TEXT
+          ? withExternalOutcomes(REVISED_ABSTRACT_TEXT, externalOutcomes)
           : input.task.includes("\\documentclass")
             ? LATEX_DOC
             : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
-              ? `${scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId))}\n${UNDEFINED_MACRO_TEX}`
-              : scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId));
+              ? withExternalOutcomes(
+                  `${scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId))}\n${UNDEFINED_MACRO_TEX}`,
+                  externalOutcomes,
+                )
+              : withExternalOutcomes(
+                  scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId)),
+                  externalOutcomes,
+                );
       } else if (scope === "writing/style-polish") {
         output = scriptedStylePolish(input.task, projectStyleModes.get(projectId));
       } else if (scope === "writing/repair") {

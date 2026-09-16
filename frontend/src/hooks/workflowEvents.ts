@@ -34,6 +34,11 @@ const DOMAIN_EVENT_TYPES = [
   "quality_gate.failed",
   "build_gate.passed",
   "build_gate.failed",
+  "fact_preservation.blocked_draft",
+  "final.created",
+  "style_polish.applied",
+  "style_polish.skipped",
+  "external_instructions.updated",
 ] as const;
 
 const TERMINAL_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -187,6 +192,12 @@ export function useWorkflowEvents({ runId, projectId, enabled }: WorkflowEventsO
       }
       if (event.type === "workflow.awaiting_input") {
         invalidateRuns();
+        return;
+      }
+      if (event.type === "external_instructions.updated" && projectId !== undefined) {
+        // M5.7：外部意见状态回写（派发 / 冲突）→ 失效意见列表与修订计划
+        void queryClient.invalidateQueries({ queryKey: queryKeys.externalInstructions(projectId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.revisionPlan(projectId) });
         return;
       }
       patchRun((run) => applyWorkflowEvent(run, event));

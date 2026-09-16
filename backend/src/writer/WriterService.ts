@@ -14,6 +14,12 @@ import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
+import {
+  EXTERNAL_OUTCOMES_MARKER,
+  type ExternalDirectiveDispatch,
+  type ExternalOutcomeKind,
+  type ExternalOutcomeReport,
+} from "../review/externalInstructions.js";
 import { protectedInventory } from "../review/styleInvariants.js";
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { validateOutline } from "../manuscript/ManuscriptService.js";
@@ -196,6 +202,10 @@ export class WriterService {
   /**
    * 依据汇总的 review issues / 改进计划修订单个章节（有界修改闭环中的一环）。
    * 只针对该章节的问题；证据不足的论断要求弱化或删除，不允许新造引用。
+   *
+   * M5.7：externalDirectives 非空时，外部修改意见以「最高业务优先级」
+   * 进入 prompt，且输出末尾携带 %%%PT-OUTCOMES%%% 执行报告行（applied /
+   * conflict / not_applicable）；事实 / 引用 / 证据约束不因外部意见放宽。
    */
   async reviseSection(params: {
     projectId: string;
@@ -207,8 +217,14 @@ export class WriterService {
     bibliography: BibliographyEntryInput[];
     buildError?: string;
     extraInstructions?: string;
-  }): Promise<{ latex: string; taskId: string }> {
-    if (params.issues.length === 0 && params.buildError === undefined) {
+    /** 外部修改意见（M5.7；缺省 = 行为与旧版完全一致） */
+    externalDirectives?: ExternalDirectiveDispatch[];
+  }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
+    if (
+      params.issues.length === 0 &&
+      params.buildError === undefined &&
+      (params.externalDirectives ?? []).length === 0
+    ) {
       // 无问题章节原样返回（不烧 Token）
       return { latex: params.currentLatex, taskId: "(unchanged)" };
     }
@@ -218,14 +234,25 @@ export class WriterService {
       task: buildRevisePrompt(params),
       projectId: params.projectId,
       contextScope: "writing/revision",
-      metadata: { role: "writer", skill: "revision" },
+      metadata: {
+        role: "writer",
+        skill: "revision",
+        ...(params.externalDirectives !== undefined && params.externalDirectives.length > 0
+          ? { externalInstructions: params.externalDirectives.length }
+          : {}),
+      },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(
         task.error ?? `章节 ${params.section.id} 修订任务以 ${task.status} 状态结束`,
       );
     }
-    const latex = stripCodeFence(task.output ?? "").trim();
+    // M5.7：先分离执行报告标记行，正文再走既有校验
+    const { latex: bodyLatex, outcomes } = splitExternalOutcomes(
+      task.output ?? "",
+      params.externalDirectives ?? [],
+    );
+    const latex = stripCodeFence(bodyLatex).trim();
     if (latex === "") {
       throw new AgentRunFailedError(`章节 ${params.section.id} 修订没有返回内容`);
     }
@@ -243,7 +270,11 @@ export class WriterService {
     if (!hasBalancedBraces(latex)) {
       throw new InvalidLatexOutputError(`章节 ${params.section.id} 修订花括号不配对`);
     }
-    return { latex, taskId: task.taskId };
+    return {
+      latex,
+      taskId: task.taskId,
+      ...(outcomes !== undefined ? { externalOutcomes: outcomes } : {}),
+    };
   }
 
   /**
@@ -518,7 +549,36 @@ function buildRevisePrompt(params: {
   bibliography: BibliographyEntryInput[];
   buildError?: string;
   extraInstructions?: string;
+  externalDirectives?: ExternalDirectiveDispatch[];
 }): string {
+  const external = params.externalDirectives ?? [];
+  const externalRules =
+    external.length > 0
+      ? [
+          "",
+          "外部意见执行规则：",
+          "a. 下方「外部修改意见」区块的意见（用户 / 期刊专家 / 导师）是最高业务优先级，先于内部审稿问题处理；内部意见与其冲突时以外部意见为准（内部建议可暂缓）。",
+          "b. 外部意见不得突破上述任何事实与证据约束：意见要求与稿件实验事实 / Evidence 冲突时（如要求「说明优势」而表格数据不支持），保留事实——不伪造数字、不篡改表格、不美化负结果——报告 conflict 并在 basis 中引用稿件的具体数值 / 结论。",
+          "c. 意见未指定章节且与本节内容无关时：本节保持原样，报告 not_applicable。",
+          "d. 可执行的替代方向：解释性能边界、分析失效原因；不得为了让意见成立而新增或修改实验数字。",
+          "e. 输出的最后一行必须单独一行执行报告（单行 JSON 数组，不要代码块）：",
+          `   ${EXTERNAL_OUTCOMES_MARKER} [{"instructionId":"<id>","outcome":"applied|conflict|not_applicable","basis":"<依据：conflict 必填，引用稿件具体数值>"}]`,
+          "   每条派发意见恰好一项；applied 只在本节真实修改时使用，不得为提高完成率虚报。",
+        ]
+      : [];
+  const externalBlock =
+    external.length > 0
+      ? [
+          "",
+          "===== 外部修改意见（最高业务优先级）=====",
+          ...external.flatMap((directive) => [
+            `--- 意见 ${directive.instructionId}（${directive.reviewerLabel ?? directive.source}${
+              directive.section !== undefined ? `；指定章节：${directive.section}` : "；未指定章节"
+            }）---`,
+            directive.text,
+          ]),
+        ]
+      : [];
   // 摘要目标（M4.8）：载体是 outline.abstract 纯文本，不是 LaTeX 片段
   if (params.section.id === "abstract") {
     return [
@@ -528,6 +588,12 @@ function buildRevisePrompt(params: {
       "1. 只输出修订后的摘要纯文本（100–200 字）；不要 LaTeX 命令、不要解释。",
       "2. 逐条解决下列针对摘要的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
       "3. 摘要是纯文本：不使用任何 LaTeX 命令、宏包或数学环境。",
+      ...(external.length > 0
+        ? [
+            `4. 外部修改意见（见下方区块）优先处理，但不得虚构数字或结论：与事实冲突时保留事实，报告行给 conflict 与依据；${EXTERNAL_OUTCOMES_MARKER} 报告行必须是输出的最后一行。`,
+          ]
+        : []),
+      ...externalRules,
       "",
       "===== 当前摘要 =====",
       params.currentLatex.slice(0, 4000),
@@ -540,6 +606,7 @@ function buildRevisePrompt(params: {
               (issue.suggestedAction ? `（建议：${issue.suggestedAction}）` : ""),
           )
         : ["（无审稿问题）"]),
+      ...externalBlock,
       "",
       "===== 可用 Evidence =====",
       ...params.evidence
@@ -574,6 +641,7 @@ function buildRevisePrompt(params: {
     ...(params.buildError
       ? ["11. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
       : []),
+    ...externalRules,
     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
     "",
     "===== 本章节当前内容 =====",
@@ -587,12 +655,97 @@ function buildRevisePrompt(params: {
             (issue.suggestedAction ? `（建议：${issue.suggestedAction}）` : ""),
         )
       : ["（无审稿问题）"]),
+    ...externalBlock,
     "",
     "===== 可用 Evidence =====",
     ...params.evidence
       .slice(0, 15)
       .map((record) => `- [${record.id}] ${record.claim.slice(0, 140)}`),
   ].join("\n");
+}
+
+/**
+ * 分离 Writer 输出中的外部意见执行报告行（M5.7）：
+ * - 标记行（EXTERNAL_OUTCOMES_MARKER 开头）之后同行是单行 JSON 数组；
+ * - 标记行之前的内容是 LaTeX 正文（调用方再走既有校验）；
+ * - 未派发外部意见时 outcomes = undefined（行为与旧版一致）；
+ * - 派发了但报告缺失 / 非法的条目以 unreported 如实补齐（不采信也不丢弃）。
+ */
+export function splitExternalOutcomes(
+  raw: string,
+  dispatched: ExternalDirectiveDispatch[],
+): { latex: string; outcomes: ExternalOutcomeReport[] | undefined } {
+  if (dispatched.length === 0) {
+    return { latex: raw, outcomes: undefined };
+  }
+  const lineIndex = raw
+    .split(/\r?\n/)
+    .findIndex((line) => line.trim().startsWith(EXTERNAL_OUTCOMES_MARKER));
+  if (lineIndex < 0) {
+    return {
+      latex: raw,
+      outcomes: dispatched.map((directive) => ({
+        instructionId: directive.instructionId,
+        outcome: "unreported",
+      })),
+    };
+  }
+  const lines = raw.split(/\r?\n/);
+  const latex = lines.slice(0, lineIndex).join("\n");
+  const reportLine = lines[lineIndex] ?? "";
+  const jsonPart = reportLine.trim().slice(EXTERNAL_OUTCOMES_MARKER.length).trim();
+  const parsed = parseOutcomeArray(jsonPart, dispatched);
+  const reported = new Set(parsed.map((report) => report.instructionId));
+  const outcomes: ExternalOutcomeReport[] = [
+    ...parsed,
+    ...dispatched
+      .filter((directive) => !reported.has(directive.instructionId))
+      .map((directive) => ({ instructionId: directive.instructionId, outcome: "unreported" as const })),
+  ];
+  return { latex, outcomes };
+}
+
+/** 报告行 JSON 数组的防御性解析：非法条目丢弃（对应意见走 unreported 兜底） */
+function parseOutcomeArray(
+  jsonPart: string,
+  dispatched: ExternalDirectiveDispatch[],
+): ExternalOutcomeReport[] {
+  if (jsonPart === "") {
+    return [];
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(jsonPart);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const known = new Set(dispatched.map((directive) => directive.instructionId));
+  const reports: ExternalOutcomeReport[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const instructionId = typeof record["instructionId"] === "string" ? record["instructionId"] : undefined;
+    const outcome = record["outcome"];
+    if (
+      instructionId === undefined ||
+      !known.has(instructionId) ||
+      (outcome !== "applied" && outcome !== "conflict" && outcome !== "not_applicable")
+    ) {
+      continue;
+    }
+    const basis = typeof record["basis"] === "string" ? record["basis"].trim().slice(0, 600) : undefined;
+    reports.push({
+      instructionId,
+      outcome: outcome as Exclude<ExternalOutcomeKind, "unreported">,
+      ...(basis !== undefined && basis !== "" ? { basis } : {}),
+    });
+  }
+  return reports;
 }
 
 /** 解析大纲 sections 数组（防御性） */

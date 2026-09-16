@@ -71,6 +71,14 @@ import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import {
+  applyDispatchOutcome,
+  type ExternalDirectiveDispatch,
+  type ExternalDispatchResult,
+  type ExternalInstructionStore,
+  type ExternalOutcomeReport,
+  reverifyHandledInstructions,
+} from "../review/externalInstructions.js";
+import {
   buildStylePolishPlan,
   fingerprintStylePolish,
   isPolishableStyleIssue,
@@ -121,6 +129,8 @@ export interface WorkflowServices {
   paper: PaperReviewServices;
   /** reviews/ 产物读写（round 编号、最新汇总） */
   reviewArtifacts: ReviewArtifactStore;
+  /** 外部修改意见（M5.7：journal reviewer / editor / advisor / user 指令存储与状态） */
+  externalInstructions: ExternalInstructionStore;
   /** manuscript 修订提交（M4.7：gate / build / artifact 的对齐基准） */
   revisions: ManuscriptRevisionStore;
   /** Draft / Final 产物存储（M4.7） */
@@ -351,13 +361,14 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
 
 /**
  * 确定性派生修订计划（reviews/revision-plan-r{round}.json）：
- * critical/major finding 与引用缺失 → 派发；minor 只记录不修（避免非收敛）。
+ * external 修改意见（M5.7，mandatory）+ critical/major finding 与引用缺失 → 派发；
+ * minor 只记录不修（避免非收敛）；conflict 的外部意见保留条目但不派发。
  * 纯代码，无 LLM——Writer 只是计划的执行者。
  */
 function revisionPlanStage(services: WorkflowServices): StageSpec {
   return {
     id: "revision.plan",
-    description: "确定性派生修订计划（critical/major 派发，minor 只记录）",
+    description: "确定性派生修订计划（外部意见 mandatory + critical/major 派发，minor 只记录）",
     requiredInputs: ["quality.gate"],
     producedOutputs: ["reviews/revision-plan-r{round}.json"],
     maxAttempts: 1, // 纯确定性派生，重试无意义
@@ -394,6 +405,17 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
           ? summarizeFactRegressions(factState).map((entry) => ({ file: entry.file, detail: entry.detail }))
           : [];
       const buildErrorValue = readBuildError(ctx.state);
+      // M5.7 外部修改意见：先以最新 gate 复核 handled（该轮修订触发 Fact
+      // Preservation FAIL → 降级 unresolved 重新派发，恢复闭环自愈），再整体入计划
+      const externalInstructionList = await services.externalInstructions.load(ctx.projectId);
+      const reverified = reverifyHandledInstructions(
+        externalInstructionList,
+        gateArtifact?.factPreservation ?? null,
+        new Date().toISOString(),
+      );
+      if (reverified.changed) {
+        await services.externalInstructions.save(ctx.projectId, reverified.instructions);
+      }
       const plan = buildRevisionPlan({
         projectId: ctx.projectId,
         sourceRevision,
@@ -406,6 +428,9 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
           ? { buildError: { message: buildErrorValue.slice(0, 500) } }
           : {}),
         ...(gateBlockers.length > 0 ? { gateBlockers } : {}),
+        ...(reverified.instructions.length > 0
+          ? { externalInstructions: reverified.instructions }
+          : {}),
       });
       await services.reviewArtifacts.savePlan(ctx.projectId, plan);
       // 回填本轮 iteration 记录的 planId（UI / 审计可从轮次回溯计划）
@@ -423,6 +448,7 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         items: plan.items.length,
         planned: plan.summary.planned,
         skipped: plan.summary.skipped,
+        ...(plan.summary.external !== undefined ? { external: plan.summary.external } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -659,7 +685,22 @@ function revisionReviseStage(
           ? await collectRevisionDirectives(services, ctx.projectId, stageId)
           : await collectPlanDirectives(services, ctx.projectId);
 
-      const targets = listRevisionTargets(outline, files, directives);
+      // M5.7 外部修改意见：独立派发通道（最高业务优先级；不占用 issue 通道，
+      // 也不改 Quality Gate 口径）。pending / partially_handled / unresolved 派发；
+      // handled / conflict 不再自动派发（conflict 保留在意见列表等人工决策）。
+      const externalDirectives = await collectExternalDirectives(services, ctx.projectId);
+      const sectionScopedExternals = externalDirectives.filter(
+        (directive) => directive.section !== undefined,
+      );
+      const externalOutcomeReports: ExternalOutcomeReport[] = [];
+
+      const targets = listRevisionTargets(outline, files, [
+        ...directives,
+        ...sectionScopedExternals.map((directive) => ({
+          match: (target: RevisionTarget) =>
+            sectionMatches(directive.section ?? "", target) ? externalScopeIssue() : null,
+        })),
+      ]);
       const revised: string[] = [];
       for (const [index, target] of targets.entries()) {
         if (ctx.signal.aborted) {
@@ -668,7 +709,17 @@ function revisionReviseStage(
         const issues = directives
           .map((directive) => directive.match(target))
           .filter((issue): issue is ReviewIssue => issue !== null);
-        if (issues.length === 0 && buildError === undefined) {
+        // 该目标命中的外部意见：指定章节的按匹配；未指定章节的全篇派发
+        const targetExternals = externalDirectives.filter((directive) =>
+          directive.section !== undefined
+            ? sectionMatches(directive.section, target)
+            : true,
+        );
+        if (
+          issues.length === 0 &&
+          buildError === undefined &&
+          targetExternals.length === 0
+        ) {
           continue; // 无问题的章节不动（不烧 Token）
         }
         // 章节人类标题（大纲 id → title；缺大纲时回退 id）：修订 prompt 以标题称呼章节
@@ -687,7 +738,13 @@ function revisionReviseStage(
           evidence,
           bibliography,
           ...(buildError !== undefined ? { buildError } : {}),
+          ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
         });
+        // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）
+        const targetChanged = result.latex.trim() !== target.currentLatex.trim();
+        for (const report of result.externalOutcomes ?? []) {
+          externalOutcomeReports.push({ ...report, targetChanged });
+        }
         if (isAbstractTarget) {
           // 摘要修订写回 outline.abstract（独立可写载体）；后续 writeMainTex 重组时生效
           if (outline !== null) {
@@ -716,11 +773,47 @@ function revisionReviseStage(
       }
       // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
       const revision = await services.revisions.commit(ctx.projectId, stageId, ctx.runId);
+      // M5.7：派发结果落回指令状态（确定性聚合：applied+真实变化 → handled 等）
+      if (externalDirectives.length > 0) {
+        const reportedIds = new Set(externalOutcomeReports.map((report) => report.instructionId));
+        const unmatched = sectionScopedExternals
+          .filter((directive) => !reportedIds.has(directive.instructionId))
+          .map((directive) => directive.instructionId);
+        const instructions = await services.externalInstructions.load(ctx.projectId);
+        const dispatch: ExternalDispatchResult = {
+          round: (await latestReviewSummary(services, ctx.projectId))?.round ?? 0,
+          revision: revision.revision,
+          outcomes: externalOutcomeReports,
+          unmatched,
+        };
+        const applied = applyDispatchOutcome(instructions, dispatch, new Date().toISOString());
+        if (applied.changed) {
+          await services.externalInstructions.save(ctx.projectId, applied.instructions);
+          const conflicts = applied.instructions.filter(
+            (instruction) => instruction.status === "conflict",
+          ).length;
+          await ctx.emitDomain(
+            "external_instructions.updated",
+            {
+              dispatched: externalOutcomeReports.length,
+              unmatched: unmatched.length,
+              conflicts,
+              revision: revision.revision,
+            },
+            conflicts > 0
+              ? `外部修改意见已派发：${externalOutcomeReports.length} 份报告，其中 ${conflicts} 条与实验事实冲突（保留原结果）`
+              : `外部修改意见已派发并更新处理状态（${externalOutcomeReports.length} 份报告）`,
+          );
+        }
+      }
       return {
         revisedSections: revised.length,
         sections: revised,
         revision: revision.revision,
         changed: revision.created,
+        ...(externalDirectives.length > 0
+          ? { externalInstructions: externalDirectives.length }
+          : {}),
       };
     },
     async verifyDod(ctx) {
@@ -2710,6 +2803,11 @@ async function collectPlanDirectives(
     if (item.status !== "planned") {
       continue; // minor / gate 阻止项：记录但不派发（D-0026 收敛纪律）
     }
+    if (item.kind === "external_instruction") {
+      // M5.7：外部意见经独立通道派发（collectExternalDirectives，携带执行报告
+      // 协议与状态回写）；计划里的 external 条目是审计快照，不重复派发
+      continue;
+    }
     const issue = revisionPlanItemToIssue(item);
     directives.push({
       match: (target: RevisionTarget) => (sectionMatches(item.section, target) ? issue : null),
@@ -2718,16 +2816,62 @@ async function collectPlanDirectives(
   return directives;
 }
 
+/**
+ * M5.7 外部修改意见派发：读指令存储，pending / partially_handled / unresolved
+ * 进入派发（handled 已有执行证据；conflict 与事实冲突，不自动改事实）。
+ * Quick Review（existing_paper_review）不含修订 stage，天然只读不派发。
+ */
+async function collectExternalDirectives(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<ExternalDirectiveDispatch[]> {
+  const instructions = await services.externalInstructions.load(projectId);
+  return instructions
+    .filter(
+      (instruction) =>
+        instruction.status === "pending" ||
+        instruction.status === "partially_handled" ||
+        instruction.status === "unresolved",
+    )
+    .map((instruction) => ({
+      instructionId: instruction.instructionId,
+      source: instruction.source,
+      ...(instruction.reviewerLabel !== undefined
+        ? { reviewerLabel: instruction.reviewerLabel }
+        : {}),
+      text: instruction.text,
+      ...(instruction.section !== undefined ? { section: instruction.section } : {}),
+    }));
+}
+
+/** 目标扩展用的哑 issue（值不会被消费；只让 listRevisionTargets 纳入被引用文件） */
+function externalScopeIssue(): ReviewIssue {
+  return {
+    category: "academic",
+    severity: "minor",
+    section: "(external)",
+    description: "外部修改意见目标扩展",
+    blocking: false,
+  };
+}
+
 /** 修订计划条目 → ReviewIssue（Writer 修订 prompt 的输入形态） */
 function revisionPlanItemToIssue(item: RevisionPlanItem): ReviewIssue {
-  const severity = item.priority === "high" ? "critical" : item.priority === "low" ? "minor" : "major";
+  // M5.7：mandatory（外部意见）映射为 critical + blocking（理论上不经此通道
+  // 派发，保留映射以兼容旧计划文件 / 审计视图）
+  const severity =
+    item.priority === "high" || item.priority === "mandatory"
+      ? "critical"
+      : item.priority === "low"
+        ? "minor"
+        : "major";
   return {
     category: item.kind === "citation_missing" || item.kind === "citation_removed" ? "citation" : "academic",
     severity,
     section: item.section,
     description: `${item.problem}（计划要求：${item.instruction}）`,
     suggestedAction: item.instruction,
-    blocking: item.priority === "high",
+    blocking: item.priority === "high" || item.priority === "mandatory",
   };
 }
 

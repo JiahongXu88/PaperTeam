@@ -25,6 +25,13 @@ vi.mock("../src/api/runs.js", () => ({
   createWorkflowRun: vi.fn(),
 }));
 
+vi.mock("../src/api/externalInstructions.js", () => ({
+  listExternalInstructions: vi.fn(async () => ({ instructions: [], sectionOptions: [] })),
+  addExternalInstruction: vi.fn(),
+  deleteExternalInstruction: vi.fn(),
+  getRevisionPlan: vi.fn(async () => ({ round: null, plan: null })),
+}));
+
 vi.mock("../src/api/runtime.js", () => ({
   getRuntimeStatus: vi.fn(async () => ({
     backend: { ok: true },
