@@ -717,3 +717,56 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   sourceImport（与 citationIntegrity 共享 ScholarlyResolver 实例）；
   httpServer sources 子资源路由扩展（import / candidates / enrich / link）；
   全部新字段 optional，M1–M5 项目零迁移可读。
+
+## D-0035 M6.3 Research Discovery：共享 ProviderHttpClient（Retry-After 双硬帽 + 按尝试计数熔断 + 限流≠宕机）+ 检索默认零持久化（显式 saveAsCandidates）+ search 与 lookup 双接口
+
+- **日期**：2026-09-17（M6.3，Research Discovery & Academic/Web Search）
+- **状态**：accepted
+- **决策**：在 D-0033 冻结架构下落地 M6.3，新增三项可复核的实现级决策：
+  1. **ProviderHttpClient 是唯一 HTTP 执行与状态观测点**（backend/src/search/
+     providerHttp.ts）：全部 provider（学术 4 家 + SearXNG）共享一个实例——
+     timeout / AbortSignal 组合 / 类型化错误（timeout/aborted/http_error/
+     rate_limited/network_error/circuit_open/business_error）/ 指数退避+有界抖动 /
+     重试集（429+500-599+网络+超时；4xx 与业务信封错误不重试）/ **Retry-After
+     双格式（delay-seconds + HTTP-date）双硬帽**（单请求内等待 ≤5s——超帽立即
+     失败进冷却，不为一个几小时的 Retry-After 阻塞请求；provider 冷却封顶 60s）。
+     **熔断按「尝试」计数**：连续 3 次临时失败尝试（含重试）即开路——单用户
+     规模下一个完整失败的请求（3 次尝试）足以证明该源当前不可用；**限流≠宕机**：
+     429 / AMiner 40306 走独立冷却（不累计熔断失败、到期自动恢复无需探测），
+     连续网络/5xx 失败走熔断（open 30s → half-open 探测 → close）。退避 sleep
+     不持锁（s2-mcp head-of-line 教训）；HTTP-200 信封业务错误经 envelope 钩子
+     穿透（AMiner code 40301/40302/40307 → degraded，绝不当 healthy）。
+  2. **检索默认零持久化，候选保存是显式动作**：search API 返回归一化融合结果，
+     只有请求携带 `saveAsCandidates: number[]`（结果下标）才写 CandidateStore
+     （origin=academic_search/web_search，provider=融合后最强源，`query` 字段
+     记录发现检索词——CandidateSource 的 M6.3 最小扩展）。一次检索 100 条结果
+     不无条件污染 sources/candidates.json；检索链路不存在 EvidenceStore 写路径
+     （snippet 最高 plausible 属 M6.5）；promotion 复用 M6.2 幂等链路不变。
+     全部失败 → SEARCH_ALL_PROVIDERS_FAILED（502，≠空结果）；无 provider /
+     未配置 SearXNG → SEARCH_PROVIDER_NOT_CONFIGURED（503，不阻塞启动）。
+  3. **search（发现）与 lookup（核验）双接口并存，不合并**：AcademicSearchProvider
+     .search 是真关键词检索（无相似度门控），与既有 ScholarlyResolver.resolve 的
+     查证语义（标题 variant + 门控裁决）分开实现与分开消费（search_papers v2 vs
+     lookup_paper 工具）；融合 = SourceIdentity 分层键去重（M6.2 identity.ts 复用，
+     零第二套 dedup）+ 带权重倒数排名 score=Σ weight/(60+rank)（SearXNG 公式，
+     无 ML reranker）+ 字段互补合并（缺失不覆盖有效；preprint/正式版键不同不
+     collapse）。
+- **理由**：D-0033 §6 冻结了 ProviderHttpClient 的职责清单但把参数与状态机留给
+  实现期；M6.1 分析报告 §7（s2-mcp Retry-After 教科书 + 持锁退避反面）、§3.5
+  （SearXNG 熔断时长）、§10.3（健康模型）给出了全部证据输入。按尝试计数熔断是
+  对「连续失败 ≥3 次」在单用户低频场景下的落地口径（一次完整失败的请求=3 次
+  观测），行为被 providerHttp.test.ts 钉死。「默认零持久化」是对 M6.2
+  CandidateStore「候选清单是事实」的对称纪律：发现是高频动作，事实只应显式记录。
+- **不做**：per-provider 速率档位串行原语（当前 4 provider 并发 fan-out + 共享
+  client 重试已满足限流礼貌，真实命中限流时 ProviderHttpClient 冷却兜底——
+  ADR 中该条按 YAGNI 推迟，需要时后补）；检索缓存（第一版不做，ADR §39 授权）；
+  FullTextResolver（ADR §11 实施顺序未列入 M6.3，属 M6.4+）；Crossref 检索化
+  （维持 MetadataResolver 职责）。
+- **影响**：backend/src/search/ 域 11 个新文件；serviceStack 装配 discovery
+  （与 citationIntegrity 共享 resolver 的对称位置）；httpServer 新增
+  /api/projects/:id/research/{academic,web}-search + GET /api/research/providers；
+  scholarlyTools 升级（search_papers v2 真检索 + search_web）；compose 增
+  `--profile research` 的可选 searxng 服务（docker/searxng/settings.yml 模板：
+  json format 开 / limiter 关 / cn.bing+baidu 白名单）；测试 +72（providerHttp
+  20 / academicProviders 17 / academicSearchService 13 / searxng 12 /
+  researchDiscovery.http 9 / config 1，全部离线；live smoke 默认跳过）。

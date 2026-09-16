@@ -230,6 +230,21 @@ async function handleRequest(
     return;
   }
 
+  // ---- GET /api/research/providers（M6.3：search provider 健康观测；无敏感信息） ----
+  if (pathname === "/api/research/providers") {
+    if (method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    if (services.stack === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "服务栈未配置" });
+      return;
+    }
+    sendJson(res, 200, { providers: services.stack.discovery.providerHealth() });
+    return;
+  }
+
   // ---- /api/skills（全局 Skill 资源：approved catalog 只读 + 受控 install/update + 摘要重生成） ----
   if (pathname === "/api/skills" || pathname.startsWith("/api/skills/")) {
     if (services.skills === undefined) {
@@ -1032,6 +1047,61 @@ async function handleProjectResourceRoutes(
         },
       );
       sendJson(res, 200, result);
+      return true;
+    }
+    return false;
+  }
+
+  // ---- research（M6.3：Research Discovery——project-scoped 学术 / Web 检索 + 显式候选保存）----
+  if (resource === "research") {
+    await stack.projects.getRequired(projectId);
+    if (rest === "/academic-search" || rest === "/web-search") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const query = readStringField(body, "query");
+      if (query === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 query");
+      }
+      const limit = readSearchLimit(body);
+      const saveAsCandidates = readSaveIndexes(body);
+      const options = {
+        limit,
+        ...readYearRange(body),
+        ...(body["openAccessOnly"] === true ? { openAccessOnly: true } : {}),
+      };
+      if (rest === "/academic-search") {
+        const response = await stack.discovery.academicSearch(query, options);
+        const saved =
+          saveAsCandidates !== undefined
+            ? await stack.discovery.saveAcademicCandidates(
+                projectId,
+                query,
+                response.results,
+                saveAsCandidates,
+              )
+            : undefined;
+        sendJson(res, 200, {
+          status: response.status,
+          results: response.results,
+          diagnostics: response.diagnostics,
+          ...(saved !== undefined ? { saved } : {}),
+        });
+        return true;
+      }
+      const response = await stack.discovery.webSearch(query, { limit });
+      const saved =
+        saveAsCandidates !== undefined
+          ? await stack.discovery.saveWebCandidates(projectId, query, response.results, saveAsCandidates)
+          : undefined;
+      sendJson(res, 200, {
+        status: response.status,
+        results: response.results,
+        diagnostics: response.diagnostics,
+        ...(saved !== undefined ? { saved } : {}),
+      });
       return true;
     }
     return false;
@@ -2087,6 +2157,52 @@ function readCandidateOrigin(
     return value;
   }
   throw new BusinessError("INVALID_REQUEST", "候选 origin 只能是 academic_search / web_search / manual");
+}
+
+/** 检索结果条数（M6.3 research search）：默认 10，API 层硬帽 50（指令纪律：防请求爆炸） */
+const SEARCH_LIMIT_MAX = 50;
+
+function readSearchLimit(body: Record<string, unknown>): number {
+  const value = body["limit"];
+  if (value === undefined) {
+    return 10;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > SEARCH_LIMIT_MAX) {
+    throw new BusinessError("INVALID_REQUEST", `limit 必须是 1-${SEARCH_LIMIT_MAX} 的整数`);
+  }
+  return value;
+}
+
+/** 显式候选保存下标（search 不自动持久化；不传 = 只返回结果） */
+function readSaveIndexes(body: Record<string, unknown>): number[] | undefined {
+  const value = body["saveAsCandidates"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0 || !value.every((item) => Number.isInteger(item) && item >= 0)) {
+    throw new BusinessError("INVALID_REQUEST", "saveAsCandidates 必须是非空整数数组（结果下标，从 0 起）");
+  }
+  return value as number[];
+}
+
+/** 年份区间过滤（1900-2100；from ≤ to） */
+function readYearRange(body: Record<string, unknown>): { yearFrom?: number; yearTo?: number } {
+  const readYear = (field: string): number | undefined => {
+    const value = body[field];
+    if (value === undefined) {
+      return undefined;
+    }
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1900 || value > 2100) {
+      throw new BusinessError("INVALID_REQUEST", `${field} 必须是 1900-2100 的整数年份`);
+    }
+    return value;
+  };
+  const yearFrom = readYear("yearFrom");
+  const yearTo = readYear("yearTo");
+  if (yearFrom !== undefined && yearTo !== undefined && yearFrom > yearTo) {
+    throw new BusinessError("INVALID_REQUEST", `yearFrom（${yearFrom}）不能大于 yearTo（${yearTo}）`);
+  }
+  return { ...(yearFrom !== undefined ? { yearFrom } : {}), ...(yearTo !== undefined ? { yearTo } : {}) };
 }
 
 const SOURCE_VERSION_TYPES = ["preprint", "conference", "journal", "other"] as const;

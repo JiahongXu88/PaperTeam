@@ -42,6 +42,8 @@ export interface CandidateSource {
   arxivId?: string;
   url?: string;
   snippetOrAbstract?: string;
+  /** 发现该候选的检索词（M6.3 discovery provenance；manual 添加无此字段） */
+  query?: string;
   status: CandidateStatus;
   /** promotion 后指向正式 Source（幂等重入依据；source 被删后可重新 promote） */
   promotedSourceId?: string;
@@ -60,6 +62,8 @@ export interface AddCandidateInput {
   year?: number;
   venue?: string;
   snippetOrAbstract?: string;
+  /** 发现时的检索词（provenance；同身份合并时只填空缺） */
+  query?: string;
   origin?: CandidateOrigin;
   provider?: string;
 }
@@ -145,6 +149,7 @@ export class CandidateStore {
             ...(input.snippetOrAbstract !== undefined
               ? { snippetOrAbstract: input.snippetOrAbstract }
               : {}),
+            ...(input.query !== undefined ? { query: input.query } : {}),
           }),
           updatedAt: this.now().toISOString(),
         };
@@ -180,6 +185,7 @@ export class CandidateStore {
       ...(input.snippetOrAbstract !== undefined && input.snippetOrAbstract.trim() !== ""
         ? { snippetOrAbstract: input.snippetOrAbstract.trim().slice(0, 3000) }
         : {}),
+      ...(input.query !== undefined && input.query.trim() !== "" ? { query: input.query.trim() } : {}),
       status: "pending_review",
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -322,7 +328,15 @@ function fillEmpty(
   incoming: Partial<
     Pick<
       CandidateSource,
-      "title" | "authors" | "year" | "venue" | "doi" | "arxivId" | "url" | "snippetOrAbstract"
+      | "title"
+      | "authors"
+      | "year"
+      | "venue"
+      | "doi"
+      | "arxivId"
+      | "url"
+      | "snippetOrAbstract"
+      | "query"
     >
   >,
 ): CandidateSource {

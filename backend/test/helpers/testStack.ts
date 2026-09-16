@@ -81,6 +81,7 @@ export const fakeFailingRunner: CommandRunner = async (command, args) => {
 
 export type ServiceStackOptionsCitation = Parameters<typeof buildServiceStack>[0]["citation"];
 export type ServiceStackOptionsReview = Parameters<typeof buildServiceStack>[0]["review"];
+export type ServiceStackOptionsSearch = Parameters<typeof buildServiceStack>[0]["search"];
 
 export interface TestStack {
   stack: ServiceStack;
@@ -105,6 +106,8 @@ export async function startTestStack(
     latexRunner?: CommandRunner;
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
+    /** search provider 装配（缺省全关 = 完全离线；http 测试注入 fake fetch / 显式启用单个 provider） */
+    search?: ServiceStackOptionsSearch;
     skills?: { registry: import("../../src/skills/SkillRegistry.js").SkillRegistry; summaries?: import("../../src/skills/SkillSummaryService.js").SkillSummaryService };
     /** Readiness probe（GET /ready；M5.5） */
     readiness?: import("../../src/runtime/readiness.js").ReadinessProbe;
@@ -135,6 +138,16 @@ export async function startTestStack(
     ...(options.citation
       ? { citation: options.citation }
       : { citation: { metadataEnabled: false, scholarly: { providers: [] } } }),
+    // search 同理：默认全部 academic provider 禁用（research 端点按 not configured
+    // 结构化失败）；需要驱动真实 provider 逻辑的 http 测试注入 fetchImpl + 白名单
+    ...(options.search !== undefined
+      ? { search: options.search }
+      : {
+          search: {
+            disabledProviders: ["openalex", "semantic-scholar", "arxiv", "aminer", "searxng"],
+            providerTimeoutMs: 2_000,
+          },
+        }),
     ...(options.paperParser !== undefined ? { paperParser: options.paperParser } : {}),
     log: () => {},
   });

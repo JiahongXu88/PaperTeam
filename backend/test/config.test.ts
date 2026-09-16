@@ -166,4 +166,34 @@ describe("loadConfig", () => {
     const config = loadConfig({ PAPERTEAM_PI_MODEL: "anything" });
     expect(config.pi.model).toBe("anything");
   });
+
+  it("search 配置（M6.3）：全部可缺省，敏感 key 只经环境注入", () => {
+    // 零配置：学术链路默认可用（provider 装配见 serviceStack），SearXNG 未配置
+    const defaults = loadConfig({}).search;
+    expect(defaults.searxngUrl).toBeUndefined();
+    expect(defaults.openalexMailto).toBeUndefined();
+    expect(defaults.semanticScholarApiKey).toBeUndefined();
+    expect(defaults.aminerApiKey).toBeUndefined();
+    expect(defaults.disabledProviders).toEqual([]);
+    expect(defaults.providerTimeoutMs).toBe(10_000);
+    // 显式配置
+    const config = loadConfig({
+      PAPERTEAM_SEARXNG_URL: "http://127.0.0.1:8080",
+      PAPERTEAM_OPENALEX_MAILTO: "team@example.com",
+      PAPERTEAM_SEMANTIC_SCHOLAR_API_KEY: "s2-key",
+      PAPERTEAM_AMINER_API_KEY: "aminer-key",
+      PAPERTEAM_SEARCH_DISABLED_PROVIDERS: "aminer, searxng ,bogus!",
+      PAPERTEAM_SEARCH_TIMEOUT_MS: "30000",
+    });
+    expect(config.search).toEqual({
+      searxngUrl: "http://127.0.0.1:8080",
+      openalexMailto: "team@example.com",
+      semanticScholarApiKey: "s2-key",
+      aminerApiKey: "aminer-key",
+      disabledProviders: ["aminer", "searxng"], // 非法 token 丢弃，不报错
+      providerTimeoutMs: 30_000,
+    });
+    // 超时越界报错
+    expect(() => loadConfig({ PAPERTEAM_SEARCH_TIMEOUT_MS: "100" })).toThrow(ConfigError);
+  });
 });

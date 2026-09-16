@@ -29,6 +29,18 @@ import { SourceStore } from "./sources/SourceStore.js";
 import { CandidateStore } from "./sources/CandidateStore.js";
 import { SourceImportService } from "./sources/SourceImportService.js";
 import { BuiltinPdfAnalyzer } from "./sources/PdfAnalyzer.js";
+import { ProviderHttpClient } from "./search/providerHttp.js";
+import { AcademicSearchService } from "./search/academicSearchService.js";
+import { OpenAlexSearchProvider } from "./search/openalexProvider.js";
+import { SemanticScholarSearchProvider } from "./search/semanticScholarProvider.js";
+import { ArxivSearchProvider } from "./search/arxivProvider.js";
+import { AMinerSearchProvider } from "./search/aminerProvider.js";
+import { SearXNGProvider } from "./search/searxngProvider.js";
+import { WebSearchService } from "./search/webSearchService.js";
+import { ResearchDiscoveryService } from "./search/researchDiscoveryService.js";
+import type { AcademicSearchProvider } from "./search/types.js";
+import type { WebSearchProvider } from "./search/types.js";
+import type { SearchConfig } from "./config/config.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
@@ -80,6 +92,12 @@ export interface ServiceStackOptions {
   paperParser?: PdfParser;
   /** PyMuPdfParser 的解释器覆盖（PAPERTEAM_PDF_PYTHON）；注入 paperParser 时忽略 */
   pdfPythonCommand?: string;
+  /**
+   * Research Discovery（M6.3）：Academic / Web Search provider 装配。
+   * 缺省零配置 = OpenAlex + arXiv + 匿名 S2（学术链路可用），SearXNG / AMiner
+   * 未配置不注册；disabledProviders 可显式关停任一源。fetchImpl 供测试注入。
+   */
+  search?: SearchConfig & { fetchImpl?: typeof fetch };
   log?: (message: string) => void;
 }
 
@@ -98,6 +116,8 @@ export interface ServiceStack {
   candidates: CandidateStore;
   /** 文献入库路径编排（DOI/arXiv/URL/BibTeX 导入 + promotion + enrich；M6.2） */
   sourceImport: SourceImportService;
+  /** Research Discovery（M6.3）：Academic / Web Search 编排 + 显式 Candidate 持久化 */
+  discovery: ResearchDiscoveryService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
   manuscript: ManuscriptService;
   citation: CitationService;
@@ -250,6 +270,72 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     scholarly: citationIntegrity.scholarlyResolver,
     log,
   });
+  // M6.3 Research Discovery：所有 search provider 共享一个 ProviderHttpClient
+  // （超时 / 退避 / Retry-After / 熔断 / 健康状态一体维护）。装配纪律（D-0033）：
+  // - OpenAlex primary / S2 enrichment-fallback（匿名可调）/ arXiv preprint 默认注册；
+  // - AMiner（China secondary）仅在 API Key 存在时注册——无 key 不影响其余源；
+  // - SearXNG（Web）仅在 URL 配置时注册——optional，无则 Web Search 结构化不可用；
+  // - disabledProviders 显式关停；Crossref 不在此出现（MetadataResolver 职责不变）。
+  const searchConfig: SearchConfig = {
+    disabledProviders: options.search?.disabledProviders ?? [],
+    providerTimeoutMs: options.search?.providerTimeoutMs ?? 10_000,
+    ...(options.search?.searxngUrl !== undefined ? { searxngUrl: options.search.searxngUrl } : {}),
+    // OpenAlex 礼貌池标识：专用配置优先，回退既有 CITATION_CONTACT_EMAIL（ADR §8）
+    ...(options.search?.openalexMailto !== undefined
+      ? { openalexMailto: options.search.openalexMailto }
+      : options.citation?.contactEmail !== undefined
+        ? { openalexMailto: options.citation.contactEmail }
+        : {}),
+    ...(options.search?.semanticScholarApiKey !== undefined
+      ? { semanticScholarApiKey: options.search.semanticScholarApiKey }
+      : {}),
+    ...(options.search?.aminerApiKey !== undefined ? { aminerApiKey: options.search.aminerApiKey } : {}),
+  };
+  const providerHttp = new ProviderHttpClient({
+    ...(options.search?.fetchImpl !== undefined ? { fetchImpl: options.search.fetchImpl } : {}),
+    defaultTimeoutMs: searchConfig.providerTimeoutMs,
+    log,
+  });
+  const disabled = new Set(searchConfig.disabledProviders);
+  const academicProviders: AcademicSearchProvider[] = [];
+  if (!disabled.has("openalex")) {
+    academicProviders.push(
+      new OpenAlexSearchProvider({
+        http: providerHttp,
+        ...(searchConfig.openalexMailto !== undefined ? { mailto: searchConfig.openalexMailto } : {}),
+      }),
+    );
+  }
+  if (!disabled.has("semantic-scholar")) {
+    academicProviders.push(
+      new SemanticScholarSearchProvider({
+        http: providerHttp,
+        ...(searchConfig.semanticScholarApiKey !== undefined
+          ? { apiKey: searchConfig.semanticScholarApiKey }
+          : {}),
+      }),
+    );
+  }
+  if (!disabled.has("arxiv")) {
+    academicProviders.push(new ArxivSearchProvider({ http: providerHttp }));
+  }
+  if (!disabled.has("aminer") && searchConfig.aminerApiKey !== undefined) {
+    academicProviders.push(new AMinerSearchProvider({ http: providerHttp, apiKey: searchConfig.aminerApiKey }));
+  }
+  const webProviders: WebSearchProvider[] = [];
+  if (!disabled.has("searxng") && searchConfig.searxngUrl !== undefined) {
+    try {
+      webProviders.push(new SearXNGProvider({ http: providerHttp, baseUrl: searchConfig.searxngUrl }));
+    } catch (error) {
+      // URL 非法：不注册 + 启动日志如实记录（Web Search 不可用，不影响其余栈）
+      log(`[search] SearXNG 未注册：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const discovery = new ResearchDiscoveryService({
+    academic: new AcademicSearchService({ providers: academicProviders, log }),
+    web: new WebSearchService(webProviders),
+    candidates,
+  });
   const reviewer = new ReviewerService({
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,
@@ -286,6 +372,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     sources,
     candidates,
     sourceImport,
+    discovery,
     pdfAnalyzer,
     manuscript,
     citation,

@@ -92,7 +92,7 @@ export type ReferenceKind =
   | "unknown";
 
 /** canonical 来源（学术库 + 软件权威源） */
-export type CanonicalSourceProvider = ScholarlyProvider | "github";
+export type CanonicalSourceProvider = ScholarlyProvider | "github" | "aminer";
 
 /** 软件类 canonical 的权威来源信息（repository / 官方文档） */
 export interface SoftwareSourceRecord {

@@ -124,7 +124,44 @@ Windows 一致）。执行脚本与原始日志保留在本机 `~/.paperteam-acc
 - [x] `docker compose stop`：日志 `shutting down (SIGTERM)... budget=40000ms` → `stopped cleanly`，容器 exit code 0，1 s 内完成；`start` 后数据仍在；容器内无 zombie 进程、日志无 unhandled rejection
 - [x] Linux 路径纯净：日志与 `/api/runtime/status` 无 `C:\` / 反斜杠路径
 
-## 8. 本地开发不受影响
+## 8. 可选服务：SearXNG（M6.3 Web Search）
+
+Web Search（`search_web` 工具 / `POST /api/projects/:id/research/web-search`）由
+独立 SearXNG 元搜索引擎承担，**可选、默认不启动**——不启用时 PaperTeam /
+Academic Search / Literature Library 全部照常工作（Web Search 结构化 503
+`SEARCH_PROVIDER_NOT_CONFIGURED`）。
+
+```bash
+# 1) 启用可选 profile（默认 docker compose up 不含它）
+docker compose --profile research up -d
+
+# 2) 在同目录 .env 加一行（compose 网络内服务名；backend 经此地址调用）
+echo 'PAPERTEAM_SEARXNG_URL=http://searxng:8080' >> .env
+docker compose up -d backend   # 重建 backend 使 env 生效
+
+# 3) 验证（searxng 只对 compose 网络内 expose:8080，宿主机不直达——经 backend 验证）
+PROJECT_ID=<你的项目 id>
+curl -fsS -X POST http://localhost:8080/api/projects/$PROJECT_ID/research/web-search \
+  -H 'Content-Type: application/json' -d '{"query":"test","limit":3}'
+curl -fsS http://localhost:8080/api/research/providers   # PaperTeam 侧健康观测
+#    自备 settings 时务必在 search.formats 加 json——SearXNG 上游默认只有 html，
+#    未启用时 /search 对 format=json 返回 403（PaperTeam 如实报 misconfigured）
+```
+
+- 配置模板 `docker/searxng/settings.yml`（挂载为只读）：`use_default_settings:
+  true` 深度合并；**必改三项已就位**——`search.formats` 加 `json`；`server.limiter:
+  false`（内网部署；开启且无 valkey 时 JSON API 限 4 次/小时/IP）；大陆引擎白名单
+  `bing`（base_url 覆盖 `https://cn.bing.com`）+ `baidu`。engine 名是 SearXNG
+  上游真实模块名（与上游 settings.yml 一致，勿自造）。
+- 境外引擎（DDG/Brave 等）需代理：在 settings.yml 的 `outgoing.proxies` 配置
+  `socks5h://…`（模板尾有注释示例）。
+- 本机裸跑（不经 compose）：自行启动 SearXNG 后设
+  `PAPERTEAM_SEARXNG_URL=http://127.0.0.1:8080`（端口以实际为准，勿假设 8080）。
+- `GET /api/research/providers` 返回全部 search provider 的健康四态
+  （healthy/degraded/rate_limited/unavailable）；`unresponsive_engines` 非空时
+  SearXNG provider 如实 degraded（继续可用，结果标注）。
+
+## 9. 本地开发不受影响
 
 Windows / macOS 开发照旧 `npm run dev`（Vite 5173 代理到 Backend 3000）；`IS_WINDOWS`
 门控的 `shell:true`（latexmk `.bat`）与 `py -3` 候选只在 Windows 生效；Linux 容器内

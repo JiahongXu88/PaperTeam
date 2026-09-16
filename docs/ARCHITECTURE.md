@@ -105,7 +105,11 @@ Reviewer 修订闭环 + bounded LaTeX repair（M4.7）、版本体验（M4.8：�
 Admin 后台（M5 未含）；受控学术 Skill 接入（M5.3 ✅，见 §12.3）与 Style Revision
 Loop（M5.4 ✅，见 §13.10）已完成；单机 Linux / Docker 部署（M5.5 ✅，2026-09-15
 真实 Docker 验收通过，见 docs/DEPLOYMENT.md §7：web(nginx) + backend 两容器、双 volume
-事实源、`/health` liveness 与 `/ready` readiness、可配置优雅停机）。
+事实源、`/health` liveness 与 `/ready` readiness、可配置优雅停机）。M6 起 Research
+Discovery 能力落地：M6.2 Project Literature Library（SourceIdentity 身份键 / 候选-
+正式分文件 / 五种入库路径 / promotion 幂等，sources/ 域）与 **M6.3 Research
+Discovery & Academic/Web Search（§14：search/ 域——共享 ProviderHttpClient + 四学术
+Provider + SearXNG + 多源融合去重 + 显式 Candidate 持久化 + Provider Health）**。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -801,6 +805,12 @@ backend/src/
 │                  identity（SourceIdentity 分层身份键）+ bibtex（最小解析器）+
 │                  metadataMerge（user>resolved>inferred 水位线）+
 │                  PdfAnalyzer（builtin 文本层 + multimodal 扩展点）
+├── search/        M6.3 Research Discovery：providerHttp（共享 ProviderHttpClient：
+│                  超时/退避/Retry-After/熔断/Provider Health 四态）、四个 Academic
+│                  Provider + SearXNGProvider、fusion（SourceIdentity 去重 + 带权重
+│                  RRF）、AcademicSearchService / WebSearchService（编排 + 降级 +
+│                  diagnostics）、ResearchDiscoveryService（唯一入口；显式 Candidate
+│                  持久化）——见 §14
 ├── manuscript/    ManuscriptService（outline / main.tex 组装 / context.yaml）、
 │                  LatexFiles（\input 递归收集）
 ├── citation/      StaticCitationChecker（Layer 1）、metadataProviders（Layer 2：
@@ -833,7 +843,9 @@ PaperTeam/
 ├── frontend/         # React Web Workbench（React 19 + Vite，M4；见 §8）
 ├── backend/          # PaperTeam Backend（API / Workflow / Pi Runtime）
 ├── agents/           # Agent 定义与配置（预留）
-├── docker/           # Docker 部署配置（预留）
+├── docker/           # Docker 部署配置（backend-entrypoint.sh / nginx.conf；M6.3 起
+│                    # 另含 searxng/settings.yml——可选 Web Search 服务的 JSON format +
+│                    # 大陆引擎白名单模板）
 └── docs/             # PRD、状态、架构、决策记录、API Contract
 ```
 
@@ -1166,3 +1178,63 @@ stylePolicy=apply_once ─ quality.gate PASS ─► hitl.style_polish（勾选 f
 `GET /api/projects/:id/style-polish`。诚实边界：invariant 是必要条件守卫，
 哨兵词计数不是语义等价证明——最终语义保持依赖复审 + 人审；Reviewer 输出中的
 AI 概率类字段一律丢弃（PaperTeam 不做 AI detector）。
+
+
+## 14. Research Discovery & Search（M6.3 已实现；D-0033/D-0035）
+
+「PaperTeam 如何可靠地发现资料」层——在 M6.2 Literature Library 之前补齐 discovery。
+架构与实施纪律由 M6.1 ADR（docs/research/M6.1_SEARCH_RAG_ADR.md）冻结。
+
+### 14.1 分层（backend/src/search/）
+
+```text
+Researcher / HTTP Client
+   │
+   ▼
+ResearchDiscoveryService（唯一编排入口；显式 Candidate 持久化 + Provider Health 观测）
+   ├─ AcademicSearchService ── AcademicSearchProvider（有界并发 fan-out + 融合）
+   │     ├─ OpenAlexSearchProvider（primary：works search + 年份/OA filter + mailto 礼貌池）
+   │     ├─ SemanticScholarSearchProvider（enrichment/fallback；匿名可调，可选 x-api-key）
+   │     ├─ ArxivSearchProvider（preprint；Atom XML 轻量解析，PDF URL）
+   │     └─ AMinerSearchProvider（China secondary；仅免费端点，HTTP-200 信封穿透）
+   └─ WebSearchService ── SearXNGProvider（唯一 WebSearchProvider；独立容器 optional）
+   │
+   ▼ 共享 ProviderHttpClient（全部 provider 的 HTTP 执行器）
+       timeout / AbortSignal / 类型化错误 / 指数退避+抖动 / Retry-After 双格式
+       （请求内等待硬帽 5s + 冷却硬帽 60s）/ 连续失败熔断（open→half-open→close）
+       / Provider Health 四态（限流≠宕机）
+   │
+   ▼ 融合（fusion.ts）：SourceIdentity 分层键去重（M6.2 identity.ts 复用）+
+       带权重倒数排名（score = Σ providerWeight/(60+rank)）+ 字段互补合并
+       （缺失不覆盖有效；preprint 与正式版键不同不 collapse）
+   │
+   ▼ 默认零持久化；显式 saveAsCandidates → CandidateStore（origin=academic_search/
+       web_search，provenance 含 query）→ 既有 promotion 幂等链路（M6.2）
+```
+
+### 14.2 边界红线（延续 D-0033/D-0023/D-0034）
+
+- **Search ≠ RAG ≠ Evidence**：检索结果默认只返回（一次 100 条结果不污染
+  candidates.json）；候选 ≠ 正式文献 ≠ Evidence——本层不存在 EvidenceStore 写路径，
+  snippet 最高支撑 plausible 属 M6.5；
+- **search（发现）≠ lookup/resolve（核验）**：既有 ScholarlyResolver（Crossref →
+  OpenAlex → S2 → arXiv 顺序核验 + 相似度门控）语义不变；AcademicSearchProvider 是
+  真关键词检索（无门控）；
+- **error ≠ not_found ≠ 空集**：单 provider 失败 → partial；全失败 →
+  SEARCH_ALL_PROVIDERS_FAILED（绝不伪造空结果）；
+- **Provider-specific payload 不上漏**：归一化投影（AcademicSearchResult /
+  WebSearchResult）是唯一出口；raw JSON 不进 ResearchDiscoveryService / CandidateStore /
+  Researcher 工具输出；
+- **AgentRuntime 不承载 Search**：Agent 经 Pi customTools（search_papers v2 /
+  search_web / lookup_paper，skills/scholarlyTools.ts）受控消费。
+
+### 14.3 Provider Health 与大陆可用性
+
+四态 healthy / degraded / rate_limited / unavailable 由 ProviderHttpClient 按真实
+请求结果统一维护（SearXNG unresponsive_engines / AMiner 40306 也进同一模型）；
+`GET /api/research/providers` 只读观测。任一源不可用时 Discovery 继续返回其余源
+结果；无任何 academic provider 或未配置 SearXNG → 结构化 503，其余 PaperTeam
+能力不受影响。Google 不是任何环节的依赖；Web 侧大陆可用性 = SearXNG
+（cn.bing + baidu 引擎白名单，docker/searxng/settings.yml）+ Academic 侧 AMiner
+（境内托管，API Key 缺失时不注册）。FullTextResolver / RetrievalService /
+EmbeddingProvider 属 M6.4+（ADR §11 实施顺序），本轮未实现。

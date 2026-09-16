@@ -130,6 +130,22 @@ export interface PdfConfig {
   pythonCommand?: string;
 }
 
+/** Research Discovery / Search 配置（M6.3；全部可缺省——零配置时学术链路照常启动） */
+export interface SearchConfig {
+  /** 独立 SearXNG 服务地址（PAPERTEAM_SEARXNG_URL；未配置 = Web Search 不可用，不影响启动） */
+  searxngUrl?: string;
+  /** OpenAlex 礼貌池标识（PAPERTEAM_OPENALEX_MAILTO；回退 CITATION_CONTACT_EMAIL） */
+  openalexMailto?: string;
+  /** Semantic Scholar API Key（PAPERTEAM_SEMANTIC_SCHOLAR_API_KEY；可选，匿名亦可调用） */
+  semanticScholarApiKey?: string;
+  /** AMiner API Key（PAPERTEAM_AMINER_API_KEY；缺失 = AMiner provider 不注册） */
+  aminerApiKey?: string;
+  /** 禁用的 provider（PAPERTEAM_SEARCH_DISABLED_PROVIDERS，逗号分隔：openalex/semantic-scholar/arxiv/aminer/searxng） */
+  disabledProviders: string[];
+  /** 单 provider HTTP 超时（PAPERTEAM_SEARCH_TIMEOUT_MS；默认 10000） */
+  providerTimeoutMs: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -146,6 +162,7 @@ export interface AppConfig {
   citation: CitationConfig;
   review: ReviewConfig;
   pdf: PdfConfig;
+  search: SearchConfig;
   skills: SkillsConfig;
   /**
    * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
@@ -183,6 +200,9 @@ const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
 const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 const DEFAULT_CITATION_MAX_LOOKUPS = 40;
 const DEFAULT_CITATION_TIMEOUT_MS = 8_000;
+const DEFAULT_SEARCH_TIMEOUT_MS = 10_000;
+const SEARCH_TIMEOUT_MIN_MS = 1_000;
+const SEARCH_TIMEOUT_MAX_MS = 60_000;
 const DEFAULT_MAX_REVISION_ROUNDS = 2;
 const DEFAULT_ACADEMIC_PASS_SCORE = 80;
 const DEFAULT_STYLE_RISK_MAX = 35;
@@ -424,6 +444,29 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       ...(readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") !== undefined
         ? { pythonCommand: readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") }
         : {}),
+    },
+    search: {
+      ...(readOptionalValue(source, "PAPERTEAM_SEARXNG_URL") !== undefined
+        ? { searxngUrl: readOptionalValue(source, "PAPERTEAM_SEARXNG_URL") }
+        : {}),
+      ...(readOptionalValue(source, "PAPERTEAM_OPENALEX_MAILTO") !== undefined
+        ? { openalexMailto: readOptionalValue(source, "PAPERTEAM_OPENALEX_MAILTO") }
+        : {}),
+      ...(readOptionalValue(source, "PAPERTEAM_SEMANTIC_SCHOLAR_API_KEY") !== undefined
+        ? { semanticScholarApiKey: readOptionalValue(source, "PAPERTEAM_SEMANTIC_SCHOLAR_API_KEY") }
+        : {}),
+      ...(readOptionalValue(source, "PAPERTEAM_AMINER_API_KEY") !== undefined
+        ? { aminerApiKey: readOptionalValue(source, "PAPERTEAM_AMINER_API_KEY") }
+        : {}),
+      disabledProviders: (readOptionalValue(source, "PAPERTEAM_SEARCH_DISABLED_PROVIDERS") ?? "")
+        .split(",")
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => /^[a-z0-9-]+$/.test(item)),
+      providerTimeoutMs: readTimeoutMs(source, "PAPERTEAM_SEARCH_TIMEOUT_MS", {
+        default: DEFAULT_SEARCH_TIMEOUT_MS,
+        min: SEARCH_TIMEOUT_MIN_MS,
+        max: SEARCH_TIMEOUT_MAX_MS,
+      }),
     },
   };
 }

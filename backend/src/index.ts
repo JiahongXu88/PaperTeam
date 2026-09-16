@@ -150,7 +150,10 @@ export async function startBackend(): Promise<void> {
           roleSkills: (role, scope) => skillRegistry.skillAssignmentsFor(role, scope),
           roleCustomTools: (role) =>
             (role === "researcher" || role === "citation") && stackRef !== undefined
-              ? createScholarlyTools(stackRef.citationIntegrity.scholarlyResolver)
+              ? createScholarlyTools(
+                  stackRef.citationIntegrity.scholarlyResolver,
+                  stackRef.discovery,
+                )
               : [],
         });
 
@@ -178,6 +181,7 @@ export async function startBackend(): Promise<void> {
       metadataTimeoutMs: config.citation.metadataTimeoutMs,
       ...(config.citation.contactEmail ? { contactEmail: config.citation.contactEmail } : {}),
     },
+    search: config.search,
     ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
     log: (message) => console.log(message),
   });

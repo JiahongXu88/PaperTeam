@@ -1,10 +1,16 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-16（**M6.2 Project Literature Library COMPLETE**——
+> 更新日期：2026-09-17（**M6.3 Research Discovery & Academic/Web Search COMPLETE**——
+> search/ 域：共享 ProviderHttpClient（超时/退避/Retry-After 双硬帽/熔断/健康四态）
+> + OpenAlex primary / S2 fallback / arXiv preprint / AMiner China-secondary 四学术
+> Provider + SearXNG optional Web Search + SourceIdentity 去重带权重 RRF 融合 +
+> 显式 Candidate 持久化 + Provider Health API + Researcher search_papers v2 /
+> search_web 工具；详见下方 M6.3 条目与 DECISIONS.md D-0035；下一节点
+> **M6.4 Project RAG & Hybrid Retrieval**；2026-09-16
+> **M6.2 Project Literature Library COMPLETE**——
 > SourceIdentity 分层身份键 / CandidateSource Discovery 状态 / 五种入库路径
 > （PDF·DOI·arXiv·URL·BibTeX）/ metadata 可信分层 merge / Evidence 引用删除
-> 保护 / 老项目 lazy 兼容；详见下方 M6.2 条目与 DECISIONS.md D-0034；
-> 下一节点 **M6.3 Research Discovery & Academic/Web Search**；同日
+> 保护 / 老项目 lazy 兼容；详见下方 M6.2 条目与 DECISIONS.md D-0034；同日
 > **M6.1 Search/RAG 架构冻结 COMPLETE**——6 开源项目源码
 > 静态分析 + PaperTeam 盘点 + ADR D-0033 冻结（六层最小接口 / SearXNG 独立服务 /
 > 无 Vector DB / 内部零 MCP）；**M6.0 M5 Baseline Freeze**——M5 冻结为完成基线、全量验证
@@ -97,7 +103,77 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
   vs 继承默认的 metadata.model 验证）+ scripted 后端外部意见 conflict 全链路。
 
 **M6 — Research Discovery & RAG（进行中：2026-09-16 M6.0 baseline established；
-2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE）**：
+2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE；
+2026-09-17 M6.3 Research Discovery & Search COMPLETE）**：
+
+- **M6.3 Research Discovery & Academic/Web Search（✅ 2026-09-17）**：
+  - **范围**：「PaperTeam 如何可靠地发现资料」——共享 Provider HTTP 基建、
+    真发现型学术检索（非标题查证）、可选 Web 检索、多源聚合降级、Provider
+    Health、Search Result → CandidateSource、Researcher 最小检索工具。**不含**
+    Embedding / Vector DB / Lexical Index / RAG / Chunking / Reranker / Evidence
+    自动验证（M6.4+）；FullTextResolver 按 ADR §11 实施顺序不属 M6.3，未实现。
+  - **共享基建（`search/providerHttp.ts`）**：全部 provider 共用一个
+    ProviderHttpClient——per-request timeout + AbortSignal 组合、类型化错误
+    （7 kind）、重试集（429 / 500-599 / 网络 / 超时；4xx 与业务信封错误不重试）、
+    指数退避 + 有界抖动（sleep 不持锁）、**Retry-After 双格式（delay-seconds /
+    HTTP-date）+ 双硬帽**（请求内等待 ≤5s，超帽立即失败进冷却；provider 冷却
+    封顶 60s）、**熔断按尝试计数**（连续 3 次临时失败尝试 → open 30s →
+    half-open 探测 → close）、**限流≠宕机**（429/AMiner 40306 独立冷却自动恢复，
+    不累计熔断失败）、HTTP-200 信封业务错误钩子穿透（AMiner 形态）。健康四态
+    （healthy/degraded/rate_limited/unavailable）由真实请求结果统一维护。
+  - **Academic Providers**：OpenAlex（primary；works search + 年份区间 / is_oa
+    filter + mailto 礼貌池（PAPERTEAM_OPENALEX_MAILTO，回退 CITATION_CONTACT_EMAIL）
+    + 倒排摘要重建复用 scholarly.ts）/ Semantic Scholar（enrichment+fallback；
+    匿名可调，可选 x-api-key；429 经共享 client 冷却）/ arXiv（preprint；Atom
+    XML 沿用既有轻量正则解析，无新 XML 依赖，年份客户端过滤）/ AMiner（China
+    secondary；**仅免费端点** `/api/paper/search`（size≤20，Authorization 裸
+    token），付费端点（pro/qa/relation/detail…）一律不接入且被测试钉死；信封
+    code 40306→rate_limited / 其余→business_error，HTTP 200 绝不判 healthy；
+    无 API Key 不注册，不影响其余源）。Crossref 不做 discovery（MetadataResolver
+    职责不变，ScholarlyResolver 零改动语义）。
+  - **融合与去重（`fusion.ts`）**：SourceIdentity 分层键去重（M6.2 identity.ts
+    原样复用，无第二套 dedup）；带权重倒数排名 score=Σ weight/(60+rank)
+    （openalex 1.0 / s2 0.9 / arxiv 0.8 / aminer 0.7；确定性排序无 ML reranker）；
+    字段互补合并只填空缺（provider A 缺失不覆盖 provider B 有效）；**arXiv
+    preprint 与 DOI 正式版键不同不 collapse**（M6.2 纪律延续）。
+  - **Web Search（optional）**：SearXNGProvider（`GET /search?format=json`；
+    URL 经 canonicalUrl 归一去重合并；unresponsive_engines 非空 → degraded）；
+    未配置 PAPERTEAM_SEARXNG_URL / 服务离线 / JSON API 未启用（403→结构化
+    misconfigured）均不阻塞启动与学术链路（503 SEARCH_PROVIDER_NOT_CONFIGURED /
+    502 结构化错误）。compose 增 `--profile research` 可选 searxng 服务 +
+    docker/searxng/settings.yml 模板（json format 开 / limiter 关 / cn.bing +
+    baidu 大陆引擎白名单，engine 名与上游一致）。
+  - **编排与降级**：AcademicSearchService 有界并发 fan-out（mapWithConcurrency，
+    并发 4）+ timeout 隔离（单源超时/熔断/冷却只进 diagnostics）+ partial
+    success（≥1 源成功即返回）+ 全源失败 502（**不伪造空结果**）；
+    WebSearchService 单源直通 + degraded 如实上报。ResearchDiscoveryService
+    唯一入口：**检索默认零持久化**，`saveAsCandidates: number[]` 显式写入
+    CandidateStore（origin=academic_search/web_search、provider、`query`
+    provenance——CandidateSource 最小新增字段）；promotion 复用 M6.2 幂等链路。
+  - **HTTP API**：`POST /api/projects/:id/research/academic-search`（query/
+    limit 1-50 默认 10/yearFrom·yearTo/openAccessOnly/saveAsCandidates）、
+    `POST /api/projects/:id/research/web-search`、`GET /api/research/providers`
+    （健康观测，无敏感信息）。错误码新增 SEARCH_ALL_PROVIDERS_FAILED(502) /
+    SEARCH_PROVIDER_NOT_CONFIGURED(503)。
+  - **Researcher 工具（scholarlyTools v2）**：search_papers 升级真发现检索
+    （多源聚合 + 诊断；输出明确标注 candidate sources 非 verified evidence；
+    未装配 discovery 的最小栈回退 resolver 查证形检索）；新增 search_web
+    （SearXNG，未配置如实 not_configured 不抛错）；lookup_paper 语义不变。
+    工具不写 EvidenceStore、不自动持久化候选。
+  - **配置**：PAPERTEAM_SEARXNG_URL / PAPERTEAM_OPENALEX_MAILTO /
+    PAPERTEAM_SEMANTIC_SCHOLAR_API_KEY / PAPERTEAM_AMINER_API_KEY /
+    PAPERTEAM_SEARCH_DISABLED_PROVIDERS / PAPERTEAM_SEARCH_TIMEOUT_MS（全部可选，
+    零配置时 OpenAlex+arXiv+匿名 S2 可用）。无 SearXNG 时 backend / Academic
+    Search / Literature Library 全部正常（测试钉死）。
+  - **验证**：新增后端测试 **72**（providerHttp 20 / academicProviders 17 /
+    academicSearchService 13 / searxng 12 / researchDiscovery.http 9 / config 1；
+    全部离线 mock HTTP；live smoke 4 个默认跳过，PAPERTEAM_LIVE_SMOKE=1 显式
+    开启）。`npm run build` / `typecheck` 全绿；后端 964 passed / 11 skipped
+    （M6.2 基线 892/7，零回归）；前端 184 passed 不变（本轮无前端改动——无
+    Sources 页面，最小适配需求为零）。
+  - **M6 next step：M6.4 Project RAG & Hybrid Retrieval**（sources chunk 管线 +
+    RetrievalIndex 进程内 lexical + retrieve_library 工具 + Context Budget
+    Packing；实施入口见 ADR §11）。
 
 - **M6.2 Project Literature Library（✅ 2026-09-16）**：
   - **范围**：把「文献进入 PaperTeam 后怎么存在」做正确——Source Domain /

@@ -246,8 +246,9 @@ function openalexToRecord(item: Record<string, unknown>, now: string): Canonical
   );
 }
 
-/** OpenAlex inverted index → 顺序摘要（null 安全：无摘要的记录该字段为 null） */
-function rebuildAbstract(index: Record<string, number[]>): string {
+/** OpenAlex inverted index → 顺序摘要（null 安全：无摘要的记录该字段为 null；
+ * M6.3 AcademicSearchProvider 复用同一重建逻辑，不另写一份） */
+export function rebuildAbstract(index: Record<string, number[]>): string {
   if (typeof index !== "object" || index === null) {
     return "";
   }

@@ -16,6 +16,26 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.3 Research Discovery & Academic/Web Search（✅ 2026-09-17）
+
+- 「PaperTeam 如何可靠地发现资料」：`backend/src/search/` 域 11 个新文件。
+  共享 **ProviderHttpClient**（超时 / 重试（429+5xx+网络+超时）/ 指数退避+抖动 /
+  Retry-After 双格式双硬帽（请求内 ≤5s、冷却 ≤60s）/ 按尝试计数熔断
+  （open→half-open→close）/ Provider Health 四态、限流≠宕机、HTTP-200 信封
+  业务错误穿透）；**真发现型学术检索**（≠ 标题查证）：OpenAlex primary（年份/
+  OA filter + mailto 礼貌池）+ Semantic Scholar enrichment/fallback（匿名可调、
+  可选 key）+ arXiv preprint（Atom 轻量解析）+ AMiner China-secondary（仅免费
+  端点，付费一律不接）；**SearXNG Web Search**（optional：未配置/离线/JSON API
+  未启用均不影响启动与学术链路；compose `--profile research` + settings 模板
+  json format + cn.bing/baidu 白名单）；**多源融合**（SourceIdentity 分层键去重
+  复用 M6.2 + 带权重倒数排名 + 字段互补合并 + preprint/正式版不 collapse）；
+  **显式候选持久化**（默认零持久化，`saveAsCandidates` 显式写 CandidateStore，
+  provenance 含 query；检索链路零 EvidenceStore 写路径）；HTTP
+  `POST /api/projects/:id/research/{academic,web}-search` +
+  `GET /api/research/providers`；Researcher 工具 search_papers v2（真检索）+
+  search_web。错误码 SEARCH_ALL_PROVIDERS_FAILED / SEARCH_PROVIDER_NOT_CONFIGURED。
+  新增后端测试 72（全离线）+ 4 个默认跳过的 live smoke。决策 D-0035。
+
 ### M6.2 Project Literature Library（✅ 2026-09-16）
 
 - 文献入库的领域与持久化基础（检索/RAG 属 M6.3+，本轮零实现，见 D-0033/D-0034）：
