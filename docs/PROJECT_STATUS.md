@@ -1,6 +1,7 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-16（**M5.7 最终产品化收口**：per-Agent Provider / Model 配置
+> 更新日期：2026-09-16（**M6.0 M5 Baseline Freeze**——M5 冻结为完成基线、全量验证
+> 与文档状态统一，M6 进入准备阶段；**M5.7 最终产品化收口**：per-Agent Provider / Model 配置
 > （Settings agents 字段 + contextScope 确定性路由 + 会话级模型解析 + 失效 override
 > 结构化失败，credential 与 override 解耦）+ 外部专家 / 导师 / 用户修改意见驱动修订
 > （原文逐字保存、mandatory 最高业务优先级、`%%%PT-OUTCOMES%%%` 执行报告、确定性
@@ -87,6 +88,33 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
   workflow e2e 6），前端 +12（AgentModelPanel 5 / ExternalInstructions + RevisionPlan 7）；
   build / typecheck / test 全绿。真实 smoke：per-Agent 双 scope 实跑（writer override
   vs 继承默认的 metadata.model 验证）+ scripted 后端外部意见 conflict 全链路。
+
+**M6 — Research Discovery & RAG（准备阶段，2026-09-16 M6.0 baseline established）**：
+
+- **M6.0 M5 Baseline Freeze & Documentation Closure（✅ 2026-09-16）**：
+  - Freeze 日期 2026-09-16；**M5 冻结基线 commit `8e8c9bf`**（M5 最终状态）；
+    M6.0 收口提交 = 紧随其后的 `docs(m6): freeze M5 baseline and open M6`
+    （提交后 main HEAD 即 M6 起点）。
+  - 冻结验证（本轮实际输出）：M5 = COMPLETE；`npm run build` PASS；
+    `npm run typecheck` PASS；backend vitest **818 passed / 7 skipped / 0 failed**
+    （75 个测试文件 = 74 passed + 1 skipped live smoke，共 825 例）；frontend vitest
+    **184 passed / 0 failed**（24 个测试文件）。CI（ubuntu install / build /
+    typecheck / test + docker build smoke）静态核验无变化；真实 Docker 验收以
+    M5.5（2026-09-15）结果为准，本轮不重跑。
+  - 唯一非文档修复：`backend/test/deploy/deployment.test.ts` 读取部署契约文件时
+    归一化 CRLF 行尾——Windows checkout（core.autocrlf=true）把 compose.yml 转为
+    CRLF 导致断言失败（环境行尾问题，非 M5 回归；与 ec13c97 / ac67230 同类的
+    平台无关化修复，test-only，ubuntu 行为不变）。
+  - 文档统一：CHANGELOG 移除残留的「M5（进行中）」旧段并按最终状态归并 M5.1–M5.7
+    条目（M5.5 不再是 AWAITING、M5.6 不再是 PARTIAL）；README Known Limitations
+    移除已完成的「Docker 部署未实现」；ARCHITECTURE §1 与 DECISIONS D-0032 的
+    「真实 Docker 验收待执行 / AWAITING」更新为已通过（2026-09-15）。
+  - **M6 next step：M6.1 Search/RAG Open-source Research & Architecture Freeze**
+    （先只读开源方案静态分析与架构调研，再冻结 Search/RAG 技术方案）。
+- M6 计划方向（均为 M6 后续工作，**M6.0 未实现任何 Search / RAG 能力**）：
+  Research Discovery、Web / Academic Search、Project Literature Library、
+  RAG / Retrieval、Evidence-grounded Retrieval、Reference Paper Intelligence、
+  Multimodal Review。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

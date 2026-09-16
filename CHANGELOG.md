@@ -16,6 +16,79 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M5.1 / M5.2 Runtime 生命周期与长程治理（✅ 2026-09-11/12）
+
+- AbortSignal 统一、事件 seq + event_gap、queued cancel、timeout 分层、结构化终态、
+  原生 usage；全局并发 / 有界受理 / context budget / session rotation / TTL·GC·容量 /
+  观测面 / 安全自愈；160-run soak（详见 docs/PROJECT_STATUS.md）。
+
+### M5.3 Controlled Academic Skill Integration（✅ 2026-09-14）
+
+- 新增三个审计 Skill（MIT，固定上游 commit）：`academic-writing-zh`、
+  `academic-review`（K-Dense-AI/scientific-agent-skills @ `0b2afe6`）、
+  `academic-style-zh`（op7418/Humanizer-zh @ `91f3d39`），均为 PaperTeam 学术
+  适配版（不建立第二套事实系统、不是 AI detector、Reviewer 保持只读）。
+- Skill Store 受控化：完整 SHA / LICENSE / PROVENANCE 校验、不可变版本快照、
+  篡改检测与自愈、update 预览 / 应用、approved catalog 安装；无任意 URL 安装。
+- role + contextScope 路由：fact / academic / style Reviewer 得到不同 Skill 集，
+  Writer 普通写作 vs style-polish 不同；旧 role-only 调用兼容。
+- 会话级 Skill 版本固定（更新只影响新会话 / 新 generation）；任务终态携带
+  `skills.assigned` 与真实观测的 `skills.accessed`（无事件时如实 unknown）。
+- Skills 设置页：用途 / 来源 / 固定 revision / hash / 绑定 / 更新状态；
+  安装 / 预览更新 / 应用更新 / 查看 provenance。
+- 配置：`PAPERTEAM_DISABLED_SKILLS`。
+
+### M5.4 Chinese Academic Style Revision Loop（✅ 2026-09-14）
+
+- run 选项 `stylePolicy`：`suggest_only`（默认，style minor 只是建议）/
+  `apply_once`（Gate 通过后 HITL 勾选 style 建议 → style-only 修订，最多一轮）。
+- Style Invariant Checker：citation key / 数字单位 / 公式 / LaTeX 结构 / 受保护
+  术语 / 否定·比较·强度哨兵；失败不覆盖当前修订、不自动重试。
+- Style Reviewer finding 含 reason / proposedAction；AI 概率类字段一律丢弃。
+- Quick Review 保持 100% 只读：携带 stylePolicy → 400。
+- UI：Improvement 启动的「语言风格建议」选项、HITL 勾选面板、「语言润色」状态卡。
+- M5 eval corpus（A–E 自建样本）+ `styleSignals` 确定性扫描 + 人工评价模板。
+
+### M5.5 Linux / Docker Deployment（✅ 2026-09-15 真实 Docker 验收通过）
+
+- `Dockerfile`（多阶段：frontend-build / backend-build / `backend` / `web`）、
+  `compose.yml`（web 唯一对外端口、backend 内部、双 named volume、stop_grace_period）、
+  `docker/nginx.conf`（同源反代，SSE 不缓冲）、`docker/backend-entrypoint.sh`
+  （volume 属主修正 + setpriv 降权）、`.dockerignore`。
+- `GET /ready` readiness（Runtime + 数据根可写 + TeX / Python 状态，degraded 如实）；
+  `/health` 保持 liveness。
+- 优雅停机：`PAPERTEAM_SHUTDOWN_TIMEOUT_MS`（默认 30s）替代固定 5s 硬退出；
+  先停止受理，再取消 / 收敛 / 释放会话。
+- CI：`.github/workflows/ci.yml`（ubuntu build / typecheck / test + docker build smoke）。
+- 真实 `docker compose` 验收已通过（2026-09-15，WSL2 + Docker Engine：build / up /
+  health / 持久化 / 容器内 XeLaTeX 中文 PDF 与 PyMuPDF / SIGTERM 优雅停机，见
+  docs/DEPLOYMENT.md §7）。
+
+### M5.6 Real Paper Acceptance & Release（✅ 2026-09-16）
+
+- 真实 26 页中文工科论文 A/B（glm-5.3）：多轮真实执行——首轮两臂均 Draft PASS /
+  Final blocked（Gate 如实 FAIL）；Quick Review 零写入；材料不足提案不编造；详见
+  docs/M5_ACCEPTANCE.md。
+- 修复：Writer 修订不再删光 Existing-Paper 重建稿的引用（可引用 key 以
+  references.bib 为事实源 + prompt 保留引用）；Style Polish 在 Draft 路径也提供一次；
+  `runtimeStats.usageTotals` + per-task usage 日志（含 assigned / accessed skills）；
+  compose 默认执行超时 900s；`scripts/m5-acceptance.mjs` 验收执行器。
+- 09-15/16 收口：**Citation Preservation Gate**（无计划依据的引用丢失 → FAIL）与
+  **Fact Preservation Gate**（表格数值 / 正文数字 / 公式 / 方向结论等确定性保护，
+  篡改稿拒绝冻结 Draft）；长论文执行超时分层；CI 首次全绿；修复后 A/B（A8/B6）
+  两臂引用丢失 0；最终 fact-gate 轮两臂事实改写均被 FAIL 拦截。
+- 最终判定：engineering goals achieved；Skill 质量增益未获稳定证据（两轮独立盲评
+  均判开启臂危害更小 2/2，样本量不足以宣称）；pairwise 口径为 Independent Model
+  Pairwise Evaluation（human optional）。**未打 tag**：验收语料上 Final 产物无法
+  达成（发布条件不满足）。
+
+### M5.7 Final Productization & Revision UX（✅ 2026-09-16）
+
+- per-Agent provider/model 配置（contextScope 确定性路由、credential 与 override
+  解耦、失效结构化失败不静默回落）+ 外部专家 / 导师 / 用户修改意见驱动的修订
+  （原文逐字保存、mandatory 最高业务优先级、确定性 handled / conflict 状态机、
+  安全 Gate 口径不变）。详见 docs/RELEASE_NOTES_M5.md。
+
 ## [0.1.0-mvp] — 2026-09-10 — M4 MVP（Alpha）
 
 首个公开里程碑：M1–M4 全部完成，三条产品路径闭环。详见
@@ -79,59 +152,3 @@ Visual Reviewer、Skill install/update、Docker 部署、系统管理后台未�
 （M5+）；后端进程崩溃时进行中的模型调用经 checkpoint 重试而非迁移；
 Windows 下 LaTeX 编译超时只终止 shell 进程；单机单用户形态。
 完整清单见 [README](README.md#known-limitations真实清单)。
-
-## [Unreleased] — M5（进行中）
-
-### M5.3 Controlled Academic Skill Integration（2026-09-14）
-
-- 新增三个审计 Skill（MIT，固定上游 commit）：`academic-writing-zh`、
-  `academic-review`（K-Dense-AI/scientific-agent-skills @ `0b2afe6`）、
-  `academic-style-zh`（op7418/Humanizer-zh @ `91f3d39`），均为 PaperTeam 学术
-  适配版（不建立第二套事实系统、不是 AI detector、Reviewer 保持只读）。
-- Skill Store 受控化：完整 SHA / LICENSE / PROVENANCE 校验、不可变版本快照、
-  篡改检测与自愈、update 预览 / 应用、approved catalog 安装；无任意 URL 安装。
-- role + contextScope 路由：fact / academic / style Reviewer 得到不同 Skill 集，
-  Writer 普通写作 vs style-polish 不同；旧 role-only 调用兼容。
-- 会话级 Skill 版本固定（更新只影响新会话 / 新 generation）；任务终态携带
-  `skills.assigned` 与真实观测的 `skills.accessed`（无事件时如实 unknown）。
-- Skills 设置页：用途 / 来源 / 固定 revision / hash / 绑定 / 更新状态；
-  安装 / 预览更新 / 应用更新 / 查看 provenance。
-- 配置：`PAPERTEAM_DISABLED_SKILLS`。
-
-### M5.4 Chinese Academic Style Revision Loop（2026-09-14）
-
-- run 选项 `stylePolicy`：`suggest_only`（默认，style minor 只是建议）/
-  `apply_once`（Gate 通过后 HITL 勾选 style 建议 → style-only 修订，最多一轮）。
-- Style Invariant Checker：citation key / 数字单位 / 公式 / LaTeX 结构 / 受保护
-  术语 / 否定·比较·强度哨兵；失败不覆盖当前修订、不自动重试。
-- Style Reviewer finding 含 reason / proposedAction；AI 概率类字段一律丢弃。
-- Quick Review 保持 100% 只读：携带 stylePolicy → 400。
-- UI：Improvement 启动的「语言风格建议」选项、HITL 勾选面板、「语言润色」状态卡。
-- M5 eval corpus（A–E 自建样本）+ `styleSignals` 确定性扫描 + 人工评价模板。
-
-### M5.5 Linux / Docker Deployment（2026-09-14，IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE）
-
-- `Dockerfile`（多阶段：frontend-build / backend-build / `backend` / `web`）、
-  `compose.yml`（web 唯一对外端口、backend 内部、双 named volume、stop_grace_period）、
-  `docker/nginx.conf`（同源反代，SSE 不缓冲）、`docker/backend-entrypoint.sh`
-  （volume 属主修正 + setpriv 降权）、`.dockerignore`。
-- `GET /ready` readiness（Runtime + 数据根可写 + TeX / Python 状态，degraded 如实）；
-  `/health` 保持 liveness。
-- 优雅停机：`PAPERTEAM_SHUTDOWN_TIMEOUT_MS`（默认 30s）替代固定 5s 硬退出；
-  先停止受理，再取消 / 收敛 / 释放会话。
-- CI：`.github/workflows/ci.yml`（ubuntu build / typecheck / test + docker build smoke）。
-- 真实 `docker compose` 验收待在 Docker 主机执行（开发机无 Docker / WSL）。
-
-### M5.6 Real Paper Acceptance（2026-09-14，PARTIAL）
-
-- 真实 26 页中文工科论文 A/B（glm-5.3）：两臂均 Draft PASS / Final blocked（Gate
-  如实 FAIL）；Quick Review 零写入；材料不足提案不编造；详见 docs/M5_ACCEPTANCE.md。
-- 修复：Writer 修订不再删光 Existing-Paper 重建稿的引用（可引用 key 以
-  references.bib 为事实源 + prompt 保留引用）；Style Polish 在 Draft 路径也提供一次；
-  `runtimeStats.usageTotals` + per-task usage 日志（含 assigned / accessed skills）；
-  compose 默认执行超时 900s；`scripts/m5-acceptance.mjs` 验收执行器。
-- 未完成：人工评价、Docker E2E；M5 不标 COMPLETE，不打 tag。
-
-### 其余 M5 阶段
-
-- M5.1 / M5.2 Runtime 生命周期与长程治理（见 docs/PROJECT_STATUS.md）。

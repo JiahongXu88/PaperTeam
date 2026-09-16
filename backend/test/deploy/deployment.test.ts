@@ -22,7 +22,10 @@ import type { AgentRuntime, AgentTask, RuntimeHealth } from "../../src/runtime/t
 import { scriptedIdeaRuntime, startTestStack } from "../helpers/testStack.js";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
-const read = (relative: string): Promise<string> => readFile(join(REPO, relative), "utf8");
+// 部署文件契约断言假定 LF：Windows checkout（core.autocrlf=true）会把 compose.yml 等
+// 转成 CRLF，读取时归一化行尾，使断言与 checkout 平台无关（同 ec13c97 的平台无关化口径）
+const read = (relative: string): Promise<string> =>
+  readFile(join(REPO, relative), "utf8").then((s) => s.replaceAll("\r\n", "\n"));
 
 const tempDirs: string[] = [];
 afterAll(async () => {

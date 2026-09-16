@@ -623,5 +623,7 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   状态落盘不完整；readiness 与 liveness 混用会让编排器在 TeX 缺失时误判进程死亡。
 - **不做**：K8s / HA / autoscaling / 多租户 / Redis / 外部队列 / 登录 / System Admin；
   在 readiness 中真实调用 LLM。
-- **如实边界**：开发机无 Docker / WSL，真实 build / up / restart / persistence 验收
-  未执行，M5.5 状态 IMPLEMENTED / AWAITING REAL DOCKER ACCEPTANCE（docs/DEPLOYMENT.md §7）。
+- **如实边界**（2026-09-15 更新）：决策当日开发机无 Docker / WSL；随后按「不擅自安装
+  Docker Desktop」纪律安装 WSL2 + Docker Engine，对同一 checkout 完成真实 build / up /
+  restart / down·up 持久化 / 容器内 XeLaTeX 中文 PDF 与 PyMuPDF 解析 / SIGTERM 优雅停机
+  验收，全部通过——M5.5 COMPLETE（docs/DEPLOYMENT.md §7、docs/M5_ACCEPTANCE.md §4.7）。
