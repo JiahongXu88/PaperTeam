@@ -627,3 +627,50 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   Docker Desktop」纪律安装 WSL2 + Docker Engine，对同一 checkout 完成真实 build / up /
   restart / down·up 持久化 / 容器内 XeLaTeX 中文 PDF 与 PyMuPDF 解析 / SIGTERM 优雅停机
   验收，全部通过——M5.5 COMPLETE（docs/DEPLOYMENT.md §7、docs/M5_ACCEPTANCE.md §4.7）。
+
+---
+
+## D-0033 M6 Search / Academic Search / RAG / Evidence 架构：六层最小接口 + SearXNG 独立服务 + 扩展既有 Scholarly 生态 + 无 Vector DB + 内部零 MCP
+
+- **日期**：2026-09-16（M6.1，架构冻结）
+- **决策**：M6 Search/RAG 采用六层能力分离（WebSearchProvider /
+  AcademicSearchProvider / MetadataResolver（既有 ScholarlyResolver.lookup）/
+  FullTextResolver / LiteratureLibrary（SourceStore 扩展）/ RetrievalService+
+  RetrievalIndex），各自最小 TypeScript 接口（草案见
+  docs/research/M6.1_SEARCH_RAG_ADR.md §12）。Web Search 以 **SearXNG 独立
+  HTTP 服务**（Docker、json format、limiter 关、中国引擎白名单 cn.bing+baidu）
+  承担，optional——不可用时降级 unavailable，学术主链路不受影响；不 bundling
+  子进程、不复制其代码（AGPL 进程边界隔离）。学术检索=扩展既有
+  ScholarlyResolver 生态：**检索（search）与核验（lookup）两接口分开**；
+  OpenAlex primary、S2 enrichment/fallback、AMiner China secondary+enrichment
+  （免费层先行，付费端点默认关闭）、Crossref 只做 MetadataResolver、
+  Unpaywall 属 FullTextResolver。跨源同一性=分层确定性键（DOI>arXiv>PMID>
+  归一标题+年份+一作 strong>预印本合并偏正式版）产出 SourceIdentity；多源
+  融合借 SearXNG 带权重倒数排名。**共享 ProviderHttpClient**（超时/退避+抖动/
+  Retry-After 优先+硬帽/类型化错误/TTL 缓存/每 provider 速率档/熔断+半开/
+  限流≠宕机）收敛两份 fetchJson。Index=Derived State：chunk 落盘（含
+  paper/section/page/contentHash）+进程内 lexical 索引+可选 dense
+  （EmbeddingProvider），**第一版零 Vector DB / 零外部数据库进程、无 reranker**。
+  Evidence 边界加严：snippet 最多 plausible（abstract 级），verified 只能经
+  quote 逐字匹配 chunk / 元数据核验 / 只见真实证据的 LLM judge；LLM 不得据
+  检索摘要生成事实直写 EvidenceStore。**内部零 MCP**（TS interface + Pi
+  customTools；MCP 仅远期对外暴露可选项）。Google 不是任何环节的依赖。
+- **理由**：M6.1 对 6 个开源项目（SearXNG / agent-search / paper-search-mcp /
+  aminer-open-skill / semantic-scholar-mcp / openalex-research-mcp，全部源码
+  级静态分析）+ PaperTeam 自身盘点的结论（证据：docs/research/
+  M6.1_SEARCH_RAG_OSS_ANALYSIS.md）：PaperTeam 已有 provider 抽象 70% 雏形，
+  正确路径是扩 seam 而非引入框架；所有被分析项目均不宜作运行时依赖（Python/
+  单源/成熟度/AGPL），价值全部在模式层（SearXNG 聚合纪律与打分公式、
+  agent-search 的 canonical_url/SSRF/预算护栏/代码拼参考文献、s2-mcp 的
+  Retry-After 与错误分层、openalex-mcp 薄原语+厚编排、AMiner 三方去重与
+  HTTP-200 信封穿透、paper-search-mcp 伪统一反面教训）；single-user×每项目
+  几十篇规模下外部索引引擎是纯开销。
+- **不做**：嵌入/修改 SearXNG 源码；引入 agent-search/任一 MCP server 作运行
+  时依赖；万能统一 SearchProvider；Milvus/Qdrant/Elasticsearch/Redis；
+  第一版 cross-encoder reranker；爬虫/反 CAPTCHA 兜底；内部 MCP 化；Google
+  依赖；AMiner 付费端点接入（先实测计费矛盾再议）。
+- **影响**：M6.2（Literature Library）→ M6.3（Search Service + 共享 HTTP
+  基建 + SearXNG compose）→ M6.4（Retrieval/RAG）→ M6.5（Evidence pipeline
+  + workflow 接线）实施顺序冻结（ADR §11）；新增 docs/research/ 目录承载
+  调研报告与 ADR 正文；零第三方源码进入 PaperTeam Git（第三方 clone 位于
+  仓库外 PaperTeam-M6-Research/）。

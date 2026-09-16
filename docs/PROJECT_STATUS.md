@@ -1,6 +1,9 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-16（**M6.0 M5 Baseline Freeze**——M5 冻结为完成基线、全量验证
+> 更新日期：2026-09-16（**M6.1 Search/RAG 架构冻结 COMPLETE**——6 开源项目源码
+> 静态分析 + PaperTeam 盘点 + ADR D-0033 冻结（六层最小接口 / SearXNG 独立服务 /
+> 无 Vector DB / 内部零 MCP），M6.2 Project Literature Library 就绪；同日
+> **M6.0 M5 Baseline Freeze**——M5 冻结为完成基线、全量验证
 > 与文档状态统一，M6 进入准备阶段；**M5.7 最终产品化收口**：per-Agent Provider / Model 配置
 > （Settings agents 字段 + contextScope 确定性路由 + 会话级模型解析 + 失效 override
 > 结构化失败，credential 与 override 解耦）+ 外部专家 / 导师 / 用户修改意见驱动修订
@@ -89,7 +92,53 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
   build / typecheck / test 全绿。真实 smoke：per-Agent 双 scope 实跑（writer override
   vs 继承默认的 metadata.model 验证）+ scripted 后端外部意见 conflict 全链路。
 
-**M6 — Research Discovery & RAG（准备阶段，2026-09-16 M6.0 baseline established）**：
+**M6 — Research Discovery & RAG（进行中：2026-09-16 M6.0 baseline established；
+2026-09-16 M6.1 架构冻结 COMPLETE）**：
+
+- **M6.1 Search/RAG Open-source Research & Architecture Freeze（✅ 2026-09-16）**：
+  - **范围与纪律**：只读源码静态分析 + 架构冻结；**零业务代码实现、零第三方
+    源码进入 PaperTeam**（6 个外部仓库浅克隆于仓库外
+    `D:\Projects\PaperTeam-M6-Research`，非 submodule）；未动 Runtime / Workflow /
+    Frontend；未新增任何依赖。
+  - **分析对象（commit / license）**：searxng f725cc7（AGPL-3.0）、
+    agent-search d97c735（MIT）、paper-search-mcp e3d7046（MIT，远端 main 唯一
+    HEAD，单文件早期版）、aminer-open-skill 7ccfa90（MIT，AMiner 官方）、
+    semantic-scholar-mcp 38b3aa8（MIT）、openalex-research-mcp 29294c3（MIT）；
+    每项目均完成「架构 / 关键模块 / 请求路径 / 错误模型 / 数据模型 / 借鉴 /
+    不借鉴」源码级分析（含 SearXNG 一次完整搜索请求的调用链追踪）。
+  - **产出文档**：`docs/research/M6.1_SEARCH_RAG_OSS_ANALYSIS.md`（静态分析
+    报告：PaperTeam 盘点 + 6 项目逐项 + 19 维对比矩阵 + 大陆可用性 + 15 个
+    架构问题 + M6.4 RAG 初步架构 + Evidence 数据流）、
+    `docs/research/M6.1_SEARCH_RAG_ADR.md`（ADR 正文 + TS 接口草案 + 拒绝
+    方案 + 实施顺序）、DECISIONS.md **D-0033**（决策登记）。
+  - **冻结结论（D-0033）**：六层最小接口（WebSearchProvider /
+    AcademicSearchProvider / MetadataResolver / FullTextResolver /
+    LiteratureLibrary / RetrievalService+RetrievalIndex）；Web Search =
+    SearXNG 独立 HTTP 服务（optional，Docker + json format + limiter 关 +
+    中国引擎白名单；不 bundling / 不复制源码——AGPL 进程边界隔离）；学术
+    检索 = 扩展既有 ScholarlyResolver 生态（检索与核验两接口分开；OpenAlex
+    primary / S2 enrichment / AMiner China-secondary+enrichment 免费层先行 /
+    Crossref 只做 MetadataResolver / Unpaywall 属 FullTextResolver）；跨源
+    同一性 = 分层确定性键产出 SourceIdentity；共享 ProviderHttpClient（超时/
+    退避/Retry-After/类型化错误/熔断/限流≠宕机）；Index = Derived State
+    （chunk 落盘 + 进程内 lexical + 可选 dense；**第一版零 Vector DB / 零外部
+    数据库进程 / 无 reranker**）；Evidence 边界加严（snippet 最多 plausible，
+    verified 只经 quote 逐字匹配 / 元数据核验 / 只见真实证据的 judge）；
+    **内部零 MCP**（TS interface + Pi customTools）；Google 非依赖。
+  - **关键源码发现（择要）**：SearXNG JSON API 默认关闭且 limiter 开启时 API
+    限 4 次/小时/IP（必须自部署改配置）；打分 = 带引擎权重倒数排名融合（借
+    用）；agent-search 的 "chunk-level citations" 宣称与代码不符（实为源级
+    编号 + 代码拼参考文献），canonical_url 去重与 SSRF 逐跳校验值得 TS 移植；
+    paper-search-mcp 无 provider 抽象（4 套字段并存，反面样本）；AMiner 无
+    前向引用端点 / 搜索无精确引用数 / 免费层无完整摘要 / 按调用计费（不能
+    Primary；HTTP-200 信封业务错误需穿透）；s2-mcp 的 Retry-After RFC 解析 +
+    30s 硬帽教科书级、退避持锁 head-of-line 与无熔断是要超越处；openalex-mcp
+    31 工具 = 3 个 HTTP 原语（薄原语 + 厚编排）。
+  - **验证**：PaperTeam 仓库本轮仅文档变更（docs/research/ 新增 + DECISIONS /
+    PROJECT_STATUS）；`git status` 干净提交，无第三方源码混入。
+  - **M6 next step：M6.2 Project Literature Library**（候选文献清单 + DOI /
+    arXiv / URL 导入路径 + AGENT_RETRIEVED 写入方 + SourceIdentity 落库；
+    实施入口详见 ADR §11）。
 
 - **M6.0 M5 Baseline Freeze & Documentation Closure（✅ 2026-09-16）**：
   - Freeze 日期 2026-09-16；**M5 冻结基线 commit `8e8c9bf`**（M5 最终状态）；
@@ -109,12 +158,14 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
     条目（M5.5 不再是 AWAITING、M5.6 不再是 PARTIAL）；README Known Limitations
     移除已完成的「Docker 部署未实现」；ARCHITECTURE §1 与 DECISIONS D-0032 的
     「真实 Docker 验收待执行 / AWAITING」更新为已通过（2026-09-15）。
-  - **M6 next step：M6.1 Search/RAG Open-source Research & Architecture Freeze**
-    （先只读开源方案静态分析与架构调研，再冻结 Search/RAG 技术方案）。
-- M6 计划方向（均为 M6 后续工作，**M6.0 未实现任何 Search / RAG 能力**）：
-  Research Discovery、Web / Academic Search、Project Literature Library、
-  RAG / Retrieval、Evidence-grounded Retrieval、Reference Paper Intelligence、
-  Multimodal Review。
+  - **M6 next step：M6.1 Search/RAG Open-source Research & Architecture Freeze
+    （✅ 同日完成，见上方 M6.1 条目）**。
+- M6 计划方向（**截至 M6.1 未实现任何 Search / RAG 业务代码**；实施顺序已由
+  D-0033 / ADR §11 冻结为 M6.2 Literature Library → M6.3 Search Service →
+  M6.4 Retrieval/RAG → M6.5 Evidence Pipeline）：Research Discovery、
+  Web / Academic Search、Project Literature Library、RAG / Retrieval、
+  Evidence-grounded Retrieval、Reference Paper Intelligence、Multimodal Review
+  （后两者为 M6+ backlog，不在 M6.2–M6.5 编号内）。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
