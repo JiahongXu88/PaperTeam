@@ -4,6 +4,18 @@ All notable changes to PaperTeam are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — M5 COMPLETE（2026-09-16，未打 tag）
+
+M5.0–M5.7 全部完成：Runtime 生命周期可靠性与长程治理（M5.1/M5.2）、受控学术
+Skill 接入（M5.3）、中文风格修订回路（M5.4）、单机 Linux / Docker 部署（M5.5，
+真实 Docker 验收）、真实论文 A/B 验收与 Citation / Fact Preservation 双 Gate
+（M5.6）、最终产品化（M5.7：per-Agent provider/model 配置 + 外部专家 / 导师
+修改意见驱动修订，supports reviewer-driven revision with conflict detection and
+deterministic preservation gates）。完整内容见
+[docs/RELEASE_NOTES_M5.md](docs/RELEASE_NOTES_M5.md)；验收记录见
+[docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
+产物无法达成（发布条件不满足）。
+
 ## [0.1.0-mvp] — 2026-09-10 — M4 MVP（Alpha）
 
 首个公开里程碑：M1–M4 全部完成，三条产品路径闭环。详见
