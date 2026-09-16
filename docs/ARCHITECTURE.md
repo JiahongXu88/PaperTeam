@@ -591,6 +591,66 @@ PiRuntimeAdapter
   在-flight 调用不迁移；Workspace/checkpoint 保留已完成 stage，未完成
   调用由 Workflow 层处理；Runtime 重启从空会话池开始，无脏恢复。
 
+### 6.6 模型配置与 Per-Agent Override（M5.7）
+
+```
+Settings（model.json）
+  ├─ 默认 provider/model（"model" 字段）
+  └─ per-Agent override（"agents" 字段；null / 缺省键 = 继承默认）
+          ↓（agentModelSpecs 回调：doInitialize / reconfigure 时读取）
+Workflow startAgent（contextScope 前缀 → 业务 Agent 键，确定性映射）
+          ↓
+AgentRuntime（PiRuntimeAdapter：会话按 scope 解析各自模型）
+```
+
+- 业务 Agent 键：writer / researcher / academicReviewer / factReviewer /
+  styleReviewer / citationReviewer（`agentModelKeyForScope`，backend
+  `settings/ModelSettingsStore.ts`；三路 Reviewer 是同一 agentId 的三个
+  contextScope，因此按键而非 PiRoleKey 区分）。
+- **没有独立的 Model Routing Layer**：无自动 fallback、无成本路由、无任务难度
+  路由、无 provider failover——只有「用户明确配置哪个 Agent 用哪个模型」。
+  未来出现这些需求时才考虑抽象。
+- credential 与 override 解耦：agents 只保存 provider/model 规格（不含任何
+  API Key）；凭据按 provider 复用 Pi 官方 credential store（auth.json），
+  同一 provider 的多个 Agent 共用凭据；GET settings 永不返回 key 本体。
+- override 失效（模型不在注册表 / provider 无凭据）：该 Agent 的 run 结构化
+  失败（`MODEL_NOT_CONFIGURED` + 修复指引），**不静默回落默认**；删除自定义
+  provider 时指向它的 override 一并清除。
+- 运行事实可观测：任务终态 `metadata.model` 按会话真实模型记录，usage / cost
+  可归因到 Agent × 模型（`modelStatusSnapshot().agents` 提供诊断摘要）。
+- env 优先级只钉住**默认**模型（`PAPERTEAM_PI_MODEL`）；agent override 独立
+  生效。旧 model.json（无 agents 字段）正常加载，全部 Agent 继承默认。
+
+### 6.7 外部修改意见驱动的修订（M5.7）
+
+```
+External/User Feedback（期刊专家 / 编辑 / 导师 / 本人；原文逐字保存）
+        ↓（API：reviews/external-instructions.json；幂等指纹 id）
+RevisionPlan（external_instruction 条目，priority=mandatory，排序先于内部意见）
+        ↓（revision.apply / revision.revise 独立派发通道）
+Writer（专用 prompt 区块：最高业务优先级 + 事实红线 + %%%PT-OUTCOMES%%% 执行报告行）
+        ↓
+Fact / Citation Preservation + Style Invariant（确定性 Gate，判定口径不变）
+        ↓
+Review / Build（强制复审与构建，闭环收敛）
+```
+
+- **External feedback highest business priority, but never bypasses deterministic
+  safety gates**：mandatory 决定「优先修改什么」；Gate 决定「能不能这样修改」。
+  事实改写授权仍然只认「计划点名旧值 + 新值（或 Evidence 含新值）」；
+  负结果 → 优势的 hard rule 不因 mandatory 放开。
+- 处理状态是确定性判定（`review/externalInstructions.ts`，不采信模型自称
+  "已处理"）：handled = Writer 报告 applied 且目标文件真实变化（stage diff
+  补记）+ 下一轮 gate 的 fact preservation 复核通过（失败自动降级 unresolved
+  重新派发）；conflict = Writer 报告与实验事实冲突（保留依据，不自动改事实、
+  不重复派发）；applied 无文件变化 → unresolved；章节指错 → unresolved + 说明。
+- Writer 报告协议：输出末尾单独一行 `%%%PT-OUTCOMES%%%
+  [{"instructionId","outcome":"applied|conflict|not_applicable","basis"}]`；
+  无外部意见派发时输出契约与旧版完全一致。缺失 / 非法报告 → unreported
+  如实补齐（不采信也不丢弃）。
+- Response-to-Reviewers 完整生成器不在 M5.7（reviewerLabel / sourceText /
+  status / 执行结果数据已为将来保留）。
+
 ## 7. 质量与构建（M3.2 已实现）
 
 - **Build Gate**（`quality/gates.ts`）：由 LatexCompiler 编译 + 结构检查（include 文件存在、

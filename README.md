@@ -29,6 +29,9 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 | 长论文审阅 | PDF 解析 → PaperMap 导航图 + 受控分章节上下文（其他章节全文绝不进入当前审阅上下文），有界并发 + 背压；Runtime 层另有全局并发上限 + 有界等待队列 + 上下文预算（超限回转/拒绝，绝不静默截断）+ 会话 TTL/GC（Workflow 局部并发与 Runtime 全局治理两层） |
 | 审稿-修订闭环 | Reviewer 三路并行审稿 → 确定性聚合 → Quality Gate → 确定性 Revision Plan → Writer 逐节修订 → 强制复审 → 收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION，纯代码） |
 | 质量门禁 | 13+ 条确定性规则（学术评分 / 引用完整性 / 可行性），结论可解释（ruleId → 中文说明 → 深链处理入口），轮次隔离，修订后过期如实提示 |
+| 事实 / 引用保持 | 确定性双 Gate：Citation Preservation（修订不得无依据丢失引用）+ Fact Preservation（表格数值 / 正文数字 / 公式 / 方向结论 / 协议不得无依据改写，负结果不得美化；授权只认计划 + Evidence；篡改稿拒绝冻结 Draft） |
+| Per-Agent 模型配置 | Writer / Researcher / Academic / Fact / Style / Citation 六个业务 Agent 可独立指定 provider / model（缺省继承全局默认；凭据按 provider 共用，不重复存 Key；运行记录按 Agent × 模型归因 token / cost） |
+| 外部意见驱动修订 | 期刊专家 / 编辑 / 导师 / 本人修改意见手工录入（原文逐字保存），作为最高**业务**优先级（mandatory）进入修订计划；supports reviewer-driven revision with conflict detection and deterministic preservation gates——与实验事实冲突时如实标记并给出依据，不伪造、不篡改、不静默忽略；处理状态（已处理 / 部分处理 / 未处理 / 冲突）为确定性判定，不采信模型自称 |
 | Draft / Final | Build Gate（LaTeX 真实编译）通过即冻结 Draft；Final 要求双 Gate 通过且对齐当前修订；产物不可变、可查看 / 下载；编译失败自动修复 ≤2 次 |
 | 版本体验 | 论文修订的不可变版本链：版本历史（修订号 / 来源 / 审稿轮次 / 门禁结论 / 产物）、两修订确定性比较（章节级差异 + 记分对照，零 LLM）、恢复历史版本（= 创建新修订，历史与旧 Final 永不删除） |
 
@@ -117,24 +120,25 @@ cd e2e && npm test     # 各套件按环境门控自动跳过；scripted 栈与�
 （`PAPERTEAM_TEST_RUNTIME=scripted`——Workflow / checkpoint / SSE / HTTP / React /
 LaTeX 编译全真实，只有模型输出是确定性脚本）；另有真实模型 smoke 记录在各里程碑。
 
-## 当前状态：M4 MVP Complete / M5 in progress
+## 当前状态：M5 COMPLETE（M1–M5）
 
 M1–M4 已完成（Runtime 迁移到 Pi in-process、React 工作台、三条产品路径、
-质量基础设施与版本体验）；M5 进行中——M5.1 Runtime 生命周期可靠性与
-M5.2 长程运行治理（分层超时 / 全局并发与有界受理 / context budget /
-会话 rotation / TTL·GC·容量 / 观测面与安全自愈）已收口，M5.3 受控学术
-Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
+质量基础设施与版本体验）。M5（中文论文质量与长程运行可靠性）已于 2026-09-16
+全部收口：M5.1 Runtime 生命周期可靠性与 M5.2 长程运行治理（分层超时 / 全局并发
+与有界受理 / context budget / 会话 rotation / TTL·GC·容量 / 观测面与安全自愈）；
+M5.3 受控学术 Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
 审计 seed、固定上游 commit、role + contextScope 路由、会话级版本固定、
-assigned / accessed 观测、受控 install / update + Skills 设置页）与 M5.4 中文
+assigned / accessed 观测、受控 install / update + Skills 设置页）；M5.4 中文
 学术风格修订回路（stylePolicy suggest_only / apply_once、Style Invariant
 Checker、style-only HITL 修订 + 强制复审、Quick Review 只读红线、M5 eval
-corpus）已完成；M5.5 单机 Linux / Docker 部署已于 2026-09-15 完成**真实 Docker 验收**（WSL2 + Docker Engine，
+corpus）；M5.5 单机 Linux / Docker 部署（2026-09-15 真实 Docker 验收，WSL2 + Docker Engine，
 build / 持久化 / 容器内 XeLaTeX 中文 PDF / PyMuPDF / SIGTERM 优雅停机，见
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；M5.6 真实论文 A/B 验收多轮执行并如实记录：
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；M5.6 真实论文 A/B 验收——
 **Citation Preservation**（修订不得无依据丢失引用）与 **Fact Preservation**（修订不得无依据
 改写 / 删除 / 占位化实验事实，篡改稿拒绝冻结 Draft）双层确定性 Gate 已上线并被真实模型运行验证
 （两臂 fact mutation 均被 FAIL 拦截）；Skill 质量增益未获稳定证据（如实记录，见
-[docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）。**M5 整体状态见
+[docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）；M5.7 最终产品化——per-Agent
+provider/model 配置与外部专家 / 导师意见驱动的修订（见下方功能清单）。**M5 整体状态见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。**真实模型 / 真实 MiKTeX 的端到端验证记录见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
@@ -184,7 +188,7 @@ XeLaTeX/latexmk/biber + 中文字体，不对外发布）；数据在 `paperteam
 | [docs/PRD.md](docs/PRD.md) | 产品需求文档 |
 | [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与里程碑记录（M1–M5） |
 | [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md) | M5 真实论文 A/B 验收记录（环境 / 指标 / 修复 / 最终判定） |
-| [docs/RELEASE_NOTES_M5.md](docs/RELEASE_NOTES_M5.md) | M5 Release Notes（PARTIAL，未打 tag） |
+| [docs/RELEASE_NOTES_M5.md](docs/RELEASE_NOTES_M5.md) | M5 Release Notes（COMPLETE；未打 tag——本语料 Final 无法达成） |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 单机 Linux / Docker 部署（依赖审计 / 持久化 / 密钥 / 验收清单） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构（含架构红线：事实来源 / 会话 / 事件 / 双 Gate） |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Frontend API Contract（端点 / DTO / SSE / 变更纪律） |

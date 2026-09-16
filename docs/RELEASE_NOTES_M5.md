@@ -1,13 +1,36 @@
-# PaperTeam M5 Release Notes（进行中 / PARTIAL）
+# PaperTeam M5 Release Notes
 
-**Status**: M5 PARTIAL · **Date**: 2026-09-14 · **Baseline**: `v0.1.0-mvp`（M4）之后的 main
+**Status**: M5 COMPLETE（M5.0–M5.7）· **Date**: 2026-09-16（M5.7 产品化收口；M5.6 工程收口
+2026-09-16，首轮验收 2026-09-14）· **Baseline**: `v0.1.0-mvp`（M4）之后的 main
 
-M5 主题是「中文论文质量与长程运行加固」。本轮交付 M5.1–M5.4 完整能力与 M5.5 部署实现，
-并用真实中文工科论文 + 真实模型完成了 M5.6 的首轮 A/B 与红线验收
-（详见 [docs/M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。**未发布 tag**：M5.5 真实 Docker
-验收与 M5.6 人工评价尚未完成，按纪律不宣布 M5 COMPLETE。
+M5 主题是「中文论文质量与长程运行加固」。本轮交付 M5.1–M5.4 完整能力、M5.5 部署
+（真实 Docker 验收通过）、M5.6 真实论文 A/B 验收（Independent Model Pairwise
+Evaluation，判定见 [docs/M5_ACCEPTANCE.md](M5_ACCEPTANCE.md) §8），以及 M5.7 最终
+产品化（per-Agent 模型配置 + 外部专家修改意见驱动的修订体验）。**未发布 tag**：
+本语料上 Final 产物无法达成（既有论文无 Evidence 支撑），发布条件不满足（见文末）。
 
 ## Highlights
+
+### M5.7 Final Productization & Revision UX（✅ 2026-09-16）
+- **Per-Agent Provider / Model Configuration**：Settings 为 Writer / Researcher /
+  Academic / Fact / Style / Citation 六个业务 Agent 独立指定 provider/model
+  （null / 缺省继承全局默认；contextScope 前缀确定性路由）。credential 与 override
+  解耦（agents 不保存任何 API Key，按 provider 复用）；override 失效 → 该 Agent run
+  结构化失败并指明修复路径，不静默回落。运行事实可观测：任务终态
+  `metadata.model` 按会话真实模型记录（usage / cost 可归因到 Agent × 模型）。
+  没有引入 Model Router / 自动 fallback / 成本路由——只有用户显式配置。
+- **External Expert / Advisor Revision Instructions**：期刊外审专家 / 编辑 / 导师 /
+  用户意见手工录入（原文逐字保存，幂等指纹），以最高**业务**修改优先级
+  （mandatory）进入确定性 RevisionPlan；修订 prompt 携带专用区块与执行红线，
+  Writer 以 `%%%PT-OUTCOMES%%%` 报告行回传 applied / conflict / not_applicable。
+- **确定性处理状态**（不采信模型自称"已处理"）：handled 需要「报告 applied 且
+  目标文件真实变化」，且下一轮 gate 的 fact preservation 复核通过（失败自动降级
+  重新派发）；conflict 保留依据、不自动改事实、不重复派发（等人工决策）；
+  UI 展示 已处理 / 部分处理 / 未处理 / 与事实冲突 及依据与可选建议。
+- **安全 Gate 不被绕过**：Fact Preservation / Citation Preservation / Style
+  Invariant 判定口径完全不变；专家要求「把负结果写成优势」类意见 → conflict
+  如实报告（依据引用稿件具体数值），不伪造、不篡改、不美化、不静默忽略。
+- Quick Review 保持 100% 只读（无修订 stage，不派发外部意见）。
 
 ### M5.1 / M5.2 Runtime 长程治理（✅）
 AbortSignal 统一、事件 seq + event_gap、queued cancel、timeout 分层、结构化终态、
@@ -78,11 +101,17 @@ Docker Engine 主机上完成 build / up / health / Web+API / 持久化（restar
 
 ## Compatibility
 - AgentRuntime 契约 v2 只新增可选字段（`AgentTask.skills`、`RuntimeSessionStats.usageTotals`、
-  `SessionDiagnosticEntry.assignedSkills/contextScope`）。
+  `SessionDiagnosticEntry.assignedSkills/contextScope`、`RuntimeModelStatus.agents`）。
 - 新配置：`PAPERTEAM_DISABLED_SKILLS`、`PAPERTEAM_SHUTDOWN_TIMEOUT_MS`；run 选项 `stylePolicy`。
+- M5.7 向后兼容：旧 `model.json`（无 `agents` 字段）正常加载、全部 Agent 继承默认；
+  PUT 不带 `agents` 字段不清空已有 override；无外部意见时 improvement workflow 与
+  之前完全一致；旧项目不因新增字段无法加载。
 - 新路由：`/api/skills/*`（provenance / update-preview / install / update）、
-  `/api/projects/:id/style-polish`、`/ready`。
+  `/api/projects/:id/style-polish`、`/api/projects/:id/external-instructions`（GET /
+  POST / DELETE :iid）、`/ready`；`PUT /api/settings/model` 新增可选 `agents` 字段。
 
 ## 建议 tag
-现有体系：`v0.1.0-mvp`（M4）。M5 完整收口后建议 `v0.2.0`（次版本：新增 Skill / Style Loop /
-部署能力，无破坏性变更）。**本轮不打 tag**。
+现有体系：`v0.1.0-mvp`（M4）。M5 完整收口后建议 `v0.2.0`（次版本：新增 Skill /
+Style Loop / 部署能力 / per-Agent 模型配置 / 外部意见修订，无破坏性变更）。
+**本轮仍不打 tag**：验收语料上 Final 产物无法达成（既有论文无 Evidence 支撑，
+双 Gate 如实 FAIL），tag 的发布条件不满足；下次取得可达成 Final 的语料后随发布打出。

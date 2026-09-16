@@ -9,7 +9,8 @@
 
 ## 0. M5 主线
 
-M5 围绕六条主线展开，阶段编号即建议执行顺序（M5.0 → M5.6）：
+M5 围绕六条主线展开，阶段编号即建议执行顺序（M5.0 → M5.7；M5.7 为
+最终产品化收口）：
 
 1. **中文论文质量**：以真实中文论文为对象建立可重复的质量评测口径
    （M5.0 基线 + M5.6 验收），避免「改了 prompt 自我感觉变好」。
@@ -232,6 +233,65 @@ PROVENANCE / CITATION 提示）与用户论文 bibliography 是两个概念：Pa
 > M5_ACCEPTANCE §5——不把模型盲评表述为人工评价）。**M5 判定：M5.0–M5.6 全部 COMPLETE**
 > （engineering goals achieved, Skill quality gain not consistently demonstrated）；不打 tag
 > （本语料无 Evidence、Final 无法达成，发布条件不满足）。
+
+### M5.7 Final Productization & Revision UX（✅ COMPLETE 2026-09-16）
+
+M5 的最终产品化收口：per-Agent 模型配置与外部（期刊专家 / 导师 / 编辑 / 用户）
+修改意见驱动的修订体验。**不新增 Skill / Runtime / RAG / 自动路由**。
+
+交付内容：
+
+- **Per-Agent Provider / Model Configuration**：
+  - Settings 保存 per-Agent override（`~/.paperteam/settings/model.json` 的 `agents`
+    字段；键 = writer / researcher / academicReviewer / factReviewer / styleReviewer /
+    citationReviewer，由 contextScope 前缀确定性路由）；null / 缺省 = 继承全局默认。
+  - Runtime 在初始化 / reconfigure 时解析 override（`agentModelSpecs` 回调），会话按
+    scope 使用各自模型（context budget / 任务终态 `metadata.model` / 诊断快照全部
+    按会话口径）；override 失效（模型不在注册表 / 无凭据）→ 该 Agent run 结构化失败
+    （`MODEL_NOT_CONFIGURED`，指明修复路径），不静默回落默认。
+  - credential 与 override 解耦：agents 只存 provider/model 规格，API Key 仍按
+    provider 复用 Pi 官方 credential store（GET 永不返回 key 本体）；删除自定义
+    提供商时指向它的 override 一并清除；PUT 不带 `agents` 字段 = 保持现有 override
+    （旧客户端兼容）。
+  - Model Settings UI「Agent 独立模型配置」：默认全部继承（显示实际生效模型），
+    单 Agent 展开 Provider / Model / 独立测试连接；activeRuns > 0 保存 409 语义不变。
+  - **没有独立的 Model Routing 层**——没有自动 fallback / 成本路由 / 难度路由 /
+    provider failover；只有「用户明确配置哪个 Agent 用哪个模型」。
+- **External Expert / Advisor Revision Instructions**：
+  - 用户手工输入外部修改意见（来源：期刊外审专家 / 用户要求 / 编辑 / 导师 / 其他，
+    可选 Reviewer 标识与涉及章节），原文逐字保存（`reviews/external-instructions.json`，
+    幂等指纹 id 跨轮稳定）；API：GET / POST / DELETE `/api/projects/:id/external-instructions`。
+  - 意见以**最高业务修改优先级**（`RevisionPlanItem.priority = "mandatory"`，排序与
+    派发先于内部审稿意见）进入确定性 RevisionPlan；内部 Reviewer 建议与外部意见
+    冲突时以外部意见为准（prompt 契约 + 排序）。
+  - **业务优先级 ≠ 安全优先级**：Fact Preservation / Citation Preservation /
+    Style Invariant 等确定性 Gate 的判定口径完全不变——mandatory 不产生任何额外
+    授权（事实改写授权仍只认「计划点名旧值 + 新值（或 Evidence 含新值）」），
+    负结果→优势 hard rule 不因 mandatory 放开。
+  - Writer 派发协议：外部意见进入修订 prompt 的专用区块（最高优先级 + 事实红线 +
+    执行报告），输出末尾以 `%%%PT-OUTCOMES%%%` 单行 JSON 报告每条意见的
+    applied / conflict / not_applicable（含依据）；无外部意见时输出契约与旧版完全一致。
+  - **确定性状态机**（不采信模型自称"已处理"）：handled = 报告 applied 且目标文件
+    真实变化（stage 确定性 diff 补记 targetChanged）；随后一轮 revision.plan 用最新
+    gate 的 fact preservation 复核，失败降级回 unresolved 重新派发（恢复闭环自愈）；
+    conflict = Writer 报告与实验事实冲突（保留依据，不重复自动派发，等人工决策）；
+    applied 但无文件变化 → unresolved（不采信）；章节指错 → unresolved + 说明。
+  - UI：改进页「外部修改意见」面板（输入 + 状态徽章 已处理 / 部分处理 / 未处理 /
+    与事实冲突 + 冲突依据与可选建议 + 删除确认）；「修订计划」面板展示每条计划的
+    来源（MUST · Reviewer 2 / 内部审稿）与状态（conflict / handled 按 instructionId
+    关联活数据）；`external_instructions.updated` domain event 经 SSE 失效前端缓存。
+  - Quick Review（existing_paper_review）保持只读：不含修订 stage，天然不派发；
+    Response-to-Reviewers 完整生成器不在本轮（reviewerLabel / sourceText / status /
+    执行结果数据已为将来保留）。
+
+> 进度：**COMPLETE（2026-09-16）**。后端新增 59 测试（per-Agent 解析矩阵 / 状态机 /
+> 计划条目 / Writer 契约与报告解析 / HTTP 全链路 e2e，含 conflict 与 Quick Review
+> 只读红线）；前端新增 12 测试（Agent 模型面板交互 / 外部意见表单与状态 /
+> 修订计划展示）；全仓 build / typecheck / test 绿。真实 smoke：per-Agent 模型
+> 双 scope 实跑（writer override vs 继承默认）+ scripted 后端外部意见 conflict
+> 全链路（不篡改事实、conflict 如实落状态）。
+
+**M5 最终状态：M5.0–M5.7 全部 COMPLETE。M5 COMPLETE。**
 
 ## 2. M5 明确不做（非目标）
 

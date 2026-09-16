@@ -1,13 +1,19 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-16（**M5.6 事实安全收口**：pair-02 独立模型盲评暴露修订改写实验事实后，
-> 新增确定性 **Fact Preservation Gate**（表格数值 / 正文数字 / 公式 / 方向结论 / 数据集划分 /
-> 硬件 / 占位回归 / 无依据新增；授权只认计划 + Evidence；篡改稿拒绝冻结 Draft）+
-> Writer 修订契约与三个学术 Skill 收紧（不新增第四个 Skill）；真实模型最终 A/B 两臂
-> fact mutation 均被 Gate FAIL 拦截；pair-02 离线回归确认盲评全部主要问题可被确定性规则命中；
+> 更新日期：2026-09-16（**M5.7 最终产品化收口**：per-Agent Provider / Model 配置
+> （Settings agents 字段 + contextScope 确定性路由 + 会话级模型解析 + 失效 override
+> 结构化失败，credential 与 override 解耦）+ 外部专家 / 导师 / 用户修改意见驱动修订
+> （原文逐字保存、mandatory 最高业务优先级、`%%%PT-OUTCOMES%%%` 执行报告、确定性
+> handled / conflict 状态机、冲突如实报告不篡改事实，安全 Gate 口径不变）；
+> **M5.0–M5.7 全部 COMPLETE，M5 COMPLETE**；同日 **M5.6 事实安全收口**：pair-02
+> 独立模型盲评暴露修订改写实验事实后，新增确定性 **Fact Preservation Gate**
+>（表格数值 / 正文数字 / 公式 / 方向结论 / 数据集划分 / 硬件 / 占位回归 / 无依据新增；
+> 授权只认计划 + Evidence；篡改稿拒绝冻结 Draft）+ Writer 修订契约与三个学术 Skill
+> 收紧（不新增第四个 Skill）；真实模型最终 A/B 两臂 fact mutation 均被 Gate FAIL 拦截；
+> pair-02 离线回归确认盲评全部主要问题可被确定性规则命中；
 > 09-15 **M5.5 ✅ COMPLETE**：WSL2 + Docker Engine 真实验收；**Citation Preservation Gate**
-> （确定性，Prompt 不是 Gate）、长论文执行超时分层、CI 首次全绿、修复后真实论文 A/B
-> （A8 / B6 两臂均 Draft、引用丢失 0、Style Polish 真实触发并被 Invariant Checker 挡下）；
+>（确定性，Prompt 不是 Gate）、长论文执行超时分层、CI 首次全绿、修复后真实论文 A/B
+>（A8 / B6 两臂均 Draft、引用丢失 0、Style Polish 真实触发并被 Invariant Checker 挡下）；
 > pairwise 口径调整为 **Independent Model Pairwise Evaluation**（独立外部模型盲评，
 > human review optional）；09-14 首轮验收：真实 26 页中文论文 A/B + Quick Review + 材料不足提案；
 > 同日 **M5.4 Chinese Academic Style Revision Loop ✅
@@ -33,13 +39,54 @@ Version Experience + Public Repository Readiness 收口后，M4 全部完成。�
 中文论文质量、长程 Runtime 可靠性（M5.1 ✅ / M5.2 ✅ 收口）、学术 Skill 受控
 接入（M5.3 ✅）、Style Revision Loop（M5.4 ✅）、单机 Linux / Docker 部署
 （M5.5 ✅ 2026-09-15 真实 Docker 验收）、真实论文 A/B 验收
-（M5.6 ✅ 2026-09-16 — Fact Preservation 收口，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）。
-**M5 整体：✅ COMPLETE（2026-09-16）— engineering goals achieved, Skill quality gain not
-consistently demonstrated**（两轮独立盲评均判 Skill 开启臂危害更小（2/2）但两臂都有事实违规且
-都被 Gate 拦截；Reviewer 分数两轮互为翻转；如实记录，不宣称 Skill 已被证明提高论文质量；
-不打 tag——本语料无 Evidence、Final 无法达成）。旧文档中「M5 = Visual Reviewer /
+（M5.6 ✅ 2026-09-16 — Fact Preservation 收口，见 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)）、
+最终产品化（M5.7 ✅ 2026-09-16 — per-Agent 模型配置 + 外部意见修订体验）。
+**M5 整体：✅ COMPLETE（2026-09-16，M5.0–M5.7 全绿）— engineering goals achieved,
+Skill quality gain not consistently demonstrated**（两轮独立盲评均判 Skill 开启臂
+危害更小（2/2）但两臂都有事实违规且都被 Gate 拦截；Reviewer 分数两轮互为翻转；
+如实记录，不宣称 Skill 已被证明提高论文质量；不打 tag——本语料无 Evidence、
+Final 无法达成）。旧文档中「M5 = Visual Reviewer /
 Skill / Deployment / System Admin（可选方向）」的表述已被取代：
 Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）。
+
+**M5.7 Final Productization & Revision UX（✅ 2026-09-16）**：
+
+- **Per-Agent Provider / Model Configuration**：Settings 的 `model.json` 新增
+  `agents` 字段（writer / researcher / academicReviewer / factReviewer /
+  styleReviewer / citationReviewer；`agentModelKeyForScope` 按 contextScope 前缀
+  确定性路由，review/section、review/summary 归 academicReviewer）。Runtime 在
+  初始化 / reconfigure 时经 `agentModelSpecs` 回调解析 override：会话按 scope
+  使用各自模型（context budget preflight、任务终态 `metadata.model`、
+  `modelStatusSnapshot().agents` 诊断全部按会话口径——usage / cost 可归因到
+  Agent × 模型）；override 失效（不在注册表 / 无凭据）→ 该 Agent run 结构化失败
+  （MODEL_NOT_CONFIGURED + 修复指引），不静默回落。credential 解耦：agents 只存
+  provider/model 规格，Key 按 provider 复用官方 credential store（GET 永不回 key）；
+  删除自定义提供商连带清除指向它的 override；PUT 缺省 `agents` 字段 = 保持现有
+  override（旧客户端兼容；旧 model.json 无 agents 字段正常加载）。UI：模型设置页
+  「Agent 独立模型配置」（默认全部继承并显示实际生效模型；单 Agent 展开独立
+  Provider / Model / 测试连接；activeRuns>0 保存 409 不变）。**未引入 Model
+  Router / 自动 fallback / 成本路由**。
+- **External Expert / Advisor Revision Instructions**：`reviews/external-instructions.json`
+  逐字保存外部意见（来源 / Reviewer 标识 / 涉及章节 / 幂等指纹 id；API GET / POST /
+  DELETE）。意见进入确定性 RevisionPlan 为 `external_instruction` 条目、
+  `priority=mandatory`（排序与派发先于内部意见；内部 Reviewer 建议冲突时让位），
+  原文 `sourceText` 随计划留档；revision.apply / revision.revise 独立通道派发，
+  Writer prompt 专用区块 + 事实红线 + `%%%PT-OUTCOMES%%%` 单行执行报告
+  （applied / conflict / not_applicable + 依据）。**确定性状态机**：handled =
+  报告 applied 且目标文件真实变化（stage diff 补记）+ 下一轮 gate fact
+  preservation 复核通过（失败自动降级 unresolved 重派）；conflict = 与实验事实
+  冲突（保留依据，不自动改事实，不重复派发）；applied 无实据 → unresolved；
+  章节指错 → unresolved + 说明。UI：改进页外部意见面板（输入 + 状态徽章 +
+  冲突依据 / 可选建议）+ 修订计划面板（MUST · Reviewer 2 来源标识、conflict /
+  handled 关联展示）；`external_instructions.updated` SSE 事件驱动缓存失效。
+- **安全边界不变**：Fact / Citation Preservation 与 Style Invariant 判定口径
+  完全不受 mandatory 影响（授权仍只认计划点名旧值+新值（或 Evidence 含新值）；
+  负结果→优势 hard rule 不放开）；Quick Review 保持 100% 只读（无修订 stage，
+  天然不派发外部意见）；无外部意见 / 无 agent override 时全部行为与旧版一致。
+- 测试：后端 +59（agentModel 25 / agentModelSettings 10 / externalInstructions 18 /
+  workflow e2e 6），前端 +12（AgentModelPanel 5 / ExternalInstructions + RevisionPlan 7）；
+  build / typecheck / test 全绿。真实 smoke：per-Agent 双 scope 实跑（writer override
+  vs 继承默认的 metadata.model 验证）+ scripted 后端外部意见 conflict 全链路。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
@@ -454,7 +501,8 @@ WSL2 + Docker Engine 主机上对同一 git checkout 完成全部真实验收（
   `stopped cleanly`、exit 0、无 zombie / unhandled；日志无 Windows 路径。明细见
   docs/M5_ACCEPTANCE.md §4.7。
 
-**M5.6 Real Paper Acceptance & Release（🟡 PARTIAL，2026-09-14）**：完整记录见
+**M5.6 Real Paper Acceptance & Release（✅ COMPLETE 2026-09-16 — engineering goals
+achieved, Skill quality gain not consistently demonstrated）**：完整记录见
 [M5_ACCEPTANCE.md](M5_ACCEPTANCE.md)，Release Notes 见 [RELEASE_NOTES_M5.md](RELEASE_NOTES_M5.md)。
 
 - **材料与方法**：本机已有的 26 页中文工科论文 PDF（本地输入，不入库）；
@@ -493,8 +541,11 @@ WSL2 + Docker Engine 主机上对同一 git checkout 完成全部真实验收（
   B $3.52 / 83 min。⑥ **盲评包** `~/.paperteam-acceptance/pairwise/`（pair-01 = A2 vs B2，
   pair-02 = A8 vs B6，随机顺序 + 解盲映射隔离）。B3 / A4 与 A5 / B4 / A6 / B5 因主机 Modern
   Standby 中断（落盘证据仍有效），A7 因 verdict 契约偏差失败——均如实记录。
-- **未完成 / 如实边界**：人工 pairwise 评价必须由真人完成（PaperTeam / Claude 不代填）。
-  **不打 tag；M5 状态 PARTIAL — awaiting human pairwise evaluation**。
+- **最终判定（2026-09-16 更新，M5_ACCEPTANCE §8）**：M5.0–M5.6 全部 COMPLETE——
+  engineering goals achieved；Skill 质量增益为「方向性盲评偏好（2/2）、样本量不足以宣称
+  稳定提升」，如实记录。human pairwise 保留为 optional（DoD 调整为 Independent Model
+  Pairwise Evaluation，调整原因见 M5_ACCEPTANCE §5）。**不打 tag**：Final 产物在本语料上
+  无法达成（无 Evidence 支撑的既有论文），发布版本条件不满足（见 RELEASE_NOTES_M5）。
 
 **M4.8 — Product Closure + Version Experience + Public Repository Readiness
 （✅ 完成，2026-09-10）**：

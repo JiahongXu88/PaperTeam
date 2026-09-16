@@ -1,10 +1,13 @@
-# M5 Acceptance（真实论文 A/B 验收记录，2026-09-14 首轮 / 2026-09-15 收口）
+# M5 Acceptance（真实论文 A/B 验收记录，2026-09-14 首轮 / 2026-09-15 收口 / 2026-09-16 最终判定）
 
-> 结论先行：**M5.3 / M5.4 / M5.5 ✅ COMPLETE；M5.6 🟡 PARTIAL — awaiting human pairwise
-> evaluation**。09-15 完成：真实 Docker 验收（§4.7）、Citation Preservation Gate（§6.6）、
+> 结论先行：**M5.0–M5.7 ✅ COMPLETE（M5 COMPLETE，2026-09-16）**。M5.6 工程目标全部
+> 达成（§8 Final verdict）；M5.7 最终产品化（per-Agent 模型配置 + 外部修改意见）另行
+> 以确定性测试矩阵 + 真实 smoke 验收（见 PROJECT_STATUS M5.7 节），不在本文件的真实
+> 论文 A/B 口径内。09-15 完成：真实 Docker 验收（§4.7）、Citation Preservation Gate（§6.6）、
 > 长论文执行超时分层（§6.7）、CI 首次全绿、修复后真实论文 A/B（§4.8）与盲评材料包（§5）。
-> 人工 pairwise 评价必须由真人完成，本文件不用任何模型自评替代，因此 M5 整体**仍不标
-> COMPLETE**。所有数字来自 `~/.paperteam-acceptance*/**/summary.json` 与 backend.log
+> 09-16：Fact Preservation Gate（§6.9 / §4.9）与最终判定（§8）；pairwise 口径为
+> **Independent Model Pairwise Evaluation**（独立外部模型盲评；human review optional，
+> 调整原因见 §5）。所有数字来自 `~/.paperteam-acceptance*/**/summary.json` 与 backend.log
 > （本地保留，不入库；论文正文不出现在本文件，只有计数 / 指纹 / 章节数）。
 
 ## 1. Environment

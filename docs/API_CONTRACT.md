@@ -231,6 +231,29 @@
 >   `PaperReconstructor` 确定性重建可修订稿件（outline / sections / bib /
 >   组装根；文本级，不含原图）；改进计划 prompt 携带真实章节文件清单。
 
+### 1.2g M5.7 已消费 ✅（Per-Agent 模型配置 / 外部修改意见 / 修订计划展示）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `PUT /api/settings/model`（M5.7 扩展） | 请求体新增可选 `agents?: Record<AgentKey, string \| null>`（键：writer / researcher / academicReviewer / factReviewer / styleReviewer / citationReviewer；值 "provider/model-id" 或 null=继承默认）。**字段省略 = 保持现有 override**（旧客户端兼容）；存在时整体替换；未知键 / 非法规格 / 未知模型 → 400；agents 不含任何 API Key（credential 按 provider 复用）。响应 `settings.agents: AgentModelSettingView[]`（override / overrideProvider / overrideModelId / effective / source / authConfigured） | AgentModelPanel（保存 Agent 配置） |
+| `GET /api/settings/model`（M5.7 扩展） | `settings.agents`：六个业务 Agent 的配置视图（继承默认时 `source:"default"`、effective=默认模型；无 key 本体） | AgentModelPanel（继承默认显示实际模型） |
+| `GET /api/projects/:id/external-instructions` | 外部修改意见列表 + 涉及章节候选 → `{instructions: ExternalInstructionView[], sectionOptions: string[]}`。ExternalInstructionView：instructionId（幂等指纹）/ source（user \| journal_reviewer \| editor \| advisor \| other）/ reviewerLabel? / text（原文逐字）/ section? / status（pending \| handled \| partially_handled \| unresolved \| conflict，**确定性判定**：handled = 报告 applied 且目标文件真实变化 + gate 复核通过）/ statusNote? / conflictBasis? | ExternalInstructionsPanel（意见列表与状态） |
+| `POST /api/projects/:id/external-instructions` | 添加意见 `{source, text, reviewerLabel?, section?}` → `{instruction, instructions}`；text 非空且 ≤8000 字符；同内容幂等指纹重复 → 400；非法 source → 400。意见以 mandatory 进入下一轮 RevisionPlan / revision.apply 派发；**不绕过任何确定性 Gate** | ExternalInstructionsPanel（添加到修改计划） |
+| `DELETE /api/projects/:id/external-instructions/:iid` | 删除一条意见（不影响已产生的修订）→ `{instructions}`；不存在 → 404 | ExternalInstructionsPanel（删除，行内确认） |
+| `GET /api/projects/:id/revision-plan`（M5.7 起消费） | 最新确定性修订计划（`?round=N` 指定轮）→ `{round, plan}`；plan.items 含 `external_instruction` 条目（priority="mandatory"、source="external"、reviewerLabel / sourceText / instructionId），冲突 / 已处理条目 status="skipped" + note 留档 | RevisionPlanPanel（来源 / 优先级 / 状态展示；conflict / handled 按 instructionId 关联意见活数据） |
+
+> 2026-09-16 M5.7 语义约定：
+> - **业务优先级 ≠ 安全优先级**：外部意见 mandatory 决定「优先修改什么」；
+>   Fact / Citation Preservation 与 Style Invariant 决定「能不能这样修改」，
+>   判定口径完全不变。与实验事实冲突的意见 → `status="conflict"` +
+>   conflictBasis（依据），不篡改、不静默忽略。
+> - **处理状态不采信模型自称**：handled 需要 Writer 报告 applied（`%%%PT-OUTCOMES%%%`
+>   协议）且目标文件真实变化（stage 确定性 diff），随后一轮 gate 的 fact
+>   preservation 复核通过（失败自动降级 unresolved 重新派发）。
+> - Quick Review（existing_paper_review）不含修订 stage，天然不派发外部意见。
+> - SSE 新增 domain event `external_instructions.updated`（revision.apply /
+>   revise 派发回写后发出；data: {dispatched, unmatched, conflicts, revision}）。
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |
