@@ -35,6 +35,11 @@ export async function saveModelSettings(input: {
   model: string;
   /** 省略 = 保持原 Key；空字符串非法（Backend 400） */
   apiKey?: string;
+  /**
+   * per-Agent override（M5.7）：省略 = 保持现有 override；存在时整体替换
+   * （键缺省 / null = 该 Agent 继承默认）。只含 provider/model 规格，无 Key。
+   */
+  agents?: Record<string, string | null>;
 }): Promise<ModelSettingsView> {
   const body = await apiClient.put<{ settings: ModelSettingsView }>("/api/settings/model", input);
   return body.settings;

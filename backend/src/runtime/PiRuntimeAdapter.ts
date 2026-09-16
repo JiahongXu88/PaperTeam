@@ -145,6 +145,11 @@ import {
 import { resolveRoleConfig, type PiRoleConfig, type PiRoleKey } from "./pi/roleConfig.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
 import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
+import {
+  AGENT_MODEL_KEYS,
+  agentModelKeyForScope,
+  type AgentModelKey,
+} from "../settings/ModelSettingsStore.js";
 import type {
   AgentEvent,
   AgentTaskSkills,
@@ -350,6 +355,14 @@ export interface PiRuntimeOptions {
   roleSkills?: (role: PiRoleKey, contextScope?: string) => RuntimeSkillAssignment[];
   /** 按角色注入的自定义工具（如 researcher/citation 的受控学术检索） */
   roleCustomTools?: (role: PiRoleKey) => ToolDefinition[];
+  /**
+   * per-Agent 模型 override（M5.7）：返回当前全部业务 Agent 的 override 规格
+   * （AgentModelKey → "provider/model-id"）。缺省键 = 继承默认模型。
+   * 在 doInitialize / reconfigure 时读取（applyModelConfig）；每次重载模型
+   * 配置都会重新解析——回调应读取持久化的最新配置（如 ModelSettingsStore）。
+   * 只含非敏感规格；credential 仍按 provider 复用 Pi 官方 credential store。
+   */
+  agentModelSpecs?: () => Promise<Partial<Record<AgentModelKey, string>>>;
   /** 诊断日志输出，默认 console.log */
   log?: (message: string) => void;
 }
@@ -376,6 +389,10 @@ interface ManagedSession {
   key: string;
   session: AgentSession;
   role: PiRoleConfig;
+  /** 本会话实际使用的模型（M5.7：per-Agent override 或默认） */
+  model: PiModel;
+  /** 本会话模型的 "provider/model-id" 标签（任务终态 metadata.model） */
+  modelLabel: string;
   cwd: string;
   /** 归一化 contextScope（Skill 路由 / 诊断；无 scope 会话缺省） */
   scope?: string;
@@ -541,6 +558,14 @@ interface RunState {
   runSettled: Promise<void>;
 }
 
+/** per-Agent override 的解析结果（M5.7） */
+interface AgentModelResolution {
+  model?: PiModel;
+  label?: string;
+  /** 配置失效原因（模型不在注册表 / provider 无凭据 / 规格非法） */
+  error?: string;
+}
+
 /** 已完结任务记录（getTask 回溯） */
 interface TaskRecord {
   task: AgentTask;
@@ -665,6 +690,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly roleSkillDirs: NonNullable<PiRuntimeOptions["roleSkillDirs"]> | undefined;
   private readonly roleSkills: NonNullable<PiRuntimeOptions["roleSkills"]> | undefined;
   private readonly roleCustomTools: NonNullable<PiRuntimeOptions["roleCustomTools"]> | undefined;
+  private readonly agentModelSpecs: NonNullable<PiRuntimeOptions["agentModelSpecs"]> | undefined;
   private readonly log: (message: string) => void;
 
   private readonly sessions = new Map<string, ManagedSession>();
@@ -691,6 +717,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private modelRuntime?: PiModelRuntime;
   private model?: PiModel;
   private resolvedModelLabel?: string;
+  /**
+   * per-Agent 模型 override 的解析结果（M5.7）：成功 → {model,label}；
+   * 配置失效（模型不在注册表 / provider 无凭据）→ {error}。
+   * applyModelConfig 时整体重建（doInitialize / reconfigure 共享）。
+   */
+  private agentModels = new Map<AgentModelKey, AgentModelResolution>();
   private initPromise?: Promise<void>;
   private initError?: string;
   private modelStatus: PiModelStatus = { phase: "unknown", providers: [], detail: "尚未初始化" };
@@ -753,6 +785,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.roleSkillDirs = options.roleSkillDirs;
     this.roleSkills = options.roleSkills;
     this.roleCustomTools = options.roleCustomTools;
+    this.agentModelSpecs = options.agentModelSpecs;
     this.log = options.log ?? ((message) => console.log(message));
   }
 
@@ -805,10 +838,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
   /**
    * 按当前 modelSpec 解析模型并更新就绪状态（doInitialize 与 reconfigure 共享）。
    * env API Key（startupApiKey）在内存覆盖层注入（不落盘）；key 本体不进日志。
+   * M5.7：默认模型解析成功后，再解析 per-Agent override（agentModelSpecs）；
+   * 失效的 override 不静默回落——对应 Agent 的 run 结构化失败（见 modelForScope）。
    */
   private async applyModelConfig(): Promise<void> {
     this.model = undefined;
     this.resolvedModelLabel = undefined;
+    this.agentModels.clear();
     if (this.modelSpec === undefined) {
       this.modelStatus = {
         phase: "not_configured",
@@ -861,6 +897,72 @@ export class PiRuntimeAdapter implements AgentRuntime {
       providers: [model.provider],
       detail: `模型 ${this.resolvedModelLabel} 已配置`,
     };
+    await this.resolveAgentModels();
+  }
+
+  /**
+   * 解析 per-Agent override（M5.7）：agentModelSpecs 回调返回持久化的最新配置。
+   * 单个 override 解析失败只记录 error（对应 Agent 的 run 结构化失败），
+   * 不影响默认模型与其他 Agent。回调整体失败 → 全部继承默认（配置读取层
+   * 的问题不应让 Runtime 拒绝启动）。
+   */
+  private async resolveAgentModels(): Promise<void> {
+    if (this.agentModelSpecs === undefined || this.modelRuntime === undefined) {
+      return;
+    }
+    let overrides: Partial<Record<AgentModelKey, string>>;
+    try {
+      overrides = await this.agentModelSpecs();
+    } catch (error) {
+      this.log(`[pi-runtime] per-Agent 模型配置读取失败（全部继承默认）：${errorText(error)}`);
+      return;
+    }
+    for (const key of AGENT_MODEL_KEYS) {
+      const spec = overrides[key];
+      if (spec === undefined || spec.trim() === "") {
+        continue;
+      }
+      const parsed = parseModelSpec(spec);
+      if (parsed === undefined) {
+        this.agentModels.set(key, { error: `模型规格非法："${spec}"（应为 provider/model-id）` });
+        continue;
+      }
+      const model = this.modelRuntime.getModel(parsed.provider, parsed.modelId);
+      if (model === undefined) {
+        this.agentModels.set(key, {
+          error: `模型 ${parsed.provider}/${parsed.modelId} 不在注册表（provider 已删除或配置失效）`,
+        });
+        continue;
+      }
+      if (!this.modelRuntime.hasConfiguredAuth(parsed.provider)) {
+        this.agentModels.set(key, {
+          error: `模型 ${parsed.provider}/${parsed.modelId} 已配置，但 provider 无可用凭据`,
+        });
+        continue;
+      }
+      this.agentModels.set(key, { model, label: spec.trim() });
+      this.log(`[pi-runtime] Agent ${key} 使用独立模型：${spec.trim()}`);
+    }
+  }
+
+  /**
+   * 按 contextScope 解析本任务应使用的模型（M5.7）：
+   * scope 命中业务 Agent 且其 override 有效 → override 模型；
+   * 命中但 override 失效 → 返回 error（调用方结构化失败，不静默回落默认）；
+   * 未命中 / 无 override → 默认模型。调用方保证默认模型已配置。
+   */
+  private modelForScope(
+    scope: string | undefined,
+  ): { key?: AgentModelKey; model: PiModel; label: string; error?: string } {
+    const key = agentModelKeyForScope(scope);
+    const resolved = key !== undefined ? this.agentModels.get(key) : undefined;
+    if (resolved !== undefined && resolved.model !== undefined && resolved.label !== undefined) {
+      return { ...(key !== undefined ? { key } : {}), model: resolved.model, label: resolved.label };
+    }
+    if (resolved !== undefined && resolved.error !== undefined) {
+      return { key, model: this.model!, label: this.resolvedModelLabel ?? "", error: resolved.error };
+    }
+    return { model: this.model!, label: this.resolvedModelLabel ?? "" };
   }
 
   private logInitDone(startedAt: number, modelMissing: boolean): void {
@@ -926,7 +1028,18 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return { phase: "unknown", providers: [], detail: "Pi Runtime 已关闭" };
     }
     await this.ensureInitialized();
-    return this.modelStatus;
+    return {
+      ...this.modelStatus,
+      ...(this.agentModels.size > 0
+        ? {
+            agents: [...this.agentModels.entries()].map(([key, resolved]) => ({
+              key,
+              ...(resolved.label !== undefined ? { model: resolved.label } : {}),
+              ...(resolved.error !== undefined ? { error: resolved.error } : {}),
+            })),
+          }
+        : {}),
+    };
   }
 
   /** 已解析的模型标签（"provider/model-id"；未配置为 undefined；诊断用） */
@@ -1044,10 +1157,32 @@ export class PiRuntimeAdapter implements AgentRuntime {
       return this.makeHandle(state);
     }
 
+    // M5.7 per-Agent 模型：scope 命中的业务 Agent 配置了失效 override 时
+    // 结构化失败——用户显式配置优先于隐式回落默认，失败信息指明修复路径。
+    const scopeModel = this.modelForScope(scope);
+    if (scopeModel.error !== undefined) {
+      const agentName = scopeModel.key ?? "(unknown)";
+      this.log(
+        `[pi-runtime] startAgent 拒绝（Agent ${agentName} 模型配置失效）：${scopeModel.error}`,
+      );
+      this.settleTask(
+        state,
+        this.buildTask({
+          taskId,
+          agentId: input.agentId,
+          status: "failed",
+          sessionKey,
+          error: `Agent ${agentName} 配置的模型不可用：${scopeModel.error}。请在 Settings → 模型设置修正该 Agent 的配置，或改回「继承默认」`,
+          errorCode: "MODEL_NOT_CONFIGURED",
+        }),
+      );
+      return this.makeHandle(state);
+    }
+
     // M5.2 oversized 单输入预算检查（任务 H5）：估算输入 + 输出预留超过
     // contextWindow 时立即结构化失败——不创建会话、不排队、不调用
     // provider、不静默截断任务内容。
-    const oversized = this.checkContextBudget(message, sessionKey, input.agentId, state);
+    const oversized = this.checkContextBudget(message, sessionKey, input.agentId, state, scopeModel.model);
     if (oversized !== undefined) {
       this.settleTask(state, oversized);
       return this.makeHandle(state);
@@ -1163,7 +1298,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
         // 同样占用上下文，照常回写）。
         const measured = state.usage?.contextTokens;
         if (measured !== undefined && measured > 0) {
-          const contextWindow = this.model?.contextWindow ?? 0;
+          const contextWindow = managed.model.contextWindow ?? 0;
           managed.context = {
             contextWindow,
             contextTokens: measured,
@@ -1523,10 +1658,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     if (managed.needsRotation) {
       await this.rotateSession(managed, managed.needsRotationReason ?? "marked_unhealthy");
     }
-    // 事实源：resolved Pi Model（任务 H1；PaperTeam 不维护模型上下文表）
-    const contextWindow = this.model?.contextWindow ?? 0;
+    // 事实源：本会话实际使用的 Pi Model（M5.7 起可能是 per-Agent override；
+    // PaperTeam 不维护模型上下文表）
+    const contextWindow = managed.model.contextWindow ?? 0;
     if (contextWindow > 0) {
-      const maxTokens = this.model?.maxTokens ?? 0;
+      const maxTokens = managed.model.maxTokens ?? 0;
       const reserve = computeOutputReserve(contextWindow, maxTokens, this.outputReserveTokens);
       const nextInputEstimate = estimatePromptTokens(message);
       // oversized 已在 startAgent 受理前拦截（见 checkContextBudget），能走到
@@ -1573,14 +1709,15 @@ export class PiRuntimeAdapter implements AgentRuntime {
     sessionKey: string,
     agentId: string,
     state: RunState,
+    model: PiModel,
   ): AgentTask | undefined {
-    const contextWindow = this.model?.contextWindow ?? 0;
+    const contextWindow = model.contextWindow ?? 0;
     if (contextWindow <= 0) {
       return undefined; // 模型窗口不可知：预算 guard 不生效（不伪造数字）
     }
     const reserve = computeOutputReserve(
       contextWindow,
-      this.model?.maxTokens ?? 0,
+      model.maxTokens ?? 0,
       this.outputReserveTokens,
     );
     const nextInputEstimate = estimatePromptTokens(message);
@@ -1673,11 +1810,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
     try {
       const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd, managed.scope);
       managed.session = fresh.session;
-      // 新 generation 重新解析 Skill 版本：更新在此边界（且仅在此边界）生效
+      // 新 generation 重新解析 Skill 版本与模型（M5.7：override 变更经
+      // reconfigure 触发整体释放，这里保持同 scope 同模型的不变量）
+      managed.model = fresh.model;
+      managed.modelLabel = fresh.modelLabel;
       managed.assignedSkills = fresh.assignedSkills;
       managed.skillDirs = fresh.skillDirs;
       managed.unsubscribe = this.wireSessionEvents(managed);
-      const contextWindow = this.model?.contextWindow ?? 0;
+      const contextWindow = managed.model.contextWindow ?? 0;
       managed.context = {
         contextWindow,
         // 全新会话：无任何对话内容，0 是准确值（estimated 基准）
@@ -1938,7 +2078,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       status: "completed",
       sessionKey,
       output,
-      model: this.resolvedModelLabel,
+      model: managed.modelLabel,
       role: managed.role.role,
     });
   }
@@ -2130,6 +2270,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
       key: sessionKey,
       session: created.session,
       role,
+      model: created.model,
+      modelLabel: created.modelLabel,
       cwd,
       ...(scope !== undefined ? { scope } : {}),
       assignedSkills: created.assignedSkills,
@@ -2166,6 +2308,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
     scope: string | undefined,
   ): Promise<CreatedPiSession> {
     await mkdir(cwd, { recursive: true }).catch(() => {});
+    // 本会话的模型（M5.7）：per-Agent override（按 scope 命中）或默认模型。
+    // 调用方（startAgent）已保证 override 失效时不会到达这里。
+    const scopeModel = this.modelForScope(scope);
+    const model = scopeModel.model;
     // 技能面完全自控：关闭全部默认发现（workspace/.pi、~/.pi 等），
     // 只注入 PaperTeam Skill Store 中该 role + contextScope 路由到的不可变
     // 版本快照目录（M5.3：generation 内固定）。
@@ -2210,7 +2356,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
             cwd,
             agentDir: this.agentDir,
             role,
-            model: this.model,
+            model,
             modelRuntime: this.modelRuntime!,
             settingsManager: this.settingsManager!,
             sessionManager,
@@ -2220,7 +2366,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
             await createAgentSession({
               cwd,
               agentDir: this.agentDir,
-              model: this.model,
+              model,
               modelRuntime: this.modelRuntime!,
               resourceLoader,
               sessionManager,
@@ -2234,7 +2380,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
               ...(allCustomTools.length > 0 ? { customTools: allCustomTools } : {}),
             })
           ).session;
-    return { session, assignedSkills, skillDirs };
+    return { session, assignedSkills, skillDirs, model, modelLabel: scopeModel.label };
   }
 
   /** projectId → workspace 子目录（含路径包含性防越界，与 ProjectStore.projectDir 同规则） */
@@ -2856,11 +3002,14 @@ function readContextUsage(
   }
 }
 
-/** 底层 Pi AgentSession + 本 generation 的 Skill 注入快照 */
+/** 底层 Pi AgentSession + 本 generation 的 Skill 注入快照与会话模型 */
 interface CreatedPiSession {
   session: AgentSession;
   assignedSkills: AssignedSkillRef[];
   skillDirs: string[];
+  /** 本会话实际使用的模型（M5.7：per-Agent override 或默认） */
+  model: PiModel;
+  modelLabel: string;
 }
 
 /**

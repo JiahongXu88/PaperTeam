@@ -51,6 +51,12 @@ import {
   regenerateSkillSummary,
 } from "../api/skills.js";
 import {
+  addExternalInstruction,
+  deleteExternalInstruction,
+  getRevisionPlan,
+  listExternalInstructions,
+} from "../api/externalInstructions.js";
+import {
   clearModelApiKey,
   deleteCustomProvider,
   getCustomProviders,
@@ -110,6 +116,11 @@ export const queryKeys = {
   modelOptions: ["model-settings", "options"] as const,
   modelOptionsFor: (provider: string) => ["model-settings", "options", provider] as const,
   customProviders: ["model-settings", "custom-providers"] as const,
+  /** 外部修改意见（M5.7；修订派发后失效重取） */
+  externalInstructions: (projectId: string) =>
+    ["project", projectId, "external-instructions"] as const,
+  /** 修订计划（M5.7；round 缺省 = 最新） */
+  revisionPlan: (projectId: string) => ["project", projectId, "revision-plan"] as const,
 };
 
 /** 项目目录几乎不变：一天内不因窗口聚焦重取（1290 条模型目录不该反复下载） */
@@ -686,7 +697,12 @@ export function useModelOptions(provider?: string) {
 export function useSaveModelSettings() {
   const invalidate = useInvalidateModelState();
   return useMutation({
-    mutationFn: (input: { model: string; apiKey?: string }) => saveModelSettings(input),
+    mutationFn: (input: {
+      model: string;
+      apiKey?: string;
+      /** per-Agent override（M5.7）：省略 = 保持现有；存在时整体替换 */
+      agents?: Record<string, string | null>;
+    }) => saveModelSettings(input),
     onSuccess: invalidate,
   });
 }
@@ -726,4 +742,44 @@ export function useTestModelConnection() {
 
 function isNonEmpty(value: string | undefined): value is string {
   return value !== undefined && value !== "";
+}
+
+// ---- 外部修改意见 / 修订计划（M5.7） ----
+
+export function useExternalInstructions(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.externalInstructions(projectId),
+    queryFn: ({ signal }) => listExternalInstructions(projectId, signal),
+  });
+}
+
+export function useAddExternalInstruction(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof addExternalInstruction>[1]) =>
+      addExternalInstruction(projectId, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.externalInstructions(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.revisionPlan(projectId) });
+    },
+  });
+}
+
+export function useDeleteExternalInstruction(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instructionId: string) => deleteExternalInstruction(projectId, instructionId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.externalInstructions(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.revisionPlan(projectId) });
+    },
+  });
+}
+
+/** 最新修订计划（external_instructions.updated 事件后由 SSE 侧失效缓存） */
+export function useRevisionPlan(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.revisionPlan(projectId),
+    queryFn: ({ signal }) => getRevisionPlan(projectId, undefined, signal),
+  });
 }

@@ -604,6 +604,29 @@ export interface RuntimeStatusView {
 /** 模型配置生效来源（env > 本地保存 > 未配置） */
 export type ModelConfigurationSource = "environment" | "stored" | "not_configured";
 
+/** 可独立配置模型的业务 Agent（M5.7；与 Backend AgentModelKey 一致） */
+export type AgentModelKey =
+  | "writer"
+  | "researcher"
+  | "academicReviewer"
+  | "factReviewer"
+  | "styleReviewer"
+  | "citationReviewer";
+
+/** 单个 Agent 的模型配置视图（无任何 key 字段） */
+export interface AgentModelSettingView {
+  key: AgentModelKey;
+  /** 保存的 override 规格 "provider/model-id"（继承默认时缺省） */
+  override?: string;
+  overrideProvider?: string;
+  overrideModelId?: string;
+  /** 该 Agent 实际使用的 "provider/model-id"（默认未配置且无 override 时缺省） */
+  effective?: string;
+  source: "agent_override" | "default";
+  /** override provider 是否有可用凭据（不含 key 本体） */
+  authConfigured?: boolean;
+}
+
 /** GET /api/settings/model 的 settings DTO（无任何 key 字段） */
 export interface ModelSettingsView {
   provider?: string;
@@ -620,6 +643,8 @@ export interface ModelSettingsView {
   modelPhase: "configured" | "not_configured" | "unknown";
   modelDetail: string;
   detail: string;
+  /** per-Agent 模型配置视图（M5.7；旧 Backend 可能缺省） */
+  agents?: AgentModelSettingView[];
 }
 
 /** provider 目录条目（安全 metadata） */
@@ -693,6 +718,92 @@ export interface ModelTestResultView {
   latencyMs?: number;
   code?: ModelTestResultCode;
   detail?: string;
+}
+
+// ---- External Instructions / Revision Plan（M5.7） ----
+
+/** 外部修改意见来源（与 Backend EXTERNAL_INSTRUCTION_SOURCES 一致） */
+export type ExternalInstructionSource =
+  | "user"
+  | "journal_reviewer"
+  | "editor"
+  | "advisor"
+  | "other";
+
+/** 处理状态（确定性判定：handled 需要真实文件变化 + gate 复核通过） */
+export type ExternalInstructionStatus =
+  | "pending"
+  | "handled"
+  | "partially_handled"
+  | "unresolved"
+  | "conflict";
+
+export interface ExternalInstructionView {
+  instructionId: string;
+  source: ExternalInstructionSource;
+  reviewerLabel?: string;
+  /** 原始意见全文（逐字保存，追溯审计） */
+  text: string;
+  section?: string;
+  status: ExternalInstructionStatus;
+  statusNote?: string;
+  conflictBasis?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/projects/:id/external-instructions */
+export interface ExternalInstructionsResponse {
+  instructions: ExternalInstructionView[];
+  sectionOptions: string[];
+}
+
+export type RevisionPlanItemKind =
+  | "external_instruction"
+  | "review_finding"
+  | "citation_missing"
+  | "citation_removed"
+  | "fact_preserve"
+  | "build_error"
+  | "gate_blocker";
+
+export type RevisionPlanItemPriority = "mandatory" | "high" | "medium" | "low";
+
+export interface RevisionPlanItemView {
+  id: string;
+  kind: RevisionPlanItemKind;
+  priority: RevisionPlanItemPriority;
+  section: string;
+  problem: string;
+  instruction: string;
+  expectedOutcome: string;
+  status: "planned" | "skipped";
+  needsEvidence?: boolean;
+  note?: string;
+  source?: "external" | "internal";
+  reviewerLabel?: string;
+  sourceText?: string;
+  instructionId?: string;
+}
+
+/** GET /api/projects/:id/revision-plan（?round= 缺省最新轮） */
+export interface RevisionPlanView {
+  schemaVersion: number;
+  planId: string;
+  projectId: string;
+  sourceRevision: number;
+  reviewRound: number;
+  createdAt: string;
+  summary: {
+    critical: number;
+    major: number;
+    blocking: number;
+    minorRecorded: number;
+    planned: number;
+    skipped: number;
+    external?: number;
+  };
+  items: RevisionPlanItemView[];
 }
 
 // ---- 通用 ----

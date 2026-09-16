@@ -4,6 +4,7 @@ import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
 import { ModelCombobox } from "../components/common/ModelCombobox.js";
 import { ProviderCombobox } from "../components/common/ProviderCombobox.js";
+import { AgentModelPanel } from "../components/settings/AgentModelPanel.js";
 import { CustomProviderPanel } from "../components/settings/CustomProviderPanel.js";
 import {
   useClearModelApiKey,
@@ -294,6 +295,8 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
           ) : null}
         </form>
       </div>
+
+      <AgentModelPanel settings={settings} />
 
       <CustomProviderPanel
         providers={customProvidersQuery.data}

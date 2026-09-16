@@ -433,6 +433,141 @@
   box-shadow: var(--shadow-card);
 }
 
+/* M5.7 Agent 独立模型配置：与 settings-form 同级的面板 */
+.agent-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.agent-model-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.agent-model-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.agent-model-name {
+  font-weight: 600;
+}
+
+.agent-model-custom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--r-lg);
+}
+
+/* M5.7 外部修改意见面板 */
+.external-instruction-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.external-instruction-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.external-instruction-form-row .field {
+  flex: 1 1 180px;
+}
+
+.external-instruction-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.external-instruction-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.external-instruction-conflict {
+  border-color: var(--warning);
+}
+
+.external-instruction-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.external-instruction-section {
+  margin-left: auto;
+}
+
+.external-instruction-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  color: var(--text-primary);
+}
+
+/* M5.7 修订计划面板 */
+.revision-plan-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.revision-plan-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-2) var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--bg-surface);
+}
+
+.revision-plan-external {
+  border-left: 3px solid var(--accent-primary);
+}
+
+.revision-plan-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.revision-plan-section {
+  margin-left: auto;
+}
+
+.revision-plan-problem {
+  margin: 0;
+}
+
 .custom-providers {
   margin-top: var(--s-8);
   padding-top: var(--s-6);

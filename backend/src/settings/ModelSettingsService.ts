@@ -35,7 +35,11 @@ import {
   toProviderConfigInput,
   validateCustomProviderInput,
 } from "./CustomProviderStore.js";
-import type { ModelSettingsStore } from "./ModelSettingsStore.js";
+import {
+  AGENT_MODEL_KEYS,
+  type AgentModelKey,
+  type ModelSettingsStore,
+} from "./ModelSettingsStore.js";
 
 /** Test Connection 的最小真实调用超时（毫秒） */
 const TEST_CONNECTION_TIMEOUT_MS = 30_000;
@@ -86,6 +90,27 @@ export interface ModelSettingsStatus {
   modelDetail: string;
   /** 人读状态说明（env 覆盖提示在此） */
   detail: string;
+  /** per-Agent 模型配置视图（M5.7；含 override 与生效值；无 key） */
+  agents?: AgentModelView[];
+}
+
+/**
+ * 单个业务 Agent 的模型配置视图（M5.7）。override 存在时 effective = override
+ * （独立于 env 对默认模型的覆盖——env 只钉住默认），否则继承默认。
+ */
+export interface AgentModelView {
+  key: AgentModelKey;
+  /** 保存的 override 规格 "provider/model-id"（继承默认时缺省） */
+  override?: string;
+  /** override 的 provider 段（前端不拆字符串） */
+  overrideProvider?: string;
+  /** override 的 model-id 段（provider 之后整体；可含 "/"） */
+  overrideModelId?: string;
+  /** 该 Agent 实际使用的 "provider/model-id"（默认未配置且无 override 时缺省） */
+  effective?: string;
+  source: "agent_override" | "default";
+  /** override provider 是否有可用凭据（不含 key 本体） */
+  authConfigured?: boolean;
 }
 
 export interface ModelProviderOption {
@@ -222,6 +247,35 @@ export class ModelSettingsService {
       modelPhase: modelStatus.phase,
       modelDetail: modelStatus.detail,
       detail: describeSource(configurationSource),
+      agents: AGENT_MODEL_KEYS.map((key) => this.toAgentModelView(key, stored, effectiveModel)),
+    };
+  }
+
+  /** per-Agent 配置视图（override > 默认；不含任何 key） */
+  private toAgentModelView(
+    key: AgentModelKey,
+    stored: Awaited<ReturnType<ModelSettingsStore["load"]>>,
+    defaultEffective: string | undefined,
+  ): AgentModelView {
+    const override = stored.agents?.[key];
+    if (override !== undefined) {
+      const parsed = parseModelSpec(override);
+      return {
+        key,
+        override,
+        ...(parsed !== undefined ? { overrideProvider: parsed.provider } : {}),
+        ...(parsed !== undefined ? { overrideModelId: parsed.modelId } : {}),
+        effective: override,
+        source: "agent_override",
+        ...(parsed !== undefined
+          ? { authConfigured: this.getAuthStatus(parsed.provider).configured }
+          : {}),
+      };
+    }
+    return {
+      key,
+      ...(defaultEffective !== undefined ? { effective: defaultEffective } : {}),
+      source: "default",
     };
   }
 
@@ -325,10 +379,24 @@ export class ModelSettingsService {
     }
     await this.customProviders.save(stored.filter((config) => config.id !== id));
 
-    const preference = (await this.store.load()).model;
-    if (preference !== undefined && parseModelSpec(preference)?.provider === id) {
-      await this.store.clear();
-      this.log(`[model-settings] 模型偏好 ${preference} 随自定义提供商 ${id} 一并清除`);
+    const preferences = await this.store.load();
+    // 默认偏好或任何 agent override 指向被删 provider 时一并清除
+    // （否则重启后 Runtime 会解析到不存在的提供商 / 模型）
+    const keptAgents = Object.fromEntries(
+      Object.entries(preferences.agents ?? {}).filter(
+        ([, spec]) => parseModelSpec(spec)?.provider !== id,
+      ),
+    ) as Partial<Record<AgentModelKey, string>>;
+    const agentOverridesCleared =
+      Object.keys(keptAgents).length !== Object.keys(preferences.agents ?? {}).length;
+    const preferenceCleared =
+      preferences.model !== undefined && parseModelSpec(preferences.model)?.provider === id;
+    if (preferenceCleared || agentOverridesCleared) {
+      await this.store.write({
+        ...(preferenceCleared ? {} : preferences.model !== undefined ? { model: preferences.model } : {}),
+        ...(Object.keys(keptAgents).length > 0 ? { agents: keptAgents } : {}),
+      });
+      this.log(`[model-settings] 指向自定义提供商 ${id} 的模型偏好已随删除一并清除`);
     }
     this.log(`[model-settings] 已删除自定义提供商 ${id}`);
     await this.reconfigureSafely(this.env.piModel ?? (await this.store.load()).model, []);
@@ -338,12 +406,18 @@ export class ModelSettingsService {
   // ---- 保存（PUT /api/settings/model） ----
 
   /**
-   * 保存模型偏好（必填）与 API Key（可选；省略 = 保持原 Key）。
+   * 保存模型偏好（必填）与 API Key（可选；省略 = 保持原 Key），
+   * 以及 per-Agent override（可选；字段缺省 = 保持现有 override，字段存在时
+   * 整体替换——键缺省 / null = 该 Agent 继承默认）。
    * 语义：先持久化，再重载 Runtime（在途 run > 0 时 409 拒绝，
    * 全部落盘但 Runtime 保持旧配置——下次空闲保存即可对齐；此处直接
    * 抛出，不产生半应用状态）。
    */
-  async saveModel(input: { model: string; apiKey?: string }): Promise<ModelSettingsStatus> {
+  async saveModel(input: {
+    model: string;
+    apiKey?: string;
+    agents?: Record<string, string | null>;
+  }): Promise<ModelSettingsStatus> {
     // 前置空闲检查：避免「已落盘但 Runtime 被拒」的半应用状态
     // （reconfigure 内部仍有一致性守卫，双保险）
     this.assertIdle();
@@ -374,14 +448,65 @@ export class ModelSettingsService {
       await this.storeApiKey(provider, apiKey);
     }
 
-    await this.store.save(spec);
-    this.log(`[model-settings] 已保存模型偏好：${spec}`);
+    // M5.7 per-Agent override：逐条校验（规格合法 + 模型在注册表），
+    // 全部通过才落盘——不产生半应用配置。不保存任何 API Key（credential
+    // 按 provider 复用，见文件头）。字段缺省 = 保持现有 override 不变
+    // （旧客户端只改默认模型时不误清空 per-Agent 配置）；字段存在时为
+    // 整体替换（键缺省 / null = 该 Agent 继承默认）。
+    const storedNow = await this.store.load();
+    const agents =
+      input.agents !== undefined ? this.validateAgentOverrides(input.agents) : storedNow.agents;
+
+    await this.store.save(spec, agents);
+    this.log(
+      `[model-settings] 已保存模型偏好：${spec}` +
+        (agents !== undefined && Object.keys(agents).length > 0
+          ? `（per-Agent override：${Object.keys(agents).join(", ")}）`
+          : ""),
+    );
 
     // 生效值仍按优先级解析（env 覆盖时 Runtime 保持 env 配置）；
     // 同样收敛 SDK 错误对象（可能内嵌 credential）
     const effective = this.env.piModel ?? spec;
     await this.reconfigureSafely(effective, [apiKey].filter(Boolean));
     return this.getStatus();
+  }
+
+  /**
+   * 校验并归一 per-Agent override 输入（整体替换语义）。
+   * 返回 undefined = 清空全部 override；键集合只保留有值的键。
+   */
+  private validateAgentOverrides(
+    raw: Record<string, string | null> | undefined,
+  ): Partial<Record<AgentModelKey, string>> | undefined {
+    if (raw === undefined) {
+      return undefined;
+    }
+    const agents: Partial<Record<AgentModelKey, string>> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (!(AGENT_MODEL_KEYS as readonly string[]).includes(key)) {
+        throw new BusinessError("INVALID_REQUEST", `未知的 Agent 键："${key}"（可选：${AGENT_MODEL_KEYS.join(", ")}）`);
+      }
+      if (value === null || value.trim() === "") {
+        continue; // 继承默认
+      }
+      const spec = value.trim();
+      const parsed = parseModelSpec(spec);
+      if (parsed === undefined) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `Agent ${key} 的模型规格非法："${spec}"（应为 provider/model-id）`,
+        );
+      }
+      if (this.modelRuntime.getModel(parsed.provider, parsed.modelId) === undefined) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `Agent ${key} 的模型 ${parsed.provider}/${parsed.modelId} 不在注册表（可在 GET /api/settings/model/options?provider=${parsed.provider} 查看可用模型）`,
+        );
+      }
+      agents[key as AgentModelKey] = spec;
+    }
+    return agents;
   }
 
   // ---- 清除 Key（DELETE /api/settings/model/key） ----

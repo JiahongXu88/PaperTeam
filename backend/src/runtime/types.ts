@@ -346,6 +346,12 @@ export interface RuntimeModelStatus {
   /** 已配置凭据的 provider 名单（不含任何 key） */
   providers: string[];
   detail: string;
+  /**
+   * per-Agent 模型解析摘要（M5.7；实现未配置 agent override 时缺省）。
+   * model = 实际使用的 "provider/model-id"；error = override 失效原因。
+   * 不含任何 key 本体。
+   */
+  agents?: Array<{ key: string; model?: string; error?: string }>;
 }
 
 export interface RuntimeSessionStats {
