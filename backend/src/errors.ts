@@ -41,6 +41,10 @@ export type BusinessErrorCode =
   | "SOURCE_IN_USE"
   | "SEARCH_ALL_PROVIDERS_FAILED"
   | "SEARCH_PROVIDER_NOT_CONFIGURED"
+  | "SOURCE_NOT_INDEXABLE"
+  | "RETRIEVAL_NOT_READY"
+  | "EMBEDDING_UNAVAILABLE"
+  | "INVALID_RETRIEVAL_FILTER"
   | "PDF_PARSE_FAILED"
   | "PDF_PARSER_UNAVAILABLE"
   | "NOT_FOUND"
@@ -79,6 +83,10 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   SOURCE_IN_USE: 409,
   SEARCH_ALL_PROVIDERS_FAILED: 502,
   SEARCH_PROVIDER_NOT_CONFIGURED: 503,
+  SOURCE_NOT_INDEXABLE: 422,
+  RETRIEVAL_NOT_READY: 503,
+  EMBEDDING_UNAVAILABLE: 422,
+  INVALID_RETRIEVAL_FILTER: 400,
   PDF_PARSE_FAILED: 422,
   PDF_PARSER_UNAVAILABLE: 503,
   NOT_FOUND: 404,
@@ -355,6 +363,45 @@ export class SourceInUseError extends BusinessError {
       `文献 ${sourceId} 已被 ${referenceCount} 条 Evidence 引用，不能删除（请先处理引用它的 Evidence）`,
     );
     this.referenceCount = referenceCount;
+  }
+}
+
+// ---- Retrieval（M6.4 Project RAG）----
+
+/** 显式重建单个无法生成全文的 Source（metadata-only / 解析失败等）：422 */
+export class SourceNotIndexableError extends BusinessError {
+  readonly reason: string;
+  constructor(sourceId: string, reason: string, detail?: string) {
+    super(
+      "SOURCE_NOT_INDEXABLE",
+      `文献 ${sourceId} 无法建立检索索引（${reason}）`,
+      detail,
+    );
+    this.reason = reason;
+  }
+}
+
+/** 检索索引不可用（derived 产物损坏且重建失败 / 底层 IO 失败）：503 */
+export class RetrievalNotReadyError extends BusinessError {
+  constructor(message: string, detail?: string) {
+    super("RETRIEVAL_NOT_READY", `项目检索索引不可用：${message}`, detail);
+  }
+}
+
+/**
+ * 显式请求 dense/hybrid 检索但 EmbeddingProvider 未配置：422。
+ * 默认（auto）路径永不抛此错——dense 是 optional，缺省 lexical-only（D-0033）。
+ */
+export class EmbeddingUnavailableError extends BusinessError {
+  constructor(message: string) {
+    super("EMBEDDING_UNAVAILABLE", `Embedding 通道不可用：${message}`);
+  }
+}
+
+/** 非法检索 filter（枚举值 / 年份区间 / sourceIds 形状）：400 */
+export class RetrievalInvalidFilterError extends BusinessError {
+  constructor(reason: string) {
+    super("INVALID_RETRIEVAL_FILTER", `非法检索过滤条件：${reason}`);
   }
 }
 

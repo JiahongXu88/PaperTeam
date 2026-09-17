@@ -260,6 +260,25 @@
 > - SSE 新增 domain event `external_instructions.updated`（revision.apply /
 >   revise 派发回写后发出；data: {dispatched, unmatched, conflicts, revision}）。
 
+### 1.2h M6.4 Retrieval API（后端已实现；前端暂无消费方——验收靠 backend + benchmark）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `POST /api/projects/:id/retrieval/search` | 项目文献库全文检索 `{query, topK?(1-50 默认 8), mode?("auto"\|"lexical"\|"hybrid"), filter?{sourceIds?, sourceRole?(evidence\|reference\|both), section?, yearFrom?, yearTo?, sourceType?}, budgetTokens?(1000-24000)}` → `{mode, query, results: RetrievedChunk[], diagnostics, packed?{text, usedTokens, budgetTokens, excluded}}`。RetrievedChunk 含 chunk（chunkId 稳定 / section / page / text / ordinal / contentHash）+ source 摘要 + score（fused 与各通道 rank/score）+ channels。**语义边界：retrieved passages ≠ verified evidence，链路零 EvidenceStore 写入**。索引 lazy + 文献库签名自动增量刷新（新上传下一次检索即生效）；`mode=hybrid` 未配置 EmbeddingProvider → 422 EMBEDDING_UNAVAILABLE（生产默认 lexical-only）；非法 filter → 400 INVALID_RETRIEVAL_FILTER；不存在项目 → 404 | （无——M6.4 不做 RAG UI） |
+| `POST /api/projects/:id/retrieval/rebuild` | 强制重建索引。body 带 `sourceId` → 单源重建（无全文 source → 422 SOURCE_NOT_INDEXABLE + reason/note）；空 body → 整库重建 → `{projectId, sources: per-source outcome[{sourceId, status, chunkCount, reason?, note?}], chunks, durationMs}`（单源失败不抛，结构化记录）。Derived State：删除 `sources/chunks/` 全部产物后 rebuild 恢复同等检索结果 | （无） |
+| `GET /api/projects/:id/retrieval/stats` | `{mode, sources:{total, indexed, skipped, stale}, chunks, vectors?{provider, identity, dimensions, chunks}, builtAt?}`（vectors 仅配置 EmbeddingProvider 时出现） | （无） |
+
+> 2026-09-17 M6.4 语义约定：
+> - 删除正式 Source（`DELETE /api/projects/:id/sources/:sid`）连带检索索引失效
+>   （磁盘 chunk 产物 + 进程内索引 + manifest；失效失败不回滚删除，下次加载
+>   按孤儿对账自愈）——不存在幽灵命中。
+> - `retrieve_library` 是 Agent 侧（Pi customTools，researcher/writer/reviewer
+>   三角色）消费同一 RetrievalService 的入口；按会话 projectId 闭包构造，
+>   Agent 无法跨项目检索。工具输出带 `packedContext`（token 预算打包 + 
+>   `[SRC:… CHUNK:… SECTION:… PAGE:…]` 引用标记）。
+> - 错误码新增：SOURCE_NOT_INDEXABLE(422) / RETRIEVAL_NOT_READY(503) /
+>   EMBEDDING_UNAVAILABLE(422) / INVALID_RETRIEVAL_FILTER(400)。
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |

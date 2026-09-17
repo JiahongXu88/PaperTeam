@@ -107,9 +107,12 @@ Loop（M5.4 ✅，见 §13.10）已完成；单机 Linux / Docker 部署（M5.5 
 真实 Docker 验收通过，见 docs/DEPLOYMENT.md §7：web(nginx) + backend 两容器、双 volume
 事实源、`/health` liveness 与 `/ready` readiness、可配置优雅停机）。M6 起 Research
 Discovery 能力落地：M6.2 Project Literature Library（SourceIdentity 身份键 / 候选-
-正式分文件 / 五种入库路径 / promotion 幂等，sources/ 域）与 **M6.3 Research
+正式分文件 / 五种入库路径 / promotion 幂等，sources/ 域）、**M6.3 Research
 Discovery & Academic/Web Search（§14：search/ 域——共享 ProviderHttpClient + 四学术
-Provider + SearXNG + 多源融合去重 + 显式 Candidate 持久化 + Provider Health）**。
+Provider + SearXNG + 多源融合去重 + 显式 Candidate 持久化 + Provider Health）** 与
+**M6.4 Project RAG & Hybrid Retrieval（§15：retrieval/ 域——确定性 SourceChunk 管线 +
+进程内 BM25 lexical + optional dense + RRF hybrid + Context Budget Packing +
+retrieve_library 工具）**。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -298,7 +301,9 @@ Reviewer、Experiment subsystem 均在 backlog（M5 未含，见 M5_PLAN §2）�
 - **Workspace（Authoritative State）**：`projects/<id>/` 下 `manuscript/`（main.tex、
   sections/、revisions.json 不可变修订链）、`sources/`（papers / parsed / index.json
   ——正式文献 authoritative；candidates.json——Discovery 候选，非 authoritative，
-  M6.2 / D-0034）、`evidence/`、`reviews/`、`workflow/`、`figures/`、`tables/`、
+  M6.2 / D-0034；`chunks/`——M6.4 检索 derived 产物（`<sourceId>.jsonl` chunk 落盘 +
+  `index.json` manifest + `<sourceId>.vectors.json` 向量旁车），可删可重建，非
+  authoritative，D-0036）、`evidence/`、`reviews/`、`workflow/`、`figures/`、`tables/`、
   `data/`、`build/`（compile.log / build-gate.json）、`artifacts/`（manifest.json +
   art-draft/final-rev{n}.pdf，不可变产物）、`project.json`。
 - **Evidence Store**（M3.1）：字段与状态模型见 PRD §6.9（verificationStatus /
@@ -811,6 +816,13 @@ backend/src/
 │                  RRF）、AcademicSearchService / WebSearchService（编排 + 降级 +
 │                  diagnostics）、ResearchDiscoveryService（唯一入口；显式 Candidate
 │                  持久化）——见 §14
+├── retrieval/     M6.4 Project RAG：chunking + SourceChunker（section-aware 确定性
+│                  chunk 管线，稳定 ID）、ChunkStore（chunks/ jsonl + manifest +
+│                  向量旁车）、tokenize（中英 bigram）+ lexicalIndex（进程内 BM25）、
+│                  embedding（EmbeddingProvider 抽象 + 确定性测试实现）、
+│                  RetrievalService（RRF hybrid + 签名自动增量刷新 + 生命周期）、
+│                  contextPacker（token 预算打包 + 引用标记）、tools
+│                  （retrieve_library）——见 §15
 ├── manuscript/    ManuscriptService（outline / main.tex 组装 / context.yaml）、
 │                  LatexFiles（\input 递归收集）
 ├── citation/      StaticCitationChecker（Layer 1）、metadataProviders（Layer 2：
@@ -1236,5 +1248,56 @@ ResearchDiscoveryService（唯一编排入口；显式 Candidate 持久化 + Pro
 结果；无任何 academic provider 或未配置 SearXNG → 结构化 503，其余 PaperTeam
 能力不受影响。Google 不是任何环节的依赖；Web 侧大陆可用性 = SearXNG
 （cn.bing + baidu 引擎白名单，docker/searxng/settings.yml）+ Academic 侧 AMiner
-（境内托管，API Key 缺失时不注册）。FullTextResolver / RetrievalService /
-EmbeddingProvider 属 M6.4+（ADR §11 实施顺序），本轮未实现。
+（境内托管，API Key 缺失时不注册）。RetrievalService / EmbeddingProvider 已随
+M6.4 实现（§15）；FullTextResolver（网络全文下载）仍未实现，属后续节点。
+
+## 15. Project Retrieval / RAG（M6.4 已实现；D-0033/D-0036）
+
+「资料已入库且有全文后，Agent 如何稳定、准确、可追溯地找到当前需要的内容」层。
+核心不变量：**Retrieved ≠ Verified**（本层零 EvidenceStore 写路径，M6.5 才做
+Evidence Grounding）；**Index = Derived State**（chunks jsonl / manifest / 向量
+旁车 / 进程内索引全部可删可重建，删除后 rebuild 恢复同等检索结果——测试钉死）。
+
+### 15.1 数据流（backend/src/retrieval/）
+
+```text
+正式 Source（有真实全文：PDF(pymupdf→builtin 回退) / text / markdown）
+   │ SourceChunker：section（TOC/markdown 标题）→ paragraph → sentence → word；
+   │ target 400 / max 600 / overlap 60 token（estimateTextTokens 同口径）
+   ▼
+SourceChunk（sources/chunks/<sourceId>.jsonl；稳定 ID
+   "<sourceId>:<sectionId>:<节内序号>:<内容hash10>"；page/section provenance；
+   manifest 绑定 sourceContentHash——内容变 → stale → 自动重生成）
+   ├─ LexicalIndex（进程内 BM25 k1=1.2 b=0.75；中英 bigram tokenizer；
+   │   章节标题并入索引 token 流；确定性排序）
+   └─ Dense（optional：EmbeddingProvider；向量旁车缓存 key =
+       chunkId + contentHash + provider identity——换模型才重嵌）
+   ▼
+RetrievalService.search：filter（sourceIds/sourceRole/section/year/sourceType，
+   打分前生效）→ lexical + dense → RRF k=60 等权融合（量纲无关）→
+   邻近 chunk 去重（同 source 同 section 连续 ≤2）→ RetrievedChunk
+   ▼
+ContextBudgetPacker：token 预算内贪心（邻近冗余 / 来源多样性 / source 限定
+   不过度多样化）→ [SRC:… CHUNK:… SECTION:… PAGE:…] 引用标记
+   ▼
+Agent（researcher/writer/reviewer 经 retrieve_library customTools——按会话
+   projectId 闭包构造，项目隔离由构造边界保证）/ HTTP API
+```
+
+### 15.2 关键纪律
+
+- **新鲜度**：每次检索前对比文献库签名（sourceId:contentHash:updatedAt），
+  变化才串行增量刷新（新增补建 / stale 重生成 / 孤儿清理 / 损坏自愈）——
+  新上传文献下一次检索即生效，无需显式 rebuild；显式 rebuild / rebuildSource
+  API 供强制重建（后者对无全文 source 报 SOURCE_NOT_INDEXABLE 422）。
+- **Dense optional 红线**：无 EmbeddingProvider（生产默认）→ lexical-only
+  健康运行；嵌入/查询失败降级 lexical + diagnostics 如实标注；显式
+  mode=hybrid 而无 provider → EMBEDDING_UNAVAILABLE(422)。M6.4 无真实
+  vendor 接入（pi-ai 无 embedding API），唯一实现是确定性测试 provider。
+- **并发**：每项目操作（load/rebuild/invalidate）promise 链串行；search 读
+  不可变快照——rebuild 进行中检索用旧快照继续，交换原子生效。
+- **零 Vector DB / 零外部索引引擎 / 零 reranker**（D-0033 拒绝项维持）；
+  性能冒烟：4290 chunks lazy 索引 619ms，查询 p50=1.8ms / p95=2.6ms。
+- **可追溯链**：RetrievedChunk → Project → Source（manifest hash 绑定）→
+  Section → Page（parser 能提供时）→ Chunk → 原文；引用标记是 M6.5
+  Evidence 回溯的锚点。

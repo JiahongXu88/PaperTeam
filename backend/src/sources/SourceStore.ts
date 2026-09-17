@@ -595,7 +595,13 @@ export class SourceStore {
     return item.contentHash === item.analysisHash;
   }
 
-  /** 删除文献（原始文件 + 解析产物 + 索引条目）；metadata-only 条目跳过文件删除 */
+  /**
+   * 删除文献（原始文件 + 解析产物 + chunk 派生产物 + 索引条目）；
+   * metadata-only 条目跳过文件删除。chunk 产物（sources/chunks/<id>.jsonl 与
+   * 向量旁车）是本 Source 的 derived artifact，随条目一并清理——与 parsed/
+   * 同一所有权口径；进程内检索索引由 RetrievalService 的 invalidate/lazy
+   * 对账负责（manifest 残留 entry 在下次 load 时按孤儿清理）。
+   */
   async remove(projectId: string, sourceId: string): Promise<void> {
     const items = await this.list(projectId);
     const item = items.find((candidate) => candidate.sourceId === sourceId);
@@ -606,6 +612,9 @@ export class SourceStore {
       await rm(join(this.papersDir(projectId), item.fileName), { force: true });
     }
     await rm(join(this.parsedDir(projectId), `${sourceId}.json`), { force: true });
+    const chunksDir = join(this.projects.sourcesDir(projectId), "chunks");
+    await rm(join(chunksDir, `${sourceId}.jsonl`), { force: true });
+    await rm(join(chunksDir, `${sourceId}.vectors.json`), { force: true });
     await this.saveIndex(
       projectId,
       items.filter((candidate) => candidate.sourceId !== sourceId),

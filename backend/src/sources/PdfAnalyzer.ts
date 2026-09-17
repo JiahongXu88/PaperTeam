@@ -259,7 +259,7 @@ function countImageObjects(buffer: Buffer): number | null {
  * 收集 Tj / TJ 操作符中的字符串。子集字体编码下结果是字形索引而非可读文本 ——
  * 由 printableRatio / extractionQuality 如实反映。
  */
-function extractPdfText(buffer: Buffer): string {
+export function extractPdfText(buffer: Buffer): string {
   const raw = buffer.toString("latin1");
   const chunks: string[] = [];
   const streamPattern = /stream\r?\n?/g;

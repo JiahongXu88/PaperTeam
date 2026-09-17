@@ -146,6 +146,16 @@ export interface SearchConfig {
   providerTimeoutMs: number;
 }
 
+/** Project Retrieval / RAG chunk 配置（M6.4；全部可缺省） */
+export interface RetrievalConfig {
+  /** chunk 目标大小（token 估算；PAPERTEAM_RETRIEVAL_CHUNK_TARGET_TOKENS，默认 400） */
+  chunkTargetTokens: number;
+  /** chunk 硬上限（PAPERTEAM_RETRIEVAL_CHUNK_MAX_TOKENS，默认 600；≥ target） */
+  chunkMaxTokens: number;
+  /** 相邻 chunk 重叠（PAPERTEAM_RETRIEVAL_CHUNK_OVERLAP_TOKENS，默认 60；< target） */
+  chunkOverlapTokens: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -163,6 +173,7 @@ export interface AppConfig {
   review: ReviewConfig;
   pdf: PdfConfig;
   search: SearchConfig;
+  retrieval: RetrievalConfig;
   skills: SkillsConfig;
   /**
    * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
@@ -468,7 +479,38 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         max: SEARCH_TIMEOUT_MAX_MS,
       }),
     },
+    retrieval: readRetrievalConfig(source),
   };
+}
+
+/** retrieval chunk 配置：三个 token 预算档（合法域与 chunking.validateChunkOptions 同口径） */
+function readRetrievalConfig(source: Record<string, string | undefined>): RetrievalConfig {
+  const targetTokens = readInt(source, "PAPERTEAM_RETRIEVAL_CHUNK_TARGET_TOKENS", {
+    default: 400,
+    min: 100,
+    max: 2000,
+  });
+  const maxTokens = readInt(source, "PAPERTEAM_RETRIEVAL_CHUNK_MAX_TOKENS", {
+    default: 600,
+    min: 200,
+    max: 4000,
+  });
+  const overlapTokens = readInt(source, "PAPERTEAM_RETRIEVAL_CHUNK_OVERLAP_TOKENS", {
+    default: 60,
+    min: 0,
+    max: 500,
+  });
+  if (maxTokens < targetTokens) {
+    throw new ConfigError(
+      `PAPERTEAM_RETRIEVAL_CHUNK_MAX_TOKENS（${maxTokens}）不得小于 PAPERTEAM_RETRIEVAL_CHUNK_TARGET_TOKENS（${targetTokens}）`,
+    );
+  }
+  if (overlapTokens >= targetTokens) {
+    throw new ConfigError(
+      `PAPERTEAM_RETRIEVAL_CHUNK_OVERLAP_TOKENS（${overlapTokens}）必须小于 PAPERTEAM_RETRIEVAL_CHUNK_TARGET_TOKENS（${targetTokens}）`,
+    );
+  }
+  return { chunkTargetTokens: targetTokens, chunkMaxTokens: maxTokens, chunkOverlapTokens: overlapTokens };
 }
 
 function readNodeEnv(source: Record<string, string | undefined>): NodeEnv {

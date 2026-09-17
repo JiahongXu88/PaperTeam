@@ -41,6 +41,10 @@ import { ResearchDiscoveryService } from "./search/researchDiscoveryService.js";
 import type { AcademicSearchProvider } from "./search/types.js";
 import type { WebSearchProvider } from "./search/types.js";
 import type { SearchConfig } from "./config/config.js";
+import { ChunkStore } from "./retrieval/ChunkStore.js";
+import { RetrievalService } from "./retrieval/RetrievalService.js";
+import { SourceChunker } from "./retrieval/SourceChunker.js";
+import type { EmbeddingProvider } from "./retrieval/types.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
@@ -98,6 +102,17 @@ export interface ServiceStackOptions {
    * 未配置不注册；disabledProviders 可显式关停任一源。fetchImpl 供测试注入。
    */
   search?: SearchConfig & { fetchImpl?: typeof fetch };
+  /**
+   * Project Retrieval（M6.4）：chunk 预算覆盖（缺省 400/600/60）与可选
+   * EmbeddingProvider（测试注入确定性 provider；生产默认不注册 =
+   * lexical-only 健康运行，D-0033 optional 红线）。
+   */
+  retrieval?: {
+    chunkTargetTokens?: number;
+    chunkMaxTokens?: number;
+    chunkOverlapTokens?: number;
+    embedding?: EmbeddingProvider;
+  };
   log?: (message: string) => void;
 }
 
@@ -118,6 +133,8 @@ export interface ServiceStack {
   sourceImport: SourceImportService;
   /** Research Discovery（M6.3）：Academic / Web Search 编排 + 显式 Candidate 持久化 */
   discovery: ResearchDiscoveryService;
+  /** Project Retrieval（M6.4）：chunk 管线 + 进程内 hybrid index + Context Packing */
+  retrieval: RetrievalService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
   manuscript: ManuscriptService;
   citation: CitationService;
@@ -336,6 +353,25 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     web: new WebSearchService(webProviders),
     candidates,
   });
+  // M6.4 Project Retrieval：chunker 复用 paper 域 PyMuPdfParser（同一工具链，
+  // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
+  // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
+  const retrieval = new RetrievalService({
+    projects: options.projects,
+    sources,
+    chunker: new SourceChunker({
+      parser: paperParser,
+      chunkOptions: {
+        targetTokens: options.retrieval?.chunkTargetTokens ?? 400,
+        maxTokens: options.retrieval?.chunkMaxTokens ?? 600,
+        overlapTokens: options.retrieval?.chunkOverlapTokens ?? 60,
+      },
+      log,
+    }),
+    chunkStore: new ChunkStore(options.projects),
+    ...(options.retrieval?.embedding !== undefined ? { embedding: options.retrieval.embedding } : {}),
+    log,
+  });
   const reviewer = new ReviewerService({
     runtime: options.runtime,
     agentId: options.agentIds.reviewer,
@@ -373,6 +409,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     candidates,
     sourceImport,
     discovery,
+    retrieval,
     pdfAnalyzer,
     manuscript,
     citation,

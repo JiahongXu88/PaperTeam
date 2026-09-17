@@ -16,6 +16,7 @@ import { SkillRegistry } from "./skills/SkillRegistry.js";
 import { ReadinessProbe } from "./runtime/readiness.js";
 import { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { createScholarlyTools } from "./skills/scholarlyTools.js";
+import { createRetrieveLibraryTool } from "./retrieval/tools.js";
 import { LatexImporter } from "./import/LatexImporter.js";
 import {
   createExistingPaperDefinition,
@@ -148,13 +149,28 @@ export async function startBackend(): Promise<void> {
           // 只有 role + contextScope 路由到、installed 且完整性 ok 的 skill 版本快照进入
           // 对应会话（progressive disclosure；M5.3 版本固定于 generation）
           roleSkills: (role, scope) => skillRegistry.skillAssignmentsFor(role, scope),
-          roleCustomTools: (role) =>
-            (role === "researcher" || role === "citation") && stackRef !== undefined
-              ? createScholarlyTools(
+          roleCustomTools: (role, projectId) => {
+            const tools = [];
+            if ((role === "researcher" || role === "citation") && stackRef !== undefined) {
+              tools.push(
+                ...createScholarlyTools(
                   stackRef.citationIntegrity.scholarlyResolver,
                   stackRef.discovery,
-                )
-              : [],
+                ),
+              );
+            }
+            // M6.4 retrieve_library：按会话绑定的 projectId 闭包构造（项目隔离
+            // 由构造边界保证，Agent 无法指定其他项目）；最小接线——工具只注册，
+            // 不改 Writer/Reviewer workflow，不自动检索
+            if (
+              (role === "researcher" || role === "writer" || role === "reviewer") &&
+              stackRef !== undefined &&
+              projectId !== undefined
+            ) {
+              tools.push(createRetrieveLibraryTool(stackRef.retrieval, projectId));
+            }
+            return tools;
+          },
         });
 
   const projects = new ProjectStore({ root: config.projectsRoot });

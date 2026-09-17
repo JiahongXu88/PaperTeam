@@ -354,7 +354,7 @@ export interface PiRuntimeOptions {
    */
   roleSkills?: (role: PiRoleKey, contextScope?: string) => RuntimeSkillAssignment[];
   /** 按角色注入的自定义工具（如 researcher/citation 的受控学术检索） */
-  roleCustomTools?: (role: PiRoleKey) => ToolDefinition[];
+  roleCustomTools?: (role: PiRoleKey, projectId?: string) => ToolDefinition[];
   /**
    * per-Agent 模型 override（M5.7）：返回当前全部业务 Agent 的 override 规格
    * （AgentModelKey → "provider/model-id"）。缺省键 = 继承默认模型。
@@ -394,6 +394,8 @@ interface ManagedSession {
   /** 本会话模型的 "provider/model-id" 标签（任务终态 metadata.model） */
   modelLabel: string;
   cwd: string;
+  /** 业务 projectId（会话工作区 = workspaceRoot/<projectId>；工具闭包绑定用） */
+  projectId?: string;
   /** 归一化 contextScope（Skill 路由 / 诊断；无 scope 会话缺省） */
   scope?: string;
   /**
@@ -1808,7 +1810,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     managed.generation += 1;
     managed.runCount = 0;
     try {
-      const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd, managed.scope);
+      const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd, managed.scope, managed.projectId);
       managed.session = fresh.session;
       // 新 generation 重新解析 Skill 版本与模型（M5.7：override 变更经
       // reconfigure 触发整体释放，这里保持同 scope 同模型的不变量）
@@ -1849,15 +1851,16 @@ export class PiRuntimeAdapter implements AgentRuntime {
     role: PiRoleConfig,
     cwd: string,
     scope: string | undefined,
+    projectId?: string,
   ): Promise<CreatedPiSession> {
     const timeoutMs = this.sessionTimeoutMs;
     if (timeoutMs === undefined) {
-      return this.createPiSession(role, cwd, scope);
+      return this.createPiSession(role, cwd, scope, projectId);
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        this.createPiSession(role, cwd, scope),
+        this.createPiSession(role, cwd, scope, projectId),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new AgentTimeoutError(timeoutMs, "session")), timeoutMs);
           timer.unref?.();
@@ -2263,7 +2266,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   ): Promise<ManagedSession> {
     const role = resolveRoleConfig(scope);
     const cwd = this.resolveWorkspaceCwd(input.projectId);
-    const created = await this.createPiSession(role, cwd, scope);
+    const created = await this.createPiSession(role, cwd, scope, input.projectId);
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
     const managed: ManagedSession = {
@@ -2273,6 +2276,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       model: created.model,
       modelLabel: created.modelLabel,
       cwd,
+      ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
       ...(scope !== undefined ? { scope } : {}),
       assignedSkills: created.assignedSkills,
       skillDirs: created.skillDirs,
@@ -2306,6 +2310,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     role: PiRoleConfig,
     cwd: string,
     scope: string | undefined,
+    projectId?: string,
   ): Promise<CreatedPiSession> {
     await mkdir(cwd, { recursive: true }).catch(() => {});
     // 本会话的模型（M5.7）：per-Agent override（按 scope 命中）或默认模型。
@@ -2348,7 +2353,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
     const sessionManager = SessionManager.inMemory(cwd);
     // 角色级自定义工具（受控学术检索等）与全局 customTools 合并注入
-    const roleTools = this.roleCustomTools?.(role.role) ?? [];
+    const roleTools = this.roleCustomTools?.(role.role, projectId) ?? [];
     const allCustomTools = [...(this.customTools ?? []), ...roleTools];
     const session =
       this.createSessionImpl !== undefined

@@ -16,6 +16,33 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.4 Project RAG & Hybrid Retrieval（✅ 2026-09-17）
+
+- 「资料已入库且有全文后，Agent 如何稳定、准确、可追溯地找到当前需要的
+  内容」：`backend/src/retrieval/` 域 10 个新文件。**确定性 SourceChunk 管线**
+  （section→paragraph→sentence→word 四级切分；target 400 / max 600 /
+  overlap 60 token（`estimateTextTokens` 同口径贯穿切分/嵌入/打包）；稳定
+  chunkId `<sourceId>:<sectionId>:<节内序号>:<内容hash10>`——内容不变 rebuild
+  逐字节不变；page/section provenance 来自 pymupdf blocks；PDF 走 paper 域
+  PyMuPdfParser 优先、builtin 文本层回退；metadata-only/bibtex/image 结构化
+  skip——abstract 永不冒充全文）；**进程内 BM25 lexical**（中英兼容 tokenizer：
+  英文小写词 + 连字符标识符双索引、中文 bigram + 尾单字；章节标题并入索引
+  token 流；零 Elasticsearch）+ **optional dense**（EmbeddingProvider 抽象 +
+  identity 缓存失效；pi-ai 无 embedding API → 生产默认 lexical-only 健康运行；
+  确定性测试 provider 验证机制）+ **RRF k=60 hybrid**（量纲无关融合 + 邻近
+  chunk 去重）+ **metadata filter**（sourceIds/sourceRole/section/year/
+  sourceType）+ **Context Budget Packing**（token 预算 / 邻近冗余 / 来源多样性
+  + `[SRC:… CHUNK:… SECTION:… PAGE:…]` 引用标记）；**文献库签名自动增量
+  刷新**（新增补建 / stale 重生成 / 孤儿清理 / 损坏自愈；删除全部产物 rebuild
+  恢复同等结果）；`retrieve_library` Agent 工具（researcher/writer/reviewer；
+  按会话 projectId 闭包构造——项目隔离由构造边界保证；retrieved ≠ verified，
+  零 EvidenceStore 写路径）；HTTP `POST /api/projects/:id/retrieval/{search,
+  rebuild}` + `GET .../stats`；错误码 SOURCE_NOT_INDEXABLE / RETRIEVAL_NOT_READY /
+  EMBEDDING_UNAVAILABLE / INVALID_RETRIEVAL_FILTER。**固定 benchmark**
+  （22 queries 五类）：lexical R@1=0.86 R@5=0.90 R@10=0.90 MRR=0.87；
+  hybrid(mock) R@5=0.95 R@10=1.00；性能 4290 chunks 索引 619ms / p95=2.6ms。
+  新增后端测试 108（全离线确定性；真实 pymupdf 仅 1 fixture 测试）。决策 D-0036。
+
 ### M6.3 Research Discovery & Academic/Web Search（✅ 2026-09-17）
 
 - 「PaperTeam 如何可靠地发现资料」：`backend/src/search/` 域 11 个新文件。

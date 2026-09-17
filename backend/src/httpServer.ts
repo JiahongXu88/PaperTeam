@@ -7,8 +7,10 @@ import {
   NotFoundError,
   ProjectBusyError,
   ProjectNotArchivedError,
+  RetrievalInvalidFilterError,
   toBusinessError,
 } from "./errors.js";
+import { packRetrievalContext } from "./retrieval/contextPacker.js";
 import {
   SUPPORT_STRENGTHS,
   VERIFICATION_LEVELS,
@@ -977,6 +979,13 @@ async function handleProjectResourceRoutes(
       if (method === "DELETE") {
         // Evidence 引用保护：被 Evidence 引用的正式 Source 拒绝删除（409）
         await stack.sourceImport.removeSource(projectId, sourceId);
+        // 检索索引失效（磁盘产物已由 SourceStore.remove 清理；这里同步进程内
+        // 索引与 manifest，防幽灵命中——失效失败不回滚删除，只记日志）
+        try {
+          await stack.retrieval.invalidateSource(projectId, sourceId);
+        } catch (error) {
+          console.error(`[http] 文献 ${sourceId} 检索索引失效失败（不影响删除）:`, errorText(error));
+        }
         sendJson(res, 200, { status: "deleted", sourceId });
         return true;
       }
@@ -1102,6 +1111,89 @@ async function handleProjectResourceRoutes(
         diagnostics: response.diagnostics,
         ...(saved !== undefined ? { saved } : {}),
       });
+      return true;
+    }
+    return false;
+  }
+
+  // ---- retrieval（M6.4：Project RAG——项目级 hybrid 检索 / 重建 / 状态）----
+  if (resource === "retrieval") {
+    await stack.projects.getRequired(projectId);
+    if (rest === "/search") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const query = readStringField(body, "query");
+      if (query === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 query");
+      }
+      const filter = readRetrievalFilter(body);
+      const mode = body["mode"] === "lexical" || body["mode"] === "hybrid" || body["mode"] === "auto"
+        ? (body["mode"] as "lexical" | "hybrid" | "auto")
+        : undefined;
+      const result = await stack.retrieval.search(projectId, query, {
+        ...(readRetrievalTopK(body) !== undefined ? { topK: readRetrievalTopK(body) } : {}),
+        ...(filter !== undefined ? { filter } : {}),
+        ...(mode !== undefined ? { mode } : {}),
+      });
+      const budgetTokens = readBudgetTokens(body);
+      const packed =
+        budgetTokens !== undefined
+          ? packRetrievalContext(result.results, {
+              budgetTokens,
+              sourceScoped: filter?.sourceIds !== undefined,
+            })
+          : undefined;
+      sendJson(res, 200, {
+        mode: result.mode,
+        query: result.query,
+        results: result.results,
+        diagnostics: result.diagnostics,
+        ...(packed !== undefined
+          ? {
+              packed: {
+                text: packed.text,
+                usedTokens: packed.usedTokens,
+                budgetTokens: packed.budgetTokens,
+                excluded: packed.excluded,
+              },
+            }
+          : {}),
+      });
+      return true;
+    }
+    if (rest === "/rebuild") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readOptionalJsonBody(req);
+      const sourceId = readStringField(body, "sourceId");
+      if (sourceId !== undefined) {
+        if (!/^[A-Z]\d{2,}$/.test(sourceId)) {
+          throw new BusinessError("INVALID_REQUEST", "sourceId 形如 S001");
+        }
+        const outcome = await stack.retrieval.rebuildSource(projectId, sourceId);
+        sendJson(res, 200, { outcome });
+        return true;
+      }
+      const report = await stack.retrieval.rebuild(projectId);
+      sendJson(res, 200, {
+        projectId: report.projectId,
+        sources: report.sources,
+        chunks: report.chunks,
+        durationMs: report.durationMs,
+      });
+      return true;
+    }
+    if (rest === "/stats" && method === "GET") {
+      sendJson(res, 200, await stack.retrieval.stats(projectId));
+      return true;
+    }
+    if (rest === "/stats") {
+      sendMethodNotAllowed(res, "GET", method);
       return true;
     }
     return false;
@@ -2206,6 +2298,123 @@ function readYearRange(body: Record<string, unknown>): { yearFrom?: number; year
 }
 
 const SOURCE_VERSION_TYPES = ["preprint", "conference", "journal", "other"] as const;
+
+// ---- retrieval 请求体解析（M6.4）----
+
+const RETRIEVAL_SOURCE_ROLES = ["evidence", "reference", "both"] as const;
+const RETRIEVAL_SOURCE_TYPES = [
+  "pdf",
+  "bibtex",
+  "text",
+  "markdown",
+  "image",
+  "doi",
+  "arxiv",
+  "url",
+  "metadata",
+] as const;
+
+function readRetrievalTopK(body: Record<string, unknown>): number | undefined {
+  const value = body["topK"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > 50) {
+    throw new BusinessError("INVALID_REQUEST", "topK 必须是 1-50 的整数");
+  }
+  return value;
+}
+
+function readBudgetTokens(body: Record<string, unknown>): number | undefined {
+  const value = body["budgetTokens"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1000 || value > 24_000) {
+    throw new BusinessError("INVALID_REQUEST", "budgetTokens 必须是 1000-24000 的整数");
+  }
+  return value;
+}
+
+function readRetrievalFilter(
+  body: Record<string, unknown>,
+):
+  | {
+      sourceIds?: string[];
+      sourceRole?: (typeof RETRIEVAL_SOURCE_ROLES)[number];
+      section?: string;
+      yearFrom?: number;
+      yearTo?: number;
+      sourceType?: (typeof RETRIEVAL_SOURCE_TYPES)[number];
+    }
+  | undefined {
+  const filter = body["filter"];
+  if (filter === undefined) {
+    return undefined;
+  }
+  if (typeof filter !== "object" || filter === null || Array.isArray(filter)) {
+    throw new BusinessError("INVALID_REQUEST", "filter 必须是对象");
+  }
+  const record = filter as Record<string, unknown>;
+  const sourceIds = record["sourceIds"];
+  const sourceRole = record["sourceRole"];
+  const section = record["section"];
+  const sourceType = record["sourceType"];
+  const out: {
+    sourceIds?: string[];
+    sourceRole?: (typeof RETRIEVAL_SOURCE_ROLES)[number];
+    section?: string;
+    yearFrom?: number;
+    yearTo?: number;
+    sourceType?: (typeof RETRIEVAL_SOURCE_TYPES)[number];
+  } = {};
+  if (sourceIds !== undefined) {
+    if (
+      !Array.isArray(sourceIds) ||
+      sourceIds.length === 0 ||
+      !sourceIds.every((id) => typeof id === "string" && /^[A-Z]\d{2,}$/.test(id))
+    ) {
+      throw new RetrievalInvalidFilterError("sourceIds 必须是非空字符串数组（形如 S001）");
+    }
+    out.sourceIds = sourceIds as string[];
+  }
+  if (sourceRole !== undefined) {
+    if (typeof sourceRole !== "string" || !(RETRIEVAL_SOURCE_ROLES as readonly string[]).includes(sourceRole)) {
+      throw new RetrievalInvalidFilterError(`sourceRole 只能是 ${RETRIEVAL_SOURCE_ROLES.join(" / ")}`);
+    }
+    out.sourceRole = sourceRole as (typeof RETRIEVAL_SOURCE_ROLES)[number];
+  }
+  if (section !== undefined) {
+    if (typeof section !== "string" || section.trim() === "") {
+      throw new RetrievalInvalidFilterError("section 必须是非空字符串");
+    }
+    out.section = section.trim();
+  }
+  if (sourceType !== undefined) {
+    if (typeof sourceType !== "string" || !(RETRIEVAL_SOURCE_TYPES as readonly string[]).includes(sourceType)) {
+      throw new RetrievalInvalidFilterError(`sourceType 只能是 ${RETRIEVAL_SOURCE_TYPES.join(" / ")}`);
+    }
+    out.sourceType = sourceType as (typeof RETRIEVAL_SOURCE_TYPES)[number];
+  }
+  const yearFrom = record["yearFrom"];
+  const yearTo = record["yearTo"];
+  if (yearFrom !== undefined) {
+    if (typeof yearFrom !== "number" || !Number.isInteger(yearFrom) || yearFrom < 1000 || yearFrom > 3000) {
+      throw new RetrievalInvalidFilterError("yearFrom 必须是 1000-3000 的整数");
+    }
+    out.yearFrom = yearFrom;
+  }
+  if (yearTo !== undefined) {
+    if (typeof yearTo !== "number" || !Number.isInteger(yearTo) || yearTo < 1000 || yearTo > 3000) {
+      throw new RetrievalInvalidFilterError("yearTo 必须是 1000-3000 的整数");
+    }
+    out.yearTo = yearTo;
+  }
+  if (out.yearFrom !== undefined && out.yearTo !== undefined && out.yearFrom > out.yearTo) {
+    throw new RetrievalInvalidFilterError("yearFrom 不能大于 yearTo");
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 function readVersionType(body: Record<string, unknown>): (typeof SOURCE_VERSION_TYPES)[number] | undefined {
   return readVersionTypeField(body, "versionType");

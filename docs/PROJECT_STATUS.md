@@ -1,12 +1,18 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-17（**M6.3 Research Discovery & Academic/Web Search COMPLETE**——
+> 更新日期：2026-09-17（**M6.4 Project RAG & Hybrid Retrieval COMPLETE**——
+> retrieval/ 域：确定性 SourceChunk 管线（稳定 ID / section-aware /
+> page provenance / contentHash 失效）+ 进程内 BM25 lexical（中英 bigram
+> tokenizer）+ optional dense（EmbeddingProvider 抽象 + 缓存 identity）+
+> RRF hybrid + metadata filter + Context Budget Packing + retrieve_library
+> 工具 + 固定 benchmark（Recall@K / MRR）；详见下方 M6.4 条目与
+> DECISIONS.md D-0036；下一节点 **M6.5 Evidence Pipeline & Agent Integration**；
+> 同日 **M6.3 Research Discovery & Academic/Web Search COMPLETE**——
 > search/ 域：共享 ProviderHttpClient（超时/退避/Retry-After 双硬帽/熔断/健康四态）
 > + OpenAlex primary / S2 fallback / arXiv preprint / AMiner China-secondary 四学术
 > Provider + SearXNG optional Web Search + SourceIdentity 去重带权重 RRF 融合 +
 > 显式 Candidate 持久化 + Provider Health API + Researcher search_papers v2 /
-> search_web 工具；详见下方 M6.3 条目与 DECISIONS.md D-0035；下一节点
-> **M6.4 Project RAG & Hybrid Retrieval**；2026-09-16
+> search_web 工具；详见下方 M6.3 条目与 DECISIONS.md D-0035；2026-09-16
 > **M6.2 Project Literature Library COMPLETE**——
 > SourceIdentity 分层身份键 / CandidateSource Discovery 状态 / 五种入库路径
 > （PDF·DOI·arXiv·URL·BibTeX）/ metadata 可信分层 merge / Evidence 引用删除
@@ -104,7 +110,85 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
 
 **M6 — Research Discovery & RAG（进行中：2026-09-16 M6.0 baseline established；
 2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE；
-2026-09-17 M6.3 Research Discovery & Search COMPLETE）**：
+2026-09-17 M6.3 Research Discovery & Search COMPLETE；2026-09-17 M6.4
+Project RAG & Hybrid Retrieval COMPLETE）**：
+
+- **M6.4 Project RAG & Hybrid Retrieval（✅ 2026-09-17）**：
+  - **范围**：「资料已入库且有全文后，Agent 如何稳定、准确、可追溯地找到当前
+    需要的内容」——SourceChunk 管线、项目级 Retrieval Index、lexical / optional
+    dense / hybrid、metadata filter、结果可追溯、Context Budget Packing、
+    retrieve_library 工具、固定 benchmark。**不含**：Search Provider 新能力 /
+    FullTextResolver（网络全文下载）/ Evidence 自动验证 / RetrievedChunk→
+    EvidenceStore / Writer 自动检索编排 / reranker / Vector DB（全部 D-0033
+    边界维持；M6.5 才做 Evidence Grounding）。
+  - **Chunk 管线（`retrieval/{chunking,SourceChunker,ChunkStore}.ts`）**：
+    section（TOC/markdown 标题）→ paragraph → sentence → word 四级切分；
+    target 400 / max 600 / overlap 60 token（`estimateTextTokens` 同口径贯穿
+    切分/嵌入/打包；env `PAPERTEAM_RETRIEVAL_CHUNK_*` 可调）；**稳定 chunkId
+    `<sourceId>:<sectionId>:<节内序号>:<内容hash10>`**（节内序号保证前置章节
+    漂移不破坏后续 ID；内容不变 rebuild 逐字节不变）；页码 provenance 来自
+    pymupdf blocks（parser 无法提供时缺省，不伪造）。输入边界：PDF 走 paper 域
+    PyMuPdfParser（`deriveDocumentStructure` 复用出口）优先、builtin 文本层
+    回退（<200 字符判无全文）；text/markdown 直读；metadata-only / bibtex /
+    image 结构化 skip（full_text_unavailable）——abstract 永不冒充全文。
+    落盘 `sources/chunks/<sourceId>.jsonl` + `index.json` manifest（绑定
+    contentHash，stale 自动重生成）+ 向量旁车；全部 Derived State 可删可重建。
+  - **Lexical（`lexicalIndex.ts` + `tokenize.ts`）**：进程内 BM25
+    （k1=1.2 b=0.75，零 Elasticsearch）；中英兼容 tokenizer——英文小写词 +
+    连字符标识符整体/部分双索引（MRG-DTM），中文连续段 bigram + 尾单字
+    （无分词服务依赖）；**章节标题并入索引 token 流**（正文保持纯净）；
+    排序确定性（score 降序、并列 chunkId 字典序）；source 级增删 df 同步维护。
+  - **Dense optional + 缓存 identity（`embedding.ts`）**：EmbeddingProvider
+    抽象（identity 字段）；pi-ai 无 embedding API（盘点结论）→ M6.4 唯一实现
+    是确定性测试 provider（token 哈希袋，验证机制不代表真实语义）；生产默认
+    不注册 = lexical-only 健康运行（红线：dense 不可用 ≠ 服务失败）。向量旁车
+    缓存 key = chunkId + contentHash + provider identity——换模型 / chunk 文本
+    变化才重嵌，未变化重启零嵌入（测试钉死）；嵌入/查询失败降级 lexical +
+    diagnostics.denseNote；显式 mode=hybrid 无 provider → EMBEDDING_UNAVAILABLE
+    (422)，默认 auto 永不因此失败。
+  - **Hybrid（`RetrievalService.ts`）**：RRF k=60 两通道等权（与 M6.3 fusion
+    同思想；量纲无关不相加裸分数）；双通道命中合并单条（channels 双标记）；
+    邻近 chunk 去重（同 source 同 section 连续 ≤2，防 overlap 副本刷屏）；
+    metadata filter（sourceIds / sourceRole / section 前缀 / year 区间 /
+    sourceType，打分前生效）。**索引新鲜度 = 文献库签名自动增量刷新**
+    （sourceId:contentHash:updatedAt 对比；新增补建 / stale 重生成 / 孤儿清理 /
+    损坏自愈）；每项目操作 promise 链串行、search 读不可变快照（rebuild 中
+    检索不悬挂不损坏）；项目间状态零共享（跨项目泄漏测试钉死）。
+  - **Context Budget Packing（`contextPacker.ts`）**：token 预算内贪心选择——
+    邻近冗余（相邻 ordinal 跳过）、来源多样性（未限定 source 时单 source
+    ≤50%+2）、source 限定查询不强插其他来源；引用标记
+    `[SRC:S001 CHUNK:<chunkId> SECTION:Method PAGE:4-5]`（M6.5 回溯锚点）。
+  - **retrieve_library 工具（`tools.ts`）**：Pi customTools（scholarlyTools 同
+    模式）；**按会话 projectId 闭包构造**（roleCustomTools seam 扩展
+    `(role, projectId)`——项目隔离由构造边界保证，Agent 无法跨项目）；
+    researcher / writer / reviewer 三角色注册（最小接线，不改 workflow 不自动
+    检索）；输出 packedContext + per-chunk 标记；工具描述明示
+    「retrieved passages ≠ verified evidence」；**全程零 EvidenceStore 写路径**
+    （域测试 + HTTP 测试 + 工具测试三处钉死）。
+  - **HTTP API**：`POST /api/projects/:id/retrieval/search`（query / topK /
+    mode / filter / budgetTokens→packed）、`POST .../retrieval/rebuild`
+    （可选 sourceId；metadata-only 单源重建 422 SOURCE_NOT_INDEXABLE）、
+    `GET .../retrieval/stats`；删除 source 连带索引失效（磁盘 + 内存 + manifest）。
+    错误码 +4：SOURCE_NOT_INDEXABLE(422) / RETRIEVAL_NOT_READY(503) /
+    EMBEDDING_UNAVAILABLE(422) / INVALID_RETRIEVAL_FILTER(400)。
+  - **验证**：新增测试 **108**（tokenize 9 / chunking 17 / sourceChunker 8 /
+    lexicalIndex 10 / embedding 6 / contextPacker 8 / retrievalService 21 /
+    tools 6 / retrieval.http 10 / benchmark 4 / performance 2 + fixtures；
+    全离线确定性，真实 pymupdf 仅 attention.pdf 一个 fixture 测试与既有
+    pdfIngest 同口径）。**Benchmark**（固定 fixture：6 source×多章节 + 1 fake
+    PDF 页级源，22 queries 五类）：lexical R@1=0.86 R@5=0.90 R@10=0.90
+    MRR=0.87 section-hit=1.00 exact-R@5=1.00；hybrid(mock dense) R@1=0.81
+    R@5=0.95 R@10=1.00 MRR=0.86——mock dense≈词重叠，验证融合机制；
+    跨语言语义查询（无词重叠）如实计入且当前不命中（Known Limitation）。
+    **性能冒烟**：4290 chunks lazy 索引 619ms、查询 p50=1.8ms p95=2.6ms、
+    并发 80 查询 27ms、堆增量 ~11MB。`npm run build` / `typecheck` 全绿；
+    后端 1072 passed / 11 skipped（M6.3 基线 964/7，零回归）；前端 184 passed
+    （本轮无前端改动）。真实启动冒烟（scripted backend + HTTP）：上传→检索
+    （中/英）→打包标记→stats→rebuild→hybrid 422→evidence 空→删除无幽灵，
+    全链路通过。
+  - **M6 next step：M6.5 Evidence Pipeline & Agent Integration**
+    （RetrievedChunk → EvidenceCandidate → quote 逐字校验 → EvidenceStore →
+    Writer/Reviewer 接线；实施入口见 ADR §11）。
 
 - **M6.3 Research Discovery & Academic/Web Search（✅ 2026-09-17）**：
   - **范围**：「PaperTeam 如何可靠地发现资料」——共享 Provider HTTP 基建、

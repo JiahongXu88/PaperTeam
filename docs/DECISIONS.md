@@ -770,3 +770,77 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   json format 开 / limiter 关 / cn.bing+baidu 白名单）；测试 +72（providerHttp
   20 / academicProviders 17 / academicSearchService 13 / searxng 12 /
   researchDiscovery.http 9 / config 1，全部离线；live smoke 默认跳过）。
+
+## D-0036 M6.4 Project RAG：确定性 chunk 身份（sourceId:节:节内序号:内容hash）+ 中英 bigram tokenizer + BM25 进程内索引（标题并入索引文本）+ EmbeddingProvider 抽象与缓存 identity 失效 + RRF hybrid + 检索库签名自动增量刷新
+
+- **日期**：2026-09-17（M6.4，Project RAG & Hybrid Retrieval）
+- **状态**：accepted
+- **决策**：在 D-0033 第 6 层（RetrievalService+RetrievalIndex）落地 M6.4，六项实现级决策：
+  1. **稳定 chunkId = `<sourceId>:<sectionId>:<节内序号4位>:<内容hash10>`**（sha256 前
+     10 hex）。序号是**节内**序号而非全局序号——前置章节 chunk 数漂移不影响后续章节
+     的 ID（局部性）；内容不变 rebuild 后 chunkId 逐字节不变（确定性 chunker + 固定
+     hash，retrievalService 测试钉死）；某节内容变化只影响该节受影响边界之后的
+     chunk。全局 ordinal 只用于邻近去重与展示，不进 ID。不引入 diff engine。
+  2. **chunk 输入边界**：只有「有真实全文」的 Source 进 chunk——PDF 走 paper 域
+     PyMuPdfParser（blocks 带页码 + TOC 章节，复用 `deriveDocumentStructure` 出口）
+     优先、builtin 文本层回退（无页码单节，<200 字符判 full_text_unavailable）；
+     text/markdown 直读（markdown 标题→章节）；metadata_only / bibtex / image
+     一律 skip + 结构化 reason（full_text_unavailable）——**abstract/snippet 永不
+     冒充全文索引**。M6.2 contentHash 绑定 manifest entry：内容变 → stale → 自动
+     重生成；chunk 落盘 `sources/chunks/<sourceId>.jsonl` + `index.json` manifest
+     + `<sourceId>.vectors.json` 向量旁车（全部 Derived State，可删可重建）。
+  3. **token 口径统一**：chunk 切分（section→paragraph→sentence→word 四级、
+     target 400 / max 600 / overlap 60 token，env 可调）、embedding、Context
+     Budget Packing 全部用 `estimateTextTokens`（CJK 1.5/char、其他 chars/4）——
+     同一估算贯穿索引与预算，不引入 tokenizer 依赖。overlap 在同节相邻 chunk 间
+     以「上一 chunk 尾部（句子对齐、超预算词截尾）」携带，chunk 上限放宽到
+     max+overlap；相邻 run 在检索/打包两层做邻近去重（≤2 连续）。
+  4. **Lexical = 进程内 BM25（k1=1.2 b=0.75）+ 中英兼容 tokenizer**：英文
+     `[a-z0-9][a-z0-9'-]*` 小写化、连字符标识符（MRG-DTM）整体+部分双索引；
+     中文连续段 bigram + 尾单字（无词典、无分词服务）；**章节标题并入索引 token
+     流**（chunk.text 保持纯正文）——"method"/"results" 型查询靠标题命中。排序
+     确定性：score 降序、并列 chunkId 字典序。零 Elasticsearch（D-0033 拒绝项）。
+  5. **Dense optional + 缓存 identity**：EmbeddingProvider 抽象（name/dimensions/
+     identity + embedDocuments/embedQuery）。pi-ai 无 embedding API（盘点结论），
+     M6.4 唯一实现是确定性测试 provider（token 哈希袋，语义≈词重叠——只验证机制，
+     不代表真实语义召回）；生产默认不注册 → lexical-only 健康运行。向量旁车缓存
+     key = chunkId + chunk contentHash + provider identity：换 provider/模型/
+     维度或 chunk 文本变化 → 重嵌，未变化重启零嵌入。显式 mode=hybrid 而无
+     provider → EMBEDDING_UNAVAILABLE(422)；默认 auto 路径永不因 dense 失败
+     （嵌入/查询失败降级 lexical + denseNote）。**Hybrid = RRF k=60 等权**
+     （与 M6.3 fusion 同思想；量纲无关，不相加裸分数）。
+  6. **索引新鲜度 = 文献库签名自动增量刷新**：每次检索前对比 sources 签名
+     （sourceId:contentHash:updatedAt，读 index.json 成本可忽略）；变化才串行
+     刷新——新 source 补建、stale 重生成、孤儿清理 + manifest 对账，磁盘 chunk
+     文件损坏/manifest 损坏按 Derived State 自愈重建。每项目操作经 promise 链
+     串行（load/rebuild/invalidate 互斥），search 读不可变快照（rebuild 中检索
+     用旧快照继续、交换原子生效）。retrieve_library 工具按会话绑定的 projectId
+     闭包构造（roleCustomTools seam 扩展为 `(role, projectId)`）——项目隔离由
+     构造边界保证；工具描述明示「retrieved passages ≠ verified evidence」，
+     检索/打包/统计全程零 EvidenceStore 写路径。
+- **理由**：D-0033 §2-7 冻结了「chunk 落盘 + 进程内 lexical + 可选 dense +
+  无 Vector DB」的骨架但把 ID 稳定性 / 中文 tokenization / 缓存失效键 /
+  新鲜度策略留给实现期。稳定 ID 是 M6.5 Evidence 与未来 citation/review
+  finding 引用 chunk 的前提（随机 UUID 会让全部下游引用在 rebuild 后悬空）；
+  bigram 是无词典 CJK 检索的最小可用方案（单字区分度不足，whitespace 切分
+  对中文完全失效——指令红线）；签名刷新修复了「首次加载后新增文献永远不进
+  索引」的真实缺陷（increment 测试钉死）。benchmark：22 queries（exact/en/
+  zh/mixed/semantic 五类）固定 fixture——lexical R@1=0.86 R@5=0.90 R@10=0.90
+  MRR=0.87 section-hit=1.00；hybrid(mock dense) R@5=0.95 R@10=1.00——mock dense
+  ≈ 词重叠，该对比只证明融合机制，真实语义价值待真实 provider（如实记录）。
+- **不做**：真实 embedding vendor 接入（pi-ai 无 API，不新增账号系统）；dense-only
+  模式（无独立价值场景）；跨语言语义 bridging（当前 lexical 与 mock dense 都
+  无法命中，benchmark 语义型查询如实计入）；Writer/Reviewer 自动检索编排与
+  Evidence 写入（M6.5）；reranker（D-0033 维持拒绝）；chunk 级前端 UI（验收靠
+  backend + benchmark）。
+- **影响**：backend/src/retrieval/ 新域 10 文件（types/tokenize/chunking/
+  SourceChunker/ChunkStore/lexicalIndex/embedding/contextPacker/
+  RetrievalService/tools）；serviceStack 装配 retrieval（chunker 复用 paper 域
+  PyMuPdfParser）；httpServer 新增 /api/projects/:id/retrieval/{search,rebuild,
+  stats} + 删除 source 时索引失效；PiRuntimeAdapter roleCustomTools seam 加
+  projectId；index.ts 为 researcher/writer/reviewer 注册 retrieve_library；
+  SourceStore.remove 连带清理 chunk 产物；config 增 PAPERTEAM_RETRIEVAL_CHUNK_
+  {TARGET,MAX,OVERLAP}_TOKENS；错误码 +4（SOURCE_NOT_INDEXABLE 422 /
+  RETRIEVAL_NOT_READY 503 / EMBEDDING_UNAVAILABLE 422 / INVALID_RETRIEVAL_
+  FILTER 400）。测试 +108（retrieval 域全离线；真实 pymupdf 仅 1 个 fixture
+  测试，与既有 pdfIngest 同口径）。

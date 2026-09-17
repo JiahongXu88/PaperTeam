@@ -50,6 +50,22 @@ export function assemblePaper(extraction: RawPdfExtraction): AssembledPaper {
   };
 }
 
+/**
+ * M6.4 retrieval 复用出口：blocks + TOC → pages / sections / block 章节归属。
+ * 与 assemblePaper 共用同一 section 推导链（TOC > 页内标题正则 > 整档兜底 +
+ * References 补齐 + 页眉跳过），只省略 chunk 组装——retrieval chunker
+ * （sources/chunks 管线）有自己的 token 预算 / overlap / 稳定 ID 规则。
+ */
+export function deriveDocumentStructure(extraction: RawPdfExtraction): {
+  pages: PaperPage[];
+  sections: PaperSection[];
+  blocks: Array<{ page: number; text: string; sectionId: string }>;
+} {
+  const pages = buildPages(extraction);
+  const sections = buildSections(extraction, pages);
+  return { pages, sections, blocks: assignBlocksToSections(extraction.blocks, sections) };
+}
+
 const ABSTRACT_TITLES = /^(abstract|摘要)\s*$/i;
 const REFERENCES_TITLES = /^(?:\d{1,2}\s*[.、]?\s*)?(references|bibliography|参考文献|reference list)\s*$/i;
 
