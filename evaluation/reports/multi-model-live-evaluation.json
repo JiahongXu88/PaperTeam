@@ -1,0 +1,417 @@
+{
+  "schemaVersion": 1,
+  "kind": "multi-model-live-evaluation",
+  "milestone": "M6.9.3",
+  "experiment": 1,
+  "name": "evidence-grounding-multi-model",
+  "dataset": "claude-compatible",
+  "scenarioId": "g1-rag-survey",
+  "proposalsPerArm": 5,
+  "execution": {
+    "mode": "serial",
+    "interModelPauseMs": 4000
+  },
+  "judge": {
+    "strategy": "same-model-per-target",
+    "bias": "same-model judge bias",
+    "detail": "每个模型的 Stage 3 semantic judge 与该模型的生成调用使用同一模型（M6.9.1 起的 plumbing 约束）。同模型自评可能系统性偏向本模型输出，verifiedRate 的跨模型对比应视为含偏差估计，不作为模型能力排名"
+  },
+  "catalog": {
+    "scannedAt": "2026-09-18T18:00:00+08:00",
+    "endpoint": "GET https://api-gateway.glm.ai/v1/models（Bearer）",
+    "fieldsNotExposed": [
+      "provider 归属（owned_by 恒为内部值）",
+      "context window"
+    ],
+    "models": [
+      {
+        "id": "claude-fable-5-1",
+        "family": "anthropic"
+      },
+      {
+        "id": "claude-opus-5",
+        "family": "anthropic"
+      },
+      {
+        "id": "claude-fable-5-cc",
+        "family": "anthropic",
+        "note": "-cc = Claude Code 专用通道，裸 Messages 请求 400（M6.9.2 实测），不适合普通 chat"
+      },
+      {
+        "id": "claude-sonnet-5-cc",
+        "family": "anthropic",
+        "note": "-cc 通道，同上"
+      },
+      {
+        "id": "claude-opus-4-6-cc",
+        "family": "anthropic",
+        "note": "-cc 通道，同上"
+      },
+      {
+        "id": "claude-opus-4-7-cc",
+        "family": "anthropic",
+        "note": "-cc 通道，同上"
+      },
+      {
+        "id": "claude-opus-4-8-cc",
+        "family": "anthropic",
+        "note": "-cc 通道，同上"
+      },
+      {
+        "id": "claude-sonnet-4-6-cc",
+        "family": "anthropic",
+        "note": "-cc 通道，同上"
+      },
+      {
+        "id": "claude-haiku-4-5-20251001-cc",
+        "family": "anthropic",
+        "note": "-cc 通道，同上"
+      },
+      {
+        "id": "gpt-5.3-codex",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.4",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.4-mini",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.4-pro",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.5",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.5-vibe",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.6-sol-vibe",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.6-sol-flex",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.6-terra",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-5.6-luna",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-6-astra",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-6-astra-vibe",
+        "family": "openai"
+      },
+      {
+        "id": "gpt-6-astra-flex",
+        "family": "openai"
+      },
+      {
+        "id": "glm-5.2",
+        "family": "glm"
+      },
+      {
+        "id": "glm-5.3-highspeed",
+        "family": "glm"
+      },
+      {
+        "id": "deepseek-v4-pro",
+        "family": "deepseek"
+      },
+      {
+        "id": "deepseek-v4-flash",
+        "family": "deepseek"
+      },
+      {
+        "id": "qwen3.7-max",
+        "family": "qwen"
+      },
+      {
+        "id": "qwen3.8-max",
+        "family": "qwen",
+        "note": "目录在列但当前凭据无权限（2026-09-18 实测 AccessDenied.Unpurchased，两种协议均拒）"
+      },
+      {
+        "id": "kimi-k2.7-code-highspeed",
+        "family": "kimi"
+      },
+      {
+        "id": "kimi-k3",
+        "family": "kimi"
+      },
+      {
+        "id": "grok-4.6",
+        "family": "grok"
+      }
+    ]
+  },
+  "selection": [
+    {
+      "tag": "claude-fable-5-1",
+      "modelSpec": "gw-anthropic/claude-fable-5-1",
+      "provider": "gw-anthropic",
+      "modelId": "claude-fable-5-1",
+      "family": "anthropic",
+      "wire": "anthropic-messages",
+      "selectionRationale": "Anthropic 系代表（目录内非 -cc 的两个 Claude 之一；M6.9.2.1 已验证 wire 路径）。Claude 通道存在 bio 内容过滤，是全批统一 claude-compatible 数据集的直接原因"
+    },
+    {
+      "tag": "gpt-5.4",
+      "modelSpec": "gw-openai/gpt-5.4",
+      "provider": "gw-openai",
+      "modelId": "gpt-5.4",
+      "family": "openai",
+      "wire": "openai-completions",
+      "selectionRationale": "OpenAI GPT 系代表。网关上 GPT 系仅 OpenAI 协议承接（Anthropic 协议报 no-available-channel，实测），需 max_completion_tokens 参数（Pi openai-completions 对非特判网关恰好发送该参数）"
+    },
+    {
+      "tag": "glm-5.3-highspeed",
+      "modelSpec": "gw-anthropic/glm-5.3-highspeed",
+      "provider": "gw-anthropic",
+      "modelId": "glm-5.3-highspeed",
+      "family": "glm",
+      "wire": "anthropic-messages",
+      "selectionRationale": "国产 GLM 系代表。注意与 M6.9.1 的 zai-coding-cn/glm-5.3 不是同一模型 id（网关目录无 glm-5.3，取目录内在列的 highspeed 变体，wire 统一走网关）"
+    },
+    {
+      "tag": "deepseek-v4-pro",
+      "modelSpec": "gw-anthropic/deepseek-v4-pro",
+      "provider": "gw-anthropic",
+      "modelId": "deepseek-v4-pro",
+      "family": "deepseek",
+      "wire": "anthropic-messages",
+      "selectionRationale": "国产 DeepSeek 系代表（目录内 pro 档；Anthropic 协议实测直连可用，含 SSE）"
+    },
+    {
+      "tag": "qwen3.7-max",
+      "modelSpec": "gw-anthropic/qwen3.7-max",
+      "provider": "gw-anthropic",
+      "modelId": "qwen3.7-max",
+      "family": "qwen",
+      "wire": "anthropic-messages",
+      "selectionRationale": "国产 Qwen 系代表。qwen3.8-max 目录在列但当前凭据无权限（实测 Unpurchased），故取 3.7-max；Anthropic 协议实测可用（响应自带 thinking 块）"
+    }
+  ],
+  "models": [
+    {
+      "tag": "claude-fable-5-1",
+      "modelSpec": "gw-anthropic/claude-fable-5-1",
+      "provider": "gw-anthropic",
+      "family": "anthropic",
+      "wire": "anthropic-messages",
+      "status": "completed",
+      "judge": "same-model",
+      "modelCalls": 7,
+      "durationMs": 368860,
+      "armA": {
+        "proposals": 5,
+        "refused": false,
+        "fabricatedQuoteRate": 1,
+        "misattributedQuoteRate": 0
+      },
+      "armB": {
+        "proposals": 5,
+        "pipelined": 5,
+        "fabricatedQuoteRate": 0,
+        "fabricatedLeaked": 0,
+        "fabricatedInterceptedRate": 0,
+        "verifiedRate": 0.6,
+        "dispositions": {
+          "verified": 3,
+          "metadata_mismatch": 2
+        }
+      },
+      "errors": [],
+      "rawReport": {
+        "jsonPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\claude-fable-5-1-exp1.json",
+        "markdownPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\claude-fable-5-1-exp1.md"
+      }
+    },
+    {
+      "tag": "gpt-5.4",
+      "modelSpec": "gw-openai/gpt-5.4",
+      "provider": "gw-openai",
+      "family": "openai",
+      "wire": "openai-completions",
+      "status": "completed",
+      "judge": "same-model",
+      "modelCalls": 7,
+      "durationMs": 24729,
+      "armA": {
+        "proposals": 5,
+        "refused": false,
+        "fabricatedQuoteRate": 1,
+        "misattributedQuoteRate": 0
+      },
+      "armB": {
+        "proposals": 5,
+        "pipelined": 5,
+        "fabricatedQuoteRate": 0,
+        "fabricatedLeaked": 0,
+        "fabricatedInterceptedRate": 0,
+        "verifiedRate": 0.8,
+        "dispositions": {
+          "verified": 4,
+          "metadata_mismatch": 1
+        }
+      },
+      "errors": [],
+      "rawReport": {
+        "jsonPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\gpt-5.4-exp1.json",
+        "markdownPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\gpt-5.4-exp1.md"
+      }
+    },
+    {
+      "tag": "glm-5.3-highspeed",
+      "modelSpec": "gw-anthropic/glm-5.3-highspeed",
+      "provider": "gw-anthropic",
+      "family": "glm",
+      "wire": "anthropic-messages",
+      "status": "completed",
+      "judge": "same-model",
+      "modelCalls": 7,
+      "durationMs": 84327,
+      "armA": {
+        "proposals": 5,
+        "refused": false,
+        "fabricatedQuoteRate": 1,
+        "misattributedQuoteRate": 0
+      },
+      "armB": {
+        "proposals": 5,
+        "pipelined": 5,
+        "fabricatedQuoteRate": 0,
+        "fabricatedLeaked": 0,
+        "fabricatedInterceptedRate": 0,
+        "verifiedRate": 0.8,
+        "dispositions": {
+          "verified": 4,
+          "metadata_mismatch": 1
+        }
+      },
+      "errors": [],
+      "rawReport": {
+        "jsonPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\glm-5.3-highspeed-exp1.json",
+        "markdownPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\glm-5.3-highspeed-exp1.md"
+      }
+    },
+    {
+      "tag": "deepseek-v4-pro",
+      "modelSpec": "gw-anthropic/deepseek-v4-pro",
+      "provider": "gw-anthropic",
+      "family": "deepseek",
+      "wire": "anthropic-messages",
+      "status": "completed",
+      "judge": "same-model",
+      "modelCalls": 7,
+      "durationMs": 66597,
+      "armA": {
+        "proposals": 5,
+        "refused": false,
+        "fabricatedQuoteRate": 1,
+        "misattributedQuoteRate": 0
+      },
+      "armB": {
+        "proposals": 5,
+        "pipelined": 5,
+        "fabricatedQuoteRate": 0,
+        "fabricatedLeaked": 0,
+        "fabricatedInterceptedRate": 0,
+        "verifiedRate": 0.8,
+        "dispositions": {
+          "verified": 4,
+          "metadata_mismatch": 1
+        }
+      },
+      "errors": [],
+      "rawReport": {
+        "jsonPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\deepseek-v4-pro-exp1.json",
+        "markdownPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\deepseek-v4-pro-exp1.md"
+      }
+    },
+    {
+      "tag": "qwen3.7-max",
+      "modelSpec": "gw-anthropic/qwen3.7-max",
+      "provider": "gw-anthropic",
+      "family": "qwen",
+      "wire": "anthropic-messages",
+      "status": "completed",
+      "judge": "same-model",
+      "modelCalls": 7,
+      "durationMs": 45509,
+      "armA": {
+        "proposals": 5,
+        "refused": false,
+        "fabricatedQuoteRate": 1,
+        "misattributedQuoteRate": 0
+      },
+      "armB": {
+        "proposals": 5,
+        "pipelined": 5,
+        "fabricatedQuoteRate": 0,
+        "fabricatedLeaked": 0,
+        "fabricatedInterceptedRate": 0,
+        "verifiedRate": 0.8,
+        "dispositions": {
+          "verified": 4,
+          "metadata_mismatch": 1
+        }
+      },
+      "errors": [],
+      "rawReport": {
+        "jsonPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\qwen3.7-max-exp1.json",
+        "markdownPath": "D:\\Projects\\PaperTeam\\evaluation\\reports\\multi-model\\qwen3.7-max-exp1.md"
+      }
+    }
+  ],
+  "aggregate": {
+    "modelsTotal": 5,
+    "modelsCompleted": 5,
+    "modelsFailed": 0,
+    "armAMeasurable": 5,
+    "armAHallucinating": 5,
+    "armAProposals": 25,
+    "armAFabricated": 25,
+    "armBFabricated": 0,
+    "armBFabricatedIntercepted": 0,
+    "armBFabricatedLeaked": 0,
+    "armBPipelined": 25,
+    "armBVerified": 19,
+    "pipelineLeakRate": 0
+  },
+  "analysis": [
+    "Plain LLM（Arm A，无库自报）：可测模型 5/5 中 5 个产生至少一条 fabricated quote（quote 不在所声称来源）——逐模型捏造率：claude-fable-5-1 100.0%、gpt-5.4 100.0%、glm-5.3-highspeed 100.0%、deepseek-v4-pro 100.0%、qwen3.7-max 100.0%。在 evaluated models 范围内，citation hallucination 不局限于单一模型族。",
+    "Evidence Pipeline（Arm B，全文提案 + 三段核验）：全文在场条件下，completed 模型的全部 25 条提案 quote 均逐字命中所声称来源（机械 fabricated 0）——本批没有需要拦截的捏造 quote，quote 拦截路径未被触发（不能据此声称「拦截有效」，只能说无泄漏：fabricated 泄漏为 verified 0 条）。管道本批实际拦截的是 metadata 陷阱：metadata_mismatch 6 条（年份错位，Stage 2 权威记录裁决），全部未转正。对照 Arm A：25/25 条 fabricated 未经任何核验直接入池。最终转正 19/25（76.0%）。",
+    "模型差异（Arm B 逐模型）：claude-fable-5-1 v=60.0%/leak=0；gpt-5.4 v=80.0%/leak=0；glm-5.3-highspeed v=80.0%/leak=0；deepseek-v4-pro v=80.0%/leak=0；qwen3.7-max v=80.0%/leak=0。差异主要体现在引用复制精度（quote_mismatch）与 metadata 陷阱敏感度（metadata_mismatch），而非拦截有效性——这与三段核验中前两段为确定性机械核验的设计一致。"
+  ],
+  "errors": [],
+  "startedAt": "2026-09-18T10:11:33.917Z",
+  "finishedAt": "2026-09-18T10:21:39.993Z",
+  "durationMs": 606075,
+  "limitations": [
+    "样本规模有限：每模型 1 场景 × 每臂 5 提案，比例指标不具统计效力（方向性证据，非显著性检验）",
+    "scenario 有限：仅 g1-rag-survey（RAG 综述域），未覆盖其他领域",
+    "same-model judge bias：judge 与生成同模型（报告显式标记），verifiedRate 跨模型对比含自评偏差",
+    "Arm B 本批无捏造 quote 进入管道（全文在场时 completed 模型 quote 复制均逐字命中）：quote 拦截路径未被触发，管道有效性证据来自 metadata 陷阱拦截与零泄漏，不是 fabricated 拦截率",
+    "全部模型经同一网关（api-gateway.glm.ai）：网关侧行为（内容过滤、协议翻译、限流）是公共混杂因子；qwen3.8-max 等目录内模型因当前凭据权限未纳入",
+    "全批使用 claude-compatible 数据集（noise token 派生集）：与 M6.8 frozen 有字符量漂移（M6.9.2.1 实测 chunk 结构一致、零误锚），但与 M6.9.1 在 frozen 上跑的 GLM-5.3 结果直接对比时需注意",
+    "结论限定于 evaluated models（本批 5 个），不应表述为「所有模型」"
+  ]
+}

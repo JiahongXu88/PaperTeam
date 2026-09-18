@@ -124,7 +124,8 @@ export interface LiveScenarioResult {
 export interface LiveExp1Report {
   schemaVersion: 1;
   kind: "live-evaluation";
-  milestone: "M6.9.2" | "M6.9.2.1";
+  /** M6.9.3 起多模型批次经 options.milestone 覆盖；缺省按数据集变体标注 */
+  milestone: "M6.9.2" | "M6.9.2.1" | "M6.9.3";
   experiment: 1;
   name: "evidence-grounding-live";
   /**
@@ -733,15 +734,18 @@ export async function runLiveExperiment1(options: {
   dataset?: "frozen-m6.8" | "claude-compatible";
   /** 报告文件名基名覆盖（M6.9.2.1：live-claude-exp1-compatible，避免覆盖原始失败记录） */
   reportBase?: string;
+  /** milestone 覆盖（M6.9.3 多模型批次传 "M6.9.3"；缺省按数据集变体推导） */
+  milestone?: LiveExp1Report["milestone"];
   out: string;
   log?: (message: string) => void;
 }): Promise<LiveRunOutcome> {
   const log = options.log ?? (() => {});
   const dataset = options.dataset ?? "frozen-m6.8";
+  const milestone = options.milestone ?? (dataset === "claude-compatible" ? "M6.9.2.1" : "M6.9.2");
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
   log(
-    `[live-eval] ${dataset === "claude-compatible" ? "M6.9.2.1" : "M6.9.2"} 真实模型评估开始` +
+    `[live-eval] ${milestone} 真实模型评估开始` +
       `（${options.scenarios.length} 场景 × 2 臂，model=${options.modelSpec ?? "(产品解析链)"}，dataset=${dataset}）`,
   );
   const live = await createLiveEvaluationRuntimeInternal(options);
@@ -768,7 +772,7 @@ export async function runLiveExperiment1(options: {
   const report: LiveExp1Report = {
     schemaVersion: 1,
     kind: "live-evaluation",
-    milestone: dataset === "claude-compatible" ? "M6.9.2.1" : "M6.9.2",
+    milestone,
     experiment: 1,
     name: "evidence-grounding-live",
     dataset,

@@ -20,6 +20,13 @@
  *                                                     #   （noise token 替换派生集，
  *                                                     #   绕开 Claude 通道 bio 过滤；
  *                                                     #   报告名不覆盖原始失败记录）
+ *   npm run evaluation -- --runtime real --multi-model
+ *                                                     # M6.9.3：多模型批次（网关目录中
+ *                                                     #   选出的 5 个代表模型 × g1-rag-survey
+ *                                                     #   × 2 臂，串行；固定 claude-compatible
+ *                                                     #   数据集；汇总报告
+ *                                                     #   multi-model-live-evaluation.{json,md}，
+ *                                                     #   每模型原始报告在 reports/multi-model/）
  *
  * 校准记录：evaluation/calibration/records.jsonl（相对仓库根；--calibration 覆盖）。
  * 报告输出：scripted → evaluation/reports/m6.8-evaluation-<timestamp>.{json,md}；
@@ -65,6 +72,8 @@ export interface CliOptions {
   dataset: "frozen" | "claude-compatible";
   /** live 模式报告文件名基名（如 live-claude-exp1-compatible；缺省 live-<modeltag>-exp1） */
   reportName?: string;
+  /** M6.9.3 多模型批次（--runtime real 专用；模型清单固定在 runners/multiModel.ts） */
+  multiModel?: boolean;
 }
 
 export function parseCliArgs(argv: readonly string[]): CliOptions {
@@ -142,6 +151,8 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
       }
       options.reportName = value;
       index += 1;
+    } else if (arg === "--multi-model") {
+      options.multiModel = true;
     } else {
       throw new Error(`未知参数：${arg}`);
     }
@@ -155,8 +166,31 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
   if (options.reportName !== undefined && options.runtime !== "real") {
     throw new Error("--report-name 只在 --runtime real 下有效（scripted 报告名固定带时间戳）");
   }
-  if (options.runtime === "real" && options.experiment !== 1) {
+  if (options.runtime === "real" && options.multiModel !== true && options.experiment !== 1) {
     throw new Error("--runtime real 目前只支持 --experiment 1（M6.9.1 首轮只接 Evidence Grounding）");
+  }
+  if (options.multiModel === true) {
+    if (options.runtime !== "real") {
+      throw new Error("--multi-model 只在 --runtime real 下有效（多模型批次需要真实模型）");
+    }
+    if (options.experiment !== "all" && options.experiment !== 1) {
+      throw new Error("--multi-model 只支持 --experiment 1（协议固定 Evidence Grounding；缺省 all 视为 1）");
+    }
+    if (options.model !== undefined) {
+      throw new Error("--multi-model 与 --model 互斥（多模型批次的模型清单固定在 runners/multiModel.ts）");
+    }
+    if (options.scenarios.length > 0) {
+      throw new Error("--multi-model 与 --scenario 互斥（多模型批次协议固定 g1-rag-survey）");
+    }
+    if (options.reportName !== undefined) {
+      throw new Error("--multi-model 与 --report-name 互斥（汇总报告名固定 multi-model-live-evaluation）");
+    }
+    // 协议要求全批统一 claude-compatible（批次含 Claude 通道模型，其 bio 过滤必须
+    // 用派生集；混用两个数据集变体会引入跨模型混杂）。缺省 --dataset frozen 时
+    // 自动切换并提示；显式 frozen 是协议矛盾，拒绝。
+    if (options.dataset === "frozen") {
+      options.dataset = "claude-compatible";
+    }
   }
   return options;
 }
@@ -202,6 +236,19 @@ export async function runEvaluationCli(argv: readonly string[]): Promise<void> {
   // M6.9.2.1：--dataset claude-compatible 换用 noise token 替换派生集（同一
   // 场景 id 空间），先过兼容性校验（frozen 快照 / 结构一致 / 安全模式）再跑。
   if (options.runtime === "real") {
+    // M6.9.3 多模型批次：固定协议（g1-rag-survey × 2 臂 × 5 提案，claude-compatible）
+    // 串行跑编目模型，单模型失败不终止批次；runner 自带数据集校验。
+    if (options.multiModel === true) {
+      const { runMultiModelEvaluation } = await import("./runners/multiModel.js");
+      const outcome = await runMultiModelEvaluation({ out: options.out, log });
+      if (outcome.hasFailures) {
+        console.error(
+          `[evaluation] ⚠ multi-model 批次存在失败（completed ${outcome.report.aggregate.modelsCompleted}/${outcome.report.aggregate.modelsTotal}，详见 ${outcome.written.jsonPath}）`,
+        );
+        process.exitCode = 1;
+      }
+      return;
+    }
     const claudeCompatible = options.dataset === "claude-compatible";
     let groundingPool = GROUNDING_SCENARIOS;
     if (claudeCompatible) {

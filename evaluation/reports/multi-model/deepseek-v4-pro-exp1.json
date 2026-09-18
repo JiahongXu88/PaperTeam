@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "kind": "live-evaluation",
+  "milestone": "M6.9.3",
+  "experiment": 1,
+  "name": "evidence-grounding-live",
+  "dataset": "claude-compatible",
+  "model": {
+    "spec": "gw-anthropic/deepseek-v4-pro",
+    "provider": "gw-anthropic",
+    "modelId": "deepseek-v4-pro",
+    "source": "cli"
+  },
+  "runtimeProvider": "pi",
+  "startedAt": "2026-09-18T10:19:43.876Z",
+  "finishedAt": "2026-09-18T10:20:50.473Z",
+  "durationMs": 66597,
+  "scenarios": [
+    {
+      "scenarioId": "g1-rag-survey",
+      "title": "RAG 幻觉缓解综述证据核验",
+      "arms": [
+        {
+          "arm": "plain-llm-live",
+          "modelCalls": 1,
+          "metrics": {
+            "proposals": 5,
+            "fabricatedQuoteRate": 1,
+            "misattributedQuoteRate": 0
+          },
+          "proposals": [
+            {
+              "key": "a-1",
+              "claim": "Gao (2023) 的综述将 RAG 范式划分为 Naive RAG、Advanced RAG 与 Modular RAG 三类，并指出 Modular RAG 通过模块化重组能更灵活地缓解幻觉。",
+              "quote": "We classify RAG into three paradigms: Naive RAG, Advanced RAG, and Modular RAG, each corresponding to different stages of retrieval-augmented generation development.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-2",
+              "claim": "RAG 通过检索外部知识为生成提供事实依据，可将语言模型的事实性幻觉率降低约 20%，优于纯参数化生成。",
+              "quote": "Retrieval-augmented generation grounds the model's output in external knowledge, reducing factual hallucinations by approximately 20% compared to purely parametric generation.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-3",
+              "claim": "Liu (2024) 提出以忠实度、答案相关性与上下文相关性三维度评估 RAG 系统，并将幻觉率作为忠实度的核心量化指标。",
+              "quote": "We evaluate retrieval-augmented systems along three dimensions—faithfulness, answer relevance, and context relevance—where the hallucination rate serves as the primary quantitative measure of faithfulness.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-4",
+              "claim": "Liu (2024) 的评估发现超过 60% 的幻觉回答中错误信息无法在检索上下文中找到支持，因而可通过引用精确率自动识别幻觉。",
+              "quote": "In over 60% of hallucinated responses, the unsupported claims cannot be located in the retrieved context, enabling automatic detection through citation precision.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-5",
+              "claim": "Wang (2035) 指出小语料场景下检索稀疏会加剧幻觉，并提出查询扩展与自举式数据增强方法可将幻觉率降低约 15%。",
+              "quote": "Under small corpora, sparse retrieval exacerbates hallucination, and our query expansion with bootstrapped data augmentation reduces the hallucination rate by approximately 15%.",
+              "claimedFileName": "rag-small.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            }
+          ],
+          "generationUsage": {
+            "inputTokens": 1427,
+            "outputTokens": 1963,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "contextTokens": 3390,
+            "assistantTurns": 1,
+            "estimatedCost": 0
+          }
+        },
+        {
+          "arm": "paperteam-live",
+          "modelCalls": 6,
+          "metrics": {
+            "proposals": 5,
+            "fabricatedQuoteRate": 0,
+            "misattributedQuoteRate": 0,
+            "dispositions": {
+              "verified": 4,
+              "metadata_mismatch": 1
+            },
+            "fabricatedInterceptedRate": 0,
+            "verifiedRate": 0.8
+          },
+          "proposals": [
+            {
+              "key": "b-1",
+              "claim": "检索增强生成通过将生成建立在检索到的段落上来缓解幻觉。",
+              "quote": "Retrieval-augmented generation mitigates hallucination by grounding generation in retrieved passages.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-2",
+              "claim": "在开放域问答基准上启用检索后平均事实错误率下降 38%。",
+              "quote": "On open-domain QA benchmarks the average factual error rate decreases by 38 percent with retrieval enabled.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-3",
+              "claim": "近期系统通过倒数排名融合将稠密检索器与稀疏词法检索器结合。",
+              "quote": "Dense retrievers and sparse lexical retrievers are combined through reciprocal rank fusion in recent systems.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-4",
+              "claim": "可复现的评估协议应分别报告幻觉率、引用精确率与覆盖率。",
+              "quote": "A reproducible evaluation protocol reports hallucination rate, citation precision and coverage separately.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-5",
+              "claim": "当检索 precision@5 超过 0.8 时幻觉率趋于饱和。",
+              "quote": "Hallucination rate saturates once retrieval precision at five exceeds 0.8.",
+              "claimedFileName": "rag-small.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "metadata_mismatch",
+              "statusReason": "metadata_mismatch（year）"
+            }
+          ],
+          "generationUsage": {
+            "inputTokens": 2729,
+            "outputTokens": 1080,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
+            "contextTokens": 3809,
+            "assistantTurns": 1,
+            "estimatedCost": 0
+          },
+          "judgeUsage": {
+            "runs": 4,
+            "runsWithUsage": 4,
+            "inputTokens": 4269,
+            "outputTokens": 846,
+            "assistantTurns": 4
+          }
+        }
+      ]
+    }
+  ],
+  "aggregate": {
+    "plainLlm": {
+      "proposals": 5,
+      "fabricatedQuoteRate": 1,
+      "misattributedQuoteRate": 0
+    },
+    "paperteam": {
+      "proposals": 5,
+      "fabricatedQuoteRate": 0,
+      "misattributedQuoteRate": 0,
+      "dispositions": {
+        "verified": 4,
+        "metadata_mismatch": 1
+      },
+      "fabricatedInterceptedRate": 0,
+      "verifiedRate": 0.8
+    }
+  },
+  "errors": [],
+  "limitations": [
+    "数据集为 claude-compatible 变体（M6.9.2.1）：corpus 防记忆噪声 token 由随机串（fqj0 式，触发网关 Claude 通道 bio 过滤）替换为 word-form synthetic marker（random-term-N，项目统一定义、场景内唯一）；claim/evidence/citation/fault 注入结构与 M6.8 frozen 逐字段一致（运行期 SHA-256 快照校验）。marker 与原 token 长度不同，chunk 边界与 prompt 长度有轻微漂移——与 frozen 数据集上的 GLM-5.3 结果比较时需注意",
+    "首轮 plumbing 冒烟：样本小（每臂 ≤5 提案）、单场景起步，指标不具统计效力",
+    "judge 与生成同用 gw-anthropic/deepseek-v4-pro（同模型自评偏差；正式实验应引入异模型 judge）",
+    "对齐良好的模型可能在无库条件下拒绝编造引文（refused 结果）——这是合法测量结果，此时 plain-llm 基线的捏造率不可测（分母为 0），不应解读为 0%",
+    "metadata 核验的权威记录是数据集内置 ground-truth provider（与 M6.8 scripted 同口径），不是真实 Crossref/OpenAlex",
+    "Arm B 锚点规则：quote 命中 chunk 用该 chunk，未命中落到来源首个 chunk（Stage 1 拦截）；chunk 边界截断可能造成误拦（报告保留逐条机械判定供审计）",
+    "quote 机械核验与产品 Stage 1 同用 normalizeForQuoteMatch 归一化口径（大小写/空白不敏感）"
+  ]
+}
