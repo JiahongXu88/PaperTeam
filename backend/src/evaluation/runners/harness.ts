@@ -222,7 +222,18 @@ export interface GroundingHarness {
   cleanup: () => Promise<void>;
 }
 
-export async function createGroundingHarness(scenario: GroundingScenario): Promise<GroundingHarness> {
+export interface GroundingHarnessOptions {
+  /**
+   * Stage 3 judge 用的 Runtime（M6.9.1 live 模式注入真实 PiRuntimeAdapter；
+   * 缺省 = ground-truth 确定性替身，scripted 路径行为不变）。
+   */
+  judgeRuntime?: AgentRuntime;
+}
+
+export async function createGroundingHarness(
+  scenario: GroundingScenario,
+  options: GroundingHarnessOptions = {},
+): Promise<GroundingHarness> {
   const { root, cleanup } = await createTempRoot("paperteam-eval-g-");
   const projects = new ProjectStore({ root });
   const project = await projects.create(`eval-${scenario.id}`);
@@ -236,7 +247,7 @@ export async function createGroundingHarness(scenario: GroundingScenario): Promi
   const unsupportedClaims = scenario.faults
     .filter((fault) => fault.faultClass === "unsupported_claim")
     .map((fault) => fault.claim);
-  const judgeRuntime = createGroundTruthJudgeRuntime(unsupportedClaims);
+  const judgeRuntime = options.judgeRuntime ?? createGroundTruthJudgeRuntime(unsupportedClaims);
   const resolver = new ScholarlyResolver({
     providers: [new GroundTruthScholarlyProvider(scenario.corpus)],
     log: () => {},

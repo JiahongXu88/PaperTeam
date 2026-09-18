@@ -1,0 +1,191 @@
+{
+  "schemaVersion": 1,
+  "kind": "live-evaluation",
+  "milestone": "M6.9.1",
+  "experiment": 1,
+  "name": "evidence-grounding-live",
+  "model": {
+    "spec": "zai-coding-cn/glm-5.3",
+    "provider": "zai-coding-cn",
+    "modelId": "glm-5.3",
+    "source": "settings"
+  },
+  "runtimeProvider": "pi",
+  "startedAt": "2026-09-18T07:50:44.271Z",
+  "finishedAt": "2026-09-18T07:53:08.583Z",
+  "durationMs": 144311,
+  "scenarios": [
+    {
+      "scenarioId": "g1-rag-survey",
+      "title": "RAG 幻觉缓解综述证据核验",
+      "arms": [
+        {
+          "arm": "plain-llm-live",
+          "modelCalls": 1,
+          "metrics": {
+            "proposals": 5,
+            "fabricatedQuoteRate": 1,
+            "misattributedQuoteRate": 0
+          },
+          "proposals": [
+            {
+              "key": "a-1",
+              "claim": "Gao 等人的 RAG 综述将现有研究归纳为 Naive、Advanced、Modular 三种范式，并指出 Advanced RAG 通过检索前后的针对性优化弥补 Naive RAG 检索质量不足的问题。",
+              "quote": "In contrast to Naive RAG, Advanced RAG incorporates specific refinements aimed at enhancing retrieval quality, addressing the limitations identified earlier.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-2",
+              "claim": "该综述将 RAG 的核心挑战归于检索端的低精度、低准确率与知识过时，其中检索低精度会把无关或冗余信息注入上下文从而干扰 LLM 生成。",
+              "quote": "Retrieval Challenges: Low Precision: Incorporating irrelevant or redundant information, potentially distracting LLM; Low Accuracy: Failure to retrieve the correct or complete knowledge.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-3",
+              "claim": "在有标注生成评测部分，该综述建议用语义精确率/召回率与引用精确率/召回率来量化答案的幻觉程度。",
+              "quote": "Semantic and Citation Precision/Recall: evaluates semantic and citation precision and recall, and measures the hallucination degree of the answer.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-4",
+              "claim": "对生成式检索系统的人工评测发现，系统仅为 74.5% 的生成句子提供引用，且完全被引用支持的句子只有 51.5%，即近半数输出含未被证据支持的幻觉性陈述。",
+              "quote": "existing generative search engines only generate citations for 74.5% of generated sentences, and only 51.5% of generated sentences are fully supported by their citations.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-5",
+              "claim": "RAG 系统评测应将忠实度、答案相关性、上下文精确率与上下文召回率作为核心维度，以区分幻觉源自检索环节还是生成环节。",
+              "quote": "we introduce RAGAS, an evaluation framework that considers the evaluation of retrieval-augmented generation pipelines along key dimensions such as faithfulness, answer relevance, context precision, and context recall.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            }
+          ],
+          "generationUsage": {
+            "inputTokens": 337,
+            "outputTokens": 5373,
+            "cacheReadTokens": 896,
+            "cacheWriteTokens": 0,
+            "contextTokens": 6606,
+            "assistantTurns": 1,
+            "estimatedCost": 0.024345960000000003
+          }
+        },
+        {
+          "arm": "paperteam-live",
+          "modelCalls": 6,
+          "metrics": {
+            "proposals": 5,
+            "fabricatedQuoteRate": 0,
+            "misattributedQuoteRate": 0,
+            "dispositions": {
+              "verified": 4,
+              "metadata_mismatch": 1
+            },
+            "fabricatedInterceptedRate": 0,
+            "verifiedRate": 0.8
+          },
+          "proposals": [
+            {
+              "key": "b-1",
+              "claim": "该综述实验部分报告，在开放域问答基准上启用检索后平均事实错误率下降38%。",
+              "quote": "On open-domain QA benchmarks the average factual error rate decreases by 38 percent with retrieval enabled.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-2",
+              "claim": "该综述指出检索质量是决定端到端答案准确率的主导因素。",
+              "quote": "Retrieval quality remains the dominant factor in end-to-end answer accuracy.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-3",
+              "claim": "该综述方法部分说明，近期系统通过倒数排名融合（reciprocal rank fusion）将稠密检索器与稀疏词法检索器结合。",
+              "quote": "Dense retrievers and sparse lexical retrievers are combined through reciprocal rank fusion in recent systems.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-4",
+              "claim": "该评估论文提出可复现的评测协议，将幻觉率、引用精确率与覆盖率分别单独报告。",
+              "quote": "A reproducible evaluation protocol reports hallucination rate, citation precision and coverage separately.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "verified"
+            },
+            {
+              "key": "b-5",
+              "claim": "小语料研究显示，当检索precision@5超过0.8后幻觉率趋于饱和。",
+              "quote": "Hallucination rate saturates once retrieval precision at five exceeds 0.8.",
+              "claimedFileName": "rag-small.md",
+              "quoteInClaimedSource": true,
+              "quoteInAnySource": true,
+              "disposition": "metadata_mismatch",
+              "statusReason": "metadata_mismatch（year）"
+            }
+          ],
+          "generationUsage": {
+            "inputTokens": 1318,
+            "outputTokens": 669,
+            "cacheReadTokens": 896,
+            "cacheWriteTokens": 0,
+            "contextTokens": 2883,
+            "assistantTurns": 1,
+            "estimatedCost": 0.00502176
+          },
+          "judgeUsage": {
+            "runs": 4,
+            "runsWithUsage": 4,
+            "inputTokens": 1590,
+            "outputTokens": 873,
+            "assistantTurns": 4
+          }
+        }
+      ]
+    }
+  ],
+  "aggregate": {
+    "plainLlm": {
+      "proposals": 5,
+      "fabricatedQuoteRate": 1,
+      "misattributedQuoteRate": 0
+    },
+    "paperteam": {
+      "proposals": 5,
+      "fabricatedQuoteRate": 0,
+      "misattributedQuoteRate": 0,
+      "dispositions": {
+        "verified": 4,
+        "metadata_mismatch": 1
+      },
+      "fabricatedInterceptedRate": 0,
+      "verifiedRate": 0.8
+    }
+  },
+  "errors": [],
+  "limitations": [
+    "首轮 plumbing 冒烟：样本小（每臂 ≤5 提案）、单场景起步，指标不具统计效力",
+    "judge 与生成同用 GLM-5.3（同模型自评偏差；正式实验应引入异模型 judge）",
+    "对齐良好的模型可能在无库条件下拒绝编造引文（refused 结果）——这是合法测量结果，此时 plain-llm 基线的捏造率不可测（分母为 0），不应解读为 0%",
+    "metadata 核验的权威记录是数据集内置 ground-truth provider（与 M6.8 scripted 同口径），不是真实 Crossref/OpenAlex",
+    "Arm B 锚点规则：quote 命中 chunk 用该 chunk，未命中落到来源首个 chunk（Stage 1 拦截）；chunk 边界截断可能造成误拦（报告保留逐条机械判定供审计）",
+    "quote 机械核验与产品 Stage 1 同用 normalizeForQuoteMatch 归一化口径（大小写/空白不敏感）"
+  ]
+}

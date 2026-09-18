@@ -1,16 +1,22 @@
 /**
- * M6.8 Evaluation CLI 入口（npm run evaluation → scripts/evaluation.mjs → 本模块）。
+ * M6.8/M6.9 Evaluation CLI 入口（npm run evaluation → scripts/evaluation.mjs → 本模块）。
  *
  * 用法：
- *   npm run evaluation                                # 全部实验、全部场景
+ *   npm run evaluation                                # 全部实验、全部场景（scripted）
  *   npm run evaluation -- --experiment 1              # 只跑 Experiment 1
  *   npm run evaluation -- --scenario g1-rag-survey --scenario r1-fact-mutate
  *   npm run evaluation -- --experiment 2 --hitl-policy needs_review
  *   npm run evaluation -- --list                      # 列出全部场景
  *   npm run evaluation -- --out D:/Tmp/eval-reports   # 自定义报告目录
+ *   npm run evaluation -- --runtime real --experiment 1 --scenario g1-rag-survey
+ *                                                     # M6.9.1 live 模式（真实模型，
+ *                                                     #   目前仅 Exp1；模型走产品解析链）
+ *   npm run evaluation -- --runtime real --model zai-coding-cn/glm-5.3 --experiment 1
+ *                                                     # 显式指定模型规格
  *
  * 校准记录：evaluation/calibration/records.jsonl（相对仓库根；--calibration 覆盖）。
- * 报告输出：evaluation/reports/m6.8-evaluation-<timestamp>.{json,md}。
+ * 报告输出：scripted → evaluation/reports/m6.8-evaluation-<timestamp>.{json,md}；
+ *           live    → evaluation/reports/live-<modeltag>-exp1.{json,md}。
  */
 
 import { readFile } from "node:fs/promises";
@@ -40,6 +46,10 @@ export interface CliOptions {
   hitlPolicy: RevisionHitlPolicy;
   out: string;
   calibrationPath: string;
+  /** scripted（M6.8 确定性离线）| real（M6.9.1 真实模型，经产品 Runtime） */
+  runtime: "scripted" | "real";
+  /** live 模式显式模型规格（"provider/model-id"）；缺省走产品解析链 */
+  model?: string;
 }
 
 export function parseCliArgs(argv: readonly string[]): CliOptions {
@@ -49,6 +59,7 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
     hitlPolicy: "reject",
     out: resolve(repoRoot, "evaluation", "reports"),
     calibrationPath: resolve(repoRoot, "evaluation", "calibration", "records.jsonl"),
+    runtime: "scripted",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
@@ -87,9 +98,29 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
       }
       options.calibrationPath = resolve(value);
       index += 1;
+    } else if (arg === "--runtime") {
+      const value = argv[index + 1];
+      if (value !== "scripted" && value !== "real") {
+        throw new Error(`--runtime 只接受 scripted | real（收到 ${value ?? "(缺)"}）`);
+      }
+      options.runtime = value;
+      index += 1;
+    } else if (arg === "--model") {
+      const value = argv[index + 1];
+      if (value === undefined) {
+        throw new Error("--model 需要一个 provider/model-id 参数");
+      }
+      options.model = value;
+      index += 1;
     } else {
       throw new Error(`未知参数：${arg}`);
     }
+  }
+  if (options.model !== undefined && options.runtime !== "real") {
+    throw new Error("--model 只在 --runtime real 下有效（scripted 不访问任何模型）");
+  }
+  if (options.runtime === "real" && options.experiment !== 1) {
+    throw new Error("--runtime real 目前只支持 --experiment 1（M6.9.1 首轮只接 Evidence Grounding）");
   }
   return options;
 }
@@ -128,10 +159,27 @@ export async function runEvaluationCli(argv: readonly string[]): Promise<void> {
     return;
   }
   const groundingScenarios = selectScenarios(GROUNDING_SCENARIOS, options.scenarios);
-  const revisionScenarios = selectScenarios(REVISION_SCENARIOS, options.scenarios);
-  const workflowScenarios = selectScenarios(WORKFLOW_SCENARIOS, options.scenarios);
   const log = (message: string) => console.log(message);
 
+  // M6.9.1 live 模式：真实模型（产品 Runtime 链）跑 Exp1 两臂，独立报告。
+  // 只选 grounding 场景——revision/workflow 数据集与 live 无关，不参与 id 校验。
+  if (options.runtime === "real") {
+    const { runLiveExperiment1 } = await import("./runners/liveExp1.js");
+    const outcome = await runLiveExperiment1({
+      scenarios: groundingScenarios,
+      ...(options.model !== undefined ? { modelSpec: options.model } : {}),
+      out: options.out,
+      log,
+    });
+    if (outcome.hasArmFailures) {
+      console.error(`[evaluation] ⚠ live 模式存在臂级失败 ${outcome.report.errors.length} 条（详见报告 errors）`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const revisionScenarios = selectScenarios(REVISION_SCENARIOS, options.scenarios);
+  const workflowScenarios = selectScenarios(WORKFLOW_SCENARIOS, options.scenarios);
   const calibration = await loadCalibration(options.calibrationPath);
   let experiment1: Experiment1Result | undefined;
   let experiment2: Experiment2Result | undefined;
