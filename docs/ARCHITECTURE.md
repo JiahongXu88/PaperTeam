@@ -11,6 +11,11 @@
 > **Iterative Writer–Reviewer Outer Review Loop（§13，D-0026）已于 M4.7 实现**
 > （score-driven loop / Revision Plan / 收敛判定 / iteration history），
 > M4.8 补齐版本体验（历史 / 比较 / 不可变恢复）。
+> **M6 Research Discovery & Evidence-grounded Pipeline 已完成并冻结
+> （2026-09-18，D-0041）**：§14 Search → M6.2 Literature Library →
+> §15 Retrieval → §16 Evidence Grounding → §17 Evidence-aware Writing →
+> M6.7 Revision Safety → §18 Evaluation（含 M6.9 live / 多模型）；M6
+> 最终流水线总图见 §1.3。
 
 ## 1. 总体架构
 
@@ -112,7 +117,43 @@ Discovery & Academic/Web Search（§14：search/ 域——共享 ProviderHttpCli
 Provider + SearXNG + 多源融合去重 + 显式 Candidate 持久化 + Provider Health）** 与
 **M6.4 Project RAG & Hybrid Retrieval（§15：retrieval/ 域——确定性 SourceChunk 管线 +
 进程内 BM25 lexical + optional dense + RRF hybrid + Context Budget Packing +
-retrieve_library 工具）**。
+retrieve_library 工具）**；M6.5 Evidence Grounding Pipeline（§16）、M6.6
+Evidence-aware Writing Loop（§17）、M6.7 Revision Safety & Quality Gate Evolution
+（Revision Item 生命周期 + revision.validate + Claim Strength Gate + Revision
+Gate）、M6.8/M6.9 Evaluation Framework（§18，scripted 三实验 + live / 五模型族
+多模型评估）相继完成——M6 全部完成并冻结（D-0041），最终流水线见 §1.3。
+
+### 1.3 M6 冻结架构（M6 Final Pipeline，D-0041）
+
+M6 收口后的端到端研究-写作流水线。各层实现细节与边界红线见 §14–§18；
+「检索到的段落」自上而下逐级升格为「可被最终论文引用的可信证据」：
+
+```text
+Research Discovery                ← §14（M6.3：多源学术 + Web 检索，
+        ↓                            默认零持久化，显式 Candidate）
+Literature Library                ← M6.2（SourceIdentity 身份键；
+        ↓                            候选 → 正式文献 promotion 幂等）
+Retrieval Layer                   ← §15（M6.4：chunk 管线 + BM25/dense
+        ↓                            hybrid；Index = Derived State）
+Evidence Grounding Layer          ← §16（M6.5：候选-转正状态机 +
+        ↓                            三段核验；grounded 写入唯一入口）
+Writer / Reviewer                 ← §17（M6.6：EvidenceSelectionService
+        ↓                            唯一使用策略；verified 才进正式上下文）
+Revision Safety                   ← M6.7（Revision Item 生命周期 +
+        ↓                            revision.validate + Claim Strength Gate）
+Quality Gate                      ← §7 + M6.6/M6.7 新规则
+        ↓                            （citations_evidence_backed /
+Final Manuscript                     revision_items_resolved /
+                                      claim_strength_guard）
+```
+
+冻结要点（D-0041）：**Retrieved ≠ Verified ≠ Grounded** 不变量贯穿全链
+（检索层零 EvidenceStore 写路径；只有三段核验通过的候选才转正）；确定性
+优先（编排 / 核验前两段 / Gate 全部无 LLM；语义 judge 复用 Citation 角色）；
+零新增 Agent（D-0009 红线贯穿 M6 全程——能力以 Tool 层 + Evidence Layer +
+Quality Gate 形式交付）；Index 是 Derived State（可删可重建）。后续扩展
+（FullTextResolver / Reference Paper Intelligence / Multimodal Review /
+evaluation live 扩展）进入 M7，不再改动 M6 冻结分层。
 
 ## 2. 核心概念区分（架构红线）
 
@@ -1550,3 +1591,40 @@ evaluation/
 - baseline 臂「无系统信号」是建模事实（无安全机制可用）不是测量值；
   Exp2 的 paperteam 存活率依赖 HITL 策略（用户 approve 可知情放行，
   留痕不阻断——设计行为）。
+
+## 19. Live / Multi-model Evaluation（M6.9 已实现；D-0041 冻结范围内的评估扩展）
+
+M6.8 scripted 框架的 live 化与跨模型验证（评估基建扩展，不是产品功能；
+被测系统零改动——评估代码只在 `backend/src/evaluation/` 内）。回答的
+问题从「安全机制对注入故障的拦截率」（scripted）扩展到「真实模型在
+Exp1 场景下的引用捏造行为与管线的实际拦截表现」（live）。
+
+### 19.1 形态
+
+- **liveRuntime.ts**：真实模型经 PiRuntimeAdapter 的最小评估 runtime——
+  复用生产 adapter 与调用链（`startAgent` / 工具面 / usage），评估不
+  自建第二套模型通道；凭据经 provider 配置（token 零落盘）。
+- **runners/liveExp1.ts**：Exp1 两臂 live 化。plain-llm-live（无库自报
+  提案）/ paperteam-live（全文提案 + 真实三段核验——Stage 1/2 确定性
+  核验是产品代码，Stage 3 语义 judge 由真实模型承担）。
+- **runners/multiModel.ts**：模型矩阵批跑（模型 × 两臂 × 每臂 5 提案；
+  serial、模型间停 4s、单模型失败不终止批次）。协议地图：GPT 族仅
+  openai-completions 协议，其余四族 anthropic-messages。
+- **数据集纪律**：claude-compatible 派生数据集只替换防记忆 noise token
+  （word-form synthetic marker），注入结构与 M6.8 frozen 逐字段一致
+  （运行期 SHA-256 快照校验）；frozen 本体不改动、负对照探针验证派生
+  不引入假信号。
+- **测量口径**：无库条件下模型拒绝编造引文（refused）是合法结果，不
+  解读为 0% 捏造（分母为 0）；judge same-model bias 显式标注。
+
+### 19.2 结果口径（M6.9.3，五模型族；报告 evaluation/reports/）
+
+五模型（GLM-5.3 / claude-fable-5-1 / gpt-5.4 / deepseek-v4-pro /
+qwen3.7-max）：Arm A Plain LLM 25/25 提案 fabricated（逐模型 100%）；
+Arm B Evidence Pipeline 零捏造泄漏（fabricatedLeaked=0）、metadata 陷阱
+拦截 6 条、转正 19/25（76%）。Limitations：小样本、单场景、same-model
+judge、同一网关公共混杂、quote 拦截路径本批未触发（有效性证据 = 零泄漏
++ metadata 拦截）；结论限定 evaluated models。**公开名纪律**：报告与
+产物文件统一公开名（GLM-5.3 等）；内部路由别名只经
+`PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL` 环境变量注入，不入库不入报告。
+live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。

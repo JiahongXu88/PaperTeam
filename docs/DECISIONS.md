@@ -1169,3 +1169,54 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   scripts.evaluation；测试 backend/test/evaluation/×5（scenarios 7 /
   metrics 12 / faultInjection 7 / report 4 / baseline 2 = 32 用例）。
   产品代码零改动（src 侧唯一新增文件均在 evaluation/ 目录内）。
+
+## D-0041 M6 Architecture Freeze：Evidence-grounded Research Agent 架构冻结（Search / Retrieval / Evidence / Evaluation 分层定型），后续扩展进入 M7
+
+- **日期**：2026-09-18（M6 Documentation Freeze；M6 COMPLETE）
+- **状态**：accepted
+- **决策**：M6（M6.0 baseline freeze – M6.9 multi-model evaluation）收口，
+  架构按当前实现形态冻结（总图 ARCHITECTURE §1.3，总览
+  docs/research/M6_FINAL_SUMMARY.md）。冻结内容：
+  - **Evidence-grounded Agent Architecture 定型**：确定性 Workflow 编排 +
+    少量角色 Agent（Researcher / Writer / Reviewer / Citation——D-0009
+    红线贯穿 M6 全程零新增 Agent）+ 强 Tool 层（search_papers /
+    retrieve_library / get_chunk / propose_evidence / evidence_query）+
+    Evidence Layer + Quality Gate。能力扩展走 Tool / Layer / Gate，不开
+    新 Agent 角色。
+  - **Search / RAG / Evidence 分层**（D-0033 六层最小接口的落地形态）：
+    Research Discovery（§14，发现，默认零持久化）→ Literature Library
+    （M6.2，SourceIdentity 身份键 + 候选-正式分离）→ Retrieval Layer
+    （§15，Derived State，零 EvidenceStore 写路径）→ Evidence Grounding
+    Layer（§16，候选-转正状态机 + 三段核验，grounded 写入唯一入口）→
+    消费层（§17，EvidenceSelectionService 唯一使用策略）→ 修订安全
+    （M6.7，Revision Item 生命周期 + revision.validate + Claim Strength
+    Gate）→ Quality Gate → Final Manuscript。核心不变量
+    **Retrieved ≠ Verified ≠ Grounded** 贯穿全链，写入路径单点化
+    （EvidenceGroundingService.appendBatch / markResolved）。
+  - **评估结果**（M6.8 scripted + M6.9 live/多模型，结论限定 evaluated
+    scenarios）：scripted 三实验——fabricated 25.0%→7.1%（rag）→0%
+    （paperteam）、unsupported 17.9%→0%（仅 paperteam）、revision 故障
+    存活率 100%→0%（零误拦）、traceability 0→60%；live 五模型族
+    （GLM-5.3 / claude-fable-5-1 / gpt-5.4 / deepseek-v4-pro /
+    qwen3.7-max）——Plain LLM 25/25 提案捏造（逐模型 100%），PaperTeam
+    pipeline 零捏造证据泄漏（fabricatedLeaked=0；metadata 陷阱拦截 6
+    条、转正 19/25）。限制如实：小样本、有限场景、same-model judge
+    bias、同一网关公共混杂（M6.9 报告 Limitations 同口径，不外推）。
+  - **评估纪律**：评估只读被测系统（不反向影响产品决策路径）；公开文档
+    与报告只使用公开模型名，内部路由别名只经
+    `PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL` 环境变量注入。
+- **理由**：M6.1（D-0033）冻结的六层接口已在 M6.2–M6.9 逐层实现并被
+  三层证据支撑（单元/集成测试钉死机制、scripted 对照实验量化拦截率、
+  live 多模型评估验证真实模型行为）；分层与不变量经 M6.6 架构审计
+  （AGENT_ARCHITECTURE_AUDIT.md）确认边界清晰。冻结使后续里程碑（M7）
+  在稳定底座上扩展，避免持续重开已验证的分层决策。
+- **不做**：不在 M6 冻结形态上重开已拒绝项（Vector DB / 外部索引引擎 /
+  reranker / 内部 MCP / 第五角色 Agent / Evidence Agent）；FullTextResolver
+  （D-0033 六层中唯一未实现层）、Reference Paper Intelligence、
+  Multimodal Review、evaluation live 扩展（多场景 / 异模型 judge /
+  Exp2·Exp3 live 化）、Researcher legacy 收口与 roleCustomTools 集中化
+  ——全部进入 M7（Entry Point 见 PROJECT_STATUS「M7 — Entry Point」段）。
+- **影响**：纯文档里程碑（Documentation Freeze，零代码改动）：PROJECT_STATUS
+  （M6 COMPLETE + M7 Entry Point）、CHANGELOG（M6 完成记录 + M6.9 条目）、
+  ARCHITECTURE（头部状态 + §1.3 M6 冻结架构 + §19 Live/Multi-model
+  Evaluation）、docs/research/M6_FINAL_SUMMARY.md（新）与本决策。

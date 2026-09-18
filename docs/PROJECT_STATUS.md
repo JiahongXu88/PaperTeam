@@ -1,6 +1,33 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-18（**M6.8 Agent Reliability Evaluation Framework
+> 更新日期：2026-09-18（**M6 COMPLETE — Research Discovery &
+> Evidence-grounded Pipeline（Documentation Freeze）**：M6.0 baseline
+> freeze → M6.1 Search/RAG 架构冻结（D-0033）→ M6.2 Literature Library →
+> M6.3 Research Discovery & Search → M6.4 Retrieval/RAG → M6.5 Evidence
+> Grounding → M6.6 Evidence-aware Writing Loop → M6.7 Revision Safety →
+> M6.8 Evaluation Framework → M6.9 Multi-model Reliability Evaluation
+> 全部 COMPLETE；架构冻结 **D-0041**、最终流水线见 ARCHITECTURE §1.3、
+> 里程碑总览见 docs/research/M6_FINAL_SUMMARY.md；**下一节点 M7（Entry
+> Point 见下方「当前阶段」M7 段）**。同日 **M6.9 Multi-model Reliability
+> Evaluation COMPLETE**——M6.8 scripted 框架的 live 化与跨模型验证
+> （被测系统零改动）：M6.9.1 GLM-5.3 live adapter（PiRuntimeAdapter 无
+> 新增调用链；首跑暴露「无库拒答是合法测量结果」的口径问题，框架调整后
+> plain-llm-live fabricated 100% / paperteam-live 0%、verified 80%）；
+> M6.9.2 Claude live（网关 anthropic 通道 bio 过滤拦死 Arm B）+ M6.9.2.1
+> claude-compatible 派生数据集（noise token → word-form marker，注入结构
+> 与 frozen 逐字段一致 + SHA-256 快照校验；Arm B 首次跑通 fabricated 0 /
+> verified 60%）；M6.9.3 五模型族多模型评估（GLM-5.3 / claude-fable-5-1 /
+> gpt-5.4 / deepseek-v4-pro / qwen3.7-max，anthropic-messages +
+> openai-completions 两协议）——Arm A（Plain LLM 无库自报）25/25 提案
+> 全部 fabricated（5/5 模型 100%，evaluated models 范围内 citation
+> hallucination 跨模型族普遍）；Arm B（Evidence Pipeline 三段核验）零捏造
+> 泄漏（fabricatedLeaked=0）+ metadata 陷阱拦截 6 条（年份错位 Stage 2
+> 裁决）+ 转正 19/25（76%）；限制如实（小样本每臂 5 提案 / 单场景 /
+> same-model judge bias / 同一网关公共混杂 / quote 拦截路径本批未触发——
+> 有效性证据是零泄漏与 metadata 拦截，不是 fabricated 拦截率）；公开名
+> 归一化（内部路由别名只经 PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL 注入，
+> 报告与文件统一公开名 GLM-5.3）；详见下方 M6.9 条目与
+> evaluation/reports/。同日 **M6.8 Agent Reliability Evaluation Framework
 > COMPLETE**——建立评估基建回答三个实验问题，不新增产品功能（红线：
 > 零新增 Agent、不改 Runtime / Workflow 核心 / Evidence Pipeline /
 > Writer / Reviewer）：`backend/src/evaluation/`（datasets/metrics/runners/
@@ -170,13 +197,70 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
   build / typecheck / test 全绿。真实 smoke：per-Agent 双 scope 实跑（writer override
   vs 继承默认的 metadata.model 验证）+ scripted 后端外部意见 conflict 全链路。
 
-**M6 — Research Discovery & RAG（进行中：2026-09-16 M6.0 baseline established；
-2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE；
-2026-09-17 M6.3 Research Discovery & Search COMPLETE；2026-09-17 M6.4
-Project RAG & Hybrid Retrieval COMPLETE；2026-09-17 M6.5 Evidence Grounding
-Pipeline COMPLETE；2026-09-17 M6.6 Evidence-aware Writing Loop COMPLETE；
-2026-09-18 M6.7 Revision Safety & Quality Gate Evolution COMPLETE；2026-09-18
-M6.8 Agent Reliability Evaluation Framework COMPLETE）**：
+**M6 — Research Discovery & Evidence-grounded Pipeline（✅ COMPLETE，2026-09-16
+启动 → 2026-09-18 收口 / Documentation Freeze）**：2026-09-16 M6.0 baseline
+freeze + M6.1 Search/RAG 架构冻结（D-0033）+ M6.2 Literature Library
+COMPLETE；2026-09-17 M6.3 Research Discovery & Search COMPLETE + M6.4
+Project RAG & Hybrid Retrieval COMPLETE + M6.5 Evidence Grounding Pipeline
+COMPLETE + M6.6 Evidence-aware Writing Loop COMPLETE；2026-09-18 M6.7
+Revision Safety & Quality Gate Evolution COMPLETE + M6.8 Agent Reliability
+Evaluation Framework COMPLETE + M6.9 Multi-model Reliability Evaluation
+COMPLETE。**M6 全部完成**：Research Discovery、Academic/Web Search、
+Literature Library、Retrieval/RAG、Evidence Grounding、Evidence Tool Layer、
+Evidence 消费接入、Revision Safety、Evaluation Framework、Multi-model
+Validation。架构冻结 D-0041；最终流水线 ARCHITECTURE §1.3；里程碑总览
+docs/research/M6_FINAL_SUMMARY.md：
+
+- **M6.9 Multi-model Reliability Evaluation（✅ 2026-09-18）**：
+  - **范围**：M6.8 scripted 框架的 live 化与跨模型验证——被测系统零改动
+    （红线维持：不新增 Agent、不改 Runtime / Workflow / Evidence Pipeline /
+    Writer / Reviewer；评估代码只在 backend/src/evaluation/ 内扩展）。
+    四个交付批次：M6.9.1 GLM-5.3 live 链路打通（c83cab7）→ M6.9.2 Claude
+    live 评估 + 网关通道适配（20d129b）→ M6.9.2.1 claude-compatible 派生
+    数据集（8ab53d7）→ M6.9.3 五模型族多模型评估（3594644）+ 公开名
+    归一化（b7a3a0e）。
+  - **Live 链路（M6.9.1）**：`evaluation/liveRuntime.ts`（真实模型经
+    PiRuntimeAdapter 的最小评估 runtime——复用生产 adapter，无新增调用链）
+    + `runners/liveExp1.ts`（Exp1 两臂 live 化：plain-llm-live 直接提案 /
+    paperteam-live 全文提案 + 真实三段核验）。frozen 数据集首跑暴露测量
+    口径问题：对齐良好的模型在无库条件下**拒绝编造引文（refused）是合法
+    测量结果**（此时 plain-llm 基线捏造率分母为 0，不应解读为 0%）；
+    调整提案框架后 GLM-5.3 实测：plain-llm-live fabricated 100% /
+    paperteam-live fabricated 0%（verified 80%，misattributed 0）。
+  - **Claude 通道适配（M6.9.2 / M6.9.2.1）**：网关 anthropic 通道对 corpus
+    防记忆噪声 token（fqj0 式随机串）触发 bio 过滤，拦死全部 Arm B（Arm A
+    与 GLM 同型捏造，方向性一致）；不做通道绕行，改做**派生式兼容数据集**
+    ——claude-compatible 变体只替换 noise token 为 word-form synthetic
+    marker（random-term-N，项目统一定义、场景内唯一），claim / evidence /
+    citation / fault 注入结构与 M6.8 frozen 逐字段一致（运行期 SHA-256
+    快照校验），负对照探针验证派生不引入假信号；marker 长度差异带来的
+    chunk 边界漂移如实标注。Arm B 首次跑通：fabricated 0 / verified 60%。
+  - **多模型评估（M6.9.3，`runners/multiModel.ts`）**：五模型族 × 两臂 ×
+    每臂 5 提案（scenario g1-rag-survey，claude-compatible 数据集全批统一
+    消除数据集混杂；serial 执行、模型间停 4s、单模型失败不终止批次）。
+    协议地图：GPT 族仅 openai-completions 协议可达，其余四模型族
+    anthropic-messages 协议。**结果**（evaluation/reports/
+    multi-model-live-evaluation.* + multi-model/ 逐模型原始报告）：Arm A
+    25/25 提案全部 fabricated（claude-fable-5-1 / gpt-5.4 / GLM-5.3 /
+    deepseek-v4-pro / qwen3.7-max 逐模型 100%）——evaluated models 范围内
+    citation hallucination 不局限于单一模型族；Arm B 零捏造泄漏
+    （fabricatedLeaked=0 全模型）、metadata 陷阱拦截 6 条（年份错位，Stage 2
+    权威记录裁决，全部未转正）、quote 复制逐字命中（全文在场时机械
+    fabricated 0）、最终转正 19/25（76%；逐模型 verified 60–80%，差异在
+    引用复制精度与 metadata 敏感度而非拦截有效性——前两段核验是确定性
+    机械核验）。**Limitations 同行**：小样本（每模型 1 场景 × 每臂 5 提案，
+    方向性证据非显著性检验）、单场景域（RAG survey）、same-model judge
+    bias（judge 与生成同模型，verifiedRate 跨模型对比含自评偏差）、全部
+    经同一网关（内容过滤 / 协议翻译 / 限流是公共混杂因子）、quote 拦截
+    路径本批未被触发（有效性证据 = 零泄漏 + metadata 拦截，不能据此声称
+    「fabricated 拦截率」）、结论限定 evaluated models（5 个）。
+  - **公开名归一化（b7a3a0e）**：评估报告与产物文件统一公开名（GLM-5.3 /
+    claude-fable-5-1 / gpt-5.4 / deepseek-v4-pro / qwen3.7-max）；内部路由
+    别名只经 `PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL` 环境变量注入（.env.example
+    有注释说明），不入库、不入报告、不出现在文件名。
+  - **测试**：backend/test/evaluation/ 扩展（liveRuntime / liveExp1 /
+    multiModel 公开名与协议适配等）；本轮 Documentation Freeze 零代码
+    改动，不重跑。
 
 - **M6.8 Agent Reliability Evaluation Framework（✅ 2026-09-18）**：
   - **范围**：评估基建（不新增产品功能）——回答三个实验问题：Evidence
@@ -679,6 +763,21 @@ M6.8 Agent Reliability Evaluation Framework COMPLETE）**：
   Web / Academic Search、Project Literature Library、RAG / Retrieval、
   Evidence-grounded Retrieval、Reference Paper Intelligence、Multimodal Review
   （后两者为 M6+ backlog，不在 M6.2–M6.5 编号内）。
+
+**M7 — Entry Point（2026-09-18 开启，范围待 M7.0 计划冻结定界）**：M6
+冻结后的候选方向，进入 M7.0 时裁剪排序：
+
+- **Evaluation live 扩展**（M6.9 Limitations 的直接后继）：多场景 /
+  多领域数据集、异模型 judge（消除 same-model bias）、更大样本量、
+  Exp2 / Exp3 的 live 化（当前仅 Exp1）。
+- **FullTextResolver**：D-0033 六层最小接口中唯一未实现层（网络全文
+  下载；Unpaywall 等属此层）。
+- **Reference Paper Intelligence**（M6+ backlog 既有项）：参考文献级别
+  深度理解与对比分析。
+- **Multimodal Review**（M6+ backlog 既有项）：图表 / 公式 / 排版的
+  多模态审阅。
+- **遗留收口**：Researcher legacy 路径迁移与 usableEvidence 完全退役
+  （M6.6 记录）、roleCustomTools 装配集中化（M6.6 Known Limitation）。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

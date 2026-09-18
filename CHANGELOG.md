@@ -4,9 +4,37 @@ All notable changes to PaperTeam are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — M5 COMPLETE（2026-09-16，未打 tag）
+## [Unreleased] — M6 COMPLETE（2026-09-18）
 
-M5.0–M5.7 全部完成：Runtime 生命周期可靠性与长程治理（M5.1/M5.2）、受控学术
+M6.0–M6.9 全部完成（Research Discovery & Evidence-grounded Pipeline；
+Documentation Freeze，架构冻结见 D-0041，总览见
+[docs/research/M6_FINAL_SUMMARY.md](docs/research/M6_FINAL_SUMMARY.md)）：
+
+1. **Multi-source Research Discovery**（M6.3）：共享 ProviderHttpClient
+   （超时/退避/Retry-After/熔断/健康四态）+ OpenAlex / Semantic Scholar /
+   arXiv / AMiner 四学术 Provider + SearXNG optional Web Search + 多源
+   融合去重 + 显式 Candidate 持久化。
+2. **Literature Management**（M6.2）：SourceIdentity 分层身份键、候选 ≠
+   正式文献分文件治理、五种入库路径（PDF/DOI/arXiv/URL/BibTeX）、
+   metadata 可信分层 merge、Evidence 引用删除保护。
+3. **Evidence-grounded Retrieval**（M6.4）：确定性 SourceChunk 管线 +
+   进程内 BM25 lexical + optional dense + RRF hybrid + Context Budget
+   Packing + retrieve_library 工具（零 Vector DB / 零外部索引引擎）。
+4. **Evidence Verification Pipeline**（M6.5/M6.6）：EvidenceCandidate
+   候选-转正状态机 + 三段核验（quote 逐字 / metadata / 语义 judge）+
+   Evidence 工具面（get_chunk / propose_evidence / evidence_query）+
+   Writer/Reviewer 消费侧重构（EvidenceSelectionService 唯一使用策略、
+   writer formalOnly 视图、citations_evidence_backed Gate 规则）。
+5. **Revision Safety**（M6.7）：Revision Item 生命周期状态机 +
+   revision.validate 四类确定性复核 + Claim Strength Gate + Revision
+   Gate 两条规则 + hitl.revision_validation。
+6. **Agent Reliability Evaluation**（M6.8/M6.9）：scripted 离线确定性
+   三实验框架 + live / 五模型族多模型评估（GLM-5.3 / claude-fable-5-1 /
+   gpt-5.4 / deepseek-v4-pro / qwen3.7-max：Plain LLM 25/25 提案捏造；
+   PaperTeam pipeline 零捏造证据泄漏——evaluated scenarios 内，限制
+   如实见 M6.9 条目）。
+
+M5 COMPLETE（2026-09-16，未打 tag）：M5.0–M5.7 全部完成：Runtime 生命周期可靠性与长程治理（M5.1/M5.2）、受控学术
 Skill 接入（M5.3）、中文风格修订回路（M5.4）、单机 Linux / Docker 部署（M5.5，
 真实 Docker 验收）、真实论文 A/B 验收与 Citation / Fact Preservation 双 Gate
 （M5.6）、最终产品化（M5.7：per-Agent provider/model 配置 + 外部专家 / 导师
@@ -15,6 +43,37 @@ deterministic preservation gates）。完整内容见
 [docs/RELEASE_NOTES_M5.md](docs/RELEASE_NOTES_M5.md)；验收记录见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
+
+### M6.9 Multi-model Reliability Evaluation（✅ 2026-09-18）
+
+- **Live 评估链路**（M6.8 scripted 框架的 live 化，被测系统零改动——
+  红线维持）：`evaluation/liveRuntime.ts`（真实模型经 PiRuntimeAdapter
+  最小评估 runtime，无新增调用链）+ `runners/liveExp1.ts`（Exp1 两臂
+  live 化）+ `runners/multiModel.ts`（多模型批跑：模型矩阵 × 两臂 × 每臂
+  5 提案，serial 执行，单模型失败不终止批次）。
+- **M6.9.1 GLM-5.3 live**：frozen 数据集首跑确立测量口径——无库条件下
+  拒绝编造引文（refused）是合法结果，不解读为 0% 捏造；提案框架调整后
+  实测 plain-llm-live fabricated 100% / paperteam-live fabricated 0%
+  （verified 80%）。
+- **M6.9.2 Claude live + M6.9.2.1 兼容数据集**：网关 anthropic 通道对
+  corpus 防记忆噪声 token 触发 bio 过滤拦死 Arm B；claude-compatible
+  派生数据集（noise token → word-form synthetic marker，注入结构与
+  frozen 逐字段一致 + SHA-256 快照校验 + 负对照探针）后 Arm B 跑通
+  （fabricated 0 / verified 60%）。
+- **M6.9.3 五模型族多模型评估**（anthropic-messages + openai-completions
+  两协议；claude-compatible 数据集全批统一）：**Arm A（Plain LLM）25/25
+  提案全部 fabricated**（五模型逐个 100%——evaluated models 范围内
+  citation hallucination 跨模型族普遍）；**Arm B（Evidence Pipeline）零
+  捏造泄漏**（fabricatedLeaked=0）+ metadata 陷阱拦截 6 条（Stage 2 权威
+  记录裁决）+ 转正 19/25（76%）。Limitations 同行：小样本（每臂 5 提案
+  × 单场景，方向性证据）、same-model judge bias、同一网关公共混杂、
+  quote 拦截路径本批未触发（有效性证据 = 零泄漏 + metadata 拦截，不是
+  fabricated 拦截率）、结论限定 evaluated models。
+- **公开名归一化**：评估报告与产物文件统一公开名（GLM-5.3 等）；内部
+  路由别名只经 `PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL` 环境变量注入，不入库
+  不入报告。报告：`evaluation/reports/`（live-glm53-exp1 / live-claude-
+  exp1(-compatible) / multi-model-live-evaluation + multi-model/ 逐模型
+  原始 JSON）。
 
 ### M6.8 Agent Reliability Evaluation Framework（✅ 2026-09-18）
 
