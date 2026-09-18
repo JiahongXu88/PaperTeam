@@ -6,6 +6,11 @@
 .app-main { padding-top: 8px; }
 .page { gap: 20px; }
 .app-sidebar { border-right: 1px solid var(--border-sidebar); background: linear-gradient(145deg, var(--bg-sidebar-hover), transparent 65%), var(--bg-sidebar); gap: 28px; padding: 26px 16px 18px; }
+/* 侧栏两主题都是深色：滑块固定用白色系；指针进入侧栏即增强（Firefox 走 scrollbar-color） */
+.app-sidebar { --scrollbar-thumb: rgba(255, 255, 255, 0.16); --scrollbar-thumb-hover: rgba(255, 255, 255, 0.34); }
+.app-sidebar:hover { scrollbar-color: var(--scrollbar-thumb-hover) transparent; }
+.app-sidebar::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb); }
+.app-sidebar:hover::-webkit-scrollbar-thumb { background-color: var(--scrollbar-thumb-hover); }
 .sidebar-brand-mark { background: var(--brand-orb); box-shadow: none; width: 32px; height: 32px; }
 .sidebar-brand-name { font-size: 20px; font-weight: 600; letter-spacing: -.7px; }
 .sidebar-brand-sub { margin-top: 5px; }

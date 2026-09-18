@@ -171,6 +171,74 @@
   color: var(--text-sidebar-muted);
 }
 
+/* 最近项目行：链接占满整行，「···」菜单浮在行尾（不嵌在链接内，见 RowMenu 约定） */
+.sidebar-recent-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-recent-item .sidebar-recent-link {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-recent-item .row-menu {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+}
+
+/* 触发按钮只在 hover / 键盘聚焦 / 菜单展开时出现；透明时不可点，避免误触 */
+.sidebar-recent-item .row-menu-trigger {
+  width: 28px;
+  height: 28px;
+  color: var(--text-sidebar-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity var(--t-fast),
+    background var(--t-fast),
+    color var(--t-fast);
+}
+
+.sidebar-recent-item:hover .row-menu-trigger,
+.sidebar-recent-item .row-menu-trigger:focus-visible,
+.sidebar-recent-item .row-menu-trigger[aria-expanded="true"] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-recent-item .row-menu-trigger:hover,
+.sidebar-recent-item .row-menu-trigger[aria-expanded="true"] {
+  background: var(--bg-sidebar-active);
+  color: var(--text-sidebar-strong);
+}
+
+/* hover 时标题右侧渐隐，长标题不会压在「···」按钮下面 */
+.sidebar-recent-item:hover .sidebar-recent-title {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 40px), transparent);
+}
+
+/* 行内确认态（归档）：侧栏窄，消息 + 按钮换行铺满整行 */
+.sidebar-recent-item-confirming {
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--bg-sidebar-hover);
+}
+
+.sidebar-recent-item-confirming .inline-confirm {
+  flex-wrap: wrap;
+  color: var(--text-sidebar);
+}
+
+.sidebar-recent-error {
+  flex-basis: 100%;
+}
+
 .sidebar-footer {
   margin-top: auto;
   /* promo card 有固定 min-height，同样不允许收缩：矮窗口下贴流排列，随滚动可达 */

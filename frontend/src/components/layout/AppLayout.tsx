@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useMatch } from "react-router-dom";
 
 import { AppErrorBoundary } from "../common/ErrorBoundary.js";
 import { Icon } from "../common/Icon.js";
+import { InlineConfirm, RowMenu } from "../common/RowMenu.js";
 import { RuntimeStatusChip } from "../common/RuntimeStatusChip.js";
 import { ThemeCycleButton } from "../common/ThemeControls.js";
-import { useProject, useProjects, useRuntimeStatus } from "../../hooks/queries.js";
+import { useArchiveProject, useProject, useProjects, useRuntimeStatus } from "../../hooks/queries.js";
 import { useUiStore } from "../../stores/uiStore.js";
+import { formatApiError } from "../../utils/errors.js";
+import type { ProjectView } from "../../types/api.js";
 
 /**
  * 应用外壳：深色侧栏 + 内容列（顶栏 + 页面）。
@@ -54,6 +58,64 @@ function PdfToolchainBanner() {
 
 const navLinkClass = ({ isActive }: { isActive: boolean }) => `sidebar-link${isActive ? " active" : ""}`;
 
+/**
+ * 单条最近项目：标题链接 + hover 才出现的「···」快捷菜单（归档）。
+ * 菜单按钮不嵌在 <NavLink> 内（RowMenu 的约定），点击行内其余区域照常进入项目；
+ * 归档沿用与项目列表 / 工作区一致的行内确认，成功后列表缓存失效、该行自动消失。
+ */
+function SidebarRecentItem({ project }: { project: ProjectView }) {
+  const archive = useArchiveProject();
+  const [confirming, setConfirming] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  if (confirming) {
+    return (
+      <div className="sidebar-recent-item sidebar-recent-item-confirming">
+        <InlineConfirm
+          message="归档后不再显示，可在「设置 → 项目管理」恢复。"
+          confirmLabel="归档"
+          pending={archive.isPending}
+          testId="sidebar-archive-confirm"
+          onCancel={() => setConfirming(false)}
+          onConfirm={() => {
+            setActionError(null);
+            archive.mutate(project.id, {
+              onSuccess: () => setConfirming(false),
+              onError: (archiveError) => {
+                setConfirming(false);
+                setActionError(formatApiError(archiveError));
+              },
+            });
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="sidebar-recent-item">
+      <NavLink
+        to={`/projects/${project.id}`}
+        className={({ isActive }) => `sidebar-recent-link${isActive ? " active" : ""}`}
+        title={project.title}
+      >
+        <Icon name="document" />
+        <span className="sidebar-recent-title">{project.title}</span>
+      </NavLink>
+      <RowMenu
+        label={`项目「${project.title}」的更多操作`}
+        testId="sidebar-recent-menu"
+        items={[{ id: "archive", label: "归档项目", onSelect: () => setConfirming(true) }]}
+      />
+      {actionError !== null ? (
+        <p className="form-error sidebar-recent-error" role="alert">
+          {actionError}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /** 最近项目（未归档，最多 5 个；列表未加载时不占位） */
 function SidebarRecent() {
   const { data } = useProjects();
@@ -64,15 +126,7 @@ function SidebarRecent() {
     <div className="sidebar-recent">
       <span className="sidebar-label">最近项目</span>
       {data.slice(0, RECENT_LIMIT).map((project) => (
-        <NavLink
-          key={project.id}
-          to={`/projects/${project.id}`}
-          className={({ isActive }) => `sidebar-recent-link${isActive ? " active" : ""}`}
-          title={project.title}
-        >
-          <Icon name="document" />
-          <span className="sidebar-recent-title">{project.title}</span>
-        </NavLink>
+        <SidebarRecentItem key={project.id} project={project} />
       ))}
       {data.length > RECENT_LIMIT ? (
         <Link to="/projects" className="sidebar-recent-link sidebar-recent-more">

@@ -36,6 +36,10 @@
   --text-faint: #a2a6b0;
   --text-on-accent: #ffffff;
 
+  /* ---- 滚动条（默认弱化半透明；hover 增强，规则见 base.css） ---- */
+  --scrollbar-thumb: rgba(27, 29, 35, 0.18);
+  --scrollbar-thumb-hover: rgba(27, 29, 35, 0.36);
+
   /* ---- 边框 ---- */
   --border-default: #e5e4e0;
   --border-subtle: #eeedea;
@@ -157,6 +161,9 @@
   --text-muted: #98a4b4;
   --text-faint: #738094;
   --text-on-accent: #ffffff;
+
+  --scrollbar-thumb: rgba(232, 234, 240, 0.14);
+  --scrollbar-thumb-hover: rgba(232, 234, 240, 0.30);
 
   --border-default: #303b47;
   --border-subtle: #26313c;

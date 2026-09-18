@@ -139,6 +139,39 @@ kbd,
   color: var(--text-primary);
 }
 
+/*
+ * 滚动条：细 / 半透明 / 圆角，默认弱化，hover 滑块时增强。
+ * 覆盖所有滚动容器（侧栏 / 窗口级主内容与右栏 / 表格 / 日志等内滚区）；
+ * 不隐藏滑块，只收窄（8px，比系统默认 17px 更省空间，不改变既有滚动行为）。
+ * Firefox：scrollbar-width + scrollbar-color；WebKit：伪元素（含滑块 hover 增强）。
+ * 侧栏恒为深色，其配色覆盖见 identity.css。
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--r-pill);
+  background-color: var(--scrollbar-thumb);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
