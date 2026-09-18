@@ -13,10 +13,18 @@
  *                                                     #   目前仅 Exp1；模型走产品解析链）
  *   npm run evaluation -- --runtime real --model zai-coding-cn/glm-5.3 --experiment 1
  *                                                     # 显式指定模型规格
+ *   npm run evaluation -- --runtime real --model claude-gateway/claude-fable-5-1 \
+ *        --experiment 1 --scenario g1-rag-survey --dataset claude-compatible \
+ *        --report-name live-claude-exp1-compatible
+ *                                                     # M6.9.2.1：claude-compatible 数据集
+ *                                                     #   （noise token 替换派生集，
+ *                                                     #   绕开 Claude 通道 bio 过滤；
+ *                                                     #   报告名不覆盖原始失败记录）
  *
  * 校准记录：evaluation/calibration/records.jsonl（相对仓库根；--calibration 覆盖）。
  * 报告输出：scripted → evaluation/reports/m6.8-evaluation-<timestamp>.{json,md}；
- *           live    → evaluation/reports/live-<modeltag>-exp1.{json,md}。
+ *           live    → evaluation/reports/live-<modeltag>-exp1.{json,md}
+ *                     （--report-name 覆盖基名，如 live-claude-exp1-compatible）。
  */
 
 import { readFile } from "node:fs/promises";
@@ -50,6 +58,13 @@ export interface CliOptions {
   runtime: "scripted" | "real";
   /** live 模式显式模型规格（"provider/model-id"）；缺省走产品解析链 */
   model?: string;
+  /**
+   * live 模式数据集变体（M6.9.2.1）：frozen = M6.8 冻结集；
+   * claude-compatible = noise token 替换派生集（Claude 通道 bio 过滤兼容）。
+   */
+  dataset: "frozen" | "claude-compatible";
+  /** live 模式报告文件名基名（如 live-claude-exp1-compatible；缺省 live-<modeltag>-exp1） */
+  reportName?: string;
 }
 
 export function parseCliArgs(argv: readonly string[]): CliOptions {
@@ -60,6 +75,7 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
     out: resolve(repoRoot, "evaluation", "reports"),
     calibrationPath: resolve(repoRoot, "evaluation", "calibration", "records.jsonl"),
     runtime: "scripted",
+    dataset: "frozen",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
@@ -112,12 +128,32 @@ export function parseCliArgs(argv: readonly string[]): CliOptions {
       }
       options.model = value;
       index += 1;
+    } else if (arg === "--dataset") {
+      const value = argv[index + 1];
+      if (value !== "frozen" && value !== "claude-compatible") {
+        throw new Error(`--dataset 只接受 frozen | claude-compatible（收到 ${value ?? "(缺)"}）`);
+      }
+      options.dataset = value;
+      index += 1;
+    } else if (arg === "--report-name") {
+      const value = argv[index + 1];
+      if (value === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+        throw new Error("--report-name 需要一个文件名基名参数（字母/数字/._-，如 live-claude-exp1-compatible）");
+      }
+      options.reportName = value;
+      index += 1;
     } else {
       throw new Error(`未知参数：${arg}`);
     }
   }
   if (options.model !== undefined && options.runtime !== "real") {
     throw new Error("--model 只在 --runtime real 下有效（scripted 不访问任何模型）");
+  }
+  if (options.dataset !== "frozen" && options.runtime !== "real") {
+    throw new Error("--dataset claude-compatible 只在 --runtime real 下有效（scripted 实验固定用 M6.8 frozen 数据集）");
+  }
+  if (options.reportName !== undefined && options.runtime !== "real") {
+    throw new Error("--report-name 只在 --runtime real 下有效（scripted 报告名固定带时间戳）");
   }
   if (options.runtime === "real" && options.experiment !== 1) {
     throw new Error("--runtime real 目前只支持 --experiment 1（M6.9.1 首轮只接 Evidence Grounding）");
@@ -163,11 +199,34 @@ export async function runEvaluationCli(argv: readonly string[]): Promise<void> {
 
   // M6.9.1 live 模式：真实模型（产品 Runtime 链）跑 Exp1 两臂，独立报告。
   // 只选 grounding 场景——revision/workflow 数据集与 live 无关，不参与 id 校验。
+  // M6.9.2.1：--dataset claude-compatible 换用 noise token 替换派生集（同一
+  // 场景 id 空间），先过兼容性校验（frozen 快照 / 结构一致 / 安全模式）再跑。
   if (options.runtime === "real") {
+    const claudeCompatible = options.dataset === "claude-compatible";
+    let groundingPool = GROUNDING_SCENARIOS;
+    if (claudeCompatible) {
+      const { GROUNDING_SCENARIOS_CLAUDE, validateClaudeCompatibleDataset } = await import(
+        "./datasets/claudeCompatible.js"
+      );
+      const compatibilityIssues = validateClaudeCompatibleDataset();
+      if (compatibilityIssues.length > 0) {
+        console.error("[evaluation] claude-compatible 数据集校验失败（拒绝跑脏数据）：");
+        for (const issue of compatibilityIssues) {
+          console.error(`  ${issue.scenarioId}: ${issue.problem}`);
+        }
+        process.exitCode = 1;
+        return;
+      }
+      log("[evaluation] claude-compatible 数据集校验通过（frozen 快照一致 / 只差 noise token / 无 bio-编码模式新增）");
+      groundingPool = GROUNDING_SCENARIOS_CLAUDE;
+    }
+    const liveScenarios = selectScenarios(groundingPool, options.scenarios);
     const { runLiveExperiment1 } = await import("./runners/liveExp1.js");
     const outcome = await runLiveExperiment1({
-      scenarios: groundingScenarios,
+      scenarios: liveScenarios,
       ...(options.model !== undefined ? { modelSpec: options.model } : {}),
+      dataset: claudeCompatible ? "claude-compatible" : "frozen-m6.8",
+      ...(options.reportName !== undefined ? { reportBase: options.reportName } : {}),
       out: options.out,
       log,
     });

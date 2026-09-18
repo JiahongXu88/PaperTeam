@@ -124,9 +124,14 @@ export interface LiveScenarioResult {
 export interface LiveExp1Report {
   schemaVersion: 1;
   kind: "live-evaluation";
-  milestone: "M6.9.2";
+  milestone: "M6.9.2" | "M6.9.2.1";
   experiment: 1;
   name: "evidence-grounding-live";
+  /**
+   * 数据集变体：frozen-m6.8 = M6.8 冻结集；claude-compatible = M6.9.2.1
+   * 派生集（noise token 替换，其余逐字段一致；Claude 通道 bio 过滤兼容）。
+   */
+  dataset: "frozen-m6.8" | "claude-compatible";
   model: {
     spec: string;
     provider: string;
@@ -174,7 +179,11 @@ function buildArmAPrompt(scenario: GroundingScenario): string {
   ].join("\n");
 }
 
-function buildArmBPrompt(scenario: GroundingScenario): string {
+/**
+ * Arm B prompt 构造（导出供 M6.9.2.1 网关兼容性探针复用——探针必须与
+ * 正式实验走完全相同的 wire 内容，才能证明数据集兼容性而非探针差异）。
+ */
+export function buildArmBPrompt(scenario: GroundingScenario): string {
   const blocks = scenario.corpus.map(
     (source) => `===== fileName: ${source.fileName} | title: ${source.title} =====\n${source.content}\n=====`,
   );
@@ -642,6 +651,7 @@ export function liveReportMarkdown(report: LiveExp1Report): string {
     `# Live Evaluation — Exp1 Evidence Grounding（${report.milestone}）`,
     "",
     `- model: \`${report.model.spec}\`（provider \`${report.model.provider}\`，来源 ${report.model.source}）`,
+    `- dataset: ${report.dataset}${report.dataset === "claude-compatible" ? "（M6.9.2.1 noise-token 兼容变体）" : "（M6.8 冻结集）"}`,
     `- runtime: ${report.runtimeProvider}（PiRuntimeAdapter，无新增调用链）`,
     `- run: ${report.startedAt} → ${report.finishedAt}（${Math.round(report.durationMs / 1000)}s）`,
     `- errors: ${report.errors.length}`,
@@ -693,9 +703,11 @@ export function liveReportMarkdown(report: LiveExp1Report): string {
 export async function writeLiveExp1Report(
   report: LiveExp1Report,
   outDir: string,
+  /** 文件名基名覆盖（M6.9.2.1：live-claude-exp1-compatible；缺省 live-<modeltag>-exp1） */
+  baseOverride?: string,
 ): Promise<{ jsonPath: string; markdownPath: string }> {
   await mkdir(outDir, { recursive: true });
-  const base = `live-${modelTagOf(report.model.modelId)}-exp1`;
+  const base = baseOverride ?? `live-${modelTagOf(report.model.modelId)}-exp1`;
   const jsonPath = join(outDir, `${base}.json`);
   const markdownPath = join(outDir, `${base}.md`);
   await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
@@ -717,14 +729,20 @@ export interface LiveRunOutcome {
 export async function runLiveExperiment1(options: {
   scenarios: readonly GroundingScenario[];
   modelSpec?: string;
+  /** 数据集变体（写入报告元数据；claude-compatible 时附加 dataset limitations） */
+  dataset?: "frozen-m6.8" | "claude-compatible";
+  /** 报告文件名基名覆盖（M6.9.2.1：live-claude-exp1-compatible，避免覆盖原始失败记录） */
+  reportBase?: string;
   out: string;
   log?: (message: string) => void;
 }): Promise<LiveRunOutcome> {
   const log = options.log ?? (() => {});
+  const dataset = options.dataset ?? "frozen-m6.8";
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
   log(
-    `[live-eval] M6.9.2 真实模型评估开始（${options.scenarios.length} 场景 × 2 臂，model=${options.modelSpec ?? "(产品解析链)"}）`,
+    `[live-eval] ${dataset === "claude-compatible" ? "M6.9.2.1" : "M6.9.2"} 真实模型评估开始` +
+      `（${options.scenarios.length} 场景 × 2 臂，model=${options.modelSpec ?? "(产品解析链)"}，dataset=${dataset}）`,
   );
   const live = await createLiveEvaluationRuntimeInternal(options);
   const errors: LiveErrorRecord[] = [];
@@ -750,9 +768,10 @@ export async function runLiveExperiment1(options: {
   const report: LiveExp1Report = {
     schemaVersion: 1,
     kind: "live-evaluation",
-    milestone: "M6.9.2",
+    milestone: dataset === "claude-compatible" ? "M6.9.2.1" : "M6.9.2",
     experiment: 1,
     name: "evidence-grounding-live",
+    dataset,
     model: {
       spec: live.modelSpec,
       provider: live.provider,
@@ -770,6 +789,11 @@ export async function runLiveExperiment1(options: {
     },
     errors,
     limitations: [
+      ...(dataset === "claude-compatible"
+        ? [
+            "数据集为 claude-compatible 变体（M6.9.2.1）：corpus 防记忆噪声 token 由随机串（fqj0 式，触发网关 Claude 通道 bio 过滤）替换为 word-form synthetic marker（random-term-N，项目统一定义、场景内唯一）；claim/evidence/citation/fault 注入结构与 M6.8 frozen 逐字段一致（运行期 SHA-256 快照校验）。marker 与原 token 长度不同，chunk 边界与 prompt 长度有轻微漂移——与 frozen 数据集上的 GLM-5.3 结果比较时需注意",
+          ]
+        : []),
       "首轮 plumbing 冒烟：样本小（每臂 ≤5 提案）、单场景起步，指标不具统计效力",
       `judge 与生成同用 ${live.modelSpec}（同模型自评偏差；正式实验应引入异模型 judge）`,
       "对齐良好的模型可能在无库条件下拒绝编造引文（refused 结果）——这是合法测量结果，此时 plain-llm 基线的捏造率不可测（分母为 0），不应解读为 0%",
@@ -778,7 +802,7 @@ export async function runLiveExperiment1(options: {
       "quote 机械核验与产品 Stage 1 同用 normalizeForQuoteMatch 归一化口径（大小写/空白不敏感）",
     ],
   };
-  const written = await writeLiveExp1Report(report, options.out);
+  const written = await writeLiveExp1Report(report, options.out, options.reportBase);
   log(`[live-eval] 报告已写入：${written.jsonPath}`);
   log(`[live-eval] 摘要已写入：${written.markdownPath}`);
   return { report, written, hasArmFailures: errors.length > 0 };
