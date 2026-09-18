@@ -13,6 +13,7 @@ import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
 import { QualityGateSummaryLink } from "../components/project/QualityGatePanel.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
+import { SourcesPanel } from "../components/project/SourcesPanel.js";
 import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
 import { readSectionProgress } from "../components/project/workflowTimeline.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
@@ -30,13 +31,14 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "paper" | "pdf" | "evidence" | "citations" | "review" | "workflow";
+type TabId = "overview" | "paper" | "pdf" | "sources" | "evidence" | "citations" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean }> = [
   { id: "overview", label: "概览" },
   { id: "paper", label: "论文产出", notReviewOnly: true },
   { id: "pdf", label: "PDF 与结构" },
+  { id: "sources", label: "文献库" },
   { id: "evidence", label: "证据" },
   { id: "citations", label: "引用核验" },
   { id: "review", label: "Review", existingOnly: true },
@@ -424,6 +426,8 @@ export function ProjectPage() {
             <PaperPanel projectId={project.id} />
           ) : tab === "pdf" ? (
             <PdfPanel projectId={project.id} />
+          ) : tab === "sources" ? (
+            <SourcesPanel projectId={project.id} />
           ) : tab === "evidence" ? (
             <EvidencePanel
               projectId={project.id}

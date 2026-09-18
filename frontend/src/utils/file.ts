@@ -3,6 +3,27 @@
 /** PDF 上传上限（与 Backend PaperIngestService.MAX_PAPER_PDF_BYTES 一致） */
 export const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
+/** 文献库单文件上限（与 Backend SourceStore.MAX_SOURCE_BYTES 一致） */
+export const MAX_SOURCE_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** 文献库允许的文件扩展名（与 Backend SourceStore 白名单一致） */
+const SOURCE_FILE_EXTENSIONS = [".pdf", ".bib", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg"] as const;
+
+/** 文献库文件选择后的即时校验；合法返回 null */
+export function validateSourceFile(file: File): string | null {
+  const name = file.name.toLowerCase();
+  if (!SOURCE_FILE_EXTENSIONS.some((ext) => name.endsWith(ext))) {
+    return `只接受 ${SOURCE_FILE_EXTENSIONS.join(" / ")} 文件`;
+  }
+  if (file.size === 0) {
+    return "文件为空";
+  }
+  if (file.size > MAX_SOURCE_UPLOAD_BYTES) {
+    return `文件超过 ${Math.floor(MAX_SOURCE_UPLOAD_BYTES / (1024 * 1024))}MB 上限`;
+  }
+  return null;
+}
+
 /** 选择文件后的即时校验；合法返回 null */
 export function validatePdfFile(file: File): string | null {
   if (!file.name.toLowerCase().endsWith(".pdf")) {

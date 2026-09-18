@@ -4,6 +4,26 @@ All notable changes to PaperTeam are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — M7.0 Productization Baseline（2026-09-18）
+
+产品化收口：前端对齐 M6 已有能力，不新增 Agent / Runtime / Workflow 能力。
+
+1. **Literature Library UI（M6.2 前端消费）**：新增项目「文献库」标签页
+   （SourcesPanel）：五种入库方式（PDF/文件上传、DOI、arXiv、URL、BibTeX）
+   全部复用既有 M6.2 端点（`POST …/sources` 与 `…/sources/import/{doi|arxiv|url|bibtex}`）；
+   幂等（created=false）与 resolver 解析结论（补全 / 未收录）如实呈现；
+   新增 api/sources.ts + types/sources.ts + hooks（useSources /
+   useUploadSource / useImportSource）。
+2. **Sidebar 响应式布局修复**：矮视口（≲700px 高）下「最近项目」被 flex
+   收缩为 0 高、内容溢出绘制且被底部 promo card 遮挡（根因：
+   `.sidebar-recent { min-height: 0 }` 取消自动最小尺寸保护）。修复 =
+   `flex-shrink: 0` + 既有 overflow-y:auto 滚动兜底，任何窗口高度不遮挡、
+   滚动可达（e2e：sidebar-responsive.spec.ts 四档高度回归）。
+3. **CI 修复（Typecheck）**：M6.5/M6.6 引入的 backend/test/evidence 类型
+   错误（runTool helper 的窄化 execute 签名 vs ToolDefinition 五参数、
+   mock LookupOutcome 宽化、未使用 import）导致 CI 自 run #21 起连续失败；
+   修复后不降低检查标准，evidence 61 测试全过。
+
 ## [Unreleased] — M6 COMPLETE（2026-09-18）
 
 M6.0–M6.9 全部完成（Research Discovery & Evidence-grounded Pipeline；

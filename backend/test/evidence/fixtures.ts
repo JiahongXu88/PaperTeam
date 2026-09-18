@@ -18,7 +18,7 @@ import { ChunkAccess } from "../../src/evidence/chunkAccess.js";
 import { EvidenceGroundingService } from "../../src/evidence/EvidenceGroundingService.js";
 import { ScholarlyResolver, type ScholarlyProvider, type ScholarlyQuery, type LookupOutcome } from "../../src/citation/scholarly.js";
 import type { CanonicalPaperRecord } from "../../src/citation/integrity.js";
-import type { AgentRuntime, AgentTask } from "../../src/runtime/types.js";
+import type { AgentRuntime } from "../../src/runtime/types.js";
 import { sha256Hex } from "../../src/util/hash.js";
 
 export const CHUNK_TEXT =

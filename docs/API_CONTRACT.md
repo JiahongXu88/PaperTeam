@@ -15,6 +15,9 @@
 > 与 Quality Gate 新规则 `revision_items_resolved` / `claim_strength_guard`；
 > `reviews/revision-validation-r{n}.json` 产物随 gate 产物
 > `revisionValidation` 字段可见）。
+> 2026-09-18 M7.0：产品化收口——§1.2 文献库（sources CRUD + import/*）
+> 与 `POST …/sources` 前端正式消费（SourcesPanel「文献库」标签页：五种入库
+> 方式、幂等与 resolver 结论如实展示；DTO 见 §2 sources 块）；无后端变更。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -72,8 +75,8 @@
 | `GET /api/runs/:runId/events` | SSE：Domain Event replay + 实时（事件类型见 §3）；断线重连后服务端全量 replay，前端按 `seq` 去重 | ✅ M4.4（useWorkflowEvents，页面级订阅） |
 | `POST /api/runs/:runId/resume` | HITL 决策 `{decision, payload?}`（仅 `awaiting_input` 可调用）。decision 必须在当前 `awaiting.options` 内，payload 按节点契约：`hitl.feasibility_confirm` 的 `adjust` 需 `targetProfile` 或 `targetVenue`（≥一项）；`hitl.outline_confirm` / `hitl.plan_confirm` 的 `revise` 需非空 `feedback`；`hitl.revision_overflow` 为 `accept_draft` / `revise_more`（无 payload）；`cancel` 走 decision 通道留档 `inputs`。成功 → 200 `{run}`（decision=cancel 时终态 cancelled）。**409 WORKFLOW_INVALID_STATE**：非法 decision / 缺 payload / 重复提交（含并发）/ 过期请求（已 resume）；重复 cancel 幂等走 `POST /cancel` | ✅ M4.5（HitlPanel 决策面板） |
 | `POST /api/runs/:runId/cancel` | 取消 run：立即 abort 在途模型调用（AgentRun / 分章节审阅 / 语义核验 / 引用真实性核验逐条循环），停止派发未开始项，循环检查点终结落盘。**已 cancelled 的重复取消幂等 200**（返回当前状态）；completed / failed → 409 | ✅ M4.4（工作流页「取消任务」） |
-| `GET/POST /api/projects/:id/sources`、`GET/PATCH/DELETE …/:sid`、`POST …/:sid/analyze` | 文献库 CRUD + PDF 分析。M6.2 起：重复上传同内容 PDF → 200 `{source, created:false}`（新建 201 `{source, created:true}`，contentHash sha256 判重）；PATCH 增可选 `versionType`（preprint/conference/journal/other）；DELETE 被 Evidence 引用时 **409 SOURCE_IN_USE**；metadata 增可选 `arxivId`/`abstract` | M4.5（M6.2 扩展） |
-| `POST /api/projects/:id/sources/import/{doi\|arxiv\|url\|bibtex}` | M6.2 入库路径：`{doi, sourceRole?, enrich?}` / `{arxivId, sourceRole?, enrich?}` / `{url, title?, sourceRole?}` / `{content, sourceRole?}`。身份归一去重（重复导入 → 200 created:false）；DOI/arXiv 默认经 ScholarlyResolver 补全元数据（`enrich:false` 跳过；未命中如实记录不伪造）；URL 只存 canonical 记录不抓正文；BibTeX 逐条导入（解析错误随响应 errors 返回） | M6.2 |
+| `GET/POST /api/projects/:id/sources`、`GET/PATCH/DELETE …/:sid`、`POST …/:sid/analyze` | 文献库 CRUD + PDF 分析。M6.2 起：重复上传同内容 PDF → 200 `{source, created:false}`（新建 201 `{source, created:true}`，contentHash sha256 判重）；PATCH 增可选 `versionType`（preprint/conference/journal/other）；DELETE 被 Evidence 引用时 **409 SOURCE_IN_USE**；metadata 增可选 `arxivId`/`abstract` | ✅ M7.0（SourcesPanel「文献库」：列表 / PDF 上传） |
+| `POST /api/projects/:id/sources/import/{doi\|arxiv\|url\|bibtex}` | M6.2 入库路径：`{doi, sourceRole?, enrich?}` / `{arxivId, sourceRole?, enrich?}` / `{url, title?, sourceRole?}` / `{content, sourceRole?}`。身份归一去重（重复导入 → 200 created:false）；DOI/arXiv 默认经 ScholarlyResolver 补全元数据（`enrich:false` 跳过；未命中如实记录不伪造）；URL 只存 canonical 记录不抓正文；BibTeX 逐条导入（解析错误随响应 errors 返回） | ✅ M7.0（SourcesPanel：DOI / arXiv / URL / BibTeX 四种导入 + resolver 结论展示） |
 | `GET/POST /api/projects/:id/sources/candidates`、`DELETE …/candidates/:cid`、`POST …/candidates/:cid/{promote\|reject}` | M6.2 Discovery 候选（≠ 正式文献）：GET 支持 `?status=pending_review/accepted/rejected`；POST 需可判等身份（doi/arxivId/url/title+year+authors 任一组合成键）；promote 幂等（library 已有同身份 → merge 返回既有）；reject 幂等；删候选不影响正式 Source | M6.2 |
 | `POST /api/projects/:id/sources/:sid/{enrich\|link}` | M6.2：enrich = resolver 元数据补全（resolved 级 merge，低可信只填空缺）；link = `{targetSourceId, versionType?, targetVersionType?}` 建立同一工作多版本关系（workKey + relatedSourceIds，preprint/正式版保持独立） | M6.2 |
 | `POST /api/projects/:id/research/academic-search` | M6.3 学术发现检索（真关键词 discovery，非标题查证）：`{query, limit?(1-50 默认 10), yearFrom?, yearTo?, openAccessOnly?, saveAsCandidates?: number[]}`。多源聚合（OpenAlex primary / S2 fallback / arXiv preprint / AMiner China-secondary）+ SourceIdentity 去重 + 带权重 RRF 融合 → `{status: success\|partial, results: [{identity, record, citationCount?, openAccess?, score, sources:[{provider,rank}]}], diagnostics, saved?}`。**默认不持久化**；`saveAsCandidates`（结果下标数组）显式写入 CandidateStore（origin=academic_search，provenance 带 query）。单源失败 → partial；全源失败 → 502 SEARCH_ALL_PROVIDERS_FAILED（≠ 空结果）；无任何 provider → 503 SEARCH_PROVIDER_NOT_CONFIGURED。检索结果 ≠ Evidence，永不写 EvidenceStore | M6.3 |
@@ -507,6 +510,33 @@ interface ModelTestResultView {
   code?: "AUTH_FAILED" | "MODEL_NOT_FOUND" | "PROVIDER_UNAVAILABLE" | "RATE_LIMITED" | "TIMEOUT" | "UNKNOWN";  // ok=false
   detail?: string;                            // 截断 + 脱敏（不含 key）
 }
+// ---- M7.0（2026-09-18）：Literature Library（frontend/src/types/sources.ts） ----
+
+type SourceRole = "evidence" | "reference" | "both";          // 缺省 both（后端 SourceStore.add）
+type SourceOrigin = "USER_ADDED" | "DOI_IMPORT" | "ARXIV_IMPORT" | "URL_IMPORT" | "BIBTEX_IMPORT" | "AGENT_RETRIEVED";
+type SourceStatus = "pending" | "metadata_only" | "available" | "partial" | "failed" | "rejected";
+type SourceType = "pdf" | "bibtex" | "text" | "markdown" | "image" | "doi" | "arxiv" | "url" | "metadata";
+
+interface SourceItemView {                                    // GET /sources 单条（列表与详情同形）
+  sourceId: string;                                           // S001 形
+  fileName?: string;                                          // metadata-only 条目（DOI/arXiv/URL 导入）为空
+  sourceType?: SourceType; sourceRole: SourceRole; origin: SourceOrigin;
+  status: SourceStatus; preferred: boolean;
+  metadata: { title?: string; authors?: string[]; year?: number; doi?: string; arxivId?: string; url?: string; venue?: string; abstract?: string };
+  metadataProvenance?: "user" | "resolved" | "inferred";      // user > resolved > inferred；缺省视为 inferred
+  contentHash?: string; workKey?: string;
+  versionType?: "preprint" | "conference" | "journal" | "other";
+  relatedSourceIds?: string[]; bytes: number; createdAt: string; updatedAt: string;
+}
+interface SourceImportResult {                                // DOI/arXiv/URL 导入响应（bibtex 见下）
+  source: SourceItemView; created: boolean;                   // created=false = 同身份条目已存在（幂等）
+  resolve?: { outcome: "match"|"mismatch"|"ambiguous"|"not_found"|"unresolved"; provider?: string; note?: string };
+}
+interface BibTexImportResultView {                            // BibTeX 批量（恒 200）
+  results: Array<{ source: SourceItemView; created: boolean; entryKey: string }>;
+  errors: Array<{ line: number; message: string }>;           // 逐条解析错误，不影响已成功条目
+}
+
 // ---- M4.6（2026-09-10）：Evidence Workbench / Quality Gate ----
 
 type EvidenceVerificationStatus =

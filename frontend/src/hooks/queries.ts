@@ -29,6 +29,14 @@ import {
   reevaluateQualityGate,
 } from "../api/evidence.js";
 import {
+  importSourceByArxiv,
+  importSourceBibtex,
+  importSourceByDoi,
+  importSourceByUrl,
+  listSources,
+  uploadSourceFile,
+} from "../api/sources.js";
+import {
   exportReviewReport,
   extractCitations,
   getCitationIntegrity,
@@ -76,6 +84,7 @@ import type {
   WorkflowKind,
   WorkflowRunView,
 } from "../types/api.js";
+import type { BibTexImportResultView, SourceImportResult, SourceRole } from "../types/sources.js";
 
 /**
  * Server state 全部经 TanStack Query 流动；Zustand 只保存纯 UI 状态。
@@ -96,6 +105,8 @@ export const queryKeys = {
   metadataRecords: (projectId: string) => ["project", projectId, "citations", "metadata"] as const,
   claimRecords: (projectId: string) => ["project", projectId, "citations", "claims"] as const,
   evidence: (projectId: string) => ["project", projectId, "evidence"] as const,
+  /** 项目文献库（M6.2；导入 / 上传 / 删除后失效重取） */
+  sources: (projectId: string) => ["project", projectId, "sources"] as const,
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
@@ -435,6 +446,64 @@ function useCitationInvalidation(projectId: string | undefined) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.citations(projectId ?? "") });
   };
 }
+
+// ---- Sources（Literature Library M6.2；M7.0 前端消费） ----
+
+/** 文献库全量列表（导入 / 上传 / 删除后失效重取） */
+export function useSources(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.sources(projectId ?? ""),
+    queryFn: ({ signal }) => listSources(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 文件上传入库（PDF / BibTeX / 文本等；contentHash 判重 → created=false 幂等） */
+export function useUploadSource(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { fileName: string; contentBase64: string; sourceRole?: SourceRole }) =>
+      uploadSourceFile(projectId ?? "", input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId ?? "") });
+    },
+  });
+}
+
+/** 标识符导入（DOI / arXiv / URL / BibTeX；由 mode 分派到对应端点） */
+export function useImportSource(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation<SourceImportResult | BibTexImportResultView, Error, SourceImportInput>({
+    mutationFn: (input) => {
+      const id = projectId ?? "";
+      const payload = input.payload;
+      switch (input.mode) {
+        case "doi":
+          return importSourceByDoi(id, payload as DoiImportInput);
+        case "arxiv":
+          return importSourceByArxiv(id, payload as ArxivImportInput);
+        case "url":
+          return importSourceByUrl(id, payload as UrlImportInput);
+        case "bibtex":
+          return importSourceBibtex(id, payload as BibtexImportInput);
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId ?? "") });
+    },
+  });
+}
+
+type DoiImportInput = { doi: string; sourceRole?: SourceRole; enrich?: boolean };
+type ArxivImportInput = { arxivId: string; sourceRole?: SourceRole; enrich?: boolean };
+type UrlImportInput = { url: string; title?: string; sourceRole?: SourceRole };
+type BibtexImportInput = { content: string; sourceRole?: SourceRole };
+
+type SourceImportInput =
+  | { mode: "doi"; payload: DoiImportInput }
+  | { mode: "arxiv"; payload: ArxivImportInput }
+  | { mode: "url"; payload: UrlImportInput }
+  | { mode: "bibtex"; payload: BibtexImportInput };
 
 // ---- Evidence（Workbench；server state，不复制进 Zustand） ----
 

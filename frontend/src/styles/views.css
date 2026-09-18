@@ -137,7 +137,10 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-height: 0;
+  /* 矮窗口下不被 flex 收缩（此前 min-height:0 使最近项目可被压到 0 高，
+     内容溢出绘制、被底部 promo card 遮住且滚动也找不回）；
+     完整占位后由 .app-sidebar 的 overflow-y:auto 滚动兜底 */
+  flex-shrink: 0;
 }
 
 .sidebar-label {
@@ -170,6 +173,8 @@
 
 .sidebar-footer {
   margin-top: auto;
+  /* promo card 有固定 min-height，同样不允许收缩：矮窗口下贴流排列，随滚动可达 */
+  flex-shrink: 0;
 }
 
 .sidebar-runtime {
@@ -2341,6 +2346,70 @@
 /* ============================================================
    证据工作台（M4.6）：复用 ledger / gutter-list / status 语言
    ============================================================ */
+
+/* ---- Sources（文献库：M6.2 能力的前端消费，M7.0 对齐） ---- */
+
+.source-mode-row {
+  flex-wrap: wrap;
+}
+
+/* 当前选中的添加方式按钮（语义同 .tab.active，形态沿按钮） */
+.btn.is-active {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary-text);
+  background: var(--accent-primary-soft);
+}
+
+.source-list {
+  padding: 0 var(--s-5);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xl);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.source-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4) 0;
+}
+
+.source-row + .source-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.source-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-3);
+}
+
+.source-title {
+  font-weight: 500;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.source-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.source-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-1) var(--s-3);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.source-venue {
+  overflow-wrap: anywhere;
+}
 
 .evidence-panel {
   display: flex;

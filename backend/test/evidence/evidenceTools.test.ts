@@ -9,6 +9,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { evidenceToolsForRole } from "../../src/evidence/tools.js";
 import {
@@ -44,13 +45,23 @@ async function evidenceLineCount(f: GroundingFixture): Promise<number> {
   }
 }
 
+/**
+ * ExtensionContext 只由 Pi runtime 构造；被测工具的 execute 只消费
+ * (toolCallId, params) 前两个参数，测试以空占位补齐后三个参数位。
+ */
+const NOOP_CTX = undefined as unknown as ExtensionContext;
+
 /** 执行工具并解析 JSON 输出（工具统一 content[0].text = JSON） */
 async function runTool(
-  tool: { name: string; execute: (id: string, params: unknown) => Promise<{ content: Array<{ text: string }> }> },
+  tool: ToolDefinition,
   params: unknown,
 ): Promise<Record<string, unknown>> {
-  const result = await tool.execute("tc-1", params);
-  return JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+  const result = await tool.execute("tc-1", params as never, undefined, undefined, NOOP_CTX);
+  const first = result.content[0]!;
+  if (!("text" in first)) {
+    throw new Error("工具输出不是文本 content（与 evidence 工具约定不符）");
+  }
+  return JSON.parse(first.text) as Record<string, unknown>;
 }
 
 const GOOD_QUOTE = "The average factual error rate drops by 42 percent";

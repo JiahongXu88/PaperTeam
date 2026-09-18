@@ -16,6 +16,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { BusinessError, EvidenceValidationError } from "../../src/errors.js";
 import { parseEvidenceJudgeOutput, buildEvidenceJudgePrompt } from "../../src/evidence/evidenceJudge.js";
+import type { LookupOutcome } from "../../src/citation/scholarly.js";
 import {
   canonicalRecord,
   CHUNK_TEXT,
@@ -148,7 +149,7 @@ describe("propose：候选提案校验", () => {
 describe("ground：三段核验生命周期", () => {
   it("全通过 → verified：EvidenceRecord 字段完整（quote 精确 + metadata match + judge supported）", async () => {
     const f = await fixture({
-      provider: fakeScholarlyProvider(async () => ({
+      provider: fakeScholarlyProvider((): LookupOutcome => ({
         kind: "match",
         record: canonicalRecord(),
       })),
@@ -231,7 +232,7 @@ describe("ground：三段核验生命周期", () => {
 
   it("metadata mismatch（外部库同 DOI 不同标题）→ mismatch（metadata_mismatch）", async () => {
     const f = await fixture({
-      provider: fakeScholarlyProvider(async () => ({
+      provider: fakeScholarlyProvider((): LookupOutcome => ({
         kind: "match",
         record: canonicalRecord({ title: "A Completely Different Paper About Cats", year: 2019 }),
       })),
