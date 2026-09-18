@@ -30,8 +30,12 @@ import { CustomProviderStore } from "../settings/CustomProviderStore.js";
 import { registerStoredCustomProviders } from "../settings/ModelSettingsService.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "../settings/ModelSettingsStore.js";
 
-/** .env 候选路径（npm run evaluation 从仓库根起跑：cwd → backend → 仓库根兜底） */
-function loadDotEnvBestEffort(): void {
+/**
+ * .env 候选路径（npm run evaluation 从仓库根起跑：cwd → backend → 仓库根兜底）。
+ * 导出供 multiModel runner 在解析网关路由别名环境变量前先加载（内部别名只放
+ * .env / 进程环境，不入库；applyEnvFile 只填空缺，重复调用幂等）。
+ */
+export function loadDotEnvBestEffort(): void {
   const candidates = [
     resolve(process.cwd(), ".env"),
     resolve(process.cwd(), "backend", ".env"),

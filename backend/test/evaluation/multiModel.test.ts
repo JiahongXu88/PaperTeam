@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseCliArgs } from "../../src/evaluation/cli.js";
+import { displayModelFields } from "../../src/evaluation/runners/liveExp1.js";
 import {
   GATEWAY_CATALOG_SNAPSHOT,
   MULTI_MODEL_TARGETS,
@@ -13,6 +14,7 @@ import {
   buildAnalysis,
   buildMultiModelReport,
   multiModelReportMarkdown,
+  resolveRuntimeModelSpec,
   type MultiModelModelResult,
   type MultiModelReport,
 } from "../../src/evaluation/runners/multiModel.js";
@@ -280,5 +282,91 @@ describe("M6.9.3 报告渲染", () => {
     // 规格唯一（provider/model-id 不重复）
     const specs = MULTI_MODEL_TARGETS.map((target) => target.modelSpec);
     expect(new Set(specs).size).toBe(specs.length);
+  });
+});
+
+describe("M6.9.3 公开名称归一化（内部路由别名不入库、不入产物）", () => {
+  const glmTarget = MULTI_MODEL_TARGETS.find((target) => target.family === "glm");
+  const ENV_KEY = "PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL";
+  const ALIAS_FIXTURE = "internal-routing-alias-fixture";
+
+  function withAliasEnv(value: string | undefined, run: () => void): void {
+    const saved = process.env[ENV_KEY];
+    if (value === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = value;
+    }
+    try {
+      run();
+    } finally {
+      if (saved === undefined) {
+        delete process.env[ENV_KEY];
+      } else {
+        process.env[ENV_KEY] = saved;
+      }
+    }
+  }
+
+  it("目标元数据与目录快照使用公开名（tag / modelId / modelSpec / catalog 自洽）", () => {
+    expect(glmTarget).toBeDefined();
+    expect(glmTarget?.tag).toBe("GLM-5.3");
+    expect(glmTarget?.modelId).toBe("GLM-5.3");
+    expect(glmTarget?.modelSpec).toBe("gw-anthropic/GLM-5.3");
+    expect(GATEWAY_CATALOG_SNAPSHOT.models.some((entry) => entry.id === "GLM-5.3")).toBe(true);
+  });
+
+  it("resolveRuntimeModelSpec：别名未注入回退公开规格；注入后仅运行时路由替换", () => {
+    withAliasEnv(undefined, () => {
+      expect(resolveRuntimeModelSpec(glmTarget!)).toBe("gw-anthropic/GLM-5.3");
+    });
+    withAliasEnv(ALIAS_FIXTURE, () => {
+      expect(resolveRuntimeModelSpec(glmTarget!)).toBe(`gw-anthropic/${ALIAS_FIXTURE}`);
+    });
+    // 空串视为未注入
+    withAliasEnv("", () => {
+      expect(resolveRuntimeModelSpec(glmTarget!)).toBe("gw-anthropic/GLM-5.3");
+    });
+  });
+
+  it("未声明 gatewayModelEnv 的目标不受别名环境变量影响", () => {
+    const plain = MULTI_MODEL_TARGETS.find((target) => target.family === "openai");
+    expect(plain?.gatewayModelEnv).toBeUndefined();
+    withAliasEnv(ALIAS_FIXTURE, () => {
+      expect(resolveRuntimeModelSpec(plain!)).toBe(plain!.modelSpec);
+    });
+  });
+
+  it("displayModelFields：产物口径覆盖运行时路由规格，缺省回退（单模型路径不变）", () => {
+    expect(
+      displayModelFields(
+        { modelSpec: `gw-anthropic/${ALIAS_FIXTURE}`, modelId: ALIAS_FIXTURE },
+        "gw-anthropic/GLM-5.3",
+      ),
+    ).toEqual({ spec: "gw-anthropic/GLM-5.3", modelId: "GLM-5.3" });
+    expect(displayModelFields({ modelSpec: "gw-openai/gpt-5.4", modelId: "gpt-5.4" })).toEqual({
+      spec: "gw-openai/gpt-5.4",
+      modelId: "gpt-5.4",
+    });
+  });
+
+  it("汇总产物序列化只含公开名，不含运行时注入的别名（端到端口径）", () => {
+    withAliasEnv(ALIAS_FIXTURE, () => {
+      const results: MultiModelModelResult[] = MULTI_MODEL_TARGETS.map((target) =>
+        completedModel({
+          tag: target.tag,
+          // 与 runMultiModelEvaluation 相同：结果元数据取 target 公开规格，
+          // 运行时别名（此环境下已注入）只进 API 调用，不进结果对象
+          modelSpec: target.modelSpec,
+          provider: target.provider,
+          family: target.family,
+          wire: target.wire,
+        }),
+      );
+      const report = buildMultiModelReport(results, { startedAt: "t0", finishedAt: "t1", durationMs: 1 });
+      const serialized = JSON.stringify(report) + multiModelReportMarkdown(report);
+      expect(serialized).toContain("GLM-5.3");
+      expect(serialized).not.toContain(ALIAS_FIXTURE);
+    });
   });
 });

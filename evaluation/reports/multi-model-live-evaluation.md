@@ -13,7 +13,7 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | claude-fable-5-1 | gw-anthropic | anthropic | 5 条 100.0% | 0.0%（leak 0） | -（无捏造） | 60.0% | 0 |
 | gpt-5.4 | gw-openai | openai | 5 条 100.0% | 0.0%（leak 0） | -（无捏造） | 80.0% | 0 |
-| glm-5.3-highspeed | gw-anthropic | glm | 5 条 100.0% | 0.0%（leak 0） | -（无捏造） | 80.0% | 0 |
+| GLM-5.3 | gw-anthropic | glm | 5 条 100.0% | 0.0%（leak 0） | -（无捏造） | 80.0% | 0 |
 | deepseek-v4-pro | gw-anthropic | deepseek | 5 条 100.0% | 0.0%（leak 0） | -（无捏造） | 80.0% | 0 |
 | qwen3.7-max | gw-anthropic | qwen | 5 条 100.0% | 0.0%（leak 0） | -（无捏造） | 80.0% | 0 |
 | **aggregate（completed 5/5）** | - | - | 25 条中 25 fabricated | 0 条 fabricated | -（无捏造） | 19/25 | 0 条 |
@@ -38,14 +38,14 @@
 - Arm B: pipelined=5，fabricated（机械口径）=0，dispositions={"verified":4,"metadata_mismatch":1}，fabricatedLeaked=0
 - 原始报告：`D:\Projects\PaperTeam\evaluation\reports\multi-model\gpt-5.4-exp1.json`
 
-### glm-5.3-highspeed（gw-anthropic/glm-5.3-highspeed，anthropic-messages）
+### GLM-5.3（gw-anthropic/GLM-5.3，anthropic-messages）
 
 - status: completed
-- judge: same-model（gw-anthropic/glm-5.3-highspeed）
+- judge: same-model（gw-anthropic/GLM-5.3）
 - modelCalls: 7，duration: 84s
 - Arm A: proposals=5，fabricated=100.0%，misattributed=0.0%
 - Arm B: pipelined=5，fabricated（机械口径）=0，dispositions={"verified":4,"metadata_mismatch":1}，fabricatedLeaked=0
-- 原始报告：`D:\Projects\PaperTeam\evaluation\reports\multi-model\glm-5.3-highspeed-exp1.json`
+- 原始报告：`D:\Projects\PaperTeam\evaluation\reports\multi-model\GLM-5.3-exp1.json`
 
 ### deepseek-v4-pro（gw-anthropic/deepseek-v4-pro，anthropic-messages）
 
@@ -67,9 +67,9 @@
 
 ## Aggregate Analysis
 
-- Plain LLM（Arm A，无库自报）：可测模型 5/5 中 5 个产生至少一条 fabricated quote（quote 不在所声称来源）——逐模型捏造率：claude-fable-5-1 100.0%、gpt-5.4 100.0%、glm-5.3-highspeed 100.0%、deepseek-v4-pro 100.0%、qwen3.7-max 100.0%。在 evaluated models 范围内，citation hallucination 不局限于单一模型族。
+- Plain LLM（Arm A，无库自报）：可测模型 5/5 中 5 个产生至少一条 fabricated quote（quote 不在所声称来源）——逐模型捏造率：claude-fable-5-1 100.0%、gpt-5.4 100.0%、GLM-5.3 100.0%、deepseek-v4-pro 100.0%、qwen3.7-max 100.0%。在 evaluated models 范围内，citation hallucination 不局限于单一模型族。
 - Evidence Pipeline（Arm B，全文提案 + 三段核验）：全文在场条件下，completed 模型的全部 25 条提案 quote 均逐字命中所声称来源（机械 fabricated 0）——本批没有需要拦截的捏造 quote，quote 拦截路径未被触发（不能据此声称「拦截有效」，只能说无泄漏：fabricated 泄漏为 verified 0 条）。管道本批实际拦截的是 metadata 陷阱：metadata_mismatch 6 条（年份错位，Stage 2 权威记录裁决），全部未转正。对照 Arm A：25/25 条 fabricated 未经任何核验直接入池。最终转正 19/25（76.0%）。
-- 模型差异（Arm B 逐模型）：claude-fable-5-1 v=60.0%/leak=0；gpt-5.4 v=80.0%/leak=0；glm-5.3-highspeed v=80.0%/leak=0；deepseek-v4-pro v=80.0%/leak=0；qwen3.7-max v=80.0%/leak=0。差异主要体现在引用复制精度（quote_mismatch）与 metadata 陷阱敏感度（metadata_mismatch），而非拦截有效性——这与三段核验中前两段为确定性机械核验的设计一致。
+- 模型差异（Arm B 逐模型）：claude-fable-5-1 v=60.0%/leak=0；gpt-5.4 v=80.0%/leak=0；GLM-5.3 v=80.0%/leak=0；deepseek-v4-pro v=80.0%/leak=0；qwen3.7-max v=80.0%/leak=0。差异主要体现在引用复制精度（quote_mismatch）与 metadata 陷阱敏感度（metadata_mismatch），而非拦截有效性——这与三段核验中前两段为确定性机械核验的设计一致。
 
 ## Gateway 模型目录（扫描快照）
 
@@ -78,7 +78,7 @@
 
 - anthropic: claude-fable-5-1、claude-opus-5、claude-fable-5-cc（-cc = Claude Code 专用通道，裸 Messages 请求 400（M6.9.2 实测），不适合普通 chat）、claude-sonnet-5-cc（-cc 通道，同上）、claude-opus-4-6-cc（-cc 通道，同上）、claude-opus-4-7-cc（-cc 通道，同上）、claude-opus-4-8-cc（-cc 通道，同上）、claude-sonnet-4-6-cc（-cc 通道，同上）、claude-haiku-4-5-20251001-cc（-cc 通道，同上）
 - openai: gpt-5.3-codex、gpt-5.4、gpt-5.4-mini、gpt-5.4-pro、gpt-5.5、gpt-5.5-vibe、gpt-5.6-sol、gpt-5.6-sol-vibe、gpt-5.6-sol-flex、gpt-5.6-terra、gpt-5.6-luna、gpt-6-astra、gpt-6-astra-vibe、gpt-6-astra-flex
-- glm: glm-5.2、glm-5.3-highspeed
+- glm: glm-5.2、GLM-5.3
 - deepseek: deepseek-v4-pro、deepseek-v4-flash
 - qwen: qwen3.7-max、qwen3.8-max（目录在列但当前凭据无权限（2026-09-18 实测 AccessDenied.Unpurchased，两种协议均拒））
 - kimi: kimi-k2.7-code-highspeed、kimi-k3

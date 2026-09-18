@@ -18,6 +18,10 @@
  *
  * 禁区纪律不变：本文件只编排 evaluation，不触碰 Runtime / Workflow / Evidence
  * Pipeline / Writer / Reviewer / Agent 架构。
+ *
+ * 公开名纪律（M6.9.3 收口）：仓库与全部 evaluation 产物只出现公开模型名；
+ * 网关内部路由别名仅作为运行时参数（环境变量，见 resolveRuntimeModelSpec
+ * 与 .env.example），不写入代码常量、报告元数据与文件名。
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -77,7 +81,11 @@ export const GATEWAY_CATALOG_SNAPSHOT: {
     { id: "gpt-6-astra-vibe", family: "openai" },
     { id: "gpt-6-astra-flex", family: "openai" },
     { id: "glm-5.2", family: "glm" },
-    { id: "glm-5.3-highspeed", family: "glm" },
+    {
+      id: "GLM-5.3",
+      family: "glm",
+      note: "网关原始 id 为内部部署/速度优化路由别名：公开仓库与产物统一归一化为公开名 GLM-5.3；实际路由 id 经运行时环境变量注入（见 MULTI_MODEL_TARGETS 与 .env.example）",
+    },
     { id: "deepseek-v4-pro", family: "deepseek" },
     { id: "deepseek-v4-flash", family: "deepseek" },
     { id: "qwen3.7-max", family: "qwen" },
@@ -93,12 +101,18 @@ export const GATEWAY_CATALOG_SNAPSHOT: {
 // ============================================================
 
 export interface MultiModelTarget {
-  /** 矩阵与报告文件名使用的短名（= 网关模型 id） */
+  /** 矩阵与报告文件名使用的短名（公开名；公开产物只出现该名称） */
   tag: string;
-  /** 评估用模型规格（provider/model-id，经 custom-providers 注入的网关 provider） */
+  /** 评估用模型规格（provider/public-name，经 custom-providers 注入的网关 provider；报告与矩阵展示口径） */
   modelSpec: string;
   provider: string;
   modelId: string;
+  /**
+   * 网关路由 id 的环境变量名（公开名 ≠ 网关内部路由名的模型必填）：
+   * 内部路由别名只作为运行时参数经环境变量（通常放 .env，不入库）注入实际
+   * API 调用，绝不写入仓库、报告元数据与文件名。见 resolveRuntimeModelSpec。
+   */
+  gatewayModelEnv?: string;
   family: "anthropic" | "openai" | "glm" | "deepseek" | "qwen";
   wire: "anthropic-messages" | "openai-completions";
   selectionRationale: string;
@@ -126,14 +140,15 @@ export const MULTI_MODEL_TARGETS: readonly MultiModelTarget[] = [
       "OpenAI GPT 系代表。网关上 GPT 系仅 OpenAI 协议承接（Anthropic 协议报 no-available-channel，实测），需 max_completion_tokens 参数（Pi openai-completions 对非特判网关恰好发送该参数）",
   },
   {
-    tag: "glm-5.3-highspeed",
-    modelSpec: "gw-anthropic/glm-5.3-highspeed",
+    tag: "GLM-5.3",
+    modelSpec: "gw-anthropic/GLM-5.3",
     provider: "gw-anthropic",
-    modelId: "glm-5.3-highspeed",
+    modelId: "GLM-5.3",
     family: "glm",
     wire: "anthropic-messages",
+    gatewayModelEnv: "PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL",
     selectionRationale:
-      "国产 GLM 系代表。注意与 M6.9.1 的 zai-coding-cn/glm-5.3 不是同一模型 id（网关目录无 glm-5.3，取目录内在列的 highspeed 变体，wire 统一走网关）",
+      "国产 GLM 系代表（对应 M6.9.1 的 zai-coding-cn/glm-5.3 同一代模型；网关目录无 glm-5.3，以内部路由别名承接）。公开产物统一展示公开名 GLM-5.3；网关路由 id 经环境变量注入运行时（见 .env.example），不写入仓库与产物",
   },
   {
     tag: "deepseek-v4-pro",
@@ -155,6 +170,21 @@ export const MULTI_MODEL_TARGETS: readonly MultiModelTarget[] = [
       "国产 Qwen 系代表。qwen3.8-max 目录在列但当前凭据无权限（实测 Unpurchased），故取 3.7-max；Anthropic 协议实测可用（响应自带 thinking 块）",
   },
 ];
+
+/**
+ * 运行时路由规格（公开名归一化的另一半）：公开名与网关路由名分离——
+ * 目标元数据（tag/modelSpec/modelId）全部使用公开名进报告；实际 API 调用
+ * 的路由 id 在声明了 gatewayModelEnv 时从环境变量读取（内部别名只作为
+ * 运行时参数存在）。未注入时回退公开规格（网关侧按未知模型报错，由
+ * 单模型失败协议如实记录并继续，不影响其余模型）。
+ */
+export function resolveRuntimeModelSpec(target: MultiModelTarget): string {
+  const gatewayId =
+    target.gatewayModelEnv !== undefined ? process.env[target.gatewayModelEnv] : undefined;
+  return gatewayId !== undefined && gatewayId !== ""
+    ? `${target.provider}/${gatewayId}`
+    : target.modelSpec;
+}
 
 // ============================================================
 // 报告 schema
@@ -621,6 +651,10 @@ export async function runMultiModelEvaluation(options: {
     throw new Error(`multi-model 协议场景缺失：${MULTI_MODEL_SCENARIO_ID} 不在 claude-compatible 数据集中`);
   }
   const { runLiveExperiment1 } = await import("./liveExp1.js");
+  // .env 的内部路由别名要先于 resolveRuntimeModelSpec 生效（liveRuntime 内部
+  // 也会加载，但那发生在别名解析之后，这里显式加载一次；幂等，重复 apply 无害）
+  const { loadDotEnvBestEffort } = await import("../liveRuntime.js");
+  loadDotEnvBestEffort();
 
   log(
     `[multi-model] M6.9.3 开始：${MULTI_MODEL_TARGETS.length} 模型 × ${MULTI_MODEL_SCENARIO_ID} × 2 臂（串行，dataset=claude-compatible）`,
@@ -631,7 +665,9 @@ export async function runMultiModelEvaluation(options: {
     try {
       const outcome = await runLiveExperiment1({
         scenarios: [scenario],
-        modelSpec: target.modelSpec,
+        // 运行时按环境变量解析的路由规格调用；产物（报告/文件名）只写公开规格
+        modelSpec: resolveRuntimeModelSpec(target),
+        displayModelSpec: target.modelSpec,
         dataset: "claude-compatible",
         reportBase: `${target.tag}-exp1`,
         milestone: "M6.9.3",

@@ -646,6 +646,19 @@ function modelTagOf(modelId: string): string {
   return modelId.replace(/[^a-z0-9]+/gi, "").toLowerCase();
 }
 
+/**
+ * 报告口径的模型标识（M6.9.3 公开名归一化）：运行时路由规格与产物展示分离。
+ * displayModelSpec 提供时覆盖 spec，modelId 取其 provider 后缀；缺省回退运行时
+ * 规格（单模型路径行为不变）。导出供测试：纯函数，不触网。
+ */
+export function displayModelFields(
+  live: { modelSpec: string; modelId: string },
+  displayModelSpec?: string,
+): { spec: string; modelId: string } {
+  const spec = displayModelSpec ?? live.modelSpec;
+  return { spec, modelId: spec.includes("/") ? spec.slice(spec.indexOf("/") + 1) : spec };
+}
+
 export function liveReportMarkdown(report: LiveExp1Report): string {
   const pct = (value: number) => `${(value * 100).toFixed(1)}%`;
   const lines: string[] = [
@@ -730,6 +743,12 @@ export interface LiveRunOutcome {
 export async function runLiveExperiment1(options: {
   scenarios: readonly GroundingScenario[];
   modelSpec?: string;
+  /**
+   * 产物（报告/摘要）展示用模型规格（M6.9.3 公开名归一化）：运行时路由用的
+   * modelSpec 可为内部路由别名（经环境变量注入），但报告元数据、judge 偏差行
+   * 与文件名只写该公开规格；缺省 = modelSpec（单模型路径行为不变）。
+   */
+  displayModelSpec?: string;
   /** 数据集变体（写入报告元数据；claude-compatible 时附加 dataset limitations） */
   dataset?: "frozen-m6.8" | "claude-compatible";
   /** 报告文件名基名覆盖（M6.9.2.1：live-claude-exp1-compatible，避免覆盖原始失败记录） */
@@ -749,6 +768,8 @@ export async function runLiveExperiment1(options: {
       `（${options.scenarios.length} 场景 × 2 臂，model=${options.modelSpec ?? "(产品解析链)"}，dataset=${dataset}）`,
   );
   const live = await createLiveEvaluationRuntimeInternal(options);
+  // 产物口径：公开规格优先，路由规格只活在运行时调用里
+  const display = displayModelFields(live, options.displayModelSpec);
   const errors: LiveErrorRecord[] = [];
   const scenarioResults: LiveScenarioResult[] = [];
   try {
@@ -777,9 +798,9 @@ export async function runLiveExperiment1(options: {
     name: "evidence-grounding-live",
     dataset,
     model: {
-      spec: live.modelSpec,
+      spec: display.spec,
       provider: live.provider,
-      modelId: live.modelId,
+      modelId: display.modelId,
       source: live.specSource,
     },
     runtimeProvider: "pi",
@@ -799,7 +820,7 @@ export async function runLiveExperiment1(options: {
           ]
         : []),
       "首轮 plumbing 冒烟：样本小（每臂 ≤5 提案）、单场景起步，指标不具统计效力",
-      `judge 与生成同用 ${live.modelSpec}（同模型自评偏差；正式实验应引入异模型 judge）`,
+      `judge 与生成同用 ${display.spec}（同模型自评偏差；正式实验应引入异模型 judge）`,
       "对齐良好的模型可能在无库条件下拒绝编造引文（refused 结果）——这是合法测量结果，此时 plain-llm 基线的捏造率不可测（分母为 0），不应解读为 0%",
       "metadata 核验的权威记录是数据集内置 ground-truth provider（与 M6.8 scripted 同口径），不是真实 Crossref/OpenAlex",
       "Arm B 锚点规则：quote 命中 chunk 用该 chunk，未命中落到来源首个 chunk（Stage 1 拦截）；chunk 边界截断可能造成误拦（报告保留逐条机械判定供审计）",
