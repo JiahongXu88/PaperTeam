@@ -19,7 +19,7 @@ import { ProjectStore } from "../../src/project/ProjectStore.js";
 import type { AgentRuntime } from "../../src/runtime/types.js";
 import { createScriptedRuntime } from "../../src/runtime/scriptedRuntime.js";
 import { buildServiceStack, type ServiceStack } from "../../src/serviceStack.js";
-import { LatexImporter } from "../../src/import/LatexImporter.js";
+import type { LatexImporter } from "../../src/import/LatexImporter.js";
 import { WorkflowOrchestrator } from "../../src/workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "../../src/workflow/runStore.js";
 import {
@@ -151,7 +151,8 @@ export async function startTestStack(
     ...(options.paperParser !== undefined ? { paperParser: options.paperParser } : {}),
     log: () => {},
   });
-  const importer = new LatexImporter({ projects: store, latex, log: () => {} });
+  // Existing-LaTeX 导入器：栈内单例（import-paper 的 latex 路径与 /:id/import 共用）
+  const importer = stack.latexImport;
   const orchestrator = new WorkflowOrchestrator({
     projects: store,
     runStore: new WorkflowRunStore(store),

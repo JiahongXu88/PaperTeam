@@ -15,7 +15,7 @@
  * 加载时各部分合并重建完整 PaperDocument；任一部分损坏 → null（重新 ingest）。
  */
 
-import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProjectStore } from "../project/ProjectStore.js";
@@ -275,6 +275,16 @@ export class PaperStore {
       return readPaperDocument({ ...base, pages, sections, chunks: chunkLines });
     } catch {
       return null;
+    }
+  }
+
+  /** 是否存在已解析文档（轻量探测：parsed/document.json 存在即真，不组装明细） */
+  async hasDocument(projectId: string): Promise<boolean> {
+    try {
+      await stat(join(this.parsedDir(projectId), "document.json"));
+      return true;
+    } catch {
+      return false;
     }
   }
 

@@ -5,10 +5,16 @@ import { ErrorState } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
 import { CITATION_SEMANTIC_MODE_OPTIONS } from "../components/common/status.js";
 import { DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
-import { useCreateProject, useCreateWorkflowRun, useImportProjectPdf, useRuntimeStatus } from "../hooks/queries.js";
+import { useCreateProject, useCreateWorkflowRun, useImportProjectPaper, useRuntimeStatus } from "../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
-import { fileToBase64, MAX_PDF_UPLOAD_BYTES, validatePdfFile } from "../utils/file.js";
-import type { CitationSemanticMode, CreateProjectInput, ExistingPaperGoal, ImportProjectPdfInput } from "../types/api.js";
+import { fileToBase64, MAX_PDF_UPLOAD_BYTES, MAX_ZIP_UPLOAD_BYTES, validatePdfFile, validateZipFile } from "../utils/file.js";
+import type {
+  CitationSemanticMode,
+  CreateProjectInput,
+  ExistingPaperGoal,
+  ImportPaperFormat,
+  ImportProjectPaperInput,
+} from "../types/api.js";
 
 /**
  * 新建项目：顶层只问一件事——你想做什么？
@@ -98,7 +104,7 @@ export function NewProjectPage() {
 
   return (
     <section className="page page-narrow">
-      <PageHeader title="新建项目" sub="从研究想法开始写一篇新论文，或导入已有论文 PDF 做 Review。" />
+      <PageHeader title="新建项目" sub="从研究想法开始写一篇新论文，或导入已有论文（PDF / LaTeX 工程）做 Review 与修改。" />
       {mode === "idea" ? <IdeaForm onSwitchMode={() => setMode("existing")} /> : <ExistingPaperForm onSwitchMode={() => setMode("idea")} />}
     </section>
   );
@@ -108,7 +114,7 @@ export function NewProjectPage() {
 function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode: EntryMode) => void }) {
   const cards: Array<{ mode: EntryMode; title: string; desc: string }> = [
     { mode: "idea", title: "从研究想法开始", desc: "从一个研究想法出发，完成调研、证据整理、写作与审阅，最终生成论文。" },
-    { mode: "existing", title: "导入已有论文", desc: "上传论文 PDF，先做快速 Review（引用核验 + 分章节审阅），或进入系统性改进流程。" },
+    { mode: "existing", title: "导入已有论文", desc: "上传论文 PDF 或 LaTeX 工程归档：PDF 可先做快速 Review（引用核验 + 分章节审阅），两者都可进入系统性改进流程。" },
   ];
   return (
     <div className="mode-cards">
@@ -235,7 +241,7 @@ function IdeaForm({ onSwitchMode }: { onSwitchMode: () => void }) {
   );
 }
 
-// ---- 模式 B：导入已有论文（File First） ----
+// ---- 模式 B：导入已有论文（File First：PDF 论文 / LaTeX 工程） ----
 
 const GOAL_OPTIONS: ReadonlyArray<{ value: ExistingPaperGoal; title: string; desc: string; recommended?: boolean }> = [
   {
@@ -251,14 +257,29 @@ const GOAL_OPTIONS: ReadonlyArray<{ value: ExistingPaperGoal; title: string; des
   },
 ];
 
+/** 导入格式（统一入口 POST /api/projects/import-paper 的 format 字段） */
+const FORMAT_OPTIONS: ReadonlyArray<{ value: ImportPaperFormat; title: string; desc: string }> = [
+  {
+    value: "pdf",
+    title: "PDF 论文",
+    desc: "上传论文 PDF 文件：可先快速 Review（引用核验 + 分章节审阅），或进入系统性改进。",
+  },
+  {
+    value: "latex",
+    title: "LaTeX 工程",
+    desc: "上传整个 LaTeX 工程（ZIP）：进入系统性改进，直接在你的原稿上修改。",
+  },
+];
+
 type ImportPhase = "idle" | "encoding" | "uploading";
 
 function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
   const navigate = useNavigate();
-  const importPdf = useImportProjectPdf();
+  const importPaper = useImportProjectPaper();
   const runtimeStatus = useRuntimeStatus();
   const startReview = useCreateWorkflowRun();
   const fileInput = useRef<HTMLInputElement>(null);
+  const [format, setFormat] = useState<ImportPaperFormat>("pdf");
   const [file, setFile] = useState<File | null>(null);
   const [goal, setGoal] = useState<ExistingPaperGoal>("review_only");
   // 快速 Review 高级选项：引用语义核验（默认关闭——默认用户无需理解这个概念）
@@ -275,13 +296,25 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
 
   const submitting = phase !== "idle";
 
+  const onPickFormat = (next: ImportPaperFormat) => {
+    if (submitting || next === format) {
+      return;
+    }
+    setFormat(next);
+    // 切换格式清空已选文件（PDF 与 ZIP 的校验规则不同，避免带错文件提交）
+    setFile(null);
+    setValidationError(null);
+    setReadError(null);
+    resetFileInput();
+  };
+
   const onPickFile = (picked: File | undefined) => {
     setValidationError(null);
     setReadError(null);
     if (picked === undefined) {
       return;
     }
-    const problem = validatePdfFile(picked);
+    const problem = format === "pdf" ? validatePdfFile(picked) : validateZipFile(picked);
     if (problem !== null) {
       setValidationError(problem);
       setFile(null);
@@ -302,7 +335,7 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
       return;
     }
     if (file === null) {
-      setValidationError("请先选择论文 PDF 文件");
+      setValidationError(format === "pdf" ? "请先选择论文 PDF 文件" : "请先选择 LaTeX 工程 ZIP 归档");
       return;
     }
     setValidationError(null);
@@ -318,19 +351,32 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
       return;
     }
 
-    const input: ImportProjectPdfInput = {
-      fileName: file.name,
-      contentBase64,
-      goal,
-      ...withPicked("researchField", advanced.researchField),
-      ...withPicked("targetVenue", advanced.targetVenue),
-      ...withPicked("targetProfile", advanced.targetProfile),
-      ...withPicked("language", advanced.language),
-    };
+    // LaTeX 工程只走系统性改进（后端同样拒绝 goal=review_only）
+    const input: ImportProjectPaperInput =
+      format === "latex"
+        ? {
+            format,
+            fileName: file.name,
+            archiveBase64: contentBase64,
+            ...withPicked("researchField", advanced.researchField),
+            ...withPicked("targetVenue", advanced.targetVenue),
+            ...withPicked("targetProfile", advanced.targetProfile),
+            ...withPicked("language", advanced.language),
+          }
+        : {
+            format,
+            fileName: file.name,
+            contentBase64,
+            goal,
+            ...withPicked("researchField", advanced.researchField),
+            ...withPicked("targetVenue", advanced.targetVenue),
+            ...withPicked("targetProfile", advanced.targetProfile),
+            ...withPicked("language", advanced.language),
+          };
     setPhase("uploading");
-    importPdf.mutate(input, {
+    importPaper.mutate(input, {
       onSuccess: async ({ project }) => {
-        if (goal === "review_only" && runtimeStatus.data?.model.phase === "configured") {
+        if (format === "pdf" && goal === "review_only" && runtimeStatus.data?.model.phase === "configured") {
           // 快速 Review：模型已配置时导入完成即自动开始；启动失败不阻断导航，Review 页会给出手动入口
           try {
             await startReview.mutateAsync({ projectId: project.id, kind: "existing_paper_review", citationSemanticMode: semanticMode });
@@ -338,7 +384,7 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
             // Review 页展示「开始 Review」按钮与失败原因
           }
         }
-        void navigate(goal === "review_only" ? `/projects/${project.id}?tab=review` : `/projects/${project.id}`);
+        void navigate(format === "pdf" && goal === "review_only" ? `/projects/${project.id}?tab=review` : `/projects/${project.id}`);
       },
       onError: () => {
         setPhase("idle");
@@ -356,41 +402,78 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
       </fieldset>
 
       <fieldset className="form-section">
-        <legend>论文 PDF</legend>
-        <label className="upload-zone">
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".pdf,application/pdf"
-            aria-label="选择论文 PDF（.pdf）"
-            onChange={(event) => onPickFile(event.target.files?.[0])}
-            disabled={submitting}
-          />
-          <span className="upload-title">
-            {phase === "encoding" ? "读取文件…" : phase === "uploading" ? "上传并解析中…" : file !== null ? file.name : "点击选择 PDF 文件"}
-          </span>
-          <span className="upload-hint">
-            .pdf 文件，不超过 {Math.floor(MAX_PDF_UPLOAD_BYTES / (1024 * 1024))}MB。导入后自动解析：论文标题取自 PDF（缺失时用文件名），之后可以改。
-          </span>
-        </label>
-      </fieldset>
-
-      <fieldset className="form-section">
-        <legend>你希望先做什么？</legend>
+        <legend>稿件格式</legend>
         <div className="mode-cards">
-          {GOAL_OPTIONS.map((option) => (
-            <label key={option.value} className={`mode-card${goal === option.value ? " selected" : ""}`} data-testid={`goal-${option.value}`}>
-              <input type="radio" name="goal" value={option.value} checked={goal === option.value} onChange={() => setGoal(option.value)} disabled={submitting} />
+          {FORMAT_OPTIONS.map((option) => (
+            <label key={option.value} className={`mode-card${format === option.value ? " selected" : ""}`} data-testid={`import-format-${option.value}`}>
+              <input type="radio" name="importFormat" value={option.value} checked={format === option.value} onChange={() => onPickFormat(option.value)} disabled={submitting} />
               <span className="mode-card-top">
                 <span className="mode-card-dot" aria-hidden="true" />
                 <span className="mode-card-title">{option.title}</span>
-                {option.recommended ? <span className="chip chip-tone-accent">推荐</span> : null}
               </span>
               <span className="mode-card-desc">{option.desc}</span>
             </label>
           ))}
         </div>
       </fieldset>
+
+      <fieldset className="form-section">
+        <legend>{format === "pdf" ? "论文 PDF" : "LaTeX 工程归档"}</legend>
+        <label className="upload-zone">
+          <input
+            ref={fileInput}
+            type="file"
+            accept={format === "pdf" ? ".pdf,application/pdf" : ".zip,application/zip"}
+            aria-label={format === "pdf" ? "选择论文 PDF（.pdf）" : "选择 LaTeX 工程 ZIP 归档（.zip）"}
+            onChange={(event) => onPickFile(event.target.files?.[0])}
+            disabled={submitting}
+          />
+          <span className="upload-title">
+            {phase === "encoding"
+              ? "读取文件…"
+              : phase === "uploading"
+                ? format === "pdf"
+                  ? "上传并解析中…"
+                  : "上传并导入工程中…"
+                : file !== null
+                  ? file.name
+                  : format === "pdf"
+                    ? "点击选择 PDF 文件"
+                    : "点击选择 ZIP 归档"}
+          </span>
+          <span className="upload-hint">
+            {format === "pdf"
+              ? `.pdf 文件，不超过 ${Math.floor(MAX_PDF_UPLOAD_BYTES / (1024 * 1024))}MB。导入后自动解析：论文标题取自 PDF（缺失时用文件名），之后可以改。`
+              : `把 LaTeX 工程打包为 .zip（入口 .tex 需含 \\documentclass，可含 sections/、references.bib、figures/），不超过 ${Math.floor(MAX_ZIP_UPLOAD_BYTES / (1024 * 1024))}MB。导入后原稿进入 manuscript 工作树，标题取自 \\title（缺失时用文件名）。`}
+          </span>
+        </label>
+      </fieldset>
+
+      {format === "pdf" ? (
+        <fieldset className="form-section">
+          <legend>你希望先做什么？</legend>
+          <div className="mode-cards">
+            {GOAL_OPTIONS.map((option) => (
+              <label key={option.value} className={`mode-card${goal === option.value ? " selected" : ""}`} data-testid={`goal-${option.value}`}>
+                <input type="radio" name="goal" value={option.value} checked={goal === option.value} onChange={() => setGoal(option.value)} disabled={submitting} />
+                <span className="mode-card-top">
+                  <span className="mode-card-dot" aria-hidden="true" />
+                  <span className="mode-card-title">{option.title}</span>
+                  {option.recommended ? <span className="chip chip-tone-accent">推荐</span> : null}
+                </span>
+                <span className="mode-card-desc">{option.desc}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ) : (
+        <fieldset className="form-section">
+          <legend>导入后做什么？</legend>
+          <p className="note note-info">
+            <span>LaTeX 工程导入后进入<strong>系统性改进</strong>流程：先 Review 建立基线（引用核验 + 分章节审阅），再依据审阅发现在你的原稿上逐节修改，不会重写整篇论文。</span>
+          </p>
+        </fieldset>
+      )}
 
       <details className="advanced-options">
         <summary>高级选项（研究领域、目标期刊等，可选）</summary>
@@ -418,24 +501,26 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
             <label htmlFor="import-language">写作语言</label>
             <input id="import-language" value={advanced.language} onChange={(e) => setAdvanced((a) => ({ ...a, language: e.target.value }))} placeholder="如：中文 / English（可选）" maxLength={LIMITS.language + 1} />
           </div>
-          <div className="field">
-            <label htmlFor="import-semantic-mode">引用语义核验{goal === "review_only" ? "" : "（仅快速 Review 使用）"}</label>
-            <select
-              id="import-semantic-mode"
-              value={semanticMode}
-              onChange={(e) => setSemanticMode(e.target.value as CitationSemanticMode)}
-              data-testid="import-semantic-mode"
-            >
-              {CITATION_SEMANTIC_MODE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <span className="field-help">
-              {CITATION_SEMANTIC_MODE_OPTIONS.find((option) => option.value === semanticMode)?.help}
-            </span>
-          </div>
+          {format === "pdf" ? (
+            <div className="field">
+              <label htmlFor="import-semantic-mode">引用语义核验{goal === "review_only" ? "" : "（仅快速 Review 使用）"}</label>
+              <select
+                id="import-semantic-mode"
+                value={semanticMode}
+                onChange={(e) => setSemanticMode(e.target.value as CitationSemanticMode)}
+                data-testid="import-semantic-mode"
+              >
+                {CITATION_SEMANTIC_MODE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="field-help">
+                {CITATION_SEMANTIC_MODE_OPTIONS.find((option) => option.value === semanticMode)?.help}
+              </span>
+            </div>
+          ) : null}
         </div>
       </details>
 
@@ -449,10 +534,10 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
           {readError}
         </p>
       ) : null}
-      {importPdf.isError ? (
-        <ErrorState title="导入失败" message={formatApiError(importPdf.error)} detail={formatApiErrorDetail(importPdf.error)} />
+      {importPaper.isError ? (
+        <ErrorState title="导入失败" message={formatApiError(importPaper.error)} detail={formatApiErrorDetail(importPaper.error)} />
       ) : null}
-      {importPdf.isSuccess ? (
+      {importPaper.isSuccess ? (
         <p className="note note-success" role="status">
           <span>
             <span className="note-mark">✓</span> 论文已导入，正在进入项目…

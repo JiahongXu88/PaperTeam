@@ -8,7 +8,9 @@
 import { EvidenceStore } from "./evidence/EvidenceStore.js";
 import { GenerationService } from "./generation/GenerationService.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
+import { LatexImporter } from "./import/LatexImporter.js";
 import { ManuscriptService } from "./manuscript/ManuscriptService.js";
+import { ManuscriptOverviewService } from "./manuscript/ManuscriptOverviewService.js";
 import { ManuscriptRevisionStore } from "./manuscript/RevisionStore.js";
 import { PaperArtifactStore } from "./artifacts/ArtifactStore.js";
 import { FinalizeService } from "./artifacts/FinalizeService.js";
@@ -158,8 +160,12 @@ export interface ServiceStack {
   paperIngest: PaperIngestService;
   paperMap: PaperMapService;
   reviewContext: ReviewContextBuilder;
-  /** 已有论文 PDF 导入（File First：一次调用建项目 + 解析 + 定标题） */
+  /** 已有论文导入（File First：PDF 解析 / LaTeX 工程，一次调用建项目 + 定标题） */
   projectImport: ProjectImportService;
+  /** Existing-LaTeX 导入器（/:id/import 与 projectImport 共用同一实例） */
+  latexImport: LatexImporter;
+  /** Manuscript 聚合视图（M7.0.3 只读：GET /api/projects/:id/manuscript） */
+  manuscriptOverview: ManuscriptOverviewService;
   reviewArtifacts: ReviewArtifactStore;
   /** 外部修改意见存储（M5.7） */
   externalInstructions: ExternalInstructionStore;
@@ -249,9 +255,13 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     reviewerAgentId: options.agentIds.reviewer,
     ...longRun,
   });
+  // Existing-LaTeX 导入器在栈内构造（projectImport 的 format=latex 路径与
+  // HTTP 层 /:id/import 路由共用同一实例，避免两份状态口径）
+  const latexImporter = new LatexImporter({ projects: options.projects, latex, log });
   const projectImport = new ProjectImportService({
     projects: options.projects,
     paperIngest,
+    latexImporter,
     log,
   });
   // CITATION_METADATA_* 配置对 PDF 引用核验（citationIntegrity）同样生效——
@@ -433,6 +443,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     artifacts,
     reviewArtifacts,
   });
+  const manuscriptOverview = new ManuscriptOverviewService({
+    projects: options.projects,
+    revisions,
+    manuscript,
+    paperStore,
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -463,12 +479,14 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     paperMap,
     reviewContext,
     projectImport,
+    latexImport: latexImporter,
     reviewArtifacts,
     externalInstructions,
     revisions,
     artifacts,
     finalize,
     versions,
+    manuscriptOverview,
     workflowServices: {
       projects: options.projects,
       generation,

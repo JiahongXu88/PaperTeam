@@ -18,7 +18,6 @@ import { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { createScholarlyTools } from "./skills/scholarlyTools.js";
 import { createRetrieveLibraryTool } from "./retrieval/tools.js";
 import { evidenceToolsForRole } from "./evidence/tools.js";
-import { LatexImporter } from "./import/LatexImporter.js";
 import {
   createExistingPaperDefinition,
   createExistingPaperReviewDefinition,
@@ -219,7 +218,9 @@ export async function startBackend(): Promise<void> {
     ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
     log: (message) => console.log(message),
   });
-  const importer = new LatexImporter({ projects, latex, log: (message) => console.log(message) });
+  // Existing-LaTeX 导入器：栈内单例（projectImport 的 format=latex 路径与
+  // POST /api/projects/:id/import 共用；此处只取引用）
+  const importer = stack.latexImport;
   stackRef = stack;
 
   // 中文简介：模型可用时补齐（一次生成、持久化；失败保持 summary_pending）。

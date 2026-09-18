@@ -65,24 +65,64 @@ export interface CreateProjectInput {
 /** 已有论文导入目标（UI 两个入口的内部映射，不进 prompt） */
 export type ExistingPaperGoal = "review_only" | "improvement";
 
-/** POST /api/projects/import-pdf 输入（File First：PDF + goal，其余可选） */
-export interface ImportProjectPdfInput {
-  fileName: string;
-  contentBase64: string;
-  goal: ExistingPaperGoal;
+/** 统一导入入口的稿件格式（M7.0.3：PDF 论文 / LaTeX 工程） */
+export type ImportPaperFormat = "pdf" | "latex";
+
+/** 导入请求的可选研究定位字段（高级选项） */
+export interface ImportPaperMetaInput {
   researchField?: string;
   targetVenue?: string;
   targetProfile?: string;
   language?: string;
 }
 
-/** POST /api/projects/import-pdf 响应 */
-export interface ImportProjectPdfResult {
+/** POST /api/projects/import-paper 输入：format=pdf（缺省兼容） */
+export interface ImportPaperPdfInput extends ImportPaperMetaInput {
+  format: "pdf";
+  fileName: string;
+  contentBase64: string;
+  goal: ExistingPaperGoal;
+}
+
+/** POST /api/projects/import-paper 输入：format=latex（只走系统性改进） */
+export interface ImportPaperLatexInput extends ImportPaperMetaInput {
+  format: "latex";
+  fileName: string;
+  archiveBase64: string;
+}
+
+export type ImportProjectPaperInput = ImportPaperPdfInput | ImportPaperLatexInput;
+
+/** LaTeX 导入结构报告（Backend LatexImportReport；UI 展示用子集） */
+export interface LatexImportReportView {
+  importedAt: string;
+  entryCount: number;
+  structure: {
+    entryFile: string;
+    texFiles: string[];
+    bibFile: string | null;
+    figures: string[];
+    otherFiles: string[];
+  };
+  baselineCompile: {
+    attempted: boolean;
+    ok: boolean;
+    tool: string;
+    error?: string;
+    logPath?: string;
+  };
+  warnings: string[];
+}
+
+/** POST /api/projects/import-paper 响应 */
+export interface ImportProjectPaperResult {
   project: ProjectView;
-  /** 解析后的文档摘要（与 GET /paper 的 document 同形） */
-  document: PaperDocSummary;
-  /** 项目标题来源：PDF 内标题 / 文件名兜底 */
-  titleSource: "pdf" | "filename";
+  /** 项目标题来源：PDF 内标题 / LaTeX \title / 文件名兜底 */
+  titleSource: "pdf" | "latex" | "filename";
+  /** format=pdf：解析后的文档摘要（与 GET /paper 的 document 同形） */
+  document?: PaperDocSummary;
+  /** format=latex：导入结构报告 */
+  report?: LatexImportReportView;
 }
 
 // ---- WorkflowRun（前端只消费列表级摘要） ----
@@ -483,6 +523,30 @@ export interface StylePolishView {
   reviewedRevision: number | null;
   /** 润色产生的修订是否已被新一轮 review 覆盖（null = 无已应用的润色） */
   reReviewed: boolean | null;
+}
+
+// ---- Manuscript Overview（M7.0.3：当前稿件聚合视图，只读；事实全部来自 Backend） ----
+
+/** 稿件进入系统的方式（Backend 从落盘事实推导） */
+export type ManuscriptSourceType = "latex" | "pdf" | "generated" | "none";
+
+export interface ManuscriptOverviewView {
+  projectId: string;
+  title: string;
+  /** 标题事实来源：outline（生成式稿件大纲）/ project（项目元数据） */
+  titleSource: "outline" | "project";
+  sourceType: ManuscriptSourceType;
+  /** 0 = 尚无版本事实（刚创建 / 只导入未提交修订） */
+  currentRevision: number;
+  sectionCount: number;
+  referenceCount: number;
+  build: {
+    passed: boolean;
+    checkedAt: string;
+    revision: number;
+    /** 构建后稿件又前进了（结论已过期） */
+    stale: boolean;
+  } | null;
 }
 
 // ---- Manuscript Versions（M4.8：关联只由 Backend 完成，前端只展示） ----

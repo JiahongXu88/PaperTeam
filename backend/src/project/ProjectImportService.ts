@@ -11,9 +11,11 @@
  * 导入后用户可在项目页「编辑标题」修正（PDF metadata 可能识别错误）。
  */
 
-import { basename } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 import { BusinessError } from "../errors.js";
+import type { LatexImporter, LatexImportReport } from "../import/LatexImporter.js";
 import type { PaperIngestService } from "../paper/PaperIngestService.js";
 import type { PaperDocument } from "../paper/types.js";
 import type { ProjectMetadata, ProjectResearchMetaInput, ProjectStore } from "./ProjectStore.js";
@@ -40,20 +42,40 @@ export interface ImportPdfResult {
   titleSource: "pdf" | "filename";
 }
 
+export interface ImportLatexInput {
+  /** 归档文件名（\title 不可用时的标题兜底：my-paper.zip → my-paper） */
+  fileName: string;
+  /** LaTeX 工程 ZIP 归档内容 */
+  archive: Buffer;
+  /** 可选研究定位元数据（高级选项；全部可缺省） */
+  meta?: ProjectResearchMetaInput;
+}
+
+export interface ImportLatexResult {
+  project: ProjectMetadata;
+  report: LatexImportReport;
+  /** 项目标题来源：入口 .tex 的 \title / 文件名兜底 */
+  titleSource: "latex" | "filename";
+}
+
 export interface ProjectImportServiceOptions {
   projects: ProjectStore;
   paperIngest: PaperIngestService;
+  /** Existing-LaTeX 导入器（import-paper 的 format=latex 路径） */
+  latexImporter: LatexImporter;
   log?: (message: string) => void;
 }
 
 export class ProjectImportService {
   private readonly projects: ProjectStore;
   private readonly paperIngest: PaperIngestService;
+  private readonly latexImporter: LatexImporter;
   private readonly log: (message: string) => void;
 
   constructor(options: ProjectImportServiceOptions) {
     this.projects = options.projects;
     this.paperIngest = options.paperIngest;
+    this.latexImporter = options.latexImporter;
     this.log = options.log ?? (() => {});
   }
 
@@ -95,6 +117,46 @@ export class ProjectImportService {
     );
     return { project: finalProject, document, titleSource: derived.source };
   }
+
+  /**
+   * 导入 LaTeX 工程并创建项目（事务式：导入校验失败 → 删除 project 回滚）。
+   * LaTeX 工程落在 manuscript/ 工作树，只能走系统性改进（existing_paper_improvement）；
+   * 标题优先取入口 .tex 的 \title，不可用时用归档文件名兜底。
+   */
+  async importLatex(input: ImportLatexInput): Promise<ImportLatexResult> {
+    // 占位标题 = 归档文件名兜底（导入成功后多数会被 \title 替换）
+    const placeholder = filenameFallbackTitle(input.fileName);
+    const project = await this.projects.create(placeholder, {
+      workflowKind: "existing_paper_improvement",
+      ...(input.meta ?? {}),
+    });
+
+    let report: LatexImportReport;
+    try {
+      report = await this.latexImporter.importFromArchive(project.id, input.archive);
+    } catch (error) {
+      // 回滚：不留半成品项目（目录整体删除）
+      await this.projects.delete(project.id).catch(() => {});
+      this.log(
+        `[import] projectId=${project.id} LaTeX 导入失败，已回滚删除：${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+
+    const derived = await deriveLatexProjectTitle(
+      this.projects.manuscriptDir(project.id),
+      report.structure.entryFile,
+      input.fileName,
+    );
+    const finalProject =
+      derived.title !== project.title
+        ? await this.projects.updateMeta(project.id, { title: derived.title })
+        : project;
+    this.log(
+      `[import] projectId=${project.id} LaTeX 导入完成：titleSource=${derived.source} title="${derived.title}" entries=${report.entryCount}`,
+    );
+    return { project: finalProject, report, titleSource: derived.source };
+  }
 }
 
 /** PDF 提取标题是否「明显可用」 */
@@ -129,6 +191,62 @@ export function deriveProjectTitle(
 ): { title: string; source: "pdf" | "filename" } {
   if (isUsablePaperTitle(document.title)) {
     return { title: document.title.trim().slice(0, 200), source: "pdf" };
+  }
+  return { title: filenameFallbackTitle(fileName), source: "filename" };
+}
+
+/**
+ * 从入口 .tex 提取 \title{...}（balanced braces；常见格式命令剥离为纯文本）。
+ * 无 \title / 括号不闭合 / 剥离后为空 → undefined（调用方走文件名兜底）。
+ */
+export function extractLatexTitle(tex: string): string | undefined {
+  const match = /\\title\s*\{/.exec(tex);
+  if (match === null) {
+    return undefined;
+  }
+  const start = match.index + match[0].length;
+  let depth = 1;
+  let i = start;
+  while (i < tex.length && depth > 0) {
+    const ch = tex[i];
+    if (ch === "\\") {
+      i += 2; // 跳过转义（\{ \% 等）
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+    } else if (ch === "}") {
+      depth -= 1;
+    }
+    i += 1;
+  }
+  if (depth !== 0) {
+    return undefined;
+  }
+  const plain = tex
+    .slice(start, i - 1)
+    .replace(/\\[a-zA-Z]+\*?\s*/g, " ") // \textbf 等命令 → 空格（保留其参数文本）
+    .replace(/\\([%$#&_{}])/g, "$1") // 转义符号还原（\% → %）
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return plain === "" ? undefined : plain;
+}
+
+/** LaTeX 导入标题推导：入口 .tex 的 \title 优先，不可用则归档文件名兜底 */
+async function deriveLatexProjectTitle(
+  manuscriptDir: string,
+  entryFile: string,
+  fileName: string,
+): Promise<{ title: string; source: "latex" | "filename" }> {
+  try {
+    const tex = await readFile(join(manuscriptDir, entryFile), "utf8");
+    const extracted = extractLatexTitle(tex);
+    if (extracted !== undefined && isUsablePaperTitle(extracted)) {
+      return { title: extracted.slice(0, 200), source: "latex" };
+    }
+  } catch {
+    // 入口文件读取失败（理论上不会：刚由导入器写入）→ 文件名兜底
   }
   return { title: filenameFallbackTitle(fileName), source: "filename" };
 }

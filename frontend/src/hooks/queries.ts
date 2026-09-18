@@ -5,8 +5,9 @@ import {
   archiveProject,
   createProject,
   deleteProject,
+  getManuscriptOverview,
   getProject,
-  importProjectPdf,
+  importProjectPaper,
   listProjects,
   renameProject,
   restoreProject,
@@ -80,7 +81,7 @@ import type {
   CreateProjectInput,
   CustomProviderInput,
   HitlDecisionInput,
-  ImportProjectPdfInput,
+  ImportProjectPaperInput,
   WorkflowKind,
   WorkflowRunView,
 } from "../types/api.js";
@@ -111,6 +112,8 @@ export const queryKeys = {
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
   versions: (projectId: string) => ["project", projectId, "versions"] as const,
+  /** 当前稿件聚合视图（M7.0.3；导入 / 构建 / 修订后失效重取） */
+  manuscript: (projectId: string) => ["project", projectId, "manuscript"] as const,
   versionCompare: (projectId: string, from: number, to: number) =>
     ["project", projectId, "versions", "compare", from, to] as const,
   buildLog: (projectId: string) => ["project", projectId, "build", "log"] as const,
@@ -197,17 +200,29 @@ export function useCreateProject() {
   });
 }
 
-/** 已有论文 File-First 导入（后端建项目 + 解析 + 自动标题，失败回滚） */
-export function useImportProjectPdf() {
+/** 已有论文 File-First 导入（统一入口；后端建项目 + 定标题，失败回滚） */
+export function useImportProjectPaper() {
   const { syncProject } = useProjectMutationEffects();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (input: ImportProjectPdfInput) => importProjectPdf(input),
+    mutationFn: (input: ImportProjectPaperInput) => importProjectPaper(input),
     onSuccess: ({ project, document }) => {
       syncProject(project, project);
-      // 导入响应已带文档摘要：直接种进 paper 缓存，落地工作区不再等一轮请求
-      queryClient.setQueryData(queryKeys.paper(project.id), { document, sections: undefined, stages: undefined });
+      // PDF 导入响应已带文档摘要：直接种进 paper 缓存，落地工作区不再等一轮请求
+      if (document !== undefined) {
+        queryClient.setQueryData(queryKeys.paper(project.id), { document, sections: undefined, stages: undefined });
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.manuscript(project.id) });
     },
+  });
+}
+
+/** 当前稿件聚合视图（M7.0.3：项目概览「当前稿件」卡） */
+export function useManuscriptOverview(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.manuscript(projectId ?? ""),
+    queryFn: ({ signal }) => getManuscriptOverview(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
   });
 }
 

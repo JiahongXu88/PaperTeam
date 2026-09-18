@@ -20,7 +20,17 @@ vi.mock("../src/api/projects.js", () => ({
   listProjects: vi.fn(async () => []),
   getProject: vi.fn(),
   createProject: vi.fn(),
-  importProjectPdf: vi.fn(),
+  importProjectPaper: vi.fn(),
+  getManuscriptOverview: vi.fn(async () => ({
+    projectId: "p-new000000001",
+    title: "全新论文项目",
+    titleSource: "project",
+    sourceType: "none",
+    currentRevision: 0,
+    sectionCount: 0,
+    referenceCount: 0,
+    build: null,
+  })),
 }));
 
 vi.mock("../src/api/runs.js", () => ({
@@ -57,7 +67,7 @@ vi.mock("../src/api/runtime.js", () => ({
   })),
 }));
 
-const { createProject, getProject, importProjectPdf } = await import("../src/api/projects.js");
+const { createProject, getProject, importProjectPaper } = await import("../src/api/projects.js");
 const { createWorkflowRun } = await import("../src/api/runs.js");
 
 const created: ProjectView = {
@@ -169,7 +179,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
   });
 
   it("未选 PDF 直接导入：提示先选择文件，不调用 API", async () => {
-    vi.mocked(importProjectPdf).mockClear();
+    vi.mocked(importProjectPaper).mockClear();
     const user = userEvent.setup();
     renderCreateFlow();
 
@@ -177,7 +187,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
     expect(await screen.findByTestId("validation-error")).toHaveTextContent("请先选择论文 PDF 文件");
-    expect(importProjectPdf).not.toHaveBeenCalled();
+    expect(importProjectPaper).not.toHaveBeenCalled();
   });
 
   it("快速 Review 导入成功：携带 goal，自动启动 Review 并落到 Review 页", async () => {
@@ -186,7 +196,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
       title: "Attention Is All You Need",
       workflowKind: "existing_paper_review",
     };
-    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
+    vi.mocked(importProjectPaper).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
     vi.mocked(getProject).mockResolvedValue(imported);
     vi.mocked(createWorkflowRun).mockClear();
     const user = userEvent.setup();
@@ -196,10 +206,12 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     await user.upload(screen.getByLabelText("选择论文 PDF（.pdf）"), pdfFile);
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
-    await waitFor(() => expect(importProjectPdf).toHaveBeenCalledTimes(1));
-    const payload = vi.mocked(importProjectPdf).mock.calls[0]![0];
-    expect(payload.fileName).toBe("MRG-DTM-final.pdf");
-    expect(payload.goal).toBe("review_only");
+    await waitFor(() => expect(importProjectPaper).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(importProjectPaper).mock.calls[0]![0]).toMatchObject({
+      format: "pdf",
+      fileName: "MRG-DTM-final.pdf",
+      goal: "review_only",
+    });
     // 模型已配置 → 自动启动快速 Review（语义核验缺省关闭，不阻碍快速导入）
     await waitFor(() =>
       expect(createWorkflowRun).toHaveBeenCalledWith(imported.id, "existing_paper_review", {
@@ -218,9 +230,9 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
       title: "Attention Is All You Need",
       workflowKind: "existing_paper_review",
     };
-    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
+    vi.mocked(importProjectPaper).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
     vi.mocked(getProject).mockResolvedValue(imported);
-    vi.mocked(importProjectPdf).mockClear();
+    vi.mocked(importProjectPaper).mockClear();
     vi.mocked(createWorkflowRun).mockClear();
     const user = userEvent.setup();
     renderCreateFlow();
@@ -239,7 +251,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     await user.selectOptions(modeSelect, "contradiction_only");
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
-    await waitFor(() => expect(importProjectPdf).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(importProjectPaper).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(createWorkflowRun).toHaveBeenCalledWith(imported.id, "existing_paper_review", {
         citationSemanticMode: "contradiction_only",
@@ -253,7 +265,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
       title: "Attention Is All You Need",
       workflowKind: "existing_paper_improvement",
     };
-    vi.mocked(importProjectPdf).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
+    vi.mocked(importProjectPaper).mockResolvedValue({ project: imported, document: importedDocument, titleSource: "pdf" });
     vi.mocked(getProject).mockResolvedValue(imported);
     vi.mocked(createWorkflowRun).mockClear();
     const user = userEvent.setup();
@@ -264,7 +276,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     await user.click(screen.getByTestId("goal-improvement"));
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
-    await waitFor(() => expect(importProjectPdf).toHaveBeenCalledWith(expect.objectContaining({ goal: "improvement" })));
+    await waitFor(() => expect(importProjectPaper).toHaveBeenCalledWith(expect.objectContaining({ goal: "improvement" })));
     // 系统性改进不自动启动 Review；落到概览并说明第一阶段
     expect(createWorkflowRun).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByText("研究定位")).toBeInTheDocument());
@@ -272,7 +284,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
   });
 
   it("导入失败：显示后端错误（如解析失败），停留在表单", async () => {
-    vi.mocked(importProjectPdf).mockRejectedValue(
+    vi.mocked(importProjectPaper).mockRejectedValue(
       new ApiError(400, "INVALID_REQUEST", "不是合法 PDF（缺少 %PDF- 文件头）"),
     );
     const user = userEvent.setup();
@@ -284,5 +296,75 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("导入失败");
     expect(screen.getByRole("button", { name: "导入论文" })).toBeEnabled();
+  });
+});
+
+describe("NewProjectPage：导入 LaTeX 工程（M7.0.3 统一入口）", () => {
+  const zipFile = new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], "my-paper.zip", { type: "application/zip" });
+
+  it("切换到 LaTeX 工程：goal 选项不出现，改为系统性改进说明", async () => {
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByTestId("import-format-latex"));
+
+    expect(screen.queryByTestId("goal-review_only")).toBeNull();
+    expect(screen.queryByTestId("goal-improvement")).toBeNull();
+    // 说明文本（<strong> 分段后仍可按连续片段断言）
+    expect(screen.getByText(/先 Review 建立基线/)).toBeInTheDocument();
+    expect(screen.getByText(/不会重写整篇论文/)).toBeInTheDocument();
+    // 上传区切换为 ZIP 语义
+    expect(screen.getByLabelText("选择 LaTeX 工程 ZIP 归档（.zip）")).toBeInTheDocument();
+    expect(screen.getByText(/入口 \.tex 需含/)).toBeInTheDocument();
+  });
+
+  it("LaTeX 导入成功：format=latex + archiveBase64（无 goal / 无 document），不自动启动 Review", async () => {
+    const imported: ProjectView = {
+      ...created,
+      title: "基于深度学习的多目标跟踪方法研究",
+      workflowKind: "existing_paper_improvement",
+    };
+    vi.mocked(importProjectPaper).mockResolvedValue({ project: imported, titleSource: "latex" });
+    vi.mocked(getProject).mockResolvedValue(imported);
+    vi.mocked(importProjectPaper).mockClear();
+    vi.mocked(createWorkflowRun).mockClear();
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByTestId("import-format-latex"));
+    await user.upload(screen.getByLabelText("选择 LaTeX 工程 ZIP 归档（.zip）"), zipFile);
+    await user.click(screen.getByRole("button", { name: "导入论文" }));
+
+    await waitFor(() => expect(importProjectPaper).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(importProjectPaper).mock.calls[0]![0]).toEqual({
+      format: "latex",
+      fileName: "my-paper.zip",
+      archiveBase64: expect.any(String),
+    });
+    // LaTeX 只走系统性改进：不自动启动快速 Review，落到概览
+    expect(createWorkflowRun).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText("研究定位")).toBeInTheDocument());
+  });
+
+  it("LaTeX 模式未选文件直接导入：提示先选择归档，不调用 API", async () => {
+    vi.mocked(importProjectPaper).mockClear();
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByTestId("import-format-latex"));
+    await user.click(screen.getByRole("button", { name: "导入论文" }));
+
+    expect(await screen.findByTestId("validation-error")).toHaveTextContent("请先选择 LaTeX 工程 ZIP 归档");
+    expect(importProjectPaper).not.toHaveBeenCalled();
+  });
+
+  it("validateZipFile：拒绝非 .zip 与空文件（选择后的即时校验）", async () => {
+    const { validateZipFile } = await import("../src/utils/file.js");
+    expect(validateZipFile(new File(["x"], "paper.pdf", { type: "application/pdf" }))).toBe("只接受 .zip 归档文件");
+    expect(validateZipFile(new File([], "empty.zip", { type: "application/zip" }))).toBe("文件为空");
+    expect(validateZipFile(zipFile)).toBeNull();
   });
 });

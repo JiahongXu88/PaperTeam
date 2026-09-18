@@ -18,6 +18,16 @@ vi.mock("../src/api/projects.js", () => ({
   listProjects: vi.fn(async () => [] as ProjectView[]),
   getProject: vi.fn(),
   createProject: vi.fn(),
+  getManuscriptOverview: vi.fn(async () => ({
+    projectId: "p-tab00000001",
+    title: "Tab 状态项目",
+    titleSource: "project",
+    sourceType: "none",
+    currentRevision: 0,
+    sectionCount: 0,
+    referenceCount: 0,
+    build: null,
+  })),
 }));
 
 vi.mock("../src/api/runs.js", () => ({
@@ -53,7 +63,7 @@ vi.mock("../src/api/evidence.js", () => ({
   reevaluateQualityGate: vi.fn(),
 }));
 
-const { getProject } = await import("../src/api/projects.js");
+const { getProject, getManuscriptOverview } = await import("../src/api/projects.js");
 const paperApi = await import("../src/api/paper.js");
 const listCitations = vi.mocked(paperApi.listCitations);
 const getCitationIntegrity = vi.mocked(paperApi.getCitationIntegrity);
@@ -149,5 +159,51 @@ describe("ProjectPage Tab 导航（UX Polish 2026-09）", () => {
     // 切回概览
     await user.click(screen.getByRole("tab", { name: "概览" }));
     expect(await screen.findByText("研究定位")).toBeInTheDocument();
+  });
+});
+
+describe("ProjectPage 概览：当前稿件信息卡（M7.0.3）", () => {
+  it("渲染 Backend 聚合视图：来源 / 修订 / 章节 / 参考文献 / 构建状态", async () => {
+    vi.mocked(getManuscriptOverview).mockResolvedValue({
+      projectId: project.id,
+      title: "Tab 状态项目",
+      titleSource: "project",
+      sourceType: "latex",
+      currentRevision: 3,
+      sectionCount: 6,
+      referenceCount: 28,
+      build: { passed: true, checkedAt: "2026-09-18T08:00:00.000Z", revision: 2, stale: true },
+    });
+    renderProjectAt("/projects/p-tab00000001");
+
+    const card = await screen.findByTestId("manuscript-card");
+    expect(card).toHaveTextContent("LaTeX 工程导入");
+    expect(card).toHaveTextContent("rev 3");
+    expect(card).toHaveTextContent("6 节");
+    expect(card).toHaveTextContent("28 条");
+    expect(screen.getByTestId("manuscript-build")).toHaveTextContent("已过期");
+    // 明确「这是正在修改的稿件」并与文献库相区分
+    expect(screen.getByTestId("manuscript-title-line")).toHaveTextContent("正在修改的论文稿件");
+    expect(screen.getByTestId("manuscript-title-line")).toHaveTextContent("不是稿件本身");
+  });
+
+  it("尚无稿件（sourceType=none）：如实展示空态与「查看论文产出」入口", async () => {
+    vi.mocked(getManuscriptOverview).mockResolvedValue({
+      projectId: project.id,
+      title: "Tab 状态项目",
+      titleSource: "project",
+      sourceType: "none",
+      currentRevision: 0,
+      sectionCount: 0,
+      referenceCount: 0,
+      build: null,
+    });
+    renderProjectAt("/projects/p-tab00000001");
+
+    const card = await screen.findByTestId("manuscript-card");
+    expect(card).toHaveTextContent("尚未创建稿件");
+    expect(card).toHaveTextContent("尚无修订");
+    expect(screen.getByTestId("manuscript-build")).toHaveTextContent("未构建");
+    expect(screen.getByTestId("manuscript-goto")).toHaveTextContent("查看论文产出");
   });
 });

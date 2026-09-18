@@ -1,8 +1,9 @@
 import { apiClient } from "./client.js";
 import type {
   CreateProjectInput,
-  ImportProjectPdfInput,
-  ImportProjectPdfResult,
+  ImportProjectPaperInput,
+  ImportProjectPaperResult,
+  ManuscriptOverviewView,
   ProjectView,
 } from "../types/api.js";
 
@@ -12,7 +13,8 @@ import type {
  *   GET    /api/projects                    → { projects }（默认未归档；?scope=archived|all）
  *   GET    /api/projects/:id                → { project }
  *   POST   /api/projects                    → 201 { project }
- *   POST   /api/projects/import-pdf         → 201 { project, titleSource }（File First 导入）
+ *   POST   /api/projects/import-paper       → 201 { project, titleSource, … }（统一导入：pdf | latex）
+ *   GET    /api/projects/:id/manuscript     → { outline, sections, overview }（当前稿件聚合视图）
  *   PATCH  /api/projects/:id                → { project }（重命名 / 研究定位）
  *   POST   /api/projects/:id/archive        → { project }（运行中 409 PROJECT_BUSY）
  *   POST   /api/projects/:id/restore        → { project }
@@ -43,9 +45,21 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectV
   return body.project;
 }
 
-/** 已有论文 File-First 导入：一次调用建项目 + 解析 + 自动标题（后端失败回滚） */
-export async function importProjectPdf(input: ImportProjectPdfInput): Promise<ImportProjectPdfResult> {
-  return apiClient.post<ImportProjectPdfResult>("/api/projects/import-pdf", input);
+/** 已有论文 File-First 导入（统一入口）：format=pdf 走解析链路，format=latex 落 manuscript/ 工作树 */
+export async function importProjectPaper(input: ImportProjectPaperInput): Promise<ImportProjectPaperResult> {
+  return apiClient.post<ImportProjectPaperResult>("/api/projects/import-paper", input);
+}
+
+/** 当前稿件聚合视图（只读：标题 / 来源 / 当前修订 / 章节数 / 参考文献数 / 构建状态） */
+export async function getManuscriptOverview(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ManuscriptOverviewView> {
+  const body = await apiClient.get<{ overview: ManuscriptOverviewView }>(
+    `/api/projects/${encodeURIComponent(projectId)}/manuscript`,
+    signal,
+  );
+  return body.overview;
 }
 
 /** 重命名（PDF metadata 可能识别错误，标题必须可后改） */

@@ -61,7 +61,9 @@
 | `GET /api/projects` | 项目列表（未归档，`updatedAt` 降序）→ `{projects: ProjectView[], scope:"active"}`；`?scope=archived\|all` 切换范围（2026-09-07） | ProjectsPage / Sidebar 最近项目 |
 | `GET /api/projects/:id` | 项目详情 → `{project: ProjectView}`；404=PROJECT_NOT_FOUND | ProjectPage |
 | `POST /api/projects` | 创建（title 必填 + 可选研究定位字段）→ 201 `{project}` | NewProjectPage（从研究想法开始） |
-| `POST /api/projects/import-pdf` | **2026-09-07**。已有论文 File-First 导入：`{fileName, contentBase64, goal: "review_only"\|"improvement", …研究定位可选字段}` → 201 `{project, document: PaperDocSummary, titleSource: "pdf"\|"filename"}`。Backend 一次完成 建项目→解析→标题（PDF 内标题优先、不可用则文件名兜底）；任一步失败回滚删除项目，不留半成品 | NewProjectPage（导入已有论文） |
+| `POST /api/projects/import-paper` | **M7.0.3（2026-09-19）**。统一导入入口：`{format: "pdf"\|"latex"（缺省 pdf）, …}`。`format=pdf` 与旧 import-pdf 同链路（paper ingest：`{fileName, contentBase64, goal}`）；`format=latex` 走 LatexImporter（`{fileName?, archiveBase64}`，只支持 `goal=improvement`，LaTeX 工程落 manuscript/ 工作树）→ 201 `{project, titleSource: "pdf"\|"latex"\|"filename", document?(pdf), report?(latex: LatexImportReport)}`。标题：PDF 内标题 / 入口 .tex 的 `\title` / 文件名兜底；任一步失败回滚删除项目 | NewProjectPage（导入已有论文：PDF / LaTeX 工程） |
+| `POST /api/projects/import-pdf` | **2026-09-07（兼容保留）**。等价于 `import-paper` 的 `format=pdf` 缺省路径；旧请求体（无 format 字段）行为不变 | （历史消费方） |
+| `GET /api/projects/:id/manuscript` | `{outline, sections}` + **M7.0.3** `overview`：当前稿件聚合视图（只读，不新增实体）——`{title, titleSource, sourceType: "latex"\|"pdf"\|"generated"\|"none"（由 import-report / parsed document / outline 落盘事实推导）, currentRevision, sectionCount, referenceCount, build: {passed, checkedAt, revision, stale}\|null}`；项目不存在 404 | ProjectPage 概览「当前稿件」卡 |
 | `GET /api/runs?projectId=` | 项目 run 列表（Backend 返回 WorkflowState 全量，前端映射为 RunView 子集） | ProjectPage Overview / ReviewPanel |
 | `GET /api/runtime/status` | Pi Runtime 诊断 → `{status: RuntimeStatusView}` | 顶栏 RuntimeStatusChip / 模型横幅 |
 | `GET /health` | 存活探针 | （诊断用） |
@@ -413,17 +415,38 @@ interface CreateProjectInput {                   // POST /api/projects 请求体
   language?: string;                             // ≤50
 }
 
-// POST /api/projects/import-pdf 请求体（2026-09-07；标题不由用户提供）
-// 响应：{ project: ProjectView, document: PaperDocSummary, titleSource: "pdf" | "filename" }
-// —— document 与 GET /paper 的 document 同形，前端直接种缓存
-interface ImportProjectPdfInput {
+// POST /api/projects/import-paper 请求体（M7.0.3 统一入口；标题不由用户提供）
+// —— format=pdf 与旧 import-pdf 请求体兼容（format 可缺省）
+interface ImportPaperPdfInput {
+  format: "pdf";
   fileName: string;                              // *.pdf ≤50MB
   contentBase64: string;
   goal: "review_only" | "improvement";           // → existing_paper_review / existing_paper_improvement
   researchField?: string; targetVenue?: string;  // 高级选项（全部可缺省）
   targetProfile?: string; language?: string;
 }
-// 响应：{ project: ProjectView; document: PaperDocSummary; titleSource: "pdf" | "filename" }
+interface ImportPaperLatexInput {
+  format: "latex";
+  fileName: string;                              // *.zip ≤50MB（标题兜底用）
+  archiveBase64: string;                         // LaTeX 工程 ZIP（入口 .tex 需含 \documentclass）
+  // goal 只能 improvement（缺省即 improvement；LaTeX 工程只走系统性改进）
+  researchField?: string; targetVenue?: string; targetProfile?: string; language?: string;
+}
+// 响应：{ project: ProjectView; titleSource: "pdf" | "latex" | "filename";
+//         document?: PaperDocSummary（format=pdf，与 GET /paper 同形，前端直接种缓存）;
+//         report?: LatexImportReport（format=latex，结构识别 + baseline compile） }
+
+// GET /api/projects/:id/manuscript 响应（M7.0.3 新增 overview 字段；outline/sections 为既有字段）
+interface ManuscriptOverview {
+  projectId: string;
+  title: string;                                 // outline 标题优先，缺省项目标题
+  titleSource: "outline" | "project";
+  sourceType: "latex" | "pdf" | "generated" | "none"; // 由落盘事实推导（import-report / parsed document / outline）
+  currentRevision: number;                       // 0 = 尚无版本事实
+  sectionCount: number;                          // outline 章节数 / LaTeX tex 文件数
+  referenceCount: number;                        // manuscript bib 条数 / PDF 已提取参考文献数
+  build: { passed: boolean; checkedAt: string; revision: number; stale: boolean } | null; // 无构建记录 = null
+}
 
 type WorkflowRunStatus =
   | "pending" | "running" | "awaiting_input"

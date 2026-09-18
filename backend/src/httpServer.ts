@@ -403,7 +403,7 @@ async function handleRequest(
     return;
   }
 
-  // ---- POST /api/projects/import-pdf（已有论文 File-First 导入） ----
+  // ---- POST /api/projects/import-pdf（已有论文 File-First 导入；兼容保留） ----
   if (pathname === "/api/projects/import-pdf") {
     if (method !== "POST") {
       res.setHeader("Allow", "POST");
@@ -415,17 +415,49 @@ async function handleRequest(
       return;
     }
     const { body, fileName, content } = await readUploadBody(req, MAX_PAPER_UPLOAD_BODY_BYTES);
-    const goal = readExistingPaperGoal(body["goal"]);
-    const result = await services.stack.projectImport.importPdf({
+    await sendImportPdfResult(res, services.stack, body, fileName, content);
+    return;
+  }
+
+  // ---- POST /api/projects/import-paper（统一导入入口：format=pdf | latex） ----
+  if (pathname === "/api/projects/import-paper") {
+    if (method !== "POST") {
+      res.setHeader("Allow", "POST");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    if (services.stack === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "业务服务栈未配置" });
+      return;
+    }
+    const body = await readJsonBody(req, MAX_PAPER_UPLOAD_BODY_BYTES);
+    const format = readImportFormat(body["format"]);
+    if (format === "pdf") {
+      const fileName = readStringField(body, "fileName");
+      if (fileName === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
+      }
+      await sendImportPdfResult(res, services.stack, body, fileName, readBase64Field(body, "contentBase64"));
+      return;
+    }
+    // format=latex：LaTeX 工程 ZIP（File First：建项目 → 导入 manuscript/ → 失败回滚）
+    if (body["goal"] !== undefined && body["goal"] !== "improvement") {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        "LaTeX 工程导入只支持系统性改进（goal=improvement）",
+      );
+    }
+    const fileName = readStringField(body, "fileName") ?? "paper.zip";
+    const archive = readBase64Field(body, "archiveBase64");
+    const result = await services.stack.projectImport.importLatex({
       fileName,
-      content,
-      goal,
+      archive,
       meta: readResearchMeta(body),
     });
     sendJson(res, 201, {
       project: result.project,
-      document: toPaperDocumentSummary(result.document),
       titleSource: result.titleSource,
+      report: result.report,
     });
     return;
   }
@@ -1983,7 +2015,10 @@ async function handleProjectResourceRoutes(
   if (resource === "manuscript" && method === "GET") {
     const outline = await stack.manuscript.loadOutline(projectId);
     const sections = await stack.manuscript.sectionStatuses(projectId);
-    sendJson(res, 200, { outline, sections });
+    // M7.0.3 聚合视图：标题 / 来源 / 当前修订 / 章节数 / 参考文献数 / 构建状态
+    // （只读组装；项目不存在 → read 内 getRequired → 404）
+    const overview = await stack.manuscriptOverview.read(projectId);
+    sendJson(res, 200, { outline, sections, overview });
     return true;
   }
   if (resource === "context" && method === "GET") {
@@ -2171,6 +2206,39 @@ async function handleProjectResourceRoutes(
   }
 
   return false;
+}
+
+/** import-paper / import-pdf 共用的 PDF 导入执行 + 201 响应 */
+async function sendImportPdfResult(
+  res: ServerResponse,
+  stack: ServiceStack,
+  body: Record<string, unknown>,
+  fileName: string,
+  content: Buffer,
+): Promise<void> {
+  const goal = readExistingPaperGoal(body["goal"]);
+  const result = await stack.projectImport.importPdf({
+    fileName,
+    content,
+    goal,
+    meta: readResearchMeta(body),
+  });
+  sendJson(res, 201, {
+    project: result.project,
+    document: toPaperDocumentSummary(result.document),
+    titleSource: result.titleSource,
+  });
+}
+
+/** HTTP 层 format 字段校验（缺省 pdf：与旧 import-pdf 请求体兼容） */
+function readImportFormat(value: unknown): "pdf" | "latex" {
+  if (value === undefined || value === "pdf") {
+    return "pdf";
+  }
+  if (value === "latex") {
+    return "latex";
+  }
+  throw new BusinessError("INVALID_REQUEST", '字段 format 只能是 pdf 或 latex（缺省 pdf）');
 }
 
 /** PaperDocument 摘要（HTTP 响应不携带 pages/chunks 全文，明细走 /chunks 端点） */

@@ -3,6 +3,9 @@
 /** PDF 上传上限（与 Backend PaperIngestService.MAX_PAPER_PDF_BYTES 一致） */
 export const MAX_PDF_UPLOAD_BYTES = 50 * 1024 * 1024;
 
+/** LaTeX 工程归档上传上限（Backend import-paper 沿用 PDF 请求体体积门槛） */
+export const MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024;
+
 /** 文献库单文件上限（与 Backend SourceStore.MAX_SOURCE_BYTES 一致） */
 export const MAX_SOURCE_UPLOAD_BYTES = 20 * 1024 * 1024;
 
@@ -34,6 +37,20 @@ export function validatePdfFile(file: File): string | null {
   }
   if (file.size > MAX_PDF_UPLOAD_BYTES) {
     return `PDF 超过 ${Math.floor(MAX_PDF_UPLOAD_BYTES / (1024 * 1024))}MB 上限`;
+  }
+  return null;
+}
+
+/** LaTeX 工程 ZIP 归档选择后的即时校验；合法返回 null */
+export function validateZipFile(file: File): string | null {
+  if (!file.name.toLowerCase().endsWith(".zip")) {
+    return "只接受 .zip 归档文件";
+  }
+  if (file.size === 0) {
+    return "文件为空";
+  }
+  if (file.size > MAX_ZIP_UPLOAD_BYTES) {
+    return `归档超过 ${Math.floor(MAX_ZIP_UPLOAD_BYTES / (1024 * 1024))}MB 上限`;
   }
   return null;
 }

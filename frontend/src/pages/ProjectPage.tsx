@@ -8,6 +8,7 @@ import { COMPLETION_LABELS, stageLabel } from "../components/common/status.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { EvidencePanel } from "../components/project/EvidencePanel.js";
+import { ManuscriptOverviewCard } from "../components/project/ManuscriptOverviewCard.js";
 import { PaperPanel } from "../components/project/PaperPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
@@ -185,6 +186,7 @@ function OverviewTab({ project, onOpenTab, onOpenGate }: { project: ProjectView;
 
   return (
     <div className="panel-stack">
+      <ManuscriptOverviewCard projectId={project.id} workflowKind={project.workflowKind} onOpenTab={onOpenTab} />
       <CurrentWorkflowCard projectId={project.id} onOpenTab={onOpenTab} />
       {project.workflowKind !== "existing_paper_review" ? (
         <QualityGateSummaryLink projectId={project.id} onOpenTab={() => onOpenGate()} />

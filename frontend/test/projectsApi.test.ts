@@ -4,15 +4,16 @@ import {
   archiveProject,
   createProject,
   deleteProject,
+  getManuscriptOverview,
   getProject,
-  importProjectPdf,
+  importProjectPaper,
   listProjects,
   renameProject,
   restoreProject,
 } from "../src/api/projects.js";
 import type { ProjectView } from "../src/types/api.js";
 
-/** Project API 层（M4.2 + 2026-09 生命周期）：路径、payload 与响应映射 */
+/** Project API 层（M4.2 + 2026-09 生命周期 + M7.0.3 统一导入 / 稿件聚合）：路径、payload 与响应映射 */
 
 const project: ProjectView = {
   id: "p-abc123def456",
@@ -59,11 +60,12 @@ describe("projects api", () => {
     expect(await listProjects()).toEqual([]);
   });
 
-  it("importProjectPdf：POST /api/projects/import-pdf（fileName + contentBase64 + goal）", async () => {
+  it("importProjectPaper（format=pdf）：POST /api/projects/import-paper（fileName + contentBase64 + goal）", async () => {
     const fetchMock = ok({ project, titleSource: "pdf" }, 201) as unknown as ReturnType<typeof vi.fn>;
     vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
 
-    const result = await importProjectPdf({
+    const result = await importProjectPaper({
+      format: "pdf",
       fileName: "paper.pdf",
       contentBase64: "JVBERi0=",
       goal: "review_only",
@@ -71,13 +73,54 @@ describe("projects api", () => {
     expect(result.project).toEqual(project);
     expect(result.titleSource).toBe("pdf");
     const [url, init] = lastCall(fetchMock);
-    expect(url).toBe("/api/projects/import-pdf");
+    expect(url).toBe("/api/projects/import-paper");
     expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
+      format: "pdf",
       fileName: "paper.pdf",
       contentBase64: "JVBERi0=",
       goal: "review_only",
     });
+  });
+
+  it("importProjectPaper（format=latex）：POST /api/projects/import-paper（fileName + archiveBase64）", async () => {
+    const fetchMock = ok({ project, titleSource: "latex" }, 201) as unknown as ReturnType<typeof vi.fn>;
+    vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
+
+    const result = await importProjectPaper({
+      format: "latex",
+      fileName: "my-paper.zip",
+      archiveBase64: "UEsDBA==",
+    });
+    expect(result.project).toEqual(project);
+    expect(result.titleSource).toBe("latex");
+    const [url, init] = lastCall(fetchMock);
+    expect(url).toBe("/api/projects/import-paper");
+    expect(JSON.parse(String(init.body))).toEqual({
+      format: "latex",
+      fileName: "my-paper.zip",
+      archiveBase64: "UEsDBA==",
+    });
+  });
+
+  it("getManuscriptOverview：GET /api/projects/:id/manuscript 取 overview 聚合字段", async () => {
+    const overview = {
+      projectId: project.id,
+      title: "RAG 论文",
+      titleSource: "project",
+      sourceType: "latex",
+      currentRevision: 2,
+      sectionCount: 5,
+      referenceCount: 23,
+      build: { passed: true, checkedAt: "2026-09-19T00:00:00.000Z", revision: 2, stale: false },
+    };
+    const fetchMock = ok({ outline: null, sections: [], overview });
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await getManuscriptOverview(project.id)).toEqual(overview);
+    const [url, init] = (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`/api/projects/${project.id}/manuscript`);
+    expect(init.method).toBe("GET");
   });
 
   it("renameProject：PATCH /api/projects/:id 只带 title", async () => {
