@@ -148,7 +148,7 @@ describe("evidence_query 工具", () => {
       { claim: "另一条未核验线索", source: { sourceId: "S002" } },
       "researcher",
     );
-    const { byName } = toolsFor(f, "writer");
+    const { byName } = toolsFor(f, "reviewer");
     const query = byName.get("evidence_query")!;
 
     const all = (await runTool(query, {})) as Record<string, unknown>;
@@ -171,6 +171,85 @@ describe("evidence_query 工具", () => {
     expect(bySection["total"]).toBe(1);
 
     expect(await evidenceLineCount(f)).toBe(2); // 查询零写入
+  });
+
+  it("M6.6 writer 视图（formalOnly）：只返回 verified + 锚点的正式证据", async () => {
+    const f = await fixture();
+    await f.grounding.propose(f.projectId, {
+      sourceId: "S001",
+      chunkId: f.chunkId,
+      claim: "RAG 降低幻觉率",
+      quote: GOOD_QUOTE,
+      proposedBy: "researcher",
+    });
+    await f.grounding.groundPending(f.projectId);
+    await f.evidence.append(
+      f.projectId,
+      { claim: "legacy unverified 线索", source: { sourceId: "S002" } },
+      "researcher",
+    );
+    await f.evidence.append(
+      f.projectId,
+      {
+        claim: "verified 但无锚点",
+        verificationStatus: "verified",
+        source: { sourceId: "S003" },
+      },
+      "researcher",
+    );
+    const { byName } = toolsFor(f, "writer");
+    const query = byName.get("evidence_query")!;
+
+    // Writer 可以查询 verified evidence（§M6.6-16 测试 1）
+    const payload = (await runTool(query, {})) as Record<string, unknown>;
+    expect(payload["total"]).toBe(1);
+    const rows = payload["evidence"] as Array<Record<string, unknown>>;
+    expect(rows[0]!["verificationStatus"]).toBe("verified");
+    expect(rows[0]!["chunkId"]).toBe(f.chunkId);
+    expect(typeof payload["note"]).toBe("string"); // writer 视图说明
+
+    // Writer 不获取 rejected / unverified / 无锚点记录（§M6.6-16 测试 2）：
+    // 显式请求 unverified 也被使用策略拒绝（formalOnly 在构造边界生效）
+    const forced = (await runTool(query, { status: "unverified" })) as Record<string, unknown>;
+    expect(forced["total"]).toBe(1); // 仍只有那条 verified
+    expect(
+      (forced["evidence"] as Array<Record<string, unknown>>).every(
+        (row) => row["verificationStatus"] === "verified",
+      ),
+    ).toBe(true);
+  });
+
+  it("M6.6 writer 视图：mismatch / not_found 状态不可见", async () => {
+    const f = await fixture();
+    await f.evidence.append(
+      f.projectId,
+      {
+        claim: "mismatch 记录",
+        verificationStatus: "mismatch",
+        source: { sourceId: "S001" },
+        location: { chunk: "S001:SEC01:0001:0000000000" },
+      },
+      "researcher",
+    );
+    await f.evidence.append(
+      f.projectId,
+      {
+        claim: "not_found 记录",
+        verificationStatus: "not_found",
+        source: { sourceId: "S001" },
+        location: { chunk: "S001:SEC01:0002:0000000000" },
+      },
+      "researcher",
+    );
+    const { byName } = toolsFor(f, "writer");
+    const payload = (await runTool(byName.get("evidence_query")!, {})) as Record<string, unknown>;
+    expect(payload["total"]).toBe(0);
+    // reviewer 全量视野仍然可见（识别 evidence_gap 的判断素材）
+    const reviewerView = (await runTool(toolsFor(f, "reviewer").byName.get("evidence_query")!, {})) as Record<
+      string,
+      unknown
+    >;
+    expect(reviewerView["total"]).toBe(2);
   });
 });
 

@@ -299,7 +299,30 @@
 >   research.feasibility → …`（零候选 no-op；幂等；DoD = 候选队列无 pending）。
 > - 错误码新增：INVALID_CHUNK_ID(422) / CHUNK_NOT_FOUND(404) / SOURCE_NOT_FOUND(404)。
 
-
+> 2026-09-17 M6.6 语义约定（Evidence-aware Writing Loop；无新 HTTP 端点，
+> 变更在 Agent 工具视图 / workflow stage 结果 / gate 产物三处）：
+> - **Evidence 使用策略**（EvidenceSelectionService，唯一事实源）：正式证据 =
+>   `verificationStatus=verified` 且 sourceId + chunkId 锚点齐备；
+>   unverified（legacy_unverified）/ plausible / mismatch / unverifiable /
+>   not_found 一律不进入 Writer / Reviewer 正式上下文。
+> - **evidence_query 工具视图分角色**：writer = **formalOnly**（构造边界强制
+>   verified + 锚点过滤——运行期显式传其他 status 也不放宽，payload 带
+>   note 说明）；researcher / reviewer / citation 保持全量查询（判定口径
+>   由 prompt 约束「只有 verified 可作 SUPPORTED 依据」）。工具参数面不变。
+> - **workflow stage 结果新增字段**：`review.run` 与 `writing.sections` 的
+>   stage result 携带 `evidenceFormal`（进入正式上下文的条数）与
+>   `evidenceExcluded: {legacyUnverified, untrusted, verifiedMissingAnchor}`
+>   （排除分类计数）。
+> - **Quality Gate 新规则** `citations_evidence_backed`（规则 16）：输入为
+>   `evidenceCitationCoverage`（cited keys ↔ formal evidence 覆盖；匹配 =
+>   DOI 精确 / 归一化 title+年份，与 Writer digest 的 bib key 关联同源）。
+>   **默认呈现不阻断**（detail 含未覆盖 key 计数）；threshold
+>   `requireEvidenceBackedCitations=true` 时未覆盖引用阻断 Final。覆盖明细
+>   （covered / uncovered / byKey）随 `quality-gate-r{n}.json` 落盘
+>   （M4.6 起的 gate 读取端点透传可见）。
+> - **legacy 兼容**：既有 `POST .../evidence`（手工登记）行为不变；legacy
+>   unverified 记录保留在库（evidence list/stats 端点可见），只是不再自动
+>   进入写作 / 审稿上下文与 writer 工具视野（收口属 M6.7）。
 
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 

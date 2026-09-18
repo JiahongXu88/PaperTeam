@@ -927,3 +927,86 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   WORKFLOW_STAGE_SEQUENCES +evidence.ground（证据核验）。工具文件组织维持
   域内 tools.ts（retrieval/tools.ts 先例），集中 tools/ 目录收敛属审计 P1
   不在本轮。
+
+## D-0038 M6.6 Evidence-aware Writing Loop：使用策略下沉 EvidenceSelectionService（usableEvidence 退役）+ writer 工具 formalOnly 视图 + digest 快照与主动查询双通道 + citations_evidence_backed Gate 规则（默认可检测不阻断）
+
+- **日期**：2026-09-17（M6.6，Evidence-aware Writing Loop）
+- **状态**：accepted
+- **决策**：让 Writer / Reviewer 真正消费 Verified Evidence，六项决策：
+  1. **使用策略唯一事实源**：新建 EvidenceSelectionService
+     （backend/src/evidence/EvidenceSelectionService.ts），definitions.ts 的
+     本地 usableEvidence 下沉至此（架构审计 P1：业务逻辑不堆 workflow
+     definitions）。规则：正式证据（formal）= verificationStatus=verified
+     且 source.sourceId 与 location.chunk（chunkId 锚点）齐备
+     （isFormalEvidence 纯函数）；其余全部排除——unverified 派生标识
+     legacy_unverified（classifyEvidence；存量记录不迁移不删除，M6.7
+     收口）、plausible / mismatch / unverifiable / not_found 归 untrusted、
+     verified 但缺锚点归 verified_missing_anchor（手工 / user_confirmed
+     无 chunk 锚点的 verified 也不进正式上下文——三件套口径不打折）。
+     **旧「trusted<3 时 unverified 兜底」行为废除**：digest 不再自动注入
+     未核验线索；无 verified 时 prompt 显式提示弱化论断（宁可少说，不可
+     拿未核验证据说满）。纯函数被 workflow 选择与 writer 工具视图共用，
+     不存在两套口径。
+  2. **writer 工具 formalOnly 视图**：evidenceToolsForRole 的 writer 分支
+     构造 evidence_query 时传 formalOnly——构造边界强制 filter.status=
+     verified + isFormalEvidence 过滤，Agent 运行期显式传 status=unverified
+     也不放宽（策略不信任运行期参数；payload note 说明 writer 视图语义）。
+     reviewer / citation 保持全量视野：识别 evidence_gap 需要看到未核验
+     线索的存在；「只有 verified 可作 SUPPORTED 依据」的判定口径由
+     prompt 约束（工具给视野，prompt 给纪律）。工具参数面零扩展
+     （§M6.6-8：claimContains / sourceId / section / status M6.5 已满足）。
+  3. **Writer prompt 双通道（兼容迁移，非拆除）**：digest 注入机制保留
+     （静态快照仍是初始上下文——一次性给出可用的 verified 集合，避免
+     每句 claims 都查一次工具烧 Token），内容改为只含 formal 池；行内
+     关联 bib key：`- [E001]（cite: gao2023survey）claim…`，
+     matchBibliographyKey = DOI 精确 → 归一化 title（+ 年份一致）
+     （EvidenceRecord → source metadata → citation：引用生成优先使用有
+     已核验证据支撑的 key）；附 evidence_query 主动查询指引（快照不够时
+     按 claimContains / sourceId / section 查，无果弱化删除，不虚构）。
+     planOutline / writeSection / reviseSection（含 abstract 分支）接齐。
+  4. **Reviewer fact 模式主动核验**：digest 行带 chunk 锚点；fact 模式
+     增加「逐 claim 先 evidence_query 后判定、get_chunk 回查原文、只有
+     verified 可作 SUPPORTED / PARTIALLY_SUPPORTED 依据、unverified 只是
+     线索」指引；无 verified 时「所有强论断应标 UNSUPPORTED（可用
+     evidence_query 查询确认）」。academic / style 模式不带 fact 工具
+     指引（Evidence 快照仍注入供学术评审参考）。
+  5. **citations_evidence_backed Gate 规则**：新增确定性
+     computeEvidenceCitationCoverage（quality/evidenceCitationCoverage.ts；
+     cited keys（CitationReport.static）↔ formal evidence 的 bib key 集合，
+     匹配规则与 matchBibliographyKey 同源单点）+ Quality Gate 新规则：
+     **默认呈现覆盖计数不阻断**（接入期存量项目 verified 覆盖率必然低，
+     直接阻断会全量误伤——检测能力先落地，阻断口径独立开关）；
+     thresholds.requireEvidenceBackedCitations=true 时未覆盖引用阻断
+     Final。覆盖明细（covered / uncovered / byKey）随 gate 产物落盘
+     （quality-gate-r*.json）。bib 中不存在的 key 记未覆盖但不归本规则
+     管（结构问题由既有 citation_structure_valid 处理，不双罚）。
+  6. **可观测性**：review.run / writing.sections stage 结果新增
+     evidenceFormal / evidenceExcluded（legacyUnverified / untrusted /
+     verifiedMissingAnchor 分类计数）；workflow 本地 usableEvidence 改为
+     evidenceSelection.selectForWriting 薄代理（revision.revise /
+     outline.plan 等调用点签名不变）。
+- **理由**：M6.5 建立了 Verified Evidence 供给，但消费侧仍是「workflow 塞
+  静态 digest + unverified 兜底」——证据来源不透明、无法动态查询、无法保证
+  verified 口径、生命周期未进 Agent loop（§M6.6-2 四问题）。双通道设计
+  （快照 + 工具）兼顾两者：快照保证每次写作有基线证据可用（冷启动 / 低频
+  场景不空转），工具通道允许按需深查（长尾 claim 不受快照限量 20 束缚）；
+  「不自动全量注入、不逐句强制查询」对应 §M6.6-17 反淹没纪律。writer 视图
+  在构造边界收紧而 reviewer 全量，是「写作用证据（strict）」与「审稿判
+  缺口（aware）」的职责差异。Gate 默认不阻断是对接入期的诚实：规则的
+  价值先在「可检测、可解释（gate 产物可见）」，阻断留给显式配置。
+  测试 +26（selection 10 / 工具视图 3 / coverage+Gate 8 / reviewer prompt
+  3 / writer digest 2）；全量 1141 通过零回归。
+- **不做**：新增 Agent / Evidence Agent（红线）；Runtime / Pi adapter /
+  Retrieval 改动；Researcher legacy unverified 路径删除（M6.7 收口）；
+  工具装配集中化（roleCustomTools 单点已存在于 index.ts，RoleDefinition
+  {tools,skills} 收敛记 Known Limitation）；evidence_query 参数扩展；
+  逐句强制 evidence_query 或全量 Evidence 注入（§M6.6-17）。
+- **影响**：backend/src/evidence/ +EvidenceSelectionService.ts；tools.ts
+  writer 视图 formalOnly；WriterService digest 渲染 + 指引（4 处 prompt）；
+  ReviewerService fact 指引 + digest 锚点；quality/ +evidenceCitationCoverage.ts
+  + gates.ts 规则 16；definitions.ts WorkflowServices.evidenceSelection +
+  usableEvidence 薄代理 + gate 接线 + stage 计数；serviceStack 装配。
+  测试：evidenceSelection.test.ts（新）/ evidenceTools.test.ts（writer
+  视图 +3、既有断言随语义升级调整）/ quality/evidenceCitationCoverage.test.ts
+  （新）/ agents/reviewerEvidencePrompt.test.ts（新）/ WriterService.test.ts
+  （+M6.6 describe）。

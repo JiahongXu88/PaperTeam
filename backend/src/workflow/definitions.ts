@@ -38,6 +38,8 @@ import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
+import type { EvidenceSelectionService } from "../evidence/EvidenceSelectionService.js";
+import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
@@ -123,6 +125,11 @@ export interface WorkflowServices {
   evidence: EvidenceStore;
   /** Evidence Grounding 管道（M6.5：evidence.ground stage 消费） */
   evidenceGrounding: EvidenceGroundingService;
+  /**
+   * Evidence 使用策略（M6.6 §9/§10：原 workflow 本地 usableEvidence 下沉至此）：
+   * 哪些 Evidence 可进入 Writer / Reviewer 正式上下文（verified + 三件套锚点）。
+   */
+  evidenceSelection: EvidenceSelectionService;
   sources: SourceStore;
   manuscript: ManuscriptService;
   writer: WriterService;
@@ -223,7 +230,9 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
       // 审稿前固化修订版本：本轮 review 审阅的就是这个不可变修订（幂等提交，
       // 未变化的 manuscript 不产生新修订号）。gate / Finalize 据此对齐。
       const { revision } = await services.revisions.commit(ctx.projectId, "review.snapshot", ctx.runId);
-      const evidence = await usableEvidence(services, ctx.projectId);
+      // M6.6：正式上下文只进 verified formal 池；排除计数随 stage 结果可观测
+      const evidenceSelection = await services.evidenceSelection.selectForWriting(ctx.projectId);
+      const evidence = evidenceSelection.formal;
       const project = await services.projects.getRequired(ctx.projectId);
       const citationReport = await services.citation.latestReport(ctx.projectId);
       const citationDigest = citationReport
@@ -259,6 +268,8 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         academicScore: summary.scores.academicScore ?? -1,
         styleRisk: summary.scores.styleRisk ?? -1,
         unsupportedCriticalClaims: summary.unsupportedCriticalClaims,
+        evidenceFormal: evidenceSelection.formal.length,
+        evidenceExcluded: evidenceSelection.excluded,
         // M5.4：可进入语言润色的 style minor finding 数（planner 据此决定是否询问）
         styleMinor: summary.issues.filter(isPolishableStyleIssue).length,
       };
@@ -306,8 +317,26 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         ctx.projectId,
         review.reviewedRevision,
       );
+      // M6.6 §13：正文引用 ↔ verified evidence 覆盖（可检测；默认不阻断）
+      const evidenceRecords = await services.evidence.list(ctx.projectId);
+      const evidenceCitationCoverage =
+        citation !== null
+          ? computeEvidenceCitationCoverage({
+              citedKeys: citation.static.citedKeys,
+              bibEntries: citation.static.bibEntries,
+              evidenceRecords,
+            })
+          : undefined;
       const gate = evaluateQualityGate(
-        { review, citation, evidence, feasibility, citationPreservation, factPreservation },
+        {
+          review,
+          citation,
+          evidence,
+          feasibility,
+          citationPreservation,
+          factPreservation,
+          ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
+        },
         QUALITY_THRESHOLDS(services),
       );
       // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
@@ -315,6 +344,7 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
       await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, {
         citationPreservation,
         factPreservation,
+        ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
       });
       // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
       // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
@@ -1861,7 +1891,9 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少大纲（outline.json）");
       }
       const artifact = await requireResearchArtifact(services, ctx.projectId);
-      const evidence = await usableEvidence(services, ctx.projectId);
+      // M6.6：写作 digest 只含 verified formal 池（legacy unverified 不再兜底注入）
+      const evidenceSelection = await services.evidenceSelection.selectForWriting(ctx.projectId);
+      const evidence = evidenceSelection.formal;
 
       let bytesTotal = 0;
       const written: string[] = [];
@@ -1894,7 +1926,14 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       });
       // 初稿完成：提交首个内容修订
       const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
-      return { sectionsWritten: written.length, sections: written, bytesTotal, revision: revision.revision };
+      return {
+        sectionsWritten: written.length,
+        sections: written,
+        bytesTotal,
+        revision: revision.revision,
+        evidenceFormal: evidenceSelection.formal.length,
+        evidenceExcluded: evidenceSelection.excluded,
+      };
     },
     async verifyDod(ctx) {
       const violations: string[] = [];
@@ -2753,21 +2792,14 @@ async function readImportReport(
   }
 }
 
-/** 可用于写作 / 审稿的 Evidence（verified / plausible 优先，unverified 兜底，限量） */
+/**
+ * M6.6 §9：usableEvidence 业务规则已下沉到 EvidenceSelectionService（架构审计：
+ * definitions.ts 不再堆业务逻辑）。正式上下文只进 formal（verified + 三件套
+ * 锚点）；legacy unverified 保留在库中但不再自动注入（§M6.6-11，M6.7 收口）。
+ */
 async function usableEvidence(services: WorkflowServices, projectId: string): Promise<EvidenceRecord[]> {
-  const records = await services.evidence.list(projectId);
-  const trusted = records.filter(
-    (record) => record.verificationStatus === "verified" || record.verificationStatus === "plausible",
-  );
-  const pool =
-    trusted.length >= 3
-      ? trusted
-      : [...trusted, ...records.filter((record) => record.verificationStatus === "unverified")];
-  return pool
-    .sort(
-      (a, b) => (b.supportStrength === "direct" ? 1 : 0) - (a.supportStrength === "direct" ? 1 : 0),
-    )
-    .slice(0, 20);
+  const { formal } = await services.evidenceSelection.selectForWriting(projectId);
+  return formal;
 }
 
 async function safeMarkUsage(

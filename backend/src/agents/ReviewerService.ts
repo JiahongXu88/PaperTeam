@@ -371,6 +371,21 @@ function parseClaims(parsed: Record<string, unknown>, context: string): FactClai
 
 // ---- Prompt ----
 
+/**
+ * M6.6 Evidence 消费模式（§M6.6-7）：Reviewer 的 fact 判定从「依赖 workflow
+ * 塞入的静态 digest」升级为「主动查询」——digest 仍作为初始上下文（兼容），
+ * 但逐 claim 核验时 Reviewer 应通过 evidence_query 查询证据库（§M6.6-10：
+ * 只有 verified 且带 chunk 锚点的记录可作为 SUPPORTED 依据），必要时用
+ * get_chunk 回查原文。
+ */
+const FACT_EVIDENCE_TOOL_GUIDANCE = [
+  "证据核验工具（evidence_query / get_chunk）：上方 Evidence 只是初始快照；",
+  "逐条 claim 判定时应先用 evidence_query 按 claim 关键词（claimContains）或 sourceId 查询证据库，",
+  "只有 verificationStatus=verified（已核验）的证据才能作为 SUPPORTED / PARTIALLY_SUPPORTED 的依据；",
+  "需要核对原文时用行内 chunk 锚点调用 get_chunk 回取逐字原文；",
+  "unverified 记录只是待核验线索，不得据此给出 SUPPORTED。",
+].join("");
+
 export function buildReviewPrompt(params: {
   projectId: string;
   mode: ReviewMode;
@@ -381,14 +396,18 @@ export function buildReviewPrompt(params: {
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
-    .map((record) => `- [${record.id}] ${record.claim.slice(0, 140)}（${record.verificationStatus}${record.supportStrength ? `/${record.supportStrength}` : ""}）`);
+    .map(
+      (record) =>
+        `- [${record.id}] ${record.claim.slice(0, 140)}（${record.verificationStatus}${record.supportStrength ? `/${record.supportStrength}` : ""}${record.location?.chunk ? `；chunk: ${record.location.chunk.slice(0, 60)}` : ""}）`,
+    );
 
   const modeSpecs: Record<ReviewMode, string[]> = {
     fact: [
       "你使用 fact checking skill：把正文拆分为 factual claims，逐条对照 Evidence 判定：",
       "SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED。",
+      FACT_EVIDENCE_TOOL_GUIDANCE,
       "输出额外字段 claims: [{section, claim, verdict, evidenceId?, note?}]；",
-      "无证据支撑的关键论断必须是 UNSUPPORTED 并生成 critical/major issue（blocking 视严重度）。",
+      "无已核验（verified）证据支撑的关键论断必须是 UNSUPPORTED 并生成 critical/major issue（blocking 视严重度）。",
     ],
     academic: [
       "你使用 academic review skill：从问题定义、方法合理性、实验充分性、论证逻辑、写作质量评审。",
@@ -422,8 +441,15 @@ export function buildReviewPrompt(params: {
     "===== 论文稿件（结构化摘要）=====",
     params.manuscriptDigest,
     "",
-    "===== 可用 Evidence =====",
-    ...(evidenceLines.length > 0 ? evidenceLines : ["（无 Evidence：正文中所有强论断都应标记 UNSUPPORTED）"]),
+    "===== 可用 Evidence（初始快照；正式证据 = verified）=====",
+    ...(evidenceLines.length > 0
+      ? [
+          ...evidenceLines,
+          ...(params.mode === "fact" ? [`（${FACT_EVIDENCE_TOOL_GUIDANCE}）`] : []),
+        ]
+      : params.mode === "fact"
+        ? ["（无已核验（verified）Evidence：正文中所有强论断都应标记 UNSUPPORTED，可用 evidence_query 查询证据库确认后）"]
+        : ["（无已核验（verified）Evidence）"]),
     ...(params.citationDigest
       ? ["", "===== 引用核验摘要 =====", params.citationDigest]
       : []),

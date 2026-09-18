@@ -1382,3 +1382,74 @@ Quality Gate（口径不变：status + supportStrength，confidence 不进硬判
   守卫兜底。
 - **防洪泛**：propose 同文（chunkId+claim+quote）去重；groundPending 单轮
   上限 100 条（超限下轮继续——stage 重试语义天然衔接）。
+
+## 17. Evidence-aware Writing Loop（M6.6 已实现；D-0038）
+
+M6.5 建立了 Verified Evidence 供给（§16）；M6.6 让 Writer / Reviewer 真正
+消费它——使用策略单点化、writer 工具视图收紧、prompt 双通道（快照 +
+主动查询）、citation 关联与 Gate 覆盖检测。核心不变量延续：
+**Retrieved ≠ Verified ≠ Grounded**，且只有 **Grounded（verified + 锚点
+三件套）** 才能进入正式写作 / 审稿上下文。
+
+### 17.1 数据流（M6.6 后的消费侧）
+
+```text
+EvidenceStore（verified 记录）
+   ▼
+EvidenceSelectionService（使用策略唯一事实源；isFormalEvidence 纯函数）
+   formal = verified && sourceId && chunkId 锚点
+   excluded = legacy_unverified / untrusted(plausible·mismatch·
+              unverifiable·not_found) / verified_missing_anchor
+   ▼                          ▼
+Writer                       Reviewer
+  ├ prompt digest（formal     ├ prompt digest（formal 快照 + chunk 锚点）
+  │  快照 + cite key 关联）    └ fact 模式：evidence_query（claimContains/
+  └ evidence_query             sourceId）→ verified 判定；get_chunk 回查
+     （formalOnly 视图：          原文；unverified 只是线索
+      强制 verified+锚点）
+   ▼
+Manuscript（\cite key 优先来自有 verified evidence 支撑的条目）
+   ▼
+Quality Gate 规则 16 citations_evidence_backed
+   （computeEvidenceCitationCoverage：cited keys ↔ formal evidence；
+    默认呈现不阻断，requireEvidenceBackedCitations=true 才参与判定）
+```
+
+### 17.2 组件与边界
+
+- **EvidenceSelectionService**（EvidenceSelectionService.ts）：使用策略
+  唯一事实源（原 workflow definitions 本地 usableEvidence 下沉——架构
+  审计 P1）。selectForWriting 返回 formal 池（direct 优先，限量 20）+
+  excluded 分类计数；classifyEvidence 派生使用分级（legacy_unverified
+  标识在此，不改存储 schema）；matchBibliographyKey（DOI 精确 / 归一化
+  title+年份）实现 EvidenceRecord → bib key 关联。只读，无核验无写入。
+- **writer 工具 formalOnly 视图**（tools.ts）：evidenceToolsForRole 的
+  writer 分支构造 evidence_query 时强制 verified + 锚点过滤——构造边界
+  生效，Agent 运行期传参不可放宽；reviewer / citation 全量视野（识别
+  evidence_gap 需要线索可见），判定口径由 prompt 约束。
+- **Writer / Reviewer prompt 双通道**：digest 快照保留（初始上下文，避免
+  逐句查询烧 Token）但只含 formal；工具指引（evidence_query 主动查询、
+  无果弱化删除不虚构）。Writer digest 行内 `（cite: key）` 关联
+  bibliography（引用生成优先使用有已核验证据支撑的 key）。
+- **citations_evidence_backed**（quality/evidenceCitationCoverage.ts +
+  gates.ts 规则 16）：确定性覆盖检测，匹配规则与 matchBibliographyKey
+  同源单点；覆盖明细随 gate 产物落盘；默认不阻断（接入期诚实口径），
+  requireEvidenceBackedCitations=true 才参与判定。
+- **Workflow**：无新 stage、无 DAG 变更（§M6.6-14 红线）；usableEvidence
+  改为 selectForWriting 薄代理；review.run / writing.sections stage 结果
+  携带 evidenceFormal / evidenceExcluded 分类计数。
+
+### 17.3 关键纪律
+
+- **不淹没**：digest 限量快照 + 按需工具查询；不自动全量注入、不逐句
+  强制查询、不自动生成 EvidenceRecord、不以 LLM 代替 verification
+  （§M6.6-17）。
+- **legacy 隔离**：legacy unverified 保留在库（M6.5 兼容期产物）但不再
+  自动进入 prompt 与 writer 工具视野；收口（Researcher 迁移 / 退役）属
+  M6.7。
+- **口径单点**：formal 判定（isFormalEvidence）与 bib key 匹配
+  （matchBibliographyKey）各只有一个实现，workflow / 工具 / Gate 三处
+  消费共享，不存在第二套口径。
+- **Known Limitation**：工具装配仍以 index.ts 的 roleCustomTools 单点
+  装配（RoleDefinition {tools, skills} 集中化收敛未做——影响面大，
+  记录待后续）。

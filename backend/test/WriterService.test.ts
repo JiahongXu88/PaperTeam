@@ -138,3 +138,97 @@ describe("WriterService", () => {
     expect(runtime.calls).toHaveLength(0);
   });
 });
+
+describe("WriterService M6.6：Evidence-aware 写作上下文", () => {
+  const SECTION = { id: "introduction", file: "introduction.tex", title: "引言" };
+  const OUTLINE = {
+    title: "RAG 综述",
+    sections: [SECTION],
+  };
+  const FORMAL_EVIDENCE = [
+    {
+      id: "E001",
+      claim: "RAG 降低幻觉率",
+      quote: "error rate drops by 42 percent",
+      verificationStatus: "verified",
+      supportStrength: "direct",
+      source: { sourceId: "S001", title: "A Survey of Retrieval-Augmented Generation", year: 2023, doi: "10.1000/survey" },
+      location: { chunk: "S001:SEC01:0001:a1b2c3d4e5", section: "Introduction" },
+      createdBy: "researcher",
+      createdAt: "2026-09-17T00:00:00Z",
+    },
+  ] as const;
+  const BIBLIOGRAPHY = [
+    {
+      key: "gao2023survey",
+      title: "A Survey of Retrieval-Augmented Generation",
+      year: 2023,
+      doi: "10.1000/survey",
+    },
+  ];
+
+  it("writeSection digest：verified Evidence 行关联 bib key（cite:）+ evidence_query 工具指引", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\nRAG 是检索增强生成。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.writeSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      evidence: [...FORMAL_EVIDENCE],
+      bibliography: BIBLIOGRAPHY,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("[E001]（cite: gao2023survey）");
+    expect(prompt).toContain("已核验 verified");
+    expect(prompt).toContain("evidence_query");
+    // 要求 Writer 引用优先使用有已核验证据支撑的 key
+    expect(prompt).toContain("cite key");
+  });
+
+  it("writeSection 无 verified Evidence：显式提示弱化论断（不虚构、不注入占位）", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\nRAG 是检索增强生成。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.writeSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      evidence: [],
+      bibliography: BIBLIOGRAPHY,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("无已核验（verified）Evidence");
+    expect(prompt).toContain("evidence_query");
+    expect(prompt).not.toContain("[E00");
+  });
+
+  it("reviseSection digest 同样走 verified 快照 + key 关联", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\nRAG 是检索增强生成。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{引言}\n旧内容。",
+      issues: [
+        {
+          category: "fact",
+          severity: "major",
+          section: "introduction",
+          description: "论断缺证据",
+          blocking: false,
+        },
+      ],
+      evidence: [...FORMAL_EVIDENCE],
+      bibliography: BIBLIOGRAPHY,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("[E001]（cite: gao2023survey）");
+    expect(prompt).toContain("evidence_query");
+  });
+});

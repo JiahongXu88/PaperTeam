@@ -47,6 +47,7 @@ import { SourceChunker } from "./retrieval/SourceChunker.js";
 import type { EmbeddingProvider } from "./retrieval/types.js";
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
 import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
+import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
 import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
@@ -133,6 +134,8 @@ export interface ServiceStack {
   evidenceCandidates: EvidenceCandidateStore;
   /** Evidence Grounding 管道（M6.5：grounded EvidenceStore 写入的唯一入口） */
   evidenceGrounding: EvidenceGroundingService;
+  /** Evidence 使用策略（M6.6：formal = verified + 锚点才进 Writer/Reviewer 正式上下文） */
+  evidenceSelection: EvidenceSelectionService;
   /** chunk 精确回取（M6.5：get_chunk 工具与 quote 校验共用锚点；只读） */
   chunkAccess: ChunkAccess;
   sources: SourceStore;
@@ -395,6 +398,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     citationAgentId: options.agentIds.citation,
     log,
   });
+  // M6.6 Evidence 使用策略（usableEvidence 下沉；verified + 三件套锚点才进正式上下文）
+  const evidenceSelection = new EvidenceSelectionService(evidence);
   const researcher = new ResearcherService({
     runtime: options.runtime,
     agentId: options.agentIds.researcher,
@@ -440,6 +445,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     evidence,
     evidenceCandidates,
     evidenceGrounding,
+    evidenceSelection,
     chunkAccess,
     sources,
     candidates,
@@ -471,6 +477,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       reviewer,
       evidence,
       evidenceGrounding,
+      evidenceSelection,
       sources,
       manuscript,
       writer,

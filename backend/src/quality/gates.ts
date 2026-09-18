@@ -16,6 +16,7 @@ import type { CitationSemanticMode } from "../citation/semanticMode.js";
 import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import type { FeasibilityReport } from "../agents/FeasibilityService.js";
 import type { ReviewSummary } from "../review/ReviewAggregator.js";
+import type { EvidenceCitationCoverage } from "./evidenceCitationCoverage.js";
 import { describeCitationPreservation, type CitationPreservationSummary } from "./citationPreservation.js";
 import { describeFactPreservation, type FactPreservationSummary } from "./factPreservation.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
@@ -225,6 +226,12 @@ export interface QualityGateThresholds {
   styleRiskMax: number;
   /** 允许进入 Final 的最低可行性档位（HIGH / MEDIUM） */
   requireFeasibility: boolean;
+  /**
+   * M6.6：引用必须有对应 Verified Evidence 才放行（citations_evidence_backed
+   * 规则参与阻断）。缺省 false——规则仍呈现覆盖计数（可检测），但未覆盖引用
+   * 不阻断 Final（M6.6 刚接入，存量项目覆盖率必然低，冒进会全量误伤）。
+   */
+  requireEvidenceBackedCitations?: boolean;
 }
 
 export const DEFAULT_QUALITY_THRESHOLDS: QualityGateThresholds = {
@@ -267,6 +274,13 @@ export interface QualityGateInput {
    * fact_preservation_not_applicable 中性呈现；summary → fact_preservation 参与判定。
    */
   factPreservation?: FactPreservationSummary | null;
+  /**
+   * Evidence Citation Coverage（M6.6 §13）：正文引用 key ↔ Verified Evidence
+   * 的覆盖结果。undefined = 调用方未计算（规则不出现）；提供了则呈现
+   * citations_evidence_backed 规则（未覆盖计数可见；只有
+   * requireEvidenceBackedCitations=true 时参与阻断）。
+   */
+  evidenceCitationCoverage?: EvidenceCitationCoverage;
 }
 
 export interface QualityGateResult {
@@ -442,6 +456,25 @@ export function evaluateQualityGate(
     }
   }
 
+  // 16. Evidence Citation Coverage（M6.6 §13）：正文引用 ↔ Verified Evidence。
+  // 默认只呈现（可检测不阻断——M6.6 接入期存量项目覆盖率必然低）；
+  // requireEvidenceBackedCitations=true 时未覆盖引用阻断 Final。
+  if (input.evidenceCitationCoverage !== undefined) {
+    const coverage = input.evidenceCitationCoverage;
+    const enforcing = thresholds.requireEvidenceBackedCitations === true;
+    rules.push({
+      rule: "citations_evidence_backed",
+      passed: enforcing ? coverage.uncovered.length === 0 : true,
+      detail: enforcing
+        ? `无 verified evidence 对应的引用 ${coverage.uncovered.length} 条${
+            coverage.uncovered.length > 0 ? `（${coverage.uncovered.slice(0, 5).join("、")}）` : ""
+          }`
+        : `引用覆盖：${coverage.covered.length}/${coverage.covered.length + coverage.uncovered.length} 有 verified evidence（未覆盖 ${coverage.uncovered.length} 条：${
+            coverage.uncovered.length > 0 ? coverage.uncovered.slice(0, 5).join("、") : "无"
+          }；人工复核，不阻断）`,
+    });
+  }
+
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);
   return {
     passed: reasons.length === 0,
@@ -468,6 +501,7 @@ export async function saveQualityGateReport(
   extras: {
     citationPreservation?: CitationPreservationSummary | null;
     factPreservation?: FactPreservationSummary | null;
+    evidenceCitationCoverage?: EvidenceCitationCoverage;
   } = {},
 ): Promise<string> {
   const dir = projects.reviewsDir(projectId);
@@ -480,6 +514,10 @@ export async function saveQualityGateReport(
     ...(extras.citationPreservation !== undefined ? { citationPreservation: extras.citationPreservation } : {}),
     // M5.6 第二层：实验事实保持明细（revision.plan 派发恢复条目；build.draft 拦截依据）
     ...(extras.factPreservation !== undefined ? { factPreservation: extras.factPreservation } : {}),
+    // M6.6：引用 ↔ verified evidence 覆盖明细（UI / 审计可见）
+    ...(extras.evidenceCitationCoverage !== undefined
+      ? { evidenceCitationCoverage: extras.evidenceCitationCoverage }
+      : {}),
     ...(typeof summary.reviewedRevision === "number"
       ? { revision: summary.reviewedRevision, reviewedRevision: summary.reviewedRevision }
       : {}),

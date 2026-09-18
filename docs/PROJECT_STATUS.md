@@ -1,6 +1,19 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-17（**M6.5 Evidence Grounding Pipeline COMPLETE**——
+> 更新日期：2026-09-17（**M6.6 Evidence-aware Writing Loop COMPLETE**——
+> Writer / Reviewer 真正消费 Verified Evidence：EvidenceSelectionService
+> （usableEvidence 从 workflow definitions 下沉；正式证据 = verified +
+> sourceId + chunkId 三件套，legacy unverified 派生标识
+> legacy_unverified 不再自动注入 prompt）；writer 的 evidence_query 升级
+> formalOnly 视图（构造边界强制 verified + 锚点，Agent 传参不可放宽）；
+> Writer/Reviewer prompt 保留 digest 快照（兼容迁移）但只含 verified、
+> 行内关联 bib key（EvidenceRecord → source metadata → citation）并加
+> evidence_query / get_chunk 主动查询指引；Quality Gate 新增
+> citations_evidence_backed 规则（citation ↔ verified evidence 覆盖可检测；
+> 默认呈现不阻断，requireEvidenceBackedCitations=true 才参与判定）；
+> 详见下方 M6.6 条目与 DECISIONS.md D-0038；下一节点 **M6.7 收口
+> （Researcher legacy path 迁移 + usableEvidence 完全退役）**；同日
+> **M6.5 Evidence Grounding Pipeline COMPLETE**——
 > evidence/ 域：EvidenceCandidate 候选-转正状态机（pending → verified /
 > mismatch / rejected / unverifiable）+ 三段核验管道 EvidenceGroundingService
 > （quote 逐字校验（确定性）/ metadata 核验（共享 ScholarlyResolver）/
@@ -121,7 +134,56 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
 2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE；
 2026-09-17 M6.3 Research Discovery & Search COMPLETE；2026-09-17 M6.4
 Project RAG & Hybrid Retrieval COMPLETE；2026-09-17 M6.5 Evidence Grounding
-Pipeline COMPLETE）**：
+Pipeline COMPLETE；2026-09-17 M6.6 Evidence-aware Writing Loop COMPLETE）**：
+
+- **M6.6 Evidence-aware Writing Loop（✅ 2026-09-17）**：
+  - **范围**：让 Writer / Reviewer 真正消费 Verified Evidence——Evidence
+    使用策略下沉（EvidenceSelectionService）、writer 工具 formalOnly 视图、
+    Writer / Reviewer prompt 的 evidence-aware 改造（digest 只含 verified +
+    工具查询指引）、citation 生成关联（EvidenceRecord → bib key）、Quality
+    Gate citations_evidence_backed 规则。**不含**：新增 Agent / Evidence
+    Agent（红线维持）、Runtime / Pi adapter 改动、Retrieval 层改动、
+    Researcher legacy 路径删除（M6.7 收口）、工具装配集中化重构
+    （roleCustomTools 现状记为 Known Limitation）。
+  - **Evidence 使用策略（§10 唯一事实源 EvidenceSelectionService）**：
+    正式证据 = `verificationStatus=verified` 且 sourceId + chunkId 锚点
+    齐备；pending/unverified/plausible/mismatch/unverifiable/not_found 一律
+    不得进入 Writer / Reviewer 正式上下文。`isFormalEvidence` 纯函数被
+    workflow 选择与 writer 工具视图共用——不存在两套口径。legacy
+    unverified 派生标识 `legacy_unverified`（classifyEvidence），存量记录
+    不迁移不删除，M6.7 收口。
+  - **writer evidence_query formalOnly 视图**：`evidenceToolsForRole`
+    的 writer 分支构造 query 工具时传 `formalOnly: true`——无论 Agent
+    运行期传什么 status，强制 verified + 锚点过滤（使用策略在构造边界
+    生效，不信任运行期参数）；reviewer / citation 保持全量视野（识别
+    evidence_gap 需要看到未核验线索；正式判定口径由 prompt 约束
+    「只有 verified 可作 SUPPORTED 依据」）。
+  - **Writer 接入（兼容迁移，非拆除）**：digest 注入机制保留（静态快照
+    仍是初始上下文），但内容只含 verified formal 池（旧 usableEvidence
+    的「trusted<3 时 unverified 兜底」行为废除）；digest 行内关联 bib key
+    （`- [E001]（cite: gao2023survey）claim…`，DOI 精确 / 归一化 title+年份
+    匹配）——Writer 引用生成优先使用有已核验证据支撑的 key；无 verified
+    时显式提示弱化论断并指向 evidence_query 确认。planOutline /
+    writeSection / reviseSection（含 abstract 分支）全部接入。
+  - **Reviewer 接入（fact 模式重点）**：digest 行带 chunk 锚点；fact 模式
+    增加主动核验指引——逐 claim 先 evidence_query（claimContains /
+    sourceId）再判定，需要原文用 get_chunk 回查，只有 verified 可作
+    SUPPORTED / PARTIALLY_SUPPORTED 依据，unverified 只是线索；无 verified
+    时「所有强论断应标 UNSUPPORTED（可用 evidence_query 查询确认）」。
+    academic / style 模式不带 fact 工具指引（职责不混淆）。
+  - **Quality Gate**：新增确定性 `computeEvidenceCitationCoverage`
+    （cited keys ↔ verified formal evidence；匹配规则与 bib key 关联同源）
+    + `citations_evidence_backed` 规则：默认呈现覆盖计数（可检测不阻断——
+    M6.6 接入期存量项目覆盖率必然低）；threshold
+    `requireEvidenceBackedCitations=true` 时未覆盖引用阻断 Final。覆盖
+    明细随 gate 产物落盘（quality-gate-r*.json）。
+  - **可观测性**：review.run / writing.sections stage 结果新增
+    evidenceFormal / evidenceExcluded（legacyUnverified / untrusted /
+    verifiedMissingAnchor 分类计数）。
+  - **测试**：后端 +26（evidenceSelection 10 / evidenceTools writer 视图 3 /
+    evidenceCitationCoverage+Gate 8 / reviewerEvidencePrompt 3 /
+    WriterService digest 2 更新），M6.5 / M6.4 / Writer / Reviewer 全量
+    回归绿。决策 D-0038。
 
 - **M6.5 Evidence Grounding Pipeline（✅ 2026-09-17）**：
   - **范围**：「检索到的原文段落」升级为「可信证据」——EvidenceCandidate

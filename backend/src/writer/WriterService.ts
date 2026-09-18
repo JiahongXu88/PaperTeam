@@ -12,6 +12,7 @@ import { AgentRunFailedError, InvalidLatexOutputError } from "../errors.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
+import { EvidenceSelectionService } from "../evidence/EvidenceSelectionService.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
@@ -46,6 +47,42 @@ export interface WriterResult {
 
 /** Markdown 代码围栏（模型偶尔会无视指令包裹输出，做防御性剥离） */
 const FENCE_PATTERN = /^\s*```[a-zA-Z]*\s*\n([\s\S]*?)\n?```\s*$/;
+
+/**
+ * M6.6 Evidence 消费模式（§M6.6-6 兼容迁移）：
+ * - 下方注入的 digest 只含正式证据（verified + chunk 锚点；由
+ *   EvidenceSelectionService.selectForWriting 保证），legacy unverified 不再进入；
+ * - digest 只是初始上下文（限量快照）：需要更多证据时 Agent 通过
+ *   evidence_query 工具（writer 视图，formalOnly）按 claim 关键词 / sourceId /
+ *   章节主动查询——不再依赖 workflow 预先塞入的静态全量。
+ */
+const EVIDENCE_QUERY_GUIDANCE = [
+  "证据查询工具（evidence_query）：当上方 Evidence 不足以支撑本节某个论断时，",
+  "可用 evidence_query 按 claim 关键词（claimContains）/ sourceId / section 查询证据库，",
+  "获取更多已核验证据（verified）及其 chunk 锚点；查询无果时弱化或删除该论断，不得虚构。",
+].join("");
+
+/**
+ * 渲染 Evidence digest 行（M6.6 §12 Citation Integration）：
+ * EvidenceRecord → 匹配 bibliography key → 引用时优先使用有已核验证据支撑的 key。
+ * 行格式：- [E001]（cite: vaswani2017）claim…
+ */
+function renderEvidenceLines(
+  evidence: EvidenceRecord[],
+  bibliography: BibliographyEntryInput[],
+  limit: number,
+): string[] {
+  if (evidence.length === 0) {
+    return ["（无已核验（verified）Evidence：避免需要外部证据的强论断；可用 evidence_query 查询证据库确认）"];
+  }
+  return evidence.slice(0, limit).map((record) => {
+    const key = EvidenceSelectionService.matchBibliographyKey(record, bibliography);
+    const cite = key !== null ? `（cite: ${key}）` : "";
+    return `- [${record.id}]${cite} ${record.claim.slice(0, 150)}${
+      record.quote ? `（引文："${record.quote.slice(0, 120)}"）` : ""
+    }`;
+  });
+}
 
 export class WriterService {
   private readonly runtime: AgentRuntime;
@@ -608,10 +645,9 @@ function buildRevisePrompt(params: {
         : ["（无审稿问题）"]),
       ...externalBlock,
       "",
-      "===== 可用 Evidence =====",
-      ...params.evidence
-        .slice(0, 15)
-        .map((record) => `- [${record.id}] ${record.claim.slice(0, 140)}`),
+      "===== 可用 Evidence（已核验 verified 快照）=====",
+      ...renderEvidenceLines(params.evidence, params.bibliography, 15),
+      `（${EVIDENCE_QUERY_GUIDANCE}）`,
     ].join("\n");
   }
   return [
@@ -657,10 +693,9 @@ function buildRevisePrompt(params: {
       : ["（无审稿问题）"]),
     ...externalBlock,
     "",
-    "===== 可用 Evidence =====",
-    ...params.evidence
-      .slice(0, 15)
-      .map((record) => `- [${record.id}] ${record.claim.slice(0, 140)}`),
+    "===== 可用 Evidence（已核验 verified 快照）=====",
+    ...renderEvidenceLines(params.evidence, params.bibliography, 15),
+    `（${EVIDENCE_QUERY_GUIDANCE}）`,
   ].join("\n");
 }
 
@@ -840,10 +875,11 @@ function buildOutlinePrompt(params: {
     `潜在贡献：${params.researchDigest.potentialContributions.slice(0, 5).join("；")}`,
     `目标类型：${params.documentType ?? "（未填写）"}；目标档次：${params.targetProfile ?? "（未填写）"}`,
     "",
-    "===== 可用 Evidence（用于判断哪些论点有支撑）=====",
-    ...params.evidence
-      .slice(0, 20)
-      .map((record) => `- [${record.id}] ${record.claim.slice(0, 120)}`),
+    "===== 可用 Evidence（已核验 verified，用于判断哪些论点有支撑）=====",
+    ...renderEvidenceLines(params.evidence, params.bibliography, 20),
+    ...(params.evidence.length === 0
+      ? []
+      : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
   ].join("\n");
 }
 
@@ -861,7 +897,7 @@ function buildSectionPrompt(params: {
     "输出要求：",
     "1. 只输出该章节的 LaTeX 正文片段：以 \\section{标题} 开始；不要 \\documentclass、\\begin{document}、导言区、文档骨架。",
     "2. 不要用 Markdown 代码块包裹，不要解释文字。",
-    "3. 论述优先使用下方 Evidence 支撑；证据不足时显式弱化表述或标注，不为凑字虚构数据、结论或引用。",
+    "3. 论述优先使用下方 Evidence 支撑（均为已核验 verified 证据；引用时优先使用行内标注的 cite key）；证据不足时显式弱化表述或标注，不为凑字虚构数据、结论或引用。",
     "4. 只允许引用以下参考文献 key：" +
       (params.bibliography.length > 0
         ? params.bibliography.map((entry) => entry.key).join(", ")
@@ -883,14 +919,9 @@ function buildSectionPrompt(params: {
       ? ["要点：", ...params.section.keyPoints.map((point) => `- ${point}`)]
       : []),
     "",
-    "===== 可用 Evidence =====",
-    ...params.evidence
-      .slice(0, 20)
-      .map(
-        (record) =>
-          `- [${record.id}] ${record.claim.slice(0, 150)}${record.quote ? `（引文："${record.quote.slice(0, 120)}"）` : ""}`,
-      ),
-    ...(params.evidence.length === 0 ? ["（无 Evidence：本章节避免需要外部证据的强论断）"] : []),
+    "===== 可用 Evidence（已核验 verified 快照）=====",
+    ...renderEvidenceLines(params.evidence, params.bibliography, 20),
+    ...(params.evidence.length === 0 ? [] : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
   ].join("\n");
 }
 

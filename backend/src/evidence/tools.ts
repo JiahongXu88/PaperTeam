@@ -12,9 +12,9 @@
  *
  * 角色权限矩阵（§M6.5-13；唯一事实源 evidenceToolsForRole）：
  *   researcher：get_chunk + propose_evidence + evidence_query
- *   writer：    evidence_query
- *   reviewer：  get_chunk + evidence_query
- *   citation：  get_chunk + evidence_query
+ *   writer：    evidence_query（M6.6 formalOnly 视图：强制 verified + chunk 锚点）
+ *   reviewer：  get_chunk + evidence_query（全量视野，正式判定口径由 prompt 约束）
+ *   citation：  get_chunk + evidence_query（同 reviewer）
  *   default：   （无）
  * 任何角色都没有 EvidenceStore 直写工具（write_evidence 不存在——状态机
  * 由 EvidenceGroundingService 独占）。
@@ -26,6 +26,7 @@ import { Type } from "typebox";
 import { BusinessError } from "../errors.js";
 import type { ChunkAccess } from "./chunkAccess.js";
 import type { EvidenceGroundingService } from "./EvidenceGroundingService.js";
+import { isFormalEvidence } from "./EvidenceSelectionService.js";
 import type { EvidenceQuery, EvidenceRecord, EvidenceStore } from "./EvidenceStore.js";
 
 /** 工具层可见的 EvidenceStore 只读投影（类型层面不存在写方法） */
@@ -162,12 +163,15 @@ export function createProposeEvidenceTool(
 export function createEvidenceQueryTool(
   evidence: EvidenceReadAccess,
   projectId: string,
+  options: { formalOnly?: boolean } = {},
 ): ToolDefinition {
+  const formalOnly = options.formalOnly === true;
   return defineTool({
     name: EVIDENCE_QUERY_TOOL_NAME,
     label: "查询证据库",
-    description:
-      "查询当前项目的证据库（EvidenceRecord）。支持按核验状态（verified / unverified / plausible / mismatch / unverifiable / not_found）、来源（sourceId）、claim 关键词、章节（section）过滤。返回的是证据库记录——其中只有 verificationStatus=verified 且经过 grounding 管道的记录是已核验证据；unverified 记录仅为待核验线索。",
+    description: formalOnly
+      ? "查询当前项目的已核验证据库（EvidenceRecord，writer 视图：只返回 verified 且带 chunk 锚点的正式证据）。支持按来源（sourceId）、claim 关键词、章节（section）过滤。本视图下 unverified / plausible 等待核验线索不可见——它们不能作为正式写作依据。"
+      : "查询当前项目的证据库（EvidenceRecord）。支持按核验状态（verified / unverified / plausible / mismatch / unverifiable / not_found）、来源（sourceId）、claim 关键词、章节（section）过滤。返回的是证据库记录——其中只有 verificationStatus=verified 且经过 grounding 管道的记录是已核验证据；unverified 记录仅为待核验线索。",
     parameters: Type.Object({
       status: Type.Optional(
         Type.String({ description: "核验状态过滤（verified / unverified / plausible / mismatch / unverifiable / not_found）" }),
@@ -179,7 +183,11 @@ export function createEvidenceQueryTool(
     execute: async (_toolCallId, params): Promise<ToolResult> => {
       try {
         const filter: EvidenceQuery = {};
-        if (params.status !== undefined && params.status.trim() !== "") {
+        if (formalOnly) {
+          // §M6.6-10 使用策略：writer 视图强制 verified——Agent 显式传
+          // 其他 status 也不放宽（策略在构造边界生效，不信任运行期参数）
+          filter.status = "verified";
+        } else if (params.status !== undefined && params.status.trim() !== "") {
           filter.status = params.status.trim() as EvidenceQuery["status"];
         }
         if (params.sourceId !== undefined && params.sourceId.trim() !== "") {
@@ -189,6 +197,10 @@ export function createEvidenceQueryTool(
           filter.claimContains = params.claimContains.trim();
         }
         let records: EvidenceRecord[] = await evidence.query(projectId, filter);
+        if (formalOnly) {
+          // verified 但缺 sourceId / chunk 锚点的记录同样不可作正式证据
+          records = records.filter((record) => isFormalEvidence(record));
+        }
         if (params.section !== undefined && params.section.trim() !== "") {
           const needle = params.section.trim().toLowerCase();
           records = records.filter((record) =>
@@ -199,6 +211,12 @@ export function createEvidenceQueryTool(
           kind: "evidence-query",
           projectId,
           total: records.length,
+          ...(formalOnly
+            ? {
+                note:
+                  "writer 视图：仅返回正式证据（verified 且带 chunk 锚点）；legacy unverified 等待核验线索已按使用策略排除",
+              }
+            : {}),
           evidence: records.slice(0, 50).map((record) => ({
             id: record.id,
             claim: record.claim,
@@ -242,25 +260,31 @@ export type EvidenceToolRole = "researcher" | "writer" | "reviewer" | "citation"
 /**
  * 角色 → Evidence 工具集（§M6.5-13 权限矩阵唯一事实源）。
  * default 角色不授予任何 Evidence 工具。
+ * M6.6 §10：writer 的 evidence_query 使用 formalOnly 视图（强制 verified +
+ * chunk 锚点；legacy unverified 不进入 Writer Evidence Query）。
  */
 export function evidenceToolsForRole(
   role: EvidenceToolRole,
   deps: EvidenceToolDeps,
   projectId: string,
 ): ToolDefinition[] {
-  const query = createEvidenceQueryTool(deps.evidence, projectId);
   switch (role) {
     case "researcher":
       return [
         createGetChunkTool(deps.chunkAccess, projectId),
         createProposeEvidenceTool(deps.grounding, projectId, "researcher"),
-        query,
+        createEvidenceQueryTool(deps.evidence, projectId),
       ];
     case "reviewer":
     case "citation":
-      return [createGetChunkTool(deps.chunkAccess, projectId), query];
+      // Reviewer / Citation 需要全量视野（识别 evidence_gap、核验线索）；
+      // 正式判定口径（只有 verified 可作依据）由 prompt 约束
+      return [
+        createGetChunkTool(deps.chunkAccess, projectId),
+        createEvidenceQueryTool(deps.evidence, projectId),
+      ];
     case "writer":
-      return [query];
+      return [createEvidenceQueryTool(deps.evidence, projectId, { formalOnly: true })];
     default:
       return [];
   }

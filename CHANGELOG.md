@@ -16,6 +16,36 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.6 Evidence-aware Writing Loop（✅ 2026-09-17）
+
+- Writer / Reviewer 从「prompt 注入静态 evidence digest」升级为
+  「verified evidence 快照 + evidence_query 主动查询」双通道（Agent can use
+  Evidence, not Evidence flooding Agent）：**EvidenceSelectionService**
+  （`backend/src/evidence/EvidenceSelectionService.ts`，架构审计 P1 落地——
+  usableEvidence 业务逻辑从 workflow definitions 下沉）持有使用策略唯一
+  事实源：正式证据 = verified + sourceId + chunkId 三件套（`isFormalEvidence`
+  纯函数），legacy unverified 派生标识 `legacy_unverified` 不再自动进入
+  prompt（旧「trusted<3 时 unverified 兜底」行为废除；存量记录不迁移，
+  M6.7 收口）；`matchBibliographyKey`（DOI 精确 / 归一化 title+年份）实现
+  EvidenceRecord → bib key 关联。**writer 工具 formalOnly 视图**：
+  `evidenceToolsForRole` writer 分支的 evidence_query 构造期强制
+  `status=verified` + 锚点过滤——Agent 运行期显式请求 unverified 也不放宽；
+  reviewer / citation 保持全量视野（evidence_gap 识别需要线索可见），正式
+  判定口径由 prompt 约束。**Writer prompt**（planOutline / writeSection /
+  reviseSection 含 abstract）：digest 只含 verified、行内 `（cite: key）`
+  关联、evidence_query 查询指引、无 verified 时弱化论断提示。**Reviewer
+  prompt**（fact 模式）：逐 claim 先 evidence_query（claimContains/sourceId）
+  后判定、get_chunk 回查原文锚点、「只有 verified 可作 SUPPORTED 依据」；
+  无 verified 时 UNSUPPORTED 口径 + 查询确认提示。**Quality Gate**：新增
+  `computeEvidenceCitationCoverage`（quality/evidenceCitationCoverage.ts，
+  cited keys ↔ verified formal evidence 覆盖检测）+ `citations_evidence_backed`
+  规则（默认呈现计数不阻断——接入期存量项目覆盖率必然低；
+  `requireEvidenceBackedCitations=true` 时未覆盖引用阻断 Final；覆盖明细随
+  gate 产物落盘）。review.run / writing.sections stage 结果新增
+  evidenceFormal / evidenceExcluded 分类计数。红线维持：不新增 Agent、
+  不改 Runtime / Pi adapter、不改 Retrieval、Retrieved ≠ Verified ≠
+  Grounded。新增后端测试 26。决策 D-0038。
+
 ### M6.5 Evidence Grounding Pipeline（✅ 2026-09-17）
 
 - 「检索到的段落」升级为「可信证据」的核验闭环（Retrieved ≠ Verified ≠
