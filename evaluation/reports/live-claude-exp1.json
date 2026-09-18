@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 1,
+  "kind": "live-evaluation",
+  "milestone": "M6.9.2",
+  "experiment": 1,
+  "name": "evidence-grounding-live",
+  "model": {
+    "spec": "claude-gateway/claude-fable-5-1",
+    "provider": "claude-gateway",
+    "modelId": "claude-fable-5-1",
+    "source": "cli"
+  },
+  "runtimeProvider": "pi",
+  "startedAt": "2026-09-18T08:55:19.612Z",
+  "finishedAt": "2026-09-18T08:57:20.020Z",
+  "durationMs": 120407,
+  "scenarios": [
+    {
+      "scenarioId": "g1-rag-survey",
+      "title": "RAG 幻觉缓解综述证据核验",
+      "arms": [
+        {
+          "arm": "plain-llm-live",
+          "modelCalls": 1,
+          "metrics": {
+            "proposals": 5,
+            "fabricatedQuoteRate": 1,
+            "misattributedQuoteRate": 0
+          },
+          "proposals": [
+            {
+              "key": "a-1",
+              "claim": "Gao 等（2023）将 RAG 发展划分为 Naive RAG、Advanced RAG 与 Modular RAG 三个范式，并以“检索—增强—生成”三元框架组织综述。",
+              "quote": "We summarize the RAG paradigms into three stages: Naive RAG, Advanced RAG, and Modular RAG, and examine the tripartite foundation of RAG frameworks: retrieval, generation, and augmentation techniques.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-2",
+              "claim": "Gao 等（2023）指出 RAG 通过引入外部知识库来缓解大模型的幻觉、知识过时与推理不透明问题。",
+              "quote": "Retrieval-Augmented Generation (RAG) has emerged as a promising solution by incorporating knowledge from external databases, enhancing the accuracy and credibility of the generation, particularly for knowledge-intensive tasks.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-3",
+              "claim": "Gao 等（2023）总结 RAG 评估应同时覆盖检索质量与生成质量，并列出 context relevance、answer faithfulness、answer relevance 等核心指标。",
+              "quote": "The evaluation of RAG systems focuses on two key aspects: retrieval quality and generation quality, with core metrics including context relevance, answer faithfulness, and answer relevance.",
+              "claimedFileName": "rag-survey.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-4",
+              "claim": "Liu 与 Chen（2024）主张 RAG 评估须将“忠实于检索上下文”与“事实正确”分离度量，否则会低估上下文引入的幻觉。",
+              "quote": "Faithfulness to the retrieved context and factual correctness must be measured separately, since a response can be faithful to an incorrect passage and still be wrong.",
+              "claimedFileName": "rag-eval.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            },
+            {
+              "key": "a-5",
+              "claim": "Wang 与 Lei（2035）报告在小规模语料下检索召回不足会显著提高幻觉率，需配合拒答或置信度门控策略。",
+              "quote": "When the corpus is small, retrieval recall drops sharply and the generator falls back on parametric knowledge, which increases hallucination unless abstention or confidence gating is applied.",
+              "claimedFileName": "rag-small.md",
+              "quoteInClaimedSource": false,
+              "quoteInAnySource": false
+            }
+          ],
+          "generationUsage": {
+            "inputTokens": 4,
+            "outputTokens": 1774,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 2001,
+            "contextTokens": 3779,
+            "assistantTurns": 1,
+            "estimatedCost": 0
+          }
+        },
+        {
+          "arm": "paperteam-live",
+          "modelCalls": 0,
+          "metrics": {
+            "proposals": 0,
+            "fabricatedQuoteRate": 0,
+            "misattributedQuoteRate": 0
+          },
+          "proposals": [],
+          "error": {
+            "scope": "g1-rag-survey/paperteam-live",
+            "kind": "other",
+            "detail": "任务终态 failed：The model refused to complete the request（errorCode=RUN_FAILED）（taskId=pi-4760acba-0808-409e-9104-52cdc8d6d6bf）",
+            "at": "2026-09-18T08:57:20.015Z"
+          }
+        }
+      ]
+    }
+  ],
+  "aggregate": {
+    "plainLlm": {
+      "proposals": 5,
+      "fabricatedQuoteRate": 1,
+      "misattributedQuoteRate": 0
+    },
+    "paperteam": {
+      "proposals": 0,
+      "fabricatedQuoteRate": 0,
+      "misattributedQuoteRate": 0,
+      "dispositions": {},
+      "fabricatedInterceptedRate": 0,
+      "verifiedRate": 0
+    }
+  },
+  "errors": [
+    {
+      "scope": "g1-rag-survey/paperteam-live",
+      "kind": "other",
+      "detail": "任务终态 failed：The model refused to complete the request（errorCode=RUN_FAILED）（taskId=pi-4760acba-0808-409e-9104-52cdc8d6d6bf）",
+      "at": "2026-09-18T08:57:20.015Z"
+    }
+  ],
+  "limitations": [
+    "首轮 plumbing 冒烟：样本小（每臂 ≤5 提案）、单场景起步，指标不具统计效力",
+    "judge 与生成同用 claude-gateway/claude-fable-5-1（同模型自评偏差；正式实验应引入异模型 judge）",
+    "对齐良好的模型可能在无库条件下拒绝编造引文（refused 结果）——这是合法测量结果，此时 plain-llm 基线的捏造率不可测（分母为 0），不应解读为 0%",
+    "metadata 核验的权威记录是数据集内置 ground-truth provider（与 M6.8 scripted 同口径），不是真实 Crossref/OpenAlex",
+    "Arm B 锚点规则：quote 命中 chunk 用该 chunk，未命中落到来源首个 chunk（Stage 1 拦截）；chunk 边界截断可能造成误拦（报告保留逐条机械判定供审计）",
+    "quote 机械核验与产品 Stage 1 同用 normalizeForQuoteMatch 归一化口径（大小写/空白不敏感）"
+  ]
+}

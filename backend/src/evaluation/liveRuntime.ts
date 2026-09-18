@@ -109,6 +109,9 @@ export async function createLiveEvaluationRuntime(options: {
   const workspaceRoot = await mkdtemp(join(tmpdir(), "paperteam-eval-live-"));
   const runtime = new PiRuntimeAdapter({
     modelSpec: resolvedSpec,
+    // 与 index.ts 同源：PAPERTEAM_PI_API_KEY 内存注入（不落盘）——网关类
+    // provider（自定义 anthropic-messages + authHeader）经此提供凭据
+    ...(config.pi.apiKey !== undefined ? { apiKey: config.pi.apiKey } : {}),
     agentDir: config.pi.agentDir,
     workspaceRoot,
     runTimeoutMs: config.pi.runTimeoutMs,

@@ -1,5 +1,5 @@
 /**
- * Live Experiment 1 Runner（M6.9.1）：真实模型首轮冒烟评估。
+ * Live Experiment 1 Runner（M6.9.1 首轮接入，M6.9.2 起跨模型复用）：真实模型评估。
  *
  * 与 M6.8 scripted Exp1 的关系：数据集与三段核验管道完全复用，唯一的
  * 差别是两个 LLM 介入点换成真实模型（经 PiRuntimeAdapter，不新增调用链）：
@@ -124,7 +124,7 @@ export interface LiveScenarioResult {
 export interface LiveExp1Report {
   schemaVersion: 1;
   kind: "live-evaluation";
-  milestone: "M6.9.1";
+  milestone: "M6.9.2";
   experiment: 1;
   name: "evidence-grounding-live";
   model: {
@@ -311,7 +311,7 @@ async function generateProposals(options: {
     contextScope: `research/evaluation-live/${options.armScope}`,
     task: options.prompt,
     timeoutMs: GENERATION_TIMEOUT_MS,
-    metadata: { evaluation: "m6.9.1-live", arm: options.armScope },
+    metadata: { evaluation: "m6.9.2-live", arm: options.armScope },
   });
   if (task.status !== "completed") {
     const classified = classifyTaskFailure(task);
@@ -724,7 +724,7 @@ export async function runLiveExperiment1(options: {
   const startedAt = new Date().toISOString();
   const startedMs = Date.now();
   log(
-    `[live-eval] M6.9.1 真实模型评估开始（${options.scenarios.length} 场景 × 2 臂，model=${options.modelSpec ?? "(产品解析链)"}）`,
+    `[live-eval] M6.9.2 真实模型评估开始（${options.scenarios.length} 场景 × 2 臂，model=${options.modelSpec ?? "(产品解析链)"}）`,
   );
   const live = await createLiveEvaluationRuntimeInternal(options);
   const errors: LiveErrorRecord[] = [];
@@ -750,7 +750,7 @@ export async function runLiveExperiment1(options: {
   const report: LiveExp1Report = {
     schemaVersion: 1,
     kind: "live-evaluation",
-    milestone: "M6.9.1",
+    milestone: "M6.9.2",
     experiment: 1,
     name: "evidence-grounding-live",
     model: {
@@ -771,7 +771,7 @@ export async function runLiveExperiment1(options: {
     errors,
     limitations: [
       "首轮 plumbing 冒烟：样本小（每臂 ≤5 提案）、单场景起步，指标不具统计效力",
-      "judge 与生成同用 GLM-5.3（同模型自评偏差；正式实验应引入异模型 judge）",
+      `judge 与生成同用 ${live.modelSpec}（同模型自评偏差；正式实验应引入异模型 judge）`,
       "对齐良好的模型可能在无库条件下拒绝编造引文（refused 结果）——这是合法测量结果，此时 plain-llm 基线的捏造率不可测（分母为 0），不应解读为 0%",
       "metadata 核验的权威记录是数据集内置 ground-truth provider（与 M6.8 scripted 同口径），不是真实 Crossref/OpenAlex",
       "Arm B 锚点规则：quote 命中 chunk 用该 chunk，未命中落到来源首个 chunk（Stage 1 拦截）；chunk 边界截断可能造成误拦（报告保留逐条机械判定供审计）",
