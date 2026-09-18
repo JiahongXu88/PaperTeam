@@ -5,6 +5,7 @@
  *   review-summary-r{n}.json    三路审稿聚合（idea_to_paper / existing_paper_improvement）
  *   existing-review-r{n}.json   已有论文只读 Review 聚合报告（existing_paper_review）
  *   quality-gate-r{n}.json      按轮 Quality Gate 结果（{gate, reviewSummary} 同轮配对）
+ *   revision-validation-r{n}.json  修订写入后的条目级复核（M6.7 Revision Safety）
  * round 从 1 递增；「最新」= 编号最大。
  */
 
@@ -18,6 +19,7 @@ import type { CitationPreservationSummary } from "../quality/citationPreservatio
 import type { FactPreservationSummary } from "../quality/factPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import type { RevisionPlan } from "./revisionPlan.js";
+import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
 import type { StylePolishResult } from "./stylePolicy.js";
 
@@ -25,6 +27,7 @@ const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
 const GATE_PATTERN = /^quality-gate-r(\d+)\.json$/;
 const PLAN_PATTERN = /^revision-plan-r(\d+)\.json$/;
+const VALIDATION_PATTERN = /^revision-validation-r(\d+)\.json$/;
 
 /** 按轮落盘的 Quality Gate 产物（saveQualityGateReport 的结构） */
 export interface QualityGateArtifact {
@@ -201,6 +204,47 @@ export class ReviewArtifactStore {
       return null;
     }
     return parsed as RevisionPlan;
+  }
+
+  // ---- Revision Validation 产物（M6.7：修订写入后、复审前的条目级复核结果） ----
+
+  validationFileName(round: number): string {
+    return `revision-validation-r${round}.json`;
+  }
+
+  async saveValidation(projectId: string, result: RevisionValidationResult): Promise<string> {
+    const fileName = this.validationFileName(result.reviewRound);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), result);
+    return `reviews/${fileName}`;
+  }
+
+  /** 读取某一轮的验证产物（无文件 / 结构损坏 → null；防御性校验同 loadGate） */
+  async loadValidation(projectId: string, round: number): Promise<RevisionValidationResult | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.validationFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>)["validationId"] !== "string" ||
+      typeof (parsed as Record<string, unknown>)["revision"] !== "number" ||
+      !Array.isArray((parsed as Record<string, unknown>)["items"])
+    ) {
+      return null;
+    }
+    return parsed as RevisionValidationResult;
+  }
+
+  /** 最新一轮验证产物（无则 null） */
+  async latestValidation(projectId: string): Promise<RevisionValidationResult | null> {
+    const rounds = await this.rounds(projectId, VALIDATION_PATTERN);
+    const round = rounds[0];
+    return round === undefined ? null : this.loadValidation(projectId, round);
   }
 
   // ---- Style polish（M5.4）：与 quality 修订计划分文件，互不覆盖 ----

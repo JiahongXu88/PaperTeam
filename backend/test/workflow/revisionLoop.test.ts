@@ -257,13 +257,14 @@ describe("bounded revision loop（idea_to_paper）", () => {
       .flatMap((record) => (record.summary?.["sections"] as string[]) ?? []);
     expect(revisedKeys.length).toBeGreaterThan(0);
     expect(revisedKeys).not.toContain("main.tex");
-    // 摘要 finding 进入确定性计划并被派发到摘要目标
+    // 摘要 finding 进入确定性计划并被派发到摘要目标（M6.7：派发后经 Revision
+    // Validation 复核落到 validated 终态——干净修订路径不触发人工决策）
     const plan = JSON.parse(
       await readFile(join(stack.root, project.id, "reviews", "revision-plan-r1.json"), "utf8"),
     ) as { items?: { section: string; status: string }[] };
     const mainTexItem = (plan.items ?? []).find((item) => item.section === "main.tex（摘要）");
     expect(mainTexItem).toBeDefined();
-    expect(mainTexItem?.status).toBe("planned");
+    expect(mainTexItem?.status).toBe("validated");
     expect(revisedKeys).toContain("abstract");
     // 摘要载体被写回 outline.abstract；组装根由 writeMainTex 重组（含新摘要，骨架完好）
     const outline = JSON.parse(

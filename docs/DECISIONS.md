@@ -1010,3 +1010,102 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   视图 +3、既有断言随语义升级调整）/ quality/evidenceCitationCoverage.test.ts
   （新）/ agents/reviewerEvidencePrompt.test.ts（新）/ WriterService.test.ts
   （+M6.6 describe）。
+
+## D-0039 M6.7 Revision Safety：RevisionPlanItem 生命周期化（状态机 + riskLevel / relatedEvidenceIds）+ revision.validate stage（修订写入后、复审前四类确定性复核，条目级归因）+ Claim Strength Gate（强 claim 弱证据）+ Revision Gate 两规则 + hitl.revision_validation（approve / reject=恢复快照 / needs_review）
+
+- **日期**：2026-09-18（M6.7，Revision Safety & Quality Gate Evolution）
+- **状态**：accepted
+- **决策**：把修订闭环从「Reviewer 发现问题 → Writer 修改」升级为
+  「Revision Plan → Evidence-aware Revision → Revision Validation →
+  Quality Gate → Accepted Manuscript」，核心原则 Revision ≠ Correct
+  Revision（修改后的文本必须重新满足：Evidence 支持、Citation 一致、
+  Fact 保持、Claim 强度合理）。八项决策：
+  1. **升级既有 RevisionPlan 而非另造结构**（M4.7 D-0026 的计划是唯一
+     事实源）：字段映射 problem≡finding、instruction≡requestedChange、
+     planned≡pending（产物兼容，旧断言不因改名碎裂）；新增
+     riskLevel（确定性派生：fact_preserve / citation_* / external →
+     high；major → medium；minor / build / gate → low）与
+     relatedEvidenceIds（finding 的 evidenceRef ∪ citation 条目经
+     evidenceLinks（matchBibliographyKey 同源）关联的 verified
+     evidence——Evidence Re-validation 的对象在计划期就固定）。
+  2. **状态机（review/revisionItemStatus.ts，纯函数）**：planned →
+     applied → validated / rejected / needs_review；rejected → planned
+     （重派发，清执行痕迹）/ approved；needs_review → approved /
+     rejected / validated；validated / approved / skipped 为终态。非法
+     流转（planned → validated 跳过执行、终态复活）确定性抛错并列出
+     全部违规，不做部分应用——状态损坏应当被发现而不是被吞掉。每次
+     流转补写 appliedAt / appliedRevision / targetChanged / resolvedAt /
+     resolution（reason 码 + 人读说明）。
+  3. **revision.validate stage 的位置与职责**：revision.revise / apply
+     写入之后、尾部重走（citation.verify → review.run → gate）之前。
+     四类复核全部确定性无 LLM：Fact / Citation Preservation 复用 M5.6
+     compute（sourceRevision → revision 窗口）；Claim Strength 与
+     Evidence Re-validation 为 M6.7 新增。违规按**文件级归因**到条目
+     （口径与派发侧 sectionMatches 一致；摘要引用归组装根 main.tex，
+     因 writeMainTex 把 outline.abstract 组装进 main.tex）——保守归因：
+     违规只可能来自被改写的文件，宁可重派一轮不静默放行。
+  4. **Claim Strength 检测的诚实边界**：句级 diff + marker 启发式
+     （与 styleInvariants 同级，不是语义理解）。只报「升级到 strong」
+     的句子（强 marker 平移不报）；授权 = 计划条目文本或关联 formal
+     evidence 文本包含该强 marker 或该句引用的数字（数字即强度依据）。
+     矩阵：strong + insufficient → block（条目 rejected）；strong +
+     partial → warning（条目 needs_review）；strong + direct → 合法
+     （不产生 finding）。宁可漏报不制造海量误报。
+  5. **targetChanged=false 不构成拒绝**：Writer 输出与原文逐字相同时，
+     「修改要求是否真正落实」由下一轮复审仲裁（同 finding 指纹再现 →
+     新计划重新派发，收敛判定照常生效）——验证层只裁四类确定性违规，
+     不猜测 Writer 意图。（曾实现为 rejected，真实回退发现会把合法的
+     「Writer 认为已处理」场景误判为失败并强制 HITL。）
+  6. **Revision Gate 两规则**（输入对齐被审阅修订才消费；不对齐 / 无
+     修订 → 规则不出现，与 Preservation null 同纪律）：
+     revision_items_resolved（rejected / needs_review > 0 → FAIL）与
+     claim_strength_guard（block > 0 → FAIL；warning 计数可解释）。
+     用户 approve 覆盖自动判定（规则放行 + detail 记录「用户已明示
+     接受」——覆盖必须可审计，不静默）。M5.6 两层 Preservation 规则
+     口径不变（M6.7 是加层不是改尺）。
+  7. **HITL 语义**：hitl.revision_validation 在 validation blocked 时
+     出现（先于复审——Revision Validation → Quality Gate 的顺序即
+     「先裁修订正确性，再审整体质量」）。approve：rejected /
+     needs_review → approved（validated 是机器复核终态，不接受用户
+     翻转——要推翻走 reject）。reject：ManuscriptRevisionStore.restore
+     恢复 sourceRevision 快照 = 提交新的不可变修订（历史不改写；
+     Preservation 对 restore 修订不可比较——不是 Writer 改稿）。
+     needs_review：保留修订但阻断 Final（Draft 路径不受阻——质量语义
+     不阻塞构建，D-0015 口径延伸）。回答新鲜度按 validationId：修订
+     未产生新修订号时（Writer 输出与原文相同，commit created=false）
+     revision 号会与前一轮撞号，按号判定会误把新一轮复核当成已回答。
+  8. **消费侧最小改动**：Reviewer 结构化输出新增可选 evidenceRequirement
+     （required / optional / none；非法值丢弃不整条拒绝，category 兜底）；
+     Writer reviseSection 新增 revisionItems / itemEvidence 参数——prompt
+     渲染「修订计划条目（结构化）」区块（含关联证据「修改前依据：修改后
+     表述必须仍被其支撑否则弱化」）；issues 通道保留（旧调用 / 执行期
+     派生回退兼容）。
+- **理由**：M5.6 真实盲评暴露的两层 Preservation 只覆盖「数字变了吗 /
+  引用少了吗」；pair 复核发现的第三类修订风险——证据弱但表达强
+  （「可能改善」→「显著提升」）——不触发任何既有规则（数字没变、引用
+  没动）。同样，M4.7 的修订计划是「派发清单」：派发过 ≠ 执行了 ≠ 修对
+  了，条目没有终态，gate 无法回答「这轮修订解决了什么」。生命周期 +
+  四类复核 + 条目归因把「修订正确性」变成确定性可判定对象；HITL 把
+  最终接受权留给人（approve 留痕、reject 可回滚、needs_review 阻断
+  Final 不阻断 Draft）。架构故事不靠加 Agent：少量角色 Agent + 强 Tool +
+  Evidence Layer + Quality Gate 的分层在修订侧闭环。
+  测试 +31（状态机 5 / claimStrength 8 / revisionValidation 纯函数 9 /
+  Revision Gate 规则 5 / 全链路 e2e 3）+ M5.6 gate e2e 适配（断言升级为
+  生命周期口径：机器 rejected → 用户 approved 留档）；全量 1171 通过
+  零回归。
+- **不做**：新增 Agent / Revision Agent（红线：流程纪律属于确定性代码，
+  D-0008/D-0026 一脉）；Runtime / Retrieval / Evidence Grounding 改动；
+  Writer 大改（reviseSection 增参兼容）；语义级 claim 强度理解
+  （marker 启发式 + 复审仲裁 + 人审，不冒充语义等价证明）；前端
+  专项 UI（HITL 决策面板按 options 泛化渲染，验证产物经 reviews/ API
+  可查）。
+- **影响**：backend/src/review/ +revisionItemStatus.ts +revisionValidation.ts
+  （revisionPlan.ts 生命周期字段）、quality/ +claimStrength.ts（gates.ts
+  规则 17/18）、workflow/definitions.ts（revision.validate /
+  hitl.revision_validation stage + planner 接线 + revise 派发回写 +
+  gate 消费）、agents/ReviewerService.ts（evidenceRequirement）、
+  writer/WriterService.ts（结构化条目区块）、runtime/scriptedRuntime.ts
+  （[strength:escalate] 标记）。测试：revisionItemStatus / claimStrength /
+  revisionValidation / revisionGate（新）+ revisionValidationFlow（新 e2e）；
+  citationPreservationGate / factPreservationGate / revisionLoop 断言随
+  生命周期语义更新。

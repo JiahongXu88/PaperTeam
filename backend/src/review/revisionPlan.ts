@@ -5,6 +5,14 @@
  * （reviews/revision-plan-r{round}.json）。Writer 的修订以本计划为准（section-scoped），
  * 不再在执行期临时拼指令；计划与该轮 scorecard / gate 结果通过 round 关联。
  *
+ * M6.7 Revision Safety 升级：计划条目从「派发清单」升级为「带生命周期的 Revision
+ * Item」——字段映射：problem ≡ finding、instruction ≡ requestedChange、planned ≡
+ * pending；新增 riskLevel / relatedEvidenceIds 与 applied → validated / rejected /
+ * needs_review / approved 状态机（见 revisionItemStatus.ts / revisionValidation.ts）。
+ * Writer 执行后由 Revision Validation 复核（Evidence 再核验 / Fact / Citation /
+ * Claim Strength），复核结果回写条目终态；Quality Gate 的 revision_items_resolved
+ * 据此阻断未解决条目进入 Final。
+ *
  * 派生规则（确定性，无 LLM）：
  * - critical / blocking finding → priority high（必改）
  * - major finding              → priority medium（必改）
@@ -32,7 +40,26 @@ export type RevisionPlanItemKind =
   | "build_error"
   | "gate_blocker";
 
-export type RevisionPlanItemStatus = "planned" | "skipped";
+/**
+ * 条目状态（M6.7 升级为完整生命周期）：
+ * - planned  待执行（≡ 任务的 pending；M4.7 既有名称，保持产物兼容）
+ * - skipped  记录不派发（minor / gate 阻止项 / conflict 外部意见；终态）
+ * - applied  Writer 已执行（M6.7：修订 stage 派发并写回后标记；等待验证）
+ * - validated  Revision Validation 复核通过（Evidence / Fact / Citation / Claim Strength；终态）
+ * - rejected  复核失败（事实漂移 / 引用无依据丢失 / 强 claim 弱证据升级；可回到 planned 重派发）
+ * - needs_review  证据弱化 / 线索级问题（不自动接受也不拒绝，交人工复核；阻断 Final）
+ * - approved  用户在 hitl.revision_validation 明示接受（终态；覆盖自动判定，记录在案）
+ *
+ * 合法流转见 review/revisionItemStatus.ts（非法流转确定性拒绝）。
+ */
+export type RevisionPlanItemStatus =
+  | "planned"
+  | "skipped"
+  | "applied"
+  | "validated"
+  | "rejected"
+  | "needs_review"
+  | "approved";
 
 /**
  * 派发理由（M5.4）：quality = 质量修订（critical / major / citation / build，
@@ -61,6 +88,27 @@ export interface RevisionPlanItem {
   status: RevisionPlanItemStatus;
   /** 证据不足类问题：修订时只能弱化 / 删除，不允许编造 */
   needsEvidence?: boolean;
+  /**
+   * 修订风险档位（M6.7，确定性派生）：high = 事实 / 引用 / 外部意见类
+   * （改错即漂移），medium = major finding，low = 表达 / 语法类。
+   * 驱动 Revision Validation 的复核强度与 HITL 呈现排序。
+   */
+  riskLevel?: "high" | "medium" | "low";
+  /**
+   * 关联证据（M6.7 §5/§6）：finding 的 evidenceRef + 引用条目经 bib key
+   * 关联的 verified evidence。修改前后对这些证据做再核验（§9）。
+   */
+  relatedEvidenceIds?: string[];
+  /** applied 时刻（ISO；M6.7） */
+  appliedAt?: string;
+  /** applied 时写入的 manuscript 修订号（M6.7；验证对齐用） */
+  appliedRevision?: number;
+  /** 派发目标是否产生实际文本变更（M6.7；确定性 diff，不采信 Writer 自称） */
+  targetChanged?: boolean;
+  /** 终态判定时刻（validated / rejected / needs_review / approved；ISO） */
+  resolvedAt?: string;
+  /** 终态判定依据（机器可读 reason 短语 + 人读说明；M6.7） */
+  resolution?: string;
   /** skipped 的原因（记录但不派发） */
   note?: string;
   /** 派发理由（缺省 quality；style_polish 条目只允许 style-only 修改） */
@@ -134,6 +182,12 @@ export interface BuildRevisionPlanInput {
    * conflict → 保留条目但 skipped（不自动改事实）；handled → skipped（留档）。
    */
   externalInstructions?: ExternalInstruction[];
+  /**
+   * bib key → verified evidence 关联（M6.7 §5/§6）：由调用方用
+   * EvidenceSelectionService.matchBibliographyKey 确定性计算；citation 类条目
+   * 据此携带 relatedEvidenceIds（§9 Evidence Re-validation 的对象）。
+   */
+  evidenceLinks?: { key: string; evidenceIds: string[] }[];
   createdAt?: string;
 }
 
@@ -157,6 +211,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       status:
         instruction.status === "handled" || instruction.status === "conflict" ? "skipped" : "planned",
       source: "external",
+      riskLevel: "high",
       ...(instruction.reviewerLabel !== undefined ? { reviewerLabel: instruction.reviewerLabel } : {}),
       sourceText: instruction.text,
       instructionId: instruction.instructionId,
@@ -200,6 +255,8 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         instruction: "删除该引用，或改为只基于现有文献的表述；禁止新造参考文献条目",
         expectedOutcome: `章节 ${file} 不再引用缺失 key ${missing.key}`,
         status: "planned",
+        riskLevel: "high",
+        ...evidenceIdsForKey(missing.key, input.evidenceLinks),
       });
     }
   }
@@ -215,6 +272,8 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         instruction: `恢复该引用：在原论述处保留 \cite{${removed.key}}（key 必须仍存在于 references.bib）；只有审稿 finding 明确要求删除该论述或该引用时才允许移除`,
         expectedOutcome: `章节 ${file} 重新引用 ${removed.key}，引用保持规则转为通过`,
         status: "planned",
+        riskLevel: "high",
+        ...evidenceIdsForKey(removed.key, input.evidenceLinks),
       });
     }
   }
@@ -230,6 +289,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         "恢复上一修订中的实验事实原值（表格数值 / 正文数字与单位 / 公式 / 方向性结论 / 协议表述）。修订不是重写：只有计划明确授权（依据 Evidence 修正数值）时才允许改值，且新值必须逐字来自 Evidence",
       expectedOutcome: "实验事实保持规则（fact_preservation）转为通过",
       status: "planned",
+      riskLevel: "high",
     });
   }
 
@@ -243,6 +303,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       instruction: "修复编译错误（语法 / 未定义命令 / 环境配对），不改变论述内容",
       expectedOutcome: "main.tex 可通过 latexmk/xelatex 编译并产出 PDF",
       status: "planned",
+      riskLevel: "low",
       ...(input.buildError.file !== undefined ? {} : { note: "错误未定位到具体文件，按全局处理" }),
     });
   }
@@ -257,6 +318,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       instruction: "（无直接章节修改路径；由对应 finding 条目或人工处理）",
       expectedOutcome: "该 gate 规则转为通过",
       status: "skipped",
+      riskLevel: "medium",
       note: "gate 阻止项无章节归属，不派发给 Writer",
     });
   }
@@ -298,6 +360,15 @@ function instructionLabel(instruction: ExternalInstruction): string {
   return `（${source}${instruction.reviewerLabel !== undefined ? ` · ${instruction.reviewerLabel}` : ""}）`;
 }
 
+/** bib key → verified evidence 关联（evidenceLinks 输入；无匹配 → 不携带字段） */
+function evidenceIdsForKey(
+  key: string,
+  links: { key: string; evidenceIds: string[] }[] | undefined,
+): { relatedEvidenceIds?: string[] } {
+  const hit = links?.find((link) => link.key === key && link.evidenceIds.length > 0);
+  return hit !== undefined ? { relatedEvidenceIds: [...hit.evidenceIds] } : {};
+}
+
 /** 意见原文的第一个非空行（problem 展示用；全文在 sourceText） */
 function firstTextLine(text: string): string {
   const line = text
@@ -326,6 +397,7 @@ function findingItem(
   priority: "high" | "medium" | "low",
   status: RevisionPlanItemStatus,
 ): RevisionPlanItem {
+  const needsEvidenceFlag = needsEvidence(issue);
   return {
     id: findingFingerprint(issue),
     kind: "review_finding",
@@ -338,8 +410,44 @@ function findingItem(
         ? "该 critical/blocking 问题在复审中不再出现"
         : "该 major 问题在复审中不再出现",
     status,
-    ...(needsEvidence(issue) ? { needsEvidence: true } : {}),
+    ...(needsEvidenceFlag ? { needsEvidence: true } : {}),
+    riskLevel: riskLevelOf("review_finding", priority) ?? "medium",
+    ...relatedEvidenceOf(issue),
   };
+}
+
+/** 条目风险档位（确定性）：事实 / 引用 / 外部意见 = high，major = medium，其余 low */
+function riskLevelOf(
+  kind: RevisionPlanItemKind,
+  priority: RevisionPlanItemPriority,
+): "high" | "medium" | "low" | undefined {
+  if (
+    kind === "fact_preserve" ||
+    kind === "citation_missing" ||
+    kind === "citation_removed" ||
+    kind === "external_instruction"
+  ) {
+    return "high";
+  }
+  if (priority === "high" || priority === "mandatory") {
+    return "high";
+  }
+  if (priority === "medium") {
+    return "medium";
+  }
+  if (priority === "low") {
+    return "low";
+  }
+  return undefined;
+}
+
+/**
+ * finding 条目的关联证据（M6.7 §5）：evidenceRef（Reviewer 引用的证据 id）。
+ * 引用类条目按 bib key 关联（evidenceLinks）；此处只处理 finding 通道。
+ */
+function relatedEvidenceOf(issue: ReviewIssue): { relatedEvidenceIds?: string[] } {
+  const ref = (issue.evidenceRef ?? "").trim();
+  return ref !== "" ? { relatedEvidenceIds: [ref] } : {};
 }
 
 function withNote(item: RevisionPlanItem, note: string): RevisionPlanItem {
@@ -352,6 +460,10 @@ function findingCount(items: readonly RevisionPlanItem[], file: string): number 
 }
 
 function needsEvidence(issue: ReviewIssue): boolean {
+  // M6.7 §13：Reviewer 显式声明优先；缺省按 category 推断（既有口径）
+  if (issue.evidenceRequirement !== undefined) {
+    return issue.evidenceRequirement !== "none";
+  }
   return issue.category.toLowerCase().includes("evidence") || issue.category.toLowerCase().includes("fact");
 }
 

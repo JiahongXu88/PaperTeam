@@ -16,6 +16,36 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.7 Revision Safety & Quality Gate Evolution（✅ 2026-09-18）
+
+- 修订闭环升级为 Revision ≠ Correct Revision（revision safety and
+  validation）：**RevisionPlanItem 生命周期化**——新增 `riskLevel` /
+  `relatedEvidenceIds` / `appliedAt` / `appliedRevision` / `targetChanged` /
+  `resolvedAt` / `resolution` 字段与七态状态机（planned(≡pending) → applied
+  → validated / rejected / needs_review；rejected → planned 重派发 / approved
+  用户接受；非法流转确定性拒绝，`backend/src/review/revisionItemStatus.ts`）。
+  **`revision.validate` stage**（`backend/src/review/revisionValidation.ts`，
+  修订写入后、复审前，纯确定性无 LLM）：四类复核——Fact / Citation
+  Preservation（复用 M5.6，sourceRevision → revision 窗口）、**Claim
+  Strength Gate**（`backend/src/quality/claimStrength.ts`：句级 diff 检测
+  「弱证据 → 强表述」升级——「可能改善」→「显著提升」；strong+
+  insufficient → block / strong+partial → warning / strong+direct 合法；
+  授权 = 计划或 formal evidence 文本含强 marker 或同数字）、**Evidence
+  Re-validation**（条目关联证据仍存在且仍 formal；新增引用 evidence-backed
+  覆盖记录）；违规按文件级归因到条目并回写终态；产物
+  `reviews/revision-validation-r{round}.json`。**Quality Gate 新增
+  `revision_items_resolved` / `claim_strength_guard` 两规则**（rejected /
+  needs_review / block 阻断 Final；用户 approve 覆盖并记录在案；输入对齐
+  被审阅修订才消费）。**HITL `hitl.revision_validation`**（approve /
+  reject=ManuscriptRevisionStore.restore 恢复修订前快照 / needs_review=保留
+  但阻断 Final；新鲜度按 validationId）。**Reviewer 结构化输出**新增可选
+  `evidenceRequirement`（required / optional / none）；**Writer
+  reviseSection 直接读取结构化 Revision Item**（id / 风险 / needsEvidence
+  约束 / 关联证据「修改前依据」，issues 通道兼容保留）。红线维持：零新增
+  Agent、Runtime / Retrieval / Evidence Grounding 不动。新增后端测试 31
+  （状态机 5 / claimStrength 8 / validation 纯函数 9 / Gate 规则 5 / e2e 3）。
+  决策 D-0039。
+
 ### M6.6 Evidence-aware Writing Loop（✅ 2026-09-17）
 
 - Writer / Reviewer 从「prompt 注入静态 evidence digest」升级为

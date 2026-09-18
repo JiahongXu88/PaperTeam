@@ -30,6 +30,14 @@ export const REVIEW_MODES: readonly ReviewMode[] = ["fact", "academic", "style"]
 export type IssueSeverity = "critical" | "major" | "minor";
 export type IssueCategory = "fact" | "academic" | "style" | "citation" | "evidence_gap" | "build";
 export type FactVerdict = "SUPPORTED" | "PARTIALLY_SUPPORTED" | "UNSUPPORTED" | "CONTRADICTED";
+/**
+ * 该 finding 的修复对 Evidence 的要求（M6.7 §13 结构化输出）：
+ * - required：修复必须基于现有 verified Evidence（否则只能弱化 / 删除，不允许编造）
+ * - optional：有证据更好，无证据也可基于稿件内部逻辑修正
+ * - none：与外部证据无关（表达 / 结构 / 编译类）
+ * 模型可省略：确定性兜底按 category 推断（fact / evidence_gap → required）。
+ */
+export type EvidenceRequirement = "required" | "optional" | "none";
 
 export interface ReviewIssue {
   category: IssueCategory;
@@ -41,6 +49,8 @@ export interface ReviewIssue {
   blocking: boolean;
   /** 为什么是问题（M5.4：style / academic finding 的依据；可执行性要素之一） */
   reason?: string;
+  /** 修复的 Evidence 依赖声明（M6.7 §13；缺省由 category 推断） */
+  evidenceRequirement?: EvidenceRequirement;
 }
 
 /**
@@ -335,10 +345,22 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
       ...(typeof record["reason"] === "string" && record["reason"].trim() !== ""
         ? { reason: record["reason"].trim() }
         : {}),
+      ...(readEvidenceRequirement(record) !== undefined
+        ? { evidenceRequirement: readEvidenceRequirement(record) }
+        : {}),
       blocking: record["blocking"] === true,
     });
   }
   return issues;
+}
+
+/** evidenceRequirement 解析（M6.7 §13）：非法值丢弃（category 兜底），不整条拒绝 */
+function readEvidenceRequirement(record: Record<string, unknown>): EvidenceRequirement | undefined {
+  const value = record["evidenceRequirement"];
+  if (value === "required" || value === "optional" || value === "none") {
+    return value;
+  }
+  return undefined;
 }
 
 function parseClaims(parsed: Record<string, unknown>, context: string): FactClaimCheck[] {
@@ -434,8 +456,10 @@ export function buildReviewPrompt(params: {
     '  "issues": [{"category": "fact|academic|style|citation|evidence_gap|build",',
     '    "severity": "critical|major|minor", "section": "sections/xxx.tex、abstract（摘要问题归这里）或章节名",',
     '    "description": "问题描述", "evidenceRef": "E001（如有）",',
-    '    "suggestedAction": "修改建议", "blocking": false}]',
+    '    "suggestedAction": "修改建议", "evidenceRequirement": "required|optional|none",',
+    '    "reason": "为什么是问题（可选）", "blocking": false}]',
     "}",
+    "evidenceRequirement：该问题修复是否必须依赖已核验 Evidence——required（修复只能基于现有 verified Evidence，否则弱化/删除）/ optional（有证据更好）/ none（表达/结构/编译类，与外部证据无关）。fact / evidence_gap 类问题应给 required。",
     "纪律：不虚构问题；问题描述必须可定位；确属阻断级（如关键论断无证据、引用不存在）才设 blocking=true。",
     "",
     "===== 论文稿件（结构化摘要）=====",

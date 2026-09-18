@@ -38,13 +38,14 @@ import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
-import type { EvidenceSelectionService } from "../evidence/EvidenceSelectionService.js";
+import { EvidenceSelectionService, isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import {
   computeCitationPreservation,
+  readSnapshotTex,
   type CitationPreservationSummary,
 } from "../quality/citationPreservation.js";
 import { computeFactPreservation, describeFactPreservation } from "../quality/factPreservation.js";
@@ -73,6 +74,14 @@ import { readFindings, type FindingCategory, type FindingSeverity } from "../rev
 import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
+import {
+  applyRevisionItemTransitions,
+  type RevisionItemTransition,
+} from "../review/revisionItemStatus.js";
+import {
+  evaluateRevisionValidation,
+  withUserDecision,
+} from "../review/revisionValidation.js";
 import {
   applyDispatchOutcome,
   type ExternalDirectiveDispatch,
@@ -327,6 +336,13 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
               evidenceRecords,
             })
           : undefined;
+      // M6.7 §10 Revision Gate：修订条目复核结果（对齐被审阅修订才消费；
+      // 旧 / 不对齐（如用户恢复历史修订）→ 规则不出现，与 Preservation null 同纪律）
+      const latestValidation = await services.reviewArtifacts.latestValidation(ctx.projectId);
+      const revisionValidation =
+        latestValidation !== null && latestValidation.revision === review.reviewedRevision
+          ? latestValidation
+          : undefined;
       const gate = evaluateQualityGate(
         {
           review,
@@ -336,6 +352,7 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
           citationPreservation,
           factPreservation,
           ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
+          ...(revisionValidation !== undefined ? { revisionValidation } : {}),
         },
         QUALITY_THRESHOLDS(services),
       );
@@ -345,6 +362,7 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         citationPreservation,
         factPreservation,
         ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
+        ...(revisionValidation !== undefined ? { revisionValidation } : {}),
       });
       // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
       // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
@@ -449,6 +467,9 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       if (reverified.changed) {
         await services.externalInstructions.save(ctx.projectId, reverified.instructions);
       }
+      // M6.7 §5/§6：citation 类条目的 relatedEvidenceIds —— bib key ↔ verified
+      // evidence 关联（与 Writer 引用标注 / Gate 覆盖判定同源 matchBibliographyKey）
+      const evidenceLinks = await buildEvidenceLinks(services, ctx.projectId);
       const plan = buildRevisionPlan({
         projectId: ctx.projectId,
         sourceRevision,
@@ -464,6 +485,7 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         ...(reverified.instructions.length > 0
           ? { externalInstructions: reverified.instructions }
           : {}),
+        ...(evidenceLinks.length > 0 ? { evidenceLinks } : {}),
       });
       await services.reviewArtifacts.savePlan(ctx.projectId, plan);
       // 回填本轮 iteration 记录的 planId（UI / 审计可从轮次回溯计划）
@@ -735,13 +757,19 @@ function revisionReviseStage(
         })),
       ]);
       const revised: string[] = [];
+      // M6.7：本轮流派发的计划条目（planned → applied 的依据；确定性 diff 补 targetChanged）
+      const dispatchedItems: { id: string; targetChanged: boolean }[] = [];
+      // 条目关联证据的记录池（§6 修改前依据；formal 快照之外的库内记录也可见）
+      const itemEvidence = await services.evidence.list(ctx.projectId);
       for (const [index, target] of targets.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "修订已被取消");
         }
-        const issues = directives
-          .map((directive) => directive.match(target))
-          .filter((issue): issue is ReviewIssue => issue !== null);
+        const matchedDirectives = directives.filter((directive) => directive.match(target) !== null);
+        const issues = matchedDirectives.map((directive) => directive.match(target)) as ReviewIssue[];
+        const matchedItems = matchedDirectives
+          .map((directive) => directive.item)
+          .filter((item): item is RevisionPlanItem => item !== undefined);
         // 该目标命中的外部意见：指定章节的按匹配；未指定章节的全篇派发
         const targetExternals = externalDirectives.filter((directive) =>
           directive.section !== undefined
@@ -772,9 +800,18 @@ function revisionReviseStage(
           bibliography,
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
+          ...(matchedItems.length > 0
+            ? {
+                revisionItems: matchedItems,
+                itemEvidence,
+              }
+            : {}),
         });
         // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）
         const targetChanged = result.latex.trim() !== target.currentLatex.trim();
+        for (const item of matchedItems) {
+          dispatchedItems.push({ id: item.id, targetChanged });
+        }
         for (const report of result.externalOutcomes ?? []) {
           externalOutcomeReports.push({ ...report, targetChanged });
         }
@@ -806,6 +843,32 @@ function revisionReviseStage(
       }
       // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
       const revision = await services.revisions.commit(ctx.projectId, stageId, ctx.runId);
+      // M6.7 §5：派发条目 planned → applied（状态机落盘；携带修订号与确定性
+      // targetChanged。无计划 / 执行期派生回退（apply 流程）时 dispatchedItems
+      // 为空，自然跳过）
+      if (dispatchedItems.length > 0) {
+        const summary = await latestReviewSummary(services, ctx.projectId);
+        const plan = summary !== null ? await services.reviewArtifacts.loadPlan(ctx.projectId, summary.round) : null;
+        if (plan !== null) {
+          const now = new Date().toISOString();
+          const transitions: RevisionItemTransition[] = dispatchedItems
+            .filter((entry) => plan.items.some((item) => item.id === entry.id && item.status === "planned"))
+            .map((entry) => ({
+              id: entry.id,
+              to: "applied",
+              reason: "dispatched",
+              appliedAt: now,
+              appliedRevision: revision.revision,
+              targetChanged: entry.targetChanged,
+            }));
+          if (transitions.length > 0) {
+            const applied = applyRevisionItemTransitions(plan, transitions, now);
+            if (applied.changed) {
+              await services.reviewArtifacts.savePlan(ctx.projectId, applied.plan);
+            }
+          }
+        }
+      }
       // M5.7：派发结果落回指令状态（确定性聚合：applied+真实变化 → handled 等）
       if (externalDirectives.length > 0) {
         const reportedIds = new Set(externalOutcomeReports.map((report) => report.instructionId));
@@ -844,6 +907,7 @@ function revisionReviseStage(
         sections: revised,
         revision: revision.revision,
         changed: revision.created,
+        ...(dispatchedItems.length > 0 ? { appliedItems: dispatchedItems.length } : {}),
         ...(externalDirectives.length > 0
           ? { externalInstructions: externalDirectives.length }
           : {}),
@@ -865,6 +929,267 @@ function revisionReviseStage(
     },
   };
 }
+
+/**
+ * Revision Validation（M6.7：修订写入后、复审前的条目级复核，纯确定性无 LLM）。
+ *
+ * Revision ≠ Correct Revision：对 sourceRevision → revision 的实际差异执行四类
+ * 检查（Fact / Citation Preservation 复用 M5.6；Claim Strength 与 Evidence
+ * Re-validation 为 M6.7 新增），结果归因到计划条目并把 applied 落到
+ * validated / rejected / needs_review 终态（状态机保证合法流转）。
+ *
+ * blocked（rejected / block 级 claim finding）→ planner 进入
+ * hitl.revision_validation（用户 approve / reject / needs_review）；
+ * needs_review 不阻断循环，但 Quality Gate 的 revision_items_resolved 阻断 Final。
+ */
+function revisionValidateStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.validate",
+    description:
+      "Revision Validation：修订写入后逐条复核（Evidence 再核验 / Fact / Citation / Claim Strength）",
+    requiredInputs: [],
+    producedOutputs: ["reviews/revision-validation-r{round}.json", "revision-plan 条目终态回写"],
+    maxAttempts: 1, // 纯确定性复核，重试无意义
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
+      }
+      const round = summary.round;
+      const plan = await services.reviewArtifacts.loadPlan(ctx.projectId, round);
+      const revision = await services.revisions.currentRevision(ctx.projectId);
+      const sourceRevision =
+        plan?.sourceRevision !== undefined && plan.sourceRevision > 0 && plan.sourceRevision < revision
+          ? plan.sourceRevision
+          : Math.max(0, revision - 1);
+      const previousFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
+      const currentFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, revision));
+      if (previousFiles === null || currentFiles === null) {
+        // 快照缺失：如实失败（修订复核不能凭空跳过；restore 路径同样会走 null 中性规则）
+        throw new BusinessError(
+          "STAGE_CONTRACT_VIOLATION",
+          `修订快照不可读（rev-${sourceRevision} / rev-${revision}），无法执行 Revision Validation`,
+        );
+      }
+      const factPreservation = await computeFactPreservation(services, ctx.projectId, revision);
+      const citationPreservation = await computeCitationPreservation(services, ctx.projectId, revision);
+      const evidenceRecords = await services.evidence.list(ctx.projectId);
+      // 新增引用的 evidence-backed 判定（与 gate 覆盖同源）
+      const citationReport = await services.citation.latestReport(ctx.projectId);
+      const evidenceLinks = new Map<string, string[]>();
+      if (citationReport !== null) {
+        for (const link of await buildEvidenceLinks(services, ctx.projectId)) {
+          evidenceLinks.set(link.key, link.evidenceIds);
+        }
+      }
+      const result = evaluateRevisionValidation({
+        projectId: ctx.projectId,
+        reviewRound: round,
+        sourceRevision,
+        revision,
+        plan,
+        previousFiles,
+        currentFiles,
+        factPreservation,
+        citationPreservation,
+        evidenceRecords,
+        evidenceLinks,
+      });
+      // 条目终态回写（applied → validated / rejected / needs_review；非法流转 = 编排缺陷，如实抛错）
+      if (plan !== null && result.items.length > 0) {
+        const transitions: RevisionItemTransition[] = result.items.map((item) => ({
+          id: item.id,
+          to: item.status,
+          reason:
+            item.status === "validated"
+              ? "validation_passed"
+              : item.reasonCodes[0] ?? "validation_passed",
+          detail: item.reasons[0]?.slice(0, 240),
+        }));
+        const applied = applyRevisionItemTransitions(plan, transitions, new Date().toISOString());
+        if (applied.changed) {
+          await services.reviewArtifacts.savePlan(ctx.projectId, applied.plan);
+        }
+      }
+      await services.reviewArtifacts.saveValidation(ctx.projectId, result);
+      const validated = result.items.filter((item) => item.status === "validated").length;
+      const rejected = result.items.filter((item) => item.status === "rejected").length;
+      const needsReview = result.items.filter((item) => item.status === "needs_review").length;
+      await ctx.emitDomain(
+        "revision.validated",
+        {
+          validationId: result.validationId,
+          planId: result.planId,
+          revision,
+          sourceRevision,
+          validated,
+          rejected,
+          needsReview,
+          claimStrengthFindings: result.claimStrength.length,
+          blocked: result.blocked,
+        },
+        result.blocked
+          ? `修订复核发现风险：${rejected} 条 rejected / ${result.claimStrength.filter((f) => f.action === "block").length} 处强 claim 弱证据（等待用户决策）`
+          : `修订复核通过：${validated} 条 validated${needsReview > 0 ? `（${needsReview} 条 needs_review 待人工确认）` : ""}`,
+      );
+      return {
+        validationId: result.validationId,
+        planId: result.planId,
+        round,
+        revision,
+        sourceRevision,
+        validated,
+        rejected,
+        needsReview,
+        claimStrengthFindings: result.claimStrength.length,
+        uncoveredAddedKeys: result.uncoveredAddedKeys.length,
+        blocked: result.blocked,
+      };
+    },
+    async verifyDod(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        return ["缺少 review 汇总"];
+      }
+      const validation = await services.reviewArtifacts.loadValidation(ctx.projectId, summary.round);
+      return validation === null
+        ? [`reviews/${services.reviewArtifacts.validationFileName(summary.round)} 不存在`]
+        : [];
+    },
+  };
+}
+
+/**
+ * M6.7 §11 HITL：修订复核发现风险项（事实漂移 / 引用丢失 / 强 claim 弱证据）时，
+ * 不自动接受修改。用户三选一：
+ * - approve：接受本轮修订（条目 → approved，Revision Gate 规则按用户决策放行并记录）
+ * - reject：恢复修订前版本（revision.restore；后续照常复审，旧 Gate 自然 stale）
+ * - needs_review：保留修订但标记待人工确认（Revision Gate 阻断 Final）
+ */
+function revisionValidationDecisionStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.revision_validation",
+    description: "修订复核发现风险项，等待用户决策（接受 / 恢复修订前版本 / 待人工确认）",
+    requiredInputs: [],
+    producedOutputs: ["用户决策"],
+    hitl: {
+      prompt:
+        "本轮修订的自动复核发现风险项（实验事实漂移 / 引用无依据丢失 / 强 claim 弱证据）。继续复审前请决策：接受本轮修订（approve）/ 拒绝并恢复修订前版本（reject）/ 保留修订但标记待人工确认（needs_review，Final 将被阻断直至确认）",
+      options: ["approve", "reject", "needs_review"],
+      payload: async (ctx) => {
+        const validation = await services.reviewArtifacts.latestValidation(ctx.projectId);
+        if (validation === null) {
+          return undefined;
+        }
+        return {
+          validationId: validation.validationId,
+          revision: validation.revision,
+          sourceRevision: validation.sourceRevision,
+          items: validation.items.map((item) => ({
+            id: item.id,
+            kind: item.kind,
+            section: item.section,
+            status: item.status,
+            reasons: item.reasons.slice(0, 3),
+          })),
+          claimStrength: validation.claimStrength.slice(0, 5),
+          evidenceRecheck: validation.evidenceRecheck.filter((entry) => !entry.stillFormal).slice(0, 5),
+          citationRemoved: validation.citationDelta.removed.filter((entry) => !entry.authorized).slice(0, 5),
+          factPreservationOk: validation.factPreservation?.ok ?? null,
+        };
+      },
+    },
+  };
+}
+
+/**
+ * M6.7 HITL 决策：revision_validation。
+ * 回答记录 validatedRevision（= 修订复核针对的修订号；下一轮复核不复用旧回答）。
+ * reject 通过 ManuscriptRevisionStore.restore 恢复 sourceRevision 快照（历史修订
+ * 永不改动，恢复本身也是新的不可变修订）。
+ */
+async function applyRevisionValidationDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  const validate = state.stageResults["revision.validate"] ?? {};
+  const revision = typeof validate["revision"] === "number" ? validate["revision"] : null;
+  if (revision === null) {
+    throw new WorkflowInvalidStateError(state.runId, state.status, "缺少 revision.validate 结果（无法定位待决策的修订）");
+  }
+  const validation = await services.reviewArtifacts.latestValidation(state.projectId);
+  if (validation === null || validation.revision !== revision) {
+    throw new WorkflowInvalidStateError(state.runId, state.status, "修订复核产物缺失或与当前修订不对齐");
+  }
+  const markItems = async (to: "approved" | "needs_review", reason: "user_approved" | "user_needs_review") => {
+    if (validation.planId === null) {
+      return;
+    }
+    const plan = await services.reviewArtifacts.loadPlan(state.projectId, validation.reviewRound);
+    if (plan === null || plan.planId !== validation.planId) {
+      return;
+    }
+    const targets = plan.items.filter(
+      // approve / needs_review 只落定未决条目（rejected / needs_review）；
+      // validated 是机器复核终态，不接受用户翻转（要推翻应走 reject 恢复快照）
+      (item) => item.status === "rejected" || item.status === "needs_review",
+    );
+    if (targets.length === 0) {
+      return;
+    }
+    const transitions: RevisionItemTransition[] = targets.map((item) => ({
+      id: item.id,
+      to,
+      reason,
+      detail: `用户在修订复核 HITL 决策（验证 ${validation.validationId}）`,
+    }));
+    const applied = applyRevisionItemTransitions(plan, transitions, new Date().toISOString());
+    if (applied.changed) {
+      await services.reviewArtifacts.savePlan(state.projectId, applied.plan);
+    }
+  };
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision === "approve") {
+    await services.reviewArtifacts.saveValidation(
+      state.projectId,
+      withUserDecision(validation, "approve", new Date().toISOString()),
+    );
+    await markItems("approved", "user_approved");
+    state.stageResults["hitl.revision_validation"] = { decision: "approve", validationId: validation.validationId };
+    return;
+  }
+  if (input.decision === "needs_review") {
+    await services.reviewArtifacts.saveValidation(
+      state.projectId,
+      withUserDecision(validation, "needs_review", new Date().toISOString()),
+    );
+    await markItems("needs_review", "user_needs_review");
+    state.stageResults["hitl.revision_validation"] = { decision: "needs_review", validationId: validation.validationId };
+    return;
+  }
+  if (input.decision === "reject") {
+    // 恢复修订前版本：restore 提交新的不可变修订（reason=revision.restore，
+    // Fact / Citation Preservation 对 restore 修订不可比较——不是 Writer 改稿）
+    await services.revisions.restore(state.projectId, validation.sourceRevision);
+    await services.reviewArtifacts.saveValidation(
+      state.projectId,
+      withUserDecision(validation, "reject", new Date().toISOString()),
+    );
+    state.stageResults["hitl.revision_validation"] = { decision: "reject", validationId: validation.validationId };
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 approve / reject / needs_review / cancel（当前 "${input.decision}"）`,
+  );
+}
+
 
 /**
  * M5.4 Style Polish 决策点（HITL；只在 stylePolicy=apply_once 且存在可润色 style
@@ -1391,6 +1716,28 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const buildIdx = lastCompletionIndex(state, "build.draft");
   const planIdx = lastCompletionIndex(state, "revision.plan");
   const finalIdx = lastCompletionIndex(state, "build.final");
+
+  // 0. M6.7 Revision Validation：修订（revise / apply）写入后必须先过条目级复核
+  //    （Revision ≠ Correct Revision），再进入尾部重走；复核 blocked 且用户未
+  //    决策（回答按 validatedRevision 对齐，下一轮复核不复用旧回答）→ HITL
+  const validateIdx = lastCompletionIndex(state, "revision.validate");
+  if (reviseIdx > -1 && validateIdx < reviseIdx) {
+    return { kind: "stage", stageId: "revision.validate" };
+  }
+  const validateResult = state.stageResults["revision.validate"] ?? {};
+  const validationBlocked = validateResult["blocked"] === true;
+  const validationId = typeof validateResult["validationId"] === "string" ? validateResult["validationId"] : "";
+  const validationMarker = state.stageResults["hitl.revision_validation"] as
+    | Record<string, unknown>
+    | undefined;
+  // 新鲜度按 validationId（轮次+修订号唯一）：修订未产生新修订号时（Writer 输出
+  // 与原文相同，created=false），revision 号会与前一轮撞号，按号判定会误把
+  // 新一轮复核当成已回答
+  const validationAnswered =
+    validationMarker !== undefined && validationMarker["validationId"] === validationId;
+  if (validationBlocked && !validationAnswered) {
+    return { kind: "stage", stageId: "hitl.revision_validation" };
+  }
 
   // 1. 引用核验须新于最近一次改稿
   if (!has("citation.verify") || citationIdx < contentIdx) {
@@ -1969,6 +2316,8 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     qualityGateStage(services),
     revisionPlanStage(services),
     revisionReviseStage(services, "revision.revise"),
+    revisionValidateStage(services),
+    revisionValidationDecisionStage(services),
     revisionRepairStage(services),
     revisionOverflowStage(),
     revisionStalledStage(services),
@@ -1991,7 +2340,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
   return {
     kind: "idea_to_paper",
     description:
-      "Idea-to-Paper：调研 → 可行性 → 确认 → 大纲 → 确认 → 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订）→ 构建",
+      "Idea-to-Paper：调研 → 可行性 → 确认 → 大纲 → 确认 → 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订 + 修订复核）→ 构建",
     stages,
     plan(state: WorkflowState): PlanDecision {
       for (const stageId of front) {
@@ -2011,6 +2360,8 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
           return applyOverflowDecision(state, input);
         case "hitl.revision_stalled":
           return applyStalledDecision(state, input);
+        case "hitl.revision_validation":
+          return applyRevisionValidationDecision(services, state, input);
         case "hitl.style_polish":
           return applyStylePolishDecision(state, input);
         default:
@@ -2221,6 +2572,8 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     planConfirmStage(services),
     revisionReviseStage(services, "revision.apply"),
     revisionReviseStage(services, "revision.revise"),
+    revisionValidateStage(services),
+    revisionValidationDecisionStage(services),
     revisionPlanStage(services),
     revisionRepairStage(services),
     revisionOverflowStage(),
@@ -2247,7 +2600,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
   return {
     kind: "existing_paper_improvement",
     description:
-      "Existing-LaTeX Improvement：结构解析 → 基线编译 → 论文理解 → 引用审计 → 审稿 → 目标评估 → 改进计划 → 确认 → 逐节改造 →（共享后段：复审 / Quality Gate / bounded 修订 / 构建）",
+      "Existing-LaTeX Improvement：结构解析 → 基线编译 → 论文理解 → 引用审计 → 审稿 → 目标评估 → 改进计划 → 确认 → 逐节改造 →（共享后段：复审 / Quality Gate / bounded 修订 + 修订复核 / 构建）",
     stages,
     plan(state: WorkflowState): PlanDecision {
       for (const stageId of front) {
@@ -2265,6 +2618,8 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
           return applyOverflowDecision(state, input);
         case "hitl.revision_stalled":
           return applyStalledDecision(state, input);
+        case "hitl.revision_validation":
+          return applyRevisionValidationDecision(services, state, input);
         case "hitl.style_polish":
           return applyStylePolishDecision(state, input);
         default:
@@ -2854,6 +3209,8 @@ function latestReviewSummary(
 interface RevisionDirective {
   /** 返回匹配到目标时对应的 issue */
   match(target: RevisionTarget): ReviewIssue | null;
+  /** 匹配时携带的计划条目（M6.7：revise 派发后标记 applied；执行期派生回退时缺省） */
+  item?: RevisionPlanItem;
 }
 
 export interface RevisionTarget {
@@ -2879,7 +3236,7 @@ async function collectPlanDirectives(
   const directives: RevisionDirective[] = [];
   for (const item of plan.items) {
     if (item.status !== "planned") {
-      continue; // minor / gate 阻止项：记录但不派发（D-0026 收敛纪律）
+      continue; // minor / gate 阻止项 / 已终态条目：记录但不派发（D-0026 收敛纪律）
     }
     if (item.kind === "external_instruction") {
       // M5.7：外部意见经独立通道派发（collectExternalDirectives，携带执行报告
@@ -2889,6 +3246,7 @@ async function collectPlanDirectives(
     const issue = revisionPlanItemToIssue(item);
     directives.push({
       match: (target: RevisionTarget) => (sectionMatches(item.section, target) ? issue : null),
+      item,
     });
   }
   return directives;
@@ -3001,8 +3359,37 @@ async function collectRevisionDirectives(
   return directives;
 }
 
-/** 引用缺失的确定性定位：missing key → 出现该引用的 tex 文件（revision.plan / 修订指令共用） */
-async function citationMissingTargets(
+/**
+ * M6.7 §5/§6：bib key ↔ verified evidence 关联（matchBibliographyKey 同源）。
+ * formal evidence 覆盖到的每个 key 携带其 evidence id 列表；修订计划据此给
+ * citation 类条目挂 relatedEvidenceIds，Revision Validation 对其做再核验（§9）。
+ */
+async function buildEvidenceLinks(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<{ key: string; evidenceIds: string[] }[]> {
+  const citation = await services.citation.latestReport(projectId);
+  if (citation === null) {
+    return [];
+  }
+  const byKey = new Map<string, string[]>();
+  const records = await services.evidence.list(projectId);
+  for (const record of records) {
+    if (!isFormalEvidence(record)) {
+      continue; // 只有关联正式证据（verified + 锚点）的 key 才挂 relatedEvidenceIds
+    }
+    const key = EvidenceSelectionService.matchBibliographyKey(record, citation.static.bibEntries);
+    if (key === null) {
+      continue;
+    }
+    const ids = byKey.get(key) ?? [];
+    ids.push(record.id);
+    byKey.set(key, ids);
+  }
+  return [...byKey.entries()].map(([key, evidenceIds]) => ({ key, evidenceIds }));
+}
+
+/** 引用缺失的确定性定位：missing key → 出现该引用的 tex 文件（revision.plan / 修订指令共用） */async function citationMissingTargets(
   services: WorkflowServices,
   projectId: string,
 ): Promise<{ key: string; files: string[] }[]> {

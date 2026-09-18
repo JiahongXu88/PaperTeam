@@ -51,6 +51,34 @@ async function approveTwice(stack: TestStack, runId: string): Promise<void> {
   await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
 }
 
+/**
+ * M6.7：修订复核 HITL（hitl.revision_validation）出现时自动 approve（用户明示
+ * 接受本轮修订），直到出现目标 stage 的 awaiting_input。既有 M5.6 断言口径不变
+ * （用户 approve 后 Revision Gate 规则按用户决策放行，gate 阻止项仍只来自
+ * fact / citation preservation）。
+ */
+async function pollRunApprovingValidation(
+  stack: TestStack,
+  runId: string,
+  stageId: string,
+  timeoutMs = 25_000,
+): Promise<WorkflowState> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const run = await pollRun(stack, runId, ["awaiting_input"], Math.max(1, deadline - Date.now()));
+    if (run.awaiting?.stageId === stageId) {
+      return run;
+    }
+    if (run.awaiting?.stageId === "hitl.revision_validation") {
+      await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`等待 ${stageId} 超时（当前 awaiting ${run.awaiting?.stageId}）`);
+    }
+  }
+}
+
 interface GateArtifact {
   gate: { passed: boolean; reasons: string[]; rules: { rule: string; passed: boolean; detail: string }[] };
   factPreservation?: {
@@ -76,9 +104,11 @@ describe("Fact Preservation Gate（scripted workflow）", () => {
     const runId = created.body["runId"] as string;
 
     await approveTwice(stack, runId);
-    // r1 fail → revise（篡改）→ r2 pass 但 gate 失败 → plan r2 派发恢复条目 → revise（仍篡改）
-    // → r3 pass → 失败集合相同 → CONVERGED → stalled HITL
-    const stalled = await pollRun(stack, runId, ["awaiting_input"]);
+    // r1 fail → revise（篡改）→ Revision Validation 拦截（fact 漂移 → 条目 rejected，
+    // M6.7：先于 gate 的修订复核 HITL；测试以 approve 放行）→ r2 pass 但 gate 失败
+    // → plan r2 派发恢复条目 → revise（仍篡改）→ 复核再拦截 → r3 pass → 失败集合
+    // 相同 → CONVERGED → stalled HITL
+    const stalled = await pollRunApprovingValidation(stack, runId, "hitl.revision_stalled");
     expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
     const gateReasons = stalled.awaiting?.payload?.["gateReasons"] as string[];
     expect(gateReasons.join("\n")).toContain("fact_preservation");
@@ -98,13 +128,23 @@ describe("Fact Preservation Gate（scripted workflow）", () => {
     expect(r2.factPreservation?.formulaChanges.length).toBeGreaterThanOrEqual(1);
     expect(r2.factPreservation?.addedUnsupportedFacts.some((finding) => finding.reason === "formula_added")).toBe(true);
 
-    // 计划派发 fact_preserve 恢复条目（有章节归属，可执行）
+    // 计划派发 fact_preserve 恢复条目（有章节归属，可执行）。M6.7 完整生命周期：
+    // 恢复未执行 → Revision Validation 机器判 rejected（验证产物留档）→ 用户在
+    // 修订复核 HITL approve → 条目落 approved 终态（resolution 记录 user_approved）
+    const validation = JSON.parse(
+      await readFile(join(stack.root, project.id, "reviews", "revision-validation-r2.json"), "utf8"),
+    ) as { items: { kind: string; status: string }[] };
+    expect(
+      validation.items.filter((item) => item.kind === "fact_preserve").every((item) => item.status === "rejected"),
+    ).toBe(true);
     const plan = JSON.parse(
       await readFile(join(stack.root, project.id, "reviews", "revision-plan-r2.json"), "utf8"),
-    ) as { items: { id: string; kind: string; status: string; section: string; priority: string }[] };
+    ) as { items: { id: string; kind: string; status: string; section: string; priority: string; resolution?: string }[] };
     const factItems = plan.items.filter((item) => item.kind === "fact_preserve");
     expect(factItems.length).toBeGreaterThanOrEqual(1);
-    expect(factItems.every((item) => item.status === "planned" && item.priority === "high")).toBe(true);
+    expect(factItems.every((item) => item.priority === "high")).toBe(true);
+    expect(factItems.every((item) => item.status === "approved")).toBe(true);
+    expect(factItems.every((item) => (item.resolution ?? "").startsWith("user_approved"))).toBe(true);
 
     // 用户接受草稿：实验事实被篡改 → Draft 产物被拦截（run failed，FACT_PRESERVATION_FAILED）
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });

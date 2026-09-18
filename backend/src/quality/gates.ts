@@ -17,6 +17,9 @@ import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import type { FeasibilityReport } from "../agents/FeasibilityService.js";
 import type { ReviewSummary } from "../review/ReviewAggregator.js";
 import type { EvidenceCitationCoverage } from "./evidenceCitationCoverage.js";
+import type { RevisionValidationResult } from "../review/revisionValidation.js";
+import { countItemStatuses } from "../review/revisionValidation.js";
+import { describeClaimStrengthFindings } from "./claimStrength.js";
 import { describeCitationPreservation, type CitationPreservationSummary } from "./citationPreservation.js";
 import { describeFactPreservation, type FactPreservationSummary } from "./factPreservation.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
@@ -281,6 +284,14 @@ export interface QualityGateInput {
    * requireEvidenceBackedCitations=true 时参与阻断）。
    */
   evidenceCitationCoverage?: EvidenceCitationCoverage;
+  /**
+   * Revision Validation（M6.7 §10 Revision Gate）：最近一次修订的条目级复核
+   * 结果（Fact / Citation / Claim Strength / Evidence 再核验）。
+   * undefined = 调用方未计算或无可比修订（规则不出现）；提供了则呈现
+   * revision_items_resolved 与 claim_strength_guard 两条规则。用户在
+   * hitl.revision_validation 的 approve 决策覆盖自动判定（记录在案，不静默）。
+   */
+  revisionValidation?: RevisionValidationResult;
 }
 
 export interface QualityGateResult {
@@ -475,6 +486,32 @@ export function evaluateQualityGate(
     });
   }
 
+  // 17-18. Revision Gate（M6.7 §10）：修订条目全部解决 + claim 强度守卫。
+  // 用户 approve 决策覆盖自动判定（HITL 明示接受已知风险，记录在案）。
+  if (input.revisionValidation !== undefined) {
+    const validation = input.revisionValidation;
+    const userApproved = validation.userDecision?.decision === "approve";
+    const counts = countItemStatuses(validation);
+    rules.push({
+      rule: "revision_items_resolved",
+      passed: userApproved || (counts.rejected === 0 && counts.needsReview === 0),
+      detail: userApproved
+        ? `修订条目 validated=${counts.validated} rejected=${counts.rejected} needs_review=${counts.needsReview}；用户已在修订验证 HITL 明示接受（${validation.validationId}）`
+        : `修订条目 validated=${counts.validated} rejected=${counts.rejected} needs_review=${counts.needsReview}（${validation.validationId}；rejected 须重派发解决，needs_review 须人工确认后才能 Final）`,
+    });
+    const blocks = validation.claimStrength.filter((finding) => finding.action === "block");
+    const warnings = validation.claimStrength.filter((finding) => finding.action === "warning");
+    rules.push({
+      rule: "claim_strength_guard",
+      passed: userApproved || blocks.length === 0,
+      detail:
+        blocks.length === 0 && warnings.length === 0
+          ? "无 claim 强度升级问题"
+          : describeClaimStrengthFindings(validation.claimStrength) +
+            (userApproved ? "；用户已明示接受" : ""),
+    });
+  }
+
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);
   return {
     passed: reasons.length === 0,
@@ -502,6 +539,7 @@ export async function saveQualityGateReport(
     citationPreservation?: CitationPreservationSummary | null;
     factPreservation?: FactPreservationSummary | null;
     evidenceCitationCoverage?: EvidenceCitationCoverage;
+    revisionValidation?: RevisionValidationResult;
   } = {},
 ): Promise<string> {
   const dir = projects.reviewsDir(projectId);
@@ -518,6 +556,8 @@ export async function saveQualityGateReport(
     ...(extras.evidenceCitationCoverage !== undefined
       ? { evidenceCitationCoverage: extras.evidenceCitationCoverage }
       : {}),
+    // M6.7：修订条目复核明细（Revision Gate 两条规则的输入；UI / 审计可见）
+    ...(extras.revisionValidation !== undefined ? { revisionValidation: extras.revisionValidation } : {}),
     ...(typeof summary.reviewedRevision === "number"
       ? { revision: summary.reviewedRevision, reviewedRevision: summary.reviewedRevision }
       : {}),

@@ -509,6 +509,12 @@ const CITE_MARKER = /\[cite:drop\]/;
  *                  revision.plan 派发 fact_preserve 恢复条目；accept_draft 也会被 Draft 拦截
  */
 const FACT_MARKER = /\[fact:mutate\]/;
+/**
+ * M6.7 Claim Strength 标记：writing/revision 输出在修订基底之上追加强升级句
+ * （「显著提升」且无数字 / 无 formal evidence）→ Revision Validation 的
+ * claim_strength 检测命中（block 级：强 claim 弱证据）→ hitl.revision_validation。
+ */
+const STRENGTH_MARKER = /\[strength:escalate\]/;
 
 /** 脚本化 style-only 润色：只改表达（「本章节论述」→「本节论述」），不动引用 / 数字 / 公式 */
 function scriptedStylePolish(task: string, mode: StyleMode | undefined): string {
@@ -584,6 +590,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectStyleModes = new Map<string, StyleMode>();
   const projectCiteDrop = new Set<string>();
   const projectFactMutate = new Set<string>();
+  const projectStrengthEscalate = new Set<string>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
 
@@ -628,6 +635,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           if (FACT_MARKER.test(input.task)) {
             projectFactMutate.add(projectId);
           }
+          if (STRENGTH_MARKER.test(input.task)) {
+            projectStrengthEscalate.add(projectId);
+          }
         }
         output = projectCiteDrop.has(projectId) ? RESEARCH_JSON_TWO_REFS : RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
@@ -665,7 +675,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                   externalOutcomes,
                 )
               : withExternalOutcomes(
-                  scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId)),
+                  projectStrengthEscalate.has(projectId)
+                    ? `${scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId))}\n\n综上所述，本方法在该任务上的效果显著提升，显著优于现有方法。`
+                    : scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId)),
                   externalOutcomes,
                 );
       } else if (scope === "writing/style-polish") {

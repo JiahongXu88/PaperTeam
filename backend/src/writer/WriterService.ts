@@ -243,6 +243,10 @@ export class WriterService {
    * M5.7：externalDirectives 非空时，外部修改意见以「最高业务优先级」
    * 进入 prompt，且输出末尾携带 %%%PT-OUTCOMES%%% 执行报告行（applied /
    * conflict / not_applicable）；事实 / 引用 / 证据约束不因外部意见放宽。
+   *
+   * M6.7 §12：revisionItems 非空时，Writer 直接读取结构化 Revision Plan 条目
+   * （id / 风险档位 / 关联证据 / 修改要求），prompt 附「修改前依据」上下文；
+   * issues 通道保持兼容（旧调用 / 无计划回退）。
    */
   async reviseSection(params: {
     projectId: string;
@@ -256,6 +260,10 @@ export class WriterService {
     extraInstructions?: string;
     /** 外部修改意见（M5.7；缺省 = 行为与旧版完全一致） */
     externalDirectives?: ExternalDirectiveDispatch[];
+    /** 结构化修订计划条目（M6.7；本节命中的 applied 待执行条目） */
+    revisionItems?: RevisionPlanItem[];
+    /** 条目关联证据的完整记录池（M6.7 §6：修改前依据；缺省退化为 formal 快照） */
+    itemEvidence?: EvidenceRecord[];
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -268,7 +276,16 @@ export class WriterService {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
       ...this.timeoutOverride,
-      task: buildRevisePrompt(params),
+      task: buildRevisePrompt({
+        ...params,
+        ...(params.revisionItems !== undefined && params.revisionItems.length > 0
+          ? {
+              evidenceById: new Map(
+                (params.itemEvidence ?? params.evidence).map((record) => [record.id, record]),
+              ),
+            }
+          : {}),
+      }),
       projectId: params.projectId,
       contextScope: "writing/revision",
       metadata: {
@@ -577,6 +594,43 @@ function buildRepairPrompt(params: {
   ].join("\n");
 }
 
+/**
+ * M6.7 §12：结构化 Revision Item 渲染（Writer 直接读取计划条目）。
+ * 每条携带 id / kind / 风险档位 / 修改要求与「修改前依据的证据」——
+ * Revision ≠ Correct Revision：修改后的表述必须仍被关联证据支撑，
+ * 支撑不住就弱化，不允许顺势升级结论强度。
+ */
+function renderRevisionItemsBlock(
+  items: readonly RevisionPlanItem[],
+  evidenceById: Map<string, EvidenceRecord> | undefined,
+): string[] {
+  if (items.length === 0) {
+    return [];
+  }
+  const lines = items.map((item) => {
+    const constraints: string[] = [];
+    if (item.needsEvidence) {
+      constraints.push("只能基于现有 Evidence 修改；证据不足时弱化或删除，不允许编造");
+    }
+    if (item.riskLevel === "high") {
+      constraints.push("高风险条目：不得改动实验数值 / 既有引用 / 结论方向");
+    }
+    const related = (item.relatedEvidenceIds ?? []).map((id) => {
+      const record = evidenceById?.get(id);
+      return record !== undefined ? `[${id}] ${record.claim.slice(0, 100)}` : `[${id}]（证据库中不可用：按无证据处理）`;
+    });
+    return [
+      `- [${item.id}]（${item.kind}${item.riskLevel !== undefined ? ` / risk=${item.riskLevel}` : ""}）${item.problem}`,
+      `  修改要求：${item.instruction}`,
+      ...(constraints.length > 0 ? [`  约束：${constraints.join("；")}`] : []),
+      ...(related.length > 0
+        ? [`  修改前该论述依据的证据（修改后表述必须仍被其支撑，否则弱化）：${related.join("；")}`]
+        : []),
+    ].join("\n");
+  });
+  return ["", "===== 修订计划条目（结构化；逐条落实，修改后将逐条复核）=====", ...lines];
+}
+
 function buildRevisePrompt(params: {
   section: OutlineSection;
   outline: Outline;
@@ -587,6 +641,9 @@ function buildRevisePrompt(params: {
   buildError?: string;
   extraInstructions?: string;
   externalDirectives?: ExternalDirectiveDispatch[];
+  revisionItems?: RevisionPlanItem[];
+  /** revisionItems 关联证据的只读索引（M6.7 §6：修改前依据的渲染源） */
+  evidenceById?: Map<string, EvidenceRecord>;
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -643,6 +700,7 @@ function buildRevisePrompt(params: {
               (issue.suggestedAction ? `（建议：${issue.suggestedAction}）` : ""),
           )
         : ["（无审稿问题）"]),
+      ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
       ...externalBlock,
       "",
       "===== 可用 Evidence（已核验 verified 快照）=====",
@@ -691,6 +749,7 @@ function buildRevisePrompt(params: {
             (issue.suggestedAction ? `（建议：${issue.suggestedAction}）` : ""),
         )
       : ["（无审稿问题）"]),
+    ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
     ...externalBlock,
     "",
     "===== 可用 Evidence（已核验 verified 快照）=====",

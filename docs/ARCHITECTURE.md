@@ -690,9 +690,33 @@ Review / Build（强制复审与构建，闭环收敛）
   不实结果。诚实边界：这是保守的必要条件守卫，方向哨兵只覆盖确定的反转模式，语义改写仍依赖
   Reviewer 与人审。
 - **bounded revision loop**：Quality Gate 失败 → `revision.plan`（确定性派发，
-  一等落盘 artifact）→ `revision.revise`（Writer 按计划逐节修订）→ 强制复审 →
-  收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION）→ 不收敛 / 超限 HITL
-  （accept_draft / revise_more ≤3 / cancel）→ 循环 ≤ N 轮（默认 2）。
+  一等落盘 artifact）→ `revision.revise`（Writer 按计划逐节修订）→
+  **`revision.validate`（M6.7 Revision Validation：修订写入后、复审前的
+  条目级确定性复核）** → 强制复审 → 收敛判定（PASS / IMPROVED /
+  CONVERGED / REGRESSION）→ 不收敛 / 超限 HITL（accept_draft /
+  revise_more ≤3 / cancel）→ 循环 ≤ N 轮（默认 2）。
+- **Revision Safety（M6.7，`review/revisionItemStatus.ts` +
+  `review/revisionValidation.ts` + `quality/claimStrength.ts`）**：
+  Revision ≠ Correct Revision——Writer 执行（applied）不等于修订正确。
+  ① RevisionPlanItem 生命周期化：planned(≡pending) → applied →
+  validated / rejected / needs_review（rejected 可重派发或用户接受），
+  非法流转确定性拒绝；条目携带 riskLevel / relatedEvidenceIds /
+  targetChanged / resolution。② 四类复核：Fact / Citation Preservation
+  复用 M5.6（sourceRevision → revision 窗口）；**Claim Strength Gate**
+  （句级 diff：弱表述→强表述 / 新增强句；strong+insufficient → block、
+  strong+partial → warning、strong+direct 合法；授权 = 计划或 formal
+  evidence 文本含强 marker 或同数字——数字没变引用没动的「可能改善→
+  显著提升」强度漂移在此拦截）；**Evidence Re-validation**（条目关联
+  证据修订后仍存在且仍 formal（verified + 锚点）；新增引用 evidence-backed
+  覆盖记录）。违规按文件级归因到条目（摘要引用归组装根 main.tex）。
+  ③ Quality Gate 新增 `revision_items_resolved` / `claim_strength_guard`
+  （rejected / needs_review / block 阻断 Final；用户 approve 覆盖并记录）。
+  ④ HITL `hitl.revision_validation`（approve / reject=恢复修订前快照
+  （revision.restore，历史不改写）/ needs_review=保留但阻断 Final，Draft
+  不受阻）；回答新鲜度按 validationId。诚实边界：targetChanged=false 不
+  构成拒绝（要求是否落实由复审仲裁——finding 指纹再现即重派发）；Claim
+  Strength 是 marker 级启发式（与 styleInvariants 同级），语义级改写仍依赖
+  Reviewer 与人审。
 - **LaTeX 修复环**：Build 失败（质量问题不阻塞构建）→ 结构化诊断（文件 /
   行号 / 错误 / 附近行）→ `revision.repair_latex`（Writer 最小上下文修复，
   每项目自动 ≤2 次，可取消）→ 耗尽 → 带错误上下文修订或 HITL。

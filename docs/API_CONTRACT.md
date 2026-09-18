@@ -10,6 +10,11 @@
 > `awaiting.payload`、stale / 重复提交的 409 语义）；
 > 2026-09-10 M4.6：Evidence Workbench + Quality Gate UI 正式消费（§1.2d / §2 增补：
 > `GET /api/projects/:id/quality-gate?round=`、Evidence 核验字段、gate / evidence DTO）。
+> 2026-09-18 M6.7：Revision Safety（§1.4 增补：`hitl.revision_validation`
+> decision 契约 approve / reject / needs_review；revision-plan 条目生命周期字段
+> 与 Quality Gate 新规则 `revision_items_resolved` / `claim_strength_guard`；
+> `reviews/revision-validation-r{n}.json` 产物随 gate 产物
+> `revisionValidation` 字段可见）。
 > 本文档是 **React Web Workbench 与 Backend 之间的唯一契约**：
 > 前端只依赖本文列出的端点与 DTO，不 import 任何 Backend 内部类型；Backend 内部对象
 > （Pi AgentSession / Pi 原始 event / AgentRunHandle / WorkflowState 全量 / Store 实现）
@@ -197,7 +202,7 @@
 | `GET /api/projects/:id/build/log` | 编译日志尾部（上限字符，错误通常在末尾）→ `{log}` | PaperPanel 构建日志折叠区 |
 | `GET /api/projects/:id/revisions` | manuscript 修订事实（Authoritative）→ `{current, revisions: [{revision, stage, runId, createdAt, contentHash}]}` | （审计 / 后续版本管理 UI） |
 | `GET /api/projects/:id/iterations` | 修订迭代收敛历史（每轮 gate 的 scorecard / outcome / planId）→ `{iterations: RevisionIterationView[]}` | PaperPanel 迭代历史卡 |
-| `GET /api/projects/:id/revision-plan?round=N` | 确定性修订计划（缺省最新轮）→ `{round, plan}`；非正整数 round → 400 | （审计 / 后续修订计划 UI） |
+| `GET /api/projects/:id/revision-plan?round=N` | 确定性修订计划（缺省最新轮）→ `{round, plan}`；非正整数 round → 400。M6.7 起 plan.items 为生命周期条目：status ∈ planned(≡pending) / skipped / applied / validated / rejected / needs_review / approved，携带 riskLevel / relatedEvidenceIds / appliedRevision / targetChanged / resolution（机器可读原因码） | （审计 / 后续修订计划 UI） |
 
 > 2026-09-10 M4.7 语义约定：
 > - **Draft 语义**：Quality Gate FAIL **不阻塞** Draft——Build 通过即冻结
@@ -213,6 +218,15 @@
 >   计划空）与 `hitl.revision_overflow`（预算耗尽）均为
 >   `accept_draft / revise_more / cancel`；`accept_draft` 为用户知情接受
 >   （buildOk=false 时如实记录无 PDF）。
+> - **修订复核 HITL（M6.7）**：`hitl.revision_validation` 在 Revision
+>   Validation 发现风险项（事实漂移 / 引用无依据丢失 / 强 claim 弱证据）时
+>   出现（先于复审）；decision 为 `approve`（接受本轮修订，条目 → approved，
+>   Revision Gate 规则按用户决策放行并记录在案）/ `reject`（恢复修订前快照
+>   ——等价 §1.2f restore 语义：新的不可变修订，历史不改写）/
+>   `needs_review`（保留修订但 `revision_items_resolved` 阻断 Final；Draft
+>   路径不受阻）/ `cancel`。payload 携带条目明细（id / kind / section /
+>   status / reasons）、claimStrength findings、失效证据与无依据删除引用
+>   清单。回答新鲜度按 validationId（每轮复核唯一）。
 
 ### 1.2f M4.8 已消费 ✅（版本体验：历史 / 比较 / 恢复）
 

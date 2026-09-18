@@ -1,6 +1,24 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-17（**M6.6 Evidence-aware Writing Loop COMPLETE**——
+> 更新日期：2026-09-18（**M6.7 Revision Safety & Quality Gate Evolution
+> COMPLETE**——修订闭环从「Reviewer 发现问题 → Writer 修改」升级为
+> 「Revision Plan（条目生命周期）→ Evidence-aware Revision → Revision
+> Validation → Quality Gate（Revision Gate）」：RevisionPlanItem 升级为
+> 带 riskLevel / relatedEvidenceIds / 状态机的 Revision Item（planned(≡pending)
+> → applied → validated / rejected / needs_review / approved，非法流转确定性
+> 拒绝）；新增 `revision.validate` stage（修订写入后、复审前，纯确定性：
+> Fact / Citation Preservation 复用 M5.6 + Claim Strength 强 claim 弱证据
+> 升级检测 + Evidence Re-validation 关联证据再核验 + 新增引用 evidence-backed
+> 覆盖，结果按文件归因到条目并回写终态）；Reviewer 结构化输出新增
+> evidenceRequirement（required / optional / none）；Writer reviseSection
+> 直接读取结构化 Revision Item（id / 风险 / 关联证据 / 修改前依据）；
+> Quality Gate 新增 revision_items_resolved 与 claim_strength_guard 两条规则
+> （rejected / needs_review 阻断 Final；用户 approve 覆盖并记录在案）；
+> HITL `hitl.revision_validation`（approve / reject=恢复修订前快照 /
+> needs_review=保留但阻断 Final）；产物 `reviews/revision-validation-r*.json`；
+> 红线维持：零新增 Agent、Runtime / Retrieval / Evidence Grounding 不动；
+> 详见下方 M6.7 条目与 DECISIONS.md D-0039；下一节点 **M6.8 Evaluation
+> Framework**。同日 **M6.6 Evidence-aware Writing Loop COMPLETE**——
 > Writer / Reviewer 真正消费 Verified Evidence：EvidenceSelectionService
 > （usableEvidence 从 workflow definitions 下沉；正式证据 = verified +
 > sourceId + chunkId 三件套，legacy unverified 派生标识
@@ -11,8 +29,9 @@
 > evidence_query / get_chunk 主动查询指引；Quality Gate 新增
 > citations_evidence_backed 规则（citation ↔ verified evidence 覆盖可检测；
 > 默认呈现不阻断，requireEvidenceBackedCitations=true 才参与判定）；
-> 详见下方 M6.6 条目与 DECISIONS.md D-0038；下一节点 **M6.7 收口
-> （Researcher legacy path 迁移 + usableEvidence 完全退役）**；同日
+> 详见下方 M6.6 条目与 DECISIONS.md D-0038；（M6.6 原计划的「M6.7 收口
+> （Researcher legacy path 迁移 + usableEvidence 完全退役）」被修订安全
+> 里程碑取代，legacy 收口并入 M6.8 Evaluation 前置清理）**；同日
 > **M6.5 Evidence Grounding Pipeline COMPLETE**——
 > evidence/ 域：EvidenceCandidate 候选-转正状态机（pending → verified /
 > mismatch / rejected / unverifiable）+ 三段核验管道 EvidenceGroundingService
@@ -134,7 +153,80 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
 2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE；
 2026-09-17 M6.3 Research Discovery & Search COMPLETE；2026-09-17 M6.4
 Project RAG & Hybrid Retrieval COMPLETE；2026-09-17 M6.5 Evidence Grounding
-Pipeline COMPLETE；2026-09-17 M6.6 Evidence-aware Writing Loop COMPLETE）**：
+Pipeline COMPLETE；2026-09-17 M6.6 Evidence-aware Writing Loop COMPLETE；
+2026-09-18 M6.7 Revision Safety & Quality Gate Evolution COMPLETE）**：
+
+- **M6.7 Revision Safety & Quality Gate Evolution（✅ 2026-09-18）**：
+  - **范围**：修订安全闭环——Revision ≠ Correct Revision。RevisionPlanItem
+    生命周期化（状态机 / riskLevel / relatedEvidenceIds）、`revision.validate`
+    stage（修订写入后、复审前的四类确定性复核 + 条目归因）、Claim Strength
+    Gate（强 claim 弱证据升级检测）、Evidence Re-validation（关联证据再核验）、
+    Quality Gate Revision Gate（revision_items_resolved / claim_strength_guard）、
+    HITL `hitl.revision_validation`、Reviewer evidenceRequirement 结构化输出、
+    Writer 直接读取结构化 Revision Item。**不含**：新增 Agent / Revision Agent
+    （红线维持：少量角色 Agent + 强 Tool + Evidence Layer + Quality Gate）、
+    Runtime / Retrieval / Evidence Grounding 改动、Writer 大改（reviseSection
+    增参兼容，issues 通道保留）。
+  - **Revision Item 生命周期（§5）**：字段映射 problem≡finding、
+    instruction≡requestedChange、planned≡pending（M4.7 名称兼容）；新增
+    `riskLevel`（确定性派生：fact / citation / external → high，major →
+    medium，表达 / 语法 → low）与 `relatedEvidenceIds`（finding evidenceRef ∪
+    citation 条目经 bib key 关联的 verified evidence，evidenceLinks 与
+    matchBibliographyKey 同源）。状态机（review/revisionItemStatus.ts）：
+    planned → applied → validated / rejected / needs_review；rejected →
+    planned（重派发）/ approved（用户）；needs_review → approved / rejected /
+    validated；validated / approved / skipped 为终态——非法流转（如
+    planned → validated 跳过执行、终态复活）确定性抛错，不做部分应用。
+    每次流转补写 appliedAt / appliedRevision / targetChanged / resolvedAt /
+    resolution（机器可读原因码 + 人读说明）。
+  - **Revision Validation stage（§6-§9）**：`revision.validate` 在
+    revision.revise / revision.apply 之后、尾部重走（citation.verify）之前执行，
+    纯确定性无 LLM。四类复核：① Fact Preservation（复用 M5.6 compute
+    —sourceRevision → revision 窗口）；② Citation Preservation（复用 M5.6）；
+    ③ Claim Strength（M6.7 新：checkClaimStrengthEscalation 句级 diff——
+    弱表述→强表述 / 新增强句，授权 = 计划文本或关联 formal evidence 文本包含
+    强 marker 或同数字；strong+insufficient → block、strong+partial →
+    warning、strong+direct 合法）；④ Evidence Re-validation（条目
+    relatedEvidenceIds 在修订后仍存在且仍 formal（verified + 锚点））。
+    违规按**文件级归因**到条目（口径与派发侧 sectionMatches 一致；摘要引用
+    归组装根 main.tex），applied → validated / rejected / needs_review 终态
+    回写计划。产物 `reviews/revision-validation-r{round}.json`（含 fact /
+    citation 明细、claim findings、citation delta（新增引用 evidence-backed
+    覆盖）、evidence recheck、用户决策）。诚实边界：targetChanged=false 不
+    构成拒绝——「要求是否落实」由下一轮复审仲裁（finding 指纹再现 → 新计划
+    重派发）；本层只裁四类确定性违规。
+  - **Claim Strength Gate（§8）**：claim strength（weak / moderate / strong
+    marker）× evidence support（direct / partial / insufficient，来自关联
+    formal evidence 的 supportStrength）矩阵；升级到 strong 且未授权 →
+    block（条目 rejected）/ warning（条目 needs_review）。与 Fact /
+    Citation Preservation 互补：数字没变、引用没动但「可能改善→显著提升」
+    的强度漂移在此拦截。启发式与 styleInvariants 同级（marker 级，非语义
+    理解；宁可漏报不制造海量误报）。
+  - **Quality Gate Revision Gate（§10）**：新增两条规则——
+    `revision_items_resolved`（rejected / needs_review > 0 → FAIL；用户
+    approve → 按决策放行并记录）与 `claim_strength_guard`（block 级 finding
+    > 0 → FAIL；warning 计数可解释）。输入对齐被审阅修订才消费（旧 / 不对齐
+    如 restore 后 → 规则不出现，与 Preservation null 同纪律）；明细随 gate
+    产物落盘。M5.6 两层 Preservation 规则口径不变。
+  - **HITL（§11）**：`hitl.revision_validation`（validation blocked 时出现，
+    先于复审）：approve（条目 → approved，Revision Gate 放行）/ reject
+    （ManuscriptRevisionStore.restore 恢复 sourceRevision 快照 = 新的不可变
+    修订，历史不改写）/ needs_review（保留修订但 Revision Gate 阻断 Final，
+    Draft 路径不受阻）。回答新鲜度按 validationId（防 Writer 输出与原文相同、
+    created=false 时修订号撞号导致误判已回答）。用户最终控制：validated 是
+    机器复核终态，不接受用户翻转（要推翻走 reject）。
+  - **Reviewer 结构化输出（§13）**：ReviewIssue 新增可选
+    `evidenceRequirement`（required / optional / none；非法值丢弃不整条
+    拒绝），prompt 明确要求 fact / evidence_gap 给 required；确定性兜底
+    按 category 推断（needsEvidence 优先消费显式声明）。
+  - **Writer 接入（§12）**：reviseSection 新增 `revisionItems` / `itemEvidence`
+    参数——prompt 渲染「修订计划条目（结构化）」区块（id / kind / riskLevel /
+    needsEvidence 约束 / 修改要求 / 关联证据「修改前依据」：修改后表述必须
+    仍被其支撑否则弱化）；issues 通道保留（旧调用 / 执行期派生回退兼容）。
+  - **测试**：后端 +31（revisionItemStatus 5 / claimStrength 8 /
+    revisionValidation 9 / revisionGate 5 / 全链路 e2e 3）+ M5.6 gate e2e
+    适配（生命周期断言：机器 rejected → 用户 approved 留档）；全量 1171
+    通过 0 失败。scriptedRuntime 新增 `[strength:escalate]` 标记。决策 D-0039。
 
 - **M6.6 Evidence-aware Writing Loop（✅ 2026-09-17）**：
   - **范围**：让 Writer / Reviewer 真正消费 Verified Evidence——Evidence

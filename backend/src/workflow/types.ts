@@ -206,6 +206,7 @@ export type WorkflowDomainEventType =
   | "workflow.failed"
   | "quality_gate.passed"
   | "quality_gate.failed"
+  | "revision.validated"
   | "build_gate.passed"
   | "build_gate.failed"
   | "fact_preservation.blocked_draft"

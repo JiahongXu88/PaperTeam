@@ -52,6 +52,34 @@ async function approveTwice(stack: TestStack, runId: string): Promise<void> {
   await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
 }
 
+/**
+ * M6.7：修订复核 HITL（hitl.revision_validation）出现时自动 approve（用户明示
+ * 接受本轮修订——含无依据的引用丢失），直到出现目标 stage 的 awaiting_input。
+ * 既有断言口径不变：approve 后 Revision Gate 按用户决策放行，gate 阻止项仍只有
+ * citation_keys_preserved。
+ */
+async function pollRunApprovingValidation(
+  stack: TestStack,
+  runId: string,
+  stageId: string,
+  timeoutMs = 25_000,
+): Promise<WorkflowState> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const run = await pollRun(stack, runId, ["awaiting_input"], Math.max(1, deadline - Date.now()));
+    if (run.awaiting?.stageId === stageId) {
+      return run;
+    }
+    if (run.awaiting?.stageId === "hitl.revision_validation") {
+      await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+      continue;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`等待 ${stageId} 超时（当前 awaiting ${run.awaiting?.stageId}）`);
+    }
+  }
+}
+
 interface GateArtifact {
   gate: { passed: boolean; reasons: string[]; rules: { rule: string; passed: boolean; detail: string }[] };
   citationPreservation?: {
@@ -77,9 +105,11 @@ describe("Citation Preservation Gate（scripted workflow）", () => {
     const runId = created.body["runId"] as string;
 
     await approveTwice(stack, runId);
-    // r1 fail → revise（删光）→ r2 pass，但 gate 失败（IMPROVED：失败规则集缩小）→ plan r2 → revise（仍删光）
-    // → r3 pass → gate 失败且失败集合相同 → CONVERGED → stalled HITL
-    const stalled = await pollRun(stack, runId, ["awaiting_input"]);
+    // r1 fail → revise（删光）→ Revision Validation 拦截（引用无依据丢失 → 条目
+    // rejected，M6.7：先于 gate 的修订复核 HITL；测试以 approve 放行）→ r2 pass，
+    // 但 gate 失败（IMPROVED：失败规则集缩小）→ plan r2 → revise（仍删光）→ 复核
+    // 再拦截 → r3 pass → gate 失败且失败集合相同 → CONVERGED → stalled HITL
+    const stalled = await pollRunApprovingValidation(stack, runId, "hitl.revision_stalled");
     expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
     expect(stalled.awaiting?.payload?.["outcome"]).toBe("CONVERGED");
     const gateReasons = stalled.awaiting?.payload?.["gateReasons"] as string[];
@@ -102,16 +132,26 @@ describe("Citation Preservation Gate（scripted workflow）", () => {
     const previousFiles = r2.citationPreservation?.unexpectedRemoved[0]?.files ?? [];
     expect(previousFiles).toEqual(["sections/experiments.tex"]);
 
-    // 第二轮计划：为每个上一修订中引用过的章节派发 citation_removed 恢复条目（有章节归属，可执行）
+    // 第二轮计划：为每个上一修订中引用过的章节派发 citation_removed 恢复条目（有章节归属，可执行）。
+    // M6.7 完整生命周期：Writer 仍删光引用 → Revision Validation 机器判 rejected
+    // （验证产物留档）→ 用户 approve → 条目落 approved（resolution 记录 user_approved）
+    const validation = JSON.parse(
+      await readFile(join(stack.root, project.id, "reviews", "revision-validation-r2.json"), "utf8"),
+    ) as { items: { kind: string; status: string }[] };
+    expect(
+      validation.items.filter((item) => item.kind === "citation_removed").every((item) => item.status === "rejected"),
+    ).toBe(true);
     const plan = JSON.parse(
       await readFile(join(stack.root, project.id, "reviews", "revision-plan-r2.json"), "utf8"),
-    ) as { sourceRevision: number; items: { id: string; kind: string; status: string; section: string; priority: string }[] };
+    ) as { sourceRevision: number; items: { id: string; kind: string; status: string; section: string; priority: string; resolution?: string }[] };
     expect(plan.sourceRevision).toBe(3); // 第二轮 review 审阅的是修订后的 rev-3；gate 比较的是 rev-2 → rev-3
     const removedItems = plan.items.filter((item) => item.kind === "citation_removed");
     expect(removedItems.length).toBe(previousFiles.length);
-    expect(removedItems.every((item) => item.status === "planned" && item.priority === "high")).toBe(true);
+    expect(removedItems.every((item) => item.priority === "high")).toBe(true);
     expect(removedItems.map((item) => item.section).sort()).toEqual([...previousFiles].sort());
     expect(removedItems[0]?.id).toBe("citation-removed:lewis2020rag:sections/experiments.tex");
+    expect(removedItems.every((item) => item.status === "approved")).toBe(true);
+    expect(removedItems.every((item) => (item.resolution ?? "").startsWith("user_approved"))).toBe(true);
 
     // 用户接受草稿：Draft 仍可构建，但 build.draft 结果与事件明确暴露引用保持失败；没有 Final
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
