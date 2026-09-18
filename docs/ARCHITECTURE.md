@@ -1477,3 +1477,76 @@ Quality Gate 规则 16 citations_evidence_backed
 - **Known Limitation**：工具装配仍以 index.ts 的 roleCustomTools 单点
   装配（RoleDefinition {tools, skills} 集中化收敛未做——影响面大，
   记录待后续）。
+
+## 18. Evaluation Framework（M6.8 已实现；D-0040）
+
+评估基建（不是产品功能）：以可重复的对照实验回答三个问题——Evidence
+Grounding 是否降低错误（Exp1）、Revision Safety 是否降低事实漂移（Exp2）、
+Agent Workflow 是否比普通 LLM / RAG 更可靠（Exp3）。被测系统零改动
+（M6.8 红线：不新增 Agent、不改 Runtime / Workflow / Evidence Pipeline /
+Writer / Reviewer）；评估代码独立成域，只通过公开服务接口驱动。
+
+### 18.1 代码与产物布局
+
+```text
+backend/src/evaluation/
+  types.ts                  # 共享类型（场景 / 结果 / 指标 / 报告 schema）
+  datasets/                 # 数据集 + 结构校验（grounding×6 / revision×7 / workflow×5）
+  metrics/                  # 纯函数指标（grounding / revision / workflow / calibration）
+  runners/                  # harness（评估栈构建）+ experiment1/2/3 + report
+  cli.ts                    # CLI（npm run evaluation → scripts/evaluation.mjs → dist）
+backend/test/evaluation/    # 测试：场景校验 / 指标 / 故障注入 / 报告 / 基线对照
+evaluation/
+  reports/                  # 生成的报告（JSON 事实源 + Markdown 摘要，入 Git）
+  calibration/records.jsonl # 人工校准记录（人工维护；example 模板入库）
+```
+
+### 18.2 评估栈（runners/harness.ts）
+
+- **GroundingHarness（Exp1）**：最小服务集直连（SourceStore / Retrieval /
+  Evidence 候选管道 / 三段核验），ScholarlyResolver 注入数据集内置
+  GroundTruthScholarlyProvider（按 authoritativeYear 判 match/mismatch 的
+  确定性替身）；Stage 3 语义 judge 注入 GroundTruthJudgeRuntime（按
+  ground truth 返回 supported / unsupported——唯一 LLM 阶段的确定性替身）。
+- **WorkflowHarness（Exp2/3）**：完整 `buildServiceStack` +
+  `WorkflowOrchestrator`（与生产同一引擎），scripted runtime 驱动（含
+  `[fact:mutate]` / `[cite:drop]` / `[strength:escalate]` 故障标记——
+  复用 src 侧唯一事实源，不重复实现）；LaTeX 假 runner（编译恒成功）。
+  `driveRunToTerminal` 泛化 HITL 驱动（approve / 策略化 revision_validation /
+  stalled·overflow → accept_draft），超预算如实上报不伪造终态。
+- 全部临时根 mkdtemp 独立命名空间，跑完即删；评估只读系统、只写
+  evaluation/reports/。
+
+### 18.3 三实验设计（臂 × 注入 × 指标）
+
+- **Exp1 Evidence Grounding**（三臂）：plain-llm（零核验自报入池）/
+  rag（真实检索条件化——命中即用 chunk 逐字切片替换 quote，无核验）/
+  paperteam（三段核验，verified 才入正式池）。注入 fabricated_quote /
+  unsupported_claim / metadata_mismatch 三类。指标：unsupported claim
+  rate / fabricated citation rate / evidence coverage；运行期「处置 vs
+  ground truth」一致性自检（不一致 → issues + 非零退出码）。
+- **Exp2 Revision Safety**（两臂）：baseline（Reviewer→Writer 直通，
+  同源故障由 scriptedRevision 物化）vs paperteam（全链路闭环 + HITL
+  策略默认 reject=恢复快照）。指标：fact violation / citation loss /
+  claim escalation 存活率 + false acceptance（零信号放行）+ false
+  rejection（干净对照误拦，over-blocking 度量）。
+- **Exp3 Agent Workflow**（两臂）：plain-llm（scenario 携带的代表性单次
+  生成，缺陷如实标注）vs paperteam（完整 idea_to_paper；带语料场景
+  run 前预置 anchored 候选、经 evidence.ground 真实转正）。指标：claim
+  correctness（可追溯到 verified evidence）/ citation correctness（反
+  捏造）/ completeness（stage+章节+论断+引用四项平均）/ human
+  preference（校准记录驱动，无记录 = null 不伪造）。
+- **人工校准**：records.jsonl（claim / prediction / humanLabel / reason）
+  → 一致率 + 逐 prediction 分组；Exp3 偏好用 humanLabel=prefer-<arm>。
+
+### 18.4 如实边界（报告 limitations 同口径）
+
+- scripted 离线实验度量**确定性安全机制对注入故障的拦截率与管线保障**
+  （traceability / 反捏造 / 完整度），不是真实模型生成质量；生成质量与
+  人工偏好结论需要 live run + 人工校准（框架已预留，属后续节点）。
+- rag 臂的「检索命中即消除捏造引文」是 RAG 生成条件化的建模；检索命中
+  本身由真实 RetrievalService 实测（跨语言 claim 无词重叠时不命中——
+  M6.4 Known Limitation，如实计入）。
+- baseline 臂「无系统信号」是建模事实（无安全机制可用）不是测量值；
+  Exp2 的 paperteam 存活率依赖 HITL 策略（用户 approve 可知情放行，
+  留痕不阻断——设计行为）。

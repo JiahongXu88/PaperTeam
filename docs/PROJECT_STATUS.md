@@ -1,6 +1,27 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-18（**M6.7 Revision Safety & Quality Gate Evolution
+> 更新日期：2026-09-18（**M6.8 Agent Reliability Evaluation Framework
+> COMPLETE**——建立评估基建回答三个实验问题，不新增产品功能（红线：
+> 零新增 Agent、不改 Runtime / Workflow 核心 / Evidence Pipeline /
+> Writer / Reviewer）：`backend/src/evaluation/`（datasets/metrics/runners/
+> cli）+ `npm run evaluation` 统一入口（scenario 选择 / HITL 策略）+
+> `evaluation/reports/*.json` 结构化报告 + `evaluation/calibration/
+> records.jsonl` 人工校准接口（prediction vs humanLabel 一致率 + Exp3
+> prefer-<arm> 偏好）；高质量小数据集（Exp1 六 / Exp2 七 / Exp3 五），
+> 自造学术语料 + ground truth 标注 + 结构校验（脏数据拒绝运行）；三
+> 实验：①Evidence Grounding 三臂（plain-llm / rag / paperteam）注入
+> fabricated quote / unsupported claim / metadata mismatch——错误率
+> 25.0%→7.1%→0%（unsupported 17.9%→0% 仅 paperteam，rag 持平）且
+> 正例 coverage 100% 无损；②Revision Safety 两臂注入
+> [fact:mutate]/[cite:drop]/[strength:escalate]（scriptedRuntime 同源
+> 故障）——存活率 / 零信号放行 100%→0%、干净对照零误拦、拦截点前移至
+> revision.validate；③Agent Workflow 两臂——traceability 0→60%（无语料
+> 场景按 M6.6 口径诚实计 0）、反捏造 40→100%、完整度 24→100%、人工
+> 偏好 null（无校准记录不伪造）；scripted 离线边界如实声明（度量确定性
+> 安全机制对注入故障的拦截率与管线保障，非真实模型生成质量——live run
+> 属后续）；评估代码零 import 测试辅助、临时根即用即删；详见下方 M6.8
+> 条目与 docs/research/M6.8_EVALUATION_REPORT.md、DECISIONS.md D-0040。
+> 同日 **M6.7 Revision Safety & Quality Gate Evolution
 > COMPLETE**——修订闭环从「Reviewer 发现问题 → Writer 修改」升级为
 > 「Revision Plan（条目生命周期）→ Evidence-aware Revision → Revision
 > Validation → Quality Gate（Revision Gate）」：RevisionPlanItem 升级为
@@ -154,7 +175,66 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
 2026-09-17 M6.3 Research Discovery & Search COMPLETE；2026-09-17 M6.4
 Project RAG & Hybrid Retrieval COMPLETE；2026-09-17 M6.5 Evidence Grounding
 Pipeline COMPLETE；2026-09-17 M6.6 Evidence-aware Writing Loop COMPLETE；
-2026-09-18 M6.7 Revision Safety & Quality Gate Evolution COMPLETE）**：
+2026-09-18 M6.7 Revision Safety & Quality Gate Evolution COMPLETE；2026-09-18
+M6.8 Agent Reliability Evaluation Framework COMPLETE）**：
+
+- **M6.8 Agent Reliability Evaluation Framework（✅ 2026-09-18）**：
+  - **范围**：评估基建（不新增产品功能）——回答三个实验问题：Evidence
+    Grounding 是否降低错误 / Revision Safety 是否降低事实漂移 / Agent
+    Workflow 是否比普通 LLM 或 RAG 更可靠。代码
+    `backend/src/evaluation/`（types / datasets / metrics / runners / cli）
+    + `scripts/evaluation.mjs`（`npm run evaluation` 统一入口：experiment
+    / scenario 选择、hitl-policy、out 目录、--list）+ 报告
+    `evaluation/reports/*.json`（schemaVersion=1 事实源 + Markdown 摘要）
+    + 人工校准 `evaluation/calibration/records.jsonl`（JSONL：claim /
+    prediction / humanLabel / reason → 一致率 + 逐 prediction 分组 +
+    Exp3 prefer-<arm> 偏好；脏行如实计数不炸报告）。**不含**：新增
+    Agent / 修改 Runtime / Workflow 核心 / Evidence Pipeline / Writer /
+    Reviewer（红线维持）、真实模型 live 评估（后续节点）、大规模数据集
+    （明确选择高质量小数据）。
+  - **数据集**：Exp1 六场景（自造中英学术语料 2-3 来源 × 正例 2-3 +
+    故障 1-3）/ Exp2 七场景（三类注入 + 干净对照 2）/ Exp3 五场景
+    （语料·修订环·无语料·中文·多轮收敛，各附代表性单次生成基线）。
+    结构校验（needle 逐字、fabricated quote 不在语料、marker↔注入类别
+    一致、metadataCorrupted 必配 authoritativeYear、正例不得锚定损坏
+    元数据来源——首轮实跑发现的数据设计错误反推的规则）CLI 启动与
+    测试双重执行，脏数据拒绝运行。
+  - **Exp1（grounding）**：三臂 plain-llm（零核验自报入池）/ rag（真实
+    RetrievalService 条件化：命中即用 chunk 逐字切片替换 quote，无核验；
+    跨语言无词重叠不命中如实计入——M6.4 Known Limitation 口径）/
+    paperteam（三段核验；metadata 权威记录与语义 judge 用数据集内置
+    ground-truth 确定性替身，如实标注）。指标 unsupported claim /
+    fabricated citation / evidence coverage + 处置通道计数；「处置 vs
+    ground truth」一致性自检（不一致 → issues + 非零退出码，本轮
+    0 不一致）。
+  - **Exp2（revision safety）**：两臂 baseline（Reviewer→Writer 直通；
+    同源故障由 scriptedRevision 物化——与 paperteam 臂同一份注入实现）
+    vs paperteam（WorkflowOrchestrator 全链路 + revision.validate +
+    Gate + HITL 策略默认 reject）；指标三类存活率 + false acceptance +
+    false rejection（over-blocking）。
+  - **Exp3（agent workflow）**：两臂 plain-llm（scenario 携带代表性单次
+    生成，缺陷如实标注）vs paperteam（完整 idea_to_paper；带语料场景
+    run 前预置 anchored 候选、经 evidence.ground 真实转正）；指标 claim
+    correctness（可追溯 verified evidence）/ citation correctness（反
+    捏造）/ completeness（stage+章节+论断+引用四项平均）/ human
+    preference（无记录 null 不伪造）。
+  - **结果**（evaluation/reports/，scripted 离线确定性）：Exp1
+    fabricated 25.0%→7.1%（rag）→0%（paperteam）、unsupported
+    17.9%→17.9%（rag 持平——引文真实≠论断被支撑）→0%、coverage 100%
+    无损、处置通道 accepted 16 / quote_mismatch 5 / judge 5 / metadata 2
+    与故障类一一对应；Exp2 三类存活率与零信号放行 100%→0%、干净对照
+    零误拦、全部场景 Final、拦截点前移至 revision.validate（gate 安全
+    规则全程 PASS——故障修订从未到达 gate，M6.7 分层按设计生效）；Exp3
+    traceability 0→60%（无语料场景按 M6.6 口径诚实计 0）、反捏造
+    40→100%、完整度 24→100%。
+  - **测试**：后端 +32（scenarios 7 / metrics 12 / faultInjection 7
+    （含 [cite:drop] 全链路 e2e）/ report 4 / baseline 2）；全量 1203
+    通过 0 失败（M6.7 基线 1171 零回归）；`tsconfig.build.json` 全绿。
+    已知环境事实：全量 tsc（含 test/）在当前 node_modules（typescript
+    ^5.7.0 区间漂移至 5.9.3）下有 17 个存量类型错误，stash 验证在
+    HEAD 上同样存在，非本轮引入、不在本轮顺手修（避免混入无关 diff）。
+    决策 D-0040；报告 docs/research/M6.8_EVALUATION_REPORT.md（含论文
+    主张映射与诚实约束、后续 live run 计划）。
 
 - **M6.7 Revision Safety & Quality Gate Evolution（✅ 2026-09-18）**：
   - **范围**：修订安全闭环——Revision ≠ Correct Revision。RevisionPlanItem

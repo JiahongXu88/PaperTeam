@@ -1,0 +1,2 @@
+{"experiment":1,"scenarioId":"g1-rag-survey","arm":"plain-llm","claim":"启用 retrieval 后事实错误率下降 92%","prediction":"unsupported","humanLabel":"unsupported","reason":"原文只支撑 38%，92% 属夸大","recordedAt":"2026-09-18T00:00:00Z"}
+{"experiment":3,"scenarioId":"w1-corpus-clean-final","arm":"plain-llm","claim":"单次生成 vs 全管线产出对比","prediction":"prefer-paperteam","humanLabel":"prefer-paperteam","reason":"引用可追溯、结构完整","recordedAt":"2026-09-18T00:00:00Z"}

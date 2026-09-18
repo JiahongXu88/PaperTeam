@@ -16,6 +16,35 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.8 Agent Reliability Evaluation Framework（✅ 2026-09-18）
+
+- **新增评估基建**（evaluation infrastructure，不新增产品功能——红线：
+  零新增 Agent、不改 Runtime / Workflow 核心 / Evidence Pipeline /
+  Writer / Reviewer）：`backend/src/evaluation/` 新域（types / datasets /
+  metrics / runners / cli）+ `npm run evaluation` 统一入口
+  （`scripts/evaluation.mjs`；experiment / scenario 选择、--hitl-policy、
+  --out、--list）+ 结构化报告 `evaluation/reports/*.json`（schemaVersion=1
+  事实源 + Markdown 摘要）+ 人工校准接口
+  `evaluation/calibration/records.jsonl`（claim / prediction /
+  humanLabel / reason → 自动指标一致率 + Exp3 prefer-<arm> 人工偏好；
+  脏行如实计数）。数据集高质量小数据（Exp1 六 / Exp2 七 / Exp3 五场景，
+  自造中英学术语料 + ground truth 标注 + 结构校验，脏数据拒绝运行）。
+- **三实验结果**（scripted 离线确定性，报告与 limitations 同行）：Exp1
+  Evidence Grounding 三臂（plain-llm / rag / paperteam）：fabricated
+  citation rate 25.0%→7.1%→0%、unsupported claim rate 17.9%→17.9%→0%
+  （rag 不核语义、paperteam judge 补位）、evidence coverage 100% 无损。
+  Exp2 Revision Safety 两臂：[fact:mutate] / [cite:drop] /
+  [strength:escalate] 注入下存活率与零信号放行 100%→0%、干净对照零误拦、
+  拦截点前移至 revision.validate。Exp3 Agent Workflow 两臂：claim
+  traceability 0→60%（无语料场景按 M6.6 口径诚实计 0）、citation
+  correctness 40→100%、completeness 24→100%、human preference 无校准
+  记录为 null（不伪造）。scripted 边界如实声明：度量确定性安全机制对
+  注入故障的拦截率与管线保障，非真实模型生成质量（live run 属后续）。
+- **测试**：后端 +32（scenarios 7 / metrics 12 / faultInjection 7 含
+  [cite:drop] 全链路 e2e / report 4 / baseline 2），全量 1203 通过 0
+  失败（零回归）；`tsconfig.build.json` 全绿。决策 D-0040；报告
+  docs/research/M6.8_EVALUATION_REPORT.md。
+
 ### M6.7 Revision Safety & Quality Gate Evolution（✅ 2026-09-18）
 
 - 修订闭环升级为 Revision ≠ Correct Revision（revision safety and

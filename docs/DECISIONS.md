@@ -1109,3 +1109,63 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   revisionValidation / revisionGate（新）+ revisionValidationFlow（新 e2e）；
   citationPreservationGate / factPreservationGate / revisionLoop 断言随
   生命周期语义更新。
+
+## D-0040 M6.8 Evaluation Framework：scripted 离线确定性评估（ground truth 数据集 + 三实验三/两臂 + fault injection 复用 scriptedRuntime 标记 + 人工校准接口），不新增产品功能
+
+- **日期**：2026-09-18（M6.8，Agent Reliability Evaluation Framework）
+- **状态**：accepted
+- **决策**：为回答三个实验问题（Evidence Grounding 是否降低错误 / Revision
+  Safety 是否降低事实漂移 / Agent Workflow 是否比普通 LLM 或 RAG 更可靠）
+  建立 evaluation infrastructure——不新增 Agent、不改 Runtime / Workflow /
+  Evidence Pipeline / Writer / Reviewer（M6.8 红线）。形态：
+  - **代码位置**：`backend/src/evaluation/`（datasets / metrics / runners /
+    cli；随 backend 构建进 dist），入口 `npm run evaluation`
+    （`scripts/evaluation.mjs` → dist cli；与 benchmark-review 同约定：
+    先 build 后跑）；报告 `evaluation/reports/*.json`（schemaVersion=1
+    结构化事实源 + Markdown 摘要）；人工校准记录
+    `evaluation/calibration/records.jsonl`（JSONL，人工维护）。
+  - **数据集**：高质量小数据（Exp1 六场景 / Exp2 七场景 / Exp3 五场景），
+    全部自造学术语料（与 M6.4 benchmark 同风格，确定性离线）+ ground
+    truth 标注（faultClass / supportable locator / 期望 stage 章节引用）；
+    结构校验（needle 逐字、fabricated quote 不在语料、marker↔注入类别
+    一致、metadataCorrupted 来源必须配 authoritativeYear、正例不得锚定
+    损坏元数据来源）在 CLI 启动与测试双重执行，脏数据拒绝运行。
+  - **Experiment 1（grounding）**：三臂 plain-llm（零核验自报入池）/
+    rag（真实 RetrievalService 条件化——检索命中即用 chunk 逐字切片
+    替换 quote，无核验）/ paperteam（三段核验）。metadata 权威记录用
+    数据集内置 ground-truth provider（确定性替身）；语义 judge 用
+    ground-truth judge runtime（唯一 LLM 阶段的确定性替身）。指标：
+    unsupported claim rate / fabricated citation rate / evidence
+    coverage + 处置通道计数；运行期做「处置 vs ground truth」一致性
+    自检（不一致记 issues 并以非零退出码暴露）。
+  - **Experiment 2（revision safety）**：两臂 baseline（Reviewer→Writer
+    输出直接接受——同源故障由 scriptedRevision 物化）vs paperteam
+    （WorkflowOrchestrator 全链路 + revision.validate + Gate）。故障注入
+    复用 scriptedRuntime 既有标记 [fact:mutate] / [cite:drop] /
+    [strength:escalate]（唯一事实源，不重复实现）+ 干净对照场景度量
+    误拦。HITL 策略可配置（默认 reject=安全缺省）。指标：三类存活率 +
+    false acceptance + false rejection。
+  - **Experiment 3（agent workflow）**：两臂 plain-llm（scenario 携带的
+    代表性单次生成，缺陷如实标注）vs paperteam（完整 idea_to_paper；
+    带语料场景 run 前预置 anchored 候选、经 evidence.ground 真实转正）。
+    指标：claim correctness（可追溯到 verified evidence）/ citation
+    correctness（反捏造）/ completeness（stage+章节+论断+引用四项平均）/
+    human preference（校准记录驱动，无记录=null 不伪造）。
+  - **人工校准**：records.jsonl 记录 claim / prediction / humanLabel /
+    reason；runner 计算一致率 + 逐 prediction 分组；脏行如实计数不炸
+    报告；Exp3 人工偏好用 humanLabel=prefer-<arm>。
+- **理由**：M6.5/M6.6/M6.7 各自的单测钉死了机制行为，但「三个核心主张
+  是否成立」需要可重复的对照实验与量化指标；评估必须独立于产品代码
+  演化（不改被测系统）才能长期可信。scripted 离线口径的边界如实声明：
+  度量的是确定性安全机制对注入故障的拦截率与管线保障（traceability /
+  反捏造 / 完整度），不是真实模型生成质量——后者需要 live run（框架
+  与校准接口已预留，属后续节点）。
+- **不做**：真实模型 live 评估（成本与不稳定采样属后续节点）；新增 Agent /
+  修改被测系统任何行为（红线）；大规模数据集（明确选择高质量小数据）；
+  评估结果进 Quality Gate（评估只读系统，不反向影响产品决策路径）。
+- **影响**：backend/src/evaluation/（新目录：types / datasets×4 / metrics×4 /
+  runners×5 / cli）+ scripts/evaluation.mjs（新）+ evaluation/{README.md,
+  calibration/records.example.jsonl, reports/}（新）+ 根 package.json
+  scripts.evaluation；测试 backend/test/evaluation/×5（scenarios 7 /
+  metrics 12 / faultInjection 7 / report 4 / baseline 2 = 32 用例）。
+  产品代码零改动（src 侧唯一新增文件均在 evaluation/ 目录内）。
