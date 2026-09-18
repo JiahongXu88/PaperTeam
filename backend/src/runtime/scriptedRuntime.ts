@@ -28,9 +28,15 @@ export const LATEX_DOC = [
   "\\end{document}",
 ].join("\n");
 
+/** M6.5 evidence 语义 judge 脚本化输出（citation/evidence/* scope 缺省） */
+export const EVIDENCE_JUDGE_SUPPORTED_JSON = JSON.stringify({
+  verdict: "supported",
+  reason: "脚本化裁决：原文段落明确支撑该论断（E2E 固定输出，不访问模型）",
+  keyQuote: undefined,
+});
+
 /** Researcher 调研输出（合法结构化 JSON） */
-export const RESEARCH_JSON = JSON.stringify({
-  domainOverview:
+export const RESEARCH_JSON = JSON.stringify({  domainOverview:
     "检索增强生成（RAG）通过在推理时检索外部知识缓解大模型幻觉。近年研究集中在检索质量、重排与生成端融合，但在小规模领域语料下的鲁棒性仍缺乏系统评估。",
   relatedWorkDirections: ["RAG 检索器优化", "重排与融合策略", "领域适配评估"],
   researchGaps: ["缺少小语料场景的系统性对比", "缺少可复现的评估协议"],
@@ -458,6 +464,12 @@ export interface ScriptedRuntimeOptions {
    * 后续轮次不再出现，便于构造 fail → pass 轨迹。
    */
   firstRoundFactIssue?: Record<string, unknown>;
+  /**
+   * citation/evidence/* scope 的 judge 输出覆盖（M6.5 evidence grounding E2E）：
+   * 缺省返回 supported 裁决（keyQuote 逐字来自 prompt 中的 chunk 原文由测试
+   * 自行保证——脚本输出不解析 prompt，只提供固定形态）。
+   */
+  evidenceJudgeOutput?: string;
 }
 
 /**
@@ -625,6 +637,10 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
           feasibilitySequence[Math.min(feasibilityIndex, feasibilitySequence.length - 1)] ??
           FEASIBILITY_HIGH_JSON;
         feasibilityIndex += 1;
+      } else if (scope.startsWith("citation/evidence/")) {
+        // M6.5 evidence 语义 judge（EvidenceGroundingService Stage 3 复用
+        // citation 角色）：固定 supported 裁决驱动 E2E；其它裁决走 options
+        output = options.evidenceJudgeOutput ?? EVIDENCE_JUDGE_SUPPORTED_JSON;
       } else if (scope === "writing/outline") {
         output = OUTLINE_JSON;
       } else if (scope === "writing/sections") {

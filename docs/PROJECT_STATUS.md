@@ -1,6 +1,15 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-17（**M6.4 Project RAG & Hybrid Retrieval COMPLETE**——
+> 更新日期：2026-09-17（**M6.5 Evidence Grounding Pipeline COMPLETE**——
+> evidence/ 域：EvidenceCandidate 候选-转正状态机（pending → verified /
+> mismatch / rejected / unverifiable）+ 三段核验管道 EvidenceGroundingService
+> （quote 逐字校验（确定性）/ metadata 核验（共享 ScholarlyResolver）/
+> 复用 Citation 角色的语义 judge（唯一 LLM 阶段））+ Evidence 工具面
+> （get_chunk / propose_evidence / evidence_query；grounded EvidenceStore 写入
+> 唯一入口在核验管道，工具零写路径）+ idea_to_paper 新增 evidence.ground
+> stage（research 后 feasibility 前）；详见下方 M6.5 条目与 DECISIONS.md
+> D-0037；下一节点 **M6.6 Agent Integration（Writer/Reviewer 消费侧重构）**；
+> 同日 **M6.4 Project RAG & Hybrid Retrieval COMPLETE**——
 > retrieval/ 域：确定性 SourceChunk 管线（稳定 ID / section-aware /
 > page provenance / contentHash 失效）+ 进程内 BM25 lexical（中英 bigram
 > tokenizer）+ optional dense（EmbeddingProvider 抽象 + 缓存 identity）+
@@ -111,7 +120,45 @@ Visual Reviewer 与 System Admin 移出 M5（见 M5_PLAN §2 非目标清单）�
 **M6 — Research Discovery & RAG（进行中：2026-09-16 M6.0 baseline established；
 2026-09-16 M6.1 架构冻结 COMPLETE；2026-09-16 M6.2 Literature Library COMPLETE；
 2026-09-17 M6.3 Research Discovery & Search COMPLETE；2026-09-17 M6.4
-Project RAG & Hybrid Retrieval COMPLETE）**：
+Project RAG & Hybrid Retrieval COMPLETE；2026-09-17 M6.5 Evidence Grounding
+Pipeline COMPLETE）**：
+
+- **M6.5 Evidence Grounding Pipeline（✅ 2026-09-17）**：
+  - **范围**：「检索到的原文段落」升级为「可信证据」——EvidenceCandidate
+    候选-转正分离、三段核验管道（quote 逐字 / metadata / 语义 judge）、
+    Evidence 工具面（get_chunk / propose_evidence / evidence_query）、
+    idea_to_paper `evidence.ground` stage 接线、Researcher 兼容双路径、
+    EvidenceStore appendBatch、HTTP candidates/ground 端点。**不含**：
+    Evidence Agent / 第五角色（D-0009 拒绝）、Reviewer/Writer prompt 的
+    evidence digest 拆除（只提供 evidence_query 能力，消费侧重构属 M6.6）、
+    候选队列 HITL 确认语义、usableEvidence 下沉（审计 P1）。
+  - **核心不变量**：Retrieved ≠ Verified ≠ Grounded——检索层（M6.4）零
+    EvidenceStore 写路径红线不变；Agent 提案只入候选队列；grounded 写入唯一
+    入口是 EvidenceGroundingService（appendBatch）；候选状态转换唯一入口是
+    EvidenceCandidateStore.markResolved（终态保护）。工具层零写路径三重钉死
+    （EvidenceReadAccess 只读投影类型 + 装配边界 + 行为测试）。
+  - **三段核验**：Stage 1 quote 逐字校验（确定性：NFKC / 去零宽与软连字符
+    U+00AD / 空白折叠 / 小写归一后子串匹配，最小 6 字符；失败 → mismatch
+    终态——Agent 虚构引文在此拦截）；Stage 2 metadata（确定性；共享
+    ScholarlyResolver；mismatch → 终态短路不进 judge；not_found/unresolved
+    如实记录不阻塞——离线部署全链路可用，D-0023 口径）；Stage 3 语义 judge
+    （唯一 LLM 阶段；复用 Citation 角色 scope citation/evidence/<id>；
+    prompt 只喂 claim+quote+chunk 原文；supported→verified+direct /
+    partially_supported→verified+partial / unsupported→rejected /
+    insufficient_evidence→unverifiable 不伪造裁决；keyQuote 伪造剥离）。
+  - **状态机**：pending → verified（带 evidenceId 回填）/ mismatch（quote 或
+    metadata 不一致，终态）/ rejected（judge unsupported，终态）/
+    unverifiable（chunk 缺失 / resolver 不可用 / judge 失败或无法判断——
+    可 retry）；幂等（verified 重复 ground 复用 evidenceId；同文提案去重）。
+  - **接线**：evidence.ground 位于 research.idea 后 research.feasibility 前
+    （feasibility 与 Reviewer 消费的 evidence stats 必须是核验后口径；零候选
+    no-op 通过、scripted/离线栈无感）；Researcher JSON evidence 字段带
+    sourceId+chunkId+quote 锚定 → 候选管道（提案失败降级 legacy 追加）；
+    无锚定 → legacy unverified 追加（输出契约与既有测试零变化）。
+  - 测试：后端 +50（quoteVerification 10 / candidates 3 / EvidenceStore
+    appendBatch +1 / 三段核验全路径 20 / 工具与权限矩阵 7（含安全红线「全部
+    角色工具轮询后 evidence.jsonl 零写入」）/ stage E2E 2 + httpWorkflowApi
+    序列更新）；全量 1115 通过零回归。决策 D-0037。
 
 - **M6.4 Project RAG & Hybrid Retrieval（✅ 2026-09-17）**：
   - **范围**：「资料已入库且有全文后，Agent 如何稳定、准确、可追溯地找到当前

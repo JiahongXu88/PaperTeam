@@ -16,6 +16,36 @@ deterministic preservation gates）。完整内容见
 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)。**未打 tag**：验收语料上 Final
 产物无法达成（发布条件不满足）。
 
+### M6.5 Evidence Grounding Pipeline（✅ 2026-09-17）
+
+- 「检索到的段落」升级为「可信证据」的核验闭环（Retrieved ≠ Verified ≠
+  Grounded）：`backend/src/evidence/` 域新增 6 个文件。**EvidenceCandidate**
+  候选-转正分离（`evidence/candidates.jsonl`；pending → verified / mismatch /
+  rejected / unverifiable 状态机，unverifiable 可 retry；转换只经
+  markResolved 受控口）；**三段核验管道 EvidenceGroundingService**（grounded
+  EvidenceStore 写入唯一入口）：Stage 1 quote 逐字校验（确定性；NFKC /
+  去零宽与软连字符 / 空白折叠 / 小写归一后子串匹配；失败 → mismatch 终态——
+  Agent 虚构引文在此拦截）→ Stage 2 metadata 核验（确定性；与 sourceImport /
+  citationIntegrity 共享 ScholarlyResolver；mismatch → 终态；not_found /
+  unresolved 如实记录不阻塞——离线部署全链路可用）→ Stage 3 语义 judge
+  （唯一 LLM 阶段；**复用 Citation 角色** scope `citation/evidence/<id>`，
+  不新增第五 Agent；prompt 只喂 claim+quote+chunk 原文；supported →
+  verified+direct / partially_supported → verified+partial / unsupported →
+  rejected / insufficient_evidence → unverifiable 不伪造裁决；keyQuote 伪造
+  剥离）；**Evidence 工具面**（get_chunk 按 chunkId 精确回取原文 /
+  propose_evidence 只入候选队列 / evidence_query 只读查询；权限矩阵：
+  researcher=3、writer=evidence_query、reviewer·citation=get_chunk+query；
+  write_evidence 不存在——工具零 EvidenceStore 写路径，evidence_query 拿
+  EvidenceReadAccess 只读投影）；**workflow**：idea_to_paper 新增
+  `evidence.ground` stage（research 后 feasibility 前——evidence stats 消费
+  口径先行核验；幂等 + 零候选 no-op）；Researcher 兼容双路径（JSON evidence
+  带 chunk 锚定 → 候选管道；无锚定 → legacy unverified 追加，输出契约不变）；
+  EvidenceStore +appendBatch（批量转正一次 loadAll）；HTTP `GET
+  /api/projects/:id/evidence/candidates` + `POST .../evidence/ground`；错误码
+  INVALID_CHUNK_ID / CHUNK_NOT_FOUND / SOURCE_NOT_FOUND。新增后端测试 50
+  （quote 归一化 / 候选状态机 / 三段核验全路径 / 工具权限矩阵 / 安全红线
+  「全部工具轮询后 evidence.jsonl 零写入」/ stage E2E）。决策 D-0037。
+
 ### M6.4 Project RAG & Hybrid Retrieval（✅ 2026-09-17）
 
 - 「资料已入库且有全文后，Agent 如何稳定、准确、可追溯地找到当前需要的

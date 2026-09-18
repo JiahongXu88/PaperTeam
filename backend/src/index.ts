@@ -17,6 +17,7 @@ import { ReadinessProbe } from "./runtime/readiness.js";
 import { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import { createScholarlyTools } from "./skills/scholarlyTools.js";
 import { createRetrieveLibraryTool } from "./retrieval/tools.js";
+import { evidenceToolsForRole } from "./evidence/tools.js";
 import { LatexImporter } from "./import/LatexImporter.js";
 import {
   createExistingPaperDefinition,
@@ -168,6 +169,23 @@ export async function startBackend(): Promise<void> {
               projectId !== undefined
             ) {
               tools.push(createRetrieveLibraryTool(stackRef.retrieval, projectId));
+            }
+            // M6.5 Evidence 工具面（权限矩阵唯一事实源 evidenceToolsForRole）：
+            // researcher = get_chunk + propose_evidence + evidence_query；
+            // reviewer/citation = get_chunk + evidence_query；writer = evidence_query。
+            // 全部只读或只入候选队列——EvidenceStore 写路径仍在 grounding 管道。
+            if (stackRef !== undefined && projectId !== undefined) {
+              tools.push(
+                ...evidenceToolsForRole(
+                  role,
+                  {
+                    chunkAccess: stackRef.chunkAccess,
+                    grounding: stackRef.evidenceGrounding,
+                    evidence: stackRef.evidence,
+                  },
+                  projectId,
+                ),
+              );
             }
             return tools;
           },

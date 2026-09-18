@@ -37,6 +37,7 @@ import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
+import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
@@ -120,6 +121,8 @@ export interface WorkflowServices {
   feasibility: FeasibilityService;
   reviewer: ReviewerService;
   evidence: EvidenceStore;
+  /** Evidence Grounding 管道（M6.5：evidence.ground stage 消费） */
+  evidenceGrounding: EvidenceGroundingService;
   sources: SourceStore;
   manuscript: ManuscriptService;
   writer: WriterService;
@@ -1630,6 +1633,7 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
         taskId: result.taskId,
         reportPath: result.reportPath,
         evidenceCount: result.evidenceAppended,
+        evidenceProposed: result.evidenceProposed,
         bibliographyCount: result.bibliographyCount,
         gaps: result.report.researchGaps.length,
       };
@@ -1643,6 +1647,46 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
         violations.push("调研结果缺少 researchGaps");
       }
       return violations;
+    },
+  };
+}
+
+/**
+ * Evidence Grounding stage（M6.5）：把 research 阶段产生的 chunk 锚定候选
+ * 走三段核验（quote 逐字 → metadata → Citation 角色语义 judge），verified
+ * 才转正进 EvidenceStore。位置在 research 与 feasibility 之间：feasibility
+ * 与后续 Reviewer 消费的 evidence stats 必须已经是核验后的口径。零候选时
+ * no-op 通过（scripted / 离线栈无感）；幂等（只处理 pending 候选）。
+ */
+function evidenceGroundStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "evidence.ground",
+    description:
+      "Evidence Grounding：候选证据三段核验（quote 逐字校验 / metadata 核验 / 语义 judge）后转正进证据库",
+    requiredInputs: ["research.idea"],
+    producedOutputs: ["evidence/candidates.jsonl 状态流转", "evidence.jsonl grounded 记录"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const summary = await services.evidenceGrounding.groundPending(ctx.projectId);
+      return {
+        pending: summary.pending,
+        processed: summary.processed,
+        verified: summary.verified,
+        mismatch: summary.mismatch,
+        rejected: summary.rejected,
+        unverifiable: summary.unverifiable,
+        evidenceAppended: summary.evidenceAppended,
+      };
+    },
+    async verifyDod(ctx) {
+      const stats = await services.evidenceGrounding.candidateStats(ctx.projectId);
+      // 处置完毕 = 队列中不再有 pending（verified/mismatch/rejected/unverifiable
+      // 都是已处置终态；unverifiable 可在后续 run / 手动 retry）
+      return stats.byStatus.pending > 0
+        ? [`仍有 ${stats.byStatus.pending} 条 pending 证据候选未处置`]
+        : [];
     },
   };
 }
@@ -1875,6 +1919,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
 export function createIdeaToPaperDefinition(services: WorkflowServices): WorkflowDefinition {
   const stages: readonly StageSpec[] = [
     researchIdeaStage(services),
+    evidenceGroundStage(services),
     feasibilityStage(services),
     feasibilityConfirmStage(services),
     outlinePlanStage(services),
@@ -1896,6 +1941,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
 
   const front = [
     "research.idea",
+    "evidence.ground",
     "research.feasibility",
     "hitl.feasibility_confirm",
     "outline.plan",

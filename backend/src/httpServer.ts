@@ -18,6 +18,7 @@ import {
   type EvidenceLocation,
   type EvidenceSourceRef,
 } from "./evidence/EvidenceStore.js";
+import { EVIDENCE_CANDIDATE_STATUSES } from "./evidence/candidates.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
@@ -1264,6 +1265,57 @@ async function handleProjectResourceRoutes(
       }
       res.setHeader("Allow", "GET, POST");
       sendJson(res, 405, { status: "method_not_allowed", method });
+      return true;
+    }
+
+    // M6.5：候选队列（GET /evidence/candidates）与核验触发（POST /evidence/ground）
+    if (rest === "/candidates") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const status = url.searchParams.get("status");
+      const sourceId = url.searchParams.get("sourceId");
+      const chunkId = url.searchParams.get("chunkId");
+      const claimContains = url.searchParams.get("claimContains");
+      const candidates = await stack.evidenceCandidates.query(projectId, {
+        ...(status !== null
+          ? { status: requireEnumParam(status, EVIDENCE_CANDIDATE_STATUSES, "status") }
+          : {}),
+        ...(sourceId !== null ? { sourceId } : {}),
+        ...(chunkId !== null ? { chunkId } : {}),
+        ...(claimContains !== null ? { claimContains } : {}),
+      });
+      sendJson(res, 200, { candidates });
+      return true;
+    }
+    if (rest === "/ground") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readOptionalJsonBody(req);
+      const candidateId =
+        typeof body["candidateId"] === "string" && body["candidateId"].trim() !== ""
+          ? body["candidateId"].trim()
+          : undefined;
+      if (candidateId !== undefined) {
+        const result = await stack.evidenceGrounding.ground(projectId, candidateId, {
+          ...(body["retry"] === true ? { retry: true } : {}),
+        });
+        sendJson(res, 200, {
+          result,
+          candidate: await stack.evidenceCandidates.get(projectId, candidateId),
+        });
+        return true;
+      }
+      const limitRaw = body["limit"];
+      const summary = await stack.evidenceGrounding.groundPending(projectId, {
+        ...(typeof limitRaw === "number" && Number.isInteger(limitRaw) && limitRaw > 0
+          ? { limit: limitRaw }
+          : {}),
+      });
+      sendJson(res, 200, { summary });
       return true;
     }
 

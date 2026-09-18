@@ -172,6 +172,7 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
     expect(run.completion?.label).toBe("final");
     expect(run.completedStages).toEqual([
       "research.idea",
+      "evidence.ground",
       "research.feasibility",
       "hitl.feasibility_confirm",
       "outline.plan",

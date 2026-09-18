@@ -45,6 +45,9 @@ import { ChunkStore } from "./retrieval/ChunkStore.js";
 import { RetrievalService } from "./retrieval/RetrievalService.js";
 import { SourceChunker } from "./retrieval/SourceChunker.js";
 import type { EmbeddingProvider } from "./retrieval/types.js";
+import { EvidenceCandidateStore } from "./evidence/candidates.js";
+import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
+import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
@@ -126,6 +129,12 @@ export interface ServiceStack {
   feasibility: FeasibilityService;
   reviewer: ReviewerService;
   evidence: EvidenceStore;
+  /** Evidence 候选队列（M6.5：propose → ground 状态机；evidence/candidates.jsonl） */
+  evidenceCandidates: EvidenceCandidateStore;
+  /** Evidence Grounding 管道（M6.5：grounded EvidenceStore 写入的唯一入口） */
+  evidenceGrounding: EvidenceGroundingService;
+  /** chunk 精确回取（M6.5：get_chunk 工具与 quote 校验共用锚点；只读） */
+  chunkAccess: ChunkAccess;
   sources: SourceStore;
   /** Discovery 候选（sources/candidates.json；非 authoritative，M6.2） */
   candidates: CandidateStore;
@@ -183,15 +192,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const candidates = new CandidateStore(options.projects);
   const pdfAnalyzer = new BuiltinPdfAnalyzer();
   const manuscript = new ManuscriptService(options.projects);
-  const researcher = new ResearcherService({
-    runtime: options.runtime,
-    agentId: options.agentIds.researcher,
-    projects: options.projects,
-    evidence,
-    sources,
-    ...longRun,
-    log,
-  });
+  // researcher 构造后移到 evidenceGrounding 之后（M6.5：research 阶段的
+  // chunk 锚定 evidence 走候选管道，需要 grounding 服务注入）
   const feasibility = new FeasibilityService({
     runtime: options.runtime,
     agentId: options.agentIds.researcher,
@@ -356,6 +358,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // M6.4 Project Retrieval：chunker 复用 paper 域 PyMuPdfParser（同一工具链，
   // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
   // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
+  const chunkStore = new ChunkStore(options.projects);
   const retrieval = new RetrievalService({
     projects: options.projects,
     sources,
@@ -368,8 +371,38 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       },
       log,
     }),
-    chunkStore: new ChunkStore(options.projects),
+    chunkStore,
     ...(options.retrieval?.embedding !== undefined ? { embedding: options.retrieval.embedding } : {}),
+    log,
+  });
+  // M6.5 Evidence Grounding：候选队列 + 三段核验管道（quote 逐字 → metadata →
+  // 复用 Citation 角色的语义 judge）。只读 ChunkStore 落盘产物（不触碰检索层
+  // 行为）；与 sourceImport / citationIntegrity 共享同一个 ScholarlyResolver
+  // （缓存 / 限速 / telemetry 一体）；grounded EvidenceStore 写入唯一入口。
+  const evidenceCandidates = new EvidenceCandidateStore(options.projects);
+  const chunkAccess = new ChunkAccess({
+    projects: options.projects,
+    chunkStore,
+    sources,
+  });
+  const evidenceGrounding = new EvidenceGroundingService({
+    projects: options.projects,
+    candidates: evidenceCandidates,
+    evidence,
+    chunkAccess,
+    scholarly: citationIntegrity.scholarlyResolver,
+    runtime: options.runtime,
+    citationAgentId: options.agentIds.citation,
+    log,
+  });
+  const researcher = new ResearcherService({
+    runtime: options.runtime,
+    agentId: options.agentIds.researcher,
+    projects: options.projects,
+    evidence,
+    sources,
+    evidenceGrounding,
+    ...longRun,
     log,
   });
   const reviewer = new ReviewerService({
@@ -405,6 +438,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     feasibility,
     reviewer,
     evidence,
+    evidenceCandidates,
+    evidenceGrounding,
+    chunkAccess,
     sources,
     candidates,
     sourceImport,
@@ -434,6 +470,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       feasibility,
       reviewer,
       evidence,
+      evidenceGrounding,
       sources,
       manuscript,
       writer,

@@ -141,10 +141,22 @@ export class EvidenceStore {
   async append(projectId: string, input: EvidenceAppendInput, createdBy: string): Promise<EvidenceRecord> {
     const claim = requireNonEmpty(input.claim, "claim");
     const { records } = await this.loadAll(projectId);
-    const id = `E${String(records.length + 1).padStart(3, "0")}`;
+    // id 冲突防御（损坏行导致编号回退时避免覆盖）
+    const maxExisting = records.reduce((max, item) => {
+      const numeric = Number(item.id.replace(/^E/, ""));
+      return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
+    }, 0);
+    const record = this.buildRecord({ ...input, claim }, `E${String(maxExisting + 1).padStart(3, "0")}`, createdBy);
+    await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
+    await appendFile(this.filePath(projectId), JSON.stringify(record) + "\n", "utf8");
+    return record;
+  }
+
+  /** 单条记录构建（append / appendBatch 共用；全部字段校验在此收口） */
+  private buildRecord(input: EvidenceAppendInput, id: string, createdBy: string): EvidenceRecord {
     const record: EvidenceRecord = {
       id,
-      claim,
+      claim: requireNonEmpty(input.claim, "claim"),
       ...(optionalString(input.summary, 2000) !== undefined
         ? { summary: optionalString(input.summary, 2000) }
         : {}),
@@ -177,16 +189,33 @@ export class EvidenceStore {
       createdBy,
       createdAt: this.now().toISOString(),
     };
-    // id 冲突防御（损坏行导致编号回退时避免覆盖）
-    const maxExisting = records.reduce((max, item) => {
+    return record;
+  }
+
+  /** 批量追加（M6.5：grounding 批量转正用——一次 loadAll + 一次追加写，避免逐条 append 的 O(n²) 读盘） */
+  async appendBatch(
+    projectId: string,
+    items: Array<{ input: EvidenceAppendInput; createdBy: string }>,
+  ): Promise<EvidenceRecord[]> {
+    if (items.length === 0) {
+      return [];
+    }
+    const { records } = await this.loadAll(projectId);
+    let maxExisting = records.reduce((max, item) => {
       const numeric = Number(item.id.replace(/^E/, ""));
       return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
     }, 0);
-    record.id = `E${String(maxExisting + 1).padStart(3, "0")}`;
-
+    const appended: EvidenceRecord[] = [];
+    const lines: string[] = [];
+    for (const { input, createdBy } of items) {
+      maxExisting += 1;
+      const record = this.buildRecord(input, `E${String(maxExisting).padStart(3, "0")}`, createdBy);
+      appended.push(record);
+      lines.push(JSON.stringify(record));
+    }
     await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
-    await appendFile(this.filePath(projectId), JSON.stringify(record) + "\n", "utf8");
-    return record;
+    await appendFile(this.filePath(projectId), lines.join("\n") + "\n", "utf8");
+    return appended;
   }
 
   /** 按 id 读取；不存在返回 null */

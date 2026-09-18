@@ -320,6 +320,7 @@ export const STAGE_LABELS: Record<string, string> = {
   "review.aggregate": "生成 Review 报告",
   // idea_to_paper
   "research.idea": "调研",
+  "evidence.ground": "证据核验",
   "research.feasibility": "可行性评估",
   "hitl.feasibility_confirm": "等待确认可行性",
   "outline.plan": "规划大纲",
@@ -414,6 +415,7 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
   ],
   idea_to_paper: [
     { stageId: "research.idea" },
+    { stageId: "evidence.ground" },
     { stageId: "research.feasibility" },
     { stageId: "hitl.feasibility_confirm", hitl: true },
     { stageId: "outline.plan" },

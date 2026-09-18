@@ -125,6 +125,26 @@ describe("EvidenceStore：query / updateVerification / markUsage", () => {
     expect(stats.byStatus.unverified).toBe(1);
     expect(stats.byStatus.not_found).toBe(1);
   });
+
+  it("appendBatch（M6.5）：一次写入多条，id 连续递增，与 append 混用编号一致", async () => {
+    const { evidence, projectId, store } = await newProject();
+    await evidence.append(projectId, { claim: "single" }, "user");
+    const batched = await evidence.appendBatch(projectId, [
+      { input: { claim: "batch-1", verificationStatus: "verified" }, createdBy: "evidence-grounding" },
+      { input: { claim: "batch-2", verificationStatus: "verified" }, createdBy: "evidence-grounding" },
+      { input: { claim: "batch-3" }, createdBy: "evidence-grounding" },
+    ]);
+    expect(batched.map((record) => record.id)).toEqual(["E002", "E003", "E004"]);
+    expect(batched[0]!.verificationStatus).toBe("verified");
+    expect(batched[0]!.createdBy).toBe("evidence-grounding");
+
+    const after = await evidence.append(projectId, { claim: "single-2" }, "user");
+    expect(after.id).toBe("E005");
+
+    const raw = await readFile(join(store.evidenceDir(projectId), "evidence.jsonl"), "utf8");
+    expect(raw.trim().split("\n")).toHaveLength(5);
+    expect(await evidence.appendBatch(projectId, [])).toEqual([]);
+  });
 });
 
 describe("EvidenceStore：持久化与容错", () => {

@@ -16,6 +16,7 @@ import { AgentRunFailedError } from "../errors.js";
 import type { ProjectMetadata, ProjectStore } from "../project/ProjectStore.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import type { EvidenceAppendInput, EvidenceStore } from "../evidence/EvidenceStore.js";
+import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { SourceStore, SourceItem } from "../sources/SourceStore.js";
 import {
   extractJsonObject,
@@ -37,8 +38,10 @@ export interface ResearcherResult {
   report: ResearchReport;
   /** 落盘路径（相对项目根） */
   reportPath: string;
-  /** 本次追加的 Evidence 条数 */
+  /** 本次追加的 Evidence 条数（legacy 路径：无 chunk 锚定的候选，unverified 直存） */
   evidenceAppended: number;
+  /** 本次提交进核验队列的 Evidence 候选条数（M6.5 chunk 锚定路径） */
+  evidenceProposed: number;
   /** 候选参考文献条数 */
   bibliographyCount: number;
   /** 本次 Researcher 任务的 Runtime 任务 id（诊断） */
@@ -51,6 +54,12 @@ export interface ResearcherServiceOptions {
   projects: ProjectStore;
   evidence: EvidenceStore;
   sources: SourceStore;
+  /**
+   * Evidence Grounding 管道（M6.5）：research JSON 中带 chunk 锚定
+   * （sourceId+chunkId+quote）的 evidence 走候选管道（propose → 核验 →
+   * 转正）；未注入时锚定候选退回 legacy unverified 追加（旧装配兼容）。
+   */
+  evidenceGrounding?: EvidenceGroundingService;
   /** 逐 run 执行超时覆盖（毫秒；长论文阶段口径，见 config.pi.longRunTimeoutMs）；缺省沿用 Runtime 默认 */
   runTimeoutMs?: number;
   log?: (message: string) => void;
@@ -62,6 +71,7 @@ export class ResearcherService {
   private readonly projects: ProjectStore;
   private readonly evidence: EvidenceStore;
   private readonly sources: SourceStore;
+  private readonly evidenceGrounding: EvidenceGroundingService | undefined;
   private readonly log: (message: string) => void;
   private readonly timeoutOverride: { timeoutMs: number } | Record<string, never>;
 
@@ -71,6 +81,7 @@ export class ResearcherService {
     this.projects = options.projects;
     this.evidence = options.evidence;
     this.sources = options.sources;
+    this.evidenceGrounding = options.evidenceGrounding;
     this.log = options.log ?? (() => {});
     this.timeoutOverride = options.runTimeoutMs !== undefined ? { timeoutMs: options.runTimeoutMs } : {};
   }
@@ -127,30 +138,69 @@ export class ResearcherService {
     // 落盘 research/research.json（Authoritative State）
     const researchDir = this.projects.researchDir(params.projectId);
     await mkdir(researchDir, { recursive: true });
+    const parsedCandidates = readEvidenceCandidates(parsed);
     const artifact = {
       generatedAt: new Date().toISOString(),
       taskId: task.taskId,
       report,
-      evidence: readEvidenceCandidates(parsed),
+      evidence: parsedCandidates,
       bibliography: readBibliography(parsed),
     };
     const reportPath = join("research", "research.json");
     await writeFile(join(researchDir, "research.json"), JSON.stringify(artifact, null, 2) + "\n", "utf8");
 
-    // Researcher 提出的 Evidence 进入 EvidenceStore（unverified，待核验）
+    // M6.5 双路径：chunk 锚定（sourceId+chunkId+quote 齐）的 evidence 走候选
+    // 管道（propose → grounding 核验 → verified 才转正进 EvidenceStore）；
+    // 无锚定的候选保持 legacy 行为（unverified 追加——兼容既有输出契约，
+    // 待 Researcher 全面迁移到工具化提案后收口）。
     let evidenceAppended = 0;
-    for (const candidate of artifact.evidence) {
-      await this.evidence.append(params.projectId, candidate, "researcher");
-      evidenceAppended += 1;
+    let evidenceProposed = 0;
+    for (const candidate of parsedCandidates) {
+      const anchored =
+        this.evidenceGrounding !== undefined &&
+        candidate.chunkId !== undefined &&
+        candidate.quote !== undefined &&
+        candidate.quote.trim() !== "";
+      if (anchored) {
+        try {
+          const { deduplicated } = await this.evidenceGrounding!.propose(params.projectId, {
+            sourceId: candidate.sourceId ?? candidate.chunkId!.split(":")[0]!,
+            chunkId: candidate.chunkId!,
+            claim: candidate.claim,
+            quote: candidate.quote!,
+            ...(candidate.summary !== undefined ? { summary: candidate.summary } : {}),
+            proposedBy: "researcher",
+          });
+          if (!deduplicated) {
+            evidenceProposed += 1;
+          }
+        } catch (error) {
+          // 锚定非法（chunk 不存在 / 格式问题）：结构化记录并降级 legacy 追加，
+          // 不让单条坏候选炸掉整个 research 阶段
+          this.log(
+            `[researcher] projectId=${params.projectId} 候选提案失败，降级 unverified 追加：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`,
+          );
+          await this.evidence.append(
+            params.projectId,
+            toLegacyAppendInput(candidate),
+            "researcher",
+          );
+          evidenceAppended += 1;
+        }
+      } else {
+        await this.evidence.append(params.projectId, toLegacyAppendInput(candidate), "researcher");
+        evidenceAppended += 1;
+      }
     }
 
     this.log(
-      `[researcher] projectId=${params.projectId} 调研完成：gaps=${report.researchGaps.length} evidence=${evidenceAppended} bibliography=${artifact.bibliography.length}`,
+      `[researcher] projectId=${params.projectId} 调研完成：gaps=${report.researchGaps.length} evidence=appended:${evidenceAppended}/proposed:${evidenceProposed} bibliography=${artifact.bibliography.length}`,
     );
     return {
       report,
       reportPath,
       evidenceAppended,
+      evidenceProposed,
       bibliographyCount: artifact.bibliography.length,
       taskId: task.taskId,
     };
@@ -259,6 +309,7 @@ export class ResearcherService {
       report,
       reportPath: "research/research.json",
       evidenceAppended: 0,
+      evidenceProposed: 0,
       bibliographyCount: 0,
       taskId: task.taskId,
       weaknesses,
@@ -267,11 +318,18 @@ export class ResearcherService {
   }
 }
 
+/** research JSON 的 evidence 条目（M6.5：可携带 chunk 锚定字段） */
+export interface ParsedEvidenceEntry extends EvidenceAppendInput {
+  /** chunk 锚定（来自 retrieve_library 的 SRC/CHUNK 标记；两字段同时出现才走候选管道） */
+  sourceId?: string;
+  chunkId?: string;
+}
+
 export type ResearchArtifact = {
   generatedAt: string;
   taskId: string;
   report: ResearchReport;
-  evidence: EvidenceAppendInput[];
+  evidence: ParsedEvidenceEntry[];
   bibliography: BibliographyEntryInput[];
 };
 
@@ -316,7 +374,8 @@ export function buildResearchPrompt(
     '  "potentialContributions": ["潜在贡献 1", "..."],',
     '  "researchQuestions": ["研究问题 1", "..."],',
     '  "literaturePlan": ["应补充检索的文献方向 1", "..."],',
-    '  "evidence": [{"claim": "该证据支撑的观点", "summary": "证据摘要", "quote": "可选直接引文",',
+    '  "evidence": [{"claim": "该证据支撑的观点", "summary": "证据摘要", "quote": "原文逐字引文",',
+    '    "sourceId": "文献库条目 id（如 S001）", "chunkId": "retrieve_library 结果中的 CHUNK 标识",',
     '    "source": {"title": "来源文献标题", "authors": ["作者"], "year": 2024, "doi": "可选", "url": "可选"},',
     '    "location": {"page": 1, "section": "4.2"}}],',
     '  "bibliography": [{"key": "zhang2024survey", "title": "标题", "authors": ["作者"], "year": 2024, "doi": "可选", "venue": "可选"}]',
@@ -325,8 +384,9 @@ export function buildResearchPrompt(
     "要求：",
     "1. 调研基于项目文献库（下方提供）与你的领域知识；不要编造不存在的论文。",
     "2. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
-    "3. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字。",
-    "4. 你不负责写论文正文。",
+    "3. 优先用 retrieve_library 检索项目文献库、get_chunk 核对原文；来自文献库的证据请在 evidence 条目中附上 sourceId、chunkId 与从原文逐字复制的 quote（不要改写）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
+    "4. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字。",
+    "5. 你不负责写论文正文。",
     "",
     "===== 项目信息 =====",
     `标题：${project.title}`,
@@ -358,12 +418,12 @@ function describeSource(item: SourceItem): string {
   return parts.join("；");
 }
 
-function readEvidenceCandidates(parsed: Record<string, unknown>): EvidenceAppendInput[] {
+function readEvidenceCandidates(parsed: Record<string, unknown>): ParsedEvidenceEntry[] {
   const value = parsed["evidence"];
   if (!Array.isArray(value)) {
     return [];
   }
-  const candidates: EvidenceAppendInput[] = [];
+  const candidates: ParsedEvidenceEntry[] = [];
   for (const raw of value.slice(0, 50)) {
     if (typeof raw !== "object" || raw === null) {
       continue;
@@ -379,10 +439,21 @@ function readEvidenceCandidates(parsed: Record<string, unknown>): EvidenceAppend
     const location = record["location"];
     const locationRef =
       typeof location === "object" && location !== null ? (location as Record<string, unknown>) : undefined;
+    // M6.5 chunk 锚定字段（可选）：来自 retrieve_library 返回的引用标记
+    const anchorSourceId =
+      typeof record["sourceId"] === "string" && record["sourceId"].trim() !== ""
+        ? record["sourceId"].trim()
+        : undefined;
+    const anchorChunkId =
+      typeof record["chunkId"] === "string" && record["chunkId"].trim() !== ""
+        ? record["chunkId"].trim()
+        : undefined;
     candidates.push({
       claim,
       ...(typeof record["summary"] === "string" ? { summary: record["summary"] } : {}),
       ...(typeof record["quote"] === "string" ? { quote: record["quote"] } : {}),
+      ...(anchorSourceId !== undefined ? { sourceId: anchorSourceId } : {}),
+      ...(anchorChunkId !== undefined ? { chunkId: anchorChunkId } : {}),
       ...(sourceRef !== undefined
         ? {
             source: {
@@ -407,6 +478,12 @@ function readEvidenceCandidates(parsed: Record<string, unknown>): EvidenceAppend
     });
   }
   return candidates;
+}
+
+/** 候选条目 → legacy EvidenceAppendInput（剔除锚定字段） */
+function toLegacyAppendInput(candidate: ParsedEvidenceEntry): EvidenceAppendInput {
+  const { sourceId: _sourceId, chunkId: _chunkId, ...legacy } = candidate;
+  return legacy;
 }
 
 function readBibliography(parsed: Record<string, unknown>): BibliographyEntryInput[] {

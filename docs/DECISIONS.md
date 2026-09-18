@@ -844,3 +844,86 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   RETRIEVAL_NOT_READY 503 / EMBEDDING_UNAVAILABLE 422 / INVALID_RETRIEVAL_
   FILTER 400）。测试 +108（retrieval 域全离线；真实 pymupdf 仅 1 个 fixture
   测试，与既有 pdfIngest 同口径）。
+
+## D-0037 M6.5 Evidence Grounding：候选-转正分离（EvidenceCandidate 状态机）+ 三段核验管道（quote 逐字 / metadata / 复用 Citation 角色语义 judge）+ Evidence 工具面只读写候选 + evidence.ground stage 位于 research 与 feasibility 之间
+
+- **日期**：2026-09-17（M6.5，Evidence Grounding Pipeline）
+- **状态**：accepted
+- **决策**：落地 M6.1 ADR §11 的 Evidence Grounding，采用审计推荐方案 C（Hybrid：工具面 + 确定性核验管道 + 复用 Citation 角色），五项决策：
+  1. **候选-转正分离**：新增 EvidenceCandidate（`evidence/candidates.jsonl`；
+     sourceId+chunkId+claim+quote 四元组）与 EvidenceRecord 分离存储。状态机
+     pending → verified / mismatch / rejected / unverifiable（unverifiable 可
+     retry，其余终态；转换只经 markResolved，终态保护 + verified 必带
+     evidenceId）。Retrieved ≠ Verified ≠ Grounded：检索结果与 Agent 提案都
+     只是候选，不触碰 EvidenceStore。不修改 EvidenceRecord 结构（六态
+     verificationStatus + supportStrength 口径不变，Quality Gate 消费不变）。
+  2. **三段核验管道**（EvidenceGroundingService，grounded 写入唯一入口）：
+     Stage 1 quote 逐字校验（确定性；归一化 = NFKC / 去零宽与软连字符——
+     U+00AD 断词教训 / 空白折叠 / 小写；归一化后子串匹配，最小 6 字符防空洞；
+     失败 → mismatch 终态）；Stage 2 metadata 核验（确定性；与 sourceImport /
+     citationIntegrity 共享同一 ScholarlyResolver 实例；mismatch → mismatch
+     终态；not_found / unresolved / ambiguous 如实记录但**不阻塞**——D-0023
+     「NOT_FOUND ≠ 检索失败 ≠ 证据问题」，离线部署 resolver 空 provider 全
+     链路可用）；Stage 3 语义 judge（唯一 LLM 阶段；**复用 Citation 角色**，
+     scope `citation/evidence/<candidateId>`，不新增第五 Agent——D-0009 四
+     准则全部不满足：同模型 / 短生命周期任务 / 无新权限 / 无独立并行资源）。
+     judge prompt 只喂 claim + quote + chunk 原文（不见摘要与文献库 digest——
+     v4/v5 蒸馏污染教训）；supported → verified+direct / partially_supported →
+     verified+partial / unsupported → rejected / insufficient_evidence →
+     unverifiable（不伪造裁决）；judge keyQuote 伪造剥离。
+  3. **Evidence 工具面**（evidence/tools.ts）：get_chunk（按 chunkId 精确回取
+     原文——M6.4 引用标记的直接消费，quote 校验锚点）/ propose_evidence（只入
+     候选队列，明确返回「不是已核验证据」）/ evidence_query（只读查证）。
+     角色权限矩阵唯一事实源 evidenceToolsForRole：researcher=3 工具、
+     writer=evidence_query、reviewer·citation=get_chunk+evidence_query、
+     default=无；write_evidence 类工具**不存在**（状态机由核验管道独占）。
+     工具纪律与 scholarlyTools/retrieve_library 同款：薄壳、无状态、失败
+     结构化返回、projectId 闭包隔离；evidence_query 拿 EvidenceReadAccess
+     只读投影（类型层面无写方法）。
+  4. **workflow 接线**：idea_to_paper 新增 `evidence.ground` stage，位置
+     research.idea 之后、research.feasibility 之前——feasibility 证据统计与
+     后续 Reviewer 消费的必须是核验后口径（零候选 no-op 通过，scripted/
+     离线栈无感；幂等：只处理 pending；DoD = 队列无 pending；单轮上限 100，
+     超限由 stage 重试语义续跑）。existing_paper 流程不接入（其 research
+     阶段零 evidence）。Researcher 兼容双路径：JSON evidence 字段带
+     sourceId+chunkId+quote 的锚定条目走候选管道（propose 校验失败降级
+     legacy 追加，单条坏候选不炸 research 阶段）；无锚定条目保持 legacy
+     unverified 追加（输出契约不变）。
+  5. **批量写与幂等**：EvidenceStore 新增 appendBatch（一次 loadAll + 一次
+     追加写，消除批量转正的 O(n²) 读盘；append/appendBatch 共用
+     buildRecord 字段校验收口）；grounded 记录幂等（重复 ground 已 verified
+     候选复用 evidenceId；append 与 markResolved 之间的中断窗口由「同文
+     verified 记录查重复用」守卫兜底）。HTTP 增 GET /evidence/candidates 与
+     POST /evidence/ground（批次或单条 + retry）。
+- **理由**：M6.4 完成后 Agent 已能检索到带引用标记的原文段落，但 Evidence
+  消费仍是「prompt 内联 digest + Researcher JSON 直写 unverified」——写路径
+  无核验、读路径无工具面（审计 §2.4 评 Evidence 为唯一接口缺口）。方案 A
+  （纯工具）不成立：verificationStatus/supportStrength 状态机是业务逻辑，
+  违反 Tool=无状态红线；方案 B（Evidence Agent）不成立：D-0009 四准则逐一
+  不满足且「找证据」的 agentic 部分已存在于 Researcher session 内。quote
+  逐字校验消灭「Agent 虚构引文」（错一个数字即 mismatch 终态，测试钉死）；
+  chunkId 内嵌内容 hash 使按 id 回取天然自校验（内容变 → 旧 id 失效 →
+  unverifiable 可重建后 retry，绝不静默返回近似原文）；metadata 通道不阻塞
+  是离线部署（resolver 空 provider）与 D-0023 语义分离的双重要求；judge 只
+  见 chunk 原文延续 v4/v5 「证据边界」纪律。测试 +50（候选 store / quote
+  归一化 / 三段核验全路径 / 工具与权限矩阵 / 安全红线「工具调用后
+  evidence.jsonl 零写入」/ stage E2E）；全量 1115 通过零回归。
+- **不做**：Evidence Agent / 第五角色（D-0009）；Reviewer/Reviewer prompt 的
+  evidence digest 拆除（M6.5 只提供 evidence_query 能力，prompt 重构属
+  M6.6——指令「本轮不要完全重构 Reviewer」）；write_evidence 类工具；
+  Researcher legacy unverified 路径删除（兼容期保留，锚定提案成为主路径后
+  收口）；usableEvidence 下沉 definitions.ts（审计 P1，随 M6.6 消费侧重构
+  一并做）；候选队列 HITL 确认语义（M6.2 accept/reject 先例可后续挂接，
+  当前自动核验已闭环）；真实 embedding / reranker（D-0033 拒绝项维持）。
+- **影响**：backend/src/evidence/ 新增 6 文件（candidates / quoteVerification /
+  chunkAccess / evidenceJudge / EvidenceGroundingService / tools）；
+  EvidenceStore +appendBatch（append 重构为共用 buildRecord，行为不变）；
+  ResearcherService 锚定双路径 + prompt 指引；definitions.ts +evidence.ground
+  stage + WorkflowServices.evidenceGrounding；serviceStack 装配（researcher
+  构造后移到 grounding 之后）；index.ts roleCustomTools 接 evidence 工具面；
+  httpServer +/evidence/candidates +/evidence/ground；scriptedRuntime
+  +citation/evidence/* 分支；errors +3 码（INVALID_CHUNK_ID 422 /
+  CHUNK_NOT_FOUND 404 / SOURCE_NOT_FOUND 404）；前端 STAGE_LABELS/
+  WORKFLOW_STAGE_SEQUENCES +evidence.ground（证据核验）。工具文件组织维持
+  域内 tools.ts（retrieval/tools.ts 先例），集中 tools/ 目录收敛属审计 P1
+  不在本轮。

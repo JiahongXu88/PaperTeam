@@ -1301,3 +1301,84 @@ Agent（researcher/writer/reviewer 经 retrieve_library customTools——按会�
 - **可追溯链**：RetrievedChunk → Project → Source（manifest hash 绑定）→
   Section → Page（parser 能提供时）→ Chunk → 原文；引用标记是 M6.5
   Evidence 回溯的锚点。
+
+## 16. Evidence Grounding Pipeline（M6.5 已实现；D-0037）
+
+「检索到的原文段落」升级为「可被写作与审稿消费的可信证据」的核验层。
+核心不变量：**Retrieved ≠ Verified ≠ Grounded**——检索层零 EvidenceStore
+写路径（§15 红线不变）；候选（EvidenceCandidate）必须经三段核验全部通过，
+才由 **EvidenceGroundingService（grounded 写入的唯一入口）** 转正进
+EvidenceStore；不新增第五角色（D-0009），语义判断复用 Citation 角色。
+
+### 16.1 数据流（backend/src/evidence/）
+
+```text
+Researcher（session 内 retrieve_library → get_chunk 核对原文）
+   │ propose_evidence 工具 / research JSON 的 chunk 锚定 evidence 字段
+   ▼
+EvidenceCandidate（evidence/candidates.jsonl；status=pending；
+   sourceId + chunkId + claim + quote 四元组；同文去重）
+   ▼
+EvidenceGroundingService（三段核验；唯一 grounded 写者）
+   Stage 1  Quote Verification（确定性，quoteVerification.ts）
+            quote 归一化后（NFKC / 去零宽与软连字符 U+00AD 等 / 空白折叠 /
+            小写）必须是 chunk 原文的子串；失败 → mismatch（终态）
+   Stage 2  Metadata Verification（确定性；ScholarlyResolver 共享实例）
+            title/DOI/author/year 对外部学术库：mismatch → mismatch（终态）；
+            not_found / unresolved → 如实记录不阻塞（D-0023：NOT_FOUND ≠
+            检索失败 ≠ 证据问题；离线部署 resolver 空 provider 全链路可用）
+   Stage 3  Semantic Judge（唯一 LLM 阶段；复用 Citation 角色，
+            scope citation/evidence/<candidateId>）
+            prompt 只喂 claim + quote + chunk 原文（不见摘要/文献库 digest）；
+            supported → verified(direct) / partially_supported → verified(partial) /
+            unsupported → rejected（终态）/ insufficient_evidence → unverifiable
+            （不伪造裁决）；keyQuote 伪造剥离（v4/v5 纪律）
+   ▼
+EvidenceStore（verified 记录：verificationMethod 记录三段结果，
+   verificationLevel=fulltext，location.chunk 锚点；appendBatch 批量写）
+   ▼
+消费方：feasibility stats / Reviewer·Writer 的 evidence_query 工具 /
+Quality Gate（口径不变：status + supportStrength，confidence 不进硬判定）
+```
+
+### 16.2 组件与边界
+
+- **EvidenceCandidateStore**（candidates.ts）：候选队列，状态机
+  pending → verified / mismatch / rejected / unverifiable（后者可 retry）；
+  转换只经 markResolved（受控，终态保护）。Candidate ≠ EvidenceRecord：
+  候选是待验证队列条目，EvidenceRecord 是已进入可信状态的记录。
+- **ChunkAccess**（chunkAccess.ts）：按 chunkId 精确回取原文（get_chunk
+  工具与 quote 校验共用）。只读 ChunkStore 落盘产物，不触碰检索层行为；
+  chunkId 内嵌内容 hash——内容变化即旧 id 失效，绝不静默返回近似内容。
+- **Evidence Tool Layer**（tools.ts）：get_chunk / propose_evidence /
+  evidence_query。薄壳、无状态、失败结构化返回；**零 EvidenceStore 写路径**
+  （evidence_query 只拿 EvidenceReadAccess 只读投影——类型层面无写方法）；
+  角色权限矩阵唯一事实源 evidenceToolsForRole：
+  researcher=3 工具 / writer=evidence_query / reviewer·citation=get_chunk+
+  evidence_query / default=无。write_evidence 类工具不存在。
+- **Workflow**：idea_to_paper 新增 `evidence.ground` stage（research 后、
+  feasibility 前——feasibility 与 Reviewer 消费的 evidence stats 必须已是
+  核验后口径）；幂等（只处理 pending），零候选 no-op 通过；DoD = 队列无
+  pending。existing_paper 流程不接入（其 research 阶段不产生 evidence）。
+- **Researcher 兼容**：research JSON evidence 字段带 sourceId+chunkId+quote
+  的条目走候选管道；无锚定条目保持 legacy unverified 追加（输出契约不变，
+  待 Researcher 全面工具化提案后收口）。
+- **HTTP API**：GET /api/projects/:id/evidence/candidates（按 status/
+  sourceId/chunkId/claimContains 过滤）、POST /api/projects/:id/evidence/
+  ground（body 空 → groundPending 批次；带 candidateId → 单条，retry 可重试
+  unverifiable）。既有 evidence 端点（list/append/verify）不变。
+
+### 16.3 关键纪律
+
+- **状态机唯一写者**：EvidenceStore 的 grounded 写入只发生在
+  EvidenceGroundingService（appendBatch）；候选状态转换只经
+  markResolved。Tool / Workflow / Agent 均无写入口（类型 + 装配 + 测试三重
+  钉死）。
+- **确定性优先**：Stage 1/2 无 LLM；确定性失败（quote/metadata mismatch）
+  短路，不进 judge；judge 无法判断 → unverifiable（可 retry），绝不映射成
+  unsupported / partially_supported。
+- **幂等与中断安全**：verified 候选重复 ground 直接复用 evidenceId；
+  append 与 markResolved 之间的中断窗口由「同文 verified 记录查重复用」
+  守卫兜底。
+- **防洪泛**：propose 同文（chunkId+claim+quote）去重；groundPending 单轮
+  上限 100 条（超限下轮继续——stage 重试语义天然衔接）。

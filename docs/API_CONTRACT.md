@@ -279,6 +279,28 @@
 > - 错误码新增：SOURCE_NOT_INDEXABLE(422) / RETRIEVAL_NOT_READY(503) /
 >   EMBEDDING_UNAVAILABLE(422) / INVALID_RETRIEVAL_FILTER(400)。
 
+### 1.2i M6.5 Evidence Grounding API（后端已实现；前端暂无消费方——验收靠 backend 行为测试）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/evidence/candidates` | 候选队列查询。query：`status?(pending\|verified\|rejected\|mismatch\|unverifiable)` / `sourceId` / `chunkId` / `claimContains` → `{candidates: EvidenceCandidate[]}`（candidateId / sourceId / chunkId / claim / quote / status / proposedBy / statusReason / metadataOutcome / judgeVerdict / judgeReason / evidenceId / createdAt / updatedAt） | （无——M6.5 不做候选 UI） |
+| `POST /api/projects/:id/evidence/ground` | 触发核验。body 空 → `groundPending` 批次（`limit?` 正整数，默认 100）→ `{summary:{pending, processed, verified, mismatch, rejected, unverifiable, evidenceAppended, results[]}}`；body 带 `candidateId`（可带 `retry:true` 重试 unverifiable）→ `{result:{candidateId, status, reason?, judgeVerdict?, evidenceId?}, candidate}`。幂等：verified 重复 ground 复用 evidenceId | （无） |
+
+> 2026-09-17 M6.5 语义约定：
+> - **Retrieved ≠ Verified ≠ Grounded**：检索（retrieval API）与提案都不产生
+>   证据；只有三段核验（quote 逐字 → metadata → 语义 judge）全通过才写
+>   EvidenceStore。`POST .../evidence`（既有 legacy 手工登记端点）行为不变，
+>   与 grounded 写入并存（createdBy=user 区分）。
+> - Agent 侧工具面（Pi customTools）：`get_chunk`（researcher/reviewer/citation）
+>   / `propose_evidence`（仅 researcher；只入候选队列）/ `evidence_query`
+>   （researcher/writer/reviewer/citation；只读）。**不存在 write_evidence 类
+>   工具**——evidence_query 拿 EvidenceReadAccess 只读投影（类型层面无写方法）。
+> - idea_to_paper workflow stage 序列变更：`research.idea → evidence.ground →
+>   research.feasibility → …`（零候选 no-op；幂等；DoD = 候选队列无 pending）。
+> - 错误码新增：INVALID_CHUNK_ID(422) / CHUNK_NOT_FOUND(404) / SOURCE_NOT_FOUND(404)。
+
+
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |
