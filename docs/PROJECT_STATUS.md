@@ -1,7 +1,12 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-18（**M6 COMPLETE — Research Discovery &
-> Evidence-grounded Pipeline（Documentation Freeze）**：M6.0 baseline
+> 更新日期：2026-09-19（**M7 进行中 — Research Discovery Activation**：
+> M7.0 Scope Freeze（D-0042）✅ / M7.1 架构审查 ✅ / M7.1a 检索接线
+> （`017ad31`）✅ / M7.1b 真实 Agent 端到端验证（`63a214b`）✅ / M7.1c
+> Discovery & 候选管理 UI（`fbe004d`）✅ / M7.1d Self Review ✅ ——详见下方
+> 「当前阶段」M7 段与 [M7_SCOPE_FREEZE.md](research/M7_SCOPE_FREEZE.md)。
+> 前一状态 2026-09-18（**M6 COMPLETE — Research Discovery &
+> Evidence-grounded Pipeline（Documentation Freeze）**）：M6.0 baseline
 > freeze → M6.1 Search/RAG 架构冻结（D-0033）→ M6.2 Literature Library →
 > M6.3 Research Discovery & Search → M6.4 Retrieval/RAG → M6.5 Evidence
 > Grounding → M6.6 Evidence-aware Writing Loop → M6.7 Revision Safety →
@@ -764,20 +769,44 @@ docs/research/M6_FINAL_SUMMARY.md：
   Evidence-grounded Retrieval、Reference Paper Intelligence、Multimodal Review
   （后两者为 M6+ backlog，不在 M6.2–M6.5 编号内）。
 
-**M7 — Entry Point（2026-09-18 开启，范围待 M7.0 计划冻结定界）**：M6
-冻结后的候选方向，进入 M7.0 时裁剪排序：
+**M7 — Research Discovery Activation（2026-09-18 Entry Point → 2026-09-19
+Scope Freeze `fbe004d` 前完成 a/b/c/d 四步）**：范围由
+[M7_SCOPE_FREEZE.md](research/M7_SCOPE_FREEZE.md)（frozen）定界——把 M6
+已交付但「零真实使用」的检索能力接成真实闭环（User Research Question →
+Researcher Agent → search_papers/save_candidates → CandidateSource → HITL
+promote → Literature Library → Evidence Grounding），决策登记 D-0042
+（Researcher Agent + Tools，不新增 Search/Planner Agent）。进度：
 
-- **Evaluation live 扩展**（M6.9 Limitations 的直接后继）：多场景 /
-  多领域数据集、异模型 judge（消除 same-model bias）、更大样本量、
-  Exp2 / Exp3 的 live 化（当前仅 Exp1）。
-- **FullTextResolver**：D-0033 六层最小接口中唯一未实现层（网络全文
-  下载；Unpaywall 等属此层）。
-- **Reference Paper Intelligence**（M6+ backlog 既有项）：参考文献级别
-  深度理解与对比分析。
-- **Multimodal Review**（M6+ backlog 既有项）：图表 / 公式 / 排版的
-  多模态审阅。
-- **遗留收口**：Researcher legacy 路径迁移与 usableEvidence 完全退役
-  （M6.6 记录）、roleCustomTools 装配集中化（M6.6 Known Limitation）。
+- **M7.0 Scope Freeze ✅（452b54f / 31341d4）**：冻结文档 + M7.1 细节设计 +
+  架构审查（四断点 P-A~P-D 定位）+ D-0042 登记。
+- **M7.1a Researcher Tool Activation ✅（017ad31）**：P-A（Researcher
+  prompt 检索优先，禁止凭记忆断言文献）+ P-B（save_candidates 工具：服务端
+  检索缓存按下标回放，LRU ≤5/query / TTL 10min / ≤25 条，Agent 无法按值
+  伪造元数据入库）+ 缓存护栏测试 21 例。
+- **M7.1b Real Agent Discovery Validation ✅（63a214b）**：真实 GLM-5.3 +
+  真实 OpenAlex/S2/arXiv 公网三场景验证（新领域调研 / 事实验证 / 已有论文
+  分析），38 次工具调用 0 错误、12 次 save_candidates、21 条候选落盘、
+  检索优先与不强制检索纪律均成立——报告
+  [M7.1_DISCOVERY_VALIDATION.md](research/M7.1_DISCOVERY_VALIDATION.md)。
+- **M7.1c Candidate Management UI ✅（fbe004d）**：前端 Discovery 面板
+  （学术检索表单 + 结果列表 + 勾选保存候选）+ 候选管理（accept/reject/promote
+  一键转正）+ API contract 扩展；零后端行为改动。
+- **M7.1d PaperTeam Self Review ✅**：用自身 Research Discovery 能力调研
+  外部 AI Research Agent / Deep Research 系统（OpenAI Deep Research /
+  Claude Research / Gemini Deep Research / AI Scientist / PaperQA / STORM /
+  Elicit 等），产出架构对比与差距分析
+  （[PAPERTEAM_SELF_REVIEW_M7.md](research/PAPERTEAM_SELF_REVIEW_M7.md)）
+  与 [M8_ROADMAP_PROPOSAL.md](research/M8_ROADMAP_PROPOSAL.md)——纯研究
+  产物，零业务代码改动。
+- **待办**：M7.1 验收底线 1 后半段（真实项目 promote → 全文 → verified
+  evidence 磁盘证据全链）+ M7.2 FullTextResolver（P-D，独立验收）；
+  M7.3 Research Intelligence 方向冻结、细节延后。
+
+M7 前的候选方向清单（Evaluation live 扩展 / FullTextResolver /
+Reference Paper Intelligence / Multimodal Review / 遗留收口）中，
+FullTextResolver 已定为 M7.2，Evaluation live 扩展与 Reference Paper
+Intelligence 收敛为 M7.3 候选（M7_SCOPE_FREEZE §6），Multimodal Review
+与遗留收口仍在 backlog。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
