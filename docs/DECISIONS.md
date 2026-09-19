@@ -1220,3 +1220,41 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   （M6 COMPLETE + M7 Entry Point）、CHANGELOG（M6 完成记录 + M6.9 条目）、
   ARCHITECTURE（头部状态 + §1.3 M6 冻结架构 + §19 Live/Multi-model
   Evaluation）、docs/research/M6_FINAL_SUMMARY.md（新）与本决策。
+
+## D-0042 M7 Research Discovery Architecture：Researcher Agent + Tools（不新增 Search / Planner Agent）
+
+- **日期**：2026-09-19（M7.0 决策收口补登记；M7.1a 已实现 @ `017ad31`）
+- **状态**：accepted
+- **决策**：Research Discovery（用户研究问题 → 外部检索 → 候选 → 文献库 →
+  证据）采用 **Researcher Agent + Tools** 架构收口，而不是新增 Search Agent /
+  Planner Agent。四项内容（对应 M7_SCOPE_FREEZE §8 预告的登记范围）：
+  1. **检索能力 = 既有工具面 + prompt 接线**：search_papers / search_web /
+     lookup_paper 早已经 roleCustomTools 挂载 researcher 会话（M6.3）；M7.1a
+     修复 P-A（ResearcherService 任务 prompt 重写为检索优先，禁止凭记忆断言
+     文献存在性/年份/venue）并新增 save_candidates 工具（P-B：服务端检索缓存
+     按下标回放，复用 saveAcademic/WebCandidates 单一写入口，Agent 无法按值
+     伪造元数据入库）。
+  2. **检索编排在确定性服务层**：provider 选择 / 并发 fan-out / 融合去重 /
+     降级全部是 ResearchDiscoveryService 代码（D-0035）；query 生成是
+     Researcher 既有职责，无独立 LLM 决策面——新增角色只会制造第二个持有
+     检索能力的会话面（D-0009 四准则逐一不满足）。
+  3. **FullTextResolver 挂接点冻结**（M7.2 实现位置）：SourceImportService
+     .tryResolveFullText（promote 后台尝试 + 手动重试端点），下载 PDF 走既有
+     importPdf 管线（contentHash 判重 + chunk 签名自动刷新）；chunker /
+     检索 / Evidence 核验零改动。
+  4. **Crossref 勘误声明**：M6.1 ADR §3 架构图中的 Crossref discovery 节点
+     属文档张力——Crossref 保持 MetadataResolver 职责（D-0033「裁判与选手
+     分离」），不做 discovery provider；M7.2 文档收口时勘误（零代码）。
+- **理由**：保持最小 Agent 拓扑（D-0009 + D-0041 零重开）；复用既有
+  SearchService 与 M6 全部测试资产（1545 行 search 测试不动）；避免 workflow
+  扩张（保存发生在 Agent 会话内，无新 stage，research.json schema 零变化，
+  候选必经用户 promote，HITL 不变）；Evidence-grounded pipeline 不变量延续
+  （Retrieved ≠ Verified ≠ Grounded；discovery 链路无 EvidenceStore 写路径）。
+- **不做**：Search Agent / Planner Agent / 第五角色；Runtime 与 Workflow 改动；
+  Memory / 浏览器自动化 / Vector DB / RAG 重构（M7_SCOPE_FREEZE §5 八项
+  红线全部维持）。
+- **影响**：M7_SCOPE_FREEZE.md 正式生效（范围 = §4 四项最小改动集）；M7.1a
+  已按本决策落地（`017ad31`：prompt 接线 + save_candidates + 进程内检索缓存
+  + 护栏测试 +21，全量 1263 测试零回归）；M7.1 验收 = 冻结文档 §6-M7.1
+  三条底线（真实项目端到端磁盘证据 / 红线回归全绿 / 全量测试零回归）；
+  M7.1 真实 Agent 验证报告见 docs/research/M7.1_DISCOVERY_VALIDATION.md。
