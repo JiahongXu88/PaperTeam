@@ -213,7 +213,7 @@ export class ResearcherService {
       (item) => item.sourceRole !== "reference" && item.status !== "failed" && item.status !== "pending",
     );
     if (usable.length === 0) {
-      return "（项目文献库当前为空：请基于领域常识给出调研方向，并在 literaturePlan 中列出应补充的文献）";
+      return "（项目文献库当前为空：请先用 search_papers 检索相关文献，基于检索结果给出调研方向，并用 save_candidates 保存重要候选）";
     }
     const lines = usable.slice(0, 20).map((item) => describeSource(item));
     return [`项目文献库（${usable.length} 项）：`, ...lines].join("\n");
@@ -249,6 +249,7 @@ export class ResearcherService {
         "}",
         "",
         "要求：如实评估，不夸大贡献；实验组织方式（Benchmark/Baseline/Ablation）缺失要点名。",
+        "涉及外部文献对比或定位时，可用 search_papers 检索、lookup_paper 核验；禁止凭记忆断言论文的存在性、年份或 venue。",
         "",
         `标题：${project.title}`,
         `目标档次：${project.targetProfile ?? "未指定"}`,
@@ -373,7 +374,7 @@ export function buildResearchPrompt(
     '  "researchGaps": ["研究空白 1", "..."],',
     '  "potentialContributions": ["潜在贡献 1", "..."],',
     '  "researchQuestions": ["研究问题 1", "..."],',
-    '  "literaturePlan": ["应补充检索的文献方向 1", "..."],',
+    '  "literaturePlan": ["本次检索仍未覆盖、建议后续人工补充的文献方向（残差）1", "..."],',
     '  "evidence": [{"claim": "该证据支撑的观点", "summary": "证据摘要", "quote": "原文逐字引文",',
     '    "sourceId": "文献库条目 id（如 S001）", "chunkId": "retrieve_library 结果中的 CHUNK 标识",',
     '    "source": {"title": "来源文献标题", "authors": ["作者"], "year": 2024, "doi": "可选", "url": "可选"},',
@@ -382,11 +383,12 @@ export function buildResearchPrompt(
     "}",
     "",
     "要求：",
-    "1. 调研基于项目文献库（下方提供）与你的领域知识；不要编造不存在的论文。",
-    "2. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
-    "3. 优先用 retrieve_library 检索项目文献库、get_chunk 核对原文；来自文献库的证据请在 evidence 条目中附上 sourceId、chunkId 与从原文逐字复制的 quote（不要改写）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
-    "4. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字。",
-    "5. 你不负责写论文正文。",
+    "1. 检索优先：研究型问题（领域现状、相关工作、研究空白、方法对比等）先用 search_papers 检索外部文献（可用 yearFrom/yearTo 聚焦近年，如最近三年），需要 Web 线索时用 search_web，对单篇论文存疑时用 lookup_paper 核验；简单问题（常识、定义、项目内信息）可直接回答，不必检索。禁止凭记忆断言论文的存在性、年份或 venue——文献类事实必须以检索结果为准，检索结果要原样引用，不得凭记忆补充。外部检索单次耗时约 1-10 秒；diagnostics 出现 partial（部分检索源失败）属常态，结果仍可用，不要因 partial 重试。",
+    "2. 调研中发现的重要文献，用 save_candidates 保存为项目候选文献（kind 与 query 必须和检索时完全一致，按结果 index 选择；本次调研合计保存不超过 20 条，按与课题的相关性遴选）。保存的候选只是线索（pending_review），需用户审核转正后才进入文献库；已检索覆盖的方向不要写进 literaturePlan（它只记录检索后仍缺失的残差）。",
+    "3. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
+    "4. 优先用 retrieve_library 检索项目文献库、get_chunk 核对原文；来自文献库的证据请在 evidence 条目中附上 sourceId、chunkId 与从原文逐字复制的 quote（不要改写）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
+    "5. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字。",
+    "6. 你不负责写论文正文。",
     "",
     "===== 项目信息 =====",
     `标题：${project.title}`,

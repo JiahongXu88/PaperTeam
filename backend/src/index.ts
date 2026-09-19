@@ -156,6 +156,9 @@ export async function startBackend(): Promise<void> {
                 ...createScholarlyTools(
                   stackRef.citationIntegrity.scholarlyResolver,
                   stackRef.discovery,
+                  // M7.1a：仅 researcher 绑定项目（检索写缓存 + save_candidates）；
+                  // citation 保持纯检索/核验，不持有候选保存面
+                  role === "researcher" ? projectId : undefined,
                 ),
               );
             }

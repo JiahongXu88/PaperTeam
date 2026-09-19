@@ -10,8 +10,9 @@
  * - 检索/网络重试/熔断全部在服务层（ProviderHttpClient），Agent 不持有 shell、
  *   不直接访问外部 HTTP；
  * - 工具输出明确标记「这些是 Candidate Sources」——检索结果 ≠ verified evidence，
- *   本工具不写 EvidenceStore、不写论文正文、不自动持久化候选（持久化经
- *   project-scoped HTTP API 显式执行）。
+ *   本工具不写 EvidenceStore、不写论文正文。候选持久化只有两条显式入口：
+ *   HTTP saveAsCandidates 与 save_candidates 工具（M7.1a）——后者按下标回放
+ *   服务端检索缓存，元数据只能来自 provider 真实返回，Agent 无法按值伪造入库。
  */
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -26,9 +27,74 @@ interface SearchToolResult {
   details: Record<string, unknown>;
 }
 
+/** save_candidates 工具（独立工厂：闭包持有非可选 discovery/projectId，避免窄化穿透） */
+function createSaveCandidatesTool(
+  discovery: ResearchDiscoveryService,
+  projectId: string,
+): ToolDefinition {
+  return defineTool({
+    name: "save_candidates",
+    label: "保存候选文献",
+    description:
+      "把 search_papers / search_web 最近一次检索结果中选中的条目（按 index）保存为项目候选文献（pending_review，待用户审核转正后才入文献库）。保存 ≠ 入库 ≠ 证据，本工具不写 EvidenceStore。kind 与 query 必须和检索时完全一致，index 只在同一 query 最近一次检索内有效（服务端缓存约 10 分钟）；返回 cache_miss 时应先用相同 query 重新检索，再保存选中条目。",
+    parameters: Type.Object({
+      kind: Type.Union([Type.Literal("academic"), Type.Literal("web")], {
+        description: "结果来源：academic = search_papers，web = search_web",
+      }),
+      query: Type.String({ description: "检索时使用的 query（必须与检索完全一致，服务端按它定位结果）" }),
+      resultIndexes: Type.Array(Type.Number(), {
+        description: "要保存的结果下标（检索结果中的 index，0 起；单次最多 25 个）",
+      }),
+    }),
+    execute: async (_toolCallId, params): Promise<SearchToolResult> => {
+      try {
+        // projectId 闭包由构造边界保证（与 retrieve_library 同纪律），Agent 无法指定其他项目
+        const result = await discovery.saveCandidatesFromCache(
+          projectId,
+          params.kind,
+          params.query,
+          params.resultIndexes,
+        );
+        const payload = {
+          kind: "save_candidates" as const,
+          ok: true as const,
+          savedCount: result.saved.length,
+          mergedCount: result.mergedExisting.length,
+          saved: result.saved.map((candidate) => ({
+            candidateId: candidate.candidateId,
+            title: candidate.title,
+            year: candidate.year,
+            status: candidate.status,
+          })),
+          note: "候选已保存（pending_review）：需用户审核转正后才进入文献库，不是已核验证据",
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(payload) }],
+          details: { ok: true, savedCount: result.saved.length, mergedCount: result.mergedExisting.length },
+        };
+      } catch (error) {
+        // cache miss / 越界 / 超量：结构化返回，不抛错打断 Agent
+        const code = (error as { code?: string }).code ?? "save_failed";
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ kind: "save_candidates", ok: false, reason: code, message }) },
+          ],
+          details: { ok: false, reason: code },
+        };
+      }
+    },
+  });
+}
+
 export function createScholarlyTools(
   resolver: ScholarlyResolver,
   discovery?: ResearchDiscoveryService,
+  /**
+   * 项目绑定（M7.1a）：传入时检索写入项目检索缓存，并注册 save_candidates
+   * （仅 researcher 角色传入；citation 等保持纯检索，不持有保存面）。
+   */
+  projectId?: string,
 ): ToolDefinition[] {
   const searchPapers = defineTool({
     name: "search_papers",
@@ -44,11 +110,15 @@ export function createScholarlyTools(
     execute: async (_toolCallId, params): Promise<SearchToolResult> => {
       const limit = clampToolLimit(params.limit);
       if (discovery !== undefined) {
-        const response = await discovery.academicSearch(params.query, {
-          limit,
-          ...(Number.isInteger(params.yearFrom) ? { yearFrom: params.yearFrom } : {}),
-          ...(Number.isInteger(params.yearTo) ? { yearTo: params.yearTo } : {}),
-        });
+        const response = await discovery.academicSearch(
+          params.query,
+          {
+            limit,
+            ...(Number.isInteger(params.yearFrom) ? { yearFrom: params.yearFrom } : {}),
+            ...(Number.isInteger(params.yearTo) ? { yearTo: params.yearTo } : {}),
+          },
+          projectId,
+        );
         const payload = {
           kind: "academic_search" as const,
           note: "candidate sources（非 verified evidence；不自动入库）",
@@ -117,7 +187,11 @@ export function createScholarlyTools(
         };
       }
       try {
-        const response = await discovery.webSearch(params.query, { limit: clampToolLimit(params.limit) });
+        const response = await discovery.webSearch(
+          params.query,
+          { limit: clampToolLimit(params.limit) },
+          projectId,
+        );
         const payload = {
           kind: "web_search" as const,
           note: "candidate sources（snippet 非 verified evidence；不自动入库）",
@@ -181,7 +255,12 @@ export function createScholarlyTools(
     },
   });
 
-  return [searchPapers, searchWeb, lookupPaper];
+  const tools: ToolDefinition[] = [searchPapers, searchWeb, lookupPaper];
+  // save_candidates 需要项目绑定（检索缓存按项目隔离）；citation 角色不传 projectId 即不注册
+  if (discovery !== undefined && projectId !== undefined) {
+    tools.push(createSaveCandidatesTool(discovery, projectId));
+  }
+  return tools;
 }
 
 function clampToolLimit(limit: number | undefined): number {
