@@ -1,7 +1,10 @@
 # PaperTeam
 
-**AI-native multi-agent academic research & paper review workbench** —
-从研究 Idea 到论文交付、以及已有论文系统性改进的 AI 多 Agent 学术研究与论文生产工作台。
+**Evidence-grounded scientific agent system for academic research & paper
+production** — 少量专业 Agent + 确定性编排：多源检索（Retrieval）→ 证据接地
+（Evidence Grounding，**Retrieved ≠ Verified ≠ Grounded**）→ 写作 / 审阅 →
+修订安全（Revision Safety）→ 确定性质量门禁，全链路有可靠性评估；覆盖从研究
+Idea 到论文交付、以及已有论文系统性改进。
 
 ```text
 Idea → Research → Evidence Grounding → Feasibility → Writing → Review / Revision Loop → Quality Gate → LaTeX / PDF
@@ -18,6 +21,23 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 - **Existing Paper — Improvement**：PDF 确定性重建为可修订稿件 → 审稿基线 → 改进计划（人工确认）→ Writer 逐节修订 → 质量门禁 → Draft / Final。
 
 三条主路径共享同一套质量基础设施：**多 Agent 工作流（HITL / 取消 / 断点恢复）、文献库与混合检索、证据接地（Retrieved ≠ Verified ≠ Grounded）、引用完整性、Evidence 工作台、确定性 Quality Gate、不可变版本链（历史 / 比较 / 恢复）**。
+
+## 工作流程（用户视角）
+
+以 Idea-to-Paper 为主线（导入已有论文的审阅 / 改造路径共享同一套质量基础设施）：
+
+```text
+研究目标（用户的研究 Idea）
+  → Researcher 多源检索发现来源（学术库 + Web；检索默认零持久化，显式保存才入库）
+  → 证据接地：候选证据三段核验，只有 verified 证据可用
+  → Writer 基于已验证证据生成稿件
+  → Reviewer 三路审稿 → 确定性 Revision Plan
+  → Writer 逐节修订 + revision.validate 复核
+  → Quality Gate 确定性门禁 → Build Gate（LaTeX 编译）→ Draft / Final
+```
+
+可行性 / 大纲 / 修订不收敛等决策点由人工确认（HITL，随 checkpoint 持久化）；
+每一步产物都在工作台对应标签页可查（文献库 / 证据 / Review / 工作流 / 论文产出）。
 
 ## 核心能力
 
@@ -40,6 +60,10 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 | 外部意见驱动修订 | 期刊专家 / 编辑 / 导师 / 本人修改意见手工录入（原文逐字保存），作为最高**业务**优先级（mandatory）进入修订计划；supports reviewer-driven revision with conflict detection and deterministic preservation gates——与实验事实冲突时如实标记并给出依据，不伪造、不篡改、不静默忽略；处理状态（已处理 / 部分处理 / 未处理 / 冲突）为确定性判定，不采信模型自称 |
 | Draft / Final | Build Gate（LaTeX 真实编译）通过即冻结 Draft；Final 要求双 Gate 通过且对齐当前修订；产物不可变、可查看 / 下载；编译失败自动修复 ≤2 次 |
 | 版本体验 | 论文修订的不可变版本链：版本历史（修订号 / 来源 / 审稿轮次 / 门禁结论 / 产物）、两修订确定性比较（章节级差异 + 记分对照，零 LLM）、恢复历史版本（= 创建新修订，历史与旧 Final 永不删除） |
+
+![文献库（M6.2 五种入库 + M7.0 SourcesPanel）](docs/images/sources-light.png)
+
+![证据工作台（verified / 未核验状态区分）](docs/images/evidence-light.png)
 
 ![论文产出与版本历史](docs/images/paper-output-light.png)
 

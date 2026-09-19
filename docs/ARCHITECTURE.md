@@ -1,6 +1,6 @@
 # PaperTeam 系统架构
 
-> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0026）整理。
+> 依据 [PRD.md](PRD.md) 与 [DECISIONS.md](DECISIONS.md)（D-0001~D-0041）整理。
 > **M1 ~ M3.8（Backend：Workflow / Evidence / Review / Pi Runtime）与 M4.0-M4.8
 > （React Web Workbench + HITL / Workflow Live View / Evidence / 质量门禁 /
 > Draft-Final 产物闭环 / 版本体验）已实现**；Pi SDK 为唯一正式 Agent Runtime
