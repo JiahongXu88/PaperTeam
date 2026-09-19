@@ -7,6 +7,7 @@ import { InlineConfirm, InlineRename, RowMenu } from "../components/common/RowMe
 import { COMPLETION_LABELS, stageLabel } from "../components/common/status.js";
 import { ProjectStatusBadge, RunStatusBadge, WorkflowKindBadge } from "../components/project/Badges.js";
 import { CitationsPanel } from "../components/project/CitationsPanel.js";
+import { DiscoveryPanel } from "../components/project/DiscoveryPanel.js";
 import { EvidencePanel } from "../components/project/EvidencePanel.js";
 import { ManuscriptOverviewCard } from "../components/project/ManuscriptOverviewCard.js";
 import { PaperPanel } from "../components/project/PaperPanel.js";
@@ -32,13 +33,15 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "paper" | "pdf" | "sources" | "evidence" | "citations" | "review" | "workflow";
+type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "evidence" | "citations" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean }> = [
   { id: "overview", label: "概览" },
   { id: "paper", label: "论文产出", notReviewOnly: true },
   { id: "pdf", label: "PDF 与结构" },
+  // M7.1c：Discovery（检索 → 候选审阅 → Promote 入库）排在文献库上游
+  { id: "discovery", label: "Discovery" },
   { id: "sources", label: "文献库" },
   { id: "evidence", label: "证据" },
   { id: "citations", label: "引用核验" },
@@ -428,6 +431,8 @@ export function ProjectPage() {
             <PaperPanel projectId={project.id} />
           ) : tab === "pdf" ? (
             <PdfPanel projectId={project.id} />
+          ) : tab === "discovery" ? (
+            <DiscoveryPanel projectId={project.id} />
           ) : tab === "sources" ? (
             <SourcesPanel projectId={project.id} />
           ) : tab === "evidence" ? (

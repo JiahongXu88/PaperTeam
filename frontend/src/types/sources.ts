@@ -95,3 +95,44 @@ export interface BibTexImportResultView {
 
 /** 标识符导入的四种模式（对应四个后端端点） */
 export type SourceImportMode = "doi" | "arxiv" | "url" | "bibtex";
+
+/**
+ * Discovery 候选（M7.1c 前端消费）——与 Backend src/sources/CandidateStore.ts
+ * 的 CandidateSource 对齐。identity 内部结构（判等键）不进前端 DTO，展示
+ * 用顶层元数据字段即可。候选 ≠ 正式文献：promote 前只存在于 candidates.json。
+ */
+
+/** 候选生命周期：pending_review → accepted（promote 成功）| rejected（用户否决） */
+export type CandidateStatus = "pending_review" | "accepted" | "rejected";
+
+/** 候选发现方：学术检索 / Web 检索（M6.3 discovery 写入）/ 手动添加（M6.2） */
+export type CandidateOrigin = "academic_search" | "web_search" | "manual";
+
+export interface CandidateSourceView {
+  candidateId: string;
+  origin: CandidateOrigin;
+  /** 发现方（openalex / searxng / manual / …） */
+  provider: string;
+  title?: string;
+  authors?: string[];
+  year?: number;
+  venue?: string;
+  doi?: string;
+  arxivId?: string;
+  url?: string;
+  snippetOrAbstract?: string;
+  /** 发现该候选的检索词（provenance） */
+  query?: string;
+  status: CandidateStatus;
+  /** promotion 后指向正式 Source（幂等重入依据） */
+  promotedSourceId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** promote 响应：created=false = 文献库已有同身份条目（幂等合并返回既有） */
+export interface CandidatePromoteResult {
+  source: SourceItemView;
+  created: boolean;
+  candidate: CandidateSourceView;
+}

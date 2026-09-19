@@ -38,6 +38,15 @@ import {
   uploadSourceFile,
 } from "../api/sources.js";
 import {
+  academicSearch,
+  listCandidates,
+  promoteCandidate,
+  rejectCandidate,
+  webSearch,
+  type AcademicSearchInput,
+  type WebSearchInput,
+} from "../api/discovery.js";
+import {
   exportReviewReport,
   extractCitations,
   getCitationIntegrity,
@@ -85,7 +94,12 @@ import type {
   WorkflowKind,
   WorkflowRunView,
 } from "../types/api.js";
-import type { BibTexImportResultView, SourceImportResult, SourceRole } from "../types/sources.js";
+import type {
+  BibTexImportResultView,
+  CandidateStatus,
+  SourceImportResult,
+  SourceRole,
+} from "../types/sources.js";
 
 /**
  * Server state 全部经 TanStack Query 流动；Zustand 只保存纯 UI 状态。
@@ -108,6 +122,8 @@ export const queryKeys = {
   evidence: (projectId: string) => ["project", projectId, "evidence"] as const,
   /** 项目文献库（M6.2；导入 / 上传 / 删除后失效重取） */
   sources: (projectId: string) => ["project", projectId, "sources"] as const,
+  /** Discovery 候选（M7.1c；检索保存 / promote / reject 后失效重取） */
+  candidates: (projectId: string) => ["project", projectId, "candidates"] as const,
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
@@ -519,6 +535,78 @@ type SourceImportInput =
   | { mode: "arxiv"; payload: ArxivImportInput }
   | { mode: "url"; payload: UrlImportInput }
   | { mode: "bibtex"; payload: BibtexImportInput };
+
+// ---- Discovery（M7.1c：检索 → 候选审阅 → promote 入文献库；全部复用既有后端端点） ----
+
+/** Discovery 候选列表（保存 / promote / reject 后失效重取） */
+export function useCandidates(projectId: string | undefined, status?: CandidateStatus) {
+  return useQuery({
+    queryKey: [...queryKeys.candidates(projectId ?? ""), status ?? "all"],
+    queryFn: ({ signal }) => listCandidates(projectId ?? "", status, signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+function useInvalidateCandidates(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.candidates(projectId ?? "") });
+  };
+}
+
+/**
+ * 学术检索（默认只返回不持久化；带 saveAsCandidates 的第二次调用保存选中
+ * 结果为 pending 候选）。保存后失效候选列表。
+ */
+export function useAcademicSearch(projectId: string | undefined) {
+  const invalidate = useInvalidateCandidates(projectId);
+  return useMutation({
+    mutationFn: (input: AcademicSearchInput) => academicSearch(projectId ?? "", input),
+    onSuccess: (response) => {
+      if (response.saved !== undefined) {
+        invalidate();
+      }
+    },
+  });
+}
+
+/** Web 检索（语义同 useAcademicSearch） */
+export function useWebSearch(projectId: string | undefined) {
+  const invalidate = useInvalidateCandidates(projectId);
+  return useMutation({
+    mutationFn: (input: WebSearchInput) => webSearch(projectId ?? "", input),
+    onSuccess: (response) => {
+      if (response.saved !== undefined) {
+        invalidate();
+      }
+    },
+  });
+}
+
+/** 候选 → 文献库（幂等）：成功后候选与文献库一起失效 */
+export function usePromoteCandidate(projectId: string | undefined) {
+  const invalidate = useInvalidateCandidates(projectId);
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { candidateId: string; sourceRole?: SourceRole }) =>
+      promoteCandidate(projectId ?? "", input.candidateId, {
+        ...(input.sourceRole !== undefined ? { sourceRole: input.sourceRole } : {}),
+      }),
+    onSuccess: () => {
+      invalidate();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId ?? "") });
+    },
+  });
+}
+
+/** 否决候选（幂等）：成功后失效候选列表 */
+export function useRejectCandidate(projectId: string | undefined) {
+  const invalidate = useInvalidateCandidates(projectId);
+  return useMutation({
+    mutationFn: (candidateId: string) => rejectCandidate(projectId ?? "", candidateId),
+    onSuccess: invalidate,
+  });
+}
 
 // ---- Evidence（Workbench；server state，不复制进 Zustand） ----
 

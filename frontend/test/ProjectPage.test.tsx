@@ -63,6 +63,15 @@ vi.mock("../src/api/evidence.js", () => ({
   reevaluateQualityGate: vi.fn(),
 }));
 
+// M7.1c：Discovery 面板数据（默认空候选）
+vi.mock("../src/api/discovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/api/discovery.js")>();
+  return {
+    ...actual,
+    listCandidates: vi.fn(async () => []),
+  };
+});
+
 const { getProject, getManuscriptOverview } = await import("../src/api/projects.js");
 const paperApi = await import("../src/api/paper.js");
 const listCitations = vi.mocked(paperApi.listCitations);
@@ -135,6 +144,14 @@ describe("ProjectPage Tab 导航（UX Polish 2026-09）", () => {
 
     expect(await screen.findByText("上传最终 PDF")).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "PDF 与结构" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("M7.1c：?tab=discovery 进入 Discovery（检索 → 候选审阅）", async () => {
+    renderProjectAt("/projects/p-tab00000001?tab=discovery");
+
+    expect(await screen.findByText("研究检索")).toBeInTheDocument();
+    expect(screen.getByText("候选文献")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Discovery" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("无效 / 未开放 tab 回退概览；?tab=evidence 进入证据工作台", async () => {

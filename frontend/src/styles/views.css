@@ -2479,6 +2479,56 @@
   overflow-wrap: anywhere;
 }
 
+/* Discovery 候选 / 检索结果行（M7.1c）：source-row 信息层级 + 行首勾选列 */
+.candidate-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--s-3);
+}
+
+.candidate-row > .candidate-check {
+  grid-row: 1 / span 3;
+  align-self: start;
+  margin-top: 3px;
+}
+
+.candidate-row > .source-row-main,
+.candidate-row > .source-row-meta,
+.candidate-row > .candidate-snippet {
+  grid-column: 2;
+}
+
+.candidate-row + .candidate-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.candidate-snippet {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.candidate-actions {
+  align-items: center;
+}
+
+.candidate-role-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.year-range {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.year-range input {
+  width: 7em;
+}
+
 .evidence-panel {
   display: flex;
   flex-direction: column;
