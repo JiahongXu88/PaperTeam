@@ -4,7 +4,7 @@
 从研究 Idea 到论文交付、以及已有论文系统性改进的 AI 多 Agent 学术研究与论文生产工作台。
 
 ```text
-Idea → Research → Feasibility → Evidence → Writing → Review / Revision Loop → Quality Gate → LaTeX / PDF
+Idea → Research → Evidence Grounding → Feasibility → Writing → Review / Revision Loop → Quality Gate → LaTeX / PDF
 ```
 
 ![PaperTeam 工作台](docs/images/projects-light.png)
@@ -13,11 +13,11 @@ Idea → Research → Feasibility → Evidence → Writing → Review / Revision
 
 PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产与审阅闭环：
 
-- **Idea-to-Paper**：输入研究想法，Researcher 完成调研与可行性评估（不承诺达不到的目标），经人工确认后进入大纲、分节写作、引用核验、审稿-修订闭环，最终产出 LaTeX / PDF（Draft / Final 双产物语义）。
+- **Idea-to-Paper**：输入研究想法，Researcher 完成调研 → 证据落地（evidence.ground）→ 可行性评估（不承诺达不到的目标），经人工确认后进入大纲、分节写作、引用核验、审稿-修订闭环，最终产出 LaTeX / PDF（Draft / Final 双产物语义）。
 - **Existing Paper — Quick Review**：导入论文 PDF，只读分析——引用真实性核验（Crossref / OpenAlex / arXiv）→ 论断-引用语义一致性 → 分章节审阅 → 可导出报告；不修改论文。
 - **Existing Paper — Improvement**：PDF 确定性重建为可修订稿件 → 审稿基线 → 改进计划（人工确认）→ Writer 逐节修订 → 质量门禁 → Draft / Final。
 
-三条主路径共享同一套质量基础设施：**多 Agent 工作流（HITL / 取消 / 断点恢复）、引用完整性、Evidence 工作台、确定性 Quality Gate、不可变版本链（历史 / 比较 / 恢复）**。
+三条主路径共享同一套质量基础设施：**多 Agent 工作流（HITL / 取消 / 断点恢复）、文献库与混合检索、证据接地（Retrieved ≠ Verified ≠ Grounded）、引用完整性、Evidence 工作台、确定性 Quality Gate、不可变版本链（历史 / 比较 / 恢复）**。
 
 ## 核心能力
 
@@ -26,6 +26,12 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 | 多 Agent 工作流 | Researcher / Writer / Reviewer / Citation 四角色 + 确定性 TypeScript WorkflowOrchestrator（流程控制不交给 LLM）；Stage DoD 校验、checkpoint 断点恢复、SSE 实时进度、协作式取消 |
 | HITL 人工决策 | 可行性确认 / 大纲确认 / 改进计划确认 / 修订不收敛或超限时的人工决策（approve / adjust / revise / accept_draft / cancel），随 checkpoint 持久化，浏览器刷新与后端重启后可恢复 |
 | 引用完整性 | Layer 1 真实性核验（外部学术库，NOT_FOUND ≠ 捏造 ≠ 检索失败）；Layer 2 论断-引用语义核验（原子论断 × 引用组、judge 禁止凭记忆、伪造引文剥离），可按 run 配置关闭 |
+| 研究发现（M6.3） | 多源学术检索（OpenAlex / Semantic Scholar / arXiv / AMiner）+ 可选 SearXNG Web 搜索；共享 ProviderHttpClient（超时 / 退避 / Retry-After / 熔断 / 健康四态）；检索默认零持久化，显式保存为候选 |
+| 文献库（M6.2） | 五种入库（PDF 上传 / DOI / arXiv / URL / BibTeX）；SourceIdentity 分层身份键精确判等；候选 ≠ 正式文献（promotion 幂等）；条目级 metadata 可信分层 merge；Evidence 引用阻止删除 |
+| 项目检索 RAG（M6.4） | 确定性 SourceChunk 管线 + 进程内 BM25 + 可选 dense + RRF 混合检索 + Context Budget Packing；`retrieve_library` 工具；零 Vector DB / 零外部索引引擎（Index 为 Derived State，可删可重建） |
+| 证据接地（M6.5/M6.6） | EvidenceCandidate 候选-转正状态机 + 三段核验（quote 逐字 / metadata 权威记录 / 语义 judge，前两段确定性）；**Retrieved ≠ Verified ≠ Grounded**——写作 / 审稿消费侧只认 verified 证据（writer formalOnly 视图、citations_evidence_backed Gate 规则），Agent 只能提案、不能定义什么是证据 |
+| 修订安全（M6.7） | RevisionPlanItem 生命周期状态机 + revision.validate 四类确定性复核（Fact / Citation Preservation、Claim Strength 升级检测、Evidence 复核）+ Claim Strength Gate（强 claim 弱证据拦截）+ hitl.revision_validation（reject = 恢复修订前快照） |
+| 可靠性评估（M6.8/M6.9） | scripted 离线确定性评估 + 五模型族 live 评估（GLM-5.3 / claude-fable-5-1 / gpt-5.4 / deepseek-v4-pro / qwen3.7-max）：Plain LLM 25/25 提案捏造引用，PaperTeam 管线零捏造证据泄漏（evaluated scenarios 内，限制如实见报告）；评估只读被测系统 |
 | 长论文审阅 | PDF 解析 → PaperMap 导航图 + 受控分章节上下文（其他章节全文绝不进入当前审阅上下文），有界并发 + 背压；Runtime 层另有全局并发上限 + 有界等待队列 + 上下文预算（超限回转/拒绝，绝不静默截断）+ 会话 TTL/GC（Workflow 局部并发与 Runtime 全局治理两层） |
 | 审稿-修订闭环 | Reviewer 三路并行审稿 → 确定性聚合 → Quality Gate → 确定性 Revision Plan → Writer 逐节修订 → 强制复审 → 收敛判定（PASS / IMPROVED / CONVERGED / REGRESSION，纯代码） |
 | 质量门禁 | 13+ 条确定性规则（学术评分 / 引用完整性 / 可行性），结论可解释（ruleId → 中文说明 → 深链处理入口），轮次隔离，修订后过期如实提示 |
@@ -41,16 +47,23 @@ PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产
 
 ```mermaid
 flowchart TD
-    UI["React Workbench<br/>(项目 / Review / 证据 / 工作流 / 论文产出)"] -->|HTTP API / SSE| ORCH
+    UI["React Workbench<br/>(项目 / 文献库 / 证据 / Review / 工作流 / 论文产出)"] -->|HTTP API / SSE| ORCH
     subgraph Backend["PaperTeam Backend (Node.js + TypeScript)"]
         ORCH["WorkflowOrchestrator<br/>确定性编排（非 Agent）"]
+        SRC["Research Discovery<br/>(M6.3: OpenAlex / Semantic Scholar /<br/>arXiv / AMiner + SearXNG)"]
+        LIB["Literature Library + Hybrid Retrieval<br/>(M6.2/M6.4: SourceIdentity 身份键、<br/>BM25 + RRF，零 Vector DB)"]
+        EVD["Evidence Grounding<br/>(M6.5: 候选-转正状态机 + 三段核验，<br/>Retrieved ≠ Verified ≠ Grounded)"]
         ORCH --> RES["Researcher"]
         ORCH --> WRI["Writer"]
         ORCH --> REV["Reviewer<br/>(fact / academic / style)"]
         ORCH --> CIT["Citation"]
-        WS["Workspace（事实来源）<br/>manuscript / evidence / reviews / artifacts / checkpoint"]
+        WS["Workspace（事实来源）<br/>manuscript / sources / evidence / reviews / artifacts / checkpoint"]
         GATE["Quality Gate + Build Gate<br/>（确定性规则）"]
     end
+    ORCH --> SRC
+    SRC --> LIB
+    LIB --> EVD
+    EVD -.verified 才进正式上下文.-> WRI
     RES & WRI & REV & CIT --> RT["AgentRuntime 契约 v2"]
     RT --> PI["PiRuntimeAdapter"]
     PI --> SDK["Pi SDK (in-process)"]
@@ -63,7 +76,7 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    A["研究 Idea"] --> B["调研 + 可行性"] --> C{HITL 确认}
+    A["研究 Idea"] --> B["调研 → 证据落地<br/>(evidence.ground) → 可行性"] --> C{HITL 确认}
     C --> D["大纲"] --> E{HITL 确认} --> F["分节写作"]
     G["论文 PDF"] --> H["确定性重建"] --> I["审稿基线"]
     F --> J["引用核验"] --> I
@@ -80,8 +93,8 @@ flowchart LR
 ```bash
 git clone https://github.com/JiahongXu88/PaperTeam.git
 cd PaperTeam
-npm run install:all   # backend（Pi SDK 0.84.4 精确 pin）+ frontend（React 19 + Vite）+ e2e（Playwright）
-npm run doctor        # 环境自检：Node / 依赖 / PDF 解析工具链（Python 3.10+ 与 pymupdf）
+npm run install:all   # backend（Pi SDK 0.84.4 精确 pin）+ frontend（React 19 + Vite）
+npm run doctor        # 环境自检：Node / 依赖 / PDF 解析工具链（Python 3.10+ 与 pymupdf）/ Git
 npm run dev           # 一键启动：Backend :3000 + React Workbench :5173（/api 同源代理）
 ```
 
@@ -113,34 +126,41 @@ npm run typecheck      # 前后端类型检查
 npm test               # backend + frontend 全部 vitest（不需要模型 / 外网）
 
 # 浏览器级 E2E（Playwright，本机 Chrome；需 dev 栈或 scripted 测试栈已启动）
-cd e2e && npm test     # 各套件按环境门控自动跳过；scripted 栈与门控变量见各 spec 文件头注释
+cd e2e && npm install && npm test   # 各套件按环境门控自动跳过；scripted 栈与门控变量见各 spec 文件头注释
 ```
 
 测试策略：编排引擎与业务服务为真实实现，仅 AgentRuntime 注入脚本化实现
 （`PAPERTEAM_TEST_RUNTIME=scripted`——Workflow / checkpoint / SSE / HTTP / React /
 LaTeX 编译全真实，只有模型输出是确定性脚本）；另有真实模型 smoke 记录在各里程碑。
 
-## 当前状态：M5 COMPLETE（M1–M5）
+## 当前状态：M6 COMPLETE（M1–M6）
 
 M1–M4 已完成（Runtime 迁移到 Pi in-process、React 工作台、三条产品路径、
 质量基础设施与版本体验）。M5（中文论文质量与长程运行可靠性）已于 2026-09-16
-全部收口：M5.1 Runtime 生命周期可靠性与 M5.2 长程运行治理（分层超时 / 全局并发
+全部收口：M5.1/M5.2 Runtime 生命周期可靠性与长程运行治理（分层超时 / 全局并发
 与有界受理 / context budget / 会话 rotation / TTL·GC·容量 / 观测面与安全自愈）；
-M5.3 受控学术 Skill 接入（academic-writing-zh / academic-review / academic-style-zh：
-审计 seed、固定上游 commit、role + contextScope 路由、会话级版本固定、
-assigned / accessed 观测、受控 install / update + Skills 设置页）；M5.4 中文
-学术风格修订回路（stylePolicy suggest_only / apply_once、Style Invariant
-Checker、style-only HITL 修订 + 强制复审、Quick Review 只读红线、M5 eval
-corpus）；M5.5 单机 Linux / Docker 部署（2026-09-15 真实 Docker 验收，WSL2 + Docker Engine，
-build / 持久化 / 容器内 XeLaTeX 中文 PDF / PyMuPDF / SIGTERM 优雅停机，见
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；M5.6 真实论文 A/B 验收——
-**Citation Preservation**（修订不得无依据丢失引用）与 **Fact Preservation**（修订不得无依据
-改写 / 删除 / 占位化实验事实，篡改稿拒绝冻结 Draft）双层确定性 Gate 已上线并被真实模型运行验证
-（两臂 fact mutation 均被 FAIL 拦截）；Skill 质量增益未获稳定证据（如实记录，见
-[docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）；M5.7 最终产品化——per-Agent
-provider/model 配置与外部专家 / 导师意见驱动的修订（见下方功能清单）。**M5 整体状态见
-[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。**真实模型 / 真实 MiKTeX 的端到端验证记录见
-[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。定位是 **MVP / Alpha**，不是
+M5.3 受控学术 Skill 接入；M5.4 中文学术风格修订回路；M5.5 单机 Linux / Docker
+部署（2026-09-15 真实 Docker 验收，见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)）；
+M5.6 真实论文 A/B 验收——**Citation Preservation** 与 **Fact Preservation**
+双层确定性 Gate 上线并被真实模型运行验证（Skill 质量增益未获稳定证据，如实记录，
+见 [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md)）；M5.7 最终产品化——per-Agent
+provider/model 配置与外部专家 / 导师意见驱动的修订（见下方功能清单）。
+
+**M6（Research Discovery & Evidence-grounded Pipeline）已于 2026-09-18 全部完成
+并冻结（M6.0–M6.9，Documentation Freeze，D-0041）**：M6.2 Literature Library →
+M6.3 Research Discovery & Academic/Web Search → M6.4 Project RAG & Hybrid
+Retrieval → M6.5 Evidence Grounding → M6.6 Evidence-aware Writing Loop →
+M6.7 Revision Safety → M6.8/M6.9 Agent Reliability Evaluation（scripted 离线
+与五模型族 live）。M6 全程**零新增 Agent**（能力以 Tool 层 + Evidence Layer +
+Quality Gate 交付，D-0009 红线）；核心不变量 **Retrieved ≠ Verified ≠
+Grounded**（详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §1.3）。M7.0
+产品化基线已收口（前端对齐 M6 能力：项目「文献库」标签页、侧边栏响应式修复、
+论文导入流程增强；不新增 Agent / Runtime / Workflow）。
+
+**里程碑总览见
+[docs/research/M6_FINAL_SUMMARY.md](docs/research/M6_FINAL_SUMMARY.md)；整体
+状态与真实模型 / 真实 MiKTeX 的端到端验证记录见
+[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。**定位是 **MVP / Alpha**，不是
 Production Stable 1.0。
 
 ### Known Limitations（真实清单）
@@ -186,13 +206,15 @@ XeLaTeX/latexmk/biber + 中文字体，不对外发布）；数据在 `paperteam
 | 文档 | 说明 |
 | --- | --- |
 | [docs/PRD.md](docs/PRD.md) | 产品需求文档 |
-| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与里程碑记录（M1–M5） |
+| [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) | 项目当前状态与里程碑记录（M1–M6） |
+| [docs/research/M6_FINAL_SUMMARY.md](docs/research/M6_FINAL_SUMMARY.md) | M6 里程碑总览（Research Discovery & Evidence-grounded Pipeline，冻结 D-0041） |
+| [docs/research/M6.8_EVALUATION_REPORT.md](docs/research/M6.8_EVALUATION_REPORT.md) | M6.8 scripted 离线评估报告（三实验 / 故障注入 / 指标） |
 | [docs/M5_ACCEPTANCE.md](docs/M5_ACCEPTANCE.md) | M5 真实论文 A/B 验收记录（环境 / 指标 / 修复 / 最终判定） |
 | [docs/RELEASE_NOTES_M5.md](docs/RELEASE_NOTES_M5.md) | M5 Release Notes（COMPLETE；未打 tag——本语料 Final 无法达成） |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | 单机 Linux / Docker 部署（依赖审计 / 持久化 / 密钥 / 验收清单） |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构（含架构红线：事实来源 / 会话 / 事件 / 双 Gate） |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 系统架构（含 M6 冻结架构 §1.3 与架构红线：事实来源 / 会话 / 事件 / 双 Gate） |
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | Frontend API Contract（端点 / DTO / SSE / 变更纪律） |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 技术决策记录（ADR，D-0001~D-0029） |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 技术决策记录（ADR，D-0001~D-0041） |
 
 ## 目录结构
 
@@ -205,6 +227,7 @@ PaperTeam/
 ├── backend/             # PaperTeam Backend（API / Workflow / Pi Runtime / LaTeX / 版本域）
 │   └── tools/parse_paper_pdf.py   # PDF 解析工具（pymupdf 子进程，stdout JSON 协议）
 ├── e2e/                 # Playwright 浏览器级 E2E（仅测试工具，不进产品代码）
+├── evaluation/          # M6.8/M6.9 Agent 可靠性评估（scripted 框架 + live，报告在 evaluation/reports/）
 └── docs/                # 项目文档（PRD / 架构 / API Contract / ADR / 状态）
 ```
 
