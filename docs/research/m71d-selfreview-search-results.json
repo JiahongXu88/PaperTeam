@@ -1,0 +1,4267 @@
+{
+  "generatedAt": "2026-09-19T07:41:30.855Z",
+  "purpose": "M7.1d PaperTeam Self Review — 外部 AI Research Agent / Deep Research 系统调研的 Research Discovery 调用记录",
+  "toolSurface": "createScholarlyTools(...) 产出的 Agent 会话同款工具对象（search_papers / search_web / save_candidates），服务栈与 backend/src/index.ts 同源装配",
+  "projectsRoot": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\m71d-selfreview-projects-FaRdvl",
+  "projectId": "p-ba7ba43663bc",
+  "searchConfig": {
+    "disabledProviders": [],
+    "searxngConfigured": false
+  },
+  "academicCalls": [
+    {
+      "tool": "search_papers",
+      "tag": "deep-research-systems",
+      "params": {
+        "query": "deep research agents large language models",
+        "limit": 10,
+        "yearFrom": 2025
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 3
+        }
+      ],
+      "latencyMs": 1780,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A Survey of Large Language Models",
+          "year": 2026,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-026-60308-3",
+          "arxivId": null,
+          "citationCount": 1547,
+          "openAccess": true,
+          "authors": [
+            "Wayne Xin Zhao",
+            "Kun Zhou",
+            "Junyi Li"
+          ],
+          "abstract": "Abstract The rapid evolution of large language models (LLMs) has driven a transformative shift in artificial intelligence (AI), reshaping both research paradigms and practical applications. Distinguished from their predecessors by unprecedented scale and advanced capabilities, LLMs necessitate new frameworks for understanding their development, behavior, and societal impact. This survey systematic",
+          "url": "https://doi.org/10.1007/s11704-026-60308-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Can Open Large Language Models Catch Vulnerabilities?",
+          "year": 2025,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.4230/oasics.icpec.2025.4",
+          "arxivId": null,
+          "citationCount": 532,
+          "openAccess": true,
+          "authors": [
+            "DeepSeek-AI",
+            "Guo, Daya",
+            "Yang, Dejian"
+          ],
+          "abstract": "As Large Language Models (LLMs) become increasingly integrated into secure software development workflows, a critical question remains unanswered: can these models not only detect insecure code but also reliably classify vulnerabilities according to standardized taxonomies? In this work, we conduct a systematic evaluation of three state-of-the-art LLMs - Llama3, Codestral, and Deepseek R1 - using ",
+          "url": "https://doi.org/10.4230/oasics.icpec.2025.4",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Negation in English and other languages",
+          "year": 2025,
+          "doi": "10.17169/refubium-47759",
+          "arxivId": null,
+          "citationCount": 1629,
+          "openAccess": true,
+          "authors": [
+            "Otto Jespersen",
+            "Reynolds, Brett",
+            "Evans, Peter"
+          ],
+          "abstract": "Synopsis: Otto Jespersen's landmark study of negation provides a wide-ranging analysis of how languages express negative meaning. Drawing on an impressive array of historical texts and comparative examples, primarily from Germanic and Romance languages, Jespersen examines the forms, functions, and historical development of negative expressions. The work traces the evolution of negative markers, an",
+          "url": "https://doi.org/10.17169/refubium-47759",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Improving large language model applications in biomedicine with retrieval-augmented generation: a systematic review, meta-analysis, and clinical development guidelines",
+          "year": 2025,
+          "venue": "Journal of the American Medical Informatics Association",
+          "doi": "10.1093/jamia/ocaf008",
+          "arxivId": null,
+          "citationCount": 169,
+          "openAccess": true,
+          "authors": [
+            "Siru Liu",
+            "Allison B. McCoy",
+            "Adam Wright"
+          ],
+          "abstract": "OBJECTIVE: The objectives of this study are to synthesize findings from recent research of retrieval-augmented generation (RAG) and large language models (LLMs) in biomedicine and provide clinical development guidelines to improve effectiveness. MATERIALS AND METHODS: We conducted a systematic literature review and a meta-analysis. The report was created in adherence to the Preferred Reporting Ite",
+          "url": "https://doi.org/10.1093/jamia/ocaf008",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Large Language Models for Chatbot Health Advice Studies",
+          "year": 2025,
+          "venue": "JAMA Network Open",
+          "doi": "10.1001/jamanetworkopen.2024.57879",
+          "arxivId": null,
+          "citationCount": 238,
+          "openAccess": true,
+          "authors": [
+            "Bright Huo",
+            "Amy Boyle",
+            "Nana Marfo"
+          ],
+          "abstract": "Importance: There is much interest in the clinical integration of large language models (LLMs) in health care. Many studies have assessed the ability of LLMs to provide health advice, but the quality of their reporting is uncertain. Objective: To perform a systematic review to examine the reporting variability among peer-reviewed studies evaluating the performance of generative artificial intellig",
+          "url": "https://doi.org/10.1001/jamanetworkopen.2024.57879",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Industrial applications of large language models",
+          "year": 2025,
+          "venue": "Scientific Reports",
+          "doi": "10.1038/s41598-025-98483-1",
+          "arxivId": null,
+          "citationCount": 151,
+          "openAccess": true,
+          "authors": [
+            "Mubashar Raza",
+            "Zarmina Jahangir",
+            "Muhammad Bilal Riaz"
+          ],
+          "abstract": "Large language models (LLMs) are artificial intelligence (AI) based computational models designed to understand and generate human like text. With billions of training parameters, LLMs excel in identifying intricate language patterns, enabling remarkable performance across a variety of natural language processing (NLP) tasks. After the introduction of transformer architectures, they are impacting ",
+          "url": "https://doi.org/10.1038/s41598-025-98483-1",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Large Language Models in Healthcare and Medical Applications: A Review",
+          "year": 2025,
+          "venue": "Bioengineering",
+          "doi": "10.3390/bioengineering12060631",
+          "arxivId": null,
+          "citationCount": 205,
+          "openAccess": true,
+          "authors": [
+            "Subhankar Maity",
+            "Manob Jyoti Saikia"
+          ],
+          "abstract": "This paper provides a systematic and in-depth examination of large language models (LLMs) in the healthcare domain, addressing their significant potential to transform medical practice through advanced natural language processing capabilities. Current implementations demonstrate LLMs' promising applications across clinical decision support, medical education, diagnostics, and patient care, while h",
+          "url": "https://doi.org/10.3390/bioengineering12060631",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "🧜Siren’s Song in the AI Ocean: A Survey on Hallucination in Large Language Models",
+          "year": 2025,
+          "venue": "Computational Linguistics",
+          "doi": "10.1162/coli.a.16",
+          "arxivId": null,
+          "citationCount": 229,
+          "openAccess": true,
+          "authors": [
+            "Yue Zhang",
+            "Yafu Li",
+            "Leyang Cui"
+          ],
+          "abstract": "Abstract While large language models (LLMs) have demonstrated remarkable capabilities across a range of downstream tasks, a significant concern revolves around their propensity to exhibit hallucinations: LLMs occasionally generate content that diverges from the user input, contradicts previously generated context, or misaligns with established world knowledge. This phenomenon poses a substantial c",
+          "url": "https://doi.org/10.1162/coli.a.16",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "ai-scientist",
+      "params": {
+        "query": "AI Scientist autonomous research paper generation",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 9
+        }
+      ],
+      "latencyMs": 3064,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A survey on large language model based autonomous agents",
+          "year": 2024,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-024-40231-1",
+          "arxivId": null,
+          "citationCount": 1606,
+          "openAccess": true,
+          "authors": [
+            "Lei Wang",
+            "Chen Ma",
+            "Xueyang Feng"
+          ],
+          "abstract": "Abstract Autonomous agents have long been a research focus in academic and industry communities. Previous research often focuses on training agents with limited knowledge within isolated environments, which diverges significantly from human learning processes, and makes the agents hard to achieve human-like decisions. Recently, through the acquisition of vast amounts of Web knowledge, large langua",
+          "url": "https://doi.org/10.1007/s11704-024-40231-1",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "FUTURE-AI: international consensus guideline for trustworthy and deployable artificial intelligence in healthcare",
+          "year": 2025,
+          "venue": "BMJ",
+          "doi": "10.1136/bmj-2024-081554",
+          "arxivId": null,
+          "citationCount": 580,
+          "openAccess": true,
+          "authors": [
+            "Karim Lekadir",
+            "Alejandro F. Frangi",
+            "Antonio R. Porras"
+          ],
+          "abstract": "Despite major advances in artificial intelligence (AI) research for healthcare, the deployment and adoption of AI technologies remain limited in clinical practice. This paper describes the FUTURE-AI framework, which provides guidance for the development and deployment of trustworthy AI tools in healthcare. The FUTURE-AI Consortium was founded in 2021 and comprises 117 interdisciplinary experts fro",
+          "url": "https://doi.org/10.1136/bmj-2024-081554",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "A Multiagent-Driven Robotic AI Chemist Enabling Autonomous Chemical Research On Demand",
+          "year": 2025,
+          "venue": "Journal of the American Chemical Society",
+          "doi": "10.1021/jacs.4c17738",
+          "arxivId": null,
+          "citationCount": 161,
+          "openAccess": true,
+          "authors": [
+            "Tao Song",
+            "Man Luo",
+            "Xiaolong Zhang"
+          ],
+          "abstract": "The successful integration of large language models (LLMs) into laboratory workflows has demonstrated robust capabilities in natural language processing, autonomous task execution, and collaborative problem-solving. This offers an exciting opportunity to realize the dream of autonomous chemical research on demand. Here, we report a robotic AI chemist powered by a hierarchical multiagent system, Ch",
+          "url": "https://doi.org/10.1021/jacs.4c17738",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "A Systematic Review of Synthetic Data Generation Techniques Using Generative AI",
+          "year": 2024,
+          "venue": "Electronics",
+          "doi": "10.3390/electronics13173509",
+          "arxivId": null,
+          "citationCount": 234,
+          "openAccess": true,
+          "authors": [
+            "Mandeep Goyal",
+            "Qusay H. Mahmoud"
+          ],
+          "abstract": "Synthetic data are increasingly being recognized for their potential to address serious real-world challenges in various domains. They provide innovative solutions to combat the data scarcity, privacy concerns, and algorithmic biases commonly used in machine learning applications. Synthetic data preserve all underlying patterns and behaviors of the original dataset while altering the actual conten",
+          "url": "https://doi.org/10.3390/electronics13173509",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Balancing Privacy and Progress: A Review of Privacy Challenges, Systemic Oversight, and Patient Perceptions in AI-Driven Healthcare",
+          "year": 2024,
+          "venue": "Applied Sciences",
+          "doi": "10.3390/app14020675",
+          "arxivId": null,
+          "citationCount": 548,
+          "openAccess": true,
+          "authors": [
+            "S. Williamson",
+            "Victor R. Prybutok"
+          ],
+          "abstract": "Integrating Artificial Intelligence (AI) in healthcare represents a transformative shift with substantial potential for enhancing patient care. This paper critically examines this integration, confronting significant ethical, legal, and technological challenges, particularly in patient privacy, decision-making autonomy, and data integrity. A structured exploration of these issues focuses on Differ",
+          "url": "https://doi.org/10.3390/app14020675",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "A review of large language models and autonomous agents in chemistry",
+          "year": 2024,
+          "venue": "Chemical Science",
+          "doi": "10.1039/d4sc03921a",
+          "arxivId": null,
+          "citationCount": 243,
+          "openAccess": true,
+          "authors": [
+            "Mayk Caldas Ramos",
+            "Christopher J. Collison",
+            "Andrew Dickson White"
+          ],
+          "abstract": "Large language models (LLMs) have emerged as powerful tools in chemistry, significantly impacting molecule design, property prediction, and synthesis optimization. This review highlights LLM capabilities in these domains and their potential to accelerate scientific discovery through automation. We also review LLM-based autonomous agents: LLMs with a broader set of tools to interact with their surr",
+          "url": "https://doi.org/10.1039/d4sc03921a",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Explainable Generative AI (GenXAI): a survey, conceptualization, and research agenda",
+          "year": 2024,
+          "venue": "Artificial Intelligence Review",
+          "doi": "10.1007/s10462-024-10916-x",
+          "arxivId": null,
+          "citationCount": 152,
+          "openAccess": true,
+          "authors": [
+            "Johannes Schneider"
+          ],
+          "abstract": "Abstract Generative AI (GenAI) represents a shift from AI’s ability to “recognize” to its ability to “generate” solutions for a wide range of tasks. As generated solutions and applications grow more complex and multi-faceted, new needs, objectives, and possibilities for explainability (XAI) have emerged. This work elaborates on why XAI has gained importance with the rise of GenAI and the challenge",
+          "url": "https://doi.org/10.1007/s10462-024-10916-x",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "The AI Scientist-v2: Workshop-Level Automated Scientific Discovery via Agentic Tree Search",
+          "year": 2025,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2504.08066",
+          "arxivId": null,
+          "citationCount": 30,
+          "openAccess": true,
+          "authors": [
+            "Yutaro Yamada",
+            "Robert Tjarko Lange",
+            "Cong Lu"
+          ],
+          "abstract": "AI is increasingly playing a pivotal role in transforming how scientific discoveries are made. We introduce The AI Scientist-v2, an end-to-end agentic system capable of producing the first entirely AI generated peer-review-accepted workshop paper. This system iteratively formulates scientific hypotheses, designs and executes experiments, analyzes and visualizes data, and autonomously authors scien",
+          "url": "https://doi.org/10.48550/arxiv.2504.08066",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "paperqa",
+      "params": {
+        "query": "PaperQA retrieval augmented literature question answering",
+        "limit": 10,
+        "yearFrom": 2023
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 8
+        }
+      ],
+      "latencyMs": 2814,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Retrieval-Augmented Generation for Large Language Models: A Survey",
+          "year": 2023,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2312.10997",
+          "arxivId": null,
+          "citationCount": 747,
+          "openAccess": true,
+          "authors": [
+            "Yunfan Gao",
+            "Yun Xiong",
+            "Xinyu Gao"
+          ],
+          "abstract": "Large Language Models (LLMs) showcase impressive capabilities but encounter challenges like hallucination, outdated knowledge, and non-transparent, untraceable reasoning processes. Retrieval-Augmented Generation (RAG) has emerged as a promising solution by incorporating knowledge from external databases. This enhances the accuracy and credibility of the generation, particularly for knowledge-inten",
+          "url": "https://doi.org/10.48550/arxiv.2312.10997",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "PaperQA: Retrieval-Augmented Generative Agent for Scientific Research",
+          "year": 2023,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2312.07559",
+          "arxivId": null,
+          "citationCount": 52,
+          "openAccess": true,
+          "authors": [
+            "Jakub Lála",
+            "Odhran O’Donoghue",
+            "Aleksandar Shtedritski"
+          ],
+          "abstract": "Large Language Models (LLMs) generalize well across language tasks, but suffer from hallucinations and uninterpretability, making it difficult to assess their accuracy without ground-truth. Retrieval-Augmented Generation (RAG) models have been proposed to reduce hallucinations and provide provenance for how an answer was generated. Applying such models to the scientific literature may enable large",
+          "url": "https://doi.org/10.48550/arxiv.2312.07559",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Benchmarking Retrieval-Augmented Generation for Medicine",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.findings-acl.372",
+          "arxivId": null,
+          "citationCount": 262,
+          "openAccess": true,
+          "authors": [
+            "Guangzhi Xiong",
+            "Qiao Jin",
+            "Zhiyong Lu"
+          ],
+          "abstract": "While large language models (LLMs) have achieved state-of-the-art performance on a wide range of medical question answering (QA) tasks, they still face challenges with hallucinations and outdated knowledge.Retrievalaugmented generation (RAG) is a promising solution and has been widely adopted.However, a RAG system can involve multiple flexible components, and there is a lack of best practices rega",
+          "url": "https://doi.org/10.18653/v1/2024.findings-acl.372",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Retrieval-Augmented Generation (RAG) Chatbots for Education: A Survey of Applications",
+          "year": 2025,
+          "venue": "Applied Sciences",
+          "doi": "10.3390/app15084234",
+          "arxivId": null,
+          "citationCount": 118,
+          "openAccess": true,
+          "authors": [
+            "Jakub Swacha",
+            "Michał Gracel"
+          ],
+          "abstract": "Retrieval-Augmented Generation (RAG) overcomes the main barrier for the adoption of LLM-based chatbots in education: hallucinations. The uncomplicated architecture of RAG chatbots makes it relatively easy to implement chatbots that serve specific purposes and thus are capable of addressing various needs in the educational domain. With five years having passed since the introduction of RAG, the tim",
+          "url": "https://doi.org/10.3390/app15084234",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Benchmarking Retrieval-Augmented Generation for Medicine",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2402.13178",
+          "arxivId": null,
+          "citationCount": 23,
+          "openAccess": true,
+          "authors": [
+            "Guangzhi Xiong",
+            "Qiao Jin",
+            "Zhiyong Lu"
+          ],
+          "abstract": "While large language models (LLMs) have achieved state-of-the-art performance on a wide range of medical question answering (QA) tasks, they still face challenges with hallucinations and outdated knowledge. Retrieval-augmented generation (RAG) is a promising solution and has been widely adopted. However, a RAG system can involve multiple flexible components, and there is a lack of best practices r",
+          "url": "https://doi.org/10.48550/arxiv.2402.13178",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Using the Retrieval-Augmented Generation to Improve the Question-Answering System in Human Health Risk Assessment: The Development and Application",
+          "year": 2025,
+          "venue": "Electronics",
+          "doi": "10.3390/electronics14020386",
+          "arxivId": null,
+          "citationCount": 17,
+          "openAccess": true,
+          "authors": [
+            "Wenjun Meng",
+            "Yuzhe Li",
+            "Lili Chen"
+          ],
+          "abstract": "While large language models (LLMs) are vital for retrieving relevant information from extensive knowledge bases, they always face challenges, including high costs and issues of credibility. Here, we developed a question answering system focused on human health risk using Retrieval-Augmented Generation (RAG). We first proposed a framework to generate question–answer pairs, resulting in 300 high-qua",
+          "url": "https://doi.org/10.3390/electronics14020386",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Advancing Cyber Incident Timeline Analysis Through Retrieval-Augmented Generation and Large Language Models",
+          "year": 2025,
+          "venue": "Computers",
+          "doi": "10.3390/computers14020067",
+          "arxivId": null,
+          "citationCount": 28,
+          "openAccess": true,
+          "authors": [
+            "Fatma Yasmine Loumachi",
+            "Mohamed Chahine Ghanem",
+            "Mohamed Amine Ferrag"
+          ],
+          "abstract": "Cyber timeline analysis or forensic timeline analysis is critical in digital forensics and incident response (DFIR) investigations. It involves examining artefacts and events—particularly their timestamps and associated metadata—to detect anomalies, establish correlations, and reconstruct a detailed sequence of the incident. Traditional approaches rely on processing structured artefacts, such as l",
+          "url": "https://doi.org/10.3390/computers14020067",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "HiPerRAG: High-Performance Retrieval Augmented Generation for Scientific Insights",
+          "year": 2025,
+          "doi": "10.1145/3732775.3733586",
+          "arxivId": null,
+          "citationCount": 8,
+          "openAccess": true,
+          "authors": [
+            "Ozan Gökdemir",
+            "Carlo Siebenschuh",
+            "Alexander Brace"
+          ],
+          "abstract": "The volume of scientific literature is growing exponentially, leading to underutilized discoveries, duplicated efforts, and limited cross-disciplinary collaboration. Retrieval-Augmented Generation (RAG) offers a way to assist scientists by improving the factuality of Large Language Models (LLMs) in processing this influx of information. However, scaling RAG to handle millions of articles introduce",
+          "url": "https://doi.org/10.1145/3732775.3733586",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "storm",
+      "params": {
+        "query": "STORM writing Wikipedia-like articles from scratch with foundation models",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 10
+        }
+      ],
+      "latencyMs": 1633,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.naacl-long.347",
+          "arxivId": null,
+          "citationCount": 37,
+          "openAccess": true,
+          "authors": [
+            "Yijia Shao",
+            "Yucheng Jiang",
+            "Theodore A. Kanell"
+          ],
+          "abstract": "Yijia Shao, Yucheng Jiang, Theodore Kanell, Peter Xu, Omar Khattab, Monica Lam. Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers). 2024.",
+          "url": "https://doi.org/10.18653/v1/2024.naacl-long.347",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2402.14207",
+          "arxivId": null,
+          "citationCount": 9,
+          "openAccess": true,
+          "authors": [
+            "Yijia Shao",
+            "Yucheng Jiang",
+            "Theodore A. Kanell"
+          ],
+          "abstract": "We study how to apply large language models to write grounded and organized long-form articles from scratch, with comparable breadth and depth to Wikipedia pages. This underexplored problem poses new challenges at the pre-writing stage, including how to research the topic and prepare an outline prior to writing. We propose STORM, a writing system for the Synthesis of Topic Outlines through Retriev",
+          "url": "https://doi.org/10.48550/arxiv.2402.14207",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Exploring the role of large language models in the scientific method: from hypothesis to discovery",
+          "year": 2025,
+          "venue": "npj Artificial Intelligence",
+          "doi": "10.1038/s44387-025-00019-5",
+          "arxivId": null,
+          "citationCount": 80,
+          "openAccess": true,
+          "authors": [
+            "Yanbo Zhang",
+            "Sumeer Ahmad Khan",
+            "A. K. M. Firoj Mahmud"
+          ],
+          "abstract": "Abstract We review how Large Language Models (LLMs) are redefining the scientific method and explore their potential applications across different stages of the scientific cycle, from hypothesis testing to discovery. We conclude that, for LLMs to serve as relevant and effective creative engines and productivity enhancers, their deep integration into all steps of the scientific process should be pu",
+          "url": "https://doi.org/10.1038/s44387-025-00019-5",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Into the Unknown Unknowns: Engaged Human Learning through Participation in Language Model Agent Conversations",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.emnlp-main.554",
+          "arxivId": null,
+          "citationCount": 8,
+          "openAccess": true,
+          "authors": [
+            "Yucheng Jiang",
+            "Yijia Shao",
+            "Dekun Ma"
+          ],
+          "abstract": "While language model (LM)-powered chatbots and generative search engines excel at answering concrete queries, discovering information in the terrain of unknown unknowns remains challenging for users.To emulate the common educational scenario where children/students learn by listening to and participating in conversations with their parents/teachers, we create Collaborative STORM (Co-STORM). 1 Unli",
+          "url": "https://doi.org/10.18653/v1/2024.emnlp-main.554",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "The Responsible Foundation Model Development Cheatsheet: A Review of Tools & Resources",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2406.16746",
+          "arxivId": null,
+          "citationCount": 4,
+          "openAccess": true,
+          "authors": [
+            "Shayne Longpre",
+            "Stella Biderman",
+            "Alon Albalak"
+          ],
+          "abstract": "Foundation model development attracts a rapidly expanding body of contributors, scientists, and applications. To help shape responsible development practices, we introduce the Foundation Model Development Cheatsheet: a growing collection of 250+ tools and resources spanning text, vision, and speech modalities. We draw on a large body of prior work to survey resources (e.g. software, documentation,",
+          "url": "https://doi.org/10.48550/arxiv.2406.16746",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "RAPID: Efficient Retrieval-Augmented Long Text Generation with Writing Planning and Information Discovery",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.findings-acl.859",
+          "arxivId": null,
+          "citationCount": 4,
+          "openAccess": true,
+          "authors": [
+            "Hongchao Gu",
+            "Dexun Li",
+            "Kuicai Dong"
+          ],
+          "abstract": "Generating knowledge-intensive and comprehensive long texts, such as encyclopedia articles, remains significant challenges for Large Language Models.It requires not only the precise integration of facts but also the maintenance of thematic coherence throughout the article.Existing methods, such as direct generation and multi-agent discussion, often struggle with issues like hallucinations, topic i",
+          "url": "https://doi.org/10.18653/v1/2025.findings-acl.859",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "QuRating: Selecting High-Quality Data for Training Language Models",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2402.09739",
+          "arxivId": null,
+          "citationCount": 6,
+          "openAccess": true,
+          "authors": [
+            "Alexander Wettig",
+            "Aatmik Gupta",
+            "Saumya Malik"
+          ],
+          "abstract": "Selecting high-quality pre-training data is important for creating capable language models, but existing methods rely on simple heuristics. We introduce QuRating, a method for selecting pre-training data that can capture human intuitions about data quality. In this paper, we investigate four qualities - writing style, required expertise, facts & trivia, and educational value - and find that LLMs a",
+          "url": "https://doi.org/10.48550/arxiv.2402.09739",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "OmniThink: Expanding Knowledge Boundaries in Machine Writing through Thinking",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.emnlp-main.50",
+          "arxivId": null,
+          "citationCount": 2,
+          "openAccess": true,
+          "authors": [
+            "Xi Zhang",
+            "Wenbiao Yin",
+            "Jizhan Fang"
+          ],
+          "abstract": "Zekun Xi, Wenbiao Yin, Jizhan Fang, Jialong Wu, Runnan Fang, Yong Jiang, Pengjun Xie, Fei Huang, Huajun Chen, Ningyu Zhang. Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing. 2025.",
+          "url": "https://doi.org/10.18653/v1/2025.emnlp-main.50",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "literature-review-automation",
+      "params": {
+        "query": "automated literature review large language models scientific",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 9
+        }
+      ],
+      "latencyMs": 1773,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A Survey of Large Language Models",
+          "year": 2026,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-026-60308-3",
+          "arxivId": null,
+          "citationCount": 1547,
+          "openAccess": true,
+          "authors": [
+            "Wayne Xin Zhao",
+            "Kun Zhou",
+            "Junyi Li"
+          ],
+          "abstract": "Abstract The rapid evolution of large language models (LLMs) has driven a transformative shift in artificial intelligence (AI), reshaping both research paradigms and practical applications. Distinguished from their predecessors by unprecedented scale and advanced capabilities, LLMs necessitate new frameworks for understanding their development, behavior, and societal impact. This survey systematic",
+          "url": "https://doi.org/10.1007/s11704-026-60308-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "A survey on large language model based autonomous agents",
+          "year": 2024,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-024-40231-1",
+          "arxivId": null,
+          "citationCount": 1606,
+          "openAccess": true,
+          "authors": [
+            "Lei Wang",
+            "Chen Ma",
+            "Xueyang Feng"
+          ],
+          "abstract": "Abstract Autonomous agents have long been a research focus in academic and industry communities. Previous research often focuses on training agents with limited knowledge within isolated environments, which diverges significantly from human learning processes, and makes the agents hard to achieve human-like decisions. Recently, through the acquisition of vast amounts of Web knowledge, large langua",
+          "url": "https://doi.org/10.1007/s11704-024-40231-1",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Augmenting large language models with chemistry tools",
+          "year": 2024,
+          "venue": "Nature Machine Intelligence",
+          "doi": "10.1038/s42256-024-00832-8",
+          "arxivId": null,
+          "citationCount": 736,
+          "openAccess": true,
+          "authors": [
+            "Andres M. Bran",
+            "Sam Cox",
+            "Oliver Schilter"
+          ],
+          "abstract": "Large language models (LLMs) have shown strong performance in tasks across domains but struggle with chemistry-related problems. These models also lack access to external knowledge sources, limiting their usefulness in scientific applications. We introduce ChemCrow, an LLM chemistry agent designed to accomplish tasks across organic synthesis, drug discovery and materials design. By integrating 18 ",
+          "url": "https://doi.org/10.1038/s42256-024-00832-8",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "A Review on Large Language Models: Architectures, Applications, Taxonomies, Open Issues and Challenges",
+          "year": 2024,
+          "venue": "IEEE Access",
+          "doi": "10.1109/access.2024.3365742",
+          "arxivId": null,
+          "citationCount": 820,
+          "openAccess": true,
+          "authors": [
+            "Mohaimenul Azam Khan Raiaan",
+            "Md. Saddam Hossain Mukta",
+            "Kaniz Fatema"
+          ],
+          "abstract": "Large Language Models (LLMs) recently demonstrated extraordinary capability, including natural language processing (NLP), language translation, text generation, question answering, etc. Moreover, LLMs are a new and essential part of computerized language processing, having the ability to understand complex verbal patterns and generate coherent and appropriate replies for the situation. Though this",
+          "url": "https://doi.org/10.1109/access.2024.3365742",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "The application of large language models in medicine: A scoping review",
+          "year": 2024,
+          "venue": "iScience",
+          "doi": "10.1016/j.isci.2024.109713",
+          "arxivId": null,
+          "citationCount": 402,
+          "openAccess": true,
+          "authors": [
+            "Xiangbin Meng",
+            "Xiangyu Yan",
+            "Kuo Zhang"
+          ],
+          "abstract": "This study systematically reviewed the application of large language models (LLMs) in medicine, analyzing 550 selected studies from a vast literature search. LLMs like ChatGPT transformed healthcare by enhancing diagnostics, medical writing, education, and project management. They assisted in drafting medical documents, creating training simulations, and streamlining research processes. Despite th",
+          "url": "https://doi.org/10.1016/j.isci.2024.109713",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "A framework for human evaluation of large language models in healthcare derived from literature review",
+          "year": 2024,
+          "venue": "npj Digital Medicine",
+          "doi": "10.1038/s41746-024-01258-7",
+          "arxivId": null,
+          "citationCount": 376,
+          "openAccess": true,
+          "authors": [
+            "Thomas Yu Chow Tam",
+            "Sonish Sivarajkumar",
+            "Sumit Kapoor"
+          ],
+          "abstract": "With generative artificial intelligence (GenAI), particularly large language models (LLMs), continuing to make inroads in healthcare, assessing LLMs with human evaluations is essential to assuring safety and effectiveness. This study reviews existing literature on human evaluation methodologies for LLMs in healthcare across various medical specialties and addresses factors such as evaluation dimen",
+          "url": "https://doi.org/10.1038/s41746-024-01258-7",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Large Language Models in Healthcare and Medical Domain: A Review",
+          "year": 2024,
+          "venue": "Informatics",
+          "doi": "10.3390/informatics11030057",
+          "arxivId": null,
+          "citationCount": 401,
+          "openAccess": true,
+          "authors": [
+            "Zabir Al Nazi",
+            "Wei Peng"
+          ],
+          "abstract": "The deployment of large language models (LLMs) within the healthcare sector has sparked both enthusiasm and apprehension. These models exhibit the remarkable ability to provide proficient responses to free-text queries, demonstrating a nuanced understanding of professional medical knowledge. This comprehensive survey delves into the functionalities of existing LLMs designed for healthcare applicat",
+          "url": "https://doi.org/10.3390/informatics11030057",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Title and abstract screening for literature reviews using large language models: an exploratory study in the biomedical domain",
+          "year": 2024,
+          "venue": "Systematic Reviews",
+          "doi": "10.1186/s13643-024-02575-4",
+          "arxivId": null,
+          "citationCount": 134,
+          "openAccess": true,
+          "authors": [
+            "Fabio Dennstädt",
+            "Johannes Zink",
+            "Paul Martin Putora"
+          ],
+          "abstract": "BACKGROUND: Systematically screening published literature to determine the relevant publications to synthesize in a review is a time-consuming and difficult task. Large language models (LLMs) are an emerging technology with promising capabilities for the automation of language-related tasks that may be useful for such a purpose. METHODS: LLMs were used as part of an automated system to evaluate th",
+          "url": "https://doi.org/10.1186/s13643-024-02575-4",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "agentic-rag",
+      "params": {
+        "query": "agentic retrieval augmented generation search agents",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 10
+        }
+      ],
+      "latencyMs": 1011,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A survey on large language model based autonomous agents",
+          "year": 2024,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-024-40231-1",
+          "arxivId": null,
+          "citationCount": 1606,
+          "openAccess": true,
+          "authors": [
+            "Lei Wang",
+            "Chen Ma",
+            "Xueyang Feng"
+          ],
+          "abstract": "Abstract Autonomous agents have long been a research focus in academic and industry communities. Previous research often focuses on training agents with limited knowledge within isolated environments, which diverges significantly from human learning processes, and makes the agents hard to achieve human-like decisions. Recently, through the acquisition of vast amounts of Web knowledge, large langua",
+          "url": "https://doi.org/10.1007/s11704-024-40231-1",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Benchmarking Retrieval-Augmented Generation for Medicine",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.findings-acl.372",
+          "arxivId": null,
+          "citationCount": 262,
+          "openAccess": true,
+          "authors": [
+            "Guangzhi Xiong",
+            "Qiao Jin",
+            "Zhiyong Lu"
+          ],
+          "abstract": "While large language models (LLMs) have achieved state-of-the-art performance on a wide range of medical question answering (QA) tasks, they still face challenges with hallucinations and outdated knowledge.Retrievalaugmented generation (RAG) is a promising solution and has been widely adopted.However, a RAG system can involve multiple flexible components, and there is a lack of best practices rega",
+          "url": "https://doi.org/10.18653/v1/2024.findings-acl.372",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "AI Agents vs. Agentic AI: A Conceptual taxonomy, applications and challenges",
+          "year": 2025,
+          "venue": "Information Fusion",
+          "doi": "10.1016/j.inffus.2025.103599",
+          "arxivId": null,
+          "citationCount": 205,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "Information fusion, in the context of the Generative AI era, must distinguish AI Agents from Agentic AI. This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and fou",
+          "url": "https://doi.org/10.1016/j.inffus.2025.103599",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "AI Agents vs. Agentic AI: A Conceptual Taxonomy, Applications and Challenges",
+          "year": 2025,
+          "venue": "SuperIntelligence - Robotics - Safety & Alignment",
+          "doi": "10.70777/si.v2i3.15161",
+          "arxivId": null,
+          "citationCount": 172,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and foundational definitions, characterizing AI Agents as modular systems driven and enabled by LLMs and LIMs fo",
+          "url": "https://doi.org/10.70777/si.v2i3.15161",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Improving large language model applications in biomedicine with retrieval-augmented generation: a systematic review, meta-analysis, and clinical development guidelines",
+          "year": 2025,
+          "venue": "Journal of the American Medical Informatics Association",
+          "doi": "10.1093/jamia/ocaf008",
+          "arxivId": null,
+          "citationCount": 169,
+          "openAccess": true,
+          "authors": [
+            "Siru Liu",
+            "Allison B. McCoy",
+            "Adam Wright"
+          ],
+          "abstract": "OBJECTIVE: The objectives of this study are to synthesize findings from recent research of retrieval-augmented generation (RAG) and large language models (LLMs) in biomedicine and provide clinical development guidelines to improve effectiveness. MATERIALS AND METHODS: We conducted a systematic literature review and a meta-analysis. The report was created in adherence to the Preferred Reporting Ite",
+          "url": "https://doi.org/10.1093/jamia/ocaf008",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Retrieval augmented generation for large language models in healthcare: A systematic review",
+          "year": 2025,
+          "venue": "PLOS Digital Health",
+          "doi": "10.1371/journal.pdig.0000877",
+          "arxivId": null,
+          "citationCount": 222,
+          "openAccess": true,
+          "authors": [
+            "Lameck Mbangula Amugongo",
+            "Pietro Mascheroni",
+            "Steven E. Brooks"
+          ],
+          "abstract": "Large Language Models (LLMs) have demonstrated promising capabilities to solve complex tasks in critical sectors such as healthcare. However, LLMs are limited by their training data which is often outdated, the tendency to generate inaccurate (\"hallucinated\") content and a lack of transparency in the content they generate. To address these limitations, retrieval augmented generation (RAG) grounds ",
+          "url": "https://doi.org/10.1371/journal.pdig.0000877",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "LightRAG: Simple and Fast Retrieval-Augmented Generation",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.findings-emnlp.568",
+          "arxivId": null,
+          "citationCount": 148,
+          "openAccess": true,
+          "authors": [
+            "Zirui Guo",
+            "Lianghao Xia",
+            "Yanhua Yu"
+          ],
+          "abstract": "Retrieval-Augmented Generation (RAG) systems enhance large language models (LLMs) by integrating external knowledge sources, enabling more accurate and contextually relevant responses tailored to user needs.However, existing RAG systems have significant limitations, including reliance on flat data representations and inadequate contextual awareness, which can lead to fragmented answers that fail t",
+          "url": "https://doi.org/10.18653/v1/2025.findings-emnlp.568",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Retrieval-Augmented Generation (RAG)",
+          "year": 2025,
+          "venue": "Business & Information Systems Engineering",
+          "doi": "10.1007/s12599-025-00945-3",
+          "arxivId": null,
+          "citationCount": 74,
+          "openAccess": true,
+          "authors": [
+            "Michael Klesel",
+            "H.F. Wittmann"
+          ],
+          "abstract": "The necessity for information is a fundamental aspect of human nature, and as such, there are ongoing efforts to enhance information retrieval with information systems (Alavi and Leidner 2001 ; Alavi et al. 2024 ). Companies are particularly affected by this, as they have extensive data at their disposal, and employees need to access it. Unfortunately, current systems are not able to adequately me",
+          "url": "https://doi.org/10.1007/s12599-025-00945-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "iterative-retrieval",
+      "params": {
+        "query": "iterative retrieval query decomposition language models",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 5
+        }
+      ],
+      "latencyMs": 1800,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A Survey of Large Language Models",
+          "year": 2026,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-026-60308-3",
+          "arxivId": null,
+          "citationCount": 1547,
+          "openAccess": true,
+          "authors": [
+            "Wayne Xin Zhao",
+            "Kun Zhou",
+            "Junyi Li"
+          ],
+          "abstract": "Abstract The rapid evolution of large language models (LLMs) has driven a transformative shift in artificial intelligence (AI), reshaping both research paradigms and practical applications. Distinguished from their predecessors by unprecedented scale and advanced capabilities, LLMs necessitate new frameworks for understanding their development, behavior, and societal impact. This survey systematic",
+          "url": "https://doi.org/10.1007/s11704-026-60308-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "A Survey on RAG Meeting LLMs: Towards Retrieval-Augmented Large Language Models",
+          "year": 2024,
+          "doi": "10.1145/3637528.3671470",
+          "arxivId": null,
+          "citationCount": 743,
+          "openAccess": true,
+          "authors": [
+            "Wenqi Fan",
+            "Yujuan Ding",
+            "Liangbo Ning"
+          ],
+          "abstract": "As one of the most advanced techniques in AI, Retrieval-Augmented Generation (RAG) can offer reliable and up-to-date external knowledge, providing huge convenience for numerous tasks. Particularly in the era of AI-Generated Content (AIGC), the powerful capacity of retrieval in providing additional knowledge enables RAG to assist existing generative AI in producing high-quality outputs. Recently, L",
+          "url": "https://doi.org/10.1145/3637528.3671470",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "A survey on large language model based autonomous agents",
+          "year": 2024,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-024-40231-1",
+          "arxivId": null,
+          "citationCount": 1606,
+          "openAccess": true,
+          "authors": [
+            "Lei Wang",
+            "Chen Ma",
+            "Xueyang Feng"
+          ],
+          "abstract": "Abstract Autonomous agents have long been a research focus in academic and industry communities. Previous research often focuses on training agents with limited knowledge within isolated environments, which diverges significantly from human learning processes, and makes the agents hard to achieve human-like decisions. Recently, through the acquisition of vast amounts of Web knowledge, large langua",
+          "url": "https://doi.org/10.1007/s11704-024-40231-1",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Explainability for Large Language Models: A Survey",
+          "year": 2024,
+          "venue": "ACM Transactions on Intelligent Systems and Technology",
+          "doi": "10.1145/3639372",
+          "arxivId": null,
+          "citationCount": 625,
+          "openAccess": true,
+          "authors": [
+            "Haiyan Zhao",
+            "Hanjie Chen",
+            "Fan Yang"
+          ],
+          "abstract": "Large language models (LLMs) have demonstrated impressive capabilities in natural language processing. However, their internal mechanisms are still unclear and this lack of transparency poses unwanted risks for downstream applications. Therefore, understanding and explaining these models is crucial for elucidating their behaviors, limitations, and social impacts. In this article, we introduce a ta",
+          "url": "https://doi.org/10.1145/3639372",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.naacl-long.389",
+          "arxivId": null,
+          "citationCount": 216,
+          "openAccess": true,
+          "authors": [
+            "Soyeong Jeong",
+            "Jinheon Baek",
+            "Sukmin Cho"
+          ],
+          "abstract": "Soyeong Jeong, Jinheon Baek, Sukmin Cho, Sung Ju Hwang, Jong Park. Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers). 2024.",
+          "url": "https://doi.org/10.18653/v1/2024.naacl-long.389",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Benchmarking Large Language Models for News Summarization",
+          "year": 2024,
+          "venue": "Transactions of the Association for Computational Linguistics",
+          "doi": "10.1162/tacl_a_00632",
+          "arxivId": null,
+          "citationCount": 352,
+          "openAccess": true,
+          "authors": [
+            "Tianyi Zhang",
+            "Faisal Ladhak",
+            "Esin Durmus"
+          ],
+          "abstract": "Abstract Large language models (LLMs) have shown promise for automatic summarization but the reasons behind their successes are poorly understood. By conducting a human evaluation on ten LLMs across different pretraining methods, prompts, and model scales, we make two important observations. First, we find instruction tuning, not model size, is the key to the LLM’s zero-shot summarization capabili",
+          "url": "https://doi.org/10.1162/tacl_a_00632",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Large Language Models: A Survey",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2402.06196",
+          "arxivId": null,
+          "citationCount": 229,
+          "openAccess": true,
+          "authors": [
+            "Shervin Minaee",
+            "Tomas Mikolov",
+            "Nikzad, Narjes"
+          ],
+          "abstract": "Large Language Models (LLMs) have drawn a lot of attention due to their strong performance on a wide range of natural language tasks, since the release of ChatGPT in November 2022. LLMs' ability of general-purpose language understanding and generation is acquired by training billions of model's parameters on massive amounts of text data, as predicted by scaling laws \\cite{kaplan2020scaling,hoffman",
+          "url": "https://doi.org/10.48550/arxiv.2402.06196",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Large language models (LLMs): survey, technical frameworks, and future challenges",
+          "year": 2024,
+          "venue": "Artificial Intelligence Review",
+          "doi": "10.1007/s10462-024-10888-y",
+          "arxivId": null,
+          "citationCount": 371,
+          "openAccess": true,
+          "authors": [
+            "Pranjal Kumar"
+          ],
+          "abstract": "Artificial intelligence (AI) has significantly impacted various fields. Large language models (LLMs) like GPT-4, BARD, PaLM, Megatron-Turing NLG, Jurassic-1 Jumbo etc., have contributed to our understanding and application of AI in these domains, along with natural language processing (NLP) techniques. This work provides a comprehensive overview of LLMs in the context of language modeling, word em",
+          "url": "https://doi.org/10.1007/s10462-024-10888-y",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "multi-agent-science",
+      "params": {
+        "query": "multi-agent system scientific research collaboration",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 6
+        }
+      ],
+      "latencyMs": 3919,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A survey on large language model based autonomous agents",
+          "year": 2024,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-024-40231-1",
+          "arxivId": null,
+          "citationCount": 1606,
+          "openAccess": true,
+          "authors": [
+            "Lei Wang",
+            "Chen Ma",
+            "Xueyang Feng"
+          ],
+          "abstract": "Abstract Autonomous agents have long been a research focus in academic and industry communities. Previous research often focuses on training agents with limited knowledge within isolated environments, which diverges significantly from human learning processes, and makes the agents hard to achieve human-like decisions. Recently, through the acquisition of vast amounts of Web knowledge, large langua",
+          "url": "https://doi.org/10.1007/s11704-024-40231-1",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "2024 ESC Guidelines for the management of atrial fibrillation developed in collaboration with the European Association for Cardio-Thoracic Surgery (EACTS)",
+          "year": 2024,
+          "venue": "European Heart Journal",
+          "doi": "10.1093/eurheartj/ehae176",
+          "arxivId": null,
+          "citationCount": 2827,
+          "openAccess": true,
+          "authors": [
+            "Isabelle C. Van Gelder",
+            "Michiel Rienstra",
+            "Karina V Bunting"
+          ],
+          "abstract": "2024 ESC Guidelines for the management of atrial fibrillation developed in collaboration with the European Association for Cardio-Thoracic Surgery (EACTS): Developed by the task force for the management of atrial fibrillation of the European Society of Cardiology (ESC), with the special contribution of the European Heart Rhythm Association (EHRA) of the ESC. Endorsed by the European Stroke Organis",
+          "url": "https://doi.org/10.1093/eurheartj/ehae176",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "A meta systematic review of artificial intelligence in higher education: a call for increased ethics, collaboration, and rigour",
+          "year": 2024,
+          "venue": "International Journal of Educational Technology in Higher Education",
+          "doi": "10.1186/s41239-023-00436-z",
+          "arxivId": null,
+          "citationCount": 730,
+          "openAccess": true,
+          "authors": [
+            "Melissa Bond",
+            "Hassan Khosravi",
+            "Maarten de Laat"
+          ],
+          "abstract": "Abstract Although the field of Artificial Intelligence in Education (AIEd) has a substantial history as a research domain, never before has the rapid evolution of AI applications in education sparked such prominent public discourse. Given the already rapidly growing AIEd literature base in higher education, now is the time to ensure that the field has a solid research and conceptual grounding. Thi",
+          "url": "https://doi.org/10.1186/s41239-023-00436-z",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "SciAgents: Automating Scientific Discovery Through Bioinspired Multi‐Agent Intelligent Graph Reasoning",
+          "year": 2024,
+          "venue": "Advanced Materials",
+          "doi": "10.1002/adma.202413523",
+          "arxivId": null,
+          "citationCount": 130,
+          "openAccess": true,
+          "authors": [
+            "Alireza Ghafarollahi",
+            "Markus J. Buehler"
+          ],
+          "abstract": "A key challenge in artificial intelligence (AI) is the creation of systems capable of autonomously advancing scientific understanding by exploring novel domains, identifying complex patterns, and uncovering previously unseen connections in vast scientific data. In this work, SciAgents, an approach that leverages three core concepts is presented: (1) large-scale ontological knowledge graphs to orga",
+          "url": "https://doi.org/10.1002/adma.202413523",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Structured information extraction from scientific text with large language models",
+          "year": 2024,
+          "venue": "Nature Communications",
+          "doi": "10.1038/s41467-024-45563-x",
+          "arxivId": null,
+          "citationCount": 711,
+          "openAccess": true,
+          "authors": [
+            "John Dagdelen",
+            "Alexander Dunn",
+            "Sang‐Hoon Lee"
+          ],
+          "abstract": "Extracting structured knowledge from scientific text remains a challenging task for machine learning models. Here, we present a simple approach to joint named entity recognition and relation extraction and demonstrate how pretrained large language models (GPT-3, Llama-2) can be fine-tuned to extract useful records of complex scientific knowledge. We test three representative tasks in materials che",
+          "url": "https://doi.org/10.1038/s41467-024-45563-x",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "AI Agents Meet Blockchain: A Survey on Secure and Scalable Collaboration for Multi-Agents",
+          "year": 2025,
+          "venue": "Future Internet",
+          "doi": "10.3390/fi17020057",
+          "arxivId": null,
+          "citationCount": 55,
+          "openAccess": true,
+          "authors": [
+            "Md Monjurul Karim",
+            "Dong Hoang Van",
+            "Sangeen Khan"
+          ],
+          "abstract": "In recent years, the interplay between AI agents and blockchain has enabled secure and scalable collaboration among multi-agent systems, promoting unprecedented levels of autonomy and interoperability. AI agents play a vital role in facilitating complex decision making and improving operational efficiency in blockchain systems. This collaborative synergy is particularly evident in how multi-agent ",
+          "url": "https://doi.org/10.3390/fi17020057",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "AI Agents vs. Agentic AI: A Conceptual taxonomy, applications and challenges",
+          "year": 2025,
+          "venue": "Information Fusion",
+          "doi": "10.1016/j.inffus.2025.103599",
+          "arxivId": null,
+          "citationCount": 205,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "Information fusion, in the context of the Generative AI era, must distinguish AI Agents from Agentic AI. This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and fou",
+          "url": "https://doi.org/10.1016/j.inffus.2025.103599",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "AI Agents vs. Agentic AI: A Conceptual Taxonomy, Applications and Challenges",
+          "year": 2025,
+          "venue": "SuperIntelligence - Robotics - Safety & Alignment",
+          "doi": "10.70777/si.v2i3.15161",
+          "arxivId": null,
+          "citationCount": 172,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and foundational definitions, characterizing AI Agents as modular systems driven and enabled by LLMs and LIMs fo",
+          "url": "https://doi.org/10.70777/si.v2i3.15161",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "citation-verification",
+      "params": {
+        "query": "citation verification hallucination scientific writing",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 7
+        }
+      ],
+      "latencyMs": 3534,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Hallucination Rates and Reference Accuracy of ChatGPT and Bard for Systematic Reviews: Comparative Analysis",
+          "year": 2024,
+          "venue": "Journal of Medical Internet Research",
+          "doi": "10.2196/53164",
+          "arxivId": null,
+          "citationCount": 393,
+          "openAccess": true,
+          "authors": [
+            "Mikaël Chelli",
+            "Jules Descamps",
+            "Vincent Lavoué"
+          ],
+          "abstract": "Background Large language models (LLMs) have raised both interest and concern in the academic community. They offer the potential for automating literature search and synthesis for systematic reviews but raise concerns regarding their reliability, as the tendency to generate unsupported (hallucinated) content persist. Objective The aim of the study is to assess the performance of LLMs such as Chat",
+          "url": "https://doi.org/10.2196/53164",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "AI hallucination: towards a comprehensive classification of distorted information in artificial intelligence-generated content",
+          "year": 2024,
+          "venue": "Humanities and Social Sciences Communications",
+          "doi": "10.1057/s41599-024-03811-x",
+          "arxivId": null,
+          "citationCount": 304,
+          "openAccess": true,
+          "authors": [
+            "Yujie Sun",
+            "Dongfang Sheng",
+            "Zihan Zhou"
+          ],
+          "abstract": "Amidst the burgeoning information age, the rapid development of artificial intelligence-generated content (AIGC) has brought forth challenges regarding information authenticity. The proliferation of distorted information significantly impacts users negatively. This study aims to systematically categorize distorted information within AIGC, delve into its internal characteristics, and provide theore",
+          "url": "https://doi.org/10.1057/s41599-024-03811-x",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "🧜Siren’s Song in the AI Ocean: A Survey on Hallucination in Large Language Models",
+          "year": 2025,
+          "venue": "Computational Linguistics",
+          "doi": "10.1162/coli.a.16",
+          "arxivId": null,
+          "citationCount": 229,
+          "openAccess": true,
+          "authors": [
+            "Yue Zhang",
+            "Yafu Li",
+            "Leyang Cui"
+          ],
+          "abstract": "Abstract While large language models (LLMs) have demonstrated remarkable capabilities across a range of downstream tasks, a significant concern revolves around their propensity to exhibit hallucinations: LLMs occasionally generate content that diverges from the user input, contradicts previously generated context, or misaligns with established world knowledge. This phenomenon poses a substantial c",
+          "url": "https://doi.org/10.1162/coli.a.16",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Hallucination‐Free? Assessing the Reliability of Leading AI Legal Research Tools",
+          "year": 2025,
+          "venue": "Journal of Empirical Legal Studies",
+          "doi": "10.1111/jels.12413",
+          "arxivId": null,
+          "citationCount": 145,
+          "openAccess": true,
+          "authors": [
+            "Varun Magesh",
+            "Faiz Surani",
+            "Matthew Dahl"
+          ],
+          "abstract": "ABSTRACT Legal practice has witnessed a sharp rise in products incorporating artificial intelligence (AI). Such tools are designed to assist with a wide range of core legal tasks, from search and summarization of caselaw to document drafting. However, the large language models used in these tools are prone to “hallucinate,” or make up false information, making their use risky in high‐stakes domain",
+          "url": "https://doi.org/10.1111/jels.12413",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Survey and analysis of hallucinations in large language models: attribution to prompting strategies or model behavior",
+          "year": 2025,
+          "venue": "Frontiers in Artificial Intelligence",
+          "doi": "10.3389/frai.2025.1622292",
+          "arxivId": null,
+          "citationCount": 118,
+          "openAccess": true,
+          "authors": [
+            "Dang Anh-Hoang",
+            "Vu Tran",
+            "Le-Minh Nguyen"
+          ],
+          "abstract": "Hallucination in Large Language Models (LLMs) refers to outputs that appear fluent and coherent but are factually incorrect, logically inconsistent, or entirely fabricated. As LLMs are increasingly deployed in education, healthcare, law, and scientific research, understanding and mitigating hallucinations has become critical. In this work, we present a comprehensive survey and empirical analysis o",
+          "url": "https://doi.org/10.3389/frai.2025.1622292",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Multi-model assurance analysis showing large language models are highly vulnerable to adversarial hallucination attacks during clinical decision support",
+          "year": 2025,
+          "venue": "Communications Medicine",
+          "doi": "10.1038/s43856-025-01021-3",
+          "arxivId": null,
+          "citationCount": 172,
+          "openAccess": true,
+          "authors": [
+            "Mahmud Omar",
+            "Vera Sorin",
+            "Jeremy D. Collins"
+          ],
+          "abstract": "Large language models (LLMs) show promise in clinical contexts but can generate false facts (often referred to as “hallucinations”). One subset of these errors arises from adversarial attacks, in which fabricated details embedded in prompts lead the model to produce or elaborate on the false information. We embedded fabricated content in clinical prompts to elicit adversarial hallucination attacks",
+          "url": "https://doi.org/10.1038/s43856-025-01021-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Evaluation of Large Language Model Performance and Reliability for Citations and References in Scholarly Writing: Cross-Disciplinary Study",
+          "year": 2024,
+          "venue": "Journal of Medical Internet Research",
+          "doi": "10.2196/52935",
+          "arxivId": null,
+          "citationCount": 66,
+          "openAccess": true,
+          "authors": [
+            "Joseph Mugaanyi",
+            "Liuying Cai",
+            "Sumei Cheng"
+          ],
+          "abstract": "BACKGROUND: Large language models (LLMs) have gained prominence since the release of ChatGPT in late 2022. OBJECTIVE: The aim of this study was to assess the accuracy of citations and references generated by ChatGPT (GPT-3.5) in two distinct academic domains: the natural sciences and humanities. METHODS: Two researchers independently prompted ChatGPT to write an introduction section for a manuscri",
+          "url": "https://doi.org/10.2196/52935",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Can ChatGPT assist authors with abstract writing in medical journals? Evaluating the quality of scientific abstracts generated by ChatGPT and original abstracts",
+          "year": 2024,
+          "venue": "PLoS ONE",
+          "doi": "10.1371/journal.pone.0297701",
+          "arxivId": null,
+          "citationCount": 52,
+          "openAccess": true,
+          "authors": [
+            "T. S. HWANG",
+            "Nishant Aggarwal",
+            "Pir Zarak Khan"
+          ],
+          "abstract": "INTRODUCTION: ChatGPT, a sophisticated large language model (LLM), has garnered widespread attention for its ability to mimic human-like communication. As recent studies indicate a potential supportive role of ChatGPT in academic writing, we assessed the LLM's capacity to generate accurate and comprehensive scientific abstracts from published Randomised Controlled Trial (RCT) data, focusing on the",
+          "url": "https://doi.org/10.1371/journal.pone.0297701",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "evidence-grounding",
+      "params": {
+        "query": "evidence grounding attribution long-form generation",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 10
+        }
+      ],
+      "latencyMs": 3860,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "MiniCheck: Efficient Fact-Checking of LLMs on Grounding Documents",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.emnlp-main.499",
+          "arxivId": null,
+          "citationCount": 42,
+          "openAccess": true,
+          "authors": [
+            "Liyan Tang",
+            "Philippe Laban",
+            "Greg Durrett"
+          ],
+          "abstract": "Recognizing if LLM output can be grounded in evidence is central to many tasks in NLP: retrieval-augmented generation, summarization, document-grounded dialogue, and more.Current approaches to this kind of factchecking are based on verifying each piece of a model generation against potential evidence using an LLM.However, this process can be very computationally expensive, requiring many calls to ",
+          "url": "https://doi.org/10.18653/v1/2024.emnlp-main.499",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Survey and analysis of hallucinations in large language models: attribution to prompting strategies or model behavior",
+          "year": 2025,
+          "venue": "Frontiers in Artificial Intelligence",
+          "doi": "10.3389/frai.2025.1622292",
+          "arxivId": null,
+          "citationCount": 118,
+          "openAccess": true,
+          "authors": [
+            "Dang Anh-Hoang",
+            "Vu Tran",
+            "Le-Minh Nguyen"
+          ],
+          "abstract": "Hallucination in Large Language Models (LLMs) refers to outputs that appear fluent and coherent but are factually incorrect, logically inconsistent, or entirely fabricated. As LLMs are increasingly deployed in education, healthcare, law, and scientific research, understanding and mitigating hallucinations has become critical. In this work, we present a comprehensive survey and empirical analysis o",
+          "url": "https://doi.org/10.3389/frai.2025.1622292",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Retrieval-Augmented Generation for AI-Generated Content: A Survey",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2402.19473",
+          "arxivId": null,
+          "citationCount": 83,
+          "openAccess": true,
+          "authors": [
+            "Penghao Zhao",
+            "Hailin Zhang",
+            "Qinhan Yu"
+          ],
+          "abstract": "Advancements in model algorithms, the growth of foundational models, and access to high-quality datasets have propelled the evolution of Artificial Intelligence Generated Content (AIGC). Despite its notable successes, AIGC still faces hurdles such as updating knowledge, handling long-tail data, mitigating data leakage, and managing high training and inference costs. Retrieval-Augmented Generation ",
+          "url": "https://doi.org/10.48550/arxiv.2402.19473",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "From Generation to Judgment: Opportunities and Challenges of LLM-as-a-judge",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.emnlp-main.138",
+          "arxivId": null,
+          "citationCount": 103,
+          "openAccess": true,
+          "authors": [
+            "Da-Wei Li",
+            "Bohan Jiang",
+            "Lili Huang"
+          ],
+          "abstract": "Dawei Li, Bohan Jiang, Liangjie Huang, Alimohammad Beigi, Chengshuai Zhao, Zhen Tan, Amrita Bhattacharjee, Yuxuan Jiang, Canyu Chen, Tianhao Wu, Kai Shu, Lu Cheng, Huan Liu. Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing. 2025.",
+          "url": "https://doi.org/10.18653/v1/2025.emnlp-main.138",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "A Systematic Literature Review of Retrieval-Augmented Generation: Techniques, Metrics, and Challenges",
+          "year": 2025,
+          "venue": "Big Data and Cognitive Computing",
+          "doi": "10.3390/bdcc9120320",
+          "arxivId": null,
+          "citationCount": 44,
+          "openAccess": true,
+          "authors": [
+            "Andrew Brown",
+            "Muhammad Roman",
+            "Barry Devereux"
+          ],
+          "abstract": "Background: Retrieval-augmented generation (RAG) aims to reduce hallucinations and outdated knowledge by grounding LLM outputs in retrieved evidence, but empirical results are scattered across tasks, systems, and metrics, limiting cumulative insight. Objective: We aimed to synthesise empirical evidence on RAG effectiveness versus parametric-only baselines, map datasets/architectures/evaluation pra",
+          "url": "https://doi.org/10.3390/bdcc9120320",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Retrieval-Augmented Generation (RAG) in Healthcare: A Comprehensive Review",
+          "year": 2025,
+          "venue": "AI",
+          "doi": "10.3390/ai6090226",
+          "arxivId": null,
+          "citationCount": 72,
+          "openAccess": true,
+          "authors": [
+            "Fnu Neha",
+            "Deepshikha Bhati",
+            "Deepak Kumar Shukla"
+          ],
+          "abstract": "Retrieval-Augmented Generation (RAG) enhances large language models (LLMs) by integrating external knowledge retrieval to improve factual consistency and reduce hallucinations. Despite growing interest, its use in healthcare remains fragmented. This paper presents a Systematic Literature Review (SLR) following PRISMA guidelines, synthesizing 30 peer-reviewed studies on RAG in clinical domains, foc",
+          "url": "https://doi.org/10.3390/ai6090226",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Effective Large Language Model Adaptation for Improved Grounding and Citation Generation",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.naacl-long.346",
+          "arxivId": null,
+          "citationCount": 9,
+          "openAccess": true,
+          "authors": [
+            "Xi Ye",
+            "Ruoxi Sun",
+            "Sercan Ö. Arık"
+          ],
+          "abstract": "Xi Ye, Ruoxi Sun, Sercan Arik, Tomas Pfister. Proceedings of the 2024 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers). 2024.",
+          "url": "https://doi.org/10.18653/v1/2024.naacl-long.346",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "VISA: Retrieval Augmented Generation with Visual Source Attribution",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.acl-long.1456",
+          "arxivId": null,
+          "citationCount": 10,
+          "openAccess": true,
+          "authors": [
+            "Xueguang Ma",
+            "Shengyao Zhuang",
+            "Bevan Koopman"
+          ],
+          "abstract": "Generation with source attribution is important for enhancing the verifiability of retrievalaugmented generation (RAG) systems.However, existing approaches in RAG primarily link generated content to document-level references, making it challenging for users to locate evidence among multiple content-rich retrieved documents.To address this challenge, we propose Retrieval-Augmented Generation with V",
+          "url": "https://doi.org/10.18653/v1/2025.acl-long.1456",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "research-benchmarks",
+      "params": {
+        "query": "benchmark evaluation deep research agents report generation",
+        "limit": 10,
+        "yearFrom": 2025
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 4
+        }
+      ],
+      "latencyMs": 3389,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A Survey of Large Language Models",
+          "year": 2026,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-026-60308-3",
+          "arxivId": null,
+          "citationCount": 1547,
+          "openAccess": true,
+          "authors": [
+            "Wayne Xin Zhao",
+            "Kun Zhou",
+            "Junyi Li"
+          ],
+          "abstract": "Abstract The rapid evolution of large language models (LLMs) has driven a transformative shift in artificial intelligence (AI), reshaping both research paradigms and practical applications. Distinguished from their predecessors by unprecedented scale and advanced capabilities, LLMs necessitate new frameworks for understanding their development, behavior, and societal impact. This survey systematic",
+          "url": "https://doi.org/10.1007/s11704-026-60308-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "DEER: A Benchmark for Evaluating Deep Research Agents on Expert Report Generation",
+          "year": 2025,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2512.17776",
+          "arxivId": null,
+          "citationCount": 1,
+          "openAccess": true,
+          "authors": [
+            "Janghoon Han",
+            "Heegyu Kim",
+            "Changho Lee"
+          ],
+          "abstract": "Recent advances in large language models have enabled deep research systems that generate expert-level reports through multi-step reasoning and evidence-based synthesis. However, evaluating such reports remains challenging: report quality is multifaceted, making it difficult to determine what to assess and which criteria to use; LLM-based judges may miss errors that require domain expertise to ide",
+          "url": "https://doi.org/10.48550/arxiv.2512.17776",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "AI Agents vs. Agentic AI: A Conceptual taxonomy, applications and challenges",
+          "year": 2025,
+          "venue": "Information Fusion",
+          "doi": "10.1016/j.inffus.2025.103599",
+          "arxivId": null,
+          "citationCount": 205,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "Information fusion, in the context of the Generative AI era, must distinguish AI Agents from Agentic AI. This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and fou",
+          "url": "https://doi.org/10.1016/j.inffus.2025.103599",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "AI Agents vs. Agentic AI: A Conceptual Taxonomy, Applications and Challenges",
+          "year": 2025,
+          "venue": "SuperIntelligence - Robotics - Safety & Alignment",
+          "doi": "10.70777/si.v2i3.15161",
+          "arxivId": null,
+          "citationCount": 172,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and foundational definitions, characterizing AI Agents as modular systems driven and enabled by LLMs and LIMs fo",
+          "url": "https://doi.org/10.70777/si.v2i3.15161",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "The Rise of Agentic AI: A Review of Definitions, Frameworks, Architectures, Applications, Evaluation Metrics, and Challenges",
+          "year": 2025,
+          "venue": "Future Internet",
+          "doi": "10.3390/fi17090404",
+          "arxivId": null,
+          "citationCount": 166,
+          "openAccess": true,
+          "authors": [
+            "Ajay Bandi",
+            "Bhavani Kongari",
+            "Roshini Naguru"
+          ],
+          "abstract": "Agentic AI systems are a recently emerged and important approach that goes beyond traditional AI, generative AI, and autonomous systems by focusing on autonomy, adaptability, and goal-driven reasoning. This study provides a clear review of agentic AI systems by bringing together their definitions, frameworks, and architectures, and by comparing them with related areas like generative AI, autonomic",
+          "url": "https://doi.org/10.3390/fi17090404",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "Generative AI and LLMs for Critical Infrastructure Protection: Evaluation Benchmarks, Agentic AI, Challenges, and Opportunities",
+          "year": 2025,
+          "venue": "Sensors",
+          "doi": "10.3390/s25061666",
+          "arxivId": null,
+          "citationCount": 61,
+          "openAccess": true,
+          "authors": [
+            "Yagmur Yigit",
+            "Mohamed Amine Ferrag",
+            "Mohamed Chahine Ghanem"
+          ],
+          "abstract": "Critical National Infrastructures (CNIs)-including energy grids, water systems, transportation networks, and communication frameworks-are essential to modern society yet face escalating cybersecurity threats. This review paper comprehensively analyzes AI-driven approaches for Critical Infrastructure Protection (CIP). We begin by examining the reliability of CNIs and introduce established benchmark",
+          "url": "https://doi.org/10.3390/s25061666",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Improving large language model applications in biomedicine with retrieval-augmented generation: a systematic review, meta-analysis, and clinical development guidelines",
+          "year": 2025,
+          "venue": "Journal of the American Medical Informatics Association",
+          "doi": "10.1093/jamia/ocaf008",
+          "arxivId": null,
+          "citationCount": 169,
+          "openAccess": true,
+          "authors": [
+            "Siru Liu",
+            "Allison B. McCoy",
+            "Adam Wright"
+          ],
+          "abstract": "OBJECTIVE: The objectives of this study are to synthesize findings from recent research of retrieval-augmented generation (RAG) and large language models (LLMs) in biomedicine and provide clinical development guidelines to improve effectiveness. MATERIALS AND METHODS: We conducted a systematic literature review and a meta-analysis. The report was created in adherence to the Preferred Reporting Ite",
+          "url": "https://doi.org/10.1093/jamia/ocaf008",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Qwen3 Technical Report",
+          "year": 2025,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2505.09388",
+          "arxivId": null,
+          "citationCount": 111,
+          "openAccess": true,
+          "authors": [
+            "An Yang",
+            "Anfeng Li",
+            "Baosong Yang"
+          ],
+          "abstract": "In this work, we present Qwen3, the latest version of the Qwen model family. Qwen3 comprises a series of large language models (LLMs) designed to advance performance, efficiency, and multilingual capabilities. The Qwen3 series includes models of both dense and Mixture-of-Expert (MoE) architectures, with parameter scales ranging from 0.6 to 235 billion. A key innovation in Qwen3 is the integration ",
+          "url": "https://doi.org/10.48550/arxiv.2505.09388",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "human-ai-research",
+      "params": {
+        "query": "human-AI collaborative research assistant literature",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 8
+        }
+      ],
+      "latencyMs": 3668,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Human-AI collaboration patterns in AI-assisted academic writing",
+          "year": 2024,
+          "venue": "Studies in Higher Education",
+          "doi": "10.1080/03075079.2024.2323593",
+          "arxivId": null,
+          "citationCount": 393,
+          "openAccess": true,
+          "authors": [
+            "Andy Nguyen",
+            "Yvonne Hong",
+            "Belle Dang"
+          ],
+          "abstract": "Artificial Intelligence (AI) has increasingly influenced higher education, notably in academic writing where AI-powered assisting tools offer both opportunities and challenges.Recently, the rapid growth of generative AI (GAI) has brought its impacts into sharper focus, yet the dynamics of its utilisation in academic writing remain largely unexplored.This paper focuses on examining the nature of hu",
+          "url": "https://doi.org/10.1080/03075079.2024.2323593",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Ethical and regulatory challenges of AI technologies in healthcare: A narrative review",
+          "year": 2024,
+          "venue": "Heliyon",
+          "doi": "10.1016/j.heliyon.2024.e26297",
+          "arxivId": null,
+          "citationCount": 1004,
+          "openAccess": true,
+          "authors": [
+            "Ciro Mennella",
+            "Umberto Maniscalco",
+            "Giuseppe De Pietro"
+          ],
+          "abstract": "Over the past decade, there has been a notable surge in AI-driven research, specifically geared toward enhancing crucial clinical processes and outcomes. The potential of AI-powered decision support systems to streamline clinical workflows, assist in diagnostics, and enable personalized treatment is increasingly evident. Nevertheless, the introduction of these cutting-edge solutions poses substant",
+          "url": "https://doi.org/10.1016/j.heliyon.2024.e26297",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Human-centred learning analytics and AI in education: A systematic literature review",
+          "year": 2024,
+          "venue": "Computers and Education Artificial Intelligence",
+          "doi": "10.1016/j.caeai.2024.100215",
+          "arxivId": null,
+          "citationCount": 236,
+          "openAccess": true,
+          "authors": [
+            "Riordan Alfredo",
+            "Vanessa Echeverría",
+            "Yueqiao Jin"
+          ],
+          "abstract": "The rapid expansion of Learning Analytics (LA) and Artificial Intelligence in Education (AIED) offers new scalable, data-intensive systems but raises concerns about data privacy and agency. Excluding stakeholders—like students and teachers—from the design process can potentially lead to mistrust and inadequately aligned tools. Despite a shift towards human-centred design in recent LA and AIED rese",
+          "url": "https://doi.org/10.1016/j.caeai.2024.100215",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "AI Tools in Society: Impacts on Cognitive Offloading and the Future of Critical Thinking",
+          "year": 2025,
+          "venue": "Societies",
+          "doi": "10.3390/soc15010006",
+          "arxivId": null,
+          "citationCount": 972,
+          "openAccess": true,
+          "authors": [
+            "Michael Gerlich"
+          ],
+          "abstract": "The proliferation of artificial intelligence (AI) tools has transformed numerous aspects of daily life, yet its impact on critical thinking remains underexplored. This study investigates the relationship between AI tool usage and critical thinking skills, focusing on cognitive offloading as a mediating factor. Utilising a mixed-method approach, we conducted surveys and in-depth interviews with 666",
+          "url": "https://doi.org/10.3390/soc15010006",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "The Role of AI in Hospitals and Clinics: Transforming Healthcare in the 21st Century",
+          "year": 2024,
+          "venue": "Bioengineering",
+          "doi": "10.3390/bioengineering11040337",
+          "arxivId": null,
+          "citationCount": 899,
+          "openAccess": true,
+          "authors": [
+            "Shiva Maleki Varnosfaderani",
+            "Mohamad Forouzanfar"
+          ],
+          "abstract": "As healthcare systems around the world face challenges such as escalating costs, limited access, and growing demand for personalized care, artificial intelligence (AI) is emerging as a key force for transformation. This review is motivated by the urgent need to harness AI's potential to mitigate these issues and aims to critically assess AI's integration in different healthcare domains. We explore",
+          "url": "https://doi.org/10.3390/bioengineering11040337",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "The promise and challenges of generative AI in education",
+          "year": 2024,
+          "venue": "Behaviour and Information Technology",
+          "doi": "10.1080/0144929x.2024.2394886",
+          "arxivId": null,
+          "citationCount": 481,
+          "openAccess": true,
+          "authors": [
+            "Michail N. Giannakos",
+            "Roger Azevedo",
+            "Peter Brusilovsky"
+          ],
+          "abstract": "Generative artificial intelligence (GenAI) tools, such as large language models (LLMs), generate natural language and other types of content to perform a wide range of tasks. This represents a significant technological advancement that poses opportunities and challenges to educational research and practice. This commentary brings together contributions from nine experts working in the intersection",
+          "url": "https://doi.org/10.1080/0144929x.2024.2394886",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Embracing the future of Artificial Intelligence in the classroom: the relevance of AI literacy, prompt engineering, and critical thinking in modern education",
+          "year": 2024,
+          "venue": "International Journal of Educational Technology in Higher Education",
+          "doi": "10.1186/s41239-024-00448-3",
+          "arxivId": null,
+          "citationCount": 1046,
+          "openAccess": true,
+          "authors": [
+            "Yoshija Walter"
+          ],
+          "abstract": "Abstract The present discussion examines the transformative impact of Artificial Intelligence (AI) in educational settings, focusing on the necessity for AI literacy, prompt engineering proficiency, and enhanced critical thinking skills. The introduction of AI into education marks a significant departure from conventional teaching methods, offering personalized learning and support for diverse edu",
+          "url": "https://doi.org/10.1186/s41239-024-00448-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Exploring collaborative decision-making: A quasi-experimental study of human and Generative AI interaction",
+          "year": 2024,
+          "venue": "Technology in Society",
+          "doi": "10.1016/j.techsoc.2024.102662",
+          "arxivId": null,
+          "citationCount": 143,
+          "openAccess": true,
+          "authors": [
+            "Xinyue Hao",
+            "Emrah Demir",
+            "Daniel Eyers"
+          ],
+          "abstract": "This paper explores the effects of integrating Generative Artificial Intelligence (GAI) into decision-making processes within organizations, employing a quasi-experimental pretest-posttest design. The study examines the synergistic interaction between Human Intelligence (HI) and GAI across four group decision-making scenarios within three global organizations renowned for their cutting-edge operat",
+          "url": "https://doi.org/10.1016/j.techsoc.2024.102662",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "ai-scientist-paper",
+      "params": {
+        "query": "fully automated open-ended scientific discovery",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 6
+        }
+      ],
+      "latencyMs": 3763,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery",
+          "year": 2024,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2408.06292",
+          "arxivId": null,
+          "citationCount": 115,
+          "openAccess": true,
+          "authors": [
+            "Chris Lu",
+            "Cong Lu",
+            "R. T. Lange"
+          ],
+          "abstract": "One of the grand challenges of artificial general intelligence is developing agents capable of conducting scientific research and discovering new knowledge. While frontier models have already been used as aides to human scientists, e.g. for brainstorming ideas, writing code, or prediction tasks, they still conduct only a small part of the scientific process. This paper presents the first comprehen",
+          "url": "https://doi.org/10.48550/arxiv.2408.06292",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "AI Scientist: 作用、影响与未来发展趋势——基于The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery的分析",
+          "year": 2024,
+          "venue": "Theory and Practice of Social Science",
+          "doi": "10.6914/tpss.060405",
+          "arxivId": null,
+          "citationCount": 1,
+          "openAccess": true,
+          "authors": [
+            "Changkui LI"
+          ],
+          "abstract": "本文基于The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery一文，探讨了AI Scientist在科学研究中的作用及其对科学界的深远影响。AI Scientist通过自动化实验设计、数据分析、论文写作等功能，显著提高了研究效率，减少了科研成本，并加速了科学发现的进程。文章还分析了AI Scientist在当前应用中的潜在伦理问题，如增加同行评审负担、对科学界的冲击，以及如何通过提高算法透明性、确保结果可验证性和加强人工监督来提升其安全性和可信度。最后，本文展望了AI Scientist未来的发展趋势，提出了其在医疗健康、环境科学、社会科学、新材料、教育等领域的广泛应用前景。AI声明：本文100%使用ChatGPT 4o完成。",
+          "url": "https://doi.org/10.6914/tpss.060405",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Interpretable scientific discovery with symbolic regression: a review",
+          "year": 2024,
+          "venue": "Artificial Intelligence Review",
+          "doi": "10.1007/s10462-023-10622-0",
+          "arxivId": null,
+          "citationCount": 308,
+          "openAccess": true,
+          "authors": [
+            "Nour Makke",
+            "Sanjay Chawla"
+          ],
+          "abstract": "Abstract Symbolic regression is emerging as a promising machine learning method for learning succinct underlying interpretable mathematical expressions directly from data. Whereas it has been traditionally tackled with genetic programming, it has recently gained a growing interest in deep learning as a data-driven model discovery tool, achieving significant advances in various application domains ",
+          "url": "https://doi.org/10.1007/s10462-023-10622-0",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "SciAgents: Automating Scientific Discovery Through Bioinspired Multi‐Agent Intelligent Graph Reasoning",
+          "year": 2024,
+          "venue": "Advanced Materials",
+          "doi": "10.1002/adma.202413523",
+          "arxivId": null,
+          "citationCount": 130,
+          "openAccess": true,
+          "authors": [
+            "Alireza Ghafarollahi",
+            "Markus J. Buehler"
+          ],
+          "abstract": "A key challenge in artificial intelligence (AI) is the creation of systems capable of autonomously advancing scientific understanding by exploring novel domains, identifying complex patterns, and uncovering previously unseen connections in vast scientific data. In this work, SciAgents, an approach that leverages three core concepts is presented: (1) large-scale ontological knowledge graphs to orga",
+          "url": "https://doi.org/10.1002/adma.202413523",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Accelerating scientific discovery with Co-Scientist",
+          "year": 2026,
+          "venue": "Nature",
+          "doi": "10.1038/s41586-026-10644-y",
+          "arxivId": null,
+          "citationCount": 94,
+          "openAccess": true,
+          "authors": [
+            "Juraj Gottweis",
+            "Wei‐Hung Weng",
+            "Alexander Daryin"
+          ],
+          "abstract": "Abstract Scientific discovery is driven by scientists generating hypotheses for complex problems that undergo rigorous experimental validation. To augment this process, we introduce Co-Scientist, a multi-agent artificial intelligence (AI) system built on Gemini for structured scientific thinking and hypothesis generation. Co-Scientist aims to help scientists discover new original knowledge. Condit",
+          "url": "https://doi.org/10.1038/s41586-026-10644-y",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "An AI Agent for Fully Automated Multi‐Omic Analyses",
+          "year": 2024,
+          "venue": "Advanced Science",
+          "doi": "10.1002/advs.202407094",
+          "arxivId": null,
+          "citationCount": 83,
+          "openAccess": true,
+          "authors": [
+            "Juexiao Zhou",
+            "Bin Zhang",
+            "Guowei Li"
+          ],
+          "abstract": "With the fast-growing and evolving omics data, the demand for streamlined and adaptable tools to handle bioinformatics analysis continues to grow. In response to this need, Automated Bioinformatics Analysis (AutoBA) is introduced, an autonomous AI agent designed explicitly for fully automated multi-omic analyses based on large language models (LLMs). AutoBA simplifies the analytical process by req",
+          "url": "https://doi.org/10.1002/advs.202407094",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Augmenting large language models with chemistry tools",
+          "year": 2024,
+          "venue": "Nature Machine Intelligence",
+          "doi": "10.1038/s42256-024-00832-8",
+          "arxivId": null,
+          "citationCount": 736,
+          "openAccess": true,
+          "authors": [
+            "Andres M. Bran",
+            "Sam Cox",
+            "Oliver Schilter"
+          ],
+          "abstract": "Large language models (LLMs) have shown strong performance in tasks across domains but struggle with chemistry-related problems. These models also lack access to external knowledge sources, limiting their usefulness in scientific applications. We introduce ChemCrow, an LLM chemistry agent designed to accomplish tasks across organic synthesis, drug discovery and materials design. By integrating 18 ",
+          "url": "https://doi.org/10.1038/s42256-024-00832-8",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Large Language Models for Automated Open-domain Scientific Hypotheses Discovery",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.findings-acl.804",
+          "arxivId": null,
+          "citationCount": 26,
+          "openAccess": true,
+          "authors": [
+            "Zonglin Yang",
+            "Xinya Du",
+            "Junxian Li"
+          ],
+          "abstract": "Hypothetical induction is recognized as the main reasoning type when scientists make observations about the world and try to propose hypotheses to explain those observations.Past research on hypothetical induction is under a constrained setting: (1) the observation annotations in the dataset are carefully manually handpicked sentences (resulting in a close-domain setting); and (2) the ground truth",
+          "url": "https://doi.org/10.18653/v1/2024.findings-acl.804",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "agent-laboratory",
+      "params": {
+        "query": "Agent Laboratory LLM agents research automation",
+        "limit": 10,
+        "yearFrom": 2025
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 6
+        }
+      ],
+      "latencyMs": 3939,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Evaluating large language model agents for automation of atomic force microscopy",
+          "year": 2025,
+          "venue": "Nature Communications",
+          "doi": "10.1038/s41467-025-64105-7",
+          "arxivId": null,
+          "citationCount": 32,
+          "openAccess": true,
+          "authors": [
+            "Indrajeet Mandal",
+            "Jitendra Soni",
+            "Mohd Zaki"
+          ],
+          "abstract": "Large language models (LLMs) are transforming laboratory automation by enabling self-driving laboratories (SDLs) that could accelerate materials research. However, current SDL implementations rely on rigid protocols that fail to capture the adaptability and intuition of expert scientists in dynamic experimental settings. Here, we show that LLM agents can automate atomic force microscopy (AFM) thro",
+          "url": "https://doi.org/10.1038/s41467-025-64105-7",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Agent Laboratory: Using LLM Agents as Research Assistants",
+          "year": 2025,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2501.04227",
+          "arxivId": null,
+          "citationCount": 29,
+          "openAccess": true,
+          "authors": [
+            "Samuel Schmidgall",
+            "Yusheng Su",
+            "Ze Wang"
+          ],
+          "abstract": "Historically, scientific discovery has been a lengthy and costly process, demanding substantial time and resources from initial conception to final results. To accelerate scientific discovery, reduce research costs, and improve research quality, we introduce Agent Laboratory, an autonomous LLM-based framework capable of completing the entire research process. This framework accepts a human-provide",
+          "url": "https://doi.org/10.48550/arxiv.2501.04227",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Towards end-to-end automation of AI research",
+          "year": 2026,
+          "venue": "Nature",
+          "doi": "10.1038/s41586-026-10265-5",
+          "arxivId": null,
+          "citationCount": 80,
+          "openAccess": true,
+          "authors": [
+            "Chris Lu",
+            "Cong Lu",
+            "R. T. Lange"
+          ],
+          "abstract": "Abstract The automation of science is a long-standing ambition in artificial intelligence (AI) research 1,2 . Although the community has made substantial progress in automating individual components of the scientific process, a system that autonomously navigates the entire research life cycle—from conception to publication—has remained out of reach. Here we present a pipeline for automating the en",
+          "url": "https://doi.org/10.1038/s41586-026-10265-5",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "A Survey of LLM-based Agents in Medicine: How far are we from Baymax?",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.findings-acl.539",
+          "arxivId": null,
+          "citationCount": 36,
+          "openAccess": true,
+          "authors": [
+            "Wenxuan Wang",
+            "Z. Ma",
+            "Zheng Wang"
+          ],
+          "abstract": "Large Language Models (LLMs) are transforming healthcare through the development of LLM-based agents that can understand, reason about, and assist with medical tasks.This survey provides a comprehensive review of LLM-based agents in medicine, examining their architectures, applications, and challenges.We analyze the key components of medical agent systems, including system profiles, clinical plann",
+          "url": "https://doi.org/10.18653/v1/2025.findings-acl.539",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "KnowAgent: Knowledge-Augmented Planning for LLM-Based Agents",
+          "year": 2025,
+          "doi": "10.18653/v1/2025.findings-naacl.205",
+          "arxivId": null,
+          "citationCount": 30,
+          "openAccess": true,
+          "authors": [
+            "Yuqi Zhu",
+            "Shuofei Qiao",
+            "Yixin Ou"
+          ],
+          "abstract": "Large Language Models (LLMs) have demonstrated great potential in complex reasoning tasks, yet they fall short when tackling more sophisticated challenges, especially when interacting with environments through generating executable actions.This inadequacy primarily stems from the lack of built-in action knowledge in language agents, which fails to effectively guide the planning trajectories during",
+          "url": "https://doi.org/10.18653/v1/2025.findings-naacl.205",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "AI, agentic models and lab automation for scientific discovery — the beginning of scAInce",
+          "year": 2025,
+          "venue": "Frontiers in Artificial Intelligence",
+          "doi": "10.3389/frai.2025.1649155",
+          "arxivId": null,
+          "citationCount": 33,
+          "openAccess": true,
+          "authors": [
+            "Thomas Hartung"
+          ],
+          "abstract": "Until recently, the conversation about generative artificial intelligence in science revolved around the textual prowess of large language models such as GPT-3.5 and the promise that they might one day draft a decent literature review. Since then, progress has been nothing short of breathtaking. We now find ourselves in the era of multimodal, agentic systems that listen, see, speak and act, orches",
+          "url": "https://doi.org/10.3389/frai.2025.1649155",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "From intention to implementation: automating biomedical research via LLMs",
+          "year": 2025,
+          "venue": "Science China Information Sciences",
+          "doi": "10.1007/s11432-024-4485-0",
+          "arxivId": null,
+          "citationCount": 39,
+          "openAccess": true,
+          "authors": [
+            "Yi Luo",
+            "Linghang Shi",
+            "Yihao Li"
+          ],
+          "url": "https://doi.org/10.1007/s11432-024-4485-0",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "A Multiagent-Driven Robotic AI Chemist Enabling Autonomous Chemical Research On Demand",
+          "year": 2025,
+          "venue": "Journal of the American Chemical Society",
+          "doi": "10.1021/jacs.4c17738",
+          "arxivId": null,
+          "citationCount": 161,
+          "openAccess": true,
+          "authors": [
+            "Tao Song",
+            "Man Luo",
+            "Xiaolong Zhang"
+          ],
+          "abstract": "The successful integration of large language models (LLMs) into laboratory workflows has demonstrated robust capabilities in natural language processing, autonomous task execution, and collaborative problem-solving. This offers an exciting opportunity to realize the dream of autonomous chemical research on demand. Here, we report a robotic AI chemist powered by a hierarchical multiagent system, Ch",
+          "url": "https://doi.org/10.1021/jacs.4c17738",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "deep-research-survey",
+      "params": {
+        "query": "deep research agents survey",
+        "limit": 10,
+        "yearFrom": 2025
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 1
+        }
+      ],
+      "latencyMs": 4324,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "A Survey of Large Language Models",
+          "year": 2026,
+          "venue": "Frontiers of Computer Science",
+          "doi": "10.1007/s11704-026-60308-3",
+          "arxivId": null,
+          "citationCount": 1547,
+          "openAccess": true,
+          "authors": [
+            "Wayne Xin Zhao",
+            "Kun Zhou",
+            "Junyi Li"
+          ],
+          "abstract": "Abstract The rapid evolution of large language models (LLMs) has driven a transformative shift in artificial intelligence (AI), reshaping both research paradigms and practical applications. Distinguished from their predecessors by unprecedented scale and advanced capabilities, LLMs necessitate new frameworks for understanding their development, behavior, and societal impact. This survey systematic",
+          "url": "https://doi.org/10.1007/s11704-026-60308-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "Agentic AI: a comprehensive survey of architectures, applications, and future directions",
+          "year": 2025,
+          "venue": "Artificial Intelligence Review",
+          "doi": "10.1007/s10462-025-11422-4",
+          "arxivId": null,
+          "citationCount": 139,
+          "openAccess": true,
+          "authors": [
+            "Mohamad Abou Ali",
+            "Fadi Dornaika",
+            "Jinan Charafeddine"
+          ],
+          "abstract": "Abstract Agentic AI represents a transformative shift in artificial intelligence, but its rapid advancement has led to a fragmented understanding, often conflating modern neural systems with outdated symbolic models—a practice known as conceptual retrofitting . This survey cuts through this confusion by introducing a novel dual-paradigm framework that categorizes agentic systems into two distinct ",
+          "url": "https://doi.org/10.1007/s10462-025-11422-4",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Deep Research: A Survey of Autonomous Research Agents",
+          "year": 2025,
+          "venue": "arXiv (Cornell University)",
+          "doi": "10.48550/arxiv.2508.12752",
+          "arxivId": null,
+          "citationCount": 1,
+          "openAccess": true,
+          "authors": [
+            "Wenlin Zhang",
+            "Xiaopeng Li",
+            "Yingyi Zhang"
+          ],
+          "abstract": "The rapid advancement of large language models (LLMs) has driven the development of agentic systems capable of autonomously performing complex tasks. Despite their impressive capabilities, LLMs remain constrained by their internal knowledge boundaries. To overcome these limitations, the paradigm of deep research has been proposed, wherein agents actively engage in planning, retrieval, and synthesi",
+          "url": "https://doi.org/10.48550/arxiv.2508.12752",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "AI Agents vs. Agentic AI: A Conceptual taxonomy, applications and challenges",
+          "year": 2025,
+          "venue": "Information Fusion",
+          "doi": "10.1016/j.inffus.2025.103599",
+          "arxivId": null,
+          "citationCount": 205,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "Information fusion, in the context of the Generative AI era, must distinguish AI Agents from Agentic AI. This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and fou",
+          "url": "https://doi.org/10.1016/j.inffus.2025.103599",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Multi-agent reinforcement learning for resources allocation optimization: a survey",
+          "year": 2025,
+          "venue": "Artificial Intelligence Review",
+          "doi": "10.1007/s10462-025-11340-5",
+          "arxivId": null,
+          "citationCount": 83,
+          "openAccess": true,
+          "authors": [
+            "Mohamad Abdul Hady",
+            "Siyi Hu",
+            "Mahardhika Pratama"
+          ],
+          "abstract": "Abstract Multi-Agent Reinforcement Learning (MARL) has become a powerful framework for numerous real-world applications, modeling distributed decision-making and learning from interactions with complex environments. Resource Allocation Optimization (RAO) benefits significantly from MARL’s ability to tackle dynamic and decentralized contexts. MARL-based approaches are increasingly applied to RAO ch",
+          "url": "https://doi.org/10.1007/s10462-025-11340-5",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "AI Agents vs. Agentic AI: A Conceptual Taxonomy, Applications and Challenges",
+          "year": 2025,
+          "venue": "SuperIntelligence - Robotics - Safety & Alignment",
+          "doi": "10.70777/si.v2i3.15161",
+          "arxivId": null,
+          "citationCount": 172,
+          "openAccess": true,
+          "authors": [
+            "Ranjan Sapkota",
+            "Konstantinos I. Roumeliotis",
+            "Manoj Karkee"
+          ],
+          "abstract": "This review critically distinguishes between AI Agents and Agentic AI, offering a structured, conceptual taxonomy, application mapping, and analysis of opportunities and challenges to clarify their divergent design philosophies and capabilities. We begin by outlining the search strategy and foundational definitions, characterizing AI Agents as modular systems driven and enabled by LLMs and LIMs fo",
+          "url": "https://doi.org/10.70777/si.v2i3.15161",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Pedagogical AI conversational agents in higher education: a conceptual framework and survey of the state of the art",
+          "year": 2025,
+          "venue": "Educational Technology Research and Development",
+          "doi": "10.1007/s11423-025-10447-4",
+          "arxivId": null,
+          "citationCount": 97,
+          "openAccess": true,
+          "authors": [
+            "Habeeb Yusuf",
+            "Arthur Money",
+            "Damon Daylamani-Zad"
+          ],
+          "abstract": "Abstract The ever-changing global educational landscape, coupled with the advancement of Web3, is seeing rapid changes in the ways pedagogical artificially intelligent conversational agents are being developed and used to advance teaching and learning in higher education. Given the rapidly evolving research landscape, there is a need to establish what the current state of the art is in terms of th",
+          "url": "https://doi.org/10.1007/s11423-025-10447-4",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "A Survey of Autonomous Driving from a Deep Learning Perspective",
+          "year": 2025,
+          "venue": "ACM Computing Surveys",
+          "doi": "10.1145/3729420",
+          "arxivId": null,
+          "citationCount": 73,
+          "openAccess": true,
+          "authors": [
+            "Jingyuan Zhao",
+            "Yuyan Wu",
+            "Rui Deng"
+          ],
+          "abstract": "Autonomous driving represents a significant advancement in the transportation industry, enhancing vehicle intelligence, optimizing traffic management, and improving user experiences. Central to these innovations is deep learning, which enables systems to handle complex data and make informed decisions. Our survey explores critical applications of deep learning in autonomous driving, such as percep",
+          "url": "https://doi.org/10.1145/3729420",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "co-storm",
+      "params": {
+        "query": "Co-STORM collaborative knowledge curation discourse",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 2
+        }
+      ],
+      "latencyMs": 4453,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Policy stimulation for the electric vehicle industry: An analysis of mainstream media discourse",
+          "year": 2024,
+          "venue": "Business Strategy and the Environment",
+          "doi": "10.1002/bse.3750",
+          "arxivId": null,
+          "citationCount": 26,
+          "openAccess": true,
+          "authors": [
+            "Monika Jain",
+            "Shalini Talwar",
+            "Rashmi Rastogi"
+          ],
+          "abstract": "Abstract Motivated by the indisputable relevance of comprehensively understanding and portraying multiple facets of ongoing conversations on electric vehicles (EVs), we employ critical discourse analysis (CDA) to go beyond the how and why of these discussions and fathom the complex interplays and subtleties. Operationally, we inductively analyze 718 popular media articles published from 2020 throu",
+          "url": "https://doi.org/10.1002/bse.3750",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "A Collaborative Model for Integrating Teacher and GenAI into Future Education",
+          "year": 2025,
+          "venue": "TechTrends",
+          "doi": "10.1007/s11528-025-01105-w",
+          "arxivId": null,
+          "citationCount": 25,
+          "openAccess": true,
+          "authors": [
+            "Tayab Din Memon",
+            "Paul Kwan"
+          ],
+          "abstract": "Abstract The integration of Generative AI (GenAI) technology in education is set to transform traditional teaching and learning models. The age of teacher-led instructional pedagogy, where teachers are the sole providers of knowledge and students being mere receivers, is long outdated. Teachers are confronted with the choice of embracing new Artificial Intelligence (AI) technologies or risking obs",
+          "url": "https://doi.org/10.1007/s11528-025-01105-w",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Artificial intelligence for geoscience: Progress, challenges, and perspectives",
+          "year": 2024,
+          "venue": "The Innovation",
+          "doi": "10.1016/j.xinn.2024.100691",
+          "arxivId": null,
+          "citationCount": 351,
+          "openAccess": true,
+          "authors": [
+            "Tianjie Zhao",
+            "Sheng Wang",
+            "Chaojun Ouyang"
+          ],
+          "abstract": "This paper explores the evolution of geoscientific inquiry, tracing the progression from traditional physics-based models to modern data-driven approaches facilitated by significant advancements in artificial intelligence (AI) and data collection techniques. Traditional models, which are grounded in physical and numerical frameworks, provide robust explanations by explicitly reconstructing underly",
+          "url": "https://doi.org/10.1016/j.xinn.2024.100691",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Libraries in the Climate Change Era: A Reflection on Curating Environmentally Sustainable Collections",
+          "year": 2025,
+          "venue": "Journal of the Australian Library and Information Association",
+          "doi": "10.1080/24750158.2025.2525631",
+          "arxivId": null,
+          "citationCount": 8,
+          "openAccess": true,
+          "authors": [
+            "Yusuf Ayodeji Ajani",
+            "Olufemi Olubunmi Ilori",
+            "Bolaji David Oladokun"
+          ],
+          "abstract": "The paper examines the evolving role of libraries in addressing climate change through the development of environmentally sustainable collections and active community involvement. Through analysis of scholarly literature, policy frameworks, and organisational reports, this study identifies three critical themes: the direct effects of climate change on library operations, the importance of sustaina",
+          "url": "https://doi.org/10.1080/24750158.2025.2525631",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Innovation and deadlock in governing disasters and climate change collaboratively - Lessons from the Northern Rivers region of New South Wales, Australia",
+          "year": 2024,
+          "venue": "International Journal of Disaster Risk Reduction",
+          "doi": "10.1016/j.ijdrr.2024.104366",
+          "arxivId": null,
+          "citationCount": 20,
+          "openAccess": true,
+          "authors": [
+            "Rebecca McNaught",
+            "Johanna Nalau",
+            "Rob Hales"
+          ],
+          "abstract": "Both scholars and global policy point to the need for, and effectiveness of, locally-led and collaborative disaster and climate change practices. However, there is a need for analysing how these collaborative approaches are developed and used in practice in different contexts. This paper outlines the use of collaborative approaches by a climate change and disaster community of practice across seve",
+          "url": "https://doi.org/10.1016/j.ijdrr.2024.104366",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "From socialization to internalization: tracing knowledge co-construction through sequential discourse interaction acts in high school English learning",
+          "year": 2025,
+          "venue": "Frontiers in Education",
+          "doi": "10.3389/feduc.2025.1664093",
+          "arxivId": null,
+          "citationCount": 2,
+          "openAccess": true,
+          "authors": [
+            "Yingwei Wu",
+            "Mahapiret Kanji",
+            "Guang'an Ou"
+          ],
+          "abstract": "Introduction Effective knowledge co-construction (KC) leading to deep internalization remains a critical challenge in high school English as a Foreign Language (EFL) instruction. While classroom discourse is central to this process, the specific sequential mechanisms linking teacher-student interactions to knowledge internalization are underexplored. This study aims to: (1) identify distinct patte",
+          "url": "https://doi.org/10.3389/feduc.2025.1664093",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "Into the Unknown Unknowns: Engaged Human Learning through Participation in Language Model Agent Conversations",
+          "year": 2024,
+          "doi": "10.18653/v1/2024.emnlp-main.554",
+          "arxivId": null,
+          "citationCount": 8,
+          "openAccess": true,
+          "authors": [
+            "Yucheng Jiang",
+            "Yijia Shao",
+            "Dekun Ma"
+          ],
+          "abstract": "While language model (LM)-powered chatbots and generative search engines excel at answering concrete queries, discovering information in the terrain of unknown unknowns remains challenging for users.To emulate the common educational scenario where children/students learn by listening to and participating in conversations with their parents/teachers, we create Collaborative STORM (Co-STORM). 1 Unli",
+          "url": "https://doi.org/10.18653/v1/2024.emnlp-main.554",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Knowledge mapping analysis of the global seaweed research using CiteSpace",
+          "year": 2024,
+          "venue": "Heliyon",
+          "doi": "10.1016/j.heliyon.2024.e28418",
+          "arxivId": null,
+          "citationCount": 14,
+          "openAccess": true,
+          "authors": [
+            "Thirukanthan Chandra Segaran",
+            "Mohamad Nor Azra",
+            "Mohd Iqbal Mohd Noor"
+          ],
+          "abstract": "Seaweed research has gained substantial momentum in recent years, attracting the attention of researchers, academic institutions, industries, policymakers, and philanthropists to explore its potential applications and benefits. Despite the growing body of literature, there is a paucity of comprehensive scientometric analyses, highlighting the need for an in-depth investigation. In this study, we u",
+          "url": "https://doi.org/10.1016/j.heliyon.2024.e28418",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "search_papers",
+      "tag": "elicit-review",
+      "params": {
+        "query": "Elicit systematic review automation evidence extraction",
+        "limit": 10,
+        "yearFrom": 2024
+      },
+      "status": "partial",
+      "resultCount": 10,
+      "diagnostics": [
+        {
+          "provider": "openalex",
+          "outcome": "ok",
+          "resultCount": 10
+        },
+        {
+          "provider": "semantic-scholar",
+          "outcome": "failed",
+          "resultCount": 0
+        },
+        {
+          "provider": "arxiv",
+          "outcome": "ok",
+          "resultCount": 5
+        }
+      ],
+      "latencyMs": 4382,
+      "details": {
+        "count": 10,
+        "status": "partial"
+      },
+      "results": [
+        {
+          "index": 0,
+          "score": 0.0164,
+          "title": "Human-centred learning analytics and AI in education: A systematic literature review",
+          "year": 2024,
+          "venue": "Computers and Education Artificial Intelligence",
+          "doi": "10.1016/j.caeai.2024.100215",
+          "arxivId": null,
+          "citationCount": 236,
+          "openAccess": true,
+          "authors": [
+            "Riordan Alfredo",
+            "Vanessa Echeverría",
+            "Yueqiao Jin"
+          ],
+          "abstract": "The rapid expansion of Learning Analytics (LA) and Artificial Intelligence in Education (AIED) offers new scalable, data-intensive systems but raises concerns about data privacy and agency. Excluding stakeholders—like students and teachers—from the design process can potentially lead to mistrust and inadequately aligned tools. Despite a shift towards human-centred design in recent LA and AIED rese",
+          "url": "https://doi.org/10.1016/j.caeai.2024.100215",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 1
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "score": 0.0161,
+          "title": "A Comprehensive Systematic Review of YOLO for Medical Object Detection (2018 to 2023)",
+          "year": 2024,
+          "venue": "IEEE Access",
+          "doi": "10.1109/access.2024.3386826",
+          "arxivId": null,
+          "citationCount": 294,
+          "openAccess": true,
+          "authors": [
+            "Mohammed Gamal Ragab",
+            "Said Jadid Abdulkadir",
+            "Amgad Muneer"
+          ],
+          "abstract": "YOLO (You Only Look Once) is an extensively utilized object detection algorithm that has found applications in various medical object detection tasks. This has been accompanied by the emergence of numerous novel variants in recent years, such as YOLOv7 and YOLOv8. This study encompasses a systematic exploration of the PubMed database to identify peer-reviewed articles published between 2018 and 20",
+          "url": "https://doi.org/10.1109/access.2024.3386826",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 2
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "score": 0.0159,
+          "title": "Integrating artificial intelligence to assess emotions in learning environments: a systematic literature review",
+          "year": 2024,
+          "venue": "Frontiers in Psychology",
+          "doi": "10.3389/fpsyg.2024.1387089",
+          "arxivId": null,
+          "citationCount": 271,
+          "openAccess": true,
+          "authors": [
+            "Angel Olider Rojas Vistorte",
+            "Ángel Deroncele-Acosta",
+            "Juan Luis Martín Ayala"
+          ],
+          "abstract": "Introduction: Artificial Intelligence (AI) is transforming multiple sectors within our society, including education. In this context, emotions play a fundamental role in the teaching-learning process given that they influence academic performance, motivation, information retention, and student well-being. Thus, the integration of AI in emotional assessment within educational environments offers se",
+          "url": "https://doi.org/10.3389/fpsyg.2024.1387089",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "score": 0.0156,
+          "title": "Generative artificial intelligence use in evidence synthesis: A systematic review",
+          "year": 2025,
+          "venue": "Research Synthesis Methods",
+          "doi": "10.1017/rsm.2025.16",
+          "arxivId": null,
+          "citationCount": 77,
+          "openAccess": true,
+          "authors": [
+            "Justin Clark",
+            "Belinda Barton",
+            "Loai Albarqouni"
+          ],
+          "abstract": "INTRODUCTION: With the increasing accessibility of tools such as ChatGPT, Copilot, DeepSeek, Dall-E, and Gemini, generative artificial intelligence (GenAI) has been poised as a potential, research timesaving tool, especially for synthesising evidence. Our objective was to determine whether GenAI can assist with evidence synthesis by assessing its performance using its accuracy, error rates, and ti",
+          "url": "https://doi.org/10.1017/rsm.2025.16",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "score": 0.0154,
+          "title": "Automation of Systematic Reviews with Large Language Models",
+          "year": 2025,
+          "venue": "medRxiv",
+          "doi": "10.1101/2025.06.13.25329541",
+          "arxivId": null,
+          "citationCount": 29,
+          "openAccess": true,
+          "authors": [
+            "Christian Cao",
+            "Rohit Arora",
+            "Paul Cento"
+          ],
+          "abstract": "Abstract Importance Systematic reviews (SRs) inform evidence-based decision making. Yet, many take over a year to complete, are labor intensive, prone to human error, and face reproducibility challenges; thus limiting access to timely and reliable information. Objective To validate a large language model (LLM)-based workflow (otto-SR) to automate three of the most labour intensive tasks in perform",
+          "url": "https://doi.org/10.1101/2025.06.13.25329541",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 5
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "score": 0.0152,
+          "title": "A Review on Large Language Models: Architectures, Applications, Taxonomies, Open Issues and Challenges",
+          "year": 2024,
+          "venue": "IEEE Access",
+          "doi": "10.1109/access.2024.3365742",
+          "arxivId": null,
+          "citationCount": 820,
+          "openAccess": true,
+          "authors": [
+            "Mohaimenul Azam Khan Raiaan",
+            "Md. Saddam Hossain Mukta",
+            "Kaniz Fatema"
+          ],
+          "abstract": "Large Language Models (LLMs) recently demonstrated extraordinary capability, including natural language processing (NLP), language translation, text generation, question answering, etc. Moreover, LLMs are a new and essential part of computerized language processing, having the ability to understand complex verbal patterns and generate coherent and appropriate replies for the situation. Though this",
+          "url": "https://doi.org/10.1109/access.2024.3365742",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 6
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "score": 0.0149,
+          "title": "The use of ChatGPT in teaching and learning: a systematic review through SWOT analysis approach",
+          "year": 2024,
+          "venue": "Frontiers in Education",
+          "doi": "10.3389/feduc.2024.1328769",
+          "arxivId": null,
+          "citationCount": 205,
+          "openAccess": true,
+          "authors": [
+            "Dương Thị Thủy",
+            "C Da",
+            "Nguyễn Văn Hạnh"
+          ],
+          "abstract": "Introduction The integration of ChatGPT, an advanced AI-powered chatbot, into educational settings, has caused mixed reactions among educators. Therefore, we conducted a systematic review to explore the strengths and weaknesses of using ChatGPT and discuss the opportunities and threats of using ChatGPT in teaching and learning. Methods Following the PRISMA flowchart guidelines, 51 articles were se",
+          "url": "https://doi.org/10.3389/feduc.2024.1328769",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 7
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "score": 0.0147,
+          "title": "Artificial intelligence for literature reviews: opportunities and challenges",
+          "year": 2024,
+          "venue": "Artificial Intelligence Review",
+          "doi": "10.1007/s10462-024-10902-3",
+          "arxivId": null,
+          "citationCount": 227,
+          "openAccess": true,
+          "authors": [
+            "F. J. Bolaños",
+            "Angelo A. Salatino",
+            "Francesco Osborne"
+          ],
+          "abstract": "Abstract This paper presents a comprehensive review of the use of Artificial Intelligence (AI) in Systematic Literature Reviews (SLRs). A SLR is a rigorous and organised methodology that assesses and integrates prior research on a given topic. Numerous tools have been developed to assist and partially automate the SLR process. The increasing role of AI in this field shows great potential in provid",
+          "url": "https://doi.org/10.1007/s10462-024-10902-3",
+          "sources": [
+            {
+              "provider": "openalex",
+              "rank": 8
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "webCalls": [
+    {
+      "tool": "search_web",
+      "tag": "openai-deep-research",
+      "params": {
+        "query": "OpenAI Deep Research architecture agent",
+        "limit": 10
+      },
+      "payload": {
+        "kind": "web_search",
+        "ok": false,
+        "reason": "SEARCH_PROVIDER_NOT_CONFIGURED",
+        "message": "Web Search 未配置（需要独立 SearXNG 服务与 PAPERTEAM_SEARXNG_URL；详见 docs/DEPLOYMENT.md）"
+      },
+      "details": {
+        "ok": false,
+        "reason": "SEARCH_PROVIDER_NOT_CONFIGURED"
+      },
+      "latencyMs": 2
+    },
+    {
+      "tool": "search_web",
+      "tag": "gemini-deep-research",
+      "params": {
+        "query": "Gemini Deep Research how it works",
+        "limit": 10
+      },
+      "payload": {
+        "kind": "web_search",
+        "ok": false,
+        "reason": "SEARCH_PROVIDER_NOT_CONFIGURED",
+        "message": "Web Search 未配置（需要独立 SearXNG 服务与 PAPERTEAM_SEARXNG_URL；详见 docs/DEPLOYMENT.md）"
+      },
+      "details": {
+        "ok": false,
+        "reason": "SEARCH_PROVIDER_NOT_CONFIGURED"
+      },
+      "latencyMs": 1
+    }
+  ],
+  "lookupCalls": [
+    {
+      "tool": "lookup_paper",
+      "tag": "The AI Scientist: Towards Fully Automated Open-Ended Scienti",
+      "params": {
+        "title": "The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery",
+        "year": 2024
+      },
+      "payload": {
+        "outcome": "match",
+        "canonical": {
+          "provider": "openalex",
+          "recordId": "W4402952666",
+          "title": "The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery",
+          "authors": [
+            "Chris Lu",
+            "Cong Lu",
+            "R. T. Lange",
+            "Jakob Foerster",
+            "Jeff Clune",
+            "David Ha"
+          ],
+          "year": 2024,
+          "doi": "10.48550/arxiv.2408.06292",
+          "url": "https://doi.org/10.48550/arxiv.2408.06292",
+          "abstract": "One of the grand challenges of artificial general intelligence is developing agents capable of conducting scientific research and discovering new knowledge. While frontier models have already been used as aides to human scientists, e.g. for brainstorming ideas, writing code, or prediction tasks, they still conduct only a small part of the scientific process. This paper presents the first comprehensive framework for fully automatic scientific discovery, enabling frontier large language models to perform research independently and communicate their findings. We introduce The AI Scientist, which generates novel research ideas, writes code, executes experiments, visualizes results, describes its findings by writing a full scientific paper, and then runs a simulated review process for evaluation. In principle, this process can be repeated to iteratively develop ideas in an open-ended fashion, acting like the human scientific community. We demonstrate its versatility by applying it to three distinct subfields of machine learning: diffusion modeling, transformer-based language modeling, and learning dynamics. Each idea is implemented and developed into a full paper at a cost of less than $15 per paper. To evaluate the generated papers, we design and validate an automated reviewer, which we show achieves near-human performance in evaluating paper scores. The AI Scientist can produce papers that exceed the acceptance threshold at a top machine learning conference as judged by our automated reviewer. This approach signifies the beginning of a new era in scientific discovery in machine learning: bringing the transformative benefits of AI agents to the entire research process of AI itself, and taking us closer to a world where endless affordable creativity and innovation can be unleashed on the world's most challenging problems. Our code is open-sourced at https://github.com/SakanaAI/AI-Scientist",
+          "retrievedAt": "2026-09-19T07:41:27.367Z"
+        },
+        "attempts": [
+          {
+            "provider": "crossref",
+            "outcome": "not_found",
+            "note": "查询：title:The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery"
+          },
+          {
+            "provider": "openalex",
+            "outcome": "match",
+            "note": "查询：title:The AI Scientist: Towards Fully Automated Open-Ended Scientific Discovery"
+          }
+        ]
+      },
+      "details": {
+        "outcome": "match"
+      },
+      "latencyMs": 2964
+    },
+    {
+      "tool": "lookup_paper",
+      "tag": "PaperQA: Retrieval-Augmented Generative Agent for Scientific",
+      "params": {
+        "title": "PaperQA: Retrieval-Augmented Generative Agent for Scientific Research",
+        "year": 2023
+      },
+      "payload": {
+        "outcome": "match",
+        "canonical": {
+          "provider": "openalex",
+          "recordId": "W4389761608",
+          "title": "PaperQA: Retrieval-Augmented Generative Agent for Scientific Research",
+          "authors": [
+            "Jakub Lála",
+            "Odhran O’Donoghue",
+            "Aleksandar Shtedritski",
+            "Sam Cox",
+            "Samuel G. Rodriques",
+            "Andrew Dickson White"
+          ],
+          "year": 2023,
+          "doi": "10.48550/arxiv.2312.07559",
+          "url": "https://doi.org/10.48550/arxiv.2312.07559",
+          "abstract": "Large Language Models (LLMs) generalize well across language tasks, but suffer from hallucinations and uninterpretability, making it difficult to assess their accuracy without ground-truth. Retrieval-Augmented Generation (RAG) models have been proposed to reduce hallucinations and provide provenance for how an answer was generated. Applying such models to the scientific literature may enable large-scale, systematic processing of scientific knowledge. We present PaperQA, a RAG agent for answering questions over the scientific literature. PaperQA is an agent that performs information retrieval across full-text scientific articles, assesses the relevance of sources and passages, and uses RAG to provide answers. Viewing this agent as a question answering model, we find it exceeds performance of existing LLMs and LLM agents on current science QA benchmarks. To push the field closer to how humans perform research on scientific literature, we also introduce LitQA, a more complex benchmark that requires retrieval and synthesis of information from full-text scientific papers across the literature. Finally, we demonstrate PaperQA's matches expert human researchers on LitQA.",
+          "retrievedAt": "2026-09-19T07:41:29.386Z"
+        },
+        "attempts": [
+          {
+            "provider": "crossref",
+            "outcome": "not_found",
+            "note": "查询：title:PaperQA: Retrieval-Augmented Generative Agent for Scientific Research"
+          },
+          {
+            "provider": "openalex",
+            "outcome": "match",
+            "note": "查询：title:PaperQA: Retrieval-Augmented Generative Agent for Scientific Research"
+          }
+        ]
+      },
+      "details": {
+        "outcome": "match"
+      },
+      "latencyMs": 1618
+    },
+    {
+      "tool": "lookup_paper",
+      "tag": "Assisting in Writing Wikipedia-like Articles From Scratch wi",
+      "params": {
+        "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+        "year": 2024
+      },
+      "payload": {
+        "outcome": "match",
+        "canonical": {
+          "provider": "crossref",
+          "recordId": "10.18653/v1/2024.naacl-long.347",
+          "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+          "authors": [
+            "Yijia Shao",
+            "Yucheng Jiang",
+            "Theodore Kanell",
+            "Peter Xu",
+            "Omar Khattab",
+            "Monica Lam"
+          ],
+          "year": 2024,
+          "doi": "10.18653/v1/2024.naacl-long.347",
+          "url": "https://doi.org/10.18653/v1/2024.naacl-long.347",
+          "retrievedAt": "2026-09-19T07:41:30.451Z"
+        },
+        "attempts": [
+          {
+            "provider": "crossref",
+            "outcome": "match",
+            "note": "查询：title:Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models"
+          }
+        ]
+      },
+      "details": {
+        "outcome": "match"
+      },
+      "latencyMs": 659
+    }
+  ],
+  "saveCalls": [
+    {
+      "tool": "save_candidates",
+      "tag": "deep-research-systems",
+      "params": {
+        "kind": "academic",
+        "query": "deep research agents large language models",
+        "resultIndexes": [
+          0,
+          1,
+          2
+        ]
+      },
+      "payload": {
+        "kind": "save_candidates",
+        "ok": true,
+        "savedCount": 3,
+        "mergedCount": 0,
+        "saved": [
+          {
+            "candidateId": "C001",
+            "title": "A Survey of Large Language Models",
+            "year": 2026,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C002",
+            "title": "Can Open Large Language Models Catch Vulnerabilities?",
+            "year": 2025,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C003",
+            "title": "Negation in English and other languages",
+            "year": 2025,
+            "status": "pending_review"
+          }
+        ],
+        "note": "候选已保存（pending_review）：需用户审核转正后才进入文献库，不是已核验证据"
+      },
+      "latencyMs": 26
+    },
+    {
+      "tool": "save_candidates",
+      "tag": "ai-scientist",
+      "params": {
+        "kind": "academic",
+        "query": "AI Scientist autonomous research paper generation",
+        "resultIndexes": [
+          0,
+          1,
+          2
+        ]
+      },
+      "payload": {
+        "kind": "save_candidates",
+        "ok": true,
+        "savedCount": 3,
+        "mergedCount": 0,
+        "saved": [
+          {
+            "candidateId": "C004",
+            "title": "A survey on large language model based autonomous agents",
+            "year": 2024,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C005",
+            "title": "FUTURE-AI: international consensus guideline for trustworthy and deployable artificial intelligence in healthcare",
+            "year": 2025,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C006",
+            "title": "A Multiagent-Driven Robotic AI Chemist Enabling Autonomous Chemical Research On Demand",
+            "year": 2025,
+            "status": "pending_review"
+          }
+        ],
+        "note": "候选已保存（pending_review）：需用户审核转正后才进入文献库，不是已核验证据"
+      },
+      "latencyMs": 15
+    },
+    {
+      "tool": "save_candidates",
+      "tag": "paperqa",
+      "params": {
+        "kind": "academic",
+        "query": "PaperQA retrieval augmented literature question answering",
+        "resultIndexes": [
+          0,
+          1,
+          2
+        ]
+      },
+      "payload": {
+        "kind": "save_candidates",
+        "ok": true,
+        "savedCount": 3,
+        "mergedCount": 0,
+        "saved": [
+          {
+            "candidateId": "C007",
+            "title": "Retrieval-Augmented Generation for Large Language Models: A Survey",
+            "year": 2023,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C008",
+            "title": "PaperQA: Retrieval-Augmented Generative Agent for Scientific Research",
+            "year": 2023,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C009",
+            "title": "Benchmarking Retrieval-Augmented Generation for Medicine",
+            "year": 2024,
+            "status": "pending_review"
+          }
+        ],
+        "note": "候选已保存（pending_review）：需用户审核转正后才进入文献库，不是已核验证据"
+      },
+      "latencyMs": 14
+    },
+    {
+      "tool": "save_candidates",
+      "tag": "storm",
+      "params": {
+        "kind": "academic",
+        "query": "STORM writing Wikipedia-like articles from scratch with foundation models",
+        "resultIndexes": [
+          0,
+          1,
+          2
+        ]
+      },
+      "payload": {
+        "kind": "save_candidates",
+        "ok": true,
+        "savedCount": 3,
+        "mergedCount": 0,
+        "saved": [
+          {
+            "candidateId": "C010",
+            "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+            "year": 2024,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C011",
+            "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+            "year": 2024,
+            "status": "pending_review"
+          },
+          {
+            "candidateId": "C012",
+            "title": "Exploring the role of large language models in the scientific method: from hypothesis to discovery",
+            "year": 2025,
+            "status": "pending_review"
+          }
+        ],
+        "note": "候选已保存（pending_review）：需用户审核转正后才进入文献库，不是已核验证据"
+      },
+      "latencyMs": 6
+    }
+  ],
+  "candidatesOnDisk": {
+    "count": 12,
+    "items": [
+      {
+        "candidateId": "C001",
+        "title": "A Survey of Large Language Models",
+        "year": 2026,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C002",
+        "title": "Can Open Large Language Models Catch Vulnerabilities?",
+        "year": 2025,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C003",
+        "title": "Negation in English and other languages",
+        "year": 2025,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C004",
+        "title": "A survey on large language model based autonomous agents",
+        "year": 2024,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C005",
+        "title": "FUTURE-AI: international consensus guideline for trustworthy and deployable artificial intelligence ",
+        "year": 2025,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C006",
+        "title": "A Multiagent-Driven Robotic AI Chemist Enabling Autonomous Chemical Research On Demand",
+        "year": 2025,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C007",
+        "title": "Retrieval-Augmented Generation for Large Language Models: A Survey",
+        "year": 2023,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C008",
+        "title": "PaperQA: Retrieval-Augmented Generative Agent for Scientific Research",
+        "year": 2023,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C009",
+        "title": "Benchmarking Retrieval-Augmented Generation for Medicine",
+        "year": 2024,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C010",
+        "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+        "year": 2024,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C011",
+        "title": "Assisting in Writing Wikipedia-like Articles From Scratch with Large Language Models",
+        "year": 2024,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      },
+      {
+        "candidateId": "C012",
+        "title": "Exploring the role of large language models in the scientific method: from hypothesis to discovery",
+        "year": 2025,
+        "status": "pending_review",
+        "origin": "academic_search",
+        "provider": "openalex"
+      }
+    ]
+  }
+}
