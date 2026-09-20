@@ -1,9 +1,12 @@
 # M7 Scope Freeze & Implementation Boundary — Research Discovery Activation
 
-> 日期：2026-09-19 · 状态：**frozen（M7 正式开始前的范围与边界冻结）**
+> 日期：2026-09-19 · 状态：**frozen（M7 正式开始前的范围与边界冻结）→
+> 已执行完毕（2026-09-20 收口：§6 M7.0–M7.2 全部交付，M7.3 按本冻结
+> 「方向冻结、细节延后」并入 M8 候选；终报见
+> [M7_FINAL_REPORT.md](M7_FINAL_REPORT.md)）**
 > 基线：main @ `3078947`（HEAD == origin/main，工作区 clean；Pre-M7 Product
 > Readiness 收口完成）· 架构冻结：D-0041（M6）· M7.1 细节设计：
-> [M7.1_WEB_SEARCH_DESIGN.md](M7.1_WEB_SEARCH_DESIGN.md)（proposed，M7.0 升版）
+> [M7.1_WEB_SEARCH_DESIGN.md](M7.1_WEB_SEARCH_DESIGN.md)（accepted，M7.0 升版）
 > 性质：**只读分析产物，零业务代码改动；本文冻结 M7 做什么 / 不做什么 /
 > 分几步做 / 每步验收什么**。M7 实现开始后，变更须走 DECISIONS.md 登记。
 

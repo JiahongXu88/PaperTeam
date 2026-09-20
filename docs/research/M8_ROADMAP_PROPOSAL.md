@@ -1,6 +1,12 @@
 # M8 Roadmap Proposal — Research Intelligence（提案稿）
 
 > 日期：2026-09-19 · 状态：**proposed（M7.1d Self Review 的产出，只提案不实施）**
+> 2026-09-20 更新：§0 表中两项 M7 硬前置——M7.2 FullTextResolver 已由
+> `aaecbef` 交付（D-0043，测试 +70 / 全量 1333 后端 + 210 前端零回归）；
+> M7.1 验收后半段（真实项目 promote → 全文 → verified 磁盘证据）链路已
+> 具备自动形态、待真实项目走通（M7 收口遗留，见
+> [M7_FINAL_REPORT.md](M7_FINAL_REPORT.md) §7）。M8.0 Scope Freeze 的数据
+> 输入条件基本就绪。
 > 上游：[PAPERTEAM_SELF_REVIEW_M7.md](PAPERTEAM_SELF_REVIEW_M7.md)（差距分析）
 > / [M7_SCOPE_FREEZE.md](M7_SCOPE_FREEZE.md)（M7.2/M7.3 既有安排）
 > 纪律：本文不预设结论——每个候选方向都带**进入条件**（数据门槛）与

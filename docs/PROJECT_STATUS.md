@@ -1,11 +1,14 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-20（**M7 进行中 — Research Discovery Activation**：
-> M7.0 Scope Freeze（D-0042）✅ / M7.1 架构审查 ✅ / M7.1a 检索接线
-> （`017ad31`）✅ / M7.1b 真实 Agent 端到端验证（`63a214b`）✅ / M7.1c
-> Discovery & 候选管理 UI（`fbe004d`）✅ / M7.1d Self Review ✅ /
-> M7.2 FullTextResolution（D-0043）✅ ——详见下方
-> 「当前阶段」M7 段与 [M7_SCOPE_FREEZE.md](research/M7_SCOPE_FREEZE.md)。
+> 更新日期：2026-09-20（**M7 COMPLETE — Research Discovery Activation
+> （2026-09-18 启动 → 2026-09-20 收口 / Finalization）**：M7.0 Scope
+> Freeze（D-0042）✅ / M7.1 架构审查 ✅ / M7.1a 检索接线（`017ad31`）✅ /
+> M7.1b 真实 Agent 端到端验证（`63a214b`）✅ / M7.1c Discovery & 候选管理
+> UI（`fbe004d`）✅ / M7.1d Self Review ✅ / M7.2 FullTextResolution
+> （D-0043，`aaecbef`）✅ / Skill 生态调研（`6e01180`）✅——终报
+> [research/M7_FINAL_REPORT.md](research/M7_FINAL_REPORT.md)；遗留（真实
+> 项目磁盘证据全链走通、M7.3 方向并入 M8）为 M8 输入、非 M7 blocker——
+> 详见下方「当前阶段」M7 段与 [M7_SCOPE_FREEZE.md](research/M7_SCOPE_FREEZE.md)。
 > 前一状态 2026-09-18（**M6 COMPLETE — Research Discovery &
 > Evidence-grounded Pipeline（Documentation Freeze）**）：M6.0 baseline
 > freeze → M6.1 Search/RAG 架构冻结（D-0033）→ M6.2 Literature Library →
@@ -770,8 +773,8 @@ docs/research/M6_FINAL_SUMMARY.md：
   Evidence-grounded Retrieval、Reference Paper Intelligence、Multimodal Review
   （后两者为 M6+ backlog，不在 M6.2–M6.5 编号内）。
 
-**M7 — Research Discovery Activation（2026-09-18 Entry Point → 2026-09-19
-Scope Freeze `fbe004d` 前完成 a/b/c/d 四步）**：范围由
+**M7 — Research Discovery Activation（✅ COMPLETE，2026-09-18 启动 →
+2026-09-20 收口；终报 [research/M7_FINAL_REPORT.md](research/M7_FINAL_REPORT.md)）**：范围由
 [M7_SCOPE_FREEZE.md](research/M7_SCOPE_FREEZE.md)（frozen）定界——把 M6
 已交付但「零真实使用」的检索能力接成真实闭环（User Research Question →
 Researcher Agent → search_papers/save_candidates → CandidateSource → HITL
@@ -817,9 +820,27 @@ promote → Literature Library → Evidence Grounding），决策登记 D-0042
   决策 D-0043；ADR §3 Crossref 勘误同步完成（D-0042 第 4 项收口）。
   测试 +70（resolver/护栏/挂载/编排/HTTP/离线验收链），全量 1333 后端 +
   210 前端零回归。
-- **待办**：M7.1 验收底线 1 后半段（真实项目 promote → 全文 → verified
-  evidence 磁盘证据全链——M7.2 落地后该链路已具备自动形态，待真实项目
-  走通）；M7.3 Research Intelligence 方向冻结、细节延后。
+- **Skill 生态调研 ✅（2026-09-20，`6e01180`）**：用自身 Research Discovery
+  能力（M6.3/M7.1 同源工具面）+ GitHub API 定向核查，调研 2024-2026 可接入
+  的科研类 Skill / MCP 生态（五类：Academic Writing / Literature Review /
+  Reviewer / Humanization / Research Agent）——P0 建议全部为「读与借鉴」级
+  （K-Dense scientific-agent-skills 精读、WenyuChiou 扩展大纲方法论、
+  Anti-Autoresearch 审计词表），接入三原则（Evidence-first / HITL /
+  确定性编排不动摇）与明确拒绝项（检测器、绕检测器、系统型 deep-research
+  项目）一并登记；报告
+  [PAPERTEAM_SKILL_DISCOVERY.md](research/PAPERTEAM_SKILL_DISCOVERY.md)
+  ——纯调研产物，零代码改动、零 Skill 安装。
+- **M7 收口判定（2026-09-20 Finalization）**：**COMPLETE**——冻结范围
+  （M7_SCOPE_FREEZE §6）内 M7.0–M7.2 全部交付，全量测试零回归；M7.3 按
+  冻结「方向冻结、细节延后」处理，其维度由 M8 提案吸收。遗留两项均为
+  M8 输入、非 M7 blocker：① M7.1 验收底线 1 后半段（真实项目 promote →
+  全文 → verified evidence 磁盘证据全链——M7.2 落地后链路已具备自动形态，
+  待真实项目走通；同时是 M8.1 Discovery Observability 的数据前置）；
+  ② M7.3 Research Intelligence（Reference Paper Intelligence +
+  Evaluation live 扩展，由
+  [M8_ROADMAP_PROPOSAL.md](research/M8_ROADMAP_PROPOSAL.md)
+  吸收具体化）。下一节点：**M8（入口 = M8.0 Scope Freeze，输入见
+  [M7_FINAL_REPORT.md](research/M7_FINAL_REPORT.md) §7）**。
 
 M7 前的候选方向清单（Evaluation live 扩展 / FullTextResolver /
 Reference Paper Intelligence / Multimodal Review / 遗留收口）中，
