@@ -18,19 +18,31 @@
  *
  * 状态机：draft → approved → executing → done。
  * - draft 只能编辑（执行 → 409）；approved 允许执行；executing 禁止重复执行；
- * - done 表示本轮计划执行完成（再执行 → 409）；
+ * - done 表示本轮计划执行完成（再执行 → 409；M8.3.1 起可经 derive 派生下一轮）；
  * - 不自动把 draft 改 approved（批准是显式 HITL 动作）。
+ *
+ * M8.3.1：批准 / 执行始终作用于**活动计划**（计划链 plans + activePlanId 中
+ * activePlanId 指向的条目；活动计划的切换入口是 ResearchPlanIterationService
+ * 的 derive / activate）。执行记录带 planId 归属（旧记录无该字段，兼容读取）。
  */
 
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
 
 import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
-import { readResearchArtifact, type ResearchArtifact } from "./ResearcherService.js";
-import type { ResearchPlan, ResearchPlanQuery, ResearchQueryKind } from "./researchPlan.js";
+import {
+  readResearchArtifact,
+  writeResearchPlanChain,
+  type ResearchArtifact,
+} from "./ResearcherService.js";
+import {
+  readPlanChain,
+  type ResearchPlan,
+  type ResearchPlanChain,
+  type ResearchPlanQuery,
+  type ResearchQueryKind,
+} from "./researchPlan.js";
 
 /** 单条 query 的执行记录状态（成功 executed / 失败 failed，均如实入 history） */
 export type PlanExecutionEntryStatus = "executed" | "failed";
@@ -46,6 +58,8 @@ export interface PlanExecutionEntry {
   kind: ResearchQueryKind;
   timestamp: string;
   status: PlanExecutionEntryStatus;
+  /** 执行该条目的计划（M8.3.1；多轮迭代下定位归属，旧记录无此字段） */
+  planId?: string;
   /** 成功时的检索结果数（Search Result 计数，非候选数） */
   resultCount?: number;
   /** 失败原因（BusinessError message；不含堆栈） */
@@ -93,10 +107,11 @@ export class ResearchPlanExecutionService {
 
   /**
    * 批准计划（draft → approved）。不自动发生——唯一的 status 流转入口之一。
+   * 作用于活动计划（M8.3.1：activate / derive 决定谁是活动计划）。
    * 非 draft（含 executing / done）→ 409 PLAN_INVALID_STATE。
    */
   async approve(projectId: string): Promise<ResearchPlan> {
-    const { artifact, plan } = await this.loadPlanOrThrow(projectId);
+    const { artifact, chain, plan } = await this.loadPlanOrThrow(projectId);
     if (plan.status !== "draft") {
       throw new BusinessError(
         "PLAN_INVALID_STATE",
@@ -104,13 +119,19 @@ export class ResearchPlanExecutionService {
       );
     }
     const approved = { ...plan, status: "approved" as const, updatedAt: new Date().toISOString() };
-    await this.writeArtifact(projectId, artifact, approved, artifact.executionHistory);
+    await writeResearchPlanChain(
+      this.projects,
+      projectId,
+      artifact,
+      replaceInChain(chain, approved),
+      artifact.executionHistory,
+    );
     this.log(`[plan-execution] projectId=${projectId} 计划已批准：planId=${approved.planId}`);
     return approved;
   }
 
   /**
-   * 执行当前 approved 的 ResearchPlan：
+   * 执行当前 approved 的 ResearchPlan（活动计划）：
    * 遍历 status=planned 的 query → ResearchDiscoveryService 检索 → 回填
    * executed + resultCount（失败记 history 不中断）→ 全部处理完 plan.status=done。
    *
@@ -128,15 +149,15 @@ export class ResearchPlanExecutionService {
     }
     this.executing.add(projectId);
     try {
-      const { artifact, plan } = await this.loadPlanOrThrow(projectId);
+      const { artifact, chain, plan } = await this.loadPlanOrThrow(projectId);
       if (plan.status !== "approved") {
         throw new BusinessError(
           "PLAN_INVALID_STATE",
           plan.status === "executing"
-            ? "该计划正在执行中，禁止重复执行；若服务曾在执行期间重启导致状态残留，请将 research.json 中 plan.status 改回 approved 后重试"
+            ? "该计划正在执行中，禁止重复执行；若服务曾在执行期间重启导致状态残留，请将 research.json 中该计划的 status 改回 approved 后重试"
             : plan.status === "draft"
               ? "计划还是 draft，只能编辑；请先批准（approve）后再执行"
-              : "计划已执行完成（done）；编辑计划补充新的 planned 检索并重新走批准流，或等待 M8.3 受控研究循环",
+              : "该轮计划已执行完成（done）；可派生新计划（derive）继续下一轮研究，或编辑补充新的 planned 检索后重新走批准流",
         );
       }
 
@@ -144,13 +165,19 @@ export class ResearchPlanExecutionService {
       const plannedQueries = plan.queries.filter((query) => query.status === "planned");
       let working: ResearchPlan = { ...plan, status: "executing", updatedAt: new Date().toISOString() };
       // 先落 executing 态（可见性：磁盘上能看出有执行在途），再逐条执行
-      await this.writeArtifact(projectId, artifact, working, artifact.executionHistory);
+      await writeResearchPlanChain(
+        this.projects,
+        projectId,
+        artifact,
+        replaceInChain(chain, working),
+        artifact.executionHistory,
+      );
 
       const entries: PlanExecutionEntry[] = [];
       let executedQueries = 0;
       let failedQueries = 0;
       for (const query of plannedQueries) {
-        const entry = await this.executeQuery(projectId, executionId, query);
+        const entry = await this.executeQuery(projectId, executionId, working.planId, query);
         entries.push(entry);
         if (entry.status === "executed") {
           executedQueries += 1;
@@ -169,7 +196,13 @@ export class ResearchPlanExecutionService {
 
       const done: ResearchPlan = { ...working, status: "done", updatedAt: new Date().toISOString() };
       const history = [...(artifact.executionHistory ?? []), ...entries].slice(-MAX_EXECUTION_HISTORY);
-      await this.writeArtifact(projectId, artifact, done, history);
+      await writeResearchPlanChain(
+        this.projects,
+        projectId,
+        artifact,
+        replaceInChain(chain, done),
+        history,
+      );
       this.log(
         `[plan-execution] projectId=${projectId} 执行完成：executionId=${executionId} planned=${plannedQueries.length} executed=${executedQueries} failed=${failedQueries}`,
       );
@@ -189,6 +222,7 @@ export class ResearchPlanExecutionService {
   private async executeQuery(
     projectId: string,
     executionId: string,
+    planId: string,
     query: ResearchPlanQuery,
   ): Promise<PlanExecutionEntry> {
     const base = {
@@ -197,6 +231,7 @@ export class ResearchPlanExecutionService {
       query: query.query,
       kind: query.kind,
       timestamp: new Date().toISOString(),
+      planId,
     };
     try {
       // 复用既有 Discovery 编排（provider fan-out / 融合 / 诊断一体）；
@@ -215,10 +250,16 @@ export class ResearchPlanExecutionService {
     }
   }
 
-  /** 读 artifact + plan；缺 artifact（未调研）/ 缺 plan（旧 artifact）→ 404 */
-  private async loadPlanOrThrow(
-    projectId: string,
-  ): Promise<{ artifact: ResearchArtifact; plan: ResearchPlan }> {
+  /**
+   * 读 artifact + 活动计划（M8.3.1：plan = 计划链中 activePlanId 指向的条目；
+   * 旧 artifact 单一 plan 字段经 readPlanChain 归一化为单轮链）。
+   * 缺 artifact（未调研）/ 缺计划 → 404。
+   */
+  private async loadPlanOrThrow(projectId: string): Promise<{
+    artifact: ResearchArtifact;
+    chain: ResearchPlanChain;
+    plan: ResearchPlan;
+  }> {
     const artifact = await readResearchArtifact(this.projects, projectId);
     if (artifact === null) {
       throw new BusinessError(
@@ -226,34 +267,24 @@ export class ResearchPlanExecutionService {
         "项目还没有调研结果（research/research.json 不存在），请先运行调研再执行研究计划",
       );
     }
-    if (artifact.plan === undefined) {
+    const chain = readPlanChain(artifact);
+    const plan = chain.plans.find((entry) => entry.planId === chain.activePlanId);
+    if (plan === undefined) {
       throw new BusinessError(
         "NOT_FOUND",
         "项目还没有研究计划（research artifact 无 plan 字段），请先运行调研或编辑生成计划",
       );
     }
-    return { artifact, plan: artifact.plan };
+    return { artifact, chain, plan };
   }
+}
 
-  /** 整对象读-改-写：existing-paper 附加字段（weaknesses / kind 等）与 report 原样保留 */
-  private async writeArtifact(
-    projectId: string,
-    artifact: ResearchArtifact,
-    plan: ResearchPlan,
-    executionHistory: PlanExecutionEntry[] | undefined,
-  ): Promise<void> {
-    await writeFile(
-      join(this.projects.researchDir(projectId), "research.json"),
-      JSON.stringify({
-        ...artifact,
-        plan,
-        ...(executionHistory !== undefined && executionHistory.length > 0
-          ? { executionHistory }
-          : {}),
-      }, null, 2) + "\n",
-      "utf8",
-    );
-  }
+/** 链中原位替换活动条目（其余迭代不动；活动条目按 planId 定位） */
+function replaceInChain(chain: ResearchPlanChain, plan: ResearchPlan): ResearchPlanChain {
+  return {
+    plans: chain.plans.map((entry) => (entry.planId === plan.planId ? plan : entry)),
+    activePlanId: chain.activePlanId,
+  };
 }
 
 /** execution id：与 planId 同风格（exec- + 12 位随机十六进制） */

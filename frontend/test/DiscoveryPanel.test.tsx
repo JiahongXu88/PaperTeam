@@ -11,7 +11,11 @@ import type {
   CandidatePromoteResult,
   CandidateSourceView,
 } from "../src/types/sources.js";
-import type { PlanExecutionResultView, ResearchPlanView } from "../src/types/researchPlan.js";
+import type {
+  PlanExecutionResultView,
+  ResearchPlanListView,
+  ResearchPlanView,
+} from "../src/types/researchPlan.js";
 import { renderWithProviders } from "./helpers.js";
 
 /**
@@ -36,6 +40,9 @@ vi.mock("../src/api/researchPlan.js", () => ({
   updateResearchPlan: vi.fn(),
   approveResearchPlan: vi.fn(),
   executeResearchPlan: vi.fn(),
+  listResearchPlans: vi.fn(async () => ({ plans: [], activePlanId: null })),
+  deriveResearchPlan: vi.fn(),
+  activateResearchPlan: vi.fn(),
 }));
 
 const api = vi.mocked(await import("../src/api/discovery.js"));
@@ -602,5 +609,127 @@ describe("DiscoveryPanel（M8.2 Research Plan Execution）", () => {
 
     expect(await screen.findByText("计划执行失败")).toBeTruthy();
     expect(screen.getByText(/禁止重复执行/)).toBeTruthy();
+  });
+});
+
+describe("DiscoveryPanel（M8.3.1 Research Plan Iteration）", () => {
+  /** 两轮迭代链：v1 done（历史）+ v2 done（当前活动） */
+  function iterationListView(): ResearchPlanListView {
+    return {
+      plans: [
+        planView({
+          planId: "rp-plan00000001",
+          status: "done",
+          iterationNumber: 1,
+          iterationId: "it-iter00000001",
+          questions: ["第一轮：Transformer MOT 的发展历史"],
+          queries: [
+            { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "executed", resultCount: 12 },
+          ],
+        }),
+        planView({
+          planId: "rp-plan00000002",
+          status: "done",
+          iterationNumber: 2,
+          iterationId: "it-iter00000001",
+          parentPlanId: "rp-plan00000001",
+          questions: ["第二轮：遮挡场景身份保持"],
+          queries: [
+            { queryId: "q-1", query: "mot occlusion identity", kind: "academic", status: "planned" },
+          ],
+        }),
+      ],
+      activePlanId: "rp-plan00000002",
+    };
+  }
+
+  async function renderPanelWithIterations() {
+    planApi.listResearchPlans.mockResolvedValue(iterationListView());
+    planApi.getResearchPlan.mockResolvedValue(
+      planView({
+        planId: "rp-plan00000002",
+        status: "done",
+        iterationNumber: 2,
+        parentPlanId: "rp-plan00000001",
+        questions: ["第二轮：遮挡场景身份保持"],
+        queries: [
+          { queryId: "q-1", query: "mot occlusion identity", kind: "academic", status: "planned" },
+        ],
+      }),
+    );
+    await renderPanel([], "Transformer MOT");
+    await screen.findByTestId("plan-iterations");
+  }
+
+  it("迭代展示：v1 / v2 条目与当前标记；活动计划内容为主显示", async () => {
+    await renderPanelWithIterations();
+
+    expect(screen.getByText("v1 · 已完成")).toBeTruthy();
+    expect(screen.getByText("v2 · 已完成（当前）")).toBeTruthy();
+    // 主显示 = 当前活动计划（v2）的问题与检索
+    expect(screen.getByText("第二轮：遮挡场景身份保持")).toBeTruthy();
+    expect(screen.getByText("mot occlusion identity")).toBeTruthy();
+    expect(screen.queryByText("第一轮：Transformer MOT 的发展历史")).toBeNull();
+  });
+
+  it("查看历史计划：点击 v1 → 历史提示 + 内容切换；编辑按钮禁用（只作用于当前）", async () => {
+    await renderPanelWithIterations();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "v1 · 已完成" }));
+
+    const note = await screen.findByTestId("plan-history-note");
+    expect(note.textContent).toContain("正在查看历史计划 v1");
+    expect(screen.getByText("第一轮：Transformer MOT 的发展历史")).toBeTruthy();
+    expect(screen.getByText("Transformer MOT survey")).toBeTruthy(); // v1 的检索词
+    expect(screen.queryByText("mot occlusion identity")).toBeNull();
+    const editButton = screen.getByRole("button", { name: "编辑" }) as HTMLButtonElement;
+    expect(editButton.disabled).toBe(true);
+  });
+
+  it("设为当前：查看历史时点击 → activate API 调用", async () => {
+    await renderPanelWithIterations();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "v1 · 已完成" }));
+    planApi.activateResearchPlan.mockResolvedValue(planView({ planId: "rp-plan00000001" }));
+    await user.click(screen.getByTestId("activate-plan"));
+
+    await waitFor(() => expect(planApi.activateResearchPlan).toHaveBeenCalledTimes(1));
+    expect(planApi.activateResearchPlan).toHaveBeenCalledWith("p-1", "rp-plan00000001");
+  });
+
+  it("派生新计划：done 活动计划 → 点击调用 derive API；成功后失效重取", async () => {
+    planApi.listResearchPlans.mockResolvedValue({ plans: [], activePlanId: null });
+    planApi.getResearchPlan.mockResolvedValue(planView({ status: "done" }));
+    await renderPanel([], "Transformer MOT");
+    await screen.findByTestId("plan-queries");
+    const user = userEvent.setup();
+
+    const deriveButton = await screen.findByTestId("derive-plan");
+    planApi.deriveResearchPlan.mockResolvedValue(planView({ status: "draft" }));
+    // derive 成功后 invalidate 触发重取：getResearchPlan 返回新 draft
+    planApi.getResearchPlan.mockResolvedValue(planView({ status: "draft", questions: ["派生后的新问题"] }));
+    await user.click(deriveButton);
+
+    await waitFor(() => expect(planApi.deriveResearchPlan).toHaveBeenCalledTimes(1));
+    expect(planApi.deriveResearchPlan).toHaveBeenCalledWith("p-1", "rp-plan00000001", {});
+    expect(await screen.findByText("派生后的新问题")).toBeTruthy();
+  });
+
+  it("派生失败：错误如实呈现（不吞 409）", async () => {
+    planApi.listResearchPlans.mockResolvedValue({ plans: [], activePlanId: null });
+    planApi.getResearchPlan.mockResolvedValue(planView({ status: "done" }));
+    await renderPanel([], "Transformer MOT");
+    await screen.findByTestId("plan-queries");
+    const user = userEvent.setup();
+
+    planApi.deriveResearchPlan.mockRejectedValue(
+      new Error("只有已完成（done）的计划才能派生下一轮"),
+    );
+    await user.click(screen.getByTestId("derive-plan"));
+
+    expect(await screen.findByText("派生计划失败")).toBeTruthy();
+    expect(screen.getByText(/只有已完成/)).toBeTruthy();
   });
 });

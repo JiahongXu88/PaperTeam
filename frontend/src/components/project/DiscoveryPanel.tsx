@@ -5,12 +5,15 @@ import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import {
   useAcademicSearch,
+  useActivateResearchPlan,
   useApproveResearchPlan,
   useCandidates,
+  useDeriveResearchPlan,
   useExecuteResearchPlan,
   usePromoteCandidate,
   useRejectCandidate,
   useResearchPlan,
+  useResearchPlans,
   useUpdateResearchPlan,
   useWebSearch,
 } from "../../hooks/queries.js";
@@ -42,6 +45,9 @@ import type { DiscoveryMode } from "../../api/discovery.js";
  *
  * - M8.1：顶部展示 Research Plan（调研产出的检索计划）——Topic / Questions /
  *   Queries（含理由），支持查看 / 编辑 / 保存（GET+PUT /research/plan）；
+ * - M8.3.1：计划完成后可迭代——迭代条（v1 / v2…当前标记）、查看历史计划、
+ *   派生新计划（done → 新 draft）、把历史计划设为当前（GET /research/plans +
+ *   POST derive / activate）；编辑 / 批准 / 执行始终作用于当前活动计划；
  * - 检索走既有 POST /research/{academic|web}-search：默认只返回不持久化，
  *   「保存选中」用同一端点的 saveAsCandidates（结果下标）显式写入候选；
  * - 候选列表 / Promote / Reject 走既有 /sources/candidates 端点群；
@@ -447,17 +453,43 @@ function PlanEditForm({
 function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: string }) {
   const [editing, setEditing] = useState(false);
   const [executionSummary, setExecutionSummary] = useState<PlanExecutionResultView | null>(null);
+  /** 查看的历史计划（null = 跟随当前活动计划；查看不切换，切换需显式「设为当前」） */
+  const [viewPlanId, setViewPlanId] = useState<string | null>(null);
   const plan = useResearchPlan(projectId);
+  const plans = useResearchPlans(projectId);
   const approve = useApproveResearchPlan(projectId);
   const execute = useExecuteResearchPlan(projectId);
-  const actionPending = approve.isPending || execute.isPending;
-  const currentStatus = plan.data?.status;
+  const derive = useDeriveResearchPlan(projectId);
+  const activate = useActivateResearchPlan(projectId);
+  const actionPending = approve.isPending || execute.isPending || derive.isPending || activate.isPending;
+
+  const historyPlans = plans.data?.plans ?? [];
+  const activePlanId = plans.data?.activePlanId ?? plan.data?.planId ?? null;
+  const viewingHistoryPlan =
+    viewPlanId !== null && viewPlanId !== activePlanId
+      ? (historyPlans.find((entry) => entry.planId === viewPlanId) ?? null)
+      : null;
+  // 展示对象：查看历史时取链中条目；否则跟随活动计划（GET /research/plan）
+  const displayed = viewingHistoryPlan ?? plan.data;
+  const currentStatus = displayed?.status;
+  const isActivePlan = displayed !== null && displayed !== undefined && displayed.planId === activePlanId;
 
   const runExecute = () => {
     setExecutionSummary(null);
     execute.mutate(undefined, {
       onSuccess: (result) => setExecutionSummary(result),
     });
+  };
+
+  const runDerive = () => {
+    if (activePlanId === null) {
+      return;
+    }
+    derive.mutate({ planId: activePlanId }, { onSuccess: () => setViewPlanId(null) });
+  };
+
+  const runActivate = (planId: string) => {
+    activate.mutate(planId, { onSuccess: () => setViewPlanId(null) });
   };
 
   return (
@@ -473,7 +505,7 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
               type="button"
               className="btn btn-small"
               onClick={() => setEditing((prev) => !prev)}
-              disabled={plan.isPending || actionPending}
+              disabled={plan.isPending || actionPending || !isActivePlan}
             >
               {editing ? "收起编辑" : "编辑"}
             </button>
@@ -485,7 +517,57 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
         已批准）后可执行：计划中「计划中」的检索会逐一运行并回填状态与结果数。
         执行只产生检索结果，不会自动保存候选或产生文献 / Evidence——保存仍由你在下方检索结果中显式勾选。
       </p>
-      {!editing && currentStatus !== undefined ? (
+      {historyPlans.length > 1 ? (
+        <div className="action-row" data-testid="plan-iterations" role="group" aria-label="计划迭代">
+          {historyPlans.map((entry) => {
+            const active = entry.planId === activePlanId;
+            return (
+              <button
+                key={entry.planId}
+                type="button"
+                className={`btn btn-small${viewPlanId === entry.planId ? " is-active" : ""}`}
+                aria-pressed={viewPlanId === entry.planId}
+                onClick={() => {
+                  setViewPlanId(entry.planId);
+                  setEditing(false); // 查看历史时退出编辑（编辑只作用于当前活动计划）
+                }}
+                disabled={actionPending}
+                title={active ? "当前活动计划（编辑 / 批准 / 执行作用于它）" : "查看该轮计划"}
+              >
+                v{entry.iterationNumber ?? "?"} · {PLAN_STATUS_LABELS[entry.status]}
+                {active ? "（当前）" : ""}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {viewingHistoryPlan !== null ? (
+        <p className="note" role="status" data-testid="plan-history-note">
+          <span>
+            正在查看历史计划 v{viewingHistoryPlan.iterationNumber ?? "?"}（
+            {PLAN_STATUS_LABELS[viewingHistoryPlan.status]}，非当前）。编辑 / 批准 / 执行
+            只作用于当前活动计划。
+          </span>{" "}
+          <button
+            type="button"
+            className="btn btn-small"
+            onClick={() => runActivate(viewingHistoryPlan.planId)}
+            disabled={actionPending}
+            data-testid="activate-plan"
+          >
+            {activate.isPending ? "切换中…" : "设为当前"}
+          </button>{" "}
+          <button
+            type="button"
+            className="btn btn-small"
+            onClick={() => setViewPlanId(null)}
+            disabled={actionPending}
+          >
+            回到当前计划
+          </button>
+        </p>
+      ) : null}
+      {!editing && currentStatus !== undefined && isActivePlan ? (
         <div className="action-row">
           {currentStatus === "draft" ? (
             <button
@@ -511,9 +593,34 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
           ) : null}
           {currentStatus === "executing" ? <span className="muted">计划执行中…</span> : null}
           {currentStatus === "done" ? (
-            <span className="muted">本轮计划已执行完成；编辑补充新检索后再走批准流。</span>
+            <>
+              <span className="muted">本轮计划已执行完成；可派生新计划继续研究。</span>
+              <button
+                type="button"
+                className="btn btn-small"
+                onClick={runDerive}
+                disabled={actionPending}
+                data-testid="derive-plan"
+              >
+                {derive.isPending ? "派生中…" : "派生新计划"}
+              </button>
+            </>
           ) : null}
         </div>
+      ) : null}
+      {derive.isError ? (
+        <ErrorState
+          title="派生计划失败"
+          message={formatApiError(derive.error)}
+          detail={formatApiErrorDetail(derive.error)}
+        />
+      ) : null}
+      {activate.isError ? (
+        <ErrorState
+          title="切换计划失败"
+          message={formatApiError(activate.error)}
+          detail={formatApiErrorDetail(activate.error)}
+        />
       ) : null}
       {plan.isPending ? (
         <Loading label="加载检索计划…" />
@@ -536,13 +643,13 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
           message={formatApiError(execute.error)}
           detail={formatApiErrorDetail(execute.error)}
         />
-      ) : plan.data === null ? (
+      ) : displayed === null || displayed === undefined ? (
         <p className="panel-empty" data-testid="research-plan-empty">
           还没有检索计划。运行「从想法到论文」工作流的调研阶段后，Researcher 制定的
           检索计划会展示在这里。
         </p>
       ) : editing ? (
-        <PlanEditForm plan={plan.data} projectId={projectId} onDone={() => setEditing(false)} />
+        <PlanEditForm plan={plan.data!} projectId={projectId} onDone={() => setEditing(false)} />
       ) : (
         <div className="panel-stack">
           <div className="field">
@@ -551,11 +658,11 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
           </div>
           <div className="field">
             <span className="field-label">Questions</span>
-            {plan.data.questions.length === 0 ? (
+            {displayed.questions.length === 0 ? (
               <p className="muted">（无研究问题）</p>
             ) : (
               <ol className="notes-list" data-testid="plan-questions">
-                {plan.data.questions.map((question, index) => (
+                {displayed.questions.map((question, index) => (
                   <li key={`${index}-${question}`}>{question}</li>
                 ))}
               </ol>
@@ -563,11 +670,11 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
           </div>
           <div className="field">
             <span className="field-label">Queries</span>
-            {plan.data.queries.length === 0 ? (
+            {displayed.queries.length === 0 ? (
               <p className="muted">（无检索词）</p>
             ) : (
               <ul className="source-list" data-testid="plan-queries">
-                {plan.data.queries.map((entry) => (
+                {displayed.queries.map((entry) => (
                   <PlanQueryRow key={entry.queryId} entry={entry} />
                 ))}
               </ul>
@@ -590,7 +697,8 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
             </p>
           ) : null}
           <p className="muted">
-            更新于 {formatDateTime(plan.data.updatedAt) ?? "—"} · planId {plan.data.planId}
+            更新于 {formatDateTime(displayed.updatedAt) ?? "—"} · planId {displayed.planId}
+            {displayed.iterationNumber !== undefined ? ` · v${displayed.iterationNumber}` : ""}
           </p>
         </div>
       )}

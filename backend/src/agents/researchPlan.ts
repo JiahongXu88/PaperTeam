@@ -1,5 +1,5 @@
 /**
- * ResearchPlan 领域模型（M8.1：Research Plan 一等产物）。
+ * ResearchPlan 领域模型（M8.1：Research Plan 一等产物；M8.3.1：Iteration）。
  *
  * ResearchPlan 是 Researcher Agent 的内部能力（不是新 Agent、不进 Workflow）：
  * 调研前制定「研究问题 + 检索词及其理由」，指导本次检索；ResearchReport
@@ -9,9 +9,15 @@
  * = { plan?, report, evidence, bibliography }）。旧 artifact 无 plan 仍可读
  * （plan 为可选字段，所有既有消费者不受影响）。
  *
+ * M8.3.1 Iteration：计划完成后可派生下一轮（发现知识缺口 → 调整方向 →
+ * 新计划）。iteration 字段（iterationId / parentPlanId? / iterationNumber）
+ * 是纯数据模型能力——首轮 iterationNumber=1、无 parentPlanId；派生轮
+ * +1 并指向来源。artifact 同步持有 `plans`（全部轮次）与 `activePlanId`；
+ * 旧 artifact（单一 plan 字段、无 iteration 字段）读取时归一化为单轮链。
+ *
  * 不变量：Plan 只是检索意图的声明，不改变 Retrieved ≠ Candidate ≠
  * Literature ≠ Verified Evidence 链路——plan.queries 不写任何持久化结果，
- * 执行回填（resultCount / status 流转）留给 M8.2。
+ * 执行回填（resultCount / status 流转）由 M8.2 执行层负责。
  */
 
 import { randomUUID } from "node:crypto";
@@ -37,6 +43,16 @@ export interface ResearchPlanQuery {
 
 export interface ResearchPlan {
   planId: string;
+  /**
+   * 迭代线索 id（M8.3.1）：同一条派生链上的所有 plan 共享（首轮生成、
+   * 派生继承），用于标识「同一次研究迭代过程」。旧 artifact 无此字段——
+   * 读取归一化时以 planId 充当（稳定且无需持久化迁移即可参与派生）。
+   */
+  iterationId: string;
+  /** 派生来源 planId（M8.3.1；首轮计划无此字段） */
+  parentPlanId?: string;
+  /** 迭代号（M8.3.1）：首轮 = 1，派生轮 = 链内最大值 + 1 */
+  iterationNumber: number;
   status: ResearchPlanStatus;
   questions: string[];
   queries: ResearchPlanQuery[];
@@ -61,7 +77,7 @@ export const RESEARCH_QUERY_STATUSES: readonly ResearchQueryStatus[] = [
 export const MAX_PLAN_QUESTIONS = 30;
 export const MAX_PLAN_QUERIES = 30;
 
-/** 新建 draft plan（planId / 时间戳由后端生成，模型与客户端均不指定） */
+/** 新建 draft plan（planId / iteration 字段 / 时间戳由后端生成，模型与客户端均不指定）；首轮 iterationNumber=1 */
 export function createResearchPlan(
   questions: string[],
   queries: Array<Pick<ResearchPlanQuery, "query" | "kind"> & Partial<ResearchPlanQuery>>,
@@ -69,6 +85,8 @@ export function createResearchPlan(
   const now = new Date().toISOString();
   return {
     planId: newPlanId(),
+    iterationId: newIterationId(),
+    iterationNumber: 1,
     status: "draft",
     questions: questions.slice(0, MAX_PLAN_QUESTIONS),
     queries: queries
@@ -123,6 +141,8 @@ export function parseResearchPlan(parsed: Record<string, unknown>): ResearchPlan
   const now = new Date().toISOString();
   return {
     planId: newPlanId(),
+    iterationId: newIterationId(),
+    iterationNumber: 1,
     status: "draft",
     questions,
     queries: assignQueryIds(queries),
@@ -281,7 +301,265 @@ export function applyResearchPlanUpdate(
   };
 }
 
+// ---- Iteration / Plan Chain（M8.3.1）----
+
+/**
+ * 落盘形态的 plan：iteration 字段在旧 artifact（M8.1 / M8.2）上可能缺失，
+ * 读取后一律经 readPlanChain 归一化为完整 ResearchPlan 再参与业务逻辑。
+ */
+export type StoredResearchPlan = Omit<ResearchPlan, "iterationId" | "iterationNumber"> & {
+  iterationId?: string;
+  iterationNumber?: number;
+};
+
+/** 计划链（research.json 顶层 plans + activePlanId 的领域形态） */
+export interface ResearchPlanChain {
+  /** 全部迭代轮次（按 iterationNumber 升序；同号保持落盘顺序） */
+  plans: ResearchPlan[];
+  /** 当前活动计划 id（编辑 / 批准 / 执行都作用于它；空链时 undefined） */
+  activePlanId: string | undefined;
+}
+
+/** 能挂计划链的 artifact 结构（ResearchArtifact 的结构子集，便于纯函数复用） */
+export interface PlanChainHost {
+  /** 兼容视图：始终等于活动计划（与 plans / activePlanId 由同一写入口保持一致） */
+  plan?: StoredResearchPlan;
+  plans?: StoredResearchPlan[];
+  activePlanId?: string;
+}
+
+/**
+ * 读取 artifact 的计划链（读写迁移的读侧，返回新对象不改入参）：
+ * - M8.3.1 形态（plans + activePlanId）：activePlanId 缺失或指向不存在的 plan
+ *   → 回落最新一轮（数据自愈，不抛错）；
+ * - 旧形态（单一 plan 字段，M8.1 / M8.2 artifact）：归一化为单轮链——iteration
+ *   字段缺失时 iterationNumber=1、iterationId 以 planId 充当（首次写回时固化）；
+ * - 均无 → 空链。
+ */
+export function readPlanChain(host: PlanChainHost): ResearchPlanChain {
+  if (Array.isArray(host.plans)) {
+    const plans = host.plans
+      .filter((plan): plan is StoredResearchPlan => typeof plan === "object" && plan !== null && typeof plan.planId === "string")
+      .map(normalizePlanEntry)
+      .sort((a, b) => a.iterationNumber - b.iterationNumber || a.createdAt.localeCompare(b.createdAt));
+    if (plans.length > 0) {
+      const activePlanId =
+        host.activePlanId !== undefined && plans.some((plan) => plan.planId === host.activePlanId)
+          ? host.activePlanId
+          : plans[plans.length - 1]!.planId;
+      return { plans, activePlanId };
+    }
+  }
+  if (typeof host.plan === "object" && host.plan !== null && typeof host.plan.planId === "string") {
+    const plan = normalizePlanEntry(host.plan);
+    return { plans: [plan], activePlanId: plan.planId };
+  }
+  return { plans: [], activePlanId: undefined };
+}
+
+/**
+ * 写侧：把链展开为 artifact 顶层字段。plan（active 兼容视图）、plans、
+ * activePlanId 三者由本函数一次性产出——所有写入口共用，保证不漂移；
+ * 空链返回空对象（artifact 上不出现 plan 相关字段，与 M8.1 旧契约一致）。
+ */
+export function planChainFields(
+  chain: ResearchPlanChain,
+): { plan: ResearchPlan; plans: ResearchPlan[]; activePlanId: string } | Record<string, never> {
+  if (chain.plans.length === 0 || chain.activePlanId === undefined) {
+    return {};
+  }
+  const active =
+    chain.plans.find((plan) => plan.planId === chain.activePlanId) ??
+    chain.plans[chain.plans.length - 1]!;
+  return { plan: active, plans: chain.plans, activePlanId: active.planId };
+}
+
+/**
+ * research() 重跑时的计划链合并策略（M8.3.1，纯函数）：
+ * - 已有链（含旧 artifact 的单轮链）→ 原样保留。questions / queries 是用户
+ *   可控字段（PUT 可改），status / resultCount 是执行回填字段，均不由重跑
+ *   覆盖——「用户修改优先」；
+ * - 无链且本轮 Agent 产出合法 plan → 以其初始化 iteration 1（M8.1 首跑语义）；
+ * - 无链且无 plan → 空链（M8.1 旧输出契约兼容）。
+ * Agent 在重跑时产出的新 plan 不落盘：重跑只刷新报告（report / evidence /
+ * bibliography），计划演化走「编辑计划」或「派生新计划」的显式路径，
+ * 防止隐式改写用户计划与执行历史。
+ */
+export function resolvePlanChainOnRerun(
+  existing: ResearchPlanChain,
+  generated: ResearchPlan | undefined,
+): ResearchPlanChain {
+  if (existing.plans.length > 0) {
+    return existing;
+  }
+  if (generated !== undefined) {
+    return { plans: [generated], activePlanId: generated.planId };
+  }
+  return { plans: [], activePlanId: undefined };
+}
+
+/** 链内最大迭代号（空链 = 0；派生轮的 iterationNumber = 它 + 1） */
+export function maxIterationNumber(plans: ResearchPlan[]): number {
+  return plans.reduce((max, plan) => Math.max(max, plan.iterationNumber), 0);
+}
+
+// ---- Derive（M8.3.1：从完成的计划派生下一轮）----
+
+/** POST /research/plan/:planId/derive 的合法请求体（全部可选：缺省整拷来源计划） */
+export interface ResearchPlanDeriveInput {
+  questions?: string[];
+  queries?: ResearchPlanDeriveQueryInput[];
+}
+
+export interface ResearchPlanDeriveQueryInput {
+  query: string;
+  kind: ResearchQueryKind;
+  rationale?: string;
+  expectedCoverage?: string;
+}
+
+/**
+ * 校验 derive 请求体（不符合契约 → INVALID_REQUEST 400）。与 PUT 的区别：
+ * - 全部字段可选（什么都不传 = 整拷来源计划作为下一轮起点）；
+ * - queries 不接受 queryId / status——新计划的检索全部从 planned 起步、
+ *   queryId 由后端重新分配（执行回填不跨轮继承）。
+ */
+export function parseResearchPlanDeriveInput(body: Record<string, unknown>): ResearchPlanDeriveInput {
+  const hasQuestions = body["questions"] !== undefined;
+  const hasQueries = body["queries"] !== undefined;
+  let questions: string[] | undefined;
+  if (hasQuestions) {
+    const value = body["questions"];
+    if (!Array.isArray(value)) {
+      throw new BusinessError("INVALID_REQUEST", "字段 questions 必须是字符串数组");
+    }
+    if (value.length > MAX_PLAN_QUESTIONS) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `研究问题最多 ${MAX_PLAN_QUESTIONS} 条（收到 ${value.length} 条）`,
+      );
+    }
+    questions = value.map((entry, index) => {
+      if (typeof entry !== "string" || entry.trim() === "") {
+        throw new BusinessError("INVALID_REQUEST", `questions[${index}] 必须是非空字符串`);
+      }
+      return entry.trim();
+    });
+  }
+  let queries: ResearchPlanDeriveQueryInput[] | undefined;
+  if (hasQueries) {
+    const value = body["queries"];
+    if (!Array.isArray(value)) {
+      throw new BusinessError("INVALID_REQUEST", "字段 queries 必须是数组");
+    }
+    if (value.length > MAX_PLAN_QUERIES) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `检索计划最多 ${MAX_PLAN_QUERIES} 条（收到 ${value.length} 条）`,
+      );
+    }
+    queries = value.map((entry, index) => {
+      if (typeof entry !== "object" || entry === null) {
+        throw new BusinessError("INVALID_REQUEST", `queries[${index}] 必须是 JSON 对象`);
+      }
+      const record = entry as Record<string, unknown>;
+      if (record["queryId"] !== undefined) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `queries[${index}].queryId 不被接受（派生计划由后端重新分配检索 id）`,
+        );
+      }
+      if (record["status"] !== undefined) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `queries[${index}].status 不被接受（派生计划的检索全部从 planned 起步）`,
+        );
+      }
+      const query = typeof record["query"] === "string" ? record["query"].trim() : "";
+      if (query === "") {
+        throw new BusinessError("INVALID_REQUEST", `queries[${index}].query 必须是非空字符串`);
+      }
+      const kind = record["kind"];
+      if (kind !== "academic" && kind !== "web") {
+        throw new BusinessError("INVALID_REQUEST", `queries[${index}].kind 只能是 academic / web`);
+      }
+      const rationale = readOptionalTrimmed(record["rationale"]);
+      const expectedCoverage = readOptionalTrimmed(record["expectedCoverage"]);
+      return {
+        query,
+        kind,
+        ...(rationale !== undefined ? { rationale } : {}),
+        ...(expectedCoverage !== undefined ? { expectedCoverage } : {}),
+      };
+    });
+  }
+  return {
+    ...(questions !== undefined ? { questions } : {}),
+    ...(queries !== undefined ? { queries } : {}),
+  };
+}
+
+/**
+ * 构造派生计划（纯函数，落盘由调用方负责）：
+ * - questions / queries 缺省整拷来源（作为下一轮起点），提供则覆盖；
+ * - 拷贝的检索条目重置为 planned、丢弃 resultCount、重新分配 queryId——
+ *   执行状态不跨轮继承，下一轮是全新计划；
+ * - iterationId 继承来源（同一迭代线索），parentPlanId 指向来源，
+ *   iterationNumber 由调用方按链内最大值 + 1 传入，status=draft。
+ */
+export function buildDerivedPlan(
+  source: ResearchPlan,
+  nextIterationNumber: number,
+  input: ResearchPlanDeriveInput,
+): ResearchPlan {
+  const now = new Date().toISOString();
+  const sourceQueries: Array<Pick<ResearchPlanQuery, "query" | "kind"> & Partial<ResearchPlanQuery>> =
+    input.queries ??
+    source.queries.map((query) => ({
+      query: query.query,
+      kind: query.kind,
+      ...(query.rationale !== undefined ? { rationale: query.rationale } : {}),
+      ...(query.expectedCoverage !== undefined ? { expectedCoverage: query.expectedCoverage } : {}),
+    }));
+  return {
+    planId: newPlanId(),
+    iterationId: source.iterationId,
+    parentPlanId: source.planId,
+    iterationNumber: nextIterationNumber,
+    status: "draft",
+    questions: input.questions ?? source.questions,
+    queries: sourceQueries
+      .slice(0, MAX_PLAN_QUERIES)
+      .map((query, index) => normalizePlanQuery(query, index)),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 // ---- 内部工具 ----
+
+/** 迭代线索 id：与 planId 同风格（it- + 12 位随机十六进制） */
+function newIterationId(): string {
+  return `it-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+/** 落盘 plan → 完整领域对象：补齐旧 artifact 缺失的 iteration 字段（不丢其余字段） */
+function normalizePlanEntry(plan: StoredResearchPlan): ResearchPlan {
+  return {
+    ...plan,
+    iterationId:
+      typeof plan.iterationId === "string" && plan.iterationId !== ""
+        ? plan.iterationId
+        : plan.planId, // 旧 artifact：以 planId 充当线索 id（稳定，写回时固化）
+    ...(plan.parentPlanId !== undefined ? { parentPlanId: plan.parentPlanId } : {}),
+    iterationNumber:
+      typeof plan.iterationNumber === "number" &&
+      Number.isInteger(plan.iterationNumber) &&
+      plan.iterationNumber >= 1
+        ? plan.iterationNumber
+        : 1,
+  };
+}
 
 /** plan id：与项目 id 同风格（rp- + 12 位随机十六进制） */
 function newPlanId(): string {

@@ -1,5 +1,6 @@
 /**
- * Research Plan 视图类型（M8.1；镜像 backend/src/agents/researchPlan.ts）。
+ * Research Plan 视图类型（M8.1；M8.3.1 增加 iteration 字段与计划链视图。
+ * 镜像 backend/src/agents/researchPlan.ts）。
  */
 
 export type ResearchPlanStatus = "draft" | "approved" | "executing" | "done";
@@ -21,11 +22,24 @@ export interface ResearchPlanQueryView {
 
 export interface ResearchPlanView {
   planId: string;
+  /** 迭代线索 id（M8.3.1；同一条派生链共享，旧计划可能缺失 → 可选） */
+  iterationId?: string;
+  /** 派生来源 planId（M8.3.1；首轮计划无此字段） */
+  parentPlanId?: string;
+  /** 迭代号（M8.3.1；旧计划可能缺失 → 可选） */
+  iterationNumber?: number;
   status: ResearchPlanStatus;
   questions: string[];
   queries: ResearchPlanQueryView[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** 计划链视图（M8.3.1 GET /research/plans 的响应）：全部迭代 + 当前活动计划 */
+export interface ResearchPlanListView {
+  plans: ResearchPlanView[];
+  /** null = 还没有计划（空态而非错误） */
+  activePlanId: string | null;
 }
 
 /**

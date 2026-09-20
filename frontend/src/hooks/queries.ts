@@ -48,9 +48,13 @@ import {
 } from "../api/discovery.js";
 import {
   approveResearchPlan,
+  activateResearchPlan,
+  deriveResearchPlan,
   executeResearchPlan,
   getResearchPlan,
+  listResearchPlans,
   updateResearchPlan,
+  type ResearchPlanDeriveInput,
   type ResearchPlanUpdateInput,
 } from "../api/researchPlan.js";
 import {
@@ -133,6 +137,8 @@ export const queryKeys = {
   candidates: (projectId: string) => ["project", projectId, "candidates"] as const,
   /** Research Plan（M8.1；调研产出 / 编辑保存后失效重取） */
   researchPlan: (projectId: string) => ["project", projectId, "research-plan"] as const,
+  /** Research Plan 计划链（M8.3.1；迭代列表 / 派生 / 激活后失效重取） */
+  researchPlans: (projectId: string) => ["project", projectId, "research-plans"] as const,
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
@@ -563,7 +569,16 @@ function useInvalidateCandidates(projectId: string | undefined) {
   };
 }
 
-// ---- Research Plan（M8.1：plan 是检索意图的声明，指导下方检索） ----
+// ---- Research Plan（M8.1：plan 是检索意图的声明，指导下方检索；M8.3.1 迭代链） ----
+
+/** 计划相关缓存失效（活动计划视图 + 迭代链列表一起失效，保证两视图不漂移） */
+function useInvalidateResearchPlans(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlans(projectId ?? "") });
+  };
+}
 
 /** 当前项目的检索计划（无调研产出时 data 为 null → 空态引导） */
 export function useResearchPlan(projectId: string | undefined) {
@@ -574,37 +589,59 @@ export function useResearchPlan(projectId: string | undefined) {
   });
 }
 
+/** 全部迭代轮次（M8.3.1 计划链：plans + activePlanId；无计划 → 空数组） */
+export function useResearchPlans(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchPlans(projectId ?? ""),
+    queryFn: ({ signal }) => listResearchPlans(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
 /** 编辑保存（questions / queries 受限字段）：成功后失效计划 */
 export function useUpdateResearchPlan(projectId: string | undefined) {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateResearchPlans(projectId);
   return useMutation({
     mutationFn: (input: ResearchPlanUpdateInput) =>
       updateResearchPlan(projectId ?? "", input),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
-    },
+    onSuccess: () => invalidate(),
   });
 }
 
 /** 批准计划（draft → approved）：成功后失效计划（状态与 updatedAt 变化） */
 export function useApproveResearchPlan(projectId: string | undefined) {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateResearchPlans(projectId);
   return useMutation({
     mutationFn: () => approveResearchPlan(projectId ?? ""),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
-    },
+    onSuccess: () => invalidate(),
   });
 }
 
 /** 执行 approved 计划：成功后失效计划（query 状态 / resultCount / plan 状态回填） */
 export function useExecuteResearchPlan(projectId: string | undefined) {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateResearchPlans(projectId);
   return useMutation({
     mutationFn: () => executeResearchPlan(projectId ?? ""),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
-    },
+    onSuccess: () => invalidate(),
+  });
+}
+
+/** 派生下一轮（M8.3.1：从 done 计划派生 draft 并自动激活；旧计划不动） */
+export function useDeriveResearchPlan(projectId: string | undefined) {
+  const invalidate = useInvalidateResearchPlans(projectId);
+  return useMutation({
+    mutationFn: ({ planId, input }: { planId: string; input?: ResearchPlanDeriveInput }) =>
+      deriveResearchPlan(projectId ?? "", planId, input ?? {}),
+    onSuccess: () => invalidate(),
+  });
+}
+
+/** 切换活动计划（M8.3.1：编辑 / 批准 / 执行都作用于活动计划；幂等） */
+export function useActivateResearchPlan(projectId: string | undefined) {
+  const invalidate = useInvalidateResearchPlans(projectId);
+  return useMutation({
+    mutationFn: (planId: string) => activateResearchPlan(projectId ?? "", planId),
+    onSuccess: () => invalidate(),
   });
 }
 

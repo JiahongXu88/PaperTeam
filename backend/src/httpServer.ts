@@ -1148,6 +1148,35 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { plan });
       return true;
     }
+    // ---- /plans（M8.3.1：列出全部迭代轮次——计划链 plans + activePlanId）----
+    if (rest === "/plans") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const chain = await stack.planIteration.list(projectId);
+      sendJson(res, 200, { plans: chain.plans, activePlanId: chain.activePlanId ?? null });
+      return true;
+    }
+    // ---- /plan/:planId/derive · /plan/:planId/activate（M8.3.1：派生下一轮 / 切换活动计划）----
+    const planIterationMatch = /^\/plan\/([a-z0-9][a-z0-9-]{0,63})\/(derive|activate)$/.exec(rest);
+    if (planIterationMatch !== null) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const planId = planIterationMatch[1] ?? "";
+      if (planIterationMatch[2] === "derive") {
+        // 请求体全部可选（缺省整拷来源计划）；空体 / 空 JSON 均合法
+        const body = await readOptionalJsonBody(req);
+        const plan = await stack.planIteration.derive(projectId, planId, body);
+        sendJson(res, 200, { plan });
+        return true;
+      }
+      const plan = await stack.planIteration.activate(projectId, planId);
+      sendJson(res, 200, { plan });
+      return true;
+    }
     // ---- /plan（M8.1：Research Plan 一等产物——读取 / 编辑调研产出的检索计划）----
     if (rest === "/plan") {
       if (method === "GET") {

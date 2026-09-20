@@ -23,7 +23,12 @@ import {
   createResearchPlan,
   parseResearchPlan,
   parseResearchPlanUpdateInput,
+  planChainFields,
+  readPlanChain,
+  resolvePlanChainOnRerun,
   type ResearchPlan,
+  type ResearchPlanChain,
+  type StoredResearchPlan,
 } from "./researchPlan.js";
 import type { PlanExecutionEntry } from "./researchPlanExecution.js";
 import {
@@ -151,10 +156,22 @@ export class ResearcherService {
     const parsedCandidates = readEvidenceCandidates(parsed);
     // M8.1：宽容解析检索计划——旧输出契约（无 plan 字段）完全兼容，plan 为空则省略
     const plan = parseResearchPlan(parsed);
+    // M8.3.1 merge strategy：重跑只刷新报告侧字段（report / evidence /
+    // bibliography / generatedAt / taskId）；计划链（plans / activePlanId）与
+    // executionHistory 是用户可控 + 执行回填状态，原样保留——已有链时本轮
+    // Agent 产出的 plan 不落盘（用户修改优先），计划演化走编辑 / 派生显式路径
+    const existing = await readResearchArtifact(this.projects, params.projectId);
+    const chain = resolvePlanChainOnRerun(
+      existing !== null ? readPlanChain(existing) : { plans: [], activePlanId: undefined },
+      plan,
+    );
     const artifact = {
       generatedAt: new Date().toISOString(),
       taskId: task.taskId,
-      ...(plan !== undefined ? { plan } : {}),
+      ...planChainFields(chain),
+      ...(existing?.executionHistory !== undefined && existing.executionHistory.length > 0
+        ? { executionHistory: existing.executionHistory }
+        : {}),
       report,
       evidence: parsedCandidates,
       bibliography: readBibliography(parsed),
@@ -304,12 +321,19 @@ export class ResearcherService {
       minItems: 0,
     });
 
-    // 落盘（覆盖 research.json：existing-paper 流程的“调研”即论文理解）
+    // 落盘（覆盖 research.json：existing-paper 流程的“调研”即论文理解）。
+    // M8.3.1：计划链与执行历史同样不受覆盖（与 research() 重跑同一 merge 策略）
     const researchDir = this.projects.researchDir(params.projectId);
     await mkdir(researchDir, { recursive: true });
+    const existing = await readResearchArtifact(this.projects, params.projectId);
+    const chain = existing !== null ? readPlanChain(existing) : { plans: [], activePlanId: undefined };
     const artifact: ResearchArtifact = {
       generatedAt: new Date().toISOString(),
       taskId: task.taskId,
+      ...planChainFields(chain),
+      ...(existing?.executionHistory !== undefined && existing.executionHistory.length > 0
+        ? { executionHistory: existing.executionHistory }
+        : {}),
       report,
       evidence: [],
       bibliography: [],
@@ -344,12 +368,22 @@ export interface ParsedEvidenceEntry extends EvidenceAppendInput {
 export type ResearchArtifact = {
   generatedAt: string;
   taskId: string;
-  /** 检索计划（M8.1 一等产物；旧 artifact 无此字段——可选，读取端一律兼容） */
-  plan?: ResearchPlan;
+  /**
+   * 活动计划（M8.1 一等产物；M8.3.1 起为 active 兼容视图——始终等于
+   * plans 中 activePlanId 指向的条目，三者由同一写入口保持一致）。
+   * 旧 artifact 无此字段——可选，读取端一律兼容（iteration 字段缺失时
+   * 经 readPlanChain 归一化）。
+   */
+  plan?: StoredResearchPlan;
+  /** 全部迭代轮次（M8.3.1；旧 artifact 无此字段，读取经 readPlanChain 兼容） */
+  plans?: StoredResearchPlan[];
+  /** 当前活动计划 id（M8.3.1；编辑 / 批准 / 执行都作用于它） */
+  activePlanId?: string;
   /**
    * 计划执行记录（M8.2；ResearchPlanExecutionService 回填的最小历史）。
-   * 可选字段：旧 artifact（M8.1 及更早）无此字段仍可读。注意 research() 重跑
-   * 会整体重写 artifact（已知限制，与 plan 编辑同源——M8.3 多轮计划收口）。
+   * 可选字段：旧 artifact（M8.1 及更早）无此字段仍可读。M8.3.1 起
+   * research() 重跑 / 论文理解重跑不再覆盖执行历史（merge strategy：
+   * 用户可控与执行回填字段一律保留，只刷新报告侧字段）。
    */
   executionHistory?: PlanExecutionEntry[];
   report: ResearchReport;
@@ -382,10 +416,44 @@ export async function readResearchArtifact(
 }
 
 /**
- * 编辑检索计划（M8.1 PUT /api/projects/:id/research/plan 的后端）：
- * 读 artifact → 校验输入 → 合并（同 queryId 保留执行回填的 resultCount）→ 写回。
- * artifact 不存在 → NOT_FOUND（先跑调研才有 plan 可编辑）；旧 artifact 无 plan
- * 字段时按「编辑即初始化」处理（draft 空计划起步，接受 questions / queries）。
+ * 把计划链写回 research.json（M8.3.1 单一写入口）：plan 兼容视图 / plans /
+ * activePlanId 三字段经 planChainFields 一次性产出，保证不漂移；artifact
+ * 其余字段（report / evidence / bibliography / existing-paper 附加字段）原样
+ * 保留。executionHistory 为空数组 / undefined 时不写字段（既有 artifact 上
+ * 的历史经 ...artifact 展开天然保留，不会被意外清空）。
+ */
+export async function writeResearchPlanChain(
+  projects: ProjectStore,
+  projectId: string,
+  artifact: ResearchArtifact,
+  chain: ResearchPlanChain,
+  executionHistory: PlanExecutionEntry[] | undefined,
+): Promise<void> {
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    join(projects.researchDir(projectId), "research.json"),
+    JSON.stringify(
+      {
+        ...artifact,
+        ...planChainFields(chain),
+        ...(executionHistory !== undefined && executionHistory.length > 0
+          ? { executionHistory }
+          : {}),
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+}
+
+/**
+ * 编辑检索计划（M8.1 PUT /api/projects/:id/research/plan 的后端；M8.3.1 起
+ * 作用于**活动计划**）：读 artifact → 校验输入 → 合并（同 queryId 保留执行
+ * 回填的 resultCount）→ 链中原位替换活动条目 → 写回。
+ * artifact 不存在 → NOT_FOUND（先跑调研才有 plan 可编辑）；旧 artifact 无
+ * plan 字段时按「编辑即初始化」处理（draft 空计划起步 = 首轮 iteration 1，
+ * 接受 questions / queries）。历史（非活动）计划不被编辑触碰。
  */
 export async function updateResearchPlan(
   projects: ProjectStore,
@@ -400,15 +468,18 @@ export async function updateResearchPlan(
     );
   }
   const input = parseResearchPlanUpdateInput(body);
-  const base = artifact.plan ?? createResearchPlan([], []);
+  const chain = readPlanChain(artifact);
+  const active = chain.plans.find((plan) => plan.planId === chain.activePlanId);
+  const base = active ?? createResearchPlan([], []);
   const updated = applyResearchPlanUpdate(base, input);
-  const { writeFile } = await import("node:fs/promises");
-  await writeFile(
-    join(projects.researchDir(projectId), "research.json"),
-    // 整对象写回：existing-paper 流程的 weaknesses / kind 等附加字段原样保留
-    JSON.stringify({ ...artifact, plan: updated }, null, 2) + "\n",
-    "utf8",
-  );
+  const nextChain: ResearchPlanChain =
+    active !== undefined
+      ? {
+          plans: chain.plans.map((plan) => (plan.planId === active.planId ? updated : plan)),
+          activePlanId: chain.activePlanId,
+        }
+      : { plans: [updated], activePlanId: updated.planId };
+  await writeResearchPlanChain(projects, projectId, artifact, nextChain, artifact.executionHistory);
   return updated;
 }
 
