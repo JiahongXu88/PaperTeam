@@ -80,3 +80,32 @@ describe("buildResearchPrompt M7.1a：Researcher 检索工具接线", () => {
     expect(withExtra).toContain("重点看相机移动场景");
   });
 });
+
+describe("buildResearchPrompt M8.1：ResearchPlan 一等产物接线", () => {
+  const prompt = buildResearchPrompt(PROJECT, DIGEST);
+
+  it("输出 schema 含 plan 字段：questions + queries（query/kind/rationale/expectedCoverage）", () => {
+    expect(prompt).toContain('"plan"');
+    expect(prompt).toContain('"questions"');
+    expect(prompt).toContain('"queries"');
+    expect(prompt).toContain('"rationale"');
+    expect(prompt).toContain('"expectedCoverage"');
+    expect(prompt).toContain('"kind"');
+  });
+
+  it("明确区分两个概念：plan 用于指导检索（先制定），report 用于总结研究结果（检索后）", () => {
+    expect(prompt).toContain("plan 是检索计划（ResearchPlan）");
+    expect(prompt).toContain("调研报告（ResearchReport）");
+    expect(prompt).toContain("在检索前制定");
+    expect(prompt).toContain("在检索完成后综合研究结果得出");
+    expect(prompt).toContain("两者不要混淆");
+  });
+
+  it("plan.queries 语义锚定：写打算执行的检索及其理由，不是调研结论", () => {
+    expect(prompt).toContain("plan.queries 写的是你实际打算（或已经）执行的检索及其理由，不是调研结论");
+  });
+
+  it("plan.questions 与 report.researchQuestions 职责不同（指导检索 vs 调研后结论）", () => {
+    expect(prompt).toContain("前者指导检索，后者是调研后的结论问题");
+  });
+});

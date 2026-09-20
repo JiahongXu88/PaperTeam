@@ -151,6 +151,87 @@ describe("ResearcherService", () => {
     expect(artifact).toBeNull();
   });
 
+  it("M8.1：输出带 plan → artifact.plan 落盘（id/时间戳后端生成，query 默认 planned）", async () => {
+    const ctx = await newProject();
+    const output = JSON.parse(RESEARCH_JSON) as Record<string, unknown>;
+    output["plan"] = {
+      questions: ["小语料下检索质量如何影响幻觉率？"],
+      queries: [
+        {
+          query: "rag hallucination evaluation",
+          kind: "academic",
+          rationale: "找评估基准",
+          expectedCoverage: "近三年基准论文",
+        },
+        { query: "small corpus rag robustness", kind: "web" },
+      ],
+    };
+    const researcher = new ResearcherService({
+      runtime: runtimeReturning(() => JSON.stringify(output)),
+      agentId: "researcher",
+      projects: ctx.store,
+      evidence: ctx.evidence,
+      sources: ctx.sources,
+      log: () => {},
+    });
+    const result = await researcher.research({ projectId: ctx.projectId });
+
+    expect(result.plan).toBeDefined();
+    expect(result.plan!.status).toBe("draft");
+    expect(result.plan!.queries.map((query) => query.queryId)).toEqual(["q-1", "q-2"]);
+    expect(result.plan!.queries.every((query) => query.status === "planned")).toBe(true);
+
+    const artifact = JSON.parse(
+      await readFile(join(ctx.root, ctx.projectId, "research", "research.json"), "utf8"),
+    ) as { plan?: { queries: Array<{ queryId: string }> }; report: { domainOverview: string } };
+    // plan 与 report 并存于同一 artifact；report 既有字段不受影响
+    expect(artifact.plan!.queries).toHaveLength(2);
+    expect(artifact.report.domainOverview).toContain("检索增强生成");
+  });
+
+  it("M8.1：输出无 plan（旧契约）→ artifact 无 plan 字段，report 正常落盘（兼容）", async () => {
+    const ctx = await newProject();
+    const researcher = new ResearcherService({
+      runtime: runtimeReturning(() => RESEARCH_JSON),
+      agentId: "researcher",
+      projects: ctx.store,
+      evidence: ctx.evidence,
+      sources: ctx.sources,
+      log: () => {},
+    });
+    const result = await researcher.research({ projectId: ctx.projectId });
+
+    expect(result.plan).toBeUndefined();
+    const artifact = JSON.parse(
+      await readFile(join(ctx.root, ctx.projectId, "research", "research.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect("plan" in artifact).toBe(false);
+    expect(artifact["report"]).toBeDefined();
+  });
+
+  it("M8.1：plan 部分条目非法 → 丢弃非法条目，不炸整次调研", async () => {
+    const ctx = await newProject();
+    const output = JSON.parse(RESEARCH_JSON) as Record<string, unknown>;
+    output["plan"] = {
+      questions: ["保留的问题"],
+      queries: [
+        { query: "合法条目", kind: "academic" },
+        { kind: "academic" }, // 缺 query → 丢弃
+      ],
+    };
+    const researcher = new ResearcherService({
+      runtime: runtimeReturning(() => JSON.stringify(output)),
+      agentId: "researcher",
+      projects: ctx.store,
+      evidence: ctx.evidence,
+      sources: ctx.sources,
+      log: () => {},
+    });
+    const result = await researcher.research({ projectId: ctx.projectId });
+    expect(result.plan!.queries).toHaveLength(1);
+    expect(result.plan!.queries[0]!.query).toBe("合法条目");
+  });
+
   it("非法 bibliography key（含非法字符）被丢弃，不影响其余产出", async () => {
     const ctx = await newProject();
     const withBadKey = JSON.parse(RESEARCH_JSON) as Record<string, unknown>;

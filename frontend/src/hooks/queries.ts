@@ -47,6 +47,11 @@ import {
   type WebSearchInput,
 } from "../api/discovery.js";
 import {
+  getResearchPlan,
+  updateResearchPlan,
+  type ResearchPlanUpdateInput,
+} from "../api/researchPlan.js";
+import {
   exportReviewReport,
   extractCitations,
   getCitationIntegrity,
@@ -124,6 +129,8 @@ export const queryKeys = {
   sources: (projectId: string) => ["project", projectId, "sources"] as const,
   /** Discovery 候选（M7.1c；检索保存 / promote / reject 后失效重取） */
   candidates: (projectId: string) => ["project", projectId, "candidates"] as const,
+  /** Research Plan（M8.1；调研产出 / 编辑保存后失效重取） */
+  researchPlan: (projectId: string) => ["project", projectId, "research-plan"] as const,
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
@@ -552,6 +559,29 @@ function useInvalidateCandidates(projectId: string | undefined) {
   return () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.candidates(projectId ?? "") });
   };
+}
+
+// ---- Research Plan（M8.1：plan 是检索意图的声明，指导下方检索） ----
+
+/** 当前项目的检索计划（无调研产出时 data 为 null → 空态引导） */
+export function useResearchPlan(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchPlan(projectId ?? ""),
+    queryFn: ({ signal }) => getResearchPlan(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 编辑保存（questions / queries 受限字段）：成功后失效计划 */
+export function useUpdateResearchPlan(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ResearchPlanUpdateInput) =>
+      updateResearchPlan(projectId ?? "", input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
+    },
+  });
 }
 
 /**

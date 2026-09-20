@@ -11,6 +11,7 @@ import type {
   CandidatePromoteResult,
   CandidateSourceView,
 } from "../src/types/sources.js";
+import type { ResearchPlanView } from "../src/types/researchPlan.js";
 import { renderWithProviders } from "./helpers.js";
 
 /**
@@ -18,6 +19,8 @@ import { renderWithProviders } from "./helpers.js";
  * - 检索 payload（学术含年份范围 / Web 精简）与显式保存（saveAsCandidates 下标）
  * - 候选列表渲染（发现方式 / provider / 状态徽标 / provenance）
  * - Promote / Reject 调用既有幂等端点；loading / empty / error 状态
+ *
+ * M8.1：Research Plan 展示与受限编辑（GET/PUT /research/plan）。
  */
 
 vi.mock("../src/api/discovery.js", () => ({
@@ -28,7 +31,13 @@ vi.mock("../src/api/discovery.js", () => ({
   rejectCandidate: vi.fn(),
 }));
 
+vi.mock("../src/api/researchPlan.js", () => ({
+  getResearchPlan: vi.fn(async () => null),
+  updateResearchPlan: vi.fn(),
+}));
+
 const api = vi.mocked(await import("../src/api/discovery.js"));
+const planApi = vi.mocked(await import("../src/api/researchPlan.js"));
 
 const NOW = "2026-09-19T08:00:00.000Z";
 
@@ -140,15 +149,60 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-async function renderPanel(candidates: CandidateSourceView[] = []) {
+async function renderPanel(candidates: CandidateSourceView[] = [], topic?: string) {
   api.listCandidates.mockResolvedValue(candidates);
-  renderWithProviders(<DiscoveryPanel projectId="p-1" />, { route: "/projects/p-1?tab=discovery" });
+  renderWithProviders(
+    <DiscoveryPanel projectId="p-1" {...(topic !== undefined ? { topic } : {})} />,
+    { route: "/projects/p-1?tab=discovery" },
+  );
   await screen.findByText("候选文献");
   // 等 query 真正 settle（loading 态下 section 标题与「0 条」也会渲染）
   if (candidates.length === 0) {
     await screen.findByText(/还没有候选/);
   } else {
     await screen.findByText(`${candidates.length} 条`);
+  }
+}
+
+function planView(overrides: Partial<ResearchPlanView> = {}): ResearchPlanView {
+  return {
+    planId: "rp-plan00000001",
+    status: "draft",
+    questions: ["Transformer MOT 的发展历史", "当前 SOTA 方法", "效率局限"],
+    queries: [
+      {
+        queryId: "q-1",
+        query: "Transformer MOT survey",
+        kind: "academic",
+        rationale: "Understand evolution",
+        expectedCoverage: "近三年综述",
+        status: "planned",
+      },
+      {
+        queryId: "q-2",
+        query: "real-time transformer tracking",
+        kind: "web",
+        rationale: "Find efficiency optimization",
+        status: "executed",
+        resultCount: 5,
+      },
+    ],
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+async function renderPanelWithPlan(
+  plan: ResearchPlanView | null,
+  candidates: CandidateSourceView[] = [],
+) {
+  planApi.getResearchPlan.mockResolvedValue(plan);
+  await renderPanel(candidates, "Transformer MOT");
+  if (plan !== null) {
+    await screen.findByTestId("plan-queries");
+  } else {
+    await screen.findByTestId("research-plan-empty");
   }
 }
 
@@ -345,5 +399,78 @@ describe("DiscoveryPanel（M7.1c Discovery 候选 UI）", () => {
     await user.click(screen.getByRole("button", { name: "检索" }));
 
     expect(await screen.findByText(/部分检索源失败/)).toBeTruthy();
+  });
+});
+
+describe("DiscoveryPanel（M8.1 Research Plan 展示与编辑）", () => {
+  it("无计划：空态引导（先运行调研），不渲染编辑按钮", async () => {
+    await renderPanelWithPlan(null);
+
+    expect(screen.getByText("Research Plan")).toBeTruthy();
+    expect(screen.getByTestId("research-plan-empty")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "编辑" })).toBeNull();
+  });
+
+  it("有计划：Topic / Questions / Queries（理由 / 期望覆盖 / 执行结果数）齐全", async () => {
+    await renderPanelWithPlan(planView());
+
+    expect(screen.getByText("Transformer MOT")).toBeTruthy(); // topic prop
+    expect(screen.getAllByText(/发展历史/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText("Transformer MOT survey")).toBeTruthy();
+    expect(screen.getByText("real-time transformer tracking")).toBeTruthy();
+    expect(screen.getByText("理由：Understand evolution")).toBeTruthy();
+    expect(screen.getByText("理由：Find efficiency optimization")).toBeTruthy();
+    expect(screen.getByText("期望覆盖：近三年综述")).toBeTruthy();
+    expect(screen.getByText("5 条结果")).toBeTruthy();
+    expect(screen.getByText("草稿")).toBeTruthy();
+  });
+
+  it("编辑保存：改问题 + 改检索词与状态 + 增删条目 → PUT 受限字段 payload", async () => {
+    await renderPanelWithPlan(planView());
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+    const questions = screen.getByLabelText("研究问题（每行一个）");
+    await user.clear(questions);
+    await user.type(questions, "改后的问题一\n改后的问题二");
+    await user.clear(screen.getByLabelText("检索词 1"));
+    await user.type(screen.getByLabelText("检索词 1"), "end-to-end MOT survey");
+    await user.selectOptions(screen.getByLabelText("状态 1"), "skipped");
+    await user.click(screen.getAllByRole("button", { name: "删除" })[1]!); // 删除第 2 条
+    await user.click(screen.getByRole("button", { name: "添加检索" }));
+    // 删除后新行占第 2 个位置（行内 aria-label 按位置编号）
+    await user.type(screen.getByLabelText("检索词 2"), "mot occlusion");
+    await user.type(screen.getByLabelText("理由 2"), "补遮挡线索");
+    await user.selectOptions(screen.getByLabelText("检索方式 2"), "web");
+
+    planApi.updateResearchPlan.mockResolvedValue(planView());
+    await user.click(screen.getByRole("button", { name: "保存计划" }));
+
+    await waitFor(() => expect(planApi.updateResearchPlan).toHaveBeenCalledTimes(1));
+    expect(planApi.updateResearchPlan).toHaveBeenCalledWith("p-1", {
+      questions: ["改后的问题一", "改后的问题二"],
+      queries: [
+        {
+          queryId: "q-1",
+          query: "end-to-end MOT survey",
+          kind: "academic",
+          rationale: "Understand evolution",
+          status: "skipped",
+        },
+        { query: "mot occlusion", kind: "web", rationale: "补遮挡线索", status: "planned" },
+      ],
+    });
+  });
+
+  it("本地校验：检索词为空 → 提示且不发请求", async () => {
+    await renderPanelWithPlan(planView());
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "编辑" }));
+    await user.clear(screen.getByLabelText("检索词 1"));
+    await user.click(screen.getByRole("button", { name: "保存计划" }));
+
+    expect(await screen.findByText(/第 1 条检索词为空/)).toBeTruthy();
+    expect(planApi.updateResearchPlan).not.toHaveBeenCalled();
   });
 });

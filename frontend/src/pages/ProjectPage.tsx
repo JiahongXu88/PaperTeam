@@ -432,7 +432,7 @@ export function ProjectPage() {
           ) : tab === "pdf" ? (
             <PdfPanel projectId={project.id} />
           ) : tab === "discovery" ? (
-            <DiscoveryPanel projectId={project.id} />
+            <DiscoveryPanel projectId={project.id} topic={project.title} />
           ) : tab === "sources" ? (
             <SourcesPanel projectId={project.id} />
           ) : tab === "evidence" ? (

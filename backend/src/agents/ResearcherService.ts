@@ -12,12 +12,19 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { AgentRunFailedError } from "../errors.js";
+import { AgentRunFailedError, BusinessError } from "../errors.js";
 import type { ProjectMetadata, ProjectStore } from "../project/ProjectStore.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import type { EvidenceAppendInput, EvidenceStore } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { SourceStore, SourceItem } from "../sources/SourceStore.js";
+import {
+  applyResearchPlanUpdate,
+  createResearchPlan,
+  parseResearchPlan,
+  parseResearchPlanUpdateInput,
+  type ResearchPlan,
+} from "./researchPlan.js";
 import {
   extractJsonObject,
   readOptionalStringArray,
@@ -38,6 +45,8 @@ export interface ResearcherResult {
   report: ResearchReport;
   /** 落盘路径（相对项目根） */
   reportPath: string;
+  /** 本次产出的检索计划（M8.1；Agent 未产出合法 plan 时为 undefined） */
+  plan: ResearchPlan | undefined;
   /** 本次追加的 Evidence 条数（legacy 路径：无 chunk 锚定的候选，unverified 直存） */
   evidenceAppended: number;
   /** 本次提交进核验队列的 Evidence 候选条数（M6.5 chunk 锚定路径） */
@@ -139,9 +148,12 @@ export class ResearcherService {
     const researchDir = this.projects.researchDir(params.projectId);
     await mkdir(researchDir, { recursive: true });
     const parsedCandidates = readEvidenceCandidates(parsed);
+    // M8.1：宽容解析检索计划——旧输出契约（无 plan 字段）完全兼容，plan 为空则省略
+    const plan = parseResearchPlan(parsed);
     const artifact = {
       generatedAt: new Date().toISOString(),
       taskId: task.taskId,
+      ...(plan !== undefined ? { plan } : {}),
       report,
       evidence: parsedCandidates,
       bibliography: readBibliography(parsed),
@@ -194,11 +206,12 @@ export class ResearcherService {
     }
 
     this.log(
-      `[researcher] projectId=${params.projectId} 调研完成：gaps=${report.researchGaps.length} evidence=appended:${evidenceAppended}/proposed:${evidenceProposed} bibliography=${artifact.bibliography.length}`,
+      `[researcher] projectId=${params.projectId} 调研完成：gaps=${report.researchGaps.length} plan=${plan !== undefined ? `${plan.queries.length} queries` : "none"} evidence=appended:${evidenceAppended}/proposed:${evidenceProposed} bibliography=${artifact.bibliography.length}`,
     );
     return {
       report,
       reportPath,
+      plan,
       evidenceAppended,
       evidenceProposed,
       bibliographyCount: artifact.bibliography.length,
@@ -309,6 +322,7 @@ export class ResearcherService {
     return {
       report,
       reportPath: "research/research.json",
+      plan: undefined,
       evidenceAppended: 0,
       evidenceProposed: 0,
       bibliographyCount: 0,
@@ -329,6 +343,8 @@ export interface ParsedEvidenceEntry extends EvidenceAppendInput {
 export type ResearchArtifact = {
   generatedAt: string;
   taskId: string;
+  /** 检索计划（M8.1 一等产物；旧 artifact 无此字段——可选，读取端一律兼容） */
+  plan?: ResearchPlan;
   report: ResearchReport;
   evidence: ParsedEvidenceEntry[];
   bibliography: BibliographyEntryInput[];
@@ -358,6 +374,37 @@ export async function readResearchArtifact(
   }
 }
 
+/**
+ * 编辑检索计划（M8.1 PUT /api/projects/:id/research/plan 的后端）：
+ * 读 artifact → 校验输入 → 合并（同 queryId 保留执行回填的 resultCount）→ 写回。
+ * artifact 不存在 → NOT_FOUND（先跑调研才有 plan 可编辑）；旧 artifact 无 plan
+ * 字段时按「编辑即初始化」处理（draft 空计划起步，接受 questions / queries）。
+ */
+export async function updateResearchPlan(
+  projects: ProjectStore,
+  projectId: string,
+  body: Record<string, unknown>,
+): Promise<ResearchPlan> {
+  const artifact = await readResearchArtifact(projects, projectId);
+  if (artifact === null) {
+    throw new BusinessError(
+      "NOT_FOUND",
+      "项目还没有调研结果（research/research.json 不存在），请先运行调研再编辑研究计划",
+    );
+  }
+  const input = parseResearchPlanUpdateInput(body);
+  const base = artifact.plan ?? createResearchPlan([], []);
+  const updated = applyResearchPlanUpdate(base, input);
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    join(projects.researchDir(projectId), "research.json"),
+    // 整对象写回：existing-paper 流程的 weaknesses / kind 等附加字段原样保留
+    JSON.stringify({ ...artifact, plan: updated }, null, 2) + "\n",
+    "utf8",
+  );
+  return updated;
+}
+
 // ---- Prompt ----
 
 export function buildResearchPrompt(
@@ -369,6 +416,10 @@ export function buildResearchPrompt(
     "你是一名学术研究员（Researcher）。请对下面的研究 Idea 做领域调研与可行性预研。",
     "只输出一个 JSON 对象（不要 Markdown 围栏、不要解释文字），字段如下：",
     "{",
+    '  "plan": {',
+    '    "questions": ["本次调研要回答的研究问题 1", "..."],',
+    '    "queries": [{"query": "检索词", "kind": "academic 或 web", "rationale": "为什么要做这条检索", "expectedCoverage": "期望覆盖的文献或信息面"}]',
+    "  },",
     '  "domainOverview": "领域现状综述（200-500 字）",',
     '  "relatedWorkDirections": ["相关工作方向 1", "..."],',
     '  "researchGaps": ["研究空白 1", "..."],',
@@ -383,6 +434,7 @@ export function buildResearchPrompt(
     "}",
     "",
     "要求：",
+    "0. 先计划后调研：plan 是检索计划（ResearchPlan）——在检索前制定，列出研究问题与你打算执行的检索词及理由，用于指导本次检索；其余字段（domainOverview 到 bibliography）是调研报告（ResearchReport）——在检索完成后综合研究结果得出。两者不要混淆：plan.queries 写的是你实际打算（或已经）执行的检索及其理由，不是调研结论；plan.questions 与 report.researchQuestions 可以呼应但职责不同（前者指导检索，后者是调研后的结论问题）。",
     "1. 检索优先：研究型问题（领域现状、相关工作、研究空白、方法对比等）先用 search_papers 检索外部文献（可用 yearFrom/yearTo 聚焦近年，如最近三年），需要 Web 线索时用 search_web，对单篇论文存疑时用 lookup_paper 核验；简单问题（常识、定义、项目内信息）可直接回答，不必检索。禁止凭记忆断言论文的存在性、年份或 venue——文献类事实必须以检索结果为准，检索结果要原样引用，不得凭记忆补充。外部检索单次耗时约 1-10 秒；diagnostics 出现 partial（部分检索源失败）属常态，结果仍可用，不要因 partial 重试。",
     "2. 调研中发现的重要文献，用 save_candidates 保存为项目候选文献（kind 与 query 必须和检索时完全一致，按结果 index 选择；本次调研合计保存不超过 20 条，按与课题的相关性遴选）。保存的候选只是线索（pending_review），需用户审核转正后才进入文献库；已检索覆盖的方向不要写进 literaturePlan（它只记录检索后仍缺失的残差）。",
     "3. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",

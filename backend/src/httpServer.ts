@@ -35,6 +35,7 @@ import { ALLOWED_CONTEXT_SCOPES } from "./skills/routing.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import type { ReadinessProbe } from "./runtime/readiness.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
+import { readResearchArtifact, updateResearchPlan } from "./agents/ResearcherService.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
 import {
@@ -1121,6 +1122,22 @@ async function handleProjectResourceRoutes(
   // ---- research（M6.3：Research Discovery——project-scoped 学术 / Web 检索 + 显式候选保存）----
   if (resource === "research") {
     await stack.projects.getRequired(projectId);
+    // ---- /plan（M8.1：Research Plan 一等产物——读取 / 编辑调研产出的检索计划）----
+    if (rest === "/plan") {
+      if (method === "GET") {
+        const artifact = await readResearchArtifact(stack.projects, projectId);
+        sendJson(res, 200, { plan: artifact?.plan ?? null });
+        return true;
+      }
+      if (method === "PUT") {
+        const body = await readJsonBody(req);
+        const plan = await updateResearchPlan(stack.projects, projectId, body);
+        sendJson(res, 200, { plan });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, PUT", method);
+      return true;
+    }
     if (rest === "/academic-search" || rest === "/web-search") {
       if (method !== "POST") {
         sendMethodNotAllowed(res, "POST", method);

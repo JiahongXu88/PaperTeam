@@ -72,6 +72,15 @@ vi.mock("../src/api/discovery.js", async (importOriginal) => {
   };
 });
 
+// M8.1：Research Plan（默认无计划空态）
+vi.mock("../src/api/researchPlan.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/api/researchPlan.js")>();
+  return {
+    ...actual,
+    getResearchPlan: vi.fn(async () => null),
+  };
+});
+
 const { getProject, getManuscriptOverview } = await import("../src/api/projects.js");
 const paperApi = await import("../src/api/paper.js");
 const listCitations = vi.mocked(paperApi.listCitations);

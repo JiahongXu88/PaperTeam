@@ -8,6 +8,8 @@ import {
   useCandidates,
   usePromoteCandidate,
   useRejectCandidate,
+  useResearchPlan,
+  useUpdateResearchPlan,
   useWebSearch,
 } from "../../hooks/queries.js";
 import type {
@@ -21,12 +23,22 @@ import type {
   CandidateStatus,
   SourceRole,
 } from "../../types/sources.js";
+import type {
+  ResearchPlanQueryView,
+  ResearchPlanStatus,
+  ResearchPlanView,
+  ResearchQueryKind,
+  ResearchQueryStatus,
+} from "../../types/researchPlan.js";
+import type { ResearchPlanUpdateInput } from "../../api/researchPlan.js";
 import type { DiscoveryMode } from "../../api/discovery.js";
 
 /**
  * 「Discovery」：Research Discovery → Candidate Review → Literature Library
  * 闭环的前端消费（M7.1c；后端能力 M6.2/M6.3 已就绪，零新 API）。
  *
+ * - M8.1：顶部展示 Research Plan（调研产出的检索计划）——Topic / Questions /
+ *   Queries（含理由），支持查看 / 编辑 / 保存（GET+PUT /research/plan）；
  * - 检索走既有 POST /research/{academic|web}-search：默认只返回不持久化，
  *   「保存选中」用同一端点的 saveAsCandidates（结果下标）显式写入候选；
  * - 候选列表 / Promote / Reject 走既有 /sources/candidates 端点群；
@@ -217,8 +229,300 @@ function WebResultRow({
   );
 }
 
-function SearchSection({ projectId }: { projectId: string }) {
-  const [mode, setMode] = useState<DiscoveryMode>("academic");
+// ---- Research Plan（M8.1）----
+
+const PLAN_STATUS_LABELS: Record<ResearchPlanStatus, string> = {
+  draft: "草稿",
+  approved: "已批准",
+  executing: "执行中",
+  done: "已完成",
+};
+
+const QUERY_KIND_LABELS: Record<ResearchQueryKind, string> = {
+  academic: "学术检索",
+  web: "Web 检索",
+};
+
+const QUERY_STATUS_LABELS: Record<ResearchQueryStatus, string> = {
+  planned: "计划中",
+  executed: "已执行",
+  skipped: "已跳过",
+};
+
+/** 编辑态的单条检索（queryId 为空串 = 本轮新增；保存时省略该字段） */
+interface EditableQuery {
+  queryId: string;
+  query: string;
+  kind: ResearchQueryKind;
+  rationale: string;
+  status: ResearchQueryStatus;
+}
+
+function toEditable(plan: ResearchPlanView): { questions: string; queries: EditableQuery[] } {
+  return {
+    questions: plan.questions.join("\n"),
+    queries: plan.queries.map((entry) => ({
+      queryId: entry.queryId,
+      query: entry.query,
+      kind: entry.kind,
+      rationale: entry.rationale ?? "",
+      status: entry.status,
+    })),
+  };
+}
+
+function PlanQueryRow({ entry }: { entry: ResearchPlanQueryView }) {
+  return (
+    <li className="source-row candidate-row">
+      <div className="source-row-main">
+        <span className="source-title">{entry.query}</span>
+        <span className="source-chips">
+          <span className="chip chip-outline" title="检索方式">{QUERY_KIND_LABELS[entry.kind]}</span>
+          <span className="chip">{QUERY_STATUS_LABELS[entry.status]}</span>
+          {entry.resultCount !== undefined ? (
+            <span className="chip chip-outline" title="执行结果数">{entry.resultCount} 条结果</span>
+          ) : null}
+        </span>
+      </div>
+      {entry.rationale !== undefined && entry.rationale !== "" ? (
+        <div className="source-row-meta candidate-snippet">理由：{entry.rationale}</div>
+      ) : null}
+      {entry.expectedCoverage !== undefined && entry.expectedCoverage !== "" ? (
+        <div className="source-row-meta candidate-snippet">期望覆盖：{entry.expectedCoverage}</div>
+      ) : null}
+    </li>
+  );
+}
+
+function PlanEditForm({
+  plan,
+  projectId,
+  onDone,
+}: {
+  plan: ResearchPlanView;
+  projectId: string;
+  onDone: () => void;
+}) {
+  const initial = toEditable(plan);
+  const [questionsText, setQuestionsText] = useState(initial.questions);
+  const [queries, setQueries] = useState<EditableQuery[]>(initial.queries);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const save = useUpdateResearchPlan(projectId);
+
+  const patchQuery = (index: number, patch: Partial<EditableQuery>) => {
+    setQueries((prev) => prev.map((entry, i) => (i === index ? { ...entry, ...patch } : entry)));
+  };
+
+  const submit = () => {
+    const questions = questionsText
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    const invalidQuery = queries.findIndex((entry) => entry.query.trim() === "");
+    if (invalidQuery >= 0) {
+      setLocalError(`第 ${invalidQuery + 1} 条检索词为空，请填写或删除该条`);
+      return;
+    }
+    setLocalError(null);
+    const input: ResearchPlanUpdateInput = {
+      questions,
+      queries: queries.map((entry) => ({
+        ...(entry.queryId !== "" ? { queryId: entry.queryId } : {}),
+        query: entry.query.trim(),
+        kind: entry.kind,
+        ...(entry.rationale.trim() !== "" ? { rationale: entry.rationale.trim() } : {}),
+        status: entry.status,
+      })),
+    };
+    save.mutate(input, { onSuccess: onDone });
+  };
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      <div className="field">
+        <label htmlFor="plan-questions">研究问题（每行一个）</label>
+        <textarea
+          id="plan-questions"
+          rows={Math.max(3, questionsText.split("\n").length)}
+          value={questionsText}
+          onChange={(event) => setQuestionsText(event.target.value)}
+          disabled={save.isPending}
+        />
+      </div>
+      <div className="field">
+        <span className="field-label">检索计划</span>
+        {queries.map((entry, index) => (
+          <div key={entry.queryId !== "" ? entry.queryId : `new-${index}`} className="plan-query-edit-row">
+            <input
+              type="text"
+              aria-label={`检索词 ${index + 1}`}
+              value={entry.query}
+              onChange={(event) => patchQuery(index, { query: event.target.value })}
+              placeholder="检索词"
+              disabled={save.isPending}
+            />
+            <select
+              aria-label={`检索方式 ${index + 1}`}
+              value={entry.kind}
+              onChange={(event) => patchQuery(index, { kind: event.target.value as ResearchQueryKind })}
+              disabled={save.isPending}
+            >
+              <option value="academic">学术检索</option>
+              <option value="web">Web 检索</option>
+            </select>
+            <select
+              aria-label={`状态 ${index + 1}`}
+              value={entry.status}
+              onChange={(event) =>
+                patchQuery(index, { status: event.target.value as ResearchQueryStatus })
+              }
+              disabled={save.isPending}
+            >
+              <option value="planned">计划中</option>
+              <option value="executed">已执行</option>
+              <option value="skipped">已跳过</option>
+            </select>
+            <input
+              type="text"
+              aria-label={`理由 ${index + 1}`}
+              value={entry.rationale}
+              onChange={(event) => patchQuery(index, { rationale: event.target.value })}
+              placeholder="理由（为什么做这条检索）"
+              disabled={save.isPending}
+            />
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => setQueries((prev) => prev.filter((_, i) => i !== index))}
+              disabled={save.isPending}
+            >
+              删除
+            </button>
+          </div>
+        ))}
+        <div className="action-row">
+          <button
+            type="button"
+            className="btn btn-small"
+            onClick={() =>
+              setQueries((prev) => [
+                ...prev,
+                { queryId: "", query: "", kind: "academic", rationale: "", status: "planned" },
+              ])
+            }
+            disabled={save.isPending}
+          >
+            添加检索
+          </button>
+        </div>
+      </div>
+      {localError !== null ? (
+        <p className="form-error" role="alert">
+          {localError}
+        </p>
+      ) : null}
+      {save.isError ? (
+        <ErrorState title="计划保存失败" message={formatApiError(save.error)} detail={formatApiErrorDetail(save.error)} />
+      ) : null}
+      <div className="form-actions">
+        <button type="submit" className="btn btn-primary" disabled={save.isPending}>
+          {save.isPending ? "保存中…" : "保存计划"}
+        </button>
+        <button type="button" className="btn" onClick={onDone} disabled={save.isPending}>
+          取消
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: string }) {
+  const [editing, setEditing] = useState(false);
+  const plan = useResearchPlan(projectId);
+
+  return (
+    <section className="panel section-block" data-testid="research-plan-section">
+      <div className="section-head">
+        <h2>Research Plan</h2>
+        {plan.data !== null && plan.data !== undefined ? (
+          <>
+            <span className="section-note">{PLAN_STATUS_LABELS[plan.data.status]}</span>
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => setEditing((prev) => !prev)}
+              disabled={plan.isPending}
+            >
+              {editing ? "收起编辑" : "编辑"}
+            </button>
+          </>
+        ) : null}
+      </div>
+      <p className="field-help">
+        检索计划是 Researcher 调研产出的检索意图声明（先计划后检索）；计划的执行回填与
+        状态流转属于后续里程碑，这里支持查看与受限编辑。
+      </p>
+      {plan.isPending ? (
+        <Loading label="加载检索计划…" />
+      ) : plan.isError ? (
+        <ErrorState
+          title="计划加载失败"
+          message={formatApiError(plan.error)}
+          detail={formatApiErrorDetail(plan.error)}
+          onRetry={() => void plan.refetch()}
+        />
+      ) : plan.data === null ? (
+        <p className="panel-empty" data-testid="research-plan-empty">
+          还没有检索计划。运行「从想法到论文」工作流的调研阶段后，Researcher 制定的
+          检索计划会展示在这里。
+        </p>
+      ) : editing ? (
+        <PlanEditForm plan={plan.data} projectId={projectId} onDone={() => setEditing(false)} />
+      ) : (
+        <div className="panel-stack">
+          <div className="field">
+            <span className="field-label">Topic</span>
+            <p>{topic ?? "—"}</p>
+          </div>
+          <div className="field">
+            <span className="field-label">Questions</span>
+            {plan.data.questions.length === 0 ? (
+              <p className="muted">（无研究问题）</p>
+            ) : (
+              <ol className="notes-list" data-testid="plan-questions">
+                {plan.data.questions.map((question, index) => (
+                  <li key={`${index}-${question}`}>{question}</li>
+                ))}
+              </ol>
+            )}
+          </div>
+          <div className="field">
+            <span className="field-label">Queries</span>
+            {plan.data.queries.length === 0 ? (
+              <p className="muted">（无检索词）</p>
+            ) : (
+              <ul className="source-list" data-testid="plan-queries">
+                {plan.data.queries.map((entry) => (
+                  <PlanQueryRow key={entry.queryId} entry={entry} />
+                ))}
+              </ul>
+            )}
+          </div>
+          <p className="muted">
+            更新于 {formatDateTime(plan.data.updatedAt) ?? "—"} · planId {plan.data.planId}
+          </p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SearchSection({ projectId }: { projectId: string }) {  const [mode, setMode] = useState<DiscoveryMode>("academic");
   const [query, setQuery] = useState("");
   const [yearFromText, setYearFromText] = useState("");
   const [yearToText, setYearToText] = useState("");
@@ -685,9 +989,10 @@ function CandidateSection({ projectId }: { projectId: string }) {
   );
 }
 
-export function DiscoveryPanel({ projectId }: { projectId: string }) {
+export function DiscoveryPanel({ projectId, topic }: { projectId: string; topic?: string }) {
   return (
     <div className="panel-stack" data-testid="discovery-panel">
+      <ResearchPlanSection projectId={projectId} topic={topic} />
       <SearchSection projectId={projectId} />
       <CandidateSection projectId={projectId} />
     </div>
