@@ -118,6 +118,8 @@ export interface SourceItem {
   versionType?: SourceVersionType;
   /** 同一 workKey 下其它版本的 sourceId（link 操作维护，双向） */
   relatedSourceIds?: string[];
+  /** 全文获取 provenance（M7.2；optional，老数据 lazy 兼容） */
+  fullText?: SourceFullTextProvenance;
   bytes: number;
   createdAt: string;
   updatedAt: string;
@@ -162,6 +164,32 @@ export interface SourceUpdatePatch {
   versionType?: SourceVersionType;
   relatedSourceIds?: string[];
   workKey?: string;
+}
+
+/**
+ * 全文获取 provenance（M7.2 FullTextResolver）：license / 来源 / 尝试审计。
+ * optional 字段——老数据 lazy 兼容；status 语义：
+ * - resolved：全文已挂载（fileName 存在，url/resolver/license 记录来源）；
+ * - not_found：resolver 链明确无 OA 全文（重试无意义，除非上游变化）；
+ * - failed：系统性失败（网络 / 下载护栏 / 非 PDF），可手动重试（attempts 递增）。
+ */
+export interface SourceFullTextProvenance {
+  status: "resolved" | "not_found" | "failed";
+  /** 命中的 resolver（unpaywall / oa-url / arxiv） */
+  resolver?: string;
+  /** 实际下载 URL（重定向后；审计） */
+  url?: string;
+  /** license 原样透传（如 cc-by / CC URI；不解释） */
+  license?: string;
+  /** not_found / failed 原因摘要（≤500 字符） */
+  note?: string;
+  /** 累计尝试次数（手动重试递增；审计） */
+  attempts: number;
+  /** 最近一次尝试时间（ISO） */
+  attemptedAt: string;
+  /** 成功时间（ISO；status=resolved 时存在） */
+  resolvedAt?: string;
+  bytes?: number;
 }
 
 export interface SourceStoreOptions {
@@ -593,6 +621,94 @@ export class SourceStore {
       return true;
     }
     return item.contentHash === item.analysisHash;
+  }
+
+  /**
+   * 向既有条目补挂全文文件（M7.2；同 sourceId 原地挂载——chunkId 锚点链
+   * 「verified ← chunk ← library ← promote ← candidate」因此单线闭合，N-1
+   * 在自动路径上根除）。与 add 共用全部纪律（安全文件名 / 大小上限 /
+   * contentHash）；差异：
+   * - 已有 fileName → 幂等跳过（attached=false，不抛错——后台尝试与手动
+   *   重试的竞态语义）；
+   * - sourceType 更新为文件类型（doi/arxiv/url → pdf）：SourceChunker 按
+   *   sourceType 分派，不更新则全文挂上了 chunker 照样 skip；导入类型由
+   *   origin + fullText provenance 保留审计。
+   */
+  async attachFile(
+    projectId: string,
+    sourceId: string,
+    input: { fileName?: string; content: Buffer; originalName?: string },
+  ): Promise<{ source: SourceItem; attached: boolean }> {
+    const items = await this.list(projectId);
+    const index = items.findIndex((item) => item.sourceId === sourceId);
+    if (index === -1) {
+      throw new NotFoundError("文献", sourceId);
+    }
+    const current = items[index]!;
+    if (current.fileName !== undefined) {
+      return { source: current, attached: false };
+    }
+    if (input.content.byteLength === 0) {
+      throw new BusinessError("INVALID_REQUEST", "文件内容不能为空");
+    }
+    if (input.content.byteLength > MAX_SOURCE_BYTES) {
+      throw new BusinessError("INVALID_REQUEST", `文件超过 ${MAX_SOURCE_BYTES} 字节上限`);
+    }
+    const safeName =
+      input.fileName !== undefined ? sanitizeFileName(input.fileName) : undefined;
+    const fileName = safeName ?? "fulltext.pdf";
+    if (!fileName.toLowerCase().endsWith(".pdf")) {
+      throw new BusinessError("INVALID_REQUEST", `补挂的全文必须是 PDF（收到 ${fileName}）`);
+    }
+    const contentHash = sha256Hex(input.content);
+    const storedName = `${sourceId}-${fileName}`;
+    const updated: SourceItem = {
+      ...current,
+      fileName: storedName,
+      ...(input.originalName !== undefined ? { originalName: input.originalName } : {}),
+      sourceType: sourceTypeFromFileName(fileName),
+      status: "pending",
+      contentHash,
+      bytes: input.content.byteLength,
+      updatedAt: this.now().toISOString(),
+    };
+    items[index] = updated;
+    await mkdir(this.papersDir(projectId), { recursive: true });
+    await writeFile(join(this.papersDir(projectId), storedName), input.content);
+    await this.saveIndex(projectId, items);
+    return { source: updated, attached: true };
+  }
+
+  /** 记录全文获取 provenance（M7.2；读-改-写，与 applyMetadataMerge 同模式） */
+  async setFullTextProvenance(
+    projectId: string,
+    sourceId: string,
+    provenance: SourceFullTextProvenance,
+  ): Promise<SourceItem> {
+    const items = await this.list(projectId);
+    const index = items.findIndex((item) => item.sourceId === sourceId);
+    if (index === -1) {
+      throw new NotFoundError("文献", sourceId);
+    }
+    const current = items[index]!;
+    const updated: SourceItem = {
+      ...current,
+      fullText: {
+        status: provenance.status,
+        ...(provenance.resolver !== undefined ? { resolver: provenance.resolver } : {}),
+        ...(provenance.url !== undefined ? { url: provenance.url } : {}),
+        ...(provenance.license !== undefined ? { license: provenance.license } : {}),
+        ...(provenance.note !== undefined ? { note: provenance.note.slice(0, 500) } : {}),
+        attempts: provenance.attempts,
+        attemptedAt: provenance.attemptedAt,
+        ...(provenance.resolvedAt !== undefined ? { resolvedAt: provenance.resolvedAt } : {}),
+        ...(provenance.bytes !== undefined ? { bytes: provenance.bytes } : {}),
+      },
+      updatedAt: this.now().toISOString(),
+    };
+    items[index] = updated;
+    await this.saveIndex(projectId, items);
+    return updated;
   }
 
   /**

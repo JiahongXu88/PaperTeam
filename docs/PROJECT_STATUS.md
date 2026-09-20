@@ -1,9 +1,10 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-19（**M7 进行中 — Research Discovery Activation**：
+> 更新日期：2026-09-20（**M7 进行中 — Research Discovery Activation**：
 > M7.0 Scope Freeze（D-0042）✅ / M7.1 架构审查 ✅ / M7.1a 检索接线
 > （`017ad31`）✅ / M7.1b 真实 Agent 端到端验证（`63a214b`）✅ / M7.1c
-> Discovery & 候选管理 UI（`fbe004d`）✅ / M7.1d Self Review ✅ ——详见下方
+> Discovery & 候选管理 UI（`fbe004d`）✅ / M7.1d Self Review ✅ /
+> M7.2 FullTextResolution（D-0043）✅ ——详见下方
 > 「当前阶段」M7 段与 [M7_SCOPE_FREEZE.md](research/M7_SCOPE_FREEZE.md)。
 > 前一状态 2026-09-18（**M6 COMPLETE — Research Discovery &
 > Evidence-grounded Pipeline（Documentation Freeze）**）：M6.0 baseline
@@ -798,9 +799,27 @@ promote → Literature Library → Evidence Grounding），决策登记 D-0042
   （[PAPERTEAM_SELF_REVIEW_M7.md](research/PAPERTEAM_SELF_REVIEW_M7.md)）
   与 [M8_ROADMAP_PROPOSAL.md](research/M8_ROADMAP_PROPOSAL.md)——纯研究
   产物，零业务代码改动。
+- **M7.2 FullTextResolution ✅（2026-09-20，P-D 修复）**：Literature →
+  FullText → Evidence 自动闭环。实现 =
+  `search/fullText.ts`（FullTextResolver 接口 ADR §12 冻结形状 + 三实现
+  Unpaywall(DOI)/OpenAlex oa-url/arXiv PDF + downloadPdf 下载护栏：SSRF
+  逐跳校验 / ≤5 跳重定向 / ≤20MB 流式截断 / %PDF- 魔数）+
+  `ProviderHttpClient.fetchBytes`（二进制通道，文本路径行为不变）+
+  `SourceStore.attachFile`（**同条目原地补挂**：sourceType→pdf，chunk 锚点
+  链单线闭合，N-1 在自动路径根除）+ `SourceItem.fullText` provenance
+  （resolver/url/license/attempts 落盘可审计）+
+  `SourceImportService.tryResolveFullText`（五结局数据化：resolved /
+  not_found / failed / skipped_has_file / not_resolvable；有界重试 ≤3×1，
+  无自动循环）+ promote 尾部后台单次尝试 + 手动端点
+  `POST /sources/:sid/resolve-fulltext`（422 FULLTEXT_NOT_RESOLVABLE =
+  无 DOI/arXiv 身份的 Web 候选，定位不是缺陷）。设计文档与 Phase 0 分析：
+  [M7.2_IMPLEMENTATION_PLAN.md](research/M7.2_IMPLEMENTATION_PLAN.md)；
+  决策 D-0043；ADR §3 Crossref 勘误同步完成（D-0042 第 4 项收口）。
+  测试 +70（resolver/护栏/挂载/编排/HTTP/离线验收链），全量 1333 后端 +
+  210 前端零回归。
 - **待办**：M7.1 验收底线 1 后半段（真实项目 promote → 全文 → verified
-  evidence 磁盘证据全链）+ M7.2 FullTextResolver（P-D，独立验收）；
-  M7.3 Research Intelligence 方向冻结、细节延后。
+  evidence 磁盘证据全链——M7.2 落地后该链路已具备自动形态，待真实项目
+  走通）；M7.3 Research Intelligence 方向冻结、细节延后。
 
 M7 前的候选方向清单（Evaluation live 扩展 / FullTextResolver /
 Reference Paper Intelligence / Multimodal Review / 遗留收口）中，

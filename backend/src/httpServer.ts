@@ -1066,6 +1066,30 @@ async function handleProjectResourceRoutes(
       return true;
     }
 
+    // M7.2：全文解析手动触发 / 重试（单轮有界尝试；结局如实呈现不报错）
+    const resolveFullTextMatch = /^\/([A-Z]\d{2,})\/resolve-fulltext$/.exec(rest);
+    if (resolveFullTextMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const sourceId = resolveFullTextMatch[1] ?? "";
+      const result = await stack.sourceImport.tryResolveFullText(projectId, sourceId);
+      if (result.outcome === "not_resolvable") {
+        // 确定性不可解析（无 DOI/arXiv 身份）：请求永不成功 → 422（同 SOURCE_NOT_INDEXABLE 口径）
+        throw new BusinessError(
+          "FULLTEXT_NOT_RESOLVABLE",
+          result.note ?? `文献 ${sourceId} 缺少可自动解析全文的身份（DOI / arXiv）`,
+        );
+      }
+      sendJson(res, 200, {
+        source: result.source,
+        outcome: result.outcome,
+        ...(result.note !== undefined ? { note: result.note } : {}),
+      });
+      return true;
+    }
+
     const linkMatch = /^\/([A-Z]\d{2,})\/link$/.exec(rest);
     if (linkMatch) {
       if (method !== "POST") {

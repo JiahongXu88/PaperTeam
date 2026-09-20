@@ -30,8 +30,13 @@ import type {
   SourceType,
   SourceVersionType,
 } from "./SourceStore.js";
+import type { PdfAnalysis } from "./PdfAnalyzer.js";
+import { BuiltinPdfAnalyzer } from "./PdfAnalyzer.js";
 import type { CandidateStore } from "./CandidateStore.js";
 import type { SourceStore } from "./SourceStore.js";
+import type { FullTextResolver } from "../search/fullText.js";
+import { applicableFullTextResolvers, downloadPdf } from "../search/fullText.js";
+import type { ProviderHttpClient } from "../search/providerHttp.js";
 
 /** 元数据解析记录（如实呈现 resolver 结论；不阻塞导入） */
 export interface ResolveNote {
@@ -63,6 +68,35 @@ export interface PromoteResult {
   candidate: CandidateSource;
 }
 
+/** tryResolveFullText 的结局（数据而非异常：不报错不阻塞，如实呈现） */
+export type FullTextOutcome =
+  | "resolved" // 全文已挂载 + 分析 + provenance 落盘
+  | "not_found" // resolver 链明确无 OA（重试无意义）
+  | "failed" // 系统性失败（网络 / 下载护栏 / 非 PDF），可手动重试
+  | "skipped_has_file" // 条目已有全文（幂等）
+  | "not_resolvable"; // 无 DOI/arXiv 身份（Web 候选定位；永远 metadata_only）
+
+export interface FullTextResult {
+  outcome: FullTextOutcome;
+  source: SourceItem;
+  note?: string;
+}
+
+/**
+ * M7.2 全文能力注入面（serviceStack 装配后注入；测试注入 fake）。
+ * 缺省未注入 = tryResolveFullText 干净 no-op（M7.1 行为不变）。
+ */
+export interface FullTextSupport {
+  resolvers: readonly FullTextResolver[];
+  http: ProviderHttpClient;
+  /** 下载函数（缺省 downloadPdf；测试可替换） */
+  download?: typeof downloadPdf;
+  /** PDF 分析器（缺省 BuiltinPdfAnalyzer，与上传路径同一语义） */
+  analyzer?: { analyzeFile(path: string): Promise<PdfAnalysis> };
+  /** 全文挂载成功后的钩子（serviceStack 接 retrieval.rebuildSource） */
+  onFullTextAttached?: (projectId: string, sourceId: string) => Promise<void>;
+}
+
 export interface SourceImportServiceOptions {
   projects: ProjectStore;
   sources: SourceStore;
@@ -75,18 +109,27 @@ export interface SourceImportServiceOptions {
 }
 
 export class SourceImportService {
+  private readonly projects: ProjectStore;
   private readonly sources: SourceStore;
   private readonly candidates: CandidateStore;
   private readonly evidence?: EvidenceStore;
   private readonly scholarly?: ScholarlyResolver;
   private readonly log: (message: string) => void;
+  /** M7.2 全文能力（缺省未装配；attachFullTextSupport 注入） */
+  private fullText?: FullTextSupport;
 
   constructor(options: SourceImportServiceOptions) {
+    this.projects = options.projects;
     this.sources = options.sources;
     this.candidates = options.candidates;
     this.evidence = options.evidence;
     this.scholarly = options.scholarly;
     this.log = options.log ?? (() => {});
+  }
+
+  /** 注入 M7.2 全文能力（serviceStack 在 retrieval 就绪后调用；幂等覆盖） */
+  attachFullTextSupport(support: FullTextSupport): void {
+    this.fullText = support;
   }
 
   // ---- A. PDF 上传（复用 SourceStore.add：contentHash 判重）----
@@ -333,11 +376,169 @@ export class SourceImportService {
       created = true;
     }
     const updated = await this.candidates.markAccepted(projectId, candidateId, source.sourceId);
+    // M7.2：promote 后台尝试自动获取 OA 全文（fire-and-forget 单次，不阻塞
+    // 响应；attachFile 幂等守卫吸收并发竞态；未装配全文能力 = no-op）
+    if (source.status === "metadata_only") {
+      void this.tryResolveFullText(projectId, source.sourceId).catch((error) => {
+        this.log(
+          `[sources] promote 后全文解析异常（${projectId}/${source.sourceId}）：${errorText(error)}`,
+        );
+      });
+    }
     return { source, created, candidate: updated };
   }
 
   rejectCandidate(projectId: string, candidateId: string): Promise<CandidateSource> {
     return this.candidates.markRejected(projectId, candidateId);
+  }
+
+  // ---- FullText Resolution（M7.2：Literature → FullText → Evidence 的断点修复） ----
+
+  /**
+   * 对 metadata-only 条目尝试自动获取 OA 全文并原地挂载（单次调用 = 一轮
+   * 有界尝试：每个适用 resolver 一次 resolve + 每个命中 URL 一次下载，
+   * 总数 ≤ 链长 ≤3，无内层重试风暴；重试 = 再次调用本方法 / 手动端点）。
+   *
+   * 结局是数据不是异常（不报错不阻塞）：resolved / not_found / failed /
+   * skipped_has_file / not_resolvable；provenance（resolver / url / license /
+   * attempts）始终落盘可审计。成功路径与 PDF 上传完全同构：attachFile →
+   * BuiltinPdfAnalyzer → setAnalysis（contentHash 防失效）→ onFullTextAttached
+   * （检索重建，SourceNotIndexable 如实记录不视为失败）。
+   */
+  async tryResolveFullText(
+    projectId: string,
+    sourceId: string,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<FullTextResult> {
+    await this.projects.getRequired(projectId);
+    let item = await this.sources.getRequired(projectId, sourceId);
+    if (item.fileName !== undefined) {
+      return { outcome: "skipped_has_file", source: item };
+    }
+    const support = this.fullText;
+    if (support === undefined) {
+      return { outcome: "not_resolvable", source: item, note: "全文解析能力未装配（FullTextSupport 未注入）" };
+    }
+    const identity = this.sources.effectiveIdentity(item);
+    const attemptedAt = nowIso();
+    const attempts = (item.fullText?.attempts ?? 0) + 1;
+    if (identity === null) {
+      const note = "条目无可判等身份，无法自动解析全文";
+      item = await this.sources.setFullTextProvenance(projectId, sourceId, {
+        status: "not_found",
+        note,
+        attempts,
+        attemptedAt,
+      });
+      return { outcome: "not_resolvable", source: item, note };
+    }
+    const chain = applicableFullTextResolvers(support.resolvers, identity);
+    if (chain.length === 0) {
+      const note = "无 DOI / arXiv / OpenAlex 身份键，无法自动解析全文（Web 候选定位是线索，可手动上传）";
+      item = await this.sources.setFullTextProvenance(projectId, sourceId, {
+        status: "not_found",
+        note,
+        attempts,
+        attemptedAt,
+      });
+      return { outcome: "not_resolvable", source: item, note };
+    }
+
+    const failures: string[] = [];
+    let sawError = false;
+    for (const resolver of chain) {
+      if (options.signal?.aborted === true) {
+        break;
+      }
+      let resolution: Awaited<ReturnType<FullTextResolver["resolve"]>>;
+      try {
+        resolution = await resolver.resolve(identity);
+      } catch (error) {
+        sawError = true;
+        failures.push(`${resolver.name}:resolve:${errorText(error)}`);
+        continue;
+      }
+      if (resolution.kind === "not_found") {
+        failures.push(`${resolver.name}:not_found`);
+        continue;
+      }
+      if (resolution.kind === "error") {
+        sawError = true;
+        failures.push(`${resolver.name}:error:${resolution.note}`);
+        continue;
+      }
+      // found → 下载 → 原地挂载（同 sourceId，chunk 锚点链闭合）
+      try {
+        const download = support.download ?? downloadPdf;
+        const downloaded = await download(resolution.url, {
+          http: support.http,
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        });
+        const attach = await this.sources.attachFile(projectId, sourceId, {
+          fileName: downloaded.fileName,
+          content: downloaded.bytes,
+          originalName: resolution.url,
+        });
+        if (!attach.attached) {
+          return { outcome: "skipped_has_file", source: attach.source };
+        }
+        item = attach.source;
+        // 分析与上传路径同一语义：失败不回滚挂载（原始文件已落盘），如实 pending
+        const analyzer = support.analyzer ?? new BuiltinPdfAnalyzer();
+        try {
+          const analysis = await analyzer.analyzeFile(
+            await this.sources.filePath(projectId, sourceId),
+          );
+          item = await this.sources.setAnalysis(projectId, sourceId, analysis, {
+            ...(item.contentHash !== undefined ? { contentHash: item.contentHash } : {}),
+          });
+        } catch (error) {
+          this.log(`[sources] 全文 ${sourceId} 自动分析失败（保持 pending，不影响挂载）：${errorText(error)}`);
+        }
+        item = await this.sources.setFullTextProvenance(projectId, sourceId, {
+          status: "resolved",
+          resolver: resolver.name,
+          url: downloaded.finalUrl,
+          ...(resolution.license !== undefined ? { license: resolution.license } : {}),
+          attempts,
+          attemptedAt,
+          resolvedAt: nowIso(),
+          bytes: downloaded.bytes.byteLength,
+        });
+        // 检索重建钩子（N-3 接线）：扫描件等 SourceNotIndexable 如实记录
+        if (support.onFullTextAttached !== undefined) {
+          try {
+            await support.onFullTextAttached(projectId, sourceId);
+          } catch (error) {
+            this.log(`[sources] 全文 ${sourceId} 检索重建失败（下次检索自动自愈）：${errorText(error)}`);
+          }
+        }
+        this.log(
+          `[sources] projectId=${projectId} ${sourceId} 全文解析成功（${resolver.name}，${downloaded.bytes.byteLength}B）`,
+        );
+        return { outcome: "resolved", source: item };
+      } catch (error) {
+        sawError = true;
+        failures.push(`${resolver.name}:download:${errorText(error)}`);
+        continue;
+      }
+    }
+    const note =
+      failures.length > 0
+        ? failures.join("; ").slice(0, 500)
+        : options.signal?.aborted === true
+          ? "已被调用方取消"
+          : "resolver 链为空";
+    item = await this.sources.setFullTextProvenance(projectId, sourceId, {
+      status: sawError ? "failed" : "not_found",
+      note,
+      attempts,
+      attemptedAt,
+    });
+    this.log(
+      `[sources] projectId=${projectId} ${sourceId} 全文解析未成（${sawError ? "failed" : "not_found"}，attempts=${attempts}）：${note.slice(0, 160)}`,
+    );
+    return { outcome: sawError ? "failed" : "not_found", source: item, note };
   }
 
   // ---- 版本关系（work identity）----
@@ -437,8 +638,18 @@ export class SourceImportService {
   }
 }
 
-/** CanonicalPaperRecord → SourceMetadata（只取确定有值的字段） */
-function recordToMetadata(record: CanonicalPaperRecord): SourceMetadata {
+/** 当前时间 ISO（provenance 时间戳） */
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+/** 错误短摘要（日志 / provenance note 用；无堆栈） */
+function errorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.slice(0, 200);
+}
+
+/** CanonicalPaperRecord → SourceMetadata（只取确定有值的字段） */function recordToMetadata(record: CanonicalPaperRecord): SourceMetadata {
   const metadata: SourceMetadata = {};
   if (record.title !== undefined && record.title !== "") {
     metadata.title = record.title;

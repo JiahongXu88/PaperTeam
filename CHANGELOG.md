@@ -4,6 +4,45 @@ All notable changes to PaperTeam are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — M7.2 FullTextResolution（2026-09-20）
+
+Literature → FullText → Evidence 自动闭环（M7_SCOPE_FREEZE P-D 修复；
+决策 D-0043；设计文档 docs/research/M7.2_IMPLEMENTATION_PLAN.md）。
+
+1. **FullTextResolver（`backend/src/search/fullText.ts`）**：D-0033 六层
+   唯一缺层落地，接口为 M6.1 ADR §12 冻结形状。三实现按确定性链序：
+   Unpaywall（DOI → best_oa_location.url_for_pdf；email 复用
+   PAPERTEAM_OPENALEX_MAILTO / CITATION_CONTACT_EMAIL，未配置不注册）→
+   OpenAlex oa-url（DOI / openalexId → best_oa_location.pdf_url）→
+   arXiv PDF（预印本兜底）。404 → not_found，网络/5xx → error
+   （error ≠ not_found，D-0023）；只认 PDF 直链，landing page 不是全文。
+2. **二进制下载通道（`ProviderHttpClient.fetchBytes`）**：与文本路径共用
+   重试/熔断/健康骨架；不跟随重定向（3xx 携带 location 冒泡，逐跳校验交
+   调用方）；maxBytes = content-length 预检 + 流式累计截断。
+   downloadPdf 护栏：仅 https / 拒 userinfo / 非 443 端口 / 拒 localhost
+   与私网保留 IP 字面量（SSRF 逐跳校验，agent-search 教训）；手动逐跳跟随
+   ≤5 跳；%PDF- 魔数拦截落地页/付费墙；≤20MB（与上传同上限）。
+3. **同条目原地补挂（`SourceStore.attachFile`）**：全文挂到既有 sourceId
+   （不新建条目）——chunkId 内嵌 sourceId（D-0036），追溯链
+   verified ← chunk ← library ← promote ← candidate 单线闭合（架构评审
+   N-1 在自动路径根除）。attach 同步 sourceType → pdf（否则 SourceChunker
+   按 sourceType 分派会跳过）；license / url / resolver / attempts 落
+   `SourceItem.fullText` provenance 可审计。
+4. **编排与入口（`SourceImportService.tryResolveFullText`）**：五结局数据
+   化（resolved / not_found / failed / skipped_has_file / not_resolvable，
+   不报错不阻塞）；单轮有界尝试 ≤3 resolver × 每 URL 一次下载，失败落链
+   内下一 resolver；重试 = 手动端点 `POST …/sources/:sid/resolve-fulltext`
+   （attempts 递增），无自动后台循环。promote 尾部 fire-and-forget 单次
+   后台尝试（不阻塞响应）。无 DOI/arXiv 身份（Web 候选）→ 422
+   FULLTEXT_NOT_RESOLVABLE（定位不是缺陷）。挂载后主动
+   retrieval.rebuildSource（SourceNotIndexable 如实记录不视为失败）。
+5. **文档收口**：ADR §3 Crossref 节点勘误（D-0042 第 4 项）、API contract
+   新端点、DECISIONS D-0043、PROJECT_STATUS M7.2 段。
+6. **测试**：+70（resolver / SSRF 与下载护栏矩阵 / attachFile 幂等 /
+   编排五结局 / promote 后台 / HTTP 端点 / 离线验收链：promote → 全文 →
+   chunk 落盘 → 检索命中 → chunk 回取，同 sourceId 单线闭合）；全量
+   1333 后端 + 210 前端测试零回归。
+
 ## [Unreleased] — M7.0 Productization Baseline（2026-09-18）
 
 产品化收口：前端对齐 M6 已有能力，不新增 Agent / Runtime / Workflow 能力。

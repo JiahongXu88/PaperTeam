@@ -82,6 +82,7 @@ export const fakeFailingRunner: CommandRunner = async (command, args) => {
 export type ServiceStackOptionsCitation = Parameters<typeof buildServiceStack>[0]["citation"];
 export type ServiceStackOptionsReview = Parameters<typeof buildServiceStack>[0]["review"];
 export type ServiceStackOptionsSearch = Parameters<typeof buildServiceStack>[0]["search"];
+export type ServiceStackOptionsFullText = Parameters<typeof buildServiceStack>[0]["fullText"];
 
 export interface TestStack {
   stack: ServiceStack;
@@ -108,6 +109,8 @@ export async function startTestStack(
     review?: ServiceStackOptionsReview;
     /** search provider 装配（缺省全关 = 完全离线；http 测试注入 fake fetch / 显式启用单个 provider） */
     search?: ServiceStackOptionsSearch;
+    /** M7.2 全文装配（缺省关闭 = promote 后台尝试 no-op，保持离线；测试注入 fake resolvers） */
+    fullText?: ServiceStackOptionsFullText;
     skills?: { registry: import("../../src/skills/SkillRegistry.js").SkillRegistry; summaries?: import("../../src/skills/SkillSummaryService.js").SkillSummaryService };
     /** Readiness probe（GET /ready；M5.5） */
     readiness?: import("../../src/runtime/readiness.js").ReadinessProbe;
@@ -148,6 +151,11 @@ export async function startTestStack(
             providerTimeoutMs: 2_000,
           },
         }),
+    // M7.2：默认关闭全文 resolver（promote 后台 no-op，测试零外呼）；
+    // 全文链路测试显式注入 fake resolvers
+    ...(options.fullText !== undefined
+      ? { fullText: options.fullText }
+      : { fullText: { enabled: false } }),
     ...(options.paperParser !== undefined ? { paperParser: options.paperParser } : {}),
     log: () => {},
   });

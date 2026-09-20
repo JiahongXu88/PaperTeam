@@ -40,6 +40,7 @@ import { AMinerSearchProvider } from "./search/aminerProvider.js";
 import { SearXNGProvider } from "./search/searxngProvider.js";
 import { WebSearchService } from "./search/webSearchService.js";
 import { ResearchDiscoveryService } from "./search/researchDiscoveryService.js";
+import { buildDefaultFullTextResolvers, type FullTextResolver } from "./search/fullText.js";
 import type { AcademicSearchProvider } from "./search/types.js";
 import type { WebSearchProvider } from "./search/types.js";
 import type { SearchConfig } from "./config/config.js";
@@ -118,6 +119,15 @@ export interface ServiceStackOptions {
     chunkMaxTokens?: number;
     chunkOverlapTokens?: number;
     embedding?: EmbeddingProvider;
+  };
+  /**
+   * M7.2 FullTextResolver 装配。缺省启用（Unpaywall 需 email 配置，未配置
+   * 自动不注册）；enabled=false 不注入 FullTextSupport（promote 后台尝试
+   * no-op，测试保持离线）；resolvers 覆盖默认装配（测试注入 fake）。
+   */
+  fullText?: {
+    enabled?: boolean;
+    resolvers?: FullTextResolver[];
   };
   log?: (message: string) => void;
 }
@@ -388,6 +398,33 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...(options.retrieval?.embedding !== undefined ? { embedding: options.retrieval.embedding } : {}),
     log,
   });
+  // M7.2 FullTextResolver（P-D 修复）：resolver 与 search provider 共享同一
+  // ProviderHttpClient（超时 / 重试 / 熔断 / 健康一体）；Unpaywall email 复用
+  // OpenAlex 礼貌池配置（PAPERTEAM_OPENALEX_MAILTO / CITATION_CONTACT_EMAIL），
+  // 未配置则不注册 unpaywall（OpenAlex / arXiv 路径不受影响——optional 降级
+  // 纪律）。挂载成功后的检索重建经 onFullTextAttached 接线（N-3）；
+  // SourceNotIndexableError（扫描件等）由钩子包装层如实记录。
+  if (options.fullText?.enabled !== false) {
+    sourceImport.attachFullTextSupport({
+      resolvers:
+        options.fullText?.resolvers ??
+        buildDefaultFullTextResolvers({
+          http: providerHttp,
+          ...(searchConfig.openalexMailto !== undefined ? { email: searchConfig.openalexMailto } : {}),
+        }),
+      http: providerHttp,
+      analyzer: pdfAnalyzer,
+      onFullTextAttached: async (projectId, sourceId) => {
+        try {
+          await retrieval.rebuildSource(projectId, sourceId);
+        } catch (error) {
+          // 全文挂载成功但不可索引（文本层过薄 / 解析失败）：resolve 不因此失败，
+          // manifest 留 skipped 记录，下次检索 / rebuild 自愈口径不变
+          log(`[retrieval] 全文挂载后重建 chunk 未成（${projectId}/${sourceId}）：${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
+    });
+  }
   // M6.5 Evidence Grounding：候选队列 + 三段核验管道（quote 逐字 → metadata →
   // 复用 Citation 角色的语义 judge）。只读 ChunkStore 落盘产物（不触碰检索层
   // 行为）；与 sourceImport / citationIntegrity 共享同一个 ScholarlyResolver

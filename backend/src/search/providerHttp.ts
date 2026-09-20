@@ -53,18 +53,21 @@ export class ProviderHttpError extends Error {
   readonly status?: number;
   /** 已解析的 Retry-After（毫秒；rate_limited）或建议冷却 */
   readonly retryAfterMs?: number;
+  /** 3xx 的 Location 原样值（fetchBytes 不跟随重定向，交调用方逐跳校验） */
+  readonly location?: string;
 
   constructor(
     kind: ProviderErrorKind,
     provider: string,
     message: string,
-    extra: { status?: number; retryAfterMs?: number } = {},
+    extra: { status?: number; retryAfterMs?: number; location?: string } = {},
   ) {
     super(message);
     this.kind = kind;
     this.provider = provider;
     this.status = extra.status;
     this.retryAfterMs = extra.retryAfterMs;
+    this.location = extra.location;
   }
 }
 
@@ -218,6 +221,22 @@ export interface ProviderFetchInit {
   envelope?: EnvelopeInspector;
 }
 
+/** fetchBytes 专用入参：二进制大小硬帽（超出即 business_error 终止，不重试） */
+export interface ProviderBytesInit extends ProviderFetchInit {
+  maxBytes?: number;
+}
+
+/** fetchBytes 产物（2xx）；3xx 不在此出现——fetchBytes 不跟随重定向 */
+export interface ProviderBytesResponse {
+  bytes: Buffer;
+  contentType: string | null;
+}
+
+/** 一次请求的读取模式（text / bytes 二分；bytes 不跟随重定向） */
+type FetchMode =
+  | { kind: "text"; json: boolean }
+  | { kind: "bytes"; maxBytes?: number };
+
 export interface ProviderHttpClientOptions {
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -328,13 +347,33 @@ export class ProviderHttpClient {
   }
 
   async fetchJson<T>(provider: ProviderProfile, url: string, init: ProviderFetchInit = {}): Promise<T> {
-    const text = await this.fetchWithRetry(provider, url, init, true);
+    const text = (await this.fetchWithRetry(provider, url, init, { kind: "text", json: true })) as string;
     return JSON.parse(text) as T;
   }
 
   /** arXiv Atom XML 等文本响应 */
   async fetchText(provider: ProviderProfile, url: string, init: ProviderFetchInit = {}): Promise<string> {
-    return this.fetchWithRetry(provider, url, init, false);
+    return (await this.fetchWithRetry(provider, url, init, { kind: "text", json: false })) as string;
+  }
+
+  /**
+   * 二进制响应（M7.2 FullTextResolver 的 PDF 下载）。与文本路径共用重试 /
+   * 熔断 / 健康骨架，差异三点：
+   * - 不跟随重定向（redirect: "manual"）：3xx 以 http_error + location 冒泡，
+   *   逐跳校验（SSRB 护栏）是调用方（downloadPdf）的职责；
+   * - maxBytes：content-length 预检 + 流式读取累计截断（服务端漏报长度也
+   *   不会缓冲超限字节），超限按 business_error 终止（不重试）；
+   * - 响应体读取也在超时窗口内（abort 会中断流读取）。
+   */
+  async fetchBytes(
+    provider: ProviderProfile,
+    url: string,
+    init: ProviderBytesInit = {},
+  ): Promise<ProviderBytesResponse> {
+    return (await this.fetchWithRetry(provider, url, init, {
+      kind: "bytes",
+      ...(init.maxBytes !== undefined ? { maxBytes: init.maxBytes } : {}),
+    })) as ProviderBytesResponse;
   }
 
   // ---- 内部 ----
@@ -352,8 +391,8 @@ export class ProviderHttpClient {
     profile: ProviderProfile,
     url: string,
     init: ProviderFetchInit,
-    json: boolean,
-  ): Promise<string> {
+    mode: FetchMode,
+  ): Promise<string | ProviderBytesResponse> {
     const tracker = this.tracker(profile.name);
     const timeoutMs = profile.timeoutMs ?? this.defaultTimeoutMs;
     const maxRetries = profile.maxRetries ?? this.defaultMaxRetries;
@@ -367,7 +406,7 @@ export class ProviderHttpClient {
         });
       }
       try {
-        const body = await this.fetchOnce(profile.name, url, init, timeoutMs, json);
+        const body = await this.fetchOnce(profile.name, url, init, timeoutMs, mode);
         tracker.recordSuccess();
         return body;
       } catch (error) {
@@ -444,12 +483,16 @@ export class ProviderHttpClient {
     url: string,
     init: ProviderFetchInit,
     timeoutMs: number,
-    json: boolean,
-  ): Promise<string> {
+    mode: FetchMode,
+  ): Promise<string | ProviderBytesResponse> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error("provider timeout")), timeoutMs);
     const onOuterAbort = () => controller.abort(new Error("caller aborted"));
     init.signal?.addEventListener("abort", onOuterAbort, { once: true });
+    const finishTimer = () => {
+      clearTimeout(timer);
+      init.signal?.removeEventListener("abort", onOuterAbort);
+    };
     let response: Response;
     try {
       response = await this.fetchImpl(url, {
@@ -457,8 +500,10 @@ export class ProviderHttpClient {
         method: init.method ?? "GET",
         headers: init.headers,
         ...(init.body !== undefined ? { body: init.body } : {}),
+        ...(mode.kind === "bytes" ? { redirect: "manual" as const } : {}),
       });
     } catch (error) {
+      finishTimer();
       // 区分：整体超时 / 调用方取消 / 网络错误
       if (init.signal?.aborted) {
         throw new ProviderHttpError("aborted", providerName, `[${providerName}] 请求已被调用方取消`);
@@ -468,18 +513,29 @@ export class ProviderHttpClient {
         throw new ProviderHttpError("timeout", providerName, `[${providerName}] 请求超时（${timeoutMs}ms）`);
       }
       throw new ProviderHttpError("network_error", providerName, `[${providerName}] 网络错误：${message}`);
-    } finally {
-      clearTimeout(timer);
-      init.signal?.removeEventListener("abort", onOuterAbort);
     }
     if (response.status === 429) {
+      finishTimer();
       const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"), this.now);
       throw new ProviderHttpError("rate_limited", providerName, `[${providerName}] 429 限流`, {
         status: 429,
         retryAfterMs,
       });
     }
+    if (mode.kind === "bytes" && response.status >= 300 && response.status < 400) {
+      // 不跟随重定向：Location 原样上抛（http_error 非 5xx 不重试、不计熔断失败），
+      // 逐跳校验与跳数上限由调用方（downloadPdf）执行
+      finishTimer();
+      const location = response.headers.get("location") ?? undefined;
+      throw new ProviderHttpError(
+        "http_error",
+        providerName,
+        `[${providerName}] HTTP ${response.status}（重定向，未跟随）`,
+        { status: response.status, ...(location !== undefined ? { location } : {}) },
+      );
+    }
     if (!response.ok) {
+      finishTimer();
       throw new ProviderHttpError(
         "http_error",
         providerName,
@@ -487,6 +543,15 @@ export class ProviderHttpClient {
         { status: response.status },
       );
     }
+    if (mode.kind === "bytes") {
+      try {
+        const bytes = await this.readBodyWithCap(providerName, response, mode.maxBytes);
+        return { bytes, contentType: response.headers.get("content-type") };
+      } finally {
+        finishTimer();
+      }
+    }
+    finishTimer();
     const text = await response.text();
     if (init.envelope !== undefined) {
       let parsed: unknown;
@@ -503,7 +568,7 @@ export class ProviderHttpClient {
         });
       }
     }
-    if (json) {
+    if (mode.json) {
       // 提前校验 JSON 合法性（malformed payload → 明确错误而非下游崩溃）
       try {
         JSON.parse(text);
@@ -512,5 +577,57 @@ export class ProviderHttpClient {
       }
     }
     return text;
+  }
+
+  /**
+   * 二进制体读取：content-length 预检 + 流式累计截断（服务端漏报长度时也不
+   * 缓冲超限字节——超限即 cancel 流并按 business_error 终止，不重试）。
+   */
+  private async readBodyWithCap(
+    providerName: string,
+    response: Response,
+    maxBytes: number | undefined,
+  ): Promise<Buffer> {
+    if (maxBytes !== undefined) {
+      const declared = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        throw new ProviderHttpError(
+          "business_error",
+          providerName,
+          `[${providerName}] 响应体 ${declared} 字节超过上限 ${maxBytes}（content-length 预检）`,
+        );
+      }
+    }
+    const reader = response.body?.getReader();
+    if (reader === undefined) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (maxBytes !== undefined && buffer.byteLength > maxBytes) {
+        throw new ProviderHttpError(
+          "business_error",
+          providerName,
+          `[${providerName}] 响应体 ${buffer.byteLength} 字节超过上限 ${maxBytes}`,
+        );
+      }
+      return buffer;
+    }
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      total += value.byteLength;
+      if (maxBytes !== undefined && total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new ProviderHttpError(
+          "business_error",
+          providerName,
+          `[${providerName}] 响应体流式读取超过上限 ${maxBytes} 字节，已中止`,
+        );
+      }
+      parts.push(value);
+    }
+    return Buffer.concat(parts.map((part) => Buffer.from(part)));
   }
 }

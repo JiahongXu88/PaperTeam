@@ -1258,3 +1258,47 @@ revision plan / gate 结果 / iteration 关联）与产品 UI 的迭代历史展
   + 护栏测试 +21，全量 1263 测试零回归）；M7.1 验收 = 冻结文档 §6-M7.1
   三条底线（真实项目端到端磁盘证据 / 红线回归全绿 / 全量测试零回归）；
   M7.1 真实 Agent 验证报告见 docs/research/M7.1_DISCOVERY_VALIDATION.md。
+
+## D-0043 M7.2 FullTextResolution：同条目原地补挂全文（attach-to-existing）+ fetchBytes 二进制通道 + SSRF 逐跳护栏 + 有界重试
+
+- **日期**：2026-09-20（M7.2 实现）
+- **状态**：accepted
+- **决策**：FullTextResolver（D-0033 六层唯一缺层 P-D）按 ADR §12 冻结形状
+  落地，四个实现级裁定：
+  1. **同条目原地补挂（attach-to-existing）**：全文下载后经新原语
+     `SourceStore.attachFile` 挂到既有 sourceId（而非 importPdf 新建条目）——
+     chunkId 内嵌 sourceId（D-0036），新建条目会使追溯链
+     「verified ← chunk ← library ← promote ← candidate」在 library 处断成
+     两条（架构评审 N-1）；attach 同步 `sourceType → pdf`（SourceChunker 按
+     sourceType 分派，不更新则全文挂上 chunker 照样 skip——F-1）。
+  2. **ProviderHttpClient.fetchBytes** 为唯一 HTTP 基建增量（文本路径行为
+     不变）：二进制分支复用重试/熔断/健康骨架，不跟随重定向（3xx 携带
+     location 冒泡），maxBytes 走 content-length 预检 + 流式累计截断。
+     下载护栏（downloadPdf）：仅 https / 拒 userinfo / 非 443 端口 / 私网与
+     保留 IP 字面量（agent-search SSRF 逐跳校验教训）；手动逐跳跟随 ≤5 跳，
+     每跳重新校验；%PDF- 魔数确定性拦截落地页/付费墙。
+  3. **三 resolver + 确定性链序**：Unpaywall(DOI，email 复用
+     PAPERTEAM_OPENALEX_MAILTO / CITATION_CONTACT_EMAIL，未配置不注册——
+     optional 降级) → OpenAlex oa-url(DOI/openalexId) → arXiv PDF（预印本
+     兜底）；404 → not_found，网络/5xx → error（error ≠ not_found，D-0023）；
+     只认 PDF 直链（url_for_pdf / pdf_url），landing page 不是全文。
+  4. **有界重试语义**：单次 tryResolveFullText ≤ 链长（≤3）次 resolve、每
+     命中 URL 一次下载，失败落链内下一 resolver；重试 = 手动端点
+     `POST /sources/:sid/resolve-fulltext`（attempts 递增可审计），无自动
+     后台循环。promote 尾部 fire-and-forget 单次尝试（不阻塞响应；
+     attachFile 幂等吸收竞态）。结局是数据不是异常（resolved / not_found /
+     failed / skipped_has_file / not_resolvable；not_resolvable 对无
+     DOI/arXiv 身份的 Web 候选 = 确定性 422，定位不是缺陷）。
+- **理由**：chunker / 检索 / Evidence 三段核验零改动即可闭环（F-2：
+  librarySignature 增量刷新使 attach 自动被检索感知；onFullTextAttached 主动
+  rebuildSource 只是时机提前，SourceNotIndexable 如实记录）；license / url /
+  resolver / attempts 落 SourceItem.fullText provenance（可审计验收）；
+  检索层与 Evidence 写路径红线全部不动（Retrieved ≠ Verified ≠ Grounded）。
+- **不做**：爬虫兜底 / landing page 解析（红线）；跨条目 contentHash 判重
+  （identity 判重在导入/promote 层，D-0033 语义）；手动上传补挂 HTTP 端点与
+  前端 fullText 状态 UI（attachFile 原语已就位，后续按需排期）。
+- **影响**：M7.2 验收五条（SCOPE_FREEZE §6-M7.2）中 ①②③④ 由离线验收链
+  测试覆盖（promote → 全文 → chunk 落盘 → 检索命中 → chunk 回取，同
+  sourceId 单线闭合），⑤ 全量 1333 后端 + 210 前端测试零回归；ADR §3
+  Crossref 勘误同步完成（D-0042 第 4 项收口）；实现计划与设计细节见
+  docs/research/M7.2_IMPLEMENTATION_PLAN.md。
