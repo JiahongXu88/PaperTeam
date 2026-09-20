@@ -11,6 +11,8 @@
  *   GET   /api/projects/:id/research/plans                 → ResearchPlanListView
  *   POST  /api/projects/:id/research/plan/:planId/derive   → { plan }（done → 新 draft，自动激活）
  *   POST  /api/projects/:id/research/plan/:planId/activate → { plan }（切换活动计划）
+ *   GET   /api/projects/:id/research/coverage              → { coverage: ResearchCoverageView | null }
+ *   POST  /api/projects/:id/research/coverage/analyze      → { coverage }（无计划 → 404）
  *
  * 语义：plan 是 Researcher 调研产出（research artifact 的计划链）的一等
  * 视图——只读展示 + 受限编辑（questions / query / rationale / query
@@ -23,6 +25,7 @@
 import { apiClient } from "./client.js";
 import type {
   PlanExecutionResultView,
+  ResearchCoverageView,
   ResearchPlanListView,
   ResearchPlanView,
   ResearchQueryKind,
@@ -141,4 +144,32 @@ export async function activateResearchPlan(
     {},
   );
   return body.plan;
+}
+
+/** ---- Coverage（M8.3.2：只读派生视图——分析不写任何状态）---- */
+
+/**
+ * 当前活动计划的覆盖（即时重算；无 artifact / 无计划 → null 空态）。
+ * 覆盖判定是确定性规则（missing / partial / covered），不依赖 LLM。
+ */
+export async function getResearchCoverage(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ResearchCoverageView | null> {
+  const body = await apiClient.get<{ coverage: ResearchCoverageView | null }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/coverage`,
+    signal,
+  );
+  return body.coverage ?? null;
+}
+
+/** 执行覆盖分析（同一确定性规则；无 artifact / 无计划 → 404） */
+export async function analyzeResearchCoverage(
+  projectId: string,
+): Promise<ResearchCoverageView> {
+  const body = await apiClient.post<{ coverage: ResearchCoverageView }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/coverage/analyze`,
+    {},
+  );
+  return body.coverage;
 }

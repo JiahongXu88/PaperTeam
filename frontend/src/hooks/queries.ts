@@ -49,8 +49,10 @@ import {
 import {
   approveResearchPlan,
   activateResearchPlan,
+  analyzeResearchCoverage,
   deriveResearchPlan,
   executeResearchPlan,
+  getResearchCoverage,
   getResearchPlan,
   listResearchPlans,
   updateResearchPlan,
@@ -139,6 +141,8 @@ export const queryKeys = {
   researchPlan: (projectId: string) => ["project", projectId, "research-plan"] as const,
   /** Research Plan 计划链（M8.3.1；迭代列表 / 派生 / 激活后失效重取） */
   researchPlans: (projectId: string) => ["project", projectId, "research-plans"] as const,
+  /** Research Coverage（M8.3.2；只读派生视图——计划 / 证据 / 候选变化后失效重取） */
+  researchCoverage: (projectId: string) => ["project", projectId, "research-coverage"] as const,
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
@@ -571,12 +575,13 @@ function useInvalidateCandidates(projectId: string | undefined) {
 
 // ---- Research Plan（M8.1：plan 是检索意图的声明，指导下方检索；M8.3.1 迭代链） ----
 
-/** 计划相关缓存失效（活动计划视图 + 迭代链列表一起失效，保证两视图不漂移） */
+/** 计划相关缓存失效（活动计划视图 + 迭代链列表 + 覆盖派生视图一起失效，保证视图不漂移） */
 function useInvalidateResearchPlans(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlans(projectId ?? "") });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.researchCoverage(projectId ?? "") });
   };
 }
 
@@ -642,6 +647,26 @@ export function useActivateResearchPlan(projectId: string | undefined) {
   return useMutation({
     mutationFn: (planId: string) => activateResearchPlan(projectId ?? "", planId),
     onSuccess: () => invalidate(),
+  });
+}
+
+/** 当前活动计划的覆盖报告（M8.3.2 只读派生视图；无计划 → null 空态） */
+export function useResearchCoverage(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchCoverage(projectId ?? ""),
+    queryFn: ({ signal }) => getResearchCoverage(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 执行覆盖分析（M8.3.2：确定性规则即时重算；成功后失效覆盖视图） */
+export function useAnalyzeResearchCoverage(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => analyzeResearchCoverage(projectId ?? ""),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchCoverage(projectId ?? "") });
+    },
   });
 }
 

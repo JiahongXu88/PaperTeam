@@ -27,6 +27,7 @@ import { FeasibilityService } from "./agents/FeasibilityService.js";
 import { ResearcherService } from "./agents/ResearcherService.js";
 import { ResearchPlanExecutionService } from "./agents/researchPlanExecution.js";
 import { ResearchPlanIterationService } from "./agents/researchPlanIteration.js";
+import { ResearchCoverageService } from "./agents/researchCoverage.js";
 import type { AgentRuntime } from "./runtime/types.js";
 import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
@@ -163,6 +164,8 @@ export interface ServiceStack {
   planExecution: ResearchPlanExecutionService;
   /** Research Plan 迭代层（M8.3.1）：列出迭代 / 派生新计划 / 切换活动计划 */
   planIteration: ResearchPlanIterationService;
+  /** Research Coverage Analyzer（M8.3.2）：活动计划覆盖分析（只读派生视图） */
+  coverage: ResearchCoverageService;
   /** Project Retrieval（M6.4）：chunk 管线 + 进程内 hybrid index + Context Packing */
   retrieval: RetrievalService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -390,6 +393,14 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // M8.3.1 计划迭代层：只依赖 ProjectStore（research.json 计划链读改写），
   // 不触碰 Runtime / Workflow / Discovery
   const planIteration = new ResearchPlanIterationService({ projects: options.projects, log });
+  // M8.3.2 覆盖分析层：只读 research.json（活动计划）+ Evidence/Candidate
+  // Store 列表，纯分析不落盘，不触碰 Runtime / Workflow / Discovery
+  const coverage = new ResearchCoverageService({
+    projects: options.projects,
+    evidence,
+    candidates,
+    log,
+  });
   // M6.4 Project Retrieval：chunker 复用 paper 域 PyMuPdfParser（同一工具链，
   // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
   // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
@@ -518,7 +529,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     discovery,
     planExecution,
     planIteration,
-    retrieval,
+    coverage,    retrieval,
     pdfAnalyzer,
     manuscript,
     citation,

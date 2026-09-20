@@ -56,3 +56,47 @@ export interface PlanExecutionResultView {
   failedQueries: number;
   plan: ResearchPlanView;
 }
+
+/** ---- Coverage（M8.3.2 镜像 backend/src/agents/researchCoverage.ts）---- */
+
+export type ResearchCoverageLevel = "covered" | "partial" | "missing";
+
+/** 单个研究问题的覆盖判定（结构化状态，非评分） */
+export interface ResearchCoverageQuestionView {
+  question: string;
+  /** 问题来源：plan（活动计划检索意图）| report（调研报告结论问题） */
+  origin: "plan" | "report";
+  coverage: ResearchCoverageLevel;
+  relatedQueryCount: number;
+  executedQueryCount: number;
+  /** 关联检索带回的 Search Result 总数（≠候选≠文献≠证据） */
+  resultCount: number;
+  evidenceCount: number;
+  promotedCount: number;
+  /** 非 covered 时的缺口描述 */
+  gap?: string;
+}
+
+/** 缺口建议（只建议：下一轮计划仍走显式 derive，不自动执行） */
+export interface ResearchCoverageGapView {
+  description: string;
+  relatedQuestion?: string;
+  suggestedQueries: string[];
+}
+
+/** 覆盖报告（只读派生视图：随源数据即时重算，不落盘） */
+export interface ResearchCoverageView {
+  planId: string;
+  planStatus: ResearchPlanStatus;
+  iterationNumber?: number;
+  analyzedAt: string;
+  questions: ResearchCoverageQuestionView[];
+  overall: {
+    questionCount: number;
+    covered: number;
+    partial: number;
+    missing: number;
+    summary: string;
+  };
+  gaps: ResearchCoverageGapView[];
+}

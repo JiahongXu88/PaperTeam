@@ -13,6 +13,7 @@ import type {
 } from "../src/types/sources.js";
 import type {
   PlanExecutionResultView,
+  ResearchCoverageView,
   ResearchPlanListView,
   ResearchPlanView,
 } from "../src/types/researchPlan.js";
@@ -43,6 +44,8 @@ vi.mock("../src/api/researchPlan.js", () => ({
   listResearchPlans: vi.fn(async () => ({ plans: [], activePlanId: null })),
   deriveResearchPlan: vi.fn(),
   activateResearchPlan: vi.fn(),
+  getResearchCoverage: vi.fn(async () => null),
+  analyzeResearchCoverage: vi.fn(),
 }));
 
 const api = vi.mocked(await import("../src/api/discovery.js"));
@@ -731,5 +734,174 @@ describe("DiscoveryPanel（M8.3.1 Research Plan Iteration）", () => {
 
     expect(await screen.findByText("派生计划失败")).toBeTruthy();
     expect(screen.getByText(/只有已完成/)).toBeTruthy();
+  });
+});
+
+describe("DiscoveryPanel（M8.3.2 Research Coverage）", () => {
+  function coverageView(overrides: Partial<ResearchCoverageView> = {}): ResearchCoverageView {
+    return {
+      planId: "rp-plan00000002",
+      planStatus: "done",
+      iterationNumber: 2,
+      analyzedAt: NOW,
+      questions: [
+        {
+          question: "Transformer tracking 的发展脉络",
+          origin: "plan",
+          coverage: "covered",
+          relatedQueryCount: 1,
+          executedQueryCount: 1,
+          resultCount: 5,
+          evidenceCount: 1,
+          promotedCount: 0,
+        },
+        {
+          question: "edge device 部署优化",
+          origin: "plan",
+          coverage: "partial",
+          relatedQueryCount: 1,
+          executedQueryCount: 1,
+          resultCount: 3,
+          evidenceCount: 0,
+          promotedCount: 0,
+          gap: "有 1 条检索带回 3 条结果，但尚无相关证据或已入库文献支撑（Candidate / Evidence 层未覆盖）",
+        },
+        {
+          question: "遮挡场景身份保持",
+          origin: "report",
+          coverage: "missing",
+          relatedQueryCount: 0,
+          executedQueryCount: 0,
+          resultCount: 0,
+          evidenceCount: 0,
+          promotedCount: 0,
+          gap: "计划中没有任何与该问题相关的检索（建议围绕问题原文制定检索词）",
+        },
+      ],
+      overall: {
+        questionCount: 3,
+        covered: 1,
+        partial: 1,
+        missing: 1,
+        summary: "研究问题 3 个：covered 1 · partial 1 · missing 1；缺口 3 项",
+      },
+      gaps: [
+        {
+          description:
+            "有 1 条检索带回 3 条结果，但尚无相关证据或已入库文献支撑（Candidate / Evidence 层未覆盖）",
+          relatedQuestion: "edge device 部署优化",
+          suggestedQueries: ["edge device 部署优化"],
+        },
+        {
+          description: "计划中没有任何与该问题相关的检索（建议围绕问题原文制定检索词）",
+          relatedQuestion: "遮挡场景身份保持",
+          suggestedQueries: ["遮挡场景身份保持"],
+        },
+        {
+          description: "调研报告登记的残差文献方向：低照度场景数据集",
+          suggestedQueries: ["低照度场景数据集"],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("无报告：空态引导；分析按钮存在（未点击不请求 analyze）", async () => {
+    await renderPanel([]);
+
+    expect(screen.getByTestId("coverage-section")).toBeTruthy();
+    expect(screen.getByTestId("coverage-empty")).toBeTruthy();
+    expect(screen.getByTestId("analyze-coverage")).toBeTruthy();
+    expect(planApi.analyzeResearchCoverage).not.toHaveBeenCalled();
+  });
+
+  it("点击「分析覆盖」→ analyze API 调用；问题状态 / 计数 / 缺口建议如实渲染", async () => {
+    await renderPanel([]);
+    const user = userEvent.setup();
+
+    planApi.analyzeResearchCoverage.mockResolvedValue(coverageView());
+    await user.click(screen.getByTestId("analyze-coverage"));
+
+    await waitFor(() => expect(planApi.analyzeResearchCoverage).toHaveBeenCalledTimes(1));
+    expect(planApi.analyzeResearchCoverage).toHaveBeenCalledWith("p-1");
+    expect(await screen.findByTestId("coverage-questions")).toBeTruthy();
+    // 三态徽标 + 来源标注 + 覆盖计数
+    expect(screen.getByText("已覆盖")).toBeTruthy();
+    expect(screen.getByText("部分覆盖")).toBeTruthy();
+    expect(screen.getByText("未覆盖")).toBeTruthy();
+    expect(screen.getAllByText("计划问题").length).toBe(2);
+    expect(screen.getByText("报告问题")).toBeTruthy();
+    expect(screen.getAllByText(/关联检索 1/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/证据 1/)).toBeTruthy();
+    expect(screen.getByText(/缺口：计划中没有任何与该问题相关的检索/)).toBeTruthy();
+    // 汇总 + 缺口建议（含 literaturePlan 残差）
+    expect(screen.getByTestId("coverage-summary").textContent).toContain(
+      "covered 1 · partial 1 · missing 1；缺口 3 项",
+    );
+    expect(screen.getAllByText(/建议检索：/).length).toBe(3);
+    expect(screen.getByText(/调研报告登记的残差文献方向：低照度场景数据集/)).toBeTruthy();
+  });
+
+  it("GET 派生视图自动加载：getResearchCoverage 返回报告 → 不点击也展示", async () => {
+    planApi.getResearchCoverage.mockResolvedValue(coverageView());
+    await renderPanel([]);
+
+    expect(await screen.findByTestId("coverage-questions")).toBeTruthy();
+    expect(planApi.analyzeResearchCoverage).not.toHaveBeenCalled();
+  });
+
+  it("按缺口派生下一轮：done 活动计划 → 复用既有 derive API 携带建议检索", async () => {
+    planApi.listResearchPlans.mockResolvedValue({
+      plans: [
+        planView({ planId: "rp-plan00000002", status: "done", iterationNumber: 2 }),
+      ],
+      activePlanId: "rp-plan00000002",
+    });
+    planApi.getResearchPlan.mockResolvedValue(planView({ planId: "rp-plan00000002", status: "done" }));
+    planApi.getResearchCoverage.mockResolvedValue(coverageView());
+    await renderPanel([], "Transformer MOT");
+    const user = userEvent.setup();
+
+    const button = await screen.findByTestId("create-next-plan");
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    planApi.deriveResearchPlan.mockResolvedValue(planView({ status: "draft" }));
+    await user.click(button);
+
+    await waitFor(() => expect(planApi.deriveResearchPlan).toHaveBeenCalledTimes(1));
+    expect(planApi.deriveResearchPlan).toHaveBeenCalledWith("p-1", "rp-plan00000002", {
+      queries: [
+        { query: "edge device 部署优化", kind: "academic" },
+        { query: "遮挡场景身份保持", kind: "academic" },
+        { query: "低照度场景数据集", kind: "academic" },
+      ],
+    });
+  });
+
+  it("派生按钮禁用：活动计划非 done（draft）→ 不调用 derive", async () => {
+    planApi.listResearchPlans.mockResolvedValue({
+      plans: [planView({ planId: "rp-plan00000002", status: "draft", iterationNumber: 2 })],
+      activePlanId: "rp-plan00000002",
+    });
+    planApi.getResearchPlan.mockResolvedValue(planView({ planId: "rp-plan00000002", status: "draft" }));
+    planApi.getResearchCoverage.mockResolvedValue(coverageView());
+    await renderPanel([], "Transformer MOT");
+
+    const button = await screen.findByTestId("create-next-plan");
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect(button.textContent).toContain("按缺口派生下一轮");
+    expect(planApi.deriveResearchPlan).not.toHaveBeenCalled();
+  });
+
+  it("分析失败：错误如实呈现（不吞 404）", async () => {
+    await renderPanel([]);
+    const user = userEvent.setup();
+
+    planApi.analyzeResearchCoverage.mockRejectedValue(
+      new Error("项目还没有调研结果（research/research.json 不存在），请先运行调研再分析覆盖"),
+    );
+    await user.click(screen.getByTestId("analyze-coverage"));
+
+    expect(await screen.findByText("覆盖分析失败")).toBeTruthy();
+    expect(screen.getByText(/请先运行调研再分析覆盖/)).toBeTruthy();
   });
 });

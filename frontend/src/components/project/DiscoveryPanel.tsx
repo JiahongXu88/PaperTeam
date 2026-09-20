@@ -6,12 +6,14 @@ import { formatDateTime } from "../../utils/format.js";
 import {
   useAcademicSearch,
   useActivateResearchPlan,
+  useAnalyzeResearchCoverage,
   useApproveResearchPlan,
   useCandidates,
   useDeriveResearchPlan,
   useExecuteResearchPlan,
   usePromoteCandidate,
   useRejectCandidate,
+  useResearchCoverage,
   useResearchPlan,
   useResearchPlans,
   useUpdateResearchPlan,
@@ -22,7 +24,12 @@ import type {
   ProviderAttemptView,
   WebResultView,
 } from "../../types/discovery.js";
-import type { PlanExecutionResultView } from "../../types/researchPlan.js";
+import type {
+  PlanExecutionResultView,
+  ResearchCoverageLevel,
+  ResearchCoverageQuestionView,
+  ResearchCoverageView,
+} from "../../types/researchPlan.js";
 import type {
   CandidateOrigin,
   CandidateSourceView,
@@ -48,6 +55,9 @@ import type { DiscoveryMode } from "../../api/discovery.js";
  * - M8.3.1：计划完成后可迭代——迭代条（v1 / v2…当前标记）、查看历史计划、
  *   派生新计划（done → 新 draft）、把历史计划设为当前（GET /research/plans +
  *   POST derive / activate）；编辑 / 批准 / 执行始终作用于当前活动计划；
+ * - M8.3.2：覆盖分析（Coverage Analysis）——当前活动计划执行后的确定性
+ *   覆盖报告（covered / partial / missing + 缺口建议），只读派生视图；
+ *   「按缺口派生下一轮」复用既有 derive API，不新增第二套创建逻辑；
  * - 检索走既有 POST /research/{academic|web}-search：默认只返回不持久化，
  *   「保存选中」用同一端点的 saveAsCandidates（结果下标）显式写入候选；
  * - 候选列表 / Promote / Reject 走既有 /sources/candidates 端点群；
@@ -706,6 +716,202 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
   );
 }
 
+// ---- Coverage Analysis（M8.3.2：只读派生视图 + 缺口建议） ----
+
+const COVERAGE_LEVEL_LABELS: Record<ResearchCoverageLevel, string> = {
+  covered: "已覆盖",
+  partial: "部分覆盖",
+  missing: "未覆盖",
+};
+
+/** status → chip tone（已覆盖=信息色；未覆盖=警示色；部分覆盖=默认） */
+function coverageTone(level: ResearchCoverageLevel): string {
+  if (level === "covered") return "chip-tone-info";
+  if (level === "missing") return "chip-tone-warn";
+  return "";
+}
+
+function CoverageQuestionRow({ entry }: { entry: ResearchCoverageQuestionView }) {
+  return (
+    <li className="source-row candidate-row">
+      <div className="source-row-main">
+        <span className="source-title">{entry.question}</span>
+        <span className="source-chips">
+          <span className={`chip ${coverageTone(entry.coverage)}`}>
+            {COVERAGE_LEVEL_LABELS[entry.coverage]}
+          </span>
+          <span className="chip chip-outline" title="问题来源">
+            {entry.origin === "plan" ? "计划问题" : "报告问题"}
+          </span>
+        </span>
+      </div>
+      <div className="source-row-meta">
+        <span title="与该问题关联的计划检索数">关联检索 {entry.relatedQueryCount}</span>
+        <span title="关联检索中已执行且带回结果的条数">已执行 {entry.executedQueryCount}</span>
+        <span title="Search Result 计数（≠候选≠文献≠证据）">结果 {entry.resultCount}</span>
+        <span title="关联 EvidenceStore 证据条数">证据 {entry.evidenceCount}</span>
+        <span title="关联已入库文献数">已入库 {entry.promotedCount}</span>
+      </div>
+      {entry.gap !== undefined ? (
+        <div className="source-row-meta candidate-snippet">缺口：{entry.gap}</div>
+      ) : null}
+    </li>
+  );
+}
+
+function CoverageSection({ projectId }: { projectId: string }) {
+  const coverage = useResearchCoverage(projectId);
+  const analyze = useAnalyzeResearchCoverage(projectId);
+  const plans = useResearchPlans(projectId);
+  const derive = useDeriveResearchPlan(projectId);
+
+  // 展示最近一次分析结果（POST 优先于 GET 派生视图）
+  const report: ResearchCoverageView | null = analyze.data ?? coverage.data ?? null;
+  const activePlanId = plans.data?.activePlanId ?? null;
+  const activeStatus =
+    plans.data?.plans.find((entry) => entry.planId === activePlanId)?.status ?? undefined;
+  // 缺口建议检索（去重；条数对齐后端计划检索上限 30）
+  const suggestedQueries =
+    report === null
+      ? []
+      : [
+          ...new Set(
+            report.gaps.flatMap((gap) => gap.suggestedQueries.map((query) => query.trim())),
+          ),
+        ]
+          .filter((query) => query !== "")
+          .slice(0, 30);
+  const canCreateNext =
+    report !== null &&
+    suggestedQueries.length > 0 &&
+    activePlanId !== null &&
+    activeStatus === "done";
+
+  const runCreateNext = () => {
+    if (activePlanId === null || suggestedQueries.length === 0) {
+      return;
+    }
+    // 复用既有 derive API：建议检索作为下一轮检索词（questions 整拷当前计划），
+    // 不新增第二套 Plan 创建逻辑；派生后仍需编辑、批准才会执行
+    derive.mutate({
+      planId: activePlanId,
+      input: { queries: suggestedQueries.map((query) => ({ query, kind: "academic" })) },
+    });
+  };
+
+  return (
+    <section className="panel section-block" data-testid="coverage-section">
+      <div className="section-head">
+        <h2>覆盖分析</h2>
+        <span className="section-note">只读分析 · 不改计划与证据</span>
+      </div>
+      <p className="field-help">
+        对当前活动计划做确定性覆盖分析（不含 LLM 判断）：研究问题是否被检索 /
+        证据 / 入库文献覆盖，哪些方向仍有缺口。报告是即时重算的派生视图，不落盘。
+      </p>
+      <div className="action-row">
+        <button
+          type="button"
+          className="btn btn-small"
+          onClick={() => analyze.mutate()}
+          disabled={analyze.isPending || derive.isPending}
+          data-testid="analyze-coverage"
+        >
+          {analyze.isPending ? "分析中…" : "分析覆盖"}
+        </button>
+      </div>
+      {analyze.isError ? (
+        <ErrorState
+          title="覆盖分析失败"
+          message={formatApiError(analyze.error)}
+          detail={formatApiErrorDetail(analyze.error)}
+        />
+      ) : null}
+      {derive.isError ? (
+        <ErrorState
+          title="派生计划失败"
+          message={formatApiError(derive.error)}
+          detail={formatApiErrorDetail(derive.error)}
+        />
+      ) : null}
+      {report === null ? (
+        coverage.isPending ? (
+          <Loading label="加载覆盖报告…" />
+        ) : (
+          <p className="panel-empty" data-testid="coverage-empty">
+            还没有覆盖报告。当前活动计划有研究问题时，点击「分析覆盖」查看覆盖情况。
+          </p>
+        )
+      ) : (
+        <div className="panel-stack">
+          <p className="note" role="status" data-testid="coverage-summary">
+            <span>
+              <span className="note-mark">✓</span> {report.overall.summary}（分析于{" "}
+              {formatDateTime(report.analyzedAt) ?? "—"}
+              {report.iterationNumber !== undefined ? ` · v${report.iterationNumber}` : ""}）
+            </span>
+          </p>
+          <div className="field">
+            <span className="field-label">Research Coverage</span>
+            {report.questions.length === 0 ? (
+              <p className="muted">（活动计划没有研究问题）</p>
+            ) : (
+              <ul className="source-list" data-testid="coverage-questions">
+                {report.questions.map((entry, index) => (
+                  <CoverageQuestionRow key={`${index}-${entry.question}`} entry={entry} />
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="field">
+            <span className="field-label">Gaps（缺口与建议）</span>
+            {report.gaps.length === 0 ? (
+              <p className="muted">无缺口：全部研究问题均已覆盖。</p>
+            ) : (
+              <ul className="notes-list" data-testid="coverage-gaps">
+                {report.gaps.map((gap, index) => (
+                  <li key={`${index}-${gap.description}`}>
+                    <div>{gap.description}</div>
+                    {gap.suggestedQueries.length > 0 ? (
+                      <div className="source-row-meta candidate-snippet">
+                        建议检索：{gap.suggestedQueries.join("；")}
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {report.gaps.length > 0 ? (
+            <div className="action-row">
+              <button
+                type="button"
+                className="btn btn-small btn-primary"
+                onClick={runCreateNext}
+                disabled={!canCreateNext || derive.isPending}
+                title={
+                  activeStatus === "done"
+                    ? "以缺口建议检索作为下一轮检索词派生 draft 计划"
+                    : "只有已完成（done）的计划才能派生下一轮"
+                }
+                data-testid="create-next-plan"
+              >
+                {derive.isPending
+                  ? "派生中…"
+                  : `按缺口派生下一轮（${suggestedQueries.length} 条建议检索）`}
+              </button>
+              <span className="field-help">
+                调用既有「派生新计划」接口（不自动批准 / 执行）；下一轮 questions 整拷当前计划，
+                派生后可先编辑再批准。
+              </span>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SearchSection({ projectId }: { projectId: string }) {  const [mode, setMode] = useState<DiscoveryMode>("academic");
   const [query, setQuery] = useState("");
   const [yearFromText, setYearFromText] = useState("");
@@ -1177,6 +1383,7 @@ export function DiscoveryPanel({ projectId, topic }: { projectId: string; topic?
   return (
     <div className="panel-stack" data-testid="discovery-panel">
       <ResearchPlanSection projectId={projectId} topic={topic} />
+      <CoverageSection projectId={projectId} />
       <SearchSection projectId={projectId} />
       <CandidateSection projectId={projectId} />
     </div>

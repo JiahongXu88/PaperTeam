@@ -1158,6 +1158,20 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { plans: chain.plans, activePlanId: chain.activePlanId ?? null });
       return true;
     }
+    // ---- /coverage · /coverage/analyze（M8.3.2：Research Coverage Analyzer——
+    //      只读派生视图：GET 即时重算当前活动计划覆盖；POST 同规则 + 无计划 404）----
+    if (rest === "/coverage" || rest === "/coverage/analyze") {
+      const isAnalyze = rest === "/coverage/analyze";
+      if (method !== (isAnalyze ? "POST" : "GET")) {
+        sendMethodNotAllowed(res, isAnalyze ? "POST" : "GET", method);
+        return true;
+      }
+      const coverage = isAnalyze
+        ? await stack.coverage.analyze(projectId)
+        : await stack.coverage.get(projectId);
+      sendJson(res, 200, { coverage });
+      return true;
+    }
     // ---- /plan/:planId/derive · /plan/:planId/activate（M8.3.1：派生下一轮 / 切换活动计划）----
     const planIterationMatch = /^\/plan\/([a-z0-9][a-z0-9-]{0,63})\/(derive|activate)$/.exec(rest);
     if (planIterationMatch !== null) {
