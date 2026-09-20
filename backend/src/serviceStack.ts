@@ -25,6 +25,7 @@ import { ProjectStore } from "./project/ProjectStore.js";
 import { ProjectImportService } from "./project/ProjectImportService.js";
 import { FeasibilityService } from "./agents/FeasibilityService.js";
 import { ResearcherService } from "./agents/ResearcherService.js";
+import { ResearchPlanExecutionService } from "./agents/researchPlanExecution.js";
 import type { AgentRuntime } from "./runtime/types.js";
 import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
@@ -157,6 +158,8 @@ export interface ServiceStack {
   sourceImport: SourceImportService;
   /** Research Discovery（M6.3）：Academic / Web Search 编排 + 显式 Candidate 持久化 */
   discovery: ResearchDiscoveryService;
+  /** Research Plan 执行层（M8.2）：批准 / 执行 approved 计划 + executionHistory 回填 */
+  planExecution: ResearchPlanExecutionService;
   /** Project Retrieval（M6.4）：chunk 管线 + 进程内 hybrid index + Context Packing */
   retrieval: RetrievalService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -378,6 +381,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     web: new WebSearchService(webProviders),
     candidates,
   });
+  // M8.2 计划执行层：只依赖 discovery 编排 + ProjectStore（research.json 读改写），
+  // 不触碰 Runtime / Workflow / Provider 装配
+  const planExecution = new ResearchPlanExecutionService({ projects: options.projects, discovery, log });
   // M6.4 Project Retrieval：chunker 复用 paper 域 PyMuPdfParser（同一工具链，
   // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
   // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
@@ -504,6 +510,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     candidates,
     sourceImport,
     discovery,
+    planExecution,
     retrieval,
     pdfAnalyzer,
     manuscript,

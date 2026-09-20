@@ -11,7 +11,7 @@ import type {
   CandidatePromoteResult,
   CandidateSourceView,
 } from "../src/types/sources.js";
-import type { ResearchPlanView } from "../src/types/researchPlan.js";
+import type { PlanExecutionResultView, ResearchPlanView } from "../src/types/researchPlan.js";
 import { renderWithProviders } from "./helpers.js";
 
 /**
@@ -34,6 +34,8 @@ vi.mock("../src/api/discovery.js", () => ({
 vi.mock("../src/api/researchPlan.js", () => ({
   getResearchPlan: vi.fn(async () => null),
   updateResearchPlan: vi.fn(),
+  approveResearchPlan: vi.fn(),
+  executeResearchPlan: vi.fn(),
 }));
 
 const api = vi.mocked(await import("../src/api/discovery.js"));
@@ -472,5 +474,133 @@ describe("DiscoveryPanel（M8.1 Research Plan 展示与编辑）", () => {
 
     expect(await screen.findByText(/第 1 条检索词为空/)).toBeTruthy();
     expect(planApi.updateResearchPlan).not.toHaveBeenCalled();
+  });
+});
+
+describe("DiscoveryPanel（M8.2 Research Plan Execution）", () => {
+  function executionResult(
+    overrides: Partial<PlanExecutionResultView> = {},
+  ): PlanExecutionResultView {
+    return {
+      executionId: "exec-000000000001",
+      totalQueries: 2,
+      executedQueries: 2,
+      failedQueries: 0,
+      plan: planView({ status: "done" }),
+      ...overrides,
+    };
+  }
+
+  it("draft：展示「批准计划」（无执行按钮）；点击 → approve API 调用", async () => {
+    await renderPanelWithPlan(planView()); // 默认 draft
+    const user = userEvent.setup();
+
+    expect(screen.getByTestId("plan-status").textContent).toBe("草稿");
+    expect(screen.getByRole("button", { name: "批准计划" })).toBeTruthy();
+    expect(screen.queryByTestId("execute-plan")).toBeNull();
+
+    planApi.approveResearchPlan.mockResolvedValue(planView({ status: "approved" }));
+    await user.click(screen.getByRole("button", { name: "批准计划" }));
+
+    await waitFor(() => expect(planApi.approveResearchPlan).toHaveBeenCalledTimes(1));
+    expect(planApi.approveResearchPlan).toHaveBeenCalledWith("p-1");
+    expect(planApi.executeResearchPlan).not.toHaveBeenCalled();
+  });
+
+  it("approved：执行按钮 → 点击调用 execute API，成功后展示执行结果摘要", async () => {
+    await renderPanelWithPlan(
+      planView({ status: "approved", queries: [
+        { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "planned" },
+        { queryId: "q-2", query: "real-time transformer tracking", kind: "web", status: "planned" },
+      ] }),
+    );
+    const user = userEvent.setup();
+
+    expect(screen.getByTestId("plan-status").textContent).toBe("已批准");
+    expect(screen.queryByRole("button", { name: "批准计划" })).toBeNull();
+
+    planApi.executeResearchPlan.mockResolvedValue(
+      executionResult({
+        executedQueries: 1,
+        failedQueries: 1,
+        plan: planView({
+          status: "done",
+          queries: [
+            { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "executed", resultCount: 25 },
+            { queryId: "q-2", query: "real-time transformer tracking", kind: "web", status: "planned" },
+          ],
+        }),
+      }),
+    );
+    await user.click(screen.getByTestId("execute-plan"));
+
+    await waitFor(() => expect(planApi.executeResearchPlan).toHaveBeenCalledTimes(1));
+    expect(planApi.executeResearchPlan).toHaveBeenCalledWith("p-1");
+    expect(
+      await screen.findByText(/计划执行完成：1 条检索成功、1 条失败/),
+    ).toBeTruthy();
+    expect(screen.getByText(/计划共 2 条/)).toBeTruthy();
+  });
+
+  it("执行后回填展示：executed 状态与结果数（Query / Status / Results）", async () => {
+    await renderPanelWithPlan(
+      planView({ status: "approved", queries: [
+        { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "planned" },
+      ] }),
+    );
+    const user = userEvent.setup();
+
+    planApi.executeResearchPlan.mockResolvedValue(
+      executionResult({
+        totalQueries: 1,
+        executedQueries: 1,
+        plan: planView({
+          status: "done",
+          queries: [
+            { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "executed", resultCount: 25 },
+          ],
+        }),
+      }),
+    );
+    // execute 成功后 invalidate 触发重取：getResearchPlan 返回回填后的 plan
+    planApi.getResearchPlan.mockResolvedValue(
+      planView({
+        status: "done",
+        queries: [
+          { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "executed", resultCount: 25 },
+        ],
+      }),
+    );
+    await user.click(screen.getByTestId("execute-plan"));
+
+    expect(await screen.findByText("25 条结果")).toBeTruthy();
+    expect(await screen.findByText("已执行")).toBeTruthy();
+    expect(screen.getByTestId("plan-status").textContent).toBe("已完成");
+  });
+
+  it("done：不渲染批准 / 执行按钮，显示完成提示", async () => {
+    await renderPanelWithPlan(planView({ status: "done" }));
+
+    expect(screen.getByTestId("plan-status").textContent).toBe("已完成");
+    expect(screen.queryByRole("button", { name: "批准计划" })).toBeNull();
+    expect(screen.queryByTestId("execute-plan")).toBeNull();
+    expect(screen.getByText(/本轮计划已执行完成/)).toBeTruthy();
+  });
+
+  it("执行失败：错误如实呈现（不吞 409）", async () => {
+    await renderPanelWithPlan(
+      planView({ status: "approved", queries: [
+        { queryId: "q-1", query: "Transformer MOT survey", kind: "academic", status: "planned" },
+      ] }),
+    );
+    const user = userEvent.setup();
+
+    planApi.executeResearchPlan.mockRejectedValue(
+      new Error("该计划正在执行中，禁止重复执行"),
+    );
+    await user.click(screen.getByTestId("execute-plan"));
+
+    expect(await screen.findByText("计划执行失败")).toBeTruthy();
+    expect(screen.getByText(/禁止重复执行/)).toBeTruthy();
   });
 });

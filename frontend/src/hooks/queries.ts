@@ -47,6 +47,8 @@ import {
   type WebSearchInput,
 } from "../api/discovery.js";
 import {
+  approveResearchPlan,
+  executeResearchPlan,
   getResearchPlan,
   updateResearchPlan,
   type ResearchPlanUpdateInput,
@@ -578,6 +580,28 @@ export function useUpdateResearchPlan(projectId: string | undefined) {
   return useMutation({
     mutationFn: (input: ResearchPlanUpdateInput) =>
       updateResearchPlan(projectId ?? "", input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
+    },
+  });
+}
+
+/** 批准计划（draft → approved）：成功后失效计划（状态与 updatedAt 变化） */
+export function useApproveResearchPlan(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => approveResearchPlan(projectId ?? ""),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
+    },
+  });
+}
+
+/** 执行 approved 计划：成功后失效计划（query 状态 / resultCount / plan 状态回填） */
+export function useExecuteResearchPlan(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => executeResearchPlan(projectId ?? ""),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
     },

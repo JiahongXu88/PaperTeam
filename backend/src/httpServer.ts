@@ -1122,6 +1122,32 @@ async function handleProjectResourceRoutes(
   // ---- research（M6.3：Research Discovery——project-scoped 学术 / Web 检索 + 显式候选保存）----
   if (resource === "research") {
     await stack.projects.getRequired(projectId);
+    // ---- /plan/execute（M8.2：执行 approved 计划——planned query 逐一检索并回填）----
+    if (rest === "/plan/execute") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const result = await stack.planExecution.execute(projectId);
+      sendJson(res, 200, {
+        executionId: result.executionId,
+        totalQueries: result.totalQueries,
+        executedQueries: result.executedQueries,
+        failedQueries: result.failedQueries,
+        plan: result.plan,
+      });
+      return true;
+    }
+    // ---- /plan/approve（M8.2：批准计划 draft → approved，显式 HITL 动作）----
+    if (rest === "/plan/approve") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const plan = await stack.planExecution.approve(projectId);
+      sendJson(res, 200, { plan });
+      return true;
+    }
     // ---- /plan（M8.1：Research Plan 一等产物——读取 / 编辑调研产出的检索计划）----
     if (rest === "/plan") {
       if (method === "GET") {

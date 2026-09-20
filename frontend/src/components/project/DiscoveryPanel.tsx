@@ -5,7 +5,9 @@ import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import {
   useAcademicSearch,
+  useApproveResearchPlan,
   useCandidates,
+  useExecuteResearchPlan,
   usePromoteCandidate,
   useRejectCandidate,
   useResearchPlan,
@@ -17,6 +19,7 @@ import type {
   ProviderAttemptView,
   WebResultView,
 } from "../../types/discovery.js";
+import type { PlanExecutionResultView } from "../../types/researchPlan.js";
 import type {
   CandidateOrigin,
   CandidateSourceView,
@@ -443,20 +446,34 @@ function PlanEditForm({
 
 function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: string }) {
   const [editing, setEditing] = useState(false);
+  const [executionSummary, setExecutionSummary] = useState<PlanExecutionResultView | null>(null);
   const plan = useResearchPlan(projectId);
+  const approve = useApproveResearchPlan(projectId);
+  const execute = useExecuteResearchPlan(projectId);
+  const actionPending = approve.isPending || execute.isPending;
+  const currentStatus = plan.data?.status;
+
+  const runExecute = () => {
+    setExecutionSummary(null);
+    execute.mutate(undefined, {
+      onSuccess: (result) => setExecutionSummary(result),
+    });
+  };
 
   return (
     <section className="panel section-block" data-testid="research-plan-section">
       <div className="section-head">
         <h2>Research Plan</h2>
-        {plan.data !== null && plan.data !== undefined ? (
+        {currentStatus !== undefined ? (
           <>
-            <span className="section-note">{PLAN_STATUS_LABELS[plan.data.status]}</span>
+            <span className={`chip${currentStatus === "done" ? " chip-tone-info" : ""}`} data-testid="plan-status">
+              {PLAN_STATUS_LABELS[currentStatus]}
+            </span>
             <button
               type="button"
               className="btn btn-small"
               onClick={() => setEditing((prev) => !prev)}
-              disabled={plan.isPending}
+              disabled={plan.isPending || actionPending}
             >
               {editing ? "收起编辑" : "编辑"}
             </button>
@@ -464,9 +481,40 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
         ) : null}
       </div>
       <p className="field-help">
-        检索计划是 Researcher 调研产出的检索意图声明（先计划后检索）；计划的执行回填与
-        状态流转属于后续里程碑，这里支持查看与受限编辑。
+        检索计划是 Researcher 调研产出的检索意图声明（先计划后检索）。批准（draft →
+        已批准）后可执行：计划中「计划中」的检索会逐一运行并回填状态与结果数。
+        执行只产生检索结果，不会自动保存候选或产生文献 / Evidence——保存仍由你在下方检索结果中显式勾选。
       </p>
+      {!editing && currentStatus !== undefined ? (
+        <div className="action-row">
+          {currentStatus === "draft" ? (
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={() => approve.mutate()}
+              disabled={actionPending}
+              data-testid="approve-plan"
+            >
+              {approve.isPending ? "批准中…" : "批准计划"}
+            </button>
+          ) : null}
+          {currentStatus === "approved" ? (
+            <button
+              type="button"
+              className="btn btn-small btn-primary"
+              onClick={runExecute}
+              disabled={actionPending}
+              data-testid="execute-plan"
+            >
+              {execute.isPending ? "执行中…" : "执行计划"}
+            </button>
+          ) : null}
+          {currentStatus === "executing" ? <span className="muted">计划执行中…</span> : null}
+          {currentStatus === "done" ? (
+            <span className="muted">本轮计划已执行完成；编辑补充新检索后再走批准流。</span>
+          ) : null}
+        </div>
+      ) : null}
       {plan.isPending ? (
         <Loading label="加载检索计划…" />
       ) : plan.isError ? (
@@ -475,6 +523,18 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
           message={formatApiError(plan.error)}
           detail={formatApiErrorDetail(plan.error)}
           onRetry={() => void plan.refetch()}
+        />
+      ) : approve.isError ? (
+        <ErrorState
+          title="计划批准失败"
+          message={formatApiError(approve.error)}
+          detail={formatApiErrorDetail(approve.error)}
+        />
+      ) : execute.isError ? (
+        <ErrorState
+          title="计划执行失败"
+          message={formatApiError(execute.error)}
+          detail={formatApiErrorDetail(execute.error)}
         />
       ) : plan.data === null ? (
         <p className="panel-empty" data-testid="research-plan-empty">
@@ -513,6 +573,22 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
               </ul>
             )}
           </div>
+          {executionSummary !== null ? (
+            <p
+              className={`note ${executionSummary.failedQueries > 0 ? "note-warn" : "note-success"}`}
+              role="status"
+              data-testid="plan-execution-result"
+            >
+              <span>
+                <span className="note-mark">{executionSummary.failedQueries > 0 ? "!" : "✓"}</span>{" "}
+                计划执行完成：{executionSummary.executedQueries} 条检索成功
+                {executionSummary.failedQueries > 0
+                  ? `、${executionSummary.failedQueries} 条失败（失败原因已记录在执行历史，条目保持计划中可重试）`
+                  : ""}
+                （计划共 {executionSummary.totalQueries} 条）。
+              </span>
+            </p>
+          ) : null}
           <p className="muted">
             更新于 {formatDateTime(plan.data.updatedAt) ?? "—"} · planId {plan.data.planId}
           </p>

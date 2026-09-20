@@ -1,0 +1,262 @@
+/**
+ * ResearchPlan Execution Layer（M8.2：可执行研究计划）。
+ *
+ * 把 M8.1 的静态 ResearchPlan 升级为可执行：批准（draft → approved）后，
+ * 遍历 plan.queries 中 status=planned 的条目，复用 ResearchDiscoveryService
+ * 执行检索（academic / web 按 kind 分派），回填 query 状态与 resultCount，
+ * 并把最小执行记录（executionHistory）挂在 research artifact 顶层的可选字段。
+ *
+ * 冻结规则（M8 架构）全部遵守：
+ * - 不新增 Agent：本服务不调用 Runtime.runAgent，检索走既有 Discovery 编排层；
+ * - 不修改 Runtime / Workflow Orchestrator：纯 Service，不进 workflowServices；
+ * - 不引入 RAG / Vector DB / MCP / 新 Provider / CLI：搜索逻辑 100% 复用
+ *   ResearchDiscoveryService（provider 装配零变化）；
+ * - Evidence 不变量：执行只产生「Search Result 计数」，不写 CandidateStore /
+ *   SourceStore / EvidenceStore，不 prime 检索缓存（不传 projectId）——
+ *   Search Result ≠ Candidate ≠ Literature ≠ Verified Evidence 链路原样，
+ *   保存候选 → promote → Evidence 仍由用户显式驱动（M7 设计不变）。
+ *
+ * 状态机：draft → approved → executing → done。
+ * - draft 只能编辑（执行 → 409）；approved 允许执行；executing 禁止重复执行；
+ * - done 表示本轮计划执行完成（再执行 → 409）；
+ * - 不自动把 draft 改 approved（批准是显式 HITL 动作）。
+ */
+
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
+
+import { BusinessError } from "../errors.js";
+import type { ProjectStore } from "../project/ProjectStore.js";
+import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
+import { readResearchArtifact, type ResearchArtifact } from "./ResearcherService.js";
+import type { ResearchPlan, ResearchPlanQuery, ResearchQueryKind } from "./researchPlan.js";
+
+/** 单条 query 的执行记录状态（成功 executed / 失败 failed，均如实入 history） */
+export type PlanExecutionEntryStatus = "executed" | "failed";
+
+/**
+ * 最小执行记录（挂在 research.json 顶层可选字段 executionHistory）。
+ * timestamp 即该 query 的 executedAt；失败条目带 error（排障摘要）。
+ */
+export interface PlanExecutionEntry {
+  executionId: string;
+  queryId: string;
+  query: string;
+  kind: ResearchQueryKind;
+  timestamp: string;
+  status: PlanExecutionEntryStatus;
+  /** 成功时的检索结果数（Search Result 计数，非候选数） */
+  resultCount?: number;
+  /** 失败原因（BusinessError message；不含堆栈） */
+  error?: string;
+}
+
+/** POST /research/plan/execute 的响应 */
+export interface PlanExecutionResult {
+  executionId: string;
+  /** plan 内 query 总数（含既有 executed / skipped） */
+  totalQueries: number;
+  /** 本次执行成功的 planned query 数 */
+  executedQueries: number;
+  /** 本次执行失败的 planned query 数（逐条记录，不中断整轮） */
+  failedQueries: number;
+  /** 执行完成后的 plan（状态已流转） */
+  plan: ResearchPlan;
+}
+
+/** executionHistory 条数硬帽（防无限增长；超限丢最旧） */
+export const MAX_EXECUTION_HISTORY = 200;
+
+export interface ResearchPlanExecutionServiceOptions {
+  projects: ProjectStore;
+  discovery: ResearchDiscoveryService;
+  log?: (message: string) => void;
+}
+
+export class ResearchPlanExecutionService {
+  private readonly projects: ProjectStore;
+  private readonly discovery: ResearchDiscoveryService;
+  private readonly log: (message: string) => void;
+  /**
+   * 进程内执行中守卫（projectId 集合）：execute 入口同步 check-and-add，
+   * 在事件循环上原子 → 并发重复执行第二个请求必得 409；finally 释放。
+   * 磁盘上的 executing 状态是可见性记录（崩溃残留见 execute 内提示）。
+   */
+  private readonly executing = new Set<string>();
+
+  constructor(options: ResearchPlanExecutionServiceOptions) {
+    this.projects = options.projects;
+    this.discovery = options.discovery;
+    this.log = options.log ?? (() => {});
+  }
+
+  /**
+   * 批准计划（draft → approved）。不自动发生——唯一的 status 流转入口之一。
+   * 非 draft（含 executing / done）→ 409 PLAN_INVALID_STATE。
+   */
+  async approve(projectId: string): Promise<ResearchPlan> {
+    const { artifact, plan } = await this.loadPlanOrThrow(projectId);
+    if (plan.status !== "draft") {
+      throw new BusinessError(
+        "PLAN_INVALID_STATE",
+        `只有 draft 状态的计划才能批准（当前 ${plan.status}）`,
+      );
+    }
+    const approved = { ...plan, status: "approved" as const, updatedAt: new Date().toISOString() };
+    await this.writeArtifact(projectId, artifact, approved, artifact.executionHistory);
+    this.log(`[plan-execution] projectId=${projectId} 计划已批准：planId=${approved.planId}`);
+    return approved;
+  }
+
+  /**
+   * 执行当前 approved 的 ResearchPlan：
+   * 遍历 status=planned 的 query → ResearchDiscoveryService 检索 → 回填
+   * executed + resultCount（失败记 history 不中断）→ 全部处理完 plan.status=done。
+   *
+   * - plan / artifact 不存在 → 404；状态不允许（draft / executing / done）→ 409；
+   * - 单条 query 检索失败（如 provider 全失败 / 未配置）→ 记 failed 条目，
+   *   继续执行其余 query；failedQueries 如实返回，不伪造成功；
+   * - 零 planned query（全部 executed / skipped）：直接流转 done，计数为 0。
+   */
+  async execute(projectId: string): Promise<PlanExecutionResult> {
+    if (this.executing.has(projectId)) {
+      throw new BusinessError(
+        "PLAN_INVALID_STATE",
+        "该计划正在执行中，禁止重复执行（请等待本轮完成）",
+      );
+    }
+    this.executing.add(projectId);
+    try {
+      const { artifact, plan } = await this.loadPlanOrThrow(projectId);
+      if (plan.status !== "approved") {
+        throw new BusinessError(
+          "PLAN_INVALID_STATE",
+          plan.status === "executing"
+            ? "该计划正在执行中，禁止重复执行；若服务曾在执行期间重启导致状态残留，请将 research.json 中 plan.status 改回 approved 后重试"
+            : plan.status === "draft"
+              ? "计划还是 draft，只能编辑；请先批准（approve）后再执行"
+              : "计划已执行完成（done）；编辑计划补充新的 planned 检索并重新走批准流，或等待 M8.3 受控研究循环",
+        );
+      }
+
+      const executionId = newExecutionId();
+      const plannedQueries = plan.queries.filter((query) => query.status === "planned");
+      let working: ResearchPlan = { ...plan, status: "executing", updatedAt: new Date().toISOString() };
+      // 先落 executing 态（可见性：磁盘上能看出有执行在途），再逐条执行
+      await this.writeArtifact(projectId, artifact, working, artifact.executionHistory);
+
+      const entries: PlanExecutionEntry[] = [];
+      let executedQueries = 0;
+      let failedQueries = 0;
+      for (const query of plannedQueries) {
+        const entry = await this.executeQuery(projectId, executionId, query);
+        entries.push(entry);
+        if (entry.status === "executed") {
+          executedQueries += 1;
+          working = {
+            ...working,
+            queries: working.queries.map((candidate) =>
+              candidate.queryId === query.queryId
+                ? { ...candidate, status: "executed", resultCount: entry.resultCount }
+                : candidate,
+            ),
+          };
+        } else {
+          failedQueries += 1; // 失败条目保持 planned（可重试）
+        }
+      }
+
+      const done: ResearchPlan = { ...working, status: "done", updatedAt: new Date().toISOString() };
+      const history = [...(artifact.executionHistory ?? []), ...entries].slice(-MAX_EXECUTION_HISTORY);
+      await this.writeArtifact(projectId, artifact, done, history);
+      this.log(
+        `[plan-execution] projectId=${projectId} 执行完成：executionId=${executionId} planned=${plannedQueries.length} executed=${executedQueries} failed=${failedQueries}`,
+      );
+      return {
+        executionId,
+        totalQueries: done.queries.length,
+        executedQueries,
+        failedQueries,
+        plan: done,
+      };
+    } finally {
+      this.executing.delete(projectId);
+    }
+  }
+
+  /** 执行单条 planned query：成功 → executed + resultCount；任何失败 → failed + error */
+  private async executeQuery(
+    projectId: string,
+    executionId: string,
+    query: ResearchPlanQuery,
+  ): Promise<PlanExecutionEntry> {
+    const base = {
+      executionId,
+      queryId: query.queryId,
+      query: query.query,
+      kind: query.kind,
+      timestamp: new Date().toISOString(),
+    };
+    try {
+      // 复用既有 Discovery 编排（provider fan-out / 融合 / 诊断一体）；
+      // 不传 projectId → 不写检索缓存：执行对 Discovery 侧零副作用
+      const response =
+        query.kind === "academic"
+          ? await this.discovery.academicSearch(query.query)
+          : await this.discovery.webSearch(query.query);
+      return { ...base, status: "executed", resultCount: response.results.length };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(
+        `[plan-execution] projectId=${projectId} 检索失败（${query.queryId} ${query.kind}）：${message.slice(0, 200)}`,
+      );
+      return { ...base, status: "failed", error: message.slice(0, 500) };
+    }
+  }
+
+  /** 读 artifact + plan；缺 artifact（未调研）/ 缺 plan（旧 artifact）→ 404 */
+  private async loadPlanOrThrow(
+    projectId: string,
+  ): Promise<{ artifact: ResearchArtifact; plan: ResearchPlan }> {
+    const artifact = await readResearchArtifact(this.projects, projectId);
+    if (artifact === null) {
+      throw new BusinessError(
+        "NOT_FOUND",
+        "项目还没有调研结果（research/research.json 不存在），请先运行调研再执行研究计划",
+      );
+    }
+    if (artifact.plan === undefined) {
+      throw new BusinessError(
+        "NOT_FOUND",
+        "项目还没有研究计划（research artifact 无 plan 字段），请先运行调研或编辑生成计划",
+      );
+    }
+    return { artifact, plan: artifact.plan };
+  }
+
+  /** 整对象读-改-写：existing-paper 附加字段（weaknesses / kind 等）与 report 原样保留 */
+  private async writeArtifact(
+    projectId: string,
+    artifact: ResearchArtifact,
+    plan: ResearchPlan,
+    executionHistory: PlanExecutionEntry[] | undefined,
+  ): Promise<void> {
+    await writeFile(
+      join(this.projects.researchDir(projectId), "research.json"),
+      JSON.stringify({
+        ...artifact,
+        plan,
+        ...(executionHistory !== undefined && executionHistory.length > 0
+          ? { executionHistory }
+          : {}),
+      }, null, 2) + "\n",
+      "utf8",
+    );
+  }
+}
+
+/** execution id：与 planId 同风格（exec- + 12 位随机十六进制） */
+function newExecutionId(): string {
+  return `exec-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}

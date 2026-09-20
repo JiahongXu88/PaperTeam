@@ -27,3 +27,18 @@ export interface ResearchPlanView {
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * 计划执行结果（M8.2 POST /research/plan/execute 的响应视图）。
+ * executed/failed 只计本轮 planned query；执行不产生候选 / 文献 / Evidence。
+ */
+export interface PlanExecutionResultView {
+  executionId: string;
+  /** plan 内 query 总数（含既有 executed / skipped） */
+  totalQueries: number;
+  /** 本轮执行成功数 */
+  executedQueries: number;
+  /** 本轮执行失败数（逐条已记录，不中断整轮） */
+  failedQueries: number;
+  plan: ResearchPlanView;
+}

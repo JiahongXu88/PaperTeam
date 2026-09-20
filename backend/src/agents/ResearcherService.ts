@@ -25,6 +25,7 @@ import {
   parseResearchPlanUpdateInput,
   type ResearchPlan,
 } from "./researchPlan.js";
+import type { PlanExecutionEntry } from "./researchPlanExecution.js";
 import {
   extractJsonObject,
   readOptionalStringArray,
@@ -345,6 +346,12 @@ export type ResearchArtifact = {
   taskId: string;
   /** 检索计划（M8.1 一等产物；旧 artifact 无此字段——可选，读取端一律兼容） */
   plan?: ResearchPlan;
+  /**
+   * 计划执行记录（M8.2；ResearchPlanExecutionService 回填的最小历史）。
+   * 可选字段：旧 artifact（M8.1 及更早）无此字段仍可读。注意 research() 重跑
+   * 会整体重写 artifact（已知限制，与 plan 编辑同源——M8.3 多轮计划收口）。
+   */
+  executionHistory?: PlanExecutionEntry[];
   report: ResearchReport;
   evidence: ParsedEvidenceEntry[];
   bibliography: BibliographyEntryInput[];
