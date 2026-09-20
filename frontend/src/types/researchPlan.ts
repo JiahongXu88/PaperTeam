@@ -77,14 +77,37 @@ export interface ResearchCoverageQuestionView {
   gap?: string;
 }
 
-/** 缺口建议（只建议：下一轮计划仍走显式 derive，不自动执行） */
-export interface ResearchCoverageGapView {
+/** ---- Research Gap（M8.3.3 镜像 backend/src/agents/researchGap.ts）---- */
+
+export type ResearchGapSeverity = "low" | "medium" | "high";
+export type ResearchGapStatus = "proposed" | "accepted" | "rejected";
+
+/**
+ * 研究缺口：Coverage Analyzer 输出的显式研究对象（M8.3.2 缺口建议的增量
+ * 升级——带稳定 gapId / severity / status）。分析器只产生 proposed；
+ * accepted / rejected 是用户 HITL 决策快照（落盘）。
+ */
+export interface ResearchGapView {
+  gapId: string;
+  planId: string;
+  /** 关联的研究问题（残差方向缺口无关联问题，字段省略） */
+  question?: string;
   description: string;
-  relatedQuestion?: string;
+  severity: ResearchGapSeverity;
   suggestedQueries: string[];
+  status: ResearchGapStatus;
+  createdAt: string;
+  decidedAt?: string;
 }
 
-/** 覆盖报告（只读派生视图：随源数据即时重算，不落盘） */
+/** GET /research/gaps 的响应：当前活动计划缺口（派生 + 决策覆盖） */
+export interface ResearchGapListView {
+  /** null = 无 artifact / 无计划（空态而非错误） */
+  planId: string | null;
+  gaps: ResearchGapView[];
+}
+
+/** 覆盖报告（只读派生视图：随源数据即时重算，不落盘；gaps 为 M8.3.3 ResearchGap[]） */
 export interface ResearchCoverageView {
   planId: string;
   planStatus: ResearchPlanStatus;
@@ -98,5 +121,5 @@ export interface ResearchCoverageView {
     missing: number;
     summary: string;
   };
-  gaps: ResearchCoverageGapView[];
+  gaps: ResearchGapView[];
 }

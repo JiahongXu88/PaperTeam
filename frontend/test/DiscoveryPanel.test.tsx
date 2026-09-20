@@ -14,6 +14,7 @@ import type {
 import type {
   PlanExecutionResultView,
   ResearchCoverageView,
+  ResearchGapListView,
   ResearchPlanListView,
   ResearchPlanView,
 } from "../src/types/researchPlan.js";
@@ -46,6 +47,10 @@ vi.mock("../src/api/researchPlan.js", () => ({
   activateResearchPlan: vi.fn(),
   getResearchCoverage: vi.fn(async () => null),
   analyzeResearchCoverage: vi.fn(),
+  listResearchGaps: vi.fn(async () => ({ planId: null, gaps: [] })),
+  acceptResearchGap: vi.fn(),
+  rejectResearchGap: vi.fn(),
+  deriveResearchGap: vi.fn(),
 }));
 
 const api = vi.mocked(await import("../src/api/discovery.js"));
@@ -785,21 +790,36 @@ describe("DiscoveryPanel（M8.3.2 Research Coverage）", () => {
         missing: 1,
         summary: "研究问题 3 个：covered 1 · partial 1 · missing 1；缺口 3 项",
       },
+      // M8.3.3：coverage.gaps 升级为 ResearchGap[]（gapId / severity / proposed）
       gaps: [
         {
-          description:
-            "有 1 条检索带回 3 条结果，但尚无相关证据或已入库文献支撑（Candidate / Evidence 层未覆盖）",
-          relatedQuestion: "edge device 部署优化",
+          gapId: "gap-aaaaaaaaaaaa",
+          planId: "rp-plan00000002",
+          question: "edge device 部署优化",
+          description: "有 1 条检索带回 3 条结果，但尚无相关证据或已入库文献支撑（Candidate / Evidence 层未覆盖）",
+          severity: "low",
           suggestedQueries: ["edge device 部署优化"],
+          status: "proposed",
+          createdAt: NOW,
         },
         {
+          gapId: "gap-bbbbbbbbbbbb",
+          planId: "rp-plan00000002",
+          question: "遮挡场景身份保持",
           description: "计划中没有任何与该问题相关的检索（建议围绕问题原文制定检索词）",
-          relatedQuestion: "遮挡场景身份保持",
+          severity: "high",
           suggestedQueries: ["遮挡场景身份保持"],
+          status: "proposed",
+          createdAt: NOW,
         },
         {
+          gapId: "gap-cccccccccccc",
+          planId: "rp-plan00000002",
           description: "调研报告登记的残差文献方向：低照度场景数据集",
+          severity: "medium",
           suggestedQueries: ["低照度场景数据集"],
+          status: "proposed",
+          createdAt: NOW,
         },
       ],
       ...overrides,
@@ -815,7 +835,7 @@ describe("DiscoveryPanel（M8.3.2 Research Coverage）", () => {
     expect(planApi.analyzeResearchCoverage).not.toHaveBeenCalled();
   });
 
-  it("点击「分析覆盖」→ analyze API 调用；问题状态 / 计数 / 缺口建议如实渲染", async () => {
+  it("点击「分析覆盖」→ analyze API 调用；问题状态 / 计数如实渲染 + 缺口入口指引", async () => {
     await renderPanel([]);
     const user = userEvent.setup();
 
@@ -834,12 +854,11 @@ describe("DiscoveryPanel（M8.3.2 Research Coverage）", () => {
     expect(screen.getAllByText(/关联检索 1/).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText(/证据 1/)).toBeTruthy();
     expect(screen.getByText(/缺口：计划中没有任何与该问题相关的检索/)).toBeTruthy();
-    // 汇总 + 缺口建议（含 literaturePlan 残差）
+    // 汇总 + M8.3.3 缺口入口指引（确认与派生在 Research Gaps 区域）
     expect(screen.getByTestId("coverage-summary").textContent).toContain(
       "covered 1 · partial 1 · missing 1；缺口 3 项",
     );
-    expect(screen.getAllByText(/建议检索：/).length).toBe(3);
-    expect(screen.getByText(/调研报告登记的残差文献方向：低照度场景数据集/)).toBeTruthy();
+    expect(screen.getByText(/检出 3 项研究缺口/)).toBeTruthy();
   });
 
   it("GET 派生视图自动加载：getResearchCoverage 返回报告 → 不点击也展示", async () => {
@@ -848,48 +867,6 @@ describe("DiscoveryPanel（M8.3.2 Research Coverage）", () => {
 
     expect(await screen.findByTestId("coverage-questions")).toBeTruthy();
     expect(planApi.analyzeResearchCoverage).not.toHaveBeenCalled();
-  });
-
-  it("按缺口派生下一轮：done 活动计划 → 复用既有 derive API 携带建议检索", async () => {
-    planApi.listResearchPlans.mockResolvedValue({
-      plans: [
-        planView({ planId: "rp-plan00000002", status: "done", iterationNumber: 2 }),
-      ],
-      activePlanId: "rp-plan00000002",
-    });
-    planApi.getResearchPlan.mockResolvedValue(planView({ planId: "rp-plan00000002", status: "done" }));
-    planApi.getResearchCoverage.mockResolvedValue(coverageView());
-    await renderPanel([], "Transformer MOT");
-    const user = userEvent.setup();
-
-    const button = await screen.findByTestId("create-next-plan");
-    expect((button as HTMLButtonElement).disabled).toBe(false);
-    planApi.deriveResearchPlan.mockResolvedValue(planView({ status: "draft" }));
-    await user.click(button);
-
-    await waitFor(() => expect(planApi.deriveResearchPlan).toHaveBeenCalledTimes(1));
-    expect(planApi.deriveResearchPlan).toHaveBeenCalledWith("p-1", "rp-plan00000002", {
-      queries: [
-        { query: "edge device 部署优化", kind: "academic" },
-        { query: "遮挡场景身份保持", kind: "academic" },
-        { query: "低照度场景数据集", kind: "academic" },
-      ],
-    });
-  });
-
-  it("派生按钮禁用：活动计划非 done（draft）→ 不调用 derive", async () => {
-    planApi.listResearchPlans.mockResolvedValue({
-      plans: [planView({ planId: "rp-plan00000002", status: "draft", iterationNumber: 2 })],
-      activePlanId: "rp-plan00000002",
-    });
-    planApi.getResearchPlan.mockResolvedValue(planView({ planId: "rp-plan00000002", status: "draft" }));
-    planApi.getResearchCoverage.mockResolvedValue(coverageView());
-    await renderPanel([], "Transformer MOT");
-
-    const button = await screen.findByTestId("create-next-plan");
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect(button.textContent).toContain("按缺口派生下一轮");
-    expect(planApi.deriveResearchPlan).not.toHaveBeenCalled();
   });
 
   it("分析失败：错误如实呈现（不吞 404）", async () => {
@@ -903,5 +880,154 @@ describe("DiscoveryPanel（M8.3.2 Research Coverage）", () => {
 
     expect(await screen.findByText("覆盖分析失败")).toBeTruthy();
     expect(screen.getByText(/请先运行调研再分析覆盖/)).toBeTruthy();
+  });
+});
+
+describe("DiscoveryPanel（M8.3.3 Research Gaps HITL）", () => {
+  function gapListView(overrides: Partial<ResearchGapListView> = {}): ResearchGapListView {
+    return {
+      planId: "rp-plan00000002",
+      gaps: [
+        {
+          gapId: "gap-aaaaaaaaaaaa",
+          planId: "rp-plan00000002",
+          question: "遮挡场景身份保持",
+          description: "计划中没有任何与该问题相关的检索（建议围绕问题原文制定检索词）",
+          severity: "high",
+          suggestedQueries: ["遮挡场景身份保持"],
+          status: "proposed",
+          createdAt: NOW,
+        },
+        {
+          gapId: "gap-bbbbbbbbbbbb",
+          planId: "rp-plan00000002",
+          question: "edge device 部署优化",
+          description: "有 1 条检索带回 3 条结果，但尚无相关证据或已入库文献支撑（Candidate / Evidence 层未覆盖）",
+          severity: "low",
+          suggestedQueries: ["edge device 部署优化"],
+          status: "accepted",
+          createdAt: NOW,
+          decidedAt: NOW,
+        },
+        {
+          gapId: "gap-cccccccccccc",
+          planId: "rp-plan00000002",
+          description: "调研报告登记的残差文献方向：低照度场景数据集",
+          severity: "medium",
+          suggestedQueries: ["低照度场景数据集"],
+          status: "rejected",
+          createdAt: NOW,
+          decidedAt: NOW,
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  async function renderPanelWithGaps(
+    list: ResearchGapListView,
+    activeStatus: "done" | "draft" = "done",
+  ) {
+    planApi.listResearchGaps.mockResolvedValue(list);
+    planApi.listResearchPlans.mockResolvedValue({
+      plans: [planView({ planId: "rp-plan00000002", status: activeStatus, iterationNumber: 2 })],
+      activePlanId: "rp-plan00000002",
+    });
+    planApi.getResearchPlan.mockResolvedValue(
+      planView({ planId: "rp-plan00000002", status: activeStatus }),
+    );
+    await renderPanel([], "Transformer MOT");
+    await screen.findByTestId("research-gap-list");
+  }
+
+  it("无缺口：空态引导（先分析覆盖）", async () => {
+    await renderPanel([]);
+
+    expect(screen.getByTestId("research-gaps-section")).toBeTruthy();
+    expect(screen.getByTestId("research-gaps-empty")).toBeTruthy();
+  });
+
+  it("缺口渲染：严重度 / 状态徽标 + 建议检索 + gapId；rejected 无操作", async () => {
+    await renderPanelWithGaps(gapListView());
+
+    const rows = screen.getAllByTestId("research-gap-row");
+    expect(rows).toHaveLength(3);
+    expect(screen.getByText("严重度 高")).toBeTruthy();
+    expect(screen.getByText("严重度 中")).toBeTruthy();
+    expect(screen.getByText("严重度 低")).toBeTruthy();
+    expect(screen.getByText("待确认")).toBeTruthy();
+    // 「已接受 / 已拒绝」与候选筛选按钮同名 → 徽标与按钮同时在场
+    expect(screen.getAllByText("已接受").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText("已拒绝").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/建议检索：遮挡场景身份保持/)).toBeTruthy();
+    expect(screen.getByText(/建议检索：低照度场景数据集/)).toBeTruthy();
+    expect(screen.getByText("gap-aaaaaaaaaaaa")).toBeTruthy();
+    expect(screen.getByText(/已拒绝（不参与下一轮派生）/)).toBeTruthy();
+    // proposed 缺口有 Accept/Reject；accepted 有派生；rejected 无任何操作按钮
+    expect(screen.getAllByTestId("accept-gap")).toHaveLength(1);
+    expect(screen.getAllByTestId("reject-gap")).toHaveLength(1);
+    expect(screen.getAllByTestId("derive-from-gap")).toHaveLength(1);
+  });
+
+  it("接受缺口：proposed → acceptResearchGap 调用（p-1, gapId）", async () => {
+    await renderPanelWithGaps(gapListView());
+    const user = userEvent.setup();
+
+    planApi.acceptResearchGap.mockResolvedValue({
+      ...gapListView().gaps[0]!,
+      status: "accepted",
+      decidedAt: NOW,
+    });
+    await user.click(screen.getByTestId("accept-gap"));
+
+    await waitFor(() => expect(planApi.acceptResearchGap).toHaveBeenCalledTimes(1));
+    expect(planApi.acceptResearchGap).toHaveBeenCalledWith("p-1", "gap-aaaaaaaaaaaa");
+  });
+
+  it("拒绝缺口：proposed → rejectResearchGap 调用（p-1, gapId）", async () => {
+    await renderPanelWithGaps(gapListView());
+    const user = userEvent.setup();
+
+    planApi.rejectResearchGap.mockResolvedValue({
+      ...gapListView().gaps[0]!,
+      status: "rejected",
+      decidedAt: NOW,
+    });
+    await user.click(screen.getByTestId("reject-gap"));
+
+    await waitFor(() => expect(planApi.rejectResearchGap).toHaveBeenCalledTimes(1));
+    expect(planApi.rejectResearchGap).toHaveBeenCalledWith("p-1", "gap-aaaaaaaaaaaa");
+  });
+
+  it("由此派生下一轮：accepted 缺口 + done 活动计划 → deriveResearchGap 调用", async () => {
+    await renderPanelWithGaps(gapListView());
+    const user = userEvent.setup();
+
+    planApi.deriveResearchGap.mockResolvedValue(planView({ status: "draft" }));
+    await user.click(screen.getByTestId("derive-from-gap"));
+
+    await waitFor(() => expect(planApi.deriveResearchGap).toHaveBeenCalledTimes(1));
+    expect(planApi.deriveResearchGap).toHaveBeenCalledWith("p-1", "gap-bbbbbbbbbbbb", {});
+  });
+
+  it("派生禁用：活动计划非 done（draft）→ 按钮禁用不调用", async () => {
+    await renderPanelWithGaps(gapListView(), "draft");
+
+    const button = screen.getByTestId("derive-from-gap") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(planApi.deriveResearchGap).not.toHaveBeenCalled();
+  });
+
+  it("接受失败：错误如实呈现（不吞 409 决策不翻转）", async () => {
+    await renderPanelWithGaps(gapListView());
+    const user = userEvent.setup();
+
+    planApi.acceptResearchGap.mockRejectedValue(
+      new Error("缺口 gap-aaaaaaaaaaaa 已是 rejected，不能改为 accepted（决策不翻转；如需改向请重新分析覆盖）"),
+    );
+    await user.click(screen.getByTestId("accept-gap"));
+
+    expect(await screen.findByText("接受缺口失败")).toBeTruthy();
+    expect(screen.getByText(/决策不翻转/)).toBeTruthy();
   });
 });

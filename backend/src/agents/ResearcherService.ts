@@ -31,6 +31,8 @@ import {
   type StoredResearchPlan,
 } from "./researchPlan.js";
 import type { PlanExecutionEntry } from "./researchPlanExecution.js";
+import type { ResearchGap } from "./researchGap.js";
+import type { ResearchLoopPolicy } from "./researchLoopPolicy.js";
 import {
   extractJsonObject,
   readOptionalStringArray,
@@ -159,7 +161,8 @@ export class ResearcherService {
     // M8.3.1 merge strategy：重跑只刷新报告侧字段（report / evidence /
     // bibliography / generatedAt / taskId）；计划链（plans / activePlanId）与
     // executionHistory 是用户可控 + 执行回填状态，原样保留——已有链时本轮
-    // Agent 产出的 plan 不落盘（用户修改优先），计划演化走编辑 / 派生显式路径
+    // Agent 产出的 plan 不落盘（用户修改优先），计划演化走编辑 / 派生显式路径。
+    // M8.3.3：gaps 决策记录与 loopPolicy 同属用户可控状态，同样不被重跑覆盖
     const existing = await readResearchArtifact(this.projects, params.projectId);
     const chain = resolvePlanChainOnRerun(
       existing !== null ? readPlanChain(existing) : { plans: [], activePlanId: undefined },
@@ -172,6 +175,8 @@ export class ResearcherService {
       ...(existing?.executionHistory !== undefined && existing.executionHistory.length > 0
         ? { executionHistory: existing.executionHistory }
         : {}),
+      ...(existing?.gaps !== undefined && existing.gaps.length > 0 ? { gaps: existing.gaps } : {}),
+      ...(existing?.loopPolicy !== undefined ? { loopPolicy: existing.loopPolicy } : {}),
       report,
       evidence: parsedCandidates,
       bibliography: readBibliography(parsed),
@@ -322,7 +327,8 @@ export class ResearcherService {
     });
 
     // 落盘（覆盖 research.json：existing-paper 流程的“调研”即论文理解）。
-    // M8.3.1：计划链与执行历史同样不受覆盖（与 research() 重跑同一 merge 策略）
+    // M8.3.1：计划链与执行历史同样不受覆盖（与 research() 重跑同一 merge 策略）；
+    // M8.3.3：gaps 决策记录与 loopPolicy 同样保留（用户可控状态）
     const researchDir = this.projects.researchDir(params.projectId);
     await mkdir(researchDir, { recursive: true });
     const existing = await readResearchArtifact(this.projects, params.projectId);
@@ -334,6 +340,8 @@ export class ResearcherService {
       ...(existing?.executionHistory !== undefined && existing.executionHistory.length > 0
         ? { executionHistory: existing.executionHistory }
         : {}),
+      ...(existing?.gaps !== undefined && existing.gaps.length > 0 ? { gaps: existing.gaps } : {}),
+      ...(existing?.loopPolicy !== undefined ? { loopPolicy: existing.loopPolicy } : {}),
       report,
       evidence: [],
       bibliography: [],
@@ -386,6 +394,14 @@ export type ResearchArtifact = {
    * 用户可控与执行回填字段一律保留，只刷新报告侧字段）。
    */
   executionHistory?: PlanExecutionEntry[];
+  /**
+   * 研究缺口决策记录（M8.3.3；ResearchGapService 落盘的 accepted /
+   * rejected 快照）。可选字段：旧 artifact 无此字段仍可读；proposed 是
+   * 覆盖派生视图不落盘。重跑与计划链写盘均原样保留（用户决策优先）。
+   */
+  gaps?: ResearchGap[];
+  /** 受控研究循环策略（M8.3.3；保存边界规则，不自动执行循环） */
+  loopPolicy?: ResearchLoopPolicy;
   report: ResearchReport;
   evidence: ParsedEvidenceEntry[];
   bibliography: BibliographyEntryInput[];
@@ -443,6 +459,26 @@ export async function writeResearchPlanChain(
       null,
       2,
     ) + "\n",
+    "utf8",
+  );
+}
+
+/**
+ * 把研究循环状态写回 research.json（M8.3.3 单一写入口：gaps 决策记录 /
+ * loopPolicy）。只覆盖传入的字段；artifact 其余字段（计划链 / 执行历史 /
+ * 报告侧）原样保留——调用方传入的 artifact 即磁盘现状，不做内存态改写，
+ * 与 writeResearchPlanChain 的「其余字段 ...artifact 展开」同纪律。
+ */
+export async function writeResearchLoopState(
+  projects: ProjectStore,
+  projectId: string,
+  artifact: ResearchArtifact,
+  fields: { gaps?: ResearchGap[]; loopPolicy?: ResearchLoopPolicy },
+): Promise<void> {
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(
+    join(projects.researchDir(projectId), "research.json"),
+    JSON.stringify({ ...artifact, ...fields }, null, 2) + "\n",
     "utf8",
   );
 }

@@ -6,14 +6,18 @@ import { formatDateTime } from "../../utils/format.js";
 import {
   useAcademicSearch,
   useActivateResearchPlan,
+  useAcceptResearchGap,
   useAnalyzeResearchCoverage,
   useApproveResearchPlan,
   useCandidates,
+  useDeriveResearchGap,
   useDeriveResearchPlan,
   useExecuteResearchPlan,
   usePromoteCandidate,
   useRejectCandidate,
+  useRejectResearchGap,
   useResearchCoverage,
+  useResearchGaps,
   useResearchPlan,
   useResearchPlans,
   useUpdateResearchPlan,
@@ -29,6 +33,9 @@ import type {
   ResearchCoverageLevel,
   ResearchCoverageQuestionView,
   ResearchCoverageView,
+  ResearchGapSeverity,
+  ResearchGapStatus,
+  ResearchGapView,
 } from "../../types/researchPlan.js";
 import type {
   CandidateOrigin,
@@ -56,8 +63,11 @@ import type { DiscoveryMode } from "../../api/discovery.js";
  *   派生新计划（done → 新 draft）、把历史计划设为当前（GET /research/plans +
  *   POST derive / activate）；编辑 / 批准 / 执行始终作用于当前活动计划；
  * - M8.3.2：覆盖分析（Coverage Analysis）——当前活动计划执行后的确定性
- *   覆盖报告（covered / partial / missing + 缺口建议），只读派生视图；
- *   「按缺口派生下一轮」复用既有 derive API，不新增第二套创建逻辑；
+ *   覆盖报告（covered / partial / missing），只读派生视图；
+ * - M8.3.3：Research Gaps（受控研究循环 HITL）——覆盖缺口成为显式研究对象
+ *   （gapId / severity / proposed），Accept / Reject 是用户决策，「由此派生
+ *   下一轮计划」只对已接受缺口开放并复用既有 derive API（Coverage → Gap →
+ *   Human Approval → Next Plan → 用户批准 → Next Execution；不自动执行）；
  * - 检索走既有 POST /research/{academic|web}-search：默认只返回不持久化，
  *   「保存选中」用同一端点的 saveAsCandidates（结果下标）显式写入候选；
  * - 候选列表 / Promote / Reject 走既有 /sources/candidates 端点群；
@@ -762,42 +772,9 @@ function CoverageQuestionRow({ entry }: { entry: ResearchCoverageQuestionView })
 function CoverageSection({ projectId }: { projectId: string }) {
   const coverage = useResearchCoverage(projectId);
   const analyze = useAnalyzeResearchCoverage(projectId);
-  const plans = useResearchPlans(projectId);
-  const derive = useDeriveResearchPlan(projectId);
 
   // 展示最近一次分析结果（POST 优先于 GET 派生视图）
   const report: ResearchCoverageView | null = analyze.data ?? coverage.data ?? null;
-  const activePlanId = plans.data?.activePlanId ?? null;
-  const activeStatus =
-    plans.data?.plans.find((entry) => entry.planId === activePlanId)?.status ?? undefined;
-  // 缺口建议检索（去重；条数对齐后端计划检索上限 30）
-  const suggestedQueries =
-    report === null
-      ? []
-      : [
-          ...new Set(
-            report.gaps.flatMap((gap) => gap.suggestedQueries.map((query) => query.trim())),
-          ),
-        ]
-          .filter((query) => query !== "")
-          .slice(0, 30);
-  const canCreateNext =
-    report !== null &&
-    suggestedQueries.length > 0 &&
-    activePlanId !== null &&
-    activeStatus === "done";
-
-  const runCreateNext = () => {
-    if (activePlanId === null || suggestedQueries.length === 0) {
-      return;
-    }
-    // 复用既有 derive API：建议检索作为下一轮检索词（questions 整拷当前计划），
-    // 不新增第二套 Plan 创建逻辑；派生后仍需编辑、批准才会执行
-    derive.mutate({
-      planId: activePlanId,
-      input: { queries: suggestedQueries.map((query) => ({ query, kind: "academic" })) },
-    });
-  };
 
   return (
     <section className="panel section-block" data-testid="coverage-section">
@@ -807,14 +784,15 @@ function CoverageSection({ projectId }: { projectId: string }) {
       </div>
       <p className="field-help">
         对当前活动计划做确定性覆盖分析（不含 LLM 判断）：研究问题是否被检索 /
-        证据 / 入库文献覆盖，哪些方向仍有缺口。报告是即时重算的派生视图，不落盘。
+        证据 / 入库文献覆盖，哪些方向仍有缺口。报告是即时重算的派生视图，不落盘；
+        缺口的确认与「由此派生下一轮」在下方 Research Gaps 区域（M8.3.3 HITL）。
       </p>
       <div className="action-row">
         <button
           type="button"
           className="btn btn-small"
           onClick={() => analyze.mutate()}
-          disabled={analyze.isPending || derive.isPending}
+          disabled={analyze.isPending}
           data-testid="analyze-coverage"
         >
           {analyze.isPending ? "分析中…" : "分析覆盖"}
@@ -825,13 +803,6 @@ function CoverageSection({ projectId }: { projectId: string }) {
           title="覆盖分析失败"
           message={formatApiError(analyze.error)}
           detail={formatApiErrorDetail(analyze.error)}
-        />
-      ) : null}
-      {derive.isError ? (
-        <ErrorState
-          title="派生计划失败"
-          message={formatApiError(derive.error)}
-          detail={formatApiErrorDetail(derive.error)}
         />
       ) : null}
       {report === null ? (
@@ -863,50 +834,209 @@ function CoverageSection({ projectId }: { projectId: string }) {
               </ul>
             )}
           </div>
-          <div className="field">
-            <span className="field-label">Gaps（缺口与建议）</span>
-            {report.gaps.length === 0 ? (
-              <p className="muted">无缺口：全部研究问题均已覆盖。</p>
-            ) : (
-              <ul className="notes-list" data-testid="coverage-gaps">
-                {report.gaps.map((gap, index) => (
-                  <li key={`${index}-${gap.description}`}>
-                    <div>{gap.description}</div>
-                    {gap.suggestedQueries.length > 0 ? (
-                      <div className="source-row-meta candidate-snippet">
-                        建议检索：{gap.suggestedQueries.join("；")}
-                      </div>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
           {report.gaps.length > 0 ? (
-            <div className="action-row">
-              <button
-                type="button"
-                className="btn btn-small btn-primary"
-                onClick={runCreateNext}
-                disabled={!canCreateNext || derive.isPending}
-                title={
-                  activeStatus === "done"
-                    ? "以缺口建议检索作为下一轮检索词派生 draft 计划"
-                    : "只有已完成（done）的计划才能派生下一轮"
-                }
-                data-testid="create-next-plan"
-              >
-                {derive.isPending
-                  ? "派生中…"
-                  : `按缺口派生下一轮（${suggestedQueries.length} 条建议检索）`}
-              </button>
-              <span className="field-help">
-                调用既有「派生新计划」接口（不自动批准 / 执行）；下一轮 questions 整拷当前计划，
-                派生后可先编辑再批准。
-              </span>
-            </div>
-          ) : null}
+            <p className="muted">
+              检出 {report.gaps.length} 项研究缺口（含建议检索）——到下方「Research
+              Gaps」逐项确认（Accept / Reject）后即可由此派生下一轮计划。
+            </p>
+          ) : (
+            <p className="muted">无缺口：全部研究问题均已覆盖。</p>
+          )}
         </div>
+      )}
+    </section>
+  );
+}
+
+// ---- Research Gaps（M8.3.3：Coverage → Gap → Human Approval → Next Plan）----
+
+const GAP_SEVERITY_LABELS: Record<ResearchGapSeverity, string> = {
+  high: "高",
+  medium: "中",
+  low: "低",
+};
+
+const GAP_STATUS_LABELS: Record<ResearchGapStatus, string> = {
+  proposed: "待确认",
+  accepted: "已接受",
+  rejected: "已拒绝",
+};
+
+/** severity → chip tone（高=警示；中/低用默认色） */
+function gapSeverityTone(severity: ResearchGapSeverity): string {
+  return severity === "high" ? "chip-tone-warn" : "";
+}
+
+/** status → chip tone（已接受=信息色；待确认/已拒绝用默认色） */
+function gapStatusTone(status: ResearchGapStatus): string {
+  return status === "accepted" ? "chip-tone-info" : "";
+}
+
+function GapRow({
+  gap,
+  canDerive,
+  actionPending,
+  onAccept,
+  onReject,
+  onDerive,
+}: {
+  gap: ResearchGapView;
+  /** 活动计划已 done（派生的来源计划状态门槛；后端同口径 409） */
+  canDerive: boolean;
+  actionPending: boolean;
+  onAccept: () => void;
+  onReject: () => void;
+  onDerive: () => void;
+}) {
+  const title = gap.question ?? gap.description;
+  return (
+    <li className="source-row candidate-row" data-testid="research-gap-row">
+      <div className="source-row-main">
+        <span className="source-title" title={gap.description}>
+          {title}
+        </span>
+        <span className="source-chips">
+          <span className={`chip ${gapSeverityTone(gap.severity)}`} title="缺口严重度（确定性规则：missing 无方向=高 / 有方向无产出=中 / partial=低；残差=中）">
+            严重度 {GAP_SEVERITY_LABELS[gap.severity]}
+          </span>
+          <span className={`chip ${gapStatusTone(gap.status)}`}>{GAP_STATUS_LABELS[gap.status]}</span>
+        </span>
+      </div>
+      <div className="source-row-meta">
+        {gap.question !== undefined ? (
+          <span className="candidate-snippet" title="缺口描述">
+            {gap.description}
+          </span>
+        ) : null}
+        {gap.suggestedQueries.length > 0 ? (
+          <span title="建议下一轮执行的检索词">建议检索：{gap.suggestedQueries.join("；")}</span>
+        ) : null}
+        <span className="muted mono">{gap.gapId}</span>
+        {gap.decidedAt !== undefined ? (
+          <span className="muted">确认于 {formatDateTime(gap.decidedAt) ?? "—"}</span>
+        ) : null}
+      </div>
+      <div className="action-row">
+        {gap.status === "proposed" ? (
+          <>
+            <button
+              type="button"
+              className="btn btn-small btn-primary"
+              onClick={onAccept}
+              disabled={actionPending}
+              data-testid="accept-gap"
+            >
+              接受
+            </button>
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={onReject}
+              disabled={actionPending}
+              data-testid="reject-gap"
+            >
+              拒绝
+            </button>
+          </>
+        ) : null}
+        {gap.status === "accepted" ? (
+          <button
+            type="button"
+            className="btn btn-small btn-primary"
+            onClick={onDerive}
+            disabled={actionPending || !canDerive}
+            title={
+              canDerive
+                ? "以该缺口的建议检索派生下一轮 draft 计划（复用既有派生接口；派生后仍需编辑、批准才会执行）"
+                : "只有已完成（done）的活动计划才能派生下一轮"
+            }
+            data-testid="derive-from-gap"
+          >
+            由此派生下一轮计划
+          </button>
+        ) : null}
+        {gap.status === "rejected" ? <span className="muted">已拒绝（不参与下一轮派生）。</span> : null}
+      </div>
+    </li>
+  );
+}
+
+function ResearchGapsSection({ projectId }: { projectId: string }) {
+  const gapsQuery = useResearchGaps(projectId);
+  const accept = useAcceptResearchGap(projectId);
+  const reject = useRejectResearchGap(projectId);
+  const derive = useDeriveResearchGap(projectId);
+  const plans = useResearchPlans(projectId);
+
+  const activePlanId = plans.data?.activePlanId ?? null;
+  const activeStatus =
+    plans.data?.plans.find((entry) => entry.planId === activePlanId)?.status ?? undefined;
+  // 派生门槛与后端同口径：缺口来自活动计划；活动计划须 done 才能派生下一轮
+  const canDerive = activePlanId !== null && activeStatus === "done";
+  const actionPending = accept.isPending || reject.isPending || derive.isPending;
+
+  const gaps = gapsQuery.data?.gaps ?? [];
+
+  return (
+    <section className="panel section-block" data-testid="research-gaps-section">
+      <div className="section-head">
+        <h2>Research Gaps</h2>
+        <span className="section-note">受控研究循环 · 确认缺口后才可派生下一轮</span>
+      </div>
+      <p className="field-help">
+        缺口来自覆盖分析（待确认 proposed，随分析即时重算）。Accept = 确认该方向值得
+        下一轮检索；Reject = 否决。「由此派生下一轮计划」只对已接受缺口开放——
+        新计划是 draft，仍需编辑、批准、执行才会跑检索（不自动执行）。
+      </p>
+      {accept.isError ? (
+        <ErrorState
+          title="接受缺口失败"
+          message={formatApiError(accept.error)}
+          detail={formatApiErrorDetail(accept.error)}
+        />
+      ) : null}
+      {reject.isError ? (
+        <ErrorState
+          title="拒绝缺口失败"
+          message={formatApiError(reject.error)}
+          detail={formatApiErrorDetail(reject.error)}
+        />
+      ) : null}
+      {derive.isError ? (
+        <ErrorState
+          title="派生计划失败"
+          message={formatApiError(derive.error)}
+          detail={formatApiErrorDetail(derive.error)}
+        />
+      ) : null}
+      {gapsQuery.isPending ? (
+        <Loading label="加载研究缺口…" />
+      ) : gapsQuery.isError ? (
+        <ErrorState
+          title="缺口加载失败"
+          message={formatApiError(gapsQuery.error)}
+          detail={formatApiErrorDetail(gapsQuery.error)}
+          onRetry={() => void gapsQuery.refetch()}
+        />
+      ) : gaps.length === 0 ? (
+        <p className="panel-empty" data-testid="research-gaps-empty">
+          还没有研究缺口。覆盖分析发现未覆盖方向时，缺口会列在这里（待确认），
+          确认后可由此派生下一轮计划。
+        </p>
+      ) : (
+        <ul className="source-list" data-testid="research-gap-list">
+          {gaps.map((gap) => (
+            <GapRow
+              key={gap.gapId}
+              gap={gap}
+              canDerive={canDerive}
+              actionPending={actionPending}
+              onAccept={() => accept.mutate(gap.gapId)}
+              onReject={() => reject.mutate(gap.gapId)}
+              onDerive={() => derive.mutate({ gapId: gap.gapId })}
+            />
+          ))}
+        </ul>
       )}
     </section>
   );
@@ -1384,6 +1514,7 @@ export function DiscoveryPanel({ projectId, topic }: { projectId: string; topic?
     <div className="panel-stack" data-testid="discovery-panel">
       <ResearchPlanSection projectId={projectId} topic={topic} />
       <CoverageSection projectId={projectId} />
+      <ResearchGapsSection projectId={projectId} />
       <SearchSection projectId={projectId} />
       <CandidateSection projectId={projectId} />
     </div>

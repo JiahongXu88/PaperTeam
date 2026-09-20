@@ -47,14 +47,18 @@ import {
   type WebSearchInput,
 } from "../api/discovery.js";
 import {
+  acceptResearchGap,
   approveResearchPlan,
   activateResearchPlan,
   analyzeResearchCoverage,
+  deriveResearchGap,
   deriveResearchPlan,
   executeResearchPlan,
   getResearchCoverage,
   getResearchPlan,
+  listResearchGaps,
   listResearchPlans,
+  rejectResearchGap,
   updateResearchPlan,
   type ResearchPlanDeriveInput,
   type ResearchPlanUpdateInput,
@@ -143,6 +147,8 @@ export const queryKeys = {
   researchPlans: (projectId: string) => ["project", projectId, "research-plans"] as const,
   /** Research Coverage（M8.3.2；只读派生视图——计划 / 证据 / 候选变化后失效重取） */
   researchCoverage: (projectId: string) => ["project", projectId, "research-coverage"] as const,
+  /** Research Gaps（M8.3.3；覆盖派生 + HITL 决策覆盖——分析 / 决策 / 计划变化后失效重取） */
+  researchGaps: (projectId: string) => ["project", projectId, "research-gaps"] as const,
   /** Draft / Final 产物（manifest；构建 / Finalize / run 结束后失效） */
   artifacts: (projectId: string) => ["project", projectId, "artifacts"] as const,
   buildStatus: (projectId: string) => ["project", projectId, "build"] as const,
@@ -575,13 +581,14 @@ function useInvalidateCandidates(projectId: string | undefined) {
 
 // ---- Research Plan（M8.1：plan 是检索意图的声明，指导下方检索；M8.3.1 迭代链） ----
 
-/** 计划相关缓存失效（活动计划视图 + 迭代链列表 + 覆盖派生视图一起失效，保证视图不漂移） */
+/** 计划相关缓存失效（活动计划视图 + 迭代链列表 + 覆盖 / 缺口派生视图一起失效，保证视图不漂移） */
 function useInvalidateResearchPlans(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlan(projectId ?? "") });
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlans(projectId ?? "") });
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchCoverage(projectId ?? "") });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.researchGaps(projectId ?? "") });
   };
 }
 
@@ -659,14 +666,65 @@ export function useResearchCoverage(projectId: string | undefined) {
   });
 }
 
-/** 执行覆盖分析（M8.3.2：确定性规则即时重算；成功后失效覆盖视图） */
+/** 执行覆盖分析（M8.3.2：确定性规则即时重算；成功后失效覆盖 + 缺口派生视图） */
 export function useAnalyzeResearchCoverage(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () => analyzeResearchCoverage(projectId ?? ""),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.researchCoverage(projectId ?? "") });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchGaps(projectId ?? "") });
     },
+  });
+}
+
+/** ---- Research Gap HITL（M8.3.3：Coverage → Gap → Human Approval → 下一轮计划）---- */
+
+/** 当前活动计划的缺口清单（派生 proposed + 决策覆盖；无计划 → 空态） */
+export function useResearchGaps(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchGaps(projectId ?? ""),
+    queryFn: ({ signal }) => listResearchGaps(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 缺口决策缓存失效（accept / reject 只影响缺口清单，不触碰计划 / 覆盖视图） */
+function useInvalidateResearchGaps(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.researchGaps(projectId ?? "") });
+  };
+}
+
+/** 接受缺口（proposed → accepted，显式 HITL 动作；幂等） */
+export function useAcceptResearchGap(projectId: string | undefined) {
+  const invalidate = useInvalidateResearchGaps(projectId);
+  return useMutation({
+    mutationFn: (gapId: string) => acceptResearchGap(projectId ?? "", gapId),
+    onSuccess: () => invalidate(),
+  });
+}
+
+/** 拒绝缺口（proposed → rejected；幂等） */
+export function useRejectResearchGap(projectId: string | undefined) {
+  const invalidate = useInvalidateResearchGaps(projectId);
+  return useMutation({
+    mutationFn: (gapId: string) => rejectResearchGap(projectId ?? "", gapId),
+    onSuccess: () => invalidate(),
+  });
+}
+
+/**
+ * 从缺口派生下一轮计划（accepted 缺口 → 新 draft 并自动激活；成功后失效
+ * 计划链 + 缺口清单——研究循环：Coverage → Gap → Accept → Next Plan）
+ */
+export function useDeriveResearchGap(projectId: string | undefined) {
+  const invalidatePlans = useInvalidateResearchPlans(projectId);
+  return useMutation({
+    mutationFn: ({ gapId, input }: { gapId: string; input?: ResearchPlanDeriveInput }) =>
+      deriveResearchGap(projectId ?? "", gapId, input ?? {}),
+    onSuccess: () => invalidatePlans(),
   });
 }
 

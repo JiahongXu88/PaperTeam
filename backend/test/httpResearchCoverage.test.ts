@@ -92,7 +92,16 @@ type CoverageBody = {
     gap?: string;
   }>;
   overall: { questionCount: number; covered: number; partial: number; missing: number; summary: string };
-  gaps: Array<{ description: string; relatedQuestion?: string; suggestedQueries: string[] }>;
+  /** M8.3.3 起 gaps 为 ResearchGap[]（gapId / severity / status=proposed 等增量字段） */
+  gaps: Array<{
+    gapId: string;
+    planId: string;
+    question?: string;
+    description: string;
+    severity: string;
+    suggestedQueries: string[];
+    status: string;
+  }>;
 };
 
 describe("GET /api/projects/:id/research/coverage", () => {
@@ -124,8 +133,10 @@ describe("GET /api/projects/:id/research/coverage", () => {
     expect(coverage.overall).toMatchObject({ questionCount: 2, covered: 0, partial: 2, missing: 0 });
     expect(coverage.gaps).toHaveLength(2);
     expect(coverage.gaps[0]).toMatchObject({
-      relatedQuestion: "Transformer tracking 的发展脉络",
+      question: "Transformer tracking 的发展脉络",
       suggestedQueries: ["Transformer tracking 的发展脉络"],
+      status: "proposed",
+      severity: "low", // partial：有结果无证据支撑
     });
   });
 
@@ -158,7 +169,7 @@ describe("POST /api/projects/:id/research/coverage/analyze", () => {
     expect(coverage.questions[1]).toMatchObject({ coverage: "partial", promotedCount: 0 });
     expect(coverage.overall).toMatchObject({ covered: 1, partial: 1, missing: 0 });
     expect(coverage.gaps).toHaveLength(1);
-    expect(coverage.gaps[0]).toMatchObject({ relatedQuestion: "edge device 部署优化" });
+    expect(coverage.gaps[0]).toMatchObject({ question: "edge device 部署优化", planId: "rp-seed00000001" });
     expect(coverage.overall.summary).toContain("covered 1 · partial 1");
   });
 

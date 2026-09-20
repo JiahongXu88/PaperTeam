@@ -28,6 +28,7 @@ import { ResearcherService } from "./agents/ResearcherService.js";
 import { ResearchPlanExecutionService } from "./agents/researchPlanExecution.js";
 import { ResearchPlanIterationService } from "./agents/researchPlanIteration.js";
 import { ResearchCoverageService } from "./agents/researchCoverage.js";
+import { ResearchGapService } from "./agents/researchGap.js";
 import type { AgentRuntime } from "./runtime/types.js";
 import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
@@ -166,6 +167,8 @@ export interface ServiceStack {
   planIteration: ResearchPlanIterationService;
   /** Research Coverage Analyzer（M8.3.2）：活动计划覆盖分析（只读派生视图） */
   coverage: ResearchCoverageService;
+  /** Research Gap HITL（M8.3.3）：缺口确认 / 拒绝 / 从缺口派生下一轮计划 */
+  gaps: ResearchGapService;
   /** Project Retrieval（M6.4）：chunk 管线 + 进程内 hybrid index + Context Packing */
   retrieval: RetrievalService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -401,6 +404,15 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     candidates,
     log,
   });
+  // M8.3.3 缺口 HITL 层：覆盖缺口（proposed）→ 用户确认（accepted）→ 从
+  // 缺口派生下一轮（委托 M8.3.1 planIteration.derive，单一派生逻辑）；
+  // 只写 research.json gaps 决策记录，不触碰 Runtime / Workflow / Discovery
+  const gaps = new ResearchGapService({
+    projects: options.projects,
+    coverage,
+    planIteration,
+    log,
+  });
   // M6.4 Project Retrieval：chunker 复用 paper 域 PyMuPdfParser（同一工具链，
   // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
   // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
@@ -529,7 +541,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     discovery,
     planExecution,
     planIteration,
-    coverage,    retrieval,
+    coverage,
+    gaps,
+    retrieval,
     pdfAnalyzer,
     manuscript,
     citation,

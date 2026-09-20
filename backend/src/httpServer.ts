@@ -36,6 +36,10 @@ import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import type { ReadinessProbe } from "./runtime/readiness.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
 import { readResearchArtifact, updateResearchPlan } from "./agents/ResearcherService.js";
+import {
+  getResearchLoopPolicy,
+  updateResearchLoopPolicy,
+} from "./agents/researchLoopPolicy.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
 import {
@@ -1170,6 +1174,55 @@ async function handleProjectResourceRoutes(
         ? await stack.coverage.analyze(projectId)
         : await stack.coverage.get(projectId);
       sendJson(res, 200, { coverage });
+      return true;
+    }
+    // ---- /gaps（M8.3.3：当前活动计划的缺口清单——覆盖派生 + HITL 决策覆盖）----
+    if (rest === "/gaps") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const result = await stack.gaps.list(projectId);
+      sendJson(res, 200, { planId: result.planId, gaps: result.gaps });
+      return true;
+    }
+    // ---- /gaps/:gapId/{accept|reject|derive}（M8.3.3：缺口 HITL——
+    //      分析器只产生 proposed；accept/reject 是显式用户决策；derive 只对
+    //      accepted 缺口开放并复用 M8.3.1 计划派生逻辑）----
+    const gapMatch = /^\/gaps\/([a-z0-9][a-z0-9-]{0,63})\/(accept|reject|derive)$/.exec(rest);
+    if (gapMatch !== null) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const gapId = gapMatch[1] ?? "";
+      if (gapMatch[2] === "derive") {
+        // 请求体全部可选（query modifications：questions / queries 覆盖缺口默认）
+        const body = await readOptionalJsonBody(req);
+        const plan = await stack.gaps.derive(projectId, gapId, body);
+        sendJson(res, 200, { plan });
+        return true;
+      }
+      const gap =
+        gapMatch[2] === "accept"
+          ? await stack.gaps.accept(projectId, gapId)
+          : await stack.gaps.reject(projectId, gapId);
+      sendJson(res, 200, { gap });
+      return true;
+    }
+    // ---- /loop-policy（M8.3.3：受控研究循环边界规则——保存但不自动执行）----
+    if (rest === "/loop-policy") {
+      if (method === "GET") {
+        sendJson(res, 200, { loopPolicy: await getResearchLoopPolicy(stack.projects, projectId) });
+        return true;
+      }
+      if (method === "PUT") {
+        const body = await readJsonBody(req);
+        const loopPolicy = await updateResearchLoopPolicy(stack.projects, projectId, body);
+        sendJson(res, 200, { loopPolicy });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, PUT", method);
       return true;
     }
     // ---- /plan/:planId/derive · /plan/:planId/activate（M8.3.1：派生下一轮 / 切换活动计划）----

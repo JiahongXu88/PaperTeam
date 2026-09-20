@@ -1,7 +1,8 @@
 /**
  * Research Plan API（M8.1；Backend research artifact plan 字段的读写。
  * M8.2 增加批准 / 执行。M8.3.1 增加迭代：列出计划链 / 从 done 计划派生
- * 下一轮 / 切换活动计划）。
+ * 下一轮 / 切换活动计划。M8.3.2 增加覆盖分析。M8.3.3 增加研究缺口 HITL：
+ * 缺口清单 / 接受 / 拒绝 / 从缺口派生下一轮）。
  *
  *   GET   /api/projects/:id/research/plan                  → { plan: ResearchPlanView | null }
  *   PUT   /api/projects/:id/research/plan                  → { questions?, queries? }
@@ -13,6 +14,10 @@
  *   POST  /api/projects/:id/research/plan/:planId/activate → { plan }（切换活动计划）
  *   GET   /api/projects/:id/research/coverage              → { coverage: ResearchCoverageView | null }
  *   POST  /api/projects/:id/research/coverage/analyze      → { coverage }（无计划 → 404）
+ *   GET   /api/projects/:id/research/gaps                  → { planId, gaps }（M8.3.3 缺口清单）
+ *   POST  /api/projects/:id/research/gaps/:gapId/accept    → { gap }（proposed → accepted）
+ *   POST  /api/projects/:id/research/gaps/:gapId/reject    → { gap }（proposed → rejected）
+ *   POST  /api/projects/:id/research/gaps/:gapId/derive    → { plan }（accepted → 新 draft）
  *
  * 语义：plan 是 Researcher 调研产出（research artifact 的计划链）的一等
  * 视图——只读展示 + 受限编辑（questions / query / rationale / query
@@ -26,6 +31,8 @@ import { apiClient } from "./client.js";
 import type {
   PlanExecutionResultView,
   ResearchCoverageView,
+  ResearchGapListView,
+  ResearchGapView,
   ResearchPlanListView,
   ResearchPlanView,
   ResearchQueryKind,
@@ -172,4 +179,66 @@ export async function analyzeResearchCoverage(
     {},
   );
   return body.coverage;
+}
+
+/** ---- Research Gap HITL（M8.3.3：Coverage → Gap → Human Approval → 下一轮计划）---- */
+
+/**
+ * 当前活动计划的缺口清单（覆盖派生 proposed + 落盘决策覆盖）。
+ * 无 artifact / 无计划 → { planId: null, gaps: [] }（空态而非错误）。
+ */
+export async function listResearchGaps(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<ResearchGapListView> {
+  return apiClient.get<ResearchGapListView>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/gaps`,
+    signal,
+  );
+}
+
+/**
+ * 接受缺口（proposed → accepted，显式 HITL 动作）：幂等；已拒绝 → 409
+ * GAP_INVALID_STATE（决策不翻转）。只有 accepted 缺口可派生下一轮计划。
+ */
+export async function acceptResearchGap(
+  projectId: string,
+  gapId: string,
+): Promise<ResearchGapView> {
+  const body = await apiClient.post<{ gap: ResearchGapView }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/gaps/${encodeURIComponent(gapId)}/accept`,
+    {},
+  );
+  return body.gap;
+}
+
+/** 拒绝缺口（proposed → rejected，幂等；已接受 → 409） */
+export async function rejectResearchGap(
+  projectId: string,
+  gapId: string,
+): Promise<ResearchGapView> {
+  const body = await apiClient.post<{ gap: ResearchGapView }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/gaps/${encodeURIComponent(gapId)}/reject`,
+    {},
+  );
+  return body.gap;
+}
+
+/**
+ * 从已接受（accepted）的缺口派生下一轮计划：复用 M8.3.1 计划派生 API
+ * （不新增第二套 Plan 创建逻辑）——questions 缺省 = 缺口关联问题，
+ * queries 缺省 = suggestedQueries（kind=academic），input 提供则覆盖；
+ * 新计划 draft、iterationNumber+1、parentPlanId=来源、自动成为活动计划；
+ * 旧计划保持不变。proposed / rejected 缺口 → 409；来源计划非 done → 409。
+ */
+export async function deriveResearchGap(
+  projectId: string,
+  gapId: string,
+  input: ResearchPlanDeriveInput = {},
+): Promise<ResearchPlanView> {
+  const body = await apiClient.post<{ plan: ResearchPlanView }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/gaps/${encodeURIComponent(gapId)}/derive`,
+    input,
+  );
+  return body.plan;
 }

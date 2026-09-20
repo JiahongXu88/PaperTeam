@@ -25,12 +25,16 @@ import {
   ResearchCoverageService,
   analyzeCoverage,
   assessQuestionCoverage,
-  buildCoverageGaps,
   isTextRelated,
   matchTokens,
   mergeQueryFacts,
   type CoverageQueryFacts,
 } from "../../src/agents/researchCoverage.js";
+import {
+  buildResearchGaps,
+  deterministicGapId,
+  type ResearchGap,
+} from "../../src/agents/researchGap.js";
 import type { PlanExecutionEntry } from "../../src/agents/researchPlanExecution.js";
 
 const tempRoots: string[] = [];
@@ -187,10 +191,10 @@ describe("Coverage rule（assessQuestionCoverage）", () => {
   });
 });
 
-// ---- 任务八-3：Gap recommendation ----
+// ---- 任务八-3：Gap recommendation（M8.3.3 起：buildResearchGaps → ResearchGap[]）----
 
-describe("Gap recommendation（buildCoverageGaps / analyzeCoverage）", () => {
-  it("missing / partial 生成缺口，建议检索 = 问题原文；covered 不生成", () => {
+describe("Gap recommendation（buildResearchGaps / analyzeCoverage）", () => {
+  it("missing / partial 生成缺口（gapId 稳定 + severity 分级 + status=proposed）；covered 不生成", () => {
     const missing = assessQuestionCoverage({
       question: "边缘部署优化",
       origin: "plan",
@@ -205,24 +209,98 @@ describe("Gap recommendation（buildCoverageGaps / analyzeCoverage）", () => {
       evidenceTexts: ["Transformer MOT 综述结论"],
       literatureTexts: [],
     });
-    const gaps = buildCoverageGaps([missing, covered], []);
+    const gaps = buildResearchGaps({
+      planId: "rp-100000000001",
+      createdAt: "2026-09-20T08:00:00.000Z",
+      questions: [missing, covered],
+      literaturePlan: [],
+    });
     expect(gaps).toEqual([
       {
-        description: missing.gap,
-        relatedQuestion: "边缘部署优化",
+        gapId: deterministicGapId("rp-100000000001", "边缘部署优化", "边缘部署优化"),
+        planId: "rp-100000000001",
+        question: "边缘部署优化",
+        description: missing.gap ?? "该研究问题未被覆盖",
+        severity: "high", // missing 且无关联检索
         suggestedQueries: ["边缘部署优化"],
+        status: "proposed",
+        createdAt: "2026-09-20T08:00:00.000Z",
       },
-    ]);
+    ] satisfies ResearchGap[]);
   });
 
-  it("report.literaturePlan 残差方向直通缺口（无关联问题）；建议检索 = 方向原文", () => {
-    const gaps = buildCoverageGaps([], ["边缘设备上的高效推理", " "]);
+  it("severity 分级：missing 有关联检索无结果 = medium；partial = low", () => {
+    const noResults = assessQuestionCoverage({
+      question: "Transformer MOT 的发展",
+      origin: "plan",
+      queries: [facts({ query: "transformer mot survey", executed: true, resultCount: 0 })],
+      evidenceTexts: [],
+      literatureTexts: [],
+    });
+    const partial = assessQuestionCoverage({
+      question: "Transformer MOT 实时部署",
+      origin: "plan",
+      queries: [facts({ query: "real-time transformer mot deployment", executed: true, resultCount: 25 })],
+      evidenceTexts: [],
+      literatureTexts: [],
+    });
+    const gaps = buildResearchGaps({
+      planId: "rp-100000000003",
+      createdAt: "2026-09-20T08:00:00.000Z",
+      questions: [noResults, partial],
+      literaturePlan: [],
+    });
+    expect(gaps.map((gap) => gap.severity)).toEqual(["medium", "low"]);
+  });
+
+  it("gapId 确定性：同计划同问题多次构造同 id；不同计划不同 id", () => {
+    const first = buildResearchGaps({
+      planId: "rp-100000000001",
+      createdAt: "2026-09-20T08:00:00.000Z",
+      questions: [
+        assessQuestionCoverage({ question: "边缘部署优化", origin: "plan", queries: [], evidenceTexts: [], literatureTexts: [] }),
+      ],
+      literaturePlan: [],
+    });
+    const second = buildResearchGaps({
+      planId: "rp-100000000001",
+      createdAt: "2026-09-20T09:00:00.000Z", // 时间变化不改变 id
+      questions: [
+        assessQuestionCoverage({ question: "边缘部署优化", origin: "plan", queries: [], evidenceTexts: [], literatureTexts: [] }),
+      ],
+      literaturePlan: [],
+    });
+    const otherPlan = buildResearchGaps({
+      planId: "rp-100000000002",
+      createdAt: "2026-09-20T08:00:00.000Z",
+      questions: [
+        assessQuestionCoverage({ question: "边缘部署优化", origin: "plan", queries: [], evidenceTexts: [], literatureTexts: [] }),
+      ],
+      literaturePlan: [],
+    });
+    expect(first[0]!.gapId).toBe(second[0]!.gapId);
+    expect(first[0]!.gapId).not.toBe(otherPlan[0]!.gapId);
+    expect(first[0]!.gapId).toMatch(/^gap-[a-f0-9]{12}$/);
+  });
+
+  it("report.literaturePlan 残差方向直通缺口（无关联问题，severity=medium）；建议检索 = 方向原文", () => {
+    const gaps = buildResearchGaps({
+      planId: "rp-100000000001",
+      createdAt: "2026-09-20T08:00:00.000Z",
+      questions: [],
+      literaturePlan: ["边缘设备上的高效推理", " "],
+    });
     expect(gaps).toEqual([
       {
+        gapId: deterministicGapId("rp-100000000001", undefined, "边缘设备上的高效推理"),
+        planId: "rp-100000000001",
         description: "调研报告登记的残差文献方向：边缘设备上的高效推理",
+        severity: "medium",
         suggestedQueries: ["边缘设备上的高效推理"],
+        status: "proposed",
+        createdAt: "2026-09-20T08:00:00.000Z",
       },
-    ]);
+    ] satisfies ResearchGap[]);
   });
 
   it("analyzeCoverage：plan.questions 优先 + report.researchQuestions 去重补充（origin 标注）+ overall 汇总", () => {
@@ -391,7 +469,7 @@ describe("ResearchCoverageService", () => {
     expect(coverage.questions[1]).toMatchObject({ coverage: "covered", promotedCount: 1 });
     expect(coverage.overall).toMatchObject({ covered: 2, partial: 0, missing: 1 });
     // report.researchQuestions 的未覆盖问题进入缺口建议
-    expect(coverage.gaps.map((gap) => gap.relatedQuestion)).toContain("遮挡场景身份保持");
+    expect(coverage.gaps.map((gap) => gap.question)).toContain("遮挡场景身份保持");
   });
 
   it("backward compatibility：M8.1 artifact（无 executionHistory / 无 iteration 字段）仍可分析", async () => {

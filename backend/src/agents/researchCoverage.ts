@@ -22,6 +22,10 @@
  *   promoted literature 是已入库候选；evidence 是 EvidenceStore 条目），
  *   三层各计各数，不混写。
  *
+ * M8.3.3：报告的 gaps 升级为 ResearchGap[]（researchGap.ts）——带稳定
+ * gapId / severity / status=proposed 的显式研究对象，供 HITL 确认与
+ * 「从缺口派生下一轮计划」消费；分析器只产生 proposed，永不自动 accepted。
+ *
  * 判定输入（全部来自既有状态）：
  * - plan.questions（活动计划的检索意图）+ report.researchQuestions（调研报告
  *   的结论问题；与 plan.questions 去重后补充分析）；
@@ -50,6 +54,7 @@ import {
 } from "./researchPlan.js";
 import type { PlanExecutionEntry } from "./researchPlanExecution.js";
 import { readResearchArtifact, type ResearchArtifact } from "./ResearcherService.js";
+import { buildResearchGaps, type ResearchGap } from "./researchGap.js";
 
 // ---- 领域模型（结构化状态优先，不过度设计评分） ----
 
@@ -75,15 +80,6 @@ export interface ResearchCoverageQuestion {
   gap?: string;
 }
 
-/** 缺口建议（只生成建议：不自动 derive / approve / execute） */
-export interface ResearchCoverageGap {
-  description: string;
-  /** 关联的研究问题（report.literaturePlan 残差方向无关联问题，省略） */
-  relatedQuestion?: string;
-  /** 建议下一轮执行的检索词（确定性生成：问题原文 / 残差方向原文） */
-  suggestedQueries: string[];
-}
-
 export interface ResearchCoverage {
   /** 被分析的计划（= 活动计划；M8.3.1 计划链中 activePlanId 指向的条目） */
   planId: string;
@@ -98,11 +94,14 @@ export interface ResearchCoverage {
     missing: number;
     summary: string;
   };
-  gaps: ResearchCoverageGap[];
+  /**
+   * 缺口清单（M8.3.3 起为 ResearchGap[]——带稳定 gapId / severity /
+   * status=proposed 的显式研究对象；分析器只产生 proposed，HITL 决策与
+   * 派生走 ResearchGapService）。字段是 M8.3.2 缺口建议（description /
+   * suggestedQueries）的纯增量扩展。
+   */
+  gaps: ResearchGap[];
 }
-
-/** 缺口条数硬帽（防 literaturePlan / 问题数异常膨胀；与既有 slice 上限同量级） */
-export const MAX_COVERAGE_GAPS = 30;
 
 // ---- 关联匹配（确定性纯函数） ----
 
@@ -217,41 +216,9 @@ export function assessQuestionCoverage(context: CoverageQuestionContext): Resear
   };
 }
 
-// ---- 缺口建议（纯函数；只建议，不派生不执行） ----
-
-/**
- * 由判定结果 + 报告残差方向生成缺口清单：
- * - missing / partial 的问题各一条缺口，建议检索 = 问题原文（确定性 v1；
- *   语义化改写留给未来的 Researcher 通道）；
- * - report.literaturePlan 是调研方声明的「检索后仍缺失」残差方向，
- *   原文作为缺口与建议检索直通登记（无关联问题）。
- */
-export function buildCoverageGaps(
-  questions: ResearchCoverageQuestion[],
-  literaturePlan: string[],
-): ResearchCoverageGap[] {
-  const gaps: ResearchCoverageGap[] = [];
-  for (const entry of questions) {
-    if (entry.coverage === "covered") {
-      continue;
-    }
-    gaps.push({
-      description: entry.gap ?? "该研究问题未被覆盖",
-      relatedQuestion: entry.question,
-      suggestedQueries: [entry.question],
-    });
-  }
-  for (const direction of literaturePlan) {
-    if (direction.trim() === "") {
-      continue;
-    }
-    gaps.push({
-      description: `调研报告登记的残差文献方向：${direction}`,
-      suggestedQueries: [direction],
-    });
-  }
-  return gaps.slice(0, MAX_COVERAGE_GAPS);
-}
+// ---- 缺口建议（M8.3.3 起移至 researchGap.ts：buildResearchGaps 产出 ----
+// ---- ResearchGap[]，含稳定 gapId / severity / status=proposed；只建议， ----
+// ---- 不派生不执行）                                                   ----
 
 // ---- 报告组装（纯函数） ----
 
@@ -306,7 +273,13 @@ export function analyzeCoverage(input: CoverageAnalysisInput): ResearchCoverage 
   const covered = questions.filter((entry) => entry.coverage === "covered").length;
   const partial = questions.filter((entry) => entry.coverage === "partial").length;
   const missing = questions.filter((entry) => entry.coverage === "missing").length;
-  const gaps = buildCoverageGaps(questions, input.literaturePlan);
+  // M8.3.3：缺口构造移交 researchGap.ts（确定性 gapId + severity + proposed）
+  const gaps = buildResearchGaps({
+    planId: input.planId,
+    createdAt: input.analyzedAt,
+    questions,
+    literaturePlan: input.literaturePlan,
+  });
   return {
     planId: input.planId,
     planStatus: input.planStatus,
