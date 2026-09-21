@@ -19,6 +19,7 @@ import {
   DEFAULT_RESEARCH_LOOP_POLICY,
   MAX_LOOP_ITERATIONS_LIMIT,
   MAX_LOOP_QUERIES_PER_ITERATION_LIMIT,
+  MAX_LOOP_TOTAL_QUERIES_LIMIT,
   getResearchLoopPolicy,
   parseResearchLoopPolicy,
   readResearchLoopPolicyFrom,
@@ -74,10 +75,11 @@ function seededArtifact(): Record<string, unknown> {
 }
 
 describe("parseResearchLoopPolicy（模型校验）", () => {
-  it("缺省策略：maxIterations=5 / maxQueriesPerIteration=20 / 三个停止条件全开", () => {
+  it("缺省策略：maxIterations=5 / maxQueriesPerIteration=20 / maxTotalQueries=100 / 三个停止条件全开", () => {
     expect(DEFAULT_RESEARCH_LOOP_POLICY).toEqual({
       maxIterations: 5,
       maxQueriesPerIteration: 20,
+      maxTotalQueries: 100,
       stopConditions: ["no_new_coverage", "budget_exceeded", "iteration_limit"],
     });
     expect(parseResearchLoopPolicy({})).toEqual(DEFAULT_RESEARCH_LOOP_POLICY);
@@ -98,6 +100,11 @@ describe("parseResearchLoopPolicy（模型校验）", () => {
       maxQueriesPerIteration: 100,
       stopConditions: ["iteration_limit", "no_new_coverage"],
     });
+    // M8.4 最小扩展：整个循环的检索预算（真实执行计数口径）
+    expect(parseResearchLoopPolicy({ maxTotalQueries: 42 })).toEqual({
+      ...DEFAULT_RESEARCH_LOOP_POLICY,
+      maxTotalQueries: 42,
+    });
   });
 
   it("越界 / 非整数 → 400 INVALID_REQUEST", () => {
@@ -108,6 +115,9 @@ describe("parseResearchLoopPolicy（模型校验）", () => {
     }
     expect(() =>
       parseResearchLoopPolicy({ maxQueriesPerIteration: MAX_LOOP_QUERIES_PER_ITERATION_LIMIT + 1 }),
+    ).toThrowError(expect.objectContaining({ code: "INVALID_REQUEST" }));
+    expect(() =>
+      parseResearchLoopPolicy({ maxTotalQueries: MAX_LOOP_TOTAL_QUERIES_LIMIT + 1 }),
     ).toThrowError(expect.objectContaining({ code: "INVALID_REQUEST" }));
   });
 
@@ -144,6 +154,7 @@ describe("ResearchLoopPolicy 读写（research.json loopPolicy 字段）", () =>
     const stored: ResearchLoopPolicy = {
       maxIterations: 8,
       maxQueriesPerIteration: 15,
+      maxTotalQueries: 60,
       stopConditions: ["iteration_limit"],
     };
     await seedArtifact(store, projectId, { ...seededArtifact(), loopPolicy: stored });
@@ -157,11 +168,13 @@ describe("ResearchLoopPolicy 读写（research.json loopPolicy 字段）", () =>
     const policy = await updateResearchLoopPolicy(store, projectId, {
       maxIterations: 7,
       maxQueriesPerIteration: 25,
+      maxTotalQueries: 80,
       stopConditions: ["no_new_coverage", "budget_exceeded"],
     });
     expect(policy).toEqual({
       maxIterations: 7,
       maxQueriesPerIteration: 25,
+      maxTotalQueries: 80,
       stopConditions: ["no_new_coverage", "budget_exceeded"],
     });
 

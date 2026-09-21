@@ -32,19 +32,27 @@ export interface ResearchLoopPolicy {
   maxIterations: number;
   /** 单轮计划允许执行的检索条数上限 */
   maxQueriesPerIteration: number;
-  /** 声明式停止条件（未来循环编排层的评估输入；M8.3.3 不消费） */
+  /**
+   * 整个循环生命周期的检索预算（M8.4 最小扩展）：按轮次执行记录的
+   * executed + failed 真实计数消耗（每条都是真实发生过的 provider 调用，
+   * 不估算、不伪造 token 成本）。达到预算 → budget_exceeded 停止。
+   */
+  maxTotalQueries: number;
+  /** 声明式停止条件（M8.4 循环编排层的评估输入） */
   stopConditions: ResearchLoopStopCondition[];
 }
 
 export const DEFAULT_RESEARCH_LOOP_POLICY: ResearchLoopPolicy = {
   maxIterations: 5,
   maxQueriesPerIteration: 20,
+  maxTotalQueries: 100,
   stopConditions: [...RESEARCH_LOOP_STOP_CONDITIONS],
 };
 
 /** 校验边界（M8.3 冻结：不追求无限弹性，给出可审计的硬边界） */
 export const MAX_LOOP_ITERATIONS_LIMIT = 20;
 export const MAX_LOOP_QUERIES_PER_ITERATION_LIMIT = 100;
+export const MAX_LOOP_TOTAL_QUERIES_LIMIT = 500;
 
 /**
  * 校验并归一 PUT /research/loop-policy 请求体（不符合契约 → 400）：
@@ -60,6 +68,13 @@ export function parseResearchLoopPolicy(body: Record<string, unknown>): Research
     1,
     MAX_LOOP_QUERIES_PER_ITERATION_LIMIT,
     DEFAULT_RESEARCH_LOOP_POLICY.maxQueriesPerIteration,
+  );
+  const maxTotalQueries = readBoundedInteger(
+    body["maxTotalQueries"],
+    "maxTotalQueries",
+    1,
+    MAX_LOOP_TOTAL_QUERIES_LIMIT,
+    DEFAULT_RESEARCH_LOOP_POLICY.maxTotalQueries,
   );
   let stopConditions = DEFAULT_RESEARCH_LOOP_POLICY.stopConditions;
   if (body["stopConditions"] !== undefined) {
@@ -87,7 +102,7 @@ export function parseResearchLoopPolicy(body: Record<string, unknown>): Research
     }
     stopConditions = parsed as ResearchLoopStopCondition[];
   }
-  return { maxIterations, maxQueriesPerIteration, stopConditions };
+  return { maxIterations, maxQueriesPerIteration, maxTotalQueries, stopConditions };
 }
 
 /** 读取项目策略（落盘值优先；形状非法时自愈回默认值——读侧不抛错） */

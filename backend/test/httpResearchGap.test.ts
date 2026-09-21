@@ -295,6 +295,7 @@ describe("GET/PUT /api/projects/:id/research/loop-policy", () => {
     expect(empty.body["loopPolicy"]).toEqual({
       maxIterations: 5,
       maxQueriesPerIteration: 20,
+      maxTotalQueries: 100,
       stopConditions: ["no_new_coverage", "budget_exceeded", "iteration_limit"],
     });
 

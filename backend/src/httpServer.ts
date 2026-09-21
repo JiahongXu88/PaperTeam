@@ -1210,7 +1210,63 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { gap });
       return true;
     }
-    // ---- /loop-policy（M8.3.3：受控研究循环边界规则——保存但不自动执行）----
+    // ---- /loop · /loop/{start,resume,cancel,plan/approve,derive-next}（M8.4：
+    //      Controlled Multi-round Research Executor——纯状态编排层，检索 / 覆盖 /
+    //      缺口 / 派生全部委托既有服务；HITL 断点停等用户：批准不自动、缺口
+    //      决策不自动、派生后不自动执行）----
+    if (rest === "/loop") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      sendJson(res, 200, { loop: await stack.loop.get(projectId) });
+      return true;
+    }
+    if (rest === "/loop/start") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, { loop: await stack.loop.start(projectId) });
+      return true;
+    }
+    if (rest === "/loop/resume") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, { loop: await stack.loop.resume(projectId) });
+      return true;
+    }
+    if (rest === "/loop/cancel") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, { loop: await stack.loop.cancel(projectId) });
+      return true;
+    }
+    if (rest === "/loop/plan/approve") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, { loop: await stack.loop.approvePlan(projectId) });
+      return true;
+    }
+    if (rest === "/loop/derive-next") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      // 请求体全部可选：gapId（多 accepted 缺口时必填）+ questions / queries
+      // （透传 M8.3.3 缺口派生的检索改写入口）
+      const body = await readOptionalJsonBody(req);
+      const { loop, plan } = await stack.loop.deriveNextPlan(projectId, body);
+      sendJson(res, 200, { loop, plan });
+      return true;
+    }
+    // ---- /loop-policy（M8.3.3：受控研究循环边界规则——M8.4 起被循环真实消费）----
     if (rest === "/loop-policy") {
       if (method === "GET") {
         sendJson(res, 200, { loopPolicy: await getResearchLoopPolicy(stack.projects, projectId) });

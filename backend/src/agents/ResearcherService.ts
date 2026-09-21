@@ -33,6 +33,7 @@ import {
 import type { PlanExecutionEntry } from "./researchPlanExecution.js";
 import type { ResearchGap } from "./researchGap.js";
 import type { ResearchLoopPolicy } from "./researchLoopPolicy.js";
+import type { ResearchLoopState } from "./researchLoop.js";
 import {
   extractJsonObject,
   readOptionalStringArray,
@@ -177,6 +178,7 @@ export class ResearcherService {
         : {}),
       ...(existing?.gaps !== undefined && existing.gaps.length > 0 ? { gaps: existing.gaps } : {}),
       ...(existing?.loopPolicy !== undefined ? { loopPolicy: existing.loopPolicy } : {}),
+      ...(existing?.loop !== undefined ? { loop: existing.loop } : {}),
       report,
       evidence: parsedCandidates,
       bibliography: readBibliography(parsed),
@@ -342,6 +344,7 @@ export class ResearcherService {
         : {}),
       ...(existing?.gaps !== undefined && existing.gaps.length > 0 ? { gaps: existing.gaps } : {}),
       ...(existing?.loopPolicy !== undefined ? { loopPolicy: existing.loopPolicy } : {}),
+      ...(existing?.loop !== undefined ? { loop: existing.loop } : {}),
       report,
       evidence: [],
       bibliography: [],
@@ -402,6 +405,12 @@ export type ResearchArtifact = {
   gaps?: ResearchGap[];
   /** 受控研究循环策略（M8.3.3；保存边界规则，不自动执行循环） */
   loopPolicy?: ResearchLoopPolicy;
+  /**
+   * 受控研究循环状态（M8.4；ResearchLoopService 落盘的状态机 + 轮次历史）。
+   * 可选字段：旧 artifact 无此字段仍可读；重跑与计划链写盘均原样保留
+   * （用户可控状态，与 gaps / loopPolicy 同纪律）。
+   */
+  loop?: ResearchLoopState;
   report: ResearchReport;
   evidence: ParsedEvidenceEntry[];
   bibliography: BibliographyEntryInput[];
@@ -465,15 +474,16 @@ export async function writeResearchPlanChain(
 
 /**
  * 把研究循环状态写回 research.json（M8.3.3 单一写入口：gaps 决策记录 /
- * loopPolicy）。只覆盖传入的字段；artifact 其余字段（计划链 / 执行历史 /
- * 报告侧）原样保留——调用方传入的 artifact 即磁盘现状，不做内存态改写，
- * 与 writeResearchPlanChain 的「其余字段 ...artifact 展开」同纪律。
+ * loopPolicy；M8.4 增补 loop 循环状态）。只覆盖传入的字段；artifact 其余
+ * 字段（计划链 / 执行历史 / 报告侧）原样保留——调用方传入的 artifact 即
+ * 磁盘现状，不做内存态改写，与 writeResearchPlanChain 的「其余字段
+ * ...artifact 展开」同纪律。
  */
 export async function writeResearchLoopState(
   projects: ProjectStore,
   projectId: string,
   artifact: ResearchArtifact,
-  fields: { gaps?: ResearchGap[]; loopPolicy?: ResearchLoopPolicy },
+  fields: { gaps?: ResearchGap[]; loopPolicy?: ResearchLoopPolicy; loop?: ResearchLoopState },
 ): Promise<void> {
   const { writeFile } = await import("node:fs/promises");
   await writeFile(
