@@ -10,6 +10,7 @@
  *   POST  /api/projects/:id/research/plan/approve          → { plan }（draft → approved）
  *   POST  /api/projects/:id/research/plan/execute          → PlanExecutionResultView
  *   GET   /api/projects/:id/research/plans                 → ResearchPlanListView
+ *   GET   /api/projects/:id/research/execution-history     → { executionHistory }（M8.5 审计）
  *   POST  /api/projects/:id/research/plan/:planId/derive   → { plan }（done → 新 draft，自动激活）
  *   POST  /api/projects/:id/research/plan/:planId/activate → { plan }（切换活动计划）
  *   GET   /api/projects/:id/research/coverage              → { coverage: ResearchCoverageView | null }
@@ -29,6 +30,7 @@
 
 import { apiClient } from "./client.js";
 import type {
+  PlanExecutionEntryView,
   PlanExecutionResultView,
   ResearchCoverageView,
   ResearchGapListView,
@@ -122,6 +124,24 @@ export async function listResearchPlans(
     `/api/projects/${encodeURIComponent(projectId)}/research/plans`,
     signal,
   );
+}
+
+/** ---- Search Audit（M8.5：executionHistory 只读审计视图）---- */
+
+/**
+ * 计划执行历史（每条 query 的执行时间 / provider 参与 / 结果数 / 失败原因 /
+ * 结果标识符投影）。只是审计痕迹：Search Result ≠ Candidate 不变，标识符
+ * 不代表已保存候选。无 artifact → 空数组（空态而非错误）。
+ */
+export async function listExecutionHistory(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<PlanExecutionEntryView[]> {
+  const body = await apiClient.get<{ executionHistory: PlanExecutionEntryView[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/execution-history`,
+    signal,
+  );
+  return body.executionHistory ?? [];
 }
 
 /**

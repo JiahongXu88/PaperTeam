@@ -3,6 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { DiscoveryPanel } from "../src/components/project/DiscoveryPanel.js";
+import { ApiError } from "../src/api/client.js";
 import type {
   AcademicSearchResponseView,
   WebSearchResponseView,
@@ -43,6 +44,7 @@ vi.mock("../src/api/researchPlan.js", () => ({
   approveResearchPlan: vi.fn(),
   executeResearchPlan: vi.fn(),
   listResearchPlans: vi.fn(async () => ({ plans: [], activePlanId: null })),
+  listExecutionHistory: vi.fn(async () => []),
   deriveResearchPlan: vi.fn(),
   activateResearchPlan: vi.fn(),
   getResearchCoverage: vi.fn(async () => null),
@@ -408,6 +410,21 @@ describe("DiscoveryPanel（M7.1c Discovery 候选 UI）", () => {
     expect(await screen.findByText("学术检索失败")).toBeTruthy();
   });
 
+  it("M8.5 候选数据损坏：标题与文案明确「损坏 ≠ 没有候选」（CANDIDATE_STORE_CORRUPTED）", async () => {
+    api.listCandidates.mockRejectedValue(
+      new ApiError(
+        500,
+        "CANDIDATE_STORE_CORRUPTED",
+        "候选文献数据损坏（p-1/sources/candidates.json 不是合法 JSON）：这不是「没有候选论文」",
+      ),
+    );
+    renderWithProviders(<DiscoveryPanel projectId="p-1" />, { route: "/projects/p-1?tab=discovery" });
+
+    expect(await screen.findByText("候选数据损坏（不是没有候选论文）")).toBeTruthy();
+    expect(screen.getByText(/不是「没有候选论文」/)).toBeTruthy();
+    expect(screen.queryByText(/还没有候选/)).toBeNull();
+  });
+
   it("partial 检索：如实提示部分源失败", async () => {
     await renderPanel([]);
     api.academicSearch.mockResolvedValue(academicResponse({ status: "partial" }));
@@ -440,6 +457,51 @@ describe("DiscoveryPanel（M8.1 Research Plan 展示与编辑）", () => {
     expect(screen.getByText("期望覆盖：近三年综述")).toBeTruthy();
     expect(screen.getByText("5 条结果")).toBeTruthy();
     expect(screen.getByText("草稿")).toBeTruthy();
+  });
+
+  it("M8.5 执行审计：executionHistory 展开（provider 参与 / 结果数 / 失败原因 / 标识留存）", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([
+      {
+        executionId: "exec-abc123",
+        queryId: "q-1",
+        query: "Transformer MOT survey",
+        kind: "academic",
+        timestamp: NOW,
+        status: "executed",
+        planId: "rp-1",
+        resultCount: 2,
+        providers: [{ provider: "openalex", outcome: "ok", resultCount: 2, latencyMs: 120 }],
+        resultIdentifiers: ["doi:10.1000/mot", "arxiv:2301.00001"],
+      },
+      {
+        executionId: "exec-abc123",
+        queryId: "q-2",
+        query: "real-time tracking",
+        kind: "web",
+        timestamp: NOW,
+        status: "failed",
+        planId: "rp-1",
+        error: "Web Search 未配置",
+      },
+    ]);
+    await renderPanelWithPlan(planView());
+
+    const audit = await screen.findByTestId("execution-audit");
+    expect(audit.textContent).toContain("执行审计（2 条记录");
+    // 成功条目：结果数 + provider 参与摘要 + 标识留存提示（title 悬停含标识符）
+    expect(audit.textContent).toContain("2 条结果");
+    expect(audit.textContent).toContain("检索源：openalex 2 条");
+    const identifiers = screen.getByTestId("execution-audit-identifiers");
+    expect(identifiers.getAttribute("title")).toContain("doi:10.1000/mot");
+    // 失败条目：失败原因如实展示
+    expect(audit.textContent).toContain("失败 —— Web Search 未配置");
+  });
+
+  it("M8.5 执行审计：无历史时收起（不渲染空块）", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([]);
+    await renderPanelWithPlan(planView());
+    await screen.findByTestId("plan-queries");
+    expect(screen.queryByTestId("execution-audit")).toBeNull();
   });
 
   it("编辑保存：改问题 + 改检索词与状态 + 增删条目 → PUT 受限字段 payload", async () => {

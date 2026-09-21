@@ -57,6 +57,36 @@ export interface PlanExecutionResultView {
   plan: ResearchPlanView;
 }
 
+/** ---- Search Audit（M8.5 镜像 backend PlanExecutionEntry）---- */
+
+/** 参与该次检索的 provider 摘要（diagnostics 最小投影） */
+export interface PlanExecutionProviderAttemptView {
+  provider: string;
+  outcome: string;
+  resultCount: number;
+  latencyMs?: number;
+  note?: string;
+}
+
+/**
+ * 单条 query 的执行审计记录（executionHistory 条目）。
+ * resultIdentifiers 是结果标识符投影（doi:… / arxiv:… / url / title:…）——
+ * 只是「这次搜到了什么」的痕迹，不是候选、不是文献。
+ */
+export interface PlanExecutionEntryView {
+  executionId: string;
+  queryId: string;
+  query: string;
+  kind: ResearchQueryKind;
+  timestamp: string;
+  status: "executed" | "failed";
+  planId?: string;
+  resultCount?: number;
+  error?: string;
+  providers?: PlanExecutionProviderAttemptView[];
+  resultIdentifiers?: string[];
+}
+
 /** ---- Coverage（M8.3.2 镜像 backend/src/agents/researchCoverage.ts）---- */
 
 export type ResearchCoverageLevel = "covered" | "partial" | "missing";

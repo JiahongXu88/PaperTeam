@@ -1162,6 +1162,17 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { plans: chain.plans, activePlanId: chain.activePlanId ?? null });
       return true;
     }
+    // ---- /execution-history（M8.5：计划执行审计——executionHistory 只读视图：
+    //      每条 query 的执行时间 / provider 参与 / 结果数 / 失败原因 / 结果标识符）----
+    if (rest === "/execution-history") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const artifact = await readResearchArtifact(stack.projects, projectId);
+      sendJson(res, 200, { executionHistory: artifact?.executionHistory ?? [] });
+      return true;
+    }
     // ---- /coverage · /coverage/analyze（M8.3.2：Research Coverage Analyzer——
     //      只读派生视图：GET 即时重算当前活动计划覆盖；POST 同规则 + 无计划 404）----
     if (rest === "/coverage" || rest === "/coverage/analyze") {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { ErrorState, Loading } from "../common/StateViews.js";
+import { ApiError } from "../../api/client.js";
 import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import {
@@ -13,6 +14,7 @@ import {
   useDeriveResearchGap,
   useDeriveResearchPlan,
   useExecuteResearchPlan,
+  useExecutionHistory,
   usePromoteCandidate,
   useRejectCandidate,
   useRejectResearchGap,
@@ -29,6 +31,7 @@ import type {
   WebResultView,
 } from "../../types/discovery.js";
 import type {
+  PlanExecutionProviderAttemptView,
   PlanExecutionResultView,
   ResearchCoverageLevel,
   ResearchCoverageQuestionView,
@@ -320,6 +323,60 @@ function PlanQueryRow({ entry }: { entry: ResearchPlanQueryView }) {
         <div className="source-row-meta candidate-snippet">期望覆盖：{entry.expectedCoverage}</div>
       ) : null}
     </li>
+  );
+}
+
+// ---- Execution Audit（M8.5：executionHistory 只读审计视图）----
+
+/** provider 参与摘要的紧凑文案（provider 条数，降级 / 失败时附注） */
+function attemptLabel(attempt: PlanExecutionProviderAttemptView): string {
+  const note =
+    attempt.outcome !== "ok" && attempt.outcome !== "degraded" && attempt.note !== undefined
+      ? `：${attempt.note}`
+      : attempt.outcome === "degraded"
+        ? "（降级）"
+        : "";
+  return `${attempt.provider} ${attempt.resultCount} 条${note}`;
+}
+
+function ExecutionAuditSection({ projectId }: { projectId: string }) {
+  const history = useExecutionHistory(projectId);
+  const entries = history.data ?? [];
+  // 审计是辅助视图：加载失败 / 无记录时静默收起，不打扰主面板
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <details className="details-block" data-testid="execution-audit">
+      <summary>
+        执行审计（{entries.length} 条记录 · 最新在前）
+      </summary>
+      <ul className="details-body notes-list">
+        {entries
+          .slice()
+          .reverse()
+          .map((entry, index) => (
+            <li key={`${entry.executionId}-${entry.queryId}-${index}`}>
+              {formatDateTime(entry.timestamp) ?? "—"} · {QUERY_KIND_LABELS[entry.kind]}「{entry.query}」：
+              {entry.status === "executed"
+                ? `${entry.resultCount ?? 0} 条结果`
+                : `失败 —— ${entry.error ?? "未知原因"}`}
+              {entry.providers !== undefined && entry.providers.length > 0
+                ? ` · 检索源：${entry.providers.map(attemptLabel).join("、")}`
+                : ""}
+              {entry.resultIdentifiers !== undefined && entry.resultIdentifiers.length > 0 ? (
+                <span
+                  title={entry.resultIdentifiers.join("\n")}
+                  data-testid="execution-audit-identifiers"
+                >
+                  {" "}
+                  · {entry.resultIdentifiers.length} 条结果标识已留存（悬停查看；只是审计痕迹，不是候选）
+                </span>
+              ) : null}
+            </li>
+          ))}
+      </ul>
+    </details>
   );
 }
 
@@ -700,6 +757,7 @@ function ResearchPlanSection({ projectId, topic }: { projectId: string; topic?: 
               </ul>
             )}
           </div>
+          <ExecutionAuditSection projectId={projectId} />
           {executionSummary !== null ? (
             <p
               className={`note ${executionSummary.failedQueries > 0 ? "note-warn" : "note-success"}`}
@@ -1421,7 +1479,11 @@ function CandidateSection({ projectId }: { projectId: string }) {
         <Loading label="加载候选…" />
       ) : isError ? (
         <ErrorState
-          title="候选加载失败"
+          title={
+            error instanceof ApiError && error.code === "CANDIDATE_STORE_CORRUPTED"
+              ? "候选数据损坏（不是没有候选论文）"
+              : "候选加载失败"
+          }
           message={formatApiError(error)}
           detail={formatApiErrorDetail(error)}
           onRetry={() => void refetch()}

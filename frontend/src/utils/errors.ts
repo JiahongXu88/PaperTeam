@@ -27,6 +27,8 @@ const CODE_MESSAGES: Record<string, string> = {
   PDF_PARSER_UNAVAILABLE: "本机缺少 PDF 解析依赖（Python + pymupdf）。",
   NETWORK_ERROR: "无法连接 PaperTeam 后端服务，请确认服务已启动。",
   INVALID_RESPONSE: "服务返回了无法解析的响应。",
+  CANDIDATE_STORE_CORRUPTED:
+    "候选文献数据损坏（这不是「没有候选论文」，是存储文件不可读）：请按提示修复后重试。",
   INTERNAL_ERROR: "服务内部错误，请稍后重试；详情见 Backend 日志。",
 };
 
@@ -38,6 +40,7 @@ const PREFER_SERVER_MESSAGE: ReadonlySet<string> = new Set([
   "INVALID_PROJECT_TITLE",
   "IMPORT_VALIDATION",
   "EVIDENCE_VALIDATION",
+  "CANDIDATE_STORE_CORRUPTED",
 ]);
 
 export function formatApiError(error: unknown): string {

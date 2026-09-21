@@ -6,6 +6,11 @@
  * 执行检索（academic / web 按 kind 分派），回填 query 状态与 resultCount，
  * 并把最小执行记录（executionHistory）挂在 research artifact 顶层的可选字段。
  *
+ * M8.5 search audit：成功条目额外回填 providers（谁参与了这条 query、各自
+ * 带回多少条 / 是否降级）与 resultIdentifiers（结果标识符投影——「这次到底
+ * 搜到了什么」可追溯，M8 真实验收的 P2 观测断层修复）。两者都是可选字段，
+ * 旧 artifact 兼容；只是审计痕迹，不自动成为 Candidate（边界不变）。
+ *
  * 冻结规则（M8 架构）全部遵守：
  * - 不新增 Agent：本服务不调用 Runtime.runAgent，检索走既有 Discovery 编排层；
  * - 不修改 Runtime / Workflow Orchestrator：纯 Service，不进 workflowServices；
@@ -31,6 +36,9 @@ import { randomUUID } from "node:crypto";
 import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
+import type { AcademicSearchResponse } from "../search/academicSearchService.js";
+import type { FusedAcademicResult } from "../search/fusion.js";
+import type { WebSearchResponse } from "../search/webSearchService.js";
 import {
   readResearchArtifact,
   writeResearchPlanChain,
@@ -46,6 +54,19 @@ import {
 
 /** 单条 query 的执行记录状态（成功 executed / 失败 failed，均如实入 history） */
 export type PlanExecutionEntryStatus = "executed" | "failed";
+
+/**
+ * 参与该次检索的 provider 摘要（M8.5 search audit；diagnostics 的最小投影，
+ * 不含 header / API key / 原始错误对象）。outcome 语义同 ProviderAttempt。
+ */
+export interface PlanExecutionProviderAttempt {
+  provider: string;
+  outcome: string;
+  resultCount: number;
+  latencyMs?: number;
+  /** degraded / skipped 的简短原因（如 SearXNG unresponsive_engines） */
+  note?: string;
+}
 
 /**
  * 最小执行记录（挂在 research.json 顶层可选字段 executionHistory）。
@@ -64,7 +85,22 @@ export interface PlanExecutionEntry {
   resultCount?: number;
   /** 失败原因（BusinessError message；不含堆栈） */
   error?: string;
+  /**
+   * 参与检索的 provider 尝试摘要（M8.5；成功条目回填——谁在何时用哪些源
+   * 跑了这条 query、各自带回多少条。失败条目整体 error 已含失败原因，不重复）。
+   * 可选字段：旧 artifact 无此字段仍可读。
+   */
+  providers?: PlanExecutionProviderAttempt[];
+  /**
+   * 结果标识符投影（M8.5；学术 = doi:… / arxiv:… / url / title:…，Web = url）。
+   * 只是审计痕迹（「这次到底搜到了什么」），不是候选、不进任何 Store——
+   * Search Result ≠ Candidate 边界不变。可选字段：旧 artifact 兼容。
+   */
+  resultIdentifiers?: string[];
 }
+
+/** 单条 query 最多留存的 result identifiers 数（防 artifact 无限膨胀；与检索硬帽同量级） */
+const MAX_RESULT_IDENTIFIERS_PER_ENTRY = 50;
 
 /** POST /research/plan/execute 的响应 */
 export interface PlanExecutionResult {
@@ -218,7 +254,7 @@ export class ResearchPlanExecutionService {
     }
   }
 
-  /** 执行单条 planned query：成功 → executed + resultCount；任何失败 → failed + error */
+  /** 执行单条 planned query：成功 → executed + resultCount + 审计投影；任何失败 → failed + error */
   private async executeQuery(
     projectId: string,
     executionId: string,
@@ -236,11 +272,19 @@ export class ResearchPlanExecutionService {
     try {
       // 复用既有 Discovery 编排（provider fan-out / 融合 / 诊断一体）；
       // 不传 projectId → 不写检索缓存：执行对 Discovery 侧零副作用
-      const response =
-        query.kind === "academic"
-          ? await this.discovery.academicSearch(query.query)
-          : await this.discovery.webSearch(query.query);
-      return { ...base, status: "executed", resultCount: response.results.length };
+      // M8.5 search audit：provider 参与摘要 + 结果标识符投影只进 executionHistory，
+      // 不写任何 Store——Search Result ≠ Candidate 不变量不变
+      if (query.kind === "academic") {
+        const response = await this.discovery.academicSearch(query.query);
+        return executedEntry(base, response.results.length, providerAttempts(response), response.results.map(academicIdentifier));
+      }
+      const response = await this.discovery.webSearch(query.query);
+      return executedEntry(
+        base,
+        response.results.length,
+        providerAttempts(response),
+        response.results.map((result) => result.url),
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.log(
@@ -290,4 +334,71 @@ function replaceInChain(chain: ResearchPlanChain, plan: ResearchPlan): ResearchP
 /** execution id：与 planId 同风格（exec- + 12 位随机十六进制） */
 function newExecutionId(): string {
   return `exec-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+}
+
+/** diagnostics.providers 的最小审计投影（截短 note；不携带 error 对象） */
+function providerAttempts(
+  response: AcademicSearchResponse | WebSearchResponse,
+): PlanExecutionProviderAttempt[] {
+  return response.diagnostics.providers.map((attempt) => ({
+    provider: attempt.provider,
+    outcome: attempt.outcome,
+    resultCount: attempt.resultCount,
+    latencyMs: attempt.latencyMs,
+    ...(attempt.note !== undefined ? { note: attempt.note.slice(0, 200) } : {}),
+  }));
+}
+
+/** 成功条目：providers 恒记录；identifiers 去重封顶后非空才写（保持 artifact 紧凑） */
+function executedEntry(
+  base: {
+    executionId: string;
+    queryId: string;
+    query: string;
+    kind: ResearchQueryKind;
+    timestamp: string;
+    planId: string;
+  },
+  resultCount: number,
+  providers: PlanExecutionProviderAttempt[],
+  identifiers: string[],
+): PlanExecutionEntry {
+  const resultIdentifiers = dedupeIdentifiers(identifiers).slice(0, MAX_RESULT_IDENTIFIERS_PER_ENTRY);
+  return {
+    ...base,
+    status: "executed",
+    resultCount,
+    providers,
+    ...(resultIdentifiers.length > 0 ? { resultIdentifiers } : {}),
+  };
+}
+
+/** 学术结果的稳定标识符投影：DOI > arXiv > URL > 标题（前缀区分形态） */
+function academicIdentifier(result: FusedAcademicResult): string {
+  const record = result.record;
+  if (record.doi !== undefined && record.doi !== "") {
+    return `doi:${record.doi}`;
+  }
+  if (record.arxivId !== undefined && record.arxivId !== "") {
+    return `arxiv:${record.arxivId}`;
+  }
+  if (record.url !== undefined && record.url !== "") {
+    return record.url;
+  }
+  return `title:${(record.title ?? "").slice(0, 120)}`;
+}
+
+/** 保序去重 + 去空（同标识符跨 provider 命中只留一次） */
+function dedupeIdentifiers(identifiers: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const identifier of identifiers) {
+    const trimmed = identifier.trim();
+    if (trimmed === "" || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }

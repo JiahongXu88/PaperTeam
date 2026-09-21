@@ -190,6 +190,38 @@ describe("Execution Service：planned query 执行与回填", () => {
     expect(Number.isNaN(Date.parse(history[0]!.timestamp))).toBe(false);
   });
 
+  it("M8.5 search audit：成功条目回填 providers 参与摘要与 resultIdentifiers（可追溯「搜到了什么」）", async () => {
+    const projectId = await createProject(okStack, "exec-audit");
+    await seedArtifact(okStack, projectId, {
+      ...reportFixture(),
+      plan: seedPlan("approved", [
+        { queryId: "q-1", query: "transformer multi-object tracking survey", kind: "academic", status: "planned" },
+      ]),
+    });
+
+    await okStack.stack.planExecution.execute(projectId);
+
+    const entry = ((await readArtifact(okStack, projectId)).executionHistory ?? [])[0]!;
+    expect(entry.status).toBe("executed");
+    // provider 参与摘要：谁参与了、各自带回多少（openalex fake 两条）
+    expect(entry.providers).toEqual([
+      expect.objectContaining({ provider: "openalex", outcome: "ok", resultCount: 2 }),
+    ]);
+    // 结果标识符投影：两条 DOI（前缀形态，非候选、非文献——只是审计痕迹）
+    expect(entry.resultIdentifiers).toEqual([
+      "doi:10.1234/mas-survey",
+      "doi:10.1234/llm-retro",
+    ]);
+
+    // HTTP 只读视图：GET /research/execution-history 同口径暴露（M8.5 UI 审计出口）
+    const response = await okStack.request("GET", `/api/projects/${projectId}/research/execution-history`);
+    expect(response.status).toBe(200);
+    const entries = response.body["executionHistory"] as PlanExecutionEntry[];
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ queryId: "q-1", status: "executed", resultCount: 2 });
+    expect(entries[0]!.resultIdentifiers).toContain("doi:10.1234/mas-survey");
+  });
+
   it("执行不写候选与 Evidence（Search Result ≠ Candidate ≠ Evidence 不变量）", async () => {
     const projectId = await createProject(okStack, "exec-no-persist");
     await seedArtifact(okStack, projectId, {

@@ -11,12 +11,21 @@
  * - M6.3 起 ResearchDiscoveryService 将批量写入候选（origin=academic_search /
  *   web_search）；M6.2 的写入方是用户手动添加（origin=manual）与测试。
  *
+ * 可靠性（M8.5 P0，M8 真实验收的 save_candidates 并发损坏修复）：
+ * - 所有读-改-写（add / markAccepted / markRejected / remove）经**项目级
+ *   promise 链互斥**串行执行（与 ProjectStore.mutate 同款），后到者基于前者
+ *   的落盘结果计算——并发保存不再互相覆盖（丢更新）或交织写坏 JSON；
+ * - 落盘仍走 writeJsonAtomic（tmp 名带单调序号，同毫秒并发不碰撞）；
+ * - 读取损坏的 candidates.json 抛结构化 CANDIDATE_STORE_CORRUPTED（500），
+ *   绝不静默返回空——「数据损坏」与「没有候选论文」是两种必须区分的事实；
+ * - 每次写成功后清理崩溃残留的同名 tmp 文件（互斥保证此刻无在途写者）。
+ *
  * 生命周期：pending_review → accepted（promote 成功）| rejected（用户否决）；
  * 删除 candidate 不影响已入库的正式 Source（引用方向只有 candidate → source）。
  */
 
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, readFile, rm } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import { BusinessError, NotFoundError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
@@ -87,6 +96,13 @@ const CANDIDATE_STATUSES: readonly CandidateStatus[] = [
 export class CandidateStore {
   private readonly projects: ProjectStore;
   private readonly now: () => Date;
+  /**
+   * 项目级写互斥（promise 链，M8.5 P0）：同一项目的全部读-改-写排队执行，
+   * 后到者基于前者的落盘结果计算（与 ProjectStore.writeQueues 同款）。
+   * 单实例约束：CandidateStore 在 serviceStack 内单例装配，进程内所有写入方
+   * （HTTP / save_candidates 工具 / 测试）共享同一互斥。
+   */
+  private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(projects: ProjectStore, options: CandidateStoreOptions = {}) {
     this.projects = projects;
@@ -98,10 +114,29 @@ export class CandidateStore {
   }
 
   /**
+   * 把操作排进项目写队列（串行化读-改-写）。前序任务失败不阻塞后继
+   * （.catch(() => {}) 吞掉的是链上残留的 rejection，操作自身的错误原样
+   * 返回给调用方）。
+   */
+  private enqueue<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.writeQueues.get(projectId) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(operation);
+    this.writeQueues.set(projectId, task);
+    const cleanup = () => {
+      if (this.writeQueues.get(projectId) === task) {
+        this.writeQueues.delete(projectId);
+      }
+    };
+    task.then(cleanup, cleanup);
+    return task;
+  }
+
+  /**
    * 添加候选。同项目内同身份的 **pending_review** 候选只保留一条：后来的
    * 发现补充其空缺字段（snippet / venue 等），返回该候选（created=false）。
    * accepted / rejected 的历史候选不参与判重——同一文献被拒绝后再次发现
    * 是合法场景（用户可改判）；已入库的判重在 promotion 时执行。
+   * 整个读-改-写在项目互斥内执行：并发 add 不丢更新、不交织写坏 JSON。
    */
   async add(projectId: string, input: AddCandidateInput): Promise<CandidateAddResult> {
     const identity =
@@ -128,8 +163,8 @@ export class CandidateStore {
         "候选文献身份缺少可判等键（仅标题不构成身份：需要 DOI / arXiv ID / URL / 标题+年份+一作）",
       );
     }
-    const candidates = await this.list(projectId);
-    if (key !== undefined) {
+    return this.enqueue(projectId, async () => {
+      const candidates = await this.list(projectId);
       const existing = candidates.find(
         (candidate) =>
           candidate.status === "pending_review" &&
@@ -159,39 +194,39 @@ export class CandidateStore {
         await this.save(projectId, next);
         return { candidate: merged, created: false };
       }
-    }
-    const candidateId = this.nextId(candidates);
-    const timestamp = this.now().toISOString();
-    const candidate: CandidateSource = {
-      candidateId,
-      identity,
-      origin: input.origin ?? "manual",
-      provider: input.provider ?? "manual",
-      ...(input.title !== undefined && input.title.trim() !== "" ? { title: input.title.trim() } : {}),
-      ...(input.authors !== undefined && input.authors.length > 0
-        ? { authors: input.authors.slice(0, 20) }
-        : {}),
-      ...(typeof input.year === "number" && Number.isInteger(input.year) ? { year: input.year } : {}),
-      ...(input.venue !== undefined && input.venue.trim() !== ""
-        ? { venue: input.venue.trim().slice(0, 200) }
-        : {}),
-      ...(input.doi !== undefined && input.doi.trim() !== "" ? { doi: input.doi.trim() } : {}),
-      ...(input.arxivId !== undefined && input.arxivId.trim() !== ""
-        ? { arxivId: input.arxivId.trim() }
-        : {}),
-      ...(input.url !== undefined && input.url.trim() !== ""
-        ? { url: input.url.trim().slice(0, 1000) }
-        : {}),
-      ...(input.snippetOrAbstract !== undefined && input.snippetOrAbstract.trim() !== ""
-        ? { snippetOrAbstract: input.snippetOrAbstract.trim().slice(0, 3000) }
-        : {}),
-      ...(input.query !== undefined && input.query.trim() !== "" ? { query: input.query.trim() } : {}),
-      status: "pending_review",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    await this.save(projectId, [...candidates, candidate]);
-    return { candidate, created: true };
+      const candidateId = this.nextId(candidates);
+      const timestamp = this.now().toISOString();
+      const candidate: CandidateSource = {
+        candidateId,
+        identity,
+        origin: input.origin ?? "manual",
+        provider: input.provider ?? "manual",
+        ...(input.title !== undefined && input.title.trim() !== "" ? { title: input.title.trim() } : {}),
+        ...(input.authors !== undefined && input.authors.length > 0
+          ? { authors: input.authors.slice(0, 20) }
+          : {}),
+        ...(typeof input.year === "number" && Number.isInteger(input.year) ? { year: input.year } : {}),
+        ...(input.venue !== undefined && input.venue.trim() !== ""
+          ? { venue: input.venue.trim().slice(0, 200) }
+          : {}),
+        ...(input.doi !== undefined && input.doi.trim() !== "" ? { doi: input.doi.trim() } : {}),
+        ...(input.arxivId !== undefined && input.arxivId.trim() !== ""
+          ? { arxivId: input.arxivId.trim() }
+          : {}),
+        ...(input.url !== undefined && input.url.trim() !== ""
+          ? { url: input.url.trim().slice(0, 1000) }
+          : {}),
+        ...(input.snippetOrAbstract !== undefined && input.snippetOrAbstract.trim() !== ""
+          ? { snippetOrAbstract: input.snippetOrAbstract.trim().slice(0, 3000) }
+          : {}),
+        ...(input.query !== undefined && input.query.trim() !== "" ? { query: input.query.trim() } : {}),
+        status: "pending_review",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      await this.save(projectId, [...candidates, candidate]);
+      return { candidate, created: true };
+    });
   }
 
   async get(projectId: string, candidateId: string): Promise<CandidateSource | null> {
@@ -207,6 +242,11 @@ export class CandidateStore {
     return candidate;
   }
 
+  /**
+   * 读取候选清单。文件不存在（还没保存过候选）= 空列表；文件存在但损坏
+   * （非法 JSON / 缺 items）= 结构化 CANDIDATE_STORE_CORRUPTED——绝不静默
+   * 返回空，「数据损坏」与「没有候选论文」必须可区分（M8.5）。
+   */
   async list(projectId: string, status?: CandidateStatus): Promise<CandidateSource[]> {
     let raw: string;
     try {
@@ -221,17 +261,14 @@ export class CandidateStore {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      throw new BusinessError(
-        "INTERNAL_ERROR",
-        `候选文献索引损坏（${projectId}/sources/candidates.json 不是合法 JSON）`,
+      throw candidateStoreCorrupted(
+        projectId,
+        "不是合法 JSON（疑似并发写残留或外部改动）",
       );
     }
     const items = (parsed as { items?: unknown } | null)?.items;
     if (!Array.isArray(items)) {
-      throw new BusinessError(
-        "INTERNAL_ERROR",
-        `候选文献索引损坏（${projectId}/sources/candidates.json 缺少 items）`,
-      );
+      throw candidateStoreCorrupted(projectId, "缺少 items 数组（结构不完整）");
     }
     const candidates = items.filter(
       (item): item is CandidateSource =>
@@ -244,44 +281,50 @@ export class CandidateStore {
     return status === undefined ? candidates : candidates.filter((c) => c.status === status);
   }
 
-  /** promotion 成功后标记（幂等：重复标记同一 source 返回原样） */
+  /** promotion 成功后标记（幂等：重复标记同一 source 返回原样；整段在互斥内） */
   async markAccepted(
     projectId: string,
     candidateId: string,
     promotedSourceId: string,
   ): Promise<CandidateSource> {
-    const candidate = await this.getRequired(projectId, candidateId);
-    if (candidate.status === "accepted" && candidate.promotedSourceId === promotedSourceId) {
-      return candidate;
-    }
-    return this.patch(projectId, candidate, {
-      status: "accepted",
-      promotedSourceId,
+    return this.enqueue(projectId, async () => {
+      const candidate = await this.getRequired(projectId, candidateId);
+      if (candidate.status === "accepted" && candidate.promotedSourceId === promotedSourceId) {
+        return candidate;
+      }
+      return this.patch(projectId, candidate, {
+        status: "accepted",
+        promotedSourceId,
+      });
     });
   }
 
-  /** 用户否决（幂等） */
+  /** 用户否决（幂等；整段在互斥内） */
   async markRejected(projectId: string, candidateId: string): Promise<CandidateSource> {
-    const candidate = await this.getRequired(projectId, candidateId);
-    if (candidate.status === "rejected") {
-      return candidate;
-    }
-    return this.patch(projectId, candidate, { status: "rejected" });
+    return this.enqueue(projectId, async () => {
+      const candidate = await this.getRequired(projectId, candidateId);
+      if (candidate.status === "rejected") {
+        return candidate;
+      }
+      return this.patch(projectId, candidate, { status: "rejected" });
+    });
   }
 
-  /** 删除候选（只影响 candidates.json；已入库的正式 Source 不受影响） */
+  /** 删除候选（只影响 candidates.json；已入库的正式 Source 不受影响；互斥内执行） */
   async remove(projectId: string, candidateId: string): Promise<void> {
-    const candidates = await this.list(projectId);
-    if (!candidates.some((candidate) => candidate.candidateId === candidateId)) {
-      throw new NotFoundError("候选文献", candidateId);
-    }
-    await this.save(
-      projectId,
-      candidates.filter((candidate) => candidate.candidateId !== candidateId),
-    );
+    return this.enqueue(projectId, async () => {
+      const candidates = await this.list(projectId);
+      if (!candidates.some((candidate) => candidate.candidateId === candidateId)) {
+        throw new NotFoundError("候选文献", candidateId);
+      }
+      await this.save(
+        projectId,
+        candidates.filter((candidate) => candidate.candidateId !== candidateId),
+      );
+    });
   }
 
-  private patch(
+  private async patch(
     projectId: string,
     candidate: CandidateSource,
     patch: Partial<Pick<CandidateSource, "status" | "promotedSourceId">>,
@@ -318,8 +361,44 @@ export class CandidateStore {
 
   private async save(projectId: string, candidates: CandidateSource[]): Promise<void> {
     await this.projects.sourcesDir(projectId); // projectId 合法性校验
-    await writeJsonAtomic(this.indexPath(projectId), { items: candidates });
+    const filePath = this.indexPath(projectId);
+    await writeJsonAtomic(filePath, { items: candidates });
+    // 崩溃残留的 tmp 清理（M8.5）：互斥保证此刻没有同文件在途写者，目录内
+    // 剩下的 `.<name>.<pid>-<ts>-<seq>.tmp` 只能是历史进程异常退出的残留。
+    // best-effort——清理失败不影响写成功的事实。
+    await cleanupStaleTempFiles(filePath).catch(() => {});
   }
+}
+
+/** `.<basename>.<pid>-<ts>-<seq>.tmp` 形态的崩溃残留（writeFileAtomic 的命名约定） */
+function tempFilePattern(sourceName: string): RegExp {
+  const escaped = sourceName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\.${escaped}\\.[0-9]+-[0-9]+-[0-9]+\\.tmp$`);
+}
+
+async function cleanupStaleTempFiles(filePath: string): Promise<void> {
+  const dir = dirname(filePath);
+  const pattern = tempFilePattern(basename(filePath));
+  const entries = await readdir(dir);
+  await Promise.all(
+    entries
+      .filter((entry) => pattern.test(entry))
+      .map((entry) => rm(join(dir, entry), { force: true }).catch(() => {})),
+  );
+}
+
+/**
+ * 损坏索引的结构化错误（CANDIDATE_STORE_CORRUPTED / 500）：用户看到的是
+ * 「数据损坏 + 恢复指引」，而不是「没有候选论文」或笼统的内部错误。
+ */
+function candidateStoreCorrupted(projectId: string, reason: string): BusinessError {
+  return new BusinessError(
+    "CANDIDATE_STORE_CORRUPTED",
+    `候选文献数据损坏（${projectId}/sources/candidates.json ${reason}）：这不是「没有候选论文」，` +
+      `而是存储文件本身不可读。请检查同目录是否有历史备份（如 candidates.json.corrupted-backup），` +
+      `或手工修复该 JSON 后重试；修复前的写入会被拒绝，不会覆盖现场。`,
+    reason,
+  );
 }
 
 /** 只填充 existing 缺省的顶层字段（候选发现方多次上报时信息只增不减） */

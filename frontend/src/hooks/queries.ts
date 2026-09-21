@@ -56,6 +56,7 @@ import {
   executeResearchPlan,
   getResearchCoverage,
   getResearchPlan,
+  listExecutionHistory,
   listResearchGaps,
   listResearchPlans,
   rejectResearchGap,
@@ -145,6 +146,8 @@ export const queryKeys = {
   researchPlan: (projectId: string) => ["project", projectId, "research-plan"] as const,
   /** Research Plan 计划链（M8.3.1；迭代列表 / 派生 / 激活后失效重取） */
   researchPlans: (projectId: string) => ["project", projectId, "research-plans"] as const,
+  /** 计划执行审计（M8.5 executionHistory；执行后失效重取） */
+  executionHistory: (projectId: string) => ["project", projectId, "execution-history"] as const,
   /** Research Coverage（M8.3.2；只读派生视图——计划 / 证据 / 候选变化后失效重取） */
   researchCoverage: (projectId: string) => ["project", projectId, "research-coverage"] as const,
   /** Research Gaps（M8.3.3；覆盖派生 + HITL 决策覆盖——分析 / 决策 / 计划变化后失效重取） */
@@ -581,7 +584,7 @@ function useInvalidateCandidates(projectId: string | undefined) {
 
 // ---- Research Plan（M8.1：plan 是检索意图的声明，指导下方检索；M8.3.1 迭代链） ----
 
-/** 计划相关缓存失效（活动计划视图 + 迭代链列表 + 覆盖 / 缺口派生视图一起失效，保证视图不漂移） */
+/** 计划相关缓存失效（活动计划视图 + 迭代链列表 + 覆盖 / 缺口派生视图 + 执行审计一起失效，保证视图不漂移） */
 function useInvalidateResearchPlans(projectId: string | undefined) {
   const queryClient = useQueryClient();
   return () => {
@@ -589,6 +592,7 @@ function useInvalidateResearchPlans(projectId: string | undefined) {
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchPlans(projectId ?? "") });
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchCoverage(projectId ?? "") });
     void queryClient.invalidateQueries({ queryKey: queryKeys.researchGaps(projectId ?? "") });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.executionHistory(projectId ?? "") });
   };
 }
 
@@ -606,6 +610,15 @@ export function useResearchPlans(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.researchPlans(projectId ?? ""),
     queryFn: ({ signal }) => listResearchPlans(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 计划执行审计（M8.5 executionHistory：每条 query 的 provider 参与 / 结果标识符；只读） */
+export function useExecutionHistory(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.executionHistory(projectId ?? ""),
+    queryFn: ({ signal }) => listExecutionHistory(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
   });
 }

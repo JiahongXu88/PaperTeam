@@ -2,7 +2,8 @@
  * 文件安全写入工具。
  *
  * checkpoint / project.json / evidence 等结构化状态都经过这里落盘：
- *   临时文件 → write + fsync + close → atomic rename
+ *   临时文件（名字含 pid + 毫秒时间戳 + 单调序号，同进程并发写不碰撞）
+ *   → write + fsync + close → atomic rename
  * 进程在任意时刻中断都不会留下「半个 JSON」；rename 在同一目录内原子生效。
  * （目录级 fsync 在 Windows 上不可用，跳过；同一目录 rename 已足够安全。）
  *
@@ -15,9 +16,19 @@ import { dirname, join } from "node:path";
 
 const RENAME_RETRY_DELAYS_MS = [20, 60, 150, 400];
 
+/**
+ * tmp 文件名的进程内单调序号（M8.5 P0）。毫秒时间戳对同一文件的并发写可碰撞
+ * （M8 真实验收：同一毫秒 ≥4 次 save_candidates → 多个句柄写同一 tmp → 落盘
+ * 「完整文档 + 残尾」的非法 JSON）；序号保证每次写的 tmp 路径唯一。
+ */
+let tmpSequence = 0;
+
 /** 原子写入文本文件（utf8）：tmp → fsync → rename；失败时清理临时文件 */
 export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  const tmpPath = join(dirname(filePath), `.${basename(filePath)}.${process.pid}-${Date.now()}.tmp`);
+  const tmpPath = join(
+    dirname(filePath),
+    `.${basename(filePath)}.${process.pid}-${Date.now()}-${(tmpSequence += 1)}.tmp`,
+  );
   try {
     const handle = await open(tmpPath, "w");
     try {
