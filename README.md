@@ -94,7 +94,7 @@ flowchart TD
     SDK --> LLM["LLM / Tools"]
     ORCH --> WS
     ORCH --> GATE
-    GATE --> LATEX["LaTeX Compiler<br/>(latexmk / xelatex)"]
+    GATE --> LATEX["LaTeX Compiler<br/>(xelatex + bibtex)"]
     LATEX --> ART["Draft / Final Artifacts<br/>(不可变)"]
 ```
 
@@ -137,7 +137,7 @@ Backend 保存到 `~/.paperteam`，不进仓库、任何接口不回显）；也
 | 依赖 | 用途 | 何时需要 |
 | --- | --- | --- |
 | Python 3.10+ 与 `pymupdf` | PDF 解析（`backend/tools/parse_paper_pdf.py` 子进程，stdout JSON 协议） | 导入已有论文（三条路径的 PDF 输入） |
-| MiKTeX / TeX Live（`latexmk` + `xelatex`） | LaTeX 编译 | Idea-to-Paper 与系统性改进产出 Draft / Final；**Quick Review 不需要** |
+| MiKTeX / TeX Live（`xelatex` + `bibtex`） | LaTeX 编译（M9.5.1 起显式编排，不依赖 latexmk/perl） | Idea-to-Paper 与系统性改进产出 Draft / Final；**Quick Review 不需要** |
 
 `npm run doctor` 会给出缺失项与安装命令；PDF 解析缺失时导入返回
 `503 PDF_PARSER_UNAVAILABLE`（附安装命令），不是 `spawn ENOENT`。
@@ -225,7 +225,7 @@ curl -fsS http://localhost:8080/ready
 ```
 
 web（nginx，唯一对外端口 8080）+ backend（Node 22 + Pi SDK + Python/pymupdf +
-XeLaTeX/latexmk/biber + 中文字体，不对外发布）；数据在 `paperteam-projects` /
+XeLaTeX/bibtex + 中文字体，不对外发布）；数据在 `paperteam-projects` /
 `paperteam-runtime` 两个 volume。细节、依赖审计与验收清单见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 ## 技术栈

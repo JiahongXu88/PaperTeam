@@ -78,8 +78,8 @@ jobs:
       - name: Smoke（toolchain 与 /health、/ready）
         run: |
           docker run --rm paperteam-backend:ci /opt/paperteam-venv/bin/python -c "import pymupdf; print(pymupdf.__version__)"
-          docker run --rm paperteam-backend:ci latexmk --version | head -n 1
           docker run --rm paperteam-backend:ci xelatex --version | head -n 1
+          docker run --rm paperteam-backend:ci bibtex --version | head -n 1
           docker run -d --name pt-smoke -e PAPERTEAM_TEST_RUNTIME=scripted paperteam-backend:ci
           for i in $(seq 1 30); do
             if docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"; then

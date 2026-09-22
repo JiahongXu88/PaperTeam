@@ -40,17 +40,13 @@ const LATEX_DOC = [
   "\\end{document}",
 ].join("\n");
 
-/** 成功创建 main.pdf 的假 LaTeX runner */
-const fakeSuccessfulRunner: CommandRunner = async (command, args) => {
+/** 成功创建 main.pdf 的假 LaTeX runner（M9.5.1 编排：编译命令在 buildDir=cwd 内执行） */
+const fakeSuccessfulRunner: CommandRunner = async (command, args, opts) => {
   if (args.includes("--version")) {
     return { code: 0, stdout: `${command} version 1.0`, stderr: "" };
   }
-  const outputDir = args.find((arg) => arg.startsWith("-output-directory="));
-  if (outputDir === undefined) {
-    throw new Error("no output-directory");
-  }
   const { writeFile } = await import("node:fs/promises");
-  await writeFile(join(outputDir.slice("-output-directory=".length), "main.pdf"), "%PDF-1.5");
+  await writeFile(join(opts.cwd, "main.pdf"), "%PDF-1.5");
   return { code: 0, stdout: "compiled", stderr: "" };
 };
 

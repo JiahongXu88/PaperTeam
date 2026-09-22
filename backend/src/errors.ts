@@ -227,7 +227,7 @@ export class InvalidLatexOutputError extends BusinessError {
 
 export class LatexToolUnavailableError extends BusinessError {
   constructor(detail: string) {
-    super("LATEX_TOOL_UNAVAILABLE", "本机未安装 LaTeX 编译工具（latexmk / xelatex）", detail);
+    super("LATEX_TOOL_UNAVAILABLE", "本机未安装 LaTeX 编译工具（xelatex / bibtex）", detail);
   }
 }
 

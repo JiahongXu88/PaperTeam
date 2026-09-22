@@ -4,7 +4,7 @@
  * 检查项（全部廉价，不调用模型）：
  *   runtime     AgentRuntime.healthCheck（Runtime 可初始化 / 已初始化；≠ 模型就绪）
  *   filesystem  PROJECTS_ROOT / PAPERTEAM_RUNTIME_ROOT 可创建、可写（写入并删除探针文件）
- *   latex       latexmk / xelatex 是否可用（版本探测，结果缓存 cacheMs，不每次 spawn）
+ *   latex       xelatex / bibtex 是否可用（版本探测，结果缓存 cacheMs，不每次 spawn）
  *   pdf         Python + pymupdf 工具链（PdfToolchain 自带缓存）
  *
  * ready = runtime ok && filesystem ok。TeX / Python 缺失是「降级」（Draft 构建 / PDF

@@ -11,7 +11,7 @@ import { expect, primeTheme, resolvePdfPath, test } from "./fixtures.js";
  *   PAPERTEAM_PORT=3100 PAPERTEAM_RUNTIME_ROOT=<隔离目录> PROJECTS_ROOT=<隔离目录> \
  *   node backend/dist/index.js
  *   cd frontend && PAPERTEAM_PORT=3100 npx vite
- * 机器需有真实 latexmk（重建稿的真实编译）。然后 PAPERTEAM_E2E_IMPROVEMENT=1 运行。
+ * 机器需有真实 xelatex + bibtex（重建稿的真实编译）。然后 PAPERTEAM_E2E_IMPROVEMENT=1 运行。
  *
  * 全浏览器链路（PDF 导入 UI → 系统性改进 → PDF 重建 → 理解 / 审稿 → 改进计划
  * → HITL 面板确认 → Writer 逐节修订 → 真实 LaTeX 构建 → Draft → 复审 →

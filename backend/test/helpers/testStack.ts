@@ -58,16 +58,13 @@ export function scriptedIdeaRuntime(
   return createScriptedRuntime(options);
 }
 
-/** 编译成功且生成 main.pdf 的假 runner */
-export const fakeSuccessfulRunner: CommandRunner = async (command, args) => {
+/** 编译成功且生成 main.pdf 的假 runner（M9.5.1 编排：编译命令在 buildDir=cwd 内执行） */
+export const fakeSuccessfulRunner: CommandRunner = async (command, args, opts) => {
   if (args.includes("--version")) {
     return { code: 0, stdout: `${command} 1.0`, stderr: "" };
   }
-  const outputDir = args.find((arg) => arg.startsWith("-output-directory="));
-  if (outputDir) {
-    const { writeFile } = await import("node:fs/promises");
-    await writeFile(join(outputDir.slice("-output-directory=".length), "main.pdf"), "%PDF-1.5");
-  }
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(join(opts.cwd, "main.pdf"), "%PDF-1.5");
   return { code: 0, stdout: "compiled", stderr: "" };
 };
 

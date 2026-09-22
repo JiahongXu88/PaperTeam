@@ -10,7 +10,7 @@ import { expect, primeTheme, resolvePdfPath, test } from "./fixtures.js";
  *   PAPERTEAM_PORT=3100 PAPERTEAM_RUNTIME_ROOT=<隔离目录> PROJECTS_ROOT=<隔离目录> \
  *   node backend/dist/index.js
  *   cd frontend && PAPERTEAM_PORT=3100 npx vite
- * 机器需有真实 latexmk（MiKTeX/TeX Live）；编译是真实调用（不用 fakebin）。
+ * 机器需有真实 xelatex + bibtex（MiKTeX/TeX Live）；编译是真实调用（不用 fakebin）。
  * 场景由 researchIdea 内嵌标记驱动（scriptedRuntime 按项目转向）：
  *   [review:pass,fail2,...]  审稿轮次序列；[latex:broken] / [latex:unfixable]
  *   引入真实编译错误（修复成功 / 修复耗尽）。然后 PAPERTEAM_E2E_PAPER=1 运行。

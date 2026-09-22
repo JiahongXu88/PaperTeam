@@ -156,6 +156,34 @@ Acceptance。
      读不到 bib → PDF 参考文献列表空（references.bib 本身经本地 bibtex
      验证可正确解析）。报告见
      docs/research/M9.5_DETERMINISTIC_BIBLIOGRAPHY.md。
+7. **M9.5.1 LaTeX Bibliography Toolchain Fix**（本批，P0）：修复 M9.5 发现
+   的「references.bib 正确但 PDF 参考文献空」渲染链问题——只动 LaTeX →
+   BibTeX → PDF 链，Citation Model / Evidence / Writer / Bibliography
+   设计零改动：
+   - 双重根因：① MiKTeX latexmk.exe 是 perl 包装，委托 Git-Bash MSYS perl
+     后 BIBINPUTS 被写成 `/d/...`，Windows bibtex 据此打开错误的
+     references.bib（blg 实证 `used 0 entries`，exit 0 静默）；② 旧
+     xelatex fallback 单轮编译，结构上永不触发 bibtex；
+   - 修复（单一方案）：`LatexCompiler` 弃用 latexmk，改为 **xelatex +
+     bibtex 显式编排**（pass1 → aux 含 `\bibdata` 时 bibtex → pass2/3 →
+     Rerun 提示最多追加 2 轮）+ **staging 统一工作目录**（manuscript/
+     源文件复制进 build/，全部命令 cwd=buildDir、无 `-output-directory`、
+     零环境变量；重复 build 白名单清理旧产物）；每步非零退出立即失败，
+     全程共享 compileTimeoutMs 预算；
+   - 三道显式化检测让「references 空」不再可能静默通过：bibtex 非零退出
+     / `.blg` `used 0 entries`（M9.5 事故形态回归）/ 最终 log
+     `Citation … undefined` → 均 `LATEX_COMPILE_FAILED`；Rerun 匹配统一
+     为 `Rerun to get …`（实测 natbib 措辞 `citations correct` 与 LaTeX
+     `cross-references right` 不同，漏匹配会提前收敛）；
+   - 配套：e2e fakebin fake latexmk → fake xelatex + fake bibtex；
+     testStack / httpServer / repairLoop / evaluation harness 四处 fake
+     runner 改 cwd 模式；CI 与 Dockerfile 探测验证改 xelatex+bibtex；
+   - 验证：backend 1618 全绿（LatexCompiler 16 用例：编排顺序 / staging /
+     事故回归 / 重复 build 一致 / 真实编译集成）；Live smoke 用 M9.5 真实
+     验收项目在同一事故环境重编译——**PDF 7→9 页、编号引用 0→48、
+     参考文献条目 0→15、零 [?]**，重复编译确定性 ok（对照
+     `m951_smoke_report.json`）。报告见
+     docs/research/M9.5_DETERMINISTIC_BIBLIOGRAPHY.md §17。
 
 ## [Unreleased] — M8 Controlled Deep Research Loop（2026-09-20 → 2026-09-22）
 

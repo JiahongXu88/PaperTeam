@@ -2,7 +2,7 @@
 # PaperTeam 单机 Linux / Docker 部署镜像（M5.5）。
 #
 # 多阶段构建；两个运行目标：
-#   --target backend  Node 22 + Backend(dist) + Pi SDK + Python3/pymupdf + Git + XeLaTeX/latexmk/biber + 中文字体
+#   --target backend  Node 22 + Backend(dist) + Pi SDK + Python3/pymupdf + Git + XeLaTeX/bibtex + 中文字体
 #   --target web      nginx：Frontend 静态资源 + /api /health /ready 反向代理到 backend（同源，无 CORS）
 #
 # 纪律：
@@ -53,7 +53,7 @@ ENV NODE_ENV=production \
 #   texlive-lang-chinese    ctex 文档类 + Fandol 中文字体
 #   texlive-pictures        pgf/tikz（导入论文；PaperTeam 自身模板不用）
 #   texlive-bibtex-extra + biber   biblatex 参考文献（导入论文）
-#   latexmk                 LatexCompiler 首选编译器（fallback xelatex）
+#   latexmk                 可选便捷工具（M9.5.1 起 LatexCompiler 用 xelatex+bibtex 显式编排，不再调用 latexmk）
 #   fonts-noto-cjk          兜底中文字体（fontspec 按名引用时可用）
 # APT_MIRROR：主机前缀（如 http://mirrors.ustc.edu.cn），替换 deb.debian.org 的 debian / debian-security；
 # PIP_INDEX_URL：PyPI simple 索引。两者只在构建期生效，不进入最终镜像的运行环境
@@ -74,8 +74,8 @@ RUN if [ -n "$APT_MIRROR" ]; then \
  && python3 -m venv /opt/paperteam-venv \
  && ${PIP_INDEX_URL:+env PIP_INDEX_URL="$PIP_INDEX_URL"} /opt/paperteam-venv/bin/pip install --no-cache-dir "pymupdf>=1.24,<2" \
  && /opt/paperteam-venv/bin/python -c "import pymupdf; print('pymupdf', pymupdf.__version__)" \
- && latexmk --version | head -n 1 \
- && xelatex --version | head -n 1
+ && xelatex --version | head -n 1 \
+ && bibtex --version | head -n 1
 
 WORKDIR /app/backend
 # 只带运行需要的内容：dist / 生产 node_modules / 审计 seed（Skill Registry）/ PDF 解析脚本

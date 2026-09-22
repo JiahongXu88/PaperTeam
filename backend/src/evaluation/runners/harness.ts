@@ -314,14 +314,12 @@ export async function createGroundingHarness(
 // ============================================================
 
 /** 编译恒成功并产出 main.pdf 的假 runner（与 testStack 同形；评估不测编译真实性） */
-const fakeSuccessfulRunner: CommandRunner = async (command, args) => {
+const fakeSuccessfulRunner: CommandRunner = async (command, args, opts) => {
   if (args.includes("--version")) {
     return { code: 0, stdout: `${command} 1.0`, stderr: "" };
   }
-  const outputDir = args.find((arg) => arg.startsWith("-output-directory="));
-  if (outputDir) {
-    await writeFile(join(outputDir.slice("-output-directory=".length), "main.pdf"), "%PDF-1.5");
-  }
+  // M9.5.1 编排：编译命令在 buildDir=cwd 内执行
+  await writeFile(join(opts.cwd, "main.pdf"), "%PDF-1.5");
   return { code: 0, stdout: "compiled", stderr: "" };
 };
 

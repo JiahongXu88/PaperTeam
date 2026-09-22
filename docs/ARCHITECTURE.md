@@ -65,7 +65,7 @@ PaperTeam Backend（backend/）
    │           └── 共享后段：Evidence → Review → Revision → Build → Quality Gate
    ├── EvidenceStore       证据存取与核验状态（M3.1）
    ├── Runtime             AgentRuntimeAdapter（唯一 Agent 入口）
-   ├── LaTeX               XeLaTeX / latexmk 编译 + Build Gate 判定
+   ├── LaTeX               XeLaTeX + bibtex 显式编排编译 + Build Gate 判定
    ├── PDF                 编译输出与页面渲染
    ├── File / Version      文件上传与版本管理（当前实现：ManuscriptRevisionStore 不可变修订快照，非 Git）
    └── Admin               系统管理后台
@@ -81,7 +81,7 @@ Pi SDK in-process（@earendil-works/pi-coding-agent 0.84.4，无子进程）
    ▼
 Linux Server
    ├── Paper Workspace（projects/，Authoritative State 落盘）
-   ├── LaTeX Environment（TeX Live / XeLaTeX / latexmk / Biber）
+   ├── LaTeX Environment（TeX Live / XeLaTeX / bibtex / Biber）
    ├── Git Repository（论文版本）
    ├── PDF Renderer（Poppler 等）
    ├── Model Providers
@@ -907,7 +907,7 @@ backend/src/
 长期运行于 Linux 服务器（推荐 Ubuntu）：
 
 - 服务：PaperTeam Backend（内嵌 Pi Runtime）、Web Frontend、Database
-- 依赖：Node.js（根 package.json `engines.node`：`>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`）、Git、Python、TeX Live（XeLaTeX/latexmk/Biber）、Poppler
+- 依赖：Node.js（根 package.json `engines.node`：`>=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0`）、Git、Python、TeX Live（XeLaTeX/bibtex/Biber）、Poppler
 - **后续使用 Docker 容器化部署**（配置位于 `docker/`）
 - 用户只访问一个 HTTPS 域名；模型 Provider 凭据经环境变量 / auth.json 配置
 

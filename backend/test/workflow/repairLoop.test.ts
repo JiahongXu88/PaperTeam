@@ -38,7 +38,7 @@ afterAll(async () => {
 /** 前 failFirst 次编译失败（诊断定位 sections/introduction.tex），之后成功 */
 function flakyRunner(failFirst: number): CommandRunner {
   let compiles = 0;
-  return async (command, args) => {
+  return async (command, args, opts) => {
     if (args.includes("--version")) {
       return { code: 0, stdout: `${command} 1.0`, stderr: "" };
     }
@@ -55,11 +55,8 @@ function flakyRunner(failFirst: number): CommandRunner {
         stderr: "",
       };
     }
-    const outputDir = args.find((arg) => arg.startsWith("-output-directory="));
-    if (outputDir) {
-      const { writeFile } = await import("node:fs/promises");
-      await writeFile(join(outputDir.slice("-output-directory=".length), "main.pdf"), "%PDF-1.5");
-    }
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(join(opts.cwd, "main.pdf"), "%PDF-1.5");
     return { code: 0, stdout: "compiled", stderr: "" };
   };
 }

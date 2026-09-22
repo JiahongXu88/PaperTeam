@@ -14,7 +14,7 @@ import { resolvePdfPath } from "./fixtures.js";
  *   PAPERTEAM_PORT=3100 PAPERTEAM_RUNTIME_ROOT=<隔离目录> PROJECTS_ROOT=<隔离目录> \
  *   node backend/dist/index.js
  *   cd frontend && PAPERTEAM_PORT=3100 npx vite
- * 可选：PATH 前置 e2e/fixtures/fakebin（无 TeX 机器用假 latexmk，让 run 以
+ * 可选：PATH 前置 e2e/fixtures/fakebin（无 TeX 机器用假 xelatex/bibtex，让 run 以
  * completed 终态产出 Draft PDF；不前置时 build.draft 如实失败，run failed
  * 同样被 A1 接受——两轮 gate 在 build 之前已落盘）。
  * 然后以 PAPERTEAM_E2E_EVIDENCE_GATE=1 运行本套件（其它环境自动跳过）。

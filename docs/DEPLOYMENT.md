@@ -30,7 +30,7 @@ Redis / 外部任务队列 / System Admin / 登录系统。
 | Node `>=22.22.3 <23 \|\| >=24.15 <25 \|\| >=25.9`（root `package.json` engines） | Backend / Frontend 构建 | `node:22-bookworm-slim` |
 | `@earendil-works/pi-coding-agent` 0.84.4 | Pi in-process Runtime | backend `node_modules`（`npm prune --omit=dev`） |
 | Python 3 + `pymupdf` | `backend/src/paper/pdfToolchain.ts` 候选 `PAPERTEAM_PDF_PYTHON` > python > python3 > py -3；脚本 `backend/tools/parse_paper_pdf.py` | `/opt/paperteam-venv`（`PAPERTEAM_PDF_PYTHON` 指向其 python） |
-| `latexmk`（首选）/ `xelatex`（fallback） | `backend/src/latex/LatexCompiler.ts`（`-xelatex -interaction=nonstopmode -halt-on-error -output-directory=…`） | `latexmk` + `texlive-xetex` |
+| `xelatex` + `bibtex`（显式编排） | `backend/src/latex/LatexCompiler.ts`（M9.5.1：xelatex → bibtex → xelatex × 2，staging 统一 build/ 工作目录；不依赖 latexmk/perl） | `texlive-xetex` |
 | TeX 包：`ctexart`、`amsmath`、`amssymb`、`natbib`（`ManuscriptService.writeMainTex`）；导入论文常见 `xcolor / graphicx / hyperref / pgf(tikz) / biblatex` | 模板 + Existing-Paper 导入 | `texlive-latex-base` / `texlive-latex-recommended` / `texlive-lang-chinese`（ctex + Fandol） / `texlive-pictures` / `texlive-bibtex-extra` + `biber` |
 | 中文字体 | ctex 默认 Fandol；fontspec 按名引用时需系统字体 | `texlive-lang-chinese`（Fandol）+ `fonts-noto-cjk` |
 | Git | Backend 运行时**不**调用 git（已 grep）；Pi SDK / 用户导入项目可能带 git 元数据 | `git`（小，可选） |
@@ -92,7 +92,7 @@ root：`docker/backend-entrypoint.sh` 以 root 启动时修正为 `paperteam` �
 ## 6. 健康 / 就绪 / 停机
 
 - `GET /health`：liveness——进程活着、Runtime `healthCheck`（不调用模型）。Docker `HEALTHCHECK` 与 compose `healthcheck` 用它；web 依赖 `service_healthy`。
-- `GET /ready`：readiness——`ReadinessProbe`（`backend/src/runtime/readiness.ts`）：Runtime ok + `PROJECTS_ROOT` / `PAPERTEAM_RUNTIME_ROOT` 可创建可写（写入并删除探针文件）+ TeX（`latexmk`/`xelatex` 版本探测，60s 缓存）+ Python/pymupdf 状态。`ready = runtime && filesystem`；TeX / Python 缺失记入 `degraded`（Draft 构建 / PDF 导入会结构化失败，其余能力可用）。返回 200 / 503，不做任何昂贵调用。
+- `GET /ready`：readiness——`ReadinessProbe`（`backend/src/runtime/readiness.ts`）：Runtime ok + `PROJECTS_ROOT` / `PAPERTEAM_RUNTIME_ROOT` 可创建可写（写入并删除探针文件）+ TeX（`xelatex`/`bibtex` 版本探测，60s 缓存）+ Python/pymupdf 状态。`ready = runtime && filesystem`；TeX / Python 缺失记入 `degraded`（Draft 构建 / PDF 导入会结构化失败，其余能力可用）。返回 200 / 503，不做任何昂贵调用。
 - `GET /api/runtime/status`：模型就绪、会话诊断（含每会话 assignedSkills）。
 - **SIGTERM（docker stop）**：`registerShutdown`（`backend/src/index.ts`）——① `server.close()` 停止接受新连接（新任务不再受理）；② `orchestrator.close()` 取消活跃 run（queued 即时终态、running 协作式 abort；checkpoint 随 stage 落盘，取消不会写半个 checkpoint）；③ `runtime.close()` 收敛在途 run、释放全部 AgentSession、清理 GC / 超时定时器；④ `closeAllConnections` 后 exit 0。兜底 `PAPERTEAM_SHUTDOWN_TIMEOUT_MS`（默认 30s；compose 设 40s）超时强制 exit 1 并记日志；compose `stop_grace_period: 45s` > 预算。旧实现固定 5s 对长任务过短，已改为可配置。
 
