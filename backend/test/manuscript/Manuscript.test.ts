@@ -71,7 +71,7 @@ describe("ManuscriptService", () => {
     const { manuscript, projectId } = await newProject();
     await manuscript.saveOutline(projectId, OUTLINE);
     await manuscript.writeBibliography(projectId, [
-      { key: "gao2023survey", title: "RAG Survey", authors: ["Gao"], year: 2023 },
+      { key: "gao2023survey", title: "RAG Survey", authors: ["Gao"], year: 2023, venue: "ACM Computing Surveys", type: "article" },
     ]);
     await manuscript.writeMainTex(projectId, OUTLINE, true);
 
@@ -83,8 +83,10 @@ describe("ManuscriptService", () => {
     expect(main).toContain("\\bibliography{references}");
 
     const bib = await readFile(join(projectRoot(manuscript, projectId), "manuscript", "references.bib"), "utf8");
+    // M9.5：渲染下沉 citation/bibliography.ts（article 带 journal 字段；确定性顺序）
     expect(bib).toContain("@article{gao2023survey,");
     expect(bib).toContain("title = {RAG Survey}");
+    expect(bib).toContain("journal = {ACM Computing Surveys}");
   });
 
   it("writeSection 落盘 + sectionStatuses 反映事实状态", async () => {

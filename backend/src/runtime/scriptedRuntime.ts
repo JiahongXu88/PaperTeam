@@ -141,6 +141,65 @@ export const SECTION_TEX_TWO_CITES = `${SECTION_TEX}\n\n开创性工作亦见 \\
 
 /** \\cite 族命令（脚本化 Writer 只做「原样保留」，不解析 key） */
 const SCRIPTED_CITE_PATTERN = /\\(?:cite|citep|citet|citealp|citealt|parencite|textcite|autocite)\*?(?:\[[^\]\n]*\])*\{[^{}]*\}/g;
+
+/**
+ * M9.5 确定性 bibliography：脚本化 Writer 镜像真实 Writer 纪律——cite key 从
+ * 写作 prompt 的「只允许引用以下参考文献 key：…」行读取（系统确定性生成的
+ * key），不自造固定 key。fixture 里的 gao2023survey / lewis2020rag 只是占位，
+ * 运行时按 allowed keys 重写；无 allowed keys（无可用文献）时剥离全部 \\cite。
+ */
+const ALLOWED_KEYS_PATTERN = /只允许引用以下参考文献 key[:：]\s*([^。\n]+)/;
+
+/** prompt 没有 allowed-keys 行 → null（非章节 prompt：保持原样）；有行但无合法 key（无可用文献）→ []（剥离） */
+function allowedKeysFromPrompt(task: string): string[] | null {
+  const match = ALLOWED_KEYS_PATTERN.exec(task);
+  if (match === null) {
+    return null;
+  }
+  return (match[1] ?? "")
+    .split(/[,，、\s]+/)
+    .map((key) => key.trim())
+    .filter((key) => /^[A-Za-z0-9_.:+*-]+$/.test(key));
+}
+
+/** 把 tex 中占位 \\cite 依序重写为 allowed keys（第 i 个 cite 用第 min(i, n-1) 个 key；null 保持原样；[] 剥离） */
+function reciteToAllowedKeys(tex: string, keys: readonly string[] | null): string {
+  if (keys === null) {
+    return tex;
+  }
+  if (keys.length === 0) {
+    return tex.replace(SCRIPTED_CITE_PATTERN, "");
+  }
+  let index = 0;
+  return tex.replace(SCRIPTED_CITE_PATTERN, () => {
+    const key = keys[Math.min(index, keys.length - 1)]!;
+    index += 1;
+    return `\\cite{${key}}`;
+  });
+}
+
+/** 写作 / 修复 prompt「本章节当前内容」块里的既有 cite keys（原样沿用；无该块 → null 保持原样） */
+function citeKeysFromCurrentContent(task: string): string[] | null {
+  const marker = "===== 本章节当前内容 =====";
+  const start = task.indexOf(marker);
+  if (start === -1) {
+    return null;
+  }
+  const rest = task.slice(start + marker.length);
+  const end = rest.indexOf("\n=====");
+  const current = end === -1 ? rest : rest.slice(0, end);
+  const keys: string[] = [];
+  for (const command of current.match(SCRIPTED_CITE_PATTERN) ?? []) {
+    const inner = /\{([^{}]*)\}/.exec(command);
+    for (const part of (inner?.[1] ?? "").split(",")) {
+      const key = part.trim();
+      if (key !== "" && !keys.includes(key)) {
+        keys.push(key);
+      }
+    }
+  }
+  return keys;
+}
 /** 数学环境（equation / align 等；修订输出原样保留——M5.6 Fact Preservation） */
 const SCRIPTED_MATH_ENV_PATTERN =
   /\\begin\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)}[\s\S]*?\\end\{\1\}/g;
@@ -654,12 +713,14 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "writing/outline") {
         output = OUTLINE_JSON;
       } else if (scope === "writing/sections") {
+        // M9.5：cite key 从 prompt allowed keys 重写（镜像真实 Writer——不自造 key）
+        const allowed = allowedKeysFromPrompt(input.task);
         output =
           projectLatexModes.get(projectId) !== undefined && targetsIntroduction(input.task)
-            ? `${SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
+            ? `${reciteToAllowedKeys(SECTION_TEX, allowed)}\n${UNDEFINED_MACRO_TEX}`
             : projectCiteDrop.has(projectId) && targetsExperiments(input.task)
-              ? SECTION_TEX_TWO_CITES
-              : SECTION_TEX;
+              ? reciteToAllowedKeys(SECTION_TEX_TWO_CITES, allowed)
+              : reciteToAllowedKeys(SECTION_TEX, allowed);
       } else if (scope === "writing/revision") {
         // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
         // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
@@ -683,10 +744,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "writing/style-polish") {
         output = scriptedStylePolish(input.task, projectStyleModes.get(projectId));
       } else if (scope === "writing/repair") {
+        // M9.5：修复 prompt 不带 allowed keys——沿用「本章节当前内容」的既有 cite keys
+        const existing = citeKeysFromCurrentContent(input.task);
         output =
           projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
-            ? `${REPAIRED_SECTION_TEX}\n${UNDEFINED_MACRO_TEX}`
-            : REPAIRED_SECTION_TEX;
+            ? `${reciteToAllowedKeys(REPAIRED_SECTION_TEX, existing)}\n${UNDEFINED_MACRO_TEX}`
+            : reciteToAllowedKeys(REPAIRED_SECTION_TEX, existing);
       } else if (scope === "writing/improvement-plan") {
         // 改进计划条目必须指向真实章节文件：prompt 现在携带「现有章节文件」清单
         // （M4.8；PDF 重建项目为 sections/secNN.tex）——脚本从中取前两个，

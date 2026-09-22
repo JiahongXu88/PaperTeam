@@ -580,7 +580,7 @@ export function buildResearchPrompt(
     "2. 调研中发现的重要文献，用 save_candidates 保存为项目候选文献（kind 与 query 必须和检索时完全一致，按结果 index 选择；本次调研合计保存不超过 20 条，按与课题的相关性遴选）。保存的候选只是线索（pending_review），需用户审核转正后才进入文献库；已检索覆盖的方向不要写进 literaturePlan（它只记录检索后仍缺失的残差）。",
     "3. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
     "4. 锚定证据路径：文献库摘要中标注「全文：已入库」的条目，用 retrieve_library 按主题检索原文段落（结果带 CHUNK 标识），用 get_chunk 回取逐字原文。对调研结论中需要文献支撑的关键论断，当文献库有可检索全文时，优先提出锚定证据：调用 propose_evidence（claim + sourceId + chunkId + 从 chunk 原文逐字复制的 quote），或在最终 evidence 条目中附上 sourceId、chunkId 与逐字 quote（quote 不要改写、不要凭记忆生成）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。是否提出证据由你的研究判断决定，不设数量指标；但项目已有可检索全文时，关键论断应优先尝试锚定，而不是只依赖摘要或检索元数据。检索后仍找不到足够支撑材料时，如实记为证据不足（写入 researchGaps / literaturePlan），绝不编造 quote 或锚定到不相关的段落。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
-    "5. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字。",
+    "5. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字（key 仅作占位：最终 citation key 由系统按文献身份确定性生成并统一重排，你的 key 不会直接进入论文）。",
     "6. 你不负责写论文正文。",
     "",
     "===== 项目信息 =====",

@@ -966,9 +966,30 @@ Evidence UI 锚定标注 + 「在文献库查看」追溯接线；真实模型 l
 三段核验 → Verified Evidence）+ Claude Browser Acceptance 真实 UI 全程
 （UI 建项 → UI 上传全文 → UI 启动工作流 → Evidence 页锚定核验），见
 [research/M9.4_ANCHORED_EVIDENCE_ACTIVATION.md](research/M9.4_ANCHORED_EVIDENCE_ACTIVATION.md)）**；
+**M9.5 Deterministic Bibliography & Citation Trace ✅（引用侧确定性闭环——
+`citation/bibliography.ts` 唯一事实源：SourceIdentity → BibliographySeed →
+assignCitationKeys（一作+年份+标题词，冲突 a/b 消解，同输入重算一致）→
+CanonicalBibliographyEntry → renderBibTeX（article/inproceedings/misc 三类、
+LaTeX 转义、sourceId 追溯字段、byte identical）；LLM bibliography 降级为
+引用意图输入（同身份条目被文献库 authoritative metadata 覆盖，其余确定性重
+key）；Evidence → key 使用点解析（resolveEvidenceCitationKey：sourceId 精确
+→ DOI/标题降级，不落存储）；Writer prompt 行内（cite: key）标注 + allowed
+keys 全部来自 canonical；references.bib 生命周期 = 内容提交前
+syncReferencesBib（实际引用裁剪；同步必须与正文同一修订号——集成测试暴露
+放在 citation.verify 会破坏 Citation Preservation 基线；Existing-Paper 用户
+bib 永不触碰）；computeEvidenceCitationCoverage 升级 sourceId 优先；live
+smoke（真实模型 + 真实 OA 全文：8/8 verified → 全经 sourceId 命中
+kim2019comparison → 真实 Writer \cite ×8 → bib 10→1 裁剪 byte identical）+
+Claude Browser Acceptance（真实 UI 全链：DOI 导入 → 全文 → 生成 → 两轮
+HITL → 写作 → 引用核验 cited 15/missing 0/unused 0 → 修订同步 → 接受草稿 →
+PDF Draft；覆盖规则如实呈现 1/15 verified-backed）；发现环境级工具链问题
+（MiKTeX latexmk 委托 Git-Bash perl → BIBINPUTS MSYS 路径 → PDF 参考文献列
+表空，references.bib 本身可被 bibtex 正确解析——移交 M9.6 P0），见
+[research/M9.5_DETERMINISTIC_BIBLIOGRAPHY.md](research/M9.5_DETERMINISTIC_BIBLIOGRAPHY.md)）**；
 后续编号调整为 M9.4 Anchored Evidence
 Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
-Full Paper E2E Acceptance。
+Full Paper E2E Acceptance（下一节点 M9.6；P0 = latexmk/perl 工具链修复，
+否则 PDF 终稿无参考文献列表）。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

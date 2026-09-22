@@ -341,7 +341,7 @@ describe("M5.4 Style Revision Loop（scripted workflow e2e）", () => {
     expect(revisions.some((revision) => revision["reason"] === "revision.style_polish")).toBe(true);
     const intro = await readFile(join(stack.store.manuscriptDir(project.id), "sections", "introduction.tex"), "utf8");
     expect(intro).toContain("本节围绕已核验证据阐述核心观点");
-    expect(intro).toContain("\\cite{gao2023survey}");
+    expect(intro).toContain("\\cite{gao2023retrieval}");
     expect(intro).not.toContain("本章节论述基于证据的核心观点");
 
     // style-polish 只读视图：计划 / 结果 / 已复审
@@ -381,7 +381,7 @@ describe("M5.4 Style Revision Loop（scripted workflow e2e）", () => {
     expect((await stack.request("GET", `/api/projects/${project.id}/revisions`)).body["current"]).toBe(revisionBefore);
     expect(completions(finished, "review.run")).toBe(1);
     const intro = await readFile(join(stack.store.manuscriptDir(project.id), "sections", "introduction.tex"), "utf8");
-    expect(intro).toContain("\\cite{gao2023survey}");
+    expect(intro).toContain("\\cite{gao2023retrieval}");
     expect(intro).toContain("本章节论述基于证据的核心观点");
     const view = (await stack.request("GET", `/api/projects/${project.id}/style-polish`)).body;
     const result = view["result"] as Record<string, unknown>;

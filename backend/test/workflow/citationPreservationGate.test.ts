@@ -1,9 +1,9 @@
 /**
  * Citation Preservation Gate 的 scripted workflow 回归（M5.6）：
- * - [cite:drop]：实验章节多带一条只在该节出现的引用（lewis2020rag；该节的 finding 是 academic，
+ * - [cite:drop]：实验章节多带一条只在该节出现的引用（lewis2020retrieval；该节的 finding 是 academic，
  *   计划没有删除依据）；Writer 修订把被修订章节的 \cite 全部删掉 → 复审虽 pass，quality.gate 仍以
- *   citation_keys_preserved FAIL（lewis2020rag 无依据消失；引言的 fact finding 允许其论述随证据不足
- *   删除，但 gao2023survey 仍在其它章节被引用，不构成丢失）
+ *   citation_keys_preserved FAIL（lewis2020retrieval 无依据消失；引言的 fact finding 允许其论述随证据不足
+ *   删除，但 gao2023retrieval 仍在其它章节被引用，不构成丢失）
  *   → Final 被阻止；revision.plan 派发 citation_removed 恢复条目（有章节归属，Writer 可执行）；
  *   Writer 再次删掉 → CONVERGED → stalled HITL → accept_draft → Draft 仍可构建，但 build.draft
  *   明确暴露引用保持失败。全部删光（catastrophic）与历史回归见 citationPreservation.test。
@@ -13,7 +13,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+
+// 全流程 e2e（真实编排 + 多轮修订）在全量并发下可能超过默认 5s——与兄弟 workflow
+// 测试文件同口径放宽（pollRun 自身仍以 20s 逻辑超时兜底）
+vi.setConfig({ testTimeout: 20_000 });
 
 import type { WorkflowState } from "../../src/workflow/types.js";
 import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
@@ -116,19 +120,19 @@ describe("Citation Preservation Gate（scripted workflow）", () => {
     expect(gateReasons.join("\n")).toContain("citation_keys_preserved");
 
     // 第一轮：outline 骨架修订 → 写作修订，引用只增不减 → PASS；
-    // 第二轮：写作修订 → 修订后，lewis2020rag（只在实验章节出现）随被修订章节的引用一起消失 → FAIL
+    // 第二轮：写作修订 → 修订后，lewis2020retrieval（只在实验章节出现）随被修订章节的引用一起消失 → FAIL
     const r1 = await readGate(stack, project.id, 1);
     expect(r1.gate.rules.find((rule) => rule.rule === "citation_keys_preserved")?.passed).toBe(true);
     expect(r1.citationPreservation?.previousCount).toBe(0);
-    expect(r1.citationPreservation?.addedKeys).toEqual(["gao2023survey", "lewis2020rag"]);
+    expect(r1.citationPreservation?.addedKeys).toEqual(["gao2023retrieval", "lewis2020retrieval"]);
     const r2 = await readGate(stack, project.id, 2);
     expect(r2.gate.passed).toBe(false);
     expect(r2.gate.reasons).toHaveLength(1); // 复审已 pass：唯一阻止项就是引用保持
     expect(r2.gate.reasons[0]).toContain("citation_keys_preserved");
-    expect(r2.citationPreservation?.catastrophic).toBe(false); // 其它章节仍引用 gao2023survey
+    expect(r2.citationPreservation?.catastrophic).toBe(false); // 其它章节仍引用 gao2023retrieval
     expect(r2.citationPreservation?.previousCount).toBeGreaterThan(r2.citationPreservation?.currentCount ?? 0);
     expect(r2.citationPreservation?.currentCount).toBeGreaterThan(0);
-    expect(r2.citationPreservation?.unexpectedRemovedKeys).toEqual(["lewis2020rag"]);
+    expect(r2.citationPreservation?.unexpectedRemovedKeys).toEqual(["lewis2020retrieval"]);
     const previousFiles = r2.citationPreservation?.unexpectedRemoved[0]?.files ?? [];
     expect(previousFiles).toEqual(["sections/experiments.tex"]);
 
@@ -149,7 +153,7 @@ describe("Citation Preservation Gate（scripted workflow）", () => {
     expect(removedItems.length).toBe(previousFiles.length);
     expect(removedItems.every((item) => item.priority === "high")).toBe(true);
     expect(removedItems.map((item) => item.section).sort()).toEqual([...previousFiles].sort());
-    expect(removedItems[0]?.id).toBe("citation-removed:lewis2020rag:sections/experiments.tex");
+    expect(removedItems[0]?.id).toBe("citation-removed:lewis2020retrieval:sections/experiments.tex");
     expect(removedItems.every((item) => item.status === "approved")).toBe(true);
     expect(removedItems.every((item) => (item.resolution ?? "").startsWith("user_approved"))).toBe(true);
 
@@ -161,7 +165,7 @@ describe("Citation Preservation Gate（scripted workflow）", () => {
     expect((finished.completion?.summary?.["qualityGateReasons"] as string[]).join("\n")).toContain("citation_keys_preserved");
     const draft = finished.stageResults["build.draft"] as Record<string, unknown>;
     expect(draft["buildOk"]).toBe(true);
-    expect(draft["citationPreservation"]).toMatchObject({ passed: false, unexpectedRemovedKeys: ["lewis2020rag"] });
+    expect(draft["citationPreservation"]).toMatchObject({ passed: false, unexpectedRemovedKeys: ["lewis2020retrieval"] });
     expect(finished.stageHistory.some((record) => record.stageId === "build.final")).toBe(false);
     const { events } = await stack.orchestrator.readEvents(runId);
     const buildEvent = events.find((event) => event.type === "build_gate.passed");

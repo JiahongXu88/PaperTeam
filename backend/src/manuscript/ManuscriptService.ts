@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStats } from "../evidence/EvidenceStore.js";
-import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
+import { renderBibliographyFile, type BibRenderEntry } from "../citation/bibliography.js";
 import { writeJsonAtomic, writeFileAtomic } from "../util/atomic.js";
 
 export interface OutlineSection {
@@ -146,9 +146,13 @@ export class ManuscriptService {
     return Buffer.byteLength(content, "utf8");
   }
 
-  /** 由结构化 bibliography 确定性生成 references.bib */
-  async writeBibliography(projectId: string, entries: BibliographyEntryInput[]): Promise<number> {
-    const content = entries.map(renderBibEntry).join("\n\n") + (entries.length > 0 ? "\n" : "");
+  /**
+   * 由结构化 bibliography 确定性生成 references.bib（M9.5：渲染下沉
+   * citation/bibliography.ts——按 key 排序、article/inproceedings/misc 类型化、
+   * LaTeX 转义、同输入字节级一致）。重复生成 byte identical。
+   */
+  async writeBibliography(projectId: string, entries: readonly BibRenderEntry[]): Promise<number> {
+    const content = renderBibliographyFile(entries);
     await mkdir(this.manuscriptDir(projectId), { recursive: true });
     await writeFileAtomic(this.bibPath(projectId), content);
     return entries.length;
@@ -280,26 +284,6 @@ export function validateOutline(outline: Outline): string[] {
     files.add(section.file);
   }
   return violations;
-}
-
-function renderBibEntry(entry: BibliographyEntryInput): string {
-  const fields: string[] = [`  title = {${entry.title}}`];
-  if (entry.authors?.length) {
-    fields.push(`  author = {${entry.authors.join(" and ")}}`);
-  }
-  if (entry.year !== undefined) {
-    fields.push(`  year = {${entry.year}}`);
-  }
-  if (entry.doi) {
-    fields.push(`  doi = {${entry.doi}}`);
-  }
-  if (entry.url) {
-    fields.push(`  url = {${entry.url}}`);
-  }
-  if (entry.venue) {
-    fields.push(`  journal = {${entry.venue}}`);
-  }
-  return `@article{${entry.key},\n${fields.join(",\n")}\n}`;
 }
 
 function escapeLatex(value: string): string {

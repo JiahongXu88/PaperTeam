@@ -34,6 +34,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
+import { isExistingPaperKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
@@ -61,6 +62,12 @@ import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readFeasibilityReport, type FeasibilityService } from "../agents/FeasibilityService.js";
 import type { ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
 import type { CitationService, CitationReport } from "../citation/CitationService.js";
+import {
+  buildBibliographyFromSources,
+  filterByCitedKeys,
+  mergeArtifactBibliography,
+  type CanonicalBibliographyEntry,
+} from "../citation/bibliography.js";
 import { extractCitationKeys, parseBib } from "../citation/StaticCitationChecker.js";
 import type { CitationIntegrityService } from "../citation/CitationIntegrityService.js";
 import type { CitationCallout, ReferenceEntry } from "../citation/integrity.js";
@@ -593,7 +600,9 @@ function revisionRepairStage(services: WorkflowServices): StageSpec {
         repaired.push(file);
         await ctx.emitProgress({ file, repairedCount: repaired.length });
       }
-      // 修复即改稿：提交修订（幂等；Writer 输出与原文相同则不产生新修订号）
+      // 修复即改稿：提交修订（幂等；Writer 输出与原文相同则不产生新修订号）。
+      // M9.5：bib 同步在提交前——引用集合变化与正文变化同一修订号
+      await syncReferencesBib(services, ctx.projectId);
       const commit = await services.revisions.commit(ctx.projectId, "revision.repair_latex", ctx.runId);
       return {
         repairedFiles: repaired,
@@ -726,11 +735,10 @@ function revisionReviseStage(
       }
       const buildError = readBuildError(ctx.state);
       const evidence = await usableEvidence(services, ctx.projectId);
-      const artifact = await readResearchArtifact(services.projects, ctx.projectId);
       // M5.6 真实论文验收暴露的 Writer regression：Existing-Paper 项目没有 research
       // artifact bibliography，修订 prompt 曾写成「无可用文献：不要使用 \cite」，Writer
       // 据此删光了重建稿的全部 \cite。可引用 key 必须以 manuscript/references.bib 为准。
-      const bibliography = await manuscriptBibliography(services, ctx.projectId, artifact?.bibliography ?? []);
+      const bibliography = await manuscriptBibliography(services, ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
 
       // 修订指令：shared loop 以落盘的确定性修订计划为准（计划缺失时回退执行期派生）；
@@ -841,6 +849,8 @@ function revisionReviseStage(
           evidenceStats: await services.evidence.stats(ctx.projectId),
         });
       }
+      // M9.5：修订可能增删 \cite——bib 同步在提交前，引用表与正文同一修订号
+      await syncReferencesBib(services, ctx.projectId);
       // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
       const revision = await services.revisions.commit(ctx.projectId, stageId, ctx.runId);
       // M6.7 §5：派发条目 planned → applied（状态机落盘；携带修订号与确定性
@@ -1319,9 +1329,8 @@ function stylePolishStage(services: WorkflowServices): StageSpec {
         match: (target: RevisionTarget) => (sectionMatches(item.section, target) ? revisionPlanItemToIssue(item) : null),
       }));
       const targets = listRevisionTargets(outline, files, directives);
-      const artifact = await readResearchArtifact(services.projects, ctx.projectId);
       const bibliographyKeys = (
-        await manuscriptBibliography(services, ctx.projectId, artifact?.bibliography ?? [])
+        await manuscriptBibliography(services, ctx.projectId)
       ).map((entry) => entry.key);
       const protectedTerms = await loadGlossaryTerms(services.projects.manuscriptDir(ctx.projectId));
       const project = await services.projects.getRequired(ctx.projectId);
@@ -1426,20 +1435,79 @@ function planStylePolish(state: WorkflowState, gateRound: number): PlanDecision 
 }
 
 /**
- * 修订 / 润色可引用的参考文献 = research artifact bibliography ∪ manuscript/references.bib
- * 条目（按 key 去重；Existing-Paper 重建项目只有后者）。references.bib 是引用 key
- * 的事实源——Writer prompt 的「只允许引用以下 key」必须覆盖稿件里已有的全部 key，
- * 否则会把合法引用当成违规删除（2026-09-14 真实论文验收 B2/A2 暴露）。
+ * 项目 canonical bibliography（M9.5）：文献库 SourceItem（authoritative
+ * metadata）∪ research artifact bibliography（LLM 引用意图，同身份条目丢弃、
+ * 其余确定性重 key）→ assignCitationKeys（冲突 a/b 消解、按 key 排序）。
+ * 纯读派生（sources.list + research.json），不落盘、零 LLM。
+ */
+async function buildCanonicalBibliography(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<CanonicalBibliographyEntry[]> {
+  const [items, artifact] = await Promise.all([
+    services.sources.list(projectId),
+    readResearchArtifact(services.projects, projectId),
+  ]);
+  return mergeArtifactBibliography(
+    buildBibliographyFromSources(items),
+    artifact?.bibliography ?? [],
+  );
+}
+
+/**
+ * references.bib 同步（M9.5 §10 生命周期）：按当前 manuscript 实际 \cite 的
+ * key 集合从 canonical bibliography 确定性重渲染——只含实际引用文献。
+ * 守卫（用户数据红线）：Existing-Paper 项目（PDF / LaTeX 导入，ProjectImport
+ * 必写 workflowKind）的 references.bib 是用户或导入事实，任何情况下不改写；
+ * 生成式项目（workflowKind 缺省或 idea_to_paper）+ 已有大纲 + canonical
+ * 非空 + main.tex 存在才执行。幂等：同输入 byte identical。
+ *
+ * 调用时机纪律：只在**内容写作阶段提交修订之前**调用（writing.sections /
+ * revision.revise / revision.repair_latex）——bib 变化必须与正文变化落在
+ * 同一个修订号里，否则会在修订与 review 快照之间制造额外修订号，破坏
+ * Citation Preservation 的 rev(n-1)→rev(n) 比较基线（2026-09-22 集成测试
+ * 暴露：放在 citation.verify 里导致 rev2→rev3 的引用丢失被跳过）。
+ */
+async function syncReferencesBib(services: WorkflowServices, projectId: string): Promise<number> {
+  const project = await services.projects.getRequired(projectId);
+  if (isExistingPaperKind(project.workflowKind)) {
+    return 0;
+  }
+  const outline = await services.manuscript.loadOutline(projectId);
+  if (outline === null) {
+    return 0;
+  }
+  const bibliography = await buildCanonicalBibliography(services, projectId);
+  if (bibliography.length === 0) {
+    return 0;
+  }
+  const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  if (files.mainTex === null) {
+    return 0;
+  }
+  const cited = new Set<string>();
+  for (const file of files.allTex) {
+    for (const key of extractCitationKeys(file.relativePath, file.content).keys) {
+      cited.add(key);
+    }
+  }
+  return services.manuscript.writeBibliography(projectId, filterByCitedKeys(bibliography, cited));
+}
+
+/**
+ * 修订 / 润色可引用的参考文献 = canonical bibliography（M9.5 确定性 key）
+ * ∪ manuscript/references.bib 现存条目（按 key 去重；Existing-Paper 重建项目
+ * 只有后者）。references.bib 是引用 key 的事实源——Writer prompt 的「只允许
+ * 引用以下 key」必须覆盖稿件里已有的全部 key，否则会把合法引用当成违规删除
+ * （2026-09-14 真实论文验收 B2/A2 暴露）。
  */
 async function manuscriptBibliography(
   services: WorkflowServices,
   projectId: string,
-  fromArtifact: readonly BibliographyEntryInput[],
 ): Promise<BibliographyEntryInput[]> {
-  const merged = new Map<string, BibliographyEntryInput>();
-  for (const entry of fromArtifact) {
-    merged.set(entry.key, entry);
-  }
+  const merged = new Map<string, BibliographyEntryInput>(
+    (await buildCanonicalBibliography(services, projectId)).map((entry) => [entry.key, entry]),
+  );
   try {
     const bib = await readFile(join(services.projects.manuscriptDir(projectId), "references.bib"), "utf8");
     for (const entry of parseBib(bib).entries) {
@@ -1453,7 +1521,7 @@ async function manuscriptBibliography(
       }
     }
   } catch {
-    // 无 references.bib：只有 artifact bibliography
+    // 无 references.bib：只有 canonical bibliography
   }
   return [...merged.values()];
 }
@@ -2148,6 +2216,10 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
       const artifact = await requireResearchArtifact(services, ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
       const evidence = await usableEvidence(services, ctx.projectId);
+      // M9.5：Writer 可引用 key 与 references.bib 全部来自 canonical bibliography
+      // （文献库 authoritative metadata + LLM 引用意图，代码确定性 key）——
+      // LLM 自造的 bibliography key 不再进入下游。
+      const bibliography = await buildCanonicalBibliography(services, ctx.projectId);
       const feedback = readFeedback(ctx.state.inputs["hitl.outline_confirm"]?.payload);
       const outline = await services.writer.planOutline({
         projectId: ctx.projectId,
@@ -2157,20 +2229,20 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
           potentialContributions: artifact.report.potentialContributions,
         },
         evidence,
-        bibliography: artifact.bibliography,
+        bibliography,
         targetProfile: project.targetProfile,
         documentType: project.documentType,
         ...(feedback !== undefined ? { feedback } : {}),
       });
       await services.manuscript.saveOutline(ctx.projectId, outline);
-      await services.manuscript.writeBibliography(ctx.projectId, artifact.bibliography);
-      await services.manuscript.writeMainTex(ctx.projectId, outline, artifact.bibliography.length > 0);
+      await services.manuscript.writeBibliography(ctx.projectId, bibliography);
+      await services.manuscript.writeMainTex(ctx.projectId, outline, bibliography.length > 0);
       // 大纲骨架也是 manuscript 状态：提交修订（后续 gate/build 对齐基准）
       const revision = await services.revisions.commit(ctx.projectId, "outline.plan", ctx.runId);
       return {
         sections: outline.sections.length,
         title: outline.title,
-        references: artifact.bibliography.length,
+        references: bibliography.length,
         revision: revision.revision,
       };
     },
@@ -2237,10 +2309,12 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       if (outline === null) {
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少大纲（outline.json）");
       }
-      const artifact = await requireResearchArtifact(services, ctx.projectId);
+      await requireResearchArtifact(services, ctx.projectId);
       // M6.6：写作 digest 只含 verified formal 池（legacy unverified 不再兜底注入）
       const evidenceSelection = await services.evidenceSelection.selectForWriting(ctx.projectId);
       const evidence = evidenceSelection.formal;
+      // M9.5：写作允许引用的 key = canonical bibliography（确定性 key）
+      const bibliography = await buildCanonicalBibliography(services, ctx.projectId);
 
       let bytesTotal = 0;
       const written: string[] = [];
@@ -2253,7 +2327,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           section,
           outline,
           evidence,
-          bibliography: artifact.bibliography,
+          bibliography,
         });
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
         written.push(section.id);
@@ -2267,10 +2341,12 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       for (const record of evidence) {
         await safeMarkUsage(services, ctx.projectId, record.id, ctx.runId);
       }
-      await services.manuscript.writeMainTex(ctx.projectId, outline, artifact.bibliography.length > 0);
+      await services.manuscript.writeMainTex(ctx.projectId, outline, bibliography.length > 0);
       await services.manuscript.rebuildContext(ctx.projectId, {
         evidenceStats: await services.evidence.stats(ctx.projectId),
       });
+      // M9.5：初稿 bib 裁剪为实际引用集合（与正文同一修订号提交）
+      await syncReferencesBib(services, ctx.projectId);
       // 初稿完成：提交首个内容修订
       const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
       return {

@@ -12,7 +12,7 @@ import { AgentRunFailedError, InvalidLatexOutputError } from "../errors.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
-import { EvidenceSelectionService } from "../evidence/EvidenceSelectionService.js";
+import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
@@ -63,9 +63,10 @@ const EVIDENCE_QUERY_GUIDANCE = [
 ].join("");
 
 /**
- * 渲染 Evidence digest 行（M6.6 §12 Citation Integration）：
- * EvidenceRecord → 匹配 bibliography key → 引用时优先使用有已核验证据支撑的 key。
- * 行格式：- [E001]（cite: vaswani2017）claim…
+ * 渲染 Evidence digest 行（M6.6 §12 Citation Integration；M9.5 确定性 key）：
+ * EvidenceRecord → resolveEvidenceCitationKey（sourceId 精确 → DOI/标题降级）
+ * → 引用时使用系统按文献身份确定性生成的 key（LLM 不自造 key）。
+ * 行格式：- [E001]（cite: vaswani2017attention）claim…
  */
 function renderEvidenceLines(
   evidence: EvidenceRecord[],
@@ -76,7 +77,7 @@ function renderEvidenceLines(
     return ["（无已核验（verified）Evidence：避免需要外部证据的强论断；可用 evidence_query 查询证据库确认）"];
   }
   return evidence.slice(0, limit).map((record) => {
-    const key = EvidenceSelectionService.matchBibliographyKey(record, bibliography);
+    const key = resolveEvidenceCitationKey(record, bibliography);
     const cite = key !== null ? `（cite: ${key}）` : "";
     return `- [${record.id}]${cite} ${record.claim.slice(0, 150)}${
       record.quote ? `（引文："${record.quote.slice(0, 120)}"）` : ""

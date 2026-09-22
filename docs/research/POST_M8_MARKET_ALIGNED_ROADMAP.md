@@ -338,6 +338,22 @@ bibliography = LLM 字符串(@article 一律) ──✗── 引用可追踪打
 > Verified Evidence 全链成立；Claude Browser Acceptance 真实 UI 全程，
 > 见 [M9.4_ANCHORED_EVIDENCE_ACTIVATION.md](M9.4_ANCHORED_EVIDENCE_ACTIVATION.md)）**；
 > 下一节点 M9.5 Deterministic Bibliography / Citation Trace。
+>
+> **M9 进度追加（2026-09-22 M9.5 完成后更新）**：**Step 5 已由 M9.5
+> Deterministic Bibliography / Citation Trace 完成（`citation/bibliography.ts`
+> 确定性唯一事实源：SourceIdentity → 一作+年份+标题词 key（冲突 a/b 消解、
+> 同输入重算一致）→ article/inproceedings/misc 渲染（LaTeX 转义 + sourceId
+> 追溯字段 + byte identical）；LLM bibliography 降级为引用意图输入；Evidence
+> → key 使用点解析（sourceId 精确 → DOI/标题降级）；references.bib =
+> 内容提交前按实际 \cite 裁剪重渲染（Existing-Paper 用户 bib 永不触碰）；
+> 覆盖检查 sourceId 优先；真实模型 live smoke（8/8 verified → 确定性 key →
+> 真实 Writer \cite → bib 裁剪 byte identical）+ 真实 UI 全链验收（cited 15 /
+> missing 0 / unused 0 → Draft PDF），见
+> [M9.5_DETERMINISTIC_BIBLIOGRAPHY.md](M9.5_DETERMINISTIC_BIBLIOGRAPHY.md)）**；
+> 下一节点 M9.6 Full Paper E2E Acceptance——**P0 新增**：本机 MiKTeX
+> latexmk 委托 Git-Bash MSYS perl → BIBINPUTS 路径形态冲突 → bibtex 读不到
+> references.bib → PDF 参考文献列表空（环境级工具链问题，M9.5 验收中暴露；
+> 不修则 M9.6 的浏览器全流程终稿无参考文献列表）。
 
 **不是本路径前置条件（明确后做）**：研究记忆、embedding vendor、M10 trace
 （验收脚本用现有 usageTotals + 任务日志即可记账）、M11 评估、图表能力、

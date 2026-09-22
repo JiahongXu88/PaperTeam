@@ -66,7 +66,7 @@ describe("Experiment 2 baseline 物化（scriptedRevision 同源故障）", () =
 
   it("[cite:drop]：实验章节独有引用被删光", () => {
     const accepted = materializeWriterFaultOutput("cite:drop", baselineSectionContent(true));
-    expect(extractCitationKeys(accepted)).not.toContain("lewis2020rag");
+    expect(extractCitationKeys(accepted)).not.toContain("lewis2020retrieval");
   });
 
   it("[strength:escalate]：追加无数字支撑的强表述", () => {
@@ -100,8 +100,8 @@ describe("Experiment 2 paperteam：[cite:drop] 全链路拦截", () => {
       expect(reasonCodes).toContain("citation_removal_unauthorized");
 
       const snapshot = await readManuscriptSnapshot(harness.root, project.id);
-      // reject 策略恢复快照：lewis2020rag 回到终稿
-      expect(snapshot.citationKeys).toContain("lewis2020rag");
+      // reject 策略恢复快照：lewis2020retrieval 回到终稿
+      expect(snapshot.citationKeys).toContain("lewis2020retrieval");
       expect(driven.hitlStages).toContain("hitl.revision_validation");
     } finally {
       await harness.cleanup();

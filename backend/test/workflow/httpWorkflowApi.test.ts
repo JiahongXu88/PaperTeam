@@ -211,7 +211,8 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
       expect(body).toContain("\\section");
     }
     const bib = await readFile(join(projectRoot, "manuscript", "references.bib"), "utf8");
-    expect(bib).toContain("gao2023survey");
+    // M9.5：references.bib 由 canonical bibliography 确定性渲染（key = 一作+年份+标题词）
+    expect(bib).toContain("gao2023retrieval");
     const citationReport = JSON.parse(
       await readFile(join(projectRoot, "reviews", "citation-report.json"), "utf8"),
     ) as { summary?: { missingKeys?: number } };

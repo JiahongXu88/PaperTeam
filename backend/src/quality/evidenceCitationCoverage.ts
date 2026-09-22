@@ -2,8 +2,9 @@
  * Evidence Citation Coverage（M6.6 §13 Quality Gate Integration）：
  * 确定性检测「正文引用的 bib key 是否存在对应的 Verified Evidence」。
  *
- * 匹配链（EvidenceRecord → source metadata → bib entry）：
- *   DOI 精确匹配 → 归一化 title（+ 年份一致性）匹配
+ * 匹配链（M9.5 起与 Writer 引用关联同源，citation/bibliography.ts
+ * resolveEvidenceCitationKey）：
+ *   sourceId 精确匹配（确定性渲染的 sourceId 字段）→ DOI 精确 → 归一化 title（+ 年份）
  * 只有 formal evidence（verified + chunk 锚点，EvidenceSelectionService 规则）
  * 参与覆盖判定——legacy unverified 不产生覆盖（§M6.6-10 使用策略）。
  *
@@ -36,13 +37,23 @@ export function computeEvidenceCitationCoverage(
 ): EvidenceCitationCoverage {
   const entryByKey = new Map(input.bibEntries.map((entry) => [entry.key, entry]));
   // formal evidence 覆盖的 bib key 集合（匹配规则与 Writer 引用关联同源：
-  // EvidenceSelectionService.matchBibliographyKey——DOI → 归一化 title+年份）
+  // sourceId 精确 → DOI → 归一化 title+年份）
   const coveredKeys = new Set<string>();
   for (const record of input.evidenceRecords) {
     if (!isFormalEvidence(record)) {
       continue;
     }
-    const key = EvidenceSelectionService.matchBibliographyKey(record, input.bibEntries);
+    const sourceId = record.source?.sourceId?.trim();
+    let key: string | null = null;
+    if (sourceId !== undefined && sourceId !== "") {
+      const hit = input.bibEntries.find((entry) => (entry.sourceId ?? "").trim() === sourceId);
+      if (hit !== undefined) {
+        key = hit.key;
+      }
+    }
+    if (key === null) {
+      key = EvidenceSelectionService.matchBibliographyKey(record, input.bibEntries);
+    }
     if (key !== null) {
       coveredKeys.add(key);
     }

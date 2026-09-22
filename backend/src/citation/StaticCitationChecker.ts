@@ -16,6 +16,8 @@ export interface BibEntrySummary {
   title?: string;
   year?: number;
   doi?: string;
+  /** M9.5 追溯：确定性渲染写入的 sourceId 字段（SourceStore 条目） */
+  sourceId?: string;
 }
 
 export interface BibParseResult {
@@ -78,6 +80,7 @@ export function parseBib(bibText: string): BibParseResult {
       ...(title !== undefined ? { title: stripBraces(title) } : {}),
       ...(Number.isInteger(yearNumeric) ? { year: yearNumeric } : {}),
       ...(readField(body, "doi") !== undefined ? { doi: readField(body, "doi") } : {}),
+      ...(readField(body, "sourceId") !== undefined ? { sourceId: readField(body, "sourceId") } : {}),
     });
   }
   return { entries, duplicateKeys, malformed };

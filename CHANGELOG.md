@@ -106,8 +106,57 @@ docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md。
      evidence.ground → Evidence 页锚定核验 → 刷新持久化）。报告见
      docs/research/M9.4_ANCHORED_EVIDENCE_ACTIVATION.md。
 
-后续：M9.4 Anchored Evidence Activation → M9.5 Deterministic
-Bibliography / Citation Trace → M9.6 Full Paper E2E Acceptance。
+后续：M9.4 Anchored Evidence Activation → **M9.5 Deterministic
+Bibliography / Citation Trace（已完成，见下条）** → M9.6 Full Paper E2E
+Acceptance。
+6. **M9.5 Deterministic Bibliography & Citation Trace**（本批）：M9.4 的
+   Verified Evidence 链路延伸到引用侧——LLM 只负责内容与引用意图，
+   **citation key / BibTeX 渲染 / references.bib 生命周期全部由代码确定性
+   完成**（零新 Agent / 零新 Store / 零 migration）：
+   - 新模块 `backend/src/citation/bibliography.ts`（唯一事实源，纯函数）：
+     `SourceItem（identity+metadata+versionType）∪ ResearchArtifact
+     bibliography（LLM 引用意图，同身份条目丢弃）→ assignCitationKeys`
+     （一作+年份+标题词；冲突按 identityKey 排序追加 a/b/c；同输入任何
+     重算一致）→ `renderBibTeX`（article/inproceedings/misc 三类 + LaTeX
+     转义 + `sourceId` 追溯字段；byte identical）；
+   - Evidence → Citation 追溯不落存储：`resolveEvidenceCitationKey`
+     （sourceId 精确 → matchBibliographyKey 降级）供 Writer 行内
+     `（cite: key）` 标注与 `computeEvidenceCitationCoverage`（升级
+     sourceId 优先，`StaticCitationChecker.parseBib` 回读 sourceId）共用；
+   - Writer 接线：outline.plan / writing.sections 的 allowed keys 与
+     references.bib 全部来自 canonical bibliography（LLM 自造 key 不再进入
+     任何下游）；`manuscriptBibliography` = canonical ∪ 稿件 bib 现存条目
+     （2026-09-14 B2/A2 教训保持）；scriptedRuntime Writer 镜像真实纪律
+     （cite key 从 prompt allowed-keys 行读取）；
+   - references.bib 生命周期：内容阶段提交修订**之前**
+     `syncReferencesBib`（收集实际 \cite → canonical ∩ cited 重渲染——只含
+     实际引用文献，幂等 byte identical）；同步时机纪律：放在 citation.verify
+     会在修订与 review 快照间制造额外修订号、跳过 Citation Preservation 的
+     引用丢失比较轮（集成测试暴露并回归覆盖）；Existing-Paper（PDF/LaTeX
+     导入）的用户 references.bib 永不改写；
+   - Researcher prompt 规则 5 措辞更新（key 仅占位，系统确定性重排；输出
+     schema 不变，legacy 兼容）；
+   - 测试：新增 `citation/bibliography.test.ts`（15）+
+     `workflow/deterministicBibliography.test.ts`（3，含旧项目用户 bib
+     逐字节保持）；scriptedRuntime 相关 key 断言迁移到确定性 key；
+     `citationPreservationGate` 补 testTimeout（既有全量并发 flake）；
+     backend 1620 用例全绿 / frontend 263 全绿 / Playwright 23 passed；
+   - 真实模型 live smoke（`scripts/m95-bibliography-smoke.mjs`，GLM-5.3 +
+     PLOS 真实 OA 全文）：8/8 verified → 全部经 sourceId 命中确定性 key →
+     真实 Writer 章节 `\cite{kim2019comparison}` ×8 → references.bib
+     10→1 裁剪 + byte identical；
+   - Claude Browser Acceptance（真实 UI + 真实模型 + 隔离栈）：UI 全链
+     DOI 导入 → 全文获取 → 开始生成 → 两轮 HITL → 分节写作 → 引用核验
+     （cited 15 / missing 0 / unused 0 / duplicate 0 / hallucinated 0，
+     kim 条目 sourceId=S001 追溯）→ 修订同步 → 接受草稿 → PDF Draft；
+     `citations_evidence_backed` 如实呈现 1/15 verified-backed（其余为
+     LLM 引用意图，非阻断）；
+   - 发现环境级工具链问题（非 M9.5 缺陷，移交 M9.6 P0）：MiKTeX latexmk
+     委托 Git-Bash MSYS perl → BIBINPUTS 写成 `/d/...` → Windows bibtex
+     读不到 bib → PDF 参考文献列表空（references.bib 本身经本地 bibtex
+     验证可正确解析）。报告见
+     docs/research/M9.5_DETERMINISTIC_BIBLIOGRAPHY.md。
+
 ## [Unreleased] — M8 Controlled Deep Research Loop（2026-09-20 → 2026-09-22）
 
 研究从一次性即时检索升级为「计划 → 批准 → 执行 → 覆盖 → 缺口 → HITL →
