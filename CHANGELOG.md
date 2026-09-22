@@ -72,6 +72,39 @@ docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md。
    - 文档 `docs/BROWSER_ACCEPTANCE.md`（Playwright vs Acceptance 分工 /
      隔离 / CDP 安全 / Bug→Playwright regression 工作流 / 已知限制）
      + 最小 `CLAUDE.md` 开发指引。
+5. **M9.4 Anchored Evidence Activation**（本批）：真实 Research 流程把
+   FullText / Chunk 转换为 Anchored Evidence——`retrieve_library →
+   get_chunk → propose_evidence → evidence.ground → Verified Evidence`
+   全链真实成立（**激活与集成，零新 Agent / Store / 检索管线 / Vector DB**）：
+   - Researcher 激活：`buildSourceDigest` 逐条标注全文可检索性
+     （「已入库（可检索锚定）」/「未入库（仅元数据）」+ 头部计数 + 锚定
+     路径提示行）；research prompt 要求 4 重写为锚定证据路径（条件化
+     优先、quote 逐字纪律、propose/JSON 双通道去重、**失败纪律**（无支撑
+     如实记入 researchGaps / literaturePlan，绝不编造）、**无机械数量
+     指标**）；
+   - 修复真实模型 smoke 暴露的产品 bug：`EvidenceCandidateStore` /
+     `EvidenceStore` 读-改-写无串行化——Agent 同回合并行
+     propose_evidence 时同号候选多行写入（实测 EC001×6）、
+     markResolved 只改首行、其余行永久卡 pending；引入项目级写队列
+     （与 M9.3 SourceStore 修复同纪律）+ 8 路并发提案回归测试；
+   - Coverage 质量收紧：`researchCoverage` 的 covered 只认 verified
+     证据或 promoted literature——unverified / legacy 证据最多 partial
+     （gap 文案明示），Search Result ≠ Covered 不变量落地；
+   - Evidence UI 最小增强：行内「锚定全文出处」标注（区分 grounding
+     产物与无锚定线索）+ 详情「在文献库查看」追溯跳转（Evidence →
+     Source Identity 接线）；
+   - 测试：新增 `anchoredPathActivation.test.ts`（工具链全打通 / 幂等 /
+     伪造 quote 拒绝 / Web-URL 锚定拒绝 / 文献身份不可变 / Researcher
+     JSON 锚定路径 / 老项目兼容 / 并发提案回归，10 tests）；更新
+     researcherPrompt / researchCoverage / httpResearchCoverage /
+     researchGap / EvidencePanel 前端测试；
+   - 真实模型 live smoke（`scripts/m94-evidence-smoke.mjs`，GLM-5.3，
+     2×PLOS ONE CC-BY 真实全文）：Researcher 自然调用
+     retrieve_library/get_chunk/propose_evidence（19-22 次工具调用），
+     锚定候选全部三段核验通过转正；Claude Browser Acceptance 真实 UI
+     全程（UI 建项 → UI 上传全文 → UI 启动工作流 → research.idea →
+     evidence.ground → Evidence 页锚定核验 → 刷新持久化）。报告见
+     docs/research/M9.4_ANCHORED_EVIDENCE_ACTIVATION.md。
 
 后续：M9.4 Anchored Evidence Activation → M9.5 Deterministic
 Bibliography / Citation Trace → M9.6 Full Paper E2E Acceptance。

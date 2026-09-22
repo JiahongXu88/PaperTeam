@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { EvidencePanel } from "../src/components/project/EvidencePanel.js";
@@ -223,5 +223,44 @@ describe("证据工作台", () => {
     await waitFor(() => expect(evidenceApi.confirm).toHaveBeenCalledWith("p-evidence01", "E002"));
     // 重取后 E002 已核验（待核验计数归零）
     await waitFor(() => expect(screen.getAllByText("待核验 0").length).toBeGreaterThan(0));
+  });
+
+  it("M9.4 锚定追溯：chunk 锚点行内标注「锚定全文出处」，详情展示 chunkId 并可跳转文献库；无锚定行不标注", async () => {
+    const anchored = record({
+      id: "E101",
+      claim: "RAG 在开放域问答中降低事实错误率",
+      verificationStatus: "verified",
+      verificationLevel: "fulltext",
+      verificationMethod: "evidence-grounding/v1 quote=exact metadata=match judge=supported",
+      location: { page: 3, section: "Introduction", chunk: "S001:SEC01:0002:1a2b3c4d5e" },
+      usedBy: [],
+    });
+    const legacy = record({
+      id: "E102",
+      claim: "无锚定的 legacy 线索",
+      verificationStatus: "unverified",
+      source: { sourceId: "S002", title: "Legacy Lead" },
+      location: { page: 9 },
+      usedBy: [],
+    });
+    evidenceApi.listEvidence.mockResolvedValue([anchored, legacy]);
+    renderPanel();
+    await screen.findByTestId("evidence-list");
+
+    // 行内锚定标注：只有带 chunk 的行出现
+    const rows = screen.getByTestId("evidence-list").querySelectorAll(".evidence-row");
+    expect(rows).toHaveLength(2);
+    const anchoredRow = rows[0]!;
+    expect(anchoredRow).toHaveTextContent("锚定全文出处");
+    expect(rows[1]).not.toHaveTextContent("锚定全文出处");
+
+    // 详情：chunkId 展示 + 「在文献库查看」跳转 sources
+    const user = userEvent.setup();
+    await user.click(within(anchoredRow as HTMLElement).getByTestId("evidence-toggle-detail"));
+    const detail = screen.getByTestId("evidence-detail");
+    expect(detail).toHaveTextContent("S001:SEC01:0002:1a2b3c4d5e");
+    expect(detail).toHaveTextContent("全文级（evidence-grounding/v1");
+    await user.click(within(detail).getByTestId("evidence-open-sources"));
+    expect(openWorkflow).toHaveBeenCalledWith("sources");
   });
 });

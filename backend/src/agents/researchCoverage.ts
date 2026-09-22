@@ -19,8 +19,10 @@
  *   不在 research.json 上新增持久化字段，避免状态双写漂移；
  * - Evidence 不变量：Search Result ≠ Candidate ≠ Literature ≠ Verified
  *   Evidence——覆盖判定如实分层（resultCount 是 Search Result 计数；
- *   promoted literature 是已入库候选；evidence 是 EvidenceStore 条目），
- *   三层各计各数，不混写。
+ *   promoted literature 是已入库候选；evidence 是已核验 EvidenceStore 条目），
+ *   三层各计各数，不混写。M9.4 收紧：unverified / legacy 证据不再把问题推成
+ *   covered（最多 partial），只有 verified 证据或 promoted literature 构成
+ *   strong covered。
  *
  * M8.3.3：报告的 gaps 升级为 ResearchGap[]（researchGap.ts）——带稳定
  * gapId / severity / status=proposed 的显式研究对象，供 HITL 确认与
@@ -72,7 +74,7 @@ export interface ResearchCoverageQuestion {
   executedQueryCount: number;
   /** 关联检索带回的 Search Result 总数（≠候选≠文献≠证据） */
   resultCount: number;
-  /** 与该问题关联的 EvidenceStore 条目数（任意核验状态，如实计数） */
+  /** 与该问题关联的已核验（verified）EvidenceStore 条目数（M9.4：只有 verified 可支撑 covered） */
   evidenceCount: number;
   /** 与该问题关联的已入库文献数（accepted 且已 promote 的候选） */
   promotedCount: number;
@@ -164,8 +166,10 @@ export interface CoverageQuestionContext {
   question: string;
   origin: "plan" | "report";
   queries: CoverageQueryFacts[];
-  /** 每条 EvidenceStore 记录的匹配文本（claim + 来源标题） */
+  /** 每条已核验（verified）EvidenceRecord 的匹配文本（claim + 来源标题） */
   evidenceTexts: string[];
+  /** 未核验（legacy unverified / plausible 等）证据文本——最多支撑 partial（M9.4）；缺省空 */
+  unverifiedEvidenceTexts?: string[];
   /** 每条已入库候选的匹配文本（发现检索词 + 标题） */
   literatureTexts: string[];
 }
@@ -174,11 +178,14 @@ export interface CoverageQuestionContext {
  * 单问题三态判定（规则全序，纯函数）：
  * 1. 无关联检索（token 无交集）→ missing（计划检索不覆盖该问题）；
  * 2. 有关联检索但无「已执行且带回结果」→ missing（有 query，resultCount=0）；
- * 3. 有带回结果的检索，且存在关联 evidence 或 promoted literature → covered；
- * 4. 其余（有结果但无证据 / 入库文献支撑）→ partial。
+ * 3. 有带回结果的检索，且存在关联的**已核验** evidence 或 promoted literature
+ *    → covered（M9.4 收紧：Search Result ≠ Candidate ≠ Verified Evidence——
+ *    unverified / legacy 证据不能把问题推成 covered，最多 partial）；
+ * 4. 其余（有结果但只有未核验证据 / 无证据 / 无入库文献支撑）→ partial。
  */
 export function assessQuestionCoverage(context: CoverageQuestionContext): ResearchCoverageQuestion {
   const { question, origin, queries, evidenceTexts, literatureTexts } = context;
+  const unverifiedEvidenceTexts = context.unverifiedEvidenceTexts ?? [];
   const related = queries.filter(
     (entry) =>
       isTextRelated(question, entry.query) ||
@@ -187,6 +194,9 @@ export function assessQuestionCoverage(context: CoverageQuestionContext): Resear
   const executed = related.filter((entry) => entry.executed && entry.resultCount > 0);
   const resultCount = executed.reduce((sum, entry) => sum + entry.resultCount, 0);
   const evidenceCount = evidenceTexts.filter((text) => isTextRelated(question, text)).length;
+  const unverifiedEvidenceCount = unverifiedEvidenceTexts.filter((text) =>
+    isTextRelated(question, text),
+  ).length;
   const promotedCount = literatureTexts.filter((text) => isTextRelated(question, text)).length;
 
   let coverage: ResearchCoverageLevel;
@@ -199,6 +209,9 @@ export function assessQuestionCoverage(context: CoverageQuestionContext): Resear
     gap = `有 ${related.length} 条相关检索，但均未执行带回结果（resultCount=0，Search Result 层未覆盖）`;
   } else if (evidenceCount + promotedCount > 0) {
     coverage = "covered";
+  } else if (unverifiedEvidenceCount > 0) {
+    coverage = "partial";
+    gap = `有 ${executed.length} 条检索带回 ${resultCount} 条结果与 ${unverifiedEvidenceCount} 条相关未核验证据，但尚无已核验（verified）证据或已入库文献支撑`;
   } else {
     coverage = "partial";
     gap = `有 ${executed.length} 条检索带回 ${resultCount} 条结果，但尚无相关证据或已入库文献支撑（Candidate / Evidence 层未覆盖）`;
@@ -233,6 +246,8 @@ export interface CoverageAnalysisInput {
   reportQuestions: string[];
   queries: CoverageQueryFacts[];
   evidenceTexts: string[];
+  /** 未核验（legacy unverified / plausible 等）证据文本——最多支撑 partial（M9.4）；缺省空 */
+  unverifiedEvidenceTexts?: string[];
   literatureTexts: string[];
   literaturePlan: string[];
 }
@@ -251,6 +266,7 @@ export function analyzeCoverage(input: CoverageAnalysisInput): ResearchCoverage 
         origin: "plan",
         queries: input.queries,
         evidenceTexts: input.evidenceTexts,
+        unverifiedEvidenceTexts: input.unverifiedEvidenceTexts,
         literatureTexts: input.literatureTexts,
       }),
     );
@@ -266,6 +282,7 @@ export function analyzeCoverage(input: CoverageAnalysisInput): ResearchCoverage 
         origin: "report",
         queries: input.queries,
         evidenceTexts: input.evidenceTexts,
+        unverifiedEvidenceTexts: input.unverifiedEvidenceTexts,
         literatureTexts: input.literatureTexts,
       }),
     );
@@ -419,6 +436,11 @@ export class ResearchCoverageService {
   ): Promise<ResearchCoverage> {
     const history = artifact.executionHistory ?? [];
     const evidenceRecords = await this.evidence.list(projectId);
+    // M9.4 质量收紧：covered 的 Evidence 支撑只认 verified（grounded 管道 /
+    // user_confirmed 产物）；legacy unverified / plausible 等待核验线索最多
+    // 支撑 partial——Search Result ≠ Candidate ≠ Verified Evidence 不变量落地。
+    const evidenceTextOf = (record: (typeof evidenceRecords)[number]) =>
+      [record.claim, record.source?.title].filter((part) => part !== undefined && part !== "").join(" ");
     const promoted = (await this.candidates.list(projectId)).filter(
       (candidate) => candidate.status === "accepted" && candidate.promotedSourceId !== undefined,
     );
@@ -430,9 +452,12 @@ export class ResearchCoverageService {
       planQuestions: plan.questions,
       reportQuestions: artifact.report?.researchQuestions ?? [],
       queries: plan.queries.map((query) => mergeQueryFacts(query, history)),
-      evidenceTexts: evidenceRecords.map((record) =>
-        [record.claim, record.source?.title].filter((part) => part !== undefined && part !== "").join(" "),
-      ),
+      evidenceTexts: evidenceRecords
+        .filter((record) => record.verificationStatus === "verified")
+        .map(evidenceTextOf),
+      unverifiedEvidenceTexts: evidenceRecords
+        .filter((record) => record.verificationStatus !== "verified")
+        .map(evidenceTextOf),
       literatureTexts: promoted.map((candidate) =>
         [candidate.query, candidate.title].filter((part) => part !== undefined && part !== "").join(" "),
       ),

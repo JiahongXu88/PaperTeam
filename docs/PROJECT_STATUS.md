@@ -954,6 +954,18 @@ academic/web 验证，见
 文件 → chunk → retrieve_library 命中；手动 fallback；幂等零重复下载；
 Evidence 零写入）+ sources-fulltext 浏览器 E2E，见
 [research/M9.3_FULLTEXT_ACTIVATION.md](research/M9.3_FULLTEXT_ACTIVATION.md)）**；
+**M9.4 Anchored Evidence Activation ✅（Researcher 锚定证据路径激活——
+sourceDigest 全文可检索性信号（「N 项已入库全文可检索锚定」+ 逐条全文状态）
++ 锚定路径 prompt（retrieve_library → get_chunk → propose_evidence、quote
+纪律、失败纪律、无机械数量指标）；EvidenceCandidateStore / EvidenceStore
+项目级写队列（真实模型并行 propose_evidence 的读-改-写竞态暴露：同号候选
+多行、幽灵 pending——修复 + 8 路并发回归）；Coverage covered 收紧
+（unverified 证据最多 partial，verified / promoted literature 才 covered）；
+Evidence UI 锚定标注 + 「在文献库查看」追溯接线；真实模型 live smoke
+（2×PLOS 全文 → Researcher 19-22 次工具调用自然走锚定路径 → evidence.ground
+三段核验 → Verified Evidence）+ Claude Browser Acceptance 真实 UI 全程
+（UI 建项 → UI 上传全文 → UI 启动工作流 → Evidence 页锚定核验），见
+[research/M9.4_ANCHORED_EVIDENCE_ACTIVATION.md](research/M9.4_ANCHORED_EVIDENCE_ACTIVATION.md)）**；
 后续编号调整为 M9.4 Anchored Evidence
 Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
 Full Paper E2E Acceptance。

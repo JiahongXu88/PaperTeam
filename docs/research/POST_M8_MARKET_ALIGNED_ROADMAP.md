@@ -327,6 +327,17 @@ bibliography = LLM 字符串(@article 一律) ──✗── 引用可追踪打
 > Step 4–6 顺延为 **M9.4 Anchored Evidence
 > Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
 > Full Paper E2E Acceptance**。§11 的 M9 章节子任务即上述 Step 1–6。
+>
+> **M9 进度追加（2026-09-22 M9.4 完成后更新）**：**Step 4 已由 M9.4
+> Anchored Evidence Activation 完成（Researcher digest 全文可检索性信号 +
+> 锚定路径 prompt 指引（含失败纪律 / 无数量指标）；EvidenceCandidateStore /
+> EvidenceStore 项目级写队列修复并发提案撞号（真实模型并行
+> propose_evidence 暴露）；Coverage covered 收紧为 verified / promoted
+> 二分；Evidence UI 锚定标注 + 文献库追溯接线；真实模型 live smoke
+> FullText → Chunk → Researcher retrieval → Proposal → evidence.ground →
+> Verified Evidence 全链成立；Claude Browser Acceptance 真实 UI 全程，
+> 见 [M9.4_ANCHORED_EVIDENCE_ACTIVATION.md](M9.4_ANCHORED_EVIDENCE_ACTIVATION.md)）**；
+> 下一节点 M9.5 Deterministic Bibliography / Citation Trace。
 
 **不是本路径前置条件（明确后做）**：研究记忆、embedding vendor、M10 trace
 （验收脚本用现有 usageTotals + 任务日志即可记账）、M11 评估、图表能力、

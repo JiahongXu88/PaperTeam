@@ -155,10 +155,15 @@ describe("POST /api/projects/:id/research/coverage/analyze", () => {
   it("执行分析：报告形状完整（questions / overall / gaps），covered 由证据驱动", async () => {
     const projectId = await createProject("cov-analyze");
     await seedArtifact(projectId, seededArtifact());
-    // 项目证据：claim 与问题 1 关联（transformer/tracking 命中）
+    // 项目证据：claim 与问题 1 关联（transformer/tracking 命中）；
+    // M9.4：covered 只认 verified 证据（未核验最多 partial）
     await stack.stack.evidence.append(
       projectId,
-      { claim: "Transformer tracking 综述梳理了发展脉络", source: { title: "A Survey of Transformer Tracking" } },
+      {
+        claim: "Transformer tracking 综述梳理了发展脉络",
+        source: { title: "A Survey of Transformer Tracking" },
+        verificationStatus: "verified",
+      },
       "researcher",
     );
 

@@ -115,10 +115,34 @@ export interface EvidenceCandidateStoreOptions {
 export class EvidenceCandidateStore {
   private readonly projects: ProjectStore;
   private readonly now: () => Date;
+  /**
+   * 项目级写队列（读-改-写串行化；与 SourceStore 同纪律）。M9.4 真实模型
+   * smoke 暴露：Agent 在同一回合并行调用 propose_evidence 时，append 的
+   * loadAll → maxExisting+1 → 追加写竞态会写出多条同号候选（EC001×N），
+   * markResolved 只改首行、其余行永久卡 pending。串行化后同号不复现。
+   */
+  private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(projects: ProjectStore, options: EvidenceCandidateStoreOptions = {}) {
     this.projects = projects;
     this.now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * 把操作排进项目写队列（串行化读-改-写）。前序任务失败不阻塞后继
+   * （catch 吞掉的是链上残留的 rejection，操作自身的错误原样返回调用方）。
+   */
+  private enqueue<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.writeQueues.get(projectId) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(operation);
+    this.writeQueues.set(projectId, task);
+    const cleanup = () => {
+      if (this.writeQueues.get(projectId) === task) {
+        this.writeQueues.delete(projectId);
+      }
+    };
+    task.then(cleanup, cleanup);
+    return task;
   }
 
   private filePath(projectId: string): string {
@@ -130,33 +154,35 @@ export class EvidenceCandidateStore {
     projectId: string,
     input: EvidenceCandidateAppendInput,
   ): Promise<EvidenceCandidate> {
-    const sourceId = requireNonEmpty(input.sourceId, "sourceId", 64);
-    const chunkId = requireNonEmpty(input.chunkId, "chunkId", 200);
-    const claim = requireNonEmpty(input.claim, "claim", 4000);
-    const quote = requireNonEmpty(input.quote, "quote", 2000);
-    const proposedBy = requireNonEmpty(input.proposedBy, "proposedBy", 64);
-    const { records } = await this.loadAll(projectId);
-    const maxExisting = records.reduce((max, item) => {
-      const numeric = Number(item.candidateId.replace(/^EC/, ""));
-      return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
-    }, 0);
-    const candidate: EvidenceCandidate = {
-      candidateId: `EC${String(maxExisting + 1).padStart(3, "0")}`,
-      projectId,
-      sourceId,
-      chunkId,
-      claim,
-      quote,
-      ...(optionalString(input.summary, 2000) !== undefined
-        ? { summary: optionalString(input.summary, 2000) }
-        : {}),
-      status: "pending",
-      proposedBy,
-      createdAt: this.now().toISOString(),
-    };
-    await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
-    await appendFile(this.filePath(projectId), JSON.stringify(candidate) + "\n", "utf8");
-    return candidate;
+    return this.enqueue(projectId, async () => {
+      const sourceId = requireNonEmpty(input.sourceId, "sourceId", 64);
+      const chunkId = requireNonEmpty(input.chunkId, "chunkId", 200);
+      const claim = requireNonEmpty(input.claim, "claim", 4000);
+      const quote = requireNonEmpty(input.quote, "quote", 2000);
+      const proposedBy = requireNonEmpty(input.proposedBy, "proposedBy", 64);
+      const { records } = await this.loadAll(projectId);
+      const maxExisting = records.reduce((max, item) => {
+        const numeric = Number(item.candidateId.replace(/^EC/, ""));
+        return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
+      }, 0);
+      const candidate: EvidenceCandidate = {
+        candidateId: `EC${String(maxExisting + 1).padStart(3, "0")}`,
+        projectId,
+        sourceId,
+        chunkId,
+        claim,
+        quote,
+        ...(optionalString(input.summary, 2000) !== undefined
+          ? { summary: optionalString(input.summary, 2000) }
+          : {}),
+        status: "pending",
+        proposedBy,
+        createdAt: this.now().toISOString(),
+      };
+      await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
+      await appendFile(this.filePath(projectId), JSON.stringify(candidate) + "\n", "utf8");
+      return candidate;
+    });
   }
 
   async get(projectId: string, candidateId: string): Promise<EvidenceCandidate | null> {
@@ -211,42 +237,44 @@ export class EvidenceCandidateStore {
     candidateId: string,
     resolution: EvidenceCandidateResolution,
   ): Promise<EvidenceCandidate> {
-    const { records } = await this.loadAll(projectId);
-    const index = records.findIndex((candidate) => candidate.candidateId === candidateId);
-    if (index === -1) {
-      throw new EvidenceValidationError(`候选 ${candidateId} 不存在`);
-    }
-    const current = records[index]!;
-    if (current.status !== "pending" && current.status !== "unverifiable") {
-      throw new EvidenceValidationError(
-        `候选 ${candidateId} 已是终态 ${current.status}，不允许再次转换`,
-      );
-    }
-    if (resolution.status === "verified" && resolution.evidenceId === undefined) {
-      throw new EvidenceValidationError("verified 转换必须携带 evidenceId");
-    }
-    const updated: EvidenceCandidate = {
-      ...current,
-      status: resolution.status,
-      ...(optionalString(resolution.statusReason, 500) !== undefined
-        ? { statusReason: optionalString(resolution.statusReason, 500) }
-        : {}),
-      ...(resolution.metadataOutcome !== undefined
-        ? { metadataOutcome: resolution.metadataOutcome }
-        : {}),
-      ...(resolution.judgeVerdict !== undefined ? { judgeVerdict: resolution.judgeVerdict } : {}),
-      ...(optionalString(resolution.judgeReason, 500) !== undefined
-        ? { judgeReason: optionalString(resolution.judgeReason, 500) }
-        : {}),
-      ...(resolution.evidenceId !== undefined ? { evidenceId: resolution.evidenceId } : {}),
-      updatedAt: this.now().toISOString(),
-    };
-    records[index] = updated;
-    await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
-    const content =
-      records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
-    await writeFileAtomic(this.filePath(projectId), content);
-    return updated;
+    return this.enqueue(projectId, async () => {
+      const { records } = await this.loadAll(projectId);
+      const index = records.findIndex((candidate) => candidate.candidateId === candidateId);
+      if (index === -1) {
+        throw new EvidenceValidationError(`候选 ${candidateId} 不存在`);
+      }
+      const current = records[index]!;
+      if (current.status !== "pending" && current.status !== "unverifiable") {
+        throw new EvidenceValidationError(
+          `候选 ${candidateId} 已是终态 ${current.status}，不允许再次转换`,
+        );
+      }
+      if (resolution.status === "verified" && resolution.evidenceId === undefined) {
+        throw new EvidenceValidationError("verified 转换必须携带 evidenceId");
+      }
+      const updated: EvidenceCandidate = {
+        ...current,
+        status: resolution.status,
+        ...(optionalString(resolution.statusReason, 500) !== undefined
+          ? { statusReason: optionalString(resolution.statusReason, 500) }
+          : {}),
+        ...(resolution.metadataOutcome !== undefined
+          ? { metadataOutcome: resolution.metadataOutcome }
+          : {}),
+        ...(resolution.judgeVerdict !== undefined ? { judgeVerdict: resolution.judgeVerdict } : {}),
+        ...(optionalString(resolution.judgeReason, 500) !== undefined
+          ? { judgeReason: optionalString(resolution.judgeReason, 500) }
+          : {}),
+        ...(resolution.evidenceId !== undefined ? { evidenceId: resolution.evidenceId } : {}),
+        updatedAt: this.now().toISOString(),
+      };
+      records[index] = updated;
+      await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
+      const content =
+        records.map((record) => JSON.stringify(record)).join("\n") + (records.length > 0 ? "\n" : "");
+      await writeFileAtomic(this.filePath(projectId), content);
+      return updated;
+    });
   }
 
   // ---- 内部 ----

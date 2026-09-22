@@ -20,6 +20,10 @@ import type { EvidenceRecordView, EvidenceVerificationStatus, WorkflowKind } fro
  * 都在同一份数据上派生，无 N+1）。核验动作是人工确认（user_confirmed），
  * 与「引用核验」的学术库自动核验是两条链路——状态语义不混用。
  * 状态枚举原样来自 Domain；中文标签集中在 status.ts 注册表。
+ *
+ * M9.4 锚定追溯：带 chunk 锚点的记录（grounding 管道产物）在行内标注
+ * 「锚定全文出处」，详情可经「在文献库查看」跳转来源文献——用户能回答
+ * 「这句话到底来自哪篇论文哪一段」。
  */
 
 type StatusFilter = "all" | "verified" | "unverified" | "attention";
@@ -72,7 +76,8 @@ export function EvidencePanel({
 }: {
   projectId: string;
   workflowKind: WorkflowKind | undefined;
-  onOpenTab: (tab: "workflow") => void;
+  /** M9.4：除 workflow 外允许跳转文献库（Evidence → Source Identity 追溯接线） */
+  onOpenTab: (tab: "workflow" | "sources") => void;
   /** 来自门禁 blocker 的深链（?tab=evidence&attention=1）：初始即筛「需注意」 */
   initialAttention?: boolean;
 }) {
@@ -286,6 +291,7 @@ export function EvidencePanel({
                 record={record}
                 confirming={confirm.isPending && confirm.variables === record.id}
                 onConfirm={() => confirm.mutate(record.id)}
+                onOpenSources={() => onOpenTab("sources")}
               />
             ))}
           </div>
@@ -302,10 +308,12 @@ function EvidenceRow({
   record,
   confirming,
   onConfirm,
+  onOpenSources,
 }: {
   record: EvidenceRecordView;
   confirming: boolean;
   onConfirm: () => void;
+  onOpenSources: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const status = statusStyleOf(EVIDENCE_VERIFICATION_STYLES, record.verificationStatus);
@@ -321,6 +329,8 @@ function EvidenceRow({
     record.location?.page !== undefined ? `第 ${record.location.page} 页` : undefined,
   ].filter((part): part is string => part !== undefined);
   const usedCount = (record.usedBy ?? []).length;
+  /** M9.4：带 chunk 锚点的记录是「锚定证据」（全文逐字出处），与无锚定线索直观区分 */
+  const anchored = (record.location?.chunk ?? "").trim() !== "";
 
   return (
     <article className={`gutter-row evidence-row${open ? " evidence-row-open" : ""}`} data-testid="evidence-row" data-evidence-id={record.id}>
@@ -351,13 +361,18 @@ function EvidenceRow({
         )}
         <span className="evidence-meta">
           {locationParts.length > 0 ? <span className="meta-part">{locationParts.join(" · ")}</span> : null}
+          {anchored ? (
+            <span className="meta-part" title={`锚定文本块 ${record.location?.chunk}`}>
+              锚定全文出处
+            </span>
+          ) : null}
           <span className="meta-part">{createdByLabel(record)} · {formatDateTime(record.createdAt) ?? "—"}</span>
           {usedCount > 0 ? <span className="meta-part">被正文使用（{usedCount} 次任务）</span> : null}
         </span>
         <button type="button" className="btn-link evidence-expand" aria-expanded={open} onClick={() => setOpen(!open)} data-testid="evidence-toggle-detail">
           {open ? "收起详情" : "查看详情与出处"}
         </button>
-        {open ? <EvidenceDetail record={record} confirming={confirming} onConfirm={onConfirm} /> : null}
+        {open ? <EvidenceDetail record={record} confirming={confirming} onConfirm={onConfirm} onOpenSources={onOpenSources} /> : null}
       </div>
       <div className="gutter-side">
         <span className={`status status-tone-${status.tone}`}>{status.label}</span>
@@ -380,12 +395,20 @@ function EvidenceRow({
 }
 
 /** 展开后的详情：出处（provenance）/ 核验信息 / 使用情况——全部来自真实字段，不推导 */
-function EvidenceDetail({ record, confirming, onConfirm }: { record: EvidenceRecordView; confirming: boolean; onConfirm: () => void }) {
+function EvidenceDetail({ record, confirming, onConfirm, onOpenSources }: { record: EvidenceRecordView; confirming: boolean; onConfirm: () => void; onOpenSources: () => void }) {
   const verification = statusStyleOf(EVIDENCE_VERIFICATION_STYLES, record.verificationStatus);
   const rows: Array<[string, ReactNode]> = [];
   const source = record.source;
   if (source?.sourceId !== undefined) {
-    rows.push(["来源 ID", <span key="sid" className="mono">{source.sourceId}</span>]);
+    rows.push([
+      "来源 ID",
+      <span key="sid">
+        <span className="mono">{source.sourceId}</span>{" "}
+        <button type="button" className="btn-link" onClick={onOpenSources} data-testid="evidence-open-sources">
+          在文献库查看
+        </button>
+      </span>,
+    ]);
   }
   if (record.location?.chunk !== undefined) {
     rows.push(["文本块", <span key="chunk" className="mono">{record.location.chunk}</span>]);

@@ -4,7 +4,8 @@
  *   简单问题可直接回答（不强制检索），禁止凭记忆断言文献；
  * - save_candidates 指引（≤20 条、按相关性遴选、pending_review 语义）；
  * - literaturePlan 语义 = 检索后残差；
- * - Evidence 红线原句一字不动（要求 3 的 retrieve_library/get_chunk/quote 规则）；
+ * - Evidence 锚定路径原句一字不动（M9.4 要求 4：retrieve_library / get_chunk /
+ *   propose_evidence / quote 纪律 + 失败纪律 + 无机械数量指标）；
  * - partial / 时延提示，避免模型因部分源失败反复重试。
  */
 
@@ -50,13 +51,21 @@ describe("buildResearchPrompt M7.1a：Researcher 检索工具接线", () => {
     expect(prompt).toContain("已检索覆盖的方向不要写进 literaturePlan");
   });
 
-  it("Evidence 红线原句一字不动（retrieve_library / get_chunk / quote 规则）", () => {
+  it("Evidence 锚定路径原句一字不动（M9.4：retrieve_library / get_chunk / propose_evidence / quote 纪律）", () => {
     expect(prompt).toContain(
-      "优先用 retrieve_library 检索项目文献库、get_chunk 核对原文；来自文献库的证据请在 evidence 条目中附上 sourceId、chunkId 与从原文逐字复制的 quote（不要改写）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
+      "4. 锚定证据路径：文献库摘要中标注「全文：已入库」的条目，用 retrieve_library 按主题检索原文段落（结果带 CHUNK 标识），用 get_chunk 回取逐字原文。对调研结论中需要文献支撑的关键论断，当文献库有可检索全文时，优先提出锚定证据：调用 propose_evidence（claim + sourceId + chunkId + 从 chunk 原文逐字复制的 quote），或在最终 evidence 条目中附上 sourceId、chunkId 与逐字 quote（quote 不要改写、不要凭记忆生成）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。是否提出证据由你的研究判断决定，不设数量指标；但项目已有可检索全文时，关键论断应优先尝试锚定，而不是只依赖摘要或检索元数据。检索后仍找不到足够支撑材料时，如实记为证据不足（写入 researchGaps / literaturePlan），绝不编造 quote 或锚定到不相关的段落。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
     );
     expect(prompt).toContain(
       "evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
     );
+  });
+
+  it("M9.4 锚定纪律要点：失败纪律（证据不足如实记录）+ 无机械数量指标", () => {
+    expect(prompt).toContain("如实记为证据不足（写入 researchGaps / literaturePlan）");
+    expect(prompt).toContain("绝不编造 quote 或锚定到不相关的段落");
+    expect(prompt).toContain("不设数量指标");
+    expect(prompt).toContain("propose_evidence");
+    expect(prompt).toContain("不要凭记忆生成");
   });
 
   it("输出契约零变化：JSON 字段清单完整（schema 不因接线改动）", () => {

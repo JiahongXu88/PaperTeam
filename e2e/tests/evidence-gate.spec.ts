@@ -178,7 +178,7 @@ test.describe.serial("证据工作台 + 质量门禁（scripted Runtime 栈）",
     await page.getByTestId("evidence-search").fill("");
     await expect(panel.locator(".evidence-row")).toHaveCount(4);
 
-    // 详情 provenance：文献 / DOI / 页码 / 核验方式 / 使用记录
+    // 详情 provenance：文献 / DOI / 页码 / 核验方式
     const row = panel.locator(".evidence-row").filter({ hasText: "人工核对过的结论" });
     await row.getByTestId("evidence-toggle-detail").click();
     const detail = row.getByTestId("evidence-detail");
@@ -186,7 +186,11 @@ test.describe.serial("证据工作台 + 质量门禁（scripted Runtime 栈）",
     await expect(detail).toContainText("10.1000/small-corpora");
     await expect(detail).toContainText("第 4 页");
     await expect(detail).toContainText("全文级");
-    await expect(detail).toContainText("run:"); // scripted run 的 markUsage 使用记录
+    // 使用记录（usedBy）只落在 formal 证据（M6.6：verified + sourceId/chunk 锚点）；
+    // 本项目的 scripted 调研证据是 legacy unverified、人工登记证据无锚点——
+    // 均不进 formal 池，writing.sections 不 markUsage（旧断言 toContainText("run:")
+    // 是 M6.6 之前的口径，pristine HEAD 上即失败，M9.4 修正）。usedBy 的 UI
+    // 呈现由 frontend/test/EvidencePanel.test.tsx 的使用记录断言覆盖。
 
     // 人工确认核验：待核验那条 → 已核验（局部 loading → 状态翻转）
     const unverifiedRow = panel.locator(".evidence-row").filter({ hasText: "待核验：重排在小语料下最稳健" });
@@ -214,8 +218,11 @@ test.describe.serial("证据工作台 + 质量门禁（scripted Runtime 栈）",
     await expect(gatePanel.getByText(/academicScore=66/).first()).toBeVisible();
     await expect(gatePanel.getByText(/styleRisk=68/).first()).toBeVisible();
     await expect(gatePanel.getByText(/学术评分 ≥ 80 · 文风风险 ≤ 35/)).toBeVisible();
-    // 规则清单：9 条真实规则，文字状态（不只靠颜色）
-    await expect(gatePanel.locator('[data-testid="gate-rule"]')).toHaveCount(9);
+    // 规则清单：真实规则带文字状态（不只靠颜色）。恒在 9 条 + 场景条件规则
+    // （citation/fact preservation、evidence 覆盖、修订条目——M5.6–M6.7 增量），
+    // 总数随场景 9–12+ 浮动；旧断言固定 9 在 pristine HEAD 上即过期（M9.4 修正）
+    const ruleCount = await gatePanel.locator('[data-testid="gate-rule"]').count();
+    expect(ruleCount).toBeGreaterThanOrEqual(9);
     await expect(gatePanel.locator('[data-rule="academic_score_threshold"] [data-status="未通过"]')).toHaveCount(1);
     // 同轮审稿上下文（round 隔离：r1 gate ↔ r1 review）
     await expect(gatePanel.getByTestId("gate-review-context")).toContainText("第 1 轮");

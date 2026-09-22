@@ -244,7 +244,12 @@ export class ResearcherService {
     };
   }
 
-  /** 汇总项目文献库（供 Prompt 注入；只提供已解析摘要，不塞原始全文） */
+  /**
+   * 汇总项目文献库（供 Prompt 注入；只提供已解析摘要，不塞原始全文）。
+   * M9.4：每条标注全文可检索性（有全文 → retrieve_library 可锚定；仅元数据
+   * → 只能作为线索引用），并在存在可检索全文时附锚定路径提示——让模型
+   * 知道「锚定值得做」，而不是默认走摘要捷径。
+   */
   private async buildSourceDigest(projectId: string): Promise<string> {
     const items = await this.sources.list(projectId);
     const usable = items.filter(
@@ -254,7 +259,19 @@ export class ResearcherService {
       return "（项目文献库当前为空：请先用 search_papers 检索相关文献，基于检索结果给出调研方向，并用 save_candidates 保存重要候选）";
     }
     const lines = usable.slice(0, 20).map((item) => describeSource(item));
-    return [`项目文献库（${usable.length} 项）：`, ...lines].join("\n");
+    const fulltextCount = usable.filter(hasRetrievableFullText).length;
+    const header = [
+      `项目文献库（${usable.length} 项，其中 ${fulltextCount} 项已入库全文可检索锚定）：`,
+      ...lines,
+    ];
+    if (fulltextCount > 0) {
+      header.push(
+        "",
+        "已入库全文的条目可用 retrieve_library 按主题检索原文段落（结果带 CHUNK 标识），",
+        "再用 get_chunk 回取逐字原文——从这些段落逐字摘录的 quote 可以锚定为待核验证据候选（见要求 4）。",
+      );
+    }
+    return header.join("\n");
   }
 
   /**
@@ -562,7 +579,7 @@ export function buildResearchPrompt(
     "1. 检索优先：研究型问题（领域现状、相关工作、研究空白、方法对比等）先用 search_papers 检索外部文献（可用 yearFrom/yearTo 聚焦近年，如最近三年），需要 Web 线索时用 search_web，对单篇论文存疑时用 lookup_paper 核验；简单问题（常识、定义、项目内信息）可直接回答，不必检索。禁止凭记忆断言论文的存在性、年份或 venue——文献类事实必须以检索结果为准，检索结果要原样引用，不得凭记忆补充。外部检索单次耗时约 1-10 秒；diagnostics 出现 partial（部分检索源失败）属常态，结果仍可用，不要因 partial 重试。",
     "2. 调研中发现的重要文献，用 save_candidates 保存为项目候选文献（kind 与 query 必须和检索时完全一致，按结果 index 选择；本次调研合计保存不超过 20 条，按与课题的相关性遴选）。保存的候选只是线索（pending_review），需用户审核转正后才进入文献库；已检索覆盖的方向不要写进 literaturePlan（它只记录检索后仍缺失的残差）。",
     "3. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
-    "4. 优先用 retrieve_library 检索项目文献库、get_chunk 核对原文；来自文献库的证据请在 evidence 条目中附上 sourceId、chunkId 与从原文逐字复制的 quote（不要改写）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
+    "4. 锚定证据路径：文献库摘要中标注「全文：已入库」的条目，用 retrieve_library 按主题检索原文段落（结果带 CHUNK 标识），用 get_chunk 回取逐字原文。对调研结论中需要文献支撑的关键论断，当文献库有可检索全文时，优先提出锚定证据：调用 propose_evidence（claim + sourceId + chunkId + 从 chunk 原文逐字复制的 quote），或在最终 evidence 条目中附上 sourceId、chunkId 与逐字 quote（quote 不要改写、不要凭记忆生成）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。是否提出证据由你的研究判断决定，不设数量指标；但项目已有可检索全文时，关键论断应优先尝试锚定，而不是只依赖摘要或检索元数据。检索后仍找不到足够支撑材料时，如实记为证据不足（写入 researchGaps / literaturePlan），绝不编造 quote 或锚定到不相关的段落。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
     "5. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字。",
     "6. 你不负责写论文正文。",
     "",
@@ -582,6 +599,11 @@ export function buildResearchPrompt(
   ].join("\n");
 }
 
+/** 全文可检索（M9.4）：解析成功（available/partial）意味着 chunk 已入库，retrieve_library 可锚定 */
+function hasRetrievableFullText(item: SourceItem): boolean {
+  return item.status === "available" || item.status === "partial";
+}
+
 function describeSource(item: SourceItem): string {
   const meta = item.metadata;
   const parts = [
@@ -589,6 +611,7 @@ function describeSource(item: SourceItem): string {
     meta.authors?.length ? `作者：${meta.authors.slice(0, 4).join(", ")}` : undefined,
     meta.year !== undefined ? `年份：${meta.year}` : undefined,
     meta.doi ? `DOI：${meta.doi}` : undefined,
+    hasRetrievableFullText(item) ? "全文：已入库（可检索锚定）" : "全文：未入库（仅元数据）",
     item.analysis?.status === "ok" || item.analysis?.status === "partial"
       ? `摘要：${(item.analysis.textPreview ?? "").slice(0, 400)}`
       : undefined,

@@ -164,6 +164,30 @@ describe("Coverage rule（assessQuestionCoverage）", () => {
     expect(result.gap).toBeUndefined();
   });
 
+  it("M9.4 收紧：未核验（legacy unverified）证据只支撑 partial，不构成 covered", () => {
+    const result = assessQuestionCoverage({
+      ...base,
+      question: "Transformer MOT 实时部署",
+      origin: "plan",
+      queries: [facts({ query: "real-time transformer mot deployment", executed: true, resultCount: 25 })],
+      evidenceTexts: [],
+      unverifiedEvidenceTexts: ["Transformer 架构在 MOT 实时部署中的延迟分析"],
+    });
+    expect(result.coverage).toBe("partial");
+    expect(result.evidenceCount).toBe(0);
+    expect(result.gap).toContain("尚无已核验（verified）证据或已入库文献支撑");
+    // 未核验 + 已核验同时存在：verified 命中仍是 covered
+    const mixed = assessQuestionCoverage({
+      ...base,
+      question: "Transformer MOT 实时部署",
+      origin: "plan",
+      queries: [facts({ query: "real-time transformer mot deployment", executed: true, resultCount: 25 })],
+      evidenceTexts: ["Transformer MOT 实时部署的延迟分析"],
+      unverifiedEvidenceTexts: ["Transformer 架构在 MOT 实时部署中的早期结论"],
+    });
+    expect(mixed.coverage).toBe("covered");
+  });
+
   it("covered：关联已入库文献（候选检索词 / 标题命中）", () => {
     const result = assessQuestionCoverage({
       ...base,
@@ -442,13 +466,18 @@ describe("ResearchCoverageService", () => {
     expect(edge).toMatchObject({ coverage: "partial", relatedQueryCount: 1, executedQueryCount: 1, resultCount: 3 });
   });
 
-  it("读取 EvidenceStore / CandidateStore（只读聚合）：证据与已入库候选驱动 covered", async () => {
+  it("读取 EvidenceStore / CandidateStore（只读聚合）：已核验证据与已入库候选驱动 covered", async () => {
     const { store, projectId } = await newProject("svc-stores");
     await seedArtifact(store, projectId, legacyArtifact());
     const evidence = new EvidenceStore(store);
     await evidence.append(
       projectId,
-      { claim: "Transformer tracking 综述梳理了发展脉络", source: { title: "A Survey of Transformer Tracking" } },
+      {
+        claim: "Transformer tracking 综述梳理了发展脉络",
+        source: { title: "A Survey of Transformer Tracking" },
+        // M9.4：covered 只认 verified（grounding 管道 / user_confirmed 的产物形态）
+        verificationStatus: "verified",
+      },
       "researcher",
     );
     const candidates = new CandidateStore(store);
@@ -470,6 +499,24 @@ describe("ResearchCoverageService", () => {
     expect(coverage.overall).toMatchObject({ covered: 2, partial: 0, missing: 1 });
     // report.researchQuestions 的未覆盖问题进入缺口建议
     expect(coverage.gaps.map((gap) => gap.question)).toContain("遮挡场景身份保持");
+  });
+
+  it("M9.4 收紧：Service 聚合把未核验证据归入 unverifiedEvidenceTexts（最多 partial）", async () => {
+    const { store, projectId } = await newProject("svc-unverified");
+    await seedArtifact(store, projectId, legacyArtifact());
+    const evidence = new EvidenceStore(store);
+    // 缺省 verificationStatus=unverified（legacy 追加路径的真实形态）
+    await evidence.append(
+      projectId,
+      { claim: "Transformer tracking 综述梳理了发展脉络", source: { title: "A Survey of Transformer Tracking" } },
+      "researcher",
+    );
+
+    const coverage = await service(store).analyze(projectId);
+    const question = coverage.questions[0]!;
+    expect(question.coverage).toBe("partial");
+    expect(question.evidenceCount).toBe(0);
+    expect(question.gap).toContain("尚无已核验（verified）证据或已入库文献支撑");
   });
 
   it("backward compatibility：M8.1 artifact（无 executionHistory / 无 iteration 字段）仍可分析", async () => {

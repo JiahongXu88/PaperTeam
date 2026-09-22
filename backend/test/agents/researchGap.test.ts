@@ -293,11 +293,16 @@ describe("ResearchGapService（list / accept / reject）", () => {
     const g1 = expectedGapIds()[0]!;
     await service(store).accept(projectId, g1);
 
-    // 补充证据使问题 1 转 covered → 缺口 1 从派生视图消失
+    // 补充已核验证据使问题 1 转 covered → 缺口 1 从派生视图消失
+    // （M9.4：covered 只认 verified 证据）
     const evidence = new EvidenceStore(store);
     await evidence.append(
       projectId,
-      { claim: "Transformer tracking 综述梳理了发展脉络", source: { title: "A Survey of Transformer Tracking" } },
+      {
+        claim: "Transformer tracking 综述梳理了发展脉络",
+        source: { title: "A Survey of Transformer Tracking" },
+        verificationStatus: "verified",
+      },
       "researcher",
     );
     const result = await service(store).list(projectId);

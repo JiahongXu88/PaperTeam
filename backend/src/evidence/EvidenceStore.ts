@@ -127,10 +127,30 @@ export const VERIFICATION_LEVELS: readonly VerificationLevel[] = [
 export class EvidenceStore {
   private readonly projects: ProjectStore;
   private readonly now: () => Date;
+  /**
+   * 项目级写队列（读-改-写串行化；与 SourceStore / EvidenceCandidateStore 同
+   * 纪律）。M9.4 并发提案修复的姊妹面：researcher JSON 追加、grounding
+   * 批量转正、workflow markUsage 并发时不再丢更新 / 撞号。
+   */
+  private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(projects: ProjectStore, options: EvidenceStoreOptions = {}) {
     this.projects = projects;
     this.now = options.now ?? (() => new Date());
+  }
+
+  /** 把操作排进项目写队列（前序失败不阻塞后继；操作错误原样返回调用方） */
+  private enqueue<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.writeQueues.get(projectId) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(operation);
+    this.writeQueues.set(projectId, task);
+    const cleanup = () => {
+      if (this.writeQueues.get(projectId) === task) {
+        this.writeQueues.delete(projectId);
+      }
+    };
+    task.then(cleanup, cleanup);
+    return task;
   }
 
   private filePath(projectId: string): string {
@@ -139,17 +159,19 @@ export class EvidenceStore {
 
   /** 追加一条 Evidence（自动生成递增 id：E001…） */
   async append(projectId: string, input: EvidenceAppendInput, createdBy: string): Promise<EvidenceRecord> {
-    const claim = requireNonEmpty(input.claim, "claim");
-    const { records } = await this.loadAll(projectId);
-    // id 冲突防御（损坏行导致编号回退时避免覆盖）
-    const maxExisting = records.reduce((max, item) => {
-      const numeric = Number(item.id.replace(/^E/, ""));
-      return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
-    }, 0);
-    const record = this.buildRecord({ ...input, claim }, `E${String(maxExisting + 1).padStart(3, "0")}`, createdBy);
-    await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
-    await appendFile(this.filePath(projectId), JSON.stringify(record) + "\n", "utf8");
-    return record;
+    return this.enqueue(projectId, async () => {
+      const claim = requireNonEmpty(input.claim, "claim");
+      const { records } = await this.loadAll(projectId);
+      // id 冲突防御（损坏行导致编号回退时避免覆盖）
+      const maxExisting = records.reduce((max, item) => {
+        const numeric = Number(item.id.replace(/^E/, ""));
+        return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
+      }, 0);
+      const record = this.buildRecord({ ...input, claim }, `E${String(maxExisting + 1).padStart(3, "0")}`, createdBy);
+      await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
+      await appendFile(this.filePath(projectId), JSON.stringify(record) + "\n", "utf8");
+      return record;
+    });
   }
 
   /** 单条记录构建（append / appendBatch 共用；全部字段校验在此收口） */
@@ -200,22 +222,24 @@ export class EvidenceStore {
     if (items.length === 0) {
       return [];
     }
-    const { records } = await this.loadAll(projectId);
-    let maxExisting = records.reduce((max, item) => {
-      const numeric = Number(item.id.replace(/^E/, ""));
-      return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
-    }, 0);
-    const appended: EvidenceRecord[] = [];
-    const lines: string[] = [];
-    for (const { input, createdBy } of items) {
-      maxExisting += 1;
-      const record = this.buildRecord(input, `E${String(maxExisting).padStart(3, "0")}`, createdBy);
-      appended.push(record);
-      lines.push(JSON.stringify(record));
-    }
-    await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
-    await appendFile(this.filePath(projectId), lines.join("\n") + "\n", "utf8");
-    return appended;
+    return this.enqueue(projectId, async () => {
+      const { records } = await this.loadAll(projectId);
+      let maxExisting = records.reduce((max, item) => {
+        const numeric = Number(item.id.replace(/^E/, ""));
+        return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
+      }, 0);
+      const appended: EvidenceRecord[] = [];
+      const lines: string[] = [];
+      for (const { input, createdBy } of items) {
+        maxExisting += 1;
+        const record = this.buildRecord(input, `E${String(maxExisting).padStart(3, "0")}`, createdBy);
+        appended.push(record);
+        lines.push(JSON.stringify(record));
+      }
+      await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
+      await appendFile(this.filePath(projectId), lines.join("\n") + "\n", "utf8");
+      return appended;
+    });
   }
 
   /** 按 id 读取；不存在返回 null */
@@ -272,43 +296,45 @@ export class EvidenceStore {
       supportStrength?: SupportStrength;
     },
   ): Promise<EvidenceRecord> {
-    const { records } = await this.loadAll(projectId);
-    const index = records.findIndex((record) => record.id === id);
-    if (index === -1) {
-      throw new NotFoundError("Evidence", id);
-    }
-    const current = records[index]!;
-    const updated: EvidenceRecord = {
-      ...current,
-      ...(patch.verificationStatus !== undefined
-        ? {
-            verificationStatus: requireEnum(
-              patch.verificationStatus,
-              VERIFICATION_STATUSES,
-              "verificationStatus",
-            ),
-          }
-        : {}),
-      ...(optionalString(patch.verificationMethod, 200) !== undefined
-        ? { verificationMethod: optionalString(patch.verificationMethod, 200) }
-        : {}),
-      ...(patch.verificationLevel !== undefined
-        ? {
-            verificationLevel: requireEnum(
-              patch.verificationLevel,
-              VERIFICATION_LEVELS,
-              "verificationLevel",
-            ),
-          }
-        : {}),
-      ...(patch.supportStrength !== undefined
-        ? { supportStrength: requireEnum(patch.supportStrength, SUPPORT_STRENGTHS, "supportStrength") }
-        : {}),
-      updatedAt: this.now().toISOString(),
-    };
-    records[index] = updated;
-    await this.rewrite(projectId, records);
-    return updated;
+    return this.enqueue(projectId, async () => {
+      const { records } = await this.loadAll(projectId);
+      const index = records.findIndex((record) => record.id === id);
+      if (index === -1) {
+        throw new NotFoundError("Evidence", id);
+      }
+      const current = records[index]!;
+      const updated: EvidenceRecord = {
+        ...current,
+        ...(patch.verificationStatus !== undefined
+          ? {
+              verificationStatus: requireEnum(
+                patch.verificationStatus,
+                VERIFICATION_STATUSES,
+                "verificationStatus",
+              ),
+            }
+          : {}),
+        ...(optionalString(patch.verificationMethod, 200) !== undefined
+          ? { verificationMethod: optionalString(patch.verificationMethod, 200) }
+          : {}),
+        ...(patch.verificationLevel !== undefined
+          ? {
+              verificationLevel: requireEnum(
+                patch.verificationLevel,
+                VERIFICATION_LEVELS,
+                "verificationLevel",
+              ),
+            }
+          : {}),
+        ...(patch.supportStrength !== undefined
+          ? { supportStrength: requireEnum(patch.supportStrength, SUPPORT_STRENGTHS, "supportStrength") }
+          : {}),
+        updatedAt: this.now().toISOString(),
+      };
+      records[index] = updated;
+      await this.rewrite(projectId, records);
+      return updated;
+    });
   }
 
   /** 记录使用关系（relatedSections / usedBy 追加去重） */
@@ -317,21 +343,23 @@ export class EvidenceStore {
     id: string,
     usage: { section?: string; usedBy?: string },
   ): Promise<EvidenceRecord> {
-    const { records } = await this.loadAll(projectId);
-    const index = records.findIndex((record) => record.id === id);
-    if (index === -1) {
-      throw new NotFoundError("Evidence", id);
-    }
-    const current = records[index]!;
-    const updated: EvidenceRecord = {
-      ...current,
-      relatedSections: mergeUnique(current.relatedSections, usage.section),
-      usedBy: mergeUnique(current.usedBy, usage.usedBy),
-      updatedAt: this.now().toISOString(),
-    };
-    records[index] = updated;
-    await this.rewrite(projectId, records);
-    return updated;
+    return this.enqueue(projectId, async () => {
+      const { records } = await this.loadAll(projectId);
+      const index = records.findIndex((record) => record.id === id);
+      if (index === -1) {
+        throw new NotFoundError("Evidence", id);
+      }
+      const current = records[index]!;
+      const updated: EvidenceRecord = {
+        ...current,
+        relatedSections: mergeUnique(current.relatedSections, usage.section),
+        usedBy: mergeUnique(current.usedBy, usage.usedBy),
+        updatedAt: this.now().toISOString(),
+      };
+      records[index] = updated;
+      await this.rewrite(projectId, records);
+      return updated;
+    });
   }
 
   /** 统计（供 Feasibility / Quality Gate 消费） */
