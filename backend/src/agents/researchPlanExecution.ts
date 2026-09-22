@@ -11,6 +11,14 @@
  * 搜到了什么」可追溯，M8 真实验收的 P2 观测断层修复）。两者都是可选字段，
  * 旧 artifact 兼容；只是审计痕迹，不自动成为 Candidate（边界不变）。
  *
+ * M9.1 E2E Activation Foundation：成功条目再回填 resultSnapshot（Top-N
+ * SearchResult 最小 projection，每 query ≤10 条、abstract 只留 300 字符
+ * 预览）——把「计划执行结果」从计数升级为用户可查看、可显式勾选保存候选的
+ * 有界快照（Search Result → Candidate 的 HITL 衔接前提）。快照仍是
+ * execution artifact 的审计痕迹：落 research.json、不写任何 Store；保存候选
+ * 唯一显式入口经 ResearchDiscoveryService.saveSnapshotCandidates →
+ * CandidateStore.add（单一写入口径），本服务零 Store 依赖不变。
+ *
  * 冻结规则（M8 架构）全部遵守：
  * - 不新增 Agent：本服务不调用 Runtime.runAgent，检索走既有 Discovery 编排层；
  * - 不修改 Runtime / Workflow Orchestrator：纯 Service，不进 workflowServices；
@@ -38,7 +46,9 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
 import type { AcademicSearchResponse } from "../search/academicSearchService.js";
 import type { FusedAcademicResult } from "../search/fusion.js";
+import type { WebSearchResult } from "../search/types.js";
 import type { WebSearchResponse } from "../search/webSearchService.js";
+import type { SourceIdentity } from "../sources/identity.js";
 import {
   readResearchArtifact,
   writeResearchPlanChain,
@@ -97,10 +107,65 @@ export interface PlanExecutionEntry {
    * Search Result ≠ Candidate 边界不变。可选字段：旧 artifact 兼容。
    */
   resultIdentifiers?: string[];
+  /**
+   * 有界 SearchResult Snapshot（M9.1 E2E Activation Foundation；Top-N 最小
+   * projection，每 query ≤ MAX_RESULT_SNAPSHOT_PER_ENTRY 条）。与
+   * resultIdentifiers 同为 execution artifact 的审计痕迹：落 research.json、
+   * **不写任何 Store**——Search Result ≠ Candidate 边界不变；用户经
+   * POST /research/execution-results/save-candidates 显式勾选后才进
+   * CandidateStore（HITL）。可选字段：旧 artifact（M8.1–M8.5）无此字段
+   * 仍正常读取。
+   */
+  resultSnapshot?: PlanExecutionResultSnapshot[];
 }
+
+/**
+ * 学术检索结果快照（M9.1）。identity 完整保留（判等与显式保存候选的依据，
+ * 本就紧凑）；abstract 只留截断预览——完整 CanonicalPaperRecord 不复制进
+ * execution artifact（防 research.json 无限膨胀）。
+ */
+export interface PlanExecutionAcademicResultSnapshot {
+  kind: "academic";
+  /** 归一化身份（执行时冻结；与 SourceItem / CandidateSource 同构） */
+  identity: SourceIdentity;
+  /** 融合后最强来源 provider（fusion 排序保证 sources[0]） */
+  provider: string;
+  title?: string;
+  authors?: string[];
+  year?: number;
+  venue?: string;
+  doi?: string;
+  arxivId?: string;
+  url?: string;
+  /** abstract 的截断预览（≤ SNIPPET_PREVIEW_MAX_CHARS 字符；不是全文） */
+  snippetPreview?: string;
+  citationCount?: number;
+  /** 融合得分（RRF 加权；展示排序参考） */
+  score?: number;
+}
+
+/** Web 检索结果快照（M9.1；canonical URL 即身份键） */
+export interface PlanExecutionWebResultSnapshot {
+  kind: "web";
+  provider: string;
+  url: string;
+  title: string;
+  snippetPreview?: string;
+  score?: number;
+}
+
+export type PlanExecutionResultSnapshot =
+  | PlanExecutionAcademicResultSnapshot
+  | PlanExecutionWebResultSnapshot;
 
 /** 单条 query 最多留存的 result identifiers 数（防 artifact 无限膨胀；与检索硬帽同量级） */
 const MAX_RESULT_IDENTIFIERS_PER_ENTRY = 50;
+
+/** 单条 query 最多留存的 result snapshot 数（M9.1；Top-10 足够用户遴选） */
+export const MAX_RESULT_SNAPSHOT_PER_ENTRY = 10;
+
+/** snapshot 的 abstract / snippet 预览长度上限（字符；完整文本不进 artifact） */
+const SNIPPET_PREVIEW_MAX_CHARS = 300;
 
 /** POST /research/plan/execute 的响应 */
 export interface PlanExecutionResult {
@@ -276,7 +341,13 @@ export class ResearchPlanExecutionService {
       // 不写任何 Store——Search Result ≠ Candidate 不变量不变
       if (query.kind === "academic") {
         const response = await this.discovery.academicSearch(query.query);
-        return executedEntry(base, response.results.length, providerAttempts(response), response.results.map(academicIdentifier));
+        return executedEntry(
+          base,
+          response.results.length,
+          providerAttempts(response),
+          response.results.map(academicIdentifier),
+          response.results.slice(0, MAX_RESULT_SNAPSHOT_PER_ENTRY).map(academicSnapshot),
+        );
       }
       const response = await this.discovery.webSearch(query.query);
       return executedEntry(
@@ -284,6 +355,7 @@ export class ResearchPlanExecutionService {
         response.results.length,
         providerAttempts(response),
         response.results.map((result) => result.url),
+        response.results.slice(0, MAX_RESULT_SNAPSHOT_PER_ENTRY).map(webSnapshot),
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -362,6 +434,7 @@ function executedEntry(
   resultCount: number,
   providers: PlanExecutionProviderAttempt[],
   identifiers: string[],
+  resultSnapshot: PlanExecutionResultSnapshot[],
 ): PlanExecutionEntry {
   const resultIdentifiers = dedupeIdentifiers(identifiers).slice(0, MAX_RESULT_IDENTIFIERS_PER_ENTRY);
   return {
@@ -370,6 +443,45 @@ function executedEntry(
     resultCount,
     providers,
     ...(resultIdentifiers.length > 0 ? { resultIdentifiers } : {}),
+    ...(resultSnapshot.length > 0 ? { resultSnapshot } : {}),
+  };
+}
+
+/** 学术融合结果 → 有界快照投影（identity 原样；abstract 只留截断预览） */
+function academicSnapshot(result: FusedAcademicResult): PlanExecutionAcademicResultSnapshot {
+  const record = result.record;
+  return {
+    kind: "academic",
+    identity: result.identity,
+    provider: result.sources[0]?.provider ?? record.provider,
+    ...(record.title !== undefined && record.title !== "" ? { title: record.title } : {}),
+    ...(record.authors !== undefined && record.authors.length > 0
+      ? { authors: record.authors.slice(0, 20) }
+      : {}),
+    ...(typeof record.year === "number" ? { year: record.year } : {}),
+    ...(record.venue !== undefined && record.venue !== "" ? { venue: record.venue } : {}),
+    ...(record.doi !== undefined && record.doi !== "" ? { doi: record.doi } : {}),
+    ...(record.arxivId !== undefined && record.arxivId !== "" ? { arxivId: record.arxivId } : {}),
+    ...(record.url !== undefined && record.url !== "" ? { url: record.url } : {}),
+    ...(record.abstract !== undefined && record.abstract !== ""
+      ? { snippetPreview: record.abstract.slice(0, SNIPPET_PREVIEW_MAX_CHARS) }
+      : {}),
+    ...(result.citationCount !== undefined ? { citationCount: result.citationCount } : {}),
+    ...(result.score !== undefined ? { score: result.score } : {}),
+  };
+}
+
+/** Web 检索结果 → 有界快照投影（snippet 只留截断预览） */
+function webSnapshot(result: WebSearchResult): PlanExecutionWebResultSnapshot {
+  return {
+    kind: "web",
+    provider: result.provider,
+    url: result.url,
+    title: result.title,
+    ...(result.snippet !== undefined && result.snippet !== ""
+      ? { snippetPreview: result.snippet.slice(0, SNIPPET_PREVIEW_MAX_CHARS) }
+      : {}),
+    ...(result.score !== undefined ? { score: result.score } : {}),
   };
 }
 

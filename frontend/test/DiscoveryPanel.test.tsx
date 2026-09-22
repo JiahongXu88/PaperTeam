@@ -13,6 +13,7 @@ import type {
   CandidateSourceView,
 } from "../src/types/sources.js";
 import type {
+  PlanExecutionEntryView,
   PlanExecutionResultView,
   ResearchCoverageView,
   ResearchGapListView,
@@ -45,6 +46,7 @@ vi.mock("../src/api/researchPlan.js", () => ({
   executeResearchPlan: vi.fn(),
   listResearchPlans: vi.fn(async () => ({ plans: [], activePlanId: null })),
   listExecutionHistory: vi.fn(async () => []),
+  saveExecutionResultsAsCandidates: vi.fn(),
   deriveResearchPlan: vi.fn(),
   activateResearchPlan: vi.fn(),
   getResearchCoverage: vi.fn(async () => null),
@@ -436,6 +438,130 @@ describe("DiscoveryPanel（M7.1c Discovery 候选 UI）", () => {
   });
 });
 
+describe("DiscoveryPanel（M9.1 Execution Snapshot → Candidate HITL）", () => {
+  /** 带 resultSnapshot 的成功条目（学术 Top-2 投影） */
+  function snapshotEntry(): PlanExecutionEntryView {
+    return {
+      executionId: "exec-snap000001",
+      queryId: "q-1",
+      query: "multi-agent scientific research",
+      kind: "academic",
+      timestamp: NOW,
+      status: "executed",
+      planId: "rp-1",
+      resultCount: 2,
+      providers: [{ provider: "openalex", outcome: "ok", resultCount: 2 }],
+      resultIdentifiers: ["doi:10.1000/mot"],
+      resultSnapshot: [
+        {
+          kind: "academic",
+          provider: "openalex",
+          title: "Multi-Agent Systems Survey",
+          authors: ["Alice Chen"],
+          year: 2023,
+          doi: "10.1000/mot",
+          snippetPreview: "A survey of multi-agent architectures.",
+          citationCount: 42,
+          score: 0.016,
+        },
+        {
+          kind: "academic",
+          provider: "openalex",
+          title: "LLM Agents Retrospective",
+          year: 2024,
+          doi: "10.1000/retro",
+          snippetPreview: "Retrospective on LLM agents.",
+        },
+      ],
+    };
+  }
+
+  it("执行结果快照展示：provider / 年份 / DOI / 预览可见；无快照的旧条目不渲染勾选列表", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([
+      snapshotEntry(),
+      {
+        // M8.5 及更早形态：executed 但只有 identifiers、无 resultSnapshot
+        executionId: "exec-m85old0001",
+        queryId: "q-old",
+        query: "old query",
+        kind: "academic",
+        timestamp: NOW,
+        status: "executed",
+        resultCount: 3,
+        resultIdentifiers: ["doi:10.1/old"],
+      },
+    ]);
+    await renderPanelWithPlan(planView());
+
+    const results = await screen.findByTestId("execution-snapshot-results");
+    expect(results.textContent).toContain("Multi-Agent Systems Survey");
+    expect(results.textContent).toContain("openalex");
+    expect(results.textContent).toContain("10.1000/mot");
+    expect(results.textContent).toContain("A survey of multi-agent architectures.");
+    // 快照区内两条结果；旧条目无快照 → 整个面板只有一个快照列表
+    expect(screen.getAllByTestId("execution-snapshot")).toHaveLength(1);
+    expect(screen.getAllByTestId(/snapshot-check-\d+/)).toHaveLength(2);
+  });
+
+  it("勾选两条快照 → 保存为候选：payload（executionId / queryId / 下标）正确，成功反馈后清空选择", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([snapshotEntry()]);
+    await renderPanelWithPlan(planView());
+    const user = userEvent.setup();
+
+    const saveButton = await screen.findByTestId("save-snapshot-candidates");
+    expect(saveButton.hasAttribute("disabled")).toBe(true); // 未勾选时禁用
+    await user.click(screen.getByTestId("snapshot-check-0"));
+    await user.click(screen.getByTestId("snapshot-check-1"));
+
+    planApi.saveExecutionResultsAsCandidates.mockResolvedValue({
+      saved: [{ candidateId: "C001" }, { candidateId: "C002" }],
+      mergedExisting: [],
+    });
+    await user.click(screen.getByTestId("save-snapshot-candidates"));
+
+    await waitFor(() =>
+      expect(planApi.saveExecutionResultsAsCandidates).toHaveBeenCalledWith("p-1", {
+        executionId: "exec-snap000001",
+        queryId: "q-1",
+        saveAsCandidates: [0, 1],
+      }),
+    );
+    expect((await screen.findByTestId("save-snapshot-note")).textContent).toContain("已保存 2 条候选");
+    expect((screen.getByTestId("snapshot-check-0") as HTMLInputElement).checked).toBe(false); // 成功后清空选择
+  });
+
+  it("合并反馈：同身份待审候选合并补充而非重复创建（mergedExisting 呈现）", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([snapshotEntry()]);
+    await renderPanelWithPlan(planView());
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId("snapshot-check-0"));
+    planApi.saveExecutionResultsAsCandidates.mockResolvedValue({
+      saved: [],
+      mergedExisting: [0],
+    });
+    await user.click(screen.getByTestId("save-snapshot-candidates"));
+
+    const note = await screen.findByTestId("save-snapshot-note");
+    expect(note.textContent).toContain("已保存 0 条候选");
+    expect(note.textContent).toContain("1 条与既有待审候选同身份，已合并补充");
+  });
+
+  it("保存失败：结构化错误呈现，不崩溃", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([snapshotEntry()]);
+    await renderPanelWithPlan(planView());
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByTestId("snapshot-check-0"));
+    planApi.saveExecutionResultsAsCandidates.mockRejectedValue(
+      new ApiError(409, "EXECUTION_RESULTS_UNAVAILABLE", "该执行记录没有可保存的结果快照"),
+    );
+    await user.click(screen.getByTestId("save-snapshot-candidates"));
+
+    expect(await screen.findByText(/保存失败：/)).toBeTruthy();
+  });
+});
+
 describe("DiscoveryPanel（M8.1 Research Plan 展示与编辑）", () => {
   it("无计划：空态引导（先运行调研），不渲染编辑按钮", async () => {
     await renderPanelWithPlan(null);
@@ -503,7 +629,6 @@ describe("DiscoveryPanel（M8.1 Research Plan 展示与编辑）", () => {
     await screen.findByTestId("plan-queries");
     expect(screen.queryByTestId("execution-audit")).toBeNull();
   });
-
   it("编辑保存：改问题 + 改检索词与状态 + 增删条目 → PUT 受限字段 payload", async () => {
     await renderPanelWithPlan(planView());
     const user = userEvent.setup();

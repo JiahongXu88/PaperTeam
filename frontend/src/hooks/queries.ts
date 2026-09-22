@@ -60,6 +60,7 @@ import {
   listResearchGaps,
   listResearchPlans,
   rejectResearchGap,
+  saveExecutionResultsAsCandidates,
   updateResearchPlan,
   type ResearchPlanDeriveInput,
   type ResearchPlanUpdateInput,
@@ -620,6 +621,19 @@ export function useExecutionHistory(projectId: string | undefined) {
     queryKey: queryKeys.executionHistory(projectId ?? ""),
     queryFn: ({ signal }) => listExecutionHistory(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
+  });
+}
+
+/**
+ * 执行结果快照 → 候选的显式保存（M9.1 HITL）：勾选某次执行的结果快照下标，
+ * 成功后失效候选列表（下方候选审阅区立即出现）。
+ */
+export function useSaveExecutionResults(projectId: string | undefined) {
+  const invalidateCandidates = useInvalidateCandidates(projectId);
+  return useMutation({
+    mutationFn: (input: { executionId: string; queryId: string; saveAsCandidates: number[] }) =>
+      saveExecutionResultsAsCandidates(projectId ?? "", input),
+    onSuccess: () => invalidateCandidates(),
   });
 }
 

@@ -22,6 +22,7 @@ import {
   useResearchGaps,
   useResearchPlan,
   useResearchPlans,
+  useSaveExecutionResults,
   useUpdateResearchPlan,
   useWebSearch,
 } from "../../hooks/queries.js";
@@ -31,7 +32,9 @@ import type {
   WebResultView,
 } from "../../types/discovery.js";
 import type {
+  PlanExecutionEntryView,
   PlanExecutionProviderAttemptView,
+  PlanExecutionResultSnapshotView,
   PlanExecutionResultView,
   ResearchCoverageLevel,
   ResearchCoverageQuestionView,
@@ -373,10 +376,140 @@ function ExecutionAuditSection({ projectId }: { projectId: string }) {
                   · {entry.resultIdentifiers.length} 条结果标识已留存（悬停查看；只是审计痕迹，不是候选）
                 </span>
               ) : null}
+              {entry.resultSnapshot !== undefined && entry.resultSnapshot.length > 0 ? (
+                <ExecutionSnapshotPicker projectId={projectId} entry={entry} />
+              ) : null}
             </li>
           ))}
       </ul>
     </details>
+  );
+}
+
+/**
+ * 单条执行记录的结果快照勾选保存（M9.1 Search Result → Candidate 的 HITL
+ * 衔接）：展示该 query 的 Top-N 快照（provider / 年份 / DOI / arXiv / 预览），
+ * 用户勾选后显式保存为候选——快照本身永不自动成为候选。
+ */
+function ExecutionSnapshotPicker({
+  projectId,
+  entry,
+}: {
+  projectId: string;
+  entry: PlanExecutionEntryView;
+}) {
+  const save = useSaveExecutionResults(projectId);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const snapshot = entry.resultSnapshot ?? [];
+
+  const toggle = (index: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div className="execution-snapshot" data-testid="execution-snapshot" style={{ marginTop: "var(--s-2)" }}>
+      <ul className="source-list" data-testid="execution-snapshot-results">
+        {snapshot.map((item, index) => (
+          <SnapshotResultRow
+            key={`${entry.queryId}-${index}`}
+            item={item}
+            index={index}
+            checked={selected.has(index)}
+            onToggle={toggle}
+          />
+        ))}
+      </ul>
+      <div className="action-row">
+        <button
+          type="button"
+          className="btn btn-small"
+          disabled={save.isPending || selected.size === 0}
+          onClick={() =>
+            save.mutate(
+              {
+                executionId: entry.executionId,
+                queryId: entry.queryId,
+                saveAsCandidates: [...selected].sort((a, b) => a - b),
+              },
+              { onSuccess: () => setSelected(new Set()) },
+            )
+          }
+          data-testid="save-snapshot-candidates"
+        >
+          {save.isPending ? "保存中…" : `保存选中（${selected.size}）为候选`}
+        </button>
+        {save.isSuccess && save.data !== undefined ? (
+          <span className="field-help" role="status" data-testid="save-snapshot-note">
+            已保存 {save.data.saved.length} 条候选
+            {save.data.mergedExisting.length > 0
+              ? `（${save.data.mergedExisting.length} 条与既有待审候选同身份，已合并补充）`
+              : ""}
+            ，请在下方候选审阅区确认。
+          </span>
+        ) : null}
+        {save.isError ? (
+          <span className="form-error" role="alert">
+            保存失败：{formatApiError(save.error)}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** 快照行：勾选 + 标题 + provider / 年份 / DOI / arXiv chips + 预览（与检索结果行同视觉） */
+function SnapshotResultRow({
+  item,
+  index,
+  checked,
+  onToggle,
+}: {
+  item: PlanExecutionResultSnapshotView;
+  index: number;
+  checked: boolean;
+  onToggle: (index: number) => void;
+}) {
+  const title =
+    item.title ?? (item.kind === "academic" ? item.url ?? item.doi ?? item.arxivId ?? `结果 ${index + 1}` : item.url);
+  return (
+    <li className="source-row candidate-row">
+      <input
+        type="checkbox"
+        className="candidate-check"
+        aria-label={`选择结果 ${index + 1}：${title}`}
+        checked={checked}
+        onChange={() => onToggle(index)}
+        data-testid={`snapshot-check-${index}`}
+      />
+      <div className="source-row-main">
+        <span className="source-title" title={title}>
+          {title}
+        </span>
+        <span className="source-chips">
+          <span className="chip chip-outline" title="发现方 provider">{item.provider}</span>
+          {item.kind === "academic" && item.year !== undefined ? (
+            <span className="chip chip-outline">{item.year}</span>
+          ) : null}
+          {item.kind === "academic" && item.doi !== undefined ? (
+            <span className="chip chip-outline mono">{item.doi}</span>
+          ) : null}
+          {item.kind === "academic" && item.arxivId !== undefined ? (
+            <span className="chip chip-outline mono">arXiv:{item.arxivId}</span>
+          ) : null}
+        </span>
+      </div>
+      {item.snippetPreview !== undefined && item.snippetPreview !== "" ? (
+        <div className="source-row-meta candidate-snippet">{item.snippetPreview}</div>
+      ) : null}
+    </li>
   );
 }
 

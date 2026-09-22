@@ -20,6 +20,10 @@ import { BusinessError } from "../errors.js";
 import type { CandidateSource } from "../sources/CandidateStore.js";
 import type { CandidateStore } from "../sources/CandidateStore.js";
 import { buildIdentity } from "../sources/identity.js";
+import type {
+  PlanExecutionAcademicResultSnapshot,
+  PlanExecutionWebResultSnapshot,
+} from "../agents/researchPlanExecution.js";
 import type { AcademicSearchResponse, AcademicSearchService } from "./academicSearchService.js";
 import type { FusedAcademicResult } from "./fusion.js";
 import type { ProviderHealthSnapshot } from "./providerHttp.js";
@@ -215,6 +219,86 @@ export class ResearchDiscoveryService {
 
   providerHealth(): ProviderHealthReport {
     return { academic: this.academic.healthSnapshots(), web: this.web.healthSnapshots() };
+  }
+
+  /**
+   * 把**执行结果快照**中选中的条目显式存为候选（M9.1 Search Result →
+   * Candidate 的 HITL 衔接：用户在 plan execution 完成后查看 resultSnapshot
+   * 并勾选，无需重新检索）。与 saveAcademicCandidates 汇聚同一
+   * CandidateStore.add 写入口径——快照是执行时冻结的 provider 真实返回
+   * 投影（identity 已归一化），元数据不能被调用方按值伪造。
+   * 调用方（HTTP 层）负责从 execution artifact 定位 entry 并校验其形态。
+   */
+  async saveAcademicSnapshotCandidates(
+    projectId: string,
+    query: string,
+    snapshots: readonly PlanExecutionAcademicResultSnapshot[],
+    resultIndexes: number[],
+  ): Promise<SavedCandidatesResult> {
+    validateIndexes(resultIndexes, snapshots.length);
+    const saved: CandidateSource[] = [];
+    const mergedExisting: number[] = [];
+    for (const index of resultIndexes) {
+      const snapshot = snapshots[index]!;
+      const result = await this.candidates.add(projectId, {
+        identity: snapshot.identity,
+        ...(snapshot.doi !== undefined ? { doi: snapshot.doi } : {}),
+        ...(snapshot.arxivId !== undefined ? { arxivId: snapshot.arxivId } : {}),
+        ...(snapshot.url !== undefined ? { url: snapshot.url } : {}),
+        ...(snapshot.title !== undefined ? { title: snapshot.title } : {}),
+        ...(snapshot.authors !== undefined ? { authors: snapshot.authors } : {}),
+        ...(snapshot.year !== undefined ? { year: snapshot.year } : {}),
+        ...(snapshot.venue !== undefined ? { venue: snapshot.venue } : {}),
+        ...(snapshot.snippetPreview !== undefined
+          ? { snippetOrAbstract: snapshot.snippetPreview }
+          : {}),
+        query,
+        origin: "academic_search",
+        provider: snapshot.provider,
+      });
+      if (result.created) {
+        saved.push(result.candidate);
+      } else {
+        mergedExisting.push(index);
+      }
+    }
+    return { saved, mergedExisting };
+  }
+
+  /** Web 快照版显式保存（M9.1；语义同 saveWebCandidates，来源是执行快照） */
+  async saveWebSnapshotCandidates(
+    projectId: string,
+    query: string,
+    snapshots: readonly PlanExecutionWebResultSnapshot[],
+    resultIndexes: number[],
+  ): Promise<SavedCandidatesResult> {
+    validateIndexes(resultIndexes, snapshots.length);
+    const saved: CandidateSource[] = [];
+    const mergedExisting: number[] = [];
+    for (const index of resultIndexes) {
+      const snapshot = snapshots[index]!;
+      const identity = buildIdentity({ url: snapshot.url, title: snapshot.title });
+      if (identity === null) {
+        throw new BusinessError("INVALID_REQUEST", `快照结果 #${index} 缺少可判等身份（URL）`);
+      }
+      const result = await this.candidates.add(projectId, {
+        identity,
+        url: snapshot.url,
+        title: snapshot.title,
+        ...(snapshot.snippetPreview !== undefined
+          ? { snippetOrAbstract: snapshot.snippetPreview }
+          : {}),
+        query,
+        origin: "web_search",
+        provider: snapshot.provider,
+      });
+      if (result.created) {
+        saved.push(result.candidate);
+      } else {
+        mergedExisting.push(index);
+      }
+    }
+    return { saved, mergedExisting };
   }
 
   /** 写入项目检索缓存：同 (kind, query) 只保留最近一次；超出 LRU 上限淘汰最旧 */

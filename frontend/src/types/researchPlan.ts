@@ -72,6 +72,8 @@ export interface PlanExecutionProviderAttemptView {
  * 单条 query 的执行审计记录（executionHistory 条目）。
  * resultIdentifiers 是结果标识符投影（doi:… / arxiv:… / url / title:…）——
  * 只是「这次搜到了什么」的痕迹，不是候选、不是文献。
+ * resultSnapshot（M9.1）是有界 SearchResult 快照（Top-N 最小 projection）——
+ * 同为审计痕迹；用户显式勾选保存后才经 save-candidates 端点进入候选（HITL）。
  */
 export interface PlanExecutionEntryView {
   executionId: string;
@@ -85,6 +87,45 @@ export interface PlanExecutionEntryView {
   error?: string;
   providers?: PlanExecutionProviderAttemptView[];
   resultIdentifiers?: string[];
+  resultSnapshot?: PlanExecutionResultSnapshotView[];
+}
+
+/** ---- Execution Result Snapshot（M9.1 镜像 backend researchPlanExecution.ts）---- */
+
+/** 学术检索结果快照（identity 完整；abstract 只留截断预览） */
+export interface PlanExecutionAcademicResultSnapshotView {
+  kind: "academic";
+  provider: string;
+  title?: string;
+  authors?: string[];
+  year?: number;
+  venue?: string;
+  doi?: string;
+  arxivId?: string;
+  url?: string;
+  snippetPreview?: string;
+  citationCount?: number;
+  score?: number;
+}
+
+/** Web 检索结果快照（canonical URL 即身份键） */
+export interface PlanExecutionWebResultSnapshotView {
+  kind: "web";
+  provider: string;
+  url: string;
+  title: string;
+  snippetPreview?: string;
+  score?: number;
+}
+
+export type PlanExecutionResultSnapshotView =
+  | PlanExecutionAcademicResultSnapshotView
+  | PlanExecutionWebResultSnapshotView;
+
+/** save-candidates 响应（与 Discovery 检索面板的 saved 同形状） */
+export interface ExecutionSaveResultView {
+  saved: Array<{ candidateId: string; title?: string }>;
+  mergedExisting: number[];
 }
 
 /** ---- Coverage（M8.3.2 镜像 backend/src/agents/researchCoverage.ts）---- */

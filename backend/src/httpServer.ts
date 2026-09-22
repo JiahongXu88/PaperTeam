@@ -36,6 +36,10 @@ import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import type { ReadinessProbe } from "./runtime/readiness.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
 import { readResearchArtifact, updateResearchPlan } from "./agents/ResearcherService.js";
+import type {
+  PlanExecutionAcademicResultSnapshot,
+  PlanExecutionWebResultSnapshot,
+} from "./agents/researchPlanExecution.js";
 import {
   getResearchLoopPolicy,
   updateResearchLoopPolicy,
@@ -1171,6 +1175,75 @@ async function handleProjectResourceRoutes(
       }
       const artifact = await readResearchArtifact(stack.projects, projectId);
       sendJson(res, 200, { executionHistory: artifact?.executionHistory ?? [] });
+      return true;
+    }
+    // ---- /execution-results/save-candidates（M9.1：执行结果快照 → 候选的显式
+    //      HITL 保存——从 execution artifact 按 executionId + queryId 定位 entry，
+    //      把选中快照下标经 Discovery 单一写入口径落 CandidateStore。
+    //      快照本身永不自动成为候选；M8.5 及更早的 entry 无 resultSnapshot → 409）----
+    if (rest === "/execution-results/save-candidates") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const executionId = readStringField(body, "executionId");
+      if (executionId === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 executionId");
+      }
+      const queryId = readStringField(body, "queryId");
+      if (queryId === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 queryId");
+      }
+      const saveAsCandidates = readSaveIndexes(body);
+      if (saveAsCandidates === undefined) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          "请求体必须包含非空整数数组字段 saveAsCandidates（快照下标，从 0 起）",
+        );
+      }
+      const artifact = await readResearchArtifact(stack.projects, projectId);
+      const entry = (artifact?.executionHistory ?? []).find(
+        (candidate) => candidate.executionId === executionId && candidate.queryId === queryId,
+      );
+      if (entry === undefined) {
+        throw new BusinessError(
+          "EXECUTION_ENTRY_NOT_FOUND",
+          `执行记录不存在：executionId=${executionId} queryId=${queryId}`,
+        );
+      }
+      if (
+        entry.status !== "executed" ||
+        entry.resultSnapshot === undefined ||
+        entry.resultSnapshot.length === 0
+      ) {
+        throw new BusinessError(
+          "EXECUTION_RESULTS_UNAVAILABLE",
+          entry.status === "failed"
+            ? `该执行记录失败（${entry.error ?? "未知原因"}），没有可保存的结果；失败条目保持计划中可重试`
+            : "该执行记录没有可保存的结果快照（M8.5 及更早的执行记录只留存标识符投影；请用 Discovery 检索面板重新检索后保存）",
+        );
+      }
+      const result =
+        entry.kind === "academic"
+          ? await stack.discovery.saveAcademicSnapshotCandidates(
+              projectId,
+              entry.query,
+              entry.resultSnapshot.filter(
+                (snapshot): snapshot is PlanExecutionAcademicResultSnapshot =>
+                  snapshot.kind === "academic",
+              ),
+              saveAsCandidates,
+            )
+          : await stack.discovery.saveWebSnapshotCandidates(
+              projectId,
+              entry.query,
+              entry.resultSnapshot.filter(
+                (snapshot): snapshot is PlanExecutionWebResultSnapshot => snapshot.kind === "web",
+              ),
+              saveAsCandidates,
+            );
+      sendJson(res, 200, { saved: result.saved, mergedExisting: result.mergedExisting });
       return true;
     }
     // ---- /coverage · /coverage/analyze（M8.3.2：Research Coverage Analyzer——

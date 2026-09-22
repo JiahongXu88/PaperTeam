@@ -11,6 +11,8 @@
  *   POST  /api/projects/:id/research/plan/execute          → PlanExecutionResultView
  *   GET   /api/projects/:id/research/plans                 → ResearchPlanListView
  *   GET   /api/projects/:id/research/execution-history     → { executionHistory }（M8.5 审计）
+ *   POST  /api/projects/:id/research/execution-results/save-candidates
+ *         → { saved, mergedExisting }（M9.1 快照显式保存为候选，HITL）
  *   POST  /api/projects/:id/research/plan/:planId/derive   → { plan }（done → 新 draft，自动激活）
  *   POST  /api/projects/:id/research/plan/:planId/activate → { plan }（切换活动计划）
  *   GET   /api/projects/:id/research/coverage              → { coverage: ResearchCoverageView | null }
@@ -30,6 +32,7 @@
 
 import { apiClient } from "./client.js";
 import type {
+  ExecutionSaveResultView,
   PlanExecutionEntryView,
   PlanExecutionResultView,
   ResearchCoverageView,
@@ -130,8 +133,8 @@ export async function listResearchPlans(
 
 /**
  * 计划执行历史（每条 query 的执行时间 / provider 参与 / 结果数 / 失败原因 /
- * 结果标识符投影）。只是审计痕迹：Search Result ≠ Candidate 不变，标识符
- * 不代表已保存候选。无 artifact → 空数组（空态而非错误）。
+ * 结果标识符投影 / 结果快照）。只是审计痕迹：Search Result ≠ Candidate 不变，
+ * 标识符与快照都不代表已保存候选。无 artifact → 空数组（空态而非错误）。
  */
 export async function listExecutionHistory(
   projectId: string,
@@ -142,6 +145,22 @@ export async function listExecutionHistory(
     signal,
   );
   return body.executionHistory ?? [];
+}
+
+/**
+ * 把执行结果快照中选中的条目显式保存为候选（M9.1 Search Result → Candidate
+ * 的 HITL 衔接：executionId + queryId 定位 executionHistory 条目，
+ * saveAsCandidates 是快照下标）。快照永不自动成为候选；旧条目（M8.5 及
+ * 更早，无快照）→ 409 EXECUTION_RESULTS_UNAVAILABLE。
+ */
+export async function saveExecutionResultsAsCandidates(
+  projectId: string,
+  input: { executionId: string; queryId: string; saveAsCandidates: number[] },
+): Promise<ExecutionSaveResultView> {
+  return apiClient.post<ExecutionSaveResultView>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/execution-results/save-candidates`,
+    input,
+  );
 }
 
 /**

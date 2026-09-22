@@ -45,6 +45,7 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
   const runs = useProjectRuns(project.id);
   const runtimeStatus = useRuntimeStatus();
   const startReview = useCreateWorkflowRun();
+  const startPaper = useCreateWorkflowRun();
   const exportReport = useExportReviewReport(project.id);
   const extract = useExtractCitations(project.id);
 
@@ -59,6 +60,11 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
   const reviewRun = runs.data?.find((run) => run.workflowKind === "existing_paper_review");
   const reviewActive = isRunActive(reviewRun);
   const modelConfigured = runtimeStatus.data?.model.phase === "configured";
+  // M9.1：idea 项目的论文生成入口。任意 kind 的活跃 run 都占用项目
+  //（后端 createRun 拒绝已有活跃 run 的项目），按钮据此在「启动 / 查看进度」间切换。
+  const ideaProject = !isExistingPaper(project.workflowKind);
+  const activeRun = runs.data?.find((run) => isRunActive(run));
+  const hasAnyRun = (runs.data?.length ?? 0) > 0;
 
   const nextSteps: Array<{ label: string; tab: AsideTab }> = [];
   // HITL 待确认最优先：任何工作流停在 awaiting_input 时，进入项目即可看到入口
@@ -141,6 +147,45 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
           </button>
         ) : null}
       </section>
+
+      {ideaProject ? (
+        <section className="aside-card aside-section" data-testid="aside-start-paper-section">
+          <h2 className="aside-title">生成论文</h2>
+          <div className="aside-actions">
+            {activeRun !== undefined ? (
+              <button type="button" className="btn btn-primary btn-block" onClick={() => onOpenTab("workflow")}>
+                <Icon name="clock" />
+                查看任务进度
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                onClick={() => startPaper.mutate({ projectId: project.id, kind: "idea_to_paper" })}
+                disabled={startPaper.isPending || !modelConfigured}
+                title={modelConfigured ? undefined : "需要先在「设置 → 模型设置」配置模型"}
+                data-testid="aside-start-paper"
+              >
+                <Icon name="play" />
+                {startPaper.isPending ? "启动中…" : hasAnyRun ? "重新生成论文" : "开始生成论文"}
+              </button>
+            )}
+          </div>
+          {startPaper.isError ? (
+            <p className="form-error" role="alert">
+              启动失败：{formatApiError(startPaper.error)}
+            </p>
+          ) : null}
+          {!modelConfigured && activeRun === undefined && runtimeStatus.data !== undefined ? (
+            <p className="field-help">
+              模型未配置，论文生成暂不可用。<Link to="/settings/model">前往模型设置</Link>
+            </p>
+          ) : null}
+          <p className="field-help">
+            从研究想法出发的完整链路：调研 → 证据核验 → 可行性 → 大纲 → 写作 → 审稿 → 修订 → 质量门禁。
+          </p>
+        </section>
+      ) : null}
 
       {nextSteps.length > 0 ? (
         <section className="aside-card aside-section">
