@@ -1,6 +1,16 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-20（**M7 COMPLETE — Research Discovery Activation
+> 更新日期：2026-09-22（**M8 COMPLETE — Controlled Deep Research Loop
+> （2026-09-20 启动 → 2026-09-22 收口）**：M8.1 Research Plan 一等产物（`e24e387`）/
+> M8.2 Plan Execution（`59e4c9f`）/ M8.3.1 Iteration Foundation（`af519bc`）/
+> M8.3.2 Coverage Analyzer（`13d152a`）/ M8.3.3 Research Gap + HITL + Loop
+> Policy（`e93cc31`）/ M8.4 Controlled Multi-round Research Executor
+> （`b056ead`）/ M8.5 Hardening & Finalization（`bbed9cd`）全部 ✅——真实模型
+> + 真实学术检索验收（[research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md](research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md)）；
+> 同日 Post-M8 市场对齐审计（`4ade22a`）定调 **M9 = Full Paper E2E
+> Activation**，详见下方「当前阶段」M8 段与
+> [research/POST_M8_MARKET_ALIGNED_ROADMAP.md](research/POST_M8_MARKET_ALIGNED_ROADMAP.md)。
+> 前一状态 2026-09-20（**M7 COMPLETE — Research Discovery Activation
 > （2026-09-18 启动 → 2026-09-20 收口 / Finalization）**：M7.0 Scope
 > Freeze（D-0042）✅ / M7.1 架构审查 ✅ / M7.1a 检索接线（`017ad31`）✅ /
 > M7.1b 真实 Agent 端到端验证（`63a214b`）✅ / M7.1c Discovery & 候选管理
@@ -847,6 +857,88 @@ Reference Paper Intelligence / Multimodal Review / 遗留收口）中，
 FullTextResolver 已定为 M7.2，Evaluation live 扩展与 Reference Paper
 Intelligence 收敛为 M7.3 候选（M7_SCOPE_FREEZE §6），Multimodal Review
 与遗留收口仍在 backlog。
+
+**M8 — Controlled Deep Research Loop（✅ COMPLETE，2026-09-20 启动 →
+2026-09-22 收口）**：把 PaperTeam 从 Search Agent 演进为 Deep Research
+Agent——研究从一次性即时检索升级为「计划 → 批准 → 执行 → 覆盖 → 缺口 →
+HITL → 派生 → 多轮循环」的受控研究管线。全程遵守 M8 架构冻结：**零新增
+Agent**（纯 Service + 纯函数编排）、**零 Runtime / Workflow Orchestrator
+改动**（loop 是 workflow 之外的独立 API 面）、**零 RAG / Vector DB / MCP /
+新 Provider / CLI**、**Retrieved ≠ Candidate ≠ Literature ≠ Verified
+Evidence 不变量不混写**（loop 不触碰任何 Store）。进度：
+
+- **M8.1 Research Plan 一等产物 ✅（2026-09-20，`e24e387`）**：
+  `ResearchPlan` 领域模型（research questions + search queries 含 rationale /
+  expectedCoverage，draft→approved→done 状态机）；research.json 从
+  ResearchReport 升级为 Research Artifact（`{plan?, report}`，旧 artifact 无
+  plan 正常读）；Researcher「先计划后调研」输出契约（plan 指导检索 / report
+  总结结果，schema 宽容解析）；GET/PUT `/research/plan` API + Discovery UI
+  计划展示与编辑。plan 只是检索意图声明——不写任何持久化结果。
+- **M8.2 Research Plan Execution ✅（2026-09-20，`59e4c9f`）**：计划执行层
+  ——approve（draft 之外状态拒绝）→ execute（逐 query 委托既有
+  ResearchDiscoveryService 学术检索 / SearXNG web 检索），回填 resultCount /
+  providers 摘要与 executionHistory（planId / queryId / resultCount /
+  timestamp / error 如实落盘）；**Search Result ≠ Candidate 边界**——执行
+  只回填计数不自动入库，保存候选仍只有显式路径。
+- **M8.3.1 Research Plan Iteration Foundation ✅（2026-09-20，`af519bc`）**：
+  计划迭代单一派生规则——derive 生成新计划 iterationNumber=链内最大+1、
+  parentPlanId 指向父、iterationId 继承，原计划不变（不可变历史）；用户
+  改写优先于缺口默认值。
+- **M8.3.2 Research Coverage Analyzer ✅（2026-09-20，`13d152a`）**：研究
+  问题 covered / partial / missing 确定性判定（token 交集口径，跨语言误判
+  如实登记为边界）+ 结构化缺口产物（gapId 稳定、severity 确定性、
+  suggestedQueries 可执行）。
+- **M8.3.3 Research Gap + HITL + Loop Policy ✅（2026-09-20，`e93cc31`）**：
+  ResearchGap 域（accept / reject / derive 决策落盘，research.json 只存
+  accepted/rejected 快照）；Loop Policy（maxIterations / maxDurationMs /
+  stopOnNoGaps 等停止条件，非法值 400）；GET/PUT `/research/loop-policy`。
+- **M8.4 Controlled Multi-round Research Executor ✅（2026-09-21，`b056ead`）**：
+  `ResearchLoopService` 状态机（idle → awaiting_plan_approval → executing →
+  awaiting_gap_decision → … → completed，stopReason 落盘）——三处 HITL 断点
+  （计划批准 / 缺口决策 / 派生后停等下一轮批准，绝不自动执行）；检索 /
+  覆盖 / 缺口 / 派生全部委托既有服务零复制；轮次历史 + **Policy Stop**（
+  停止条件命中确定性收敛）+ **Crash Recovery**（重启后纯按磁盘事实重算
+  状态，无内存真相）。
+- **M8.5 Research Pipeline Hardening & Finalization ✅（2026-09-22，
+  `bbed9cd`）**：**CandidateStore Hardening**——进程内 promise 链互斥 +
+  原子写 tmp 名加随机数防毫秒碰撞 + 损坏显式报错（CANDIDATE_STORE_
+  CORRUPTED，「损坏 ≠ 没有」口径区分，读取侧不再静默吞损坏）+ 崩溃残留
+  tmp 清理；**Search Execution Audit**——executionHistory 增 providers 摘要
+  与 resultIdentifiers（标识符级投影，回答「搜到了什么」）+ GET
+  `/research/execution-history` 只读出口；M8.1–M8.4 四种历史形态兼容读取
+  测试 + research artifact 审计（writeResearchPlanChain 保留字段不丢）+
+  **Evidence Boundary 回归**（loop 全链路后三 Store 文件层 + HTTP 层验证
+  零写入）；SearXNG 接线离线假服务验证。
+- **真实模型验收 ✅（2026-09-20，`09c11e0` 报告）**：真实 GLM-5.3 + 真实
+  OpenAlex/S2/arXiv——两轮完整循环（计划 15 queries → 执行 14+1 失败如实 →
+  coverage 10 问全 covered + 7 gaps → HITL accept×2/reject×1/derive → 二轮
+  3 queries → 再 coverage），验收暴露的 P0（save_candidates 并发损坏候选库）
+  即 M8.5 修复对象；报告
+  [research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md](research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md)。
+- **Post-M8 Market-Aligned Capability Audit ✅（2026-09-22，`4ade22a`）**：
+  只读审计 + Roadmap——结论「组件全在、缺的是接线」：M9 = Full Paper E2E
+  Activation（第一篇完整论文）、M10 = Run Observability & Cost、M11 =
+  E2E Evaluation；Vector DB / Python 服务 / MCP / 自动路由 / reranker 全部
+  判 DO NOT BUILD（理由见
+  [research/POST_M8_MARKET_ALIGNED_ROADMAP.md](research/POST_M8_MARKET_ALIGNED_ROADMAP.md)）。
+
+**M8 最终能力清单**：Research Plan / Plan Approval / Research Execution /
+Coverage Analysis / Gap Analysis / HITL（三断点）/ Iteration / Controlled
+Multi-round Loop / Policy Stop / Crash Recovery / CandidateStore Hardening /
+Search Execution Audit / Evidence Boundary。
+
+**不是 M8 遗留 Bug、而是 M9+ Roadmap**（Post-M8 审计定调）：Search
+Result → Candidate 产品衔接、FullText 激活、锚定 Evidence 调研流、
+确定性 Bibliography、Full Paper E2E、Observability、E2E Evaluation、
+Research Memory——全部是「把已有组件接成一次真实产品级使用」的范畴
+（POST_M8 §9 Critical Path / §11 Roadmap），非 M8 缺陷。
+
+**M8 收口判定（2026-09-22）**：**COMPLETE**——冻结范围内 M8.1–M8.5 全部
+交付、真实模型验收通过、全量测试零回归（M8.5 收口时 backend 248 +
+frontend 39 test files 全绿）；按仓库惯例不打 tag（仅 release 版本打 tag，
+同 M5/M6/M7）。下一节点：**M9 Full Paper E2E Activation（入口 = M9.1
+E2E Activation Foundation：idea_to_paper UI 入口 + Search Result →
+Candidate HITL 衔接）**。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

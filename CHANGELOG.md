@@ -4,6 +4,47 @@ All notable changes to PaperTeam are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — M8 Controlled Deep Research Loop（2026-09-20 → 2026-09-22）
+
+研究从一次性即时检索升级为「计划 → 批准 → 执行 → 覆盖 → 缺口 → HITL →
+派生 → 受控多轮循环」。全程零新增 Agent / 零 Runtime 与 Workflow
+Orchestrator 改动 / Retrieved ≠ Candidate ≠ Literature ≠ Verified Evidence
+不变量保持。逐批实施报告见 docs/research/M8.*；真实模型验收见
+docs/research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md；M8 正式收口与 M9
+路线见 docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md。
+
+1. **M8.1 Research Plan 一等产物**（`backend/src/agents/researchPlan.ts`）：
+   ResearchPlan 领域模型（research questions + queries 含 rationale /
+   expectedCoverage，draft→approved→done）；research.json 升级 Research
+   Artifact（`{plan?, report}` 向后兼容）；Researcher「先计划后调研」输出
+   契约；GET/PUT `/api/projects/:id/research/plan`；Discovery UI 计划
+   展示与编辑。
+2. **M8.2 Plan Execution**（`backend/src/agents/researchPlanExecution.ts`）：
+   approve → execute 逐 query 委托既有 ResearchDiscoveryService（学术 +
+   web 检索），executionHistory 落盘（planId / queryId / resultCount /
+   timestamp / error 如实）；执行只回填计数不自动入库（Search Result ≠
+   Candidate 边界）。
+3. **M8.3.1 Iteration Foundation**（`researchPlanIteration.ts`）：derive
+   单一派生规则——新计划 iterationNumber=链内最大+1、parentPlanId 指向父、
+   iterationId 继承，原计划不可变；用户改写优先。
+4. **M8.3.2 Coverage Analyzer**（`researchCoverage.ts`）：研究问题
+   covered / partial / missing 确定性判定 + 结构化缺口产物（gapId 稳定 /
+   severity 确定性 / suggestedQueries 可执行）。
+5. **M8.3.3 Research Gap + HITL + Loop Policy**（`researchGap.ts` /
+   `researchLoopPolicy.ts`）：gap accept / reject / derive 决策落盘；
+   Loop Policy 停止条件（GET/PUT `/research/loop-policy`，非法值 400）。
+6. **M8.4 Controlled Multi-round Research Executor**
+   （`backend/src/agents/researchLoop.ts`）：ResearchLoopService 状态机
+   （三处 HITL 断点：计划批准 / 缺口决策 / 派生后停等；Policy Stop 命中
+   确定性收敛；Crash Recovery 重启后纯按磁盘事实重算；轮次历史落盘）。
+7. **M8.5 Pipeline Hardening & Finalization**：CandidateStore 进程内
+   promise 链互斥 + 原子写 tmp 防碰撞 + 损坏显式报错
+   （CANDIDATE_STORE_CORRUPTED，读取不再静默吞损坏）+ 崩溃残留 tmp 清理
+   （修复真实验收暴露的 P0 并发损坏）；executionHistory 增 providers 摘要
+   与 resultIdentifiers 审计投影 + GET `/research/execution-history`；
+   M8.1–M8.4 历史形态兼容读取 + Evidence Boundary 回归（loop 全链路后
+   三 Store 零写入）。
+
 ## [Unreleased] — M7.2 FullTextResolution（2026-09-20）
 
 Literature → FullText → Evidence 自动闭环（M7_SCOPE_FREEZE P-D 修复；

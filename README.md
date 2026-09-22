@@ -181,6 +181,20 @@ Grounded**（详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §1.3）。M7.0
 产品化基线已收口（前端对齐 M6 能力：项目「文献库」标签页、侧边栏响应式修复、
 论文导入流程增强；不新增 Agent / Runtime / Workflow）。
 
+**M8（Controlled Deep Research Loop）已于 2026-09-22 全部完成**：研究从
+一次性即时检索升级为「计划 → 批准 → 执行 → 覆盖 → 缺口分析 → HITL →
+派生 → 受控多轮循环」——Research Plan 一等产物（M8.1）、Plan Execution
+真实学术检索与执行审计（M8.2）、Iteration 单一派生（M8.3.1）、Coverage
+Analyzer（M8.3.2）、Research Gap + HITL + Loop Policy（M8.3.3）、受控多轮
+Executor（三处 HITL 断点 + 策略停止 + 崩溃恢复按磁盘事实重算，M8.4）、
+Pipeline Hardening（CandidateStore 并发安全 / 损坏显式报错 / 执行审计
+字段，M8.5）。全程零新增 Agent；**Retrieved ≠ Candidate ≠ Literature ≠
+Verified Evidence 不变量保持**（loop 不自动保存候选 / 不 promote / 不写
+Evidence）。真实模型 + 真实学术检索验收见
+[docs/research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md](docs/research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md)；
+Post-M8 市场对齐审计与后续路线（M9 = Full Paper E2E Activation）见
+[docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md](docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md)。
+
 **里程碑总览见
 [docs/research/M6_FINAL_SUMMARY.md](docs/research/M6_FINAL_SUMMARY.md)；整体
 状态与真实模型 / 真实 MiKTeX 的端到端验证记录见
