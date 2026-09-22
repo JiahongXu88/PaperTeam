@@ -52,6 +52,26 @@ docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md。
      → 文件 → chunk → retrieve_library 命中；手动上传 fallback；二次
      批量幂等零重复下载）+ 浏览器 E2E（sources-fulltext.spec）。报告见
      docs/research/M9.3_FULLTEXT_ACTIVATION.md。
+4. **Pre-M9.4 Claude Browser Acceptance Tooling**（本批）：在 Playwright
+   之上新增 Claude 主导的探索式浏览器验收层（纯开发工具，零产品代码
+   改动，D-0033 边界不变）：
+   - `@playwright/mcp` 0.0.82 作为 e2e devDependency + 仓库根
+     `.mcp.json`（重启后的 Claude Code 会话原生加载 playwright-browser
+     工具集，standalone 隔离 profile，无外部 CDP 端口）；
+   - `e2e/acceptance/`：`browser.mjs` acceptance 浏览器生命周期
+     （独立 user-data-dir；CDP 仅绑 127.0.0.1，默认 9222 被占自动后移；
+     stop 前校验进程命令行，绝不 kill 无关 Chrome）+ `mcp-bridge.mjs`
+     通用 MCP stdio 桥（本会话式逐动作调用，纯连接层）+
+     `selftest.mjs` 15 场景自测（含 loopback netstat 核验 / 拒杀无关
+     进程 / stale 自愈 / --purge）；
+   - `npm run browser:acceptance:start|status|stop|selftest`（e2e/）；
+   - 真实交互验收已跑通（scripted 栈 + 隔离 root）：UI 建项目 → Tab
+     切换（Discovery / 文献库）→ URL 条目导入 → 手动上传 PDF → 全文
+     状态翻转 → Network（method/path/status，零 header 采集）→ Console
+     （0 JS error；发现 favicon 404 观察项）→ 截图 → 刷新持久；
+   - 文档 `docs/BROWSER_ACCEPTANCE.md`（Playwright vs Acceptance 分工 /
+     隔离 / CDP 安全 / Bug→Playwright regression 工作流 / 已知限制）
+     + 最小 `CLAUDE.md` 开发指引。
 
 后续：M9.4 Anchored Evidence Activation → M9.5 Deterministic
 Bibliography / Citation Trace → M9.6 Full Paper E2E Acceptance。

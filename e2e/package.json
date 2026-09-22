@@ -7,9 +7,14 @@
   "scripts": {
     "test": "playwright test",
     "test:headed": "playwright test --headed",
-    "report": "playwright show-report"
+    "report": "playwright show-report",
+    "browser:acceptance:start": "node acceptance/browser.mjs start",
+    "browser:acceptance:status": "node acceptance/browser.mjs status",
+    "browser:acceptance:stop": "node acceptance/browser.mjs stop --purge",
+    "browser:acceptance:selftest": "node acceptance/selftest.mjs"
   },
   "devDependencies": {
+    "@playwright/mcp": "^0.0.82",
     "@playwright/test": "^1.63.0",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"

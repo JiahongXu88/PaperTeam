@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "playwright-browser": {
+      "command": "node",
+      "args": [
+        "e2e/node_modules/@playwright/mcp/cli.js",
+        "--browser",
+        "chrome",
+        "--user-data-dir",
+        "e2e/.tmp/acceptance/mcp-chrome-profile",
+        "--viewport-size",
+        "1440x900",
+        "--timeout-action",
+        "20000",
+        "--output-dir",
+        "e2e/.tmp/acceptance/shots"
+      ]
+    }
+  }
+}
