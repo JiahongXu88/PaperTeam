@@ -260,10 +260,30 @@ export function effectiveSourceType(item: SourceItem): SourceType {
 export class SourceStore {
   private readonly projects: ProjectStore;
   private readonly now: () => Date;
+  /** 项目级写队列（索引读-改-写串行化；与 CandidateStore 同纪律——并发
+   * fulltext 批量 / 后台 promote 解析的多写方不丢更新、不交织写坏 index.json） */
+  private readonly writeQueues = new Map<string, Promise<unknown>>();
 
   constructor(projects: ProjectStore, options: SourceStoreOptions = {}) {
     this.projects = projects;
     this.now = options.now ?? (() => new Date());
+  }
+
+  /**
+   * 把操作排进项目写队列（串行化读-改-写）。前序任务失败不阻塞后继
+   * （catch 吞掉的是链上残留的 rejection，操作自身的错误原样返回调用方）。
+   */
+  private enqueue<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.writeQueues.get(projectId) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(operation);
+    this.writeQueues.set(projectId, task);
+    const cleanup = () => {
+      if (this.writeQueues.get(projectId) === task) {
+        this.writeQueues.delete(projectId);
+      }
+    };
+    task.then(cleanup, cleanup);
+    return task;
   }
 
   private papersDir(projectId: string): string {
@@ -320,6 +340,7 @@ export class SourceStore {
    * 底层写入（import 路径 / add 共用）：文件型传 fileName+content，
    * metadata-only 传 sourceType ∈ {doi, arxiv, url, metadata, bibtex}。
    * 身份归一：显式 identity 优先，否则从 metadata 推导。
+   * 读-改-写在项目写队列内执行（并发导入 / 全文挂载不丢更新）。
    */
   async addRecord(projectId: string, input: AddRecordInput): Promise<SourceItem> {
     const role = input.sourceRole ?? "both";
@@ -355,45 +376,46 @@ export class SourceStore {
     } else {
       status = "metadata_only";
     }
-
-    const items = await this.list(projectId);
-    // 按已有最大编号递增（不是 length+1）：删除中间条目后新条目不得复用旧 id，
-    // 否则 parsed/<id>.json 与索引会串到别的文献上
-    const maxId = items.reduce((max, item) => {
-      const match = /^S(\d+)$/.exec(item.sourceId);
-      return match !== null ? Math.max(max, Number(match[1])) : max;
-    }, 0);
-    const sourceId = `S${String(maxId + 1).padStart(3, "0")}`;
-    const timestamp = this.now().toISOString();
-    const identity =
-      input.identity !== undefined && input.identity !== null
-        ? input.identity
-        : buildIdentity(metadataToIdentityInput(metadata));
-    const item: SourceItem = {
-      sourceId,
-      ...(fileName !== undefined
-        ? { fileName: `${sourceId}-${fileName}`, originalName: input.fileName }
-        : {}),
-      sourceType: input.sourceType,
-      sourceRole: role,
-      origin,
-      status,
-      preferred: input.preferred ?? false,
-      metadata,
-      metadataProvenance: input.metadataProvenance ?? "inferred",
-      ...(identity !== null ? { identity } : {}),
-      ...(contentHash !== undefined ? { contentHash } : {}),
-      ...(input.versionType !== undefined ? { versionType: input.versionType } : {}),
-      bytes,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-    if (fileName !== undefined) {
-      await mkdir(this.papersDir(projectId), { recursive: true });
-      await writeFile(join(this.papersDir(projectId), item.fileName!), input.content!);
-    }
-    await this.saveIndex(projectId, [...items, item]);
-    return item;
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      // 按已有最大编号递增（不是 length+1）：删除中间条目后新条目不得复用旧 id，
+      // 否则 parsed/<id>.json 与索引会串到别的文献上
+      const maxId = items.reduce((max, item) => {
+        const match = /^S(\d+)$/.exec(item.sourceId);
+        return match !== null ? Math.max(max, Number(match[1])) : max;
+      }, 0);
+      const sourceId = `S${String(maxId + 1).padStart(3, "0")}`;
+      const timestamp = this.now().toISOString();
+      const identity =
+        input.identity !== undefined && input.identity !== null
+          ? input.identity
+          : buildIdentity(metadataToIdentityInput(metadata));
+      const item: SourceItem = {
+        sourceId,
+        ...(fileName !== undefined
+          ? { fileName: `${sourceId}-${fileName}`, originalName: input.fileName }
+          : {}),
+        sourceType: input.sourceType,
+        sourceRole: role,
+        origin,
+        status,
+        preferred: input.preferred ?? false,
+        metadata,
+        metadataProvenance: input.metadataProvenance ?? "inferred",
+        ...(identity !== null ? { identity } : {}),
+        ...(contentHash !== undefined ? { contentHash } : {}),
+        ...(input.versionType !== undefined ? { versionType: input.versionType } : {}),
+        bytes,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      if (fileName !== undefined) {
+        await mkdir(this.papersDir(projectId), { recursive: true });
+        await writeFile(join(this.papersDir(projectId), item.fileName!), input.content!);
+      }
+      await this.saveIndex(projectId, [...items, item]);
+      return item;
+    });
   }
 
   async get(projectId: string, sourceId: string): Promise<SourceItem | null> {
@@ -478,58 +500,60 @@ export class SourceStore {
     return join(this.papersDir(projectId), item.fileName);
   }
 
-  /** 更新角色 / 重点参考标记 / 版本关系标注 */
+  /** 更新角色 / 重点参考标记 / 版本关系标注（读-改-写在项目写队列内） */
   async update(projectId: string, sourceId: string, patch: SourceUpdatePatch): Promise<SourceItem> {
-    const items = await this.list(projectId);
-    const index = items.findIndex((item) => item.sourceId === sourceId);
-    if (index === -1) {
-      throw new NotFoundError("文献", sourceId);
-    }
-    const current = items[index]!;
-    const updated: SourceItem = {
-      ...current,
-      ...(patch.sourceRole !== undefined
-        ? {
-            sourceRole: SOURCE_ROLES.includes(patch.sourceRole)
-              ? patch.sourceRole
-              : (() => {
-                  throw new BusinessError("INVALID_REQUEST", `非法 sourceRole：${patch.sourceRole}`);
-                })(),
-          }
-        : {}),
-      ...(patch.preferred !== undefined ? { preferred: patch.preferred } : {}),
-      ...(patch.metadata !== undefined
-        ? {
-            metadata: { ...current.metadata, ...sanitizeMetadata(patch.metadata) },
-            // PATCH 是用户显式操作 → 元数据升级为 user 级
-            metadataProvenance: "user",
-          }
-        : {}),
-      ...(patch.versionType !== undefined
-        ? {
-            versionType: SOURCE_VERSION_TYPES.includes(patch.versionType)
-              ? patch.versionType
-              : (() => {
-                  throw new BusinessError(
-                    "INVALID_REQUEST",
-                    `versionType 只能是 ${SOURCE_VERSION_TYPES.join(" / ")}`,
-                  );
-                })(),
-          }
-        : {}),
-      ...(patch.relatedSourceIds !== undefined ? { relatedSourceIds: dedupeIds(patch.relatedSourceIds) } : {}),
-      ...(patch.workKey !== undefined && patch.workKey !== "" ? { workKey: patch.workKey } : {}),
-      updatedAt: this.now().toISOString(),
-    };
-    // identity 增量更新：PATCH 带来的 doi/arxivId/url/title 变化同步进 identity
-    const nextIdentity = buildIdentity({
-      ...(updated.identity ?? {}),
-      ...identityFieldsOfMetadata(updated.metadata),
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      const index = items.findIndex((item) => item.sourceId === sourceId);
+      if (index === -1) {
+        throw new NotFoundError("文献", sourceId);
+      }
+      const current = items[index]!;
+      const updated: SourceItem = {
+        ...current,
+        ...(patch.sourceRole !== undefined
+          ? {
+              sourceRole: SOURCE_ROLES.includes(patch.sourceRole)
+                ? patch.sourceRole
+                : (() => {
+                    throw new BusinessError("INVALID_REQUEST", `非法 sourceRole：${patch.sourceRole}`);
+                  })(),
+            }
+          : {}),
+        ...(patch.preferred !== undefined ? { preferred: patch.preferred } : {}),
+        ...(patch.metadata !== undefined
+          ? {
+              metadata: { ...current.metadata, ...sanitizeMetadata(patch.metadata) },
+              // PATCH 是用户显式操作 → 元数据升级为 user 级
+              metadataProvenance: "user",
+            }
+          : {}),
+        ...(patch.versionType !== undefined
+          ? {
+              versionType: SOURCE_VERSION_TYPES.includes(patch.versionType)
+                ? patch.versionType
+                : (() => {
+                    throw new BusinessError(
+                      "INVALID_REQUEST",
+                      `versionType 只能是 ${SOURCE_VERSION_TYPES.join(" / ")}`,
+                    );
+                  })(),
+            }
+          : {}),
+        ...(patch.relatedSourceIds !== undefined ? { relatedSourceIds: dedupeIds(patch.relatedSourceIds) } : {}),
+        ...(patch.workKey !== undefined && patch.workKey !== "" ? { workKey: patch.workKey } : {}),
+        updatedAt: this.now().toISOString(),
+      };
+      // identity 增量更新：PATCH 带来的 doi/arxivId/url/title 变化同步进 identity
+      const nextIdentity = buildIdentity({
+        ...(updated.identity ?? {}),
+        ...identityFieldsOfMetadata(updated.metadata),
+      });
+      updated.identity = nextIdentity ?? undefined;
+      items[index] = updated;
+      await this.saveIndex(projectId, items);
+      return updated;
     });
-    updated.identity = nextIdentity ?? undefined;
-    items[index] = updated;
-    await this.saveIndex(projectId, items);
-    return updated;
   }
 
   /**
@@ -541,30 +565,32 @@ export class SourceStore {
     sourceId: string,
     incoming: { metadata: SourceMetadata; provenance: MetadataProvenance },
   ): Promise<SourceItem> {
-    const items = await this.list(projectId);
-    const index = items.findIndex((item) => item.sourceId === sourceId);
-    if (index === -1) {
-      throw new NotFoundError("文献", sourceId);
-    }
-    const current = items[index]!;
-    const merged = mergeSourceMetadata(
-      { metadata: current.metadata, provenance: current.metadataProvenance },
-      { metadata: sanitizeMetadata(incoming.metadata), provenance: incoming.provenance },
-    );
-    const identity = buildIdentity({
-      ...(current.identity ?? {}),
-      ...identityFieldsOfMetadata(merged.metadata),
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      const index = items.findIndex((item) => item.sourceId === sourceId);
+      if (index === -1) {
+        throw new NotFoundError("文献", sourceId);
+      }
+      const current = items[index]!;
+      const merged = mergeSourceMetadata(
+        { metadata: current.metadata, provenance: current.metadataProvenance },
+        { metadata: sanitizeMetadata(incoming.metadata), provenance: incoming.provenance },
+      );
+      const identity = buildIdentity({
+        ...(current.identity ?? {}),
+        ...identityFieldsOfMetadata(merged.metadata),
+      });
+      const updated: SourceItem = {
+        ...current,
+        metadata: merged.metadata,
+        metadataProvenance: merged.provenance,
+        ...(identity !== null ? { identity } : {}),
+        updatedAt: this.now().toISOString(),
+      };
+      items[index] = updated;
+      await this.saveIndex(projectId, items);
+      return updated;
     });
-    const updated: SourceItem = {
-      ...current,
-      metadata: merged.metadata,
-      metadataProvenance: merged.provenance,
-      ...(identity !== null ? { identity } : {}),
-      updatedAt: this.now().toISOString(),
-    };
-    items[index] = updated;
-    await this.saveIndex(projectId, items);
-    return updated;
   }
 
   /**
@@ -578,39 +604,41 @@ export class SourceStore {
     analysis: PdfAnalysis,
     options: { contentHash?: string } = {},
   ): Promise<SourceItem> {
-    const items = await this.list(projectId);
-    const index = items.findIndex((item) => item.sourceId === sourceId);
-    if (index === -1) {
-      throw new NotFoundError("文献", sourceId);
-    }
-    const current = items[index]!;
-    if (
-      options.contentHash !== undefined &&
-      current.contentHash !== undefined &&
-      options.contentHash !== current.contentHash
-    ) {
-      throw new BusinessError(
-        "INVALID_REQUEST",
-        `文献 ${sourceId} 的内容已变化（contentHash 不一致），拒绝写入过期解析结果；请对当前内容重新分析`,
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      const index = items.findIndex((item) => item.sourceId === sourceId);
+      if (index === -1) {
+        throw new NotFoundError("文献", sourceId);
+      }
+      const current = items[index]!;
+      if (
+        options.contentHash !== undefined &&
+        current.contentHash !== undefined &&
+        options.contentHash !== current.contentHash
+      ) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `文献 ${sourceId} 的内容已变化（contentHash 不一致），拒绝写入过期解析结果；请对当前内容重新分析`,
+        );
+      }
+      await mkdir(this.parsedDir(projectId), { recursive: true });
+      await writeJsonAtomic(
+        join(this.parsedDir(projectId), `${sourceId}.json`),
+        analysis,
       );
-    }
-    await mkdir(this.parsedDir(projectId), { recursive: true });
-    await writeJsonAtomic(
-      join(this.parsedDir(projectId), `${sourceId}.json`),
-      analysis,
-    );
-    const status: SourceStatus =
-      analysis.status === "ok" ? "available" : analysis.status === "partial" ? "partial" : "failed";
-    const updated: SourceItem = {
-      ...current,
-      status,
-      analysis,
-      ...(options.contentHash !== undefined ? { analysisHash: options.contentHash } : {}),
-      updatedAt: this.now().toISOString(),
-    };
-    items[index] = updated;
-    await this.saveIndex(projectId, items);
-    return updated;
+      const status: SourceStatus =
+        analysis.status === "ok" ? "available" : analysis.status === "partial" ? "partial" : "failed";
+      const updated: SourceItem = {
+        ...current,
+        status,
+        analysis,
+        ...(options.contentHash !== undefined ? { analysisHash: options.contentHash } : {}),
+        updatedAt: this.now().toISOString(),
+      };
+      items[index] = updated;
+      await this.saveIndex(projectId, items);
+      return updated;
+    });
   }
 
   /**
@@ -639,76 +667,80 @@ export class SourceStore {
     sourceId: string,
     input: { fileName?: string; content: Buffer; originalName?: string },
   ): Promise<{ source: SourceItem; attached: boolean }> {
-    const items = await this.list(projectId);
-    const index = items.findIndex((item) => item.sourceId === sourceId);
-    if (index === -1) {
-      throw new NotFoundError("文献", sourceId);
-    }
-    const current = items[index]!;
-    if (current.fileName !== undefined) {
-      return { source: current, attached: false };
-    }
-    if (input.content.byteLength === 0) {
-      throw new BusinessError("INVALID_REQUEST", "文件内容不能为空");
-    }
-    if (input.content.byteLength > MAX_SOURCE_BYTES) {
-      throw new BusinessError("INVALID_REQUEST", `文件超过 ${MAX_SOURCE_BYTES} 字节上限`);
-    }
-    const safeName =
-      input.fileName !== undefined ? sanitizeFileName(input.fileName) : undefined;
-    const fileName = safeName ?? "fulltext.pdf";
-    if (!fileName.toLowerCase().endsWith(".pdf")) {
-      throw new BusinessError("INVALID_REQUEST", `补挂的全文必须是 PDF（收到 ${fileName}）`);
-    }
-    const contentHash = sha256Hex(input.content);
-    const storedName = `${sourceId}-${fileName}`;
-    const updated: SourceItem = {
-      ...current,
-      fileName: storedName,
-      ...(input.originalName !== undefined ? { originalName: input.originalName } : {}),
-      sourceType: sourceTypeFromFileName(fileName),
-      status: "pending",
-      contentHash,
-      bytes: input.content.byteLength,
-      updatedAt: this.now().toISOString(),
-    };
-    items[index] = updated;
-    await mkdir(this.papersDir(projectId), { recursive: true });
-    await writeFile(join(this.papersDir(projectId), storedName), input.content);
-    await this.saveIndex(projectId, items);
-    return { source: updated, attached: true };
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      const index = items.findIndex((item) => item.sourceId === sourceId);
+      if (index === -1) {
+        throw new NotFoundError("文献", sourceId);
+      }
+      const current = items[index]!;
+      if (current.fileName !== undefined) {
+        return { source: current, attached: false };
+      }
+      if (input.content.byteLength === 0) {
+        throw new BusinessError("INVALID_REQUEST", "文件内容不能为空");
+      }
+      if (input.content.byteLength > MAX_SOURCE_BYTES) {
+        throw new BusinessError("INVALID_REQUEST", `文件超过 ${MAX_SOURCE_BYTES} 字节上限`);
+      }
+      const safeName =
+        input.fileName !== undefined ? sanitizeFileName(input.fileName) : undefined;
+      const fileName = safeName ?? "fulltext.pdf";
+      if (!fileName.toLowerCase().endsWith(".pdf")) {
+        throw new BusinessError("INVALID_REQUEST", `补挂的全文必须是 PDF（收到 ${fileName}）`);
+      }
+      const contentHash = sha256Hex(input.content);
+      const storedName = `${sourceId}-${fileName}`;
+      const updated: SourceItem = {
+        ...current,
+        fileName: storedName,
+        ...(input.originalName !== undefined ? { originalName: input.originalName } : {}),
+        sourceType: sourceTypeFromFileName(fileName),
+        status: "pending",
+        contentHash,
+        bytes: input.content.byteLength,
+        updatedAt: this.now().toISOString(),
+      };
+      items[index] = updated;
+      await mkdir(this.papersDir(projectId), { recursive: true });
+      await writeFile(join(this.papersDir(projectId), storedName), input.content);
+      await this.saveIndex(projectId, items);
+      return { source: updated, attached: true };
+    });
   }
 
-  /** 记录全文获取 provenance（M7.2；读-改-写，与 applyMetadataMerge 同模式） */
+  /** 记录全文获取 provenance（M7.2；读-改-写在项目写队列内，与 applyMetadataMerge 同模式） */
   async setFullTextProvenance(
     projectId: string,
     sourceId: string,
     provenance: SourceFullTextProvenance,
   ): Promise<SourceItem> {
-    const items = await this.list(projectId);
-    const index = items.findIndex((item) => item.sourceId === sourceId);
-    if (index === -1) {
-      throw new NotFoundError("文献", sourceId);
-    }
-    const current = items[index]!;
-    const updated: SourceItem = {
-      ...current,
-      fullText: {
-        status: provenance.status,
-        ...(provenance.resolver !== undefined ? { resolver: provenance.resolver } : {}),
-        ...(provenance.url !== undefined ? { url: provenance.url } : {}),
-        ...(provenance.license !== undefined ? { license: provenance.license } : {}),
-        ...(provenance.note !== undefined ? { note: provenance.note.slice(0, 500) } : {}),
-        attempts: provenance.attempts,
-        attemptedAt: provenance.attemptedAt,
-        ...(provenance.resolvedAt !== undefined ? { resolvedAt: provenance.resolvedAt } : {}),
-        ...(provenance.bytes !== undefined ? { bytes: provenance.bytes } : {}),
-      },
-      updatedAt: this.now().toISOString(),
-    };
-    items[index] = updated;
-    await this.saveIndex(projectId, items);
-    return updated;
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      const index = items.findIndex((item) => item.sourceId === sourceId);
+      if (index === -1) {
+        throw new NotFoundError("文献", sourceId);
+      }
+      const current = items[index]!;
+      const updated: SourceItem = {
+        ...current,
+        fullText: {
+          status: provenance.status,
+          ...(provenance.resolver !== undefined ? { resolver: provenance.resolver } : {}),
+          ...(provenance.url !== undefined ? { url: provenance.url } : {}),
+          ...(provenance.license !== undefined ? { license: provenance.license } : {}),
+          ...(provenance.note !== undefined ? { note: provenance.note.slice(0, 500) } : {}),
+          attempts: provenance.attempts,
+          attemptedAt: provenance.attemptedAt,
+          ...(provenance.resolvedAt !== undefined ? { resolvedAt: provenance.resolvedAt } : {}),
+          ...(provenance.bytes !== undefined ? { bytes: provenance.bytes } : {}),
+        },
+        updatedAt: this.now().toISOString(),
+      };
+      items[index] = updated;
+      await this.saveIndex(projectId, items);
+      return updated;
+    });
   }
 
   /**
@@ -719,22 +751,24 @@ export class SourceStore {
    * 对账负责（manifest 残留 entry 在下次 load 时按孤儿清理）。
    */
   async remove(projectId: string, sourceId: string): Promise<void> {
-    const items = await this.list(projectId);
-    const item = items.find((candidate) => candidate.sourceId === sourceId);
-    if (item === undefined) {
-      throw new NotFoundError("文献", sourceId);
-    }
-    if (item.fileName !== undefined) {
-      await rm(join(this.papersDir(projectId), item.fileName), { force: true });
-    }
-    await rm(join(this.parsedDir(projectId), `${sourceId}.json`), { force: true });
-    const chunksDir = join(this.projects.sourcesDir(projectId), "chunks");
-    await rm(join(chunksDir, `${sourceId}.jsonl`), { force: true });
-    await rm(join(chunksDir, `${sourceId}.vectors.json`), { force: true });
-    await this.saveIndex(
-      projectId,
-      items.filter((candidate) => candidate.sourceId !== sourceId),
-    );
+    return this.enqueue(projectId, async () => {
+      const items = await this.list(projectId);
+      const item = items.find((candidate) => candidate.sourceId === sourceId);
+      if (item === undefined) {
+        throw new NotFoundError("文献", sourceId);
+      }
+      if (item.fileName !== undefined) {
+        await rm(join(this.papersDir(projectId), item.fileName), { force: true });
+      }
+      await rm(join(this.parsedDir(projectId), `${sourceId}.json`), { force: true });
+      const chunksDir = join(this.projects.sourcesDir(projectId), "chunks");
+      await rm(join(chunksDir, `${sourceId}.jsonl`), { force: true });
+      await rm(join(chunksDir, `${sourceId}.vectors.json`), { force: true });
+      await this.saveIndex(
+        projectId,
+        items.filter((candidate) => candidate.sourceId !== sourceId),
+      );
+    });
   }
 
   private async saveIndex(projectId: string, items: SourceItem[]): Promise<void> {

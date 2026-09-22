@@ -10,7 +10,10 @@
  * - enrich：对已有条目执行一次 resolver 元数据补全（merge 规则见 metadataMerge）;
  * - link：同一研究工作多版本（preprint / conference / journal）的轻量关系建立
  *   （workKey + relatedSourceIds + versionType；不做自动识别、不合并 Source）；
- * - removeSource：Evidence 引用保护（被引用的正式 Source 禁止删除，409）。
+ * - removeSource：Evidence 引用保护（被引用的正式 Source 禁止删除，409）；
+ * - M9.3：tryResolveFullText 的批量形态（resolveFullTextBatch，有界并发 +
+ *   partial success 汇总）与手动 PDF 补挂（attachManualFullText，自动解析
+ *   失败的人工 fallback，与自动路径同构）。
  */
 
 import { randomUUID } from "node:crypto";
@@ -23,6 +26,7 @@ import { ScholarlyResolver, type ResolverVerdict } from "../citation/scholarly.j
 import type { CandidateAddResult, CandidateSource, CandidateStatus, AddCandidateInput } from "./CandidateStore.js";
 import { mapBibEntry, parseBibTeX } from "./bibtex.js";
 import { buildIdentity, normalizeArxivId, canonicalUrl, normalizeDoi, type SourceIdentity } from "./identity.js";
+import { mapWithConcurrency, assertValidConcurrency } from "../util/concurrency.js";
 import type {
   SourceItem,
   SourceMetadata,
@@ -82,6 +86,33 @@ export interface FullTextResult {
   note?: string;
 }
 
+/** 批量全文解析的逐条结局（M9.3；source 在极端竞态（执行中条目被删）下缺省） */
+export interface BatchFullTextEntry {
+  sourceId: string;
+  outcome: FullTextOutcome;
+  source?: SourceItem;
+  note?: string;
+}
+
+/** 批量全文解析汇总（M9.3）：partial success——成功项保留，失败项不回滚任何人 */
+export interface BatchFullTextSummary {
+  total: number;
+  resolved: number;
+  notFound: number;
+  failed: number;
+  notResolvable: number;
+  /** 已有全文（skipped_has_file）：幂等跳过，不算失败 */
+  skipped: number;
+}
+
+export interface BatchFullTextResult {
+  summary: BatchFullTextSummary;
+  results: BatchFullTextEntry[];
+}
+
+/** 批量全文解析默认并发（与 review/summary 同档；配置覆盖见 config.ts） */
+export const DEFAULT_FULLTEXT_BATCH_CONCURRENCY = 3;
+
 /**
  * M7.2 全文能力注入面（serviceStack 装配后注入；测试注入 fake）。
  * 缺省未注入 = tryResolveFullText 干净 no-op（M7.1 行为不变）。
@@ -105,6 +136,8 @@ export interface SourceImportServiceOptions {
   evidence?: EvidenceStore;
   /** 元数据解析器（DOI/arXiv 导入与 enrich；测试注入 fake providers） */
   scholarly?: ScholarlyResolver;
+  /** 批量全文解析有界并发度（M9.3；缺省 3，与 review/summary 同档） */
+  batchConcurrency?: number;
   log?: (message: string) => void;
 }
 
@@ -114,6 +147,7 @@ export class SourceImportService {
   private readonly candidates: CandidateStore;
   private readonly evidence?: EvidenceStore;
   private readonly scholarly?: ScholarlyResolver;
+  private readonly batchConcurrency: number;
   private readonly log: (message: string) => void;
   /** M7.2 全文能力（缺省未装配；attachFullTextSupport 注入） */
   private fullText?: FullTextSupport;
@@ -124,6 +158,8 @@ export class SourceImportService {
     this.candidates = options.candidates;
     this.evidence = options.evidence;
     this.scholarly = options.scholarly;
+    this.batchConcurrency = options.batchConcurrency ?? DEFAULT_FULLTEXT_BATCH_CONCURRENCY;
+    assertValidConcurrency(this.batchConcurrency, "batchConcurrency");
     this.log = options.log ?? (() => {});
   }
 
@@ -539,6 +575,139 @@ export class SourceImportService {
       `[sources] projectId=${projectId} ${sourceId} 全文解析未成（${sawError ? "failed" : "not_found"}，attempts=${attempts}）：${note.slice(0, 160)}`,
     );
     return { outcome: sawError ? "failed" : "not_found", source: item, note };
+  }
+
+  /**
+   * 批量全文解析（M9.3）：mapWithConcurrency 有界并发逐条走 tryResolveFullText
+   * （每条 = 单轮有界尝试，语义与单篇端点完全一致；不 Promise.all 无限并发）。
+   *
+   * - partial success：单条结局是数据不是异常，成功项保留、失败项不回滚任何人
+   *   （tryResolveFullText 内部已吸收 resolver/下载错误；这里的 catch 只兜
+   *   「执行中条目被删」等极端竞态，按 failed 单条落账不推翻整批）；
+   * - 前置存在性校验：批次是用户显式操作，不存在的条目整体 400（不做半批静默）；
+   * - 幂等：已有全文的条目 skipped_has_file，不重复下载。
+   */
+  async resolveFullTextBatch(
+    projectId: string,
+    sourceIds: readonly string[],
+    options: { signal?: AbortSignal } = {},
+  ): Promise<BatchFullTextResult> {
+    await this.projects.getRequired(projectId);
+    const unique = [...new Set(sourceIds)];
+    const missing: string[] = [];
+    for (const sourceId of unique) {
+      if ((await this.sources.get(projectId, sourceId)) === null) {
+        missing.push(sourceId);
+      }
+    }
+    if (missing.length > 0) {
+      throw new BusinessError("INVALID_REQUEST", `文献不存在：${missing.join("、")}`);
+    }
+    // worker 结局：tryResolveFullText 的 FullTextResult，或竞态兜底的
+    // {outcome:"failed"}（条目执行中被删等，无 SourceItem 可带）
+    const outcomes = await mapWithConcurrency(
+      unique,
+      this.batchConcurrency,
+      async (sourceId): Promise<FullTextResult | { outcome: "failed"; sourceId: string; note: string }> => {
+        try {
+          return await this.tryResolveFullText(projectId, sourceId, options);
+        } catch (error) {
+          return { outcome: "failed", sourceId, note: errorText(error) };
+        }
+      },
+      { ...(options.signal !== undefined ? { signal: options.signal } : {}) },
+    );
+    const results: BatchFullTextEntry[] = outcomes.map((outcome, index) => {
+      const sourceId = unique[index]!;
+      if (outcome.ok) {
+        const value = outcome.value;
+        if ("sourceId" in value) {
+          return { sourceId, outcome: value.outcome, note: value.note };
+        }
+        return {
+          sourceId,
+          outcome: value.outcome,
+          source: value.source,
+          ...(value.note !== undefined ? { note: value.note } : {}),
+        };
+      }
+      return { sourceId, outcome: "failed", note: errorText(outcome.error) };
+    });
+    const summary: BatchFullTextSummary = { total: results.length, resolved: 0, notFound: 0, failed: 0, notResolvable: 0, skipped: 0 };
+    for (const entry of results) {
+      if (entry.outcome === "resolved") summary.resolved += 1;
+      else if (entry.outcome === "not_found") summary.notFound += 1;
+      else if (entry.outcome === "failed") summary.failed += 1;
+      else if (entry.outcome === "not_resolvable") summary.notResolvable += 1;
+      else summary.skipped += 1;
+    }
+    this.log(
+      `[sources] projectId=${projectId} 批量全文解析：${summary.resolved}/${summary.total} 成功` +
+        `（not_found=${summary.notFound} failed=${summary.failed} not_resolvable=${summary.notResolvable} skipped=${summary.skipped}）`,
+    );
+    return { summary, results };
+  }
+
+  /**
+   * 手动上传 PDF 补挂（M9.3：自动解析失败的人工 fallback）。与自动路径完全
+   * 同构：attachFile（PDF-only 文件名 / ≤20MB / 幂等守卫）→ %PDF- 魔数校验
+   * （与 downloadPdf 同纪律，扩展名对不上内容的文件在此拦下）→ 分析
+   * （失败不回滚挂载）→ provenance 记 resolver="manual-upload"（全文来源
+   * 可审计）→ 检索重建钩子。上传只声明「这个文件属于这篇文献」——不创建
+   * Evidence、不标 Verified（那是 M9.4 的核验管道职责）。
+   */
+  async attachManualFullText(
+    projectId: string,
+    sourceId: string,
+    input: { fileName: string; content: Buffer },
+  ): Promise<FullTextResult> {
+    await this.projects.getRequired(projectId);
+    const existing = await this.sources.getRequired(projectId, sourceId);
+    if (existing.fileName !== undefined) {
+      return { outcome: "skipped_has_file", source: existing };
+    }
+    if (input.content.subarray(0, 5).toString("latin1") !== "%PDF-") {
+      throw new BusinessError("INVALID_REQUEST", "上传内容不是 PDF（缺少 %PDF- 头）");
+    }
+    const support = this.fullText;
+    const attach = await this.sources.attachFile(projectId, sourceId, {
+      fileName: input.fileName,
+      content: input.content,
+      originalName: input.fileName,
+    });
+    if (!attach.attached) {
+      return { outcome: "skipped_has_file", source: attach.source };
+    }
+    let item = attach.source;
+    // 分析与自动路径同一语义：失败不回滚挂载（原始文件已落盘），如实 pending
+    const analyzer = support?.analyzer ?? new BuiltinPdfAnalyzer();
+    try {
+      const analysis = await analyzer.analyzeFile(await this.sources.filePath(projectId, sourceId));
+      item = await this.sources.setAnalysis(projectId, sourceId, analysis, {
+        ...(item.contentHash !== undefined ? { contentHash: item.contentHash } : {}),
+      });
+    } catch (error) {
+      this.log(`[sources] 全文 ${sourceId} 手动挂载分析失败（保持 pending，不影响挂载）：${errorText(error)}`);
+    }
+    item = await this.sources.setFullTextProvenance(projectId, sourceId, {
+      status: "resolved",
+      resolver: "manual-upload",
+      attempts: item.fullText?.attempts ?? 0,
+      attemptedAt: nowIso(),
+      resolvedAt: nowIso(),
+      bytes: input.content.byteLength,
+    });
+    if (support?.onFullTextAttached !== undefined) {
+      try {
+        await support.onFullTextAttached(projectId, sourceId);
+      } catch (error) {
+        this.log(`[sources] 全文 ${sourceId} 检索重建失败（下次检索自动自愈）：${errorText(error)}`);
+      }
+    }
+    this.log(
+      `[sources] projectId=${projectId} ${sourceId} 手动全文挂载成功（${input.content.byteLength}B）`,
+    );
+    return { outcome: "resolved", source: item };
   }
 
   // ---- 版本关系（work identity）----

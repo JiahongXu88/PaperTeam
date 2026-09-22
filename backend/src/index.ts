@@ -218,6 +218,7 @@ export async function startBackend(): Promise<void> {
       ...(config.citation.contactEmail ? { contactEmail: config.citation.contactEmail } : {}),
     },
     search: config.search,
+    fullText: { batchConcurrency: config.fullText.batchConcurrency },
     ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
     log: (message) => console.log(message),
   });

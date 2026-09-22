@@ -156,6 +156,16 @@ export interface RetrievalConfig {
   chunkOverlapTokens: number;
 }
 
+/** 文献全文获取配置（M9.3；可缺省） */
+export interface FullTextConfig {
+  /**
+   * 批量全文解析的有界并发度（PAPERTEAM_FULLTEXT_BATCH_CONCURRENCY；无效值
+   * 回退默认 3，不报错——性能调优项而非正确性约束，与 reviewConcurrency 同
+   * 纪律；每条是「resolver 链 + 下载」的真实外呼，过高对 OA 服务方失礼）。
+   */
+  batchConcurrency: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -174,6 +184,7 @@ export interface AppConfig {
   pdf: PdfConfig;
   search: SearchConfig;
   retrieval: RetrievalConfig;
+  fullText: FullTextConfig;
   skills: SkillsConfig;
   /**
    * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
@@ -219,6 +230,8 @@ const DEFAULT_ACADEMIC_PASS_SCORE = 80;
 const DEFAULT_STYLE_RISK_MAX = 35;
 const DEFAULT_REVIEW_CONCURRENCY = 3;
 const DEFAULT_SUMMARY_CONCURRENCY = 3;
+/** 批量全文解析默认并发（M9.3）：resolver 链 + 下载是外呼，3 与 review/summary 同档 */
+const DEFAULT_FULLTEXT_BATCH_CONCURRENCY = 3;
 /** 并发度允许范围：1（纯串行）到 8（Provider 限流压力已明显） */
 const CONCURRENCY_MIN = 1;
 const CONCURRENCY_MAX = 8;
@@ -480,6 +493,13 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       }),
     },
     retrieval: readRetrievalConfig(source),
+    fullText: {
+      batchConcurrency: readIntWithFallback(source, "PAPERTEAM_FULLTEXT_BATCH_CONCURRENCY", {
+        default: DEFAULT_FULLTEXT_BATCH_CONCURRENCY,
+        min: CONCURRENCY_MIN,
+        max: CONCURRENCY_MAX,
+      }),
+    },
   };
 }
 

@@ -128,11 +128,13 @@ export interface ServiceStackOptions {
   /**
    * M7.2 FullTextResolver 装配。缺省启用（Unpaywall 需 email 配置，未配置
    * 自动不注册）；enabled=false 不注入 FullTextSupport（promote 后台尝试
-   * no-op，测试保持离线）；resolvers 覆盖默认装配（测试注入 fake）。
+   * no-op，测试保持离线）；resolvers 覆盖默认装配（测试注入 fake）；
+   * batchConcurrency 是 M9.3 批量解析的有界并发度（缺省 3）。
    */
   fullText?: {
     enabled?: boolean;
     resolvers?: FullTextResolver[];
+    batchConcurrency?: number;
   };
   log?: (message: string) => void;
 }
@@ -329,6 +331,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     candidates,
     evidence,
     scholarly: citationIntegrity.scholarlyResolver,
+    ...(options.fullText?.batchConcurrency !== undefined
+      ? { batchConcurrency: options.fullText.batchConcurrency }
+      : {}),
     log,
   });
   // M6.3 Research Discovery：所有 search provider 共享一个 ProviderHttpClient

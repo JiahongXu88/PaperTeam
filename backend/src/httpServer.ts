@@ -94,6 +94,9 @@ const UPLOAD_BODY_SLACK_BYTES = 1024 * 1024;
 const MAX_SOURCE_UPLOAD_BODY_BYTES = Math.ceil((MAX_SOURCE_BYTES * 4) / 3) + UPLOAD_BODY_SLACK_BYTES;
 const MAX_PAPER_UPLOAD_BODY_BYTES = Math.ceil((MAX_PAPER_PDF_BYTES * 4) / 3) + UPLOAD_BODY_SLACK_BYTES;
 
+/** 批量全文解析单请求条数上限（M9.3；同步批次，防误传全库长阻塞） */
+const MAX_BATCH_FULLTEXT_SOURCES = 50;
+
 /** SSE 心跳间隔（毫秒） */
 const SSE_HEARTBEAT_MS = 15_000;
 
@@ -1091,6 +1094,40 @@ async function handleProjectResourceRoutes(
           result.note ?? `文献 ${sourceId} 缺少可自动解析全文的身份（DOI / arXiv）`,
         );
       }
+      sendJson(res, 200, {
+        source: result.source,
+        outcome: result.outcome,
+        ...(result.note !== undefined ? { note: result.note } : {}),
+      });
+      return true;
+    }
+
+    // M9.3：批量全文解析（有界并发逐条走 tryResolveFullText；partial success 汇总）
+    if (rest === "/resolve-fulltext") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const sourceIds = readBatchSourceIds(body);
+      const result = await stack.sourceImport.resolveFullTextBatch(projectId, sourceIds);
+      sendJson(res, 200, result);
+      return true;
+    }
+
+    // M9.3：手动上传 PDF 补挂（自动解析失败的人工 fallback；不创建 Evidence）
+    const attachFullTextMatch = /^\/([A-Z]\d{2,})\/fulltext$/.exec(rest);
+    if (attachFullTextMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const sourceId = attachFullTextMatch[1] ?? "";
+      const { fileName, content } = await readUploadBody(req, MAX_SOURCE_UPLOAD_BODY_BYTES);
+      const result = await stack.sourceImport.attachManualFullText(projectId, sourceId, {
+        fileName,
+        content,
+      });
       sendJson(res, 200, {
         source: result.source,
         outcome: result.outcome,
@@ -3079,6 +3116,27 @@ async function readUploadBody(
     throw new BusinessError("INVALID_REQUEST", "请求体必须包含 fileName 与 contentBase64");
   }
   return { body, fileName, content: readBase64Field(body, "contentBase64") };
+}
+
+/**
+ * 批量全文解析的 sourceIds 字段（M9.3）：非空字符串数组，逐条形如 S001，
+ * 1..MAX_BATCH_FULLTEXT_SOURCES 条（服务层另行去重保序 + 存在性校验）。
+ */
+function readBatchSourceIds(body: Record<string, unknown>): string[] {
+  const value = body["sourceIds"];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空数组字段 sourceIds");
+  }
+  if (value.length > MAX_BATCH_FULLTEXT_SOURCES) {
+    throw new BusinessError("INVALID_REQUEST", `批量全文解析单次最多 ${MAX_BATCH_FULLTEXT_SOURCES} 条`);
+  }
+  const sourceIds = value.map((entry) => {
+    if (typeof entry !== "string" || !/^[A-Z]\d{2,}$/.test(entry)) {
+      throw new BusinessError("INVALID_REQUEST", `sourceIds 含非法条目（期望形如 S001）：${String(entry).slice(0, 40)}`);
+    }
+    return entry;
+  });
+  return sourceIds;
 }
 
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {

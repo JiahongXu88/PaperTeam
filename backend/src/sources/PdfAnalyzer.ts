@@ -298,8 +298,10 @@ function extractTextOperators(content: string): string {
   const parts: string[] = [];
   // (string) Tj
   const tjPattern = /\(((?:\\.|[^\\()])*)\)\s*Tj/g;
-  // [ (s1) num (s2) … ] TJ
-  const tjArrayPattern = /\[((?:\\.|[^\]])*)\]\s*TJ/g;
+  // [ (s1) num (s2) … ] TJ——字符类必须排除反斜杠：`\` 只由 \\. 分支消费，
+  // 否则 (?:\\.|[^\]]*) 两分支都能匹配反斜杠 → 歧义交替引发指数回溯
+  // （真实论文 PDF 的大内容流上实测单流 30s+，M6.2 预存缺陷，M9.3 e2e 暴露）
+  const tjArrayPattern = /\[((?:\\.|[^\]\\])*)\]\s*TJ/g;
   let match: RegExpExecArray | null;
   while ((match = tjPattern.exec(content)) !== null) {
     parts.push(decodePdfString(match[1] ?? ""));

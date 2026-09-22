@@ -215,6 +215,23 @@ describe("BuiltinPdfAnalyzer（确定性文本层）", () => {
     expect(analysis.status).toBe("failed");
     expect(analysis.note).toContain("不是 PDF");
   });
+
+  it("高反斜杠密度的大内容流不触发灾难性回溯（M6.2 预存缺陷回归锚）", () => {
+    // 旧 tjArrayPattern 的 (?:\\.|[^\]]*) 两分支都能匹配反斜杠 → 歧义交替，
+    // 真实论文 PDF（attention.pdf 流 #21）实测单流 30s+（事件循环被同步阻塞，
+    // manual fulltext attach / PDF 上传全链挂起）。修复后必须线性：
+    // 本用例构造同形态高压输入，200ms 内完成即通过（回归时通常 >10s）。
+    const unit = "[(At\\)tention] -120 [(is\\)all\\\\you\\\\need)] 3.5 [(T\\)j)] TJ ";
+    const hostile = `BT /F1 12 Tf ${unit.repeat(2000)} ET`;
+    const content = Buffer.from(hostile, "latin1");
+    const pdf = Buffer.concat([Buffer.from("%PDF-1.4\nstream\n"), content, Buffer.from("\nendstream\n")]);
+    const analyzer = new BuiltinPdfAnalyzer();
+    const started = Date.now();
+    const analysis = analyzer.analyzeBuffer(pdf);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(analysis.status).not.toBe("failed");
+    expect(analysis.extractedChars).toBeGreaterThan(0);
+  });
 });
 
 describe("AgentMultimodalAnalyzer（扩展点）", () => {

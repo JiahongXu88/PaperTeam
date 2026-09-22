@@ -68,9 +68,67 @@ export interface SourceItemView {
   workKey?: string;
   versionType?: SourceVersionType;
   relatedSourceIds?: string[];
+  /**
+   * 全文获取 provenance（M9.3 前端消费；Backend 全量序列化，此处只取
+   * 状态列需要的最小子集——判等键细节不进 DTO）。缺省 = 老数据 / 未尝试。
+   */
+  fullText?: SourceFullTextView;
+  /** 身份键子集（Backend 全量序列化；UI 只用于「可否自动获取全文」判定） */
+  identity?: { doi?: string; arxivId?: string; openalexId?: string };
   bytes: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * 全文获取 provenance（与 Backend SourceFullTextProvenance 对齐）：
+ * resolved=全文已挂载；not_found=明确无 OA（重试无意义）；failed=系统性失败
+ * （可重试）。manual-upload 是 resolver 字段的保留值（手动补挂来源标记）。
+ */
+export interface SourceFullTextView {
+  status: "resolved" | "not_found" | "failed";
+  /** 命中的 resolver（unpaywall / oa-url / arxiv / manual-upload） */
+  resolver?: string;
+  url?: string;
+  license?: string;
+  note?: string;
+  attempts: number;
+  attemptedAt: string;
+  resolvedAt?: string;
+  bytes?: number;
+}
+
+/** 全文解析调用结局（Backend FullTextOutcome；数据不是异常） */
+export type FullTextOutcomeView =
+  | "resolved"
+  | "not_found"
+  | "failed"
+  | "skipped_has_file"
+  | "not_resolvable";
+
+/** 单篇全文解析响应：POST /sources/:sid/resolve-fulltext | POST /sources/:sid/fulltext */
+export interface FullTextResolveResultView {
+  source: SourceItemView;
+  outcome: FullTextOutcomeView;
+  note?: string;
+}
+
+/** 批量全文解析响应（M9.3；partial success 汇总） */
+export interface BatchFullTextResultView {
+  summary: {
+    total: number;
+    resolved: number;
+    notFound: number;
+    failed: number;
+    notResolvable: number;
+    skipped: number;
+  };
+  results: Array<{
+    sourceId: string;
+    outcome: FullTextOutcomeView;
+    source?: SourceItemView;
+    note?: string;
+  }>;
 }
 
 /** DOI / arXiv 导入附带的元数据解析记录（如实呈现 resolver 结论；解析失败不阻塞导入） */

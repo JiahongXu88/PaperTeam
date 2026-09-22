@@ -30,11 +30,14 @@ import {
   reevaluateQualityGate,
 } from "../api/evidence.js";
 import {
+  attachSourceFullTextPdf,
+  batchResolveSourceFullText,
   importSourceByArxiv,
   importSourceBibtex,
   importSourceByDoi,
   importSourceByUrl,
   listSources,
+  resolveSourceFullText,
   uploadSourceFile,
 } from "../api/sources.js";
 import {
@@ -567,6 +570,43 @@ type SourceImportInput =
   | { mode: "arxiv"; payload: ArxivImportInput }
   | { mode: "url"; payload: UrlImportInput }
   | { mode: "bibtex"; payload: BibtexImportInput };
+
+/** 单篇全文解析（M9.3；成功/失败后都失效重取——fullText provenance 在列表条目上） */
+export function useResolveSourceFullText(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceId: string) => resolveSourceFullText(projectId ?? "", sourceId),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId ?? "") });
+    },
+  });
+}
+
+/** 批量全文解析（M9.3；后端有界并发 + partial success 汇总，同步返回） */
+export function useBatchResolveSourceFullText(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (sourceIds: string[]) => batchResolveSourceFullText(projectId ?? "", sourceIds),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId ?? "") });
+    },
+  });
+}
+
+/** 手动 PDF 补挂（M9.3；自动解析失败的人工 fallback） */
+export function useAttachSourceFullText(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { sourceId: string; fileName: string; contentBase64: string }) =>
+      attachSourceFullTextPdf(projectId ?? "", input.sourceId, {
+        fileName: input.fileName,
+        contentBase64: input.contentBase64,
+      }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId ?? "") });
+    },
+  });
+}
 
 // ---- Discovery（M7.1c：检索 → 候选审阅 → promote 入文献库；全部复用既有后端端点） ----
 

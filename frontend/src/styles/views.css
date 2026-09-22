@@ -2479,6 +2479,32 @@
   overflow-wrap: anywhere;
 }
 
+/* M9.3 全文激活：可勾选的 metadata-only 文献行（勾选列对齐 candidate-row） */
+.source-row.is-selectable {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: var(--s-3);
+}
+
+.source-row.is-selectable > .source-check {
+  grid-row: 1 / span 3;
+  align-self: start;
+  margin-top: 3px;
+}
+
+.source-row.is-selectable > .source-row-main,
+.source-row.is-selectable > .source-row-meta,
+.source-row.is-selectable > .source-row-actions {
+  grid-column: 2;
+}
+
+.source-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+}
+
 /* Discovery 候选 / 检索结果行（M7.1c）：source-row 信息层级 + 行首勾选列 */
 .candidate-row {
   display: grid;

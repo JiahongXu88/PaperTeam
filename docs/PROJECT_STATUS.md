@@ -945,7 +945,16 @@ idea_to_paper UI 入口 + 执行结果快照 + Search Result → Candidate HITL
 接线 + Web 检索可用性可见性 + WSL Docker 真实 live smoke + mixed
 academic/web 验证，见
 [research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md](research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md)）**；
-后续编号调整为 M9.3 FullText Activation → M9.4 Anchored Evidence
+**M9.3 Academic FullText Activation ✅（激活 M7.2 FullTextResolver——批量
+全文端点（mapWithConcurrency 有界并发 + partial success）+ 手动 PDF 补挂
+端点（manual-upload provenance）+ 文献库 UI 五态全文状态列 / 单篇 / 批量 /
+手动上传；修复两个实施中暴露的预存缺陷（SourceStore 并发写 lost update →
+项目写队列；BuiltinPdfAnalyzer 正则灾难性回溯，真实论文 PDF 单流 33s →
+2ms）；真实 OA live smoke 12/12（2×PLOS CC-BY oa-url + 1×arXiv：批量 →
+文件 → chunk → retrieve_library 命中；手动 fallback；幂等零重复下载；
+Evidence 零写入）+ sources-fulltext 浏览器 E2E，见
+[research/M9.3_FULLTEXT_ACTIVATION.md](research/M9.3_FULLTEXT_ACTIVATION.md)）**；
+后续编号调整为 M9.4 Anchored Evidence
 Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
 Full Paper E2E Acceptance。
 

@@ -315,11 +315,16 @@ bibliography = LLM 字符串(@article 一律) ──✗── 引用可追踪打
 - **并行 Step 0（部署项，非代码）**：SearXNG 容器真实部署验证
   （compose profile research 已有模板；需有 Docker 的环境）。
 
-> **M9 阶段编号映射（2026-09-22 M9.2 插入后更新）**：Step 0+1+2 已由
+> **M9 阶段编号映射（2026-09-22 M9.3 完成后更新）**：Step 0+1+2 已由
 > M9.1（入口 + 快照衔接）与 **M9.2 General Web Search Activation**
 > （SearXNG 部署激活 + 可用性可见性 + WSL Docker 真实 live smoke，见
 > [M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md](M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md)）
-> 完成；Step 3–6 顺延为 **M9.3 FullText Activation → M9.4 Anchored Evidence
+> 完成；**Step 3 已由 M9.3 Academic FullText Activation 完成（2026-09-22：
+> 批量全文端点（有界并发 + partial success）+ 手动 PDF 补挂 + fullText
+> 五态状态列 + SourceStore 并发写串行化与 BuiltinPdfAnalyzer 回溯两个
+> 预存缺陷修复 + 真实 OA live smoke 12/12，见
+> [M9.3_FULLTEXT_ACTIVATION.md](M9.3_FULLTEXT_ACTIVATION.md)）**；
+> Step 4–6 顺延为 **M9.4 Anchored Evidence
 > Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
 > Full Paper E2E Acceptance**。§11 的 M9 章节子任务即上述 Step 1–6。
 

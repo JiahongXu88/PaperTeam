@@ -4,9 +4,18 @@ import { ErrorState, Loading } from "../common/StateViews.js";
 import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import { formatBytes, formatDateTime } from "../../utils/format.js";
 import { fileToBase64, MAX_SOURCE_UPLOAD_BYTES, validateSourceFile } from "../../utils/file.js";
-import { useImportSource, useSources, useUploadSource } from "../../hooks/queries.js";
+import {
+  useAttachSourceFullText,
+  useBatchResolveSourceFullText,
+  useImportSource,
+  useResolveSourceFullText,
+  useSources,
+  useUploadSource,
+} from "../../hooks/queries.js";
 import type {
+  BatchFullTextResultView,
   BibTexImportResultView,
+  FullTextOutcomeView,
   SourceImportMode,
   SourceItemView,
   SourceOrigin,
@@ -23,6 +32,14 @@ import type {
  * PDF/文件上传、DOI、arXiv、URL、BibTeX——标识符导入只建 canonical 记录
  * （DOI/arXiv 默认经 ScholarlyResolver 补全元数据，未命中如实记录不伪造；
  * URL 不抓正文）。导入 ≠ 证据：Evidence 走 M6.5 grounding 管道，与库独立。
+ *
+ * M9.3 全文激活（复用 M7.2 后端能力）：
+ * - 每条文献显示全文状态（全文已获取 / 未获取 / 无开放全文 / 获取失败 /
+ *   不可自动获取——以后端 fullText provenance + fileName 为事实源，不虚构）；
+ * - metadata-only 条目可单篇「获取全文」（resolve-fulltext）或勾选批量补全
+ *   （有界并发 + partial success 汇总）；不可自动获取（无 DOI/arXiv 身份，
+ *   如 Web 候选）的条目走「上传 PDF」人工 fallback；
+ * - 全文 ≠ Evidence：获取全文 / 上传 PDF 不产生任何核验证据（M9.4 边界）。
  */
 
 type AddMode = "pdf" | SourceImportMode;
@@ -111,11 +128,134 @@ function ResolveNoteLine({ resolve }: { resolve: SourceResolveNote }) {
   );
 }
 
-function SourceRow({ source }: { source: SourceItemView }) {
+// ---- 全文状态（M9.3；以后端 fullText provenance + fileName 为事实源） ----
+
+/** 条目是否具备可自动解析全文的学术身份（DOI / arXiv / OpenAlex） */
+function hasAcademicIdentity(source: SourceItemView): boolean {
+  return (
+    source.metadata.doi !== undefined ||
+    source.metadata.arxivId !== undefined ||
+    source.identity?.doi !== undefined ||
+    source.identity?.arxivId !== undefined ||
+    source.identity?.openalexId !== undefined
+  );
+}
+
+type FullTextDisplay = { kind: string; label: string; tone: string; title: string };
+
+const FULLTEXT_LABELS: Record<string, { label: string; tone: string }> = {
+  available: { label: "全文已获取", tone: "chip-tone-info" },
+  untried: { label: "全文未获取", tone: "" },
+  not_found: { label: "无开放全文", tone: "" },
+  failed: { label: "获取失败", tone: "chip-tone-warn" },
+  not_resolvable: { label: "不可自动获取", tone: "chip-tone-warn" },
+};
+
+/** 全文状态推导：有文件 → 已获取；provenance 如实映射；无学术身份 → 不可自动获取 */
+function fullTextDisplay(source: SourceItemView): FullTextDisplay {
+  const base = FULLTEXT_LABELS;
+  let kind: keyof typeof base;
+  if (source.fileName !== undefined || source.fullText?.status === "resolved") {
+    kind = "available";
+  } else if (source.fullText?.status === "failed") {
+    kind = "failed";
+  } else if (source.fullText?.status === "not_found") {
+    kind = hasAcademicIdentity(source) ? "not_found" : "not_resolvable";
+  } else {
+    kind = hasAcademicIdentity(source) ? "untried" : "not_resolvable";
+  }
+  const provenance = source.fullText;
+  const title =
+    kind === "available" && provenance !== undefined
+      ? `全文来源：${provenance.resolver === "manual-upload" ? "手动上传" : provenance.resolver ?? "未知"}${
+          provenance.url !== undefined ? `（${provenance.url}）` : ""
+        }${provenance.license !== undefined ? ` · ${provenance.license}` : ""} · 尝试 ${provenance.attempts} 次`
+      : provenance?.note ?? base[kind]!.label;
+  return { kind, label: base[kind]!.label, tone: base[kind]!.tone, title };
+}
+
+/** 单篇/批量共用的结局文案（如实呈现，不粉饰） */
+function outcomeLabel(outcome: FullTextOutcomeView): string {
+  switch (outcome) {
+    case "resolved":
+      return "已获取全文";
+    case "not_found":
+      return "无开放全文";
+    case "failed":
+      return "获取失败";
+    case "skipped_has_file":
+      return "已有全文（跳过）";
+    case "not_resolvable":
+      return "不可自动获取";
+  }
+}
+
+/** 批量汇总 note（成功/失败混合都如实呈现；失败明细折叠） */
+function BatchFullTextNote({ result }: { result: BatchFullTextResultView }) {
+  const { summary } = result;
+  const attention = result.results.filter(
+    (entry) => entry.outcome === "failed" || (entry.outcome === "not_found" && entry.note !== undefined),
+  );
+  return (
+    <>
+      <p className="note note-success" role="status">
+        <span>
+          <span className="note-mark">✓</span> 批量获取完成：共 {summary.total} ｜ 已获取 {summary.resolved} ｜
+          无开放全文 {summary.notFound} ｜ 失败 {summary.failed} ｜ 不可自动获取 {summary.notResolvable} ｜
+          已有全文 {summary.skipped}。失败项不影响已成功项。
+        </span>
+      </p>
+      {attention.length > 0 ? (
+        <details className="details-block">
+          <summary>{attention.length} 条未获取（可重试或手动上传 PDF）</summary>
+          <ul className="details-body notes-list">
+            {attention.map((entry) => (
+              <li key={entry.sourceId}>
+                <span className="mono">{entry.sourceId}</span>：{outcomeLabel(entry.outcome)}
+                {entry.note !== undefined ? `（${entry.note.slice(0, 200)}）` : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </>
+  );
+}
+
+function SourceRow({
+  source,
+  selectable,
+  checked,
+  onToggle,
+  onResolve,
+  onPickFile,
+  actionBusy,
+}: {
+  source: SourceItemView;
+  selectable: boolean;
+  checked: boolean;
+  onToggle: (sourceId: string) => void;
+  onResolve: (sourceId: string) => void;
+  onPickFile: (sourceId: string, file: File | undefined) => void;
+  actionBusy: boolean;
+}) {
   const meta = source.metadata;
   const title = meta.title ?? source.originalName ?? source.fileName ?? source.sourceId;
+  const fullText = fullTextDisplay(source);
+  const autoResolvable = selectable && hasAcademicIdentity(source);
+  const attachInputId = `source-fulltext-file-${source.sourceId}`;
   return (
-    <li className="source-row">
+    <li className={`source-row${selectable ? " is-selectable" : ""}`}>
+      {selectable ? (
+        <input
+          type="checkbox"
+          className="source-check"
+          checked={checked}
+          onChange={() => onToggle(source.sourceId)}
+          aria-label={`选择 ${title}`}
+          disabled={actionBusy}
+        />
+      ) : null}
       <div className="source-row-main">
         <span className="source-title" title={title}>
           {title}
@@ -126,6 +266,9 @@ function SourceRow({ source }: { source: SourceItemView }) {
             <span className="chip chip-outline">{TYPE_LABELS[source.sourceType]}</span>
           ) : null}
           <span className={`chip ${statusTone(source.status)}`}>{STATUS_LABELS[source.status]}</span>
+          <span className={`chip chip-outline ${fullText.tone}`} title={fullText.title}>
+            {fullText.label}
+          </span>
           <span className="chip chip-outline" title="文献在项目中的角色">{ROLE_LABELS[source.sourceRole]}</span>
         </span>
       </div>
@@ -142,6 +285,43 @@ function SourceRow({ source }: { source: SourceItemView }) {
         <span className="muted mono">{source.sourceId}</span>
         <span className="muted">{formatDateTime(source.updatedAt) ?? "—"}</span>
       </div>
+      {selectable ? (
+        <div className="source-row-actions">
+          <button
+            type="button"
+            className="btn btn-small"
+            disabled={actionBusy || !autoResolvable}
+            title={
+              autoResolvable
+                ? "经 Unpaywall / OpenAlex / arXiv 解析开放全文（单轮有界尝试）"
+                : "缺少 DOI / arXiv 身份，无法自动获取——可上传本地 PDF"
+            }
+            onClick={() => onResolve(source.sourceId)}
+            data-testid={`resolve-fulltext-${source.sourceId}`}
+          >
+            {actionBusy ? "获取中…" : "获取全文"}
+          </button>
+          <label
+            className="btn btn-small"
+            htmlFor={attachInputId}
+            title="手动上传本地 PDF 作为该文献全文（自动获取失败时的人工兜底）"
+          >
+            {actionBusy ? "上传中…" : "上传 PDF"}
+          </label>
+          <input
+            id={attachInputId}
+            type="file"
+            accept=".pdf,application/pdf"
+            hidden
+            disabled={actionBusy}
+            aria-label={`为 ${title} 上传 PDF 全文`}
+            onChange={(event) => {
+              onPickFile(source.sourceId, event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+        </div>
+      ) : null}
     </li>
   );
 }
@@ -457,6 +637,86 @@ function BibtexResultNote({ result }: { result: BibTexImportResultView }) {
 
 export function SourcesPanel({ projectId }: { projectId: string }) {
   const { data, isPending, isError, error, refetch } = useSources(projectId);
+  const resolve = useResolveSourceFullText(projectId);
+  const batch = useBatchResolveSourceFullText(projectId);
+  const attach = useAttachSourceFullText(projectId);
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [resolveNote, setResolveNote] = useState<string | null>(null);
+
+  const toggle = (sourceId: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(sourceId)) {
+        next.delete(sourceId);
+      } else {
+        next.add(sourceId);
+      }
+      return next;
+    });
+  };
+
+  const onResolve = (sourceId: string) => {
+    setActionError(null);
+    setResolveNote(null);
+    resolve.mutate(sourceId, {
+      onSuccess: (result) => {
+        setResolveNote(`${sourceId}：${outcomeLabel(result.outcome)}${result.note !== undefined ? `（${result.note.slice(0, 200)}）` : ""}`);
+      },
+      onError: (mutationError) => {
+        setActionError(`全文获取失败（${sourceId}）：${formatApiError(mutationError)}`);
+      },
+    });
+  };
+
+  const onPickFile = async (sourceId: string, file: File | undefined) => {
+    setActionError(null);
+    setResolveNote(null);
+    if (file === undefined) {
+      return;
+    }
+    const name = file.name.toLowerCase();
+    if (!name.endsWith(".pdf")) {
+      setActionError("手动补挂只接受 .pdf 文件");
+      return;
+    }
+    if (file.size === 0) {
+      setActionError("文件为空");
+      return;
+    }
+    if (file.size > MAX_SOURCE_UPLOAD_BYTES) {
+      setActionError(`PDF 超过 ${Math.floor(MAX_SOURCE_UPLOAD_BYTES / (1024 * 1024))}MB 上限`);
+      return;
+    }
+    let contentBase64: string;
+    try {
+      contentBase64 = await fileToBase64(file);
+    } catch (readError) {
+      setActionError(`读取文件失败：${readError instanceof Error ? readError.message : String(readError)}`);
+      return;
+    }
+    attach.mutate(
+      { sourceId, fileName: file.name, contentBase64 },
+      {
+        onSuccess: (result) => {
+          setResolveNote(
+            result.outcome === "resolved"
+              ? `${sourceId}：已挂载手动上传的 PDF 全文`
+              : `${sourceId}：已有全文，未覆盖（${outcomeLabel(result.outcome)}）`,
+          );
+        },
+        onError: (mutationError) => {
+          setActionError(`上传失败（${sourceId}）：${formatApiError(mutationError)}`);
+        },
+      },
+    );
+  };
+
+  const selectableIds = (data ?? []).filter((source) => source.fileName === undefined).map((source) => source.sourceId);
+  // 列表刷新后清掉已不可选择的勾选（如条目已获得全文）
+  const effectiveSelected = new Set([...selected].filter((id) => selectableIds.includes(id)));
+  const actionBusy = resolve.isPending || batch.isPending || attach.isPending;
 
   return (
     <div className="panel-stack">
@@ -466,6 +726,55 @@ export function SourcesPanel({ projectId }: { projectId: string }) {
           <h2>文献列表</h2>
           <span className="section-note">{data?.length ?? 0} 条</span>
         </div>
+        {selectableIds.length > 0 ? (
+          <div className="action-row">
+            <button
+              type="button"
+              className="btn btn-small"
+              disabled={actionBusy || effectiveSelected.size === 0}
+              title="对选中条目批量解析开放全文（有界并发；失败不影响已成功项）"
+              onClick={() => {
+                setActionError(null);
+                setResolveNote(null);
+                batch.mutate([...effectiveSelected], {
+                  onSuccess: () => setSelected(new Set()),
+                });
+              }}
+              data-testid="batch-resolve-fulltext"
+            >
+              {batch.isPending ? `获取中…（${effectiveSelected.size} 篇）` : `批量获取全文（${effectiveSelected.size}）`}
+            </button>
+            <button
+              type="button"
+              className="btn btn-small"
+              disabled={actionBusy || effectiveSelected.size === selectableIds.length}
+              onClick={() => setSelected(new Set(selectableIds))}
+            >
+              全选待获取
+            </button>
+            <span className="field-help">先选条目，再批量补全开放全文；不可自动获取的可单独上传 PDF。</span>
+          </div>
+        ) : null}
+        {batch.isError ? (
+          <ErrorState
+            title="批量获取失败"
+            message={formatApiError(batch.error)}
+            detail={formatApiErrorDetail(batch.error)}
+          />
+        ) : null}
+        {batch.isSuccess && batch.data !== undefined ? <BatchFullTextNote result={batch.data} /> : null}
+        {resolveNote !== null ? (
+          <p className="note" role="status">
+            <span>
+              <span className="note-mark">!</span> {resolveNote}
+            </span>
+          </p>
+        ) : null}
+        {actionError !== null ? (
+          <p className="form-error" role="alert">
+            {actionError}
+          </p>
+        ) : null}
         {isPending ? (
           <Loading label="加载文献库…" />
         ) : isError ? (
@@ -482,7 +791,16 @@ export function SourcesPanel({ projectId }: { projectId: string }) {
         ) : (
           <ul className="source-list">
             {data.map((source) => (
-              <SourceRow key={source.sourceId} source={source} />
+              <SourceRow
+                key={source.sourceId}
+                source={source}
+                selectable={source.fileName === undefined}
+                checked={effectiveSelected.has(source.sourceId)}
+                onToggle={toggle}
+                onResolve={onResolve}
+                onPickFile={(id, file) => void onPickFile(id, file)}
+                actionBusy={actionBusy}
+              />
             ))}
           </ul>
         )}

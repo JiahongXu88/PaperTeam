@@ -32,10 +32,29 @@ docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md。
      三类真实搜索、mixed academic+web 计划执行 academic 10 / web 6+6、
      两类显式保存候选、Literature / Evidence 零增长）。报告见
      docs/research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md。
+3. **M9.3 Academic FullText Activation**（本批）：文献库全文从「能力存在、
+   产品不通」到真实可用——**激活** M7.2 FullTextResolver（零第二套存储 /
+   解析 / 检索）：
+   - 批量全文端点 `POST /sources/resolve-fulltext`（`mapWithConcurrency`
+     有界并发，`PAPERTEAM_FULLTEXT_BATCH_CONCURRENCY` 默认 3；partial
+     success 五桶汇总，失败不回滚成功；已有全文 skipped 幂等）；
+   - 手动 PDF 补挂端点 `POST /sources/:sid/fulltext`（%PDF- 魔数 + 既有
+     attachFile 全部纪律 + `resolver: "manual-upload"` provenance；自动
+     解析失败的人工 fallback；不创建 Evidence）；
+   - 文献库 UI 全文激活：五态状态列（已获取 / 未获取 / 无开放全文 /
+     获取失败 / 不可自动获取，provenance tooltip）+ 行内单篇获取 / 手动
+     上传 + 勾选批量 + 混合 summary；
+   - 修复两个实施中暴露的预存缺陷：SourceStore 读-改-写无串行化（批量
+     并发下 index.json lost update——引入项目级写队列，与 CandidateStore
+     同纪律）；BuiltinPdfAnalyzer TJ 数组正则歧义交替回溯（真实论文 PDF
+     单流 33s 事件循环阻塞 → 修复后 2ms）；
+   - 真实 OA live smoke 12/12（2×PLOS CC-BY via oa-url + 1×arXiv，批量
+     → 文件 → chunk → retrieve_library 命中；手动上传 fallback；二次
+     批量幂等零重复下载）+ 浏览器 E2E（sources-fulltext.spec）。报告见
+     docs/research/M9.3_FULLTEXT_ACTIVATION.md。
 
-后续：M9.3 FullText Activation → M9.4 Anchored Evidence Activation →
-M9.5 Deterministic Bibliography / Citation Trace → M9.6 Full Paper E2E
-Acceptance。
+后续：M9.4 Anchored Evidence Activation → M9.5 Deterministic
+Bibliography / Citation Trace → M9.6 Full Paper E2E Acceptance。
 ## [Unreleased] — M8 Controlled Deep Research Loop（2026-09-20 → 2026-09-22）
 
 研究从一次性即时检索升级为「计划 → 批准 → 执行 → 覆盖 → 缺口 → HITL →
