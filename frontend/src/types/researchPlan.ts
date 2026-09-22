@@ -116,6 +116,10 @@ export interface PlanExecutionWebResultSnapshotView {
   title: string;
   snippetPreview?: string;
   score?: number;
+  /** 命中引擎（M9.2 optional audit） */
+  engines?: string[];
+  /** 发布日期（M9.2 optional audit；引擎提供时才有） */
+  publishedDate?: string;
 }
 
 export type PlanExecutionResultSnapshotView =

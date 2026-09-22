@@ -160,6 +160,13 @@ curl -fsS http://localhost:8080/api/research/providers   # PaperTeam 侧健康�
 - `GET /api/research/providers` 返回全部 search provider 的健康四态
   （healthy/degraded/rate_limited/unavailable）；`unresponsive_engines` 非空时
   SearXNG provider 如实 degraded（继续可用，结果标注）。
+- **M9.2 起**：backend 的 `PAPERTEAM_SEARXNG_URL` 在 compose 中显式透传
+  （`${PAPERTEAM_SEARXNG_URL:-}`，缺省空 = 未配置）——`.env` 一处设置即可，
+  不需要重建镜像，`docker compose up -d backend` 重建容器生效；前端
+  Discovery 的 Web 检索页签会显示 SearXNG 可用性（未配置警告 / 状态行），
+  `GET /api/research/providers` 是其数据源。实测验收（WSL2 Docker Engine，
+  2026-09-22）见
+  [research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md](research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md)。
 
 ## 9. 本地开发不受影响
 

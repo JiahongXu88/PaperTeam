@@ -1,21 +1,23 @@
 # PaperTeam 的 SearXNG 配置模板（M6.3 Web Search；官方镜像挂载为 /etc/searxng/settings.yml）
 #
 # 依据 M6.1 源码分析（docs/research/M6.1_SEARCH_RAG_OSS_ANALYSIS.md §3）：
-#   * use_default_settings: true —— 与上游默认深度合并；本文件只覆盖 PaperTeam
-#     必改三项，不复制上游任何代码或完整配置（AGPL 边界：配置是官方支持的
-#     部署覆盖方式，非程序作品）；
+#   * use_default_settings 引擎收敛 —— 只保留大陆直连可用的 bing + baidu。
+#     M9.2 live smoke 实测：`use_default_settings: true` 时上游默认引擎
+#     （google cse 等）仍在跑——大陆网络超时拖慢每次查询并恒定
+#     unresponsive_engines → degraded；keep_only 才是真正的白名单语义；
 #   * search.formats 必须显式加 json —— 上游默认只有 html，format=json 未启用时
 #     GET /search 返回 403（PaperTeam 会如实报 provider_misconfigured）；
 #   * server.limiter 关闭 —— 单机内网部署；若开启且无 valkey 白名单，
-#     JSON API 请求限 4 次/小时/IP（searx/botdetection/ip_limit.py API_MAX=4）；
-#   * engine 白名单：大陆直连可用的 general 源是 cn.bing + baidu
-#     （360/sogou/quark 可用但风控激进，默认保持关闭；DDG/Brave/Google 系需
-#     代理，经 outgoing.proxies 启用——见文件尾注释）。
+#     JSON API 请求限 4 次/小时/IP（searx/botdetection/ip_limit.py API_MAX=4）。
 #
-# engine 名（bing / baidu / 360search / sogou …）是 SearXNG 上游真实模块名，
-# 与 https://github.com/searxng/searxng/blob/master/searx/settings.yml 一致。
+# engine 名（bing / baidu …）是 SearXNG 上游真实模块名，与
+# https://github.com/searxng/searxng/blob/master/searx/settings.yml 一致。
 
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - baidu
 
 server:
   # 内网部署：limiter 关闭（开启会限 JSON API 4 次/小时/IP）
@@ -37,16 +39,8 @@ engines:
   # 大陆直连主力：百度（JSON 接口；CAPTCHA 时 SearXNG 自动挂起 1h 换源）
   - name: baidu
     disabled: false
-  # 以下大陆源默认关闭（风控激进 / 返回质量不稳），需要时自行打开：
-  # - name: 360search
-  #   disabled: false
-  # - name: sogou
-  #   disabled: false
-  # 微信公众号文章搜索（中文渠道补充）：
-  # - name: sogou wechat
-  #   disabled: false
 
-# 有代理时可启用境外引擎（ socks5h 走本地代理出口）：
+# 有代理时可启用境外引擎（ socks5h 走本地代理出口；keep_only 需同步加引擎名）：
 # outgoing:
 #   proxies:
 #     all://:

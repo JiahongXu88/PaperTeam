@@ -35,6 +35,7 @@ function searxngJsonBody(): string {
         content: "A survey of multi-agent systems.",
         engines: ["bing", "baidu"],
         score: 4.5,
+        publishedDate: "2024-05-01T00:00:00Z",
       },
       {
         url: "https://example.org/llm-agents/",
@@ -176,5 +177,125 @@ describe("Web Search Pipeline 接线（SearXNG 配置 → 计划执行 → 审�
     // 审计痕迹 ≠ 候选：web 检索结果没有落成 Candidate
     const candidates = await stack.request("GET", `/api/projects/${projectId}/sources/candidates`);
     expect(candidates.body["candidates"]).toEqual([]);
+  });
+
+  it("M9.2 web resultSnapshot 的 optional audit 字段：engines / publishedDate 原样投影（引擎未提供时缺省）", async () => {
+    const response = await stack.request("POST", "/api/projects", { title: "Web 快照 audit 字段" });
+    const projectId = (response.body["project"] as { id: string }).id;
+    const researchDir = stack.store.researchDir(projectId);
+    await mkdir(researchDir, { recursive: true });
+    await writeFile(
+      join(researchDir, "research.json"),
+      JSON.stringify({
+        generatedAt: "2026-09-22T09:00:00.000Z",
+        taskId: "run-webaudit",
+        plan: {
+          planId: "rp-webaudit000001",
+          status: "draft",
+          questions: ["multi-agent systems survey"],
+          queries: [{ queryId: "q-1", query: "multi-agent systems survey", kind: "web", status: "planned" }],
+          createdAt: "2026-09-22T09:00:00.000Z",
+          updatedAt: "2026-09-22T09:00:00.000Z",
+        },
+        report: {
+          domainOverview: "概述",
+          relatedWorkDirections: [],
+          researchGaps: ["gap"],
+          potentialContributions: ["c"],
+          researchQuestions: [],
+          literaturePlan: [],
+        },
+        evidence: [],
+        bibliography: [],
+      }),
+      "utf8",
+    );
+    await stack.stack.planExecution.approve(projectId);
+    const result = await stack.stack.planExecution.execute(projectId);
+    expect(result.executedQueries).toBe(1);
+
+    const artifact = (await readResearchArtifact(stack.store, projectId))!;
+    const entry = artifact.executionHistory?.[0]!;
+    expect(entry.resultSnapshot).toHaveLength(2);
+    const first = entry.resultSnapshot![0] as { kind: "web"; engines?: string[]; publishedDate?: string };
+    expect(first.kind).toBe("web");
+    expect(first.engines).toEqual(["bing", "baidu"]);
+    expect(first.publishedDate).toBe("2024-05-01T00:00:00Z");
+    // 引擎未提供 publishedDate 的条目：字段缺省（optional，不伪造）
+    const second = entry.resultSnapshot![1] as { engines?: string[]; publishedDate?: string };
+    expect(second.engines).toEqual(["bing"]);
+    expect(second.publishedDate).toBeUndefined();
+  });
+
+  it("M9.2 反向 partial：web 成功 + 学术全失败 → web 快照保留、学术条目如实 failed 不中断", async () => {
+    // 学术侧改为 500（openalex 不可达）——web snapshot 必须不被学术失败抹掉
+    const failureStack = await startTestStack(scriptedIdeaRuntime().runtime, {
+      search: {
+        disabledProviders: ["semantic-scholar", "arxiv", "aminer"],
+        providerTimeoutMs: 2_000,
+        searxngUrl,
+        fetchImpl: (async (url: string | URL | Request): Promise<Response> => {
+          const target = String(url);
+          if (target.startsWith(searxngUrl)) {
+            return fetch(target);
+          }
+          return new Response(JSON.stringify({ error: "academic providers down" }), { status: 500 });
+        }) as unknown as typeof fetch,
+      },
+    });
+    try {
+      const response = await failureStack.request("POST", "/api/projects", { title: "反向 partial" });
+      const projectId = (response.body["project"] as { id: string }).id;
+      const researchDir = failureStack.store.researchDir(projectId);
+      await mkdir(researchDir, { recursive: true });
+      await writeFile(
+        join(researchDir, "research.json"),
+        JSON.stringify({
+          generatedAt: "2026-09-22T09:10:00.000Z",
+          taskId: "run-revpartial",
+          plan: {
+            planId: "rp-revpartial00001",
+            status: "draft",
+            questions: ["multi-agent systems survey"],
+            queries: [
+              { queryId: "q-1", query: "multi-agent systems survey", kind: "academic", status: "planned" },
+              { queryId: "q-2", query: "multi-agent systems survey", kind: "web", status: "planned" },
+            ],
+            createdAt: "2026-09-22T09:10:00.000Z",
+            updatedAt: "2026-09-22T09:10:00.000Z",
+          },
+          report: {
+            domainOverview: "概述",
+            relatedWorkDirections: [],
+            researchGaps: ["gap"],
+            potentialContributions: ["c"],
+            researchQuestions: [],
+            literaturePlan: [],
+          },
+          evidence: [],
+          bibliography: [],
+        }),
+        "utf8",
+      );
+      await failureStack.stack.planExecution.approve(projectId);
+      const result = await failureStack.stack.planExecution.execute(projectId);
+      expect(result.executedQueries).toBe(1);
+      expect(result.failedQueries).toBe(1);
+
+      const artifact = (await readResearchArtifact(failureStack.store, projectId))!;
+      const history = artifact.executionHistory ?? [];
+      const academicEntry = history.find((entry) => entry.queryId === "q-1")!;
+      expect(academicEntry.status).toBe("failed");
+      expect(academicEntry.error).toContain("openalex:http_error");
+
+      const webEntry = history.find((entry) => entry.queryId === "q-2")!;
+      expect(webEntry.status).toBe("executed");
+      expect(webEntry.resultSnapshot).toHaveLength(2);
+      // plan 状态如实流转：失败条目保持 planned 可重试，成功条目 executed
+      expect(result.plan.queries.find((q) => q.queryId === "q-1")?.status).toBe("planned");
+      expect(result.plan.queries.find((q) => q.queryId === "q-2")?.status).toBe("executed");
+    } finally {
+      await failureStack.cleanup();
+    }
   });
 });

@@ -22,6 +22,7 @@ import {
   useResearchGaps,
   useResearchPlan,
   useResearchPlans,
+  useResearchProviders,
   useSaveExecutionResults,
   useUpdateResearchPlan,
   useWebSearch,
@@ -29,6 +30,7 @@ import {
 import type {
   AcademicResultView,
   ProviderAttemptView,
+  ProviderHealthSnapshotView,
   WebResultView,
 } from "../../types/discovery.js";
 import type {
@@ -116,6 +118,14 @@ const PROVIDER_OUTCOME_LABELS: Record<ProviderAttemptView["outcome"], string> = 
   skipped_circuit_open: "熔断跳过",
 };
 
+/** provider 健康状态的紧凑中文（M9.2 Web Search 可用性提示） */
+const PROVIDER_STATE_LABELS: Record<ProviderHealthSnapshotView["state"], string> = {
+  healthy: "可用",
+  degraded: "降级（部分引擎无响应，结果仍可用）",
+  rate_limited: "限流冷却中",
+  unavailable: "暂不可达（熔断中，稍后自动恢复）",
+};
+
 type StatusFilter = "all" | CandidateStatus;
 
 const STATUS_FILTERS: ReadonlyArray<{ id: StatusFilter; label: string }> = [
@@ -162,6 +172,34 @@ function ProviderDiagnostics({ attempts }: { attempts: ProviderAttemptView[] }) 
         ))}
       </ul>
     </details>
+  );
+}
+
+/**
+ * Web Search 可用性提示（M9.2）：SearXNG 未配置 / 状态对用户透明。
+ * 只在 Web 检索页签下渲染；观测查询未完成或失败时静默（fail-open——
+ * 观测端点失败不代表 Web Search 未配置，检索失败本身已有结构化错误呈现）。
+ */
+function WebSearchAvailability({ providers }: { providers: ReturnType<typeof useResearchProviders> }) {
+  if (!providers.isSuccess) {
+    return null;
+  }
+  const web = providers.data?.web ?? [];
+  if (web.length === 0) {
+    return (
+      <p className="note note-warn" data-testid="web-search-unavailable">
+        <span>
+          <span className="note-mark">!</span> Web 检索不可用：未配置 SearXNG
+          （部署侧设置 PAPERTEAM_SEARXNG_URL，见 docs/DEPLOYMENT.md）。学术检索不受影响。
+        </span>
+      </p>
+    );
+  }
+  const worst = web.find((provider) => provider.state !== "healthy") ?? web[0]!;
+  return (
+    <p className="panel-empty" data-testid="web-search-status">
+      Web 检索：{web.map((provider) => provider.provider).join("、")}（{PROVIDER_STATE_LABELS[worst.state]}）
+    </p>
   );
 }
 
@@ -495,6 +533,14 @@ function SnapshotResultRow({
         </span>
         <span className="source-chips">
           <span className="chip chip-outline" title="发现方 provider">{item.provider}</span>
+          {item.kind === "web" && item.engines !== undefined && item.engines.length > 0 ? (
+            <span className="chip chip-outline" title={`命中引擎：${item.engines.join(", ")}`}>
+              {item.engines.length} 引擎
+            </span>
+          ) : null}
+          {item.kind === "web" && item.publishedDate !== undefined ? (
+            <span className="chip chip-outline">{item.publishedDate.slice(0, 10)}</span>
+          ) : null}
           {item.kind === "academic" && item.year !== undefined ? (
             <span className="chip chip-outline">{item.year}</span>
           ) : null}
@@ -1244,6 +1290,7 @@ function SearchSection({ projectId }: { projectId: string }) {  const [mode, set
 
   const academic = useAcademicSearch(projectId);
   const web = useWebSearch(projectId);
+  const providers = useResearchProviders();
   const pending = academic.isPending || web.isPending;
   const response = mode === "academic" ? academic.data : web.data;
 
@@ -1327,6 +1374,7 @@ function SearchSection({ projectId }: { projectId: string }) {  const [mode, set
           </button>
         ))}
       </div>
+      {mode === "web" ? <WebSearchAvailability providers={providers} /> : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();

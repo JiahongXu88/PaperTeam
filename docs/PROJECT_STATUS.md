@@ -936,9 +936,18 @@ Research Memory——全部是「把已有组件接成一次真实产品级使�
 **M8 收口判定（2026-09-22）**：**COMPLETE**——冻结范围内 M8.1–M8.5 全部
 交付、真实模型验收通过、全量测试零回归（M8.5 收口时 backend 248 +
 frontend 39 test files 全绿）；按仓库惯例不打 tag（仅 release 版本打 tag，
-同 M5/M6/M7）。下一节点：**M9 Full Paper E2E Activation（入口 = M9.1
-E2E Activation Foundation：idea_to_paper UI 入口 + Search Result →
-Candidate HITL 衔接）**。
+同 M5/M6/M7）。下一节点：**M9 Full Paper E2E Activation**。
+
+**M9 进度（2026-09-22 更新）**：M9.1 E2E Activation Foundation ✅（19b9ac4，
+idea_to_paper UI 入口 + 执行结果快照 + Search Result → Candidate HITL
+衔接，见 [research/M9.1_E2E_ACTIVATION_FOUNDATION.md](research/M9.1_E2E_ACTIVATION_FOUNDATION.md)）；
+**M9.2 General Web Search Activation ✅（SearXNG 部署激活 + compose 显式
+接线 + Web 检索可用性可见性 + WSL Docker 真实 live smoke + mixed
+academic/web 验证，见
+[research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md](research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md)）**；
+后续编号调整为 M9.3 FullText Activation → M9.4 Anchored Evidence
+Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
+Full Paper E2E Acceptance。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

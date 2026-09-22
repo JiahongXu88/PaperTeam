@@ -17,6 +17,7 @@
 import { apiClient } from "./client.js";
 import type {
   AcademicSearchResponseView,
+  ResearchProvidersView,
   WebSearchResponseView,
 } from "../types/discovery.js";
 import type {
@@ -27,6 +28,16 @@ import type {
 } from "../types/sources.js";
 
 export type DiscoveryMode = "academic" | "web";
+
+/**
+ * Search provider 健康观测（M9.2 Web Search 可用性可见性）：
+ * GET /api/research/providers → { academic, web }。
+ * web 为空数组 = SearXNG 未配置（optional 能力，非故障）。
+ */
+export async function getResearchProviders(signal?: AbortSignal): Promise<ResearchProvidersView> {
+  const body = await apiClient.get<ResearchProvidersView>("/api/research/providers", signal);
+  return { academic: body.academic ?? [], web: body.web ?? [] };
+}
 
 export interface AcademicSearchInput {
   query: string;

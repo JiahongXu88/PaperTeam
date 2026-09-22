@@ -52,6 +52,21 @@ export interface ProviderAttemptView {
   note?: string;
 }
 
+/** provider 健康快照（GET /api/research/providers 投影；无敏感信息） */
+export interface ProviderHealthSnapshotView {
+  provider: string;
+  state: "healthy" | "degraded" | "rate_limited" | "unavailable";
+  circuit: "closed" | "open" | "half_open";
+  lastError?: string;
+  consecutiveFailures: number;
+}
+
+/** Web 检索可用性观测（web 数组为空 = SearXNG 未配置，非故障） */
+export interface ResearchProvidersView {
+  academic: ProviderHealthSnapshotView[];
+  web: ProviderHealthSnapshotView[];
+}
+
 export interface SearchDiagnosticsView {
   providers: ProviderAttemptView[];
   rawResultCount: number;

@@ -39,6 +39,7 @@ import {
 } from "../api/sources.js";
 import {
   academicSearch,
+  getResearchProviders,
   listCandidates,
   promoteCandidate,
   rejectCandidate,
@@ -167,6 +168,8 @@ export const queryKeys = {
   qualityGate: (projectId: string, round?: number) =>
     ["project", projectId, "quality-gate", ...(round !== undefined ? [round] : ["latest"])] as const,
   runtimeStatus: ["runtime-status"] as const,
+  /** Search provider 健康（M9.2；全局只读观测，非项目维度） */
+  researchProviders: ["research", "providers"] as const,
   skills: ["skills"] as const,
   stylePolish: (projectId: string) => ["project", projectId, "style-polish"] as const,
   skillProvenance: (skillId: string) => ["skills", skillId, "provenance"] as const,
@@ -781,6 +784,18 @@ export function useWebSearch(projectId: string | undefined) {
         invalidate();
       }
     },
+  });
+}
+
+/**
+ * Search provider 健康（M9.2 Web Search 可用性可见性）：web 为空 = SearXNG
+ * 未配置。只读观测：加载失败时静默（不打扰主面板——可用性提示 fail-open，
+ * 检索失败本身已有结构化错误呈现）。
+ */
+export function useResearchProviders() {
+  return useQuery({
+    queryKey: queryKeys.researchProviders,
+    queryFn: ({ signal }) => getResearchProviders(signal),
   });
 }
 

@@ -42,6 +42,11 @@ services:
       # （M5.6 真实论文验收：单节修订最长 626s），这里显式写出便于部署时调整；
       # 通用短任务仍走 PAPERTEAM_PI_RUN_TIMEOUT_MS 默认 300000（不整体抬高）
       PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS: "900000"
+      # Web Search（M9.2）：显式接线（空 = 未配置，学术链路照常）。启用
+      # --profile research 时在 .env 设置 PAPERTEAM_SEARXNG_URL=http://searxng:8080
+      # （service name，容器网络内互访；禁止写 localhost）。此处只做透传不设默认值：
+      # 未启用 research profile 时 backend 必须保持「未配置」而非「不可达」。
+      PAPERTEAM_SEARXNG_URL: ${PAPERTEAM_SEARXNG_URL:-}
     volumes:
       - paperteam-projects:/data/projects
       - paperteam-runtime:/data/runtime
@@ -71,7 +76,8 @@ services:
   # ---- SearXNG（M6.3 Web Search；可选服务，默认不启动）----
   # 启用：docker compose --profile research up -d
   # 并在同目录 .env 里设置 PAPERTEAM_SEARXNG_URL=http://searxng:8080
-  # 不启用时 PaperTeam / Academic Search / Literature Library 照常工作（Web Search 降级 unavailable）。
+  # （backend environment 已显式透传该变量；不设置 = Web Search 未配置，
+  #   Academic Search / Literature Library 照常工作）。
   # settings 模板（docker/searxng/settings.yml）已开启 JSON format、关闭 limiter、
   # 启用大陆可用引擎（bing→cn.bing + baidu）；engine 名以模板内白名单为准。
   searxng:

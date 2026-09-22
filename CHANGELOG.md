@@ -4,6 +4,38 @@ All notable changes to PaperTeam are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — M9 Full Paper E2E Activation（进行中）
+
+目标：从浏览器新建 idea 项目开始，经真实调研（含 Web Search 与全文
+获取）产出一篇结构完整、引用可追溯的真实论文。核心不变量
+Retrieved ≠ Candidate ≠ Literature ≠ Verified Evidence 全程保持；零新
+Agent / 零新商业 Search API / 零 Vector DB。路线与编号见
+docs/research/POST_M8_MARKET_ALIGNED_ROADMAP.md。
+
+1. **M9.1 E2E Activation Foundation**（`19b9ac4`）：idea_to_paper 前端
+   启动入口；Research Plan Execution Result Snapshot（每 query ≤10 条
+   有界投影，identity / DOI / URL / 预览保留）；Search Result →
+   Candidate HITL 衔接（快照勾选显式保存，单一写入口径）。报告见
+   docs/research/M9.1_E2E_ACTIVATION_FOUNDATION.md。
+2. **M9.2 General Web Search Activation**（本批）：M8 真实验收暴露的
+   P0 部署缺口闭环——SearXNG 从「代码存在、从未部署」到真实可用：
+   - compose backend 显式透传 `PAPERTEAM_SEARXNG_URL`（缺省空 = 未
+     配置，学术链路不受影响；容器内用 service name 不写死 localhost）；
+   - SearXNG 模板修复：`use_default_settings` 改 `engines.keep_only`
+     白名单（实测默认引擎 google cse 等超时拖慢查询并恒定 degraded；
+     修复后单查询 10s+ → 0.15–0.42s）；
+   - Web 检索可用性前端可见（Discovery Web 页签：未配置警告 / provider
+     状态行，观测失败 fail-open 不误报）；
+   - Web 快照 optional audit 字段：engines / publishedDate（引擎提供时
+     才有，不伪造）；
+   - WSL2 Docker 真实 compose 栈 live smoke（backend↔searxng 容器互访、
+     三类真实搜索、mixed academic+web 计划执行 academic 10 / web 6+6、
+     两类显式保存候选、Literature / Evidence 零增长）。报告见
+     docs/research/M9.2_GENERAL_WEB_SEARCH_ACTIVATION.md。
+
+后续：M9.3 FullText Activation → M9.4 Anchored Evidence Activation →
+M9.5 Deterministic Bibliography / Citation Trace → M9.6 Full Paper E2E
+Acceptance。
 ## [Unreleased] — M8 Controlled Deep Research Loop（2026-09-20 → 2026-09-22）
 
 研究从一次性即时检索升级为「计划 → 批准 → 执行 → 覆盖 → 缺口 → HITL →

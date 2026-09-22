@@ -152,6 +152,10 @@ export interface PlanExecutionWebResultSnapshot {
   title: string;
   snippetPreview?: string;
   score?: number;
+  /** 命中引擎（M9.2 optional audit：SearXNG 聚合 engines；供以后区分来源层） */
+  engines?: string[];
+  /** 发布日期（M9.2 optional audit：ISO 字符串，引擎提供时才有） */
+  publishedDate?: string;
 }
 
 export type PlanExecutionResultSnapshot =
@@ -471,7 +475,7 @@ function academicSnapshot(result: FusedAcademicResult): PlanExecutionAcademicRes
   };
 }
 
-/** Web 检索结果 → 有界快照投影（snippet 只留截断预览） */
+/** Web 检索结果 → 有界快照投影（snippet 只留截断预览；engines/publishedDate 为 optional audit） */
 function webSnapshot(result: WebSearchResult): PlanExecutionWebResultSnapshot {
   return {
     kind: "web",
@@ -482,6 +486,8 @@ function webSnapshot(result: WebSearchResult): PlanExecutionWebResultSnapshot {
       ? { snippetPreview: result.snippet.slice(0, SNIPPET_PREVIEW_MAX_CHARS) }
       : {}),
     ...(result.score !== undefined ? { score: result.score } : {}),
+    ...(result.engines.length > 0 ? { engines: result.engines.slice(0, 10) } : {}),
+    ...(result.publishedDate !== undefined ? { publishedDate: result.publishedDate } : {}),
   };
 }
 

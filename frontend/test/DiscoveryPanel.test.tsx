@@ -37,6 +37,8 @@ vi.mock("../src/api/discovery.js", () => ({
   listCandidates: vi.fn(),
   promoteCandidate: vi.fn(),
   rejectCandidate: vi.fn(),
+  // M9.2 默认「未配置」——需要可用态的用例自行覆盖
+  getResearchProviders: vi.fn(async () => ({ academic: [], web: [] })),
 }));
 
 vi.mock("../src/api/researchPlan.js", () => ({
@@ -61,6 +63,14 @@ const api = vi.mocked(await import("../src/api/discovery.js"));
 const planApi = vi.mocked(await import("../src/api/researchPlan.js"));
 
 const NOW = "2026-09-19T08:00:00.000Z";
+
+/** 学术 provider 健康快照（M9.2 可用性提示的 mock 数据） */
+const openalexHealth = {
+  provider: "openalex",
+  state: "healthy" as const,
+  circuit: "closed" as const,
+  consecutiveFailures: 0,
+};
 
 function academicResponse(
   overrides: Partial<AcademicSearchResponseView> = {},
@@ -312,6 +322,53 @@ describe("DiscoveryPanel（M7.1c Discovery 候选 UI）", () => {
     expect(await screen.findByText("MOT Benchmark Page")).toBeTruthy();
   });
 
+  it("M9.2 SearXNG 未配置：Web 页签显示明确提示（学术页签不显示）", async () => {
+    api.getResearchProviders.mockResolvedValue({ academic: [openalexHealth], web: [] });
+    await renderPanel([]);
+    const user = userEvent.setup();
+
+    // 默认学术页签：不显示 Web 可用性提示
+    expect(screen.queryByTestId("web-search-unavailable")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Web 检索" }));
+    const notice = await screen.findByTestId("web-search-unavailable");
+    expect(notice.textContent).toContain("未配置 SearXNG");
+    expect(notice.textContent).toContain("学术检索不受影响");
+    expect(screen.queryByTestId("web-search-status")).toBeNull();
+  });
+
+  it("M9.2 SearXNG 已配置：显示可用状态（含 provider 名与状态），不显示警告", async () => {
+    api.getResearchProviders.mockResolvedValue({
+      academic: [openalexHealth],
+      web: [
+        {
+          provider: "searxng",
+          state: "healthy",
+          circuit: "closed",
+          consecutiveFailures: 0,
+        },
+      ],
+    });
+    await renderPanel([]);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Web 检索" }));
+
+    const status = await screen.findByTestId("web-search-status");
+    expect(status.textContent).toContain("searxng");
+    expect(status.textContent).toContain("可用");
+    expect(screen.queryByTestId("web-search-unavailable")).toBeNull();
+  });
+
+  it("M9.2 provider 健康查询失败：可用性提示静默（不误报不可用、不阻塞检索）", async () => {
+    api.getResearchProviders.mockRejectedValue(new Error("network down"));
+    await renderPanel([]);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Web 检索" }));
+
+    await waitFor(() => expect(api.getResearchProviders).toHaveBeenCalled());
+    expect(screen.queryByTestId("web-search-unavailable")).toBeNull();
+    expect(screen.queryByTestId("web-search-status")).toBeNull();
+    expect(screen.getByLabelText("研究问题")).toBeTruthy();
+  });
+
   it("候选列表渲染：标题 / 元数据 / 发现方式 / provider / 状态徽标 / 检索词", async () => {
     await renderPanel([
       candidateView(),
@@ -559,6 +616,41 @@ describe("DiscoveryPanel（M9.1 Execution Snapshot → Candidate HITL）", () =>
     await user.click(screen.getByTestId("save-snapshot-candidates"));
 
     expect(await screen.findByText(/保存失败：/)).toBeTruthy();
+  });
+
+  it("M9.2 Web 快照展示：engines / publishedDate audit 字段可见（与学术快照同行渲染）", async () => {
+    planApi.listExecutionHistory.mockResolvedValue([
+      {
+        executionId: "exec-web00000001",
+        queryId: "q-web",
+        query: "deep research agent products",
+        kind: "web" as const,
+        timestamp: NOW,
+        status: "executed" as const,
+        planId: "rp-1",
+        resultCount: 1,
+        providers: [{ provider: "searxng", outcome: "ok", resultCount: 1 }],
+        resultSnapshot: [
+          {
+            kind: "web" as const,
+            provider: "searxng",
+            url: "https://openai.com/deep-research",
+            title: "OpenAI Deep Research",
+            snippetPreview: "Official product page.",
+            score: 4.5,
+            engines: ["bing", "baidu"],
+            publishedDate: "2025-02-24T00:00:00Z",
+          },
+        ],
+      },
+    ]);
+    await renderPanelWithPlan(planView());
+
+    const results = await screen.findByTestId("execution-snapshot-results");
+    expect(results.textContent).toContain("OpenAI Deep Research");
+    expect(results.textContent).toContain("searxng");
+    expect(results.textContent).toContain("2 引擎");
+    expect(results.textContent).toContain("2025-02-24");
   });
 });
 
