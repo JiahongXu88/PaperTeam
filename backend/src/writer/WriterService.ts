@@ -85,6 +85,56 @@ function renderEvidenceLines(
   });
 }
 
+/**
+ * M9.7.2：bibliography key 的 evidence 支撑分组（prompt 构造时派生，不落存储）。
+ * 与 quality/evidenceCitationCoverage 的覆盖判定共用 resolveEvidenceCitationKey
+ * 解析链（sourceId 精确 → DOI → 归一标题+年份）——Writer 所见分组与 gate 统计
+ * 永远同口径。A 组 = 至少一条 evidence 命中的 key；B 组 = 其余（LLM 回忆条目）。
+ */
+export function partitionEvidenceBackedKeys(
+  evidence: EvidenceRecord[],
+  bibliography: BibliographyEntryInput[],
+): { backedKeys: string[]; unbackedKeys: string[] } {
+  const backed = new Set<string>();
+  for (const record of evidence) {
+    const key = resolveEvidenceCitationKey(record, bibliography);
+    if (key !== null) {
+      backed.add(key);
+    }
+  }
+  const backedKeys: string[] = [];
+  const unbackedKeys: string[] = [];
+  for (const entry of bibliography) {
+    (backed.has(entry.key) ? backedKeys : unbackedKeys).push(entry.key);
+  }
+  return { backedKeys, unbackedKeys };
+}
+
+/**
+ * M9.7.2 引用纪律行（A/B 组分组白名单）：buildSectionPrompt / buildRevisePrompt /
+ * buildOutlinePrompt 共用。政策：事实性论断（机制、方法、数值、结论）的引用
+ * 必须取自 A 组；B 组只承载泛指性背景陈述——Writer 优先基于 Verified Evidence
+ * 引用，而不是自由引用 bibliography（M9.7.1 baseline coverage 3/17=17.6% 的
+ * 修复面；分组派生与 coverage gate 同源，无双重标准）。
+ */
+function renderCitationDisciplineLines(
+  evidence: EvidenceRecord[],
+  bibliography: BibliographyEntryInput[],
+): string[] {
+  if (bibliography.length === 0) {
+    return ["（无可用文献：不要使用 \\cite）"];
+  }
+  const { backedKeys, unbackedKeys } = partitionEvidenceBackedKeys(evidence, bibliography);
+  return [
+    backedKeys.length > 0
+      ? `   - A 组（有 verified evidence 支撑；一切事实性论断——机制描述、方法对比、实验数值、结论——的引用必须取自本组）：${backedKeys.join(", ")}`
+      : "   - A 组（有 verified evidence 支撑）：（空——当前没有任何可用 key 具备 verified evidence 支撑；事实性论断只能弱化或删除，不得引用 B 组 key 支撑）",
+    unbackedKeys.length > 0
+      ? `   - B 组（无 verified evidence 支撑；仅限泛指性背景陈述——领域概述、广为人知的概念——不得支撑任何具体事实、数值或结论；证据不足时弱化或删除论断，不得改引本组 key 充数）：${unbackedKeys.join(", ")}`
+      : "   - B 组（无 verified evidence 支撑）：（无——全部可用 key 均有证据支撑，按 A 组规则引用）",
+  ];
+}
+
 export class WriterService {
   private readonly runtime: AgentRuntime;
   private readonly agentId: string;
@@ -704,7 +754,7 @@ function buildRevisePrompt(params: {
       ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
       ...externalBlock,
       "",
-      "===== 可用 Evidence（已核验 verified 快照）=====",
+      "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
       ...renderEvidenceLines(params.evidence, params.bibliography, 15),
       `（${EVIDENCE_QUERY_GUIDANCE}）`,
     ].join("\n");
@@ -728,10 +778,9 @@ function buildRevisePrompt(params: {
     "7. 学术语言优化不得改变 claim 强度（可能 / 表明 / 证明 不互换）与比较方向（高于 / 低于 / 优于 / 劣于 不互换）。",
     "8. 可用宏包只有 amsmath / amssymb / natbib（ctexart 文档类）；不要使用 tikz 等"
       + "其他宏包的环境或命令（图形以文字描述或 table 呈现），否则无法编译。",
-    "9. 只允许引用以下参考文献 key：" +
-      (params.bibliography.length > 0
-        ? params.bibliography.map((entry) => entry.key).join(", ")
-        : "（无：不要新增 \\cite）"),
+    "9. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",
+    ...renderCitationDisciplineLines(params.evidence, params.bibliography),
+    "   - 修订特则：本章节现有的 B 组引用按第 10 条保留（不因缺证据而删除）；但不得新增 B 组引用，也不得把原本 A 组支撑的论断改由 B 组支撑。",
     "10. 保留本章节现有的 \\cite 引用及其所支撑的论述（除非某条问题明确要求删除该引用）；不得为了精简而整体删光引用，也不得新增列表之外的 key。",
     ...(params.buildError
       ? ["11. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
@@ -753,7 +802,7 @@ function buildRevisePrompt(params: {
     ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
     ...externalBlock,
     "",
-    "===== 可用 Evidence（已核验 verified 快照）=====",
+    "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 15),
     `（${EVIDENCE_QUERY_GUIDANCE}）`,
   ].join("\n");
@@ -923,10 +972,8 @@ function buildOutlinePrompt(params: {
     "要求：",
     "1. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
-    "3. 可引用的参考文献 key：" +
-      (params.bibliography.length > 0
-        ? params.bibliography.map((entry) => entry.key).join(", ")
-        : "（暂无；正文中不要使用 \\cite）"),
+    "3. 引用纪律（可引用的参考文献 key 按 verified evidence 支撑分组；正文写作时事实性论断必须取 A 组）：",
+    ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     ...(params.feedback ? ["", "用户对上一版大纲的修改意见（必须落实）：", params.feedback] : []),
     "",
     "===== 调研摘要 =====",
@@ -935,7 +982,7 @@ function buildOutlinePrompt(params: {
     `潜在贡献：${params.researchDigest.potentialContributions.slice(0, 5).join("；")}`,
     `目标类型：${params.documentType ?? "（未填写）"}；目标档次：${params.targetProfile ?? "（未填写）"}`,
     "",
-    "===== 可用 Evidence（已核验 verified，用于判断哪些论点有支撑）=====",
+    "===== Verified Evidence Context（已核验 verified，用于判断哪些论点有支撑）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 20),
     ...(params.evidence.length === 0
       ? []
@@ -957,11 +1004,9 @@ function buildSectionPrompt(params: {
     "输出要求：",
     "1. 只输出该章节的 LaTeX 正文片段：以 \\section{标题} 开始；不要 \\documentclass、\\begin{document}、导言区、文档骨架。",
     "2. 不要用 Markdown 代码块包裹，不要解释文字。",
-    "3. 论述优先使用下方 Evidence 支撑（均为已核验 verified 证据；引用时优先使用行内标注的 cite key）；证据不足时显式弱化表述或标注，不为凑字虚构数据、结论或引用。",
-    "4. 只允许引用以下参考文献 key：" +
-      (params.bibliography.length > 0
-        ? params.bibliography.map((entry) => entry.key).join(", ")
-        : "（无可用文献：不要使用 \\cite）"),
+    "3. 论述必须优先基于下方 Verified Evidence Context（均为已核验 verified 证据；引用时使用行内标注的 cite key）；证据不足时显式弱化表述或标注，不为凑字虚构数据、结论或引用。",
+    "4. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",
+    ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     "5. 保持与其他章节的术语一致。",
     ...(params.styleProfile
       ? ["6. 参考论文的结构与呈现模式（只学结构，不复制内容）：" + JSON.stringify(params.styleProfile).slice(0, 600)]
@@ -979,7 +1024,7 @@ function buildSectionPrompt(params: {
       ? ["要点：", ...params.section.keyPoints.map((point) => `- ${point}`)]
       : []),
     "",
-    "===== 可用 Evidence（已核验 verified 快照）=====",
+    "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 20),
     ...(params.evidence.length === 0 ? [] : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
   ].join("\n");

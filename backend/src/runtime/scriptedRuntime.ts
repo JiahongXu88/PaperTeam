@@ -144,22 +144,45 @@ const SCRIPTED_CITE_PATTERN = /\\(?:cite|citep|citet|citealp|citealt|parencite|t
 
 /**
  * M9.5 确定性 bibliography：脚本化 Writer 镜像真实 Writer 纪律——cite key 从
- * 写作 prompt 的「只允许引用以下参考文献 key：…」行读取（系统确定性生成的
- * key），不自造固定 key。fixture 里的 gao2023survey / lewis2020rag 只是占位，
- * 运行时按 allowed keys 重写；无 allowed keys（无可用文献）时剥离全部 \\cite。
+ * 写作 prompt 的引用白名单行读取（系统确定性生成的 key），不自造固定 key。
+ * fixture 里的 gao2023survey / lewis2020rag 只是占位，运行时按 allowed keys
+ * 重写；无 allowed keys（无可用文献）时剥离全部 \\cite。
+ * M9.7.2：白名单升级为 A/B 组分组行（WriterService renderCitationDisciplineLines，
+ * 「- A 组（…）：key1, key2」）；镜像解析先读分组行行尾 key，旧版平铺行
+ * （只允许引用以下参考文献 key：a, b）作为回退格式保留。
  */
 const ALLOWED_KEYS_PATTERN = /只允许引用以下参考文献 key[:：]\s*([^。\n]+)/;
 
+/** M9.7.2 分组白名单行：行尾「）：key1, key2」的 key 列表（空组行以（…）收尾，无 key 不命中） */
+const GROUPED_ALLOWED_KEYS_PATTERN = /[ \t]*-[ \t]*[AB] 组[^\n]*?[）：][ \t]*([A-Za-z0-9_.:+*-][^。\n]*)/g;
+
 /** prompt 没有 allowed-keys 行 → null（非章节 prompt：保持原样）；有行但无合法 key（无可用文献）→ []（剥离） */
 function allowedKeysFromPrompt(task: string): string[] | null {
-  const match = ALLOWED_KEYS_PATTERN.exec(task);
-  if (match === null) {
+  if (!task.includes("只允许引用以下参考文献 key")) {
     return null;
   }
-  return (match[1] ?? "")
-    .split(/[,，、\s]+/)
-    .map((key) => key.trim())
-    .filter((key) => /^[A-Za-z0-9_.:+*-]+$/.test(key));
+  // 分组行行尾 key（A 组行先于 B 组行出现，保持 bibliography 顺序）
+  const grouped: string[] = [];
+  for (const match of task.matchAll(GROUPED_ALLOWED_KEYS_PATTERN)) {
+    for (const token of (match[1] ?? "").split(/[,，、\s]+/)) {
+      const key = token.trim();
+      if (/^[A-Za-z0-9_.:+*-]+$/.test(key) && !grouped.includes(key)) {
+        grouped.push(key);
+      }
+    }
+  }
+  if (grouped.length > 0) {
+    return grouped;
+  }
+  // 旧版平铺行回退
+  const match = ALLOWED_KEYS_PATTERN.exec(task);
+  if (match !== null) {
+    return (match[1] ?? "")
+      .split(/[,，、\s]+/)
+      .map((key) => key.trim())
+      .filter((key) => /^[A-Za-z0-9_.:+*-]+$/.test(key));
+  }
+  return [];
 }
 
 /** 把 tex 中占位 \\cite 依序重写为 allowed keys（第 i 个 cite 用第 min(i, n-1) 个 key；null 保持原样；[] 剥离） */

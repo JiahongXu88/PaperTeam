@@ -269,7 +269,13 @@ describe("Writer formalOnly cite 标注（选择层 → prompt）", () => {
     });
     const prompt = tasks[0] ?? "";
     expect(prompt).toContain("[E001]（cite: gao2023retrieval）");
-    expect(prompt).toContain("只允许引用以下参考文献 key：gao2023retrieval, vaswani2017attention");
+    // M9.7.2：白名单按 verified evidence 支撑分组（A 组 = E001 命中 key；B 组 = 无证据 key）
+    expect(prompt).toContain("只允许引用以下参考文献 key");
+    expect(prompt).toContain(
+      "A 组（有 verified evidence 支撑；一切事实性论断——机制描述、方法对比、实验数值、结论——的引用必须取自本组）：gao2023retrieval",
+    );
+    expect(prompt).toContain("B 组（无 verified evidence 支撑");
+    expect(prompt).toContain("vaswani2017attention");
     expect(prompt).not.toContain("Some Unverified Web Note"); // legacy 不进正式上下文
     expect(prompt).not.toContain("gao2023survey"); // LLM key 不出现在 prompt
   });

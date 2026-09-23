@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { AgentRunFailedError, InvalidLatexOutputError } from "../src/errors.js";
 import type { AgentRuntime, AgentTask } from "../src/runtime/types.js";
-import { WriterService, buildWriterPrompt } from "../src/writer/WriterService.js";
+import { WriterService, buildWriterPrompt, partitionEvidenceBackedKeys } from "../src/writer/WriterService.js";
+import type { EvidenceRecord } from "../src/evidence/EvidenceStore.js";
 
 /** 可编程的假 Runtime：记录调用并返回预设任务结果 */
 class FakeRuntime implements AgentRuntime {
@@ -230,5 +231,145 @@ describe("WriterService M6.6：Evidence-aware 写作上下文", () => {
     const prompt = runtime.calls[0]!.task;
     expect(prompt).toContain("[E001]（cite: gao2023survey）");
     expect(prompt).toContain("evidence_query");
+  });
+});
+
+describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () => {
+  const SECTION = { id: "introduction", file: "introduction.tex", title: "引言" };
+  const OUTLINE = {
+    title: "RAG 综述",
+    sections: [SECTION],
+  };
+  const EVIDENCE_S1 = [
+    {
+      id: "E001",
+      claim: "ReAct 交替推理与行动",
+      quote: "interleaving reasoning and acting",
+      verificationStatus: "verified",
+      supportStrength: "direct",
+      source: { sourceId: "S001", title: "ReAct", year: 2023, doi: "10.1/react" },
+      location: { chunk: "S001:SEC01:0001:a1b2c3d4e5", section: "1" },
+      createdBy: "researcher",
+      createdAt: "2026-09-23T00:00:00Z",
+    },
+  ] as unknown as EvidenceRecord[];
+  const BIB = [
+    { key: "yao2023react", title: "ReAct", year: 2023, doi: "10.1/react" },
+    { key: "wei2022cot", title: "Chain-of-Thought", year: 2022 },
+    { key: "bommasani2021foundation", title: "Foundation Models", year: 2021 },
+  ];
+
+  it("partitionEvidenceBackedKeys：sourceId/DOI 命中的 key 进 A 组，其余进 B 组", () => {
+    const { backedKeys, unbackedKeys } = partitionEvidenceBackedKeys(EVIDENCE_S1, BIB);
+    expect(backedKeys).toEqual(["yao2023react"]);
+    expect(unbackedKeys).toEqual(["wei2022cot", "bommasani2021foundation"]);
+  });
+
+  it("writeSection：白名单分组渲染（A 组 = 证据命中 key，B 组 = 回忆 key）+ Verified Evidence Context 块头", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\n如 \\cite{yao2023react} 所示。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.writeSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("Verified Evidence Context（已核验 verified 证据，引用第一优先来源）");
+    expect(prompt).toContain("按 verified evidence 支撑分组");
+    expect(prompt).toContain("引用必须取自本组）：yao2023react");
+    expect(prompt).toContain("不得改引本组 key 充数）：wei2022cot, bommasani2021foundation");
+  });
+
+  it("writeSection：全部 key 无证据 → A 组空提示（事实论断弱化，不引 B 组支撑）", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\nRAG 是检索增强生成。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.writeSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      evidence: [],
+      bibliography: BIB,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("（空——当前没有任何可用 key 具备 verified evidence 支撑");
+    expect(prompt).toContain("事实性论断只能弱化或删除");
+    expect(prompt).toContain("）：yao2023react, wei2022cot, bommasani2021foundation");
+  });
+
+  it("writeSection：全部 key 有证据（M9.6 形态）→ B 组空提示，行为等价旧白名单", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\n如 \\cite{yao2023react} 所示。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.writeSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      evidence: EVIDENCE_S1,
+      bibliography: [BIB[0]!],
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("引用必须取自本组）：yao2023react");
+    expect(prompt).toContain("（无——全部可用 key 均有证据支撑，按 A 组规则引用）");
+  });
+
+  it("reviseSection：分组白名单 + 修订特则（B 组存量保留、不得新增）", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask("\\section{引言}\n修订后的内容。"),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{引言}\n旧内容 \\cite{wei2022cot}。",
+      issues: [
+        {
+          category: "fact",
+          severity: "major",
+          section: "introduction",
+          description: "论断缺证据",
+          blocking: false,
+        },
+      ],
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("按 verified evidence 支撑分组");
+    expect(prompt).toContain("修订特则：本章节现有的 B 组引用按第 10 条保留");
+    expect(prompt).toContain("不得新增 B 组引用");
+  });
+
+  it("planOutline：大纲 prompt 同步分组（规划阶段向证据倾斜）", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask(
+        '{"title":"T","abstract":"A","sections":[' +
+          '{"id":"introduction","file":"introduction.tex","title":"引言"},' +
+          '{"id":"method","file":"method.tex","title":"方法"},' +
+          '{"id":"conclusion","file":"conclusion.tex","title":"结论"}],"references":[]}',
+      ),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.planOutline({
+      projectId: "p-abc",
+      researchDigest: {
+        domainOverview: "领域",
+        researchGaps: ["gap1"],
+        potentialContributions: ["c1"],
+      },
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("正文写作时事实性论断必须取 A 组");
+    expect(prompt).toContain("引用必须取自本组）：yao2023react");
+    expect(prompt).toContain("Verified Evidence Context");
   });
 });
