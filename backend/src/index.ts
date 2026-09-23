@@ -148,7 +148,7 @@ export async function startBackend(): Promise<void> {
           agentModelSpecs: async () => (await modelSettingsStore.load()).agents ?? {},
           // 只有 role + contextScope 路由到、installed 且完整性 ok 的 skill 版本快照进入
           // 对应会话（progressive disclosure；M5.3 版本固定于 generation）
-          roleSkills: (role, scope) => skillRegistry.skillAssignmentsFor(role, scope),
+          roleSkills: (role, scope, language) => skillRegistry.skillAssignmentsFor(role, scope, language),
           roleCustomTools: (role, projectId) => {
             const tools = [];
             if ((role === "researcher" || role === "citation") && stackRef !== undefined) {

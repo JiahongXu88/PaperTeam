@@ -88,6 +88,22 @@ export function normalizeArxivId(input: string): string | undefined {
   return match[1]!.toLowerCase();
 }
 
+/**
+ * arXiv DOI（DataCite 前缀 10.48550/arxiv.*）→ 归一化 arXiv ID（M9.7.4）。
+ * `10.48550/arxiv.2210.03629` → `2210.03629`；非 arXiv DOI / 非法 ID 返回
+ * undefined。arXiv DOI 的身份权威源是 arXiv 本身——这是 DOI-only 查询防
+ * provider 错配（M9.7.3 真实案例：OpenAlex 对 arXiv DOI 索引错配返回
+ * match + 错误论文）的唯一独立参照。放在 identity.ts 供 citation 与
+ * sources 两域共用（避免 scholarly ↔ candidateScoring 运行时循环依赖）。
+ */
+export function arxivIdFromDoi(doi: string): string | undefined {
+  const match = /^10\.48550\/arxiv\.(\S+)$/i.exec(doi.trim());
+  if (match === null) {
+    return undefined;
+  }
+  return normalizeArxivId(match[1]!);
+}
+
 /** PMID 归一化（纯数字串） */
 export function normalizePmid(input: string): string | undefined {
   const value = input.trim();

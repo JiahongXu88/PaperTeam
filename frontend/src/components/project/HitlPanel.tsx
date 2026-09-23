@@ -75,6 +75,7 @@ export function HitlPanel({ run }: { run: WorkflowRunView }) {
   const hasReviseMore = options.includes("revise_more");
   const hasApply = options.includes("apply");
   const hasSkip = options.includes("skip");
+  const hasContinue = options.includes("continue");
   const hasCancel = options.includes("cancel");
   const supportsForm = hasAdjust || hasRevise;
   const styleFindings = awaiting.stageId === "hitl.style_polish" ? readStyleFindings(awaiting.payload) : [];
@@ -141,6 +142,19 @@ export function HitlPanel({ run }: { run: WorkflowRunView }) {
           >
             <Icon name="play" />
             {pending && resume.variables?.input.action === "approve" ? "提交中…" : "继续"}
+          </button>
+        ) : null}
+        {hasContinue ? (
+          <button
+            type="button"
+            className="btn btn-primary"
+            data-testid="hitl-evidence-continue"
+            disabled={pending}
+            title="以当前已核验证据继续写作；候选文献可在「文献发现」页随时审阅（M9.7.4 证据供给决策）"
+            onClick={() => submit({ action: "continue" })}
+          >
+            <Icon name="play" />
+            {pending && resume.variables?.input.action === "continue" ? "提交中…" : "以当前证据继续写作"}
           </button>
         ) : null}
         {hasAcceptDraft ? (

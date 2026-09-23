@@ -151,7 +151,7 @@ export interface ProviderAttempt {
 }
 
 export interface CitationFieldMismatch {
-  field: "title" | "authors" | "year" | "venue" | "doi";
+  field: "title" | "authors" | "year" | "venue" | "doi" | "arxivId";
   /** 草稿所写 */
   expected?: string;
   /** canonical 实际 */

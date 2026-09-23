@@ -4,8 +4,10 @@
  * 两条一级工作流共享后段（D-0010）：
  *
  *   Idea-to-Paper 前段：
- *     research.idea → research.feasibility → HITL(feasibility: approve/adjust/cancel)
- *     → outline.plan → HITL(outline: approve/revise/cancel) → writing.sections
+ *     research.idea → evidence.ground → research.feasibility → HITL(feasibility: approve/adjust/cancel)
+ *     → outline.plan → HITL(outline: approve/revise/cancel)
+ *     → HITL(evidence_supply: continue/cancel；M9.7.4 条件出现——待审候选 ≥3，
+ *       只提示不自动 promote) → writing.sections
  *   Existing-Paper 前段：
  *     import.parse → import.baseline_build → import.understand → citation.verify
  *     → review.run → assessment.target → plan.improvement → HITL(plan) → revision.apply
@@ -37,11 +39,13 @@ import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
 import { isExistingPaperKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
+import { normalizeManuscriptLanguage } from "../project/language.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService, isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
+import type { CandidateStore } from "../sources/CandidateStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import {
@@ -146,6 +150,11 @@ export interface WorkflowServices {
    * 哪些 Evidence 可进入 Writer / Reviewer 正式上下文（verified + 三件套锚点）。
    */
   evidenceSelection: EvidenceSelectionService;
+  /**
+   * Discovery 候选文献存储（M9.7.4：hitl.evidence_supply 读取待审数量——
+   * 只读消费，promote 仍是用户显式动作，本工作流绝不自动晋升）。
+   */
+  candidates: CandidateStore;
   sources: SourceStore;
   manuscript: ManuscriptService;
   writer: WriterService;
@@ -256,11 +265,13 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         : undefined;
 
       // fan-out：三类 review skill 并行（Promise.all；各 mode 独立 contextScope）
+      const language = normalizeManuscriptLanguage(project.language);
       const results = await services.reviewer.reviewAll({
         projectId: ctx.projectId,
         manuscriptDigest: digest,
         evidence,
         targetProfile: project.targetProfile,
+        ...(language !== undefined ? { language } : {}),
         ...(citationDigest !== undefined ? { citationDigest } : {}),
       });
 
@@ -740,6 +751,8 @@ function revisionReviseStage(
       // 据此删光了重建稿的全部 \cite。可引用 key 必须以 manuscript/references.bib 为准。
       const bibliography = await manuscriptBibliography(services, ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
+      // M9.7.4：修订 prompt / skill 路由同样遵守 project.language
+      const revisionLanguage = normalizeManuscriptLanguage(project.language);
 
       // 修订指令：shared loop 以落盘的确定性修订计划为准（计划缺失时回退执行期派生）；
       // apply 仍用改进计划（映射为 issue）
@@ -806,6 +819,7 @@ function revisionReviseStage(
           issues,
           evidence,
           bibliography,
+          ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
           ...(matchedItems.length > 0
@@ -1414,9 +1428,15 @@ function stylePolishStage(services: WorkflowServices): StageSpec {
  * - 无可润色 style minor finding（review.run.styleMinor === 0）→ 不询问
  * - HITL 未回答 / 回答属于旧 gateRound → hitl.style_polish
  * - 回答 apply（同 gateRound）→ revision.style_polish；skip → 不进入
+ * - M9.7.4：request.language="en" → 不进入——润色链是 zh 专用设计
+ *   （zh skill + 中文 invariant 哨兵词表），en 项目静默跳过比错乱执行诚实；
+ *   style findings 照常出现在 review 结果中（用户可见），仅无自动润色入口
  */
 function planStylePolish(state: WorkflowState, gateRound: number): PlanDecision | null {
   if (readStylePolicy(state.request) !== "apply_once") {
+    return null;
+  }
+  if (state.request?.["language"] === "en") {
     return null;
   }
   if (countCompletions(state, "revision.style_polish") > 0) {
@@ -2074,6 +2094,9 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
       const result = await services.researcher.research({ projectId: ctx.projectId });
+      // M9.7.4：待审候选数随 stage 结果暴露（planEvidenceSupply 纯函数消费，
+      // 决定是否在写作前呈现 evidence-supply HITL；只读，绝不自动 promote）
+      const pendingCandidates = (await services.candidates.list(ctx.projectId, "pending_review")).length;
       return {
         taskId: result.taskId,
         reportPath: result.reportPath,
@@ -2081,6 +2104,7 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
         evidenceProposed: result.evidenceProposed,
         bibliographyCount: result.bibliographyCount,
         gaps: result.report.researchGaps.length,
+        candidatePending: pendingCandidates,
       };
     },
     async verifyDod(ctx) {
@@ -2215,6 +2239,7 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
     async execute(ctx) {
       const artifact = await requireResearchArtifact(services, ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
+      const language = normalizeManuscriptLanguage(project.language);
       const evidence = await usableEvidence(services, ctx.projectId);
       // M9.5：Writer 可引用 key 与 references.bib 全部来自 canonical bibliography
       // （文献库 authoritative metadata + LLM 引用意图，代码确定性 key）——
@@ -2232,6 +2257,7 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
         bibliography,
         targetProfile: project.targetProfile,
         documentType: project.documentType,
+        ...(language !== undefined ? { language } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
       });
       await services.manuscript.saveOutline(ctx.projectId, outline);
@@ -2295,6 +2321,67 @@ function outlineConfirmStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/**
+ * M9.7.4 Evidence Supply HITL：写作前把「待审候选文献 vs 已核验证据覆盖」
+ * 作为用户决策点呈现——M9.7.3 暴露 coverage 天花板 3/20≈15% 的杠杆在
+ * 用户 promote（Research found N candidates / Verified evidence covers M
+ * sources），而此前 workflow 对 32 条 pending 候选完全无感知。
+ *
+ * 边界纪律（不可违反）：
+ * - 只提示、不自动晋升：pending → accepted 的 promote 永远是用户显式动作
+ *   （D-0033/D-0035 红线，Retrieved ≠ Verified）；
+ * - 不是 Quality Gate：证据覆盖低不 FAIL、不阻断 Draft（本 stage 的
+ *   continue/cancel 由用户决定，无任何自动否决）；
+ * - 每 run 至多询问一次；无候选（scripted / 离线栈）零打扰。
+ */
+const EVIDENCE_SUPPLY_MIN_PENDING = 3;
+
+function evidenceSupplyStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.evidence_supply",
+    description:
+      "证据供给提示：待审候选文献 vs 已核验证据覆盖（用户决定先扩充证据或直接继续写作）",
+    requiredInputs: ["hitl.outline_confirm"],
+    producedOutputs: ["用户决策（continue / cancel）"],
+    hitl: {
+      prompt:
+        "研究发现了一批待审候选文献，而当前已核验（verified）证据只覆盖少数来源。你可以先在「文献发现」页审阅并 Promote 候选文献（入库并获取全文后，重新运行研究阶段可扩大证据池、提高后续引用的证据覆盖），也可以直接以当前证据继续写作。",
+      options: ["continue", "cancel"],
+      payload: async (ctx) => {
+        const pending = await services.candidates.list(ctx.projectId, "pending_review");
+        const formal = (await services.evidenceSelection.selectForWriting(ctx.projectId)).formal;
+        const verifiedSources = new Set(
+          formal.map((record) => record.source?.sourceId).filter((id): id is string => id !== undefined),
+        );
+        return {
+          pendingCandidates: pending.length,
+          verifiedEvidenceRecords: formal.length,
+          verifiedEvidenceSources: verifiedSources.size,
+          pendingSample: pending.slice(0, 5).map((candidate) => ({
+            title: candidate.title ?? "(untitled)",
+            ...(candidate.year !== undefined ? { year: candidate.year } : {}),
+            ...(candidate.doi !== undefined ? { doi: candidate.doi } : {}),
+            ...(candidate.arxivId !== undefined ? { arxivId: candidate.arxivId } : {}),
+            origin: candidate.origin,
+          })),
+          action:
+            "在「文献发现」页 Promote 候选 → 文献库获取全文 → 重跑研究（或本 run 直接 continue 使用现有证据）",
+        };
+      },
+    },
+  };
+}
+
+/** M9.7.4 planner 片段：是否呈现 evidence-supply HITL（纯函数，只看 state） */
+function planEvidenceSupply(state: WorkflowState): PlanDecision | null {
+  if ("hitl.evidence_supply" in state.stageResults) {
+    return null; // 每 run 至多一次
+  }
+  const research = state.stageResults["research.idea"] ?? {};
+  const pending = typeof research["candidatePending"] === "number" ? research["candidatePending"] : 0;
+  return pending >= EVIDENCE_SUPPLY_MIN_PENDING ? { kind: "stage", stageId: "hitl.evidence_supply" } : null;
+}
+
 function writingSectionsStage(services: WorkflowServices): StageSpec {
   return {
     id: "writing.sections",
@@ -2310,6 +2397,10 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少大纲（outline.json）");
       }
       await requireResearchArtifact(services, ctx.projectId);
+      // M9.7.4：写作语言是 Project Contract（project.language → prompt + skill）
+      const language = normalizeManuscriptLanguage(
+        (await services.projects.getRequired(ctx.projectId)).language,
+      );
       // M6.6：写作 digest 只含 verified formal 池（legacy unverified 不再兜底注入）
       const evidenceSelection = await services.evidenceSelection.selectForWriting(ctx.projectId);
       const evidence = evidenceSelection.formal;
@@ -2328,6 +2419,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           outline,
           evidence,
           bibliography,
+          ...(language !== undefined ? { language } : {}),
         });
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
         written.push(section.id);
@@ -2386,6 +2478,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     feasibilityConfirmStage(services),
     outlinePlanStage(services),
     outlineConfirmStage(services),
+    evidenceSupplyStage(services),
     writingSectionsStage(services),
     citationVerifyStage(services),
     reviewRunStage(services),
@@ -2410,19 +2503,26 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     "hitl.feasibility_confirm",
     "outline.plan",
     "hitl.outline_confirm",
-    "writing.sections",
   ];
 
   return {
     kind: "idea_to_paper",
     description:
-      "Idea-to-Paper：调研 → 可行性 → 确认 → 大纲 → 确认 → 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订 + 修订复核）→ 构建",
+      "Idea-to-Paper：调研 → 可行性 → 确认 → 大纲 → 确认 →（证据供给提示，条件出现）→ 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订 + 修订复核）→ 构建",
     stages,
     plan(state: WorkflowState): PlanDecision {
       for (const stageId of front) {
         if (!(stageId in state.stageResults)) {
           return { kind: "stage", stageId };
         }
+      }
+      // M9.7.4：待审候选较多时，写作前呈现一次 evidence-supply HITL
+      const evidenceSupply = planEvidenceSupply(state);
+      if (evidenceSupply !== null) {
+        return evidenceSupply;
+      }
+      if (!("writing.sections" in state.stageResults)) {
+        return { kind: "stage", stageId: "writing.sections" };
       }
       return planSharedTail(state, services);
     },
@@ -2432,6 +2532,8 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
           return applyFeasibilityDecision(services, state, input);
         case "hitl.outline_confirm":
           return applyOutlineDecision(state, input);
+        case "hitl.evidence_supply":
+          return applyEvidenceSupplyDecision(state, input);
         case "hitl.revision_overflow":
           return applyOverflowDecision(state, input);
         case "hitl.revision_stalled":
@@ -3119,6 +3221,27 @@ async function applyFeasibilityDecision(
     state.runId,
     state.status,
     `decision 只能是 approve / adjust / cancel（当前 "${input.decision}"）`,
+  );
+}
+
+/** M9.7.4 evidence-supply 决策：continue = 以当前证据继续写作；cancel = 终止 run */
+async function applyEvidenceSupplyDecision(state: WorkflowState, input: ResumeInput): Promise<void | "cancel"> {
+  if (input.decision === "continue") {
+    const research = state.stageResults["research.idea"] ?? {};
+    state.stageResults["hitl.evidence_supply"] = {
+      decision: "continue",
+      pendingCandidatesAtDecision:
+        typeof research["candidatePending"] === "number" ? research["candidatePending"] : 0,
+    };
+    return;
+  }
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 continue / cancel（当前 "${input.decision}"）`,
   );
 }
 

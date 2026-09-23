@@ -14,10 +14,12 @@ import { join } from "node:path";
 
 import { AgentRunFailedError, BusinessError } from "../errors.js";
 import type { ProjectMetadata, ProjectStore } from "../project/ProjectStore.js";
+import { normalizeManuscriptLanguage, targetLanguageLines } from "../project/language.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import type { EvidenceAppendInput, EvidenceStore } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { SourceStore, SourceItem } from "../sources/SourceStore.js";
+import { compactTitle } from "../citation/referenceText.js";
 import {
   applyResearchPlanUpdate,
   createResearchPlan,
@@ -115,14 +117,20 @@ export class ResearcherService {
     extraInstructions?: string;
   }): Promise<ResearcherResult> {
     const project = await this.projects.getRequired(params.projectId);
+    const language = normalizeManuscriptLanguage(project.language);
     const sourceDigest = await this.buildSourceDigest(params.projectId);
+    // M9.7.4：重跑时把上一轮 bibliography 注入 prompt（bounded 复述纪律），
+    // 抑制「会话记忆复述 + 每轮扩充」导致的 20→30→36 单调膨胀
+    const existing = await readResearchArtifact(this.projects, params.projectId);
+    const existingBibliography = existing?.bibliography;
 
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
       ...this.timeoutOverride,
-      task: buildResearchPrompt(project, sourceDigest, params.extraInstructions),
+      task: buildResearchPrompt(project, sourceDigest, params.extraInstructions, existingBibliography),
       projectId: params.projectId,
       contextScope: "research",
+      ...(language !== undefined ? { language } : {}),
       metadata: { role: "researcher" },
     });
     if (task.status !== "completed") {
@@ -164,7 +172,7 @@ export class ResearcherService {
     // executionHistory 是用户可控 + 执行回填状态，原样保留——已有链时本轮
     // Agent 产出的 plan 不落盘（用户修改优先），计划演化走编辑 / 派生显式路径。
     // M8.3.3：gaps 决策记录与 loopPolicy 同属用户可控状态，同样不被重跑覆盖
-    const existing = await readResearchArtifact(this.projects, params.projectId);
+    // （existing 已在 runAgent 前读取——M9.7.4 上一轮 bibliography 注入复用）
     const chain = resolvePlanChainOnRerun(
       existing !== null ? readPlanChain(existing) : { plans: [], activePlanId: undefined },
       plan,
@@ -552,6 +560,8 @@ export function buildResearchPrompt(
   project: ProjectMetadata,
   sourceDigest: string,
   extraInstructions?: string,
+  /** 上一轮已落盘的 bibliography（M9.7.4：重跑时注入，抑制会话记忆驱动的单调膨胀） */
+  previousBibliography?: BibliographyEntryInput[],
 ): string {
   return [
     "你是一名学术研究员（Researcher）。请对下面的研究 Idea 做领域调研与可行性预研。",
@@ -580,7 +590,16 @@ export function buildResearchPrompt(
     "2. 调研中发现的重要文献，用 save_candidates 保存为项目候选文献（kind 与 query 必须和检索时完全一致，按结果 index 选择；本次调研合计保存不超过 20 条，按与课题的相关性遴选）。保存的候选只是线索（pending_review），需用户审核转正后才进入文献库；已检索覆盖的方向不要写进 literaturePlan（它只记录检索后仍缺失的残差）。",
     "3. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",
     "4. 锚定证据路径：文献库摘要中标注「全文：已入库」的条目，用 retrieve_library 按主题检索原文段落（结果带 CHUNK 标识），用 get_chunk 回取逐字原文。对调研结论中需要文献支撑的关键论断，当文献库有可检索全文时，优先提出锚定证据：调用 propose_evidence（claim + sourceId + chunkId + 从 chunk 原文逐字复制的 quote），或在最终 evidence 条目中附上 sourceId、chunkId 与逐字 quote（quote 不要改写、不要凭记忆生成）——这类证据会进入核验管道成为已核验证据。已通过 propose_evidence 工具提交过的证据不要在 evidence 字段里重复。是否提出证据由你的研究判断决定，不设数量指标；但项目已有可检索全文时，关键论断应优先尝试锚定，而不是只依赖摘要或检索元数据。检索后仍找不到足够支撑材料时，如实记为证据不足（写入 researchGaps / literaturePlan），绝不编造 quote 或锚定到不相关的段落。无法锚定到文献库 chunk 的证据保持原格式（只记为未核验线索）。",
-    "5. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字（key 仅作占位：最终 citation key 由系统按文献身份确定性生成并统一重排，你的 key 不会直接进入论文）。",
+    "5. bibliography 的 key 使用「第一作者年份主题」格式（如 zhang2024survey），全小写字母数字（key 仅作占位：最终 citation key 由系统按文献身份确定性生成并统一重排，你的 key 不会直接进入论文）。bibliography 只列与本课题最相关的文献，总量控制在 30 条以内——它不是领域全目录，宁缺毋滥。",
+    ...(previousBibliography !== undefined && previousBibliography.length > 0
+      ? [
+          `上一轮调研已列出 ${previousBibliography.length} 条参考文献（title | year）：`,
+          ...previousBibliography
+            .slice(0, 30)
+            .map((entry) => `- ${entry.title}${entry.year !== undefined ? ` | ${entry.year}` : ""}`),
+          "本轮 bibliography 以上一轮清单为基础：确属课题核心的可保留（元数据可修正），仅补充本轮真实新发现的重要文献；同一文献不要以不同 key / 不同年份形态重复出现，总量不得超出上一轮明显增长。",
+        ]
+      : []),
     "6. 你不负责写论文正文。",
     "",
     "===== 项目信息 =====",
@@ -590,6 +609,7 @@ export function buildResearchPrompt(
     `目标类型：${project.documentType ?? "（未填写）"}`,
     `目标档次：${project.targetProfile ?? "（未填写）"}`,
     `目标 Venue：${project.targetVenue ?? "（未填写）"}`,
+    ...targetLanguageLines(normalizeManuscriptLanguage(project.language)),
     "",
     "===== 项目文献库摘要 =====",
     sourceDigest,
@@ -687,7 +707,7 @@ function toLegacyAppendInput(candidate: ParsedEvidenceEntry): EvidenceAppendInpu
   return legacy;
 }
 
-function readBibliography(parsed: Record<string, unknown>): BibliographyEntryInput[] {
+export function readBibliography(parsed: Record<string, unknown>): BibliographyEntryInput[] {
   const value = parsed["bibliography"];
   if (!Array.isArray(value)) {
     return [];
@@ -715,13 +735,20 @@ function readBibliography(parsed: Record<string, unknown>): BibliographyEntryInp
       ...(typeof record["venue"] === "string" ? { venue: record["venue"] } : {}),
     });
   }
-  // key 去重
+  // key 去重 + 同文献跨形态去重（M9.7.4：同一论文以不同 key / 不同 title 写法
+  // 重复出现时折叠——归一标题+年份精确判等，先出现者保留（LLM 输出序=相关性序））
   const seen = new Set<string>();
+  const seenTitleYear = new Set<string>();
   return entries.filter((entry) => {
     if (seen.has(entry.key)) {
       return false;
     }
     seen.add(entry.key);
+    const titleYearKey = `${compactTitle(entry.title)}|${entry.year ?? "?"}`;
+    if (seenTitleYear.has(titleYearKey)) {
+      return false;
+    }
+    seenTitleYear.add(titleYearKey);
     return true;
   });
 }

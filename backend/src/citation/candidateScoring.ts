@@ -12,6 +12,7 @@
  */
 
 import type { CanonicalPaperRecord, CitationFieldMismatch } from "./integrity.js";
+import { arxivIdFromDoi } from "../sources/identity.js";
 import type { ScholarlyQuery } from "./scholarly.js";
 import { compactTitle, titleSimilarity } from "./referenceText.js";
 
@@ -37,6 +38,13 @@ export interface CandidateScore {
 export function scoreCandidate(query: ScholarlyQuery, candidate: CanonicalPaperRecord): CandidateScore {
   const doiExact =
     query.doi !== undefined && candidate.doi !== undefined && query.doi.toLowerCase() === candidate.doi.toLowerCase();
+  // M9.7.4：arXiv ID 精确命中与 DOI 同级（id:X 是 arXiv 官方 API 的实体查询，
+  // 候选的 arxivId 由响应 id 提取）——修复「无 title 的 arXiv-only query 全部
+  // reject」的潜伏缺陷（M9.7.1 arXiv enrich 未定论的根源之一）
+  const arxivExact =
+    query.arxivId !== undefined &&
+    candidate.arxivId !== undefined &&
+    query.arxivId.toLowerCase() === candidate.arxivId.toLowerCase();
   const similarity =
     query.title !== undefined && candidate.title !== undefined ? titleSimilarity(query.title, candidate.title) : 0;
   const firstAuthorMatch =
@@ -49,7 +57,7 @@ export function scoreCandidate(query: ScholarlyQuery, candidate: CanonicalPaperR
     query.year !== undefined && candidate.year !== undefined ? Math.abs(query.year - candidate.year) : undefined;
 
   let tier: CandidateTier = "reject";
-  if (doiExact) {
+  if (doiExact || arxivExact) {
     tier = "doi";
   } else if (query.title === undefined) {
     // 无标题只能靠 DOI / arXiv id 精确命中；搜索候选不可接受
@@ -108,6 +116,16 @@ export function compareFields(query: ScholarlyQuery, canonical: CanonicalPaperRe
   }
   if (query.doi !== undefined && canonical.doi !== undefined && query.doi.toLowerCase() !== canonical.doi.toLowerCase()) {
     mismatches.push({ field: "doi", expected: query.doi, actual: canonical.doi });
+  }
+  // M9.7.4 arXiv DOI ↔ arXiv ID 身份交叉校验：10.48550/arxiv.X 唯一确定
+  // arXiv ID；candidate 声称的 arXiv ID 与之不一致 = 身份错配（即使 DOI 回显相同）
+  const queryArxivFromDoi = query.doi !== undefined ? arxivIdFromDoi(query.doi) : undefined;
+  if (
+    queryArxivFromDoi !== undefined &&
+    canonical.arxivId !== undefined &&
+    canonical.arxivId.toLowerCase().replace(/v\d+$/, "") !== queryArxivFromDoi
+  ) {
+    mismatches.push({ field: "arxivId", expected: queryArxivFromDoi, actual: canonical.arxivId });
   }
   return mismatches;
 }

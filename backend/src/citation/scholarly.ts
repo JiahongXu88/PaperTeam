@@ -20,10 +20,13 @@ import type {
   ScholarlyProvider as ScholarlyProviderName,
 } from "./integrity.js";
 import { compareFields, sameWork, scoreCandidate } from "./candidateScoring.js";
-import { REFERENCE_NORMALIZATION_VERSION, titleQueryVariants } from "./referenceText.js";
+import { TITLE_STRONG_THRESHOLD } from "./candidateScoring.js";
+import { REFERENCE_NORMALIZATION_VERSION, titleQueryVariants, titleSimilarity } from "./referenceText.js";
+import { arxivIdFromDoi } from "../sources/identity.js";
 import { fingerprintJson } from "../util/hash.js";
 
 export { compareFields } from "./candidateScoring.js";
+export { arxivIdFromDoi } from "../sources/identity.js";
 
 // ---- 查询与结果 ----
 
@@ -478,8 +481,10 @@ export function buildQueryPlan(query: ScholarlyQuery): QueryStep[] {
  * 语义）任一变化就递增，纳入 metadata 记录与 cache fingerprint——旧 NOT_FOUND 结果
  * 自动失效，无需用户删 workspace。
  *   v3：+ software kind 核验（SoftwareReferenceResolver）+ PROVIDER_ERROR 结论分离
+ *   v4（M9.7.4）：+ DOI-only query 的 arXiv 权威源交叉验证（arXiv DOI 错配
+ *       match → mismatch/unresolved）+ compareFields 的 arXiv DOI↔ID 交叉校验
  */
-export const METADATA_VERIFICATION_VERSION = `v3.n${REFERENCE_NORMALIZATION_VERSION}`;
+export const METADATA_VERIFICATION_VERSION = `v4.n${REFERENCE_NORMALIZATION_VERSION}`;
 
 // ---- Resolver（编排 + 缓存 + 语义裁决） ----
 
@@ -577,8 +582,31 @@ export class ScholarlyResolver {
         case "match":
         case "mismatch": {
           // variant 命中后按原始字段重新比对（variant 标题只服务检索）
-          const mismatches = compareFields(query, outcome.record);
+          let mismatches = compareFields(query, outcome.record);
           attempts.push({ provider: provider.name, outcome: mismatches.length > 0 ? "mismatch" : "match", note: step.note });
+          // M9.7.4 DOI-only 身份交叉验证：query 无 title 参照时，provider 对
+          // 查询 DOI 的回显不构成身份证明（OpenAlex 对 arXiv DOI 索引错配的
+          // 真实案例）。arXiv DOI 用 arXiv 官方 API 的权威 title 交叉比对：
+          // 不一致 → mismatch；权威源不可确认 → unresolved（保守：宁可
+          // unresolved，不给 wrong match）。
+          if (mismatches.length === 0 && query.title === undefined && query.doi !== undefined) {
+            const cross = await this.crossCheckArxivDoi(query.doi, outcome.record);
+            if (cross !== undefined) {
+              attempts.push({ provider: "arxiv-authority", outcome: cross.kind === "match" ? "match" : cross.kind, note: cross.note });
+              if (cross.kind === "mismatch") {
+                return {
+                  outcome: "mismatch",
+                  canonical: outcome.record,
+                  mismatches: cross.mismatches,
+                  attempts,
+                  cacheHits: this.telemetry.cacheHits,
+                };
+              }
+              if (cross.kind === "unresolved") {
+                return { outcome: "unresolved", attempts, cacheHits: this.telemetry.cacheHits };
+              }
+            }
+          }
           return {
             outcome: mismatches.length > 0 ? "mismatch" : "match",
             canonical: outcome.record,
@@ -608,6 +636,51 @@ export class ScholarlyResolver {
       return { outcome: "ambiguous", candidates: firstAmbiguous, attempts, cacheHits: this.telemetry.cacheHits };
     }
     return { outcome: "unresolved", attempts, cacheHits: this.telemetry.cacheHits };
+  }
+
+  /**
+   * M9.7.4 arXiv DOI 身份交叉验证（DOI-only query 的 match 前置防线）：
+   * 从 DOI 提取 arXiv ID → arXiv 官方 API 按 id 查权威记录 → title 相似度
+   * 比对。返回 undefined 表示该 DOI 不是 arXiv DOI（无独立权威源，不强行
+   * 验证——普通 DOI 的实体查询错配风险不在本防线范围，如实记录边界）。
+   */
+  private async crossCheckArxivDoi(
+    doi: string,
+    candidate: CanonicalPaperRecord,
+  ): Promise<
+    | { kind: "match"; note: string }
+    | { kind: "mismatch"; note: string; mismatches: CitationFieldMismatch[] }
+    | { kind: "unresolved"; note: string }
+    | undefined
+  > {
+    const arxivId = arxivIdFromDoi(doi);
+    if (arxivId === undefined) {
+      return undefined;
+    }
+    const arxiv = this.providers.find((provider) => provider.name === "arxiv");
+    if (arxiv === undefined) {
+      return { kind: "unresolved", note: `arXiv DOI（${doi}）无权威源可交叉验证（未配置 arxiv provider）` };
+    }
+    const outcome = await this.lookupCached(arxiv, { arxivId });
+    if (outcome.kind !== "match" && outcome.kind !== "mismatch") {
+      return { kind: "unresolved", note: `arXiv 权威源无法确认 arxiv:${arxivId}（${outcome.kind}）` };
+    }
+    const authority = outcome.record;
+    if (
+      authority.title !== undefined &&
+      candidate.title !== undefined &&
+      titleSimilarity(authority.title, candidate.title) < TITLE_STRONG_THRESHOLD
+    ) {
+      return {
+        kind: "mismatch",
+        note: `arXiv 权威标题与 provider 返回不符（expected="${authority.title.slice(0, 80)}" actual="${candidate.title.slice(0, 80)}"）`,
+        mismatches: [
+          { field: "title", expected: authority.title, actual: candidate.title },
+          { field: "doi", expected: doi, actual: candidate.doi ?? doi },
+        ],
+      };
+    }
+    return { kind: "match", note: `arXiv 权威源交叉验证一致（arxiv:${arxivId}）` };
   }
 
   /** 逐步执行 query plan：not_found 继续；match/mismatch/ambiguous/error 停止 */

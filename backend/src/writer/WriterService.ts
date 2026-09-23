@@ -10,6 +10,8 @@
 
 import { AgentRunFailedError, InvalidLatexOutputError } from "../errors.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
+import type { ManuscriptLanguage } from "../project/language.js";
+import { targetLanguageLines } from "../project/language.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
@@ -212,6 +214,8 @@ export class WriterService {
     bibliography: BibliographyEntryInput[];
     targetProfile?: string;
     documentType?: string;
+    /** 稿件语言（M9.7.4；undefined = legacy 不注入） */
+    language?: ManuscriptLanguage;
     feedback?: string;
   }): Promise<Outline> {
     const task = await this.runtime.runAgent({
@@ -220,6 +224,7 @@ export class WriterService {
       task: buildOutlinePrompt(params),
       projectId: params.projectId,
       contextScope: "writing/outline",
+      ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: { role: "writer", skill: "outline" },
     });
     if (task.status !== "completed") {
@@ -255,6 +260,8 @@ export class WriterService {
     evidence: EvidenceRecord[];
     bibliography: BibliographyEntryInput[];
     styleProfile?: Record<string, unknown>;
+    /** 稿件语言（M9.7.4；undefined = legacy 不注入） */
+    language?: ManuscriptLanguage;
     extraInstructions?: string;
   }): Promise<{ latex: string; taskId: string }> {
     const task = await this.runtime.runAgent({
@@ -263,6 +270,7 @@ export class WriterService {
       task: buildSectionPrompt(params),
       projectId: params.projectId,
       contextScope: "writing/sections",
+      ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: { role: "writer", skill: "section" },
     });
     if (task.status !== "completed") {
@@ -308,6 +316,8 @@ export class WriterService {
     evidence: EvidenceRecord[];
     bibliography: BibliographyEntryInput[];
     buildError?: string;
+    /** 稿件语言（M9.7.4；undefined = legacy 不注入） */
+    language?: ManuscriptLanguage;
     extraInstructions?: string;
     /** 外部修改意见（M5.7；缺省 = 行为与旧版完全一致） */
     externalDirectives?: ExternalDirectiveDispatch[];
@@ -339,6 +349,7 @@ export class WriterService {
       }),
       projectId: params.projectId,
       contextScope: "writing/revision",
+      ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: {
         role: "writer",
         skill: "revision",
@@ -682,7 +693,7 @@ function renderRevisionItemsBlock(
   return ["", "===== 修订计划条目（结构化；逐条落实，修改后将逐条复核）=====", ...lines];
 }
 
-function buildRevisePrompt(params: {
+export function buildRevisePrompt(params: {
   section: OutlineSection;
   outline: Outline;
   currentLatex: string;
@@ -690,6 +701,7 @@ function buildRevisePrompt(params: {
   evidence: EvidenceRecord[];
   bibliography: BibliographyEntryInput[];
   buildError?: string;
+  language?: ManuscriptLanguage;
   extraInstructions?: string;
   externalDirectives?: ExternalDirectiveDispatch[];
   revisionItems?: RevisionPlanItem[];
@@ -729,6 +741,8 @@ function buildRevisePrompt(params: {
     return [
       "你是一名学术论文写手（Writer）。请修订论文摘要（abstract）。",
       "",
+      ...targetLanguageLines(params.language),
+      ...(params.language !== undefined ? [""] : []),
       "输出要求：",
       "1. 只输出修订后的摘要纯文本（100–200 字）；不要 LaTeX 命令、不要解释。",
       "2. 逐条解决下列针对摘要的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
@@ -762,6 +776,8 @@ function buildRevisePrompt(params: {
   return [
     `你是一名学术论文写手（Writer）。请修订论文章节「${params.section.title}」。`,
     "",
+    ...targetLanguageLines(params.language),
+    ...(params.language !== undefined ? [""] : []),
     "输出要求：",
     "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
     "2. 这是一次**受限修订（revision）**，不是重写：逐条解决下列针对本章节的问题，只修改问题指向的位置及保持连贯所需的最小上下文；其余内容逐字保留。",
@@ -948,7 +964,7 @@ function hasBalancedBraces(latex: string): boolean {
   return depth === 0;
 }
 
-function buildOutlinePrompt(params: {
+export function buildOutlinePrompt(params: {
   researchDigest: {
     domainOverview: string;
     researchGaps: string[];
@@ -958,6 +974,7 @@ function buildOutlinePrompt(params: {
   bibliography: BibliographyEntryInput[];
   targetProfile?: string;
   documentType?: string;
+  language?: ManuscriptLanguage;
   feedback?: string;
 }): string {
   return [
@@ -969,6 +986,8 @@ function buildOutlinePrompt(params: {
     '   "targetLengthWords": 400, "keyPoints": ["要点 1"]}],',
     ' "references": []}',
     "",
+    ...targetLanguageLines(params.language),
+    ...(params.language !== undefined ? [""] : []),
     "要求：",
     "1. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
@@ -990,17 +1009,20 @@ function buildOutlinePrompt(params: {
   ].join("\n");
 }
 
-function buildSectionPrompt(params: {
+export function buildSectionPrompt(params: {
   section: OutlineSection;
   outline: Outline;
   evidence: EvidenceRecord[];
   bibliography: BibliographyEntryInput[];
   styleProfile?: Record<string, unknown>;
+  language?: ManuscriptLanguage;
   extraInstructions?: string;
 }): string {
   return [
     `你是一名学术论文写手（Writer）。请撰写论文章节「${params.section.title}」。`,
     "",
+    ...targetLanguageLines(params.language),
+    ...(params.language !== undefined ? [""] : []),
     "输出要求：",
     "1. 只输出该章节的 LaTeX 正文片段：以 \\section{标题} 开始；不要 \\documentclass、\\begin{document}、导言区、文档骨架。",
     "2. 不要用 Markdown 代码块包裹，不要解释文字。",

@@ -201,6 +201,7 @@ export interface WorkflowStageRecordView {
  *   revise        仅 hitl.outline_confirm / hitl.plan_confirm：非空 feedback
  *   accept_draft  仅 hitl.revision_overflow：知情接受当前稿
  *   revise_more   仅 hitl.revision_overflow：人工授权追加一轮修订
+ *   continue      仅 hitl.evidence_supply（M9.7.4）：以当前证据继续写作
  *   cancel        取消整个 run（经 decision 通道，留档 inputs）
  */
 export type HitlDecisionInput =
@@ -213,6 +214,8 @@ export type HitlDecisionInput =
   | { action: "apply"; payload: { selectedFindingIds: string[] } }
   /** 仅 hitl.style_polish：只保留建议，不修改稿件 */
   | { action: "skip" }
+  /** 仅 hitl.evidence_supply（M9.7.4）：以当前已核验证据继续写作 */
+  | { action: "continue" }
   | { action: "cancel" };
 
 // ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----

@@ -180,7 +180,8 @@ describe("SoftwareReferenceResolver（fake fetch）", () => {
 
   it("软件核验版本纳入常量（算法升级 → 旧记录失效）", () => {
     expect(SOFTWARE_VERIFICATION_VERSION).toBeGreaterThan(0);
-    expect(METADATA_VERIFICATION_VERSION).toMatch(/^v3\./);
+    // M9.7.4：v3 → v4（DOI-only arXiv 交叉验证 + arXiv DOI↔ID 比对）
+    expect(METADATA_VERIFICATION_VERSION).toMatch(/^v4\./);
   });
 });
 

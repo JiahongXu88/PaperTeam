@@ -595,6 +595,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       evidence,
       evidenceGrounding,
       evidenceSelection,
+      candidates,
       sources,
       manuscript,
       writer,

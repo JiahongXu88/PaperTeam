@@ -325,6 +325,7 @@ export const STAGE_LABELS: Record<string, string> = {
   "hitl.feasibility_confirm": "等待确认可行性",
   "outline.plan": "规划大纲",
   "hitl.outline_confirm": "等待确认大纲",
+  "hitl.evidence_supply": "等待证据供给决策",
   "writing.sections": "分节写作",
   // 共享后段（idea_to_paper / existing_paper_improvement）
   "citation.verify": "引用核验",
@@ -420,6 +421,7 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "hitl.feasibility_confirm", hitl: true },
     { stageId: "outline.plan" },
     { stageId: "hitl.outline_confirm", hitl: true },
+    { stageId: "hitl.evidence_supply", hitl: true, conditional: true },
     { stageId: "writing.sections" },
     { stageId: "citation.verify" },
     { stageId: "review.run" },

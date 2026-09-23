@@ -111,6 +111,13 @@ export interface RunAgentInput {
    * 恰好挂一个监听器，任务 settle 后即移除。
    */
   signal?: AbortSignal;
+  /**
+   * 稿件语言（M9.7.4 Language Contract，已归一化 "zh"|"en"）：会话创建 /
+   * rotation 时经 roleSkills 回调参与 Skill 路由（"en" 剔除 zh-only Skill）。
+   * 缺省 = 不过滤（legacy 默认）。业务层从 project.language 归一化后传入，
+   * Runtime 不读业务存储。
+   */
+  language?: "zh" | "en";
   /** 附加到任务的业务侧标记（透传给 Adapter 诊断日志，不参与 Runtime 协议） */
   metadata?: Record<string, unknown>;
 }

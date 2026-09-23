@@ -24,6 +24,7 @@ import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
 import { MAX_PAPER_PDF_BYTES } from "./paper/PaperIngestService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
+import { normalizeManuscriptLanguage } from "./project/language.js";
 import { readExistingPaperGoal } from "./project/ProjectImportService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import type { RuntimeStatusService } from "./runtime/statusService.js";
@@ -566,12 +567,16 @@ async function handleRequest(
     // M5.4 语言润色策略：只对会修改稿件的工作流有意义；Quick Review 100% 只读，
     // 携带 stylePolicy（任何值）直接 400——不存在「Quick Review 里应用润色」的路径
     const stylePolicy = readStylePolicyField(body, kind);
+    // M9.7.4：稿件语言随 run 固化（planner 纯函数层消费——en 项目跳过
+    // zh-only 润色链；旧 run 无此字段 = 不过滤，兼容）
+    const runLanguage = normalizeManuscriptLanguage(project.language);
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
       // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
       // 按 full 解释，两个默认值不共用同一条兜底路径）
       ...(kind === "existing_paper_review" ? { citationSemanticMode: readCitationSemanticMode(body) } : {}),
       ...(stylePolicy !== undefined ? { stylePolicy } : {}),
+      ...(runLanguage !== undefined ? { language: runLanguage } : {}),
     });
     sendJson(res, 202, { runId: run.runId, status: run.status, workflowKind: run.workflowKind });
     return;
@@ -2392,11 +2397,13 @@ async function handleProjectResourceRoutes(
       const evidence = await stack.evidence.list(projectId);
       const project = await stack.projects.getRequired(projectId);
       const citation = await stack.citation.latestReport(projectId);
+      const reviewLanguage = normalizeManuscriptLanguage(project.language);
       const results = await stack.reviewer.reviewAll({
         projectId,
         manuscriptDigest: digest,
         evidence: evidence.slice(0, 20),
         targetProfile: project.targetProfile,
+        ...(reviewLanguage !== undefined ? { language: reviewLanguage } : {}),
         ...(citation
           ? {
               citationDigest: `cited=${citation.summary.citedCount} missing=${citation.summary.missingKeys} hallucinated=${citation.summary.hallucinated}`,

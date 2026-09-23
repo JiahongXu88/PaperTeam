@@ -783,15 +783,17 @@ export class SourceImportService {
           record: verdict.canonical,
         };
       case "mismatch":
-        // DOI/arXiv 导入路径下 query 只有标识符：record 是该标识符的权威记录，
-        // 字段差异如实呈现在 mismatch 结论中，记录仍可用于元数据补全
+        // M9.7.4：mismatch = 身份错配（provider 返回的不是 query 标识符对应的
+        // 文献，或 title/arXiv ID 交叉校验失败）——record 字段一律不返回、
+        // 不写库。旧语义曾把 mismatch record 用于「元数据补全」，在 provider
+        // 错配（OpenAlex 对 arXiv DOI 索引错配，M9.7.3）场景下等于把错误
+        // 论文的 title 以 resolved 水位线毒化入库；错误 metadata 比缺失更糟。
         return {
           note: {
             outcome: "mismatch",
             ...(provider !== undefined ? { provider } : {}),
             note: verdict.mismatches?.map((m) => `${m.field}:${m.expected}≠${m.actual}`).join("; "),
           },
-          record: verdict.canonical,
         };
       case "ambiguous":
         return {

@@ -13,9 +13,16 @@
  *   reviewer(verify-citations) / writer 的既有行为不退化，且 writer 默认获得
  *   academic-writing-zh（普通写作场景）。
  *
+ * Language Contract（M9.7.4）：路由结果按稿件语言过滤 zh-only Skill——
+ * language="en" 时剔除 ZH_ONLY_SKILL_IDS（英文稿件 × 中文 Skill 是 M9.7.3
+ * review 链路 7/7 结构化失败的归因环境）；language 缺省（undefined / "zh"）
+ * 不过滤，既有项目（隐含中文场景）行为零变化。
+ *
  * 路由表是业务定义（代码内控常量）；如允许编辑，只能在 approved catalog +
  * ALLOWED_CONTEXT_SCOPES 集合内选择（本轮 UI 只读展示）。
  */
+
+import type { ManuscriptLanguage } from "../project/language.js";
 
 export interface SkillRoute {
   role: string;
@@ -123,6 +130,13 @@ export const APPROVED_SKILL_IDS: readonly string[] = Array.from(
   new Set(DEFAULT_SKILL_ROUTES.flatMap((route) => [...route.skillIds])),
 ).sort();
 
+/**
+ * 只适用于中文稿件的 Skill（M9.7.4）：seed 的 purpose 明确锚定中文学术
+ * 表达 / 中文工科论文写作。language="en" 的会话不注入（缺失字段契约漂移
+ * 的归因环境，见 M9.7.3 §4.5）；zh / undefined（legacy 默认中文）不过滤。
+ */
+export const ZH_ONLY_SKILL_IDS: readonly string[] = ["academic-writing-zh", "academic-style-zh"];
+
 function scopeMatches(prefix: string, scope: string): boolean {
   return scope === prefix || scope.startsWith(`${prefix}/`);
 }
@@ -130,10 +144,12 @@ function scopeMatches(prefix: string, scope: string): boolean {
 /**
  * 解析应注入的 skill id（有序、去重）。
  * scope 应已归一化（sanitizeContextScope）；未归一化的输入按小写处理。
+ * language（M9.7.4）："en" 时剔除 zh-only Skill；缺省 / "zh" 不过滤。
  */
 export function resolveSkillIds(
   role: string,
   contextScope?: string,
+  language?: ManuscriptLanguage,
   routes: readonly SkillRoute[] = DEFAULT_SKILL_ROUTES,
 ): string[] {
   const scope = contextScope?.trim().toLowerCase();
@@ -154,5 +170,9 @@ export function resolveSkillIds(
   if (best === undefined) {
     best = candidates.find((route) => route.scopePrefix === undefined);
   }
-  return best === undefined ? [] : Array.from(new Set(best.skillIds));
+  if (best === undefined) {
+    return [];
+  }
+  const ids = Array.from(new Set(best.skillIds));
+  return language === "en" ? ids.filter((id) => !ZH_ONLY_SKILL_IDS.includes(id)) : ids;
 }

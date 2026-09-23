@@ -351,8 +351,14 @@ export interface PiRuntimeOptions {
   /**
    * 按 role + contextScope 解析注入的 Skill 版本引用（M5.3；优先于 roleSkillDirs）。
    * 返回的 dir 必须是不可变版本快照——会话 generation 生命周期内不变。
+   * language（M9.7.4）：稿件语言参与路由（"en" 剔除 zh-only Skill）；
+   * 缺省 = 不过滤。来自 startAgent input.language（业务层归一化后传入）。
    */
-  roleSkills?: (role: PiRoleKey, contextScope?: string) => RuntimeSkillAssignment[];
+  roleSkills?: (
+    role: PiRoleKey,
+    contextScope?: string,
+    language?: "zh" | "en",
+  ) => RuntimeSkillAssignment[];
   /** 按角色注入的自定义工具（如 researcher/citation 的受控学术检索） */
   roleCustomTools?: (role: PiRoleKey, projectId?: string) => ToolDefinition[];
   /**
@@ -398,6 +404,8 @@ interface ManagedSession {
   projectId?: string;
   /** 归一化 contextScope（Skill 路由 / 诊断；无 scope 会话缺省） */
   scope?: string;
+  /** 稿件语言（M9.7.4；创建时记录，rotation 复用——语言是项目级稳定属性） */
+  language?: "zh" | "en";
   /**
    * 当前 generation 注入的 Skill 版本（M5.3 版本固定：创建 / rotation 时解析一次，
    * generation 内不变；Skill 更新只影响之后创建的 generation）。
@@ -1810,7 +1818,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
     managed.generation += 1;
     managed.runCount = 0;
     try {
-      const fresh = await this.createPiSessionWithTimeout(managed.role, managed.cwd, managed.scope, managed.projectId);
+      const fresh = await this.createPiSessionWithTimeout(
+        managed.role,
+        managed.cwd,
+        managed.scope,
+        managed.projectId,
+        managed.language,
+      );
       managed.session = fresh.session;
       // 新 generation 重新解析 Skill 版本与模型（M5.7：override 变更经
       // reconfigure 触发整体释放，这里保持同 scope 同模型的不变量）
@@ -1852,15 +1866,16 @@ export class PiRuntimeAdapter implements AgentRuntime {
     cwd: string,
     scope: string | undefined,
     projectId?: string,
+    language?: "zh" | "en",
   ): Promise<CreatedPiSession> {
     const timeoutMs = this.sessionTimeoutMs;
     if (timeoutMs === undefined) {
-      return this.createPiSession(role, cwd, scope, projectId);
+      return this.createPiSession(role, cwd, scope, projectId, language);
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        this.createPiSession(role, cwd, scope, projectId),
+        this.createPiSession(role, cwd, scope, projectId, language),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(new AgentTimeoutError(timeoutMs, "session")), timeoutMs);
           timer.unref?.();
@@ -2266,7 +2281,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   ): Promise<ManagedSession> {
     const role = resolveRoleConfig(scope);
     const cwd = this.resolveWorkspaceCwd(input.projectId);
-    const created = await this.createPiSession(role, cwd, scope, input.projectId);
+    const created = await this.createPiSession(role, cwd, scope, input.projectId, input.language);
     const nowMs = this.now();
     const now = new Date(nowMs).toISOString();
     const managed: ManagedSession = {
@@ -2278,6 +2293,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
       cwd,
       ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
       ...(scope !== undefined ? { scope } : {}),
+      ...(input.language !== undefined ? { language: input.language } : {}),
       assignedSkills: created.assignedSkills,
       skillDirs: created.skillDirs,
       createdAt: now,
@@ -2311,6 +2327,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     cwd: string,
     scope: string | undefined,
     projectId?: string,
+    language?: "zh" | "en",
   ): Promise<CreatedPiSession> {
     await mkdir(cwd, { recursive: true }).catch(() => {});
     // 本会话的模型（M5.7）：per-Agent override（按 scope 命中）或默认模型。
@@ -2322,7 +2339,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     // 版本快照目录（M5.3：generation 内固定）。
     const assignments: RuntimeSkillAssignment[] =
       this.roleSkills !== undefined
-        ? this.roleSkills(role.role, scope)
+        ? this.roleSkills(role.role, scope, language)
         : (this.roleSkillDirs?.(role.role, scope) ?? []).map((dir) => ({
             id: basename(dir),
             contentHash: "unknown",

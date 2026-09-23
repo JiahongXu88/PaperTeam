@@ -520,11 +520,11 @@ describe("Candidate 生命周期", () => {
 });
 
 describe("Metadata merge", () => {
-  it("user 级标题不被 resolved 覆盖；空缺字段被补全", async () => {
+  it("user 级标题不被 resolved 覆盖；match 时空缺字段被补全", async () => {
     const f = await newFixture({
       resolverRecords: {
         "doi:10.1234/merge": {
-          title: "Wrong Title From Resolver",
+          title: "User Title",
           authors: ["Resolve Author"],
           year: 2024,
         },
@@ -542,7 +542,7 @@ describe("Metadata merge", () => {
       metadata: { title: "User Title" },
     });
     expect(patched.metadataProvenance).toBe("user");
-    // enrich（resolved）不覆盖 user 标题，但补 authors/year
+    // enrich（resolved，title 一致 = match）不覆盖 user 标题，但补 authors/year
     const { source: enriched } = await f.importer.enrichMetadata(f.projectId, source.sourceId);
     expect(enriched.metadata.title).toBe("User Title");
     expect(enriched.metadata.authors).toEqual(["Resolve Author"]);
@@ -553,7 +553,7 @@ describe("Metadata merge", () => {
     expect(enriched.identity?.doi).toBe("10.1234/merge");
   });
 
-  it("resolved 覆盖 inferred（PDF 抽取的错标题被学术库正式记录纠正）", async () => {
+  it("resolver title mismatch → 保守不 merge（M9.7.4：身份可疑的记录不入库）", async () => {
     const f = await newFixture({
       resolverRecords: {
         "doi:10.1234/fix": {
@@ -567,9 +567,14 @@ describe("Metadata merge", () => {
       content: minimalPdf("garbled"),
       metadata: { title: "Ocr Broken Title", doi: "10.1234/fix" },
     });
-    const { source: enriched } = await f.importer.enrichMetadata(f.projectId, source.sourceId);
-    expect(enriched.metadata.title).toBe("Corrected Title");
-    expect(enriched.metadata.year).toBe(2022);
+    const enriched = await f.importer.enrichMetadata(f.projectId, source.sourceId);
+    // 旧语义曾把 mismatch record 用于「OCR 纠正」——但 DOI 命中 + title 不符
+    // 在 provider 错配场景（M9.7.3：OpenAlex 对 arXiv DOI 索引错配）等价于
+    // 把错误论文的字段以 resolved 水位线毒化入库。M9.7.4 起一律保守：
+    // mismatch = 身份可疑 → 字段不写库，OCR 修正交给用户手动 PATCH。
+    expect(enriched.source.metadata.title).toBe("Ocr Broken Title");
+    expect(enriched.source.metadata.year).toBeUndefined();
+    expect(enriched.resolve.outcome).toBe("mismatch");
   });
 
   it("无 DOI/arXiv/标题的条目 enrich 拒绝（无解析依据）", async () => {

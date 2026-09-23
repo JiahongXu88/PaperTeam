@@ -23,7 +23,7 @@ import { EvidenceSelectionService } from "../evidence/EvidenceSelectionService.j
 import type { SourceItem } from "../sources/SourceStore.js";
 import { firstAuthorFamily, identityFromMetadata, identityKey } from "../sources/identity.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
-import { canonicalTitleTokens, compactTitle } from "./referenceText.js";
+import { canonicalTitleTokens, compactTitle, titleSimilarity } from "./referenceText.js";
 
 /** M9.5 覆盖的 BibTeX 条目类型（刻意最小：不设计全类型系统） */
 export type DeterministicBibType = "article" | "inproceedings" | "misc";
@@ -240,14 +240,30 @@ export function buildBibliographyFromSources(items: readonly SourceItem[]): Bibl
 }
 
 /**
+ * LLM-recalled（artifact）bibliography 条目的并入上限（M9.7.4）。
+ * source-library 条目（用户 promote / 导入的事实）**永不**因上限被裁；
+ * 只有 LLM 回忆的背景条目 bounded——超出按 LLM 输出序裁尾（输出序≈相关性序）。
+ * 40 = research prompt 纪律上限（30）之上的失控兜底，正常项目不会触碰。
+ */
+export const MAX_ARTIFACT_BIBLIOGRAPHY_ENTRIES = 40;
+
+/** 与文献库条目的年份兼容（相等，或一方缺失——缺失不构成冲突） */
+function yearCompatible(a: number | undefined, b: number | undefined): boolean {
+  return a === undefined || b === undefined || a === b;
+}
+
+/**
  * Researcher artifact bibliography（LLM 引用意图）并入 canonical 集：
- * 与文献库条目同身份（DOI 精确 / 归一标题+年份一致）的 LLM 条目**丢弃**
- * （authoritative metadata 在库内）；其余作为 origin=artifact 条目保留并
- * 改用确定性 key——LLM 自造 key 从此不再进入任何下游。
+ * 与文献库条目同身份（DOI 精确 / 归一标题+年份一致 / 标题相似度 ≥0.92 且
+ * 年份兼容——M9.7.4 增强，title variant 不再与库内条目成对存活）的 LLM
+ * 条目**丢弃**（authoritative metadata 在库内）；其余作为 origin=artifact
+ * 条目保留并改用确定性 key——LLM 自造 key 从此不再进入任何下游。
+ * artifact 条目总量有界（maxArtifactEntries，缺省 40）。
  */
 export function mergeArtifactBibliography(
   canonical: readonly BibliographySeed[],
   artifact: readonly BibliographyEntryInput[],
+  maxArtifactEntries: number = MAX_ARTIFACT_BIBLIOGRAPHY_ENTRIES,
 ): CanonicalBibliographyEntry[] {
   const byDoi = new Map<string, BibliographySeed>();
   const byTitleYear = new Map<string, BibliographySeed>();
@@ -258,7 +274,11 @@ export function mergeArtifactBibliography(
     byTitleYear.set(titleYearKey(seed.title, seed.year), seed);
   }
   const seeds = [...canonical];
+  let artifactCount = 0;
   for (const entry of artifact) {
+    if (artifactCount >= maxArtifactEntries) {
+      break; // M9.7.4 bounded：LLM-recalled 条目上限，超出裁尾（LLM 输出序尾部）
+    }
     const title = entry.title.trim();
     if (title === "") {
       continue;
@@ -270,6 +290,14 @@ export function mergeArtifactBibliography(
     const titleKey = titleYearKey(title, entry.year);
     if (byTitleYear.has(titleKey)) {
       continue; // 文献库已有同标题（+年份）条目
+    }
+    // M9.7.4：标题 variant（副标题 / 大小写 / 标点差异逃过 compactTitle 全等）
+    // + 年份兼容 → 同一文献，库内 authoritative 条目胜出（recall 形态丢弃）
+    const similarInLibrary = canonical.some(
+      (seed) => titleSimilarity(title, seed.title) >= 0.92 && yearCompatible(entry.year, seed.year),
+    );
+    if (similarInLibrary) {
+      continue;
     }
     seeds.push({
       title,
@@ -284,6 +312,7 @@ export function mergeArtifactBibliography(
       identityKey: `artifact:${compactTitle(title)}`,
       origin: "artifact",
     });
+    artifactCount += 1;
   }
   return assignCitationKeys(seeds);
 }

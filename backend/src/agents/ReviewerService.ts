@@ -16,11 +16,14 @@ import { join } from "node:path";
 
 import { AgentRunFailedError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
+import type { ManuscriptLanguage } from "../project/language.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import {
   extractJsonObject,
   readRequiredEnum,
+  StructuredOutputError,
+  describeStructuredError,
 } from "./outputParsing.js";
 
 export type ReviewMode = "fact" | "academic" | "style";
@@ -90,6 +93,12 @@ export interface ModeReviewResult {
   riskScore?: number;
   issues: ReviewIssue[];
   summary: string;
+  /**
+   * 结构化输出修复诊断（M9.7.4）：attempts = 首次输出未通过校验后执行的
+   * error-feedback repair 调用次数（0 次不写字段）；errors = 被修复掉的
+   * 校验错误（人读描述）。随 saveReport 落盘 reviews/review-r*-*.json。
+   */
+  repair?: { attempts: number; errors: string[] };
 }
 
 export interface ReviewerServiceOptions {
@@ -117,6 +126,12 @@ const VERDICTS: readonly FactVerdict[] = [
   "CONTRADICTED",
 ];
 
+/**
+ * 结构化输出修复上限（M9.7.4）：original attempt + 最多 2 次错误反馈修复。
+ * 有界：绝不无限重试；全部失败仍如实抛错。
+ */
+export const REVIEW_REPAIR_MAX_ATTEMPTS = 2;
+
 export class ReviewerService {
   private readonly runtime: AgentRuntime;
   private readonly agentId: string;
@@ -138,6 +153,8 @@ export class ReviewerService {
     manuscriptDigest: string;
     evidence: EvidenceRecord[];
     targetProfile?: string;
+    /** 稿件语言（M9.7.4；en 时不注入 zh-only style skill + prompt 语言化） */
+    language?: ManuscriptLanguage;
     citationDigest?: string;
   }): Promise<ModeReviewResult[]> {
     const results = await Promise.all(
@@ -152,34 +169,86 @@ export class ReviewerService {
     return results;
   }
 
-  /** 单个 review mode（独立 contextScope，会话隔离） */
+  /**
+   * 单个 review mode（独立 contextScope，会话隔离）。
+   *
+   * M9.7.4 Structured Output Repair：输出已产生但未通过结构化校验
+   * （缺 riskScore / scores、JSON 无法解析等）时，不做原样重跑——把具体
+   * 校验错误 + 上一轮输出回馈给模型做**有界修复**（≤ REVIEW_REPAIR_MAX_ATTEMPTS
+   * 次），修复成功则保留审稿内容并记录 repair 诊断；全部失败才抛错（由
+   * Stage 层 transient retry 兜底）。任务本身失败（status != completed，
+   * 模型 / 网络问题）不进入 repair——那是 Runtime 层 transient。
+   * 纪律：缺失的语义字段（riskScore / scores / verdict）只能由模型补齐，
+   * 代码绝不填默认值（Quality Gate 可信度红线）。
+   */
   async reviewMode(params: {
     projectId: string;
     mode: ReviewMode;
     manuscriptDigest: string;
     evidence: EvidenceRecord[];
     targetProfile?: string;
+    /** 稿件语言（M9.7.4；en 时不注入 zh-only style skill + prompt 语言化） */
+    language?: ManuscriptLanguage;
     citationDigest?: string;
   }): Promise<ModeReviewResult> {
-    const task = await this.runtime.runAgent({
-      agentId: this.agentId,
-      ...this.timeoutOverride,
-      task: buildReviewPrompt(params),
-      projectId: params.projectId,
-      contextScope: `review/${params.mode}`,
-      metadata: { role: "reviewer", skill: params.mode },
-    });
-    if (task.status !== "completed") {
-      throw new AgentRunFailedError(
-        task.error ?? `Review（${params.mode}）任务以 ${task.status} 状态结束`,
-      );
+    const contextScope = `review/${params.mode}`;
+    let lastOutput = "";
+    const validationErrors: string[] = [];
+    let lastError: AgentRunFailedError | undefined;
+
+    for (let attempt = 0; attempt <= REVIEW_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+      const task = await this.runtime.runAgent({
+        agentId: this.agentId,
+        ...this.timeoutOverride,
+        task:
+          attempt === 0
+            ? buildReviewPrompt(params)
+            : buildReviewRepairPrompt(params.mode, lastOutput, validationErrors),
+        projectId: params.projectId,
+        contextScope,
+        ...(params.language !== undefined ? { language: params.language } : {}),
+        metadata: {
+          role: "reviewer",
+          skill: params.mode,
+          ...(attempt > 0 ? { structuredRepairAttempt: attempt } : {}),
+        },
+      });
+      if (task.status !== "completed") {
+        // 模型 / 网络层失败不是结构化违约：直接抛出，交给 Stage transient retry
+        throw new AgentRunFailedError(
+          task.error ?? `Review（${params.mode}）任务以 ${task.status} 状态结束`,
+        );
+      }
+      lastOutput = task.output ?? "";
+      try {
+        const parsed = extractJsonObject(lastOutput, `Review（${params.mode}）结果`);
+        const result = parseModeReview(params.mode, parsed);
+        if (attempt > 0) {
+          result.repair = { attempts: attempt, errors: [...validationErrors] };
+          this.log(
+            `[reviewer] projectId=${params.projectId} mode=${params.mode} 结构化修复成功（第 ${attempt} 次修复）：${validationErrors.length} 项校验错误已补齐`,
+          );
+        }
+        this.log(
+          `[reviewer] projectId=${params.projectId} mode=${params.mode} issues=${result.issues.length}`,
+        );
+        return result;
+      } catch (error) {
+        if (!(error instanceof AgentRunFailedError)) {
+          throw error;
+        }
+        lastError = error;
+        validationErrors.push(describeStructuredError(error));
+        this.log(
+          `[reviewer] projectId=${params.projectId} mode=${params.mode} 第 ${attempt + 1} 次输出未通过结构化校验：${error.message}`,
+        );
+      }
     }
-    const parsed = extractJsonObject(task.output ?? "", `Review（${params.mode}）结果`);
-    const result = parseModeReview(params.mode, parsed);
-    this.log(
-      `[reviewer] projectId=${params.projectId} mode=${params.mode} issues=${result.issues.length}`,
+    // 有界耗尽：如实失败（禁止伪造默认字段值）
+    throw new AgentRunFailedError(
+      `Review（${params.mode}）结构化输出在 ${REVIEW_REPAIR_MAX_ATTEMPTS + 1} 次尝试（含 ${REVIEW_REPAIR_MAX_ATTEMPTS} 次错误反馈修复）后仍未通过校验：` +
+        `${lastError !== undefined ? lastError.message : "未知校验错误"}（修复历史：${validationErrors.join("；")}）`,
     );
-    return result;
   }
 
   /** 落盘单个 mode 的报告（reviews/review-<round>-<mode>.json） */
@@ -283,7 +352,12 @@ export function parseModeReview(
       }
     }
     if (Object.keys(scores).length === 0) {
-      throw new AgentRunFailedError(`${context}：缺少合法的 scores（各维度 0-100）`);
+      // M9.7.4：分类为结构化错误（缺失 / 非法），供 error-feedback repair
+      throw new StructuredOutputError(
+        `${context}：缺少合法的 scores（各维度 0-100，形如 {"问题定义": 82, "方法合理性": 75, "实验充分性": 68, "论证逻辑": 80, "写作质量": 85}）`,
+        rawScores === undefined ? "missing_field" : "wrong_type",
+        "scores",
+      );
     }
     const overall =
       typeof parsed["overallScore"] === "number" && parsed["overallScore"] >= 0 && parsed["overallScore"] <= 100
@@ -295,7 +369,12 @@ export function parseModeReview(
   // FORBIDDEN_DETECTOR_FIELDS 列出的键即使出现也被丢弃）
   const risk = parsed["riskScore"];
   if (typeof risk !== "number" || risk < 0 || risk > 100) {
-    throw new AgentRunFailedError(`${context}：缺少合法的 riskScore（0-100）`);
+    // M9.7.4：分类为结构化错误（缺失 / 非法），供 error-feedback repair
+    throw new StructuredOutputError(
+      `${context}：缺少合法的 riskScore（0-100 的数字，模板化 / 机械化表达风险的工程口径）`,
+      risk === undefined ? "missing_field" : "invalid_value",
+      "riskScore",
+    );
   }
   return { ...base, riskScore: Math.round(risk) };
 }
@@ -314,7 +393,7 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
     return [];
   }
   if (!Array.isArray(raw)) {
-    throw new AgentRunFailedError(`${context}：issues 不是数组`);
+    throw new StructuredOutputError(`${context}：issues 不是数组`, "wrong_type", "issues");
   }
   const issues: ReviewIssue[] = [];
   for (const item of raw.slice(0, 100)) {
@@ -414,6 +493,8 @@ export function buildReviewPrompt(params: {
   manuscriptDigest: string;
   evidence: EvidenceRecord[];
   targetProfile?: string;
+  /** 稿件语言（M9.7.4；en 时 style 检查项以英文表述、finding 用英文撰写） */
+  language?: ManuscriptLanguage;
   citationDigest?: string;
 }): string {
   const evidenceLines = params.evidence
@@ -422,6 +503,32 @@ export function buildReviewPrompt(params: {
       (record) =>
         `- [${record.id}] ${record.claim.slice(0, 140)}（${record.verificationStatus}${record.supportStrength ? `/${record.supportStrength}` : ""}${record.location?.chunk ? `；chunk: ${record.location.chunk.slice(0, 60)}` : ""}）`,
     );
+
+  // M9.7.4：style lens 的检查项语言化——英文稿件配中文检查文案 + zh-only
+  // skill（M9.7.3 归因环境）是结构化输出漂移的温床；fact/academic 的指令
+  // 仍为中文（对英文稿件工作正常），仅要求 finding 文本跟随稿件语言。
+  const languageDirective =
+    params.language === "en"
+      ? `Manuscript language: English. Write the "summary" and every issue's "description" / "suggestedAction" / "reason" in English. The JSON contract below is unchanged.`
+      : params.language === "zh"
+        ? `稿件语言：中文。summary 与 issue 的 description / suggestedAction / reason 用中文撰写。`
+        : "";
+  const styleSpec =
+    params.language === "en"
+      ? [
+          "You are using the style review skill (academic writing quality, NOT AI detection): check for vague summaries, repetitive phrasing, mechanical parallelism, over-templated structure, vague attribution, overstated significance, promotional wording, unnatural or translationese-like expression, overly uniform paragraph rhythm, redundant transitions, and terminology drift.",
+          "Every issue must include: section (location), description (the problem, quoting a fragment of the original sentence), reason (why it is a problem: contradicts surrounding logic / evaluative wording without numerical support / Nth repetition in the same section, etc.), suggestedAction (a concrete sentence-level fix or deletion), severity (expression issues are usually minor; major only when they cause real ambiguity).",
+          "Connectives such as 'Moreover / However / Therefore / Meanwhile' are normal in academic writing: do not report them merely for occurring; flag a redundant transition only when the logical relation does not hold or consecutive sentences in one paragraph open mechanically with them. A well-written academic paragraph should have zero or very few issues.",
+          "Do NOT output any AI-probability / human-probability / detector-score fields; do not judge the authors; no holistic impressionistic comments.",
+          "Output the additional field riskScore: 0-100 (engineering measure of templated / mechanical writing risk; higher = more templated; NOT a provenance judgment).",
+        ]
+      : [
+          "你使用 style review skill（中文学术表达质量，不是 AI 检测）：检查空泛总结、重复表达、机械排比、过度模板化、模糊归因、夸大意义、宣传式措辞、翻译腔 / 不自然表达、段落节奏过度一致、冗余过渡、术语漂移。",
+          "每条 issue 必须同时给出：section（位置）、description（问题，引用原句片段 ≤ 60 字）、reason（为什么是问题：与前后句逻辑不符 / 评价词无数字支撑 / 同段第 N 次重复 等）、suggestedAction（具体到句的改法或删除）、severity（表达问题通常 minor；只有造成理解歧义才 major）。",
+          "「此外 / 然而 / 因此 / 同时」在学术写作中是正常用法：不得仅因出现就报告；只有逻辑关系不符或同段连续多句机械开头才算冗余过渡。正常的中文学术段落应当零或极少 issue。",
+          "禁止输出 AI 概率 / 人类概率 / 检测器分数等字段；不评价作者，不做整体印象式泛评。",
+          "输出额外字段 riskScore: 0-100（模板化 / 机械化表达风险的工程口径，越高表示模板化越重；不是生成来源判断）。",
+        ];
 
   const modeSpecs: Record<ReviewMode, string[]> = {
     fact: [
@@ -436,17 +543,12 @@ export function buildReviewPrompt(params: {
       `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
       "输出额外字段 scores: {问题定义: 0-100, 方法合理性: 0-100, 实验充分性: 0-100, 论证逻辑: 0-100, 写作质量: 0-100} 与 overallScore。",
     ],
-    style: [
-      "你使用 style review skill（中文学术表达质量，不是 AI 检测）：检查空泛总结、重复表达、机械排比、过度模板化、模糊归因、夸大意义、宣传式措辞、翻译腔 / 不自然表达、段落节奏过度一致、冗余过渡、术语漂移。",
-      "每条 issue 必须同时给出：section（位置）、description（问题，引用原句片段 ≤ 60 字）、reason（为什么是问题：与前后句逻辑不符 / 评价词无数字支撑 / 同段第 N 次重复 等）、suggestedAction（具体到句的改法或删除）、severity（表达问题通常 minor；只有造成理解歧义才 major）。",
-      "「此外 / 然而 / 因此 / 同时」在学术写作中是正常用法：不得仅因出现就报告；只有逻辑关系不符或同段连续多句机械开头才算冗余过渡。正常的中文学术段落应当零或极少 issue。",
-      "禁止输出 AI 概率 / 人类概率 / 检测器分数等字段；不评价作者，不做整体印象式泛评。",
-      "输出额外字段 riskScore: 0-100（模板化 / 机械化表达风险的工程口径，越高表示模板化越重；不是生成来源判断）。",
-    ],
+    style: styleSpec,
   };
 
   return [
     `你是一名论文审稿人（Reviewer）。请对下面的论文稿件执行 ${params.mode} 审查。`,
+    ...(languageDirective !== "" ? ["", languageDirective] : []),
     "",
     ...modeSpecs[params.mode],
     "",
@@ -477,5 +579,31 @@ export function buildReviewPrompt(params: {
     ...(params.citationDigest
       ? ["", "===== 引用核验摘要 =====", params.citationDigest]
       : []),
+  ].join("\n");
+}
+
+/**
+ * M9.7.4 结构化修复 prompt：复用同一 reviewer 会话（contextScope 不变，
+ * 原审稿任务在会话上下文中），显式注入上一轮输出与具体校验错误——
+ * 修复输出协议，不重做审稿（review 内容保留）。
+ */
+export function buildReviewRepairPrompt(
+  mode: ReviewMode,
+  previousOutput: string,
+  validationErrors: readonly string[],
+): string {
+  return [
+    `你上一轮的 Review（${mode}）输出未通过结构化校验，需要修复。`,
+    "",
+    "校验错误（逐条修复）：",
+    ...validationErrors.map((error) => `- ${error}`),
+    "",
+    "要求：",
+    "1. 保留上一轮输出中已有的审稿内容（issues / claims / summary 等一律不重写、不删减），只补齐或修正违反校验的字段。",
+    "2. 不要重新执行整篇审稿，除非修复该字段必需。",
+    "3. 只输出修复后的完整 JSON 对象（必须包含上一轮已有的全部字段），不要 Markdown 围栏、不要解释文字。",
+    "",
+    "===== 上一轮输出 =====",
+    previousOutput,
   ].join("\n");
 }

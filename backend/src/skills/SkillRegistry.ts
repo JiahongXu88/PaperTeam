@@ -24,6 +24,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { NotFoundError, BusinessError } from "../errors.js";
+import type { ManuscriptLanguage } from "../project/language.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import { diffFileSets, diffLines, type FileSnapshot } from "./diff.js";
@@ -418,11 +419,12 @@ export class SkillRegistry {
   // ---- 路由 / 注入 ----
 
   /**
-   * 解析某会话应注入的 Skill 版本引用（同步读缓存）：role + contextScope 路由 →
-   * installed 且完整性 ok 且未被配置禁用的子集，指向不可变版本快照目录。
+   * 解析某会话应注入的 Skill 版本引用（同步读缓存）：role + contextScope 路由
+   * （M9.7.4：language="en" 时剔除 zh-only Skill）→ installed 且完整性 ok 且
+   * 未被配置禁用的子集，指向不可变版本快照目录。
    */
-  skillAssignmentsFor(role: string, contextScope?: string): SkillAssignment[] {
-    const ids = resolveSkillIds(role, contextScope, this.routes);
+  skillAssignmentsFor(role: string, contextScope?: string, language?: ManuscriptLanguage): SkillAssignment[] {
+    const ids = resolveSkillIds(role, contextScope, language, this.routes);
     if (ids.length === 0) {
       return [];
     }
@@ -449,8 +451,8 @@ export class SkillRegistry {
   }
 
   /** 注入 Pi Session 的 skill 目录（向后兼容：role-only 调用仍有效） */
-  skillDirsForAgent(role: string, contextScope?: string): string[] {
-    return this.skillAssignmentsFor(role, contextScope).map((assignment) => assignment.dir);
+  skillDirsForAgent(role: string, contextScope?: string, language?: ManuscriptLanguage): string[] {
+    return this.skillAssignmentsFor(role, contextScope, language).map((assignment) => assignment.dir);
   }
 
   /** 供异步场景使用（刷新缓存并返回） */
