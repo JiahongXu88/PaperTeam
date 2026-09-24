@@ -266,3 +266,51 @@ async function readFileRaw(path: string): Promise<string> {
   const { readFile } = await import("node:fs/promises");
   return readFile(path, "utf8");
 }
+
+describe("Requirement Provenance（M9.9 Phase 4：候选 ↔ 预写需求最小关联）", () => {
+  it("add 带 requirementId：新候选记录关联；旧数据 / 普通候选无字段（兼容）", async () => {
+    const { candidates, projectId } = await newFixture();
+    const { candidate } = await candidates.add(projectId, {
+      doi: "10.1000/req-provenance",
+      title: "MemGPT Paper",
+      query: "MemGPT memory management",
+      origin: "academic_search",
+      requirementId: "er-1",
+    });
+    expect(candidate.requirementId).toBe("er-1");
+
+    const plain = await candidates.add(projectId, {
+      doi: "10.1000/plain-paper",
+      title: "Plain Paper",
+    });
+    expect(plain.candidate.requirementId).toBeUndefined();
+    expect((await candidates.list(projectId))).toHaveLength(2);
+  });
+
+  it("同身份合并只填空缺：已有 requirementId 不被后续无关联保存冲掉；反向补填生效", async () => {
+    const { candidates, projectId } = await newFixture();
+    await candidates.add(projectId, {
+      doi: "10.1000/merge-req",
+      title: "Merge Target",
+      requirementId: "er-1",
+    });
+    // 后续同身份保存（无 requirementId）：不冲掉既有关联
+    const merged = await candidates.add(projectId, {
+      doi: "10.1000/merge-req",
+      title: "Merge Target",
+      snippetOrAbstract: "补充摘要",
+    });
+    expect(merged.created).toBe(false);
+    expect(merged.candidate.requirementId).toBe("er-1");
+
+    // 反向：普通候选先落库，需求供给检索再发现同身份 → 补填关联
+    await candidates.add(projectId, { doi: "10.1000/backfill", title: "Backfill Target" });
+    const backfilled = await candidates.add(projectId, {
+      doi: "10.1000/backfill",
+      title: "Backfill Target",
+      requirementId: "er-2",
+    });
+    expect(backfilled.created).toBe(false);
+    expect(backfilled.candidate.requirementId).toBe("er-2");
+  });
+});

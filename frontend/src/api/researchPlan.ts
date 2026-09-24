@@ -32,6 +32,8 @@
 
 import { apiClient } from "./client.js";
 import type {
+  EvidenceClaimType,
+  ExpectedEvidenceType,
   ExecutionSaveResultView,
   PlanExecutionEntryView,
   PlanExecutionResultView,
@@ -39,6 +41,7 @@ import type {
   ResearchGapListView,
   ResearchGapView,
   ResearchPlanListView,
+  ResearchPlanQueryView,
   ResearchPlanView,
   ResearchQueryKind,
   ResearchQueryStatus,
@@ -54,9 +57,23 @@ export interface ResearchPlanQueryInput {
   status?: ResearchQueryStatus;
 }
 
+/** PUT 请求体中的单条预写证据需求（M9.8；status=waived 只能经此路径 = 用户显式动作） */
+export interface EvidenceRequirementInput {
+  requirementId?: string;
+  topic: string;
+  claimType: EvidenceClaimType;
+  expectedEvidenceType: ExpectedEvidenceType;
+  relatedSection?: string;
+  priority?: "high" | "medium" | "low";
+  status?: "open" | "waived";
+  note?: string;
+}
+
 export interface ResearchPlanUpdateInput {
   questions?: string[];
   queries?: ResearchPlanQueryInput[];
+  /** 整体替换语义（M9.8；Skip/waive 是用户编辑动作的唯一落点） */
+  requirements?: EvidenceRequirementInput[];
 }
 
 export async function getResearchPlan(
@@ -100,6 +117,21 @@ export async function executeResearchPlan(
   return apiClient.post<PlanExecutionResultView>(
     `/api/projects/${encodeURIComponent(projectId)}/research/plan/execute`,
     {},
+  );
+}
+
+/**
+ * 需求驱动的供给检索（M9.9 Phase 3）：把一条补充查询追加进活动计划
+ * （requirementId + rationale 可审计），不执行——执行走既有批准 / 执行链路。
+ * covered 需求 / waived / 已有待执行供给检索 / executing·done 计划 → 400。
+ */
+export async function supplyRequirementQuery(
+  projectId: string,
+  requirementId: string,
+): Promise<{ plan: ResearchPlanView; query: ResearchPlanQueryView }> {
+  return apiClient.post<{ plan: ResearchPlanView; query: ResearchPlanQueryView }>(
+    `/api/projects/${encodeURIComponent(projectId)}/research/requirements/supply-query`,
+    { requirementId },
   );
 }
 

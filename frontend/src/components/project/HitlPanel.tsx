@@ -11,10 +11,18 @@ import {
   statusStyleOf,
 } from "../common/status.js";
 import { TARGET_PROFILE_OPTIONS } from "../../constants/projectMeta.js";
-import { queryKeys, useResumeWorkflowRun } from "../../hooks/queries.js";
+import {
+  queryKeys,
+  useResearchPlans,
+  useResumeWorkflowRun,
+  useSupplyRequirementQuery,
+  useUpdateResearchPlan,
+} from "../../hooks/queries.js";
 import { ApiError } from "../../api/client.js";
-import { formatApiErrorDetail } from "../../utils/errors.js";
+import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
+import { formatDateTime } from "../../utils/format.js";
 import type { HitlDecisionInput, WorkflowRunView } from "../../types/api.js";
+import type { EvidenceRequirementView } from "../../types/researchPlan.js";
 
 /**
  * HITL 决策面板（M4.5）：workflow 停在 awaiting_input 时的统一交互壳。
@@ -31,7 +39,20 @@ import type { HitlDecisionInput, WorkflowRunView } from "../../types/api.js";
 
 type OpenForm = "adjust" | "revise" | null;
 
-export function HitlPanel({ run }: { run: WorkflowRunView }) {
+/**
+ * 证据供给动作的导航目标（M9.9）：补充检索 → 文献发现（计划编辑面），
+ * 上传论文 → 文献库（上传表单）。可选——测试 / 旧挂载点无导航时动作仍可
+ * 提交（supply-query 只依赖 projectId）。
+ */
+export type EvidenceSupplyTab = "discovery" | "sources";
+
+export function HitlPanel({
+  run,
+  onOpenTab,
+}: {
+  run: WorkflowRunView;
+  onOpenTab?: (tab: EvidenceSupplyTab) => void;
+}) {
   const awaiting = run.awaiting;
   const resume = useResumeWorkflowRun(run.projectId);
   const queryClient = useQueryClient();
@@ -103,6 +124,7 @@ export function HitlPanel({ run }: { run: WorkflowRunView }) {
         stageId={awaiting.stageId}
         payload={awaiting.payload}
         styleSelection={{ selected: selectedStyleIds, onToggle: toggleStyleFinding }}
+        supply={{ projectId: run.projectId, onOpenTab }}
       />
 
       <div className="hitl-actions" data-testid="hitl-actions">
@@ -433,10 +455,12 @@ function HitlPayload({
   stageId,
   payload,
   styleSelection,
+  supply,
 }: {
   stageId: string;
   payload: Record<string, unknown> | undefined;
   styleSelection?: { selected: string[]; onToggle: (id: string) => void };
+  supply?: { projectId: string; onOpenTab?: (tab: EvidenceSupplyTab) => void };
 }) {
   if (payload === undefined) {
     return null;
@@ -454,10 +478,232 @@ function HitlPayload({
       return <OverflowPayload payload={payload} />;
     case "hitl.revision_stalled":
       return <StalledPayload payload={payload} />;
+    case "hitl.evidence_supply":
+      return <EvidenceSupplyPayload payload={payload} supply={supply} />;
     default:
       // 未知 HITL 节点：不虚构内容，prompt 已说明情况
       return null;
   }
+}
+
+// ---- 证据供给 payload（M9.9：预写证据需求的覆盖缺口 + 三动作）----
+
+/** HITL payload 里的单条需求缺口（backend evidenceSupplyStage 投影形状） */
+interface SupplyRequirementPayload {
+  requirementId: string;
+  topic: string;
+  claimType: string;
+  evidenceType: string;
+  coverageStatus: string;
+  evidenceCount: number;
+  promotedCount?: number;
+  priority?: string;
+  missingReason?: string;
+}
+
+const SUPPLY_COVERAGE_STYLES: Record<string, { label: string; tone: "ok" | "warn" | "danger" }> = {
+  covered: { label: "已覆盖", tone: "ok" },
+  partial: { label: "部分覆盖", tone: "warn" },
+  missing: { label: "缺失", tone: "danger" },
+};
+
+const SUPPLY_CLAIM_TYPE_LABELS: Record<string, string> = {
+  definition: "定义",
+  mechanism: "机制",
+  comparison: "对比",
+  benchmark: "基准",
+  limitation: "局限",
+  background: "背景",
+};
+
+const SUPPLY_EVIDENCE_TYPE_LABELS: Record<string, string> = {
+  survey: "综述",
+  original_paper: "原始论文",
+  benchmark_paper: "基准论文",
+  system_paper: "系统论文",
+};
+
+function readSupplyRequirements(payload: Record<string, unknown>): SupplyRequirementPayload[] {
+  const raw = payload["requirements"];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return [];
+    }
+    const record = entry as Record<string, unknown>;
+    if (typeof record["requirementId"] !== "string" || typeof record["topic"] !== "string") {
+      return [];
+    }
+    return [
+      {
+        requirementId: record["requirementId"],
+        topic: record["topic"],
+        claimType: typeof record["claimType"] === "string" ? record["claimType"] : "",
+        evidenceType: typeof record["evidenceType"] === "string" ? record["evidenceType"] : "",
+        coverageStatus:
+          typeof record["coverageStatus"] === "string" ? record["coverageStatus"] : "missing",
+        evidenceCount: typeof record["evidenceCount"] === "number" ? record["evidenceCount"] : 0,
+        ...(typeof record["promotedCount"] === "number" ? { promotedCount: record["promotedCount"] } : {}),
+        ...(typeof record["priority"] === "string" ? { priority: record["priority"] } : {}),
+        ...(typeof record["missingReason"] === "string" ? { missingReason: record["missingReason"] } : {}),
+      },
+    ];
+  });
+}
+
+/**
+ * 证据供给 payload：待审候选 / 已核验证据规模 + 预写证据需求缺口清单 +
+ * 每条非 covered 需求的三动作（M9.9 Phase 2/5）：
+ * - 补充检索（Case A）：POST supply-query 把补充查询追加进活动计划 →
+ *   跳「文献发现」批准 / 执行（既有链路，检索可审计、不自动执行）；
+ * - 上传论文（Case B）：跳「文献库」上传表单（既有 FullText pipeline 入口）；
+ * - 跳过该需求（Case C）：PUT /research/plan 把该需求 status 置 waived——
+ *   用户显式编辑动作，系统永不自动弃权。
+ */
+function EvidenceSupplyPayload({
+  payload,
+  supply,
+}: {
+  payload: Record<string, unknown>;
+  supply?: { projectId: string; onOpenTab?: (tab: EvidenceSupplyTab) => void };
+}) {
+  const requirements = readSupplyRequirements(payload);
+  const pendingCandidates = typeof payload["pendingCandidates"] === "number" ? payload["pendingCandidates"] : 0;
+  const verifiedEvidenceRecords =
+    typeof payload["verifiedEvidenceRecords"] === "number" ? payload["verifiedEvidenceRecords"] : 0;
+  const verifiedEvidenceSources =
+    typeof payload["verifiedEvidenceSources"] === "number" ? payload["verifiedEvidenceSources"] : 0;
+  const analyzedAt = typeof payload["requirementCoverageAnalyzedAt"] === "string" ? payload["requirementCoverageAnalyzedAt"] : undefined;
+  const projectId = supply?.projectId ?? "";
+  const supplySearch = useSupplyRequirementQuery(projectId !== "" ? projectId : undefined);
+  const plans = useResearchPlans(projectId !== "" ? projectId : undefined);
+  const updatePlan = useUpdateResearchPlan(projectId !== "" ? projectId : undefined);
+
+  const waive = (requirement: SupplyRequirementPayload) => {
+    const active = plans.data?.plans.find((plan) => plan.planId === plans.data.activePlanId);
+    const current = active?.requirements ?? [];
+    if (!current.some((entry) => entry.requirementId === requirement.requirementId)) {
+      return; // 快照过期：计划上已无该需求（编辑 / 重跑），不伪造弃权
+    }
+    const requirements: EvidenceRequirementView[] = current.map((entry) =>
+      entry.requirementId === requirement.requirementId
+        ? { ...entry, status: "waived", note: entry.note ?? "用户在证据供给决策中选择跳过" }
+        : entry,
+    );
+    updatePlan.mutate({
+      requirements: requirements.map((entry) => ({
+        requirementId: entry.requirementId,
+        topic: entry.topic,
+        claimType: entry.claimType,
+        expectedEvidenceType: entry.expectedEvidenceType,
+        ...(entry.relatedSection !== undefined ? { relatedSection: entry.relatedSection } : {}),
+        priority: entry.priority,
+        status: entry.status,
+        ...(entry.note !== undefined ? { note: entry.note } : {}),
+      })),
+    });
+  };
+
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-evidence-supply">
+      <p className="hitl-payload-level" data-testid="evidence-supply-stats">
+        待审候选 {pendingCandidates} 篇 · 已核验证据 {verifiedEvidenceRecords} 条（来源 {verifiedEvidenceSources} 个）
+      </p>
+      {requirements.length === 0 ? (
+        <p className="muted" data-testid="evidence-supply-no-requirements">
+          活动计划没有预写证据需求（或为旧项目）——按候选 / 证据规模决策即可。
+        </p>
+      ) : (
+        <div className="field">
+          <span className="field-label">Research Requirements（成稿所需证据缺口）</span>
+          <ul className="source-list" data-testid="evidence-supply-requirements">
+            {requirements.map((requirement) => {
+              const style = SUPPLY_COVERAGE_STYLES[requirement.coverageStatus] ?? SUPPLY_COVERAGE_STYLES["missing"]!;
+              const claimTypeLabel = SUPPLY_CLAIM_TYPE_LABELS[requirement.claimType] ?? requirement.claimType;
+              const evidenceTypeLabel = SUPPLY_EVIDENCE_TYPE_LABELS[requirement.evidenceType] ?? requirement.evidenceType;
+              const searchPending =
+                supplySearch.isPending && supplySearch.variables === requirement.requirementId;
+              return (
+                <li key={requirement.requirementId} className="source-row" data-testid={`evidence-requirement-${requirement.requirementId}`}>
+                  <div className="source-row-main">
+                    <span className="source-row-title">{requirement.topic}</span>
+                    <span className="source-row-meta">
+                      <RegistryStatus style={style} />
+                      <span className="chip">{claimTypeLabel}</span>
+                      <span className="chip chip-outline">{evidenceTypeLabel}</span>
+                      {requirement.priority !== undefined ? <span className="chip">{requirement.priority}</span> : null}
+                      <span>
+                        已核验证据 {requirement.evidenceCount}
+                        {requirement.promotedCount !== undefined ? ` · 入库文献 ${requirement.promotedCount}` : ""}
+                      </span>
+                    </span>
+                  </div>
+                  {requirement.missingReason !== undefined ? (
+                    <p className="field-help">{requirement.missingReason}</p>
+                  ) : null}
+                  {requirement.coverageStatus !== "covered" ? (
+                    <div className="action-row">
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        disabled={supplySearch.isPending}
+                        title="把该需求的补充检索词追加进活动计划（可审计）；到「文献发现」批准并执行"
+                        data-testid={`supply-search-${requirement.requirementId}`}
+                        onClick={() =>
+                          supplySearch.mutate(requirement.requirementId, {
+                            onSuccess: () => supply?.onOpenTab?.("discovery"),
+                          })
+                        }
+                      >
+                        {searchPending ? "追加中…" : "补充检索"}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        title="到「文献库」上传论文全文（既有全文管线）"
+                        data-testid={`supply-upload-${requirement.requirementId}`}
+                        onClick={() => supply?.onOpenTab?.("sources")}
+                      >
+                        上传论文
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-small"
+                        disabled={updatePlan.isPending}
+                        title="该需求标记为用户弃权（waived）：明知缺此证据仍继续，系统绝不自动弃权"
+                        data-testid={`supply-skip-${requirement.requirementId}`}
+                        onClick={() => waive(requirement)}
+                      >
+                        跳过该需求
+                      </button>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+      {supplySearch.isError ? (
+        <p className="form-error" role="alert" data-testid="supply-search-error">
+          {formatApiError(supplySearch.error)}
+        </p>
+      ) : null}
+      {updatePlan.isError ? (
+        <p className="form-error" role="alert" data-testid="supply-skip-error">
+          {formatApiError(updatePlan.error)}
+        </p>
+      ) : null}
+      {analyzedAt !== undefined ? (
+        <p className="field-help">
+          覆盖缺口为 {formatDateTime(analyzedAt) ?? "暂停时"} 的分析快照——补给（检索 /
+          上传 / 入库）后需重跑研究阶段，覆盖才会更新。
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 /** 可行性结论：等级 + 原因 / 缺口 / 需补实验 / 建议（Backend feasibility.json 摘要） */

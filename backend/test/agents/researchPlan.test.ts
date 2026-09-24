@@ -16,8 +16,10 @@ import { afterAll, describe, expect, it } from "vitest";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { BusinessError } from "../../src/errors.js";
 import {
+  appendRequirementSupplyQuery,
   applyResearchPlanUpdate,
   buildDerivedPlan,
+  buildRequirementSupplyQuery,
   createResearchPlan,
   MAX_PLAN_REQUIREMENTS,
   parseEvidenceRequirements,
@@ -452,5 +454,117 @@ describe("requirements 编辑语义（M9.8：PUT 整体替换 + waived 只来自
     expect(derived.requirements).toEqual(plan.requirements);
     expect(derived.iterationNumber).toBe(2);
     expect(derived.parentPlanId).toBe(plan.planId);
+  });
+});
+
+describe("requirement supply query（M9.9 Phase 3：缺口驱动补充检索）", () => {
+  const basePlan = (): ResearchPlan =>
+    createResearchPlan(
+      ["agent memory 机制"],
+      [{ query: "agent memory survey", kind: "academic" }],
+      [
+        {
+          topic: "MemGPT memory management",
+          claimType: "mechanism",
+          expectedEvidenceType: "original_paper",
+          priority: "high",
+        },
+        {
+          topic: "agent benchmark evaluation",
+          claimType: "benchmark",
+          expectedEvidenceType: "benchmark_paper",
+        },
+      ],
+    );
+
+  it("buildRequirementSupplyQuery：survey / benchmark 形态加提示词，其余用主题原词", () => {
+    const [mechanism, benchmark] = basePlan().requirements!;
+    expect(buildRequirementSupplyQuery(mechanism!, "missing").query).toBe(
+      "MemGPT memory management",
+    );
+    expect(buildRequirementSupplyQuery(benchmark!, "partial").query).toBe(
+      "agent benchmark evaluation benchmark",
+    );
+    expect(buildRequirementSupplyQuery(mechanism!, "missing").rationale).toContain("需求 er-1");
+    expect(buildRequirementSupplyQuery(mechanism!, "missing").rationale).toContain("missing");
+  });
+
+  it("appendRequirementSupplyQuery：追加 planned 查询（requirementId linkage + queryId 分配）", () => {
+    const plan = basePlan();
+    const { plan: next, query } = appendRequirementSupplyQuery(plan, { requirementId: "er-1" }, "missing");
+    expect(next.queries).toHaveLength(2);
+    expect(query).toMatchObject({
+      queryId: "q-2",
+      query: "MemGPT memory management",
+      kind: "academic",
+      status: "planned",
+      requirementId: "er-1",
+    });
+    expect(query.rationale).toContain("需求 er-1");
+    // 纯函数：不改入参
+    expect(plan.queries).toHaveLength(1);
+    expect(next.updatedAt >= plan.updatedAt).toBe(true);
+  });
+
+  it("守卫：waived 拒绝 / 需求不存在 404 / 同需求重复 planned 供给拒绝 / 自定义空词拒绝", () => {
+    const plan = applyResearchPlanUpdate(
+      basePlan(),
+      parseResearchPlanUpdateInput({
+        requirements: [
+          { requirementId: "er-1", topic: "MemGPT memory management", claimType: "mechanism", expectedEvidenceType: "original_paper", status: "waived" },
+          { requirementId: "er-2", topic: "agent benchmark evaluation", claimType: "benchmark", expectedEvidenceType: "benchmark_paper" },
+        ],
+      }),
+    );
+    expect(() => appendRequirementSupplyQuery(plan, { requirementId: "er-1" }, "missing")).toThrowError(BusinessError);
+    expect(() => appendRequirementSupplyQuery(plan, { requirementId: "er-99" }, "missing")).toThrowError(/不存在需求 er-99/);
+
+    const { plan: withSupply } = appendRequirementSupplyQuery(plan, { requirementId: "er-2" }, "missing");
+    expect(() => appendRequirementSupplyQuery(withSupply, { requirementId: "er-2" }, "missing")).toThrowError(
+      /已有待执行的供给检索/,
+    );
+    // 既有供给 executed 后可再次追加（下一轮缺口补给）
+    const resupplied = applyResearchPlanUpdate(
+      withSupply,
+      parseResearchPlanUpdateInput({
+        queries: [
+          { queryId: "q-1", query: "agent memory survey", kind: "academic" },
+          { queryId: "q-2", query: "agent benchmark evaluation benchmark", kind: "academic", status: "executed" },
+        ],
+      }),
+    );
+    const again = appendRequirementSupplyQuery(resupplied, { requirementId: "er-2" }, "partial");
+    expect(again.query.queryId).toBe("q-3");
+
+    expect(() => appendRequirementSupplyQuery(plan, { requirementId: "er-2", query: "   " }, "missing")).toThrowError(
+      /非空字符串/,
+    );
+  });
+
+  it("守卫：executing / done 计划拒绝追加", () => {
+    const draft = basePlan();
+    const executing = { ...draft, status: "executing" as const };
+    expect(() => appendRequirementSupplyQuery(executing, { requirementId: "er-1" }, "missing")).toThrowError(/执行中/);
+    const done = { ...draft, status: "done" as const };
+    expect(() => appendRequirementSupplyQuery(done, { requirementId: "er-1" }, "missing")).toThrowError(/派生下一轮/);
+  });
+
+  it("编辑继承：同 queryId 的 PUT 更新不冲掉 requirementId linkage", () => {
+    const { plan: withSupply } = appendRequirementSupplyQuery(basePlan(), { requirementId: "er-1" }, "missing");
+    const edited = applyResearchPlanUpdate(
+      withSupply,
+      parseResearchPlanUpdateInput({
+        queries: [
+          { queryId: "q-1", query: "agent memory survey", kind: "academic" },
+          { queryId: "q-2", query: "MemGPT memory management LLM OS", kind: "academic", status: "skipped" },
+        ],
+      }),
+    );
+    expect(edited.queries[1]).toMatchObject({
+      queryId: "q-2",
+      query: "MemGPT memory management LLM OS",
+      status: "skipped",
+      requirementId: "er-1",
+    });
   });
 });

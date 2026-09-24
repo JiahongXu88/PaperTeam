@@ -234,6 +234,7 @@ export class ResearchDiscoveryService {
     query: string,
     snapshots: readonly PlanExecutionAcademicResultSnapshot[],
     resultIndexes: number[],
+    requirementId?: string,
   ): Promise<SavedCandidatesResult> {
     validateIndexes(resultIndexes, snapshots.length);
     const saved: CandidateSource[] = [];
@@ -255,6 +256,9 @@ export class ResearchDiscoveryService {
         query,
         origin: "academic_search",
         provider: snapshot.provider,
+        // M9.9 Phase 4：需求供给检索的执行快照 → 候选 provenance（服务端记录，
+        // 调用方不可按值伪造需求关联的其它字段——requirementId 只作 linkage）
+        ...(requirementId !== undefined ? { requirementId } : {}),
       });
       if (result.created) {
         saved.push(result.candidate);
@@ -271,6 +275,7 @@ export class ResearchDiscoveryService {
     query: string,
     snapshots: readonly PlanExecutionWebResultSnapshot[],
     resultIndexes: number[],
+    requirementId?: string,
   ): Promise<SavedCandidatesResult> {
     validateIndexes(resultIndexes, snapshots.length);
     const saved: CandidateSource[] = [];
@@ -291,6 +296,8 @@ export class ResearchDiscoveryService {
         query,
         origin: "web_search",
         provider: snapshot.provider,
+        // M9.9 Phase 4：同 saveAcademicSnapshotCandidates 的需求 linkage 透传
+        ...(requirementId !== undefined ? { requirementId } : {}),
       });
       if (result.created) {
         saved.push(result.candidate);

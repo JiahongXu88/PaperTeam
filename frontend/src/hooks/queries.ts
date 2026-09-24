@@ -65,6 +65,7 @@ import {
   listResearchPlans,
   rejectResearchGap,
   saveExecutionResultsAsCandidates,
+  supplyRequirementQuery,
   updateResearchPlan,
   type ResearchPlanDeriveInput,
   type ResearchPlanUpdateInput,
@@ -704,6 +705,19 @@ export function useExecuteResearchPlan(projectId: string | undefined) {
   const invalidate = useInvalidateResearchPlans(projectId);
   return useMutation({
     mutationFn: () => executeResearchPlan(projectId ?? ""),
+    onSuccess: () => invalidate(),
+  });
+}
+
+/**
+ * 需求供给检索追加（M9.9）：把缺口需求的补充查询写进活动计划——成功后失效
+ * 计划 / 覆盖 / 缺口 / 执行历史（追加的 planned 查询立即出现在计划编辑面）。
+ */
+export function useSupplyRequirementQuery(projectId: string | undefined) {
+  const invalidate = useInvalidateResearchPlans(projectId);
+  return useMutation({
+    mutationFn: (requirementId: string) =>
+      supplyRequirementQuery(projectId ?? "", requirementId),
     onSuccess: () => invalidate(),
   });
 }

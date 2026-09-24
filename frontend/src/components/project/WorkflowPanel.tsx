@@ -26,7 +26,7 @@ import type { ProjectView, WorkflowRunView } from "../../types/api.js";
  * 活跃时 3s 轮询兜底）；耗时用客户端 timer 基于 server 时间戳计算，不轮询后端。
  */
 
-type OpenableTab = "pdf" | "evidence" | "citations" | "review" | "overview";
+type OpenableTab = "pdf" | "evidence" | "citations" | "review" | "overview" | "discovery" | "sources";
 
 /** 客户端秒级 tick（仅运行中启用；驱动 elapsed 展示，不请求后端） */
 function useNowTick(active: boolean): number {
@@ -335,7 +335,7 @@ function RunDetail({
         </p>
       ) : null}
 
-      {run.status === "awaiting_input" ? <HitlPanel run={run} /> : null}
+      {run.status === "awaiting_input" ? <HitlPanel run={run} onOpenTab={onOpenTab} /> : null}
       {run.status === "failed" ? <FailedBlock run={run} /> : null}
       {run.status === "cancelled" ? (
         <p className="note note-info" role="status" data-testid="workflow-cancelled">

@@ -82,6 +82,12 @@ export interface ResearchPlanQuery {
   status: ResearchQueryStatus;
   /** 执行后的结果数（执行侧回填；编辑 API 不接受该字段） */
   resultCount?: number;
+  /**
+   * 该检索供给的预写证据需求（M9.9 Phase 3 provenance：requirementId +
+   * generated query + rationale 全部落 plan 可审计）。可选字段——普通检索
+   * 无此关联；编辑面同 queryId 继承（与 resultCount 同策略），不可伪造。
+   */
+  requirementId?: string;
 }
 
 export interface ResearchPlan {
@@ -541,6 +547,8 @@ export function applyResearchPlanUpdate(
         status,
         // 执行回填的结果数只在同 queryId 条目上继承，编辑面无法伪造
         ...(existing?.resultCount !== undefined ? { resultCount: existing.resultCount } : {}),
+        // M9.9：需求供给关联同策略继承（系统记录的 linkage，编辑不冲掉）
+        ...(existing?.requirementId !== undefined ? { requirementId: existing.requirementId } : {}),
       });
     }
     queries = assignQueryIds(merged);
@@ -798,6 +806,112 @@ export function buildDerivedPlan(
       : {}),
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+// ---- Requirement Supply Query（M9.9 Phase 3：缺口驱动的补充检索）----
+
+/** 期望证据形态 → 检索词提示词（确定性；无提示的形态用主题原词） */
+const EVIDENCE_TYPE_QUERY_HINTS: Record<ExpectedEvidenceType, string> = {
+  survey: "survey",
+  original_paper: "",
+  benchmark_paper: "benchmark",
+  system_paper: "",
+};
+
+/** POST /research/requirements/supply-query 的合法请求体 */
+export interface RequirementSupplyQueryInput {
+  requirementId: string;
+  /** 覆盖确定性派生词（缺省 = topic + 证据形态提示）；用户可改写 */
+  query?: string;
+  /** 缺省 academic */
+  kind?: ResearchQueryKind;
+}
+
+/**
+ * 从预写需求确定性派生供给检索词（纯函数，M9.9 Phase 3）：
+ * query = topic + 证据形态提示（survey / benchmark；其余形态用主题原词）。
+ * 主题原文进检索词——不翻译不改写（宁可检索面朴素，不虚构语义）；
+ * 用户可在计划编辑面改写检索词后执行。
+ */
+export function buildRequirementSupplyQuery(
+  requirement: EvidenceRequirement,
+  coverageStatus: string,
+): { query: string; kind: ResearchQueryKind; rationale: string } {
+  const hint = EVIDENCE_TYPE_QUERY_HINTS[requirement.expectedEvidenceType];
+  const query =
+    requirement.topic.trim() + (hint !== "" ? ` ${hint}` : "");
+  return {
+    query,
+    kind: "academic",
+    rationale: `需求 ${requirement.requirementId}（${requirement.topic}）供给检索——当前覆盖 ${coverageStatus}`,
+  };
+}
+
+/**
+ * 把供给检索追加进活动计划（纯函数，落盘由调用方负责；M9.9 Phase 3）：
+ * - 需求必须存在且 status=open（waived = 用户已显式弃权，不再供给）；
+ * - 幂等守卫：该需求已有一条 planned 供给检索（同 requirementId）→ 拒绝
+ *   （防重复点击堆叠查询；「禁止自动无限搜索」纪律的确定性落地）；
+ * - 计划状态守卫：executing / done 的计划不接受追加（executing 等本轮完成；
+ *   done 走「派生下一轮」显式路径，不静默改写已完成计划）；
+ * - 新条目 status=planned、requirementId 记录 linkage、queryId 由
+ *   assignQueryIds 分配——后续执行 / 快照 / 候选保存全部走既有链路。
+ */
+export function appendRequirementSupplyQuery(
+  plan: ResearchPlan,
+  input: RequirementSupplyQueryInput,
+  coverageStatus: string,
+): { plan: ResearchPlan; query: ResearchPlanQuery } {
+  const requirement = plan.requirements?.find(
+    (entry) => entry.requirementId === input.requirementId,
+  );
+  if (requirement === undefined) {
+    throw new BusinessError(
+      "NOT_FOUND",
+      `计划中不存在需求 ${input.requirementId}（活动计划 ${plan.requirements?.length ?? 0} 条需求）`,
+    );
+  }
+  if (requirement.status === "waived") {
+    throw new BusinessError(
+      "INVALID_REQUEST",
+      `需求 ${input.requirementId} 已被用户显式弃权（waived），不再触发供给检索`,
+    );
+  }
+  if (plan.status === "executing" || plan.status === "done") {
+    throw new BusinessError(
+      "INVALID_REQUEST",
+      plan.status === "executing"
+        ? "计划正在执行中，等本轮完成后再次追加供给检索"
+        : "计划已完成（done）——请先经「派生下一轮」创建新计划，再对新缺口追加供给检索",
+    );
+  }
+  const existingSupply = plan.queries.find(
+    (entry) => entry.requirementId === input.requirementId && entry.status === "planned",
+  );
+  if (existingSupply !== undefined) {
+    throw new BusinessError(
+      "INVALID_REQUEST",
+      `需求 ${input.requirementId} 已有待执行的供给检索（${existingSupply.queryId}：${existingSupply.query}），请先执行或编辑该条`,
+    );
+  }
+  const derived = buildRequirementSupplyQuery(requirement, coverageStatus);
+  const queryText = (input.query ?? derived.query).trim();
+  if (queryText === "") {
+    throw new BusinessError("INVALID_REQUEST", "供给检索词必须是非空字符串");
+  }
+  const appended: ResearchPlanQuery = {
+    queryId: "",
+    query: queryText,
+    kind: input.kind ?? derived.kind,
+    rationale: derived.rationale,
+    status: "planned",
+    requirementId: input.requirementId,
+  };
+  const queries = assignQueryIds([...plan.queries, appended]);
+  return {
+    plan: { ...plan, queries, updatedAt: new Date().toISOString() },
+    query: queries[queries.length - 1]!,
   };
 }
 

@@ -21,6 +21,7 @@ import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingServ
 import type { SourceStore, SourceItem } from "../sources/SourceStore.js";
 import { compactTitle } from "../citation/referenceText.js";
 import {
+  appendRequirementSupplyQuery,
   applyResearchPlanUpdate,
   createResearchPlan,
   parseResearchPlan,
@@ -28,8 +29,10 @@ import {
   planChainFields,
   readPlanChain,
   resolvePlanChainOnRerun,
+  type RequirementSupplyQueryInput,
   type ResearchPlan,
   type ResearchPlanChain,
+  type ResearchPlanQuery,
   type StoredResearchPlan,
 } from "./researchPlan.js";
 import type { PlanExecutionEntry } from "./researchPlanExecution.js";
@@ -552,6 +555,65 @@ export async function updateResearchPlan(
       : { plans: [updated], activePlanId: updated.planId };
   await writeResearchPlanChain(projects, projectId, artifact, nextChain, artifact.executionHistory);
   return updated;
+}
+
+/**
+ * 需求驱动的供给检索（M9.9 Phase 3，POST /api/projects/:id/research/
+ * requirements/supply-query 的后端）：读 artifact → 追加供给查询进活动计划
+ * （requirementId linkage + rationale 可审计）→ 链中原位替换 → 写回。
+ *
+ * 只追加检索意图，**不执行**——执行走既有「批准 → POST /research/plan/
+ * execute」显式链路（隐藏搜索禁令）；覆盖守卫（covered 需求拒绝）由
+ * HTTP 层基于 Coverage Analyzer 派生结果执行，coverageStatus 仅进 rationale。
+ */
+export async function supplyRequirementQuery(
+  projects: ProjectStore,
+  projectId: string,
+  body: Record<string, unknown>,
+  coverageStatus: string,
+): Promise<{ plan: ResearchPlan; query: ResearchPlanQuery }> {
+  const artifact = await readResearchArtifact(projects, projectId);
+  if (artifact === null) {
+    throw new BusinessError(
+      "NOT_FOUND",
+      "项目还没有调研结果（research/research.json 不存在），请先运行调研再触发供给检索",
+    );
+  }
+  const requirementId =
+    typeof body["requirementId"] === "string" && body["requirementId"].trim() !== ""
+      ? body["requirementId"].trim()
+      : "";
+  if (requirementId === "") {
+    throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 requirementId");
+  }
+  const query =
+    typeof body["query"] === "string" && body["query"].trim() !== ""
+      ? body["query"].trim()
+      : undefined;
+  const kind = body["kind"];
+  if (kind !== undefined && kind !== "academic" && kind !== "web") {
+    throw new BusinessError("INVALID_REQUEST", "字段 kind 只能是 academic / web");
+  }
+  const input: RequirementSupplyQueryInput = {
+    requirementId,
+    ...(query !== undefined ? { query } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+  };
+  const chain = readPlanChain(artifact);
+  const active = chain.plans.find((plan) => plan.planId === chain.activePlanId);
+  if (active === undefined) {
+    throw new BusinessError(
+      "NOT_FOUND",
+      "项目还没有研究计划（research artifact 无 plan 字段），请先运行调研或编辑生成计划",
+    );
+  }
+  const { plan, query: appended } = appendRequirementSupplyQuery(active, input, coverageStatus);
+  const nextChain: ResearchPlanChain = {
+    plans: chain.plans.map((entry) => (entry.planId === active.planId ? plan : entry)),
+    activePlanId: chain.activePlanId,
+  };
+  await writeResearchPlanChain(projects, projectId, artifact, nextChain, artifact.executionHistory);
+  return { plan, query: appended };
 }
 
 // ---- Prompt ----

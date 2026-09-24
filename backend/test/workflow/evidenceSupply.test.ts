@@ -107,6 +107,135 @@ describe("hitl.evidence_supply（M9.7.4）", () => {
     expect(sources.body["sources"]).toHaveLength(0);
   });
 
+  it("19d. M9.9：预置需求计划 → payload 携带 requirements 缺口投影（派生视图，旧契约字段并存）", async () => {
+    const scripted = scriptedIdeaRuntime();
+    const stack = await startTestStack(scripted.runtime, {
+      registerCleanup: (cleanup) => cleanups.push(cleanup),
+    });
+    const project = await stack.store.create("Evidence Supply Requirements", {
+      researchIdea: "agent memory 调研",
+    });
+    // 预置带需求的计划链（research 重跑保留既有链——M8.3.1 merge strategy）
+    const researchDir = stack.store.researchDir(project.id);
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { join } = await import("node:path");
+    const plan = {
+      planId: "rp-seedreq00001",
+      iterationId: "it-seedreq00001",
+      iterationNumber: 1,
+      status: "draft",
+      questions: ["Agent memory 机制"],
+      queries: [
+        {
+          queryId: "q-1",
+          query: "MemGPT memory management architecture",
+          kind: "academic",
+          status: "executed",
+          resultCount: 3,
+        },
+      ],
+      requirements: [
+        {
+          requirementId: "er-1",
+          topic: "MemGPT memory management",
+          claimType: "mechanism",
+          expectedEvidenceType: "original_paper",
+          priority: "high",
+          status: "open",
+        },
+        {
+          requirementId: "er-2",
+          topic: "agent benchmark evaluation",
+          claimType: "benchmark",
+          expectedEvidenceType: "benchmark_paper",
+          priority: "medium",
+          status: "open",
+        },
+      ],
+      createdAt: "2026-09-24T08:00:00.000Z",
+      updatedAt: "2026-09-24T08:00:00.000Z",
+    };
+    await mkdir(researchDir, { recursive: true });
+    await writeFile(
+      join(researchDir, "research.json"),
+      JSON.stringify({
+        generatedAt: "2026-09-24T08:00:00.000Z",
+        taskId: "run-seed",
+        plan,
+        plans: [plan],
+        activePlanId: plan.planId,
+        report: {
+          domainOverview: "概述",
+          relatedWorkDirections: [],
+          researchGaps: [],
+          potentialContributions: ["贡献"],
+          researchQuestions: [],
+          literaturePlan: [],
+        },
+        evidence: [],
+        bibliography: [],
+      }),
+      "utf8",
+    );
+    // er-1 的 verified 证据（≥2 内容词命中 + 关联检索存在 → covered）
+    await stack.stack.evidence.append(
+      project.id,
+      {
+        claim: "MemGPT memory management 分层机制",
+        source: { title: "MemGPT: Towards LLMs as Operating Systems" },
+        verificationStatus: "verified",
+      },
+      "researcher",
+    );
+    await seedCandidates(stack, project.id, 4);
+
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
+    const runId = created.body["runId"] as string;
+    let run = await pollRun(stack, runId, ["awaiting_input", "failed"]);
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+    run = await pollRun(stack, runId, ["awaiting_input", "failed"]);
+    expect(run.awaiting?.stageId).toBe("hitl.outline_confirm");
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+
+    run = await pollRun(stack, runId, ["awaiting_input", "failed"]);
+    expect(run.awaiting?.stageId).toBe("hitl.evidence_supply");
+    const payload = (run.awaiting?.payload ?? {}) as Record<string, unknown>;
+    // 旧契约字段并存（M9.7.4 不动）
+    expect(payload["pendingCandidates"]).toBe(4);
+    expect(Array.isArray(payload["pendingSample"])).toBe(true);
+    // M9.9 投影：requirementId / topic / claimType / evidenceType / coverageStatus /
+    // evidenceCount / missingReason + 快照时点
+    const requirements = payload["requirements"] as Array<Record<string, unknown>>;
+    expect(requirements).toHaveLength(2);
+    expect(requirements[0]).toMatchObject({
+      requirementId: "er-1",
+      topic: "MemGPT memory management",
+      claimType: "mechanism",
+      evidenceType: "original_paper",
+      coverageStatus: "covered",
+      evidenceCount: 1,
+    });
+    expect(requirements[0]!["missingReason"]).toBeUndefined();
+    expect(requirements[1]).toMatchObject({
+      requirementId: "er-2",
+      coverageStatus: "missing",
+      evidenceCount: 0,
+    });
+    expect(typeof requirements[1]!["missingReason"]).toBe("string");
+    expect(payload["requirementSummary"]).toMatchObject({
+      analyzed: 2,
+      covered: 1,
+      missing: 1,
+      waived: 0,
+    });
+    expect(typeof payload["requirementCoverageAnalyzedAt"]).toBe("string");
+
+    // continue 语义不变（不修改已有 HITL 决策契约）
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "continue" });
+    run = await pollRun(stack, runId, ["awaiting_input", "failed", "completed"]);
+    expect(run.status).not.toBe("failed");
+  });
+
   it("19b. cancel → run 终止为 cancelled（用户主导，无自动续跑）", async () => {
     const scripted = scriptedIdeaRuntime();
     const stack = await startTestStack(scripted.runtime, {

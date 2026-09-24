@@ -53,6 +53,12 @@ export interface CandidateSource {
   snippetOrAbstract?: string;
   /** 发现该候选的检索词（M6.3 discovery provenance；manual 添加无此字段） */
   query?: string;
+  /**
+   * 该候选供给的预写证据需求 id（M9.9 Phase 4 provenance：从需求供给检索的
+   * 执行快照保存时由服务端记录——与 query 同为扁平 provenance 字段，不复制
+   * 需求元数据；同身份合并时只填空缺。普通检索 / 手动添加无此字段）。
+   */
+  requirementId?: string;
   status: CandidateStatus;
   /** promotion 后指向正式 Source（幂等重入依据；source 被删后可重新 promote） */
   promotedSourceId?: string;
@@ -73,6 +79,8 @@ export interface AddCandidateInput {
   snippetOrAbstract?: string;
   /** 发现时的检索词（provenance；同身份合并时只填空缺） */
   query?: string;
+  /** 供给的需求 id（M9.9 provenance；同身份合并时只填空缺） */
+  requirementId?: string;
   origin?: CandidateOrigin;
   provider?: string;
 }
@@ -185,6 +193,7 @@ export class CandidateStore {
               ? { snippetOrAbstract: input.snippetOrAbstract }
               : {}),
             ...(input.query !== undefined ? { query: input.query } : {}),
+            ...(input.requirementId !== undefined ? { requirementId: input.requirementId } : {}),
           }),
           updatedAt: this.now().toISOString(),
         };
@@ -220,6 +229,9 @@ export class CandidateStore {
           ? { snippetOrAbstract: input.snippetOrAbstract.trim().slice(0, 3000) }
           : {}),
         ...(input.query !== undefined && input.query.trim() !== "" ? { query: input.query.trim() } : {}),
+        ...(input.requirementId !== undefined && input.requirementId.trim() !== ""
+          ? { requirementId: input.requirementId.trim() }
+          : {}),
         status: "pending_review",
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -416,6 +428,7 @@ function fillEmpty(
       | "url"
       | "snippetOrAbstract"
       | "query"
+      | "requirementId"
     >
   >,
 ): CandidateSource {

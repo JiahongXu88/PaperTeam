@@ -36,7 +36,13 @@ import { ALLOWED_CONTEXT_SCOPES } from "./skills/routing.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
 import type { ReadinessProbe } from "./runtime/readiness.js";
 import { readFeasibilityReport } from "./agents/FeasibilityService.js";
-import { readResearchArtifact, updateResearchPlan } from "./agents/ResearcherService.js";
+import {
+  readResearchArtifact,
+  supplyRequirementQuery,
+  updateResearchPlan,
+  type ResearchArtifact,
+} from "./agents/ResearcherService.js";
+import { readPlanChain } from "./agents/researchPlan.js";
 import type {
   PlanExecutionAcademicResultSnapshot,
   PlanExecutionWebResultSnapshot,
@@ -1276,6 +1282,7 @@ async function handleProjectResourceRoutes(
                   snapshot.kind === "academic",
               ),
               saveAsCandidates,
+              requirementIdOfQuery(artifact, entry.queryId, entry.planId),
             )
           : await stack.discovery.saveWebSnapshotCandidates(
               projectId,
@@ -1284,6 +1291,7 @@ async function handleProjectResourceRoutes(
                 (snapshot): snapshot is PlanExecutionWebResultSnapshot => snapshot.kind === "web",
               ),
               saveAsCandidates,
+              requirementIdOfQuery(artifact, entry.queryId, entry.planId),
             );
       sendJson(res, 200, { saved: result.saved, mergedExisting: result.mergedExisting });
       return true;
@@ -1440,6 +1448,39 @@ async function handleProjectResourceRoutes(
         return true;
       }
       sendMethodNotAllowed(res, "GET, PUT", method);
+      return true;
+    }
+    // ---- /requirements/supply-query（M9.9 Phase 3：缺口驱动的供给检索——只把
+    // 补充查询追加进活动计划（可审计），不执行；执行走既有批准 → 执行链路。
+    // covered 需求拒绝（缺口驱动纪律），waived / 重复 / 状态守卫在领域函数内。
+    if (rest === "/requirements/supply-query") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const requirementId =
+        typeof body["requirementId"] === "string" ? body["requirementId"].trim() : "";
+      if (requirementId === "") {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 requirementId");
+      }
+      const coverage = await stack.coverage.get(projectId);
+      const entry = coverage?.requirementCoverage.find(
+        (item) => item.requirementId === requirementId,
+      );
+      if (entry !== undefined && entry.coverage === "covered") {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `需求 ${requirementId} 已覆盖（covered，${entry.evidenceCount} 条已核验证据 / ${entry.promotedCount} 条入库文献），无需补充检索`,
+        );
+      }
+      const result = await supplyRequirementQuery(
+        stack.projects,
+        projectId,
+        body,
+        entry?.coverage ?? "missing",
+      );
+      sendJson(res, 200, { plan: result.plan, query: result.query });
       return true;
     }
     if (rest === "/academic-search" || rest === "/web-search") {
@@ -2742,6 +2783,33 @@ function readSaveIndexes(body: Record<string, unknown>): number[] | undefined {
     throw new BusinessError("INVALID_REQUEST", "saveAsCandidates 必须是非空整数数组（结果下标，从 0 起）");
   }
   return value as number[];
+}
+
+/**
+ * 执行条目对应计划检索的需求供给关联（M9.9 Phase 4）：从 execution 条目的
+ * planId（缺省活动计划）在链上定位检索条目，取其 requirementId。普通检索 /
+ * 旧计划无该字段 → undefined（候选不带关联，旧数据兼容）。只读——不改计划。
+ */
+function requirementIdOfQuery(
+  artifact: ResearchArtifact | null,
+  queryId: string,
+  planId?: string,
+): string | undefined {
+  if (artifact === null) {
+    return undefined;
+  }
+  const chain = readPlanChain(artifact);
+  const plans =
+    planId !== undefined
+      ? chain.plans.filter((plan) => plan.planId === planId)
+      : chain.plans.filter((plan) => plan.planId === chain.activePlanId);
+  for (const plan of plans) {
+    const linkage = plan.queries.find((query) => query.queryId === queryId)?.requirementId;
+    if (linkage !== undefined) {
+      return linkage;
+    }
+  }
+  return undefined;
 }
 
 /** 年份区间过滤（1900-2100；from ≤ to） */

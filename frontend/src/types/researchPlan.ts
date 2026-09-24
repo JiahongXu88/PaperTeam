@@ -40,6 +40,8 @@ export interface ResearchPlanQueryView {
   status: ResearchQueryStatus;
   /** 执行后的结果数（执行侧回填；编辑面不产生该字段） */
   resultCount?: number;
+  /** 该检索供给的预写需求 id（M9.9 provenance；普通检索无此字段） */
+  requirementId?: string;
 }
 
 export interface ResearchPlanView {

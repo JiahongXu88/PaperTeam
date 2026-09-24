@@ -369,3 +369,166 @@ describe("HitlPanel：恢复语义（数据来自 run.awaiting，不依赖内存
     expect(screen.getByTestId("hitl-approve")).toBeEnabled();
   });
 });
+
+// ---- M9.9：证据供给 payload（需求缺口 + 三动作）----
+
+vi.mock("../src/api/researchPlan.js", () => ({
+  getResearchPlan: vi.fn(async () => null),
+  updateResearchPlan: vi.fn(),
+  approveResearchPlan: vi.fn(),
+  executeResearchPlan: vi.fn(),
+  listResearchPlans: vi.fn(async () => ({ plans: [], activePlanId: null })),
+  listExecutionHistory: vi.fn(async () => []),
+  saveExecutionResultsAsCandidates: vi.fn(),
+  deriveResearchPlan: vi.fn(),
+  activateResearchPlan: vi.fn(),
+  getResearchCoverage: vi.fn(async () => null),
+  analyzeResearchCoverage: vi.fn(),
+  listResearchGaps: vi.fn(async () => ({ planId: null, gaps: [] })),
+  acceptResearchGap: vi.fn(),
+  rejectResearchGap: vi.fn(),
+  deriveResearchGap: vi.fn(),
+  supplyRequirementQuery: vi.fn(),
+}));
+
+const planApi = vi.mocked(await import("../src/api/researchPlan.js"));
+
+function evidenceSupplyRunFixture(): WorkflowRunView {
+  return hitlRunFixture({
+    currentStage: "hitl.evidence_supply",
+    awaiting: {
+      stageId: "hitl.evidence_supply",
+      prompt: "研究发现了一批待审候选文献，而当前已核验证据只覆盖少数来源。",
+      options: ["continue", "cancel"],
+      payload: {
+        pendingCandidates: 5,
+        verifiedEvidenceRecords: 3,
+        verifiedEvidenceSources: 2,
+        pendingSample: [{ title: "Sample Paper", origin: "academic_search" }],
+        requirements: [
+          {
+            requirementId: "er-1",
+            topic: "MemGPT memory management",
+            claimType: "mechanism",
+            evidenceType: "original_paper",
+            coverageStatus: "covered",
+            evidenceCount: 2,
+            promotedCount: 1,
+            priority: "high",
+          },
+          {
+            requirementId: "er-2",
+            topic: "agent benchmark evaluation",
+            claimType: "benchmark",
+            evidenceType: "benchmark_paper",
+            coverageStatus: "missing",
+            evidenceCount: 0,
+            priority: "medium",
+            missingReason: "计划中没有任何与该需求主题相关的检索（需求未驱动检索词生成）",
+          },
+        ],
+        requirementSummary: { analyzed: 2, covered: 1, partial: 0, missing: 1, waived: 0 },
+        requirementCoverageAnalyzedAt: "2026-09-24T08:00:00.000Z",
+        action: "在「文献发现」页 Promote 候选 → 文献库获取全文 → 重跑研究",
+      },
+    },
+  });
+}
+
+describe("HitlPanel：证据供给 payload（M9.9 需求缺口 + Search/Upload/Skip）", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    planApi.listResearchPlans.mockResolvedValue({ plans: [], activePlanId: null });
+  });
+
+  it("渲染：缺口清单 + 覆盖徽章 + 缺口原因 + 快照时点声明；covered 行无动作", async () => {
+    renderHitl(evidenceSupplyRunFixture());
+    const payload = await screen.findByTestId("hitl-payload-evidence-supply");
+    expect(screen.getByTestId("evidence-supply-stats")).toHaveTextContent("待审候选 5 篇");
+    expect(screen.getByTestId("evidence-supply-stats")).toHaveTextContent("已核验证据 3 条");
+    const covered = screen.getByTestId("evidence-requirement-er-1");
+    expect(covered).toHaveTextContent("MemGPT memory management");
+    expect(covered).toHaveTextContent("已覆盖");
+    expect(within(covered).queryByRole("button")).toBeNull();
+    const missing = screen.getByTestId("evidence-requirement-er-2");
+    expect(missing).toHaveTextContent("agent benchmark evaluation");
+    expect(missing).toHaveTextContent("缺失");
+    expect(missing).toHaveTextContent("需求未驱动检索词生成");
+    expect(within(missing).getByTestId("supply-search-er-2")).toBeInTheDocument();
+    expect(within(missing).getByTestId("supply-upload-er-2")).toBeInTheDocument();
+    expect(within(missing).getByTestId("supply-skip-er-2")).toBeInTheDocument();
+    // 快照时点如实标注（补给后需重跑才更新）
+    expect(payload).toHaveTextContent("分析快照");
+  });
+
+  it("Case A 补充检索：POST supply-query → 成功后跳「文献发现」", async () => {
+    planApi.supplyRequirementQuery.mockResolvedValue({
+      plan: {} as never,
+      query: { queryId: "q-3", query: "agent benchmark evaluation benchmark" } as never,
+    });
+    const onOpenTab = vi.fn();
+    renderWithProviders(<HitlPanel run={evidenceSupplyRunFixture()} onOpenTab={onOpenTab} />);
+    await screen.findByTestId("evidence-requirement-er-2");
+    await userEvent.click(screen.getByTestId("supply-search-er-2"));
+    await waitFor(() =>
+      expect(planApi.supplyRequirementQuery).toHaveBeenCalledWith("p-hitl0001", "er-2"),
+    );
+    await waitFor(() => expect(onOpenTab).toHaveBeenCalledWith("discovery"));
+  });
+
+  it("Case B 上传论文：跳「文献库」（既有 FullText pipeline 入口，无新端点）", async () => {
+    const onOpenTab = vi.fn();
+    renderWithProviders(<HitlPanel run={evidenceSupplyRunFixture()} onOpenTab={onOpenTab} />);
+    await screen.findByTestId("evidence-requirement-er-2");
+    await userEvent.click(screen.getByTestId("supply-upload-er-2"));
+    expect(onOpenTab).toHaveBeenCalledWith("sources");
+    expect(planApi.supplyRequirementQuery).not.toHaveBeenCalled();
+    expect(planApi.updateResearchPlan).not.toHaveBeenCalled();
+  });
+
+  it("Case C 跳过该需求：PUT 计划把 er-2 置 waived（用户显式动作，note 留痕）", async () => {
+    planApi.listResearchPlans.mockResolvedValue({
+      activePlanId: "rp-1",
+      plans: [
+        {
+          planId: "rp-1",
+          status: "draft",
+          questions: [],
+          queries: [],
+          requirements: [
+            {
+              requirementId: "er-1",
+              topic: "MemGPT memory management",
+              claimType: "mechanism",
+              expectedEvidenceType: "original_paper",
+              priority: "high",
+              status: "open",
+            },
+            {
+              requirementId: "er-2",
+              topic: "agent benchmark evaluation",
+              claimType: "benchmark",
+              expectedEvidenceType: "benchmark_paper",
+              priority: "medium",
+              status: "open",
+            },
+          ],
+          createdAt: "2026-09-24T08:00:00.000Z",
+          updatedAt: "2026-09-24T08:00:00.000Z",
+        } as never,
+      ],
+    });
+    planApi.updateResearchPlan.mockResolvedValue({} as never);
+    renderHitl(evidenceSupplyRunFixture());
+    await screen.findByTestId("evidence-requirement-er-2");
+    await userEvent.click(screen.getByTestId("supply-skip-er-2"));
+    await waitFor(() => expect(planApi.updateResearchPlan).toHaveBeenCalledTimes(1));
+    const input = planApi.updateResearchPlan.mock.calls[0]![1];
+    const waived = input.requirements!.find((entry) => entry.requirementId === "er-2")!;
+    expect(waived.status).toBe("waived");
+    expect(waived.note).toContain("跳过");
+    // 其它需求不受影响（整体替换语义下原样收编）
+    const kept = input.requirements!.find((entry) => entry.requirementId === "er-1")!;
+    expect(kept.status).toBe("open");
+  });
+});

@@ -43,6 +43,7 @@ import { normalizeManuscriptLanguage } from "../project/language.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService, isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
+import type { ResearchCoverageService } from "../agents/researchCoverage.js";
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { CandidateStore } from "../sources/CandidateStore.js";
@@ -160,6 +161,12 @@ export interface WorkflowServices {
    * 只读消费，promote 仍是用户显式动作，本工作流绝不自动晋升）。
    */
   candidates: CandidateStore;
+  /**
+   * Research Coverage Analyzer（M9.9：hitl.evidence_supply payload 只读消费
+   * requirementCoverage 派生视图——预写证据需求的缺口在 HITL 呈现；覆盖
+   * 状态仍由 Analyzer 随源数据即时派生，不在 workflow / artifact 上持久化）。
+   */
+  coverage: ResearchCoverageService;
   sources: SourceStore;
   manuscript: ManuscriptService;
   writer: WriterService;
@@ -2403,6 +2410,30 @@ function evidenceSupplyStage(services: WorkflowServices): StageSpec {
         const verifiedSources = new Set(
           formal.map((record) => record.source?.sourceId).filter((id): id is string => id !== undefined),
         );
+        // M9.9 Phase 1：预写证据需求的覆盖缺口接入 payload（只读派生视图；
+        // null = 无 artifact / 无计划（旧项目）→ 整节省略，旧契约兼容。
+        // 快照时点 = analyzedAt——用户补给后需重跑研究才见新覆盖，UI 如实标注）。
+        const coverage = await services.coverage.get(ctx.projectId);
+        const requirementFields =
+          coverage === null
+            ? {}
+            : {
+                requirements: coverage.requirementCoverage.map((entry) => ({
+                    requirementId: entry.requirementId,
+                    topic: entry.topic,
+                    claimType: entry.claimType,
+                    evidenceType: entry.expectedEvidenceType,
+                    coverageStatus: entry.coverage,
+                    evidenceCount: entry.evidenceCount,
+                    promotedCount: entry.promotedCount,
+                    priority: entry.priority,
+                    ...(entry.missingReason !== undefined
+                      ? { missingReason: entry.missingReason }
+                      : {}),
+                  })),
+                requirementSummary: coverage.overall.requirements,
+                requirementCoverageAnalyzedAt: coverage.analyzedAt,
+              };
         return {
           pendingCandidates: pending.length,
           verifiedEvidenceRecords: formal.length,
@@ -2414,6 +2445,7 @@ function evidenceSupplyStage(services: WorkflowServices): StageSpec {
             ...(candidate.arxivId !== undefined ? { arxivId: candidate.arxivId } : {}),
             origin: candidate.origin,
           })),
+          ...requirementFields,
           action:
             "在「文献发现」页 Promote 候选 → 文献库获取全文 → 重跑研究（或本 run 直接 continue 使用现有证据）",
         };
