@@ -83,6 +83,11 @@ import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/Secti
 import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
 import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
+import {
+  buildClaimRepairDirectives,
+  computeClaimGroundingReport,
+  type ClaimRepairDirective,
+} from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import {
@@ -285,6 +290,17 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
       const summary = aggregateReviews(results, round, reportPaths);
       summary.reviewedRevision = revision;
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
+      // M9.7.6 Claim Grounding：fact claims 的确定性证据绑定整理（复用 verdict，
+      // 无新 LLM 判定）。citation key 解析与 Writer 引用 / coverage gate 同源。
+      const factClaims = results.find((result) => result.mode === "fact")?.claims ?? [];
+      const claimGrounding = computeClaimGroundingReport({
+        projectId: ctx.projectId,
+        round,
+        factClaims,
+        formalEvidence: evidence,
+        bibEntries: citationReport?.static.bibEntries ?? [],
+      });
+      await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
       return {
         round,
         revision,
@@ -295,6 +311,8 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         academicScore: summary.scores.academicScore ?? -1,
         styleRisk: summary.scores.styleRisk ?? -1,
         unsupportedCriticalClaims: summary.unsupportedCriticalClaims,
+        evidenceBoundClaims: claimGrounding.evidenceBoundClaims,
+        claimEvidenceBindingRate: claimGrounding.evidenceBindingRate,
         evidenceFormal: evidenceSelection.formal.length,
         evidenceExcluded: evidenceSelection.excluded,
         // M5.4：可进入语言润色的 style minor finding 数（planner 据此决定是否询问）
@@ -782,6 +800,15 @@ function revisionReviseStage(
       const dispatchedItems: { id: string; targetChanged: boolean }[] = [];
       // 条目关联证据的记录池（§6 修改前依据；formal 快照之外的库内记录也可见）
       const itemEvidence = await services.evidence.list(ctx.projectId);
+      const evidenceById = new Map(itemEvidence.map((record) => [record.id, record]));
+      // M9.7.6 Claim Grounding：本修订轮消费的 claim grounding 报告（与派发指令
+      // 同源 = 最新 review 轮；legacy 项目无该产物 → null → 不注入 Repair Context）
+      const revisionSummary = await latestReviewSummary(services, ctx.projectId);
+      const claimGrounding =
+        revisionSummary !== null
+          ? await services.reviewArtifacts.loadClaimGrounding(ctx.projectId, revisionSummary.round)
+          : null;
+      let claimRepairsDispatched = 0;
       for (const [index, target] of targets.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "修订已被取消");
@@ -791,6 +818,17 @@ function revisionReviseStage(
         const matchedItems = matchedDirectives
           .map((directive) => directive.item)
           .filter((item): item is RevisionPlanItem => item !== undefined);
+        // M9.7.6：UNSUPPORTED / CONTRADICTED claim 的 evidence-aware Repair
+        // Context（复用该轮 claim grounding 报告；候选只含 formal evidence）。
+        const claimRepairs: ClaimRepairDirective[] =
+          claimGrounding !== null
+            ? buildClaimRepairDirectives(
+                claimGrounding,
+                (claimSection) => sectionMatches(claimSection, target),
+                evidenceById,
+                bibliography,
+              )
+            : [];
         // 该目标命中的外部意见：指定章节的按匹配；未指定章节的全篇派发
         const targetExternals = externalDirectives.filter((directive) =>
           directive.section !== undefined
@@ -800,10 +838,12 @@ function revisionReviseStage(
         if (
           issues.length === 0 &&
           buildError === undefined &&
-          targetExternals.length === 0
+          targetExternals.length === 0 &&
+          claimRepairs.length === 0
         ) {
           continue; // 无问题的章节不动（不烧 Token）
         }
+        claimRepairsDispatched += claimRepairs.length;
         // 章节人类标题（大纲 id → title；缺大纲时回退 id）：修订 prompt 以标题称呼章节
         const sectionMeta = outline?.sections.find((section) => section.id === target.key);
         const isAbstractTarget = target.key === "abstract";
@@ -822,6 +862,7 @@ function revisionReviseStage(
           ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
+          ...(claimRepairs.length > 0 ? { claimRepairs } : {}),
           ...(matchedItems.length > 0
             ? {
                 revisionItems: matchedItems,
@@ -829,10 +870,18 @@ function revisionReviseStage(
               }
             : {}),
         });
-        // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）
+        // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）。
+        // M9.7.6 P0：一条 finding 的 section 引用可能命中多个修订目标（如
+        // 「sections/a.tex（并见 sections/b.tex）」），同 id 只记一次，
+        // targetChanged 跨目标 OR——下游 transitions 不再产生重复 id。
         const targetChanged = result.latex.trim() !== target.currentLatex.trim();
         for (const item of matchedItems) {
-          dispatchedItems.push({ id: item.id, targetChanged });
+          const existing = dispatchedItems.find((entry) => entry.id === item.id);
+          if (existing === undefined) {
+            dispatchedItems.push({ id: item.id, targetChanged });
+          } else {
+            existing.targetChanged = existing.targetChanged || targetChanged;
+          }
         }
         for (const report of result.externalOutcomes ?? []) {
           externalOutcomeReports.push({ ...report, targetChanged });
@@ -931,6 +980,7 @@ function revisionReviseStage(
         sections: revised,
         revision: revision.revision,
         changed: revision.created,
+        ...(claimRepairsDispatched > 0 ? { claimRepairs: claimRepairsDispatched } : {}),
         ...(dispatchedItems.length > 0 ? { appliedItems: dispatchedItems.length } : {}),
         ...(externalDirectives.length > 0
           ? { externalInstructions: externalDirectives.length }

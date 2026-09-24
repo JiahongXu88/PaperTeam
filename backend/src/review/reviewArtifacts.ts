@@ -18,6 +18,7 @@ import type { QualityGateResult } from "../quality/gates.js";
 import type { CitationPreservationSummary } from "../quality/citationPreservation.js";
 import type { FactPreservationSummary } from "../quality/factPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
+import type { ClaimGroundingReport } from "./claimGrounding.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
@@ -28,6 +29,7 @@ const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
 const GATE_PATTERN = /^quality-gate-r(\d+)\.json$/;
 const PLAN_PATTERN = /^revision-plan-r(\d+)\.json$/;
 const VALIDATION_PATTERN = /^revision-validation-r(\d+)\.json$/;
+const CLAIM_GROUNDING_PATTERN = /^claim-grounding-r(\d+)\.json$/;
 
 /** 按轮落盘的 Quality Gate 产物（saveQualityGateReport 的结构） */
 export interface QualityGateArtifact {
@@ -166,6 +168,50 @@ export class ReviewArtifactStore {
       return null;
     }
     return this.readJson<Record<string, unknown>>(projectId, this.existingReviewFileName(latest));
+  }
+
+  // ---- Claim Grounding 报告（M9.7.6：fact claims 的确定性证据绑定统计） ----
+
+  claimGroundingFileName(round: number): string {
+    return `claim-grounding-r${round}.json`;
+  }
+
+  async saveClaimGrounding(projectId: string, report: ClaimGroundingReport): Promise<string> {
+    const fileName = this.claimGroundingFileName(report.round);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), report);
+    return `reviews/${fileName}`;
+  }
+
+  /**
+   * 读取某一轮的 Claim Grounding 报告（无文件 / 结构损坏 → null；旧项目
+   * （M9.7.6 之前）没有该产物属正常态，调用方按 legacy 跳过 Claim Repair）。
+   */
+  async loadClaimGrounding(projectId: string, round: number): Promise<ClaimGroundingReport | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.claimGroundingFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>)["reportId"] !== "string" ||
+      typeof (parsed as Record<string, unknown>)["round"] !== "number" ||
+      !Array.isArray((parsed as Record<string, unknown>)["claims"])
+    ) {
+      return null;
+    }
+    return parsed as ClaimGroundingReport;
+  }
+
+  /** 最新一轮 Claim Grounding 报告（无则 null） */
+  async latestClaimGrounding(projectId: string): Promise<ClaimGroundingReport | null> {
+    const rounds = await this.rounds(projectId, CLAIM_GROUNDING_PATTERN);
+    const round = rounds[0];
+    return round === undefined ? null : this.loadClaimGrounding(projectId, round);
   }
 
   // ---- Revision Plan 与迭代历史（M4.7） ----

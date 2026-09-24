@@ -16,6 +16,7 @@ import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
+import type { ClaimRepairDirective } from "../review/claimGrounding.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
   EXTERNAL_OUTCOMES_MARKER,
@@ -65,10 +66,11 @@ const EVIDENCE_QUERY_GUIDANCE = [
 ].join("");
 
 /**
- * 渲染 Evidence digest 行（M6.6 §12 Citation Integration；M9.5 确定性 key）：
+ * 渲染 Evidence digest 行（M6.6 §12 Citation Integration；M9.5 确定性 key；
+ * M9.7.6 Claim Discipline 补 source identity）：
  * EvidenceRecord → resolveEvidenceCitationKey（sourceId 精确 → DOI/标题降级）
  * → 引用时使用系统按文献身份确定性生成的 key（LLM 不自造 key）。
- * 行格式：- [E001]（cite: vaswani2017attention）claim…
+ * 行格式：- [E001]（cite: vaswani2017attention；src: ReAct (2023)）claim…（引文："…"）
  */
 function renderEvidenceLines(
   evidence: EvidenceRecord[],
@@ -80,12 +82,32 @@ function renderEvidenceLines(
   }
   return evidence.slice(0, limit).map((record) => {
     const key = resolveEvidenceCitationKey(record, bibliography);
-    const cite = key !== null ? `（cite: ${key}）` : "";
-    return `- [${record.id}]${cite} ${record.claim.slice(0, 150)}${
+    const title = record.source?.title?.trim();
+    const year = record.source?.year;
+    const meta: string[] = [];
+    if (key !== null) {
+      meta.push(`cite: ${key}`);
+    }
+    if (title !== undefined && title !== "") {
+      meta.push(`src: ${title.slice(0, 60)}${year !== undefined ? ` (${year})` : ""}`);
+    }
+    return `- [${record.id}]${meta.length > 0 ? `（${meta.join("；")}）` : ""} ${record.claim.slice(0, 150)}${
       record.quote ? `（引文："${record.quote.slice(0, 120)}"）` : ""
     }`;
   });
 }
+
+/**
+ * M9.7.6 Claim Discipline（§4）：事实性 claim 的强度纪律。写作与修订 prompt
+ * 共用——「证据 claim 说什么就写什么，不升级、不外推」；无证据的出口只有
+ * 弱化 / 标注不确定 / 删除，不存在「凭记忆写得更确定」。
+ */
+const CLAIM_DISCIPLINE_LINES = [
+  "事实性论断强度纪律（数字 / 年份 / 性能结论 / 方法能力 / 实验结果 / 对论文贡献的具体描述 / 比较性事实）：",
+  "- 每写一个这类论断，先在上方 Evidence 中找到能支撑它的 claim（证据说什么写什么：范围、数值、对象、限定词都不得扩大）；",
+  "- 证据只支撑一部分时，只写被支撑的那部分，其余弱化为背景性描述或明确不确定性（如「有报道指出」「尚待验证」）；",
+  "- 完全没有证据时删除该具体论断，只保留无争议的背景性叙述；禁止凭模型记忆把具体事实（数字、年份、结论、对比）写得更确定。",
+];
 
 /**
  * M9.7.2：bibliography key 的 evidence 支撑分组（prompt 构造时派生，不落存储）。
@@ -321,6 +343,11 @@ export class WriterService {
     extraInstructions?: string;
     /** 外部修改意见（M5.7；缺省 = 行为与旧版完全一致） */
     externalDirectives?: ExternalDirectiveDispatch[];
+    /**
+     * Unsupported Claim Repair Context（M9.7.6：本节命中的 UNSUPPORTED /
+     * CONTRADICTED claim + 候选 Verified Evidence；缺省 = 无该区块）
+     */
+    claimRepairs?: ClaimRepairDirective[];
     /** 结构化修订计划条目（M6.7；本节命中的 applied 待执行条目） */
     revisionItems?: RevisionPlanItem[];
     /** 条目关联证据的完整记录池（M6.7 §6：修改前依据；缺省退化为 formal 快照） */
@@ -329,7 +356,8 @@ export class WriterService {
     if (
       params.issues.length === 0 &&
       params.buildError === undefined &&
-      (params.externalDirectives ?? []).length === 0
+      (params.externalDirectives ?? []).length === 0 &&
+      (params.claimRepairs ?? []).length === 0
     ) {
       // 无问题章节原样返回（不烧 Token）
       return { latex: params.currentLatex, taskId: "(unchanged)" };
@@ -582,6 +610,46 @@ export interface ImprovementPlan {
   items: ImprovementPlanItem[];
 }
 
+/**
+ * M9.7.6 §7：Unsupported Claim Repair Context 渲染。
+ * 每条 UNSUPPORTED / CONTRADICTED claim 附候选 Verified Evidence（claim +
+ * 引文 + cite key）与三动作处置规则（SUPPORT / WEAKEN / REMOVE）；候选为空时
+ * 只允许 WEAKEN / REMOVE。红线与既有修订规则（事实冻结 / 引用保持）叠加，
+ * 不是替代——Evidence ID 只出现在 prompt（Agent Harness 内部 grounding
+ * contract），正文永远只允许 \cite{key}，不得出现 [E###] / [c-###] 标记。
+ */
+function renderClaimRepairBlock(repairs: readonly ClaimRepairDirective[]): string[] {
+  if (repairs.length === 0) {
+    return [];
+  }
+  const blocks = repairs.map((repair) => {
+    const candidates =
+      repair.candidates.length > 0
+        ? repair.candidates.map(
+            (candidate) =>
+              `   - [${candidate.evidenceId}]${candidate.citationKey !== undefined ? `（cite: ${candidate.citationKey}）` : ""} ${candidate.claim.slice(0, 150)}${
+                candidate.quote !== undefined ? `（引文："${candidate.quote.slice(0, 120)}"）` : ""
+              }`,
+          )
+        : ["   - （无足够相关的已核验证据：本条只能 WEAKEN 或 REMOVE）"];
+    return [
+      `- [${repair.claimId}]（verdict: ${repair.verdict}；位置：${repair.section}）论断原文：${repair.claim.slice(0, 300)}`,
+      "  候选 Verified Evidence（系统按相关性给出，仅供判断；引用只使用行内 cite key）：",
+      ...candidates,
+    ].join("\n");
+  });
+  return [
+    "",
+    "===== Unsupported Claim Repair（证据感知修订；逐条处置）=====",
+    ...blocks,
+    "处置规则（每条三选一，按候选证据的实际支撑范围决定）：",
+    "1. SUPPORT——某条候选证据确实支撑该论断：用该证据重写论断（范围 / 数值 / 限定词以证据为准，不得扩大），并 \\cite 其行内 cite key；",
+    "2. WEAKEN——证据只支撑一部分：降低表述强度，只保留被支撑的部分；",
+    "3. REMOVE——没有证据支撑：删除该具体论断（可保留无争议的背景性叙述）。",
+    "红线：不得为此新增数字、年份、实验结果、bibliography key 或任何未经核验的具体事实；正文不得出现 [E###] / [c-###] 之类证据标记（它们是内部编号，只允许 \\cite）。",
+  ];
+}
+
 function buildStylePolishPrompt(params: {
   section: OutlineSection;
   currentLatex: string;
@@ -704,6 +772,7 @@ export function buildRevisePrompt(params: {
   language?: ManuscriptLanguage;
   extraInstructions?: string;
   externalDirectives?: ExternalDirectiveDispatch[];
+  claimRepairs?: ClaimRepairDirective[];
   revisionItems?: RevisionPlanItem[];
   /** revisionItems 关联证据的只读索引（M6.7 §6：修改前依据的渲染源） */
   evidenceById?: Map<string, EvidenceRecord>;
@@ -766,6 +835,7 @@ export function buildRevisePrompt(params: {
           )
         : ["（无审稿问题）"]),
       ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
+      ...renderClaimRepairBlock(params.claimRepairs ?? []),
       ...externalBlock,
       "",
       "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
@@ -798,6 +868,7 @@ export function buildRevisePrompt(params: {
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     "   - 修订特则：本章节现有的 B 组引用按第 10 条保留（不因缺证据而删除）；但不得新增 B 组引用，也不得把原本 A 组支撑的论断改由 B 组支撑。",
     "10. 保留本章节现有的 \\cite 引用及其所支撑的论述（除非某条问题明确要求删除该引用）；不得为了精简而整体删光引用，也不得新增列表之外的 key。",
+    ...CLAIM_DISCIPLINE_LINES,
     ...(params.buildError
       ? ["11. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
       : []),
@@ -816,6 +887,7 @@ export function buildRevisePrompt(params: {
         )
       : ["（无审稿问题）"]),
     ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
+    ...renderClaimRepairBlock(params.claimRepairs ?? []),
     ...externalBlock,
     "",
     "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
@@ -1029,6 +1101,7 @@ export function buildSectionPrompt(params: {
     "3. 论述必须优先基于下方 Verified Evidence Context（均为已核验 verified 证据；引用时使用行内标注的 cite key）；证据不足时显式弱化表述或标注，不为凑字虚构数据、结论或引用。",
     "4. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
+    ...CLAIM_DISCIPLINE_LINES,
     "5. 保持与其他章节的术语一致。",
     ...(params.styleProfile
       ? ["6. 参考论文的结构与呈现模式（只学结构，不复制内容）：" + JSON.stringify(params.styleProfile).slice(0, 600)]

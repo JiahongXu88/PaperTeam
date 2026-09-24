@@ -181,7 +181,7 @@ describe("WriterService M6.6：Evidence-aware 写作上下文", () => {
       bibliography: BIBLIOGRAPHY,
     });
     const prompt = runtime.calls[0]!.task;
-    expect(prompt).toContain("[E001]（cite: gao2023survey）");
+    expect(prompt).toContain("[E001]（cite: gao2023survey；src: A Survey of Retrieval-Augmented Generation (2023)）");
     expect(prompt).toContain("已核验 verified");
     expect(prompt).toContain("evidence_query");
     // 要求 Writer 引用优先使用有已核验证据支撑的 key
@@ -229,7 +229,7 @@ describe("WriterService M6.6：Evidence-aware 写作上下文", () => {
       bibliography: BIBLIOGRAPHY,
     });
     const prompt = runtime.calls[0]!.task;
-    expect(prompt).toContain("[E001]（cite: gao2023survey）");
+    expect(prompt).toContain("[E001]（cite: gao2023survey；src: A Survey of Retrieval-Augmented Generation (2023)）");
     expect(prompt).toContain("evidence_query");
   });
 });
@@ -371,5 +371,140 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
     expect(prompt).toContain("正文写作时事实性论断必须取 A 组");
     expect(prompt).toContain("引用必须取自本组）：yao2023react");
     expect(prompt).toContain("Verified Evidence Context");
+  });
+});
+
+describe("WriterService M9.7.6：Claim Discipline + Unsupported Claim Repair", () => {
+  const SECTION = { id: "introduction", file: "introduction.tex", title: "引言" };
+  const OUTLINE = { title: "RAG 综述", sections: [SECTION] };
+  const EVIDENCE_S1 = [
+    {
+      id: "E001",
+      claim: "ReAct 在 HotpotQA 上超越标准提示基线",
+      quote: "ReAct outperforms standard prompting on HotpotQA",
+      verificationStatus: "verified",
+      supportStrength: "direct",
+      source: { sourceId: "S001", title: "ReAct", year: 2023, doi: "10.1/react" },
+      location: { chunk: "S001:SEC01:0001:a1b2c3d4e5", section: "3" },
+      createdBy: "researcher",
+      createdAt: "2026-09-23T00:00:00Z",
+    },
+  ] as unknown as EvidenceRecord[];
+  const BIB = [
+    { key: "yao2023react", title: "ReAct", year: 2023, doi: "10.1/react" },
+    { key: "wei2022cot", title: "Chain-of-Thought", year: 2022 },
+  ];
+  const REPAIRS = [
+    {
+      claimId: "c-abc123def456",
+      section: "sections/introduction.tex",
+      claim: "ReAct 在所有 Agent benchmark 上都优于 Reflexion",
+      verdict: "UNSUPPORTED" as const,
+      candidates: [
+        {
+          evidenceId: "E001",
+          claim: "ReAct 在 HotpotQA 上超越标准提示基线",
+          quote: "ReAct outperforms standard prompting on HotpotQA",
+          citationKey: "yao2023react",
+        },
+      ],
+    },
+  ];
+
+  it("writeSection / reviseSection：事实性论断强度纪律注入（证据说什么写什么；无证据弱化/标注/删除）", async () => {
+    const runtime = new FakeRuntime(() => completedTask("\\section{引言}\n内容。"));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.writeSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+    });
+    const sectionPrompt = runtime.calls[0]!.task;
+    expect(sectionPrompt).toContain("事实性论断强度纪律");
+    expect(sectionPrompt).toContain("证据说什么写什么");
+    expect(sectionPrompt).toContain("禁止凭模型记忆");
+
+    await writer.reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{引言}\n旧内容。",
+      issues: [{ category: "fact", severity: "major", section: "introduction", description: "论断缺证据", blocking: false }],
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+    });
+    const revisePrompt = runtime.calls[1]!.task;
+    expect(revisePrompt).toContain("事实性论断强度纪律");
+  });
+
+  it("reviseSection：Claim Repair 块携带论断原文 / 候选证据 / 三动作规则；claimRepairs 单独即可触发调用", async () => {
+    const runtime = new FakeRuntime(() => completedTask("\\section{引言}\n修订内容。"));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{引言}\nReAct 在所有 Agent benchmark 上都优于 Reflexion。",
+      issues: [], // 无 issue / buildError / 外部意见：仅 claimRepairs 也要派发
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+      claimRepairs: REPAIRS,
+    });
+    expect(runtime.calls).toHaveLength(1); // 没有被 no-op 早退吞掉
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("Unsupported Claim Repair（证据感知修订；逐条处置）");
+    expect(prompt).toContain("ReAct 在所有 Agent benchmark 上都优于 Reflexion");
+    expect(prompt).toContain("[E001]（cite: yao2023react）");
+    expect(prompt).toContain("ReAct outperforms standard prompting on HotpotQA");
+    expect(prompt).toContain("1. SUPPORT");
+    expect(prompt).toContain("2. WEAKEN");
+    expect(prompt).toContain("3. REMOVE");
+    // 修订红线（§8）：不得新增数字 / 年份 / 实验结果 / key / 未核验事实
+    expect(prompt).toContain("不得为此新增数字、年份、实验结果、bibliography key 或任何未经核验的具体事实");
+    // §5：Evidence ID 是内部 grounding contract，正文不得出现 [E###] 标记
+    expect(prompt).toContain("正文不得出现 [E###] / [c-###] 之类证据标记");
+    // M9.7.2 A/B 分组保持（不因 Repair 块移除）
+    expect(prompt).toContain("按 verified evidence 支撑分组");
+  });
+
+  it("reviseSection：无候选证据的 claim → 明示只能 WEAKEN / REMOVE", async () => {
+    const runtime = new FakeRuntime(() => completedTask("\\section{引言}\n弱化后的表述。"));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{引言}\n无证据论断。",
+      issues: [{ category: "fact", severity: "critical", section: "introduction", description: "论断无证据", blocking: true }],
+      evidence: [],
+      bibliography: BIB,
+      claimRepairs: [
+        { claimId: "c-000000000000", section: "sections/introduction.tex", claim: "无证据论断", verdict: "UNSUPPORTED", candidates: [] },
+      ],
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("无足够相关的已核验证据：本条只能 WEAKEN 或 REMOVE");
+  });
+
+  it("reviseSection（摘要）：Repair 块同样注入", async () => {
+    const runtime = new FakeRuntime(() => completedTask("修订后的摘要。"));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({
+      projectId: "p-abc",
+      section: { id: "abstract", file: "abstract", title: "摘要" },
+      outline: OUTLINE,
+      currentLatex: "旧摘要。",
+      issues: [{ category: "fact", severity: "major", section: "abstract", description: "摘要论断无证据", blocking: false }],
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+      claimRepairs: [
+        { ...REPAIRS[0]!, section: "abstract", candidates: [] },
+      ],
+    });
+    const prompt = runtime.calls[0]!.task;
+    expect(prompt).toContain("Unsupported Claim Repair");
+    expect(prompt).toContain("只能 WEAKEN 或 REMOVE");
   });
 });

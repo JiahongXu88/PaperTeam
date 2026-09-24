@@ -422,7 +422,7 @@ export function filterByCitedKeys(
  */
 export function resolveEvidenceCitationKey(
   record: EvidenceRecord,
-  entries: readonly BibRenderEntry[],
+  entries: readonly (Pick<BibRenderEntry, "key"> & Partial<Pick<BibRenderEntry, "sourceId" | "title" | "doi" | "year">>)[],
 ): string | null {
   const sourceId = record.source?.sourceId?.trim();
   if (sourceId !== undefined && sourceId !== "") {

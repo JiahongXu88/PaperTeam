@@ -268,7 +268,9 @@ describe("Writer formalOnly cite 标注（选择层 → prompt）", () => {
       bibliography,
     });
     const prompt = tasks[0] ?? "";
-    expect(prompt).toContain("[E001]（cite: gao2023retrieval）");
+    // M9.7.6：Evidence 行携带 source identity（src: title (year)）
+    expect(prompt).toContain("[E001]（cite: gao2023retrieval；");
+    expect(prompt).toContain("src: Retrieval-Augmented Generation");
     // M9.7.2：白名单按 verified evidence 支撑分组（A 组 = E001 命中 key；B 组 = 无证据 key）
     expect(prompt).toContain("只允许引用以下参考文献 key");
     expect(prompt).toContain(
