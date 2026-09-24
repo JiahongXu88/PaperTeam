@@ -159,6 +159,12 @@ function renderCitationDisciplineLines(
   ];
 }
 
+/**
+ * 大纲结构化输出修复上限（M9.7.6，M9.7.4 REVIEW_REPAIR_MAX_ATTEMPTS 同构）：
+ * original attempt + 最多 2 次错误反馈修复，有界，绝不无限重试。
+ */
+export const OUTLINE_REPAIR_MAX_ATTEMPTS = 2;
+
 export class WriterService {
   private readonly runtime: AgentRuntime;
   private readonly agentId: string;
@@ -224,6 +230,13 @@ export class WriterService {
   /**
    * 产出结构化大纲（JSON）。校验：至少 3 节、文件名合法、id 唯一。
    * feedback 用于 HITL 修订轮（用户对上一版大纲的修改意见）。
+   *
+   * M9.7.6 Structured Output Repair（M9.7.4 Reviewer repair 同构）：输出已产生
+   * 但未通过结构化校验时，把具体校验错误 + 上一轮输出回馈模型做有界修复
+   * （≤ OUTLINE_REPAIR_MAX_ATTEMPTS 次），不原样重跑。真实漂移形态（2026-09-24
+   * GLM-5.3 smoke 实录）：abstract 含未转义 ASCII 双引号 → 外层 JSON 非法 →
+   * extractJsonObject 回退命中内层 section 子对象 → 伪装成 sections<3 校验错。
+   * repair prompt 显式提示转义规则修复此类漂移；全部失败仍如实抛错。
    */
   async planOutline(params: {
     projectId: string;
@@ -239,36 +252,70 @@ export class WriterService {
     /** 稿件语言（M9.7.4；undefined = legacy 不注入） */
     language?: ManuscriptLanguage;
     feedback?: string;
-  }): Promise<Outline> {
-    const task = await this.runtime.runAgent({
-      agentId: this.agentId,
-      ...this.timeoutOverride,
-      task: buildOutlinePrompt(params),
-      projectId: params.projectId,
-      contextScope: "writing/outline",
-      ...(params.language !== undefined ? { language: params.language } : {}),
-      metadata: { role: "writer", skill: "outline" },
-    });
-    if (task.status !== "completed") {
-      throw new AgentRunFailedError(task.error ?? `大纲任务以 ${task.status} 状态结束`);
+  }): Promise<Outline & { repair?: { attempts: number; errors: string[] } }> {
+    let lastOutput = "";
+    const validationErrors: string[] = [];
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= OUTLINE_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+      const task = await this.runtime.runAgent({
+        agentId: this.agentId,
+        ...this.timeoutOverride,
+        task: attempt === 0 ? buildOutlinePrompt(params) : buildOutlineRepairPrompt(lastOutput, validationErrors),
+        projectId: params.projectId,
+        contextScope: "writing/outline",
+        ...(params.language !== undefined ? { language: params.language } : {}),
+        metadata: {
+          role: "writer",
+          skill: "outline",
+          ...(attempt > 0 ? { structuredRepairAttempt: attempt } : {}),
+        },
+      });
+      if (task.status !== "completed") {
+        // 模型 / 网络层失败不是结构化违约：直接抛出（Stage transient retry 兜底）
+        throw new AgentRunFailedError(task.error ?? `大纲任务以 ${task.status} 状态结束`);
+      }
+      lastOutput = task.output ?? "";
+      try {
+        const parsed = extractJsonObject(lastOutput, "大纲结果");
+        const outline: Outline = {
+          title:
+            typeof parsed["title"] === "string" && parsed["title"].trim() !== ""
+              ? parsed["title"].trim()
+              : "Untitled",
+          ...(typeof parsed["abstract"] === "string" && parsed["abstract"].trim() !== ""
+            ? { abstract: parsed["abstract"].trim() }
+            : {}),
+          sections: readOutlineSections(parsed),
+        };
+        const violations = validateOutline(outline);
+        if (violations.length > 0) {
+          throw new InvalidLatexOutputError(`大纲未通过校验：${violations.join("；")}`);
+        }
+        if (attempt > 0) {
+          this.log(
+            `[writer] projectId=${params.projectId} 大纲结构化修复成功（第 ${attempt} 次修复）：${validationErrors.length} 项校验错误已补齐`,
+          );
+        }
+        this.log(`[writer] projectId=${params.projectId} 大纲完成：${outline.sections.length} 节`);
+        return attempt > 0
+          ? { ...outline, repair: { attempts: attempt, errors: [...validationErrors] } }
+          : outline;
+      } catch (error) {
+        if (!(error instanceof AgentRunFailedError) && !(error instanceof InvalidLatexOutputError)) {
+          throw error;
+        }
+        lastError = error;
+        validationErrors.push(error.message);
+        this.log(
+          `[writer] projectId=${params.projectId} 第 ${attempt + 1} 次大纲输出未通过结构化校验：${error.message}`,
+        );
+      }
     }
-    const parsed = extractJsonObject(task.output ?? "", "大纲结果");
-    const outline: Outline = {
-      title:
-        typeof parsed["title"] === "string" && parsed["title"].trim() !== ""
-          ? parsed["title"].trim()
-          : "Untitled",
-      ...(typeof parsed["abstract"] === "string" && parsed["abstract"].trim() !== ""
-        ? { abstract: parsed["abstract"].trim() }
-        : {}),
-      sections: readOutlineSections(parsed),
-    };
-    const violations = validateOutline(outline);
-    if (violations.length > 0) {
-      throw new InvalidLatexOutputError(`大纲未通过校验：${violations.join("；")}`);
-    }
-    this.log(`[writer] projectId=${params.projectId} 大纲完成：${outline.sections.length} 节`);
-    return outline;
+    // 有界耗尽：如实失败（禁止伪造默认结构）
+    throw new AgentRunFailedError(
+      `大纲结构化输出在 ${OUTLINE_REPAIR_MAX_ATTEMPTS + 1} 次尝试（含 ${OUTLINE_REPAIR_MAX_ATTEMPTS} 次错误反馈修复）后仍未通过校验：` +
+        `${lastError !== undefined ? lastError.message : "未知校验错误"}（修复历史：${validationErrors.join("；")}）`,
+    );
   }
 
   /**
@@ -1078,6 +1125,32 @@ export function buildOutlinePrompt(params: {
     ...(params.evidence.length === 0
       ? []
       : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
+  ].join("\n");
+}
+
+/**
+ * M9.7.6 大纲结构化修复 prompt（ReviewerService.buildReviewRepairPrompt 同构）：
+ * 复用同一 writing/outline 会话，注入上一轮输出与具体校验错误——修复输出协议
+ * （严格合法 JSON），不重做大纲规划。显式给出转义规则：真实漂移形态是字符串
+ * 值内未转义的 ASCII 双引号（中文术语强调引号），修复时必须转义或改中文引号。
+ */
+export function buildOutlineRepairPrompt(
+  previousOutput: string,
+  validationErrors: readonly string[],
+): string {
+  return [
+    "你上一轮的大纲输出未通过结构化校验，需要修复。",
+    "",
+    "校验错误（逐条修复）：",
+    ...validationErrors.map((error) => `- ${error}`),
+    "",
+    "要求：",
+    "1. 保留上一轮输出中已有的大纲内容（title / abstract / sections / keyPoints 一律不重写、不删减），只修复违反校验的部分。",
+    "2. 输出必须是严格合法的单个 JSON 对象：字符串值内部不得出现未转义的 ASCII 双引号——中文表述中的强调引号改用「」或转义为 \\\"；不要 Markdown 围栏、不要解释文字。",
+    "3. 不要重新执行大纲规划，除非修复校验错误必需。",
+    "",
+    "===== 上一轮输出 =====",
+    previousOutput,
   ].join("\n");
 }
 

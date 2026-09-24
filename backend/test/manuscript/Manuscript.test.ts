@@ -295,6 +295,8 @@ describe("WriterService（分节）", () => {
       title: "T",
       sections: [{ id: "a", file: "a.tex", title: "A" }],
     });
+    // M9.7.6：输出先经 ≤2 次错误反馈修复（有界）；FakeRuntime 恒返回坏输出 →
+    // 3 次尝试后如实失败（AGENT_RUN_FAILED，修复历史在 message）
     await expect(
       writer(tooFew).planOutline({
         projectId: "p-x",
@@ -302,7 +304,7 @@ describe("WriterService（分节）", () => {
         evidence: [],
         bibliography: [],
       }),
-    ).rejects.toMatchObject({ code: "INVALID_LATEX_OUTPUT" });
+    ).rejects.toMatchObject({ code: "AGENT_RUN_FAILED" });
   });
 });
 

@@ -374,6 +374,61 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
   });
 });
 
+describe("WriterService M9.7.6：大纲结构化输出修复（outline repair）", () => {
+  const OUTLINE_ARGS = {
+    projectId: "p-abc",
+    researchDigest: { domainOverview: "o", researchGaps: ["g"], potentialContributions: ["c"] },
+    evidence: [],
+    bibliography: [],
+  };
+  const GOOD_OUTLINE = JSON.stringify({
+    title: "T",
+    sections: [
+      { id: "introduction", file: "introduction.tex", title: "引言" },
+      { id: "method", file: "method.tex", title: "方法" },
+      { id: "conclusion", file: "conclusion.tex", title: "结论" },
+    ],
+  });
+
+  it("首输出未过校验 → error-feedback 修复成功（保留内容，repair 诊断携带）", async () => {
+    // 真实漂移形态（2026-09-24 GLM smoke）：字符串值内未转义 ASCII 引号 →
+    // extractJsonObject 回退命中内层对象（title=结论、无 sections）→ 校验失败
+    const drifted = JSON.stringify({
+      id: "conclusion",
+      file: "conclusion.tex",
+      title: "结论",
+      keyPoints: ["要点"],
+    });
+    let call = 0;
+    const runtime = new FakeRuntime(() => completedTask(call++ === 0 ? drifted : GOOD_OUTLINE));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const outline = await writer.planOutline(OUTLINE_ARGS);
+    expect(outline.sections).toHaveLength(3);
+    expect(outline.repair).toMatchObject({ attempts: 1 });
+    expect(outline.repair?.errors[0]).toContain("sections 必须是至少 3 项的数组");
+    // 修复 prompt：上一轮输出 + 校验错误 + 转义规则
+    const repairPrompt = runtime.calls[1]!.task;
+    expect(repairPrompt).toContain("你上一轮的大纲输出未通过结构化校验");
+    expect(repairPrompt).toContain("未转义的 ASCII 双引号");
+    expect(repairPrompt).toContain(drifted);
+  });
+
+  it("修复有界耗尽（≤2 次）→ 如实失败，不伪造默认结构", async () => {
+    const bad = JSON.stringify({ title: "T", sections: [] });
+    const runtime = new FakeRuntime(() => completedTask(bad));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await expect(writer.planOutline(OUTLINE_ARGS)).rejects.toMatchObject({ code: "AGENT_RUN_FAILED" });
+    expect(runtime.calls).toHaveLength(3); // original + 2 次修复
+  });
+
+  it("模型层失败（status=failed）不进修复循环（Stage transient 兜底）", async () => {
+    const runtime = new FakeRuntime(() => ({ ...completedTask(""), status: "failed" as const, error: "provider down" }));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await expect(writer.planOutline(OUTLINE_ARGS)).rejects.toMatchObject({ code: "AGENT_RUN_FAILED" });
+    expect(runtime.calls).toHaveLength(1);
+  });
+});
+
 describe("WriterService M9.7.6：Claim Discipline + Unsupported Claim Repair", () => {
   const SECTION = { id: "introduction", file: "introduction.tex", title: "引言" };
   const OUTLINE = { title: "RAG 综述", sections: [SECTION] };
