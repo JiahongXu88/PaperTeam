@@ -140,21 +140,10 @@ describe("Revision Item 状态机（M6.7）", () => {
     expect(() =>
       applyRevisionItemTransitions(plan, [{ id, to: "validated", reason: "validation_passed" }], "2026-09-18T00:00:00.000Z"),
     ).toThrow(/不是合法流转/);
-    // 不存在的条目 id
+    // 不存在的条目 id（M9.7.6 后仍确定性拒绝）
     expect(() =>
       applyRevisionItemTransitions(plan, [{ id: "not-exist", to: "applied", reason: "dispatched" }], "2026-09-18T00:00:00.000Z"),
     ).toThrow(/不在计划/);
-    // 重复 id
-    expect(() =>
-      applyRevisionItemTransitions(
-        plan,
-        [
-          { id, to: "applied", reason: "dispatched" },
-          { id, to: "applied", reason: "dispatched" },
-        ],
-        "2026-09-18T00:00:00.000Z",
-      ),
-    ).toThrow(/重复 id/);
 
     // 终态不可流转：validated / approved / skipped
     const validated = applyRevisionItemTransitions(
@@ -168,6 +157,92 @@ describe("Revision Item 状态机（M6.7）", () => {
     ).toThrow(/不是合法流转/);
     expect(canTransitionRevisionItem("skipped", "applied")).toBe(false);
     expect(canTransitionRevisionItem("planned", "skipped")).toBe(true);
+  });
+
+  it("M9.7.6 P0：完全相同的重复声明确定性 collapse（不再杀死 run）+ 归一诊断", () => {
+    const plan = planOf();
+    const id = plan.items[0]!.id;
+    const result = applyRevisionItemTransitions(
+      plan,
+      [
+        { id, to: "applied", reason: "dispatched", appliedAt: "2026-09-18T01:00:00.000Z", appliedRevision: 4, targetChanged: true },
+        { id, to: "applied", reason: "dispatched", appliedAt: "2026-09-18T01:00:01.000Z", appliedRevision: 4, targetChanged: false },
+      ],
+      "2026-09-18T01:00:00.000Z",
+    );
+    // 幂等重述 → 单条生效；applied 元数据合并（targetChanged OR、appliedAt 取首）
+    expect(result.plan.items[0]).toMatchObject({
+      status: "applied",
+      appliedRevision: 4,
+      appliedAt: "2026-09-18T01:00:00.000Z",
+      targetChanged: true,
+    });
+    expect(result.normalization).toMatchObject({
+      duplicateIds: [id],
+      originalCount: 2,
+      normalizedCount: 1,
+      originalSequences: { [id]: ["applied", "applied"] },
+    });
+    // 其他条目不受影响
+    expect(result.plan.items[1]?.status).toBe(plan.items[1]?.status);
+  });
+
+  it("M9.7.6 P0：合法顺序重复按序 replay（planned → applied → validated 一批声明）", () => {
+    const plan = planOf();
+    const id = plan.items[0]!.id;
+    const result = applyRevisionItemTransitions(
+      plan,
+      [
+        { id, to: "applied", reason: "dispatched", appliedAt: "2026-09-18T01:00:00.000Z", appliedRevision: 4, targetChanged: true },
+        { id, to: "validated", reason: "validation_passed" },
+      ],
+      "2026-09-18T02:00:00.000Z",
+    );
+    expect(result.plan.items[0]?.status).toBe("validated");
+    expect(result.plan.items[0]?.resolution).toContain("validation_passed");
+    expect(result.normalization?.duplicateIds).toEqual([id]);
+  });
+
+  it("M9.7.6 P0：互相矛盾的重复声明结构化拒绝（不静默 last-wins，不部分应用）", () => {
+    const plan = planOf();
+    const id = plan.items[0]!.id;
+    const other = plan.items[1]!.id;
+    // applied 与 skipped 并列：planned 起点下无法构成合法路径
+    expect(() =>
+      applyRevisionItemTransitions(
+        plan,
+        [
+          { id, to: "applied", reason: "dispatched" },
+          { id, to: "skipped", reason: "writer_unchanged" },
+          // 合法条目与矛盾条目同批：整体拒绝（原子性），不得部分应用
+          { id: other, to: "applied", reason: "dispatched" },
+        ],
+        "2026-09-18T00:00:00.000Z",
+      ),
+    ).toThrow(/无法归一的重复声明/);
+    // 原子性：失败的批次不改变计划
+    expect(plan.items[0]?.status).toBe("planned");
+    expect(plan.items[1]?.status).toBe("planned");
+  });
+
+  it("M9.7.6 P0 回归：m975 真实场景——一条 finding 命中两个修订目标产生重复 applied", () => {
+    // m975 Arm A r1：f-841df05ccd04 section="sections/evaluation-failure.tex（并见
+    // sections/reasoning-acting.tex）" 经 sectionMatches 命中两个 target，循环内
+    // 同 id push 两次 → transitions 重复 → 旧实现 throw → transient 2/2 → run 死。
+    // 新实现：collapse + targetChanged OR（一个目标改了 = 条目有实际变化）。
+    const plan = planOf();
+    const id = plan.items[0]!.id;
+    const result = applyRevisionItemTransitions(
+      plan,
+      [
+        { id, to: "applied", reason: "dispatched", appliedRevision: 5, targetChanged: false }, // target 1 未变
+        { id, to: "applied", reason: "dispatched", appliedRevision: 5, targetChanged: true }, // target 2 变了
+      ],
+      "2026-09-24T00:00:00.000Z",
+    );
+    expect(result.changed).toBe(true);
+    expect(result.plan.items[0]).toMatchObject({ status: "applied", targetChanged: true, appliedRevision: 5 });
+    expect(result.normalization?.duplicateIds).toEqual([id]);
   });
 
   it("revisionItemCounts：生命周期计数（gate 规则 / HITL payload 用）", () => {
