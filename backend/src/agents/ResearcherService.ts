@@ -239,7 +239,7 @@ export class ResearcherService {
     }
 
     this.log(
-      `[researcher] projectId=${params.projectId} 调研完成：gaps=${report.researchGaps.length} plan=${plan !== undefined ? `${plan.queries.length} queries` : "none"} evidence=appended:${evidenceAppended}/proposed:${evidenceProposed} bibliography=${artifact.bibliography.length}`,
+      `[researcher] projectId=${params.projectId} 调研完成：gaps=${report.researchGaps.length} plan=${plan !== undefined ? `${plan.queries.length} queries` : "none"}${plan !== undefined && plan.requirements !== undefined ? ` requirements=${plan.requirements.length}` : ""} evidence=appended:${evidenceAppended}/proposed:${evidenceProposed} bibliography=${artifact.bibliography.length}`,
     );
     return {
       report,
@@ -569,6 +569,10 @@ export function buildResearchPrompt(
     "{",
     '  "plan": {',
     '    "questions": ["本次调研要回答的研究问题 1", "..."],',
+    '    "requirements": [{"topic": "未来正文需要证据支撑的主题（如某系统的机制刻画、某方向的对比）",',
+    '      "claimType": "definition|mechanism|comparison|benchmark|limitation|background（正文论断类型）",',
+    '      "expectedEvidenceType": "survey|original_paper|benchmark_paper|system_paper（需要的证据形态）",',
+    '      "relatedSection": "预计落点章节（可选）", "priority": "high|medium|low", "note": "为什么需要（可选）"}],',
     '    "queries": [{"query": "检索词", "kind": "academic 或 web", "rationale": "为什么要做这条检索", "expectedCoverage": "期望覆盖的文献或信息面"}]',
     "  },",
     '  "domainOverview": "领域现状综述（200-500 字）",',
@@ -585,7 +589,8 @@ export function buildResearchPrompt(
     "}",
     "",
     "要求：",
-    "0. 先计划后调研：plan 是检索计划（ResearchPlan）——在检索前制定，列出研究问题与你打算执行的检索词及理由，用于指导本次检索；其余字段（domainOverview 到 bibliography）是调研报告（ResearchReport）——在检索完成后综合研究结果得出。两者不要混淆：plan.queries 写的是你实际打算（或已经）执行的检索及其理由，不是调研结论；plan.questions 与 report.researchQuestions 可以呼应但职责不同（前者指导检索，后者是调研后的结论问题）。",
+    "0. 先计划后调研：plan 是检索计划（ResearchPlan）——在检索前制定，列出研究问题、预写证据需求与你打算执行的检索词及理由，用于指导本次检索；其余字段（domainOverview 到 bibliography）是调研报告（ResearchReport）——在检索完成后综合研究结果得出。两者不要混淆：plan.queries 写的是你实际打算（或已经）执行的检索及其理由，不是调研结论；plan.questions 与 report.researchQuestions 可以呼应但职责不同（前者指导检索，后者是调研后的结论问题）。",
+    "0a. 需求先行（requirements）：plan.requirements 是「预写证据需求」——站在未来正文的立场，先于检索列出成稿必须能做出的论断及其主题（claimType：定义 / 机制 / 对比 / 基准 / 局限 / 背景），并注明需要的证据形态（expectedEvidenceType）。制定后必须驱动检索词生成：每条 high / medium 需求至少对应一条主题相关的 query（如需求「智能体记忆机制机制刻画」应产生 memory / 记忆管理相关检索词）。只列真实需要的需求（≤12 条，宁缺毋滥）；检索无法满足某条需求时不凑数、不自行降级——如实把该缺口写入 researchGaps / literaturePlan，绝不为了填需求编造证据或锚定到不相关段落。",
     "1. 检索优先：研究型问题（领域现状、相关工作、研究空白、方法对比等）先用 search_papers 检索外部文献（可用 yearFrom/yearTo 聚焦近年，如最近三年），需要 Web 线索时用 search_web，对单篇论文存疑时用 lookup_paper 核验；简单问题（常识、定义、项目内信息）可直接回答，不必检索。禁止凭记忆断言论文的存在性、年份或 venue——文献类事实必须以检索结果为准，检索结果要原样引用，不得凭记忆补充。外部检索单次耗时约 1-10 秒；diagnostics 出现 partial（部分检索源失败）属常态，结果仍可用，不要因 partial 重试。",
     "2. 调研中发现的重要文献，用 save_candidates 保存为项目候选文献（kind 与 query 必须和检索时完全一致，按结果 index 选择；本次调研合计保存不超过 20 条，按与课题的相关性遴选）。保存的候选只是线索（pending_review），需用户审核转正后才进入文献库；已检索覆盖的方向不要写进 literaturePlan（它只记录检索后仍缺失的残差）。",
     "3. evidence 只包含你能给出明确来源（文献库条目或确凿的公开文献）的事实；来源不充分的不要写入 evidence。",

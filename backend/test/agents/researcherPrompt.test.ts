@@ -118,3 +118,27 @@ describe("buildResearchPrompt M8.1：ResearchPlan 一等产物接线", () => {
     expect(prompt).toContain("前者指导检索，后者是调研后的结论问题");
   });
 });
+
+describe("buildResearchPrompt M9.8：预写证据需求（requirements）接线", () => {
+  const prompt = buildResearchPrompt(PROJECT, DIGEST);
+
+  it("plan schema 含 requirements 块（topic / claimType / expectedEvidenceType / priority）", () => {
+    expect(prompt).toContain('"requirements"');
+    expect(prompt).toContain('"topic"');
+    expect(prompt).toContain('"claimType"');
+    expect(prompt).toContain('"expectedEvidenceType"');
+    expect(prompt).toContain('"priority"');
+  });
+
+  it("需求先行指令：预写证据需求先于检索制定，且必须驱动检索词生成", () => {
+    expect(prompt).toContain("0a. 需求先行（requirements）");
+    expect(prompt).toContain("预写证据需求");
+    expect(prompt).toContain("站在未来正文的立场");
+    expect(prompt).toContain("每条 high / medium 需求至少对应一条主题相关的 query");
+  });
+
+  it("诚实失败纪律：检索无法满足需求时不凑数、不降级、不编造", () => {
+    expect(prompt).toContain("不凑数、不自行降级");
+    expect(prompt).toContain("绝不为了填需求编造证据或锚定到不相关段落");
+  });
+});

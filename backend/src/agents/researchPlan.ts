@@ -28,6 +28,49 @@ export type ResearchPlanStatus = "draft" | "approved" | "executing" | "done";
 export type ResearchQueryKind = "academic" | "web";
 export type ResearchQueryStatus = "planned" | "executed" | "skipped";
 
+// ---- Evidence Requirement（M9.8：预写证据需求）----
+
+/**
+ * 未来正文需要做出的论断类型（M9.8 Phase 1，最小枚举——claimType 描述
+ * 「正文要说什么」，不是证据形态）：background 含 survey 式背景性陈述
+ * （任务书 §Phase 1 的 survey/background 归并为一类）。
+ */
+export type EvidenceClaimType =
+  | "definition"
+  | "mechanism"
+  | "comparison"
+  | "benchmark"
+  | "limitation"
+  | "background";
+
+/** 期望的证据形态（描述「需要什么材料来支撑」） */
+export type ExpectedEvidenceType = "survey" | "original_paper" | "benchmark_paper" | "system_paper";
+
+/**
+ * open = 待供给（唯一默认态；Agent 产出一律归一为 open）；
+ * waived = 用户显式弃权（明知无此证据仍继续——诚实失败记录，只有编辑面能设置）。
+ * 需求的覆盖状态（covered/partial/missing）永不持久化：由 Coverage Analyzer
+ * 随源数据即时派生（M9.8 §3 Q3：不造第二个状态机）。
+ */
+export type EvidenceRequirementStatus = "open" | "waived";
+
+export type EvidenceRequirementPriority = "high" | "medium" | "low";
+
+export interface EvidenceRequirement {
+  /** plan 内唯一（er-<n>，与 queryId 同分配策略） */
+  requirementId: string;
+  /** 未来正文需要支撑的主题（如「MemGPT 的记忆管理机制」） */
+  topic: string;
+  claimType: EvidenceClaimType;
+  expectedEvidenceType: ExpectedEvidenceType;
+  /** 预计落点章节（提示性，不与 outline 强绑定） */
+  relatedSection?: string;
+  priority: EvidenceRequirementPriority;
+  status: EvidenceRequirementStatus;
+  /** 为什么需要 / 为什么弃权 */
+  note?: string;
+}
+
 export interface ResearchPlanQuery {
   queryId: string;
   query: string;
@@ -56,6 +99,12 @@ export interface ResearchPlan {
   status: ResearchPlanStatus;
   questions: string[];
   queries: ResearchPlanQuery[];
+  /**
+   * 预写证据需求（M9.8 Phase 1）：站在未来正文立场、先于检索声明的证据需求。
+   * 可选字段——旧 artifact 无此字段仍可读（与 plan 字段本身的兼容策略一致）；
+   * 覆盖对齐状态由 Coverage Analyzer 派生（requirementCoverage），不在此存储。
+   */
+  requirements?: EvidenceRequirement[];
   createdAt: string;
   updatedAt: string;
 }
@@ -72,15 +121,36 @@ export const RESEARCH_QUERY_STATUSES: readonly ResearchQueryStatus[] = [
   "executed",
   "skipped",
 ];
+export const EVIDENCE_CLAIM_TYPES: readonly EvidenceClaimType[] = [
+  "definition",
+  "mechanism",
+  "comparison",
+  "benchmark",
+  "limitation",
+  "background",
+];
+export const EXPECTED_EVIDENCE_TYPES: readonly ExpectedEvidenceType[] = [
+  "survey",
+  "original_paper",
+  "benchmark_paper",
+  "system_paper",
+];
+export const EVIDENCE_REQUIREMENT_STATUSES: readonly EvidenceRequirementStatus[] = [
+  "open",
+  "waived",
+];
 
 /** 单个 plan 的条数硬帽（防 Agent / API 输出爆炸；与既有 slice 上限同量级） */
 export const MAX_PLAN_QUESTIONS = 30;
 export const MAX_PLAN_QUERIES = 30;
+/** 预写证据需求上限（M9.8：稿件规模量级，宁缺毋滥） */
+export const MAX_PLAN_REQUIREMENTS = 12;
 
 /** 新建 draft plan（planId / iteration 字段 / 时间戳由后端生成，模型与客户端均不指定）；首轮 iterationNumber=1 */
 export function createResearchPlan(
   questions: string[],
   queries: Array<Pick<ResearchPlanQuery, "query" | "kind"> & Partial<ResearchPlanQuery>>,
+  requirements: Array<EvidenceRequirementInput> = [],
 ): ResearchPlan {
   const now = new Date().toISOString();
   return {
@@ -92,9 +162,61 @@ export function createResearchPlan(
     queries: queries
       .slice(0, MAX_PLAN_QUERIES)
       .map((query, index) => normalizePlanQuery(query, index)),
+    ...(requirements.length > 0
+      ? { requirements: normalizeRequirements(requirements) }
+      : {}),
     createdAt: now,
     updatedAt: now,
   };
+}
+
+/** 编辑 / 派生 / 解析共用的需求输入形态（requirementId / status 由后端归一） */
+export type EvidenceRequirementInput = Pick<
+  EvidenceRequirement,
+  "topic" | "claimType" | "expectedEvidenceType"
+> &
+  Partial<Pick<EvidenceRequirement, "relatedSection" | "priority" | "status" | "note">> &
+  Partial<Pick<EvidenceRequirement, "requirementId">>;
+
+/**
+ * 需求条目归一（纯函数）：er-<n> 分配（与 assignQueryIds 同策略——保留既有
+ * 不冲突 id，新 id 从最大序号之后取）；priority 非法回退 medium；status 缺省
+ * open（Agent 产出一律归一 open，waived 只来自用户编辑）。
+ */
+function normalizeRequirements(inputs: EvidenceRequirementInput[]): EvidenceRequirement[] {
+  const capped = inputs.slice(0, MAX_PLAN_REQUIREMENTS);
+  const used = new Set<string>();
+  let next = 1;
+  for (const input of capped) {
+    if (input.requirementId !== undefined && input.requirementId !== "") {
+      used.add(input.requirementId);
+      const suffix = /^er-(\d+)$/.exec(input.requirementId);
+      if (suffix !== null) {
+        next = Math.max(next, Number(suffix[1]) + 1);
+      }
+    }
+  }
+  return capped.map((input) => {
+    let requirementId = input.requirementId;
+    if (requirementId === undefined || requirementId === "") {
+      while (used.has(`er-${next}`)) {
+        next += 1;
+      }
+      requirementId = `er-${next}`;
+      used.add(requirementId);
+      next += 1;
+    }
+    return {
+      requirementId,
+      topic: input.topic.trim(),
+      claimType: input.claimType,
+      expectedEvidenceType: input.expectedEvidenceType,
+      ...(input.relatedSection !== undefined ? { relatedSection: input.relatedSection } : {}),
+      priority: input.priority ?? "medium",
+      status: input.status ?? "open",
+      ...(input.note !== undefined ? { note: input.note } : {}),
+    };
+  });
 }
 
 /**
@@ -135,6 +257,7 @@ export function parseResearchPlan(parsed: Record<string, unknown>): ResearchPlan
       status: "planned",
     });
   }
+  const requirements = parseEvidenceRequirements(record);
   if (questions.length === 0 && queries.length === 0) {
     return undefined; // 空 plan 视为未产出（不给 UI 留空壳）
   }
@@ -146,15 +269,62 @@ export function parseResearchPlan(parsed: Record<string, unknown>): ResearchPlan
     status: "draft",
     questions,
     queries: assignQueryIds(queries),
+    ...(requirements.length > 0 ? { requirements } : {}),
     createdAt: now,
     updatedAt: now,
   };
 }
 
-/** PUT /research/plan 的合法请求体（questions / queries 至少其一，整体替换语义） */
+/**
+ * 宽容解析 plan.requirements（M9.8 Phase 2）：单条非法（缺 topic / 枚举非法）
+ * 丢弃该条不炸整体；status 一律重置 open（waived 是用户编辑面的显式动作，
+ * Agent 输出不接受）；超上限截断。无 requirements 字段 = 空数组（旧契约兼容）。
+ */
+export function parseEvidenceRequirements(
+  planRecord: Record<string, unknown>,
+): EvidenceRequirement[] {
+  const raw = planRecord["requirements"];
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const inputs: EvidenceRequirementInput[] = [];
+  for (const entry of raw.slice(0, MAX_PLAN_REQUIREMENTS)) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const topic = typeof record["topic"] === "string" ? record["topic"].trim() : "";
+    const claimType = record["claimType"];
+    const expectedEvidenceType = record["expectedEvidenceType"];
+    if (
+      topic === "" ||
+      !EVIDENCE_CLAIM_TYPES.includes(claimType as EvidenceClaimType) ||
+      !EXPECTED_EVIDENCE_TYPES.includes(expectedEvidenceType as ExpectedEvidenceType)
+    ) {
+      continue; // 缺主题 / 枚举非法的需求直接丢弃
+    }
+    const priority = record["priority"];
+    const relatedSection = readOptionalTrimmed(record["relatedSection"]);
+    const note = readOptionalTrimmed(record["note"]);
+    inputs.push({
+      topic,
+      claimType: claimType as EvidenceClaimType,
+      expectedEvidenceType: expectedEvidenceType as ExpectedEvidenceType,
+      ...(relatedSection !== undefined ? { relatedSection } : {}),
+      ...(priority === "high" || priority === "medium" || priority === "low" ? { priority } : {}),
+      status: "open", // Agent 产出不可自带 waived（见函数注释）
+      ...(note !== undefined ? { note } : {}),
+    });
+  }
+  return normalizeRequirements(inputs);
+}
+
+/** PUT /research/plan 的合法请求体（questions / queries / requirements 至少其一，整体替换语义） */
 export interface ResearchPlanUpdateInput {
   questions?: string[];
   queries?: ResearchPlanQueryUpdateInput[];
+  /** M9.8：预写证据需求（整体替换；status=waived 只能经此路径设置） */
+  requirements?: EvidenceRequirementUpdateInput[];
 }
 
 export interface ResearchPlanQueryUpdateInput {
@@ -166,6 +336,17 @@ export interface ResearchPlanQueryUpdateInput {
   status?: ResearchQueryStatus;
 }
 
+export interface EvidenceRequirementUpdateInput {
+  requirementId?: string;
+  topic: string;
+  claimType: EvidenceClaimType;
+  expectedEvidenceType: ExpectedEvidenceType;
+  relatedSection?: string;
+  priority?: EvidenceRequirementPriority;
+  status?: EvidenceRequirementStatus;
+  note?: string;
+}
+
 /**
  * 校验 PUT 请求体（不符合契约 → INVALID_REQUEST 400）。
  * resultCount / plan status 不在接受范围内：执行状态由执行侧（M8.2）回填，
@@ -174,8 +355,9 @@ export interface ResearchPlanQueryUpdateInput {
 export function parseResearchPlanUpdateInput(body: Record<string, unknown>): ResearchPlanUpdateInput {
   const hasQuestions = body["questions"] !== undefined;
   const hasQueries = body["queries"] !== undefined;
-  if (!hasQuestions && !hasQueries) {
-    throw new BusinessError("INVALID_REQUEST", "请求体必须包含 questions 或 queries 之一");
+  const hasRequirements = body["requirements"] !== undefined;
+  if (!hasQuestions && !hasQueries && !hasRequirements) {
+    throw new BusinessError("INVALID_REQUEST", "请求体必须包含 questions / queries / requirements 之一");
   }
   let questions: string[] | undefined;
   if (hasQuestions) {
@@ -249,9 +431,79 @@ export function parseResearchPlanUpdateInput(body: Record<string, unknown>): Res
       };
     });
   }
+  let requirements: EvidenceRequirementUpdateInput[] | undefined;
+  if (hasRequirements) {
+    const value = body["requirements"];
+    if (!Array.isArray(value)) {
+      throw new BusinessError("INVALID_REQUEST", "字段 requirements 必须是数组");
+    }
+    if (value.length > MAX_PLAN_REQUIREMENTS) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `证据需求最多 ${MAX_PLAN_REQUIREMENTS} 条（收到 ${value.length} 条）`,
+      );
+    }
+    requirements = value.map((entry, index) => {
+      if (typeof entry !== "object" || entry === null) {
+        throw new BusinessError("INVALID_REQUEST", `requirements[${index}] 必须是 JSON 对象`);
+      }
+      const record = entry as Record<string, unknown>;
+      const topic = typeof record["topic"] === "string" ? record["topic"].trim() : "";
+      if (topic === "") {
+        throw new BusinessError("INVALID_REQUEST", `requirements[${index}].topic 必须是非空字符串`);
+      }
+      const claimType = record["claimType"];
+      if (!EVIDENCE_CLAIM_TYPES.includes(claimType as EvidenceClaimType)) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `requirements[${index}].claimType 只能是 ${EVIDENCE_CLAIM_TYPES.join(" / ")}`,
+        );
+      }
+      const expectedEvidenceType = record["expectedEvidenceType"];
+      if (!EXPECTED_EVIDENCE_TYPES.includes(expectedEvidenceType as ExpectedEvidenceType)) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `requirements[${index}].expectedEvidenceType 只能是 ${EXPECTED_EVIDENCE_TYPES.join(" / ")}`,
+        );
+      }
+      const priority = record["priority"];
+      if (
+        priority !== undefined &&
+        priority !== "high" &&
+        priority !== "medium" &&
+        priority !== "low"
+      ) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `requirements[${index}].priority 只能是 high / medium / low`,
+        );
+      }
+      const status = record["status"];
+      if (status !== undefined && status !== "open" && status !== "waived") {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `requirements[${index}].status 只能是 open / waived`,
+        );
+      }
+      const requirementId = readOptionalTrimmed(record["requirementId"]);
+      const relatedSection = readOptionalTrimmed(record["relatedSection"]);
+      const note = readOptionalTrimmed(record["note"]);
+      return {
+        ...(requirementId !== undefined ? { requirementId } : {}),
+        topic,
+        claimType: claimType as EvidenceClaimType,
+        expectedEvidenceType: expectedEvidenceType as ExpectedEvidenceType,
+        ...(relatedSection !== undefined ? { relatedSection } : {}),
+        ...(priority !== undefined ? { priority: priority as EvidenceRequirementPriority } : {}),
+        ...(status !== undefined ? { status: status as EvidenceRequirementStatus } : {}),
+        ...(note !== undefined ? { note } : {}),
+      };
+    });
+  }
   return {
     ...(questions !== undefined ? { questions } : {}),
     ...(queries !== undefined ? { queries } : {}),
+    ...(requirements !== undefined ? { requirements } : {}),
   };
 }
 
@@ -293,10 +545,18 @@ export function applyResearchPlanUpdate(
     }
     queries = assignQueryIds(merged);
   }
+  // M9.8：需求整体替换（与 questions / queries 同语义）——无执行回填字段需要
+  // 继承，同 requirementId 条目原样收编（id 稳定），新条目由 normalizeRequirements
+  // 分配不冲突的 er-<n>；waived 只能经该路径写入（PUT 是用户动作）。
+  const requirements =
+    input.requirements !== undefined
+      ? normalizeRequirements(input.requirements)
+      : plan.requirements;
   return {
     ...plan,
     ...(input.questions !== undefined ? { questions: input.questions } : {}),
     queries,
+    ...(requirements !== undefined ? { requirements } : {}),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -531,6 +791,11 @@ export function buildDerivedPlan(
     queries: sourceQueries
       .slice(0, MAX_PLAN_QUERIES)
       .map((query, index) => normalizePlanQuery(query, index)),
+    // M9.8：需求整拷来源（作为下一轮供给起点；需求无执行态，不重置——
+    // waived 语义是「该需求已显式弃权」，跨轮保留才诚实）
+    ...(source.requirements !== undefined && source.requirements.length > 0
+      ? { requirements: source.requirements.slice(0, MAX_PLAN_REQUIREMENTS) }
+      : {}),
     createdAt: now,
     updatedAt: now,
   };

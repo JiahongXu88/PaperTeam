@@ -125,6 +125,7 @@ function coverageFixture(overrides: { covered?: number; gaps?: ResearchGap[] } =
     planStatus: "done",
     analyzedAt: "2026-09-21T09:00:00.000Z",
     questions: [],
+    requirementCoverage: [],
     overall: {
       questionCount: 2,
       covered: overrides.covered ?? 0,

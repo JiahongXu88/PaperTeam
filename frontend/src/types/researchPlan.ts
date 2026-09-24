@@ -7,6 +7,28 @@ export type ResearchPlanStatus = "draft" | "approved" | "executing" | "done";
 export type ResearchQueryKind = "academic" | "web";
 export type ResearchQueryStatus = "planned" | "executed" | "skipped";
 
+/** ---- 预写证据需求（M9.8；镜像 backend researchPlan.ts）---- */
+export type EvidenceClaimType =
+  | "definition"
+  | "mechanism"
+  | "comparison"
+  | "benchmark"
+  | "limitation"
+  | "background";
+export type ExpectedEvidenceType = "survey" | "original_paper" | "benchmark_paper" | "system_paper";
+export type EvidenceRequirementStatus = "open" | "waived";
+
+export interface EvidenceRequirementView {
+  requirementId: string;
+  topic: string;
+  claimType: EvidenceClaimType;
+  expectedEvidenceType: ExpectedEvidenceType;
+  relatedSection?: string;
+  priority: "high" | "medium" | "low";
+  status: EvidenceRequirementStatus;
+  note?: string;
+}
+
 export interface ResearchPlanQueryView {
   queryId: string;
   query: string;
@@ -31,6 +53,8 @@ export interface ResearchPlanView {
   status: ResearchPlanStatus;
   questions: string[];
   queries: ResearchPlanQueryView[];
+  /** 预写证据需求（M9.8；旧计划无此字段 → 可选） */
+  requirements?: EvidenceRequirementView[];
   createdAt: string;
   updatedAt: string;
 }

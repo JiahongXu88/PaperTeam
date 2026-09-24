@@ -17,7 +17,10 @@ import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { BusinessError } from "../../src/errors.js";
 import {
   applyResearchPlanUpdate,
+  buildDerivedPlan,
   createResearchPlan,
+  MAX_PLAN_REQUIREMENTS,
+  parseEvidenceRequirements,
   parseResearchPlan,
   parseResearchPlanUpdateInput,
   type ResearchPlan,
@@ -290,5 +293,164 @@ describe("backward compatibility（旧 research.json 无 plan 字段）", () => 
     await expect(
       updateResearchPlan(store, projectId, { questions: ["x"] }),
     ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+// ---- M9.8：预写证据需求（requirements）----
+
+const VALID_REQUIREMENT = {
+  topic: "智能体记忆管理机制",
+  claimType: "mechanism",
+  expectedEvidenceType: "original_paper",
+  relatedSection: "agent-architecture",
+  priority: "high",
+  note: "正文机制章节的核心论断面",
+};
+
+describe("requirements 解析（M9.8 Phase 1/2：Agent 输出 → 领域对象）", () => {
+  it("合法 requirements：er-<n> 后端分配、priority 缺省 medium、status 归一 open", () => {
+    const plan = parseResearchPlan({
+      plan: {
+        ...VALID_AGENT_PLAN,
+        requirements: [
+          VALID_REQUIREMENT,
+          { topic: "各框架对比", claimType: "comparison", expectedEvidenceType: "survey" },
+        ],
+      },
+    });
+    expect(plan?.requirements).toEqual([
+      {
+        requirementId: "er-1",
+        topic: "智能体记忆管理机制",
+        claimType: "mechanism",
+        expectedEvidenceType: "original_paper",
+        relatedSection: "agent-architecture",
+        priority: "high",
+        status: "open",
+        note: "正文机制章节的核心论断面",
+      },
+      {
+        requirementId: "er-2",
+        topic: "各框架对比",
+        claimType: "comparison",
+        expectedEvidenceType: "survey",
+        priority: "medium",
+        status: "open",
+      },
+    ]);
+  });
+
+  it("宽容解析：缺 topic / 枚举非法 / 非对象条目丢弃，不炸整体；Agent 带 waived 一律重置 open", () => {
+    const requirements = parseEvidenceRequirements({
+      requirements: [
+        { ...VALID_REQUIREMENT, status: "waived" }, // Agent 产出不可自带 waived
+        { topic: "缺枚举", claimType: "神奇类型", expectedEvidenceType: "survey" },
+        { topic: "", claimType: "background", expectedEvidenceType: "survey" },
+        { topic: "合法保留", claimType: "limitation", expectedEvidenceType: "benchmark_paper", priority: "离谱" },
+        "不是对象",
+      ],
+    });
+    expect(requirements).toHaveLength(2);
+    expect(requirements[0]).toMatchObject({ topic: "智能体记忆管理机制", status: "open" });
+    expect(requirements[1]).toMatchObject({ topic: "合法保留", priority: "medium", status: "open" });
+  });
+
+  it(`超上限截断（≤${MAX_PLAN_REQUIREMENTS} 条）`, () => {
+    const many = Array.from({ length: MAX_PLAN_REQUIREMENTS + 5 }, (_, index) => ({
+      topic: `需求 ${index + 1}`,
+      claimType: "background" as const,
+      expectedEvidenceType: "survey" as const,
+    }));
+    const requirements = parseEvidenceRequirements({ requirements: many });
+    expect(requirements).toHaveLength(MAX_PLAN_REQUIREMENTS);
+  });
+
+  it("无 requirements 字段 = 空数组（旧输出契约兼容；plan 不因 requirements 为空而无效）", () => {
+    const plan = parseResearchPlan({ plan: VALID_AGENT_PLAN });
+    expect(plan?.requirements).toBeUndefined();
+  });
+});
+
+describe("requirements 编辑语义（M9.8：PUT 整体替换 + waived 只来自用户）", () => {
+  const basePlan = (): ResearchPlan =>
+    createResearchPlan(
+      ["q"],
+      [{ query: "agent memory", kind: "academic" }],
+      [
+        {
+          topic: "智能体记忆管理机制",
+          claimType: "mechanism",
+          expectedEvidenceType: "original_paper",
+          priority: "high",
+        },
+      ],
+    );
+
+  it("requirements 单独提供合法（questions / queries 缺席）", () => {
+    const input = parseResearchPlanUpdateInput({
+      requirements: [{ ...VALID_REQUIREMENT, status: "waived" }],
+    });
+    expect(input.requirements).toHaveLength(1);
+  });
+
+  it("非法输入 → INVALID_REQUEST：空 topic / 非法枚举 / 超上限", () => {
+    expect(() =>
+      parseResearchPlanUpdateInput({
+        requirements: [{ topic: " ", claimType: "mechanism", expectedEvidenceType: "survey" }],
+      }),
+    ).toThrow(BusinessError);
+    expect(() =>
+      parseResearchPlanUpdateInput({
+        requirements: [{ topic: "t", claimType: "magic", expectedEvidenceType: "survey" }],
+      }),
+    ).toThrow(BusinessError);
+    expect(() =>
+      parseResearchPlanUpdateInput({
+        requirements: Array.from({ length: MAX_PLAN_REQUIREMENTS + 1 }, () => VALID_REQUIREMENT),
+      }),
+    ).toThrow(BusinessError);
+  });
+
+  it("整体替换：同 requirementId 保留 id、waived 生效（用户动作）；未提供字段保持不变", () => {
+    const plan = basePlan();
+    const updated = applyResearchPlanUpdate(
+      plan,
+      parseResearchPlanUpdateInput({
+        requirements: [
+          { requirementId: "er-1", ...VALID_REQUIREMENT, status: "waived", note: "语料无全文，弃权" },
+          { topic: "新增需求", claimType: "background", expectedEvidenceType: "survey" },
+        ],
+      }),
+    );
+    expect(updated.requirements?.[0]).toMatchObject({
+      requirementId: "er-1",
+      status: "waived",
+      note: "语料无全文，弃权",
+    });
+    expect(updated.requirements?.[1]).toMatchObject({ requirementId: "er-2", topic: "新增需求" });
+    // queries / questions 未提供 → 不变
+    expect(updated.queries).toEqual(plan.queries);
+    expect(updated.questions).toEqual(plan.questions);
+  });
+
+  it("空数组清空需求；未提供 requirements → 既有需求原样保留", () => {
+    const plan = basePlan();
+    expect(applyResearchPlanUpdate(plan, parseResearchPlanUpdateInput({ requirements: [] })).requirements).toEqual([]);
+    expect(
+      applyResearchPlanUpdate(plan, parseResearchPlanUpdateInput({ questions: ["新问题"] })).requirements,
+    ).toEqual(plan.requirements);
+  });
+
+  it("派生计划整拷需求（跨轮保留 waived 语义）", () => {
+    const plan = applyResearchPlanUpdate(
+      basePlan(),
+      parseResearchPlanUpdateInput({
+        requirements: [{ requirementId: "er-1", ...VALID_REQUIREMENT, status: "waived" }],
+      }),
+    );
+    const derived = buildDerivedPlan(plan, 2, {});
+    expect(derived.requirements).toEqual(plan.requirements);
+    expect(derived.iterationNumber).toBe(2);
+    expect(derived.parentPlanId).toBe(plan.planId);
   });
 });

@@ -25,11 +25,13 @@ import {
   ResearchCoverageService,
   analyzeCoverage,
   assessQuestionCoverage,
+  assessRequirementCoverage,
   isTextRelated,
   matchTokens,
   mergeQueryFacts,
   type CoverageQueryFacts,
 } from "../../src/agents/researchCoverage.js";
+import type { EvidenceRequirement } from "../../src/agents/researchPlan.js";
 import {
   buildResearchGaps,
   deterministicGapId,
@@ -613,5 +615,274 @@ describe("ResearchCoverageService", () => {
       before.candidatesJson,
     );
     expect(JSON.stringify(await sources.list(projectId))).toBe(before.sourcesIndex);
+  });
+});
+
+// ---- M9.8：预写证据需求覆盖（requirementCoverage）----
+
+function requirementFixture(overrides: Partial<EvidenceRequirement> = {}): EvidenceRequirement {
+  return {
+    requirementId: "er-1",
+    topic: "智能体记忆管理机制",
+    claimType: "mechanism",
+    expectedEvidenceType: "original_paper",
+    priority: "high",
+    status: "open",
+    ...overrides,
+  };
+}
+
+describe("Requirement coverage rule（assessRequirementCoverage，M9.8 Phase 3）", () => {
+  const base = { evidenceTexts: [] as string[], literatureTexts: [] as string[] };
+
+  it("missing：需求主题没有任何关联检索（需求未驱动检索词生成）", () => {
+    const entry = assessRequirementCoverage({
+      ...base,
+      requirement: requirementFixture(),
+      queries: [facts({ query: "transformer mot survey", executed: true, resultCount: 10 })],
+    });
+    expect(entry.coverage).toBe("missing");
+    expect(entry.relatedQueryCount).toBe(0);
+    expect(entry.missingReason).toContain("需求未驱动检索词生成");
+  });
+
+  it("关联面含 rationale：检索词与期望覆盖未命中但 rationale 声明了映射意图 → 判关联", () => {
+    const entry = assessRequirementCoverage({
+      ...base,
+      requirement: requirementFixture(),
+      queries: [facts({ queryId: "q-9", query: "memory management", executed: false, resultCount: 0 })],
+      queryRationales: new Map([["q-9", "覆盖智能体记忆管理机制需求"]]),
+    });
+    expect(entry.relatedQueryCount).toBe(1);
+    expect(entry.coverage).toBe("missing");
+    expect(entry.missingReason).toContain("均未执行带回结果");
+  });
+
+  it("partial：检索带回结果但无 verified 证据 / 入库文献；unverified 证据只支撑 partial", () => {
+    const entry = assessRequirementCoverage({
+      ...base,
+      requirement: requirementFixture({ topic: "MemGPT 记忆管理机制" }),
+      queries: [facts({ query: "memgpt memory management", executed: true, resultCount: 8 })],
+      unverifiedEvidenceTexts: ["MemGPT 的记忆管理机制刻画"],
+    });
+    expect(entry).toMatchObject({ coverage: "partial", relatedQueryCount: 1, executedQueryCount: 1 });
+    expect(entry.missingReason).toContain("未核验");
+  });
+
+  it("covered：关联 verified 证据（claim / 标题 token 命中需求主题）", () => {
+    const entry = assessRequirementCoverage({
+      ...base,
+      requirement: requirementFixture({ topic: "MemGPT 记忆管理机制" }),
+      queries: [facts({ query: "memgpt memory management", executed: true, resultCount: 8 })],
+      evidenceTexts: ["MemGPT 实现了智能体记忆管理机制 MemGPT (2023)"],
+    });
+    expect(entry.coverage).toBe("covered");
+    expect(entry.evidenceCount).toBe(1);
+    expect(entry.missingReason).toBeUndefined();
+  });
+
+  it("M9.8 Phase 5 修正：供给优先——关联检索未执行回填（Agent 工具检索路径）但存在关联 verified 证据 → covered", () => {
+    const entry = assessRequirementCoverage({
+      ...base,
+      requirement: requirementFixture({ topic: "MemGPT 记忆管理机制" }),
+      // 标准流程：plan.queries 停留在 planned（执行回填只在显式计划执行后存在）
+      queries: [facts({ query: "memgpt memory management", executed: false, resultCount: 0 })],
+      evidenceTexts: ["MemGPT 实现了智能体记忆管理机制 MemGPT (2023)"],
+    });
+    expect(entry).toMatchObject({ coverage: "covered", evidenceCount: 1, executedQueryCount: 0 });
+  });
+
+  it("M9.8 Phase 5 修正：泛化词单命中不强配——CAMEL 需求只靠「机制 / 与」命中 ReAct 证据不算覆盖（m98 B 臂实录形态）", () => {
+    const entry = assessRequirementCoverage({
+      ...base,
+      requirement: requirementFixture({
+        topic: "CAMEL 角色扮演式多智能体自主协作机制（inception prompting 与 society 研究）",
+        claimType: "mechanism",
+        expectedEvidenceType: "system_paper",
+      }),
+      queries: [facts({ query: "camel communicative agents mind exploration", executed: true, resultCount: 5 })],
+      evidenceTexts: [
+        "ReAct 的核心机制是让大语言模型交替生成推理轨迹与任务动作以实现推理与行动的协同", // 单命中「机制」
+        "在 HotpotQA 与 Fever 上 ReAct 与 CoT 各有胜负", // 单命中「与」（孤立单字已剔除 → 0 命中）
+      ],
+    });
+    expect(entry.evidenceCount).toBe(0);
+    // 检索已执行带回结果但证据不支撑该需求 → partial（与问题覆盖第 4 态同语义）
+    expect(entry.coverage).toBe("partial");
+    expect(entry.missingReason).toContain("尚无相关证据");
+  });
+});
+
+describe("analyzeCoverage 集成 requirements（M9.8）", () => {
+  it("需求视图与问题视图平行输出：三态汇总 + summary 追加；waived 不参与判定只计数", () => {
+    const coverage = analyzeCoverage({
+      planId: "rp-98xxxxxxxx1",
+      planStatus: "done",
+      analyzedAt: "2026-09-24T08:00:00.000Z",
+      planQuestions: ["Transformer MOT 的发展"],
+      reportQuestions: [],
+      requirements: [
+        requirementFixture(), // missing：无关联检索
+        requirementFixture({
+          requirementId: "er-2",
+          topic: "各系统协作框架对比",
+          claimType: "comparison",
+          expectedEvidenceType: "survey",
+          priority: "medium",
+        }),
+        requirementFixture({
+          requirementId: "er-3",
+          topic: "工具调用自学习",
+          claimType: "mechanism",
+          status: "waived",
+        }), // waived：不参与判定
+      ],
+      queries: [
+        facts({ query: "transformer mot survey", executed: true, resultCount: 5 }),
+        facts({
+          queryId: "q-2",
+          query: "multi-agent collaboration comparison survey",
+          expectedCoverage: "各系统协作框架对比综述",
+          executed: true,
+          resultCount: 7,
+        }),
+      ],
+      evidenceTexts: ["多智能体协作框架对比综述"],
+      literatureTexts: [],
+      literaturePlan: [],
+    });
+    expect(coverage.requirementCoverage).toHaveLength(2); // waived 不出现
+    expect(coverage.requirementCoverage[0]).toMatchObject({
+      requirementId: "er-1",
+      coverage: "missing",
+      claimType: "mechanism",
+      expectedEvidenceType: "original_paper",
+      priority: "high",
+    });
+    expect(coverage.requirementCoverage[1]).toMatchObject({
+      requirementId: "er-2",
+      coverage: "covered",
+      evidenceCount: 1,
+      relatedQueryCount: 1,
+    });
+    expect(coverage.overall.requirements).toEqual({
+      analyzed: 2,
+      covered: 1,
+      partial: 0,
+      missing: 1,
+      waived: 1,
+    });
+    expect(coverage.overall.summary).toContain("covered 1 · partial 0 · missing 1");
+    expect(coverage.overall.summary).toContain("证据需求 2 条");
+    expect(coverage.overall.summary).toContain("另 waived 1");
+  });
+
+  it("无 requirements（旧 artifact）：requirementCoverage 空数组、overall 无 requirements 字段、summary 不追加", () => {
+    const coverage = analyzeCoverage({
+      planId: "rp-98xxxxxxxx2",
+      planStatus: "done",
+      analyzedAt: "2026-09-24T08:00:00.000Z",
+      planQuestions: ["一个问题"],
+      reportQuestions: [],
+      queries: [facts({ query: "some query", executed: true, resultCount: 3 })],
+      evidenceTexts: [],
+      literatureTexts: [],
+      literaturePlan: [],
+    });
+    expect(coverage.requirementCoverage).toEqual([]);
+    expect(coverage.overall.requirements).toBeUndefined();
+    expect(coverage.overall.summary).not.toContain("证据需求");
+  });
+});
+
+describe("ResearchCoverageService × requirements（M9.8 端到端只读装配）", () => {
+  it("plan.requirements → requirementCoverage（rationale 关联 + verified 证据判定）", async () => {
+    const { store, projectId } = await newProject("svc-requirements");
+    await seedArtifact(store, projectId, {
+      generatedAt: "2026-09-24T08:00:00.000Z",
+      taskId: "t-1",
+      plan: {
+        planId: "rp-m98xxxxxxx01",
+        iterationId: "it-m98xxxxxxx01",
+        iterationNumber: 1,
+        status: "done",
+        questions: ["LLM 智能体研究全景"],
+        queries: [
+          {
+            queryId: "q-1",
+            query: "llm agent survey",
+            kind: "academic",
+            rationale: "覆盖领域全景背景需求",
+            status: "executed",
+            resultCount: 12,
+          },
+          {
+            queryId: "q-2",
+            query: "llm-based memory mechanisms",
+            kind: "academic",
+            rationale: "供给记忆机制需求",
+            status: "executed",
+            resultCount: 6,
+          },
+        ],
+        requirements: [
+          {
+            requirementId: "er-1",
+            topic: "智能体记忆管理机制",
+            claimType: "mechanism",
+            expectedEvidenceType: "original_paper",
+            relatedSection: "agent-architecture",
+            priority: "high",
+            status: "open",
+          },
+          {
+            requirementId: "er-2",
+            topic: "基准评测结果对比",
+            claimType: "benchmark",
+            expectedEvidenceType: "benchmark_paper",
+            priority: "medium",
+            status: "open",
+          },
+        ],
+        createdAt: "2026-09-24T07:00:00.000Z",
+        updatedAt: "2026-09-24T07:00:00.000Z",
+      },
+      report: reportFixture(),
+      evidence: [],
+      bibliography: [],
+    });
+    const evidence = new EvidenceStore(store);
+    await evidence.append(
+      projectId,
+      {
+        claim: "MemGPT 提出操作系统的智能体记忆管理机制",
+        source: { sourceId: "S004", title: "MemGPT" },
+        verificationStatus: "verified",
+        supportStrength: "direct",
+        verificationLevel: "fulltext",
+      },
+      "evidence.ground",
+    );
+
+    const coverage = await service(store).analyze(projectId);
+    expect(coverage.requirementCoverage).toHaveLength(2);
+    expect(coverage.requirementCoverage[0]).toMatchObject({
+      requirementId: "er-1",
+      coverage: "covered",
+      evidenceCount: 1,
+      relatedQueryCount: 1,
+    });
+    expect(coverage.requirementCoverage[1]).toMatchObject({
+      requirementId: "er-2",
+      coverage: "missing",
+      relatedQueryCount: 0,
+    });
+    expect(coverage.overall.requirements).toEqual({
+      analyzed: 2,
+      covered: 1,
+      partial: 0,
+      missing: 1,
+      waived: 0,
+    });
   });
 });
