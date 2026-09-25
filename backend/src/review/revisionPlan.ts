@@ -30,6 +30,7 @@ import { createHash } from "node:crypto";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import { EXTERNAL_SOURCE_LABELS, type ExternalInstruction } from "./externalInstructions.js";
+import { RevisionProtocolError, validateRevisionPlanShape } from "./revisionItemStatus.js";
 
 export type RevisionPlanItemKind =
   | "external_instruction"
@@ -334,7 +335,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
 
   const planned = items.filter((item) => item.status === "planned").length;
   const externalCount = (input.externalInstructions ?? []).length;
-  return {
+  const plan: RevisionPlan = {
     schemaVersion: 1,
     planId: `plan-r${input.reviewRound}-rev${input.sourceRevision}`,
     projectId: input.projectId,
@@ -352,6 +353,18 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     },
     items,
   };
+  // M9.10 Phase 1 构建期断言：多通道合流（external/finding/citation/fact/build/
+  // gate）不得产出重复条目 id 或非法 status——确定性派生器自身违反即抛错，
+  // 不把坏计划落盘交给 validate 阶段晚爆
+  const shapeViolations = validateRevisionPlanShape(plan);
+  if (shapeViolations.length > 0) {
+    throw new RevisionProtocolError(
+      "duplicate_item_id",
+      shapeViolations,
+      `修订计划派生产出非法 schema（${shapeViolations.map((v) => `${v.id ?? "?"}: ${v.detail}`).join("；")}）`,
+    );
+  }
+  return plan;
 }
 
 /** 外部意见的展示标签（来源 + Reviewer 标识） */

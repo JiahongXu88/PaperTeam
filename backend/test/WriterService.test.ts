@@ -343,8 +343,59 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
     });
     const prompt = runtime.calls[0]!.task;
     expect(prompt).toContain("按 verified evidence 支撑分组");
-    expect(prompt).toContain("修订特则：本章节现有的 B 组引用按第 10 条保留");
+    expect(prompt).toContain("修订特则：本章节现有的 B 组引用按第 10/11 条保留");
     expect(prompt).toContain("不得新增 B 组引用");
+    // M9.10 Phase 2：引用冻结清单（现有 key 显式列出 + 禁删规则）
+    expect(prompt).toContain("引用冻结清单");
+    expect(prompt).toContain("wei2022cot");
+    expect(prompt).toContain("禁止删除清单内任何 key");
+  });
+
+  it("reviseSection：无外部意见派发时也剥离自发的 PT-OUTCOMES 协议行（M9.10 Phase 1）", async () => {
+    const leakyOutput = [
+      "\\section{实验}",
+      "修订后的正文，包含数值 901.5 ms。",
+      "%%%PT-OUTCOMES%%% [{\"instructionId\":\"f-0f185517c97b\",\"outcome\":\"applied\",\"basis\":\"证据库 verified 记录为 0\"}]",
+      "",
+    ].join("\n");
+    const runtime = new FakeRuntime(() => completedTask(leakyOutput));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const result = await writer.reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{实验}\n旧内容。",
+      issues: [
+        { category: "fact", severity: "major", section: "experiments", description: "论断缺证据", blocking: false },
+      ],
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+    });
+    expect(result.latex).not.toContain("PT-OUTCOMES");
+    expect(result.latex).not.toContain("instructionId");
+    expect(result.latex).toContain("901.5");
+    // 无外部意见派发 → 不产出 outcomes
+    expect(result.externalOutcomes).toBeUndefined();
+    // 派发过外部意见时：合法报告行仍走 splitExternalOutcomes（协议分离 + unreported 兜底）
+    const dispatchedRuntime = new FakeRuntime(() =>
+      completedTask("\\section{实验}\n改写。\n%%%PT-OUTCOMES%%% [{\"instructionId\":\"x-1\",\"outcome\":\"applied\"}]"),
+    );
+    const dispatched = await new WriterService({ runtime: dispatchedRuntime, agentId: "writer" }).reviseSection({
+      projectId: "p-abc",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: "\\section{实验}\n旧内容。",
+      issues: [],
+      evidence: EVIDENCE_S1,
+      bibliography: BIB,
+      externalDirectives: [
+        { instructionId: "x-1", source: "journal_reviewer", reviewerLabel: "Reviewer 2", text: "补充引用" },
+      ],
+    });
+    expect(dispatched.latex).not.toContain("PT-OUTCOMES");
+    expect(dispatched.externalOutcomes).toEqual([
+      { instructionId: "x-1", outcome: "applied" },
+    ]);
   });
 
   it("planOutline：大纲 prompt 同步分组（规划阶段向证据倾斜）", async () => {

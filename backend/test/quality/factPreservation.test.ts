@@ -433,3 +433,114 @@ describe("Fact Preservation：Quality Gate 集成", () => {
     expect(describeFactPreservation(failed)).toContain("实验事实保持失败");
   });
 });
+
+// ---- M9.10 Phase 3：数值归一化 + 事实变化分类（A/B/C/D） ----
+
+describe("Fact Preservation：格式等价差异（B/C 类，M9.10）", () => {
+  it("千分位写法差异（1446 → 1,446）→ formatChanges（B），不计违规", () => {
+    const summary = evaluate(
+      { "sections/experiments.tex": "样本总量 1446 条，覆盖 3 个场景。\n" },
+      { "sections/experiments.tex": "样本总量 1,446 条，覆盖 3 个场景。\n" },
+    );
+    expect(summary.ok).toBe(true);
+    expect(summary.changedFacts).toHaveLength(0);
+    expect(summary.formatChanges).toHaveLength(1);
+    expect(summary.formatChanges[0]?.classification).toMatchObject({
+      category: "B",
+      type: "number_formatted",
+      severity: "low",
+    });
+  });
+
+  it("全角数字（2022 → ２０２２）→ 提取层归一，不产生任何 finding", () => {
+    const summary = evaluate(
+      { "sections/experiments.tex": "该方法于 2022 年提出，参数量 8.9M。\n" },
+      { "sections/experiments.tex": "该方法于 ２０２２ 年提出，参数量 8.9M。\n" },
+    );
+    expect(summary.ok).toBe(true);
+    expect(summary.formatChanges).toHaveLength(0);
+    expect(summary.removedFacts).toHaveLength(0);
+    expect(summary.addedUnsupportedFacts).toHaveLength(0);
+  });
+
+  it("小数尾零（0.680 → 0.68）→ formatChanges（B）", () => {
+    const summary = evaluate(
+      { "sections/experiments.tex": "低照度场景 MOTA 为 0.680，其余场景正常。\n" },
+      { "sections/experiments.tex": "低照度场景 MOTA 为 0.68，其余场景正常。\n" },
+    );
+    expect(summary.ok).toBe(true);
+    expect(summary.formatChanges[0]?.classification?.category).toBe("B");
+  });
+
+  it("单位大小写（3.31FPS → 3.31fps）→ formatChanges（B）", () => {
+    const summary = evaluate(
+      { "sections/experiments.tex": "端到端帧率为 3.31FPS，延迟满足约束。\n" },
+      { "sections/experiments.tex": "端到端帧率为 3.31fps，延迟满足约束。\n" },
+    );
+    expect(summary.ok).toBe(true);
+    expect(summary.formatChanges[0]?.classification?.category).toBe("B");
+  });
+
+  it("表格单元格措辞变化（数字未动）→ C 类 language_rewritten，不计违规", () => {
+    const previous = EXPERIMENT_TEX.replace("纯IoU基线", "纯IoU基线(基线24)");
+    const current = previous.replace("纯IoU基线(基线24)", "IoU-only baseline(基线24)");
+    const summary = evaluate(
+      { "sections/experiments.tex": previous },
+      { "sections/experiments.tex": current },
+    );
+    expect(summary.ok).toBe(true);
+    expect(summary.changedFacts).toHaveLength(0);
+    expect(summary.formatChanges.length).toBeGreaterThanOrEqual(1);
+    expect(
+      summary.formatChanges.some((finding) => finding.classification?.category === "C"),
+    ).toBe(true);
+  });
+
+  it("真实数值漂移（35 → 28）仍为 A 类违规，分类 severity=high", () => {
+    const summary = evaluate(
+      { "sections/experiments.tex": EXPERIMENT_TEX },
+      { "sections/experiments.tex": revised({ "本文方法 & 35 & 102": "本文方法 & 28 & 102" }) },
+    );
+    expect(summary.ok).toBe(false);
+    expect(summary.changedFacts.length).toBeGreaterThanOrEqual(1);
+    expect(summary.changedFacts[0]?.classification).toMatchObject({
+      category: "A",
+      type: "number_changed",
+      severity: "high",
+      oldValue: expect.stringContaining("35"),
+      newValue: expect.stringContaining("28"),
+    });
+  });
+
+  it("describeFactPreservation：通过 / 失败都呈现格式等价计数（审计可见）", () => {
+    const withFormat = evaluate(
+      { "sections/experiments.tex": "样本总量 1446 条。\n" },
+      { "sections/experiments.tex": "样本总量 1,446 条。\n" },
+    );
+    expect(describeFactPreservation(withFormat)).toContain("格式等价差异 1 项");
+    const drifted = evaluate(
+      { "sections/experiments.tex": EXPERIMENT_TEX },
+      { "sections/experiments.tex": revised({ "本文方法 & 35 & 102": "本文方法 & 28 & 102" }) },
+    );
+    expect(describeFactPreservation(drifted)).toContain("实验事实保持失败");
+  });
+
+  it("授权匹配跨格式：计划点名 1,446 → 改为 1500 时 token 1446 命中（不再 miss 成 FP）", () => {
+    const plan = planWithItems([
+      {
+        id: "fact-fix-1",
+        kind: "fact_preserve",
+        problem: "样本总量应为 1,446，需更正为 1500",
+        instruction: "将样本总量 1,446 更正为 1500（新统计口径）",
+      },
+    ]);
+    const summary = evaluateFactPreservation({
+      previous: snapshot(1, { "sections/experiments.tex": "样本总量 1446 条。\n" }),
+      current: snapshot(2, { "sections/experiments.tex": "样本总量 1500 条。\n" }),
+      plan,
+    });
+    expect(summary.ok).toBe(true);
+    expect(summary.changedFacts).toHaveLength(0);
+    expect(summary.allowedChanges).toBe(1);
+  });
+});

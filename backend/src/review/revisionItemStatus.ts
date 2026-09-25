@@ -51,6 +51,7 @@ export type RevisionItemResolutionReason =
   | "validation_passed"
   | "fact_preservation_violation"
   | "citation_removal_unauthorized"
+  | "citation_removal_detected"
   | "claim_strength_escalation"
   | "evidence_stale"
   | "no_change_detected"
@@ -58,6 +59,98 @@ export type RevisionItemResolutionReason =
   | "user_rejected"
   | "user_needs_review"
   | "re_dispatched";
+
+// ---- M9.10 Phase 1：协议违规的结构化错误 ----
+
+/** 结构化协议违规（机器可读；进入 stage 失败分类与修复循环，不再是裸字符串） */
+export interface RevisionProtocolViolation {
+  /** 违规类别（duplicate_conflict 例外：单条 detail 描述整组矛盾） */
+  code?: RevisionProtocolErrorCode;
+  id?: string;
+  from?: RevisionPlanItemStatus;
+  to?: RevisionPlanItemStatus;
+  detail: string;
+}
+
+export type RevisionProtocolErrorCode =
+  | "duplicate_conflict"
+  | "illegal_transition"
+  | "unknown_item"
+  | "duplicate_item_id"
+  | "invalid_item_status"
+  | "missing_transition";
+
+/**
+ * Revision 协议错误（M9.10）：重复 / 非法 / 缺失 transition 与计划 schema 违规
+ * 的统一结构化载体。message 保持与旧实现一致的中文句子（既有测试 / 日志口径
+ * 不变），code + violations 供 stage 失败处理与修复循环消费。
+ */
+export class RevisionProtocolError extends Error {
+  readonly code: RevisionProtocolErrorCode;
+  readonly violations: readonly RevisionProtocolViolation[];
+
+  constructor(code: RevisionProtocolErrorCode, violations: RevisionProtocolViolation[], message: string) {
+    super(message);
+    this.name = "RevisionProtocolError";
+    this.code = code;
+    this.violations = violations;
+  }
+}
+
+/** 合法 status 集合（运行时校验用；loadPlan 读回的 JSON 不受编译期类型保护） */
+export const REVISION_ITEM_STATUSES: ReadonlySet<RevisionPlanItemStatus> = new Set([
+  "planned",
+  "skipped",
+  "applied",
+  "validated",
+  "rejected",
+  "needs_review",
+  "approved",
+]);
+
+/**
+ * 计划 schema 断言（M9.10 Phase 1）：条目 id 在计划内必须唯一、status 必须
+ * 是生命周期合法值。确定性派生（buildRevisionPlan）与落盘读回（loadPlan）的
+ * 双通道都过本断言——同 id 条目一旦进入计划，会在 validate 阶段以「矛盾序列」
+ * 形式晚爆（applied→validated 与 applied→rejected 并列），在构建期拒绝才是
+ * 稳定协议的口径。
+ */
+export function validateRevisionPlanShape(
+  plan: Pick<RevisionPlan, "planId" | "items">,
+): RevisionProtocolViolation[] {
+  const violations: RevisionProtocolViolation[] = [];
+  const seen = new Map<string, number>();
+  for (const item of plan.items) {
+    seen.set(item.id, (seen.get(item.id) ?? 0) + 1);
+    if (!REVISION_ITEM_STATUSES.has(item.status)) {
+      violations.push({
+        code: "invalid_item_status",
+        id: item.id,
+        detail: `status "${String(item.status)}" 不是合法生命周期状态`,
+      });
+    }
+  }
+  for (const [id, count] of seen) {
+    if (count > 1) {
+      violations.push({
+        code: "duplicate_item_id",
+        id,
+        detail: `条目 id 在计划 ${plan.planId} 中出现 ${count} 次（必须唯一）`,
+      });
+    }
+  }
+  return violations;
+}
+
+/**
+ * 缺失 transition 检测（M9.10 Phase 1）：revision.validate 之后仍停留在 applied
+ * 的条目 = 派发了执行却没走到任何复核终态（validated / rejected / needs_review），
+ * 属于编排跳步或复核漏判——条目会无声悬置（Quality Gate 只消费 validation
+ * result，不看计划残留），必须显式暴露。
+ */
+export function findStuckAppliedItems(plan: Pick<RevisionPlan, "items"> | null): RevisionPlanItem[] {
+  return (plan?.items ?? []).filter((item) => item.status === "applied");
+}
 
 export interface RevisionItemTransition {
   id: string;
@@ -250,19 +343,41 @@ export function applyRevisionItemTransitions(
   transitions: readonly RevisionItemTransition[],
   now: string,
 ): ApplyTransitionsResult {
+  // M9.10 Phase 1：计划本体 schema 断言——重复 id / 非法 status 的计划在流转
+  // 前拒绝（同 id 条目会让 byId 匹配与归一化路径产生未定义行为）
+  const shapeViolations = validateRevisionPlanShape(plan);
+  if (shapeViolations.length > 0) {
+    throw new RevisionProtocolError(
+      shapeViolations[0]?.code === "invalid_item_status" && !shapeViolations.some((v) => v.code === "duplicate_item_id")
+        ? "invalid_item_status"
+        : "duplicate_item_id",
+      shapeViolations,
+      `修订计划 schema 违规（${shapeViolations.map((violation) => `${violation.id ?? "?"}: ${violation.detail}`).join("；")}）`,
+    );
+  }
   const { transitions: normalized, replayedIds, normalization, conflicts } =
     normalizeRevisionItemTransitions(plan, transitions);
   if (conflicts.length > 0) {
-    throw new Error(
+    // M9.10：结构化拒绝（重复声明无法构成合法路径）；message 口径不变
+    throw new RevisionProtocolError(
+      "duplicate_conflict",
+      conflicts.map((conflict) => ({ detail: conflict })),
       `revision item transitions 存在无法归一的重复声明（${conflicts.join("；")}）`,
     );
   }
   const byId = new Map(normalized.map((transition) => [transition.id, transition]));
   const illegal: string[] = [];
+  const illegalViolations: RevisionProtocolViolation[] = [];
   for (const transition of normalized) {
     const item = plan.items.find((candidate) => candidate.id === transition.id);
     if (item === undefined) {
       illegal.push(`条目 ${transition.id} 不在计划 ${plan.planId} 中`);
+      illegalViolations.push({
+        code: "unknown_item",
+        id: transition.id,
+        to: transition.to,
+        detail: `不在计划 ${plan.planId} 中`,
+      });
       continue;
     }
     if (
@@ -271,10 +386,23 @@ export function applyRevisionItemTransitions(
       !canTransitionRevisionItem(item.status, transition.to)
     ) {
       illegal.push(`${item.id}: ${item.status} → ${transition.to} 不是合法流转`);
+      illegalViolations.push({
+        code: "illegal_transition",
+        id: item.id,
+        from: item.status,
+        to: transition.to,
+        detail: "不是合法流转",
+      });
     }
   }
   if (illegal.length > 0) {
-    throw new Error(`非法的 revision item 状态流转（${illegal.join("；")}）`);
+    throw new RevisionProtocolError(
+      illegalViolations.some((violation) => violation.code === "illegal_transition")
+        ? "illegal_transition"
+        : "unknown_item",
+      illegalViolations,
+      `非法的 revision item 状态流转（${illegal.join("；")}）`,
+    );
   }
   let changed = false;
   const items = plan.items.map((item): RevisionPlanItem => {

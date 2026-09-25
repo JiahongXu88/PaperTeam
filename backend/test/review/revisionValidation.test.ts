@@ -16,6 +16,7 @@ import type { CitationPreservationSummary } from "../../src/quality/citationPres
 import { buildRevisionPlan, type RevisionPlan } from "../../src/review/revisionPlan.js";
 import { applyRevisionItemTransitions } from "../../src/review/revisionItemStatus.js";
 import {
+  describeRevisionValidation,
   evaluateRevisionValidation,
   itemTouchesFile,
   withUserDecision,
@@ -83,6 +84,7 @@ const OK_FACT: FactPreservationSummary = {
   directionalChanges: [],
   formulaChanges: [],
   placeholderRegressions: [],
+  formatChanges: [],
   allowedChanges: 0,
   allowedRemovals: 0,
   planId: "plan-r1-rev2",
@@ -272,5 +274,70 @@ describe("evaluateRevisionValidation", () => {
     expect(approved.userDecision).toEqual({ decision: "approve", decidedAt: "2026-09-18T03:00:00.000Z" });
     // 原结果不可变（纯函数）
     expect(result.userDecision).toBeUndefined();
+  });
+
+  it("M9.10 Phase 4：fact 漂移 rejected 携带 category + rejectedItems（id/category/reason/evidence）", () => {
+    const result = evaluateRevisionValidation(
+      inputOf({
+        factPreservation: {
+          ...OK_FACT,
+          ok: false,
+          changedFacts: [
+            {
+              kind: "changed",
+              file: "sections/experiments.tex",
+              section: "实验",
+              before: "45",
+              after: "28",
+              reason: "prose_number",
+              classification: { category: "A", type: "number_changed", severity: "high", oldValue: "45", newValue: "28" },
+            },
+          ],
+        },
+      }),
+    );
+    expect(result.items[0]?.category).toBe("fact_preservation");
+    expect(result.rejectedItems).toHaveLength(1);
+    expect(result.rejectedItems?.[0]).toMatchObject({
+      id: result.items[0]?.id,
+      category: "fact_preservation",
+    });
+    expect(result.rejectedItems?.[0]?.reason).toContain("prose_number");
+    expect(result.rejectedItems?.[0]?.evidence[0]).toContain("[A/number_changed]");
+    expect(result.rejectedItems?.[0]?.evidence[0]).toContain("45");
+  });
+
+  it("M9.10 Phase 4：引用无据删除的类别 = citation_removal_detected（事件名），reasonCode 保持既有口径", () => {
+    const after = BEFORE_TEX.replace(" \\cite{gao2023survey}", "");
+    const result = evaluateRevisionValidation(
+      inputOf({
+        currentFiles: [{ file: "sections/experiments.tex", content: after }],
+        citationPreservation: {
+          ...OK_CITATION,
+          ok: false,
+          currentCount: 0,
+          currentKeys: [],
+          removedKeys: ["gao2023survey"],
+          unexpectedRemovedKeys: ["gao2023survey"],
+          unexpectedRemoved: [{ key: "gao2023survey", files: ["sections/experiments.tex"] }],
+        },
+      }),
+    );
+    expect(result.items[0]?.category).toBe("citation_removal_detected");
+    expect(result.items[0]?.reasonCodes).toContain("citation_removal_unauthorized");
+    expect(result.rejectedItems?.[0]?.category).toBe("citation_removal_detected");
+    expect(result.rejectedItems?.[0]?.evidence[0]).toContain("gao2023survey");
+  });
+
+  it("M9.10 Phase 4：干净修订 category=null / rejectedItems 空；describe 含分类计数", () => {
+    const clean = evaluateRevisionValidation(inputOf());
+    expect(clean.items[0]?.category).toBeNull();
+    expect(clean.rejectedItems).toHaveLength(0);
+    const drifted = evaluateRevisionValidation(
+      inputOf({
+        factPreservation: { ...OK_FACT, ok: false, changedFacts: [{ kind: "changed", file: "sections/experiments.tex", section: "实验", before: "45", after: "28", reason: "prose_number", classification: { category: "A", type: "number_changed", severity: "high" } }] },
+      }),
+    );
+    expect(describeRevisionValidation(drifted)).toContain("fact_preservation=1");
   });
 });

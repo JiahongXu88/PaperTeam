@@ -19,8 +19,11 @@ import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import {
   applyRevisionItemTransitions,
   canTransitionRevisionItem,
+  findStuckAppliedItems,
   revisionItemCounts,
   REVISION_ITEM_TERMINAL,
+  RevisionProtocolError,
+  validateRevisionPlanShape,
 } from "../../src/review/revisionItemStatus.js";
 
 function summaryWith(issues: Partial<ReviewIssue>[]): ReviewSummary {
@@ -243,6 +246,109 @@ describe("Revision Item 状态机（M6.7）", () => {
     expect(result.changed).toBe(true);
     expect(result.plan.items[0]).toMatchObject({ status: "applied", targetChanged: true, appliedRevision: 5 });
     expect(result.normalization?.duplicateIds).toEqual([id]);
+  });
+
+  it("M9.10 Phase 1：协议错误结构化（code + violations），不再只是裸字符串", () => {
+    const plan = planOf();
+    const id = plan.items[0]!.id;
+    // 矛盾重复声明 → duplicate_conflict
+    try {
+      applyRevisionItemTransitions(
+        plan,
+        [
+          { id, to: "applied", reason: "dispatched" },
+          { id, to: "skipped", reason: "writer_unchanged" },
+        ],
+        "2026-09-25T00:00:00.000Z",
+      );
+      expect.unreachable("矛盾重复声明应抛错");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RevisionProtocolError);
+      const protocolError = error as RevisionProtocolError;
+      expect(protocolError.code).toBe("duplicate_conflict");
+      expect(protocolError.violations.length).toBeGreaterThan(0);
+      expect(protocolError.message).toContain("无法归一的重复声明");
+    }
+    // 非法流转 → illegal_transition（携带 id / from / to）
+    try {
+      applyRevisionItemTransitions(
+        plan,
+        [{ id, to: "validated", reason: "validation_passed" }],
+        "2026-09-25T00:00:00.000Z",
+      );
+      expect.unreachable("非法流转应抛错");
+    } catch (error) {
+      const protocolError = error as RevisionProtocolError;
+      expect(protocolError.code).toBe("illegal_transition");
+      expect(protocolError.violations[0]).toMatchObject({ id, from: "planned", to: "validated" });
+    }
+    // 未知条目 → unknown_item
+    try {
+      applyRevisionItemTransitions(
+        plan,
+        [{ id: "ghost-item", to: "applied", reason: "dispatched" }],
+        "2026-09-25T00:00:00.000Z",
+      );
+      expect.unreachable("未知条目应抛错");
+    } catch (error) {
+      const protocolError = error as RevisionProtocolError;
+      expect(protocolError.code).toBe("unknown_item");
+      expect(protocolError.violations[0]?.id).toBe("ghost-item");
+    }
+  });
+
+  it("M9.10 Phase 1：计划 schema 断言——重复条目 id / 非法 status 确定性拒绝", () => {
+    const plan = planOf();
+    expect(validateRevisionPlanShape(plan)).toHaveLength(0);
+    // 篡改出重复 id
+    const duplicated: RevisionPlan = {
+      ...plan,
+      items: [...plan.items, { ...plan.items[0]!, status: "planned" }],
+    };
+    const violations = validateRevisionPlanShape(duplicated);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toMatchObject({ code: "duplicate_item_id", id: plan.items[0]!.id });
+    // 重复 id 的计划在流转入口被拒（结构化错误，不进入下一阶段）
+    expect(() =>
+      applyRevisionItemTransitions(
+        duplicated,
+        [{ id: plan.items[0]!.id, to: "applied", reason: "dispatched" }],
+        "2026-09-25T00:00:00.000Z",
+      ),
+    ).toThrow(RevisionProtocolError);
+    // 非法 status（loadPlan 读回的旧 / 坏 JSON 防御）
+    const badStatus: RevisionPlan = {
+      ...plan,
+      items: plan.items.map((item, index) =>
+        index === 0 ? { ...item, status: "finished" as never } : item,
+      ),
+    };
+    expect(validateRevisionPlanShape(badStatus)[0]?.code).toBe("invalid_item_status");
+  });
+
+  it("M9.10 Phase 1：缺失 transition 检测——validate 后仍停留 applied 的条目可见", () => {
+    const plan = planOf();
+    const ids = plan.items.map((item) => item.id);
+    // 派发了两条，只复核了一条 → 另一条 stuck applied（缺失 transition）
+    const applied = applyRevisionItemTransitions(
+      plan,
+      ids.map((id) => ({ id, to: "applied" as const, reason: "dispatched" as const })),
+      "2026-09-25T00:00:00.000Z",
+    ).plan;
+    expect(findStuckAppliedItems(applied)).toHaveLength(ids.length);
+    const partiallyValidated = applyRevisionItemTransitions(
+      applied,
+      [{ id: ids[0]!, to: "validated", reason: "validation_passed" }],
+      "2026-09-25T01:00:00.000Z",
+    ).plan;
+    const stuck = findStuckAppliedItems(partiallyValidated);
+    expect(stuck.map((item) => item.id)).toEqual(ids.slice(1));
+    const fullyValidated = applyRevisionItemTransitions(
+      partiallyValidated,
+      ids.slice(1).map((id) => ({ id, to: "validated" as const, reason: "validation_passed" as const })),
+      "2026-09-25T02:00:00.000Z",
+    ).plan;
+    expect(findStuckAppliedItems(fullyValidated)).toHaveLength(0);
   });
 
   it("revisionItemCounts：生命周期计数（gate 规则 / HITL payload 用）", () => {

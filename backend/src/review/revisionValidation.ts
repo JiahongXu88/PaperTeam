@@ -36,15 +36,37 @@ import { extractCitationKeys } from "./styleInvariants.js";
 
 export type RevisionValidationItemStatus = "validated" | "rejected" | "needs_review";
 
+/**
+ * 拒绝归因类别（M9.10 Phase 4：失败可解释）。
+ * citation 类别事件名 = citation_removal_detected（任务规格命名；对应 reasonCode
+ * 仍是 citation_removal_unauthorized——evaluation runner 按该字符串对账，不改）。
+ */
+export type RevisionRejectionCategory =
+  | "fact_preservation"
+  | "citation_removal_detected"
+  | "claim_strength"
+  | "evidence_stale";
+
 export interface RevisionValidationItemResult {
   id: string;
   kind: RevisionPlanItemKind;
   section: string;
   riskLevel: RevisionPlanItem["riskLevel"];
   status: RevisionValidationItemStatus;
+  /** 主归因类别（validated 条目为 null；M9.10 前的旧产物无此字段） */
+  category?: RevisionRejectionCategory | null;
   /** 机器可读原因码（写回计划条目 resolution 的前缀；与 reasons 一一对应） */
   reasonCodes: RevisionItemResolutionReason[];
   reasons: string[];
+}
+
+/** rejected 条目的结构化报告项（M9.10 Phase 4：id + category + reason + evidence） */
+export interface RejectedItemReport {
+  id: string;
+  category: RevisionRejectionCategory;
+  reason: string;
+  /** 证据片段（before → after / key / marker；≤ 3 条） */
+  evidence: string[];
 }
 
 export interface CitationDeltaEntry {
@@ -71,6 +93,8 @@ export interface RevisionValidationResult {
   revision: number;
   validatedAt: string;
   items: RevisionValidationItemResult[];
+  /** rejected 条目的结构化报告（M9.10 Phase 4：失败可解释；UI / HITL payload 消费。旧产物无此字段） */
+  rejectedItems?: RejectedItemReport[];
   factPreservation: FactPreservationSummary | null;
   citationPreservation: CitationPreservationSummary | null;
   claimStrength: ClaimStrengthFinding[];
@@ -144,12 +168,18 @@ export function itemTouchesFile(sectionRef: string, file: string): boolean {
   );
 }
 
-/** 全部违规事实/引用 finding 涉及的文件集合（附机器可读原因码） */
+/** 全部违规事实/引用 finding 涉及的文件集合（附机器可读原因码 + 归因类别 + 证据片段） */
 function violationFiles(
   fact: FactPreservationSummary | null,
   citation: CitationPreservationSummary | null,
-): { file: string; reason: string; code: RevisionItemResolutionReason }[] {
-  const hits: { file: string; reason: string; code: RevisionItemResolutionReason }[] = [];
+): { file: string; reason: string; code: RevisionItemResolutionReason; category: RevisionRejectionCategory; evidence: string }[] {
+  const hits: {
+    file: string;
+    reason: string;
+    code: RevisionItemResolutionReason;
+    category: RevisionRejectionCategory;
+    evidence: string;
+  }[] = [];
   if (fact !== null && !fact.ok) {
     const findings = [
       ...fact.changedFacts,
@@ -160,10 +190,13 @@ function violationFiles(
       ...fact.placeholderRegressions,
     ];
     for (const finding of findings) {
+      const evidence = `${finding.before}${finding.after !== "" ? ` → ${finding.after}` : "（被删除）"}`;
       hits.push({
         file: finding.file,
-        reason: `${finding.reason}：${finding.before}${finding.after !== "" ? ` → ${finding.after}` : "（被删除）"}`,
+        reason: `${finding.reason}：${evidence}`,
         code: "fact_preservation_violation",
+        category: "fact_preservation",
+        evidence: `${finding.classification !== undefined ? `[${finding.classification.category}/${finding.classification.type}] ` : ""}${evidence}`,
       });
     }
   }
@@ -174,6 +207,8 @@ function violationFiles(
           file,
           reason: `引用 \cite{${entry.key}} 被无依据删除`,
           code: "citation_removal_unauthorized",
+          category: "citation_removal_detected",
+          evidence: `key ${entry.key}（previous 出现于 ${entry.files.join("、") || "?"}，current 已消失）`,
         });
       }
     }
@@ -294,10 +329,22 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
   const items: RevisionValidationItemResult[] = appliedItems.map((item) => {
     const reasons: string[] = [];
     const reasonCodes: RevisionItemResolutionReason[] = [];
+    const evidence: string[] = [];
+    const categories: RevisionRejectionCategory[] = [];
     let status: RevisionValidationItemStatus = "validated";
-    const settle = (next: RevisionValidationItemStatus, reason: string, code: RevisionItemResolutionReason) => {
+    const settle = (
+      next: RevisionValidationItemStatus,
+      reason: string,
+      code: RevisionItemResolutionReason,
+      category: RevisionRejectionCategory,
+      itemEvidence?: string,
+    ) => {
       reasons.push(reason);
       reasonCodes.push(code);
+      categories.push(category);
+      if (itemEvidence !== undefined && evidence.length < 3) {
+        evidence.push(itemEvidence);
+      }
       // rejected > needs_review > validated
       if (next === "rejected" || (next === "needs_review" && status === "validated")) {
         status = next;
@@ -306,37 +353,106 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     // 修改前记录（§6）：条目触达文件的违规事实 / 引用
     for (const violation of violations) {
       if (itemTouchesFile(item.section, violation.file)) {
-        settle("rejected", `${violation.file}：${violation.reason}`, violation.code);
+        settle("rejected", `${violation.file}：${violation.reason}`, violation.code, violation.category, violation.evidence);
       }
     }
     for (const finding of blockFindings) {
       if (itemTouchesFile(item.section, finding.file)) {
-        settle("rejected", `${finding.file}：claim 强度升级为强表述但证据不足（${finding.markers.join("/")}）`, "claim_strength_escalation");
+        settle(
+          "rejected",
+          `${finding.file}：claim 强度升级为强表述但证据不足（${finding.markers.join("/")}）`,
+          "claim_strength_escalation",
+          "claim_strength",
+          `markers：${finding.markers.join("/")}（${finding.file}）`,
+        );
       }
     }
     for (const file of warningFiles) {
       if (itemTouchesFile(item.section, file)) {
-        settle("needs_review", `${file}：claim 强度升级仅有部分证据支撑，需人工确认`, "claim_strength_escalation");
+        settle(
+          "needs_review",
+          `${file}：claim 强度升级仅有部分证据支撑，需人工确认`,
+          "claim_strength_escalation",
+          "claim_strength",
+        );
       }
     }
     const stale = staleEvidenceByItem.get(item.id);
     if (stale !== undefined) {
-      settle("needs_review", `关联证据 ${stale.join("、")} 已不存在或不再是正式证据（verified + 锚点）`, "evidence_stale");
+      settle(
+        "needs_review",
+        `关联证据 ${stale.join("、")} 已不存在或不再是正式证据（verified + 锚点）`,
+        "evidence_stale",
+        "evidence_stale",
+        `失效证据：${stale.join("、")}`,
+      );
     }
     // 说明：targetChanged=false（Writer 输出与原文逐字相同）不构成拒绝——
     // 「修改要求是否真正落实」由下一轮复审仲裁（同 finding 指纹再现 → 新计划
     // 重新派发，收敛判定照常生效）；本层只裁事实 / 引用 / 强度 / 证据四类
     // 确定性违规，不猜测 Writer 意图。targetChanged 原样留在条目上供审计。
+    // 主归因类别（M9.10）：fact > citation > claim > evidence（拒绝力强的优先）
+    const primaryCategory: RevisionRejectionCategory | null =
+      categories.includes("fact_preservation")
+        ? "fact_preservation"
+        : categories.includes("citation_removal_detected")
+          ? "citation_removal_detected"
+          : categories.includes("claim_strength")
+            ? "claim_strength"
+            : categories.length > 0
+              ? (categories[0] as RevisionRejectionCategory)
+              : null;
     return {
       id: item.id,
       kind: item.kind,
       section: item.section,
       riskLevel: item.riskLevel,
       status,
+      category: primaryCategory,
       reasonCodes,
       reasons,
     };
   });
+
+  // M9.10 Phase 4：rejected 条目的结构化报告（id + category + reason + evidence）
+  const evidenceById2 = new Map<string, string[]>();
+  for (const violation of violations) {
+    for (const applied of appliedItems) {
+      if (itemTouchesFile(applied.section, violation.file)) {
+        const list = evidenceById2.get(applied.id) ?? [];
+        if (list.length < 3) {
+          list.push(violation.evidence);
+        }
+        evidenceById2.set(applied.id, list);
+      }
+    }
+  }
+  for (const finding of blockFindings) {
+    for (const applied of appliedItems) {
+      if (itemTouchesFile(applied.section, finding.file)) {
+        const list = evidenceById2.get(applied.id) ?? [];
+        if (list.length < 3) {
+          list.push(`markers：${finding.markers.join("/")}（${finding.file}）`);
+        }
+        evidenceById2.set(applied.id, list);
+      }
+    }
+  }
+  for (const [id, stale] of staleEvidenceByItem) {
+    const list = evidenceById2.get(id) ?? [];
+    if (list.length < 3) {
+      list.push(`失效证据：${stale.join("、")}`);
+    }
+    evidenceById2.set(id, list);
+  }
+  const rejectedItems: RejectedItemReport[] = items
+    .filter((item) => item.status === "rejected")
+    .map((item) => ({
+      id: item.id,
+      category: item.category ?? "fact_preservation",
+      reason: item.reasons.join("；").slice(0, 400),
+      evidence: (evidenceById2.get(item.id) ?? []).slice(0, 3),
+    }));
 
   const rejected = items.filter((item) => item.status === "rejected").length;
   const needsReview = items.filter((item) => item.status === "needs_review").length;
@@ -351,6 +467,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     revision: input.revision,
     validatedAt,
     items,
+    rejectedItems,
     factPreservation: input.factPreservation,
     citationPreservation: input.citationPreservation,
     claimStrength,
@@ -373,8 +490,16 @@ export function withUserDecision(
 
 export function describeRevisionValidation(result: RevisionValidationResult): string {
   const counts = countItemStatuses(result);
+  const rejectedByCategory = new Map<RevisionRejectionCategory, number>();
+  for (const report of result.rejectedItems ?? []) {
+    rejectedByCategory.set(report.category, (rejectedByCategory.get(report.category) ?? 0) + 1);
+  }
+  const breakdown =
+    rejectedByCategory.size > 0
+      ? `（${[...rejectedByCategory].map(([category, count]) => `${category}=${count}`).join("/")}）`
+      : "";
   const parts = [
-    `条目 validated=${counts.validated} rejected=${counts.rejected} needs_review=${counts.needsReview}`,
+    `条目 validated=${counts.validated} rejected=${counts.rejected}${breakdown} needs_review=${counts.needsReview}`,
     `claim 强度 finding ${result.claimStrength.length} 处`,
     `新增引用 ${result.citationDelta.added.length}（无证据支撑 ${result.uncoveredAddedKeys.length}）`,
   ];

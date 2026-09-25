@@ -66,6 +66,24 @@ export interface FactFinding {
   reason: string;
   /** 命中的授权（只出现在被放行的变更统计里；违规 finding 恒无授权） */
   authorization?: { basis: string; planItemId: string };
+  /**
+   * M9.10 Phase 3 事实变化分类（确定性）：
+   * A 明确事实变化（数值 / 方向 / 公式 / 占位 / 协议的真实漂移）＝违规；
+   * B 格式变化（千分位 / 全角 / 尾零 / 单位大小写等数值等价格式差异）＝非违规；
+   * C 语言重写（数字未动、措辞变化）＝非违规；
+   * D 引用范围变化（差异只在 \cite 参数）＝非违规（由 Citation Preservation 独立裁决）。
+   */
+  classification?: FactClassification;
+}
+
+/** 事实变化分类（M9.10 Phase 3；见 FactFinding.classification） */
+export interface FactClassification {
+  category: "A" | "B" | "C" | "D";
+  /** 机器可读类型短语（number_changed / number_formatted / language_rewritten / citation_scope_changed / …） */
+  type: string;
+  severity: "high" | "medium" | "low";
+  oldValue?: string;
+  newValue?: string;
 }
 
 export interface FactPreservationSummary {
@@ -77,11 +95,16 @@ export interface FactPreservationSummary {
   directionalChanges: FactFinding[];
   formulaChanges: FactFinding[];
   placeholderRegressions: FactFinding[];
+  /**
+   * 格式等价 / 语言重写 / 引用范围差异（M9.10 Phase 3 B/C/D 类）：数值未漂移，
+   * 不计入违规（ok 不受影响），保留审计轨迹与分类标签
+   */
+  formatChanges: FactFinding[];
   /** 有计划 / Evidence 依据被放行的变更与删除数（审计口径） */
   allowedChanges: number;
   allowedRemovals: number;
   planId: string | null;
-  /** 全部违规数组为空 */
+  /** 全部违规数组为空（formatChanges 不参与） */
   ok: boolean;
 }
 
@@ -192,16 +215,140 @@ function normalizeContent(content: string): string {
   return content.replace(/\r\n/g, "\n");
 }
 
+// ---- M9.10 Phase 3：数值归一化（等价判定 / 授权匹配共用） ----
+
+/**
+ * 数值 token 的等价归一化（只用于相等性判定与授权匹配，不用于展示）：
+ * - 全角数字 / 小数点 / 百分号 → 半角；
+ * - 千分位逗号剥离（1,446 ≡ 1446）；
+ * - Unicode 减号统一为 ASCII '-'；
+ * - 小数尾零剥离（45.90 ≡ 45.9；45. ≡ 45）；
+ * - 单位字母小写化（3.31FPS ≡ 3.31fps）。
+ * 归一相等 = 数值未漂移（B 类格式变化，非违规）；数值真正变化的判定口径不变。
+ */
+export function normalizeNumericToken(token: string): string {
+  let text = token
+    .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/．/g, ".")
+    .replace(/％/g, "%")
+    .replace(/，/g, ",");
+  let previous = "";
+  while (previous !== text) {
+    previous = text;
+    text = text.replace(/(\d),(\d{3})/g, "$1$2");
+  }
+  text = text.replace(/[−–—]/g, "-");
+  text = text.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  return text.toLowerCase();
+}
+
+/** 全角数字 / 百分号预归一（提取前处理内容：２０２２ 根本进不了 \d 提取器，会伪装成删除） */
+function normalizeFullWidthDigits(content: string): string {
+  return content
+    .replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0))
+    .replace(/％/g, "%");
+}
+
+/** 文本内的数字串整体归一（授权匹配用：计划文本 1,446 能命中 token 1446） */
+function normalizeNumbersInText(text: string): string {
+  return text.replace(/[０-９\d][０-９\d,，．.\d]*[%‰]?/g, (match) => normalizeNumericToken(match));
+}
+
+/** 文本中的数字 run（归一后；分类用多重集比较） */
+function normalizedNumberRuns(text: string): string[] {
+  const half = normalizeFullWidthDigits(text);
+  return [...half.matchAll(/[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g)].map((match) =>
+    normalizeNumericToken(match[0] ?? ""),
+  );
+}
+
+/** 差异是否只在 \cite 参数（数字未动时的 D 类：引用范围由 Citation Preservation 裁决） */
+function onlyCitationScopeChanged(before: string, after: string): boolean {
+  const stripCites = (text: string): string =>
+    text.replace(/\\(?:cite|citep|citet|citealp|parencite|textcite|autocite)\*?(?:\[[^\]\n]*\])*\{[^{}]*\}/g, " ");
+  return (
+    stripCites(before).replace(/\s+/g, "").trim() === stripCites(after).replace(/\s+/g, "").trim()
+  );
+}
+
+/**
+ * 值对分类（M9.10 Phase 3）：A 数值漂移（违规）/ B 数值等价格式差异（非违规）。
+ * C（语言重写）/ D（引用范围）由调用方按上下文判定（见 classifyCell / prose 分类）。
+ */
+function classifyValuePair(oldValue: string, newValue: string): FactClassification {
+  const oldNormalized = normalizeNumericToken(oldValue);
+  const newNormalized = normalizeNumericToken(newValue);
+  if (oldNormalized !== newNormalized) {
+    return { category: "A", type: "number_changed", severity: "high", oldValue, newValue };
+  }
+  return { category: "B", type: "number_formatted", severity: "low", oldValue, newValue };
+}
+
+/** 表格单元格分类：数字多重集相等 → D（只在 cite 参数）/ B（数字格式变）/ C（数字未动措辞变） */
+function classifyCellChange(before: string, after: string): FactClassification {
+  const beforeNumbers = normalizedNumberRuns(before);
+  const afterNumbers = normalizedNumberRuns(after);
+  const diff = multisetDiff(beforeNumbers, afterNumbers);
+  if (beforeNumbers.length !== afterNumbers.length || diff.missing.length > 0 || diff.added.length > 0) {
+    return { category: "A", type: "number_changed", severity: "high", oldValue: before, newValue: after };
+  }
+  if (onlyCitationScopeChanged(before, after)) {
+    return { category: "D", type: "citation_scope_changed", severity: "low", oldValue: before, newValue: after };
+  }
+  // 数值等价：数字原文变了（1,446→1446 / 45.90→45.9）＝B 格式变化；
+  // 数字原文未动、只是周边措辞变 ＝C 语言重写
+  const rawNumberRuns = (text: string): string[] => [
+    ...normalizeFullWidthDigits(text).matchAll(/[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g),
+  ].map((match) => match[0] ?? "");
+  return rawNumberRuns(before).join("|") !== rawNumberRuns(after).join("|")
+    ? { category: "B", type: "number_formatted", severity: "low", oldValue: before, newValue: after }
+    : { category: "C", type: "language_rewritten", severity: "medium", oldValue: before, newValue: after };
+}
+
+/** 各违规桶的固定 A 类分类（direction / formula / placeholder / protocol / added / removed） */
+function classAFinding(type: string, oldValue?: string, newValue?: string): FactClassification {
+  return {
+    category: "A",
+    type,
+    severity: "high",
+    ...(oldValue !== undefined && oldValue !== "" ? { oldValue } : {}),
+    ...(newValue !== undefined && newValue !== "" ? { newValue } : {}),
+  };
+}
+
 function snippet(text: string, maxLength = 90): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1)}…`;
 }
 
-/** 数字边界安全包含（47 不匹配 147 / 47.5） */
+/**
+ * 数字边界安全包含（47 不匹配 147 / 47.5）。
+ * M9.10：追加两条归一化通道——原文 / 计划文本里的 1,446、４５.９ 等写法归一后
+ * 与 token 匹配；token 带单位后缀（1446条 / 309MB）时再退化用数字核心匹配
+ * （授权匹配不因格式写法 miss；miss = 保守违规，修的是 FP）
+ */
 function mentionsValue(texts: readonly string[], value: string): boolean {
   const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(`(?<![\\w.])${escaped}(?![\\w.])`);
-  return texts.some((text) => pattern.test(text));
+  if (texts.some((text) => pattern.test(text))) {
+    return true;
+  }
+  const normalizedValue = normalizeNumericToken(value);
+  if (normalizedValue === "") {
+    return false;
+  }
+  const normalizedEscaped = normalizedValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const normalizedPattern = new RegExp(`(?<![\\w.])${normalizedEscaped}(?![\\w.])`);
+  if (texts.some((text) => normalizedPattern.test(normalizeNumbersInText(text)))) {
+    return true;
+  }
+  const coreMatch = /^[-+]?\d+(?:\.\d+)?/.exec(normalizedValue);
+  if (coreMatch !== null && coreMatch[0] !== normalizedValue) {
+    const coreEscaped = coreMatch[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const corePattern = new RegExp(`(?<![\\w.])${coreEscaped}(?![\\w.])`);
+    return texts.some((text) => corePattern.test(normalizeNumbersInText(text)));
+  }
+  return false;
 }
 
 /** 离内容位置最近的 \section / \subsection 标题（无则 "(global)"） */
@@ -369,11 +516,19 @@ function stripTablesAndMath(content: string): string {
 }
 
 function proseNumberTokens(content: string): string[] {
-  return extractNumericTokens(stripTablesAndMath(content));
+  // M9.10：全角数字预归一（２０２２ 进不了 \d 提取器，会伪装成删除）。
+  // token 保持原文写法：千分位 / 尾零 / 单位大小写差异会进入多重集差异，
+  // 由 classifyValuePair 判为 B 类格式变化（formatChanges 审计，不计违规）——
+  // 提取层直接归一会把这类变化完全吞掉，失去审计轨迹
+  return extractNumericTokens(normalizeFullWidthDigits(stripTablesAndMath(content)));
 }
 
 function indexOfToken(content: string, token: string): number {
-  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*");
+  // M9.10：token 已归一（无千分位逗号）；定位原文时允许数字间出现分隔符
+  const escaped = token
+    .split("")
+    .map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("(?:[,，\\s]?\\s*)?");
   const pattern = new RegExp(`(?<![\\w.])${escaped}`);
   const match = pattern.exec(content);
   return match !== null ? match.index : -1;
@@ -494,6 +649,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
   const directionalChanges: FactFinding[] = [];
   const formulaChanges: FactFinding[] = [];
   const placeholderRegressions: FactFinding[] = [];
+  const formatChanges: FactFinding[] = [];
   let allowedChanges = 0;
   let allowedRemovals = 0;
 
@@ -518,6 +674,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: snippet(`${where}（${table.rows.length} 行）`),
           after: "",
           reason: "table_removed",
+          classification: classAFinding("number_removed", `${where}（${table.rows.length} 行）`),
         });
         return;
       }
@@ -533,6 +690,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
               before: snippet(`${where} 行「${row[0] ?? ""}」：${row.join(" | ")}`),
               after: "",
               reason: "table_row_removed",
+              classification: classAFinding("number_removed", row.join(" | ")),
             });
           }
           return;
@@ -559,16 +717,27 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
             after: snippet(after),
             reason: placeholderNow ? "table_cell_placeholder" : "table_cell",
           };
-          const grant =
-            !placeholderNow && numericChange
-              ? valueChangeAuthorized(auth, before.replace(/[^\d.%‰eE+\-−]/g, ""), after.replace(/[^\d.%‰eE+\-−]/g, ""))
-              : null;
+          if (placeholderNow) {
+            placeholderRegressions.push({ ...finding, classification: classAFinding("placeholder_regression", before, after) });
+            continue;
+          }
+          // M9.10：先分类再判授权——数值等价（B/C/D）不是违规，无需授权
+          const classification = classifyCellChange(before, after);
+          if (classification.category !== "A") {
+            formatChanges.push({ ...finding, kind: "changed", classification });
+            continue;
+          }
+          const grant = numericChange
+            ? valueChangeAuthorized(
+                auth,
+                normalizeNumericToken(before.replace(/[^\d.%‰eE+\-−]/g, "")),
+                normalizeNumericToken(after.replace(/[^\d.%‰eE+\-−]/g, "")),
+              )
+            : null;
           if (grant !== null) {
             allowedChanges += 1;
-          } else if (placeholderNow) {
-            placeholderRegressions.push(finding);
           } else {
-            changedFacts.push(finding);
+            changedFacts.push({ ...finding, classification });
           }
         }
       });
@@ -587,6 +756,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
             before: "",
             after: snippet(`${where} 新增行：${row.join(" | ")}`),
             reason: "table_row_added",
+            classification: classAFinding("number_added", undefined, row.join(" | ")),
           };
           if (grant) {
             allowedChanges += 1;
@@ -607,6 +777,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: "",
           after: snippet(`新增表（${table.label ?? table.caption}，${table.rows.length} 行）`),
           reason: "table_added",
+          classification: classAFinding("number_added", undefined, `新增表（${table.label ?? table.caption}）`),
         });
       }
     });
@@ -621,6 +792,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: snippet(token),
           after: "",
           reason: "file_removed",
+          classification: classAFinding("number_removed", token),
         });
       }
       continue;
@@ -640,6 +812,21 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       const beforeSnippet = at >= 0 ? snippet(lineOf(previous, at)) : snippet(token);
       if (index < paired) {
         const replacement = numberDiff.added[index] ?? "";
+        const classification = classifyValuePair(token, replacement);
+        if (classification.category !== "A") {
+          // M9.10 B 类：数值等价的格式差异（千分位 / 全角 / 尾零 / 单位写法）——
+          // 不是事实漂移，不进违规桶（false positive 消除），保留审计轨迹
+          formatChanges.push({
+            kind: "changed",
+            file: previousFile.file,
+            section,
+            before: beforeSnippet,
+            after: snippet(`${replacement}（原 ${token}）`),
+            reason: "prose_number",
+            classification,
+          });
+          continue;
+        }
         const grant = valueChangeAuthorized(auth, token, replacement);
         if (grant !== null) {
           allowedChanges += 1;
@@ -652,6 +839,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: beforeSnippet,
           after: snippet(`${replacement}（原 ${token}）`),
           reason: "prose_number",
+          classification,
         });
       } else {
         const grant = valueRemovalAuthorized(auth, token, previousFile.file);
@@ -667,6 +855,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
             before: beforeSnippet,
             after: snippet(`${token} → 占位表述`),
             reason: "placeholder_replacement",
+            classification: classAFinding("placeholder_regression", token),
           });
           continue;
         }
@@ -677,6 +866,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: beforeSnippet,
           after: "",
           reason: "prose_number",
+          classification: classAFinding("number_removed", token),
         });
       }
     }
@@ -698,6 +888,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         before: "",
         after: snippet(at >= 0 ? lineOf(current, at) : token),
         reason: "added_number",
+        classification: classAFinding("number_added", undefined, token),
       });
     }
     // -- 2b. 超参数 / 阈值赋值新增（r=16、Lclip≥3 类；仅 previous 已存在的文件参与，
@@ -722,6 +913,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         before: "",
         after: snippet(whole),
         reason: "hyperparameter_assignment",
+        classification: classAFinding("number_added", undefined, whole),
       });
     }
     // -- 2c. 量纲后缀新增（71维 / 64路：数字 token 本体不带这些量纲，单独扫描） --
@@ -742,6 +934,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         before: "",
         after: snippet(whole),
         reason: "added_number",
+        classification: classAFinding("number_added", undefined, whole),
       });
     }
     if (placeholderIncreased && missingNumericTotal === 0) {
@@ -754,6 +947,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: snippet("（该章节原有具体实验事实）"),
           after: snippet([...current.matchAll(PLACEHOLDER_PATTERN)].map((match) => match[0]).slice(0, 3).join("/")),
           reason: "placeholder_regression",
+          classification: classAFinding("placeholder_regression"),
         });
       }
     }
@@ -777,6 +971,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         before: snippet(segment, 70),
         after: "",
         reason: "formula_removed_or_changed",
+        classification: classAFinding("formula_changed", snippet(segment, 40)),
       });
     }
     for (const segment of mathDiff.added) {
@@ -792,6 +987,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         before: "",
         after: snippet(segment, 70),
         reason: "formula_added",
+        classification: classAFinding("formula_changed", undefined, snippet(segment, 40)),
       });
     }
 
@@ -810,7 +1006,11 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         allowedChanges += 1;
         return;
       }
-      directionalChanges.push({ kind: "directional", ...finding });
+      directionalChanges.push({
+        kind: "directional",
+        classification: classAFinding("direction_changed", finding.before, finding.after),
+        ...finding,
+      });
     };
     // 4a. 负结果消失且出现优势结论（§9 hard protection）
     if (
@@ -876,6 +1076,11 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: snippet(previousOfficial ? "official/官方数据划分" : "custom/自定义数据划分"),
           after: snippet(currentCustom ? "custom/自定义数据划分" : "official/官方数据划分"),
           reason: "dataset_split_changed",
+          classification: classAFinding(
+            "protocol_changed",
+            previousOfficial ? "official/官方数据划分" : "custom/自定义数据划分",
+            currentCustom ? "custom/自定义数据划分" : "official/官方数据划分",
+          ),
         });
       } else {
         allowedChanges += 1;
@@ -894,6 +1099,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
             before: snippet(hardware),
             after: "",
             reason: "hardware_removed",
+            classification: classAFinding("protocol_changed", hardware),
           });
         } else {
           allowedRemovals += 1;
@@ -911,6 +1117,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
             before: "",
             after: snippet(hardware),
             reason: "hardware_added",
+            classification: classAFinding("protocol_changed", undefined, hardware),
           });
         } else {
           allowedChanges += 1;
@@ -928,6 +1135,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     directionalChanges: cap(directionalChanges),
     formulaChanges: cap(formulaChanges),
     placeholderRegressions: cap(placeholderRegressions),
+    formatChanges: cap(formatChanges),
     allowedChanges,
     allowedRemovals,
     planId: input.plan?.planId ?? null,
@@ -1009,7 +1217,9 @@ function matchRows(previousRows: readonly string[][], currentRows: readonly stri
 export function describeFactPreservation(summary: FactPreservationSummary): string {
   const base = `rev-${summary.previousRevision}→rev-${summary.currentRevision}`;
   if (summary.ok) {
-    return `${base} 实验事实保持通过（授权变更 ${summary.allowedChanges} 项 / 授权删除 ${summary.allowedRemovals} 项）`;
+    return `${base} 实验事实保持通过（授权变更 ${summary.allowedChanges} 项 / 授权删除 ${summary.allowedRemovals} 项${
+      summary.formatChanges.length > 0 ? ` / 格式等价差异 ${summary.formatChanges.length} 项不计违规` : ""
+    }）`;
   }
   const parts: string[] = [];
   const sample = (findings: FactFinding[], label: string): string => {
@@ -1026,7 +1236,10 @@ export function describeFactPreservation(summary: FactPreservationSummary): stri
   parts.push(sample(summary.directionalChanges, "结论方向反转"));
   parts.push(sample(summary.formulaChanges, "公式变化"));
   parts.push(sample(summary.placeholderRegressions, "事实被占位替换"));
-  return `${base} 实验事实保持失败：${parts.filter((part) => part !== "").join("；")}——未经 RevisionPlan/Evidence 授权`;
+  const failures = parts.filter((part) => part !== "").join("；");
+  const formatNote =
+    summary.formatChanges.length > 0 ? `；另有格式等价差异 ${summary.formatChanges.length} 项（数值未漂移，不计违规）` : "";
+  return `${base} 实验事实保持失败：${failures}——未经 RevisionPlan/Evidence 授权${formatNote}`;
 }
 
 // ---- 工作流 / HTTP 共用的加载器（与 computeCitationPreservation 同构） ----

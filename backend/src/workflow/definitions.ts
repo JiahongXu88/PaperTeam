@@ -93,6 +93,8 @@ import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import {
   applyRevisionItemTransitions,
+  findStuckAppliedItems,
+  RevisionProtocolError,
   type RevisionItemTransition,
 } from "../review/revisionItemStatus.js";
 import {
@@ -1090,6 +1092,22 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
           detail: item.reasons[0]?.slice(0, 240),
         }));
         const applied = applyRevisionItemTransitions(plan, transitions, new Date().toISOString());
+        // M9.10 Phase 1：缺失 transition 检测——本轮复核落定后仍停留在 applied 的
+        // 条目 = 派发了执行却没走到任何复核终态（编排跳步 / 复核漏判），结构化
+        // 拒绝而不是无声悬置（Quality Gate 只消费 validation result，不看计划残留）
+        const stuck = findStuckAppliedItems(applied.plan);
+        if (stuck.length > 0) {
+          throw new RevisionProtocolError(
+            "missing_transition",
+            stuck.map((item) => ({
+              code: "missing_transition" as const,
+              id: item.id,
+              from: "applied" as const,
+              detail: `已派发（rev-${item.appliedRevision ?? "?"}）但未收到任何复核终态`,
+            })),
+            `修订条目缺失 transition（${stuck.map((item) => `${item.id}（applied 未复核）`).join("；")}）`,
+          );
+        }
         if (applied.changed) {
           await services.reviewArtifacts.savePlan(ctx.projectId, applied.plan);
         }
@@ -1173,12 +1191,32 @@ function revisionValidationDecisionStage(services: WorkflowServices): StageSpec 
             kind: item.kind,
             section: item.section,
             status: item.status,
+            category: item.category,
             reasons: item.reasons.slice(0, 3),
           })),
+          // M9.10 Phase 4：rejected 条目结构化报告（id + category + reason + evidence）
+          rejectedItems: (validation.rejectedItems ?? []).slice(0, 10),
           claimStrength: validation.claimStrength.slice(0, 5),
           evidenceRecheck: validation.evidenceRecheck.filter((entry) => !entry.stillFormal).slice(0, 5),
           citationRemoved: validation.citationDelta.removed.filter((entry) => !entry.authorized).slice(0, 5),
           factPreservationOk: validation.factPreservation?.ok ?? null,
+          // M9.10 Phase 3：事实违规的分类分布（A=真实漂移；B/C/D 已归入 formatChanges 不违规）
+          factFindings: validation.factPreservation?.ok
+            ? []
+            : [
+                ...(validation.factPreservation?.changedFacts ?? []).slice(0, 3),
+                ...(validation.factPreservation?.removedFacts ?? []).slice(0, 3),
+                ...(validation.factPreservation?.addedUnsupportedFacts ?? []).slice(0, 3),
+              ].map((finding) => ({
+                file: finding.file,
+                reason: finding.reason,
+                category: finding.classification?.category ?? "A",
+                type: finding.classification?.type ?? finding.reason,
+                severity: finding.classification?.severity ?? "high",
+                before: finding.before,
+                after: finding.after,
+              })),
+          formatChanges: validation.factPreservation?.formatChanges.length ?? 0,
         };
       },
     },

@@ -478,6 +478,8 @@ function HitlPayload({
       return <OverflowPayload payload={payload} />;
     case "hitl.revision_stalled":
       return <StalledPayload payload={payload} />;
+    case "hitl.revision_validation":
+      return <RevisionValidationPayload payload={payload} />;
     case "hitl.evidence_supply":
       return <EvidenceSupplyPayload payload={payload} supply={supply} />;
     default:
@@ -1049,6 +1051,137 @@ function stalledOutcomeAdvice(outcome: string): string {
     return "本轮修订后出现了新的严重问题或评分大幅下滑。";
   }
   return "";
+}
+
+// ---- 修订复核 payload（M9.10 Phase 4：rejected 可解释 + 分类展示） ----
+
+/** 拒绝归因类别的展示样式（与 backend RevisionRejectionCategory 对应） */
+const REJECTION_CATEGORY_STYLES: Record<string, { label: string; tone: "ok" | "warn" | "danger" }> = {
+  fact_preservation: { label: "事实漂移", tone: "danger" },
+  citation_removal_detected: { label: "引用无据删除", tone: "danger" },
+  claim_strength: { label: "claim 强度升级", tone: "warn" },
+  evidence_stale: { label: "证据失效", tone: "warn" },
+};
+
+interface RejectedItemPayload {
+  id: string;
+  category: string;
+  reason: string;
+  evidence?: unknown;
+}
+
+interface FactFindingPayload {
+  file: string;
+  reason: string;
+  category: string;
+  type: string;
+  severity: string;
+  before: string;
+  after: string;
+}
+
+function RevisionValidationPayload({ payload }: { payload: Record<string, unknown> }) {
+  const items = Array.isArray(payload["items"])
+    ? (payload["items"] as Record<string, unknown>[])
+    : [];
+  const countOf = (status: string): number => items.filter((item) => item["status"] === status).length;
+  const rejectedItems = Array.isArray(payload["rejectedItems"])
+    ? (payload["rejectedItems"] as unknown[]).filter(
+        (entry): entry is RejectedItemPayload =>
+          typeof entry === "object" && entry !== null && typeof (entry as RejectedItemPayload).id === "string",
+      )
+    : [];
+  const factFindings = Array.isArray(payload["factFindings"])
+    ? (payload["factFindings"] as unknown[]).filter(
+        (entry): entry is FactFindingPayload =>
+          typeof entry === "object" && entry !== null && typeof (entry as FactFindingPayload).file === "string",
+      )
+    : [];
+  const citationRemoved = Array.isArray(payload["citationRemoved"])
+    ? (payload["citationRemoved"] as Record<string, unknown>[]).filter((entry) => entry["authorized"] === false)
+    : [];
+  const evidenceStale = Array.isArray(payload["evidenceRecheck"])
+    ? (payload["evidenceRecheck"] as Record<string, unknown>[]).filter((entry) => entry["stillFormal"] === false)
+    : [];
+  const formatChanges = typeof payload["formatChanges"] === "number" ? (payload["formatChanges"] as number) : 0;
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-revision-validation">
+      <p className="hitl-payload-level" data-testid="hitl-validation-counts">
+        条目复核：通过 {countOf("validated")} / 拒绝 {countOf("rejected")} / 待确认 {countOf("needs_review")}
+      </p>
+      {rejectedItems.length > 0 ? (
+        <div className="hitl-validation-rejected" data-testid="hitl-validation-rejected">
+          <h3>拒绝明细（为什么 rejected）</h3>
+          <ul>
+            {rejectedItems.map((entry) => {
+              const style = REJECTION_CATEGORY_STYLES[entry.category] ?? { label: entry.category, tone: "warn" as const };
+              const evidence = Array.isArray(entry.evidence) ? (entry.evidence as string[]) : [];
+              return (
+                <li key={entry.id}>
+                  <p>
+                    <RegistryStatus style={style} />
+                    <span className="mono">{entry.id}</span>
+                  </p>
+                  <p className="field-help">{entry.reason}</p>
+                  {evidence.length > 0 ? (
+                    <ul className="hitl-list">
+                      {evidence.map((line, index) => (
+                        <li key={index} className="mono">
+                          {line}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+      {factFindings.length > 0 ? (
+        <div data-testid="hitl-validation-facts">
+          <h3>事实违规（分类）</h3>
+          <ul>
+            {factFindings.map((finding, index) => (
+              <li key={index}>
+                <p>
+                  <RegistryStatus
+                    style={
+                      finding.category === "A"
+                        ? { label: "A 事实变化", tone: "danger" }
+                        : { label: `${finding.category} 非违规`, tone: "ok" }
+                    }
+                  />
+                  <span className="mono">{finding.type}</span>
+                  <span className="field-help">（{finding.file}）</span>
+                </p>
+                <p className="mono">
+                  {finding.before}
+                  {finding.after !== "" ? ` → ${finding.after}` : "（被删除）"}
+                </p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {citationRemoved.length > 0 ? (
+        <HitlList
+          title="被无依据删除的引用 key"
+          items={citationRemoved.map((entry) => `${String(entry["key"] ?? "")}（${String(entry["file"] ?? "")}）`)}
+        />
+      ) : null}
+      {evidenceStale.length > 0 ? (
+        <HitlList
+          title="已失效的关联证据"
+          items={evidenceStale.map((entry) => String(entry["evidenceId"] ?? ""))}
+          tone="warn"
+        />
+      ) : null}
+      {formatChanges > 0 ? (
+        <p className="field-help">另有 {formatChanges} 项格式等价差异（数值未漂移，不计违规，仅审计记录）。</p>
+      ) : null}
+    </div>
+  );
 }
 
 function HitlList({

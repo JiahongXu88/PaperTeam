@@ -24,7 +24,7 @@ import {
   type ExternalOutcomeKind,
   type ExternalOutcomeReport,
 } from "../review/externalInstructions.js";
-import { protectedInventory } from "../review/styleInvariants.js";
+import { extractCitationKeys, protectedInventory } from "../review/styleInvariants.js";
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { validateOutline } from "../manuscript/ManuscriptService.js";
 import { extractJsonObject } from "../agents/outputParsing.js";
@@ -132,6 +132,26 @@ export function partitionEvidenceBackedKeys(
     (backed.has(entry.key) ? backedKeys : unbackedKeys).push(entry.key);
   }
   return { backedKeys, unbackedKeys };
+}
+
+/**
+ * M9.10 Phase 2 引用冻结清单：本章节当前实际引用的 key（确定性提取自
+ * currentLatex，非 LLM 推断）。修订输出必须保留清单内每一个 key——「弱化论断」
+ * 与「删除引用」是两件事：弱化后的表述仍带原 \cite；删除只发生在修订计划条目
+ * 明确要求删该引用（如 citation_missing）时。清单化的动机（M9.7.1 §11 归因）：
+ * 显式清单（A/B 组白名单）hallucinated=0 全零有效，而隐式「保留原文 cite」在
+ * GLM-5.3 整节重写式输出下概率性丢失——把隐式约束变成显式锚点。
+ */
+function renderCitationFreezeLines(currentLatex: string): string[] {
+  const keys = extractCitationKeys(currentLatex);
+  return [
+    "11. 引用冻结清单（本章节当前实际引用的 key；修订输出必须原样保留其中每一个，至少各出现一次）：",
+    keys.length > 0 ? `    ${keys.join(", ")}` : "    （本章节当前没有引用；新增引用仍须遵守第 9 条 A/B 组规则）",
+    "    - 禁止删除清单内任何 key：不得因「证据不足」「精简」「重写」「B 组身份」而移除；",
+    "    - 弱化论断 ≠ 删除引用：把表述弱化为背景性 / 有限定的说法时，保留其 \\cite（引用标注来源主张，不背书强度）；",
+    "    - 只有当上方修订计划条目明确要求删除某引用（如 citation_missing：key 不在参考文献库）时，才允许移除该 key；",
+    "    - 允许新增 A 组 key；清单外与 A/B 组之外的 key 一律不得出现。",
+  ];
 }
 
 /**
@@ -443,7 +463,11 @@ export class WriterService {
       task.output ?? "",
       params.externalDirectives ?? [],
     );
-    const latex = stripCodeFence(bodyLatex).trim();
+    // M9.10 Phase 1：防御性剥离「无外部意见派发时模型自发输出的协议标记行」——
+    // GLM-5.3 会把 RevisionPlanItem id 当 instructionId 上报 PT-OUTCOMES（m910 E2E
+    // rev3 实录：协议行连同 JSON 进入正文，其数字片段被 Fact Preservation 判为
+    // added_number）。协议行不可能是合法 LaTeX 内容，无论是否派发过外部意见都剥离。
+    const latex = stripStrayOutcomeLines(stripCodeFence(bodyLatex)).trim();
     if (latex === "") {
       throw new AgentRunFailedError(`章节 ${params.section.id} 修订没有返回内容`);
     }
@@ -913,11 +937,12 @@ export function buildRevisePrompt(params: {
       + "其他宏包的环境或命令（图形以文字描述或 table 呈现），否则无法编译。",
     "9. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
-    "   - 修订特则：本章节现有的 B 组引用按第 10 条保留（不因缺证据而删除）；但不得新增 B 组引用，也不得把原本 A 组支撑的论断改由 B 组支撑。",
+    "   - 修订特则：本章节现有的 B 组引用按第 10/11 条保留（不因缺证据而删除）；但不得新增 B 组引用，也不得把原本 A 组支撑的论断改由 B 组支撑。",
     "10. 保留本章节现有的 \\cite 引用及其所支撑的论述（除非某条问题明确要求删除该引用）；不得为了精简而整体删光引用，也不得新增列表之外的 key。",
+    ...renderCitationFreezeLines(params.currentLatex),
     ...CLAIM_DISCIPLINE_LINES,
     ...(params.buildError
-      ? ["11. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
+      ? ["12. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
       : []),
     ...externalRules,
     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
@@ -1025,6 +1050,21 @@ function parseOutcomeArray(
     });
   }
   return reports;
+}
+
+/**
+ * 剥离输出中残留的 PT-OUTCOMES 协议标记行（M9.10 Phase 1）。
+ * splitExternalOutcomes 只在「本目标派发过外部意见」时分离报告行；GLM-5.3 会
+ * 在无派发时也自发上报（把 RevisionPlanItem id 当 instructionId，m910 E2E rev3
+ * 实录三处泄漏），协议行连同 JSON 进入正文——其中的数字片段（verified=0、
+ * id 尾串）会被 Fact Preservation 判为 added_number。协议行不可能是合法
+ * LaTeX 内容，统一防御性剥离。
+ */
+export function stripStrayOutcomeLines(latex: string): string {
+  return latex
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith(EXTERNAL_OUTCOMES_MARKER))
+    .join("\n");
 }
 
 /** 解析大纲 sections 数组（防御性） */
