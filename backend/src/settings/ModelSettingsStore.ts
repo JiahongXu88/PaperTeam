@@ -82,7 +82,7 @@ export function agentModelKeyForScope(scope: string | undefined): AgentModelKey 
   return undefined;
 }
 
-/** 持久化的模型偏好（版本化 schema；v1 只有 model；M5.7 增加可选 agents） */
+/** 持久化的模型偏好（版本化 schema；v1 只有 model；M5.7 增加可选 agents；M10.2 增加可选 visionModel） */
 export interface StoredModelSettings {
   /** 生效默认偏好 "provider/model-id"（缺省 = 未保存） */
   model?: string;
@@ -91,6 +91,12 @@ export interface StoredModelSettings {
    * 缺省键 / null = 该 Agent 继承默认模型。只存非敏感配置，不含 API Key。
    */
   agents?: Partial<Record<AgentModelKey, string>>;
+  /**
+   * Vision 模型（M10.2）：显式指定图片分析用的 "provider/model-id"。
+   * 缺省 = 未设置（默认模型 image-capable 时可复用默认，否则 Vision 不可用）。
+   * 保存时已校验模型目录声明 image input——这里只存偏好，不做能力判定。
+   */
+  visionModel?: string;
   /** 上次保存时间（ISO；诊断用） */
   savedAt?: string;
 }
@@ -137,9 +143,11 @@ export class ModelSettingsStore {
     }
     const model = (parsed as Record<string, unknown>)["model"];
     const savedAt = (parsed as Record<string, unknown>)["savedAt"];
+    const visionModel = (parsed as Record<string, unknown>)["visionModel"];
     const agents = readAgentOverrides((parsed as Record<string, unknown>)["agents"]);
     return {
       ...(typeof model === "string" && model.trim() !== "" ? { model: model.trim() } : {}),
+      ...(typeof visionModel === "string" && visionModel.trim() !== "" ? { visionModel: visionModel.trim() } : {}),
       ...(typeof savedAt === "string" ? { savedAt } : {}),
       ...(agents !== undefined ? { agents } : {}),
     };
@@ -167,6 +175,7 @@ export class ModelSettingsStore {
         : {};
     await writeJsonAtomic(this.filePath, {
       ...(settings.model !== undefined ? { model: settings.model } : {}),
+      ...(settings.visionModel !== undefined ? { visionModel: settings.visionModel } : {}),
       ...agents,
       savedAt: new Date().toISOString(),
     });

@@ -712,6 +712,20 @@ export interface ModelSettingsView {
   detail: string;
   /** per-Agent 模型配置视图（M5.7；旧 Backend 可能缺省） */
   agents?: AgentModelSettingView[];
+  /** Vision 模型解析视图（M10.2；旧 Backend 可能缺省） */
+  vision?: VisionModelStatusView;
+}
+
+/** Vision 模型状态视图（M10.2；显式设置 > 默认模型复用；不可用有原因） */
+export interface VisionModelStatusView {
+  /** Settings 保存的显式 Vision 模型规格（未设置时缺省） */
+  savedModel?: string;
+  /** 实际将用于图片分析的模型（不可用时缺省） */
+  model?: string;
+  source: "vision_setting" | "default_model" | "unavailable";
+  reason?: "not_configured" | "no_vision_model" | "model_not_in_catalog" | "auth_missing";
+  authConfigured?: boolean;
+  detail: string;
 }
 
 /** provider 目录条目（安全 metadata） */

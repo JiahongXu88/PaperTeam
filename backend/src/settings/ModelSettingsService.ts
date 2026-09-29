@@ -29,6 +29,8 @@ import { BusinessError, ModelConfigBusyError, NotFoundError } from "../errors.js
 import { parseModelSpec } from "../runtime/PiRuntimeAdapter.js";
 import { PI_RUNTIME_VERSION } from "../runtime/pi/version.js";
 import type { RuntimeHealth } from "../runtime/types.js";
+import { isImageCapable, resolveVisionModel } from "../vision/capabilities.js";
+import type { VisionUnavailableReason } from "../vision/types.js";
 import {
   type CustomProviderConfig,
   type CustomProviderStore,
@@ -92,6 +94,22 @@ export interface ModelSettingsStatus {
   detail: string;
   /** per-Agent 模型配置视图（M5.7；含 override 与生效值；无 key） */
   agents?: AgentModelView[];
+  /** Vision 模型解析视图（M10.2：显式设置 > 默认模型复用；不可用时明确说明） */
+  vision?: VisionModelStatusView;
+}
+
+/** Vision 模型状态视图（M10.2；不含任何 key） */
+export interface VisionModelStatusView {
+  /** Settings 保存的显式 Vision 模型规格（未设置时缺省） */
+  savedModel?: string;
+  /** 实际将用于图片分析的模型（不可用时缺省） */
+  model?: string;
+  source: "vision_setting" | "default_model" | "unavailable";
+  /** source=unavailable 时的原因码 */
+  reason?: VisionUnavailableReason;
+  /** 解析到模型时其 provider 是否有凭据 */
+  authConfigured?: boolean;
+  detail: string;
 }
 
 /**
@@ -233,6 +251,9 @@ export class ModelSettingsService {
         ? "stored"
         : "not_configured";
 
+    // M10.2 Vision 解析视图：显式 visionModel > 默认模型（须 image-capable + 凭据）
+    const vision = this.toVisionModelView(stored.visionModel, effectiveModel);
+
     return {
       ...(parsed !== undefined ? { provider: parsed.provider } : {}),
       ...(parsed !== undefined ? { modelId: parsed.modelId } : {}),
@@ -248,6 +269,36 @@ export class ModelSettingsService {
       modelDetail: modelStatus.detail,
       detail: describeSource(configurationSource),
       agents: AGENT_MODEL_KEYS.map((key) => this.toAgentModelView(key, stored, effectiveModel)),
+      vision,
+    };
+  }
+
+  /** Vision 模型解析视图（无 key；不可用时给可行动的原因说明） */
+  private toVisionModelView(
+    savedVisionModel: string | undefined,
+    defaultModel: string | undefined,
+  ): VisionModelStatusView {
+    const selection = resolveVisionModel(this.modelRuntime, {
+      visionModel: savedVisionModel,
+      defaultModel,
+    });
+    if (selection.available) {
+      return {
+        ...(savedVisionModel !== undefined ? { savedModel: savedVisionModel } : {}),
+        model: selection.modelSpec,
+        source: selection.source,
+        authConfigured: true,
+        detail:
+          selection.source === "vision_setting"
+            ? `图片分析使用显式配置的 Vision 模型 ${selection.modelSpec}`
+            : `图片分析复用默认模型 ${selection.modelSpec}（目录已声明 image input）`,
+      };
+    }
+    return {
+      ...(savedVisionModel !== undefined ? { savedModel: savedVisionModel } : {}),
+      source: "unavailable",
+      reason: selection.reason,
+      detail: `图片分析不可用：${selection.detail}。可在设置中显式选择支持图片输入的 Vision 模型（如目录中 input 含 image 的模型）`,
     };
   }
 
@@ -380,7 +431,7 @@ export class ModelSettingsService {
     await this.customProviders.save(stored.filter((config) => config.id !== id));
 
     const preferences = await this.store.load();
-    // 默认偏好或任何 agent override 指向被删 provider 时一并清除
+    // 默认偏好 / Vision 模型 / agent override 指向被删 provider 时一并清除
     // （否则重启后 Runtime 会解析到不存在的提供商 / 模型）
     const keptAgents = Object.fromEntries(
       Object.entries(preferences.agents ?? {}).filter(
@@ -391,9 +442,12 @@ export class ModelSettingsService {
       Object.keys(keptAgents).length !== Object.keys(preferences.agents ?? {}).length;
     const preferenceCleared =
       preferences.model !== undefined && parseModelSpec(preferences.model)?.provider === id;
-    if (preferenceCleared || agentOverridesCleared) {
+    const visionCleared =
+      preferences.visionModel !== undefined && parseModelSpec(preferences.visionModel)?.provider === id;
+    if (preferenceCleared || agentOverridesCleared || visionCleared) {
       await this.store.write({
         ...(preferenceCleared ? {} : preferences.model !== undefined ? { model: preferences.model } : {}),
+        ...(visionCleared ? {} : preferences.visionModel !== undefined ? { visionModel: preferences.visionModel } : {}),
         ...(Object.keys(keptAgents).length > 0 ? { agents: keptAgents } : {}),
       });
       this.log(`[model-settings] 指向自定义提供商 ${id} 的模型偏好已随删除一并清除`);
@@ -417,6 +471,11 @@ export class ModelSettingsService {
     model: string;
     apiKey?: string;
     agents?: Record<string, string | null>;
+    /**
+     * Vision 模型（M10.2）：undefined = 保持现有；null / 空串 = 清除
+     * （回落到「默认模型 image-capable 时复用」的解析规则）。
+     */
+    visionModel?: string | null;
   }): Promise<ModelSettingsStatus> {
     // 前置空闲检查：避免「已落盘但 Runtime 被拒」的半应用状态
     // （reconfigure 内部仍有一致性守卫，双保险）
@@ -457,9 +516,20 @@ export class ModelSettingsService {
     const agents =
       input.agents !== undefined ? this.validateAgentOverrides(input.agents) : storedNow.agents;
 
-    await this.store.save(spec, agents);
+    // M10.2 Vision 模型：显式设置时必须已在注册表且目录声明 image input
+    // （unknown 保守拒绝——「允许用户显式选择」的前提是能力已确认）。
+    // 清除（null / 空串）与保持（undefined）语义同 agents。
+    const visionModel = this.validateVisionModel(input.visionModel, storedNow.visionModel);
+
+    await this.store.write({
+      model: spec,
+      ...(agents !== undefined ? { agents } : {}),
+      // null（清除）/ undefined（保持且当前为空）都表现为字段缺省
+      ...(visionModel != null ? { visionModel } : {}),
+    });
     this.log(
       `[model-settings] 已保存模型偏好：${spec}` +
+        (visionModel !== undefined ? `（vision：${visionModel ?? "（未设置）"}）` : "") +
         (agents !== undefined && Object.keys(agents).length > 0
           ? `（per-Agent override：${Object.keys(agents).join(", ")}）`
           : ""),
@@ -507,6 +577,45 @@ export class ModelSettingsService {
       agents[key as AgentModelKey] = spec;
     }
     return agents;
+  }
+
+  /**
+   * 校验 Vision 模型输入（M10.2）。返回 undefined = 保持现有；null = 清除；
+   * 字符串 = 校验通过的规格。显式设置必须：规格合法 + 在注册表 + 目录
+   * 声明 image input（§7：unknown ≠ vision supported，保守拒绝）。
+   */
+  private validateVisionModel(
+    raw: string | null | undefined,
+    current: string | undefined,
+  ): string | null | undefined {
+    if (raw === undefined) {
+      return current;
+    }
+    if (raw === null || raw.trim() === "") {
+      return null;
+    }
+    const spec = raw.trim();
+    const parsed = parseModelSpec(spec);
+    if (parsed === undefined) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `Vision 模型规格非法："${spec}"（应为 provider/model-id）`,
+      );
+    }
+    const entry = this.modelRuntime.getModel(parsed.provider, parsed.modelId);
+    if (entry === undefined) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `Vision 模型 ${parsed.provider}/${parsed.modelId} 不在注册表（可在 GET /api/settings/model/options?provider=${parsed.provider} 查看可用模型）`,
+      );
+    }
+    if (!isImageCapable(entry)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `Vision 模型 ${spec} 未声明 image input 能力（目录 input=${JSON.stringify(entry.input ?? null)}）；请选择支持图片输入的模型`,
+      );
+    }
+    return spec;
   }
 
   // ---- 清除 Key（DELETE /api/settings/model/key） ----

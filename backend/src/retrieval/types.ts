@@ -61,7 +61,8 @@ export type ChunkParserKind =
   | "structured-document" // M10.1：其它结构化文档产物（同投影路径）
   | "tabular" // M10.1：CSV/XLSX 行级结构化记录投影（M10.1.1 起 JSON/YAML 同路径）
   | "code" // M10.1.1：源码行窗口块
-  | "notebook"; // M10.1.1：Notebook cell 静态投影
+  | "notebook" // M10.1.1：Notebook cell 静态投影
+  | "figure-analysis"; // M10.2：Vision FigureAnalysis 投影（图片条目唯一可检索通道；追加于文档投影之后）
 
 /** 单个 Source 的 chunk 生成结果（结构化失败——不抛给整库） */
 export interface SourceChunkOutcome {

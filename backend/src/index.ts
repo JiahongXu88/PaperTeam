@@ -10,6 +10,7 @@ import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { CustomProviderStore } from "./settings/CustomProviderStore.js";
 import { ModelSettingsService, registerStoredCustomProviders } from "./settings/ModelSettingsService.js";
+import { ScriptedVisionRuntime } from "./vision/scriptedVisionRuntime.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { SkillRegistry } from "./skills/SkillRegistry.js";
@@ -49,6 +50,9 @@ export async function startBackend(): Promise<void> {
   // PiRuntimeAdapter（浏览器级 E2E 驱动完整真实链路：编排器 / checkpoint / SSE /
   // HTTP / React 全部真实，只有「模型输出」是脚本）。正式环境不设置该变量。
   const useScriptedRuntime = process.env["PAPERTEAM_TEST_RUNTIME"]?.trim() === "scripted";
+  // M10.2 测试专用 seam：PAPERTEAM_TEST_VISION=scripted 时 Vision 分析用确定性
+  // 假模型（不访问任何真实模型；链路其余部分全部真实）
+  const useScriptedVision = process.env["PAPERTEAM_TEST_VISION"]?.trim() === "scripted";
 
   let config;
   try {
@@ -219,6 +223,24 @@ export async function startBackend(): Promise<void> {
     },
     search: config.search,
     fullText: { batchConcurrency: config.fullText.batchConcurrency },
+    // M10.2 Vision 模型接入：scripted seam（测试）或共享 ModelRuntime（生产，
+    // 与 adapter / ModelSettingsService 同一实例）。偏好解析：显式 visionModel
+    // 设置 > 生效默认模型（env PAPERTEAM_PI_MODEL > settings model.json）。
+    vision: useScriptedVision
+      ? {
+          modelRuntime: new ScriptedVisionRuntime(),
+          modelCandidates: () => ({ visionModel: "scripted/vision-mock" }),
+        }
+      : {
+          modelRuntime,
+          modelCandidates: async () => {
+            const stored = await modelSettingsStore.load();
+            return {
+              visionModel: stored.visionModel,
+              defaultModel: effectiveModelSpec,
+            };
+          },
+        },
     ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
     ...(config.pdf.doclingPythonCommand !== undefined
       ? { doclingPythonCommand: config.pdf.doclingPythonCommand }

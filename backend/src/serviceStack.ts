@@ -58,6 +58,9 @@ import { DoclingParser } from "./ingestion/DoclingParser.js";
 import { IngestionService } from "./ingestion/IngestionService.js";
 import { LegacyPdfTextParser } from "./ingestion/LegacyPdfTextParser.js";
 import type { DocumentParser } from "./ingestion/types.js";
+import { FigureAnalysisStore } from "./vision/FigureAnalysisStore.js";
+import { VisionAnalysisService } from "./vision/VisionAnalysisService.js";
+import type { VisionModelCandidates, VisionModelRuntime } from "./vision/types.js";
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
 import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
@@ -152,6 +155,16 @@ export interface ServiceStackOptions {
     resolvers?: FullTextResolver[];
     batchConcurrency?: number;
   };
+  /**
+   * M10.2 Vision 模型接入。缺省 = 不装配（analyze 全部 skipped，capability
+   * unavailable 如实上报）；生产由 index.ts 注入共享 ModelRuntime + 模型
+   * 偏好读取（visionModel 设置 > 默认模型复用）；测试注入 fake。
+   */
+  vision?: {
+    modelRuntime?: VisionModelRuntime;
+    modelCandidates?: () => VisionModelCandidates | Promise<VisionModelCandidates>;
+    requestTimeoutMs?: number;
+  };
   log?: (message: string) => void;
 }
 
@@ -200,6 +213,10 @@ export interface ServiceStack {
   parsedDocuments: ParsedDocumentStore;
   /** M10.1：Document & Data Ingestion 编排（PDF docling 链 + CSV/XLSX 记录 + 事实确认） */
   ingestion: IngestionService;
+  /** M10.2：FigureAnalysis 持久化（sources/analysis/<id>.vision.json） */
+  figureAnalyses: FigureAnalysisStore;
+  /** M10.2：Minimal Multimodal Document Understanding 编排（figure → Vision → 检索 / 确认） */
+  vision: VisionAnalysisService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
   manuscript: ManuscriptService;
   citation: CitationService;
@@ -484,6 +501,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
   // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
   // M10.1：结构化解析产物优先（docling / tabular 投影）。
+  // M10.2：FigureAnalysis 投影接入——已完成且新鲜（sourceContentHash 与
+  // 当前条目一致）的分析进入检索；图片条目由此获得唯一可检索通道。
+  const figureAnalyses = new FigureAnalysisStore(options.projects);
   const chunkStore = new ChunkStore(options.projects);
   const retrieval = new RetrievalService({
     projects: options.projects,
@@ -491,6 +511,18 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     chunker: new SourceChunker({
       parser: paperParser,
       documentProvider: (projectId, item) => ingestion.getDocument(projectId, item.sourceId),
+      figureAnalysisProvider: async (projectId, item) => {
+        const stored = await figureAnalyses.load(projectId, item.sourceId);
+        if (stored === null) {
+          return null;
+        }
+        return stored.analyses.filter(
+          (entry) =>
+            entry.status === "completed" &&
+            entry.sourceContentHash !== undefined &&
+            entry.sourceContentHash === item.contentHash,
+        );
+      },
       chunkOptions: {
         targetTokens: options.retrieval?.chunkTargetTokens ?? 400,
         maxTokens: options.retrieval?.chunkMaxTokens ?? 600,
@@ -507,6 +539,26 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // chunk，直到下一次库签名变化）。重建失败只记日志（lazy 自愈口径不变：
   // 扫描件等 SourceNotIndexableError 如实记录在 manifest）。
   ingestion.attachIngestedHook(async (projectId, sourceId) => {
+    await retrieval.rebuildSource(projectId, sourceId);
+  });
+  // M10.2 Vision 分析编排：只消费已登记的 ParsedFigureBlock（PDF 抽图 /
+  // 上传图片 / Notebook 图片输出同链）；模型接入 optional（缺省全部
+  // skipped，capability unavailable 如实上报）。分析完成后检索层按新
+  // 分析重建（图片条目获得唯一可检索通道；SourceNotIndexableError 由
+  // service 内 hook 包装层记录，如纯失败场景）。
+  const vision = new VisionAnalysisService({
+    projects: options.projects,
+    sources,
+    documents: parsedDocuments,
+    analyses: figureAnalyses,
+    ingestion,
+    evidence,
+    ...(options.vision?.modelRuntime !== undefined ? { modelRuntime: options.vision.modelRuntime } : {}),
+    ...(options.vision?.modelCandidates !== undefined ? { modelCandidates: options.vision.modelCandidates } : {}),
+    ...(options.vision?.requestTimeoutMs !== undefined ? { requestTimeoutMs: options.vision.requestTimeoutMs } : {}),
+    log,
+  });
+  vision.attachAnalyzedHook(async (projectId, sourceId) => {
     await retrieval.rebuildSource(projectId, sourceId);
   });
   // M7.2 FullTextResolver（P-D 修复）：resolver 与 search provider 共享同一
@@ -626,6 +678,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     retrieval,
     parsedDocuments,
     ingestion,
+    figureAnalyses,
+    vision,
     pdfAnalyzer,
     manuscript,
     citation,

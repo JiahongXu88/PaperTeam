@@ -83,6 +83,7 @@ export type ServiceStackOptionsReview = Parameters<typeof buildServiceStack>[0][
 export type ServiceStackOptionsSearch = Parameters<typeof buildServiceStack>[0]["search"];
 export type ServiceStackOptionsFullText = Parameters<typeof buildServiceStack>[0]["fullText"];
 export type ServiceStackOptionsIngestion = Parameters<typeof buildServiceStack>[0]["ingestion"];
+export type ServiceStackOptionsVision = NonNullable<Parameters<typeof buildServiceStack>[0]["vision"]>;
 
 /** 测试默认的离线文档解析 stub：PDF 上传的后台 ingestion 立即失败（不 spawn python/docling） */
 const offlineDocumentParser: DocumentParser = {
@@ -128,6 +129,8 @@ export async function startTestStack(
     paperParser?: import("../../src/paper/PdfParser.js").PdfParser;
     /** M10.1 ingestion 装配（缺省离线 stub；ingestion 测试注入 fake parser） */
     ingestion?: ServiceStackOptionsIngestion;
+    /** M10.2 Vision 模型接入（缺省不装配 = analyze 全部 skipped；测试注入 fake） */
+    vision?: ServiceStackOptionsVision;
     /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
     root?: string;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
@@ -176,6 +179,7 @@ export async function startTestStack(
       fallbackParser: offlineDocumentParser,
       ...(options.ingestion ?? {}),
     },
+    ...(options.vision !== undefined ? { vision: options.vision } : {}),
     log: () => {},
   });
   // Existing-LaTeX 导入器：栈内单例（import-paper 的 latex 路径与 /:id/import 共用）

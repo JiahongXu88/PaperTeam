@@ -40,6 +40,11 @@ export async function saveModelSettings(input: {
    * （键缺省 / null = 该 Agent 继承默认）。只含 provider/model 规格，无 Key。
    */
   agents?: Record<string, string | null>;
+  /**
+   * Vision 模型（M10.2）：省略 = 保持现有；null = 清除（回落默认模型复用）；
+   * 须为目录声明 image input 的模型（Backend 校验拒绝 text-only）。
+   */
+  visionModel?: string | null;
 }): Promise<ModelSettingsView> {
   const body = await apiClient.put<{ settings: ModelSettingsView }>("/api/settings/model", input);
   return body.settings;

@@ -1144,6 +1144,8 @@ export function useSaveModelSettings() {
       apiKey?: string;
       /** per-Agent override（M5.7）：省略 = 保持现有；存在时整体替换 */
       agents?: Record<string, string | null>;
+      /** Vision 模型（M10.2）：省略 = 保持现有；null = 清除 */
+      visionModel?: string | null;
     }) => saveModelSettings(input),
     onSuccess: invalidate,
   });

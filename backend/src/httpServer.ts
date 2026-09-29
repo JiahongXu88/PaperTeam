@@ -740,11 +740,23 @@ async function handleModelSettingsRoutes(
           }
         }
       }
+      // visionModel（M10.2，可选）：字符串 = 显式设置（须目录声明 image
+      // input）；null / 空串 = 清除；字段缺省 = 保持现有
+      const visionModelField = body["visionModel"];
+      if (visionModelField !== undefined && visionModelField !== null && typeof visionModelField !== "string") {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          '字段 visionModel 必须是 "provider/model-id" 字符串或 null（清除）',
+        );
+      }
       const settings = await service.saveModel({
         model,
         ...(typeof apiKeyField === "string" ? { apiKey: apiKeyField } : {}),
         ...(agentsField !== undefined
           ? { agents: agentsField as Record<string, string | null> }
+          : {}),
+        ...(visionModelField !== undefined
+          ? { visionModel: visionModelField === null ? null : String(visionModelField) }
           : {}),
       });
       sendJson(res, 200, { settings });
@@ -1211,6 +1223,72 @@ async function handleProjectResourceRoutes(
           provenance: result.record.provenance,
         },
         cell: result.cell,
+      });
+      return true;
+    }
+
+    // ---- M10.2 vision：figure 视觉分析 / 状态 / 候选事实确认 ----
+
+    const visionAnalyzeMatch = /^\/([A-Z]\d{2,})\/vision\/analyze$/.exec(rest);
+    if (visionAnalyzeMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const sourceId = visionAnalyzeMatch[1] ?? "";
+      const body = await readOptionalJsonBody(req);
+      const force = body["force"] === true;
+      // 默认后台执行（逐图增量落盘，GET /vision 轮询进度）；?inline=true
+      // 同步执行完再返回（小批量 / 测试 / smoke 用）
+      if (url.searchParams.get("inline") === "true") {
+        const result = await stack.vision.analyze(projectId, sourceId, { force });
+        sendJson(res, 200, { vision: result.status, actions: result.actions });
+        return true;
+      }
+      stack.vision.analyzeInBackground(projectId, sourceId, { force });
+      sendJson(res, 200, {
+        vision: await stack.vision.status(projectId, sourceId),
+        mode: "background",
+        note: `分析已后台触发；GET /api/projects/${projectId}/sources/${sourceId}/vision 轮询进度`,
+      });
+      return true;
+    }
+
+    const visionStatusMatch = /^\/([A-Z]\d{2,})\/vision$/.exec(rest);
+    if (visionStatusMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const vision = await stack.vision.status(projectId, visionStatusMatch[1] ?? "", {
+        includeFacts: url.searchParams.get("facts") === "true",
+      });
+      sendJson(res, 200, { vision });
+      return true;
+    }
+
+    const visionFactEvidenceMatch = /^\/([A-Z]\d{2,})\/vision\/facts\/([A-Za-z0-9][A-Za-z0-9-]*)\/evidence$/.exec(rest);
+    if (visionFactEvidenceMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const sourceId = visionFactEvidenceMatch[1] ?? "";
+      const factId = visionFactEvidenceMatch[2] ?? "";
+      const body = await readJsonBody(req);
+      const claim = readStringField(body, "claim");
+      if (claim === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 claim");
+      }
+      const result = await stack.vision.confirmFactEvidence(projectId, sourceId, factId, { claim });
+      sendJson(res, 201, {
+        evidence: result.evidence,
+        fact: result.fact,
+        analysis: {
+          analysisId: result.analysis.analysisId,
+          figureBlockId: result.analysis.figureBlockId,
+          model: result.analysis.model,
+        },
       });
       return true;
     }

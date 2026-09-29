@@ -54,6 +54,14 @@ export interface EvidenceLocation {
   column?: string;
   /** 结构化路径（M10.1.1：JSON/YAML 投影记录，`$.training.epochs`） */
   path?: string;
+  /** 图片分析 provenance（M10.2：Vision candidate fact → user_confirmed 证据） */
+  figureBlockId?: string;
+  /** 图片资产文件名（sources/figures/<sourceId>/ 内） */
+  assetName?: string;
+  /** 页面坐标（parser 提供时；Parser Fact 拷贝） */
+  bbox?: { x0: number; y0: number; x1: number; y1: number };
+  /** 视觉分析产物引用（"<analysisId>/<factId>"；model 不是 source of truth） */
+  visionFactRef?: string;
 }
 
 export interface EvidenceRecord {
@@ -521,6 +529,21 @@ function validateLocation(location: EvidenceLocation | undefined): EvidenceLocat
   }
   if (location.column !== undefined) out.column = optionalString(location.column, 100);
   if (location.path !== undefined) out.path = optionalString(location.path, 200);
+  // M10.2 图片分析 provenance（全部 optional；bbox 数值防御）
+  if (location.figureBlockId !== undefined) out.figureBlockId = optionalString(location.figureBlockId, 32);
+  if (location.assetName !== undefined) out.assetName = optionalString(location.assetName, 200);
+  if (location.visionFactRef !== undefined) out.visionFactRef = optionalString(location.visionFactRef, 100);
+  if (location.bbox !== undefined) {
+    const bbox = location.bbox;
+    if (
+      typeof bbox !== "object" ||
+      bbox === null ||
+      ![bbox.x0, bbox.y0, bbox.x1, bbox.y1].every((value) => typeof value === "number" && Number.isFinite(value))
+    ) {
+      throw new EvidenceValidationError("location.bbox 必须含四个有限数值（x0/y0/x1/y1）");
+    }
+    out.bbox = { x0: bbox.x0, y0: bbox.y0, x1: bbox.x1, y1: bbox.y1 };
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

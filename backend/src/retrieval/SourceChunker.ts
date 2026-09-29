@@ -14,8 +14,11 @@
  *   无页码）；latex 无产物时同法按整档文本；
  * - xlsx / json / yaml / code / notebook：无结构化产物不可索引（结构化
  *   通道见 POST /sources/:id/ingest；上传即自动内联触发）；
- * - metadata_only（doi/arxiv/url/metadata）/ bibtex / image：full_text_unavailable
- *   skip——**绝不把 abstract/snippet 偷偷当全文索引**。
+ * - metadata_only（doi/arxiv/url/metadata）/ bibtex：full_text_unavailable
+ *   skip——**绝不把 abstract/snippet 偷偷当全文索引**；
+ * - 图片（M10.2）：无 Vision 分析时仍 full_text_unavailable skip；有已完成
+ *   且新鲜的 FigureAnalysis 时按 figure-analysis 投影索引（唯一可检索通道）；
+ *   文档类条目（PDF/Notebook 等）的分析 sections 追加在既有投影之后。
  *
  * 单 Source 失败不污染整库：结构化 outcome（reason + 短 note，不含全文）。
  */
@@ -35,6 +38,8 @@ import {
   tabularSectionsFromDocument,
 } from "../ingestion/documentSections.js";
 import type { ParsedDocument } from "../ingestion/types.js";
+import type { FigureAnalysis } from "../vision/types.js";
+import { figureAnalysisSections } from "./figureSections.js";
 import {
   buildSourceChunks,
   splitParagraphs,
@@ -56,6 +61,12 @@ export interface SourceChunkerOptions {
    * builtin 路径（表格 / 阅读顺序 / 页码 provenance 更完整）。
    */
   documentProvider?: (projectId: string, item: SourceItem) => Promise<ParsedDocument | null>;
+  /**
+   * M10.2 Vision 分析产物供给（已过滤：completed + sourceContentHash 与
+   * 当前条目一致）。返回非空时 figure 分析进入检索：图片条目的唯一可检索
+   * 通道；文档条目追加在既有投影之后。缺省 / null = 无分析，行为不变。
+   */
+  figureAnalysisProvider?: (projectId: string, item: SourceItem) => Promise<readonly FigureAnalysis[] | null>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -69,6 +80,10 @@ export interface SourceChunkResult {
 export class SourceChunker {
   private readonly parser?: PdfParser;
   private readonly documentProvider?: (projectId: string, item: SourceItem) => Promise<ParsedDocument | null>;
+  private readonly figureAnalysisProvider?: (
+    projectId: string,
+    item: SourceItem,
+  ) => Promise<readonly FigureAnalysis[] | null>;
   private readonly chunkOptions: ChunkBuildOptions;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
@@ -76,6 +91,7 @@ export class SourceChunker {
   constructor(options: SourceChunkerOptions = {}) {
     this.parser = options.parser;
     this.documentProvider = options.documentProvider;
+    this.figureAnalysisProvider = options.figureAnalysisProvider;
     this.chunkOptions = options.chunkOptions ?? {
       targetTokens: 400,
       maxTokens: 600,
@@ -94,12 +110,19 @@ export class SourceChunker {
       return skipped(item.sourceId, "full_text_unavailable", "metadata-only 条目（无原始文件）");
     }
     const kind = assetKindOfFileName(item.fileName);
+    // M10.2：图片条目在无 Vision 分析时仍不可索引（行为不变）；有已完成
+    // 分析时按 figure-analysis 投影索引（唯一可检索通道）
+    const figureAnalyses = await this.loadFigureAnalyses(projectId, item);
+    const figureSections = figureAnalysisSections(figureAnalyses);
     if (kind === "image") {
-      return skipped(
-        item.sourceId,
-        "full_text_unavailable",
-        "图片条目无文本层（资产登记见 ingestion；视觉解析属 M10.2）",
-      );
+      if (figureSections.length === 0) {
+        return skipped(
+          item.sourceId,
+          "full_text_unavailable",
+          "图片条目无文本层（资产登记见 ingestion；视觉分析见 POST /sources/:id/vision/analyze）",
+        );
+      }
+      return this.build(projectId, item.sourceId, figureSections, "figure-analysis");
     }
     // M10.1/M10.1.1：结构化解析产物优先。只消费 structured 模式 + 非 failed
     // 产物；text_only 降级产物交给下方既有 pymupdf / builtin 路径（质量
@@ -108,7 +131,15 @@ export class SourceChunker {
     if (document !== null) {
       const fromDocument = sectionsFromAssetDocument(document, kind);
       if (fromDocument !== null && fromDocument.sections.length > 0) {
+        // M10.2：文档投影之后追加 figure 分析 sections（sectionId 续编号）
+        if (figureSections.length > 0) {
+          fromDocument.sections.push(...figureAnalysisSections(figureAnalyses, fromDocument.sections.length));
+        }
         return this.build(projectId, item.sourceId, fromDocument.sections, fromDocument.parser);
+      }
+      // 文档投影为空（如 PDF 纯图无文本层）但有 figure 分析 → 检索通道兜底
+      if (figureSections.length > 0) {
+        return this.build(projectId, item.sourceId, figureSections, "figure-analysis");
       }
     }
     switch (kind) {
@@ -175,6 +206,21 @@ export class SourceChunker {
         `[retrieval] 结构化解析产物读取失败（${item.sourceId}，走既有路径）：${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
+    }
+  }
+
+  /** 读取 Vision 分析产物（供给方已做 completed + 新鲜度过滤；异常走无分析路径） */
+  private async loadFigureAnalyses(projectId: string, item: SourceItem): Promise<readonly FigureAnalysis[]> {
+    if (this.figureAnalysisProvider === undefined) {
+      return [];
+    }
+    try {
+      return (await this.figureAnalysisProvider(projectId, item)) ?? [];
+    } catch (error) {
+      this.log(
+        `[retrieval] Vision 分析产物读取失败（${item.sourceId}，按无分析处理）：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return [];
     }
   }
 

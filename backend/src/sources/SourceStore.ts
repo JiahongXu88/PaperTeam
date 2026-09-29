@@ -802,6 +802,10 @@ export class SourceStore {
         force: true,
         recursive: true,
       });
+      // M10.2：Vision 分析产物（sources/analysis/<sourceId>.vision.json）
+      await rm(join(this.projects.sourcesDir(projectId), "analysis", `${sourceId}.vision.json`), {
+        force: true,
+      });
       const chunksDir = join(this.projects.sourcesDir(projectId), "chunks");
       await rm(join(chunksDir, `${sourceId}.jsonl`), { force: true });
       await rm(join(chunksDir, `${sourceId}.vectors.json`), { force: true });

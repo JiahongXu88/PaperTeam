@@ -1081,6 +1081,46 @@ M11 再考虑 Research Memory 等条件能力。M10.0 的 Evaluation Framework �
   docling 真实 smoke 回归通过；真实 notebook manual smoke（jupyter 官方
   示例，smoke 后删除）通过。
 
+**M10.2 Minimal Multimodal Document Understanding ✅（2026-09-29）**：已
+登记图片资产 → Vision-capable Model → 结构化 FigureAnalysis → 可检索
+Candidate Knowledge → 用户确认 user_confirmed Evidence，见
+[research/M10.2_MULTIMODAL_DOCUMENT_UNDERSTANDING_REPORT.md](research/M10.2_MULTIMODAL_DOCUMENT_UNDERSTANDING_REPORT.md)。
+要点：
+
+- **新模块 `backend/src/vision/`**：`ParsedFigureBlock`（PDF 抽图 / 上传
+  图片 / Notebook 图片输出三链路同一 Analyzer）→ `ModelRuntime.
+  completeSimple` 直接调用（pi-ai ImageContent；无 Agent 循环、无多
+  provider）→ 固定最小 schema（description / figureType / observations /
+  candidateFacts / warnings / confidence）+ 服务端校验 + 至多 1 次
+  repair → FigureAnalysis 落 `sources/analysis/<id>.vision.json`。
+- **Parser Fact ≠ Model Interpretation**：Vision 输出绝不回写
+  ParsedDocument（逐字节断言锁定）；分析独立落盘可重建，换模型零污染；
+  provenance 是 Parser Fact 拷贝，权威值在块上。
+- **capability 显式（§7）**：唯一依据 Pi 目录 `Model.input` 元数据
+  （名字不算证据；unknown 保守不可用）；两 slot：显式 visionModel 设置
+  （model.json 新字段 + Settings UI VisionModelPanel + text-only 保存
+  拒绝）> 默认模型（须 image-capable 才复用）；都不可用 → analyze 全部
+  skipped、零调用。
+- **检索接入**：completed + 新鲜分析进 chunk 投影（图片条目唯一可检索
+  通道；文档条目追加 section），chunk 文本带 `[figure B0005 · page 3 ·
+  fig-001.png · vision <model>]` 回溯锚；分析完成 → rebuildSource。
+- **freshness（§18）**：imageHash + modelSpec + schemaVersion 三键复用；
+  图片 / 模型 / schema 变化即失效；source 变化后旧分析不进检索、拒绝确认。
+- **Evidence 边界不变**：`POST /vision/facts/:factId/evidence` 确认 →
+  user_confirmed + unverified（fact 带 value 时 claim 须提到该值，422
+  纪律）；无 chunk 锚点 → isFormalEvidence=false → 永不 grounded_verified
+  （单测锁定）。
+- **异步 / 降级**：M10.1 后台串行链模式（inline 可选）；failed 十类
+  错误码（限速 / 超时 / 非法图片 / 输出不可解析等）如实落盘不伪装。
+- **测试**：新增 7 文件 61 用例（capability / analyzer / 服务编排 /
+  检索集成 / 事实确认 / HTTP / settings）；mock E2E（真实 dist 后端 +
+  真实 docling + `PAPERTEAM_TEST_VISION=scripted` 假模型，
+  `scripts/m10-2-e2e.mjs` + PyMuPDF 确定性图表 fixtures
+  `gen_m10_2_fixtures.py`）23/23 PASS；**live smoke（真实
+  `zai-coding-cn/glm-4.6v`）4/4 PASS**——折线图 / 柱状图 / PDF 抽取
+  figure 全部正确读值（如「MOTA 在 threshold 0.5 峰值 82.4」high
+  confidence fact）；M10.1 / M10.1.1 e2e 回归通过（ingestion 零回归）。
+
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
 `event_gap` 合成事件类型），`PiRuntimeAdapter` 三项可靠性修复，全部先以
