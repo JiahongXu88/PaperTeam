@@ -21,7 +21,7 @@ import { PaperStore } from "../../src/paper/PaperStore.js";
 import {
   reconstructManuscriptFromPaper,
 } from "../../src/import/PaperReconstructor.js";
-import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
+import { scriptedIdeaRuntime, startTestStack, pollRunUntilAwaiting, type TestStack } from "../helpers/testStack.js";
 
 vi.setConfig({ testTimeout: 60_000 });
 
@@ -149,8 +149,9 @@ describe("PDF 导入 → improvement 全链路（scripted Runtime + fake 编译�
     });
     const runId = created.body["runId"] as string;
 
-    // 推进到改进计划确认（前段：重建 / 理解 / 引用 / 审稿 / 目标评估）
-    const planConfirm = await pollRun(stack, runId, ["awaiting_input", "failed"]);
+    // 推进到改进计划确认（前段：重建 / 理解 / 引用 / 审稿 / 目标评估；
+    // M10.3：自动批准新增的 research_plan / evidence_supply 决策点）
+    const planConfirm = await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
     expect(planConfirm.status).toBe("awaiting_input");
     expect(planConfirm.awaiting?.stageId).toBe("hitl.plan_confirm");
     const payload = planConfirm.awaiting?.payload as { items?: { section: string }[] } | undefined;

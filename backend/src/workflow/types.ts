@@ -213,7 +213,8 @@ export type WorkflowDomainEventType =
   | "final.created"
   | "style_polish.applied"
   | "style_polish.skipped"
-  | "external_instructions.updated";
+  | "external_instructions.updated"
+  | "revision_report.created";
 
 export interface WorkflowDomainEvent {
   seq: number;

@@ -395,6 +395,188 @@ export class ResearcherService {
       contributions: report.potentialContributions,
     };
   }
+
+  /**
+   * M10.3：Existing-Paper 修订研究规划（requirement-driven，只规划不检索）。
+   *
+   * 把「需要新增/补强文献的位置」（论文理解弱点 + 外部意见 + 作者修订目标中
+   * 涉及外部科学论断的部分）转化为 M8 ResearchPlan（questions / queries /
+   * requirements）。检索本身由后续 research.execute（用户批准计划后）执行——
+   * Writer / 本方法都不做即时检索（Search 是 Evidence Gap 的下游工具）。
+   *
+   * 纪律：
+   * - requirements 只覆盖 external literature 需要（related work / 外部方法
+   *   事实描述 / 对比定位）；作者自身实验数据不进 requirements（那是
+   *   user_confirmed Evidence 的领地，不归文献管道管）；
+   * - 计划落盘走 writeResearchPlanChain（draft 状态，等待 HITL 批准）；
+   * - 已存在计划链时（重跑 / 用户已编辑）：initial 模式尊重既有链（幂等返回），
+   *   revise 模式仅在活动计划仍为 draft 时替换（approved/executing 是用户
+   *   已提交状态，不允许静默覆盖）。
+   */
+  async planRevisionResearch(params: {
+    projectId: string;
+    analysisDigest: string;
+    externalInstructionDigest?: string;
+    authorGoal?: string;
+    /** HITL revise 回路携带的反馈（触发 draft 计划替换） */
+    feedback?: string;
+  }): Promise<{ plan: StoredResearchPlan; taskId: string; regenerated: boolean }> {
+    const project = await this.projects.getRequired(params.projectId);
+    const language = normalizeManuscriptLanguage(project.language);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      task: buildRevisionResearchPrompt({
+        title: project.title,
+        targetProfile: project.targetProfile,
+        analysisDigest: params.analysisDigest,
+        ...(params.externalInstructionDigest !== undefined
+          ? { externalInstructionDigest: params.externalInstructionDigest }
+          : {}),
+        ...(params.authorGoal !== undefined ? { authorGoal: params.authorGoal } : {}),
+        ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+      }),
+      projectId: params.projectId,
+      contextScope: "research/revision-plan",
+      ...(language !== undefined ? { language } : {}),
+      metadata: { role: "researcher", skill: "revision-research-plan" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `修订研究规划任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "修订研究计划");
+    const plan = parseResearchPlan(parsed);
+    if (plan === undefined || (plan.queries.length === 0 && plan.questions.length === 0)) {
+      throw new AgentRunFailedError("修订研究计划：缺少非空 plan（questions / queries 至少一项）");
+    }
+
+    const researchDir = this.projects.researchDir(params.projectId);
+    await mkdir(researchDir, { recursive: true });
+    const existing = await readResearchArtifact(this.projects, params.projectId);
+    if (existing === null) {
+      throw new AgentRunFailedError("修订研究计划：缺少 research/research.json（先执行论文理解 import.understand）");
+    }
+    const chain = readPlanChain(existing);
+    if (params.feedback === undefined && chain.plans.length > 0) {
+      // initial 幂等：已有计划链（用户编辑过 / 前一 run 已建）→ 尊重既有状态
+      const active = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      if (active !== undefined) {
+        return { plan: active, taskId: task.taskId, regenerated: false };
+      }
+    }
+    if (params.feedback !== undefined) {
+      const active = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      if (active !== undefined && active.status !== "draft") {
+        throw new AgentRunFailedError(
+          `修订研究计划：活动计划已${active.status === "approved" ? "批准" : "执行"}，不允许静默替换（应走计划编辑路径）`,
+        );
+      }
+    }
+    // 建立 / 替换 draft 计划链（revision 场景无父计划：首轮即 iteration 1）
+    const nextChain = replaceDraftChain(plan);
+    await writeResearchPlanChain(
+      this.projects,
+      params.projectId,
+      existing,
+      nextChain,
+      existing?.executionHistory,
+    );
+    const active = nextChain.plans.find((candidate) => candidate.planId === nextChain.activePlanId)!;
+    this.log(
+      `[researcher] projectId=${params.projectId} 修订研究计划完成：queries=${plan.queries.length} requirements=${plan.requirements?.length ?? 0}`,
+    );
+    return { plan: active, taskId: task.taskId, regenerated: params.feedback !== undefined };
+  }
+
+  /**
+   * M10.3：从文献库全文提出锚定证据候选（requirements 驱动；不检索）。
+   *
+   * 用户在 evidence-supply HITL 期间 promote 候选文献并获取全文后，本方法让
+   * Researcher 用 retrieve_library / get_chunk 对 requirements 提出逐字锚定
+   * 的证据候选（propose_evidence 工具或 JSON evidence 字段），进入三段核验
+   * 管道（verified 才转正）。无全文可锚定 → 零候选（如实；覆盖缺口保留在
+   * coverage 视图中，由 supply-query 链继续补）。
+   */
+  async proposeRevisionEvidence(params: {
+    projectId: string;
+    requirementDigest: string;
+  }): Promise<{ evidenceProposed: number; evidenceAppended: number; taskId: string }> {
+    const project = await this.projects.getRequired(params.projectId);
+    const language = normalizeManuscriptLanguage(project.language);
+    const sourceDigest = await this.buildSourceDigest(params.projectId);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      task: [
+        "你是一名学术研究员（Researcher）。论文修订需要外部文献证据：请只针对下面的证据需求，从项目文献库的全文中提出锚定证据候选（不检索新文献）。",
+        "",
+        "只输出一个 JSON 对象（不要 Markdown 围栏）：",
+        "{",
+        '  "evidence": [{"claim": "该证据支撑的论断", "summary": "摘要", "quote": "原文逐字引文",',
+        '    "sourceId": "文献库条目 id（如 S001）", "chunkId": "retrieve_library 结果中的 CHUNK 标识",',
+        '    "source": {"title": "标题", "authors": ["作者"], "year": 2024, "doi": "可选"},',
+        '    "location": {"page": 1, "section": "4.2"}}]',
+        "}",
+        "",
+        "要求：",
+        "1. 用 retrieve_library 按需求主题检索文献库全文（结果带 CHUNK 标识），get_chunk 回取逐字原文，quote 必须从 chunk 原文逐字复制（不改写、不凭记忆生成）。",
+        "2. 每条证据只支撑一个明确论断；与需求无关的证据不要提。宁缺毋滥：找不到足够支撑的需求如实留空，绝不编造 quote 或锚定不相关段落。",
+        "3. 不调用任何搜索工具（不检索新文献）；只用已入库全文。无全文可检索的条目无法锚定——这是事实，不是错误。",
+        "",
+        "===== 证据需求（requirements）=====",
+        params.requirementDigest,
+        "",
+        "===== 项目文献库摘要 =====",
+        sourceDigest,
+      ].join("\n"),
+      projectId: params.projectId,
+      contextScope: "research/revision-evidence",
+      ...(language !== undefined ? { language } : {}),
+      metadata: { role: "researcher", skill: "revision-evidence" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `锚定证据提案任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "锚定证据提案");
+    const candidates = readEvidenceCandidates(parsed);
+    let evidenceAppended = 0;
+    let evidenceProposed = 0;
+    for (const candidate of candidates) {
+      const anchored =
+        this.evidenceGrounding !== undefined &&
+        candidate.chunkId !== undefined &&
+        candidate.quote !== undefined &&
+        candidate.quote.trim() !== "";
+      if (anchored) {
+        try {
+          const { deduplicated } = await this.evidenceGrounding!.propose(params.projectId, {
+            sourceId: candidate.sourceId ?? candidate.chunkId!.split(":")[0]!,
+            chunkId: candidate.chunkId!,
+            claim: candidate.claim,
+            quote: candidate.quote!,
+            ...(candidate.summary !== undefined ? { summary: candidate.summary } : {}),
+            proposedBy: "researcher",
+          });
+          if (!deduplicated) {
+            evidenceProposed += 1;
+          }
+        } catch (error) {
+          this.log(
+            `[researcher] projectId=${params.projectId} 修订证据提案失败，降级 unverified 追加：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`,
+          );
+          await this.evidence.append(params.projectId, toLegacyAppendInput(candidate), "researcher");
+          evidenceAppended += 1;
+        }
+      } else {
+        await this.evidence.append(params.projectId, toLegacyAppendInput(candidate), "researcher");
+        evidenceAppended += 1;
+      }
+    }
+    this.log(
+      `[researcher] projectId=${params.projectId} 修订证据提案完成：proposed=${evidenceProposed} appended=${evidenceAppended}`,
+    );
+    return { evidenceProposed, evidenceAppended, taskId: task.taskId };
+  }
 }
 
 /** research JSON 的 evidence 条目（M6.5：可携带 chunk 锚定字段） */
@@ -818,4 +1000,57 @@ export function readBibliography(parsed: Record<string, unknown>): BibliographyE
     seenTitleYear.add(titleYearKey);
     return true;
   });
+}
+
+// ---- M10.3：Existing-Paper 修订研究规划 ----
+
+/**
+ * 修订研究计划 prompt（只规划不检索：requirements 驱动 queries；
+ * 检索在用户批准计划后由 research.execute 执行）。
+ */
+export function buildRevisionResearchPrompt(input: {
+  title: string;
+  targetProfile?: string;
+  analysisDigest: string;
+  externalInstructionDigest?: string;
+  authorGoal?: string;
+  feedback?: string;
+}): string {
+  return [
+    "你是一名学术研究员（Researcher）。这篇论文即将做 evidence-grounded 修订：请为「需要新增或补强外部文献支撑的位置」制定一份修订研究计划（只规划，不检索）。",
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏、不要解释文字）：",
+    "{",
+    '  "plan": {',
+    '    "questions": ["修订需要回答的研究问题（如：近年 MOT 关联方法中与本方法最相关的对比基线是什么）"],',
+    '    "requirements": [{"topic": "正文修订需要外部文献支撑的主题",',
+    '      "claimType": "definition|mechanism|comparison|benchmark|limitation|background",',
+    '      "expectedEvidenceType": "survey|original_paper|benchmark_paper|system_paper",',
+    '      "relatedSection": "预计落点章节（可选）", "priority": "high|medium|low", "note": "为什么需要（可选）"}],',
+    '    "queries": [{"query": "检索词", "kind": "academic 或 web", "rationale": "对应的修订需要", "expectedCoverage": "期望覆盖面"}]',
+    "  }",
+    "}",
+    "",
+    "要求：",
+    "1. requirement-driven：requirements 是「预写证据需求」——只覆盖需要外部文献/公开科学事实支撑的修订（related work 补强、对其他方法的事实描述、对比定位、领域背景）。作者自身实验数据、板端测量、负面结果不是文献需求，绝不写入 requirements。",
+    "2. 每条 high/medium requirement 至少对应一条主题相关的 query；没有文献缺口时宁少勿滥（可以只有 1-2 条需求）。",
+    "3. 不要在规划阶段执行检索（不调用任何搜索工具）；检索词留给后续批准后的执行阶段。",
+    "4. queries 总量 ≤ 8 条（修订补强不是重新调研整个领域）。",
+    ...(input.feedback !== undefined ? ["", "用户对上一版计划的反馈（据此重订）：", input.feedback] : []),
+    "",
+    `论文标题：${input.title}`,
+    `目标档次：${input.targetProfile ?? "未指定"}`,
+    ...(input.authorGoal !== undefined ? ["", "===== 作者修订目标 =====", input.authorGoal] : []),
+    ...(input.externalInstructionDigest !== undefined
+      ? ["", "===== 外部修改意见（涉及文献需求的部分）=====", input.externalInstructionDigest]
+      : []),
+    "",
+    "===== 论文理解摘要 =====",
+    input.analysisDigest,
+  ].join("\n");
+}
+
+/** 建立 / 替换单计划链（revision 场景首轮即 iteration 1；draft 状态等待批准） */
+function replaceDraftChain(plan: ResearchPlan): ResearchPlanChain {
+  return { plans: [plan], activePlanId: plan.planId };
 }

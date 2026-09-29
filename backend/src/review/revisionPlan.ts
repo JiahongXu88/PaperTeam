@@ -210,7 +210,11 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       expectedOutcome:
         "该意见在事实 / 引用 / 证据约束内落实；与实验事实冲突时如实报告 CONFLICT，不篡改数据",
       status:
-        instruction.status === "handled" || instruction.status === "conflict" ? "skipped" : "planned",
+        instruction.status === "handled" ||
+        instruction.status === "conflict" ||
+        instruction.status === "already_satisfied"
+          ? "skipped"
+          : "planned",
       source: "external",
       riskLevel: "high",
       ...(instruction.reviewerLabel !== undefined ? { reviewerLabel: instruction.reviewerLabel } : {}),
@@ -218,6 +222,11 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       instructionId: instruction.instructionId,
       ...(instruction.status === "handled"
         ? { note: "该意见已处理（执行证据见指令状态）" }
+        : {}),
+      ...(instruction.status === "already_satisfied"
+        ? {
+            note: `该意见已在当前稿落实（导入登记，不重复修改）：${instruction.statusNote ?? "见外部意见列表"}`,
+          }
         : {}),
       ...(instruction.status === "conflict"
         ? {

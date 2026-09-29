@@ -44,6 +44,7 @@ import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService, isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import type { ResearchCoverageService } from "../agents/researchCoverage.js";
+import type { ResearchPlanExecutionService } from "../agents/researchPlanExecution.js";
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { CandidateStore } from "../sources/CandidateStore.js";
@@ -61,9 +62,13 @@ import {
   reconstructManuscriptFromPaper,
   writeReconstructionReport,
 } from "../import/PaperReconstructor.js";
+import { buildAssetInventory } from "../import/assetInventory.js";
+import { buildRevisionBaseline } from "../review/revisionBaseline.js";
+import { writeRevisionResponse } from "../review/revisionResponse.js";
 import type { WriterService } from "../writer/WriterService.js";
 import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
+import { readPlanChain } from "../agents/researchPlan.js";
 import { readFeasibilityReport, type FeasibilityService } from "../agents/FeasibilityService.js";
 import type { ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
 import type { CitationService, CitationReport } from "../citation/CitationService.js";
@@ -71,6 +76,7 @@ import {
   buildBibliographyFromSources,
   filterByCitedKeys,
   mergeArtifactBibliography,
+  renderBibEntry,
   type CanonicalBibliographyEntry,
 } from "../citation/bibliography.js";
 import { extractCitationKeys, parseBib } from "../citation/StaticCitationChecker.js";
@@ -169,6 +175,11 @@ export interface WorkflowServices {
    * 状态仍由 Analyzer 随源数据即时派生，不在 workflow / artifact 上持久化）。
    */
   coverage: ResearchCoverageService;
+  /**
+   * Research Plan 执行器（M10.3：existing-paper 流程 research.plan / execute
+   * stage 消费——批准 + 检索执行 + 结果快照回填；批准仍走 HITL）。
+   */
+  planExecution: ResearchPlanExecutionService;
   sources: SourceStore;
   manuscript: ManuscriptService;
   writer: WriterService;
@@ -750,6 +761,61 @@ function buildFinalStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/**
+ * M10.3 §15 revision.report：Revision Trace / Author Revision Report
+ * （确定性投影，无 LLM）。外部意见逐条状态 + 修订计划条目终态 + 复核结果
+ * → build/revision-response.md。不是 Response Letter——本轮没有第二轮
+ * 审稿意见时如实呈现已有意见的登记状态，不假装是正式回复函。
+ */
+function revisionReportStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.report",
+    description: "Revision Trace 报告：指令状态 + 计划条目 + 复核结果确定性投影",
+    requiredInputs: [],
+    producedOutputs: ["build/revision-response.md"],
+    maxAttempts: 1,
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const { final, draft } = await services.artifacts.latest(ctx.projectId);
+      const revision = await services.revisions.currentRevision(ctx.projectId);
+      const result = await writeRevisionResponse(
+        {
+          projects: services.projects,
+          reviewArtifacts: services.reviewArtifacts,
+          externalInstructions: services.externalInstructions,
+        },
+        ctx.projectId,
+        {
+          revision,
+          finalArtifactId: final?.artifactId ?? null,
+          draftArtifactId: draft?.artifactId ?? null,
+        },
+      );
+      await ctx.emitDomain(
+        "revision_report.created",
+        { path: result.path, instructions: result.instructions },
+        `Revision Trace 报告已产出（${result.instructions} 条外部意见 / ${result.planItems + result.improvementItems} 个计划条目）`,
+      );
+      return {
+        reportPath: result.path,
+        instructions: result.instructions,
+        planItems: result.planItems,
+        improvementItems: result.improvementItems,
+        revision,
+      };
+    },
+    async verifyDod(ctx) {
+      try {
+        await readFile(join(services.projects.buildDir(ctx.projectId), "revision-response.md"), "utf8");
+        return [];
+      } catch {
+        return ["build/revision-response.md 不存在"];
+      }
+    },
+  };
+}
+
 function revisionReviseStage(
   services: WorkflowServices,
   stageId: "revision.revise" | "revision.apply",
@@ -768,9 +834,9 @@ function revisionReviseStage(
     async execute(ctx) {
       const outline = await services.manuscript.loadOutline(ctx.projectId);
       const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
-      if (outline === null && files.sections.length === 0) {
-        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有任何可修订的章节文件");
-      }
+      // M10.3：单文件 LaTeX 项目（无 \input / 无大纲）——main.tex 即用户全部
+      // 内容，是整文件修订目标（不因「无 sections 目录」拒绝服务）
+      const singleFile = outline === null && files.sections.length === 0 && files.mainTex !== null;
       const buildError = readBuildError(ctx.state);
       const evidence = await usableEvidence(services, ctx.projectId);
       // M5.6 真实论文验收暴露的 Writer regression：Existing-Paper 项目没有 research
@@ -804,6 +870,9 @@ function revisionReviseStage(
             sectionMatches(directive.section ?? "", target) ? externalScopeIssue() : null,
         })),
       ]);
+      if (targets.length === 0) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有任何可修订的章节文件");
+      }
       const revised: string[] = [];
       // M6.7：本轮流派发的计划条目（planned → applied 的依据；确定性 diff 补 targetChanged）
       const dispatchedItems: { id: string; targetChanged: boolean }[] = [];
@@ -856,6 +925,8 @@ function revisionReviseStage(
         // 章节人类标题（大纲 id → title；缺大纲时回退 id）：修订 prompt 以标题称呼章节
         const sectionMeta = outline?.sections.find((section) => section.id === target.key);
         const isAbstractTarget = target.key === "abstract";
+        // M10.3：单文件项目的 main.tex 目标 = 整文件修订（输出完整文件）
+        const isWholeFileTarget = singleFile && target.relativePath === "main.tex";
         const result = await services.writer.reviseSection({
           projectId: ctx.projectId,
           section: {
@@ -868,6 +939,7 @@ function revisionReviseStage(
           issues,
           evidence,
           bibliography,
+          ...(isWholeFileTarget ? { wholeFile: true } : {}),
           ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
@@ -1586,7 +1658,13 @@ async function buildCanonicalBibliography(
 async function syncReferencesBib(services: WorkflowServices, projectId: string): Promise<number> {
   const project = await services.projects.getRequired(projectId);
   if (isExistingPaperKind(project.workflowKind)) {
-    return 0;
+    // M10.3：Existing-Paper 项目的 references.bib 仍是用户/导入事实——既有条目
+    // 任何情况下不改写；但修订引入的**新增引用**（正文 \cite 了 bib 中不存在的
+    // key）允许追加式合并：仅当 key 存在于 canonical bibliography（promoted
+    // 文献 / 检索入库）且有 formal evidence 关联（buildEvidenceLinks 同源）时，
+    // 把确定性渲染的条目**追加**到实际解析的 bib 文件末尾。无证据支撑的新 key
+    // 不追加 → citation.verify 报 missing → Writer 被要求删除（引用纪律）。
+    return appendEvidenceBackedBibEntries(services, projectId);
   }
   const outline = await services.manuscript.loadOutline(projectId);
   if (outline === null) {
@@ -1607,6 +1685,72 @@ async function syncReferencesBib(services: WorkflowServices, projectId: string):
     }
   }
   return services.manuscript.writeBibliography(projectId, filterByCitedKeys(bibliography, cited));
+}
+
+/**
+ * M10.3：Existing-Paper bib 追加式合并（append-only，幂等）。
+ * 追加目标 = collectLatexFiles 解析出的实际 bib 文件（\bibliography{refs} →
+ * refs.bib）；无解析结果时退回 references.bib。返回追加条数（0 = 无变化）。
+ */
+export async function appendEvidenceBackedBibEntries(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<number> {
+  const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  if (files.mainTex === null) {
+    return 0;
+  }
+  const bibRelative = files.bibPath ?? "references.bib";
+  const manuscriptDir = services.projects.manuscriptDir(projectId);
+  let existingContent: string;
+  try {
+    existingContent = await readFile(join(manuscriptDir, bibRelative), "utf8");
+  } catch {
+    existingContent = "";
+  }
+  const existingKeys = new Set(parseBib(existingContent).entries.map((entry) => entry.key));
+  const cited = new Set<string>();
+  for (const file of files.allTex) {
+    for (const key of extractCitationKeys(file.relativePath, file.content).keys) {
+      cited.add(key);
+    }
+  }
+  const missingKeys = [...cited].filter((key) => !existingKeys.has(key));
+  if (missingKeys.length === 0) {
+    return 0;
+  }
+  const canonical = await buildCanonicalBibliography(services, projectId);
+  const canonicalByKey = new Map(canonical.map((entry) => [entry.key, entry]));
+  // evidence 关联对 canonical 条目解析（追加的 key 尚不在 bib 文件中——
+  // buildEvidenceLinks 的 bib 报告口径覆盖不到它）；匹配链与 Writer 引用
+  // 纪律 / gate 覆盖同源（matchBibliographyKey）
+  const evidenceRecords = await services.evidence.list(projectId);
+  const linkedKeys = new Set<string>();
+  for (const record of evidenceRecords) {
+    if (!isFormalEvidence(record)) {
+      continue;
+    }
+    const key = EvidenceSelectionService.matchBibliographyKey(record, canonical);
+    if (key !== null) {
+      linkedKeys.add(key);
+    }
+  }
+  const toAppend = missingKeys
+    .filter((key) => canonicalByKey.has(key) && linkedKeys.has(key))
+    .sort()
+    .map((key) => canonicalByKey.get(key)!)
+    .slice(0, 20);
+  if (toAppend.length === 0) {
+    return 0;
+  }
+  const rendered = toAppend.map((entry) => renderBibEntry(entry).trim());
+  const separator = existingContent === "" ? "" : existingContent.endsWith("\n") ? "" : "\n";
+  await writeFile(
+    join(manuscriptDir, bibRelative),
+    `${existingContent}${separator}${rendered.join("\n\n")}\n`,
+    "utf8",
+  );
+  return toAppend.length;
 }
 
 /**
@@ -2222,12 +2366,15 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
  * 与后续 Reviewer 消费的 evidence stats 必须已经是核验后的口径。零候选时
  * no-op 通过（scripted / 离线栈无感）；幂等（只处理 pending 候选）。
  */
-function evidenceGroundStage(services: WorkflowServices): StageSpec {
+function evidenceGroundStage(
+  services: WorkflowServices,
+  requiredInputs: string[] = ["research.idea"],
+): StageSpec {
   return {
     id: "evidence.ground",
     description:
       "Evidence Grounding：候选证据三段核验（quote 逐字校验 / metadata 核验 / 语义 judge）后转正进证据库",
-    requiredInputs: ["research.idea"],
+    requiredInputs,
     producedOutputs: ["evidence/candidates.jsonl 状态流转", "evidence.jsonl grounded 记录"],
     maxAttempts: services.stageMaxAttempts,
     timeoutMs: services.stageTimeoutMs,
@@ -2431,12 +2578,15 @@ function outlineConfirmStage(services: WorkflowServices): StageSpec {
  */
 const EVIDENCE_SUPPLY_MIN_PENDING = 3;
 
-function evidenceSupplyStage(services: WorkflowServices): StageSpec {
+function evidenceSupplyStage(
+  services: WorkflowServices,
+  requiredInputs: string[] = ["hitl.outline_confirm"],
+): StageSpec {
   return {
     id: "hitl.evidence_supply",
     description:
       "证据供给提示：待审候选文献 vs 已核验证据覆盖（用户决定先扩充证据或直接继续写作）",
-    requiredInputs: ["hitl.outline_confirm"],
+    requiredInputs,
     producedOutputs: ["用户决策（continue / cancel）"],
     hitl: {
       prompt:
@@ -2754,6 +2904,130 @@ function importBaselineBuildStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/**
+ * M10.3 Stage A：资产清单（确定性，无 LLM）。
+ * sources ↔ 案例角色映射（MANIFEST 是事实边界，不按文件名猜测）；
+ * 产物 research/asset-inventory.json 供隔离校验与报告消费。MANIFEST 缺失
+ * 退化为 unclassified 清单（不阻塞——非真实案例项目没有案例清单）。
+ */
+function importInventoryStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "import.inventory",
+    description: "资产清单：source ↔ 案例角色映射（MANIFEST 事实边界；确定性）",
+    requiredInputs: ["import.parse"],
+    producedOutputs: ["research/asset-inventory.json"],
+    maxAttempts: 1,
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const items = await services.sources.list(ctx.projectId);
+      let manifestRaw: string | null = null;
+      for (const item of items) {
+        const name = (item.originalName ?? item.fileName ?? "").toLowerCase();
+        if (name === "manifest.json" && item.fileName !== undefined) {
+          try {
+            manifestRaw = await readFile(
+              await services.sources.filePath(ctx.projectId, item.sourceId),
+              "utf8",
+            );
+          } catch {
+            manifestRaw = null;
+          }
+          break;
+        }
+      }
+      const inventory = buildAssetInventory(
+        items.map((item) => ({
+          sourceId: item.sourceId,
+          fileName: item.fileName ?? item.sourceId,
+          ...(item.originalName !== undefined ? { originalName: item.originalName } : {}),
+          sourceType: item.sourceType ?? "other",
+        })),
+        manifestRaw,
+      );
+      await writeJsonAtomic(
+        join(services.projects.researchDir(ctx.projectId), "asset-inventory.json"),
+        inventory,
+      );
+      return {
+        sources: inventory.entries.length,
+        manifestFound: inventory.manifestFound,
+        current: inventory.domains.current.length,
+        historicalBoard: inventory.domains.historicalBoard.length,
+        historical: inventory.domains.historical.length,
+        feedback: inventory.domains.feedback.length,
+        unclassified: inventory.domains.unclassified.length,
+        warnings: inventory.warnings.slice(0, 3),
+      };
+    },
+    async verifyDod(ctx) {
+      try {
+        await readFile(
+          join(services.projects.researchDir(ctx.projectId), "asset-inventory.json"),
+          "utf8",
+        );
+        return [];
+      } catch {
+        return ["research/asset-inventory.json 不存在"];
+      }
+    },
+  };
+}
+
+/**
+ * M10.3 Stage C：Revision Baseline（确定性，无 LLM）。
+ * 从 current manuscript 提取事实基线（表格 / 数字 / 公式 / 方向句 / 引用 /
+ * 图片 / 硬件 / 占位）→ research/revision-baseline.json。正式修改前的
+ * 冻结事实投影：修订可追溯、冲突检测、报告输入。
+ */
+function importBaselineStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "import.baseline",
+    description: "Revision Baseline：current manuscript 事实基线（确定性）",
+    requiredInputs: ["import.parse"],
+    producedOutputs: ["research/revision-baseline.json"],
+    maxAttempts: 1,
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      if (files.allTex.length === 0) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "manuscript 目录没有任何 .tex 文件");
+      }
+      const baseline = buildRevisionBaseline(
+        files.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+      );
+      await writeJsonAtomic(
+        join(services.projects.researchDir(ctx.projectId), "revision-baseline.json"),
+        baseline,
+      );
+      return {
+        contentHash: baseline.contentHash.slice(0, 12),
+        tables: baseline.tables.length,
+        citationKeys: baseline.citationKeys.length,
+        figures: baseline.figures.length,
+        hardware: baseline.hardware.length,
+        placeholders: baseline.placeholders,
+      };
+    },
+    async verifyDod(ctx) {
+      try {
+        const raw = JSON.parse(
+          await readFile(
+            join(services.projects.researchDir(ctx.projectId), "revision-baseline.json"),
+            "utf8",
+          ),
+        ) as { contentHash?: unknown };
+        return typeof raw.contentHash === "string" && raw.contentHash.length === 64
+          ? []
+          : ["revision-baseline.json 缺少合法 contentHash"];
+      } catch {
+        return ["research/revision-baseline.json 不存在或不可解析"];
+      }
+    },
+  };
+}
+
 function importUnderstandStage(services: WorkflowServices): StageSpec {
   return {
     id: "import.understand",
@@ -2782,10 +3056,268 @@ function importUnderstandStage(services: WorkflowServices): StageSpec {
   };
 }
 
+// ============================================================
+// M10.3：修订研究链（M8 Research Plan → requirements → execute →
+// evidence_supply → propose → ground；requirement-driven，无即时检索）
+// ============================================================
+
+/**
+ * research.plan（LLM）：把「需要新增/补强文献的位置」转化为 M8 ResearchPlan。
+ * 输入 = 论文理解弱点 + 外部意见（文献相关部分）+ 作者修订目标（run prompt）。
+ * 只规划不检索；计划落盘 draft，等待 hitl.research_plan 批准。
+ */
+function researchPlanStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "research.plan",
+    description: "修订研究规划：文献缺口 → M8 ResearchPlan（requirements 驱动 queries；只规划不检索）",
+    requiredInputs: ["assessment.target"],
+    producedOutputs: ["research/research.json 计划链（draft）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const artifact = await requireResearchArtifact(services, ctx.projectId);
+      const digest = [
+        `概述：${artifact.report.domainOverview.slice(0, 600)}`,
+        `弱点：${artifact.report.researchGaps.slice(0, 8).join("；")}`,
+        `文献方向：${artifact.report.literaturePlan.slice(0, 6).join("；")}`,
+        `研究问题：${artifact.report.researchQuestions.slice(0, 6).join("；")}`,
+      ].join("\n");
+      const external = await collectExternalDirectives(services, ctx.projectId);
+      const instructionDigest = external
+        .slice(0, 10)
+        .map((directive) => `- [${directive.reviewerLabel ?? directive.source}] ${firstLine(directive.text, 200)}`)
+        .join("\n");
+      const authorGoal = readAuthorGoal(ctx.state.request);
+      const feedback = readFeedback(ctx.state.inputs["hitl.research_plan"]?.payload);
+      const result = await services.researcher.planRevisionResearch({
+        projectId: ctx.projectId,
+        analysisDigest: digest,
+        ...(instructionDigest !== "" ? { externalInstructionDigest: instructionDigest } : {}),
+        ...(authorGoal !== undefined ? { authorGoal } : {}),
+        ...(feedback !== undefined ? { feedback } : {}),
+      });
+      const coverageRelevant = result.plan.requirements?.length ?? 0;
+      return {
+        planId: result.plan.planId,
+        status: result.plan.status,
+        questions: result.plan.questions.length,
+        queries: result.plan.queries.length,
+        requirements: coverageRelevant,
+        ...(result.regenerated ? { regenerated: true } : {}),
+      };
+    },
+    async verifyDod(ctx) {
+      const artifact = await readResearchArtifact(services.projects, ctx.projectId);
+      return artifact === null || (artifact.plans ?? []).length === 0
+        ? ["research/research.json 缺少计划链"]
+        : [];
+    },
+  };
+}
+
+/** hitl.research_plan：M8 纪律——计划批准是 HITL（绝不自动批准） */
+function researchPlanConfirmStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.research_plan",
+    description: "等待用户批准修订研究计划（检索执行前）",
+    requiredInputs: ["research.plan"],
+    producedOutputs: ["用户决策"],
+    hitl: {
+      prompt:
+        "修订研究计划已生成（只覆盖需要外部文献支撑的修订需求；自身实验数据不属于文献管道）。批准后将执行计划内检索；也可以带反馈重新规划，或取消",
+      options: ["approve", "revise", "cancel"],
+      payload: async (ctx) => {
+        const artifact = await readResearchArtifact(services.projects, ctx.projectId);
+        const chain = artifact !== null ? readPlanChain(artifact) : null;
+        const plan = chain?.plans.find((candidate) => candidate.planId === chain.activePlanId);
+        if (plan === undefined) {
+          return undefined;
+        }
+        return {
+          planId: plan.planId,
+          status: plan.status,
+          questions: plan.questions.slice(0, 6),
+          requirements: (plan.requirements ?? []).map((requirement) => ({
+            requirementId: requirement.requirementId,
+            topic: requirement.topic,
+            claimType: requirement.claimType,
+            expectedEvidenceType: requirement.expectedEvidenceType,
+            priority: requirement.priority,
+          })),
+          queries: plan.queries.slice(0, 8).map((query) => ({
+            queryId: query.queryId,
+            query: query.query,
+            kind: query.kind,
+            ...(query.rationale !== undefined ? { rationale: query.rationale } : {}),
+          })),
+        };
+      },
+    },
+  };
+}
+
+/** HITL 决策：research_plan（approve → planExecution.approve；revise → 重规划） */
+async function applyResearchPlanDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "approve") {
+    // 幂等：计划已是 approved / done（前一批准过）→ 不重复批准，直接放行
+    const artifact = await readResearchArtifact(services.projects, state.projectId);
+    const chain = artifact !== null ? readPlanChain(artifact) : null;
+    const plan = chain?.plans.find((candidate) => candidate.planId === chain.activePlanId);
+    if (plan !== undefined && plan.status === "draft") {
+      await services.planExecution.approve(state.projectId);
+    }
+    state.stageResults["hitl.research_plan"] = { decision: "approve" };
+    return;
+  }
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision === "revise") {
+    if (readFeedback(input.payload) === undefined) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        "revise 需要携带非空 payload.feedback",
+      );
+    }
+    if (countCompletions(state, "research.plan") >= MAX_PLAN_REVISIONS) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        `研究计划修订次数已达上限（${MAX_PLAN_REVISIONS} 次），请 approve 或 cancel`,
+      );
+    }
+    dropStageResult(state, "research.plan");
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 approve / revise / cancel（当前 "${input.decision}"）`,
+  );
+}
+
+/**
+ * research.execute（确定性编排 + 外部检索）：执行批准后的计划检索
+ * （结果快照回填，不写 Store）；随后 coverage 分析给出 requirement 覆盖视图。
+ * 已 done 的计划（重跑场景）→ 只重算 coverage，不重复检索。
+ */
+function researchExecuteStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "research.execute",
+    description: "执行修订研究计划检索（requirement-driven；结果快照不自动入库）",
+    requiredInputs: ["hitl.research_plan"],
+    producedOutputs: ["research.json 执行历史 + 结果快照"],
+    maxAttempts: 1,
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      const artifact = await requireResearchArtifact(services, ctx.projectId);
+      const chain = readPlanChain(artifact);
+      const plan = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      if (plan === undefined) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少活动研究计划（先执行 research.plan）");
+      }
+      let executed = 0;
+      let failed = 0;
+      if (plan.status === "approved") {
+        const result = await services.planExecution.execute(ctx.projectId);
+        executed = result.executedQueries;
+        failed = result.failedQueries;
+      } else if (plan.status === "draft") {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "研究计划尚未批准（先通过 hitl.research_plan）");
+      }
+      const coverage = await services.coverage.analyze(ctx.projectId);
+      const missing = coverage.requirementCoverage.filter(
+        (entry) => entry.coverage === "missing",
+      ).length;
+      const partial = coverage.requirementCoverage.filter(
+        (entry) => entry.coverage === "partial",
+      ).length;
+      const pendingCandidates = (await services.candidates.list(ctx.projectId, "pending_review")).length;
+      return {
+        planId: plan.planId,
+        planStatus: plan.status === "approved" ? "done" : plan.status,
+        executed,
+        failed,
+        requirementsTotal: coverage.requirementCoverage.length,
+        requirementsMissing: missing,
+        requirementsPartial: partial,
+        pendingCandidates,
+      };
+    },
+  };
+}
+
+/** M10.3 planner 片段：研究执行后是否呈现 evidence-supply HITL（每 run 至多一次） */
+function planEvidenceSupplyExisting(state: WorkflowState): PlanDecision | null {
+  if ("hitl.evidence_supply" in state.stageResults) {
+    return null;
+  }
+  const research = state.stageResults["research.execute"] ?? {};
+  const pending = typeof research["pendingCandidates"] === "number" ? research["pendingCandidates"] : 0;
+  const missing = typeof research["requirementsMissing"] === "number" ? research["requirementsMissing"] : 0;
+  const partial = typeof research["requirementsPartial"] === "number" ? research["requirementsPartial"] : 0;
+  const executed = typeof research["executed"] === "number" ? research["executed"] : 0;
+  // 有可审候选（≥3 与 idea 流程同阈值），或存在未覆盖/部分覆盖的文献需求，
+  // 或本轮真实执行过检索（用户需要从结果快照遴选候选）→ 呈现一次
+  if (pending >= EVIDENCE_SUPPLY_MIN_PENDING || missing > 0 || partial > 0 || executed > 0) {
+    return { kind: "stage", stageId: "hitl.evidence_supply" };
+  }
+  return null;
+}
+
+/**
+ * research.propose（LLM + 工具）：从文献库全文为 requirements 提出锚定证据候选
+ * （propose_evidence / retrieve_library / get_chunk）；候选进入核验管道，
+ * verified 才转正。无全文可锚定时零候选（如实——需求覆盖留给 supply 链）。
+ */
+function researchProposeStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "research.propose",
+    description: "从文献库全文提出锚定证据候选（requirements 驱动；不检索）",
+    requiredInputs: ["research.execute"],
+    producedOutputs: ["evidence/candidates.jsonl 提案（待核验）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const artifact = await requireResearchArtifact(services, ctx.projectId);
+      const chain = readPlanChain(artifact);
+      const plan = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      const requirementDigest = (plan?.requirements ?? [])
+        .slice(0, 12)
+        .map(
+          (requirement) =>
+            `- [${requirement.requirementId}][${requirement.priority}] ${requirement.topic}（${requirement.claimType} / ${requirement.expectedEvidenceType}）`,
+        )
+        .join("\n");
+      const result = await services.researcher.proposeRevisionEvidence({
+        projectId: ctx.projectId,
+        requirementDigest:
+          requirementDigest !== ""
+            ? requirementDigest
+            : "（计划未预写证据需求：只对正文修订明确需要的文献论断提出锚定证据）",
+      });
+      return {
+        proposed: result.evidenceProposed,
+        appended: result.evidenceAppended,
+        taskId: result.taskId,
+      };
+    },
+  };
+}
+
 function improvementPlanStage(services: WorkflowServices): StageSpec {
   return {
     id: "plan.improvement",
-    description: "Writer 制定分节改进计划（基于审稿问题 + 目标差距）",
+    description:
+      "Writer 制定分节改进计划（审稿问题 + 目标差距 + 证据分层摘要 + 需求覆盖 + 基线事实）",
     requiredInputs: ["assessment.target"],
     producedOutputs: ["research/improvement-plan.json"],
     maxAttempts: services.stageMaxAttempts,
@@ -2798,21 +3330,45 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
       const project = await services.projects.getRequired(ctx.projectId);
       const feedback = readFeedback(ctx.state.inputs["hitl.plan_confirm"]?.payload);
       const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      // M10.3：计划输入扩展——A 原稿基线 / B user_confirmed 实验证据 /
+      // E verified 文献证据 / 需求覆盖 / 外部意见 / 作者目标
+      const baselineDigest = await readBaselineDigest(services, ctx.projectId);
+      const evidenceDigest = await buildEvidenceDigest(services, ctx.projectId);
+      const coverageDigest = await buildCoverageDigest(services, ctx.projectId);
+      const instructionDigest = await buildInstructionDigest(services, ctx.projectId);
+      const authorGoal = readAuthorGoal(ctx.state.request);
+      // 确定性 id 清单：Writer 条目的 relatedEvidenceIds / instructionId 只能从中选取
+      const [evidenceIds, instructions] = await Promise.all([
+        services.evidence.list(ctx.projectId),
+        services.externalInstructions.load(ctx.projectId),
+      ]);
       const plan = await services.writer.planImprovement({
         projectId: ctx.projectId,
         issues: review?.issues ?? [],
         analysisDigest: `${artifact.report.domainOverview.slice(0, 400)}\n弱点：${artifact.report.researchGaps.slice(0, 5).join("；")}`,
         feasibilityLevel: feasibility?.level ?? "未评估",
         targetProfile: project.targetProfile,
-        // 计划条目必须指向真实存在的章节文件（PDF 重建项目为 sections/secNN.tex）
+        // 计划条目必须指向真实存在的章节文件（PDF 重建项目为 sections/secNN.tex）；
+        // 单文件 LaTeX 项目 sections 为空 → 条目使用 main.tex
         sectionFiles: files.sections.map((file) => file.relativePath).slice(0, 20),
+        ...(baselineDigest !== undefined ? { baselineDigest } : {}),
+        ...(evidenceDigest !== undefined ? { evidenceDigest } : {}),
+        ...(coverageDigest !== undefined ? { coverageDigest } : {}),
+        ...(instructionDigest !== undefined ? { instructionDigest } : {}),
+        ...(authorGoal !== undefined ? { authorGoal } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
+        validEvidenceIds: evidenceIds.map((record) => record.id),
+        validInstructionIds: instructions.map((instruction) => instruction.instructionId),
       });
       await writeJsonAtomic(
         join(services.projects.researchDir(ctx.projectId), "improvement-plan.json"),
         { generatedAt: new Date().toISOString(), plan },
       );
-      return { items: plan.items.length };
+      return {
+        items: plan.items.length,
+        evidenceLinkedItems: plan.items.filter((item) => (item.relatedEvidenceIds ?? []).length > 0).length,
+        instructionLinkedItems: plan.items.filter((item) => item.instructionId !== undefined).length,
+      };
     },
     async verifyDod(ctx) {
       try {
@@ -2862,10 +3418,18 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
   const stages: readonly StageSpec[] = [
     importParseStage(services),
     importBaselineBuildStage(services),
+    importInventoryStage(services),
+    importBaselineStage(services),
     importUnderstandStage(services),
     citationVerifyStage(services),
     reviewRunStage(services),
     feasibilityStage(services, "assessment.target"),
+    researchPlanStage(services),
+    researchPlanConfirmStage(services),
+    researchExecuteStage(services),
+    evidenceSupplyStage(services, ["research.execute"]),
+    researchProposeStage(services),
+    evidenceGroundStage(services, ["research.propose"]),
     improvementPlanStage(services),
     planConfirmStage(services),
     revisionReviseStage(services, "revision.apply"),
@@ -2881,35 +3445,66 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     buildDraftStage(services),
     qualityGateStage(services),
     buildFinalStage(services),
+    revisionReportStage(services),
   ];
 
-  const front = [
+  const frontPre = [
     "import.parse",
     "import.baseline_build",
+    "import.inventory",
+    "import.baseline",
     "import.understand",
     "citation.verify",
     "review.run",
     "assessment.target",
-    "plan.improvement",
-    "hitl.plan_confirm",
-    "revision.apply",
+    "research.plan",
+    "hitl.research_plan",
+    "research.execute",
   ];
+  const frontPost = ["plan.improvement", "hitl.plan_confirm", "revision.apply"];
 
   return {
     kind: "existing_paper_improvement",
     description:
-      "Existing-LaTeX Improvement：结构解析 → 基线编译 → 论文理解 → 引用审计 → 审稿 → 目标评估 → 改进计划 → 确认 → 逐节改造 →（共享后段：复审 / Quality Gate / bounded 修订 + 修订复核 / 构建）",
+      "Existing-LaTeX Improvement：结构解析 → 基线编译 → 资产清单 → 事实基线 → 论文理解 → 引用审计 → 审稿 → 目标评估 →（M10.3：修订研究计划 → 批准 → 检索执行 → 证据供给提示 → 锚定提案 → 三段核验）→ 改进计划 → 确认 → 逐节改造 →（共享后段：复审 / Quality Gate / bounded 修订 + 修订复核 / 构建）→ Revision Trace 报告",
     stages,
     plan(state: WorkflowState): PlanDecision {
-      for (const stageId of front) {
+      for (const stageId of frontPre) {
         if (!(stageId in state.stageResults)) {
           return { kind: "stage", stageId };
         }
       }
-      return planSharedTail(state, services);
+      // M10.3：检索执行后呈现一次 evidence-supply HITL（用户遴选候选 /
+      // promote / 全文获取 / supply-query；continue 后走锚定提案 + 核验）
+      const evidenceSupply = planEvidenceSupplyExisting(state);
+      if (evidenceSupply !== null) {
+        return evidenceSupply;
+      }
+      if (!("research.propose" in state.stageResults)) {
+        return { kind: "stage", stageId: "research.propose" };
+      }
+      if (!("evidence.ground" in state.stageResults)) {
+        return { kind: "stage", stageId: "evidence.ground" };
+      }
+      for (const stageId of frontPost) {
+        if (!(stageId in state.stageResults)) {
+          return { kind: "stage", stageId };
+        }
+      }
+      const tail = planSharedTail(state, services);
+      if (tail.kind === "complete" && !("revision.report" in state.stageResults)) {
+        // 收尾产物：Revision Trace / Author Revision Report（确定性投影；
+        // Draft 完成路径同样产出——返修语境下 Draft 即当前可用产物）
+        return { kind: "stage", stageId: "revision.report" };
+      }
+      return tail;
     },
     async onInput(state, stageId, input): Promise<void | "cancel"> {
       switch (stageId) {
+        case "hitl.research_plan":
+          return applyResearchPlanDecision(services, state, input);
+        case "hitl.evidence_supply":
+          return applyEvidenceSupplyDecision(state, input);
         case "hitl.plan_confirm":
           return applyPlanDecision(state, input);
         case "hitl.revision_overflow":
@@ -3467,6 +4062,146 @@ async function readImportReport(
 }
 
 /**
+ * M10.3 §6：原稿事实基线 digest（improvement plan 输入 A）。
+ * 只给结构化要点（表格标签 + 关键数值样例 + 引用 key 数），不给全文——
+ * 计划需要知道「冻结了什么」而不是重读论文。
+ */
+async function readBaselineDigest(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  try {
+    const baseline = JSON.parse(
+      await readFile(join(services.projects.researchDir(projectId), "revision-baseline.json"), "utf8"),
+    ) as {
+      tables?: { label: string | null; caption: string; rowCount: number }[];
+      citationKeys?: string[];
+      hardware?: string[];
+      placeholders?: number;
+    };
+    const tables = (baseline.tables ?? []).slice(0, 12);
+    const parts = [
+      tables.length > 0
+        ? `表格（${tables.length} 个）：${tables
+            .map((table) => `${table.label ?? table.caption.slice(0, 24)}(${table.rowCount}行)`)
+            .join("、")}`
+        : undefined,
+      `引用 key ${baseline.citationKeys?.length ?? 0} 个`,
+      baseline.hardware !== undefined && baseline.hardware.length > 0
+        ? `硬件：${baseline.hardware.join("、")}`
+        : undefined,
+      baseline.placeholders !== undefined && baseline.placeholders > 0
+        ? `⚠ 基线含 ${baseline.placeholders} 处占位表述（待确认事实）`
+        : undefined,
+    ].filter((part): part is string => part !== undefined);
+    return parts.length > 0 ? `原稿冻结基线：${parts.join("；")}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * M10.3 §8：证据分层 digest（improvement plan 输入 B/E）。
+ * 两种 Evidence 用途严格区分：verified（grounded）= 外部文献证据，可支撑
+ * related work / 外部事实论述；user_confirmed = 作者自身实验事实，只授权
+ * 修改作者自己的实验数值，绝不等于「外部科学事实已验证」。
+ */
+async function buildEvidenceDigest(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  const records = await services.evidence.list(projectId);
+  const verified = records.filter((record) => record.verificationStatus === "verified");
+  const userConfirmed = records.filter(
+    (record) => record.verificationLevel === "user_confirmed" && record.verificationStatus !== "mismatch",
+  );
+  if (verified.length === 0 && userConfirmed.length === 0) {
+    return undefined;
+  }
+  const parts: string[] = [];
+  if (verified.length > 0) {
+    parts.push(
+      `【已核验外部文献证据（verified，可用于外部事实论述与引用）${verified.length} 条】`,
+      ...verified.slice(0, 10).map(
+        (record) =>
+          `- [${record.id}] ${record.claim.slice(0, 160)}${record.quote !== undefined ? `（引文："${record.quote.slice(0, 100)}"）` : ""}`,
+      ),
+    );
+  }
+  if (userConfirmed.length > 0) {
+    parts.push(
+      `【作者实验证据（user_confirmed：只授权修改作者自身实验事实，不是外部科学事实验证）${userConfirmed.length} 条】`,
+      ...userConfirmed.slice(0, 15).map((record) => {
+        const location = record.location ?? {};
+        const origin =
+          location.path !== undefined
+            ? `path=${location.path}`
+            : location.sheet !== undefined
+              ? `sheet=${location.sheet} row=${location.row ?? "?"} col=${location.column ?? "?"}`
+              : location.figureBlockId !== undefined
+                ? `figure=${location.figureBlockId}`
+                : "（无结构化定位）";
+        return `- [${record.id}] ${record.claim.slice(0, 160)}（${origin}）`;
+      }),
+    );
+  }
+  return parts.join("\n");
+}
+
+/** M10.3：requirement coverage digest（计划输入：文献需求覆盖现状） */
+async function buildCoverageDigest(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  try {
+    const coverage = await services.coverage.get(projectId);
+    if (coverage === null || coverage.requirementCoverage.length === 0) {
+      return undefined;
+    }
+    const lines = coverage.requirementCoverage
+      .slice(0, 12)
+      .map(
+        (entry) =>
+          `- [${entry.requirementId}][${entry.coverage}] ${entry.topic}（证据 ${entry.evidenceCount} / 已入库文献 ${entry.promotedCount}${entry.missingReason !== undefined ? `；缺口：${entry.missingReason}` : ""}）`,
+      );
+    return `文献需求覆盖（ResearchPlan requirements）：\n${lines.join("\n")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** M10.3：外部意见 digest（计划输入 F：含已落实的历史意见——作者目标常以此为载体） */
+async function buildInstructionDigest(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  const instructions = await services.externalInstructions.load(projectId);
+  if (instructions.length === 0) {
+    return undefined;
+  }
+  const lines = instructions.slice(0, 12).map((instruction) => {
+    const label = `${instruction.source}${instruction.reviewerLabel !== undefined ? `·${instruction.reviewerLabel}` : ""}`;
+    return `- [${instruction.instructionId}][${instruction.status}][${label}] ${firstLine(instruction.text, 160)}`;
+  });
+  return `外部修改意见（状态：pending=待处理 / already_satisfied=已在当前稿落实 / conflict=与事实冲突）：\n${lines.join("\n")}`;
+}
+
+/** run request 的作者修订目标（prompt 字段；M10.3 真实案例的作者路线说明） */
+function readAuthorGoal(request: Record<string, unknown> | undefined): string | undefined {
+  const value = request?.["prompt"];
+  return typeof value === "string" && value.trim() !== "" ? value.trim().slice(0, 4000) : undefined;
+}
+
+/** 文本首个非空行（截断） */
+function firstLine(text: string, maxLength: number): string {
+  const line = text
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry !== "");
+  return (line ?? text).slice(0, maxLength);
+}
+
+/**
  * M6.6 §9：usableEvidence 业务规则已下沉到 EvidenceSelectionService（架构审计：
  * definitions.ts 不再堆业务逻辑）。正式上下文只进 formal（verified + 三件套
  * 锚点）；legacy unverified 保留在库中但不再自动注入（§M6.6-11，M6.7 收口）。
@@ -3505,7 +4240,9 @@ async function buildManuscriptDigest(services: WorkflowServices, projectId: stri
       parts.push(`[abstract]（论文摘要，独立可修订）\n${(outline.abstract ?? "").slice(0, 2000)}`);
     }
   } else if (files.mainTex !== null) {
-    parts.push(`[main.tex]\n${files.mainTex.content.slice(0, 2000)}`);
+    // M10.3：单文件 LaTeX 导入项目（无 \input / 无大纲）——按 \section /
+    // \subsection 边界切块，否则 2000 字符截断会让审稿与论文理解几乎失明
+    parts.push(...splitSingleFileDigest(files.mainTex.content));
   }
   for (const section of files.sections.slice(0, 15)) {
     parts.push(`[${section.relativePath}]\n${section.content.slice(0, 2500)}`);
@@ -3514,6 +4251,41 @@ async function buildManuscriptDigest(services: WorkflowServices, projectId: stri
     throw new BusinessError("STAGE_CONTRACT_VIOLATION", "manuscript 目录没有任何 .tex 文件");
   }
   return parts.join("\n\n").slice(0, 40_000);
+}
+
+/**
+ * 单文件论文 digest 切块（M10.3）：preamble+摘要 为一块，其后每个
+ * \section / \subsection 起始一段。总块数 ≤ 18、每块 ≤ 2600 字符——
+ * 与分节项目的 digest 量级一致，不因单文件形态丢失正文可见性。
+ */
+function splitSingleFileDigest(content: string): string[] {
+  const normalized = content.replace(/\r\n/g, "\n");
+  const boundary = /(^|\n)\\(?:sub)*section\*?\{[^}]*\}/g;
+  const indices: number[] = [0];
+  for (const match of normalized.matchAll(boundary)) {
+    const at = (match.index ?? 0) + (match[1] ?? "").length;
+    if (at > indices[indices.length - 1]!) {
+      indices.push(at);
+    }
+  }
+  const parts: string[] = [];
+  for (const [position, start] of indices.entries()) {
+    const end = position + 1 < indices.length ? indices[position + 1]! : normalized.length;
+    const chunk = normalized.slice(start, end).trim();
+    if (chunk === "") {
+      continue;
+    }
+    const headerMatch = /\\(?:sub)*section\*?\{([^}]*)\}/.exec(chunk);
+    const label =
+      position === 0
+        ? "main.tex（导言 + 标题 + 摘要）"
+        : `main.tex · ${headerMatch?.[1]?.trim() ?? `第 ${position} 段`}`;
+    parts.push(`[${label}]\n${chunk.slice(0, 2600)}`);
+    if (parts.length >= 18) {
+      break;
+    }
+  }
+  return parts;
 }
 
 /** 读取最新 review 汇总（按 round 编号最大） */
@@ -3643,10 +4415,46 @@ async function collectRevisionDirectives(
           join(services.projects.researchDir(projectId), "improvement-plan.json"),
           "utf8",
         ),
-      ) as { plan?: { items?: { section: string; action: string; rationale?: string; priority?: string }[] } };
-      return (plan.plan?.items ?? []).map((item) => ({
+      ) as {
+        plan?: {
+          items?: {
+            section: string;
+            action: string;
+            rationale?: string;
+            priority?: string;
+            instructionId?: string;
+            relatedEvidenceIds?: string[];
+          }[];
+        };
+      };
+      return (plan.plan?.items ?? []).map((item, index) => ({
         match: (target: RevisionTarget) =>
           sectionMatches(item.section, target) ? planItemToIssue(item) : null,
+        // M10.3：改进计划条目以伪 RevisionPlanItem 形态携带证据与意见关联——
+        // Writer 修订 prompt 据此注入「修改前依据」（itemEvidence 池），Fact
+        // Preservation 的授权口径不变（improvementPlanItems 通道）
+        item: {
+          id: `improvement:${index + 1}`,
+          kind: "review_finding" as const,
+          priority:
+            item.instructionId !== undefined
+              ? ("mandatory" as const)
+              : item.priority === "high"
+                ? ("high" as const)
+                : item.priority === "low"
+                  ? ("low" as const)
+                  : ("medium" as const),
+          section: item.section,
+          problem: item.rationale ?? item.action.slice(0, 200),
+          instruction: item.action,
+          expectedOutcome: item.action.slice(0, 160),
+          status: "planned" as const,
+          ...(item.instructionId !== undefined ? { instructionId: item.instructionId } : {}),
+          ...(item.instructionId !== undefined ? { source: "external" as const } : {}),
+          ...(item.relatedEvidenceIds !== undefined && item.relatedEvidenceIds.length > 0
+            ? { relatedEvidenceIds: item.relatedEvidenceIds }
+            : {}),
+        },
       }));
     } catch {
       return [];
@@ -3852,10 +4660,14 @@ function listRevisionTargets(
     for (const section of outline.sections) {
       add(section.id, `sections/${section.file}`, contentByPath.get(`sections/${section.file}`));
     }
-  } else {
+  } else if (files.sections.length > 0) {
     for (const file of files.sections) {
       add(file.relativePath, file.relativePath, file.content);
     }
+  } else if (files.mainTex !== null) {
+    // M10.3：单文件 LaTeX 导入项目（无 \input / 无大纲）——main.tex 是用户
+    // 全部内容，作为整文件修订目标（writeMainTex 不会运行，不存在重组覆盖）
+    targets.push({ key: "main.tex", relativePath: "main.tex", currentLatex: files.mainTex.content });
   }
   // 指令引用了不在目标中的现有文件（如导入项目的自定义路径）→ 追加。
   // 有大纲时根 main.tex 是 writeMainTex 的确定性组装产物（含 outline.abstract），

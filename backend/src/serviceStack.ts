@@ -710,6 +710,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       evidenceSelection,
       candidates,
       coverage,
+      planExecution,
       sources,
       manuscript,
       writer,

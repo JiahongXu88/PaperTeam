@@ -515,12 +515,31 @@ function stripTablesAndMath(content: string): string {
   return text;
 }
 
+/**
+ * prose 数字提取前的保守归一（M10.3 整文件修订假阳性消除；只影响提取、
+ * 不改变展示 / 表格 / 公式口径）：
+ * - 数字 run 内部断行：`BDD1\n00K` 这类整文件重排把一个数字串拆到两行，
+ *   是排版噪声而非事实变化——仅当断行两侧都是数字时连接（词边界断行
+ *   `41.8\nafter` 保持原样，LaTeX 中换行即空格，语义不同）；
+ * - 前导宏管道：`\newcommand{\keywords}[1]{...}` / `\def\x{...}` 的参数
+ *   个数与默认值是 LaTeX 管道，不是论文事实——从 prose 提取中剥离。
+ * 两条都只可能减少违规计数（保守方向）；真实数值漂移不受影响。
+ */
+function normalizeForProseExtraction(text: string): string {
+  return text
+    .replace(/(\d)[ \t]*\r?\n[ \t]*(?=\d)/g, "$1")
+    .replace(/\\(?:re?newcommand|providecommand|def|DeclareMathOperator)\s*\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*(?:\[\d\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, " ");
+}
+
 function proseNumberTokens(content: string): string[] {
   // M9.10：全角数字预归一（２０２２ 进不了 \d 提取器，会伪装成删除）。
   // token 保持原文写法：千分位 / 尾零 / 单位大小写差异会进入多重集差异，
   // 由 classifyValuePair 判为 B 类格式变化（formatChanges 审计，不计违规）——
-  // 提取层直接归一会把这类变化完全吞掉，失去审计轨迹
-  return extractNumericTokens(normalizeFullWidthDigits(stripTablesAndMath(content)));
+  // 提取层直接归一会把这类变化完全吞掉，失去审计轨迹。
+  // M10.3：整文件重排的行内断行 / 前导宏管道先经保守归一（见函数注释）
+  return extractNumericTokens(
+    normalizeForProseExtraction(normalizeFullWidthDigits(stripTablesAndMath(content))),
+  );
 }
 
 function indexOfToken(content: string, token: string): number {
@@ -893,8 +912,8 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     }
     // -- 2b. 超参数 / 阈值赋值新增（r=16、Lclip≥3 类；仅 previous 已存在的文件参与，
     //    写作阶段的新章节文件不在本循环内——新增审查只针对既有稿） --
-    const previousProseCompact = stripTablesAndMath(previous).replace(/\s+/g, "");
-    const currentProse = stripTablesAndMath(current);
+    const previousProseCompact = normalizeForProseExtraction(stripTablesAndMath(previous)).replace(/\s+/g, "");
+    const currentProse = normalizeForProseExtraction(stripTablesAndMath(current));
     for (const match of currentProse.matchAll(ASSIGNMENT_PATTERN)) {
       const whole = (match[0] ?? "").replace(/\s+/g, "");
       const value = match[2] ?? "";
@@ -1326,13 +1345,45 @@ async function readImprovementPlanItems(
   try {
     const parsed = JSON.parse(
       await readFile(join(projects.researchDir(projectId), "improvement-plan.json"), "utf8"),
-    ) as { plan?: { items?: { section?: unknown; action?: unknown; rationale?: unknown }[] } };
+    ) as {
+      plan?: {
+        items?: {
+          section?: unknown;
+          action?: unknown;
+          rationale?: unknown;
+          expectedFactChanges?: unknown;
+        }[];
+      };
+    };
     return (parsed.plan?.items ?? [])
       .filter((item) => typeof item.section === "string" && typeof item.action === "string")
       .map((item) => ({
         section: item.section as string,
         action: item.action as string,
         ...(typeof item.rationale === "string" ? { rationale: item.rationale as string } : {}),
+        // M10.3：expectedFactChanges（before → after）并入授权文本——
+        // 计划点名旧值与新值的数值变更是 plan_value_correction 授权
+        ...(Array.isArray(item.expectedFactChanges)
+          ? {
+              rationale: [
+                typeof item.rationale === "string" ? item.rationale : "",
+                ...item.expectedFactChanges
+                  .filter(
+                    (change): change is { before: string; after: string; basis?: string } =>
+                      typeof change === "object" &&
+                      change !== null &&
+                      typeof (change as Record<string, unknown>)["before"] === "string" &&
+                      typeof (change as Record<string, unknown>)["after"] === "string",
+                  )
+                  .map(
+                    (change) =>
+                      `${change.before} → ${change.after}${change.basis !== undefined ? `（依据：${change.basis}）` : ""}`,
+                  ),
+              ]
+                .filter((part) => part !== "")
+                .join("\n"),
+            }
+          : {}),
       }));
   } catch {
     return [];

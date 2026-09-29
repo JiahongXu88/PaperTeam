@@ -51,13 +51,18 @@ export const EXTERNAL_SOURCE_LABELS: Record<ExternalInstructionSource, string> =
  * - partially_handled：部分执行（多目标派发中部分 applied、部分未报告）
  * - unresolved：已派发但未执行（not_applicable / 无文件变化 / 未报告）
  * - conflict：与稿件实验事实 / Evidence 冲突（Writer 报告 + 依据；不重复自动派发）
+ * - already_satisfied：导入时即在当前稿已落实的历史意见（M10.3：如投稿轮
+ *   Reviewer 意见在提交版已回复落实）。登记性终态：不派发、不参与 gate 复核
+ *   降级（reverifyHandledInstructions 只处理 handled）——本轮修订不因历史
+ *   意见强行再改，只作为审计上下文保留。
  */
 export type ExternalInstructionStatus =
   | "pending"
   | "handled"
   | "partially_handled"
   | "unresolved"
-  | "conflict";
+  | "conflict"
+  | "already_satisfied";
 
 export interface ExternalInstruction {
   instructionId: string;
@@ -139,7 +144,7 @@ function isSource(value: unknown): value is ExternalInstructionSource {
 function isStatus(value: unknown): value is ExternalInstructionStatus {
   return (
     typeof value === "string" &&
-    ["pending", "handled", "partially_handled", "unresolved", "conflict"].includes(value)
+    ["pending", "handled", "partially_handled", "unresolved", "conflict", "already_satisfied"].includes(value)
   );
 }
 
@@ -238,12 +243,19 @@ export class ExternalInstructionStore {
     });
   }
 
-  /** 新增一条（幂等：同内容 id 已存在 → 返回 null） */
+  /**
+   * 新增一条（幂等：同内容 id 已存在 → 返回 null）。
+   * initialStatus 仅允许 already_satisfied（M10.3：登记导入前已在当前稿落实的
+   * 历史意见，需携带 statusNote 说明依据）；其余状态一律从 pending 起步，
+   * 由派发/复核状态机确定性流转。
+   */
   async add(projectId: string, input: {
     source: ExternalInstructionSource;
     text: string;
     reviewerLabel?: string;
     section?: string;
+    initialStatus?: "already_satisfied";
+    statusNote?: string;
     now?: string;
   }): Promise<ExternalInstruction | null> {
     const now = input.now ?? new Date().toISOString();
@@ -252,13 +264,16 @@ export class ExternalInstructionStore {
     if (existing.some((instruction) => instruction.instructionId === instructionId)) {
       return null;
     }
+    const satisfied =
+      input.initialStatus === "already_satisfied" && (input.statusNote ?? "").trim() !== "";
     const instruction: ExternalInstruction = {
       instructionId,
       source: input.source,
       ...(input.reviewerLabel !== undefined ? { reviewerLabel: input.reviewerLabel } : {}),
       text: input.text,
       ...(input.section !== undefined ? { section: input.section } : {}),
-      status: "pending",
+      status: satisfied ? "already_satisfied" : "pending",
+      ...(satisfied ? { statusNote: input.statusNote } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -295,7 +310,11 @@ export function applyDispatchOutcome(
 ): { instructions: ExternalInstruction[]; changed: boolean } {
   let changed = false;
   const next = instructions.map((instruction): ExternalInstruction => {
-    if (instruction.status === "handled" || instruction.status === "conflict") {
+    if (
+      instruction.status === "handled" ||
+      instruction.status === "conflict" ||
+      instruction.status === "already_satisfied"
+    ) {
       return instruction; // 终态：不因新轮次自动翻转（handled 的降级只经 gate 复核）
     }
     if (dispatch.unmatched.includes(instruction.instructionId)) {

@@ -16,7 +16,7 @@ import { deflateRawSync } from "node:zlib";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import type { WorkflowState } from "../../src/workflow/types.js";
-import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
+import { scriptedIdeaRuntime, startTestStack, pollRunUntilAwaiting, type TestStack } from "../helpers/testStack.js";
 
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -131,7 +131,9 @@ async function runImprovement(
   });
   expect(created.status).toBe(202);
   const runId = created.body["runId"] as string;
-  const awaiting = await pollRun(stack, runId, ["awaiting_input"]);
+  // M10.3：前段新增 hitl.research_plan / hitl.evidence_supply 决策点——
+  // 自动批准后到达既有的改进计划确认
+  const awaiting = await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
   expect(awaiting.awaiting?.stageId).toBe("hitl.plan_confirm");
   await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
   return pollRun(stack, runId, ["completed", "failed"]);

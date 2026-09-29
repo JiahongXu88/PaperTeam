@@ -419,6 +419,8 @@ export class WriterService {
     revisionItems?: RevisionPlanItem[];
     /** 条目关联证据的完整记录池（M6.7 §6：修改前依据；缺省退化为 formal 快照） */
     itemEvidence?: EvidenceRecord[];
+    /** M10.3：单文件项目的整文件修订（main.tex；输出完整文件而非片段） */
+    wholeFile?: boolean;
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -471,7 +473,14 @@ export class WriterService {
     if (latex === "") {
       throw new AgentRunFailedError(`章节 ${params.section.id} 修订没有返回内容`);
     }
-    if (latex.includes("\\documentclass") || latex.includes("\\begin{document}")) {
+    if (params.wholeFile === true) {
+      // M10.3：整文件目标——输出必须是完整文档（缺失骨架说明 Writer 误解了契约）
+      if (!latex.includes("\\documentclass") || !latex.includes("\\begin{document}")) {
+        throw new InvalidLatexOutputError(
+          `章节 ${params.section.id} 整文件修订缺少完整文档骨架（\\documentclass / \\begin{document}）`,
+        );
+      }
+    } else if (latex.includes("\\documentclass") || latex.includes("\\begin{document}")) {
       throw new InvalidLatexOutputError(
         `章节 ${params.section.id} 修订返回了完整文档骨架（应为正文片段）`,
       );
@@ -585,6 +594,12 @@ export class WriterService {
   /**
    * Existing-Paper Improvement：依据审稿问题与目标差距生成分节改进计划。
    * 输出为结构化 plan（经校验），不改写正文。
+   *
+   * M10.3：计划输入扩展（A 原稿基线 / B·E 分层证据 / 需求覆盖 / 外部意见 /
+   * 作者目标）；条目可选携带 relatedEvidenceIds（修改依据的证据 id）、
+   * instructionId（对应外部意见）、expectedFactChanges（授权的事实数值变更
+   * before → after）。确定性校验：证据 id / 意见 id 必须存在于给定清单，
+   * 伪造引用一律剥离。
    */
   async planImprovement(params: {
     projectId: string;
@@ -595,6 +610,20 @@ export class WriterService {
     feedback?: string;
     /** 现有章节文件（相对 manuscript/ 的 POSIX 路径；section 字段必须从中选择） */
     sectionFiles: string[];
+    /** M10.3：原稿冻结事实基线要点（表格 / 引用 / 硬件 / 占位） */
+    baselineDigest?: string;
+    /** M10.3：分层证据摘要（verified 外部文献 + user_confirmed 作者实验） */
+    evidenceDigest?: string;
+    /** M10.3：文献需求覆盖现状 */
+    coverageDigest?: string;
+    /** M10.3：外部修改意见摘要（状态 + instructionId） */
+    instructionDigest?: string;
+    /** M10.3：作者修订目标（run prompt） */
+    authorGoal?: string;
+    /** 合法证据 id 清单（relatedEvidenceIds 校验用；缺省不校验但也不注入提示） */
+    validEvidenceIds?: string[];
+    /** 合法外部意见 id 清单（instructionId 校验用） */
+    validInstructionIds?: string[];
   }): Promise<ImprovementPlan> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -603,7 +632,9 @@ export class WriterService {
         "你是一名论文写手（Writer）。请基于审稿问题与目标差距，为已有 LaTeX 论文制定分节改进计划（只规划，不写正文）。",
         "",
         "只输出一个 JSON 对象（不要 Markdown 围栏）：",
-        '{"plan": [{"section": "sections/xxx.tex", "action": "具体改法", "rationale": "对应的问题或差距", "priority": "high|medium|low"}]}',
+        '{"plan": [{"section": "sections/xxx.tex", "action": "具体改法（要点名涉及的旧值与新值）", "rationale": "对应的问题或差距（含依据）", "priority": "high|medium|low",',
+        '  "instructionId": "对应外部意见 id（可选，须来自意见清单）", "relatedEvidenceIds": ["依据证据 id（可选，须来自证据清单）"],',
+        '  "expectedFactChanges": [{"before": "旧值", "after": "新值", "basis": "证据 id 或依据说明"}]}]}',
         "",
         "要求：",
         "1. plan 至少 1 项、至多 20 项；section 必须是以下现有章节文件之一：",
@@ -612,9 +643,27 @@ export class WriterService {
           : ["   - （未识别到章节文件：section 使用 main.tex）"]),
         "2. 优先处理 critical / blocking 问题与编译错误。",
         "3. 证据不足的论断计划为「弱化或删除」，不允许计划编造实验或引用。",
+        "4. 修改实验数值的条目必须：action 点名旧值与新值 + expectedFactChanges 逐条列出 + relatedEvidenceIds 给出作者实验证据（user_confirmed）或已核验文献证据。没有证据授权的数值修改不允许进入计划。",
+        "5. 证据分层纪律：verified（已核验文献）只支撑外部事实论述；user_confirmed（作者实验）只授权作者自身实验数值变更，不得当作外部科学事实验证。",
+        "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
         "",
         `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,
+        ...(params.authorGoal !== undefined
+          ? ["", "===== 作者修订目标 =====", params.authorGoal]
+          : []),
+        ...(params.baselineDigest !== undefined
+          ? ["", "===== 原稿冻结基线 =====", params.baselineDigest]
+          : []),
+        ...(params.instructionDigest !== undefined
+          ? ["", "===== 外部修改意见 =====", params.instructionDigest]
+          : []),
+        ...(params.coverageDigest !== undefined
+          ? ["", "===== 文献需求覆盖 =====", params.coverageDigest]
+          : []),
+        ...(params.evidenceDigest !== undefined
+          ? ["", "===== 证据（分层）=====", params.evidenceDigest]
+          : []),
         "",
         "===== 论文理解摘要 =====",
         params.analysisDigest,
@@ -639,6 +688,8 @@ export class WriterService {
     if (!Array.isArray(rawPlan) || rawPlan.length === 0) {
       throw new AgentRunFailedError("改进计划：缺少非空 plan 数组");
     }
+    const validEvidence = new Set(params.validEvidenceIds ?? []);
+    const validInstructions = new Set(params.validInstructionIds ?? []);
     const items: ImprovementPlanItem[] = [];
     for (const raw of rawPlan.slice(0, 20)) {
       if (typeof raw !== "object" || raw === null) {
@@ -661,6 +712,35 @@ export class WriterService {
           ? { rationale: record["rationale"].trim() }
           : {}),
         priority,
+        // 确定性校验：id 必须存在于系统清单，模型自造 id 一律剥离
+        ...(typeof record["instructionId"] === "string" &&
+        validInstructions.has(record["instructionId"].trim())
+          ? { instructionId: record["instructionId"].trim() }
+          : {}),
+        ...(Array.isArray(record["relatedEvidenceIds"])
+          ? {
+              relatedEvidenceIds: record["relatedEvidenceIds"]
+                .filter(
+                  (id): id is string =>
+                    typeof id === "string" && (validEvidence.size === 0 || validEvidence.has(id.trim())),
+                )
+                .map((id) => id.trim())
+                .slice(0, 8),
+            }
+          : {}),
+        ...(Array.isArray(record["expectedFactChanges"])
+          ? {
+              expectedFactChanges: record["expectedFactChanges"]
+                .filter(
+                  (change): change is { before: string; after: string; basis?: string } =>
+                    typeof change === "object" &&
+                    change !== null &&
+                    typeof (change as Record<string, unknown>)["before"] === "string" &&
+                    typeof (change as Record<string, unknown>)["after"] === "string",
+                )
+                .slice(0, 6),
+            }
+          : {}),
       });
     }
     if (items.length === 0) {
@@ -675,6 +755,12 @@ export interface ImprovementPlanItem {
   action: string;
   rationale?: string;
   priority: "high" | "medium" | "low";
+  /** M10.3：对应外部意见 id（确定性校验通过后保留） */
+  instructionId?: string;
+  /** M10.3：依据证据 id（确定性校验通过后保留） */
+  relatedEvidenceIds?: string[];
+  /** M10.3：授权的事实数值变更（Fact Preservation 的计划授权通道） */
+  expectedFactChanges?: { before: string; after: string; basis?: string }[];
 }
 
 export interface ImprovementPlan {
@@ -847,6 +933,11 @@ export function buildRevisePrompt(params: {
   revisionItems?: RevisionPlanItem[];
   /** revisionItems 关联证据的只读索引（M6.7 §6：修改前依据的渲染源） */
   evidenceById?: Map<string, EvidenceRecord>;
+  /**
+   * M10.3：单文件 LaTeX 项目的整文件修订目标（main.tex = 用户全部内容）。
+   * 输出契约变为「修改后的完整文件」（含导言区），不按章节片段口径校验。
+   */
+  wholeFile?: boolean;
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -920,7 +1011,13 @@ export function buildRevisePrompt(params: {
     ...targetLanguageLines(params.language),
     ...(params.language !== undefined ? [""] : []),
     "输出要求：",
-    "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
+    ...(params.wholeFile === true
+      ? [
+          "1. 本目标是**单文件完整稿件**（main.tex 即全部内容）：输出修改后的完整 LaTeX 文件（含 \\documentclass 导言区到 \\end{document}）；不要解释、不要代码围栏。只修改问题指向的位置及保持连贯所需的最小上下文，导言区与其余章节内容逐字保留（除非问题明确指向它们）。",
+        ]
+      : [
+          "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
+        ]),
     "2. 这是一次**受限修订（revision）**，不是重写：逐条解决下列针对本章节的问题，只修改问题指向的位置及保持连贯所需的最小上下文；其余内容逐字保留。",
     "3. **实验事实默认冻结**：当前稿件中的实验数值（含小数位 / 百分比 / 区间 / 单位）、表格内容、"
       + "数据集划分、训练与评测协议、硬件与部署配置、超参数、公式（数学环境内容）必须原样保留，"
@@ -948,7 +1045,8 @@ export function buildRevisePrompt(params: {
     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
     "",
     "===== 本章节当前内容 =====",
-    params.currentLatex.slice(0, 12_000),
+    // M10.3：单文件整文件修订不截断（截断 = 丢失保留义务，Writer 无法逐字保留）
+    params.wholeFile === true ? params.currentLatex : params.currentLatex.slice(0, 12_000),
     "",
     "===== 针对本章节的问题 =====",
     ...(params.issues.length > 0

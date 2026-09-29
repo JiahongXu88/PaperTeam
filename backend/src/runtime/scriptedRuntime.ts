@@ -236,6 +236,23 @@ const SCRIPTED_MATH_ENV_PATTERN =
  * Writer 篡改实验事实的回归（Fact Preservation Gate 的用例输入）。
  * prompt 里没有「本章节当前内容」块（单元测试直接调用）时只返回基底。
  */
+/**
+ * M10.3 单文件整文件修订（scripted）：返回「当前内容 + 无害标记行」——
+ * 事实 / 引用 / 公式逐字保留（Fact / Citation Preservation 全过），
+ * 文本真实变化（targetChanged 成立，修订号推进）。
+ */
+export function scriptedWholeFileRevision(task: string): string {
+  const marker = "===== 本章节当前内容 =====";
+  const start = task.indexOf(marker);
+  if (start === -1) {
+    return LATEX_DOC;
+  }
+  const rest = task.slice(start + marker.length);
+  const end = rest.indexOf("\n=====");
+  const current = (end === -1 ? rest : rest.slice(0, end)).trim();
+  return `${current}\n\n% 修订后（scripted whole-file revision：内容逐字保留，仅追加本标记行）`;
+}
+
 export function scriptedRevision(task: string, dropCitations: boolean, mutateFacts = false): string {
   const marker = "===== 本章节当前内容 =====";
   const start = task.indexOf(marker);
@@ -361,6 +378,43 @@ export const EXISTING_ANALYSIS_JSON = JSON.stringify({
   evidence: [],
   bibliography: [],
   weaknesses: ["缺少显著性检验", "相关工作覆盖不足", "结论表述过强"],
+});
+
+/** M10.3 修订研究计划输出（requirements 驱动 queries 的 draft 计划） */
+export const REVISION_RESEARCH_PLAN_JSON = JSON.stringify({
+  plan: {
+    questions: ["修订需要对比的近年方法基线是什么？"],
+    requirements: [
+      {
+        topic: "近年多目标跟踪关联方法与本文方法的对比定位",
+        claimType: "comparison",
+        expectedEvidenceType: "original_paper",
+        relatedSection: "引言 / 相关工作",
+        priority: "high",
+        note: "修订需要补充近年方法对比论述",
+      },
+    ],
+    queries: [
+      {
+        query: "multi-object tracking association survey",
+        kind: "academic",
+        rationale: "对应对比定位需求",
+        expectedCoverage: "近年 MOT 关联方法综述",
+      },
+    ],
+  },
+});
+
+/** M10.3 修订锚定证据提案输出（无 chunk 锚定 → legacy unverified 追加路径） */
+export const REVISION_EVIDENCE_JSON = JSON.stringify({
+  evidence: [
+    {
+      claim: "检索增强能降低大模型幻觉率",
+      summary: "综述汇总了多项实验：引入检索后事实错误率平均下降。",
+      source: { title: "A Survey of Retrieval-Augmented Generation", authors: ["Gao, Y."], year: 2023 },
+      location: { section: "5" },
+    },
+  ],
 });
 
 /** 改进计划输出 */
@@ -724,6 +778,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = projectCiteDrop.has(projectId) ? RESEARCH_JSON_TWO_REFS : RESEARCH_JSON;
       } else if (scope === "research/existing-analysis") {
         output = EXISTING_ANALYSIS_JSON;
+      } else if (scope === "research/revision-plan") {
+        // M10.3 修订研究规划：requirements 驱动 queries 的 draft 计划
+        output = REVISION_RESEARCH_PLAN_JSON;
+      } else if (scope === "research/revision-evidence") {
+        // M10.3 锚定证据提案：无 chunk 锚定的 legacy 候选（unverified 追加路径）
+        output = REVISION_EVIDENCE_JSON;
       } else if (scope === "research/feasibility") {
         output =
           feasibilitySequence[Math.min(feasibilityIndex, feasibilitySequence.length - 1)] ??
@@ -751,9 +811,11 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         const externalOutcomes = scriptedExternalOutcomes(input.task);
         output = input.task.includes("修订论文摘要")
           ? withExternalOutcomes(REVISED_ABSTRACT_TEXT, externalOutcomes)
-          : input.task.includes("\\documentclass")
-            ? LATEX_DOC
-            : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
+          : input.task.includes("单文件完整稿件")
+            ? withExternalOutcomes(scriptedWholeFileRevision(input.task), externalOutcomes)
+            : input.task.includes("\\documentclass")
+              ? LATEX_DOC
+              : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)
               ? withExternalOutcomes(
                   `${scriptedRevision(input.task, projectCiteDrop.has(projectId), projectFactMutate.has(projectId))}\n${UNDEFINED_MACRO_TEX}`,
                   externalOutcomes,
@@ -776,7 +838,8 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "writing/improvement-plan") {
         // 改进计划条目必须指向真实章节文件：prompt 现在携带「现有章节文件」清单
         // （M4.8；PDF 重建项目为 sections/secNN.tex）——脚本从中取前两个，
-        // 提取不到时保持静态 fixture（兼容旧 prompt 形态的用例）
+        // 提取不到时保持静态 fixture（兼容旧 prompt 形态的用例）。
+        // M10.3：单文件项目（无 sections/）→ 条目指向 main.tex（整文件修订）
         const sectionFiles = [...input.task.matchAll(/^\s*- (sections\/[a-z0-9-]+\.tex)$/gm)].map(
           (match) => match[1] ?? "",
         );
@@ -790,7 +853,18 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                   priority: index === 0 ? "high" : "medium",
                 })),
               })
-            : IMPROVEMENT_PLAN_JSON;
+            : input.task.includes("section 使用 main.tex")
+              ? JSON.stringify({
+                  plan: [
+                    {
+                      section: "main.tex",
+                      action: "补充关键论证并收敛过强表述",
+                      rationale: "基于审稿发现与目标差距",
+                      priority: "high",
+                    },
+                  ],
+                })
+              : IMPROVEMENT_PLAN_JSON;
       } else if (scope.startsWith("review/section/")) {
         // 快速 Review 的分章节审阅（M4.7 只读红线 E2E：合法 findings，产出零 PDF）
         output = SECTION_FINDINGS_JSON;

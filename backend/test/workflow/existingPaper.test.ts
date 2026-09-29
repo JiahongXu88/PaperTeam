@@ -12,7 +12,7 @@ import { deflateRawSync } from "node:zlib";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import type { WorkflowState } from "../../src/workflow/types.js";
-import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
+import { scriptedIdeaRuntime, startTestStack, pollRunUntilAwaiting, type TestStack } from "../helpers/testStack.js";
 
 // 全流程 e2e 超过默认 5s
 vi.setConfig({ testTimeout: 20_000 });
@@ -133,8 +133,9 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
     expect(created.status).toBe(202);
     const runId = created.body["runId"] as string;
 
-    // 前段推进到改进计划确认
-    const planConfirm = await pollRun(stack, runId, ["awaiting_input"]);
+    // 前段推进到改进计划确认（M10.3：自动批准新增的 research_plan /
+    // evidence_supply 决策点）
+    const planConfirm = await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
     expect(planConfirm.awaiting?.stageId).toBe("hitl.plan_confirm");
     const payload = planConfirm.awaiting?.payload as { items?: { section: string }[] } | undefined;
     expect((payload?.items ?? []).length).toBeGreaterThan(0);
@@ -202,7 +203,7 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
       kind: "existing_paper_improvement",
     });
     const runId = created.body["runId"] as string;
-    await pollRun(stack, runId, ["awaiting_input"]);
+    await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
 
     const missing = await stack.request("POST", `/api/runs/${runId}/resume`, {
       decision: "revise",
@@ -214,7 +215,7 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
       decision: "revise",
       payload: { feedback: "优先补显著性检验" },
     });
-    await pollRun(stack, runId, ["awaiting_input"]);
+    await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
     const finished = await pollRun(stack, runId, ["completed"]);
     const plans = finished.stageHistory.filter(

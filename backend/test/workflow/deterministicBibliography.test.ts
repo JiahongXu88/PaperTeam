@@ -23,7 +23,7 @@ import { deflateRawSync } from "node:zlib";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import type { WorkflowState } from "../../src/workflow/types.js";
-import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
+import { scriptedIdeaRuntime, startTestStack, pollRunUntilAwaiting, type TestStack } from "../helpers/testStack.js";
 import { WriterService } from "../../src/writer/WriterService.js";
 import { renderBibliographyFile, filterByCitedKeys, buildBibliographyFromSources, mergeArtifactBibliography } from "../../src/citation/bibliography.js";
 import type { AgentRuntime, AgentTask, RunAgentInput } from "../../src/runtime/types.js";
@@ -364,8 +364,8 @@ describe("旧项目兼容（Existing-Paper references.bib 不被改写）", () =
     });
     expect(created.status).toBe(202);
     const runId = created.body["runId"] as string;
-    // plan_confirm HITL → approve → 完成
-    const run = await pollRun(stack, runId, ["awaiting_input"]);
+    // plan_confirm HITL → approve → 完成（M10.3：先自动批准新增决策点）
+    const run = await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
     expect(run.awaiting?.stageId).toBe("hitl.plan_confirm");
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
     await pollRun(stack, runId, ["completed"]);

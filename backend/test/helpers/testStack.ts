@@ -112,6 +112,53 @@ export interface TestStack {
   port: () => number;
 }
 
+/**
+ * M10.3：轮询 run 直到 awaiting_input，途中对指定的中间 HITL 自动批准。
+ * existing_paper_improvement 前段新增 hitl.research_plan（approve）/
+ * hitl.evidence_supply（continue）后，旧测试只关心 hitl.plan_confirm——
+ * 用本辅助越过新增决策点，测试焦点保持在原断言。
+ */
+export async function pollRunUntilAwaiting(
+  stack: TestStack,
+  runId: string,
+  targetStage: string,
+  options: { timeoutMs?: number; autoDecisions?: Record<string, string> } = {},
+): Promise<import("../../src/workflow/types.js").WorkflowState> {
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  const autoDecisions = options.autoDecisions ?? {
+    "hitl.research_plan": "approve",
+    "hitl.evidence_supply": "continue",
+  };
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { body } = await stack.request("GET", `/api/runs/${runId}`);
+    const run = body["run"] as import("../../src/workflow/types.js").WorkflowState;
+    if (run.status === "awaiting_input" && run.awaiting?.stageId === targetStage) {
+      return run;
+    }
+    if (run.status === "failed") {
+      throw new Error(
+        `run 意外失败：${run.error?.code} ${run.error?.message}（stage ${run.error?.stageId ?? "?"}）`,
+      );
+    }
+    if (run.status === "awaiting_input") {
+      const stageId = run.awaiting?.stageId ?? "";
+      const decision = autoDecisions[stageId];
+      if (decision === undefined) {
+        throw new Error(`等待 ${targetStage} 时遇到未预期的待办节点 ${stageId}`);
+      }
+      await stack.request("POST", `/api/runs/${runId}/resume`, { decision });
+      continue;
+    }
+    if (run.status === "completed") {
+      throw new Error(`run 已完成（未出现 ${targetStage}）`);
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`等待 ${targetStage} 超时（当前 ${run.status}，stage ${run.currentStage}）`);
+    }
+  }
+}
+
 export async function startTestStack(
   runtime: AgentRuntime,
   options: {

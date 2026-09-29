@@ -2479,11 +2479,28 @@ async function handleProjectResourceRoutes(
           typeof body["section"] === "string" && body["section"].trim() !== ""
             ? body["section"].trim().slice(0, 300)
             : undefined;
+        // M10.3：登记导入前已在当前稿落实的历史意见（如投稿轮 reviewer 意见在
+        // 提交版已回复落实）——already_satisfied 终态，不派发、不强行再改；
+        // 必须携带 statusNote 说明「已落实」的依据（防止滥用为跳过通道）。
+        const initialStatus =
+          body["initialStatus"] === "already_satisfied" ? ("already_satisfied" as const) : undefined;
+        const statusNote =
+          typeof body["statusNote"] === "string" && body["statusNote"].trim() !== ""
+            ? body["statusNote"].trim().slice(0, 500)
+            : undefined;
+        if (initialStatus !== undefined && statusNote === undefined) {
+          throw new BusinessError(
+            "INVALID_REQUEST",
+            "initialStatus=already_satisfied 必须携带非空 statusNote（说明该意见已在当前稿落实的依据）",
+          );
+        }
         const instruction = await stack.externalInstructions.add(projectId, {
           source: source as ExternalInstructionSource,
           text,
           ...(reviewerLabel !== undefined ? { reviewerLabel } : {}),
           ...(section !== undefined ? { section } : {}),
+          ...(initialStatus !== undefined ? { initialStatus } : {}),
+          ...(statusNote !== undefined ? { statusNote } : {}),
         });
         if (instruction === null) {
           throw new BusinessError("INVALID_REQUEST", "该意见已存在（相同来源 / 标识 / 原文的幂等指纹）");
