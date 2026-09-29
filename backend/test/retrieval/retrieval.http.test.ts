@@ -4,7 +4,7 @@
  */
 
 import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
@@ -169,10 +169,18 @@ describe("POST /api/projects/:id/retrieval/rebuild + GET stats", () => {
     const a = await createProject("范围 A");
     const b = await createProject("范围 B");
     await uploadText(a, "doc.md", DOC);
+    // M10.1.1：md 上传即自动 ingest + 重建（B 自己的 chunks 在上传时已生成）；
+    // 本断言保护的是「A 的 rebuild 不触碰 B」——快照 B 目录，rebuild A 后不变
     await uploadText(b, "doc.md", "# B\n\n" + "beta content ".repeat(40));
+    const bChunks = join(stack.root, b, "sources", "chunks");
+    const before = existsSync(bChunks)
+      ? readdirSync(bChunks).sort().join(",")
+      : "__missing__";
     await stack.request("POST", `/api/projects/${a}/retrieval/rebuild`, {});
-    const bFile = join(stack.root, b, "sources", "chunks");
-    expect(existsSync(bFile)).toBe(false); // B 未被触碰
+    const after = existsSync(bChunks)
+      ? readdirSync(bChunks).sort().join(",")
+      : "__missing__";
+    expect(after).toBe(before); // B 未被触碰
   });
 });
 

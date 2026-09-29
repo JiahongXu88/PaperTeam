@@ -52,6 +52,8 @@ export interface EvidenceLocation {
   row?: number;
   /** 列（表头名） */
   column?: string;
+  /** 结构化路径（M10.1.1：JSON/YAML 投影记录，`$.training.epochs`） */
+  path?: string;
 }
 
 export interface EvidenceRecord {
@@ -518,6 +520,7 @@ function validateLocation(location: EvidenceLocation | undefined): EvidenceLocat
     out.row = location.row;
   }
   if (location.column !== undefined) out.column = optionalString(location.column, 100);
+  if (location.path !== undefined) out.path = optionalString(location.path, 200);
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

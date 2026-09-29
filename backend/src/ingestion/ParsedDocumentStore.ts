@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
-import type { ParsedDocument } from "./types.js";
+import { normalizeCounts, type ParsedDocument } from "./types.js";
 
 export class ParsedDocumentStore {
   private readonly projects: ProjectStore;
@@ -51,6 +51,8 @@ export class ParsedDocumentStore {
     try {
       const parsed = JSON.parse(raw) as ParsedDocument;
       if (typeof parsed === "object" && parsed !== null && parsed.schemaVersion === 1) {
+        // counts 归一：M10.1.1 前的老产物缺 code/output 键——补 0（不覆盖已有值）
+        parsed.counts = normalizeCounts(parsed.counts);
         return parsed;
       }
       return null;

@@ -1044,6 +1044,43 @@ M11 再考虑 Research Memory 等条件能力。M10.0 的 Evaluation Framework �
   HTTP 端点）+ **真实 docling smoke（attention.pdf 全链：解析 → ingest →
   chunker kind=docling）**；全量 backend 回归零回归（快照见报告 §11）。
 
+**M10.1.1 Common Asset Ingestion ✅（2026-09-29）**：统一 ingestion 横向
+扩展到常见科研工程资产，见
+[research/M10.1.1_COMMON_ASSET_INGESTION_REPORT.md](research/M10.1.1_COMMON_ASSET_INGESTION_REPORT.md)。
+要点：
+
+- **新格式（全部走既有 DocumentParser seam / ParsedDocument，无第二套
+  抽象）**：TXT/Markdown/LaTeX/源码（TextAssetParser：行 provenance，
+  MD ATX 标题与 LaTeX `\section` 命令 → section，代码行窗口块无 AST，
+  单行不截断）；JSON/YAML（标量叶子路径投影 `$.training.epochs` →
+  structured_record，YAML 经 `yaml` 库 AST+LineCounter 保留行号，JSON
+  如实无行号）；ipynb（纯静态解析——cell 块 + 文本输出块 + 图片输出
+  base64 解码落盘资产，**绝不执行 cell**；超限登记 visualOutputPresent）；
+  PNG/JPG（ImageAssetParser：magic bytes 验签 + 头部尺寸 + 资产登记，
+  无 Vision/OCR，理解属 M10.2）。块模型扩展：code/output 块类型 +
+  lineStart/lineEnd/jsonPath/cellIndex/cellId/outputIndex provenance +
+  figure width/height/visualOutputPresent。
+- **Parser Registry**（`parserRegistry.ts` 查表函数）：扩展名 → 资产大类
+  → parser 单点分派；上传 API 不变（非 PDF 内联解析、PDF 后台 docling）；
+  新增格式 = 扩表 + 实现 parser，业务层零改动。「不信文件名」由内容层
+  兜底（文本拒二进制 / 图片验签名 / notebook 验结构）。
+- **检索 / provenance**：SourceChunk 新增 lineStart/lineEnd（与页码同
+  纪律）；JSON/YAML chunk 文本带 `[$.path · line N]` 回溯锚；Notebook 按
+  cell 分节。跨格式 E2E（MOT17 迷你工程 12 文件，真实 dist 后端）32/32
+  PASS：epochs→config.json、learning_rate→train.py:5、MOTA→CSV/XLSX 行、
+  Notebook 结论→cell 输出、PDF docling 回归。
+- **path 寻址确认**：`POST /records/evidence` 支持 `path`（`$.…`）替代
+  row/column——JSON/YAML 值确认走 M10.1 同通道（机械值校验 +
+  user_confirmed ≠ grounded_verified 边界单测锁定）。
+- **预存缺陷修复（本轮 E2E 发现，XLSX 回归范围内）**：dist（Node ESM）
+  下 `import("exceljs")` 只暴露 `{default}`，生产 XLSX 解析必败（vitest
+  interop 掩盖、M10.1 e2e 未覆盖 xlsx 上传）——loadExcelJs 加 default
+  兜底。
+- **测试**：新增 7 文件 56 用例（四 parser + registry + 服务分派 + 检索
+  集成）；全量 backend 1851 passed / frontend 267 passed / M10.1 e2e 与
+  docling 真实 smoke 回归通过；真实 notebook manual smoke（jupyter 官方
+  示例，smoke 后删除）通过。
+
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
 `event_gap` 合成事件类型），`PiRuntimeAdapter` 三项可靠性修复，全部先以
@@ -2182,14 +2219,14 @@ POST   /api/runs/:runId/resume                    HITL 输入 {decision, payload
 POST   /api/runs/:runId/cancel                    取消
 POST   /api/projects/:id/import                   导入 LaTeX 项目（archiveBase64 | files）
 GET    /api/projects/:id/import                   最近导入报告
-POST   /api/projects/:id/sources                  上传文献 {fileName, contentBase64, sourceRole?…}（csv/xlsx 内联结构化 ingest；pdf 后台 ingest，M10.1）
+POST   /api/projects/:id/sources                  上传文献 {fileName, contentBase64, sourceRole?…}（pdf 后台 ingest；csv/xlsx/txt/md/tex/json/yaml/源码/ipynb/图片登记内联结构化 ingest，M10.1/M10.1.1）
 GET    /api/projects/:id/sources                  文献列表
 GET|PATCH|DELETE /api/projects/:id/sources/:sid   详情 / 角色 / 删除
 POST   /api/projects/:id/sources/:sid/analyze     PDF 分析 {mode: builtin|multimodal}
 POST   /api/projects/:id/sources/:sid/ingest      结构化解析（手动触发 / 重试，M10.1）
 GET    /api/projects/:id/sources/:sid/document    ParsedDocument 汇总（?blocks=true 有界块视图，M10.1）
 GET    /api/projects/:id/sources/:sid/records     结构化记录窗口（sheet/rowFrom/rowTo/limit，M10.1）
-POST   /api/projects/:id/sources/:sid/records/evidence  确认记录值 → user_confirmed Evidence（M10.1）
+POST   /api/projects/:id/sources/:sid/records/evidence  确认记录值 → user_confirmed Evidence（row+column 或 path=$.… 寻址，M10.1/M10.1.1）
 GET|POST /api/projects/:id/evidence               Evidence 列表（查询参数）/ 手工添加
 POST   /api/projects/:id/evidence/:eid/verify     更新核验状态
 GET    /api/projects/:id/feasibility              最近可行性报告

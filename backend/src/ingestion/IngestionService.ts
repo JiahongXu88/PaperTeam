@@ -1,20 +1,28 @@
 /**
- * IngestionService（M10.1）：source 文件 → ParsedDocument 编排 + 结构化
- * 记录 → user_confirmed Evidence 的确认通道。
+ * IngestionService（M10.1 + M10.1.1）：source 文件 → ParsedDocument 编排 +
+ * 结构化记录 → user_confirmed Evidence 的确认通道。
  *
- * 解析链（显式降级，不静默）：
+ * 解析链（显式降级，不静默；M10.1.1 起经 parserRegistry 按资产大类分派）：
  *   PDF:   DoclingParser（结构化：版面 / 阅读顺序 / 表格 / 图 / 页码 bbox）
  *          └ 不可用 → LegacyPdfTextParser（pymupdf 文本层 → builtin 文本层；
  *            parseMode=text_only + degradedFrom 审计）
  *          └ 解析失败（损坏 / 加密 / 超时）→ status=failed 如实落盘，可重试
  *   CSV:   CsvParser（每行一条 structured_record，file/row/column provenance）
  *   XLSX:  XlsxParser（sheet/row/column provenance）
+ *   TXT/MD/LaTeX/源码: TextAssetParser（行 provenance；MD 标题 / LaTeX
+ *          分节命令 → section）
+ *   JSON/YAML: 轻量结构化投影（叶子路径 structured_record，jsonPath
+ *          provenance；YAML 带行号）
+ *   ipynb: NotebookParser（静态解析：cell 块 + 文本输出块 + 图片输出资产；
+ *          绝不执行 cell 代码）
+ *   PNG/JPG: ImageAssetParser（登记：签名 + 尺寸 + 资产落位；不理解内容）
  *
  * Evidence 语义红线（M10.0.5 §8.5-R1）：结构化记录 → 用户确认 →
  * verificationLevel=user_confirmed 的 Evidence；verificationStatus 保持
  * unverified（用户自己的实验数字不是「已被外部文献机械验证」），
  * isFormalEvidence / grounded_verified 分级不受影响。claim 与单元格值
- * 做机械包含校验——登记的数值必须真的在那个格子里。
+ * 做机械包含校验——登记的数值必须真的在那个格子里。JSON/YAML 记录
+ * 经 path（jsonPath）寻址走同一通道（M10.1.1）。
  */
 
 import { BusinessError, EvidenceValueMismatchError, NotFoundError } from "../errors.js";
@@ -22,10 +30,24 @@ import type { EvidenceStore } from "../evidence/EvidenceStore.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { SourceItem, SourceStore } from "../sources/SourceStore.js";
 import { CsvParser } from "./csvTabular.js";
+import { ImageAssetParser } from "./imageAsset.js";
+import { JsonParser } from "./jsonStructured.js";
+import { NotebookParser } from "./notebookParser.js";
+import {
+  assetKindOfFileName,
+  defaultMimeOfAssetKind,
+  documentKindOfAssetKind,
+  type SourceAssetKind,
+} from "./parserRegistry.js";
+import { TextAssetParser } from "./textAsset.js";
 import type { DocumentExtraction, DocumentParser, ParsedBlock, ParsedDocument, ParsedRecordBlock } from "./types.js";
-import { isDocumentFresh } from "./types.js";
+import { emptyCounts, isDocumentFresh } from "./types.js";
 import type { ParsedDocumentStore } from "./ParsedDocumentStore.js";
 import { XlsxParser } from "./xlsxTabular.js";
+import { YamlParser } from "./yamlStructured.js";
+
+/** 非 PDF 资产大类（parser 表键；pdf 走 structuredParser + 降级链特例） */
+export type AssetParserKind = Exclude<SourceAssetKind, "pdf" | "other">;
 
 export interface IngestionServiceOptions {
   projects: ProjectStore;
@@ -38,6 +60,8 @@ export interface IngestionServiceOptions {
   evidence?: EvidenceStore;
   csvParser?: DocumentParser;
   xlsxParser?: DocumentParser;
+  /** M10.1.1 文本 / 结构化 / Notebook / 图片 parser 注入（缺省内建默认） */
+  assetParsers?: Partial<Record<AssetParserKind, DocumentParser>>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -53,10 +77,15 @@ export interface RecordQuery {
 export interface RecordEvidenceInput {
   /** sheet 名（XLSX 必填语义由记录本身决定；CSV 省略） */
   sheet?: string;
-  /** 物理行号（含表头 = 1；与 Excel 行号一致） */
-  row: number;
+  /** 物理行号（含表头 = 1；与 Excel 行号一致；row/column 寻址模式必填） */
+  row?: number;
   /** 列（表头名或列字母） */
-  column: string;
+  column?: string;
+  /**
+   * 结构化路径寻址（M10.1.1 JSON/YAML：`$.training.epochs`）。提供时
+   * 优先于 row/column——按 provenance.jsonPath 精确匹配记录。
+   */
+  path?: string;
   claim: string;
 }
 
@@ -67,8 +96,8 @@ export class IngestionService {
   private readonly structuredParser: DocumentParser;
   private readonly fallbackParser?: DocumentParser;
   private readonly evidence?: EvidenceStore;
-  private readonly csvParser: DocumentParser;
-  private readonly xlsxParser: DocumentParser;
+  /** 资产大类 → parser（M10.1.1 registry；pdf 特例走 structuredParser 链） */
+  private readonly assetParsers: ReadonlyMap<AssetParserKind, DocumentParser>;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
   /** 同一 source 的在途解析去重（并发上传 / 后台触发 / 手动触发不重复 spawn） */
@@ -88,10 +117,17 @@ export class IngestionService {
     this.structuredParser = options.structuredParser;
     this.fallbackParser = options.fallbackParser;
     this.evidence = options.evidence;
-    this.csvParser = options.csvParser ?? new CsvParser();
-    this.xlsxParser = options.xlsxParser ?? new XlsxParser();
+    this.assetParsers = buildAssetParsers(options);
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
+  }
+
+  /** 资产大类对应的 parser（pdf/other 无映射——pdf 走降级链特例） */
+  parserForAssetKind(kind: SourceAssetKind): DocumentParser | null {
+    if (kind === "pdf" || kind === "other") {
+      return kind === "pdf" ? this.structuredParser : null;
+    }
+    return this.assetParsers.get(kind) ?? null;
   }
 
   // ---- Ingestion ----
@@ -132,12 +168,13 @@ export class IngestionService {
     if (item.fileName === undefined) {
       throw new BusinessError("INVALID_REQUEST", `文献 ${sourceId} 是 metadata-only 条目（无原始文件可解析）`);
     }
-    const kind = documentKindOf(item);
-    if (kind === "other") {
+    const kind = assetKindOfFileName(item.fileName);
+    const parser = this.parserForAssetKind(kind);
+    if (kind === "other" || parser === null) {
       // 不支持的类型：前置拒绝（不落 failed 文档——这不是解析失败，是能力边界）
       throw new BusinessError(
         "INVALID_REQUEST",
-        `文献 ${sourceId} 的文件类型不支持结构化解析（${item.fileName}；支持 pdf / csv / xlsx）`,
+        `文献 ${sourceId} 的文件类型不支持结构化解析（${item.fileName}；支持 pdf / csv / xlsx / txt / md / tex / json / yaml / 常见源码 / ipynb / png·jpg）`,
       );
     }
     const filePath = await this.sources.filePath(projectId, sourceId);
@@ -160,13 +197,17 @@ export class IngestionService {
             throw error;
           }
         }
-      } else if (kind === "csv") {
-        extraction = await this.csvParser.parseFile(filePath);
+      } else if (kind === "notebook" || kind === "image") {
+        // 资产产出 parser（notebook 图片输出 / 图片登记落 figures 目录）
+        extraction = await parser.parseFile(filePath, {
+          figuresDir: this.documents.figuresDir(projectId, sourceId),
+        });
       } else {
-        extraction = await this.xlsxParser.parseFile(filePath);
+        extraction = await parser.parseFile(filePath);
       }
       const document = buildParsedDocument({
         item,
+        assetKind: kind,
         extraction,
         contentHash,
         parsedAt: this.now().toISOString(),
@@ -192,14 +233,15 @@ export class IngestionService {
     } catch (error) {
       // 解析失败如实落盘（可重试；不静默、不伪装成功）
       const reason = error instanceof Error ? error.message : String(error);
+      const storageKind = documentKindOfAssetKind(kind);
       const document: ParsedDocument = {
         schemaVersion: 1,
         sourceId,
         fileName: item.originalName ?? item.fileName,
         storedFileName: item.fileName,
-        kind: kind === "xlsx" || kind === "csv" ? "tabular" : "pdf",
-        mimeType: mimeOf(kind),
-        parser: { id: attemptedParserId(kind, this.structuredParser.id) },
+        kind: storageKind === "other" ? "text" : storageKind,
+        mimeType: defaultMimeOfAssetKind(kind),
+        parser: { id: kind === "pdf" ? this.structuredParser.id : parser.id },
         parseMode: "structured",
         status: "failed",
         blocks: [],
@@ -260,11 +302,12 @@ export class IngestionService {
   // ---- 结构化记录 → user_confirmed Evidence ----
 
   /**
-   * 用户确认一条记录值为事实（M10.1C/D）：
+   * 用户确认一条记录值为事实（M10.1C/D + M10.1.1 path 寻址）：
+   * - 寻址：row/column（CSV/XLSX 物理行）或 path（JSON/YAML jsonPath）；
    * - 机械校验：claim 必须真的提到该单元格的值（数值等价归一）；
    * - verificationLevel=user_confirmed、verificationStatus=unverified——
    *   用户实验数字 ≠ 文献机械核验（grounded_verified 分级不受影响）；
-   * - provenance 落 location.sheet/row/column，quote 为原始值。
+   * - provenance 落 location.sheet/row/column/path，quote 为原始值。
    */
   async confirmRecordEvidence(
     projectId: string,
@@ -280,23 +323,21 @@ export class IngestionService {
     if (document.status === "failed") {
       throw new BusinessError("INVALID_REQUEST", `文献 ${sourceId} 的解析产物不可用（status=failed；请重新解析）`);
     }
-    const record = findRecord(document.blocks, input.sheet, input.row);
-    if (record === null) {
-      throw new NotFoundError(
-        "结构化记录",
-        `${sourceId} ${input.sheet !== undefined ? `sheet=${input.sheet} ` : ""}row=${input.row}`,
-      );
+    const located = locateRecord(document.blocks, input);
+    if (located === null) {
+      const where =
+        input.path !== undefined
+          ? `path=${input.path}`
+          : `${input.sheet !== undefined ? `sheet=${input.sheet} ` : ""}row=${input.row ?? "?"}`;
+      throw new NotFoundError("结构化记录", `${sourceId} ${where}`);
     }
-    const cell = findCell(record, input.column);
-    if (cell === null) {
-      throw new NotFoundError("记录列", `${sourceId} row=${input.row} column=${input.column}`);
-    }
+    const { record, cell } = located;
     if (cell.value.trim() === "") {
-      throw new BusinessError("INVALID_REQUEST", `该单元格为空（row=${input.row} column=${input.column}），无可确认事实`);
+      throw new BusinessError("INVALID_REQUEST", `该记录值为空（${describeAddress(input)}），无可确认事实`);
     }
     if (!claimMentionsValue(input.claim, cell.value)) {
       throw new EvidenceValueMismatchError(
-        `claim 未包含记录值（row=${input.row} ${cell.header}=${cell.value}；claim 应提到该值）`,
+        `claim 未包含记录值（${describeAddress(input)} ${cell.header}=${cell.value}；claim 应提到该值）`,
       );
     }
     const created = await this.evidence.append(
@@ -310,7 +351,10 @@ export class IngestionService {
         },
         location: {
           ...(record.provenance.sheet !== undefined ? { sheet: record.provenance.sheet } : {}),
-          row: input.row,
+          ...(record.provenance.row !== undefined ? { row: record.provenance.row } : {}),
+          ...(input.path !== undefined || record.provenance.jsonPath !== undefined
+            ? { path: input.path ?? record.provenance.jsonPath }
+            : {}),
           column: cell.header,
         },
         verificationStatus: "unverified",
@@ -320,7 +364,7 @@ export class IngestionService {
       createdBy,
     );
     this.log(
-      `[ingestion] ${projectId}/${sourceId} 结构化事实确认（${record.provenance.sheet ?? "csv"} row=${input.row} ${cell.header}=${cell.value.slice(0, 40)}）→ Evidence ${created.id}`,
+      `[ingestion] ${projectId}/${sourceId} 结构化事实确认（${describeAddress(input)} ${cell.header}=${cell.value.slice(0, 40)}）→ Evidence ${created.id}`,
     );
     return { evidence: created, record, cell };
   }
@@ -344,6 +388,7 @@ export interface ParsedDocumentSummary {
   sourceId: string;
   fileName: string;
   kind: ParsedDocument["kind"];
+  mimeType: string;
   parser: ParsedDocument["parser"];
   parseMode: ParsedDocument["parseMode"];
   status: ParsedDocument["status"];
@@ -361,6 +406,7 @@ export function summarizeDocument(document: ParsedDocument): ParsedDocumentSumma
     sourceId: document.sourceId,
     fileName: document.fileName,
     kind: document.kind,
+    mimeType: document.mimeType,
     parser: document.parser,
     parseMode: document.parseMode,
     status: document.status,
@@ -376,26 +422,49 @@ export function summarizeDocument(document: ParsedDocument): ParsedDocumentSumma
 
 // ---- 构建辅助 ----
 
+/** 资产大类 → 默认 parser 表（构造期一次；assetParsers 注入可覆盖单项） */
+function buildAssetParsers(options: IngestionServiceOptions): ReadonlyMap<AssetParserKind, DocumentParser> {
+  const defaults = new Map<AssetParserKind, DocumentParser>([
+    ["csv", options.csvParser ?? new CsvParser()],
+    ["xlsx", options.xlsxParser ?? new XlsxParser()],
+    ["text", new TextAssetParser("text")],
+    ["markdown", new TextAssetParser("markdown")],
+    ["latex", new TextAssetParser("latex")],
+    ["code", new TextAssetParser("code")],
+    ["json", new JsonParser()],
+    ["yaml", new YamlParser()],
+    ["notebook", new NotebookParser()],
+    ["image", new ImageAssetParser()],
+  ]);
+  for (const [kind, parser] of Object.entries(options.assetParsers ?? {})) {
+    if (parser !== undefined) {
+      defaults.set(kind as AssetParserKind, parser);
+    }
+  }
+  return defaults;
+}
+
 function buildParsedDocument(input: {
   item: SourceItem;
+  assetKind: SourceAssetKind;
   extraction: DocumentExtraction;
   contentHash: string;
   parsedAt: string;
   degradedFrom?: ParsedDocument["degradedFrom"];
 }): ParsedDocument {
-  const { item, extraction, contentHash, parsedAt } = input;
-  const kind = documentKindOf(item);
+  const { item, assetKind, extraction, contentHash, parsedAt } = input;
   const counts = emptyCounts();
   for (const block of extraction.blocks) {
     counts[block.type] += 1;
   }
+  const storageKind = documentKindOfAssetKind(assetKind);
   return {
     schemaVersion: 1,
     sourceId: item.sourceId,
     fileName: item.originalName ?? item.fileName ?? item.sourceId,
     storedFileName: item.fileName ?? "",
-    kind: kind === "xlsx" || kind === "csv" ? "tabular" : "pdf",
-    mimeType: mimeOf(kind),
+    kind: storageKind === "other" ? "text" : storageKind,
+    mimeType: extraction.mimeType ?? defaultMimeOfAssetKind(assetKind),
     parser: extraction.parser,
     parseMode: extraction.mode,
     status: extraction.quality === "full" ? "ok" : "partial",
@@ -410,65 +479,60 @@ function buildParsedDocument(input: {
   };
 }
 
-function emptyCounts(): Record<ParsedBlock["type"], number> {
-  return { text: 0, table: 0, figure: 0, formula: 0, structured_record: 0 };
-}
-
-/** 文件类型判定（扩展名优先，兼容老数据 sourceType） */
-export function documentKindOf(item: SourceItem): "pdf" | "csv" | "xlsx" | "other" {
-  const name = (item.fileName ?? "").toLowerCase();
-  if (name.endsWith(".pdf")) {
-    return "pdf";
-  }
-  if (name.endsWith(".csv")) {
-    return "csv";
-  }
-  if (name.endsWith(".xlsx")) {
-    return "xlsx";
-  }
-  return "other";
-}
-
-function mimeOf(kind: "pdf" | "csv" | "xlsx" | "other"): string {
-  switch (kind) {
-    case "pdf":
-      return "application/pdf";
-    case "csv":
-      return "text/csv";
-    case "xlsx":
-      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    default:
-      return "application/octet-stream";
-  }
-}
-
-function attemptedParserId(kind: string, structuredId: string): string {
-  return kind === "pdf" ? structuredId : kind;
-}
-
 function isUnavailable(error: unknown): boolean {
   // DocumentParserUnavailableError / PdfParserUnavailableError 均走降级链
   const code = (error as { code?: string }).code;
   return code === "INGESTION_PARSER_UNAVAILABLE" || code === "PDF_PARSER_UNAVAILABLE";
 }
 
-function findRecord(blocks: ParsedBlock[], sheet: string | undefined, row: number): ParsedRecordBlock | null {
+/** 记录寻址：path（jsonPath 精确匹配）优先；否则 sheet/row + column */
+function locateRecord(
+  blocks: ParsedBlock[],
+  input: RecordEvidenceInput,
+): { record: ParsedRecordBlock; cell: { letter?: string; header: string; value: string } } | null {
+  if (input.path !== undefined) {
+    for (const block of blocks) {
+      if (block.type !== "structured_record" || block.provenance.jsonPath !== input.path) {
+        continue;
+      }
+      // path 寻址默认取首 cell（JSON/YAML 投影单值记录；多 cell 时可再用 column 细化）
+      const cell = input.column !== undefined ? findCell(block, input.column) : block.cells[0];
+      if (cell === undefined || cell === null) {
+        return null;
+      }
+      return { record: block, cell };
+    }
+    return null;
+  }
+  if (input.row === undefined) {
+    return null;
+  }
   for (const block of blocks) {
     if (block.type !== "structured_record") {
       continue;
     }
-    if (block.provenance.row !== row) {
+    if (block.provenance.row !== input.row) {
       continue;
     }
-    if (sheet !== undefined && block.provenance.sheet !== sheet) {
+    if (input.sheet !== undefined && block.provenance.sheet !== input.sheet) {
       continue;
     }
-    return block;
+    if (input.column === undefined) {
+      return null; // 行列寻址必须给列（单值语义只在 path 模式成立）
+    }
+    const cell = findCell(block, input.column);
+    if (cell !== null) {
+      return { record: block, cell };
+    }
+    return null;
   }
   return null;
 }
 
-function findCell(record: ParsedRecordBlock, column: string): { letter: string; header: string; value: string } | null {
+function findCell(
+  record: ParsedRecordBlock,
+  column: string,
+): { letter?: string; header: string; value: string } | null {
   const needle = column.trim();
   if (needle === "") {
     return null;
@@ -478,6 +542,14 @@ function findCell(record: ParsedRecordBlock, column: string): { letter: string; 
     return byHeader;
   }
   return record.cells.find((cell) => cell.letter === needle.toUpperCase()) ?? null;
+}
+
+/** 寻址描述（错误信息 / 日志用） */
+function describeAddress(input: RecordEvidenceInput): string {
+  if (input.path !== undefined) {
+    return input.column !== undefined ? `path=${input.path} column=${input.column}` : `path=${input.path}`;
+  }
+  return `${input.sheet !== undefined ? `sheet=${input.sheet} ` : ""}row=${input.row ?? "?"}${input.column !== undefined ? ` column=${input.column}` : ""}`;
 }
 
 /** claim 是否提到记录值（子串或数值等价：82.40 ≡ 82.4） */

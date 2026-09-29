@@ -54,10 +54,13 @@ export function validateChunkOptions(options: ChunkBuildOptions): void {
   }
 }
 
-/** 已归属章节的文本单元（page 来自解析层；退化路径无页码——不伪造） */
+/** 已归属章节的文本单元（page / lineRange 来自解析层；退化路径缺省——不伪造） */
 export interface SectionUnit {
   text: string;
   page?: number;
+  /** 1-based 起始行（文本 / 源码；Notebook cell 内相对行） */
+  lineStart?: number;
+  lineEnd?: number;
 }
 
 /** 单个章节（含其全部单元，文档顺序） */
@@ -103,7 +106,14 @@ export function buildSourceChunks(params: {
     for (const unit of units) {
       normalized.push(...splitOversizedUnit(unit, options));
     }
-    let current: { parts: string[]; tokens: number; pageStart?: number; pageEnd?: number } | null = null;
+    let current: {
+      parts: string[];
+      tokens: number;
+      pageStart?: number;
+      pageEnd?: number;
+      lineStart?: number;
+      lineEnd?: number;
+    } | null = null;
     let carry = "";
     let ordinalInSection = 0;
 
@@ -122,6 +132,7 @@ export function buildSourceChunks(params: {
         sectionTitle: section.title,
         ...(section.level >= 2 ? { subsection: section.title } : {}),
         ...(current.pageStart !== undefined ? { pageStart: current.pageStart, pageEnd: current.pageEnd } : {}),
+        ...(current.lineStart !== undefined ? { lineStart: current.lineStart, lineEnd: current.lineEnd } : {}),
         ordinal: chunks.length + 1,
         text,
         charCount: text.length,
@@ -134,6 +145,15 @@ export function buildSourceChunks(params: {
       current = null;
     };
 
+    const newCurrent = (unit: SectionUnit, parts: string[]) => ({
+      parts,
+      tokens: estimateTextTokens(parts.join("\n\n")),
+      ...(unit.page !== undefined ? { pageStart: unit.page, pageEnd: unit.page } : {}),
+      ...(unit.lineStart !== undefined
+        ? { lineStart: unit.lineStart, lineEnd: unit.lineEnd ?? unit.lineStart }
+        : {}),
+    });
+
     for (const unit of normalized) {
       const unitTokens = estimateTextTokens(unit.text);
       if (current === null) {
@@ -144,11 +164,7 @@ export function buildSourceChunks(params: {
           carry !== "" && carryTokens + unitTokens <= options.maxTokens + options.overlapTokens
             ? [carry, unit.text]
             : [unit.text];
-        current = {
-          parts,
-          tokens: estimateTextTokens(parts.join("\n\n")),
-          ...(unit.page !== undefined ? { pageStart: unit.page, pageEnd: unit.page } : {}),
-        };
+        current = newCurrent(unit, parts);
         continue;
       }
       const merged = current.tokens + unitTokens + 2;
@@ -161,6 +177,12 @@ export function buildSourceChunks(params: {
             current.pageStart = unit.page;
           }
         }
+        if (unit.lineStart !== undefined) {
+          current.lineEnd = unit.lineEnd ?? unit.lineStart;
+          if (current.lineStart === undefined) {
+            current.lineStart = unit.lineStart;
+          }
+        }
         continue;
       }
       flush();
@@ -170,11 +192,7 @@ export function buildSourceChunks(params: {
         carry !== "" && carryTokens + unitTokens <= options.maxTokens + options.overlapTokens
           ? [carry, unit.text]
           : [unit.text];
-      current = {
-        parts,
-        tokens: estimateTextTokens(parts.join("\n\n")),
-        ...(unit.page !== undefined ? { pageStart: unit.page, pageEnd: unit.page } : {}),
-      };
+      current = newCurrent(unit, parts);
     }
     flush();
   }
@@ -231,7 +249,12 @@ function splitOversizedUnit(unit: SectionUnit, options: ChunkBuildOptions): Sect
 }
 
 function joinWindow(parts: string[], unit: SectionUnit): SectionUnit {
-  return { text: parts.join(" "), ...(unit.page !== undefined ? { page: unit.page } : {}) };
+  return {
+    text: parts.join(" "),
+    ...(unit.page !== undefined ? { page: unit.page } : {}),
+    // 窗口切分丢失精确行边界：携带原单元范围（粗粒度，不伪造精确值）
+    ...(unit.lineStart !== undefined ? { lineStart: unit.lineStart, lineEnd: unit.lineEnd } : {}),
+  };
 }
 
 /** 句子切分（中英文终点标点；无终点标点的按行） */

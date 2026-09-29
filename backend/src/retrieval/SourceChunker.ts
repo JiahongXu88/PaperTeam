@@ -2,14 +2,18 @@
  * SourceChunker：正式 Source → SourceChunk[]（M6.4 chunk 管线 IO 编排）。
  *
  * 合法输入边界（指令冻结）：只有「已入库且有真实全文」的 Source 进入 chunk：
- * - 结构化解析产物（M10.1，documentProvider 注入；freshness 已判）优先：
- *   PDF=docling 块投影（阅读顺序 + 页码 + 表格文本）、CSV/XLSX=行级记录
- *   投影（[sheet row N] 标记）；产物缺失 / text_only 降级 / failed 时走
+ * - 结构化解析产物（M10.1/M10.1.1，documentProvider 注入；freshness 已判）
+ *   优先：PDF=docling 块投影（阅读顺序 + 页码 + 表格文本）、CSV/XLSX=行级
+ *   记录投影（[sheet row N] 标记）、JSON/YAML=路径投影（[$.path] 标记）、
+ *   TXT/MD/LaTeX=段落块（section + 行 provenance）、源码=行窗口块、
+ *   Notebook=cell 分节投影；产物缺失 / text_only 降级 / failed 时走
  *   下方既有路径（pymupdf / builtin / 纯文本），行为不变；
  * - PDF：pymupdf（paper 域同一工具链：blocks 带页码 + TOC 章节）优先；
  *   工具链不可用时回退 builtin 文本层（无页码、整档单节——如实降级）；
- * - text / markdown / csv：文件即全文（markdown 标题 → 章节；无页码）；
- * - xlsx：二进制无文本层——仅消费结构化产物，否则 full_text_unavailable；
+ * - text / markdown（含 csv 无产物时）：文件即全文（markdown 标题 → 章节；
+ *   无页码）；latex 无产物时同法按整档文本；
+ * - xlsx / json / yaml / code / notebook：无结构化产物不可索引（结构化
+ *   通道见 POST /sources/:id/ingest；上传即自动内联触发）；
  * - metadata_only（doi/arxiv/url/metadata）/ bibtex / image：full_text_unavailable
  *   skip——**绝不把 abstract/snippet 偷偷当全文索引**。
  *
@@ -23,7 +27,13 @@ import type { PdfParser } from "../paper/PdfParser.js";
 import { deriveDocumentStructure } from "../paper/sectionChunking.js";
 import { extractPdfText } from "../sources/PdfAnalyzer.js";
 import type { SourceItem } from "../sources/SourceStore.js";
-import { sectionsFromDocument, tabularSectionsFromDocument } from "../ingestion/documentSections.js";
+import { assetKindOfFileName, type SourceAssetKind } from "../ingestion/parserRegistry.js";
+import {
+  codeSectionsFromDocument,
+  notebookSectionsFromDocument,
+  sectionsFromDocument,
+  tabularSectionsFromDocument,
+} from "../ingestion/documentSections.js";
 import type { ParsedDocument } from "../ingestion/types.js";
 import {
   buildSourceChunks,
@@ -80,41 +90,38 @@ export class SourceChunker {
    * 巨量全文不进 note/log）。
    */
   async chunkSource(projectId: string, item: SourceItem, filePath: string): Promise<SourceChunkResult> {
-    const sourceType =
-      item.sourceType !== undefined
-        ? item.sourceType
-        : item.fileName !== undefined
-          ? inferSourceTypeFromName(item.fileName)
-          : "metadata";
-
     if (item.fileName === undefined) {
       return skipped(item.sourceId, "full_text_unavailable", "metadata-only 条目（无原始文件）");
     }
-    // M10.1：结构化解析产物优先（pdf=docling / csv=行记录 / xlsx=sheet 记录）。
-    // 只消费 structured 模式 + 非 failed 产物；text_only 降级产物交给下方
-    // 既有 pymupdf / builtin 路径（质量相同，路径已验证）。
+    const kind = assetKindOfFileName(item.fileName);
+    if (kind === "image") {
+      return skipped(
+        item.sourceId,
+        "full_text_unavailable",
+        "图片条目无文本层（资产登记见 ingestion；视觉解析属 M10.2）",
+      );
+    }
+    // M10.1/M10.1.1：结构化解析产物优先。只消费 structured 模式 + 非 failed
+    // 产物；text_only 降级产物交给下方既有 pymupdf / builtin 路径（质量
+    // 相同，路径已验证）。
     const document = await this.loadStructuredDocument(projectId, item);
     if (document !== null) {
-      if (sourceType === "pdf") {
-        const sections = sectionsFromDocument(document);
-        if (sections.length > 0) {
-          const kind: ChunkParserKind = document.parser.id === "docling" ? "docling" : "structured-document";
-          return this.build(projectId, item.sourceId, sections, kind);
-        }
-      } else if (sourceType === "xlsx" || (sourceType === "text" && item.fileName.toLowerCase().endsWith(".csv"))) {
-        const sections = tabularSectionsFromDocument(document);
-        if (sections.length > 0) {
-          return this.build(projectId, item.sourceId, sections, "tabular");
-        }
+      const fromDocument = sectionsFromAssetDocument(document, kind);
+      if (fromDocument !== null && fromDocument.sections.length > 0) {
+        return this.build(projectId, item.sourceId, fromDocument.sections, fromDocument.parser);
       }
     }
-    switch (sourceType) {
+    switch (kind) {
       case "pdf":
         return this.chunkPdf(projectId, item, filePath);
       case "markdown":
         return this.chunkPlainTextFile(projectId, item, filePath, "markdown");
       case "text":
+      case "csv":
         return this.chunkPlainTextFile(projectId, item, filePath, "text");
+      case "latex":
+        // 无产物兜底：整档文本（source text 原样；主路径是结构化产物）
+        return this.chunkPlainTextFile(projectId, item, filePath, "latex");
       case "xlsx":
         // 二进制格式没有可读文本层；无结构化产物时不可索引（先触发 ingest）
         return skipped(
@@ -122,12 +129,30 @@ export class SourceChunker {
           "full_text_unavailable",
           "XLSX 无结构化解析产物（结构化记录通道见 POST /sources/:id/ingest）",
         );
-      case "bibtex":
-        return skipped(item.sourceId, "full_text_unavailable", "BibTeX 条目集不是单篇全文");
-      case "image":
-        return skipped(item.sourceId, "full_text_unavailable", "图片条目无文本层（视觉解析属后续能力）");
+      case "json":
+      case "yaml":
+        return skipped(
+          item.sourceId,
+          "full_text_unavailable",
+          `${kind.toUpperCase()} 无结构化解析产物（路径投影通道见 POST /sources/:id/ingest）`,
+        );
+      case "code":
+        return skipped(
+          item.sourceId,
+          "full_text_unavailable",
+          "源码无结构化解析产物（行窗口通道见 POST /sources/:id/ingest）",
+        );
+      case "notebook":
+        return skipped(
+          item.sourceId,
+          "full_text_unavailable",
+          "Notebook 无结构化解析产物（cell 投影通道见 POST /sources/:id/ingest）",
+        );
       default:
-        return skipped(item.sourceId, "full_text_unavailable", `条目类型 ${sourceType} 无全文`);
+        if (item.fileName.toLowerCase().endsWith(".bib")) {
+          return skipped(item.sourceId, "full_text_unavailable", "BibTeX 条目集不是单篇全文");
+        }
+        return skipped(item.sourceId, "full_text_unavailable", `条目 ${item.fileName} 类型无全文`);
     }
   }
 
@@ -241,7 +266,7 @@ export class SourceChunker {
     projectId: string,
     item: SourceItem,
     filePath: string,
-    kind: "markdown" | "text",
+    kind: "markdown" | "text" | "latex",
   ): Promise<SourceChunkResult> {
     let raw: string;
     try {
@@ -344,27 +369,46 @@ function wholeDocumentSections(raw: string): ResolvedSection[] {
   return [{ sectionId: "SEC01", title: "Whole Document", level: 1, units }];
 }
 
-function inferSourceTypeFromName(fileName: string): "pdf" | "bibtex" | "text" | "markdown" | "image" | "xlsx" {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".pdf")) {
-    return "pdf";
+/** 结构化产物 → sections（按资产大类选投影；null = 该类不消费产物投影） */
+function sectionsFromAssetDocument(
+  document: ParsedDocument,
+  kind: SourceAssetKind,
+): { sections: ResolvedSection[]; parser: ChunkParserKind } | null {
+  switch (kind) {
+    case "pdf": {
+      const sections = sectionsFromDocument(document);
+      if (sections.length === 0) {
+        return null;
+      }
+      return {
+        sections,
+        parser: document.parser.id === "docling" ? "docling" : "structured-document",
+      };
+    }
+    case "csv":
+    case "xlsx":
+    case "json":
+    case "yaml": {
+      const sections = tabularSectionsFromDocument(document);
+      return sections.length > 0 ? { sections, parser: "tabular" } : null;
+    }
+    case "text":
+    case "markdown":
+    case "latex": {
+      const sections = sectionsFromDocument(document);
+      return sections.length > 0 ? { sections, parser: kind } : null;
+    }
+    case "code": {
+      const sections = codeSectionsFromDocument(document);
+      return sections.length > 0 ? { sections, parser: "code" } : null;
+    }
+    case "notebook": {
+      const sections = notebookSectionsFromDocument(document);
+      return sections.length > 0 ? { sections, parser: "notebook" } : null;
+    }
+    default:
+      return null;
   }
-  if (lower.endsWith(".bib")) {
-    return "bibtex";
-  }
-  if (lower.endsWith(".txt") || lower.endsWith(".csv")) {
-    return "text";
-  }
-  if (lower.endsWith(".md")) {
-    return "markdown";
-  }
-  if (lower.endsWith(".xlsx")) {
-    return "xlsx";
-  }
-  if (/\.(png|jpg|jpeg)$/.test(lower)) {
-    return "image";
-  }
-  return "text";
 }
 
 function skipped(

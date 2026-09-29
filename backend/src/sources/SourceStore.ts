@@ -28,6 +28,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { BusinessError, NotFoundError } from "../errors.js";
+import { CODE_EXTENSIONS, languageOfFileName } from "../ingestion/parserRegistry.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
@@ -72,6 +73,11 @@ export type SourceType =
   | "markdown"
   | "image"
   | "xlsx"
+  | "latex"
+  | "json"
+  | "yaml"
+  | "code"
+  | "notebook"
   | "doi"
   | "arxiv"
   | "url"
@@ -223,6 +229,13 @@ const ALLOWED_EXTENSIONS: readonly string[] = [
   ".png",
   ".jpg",
   ".jpeg",
+  // M10.1.1 常见科研 / 工程资产
+  ".tex",
+  ".json",
+  ".yaml",
+  ".yml",
+  ".ipynb",
+  ...CODE_EXTENSIONS,
 ];
 
 /** 单文件大小上限 */
@@ -248,6 +261,22 @@ export function sourceTypeFromFileName(fileName: string): SourceType {
   }
   if (lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")) {
     return "image";
+  }
+  // M10.1.1 常见科研 / 工程资产
+  if (lower.endsWith(".tex")) {
+    return "latex";
+  }
+  if (lower.endsWith(".json")) {
+    return "json";
+  }
+  if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {
+    return "yaml";
+  }
+  if (lower.endsWith(".ipynb")) {
+    return "notebook";
+  }
+  if (languageOfFileName(lower) !== undefined) {
+    return "code";
   }
   return "text";
 }

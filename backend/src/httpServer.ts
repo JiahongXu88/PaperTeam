@@ -19,6 +19,7 @@ import {
   type EvidenceSourceRef,
 } from "./evidence/EvidenceStore.js";
 import { EVIDENCE_CANDIDATE_STATUSES } from "./evidence/candidates.js";
+import { assetKindOfFileName } from "./ingestion/parserRegistry.js";
 import { summarizeDocument } from "./ingestion/IngestionService.js";
 import type { ParsedDocument } from "./ingestion/types.js";
 import type { GenerationService } from "./generation/GenerationService.js";
@@ -884,18 +885,19 @@ async function handleProjectResourceRoutes(
             console.error(`[http] 文献 ${item.sourceId} 自动分析失败（不影响上传）:`, errorText(error));
           }
         }
-        // M10.1 结构化 ingestion：CSV/XLSX 解析快（确定性 TS），上传内联完成并
-        // 在响应中如实呈现（含失败）；PDF 走 docling（慢，可能含模型下载），
-        // 后台触发——结果经 GET /document / POST /ingest 可见，失败可重试
+        // M10.1/M10.1.1 结构化 ingestion：全部确定性 TS parser（CSV/XLSX/
+        // 文本/代码/JSON/YAML/Notebook/图片登记）上传内联完成并在响应中如实
+        // 呈现（含失败）；PDF 走 docling（慢，可能含模型下载），后台触发——
+        // 结果经 GET /document / POST /ingest 可见，失败可重试
         let ingestionSummary: IngestionSummaryResponse | undefined;
         if (created) {
-          const kind = uploadIngestionKind(item.fileName ?? "");
-          if (kind === "csv" || kind === "xlsx") {
-            const document = await stack.ingestion.ingest(projectId, item.sourceId);
-            ingestionSummary = ingestionResponseOf(document);
-          } else if (kind === "pdf") {
+          const kind = assetKindOfFileName(item.fileName ?? "");
+          if (kind === "pdf") {
             stack.ingestion.ingestInBackground(projectId, item.sourceId);
             ingestionSummary = { status: "pending", kind: "pdf" };
+          } else if (kind !== "other") {
+            const document = await stack.ingestion.ingest(projectId, item.sourceId);
+            ingestionSummary = ingestionResponseOf(document);
           }
         }
         sendJson(res, created ? 201 : 200, {
@@ -1176,21 +1178,29 @@ async function handleProjectResourceRoutes(
       }
       const sourceId = recordEvidenceMatch[1] ?? "";
       const body = await readJsonBody(req);
-      const row = body["row"];
-      if (typeof row !== "number" || !Number.isInteger(row) || row < 1) {
-        throw new BusinessError("INVALID_REQUEST", "请求体必须包含正整数字段 row（物理行号，含表头 = 1）");
-      }
-      const column = readStringField(body, "column");
-      if (column === undefined) {
-        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 column（表头名或列字母）");
-      }
       const claim = readStringField(body, "claim");
       if (claim === undefined) {
         throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 claim");
       }
+      // 寻址两态（M10.1.1）：path（JSON/YAML 结构化路径）或 row+column（表格）
+      const path = readStringField(body, "path");
+      const row = body["row"];
+      const column = readStringField(body, "column");
+      if (path === undefined) {
+        if (typeof row !== "number" || !Number.isInteger(row) || row < 1) {
+          throw new BusinessError(
+            "INVALID_REQUEST",
+            "请求体必须包含正整数字段 row + 字符串 column（表格行寻址）或字符串 path（结构化路径寻址）",
+          );
+        }
+        if (column === undefined) {
+          throw new BusinessError("INVALID_REQUEST", "row/column 寻址模式下 column 必填（表头名或列字母）");
+        }
+      }
       const result = await stack.ingestion.confirmRecordEvidence(projectId, sourceId, {
-        row,
-        column,
+        ...(path !== undefined ? { path } : {}),
+        ...(typeof row === "number" ? { row } : {}),
+        ...(column !== undefined ? { column } : {}),
         claim,
         ...(typeof body["sheet"] === "string" && body["sheet"].trim() !== "" ? { sheet: body["sheet"] } : {}),
       });
@@ -3341,21 +3351,6 @@ function readStringField(body: Record<string, unknown>, field: string): string |
 type IngestionSummaryResponse =
   | { status: "pending"; kind: "pdf" }
   | ReturnType<typeof summarizeDocument> & { blocks?: unknown[] };
-
-/** 上传后的 ingestion 分派（PDF 后台 / CSV·XLSX 内联 / 其余不支持） */
-function uploadIngestionKind(fileName: string): "pdf" | "csv" | "xlsx" | "other" {
-  const lower = fileName.toLowerCase();
-  if (lower.endsWith(".pdf")) {
-    return "pdf";
-  }
-  if (lower.endsWith(".csv")) {
-    return "csv";
-  }
-  if (lower.endsWith(".xlsx")) {
-    return "xlsx";
-  }
-  return "other";
-}
 
 /** ParsedDocument → HTTP 汇总投影（includeBlocks 时附带块，有界） */
 function ingestionResponseOf(document: ParsedDocument, includeBlocks = false): IngestionSummaryResponse {

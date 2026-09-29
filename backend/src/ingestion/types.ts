@@ -22,13 +22,15 @@
 
 import type { SourceItem } from "../sources/SourceStore.js";
 
-/** 块类型（M10.1A 最小集） */
+/** 块类型（M10.1 最小集 + M10.1.1 文本/代码/Notebook 扩展） */
 export type ParsedBlockType =
-  | "text" // 正文文本（含标题 / 列表 / 题注）
+  | "text" // 正文文本（含标题 / 列表 / 题注；md/tex 段落同型）
   | "table" // 表格（PDF 内嵌表格：headers + 行列网格）
   | "figure" // 图片（检测 + 登记 + 可选资产；不理解内容——M10.2）
   | "formula" // 公式（parser 提供时保存 LaTeX / 文本）
-  | "structured_record"; // 结构化数据行（CSV/XLSX：一行 = 一条记录）
+  | "structured_record" // 结构化数据（CSV/XLSX 行；M10.1.1 起 JSON/YAML 叶子路径同型）
+  | "code" // 源码（CodeTextAsset：行窗口块，语言 + 行 provenance）
+  | "output"; // Notebook 文本类输出（stream / execute_result / error；静态提取）
 
 /** 文本块的细类（检索分组 / 展示用；parser 提供时填） */
 export type TextKind = "paragraph" | "title" | "section_header" | "list_item" | "caption";
@@ -56,7 +58,9 @@ export interface ParsedProvenance {
   sheet?: string;
   /**
    * 1-based 物理行号（含表头行：表头 = 1，首条数据 = 2——与 Excel 行号
-   * 一致，用户可直接在表格软件里对上）。
+   * 一致，用户可直接在表格软件里对上）。M10.1.1 起 YAML 叶子路径复用
+   * 该字段携带所在行（1-based 文件行）；JSON 无行号（JSON.parse 不带
+   * 位置）——缺省不伪造。
    */
   row?: number;
   /** 列（表头名；查无表头时缺省） */
@@ -65,6 +69,21 @@ export interface ParsedProvenance {
   bbox?: BBox;
   /** parser 原始块 id（docling self_ref 等；审计用） */
   parserBlockId?: string;
+  /**
+   * 1-based 起始行（文本 / 代码 / LaTeX：文件物理行；Notebook cell：
+   * cell 内相对行——首行 = 1）。M10.1.1。
+   */
+  lineStart?: number;
+  /** 1-based 结束行（含端点） */
+  lineEnd?: number;
+  /** 结构化路径（JSON `$.training.epochs` / YAML 同型；M10.1.1） */
+  jsonPath?: string;
+  /** Notebook cell 序号（0-based，与 nbformat cells 数组下标一致；M10.1.1） */
+  cellIndex?: number;
+  /** Notebook cell id（nbformat 4.4+ 存在时保留） */
+  cellId?: string;
+  /** Notebook output 序号（cell.outputs 数组下标，0-based；M10.1.1） */
+  outputIndex?: number;
 }
 
 interface ParsedBlockBase {
@@ -72,6 +91,8 @@ interface ParsedBlockBase {
   blockId: string;
   type: ParsedBlockType;
   provenance: ParsedProvenance;
+  /** 内容触达防御上限被截断（不静默；M10.1.1） */
+  truncated?: boolean;
 }
 
 export interface ParsedTextBlock extends ParsedBlockBase {
@@ -97,6 +118,15 @@ export interface ParsedFigureBlock extends ParsedBlockBase {
   caption?: string;
   /** 抽取出的图片资产文件名（sources/figures/<sourceId>/ 下） */
   assetName?: string;
+  /** 像素宽（header 可读时；图片登记 / Notebook 图片输出；M10.1.1） */
+  width?: number;
+  /** 像素高 */
+  height?: number;
+  /**
+   * 图片类内容存在但未落资产（超上限 / 解码失败）——事实不丢失，
+   * M10.2 视觉解析可据此回捞。M10.1.1。
+   */
+  visualOutputPresent?: boolean;
 }
 
 export interface ParsedFormulaBlock extends ParsedBlockBase {
@@ -109,9 +139,12 @@ export interface ParsedFormulaBlock extends ParsedBlockBase {
 
 /** CSV/XLSX 数据行：一行 = 一条可确认记录（cells 携带列级 provenance） */
 export interface ParsedRecordCell {
-  /** 列字母（A / B / … AA；CSV/XLSX 均可确定） */
-  letter: string;
-  /** 表头名（首行；空表头降级为列字母） */
+  /**
+   * 列字母（A / B / … AA；CSV/XLSX 均可确定）。JSON / YAML 投影单值
+   * 记录无列概念——缺省（header 即完整路径）。M10.1.1 起可选。
+   */
+  letter?: string;
+  /** 表头名（首行；空表头降级为列字母；JSON/YAML = 完整结构化路径） */
   header: string;
   value: string;
 }
@@ -121,12 +154,38 @@ export interface ParsedRecordBlock extends ParsedBlockBase {
   cells: ParsedRecordCell[];
 }
 
+/** 源码块（CodeTextAsset：行窗口；不截断单行，语言 + 行 provenance） */
+export interface ParsedCodeBlock extends ParsedBlockBase {
+  type: "code";
+  /** 语言标签（扩展名推断：python / cpp / typescript …） */
+  language: string;
+  /** 逐字源码（CRLF 归一为 LF；行完整性保留） */
+  text: string;
+  /** Notebook code cell 的执行计数（存在时记录；静态字段，不代表执行过） */
+  executionCount?: number;
+}
+
+/** Notebook 文本类输出（静态提取；不执行任何代码） */
+export interface ParsedOutputBlock extends ParsedBlockBase {
+  type: "output";
+  outputKind: "stream" | "execute_result" | "display_data" | "error" | "other";
+  /** stdout / stderr（stream 输出） */
+  stream?: string;
+  /**
+   * 输出文本（stream 文本 / text/plain / error traceback）。
+   * outputKind="other" 时为类型登记标记（如 `[unsupported output data: text/html]`）。
+   */
+  text: string;
+}
+
 export type ParsedBlock =
   | ParsedTextBlock
   | ParsedTableBlock
   | ParsedFigureBlock
   | ParsedFormulaBlock
-  | ParsedRecordBlock;
+  | ParsedRecordBlock
+  | ParsedCodeBlock
+  | ParsedOutputBlock;
 
 /** 表格数据的 sheet 概览 */
 export interface ParsedSheetSummary {
@@ -145,13 +204,26 @@ export interface ParsedSheetSummary {
  * - text_only：docling 不可用等原因显式降级到文本层（表格 / 图 / 版面
  *   结构不可用）——调用方必须能知道发生过降级，绝不伪装成完整解析。
  */
+/** 资产大类（M10.1.1：PDF / 表格 → 常见科研工程资产全覆盖） */
+export type ParsedDocumentKind =
+  | "pdf"
+  | "tabular" // csv / xlsx
+  | "text" // txt
+  | "markdown"
+  | "latex"
+  | "json"
+  | "yaml"
+  | "code"
+  | "notebook"
+  | "image";
+
 export interface ParsedDocument {
   schemaVersion: 1;
   sourceId: string;
   /** 用户可见文件名（originalName 优先） */
   fileName: string;
   storedFileName: string;
-  kind: "pdf" | "tabular";
+  kind: ParsedDocumentKind;
   mimeType: string;
   parser: { id: string; version?: string };
   parseMode: "structured" | "text_only";
@@ -168,6 +240,35 @@ export interface ParsedDocument {
   /** 原始文件 sha256（ freshness 判据：与 SourceItem.contentHash 一致才可用） */
   contentHash: string;
   parsedAt: string;
+}
+
+/** 全部块类型（counts 归一 / 存量产物补键用；顺序即文档模型声明序） */
+export const PARSED_BLOCK_TYPES: readonly ParsedBlockType[] = [
+  "text",
+  "table",
+  "figure",
+  "formula",
+  "structured_record",
+  "code",
+  "output",
+];
+
+/** counts 归一：补齐缺失键（schema 演进后老产物读取防线；不覆盖已有值） */
+export function normalizeCounts(counts: Partial<Record<ParsedBlockType, number>> | undefined): Record<ParsedBlockType, number> {
+  const out = emptyCounts();
+  if (counts !== undefined) {
+    for (const type of PARSED_BLOCK_TYPES) {
+      const value = counts[type];
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+        out[type] = value;
+      }
+    }
+  }
+  return out;
+}
+
+export function emptyCounts(): Record<ParsedBlockType, number> {
+  return { text: 0, table: 0, figure: 0, formula: 0, structured_record: 0, code: 0, output: 0 };
 }
 
 /** 文档解析产物是否仍然对应当前 Source 内容（无 hash 的老条目视为不可信） */
@@ -215,6 +316,8 @@ export interface DocumentExtraction {
   mode: "structured" | "text_only";
   /** 解析器自报的可用性（缺省视为完整） */
   quality: "full" | "partial";
+  /** 实际内容 MIME（内容签名判定；缺省按 kind 表缺省值；M10.1.1） */
+  mimeType?: string;
   pageCount?: number;
   sheets?: ParsedSheetSummary[];
   blocks: ExtractionBlock[];
@@ -239,4 +342,17 @@ export const INGESTION_LIMITS = {
   maxFigures: 200,
   /** notes 条数 */
   maxNotes: 20,
+  /** ---- M10.1.1 文本 / 代码 / Notebook / 结构化投影 ---- */
+  /** 单文本资产最大读取字符（>20MB 文本截断读取，不整读进内存） */
+  maxTextAssetChars: 2_000_000,
+  /** 单代码块最大行数（行窗口；超出在行边界硬切） */
+  maxCodeBlockLines: 50,
+  /** 单 Notebook 输出文本字符（stream / text/plain / traceback） */
+  maxOutputChars: 20_000,
+  /** Notebook 图片输出：单张解码字节上限（超出登记 visualOutputPresent 不落资产） */
+  maxNotebookImageBytes: 8 * 1024 * 1024,
+  /** Notebook 图片输出：每 notebook 落资产数上限 */
+  maxNotebookImages: 50,
+  /** JSON/YAML 投影：最大遍历深度（超出按叶子渲染） */
+  maxProjectionDepth: 12,
 } as const;

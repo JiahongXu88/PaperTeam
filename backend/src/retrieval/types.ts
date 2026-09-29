@@ -32,6 +32,12 @@ export interface SourceChunk {
   /** 1-based 页码（parser 无法提供时省略——不伪造页码） */
   pageStart?: number;
   pageEnd?: number;
+  /**
+   * 1-based 文件行号范围（文本 / 源码 / LaTeX；Notebook 为 cell 内相对行；
+   * parser 无法提供时省略——M10.1.1）。回答「train.py:42-48」类定位用。
+   */
+  lineStart?: number;
+  lineEnd?: number;
   /** source 内文档顺序（1 起单调递增；邻近判定与排序用） */
   ordinal: number;
   /** 逐字来自解析层的 chunk 文本（含 overlap 尾句时与相邻 chunk 部分重复） */
@@ -50,9 +56,12 @@ export type ChunkParserKind =
   | "builtin-pdf-text"
   | "text"
   | "markdown"
+  | "latex" // M10.1.1：LaTeX source text（行 provenance）
   | "docling" // M10.1：结构化文档解析（docling adapter）
   | "structured-document" // M10.1：其它结构化文档产物（同投影路径）
-  | "tabular"; // M10.1：CSV/XLSX 行级结构化记录投影
+  | "tabular" // M10.1：CSV/XLSX 行级结构化记录投影（M10.1.1 起 JSON/YAML 同路径）
+  | "code" // M10.1.1：源码行窗口块
+  | "notebook"; // M10.1.1：Notebook cell 静态投影
 
 /** 单个 Source 的 chunk 生成结果（结构化失败——不抛给整库） */
 export interface SourceChunkOutcome {

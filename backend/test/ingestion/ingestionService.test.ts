@@ -41,6 +41,8 @@ describe("M10.1B PDF 结构化 ingestion（fake docling）", () => {
       figure: 1,
       formula: 1,
       structured_record: 0,
+      code: 0,
+      output: 0,
     });
     const table = document.blocks.find((block) => block.type === "table");
     expect(table).toBeDefined();

@@ -96,13 +96,14 @@ describe("M10.1 sources × ingestion HTTP", () => {
     expect(document["status"]).toBe("ok");
     expect(Array.isArray(document["blocks"])).toBe(true);
 
-    // 未解析条目（txt）→ null + 提示
-    await upload(projectId, "notes.txt", Buffer.from("just text", "utf8"));
+    // 不参与结构化解析的条目（bib：ingestion 能力边界外）→ null + 提示
+    // （M10.1.1 起 txt/md 等文本资产上传即自动解析，不再适合构造该场景）
+    await upload(projectId, "references.bib", Buffer.from("@article{a, title={A}}", "utf8"));
     const sources2 = await stack.request("GET", `/api/projects/${projectId}/sources`);
-    const txtId = (sources2.body["sources"] as Array<{ sourceId: string; fileName?: string }>).find(
-      (item) => item.fileName?.endsWith(".txt"),
+    const bibId = (sources2.body["sources"] as Array<{ sourceId: string; fileName?: string }>).find(
+      (item) => item.fileName?.endsWith(".bib"),
     )!.sourceId;
-    const empty = await stack.request("GET", `/api/projects/${projectId}/sources/${txtId}/document`);
+    const empty = await stack.request("GET", `/api/projects/${projectId}/sources/${bibId}/document`);
     expect(empty.status).toBe(200);
     expect(empty.body["document"]).toBeNull();
     expect(typeof empty.body["note"]).toBe("string");

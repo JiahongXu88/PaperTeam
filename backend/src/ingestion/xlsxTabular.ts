@@ -28,7 +28,17 @@ import { columnLetter, dedupeHeaders } from "./csvTabular.js";
 /** exceljs 是体量较大的可选依赖：延迟加载，缺依赖时报结构化错误 */
 async function loadExcelJs(): Promise<typeof import("exceljs")> {
   try {
-    return await import("exceljs");
+    const mod = await import("exceljs");
+    // Node ESM（dist 生产形态）下 CJS 包的具名导出可能未被 cjs-module-lexer
+    // 识别（namespace 只剩 default）——default 兜底；vitest 两种形状都兼容
+    if (mod.Workbook !== undefined) {
+      return mod;
+    }
+    const viaDefault = (mod as { default?: unknown }).default;
+    if (viaDefault !== undefined && typeof viaDefault === "object") {
+      return viaDefault as typeof import("exceljs");
+    }
+    return mod;
   } catch {
     throw new DocumentParseFailedError(
       "exceljs 依赖不可用（XLSX 解析需要 exceljs，请检查 backend 依赖安装）",
