@@ -53,6 +53,11 @@ import { ChunkStore } from "./retrieval/ChunkStore.js";
 import { RetrievalService } from "./retrieval/RetrievalService.js";
 import { SourceChunker } from "./retrieval/SourceChunker.js";
 import type { EmbeddingProvider } from "./retrieval/types.js";
+import { ParsedDocumentStore } from "./ingestion/ParsedDocumentStore.js";
+import { DoclingParser } from "./ingestion/DoclingParser.js";
+import { IngestionService } from "./ingestion/IngestionService.js";
+import { LegacyPdfTextParser } from "./ingestion/LegacyPdfTextParser.js";
+import type { DocumentParser } from "./ingestion/types.js";
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
 import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
@@ -108,6 +113,17 @@ export interface ServiceStackOptions {
   paperParser?: PdfParser;
   /** PyMuPdfParser 的解释器覆盖（PAPERTEAM_PDF_PYTHON）；注入 paperParser 时忽略 */
   pdfPythonCommand?: string;
+  /**
+   * M10.1 Document & Data Ingestion 装配。缺省：DoclingParser（PDF 结构化，
+   * PAPERTEAM_DOCLING_PYTHON 覆盖）+ LegacyPdfTextParser（降级链第二级，复用
+   * paperParser）；测试可整体注入 fake（structuredParser / fallbackParser）。
+   */
+  ingestion?: {
+    structuredParser?: DocumentParser;
+    fallbackParser?: DocumentParser;
+  };
+  /** DoclingParser 的解释器覆盖（PAPERTEAM_DOCLING_PYTHON）；注入 structuredParser 时忽略 */
+  doclingPythonCommand?: string;
   /**
    * Research Discovery（M6.3）：Academic / Web Search provider 装配。
    * 缺省零配置 = OpenAlex + arXiv + 匿名 S2（学术链路可用），SearXNG / AMiner
@@ -180,6 +196,10 @@ export interface ServiceStack {
   loop: ResearchLoopService;
   /** Project Retrieval（M6.4）：chunk 管线 + 进程内 hybrid index + Context Packing */
   retrieval: RetrievalService;
+  /** M10.1：结构化解析产物持久化（sources/parsed/<id>.document.json + figures/） */
+  parsedDocuments: ParsedDocumentStore;
+  /** M10.1：Document & Data Ingestion 编排（PDF docling 链 + CSV/XLSX 记录 + 事实确认） */
+  ingestion: IngestionService;
   pdfAnalyzer: BuiltinPdfAnalyzer;
   manuscript: ManuscriptService;
   citation: CitationService;
@@ -435,15 +455,42 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     gaps,
     log,
   });
+  // M10.1 Document & Data Ingestion：PDF 走 docling（结构化：版面 / 表格 /
+  // 图 / 页码 bbox），不可用时显式降级 pymupdf→builtin 文本层（复用
+  // paperParser 工具链）；CSV/XLSX 走确定性 TS 解析（无外部依赖）。
+  // IngestionService 在 retrieval 之前构造——SourceChunker 经
+  // documentProvider 消费结构化产物（freshness 已在 getDocument 内判定）。
+  const parsedDocuments = new ParsedDocumentStore(options.projects);
+  const doclingParser =
+    options.ingestion?.structuredParser ??
+    new DoclingParser({
+      ...(options.doclingPythonCommand !== undefined
+        ? { pythonCommand: options.doclingPythonCommand }
+        : {}),
+      log,
+    });
+  const legacyPdfTextParser =
+    options.ingestion?.fallbackParser ?? new LegacyPdfTextParser({ pdfParser: paperParser, log });
+  const ingestion = new IngestionService({
+    projects: options.projects,
+    sources,
+    documents: parsedDocuments,
+    structuredParser: doclingParser,
+    fallbackParser: legacyPdfTextParser,
+    evidence,
+    log,
+  });
   // M6.4 Project Retrieval：chunker 复用 paper 域 PyMuPdfParser（同一工具链，
   // blocks 带页码 + TOC 章节；不可用时 PDF 回退 builtin 文本层）。Embedding
   // 未注册 = lexical-only（dense 通道 optional，不阻塞任何主链路）。
+  // M10.1：结构化解析产物优先（docling / tabular 投影）。
   const chunkStore = new ChunkStore(options.projects);
   const retrieval = new RetrievalService({
     projects: options.projects,
     sources,
     chunker: new SourceChunker({
       parser: paperParser,
+      documentProvider: (projectId, item) => ingestion.getDocument(projectId, item.sourceId),
       chunkOptions: {
         targetTokens: options.retrieval?.chunkTargetTokens ?? 400,
         maxTokens: options.retrieval?.chunkMaxTokens ?? 600,
@@ -454,6 +501,13 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     chunkStore,
     ...(options.retrieval?.embedding !== undefined ? { embedding: options.retrieval.embedding } : {}),
     log,
+  });
+  // M10.1：解析产物落盘后重建该 source 的 chunk——后台 PDF ingest 完成后
+  // 立即按结构化产物重建（否则上传后先检索过的 source 会一直停在降级
+  // chunk，直到下一次库签名变化）。重建失败只记日志（lazy 自愈口径不变：
+  // 扫描件等 SourceNotIndexableError 如实记录在 manifest）。
+  ingestion.attachIngestedHook(async (projectId, sourceId) => {
+    await retrieval.rebuildSource(projectId, sourceId);
   });
   // M7.2 FullTextResolver（P-D 修复）：resolver 与 search provider 共享同一
   // ProviderHttpClient（超时 / 重试 / 熔断 / 健康一体）；Unpaywall email 复用
@@ -479,6 +533,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
           // manifest 留 skipped 记录，下次检索 / rebuild 自愈口径不变
           log(`[retrieval] 全文挂载后重建 chunk 未成（${projectId}/${sourceId}）：${error instanceof Error ? error.message : String(error)}`);
         }
+        // M10.1：挂载的 PDF 随后走后台结构化解析（docling）；完成后
+        // attachIngestedHook 会再按结构化产物重建 chunk（先保证立即可检索）
+        ingestion.ingestInBackground(projectId, sourceId);
       },
     });
   }
@@ -567,6 +624,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     gaps,
     loop,
     retrieval,
+    parsedDocuments,
+    ingestion,
     pdfAnalyzer,
     manuscript,
     citation,

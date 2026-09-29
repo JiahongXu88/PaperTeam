@@ -19,6 +19,8 @@ import {
   type EvidenceSourceRef,
 } from "./evidence/EvidenceStore.js";
 import { EVIDENCE_CANDIDATE_STATUSES } from "./evidence/candidates.js";
+import { summarizeDocument } from "./ingestion/IngestionService.js";
+import type { ParsedDocument } from "./ingestion/types.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
@@ -882,7 +884,25 @@ async function handleProjectResourceRoutes(
             console.error(`[http] 文献 ${item.sourceId} 自动分析失败（不影响上传）:`, errorText(error));
           }
         }
-        sendJson(res, created ? 201 : 200, { source, created });
+        // M10.1 结构化 ingestion：CSV/XLSX 解析快（确定性 TS），上传内联完成并
+        // 在响应中如实呈现（含失败）；PDF 走 docling（慢，可能含模型下载），
+        // 后台触发——结果经 GET /document / POST /ingest 可见，失败可重试
+        let ingestionSummary: IngestionSummaryResponse | undefined;
+        if (created) {
+          const kind = uploadIngestionKind(item.fileName ?? "");
+          if (kind === "csv" || kind === "xlsx") {
+            const document = await stack.ingestion.ingest(projectId, item.sourceId);
+            ingestionSummary = ingestionResponseOf(document);
+          } else if (kind === "pdf") {
+            stack.ingestion.ingestInBackground(projectId, item.sourceId);
+            ingestionSummary = { status: "pending", kind: "pdf" };
+          }
+        }
+        sendJson(res, created ? 201 : 200, {
+          source,
+          created,
+          ...(ingestionSummary !== undefined ? { ingestion: ingestionSummary } : {}),
+        });
         return true;
       }
       if (method === "GET") {
@@ -1086,6 +1106,102 @@ async function handleProjectResourceRoutes(
       }
       const result = await stack.sourceImport.enrichMetadata(projectId, enrichMatch[1] ?? "");
       sendJson(res, 200, result);
+      return true;
+    }
+
+    // ---- M10.1 ingestion：结构化解析 / 文档产物 / 结构化记录 / 事实确认 ----
+
+    const ingestMatch = /^\/([A-Z]\d{2,})\/ingest$/.exec(rest);
+    if (ingestMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const document = await stack.ingestion.ingest(projectId, ingestMatch[1] ?? "");
+      sendJson(res, 200, { document: ingestionResponseOf(document, true) });
+      return true;
+    }
+
+    const documentMatch = /^\/([A-Z]\d{2,})\/document$/.exec(rest);
+    if (documentMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const sourceId = documentMatch[1] ?? "";
+      const document = await stack.ingestion.getDocument(projectId, sourceId);
+      if (document === null) {
+        // 无产物 / 过期：如实告知（不伪造空文档）；触发解析走 POST /ingest
+        sendJson(res, 200, {
+          document: null,
+          note: `文献 ${sourceId} 尚无有效结构化解析产物；POST /api/projects/${projectId}/sources/${sourceId}/ingest 触发解析`,
+        });
+        return true;
+      }
+      sendJson(res, 200, { document: ingestionResponseOf(document, url.searchParams.get("blocks") === "true") });
+      return true;
+    }
+
+    const recordsMatch = /^\/([A-Z]\d{2,})\/records$/.exec(rest);
+    if (recordsMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const sourceId = recordsMatch[1] ?? "";
+      const rowFrom = readOptionalPositiveIntParam(url.searchParams.get("rowFrom"));
+      const rowTo = readOptionalPositiveIntParam(url.searchParams.get("rowTo"));
+      const sheet = url.searchParams.get("sheet") ?? undefined;
+      const limitRaw = url.searchParams.get("limit");
+      const result = await stack.ingestion.listRecords(projectId, sourceId, {
+        ...(sheet !== undefined ? { sheet } : {}),
+        ...(rowFrom !== undefined ? { rowFrom } : {}),
+        ...(rowTo !== undefined ? { rowTo } : {}),
+        ...(limitRaw !== null && Number.isInteger(Number(limitRaw)) && Number(limitRaw) > 0
+          ? { limit: Number(limitRaw) }
+          : {}),
+      });
+      sendJson(res, 200, {
+        document: result.document,
+        records: result.records,
+      });
+      return true;
+    }
+
+    const recordEvidenceMatch = /^\/([A-Z]\d{2,})\/records\/evidence$/.exec(rest);
+    if (recordEvidenceMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const sourceId = recordEvidenceMatch[1] ?? "";
+      const body = await readJsonBody(req);
+      const row = body["row"];
+      if (typeof row !== "number" || !Number.isInteger(row) || row < 1) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含正整数字段 row（物理行号，含表头 = 1）");
+      }
+      const column = readStringField(body, "column");
+      if (column === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 column（表头名或列字母）");
+      }
+      const claim = readStringField(body, "claim");
+      if (claim === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 claim");
+      }
+      const result = await stack.ingestion.confirmRecordEvidence(projectId, sourceId, {
+        row,
+        column,
+        claim,
+        ...(typeof body["sheet"] === "string" && body["sheet"].trim() !== "" ? { sheet: body["sheet"] } : {}),
+      });
+      sendJson(res, 201, {
+        evidence: result.evidence,
+        record: {
+          blockId: result.record.blockId,
+          provenance: result.record.provenance,
+        },
+        cell: result.cell,
+      });
       return true;
     }
 
@@ -2843,6 +2959,7 @@ const RETRIEVAL_SOURCE_TYPES = [
   "text",
   "markdown",
   "image",
+  "xlsx",
   "doi",
   "arxiv",
   "url",
@@ -3217,6 +3334,57 @@ function readBatchSourceIds(body: Record<string, unknown>): string[] {
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {
   const value = body[field];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+// ---- M10.1 ingestion 辅助 ----
+
+type IngestionSummaryResponse =
+  | { status: "pending"; kind: "pdf" }
+  | ReturnType<typeof summarizeDocument> & { blocks?: unknown[] };
+
+/** 上传后的 ingestion 分派（PDF 后台 / CSV·XLSX 内联 / 其余不支持） */
+function uploadIngestionKind(fileName: string): "pdf" | "csv" | "xlsx" | "other" {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith(".pdf")) {
+    return "pdf";
+  }
+  if (lower.endsWith(".csv")) {
+    return "csv";
+  }
+  if (lower.endsWith(".xlsx")) {
+    return "xlsx";
+  }
+  return "other";
+}
+
+/** ParsedDocument → HTTP 汇总投影（includeBlocks 时附带块，有界） */
+function ingestionResponseOf(document: ParsedDocument, includeBlocks = false): IngestionSummaryResponse {
+  const summary = summarizeDocument(document);
+  if (!includeBlocks) {
+    return summary;
+  }
+  // 全量 blocks 可能很大：截断到 500 块 + truncatedBlocks 计数（行级数据走 /records）
+  const MAX_RESPONSE_BLOCKS = 500;
+  const blocks = document.blocks.slice(0, MAX_RESPONSE_BLOCKS);
+  return {
+    ...summary,
+    blocks,
+    ...(document.blocks.length > MAX_RESPONSE_BLOCKS
+      ? { truncatedBlocks: document.blocks.length - MAX_RESPONSE_BLOCKS }
+      : {}),
+  };
+}
+
+/** 可选正整数 query 参数（缺省 undefined；提供但非法 → 400） */
+function readOptionalPositiveIntParam(raw: string | null): number | undefined {
+  if (raw === null) {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new BusinessError("INVALID_REQUEST", `查询参数必须是正整数：${raw}`);
+  }
+  return value;
 }
 
 /** 可选正整数字段（缺省 undefined；非正整数 → 400） */

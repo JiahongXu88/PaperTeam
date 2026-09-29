@@ -220,6 +220,9 @@ export async function startBackend(): Promise<void> {
     search: config.search,
     fullText: { batchConcurrency: config.fullText.batchConcurrency },
     ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
+    ...(config.pdf.doclingPythonCommand !== undefined
+      ? { doclingPythonCommand: config.pdf.doclingPythonCommand }
+      : {}),
     log: (message) => console.log(message),
   });
   // Existing-LaTeX 导入器：栈内单例（projectImport 的 format=latex 路径与

@@ -2,9 +2,14 @@
  * SourceChunker：正式 Source → SourceChunk[]（M6.4 chunk 管线 IO 编排）。
  *
  * 合法输入边界（指令冻结）：只有「已入库且有真实全文」的 Source 进入 chunk：
+ * - 结构化解析产物（M10.1，documentProvider 注入；freshness 已判）优先：
+ *   PDF=docling 块投影（阅读顺序 + 页码 + 表格文本）、CSV/XLSX=行级记录
+ *   投影（[sheet row N] 标记）；产物缺失 / text_only 降级 / failed 时走
+ *   下方既有路径（pymupdf / builtin / 纯文本），行为不变；
  * - PDF：pymupdf（paper 域同一工具链：blocks 带页码 + TOC 章节）优先；
  *   工具链不可用时回退 builtin 文本层（无页码、整档单节——如实降级）；
  * - text / markdown / csv：文件即全文（markdown 标题 → 章节；无页码）；
+ * - xlsx：二进制无文本层——仅消费结构化产物，否则 full_text_unavailable；
  * - metadata_only（doi/arxiv/url/metadata）/ bibtex / image：full_text_unavailable
  *   skip——**绝不把 abstract/snippet 偷偷当全文索引**。
  *
@@ -18,6 +23,8 @@ import type { PdfParser } from "../paper/PdfParser.js";
 import { deriveDocumentStructure } from "../paper/sectionChunking.js";
 import { extractPdfText } from "../sources/PdfAnalyzer.js";
 import type { SourceItem } from "../sources/SourceStore.js";
+import { sectionsFromDocument, tabularSectionsFromDocument } from "../ingestion/documentSections.js";
+import type { ParsedDocument } from "../ingestion/types.js";
 import {
   buildSourceChunks,
   splitParagraphs,
@@ -33,6 +40,12 @@ export interface SourceChunkerOptions {
   /** PDF 结构化解析器（paper 域 PyMuPdfParser；缺省 = PDF 走 builtin 回退） */
   parser?: PdfParser;
   chunkOptions?: ChunkBuildOptions;
+  /**
+   * M10.1 结构化解析产物供给（IngestionService.getDocument：含 freshness
+   * 判据，不新鲜返回 null）。提供且为 structured 模式时优先于 pymupdf /
+   * builtin 路径（表格 / 阅读顺序 / 页码 provenance 更完整）。
+   */
+  documentProvider?: (projectId: string, item: SourceItem) => Promise<ParsedDocument | null>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -45,12 +58,14 @@ export interface SourceChunkResult {
 
 export class SourceChunker {
   private readonly parser?: PdfParser;
+  private readonly documentProvider?: (projectId: string, item: SourceItem) => Promise<ParsedDocument | null>;
   private readonly chunkOptions: ChunkBuildOptions;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
 
   constructor(options: SourceChunkerOptions = {}) {
     this.parser = options.parser;
+    this.documentProvider = options.documentProvider;
     this.chunkOptions = options.chunkOptions ?? {
       targetTokens: 400,
       maxTokens: 600,
@@ -75,6 +90,24 @@ export class SourceChunker {
     if (item.fileName === undefined) {
       return skipped(item.sourceId, "full_text_unavailable", "metadata-only 条目（无原始文件）");
     }
+    // M10.1：结构化解析产物优先（pdf=docling / csv=行记录 / xlsx=sheet 记录）。
+    // 只消费 structured 模式 + 非 failed 产物；text_only 降级产物交给下方
+    // 既有 pymupdf / builtin 路径（质量相同，路径已验证）。
+    const document = await this.loadStructuredDocument(projectId, item);
+    if (document !== null) {
+      if (sourceType === "pdf") {
+        const sections = sectionsFromDocument(document);
+        if (sections.length > 0) {
+          const kind: ChunkParserKind = document.parser.id === "docling" ? "docling" : "structured-document";
+          return this.build(projectId, item.sourceId, sections, kind);
+        }
+      } else if (sourceType === "xlsx" || (sourceType === "text" && item.fileName.toLowerCase().endsWith(".csv"))) {
+        const sections = tabularSectionsFromDocument(document);
+        if (sections.length > 0) {
+          return this.build(projectId, item.sourceId, sections, "tabular");
+        }
+      }
+    }
     switch (sourceType) {
       case "pdf":
         return this.chunkPdf(projectId, item, filePath);
@@ -82,12 +115,41 @@ export class SourceChunker {
         return this.chunkPlainTextFile(projectId, item, filePath, "markdown");
       case "text":
         return this.chunkPlainTextFile(projectId, item, filePath, "text");
+      case "xlsx":
+        // 二进制格式没有可读文本层；无结构化产物时不可索引（先触发 ingest）
+        return skipped(
+          item.sourceId,
+          "full_text_unavailable",
+          "XLSX 无结构化解析产物（结构化记录通道见 POST /sources/:id/ingest）",
+        );
       case "bibtex":
         return skipped(item.sourceId, "full_text_unavailable", "BibTeX 条目集不是单篇全文");
       case "image":
         return skipped(item.sourceId, "full_text_unavailable", "图片条目无文本层（视觉解析属后续能力）");
       default:
         return skipped(item.sourceId, "full_text_unavailable", `条目类型 ${sourceType} 无全文`);
+    }
+  }
+
+  /** 读取可消费的结构化解析产物（structured 模式 + status != failed） */
+  private async loadStructuredDocument(
+    projectId: string,
+    item: SourceItem,
+  ): Promise<ParsedDocument | null> {
+    if (this.documentProvider === undefined) {
+      return null;
+    }
+    try {
+      const document = await this.documentProvider(projectId, item);
+      if (document === null || document.parseMode !== "structured" || document.status === "failed") {
+        return null;
+      }
+      return document;
+    } catch (error) {
+      this.log(
+        `[retrieval] 结构化解析产物读取失败（${item.sourceId}，走既有路径）：${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
     }
   }
 
@@ -282,7 +344,7 @@ function wholeDocumentSections(raw: string): ResolvedSection[] {
   return [{ sectionId: "SEC01", title: "Whole Document", level: 1, units }];
 }
 
-function inferSourceTypeFromName(fileName: string): "pdf" | "bibtex" | "text" | "markdown" | "image" {
+function inferSourceTypeFromName(fileName: string): "pdf" | "bibtex" | "text" | "markdown" | "image" | "xlsx" {
   const lower = fileName.toLowerCase();
   if (lower.endsWith(".pdf")) {
     return "pdf";
@@ -295,6 +357,9 @@ function inferSourceTypeFromName(fileName: string): "pdf" | "bibtex" | "text" | 
   }
   if (lower.endsWith(".md")) {
     return "markdown";
+  }
+  if (lower.endsWith(".xlsx")) {
+    return "xlsx";
   }
   if (/\.(png|jpg|jpeg)$/.test(lower)) {
     return "image";

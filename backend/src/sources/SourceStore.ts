@@ -14,8 +14,9 @@
  * identity 判等时从 metadata 动态推导）：
  * - identity：SourceIdentity（DOI/arXiv/PMID/标题指纹+年份+一作/URL 分层键）；
  * - contentHash：原始文件 sha256（重复上传判重 + 解析产物失效判定）；
- * - sourceType：pdf/bibtex/text/markdown/image/doi/arxiv/url/metadata
- *   （metadata-only 条目 fileName 为空，无原始文件）；
+ * - sourceType：pdf/bibtex/text/markdown/image/xlsx/doi/arxiv/url/metadata
+ *   （metadata-only 条目 fileName 为空，无原始文件；xlsx 为 M10.1 新增——
+ *   结构化数据经 ingestion 域 records 通道，不走文本 chunk）；
  * - status="metadata_only"：有元数据、无全文（DOI/URL/BibTeX 导入）；
  * - workKey / versionType / relatedSourceIds：同一研究工作多版本（preprint /
  *   conference / journal）的轻量关系，不同版本仍是独立 Source；
@@ -70,6 +71,7 @@ export type SourceType =
   | "text"
   | "markdown"
   | "image"
+  | "xlsx"
   | "doi"
   | "arxiv"
   | "url"
@@ -217,6 +219,7 @@ const ALLOWED_EXTENSIONS: readonly string[] = [
   ".txt",
   ".md",
   ".csv",
+  ".xlsx",
   ".png",
   ".jpg",
   ".jpeg",
@@ -236,6 +239,9 @@ export function sourceTypeFromFileName(fileName: string): SourceType {
   }
   if (lower.endsWith(".txt") || lower.endsWith(".csv")) {
     return "text";
+  }
+  if (lower.endsWith(".xlsx")) {
+    return "xlsx";
   }
   if (lower.endsWith(".md")) {
     return "markdown";
@@ -761,6 +767,12 @@ export class SourceStore {
         await rm(join(this.papersDir(projectId), item.fileName), { force: true });
       }
       await rm(join(this.parsedDir(projectId), `${sourceId}.json`), { force: true });
+      // M10.1：结构化解析产物与图片资产（derived artifact，随条目清理）
+      await rm(join(this.parsedDir(projectId), `${sourceId}.document.json`), { force: true });
+      await rm(join(this.projects.sourcesDir(projectId), "figures", sourceId), {
+        force: true,
+        recursive: true,
+      });
       const chunksDir = join(this.projects.sourcesDir(projectId), "chunks");
       await rm(join(chunksDir, `${sourceId}.jsonl`), { force: true });
       await rm(join(chunksDir, `${sourceId}.vectors.json`), { force: true });

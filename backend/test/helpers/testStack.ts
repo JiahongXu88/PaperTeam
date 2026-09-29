@@ -19,6 +19,8 @@ import { ProjectStore } from "../../src/project/ProjectStore.js";
 import type { AgentRuntime } from "../../src/runtime/types.js";
 import { createScriptedRuntime } from "../../src/runtime/scriptedRuntime.js";
 import { buildServiceStack, type ServiceStack } from "../../src/serviceStack.js";
+import { DocumentParserUnavailableError } from "../../src/errors.js";
+import type { DocumentParser } from "../../src/ingestion/types.js";
 import type { LatexImporter } from "../../src/import/LatexImporter.js";
 import { WorkflowOrchestrator } from "../../src/workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "../../src/workflow/runStore.js";
@@ -80,6 +82,17 @@ export type ServiceStackOptionsCitation = Parameters<typeof buildServiceStack>[0
 export type ServiceStackOptionsReview = Parameters<typeof buildServiceStack>[0]["review"];
 export type ServiceStackOptionsSearch = Parameters<typeof buildServiceStack>[0]["search"];
 export type ServiceStackOptionsFullText = Parameters<typeof buildServiceStack>[0]["fullText"];
+export type ServiceStackOptionsIngestion = Parameters<typeof buildServiceStack>[0]["ingestion"];
+
+/** 测试默认的离线文档解析 stub：PDF 上传的后台 ingestion 立即失败（不 spawn python/docling） */
+const offlineDocumentParser: DocumentParser = {
+  id: "test-offline",
+  async parseFile() {
+    throw new DocumentParserUnavailableError(
+      "测试栈禁用文档解析（离线；ingestion 测试请注入 fake parser）",
+    );
+  },
+};
 
 export interface TestStack {
   stack: ServiceStack;
@@ -113,6 +126,8 @@ export async function startTestStack(
     readiness?: import("../../src/runtime/readiness.js").ReadinessProbe;
     /** Final PDF parser 注入（import-pdf / existing_paper_review 测试用） */
     paperParser?: import("../../src/paper/PdfParser.js").PdfParser;
+    /** M10.1 ingestion 装配（缺省离线 stub；ingestion 测试注入 fake parser） */
+    ingestion?: ServiceStackOptionsIngestion;
     /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
     root?: string;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
@@ -154,6 +169,13 @@ export async function startTestStack(
       ? { fullText: options.fullText }
       : { fullText: { enabled: false } }),
     ...(options.paperParser !== undefined ? { paperParser: options.paperParser } : {}),
+    // M10.1：默认离线（PDF 上传的后台 ingestion 不 spawn python / docling）；
+    // CSV/XLSX 解析是进程内确定性 TS，不受此注入影响
+    ingestion: {
+      structuredParser: offlineDocumentParser,
+      fallbackParser: offlineDocumentParser,
+      ...(options.ingestion ?? {}),
+    },
     log: () => {},
   });
   // Existing-LaTeX 导入器：栈内单例（import-paper 的 latex 路径与 /:id/import 共用）

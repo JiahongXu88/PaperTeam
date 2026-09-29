@@ -46,6 +46,12 @@ export interface EvidenceLocation {
   page?: number;
   section?: string;
   chunk?: string;
+  /** 结构化数据 provenance（M10.1：CSV/XLSX 记录 → user_confirmed 证据） */
+  sheet?: string;
+  /** 物理行号（含表头 = 1；与 Excel 行号一致） */
+  row?: number;
+  /** 列（表头名） */
+  column?: string;
 }
 
 export interface EvidenceRecord {
@@ -504,6 +510,14 @@ function validateLocation(location: EvidenceLocation | undefined): EvidenceLocat
   }
   if (location.section !== undefined) out.section = optionalString(location.section, 100);
   if (location.chunk !== undefined) out.chunk = optionalString(location.chunk, 100);
+  if (location.sheet !== undefined) out.sheet = optionalString(location.sheet, 100);
+  if (location.row !== undefined) {
+    if (typeof location.row !== "number" || !Number.isInteger(location.row) || location.row < 1) {
+      throw new EvidenceValidationError("location.row 必须是正整数");
+    }
+    out.row = location.row;
+  }
+  if (location.column !== undefined) out.column = optionalString(location.column, 100);
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

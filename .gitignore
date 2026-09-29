@@ -82,3 +82,7 @@ e2e/shots/
 
 # e2e 本机临时栈（隔离 runtime/projects 根、seed 脚本；fakebin 已入 fixtures/）
 e2e/.tmp/
+
+# ===== Python 工具字节码缓存（backend/tools 解析脚本） =====
+__pycache__/
+*.pyc

@@ -45,7 +45,14 @@ export interface SourceChunk {
 }
 
 /** chunk 生成分辨率（stats / 诊断如实呈现） */
-export type ChunkParserKind = "pymupdf" | "builtin-pdf-text" | "text" | "markdown";
+export type ChunkParserKind =
+  | "pymupdf"
+  | "builtin-pdf-text"
+  | "text"
+  | "markdown"
+  | "docling" // M10.1：结构化文档解析（docling adapter）
+  | "structured-document" // M10.1：其它结构化文档产物（同投影路径）
+  | "tabular"; // M10.1：CSV/XLSX 行级结构化记录投影
 
 /** 单个 Source 的 chunk 生成结果（结构化失败——不抛给整库） */
 export interface SourceChunkOutcome {

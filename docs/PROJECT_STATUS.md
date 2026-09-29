@@ -991,6 +991,59 @@ Activation → M9.5 Deterministic Bibliography / Citation Trace → M9.6
 Full Paper E2E Acceptance（下一节点 M9.6；P0 = latexmk/perl 工具链修复，
 否则 PDF 终稿无参考文献列表）。
 
+**M10 路线调整（2026-09-29，M10.0.5 调研后）**：PaperTeam 定位从「论文写作
+Agent」扩展为 Document/Data → Ingestion → Structured Parsing →
+Provenance-aware Evidence → Agent Runtime/RAG → Workflow → Scientific
+Research Application 的通用工程底座（论文是上层真实应用）。M10 顺序调整为：
+**M10.1 Document & Data Ingestion → M10.2 Minimal Multimodal Document
+Understanding → M10.3 Existing Paper Revision → M10.4 Minimal Evaluation**；
+M11 再考虑 Research Memory 等条件能力。M10.0 的 Evaluation Framework 设计
+（五份设计文档）**保留、延期实现、不作废**——对应 M10.4。M9.6-M9.10 各
+报告见 docs/research/（Full Paper E2E / 管线加固 / A/B 评估 / 需求对齐 /
+事实保持审计均已交付）。
+
+**M10.1 Document & Data Ingestion ✅（2026-09-29）**：统一 Ingestion 数据
+模型 + PDF 结构化解析（Docling）+ CSV/XLSX 结构化数据 + user_confirmed
+证据通道，见
+[research/M10.1_DOCUMENT_DATA_INGESTION_REPORT.md](research/M10.1_DOCUMENT_DATA_INGESTION_REPORT.md)。
+要点：
+
+- **统一模型（M10.1A）**：`backend/src/ingestion/`——`DocumentParser` seam
+  （DoclingAdapter / CsvParser / XlsxParser / LegacyPdfTextParser 四实现）→
+  `ParsedDocument`（text/table/figure/formula/structured_record 五类块 +
+  fileName/page/section/sheet/row/column/bbox 块级 provenance +
+  parseMode/degradedFrom 降级审计 + contentHash freshness），落盘
+  `sources/parsed/<id>.document.json` + `sources/figures/<id>/`；防御上限
+  （块 20000 / 行 20000 / cell 2000 字符）截断如实进 notes。
+- **PDF（M10.1B）**：Docling 2.130.0 经 child process（完全复用 pymupdf
+  parser 的 execFile/探测/协议纪律，无服务无队列无新库）——版面阅读顺序 +
+  页码 + TableFormer 表格网格 + figure 检测与 PNG 资产抽取 + 章节追踪 +
+  bbox；OCR 关（确定性）、formula enrichment 预留开关；实测 attention.pdf
+  161 块（150 text/4 table/7 figure）页码 161/161。chunker 消费 structured
+  产物（kind=docling，表格行列投影进 RAG）；docling 不可用显式降级
+  pymupdf→builtin 文本层（parseMode=text_only + degradedFrom），解析失败
+  failed 文档落盘可重试——降级永远可见、不静默。
+- **CSV/XLSX（M10.1C）**：不再「CSV → 一整段文本」——每行一条
+  structured_record（行号与 Excel 口径一致：表头=1），cells 带表头+列字母；
+  xlsx 经 exceljs 4.4.0（.xlsx 入白名单，新增 SourceType "xlsx"）；检索侧
+  CSV/XLSX 走行级 tabular chunk（[sheet row N] 标记进 chunk 文本）。
+- **user_confirmed 证据（M10.1C/D）**：`POST /sources/:id/records/evidence`
+  用户确认某行某列 → EvidenceStore（既有通道复用 + EvidenceLocation 最小
+  扩展 sheet/row/column）；服务端机械值校验（claim 必须含单元格值，数值
+  等价归一，EVIDENCE_VALUE_MISMATCH 422 拒绝）；verificationLevel=
+  user_confirmed + status=unverified——**不提升 grounded_verified**
+  （isFormalEvidence/selectForWriting 零改动复用，formal 池天然排除），
+  而 quote 进 factPreservation 授权链（W-1 兑现）。
+- **端点（最小集）**：POST /sources（csv/xlsx 内联 ingest 汇总 + pdf 后台
+  pending）、POST /sources/:id/ingest（手动/重试）、GET /sources/:id/document
+  （?blocks=true 有界块视图）、GET /sources/:id/records（sheet/行窗口）、
+  POST /sources/:id/records/evidence（确认）。UI 未动（curl/API/测试验证）。
+- **测试**：backend/test/ingestion/ 8 文件 49 用例（CSV RFC4180/嗅探/口径、
+  XLSX 多 sheet provenance、Docling 协议映射/失败/不可用、降级链、
+  freshness、确认链、grounded_verified 隔离、chunker 投影 + 回归保护、
+  HTTP 端点）+ **真实 docling smoke（attention.pdf 全链：解析 → ingest →
+  chunker kind=docling）**；全量 backend 回归零回归（快照见报告 §11）。
+
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
 `event_gap` 合成事件类型），`PiRuntimeAdapter` 三项可靠性修复，全部先以
@@ -2129,10 +2182,14 @@ POST   /api/runs/:runId/resume                    HITL 输入 {decision, payload
 POST   /api/runs/:runId/cancel                    取消
 POST   /api/projects/:id/import                   导入 LaTeX 项目（archiveBase64 | files）
 GET    /api/projects/:id/import                   最近导入报告
-POST   /api/projects/:id/sources                  上传文献 {fileName, contentBase64, sourceRole?…}
+POST   /api/projects/:id/sources                  上传文献 {fileName, contentBase64, sourceRole?…}（csv/xlsx 内联结构化 ingest；pdf 后台 ingest，M10.1）
 GET    /api/projects/:id/sources                  文献列表
 GET|PATCH|DELETE /api/projects/:id/sources/:sid   详情 / 角色 / 删除
 POST   /api/projects/:id/sources/:sid/analyze     PDF 分析 {mode: builtin|multimodal}
+POST   /api/projects/:id/sources/:sid/ingest      结构化解析（手动触发 / 重试，M10.1）
+GET    /api/projects/:id/sources/:sid/document    ParsedDocument 汇总（?blocks=true 有界块视图，M10.1）
+GET    /api/projects/:id/sources/:sid/records     结构化记录窗口（sheet/rowFrom/rowTo/limit，M10.1）
+POST   /api/projects/:id/sources/:sid/records/evidence  确认记录值 → user_confirmed Evidence（M10.1）
 GET|POST /api/projects/:id/evidence               Evidence 列表（查询参数）/ 手工添加
 POST   /api/projects/:id/evidence/:eid/verify     更新核验状态
 GET    /api/projects/:id/feasibility              最近可行性报告

@@ -60,6 +60,9 @@ export type BusinessErrorCode =
   | "CANDIDATE_STORE_CORRUPTED"
   | "FULLTEXT_NOT_RESOLVABLE"
   | "FULLTEXT_DOWNLOAD_FAILED"
+  | "INGESTION_PARSE_FAILED"
+  | "INGESTION_PARSER_UNAVAILABLE"
+  | "EVIDENCE_VALUE_MISMATCH"
   | "NOT_FOUND"
   | "INTERNAL_ERROR";
 
@@ -115,6 +118,9 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   CANDIDATE_STORE_CORRUPTED: 500,
   FULLTEXT_NOT_RESOLVABLE: 422,
   FULLTEXT_DOWNLOAD_FAILED: 502,
+  INGESTION_PARSE_FAILED: 422,
+  INGESTION_PARSER_UNAVAILABLE: 503,
+  EVIDENCE_VALUE_MISMATCH: 422,
   NOT_FOUND: 404,
   INTERNAL_ERROR: 500,
 };
@@ -444,6 +450,29 @@ export class PdfParseFailedError extends BusinessError {
 export class PdfParserUnavailableError extends BusinessError {
   constructor(hint: string) {
     super("PDF_PARSER_UNAVAILABLE", `未找到 PDF 解析依赖：${hint}`);
+  }
+}
+
+// ---- Document & Data Ingestion（M10.1）----
+
+/** 文档/数据解析失败（损坏 / 加密 / 输出协议异常）：422，原料保留可重试 */
+export class DocumentParseFailedError extends BusinessError {
+  constructor(reason: string, detail?: string) {
+    super("INGESTION_PARSE_FAILED", `文档解析失败：${reason}`, detail);
+  }
+}
+
+/** 本机缺少所选结构化解析器（docling 等）：503，附安装指引（调用方可走显式降级链） */
+export class DocumentParserUnavailableError extends BusinessError {
+  constructor(hint: string) {
+    super("INGESTION_PARSER_UNAVAILABLE", `结构化文档解析器不可用：${hint}`);
+  }
+}
+
+/** user_confirmed 证据登记时 claim 与记录值机械比对不符：422（拒绝登记，防手填报错值） */
+export class EvidenceValueMismatchError extends BusinessError {
+  constructor(detail: string) {
+    super("EVIDENCE_VALUE_MISMATCH", `证据声明与结构化记录值不一致：${detail}`);
   }
 }
 

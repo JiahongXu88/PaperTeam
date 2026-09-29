@@ -128,6 +128,8 @@ export interface PiRuntimeConfig {
 export interface PdfConfig {
   /** PDF 解析用 Python 解释器（PAPERTEAM_PDF_PYTHON；缺省自动探测 python / python3 / py -3） */
   pythonCommand?: string;
+  /** 结构化文档解析（docling）用 Python 解释器（PAPERTEAM_DOCLING_PYTHON；缺省同上探测；未安装时 PDF 显式降级文本层） */
+  doclingPythonCommand?: string;
 }
 
 /** Research Discovery / Search 配置（M6.3；全部可缺省——零配置时学术链路照常启动） */
@@ -467,6 +469,9 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     pdf: {
       ...(readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") !== undefined
         ? { pythonCommand: readOptionalValue(source, "PAPERTEAM_PDF_PYTHON") }
+        : {}),
+      ...(readOptionalValue(source, "PAPERTEAM_DOCLING_PYTHON") !== undefined
+        ? { doclingPythonCommand: readOptionalValue(source, "PAPERTEAM_DOCLING_PYTHON") }
         : {}),
     },
     search: {
