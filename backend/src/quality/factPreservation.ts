@@ -727,6 +727,10 @@ function stripTablesAndMath(content: string): string {
  */
 function normalizeForProseExtraction(text: string): string {
   return text
+    // M10.3.1（恢复 rerun 实录）：排版长度宏（\vspace{1.5ex} / \hspace{2pt}）
+    // 是版面参数而非论文事实——"1.5ex" 会以数字+单位形态进入事实型新增判定。
+    // 整段剥离（只减假阳性）。
+    .replace(/\\(?:vspace|hspace|setlength|addvspace|vskip|hskip|baselineskip)\*?\s*(?:\{[^{}]*\}|[-−]?\d+(?:\.\d+)?[a-zA-Z]{1,3})/g, " ")
     // M10.3.1（恢复 rerun 实录）：千分位逗号后断行（"61,\n047"）——逗号挡住了
     // 数字-数字断行连接，"047" 被当独立 token 与无关新增值任意配对成假 changed。
     // 仅当断行后是恰好 3 位数字（千分位形态）时连接。同理处理 LaTeX 细空格
@@ -740,7 +744,7 @@ function normalizeForProseExtraction(text: string): string {
     // 公式引用「式(12)」被当作数值新增，与无关删除值配对成假 changed 违规。
     // 只剥编号本身，引用词保留（保守方向：只减少假阳性）。
     .replace(
-      /((?:式|公式|表|图|章节|附录|算法)|(?:(?:Eq|Fig|Table|Tab|Sec|Section|Chapter|Appendix|Algorithm)\.?)\s?)\(?\d+(?:\s*[–—-]+\s*\d+)?\)?/g,
+      /((?:式|公式|表|图|章节|附录|算法)|(?:(?:Eqs?|Equations?|Figs?|Figures?|Tables?|Tabs?|Secs?|Sections?|Chapters?|Appendix|Appendices|Algorithms?)\.?)\s?)\(?\d+(?:\s*(?:,|and|&|to|~|[–—-]+)\s*\d+)*\)?/g,
       "$1",
     );
 }

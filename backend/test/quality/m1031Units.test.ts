@@ -862,3 +862,38 @@ describe("G1 恢复 rerun 实录回归（配对前分流 + 三类提取噪声）
     expect(summary.ok).toBe(true);
   });
 });
+describe("G1 续跑实录回归（英文交叉引用范围 + 排版长度宏）", () => {
+  it("英文交叉引用范围（Tables 4 and 6--9 of）不产出 -9of 伪 token", () => {
+    const previous = "\\section{Abstract}\nResults are given in Table 2.\n";
+    const current = "\\section{Abstract}\nResults are given in Tables 4 and 6--9 of the text; verification follows.\n";
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(previous) },
+      current: { revision: 2, files: texFile(current) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(true);
+  });
+
+  it("排版长度宏（\\vspace{1.5ex} / \\hspace{2pt}）不是事实新增", () => {
+    const previous = "\\section{版式}\n结论如上。\n";
+    const current = "\\section{版式}\n\\par\\vspace{1.5ex}%\n结论如上（含 \\hspace{2pt} 间距）。\n";
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(previous) },
+      current: { revision: 2, files: texFile(current) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(true);
+  });
+
+  it("真实数值范围（亮度 71.3--79.3）仍受守卫（排版/交叉引用剥离不吞数据区间）", () => {
+    const previous = "\\section{数据}\n低照度片段亮度为 71.3--79.3。\n";
+    const current = "\\section{数据}\n低照度片段亮度为 81.2--84.5。\n";
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(previous) },
+      current: { revision: 2, files: texFile(current) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(false);
+    expect(summary.changedFacts.length).toBeGreaterThanOrEqual(1);
+  });
+});
