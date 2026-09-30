@@ -317,13 +317,16 @@ describe("G1 pairwise 授权漂洗修复（fact_preserve 不再洗白漂移）",
     expect(summary.allowedChanges).toBeGreaterThanOrEqual(1);
   });
 
-  it("恢复方向（改回原值）经 factRestore.restoreValues 授权", () => {
+  it("恢复方向（改回原值 + 漂移值删除）经 factRestore 双清单授权", () => {
+    // 与 buildCumulativeFactRegressions 的真实产物一致：changed 违规同时携带
+    // restoreValues（改回的原值）与 removeValues（要删除的漂移值）——配对前
+    // 分流后两个方向各自走 valueAddition / valueRemoval 授权
     const restorePlan = {
       ...planWithFactPreserve,
       items: [
         {
           ...planWithFactPreserve.items[0]!,
-          factRestore: { removeValues: [], restoreValues: ["0.5"] },
+          factRestore: { removeValues: ["67.3"], restoreValues: ["0.5"] },
         },
       ],
     };
@@ -333,6 +336,8 @@ describe("G1 pairwise 授权漂洗修复（fact_preserve 不再洗白漂移）",
       plan: restorePlan as never,
     });
     expect(summary.ok).toBe(true);
+    expect(summary.allowedChanges).toBeGreaterThanOrEqual(1);
+    expect(summary.allowedRemovals).toBeGreaterThanOrEqual(1);
   });
 
   it("通用计划文本（fact_preserve 之外）仍按 plan_value_correction 授权", () => {
@@ -749,5 +754,111 @@ describe("G1 公式新增授权扩展（rgate 展开式实例）", () => {
     });
     expect(summary.ok).toBe(false);
     expect(summary.addedUnsupportedFacts.length).toBeGreaterThanOrEqual(1);
+  });
+});
+describe("G1 恢复 rerun 实录回归（配对前分流 + 三类提取噪声）", () => {
+  it("配对前分流：已授权新增值不被无关删除值 launder 成假 changed（板端值恢复实例）", () => {
+    // rev2 丢板端值 0.9986（作者块同时消失一个 "4"）；rev3 恢复 0.9986——
+    // 0.9986 应走 factRestore.restoreValues 新增授权，"4" 走删除通道，
+    // 二者不得被任意配对一个假 changed
+    const previous = [
+      "\\section{部署}",
+      "\\author{徐，冯$^{*}$\\[4pt]",
+      "板端检测质量 Q 为 0.9986 与 0.9995。",
+    ].join("\n");
+    const drifted = previous.replace("板端检测质量 Q 为 0.9986 与 0.9995。", "板端部署完成。");
+    const restored = [
+      "\\section{部署}",
+      "板端检测质量 Q 为 0.9986 与 0.9995。",
+    ].join("\n");
+    const plan = {
+      schemaVersion: 1 as const,
+      planId: "p", projectId: "p", sourceRevision: 2, reviewRound: 2,
+      createdAt: new Date().toISOString(),
+      summary: { critical: 0, major: 0, blocking: 0, minorRecorded: 0, planned: 1, skipped: 0 },
+      items: [
+        {
+          id: "fact-preserve:aaa", kind: "fact_preserve" as const, priority: "high" as const,
+          section: "main.tex", problem: "板端值被删", instruction: "恢复", expectedOutcome: "ok",
+          status: "planned" as const, riskLevel: "high" as const,
+          factRestore: { restoreValues: ["0.9986", "0.9995"], removeValues: [] },
+        },
+      ],
+    };
+    const s1 = evaluateFactPreservation({
+      previous: { revision: 2, files: texFile(drifted) },
+      current: { revision: 3, files: texFile(restored) },
+      plan: plan as never,
+    });
+    expect(s1.ok).toBe(true);
+    expect(s1.changedFacts).toHaveLength(0);
+    expect(s1.allowedChanges).toBeGreaterThanOrEqual(2);
+  });
+
+  it("计划点名的替换（0.5 → 0.4）：新值新增授权 + 旧值替换删除授权（配对前分流不破坏合法更正）", () => {
+    const plan = {
+      schemaVersion: 1 as const,
+      planId: "p", projectId: "p", sourceRevision: 1, reviewRound: 1,
+      createdAt: new Date().toISOString(),
+      summary: { critical: 0, major: 0, blocking: 0, minorRecorded: 0, planned: 1, skipped: 0 },
+      items: [
+        {
+          id: "f-fix", kind: "review_finding" as const, priority: "high" as const,
+          section: "main.tex", problem: "修正超参记录：0.5 → 0.4", instruction: "更正",
+          expectedOutcome: "ok", status: "planned" as const,
+        },
+      ],
+    };
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(FROZEN_TEX) },
+      current: { revision: 2, files: texFile(FROZEN_TEX.replace("故取 0.5。", "故取 0.4。")) },
+      plan: plan as never,
+    });
+    expect(summary.ok).toBe(true);
+    expect(summary.allowedChanges).toBeGreaterThanOrEqual(1);
+    expect(summary.allowedRemovals).toBeGreaterThanOrEqual(1);
+  });
+
+  it("两侧都未授权的配对仍判 changed（分流不放宽）", () => {
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(FROZEN_TEX) },
+      current: { revision: 2, files: texFile(FROZEN_TEX.replace("故取 0.5。", "故取 9.9。")) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(false);
+    expect(summary.changedFacts.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("LaTeX 细空格千分位（61\\,047）不再产出 047 伪 token", () => {
+    const previous = "\\section{标定}\n标定锚点取自 38 个片段共 61\\,047 个匹配观测。\n";
+    const current = "\\section{标定}\n标定锚点取自 61\\,047 个匹配观测（38 个片段）。\n";
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(previous) },
+      current: { revision: 2, files: texFile(current) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(true);
+  });
+
+  it("千分位逗号断行（61,\\n047）连接后不再产出 047 伪 token", () => {
+    const previous = "\\section{标定}\n共 61,\n047 个匹配观测。\n";
+    const current = "\\section{标定}\n共 61,047 个匹配观测。\n";
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(previous) },
+      current: { revision: 2, files: texFile(current) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(true);
+  });
+
+  it("作者块/标题间距宏（\\[4pt] / \\[8pt]）不产出数字 token、不吞显示数学", () => {
+    const docA = ["\\section{题注}", "\\title{方法\\[4pt]", "{\\normalsize Subtitle}", "增益为 0.5。", ""].join("\n");
+    const docB = ["\\section{题注}", "\\title{方法\\[8pt]", "{\\normalsize Subtitle}", "增益为 0.5。", ""].join("\n");
+    const summary = evaluateFactPreservation({
+      previous: { revision: 1, files: texFile(docA) },
+      current: { revision: 2, files: texFile(docB) },
+      plan: null,
+    });
+    expect(summary.ok).toBe(true);
   });
 });

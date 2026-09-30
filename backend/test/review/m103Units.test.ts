@@ -305,7 +305,11 @@ describe("M10.3 Improvement Plan 授权链（Fact Preservation）", () => {
       improvementPlanItems: [{ section: "main.tex", action: "润色表述", rationale: "语言优化" }],
       evidenceTexts: ["板端早期跟踪器 E2E 延迟 286.57 ms"],
     });
-    expect(result.changedFacts.length).toBeGreaterThan(0);
+    // M10.3.1（配对前分流）：证据池含新值 → 新增值走 evidence 授权放行，
+    // 但旧值（78.2）的删除无任何计划依据 → 仍判违规（桶从 changed 变为
+    // removed；保护不变量不变：历史板测值洗板 swap 无法通过 gate）
+    expect(result.changedFacts.length + result.removedFacts.length).toBeGreaterThan(0);
+    expect(result.ok).toBe(false);
   });
 });
 

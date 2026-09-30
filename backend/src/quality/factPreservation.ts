@@ -520,6 +520,12 @@ function valueChangeAuthorized(
 
 /** 值删除授权：needsEvidence 条目命中章节，或计划点名值且明示删除/弱化 */
 const REMOVAL_WORDS = /(删除|移除|弱化|去掉|删去|剪除)/;
+/**
+ * M10.3.1：计划点名的替换表达（「0.5 → 0.4」「改为 / 更正为 / 修正为 / 替换为」）
+ * ——旧值出现在替换式左侧即构成删除授权（配对前分流的配套语义；否则计划点名的
+ * 新值被新增通道先行放行后，旧值的删除会被误报）。
+ */
+const REPLACEMENT_WORDS = /(→|->|=>|改为|更正为|修正为|替换为|调整为)/;
 
 function valueRemovalAuthorized(
   auth: AuthorizationContext,
@@ -534,6 +540,11 @@ function valueRemovalAuthorized(
   for (const entry of entries) {
     if (mentionsValue([entry.text], before) && REMOVAL_WORDS.test(entry.text)) {
       return { basis: "planned_value_removal", planItemId: entry.id };
+    }
+  }
+  for (const entry of entries) {
+    if (mentionsValue([entry.text], before) && REPLACEMENT_WORDS.test(entry.text)) {
+      return { basis: "planned_value_replacement", planItemId: entry.id };
     }
   }
   // M10.3.1 恢复方向：fact_preserve 条目点名「删除无依据新增的违规值」
@@ -683,7 +694,12 @@ function stripTablesAndMath(content: string): string {
   let text = normalizeContent(content);
   text = text.replace(TABLE_ENV_PATTERN, " ");
   text = text.replace(TABULAR_PATTERN, " ");
-  text = text.replace(/\\\[[\s\S]*?\\\]/g, " ").replace(/\\\(([\s\S]*?)\\\)/g, " ");
+  // M10.3.1（恢复 rerun 实录）：`\\[4pt]` / `\\[8pt]`（换行+间距选项）不是显示
+  // 数学——先剥为空格，显示数学 `\[...\]` 加负向后行（与 styleInvariants 的
+  // extractMathSegments 修复同口径；此前只修了公式通道，prose 通道漏了——作者块
+  // `\\[4pt]` 会吞掉后续内容直到远处的 `\]`，其 "4" 进入多重集被任意配对）。
+  text = text.replace(/\\\[\d+(?:\.\d+)?[a-zA-Z]{1,3}\]/g, " ");
+  text = text.replace(/(?<!\\)\\\[([\s\S]*?)\\\]/g, " ").replace(/\\\(([\s\S]*?)\\\)/g, " ");
   text = text.replace(/\$\$[\s\S]*?\$\$/g, " ");
   // M10.3.1：内联数学中的赋值（$N_{\max}=20$ / $\lambda=0.5$）——数值没有
   // 消失，只是从 prose 迁入数学表达（真实 E2E：rev1「模板数超过 20」→ rev3
@@ -711,6 +727,12 @@ function stripTablesAndMath(content: string): string {
  */
 function normalizeForProseExtraction(text: string): string {
   return text
+    // M10.3.1（恢复 rerun 实录）：千分位逗号后断行（"61,\n047"）——逗号挡住了
+    // 数字-数字断行连接，"047" 被当独立 token 与无关新增值任意配对成假 changed。
+    // 仅当断行后是恰好 3 位数字（千分位形态）时连接。同理处理 LaTeX 细空格
+    // 千分位（61\,047）——\, 同样挡不住词内提取，归一为逗号千分位形态。
+    .replace(/(\d)\\,(?=\d{3}(?![\d,\\]))/g, "$1,")
+    .replace(/(\d),[ \t]*\r?\n[ \t]*(?=\d{3}(?![\d,]))/g, "$1,")
     .replace(/(\d)[ \t]*\r?\n[ \t]*(?=\d)/g, "$1")
     .replace(/\\(?:re?newcommand|providecommand|def|DeclareMathOperator)\s*\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*(?:\[\d\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, " ")
     // M10.3.1：交叉引用编号（式(12) / 式(17)--(19) / 表 7 / 图 3 / Eq. 5 /
@@ -735,11 +757,13 @@ function proseNumberTokens(content: string): string[] {
 }
 
 function indexOfToken(content: string, token: string): number {
-  // M9.10：token 已归一（无千分位逗号）；定位原文时允许数字间出现分隔符
+  // M9.10：token 已归一（无千分位逗号）；定位原文时允许数字间出现分隔符。
+  // M10.3.1：分隔符扩展容忍 LaTeX 转义（原文 35.9\% 对 token 35.9%；旧模式
+  // 不含反斜杠 → 定位失败 → 恢复 rerun 的 swap 配对拿不到行位置）
   const escaped = token
     .split("")
     .map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("(?:[,，\\s]?\\s*)?");
+    .join("(?:[,，\\\\\\s]?\\s*)?");
   const pattern = new RegExp(`(?<![\\w.])${escaped}`);
   const match = pattern.exec(content);
   return match !== null ? match.index : -1;
@@ -1022,14 +1046,94 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     const numberDiff = multisetDiff(previousNumbers, currentNumbers);
     const placeholderIncreased = countPlaceholders(current) > countPlaceholders(previous);
     const missingNumericTotal = numberDiff.missing.length;
-    const paired = Math.min(numberDiff.missing.length, numberDiff.added.length);
-    for (let index = 0; index < numberDiff.missing.length && removedFacts.length + changedFacts.length < 400; index += 1) {
-      const token = numberDiff.missing[index] ?? "";
-      const at = indexOfToken(previous, token);
+    /**
+     * M10.3.1（恢复 rerun 实录）：配对前先分流独立授权——已授权的新增值
+     * （Evidence / 计划文本 / 恢复清单）与已授权的删除值各自放行，剩余未授权
+     * 部分才按多重集序配对成 changed。旧实现的任意配对会把「已授权新增」与
+     * 「无关删除」撮合成一个假 changed（实例：rev3 恢复的板端值 0.9986 本应经
+     * factRestore.restoreValues 授权，却被拿去与作者块消失的 "4" 配对）。
+     * 计划点名的替换（0.5 → 0.4）由 valueRemovalAuthorized 的替换语义覆盖。
+     */
+    const remainingAdded: string[] = [];
+    for (const addedToken of numberDiff.added) {
+      if (valueAdditionAuthorized(auth, addedToken, previousFile.file) !== null) {
+        allowedChanges += 1;
+      } else {
+        remainingAdded.push(addedToken);
+      }
+    }
+    const remainingMissing: { token: string; index: number }[] = [];
+    for (const missingToken of numberDiff.missing) {
+      if (valueRemovalAuthorized(auth, missingToken, previousFile.file) !== null) {
+        allowedRemovals += 1;
+      } else {
+        remainingMissing.push({ token: missingToken, index: indexOfToken(previous, missingToken) });
+      }
+    }
+    /**
+     * M10.3.1（恢复 rerun 定稿）：废除任意下标配对——只做「同章节 + 行上下文
+     * 关键词共享」的定位配对（真实 swap：同一行的值替换，行内词面必然共享
+     * 指标/术语）。任意配对会把互不相干的删除与新增撮合成假 changed（两类
+     * 实录：板端值恢复 × 作者块消失的 "4"；λ_smooth 段 × 无关删除值）。
+     * swap 配对走 valueChangeAuthorized（计划须点名双值——Evidence 池中的
+     * 历史值不构成 swap 授权，M10.3 历史板测值防洗板语义保持）。
+     */
+    const contextTokens = (line: string): Set<string> => {
+      const tokens = new Set<string>();
+      for (const match of line.matchAll(/[A-Za-z]{3,}/g)) {
+        tokens.add(match[0].toLowerCase());
+      }
+      for (const match of line.matchAll(/[一-鿿]{2,}/g)) {
+        tokens.add(match[0]);
+      }
+      return tokens;
+    };
+    const sharesContext = (a: string, b: string): boolean => {
+      const sa = contextTokens(a);
+      const sb = contextTokens(b);
+      for (const token of sa) {
+        if (sb.has(token)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const pendingAdded: { token: string; index: number }[] = remainingAdded.map((token) => ({
+      token,
+      index: indexOfToken(current, token),
+    }));
+    const pairedMissing: { token: string; index: number; partner?: string }[] = [];
+    const usedAdded = new Set<number>();
+    for (const missingEntry of remainingMissing) {
+      const missingLine = missingEntry.index >= 0 ? lineOf(previous, missingEntry.index) : "";
+      const missingSection = missingEntry.index >= 0 ? nearestSection(previous, missingEntry.index) : "(global)";
+      let partner: { token: string; index: number } | undefined;
+      for (let ai = 0; ai < pendingAdded.length; ai += 1) {
+        if (usedAdded.has(ai)) {
+          continue;
+        }
+        const candidate = pendingAdded[ai]!;
+        const candidateLine = candidate.index >= 0 ? lineOf(current, candidate.index) : "";
+        const candidateSection = candidate.index >= 0 ? nearestSection(current, candidate.index) : "(global)";
+        if (
+          missingSection === candidateSection &&
+          sharesContext(missingLine, candidateLine)
+        ) {
+          partner = candidate;
+          usedAdded.add(ai);
+          break;
+        }
+      }
+      pairedMissing.push({ ...missingEntry, ...(partner !== undefined ? { partner: partner.token } : {}) });
+    }
+    const pairedAdded = pendingAdded.filter((_, ai) => !usedAdded.has(ai));
+    for (let index = 0; index < pairedMissing.length && removedFacts.length + changedFacts.length < 400; index += 1) {
+      const token = pairedMissing[index]!.token;
+      const at = pairedMissing[index]!.index;
       const section = at >= 0 ? nearestSection(previous, at) : "(global)";
       const beforeSnippet = at >= 0 ? snippet(lineOf(previous, at)) : snippet(token);
-      if (index < paired) {
-        const replacement = numberDiff.added[index] ?? "";
+      if (pairedMissing[index]!.partner !== undefined) {
+        const replacement = pairedMissing[index]!.partner!;
         const classification = classifyValuePair(token, replacement);
         if (classification.category !== "A") {
           // M9.10 B 类：数值等价的格式差异（千分位 / 全角 / 尾零 / 单位写法）——
@@ -1060,11 +1164,6 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           classification,
         });
       } else {
-        const grant = valueRemovalAuthorized(auth, token, previousFile.file);
-        if (grant !== null) {
-          allowedRemovals += 1;
-          continue;
-        }
         if (placeholderIncreased) {
           placeholderRegressions.push({
             kind: "placeholder",
@@ -1088,17 +1187,14 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         });
       }
     }
-    const unpairedAdditions = numberDiff.added.slice(paired);
-    for (const token of unpairedAdditions) {
+    // 未被 swap 配对消费的新增值：fact-like 过滤后计违规（授权的已在分流步放行）
+    const unpairedAdditions = pairedAdded;
+    for (const entry of unpairedAdditions) {
+      const token = entry.token;
       if (!isFactLikeAddition(token)) {
         continue;
       }
-      const grant = valueAdditionAuthorized(auth, token, previousFile.file);
-      const at = indexOfToken(current, token);
-      if (grant !== null) {
-        allowedChanges += 1;
-        continue;
-      }
+      const at = entry.index;
       addedUnsupportedFacts.push({
         kind: "added_unsupported",
         file: previousFile.file,
