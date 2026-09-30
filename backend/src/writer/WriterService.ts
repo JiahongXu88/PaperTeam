@@ -8,6 +8,8 @@
  * 输出校验失败抛业务错误（Agent 返回文本 ≠ 成功）。
  */
 
+import { readFile } from "node:fs/promises";
+
 import { AgentRunFailedError, InvalidLatexOutputError } from "../errors.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { ManuscriptLanguage } from "../project/language.js";
@@ -421,6 +423,14 @@ export class WriterService {
     itemEvidence?: EvidenceRecord[];
     /** M10.3：单文件项目的整文件修订（main.tex；输出完整文件而非片段） */
     wholeFile?: boolean;
+    /**
+     * M10.3.1：整文件目标在磁盘上的绝对路径。GLM 5.3 在工具会话中会改用
+     * write/edit 直接改写目标文件而最终消息为空（真实 E2E 实测 77.7KB→90.2KB
+     * 直接落盘、消息空 → 判失败 ×2）。提供路径后：最终消息为空但目标文件相对
+     * currentLatex 真实变化时，确定性采纳磁盘内容为修订结果（DoD / gate 照常
+     * 裁决，不降低任何守卫）。
+     */
+    targetFilePath?: string;
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -469,7 +479,19 @@ export class WriterService {
     // GLM-5.3 会把 RevisionPlanItem id 当 instructionId 上报 PT-OUTCOMES（m910 E2E
     // rev3 实录：协议行连同 JSON 进入正文，其数字片段被 Fact Preservation 判为
     // added_number）。协议行不可能是合法 LaTeX 内容，无论是否派发过外部意见都剥离。
-    const latex = stripStrayOutcomeLines(stripCodeFence(bodyLatex)).trim();
+    let latex = stripStrayOutcomeLines(stripCodeFence(bodyLatex)).trim();
+    if (latex === "") {
+      // M10.3.1：整文件目标——模型用 write/edit 工具直接改写文件而最终消息为空
+      // 时，磁盘上的真实变更就是修订结果（确定性读取；继续走下方全部 DoD 与
+      // 下游 Fact Preservation / Quality Gate，不降低任何守卫）
+      if (params.wholeFile === true && params.targetFilePath !== undefined) {
+        const onDisk = await readFile(params.targetFilePath, "utf8");
+        const diskLatex = stripStrayOutcomeLines(stripCodeFence(onDisk)).trim();
+        if (diskLatex !== "" && diskLatex !== params.currentLatex.trim()) {
+          latex = diskLatex;
+        }
+      }
+    }
     if (latex === "") {
       throw new AgentRunFailedError(`章节 ${params.section.id} 修订没有返回内容`);
     }
@@ -1014,6 +1036,7 @@ export function buildRevisePrompt(params: {
     ...(params.wholeFile === true
       ? [
           "1. 本目标是**单文件完整稿件**（main.tex 即全部内容）：输出修改后的完整 LaTeX 文件（含 \\documentclass 导言区到 \\end{document}）；不要解释、不要代码围栏。只修改问题指向的位置及保持连贯所需的最小上下文，导言区与其余章节内容逐字保留（除非问题明确指向它们）。",
+          "1b. **交付方式契约**：修改后的完整文件内容必须出现在你的**最终回复消息**里（正文输出）。不要改用 write/edit 工具直接改写文件来替代交付——只有最终消息会被采纳为修订结果；最终消息为空将被判失败。",
         ]
       : [
           "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
@@ -1093,7 +1116,11 @@ export function splitExternalOutcomes(
     };
   }
   const lines = raw.split(/\r?\n/);
-  const latex = lines.slice(0, lineIndex).join("\n");
+  // M10.3.1：模型会把执行报告行放在输出**最前面**（先上报后交付）——此时
+  // 「marker 之前取正文」得到空串（整文件修订被判空内容）。前缀为空时改取
+  // marker 行之后的内容为正文（残留 marker 行由 stripStrayOutcomeLines 剥离）。
+  const before = lines.slice(0, lineIndex).join("\n");
+  const latex = before.trim() === "" ? lines.slice(lineIndex + 1).join("\n") : before;
   const reportLine = lines[lineIndex] ?? "";
   const jsonPart = reportLine.trim().slice(EXTERNAL_OUTCOMES_MARKER.length).trim();
   const parsed = parseOutcomeArray(jsonPart, dispatched);

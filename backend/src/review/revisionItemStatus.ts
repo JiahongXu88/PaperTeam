@@ -58,7 +58,8 @@ export type RevisionItemResolutionReason =
   | "user_approved"
   | "user_rejected"
   | "user_needs_review"
-  | "re_dispatched";
+  | "re_dispatched"
+  | "deterministic_restore";
 
 // ---- M9.10 Phase 1：协议违规的结构化错误 ----
 

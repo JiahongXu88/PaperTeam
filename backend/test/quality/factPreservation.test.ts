@@ -525,11 +525,14 @@ describe("Fact Preservation：格式等价差异（B/C 类，M9.10）", () => {
     expect(describeFactPreservation(drifted)).toContain("实验事实保持失败");
   });
 
-  it("授权匹配跨格式：计划点名 1,446 → 改为 1500 时 token 1446 命中（不再 miss 成 FP）", () => {
+  it("授权匹配跨格式：计划点名 1,446 → 改为 1500 时 token 1446 命中（review_finding 更正授权）", () => {
+    // M10.3.1：数值更正授权只认 review_finding / improvement 计划条目——
+    // fact_preserve 条目的 before → after 文本不再进通用授权（防漂移洗白），
+    // 其恢复方向授权经 factRestore 数值清单（见 m1031Units 测试）。
     const plan = planWithItems([
       {
         id: "fact-fix-1",
-        kind: "fact_preserve",
+        kind: "review_finding",
         problem: "样本总量应为 1,446，需更正为 1500",
         instruction: "将样本总量 1,446 更正为 1500（新统计口径）",
       },
@@ -542,5 +545,23 @@ describe("Fact Preservation：格式等价差异（B/C 类，M9.10）", () => {
     expect(summary.ok).toBe(true);
     expect(summary.changedFacts).toHaveLength(0);
     expect(summary.allowedChanges).toBe(1);
+  });
+
+  it("M10.3.1 漂洗关闭：fact_preserve 条目文本点名 1,446 与 1500 也不再授权 1446 → 1500", () => {
+    const plan = planWithItems([
+      {
+        id: "fact-preserve-1",
+        kind: "fact_preserve",
+        problem: "样本总量应为 1,446，需更正为 1500",
+        instruction: "将样本总量 1,446 更正为 1500（新统计口径）",
+      },
+    ]);
+    const summary = evaluateFactPreservation({
+      previous: snapshot(1, { "sections/experiments.tex": "样本总量 1446 条。\n" }),
+      current: snapshot(2, { "sections/experiments.tex": "样本总量 1500 条。\n" }),
+      plan,
+    });
+    expect(summary.ok).toBe(false);
+    expect(summary.changedFacts).toHaveLength(1);
   });
 });

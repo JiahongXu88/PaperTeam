@@ -22,6 +22,9 @@ import {
 } from "./externalInstructions.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { RevisionValidationResult } from "./revisionValidation.js";
+import type { CumulativeFactValidation } from "../quality/cumulativeFactPreservation.js";
+import type { ClaimGapAudit } from "./claimGapAudit.js";
+import { readFeasibilityReport, type FeasibilityReport } from "../agents/FeasibilityService.js";
 
 export interface RevisionResponseInput {
   instructions: ExternalInstruction[];
@@ -41,6 +44,12 @@ export interface RevisionResponseInput {
   finalArtifactId: string | null;
   draftArtifactId: string | null;
   generatedAt: string;
+  /** M10.3.1 G1：最新 gate 的累计事实校验（Frozen → Current；null = 无基线不可比较） */
+  cumulativeFactPreservation?: CumulativeFactValidation | null;
+  /** M10.3.1 G2：最新一轮 claim 适用性审计（existing-paper） */
+  claimGapAudit?: ClaimGapAudit | null;
+  /** M10.3.1 G2：最新 feasibility（含 task-aware criterionApplicability） */
+  feasibility?: FeasibilityReport | null;
 }
 
 const STATUS_LABELS: Record<ExternalInstruction["status"], string> = {
@@ -189,6 +198,84 @@ export function buildRevisionResponseMarkdown(input: RevisionResponseInput): str
     }
   }
   lines.push("");
+
+  // ---- 四、累计事实保持（M10.3.1 G1：Frozen Baseline → Current）----
+  if (input.cumulativeFactPreservation !== undefined) {
+    lines.push("## 四、Cumulative Fact Preservation（冻结基线 → 当前稿）");
+    lines.push("");
+    if (input.cumulativeFactPreservation === null) {
+      lines.push("（无导入冻结基线——非 existing-paper 项目，累计口径不适用。）");
+    } else {
+      const cumulative = input.cumulativeFactPreservation;
+      lines.push(
+        `- 冻结基线：rev-${cumulative.baselineRevision} → 当前稿 rev-${cumulative.currentRevision}`,
+      );
+      lines.push(
+        `- 结论：${cumulative.ok ? "通过（无未授权累计漂移）" : `未通过（未授权漂移 ${cumulative.unresolvedViolations.length} 项跨轮未解决——Final 被阻断）`}`,
+      );
+      lines.push(
+        `- 授权：计划台账 ${cumulative.authorizationSources.ledgerEntries} 条 / 证据 ${cumulative.authorizationSources.evidenceRecords} 条（授权变更 ${cumulative.authorizedChanges} 项 / 授权删除 ${cumulative.authorizedRemovals} 项 / 格式等价 ${cumulative.formatChanges} 项）`,
+      );
+      if (cumulative.resolvedViolations.length > 0) {
+        lines.push(`- 已解决（恢复基线或获授权）：${cumulative.resolvedViolations.length} 项`);
+      }
+      for (const finding of cumulative.unresolvedViolations.slice(0, 10)) {
+        lines.push(
+          `  - ［${finding.reason}］${finding.file}：${finding.before}${finding.after !== "" ? ` → ${finding.after}` : "（被删除）"}`,
+        );
+      }
+      if (cumulative.unresolvedViolations.length > 10) {
+        lines.push(`  - …（其余 ${cumulative.unresolvedViolations.length - 10} 项见 quality-gate 产物）`);
+      }
+    }
+    lines.push("");
+  }
+
+  // ---- 五、Claim 适用性审计（M10.3.1 G2：unsupported claims 的返修语境归层）----
+  if (input.claimGapAudit !== undefined && input.claimGapAudit !== null) {
+    const audit = input.claimGapAudit;
+    lines.push("## 五、Claim Gap Audit（unsupported claims 的 task-aware 归层）");
+    lines.push("");
+    lines.push(
+      `- 口径：修订引入 ${audit.counts.revisionIntroduced} / 原稿既有（作者裁决）${audit.counts.excludedPreExisting} / 作者数据覆盖 ${audit.counts.excludedAuthorData}（共 ${audit.counts.unsupportedTotal} 条 UNSUPPORTED/CONTRADICTED）`,
+    );
+    if (audit.claims.length > 0) {
+      lines.push("");
+      lines.push("| Claim | 归层 | 依据 |");
+      lines.push("|-------|------|------|");
+      for (const claim of audit.claims) {
+        lines.push(
+          `| ${claim.claim.replace(/\|/g, "\|").slice(0, 90)} | ${claim.applicability} | ${claim.basis.replace(/\|/g, "\|").slice(0, 120)} |`,
+        );
+      }
+    }
+    lines.push("");
+    lines.push(
+      "归层说明：原稿既有 claim 的证据完备性属作者裁决（返修任务不重证原论文）；作者数据覆盖 = user_confirmed 作者实验证据（jsonPath 溯源）；修订引入的 claim 仍按原规则要求补证 / 关联 / 弱化。",
+    );
+    lines.push("");
+  }
+
+  // ---- 六、Feasibility（task-aware 适用性）----
+  if (input.feasibility !== undefined && input.feasibility !== null) {
+    const feasibility = input.feasibility;
+    lines.push("## 六、Feasibility（含 task-aware 适用性）");
+    lines.push("");
+    lines.push(`- 结论：${feasibility.level}`);
+    if (feasibility.criterionApplicability !== undefined && feasibility.criterionApplicability.length > 0) {
+      lines.push("");
+      lines.push("| 差距条目 | 适用性 | 理由 |");
+      lines.push("|----------|--------|------|");
+      for (const entry of feasibility.criterionApplicability) {
+        lines.push(
+          `| ${entry.criterion.replace(/\|/g, "\|").slice(0, 90)} | ${entry.applicability} | ${entry.reason.replace(/\|/g, "\|").slice(0, 120)} |`,
+        );
+      }
+    }
+    lines.push("");
+  }
+
+  lines.push("");
   lines.push("---");
   lines.push("");
   lines.push(
@@ -203,6 +290,32 @@ export interface RevisionResponseDeps {
   projects: ProjectStore;
   reviewArtifacts: ReviewArtifactStore;
   externalInstructions: ExternalInstructionStore;
+}
+
+/** 最新 gate 产物中的累计事实校验（无产物 / 通过 → 都如实投影） */
+async function loadLatestCumulative(
+  deps: RevisionResponseDeps,
+  projectId: string,
+): Promise<CumulativeFactValidation | null | undefined> {
+  const rounds = await deps.reviewArtifacts.gateRounds(projectId);
+  const latest = rounds[0];
+  if (latest === undefined) {
+    return undefined;
+  }
+  const artifact = await deps.reviewArtifacts.loadGate(projectId, latest);
+  return artifact?.cumulativeFactPreservation;
+}
+
+/** 最新一轮 claim 适用性审计（无产物 → undefined，章节不出现） */
+async function loadLatestClaimAudit(
+  deps: RevisionResponseDeps,
+  projectId: string,
+): Promise<ClaimGapAudit | null | undefined> {
+  const summary = await deps.reviewArtifacts.latestSummary(projectId);
+  if (summary === null) {
+    return undefined;
+  }
+  return deps.reviewArtifacts.loadClaimGapAudit(projectId, summary.round);
 }
 
 export interface RevisionResponseResult {
@@ -283,6 +396,10 @@ export async function writeRevisionResponse(
     finalArtifactId: artifacts.finalArtifactId,
     draftArtifactId: artifacts.draftArtifactId,
     generatedAt: new Date().toISOString(),
+    // M10.3.1：累计事实 / claim 适用性 / feasibility 适用性一并投影（不隐藏）
+    cumulativeFactPreservation: await loadLatestCumulative(deps, projectId),
+    claimGapAudit: await loadLatestClaimAudit(deps, projectId),
+    feasibility: (await readFeasibilityReport(deps.projects, projectId))?.report ?? null,
   });
   const buildDir = deps.projects.buildDir(projectId);
   await mkdir(buildDir, { recursive: true });

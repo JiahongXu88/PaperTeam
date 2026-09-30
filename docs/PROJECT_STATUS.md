@@ -1081,6 +1081,28 @@ M11 再考虑 Research Memory 等条件能力。M10.0 的 Evaluation Framework �
   docling 真实 smoke 回归通过；真实 notebook manual smoke（jupyter 官方
   示例，smoke 后删除）通过。
 
+**M10.3 Existing Paper Revision ✅（2026-09-30）+ M10.3.1 Revision Reliability
+Closure ✅（2026-09-30，engineering closure complete）**：全链路（Import →
+Asset Inventory → Baseline → Research Plan → Search → Evidence → Revision
+Plan → Revision → Fact/Citation Preservation → Review → Quality Gate → PDF →
+Revision Trace）真实论文打通；M10.3.1 收口两个可靠性缺口——
+
+- **G1 Cumulative Fact Preservation**：Frozen Baseline（rev-1）+ append-only
+  授权台账（fact-authorizations.json）+ carry-forward（历史未授权漂移跨轮
+  保持 unresolved）+ 确定性段落恢复（revision.restore_facts，无 LLM）+
+  pairwise 漂洗封堵（fact_preserve 条目只授权恢复方向）——「一次错误修订
+  被后续轮洗白」路径封死（确定性测试 Cases A–D + 工作流闭环全绿）。
+- **G2 Task-aware Gate**：claim-gap-audit 把原稿既有声明 / 作者数据覆盖 /
+  修订引入三层归层（真实案例 unsupported 9 → 修订引入 2）；feasibility
+  criterionApplicability 逐条适用性（INSUFFICIENT→MEDIUM，从零写作标准
+  不再误套返修任务）；Revision Trace 新增累计事实 / claim 归层 / 适用性三节。
+- **真实 rerun（同一输入）**：60 分钟单次完成（M10.3 4.5h+3 次接管）；
+  feasibility MEDIUM；λ_smooth 类漂移封死；剩余 3 项 blocker 全部作者裁决
+  （0.6/0.1 正文新增 / G2 区间派生值 / academic 完备性）——**engineering
+  closure complete，后续会话无需继续改系统**。见
+  [research/M10.3.1_REVISION_RELIABILITY_CLOSURE.md](research/M10.3.1_REVISION_RELIABILITY_CLOSURE.md)
+  与 [research/M10.3.1_REAL_PAPER_RERUN.md](research/M10.3.1_REAL_PAPER_RERUN.md)。
+
 **M10.2 Minimal Multimodal Document Understanding ✅（2026-09-29）**：已
 登记图片资产 → Vision-capable Model → 结构化 FigureAnalysis → 可检索
 Candidate Knowledge → 用户确认 user_confirmed Evidence，见

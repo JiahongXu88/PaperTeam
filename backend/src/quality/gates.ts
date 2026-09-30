@@ -22,6 +22,11 @@ import { countItemStatuses } from "../review/revisionValidation.js";
 import { describeClaimStrengthFindings } from "./claimStrength.js";
 import { describeCitationPreservation, type CitationPreservationSummary } from "./citationPreservation.js";
 import { describeFactPreservation, type FactPreservationSummary } from "./factPreservation.js";
+import {
+  describeCumulativeFactPreservation,
+  type CumulativeFactValidation,
+} from "./cumulativeFactPreservation.js";
+import type { ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { LatexDiagnostic } from "../latex/diagnostics.js";
 import { parseLatexDiagnostics } from "../latex/diagnostics.js";
@@ -278,6 +283,22 @@ export interface QualityGateInput {
    */
   factPreservation?: FactPreservationSummary | null;
   /**
+   * Cumulative Fact Preservation（M10.3.1 G1）：冻结基线（导入 rev-1）→ 被审阅
+   * 修订的累计事实校验。undefined = 调用方未计算（规则不出现，兼容纯单元输入）；
+   * null = 不可比较（无导入基线——idea_to_paper 项目）→ 规则以中性形态呈现；
+   * validation → cumulative_fact_preservation 参与判定（Final 必须通过；
+   * Draft 不受阻断但结果必须可见——见 build.draft / revision.report）。
+   */
+  cumulativeFactPreservation?: CumulativeFactValidation | null;
+  /**
+   * Claim Gap Audit（M10.3.1 G2）：existing-paper 语境下 unsupported claims 的
+   * task-aware 适用性（pre-existing 原稿既有 / author-data 作者实验数据覆盖 /
+   * revision-introduced 修订引入）。undefined = 未计算（规则按原口径）；提供时
+   * 规则 4/5/6 只对「修订引入」口径计数——原稿既有 claim 的证据完备性属作者
+   * 裁决，不因返修任务被重新证明（审计产物逐条留档，不隐藏）。
+   */
+  claimGapAudit?: ClaimGapAudit;
+  /**
    * Evidence Citation Coverage（M6.6 §13）：正文引用 key ↔ Verified Evidence
    * 的覆盖结果。undefined = 调用方未计算（规则不出现）；提供了则呈现
    * citations_evidence_backed 规则（未覆盖计数可见；只有
@@ -334,26 +355,52 @@ export function evaluateQualityGate(
     detail: `contradictory evidence ${input.evidence.contradictory} 条`,
   });
 
-  // 4. unsupported / contradicted 关键 claim = 0
-  const unsupported = input.review.unsupportedCriticalClaims ?? 0;
+  // 4. unsupported / contradicted 关键 claim = 0（M10.3.1：existing-paper 语境
+  //    只计修订引入口径——原稿既有 claim / 作者数据覆盖的 claim 不要求作为新
+  //    claim 重证，但逐条留档在 claim-gap-audit，作者裁决）
+  const audit = input.claimGapAudit;
+  const unsupported = audit !== undefined
+    ? audit.counts.revisionIntroduced
+    : (input.review.unsupportedCriticalClaims ?? 0);
   rules.push({
     rule: "unsupported_critical_claims_zero",
     passed: unsupported === 0,
-    detail: `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
+    detail:
+      audit !== undefined
+        ? `修订引入 UNSUPPORTED/CONTRADICTED claim ${unsupported} 条（另有原稿既有 ${audit.counts.excludedPreExisting} 条 / 作者数据覆盖 ${audit.counts.excludedAuthorData} 条——返修语境不重证，见 claim-gap-audit）`
+        : `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
   });
 
-  // 5. blocking review issue = 0
+  // 5. blocking review issue = 0（M10.3.1：归因到被排除 claim 的 blocking 不计）
+  const blockingTotal = input.review.counts.blocking;
+  const blockingExcluded = audit?.counts.issues.excludedBlocking ?? 0;
+  const blockingEffective = Math.max(0, blockingTotal - blockingExcluded);
   rules.push({
     rule: "blocking_issues_zero",
-    passed: input.review.counts.blocking === 0,
-    detail: `blocking issue ${input.review.counts.blocking} 条`,
+    passed: blockingEffective === 0,
+    detail:
+      audit !== undefined && blockingExcluded > 0
+        ? `blocking issue ${blockingEffective} 条（另有 ${blockingExcluded} 条归因于原稿既有 / 作者数据覆盖 claim，返修语境不计入）`
+        : `blocking issue ${blockingTotal} 条`,
   });
 
-  // 6. 未解决的 critical / major = 0
+  // 6. 未解决的 critical / major = 0（M10.3.1 同 5 的归因口径）
+  const criticalEffective = Math.max(
+    0,
+    input.review.openCritical - (audit?.counts.issues.excludedCritical ?? 0),
+  );
+  const majorEffective = Math.max(
+    0,
+    input.review.openMajor - (audit?.counts.issues.excludedMajor ?? 0),
+  );
   rules.push({
     rule: "open_critical_major_zero",
-    passed: input.review.openCritical === 0 && input.review.openMajor === 0,
-    detail: `critical=${input.review.openCritical} major=${input.review.openMajor}`,
+    passed: criticalEffective === 0 && majorEffective === 0,
+    detail: `critical=${criticalEffective} major=${majorEffective}${
+      audit !== undefined && (audit.counts.issues.excludedCritical > 0 || audit.counts.issues.excludedMajor > 0)
+        ? `（归因排除 critical ${audit.counts.issues.excludedCritical} / major ${audit.counts.issues.excludedMajor} 条）`
+        : ""
+    }`,
   });
 
   // 7. academic score ≥ 阈值（缺失评分视为不通过——不能因没评就通过）
@@ -377,16 +424,26 @@ export function evaluateQualityGate(
   });
 
   // 9. 目标可行性达标（LOW / INSUFFICIENT 阻止 Final；用户知情接受不降低标准）
+  // M10.3.1：existing_paper 的 task-aware 适用性在 detail 中可见（required
+  // vs not_applicable 逐条留档于 feasibility.json；判定口径不变——level 仍由
+  // 评估器诚实给出，不因 N/A 条目自动放行）
   const feasibility = input.feasibility;
   const feasibilityOk =
     !thresholds.requireFeasibility ||
     feasibility === null ||
     feasibility.level === "HIGH" ||
     feasibility.level === "MEDIUM";
+  const applicabilityNote =
+    feasibility?.criterionApplicability !== undefined && feasibility.criterionApplicability.length > 0
+      ? `（task-aware：required ${feasibility.criterionApplicability.filter((entry) => entry.applicability === "required").length} 项 / not_applicable ${feasibility.criterionApplicability.filter((entry) => entry.applicability === "not_applicable").length} 项，理由见 feasibility.json）`
+      : "";
   rules.push({
     rule: "target_feasibility",
     passed: feasibilityOk,
-    detail: feasibility === null ? "未评估（跳过）" : `feasibility=${feasibility.level}`,
+    detail:
+      feasibility === null
+        ? "未评估（跳过）"
+        : `feasibility=${feasibility.level}${applicabilityNote}`,
   });
 
   // 10-13. Citation Integrity（并入同一 Gate Engine，不另造平行体系）
@@ -467,6 +524,26 @@ export function evaluateQualityGate(
     }
   }
 
+  // 15b. Cumulative Fact Preservation（M10.3.1 G1）：Frozen Baseline → Current。
+  // previous→current 干净不等于安全——历史未授权漂移必须跨轮保持 unresolved，
+  // 直到恢复基线值或获（已批准计划 / Evidence）授权。Final 必须通过本规则；
+  // Draft 不阻断但 unresolved 明细随产物与报告可见（不隐藏）。
+  if (input.cumulativeFactPreservation !== undefined) {
+    if (input.cumulativeFactPreservation === null) {
+      rules.push({
+        rule: "cumulative_fact_preservation_not_applicable",
+        passed: true,
+        detail: "无导入冻结基线（非 existing-paper 项目）；累计事实保持规则不参与判定",
+      });
+    } else {
+      rules.push({
+        rule: "cumulative_fact_preservation",
+        passed: input.cumulativeFactPreservation.ok,
+        detail: describeCumulativeFactPreservation(input.cumulativeFactPreservation),
+      });
+    }
+  }
+
   // 16. Evidence Citation Coverage（M6.6 §13）：正文引用 ↔ Verified Evidence。
   // 默认只呈现（可检测不阻断——M6.6 接入期存量项目覆盖率必然低）；
   // requireEvidenceBackedCitations=true 时未覆盖引用阻断 Final。
@@ -538,6 +615,7 @@ export async function saveQualityGateReport(
   extras: {
     citationPreservation?: CitationPreservationSummary | null;
     factPreservation?: FactPreservationSummary | null;
+    cumulativeFactPreservation?: CumulativeFactValidation | null;
     evidenceCitationCoverage?: EvidenceCitationCoverage;
     revisionValidation?: RevisionValidationResult;
   } = {},
@@ -552,6 +630,10 @@ export async function saveQualityGateReport(
     ...(extras.citationPreservation !== undefined ? { citationPreservation: extras.citationPreservation } : {}),
     // M5.6 第二层：实验事实保持明细（revision.plan 派发恢复条目；build.draft 拦截依据）
     ...(extras.factPreservation !== undefined ? { factPreservation: extras.factPreservation } : {}),
+    // M10.3.1 G1：累计事实保持明细（Frozen → Current；restore stage / 报告消费）
+    ...(extras.cumulativeFactPreservation !== undefined
+      ? { cumulativeFactPreservation: extras.cumulativeFactPreservation }
+      : {}),
     // M6.6：引用 ↔ verified evidence 覆盖明细（UI / 审计可见）
     ...(extras.evidenceCitationCoverage !== undefined
       ? { evidenceCitationCoverage: extras.evidenceCitationCoverage }

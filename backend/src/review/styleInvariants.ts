@@ -84,7 +84,13 @@ const MATH_ENVS = ["equation", "equation*", "align", "align*", "gather", "gather
  * （如 ms、GB、dB、mAP、°C）或中文计量词（倍 / 个 / 次 / 张 / 项 / 例 / 年 / 月 / 天 / 篇 / 层）。
  * 不匹配 LaTeX 命令内部（如 \section 后的 label 编号），因此先剥离命令参数中的 label/ref。
  */
-const NUMBER_PATTERN = /(?<![A-Za-z\\])[-−]?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s?(?:%|‰|°C|[A-Za-zμ]{1,6}|倍|个|次|张|项|例|年|月|天|篇|层|条|组|类|种|轮|步|位))?/g;
+/**
+ * M10.3.1：lookbehind 增加 \d——字母/数字混合标识符（BDD100K / YOLOv11 /
+ * RTX4090）的词内数字不再被切成 "00K" / "1" 伪 token（真实 E2E 实测这类伪
+ * token 与无关删除值配对成假 changed 违规，阻断 Draft）。方向与 §3.10 的
+ * 噪声归一一致：只减少假阳性，真实独立数值（前置非字母非数字）不受影响。
+ */
+const NUMBER_PATTERN = /(?<![A-Za-z\\\d])[-−]?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s?(?:%|‰|°C|[A-Za-zμ]{1,6}|倍|个|次|张|项|例|年|月|天|篇|层|条|组|类|种|轮|步|位))?/g;
 
 function normalize(text: string): string {
   return text.replace(/\r\n/g, "\n");
@@ -137,11 +143,28 @@ export function extractCitationKeys(latex: string): string[] {
 export function extractMathSegments(latex: string): string[] {
   const text = normalize(latex);
   const segments: string[] = [];
+  /**
+   * M10.3.1：只把**含关系 / 运算符**的数学段当公式事实（= + × ÷ ± < > ≤ ≥ ≠ ≈
+   * 与 \cdot/\frac/\sum/\int/\sqrt 等）。符号引用（$\lambda_{\text{smooth}}$）、
+   * 表头指示（$\uparrow$ / $\text{mAP}_{50}\uparrow$）、标题排版片段等无关系
+   * 符号的 span 不是公式事实——真实 E2E 整文件重写下这些片段的重排会以
+   * formula_removed/added 假违规阻断 Draft。方向与 §3.10 一致：只减假阳性；
+   * 被替换的损失函数 / 方程（含 = 等）仍受守卫。
+   */
+  const MATH_OPERATOR_PATTERN =
+    /[=×÷±<>≤≥≠≈]|\\(?:cdot|le\b|ge\b|neq\b|approx\b|sum\b|prod\b|int\b|frac|sqrt|times\b|pm\b|mp\b)/;
   const push = (raw: string): void => {
     const compact = raw.replace(/\s+/g, " ").trim();
-    if (compact !== "") {
-      segments.push(compact);
+    if (compact === "" || !MATH_OPERATOR_PATTERN.test(compact)) {
+      return;
     }
+    // M10.3.1：纯数值赋值（$N_{\max}=20$ / $\lambda=0.5$）是参数设定而非公式
+    // 事实——其数值已由 prose 管道保留（stripTablesAndMath 的赋值右值通道），
+    // 不再进公式多重集（同一数值双通道计数会产生假 formula_added）。
+    if (/^[A-Za-z\\{}_^()\s]*(?:=|＝)\s*[-−]?\d+(?:\.\d+)?\s*$/.test(compact)) {
+      return;
+    }
+    segments.push(compact);
   };
   // 环境
   const envRegex = new RegExp(
@@ -152,8 +175,10 @@ export function extractMathSegments(latex: string): string[] {
     push(body);
     return " ";
   });
-  // \[ … \] 与 \( … \)
-  stripped = stripped.replace(/\\\[([\s\S]*?)\\\]/g, (_whole, body: string) => {
+  // \[ … \] 与 \( … \)。
+  // M10.3.1：`\\[8pt]`（换行+间距选项）不是显示数学——负向后行排除（否则
+  // 标题块被吞成超长片段直到远处的 \]，整文件重排即假 formula 违规）。
+  stripped = stripped.replace(/(?<!\\)\\\[([\s\S]*?)\\\]/g, (_whole, body: string) => {
     push(body);
     return " ";
   });
@@ -161,9 +186,14 @@ export function extractMathSegments(latex: string): string[] {
     push(body);
     return " ";
   });
-  // $$ … $$ 与 $ … $（不跨越空行）
+  // $$ … $$ 与 $ … $（不跨越空行）。
+  // M10.3.1：相邻的两个单 $（`$\text{J}_{trk}$$\downarrow$` 表头指示）会被
+  // 误配成 $$ 对——内容跨多个表格单元格（含 &）。真显示数学不用 &（矩阵在
+  // 环境内），含 & 的 $$ 匹配按误配丢弃。
   stripped = stripped.replace(/\$\$([\s\S]*?)\$\$/g, (_whole, body: string) => {
-    push(body);
+    if (!body.includes("&")) {
+      push(body);
+    }
     return " ";
   });
   stripped.replace(/(?<!\\)\$([^$\n]+?)(?<!\\)\$/g, (_whole, body: string) => {

@@ -71,7 +71,7 @@ export interface PiRuntimeConfig {
   /** 执行阶段超时（毫秒；PAPERTEAM_PI_EXECUTION_TIMEOUT_MS；缺省回退 runTimeoutMs） */
   executionTimeoutMs?: number;
   /**
-   * 长论文阶段的执行超时（毫秒；PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS；默认 900000 = 15 分钟；
+   * 长论文阶段的执行超时（毫秒；PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS；默认 1800000 = 30 分钟，M10.3.1 按真实整文件修订延迟方差放宽；
    * 1s-1h）。只用于 Writer（章节写作 / 逐节修订 / 润色 / 改进计划 / 编译修复）、三路
    * Reviewer 与分章节 Reviewer、Researcher 这类以整篇论文为输入的长任务——M5.6 真实
    * 26 页论文验收实测单节修订最长 626s、单路审稿 315s，通用默认 300s 会高频误超时。
@@ -216,8 +216,14 @@ export interface AgentIds {
 const DEFAULT_PORT = 3000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_RUN_TIMEOUT_MS = 300_000;
-/** 长论文阶段（Writer / Reviewer / Researcher）的执行超时默认：M5.6 真实论文验收实测口径 */
-const DEFAULT_LONG_RUN_TIMEOUT_MS = 900_000;
+/**
+ * 长论文阶段（Writer / Reviewer / Researcher）的执行超时默认。
+ * M5.6 真实论文验收实测口径；M10.3.1：900s → 1_800s——M10.3 真实 E2E 整文件
+ * 修订单轮 8-12 分钟（贴边），rerun 实测同一 78KB 论文超 15 分钟被
+ * AGENT_TIMEOUT 掐断（×2 重试均超）。30 分钟有界放宽，覆盖真实整文件
+ * Writer 延迟方差；环境变量仍可覆盖。
+ */
+const DEFAULT_LONG_RUN_TIMEOUT_MS = 1_800_000;
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 900_000;

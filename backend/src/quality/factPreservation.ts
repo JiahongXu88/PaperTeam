@@ -117,6 +117,13 @@ export interface FactPreservationInput {
   improvementPlanItems?: { section: string; action: string; rationale?: string }[];
   /** Evidence 文本（claims + quotes + summaries；新增/替换值的授权依据） */
   evidenceTexts?: string[];
+  /**
+   * M10.3.1：当前 references.bib 中的既有 key。新增表格行若引用既有 key 且
+   * 剥离 key 后不含任何数字（方法论对比行，非实验数值），授权为
+   * bib_keyed_row——此类行是引用层的合法对象（key 只能来自既有 bib 或
+   * evidence-backed 追加），不是 Fact Preservation 要拦的实验事实。
+   */
+  bibliographyKeys?: string[];
 }
 
 // ---- 提取：表格 ----
@@ -257,7 +264,10 @@ function normalizeNumbersInText(text: string): string {
 /** 文本中的数字 run（归一后；分类用多重集比较） */
 function normalizedNumberRuns(text: string): string[] {
   const half = normalizeFullWidthDigits(text);
-  return [...half.matchAll(/[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g)].map((match) =>
+  // M10.3.1：与 NUMBER_PATTERN 同口径的词内数字排除（YOLOv11 不产出 "11"，
+  // BDD100K 不产出 "00K"）——真实 E2E 表格措辞单元格因模型名内嵌数字被误判
+  // 数值变化（table_cell 假违规阻断 Draft）。
+  return [...half.matchAll(/(?<![A-Za-z\\\d])[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g)].map((match) =>
     normalizeNumericToken(match[0] ?? ""),
   );
 }
@@ -296,9 +306,10 @@ function classifyCellChange(before: string, after: string): FactClassification {
     return { category: "D", type: "citation_scope_changed", severity: "low", oldValue: before, newValue: after };
   }
   // 数值等价：数字原文变了（1,446→1446 / 45.90→45.9）＝B 格式变化；
-  // 数字原文未动、只是周边措辞变 ＝C 语言重写
+  // 数字原文未动、只是周边措辞变 ＝C 语言重写（词内数字与 normalizedNumberRuns
+  // 同口径排除——YOLOv11 等标识符内嵌数字不算「数字原文」）
   const rawNumberRuns = (text: string): string[] => [
-    ...normalizeFullWidthDigits(text).matchAll(/[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g),
+    ...normalizeFullWidthDigits(text).matchAll(/(?<![A-Za-z\\\d])[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g),
   ].map((match) => match[0] ?? "");
   return rawNumberRuns(before).join("|") !== rawNumberRuns(after).join("|")
     ? { category: "B", type: "number_formatted", severity: "low", oldValue: before, newValue: after }
@@ -372,16 +383,32 @@ interface AuthorizationContext {
   planTexts: { id: string; section: string; text: string }[];
   improvementTexts: { id: string; section: string; text: string }[];
   evidenceTexts: string[];
+  bibliographyKeys: string[];
   needsEvidenceItems: RevisionPlanItem[];
+  /**
+   * M10.3.1：fact_preserve 条目的恢复方向授权。这类条目的 problem 文本包含
+   * 「before → after」片段——若进入通用 planTexts 会把「保留违规值」也判为
+   * plan_value_correction（漂移被要求恢复它的计划洗白）。因此 fact_preserve
+   * 条目整体移出通用授权，只按 factRestore 数值清单授权三个恢复方向：
+   * 改回旧值（restoreValues 作 after）/ 重新加回被删旧值 / 删除无依据新增值。
+   */
+  restoreAuths: {
+    id: string;
+    section: string;
+    restoreValues: string[];
+    removeValues: string[];
+  }[];
 }
 
 function buildAuthorization(
   plan: RevisionPlan | null,
   improvementPlanItems: FactPreservationInput["improvementPlanItems"],
   evidenceTexts: readonly string[],
+  bibliographyKeys: readonly string[] = [],
 ): AuthorizationContext {
-  const planTexts = (plan?.items ?? [])
-    .filter((item) => item.status === "planned")
+  const plannedItems = (plan?.items ?? []).filter((item) => item.status === "planned");
+  const planTexts = plannedItems
+    .filter((item) => item.kind !== "fact_preserve")
     .map((item) => ({
       id: item.id,
       section: item.section,
@@ -392,10 +419,52 @@ function buildAuthorization(
     section: item.section,
     text: `${item.action}\n${item.rationale ?? ""}`,
   }));
-  const needsEvidenceItems = (plan?.items ?? []).filter(
-    (item) => item.status === "planned" && item.needsEvidence === true,
-  );
-  return { planTexts, improvementTexts, evidenceTexts: [...evidenceTexts], needsEvidenceItems };
+  const needsEvidenceItems = plannedItems.filter((item) => item.needsEvidence === true);
+  // M10.3.1：恢复授权在条目生命周期内持续有效——restore stage 执行后会把条目
+  // 推进到 validated，若只认 planned，恢复动作自身的变化会在下一轮 pairwise
+  // 失去授权（恢复被误报为漂移）。rejected 条目除外（该方向已被复核否定）。
+  const restoreAuths = (plan?.items ?? [])
+    .filter(
+      (item): item is RevisionPlanItem & { factRestore: { restoreValues?: string[]; removeValues?: string[] } } =>
+        item.kind === "fact_preserve" &&
+        item.factRestore !== undefined &&
+        item.status !== "rejected" &&
+        item.status !== "skipped",
+    )
+    .map((item) => ({
+      id: item.id,
+      section: item.section,
+      restoreValues: item.factRestore.restoreValues ?? [],
+      removeValues: item.factRestore.removeValues ?? [],
+    }));
+  return {
+    planTexts,
+    improvementTexts,
+    evidenceTexts: [...evidenceTexts],
+    bibliographyKeys: [...bibliographyKeys],
+    needsEvidenceItems,
+    restoreAuths,
+  };
+}
+
+/**
+ * M10.3.1：表格新增行是否为「引用既有 bib key 的方法论行」（非实验数值行）：
+ * - 至少一个单元格包含既有 key（作者年式 key 逐字出现在行内）；
+ * - 剥离全部 key 子串后，整行不含数字——数字只允许来自 key 本身（如
+ *   Maggiolino2023DeepOCSORT 的年份），实验数值（82.4 / 116 等）仍须
+ *   Evidence / 计划授权，此通道不放行。
+ */
+function isBibKeyedMethodologyRow(row: readonly string[], bibliographyKeys: readonly string[]): boolean {
+  if (bibliographyKeys.length === 0) {
+    return false;
+  }
+  const joined = row.join(" | ");
+  const hasKey = bibliographyKeys.some((key) => joined.includes(key));
+  if (!hasKey) {
+    return false;
+  }
+  const stripped = bibliographyKeys.reduce((text, key) => text.replaceAll(key, ""), joined);
+  return !/\d/.test(stripped);
 }
 
 /** 计划条目是否显式指向该章节（与 Citation Preservation 同口径的宽松匹配） */
@@ -422,6 +491,7 @@ function valueChangeAuthorized(
   auth: AuthorizationContext,
   before: string,
   after: string,
+  file?: string,
 ): { basis: string; planItemId: string } | null {
   const entries = [...auth.planTexts, ...auth.improvementTexts];
   for (const entry of entries) {
@@ -431,6 +501,17 @@ function valueChangeAuthorized(
       }
       if (mentionsValue(auth.evidenceTexts, after)) {
         return { basis: "plan_and_evidence", planItemId: entry.id };
+      }
+    }
+  }
+  // M10.3.1 恢复方向：fact_preserve 条目点名「改回 restoreValues 中的旧值」
+  if (file !== undefined) {
+    for (const restore of auth.restoreAuths) {
+      if (!sectionRefMatchesFile(restore.section, file)) {
+        continue;
+      }
+      if (restore.restoreValues.some((value) => mentionsValue([value], after))) {
+        return { basis: "planned_fact_restore", planItemId: restore.id };
       }
     }
   }
@@ -455,6 +536,15 @@ function valueRemovalAuthorized(
       return { basis: "planned_value_removal", planItemId: entry.id };
     }
   }
+  // M10.3.1 恢复方向：fact_preserve 条目点名「删除无依据新增的违规值」
+  for (const restore of auth.restoreAuths) {
+    if (!sectionRefMatchesFile(restore.section, file)) {
+      continue;
+    }
+    if (restore.removeValues.some((value) => mentionsValue([value], before))) {
+      return { basis: "planned_fact_restore", planItemId: restore.id };
+    }
+  }
   return null;
 }
 
@@ -462,6 +552,7 @@ function valueRemovalAuthorized(
 function valueAdditionAuthorized(
   auth: AuthorizationContext,
   value: string,
+  file?: string,
 ): { basis: string; planItemId: string } | null {
   if (mentionsValue(auth.evidenceTexts, value)) {
     return { basis: "evidence", planItemId: "(evidence)" };
@@ -472,11 +563,93 @@ function valueAdditionAuthorized(
       return { basis: "plan_value", planItemId: entry.id };
     }
   }
+  // M10.3.1 恢复方向：fact_preserve 条目点名「重新加回被删的原值」
+  if (file !== undefined) {
+    for (const restore of auth.restoreAuths) {
+      if (!sectionRefMatchesFile(restore.section, file)) {
+        continue;
+      }
+      if (restore.restoreValues.some((candidate) => mentionsValue([candidate], value))) {
+        return { basis: "planned_fact_restore", planItemId: restore.id };
+      }
+    }
+  }
   return null;
 }
 
 /** 公式变更授权：计划明确提及公式修正 */
 const FORMULA_WORDS = /(公式|equation|数学表达|损失函数|loss)/i;
+/** 计划文本中「公式意图」的表述（新增小节要给出某式） */
+const FORMULA_INTENT_WORDS = /(公式|equation|数学表达|损失函数|loss|更新式|表达式|定义式)/i;
+
+/**
+ * 公式骨架归一（授权匹配用）：剥空白 / 命令转义 / 乘点，只留字母数字下标与
+ * 关系符——「R_t = Q_t \cdot C_t,」与计划文本「R_t=Q_t·C_t」归一到同一骨架。
+ */
+function formulaSkeleton(segment: string): string {
+  return segment
+    .replace(/\\cdot|\\times|[·∙×]/g, "")
+    .replace(/\\[A-Za-z@]+/g, "")
+    .replace(/[\s{}]/g, "")
+    .replace(/[,;。]+$/g, "")
+    .toLowerCase();
+}
+
+/**
+ * 希腊字母命令 → Unicode 规范（符号匹配用）：`\eta_t` 与台账文本的 `η_t`
+ * 归一到同一写法。
+ */
+function normalizeGreekSymbols(text: string): string {
+  const map: Record<string, string> = {
+    alpha: "α", beta: "β", gamma: "γ", delta: "δ", epsilon: "ε", varepsilon: "ε",
+    zeta: "ζ", eta: "η", theta: "θ", lambda: "λ", mu: "μ", nu: "ν", xi: "ξ",
+    pi: "π", rho: "ρ", sigma: "σ", tau: "τ", phi: "φ", varphi: "φ", chi: "χ",
+    psi: "ψ", omega: "ω",
+  };
+  // \mathbf{e} / \mathbf{\eta} 等字体包裹先剥（符号 e_t / η_t 要可直接提取）
+  let unwrapped = text.replace(/\\math(?:bf|rm|it|cal|sf|tt)?\{([^{}]*)\}/g, "$1");
+  for (let depth = 0; depth < 3 && /\\math[a-z]*\{/.test(unwrapped); depth += 1) {
+    unwrapped = unwrapped.replace(/\\math(?:bf|rm|it|cal|sf|tt)?\{([^{}]*)\}/g, "$1");
+  }
+  // (?![A-Za-z]) 而非 \b：\eta_t 的命令名后跟下标下划线，\b 在字母↔下划线间
+  // 不成立（两者都是 \w），希腊替换从未触发（真实 E2E 排查实录）
+  return unwrapped.replace(/\\([a-z]+)(?![A-Za-z])/g, (whole, name: string) => map[name] ?? whole);
+}
+
+/**
+ * M10.3.1：公式新增授权的确定性扩展——已批准计划/台账逐字给出公式（骨架
+ * 包含），或给出「公式意图 + 公式主符号」（如『零参数门控 EMA 更新式 …
+ * η_t=0.05+0.20·R_t』授权以其符号 η_t/R_t 定义的展开式）。真实 E2E：rgate
+ * 方法小节的三个新公式由已批准改进计划明确规划，旧关键词口径漏授权。
+ */
+function formulaAdditionAuthorized(
+  auth: AuthorizationContext,
+  segment: string,
+): { basis: string; planItemId: string } | null {
+  const entries = [...auth.planTexts, ...auth.improvementTexts];
+  const skeleton = formulaSkeleton(segment);
+  if (skeleton.length >= 6) {
+    for (const entry of entries) {
+      if (formulaSkeleton(entry.text).includes(skeleton)) {
+        return { basis: "planned_formula_change", planItemId: entry.id };
+      }
+    }
+  }
+  // 公式主符号（带下标的量，如 η_t / R_t / e_t）+ 计划文本的公式意图表述
+  const normalized = normalizeGreekSymbols(segment);
+  const symbols = [...normalized.matchAll(/([A-Za-zα-ωΑ-Ω])_([A-Za-z0-9]+)/g)].map(
+    (match) => `${match[1]}_${match[2]}`,
+  );
+  if (symbols.length > 0) {
+    for (const entry of entries) {
+      const entryText = normalizeGreekSymbols(entry.text);
+      if (FORMULA_INTENT_WORDS.test(entryText) && symbols.some((symbol) => entryText.includes(symbol))) {
+        return { basis: "planned_formula_change", planItemId: entry.id };
+      }
+    }
+  }
+  return null;
+}
 
 function formulaChangeAuthorized(auth: AuthorizationContext): { basis: string; planItemId: string } | null {
   const entries = [...auth.planTexts, ...auth.improvementTexts];
@@ -511,7 +684,18 @@ function stripTablesAndMath(content: string): string {
   text = text.replace(TABLE_ENV_PATTERN, " ");
   text = text.replace(TABULAR_PATTERN, " ");
   text = text.replace(/\\\[[\s\S]*?\\\]/g, " ").replace(/\\\(([\s\S]*?)\\\)/g, " ");
-  text = text.replace(/\$\$[\s\S]*?\$\$/g, " ").replace(/(?<!\\)\$[^$\n]+?(?<!\\)\$/g, " ");
+  text = text.replace(/\$\$[\s\S]*?\$\$/g, " ");
+  // M10.3.1：内联数学中的赋值（$N_{\max}=20$ / $\lambda=0.5$）——数值没有
+  // 消失，只是从 prose 迁入数学表达（真实 E2E：rev1「模板数超过 20」→ rev3
+  // 「$N_{\max}=20$」被判成 20 被删 + 任意配对假违规）。赋值右值保留进 prose
+  // 多重集；其余内联数学照旧剥离（公式片段由 extractMathSegments 独立比较）。
+  text = text.replace(/(?<!\\)\$[^$\n]+?(?<!\\)\$/g, (span) => {
+    if (!/=/u.test(span) || !/\d/.test(span)) {
+      return " ";
+    }
+    const assignment = /(?:=|＝|\\eq)\s*([-−]?\d+(?:\.\d+)?)/.exec(span);
+    return assignment !== null ? ` ${assignment[1] ?? ""} ` : " ";
+  });
   return text;
 }
 
@@ -528,7 +712,15 @@ function stripTablesAndMath(content: string): string {
 function normalizeForProseExtraction(text: string): string {
   return text
     .replace(/(\d)[ \t]*\r?\n[ \t]*(?=\d)/g, "$1")
-    .replace(/\\(?:re?newcommand|providecommand|def|DeclareMathOperator)\s*\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*(?:\[\d\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, " ");
+    .replace(/\\(?:re?newcommand|providecommand|def|DeclareMathOperator)\s*\*?\s*(?:\[[^\]]*\]\s*)?\{[^{}]*\}\s*(?:\[\d\])?\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, " ")
+    // M10.3.1：交叉引用编号（式(12) / 式(17)--(19) / 表 7 / 图 3 / Eq. 5 /
+    // Table 2 等）是文档结构管道而非论文事实——真实 E2E 中新增方法小节的
+    // 公式引用「式(12)」被当作数值新增，与无关删除值配对成假 changed 违规。
+    // 只剥编号本身，引用词保留（保守方向：只减少假阳性）。
+    .replace(
+      /((?:式|公式|表|图|章节|附录|算法)|(?:(?:Eq|Fig|Table|Tab|Sec|Section|Chapter|Appendix|Algorithm)\.?)\s?)\(?\d+(?:\s*[–—-]+\s*\d+)?\)?/g,
+      "$1",
+    );
 }
 
 function proseNumberTokens(content: string): string[] {
@@ -661,7 +853,12 @@ function cap(items: FactFinding[]): FactFinding[] {
 }
 
 export function evaluateFactPreservation(input: FactPreservationInput): FactPreservationSummary {
-  const auth = buildAuthorization(input.plan, input.improvementPlanItems, input.evidenceTexts ?? []);
+  const auth = buildAuthorization(
+    input.plan,
+    input.improvementPlanItems,
+    input.evidenceTexts ?? [],
+    input.bibliographyKeys ?? [],
+  );
   const changedFacts: FactFinding[] = [];
   const removedFacts: FactFinding[] = [];
   const addedUnsupportedFacts: FactFinding[] = [];
@@ -751,6 +948,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
                 auth,
                 normalizeNumericToken(before.replace(/[^\d.%‰eE+\-−]/g, "")),
                 normalizeNumericToken(after.replace(/[^\d.%‰eE+\-−]/g, "")),
+                previousFile.file,
               )
             : null;
           if (grant !== null) {
@@ -765,9 +963,10 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           return; // 与 previous 某行配对过的行不算新增
         }
         if (row.some((cell) => /\d/.test(cell))) {
-          const grant = row.some((cell) =>
-            /\d/.test(cell) && valueAdditionAuthorized(auth, cell.replace(/[^\d.%‰eE+\-−]/g, "")) !== null,
-          );
+          const grant =
+            row.some((cell) =>
+              /\d/.test(cell) && valueAdditionAuthorized(auth, cell.replace(/[^\d.%‰eE+\-−]/g, ""), previousFile.file) !== null,
+            ) || isBibKeyedMethodologyRow(row, auth.bibliographyKeys);
           const finding: FactFinding = {
             kind: "added_unsupported",
             file: previousFile.file,
@@ -846,7 +1045,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           });
           continue;
         }
-        const grant = valueChangeAuthorized(auth, token, replacement);
+        const grant = valueChangeAuthorized(auth, token, replacement, previousFile.file);
         if (grant !== null) {
           allowedChanges += 1;
           continue;
@@ -894,7 +1093,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       if (!isFactLikeAddition(token)) {
         continue;
       }
-      const grant = valueAdditionAuthorized(auth, token);
+      const grant = valueAdditionAuthorized(auth, token, previousFile.file);
       const at = indexOfToken(current, token);
       if (grant !== null) {
         allowedChanges += 1;
@@ -920,7 +1119,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       if (whole === "" || previousProseCompact.includes(whole)) {
         continue;
       }
-      const grant = valueAdditionAuthorized(auth, value);
+      const grant = valueAdditionAuthorized(auth, value, previousFile.file);
       if (grant !== null) {
         allowedChanges += 1;
         continue;
@@ -941,7 +1140,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       if (whole === "" || previousProseCompact.includes(whole)) {
         continue;
       }
-      const grant = valueAdditionAuthorized(auth, match[1] ?? "");
+      const grant = valueAdditionAuthorized(auth, match[1] ?? "", previousFile.file);
       if (grant !== null) {
         allowedChanges += 1;
         continue;
@@ -994,7 +1193,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       });
     }
     for (const segment of mathDiff.added) {
-      const grant = formulaChangeAuthorized(auth);
+      const grant = formulaAdditionAuthorized(auth, segment) ?? formulaChangeAuthorized(auth);
       if (grant !== null) {
         allowedChanges += 1;
         continue;
@@ -1127,7 +1326,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     }
     for (const hardware of currentHardware) {
       if (![...previousHardware].some((candidate) => candidate.replace(/\s/g, "") === hardware.replace(/\s/g, ""))) {
-        const grant = valueAdditionAuthorized(auth, hardware);
+        const grant = valueAdditionAuthorized(auth, hardware, previousFile.file);
         if (grant === null) {
           addedUnsupportedFacts.push({
             kind: "added_unsupported",
@@ -1329,13 +1528,35 @@ export async function computeFactPreservation(
     record.summary ?? "",
     record.quote ?? "",
   ]);
+  const bibliographyKeys = await readBibliographyKeys(deps.projects, projectId);
   return evaluateFactPreservation({
     previous: { revision: previousRecord.revision, files: previousFiles },
     current: { revision: currentRecord.revision, files: currentFiles },
     plan,
     ...(improvementPlanItems.length > 0 ? { improvementPlanItems } : {}),
     evidenceTexts,
+    ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
   });
+}
+
+/**
+ * M10.3.1：当前 manuscript 目录 bib 文件的 key 清单（bib-keyed 方法论行的
+ * 授权通道）。bib 文件缺失 / 不可解析 → 空清单（该通道中性关闭，其余授权不变）。
+ */
+async function readBibliographyKeys(
+  projects: ProjectStore,
+  projectId: string,
+): Promise<string[]> {
+  const { readFile } = await import("node:fs/promises");
+  for (const name of ["references.bib", "refs.bib"]) {
+    try {
+      const raw = await readFile(join(projects.manuscriptDir(projectId), name), "utf8");
+      return [...raw.matchAll(/@\w+\s*\{\s*([^,\s]+)\s*,/g)].map((match) => match[1] ?? "");
+    } catch {
+      // 尝试下一个名字
+    }
+  }
+  return [];
 }
 
 async function readImprovementPlanItems(

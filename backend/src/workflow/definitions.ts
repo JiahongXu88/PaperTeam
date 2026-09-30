@@ -55,7 +55,19 @@ import {
   readSnapshotTex,
   type CitationPreservationSummary,
 } from "../quality/citationPreservation.js";
-import { computeFactPreservation, describeFactPreservation } from "../quality/factPreservation.js";
+import {
+  computeFactPreservation,
+  describeFactPreservation,
+  type FactTexFile,
+} from "../quality/factPreservation.js";
+import {
+  computeCumulativeFactPreservation,
+  findFrozenBaselineRevision,
+  recordImprovementPlanApproval,
+  type CumulativeFactValidation,
+} from "../quality/cumulativeFactPreservation.js";
+import { applyFactRestore, planFactRestore, restoreValueDelta } from "../quality/factRestore.js";
+import { computeClaimGapAudit, type ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
 import { diagnosticFiles, type LatexDiagnostic } from "../latex/diagnostics.js";
 import {
@@ -93,6 +105,7 @@ import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator
 import {
   buildClaimRepairDirectives,
   computeClaimGroundingReport,
+  isUnsupportedVerdict,
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
@@ -267,6 +280,39 @@ function citationVerifyStage(services: WorkflowServices): StageSpec {
 }
 
 function reviewRunStage(services: WorkflowServices): StageSpec {
+  return reviewRunStageInner(services, {});
+}
+
+/**
+ * 导入冻结基线（reason=baseline 的最早修订 + 快照文本；M10.3.1 G1/G2 共用）。
+ * null = 非导入基线项目 / 快照缺失——累计口径与 claim 适用性审计按中性处理。
+ */
+async function loadFrozenBaseline(
+  services: WorkflowServices,
+  projectId: string,
+  options: { existingPaper?: boolean } = {},
+): Promise<{ revision: number; files: { file: string; content: string }[] } | null> {
+  const state = await services.revisions.load(projectId);
+  const baseline = findFrozenBaselineRevision(state.revisions, options.existingPaper === true);
+  if (baseline === undefined) {
+    return null;
+  }
+  const files = await readSnapshotTex(services.revisions.snapshotDir(projectId, baseline.revision));
+  if (files === null || files.length === 0) {
+    return null;
+  }
+  return { revision: baseline.revision, files };
+}
+
+/**
+ * M10.3.1 G2：existing-paper 流程的 review 附带 task-aware claim 适用性审计
+ * （claim-gap-audit-r{round}.json，确定性）。Quality Gate 规则 4/5/6 与
+ * revision.plan 据此只对「修订引入」口径计数 / 派发。
+ */
+function reviewRunStageInner(
+  services: WorkflowServices,
+  options: { existingPaper?: boolean },
+): StageSpec {
   return {
     id: "review.run",
     description: "Reviewer 三路并行审稿（fact / academic / style）并确定性聚合",
@@ -321,6 +367,27 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         bibEntries: citationReport?.static.bibEntries ?? [],
       });
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
+      // M10.3.1 G2：existing-paper 的 claim 适用性审计（pre-existing / 作者数据
+      // 覆盖 / 修订引入；机器可读，gate 与 revision.plan 消费）
+      let claimGapAudit: ClaimGapAudit | null = null;
+      if (options.existingPaper === true) {
+        const baseline = await loadFrozenBaseline(services, ctx.projectId, {
+            existingPaper: options.existingPaper === true,
+          });
+        if (baseline !== null) {
+          const allEvidence = await services.evidence.list(ctx.projectId);
+          claimGapAudit = computeClaimGapAudit({
+            projectId: ctx.projectId,
+            round,
+            baselineRevision: baseline.revision,
+            unsupportedClaims: claimGrounding.claims.filter((entry) => isUnsupportedVerdict(entry.verdict)),
+            issues: summary.issues,
+            frozenFiles: baseline.files,
+            authorEvidence: allEvidence.filter((record) => record.verificationLevel === "user_confirmed"),
+          });
+          await services.reviewArtifacts.saveClaimGapAudit(ctx.projectId, claimGapAudit);
+        }
+      }
       return {
         round,
         revision,
@@ -331,6 +398,15 @@ function reviewRunStage(services: WorkflowServices): StageSpec {
         academicScore: summary.scores.academicScore ?? -1,
         styleRisk: summary.scores.styleRisk ?? -1,
         unsupportedCriticalClaims: summary.unsupportedCriticalClaims,
+        ...(claimGapAudit !== null
+          ? {
+              claimGapAudit: {
+                revisionIntroduced: claimGapAudit.counts.revisionIntroduced,
+                excludedPreExisting: claimGapAudit.counts.excludedPreExisting,
+                excludedAuthorData: claimGapAudit.counts.excludedAuthorData,
+              },
+            }
+          : {}),
         evidenceBoundClaims: claimGrounding.evidenceBoundClaims,
         claimEvidenceBindingRate: claimGrounding.evidenceBindingRate,
         evidenceFormal: evidenceSelection.formal.length,
@@ -382,6 +458,17 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         ctx.projectId,
         review.reviewedRevision,
       );
+      // M10.3.1 G1：累计事实校验（Frozen Baseline → 被审阅修订；授权 = 已批准
+      // 改进计划台账 + Evidence。历史未授权漂移跨轮保持 unresolved）
+      const cumulativeFactPreservation = await computeCumulativeFactPreservation(
+        services,
+        ctx.projectId,
+        review.reviewedRevision,
+        { existingPaper: isExistingPaperKind(ctx.state.workflowKind) },
+      );
+      // M10.3.1 G2：同轮 claim 适用性审计（existing-paper 流程在 review.run 产出；
+      // 旧 / idea 项目无产物 → 规则按原口径）
+      const claimGapAudit = await services.reviewArtifacts.loadClaimGapAudit(ctx.projectId, review.round);
       // M6.6 §13：正文引用 ↔ verified evidence 覆盖（可检测；默认不阻断）
       const evidenceRecords = await services.evidence.list(ctx.projectId);
       const evidenceCitationCoverage =
@@ -407,6 +494,8 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
           feasibility,
           citationPreservation,
           factPreservation,
+          cumulativeFactPreservation,
+          ...(claimGapAudit !== null ? { claimGapAudit } : {}),
           ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
           ...(revisionValidation !== undefined ? { revisionValidation } : {}),
         },
@@ -417,6 +506,7 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
       await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, {
         citationPreservation,
         factPreservation,
+        cumulativeFactPreservation,
         ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
         ...(revisionValidation !== undefined ? { revisionValidation } : {}),
       });
@@ -445,6 +535,15 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
           academicScore: review.scores.academicScore,
           styleRisk: review.scores.styleRisk,
           outcome,
+          ...(cumulativeFactPreservation !== null
+            ? {
+                cumulativeFactViolations: cumulativeFactPreservation.unresolvedViolations.length,
+                baselineRevision: cumulativeFactPreservation.baselineRevision,
+              }
+            : {}),
+          ...(claimGapAudit !== null
+            ? { revisionIntroducedUnsupported: claimGapAudit.counts.revisionIntroduced }
+            : {}),
         },
         gate.passed
           ? "Quality Gate 通过"
@@ -457,6 +556,15 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         round,
         outcome,
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
+        ...(cumulativeFactPreservation !== null
+          ? {
+              cumulativeFactViolations: cumulativeFactPreservation.unresolvedViolations.length,
+              cumulativeFactOk: cumulativeFactPreservation.ok,
+            }
+          : {}),
+        ...(claimGapAudit !== null
+          ? { revisionIntroducedUnsupported: claimGapAudit.counts.revisionIntroduced }
+          : {}),
       };
     },
   };
@@ -506,10 +614,39 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
           ? preservation.unexpectedRemoved.map((entry) => ({ key: entry.key, files: entry.files }))
           : [];
       // M5.6 Fact Preservation：违规事实按文件聚合派发恢复条目（每文件最多 2 条，防计划爆炸）
+      // M10.3.1 G1：existing-paper 优先消费累计违规（Frozen → Current——pairwise
+      // 干净不等于安全，历史漂移必须重新派发直至恢复或授权）；
+      const cumulativeState = gateArtifact?.cumulativeFactPreservation ?? null;
       const factState = gateArtifact?.factPreservation ?? null;
-      const factRegressions =
-        factState !== null && !factState.ok
-          ? summarizeFactRegressions(factState).map((entry) => ({ file: entry.file, detail: entry.detail }))
+      let factRegressions: {
+        file: string;
+        detail: string;
+        violationKey?: string;
+        restoreValues?: string[];
+        removeValues?: string[];
+        restorable?: boolean;
+      }[];
+      if (cumulativeState !== null && !cumulativeState.ok) {
+        factRegressions = await buildCumulativeFactRegressions(services, ctx.projectId, cumulativeState);
+      } else if (factState !== null && !factState.ok) {
+        factRegressions = summarizeFactRegressions(factState).map((entry) => ({
+          file: entry.file,
+          detail: entry.detail,
+        }));
+      } else {
+        factRegressions = [];
+      }
+      // M10.3.1 G2：claim-gap-audit 归因排除的 issue（原稿既有 / 作者数据覆盖
+      // claim 的伴随 finding）→ 留档 skipped，不派发 Writer
+      const claimAudit =
+        gateRound !== undefined
+          ? await services.reviewArtifacts.loadClaimGapAudit(ctx.projectId, summary.round)
+          : null;
+      const inapplicableFindings =
+        claimAudit !== null
+          ? claimAudit.issueAttribution
+              .filter((entry) => entry.excluded)
+              .map((entry) => ({ fingerprint: entry.fingerprint }))
           : [];
       const buildErrorValue = readBuildError(ctx.state);
       // M5.7 外部修改意见：先以最新 gate 复核 handled（该轮修订触发 Fact
@@ -534,6 +671,7 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         citationMissing: await citationMissingTargets(services, ctx.projectId),
         ...(citationRemoved.length > 0 ? { citationRemoved } : {}),
         ...(factRegressions.length > 0 ? { factRegressions } : {}),
+        ...(inapplicableFindings.length > 0 ? { inapplicableFindings } : {}),
         ...(buildErrorValue !== undefined
           ? { buildError: { message: buildErrorValue.slice(0, 500) } }
           : {}),
@@ -560,6 +698,11 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         planned: plan.summary.planned,
         skipped: plan.summary.skipped,
         ...(plan.summary.external !== undefined ? { external: plan.summary.external } : {}),
+        // M10.3.1：确定性可恢复的累计违规数（plan() 据此路由 revision.restore_facts）
+        ...(factRegressions.length > 0
+          ? { restorableFacts: factRegressions.filter((entry) => entry.restorable === true).length }
+          : {}),
+        ...(inapplicableFindings.length > 0 ? { inapplicableFindings: inapplicableFindings.length } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -939,7 +1082,13 @@ function revisionReviseStage(
           issues,
           evidence,
           bibliography,
-          ...(isWholeFileTarget ? { wholeFile: true } : {}),
+          ...(isWholeFileTarget
+            ? {
+                wholeFile: true,
+                // M10.3.1：模型改用 write/edit 直接改盘时的确定性回退读取路径
+                targetFilePath: join(services.projects.manuscriptDir(ctx.projectId), target.relativePath),
+              }
+            : {}),
           ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
@@ -1907,6 +2056,21 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
         const draft = await services.artifacts.ensureDraft(ctx.projectId, revision, record, ctx.runId);
         draftArtifactId = draft.artifactId;
       }
+      // M10.3.1 G1：累计未授权漂移不阻断 Draft（用户 accept_draft 决策可产出），
+      // 但必须显式可见——Final 被 cumulative_fact_preservation 阻断的事实不能只
+      // 藏在 gate 产物里（任务 §7：报告必须明确 unresolved，不能隐藏）
+      const cumulativeFailure = await latestCumulativeFailure(services, ctx.projectId);
+      if (build.passed && cumulativeFailure !== null) {
+        await ctx.emitDomain(
+          "fact_preservation.cumulative_unresolved",
+          {
+            revision,
+            baselineRevision: cumulativeFailure.baselineRevision,
+            unresolvedViolations: cumulativeFailure.unresolvedViolations.length,
+          },
+          `注意：冻结基线 rev-${cumulativeFailure.baselineRevision} → rev-${revision} 累计未授权事实漂移 ${cumulativeFailure.unresolvedViolations.length} 项未解决——Draft 按用户决策产出，Final 仍被阻断（明细见 quality-gate 产物）`,
+        );
+      }
       return {
         buildOk: build.passed,
         revision,
@@ -1919,6 +2083,12 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
         diagnosticsCount: record.diagnostics.length,
         diagnosticFiles: diagnosticFiles(record.diagnostics),
         ...(draftArtifactId !== undefined ? { draftArtifactId } : {}),
+        ...(cumulativeFailure !== null
+          ? {
+              cumulativeFactViolations: cumulativeFailure.unresolvedViolations.length,
+              cumulativeFactBaselineRevision: cumulativeFailure.baselineRevision,
+            }
+          : {}),
         ...(preservationView !== null ? { citationPreservation: preservationView } : {}),
       };
     },
@@ -1985,6 +2155,224 @@ async function latestFactPreservationFailure(
   return preservation !== null && !preservation.ok ? preservation : null;
 }
 
+/** 最新 gate 产物里的累计事实漂移（通过 / 不可比较 / 无产物 → null） */
+async function latestCumulativeFailure(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<CumulativeFactValidation | null> {
+  const rounds = await services.reviewArtifacts.gateRounds(projectId);
+  const latest = rounds[0];
+  if (latest === undefined) {
+    return null;
+  }
+  const artifact = await services.reviewArtifacts.loadGate(projectId, latest);
+  const cumulative = artifact?.cumulativeFactPreservation ?? null;
+  return cumulative !== null && !cumulative.ok ? cumulative : null;
+}
+
+/**
+ * 累计违规 → fact_preserve 派发输入（M10.3.1 G1）。对每条违规同时规划
+ * 确定性段落恢复（planFactRestore，与 revision.restore_facts 同一确定性
+ * 计算）：restorable=true 的违规由 restore stage 直接恢复；数值清单进
+ * factRestore（pairwise 授权只放行恢复方向）。
+ */
+async function buildCumulativeFactRegressions(
+  services: WorkflowServices,
+  projectId: string,
+  cumulative: CumulativeFactValidation,
+): Promise<
+  {
+    file: string;
+    detail: string;
+    violationKey: string;
+    restoreValues?: string[];
+    removeValues?: string[];
+    restorable?: boolean;
+  }[]
+> {
+  const baseline = await loadFrozenBaseline(services, projectId, { existingPaper: true });
+  const currentFiles = await readSnapshotTex(
+    services.revisions.snapshotDir(projectId, cumulative.currentRevision),
+  );
+  let restorableKeys: Set<string> | null = null;
+  if (baseline !== null && currentFiles !== null) {
+    const restorePlan = planFactRestore(baseline.files, currentFiles, cumulative.unresolvedViolations);
+    restorableKeys = new Set(restorePlan.restorable.flatMap((span) => span.resolves));
+  }
+  const numericPart = (value: string | undefined): string | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    const stripped = value.replace(/[^\d.%‰eE+\-−]/g, "").trim();
+    return /\d/.test(stripped) ? stripped : undefined;
+  };
+  return cumulative.unresolvedViolations.map((finding) => ({
+    file: finding.file,
+    detail: `${finding.reason}：${finding.before}${finding.after !== "" ? ` → ${finding.after}` : "（被删除）"}`,
+    violationKey: finding.violationKey,
+    ...(finding.kind === "added_unsupported"
+      ? numericPart(finding.classification?.newValue) !== undefined
+        ? { removeValues: [numericPart(finding.classification?.newValue) ?? ""] }
+        : {}
+      : numericPart(finding.classification?.oldValue) !== undefined
+        ? {
+            // changed：恢复 = 改回旧值（restoreValues）且漂移新值被删除（removeValues）
+            restoreValues: [numericPart(finding.classification?.oldValue) ?? ""],
+            ...(numericPart(finding.classification?.newValue) !== undefined
+              ? { removeValues: [numericPart(finding.classification?.newValue) ?? ""] }
+              : {}),
+          }
+        : {}),
+    ...(restorableKeys !== null ? { restorable: restorableKeys.has(finding.violationKey) } : {}),
+  }));
+}
+
+/**
+ * Deterministic Fact Restore（M10.3.1 G1 §8）：对累计未授权漂移中可可靠定位
+ * 的违规，直接恢复冻结基线段落（无 LLM）。提交 reason=revision.restore_facts
+ * 的不可变修订；已解决的 fact_preserve 计划条目回写 validated。恢复失败的
+ * 违规保持 planned 条目，由 revision.revise 派发 Writer（兜底）。
+ */
+function revisionRestoreFactsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.restore_facts",
+    description: "确定性恢复：累计未授权事实漂移 → 冻结基线段落（无 LLM）",
+    requiredInputs: ["quality.gate"],
+    producedOutputs: ["manuscript/*.tex（恢复修订）"],
+    maxAttempts: 1, // 纯确定性恢复，重试无意义（失败走 Writer 兜底）
+    timeoutMs: 60_000,
+    retryable: [],
+    async execute(ctx) {
+      const rounds = await services.reviewArtifacts.gateRounds(ctx.projectId);
+      const latest = rounds[0];
+      if (latest === undefined) {
+        return { restored: 0 };
+      }
+      const artifact = await services.reviewArtifacts.loadGate(ctx.projectId, latest);
+      const cumulative = artifact?.cumulativeFactPreservation ?? null;
+      if (cumulative === null || cumulative.ok) {
+        return { restored: 0, cumulativeViolations: 0 };
+      }
+      const baseline = await loadFrozenBaseline(services, ctx.projectId, { existingPaper: true });
+      const files = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      const currentFiles: FactTexFile[] = [
+        ...(files.mainTex !== null ? [{ file: files.mainTex.relativePath, content: files.mainTex.content }] : []),
+        ...files.sections.map((file) => ({ file: file.relativePath, content: file.content })),
+      ];
+      if (baseline === null || currentFiles.length === 0) {
+        return { restored: 0, cumulativeViolations: cumulative.unresolvedViolations.length, unrestorable: cumulative.unresolvedViolations.length };
+      }
+      const restorePlan = planFactRestore(baseline.files, currentFiles, cumulative.unresolvedViolations);
+      const changedFiles = applyFactRestore(currentFiles, restorePlan);
+      const resolvedKeys = new Set(changedFiles.length > 0 ? restorePlan.restorable.flatMap((span) => span.resolves) : []);
+      if (changedFiles.length === 0) {
+        await ctx.emitDomain(
+          "fact_restore.skipped",
+          { violations: cumulative.unresolvedViolations.length, skipped: restorePlan.skipped.length },
+          `累计事实漂移 ${cumulative.unresolvedViolations.length} 项无可靠定位的恢复点（${restorePlan.skipped.length} 项定位失败）——保持 gate FAIL，交 Writer / 用户处理`,
+        );
+        return {
+          restored: 0,
+          cumulativeViolations: cumulative.unresolvedViolations.length,
+          unrestorable: cumulative.unresolvedViolations.length,
+        };
+      }
+      for (const file of changedFiles) {
+        await writeFile(
+          join(services.projects.manuscriptDir(ctx.projectId), file.file),
+          file.content,
+          "utf8",
+        );
+      }
+      const revision = await services.revisions.commit(ctx.projectId, "revision.restore_facts", ctx.runId);
+      // 已恢复违规的 fact_preserve 条目 → validated（确定性终态）；同时把恢复的
+      // 连带数值增删并入同文件条目的 factRestore——恢复动作本身删除漂移值 /
+      // 加回原值，pairwise 下一轮按 removal / addition 计，须授权（否则恢复被误报）
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      const plan = summary !== null ? await services.reviewArtifacts.loadPlan(ctx.projectId, summary.round) : null;
+      if (plan !== null) {
+        const now = new Date().toISOString();
+        const restoredFiles = new Set(restorePlan.restorable.map((span) => span.file));
+        const deltaByFile = new Map<string, { restoreValues: string[]; removeValues: string[] }>();
+        for (const span of restorePlan.restorable) {
+          const delta = restoreValueDelta(span.currentParagraph, span.frozenParagraph);
+          const merged = deltaByFile.get(span.file) ?? { restoreValues: [], removeValues: [] };
+          merged.restoreValues.push(...delta.restoreValues);
+          merged.removeValues.push(...delta.removeValues);
+          deltaByFile.set(span.file, merged);
+        }
+        let enriched = plan;
+        for (const [file, delta] of deltaByFile) {
+          enriched = {
+            ...enriched,
+            items: enriched.items.map((item) =>
+              item.kind === "fact_preserve" && item.section === file
+                ? {
+                    ...item,
+                    factRestore: {
+                      restoreValues: [...new Set([...(item.factRestore?.restoreValues ?? []), ...delta.restoreValues])],
+                      removeValues: [...new Set([...(item.factRestore?.removeValues ?? []), ...delta.removeValues])],
+                    },
+                  }
+                : item,
+            ),
+          };
+        }
+        // planned → applied → validated 两步（状态机合法路径；restore stage 即执行者）
+        const transitions: RevisionItemTransition[] = enriched.items
+          .filter(
+            (item) =>
+              item.kind === "fact_preserve" &&
+              item.status === "planned" &&
+              item.id.startsWith("fact-preserve:") &&
+              resolvedKeys.has(item.id.slice("fact-preserve:".length)),
+          )
+          .flatMap((item) => [
+            {
+              id: item.id,
+              to: "applied" as const,
+              reason: "dispatched" as const,
+              appliedAt: now,
+              appliedRevision: revision.revision,
+              targetChanged: true,
+            },
+            {
+              id: item.id,
+              to: "validated" as const,
+              reason: "deterministic_restore" as const,
+              resolvedAt: now,
+              resolution:
+                "冻结基线段落已由 revision.restore_facts 确定性恢复（无 LLM；恢复点定位与替换确定性可复核）",
+            },
+          ]);
+        const applied = applyRevisionItemTransitions(enriched, transitions, now);
+        if (applied.changed || restoredFiles.size > 0) {
+          await services.reviewArtifacts.savePlan(ctx.projectId, applied.plan);
+        }
+      }
+      await ctx.emitDomain(
+        "fact_restore.applied",
+        {
+          revision: revision.revision,
+          restoredSpans: restorePlan.restorable.length,
+          violations: cumulative.unresolvedViolations.length,
+          remaining: cumulative.unresolvedViolations.length - resolvedKeys.size,
+          baselineRevision: cumulative.baselineRevision,
+        },
+        `累计事实漂移：确定性恢复 ${resolvedKeys.size}/${cumulative.unresolvedViolations.length} 项（冻结基线 rev-${cumulative.baselineRevision} 段落；剩余项继续走 Writer / 用户裁决）`,
+      );
+      return {
+        restored: resolvedKeys.size,
+        restoredSpans: restorePlan.restorable.length,
+        cumulativeViolations: cumulative.unresolvedViolations.length,
+        unrestorable: cumulative.unresolvedViolations.length - resolvedKeys.size,
+        revision: revision.revision,
+        changed: revision.created,
+      };
+    },
+  };
+}
+
 // ============================================================
 // 共享后段规划器（bounded revision loop）
 // ============================================================
@@ -2035,8 +2423,10 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     state.stageResults["revision.style_polish"]?.["changed"] === true
       ? lastCompletionIndex(state, "revision.style_polish")
       : -1;
-  // 任何改稿动作（修订 / 编译修复 / 语言润色都写入 manuscript）
-  const contentIdx = Math.max(reviseIdx, repairIdx, polishIdx);
+  // 任何改稿动作（修订 / 编译修复 / 语言润色都写入 manuscript）；
+  // M10.3.1：确定性事实恢复（revision.restore_facts）同样写入 manuscript
+  const restoreIdx = lastCompletionIndex(state, "revision.restore_facts");
+  const contentIdx = Math.max(reviseIdx, repairIdx, polishIdx, restoreIdx);
   const citationIdx = lastCompletionIndex(state, "citation.verify");
   const reviewIdx = lastCompletionIndex(state, "review.run");
   const gateIdx = lastCompletionIndex(state, "quality.gate");
@@ -2193,6 +2583,15 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
       return { kind: "stage", stageId: "hitl.revision_stalled" };
     }
     if (planned > 0 || stalledDecision === "revise_more") {
+      // M10.3.1 G1：计划含可确定性恢复的累计事实漂移 → 先走无 LLM 恢复
+      // （恢复产生新修订 → 尾部重走复审；本轮已恢复过（restoreIdx ≥ planIdx）
+      // 则不再重复路由，剩余 planned 条目交 Writer——防止无变化死循环）
+      const restorableFacts = typeof planResult["restorableFacts"] === "number"
+        ? (planResult["restorableFacts"] as number)
+        : 0;
+      if (restorableFacts > 0 && restoreIdx < planIdx) {
+        return { kind: "stage", stageId: "revision.restore_facts" };
+      }
       return { kind: "stage", stageId: "revision.revise" };
     }
     // stalled 且用户 accept_draft → 构建 Draft 后完成
@@ -2754,6 +3153,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     reviewRunStage(services),
     qualityGateStage(services),
     revisionPlanStage(services),
+    revisionRestoreFactsStage(services),
     revisionReviseStage(services, "revision.revise"),
     revisionValidateStage(services),
     revisionValidationDecisionStage(services),
@@ -3422,7 +3822,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     importBaselineStage(services),
     importUnderstandStage(services),
     citationVerifyStage(services),
-    reviewRunStage(services),
+    reviewRunStageInner(services, { existingPaper: true }),
     feasibilityStage(services, "assessment.target"),
     researchPlanStage(services),
     researchPlanConfirmStage(services),
@@ -3437,6 +3837,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     revisionValidateStage(services),
     revisionValidationDecisionStage(services),
     revisionPlanStage(services),
+    revisionRestoreFactsStage(services),
     revisionRepairStage(services),
     revisionOverflowStage(),
     revisionStalledStage(services),
@@ -3505,8 +3906,15 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
           return applyResearchPlanDecision(services, state, input);
         case "hitl.evidence_supply":
           return applyEvidenceSupplyDecision(state, input);
-        case "hitl.plan_confirm":
-          return applyPlanDecision(state, input);
+        case "hitl.plan_confirm": {
+          const result = await applyPlanDecision(state, input);
+          if (input.decision === "approve") {
+            // M10.3.1 G1：批准即授权——改进计划条目固化进 append-only 授权台账
+            // （后续 run 覆盖 improvement-plan.json 也不丢失已授予的事实变更授权）
+            await recordImprovementPlanApproval(services.projects, state.projectId, state.runId);
+          }
+          return result;
+        }
         case "hitl.revision_overflow":
           return applyOverflowDecision(state, input);
         case "hitl.revision_stalled":

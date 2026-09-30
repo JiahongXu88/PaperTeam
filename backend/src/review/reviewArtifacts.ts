@@ -17,8 +17,10 @@ import { writeJsonAtomic } from "../util/atomic.js";
 import type { QualityGateResult } from "../quality/gates.js";
 import type { CitationPreservationSummary } from "../quality/citationPreservation.js";
 import type { FactPreservationSummary } from "../quality/factPreservation.js";
+import type { CumulativeFactValidation } from "../quality/cumulativeFactPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import type { ClaimGroundingReport } from "./claimGrounding.js";
+import type { ClaimGapAudit } from "./claimGapAudit.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
@@ -43,6 +45,8 @@ export interface QualityGateArtifact {
   citationPreservation?: CitationPreservationSummary | null;
   /** 实验事实保持明细（M5.6 第二层；null = 不可比较；旧产物缺省） */
   factPreservation?: FactPreservationSummary | null;
+  /** 累计事实保持明细（M10.3.1 G1；null = 无导入基线不可比较；旧产物缺省） */
+  cumulativeFactPreservation?: CumulativeFactValidation | null;
 }
 
 export class ReviewArtifactStore {
@@ -144,6 +148,7 @@ export class ReviewArtifactStore {
         : {}),
       ...(readCitationPreservation(record["citationPreservation"])),
       ...(readFactPreservation(record["factPreservation"])),
+      ...(readCumulativeFactPreservation(record["cumulativeFactPreservation"])),
     };
   }
 
@@ -212,6 +217,39 @@ export class ReviewArtifactStore {
     const rounds = await this.rounds(projectId, CLAIM_GROUNDING_PATTERN);
     const round = rounds[0];
     return round === undefined ? null : this.loadClaimGrounding(projectId, round);
+  }
+
+  // ---- Claim Gap Audit（M10.3.1 G2：task-aware 适用性审计，按轮） ----
+
+  claimGapAuditFileName(round: number): string {
+    return `claim-gap-audit-r${round}.json`;
+  }
+
+  async saveClaimGapAudit(projectId: string, audit: ClaimGapAudit): Promise<string> {
+    const fileName = this.claimGapAuditFileName(audit.round);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), audit);
+    return `reviews/${fileName}`;
+  }
+
+  async loadClaimGapAudit(projectId: string, round: number): Promise<ClaimGapAudit | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.claimGapAuditFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>)["reportId"] !== "string" ||
+      typeof (parsed as Record<string, unknown>)["round"] !== "number" ||
+      !Array.isArray((parsed as Record<string, unknown>)["claims"])
+    ) {
+      return null;
+    }
+    return parsed as ClaimGapAudit;
   }
 
   // ---- Revision Plan 与迭代历史（M4.7） ----
@@ -440,6 +478,27 @@ function readFactPreservation(value: unknown): { factPreservation?: FactPreserva
     return {};
   }
   return { factPreservation: value as FactPreservationSummary };
+}
+
+function readCumulativeFactPreservation(
+  value: unknown,
+): { cumulativeFactPreservation?: CumulativeFactValidation | null } {
+  if (value === null) {
+    return { cumulativeFactPreservation: null };
+  }
+  if (typeof value !== "object") {
+    return {};
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record["ok"] !== "boolean" ||
+    typeof record["baselineRevision"] !== "number" ||
+    typeof record["currentRevision"] !== "number" ||
+    !Array.isArray(record["unresolvedViolations"])
+  ) {
+    return {};
+  }
+  return { cumulativeFactPreservation: value as CumulativeFactValidation };
 }
 
 /** QualityGateResult 的防御性读取（结构损坏 → null，不盲信磁盘 JSON） */

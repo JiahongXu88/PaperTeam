@@ -69,6 +69,14 @@ export const FEASIBILITY_HIGH_JSON = JSON.stringify({
   requiredExperiments: ["补充两组对比实验"],
   evidenceGaps: ["需要至少 3 篇基线论文的精确数字"],
   recommendations: ["先固定评估协议，再做消融"],
+  // M10.3.1：existing_paper 评估要求逐条适用性（此处 required；与真实口径一致）
+  criterionApplicability: [
+    {
+      criterion: "补充两组对比实验",
+      applicability: "required",
+      reason: "修订引入的对比论述需要实验支撑",
+    },
+  ],
 });
 
 export const FEASIBILITY_INSUFFICIENT_JSON = JSON.stringify({
@@ -251,6 +259,53 @@ export function scriptedWholeFileRevision(task: string): string {
   const end = rest.indexOf("\n=====");
   const current = (end === -1 ? rest : rest.slice(0, end)).trim();
   return `${current}\n\n% 修订后（scripted whole-file revision：内容逐字保留，仅追加本标记行）`;
+}
+
+/**
+ * M10.3.1 整文件修订的「未授权事实漂移」输出（λ_smooth 型回归驱动）：
+ * 取当前稿第一个含小数的段落（空行分块），把其中数值替换为无授权新值
+ * （+13.7 的确定性偏移），其余内容逐字保留。模拟真实 Writer 把读起来合理的
+ * 改写带入中间修订——用于驱动 Cumulative Fact Preservation / restore E2E。
+ */
+export function scriptedFactDriftRevision(task: string): string {
+  const marker = "===== 本章节当前内容 =====";
+  const start = task.indexOf(marker);
+  if (start === -1) {
+    return LATEX_DOC;
+  }
+  const rest = task.slice(start + marker.length);
+  const end = rest.indexOf("\n=====");
+  const current = (end === -1 ? rest : rest.slice(0, end)).trim();
+  const lines = current.split("\n");
+  const paragraphs: { start: number; end: number }[] = [];
+  let cursor = 0;
+  let blockStart = -1;
+  for (const [index, line] of lines.entries()) {
+    if (line.trim() === "") {
+      if (blockStart >= 0) {
+        paragraphs.push({ start: blockStart, end: index });
+        blockStart = -1;
+      }
+    } else if (blockStart < 0) {
+      blockStart = index;
+    }
+    cursor = index;
+  }
+  if (blockStart >= 0) {
+    paragraphs.push({ start: blockStart, end: lines.length });
+  }
+  void cursor;
+  const driftValue = (value: string): string => (Number.parseFloat(value) + 13.7).toFixed(1);
+  for (const paragraph of paragraphs) {
+    const block = lines.slice(paragraph.start, paragraph.end);
+    if (!block.some((line) => /\d+\.\d+/.test(line))) {
+      continue;
+    }
+    const drifted = block.map((line) => line.replace(/\d+\.\d+/g, (value) => driftValue(value)));
+    lines.splice(paragraph.start, block.length, ...drifted);
+    break; // 只漂移第一个数值段落（定位可控）
+  }
+  return lines.join("\n");
 }
 
 export function scriptedRevision(task: string, dropCitations: boolean, mutateFacts = false): string {
@@ -645,6 +700,8 @@ const CITE_MARKER = /\[cite:drop\]/;
  *                  revision.plan 派发 fact_preserve 恢复条目；accept_draft 也会被 Draft 拦截
  */
 const FACT_MARKER = /\[fact:mutate\]/;
+/** M10.3.1：整文件修订引入未授权数值漂移（λ_smooth 型）——驱动累计守卫 E2E */
+const FACT_DRIFT_MARKER = /\[fact:drift\]/;
 /**
  * M6.7 Claim Strength 标记：writing/revision 输出在修订基底之上追加强升级句
  * （「显著提升」且无数字 / 无 formal evidence）→ Revision Validation 的
@@ -726,6 +783,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectStyleModes = new Map<string, StyleMode>();
   const projectCiteDrop = new Set<string>();
   const projectFactMutate = new Set<string>();
+  const projectFactDrift = new Set<string>();
   const projectStrengthEscalate = new Set<string>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
@@ -743,6 +801,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       }
       const scope = input.contextScope ?? "";
       const projectId = input.projectId ?? "";
+      if (typeof input.projectId === "string" && input.projectId !== "" && FACT_DRIFT_MARKER.test(input.task)) {
+        projectFactDrift.add(input.projectId);
+      }
       let output = LATEX_DOC;
       if (scope === "research") {
         // research prompt 内嵌 researchIdea：解析 E2E 转向标记并按项目记忆
@@ -812,7 +873,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = input.task.includes("修订论文摘要")
           ? withExternalOutcomes(REVISED_ABSTRACT_TEXT, externalOutcomes)
           : input.task.includes("单文件完整稿件")
-            ? withExternalOutcomes(scriptedWholeFileRevision(input.task), externalOutcomes)
+            ? withExternalOutcomes(
+                projectFactDrift.has(projectId)
+                  ? scriptedFactDriftRevision(input.task)
+                  : scriptedWholeFileRevision(input.task),
+                externalOutcomes,
+              )
             : input.task.includes("\\documentclass")
               ? LATEX_DOC
               : projectLatexModes.get(projectId) === "unfixable" && targetsIntroduction(input.task)

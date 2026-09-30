@@ -122,7 +122,11 @@ describe("M5.4 Style Invariant Checker（确定性守卫）", () => {
     expect(report.violations).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.checks.citation_keys.before).toBe(2);
-    expect(report.checks.numeric_literals.before).toBeGreaterThanOrEqual(8);
+    // M10.3.1：NUMBER_PATTERN lookbehind 增加 \d 后，词内数字伪 token（P99 的
+    // "9"、smith2020bench 的 "020bench"）不再计入——真实字面量为 7 个
+    //（0.01/1.5/2.1/12.4/18.7/30/33.5/45/200 中按词边界计 7；2020/2021 在
+    // cite key 内、99 在 P99 内被正确排除）
+    expect(report.checks.numeric_literals.before).toBeGreaterThanOrEqual(7);
     expect(report.checks.math_segments.before).toBeGreaterThanOrEqual(3);
   });
 

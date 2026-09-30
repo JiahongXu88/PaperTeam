@@ -1,7 +1,12 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { AgentRunFailedError, InvalidLatexOutputError } from "../src/errors.js";
 import type { AgentRuntime, AgentTask } from "../src/runtime/types.js";
+import type { ReviewIssue } from "../src/agents/ReviewerService.js";
 import { WriterService, buildWriterPrompt, partitionEvidenceBackedKeys } from "../src/writer/WriterService.js";
 import type { EvidenceRecord } from "../src/evidence/EvidenceStore.js";
 
@@ -612,5 +617,110 @@ describe("WriterService M9.7.6：Claim Discipline + Unsupported Claim Repair", (
     const prompt = runtime.calls[0]!.task;
     expect(prompt).toContain("Unsupported Claim Repair");
     expect(prompt).toContain("只能 WEAKEN 或 REMOVE");
+  });
+});
+
+describe("WriterService M10.3.1：整文件修订交付契约（工具改盘 / 报告行前置）", () => {
+  const SECTION = { id: "main", file: "main.tex", title: "全文" };
+  const OUTLINE = { title: "t", sections: [] };
+  const CURRENT = [
+    "\\documentclass[UTF8]{ctexart}",
+    "\\begin{document}",
+    "\\section{实验}",
+    "MOTA 提升 12.4\\%。",
+    "\\end{document}",
+  ].join("\n");
+  const EDITED_ON_DISK = CURRENT.replace("12.4", "13.1");
+  const ISSUE: ReviewIssue = {
+    category: "academic",
+    severity: "major",
+    section: "main.tex",
+    description: "论述不足",
+    suggestedAction: "补强",
+    blocking: false,
+  };
+
+  it("最终消息为空 + 目标文件已被工具改写 → 确定性采纳磁盘内容（守卫不降低）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "m1031-writer-"));
+    const target = join(dir, "main.tex");
+    await writeFile(target, EDITED_ON_DISK, "utf8");
+    const runtime = new FakeRuntime(() => completedTask("   "));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const result = await writer.reviseSection({
+      projectId: "p-1",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: CURRENT,
+      issues: [ISSUE],
+      evidence: [],
+      bibliography: [],
+      wholeFile: true,
+      targetFilePath: target,
+    });
+    expect(result.latex).toBe(EDITED_ON_DISK);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("最终消息为空 + 磁盘无变化 → 仍抛 AgentRunFailedError（不静默接受空修订）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "m1031-writer-"));
+    const target = join(dir, "main.tex");
+    await writeFile(target, CURRENT, "utf8");
+    const runtime = new FakeRuntime(() => completedTask(""));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await expect(
+      writer.reviseSection({
+        projectId: "p-1",
+        section: SECTION,
+        outline: OUTLINE,
+        currentLatex: CURRENT,
+        issues: [ISSUE],
+        evidence: [],
+        bibliography: [],
+        wholeFile: true,
+        targetFilePath: target,
+      }),
+    ).rejects.toBeInstanceOf(AgentRunFailedError);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("执行报告行放在输出最前（先上报后交付）→ 正文取 marker 之后，不再判空", async () => {
+    const output = [
+      "%%%PT-OUTCOMES%%% [{\"instructionId\":\"x-1\",\"outcome\":\"applied\"}]",
+      CURRENT,
+    ].join("\n");
+    const runtime = new FakeRuntime(() => completedTask(output));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const result = await writer.reviseSection({
+      projectId: "p-1",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: CURRENT,
+      issues: [ISSUE],
+      evidence: [],
+      bibliography: [],
+      wholeFile: true,
+      externalDirectives: [
+        { instructionId: "x-1", source: "user", text: "补充论述" },
+      ] as never,
+    });
+    expect(result.latex).toContain("\\documentclass");
+    expect(result.externalOutcomes).toEqual([{ instructionId: "x-1", outcome: "applied" }]);
+  });
+
+  it("整文件修订 prompt 携带交付方式契约（最终消息交付，不用工具改写替代）", async () => {
+    const runtime = new FakeRuntime(() => completedTask(CURRENT));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({
+      projectId: "p-1",
+      section: SECTION,
+      outline: OUTLINE,
+      currentLatex: CURRENT,
+      issues: [ISSUE],
+      evidence: [],
+      bibliography: [],
+      wholeFile: true,
+    });
+    expect(runtime.calls[0]!.task).toContain("交付方式契约");
+    expect(runtime.calls[0]!.task).toContain("最终回复消息");
   });
 });

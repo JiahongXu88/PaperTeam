@@ -122,6 +122,17 @@ export interface RevisionPlanItem {
   sourceText?: string;
   /** 外部意见 id（跨轮跟踪，见 review/externalInstructions.ts） */
   instructionId?: string;
+  /**
+   * M10.3.1：fact_preserve 条目的确定性恢复清单（从 FactFinding.classification
+   * 提取）。restoreValues = 冻结/上一修订的原值（授权「改回 / 加回」方向）；
+   * removeValues = 无依据新增的违规值（授权「删除」方向）。Fact Preservation
+   * 据此只放行恢复方向——fact_preserve 条目的 before → after 文本不再进入
+   * 通用授权（防漂移被恢复指令洗白）。
+   */
+  factRestore?: {
+    restoreValues?: string[];
+    removeValues?: string[];
+  };
 }
 
 export interface RevisionPlan {
@@ -172,8 +183,19 @@ export interface BuildRevisionPlanInput {
   /**
    * Fact Preservation Gate 判定为无依据改写 / 删除 / 占位化的实验事实 → 发生文件（M5.6）。
    * detail 为该文件违规明细的摘要（数值 / 公式 / 方向，含 before → after 短片段）。
+   * M10.3.1：violationKey / restoreValues / removeValues 来自累计（或 pairwise）
+   * 违规的 FactFinding——violationKey 作稳定条目 id；数值清单进 factRestore
+   * （恢复方向授权），restorable 标记该违规可被确定性段落恢复（恢复 stage 消费）。
    */
-  factRegressions?: { file: string; detail: string }[];
+  factRegressions?: {
+    file: string;
+    detail: string;
+    violationKey?: string;
+    restoreValues?: string[];
+    removeValues?: string[];
+    /** 确定性段落恢复可规划（revision.restore_facts 消费；缺省 false = 只能派发 Writer） */
+    restorable?: boolean;
+  }[];
   /** 编译错误（修复循环 / 带 buildError 的修订消费） */
   buildError?: { message: string; file?: string };
   /** gate 阻止项（ruleId + detail；无章节归属的记录为 gate_blocker） */
@@ -189,6 +211,12 @@ export interface BuildRevisionPlanInput {
    * 据此携带 relatedEvidenceIds（§9 Evidence Re-validation 的对象）。
    */
   evidenceLinks?: { key: string; evidenceIds: string[] }[];
+  /**
+   * M10.3.1：claim-gap-audit 归因排除的 finding 指纹（原稿既有 / 作者数据覆盖
+   * claim 的伴随 issue——返修语境不作为新 claim 重证）。这些 finding 仍入计划
+   * 留档，但 status=skipped 不派发（避免对作者级问题反复修订直到 stalled）。
+   */
+  inapplicableFindings?: { fingerprint: string; note?: string }[];
   createdAt?: string;
 }
 
@@ -239,9 +267,23 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     });
   }
 
+  const inapplicable = new Map(
+    (input.inapplicableFindings ?? []).map((entry) => [entry.fingerprint, entry.note ?? ""]),
+  );
   for (const issue of input.summary.issues) {
     const blocking = issue.blocking;
     const severity = issue.severity;
+    const inapplicableNote = inapplicable.get(findingFingerprint(issue));
+    if (inapplicableNote !== undefined) {
+      // M10.3.1：归因到原稿既有 / 作者数据覆盖 claim 的 issue——留档不派发
+      items.push(
+        withNote(
+          findingItem(issue, severity === "critical" || blocking ? "high" : severity === "major" ? "medium" : "low", "skipped"),
+          `返修语境不适用（claim-gap-audit 归因排除）：${inapplicableNote || "原稿既有 claim，证据完备性属作者裁决"}`,
+        ),
+      );
+      continue;
+    }
     if (severity === "critical" || blocking) {
       items.push(findingItem(issue, "high", "planned"));
     } else if (severity === "major") {
@@ -289,8 +331,14 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
   }
 
   for (const regression of input.factRegressions ?? []) {
+    const hasRestore =
+      (regression.restoreValues !== undefined && regression.restoreValues.length > 0) ||
+      (regression.removeValues !== undefined && regression.removeValues.length > 0);
     items.push({
-      id: `fact-preserve:${regression.file}:${findingCount(items, regression.file) + 1}`,
+      id:
+        regression.violationKey !== undefined
+          ? `fact-preserve:${regression.violationKey}`
+          : `fact-preserve:${regression.file}:${findingCount(items, regression.file) + 1}`,
       kind: "fact_preserve",
       priority: "high",
       section: regression.file,
@@ -298,8 +346,26 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       instruction:
         "恢复上一修订中的实验事实原值（表格数值 / 正文数字与单位 / 公式 / 方向性结论 / 协议表述）。修订不是重写：只有计划明确授权（依据 Evidence 修正数值）时才允许改值，且新值必须逐字来自 Evidence",
       expectedOutcome: "实验事实保持规则（fact_preservation）转为通过",
+      // restorable 条目同样保持 planned：先由 revision.restore_facts 确定性恢复
+      // 并回写 validated；恢复失败（定位失效等）时 Writer 派发仍是兜底路径——
+      // 任何违规都保证有执行者，不存在 skipped 导致的无出口循环。
       status: "planned",
       riskLevel: "high",
+      ...(regression.restorable === true
+        ? { note: "优先由 revision.restore_facts 确定性恢复冻结基线段落（失败时才派发 Writer）" }
+        : {}),
+      ...(hasRestore
+        ? {
+            factRestore: {
+              ...(regression.restoreValues !== undefined && regression.restoreValues.length > 0
+                ? { restoreValues: regression.restoreValues }
+                : {}),
+              ...(regression.removeValues !== undefined && regression.removeValues.length > 0
+                ? { removeValues: regression.removeValues }
+                : {}),
+            },
+          }
+        : {}),
     });
   }
 
