@@ -168,6 +168,13 @@ import type {
   RuntimeSessionStats,
   SessionDiagnosticEntry,
 } from "./types.js";
+import {
+  TaskTraceRecorder,
+  currentTraceScope,
+  findRunTraceSession,
+  getOrCreateRunTraceSession,
+  type TraceScope,
+} from "../observability/trace.js";
 
 /** Pi 模型类型（不直接依赖 pi-ai：经 pi-coding-agent 的公开选项类型提取） */
 type PiModel = NonNullable<CreateAgentSessionOptions["model"]>;
@@ -559,6 +566,13 @@ interface RunState {
   skillsAccessed?: Set<string>;
   /** 本 run 是否收到过任何 Pi 会话事件（accessBasis 的判据） */
   sawPiEvents?: boolean;
+  /**
+   * M10.4.0 trace：startAgent 入口（首个 await 前）捕获的 workflow stage
+   * 归属 scope；无 workflow 上下文的调用（启动期摘要 / 独立 API）缺省。
+   */
+  traceScope?: TraceScope;
+  /** M10.4.0 trace：任务级记录器（独占会话执行开始时创建，settle 时收敛） */
+  trace?: TaskTraceRecorder;
   /**
    * 本任务占用的 pendingArrivals 配额所属会话（M5.2 任务 J1）：settle 时
    * 统一释放，保证 GC 的 idle 判定不漏掉「已命中会话但尚未入队」的任务。
@@ -1107,11 +1121,19 @@ export class PiRuntimeAdapter implements AgentRuntime {
       throw new AgentRuntimeUnavailableError("Runtime 已关闭", "adapter closed");
     }
 
+    // M10.4.0：在首个 await 前捕获 trace scope（调用方 stage 的异步上下文）。
+    // 后台链与事件转发一律使用该捕获值——Pi 会话的持久 listener 可能落在
+    // 会话创建时的 async 上下文，不能依赖事件触发点的动态 scope。
+    const traceScope = currentTraceScope();
+
     const sessionKey =
       resolveSessionKey(input) ?? adhocSessionKey(input.agentId || "default");
     const scope = sanitizeContextScope(input.contextScope);
     const taskId = `pi-${randomUUID()}`;
     const state = this.createRunState(taskId, sessionKey, input.agentId || "default");
+    if (traceScope !== undefined) {
+      state.traceScope = traceScope;
+    }
 
     // init 阶段（懒初始化）：缺省不限时（历史行为）；配置 initTimeoutMs 时
     // 超时 → 句柄仍返回，result 以 AgentTimeoutError("init") reject +
@@ -1498,6 +1520,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
       ...(state.usage !== undefined ? { usage: { ...state.usage } } : {}),
       ...(state.skillsAssigned !== undefined ? { skills: skillsOf(state) } : {}),
     };
+    // M10.4.0：任务终态收敛 trace span（resolve / reject 两条路径的唯一收口点）
+    state.trace?.taskSettled(enriched);
+    state.trace = undefined;
     return enriched;
   }
 
@@ -2002,6 +2027,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
       void managed.session.abort().catch(() => {});
     }, executionTimeoutMs);
     timer.unref?.();
+
+    // M10.4.0：agent.task span 从执行段开始（排队等待记入属性，不占 span 时长）
+    state.trace?.executionStarted();
 
     let promptError: unknown;
     try {
@@ -2622,10 +2650,35 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.skillDirs = [...managed.skillDirs];
     state.skillsAccessed = new Set();
     state.sawPiEvents = false;
+    // M10.4.0 trace：任务级记录器（model.turn / tool.call / retry；settle 收敛）。
+    // 只在捕获到 workflow stage scope 时创建——无 run 归属的调用（启动期
+    // Skill 摘要 / 独立 API）不入任何 run trace。
+    if (state.traceScope !== undefined) {
+      state.trace = new TaskTraceRecorder(
+        state.traceScope,
+        findRunTraceSession(state.traceScope.projectId, state.traceScope.runId) ?? getOrCreateRunTraceSession({
+          projectId: state.traceScope.projectId,
+          runId: state.traceScope.runId,
+          // scope 未登记会话（如进程重启后恢复的 run）：补建会话，
+          // workflowKind 未知如实标注
+          workflowKind: "(recovered)",
+          nowMs: this.now(),
+        }),
+        {
+          taskId,
+          agentId: state.agentId,
+          modelLabel: managed.modelLabel,
+          role: managed.role.role,
+        },
+        this.now,
+      );
+    }
     // 会话创建时已挂持久 listener（见 wireSessionEvents）；
     // 这里登记当前任务的事件转发器，listener 按 activeTaskId 分发。
     this.eventForwarders.set(taskId, (event) => {
       state.sawPiEvents = true;
+      // M10.4.0：trace 消费先于既有映射（只读事件，不影响事件流语义）
+      state.trace?.observeEvent(event as unknown as Parameters<TaskTraceRecorder["observeEvent"]>[0]);
       if (event.type === "tool_execution_start") {
         recordSkillAccess(state, managed, event);
       }

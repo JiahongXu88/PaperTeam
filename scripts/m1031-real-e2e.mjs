@@ -18,7 +18,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -618,6 +618,81 @@ telemetry.revisionRounds = decisionsTaken.filter((s) => s.includes("revision")).
 check("run 终态 completed", run.status === "completed", `status=${run.status}`);
 const completionLabel = run.completion?.label ?? "?";
 log(`run 完成（${completionLabel}；HITL 序列：${decisionsTaken.join(" → ") || "无"}）`);
+
+// ---- 12b. M10.4.0 trace 产物断言（run-trace.json + performance-report.md）----
+
+const traceDir = join(root, "projects", projectId, "workflow", "runs", runId);
+// completed 对 API 可见的时刻略早于终态 trace 落盘完成（persistThenCommit 内
+// flush 在 emit 之后），带谓词重试读取
+async function readWithRetry(path, accept, attempts = 10) {
+  for (let i = 0; i < attempts; i += 1) {
+    const text = await readFile(path, "utf8").catch(() => null);
+    if (text !== null && accept(text)) return text;
+    await sleep(300);
+  }
+  return null;
+}
+const traceRaw = await readWithRetry(join(traceDir, "run-trace.json"), (text) => {
+  try {
+    return JSON.parse(text).runStatus === "completed";
+  } catch {
+    return false;
+  }
+});
+const perfReport = await readWithRetry(join(traceDir, "performance-report.md"), (text) => text.includes("run 状态: completed"), 3);
+check(
+  "M10.4.0 run-trace.json 生成（OTel 兼容 span 形状）",
+  traceRaw !== null && (() => {
+    const doc = JSON.parse(traceRaw);
+    return doc.traceId === runId && Array.isArray(doc.spans) && doc.spans.length > 0 &&
+      doc.runStatus === "completed" && doc.spans.every((s) => s.spanId && s.name && typeof s.durationMs === "number");
+  })(),
+  traceRaw === null ? "run-trace.json 缺失" : `spans=${JSON.parse(traceRaw).spans.length}`,
+);
+check("M10.4.0 performance-report.md 生成（总时长/慢stage/模型/工具）", perfReport !== null &&
+  perfReport.includes("# Performance Report") && perfReport.includes("## 3. 最慢 Stage") && perfReport.includes("## 4. 模型调用"), (perfReport ?? "").slice(0, 120));
+if (traceRaw !== null) {
+  const doc = JSON.parse(traceRaw);
+  const stageSpans = doc.spans.filter((s) => s.name.startsWith("stage:"));
+  const modelSpans = doc.spans.filter((s) => s.name === "model.turn");
+  const toolSpans = doc.spans.filter((s) => s.name === "tool.call");
+  const busy = stageSpans.reduce((sum, s) => sum + s.durationMs, 0);
+  const wall = (doc.finishedAtMs ?? doc.updatedAtMs) - doc.createdAtMs;
+  log(`trace：spans=${doc.spans.length}（stage ${stageSpans.length} / model ${modelSpans.length} / tool ${toolSpans.length}）wall=${Math.round(wall / 1000)}s busy=${Math.round(busy / 1000)}s`);
+  const byStage = new Map();
+  for (const span of stageSpans) {
+    const key = span.attributes["stage.id"];
+    byStage.set(key, (byStage.get(key) ?? 0) + span.durationMs);
+  }
+  const top = [...byStage.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  for (const [stageId, ms] of top) {
+    log(`  stage ${stageId}: ${(ms / 1000).toFixed(1)}s`);
+  }
+  const modelMs = modelSpans.reduce((sum, s) => sum + s.durationMs, 0);
+  const inTok = modelSpans.reduce((sum, s) => sum + (s.attributes["model.inputTokens"] ?? 0), 0);
+  const outTok = modelSpans.reduce((sum, s) => sum + (s.attributes["model.outputTokens"] ?? 0), 0);
+  const retries = doc.spans.reduce((sum, s) => sum + (s.events ?? []).filter((e) => e.name === "auto_retry" || e.name === "agent_retry").length, 0);
+  telemetry.trace = {
+    spans: doc.spans.length,
+    stageSpans: stageSpans.length,
+    modelTurns: modelSpans.length,
+    toolCalls: toolSpans.length,
+    wallMs: wall,
+    busyMs: busy,
+    modelLatencyMs: modelMs,
+    modelInputTokens: inTok,
+    modelOutputTokens: outTok,
+    modelRetries: retries,
+  };
+  // 拷贝 trace 产物到 staging（防 projects 目录被清理后丢失）
+  const traceOutDir = join(root, "m104-trace");
+  await mkdir(traceOutDir, { recursive: true });
+  await writeFile(join(traceOutDir, "run-trace.json"), traceRaw);
+  if (perfReport !== null) {
+    await writeFile(join(traceOutDir, "performance-report.md"), perfReport);
+  }
+  log(`trace 产物副本：${traceOutDir}`);
+}
 
 // ---- 13. 产物与红线断言 ----
 

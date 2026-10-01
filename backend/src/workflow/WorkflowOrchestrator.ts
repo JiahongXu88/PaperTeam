@@ -21,6 +21,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
 
 import {
   BusinessError,
@@ -30,6 +32,16 @@ import {
   WorkflowNotFoundError,
   type StageFailureCategory,
 } from "../errors.js";
+import { buildPerformanceReport } from "../observability/traceReport.js";
+import {
+  finishRunTraceSession,
+  getOrCreateRunTraceSession,
+  runInTraceScope,
+  type RunTraceSession,
+  type StageSpanHandle,
+  type TraceScope,
+} from "../observability/trace.js";
+import { writeFileAtomic, writeJsonAtomic } from "../util/atomic.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { appendEventLine, readEventLog } from "./eventLog.js";
 import { WorkflowRunStore } from "./runStore.js";
@@ -79,6 +91,8 @@ interface RunHandle {
   recovered: boolean;
   /** 在途 stage 的取消信号（cancel 时全部 abort） */
   abortControllers: Set<AbortController>;
+  /** M10.4.0 trace 会话（run 首次进入执行循环时创建；stage 边界落盘） */
+  trace?: RunTraceSession;
 }
 
 export class WorkflowOrchestrator {
@@ -252,6 +266,15 @@ export class WorkflowOrchestrator {
       data: { decision: input.decision },
     });
     await this.runStore.saveCheckpoint(handle.state);
+    // 竞态收敛（M10.4.0 trace 实测暴露，与 cancel() 同口径）：awaiting 状态在
+    // enterAwaitingInput 的 persistThenCommit 内 apply(handle.state) 时即对
+    // GET /api/runs 可见，而旧执行循环要到 emit / checkpoint / trace 落盘全部
+    // 完成后才退出并清空 handle.loop。该窗口内的 resume 会让 startLoop 因
+    // loop 非空而静默 no-op，run 永远停在 running。这里先等旧循环完全退出
+    // 再启动新循环（窗口量级 = 一次磁盘写，不影响正常时延）。
+    if (handle.loop !== null) {
+      await handle.loop.catch(() => {});
+    }
     this.startLoop(runId);
     return structuredClone(handle.state);
   }
@@ -406,6 +429,14 @@ export class WorkflowOrchestrator {
     }
 
     try {
+      // M10.4.0 trace：run 进入执行循环即建立 trace 会话（幂等；resume 重入
+      // / 重启恢复复用同一会话——重启前未落盘的 span 不可恢复，如实缺失）
+      handle.trace ??= getOrCreateRunTraceSession({
+        projectId: state.projectId,
+        runId: state.runId,
+        workflowKind: state.workflowKind,
+        nowMs: this.now().getTime(),
+      });
       if (state.status === "pending") {
         state.status = "running";
         state.startedAt = this.now().toISOString();
@@ -513,6 +544,7 @@ export class WorkflowOrchestrator {
         return false;
       }
 
+      const startedAtMs = this.now().getTime();
       const startedAt = this.now().toISOString();
       await this.emit(handle, {
         type: "stage.started",
@@ -524,66 +556,97 @@ export class WorkflowOrchestrator {
       const controller = new AbortController();
       handle.abortControllers.add(controller);
 
-      let outcome:
-        | { ok: true; result: Record<string, unknown> }
-        | { ok: false; category: StageFailureCategory; code: string; message: string };
-      try {
-        // 超时按"无进展时长"计：几十节的分章节审阅总时长随论文长度线性增长，
-        // 只要 stage 持续汇报进度就不该被固定预算杀掉；不汇报进度的 stage 语义与整体超时相同
-        const deadline = new IdleDeadline(stage.timeoutMs, `Stage ${stage.id} 执行超时（${stage.timeoutMs}ms 内无进展）`);
-        const ctx: StageRunContext = {
-          runId: state.runId,
-          projectId: state.projectId,
-          attempt,
-          state: structuredClone(state),
-          signal: controller.signal,
-          emitProgress: (data) => {
-            deadline.extend();
-            state.progress = { stageId: stage.id, data, updatedAt: this.now().toISOString() };
-            this.touch(state);
-            return this.emit(handle, { type: "stage.progress", stageId: stage.id, attempt, data });
-          },
-          emitDomain: (type, data, message) =>
-            this.emit(handle, {
-              type,
+      // M10.4.0 trace：本次 stage 尝试的 span + ALS scope（业务服务 →
+      // runtime.runAgent → 后台链据此归属 model/tool/task span；只观测不改行为）
+      const stageSpan: StageSpanHandle | undefined = handle.trace?.startStageSpan({
+        stageId: stage.id,
+        attempt,
+        phase: "execute",
+        startMs: startedAtMs,
+      });
+      const stageScope: TraceScope | undefined =
+        handle.trace !== undefined
+          ? {
+              projectId: state.projectId,
+              runId: state.runId,
               stageId: stage.id,
-              ...(message !== undefined ? { message } : {}),
-              data,
-            }),
-          log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
-        };
-        const result = await deadline.race(stage.execute(ctx));
+              attempt,
+              stageSpanId: stageSpan?.spanId ?? null,
+            }
+          : undefined;
 
-        // DoD 校验（StageContract：Agent 返回文本 ≠ 成功，产出必须确定性可检）
-        const violations = (await stage.verifyDod?.(ctx)) ?? [];
-        if (violations.length > 0) {
-          throw new StageContractViolationError(stage.id, violations);
-        }
-        outcome = { ok: true, result };
-      } catch (error) {
-        if (error instanceof StageContractViolationError) {
-          outcome = { ok: false, category: "contract_violation", code: error.code, message: error.message };
-        } else if (error instanceof StageFailedError) {
-          outcome = { ok: false, category: error.category, code: error.code, message: error.message };
-        } else if (error instanceof TimeoutSignal) {
-          // 超时的 stage 仍在运行：必须 abort，否则重试的第二次尝试会与它并发（同一会话 / 同一产物目录）
-          controller.abort();
-          outcome = { ok: false, category: "timeout", code: "STAGE_FAILED", message: error.message };
-        } else if (error instanceof BusinessError) {
-          outcome = {
-            ok: false,
-            category: classifyBusinessError(error),
-            code: error.code,
-            message: error.message,
+      const runAttempt = async (): Promise<
+        | { ok: true; result: Record<string, unknown> }
+        | { ok: false; category: StageFailureCategory; code: string; message: string }
+      > => {
+        try {
+          // 超时按"无进展时长"计：几十节的分章节审阅总时长随论文长度线性增长，
+          // 只要 stage 持续汇报进度就不该被固定预算杀掉；不汇报进度的 stage 语义与整体超时相同
+          const deadline = new IdleDeadline(stage.timeoutMs, `Stage ${stage.id} 执行超时（${stage.timeoutMs}ms 内无进展）`);
+          const ctx: StageRunContext = {
+            runId: state.runId,
+            projectId: state.projectId,
+            attempt,
+            state: structuredClone(state),
+            signal: controller.signal,
+            emitProgress: (data) => {
+              deadline.extend();
+              state.progress = { stageId: stage.id, data, updatedAt: this.now().toISOString() };
+              this.touch(state);
+              return this.emit(handle, { type: "stage.progress", stageId: stage.id, attempt, data });
+            },
+            emitDomain: (type, data, message) =>
+              this.emit(handle, {
+                type,
+                stageId: stage.id,
+                ...(message !== undefined ? { message } : {}),
+                data,
+              }),
+            log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
           };
-        } else {
-          outcome = { ok: false, category: "transient", code: "INTERNAL_ERROR", message: errorText(error) };
-        }
-      } finally {
-        handle.abortControllers.delete(controller);
-      }
+          const result = await deadline.race(stage.execute(ctx));
 
+          // DoD 校验（StageContract：Agent 返回文本 ≠ 成功，产出必须确定性可检）
+          const violations = (await stage.verifyDod?.(ctx)) ?? [];
+          if (violations.length > 0) {
+            throw new StageContractViolationError(stage.id, violations);
+          }
+          return { ok: true, result };
+        } catch (error) {
+          if (error instanceof StageContractViolationError) {
+            return { ok: false, category: "contract_violation", code: error.code, message: error.message };
+          } else if (error instanceof StageFailedError) {
+            return { ok: false, category: error.category, code: error.code, message: error.message };
+          } else if (error instanceof TimeoutSignal) {
+            // 超时的 stage 仍在运行：必须 abort，否则重试的第二次尝试会与它并发（同一会话 / 同一产物目录）
+            controller.abort();
+            return { ok: false, category: "timeout", code: "STAGE_FAILED", message: error.message };
+          } else if (error instanceof BusinessError) {
+            return {
+              ok: false,
+              category: classifyBusinessError(error),
+              code: error.code,
+              message: error.message,
+            };
+          } else {
+            return { ok: false, category: "transient", code: "INTERNAL_ERROR", message: errorText(error) };
+          }
+        } finally {
+          handle.abortControllers.delete(controller);
+        }
+      };
+
+      const outcome = await (stageScope !== undefined
+        ? runInTraceScope(stageScope, runAttempt)
+        : runAttempt());
+
+      const finishedAtMs = this.now().getTime();
       const finishedAt = this.now().toISOString();
+      stageSpan?.end({
+        status: outcome.ok ? "ok" : "error",
+        ...(outcome.ok ? {} : { statusMessage: `${outcome.category}/${outcome.code}: ${outcome.message}` }),
+        endMs: finishedAtMs,
+      });
 
       // stage 在收到 abort 后通常以 WORKFLOW_CANCELLED 或任意异常收尾：取消意图优先于失败分类
       if (!outcome.ok && handle.cancelRequested) {
@@ -627,6 +690,7 @@ export class WorkflowOrchestrator {
           data: summarizeResult(outcome.result),
         });
         await this.runStore.saveCheckpoint(state);
+        await this.flushTrace(handle);
         return true;
       }
 
@@ -653,6 +717,7 @@ export class WorkflowOrchestrator {
           maxAttempts: stage.maxAttempts,
         },
       });
+      await this.flushTrace(handle);
 
       const retryable = stage.retryable.includes(outcome.category);
       if (retryable && attempt < stage.maxAttempts) {
@@ -685,7 +750,11 @@ export class WorkflowOrchestrator {
       emitDomain: () => Promise.resolve(),
       log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
     };
-    const payload = (await stage.hitl.payload?.(ctx)) ?? undefined;
+    // M10.4.0 trace：payload 构造也可能访问模型 / 检索（观测 + scope 归属）
+    const payload =
+      stage.hitl.payload !== undefined
+        ? await this.runHitlPayload(handle, stage, ctx)
+        : undefined;
     await this.persistThenCommit(
       handle,
       (target) => {
@@ -709,6 +778,59 @@ export class WorkflowOrchestrator {
         },
       }),
     );
+  }
+
+  /** M10.4.0 trace：HITL payload 构造的 span + scope 包装（无 payload 时零开销） */
+  private async runHitlPayload(
+    handle: RunHandle,
+    stage: HitlStageSpec,
+    ctx: StageRunContext,
+  ): Promise<Record<string, unknown> | undefined> {
+    const { state } = handle;
+    const trace = handle.trace;
+    const payloadBuilder = stage.hitl.payload;
+    if (payloadBuilder === undefined || trace === undefined) {
+      return payloadBuilder?.(ctx);
+    }
+    const span = trace.startStageSpan({
+      stageId: stage.id,
+      attempt: 1,
+      phase: "hitl-payload",
+      startMs: this.now().getTime(),
+    });
+    const scope: TraceScope = {
+      projectId: state.projectId,
+      runId: state.runId,
+      stageId: stage.id,
+      attempt: 1,
+      stageSpanId: span.spanId,
+    };
+    try {
+      return await runInTraceScope(scope, () => payloadBuilder(ctx));
+    } finally {
+      span.end({ status: "ok", endMs: this.now().getTime() });
+    }
+  }
+
+  /**
+   * M10.4.0 trace：把 run-trace.json + performance-report.md 原子落盘到
+   * run 目录（stage 边界 / awaiting / 终态时调用）。trace 是观测面：
+   * 写盘失败只记日志，绝不影响 workflow 行为。
+   */
+  private async flushTrace(handle: RunHandle): Promise<void> {
+    const trace = handle.trace;
+    if (trace === undefined) {
+      return;
+    }
+    try {
+      const dir = this.runStore.runDir(handle.state.projectId, handle.state.runId);
+      await mkdir(dir, { recursive: true });
+      const doc = trace.snapshot();
+      await writeJsonAtomic(join(dir, "run-trace.json"), doc);
+      await writeFileAtomic(join(dir, "performance-report.md"), buildPerformanceReport(doc));
+    } catch (error) {
+      this.log(`[workflow ${handle.state.runId}] trace 落盘失败（忽略）：${errorText(error)}`);
+    }
   }
 
   private async finalizeCancelled(handle: RunHandle): Promise<void> {
@@ -773,6 +895,17 @@ export class WorkflowOrchestrator {
     await this.runStore.saveCheckpoint(snapshot);
     apply(handle.state);
     await this.emit(handle, buildEvent());
+    // M10.4.0 trace：awaiting / 终态边界刷新 trace 落盘；终态先标记会话完成
+    const status = handle.state.status;
+    if (status === "completed" || status === "failed" || status === "cancelled") {
+      finishRunTraceSession(
+        handle.state.projectId,
+        handle.state.runId,
+        status,
+        this.now().getTime(),
+      );
+    }
+    await this.flushTrace(handle);
   }
 
   // ---- 内部：事件与句柄 ----
