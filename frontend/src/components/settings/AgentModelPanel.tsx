@@ -23,6 +23,7 @@ import type {
 
 export const AGENT_MODEL_LABELS: Record<AgentModelKey, string> = {
   writer: "Writer · 写作",
+  improvementPlanner: "Improvement Planner · 修订计划",
   researcher: "Researcher · 调研",
   academicReviewer: "Academic Reviewer · 学术审稿",
   factReviewer: "Fact Reviewer · 事实核验",

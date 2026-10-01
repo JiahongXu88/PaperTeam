@@ -14,6 +14,14 @@
  *
  * 纪律不变：不虚构第二轮意见 / 不虚构 Phase6 板端完成 / 表 11 C0 不混域 /
  * rgate 无 HOTA/IDSW/IDF1 改善声明 / 基金与作者简介不动。
+ *
+ * M10.4.2 Model Routing Benchmark 钩子（不改变默认行为）：
+ * - M1031_ARM_LABEL    日志/摘要中的 arm 标签（缺省 "baseline"）
+ * - M1031_MODEL_DEFAULT 默认模型规格（缺省 zai-coding-cn/glm-5.3 = M10.3.1 基线）
+ * - M1031_MODEL_AGENTS per-Agent 模型 override（JSON 对象；缺省 "{}" = 显式
+ *                     清空，保证各 arm 输入配置确定性——不在臂间残留）
+ * - M1031_EXPORT_DIR   设置时把基准产物（summary/trace/gate/audit/tex/pdf/
+ *                     plan/response）复制到该目录（防临时目录清理后丢失）
  */
 
 import { spawn } from "node:child_process";
@@ -26,6 +34,10 @@ import { deflateRawSync } from "node:zlib";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const CASE_ZIP = process.env.M103_CASE_ZIP ?? "D:\\PaperTeamData\\M10.3-real-paper-case.zip";
+const ARM_LABEL = process.env.M1031_ARM_LABEL ?? "baseline";
+const ARM_MODEL_DEFAULT = process.env.M1031_MODEL_DEFAULT ?? "zai-coding-cn/glm-5.3";
+const ARM_MODEL_AGENTS = JSON.parse(process.env.M1031_MODEL_AGENTS ?? "{}");
+const EXPORT_DIR = process.env.M1031_EXPORT_DIR ?? undefined;
 const BASE = "http://127.0.0.1:8777";
 const PORT = 8777;
 
@@ -39,6 +51,8 @@ function log(message) {
 
 const telemetry = {
   startedAt: new Date().toISOString(),
+  arm: ARM_LABEL,
+  modelAgents: ARM_MODEL_AGENTS,
   modelCallsApprox: 0,
   visionCalls: 0,
   visionUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: null },
@@ -195,16 +209,27 @@ async function waitForServer(timeoutMs = 90_000) {
 await assertPortFree();
 await waitForServer();
 
-// 模型配置：default = zai-coding-cn/glm-5.3（已有存储偏好）；vision 显式设为
-// GLM 5.3 Flash（image-capable；能力来自目录 input 元数据，不硬编码判断）
+// 模型配置：default 按 arm 指定（M10.4.2；缺省 glm-5.3 即 M10.3.1 基线）；
+// vision 显式设为 GLM 5.3 Flash（image-capable；能力来自目录 input 元数据，
+// 不硬编码判断——各 arm 固定不变，不是本研究的路由对象）。
+// agents 显式随 PUT 下发（缺省 {} = 清空 override），保证各 arm 模型路由
+// 确定性；保存后回读 effective 值断言路由已生效
 const modelSetup = await api("PUT", "/api/settings/model", {
-  model: "zai-coding-cn/glm-5.3",
+  model: ARM_MODEL_DEFAULT,
   visionModel: "zai-coding-cn/glm-5.3-flash",
+  agents: ARM_MODEL_AGENTS,
 });
+const appliedAgents = Object.fromEntries(
+  (modelSetup.body["settings"]?.agents ?? [])
+    .filter((a) => a.source === "agent_override")
+    .map((a) => [a.key, a.effective]),
+);
 check(
-  "模型配置（default glm-5.3 / vision glm-5.3-flash）",
-  modelSetup.status === 200 && modelSetup.body["settings"]?.model === "zai-coding-cn/glm-5.3",
-  JSON.stringify(modelSetup.body).slice(0, 200),
+  "模型配置（default / vision glm-5.3-flash / per-Agent override 生效）",
+  modelSetup.status === 200 &&
+    modelSetup.body["settings"]?.model === ARM_MODEL_DEFAULT &&
+    JSON.stringify(appliedAgents) === JSON.stringify(ARM_MODEL_AGENTS),
+  `default=${modelSetup.body["settings"]?.model} applied=${JSON.stringify(appliedAgents)} 期望=${JSON.stringify(ARM_MODEL_AGENTS)}`,
 );
 
 // ---- 4. Stage A：Import（current manuscript 导入 + 资产上传）----
@@ -477,7 +502,13 @@ async function pollRun(statuses, timeoutMs = 15 * 60_000) {
     const run = body["run"];
     if (statuses.includes(run?.status)) return run;
     if (run?.status === "failed") {
-      throw new Error(`run 失败：${run.error?.code} ${run.error?.message}（stage ${run.error?.stageId}）\n${logBuffer.slice(-4000)}`);
+      // M10.4.2：run 硬失败（如 FACT_PRESERVATION_FAILED 阻断 Draft）是合法
+      // 实验结局——不再中断驱动，落 WARN 后返回 failed run 继续收割产物
+      //（终态断言会如实 FAIL，退出码仍非零）
+      console.log(
+        `[WARN] run 终态 failed：${run.error?.code}（stage ${run.error?.stageId}）${run.error?.message ?? ""}`.slice(0, 400),
+      );
+      return run;
     }
     if (Date.now() > deadline) {
       throw new Error(`等待 ${statuses.join("|")} 超时（当前 ${run?.status}，stage ${run?.currentStage}）\n${logBuffer.slice(-3000)}`);
@@ -497,7 +528,14 @@ async function resume(decision, payload) {
 
 // M10.3.1：前置链（理解+核验+三路审稿+可行性）真实 LLM 耗时可超 15 分钟——
 // 首个等待窗口与后段一致放宽到 90 分钟（run 状态全部落盘，超时≠失败）
-let run = await pollRun(["awaiting_input"], 90 * 60_000);
+// M10.4.2：HITL 全阶段包 try/catch——run 任意时点硬失败（如 flash 模型
+// 违反输出契约、fact guard 阻断）时 WARN 后直接进入产物收割阶段，基准
+// 数据（trace / gate / audit / 摘要 / 导出）仍然完整落盘
+let run = null;
+let completionLabel = "?";
+const decisionsTaken = [];
+try {
+run = await pollRun(["awaiting_input"], 90 * 60_000);
 while (run.awaiting?.stageId !== "hitl.research_plan") {
   const stageId = run.awaiting?.stageId ?? "";
   if (stageId === "") throw new Error(`意外状态：${run.status}`);
@@ -593,7 +631,6 @@ await resume("approve");
 // ---- 12. 共享后段（bounded loop；可能的 revision_validation / stalled / overflow）----
 
 run = await pollRun(["awaiting_input", "completed"], 90 * 60_000);
-const decisionsTaken = [];
 while (run.status === "awaiting_input") {
   const stageId = run.awaiting?.stageId ?? "";
   decisionsTaken.push(stageId);
@@ -616,8 +653,14 @@ while (run.status === "awaiting_input") {
 telemetry.revisionRounds = decisionsTaken.filter((s) => s.includes("revision")).length;
 
 check("run 终态 completed", run.status === "completed", `status=${run.status}`);
-const completionLabel = run.completion?.label ?? "?";
+completionLabel = run.completion?.label ?? "?";
 log(`run 完成（${completionLabel}；HITL 序列：${decisionsTaken.join(" → ") || "无"}）`);
+} catch (error) {
+  // M10.4.2：HITL 阶段中断（run 硬失败 / resume 拒绝 / 等待超时）——如实记录
+  // 后继续收割产物；下方终态断言会 FAIL，退出码仍非零
+  console.log(`[WARN] HITL 阶段中断（${run?.status ?? "?"}）：${String(error?.message ?? error).slice(0, 300)}`);
+  telemetry.notes.push(`hitlAborted: ${String(error?.message ?? error).slice(0, 200)}`);
+}
 
 // ---- 12b. M10.4.0 trace 产物断言（run-trace.json + performance-report.md）----
 
@@ -634,18 +677,18 @@ async function readWithRetry(path, accept, attempts = 10) {
 }
 const traceRaw = await readWithRetry(join(traceDir, "run-trace.json"), (text) => {
   try {
-    return JSON.parse(text).runStatus === "completed";
+    return ["completed", "failed", "cancelled"].includes(JSON.parse(text).runStatus);
   } catch {
     return false;
   }
 });
-const perfReport = await readWithRetry(join(traceDir, "performance-report.md"), (text) => text.includes("run 状态: completed"), 3);
+const perfReport = await readWithRetry(join(traceDir, "performance-report.md"), (text) => text.includes("# Performance Report"), 3);
 check(
   "M10.4.0 run-trace.json 生成（OTel 兼容 span 形状）",
   traceRaw !== null && (() => {
     const doc = JSON.parse(traceRaw);
     return doc.traceId === runId && Array.isArray(doc.spans) && doc.spans.length > 0 &&
-      doc.runStatus === "completed" && doc.spans.every((s) => s.spanId && s.name && typeof s.durationMs === "number");
+      ["completed", "failed", "cancelled"].includes(doc.runStatus) && doc.spans.every((s) => s.spanId && s.name && typeof s.durationMs === "number");
   })(),
   traceRaw === null ? "run-trace.json 缺失" : `spans=${JSON.parse(traceRaw).spans.length}`,
 );
@@ -671,7 +714,31 @@ if (traceRaw !== null) {
   const modelMs = modelSpans.reduce((sum, s) => sum + s.durationMs, 0);
   const inTok = modelSpans.reduce((sum, s) => sum + (s.attributes["model.inputTokens"] ?? 0), 0);
   const outTok = modelSpans.reduce((sum, s) => sum + (s.attributes["model.outputTokens"] ?? 0), 0);
+  const cacheRead = modelSpans.reduce((sum, s) => sum + (s.attributes["model.cacheReadTokens"] ?? 0), 0);
+  const costUsd = modelSpans.reduce((sum, s) => sum + (s.attributes["model.estimatedCost"] ?? 0), 0);
   const retries = doc.spans.reduce((sum, s) => sum + (s.events ?? []).filter((e) => e.name === "auto_retry" || e.name === "agent_retry").length, 0);
+  // M10.4.2：按模型 / 按 (stage, model) 聚合（路由验证 + 成本归因）。
+  // model.turn 自带 stage.id + model.label，无需 join 父 span
+  const byModel = new Map();
+  const byStageModel = new Map();
+  for (const span of modelSpans) {
+    const model = span.attributes["model.label"] ?? "(unknown)";
+    const stageId = span.attributes["stage.id"] ?? "(none)";
+    const bucket = byModel.get(model) ?? { turns: 0, latencyMs: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 };
+    bucket.turns += 1;
+    bucket.latencyMs += span.durationMs;
+    bucket.inputTokens += span.attributes["model.inputTokens"] ?? 0;
+    bucket.outputTokens += span.attributes["model.outputTokens"] ?? 0;
+    bucket.cacheReadTokens += span.attributes["model.cacheReadTokens"] ?? 0;
+    bucket.costUsd += span.attributes["model.estimatedCost"] ?? 0;
+    byModel.set(model, bucket);
+    const key = `${stageId} :: ${model}`;
+    const stageBucket = byStageModel.get(key) ?? { turns: 0, latencyMs: 0, costUsd: 0 };
+    stageBucket.turns += 1;
+    stageBucket.latencyMs += span.durationMs;
+    stageBucket.costUsd += span.attributes["model.estimatedCost"] ?? 0;
+    byStageModel.set(key, stageBucket);
+  }
   telemetry.trace = {
     spans: doc.spans.length,
     stageSpans: stageSpans.length,
@@ -682,7 +749,11 @@ if (traceRaw !== null) {
     modelLatencyMs: modelMs,
     modelInputTokens: inTok,
     modelOutputTokens: outTok,
+    modelCacheReadTokens: cacheRead,
+    modelCostUsd: costUsd,
     modelRetries: retries,
+    byModel: Object.fromEntries([...byModel.entries()].sort((a, b) => b[1].turns - a[1].turns)),
+    byStageModel: Object.fromEntries([...byStageModel.entries()].sort((a, b) => b[1].latencyMs - a[1].latencyMs)),
   };
   // 拷贝 trace 产物到 staging（防 projects 目录被清理后丢失）
   const traceOutDir = join(root, "m104-trace");
@@ -698,34 +769,44 @@ if (traceRaw !== null) {
 
 const projectDir = join(root, "projects", projectId);
 
+// M10.4.2：早失败 run 可能未产出研究链/修订产物——读取全部 null 実容，
+// 对应断言如实 FAIL（「未达该阶段」），不让驱动在收割阶段崩溃
+async function readJsonOrNull(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 // 资产清单：current/historical 隔离
-const inventory = JSON.parse(await readFile(join(projectDir, "research", "asset-inventory.json"), "utf8"));
+const inventory = await readJsonOrNull(join(projectDir, "research", "asset-inventory.json"));
 const boardC0Source = sourceIds["experiments/data/board_c0_20260904/aggregate.json"];
 const batterySource = sourceIds["experiments/data/phase4/battery_phase4.json"];
 check(
   "资产清单：current / historical 域隔离正确",
-  inventory.manifestFound === true &&
-    inventory.domains.historicalBoard.includes(boardC0Source) &&
-    inventory.domains.current.includes(batterySource) &&
-    !inventory.domains.current.includes(boardC0Source),
-  JSON.stringify(inventory.domains),
+  inventory?.manifestFound === true &&
+    (inventory?.domains?.historicalBoard ?? []).includes(boardC0Source) &&
+    (inventory?.domains?.current ?? []).includes(batterySource) &&
+    !(inventory?.domains?.current ?? []).includes(boardC0Source),
+  JSON.stringify(inventory?.domains ?? "（asset-inventory 缺失）"),
 );
 
 // 事实基线
-const baseline = JSON.parse(await readFile(join(projectDir, "research", "revision-baseline.json"), "utf8"));
+const baseline = await readJsonOrNull(join(projectDir, "research", "revision-baseline.json"));
 check(
   "修订前事实基线（表格 / 引用 / 板端数字入基线）",
-  baseline.tables.length >= 10 && baseline.citationKeys.length === 25 && baseline.numbers.some((n) => n.tokens.some((t) => t.startsWith("1495.63"))),
-  `tables=${baseline.tables.length} keys=${baseline.citationKeys.length}`,
+  (baseline?.tables?.length ?? 0) >= 10 && (baseline?.citationKeys?.length ?? 0) === 25 && (baseline?.numbers ?? []).some((n) => n.tokens.some((t) => t.startsWith("1495.63"))),
+  `tables=${baseline?.tables?.length ?? "?"} keys=${baseline?.citationKeys?.length ?? "?"}`,
 );
 
 // 研究链产物
-const research = JSON.parse(await readFile(join(projectDir, "research", "research.json"), "utf8"));
-const activePlan = (research.plans ?? []).find((p) => p.planId === research.activePlanId) ?? research.plans?.[0];
+const research = await readJsonOrNull(join(projectDir, "research", "research.json"));
+const activePlan = (research?.plans ?? []).find((p) => p.planId === research.activePlanId) ?? research?.plans?.[0];
 check(
   "研究链：计划批准并执行（done）+ requirements 覆盖视图",
-  activePlan?.status === "done" && (research.executionHistory ?? []).length > 0,
-  `plan=${activePlan?.status} history=${(research.executionHistory ?? []).length}`,
+  activePlan?.status === "done" && (research?.executionHistory ?? []).length > 0,
+  `plan=${activePlan?.status} history=${(research?.executionHistory ?? []).length}`,
 );
 
 // 证据分层
@@ -740,8 +821,8 @@ check(
 telemetry.notes.push(`evidence: user_confirmed=${userConfirmed.length} verified=${verified.length}`);
 
 // 修订发生 + 红线
-const revisedMain = await readFile(join(projectDir, "manuscript", "main.tex"), "utf8");
-const changed = createHash("sha256").update(revisedMain).digest("hex") !== manuscriptSha;
+const revisedMain = (await readFile(join(projectDir, "manuscript", "main.tex"), "utf8").catch(() => "")) ?? "";
+const changed = revisedMain !== "" && createHash("sha256").update(revisedMain).digest("hex") !== manuscriptSha;
 check("Writer 修改成功（main.tex 相对冻结稿发生变化）", changed, "main.tex 未变化");
 check(
   "红线：不虚构 Phase6 板端结果（rgate 无『已验证/完成板端』声明）",
@@ -762,9 +843,9 @@ check("表 11 板端 C0 数字保持（1495.63 / 0.669）", revisedMain.includes
 check("旧板测数字（286.57 / 3.49 FPS）未混入", !revisedMain.includes("286.57") && !revisedMain.includes("3.49"), "历史板测数字混入");
 
 // preservation 结果（最终 gate）+ M10.3.1 G1/G2 收口断言
-const gateFiles = (await readdir(join(projectDir, "reviews"))).filter((f) => f.startsWith("quality-gate-"));
+const gateFiles = (await readdir(join(projectDir, "reviews")).catch(() => [])).filter((f) => f.startsWith("quality-gate-"));
 const latestGate = gateFiles.sort().at(-1);
-const gate = latestGate !== undefined ? JSON.parse(await readFile(join(projectDir, "reviews", latestGate), "utf8")) : null;
+const gate = await readJsonOrNull(latestGate !== undefined ? join(projectDir, "reviews", latestGate) : null);
 check(
   "Fact Preservation：未授权数值变化为 0（最终 gate 规则通过或中性）",
   gate === null ||
@@ -796,9 +877,9 @@ check(
 );
 
 // M10.3.1 G2：claim-gap-audit 修订引入口径 blocking = 0；剩余阻断须为作者级
-const auditFiles = (await readdir(join(projectDir, "reviews"))).filter((f) => f.startsWith("claim-gap-audit-"));
+const auditFiles = (await readdir(join(projectDir, "reviews")).catch(() => [])).filter((f) => f.startsWith("claim-gap-audit-"));
 const latestAudit = auditFiles.sort().at(-1);
-const audit = latestAudit !== undefined ? JSON.parse(await readFile(join(projectDir, "reviews", latestAudit), "utf8")) : null;
+const audit = await readJsonOrNull(latestAudit !== undefined ? join(projectDir, "reviews", latestAudit) : null);
 check(
   "G2 修订引入 unsupported claim = 0（pre-existing / author-data 归层在案）",
   audit !== null && audit.counts?.revisionIntroduced === 0,
@@ -817,7 +898,7 @@ check(
 );
 
 // M10.3.1 G2：feasibility task-aware 重评（criterionApplicability 在案；INSUFFICIENT 须有 required 依据）
-const feasibility = JSON.parse(await readFile(join(projectDir, "research", "feasibility.json"), "utf8"));
+const feasibility = await readJsonOrNull(join(projectDir, "research", "feasibility.json"));
 const applicability = feasibility?.report?.criterionApplicability ?? [];
 const requiredCount = applicability.filter((e) => e.applicability === "required").length;
 check(
@@ -882,7 +963,7 @@ try {
 check("Vision 实际调用 GLM 5.3 Flash（analyzedModelSpec）", visionModelUsed === "zai-coding-cn/glm-5.3-flash", `model=${visionModelUsed}`);
 
 // 模型调用规模（近似：stage 汇总中的模型遥测 + run 事件）
-const stageModelCalls = (run.stageHistory ?? []).reduce((sum, record) => {
+const stageModelCalls = (run?.stageHistory ?? []).reduce((sum, record) => {
   const summary = record.summary ?? {};
   return sum + (summary.modelCalls ?? summary.lookup?.providerCalls ?? summary.modelTelemetry?.modelCalls ?? summary.modelTelemetry?.calls ?? 0);
 }, 0);
@@ -896,6 +977,34 @@ log(`摘要写入 ${join(root, "m1031-real-summary.json")}`);
 console.log(`\n产物目录：${projectDir}`);
 console.log(`revised PDF：${join(buildDir, "paper.pdf")}`);
 console.log(`revision report：${join(buildDir, "revision-response.md")}`);
+
+// M10.4.2：基准产物导出（M1031_EXPORT_DIR 设置时）——summary / trace /
+// performance report / 终局 gate / claim-gap audit / 冻结输入校验用的
+// improvement-plan / 终稿 tex / PDF / revision response
+if (EXPORT_DIR !== undefined) {
+  const exportPairs = [
+    ["m1031-real-summary.json", join(root, "m1031-real-summary.json")],
+    ["run-trace.json", traceRaw !== null ? join(traceDir, "run-trace.json") : null],
+    ["performance-report.md", perfReport !== null ? join(traceDir, "performance-report.md") : null],
+    ["quality-gate-final.json", latestGate !== undefined ? join(projectDir, "reviews", latestGate) : null],
+    ["claim-gap-audit-final.json", latestAudit !== undefined ? join(projectDir, "reviews", latestAudit) : null],
+    ["improvement-plan.json", join(projectDir, "research", "improvement-plan.json")],
+    ["main.tex", join(projectDir, "manuscript", "main.tex")],
+    ["paper.pdf", join(buildDir, "paper.pdf")],
+    ["revision-response.md", join(buildDir, "revision-response.md")],
+  ];
+  await mkdir(EXPORT_DIR, { recursive: true });
+  let exported = 0;
+  for (const [name, source] of exportPairs) {
+    if (source === null) continue;
+    const content = await readFile(source).catch(() => null);
+    if (content !== null) {
+      await writeFile(join(EXPORT_DIR, name), content);
+      exported += 1;
+    }
+  }
+  log(`M10.4.2 产物导出（arm=${ARM_LABEL}）：${exported} 文件 → ${EXPORT_DIR}`);
+}
 
 server.kill();
 await sleep(1000);

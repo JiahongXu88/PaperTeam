@@ -674,6 +674,7 @@ export type ModelConfigurationSource = "environment" | "stored" | "not_configure
 /** 可独立配置模型的业务 Agent（M5.7；与 Backend AgentModelKey 一致） */
 export type AgentModelKey =
   | "writer"
+  | "improvementPlanner"
   | "researcher"
   | "academicReviewer"
   | "factReviewer"

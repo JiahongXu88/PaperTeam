@@ -22,6 +22,7 @@ import { writeJsonAtomic } from "../util/atomic.js";
  */
 export type AgentModelKey =
   | "writer"
+  | "improvementPlanner"
   | "researcher"
   | "academicReviewer"
   | "factReviewer"
@@ -30,6 +31,7 @@ export type AgentModelKey =
 
 export const AGENT_MODEL_KEYS: readonly AgentModelKey[] = [
   "writer",
+  "improvementPlanner",
   "researcher",
   "academicReviewer",
   "factReviewer",
@@ -48,11 +50,17 @@ function isAgentModelKey(value: unknown): value is AgentModelKey {
  * 返回 undefined = 无对应业务 Agent（default 角色 / 工具型任务）→ 继承全局默认。
  *
  * mapping 说明：分节审稿（review/section/*）与章节摘要（review/summary/*）是
- * Reviewer 的学术性工作面，归 academicReviewer。
+ * Reviewer 的学术性工作面，归 academicReviewer；writing/improvement-plan 归
+ * improvementPlanner（M10.4.2 起与正文写作分键，未配置时同样继承默认）。
  */
 export function agentModelKeyForScope(scope: string | undefined): AgentModelKey | undefined {
   if (scope === undefined || scope === "") {
     return undefined;
+  }
+  if (scope === "writing/improvement-plan" || scope.startsWith("writing/improvement-plan/")) {
+    // M10.4.2：改进计划（planner）与正文写作（writer）分键——Revision 场景下
+    // 两者模型偏好独立（如 strong planner + flash writer 的路由实验）
+    return "improvementPlanner";
   }
   if (scope === "writing" || scope.startsWith("writing/")) {
     return "writer";
