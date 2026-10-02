@@ -1,6 +1,12 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-09-22（**M8 COMPLETE — Controlled Deep Research Loop
+> 更新日期：2026-10-02（**M11.1 进行中 — Survey Synthesis 链路**：M11.0
+> 冻结审计 ✅ / M11.1.1 Survey Matrix ✅（`96feb9f`）/ M11.1.2 Structured
+> Synthesis ✅（七类综合 + 确定性 grounding + Evidence 真实核验链）；剩
+> M11.1.3 Survey Outline 契约、M11.1.4 Workflow Integration、M11.2 Writing
+> E2E——Topic → Survey 整体尚未完成，勿提前宣称完整综述能力。详见下方
+> M11 段。）
+> 前一状态 2026-09-22（**M8 COMPLETE — Controlled Deep Research Loop
 > （2026-09-20 启动 → 2026-09-22 收口）**：M8.1 Research Plan 一等产物（`e24e387`）/
 > M8.2 Plan Execution（`59e4c9f`）/ M8.3.1 Iteration Foundation（`af519bc`）/
 > M8.3.2 Coverage Analyzer（`13d152a`）/ M8.3.3 Research Gap + HITL + Loop
@@ -1190,8 +1196,85 @@ Survey 当前真正缺失的核心能力只有 **Survey Synthesis Matrix**、
   HTTP 6 / promote-batch 3），含 5 篇固定文献（4 fulltext + 1
   abstract-only，脚本化 researcher runtime 从 prompt CHUNK 标记取真实
   chunkId 锚定）的完整链路 fixture。
-- **尚缺（未实现，勿提前宣称）**：Structured Synthesis（M11.1.2）、
-  Survey Outline 契约、Survey Writing / Review / Revision / PDF。Topic →
+
+**M11.1.2 Structured Synthesis ✅ COMPLETE（2026-10-02）**：Survey
+Matrix → 跨论文结构化综合的正式产物（七类：taxonomy / trend /
+comparison / consensus / disagreement / research_gap / future_direction）。
+要点：
+
+- **新模块（同域扩展，零新 Agent / Runtime 角色）**：
+  `synthesisTypes.ts`（schema + 确定性 ID / dedup + candidate parse）/
+  `groundingRules.ts`（groundingLevel 确定性判定纯函数）/
+  `SynthesisService.ts`（构建编排；`contextScope="research/survey-synthesis"`
+  经 roleConfig `research/*` 前缀映射 researcher）。
+- **groundingLevel 只由代码判定**：LLM 产出 candidate（claim / 分类 /
+  对比措辞），模型输出的任何 groundingLevel / evidenceIds 自报字段在
+  parse 层被结构性丢弃；`deriveGroundingLevel` 纯函数按确定性规则定级
+  （规则总表写入 groundingRules.ts 头注释并逐条单测锁死）：
+  - `taxonomy` / `research_gap` 恒 `literature_cited`（组织骨架 / 不存在
+    性论断不走 evidence 通道）；
+  - `future_direction` `origin=inferred` 一律 `speculative`（硬规则，
+    证据再强也不升级，且不进核验管道）；`cited_future_work` 走 evidence
+    阈值；
+  - 通用 evidence 阈值（trend / comparison / consensus / cited future）：
+    ≥2 条 verified evidence 且 ≥2 个不同来源；
+  - `consensus`：≥3 来源才可 evidence_backed；2 来源 = observed
+    agreement（封顶 literature_cited，detail 如实标记）；1 来源 parse 期
+    拒绝；
+  - `disagreement`：双侧可靠锚点 + 每侧 ≥1 verified 才 evidence_backed；
+    单侧弱锚 → literature_cited；双侧弱锚 → speculative。
+- **Evidence 真实链路**：synthesis candidate 的 evidenceProposals
+  （chunkId 必须 ∈ 该 entry 的 Matrix anchor 集）走既有
+  EvidenceGroundingService 三段核验（quote 逐字 ← chunk 原文 → metadata →
+  semantic judge）；verified EvidenceRecord 的 id 进 synthesis.evidenceIds；
+  不创建 multi-source EvidenceRecord（跨论文综合经 evidenceIds[] 引用多个
+  独立记录，单源单锚点语义不变）；chunkId 存在 ≠ verified。
+- **引用 fail-closed**：sourceIds 不接受模型输出（一律从 entryIds =
+  `M-<sourceId>` 派生）；不存在的 entryId 剔除；comparison /
+  disagreement 剔后单侧空 → 整条拒绝；trend / consensus / disagreement
+  最低来源数不达 → 拒绝；research_gap trigger 白名单
+  （literature_limitation / taxonomy_empty / coverage_missing）外 → parse
+  期拒绝入账目。拒绝账目（rejections：kind + claim + reason）随 build
+  结果返回，不静默丢弃。
+- **taxonomy 确定性聚合（零 LLM）**：family → subFamily → entryIds；
+  空家族不生成 node；unclassified（含标签失效条目）单独保留绝不猜回；
+  每个 leaf 至少对应一个真实 entry；claim 模板化（同 Matrix 恒同 ID）。
+- **bounded batching**：不把全部论文塞一个 prompt——trend / comparison /
+  consensus / disagreement 按 methodFamily 分组（单条家族不建 batch），
+  research_gap / future_direction 全局单批（含 taxonomy 聚合统计与已确认
+  gap 清单）；批内 ≤12 条按 entryId 切块；LLM 调用串行。
+- **确定性 ID + dedup**：`synthesisId = SYN-<sha256(kind+normalizedClaim+
+  sortedSourceIds)[:10]>`（无随机数 / 时钟）；跨 batch 完全重复按
+  fingerprint 合并 entryIds / evidenceIds；Matrix 指纹未变且非 force 时
+  直接复用既有 artifact（零 LLM 调用）；force 重建同 ID、evidence 不重复
+  追加（findGroundedRecord 幂等守卫复用）。
+- **Artifact**：`research/survey-synthesis.json` 独立文件（与 survey.json
+  同级；构建节奏 / schemaVersion 独立演化）；schemaVersion=1 +
+  matrixFingerprint（staleness 检测）；原子写 / 确定性序列化（items 按
+  synthesisId 排序）/ tolerant read / 损坏 → 结构化
+  `SURVEY_SYNTHESIS_CORRUPTED` fail-closed。
+- **API**：`GET /api/projects/:id/survey/synthesis`（未构建 →
+  synthesis:null）/ `POST …/survey/synthesis/build`（kinds? / force?）。
+  synthesis 级 HITL 编辑（PUT）按范围裁决留给 M11.1.3/1.4。
+- **测试**：新增 4 文件 48 用例（groundingRules 规则矩阵 17 /
+  synthesisTypes 11 / artifact 扩展 5 / 服务编排 fixture 11 / HTTP 4）；
+  fixture 扩至 7 篇（6 fulltext + 1 abstract-only，3 family + unclassified
+  + consensus 3 源 + disagreement 双侧 + cited/inferred future），runtime
+  按 contextScope 分派（matrix / synthesis / judge 三链）。真实 smoke：
+  `scripts/m1112-synthesis-smoke.mjs`（11 篇 arXiv MOT 文献真实模型全链，
+  报告落 e2e/.tmp/m1112-synthesis-smoke/）——结果：matrix 11/11 built
+  （144s）、synthesis 10 batches → 16 items / 0 rejected（733s）、
+  evidence 28/28 verified、grounding 分布 3 evidence_backed / 9
+  literature_cited / 4 speculative。人审结论：consensus 2 条均为真实
+  结论且正确降级 observed agreement（2 源封顶）；comparison 真跨论文
+  （motion vs joint 双侧有据）；inferred future 全部 speculative（硬规则
+  真实生效）；gap 三类 trigger（literature_limitation / coverage_missing /
+  taxonomy_empty）均有合理产出。已知问题：本机 arXiv 全文下载 8/11 失败
+  （网络面非系统缺陷）→ 8 篇 abstract_only 聚集 unclassified；DeepSORT
+  被抽取层归 joint 而非 appearance_based（Matrix 层归类偏差，HITL 修正
+  范畴）。
+- **尚缺（未实现，勿提前宣称）**：Survey Outline 契约（M11.1.3）、
+  Workflow Integration（M11.1.4）、Survey Writing E2E（M11.2）。Topic →
   Survey 整体未完成。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：

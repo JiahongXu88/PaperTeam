@@ -66,6 +66,7 @@ import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js
 import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
 import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { MatrixService } from "./survey/MatrixService.js";
+import { SynthesisService } from "./survey/SynthesisService.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
@@ -215,6 +216,12 @@ export interface ServiceStack {
    * research/survey.json（Research 阶段派生产物；不写 EvidenceStore）
    */
   survey: MatrixService;
+  /**
+   * Survey Synthesis（M11.1.2）：Matrix → 跨论文 Structured Synthesis →
+   * research/survey-synthesis.json（groundingLevel 由确定性规则判定；
+   * evidence 经 EvidenceGroundingService 真实核验路径）
+   */
+  synthesis: SynthesisService;
   /** M10.1：结构化解析产物持久化（sources/parsed/<id>.document.json + figures/） */
   parsedDocuments: ParsedDocumentStore;
   /** M10.1：Document & Data Ingestion 编排（PDF docling 链 + CSV/XLSX 记录 + 事实确认） */
@@ -633,6 +640,20 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...longRun,
     log,
   });
+  // M11.1.2 Structured Synthesis：Matrix → 跨论文综合（七类）；taxonomy 确定性
+  // 聚合 + 其余六类 bounded batch 走 researcher（contextScope=research/
+  // survey-synthesis，research/* 前缀规则已映射）；evidence 升级复用
+  // EvidenceGroundingService 真实核验管道（不造 multi-source EvidenceRecord）
+  const synthesis = new SynthesisService({
+    projects: options.projects,
+    sources,
+    chunkAccess,
+    runtime: options.runtime,
+    researcherAgentId: options.agentIds.researcher,
+    evidenceGrounding,
+    ...longRun,
+    log,
+  });
   const researcher = new ResearcherService({
     runtime: options.runtime,
     agentId: options.agentIds.researcher,
@@ -697,6 +718,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     loop,
     retrieval,
     survey,
+    synthesis,
     parsedDocuments,
     ingestion,
     figureAnalyses,

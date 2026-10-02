@@ -384,6 +384,35 @@
 > - **尚缺（勿提前宣称）**：Structured Synthesis（M11.1.2）/ Survey
 >   Outline 契约 / Survey Writing / Review / Revision / PDF。
 
+### 1.2k M11.1.2 Survey Synthesis API（后端已实现；前端暂无消费方）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/survey/synthesis` | 读 Structured Synthesis artifact（`research/survey-synthesis.json`；与 survey.json 同级的 Research 阶段派生产物）。200 `{synthesis: SurveySynthesisArtifact \| null}`——未构建 = null；文件损坏 / 未来 schemaVersion → **500 SURVEY_SYNTHESIS_CORRUPTED**。artifact：`{schemaVersion:1, updatedAt, matrixFingerprint, items: SurveySynthesisItem[]}`（items 按 synthesisId 升序）。item：`{synthesisId: "SYN-<hash10>"（确定性纯函数，同输入恒同值）, kind: taxonomy\|trend\|comparison\|consensus\|disagreement\|research_gap\|future_direction, claim, groundingLevel: evidence_backed\|literature_cited\|speculative（**只由代码判定**，模型自报字段被结构性丢弃）, evidenceIds, sourceIds（从 derivedFrom.entryIds 派生，模型无权声明）, derivedFrom:{entryIds}, detail?（kind 判别联合）, groundingReason?, taskId?, updatedAt}` | （无——Survey UI 属 M11.1.3+） |
+| `POST /api/projects/:id/survey/synthesis/build` | 基于 Matrix 快照**全量重建**。body 全可选：`{kinds?: SurveySynthesisKind[]（非空子集，非法值 400；缺省全部七类）, force?: boolean（Matrix 指纹未变也重建；缺省指纹未变直接复用既有 artifact，零 LLM 调用）}`。前置：Matrix 必须已构建（否则 400 提示先跑 matrix build）。执行链：taxonomy 确定性聚合（零 LLM）→ 其余六类 bounded batch（trend/comparison/consensus/disagreement 按 family 分组、gap/future 全局单批）→ researcher（contextScope=`research/survey-synthesis`，零新 Agent）→ candidate parse（模型自报 grounding 字段丢弃）→ 引用 fail-closed 核验 → evidence proposals 走 EvidenceGroundingService 三段真实核验 → `deriveGroundingLevel` 确定性判定 → 确定性 dedup → 原子落盘。200 `{summary:{matrixEntries, matrixFingerprint, reused, batches, candidates, accepted, rejected, byKind, evidenceProposed, evidenceVerified}, rejections:[{kind, claim, reason}], synthesis}`。kinds 空数组 / 含非法值 → 400；非 POST → 405 | （无） |
+
+> 2026-10-02 M11.1.2 语义约定：
+> - **groundingLevel 判定权只在代码**：`groundingRules.deriveGroundingLevel`
+>   纯函数；taxonomy / research_gap 恒 literature_cited；future_direction
+>   `origin=inferred` 一律 speculative（硬规则，不进核验管道）；通用
+>   evidence 阈值 = ≥2 verified evidence 且 ≥2 不同来源；consensus ≥3
+>   来源才可 evidence_backed（2 来源 = observed agreement 封顶
+>   literature_cited）；disagreement 双侧可靠锚点 + 每侧 ≥1 verified 才
+>   evidence_backed（单侧弱锚 → literature_cited，双侧弱锚 → speculative）。
+> - **Evidence 语义不变**：synthesis 经 evidenceIds[] 引用多个**独立**
+>   verified EvidenceRecord（单源单锚点），不创建 multi-source 记录；
+>   chunkId 存在 ≠ verified（必须过 quote 逐字 → metadata → judge 三段）。
+> - **引用 fail-closed**：sourceIds 从 entryIds 派生（模型无权声明）；
+>   不存在的 entryId 剔除；comparison / disagreement 剔后单侧空 → 整条
+>   拒绝；trend/consensus/disagreement 最低来源数不达 → 拒绝；
+>   research_gap trigger 白名单（literature_limitation / taxonomy_empty /
+>   coverage_missing）外 → parse 期拒绝。拒绝账目随 build 返回。
+> - **synthesis 级 HITL 编辑（PUT …/synthesis/:synthesisId）**：本阶段
+>   未实现（按范围裁决留给 M11.1.3/1.4）。
+> - **错误码新增**：SURVEY_SYNTHESIS_CORRUPTED(500)。
+> - **尚缺（勿提前宣称）**：Survey Outline 契约（M11.1.3）/ Workflow
+>   Integration（M11.1.4）/ Survey Writing E2E（M11.2）。
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |

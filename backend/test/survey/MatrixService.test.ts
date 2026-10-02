@@ -83,7 +83,7 @@ describe("MatrixService.buildMatrix（完整链路）", () => {
       S005: s005Script,
     });
     try {
-      for (const paper of FIXTURE_PAPERS) {
+      for (const paper of FIXTURE_PAPERS.slice(0, 4)) {
         await addFulltextPaper(fixture.sources, fixture.projectId, paper);
       }
       await addMetadataOnlyPaper(fixture.sources, fixture.projectId, FIXTURE_ABSTRACT_ONLY);
@@ -172,7 +172,7 @@ describe("MatrixService.buildMatrix（完整链路）", () => {
     const fixture = await newSurveyFixture({ S001: s001Script });
     try {
       const ids: string[] = [];
-      for (const paper of FIXTURE_PAPERS) {
+      for (const paper of FIXTURE_PAPERS.slice(0, 4)) {
         ids.push(await addFulltextPaper(fixture.sources, fixture.projectId, paper));
       }
       const first = await fixture.matrix.buildMatrix(fixture.projectId);
@@ -202,7 +202,7 @@ describe("MatrixService.buildMatrix（完整链路）", () => {
       S004: () => ({ fail: true, error: "模型任务失败（fixture）" }),
     });
     try {
-      for (const paper of FIXTURE_PAPERS) {
+      for (const paper of FIXTURE_PAPERS.slice(0, 4)) {
         await addFulltextPaper(fixture.sources, fixture.projectId, paper);
       }
       const result = await fixture.matrix.buildMatrix(fixture.projectId);

@@ -1,5 +1,5 @@
 /**
- * M11.1.1 Survey Matrix artifact 持久化测试：
+ * M11.1.1 Matrix / M11.1.2 Synthesis artifact 持久化测试：
  * round-trip / 确定性序列化 / 容错读取 / 损坏与版本 fail-closed。
  */
 
@@ -12,13 +12,18 @@ import { describe, expect, it } from "vitest";
 
 import { BusinessError } from "../../src/errors.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
-import { SurveyMatrixArtifactStore } from "../../src/survey/surveyArtifacts.js";
+import { SurveyMatrixArtifactStore, SurveySynthesisArtifactStore } from "../../src/survey/surveyArtifacts.js";
 import {
   DEFAULT_SURVEY_TAXONOMY,
   matrixEntryId,
   type SurveyMatrixArtifact,
   type SurveyMatrixEntry,
 } from "../../src/survey/matrixTypes.js";
+import {
+  synthesisId,
+  type SurveySynthesisArtifact,
+  type SurveySynthesisItem,
+} from "../../src/survey/synthesisTypes.js";
 
 function sampleEntry(sourceId: string, overrides: Partial<SurveyMatrixEntry> = {}): SurveyMatrixEntry {
   return {
@@ -189,6 +194,151 @@ describe("SurveyMatrixArtifactStore", () => {
       await expect(fixture.store.read(fixture.projectId)).rejects.toMatchObject({
         code: "SURVEY_MATRIX_CORRUPTED",
       });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+});
+
+// ---- M11.1.2 Survey Synthesis artifact ----
+
+function sampleSynthesisItem(
+  kind: SurveySynthesisItem["kind"],
+  claim: string,
+  sourceIds: string[],
+  overrides: Partial<SurveySynthesisItem> = {},
+): SurveySynthesisItem {
+  return {
+    synthesisId: synthesisId(kind, claim, sourceIds),
+    kind,
+    claim,
+    groundingLevel: "literature_cited",
+    evidenceIds: [],
+    sourceIds,
+    derivedFrom: { entryIds: sourceIds.map((sourceId) => matrixEntryId(sourceId)) },
+    groundingReason: "fixture",
+    updatedAt: "2026-10-02T08:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function sampleSynthesisArtifact(): SurveySynthesisArtifact {
+  return {
+    schemaVersion: 1,
+    updatedAt: "2026-10-02T08:00:00.000Z",
+    matrixFingerprint: "abc123def0",
+    items: [
+      sampleSynthesisItem("consensus", "低分框共识", ["S001", "S002", "S003"], {
+        groundingLevel: "evidence_backed",
+        evidenceIds: ["E001", "E002"],
+      }),
+      sampleSynthesisItem("trend", "运动关联转向", ["S001", "S002"]),
+    ],
+  };
+}
+
+describe("SurveySynthesisArtifactStore", () => {
+  async function newSynthesisStore() {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-synthesis-artifact-"));
+    const projects = new ProjectStore({ root });
+    const project = await projects.create("synthesis artifact 测试");
+    return {
+      store: new SurveySynthesisArtifactStore(projects),
+      projects,
+      projectId: project.id,
+      root,
+      cleanup: async () => {
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("未构建 → read 返回 null（与「损坏」区分）", async () => {
+    const fixture = await newSynthesisStore();
+    try {
+      expect(await fixture.store.read(fixture.projectId)).toBeNull();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("write → read round-trip：items 按 synthesisId 排序，字段完整", async () => {
+    const fixture = await newSynthesisStore();
+    try {
+      await fixture.store.write(fixture.projectId, sampleSynthesisArtifact());
+      const read = await fixture.store.read(fixture.projectId);
+      expect(read).not.toBeNull();
+      expect(read!.matrixFingerprint).toBe("abc123def0");
+      const ids = read!.items.map((item) => item.synthesisId);
+      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
+      const consensus = read!.items.find((item) => item.kind === "consensus")!;
+      expect(consensus.groundingLevel).toBe("evidence_backed");
+      expect(consensus.evidenceIds).toEqual(["E001", "E002"]);
+      expect(consensus.derivedFrom.entryIds).toEqual(["M-S001", "M-S002", "M-S003"]);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("确定性序列化：同内容两次写产生字节相同的文件；输入乱序落盘仍同序", async () => {
+    const fixture = await newSynthesisStore();
+    try {
+      const path = join(fixture.projects.researchDir(fixture.projectId), "survey-synthesis.json");
+      await fixture.store.write(fixture.projectId, sampleSynthesisArtifact());
+      const first = await readFile(path, "utf8");
+      await fixture.store.write(fixture.projectId, sampleSynthesisArtifact());
+      const second = await readFile(path, "utf8");
+      expect(second).toBe(first);
+      await fixture.store.write(fixture.projectId, {
+        ...sampleSynthesisArtifact(),
+        items: [...sampleSynthesisArtifact().items].reverse(),
+      });
+      const third = await readFile(path, "utf8");
+      expect(third).toBe(first);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("损坏 JSON / 缺 items / 未来 schemaVersion → SURVEY_SYNTHESIS_CORRUPTED", async () => {
+    const fixture = await newSynthesisStore();
+    try {
+      const path = join(fixture.projects.researchDir(fixture.projectId), "survey-synthesis.json");
+      await writeFile(path, "{ broken", "utf8");
+      await expect(fixture.store.read(fixture.projectId)).rejects.toMatchObject({
+        code: "SURVEY_SYNTHESIS_CORRUPTED",
+      });
+      await writeFile(path, JSON.stringify({ schemaVersion: 1, items: "no" }), "utf8");
+      await expect(fixture.store.read(fixture.projectId)).rejects.toMatchObject({
+        code: "SURVEY_SYNTHESIS_CORRUPTED",
+      });
+      await writeFile(path, JSON.stringify({ ...sampleSynthesisArtifact(), schemaVersion: 2 }), "utf8");
+      await expect(fixture.store.read(fixture.projectId)).rejects.toMatchObject({
+        code: "SURVEY_SYNTHESIS_CORRUPTED",
+        detail: expect.stringContaining("schemaVersion"),
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("tolerant read：缺形 item 剔除、其余保留；老版本缺 matrixFingerprint 可读（空串）", async () => {
+    const fixture = await newSynthesisStore();
+    try {
+      const path = join(fixture.projects.researchDir(fixture.projectId), "survey-synthesis.json");
+      const artifact = sampleSynthesisArtifact();
+      await writeFile(
+        path,
+        JSON.stringify({
+          schemaVersion: 1,
+          updatedAt: artifact.updatedAt,
+          items: [...artifact.items, { kind: "trend", claim: "缺 id" }, null, "garbage"],
+        }),
+        "utf8",
+      );
+      const read = await fixture.store.read(fixture.projectId);
+      expect(read!.items).toHaveLength(2);
+      expect(read!.matrixFingerprint).toBe("");
     } finally {
       await fixture.cleanup();
     }

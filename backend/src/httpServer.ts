@@ -39,6 +39,7 @@ import {
   type SurveyFieldAnchor,
   type SurveyTaxonomy,
 } from "./survey/matrixTypes.js";
+import { SURVEY_SYNTHESIS_KINDS, type SurveySynthesisKind } from "./survey/synthesisTypes.js";
 import type { SkillRegistry } from "./skills/SkillRegistry.js";
 import { ALLOWED_CONTEXT_SCOPES } from "./skills/routing.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
@@ -1809,6 +1810,31 @@ async function handleProjectResourceRoutes(
       const body = await readJsonBody(req);
       const entry = await stack.survey.updateEntry(projectId, entryId, readSurveyEntryPatch(body));
       sendJson(res, 200, { entry });
+      return true;
+    }
+    // GET /survey/synthesis：读取综合产物（未构建 → synthesis:null，与「损坏」区分）
+    if (rest === "/synthesis") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const synthesis = await stack.synthesis.getSynthesis(projectId);
+      sendJson(res, 200, { synthesis });
+      return true;
+    }
+    // POST /survey/synthesis/build：全量重建（Matrix 指纹未变且非 force 时复用）
+    if (rest === "/synthesis/build") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readOptionalJsonBody(req);
+      const kinds = readSynthesisKinds(body);
+      const result = await stack.synthesis.buildSynthesis(projectId, {
+        ...(kinds !== undefined ? { kinds } : {}),
+        ...(body["force"] === true ? { force: true } : {}),
+      });
+      sendJson(res, 200, result);
       return true;
     }
     return false;
@@ -3653,6 +3679,29 @@ function readSurveyEntryPatch(body: Record<string, unknown>): SurveyEntryPatch {
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {
   const value = body[field];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** POST /survey/synthesis/build 请求体的 kinds 过滤（非法值 → 400；缺省全部七类） */
+function readSynthesisKinds(body: Record<string, unknown>): SurveySynthesisKind[] | undefined {
+  const raw = body["kinds"];
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new BusinessError("INVALID_REQUEST", "kinds 必须是非空字符串数组（不指定则构建全部七类）");
+  }
+  return raw.map((kind, index) => {
+    if (typeof kind !== "string") {
+      throw new BusinessError("INVALID_REQUEST", `kinds[${index}] 必须是字符串`);
+    }
+    if (!(SURVEY_SYNTHESIS_KINDS as readonly string[]).includes(kind)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `未知的 synthesis kind「${kind}」（合法值：${SURVEY_SYNTHESIS_KINDS.join(" / ")}）`,
+      );
+    }
+    return kind as SurveySynthesisKind;
+  });
 }
 
 // ---- M10.1 ingestion 辅助 ----
