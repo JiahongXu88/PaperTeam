@@ -77,7 +77,11 @@ export type RevisionReason = "quality" | "style_polish";
 export type RevisionPlanItemPriority = "mandatory" | "high" | "medium" | "low";
 
 export interface RevisionPlanItem {
-  /** 稳定 id（finding 指纹 / external:{instructionId} / citation-missing:{key} / citation-removed:{key} / build-error / gate:{rule}） */
+  /**
+   * 稳定 id（finding 指纹 / external:{instructionId} / citation-missing:{key} / citation-removed:{key} /
+   * fact-preserve:{violationKey}:{n}——同一 violationKey 多次出现按输入顺序 0 基编号（M10.4.3 去重；
+   * violationKey 为 16 位 hex 不含冒号） / fact-preserve:{file}:{n}（无 key fallback） / build-error / gate:{rule}）
+   */
   id: string;
   kind: RevisionPlanItemKind;
   priority: RevisionPlanItemPriority;
@@ -330,6 +334,11 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     }
   }
 
+  // M10.4.3：violationKey 是内容指纹（cumulativeViolationKey），同内容漂移在
+  // 多处发生时 gate 会如实产出多条同 key 违规（M10.4.2 A1·2/A2·1 实证）——
+  // id 直接拼 key 无消歧会触发 M9.10 duplicate_item_id 构建期断言 fail-closed。
+  // 出现序号按输入顺序确定性计数（同 fallback 路径的 findingCount 模式）。
+  const keyOccurrences = new Map<string, number>();
   for (const regression of input.factRegressions ?? []) {
     const hasRestore =
       (regression.restoreValues !== undefined && regression.restoreValues.length > 0) ||
@@ -337,7 +346,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     items.push({
       id:
         regression.violationKey !== undefined
-          ? `fact-preserve:${regression.violationKey}`
+          ? `fact-preserve:${regression.violationKey}:${nextOccurrence(keyOccurrences, regression.violationKey)}`
           : `fact-preserve:${regression.file}:${findingCount(items, regression.file) + 1}`,
       kind: "fact_preserve",
       priority: "high",
@@ -545,6 +554,13 @@ function withNote(item: RevisionPlanItem, note: string): RevisionPlanItem {
 /** 同一文件的 fact_preserve 条目计数（稳定 id 用） */
 function findingCount(items: readonly RevisionPlanItem[], file: string): number {
   return items.filter((item) => item.kind === "fact_preserve" && item.section === file).length;
+}
+
+/** 同一 violationKey 的出现序号（0 基；按输入顺序确定性计数，同输入同输出） */
+function nextOccurrence(counts: Map<string, number>, key: string): number {
+  const next = counts.get(key) ?? 0;
+  counts.set(key, next + 1);
+  return next;
 }
 
 function needsEvidence(issue: ReviewIssue): boolean {

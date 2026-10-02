@@ -2319,13 +2319,17 @@ function revisionRestoreFactsStage(services: WorkflowServices): StageSpec {
           };
         }
         // planned → applied → validated 两步（状态机合法路径；restore stage 即执行者）
+        // M10.4.3：fact-preserve id 为 fact-preserve:{violationKey}:{n}（同 key 多出现
+        // 确定性编号）；violationKey 为 16 位 hex 不含冒号，取前缀后第一段即 key——
+        // 同时兼容旧计划裸格式与无 key fallback（file 段不会命中 hex key 集合）。
+        // 同 key 的全部出现随 key 恢复一并闭环；未真恢复的出现由下一轮 gate 重算暴露。
         const transitions: RevisionItemTransition[] = enriched.items
           .filter(
             (item) =>
               item.kind === "fact_preserve" &&
               item.status === "planned" &&
               item.id.startsWith("fact-preserve:") &&
-              resolvedKeys.has(item.id.slice("fact-preserve:".length)),
+              resolvedKeys.has(item.id.slice("fact-preserve:".length).split(":")[0] ?? ""),
           )
           .flatMap((item) => [
             {

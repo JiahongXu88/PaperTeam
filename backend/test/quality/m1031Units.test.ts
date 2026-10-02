@@ -594,7 +594,7 @@ describe("G2 feasibility task-aware prompt + revision plan 接线", () => {
     expect(skippedFinding?.status).toBe("skipped");
     expect(skippedFinding?.note).toContain("返修语境不适用");
     const factItem = plan.items.find((item) => item.kind === "fact_preserve");
-    expect(factItem?.id).toBe(`fact-preserve:${"a".repeat(16)}`);
+    expect(factItem?.id).toBe(`fact-preserve:${"a".repeat(16)}:0`);
     expect(factItem?.status).toBe("planned");
     expect(factItem?.factRestore?.restoreValues).toEqual(["0.5"]);
     expect(factItem?.note).toContain("revision.restore_facts");
