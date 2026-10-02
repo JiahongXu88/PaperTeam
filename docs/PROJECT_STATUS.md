@@ -1143,6 +1143,57 @@ Candidate Knowledge → 用户确认 user_confirmed Evidence，见
   figure 全部正确读值（如「MOTA 在 threshold 0.5 峰值 82.4」high
   confidence fact）；M10.1 / M10.1.1 e2e 回归通过（ingestion 零回归）。
 
+**M11 — Topic → Survey（进行中；2026-10 立项）**：把「Topic → 综述论文」
+补成一级能力。M11.0 只读审计 ✅ COMPLETE（2026-10-02，判定 GO）：Topic →
+Survey 当前真正缺失的核心能力只有 **Survey Synthesis Matrix**、
+**Structured Synthesis**、**synthesis → Survey Outline 契约** 三项；检索 /
+候选 / 全文 / 证据 / 引用 / 写作 / 审稿 / 修订 / Gate / PDF / Trace 组件
+全部已具备（复用，不重建）。
+
+**M11.1.1 Survey Matrix Domain + Batch Literature Selection ✅ COMPLETE
+（2026-10-02）**：Literature → per-paper 结构化理解 → Survey Matrix 的
+可靠、可持久化、可修改、可追溯正式中间产物。要点：
+
+- **新域 `backend/src/survey/`**：`matrixTypes.ts`（schema + 确定性校验）/
+  `MatrixService.ts`（构建与 HITL 修正编排）/ `surveyArtifacts.ts`
+  （`research/survey.json` 单一写入口：原子写、确定性序列化（entries 按
+  sourceId 排序）、tolerant read、损坏 / 未来 schemaVersion → 结构化
+  `SURVEY_MATRIX_CORRUPTED`，绝不静默当空矩阵）。零新 Agent / Runtime
+  角色：抽取走既有 researcher 角色（`contextScope="research/survey-matrix"`，
+  roleConfig 的 `research/*` 前缀规则天然映射，roleConfig / AgentRuntime
+  契约零改动）。
+- **数据边界**：Matrix 是 Research 阶段派生产物，不写 EvidenceStore、不改
+  EvidenceRecord 语义；不复制 SourceStore 事实（year / venue / DOI 一律经
+  sourceId 指向）；citationKey 不落盘（使用点经 M9.5 确定性 bibliography
+  管道解析，与 Evidence→key 同纪律）。entryId = `M-<sourceId>` 纯函数
+  （dedup 键 = sourceId，同输入重复 build 恒同一行）。
+- **abstract_only 诚实降级**：无全文条目允许 taxonomy 初步归类与描述性
+  字段，评价性字段（strength / limitation / keyFindings）强制剥离、
+  anchors 强制清空（不伪造 chunk / evidence 锚点）；fulltext 条目的
+  anchors 经 ChunkAccess fail-closed 核验（chunk 存在 + 属于本 source，
+  跨文献锚定剔除）。LLM 无权自报 grounded（groundingLevel 属 M11.1.2）。
+- **taxonomy fail-closed**：受控词表（缺省最小集，build 时可提供 / 覆盖）；
+  模型标签不在表内 → `unclassified` + issue 记录原始提案，绝不静默扩表；
+  HITL 修正只接受表内标签。
+- **批量纪律**：按 paper 独立执行——单篇失败是数据不是异常（failed 落账
+  不回滚、不污染其他条目；force 重算失败保留旧条目）；已有 entry 不重复
+  构建；下次 build 自动重试失败篇目；孤儿条目（source 已删）清理。
+- **Candidate 批量入选**：`POST /sources/candidates/promote-batch`（上限
+  50，逐条复用单条 promote 逻辑零复制，partial success：promoted /
+  already_exists / failed 逐条落账，幂等）+ `selectionReason` 入选理由
+  落盘（扁平 provenance 字段；单条 promote 同样支持）。
+- **API**：`GET /api/projects/:id/survey/matrix`（未构建 → matrix:null）/
+  `POST …/survey/matrix/build`（sourceIds / taxonomy / force 可选）/
+  `PUT …/survey/matrix/:entryId`（HITL：字段修正 / taxonomy 修正 /
+  draft↔confirmed；内容修改回退 draft；严格 400 不静默截断）。
+- **测试**：新增 5 文件 45 用例（类型层 16 / artifact 8 / 服务编排 12 /
+  HTTP 6 / promote-batch 3），含 5 篇固定文献（4 fulltext + 1
+  abstract-only，脚本化 researcher runtime 从 prompt CHUNK 标记取真实
+  chunkId 锚定）的完整链路 fixture。
+- **尚缺（未实现，勿提前宣称）**：Structured Synthesis（M11.1.2）、
+  Survey Outline 契约、Survey Writing / Review / Revision / PDF。Topic →
+  Survey 整体未完成。
+
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +
 `event_gap` 合成事件类型），`PiRuntimeAdapter` 三项可靠性修复，全部先以

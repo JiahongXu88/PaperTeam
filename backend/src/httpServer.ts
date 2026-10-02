@@ -34,6 +34,11 @@ import type { RuntimeStatusService } from "./runtime/statusService.js";
 import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
 import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
+import type { SurveyEntryPatch } from "./survey/MatrixService.js";
+import {
+  type SurveyFieldAnchor,
+  type SurveyTaxonomy,
+} from "./survey/matrixTypes.js";
 import type { SkillRegistry } from "./skills/SkillRegistry.js";
 import { ALLOWED_CONTEXT_SCOPES } from "./skills/routing.js";
 import type { SkillSummaryService } from "./skills/SkillSummaryService.js";
@@ -1037,12 +1042,35 @@ async function handleProjectResourceRoutes(
         const sourceRole = readSourceRole(body);
         const result = await stack.sourceImport.promoteCandidate(projectId, candidateId, {
           ...(sourceRole !== undefined ? { sourceRole } : {}),
+          ...(readStringField(body, "selectionReason") !== undefined
+            ? { selectionReason: readStringField(body, "selectionReason") }
+            : {}),
         });
         sendJson(res, 200, result);
         return true;
       }
       const candidate = await stack.sourceImport.rejectCandidate(projectId, candidateId);
       sendJson(res, 200, { candidate });
+      return true;
+    }
+
+    // M11.1.1：批量 promote（Survey corpus 入选；逐条复用单条逻辑，partial success）
+    if (rest === "/candidates/promote-batch") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const candidateIds = readCandidateIds(body);
+      const sourceRole = readSourceRole(body);
+      const result = await stack.sourceImport.promoteCandidatesBatch(projectId, {
+        candidateIds,
+        ...(sourceRole !== undefined ? { sourceRole } : {}),
+        ...(readStringField(body, "selectionReason") !== undefined
+          ? { selectionReason: readStringField(body, "selectionReason") }
+          : {}),
+      });
+      sendJson(res, 200, result);
       return true;
     }
 
@@ -1734,6 +1762,53 @@ async function handleProjectResourceRoutes(
         diagnostics: response.diagnostics,
         ...(saved !== undefined ? { saved } : {}),
       });
+      return true;
+    }
+    return false;
+  }
+
+  // ---- survey（M11.1.1：Survey Matrix——Literature → per-paper 结构化理解；
+  //      Research 阶段派生产物，≠ Verified Evidence）----
+  if (resource === "survey") {
+    await stack.projects.getRequired(projectId);
+    // GET /survey/matrix：读取矩阵（未构建 → matrix:null，与「损坏」区分）
+    if (rest === "/matrix") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const matrix = await stack.survey.getMatrix(projectId);
+      sendJson(res, 200, { matrix });
+      return true;
+    }
+    // POST /survey/matrix/build：构建 / 增量构建（单篇失败是数据不是异常）
+    if (rest === "/matrix/build") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readOptionalJsonBody(req);
+      const sourceIds = readOptionalSourceIds(body);
+      const taxonomy = readSurveyTaxonomy(body);
+      const result = await stack.survey.buildMatrix(projectId, {
+        ...(sourceIds !== undefined ? { sourceIds } : {}),
+        ...(taxonomy !== undefined ? { taxonomy } : {}),
+        ...(body["force"] === true ? { force: true } : {}),
+      });
+      sendJson(res, 200, result);
+      return true;
+    }
+    // PUT /survey/matrix/:entryId：HITL 修正单条（taxonomy / interpretation / 确认）
+    const surveyEntryMatch = /^\/matrix\/(M-S\d{2,})$/.exec(rest);
+    if (surveyEntryMatch) {
+      if (method !== "PUT") {
+        sendMethodNotAllowed(res, "PUT", method);
+        return true;
+      }
+      const entryId = surveyEntryMatch[1] ?? "";
+      const body = await readJsonBody(req);
+      const entry = await stack.survey.updateEntry(projectId, entryId, readSurveyEntryPatch(body));
+      sendJson(res, 200, { entry });
       return true;
     }
     return false;
@@ -3434,6 +3509,145 @@ function readBatchSourceIds(body: Record<string, unknown>): string[] {
     return entry;
   });
   return sourceIds;
+}
+
+/** M11.1.1 批量 promote 的 candidateIds 入参（形状与上限由服务层终检） */
+function readCandidateIds(body: Record<string, unknown>): string[] {
+  const value = body["candidateIds"];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串数组字段 candidateIds");
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `candidateIds 含非法条目（期望候选 id 形如 C001）：${String(entry).slice(0, 40)}`,
+      );
+    }
+    return entry.trim();
+  });
+}
+
+// ---- M11.1.1 Survey Matrix 请求体辅助 ----
+
+/** build.sourceIds（可选；提供则必须非空、形状合法） */
+function readOptionalSourceIds(body: Record<string, unknown>): string[] | undefined {
+  const value = body["sourceIds"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new BusinessError("INVALID_REQUEST", "sourceIds 必须是非空数组（不指定则构建全部文献）");
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "string" || !/^[A-Z]\d{2,}$/.test(entry)) {
+      throw new BusinessError("INVALID_REQUEST", `sourceIds 含非法条目（期望形如 S001）：${String(entry).slice(0, 40)}`);
+    }
+    return entry;
+  });
+}
+
+/** build.taxonomy（可选；families 形状校验，标签归一由服务层终检） */
+function readSurveyTaxonomy(body: Record<string, unknown>): SurveyTaxonomy | undefined {
+  const value = body["taxonomy"];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "object" || value === null || !Array.isArray((value as { families?: unknown }).families)) {
+    throw new BusinessError("INVALID_REQUEST", "taxonomy 必须是 { families: [{label, description, subFamilies?}] }");
+  }
+  const families = (value as { families: unknown[] }).families.map((raw) => {
+    if (typeof raw !== "object" || raw === null) {
+      throw new BusinessError("INVALID_REQUEST", "taxonomy.families 含非对象条目");
+    }
+    const record = raw as Record<string, unknown>;
+    if (typeof record["label"] !== "string" || record["label"].trim() === "") {
+      throw new BusinessError("INVALID_REQUEST", "taxonomy.families[].label 必须是非空字符串");
+    }
+    return {
+      label: record["label"],
+      ...(typeof record["description"] === "string" ? { description: record["description"] } : { description: "" }),
+      ...(Array.isArray(record["subFamilies"])
+        ? {
+            subFamilies: record["subFamilies"].filter(
+              (sub): sub is string => typeof sub === "string" && sub.trim() !== "",
+            ),
+          }
+        : {}),
+    };
+  });
+  return { families };
+}
+
+/** 字符串数组字段（严格：全字符串、允许空数组 = 清空） */
+function readStringArrayField(body: Record<string, unknown>, field: string): string[] | undefined {
+  const value = body[field];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    throw new BusinessError("INVALID_REQUEST", `字段 ${field} 必须是字符串数组`);
+  }
+  return value as string[];
+}
+
+/** PUT /survey/matrix/:entryId 请求体 → SurveyEntryPatch（present-but-empty = 清空该字段） */
+function readSurveyEntryPatch(body: Record<string, unknown>): SurveyEntryPatch {
+  const textFields = [
+    "researchProblem",
+    "methodFamily",
+    "subFamily",
+    "mainIdea",
+    "keyTechnique",
+    "assumption",
+    "datasetContext",
+    "strength",
+    "limitation",
+  ] as const;
+  const patch: SurveyEntryPatch = {};
+  for (const field of textFields) {
+    const value = body[field];
+    if (typeof value === "string") {
+      (patch as Record<string, unknown>)[field] = value;
+    }
+  }
+  const comparedMethods = readStringArrayField(body, "comparedMethods");
+  if (comparedMethods !== undefined) {
+    patch.comparedMethods = comparedMethods;
+  }
+  const keyFindings = readStringArrayField(body, "keyFindings");
+  if (keyFindings !== undefined) {
+    patch.keyFindings = keyFindings;
+  }
+  if (body["status"] === "draft" || body["status"] === "confirmed") {
+    patch.status = body["status"];
+  }
+  const anchorsRaw = body["anchors"];
+  if (anchorsRaw !== undefined) {
+    if (!Array.isArray(anchorsRaw)) {
+      throw new BusinessError("INVALID_REQUEST", "字段 anchors 必须是数组（整体替换语义）");
+    }
+    patch.anchors = anchorsRaw.map((raw, index) => {
+      if (typeof raw !== "object" || raw === null) {
+        throw new BusinessError("INVALID_REQUEST", `anchors[${index}] 必须是对象`);
+      }
+      const record = raw as Record<string, unknown>;
+      if (typeof record["field"] !== "string") {
+        throw new BusinessError("INVALID_REQUEST", `anchors[${index}].field 必须是字符串`);
+      }
+      if (!Array.isArray(record["chunkIds"])) {
+        throw new BusinessError("INVALID_REQUEST", `anchors[${index}].chunkIds 必须是字符串数组`);
+      }
+      return {
+        field: record["field"] as SurveyFieldAnchor["field"],
+        chunkIds: record["chunkIds"] as string[],
+        ...(Array.isArray(record["evidenceIds"])
+          ? { evidenceIds: record["evidenceIds"] as string[] }
+          : {}),
+      };
+    });
+  }
+  return patch;
 }
 
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {

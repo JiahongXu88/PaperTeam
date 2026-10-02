@@ -65,6 +65,7 @@ import { EvidenceCandidateStore } from "./evidence/candidates.js";
 import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
 import { ChunkAccess } from "./evidence/chunkAccess.js";
+import { MatrixService } from "./survey/MatrixService.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
@@ -209,6 +210,11 @@ export interface ServiceStack {
   loop: ResearchLoopService;
   /** Project Retrieval（M6.4）：chunk 管线 + 进程内 hybrid index + Context Packing */
   retrieval: RetrievalService;
+  /**
+   * Survey Matrix（M11.1.1）：Literature → per-paper 结构化理解 →
+   * research/survey.json（Research 阶段派生产物；不写 EvidenceStore）
+   */
+  survey: MatrixService;
   /** M10.1：结构化解析产物持久化（sources/parsed/<id>.document.json + figures/） */
   parsedDocuments: ParsedDocumentStore;
   /** M10.1：Document & Data Ingestion 编排（PDF docling 链 + CSV/XLSX 记录 + 事实确认） */
@@ -613,6 +619,20 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   });
   // M6.6 Evidence 使用策略（usableEvidence 下沉；verified + 三件套锚点才进正式上下文）
   const evidenceSelection = new EvidenceSelectionService(evidence);
+  // M11.1.1 Survey Matrix：复用 retrieval（单篇检索）+ chunkAccess（anchor 核验）
+  // + researcher 角色（contextScope=research/survey-matrix，roleConfig research/* 前缀
+  // 规则已映射，无新增角色）；不写 EvidenceStore（Matrix ≠ Verified Evidence）
+  const survey = new MatrixService({
+    projects: options.projects,
+    sources,
+    retrieval,
+    chunkAccess,
+    runtime: options.runtime,
+    researcherAgentId: options.agentIds.researcher,
+    evidence,
+    ...longRun,
+    log,
+  });
   const researcher = new ResearcherService({
     runtime: options.runtime,
     agentId: options.agentIds.researcher,
@@ -676,6 +696,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     gaps,
     loop,
     retrieval,
+    survey,
     parsedDocuments,
     ingestion,
     figureAnalyses,

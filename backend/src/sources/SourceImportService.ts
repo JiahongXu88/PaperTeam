@@ -72,6 +72,30 @@ export interface PromoteResult {
   candidate: CandidateSource;
 }
 
+/** 批量 promote 单条上限（M11.1.1；与 MAX_BATCH_FULLTEXT_SOURCES 同档） */
+export const MAX_PROMOTE_BATCH_CANDIDATES = 50;
+
+/** 批量 promote 逐条结局（partial success：失败是数据不是异常） */
+export interface PromoteBatchEntry {
+  candidateId: string;
+  /** promoted = 新建入库；already_exists = 幂等重入 / 同身份既有条目；failed = 该条失败 */
+  outcome: "promoted" | "already_exists" | "failed";
+  source?: SourceItem;
+  candidate?: CandidateSource;
+  /** failed 时的短摘要（错误码 + 消息；不含堆栈） */
+  error?: string;
+}
+
+export interface PromoteBatchResult {
+  summary: {
+    total: number;
+    promoted: number;
+    alreadyExists: number;
+    failed: number;
+  };
+  results: PromoteBatchEntry[];
+}
+
 /** tryResolveFullText 的结局（数据而非异常：不报错不阻塞，如实呈现） */
 export type FullTextOutcome =
   | "resolved" // 全文已挂载 + 分析 + provenance 落盘
@@ -373,20 +397,34 @@ export class SourceImportService {
    * Candidate → Literature Library（幂等）：
    * 1. 重新执行 SourceIdentity 去重（library 已有同身份条目 → merge 元数据并
    *    返回既有条目，不复制）；
-   * 2. 已 promoted 且目标 source 仍在 → 直接返回（重复调用幂等）；
+   * 2. 已 promoted 且目标 source 仍在 → 直接返回（重复调用幂等）；带新
+   *    selectionReason 时仅补记理由（M11.1.1）；
    * 3. 新建条目的 origin：manual 候选 = USER_ADDED，检索候选 = AGENT_RETRIEVED；
    * 4. promotion 只影响 candidate 状态标记，不把候选清单变成文献事实来源。
    */
   async promoteCandidate(
     projectId: string,
     candidateId: string,
-    input: { sourceRole?: SourceRole } = {},
+    input: { sourceRole?: SourceRole; selectionReason?: string } = {},
   ): Promise<PromoteResult> {
     const candidate = await this.candidates.getRequired(projectId, candidateId);
     // 幂等快路径：已 promote 且 library 条目仍在
     if (candidate.status === "accepted" && candidate.promotedSourceId !== undefined) {
       const promoted = await this.sources.get(projectId, candidate.promotedSourceId);
       if (promoted !== null) {
+        if (
+          input.selectionReason !== undefined &&
+          input.selectionReason.trim() !== "" &&
+          candidate.selectionReason !== input.selectionReason.trim().slice(0, 500)
+        ) {
+          const updated = await this.candidates.markAccepted(
+            projectId,
+            candidateId,
+            promoted.sourceId,
+            input.selectionReason,
+          );
+          return { source: promoted, created: false, candidate: updated };
+        }
         return { source: promoted, created: false, candidate };
       }
       // 目标条目已被删除 → 落回正常路径重新入库
@@ -411,7 +449,12 @@ export class SourceImportService {
       });
       created = true;
     }
-    const updated = await this.candidates.markAccepted(projectId, candidateId, source.sourceId);
+    const updated = await this.candidates.markAccepted(
+      projectId,
+      candidateId,
+      source.sourceId,
+      input.selectionReason,
+    );
     // M7.2：promote 后台尝试自动获取 OA 全文（fire-and-forget 单次，不阻塞
     // 响应；attachFile 幂等守卫吸收并发竞态；未装配全文能力 = no-op）
     if (source.status === "metadata_only") {
@@ -426,6 +469,80 @@ export class SourceImportService {
 
   rejectCandidate(projectId: string, candidateId: string): Promise<CandidateSource> {
     return this.candidates.markRejected(projectId, candidateId);
+  }
+
+  /**
+   * 批量 promote（M11.1.1 Survey corpus 入选）：逐条复用 promoteCandidate 的
+   * 全部逻辑（身份去重 / 幂等 / 全文后台尝试），零逻辑复制——本方法只做
+   * 输入校验、逐条调度与结局汇总。
+   *
+   * - partial success：单条失败是数据不是异常（failed 落账，不回滚任何人、
+   *   不阻塞后续条目）；重复提交同批 → 全部 already_exists（幂等）；
+   * - 上限 MAX_PROMOTE_BATCH_CANDIDATES（防一次性无限输入）；
+   * - selectionReason 批级统一携带（「为什么这批文献被纳入 Survey corpus」；
+   *   逐条差异化理由走单条 promote）。
+   */
+  async promoteCandidatesBatch(
+    projectId: string,
+    input: { candidateIds: readonly string[]; sourceRole?: SourceRole; selectionReason?: string },
+  ): Promise<PromoteBatchResult> {
+    await this.projects.getRequired(projectId);
+    const candidateIds = [...new Set(input.candidateIds.map((id) => id.trim()).filter((id) => id !== ""))];
+    if (candidateIds.length === 0) {
+      throw new BusinessError("INVALID_REQUEST", "candidateIds 必须是非空数组");
+    }
+    if (candidateIds.length > MAX_PROMOTE_BATCH_CANDIDATES) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `单次批量 promote 上限 ${MAX_PROMOTE_BATCH_CANDIDATES} 条（当前 ${candidateIds.length}）；请分批提交`,
+      );
+    }
+    const results: PromoteBatchEntry[] = [];
+    let promoted = 0;
+    let alreadyExists = 0;
+    let failed = 0;
+    for (const candidateId of candidateIds) {
+      try {
+        const result = await this.promoteCandidate(projectId, candidateId, {
+          ...(input.sourceRole !== undefined ? { sourceRole: input.sourceRole } : {}),
+          ...(input.selectionReason !== undefined
+            ? { selectionReason: input.selectionReason }
+            : {}),
+        });
+        if (result.created) {
+          promoted += 1;
+          results.push({
+            candidateId,
+            outcome: "promoted",
+            source: result.source,
+            candidate: result.candidate,
+          });
+        } else {
+          alreadyExists += 1;
+          results.push({
+            candidateId,
+            outcome: "already_exists",
+            source: result.source,
+            candidate: result.candidate,
+          });
+        }
+      } catch (error) {
+        failed += 1;
+        results.push({
+          candidateId,
+          outcome: "failed",
+          error: error instanceof BusinessError ? `${error.code}: ${error.message}` : errorText(error),
+        });
+      }
+    }
+    this.log(
+      `[sources] projectId=${projectId} 批量 promote：${promoted}/${candidateIds.length} 新建` +
+        `（already_exists=${alreadyExists} failed=${failed}）`,
+    );
+    return {
+      summary: { total: candidateIds.length, promoted, alreadyExists, failed },
+      results,
+    };
   }
 
   // ---- FullText Resolution（M7.2：Literature → FullText → Evidence 的断点修复） ----

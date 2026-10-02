@@ -358,6 +358,32 @@
 >   unverified 记录保留在库（evidence list/stats 端点可见），只是不再自动
 >   进入写作 / 审稿上下文与 writer 工具视野（收口属 M6.7）。
 
+### 1.2j M11.1.1 Survey Matrix / Candidate 批量入选 API（后端已实现；前端暂无消费方——验收靠 backend 行为测试）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/survey/matrix` | 读 Survey Matrix artifact（`research/survey.json`；Research 阶段派生产物，≠ Verified Evidence）。200 `{matrix: SurveyMatrixArtifact \| null}`——未构建 = null（空态而非错误）；文件损坏 / 未来 schemaVersion → **500 SURVEY_MATRIX_CORRUPTED**（含恢复指引；损坏期间 build / PUT 被拒绝，不覆盖现场）。artifact：`{schemaVersion:1, updatedAt, taxonomy:{families:[{label, description, subFamilies?}]}, entries: SurveyMatrixEntry[]}`（entries 按 sourceId 升序；entryId=`M-<sourceId>` 确定性派生，dedup 键 = sourceId）。entry 携带 `interpretationDepth(fulltext\|abstract_only)` / `researchProblem / methodFamily / subFamily / mainIdea / keyTechnique / assumption / datasetContext / strength / limitation / comparedMethods / keyFindings / anchors / status(draft\|confirmed) / issues / taskId / updatedAt`；citationKey **不落盘**（使用点经 M9.5 确定性 bibliography 管道按 sourceId 解析） | （无——M11.1.1 不做 Survey UI） |
+| `POST /api/projects/:id/survey/matrix/build` | 构建 / 增量构建。body 全可选：`{sourceIds?: string[]（形如 S001；须存在且非 reference / rejected，否则 400 列明）, taxonomy?: {families:[{label, description, subFamilies?}]}（覆盖受控词表；既有条目标签失效 → unclassified + issue，不静默丢弃）, force?: boolean（重算已有条目，缺省跳过）}`。逐篇抽取走既有 researcher 角色（contextScope=`research/survey-matrix`，roleConfig 前缀规则天然映射，零新 Agent）：fulltext（status=available/partial）→ RetrievalService 单篇检索（CHUNK 标记进 prompt）→ 结构化 JSON → 确定性校验 → anchors 经 ChunkAccess fail-closed 核验（chunk 存在 + 属本 source）；abstract_only → 元数据/摘要有限归类（评价性字段剥离、anchors 强制清空）。**partial success**：单篇失败是数据不是异常。200 `{summary:{total, built, skippedExisting, failed, removedOrphans}, results:[{sourceId, outcome: built\|skipped_existing\|failed, entry?, error?}], matrix}`（已有 entry 不重复构建；失败篇目下次 build 自动重试；source 已删的孤儿条目清理；force 重算失败保留旧条目）。taxonomy 非法 / sourceIds 空或非法 → 400；非 POST → 405 | （无） |
+| `PUT /api/projects/:id/survey/matrix/:entryId` | HITL 修正单条（entryId 形如 M-S001）。body 全可选（present-but-empty 字符串 = 清空该字段）：`{researchProblem? / methodFamily? / subFamily? / mainIdea? / keyTechnique? / assumption? / datasetContext? / strength? / limitation?（≤300 字符，超长 400 不静默截断）, comparedMethods?: string[]（归一去重）, keyFindings?: string[]（≤3 条，超限 400）, anchors?: [{field: mainIdea\|keyTechnique\|strength\|limitation\|keyFindings\|datasetContext, chunkIds: string[], evidenceIds?: string[]}]（整体替换；chunkId 须存在且属本 source、evidenceId 须存在且指向本 source，任一非法 400）, status?: draft\|confirmed}`。methodFamily 只接受 taxonomy 表内标签或 `unclassified`（非法 400 列出合法集）；subFamily 须在所属 family 的 subFamilies 内；已确认条目被修改内容字段 → 自动回退 draft（重新走确认）。矩阵未构建 → 404；条目不存在 → 404。200 `{entry}` | （无） |
+| `POST /api/projects/:id/sources/candidates/promote-batch` | M11.1.1 Candidate 批量入选（Survey corpus）：`{candidateIds: string[]（非空，单次 ≤50，重复 id 去重保序）, sourceRole?, selectionReason?: string（批级入选理由，如 seminal work / opposing approach；落盘到各候选的扁平 provenance 字段）}`。逐条**复用**单条 promoteCandidate 全部逻辑（身份去重 / 幂等 / 全文后台尝试），零逻辑复制；partial success——200 `{summary:{total, promoted, alreadyExists, failed}, results:[{candidateId, outcome: promoted\|already_exists\|failed, source?, candidate?, error?}]}`（promoted=新建入库；already_exists=幂等重入 / 同身份既有条目；failed=该条失败不回滚任何人）。缺字段 / 空数组 / 超 50 / 含非字符串 → 400 INVALID_REQUEST；非 POST → 405。单条 `POST …/candidates/:cid/promote` 同步支持可选 `selectionReason` | （无） |
+
+> 2026-10-02 M11.1.1 语义约定：
+> - **Survey Matrix ≠ Verified Evidence**：Matrix 是 per-paper 结构化理解
+>   （Research 阶段派生产物），不写 EvidenceStore、不改 EvidenceRecord
+>   「单源、单锚点、verified」语义；Matrix anchors 只承载 chunk 引用，
+>   `evidenceIds` 仅 HITL 路径可携带并核验存在——LLM 无权自报 grounded，
+>   synthesis groundingLevel 判定属 M11.1.2。
+> - **abstract_only 诚实降级**：无全文条目（metadata_only / pending /
+>   failed）允许 taxonomy 初步归类与描述性字段；strength / limitation /
+>   keyFindings 强制剥离（评价性字段需全文依据）、anchors 强制清空
+>   （不伪造 chunk / evidence 锚点、不绕过 abstract 不进检索链的限制）。
+> - **taxonomy fail-closed**：模型输出的 methodFamily 不在受控词表内 →
+>   `unclassified` + issue 记录原始提案（进 HITL 修正队列），绝不静默
+>   扩表；缺省最小词表内置于 `matrixTypes.ts`，build 时可提供 / 覆盖。
+> - **错误码新增**：SURVEY_MATRIX_CORRUPTED(500)。
+> - **尚缺（勿提前宣称）**：Structured Synthesis（M11.1.2）/ Survey
+>   Outline 契约 / Survey Writing / Review / Revision / PDF。
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |

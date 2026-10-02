@@ -62,6 +62,13 @@ export interface CandidateSource {
   status: CandidateStatus;
   /** promotion 后指向正式 Source（幂等重入依据；source 被删后可重新 promote） */
   promotedSourceId?: string;
+  /**
+   * 入选理由（M11.1.1 Survey 批量入选）：「为什么这篇文献被纳入 Survey
+   * corpus」（如 seminal work / representative method / opposing approach）。
+   * 扁平 provenance 字段（与 query / requirementId 同层），promotion 时由
+   * 用户动作写入，不承载文献事实；不建 PRISMA 筛选状态机。
+   */
+  selectionReason?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -293,20 +300,34 @@ export class CandidateStore {
     return status === undefined ? candidates : candidates.filter((c) => c.status === status);
   }
 
-  /** promotion 成功后标记（幂等：重复标记同一 source 返回原样；整段在互斥内） */
+  /**
+   * promotion 成功后标记（幂等：重复标记同一 source 返回原样；整段在互斥内）。
+   * M11.1.1：可选 selectionReason 随 promotion 落盘（仅在提供且变化时更新，
+   * 不覆盖历史理由以外的字段）。
+   */
   async markAccepted(
     projectId: string,
     candidateId: string,
     promotedSourceId: string,
+    selectionReason?: string,
   ): Promise<CandidateSource> {
+    const reason =
+      selectionReason !== undefined && selectionReason.trim() !== ""
+        ? selectionReason.trim().slice(0, 500)
+        : undefined;
     return this.enqueue(projectId, async () => {
       const candidate = await this.getRequired(projectId, candidateId);
-      if (candidate.status === "accepted" && candidate.promotedSourceId === promotedSourceId) {
+      if (
+        candidate.status === "accepted" &&
+        candidate.promotedSourceId === promotedSourceId &&
+        (reason === undefined || candidate.selectionReason === reason)
+      ) {
         return candidate;
       }
       return this.patch(projectId, candidate, {
         status: "accepted",
         promotedSourceId,
+        ...(reason !== undefined ? { selectionReason: reason } : {}),
       });
     });
   }
@@ -339,7 +360,7 @@ export class CandidateStore {
   private async patch(
     projectId: string,
     candidate: CandidateSource,
-    patch: Partial<Pick<CandidateSource, "status" | "promotedSourceId">>,
+    patch: Partial<Pick<CandidateSource, "status" | "promotedSourceId" | "selectionReason">>,
   ): Promise<CandidateSource> {
     const updated: CandidateSource = {
       ...candidate,
