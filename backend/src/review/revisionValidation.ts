@@ -33,6 +33,7 @@ import { checkClaimStrengthEscalation } from "../quality/claimStrength.js";
 import type { RevisionPlan, RevisionPlanItem, RevisionPlanItemKind } from "./revisionPlan.js";
 import type { RevisionItemResolutionReason } from "./revisionItemStatus.js";
 import { extractCitationKeys } from "./styleInvariants.js";
+import { extractLatexHeadings, sectionRefNamesHeading } from "../manuscript/latexHeadings.js";
 
 export type RevisionValidationItemStatus = "validated" | "rejected" | "needs_review";
 
@@ -139,16 +140,37 @@ export interface RevisionValidationInput {
 
 /**
  * 条目 section 引用是否指向该文件（文件级归因；口径与派发侧 sectionMatches 一致：
- * 路径 / 文件名 / stem / 包含；摘要引用归到组装根 main.tex——writeMainTex 会把
- * outline.abstract 组装进 main.tex，摘要改动在快照上体现为 main.tex 差异）。
+ * 路径 / 文件名 / stem / 包含 / heading（M10.4.4）；摘要引用归到组装根
+ * main.tex——writeMainTex 会把 outline.abstract 组装进 main.tex，摘要改动在
+ * 快照上体现为 main.tex 差异）。
+ *
+ * M10.4.4：可选 contents（修订前后文件内容）提供时启用 grounded heading
+ * 归因——heading 式引用（「方法/3.6 轨迹稳定性自适应损失」）条目被派发应用
+ * 后，其违规 / claim 归因不再漏看该文件。缺省（无内容）保持纯路径口径。
  */
-export function itemTouchesFile(sectionRef: string, file: string): boolean {
+export function itemTouchesFile(
+  sectionRef: string,
+  file: string,
+  contents?: { before?: string; after?: string },
+): boolean {
   const ref = sectionRef.trim().replaceAll("\\", "/").toLowerCase();
   if (ref === "" || ref === "(global)" || ref === "(unknown)") {
     return false;
   }
   const isAbstractRef = ref.includes("摘要") || ref.includes("abstract");
   const path = file.replaceAll("\\", "/").toLowerCase();
+  if (contents !== undefined) {
+    // M10.4.4 grounded heading 归因（先于 main.tex 特判）：单文件项目的
+    // main.tex 是用户内容（含真实 \section），heading 引用条目被派发应用后
+    // 归因不能漏看；outline 项目的组装根 main.tex 只含 \input 不含 \section，
+    // 提取不到标题 → 天然不误归因。修订前或修订后任一快照含该标题即归因
+    // （引用由 reviewer 对修订前稿件写出，派发按修订前内容成立）。
+    for (const latex of [contents.before, contents.after]) {
+      if (latex !== undefined && sectionRefNamesHeading(sectionRef, extractLatexHeadings(latex))) {
+        return true;
+      }
+    }
+  }
   if (path === "main.tex") {
     // 组装根只接受摘要类引用与显式 main.tex 引用
     return isAbstractRef || ref === "main.tex" || ref.endsWith("/main.tex");
@@ -245,7 +267,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     if (contents === undefined) {
       continue;
     }
-    const touchingItems = appliedItems.filter((item) => itemTouchesFile(item.section, file));
+    const touchingItems = appliedItems.filter((item) => itemTouchesFile(item.section, file, contentByFile.get(file)));
     const relatedEvidence = touchingItems.flatMap((item) =>
       (item.relatedEvidenceIds ?? []).flatMap((id) => {
         const record = evidenceById.get(id);
@@ -352,12 +374,12 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     };
     // 修改前记录（§6）：条目触达文件的违规事实 / 引用
     for (const violation of violations) {
-      if (itemTouchesFile(item.section, violation.file)) {
+      if (itemTouchesFile(item.section, violation.file, contentByFile.get(violation.file))) {
         settle("rejected", `${violation.file}：${violation.reason}`, violation.code, violation.category, violation.evidence);
       }
     }
     for (const finding of blockFindings) {
-      if (itemTouchesFile(item.section, finding.file)) {
+      if (itemTouchesFile(item.section, finding.file, contentByFile.get(finding.file))) {
         settle(
           "rejected",
           `${finding.file}：claim 强度升级为强表述但证据不足（${finding.markers.join("/")}）`,
@@ -368,7 +390,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
       }
     }
     for (const file of warningFiles) {
-      if (itemTouchesFile(item.section, file)) {
+      if (itemTouchesFile(item.section, file, contentByFile.get(file))) {
         settle(
           "needs_review",
           `${file}：claim 强度升级仅有部分证据支撑，需人工确认`,
@@ -418,7 +440,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
   const evidenceById2 = new Map<string, string[]>();
   for (const violation of violations) {
     for (const applied of appliedItems) {
-      if (itemTouchesFile(applied.section, violation.file)) {
+      if (itemTouchesFile(applied.section, violation.file, contentByFile.get(violation.file))) {
         const list = evidenceById2.get(applied.id) ?? [];
         if (list.length < 3) {
           list.push(violation.evidence);
@@ -429,7 +451,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
   }
   for (const finding of blockFindings) {
     for (const applied of appliedItems) {
-      if (itemTouchesFile(applied.section, finding.file)) {
+      if (itemTouchesFile(applied.section, finding.file, contentByFile.get(finding.file))) {
         const list = evidenceById2.get(applied.id) ?? [];
         if (list.length < 3) {
           list.push(`markers：${finding.markers.join("/")}（${finding.file}）`);

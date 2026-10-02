@@ -656,6 +656,12 @@ export interface ScriptedRuntimeOptions {
    */
   firstRoundFactIssue?: Record<string, unknown>;
   /**
+   * 附加到每一轮 review/fact 载荷的 issue（M10.4.4）：existing-paper 流程的
+   * Quality Gate 只对 r2+ 轮裁决（r1 是计划前 review），需要 heading 式
+   * finding 在 gate 失败轮也出现才能验证派发链路。
+   */
+  everyRoundFactIssue?: Record<string, unknown>;
+  /**
    * citation/evidence/* scope 的 judge 输出覆盖（M6.5 evidence grounding E2E）：
    * 缺省返回 supported 裁决（keyQuote 逐字来自 prompt 中的 chunk 原文由测试
    * 自行保证——脚本输出不解析 prompt，只提供固定形态）。
@@ -957,6 +963,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         output = scope === "review/fact" ? pack.fact : scope === "review/academic" ? pack.academic : pack.style;
         if (scope === "review/fact" && round === 0 && options.firstRoundFactIssue !== undefined) {
           output = appendReviewIssue(output, options.firstRoundFactIssue);
+        }
+        if (scope === "review/fact" && options.everyRoundFactIssue !== undefined) {
+          output = appendReviewIssue(output, options.everyRoundFactIssue);
         }
         if (scope === "review/style" && projectStyleModes.has(projectId)) {
           // M5.4：可执行的 style minor finding（位置 / 问题 / 原因 / 改法 / 严重度）

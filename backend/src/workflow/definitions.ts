@@ -51,6 +51,11 @@ import type { CandidateStore } from "../sources/CandidateStore.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import {
+  headingsOfContent,
+  latexContainsAbstract,
+  sectionRefNamesHeading,
+} from "../manuscript/latexHeadings.js";
+import {
   computeCitationPreservation,
   readSnapshotTex,
   type CitationPreservationSummary,
@@ -1016,6 +1021,20 @@ function revisionReviseStage(
       if (targets.length === 0) {
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有任何可修订的章节文件");
       }
+      // M10.4.4 派发覆盖诊断（确定性、只读）：进入派发的 finding 有多少真正
+      // 命中修订目标——unmatched 条目不会进入任何 Writer prompt（永久滞留
+      // planned，需复审 / HITL 兜底）；multiTarget = 命中多个目标（M9.7.6
+      // 同 id 合并语义，grounded 多目标派发，显式计数不静默）。
+      const dispatchTargetCounts = directives.map(
+        (directive) => targets.filter((target) => directive.match(target) !== null).length,
+      );
+      const dispatchMatched = dispatchTargetCounts.filter((count) => count > 0).length;
+      const findingDispatch = {
+        total: directives.length,
+        matched: dispatchMatched,
+        unmatched: directives.length - dispatchMatched,
+        multiTarget: dispatchTargetCounts.filter((count) => count > 1).length,
+      };
       const revised: string[] = [];
       // M6.7：本轮流派发的计划条目（planned → applied 的依据；确定性 diff 补 targetChanged）
       const dispatchedItems: { id: string; targetChanged: boolean }[] = [];
@@ -1210,6 +1229,7 @@ function revisionReviseStage(
         sections: revised,
         revision: revision.revision,
         changed: revision.created,
+        findingDispatch,
         ...(claimRepairsDispatched > 0 ? { claimRepairs: claimRepairsDispatched } : {}),
         ...(dispatchedItems.length > 0 ? { appliedItems: dispatchedItems.length } : {}),
         ...(externalDirectives.length > 0
@@ -5015,23 +5035,41 @@ function isAbstractSectionRef(sectionRef: string): boolean {
   return ref !== "" && (ref.includes("摘要") || ref.includes("abstract"));
 }
 
-/** issue/plan 的 section 字段与修订目标的模糊匹配（路径 / id / 文件名） */
-function sectionMatches(sectionRef: string, target: RevisionTarget): boolean {
+/**
+ * issue/plan 的 section 字段与修订目标的模糊匹配（路径 / id / 文件名 / heading）。
+ *
+ * M10.4.4 分层（逐层、确定性）：
+ * 1. 摘要互斥（M4.8 语义 + grounded 补充）：摘要目标只收摘要类引用；摘要类
+ *    引用对普通目标仅当该目标自身内容含摘要环境（latexContainsAbstract）才
+ *    匹配——单文件 main.tex 项目（摘要物理在文件内、无独立摘要目标）的
+ *    abstract 类 finding 不再永久滞留；outline 项目组装根不入目标、章节文件
+ *    无摘要环境，行为不变。
+ * 2. 路径 / stem / key 匹配：M10.3 前既有语义逐字保留（多文件与显式路径引用）。
+ * 3. heading 匹配（grounded in target.currentLatex）：引用切段（分隔符 /
+ *    括号注释 / 前导编号剥离）后与目标真实 \section 系标题做精确段匹配与
+ *    子串兜底——「方法/3.6 轨迹稳定性自适应损失」类自由格式引用命中含该
+ *    标题的目标文件；无法可靠匹配保持 unmatched（不广播、不伪造）。
+ *
+ * 导出供 M10.4.4 派发覆盖单测直接测试真实匹配语义。
+ */
+export function sectionMatches(sectionRef: string, target: RevisionTarget): boolean {
   const ref = sectionRef.trim().replaceAll("\\", "/").toLowerCase();
   if (ref === "") {
     return false;
   }
-  // 摘要引用与普通目标互斥：摘要只进摘要目标，章节引用不进摘要目标
+  // 摘要引用与普通目标互斥：摘要只进摘要目标，章节引用不进摘要目标；
+  // M10.4.4 grounded 例外：目标自身含摘要环境（单文件 main.tex）时摘要类
+  // 引用允许派发——摘要的物理载体就是该文件
   if (target.key === "abstract") {
     return isAbstractSectionRef(ref);
   }
   if (isAbstractSectionRef(ref)) {
-    return false;
+    return latexContainsAbstract(target.currentLatex);
   }
   const path = target.relativePath.replaceAll("\\", "/").toLowerCase();
   const fileName = path.split("/").pop() ?? path;
   const stem = fileName.replace(/\.tex$/, "");
-  return (
+  if (
     ref === path ||
     ref === fileName ||
     ref === stem ||
@@ -5040,7 +5078,10 @@ function sectionMatches(sectionRef: string, target: RevisionTarget): boolean {
     path.endsWith(ref) ||
     ref.includes(stem) ||
     target.key.toLowerCase().includes(ref)
-  );
+  ) {
+    return true;
+  }
+  return sectionRefNamesHeading(sectionRef, headingsOfContent(target, target.currentLatex));
 }
 
 /** 修订目标列表：有大纲按大纲；否则用全部非 main 的 tex；指令引用的额外文件一并纳入 */
