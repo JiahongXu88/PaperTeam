@@ -1,11 +1,11 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-10-02（**M11.1 进行中 — Survey Synthesis 链路**：M11.0
+> 更新日期：2026-10-03（**M11.1 进行中 — Survey Outline 契约落地**：M11.0
 > 冻结审计 ✅ / M11.1.1 Survey Matrix ✅（`96feb9f`）/ M11.1.2 Structured
-> Synthesis ✅（七类综合 + 确定性 grounding + Evidence 真实核验链）；剩
-> M11.1.3 Survey Outline 契约、M11.1.4 Workflow Integration、M11.2 Writing
-> E2E——Topic → Survey 整体尚未完成，勿提前宣称完整综述能力。详见下方
-> M11 段。）
+> Synthesis ✅（`ad5819a`）/ M11.1.3 Survey Outline ✅（synthesisRefs /
+> literatureRefs 契约 + 确定性校验 + 真实 smoke）；剩 M11.1.4 Workflow
+> Integration、M11.2 Writing E2E、M11.3 Review / Real Acceptance——Topic →
+> Survey 整体尚未完成，勿提前宣称完整综述能力。详见下方 M11 段。）
 > 前一状态 2026-09-22（**M8 COMPLETE — Controlled Deep Research Loop
 > （2026-09-20 启动 → 2026-09-22 收口）**：M8.1 Research Plan 一等产物（`e24e387`）/
 > M8.2 Plan Execution（`59e4c9f`）/ M8.3.1 Iteration Foundation（`af519bc`）/
@@ -1273,8 +1273,93 @@ comparison / consensus / disagreement / research_gap / future_direction）。
   （网络面非系统缺陷）→ 8 篇 abstract_only 聚集 unclassified；DeepSORT
   被抽取层归 joint 而非 appearance_based（Matrix 层归类偏差，HITL 修正
   范畴）。
-- **尚缺（未实现，勿提前宣称）**：Survey Outline 契约（M11.1.3）、
-  Workflow Integration（M11.1.4）、Survey Writing E2E（M11.2）。Topic →
+- **当时尚缺**：Survey Outline 契约（→ M11.1.3 已完成，见下）。
+
+**M11.1.3 Survey Outline Contract ✅ COMPLETE（2026-10-03）**：
+Structured Synthesis → 可追溯、可冻结的 Survey Outline（本阶段终点是
+outline，不进正文写作）。要点：
+
+- **Outline 是组织层，不是新的研究推理层**：planner 只能组织章节 / 调序 /
+  合并主题 / 决定七类 synthesis 落位，不能发明 taxonomy / gap / consensus /
+  future direction，不能新增 literature，不能把 speculative 伪装成
+  established finding。
+- **Schema 扩展（最小可选字段，普通论文零改动）**：`OutlineSection` 增加
+  `synthesisRefs?`（消费的 SurveySynthesisItem.synthesisId）与
+  `literatureRefs?`（覆盖的 SurveyMatrixEntry.entryId）——只存 refs，不复制
+  taxonomy 标签 / synthesis claim（refs → Synthesis / Matrix artifact 追溯，
+  Matrix HITL 修正 → Synthesis rebuild → Outline rebuild 链不回填新事实源）。
+  `validateOutline` 加 refs 形状校验；`saveOutline` 归一（trim + 去重 + 升序
+  → 确定性序列化）；旧项目 outline（无 refs）完全兼容。
+- **Survey 模式走既有 WriterService.planOutline**（零新 Agent /
+  Runtime 角色；`writing/outline` 会话）：`surveyDigest` 参数存在即 survey
+  模式——`buildSurveyOutlinePrompt` 按方法体系 / 研究问题组织、要求逐字
+  复制 synthesisId / entryId、禁「论文 A / 论文 B」逐篇章节、禁创新点 /
+  实验设计语义；普通论文路径（researchDigest）行为不变（refs 字段不解析）。
+  结构化输出修复（M9.7.6）prompt 同步要求 refs 原样保留。
+- **digest 是投影不是第二事实源**（`survey/outlineDigest.ts` 纯函数）：
+  七类 synthesis（synthesisId / kind / claim ≤240 / groundingLevel / detail
+  摘要 / entryIds）+ 文献清单（entryId / 深度 / family / year / title，title
+  与 year 从 SourceStore 注入不落 Outline）+ 覆盖统计（family / year /
+  grounding 分布、unclassified、abstract_only 弱信息提示）——不塞完整
+  chunk / EvidenceRecord / PDF（正文写作才需要 Evidence）。超大 synthesis
+  按 grounding 优先级截断 speculative（≤150 条）并如实计数。
+- **grounding 消费规则（锁死）**：evidence_backed → 主要章节结构依据 /
+  核心综合结论；literature_cited → 章节组织 / taxonomy / gap / observed
+  agreement（进入 Outline 不升级）；speculative（含 inferred future）→
+  **只能进展望语境章节**，不得支撑 taxonomy 主干 / trend / comparison /
+  consensus / established findings / framing。
+- **确定性契约校验 `validateSurveyOutline`**（`survey/outlineValidation.ts`
+  纯函数；blocking / warnings 分离）——blocking：悬空 synthesisRef /
+  literatureRef（fail）、speculative 泄漏到非 future 章节（含 framing /
+  gap）、core 章节（含 gap / future）零 synthesisRefs（= planner 自造结构
+  依据 / 自造 gap / 自造方向）、gap 章节混入非 research_gap、paper-by-paper
+  退化（文献 ≥5 且 ≥3 个正文节各只挂 1 篇且 ≥50% 正文节如此；<5 篇不判
+  ——小 corpus 逐篇结构可能是真实的）；warnings（可见不阻断）：family
+  失衡 ≥60%、unclassified、abstract_only ≥50%、literatureRefs 覆盖 <50%、
+  分类章节未绑 taxonomy synthesis、展望章节混入非 future/gap synthesis、
+  单一年份 corpus。语义分类 `classifySurveySection`（future → framing →
+  gap → core；「Conclusion and Future Directions」按 future）。
+- **编排 `SurveyOutlineService`**（`survey/OutlineService.ts`）：缺 Matrix /
+  Synthesis → 400 指引；synthesis.matrixFingerprint ≠ 当前 Matrix → 拒绝并
+  指引先重建（staleness fail-closed）；digest → planner → 契约校验 →
+  blocking 非空则校验错误作为 feedback 重规划（≤2 次）→ 仍失败抛
+  `SURVEY_OUTLINE_INVALID`（422）**不落盘**（fail-closed，不伪造默认结构）
+  → 通过则 `saveOutline` 落 manuscript/outline.json（复用既有 outline
+  HITL / persistence / resume 链，零平行 survey-outline.json）。
+- **HITL**：workflow `hitl.outline_confirm` payload 的 sections 携带
+  synthesisRefs / literatureRefs（修订轮 refs 可见、不无声丢失；普通论文
+  无 refs 时 payload 形状不变）；revise 路径 = feedback 重规划（同一 survey
+  prompt 契约），重建后重新校验。
+- **API**：`POST /api/projects/:id/survey/outline/build`（body：
+  `feedback?`）；读取走既有 `GET /:id/manuscript`（outline 字段含 refs）。
+  不建平行 Survey Outline API 系统。
+- **测试**：新增 4 文件 39 用例（outlineValidation 规则矩阵 19 /
+  outlineDigest + planner 分支 8 / OutlineService 编排 6 / outline.http 4 +
+  Manuscript refs 兼容 2）+ fixtures 扩展（writing/outline 脚本分派 +
+  defaultOutlineOutput 合法 taxonomy 组织输出）；fixture 全链（7 篇：6
+  fulltext + 1 abstract-only → Matrix → Synthesis → Outline）验证 refs
+  有效、无逐篇退化、speculative 只出现在 future 章节。真实 smoke：
+  `scripts/m1113-outline-smoke.mjs`（11 篇 arXiv MOT 全链重建 + 真实
+  Writer 规划，报告 e2e/.tmp/m1113-outline-smoke/report.json）——本轮网络
+  良好，全文 11/11（不同于 M11.1.2 的 3/11，弱数据场景由 fixture 覆盖）；
+  matrix 11/11（433s）、synthesis 28 条 0 拒绝（1368s）、**outline 一次
+  规划通过（108s）：10 节零 blocking**。人审结论：完全按方法体系组织
+  （运动关联 / 联合关联与外观增强 / 基准与理论三个 taxonomy 章 + trend /
+  comparison / consensus / gap / 争议与展望综合章），**零逐篇罗列**（8 个
+  正文节中单文献节 0 个）；synthesis 覆盖 100% / literature 覆盖 100%；
+  speculative 7 条（4 inferred future + 3 双侧弱锚 disagreement）**全部
+  隔离在「开放争议与未来方向」一章**——其中 3 条 speculative
+  disagreement 被 planner 主动归入展望语境章节（规则涌现：speculative 只
+  能进展望），cited future（literature_cited）同章但 refs 各自保留
+  groundingLevel 不抹平。warnings 3 条如实：family 失衡 9/11（真实分布）、
+  展望章混入 disagreement（有意的合并组织，提示确认）、「年份单一」实为
+  arXiv enrich=false 无年份元数据（validator 措辞可跟进：区分无元数据与
+  单一年份）。已知上游问题如实记录：DeepSORT 本轮仍归 joint（M11.1.2 已
+  知 Matrix 层偏差复现，进 joint taxonomy 章无结构性污染，HITL 修正范畴）；
+  FairMOT 归 theory_analysis（归类偏差，同范畴）。
+- **尚缺（未实现，勿提前宣称）**：Workflow Integration（M11.1.4——把
+  Topic → Research → Matrix → Synthesis → Outline 串成正式 workflow）、
+  Survey Writing E2E（M11.2）、Review / Real Acceptance（M11.3）。Topic →
   Survey 整体未完成。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：

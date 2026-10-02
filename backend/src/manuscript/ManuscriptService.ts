@@ -26,6 +26,15 @@ export interface OutlineSection {
   title: string;
   targetLengthWords?: number;
   keyPoints?: string[];
+  /**
+   * M11.1.3（Survey 专用，普通论文不产生）：本节消费的
+   * SurveySynthesisItem.synthesisId 列表。只存 refs——taxonomy 标签 /
+   * synthesis claim 不复制进 Outline（refs → Synthesis / Matrix artifact
+   * 追溯），Matrix HITL 修正 → Synthesis rebuild → Outline rebuild 链不回填。
+   */
+  synthesisRefs?: string[];
+  /** M11.1.3（Survey 专用）：本节覆盖的 SurveyMatrixEntry.entryId 列表（经 Matrix → sourceId 追溯） */
+  literatureRefs?: string[];
 }
 
 export interface Outline {
@@ -77,15 +86,16 @@ export class ManuscriptService {
     return join(this.projects.projectDir(projectId), "context.yaml");
   }
 
-  /** 校验并保存大纲（manuscript/outline.json） */
+  /** 校验并保存大纲（manuscript/outline.json）；refs 归一（去重 + 升序）后落盘 */
   async saveOutline(projectId: string, outline: Outline): Promise<Outline> {
     const violations = validateOutline(outline);
     if (violations.length > 0) {
       throw new BusinessError("STAGE_CONTRACT_VIOLATION", `大纲校验未通过：${violations.join("；")}`);
     }
+    const normalized = normalizeOutlineRefs(outline);
     await mkdir(this.sectionsDir(projectId), { recursive: true });
-    await writeJsonAtomic(this.outlinePath(projectId), outline);
-    return outline;
+    await writeJsonAtomic(this.outlinePath(projectId), normalized);
+    return normalized;
   }
 
   async loadOutline(projectId: string): Promise<Outline | null> {
@@ -280,10 +290,64 @@ export function validateOutline(outline: Outline): string[] {
     if (files.has(section.file)) {
       violations.push(`section file 重复：${section.file}`);
     }
+    // M11.1.3：survey refs 形状校验（可选字段；存在则必须是非空字符串数组）。
+    // 语义校验（悬空引用 / speculative 泄漏等）属 survey 域 validateSurveyOutline，
+    // 不污染普通论文路径。
+    for (const [field, refs] of [
+      ["synthesisRefs", section.synthesisRefs],
+      ["literatureRefs", section.literatureRefs],
+    ] as const) {
+      if (refs === undefined) {
+        continue;
+      }
+      if (
+        !Array.isArray(refs) ||
+        refs.some((ref) => typeof ref !== "string" || ref.trim() === "")
+      ) {
+        violations.push(`section ${section.id} 的 ${field} 必须是非空字符串数组`);
+      }
+    }
     ids.add(section.id);
     files.add(section.file);
   }
   return violations;
+}
+
+/**
+ * M11.1.3：survey refs 归一（trim + 去重 + 升序）。确定性序列化纪律：同一
+ * refs 集合无论输入顺序如何，落盘恒同字节；普通论文 outline 无 refs 字段，
+ * 原样返回（不新增键）。
+ */
+export function normalizeOutlineRefs(outline: Outline): Outline {
+  const dedupe = (refs: string[]): string[] => [
+    ...new Set(refs.map((ref) => ref.trim()).filter((ref) => ref !== "")),
+  ].sort();
+  let changed = false;
+  const sections = outline.sections.map((section) => {
+    const next = { ...section };
+    if (section.synthesisRefs !== undefined) {
+      const normalized = dedupe(section.synthesisRefs);
+      if (normalized.length === 0) {
+        delete next.synthesisRefs;
+        changed = true;
+      } else if (normalized.join(" ") !== section.synthesisRefs.join(" ")) {
+        next.synthesisRefs = normalized;
+        changed = true;
+      }
+    }
+    if (section.literatureRefs !== undefined) {
+      const normalized = dedupe(section.literatureRefs);
+      if (normalized.length === 0) {
+        delete next.literatureRefs;
+        changed = true;
+      } else if (normalized.join(" ") !== section.literatureRefs.join(" ")) {
+        next.literatureRefs = normalized;
+        changed = true;
+      }
+    }
+    return next;
+  });
+  return changed ? { ...outline, sections } : outline;
 }
 
 function escapeLatex(value: string): string {

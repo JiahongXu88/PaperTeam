@@ -30,6 +30,12 @@ import { extractCitationKeys, protectedInventory } from "../review/styleInvarian
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { validateOutline } from "../manuscript/ManuscriptService.js";
 import { extractJsonObject } from "../agents/outputParsing.js";
+import type { SurveyOutlineDigest } from "../survey/outlineDigest.js";
+import {
+  renderDigestItems,
+  renderDigestLiterature,
+  renderDigestStats,
+} from "../survey/outlineDigest.js";
 
 export interface WriterServiceOptions {
   runtime: AgentRuntime;
@@ -253,6 +259,10 @@ export class WriterService {
    * 产出结构化大纲（JSON）。校验：至少 3 节、文件名合法、id 唯一。
    * feedback 用于 HITL 修订轮（用户对上一版大纲的修改意见）。
    *
+   * M11.1.3 Survey 模式：surveyDigest 存在时走综述大纲 prompt（按方法体系
+   * 组织 / synthesisRefs / literatureRefs 契约），researchDigest 可省；缺省
+   * （普通论文路径）行为与旧版完全一致——refs 字段不解析。
+   *
    * M9.7.6 Structured Output Repair（M9.7.4 Reviewer repair 同构）：输出已产生
    * 但未通过结构化校验时，把具体校验错误 + 上一轮输出回馈模型做有界修复
    * （≤ OUTLINE_REPAIR_MAX_ATTEMPTS 次），不原样重跑。真实漂移形态（2026-09-24
@@ -262,7 +272,7 @@ export class WriterService {
    */
   async planOutline(params: {
     projectId: string;
-    researchDigest: {
+    researchDigest?: {
       domainOverview: string;
       researchGaps: string[];
       potentialContributions: string[];
@@ -274,7 +284,13 @@ export class WriterService {
     /** 稿件语言（M9.7.4；undefined = legacy 不注入） */
     language?: ManuscriptLanguage;
     feedback?: string;
+    /** M11.1.3：Survey 大纲 digest（存在 = Survey 模式；章节结构来自七类 synthesis） */
+    surveyDigest?: SurveyOutlineDigest;
   }): Promise<Outline & { repair?: { attempts: number; errors: string[] } }> {
+    const survey = params.surveyDigest !== undefined;
+    if (!survey && params.researchDigest === undefined) {
+      throw new AgentRunFailedError("planOutline 需要 researchDigest（普通论文）或 surveyDigest（综述）之一");
+    }
     let lastOutput = "";
     const validationErrors: string[] = [];
     let lastError: Error | undefined;
@@ -282,13 +298,25 @@ export class WriterService {
       const task = await this.runtime.runAgent({
         agentId: this.agentId,
         ...this.timeoutOverride,
-        task: attempt === 0 ? buildOutlinePrompt(params) : buildOutlineRepairPrompt(lastOutput, validationErrors),
+        task:
+          attempt === 0
+            ? survey
+              ? buildSurveyOutlinePrompt({
+                  targetProfile: params.targetProfile,
+                  documentType: params.documentType,
+                  ...(params.language !== undefined ? { language: params.language } : {}),
+                  ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+                  surveyDigest: params.surveyDigest!,
+                })
+              : buildOutlinePrompt(params as Parameters<typeof buildOutlinePrompt>[0])
+            : buildOutlineRepairPrompt(lastOutput, validationErrors),
         projectId: params.projectId,
         contextScope: "writing/outline",
         ...(params.language !== undefined ? { language: params.language } : {}),
         metadata: {
           role: "writer",
           skill: "outline",
+          ...(survey ? { outlineProfile: "survey" } : {}),
           ...(attempt > 0 ? { structuredRepairAttempt: attempt } : {}),
         },
       });
@@ -307,7 +335,7 @@ export class WriterService {
           ...(typeof parsed["abstract"] === "string" && parsed["abstract"].trim() !== ""
             ? { abstract: parsed["abstract"].trim() }
             : {}),
-          sections: readOutlineSections(parsed),
+          sections: readOutlineSections(parsed, { surveyRefs: survey }),
         };
         const violations = validateOutline(outline);
         if (violations.length > 0) {
@@ -1192,12 +1220,28 @@ export function stripStrayOutcomeLines(latex: string): string {
     .join("\n");
 }
 
-/** 解析大纲 sections 数组（防御性） */
-function readOutlineSections(parsed: Record<string, unknown>): OutlineSection[] {
+/** 解析大纲 sections 数组（防御性）；surveyRefs=true 时解析 M11.1.3 refs 字段 */
+function readOutlineSections(
+  parsed: Record<string, unknown>,
+  options: { surveyRefs?: boolean } = {},
+): OutlineSection[] {
   const value = parsed["sections"];
   if (!Array.isArray(value)) {
     return [];
   }
+  const parseRefList = (raw: unknown): string[] | undefined => {
+    if (!Array.isArray(raw)) {
+      return undefined;
+    }
+    const refs = [
+      ...new Set(
+        raw
+          .filter((ref): ref is string => typeof ref === "string" && ref.trim() !== "")
+          .map((ref) => ref.trim()),
+      ),
+    ].sort();
+    return refs.length > 0 ? refs : undefined;
+  };
   const sections: OutlineSection[] = [];
   for (const raw of value.slice(0, 20)) {
     if (typeof raw !== "object" || raw === null) {
@@ -1207,6 +1251,8 @@ function readOutlineSections(parsed: Record<string, unknown>): OutlineSection[] 
     if (typeof record["id"] !== "string" || typeof record["file"] !== "string") {
       continue;
     }
+    const synthesisRefs = options.surveyRefs ? parseRefList(record["synthesisRefs"]) : undefined;
+    const literatureRefs = options.surveyRefs ? parseRefList(record["literatureRefs"]) : undefined;
     sections.push({
       id: record["id"].trim().toLowerCase().replaceAll(/[^a-z0-9-]/g, "-").slice(0, 40),
       file: record["file"].trim().toLowerCase(),
@@ -1222,6 +1268,8 @@ function readOutlineSections(parsed: Record<string, unknown>): OutlineSection[] 
               .map((point) => point.trim()),
           }
         : {}),
+      ...(synthesisRefs !== undefined ? { synthesisRefs } : {}),
+      ...(literatureRefs !== undefined ? { literatureRefs } : {}),
     });
   }
   return sections;
@@ -1294,6 +1342,61 @@ export function buildOutlinePrompt(params: {
 }
 
 /**
+ * M11.1.3 Survey 大纲 prompt（综述 ≠ 原创论文）：
+ * - 章节结构的事实来源是七类 Structured Synthesis（digest 投影），不是
+ *   research gaps / potential contributions / 实验设计；
+ * - 每个核心 section 返回 synthesisRefs / literatureRefs（逐字复制）；
+ * - speculative（含推断型 future_direction）只能进展望语境；
+ * - Outline 是组织层：不发明 taxonomy / gap / consensus / future，不新增
+ *   digest 之外的文献。
+ */
+export function buildSurveyOutlinePrompt(params: {
+  targetProfile?: string;
+  documentType?: string;
+  language?: ManuscriptLanguage;
+  feedback?: string;
+  surveyDigest: SurveyOutlineDigest;
+}): string {
+  const digest = params.surveyDigest;
+  return [
+    `你是一名学术论文写手（Writer）。请基于下方「结构化综合（Structured Synthesis）」为一篇综述（survey / review article）规划大纲——主题：${digest.topic}。只规划，不写正文。`,
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏），字段：",
+    '{"title": "综述标题", "abstract": "摘要（100-200 字）",',
+    ' "sections": [{"id": "introduction", "file": "introduction.tex", "title": "引言",',
+    '   "targetLengthWords": 400, "keyPoints": ["要点"],',
+    '   "synthesisRefs": ["SYN-…（逐字复制下方综合产物 digest 中的标识）"],',
+    '   "literatureRefs": ["M-S…（逐字复制下方文献清单中的标识）"]}],',
+    ' "references": []}',
+    "",
+    ...targetLanguageLines(params.language),
+    ...(params.language !== undefined ? [""] : []),
+    "组织纪律（综述大纲最重要的规则）：",
+    "1. 这是综述（review article），不是原创算法论文：不要求论证研究空白、不要求潜在贡献 / 创新点、不要求实验设计 / 方法章节。",
+    "2. 按方法体系 / 研究问题组织章节，绝不按论文逐篇组织——「论文 A / 论文 B / 论文 C」式章节是错误结构。",
+    "3. 章节结构只能来自输入的七类 synthesis：taxonomy 决定方法分类章节的骨架；trend / comparison / consensus / disagreement 决定综合分析章节；research_gap 决定空缺章节；future_direction 决定展望章节。digest 中没有的类（标注「无」）不得发明对应章节。",
+    "4. 不发明输入中不存在的内容：不新增 taxonomy 家族、不新增文献、不虚构共识或争议；某个主题 synthesis 不足就不设对应小节。",
+    "5. 每个核心正文 section 必须给出 synthesisRefs（本节消费的 synthesisId）与 literatureRefs（本节覆盖的 entryId）——逐字复制，不得改写、不得凭记忆生成。",
+    "6. Introduction / Conclusion 等框架章节可不带 refs（若给出也必须真实存在且非 speculative）。",
+    "7. speculative 的 synthesis（含推断型 future_direction）只能进入明确的展望 / 未来方向章节；taxonomy / trend / comparison / consensus 等既定结论章节只消费 evidence_backed 或 literature_cited。",
+    "8. 文献分布不均衡时在 keyPoints 说明结构依据（如「X 族占多数，拆两个小节」），不强行让章节平均分配文献。",
+    "9. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
+    ...(params.feedback ? ["", "用户对上一版大纲的修改意见（必须落实；不得因此违反上述纪律）：", params.feedback] : []),
+    "",
+    `目标类型：survey（综述）${params.documentType !== undefined ? `（项目登记：${params.documentType}）` : ""}；目标档次：${params.targetProfile ?? "（未填写）"}`,
+    "",
+    "===== 综合产物 digest（章节结构的事实来源；synthesisRefs 只能从中逐字复制）=====",
+    ...renderDigestItems(digest),
+    "",
+    "===== 文献清单（literatureRefs 的唯一合法候选集）=====",
+    ...renderDigestLiterature(digest),
+    "",
+    "===== 覆盖与分布统计（组织提示，不是硬性配额）=====",
+    ...renderDigestStats(digest),
+  ].join("\n");
+}
+
+/**
  * M9.7.6 大纲结构化修复 prompt（ReviewerService.buildReviewRepairPrompt 同构）：
  * 复用同一 writing/outline 会话，注入上一轮输出与具体校验错误——修复输出协议
  * （严格合法 JSON），不重做大纲规划。显式给出转义规则：真实漂移形态是字符串
@@ -1310,7 +1413,7 @@ export function buildOutlineRepairPrompt(
     ...validationErrors.map((error) => `- ${error}`),
     "",
     "要求：",
-    "1. 保留上一轮输出中已有的大纲内容（title / abstract / sections / keyPoints 一律不重写、不删减），只修复违反校验的部分。",
+    "1. 保留上一轮输出中已有的大纲内容（title / abstract / sections / keyPoints 一律不重写、不删减），只修复违反校验的部分；synthesisRefs / literatureRefs（如上一轮输出中存在）原样保留、不增不改。",
     "2. 输出必须是严格合法的单个 JSON 对象：字符串值内部不得出现未转义的 ASCII 双引号——中文表述中的强调引号改用「」或转义为 \\\"；不要 Markdown 围栏、不要解释文字。",
     "3. 不要重新执行大纲规划，除非修复校验错误必需。",
     "",

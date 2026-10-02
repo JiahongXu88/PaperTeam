@@ -66,6 +66,70 @@ describe("validateOutline", () => {
   });
 });
 
+describe("validateOutline + normalizeOutlineRefs（M11.1.3 survey refs）", () => {
+  it("普通大纲（无 refs）仍兼容；refs 形状非法拒绝", () => {
+    expect(validateOutline(OUTLINE)).toEqual([]);
+    const withRefs: Outline = {
+      ...OUTLINE,
+      sections: [
+        OUTLINE.sections[0]!,
+        {
+          ...OUTLINE.sections[1]!,
+          synthesisRefs: ["SYN-aaaaaaaaaa", "SYN-bbbbbbbbbb"],
+          literatureRefs: ["M-S001"],
+        },
+        OUTLINE.sections[2]!,
+      ],
+    };
+    expect(validateOutline(withRefs)).toEqual([]);
+    expect(
+      validateOutline({
+        ...OUTLINE,
+        sections: [
+          OUTLINE.sections[0]!,
+          { ...OUTLINE.sections[1]!, synthesisRefs: ["SYN-a", ""] },
+          OUTLINE.sections[2]!,
+        ],
+      }),
+    ).not.toEqual([]);
+    expect(
+      validateOutline({
+        ...OUTLINE,
+        sections: [
+          OUTLINE.sections[0]!,
+          { ...OUTLINE.sections[1]!, literatureRefs: "M-S001" as never },
+          OUTLINE.sections[2]!,
+        ],
+      }),
+    ).not.toEqual([]);
+  });
+
+  it("saveOutline round-trip：refs 去重 + 升序归一（确定性序列化）；无 refs 不新增键", async () => {
+    const { manuscript, projectId } = await newProject();
+    const saved = await manuscript.saveOutline(projectId, {
+      ...OUTLINE,
+      sections: [
+        OUTLINE.sections[0]!,
+        {
+          ...OUTLINE.sections[1]!,
+          synthesisRefs: ["SYN-bbbbbbbbbb", "SYN-aaaaaaaaaa", "SYN-aaaaaaaaaa"],
+          literatureRefs: ["M-S002", "M-S001", "M-S002"],
+        },
+        OUTLINE.sections[2]!,
+      ],
+    });
+    const method = saved.sections[1]!;
+    expect(method.synthesisRefs).toEqual(["SYN-aaaaaaaaaa", "SYN-bbbbbbbbbb"]);
+    expect(method.literatureRefs).toEqual(["M-S001", "M-S002"]);
+
+    const loaded = await manuscript.loadOutline(projectId);
+    expect(loaded?.sections[1]?.synthesisRefs).toEqual(["SYN-aaaaaaaaaa", "SYN-bbbbbbbbbb"]);
+    // 普通 section 不携带 refs 键（旧项目 artifact 形状不变）
+    expect(loaded?.sections[0]).not.toHaveProperty("synthesisRefs");
+    expect(loaded?.sections[0]).not.toHaveProperty("literatureRefs");
+  });
+});
+
 describe("ManuscriptService", () => {
   it("saveOutline + writeMainTex：main.tex \\input 全部章节；有文献时含 bibliography", async () => {
     const { manuscript, projectId } = await newProject();

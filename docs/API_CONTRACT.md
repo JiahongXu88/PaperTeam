@@ -410,8 +410,43 @@
 > - **synthesis 级 HITL 编辑（PUT …/synthesis/:synthesisId）**：本阶段
 >   未实现（按范围裁决留给 M11.1.3/1.4）。
 > - **错误码新增**：SURVEY_SYNTHESIS_CORRUPTED(500)。
-> - **尚缺（勿提前宣称）**：Survey Outline 契约（M11.1.3）/ Workflow
->   Integration（M11.1.4）/ Survey Writing E2E（M11.2）。
+> - **当时尚缺**：Survey Outline 契约（→ M11.1.3 已完成，见下）。
+
+### 1.2l M11.1.3 Survey Outline API（后端已实现；前端暂无消费方）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `POST /api/projects/:id/survey/outline/build` | Structured Synthesis → Survey Outline 并落盘 `manuscript/outline.json`（**复用既有 Manuscript outline artifact**，section 携带可选 `synthesisRefs` / `literatureRefs`；读取走既有 `GET /:id/manuscript` 的 outline 字段，无平行存储）。body：`{feedback?: string（HITL 修订意见，透传 planner）}`。前置 fail-closed：未构建 Matrix → 400（指引 matrix build）；未构建 Synthesis → 400（指引 synthesis build）；synthesis 过期（matrixFingerprint ≠ 当前 Matrix）→ 400（指引先重建 synthesis）；Matrix 为空 → 400。执行链：digest 投影（七类 synthesis + 文献清单 + 覆盖统计；不塞 chunk / EvidenceRecord）→ WriterService.planOutline survey 模式（`writing/outline`，零新 Agent；结构化输出内部有界修复）→ `validateSurveyOutline` 确定性契约校验 → blocking 非空则校验错误作为 feedback 重规划（≤2 次）→ 仍失败 **422 SURVEY_OUTLINE_INVALID（不落盘，不伪造默认结构）** → 通过则 saveOutline（refs trim+去重+升序归一）。200 `{outline（含 refs）, validation:{blocking:[], warnings:[…], summary:{sections:{total,framing,future,gap,core}, synthesisCoverage, literatureCoverage}}, summary:{matrixEntries, synthesisItems, sections, planningAttempts, repair?}}`。非 POST → 405 | （无——Survey UI 属 M11.1.4+） |
+
+> 2026-10-03 M11.1.3 语义约定：
+> - **Outline 是组织层**：章节结构只能来自七类 synthesis；planner 不得发明
+>   taxonomy / gap / consensus / future、不得新增 literature。每个核心正文
+>   section 必须携带 `synthesisRefs`（消费的 synthesisId，逐字复制 digest）
+>   与 `literatureRefs`（覆盖的 entryId）；Introduction / Conclusion 等
+>   framing 章节可豁免。
+> - **grounding 消费规则（validateSurveyOutline 锁死）**：speculative
+>   （含 inferred future）**只能被展望语境章节消费**——绑到 taxonomy /
+>   trend / comparison / consensus / framing / gap 章节 = blocking；gap
+>   章节只能消费 research_gap synthesis；future 章节必须消费
+>   future_direction（可叠加 research_gap；混入其它 kind → warning 保持
+>   grounding / speculation 区分可见）。literature_cited 进入 Outline 不
+>   自动升级。
+> - **paper-by-paper 退化判定**（blocking）：文献 ≥5 且 ≥3 个正文节各只挂
+>   1 篇文献且 ≥50% 正文节如此；<5 篇不判（小 corpus 逐篇结构可能是真实的）。
+> - **悬空引用**（blocking）：synthesisRefs / literatureRefs 必须存在于
+>   当前 synthesis artifact / Matrix（模型幻觉 id 一律拒绝）。
+> - **warnings（可见不阻断）**：family 失衡 ≥60% / unclassified / 
+>   abstract_only ≥50% / literatureRefs 覆盖 <50% / 分类章节未绑 taxonomy
+>   synthesis / 展望章节混入非 future/gap synthesis / 单一年份 corpus——
+>   平衡类问题不硬性拒绝（「某 family 60%」不自动等于结构失当）。
+> - **HITL**：workflow `hitl.outline_confirm` payload sections 现携带
+>   synthesisRefs / literatureRefs（普通论文无 refs 时 payload 形状不变）；
+>   revise = feedback 重规划后重新校验。
+> - **兼容性**：普通论文 outline（无 refs）完全兼容；refs 字段只在 survey
+>   构建路径产生与解析（普通路径模型输出中的 refs 被忽略）。
+> - **错误码新增**：SURVEY_OUTLINE_INVALID(422)。
+> - **尚缺（勿提前宣称）**：Workflow Integration（M11.1.4）/ Survey
+>   Writing E2E（M11.2）/ Review / Real Acceptance（M11.3）。
 
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 

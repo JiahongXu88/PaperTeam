@@ -2979,6 +2979,14 @@ function outlineConfirmStage(services: WorkflowServices): StageSpec {
             id: section.id,
             title: section.title,
             file: section.file,
+            // M11.1.3：Survey Outline 的 refs 契约可见（修订轮不得无声丢失；
+            // 普通论文 outline 无 refs 字段，payload 形状不变）
+            ...(section.synthesisRefs !== undefined
+              ? { synthesisRefs: section.synthesisRefs }
+              : {}),
+            ...(section.literatureRefs !== undefined
+              ? { literatureRefs: section.literatureRefs }
+              : {}),
           })),
         };
       },

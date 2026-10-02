@@ -1837,6 +1837,24 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, result);
       return true;
     }
+    // POST /survey/outline/build：Synthesis → Survey Outline（M11.1.3；落盘
+    // manuscript/outline.json——读取走既有 GET /:id/manuscript 的 outline 字段）
+    if (rest === "/outline/build") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readOptionalJsonBody(req);
+      const feedback =
+        typeof body["feedback"] === "string" && body["feedback"].trim() !== ""
+          ? body["feedback"].trim()
+          : undefined;
+      const result = await stack.surveyOutline.buildSurveyOutline(projectId, {
+        ...(feedback !== undefined ? { feedback } : {}),
+      });
+      sendJson(res, 200, result);
+      return true;
+    }
     return false;
   }
 

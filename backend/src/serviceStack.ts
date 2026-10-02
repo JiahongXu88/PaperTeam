@@ -67,6 +67,7 @@ import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js
 import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { MatrixService } from "./survey/MatrixService.js";
 import { SynthesisService } from "./survey/SynthesisService.js";
+import { SurveyOutlineService } from "./survey/OutlineService.js";
 import { WriterService } from "./writer/WriterService.js";
 import { CitationService } from "./citation/CitationService.js";
 import { CitationIntegrityService } from "./citation/CitationIntegrityService.js";
@@ -222,6 +223,11 @@ export interface ServiceStack {
    * evidence 经 EvidenceGroundingService 真实核验路径）
    */
   synthesis: SynthesisService;
+  /**
+   * Survey Outline（M11.1.3）：Synthesis → 综述大纲（synthesisRefs /
+   * literatureRefs 契约；落盘仍是 manuscript/outline.json，零平行存储）
+   */
+  surveyOutline: SurveyOutlineService;
   /** M10.1：结构化解析产物持久化（sources/parsed/<id>.document.json + figures/） */
   parsedDocuments: ParsedDocumentStore;
   /** M10.1：Document & Data Ingestion 编排（PDF docling 链 + CSV/XLSX 记录 + 事实确认） */
@@ -654,6 +660,16 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...longRun,
     log,
   });
+  // M11.1.3 Survey Outline：Synthesis artifact 投影 → Writer（writing/outline
+  // 会话的 survey 模式）→ 确定性契约校验 → manuscript/outline.json（refs 可选
+  // 字段；普通论文 outline 零改动）
+  const surveyOutline = new SurveyOutlineService({
+    projects: options.projects,
+    sources,
+    writer,
+    manuscript,
+    log,
+  });
   const researcher = new ResearcherService({
     runtime: options.runtime,
     agentId: options.agentIds.researcher,
@@ -719,6 +735,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     retrieval,
     survey,
     synthesis,
+    surveyOutline,
     parsedDocuments,
     ingestion,
     figureAnalyses,

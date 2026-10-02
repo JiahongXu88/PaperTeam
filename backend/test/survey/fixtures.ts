@@ -24,6 +24,9 @@ import { EvidenceGroundingService } from "../../src/evidence/EvidenceGroundingSe
 import { ScholarlyResolver } from "../../src/citation/scholarly.js";
 import { MatrixService } from "../../src/survey/MatrixService.js";
 import { SynthesisService } from "../../src/survey/SynthesisService.js";
+import { SurveyOutlineService } from "../../src/survey/OutlineService.js";
+import { WriterService } from "../../src/writer/WriterService.js";
+import { ManuscriptService } from "../../src/manuscript/ManuscriptService.js";
 import type { AgentRuntime } from "../../src/runtime/types.js";
 
 /** 固定时钟（updatedAt 确定性；entryId 本身不含时间成分） */
@@ -54,11 +57,29 @@ export interface SynthesisScriptInput {
 
 export type SynthesisScript = (input: SynthesisScriptInput) => SurveyScriptResult;
 
+/** survey outline 脚本输入：prompt 中出现的全部 synthesisId / entryId（M11.1.3） */
+export interface OutlineScriptInput {
+  prompt: string;
+  synthesisIds: string[];
+  entryIds: string[];
+  taxonomyIds: string[];
+  trendIds: string[];
+  comparisonIds: string[];
+  consensusIds: string[];
+  gapIds: string[];
+  futureIds: string[];
+  speculativeIds: string[];
+}
+
+export type OutlineScript = (input: OutlineScriptInput) => SurveyScriptResult;
+
 export interface SurveyScriptedRuntime extends AgentRuntime {
   calls: Array<{ agentId: string; contextScope?: string; sourceId: string }>;
   setScript: (sourceId: string, script: SurveyScript) => void;
   setSynthesisScript: (kind: string, script: SynthesisScript) => void;
   clearSynthesisScript: (kind: string) => void;
+  setOutlineScript: (script: OutlineScript) => void;
+  clearOutlineScript: () => void;
   setJudge: (script: (scope: string) => SurveyScriptResult) => void;
 }
 
@@ -67,6 +88,9 @@ const CHUNK_MARKER_PATTERN = /CHUNK:([A-Z]\d{2,}:[A-Za-z0-9_-]+:\d{1,6}:[0-9a-f]
 const SYNTHESIS_KIND_PATTERN = /本批次 kind = "([a-z_]+)"/;
 const SYNTHESIS_ENTRY_PATTERN = /^- (M-S\d+)｜/gm;
 const SYNTHESIS_ANCHOR_PATTERN = /^- (M-S\d+)｜[^\n]*\n(?:  [^\n]*\n)*?  锚点chunk: ([^\n（]*)/gm;
+// M11.1.3：survey outline digest 的条目标记（SYN- 行 + kind 分组区块标题）
+const OUTLINE_SYNTHESIS_PATTERN = /^- \[(SYN-[0-9a-f]{10})\] grounding=(\w+)/gm;
+const OUTLINE_ENTRY_PATTERN = /- (M-S\d+)｜/g;
 
 /**
  * 可按 contextScope 分派的 fake runtime：
@@ -79,6 +103,7 @@ export function buildSurveyRuntime(
   synthesisScripts: Record<string, SynthesisScript> = {},
 ): SurveyScriptedRuntime {
   let judgeScript: ((scope: string) => SurveyScriptResult) | undefined;
+  let outlineScript: OutlineScript | undefined;
   const calls: SurveyScriptedRuntime["calls"] = [];
   const runtime: SurveyScriptedRuntime = {
     provider: "pi",
@@ -91,6 +116,12 @@ export function buildSurveyRuntime(
     },
     clearSynthesisScript(kind) {
       delete synthesisScripts[kind];
+    },
+    setOutlineScript(script) {
+      outlineScript = script;
+    },
+    clearOutlineScript() {
+      outlineScript = undefined;
     },
     setJudge(script) {
       judgeScript = script;
@@ -165,6 +196,57 @@ export function buildSurveyRuntime(
             ? script({ kind, prompt: task, entryIds, chunkIdsByEntry })
             : undefined;
         return toOutcome(mkBase(kind), outcome, defaultSynthesisOutput({ kind, prompt: task, entryIds, chunkIdsByEntry }));
+      }
+
+      // survey outline（writing/outline + digest 标记；M11.1.3）
+      if (scope === "writing/outline" && OUTLINE_SYNTHESIS_PATTERN.test(task)) {
+        OUTLINE_SYNTHESIS_PATTERN.lastIndex = 0;
+        const matches = [...task.matchAll(OUTLINE_SYNTHESIS_PATTERN)];
+        // 逐区块扫描（--- <kind 标签>（n 条）--- 之后到下一区块前的 SYN 行）重建 kind 分组
+        const byKind: Record<string, string[]> = {};
+        let currentKind = "?";
+        for (const line of task.split(/\r?\n/)) {
+          const sectionMatch = /^--- (.+)（\d+ 条）---$/.exec(line);
+          if (sectionMatch) {
+            currentKind = sectionMatch[1]!;
+            byKind[currentKind] ??= [];
+            continue;
+          }
+          const itemMatch = /^- \[(SYN-[0-9a-f]{10})\] grounding=(\w+)/.exec(line);
+          if (itemMatch) {
+            (byKind[currentKind] ??= []).push(itemMatch[1]!);
+          }
+        }
+        const entryIds = [...new Set([...task.matchAll(OUTLINE_ENTRY_PATTERN)].map((match) => match[1]!))];
+        calls.push({ agentId: input.agentId, contextScope: scope, sourceId: "outline" });
+        const kindKey = (label: string): string[] =>
+          byKind[Object.keys(byKind).find((key) => key.startsWith(label)) ?? ""] ?? [];
+        const taxonomyIds = kindKey("taxonomy");
+        const trendIds = kindKey("trend");
+        const comparisonIds = kindKey("comparison");
+        const consensusIds = kindKey("consensus");
+        const gapIds = kindKey("research_gap");
+        const futureIds = kindKey("future_direction");
+        const speculativeIds = matches
+          .filter((match) => match[2] === "speculative")
+          .map((match) => match[1]!);
+        const outlineInput: OutlineScriptInput = {
+          prompt: task,
+          synthesisIds: matches.map((match) => match[1]!),
+          entryIds,
+          taxonomyIds,
+          trendIds,
+          comparisonIds,
+          consensusIds,
+          gapIds,
+          futureIds,
+          speculativeIds,
+        };
+        return toOutcome(
+          mkBase("outline"),
+          outlineScript?.(outlineInput),
+          defaultOutlineOutput(outlineInput),
+        );
       }
 
       // matrix（research/survey-matrix；M11.1.1 行为不变）
@@ -317,6 +399,60 @@ export function defaultSynthesisOutput(input: SynthesisScriptInput): string {
   }
 }
 
+/**
+ * 缺省 survey outline 脚本输出：按方法体系组织的合法大纲——intro / taxonomy
+ * 分类章（绑 taxonomy synthesis + 全部文献）/ 演进比较综合章（trend+comparison）/
+ * 空缺章（gap）/ 展望章（future，含 speculative）/ conclusion。refs 逐字取自
+ * digest 中出现的真实标识（镜像真实模型「从 digest 复制」的行为）。
+ */
+export function defaultOutlineOutput(input: OutlineScriptInput): string {
+  const trendAndComparison = [...input.trendIds, ...input.comparisonIds].sort();
+  return JSON.stringify({
+    title: "多目标跟踪数据关联方法综述",
+    abstract: "本文综述多目标跟踪中数据关联方法的研究进展：按方法体系分类梳理运动 / 外观 / 联合关联三类路线，比较其假设与适用场景，归纳共识与分歧，总结研究空缺与未来方向。",
+    sections: [
+      { id: "introduction", file: "introduction.tex", title: "引言", targetLengthWords: 400, keyPoints: ["综述范围与动机"] },
+      {
+        id: "taxonomy",
+        file: "taxonomy.tex",
+        title: "数据关联方法分类",
+        targetLengthWords: 800,
+        keyPoints: ["按方法家族组织", "unclassified 单独说明"],
+        synthesisRefs: [...input.taxonomyIds].sort(),
+        literatureRefs: [...input.entryIds].sort(),
+      },
+      {
+        id: "trends-comparison",
+        file: "trends-comparison.tex",
+        title: "演进趋势与跨方法比较",
+        targetLengthWords: 900,
+        keyPoints: ["方法演进脉络", "维度对比"],
+        synthesisRefs: trendAndComparison,
+        literatureRefs: [...input.entryIds].sort(),
+      },
+      {
+        id: "gaps",
+        file: "gaps.tex",
+        title: "研究空缺与局限",
+        targetLengthWords: 500,
+        keyPoints: ["来自 research_gap synthesis"],
+        synthesisRefs: [...input.gapIds].sort(),
+        literatureRefs: [...input.entryIds].sort(),
+      },
+      {
+        id: "future-directions",
+        file: "future-directions.tex",
+        title: "未来方向",
+        targetLengthWords: 500,
+        keyPoints: ["文献提出的 future work", "推断型方向明确标注推测性"],
+        synthesisRefs: [...input.futureIds, ...input.gapIds].sort(),
+        literatureRefs: [...input.entryIds].sort(),
+      },
+      { id: "conclusion", file: "conclusion.tex", title: "结论", targetLengthWords: 300, keyPoints: ["总结"] },
+    ],
+  });
+}
+
 /** 文本型全文条目用的最小合法分析产物（status=ok → available） */
 export function fakeTextAnalysis(): PdfAnalysis {
   return {
@@ -342,6 +478,8 @@ export interface SurveyFixture {
   evidenceGrounding: EvidenceGroundingService;
   matrix: MatrixService;
   synthesis: SynthesisService;
+  outline: SurveyOutlineService;
+  manuscript: ManuscriptService;
   runtime: SurveyScriptedRuntime;
   projectId: string;
   root: string;
@@ -447,6 +585,14 @@ export async function newSurveyFixture(
     now: FIXED_NOW,
     log: () => {},
   });
+  const manuscript = new ManuscriptService(projects);
+  const outline = new SurveyOutlineService({
+    projects,
+    sources,
+    writer: new WriterService({ runtime, agentId: "writer", log: () => {} }),
+    manuscript,
+    log: () => {},
+  });
 
   return {
     projects,
@@ -457,6 +603,8 @@ export async function newSurveyFixture(
     evidenceGrounding,
     matrix,
     synthesis,
+    outline,
+    manuscript,
     runtime,
     projectId,
     root,
