@@ -71,6 +71,18 @@ export interface PiRuntimeConfig {
   /** 执行阶段超时（毫秒；PAPERTEAM_PI_EXECUTION_TIMEOUT_MS；缺省回退 runTimeoutMs） */
   executionTimeoutMs?: number;
   /**
+   * First-activity watchdog（毫秒；M10.4.4；PAPERTEAM_PI_FIRST_ACTIVITY_TIMEOUT_MS）：
+   * 进入 session.prompt 后，在该时长内未收到任何 provider 活动（assistant
+   * 消息事件——message_start 在 provider 首个流事件时发出，reasoning/text delta
+   * 均为有效活动）即主动 abort 并以 timed_out(FIRST_ACTIVITY_TIMEOUT) 终态
+   * 收口，交既有 stage retry。首条活动到达即解除——后续合法长生成只受
+   * executionTimeoutMs / longRunTimeoutMs 约束，watchdog 不再介入。
+   * 依据：M10.4.1 观测到 provider 0-activity 挂起白等整个执行预算（长任务
+   * 默认 30 分钟）；TTFB 与生成长度无关（正常量级秒级）。默认 180000 =
+   * 3 分钟（>60× 典型 TTFB 裕量）；0 = 关闭（min 0 允许显式停用）。
+   */
+  firstActivityTimeoutMs: number;
+  /**
    * 长论文阶段的执行超时（毫秒；PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS；默认 1800000 = 30 分钟，M10.3.1 按真实整文件修订延迟方差放宽；
    * 1s-1h）。只用于 Writer（章节写作 / 逐节修订 / 润色 / 改进计划 / 编译修复）、三路
    * Reviewer 与分章节 Reviewer、Researcher 这类以整篇论文为输入的长任务——M5.6 真实
@@ -224,6 +236,14 @@ const DEFAULT_RUN_TIMEOUT_MS = 300_000;
  * Writer 延迟方差；环境变量仍可覆盖。
  */
 const DEFAULT_LONG_RUN_TIMEOUT_MS = 1_800_000;
+/**
+ * First-activity watchdog 默认（M10.4.4）：provider 0-activity 静默期上限。
+ * 180s = 典型 TTFB（秒级）的 >60× 裕量，同时把 M10.4.1 观测的 0-turn 挂起
+ * 白等（stage 无进展 deadline 900s / 执行预算 30min）压缩到 3 分钟内。
+ */
+const DEFAULT_FIRST_ACTIVITY_TIMEOUT_MS = 180_000;
+/** 0 = 显式关闭 watchdog；>0 时下限 1s */
+const FIRST_ACTIVITY_TIMEOUT_MIN_MS = 0;
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
@@ -322,6 +342,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       }),
       executionTimeoutMs: readOptionalTimeoutMs(source, "PAPERTEAM_PI_EXECUTION_TIMEOUT_MS", {
         min: RUN_TIMEOUT_MIN_MS,
+        max: RUN_TIMEOUT_MAX_MS,
+      }),
+      firstActivityTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_FIRST_ACTIVITY_TIMEOUT_MS", {
+        default: DEFAULT_FIRST_ACTIVITY_TIMEOUT_MS,
+        min: FIRST_ACTIVITY_TIMEOUT_MIN_MS,
         max: RUN_TIMEOUT_MAX_MS,
       }),
       longRunTimeoutMs: readTimeoutMs(source, "PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS", {

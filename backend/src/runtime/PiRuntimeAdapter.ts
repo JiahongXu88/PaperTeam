@@ -59,6 +59,13 @@
  *   终态（errorCode=*_TIMEOUT + timeoutPhase，getTask 可查）。timeout 与
  *   manual cancel 竞态以「首个 abort 发起者」定归因（abortInitiator），
  *   first-settle-wins，绝不双重归因。
+ * - first-activity watchdog（M10.4.4）：execution 阶段内的静默期守卫——
+ *   进入 prompt 后 firstActivityTimeoutMs 内无任何 provider 活动（assistant
+ *   消息事件；user prompt 回声 / agent_start / turn_start / 工具事件是本地
+ *   事件不算）即主动 abort，以 timed_out(FIRST_ACTIVITY_TIMEOUT) 收口并交
+ *   既有 stage retry。首条活动到达即解除，之后的合法长生成只受 execution
+ *   超时约束。针对 M10.4.1 观测的 provider 0-activity 挂起（白等 ~900s）；
+ *   与 execution 超时共用 abortInitiator / self-healing / reject 通道。
  * - 终态（M5.1）：无论 result resolve 还是 reject，全部终态（completed /
  *   cancelled / failed / timed_out）都写入任务记录（getTask 可回溯），
  *   携带 queuedAt / startedAt / queueDurationMs / executionDurationMs /
@@ -224,6 +231,15 @@ const DEFAULT_MAX_SESSIONS = 16;
 const GC_SWEEP_MIN_INTERVAL_MS = 1_000;
 const GC_SWEEP_MAX_INTERVAL_MS = 60_000;
 
+/**
+ * First-activity watchdog 默认（M10.4.4）：3 分钟。provider 活动 = assistant
+ * 消息事件（message_start 在 provider 首个流事件时发出；thinking/text delta
+ * 均为活动）——TTFB 与生成长度无关，正常量级秒级；3 分钟 = >60× 裕量，
+ * 同时把 0-activity 挂起（M10.4.1 实测白等 ~900s stage deadline）压缩到
+ * 3 分钟内 abort + 既有 stage retry。
+ */
+const DEFAULT_FIRST_ACTIVITY_TIMEOUT_MS = 180_000;
+
 /** 无 projectId 时的会话兜底键（对应 v1 的「默认会话」语义） */
 function adhocSessionKey(agentId: string): string {
   return `agent:${agentId}:paperteam-adhoc`;
@@ -258,6 +274,18 @@ export interface PiRuntimeOptions {
    * （未引入新配置时行为与历史 runTimeoutMs 完全一致）。
    */
   executionTimeoutMs?: number;
+  /**
+   * First-activity watchdog（毫秒；M10.4.4）：进入 session.prompt 后该时长内
+   * 未收到任何 provider 活动（assistant 消息事件）即 abort 并以
+   * timed_out(FIRST_ACTIVITY_TIMEOUT) 收口（归因/重试语义与 execution 超时
+   * 同路：abortInitiator first-wins + markNeedsRotation + 既有 stage retry，
+   * 不新增第二套重试）。首条 assistant 事件到达即解除——合法长生成只受
+   * executionTimeoutMs 约束，watchdog 不再介入。
+   * 默认 180000（3 分钟）；0 = 关闭。provider 活动 ≠ 本地事件：user prompt
+   * 回声（message_start/end，role=user）、agent_start/turn_start、
+   * tool_execution_* 都是本地事件，不计入。
+   */
+  firstActivityTimeoutMs?: number;
   /**
    * 单次 run 的整体超时（毫秒；兼容字段，M5.1 前的唯一超时）。
    * 未设置 executionTimeoutMs 时作为执行阶段超时的默认值；本身缺省 300000。
@@ -541,6 +569,8 @@ interface RunState {
   abortRequested: boolean;
   /** 首个发起 session.abort 的归因方（timeout/cancel 竞态的唯一裁决依据） */
   abortInitiator?: "timeout" | "cancel";
+  /** M10.4.4：timeout 归因细分（abortInitiator=timeout 时：整体执行 / 首活动静默） */
+  abortTimeoutPhase?: "execution" | "first_activity";
   /** 排队阶段超时定时器（入队时武装，出队/取消/超时/settle 时清理） */
   queueTimer?: ReturnType<typeof setTimeout>;
   /**
@@ -566,6 +596,18 @@ interface RunState {
   skillsAccessed?: Set<string>;
   /** 本 run 是否收到过任何 Pi 会话事件（accessBasis 的判据） */
   sawPiEvents?: boolean;
+  /**
+   * M10.4.4：本 run 是否观测到 provider 活动（assistant 消息事件）。
+   * 与 sawPiEvents 的区别：user prompt 回声 / agent_start / turn_start /
+   * tool_execution_* 是本地事件，不证明 provider 在响应。
+   */
+  sawProviderActivity?: boolean;
+  /** M10.4.4：首条 provider 活动到达时刻（epoch ms；诊断/trace 用） */
+  firstActivityAtMs?: number;
+  /** M10.4.4：first-activity watchdog 定时器（首条活动到达或执行结束时清理） */
+  firstActivityTimer?: ReturnType<typeof setTimeout>;
+  /** M10.4.4：watchdog 阈值快照（触发时日志/trace 归因用；0 = 未武装） */
+  firstActivityArmedMs?: number;
   /**
    * M10.4.0 trace：startAgent 入口（首个 await 前）捕获的 workflow stage
    * 归属 scope；无 workflow 上下文的调用（启动期摘要 / 独立 API）缺省。
@@ -685,6 +727,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly defaultCwd: string;
   /** 执行阶段超时（executionTimeoutMs ?? runTimeoutMs ?? 300000；兼容解析） */
   private readonly executionTimeoutMs: number;
+  /** First-activity watchdog（M10.4.4；0 = 关闭）：进入 prompt 后无 provider 活动的静默期上限 */
+  private readonly firstActivityTimeoutMs: number;
   /** 排队阶段超时（缺省不限） */
   private readonly queueTimeoutMs: number | undefined;
   /** 会话创建阶段超时（缺省不限） */
@@ -760,6 +804,15 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.defaultCwd = resolve(options.defaultCwd ?? process.cwd());
     // 兼容解析：未引入 executionTimeoutMs 时沿用 runTimeoutMs 语义
     this.executionTimeoutMs = options.executionTimeoutMs ?? options.runTimeoutMs ?? 300_000;
+    // M10.4.4 first-activity watchdog：0 = 显式关闭；正整数 = 静默期上限
+    //（合理范围校验归 config 层 env 解析；adapter 只拒绝非整数/负数，
+    //  允许测试注入毫秒级值）
+    this.firstActivityTimeoutMs = options.firstActivityTimeoutMs ?? DEFAULT_FIRST_ACTIVITY_TIMEOUT_MS;
+    if (!Number.isInteger(this.firstActivityTimeoutMs) || this.firstActivityTimeoutMs < 0) {
+      throw new RangeError(
+        `firstActivityTimeoutMs 必须是 >= 0 的整数（毫秒，0=关闭），当前为 ${this.firstActivityTimeoutMs}`,
+      );
+    }
     this.queueTimeoutMs = options.queueTimeoutMs;
     this.sessionTimeoutMs = options.sessionTimeoutMs;
     this.initTimeoutMs = options.initTimeoutMs;
@@ -1454,6 +1507,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.settled = true;
     state.settledAtMs = this.now();
     this.clearQueueTimer(state);
+    this.clearFirstActivityTimer(state);
     this.releaseAdmission(state);
     this.releaseArrivalToken(state);
     const final = this.withTerminalDiagnostics(state, task);
@@ -1476,6 +1530,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     state.settled = true;
     state.settledAtMs = this.now();
     this.clearQueueTimer(state);
+    this.clearFirstActivityTimer(state);
     this.releaseAdmission(state);
     this.releaseArrivalToken(state);
     state.failure = error;
@@ -1520,8 +1575,18 @@ export class PiRuntimeAdapter implements AgentRuntime {
       ...(state.usage !== undefined ? { usage: { ...state.usage } } : {}),
       ...(state.skillsAssigned !== undefined ? { skills: skillsOf(state) } : {}),
     };
+    // M10.4.4：首活动时长进诊断 metadata（未观测到 provider 活动即缺省，不伪造）
+    const firstActivityMs =
+      state.firstActivityAtMs !== undefined && state.runningAtMs !== undefined
+        ? Math.max(0, state.firstActivityAtMs - state.runningAtMs)
+        : undefined;
+    if (firstActivityMs !== undefined) {
+      enriched.metadata = { ...(enriched.metadata ?? {}), firstActivityMs };
+    }
     // M10.4.0：任务终态收敛 trace span（resolve / reject 两条路径的唯一收口点）
-    state.trace?.taskSettled(enriched);
+    state.trace?.taskSettled(
+      firstActivityMs !== undefined ? { ...enriched, firstActivityMs } : enriched,
+    );
     state.trace = undefined;
     return enriched;
   }
@@ -1595,6 +1660,14 @@ export class PiRuntimeAdapter implements AgentRuntime {
     if (state.queueTimer !== undefined) {
       clearTimeout(state.queueTimer);
       state.queueTimer = undefined;
+    }
+  }
+
+  /** M10.4.4：first-activity watchdog 清理（首条活动到达 / prompt 结束 / settle） */
+  private clearFirstActivityTimer(state: RunState): void {
+    if (state.firstActivityTimer !== undefined) {
+      clearTimeout(state.firstActivityTimer);
+      state.firstActivityTimer = undefined;
     }
   }
 
@@ -2023,10 +2096,43 @@ export class PiRuntimeAdapter implements AgentRuntime {
       }
       state.abortRequested = true;
       state.abortInitiator = "timeout";
+      state.abortTimeoutPhase = "execution";
       this.log(`[pi-runtime] runAgent ${taskId} 执行超时（${executionTimeoutMs}ms），执行 abort`);
       void managed.session.abort().catch(() => {});
     }, executionTimeoutMs);
     timer.unref?.();
+
+    // M10.4.4 first-activity watchdog：只约束「首条 provider 活动之前」的
+    // 静默期（provider 请求挂起 0 事件，M10.4.1 实测白等 ~900s）。首条
+    // assistant 消息事件到达即解除（事件转发器清理）——之后的合法长生成
+    // 只受上面 executionTimeoutMs 约束。与 execution 超时共用 first-wins
+    // abortInitiator / markNeedsRotation / AgentTimeoutError 通道（phase
+    // first_activity），不引入第二套 abort / 重试路径；watchdog 本身不重试。
+    if (this.firstActivityTimeoutMs > 0) {
+      state.firstActivityArmedMs = this.firstActivityTimeoutMs;
+      const watchdog = setTimeout(() => {
+        if (state.settled || state.abortInitiator !== undefined || state.sawProviderActivity === true) {
+          // 已终态 / cancel 先到 / 首条活动刚好先到（事件转发器同步置位）：
+          // 不 abort——避免边界双终态
+          return;
+        }
+        state.firstActivityTimer = undefined;
+        state.abortRequested = true;
+        state.abortInitiator = "timeout";
+        state.abortTimeoutPhase = "first_activity";
+        // 超时可观测（trace 事件 + 结构化错误码），不伪装成普通 provider error
+        state.trace?.recordFirstActivityTimeout({
+          thresholdMs: this.firstActivityTimeoutMs,
+          elapsedMs: Math.max(0, this.now() - (state.runningAtMs ?? this.now())),
+        });
+        this.log(
+          `[pi-runtime] runAgent ${taskId} 首活动超时（${this.firstActivityTimeoutMs}ms 无 provider 活动），执行 abort`,
+        );
+        void managed.session.abort().catch(() => {});
+      }, this.firstActivityTimeoutMs);
+      watchdog.unref?.();
+      state.firstActivityTimer = watchdog;
+    }
 
     // M10.4.0：agent.task span 从执行段开始（排队等待记入属性，不占 span 时长）
     state.trace?.executionStarted();
@@ -2038,16 +2144,21 @@ export class PiRuntimeAdapter implements AgentRuntime {
       promptError = error;
     } finally {
       clearTimeout(timer);
+      this.clearFirstActivityTimer(state);
       this.eventForwarders.delete(taskId);
     }
 
     if (state.abortInitiator === "timeout") {
+      const phase = state.abortTimeoutPhase ?? "execution";
       await managed.session.waitForIdle().catch(() => {});
       // self-healing（M5.2 任务 K3）：执行超时后底层会话状态不确定
       //（waitForIdle 已收敛，但流中断点后的会话复用没有上游保证），
       // 标记下一安全边界重建——只恢复 Runtime 后续可用性，不重试本任务
-      this.markNeedsRotation(managed, "execution_timeout");
-      throw new AgentTimeoutError(executionTimeoutMs, "execution");
+      this.markNeedsRotation(managed, phase === "first_activity" ? "first_activity_timeout" : "execution_timeout");
+      throw new AgentTimeoutError(
+        phase === "first_activity" ? (state.firstActivityArmedMs ?? this.firstActivityTimeoutMs) : executionTimeoutMs,
+        phase,
+      );
     }
 
     if (promptError !== undefined) {
@@ -2679,6 +2790,18 @@ export class PiRuntimeAdapter implements AgentRuntime {
       state.sawPiEvents = true;
       // M10.4.0：trace 消费先于既有映射（只读事件，不影响事件流语义）
       state.trace?.observeEvent(event as unknown as Parameters<TaskTraceRecorder["observeEvent"]>[0]);
+      // M10.4.4 first-activity watchdog：assistant 消息事件 = provider 活动
+      //（message_start 在 provider 首个流事件时发出，pi-agent-core agent-loop
+      // 确认；user prompt 回声 role=user 不算）。首条活动到达即解除 watchdog。
+      if (
+        (event.type === "message_start" || event.type === "message_update" || event.type === "message_end") &&
+        (event as { message?: { role?: unknown } }).message?.role === "assistant" &&
+        state.sawProviderActivity !== true
+      ) {
+        state.sawProviderActivity = true;
+        state.firstActivityAtMs = this.now();
+        this.clearFirstActivityTimer(state);
+      }
       if (event.type === "tool_execution_start") {
         recordSkillAccess(state, managed, event);
       }

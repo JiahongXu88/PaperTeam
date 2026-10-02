@@ -119,6 +119,8 @@ export async function createLiveEvaluationRuntime(options: {
     agentDir: config.pi.agentDir,
     workspaceRoot,
     runTimeoutMs: config.pi.runTimeoutMs,
+    // M10.4.4 first-activity watchdog（与产品同源默认；0 = 关闭）
+    firstActivityTimeoutMs: config.pi.firstActivityTimeoutMs,
     modelRuntime,
     // per-Agent override 与产品同源（model.json agents 字段；缺省键继承默认模型）
     agentModelSpecs: async () => (await modelSettingsStore.load()).agents ?? {},

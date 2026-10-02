@@ -294,6 +294,11 @@ export interface TaskSettleInfo {
   queueDurationMs?: number;
   executionDurationMs?: number;
   totalDurationMs?: number;
+  /**
+   * M10.4.4：prompt 开始 → 首条 provider 活动的时长（毫秒）。未观测到
+   * provider 活动即终态（含 first-activity 超时）时缺省——不伪造。
+   */
+  firstActivityMs?: number;
   usage?: {
     inputTokens: number;
     outputTokens: number;
@@ -324,6 +329,12 @@ export class TaskTraceRecorder {
   private autoRetries = 0;
   private agentRetries = 0;
   private compactions = 0;
+  /**
+   * M10.4.4：上一条活动（assistant message_end / 工具执行 end）的结束时刻
+   * ——下一个 model.turn 的 message_start 距它的间隔即该次 provider 请求的
+   * TTFB（首 turn 无前序活动时以任务执行开始为基线）。
+   */
+  private lastActivityEndMs: number | undefined;
 
   constructor(
     scope: TraceScope,
@@ -369,6 +380,10 @@ export class TaskTraceRecorder {
       case "message_start":
         if (raw.message?.role === "assistant") {
           this.closeOpenModelSpan("unset", "message_start 重入（前序流未收尾）");
+          const startedAt = this.nowMs();
+          // M10.4.4：本 turn 的 provider TTFB（距上一活动结束 / 任务执行开始）
+          const baseline = this.lastActivityEndMs ?? this.taskSpan?.startMs ?? startedAt;
+          const ttfbMs = Math.max(0, startedAt - baseline);
           this.openModelSpan = {
             span: {
               traceId: this.session.traceId,
@@ -376,8 +391,8 @@ export class TaskTraceRecorder {
               parentSpanId: this.taskSpan?.spanId ?? this.scope.stageSpanId,
               name: "model.turn",
               kind: "client",
-              startMs: this.nowMs(),
-              endMs: this.nowMs(),
+              startMs: startedAt,
+              endMs: startedAt,
               durationMs: 0,
               status: "unset",
               attributes: {
@@ -386,6 +401,7 @@ export class TaskTraceRecorder {
                 "model.label": this.base.modelLabel,
                 "agent.id": this.base.agentId,
                 "stage.id": this.scope.stageId,
+                "model.ttfbMs": ttfbMs,
               },
             },
           };
@@ -426,6 +442,7 @@ export class TaskTraceRecorder {
         span.endMs = now;
         span.durationMs = Math.max(0, span.endMs - span.startMs);
         span.status = stopReason === "error" ? "error" : "ok";
+        this.lastActivityEndMs = now; // M10.4.4：下一 turn TTFB 的基线
         if (stopReason !== undefined) {
           span.attributes["model.stopReason"] = stopReason;
         }
@@ -481,6 +498,7 @@ export class TaskTraceRecorder {
         span.endMs = this.nowMs();
         span.durationMs = Math.max(0, span.endMs - span.startMs);
         span.status = raw.isError === true ? "error" : "ok";
+        this.lastActivityEndMs = span.endMs; // M10.4.4：下一 turn TTFB 的基线
         this.session.addSpan(span);
         return;
       }
@@ -557,6 +575,9 @@ export class TaskTraceRecorder {
     if (typeof info.totalDurationMs === "number") {
       span.attributes["task.totalDurationMs"] = Math.max(0, info.totalDurationMs);
     }
+    if (typeof info.firstActivityMs === "number") {
+      span.attributes["task.firstActivityMs"] = Math.max(0, info.firstActivityMs);
+    }
     if (info.usage !== undefined) {
       span.attributes["task.inputTokens"] = info.usage.inputTokens;
       span.attributes["task.outputTokens"] = info.usage.outputTokens;
@@ -592,6 +613,17 @@ export class TaskTraceRecorder {
       return;
     }
     span.events = [...(span.events ?? []), { name, timeMs: this.nowMs(), attributes }];
+  }
+
+  /**
+   * M10.4.4：first-activity watchdog 触发的显式 trace 事件（threshold /
+   * elapsed / 是否武装过）——不伪装成普通 provider error，超时类型可观测。
+   */
+  recordFirstActivityTimeout(params: { thresholdMs: number; elapsedMs: number }): void {
+    this.appendTaskEvent("first_activity_timeout", {
+      "timeout.thresholdMs": params.thresholdMs,
+      "timeout.elapsedMs": params.elapsedMs,
+    });
   }
 
   private providerOf(): string {

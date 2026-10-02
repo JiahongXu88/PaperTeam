@@ -27,6 +27,11 @@ describe("loadConfig", () => {
     expect(config.pi.model).toBeUndefined();
     expect(config.pi.apiKey).toBeUndefined();
     expect(config.pi.runTimeoutMs).toBe(300_000);
+    // M10.4.4 first-activity watchdog 默认 3 分钟；0 = 显式关闭；非法值拒绝启动
+    expect(config.pi.firstActivityTimeoutMs).toBe(180_000);
+    expect(loadConfig({ PAPERTEAM_PI_FIRST_ACTIVITY_TIMEOUT_MS: "0" }).pi.firstActivityTimeoutMs).toBe(0);
+    expect(loadConfig({ PAPERTEAM_PI_FIRST_ACTIVITY_TIMEOUT_MS: "60000" }).pi.firstActivityTimeoutMs).toBe(60_000);
+    expect(() => loadConfig({ PAPERTEAM_PI_FIRST_ACTIVITY_TIMEOUT_MS: "-5" })).toThrow();
     // agentDir 默认落在用户级 Runtime 根下
     expect(config.pi.agentDir).toBe(join(homedir(), ".paperteam", "runtime", "pi", "agent"));
     // 会话标识默认沿用 M3.7 验证基线

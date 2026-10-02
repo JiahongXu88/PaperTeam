@@ -46,7 +46,7 @@ export type AgentTaskStatus =
  * - queue     等待同会话独占权（per-session FIFO）超时
  * - execution 进入 session.prompt 后的执行超时
  */
-export type AgentTimeoutPhase = "init" | "session" | "queue" | "execution";
+export type AgentTimeoutPhase = "init" | "session" | "queue" | "execution" | "first_activity";
 
 /**
  * Runtime 健康状态（Runtime 健康 ≠ 模型就绪，见 healthCheck）：
@@ -151,6 +151,11 @@ export interface AgentTask {
   /**
    * 结构化错误码（failed / timed_out 终态携带；completed/cancelled 不携带）。
    * timed_out：INIT_TIMEOUT / SESSION_TIMEOUT / QUEUE_TIMEOUT / EXECUTION_TIMEOUT。
+   * M10.4.4 新增：FIRST_ACTIVITY_TIMEOUT（进入 session.prompt 后长时间无任何
+   * provider 活动（assistant 消息事件），first-activity watchdog 主动 abort——
+   * 与 EXECUTION_TIMEOUT 的区别：后者约束整个执行段（合法长生成不受影响），
+   * 前者只约束「首条 provider activity 之前」的静默期（M10.4.1 观测到的
+   * 0-turn 挂起最长白等 30 分钟执行预算）。
    * M5.2 新增：CONTEXT_BUDGET_EXCEEDED（单次输入 + 输出预留超上下文窗口，
    * 调用 provider 前拒绝）、RUNTIME_SESSION_CAPACITY（受管会话达硬上限且
    * 无可淘汰空闲会话）。

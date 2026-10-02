@@ -127,6 +127,8 @@ export async function startBackend(): Promise<void> {
           ...(config.pi.executionTimeoutMs !== undefined
             ? { executionTimeoutMs: config.pi.executionTimeoutMs }
             : {}),
+          // M10.4.4 first-activity watchdog（恒有默认值，直接透传；0 = 关闭）
+          firstActivityTimeoutMs: config.pi.firstActivityTimeoutMs,
           ...(config.pi.queueTimeoutMs !== undefined
             ? { queueTimeoutMs: config.pi.queueTimeoutMs }
             : {}),
