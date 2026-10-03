@@ -47,7 +47,15 @@ import type { ResearchCoverageService } from "../agents/researchCoverage.js";
 import type { ResearchPlanExecutionService } from "../agents/researchPlanExecution.js";
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
-import type { CandidateStore } from "../sources/CandidateStore.js";
+import type { CandidateStore, CandidateSource } from "../sources/CandidateStore.js";
+import type { SourceImportService } from "../sources/SourceImportService.js";
+import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
+import type { IngestionService } from "../ingestion/IngestionService.js";
+import type { PlanExecutionAcademicResultSnapshot, PlanExecutionWebResultSnapshot } from "../agents/researchPlanExecution.js";
+import type { MatrixService, SurveyEntryPatch } from "../survey/MatrixService.js";
+import type { SynthesisService } from "../survey/SynthesisService.js";
+import type { SurveyOutlineService } from "../survey/OutlineService.js";
+import { normalizeTaxonomy, UNCLASSIFIED_FAMILY, type SurveyTaxonomy } from "../survey/matrixTypes.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import {
@@ -199,6 +207,37 @@ export interface WorkflowServices {
    */
   planExecution: ResearchPlanExecutionService;
   sources: SourceStore;
+  /**
+   * 文献入库路径编排（M11.1.4：topic_survey 的 survey.fulltext stage 消费——
+   * 批量 promote 选中候选 + 批量全文解析；全部走既有幂等语义）。
+   */
+  sourceImport: SourceImportService;
+  /**
+   * Research Discovery（M11.1.4：survey.search stage 消费——把执行计划的结果
+   * 快照经单一写入口径物化为候选；Search Result ≠ Candidate ≠ Literature 边界
+   * 由 Candidate / promote 状态天然保持）。
+   */
+  discovery: ResearchDiscoveryService;
+  /**
+   * Document & Data Ingestion（M11.1.4：survey.fulltext stage 在全文挂载后
+   * 同步等待结构化解析完成——Matrix 的 fulltext 锚定依赖 chunk 就绪）。
+   */
+  ingestion: IngestionService;
+  /**
+   * Survey Matrix（M11.1.4：survey.matrix stage 消费——Literature → per-paper
+   * 结构化理解；不复制抽取逻辑，构建 / 增量 / taxonomy 重校验全部在服务内）。
+   */
+  survey: MatrixService;
+  /**
+   * Survey Synthesis（M11.1.4：survey.synthesis stage 消费——Matrix 指纹复用 /
+   * 全量重建；grounding 规则零旁路）。
+   */
+  synthesis: SynthesisService;
+  /**
+   * Survey Outline（M11.1.4：survey.outline stage 消费——validateSurveyOutline
+   * blocking fail-closed + feedback 重规划在服务内）。
+   */
+  surveyOutline: SurveyOutlineService;
   manuscript: ManuscriptService;
   writer: WriterService;
   citation: CitationService;
@@ -2958,6 +2997,34 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/** outline 确认 HITL 的共享 payload（M11.1.3 refs 契约可见；idea / survey 共用） */
+async function outlineConfirmPayload(
+  services: WorkflowServices,
+  ctx: { projectId: string },
+): Promise<Record<string, unknown> | undefined> {
+  const outline = await services.manuscript.loadOutline(ctx.projectId);
+  if (outline === null) {
+    return undefined;
+  }
+  return {
+    title: outline.title,
+    ...(outline.abstract !== undefined ? { abstract: outline.abstract.slice(0, 300) } : {}),
+    sections: outline.sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      file: section.file,
+      // M11.1.3：Survey Outline 的 refs 契约可见（修订轮不得无声丢失；
+      // 普通论文 outline 无 refs 字段，payload 形状不变）
+      ...(section.synthesisRefs !== undefined
+        ? { synthesisRefs: section.synthesisRefs }
+        : {}),
+      ...(section.literatureRefs !== undefined
+        ? { literatureRefs: section.literatureRefs }
+        : {}),
+    })),
+  };
+}
+
 function outlineConfirmStage(services: WorkflowServices): StageSpec {
   return {
     id: "hitl.outline_confirm",
@@ -2967,29 +3034,7 @@ function outlineConfirmStage(services: WorkflowServices): StageSpec {
     hitl: {
       prompt: "大纲已生成，请确认后开始分节写作",
       options: ["approve", "revise", "cancel"],
-      payload: async (ctx) => {
-        const outline = await services.manuscript.loadOutline(ctx.projectId);
-        if (outline === null) {
-          return undefined;
-        }
-        return {
-          title: outline.title,
-          ...(outline.abstract !== undefined ? { abstract: outline.abstract.slice(0, 300) } : {}),
-          sections: outline.sections.map((section) => ({
-            id: section.id,
-            title: section.title,
-            file: section.file,
-            // M11.1.3：Survey Outline 的 refs 契约可见（修订轮不得无声丢失；
-            // 普通论文 outline 无 refs 字段，payload 形状不变）
-            ...(section.synthesisRefs !== undefined
-              ? { synthesisRefs: section.synthesisRefs }
-              : {}),
-            ...(section.literatureRefs !== undefined
-              ? { literatureRefs: section.literatureRefs }
-              : {}),
-          })),
-        };
-      },
+      payload: (ctx) => outlineConfirmPayload(services, ctx),
     },
   };
 }
@@ -3548,16 +3593,22 @@ function researchPlanStage(services: WorkflowServices): StageSpec {
   };
 }
 
-/** hitl.research_plan：M8 纪律——计划批准是 HITL（绝不自动批准） */
-function researchPlanConfirmStage(services: WorkflowServices): StageSpec {
+/**
+ * hitl.research_plan：M8 纪律——计划批准是 HITL（绝不自动批准）。
+ * M11.1.4：survey 模式只换业务文案（检索语义不同：为综述找全文献，而非补强
+ * 修订证据）；payload / 决策语义完全复用。
+ */
+function researchPlanConfirmStage(services: WorkflowServices, options: { survey?: boolean } = {}): StageSpec {
   return {
     id: "hitl.research_plan",
-    description: "等待用户批准修订研究计划（检索执行前）",
+    description: options.survey === true ? "等待用户批准综述研究计划（检索执行前）" : "等待用户批准修订研究计划（检索执行前）",
     requiredInputs: ["research.plan"],
     producedOutputs: ["用户决策"],
     hitl: {
       prompt:
-        "修订研究计划已生成（只覆盖需要外部文献支撑的修订需求；自身实验数据不属于文献管道）。批准后将执行计划内检索；也可以带反馈重新规划，或取消",
+        options.survey === true
+          ? "综述研究计划已生成（研究问题 + 检索词 + 初始方法分类词表；批准后将执行计划内检索并整理候选文献）。也可以带反馈重新规划，或取消"
+          : "修订研究计划已生成（只覆盖需要外部文献支撑的修订需求；自身实验数据不属于文献管道）。批准后将执行计划内检索；也可以带反馈重新规划，或取消",
       options: ["approve", "revise", "cancel"],
       payload: async (ctx) => {
         const artifact = await readResearchArtifact(services.projects, ctx.projectId);
@@ -3583,6 +3634,24 @@ function researchPlanConfirmStage(services: WorkflowServices): StageSpec {
             kind: query.kind,
             ...(query.rationale !== undefined ? { rationale: query.rationale } : {}),
           })),
+          // M11.1.4：survey 计划的画像意图（范围 + 初始 taxonomy + 覆盖意图）
+          ...(artifact?.surveyProfile !== undefined
+            ? {
+                surveyProfile: {
+                  ...(artifact.surveyProfile.scope !== "" ? { scope: artifact.surveyProfile.scope } : {}),
+                  ...(artifact.surveyProfile.taxonomy !== undefined
+                    ? {
+                        taxonomyIntent: artifact.surveyProfile.taxonomy.families.map(
+                          (family) => family.label,
+                        ),
+                      }
+                    : {}),
+                  ...(artifact.surveyProfile.coverageIntent !== undefined
+                    ? { coverageIntent: artifact.surveyProfile.coverageIntent }
+                    : {}),
+                },
+              }
+            : {}),
         };
       },
     },
@@ -4326,6 +4395,779 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
         state.status,
         `本工作流没有待办节点（收到 ${stageId}）`,
       );
+    },
+  };
+}
+
+// ============================================================
+// Topic → Survey 定义（M11.1.4 topic_survey）
+// ============================================================
+
+/**
+ * 文献遴选推荐集上限（M11.1.4 第一版验收口径：15-25 篇 selected literature；
+ * 超出按确定性排序截断，用户可用 payload.candidateIds 增删）。
+ */
+const SURVEY_RECOMMENDED_MAX = 25;
+
+/**
+ * 推荐文献集（纯函数，HITL 决策与 stage 执行共用同一实现保证确定性）：
+ * 学术形态（DOI / arXiv）优先，年份降序（缺年份排后），candidateId 升序破平。
+ */
+export function recommendedSurveyCandidateIds(candidates: readonly CandidateSource[]): string[] {
+  const paperLike = candidates.filter(
+    (candidate) => candidate.doi !== undefined || candidate.arxivId !== undefined,
+  );
+  const pool = paperLike.length > 0 ? paperLike : [...candidates];
+  return pool
+    .sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || a.candidateId.localeCompare(b.candidateId))
+    .slice(0, SURVEY_RECOMMENDED_MAX)
+    .map((candidate) => candidate.candidateId);
+}
+
+/** run request + project 的综述范围摘要（survey.plan prompt 输入；纯函数） */
+function surveyScopeDigest(
+  project: { title: string; targetVenue?: string; targetProfile?: string; language?: string },
+  request: Record<string, unknown> | undefined,
+): string {
+  const yearFrom = typeof request?.["yearFrom"] === "number" ? request["yearFrom"] : undefined;
+  const yearTo = typeof request?.["yearTo"] === "number" ? request["yearTo"] : undefined;
+  const targetLength =
+    typeof request?.["targetLength"] === "string" && request["targetLength"].trim() !== ""
+      ? request["targetLength"].trim().slice(0, 100)
+      : undefined;
+  const targetJournal =
+    typeof request?.["targetJournal"] === "string" && request["targetJournal"].trim() !== ""
+      ? request["targetJournal"].trim().slice(0, 200)
+      : undefined;
+  return [
+    `- 综述主题：${project.title}`,
+    yearFrom !== undefined || yearTo !== undefined
+      ? `- 时间范围意图：${yearFrom ?? "…"}–${yearTo ?? "…"}（检索词与遴选以此为参考，不是硬过滤）`
+      : undefined,
+    targetLength !== undefined ? `- 篇幅目标：${targetLength}` : undefined,
+    `- 目标期刊 / 会议：${targetJournal ?? project.targetVenue ?? "未指定"}`,
+    `- 目标定位：${project.targetProfile ?? "未指定"}`,
+    `- 写作语言：${project.language ?? "未指定"}`,
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
+}
+
+/** survey.research_plan（id 复用 research.plan：与计划 HITL / 执行链同 id 空间） */
+function surveyPlanStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "research.plan",
+    description: "综述研究规划：survey 语义的 ResearchPlan + surveyProfile（只规划不检索）",
+    requiredInputs: [],
+    producedOutputs: ["research/research.json（survey 计划链 draft + surveyProfile）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const project = await services.projects.getRequired(ctx.projectId);
+      const feedback = readFeedback(ctx.state.inputs["hitl.research_plan"]?.payload);
+      const result = await services.researcher.planSurveyResearch({
+        projectId: ctx.projectId,
+        scopeDigest: surveyScopeDigest(project, ctx.state.request),
+        ...(feedback !== undefined ? { feedback } : {}),
+      });
+      return {
+        planId: result.plan.planId,
+        status: result.plan.status,
+        questions: result.plan.questions.length,
+        queries: result.plan.queries.length,
+        requirements: result.plan.requirements?.length ?? 0,
+        ...(result.profile?.taxonomy !== undefined
+          ? { taxonomyIntent: result.profile.taxonomy.families.length }
+          : {}),
+        ...(result.regenerated ? { regenerated: true } : {}),
+      };
+    },
+    async verifyDod(ctx) {
+      const artifact = await readResearchArtifact(services.projects, ctx.projectId);
+      return artifact === null || (artifact.plans ?? []).length === 0
+        ? ["research/research.json 缺少综述计划链"]
+        : [];
+    },
+  };
+}
+
+/**
+ * survey.search：执行批准后的检索计划（复用 planExecution 的批准 / 执行 /
+ * 幂等语义），随后把执行结果快照经 Discovery 单一写入口径物化为候选——
+ * Search Result → Candidate 是系统动作（有界快照 ≤10/query），Candidate →
+ * Literature（promote）仍只发生在用户批准 literature_selection 之后。
+ */
+function surveySearchStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "survey.search",
+    description: "执行综述检索计划并把结果快照物化为候选文献（Retrieved ≠ Candidate ≠ Literature）",
+    requiredInputs: ["hitl.research_plan"],
+    producedOutputs: ["research.json 执行历史 + 候选文献（pending_review）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      const artifact = await requireResearchArtifact(services, ctx.projectId);
+      const chain = readPlanChain(artifact);
+      const plan = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      if (plan === undefined) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少活动研究计划（先执行 research.plan）");
+      }
+      let executed = 0;
+      let failed = 0;
+      if (plan.status === "approved") {
+        await ctx.emitProgress({ phase: "search", done: 0, total: plan.queries.length });
+        const result = await services.planExecution.execute(ctx.projectId);
+        executed = result.executedQueries;
+        failed = result.failedQueries;
+      } else if (plan.status === "draft") {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "研究计划尚未批准（先通过 hitl.research_plan）");
+      }
+      // plan.status === "done"：resume / 重跑场景——检索不重复执行
+
+      // 结果快照 → 候选（幂等：同身份候选合并，不重复建）；只物化本活动计划的执行记录
+      await ctx.emitProgress({ phase: "materialize" });
+      const fresh = await requireResearchArtifact(services, ctx.projectId);
+      let candidatesSaved = 0;
+      let candidatesMerged = 0;
+      for (const entry of fresh.executionHistory ?? []) {
+        if (entry.planId !== plan.planId || entry.status !== "executed") {
+          continue;
+        }
+        const snapshots = entry.resultSnapshot ?? [];
+        if (snapshots.length === 0) {
+          continue;
+        }
+        const indexes = snapshots.map((_, index) => index);
+        const result =
+          entry.kind === "academic"
+            ? await services.discovery.saveAcademicSnapshotCandidates(
+                ctx.projectId,
+                entry.query,
+                snapshots.filter(
+                  (snapshot): snapshot is PlanExecutionAcademicResultSnapshot => snapshot.kind === "academic",
+                ),
+                indexes,
+              )
+            : await services.discovery.saveWebSnapshotCandidates(
+                ctx.projectId,
+                entry.query,
+                snapshots.filter(
+                  (snapshot): snapshot is PlanExecutionWebResultSnapshot => snapshot.kind === "web",
+                ),
+                indexes,
+              );
+        candidatesSaved += result.saved.length;
+        candidatesMerged += result.mergedExisting.length;
+      }
+      const pending = await services.candidates.list(ctx.projectId, "pending_review");
+      const sources = await services.sources.list(ctx.projectId);
+      const libraryEligible = sources.filter(
+        (item) => item.sourceRole !== "reference" && item.status !== "rejected",
+      ).length;
+      if (pending.length === 0 && libraryEligible === 0) {
+        throw new BusinessError(
+          "STAGE_CONTRACT_VIOLATION",
+          `检索没有产生任何候选文献（executed=${executed} failed=${failed} saved=${candidatesSaved}）：请检查检索 provider 配置 / 网络后重跑，或在「文献发现」手动添加候选`,
+        );
+      }
+      return {
+        planId: plan.planId,
+        planStatus: plan.status === "approved" ? "done" : plan.status,
+        executed,
+        failedQueries: failed,
+        candidatesSaved,
+        candidatesMerged,
+        pendingCandidates: pending.length,
+        recommended: recommendedSurveyCandidateIds(pending).length,
+        libraryEligible,
+      };
+    },
+  };
+}
+
+/** hitl.literature_selection：候选文献集合的正式确认（Corpus 入选是用户决策） */
+function literatureSelectionStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.literature_selection",
+    description: "等待用户确认进入综述矩阵的文献集合（推荐集可增删）",
+    requiredInputs: ["survey.search"],
+    producedOutputs: ["用户决策（candidateIds）"],
+    hitl: {
+      prompt:
+        "文献检索已完成，候选清单如下。默认入选「推荐集」（学术形态优先、按年份降序，上限 25 篇）；确认后这些文献将入库（promote）并获取全文，进入综述矩阵构建。也可在决策 payload.candidateIds 中指定增删后的集合（candidateId 列表），或取消",
+      options: ["approve", "cancel"],
+      payload: async (ctx) => {
+        const artifact = await readResearchArtifact(services.projects, ctx.projectId);
+        const chain = artifact !== null ? readPlanChain(artifact) : null;
+        const plan = chain?.plans.find((candidate) => candidate.planId === chain.activePlanId);
+        const pending = await services.candidates.list(ctx.projectId, "pending_review");
+        const sources = await services.sources.list(ctx.projectId);
+        const years = pending
+          .map((candidate) => candidate.year)
+          .filter((year): year is number => typeof year === "number");
+        return {
+          pendingCount: pending.length,
+          questions: plan?.questions.slice(0, 6) ?? [],
+          ...(artifact?.surveyProfile?.taxonomy !== undefined
+            ? {
+                taxonomyIntent: artifact.surveyProfile.taxonomy.families.map(
+                  (family) => family.label,
+                ),
+              }
+            : {}),
+          yearRange:
+            years.length > 0 ? { from: Math.min(...years), to: Math.max(...years) } : undefined,
+          libraryEligible: sources.filter(
+            (item) => item.sourceRole !== "reference" && item.status !== "rejected",
+          ).length,
+          recommendedCandidateIds: recommendedSurveyCandidateIds(pending),
+          candidates: pending.slice(0, 40).map((candidate) => ({
+            candidateId: candidate.candidateId,
+            title: candidate.title ?? "(untitled)",
+            ...(candidate.year !== undefined ? { year: candidate.year } : {}),
+            ...(candidate.doi !== undefined ? { doi: candidate.doi } : {}),
+            ...(candidate.arxivId !== undefined ? { arxivId: candidate.arxivId } : {}),
+            origin: candidate.origin,
+            ...(candidate.query !== undefined ? { query: candidate.query } : {}),
+          })),
+        };
+      },
+    },
+  };
+}
+
+/** HITL 决策：literature_selection（approve 可携带 payload.candidateIds 增删） */
+async function applyLiteratureSelectionDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision !== "approve") {
+    throw new WorkflowInvalidStateError(
+      state.runId,
+      state.status,
+      `decision 只能是 approve / cancel（当前 "${input.decision}"）`,
+    );
+  }
+  const pending = await services.candidates.list(state.projectId, "pending_review");
+  const byId = new Map(pending.map((candidate) => [candidate.candidateId, candidate]));
+  let selected: string[];
+  const raw = input.payload?.["candidateIds"];
+  if (raw === undefined) {
+    selected = recommendedSurveyCandidateIds(pending);
+  } else {
+    if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        "payload.candidateIds 必须是 candidateId 字符串数组（缺省 = 推荐集）",
+      );
+    }
+    const ids = [...new Set(raw as string[])];
+    if (ids.length === 0) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        "payload.candidateIds 不能为空（不继续请选择 cancel）",
+      );
+    }
+    const missing = ids.filter((id) => !byId.has(id));
+    if (missing.length > 0) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        `candidateIds 含未知或非待审候选：${missing.join("、")}`,
+      );
+    }
+    selected = ids;
+  }
+  state.stageResults["hitl.literature_selection"] = {
+    decision: "approve",
+    candidateIds: selected,
+    pendingAtDecision: pending.length,
+  };
+  return;
+}
+
+/**
+ * survey.fulltext：入选候选 promote（幂等）→ 批量全文解析（partial success，
+ * 降级 abstract_only / metadata_only 不终止）→ 同步等待结构化解析（Matrix 的
+ * fulltext 锚定依赖 chunk 就绪）。零选择（无 pending、文献库已有 corpus）时
+ * 直接对文献库执行——支持「用户在暂停期间手动 promote」的续跑。
+ */
+function surveyFulltextStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "survey.fulltext",
+    description: "入选文献入库（promote）+ 全文解析 + 结构化解析等待（partial success）",
+    requiredInputs: ["hitl.literature_selection"],
+    producedOutputs: ["sources 入库 + 全文挂载 + chunks（Matrix fulltext 锚定前提）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      const marker = ctx.state.stageResults["hitl.literature_selection"] ?? {};
+      const candidateIds = Array.isArray(marker["candidateIds"])
+        ? (marker["candidateIds"] as string[]).filter((id): id is string => typeof id === "string")
+        : [];
+      let promoted = 0;
+      let alreadyExists = 0;
+      let promoteFailed = 0;
+      let sourceIds: string[] = [];
+      if (candidateIds.length > 0) {
+        const batch = await services.sourceImport.promoteCandidatesBatch(ctx.projectId, {
+          candidateIds,
+          selectionReason: "topic_survey 文献遴选（workflow HITL 批准）",
+        });
+        promoted = batch.summary.promoted;
+        alreadyExists = batch.summary.alreadyExists;
+        promoteFailed = batch.summary.failed;
+        sourceIds = batch.results
+          .filter((entry) => entry.source !== undefined)
+          .map((entry) => entry.source!.sourceId);
+      }
+      if (sourceIds.length === 0) {
+        // 无新入选（用户全部手动 promote / 上一 run 已完成）：对文献库全部合格条目执行
+        const sources = await services.sources.list(ctx.projectId);
+        sourceIds = sources
+          .filter((item) => item.sourceRole !== "reference" && item.status !== "rejected")
+          .map((item) => item.sourceId);
+      }
+      await ctx.emitProgress({ phase: "resolve-fulltext", total: sourceIds.length });
+      const fulltext =
+        sourceIds.length > 0
+          ? await services.sourceImport.resolveFullTextBatch(ctx.projectId, sourceIds, {
+              signal: ctx.signal,
+            })
+          : { summary: { total: 0, resolved: 0, notFound: 0, failed: 0, notResolvable: 0, skipped: 0 }, results: [] };
+
+      // 同步等待结构化解析（docling 后台任务 dedup；失败是数据不是异常——条目
+      // 保持可检索的降级 chunk 或 metadata_only，Matrix 按 interpretationDepth 降级）。
+      // 已新鲜的产物直接跳过（promote 钩子 / 上一 run 可能已解析，避免重复 spawn）
+      const withFile = (await services.sources.list(ctx.projectId)).filter(
+        (item) =>
+          sourceIds.includes(item.sourceId) &&
+          item.fileName !== undefined &&
+          item.status !== "metadata_only",
+      );
+      let ingested = 0;
+      let ingestSkipped = 0;
+      let ingestFailed = 0;
+      for (const [index, item] of withFile.entries()) {
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "全文准备已被取消");
+        }
+        await ctx.emitProgress({ phase: "ingest", done: index + 1, total: withFile.length, sourceId: item.sourceId });
+        try {
+          if ((await services.ingestion.getDocument(ctx.projectId, item.sourceId)) !== null) {
+            ingestSkipped += 1;
+            continue;
+          }
+          await services.ingestion.ingest(ctx.projectId, item.sourceId);
+          ingested += 1;
+        } catch {
+          ingestFailed += 1;
+        }
+      }
+      return {
+        selected: candidateIds.length,
+        promoted,
+        alreadyExists,
+        promoteFailed,
+        sources: sourceIds.length,
+        fulltextResolved: fulltext.summary.resolved,
+        fulltextNotFound: fulltext.summary.notFound,
+        fulltextNotResolvable: fulltext.summary.notResolvable,
+        fulltextFailed: fulltext.summary.failed,
+        fulltextSkipped: fulltext.summary.skipped,
+        ingested,
+        ingestSkipped,
+        ingestFailed,
+      };
+    },
+  };
+}
+
+/** survey.matrix：直接调用 MatrixService（taxonomy 意图来自 surveyProfile，非法回退缺省词表） */
+function surveyMatrixStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "survey.matrix",
+    description: "Survey Matrix 构建：Literature → per-paper 结构化理解（复用 MatrixService 幂等语义）",
+    requiredInputs: ["survey.fulltext"],
+    producedOutputs: ["research/survey.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 4,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const artifact = await requireResearchArtifact(services, ctx.projectId);
+      let taxonomy: SurveyTaxonomy | undefined;
+      if (artifact.surveyProfile?.taxonomy !== undefined) {
+        try {
+          taxonomy = normalizeTaxonomy(artifact.surveyProfile.taxonomy);
+        } catch {
+          taxonomy = undefined; // 意图词表非法 → 服务内缺省词表（fail-open 只对词表，不伪造条目）
+        }
+      }
+      const build = await services.survey.buildMatrix(ctx.projectId, {
+        ...(taxonomy !== undefined ? { taxonomy } : {}),
+        onProgress: (info) => {
+          void ctx.emitProgress({
+            phase: "matrix",
+            done: info.done + 1,
+            total: info.total,
+            sourceId: info.sourceId,
+          });
+        },
+      });
+      const matrix = build.matrix;
+      const byFamily = new Map<string, number>();
+      let unclassified = 0;
+      for (const entry of matrix.entries) {
+        if (entry.methodFamily === undefined || entry.methodFamily === UNCLASSIFIED_FAMILY) {
+          unclassified += 1;
+        } else {
+          byFamily.set(entry.methodFamily, (byFamily.get(entry.methodFamily) ?? 0) + 1);
+        }
+      }
+      return {
+        entries: matrix.entries.length,
+        built: build.summary.built,
+        skippedExisting: build.summary.skippedExisting,
+        failed: build.summary.failed,
+        fulltext: matrix.entries.filter((entry) => entry.interpretationDepth === "fulltext").length,
+        abstractOnly: matrix.entries.filter((entry) => entry.interpretationDepth === "abstract_only")
+          .length,
+        unclassified,
+        entriesWithIssues: matrix.entries.filter((entry) => (entry.issues ?? []).length > 0).length,
+        ...(taxonomy !== undefined ? { taxonomyApplied: taxonomy.families.length } : {}),
+      };
+    },
+    async verifyDod(ctx) {
+      const matrix = await services.survey.getMatrix(ctx.projectId);
+      return matrix === null || matrix.entries.length === 0
+        ? ["research/survey.json 不存在或为空（0 条文献）"]
+        : [];
+    },
+  };
+}
+
+/** hitl.matrix_confirm：进入 Synthesis 前的矩阵修正点（重点暴露 unclassified / 弱锚 / 降级条目） */
+function matrixConfirmStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.matrix_confirm",
+    description: "等待用户确认综述矩阵（可修正 taxonomy / 归类 / 状态）",
+    requiredInputs: ["survey.matrix"],
+    producedOutputs: ["用户决策（approve / revise entryPatches）"],
+    hitl: {
+      prompt:
+        "综述矩阵已生成（每篇文献的结构化理解）。下方重点列出需要人工关注的条目（未归类 / 弱锚定 / 仅摘要）。确认后进入跨论文综合；需要修正时在决策 payload.entryPatches 中给出条目修正（entryId + 要改的字段，字段校验与「矩阵」页编辑一致），修正会触发综合重建",
+      options: ["approve", "revise", "cancel"],
+      payload: async (ctx) => {
+        const matrix = await services.survey.getMatrix(ctx.projectId);
+        if (matrix === null) {
+          return undefined;
+        }
+        const unclassified = matrix.entries.filter(
+          (entry) => entry.methodFamily === undefined || entry.methodFamily === UNCLASSIFIED_FAMILY,
+        );
+        const weakAnchors = matrix.entries.filter(
+          (entry) =>
+            entry.interpretationDepth === "fulltext" &&
+            (entry.anchors.length === 0 ||
+              (entry.issues ?? []).some(
+                (issue) => issue.code === "no_valid_anchors" || issue.code === "no_retrievable_chunks",
+              )),
+        );
+        const byFamily = new Map<string, number>();
+        for (const entry of matrix.entries) {
+          if (entry.methodFamily !== undefined && entry.methodFamily !== UNCLASSIFIED_FAMILY) {
+            byFamily.set(entry.methodFamily, (byFamily.get(entry.methodFamily) ?? 0) + 1);
+          }
+        }
+        return {
+          entries: matrix.entries.length,
+          fulltext: matrix.entries.filter((entry) => entry.interpretationDepth === "fulltext").length,
+          abstractOnly: matrix.entries.filter((entry) => entry.interpretationDepth === "abstract_only")
+            .length,
+          taxonomy: matrix.taxonomy.families.map(
+            (family) => `${family.label}=${byFamily.get(family.label) ?? 0}`,
+          ),
+          attention: {
+            unclassified: unclassified.map((entry) => ({
+              entryId: entry.entryId,
+              sourceId: entry.sourceId,
+              proposed:
+                entry.issues?.find((issue) => issue.code === "method_family_not_in_taxonomy")
+                  ?.proposed ?? undefined,
+            })),
+            weakAnchors: weakAnchors.map((entry) => entry.entryId),
+          },
+          entriesWithIssues: matrix.entries.filter((entry) => (entry.issues ?? []).length > 0).length,
+        };
+      },
+    },
+  };
+}
+
+/** HITL 决策：matrix_confirm（revise = entryPatches 经服务严格校验后落盘） */
+async function applyMatrixConfirmDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision === "approve") {
+    // 最简语义：workflow 级批准。entry.status 不强制逐条 confirmed（构建产物
+    // 默认 draft；PUT 编辑自然管理状态），Synthesis 不消费 entry.status
+    state.stageResults["hitl.matrix_confirm"] = { decision: "approve" };
+    return;
+  }
+  if (input.decision === "revise") {
+    const raw = input.payload?.["entryPatches"];
+    if (!Array.isArray(raw) || raw.length === 0) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        "revise 需要携带非空 payload.entryPatches（[{entryId, methodFamily?, subFamily?, status?, …}]；只提意见不改条目请 approve）",
+      );
+    }
+    const patches: Array<{ entryId: string; patch: SurveyEntryPatch }> = [];
+    for (const entry of raw) {
+      if (typeof entry !== "object" || entry === null || typeof (entry as Record<string, unknown>)["entryId"] !== "string") {
+        throw new WorkflowInvalidStateError(
+          state.runId,
+          state.status,
+          "entryPatches[].entryId 必须是非空字符串",
+        );
+      }
+      const { entryId, ...rest } = entry as { entryId: string } & SurveyEntryPatch;
+      if (Object.keys(rest).length === 0) {
+        throw new WorkflowInvalidStateError(
+          state.runId,
+          state.status,
+          `entryPatches 中 ${entryId} 没有要修改的字段`,
+        );
+      }
+      patches.push({ entryId, patch: rest });
+    }
+    // 逐条走服务写入口（严格 fail-closed：非法标签 / 越界字段直接抛错回给用户）
+    const applied: string[] = [];
+    for (const { entryId, patch } of patches) {
+      const updated = await services.survey.updateEntry(state.projectId, entryId, patch);
+      applied.push(updated.entryId);
+    }
+    state.stageResults["hitl.matrix_confirm"] = {
+      decision: "revise",
+      patched: applied.length,
+      patchedEntries: applied,
+    };
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 approve / revise / cancel（当前 "${input.decision}"）`,
+  );
+}
+
+/** survey.synthesis：直接调用 SynthesisService（Matrix 指纹复用 / 全量重建） */
+function surveySynthesisStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "survey.synthesis",
+    description: "Structured Synthesis 构建：七类跨论文综合（grounding 规则零旁路）",
+    requiredInputs: ["hitl.matrix_confirm"],
+    producedOutputs: ["research/survey-synthesis.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 4,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const build = await services.synthesis.buildSynthesis(ctx.projectId, {
+        onProgress: (info) => {
+          void ctx.emitProgress({
+            phase: "synthesis",
+            done: info.done + 1,
+            total: info.total,
+            kind: info.kind,
+          });
+        },
+      });
+      return {
+        synthesisItems: build.synthesis.items.length,
+        reused: build.summary.reused,
+        batches: build.summary.batches,
+        byKind: build.summary.byKind,
+        evidenceProposed: build.summary.evidenceProposed,
+        evidenceVerified: build.summary.evidenceVerified,
+        rejected: build.summary.rejected,
+      };
+    },
+    async verifyDod(ctx) {
+      const synthesis = await services.synthesis.getSynthesis(ctx.projectId);
+      return synthesis === null ? ["research/survey-synthesis.json 不存在"] : [];
+    },
+  };
+}
+
+/** survey.outline：直接调用 SurveyOutlineService（validate blocking fail-closed 在服务内） */
+function surveyOutlineStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "survey.outline",
+    description: "Survey Outline 规划：Synthesis → 综述大纲（契约校验 + feedback 重规划）",
+    requiredInputs: ["survey.synthesis"],
+    producedOutputs: ["manuscript/outline.json（synthesisRefs / literatureRefs）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const feedback = readFeedback(ctx.state.inputs["hitl.outline_confirm"]?.payload);
+      const build = await services.surveyOutline.buildSurveyOutline(ctx.projectId, {
+        ...(feedback !== undefined ? { feedback } : {}),
+      });
+      return {
+        title: build.outline.title,
+        sections: build.outline.sections.length,
+        planningAttempts: build.summary.planningAttempts,
+        matrixEntries: build.summary.matrixEntries,
+        synthesisItems: build.summary.synthesisItems,
+        synthesisCoverage: build.validation.summary.synthesisCoverage,
+        literatureCoverage: build.validation.summary.literatureCoverage,
+        warnings: build.validation.warnings.length,
+        ...(build.summary.repair !== undefined ? { repair: build.summary.repair.attempts } : {}),
+      };
+    },
+    async verifyDod(ctx) {
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      return outline === null ? ["manuscript/outline.json 不存在"] : [];
+    },
+  };
+}
+
+/** hitl.outline_confirm（survey 变体：前置是 survey.outline；payload 与 idea 流程共用） */
+function surveyOutlineConfirmStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.outline_confirm",
+    description: "等待用户确认综述大纲（refs 契约可见）",
+    requiredInputs: ["survey.outline"],
+    producedOutputs: ["用户决策"],
+    hitl: {
+      prompt: "综述大纲已生成（按方法体系 / 综合结果组织；各节携带 synthesis / literature 引用）。确认后本次综述研究流程完成；也可以带反馈重新规划，或取消",
+      options: ["approve", "revise", "cancel"],
+      payload: (ctx) => outlineConfirmPayload(services, ctx),
+    },
+  };
+}
+
+/** HITL 决策：outline_confirm（survey 变体：revise 重跑 survey.outline，refs 链不丢） */
+async function applySurveyOutlineDecision(
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "approve") {
+    state.stageResults["hitl.outline_confirm"] = { decision: "approve" };
+    return;
+  }
+  if (input.decision === "cancel") {
+    return "cancel";
+  }
+  if (input.decision === "revise") {
+    if (readFeedback(input.payload) === undefined) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        "revise 需要携带非空 payload.feedback",
+      );
+    }
+    if (countCompletions(state, "survey.outline") >= MAX_OUTLINE_REVISIONS) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        `大纲修订次数已达上限（${MAX_OUTLINE_REVISIONS} 次），请 approve 或 cancel`,
+      );
+    }
+    dropStageResult(state, "survey.outline");
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 approve / revise / cancel（当前 "${input.decision}"）`,
+  );
+}
+
+export function createTopicSurveyDefinition(services: WorkflowServices): WorkflowDefinition {
+  const stages: readonly StageSpec[] = [
+    surveyPlanStage(services),
+    researchPlanConfirmStage(services, { survey: true }),
+    surveySearchStage(services),
+    literatureSelectionStage(services),
+    surveyFulltextStage(services),
+    surveyMatrixStage(services),
+    matrixConfirmStage(services),
+    surveySynthesisStage(services),
+    surveyOutlineStage(services),
+    surveyOutlineConfirmStage(services),
+  ];
+
+  const front = [
+    "research.plan",
+    "hitl.research_plan",
+    "survey.search",
+    "hitl.literature_selection",
+    "survey.fulltext",
+    "survey.matrix",
+    "hitl.matrix_confirm",
+    "survey.synthesis",
+    "survey.outline",
+    "hitl.outline_confirm",
+  ];
+
+  return {
+    kind: "topic_survey",
+    description:
+      "Topic-to-Survey：综述研究规划 → 确认 → 检索 → 文献遴选 → 全文准备 → Survey Matrix → 矩阵确认 → Structured Synthesis → Survey Outline → 大纲确认（终点是冻结的综述大纲，不写正文）",
+    stages,
+    plan(state: WorkflowState): PlanDecision {
+      for (const stageId of front) {
+        if (!(stageId in state.stageResults)) {
+          return { kind: "stage", stageId };
+        }
+      }
+      const outline = state.stageResults["survey.outline"] ?? {};
+      const matrix = state.stageResults["survey.matrix"] ?? {};
+      const synthesis = state.stageResults["survey.synthesis"] ?? {};
+      const selection = state.stageResults["hitl.literature_selection"] ?? {};
+      return {
+        kind: "complete",
+        label: "survey",
+        summary: {
+          sections: outline["sections"] ?? 0,
+          matrixEntries: matrix["entries"] ?? 0,
+          synthesisItems: synthesis["synthesisItems"] ?? 0,
+          selectedLiterature: Array.isArray(selection["candidateIds"])
+            ? selection["candidateIds"].length
+            : 0,
+        },
+      };
+    },
+    async onInput(state, stageId, input): Promise<void | "cancel"> {
+      switch (stageId) {
+        case "hitl.research_plan":
+          return applyResearchPlanDecision(services, state, input);
+        case "hitl.literature_selection":
+          return applyLiteratureSelectionDecision(services, state, input);
+        case "hitl.matrix_confirm":
+          return applyMatrixConfirmDecision(services, state, input);
+        case "hitl.outline_confirm":
+          return applySurveyOutlineDecision(state, input);
+        default:
+          throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
+      }
     },
   };
 }

@@ -348,12 +348,23 @@ export const STAGE_LABELS: Record<string, string> = {
   "assessment.target": "目标评估",
   "plan.improvement": "制定改进计划",
   "hitl.plan_confirm": "等待确认改进计划",
+  // topic_survey（M11.1.4：内部 stage key 技术命名，展示层用友好名称）
+  "research.plan": "规划综述研究",
+  "hitl.research_plan": "等待确认研究计划",
+  "survey.search": "检索文献",
+  "hitl.literature_selection": "等待确认文献集合",
+  "survey.fulltext": "准备全文",
+  "survey.matrix": "理解文献（综述矩阵）",
+  "hitl.matrix_confirm": "等待确认综述矩阵",
+  "survey.synthesis": "跨论文综合",
+  "survey.outline": "规划综述大纲",
 };
 
 export const COMPLETION_LABELS: Record<string, string> = {
   final: "最终稿",
   draft: "草稿",
   review: "Review 报告",
+  survey: "综述大纲",
 };
 
 /**
@@ -435,6 +446,18 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "build.draft", conditional: true },
     { stageId: "revision.repair_latex", conditional: true },
     { stageId: "build.final", conditional: true },
+  ],
+  topic_survey: [
+    { stageId: "research.plan" },
+    { stageId: "hitl.research_plan", hitl: true },
+    { stageId: "survey.search" },
+    { stageId: "hitl.literature_selection", hitl: true },
+    { stageId: "survey.fulltext" },
+    { stageId: "survey.matrix" },
+    { stageId: "hitl.matrix_confirm", hitl: true },
+    { stageId: "survey.synthesis" },
+    { stageId: "survey.outline" },
+    { stageId: "hitl.outline_confirm", hitl: true },
   ],
   existing_paper_improvement: [
     { stageId: "import.parse" },

@@ -13,7 +13,8 @@ import type { PaperDocSummary } from "./paper.js";
 export type WorkflowKind =
   | "idea_to_paper"
   | "existing_paper_improvement"
-  | "existing_paper_review";
+  | "existing_paper_review"
+  | "topic_survey";
 
 /**
  * 引用语义核验模式（Claim-Citation 一致性核验档位；Backend citation/semanticMode.ts）。
@@ -158,7 +159,7 @@ export interface WorkflowRunView {
     payload?: Record<string, unknown>;
   } | null;
   error?: { code: string; message: string; stageId?: string } | null;
-  completion?: { label: "final" | "draft" | "review" } | null;
+  completion?: { label: "final" | "draft" | "review" | "survey" } | null;
   /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
   /** 已完成 stage id（按完成顺序；重复执行的 stage 只出现一次） */

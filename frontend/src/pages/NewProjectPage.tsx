@@ -20,6 +20,7 @@ import type {
  * 新建项目：顶层只问一件事——你想做什么？
  *   A. 从研究想法开始（标题 + 研究想法 + 定位字段）
  *   B. 导入已有论文（File First：PDF + 目标即提交，标题由 PDF 自动识别，其余折叠进高级选项）
+ *   C. 综述调研（M11.1.4：只输入 Topic → 自动研究到可确认的 Survey Outline）
  */
 
 /** 与 Backend ProjectStore 一致的长度上限（前端提前拦截） */
@@ -31,7 +32,7 @@ const LIMITS = {
   language: 50,
 } as const;
 
-type EntryMode = "idea" | "existing";
+type EntryMode = "idea" | "existing" | "survey";
 
 interface FormState {
   title: string;
@@ -104,16 +105,23 @@ export function NewProjectPage() {
 
   return (
     <section className="page page-narrow">
-      <PageHeader title="新建项目" sub="从研究想法开始写一篇新论文，或导入已有论文（PDF / LaTeX 工程）做 Review 与修改。" />
-      {mode === "idea" ? <IdeaForm onSwitchMode={() => setMode("existing")} /> : <ExistingPaperForm onSwitchMode={() => setMode("idea")} />}
+      <PageHeader title="新建项目" sub="从研究想法开始写一篇新论文，导入已有论文做 Review 与修改，或从主题开始做一篇综述的研究调研。" />
+      {mode === "idea" ? (
+        <IdeaForm onSwitchMode={setMode} />
+      ) : mode === "survey" ? (
+        <SurveyForm onSwitchMode={setMode} />
+      ) : (
+        <ExistingPaperForm onSwitchMode={setMode} />
+      )}
     </section>
   );
 }
 
-/** 模式切换卡（两份表单共用；当前模式高亮，点击另一张切换） */
+/** 模式切换卡（三份表单共用；当前模式高亮，点击另一张切换） */
 function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode: EntryMode) => void }) {
   const cards: Array<{ mode: EntryMode; title: string; desc: string }> = [
     { mode: "idea", title: "从研究想法开始", desc: "从一个研究想法出发，完成调研、证据整理、写作与审阅，最终生成论文。" },
+    { mode: "survey", title: "综述调研", desc: "只输入一个主题：系统会检索并遴选文献、构建综述矩阵与跨论文综合，产出可确认的综述大纲（本阶段不写正文）。" },
     { mode: "existing", title: "导入已有论文", desc: "上传论文 PDF 或 LaTeX 工程归档：PDF 可先做快速 Review（引用核验 + 分章节审阅），两者都可进入系统性改进流程。" },
   ];
   return (
@@ -134,7 +142,7 @@ function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode:
 
 // ---- 模式 A：从研究想法开始 ----
 
-function IdeaForm({ onSwitchMode }: { onSwitchMode: () => void }) {
+function IdeaForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void }) {
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
@@ -241,7 +249,169 @@ function IdeaForm({ onSwitchMode }: { onSwitchMode: () => void }) {
   );
 }
 
-// ---- 模式 B：导入已有论文（File First：PDF 论文 / LaTeX 工程） ----
+// ---- 模式 B：综述调研（M11.1.4 topic_survey：Topic → Survey Outline） ----
+
+interface SurveyFormState {
+  topic: string;
+  language: string;
+  targetVenue: string;
+  yearFrom: string;
+  yearTo: string;
+  targetLength: string;
+}
+
+const INITIAL_SURVEY_FORM: SurveyFormState = {
+  topic: "",
+  language: "",
+  targetVenue: "",
+  yearFrom: "",
+  yearTo: "",
+  targetLength: "",
+};
+
+function readYearField(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return undefined;
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isInteger(parsed) && parsed >= 1900 && parsed <= 2100 ? parsed : NaN;
+}
+
+function SurveyForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void }) {
+  const navigate = useNavigate();
+  const createProject = useCreateProject();
+  const startRun = useCreateWorkflowRun();
+  const [form, setForm] = useState<SurveyFormState>(INITIAL_SURVEY_FORM);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const submitting = createProject.isPending || startRun.isPending;
+
+  const update = (field: keyof SurveyFormState) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    setForm((prev) => ({ ...prev, [field]: event.target.value }));
+  };
+
+  const onSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    const topic = form.topic.trim();
+    if (topic === "") {
+      setValidationError("综述主题不能为空");
+      return;
+    }
+    if (topic.length > LIMITS.title) {
+      setValidationError(`综述主题不能超过 ${LIMITS.title} 个字符`);
+      return;
+    }
+    const yearFrom = readYearField(form.yearFrom);
+    const yearTo = readYearField(form.yearTo);
+    if (Number.isNaN(yearFrom) || Number.isNaN(yearTo)) {
+      setValidationError("年份范围必须是 1900-2100 的整数（留空 = 不限）");
+      return;
+    }
+    if (yearFrom !== undefined && yearTo !== undefined && yearFrom > yearTo) {
+      setValidationError("起始年份不能晚于结束年份");
+      return;
+    }
+    setValidationError(null);
+    try {
+      const project = await createProject.mutateAsync({
+        title: topic,
+        workflowKind: "topic_survey",
+        ...withPicked("language", form.language),
+        ...withPicked("targetVenue", form.targetVenue),
+      });
+      // 只输入 Topic 即启动：其余都是可选范围参数（随 run request 持久化）
+      await startRun.mutateAsync({
+        projectId: project.id,
+        kind: "topic_survey",
+        survey: {
+          ...(yearFrom !== undefined ? { yearFrom } : {}),
+          ...(yearTo !== undefined ? { yearTo } : {}),
+          ...withPicked("targetLength", form.targetLength),
+        },
+      });
+      void navigate(`/projects/${project.id}`);
+    } catch {
+      // 错误由下方 ErrorState 呈现（createProject / startRun 共用）
+    }
+  };
+
+  return (
+    <form className="panel form-panel" onSubmit={(event) => void onSubmit(event)} noValidate>
+      <fieldset className="form-section">
+        <legend>你想做什么？</legend>
+        <ModeCards current="survey" onSelect={onSwitchMode} />
+      </fieldset>
+
+      <fieldset className="form-section">
+        <legend>综述主题</legend>
+        <div className="field">
+          <label htmlFor="survey-topic">
+            主题 <span className="required">*</span>
+          </label>
+          <input
+            id="survey-topic"
+            name="topic"
+            value={form.topic}
+            onChange={update("topic")}
+            placeholder="如：多目标跟踪中的数据关联方法"
+            maxLength={LIMITS.title + 1}
+            data-testid="survey-topic"
+          />
+          <span className="field-help">系统会自动完成：研究计划 → 文献检索与遴选 → 全文准备 → 综述矩阵 → 跨论文综合 → 综述大纲；关键节点会暂停等你确认。</span>
+        </div>
+      </fieldset>
+
+      <details className="advanced-options">
+        <summary>范围选项（年份 / 篇幅 / 语言 / 目标期刊，可选）</summary>
+        <div className="form-grid" style={{ marginTop: "var(--s-3)" }}>
+          <div className="field">
+            <label htmlFor="survey-year-from">起始年份</label>
+            <input id="survey-year-from" inputMode="numeric" value={form.yearFrom} onChange={update("yearFrom")} placeholder="如 2015（可选）" data-testid="survey-year-from" />
+          </div>
+          <div className="field">
+            <label htmlFor="survey-year-to">结束年份</label>
+            <input id="survey-year-to" inputMode="numeric" value={form.yearTo} onChange={update("yearTo")} placeholder="如 2025（可选）" data-testid="survey-year-to" />
+          </div>
+          <div className="field">
+            <label htmlFor="survey-target-length">篇幅目标</label>
+            <input id="survey-target-length" value={form.targetLength} onChange={update("targetLength")} placeholder="如：万字级综述（可选）" maxLength={200} />
+          </div>
+          <div className="field">
+            <label htmlFor="survey-target-venue">目标期刊 / 会议</label>
+            <input id="survey-target-venue" value={form.targetVenue} onChange={update("targetVenue")} placeholder="如：某核心期刊（可选）" maxLength={LIMITS.targetVenue + 1} />
+          </div>
+          <div className="field">
+            <label htmlFor="survey-language">综述语言</label>
+            <input id="survey-language" value={form.language} onChange={update("language")} placeholder="如：中文 / English（可选）" maxLength={LIMITS.language + 1} />
+          </div>
+        </div>
+      </details>
+
+      {validationError !== null ? (
+        <p className="form-error" role="alert" data-testid="validation-error">
+          {validationError}
+        </p>
+      ) : null}
+      {createProject.isError ? (
+        <ErrorState title="创建失败" message={formatApiError(createProject.error)} detail={formatApiErrorDetail(createProject.error)} />
+      ) : null}
+      {startRun.isError ? (
+        <ErrorState title="启动失败" message={formatApiError(startRun.error)} detail={formatApiErrorDetail(startRun.error)} />
+      ) : null}
+
+      <div className="form-actions">
+        <Link to="/projects" className="btn">
+          取消
+        </Link>
+        <button type="submit" className="btn btn-primary" disabled={submitting} data-testid="survey-submit">
+          {createProject.isPending ? "创建中…" : startRun.isPending ? "启动调研中…" : "开始综述调研"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// ---- 模式 C：导入已有论文（File First：PDF 论文 / LaTeX 工程） ----
 
 const GOAL_OPTIONS: ReadonlyArray<{ value: ExistingPaperGoal; title: string; desc: string; recommended?: boolean }> = [
   {
@@ -273,7 +443,7 @@ const FORMAT_OPTIONS: ReadonlyArray<{ value: ImportPaperFormat; title: string; d
 
 type ImportPhase = "idle" | "encoding" | "uploading";
 
-function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: () => void }) {
+function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void }) {
   const navigate = useNavigate();
   const importPaper = useImportProjectPaper();
   const runtimeStatus = useRuntimeStatus();

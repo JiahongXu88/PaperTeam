@@ -115,6 +115,85 @@ export interface ResearchPlan {
   updatedAt: string;
 }
 
+// ---- Survey Research Profile（M11.1.4：topic_survey 的最小 survey 扩展）----
+
+/**
+ * topic_survey 工作流的 survey 语义计划画像（research.json 顶层可选字段，
+ * 与 plan 同生同灭）：plan（questions / queries）承载可执行检索，本画像承载
+ * 综述特有的意图——范围界定、初始 taxonomy 词表、覆盖意图。全部字段宽容
+ * 解析：缺失 / 非法不阻塞（Matrix 构建对非法 taxonomy 回退缺省词表并记账）。
+ */
+export interface SurveyResearchProfile {
+  /** 综述范围界定（一句话；topic 的澄清与边界） */
+  scope: string;
+  /** 初始 taxonomy 意图（可选；经 normalizeTaxonomy 校验后才落盘） */
+  taxonomy?: { families: Array<{ label: string; description: string; subFamilies?: string[] }> };
+  /** 覆盖意图（提示性：奠基 / 代表 / 近期文献与时间窗的检索侧重） */
+  coverageIntent?: {
+    seminal?: string[];
+    dimensions?: string[];
+    yearsNote?: string;
+  };
+}
+
+/** 宽容解析 surveyProfile（独立可测）：无字段 → undefined；部分字段缺失只留可用部分 */
+export function parseSurveyProfile(parsed: Record<string, unknown>): SurveyResearchProfile | undefined {
+  const value = parsed["surveyProfile"];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const scope = typeof record["scope"] === "string" ? record["scope"].trim().slice(0, 1000) : "";
+  const taxonomyRaw = record["taxonomy"];
+  const families: NonNullable<SurveyResearchProfile["taxonomy"]>["families"] = [];
+  if (typeof taxonomyRaw === "object" && taxonomyRaw !== null && Array.isArray((taxonomyRaw as Record<string, unknown>)["families"])) {
+    for (const raw of (taxonomyRaw as Record<string, unknown>)["families"] as unknown[]) {
+      if (typeof raw !== "object" || raw === null) {
+        continue;
+      }
+      const family = raw as Record<string, unknown>;
+      const label = typeof family["label"] === "string" ? family["label"].trim().slice(0, 80) : "";
+      const description = typeof family["description"] === "string" ? family["description"].trim().slice(0, 500) : "";
+      if (label === "") {
+        continue;
+      }
+      const subs = Array.isArray(family["subFamilies"])
+        ? [...new Set((family["subFamilies"] as unknown[]).filter((sub): sub is string => typeof sub === "string" && sub.trim() !== "").map((sub) => sub.trim().slice(0, 80)))]
+        : undefined;
+      families.push({ label, description, ...(subs !== undefined && subs.length > 0 ? { subFamilies: subs } : {}) });
+    }
+  }
+  const intentRaw = record["coverageIntent"];
+  let coverageIntent: SurveyResearchProfile["coverageIntent"];
+  if (typeof intentRaw === "object" && intentRaw !== null && !Array.isArray(intentRaw)) {
+    const intent = intentRaw as Record<string, unknown>;
+    const readStrings = (key: string): string[] | undefined => {
+      const raw = intent[key];
+      if (!Array.isArray(raw)) {
+        return undefined;
+      }
+      const items = raw.filter((item): item is string => typeof item === "string").map((item) => item.trim().slice(0, 200)).filter((item) => item !== "");
+      return items.length > 0 ? items.slice(0, 12) : undefined;
+    };
+    const seminal = readStrings("seminal");
+    const dimensions = readStrings("dimensions");
+    const yearsNote = typeof intent["yearsNote"] === "string" && intent["yearsNote"].trim() !== "" ? intent["yearsNote"].trim().slice(0, 200) : undefined;
+    coverageIntent = {
+      ...(seminal !== undefined ? { seminal } : {}),
+      ...(dimensions !== undefined ? { dimensions } : {}),
+      ...(yearsNote !== undefined ? { yearsNote } : {}),
+    };
+  }
+  if (scope === "" && families.length === 0 && coverageIntent === undefined) {
+    return undefined;
+  }
+  return {
+    scope,
+    ...(families.length > 0 ? { taxonomy: { families } } : {}),
+    ...(coverageIntent !== undefined ? { coverageIntent } : {}),
+  };
+}
+
 export const RESEARCH_PLAN_STATUSES: readonly ResearchPlanStatus[] = [
   "draft",
   "approved",

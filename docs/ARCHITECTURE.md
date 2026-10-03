@@ -862,8 +862,10 @@ backend/src/
 │                  sectionChunking（TOC/标题 → sections，标题行锚定的 block 归属 → chunks）、
 │                  PaperStore、PaperIngestService、PaperMapService、ReviewContextBuilder、
 │                  ReferenceExtractor（IEEE / GB/T 7714 / APA 著录解析）、SectionReviewService
-├── workflow/      WorkflowOrchestrator（引擎）、definitions（三条 workflow 的
-│                  stage 注册表 + plan/onInput 确定性规划器）、kinds（WorkflowKind 常量）、
+├── workflow/      WorkflowOrchestrator（引擎）、definitions（四条 workflow 的
+│                  stage 注册表 + plan/onInput 确定性规划器；M11.1.4 起含
+│                  topic_survey——Topic→Survey Outline，completion label=survey）、
+│                  kinds（WorkflowKind 常量）、
 │                  runStore（checkpoint 持久化）、eventLog（Domain Event JSONL）、types
 ├── agents/        ResearcherService、FeasibilityService、ReviewerService（业务角色，
 │                  Prompt + 结构化输出校验）、outputParsing（防御性 JSON 提取）

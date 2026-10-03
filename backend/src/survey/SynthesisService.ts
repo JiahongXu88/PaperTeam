@@ -68,6 +68,11 @@ export interface SurveySynthesisBuildInput {
   kinds?: SurveySynthesisKind[];
   /** Matrix 指纹未变时仍强制重建（默认复用既有 artifact） */
   force?: boolean;
+  /**
+   * 逐 batch 进度回调（M11.1.4：workflow stage 空闲超时看门狗喂食；纯观测，
+   * 异常不回传）
+   */
+  onProgress?: (info: { done: number; total: number; kind: string }) => void;
 }
 
 export interface SurveySynthesisBuildResult {
@@ -204,50 +209,53 @@ export class SynthesisService {
         ...llmKinds.filter((kind) => kind === "future_direction"),
       ];
       const acceptedGapClaims: string[] = [];
-      for (const kind of orderedKinds) {
-        for (const batch of splitBatches(matrix.entries, kind)) {
-          counters.batches += 1;
-          let parsed: Awaited<ReturnType<SynthesisService["requestCandidates"]>>;
-          try {
-            parsed = await this.requestCandidates(projectId, {
-              kind,
-              language,
-              batch,
-              matrix,
-              taxonomyStats,
-              yearBySource,
-              ...(kind === "future_direction" ? { gapClaims: acceptedGapClaims } : {}),
-            });
-          } catch (error) {
-            // 单 batch 失败是数据不是异常：记拒绝账目，继续其余 batch
-            const reason = error instanceof Error ? error.message : String(error);
-            rejections.push({
-              kind,
-              claim: "",
-              reason: `batch 失败（${batch.map((entry) => entry.entryId).join("、").slice(0, 80)}）：${reason.slice(0, 160)}`,
-            });
-            this.log(`[survey] projectId=${projectId} ${kind} batch 失败：${reason.slice(0, 200)}`);
-            continue;
-          }
-          // parse 期结构拒绝（非法 gap trigger / detail 形状错等）先入账目
-          rejections.push(...parsed.rejections);
-          counters.candidates += parsed.candidates.length;
-          for (const candidate of parsed.candidates) {
-            const outcome = await this.processCandidate(projectId, {
-              candidate,
-              kind,
-              entryById,
-              updatedAt,
-              counters,
-            });
-            if (outcome.type === "accepted") {
-              items.push(outcome.item);
-              if (kind === "research_gap") {
-                acceptedGapClaims.push(outcome.item.claim);
-              }
-            } else {
-              rejections.push(outcome.rejection);
+      // 预展开 batch 队列（执行顺序不变；进度分母先知）
+      const plannedBatches = orderedKinds.flatMap((kind) =>
+        splitBatches(matrix.entries, kind).map((batch) => ({ kind, batch })),
+      );
+      for (const [batchIndex, { kind, batch }] of plannedBatches.entries()) {
+        input.onProgress?.({ done: batchIndex, total: plannedBatches.length, kind });
+        counters.batches += 1;
+        let parsed: Awaited<ReturnType<SynthesisService["requestCandidates"]>>;
+        try {
+          parsed = await this.requestCandidates(projectId, {
+            kind,
+            language,
+            batch,
+            matrix,
+            taxonomyStats,
+            yearBySource,
+            ...(kind === "future_direction" ? { gapClaims: acceptedGapClaims } : {}),
+          });
+        } catch (error) {
+          // 单 batch 失败是数据不是异常：记拒绝账目，继续其余 batch
+          const reason = error instanceof Error ? error.message : String(error);
+          rejections.push({
+            kind,
+            claim: "",
+            reason: `batch 失败（${batch.map((entry) => entry.entryId).join("、").slice(0, 80)}）：${reason.slice(0, 160)}`,
+          });
+          this.log(`[survey] projectId=${projectId} ${kind} batch 失败：${reason.slice(0, 200)}`);
+          continue;
+        }
+        // parse 期结构拒绝（非法 gap trigger / detail 形状错等）先入账目
+        rejections.push(...parsed.rejections);
+        counters.candidates += parsed.candidates.length;
+        for (const candidate of parsed.candidates) {
+          const outcome = await this.processCandidate(projectId, {
+            candidate,
+            kind,
+            entryById,
+            updatedAt,
+            counters,
+          });
+          if (outcome.type === "accepted") {
+            items.push(outcome.item);
+            if (kind === "research_gap") {
+              acceptedGapClaims.push(outcome.item.claim);
             }
+          } else {
+            rejections.push(outcome.rejection);
           }
         }
       }

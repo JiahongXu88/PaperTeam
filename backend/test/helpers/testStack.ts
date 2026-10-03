@@ -28,6 +28,7 @@ import {
   createExistingPaperDefinition,
   createExistingPaperReviewDefinition,
   createIdeaToPaperDefinition,
+  createTopicSurveyDefinition,
 } from "../../src/workflow/definitions.js";
 
 export const AGENT_IDS = {
@@ -242,6 +243,8 @@ export async function startTestStack(
           return createExistingPaperDefinition(stack.workflowServices);
         case "existing_paper_review":
           return createExistingPaperReviewDefinition(stack.workflowServices);
+        case "topic_survey":
+          return createTopicSurveyDefinition(stack.workflowServices);
       }
     },
     retryDelayMs: 0,

@@ -452,7 +452,7 @@
 
 | 端点 | 说明 | 前端消费方 |
 |---|---|---|
-| `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun `{kind: WorkflowKind, citationSemanticMode?}`（kind 含 `existing_paper_review`）；`citationSemanticMode` 仅 `existing_paper_review` 消费：`"off" \| "contradiction_only" \| "full"`，**缺省 `off`，非法值 → 400**（随 run `request` 持久化；旧 run 无该字段按 `full` 解释）；**已归档项目 → 409 PROJECT_BUSY** → 202 `{runId, status, workflowKind}` | ReviewPanel（开始 Review，高级选项）/ NewProjectPage（导入后自动启动） |
+| `POST /api/projects/:id/workflows` | 创建异步 WorkflowRun `{kind: WorkflowKind, citationSemanticMode?}`（kind 含 `existing_paper_review` / `topic_survey`）；`citationSemanticMode` 仅 `existing_paper_review` 消费：`"off" \| "contradiction_only" \| "full"`，**缺省 `off`，非法值 → 400**（随 run `request` 持久化；旧 run 无该字段按 `full` 解释）；**M11.1.4 `topic_survey` 可选范围参数**（随 run `request` 持久化，只是检索/规划意图不是硬过滤）：`{yearFrom?: number(1900-2100), yearTo?: number（≥yearFrom，否则 400）, targetLength?: string, targetJournal?: string}`——topic 本体 = `project.title`、语言 = `project.language`，不重复传；`topic_survey` 携带 `stylePolicy` → 400（综述研究无润色链）；**已归档项目 → 409 PROJECT_BUSY** → 202 `{runId, status, workflowKind}` | ReviewPanel（开始 Review，高级选项）/ NewProjectPage（导入后自动启动 / 综述调研自动启动） |
 | `POST /api/projects/:id/archive` | 归档项目（幂等）：设 `archivedAt`（独立于 status 的生命周期字段）。**存在 pending/running/awaiting_input run → 409 PROJECT_BUSY**（不静默归档、不自动取消）→ `{project}` | ProjectRow / ProjectPage Header（··· 菜单） |
 | `POST /api/projects/:id/restore` | 恢复归档（幂等）：清除 `archivedAt`，项目回到默认列表与最近项目 → `{project}` | Settings → 项目管理 |
 | `DELETE /api/projects/:id` | **永久删除整个工作区**（PDF/parsed/citations/reviews/workflow checkpoints/manuscript/build/元数据；并释放 Runtime 内该项目的 idle Agent Session）。前置校验：**必须已归档（否则 409 PROJECT_NOT_ARCHIVED）**、无进行中任务（否则 409 PROJECT_BUSY）→ `{status:"deleted"}` | Settings → 项目管理（输入完整标题确认后） |
@@ -467,6 +467,21 @@
 >   走 M4.3 PDF Review Foundation 链路（PaperMap → Citation Integrity →
 >   ReviewContextBuilder 分章节 → ReviewFinding → 聚合报告），与旧
 >   `POST /api/projects/:id/review`（manuscriptDigest 三路审稿）互不复用。
+- **M11.1.4 `topic_survey`（Topic → Survey Outline）**：completion label =
+  `survey`（终点是冻结的综述大纲，不写正文）。stage graph：
+  `research.plan`（survey 语义研究计划 + surveyProfile）→ `hitl.research_plan`
+  （approve/revise/cancel）→ `survey.search`（执行计划检索 + 结果快照物化为
+  候选）→ `hitl.literature_selection`（approve[+payload.candidateIds 增删]/
+  cancel；缺省推荐集 = 学术形态优先、年份降序、上限 25）→ `survey.fulltext`
+  （promote + 批量全文解析 + 结构化解析等待；partial success）→
+  `survey.matrix`（复用 MatrixService；taxonomy 意图来自 surveyProfile）→
+  `hitl.matrix_confirm`（approve / revise[+payload.entryPatches，校验与
+  PUT /survey/matrix/:entryId 一致] / cancel）→ `survey.synthesis`（复用
+  SynthesisService；Matrix 指纹复用）→ `survey.outline`（复用
+  SurveyOutlineService；blocking fail-closed）→ `hitl.outline_confirm`
+  （approve/revise/cancel）→ END。HITL 全部走既有
+  `POST /api/runs/:runId/resume`；独立 survey build API（matrix / synthesis /
+  outline）保留用于 debug / 手动重建，正式用户路径优先 Workflow API。
 > - 快速 Review 只读，不修改论文正文；系统性改进（existing_paper_improvement）
 >   第一阶段同样是先建立 Review 基线。
 >

@@ -460,6 +460,47 @@ export const REVISION_RESEARCH_PLAN_JSON = JSON.stringify({
   },
 });
 
+/** M11.1.4 topic_survey 综述研究规划输出（survey 语义：questions + queries + surveyProfile） */
+export const SURVEY_PLAN_JSON = JSON.stringify({
+  plan: {
+    questions: [
+      "多目标跟踪的数据关联方法体系如何划分？",
+      "各关联路线的取舍与演进趋势是什么？",
+      "公认结论、争议与研究空缺有哪些？",
+    ],
+    queries: [
+      {
+        query: "multi-object tracking data association survey",
+        kind: "academic",
+        rationale: "综述线索与体系划分（seminal / 综述意图）",
+        expectedCoverage: "MOT 关联方法综述",
+      },
+      {
+        query: "tracking by detection association motion appearance",
+        kind: "academic",
+        rationale: "代表性方法路线（representative 意图）",
+        expectedCoverage: "运动 / 外观 / 联合三类关联路线",
+      },
+    ],
+  },
+  surveyProfile: {
+    scope: "覆盖多目标跟踪中的数据关联方法（运动 / 外观 / 联合路线与评测基准），不含单目标跟踪。",
+    taxonomy: {
+      families: [
+        { label: "survey", description: "综述与系统性回顾" },
+        { label: "tracking_association", description: "多目标跟踪数据关联", subFamilies: ["motion_based", "appearance_based", "joint"] },
+        { label: "re_identification", description: "外观重识别与嵌入匹配" },
+        { label: "evaluation_benchmark", description: "评测基准与协议" },
+      ],
+    },
+    coverageIntent: {
+      seminal: ["SORT", "DeepSORT"],
+      dimensions: ["assumption", "appearance dependency", "computational cost"],
+      yearsNote: "以近十年为主，兼顾奠基工作",
+    },
+  },
+});
+
 /** M10.3 修订锚定证据提案输出（无 chunk 锚定 → legacy unverified 追加路径） */
 export const REVISION_EVIDENCE_JSON = JSON.stringify({
   evidence: [
@@ -667,6 +708,8 @@ export interface ScriptedRuntimeOptions {
    * 自行保证——脚本输出不解析 prompt，只提供固定形态）。
    */
   evidenceJudgeOutput?: string;
+  /** research/survey-plan scope 的输出覆盖（M11.1.4；缺省 SURVEY_PLAN_JSON） */
+  surveyPlanOutput?: string;
 }
 
 /**
@@ -848,6 +891,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "research/revision-plan") {
         // M10.3 修订研究规划：requirements 驱动 queries 的 draft 计划
         output = REVISION_RESEARCH_PLAN_JSON;
+      } else if (scope === "research/survey-plan") {
+        // M11.1.4 topic_survey：survey 语义研究规划（plan + surveyProfile）
+        output = options.surveyPlanOutput ?? SURVEY_PLAN_JSON;
       } else if (scope === "research/revision-evidence") {
         // M10.3 锚定证据提案：无 chunk 锚定的 legacy 候选（unverified 追加路径）
         output = REVISION_EVIDENCE_JSON;

@@ -25,6 +25,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<WorkflowKind>([
   "idea_to_paper",
   "existing_paper_improvement",
   "existing_paper_review",
+  "topic_survey",
 ]);
 
 const KNOWN_SEMANTIC_MODES: ReadonlySet<string> = new Set<CitationSemanticMode>([
@@ -76,7 +77,9 @@ function readCompletion(value: unknown): WorkflowRunView["completion"] {
     return null;
   }
   const label = value["label"];
-  return label === "final" || label === "draft" || label === "review" ? { label } : null;
+  return label === "final" || label === "draft" || label === "review" || label === "survey"
+    ? { label }
+    : null;
 }
 
 function readProgress(value: unknown): WorkflowRunView["progress"] {
@@ -209,12 +212,18 @@ export async function listProjectRuns(
 export async function createWorkflowRun(
   projectId: string,
   kind: WorkflowKind,
-  options: { citationSemanticMode?: CitationSemanticMode; stylePolicy?: StylePolicy } = {},
+  options: {
+    citationSemanticMode?: CitationSemanticMode;
+    stylePolicy?: StylePolicy;
+    /** M11.1.4 topic_survey 的可选范围参数（随 run request 持久化） */
+    survey?: { yearFrom?: number; yearTo?: number; targetLength?: string; targetJournal?: string };
+  } = {},
 ): Promise<{ runId: string; status: string; workflowKind: WorkflowKind }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/workflows`, {
     kind,
     ...(options.citationSemanticMode !== undefined ? { citationSemanticMode: options.citationSemanticMode } : {}),
     ...(options.stylePolicy !== undefined && kind !== "existing_paper_review" ? { stylePolicy: options.stylePolicy } : {}),
+    ...(kind === "topic_survey" && options.survey !== undefined ? { ...options.survey } : {}),
   });
 }
 

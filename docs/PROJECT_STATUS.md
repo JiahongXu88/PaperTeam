@@ -1,11 +1,13 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-10-03（**M11.1 进行中 — Survey Outline 契约落地**：M11.0
-> 冻结审计 ✅ / M11.1.1 Survey Matrix ✅（`96feb9f`）/ M11.1.2 Structured
-> Synthesis ✅（`ad5819a`）/ M11.1.3 Survey Outline ✅（synthesisRefs /
-> literatureRefs 契约 + 确定性校验 + 真实 smoke）；剩 M11.1.4 Workflow
-> Integration、M11.2 Writing E2E、M11.3 Review / Real Acceptance——Topic →
-> Survey 整体尚未完成，勿提前宣称完整综述能力。详见下方 M11 段。）
+> 更新日期：2026-10-03（**M11.1 COMPLETE — Topic → Survey Research**：
+> M11.0 冻结审计 ✅ / M11.1.1 Survey Matrix ✅（`96feb9f`）/ M11.1.2 Structured
+> Synthesis ✅（`ad5819a`）/ M11.1.3 Survey Outline ✅ / M11.1.4 Workflow
+> Integration ✅（topic_survey 正式工作流 + 真实 E2E：只输入 Topic →
+> 70min 跑通 25 篇文献 → 11 节综述大纲，全程仅 4 次 HITL approve）。
+> 正式能力 = Topic → Research → Literature → Matrix → Synthesis → Survey
+> Outline；**不是** Topic → 完整 Survey PDF——剩 M11.2 Writing E2E、M11.3
+> Review / Real Acceptance。详见下方 M11 段。）
 > 前一状态 2026-09-22（**M8 COMPLETE — Controlled Deep Research Loop
 > （2026-09-20 启动 → 2026-09-22 收口）**：M8.1 Research Plan 一等产物（`e24e387`）/
 > M8.2 Plan Execution（`59e4c9f`）/ M8.3.1 Iteration Foundation（`af519bc`）/
@@ -1357,10 +1359,87 @@ outline，不进正文写作）。要点：
   单一年份）。已知上游问题如实记录：DeepSORT 本轮仍归 joint（M11.1.2 已
   知 Matrix 层偏差复现，进 joint taxonomy 章无结构性污染，HITL 修正范畴）；
   FairMOT 归 theory_analysis（归类偏差，同范畴）。
-- **尚缺（未实现，勿提前宣称）**：Workflow Integration（M11.1.4——把
-  Topic → Research → Matrix → Synthesis → Outline 串成正式 workflow）、
-  Survey Writing E2E（M11.2）、Review / Real Acceptance（M11.3）。Topic →
-  Survey 整体未完成。
+- **尚缺（M11.1.3 时点）**：Workflow Integration（→ M11.1.4 已完成，见下）、
+  Survey Writing E2E（M11.2）、Review / Real Acceptance（M11.3）。
+
+**M11.1.4 Topic → Survey Workflow Integration ✅ COMPLETE（2026-10-03）**：
+把 Research → Matrix → Synthesis → Outline 串成正式 `topic_survey` 工作流
+（零能力重造——全部 stage 只做输入读取 / Service 调用 / artifact 状态检查 /
+结果写 checkpoint / 错误传播 / HITL）。要点：
+
+- **WorkflowKind = `topic_survey`**（`workflow/kinds.ts`；旧项目无该字段行为
+  不变）。stage graph：`research.plan`（survey 语义研究计划）→
+  `hitl.research_plan`（approve/revise/cancel，复用 M10.3 决策语义）→
+  `survey.search`（执行批准后的计划检索 + 结果快照经 Discovery 单一写入口径
+  物化为候选——Retrieved ≠ Candidate ≠ Literature 边界保持）→
+  `hitl.literature_selection`（approve[+payload.candidateIds 增删]/cancel；
+  缺省推荐集 = 学术形态优先、年份降序、上限 25）→ `survey.fulltext`
+  （promote-batch 幂等 + resolveFullTextBatch partial success + docling
+  同步等待[新鲜度短路]；失败条目按 abstract_only 降级不终止）→
+  `survey.matrix`（直调 MatrixService；taxonomy 意图来自 surveyProfile，
+  非法回退缺省词表）→ `hitl.matrix_confirm`（approve / revise[+
+  payload.entryPatches——校验与 PUT /survey/matrix/:entryId 完全一致] /
+  cancel；不要求逐条 confirmed，workflow 级批准）→ `survey.synthesis`
+  （直调 SynthesisService；Matrix 指纹复用，HITL 修正后指纹变化自动重建）→
+  `survey.outline`（直调 SurveyOutlineService；validateSurveyOutline
+  blocking fail-closed + feedback 重规划在服务内）→ `hitl.outline_confirm`
+  （revise 重跑 survey.outline，refs 链不丢）→ END（**completion label=
+  `survey`**，终点是冻结的综述大纲，不写正文）。
+- **Survey 研究规划（ResearcherService.planSurveyResearch，新 contextScope
+  `research/survey-plan`）**：survey 语义 prompt（明确禁原创 idea / potential
+  contribution / 实验可行性；seminal / representative / recent / temporal
+  覆盖意图写进检索词与 rationale）→ 既有 `parseResearchPlan` 落盘计划链
+  （draft → 批准 → 执行 → done 状态机不变）+ research.json 顶层可选
+  `surveyProfile`（范围界定 + 初始 taxonomy 意图 + 覆盖意图；宽容解析，
+  Matrix 构建消费）。
+- **输入契约**：必填 = topic（= `project.title`）；可选 = language /
+  targetVenue（project 字段复用）+ yearFrom / yearTo / targetLength /
+  targetJournal（run request 持久化，只是检索/规划意图不是硬过滤）；不新增
+  tuning knobs。前端 NewProjectPage 第三入口「综述调研」（topic 必填 +
+  折叠范围选项，创建即自动启动 run）；Run 页 stage 时间线 / HITL 面板 /
+  大纲 payload 全部识别 topic_survey。
+- **幂等 / resume**：计划链 initial 幂等（重跑尊重既有链）；`survey.search`
+  对 done 计划不重复执行、快照重存走候选身份合并；promote / 全文 /
+  matrix skipped_existing / synthesis 指纹复用 / outline 仅 feedback 重跑。
+  测试覆盖 matrix_confirm 与 outline_confirm 处「新 Orchestrator 实例从
+  checkpoint 重启」：前序 stage 完成计数恒 1、matrix/synthesis 脚本调用
+  零增长。
+- **观测**：Matrix/Synthesis 增加可选 `onProgress`（喂 stage 空闲超时看门狗；
+  纯观测零行为变化）；stage span / model.turn / token / cost 经既有 trace
+  自动落盘（run-trace.json + performance-report.md）。
+- **测试**：新增 17 用例（definition 8：stage 顺序 / plan 线性推进与收口 /
+  HITL options 契约 / requiredInputs 防跳步 / 推荐集纯函数；fixture E2E 9：
+  主链 artifacts + refs 回溯 / 计划 revise / 矩阵 revise→synthesis 重建 /
+  矩阵非法 patch 400 / 大纲 revise refs 保持 / 非法 decision 409 / 两处
+  重启恢复不重复执行 / awaiting cancel）。backend 全量 2174/0、frontend
+  267/0、双侧 build + typecheck 通过。
+- **真实 E2E Acceptance（`scripts/m1114-workflow-smoke.mjs`，报告
+  `e2e/.tmp/m1114-workflow-smoke/report.json`）**：主题「多目标跟踪中的
+  数据关联方法」，**只输入 Topic（两次 API：建项目 + 启动 workflow）**，
+  全程仅 4 次 HITL approve（零人工修正）：计划 5 问 10 检索词（9 taxonomy
+  意图：classical_probabilistic / random_finite_set / transformer_association /
+  graph_structured 等）→ 检索 9/10 query 成功、90 快照 → 81 候选 → 推荐
+  25 → promote 25/25 → 全文 21/25（4 失败如实降级 abstract_only）→
+  Matrix 25/25（0 失败；12 unclassified 如实暴露待 HITL）→ Synthesis 40 条
+  （taxonomy7/trend5/comparison5/consensus5/disagreement6/gap4/future8；
+  grounding evidence_backed 20 / literature_cited 17 / speculative 3；evidence
+  核验 59/76）→ **Outline 11 节一次链路通过（planningAttempts=2：首次契约
+  校验失败后 feedback 重规划在流内自动生效）**：synthesis 覆盖 100% /
+  literature 覆盖 100%、9 正文节单文献节 0（零逐篇罗列）、speculative 3 条
+  全部隔离在未来方向章、refs 全部可回溯。总耗时 70.0min（fulltext 18.4min /
+  matrix 10.0min / synthesis 35.2min / outline 4.1min）；模型 118 turns、
+  tokens in/out/cacheRead=353K/213K/3.44M、cost $2.33。
+- **已知限制（如实）**：文献遴选第一版为「推荐集 + payload.candidateIds」
+  （前端未做逐条勾选 UI，增删走 API payload——HitlPanel 已展示推荐标记）；
+  `survey.search` 中途崩溃留下的 executing 计划按既有 PLAN_INVALID_STATE
+  语义如实失败（指引手工改状态 / 派生，不静默重试）；promote 触发的后台
+  全文/解析链与本 stage 的同步等待存在少量重复解析（新鲜度短路已缓解）。
+- **尚缺（未实现，勿提前宣称）**：Survey Writing E2E（M11.2——大纲 →
+  正文）、Review / Real Acceptance（M11.3）。Topic → 完整 Survey PDF 未完成。
+
+**M11.1 — Topic → Survey Research ✅ COMPLETE（2026-10-03）**：正式能力 =
+Topic → Research → Literature → Matrix → Synthesis → Survey Outline
+（M11.1.1~M11.1.4 全部收口）；判定可进入 M11.2 Survey Writing E2E。
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

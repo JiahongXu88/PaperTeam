@@ -585,6 +585,9 @@ async function handleRequest(
     // M9.7.4：稿件语言随 run 固化（planner 纯函数层消费——en 项目跳过
     // zh-only 润色链；旧 run 无此字段 = 不过滤，兼容）
     const runLanguage = normalizeManuscriptLanguage(project.language);
+    // M11.1.4：topic_survey 的可选范围参数（topic = project.title，不重复传；
+    // 年份范围 / 篇幅目标 / 目标期刊只作检索与规划意图，不是硬过滤）
+    const surveyScope = kind === "topic_survey" ? readSurveyScopeFields(body) : {};
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
       // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
@@ -592,6 +595,7 @@ async function handleRequest(
       ...(kind === "existing_paper_review" ? { citationSemanticMode: readCitationSemanticMode(body) } : {}),
       ...(stylePolicy !== undefined ? { stylePolicy } : {}),
       ...(runLanguage !== undefined ? { language: runLanguage } : {}),
+      ...surveyScope,
     });
     sendJson(res, 202, { runId: run.runId, status: run.status, workflowKind: run.workflowKind });
     return;
@@ -3813,16 +3817,53 @@ function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
 }
 
 /**
+ * M11.1.4 topic_survey 的可选范围参数（随 run request 持久化；topic 本体 =
+ * project.title，语言 = project.language，不重复传）。年份 / 篇幅 / 期刊只是
+ * 检索与规划意图（prompt 注入），不是硬过滤——复用既有 settings，不建 tuning knobs。
+ */
+function readSurveyScopeFields(body: Record<string, unknown>): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  for (const key of ["yearFrom", "yearTo"] as const) {
+    const value = body[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1900 || value > 2100) {
+      throw new BusinessError("INVALID_REQUEST", `字段 ${key} 必须是 1900-2100 的整数年份`);
+    }
+    fields[key] = value;
+  }
+  const yearFrom = fields["yearFrom"];
+  const yearTo = fields["yearTo"];
+  if (typeof yearFrom === "number" && typeof yearTo === "number" && yearFrom > yearTo) {
+    throw new BusinessError("INVALID_REQUEST", "yearFrom 不能大于 yearTo");
+  }
+  for (const key of ["targetLength", "targetJournal"] as const) {
+    const value = body[key];
+    if (value === undefined) {
+      continue;
+    }
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new BusinessError("INVALID_REQUEST", `字段 ${key} 必须是非空字符串`);
+    }
+    fields[key] = value.trim().slice(0, 200);
+  }
+  return fields;
+}
+
+/**
  * 语言润色策略（M5.4；idea_to_paper / existing_paper_improvement 专用）：
  * 缺省 suggest_only（显式写入 request）；非法值 400；existing_paper_review 携带即 400。
  */
 function readStylePolicyField(body: Record<string, unknown>, kind: WorkflowKind): StylePolicy | undefined {
   const value = body["stylePolicy"];
-  if (kind === "existing_paper_review") {
+  if (kind === "existing_paper_review" || kind === "topic_survey") {
     if (value !== undefined) {
       throw new BusinessError(
         "INVALID_REQUEST",
-        "existing_paper_review（Quick Review）是只读流程，不接受 stylePolicy；语言润色只在 Improvement / Idea-to-Paper 工作流可用",
+        kind === "topic_survey"
+          ? "topic_survey（综述研究）不涉及稿件润色，不接受 stylePolicy；语言润色只在 Improvement / Idea-to-Paper 工作流可用"
+          : "existing_paper_review（Quick Review）是只读流程，不接受 stylePolicy；语言润色只在 Improvement / Idea-to-Paper 工作流可用",
       );
     }
     return undefined;

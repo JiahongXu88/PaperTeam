@@ -26,6 +26,7 @@ import {
   createResearchPlan,
   parseResearchPlan,
   parseResearchPlanUpdateInput,
+  parseSurveyProfile,
   planChainFields,
   readPlanChain,
   resolvePlanChainOnRerun,
@@ -34,6 +35,7 @@ import {
   type ResearchPlanChain,
   type ResearchPlanQuery,
   type StoredResearchPlan,
+  type SurveyResearchProfile,
 } from "./researchPlan.js";
 import type { PlanExecutionEntry } from "./researchPlanExecution.js";
 import type { ResearchGap } from "./researchGap.js";
@@ -489,6 +491,120 @@ export class ResearcherService {
   }
 
   /**
+   * M11.1.4 topic_survey：Survey 语义的研究规划（只规划不检索）。
+   *
+   * 与 idea / revision 规划的区别：目标不是「提出原创研究 idea / 实验可行性」，
+   * 而是为「系统性梳理一个主题的已有文献」制定计划——
+   * - plan.questions：综述要回答的研究问题（survey questions）；
+   * - plan.queries：学术 / Web 检索词（temporal / seminal / representative /
+   *   recent 覆盖意图直接写进检索词与 rationale，不建第二套字段）；
+   * - surveyProfile：范围界定 + 初始 taxonomy 意图 + 覆盖意图（research.json
+   *   顶层可选字段；Matrix 构建消费 taxonomy 意图，非法回退缺省词表）。
+   *
+   * 落盘：无 research.json 时初始化（survey 口径的最小 report——topic_survey
+   * 链路只有计划执行 / coverage 消费 research.json，Matrix / Synthesis /
+   * Outline 均不读 report）；已有计划链时与 planRevisionResearch 同纪律
+   * （initial 幂等尊重既有链，feedback 仅替换 draft）。
+   */
+  async planSurveyResearch(params: {
+    projectId: string;
+    /** 综述主题（= project.title）与用户可选参数的范围摘要（调用方拼装） */
+    scopeDigest: string;
+    /** HITL revise 回路携带的反馈（触发 draft 计划替换） */
+    feedback?: string;
+  }): Promise<{
+    plan: StoredResearchPlan;
+    profile: SurveyResearchProfile | undefined;
+    taskId: string;
+    regenerated: boolean;
+  }> {
+    const project = await this.projects.getRequired(params.projectId);
+    const language = normalizeManuscriptLanguage(project.language);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      task: buildSurveyPlanPrompt({
+        title: project.title,
+        scopeDigest: params.scopeDigest,
+        ...(params.feedback !== undefined ? { feedback: params.feedback } : {}),
+      }),
+      projectId: params.projectId,
+      contextScope: "research/survey-plan",
+      ...(language !== undefined ? { language } : {}),
+      metadata: { role: "researcher", skill: "survey-research-plan" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `综述研究规划任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "综述研究计划");
+    const plan = parseResearchPlan(parsed);
+    if (plan === undefined || plan.queries.length === 0) {
+      throw new AgentRunFailedError("综述研究计划：缺少非空 plan.queries（综述必须有检索词）");
+    }
+    const profile = parseSurveyProfile(parsed);
+
+    const researchDir = this.projects.researchDir(params.projectId);
+    await mkdir(researchDir, { recursive: true });
+    const existing = await readResearchArtifact(this.projects, params.projectId);
+    if (params.feedback === undefined && existing !== null) {
+      const chain = readPlanChain(existing);
+      const active = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      if (active !== undefined) {
+        // initial 幂等：已有计划链（用户编辑过 / 前一 run 已建）→ 尊重既有状态
+        return {
+          plan: active,
+          profile: existing.surveyProfile,
+          taskId: task.taskId,
+          regenerated: false,
+        };
+      }
+    }
+    if (params.feedback !== undefined && existing !== null) {
+      const chain = readPlanChain(existing);
+      const active = chain.plans.find((candidate) => candidate.planId === chain.activePlanId);
+      if (active !== undefined && active.status !== "draft") {
+        throw new AgentRunFailedError(
+          `综述研究计划：活动计划已${active.status === "approved" ? "批准" : active.status === "executing" ? "在执行" : "执行完成"}，不允许静默替换（应走计划编辑 / 派生路径）`,
+        );
+      }
+    }
+    const nextChain = replaceDraftChain(plan);
+    const base: ResearchArtifact =
+      existing ?? {
+        generatedAt: new Date().toISOString(),
+        taskId: task.taskId,
+        // survey 口径最小 report：不为 idea 流程伪造「贡献 / 缺口」，只承载计划链
+        report: {
+          domainOverview:
+            profile?.scope !== undefined && profile.scope !== ""
+              ? profile.scope
+              : `围绕「${project.title}」的文献综述研究`,
+          relatedWorkDirections: [],
+          researchGaps: [],
+          potentialContributions: [
+            `以综述形式系统性梳理「${project.title}」的方法体系与研究现状（不产出新实验）`,
+          ],
+          researchQuestions: plan.questions,
+          literaturePlan: plan.queries.map((query) => query.query),
+        },
+        evidence: [],
+        bibliography: [],
+      };
+    await writeResearchPlanChain(
+      this.projects,
+      params.projectId,
+      { ...base, ...(profile !== undefined ? { surveyProfile: profile } : {}) },
+      nextChain,
+      existing?.executionHistory,
+    );
+    const active = nextChain.plans.find((candidate) => candidate.planId === nextChain.activePlanId)!;
+    this.log(
+      `[researcher] projectId=${params.projectId} 综述研究计划完成：queries=${plan.queries.length} questions=${plan.questions.length}${profile?.taxonomy !== undefined ? ` taxonomyIntent=${profile.taxonomy.families.length}` : ""}`,
+    );
+    return { plan: active, profile, taskId: task.taskId, regenerated: params.feedback !== undefined };
+  }
+
+  /**
    * M10.3：从文献库全文提出锚定证据候选（requirements 驱动；不检索）。
    *
    * 用户在 evidence-supply HITL 期间 promote 候选文献并获取全文后，本方法让
@@ -621,6 +737,12 @@ export type ResearchArtifact = {
    * （用户可控状态，与 gaps / loopPolicy 同纪律）。
    */
   loop?: ResearchLoopState;
+  /**
+   * Survey 研究画像（M11.1.4 topic_survey）：范围界定 + 初始 taxonomy 意图 +
+   * 覆盖意图。可选字段：普通论文项目无此字段；计划链写盘经 ...artifact 展开
+   * 原样保留（与 executionHistory 同纪律）。
+   */
+  surveyProfile?: SurveyResearchProfile;
   report: ResearchReport;
   evidence: ParsedEvidenceEntry[];
   bibliography: BibliographyEntryInput[];
@@ -1053,4 +1175,52 @@ export function buildRevisionResearchPrompt(input: {
 /** 建立 / 替换单计划链（revision 场景首轮即 iteration 1；draft 状态等待批准） */
 function replaceDraftChain(plan: ResearchPlan): ResearchPlanChain {
   return { plans: [plan], activePlanId: plan.planId };
+}
+
+// ---- M11.1.4：topic_survey 综述研究规划 ----
+
+/**
+ * 综述研究计划 prompt（survey 语义，只规划不检索）。
+ * 与 idea / revision 规划的关键差异写在指令里：目标是系统性梳理已有文献，
+ * 不提出原创研究 idea、不写 potential contribution / 实验可行性；
+ * seminal / representative / recent / temporal 覆盖意图直接体现在检索词。
+ */
+export function buildSurveyPlanPrompt(input: {
+  title: string;
+  scopeDigest: string;
+  feedback?: string;
+}): string {
+  return [
+    "你是一名学术研究员（Researcher）。用户要对下面这个主题做一篇学术综述（survey / review article）。请制定综述研究计划（只规划，不检索）。",
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏、不要解释文字）：",
+    "{",
+    '  "plan": {',
+    '    "questions": ["综述要回答的研究问题（如：该主题的方法体系如何划分、各路线的取舍与演进、公认结论与争议、研究空缺）"],',
+    '    "queries": [{"query": "检索词（英文为主，覆盖面互相补充）", "kind": "academic 或 web",',
+    '      "rationale": "对应哪个研究问题 / 覆盖意图", "expectedCoverage": "期望覆盖面"}]',
+    "  },",
+    '  "surveyProfile": {',
+    '    "scope": "综述范围界定（一句话：覆盖什么、不覆盖什么）",',
+    '    "taxonomy": {"families": [{"label": "方法家族标签（英文 snake_case，如 motion_based）",',
+    '      "description": "该家族的界定（一句话）", "subFamilies": ["可选：子家族标签"]}]},',
+    '    "coverageIntent": {"seminal": ["应覆盖的奠基 / 代表性工作（标题或主题线索）"],',
+    '      "dimensions": ["比较维度（如 assumption / computational cost / 适用场景）"],',
+    '      "yearsNote": "时间覆盖说明（如以近十年为主，兼顾奠基工作）"}',
+    "  }",
+    "}",
+    "",
+    "要求：",
+    "1. 这是综述，不是新研究：不要提出原创研究 idea、不要写 potential contribution / 实验设计 / 可行性——计划只服务于「把该主题的已有文献系统性地找全、看清」。",
+    "2. 检索词设计要覆盖三类意图：奠基工作（seminal）、各方法路线的代表性工作（representative）、近期进展（recent）；时间意图写进 rationale。",
+    "3. queries 总量 6-10 条、彼此覆盖面互补（按方法家族 / 综述线索 / 基准与评测 / 近期进展分摊）；kind=web 只用于找综述线索页 / 资源页（≤2 条）。",
+    "4. taxonomy.families 是「这个主题下预期能把文献分成几类」的初始词表（5-10 个 family）；检索后由 Matrix 构建实际归类，词表不合适会由人工修正。",
+    "5. 不调用任何搜索工具（检索在计划批准后执行）。",
+    ...(input.feedback !== undefined ? ["", "用户对上一版计划的反馈（据此重订）：", input.feedback] : []),
+    "",
+    `综述主题：${input.title}`,
+    "",
+    "===== 主题与用户要求摘要 =====",
+    input.scopeDigest,
+  ].join("\n");
 }

@@ -5,11 +5,14 @@
  * - idea_to_paper               从研究想法到论文
  * - existing_paper_improvement  已有 LaTeX / PDF 论文的系统性改进
  * - existing_paper_review       已有论文只读 Review
+ * - topic_survey                Topic → Survey Outline（M11.1.4：综述研究链，
+ *                               终点是冻结的 Survey Outline，不写正文）
  */
 export const WORKFLOW_KINDS = [
   "idea_to_paper",
   "existing_paper_improvement",
   "existing_paper_review",
+  "topic_survey",
 ] as const;
 
 export type WorkflowKind = (typeof WORKFLOW_KINDS)[number];

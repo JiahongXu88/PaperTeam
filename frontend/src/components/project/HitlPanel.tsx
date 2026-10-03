@@ -482,10 +482,137 @@ function HitlPayload({
       return <RevisionValidationPayload payload={payload} />;
     case "hitl.evidence_supply":
       return <EvidenceSupplyPayload payload={payload} supply={supply} />;
+    case "hitl.research_plan":
+      return <ResearchPlanPayload payload={payload} />;
+    case "hitl.literature_selection":
+      return <LiteratureSelectionPayload payload={payload} />;
+    case "hitl.matrix_confirm":
+      return <MatrixConfirmPayload payload={payload} />;
     default:
       // 未知 HITL 节点：不虚构内容，prompt 已说明情况
       return null;
   }
+}
+
+// ---- topic_survey HITL payload（M11.1.4：研究计划 / 文献遴选 / 矩阵确认） ----
+
+/** 研究计划（修订 / 综述共用形状）：问题 + 检索词 + survey 画像意图 */
+function ResearchPlanPayload({ payload }: { payload: Record<string, unknown> }) {
+  const questions = readStringArray(payload["questions"]);
+  const queries = Array.isArray(payload["queries"])
+    ? (payload["queries"] as Record<string, unknown>[]).filter(
+        (entry) => typeof entry["query"] === "string",
+      )
+    : [];
+  const profile = payload["surveyProfile"];
+  const taxonomyIntent =
+    typeof profile === "object" && profile !== null && Array.isArray((profile as Record<string, unknown>)["taxonomyIntent"])
+      ? ((profile as Record<string, unknown>)["taxonomyIntent"] as string[])
+      : [];
+  if (questions.length === 0 && queries.length === 0) {
+    return null;
+  }
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-research-plan">
+      <HitlList title="研究问题" items={questions} empty="（计划未给出研究问题）" />
+      <div className="hitl-list">
+        <h3>检索词（{queries.length} 条，批准后执行）</h3>
+        <ul>
+          {queries.map((query, index) => (
+            <li key={index} className="mono">
+              [{typeof query["kind"] === "string" ? query["kind"] : "?"}] {String(query["query"])}
+              {typeof query["rationale"] === "string" ? <span className="muted"> — {query["rationale"]}</span> : null}
+            </li>
+          ))}
+        </ul>
+      </div>
+      {taxonomyIntent.length > 0 ? (
+        <p className="field-help">初始方法分类词表：{taxonomyIntent.join("、")}（矩阵构建实际归类，可在确认节点修正）</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** 文献遴选：候选规模 + 推荐集（approve 可用 payload.candidateIds 增删） */
+function LiteratureSelectionPayload({ payload }: { payload: Record<string, unknown> }) {
+  const pendingCount = typeof payload["pendingCount"] === "number" ? payload["pendingCount"] : 0;
+  const recommended = readStringArray(payload["recommendedCandidateIds"]);
+  const yearRange = payload["yearRange"];
+  const from =
+    typeof yearRange === "object" && yearRange !== null ? (yearRange as Record<string, unknown>)["from"] : undefined;
+  const to =
+    typeof yearRange === "object" && yearRange !== null ? (yearRange as Record<string, unknown>)["to"] : undefined;
+  const candidates = Array.isArray(payload["candidates"])
+    ? (payload["candidates"] as Record<string, unknown>[]).filter(
+        (entry) => typeof entry["title"] === "string",
+      )
+    : [];
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-literature-selection">
+      <p className="hitl-payload-level">
+        候选文献 {pendingCount} 篇 · 推荐入选 {recommended.length} 篇
+        {typeof from === "number" && typeof to === "number" ? `（年份 ${from}–${to}）` : ""}
+      </p>
+      <ul className="source-list" data-testid="literature-selection-candidates">
+        {candidates.slice(0, 30).map((candidate, index) => {
+          const id = typeof candidate["candidateId"] === "string" ? candidate["candidateId"] : String(index);
+          const isRecommended = recommended.includes(id);
+          return (
+            <li key={id} className="source-row">
+              <div className="source-row-main">
+                <span className="source-row-title">{String(candidate["title"])}</span>
+                <span className="source-row-meta">
+                  {isRecommended ? <span className="chip chip-tone-accent">推荐</span> : <span className="chip chip-outline">备选</span>}
+                  {typeof candidate["year"] === "number" ? <span className="chip">{candidate["year"]}</span> : null}
+                  {typeof candidate["doi"] === "string" ? <span className="mono">{candidate["doi"]}</span> : null}
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="field-help">推荐集 = 学术形态优先（DOI / arXiv）、按年份降序、上限 25 篇；「继续」按推荐集入库，增删需在决策 payload.candidateIds 中指定（开发者 API / 自动化路径）。</p>
+    </div>
+  );
+}
+
+/** 矩阵确认：规模 + 分类计数 + 需要人工关注的条目（未归类 / 弱锚定） */
+function MatrixConfirmPayload({ payload }: { payload: Record<string, unknown> }) {
+  const entries = typeof payload["entries"] === "number" ? payload["entries"] : 0;
+  const fulltext = typeof payload["fulltext"] === "number" ? payload["fulltext"] : 0;
+  const abstractOnly = typeof payload["abstractOnly"] === "number" ? payload["abstractOnly"] : 0;
+  const taxonomy = readStringArray(payload["taxonomy"]);
+  const attention = payload["attention"];
+  const attentionRecord = typeof attention === "object" && attention !== null ? (attention as Record<string, unknown>) : undefined;
+  const unclassified = Array.isArray(attentionRecord?.["unclassified"])
+    ? (attentionRecord!["unclassified"] as Record<string, unknown>[])
+    : [];
+  const weakAnchors = readStringArray(attentionRecord?.["weakAnchors"]);
+  return (
+    <div className="hitl-payload" data-testid="hitl-payload-matrix-confirm">
+      <p className="hitl-payload-level">
+        矩阵 {entries} 条 · 全文理解 {fulltext} 篇 · 仅摘要 {abstractOnly} 篇
+      </p>
+      {taxonomy.length > 0 ? <HitlList title="方法分类计数" items={taxonomy} /> : null}
+      {unclassified.length > 0 ? (
+        <div className="hitl-list hitl-list-warn" data-testid="matrix-unclassified">
+          <h3>未归类条目（{unclassified.length}，建议修正）</h3>
+          <ul>
+            {unclassified.slice(0, 12).map((entry) => (
+              <li key={String(entry["entryId"])}>
+                <span className="mono">{String(entry["entryId"])}</span>
+                {typeof entry["proposed"] === "string" ? <span className="muted">（模型原提案：{entry["proposed"]}）</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {weakAnchors.length > 0 ? (
+        <HitlList title="弱锚定条目（无有效全文锚点，综合时谨慎）" items={weakAnchors.slice(0, 12)} tone="warn" />
+      ) : null}
+      <p className="field-help">确认后进入跨论文综合；需要修正归类时用决策 payload.entryPatches（entryId + 字段，校验与「矩阵」页编辑一致），修正会触发综合重建。</p>
+    </div>
+  );
 }
 
 // ---- 证据供给 payload（M9.9：预写证据需求的覆盖缺口 + 三动作）----

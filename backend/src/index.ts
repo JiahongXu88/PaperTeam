@@ -23,6 +23,7 @@ import {
   createExistingPaperDefinition,
   createExistingPaperReviewDefinition,
   createIdeaToPaperDefinition,
+  createTopicSurveyDefinition,
 } from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "./workflow/runStore.js";
@@ -305,6 +306,8 @@ export async function startBackend(): Promise<void> {
           return createExistingPaperDefinition(stack.workflowServices);
         case "existing_paper_review":
           return createExistingPaperReviewDefinition(stack.workflowServices);
+        case "topic_survey":
+          return createTopicSurveyDefinition(stack.workflowServices);
       }
     },
     log: (message) => console.log(message),

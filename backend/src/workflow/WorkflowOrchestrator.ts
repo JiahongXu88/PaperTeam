@@ -481,7 +481,9 @@ export class WorkflowOrchestrator {
                   ? "Final：双 Gate 通过"
                   : label === "review"
                     ? "Review：审阅报告已生成"
-                    : "Draft：Build Gate 通过"
+                    : label === "survey"
+                      ? "Survey：综述大纲已生成"
+                      : "Draft：Build Gate 通过"
               }）`,
               data: { label, summary },
             }),

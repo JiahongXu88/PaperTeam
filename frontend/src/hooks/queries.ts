@@ -327,16 +327,20 @@ export function useCreateWorkflowRun() {
       kind,
       citationSemanticMode,
       stylePolicy,
+      survey,
     }: {
       projectId: string;
       kind: WorkflowKind;
       citationSemanticMode?: CitationSemanticMode;
       /** M5.4 语言润色策略（idea / improvement；Quick Review 不发送） */
       stylePolicy?: StylePolicy;
+      /** M11.1.4 topic_survey 的可选范围参数 */
+      survey?: { yearFrom?: number; yearTo?: number; targetLength?: string; targetJournal?: string };
     }) =>
       createWorkflowRun(projectId, kind, {
         ...(citationSemanticMode !== undefined ? { citationSemanticMode } : {}),
         ...(stylePolicy !== undefined ? { stylePolicy } : {}),
+        ...(survey !== undefined ? { survey } : {}),
       }),
     onSuccess: (_run, { projectId }) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId) });

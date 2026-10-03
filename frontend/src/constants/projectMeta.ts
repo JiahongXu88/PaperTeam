@@ -12,6 +12,7 @@ export const WORKFLOW_KIND_LABELS: Record<WorkflowKind, string> = {
   idea_to_paper: "想法成文",
   existing_paper_improvement: "论文改进",
   existing_paper_review: "论文 Review",
+  topic_survey: "综述调研",
 };
 
 /** documentType 建议值（Backend DOCUMENT_TYPES） */

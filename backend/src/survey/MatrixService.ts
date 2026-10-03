@@ -84,6 +84,11 @@ export interface SurveyMatrixBuildInput {
   taxonomy?: SurveyTaxonomy;
   /** 重算已有条目（默认跳过已有 entry 的 source） */
   force?: boolean;
+  /**
+   * 逐篇进度回调（M11.1.4：workflow stage 空闲超时看门狗需要「还在动」的
+   * 信号——逐篇 LLM 调用可能远超 stage 整体超时预算；纯观测，异常不回传）
+   */
+  onProgress?: (info: { done: number; total: number; sourceId: string }) => void;
 }
 
 /** PUT /survey/matrix/:entryId 的可修改字段（全部可选；未提供字段原样保留） */
@@ -233,7 +238,8 @@ export class MatrixService {
     let built = 0;
     let failed = 0;
     let skippedExisting = 0;
-    for (const item of targets) {
+    for (const [index, item] of targets.entries()) {
+      input.onProgress?.({ done: index, total: targets.length, sourceId: item.sourceId });
       const prior = entries.get(item.sourceId);
       if (prior !== undefined && input.force !== true) {
         skippedExisting += 1;

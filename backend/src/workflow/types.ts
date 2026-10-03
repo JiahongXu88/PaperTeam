@@ -120,10 +120,12 @@ export interface ResumeInput {
 
 /**
  * Workflow 完成（label：final=双 Gate 通过；draft=Build Gate 通过即可；
- * review=只读审阅流程完成（不产生稿件改动），existing_paper_review 用）
+ * review=只读审阅流程完成（不产生稿件改动），existing_paper_review 用；
+ * survey=Topic → Survey Outline 完成（M11.1.4 topic_survey——终点是冻结的
+ * 综述大纲，不进正文写作））
  */
 export interface WorkflowCompletion {
-  label: "final" | "draft" | "review";
+  label: "final" | "draft" | "review" | "survey";
   summary: Record<string, unknown>;
 }
 
@@ -170,7 +172,7 @@ export interface WorkflowState {
 /** 规划决策：执行下一个 stage / 完成 / 失败 */
 export type PlanDecision =
   | { kind: "stage"; stageId: string }
-  | { kind: "complete"; label: "final" | "draft" | "review"; summary: Record<string, unknown> }
+  | { kind: "complete"; label: "final" | "draft" | "review" | "survey"; summary: Record<string, unknown> }
   | { kind: "fail"; code: string; message: string };
 
 /**
