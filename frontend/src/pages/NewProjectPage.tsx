@@ -4,7 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { ErrorState } from "../components/common/StateViews.js";
 import { PageHeader } from "../components/common/PageHeader.js";
 import { CITATION_SEMANTIC_MODE_OPTIONS } from "../components/common/status.js";
-import { DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
+import { TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import { useCreateProject, useCreateWorkflowRun, useImportProjectPaper, useRuntimeStatus } from "../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
 import { fileToBase64, MAX_PDF_UPLOAD_BYTES, MAX_ZIP_UPLOAD_BYTES, validatePdfFile, validateZipFile } from "../utils/file.js";
@@ -17,10 +17,11 @@ import type {
 } from "../types/api.js";
 
 /**
- * 新建项目：顶层只问一件事——你想做什么？
- *   A. 从研究想法开始（标题 + 研究想法 + 定位字段）
- *   B. 导入已有论文（File First：PDF + 目标即提交，标题由 PDF 自动识别，其余折叠进高级选项）
- *   C. 综述调研（M11.1.4：只输入 Topic → 自动研究到可确认的 Survey Outline）
+ * 新建项目：顶层只问一件事——写新论文，还是修改已有论文？
+ *   A. 创建新论文（M11.2.1：论文类型是用户概念——研究论文 / 综述论文；
+ *      documentType → workflowKind 的映射由后端作为最终事实源完成）
+ *   B. 修改已有论文（File First 导入：PDF + 目标即提交，标题由 PDF 自动识别，
+ *      其余折叠进高级选项；用户起点是「已有论文 + 意见」，不并入创建流程）
  */
 
 /** 与 Backend ProjectStore 一致的长度上限（前端提前拦截） */
@@ -32,7 +33,23 @@ const LIMITS = {
   language: 50,
 } as const;
 
-type EntryMode = "idea" | "existing" | "survey";
+type EntryMode = "new" | "existing";
+
+/** 创建新论文的论文类型（documentType 值与 Backend DOCUMENT_TYPES 对齐） */
+type PaperType = "research_article" | "survey";
+
+const PAPER_TYPE_OPTIONS: ReadonlyArray<{ value: PaperType; title: string; desc: string }> = [
+  {
+    value: "research_article",
+    title: "研究论文",
+    desc: "从一个研究想法出发，完成调研、证据整理、写作与审阅，最终生成论文。",
+  },
+  {
+    value: "survey",
+    title: "综述论文",
+    desc: "只输入一个主题：系统会检索并遴选文献、构建综述矩阵与跨论文综合，确认大纲后继续综述写作、审阅与修订，最终生成综述论文 PDF。",
+  },
+];
 
 interface FormState {
   title: string;
@@ -88,12 +105,12 @@ function withPicked<K extends string>(key: K, value: string): Partial<Record<K, 
 }
 
 function toCreateInput(form: FormState): CreateProjectInput {
+  // M11.2.1：不发送 workflowKind——后端按 documentType 派生（单一映射事实源）
   return {
     title: form.title.trim(),
-    workflowKind: "idea_to_paper",
+    documentType: "research_article",
     ...withPicked("researchIdea", form.researchIdea),
     ...withPicked("researchField", form.researchField),
-    ...withPicked("documentType", form.documentType),
     ...withPicked("targetProfile", form.targetProfile),
     ...withPicked("targetVenue", form.targetVenue),
     ...withPicked("language", form.language),
@@ -101,15 +118,18 @@ function toCreateInput(form: FormState): CreateProjectInput {
 }
 
 export function NewProjectPage() {
-  const [mode, setMode] = useState<EntryMode>("idea");
+  const [mode, setMode] = useState<EntryMode>("new");
+  const [paperType, setPaperType] = useState<PaperType>("research_article");
 
   return (
     <section className="page page-narrow">
-      <PageHeader title="新建项目" sub="从研究想法开始写一篇新论文，导入已有论文做 Review 与修改，或从主题开始做一篇综述的研究调研。" />
-      {mode === "idea" ? (
-        <IdeaForm onSwitchMode={setMode} />
-      ) : mode === "survey" ? (
-        <SurveyForm onSwitchMode={setMode} />
+      <PageHeader title="新建项目" sub="创建一篇新论文（研究论文或综述论文），或导入已有论文做 Review 与修改。" />
+      {mode === "new" ? (
+        paperType === "research_article" ? (
+          <ResearchArticleForm paperType={paperType} onSelectPaperType={setPaperType} onSwitchMode={setMode} />
+        ) : (
+          <SurveyForm paperType={paperType} onSelectPaperType={setPaperType} onSwitchMode={setMode} />
+        )
       ) : (
         <ExistingPaperForm onSwitchMode={setMode} />
       )}
@@ -117,17 +137,16 @@ export function NewProjectPage() {
   );
 }
 
-/** 模式切换卡（三份表单共用；当前模式高亮，点击另一张切换） */
+/** 顶层入口卡（两个用户概念：创建新论文 / 修改已有论文） */
 function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode: EntryMode) => void }) {
   const cards: Array<{ mode: EntryMode; title: string; desc: string }> = [
-    { mode: "idea", title: "从研究想法开始", desc: "从一个研究想法出发，完成调研、证据整理、写作与审阅，最终生成论文。" },
-    { mode: "survey", title: "综述调研", desc: "只输入一个主题：系统会检索并遴选文献、构建综述矩阵与跨论文综合，确认大纲后继续综述写作、审阅与修订，最终生成综述论文 PDF。" },
-    { mode: "existing", title: "导入已有论文", desc: "上传论文 PDF 或 LaTeX 工程归档：PDF 可先做快速 Review（引用核验 + 分章节审阅），两者都可进入系统性改进流程。" },
+    { mode: "new", title: "创建新论文", desc: "从研究想法或综述主题开始，完成调研、写作与审阅，最终生成论文 PDF。" },
+    { mode: "existing", title: "修改已有论文", desc: "上传论文 PDF 或 LaTeX 工程归档：PDF 可先做快速 Review（引用核验 + 分章节审阅），两者都可进入系统性改进流程。" },
   ];
   return (
     <div className="mode-cards">
       {cards.map((card) => (
-        <label key={card.mode} className={`mode-card${current === card.mode ? " selected" : ""}`}>
+        <label key={card.mode} className={`mode-card${current === card.mode ? " selected" : ""}`} data-testid={`entry-${card.mode}`}>
           <input type="radio" name="entryMode" value={card.mode} checked={current === card.mode} onChange={() => onSelect(card.mode)} />
           <span className="mode-card-top">
             <span className="mode-card-dot" aria-hidden="true" />
@@ -140,9 +159,51 @@ function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode:
   );
 }
 
-// ---- 模式 A：从研究想法开始 ----
+/** 论文类型卡（创建新论文内部；切换即切换字段集，不丢失已填内容的跨类型字段由各自表单持有） */
+function PaperTypeCards({
+  current,
+  onSelect,
+}: {
+  current: PaperType;
+  onSelect: (type: PaperType) => void;
+}) {
+  return (
+    <div className="mode-cards">
+      {PAPER_TYPE_OPTIONS.map((option) => (
+        <label
+          key={option.value}
+          className={`mode-card${current === option.value ? " selected" : ""}`}
+          data-testid={`paper-type-${option.value}`}
+        >
+          <input
+            type="radio"
+            name="paperType"
+            value={option.value}
+            checked={current === option.value}
+            onChange={() => onSelect(option.value)}
+          />
+          <span className="mode-card-top">
+            <span className="mode-card-dot" aria-hidden="true" />
+            <span className="mode-card-title">{option.title}</span>
+          </span>
+          <span className="mode-card-desc">{option.desc}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
 
-function IdeaForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void }) {
+// ---- 模式 A：创建新论文 → 研究论文 ----
+
+function ResearchArticleForm({
+  paperType,
+  onSelectPaperType,
+  onSwitchMode,
+}: {
+  paperType: PaperType;
+  onSelectPaperType: (type: PaperType) => void;
+  onSwitchMode: (mode: EntryMode) => void;
+}) {
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
@@ -165,10 +226,15 @@ function IdeaForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void })
   };
 
   return (
-    <form className="panel form-panel" onSubmit={onSubmit} noValidate>
+    <form className="panel form-panel" onSubmit={onSubmit} noValidate data-testid="research-article-form">
       <fieldset className="form-section">
         <legend>你想做什么？</legend>
-        <ModeCards current="idea" onSelect={onSwitchMode} />
+        <ModeCards current="new" onSelect={onSwitchMode} />
+      </fieldset>
+
+      <fieldset className="form-section">
+        <legend>论文类型</legend>
+        <PaperTypeCards current={paperType} onSelect={onSelectPaperType} />
       </fieldset>
 
       <fieldset className="form-section">
@@ -199,17 +265,6 @@ function IdeaForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void })
       <fieldset className="form-section">
         <legend>论文定位</legend>
         <div className="form-grid">
-          <div className="field">
-            <label htmlFor="documentType">论文类型</label>
-            <select id="documentType" name="documentType" value={form.documentType} onChange={update("documentType")}>
-              <option value="">未指定</option>
-              {DOCUMENT_TYPE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
           <div className="field">
             <label htmlFor="targetProfile">目标定位</label>
             <select id="targetProfile" name="targetProfile" value={form.targetProfile} onChange={update("targetProfile")}>
@@ -249,7 +304,7 @@ function IdeaForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void })
   );
 }
 
-// ---- 模式 B：综述调研（M11.1.4 topic_survey：Topic → Survey Outline） ----
+// ---- 模式 A：创建新论文 → 综述论文（内部工作流 topic_survey，对用户不暴露） ----
 
 interface SurveyFormState {
   topic: string;
@@ -278,7 +333,15 @@ function readYearField(value: string): number | undefined {
   return Number.isInteger(parsed) && parsed >= 1900 && parsed <= 2100 ? parsed : NaN;
 }
 
-function SurveyForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void }) {
+function SurveyForm({
+  paperType,
+  onSelectPaperType,
+  onSwitchMode,
+}: {
+  paperType: PaperType;
+  onSelectPaperType: (type: PaperType) => void;
+  onSwitchMode: (mode: EntryMode) => void;
+}) {
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const startRun = useCreateWorkflowRun();
@@ -313,16 +376,17 @@ function SurveyForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void 
     }
     setValidationError(null);
     try {
+      // M11.2.1：documentType=survey → 后端派生 topic_survey（不发送 workflowKind）
       const project = await createProject.mutateAsync({
         title: topic,
-        workflowKind: "topic_survey",
+        documentType: "survey",
         ...withPicked("language", form.language),
         ...withPicked("targetVenue", form.targetVenue),
       });
-      // 只输入 Topic 即启动：其余都是可选范围参数（随 run request 持久化）
+      // 只输入 Topic 即启动：其余都是可选范围参数（随 run request 持久化）；
+      // kind 省略 → 后端回落 project.workflowKind
       await startRun.mutateAsync({
         projectId: project.id,
-        kind: "topic_survey",
         survey: {
           ...(yearFrom !== undefined ? { yearFrom } : {}),
           ...(yearTo !== undefined ? { yearTo } : {}),
@@ -336,10 +400,15 @@ function SurveyForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) => void 
   };
 
   return (
-    <form className="panel form-panel" onSubmit={(event) => void onSubmit(event)} noValidate>
+    <form className="panel form-panel" onSubmit={(event) => void onSubmit(event)} noValidate data-testid="survey-form">
       <fieldset className="form-section">
         <legend>你想做什么？</legend>
-        <ModeCards current="survey" onSelect={onSwitchMode} />
+        <ModeCards current="new" onSelect={onSwitchMode} />
+      </fieldset>
+
+      <fieldset className="form-section">
+        <legend>论文类型</legend>
+        <PaperTypeCards current={paperType} onSelect={onSelectPaperType} />
       </fieldset>
 
       <fieldset className="form-section">

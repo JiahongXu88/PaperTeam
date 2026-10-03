@@ -34,7 +34,7 @@ function delay(ms: number): Promise<void> {
 /** File-First 导入（标题由 PDF 内容推导，不需要手填） */
 async function createProject(page: PageFixture, pdfPath: string): Promise<string> {
   await page.goto("/projects/new");
-  await page.getByRole("radio", { name: /导入已有论文/ }).check();
+  await page.getByRole("radio", { name: /修改已有论文/ }).check();
   await page.getByLabel("选择论文 PDF（.pdf）").setInputFiles(pdfPath);
   await page.getByRole("button", { name: "导入论文" }).click();
   await expect(page).toHaveURL(/\/projects\/p-[a-z0-9]+/, { timeout: 90_000 });

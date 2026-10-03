@@ -211,7 +211,12 @@ export async function listProjectRuns(
  */
 export async function createWorkflowRun(
   projectId: string,
-  kind: WorkflowKind,
+  /**
+   * M11.2.1：kind 可省略——后端回落到 project.workflowKind（创建时由
+   * documentType 派生，后端是映射的最终事实源）。显式传入仍优先（手动启动
+   * / 既有流程不受影响）。
+   */
+  kind: WorkflowKind | undefined,
   options: {
     citationSemanticMode?: CitationSemanticMode;
     stylePolicy?: StylePolicy;
@@ -220,10 +225,10 @@ export async function createWorkflowRun(
   } = {},
 ): Promise<{ runId: string; status: string; workflowKind: WorkflowKind }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/workflows`, {
-    kind,
+    ...(kind !== undefined ? { kind } : {}),
     ...(options.citationSemanticMode !== undefined ? { citationSemanticMode: options.citationSemanticMode } : {}),
     ...(options.stylePolicy !== undefined && kind !== "existing_paper_review" ? { stylePolicy: options.stylePolicy } : {}),
-    ...(kind === "topic_survey" && options.survey !== undefined ? { ...options.survey } : {}),
+    ...(options.survey !== undefined ? { ...options.survey } : {}),
   });
 }
 

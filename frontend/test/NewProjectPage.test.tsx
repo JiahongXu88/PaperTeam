@@ -10,9 +10,11 @@ import type { ProjectView } from "../src/types/api.js";
 import { renderWithProviders } from "./helpers.js";
 
 /**
- * NewProjectPage（Project Entry UX 2026-09）：
- * - 二选一入口：从研究想法开始 / 导入已有论文
- * - 导入已有论文 = File First：无标题必填，PDF + goal，高级选项默认折叠
+ * NewProjectPage（M11.2.1 产品 IA 收口）：
+ * - 二选一入口：创建新论文 / 修改已有论文（综述调研不再是顶层入口）
+ * - 创建新论文内部：论文类型（研究论文 / 综述论文）；documentType →
+ *   workflowKind 的映射由后端完成（前端不发送 workflowKind / kind）
+ * - 修改已有论文 = File First：无标题必填，PDF + goal，高级选项默认折叠
  * - 导入成功导航：快速 Review → ?tab=review（模型就绪时自动启动）；系统性改进 → 概览
  */
 
@@ -132,7 +134,7 @@ describe("NewProjectPage", () => {
     await waitFor(() =>
       expect(createProject).toHaveBeenCalledWith({
         title: "全新论文项目",
-        workflowKind: "idea_to_paper",
+        documentType: "research_article",
         researchIdea: "从想法到论文",
         researchField: "信息检索",
       }),
@@ -163,7 +165,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
 
     expect(screen.getByTestId("existing-import-form")).toBeInTheDocument();
     // Gate G：标题不是前置字段（无任何标题文本输入框）
@@ -183,7 +185,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
     expect(await screen.findByTestId("validation-error")).toHaveTextContent("请先选择论文 PDF 文件");
@@ -202,7 +204,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.upload(screen.getByLabelText("选择论文 PDF（.pdf）"), pdfFile);
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
@@ -237,7 +239,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.upload(screen.getByLabelText("选择论文 PDF（.pdf）"), pdfFile);
 
     // 高级选项默认折叠；展开后语义核验默认「关闭（推荐）」
@@ -271,7 +273,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.upload(screen.getByLabelText("选择论文 PDF（.pdf）"), pdfFile);
     await user.click(screen.getByTestId("goal-improvement"));
     await user.click(screen.getByRole("button", { name: "导入论文" }));
@@ -290,7 +292,7 @@ describe("NewProjectPage：导入已有论文（File First）", () => {
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.upload(screen.getByLabelText("选择论文 PDF（.pdf）"), pdfFile);
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
@@ -306,7 +308,7 @@ describe("NewProjectPage：导入 LaTeX 工程（M7.0.3 统一入口）", () => 
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.click(screen.getByTestId("import-format-latex"));
 
     expect(screen.queryByTestId("goal-review_only")).toBeNull();
@@ -332,7 +334,7 @@ describe("NewProjectPage：导入 LaTeX 工程（M7.0.3 统一入口）", () => 
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.click(screen.getByTestId("import-format-latex"));
     await user.upload(screen.getByLabelText("选择 LaTeX 工程 ZIP 归档（.zip）"), zipFile);
     await user.click(screen.getByRole("button", { name: "导入论文" }));
@@ -353,7 +355,7 @@ describe("NewProjectPage：导入 LaTeX 工程（M7.0.3 统一入口）", () => 
     const user = userEvent.setup();
     renderCreateFlow();
 
-    await user.click(screen.getByRole("radio", { name: /导入已有论文/ }));
+    await user.click(screen.getByRole("radio", { name: /修改已有论文/ }));
     await user.click(screen.getByTestId("import-format-latex"));
     await user.click(screen.getByRole("button", { name: "导入论文" }));
 
@@ -366,5 +368,87 @@ describe("NewProjectPage：导入 LaTeX 工程（M7.0.3 统一入口）", () => 
     expect(validateZipFile(new File(["x"], "paper.pdf", { type: "application/pdf" }))).toBe("只接受 .zip 归档文件");
     expect(validateZipFile(new File([], "empty.zip", { type: "application/zip" }))).toBe("文件为空");
     expect(validateZipFile(zipFile)).toBeNull();
+  });
+});
+
+describe("NewProjectPage：创建新论文的论文类型（M11.2.1 产品 IA）", () => {
+  it("顶层只有两个入口（创建新论文 / 修改已有论文），不再出现独立「综述调研」入口", async () => {
+    renderCreateFlow();
+
+    expect(screen.getByTestId("entry-new")).toHaveClass("selected");
+    expect(screen.getByTestId("entry-existing")).toBeInTheDocument();
+    // 旧顶层入口（综述调研 / 从研究想法开始）不复存在——workflow 是工程概念
+    expect(screen.queryByText("综述调研")).toBeNull();
+    expect(screen.queryByText("从研究想法开始")).toBeNull();
+  });
+
+  it("创建页默认研究论文：可选论文类型且类型字段集随之切换", async () => {
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    // 默认研究论文表单（研究想法 / 研究领域），无综述专属字段
+    expect(screen.getByTestId("paper-type-research_article")).toHaveClass("selected");
+    expect(screen.getByLabelText("研究想法")).toBeInTheDocument();
+    expect(screen.queryByTestId("survey-year-from")).toBeNull();
+
+    // 切到综述论文：年份范围等 survey 专属字段出现，研究想法字段消失
+    await user.click(screen.getByTestId("paper-type-survey"));
+    expect(screen.getByTestId("survey-form")).toBeInTheDocument();
+    expect(screen.getByTestId("survey-year-from")).toBeInTheDocument();
+    expect(screen.queryByLabelText("研究想法")).toBeNull();
+
+    // 切回研究论文
+    await user.click(screen.getByTestId("paper-type-research_article"));
+    expect(screen.getByTestId("research-article-form")).toBeInTheDocument();
+    expect(screen.getByLabelText("研究想法")).toBeInTheDocument();
+  });
+
+  it("综述论文创建：documentType=survey 且不带 workflowKind / kind（映射归后端）", async () => {
+    const surveyProject: ProjectView = {
+      ...created,
+      title: "多目标跟踪中的数据关联方法",
+      workflowKind: "topic_survey",
+    };
+    vi.mocked(createProject).mockResolvedValue(surveyProject);
+    vi.mocked(getProject).mockResolvedValue(surveyProject);
+    vi.mocked(createProject).mockClear();
+    vi.mocked(createWorkflowRun).mockClear();
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByTestId("paper-type-survey"));
+    await user.type(screen.getByTestId("survey-topic"), "多目标跟踪中的数据关联方法");
+    await user.type(screen.getByTestId("survey-year-from"), "2015");
+    await user.type(screen.getByTestId("survey-year-to"), "2025");
+    await user.click(screen.getByTestId("survey-submit"));
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(createProject).mock.calls[0]![0]).toEqual({
+      title: "多目标跟踪中的数据关联方法",
+      documentType: "survey",
+    });
+    // run 启动不携带 kind：后端回落 project.workflowKind（documentType 派生）
+    await waitFor(() =>
+      expect(createWorkflowRun).toHaveBeenCalledWith(surveyProject.id, undefined, {
+        survey: { yearFrom: 2015, yearTo: 2025 },
+      }),
+    );
+  });
+
+  it("研究论文创建：documentType=research_article，不自动启动 run（进入项目页手动开始）", async () => {
+    vi.mocked(createProject).mockResolvedValue(created);
+    vi.mocked(getProject).mockResolvedValue(created);
+    vi.mocked(createProject).mockClear();
+    vi.mocked(createWorkflowRun).mockClear();
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.type(screen.getByLabelText(/论文标题/), "研究论文项目");
+    await user.click(screen.getByRole("button", { name: "创建项目" }));
+
+    await waitFor(() => expect(createProject).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(createProject).mock.calls[0]![0]).toMatchObject({ documentType: "research_article" });
+    expect(vi.mocked(createProject).mock.calls[0]![0]).not.toHaveProperty("workflowKind");
+    expect(createWorkflowRun).not.toHaveBeenCalled();
   });
 });

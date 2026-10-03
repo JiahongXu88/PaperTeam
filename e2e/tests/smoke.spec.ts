@@ -46,7 +46,7 @@ test.describe.serial("PaperTeam 用户路径 smoke", () => {
 
   test("4-6 导入已有论文 PDF → 快速 Review 页（自动启动后立即取消）", async ({ page, request }) => {
     await page.goto("/projects/new");
-    await page.getByRole("radio", { name: /导入已有论文/ }).check();
+    await page.getByRole("radio", { name: /修改已有论文/ }).check();
     await page.getByLabel("选择论文 PDF（.pdf）").setInputFiles(resolvePdfPath());
     await expect(page.getByTestId("goal-review_only")).toHaveClass(/selected/);
     await page.getByRole("button", { name: "导入论文" }).click();

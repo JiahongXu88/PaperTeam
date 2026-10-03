@@ -38,12 +38,35 @@ export type ProjectWorkflowKind = WorkflowKind;
  * 前端与 Prompt 使用的建议值集合，不在存储层冻结 enum。
  */
 export const DOCUMENT_TYPES: readonly string[] = [
+  "research_article",
+  "survey",
   "undergraduate_thesis",
   "master_thesis",
   "doctoral_thesis",
   "journal_article",
   "conference_paper",
 ];
+
+/**
+ * M11.2.1：documentType → workflowKind 的产品级映射（后端是最终事实源，
+ * 前端不再各自维护映射）。survey 类（综述）→ topic_survey；其余（含未指定）
+ * → idea_to_paper（与「workflowKind 缺省视为 idea_to_paper」的既有语义一致）。
+ * 显式提供的 workflowKind 优先（导入 / 旧客户端不受影响）。
+ */
+const SURVEY_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  "survey",
+  "survey_article",
+  "review",
+  "review_article",
+  "综述",
+  "综述论文",
+]);
+
+export function workflowKindForDocumentType(documentType: string | undefined): ProjectWorkflowKind {
+  return documentType !== undefined && SURVEY_DOCUMENT_TYPES.has(documentType.trim())
+    ? "topic_survey"
+    : "idea_to_paper";
+}
 
 export const TARGET_PROFILES: readonly string[] = [
   "course_paper",
@@ -567,6 +590,10 @@ function normalizeResearchMeta(meta: ProjectResearchMetaInput): Partial<ProjectM
       throw new BusinessError("INVALID_REQUEST", `非法的 workflowKind："${meta.workflowKind}"`);
     }
     out.workflowKind = meta.workflowKind;
+  } else if (meta.documentType !== undefined && meta.documentType.trim() !== "") {
+    // M11.2.1：未显式给 workflowKind 但选择了论文类型 → 按 documentType 派生
+    // （后端单一映射源；survey → topic_survey，其余 → idea_to_paper）
+    out.workflowKind = workflowKindForDocumentType(meta.documentType);
   }
   for (const [field, maxLength] of Object.entries(RESEARCH_FIELD_LIMITS) as [ResearchField, number][]) {
     const raw = meta[field];

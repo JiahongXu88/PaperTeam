@@ -330,7 +330,8 @@ export function useCreateWorkflowRun() {
       survey,
     }: {
       projectId: string;
-      kind: WorkflowKind;
+      /** M11.2.1：可省略——后端回落 project.workflowKind（documentType 派生） */
+      kind?: WorkflowKind;
       citationSemanticMode?: CitationSemanticMode;
       /** M5.4 语言润色策略（idea / improvement；Quick Review 不发送） */
       stylePolicy?: StylePolicy;

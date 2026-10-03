@@ -83,7 +83,7 @@ test.describe.serial("M4.8 Existing Paper Improvement（scripted + 真实 LaTeX�
 
     // 1. 浏览器导入：已有论文 + 系统性改进
     await page.goto("/projects/new");
-    await page.getByRole("radio", { name: /导入已有论文/ }).check();
+    await page.getByRole("radio", { name: /修改已有论文/ }).check();
     await page.getByLabel("选择论文 PDF（.pdf）").setInputFiles(resolvePdfPath());
     await page.getByTestId("goal-improvement").click();
     await page.getByRole("button", { name: "导入论文" }).click();

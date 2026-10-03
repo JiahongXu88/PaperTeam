@@ -305,7 +305,7 @@ test.describe.serial("证据工作台 + 质量门禁（scripted Runtime 栈）",
     // 真实 PDF 解析 + 完整快速 Review（scripted）：放宽到 5 分钟
     test.setTimeout(300_000);
     await page.goto("/projects/new");
-    await page.getByRole("radio", { name: /导入已有论文/ }).check();
+    await page.getByRole("radio", { name: /修改已有论文/ }).check();
     await page.getByLabel("选择论文 PDF（.pdf）").setInputFiles(resolvePdfPath());
     await page.getByRole("button", { name: "导入论文" }).click();
     await expect(page).toHaveURL(/\/projects\/p-[a-z0-9]+\?tab=review$/, { timeout: 90_000 });

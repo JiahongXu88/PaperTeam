@@ -573,9 +573,9 @@ async function handleRequest(
       return;
     }
     const body = await readJsonBody(req);
-    const kind = readWorkflowKind(body);
-    const prompt = readStringField(body, "prompt");
     const project = await services.projects.getRequired(projectId);
+    const kind = resolveWorkflowKind(body, project);
+    const prompt = readStringField(body, "prompt");
     if (project.archivedAt !== undefined) {
       throw new ProjectBusyError(`项目已归档，不能启动新任务（请先恢复项目 ${projectId}）`);
     }
@@ -3814,6 +3814,21 @@ function readWorkflowKind(body: Record<string, unknown>): WorkflowKind {
     "INVALID_REQUEST",
     `字段 kind 只能是 ${WORKFLOW_KINDS.join("、")}（缺省 idea_to_paper）`,
   );
+}
+
+/**
+ * M11.2.1：kind 缺省时回落到 project.workflowKind（创建时经 documentType 派生
+ * 并落 project.json——后端是 documentType → workflowKind 映射的最终事实源；
+ * 旧项目无该字段 → idea_to_paper，与既有缺省语义一致）。
+ */
+function resolveWorkflowKind(
+  body: Record<string, unknown>,
+  project: { workflowKind?: import("./project/ProjectStore.js").ProjectWorkflowKind },
+): WorkflowKind {
+  if (body["kind"] === undefined) {
+    return project.workflowKind ?? "idea_to_paper";
+  }
+  return readWorkflowKind(body);
 }
 
 /**

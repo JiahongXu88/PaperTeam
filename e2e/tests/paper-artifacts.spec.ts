@@ -415,7 +415,7 @@ test.describe.serial("M4.7 论文产出闭环（scripted + 真实 LaTeX）", () 
   test("I 快速 Review 只读：无论文产出 tab；完成后仍零产物", async ({ page, request }) => {
     test.setTimeout(420_000);
     await page.goto("/projects/new");
-    await page.getByRole("radio", { name: /导入已有论文/ }).check();
+    await page.getByRole("radio", { name: /修改已有论文/ }).check();
     await page.getByLabel("选择论文 PDF（.pdf）").setInputFiles(resolvePdfPath());
     await page.getByRole("button", { name: "导入论文" }).click();
     // review_only 导入成功后导航到 /projects/:id?tab=review
