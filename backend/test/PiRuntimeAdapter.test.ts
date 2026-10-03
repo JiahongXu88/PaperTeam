@@ -3,7 +3,7 @@
  *
  * 分层（对应任务书 §23）：
  * - Level 1 纯单元：注入 fake AgentSession + stub ModelRuntime（不跑 Pi SDK 循环）
- * - Level 2 SDK 集成：真实 @earendil-works/pi-coding-agent 0.84.4 +
+ * - Level 2 SDK 集成：真实 @earendil-works/pi-coding-agent（PI_RUNTIME_VERSION）+
  *   官方 fauxProvider（pi-ai 公开导出）——真实 Agent loop / 工具注册表 /
  *   事件链 / abort / 工具 AbortSignal 语义，仅模型流为脚本化假流
  * - Level 3 真实 provider LLM：本机无凭据，NOT VERIFIED（见 M3.7/M3.8 报告）
@@ -2852,14 +2852,29 @@ describe("PiRuntimeAdapter（Level 2：真实 SDK + faux model）", () => {
 
   it("systemPromptOverride 生效：role 提示词真实到达 LLM 请求上下文", async () => {
     const capturedSystems: (string | undefined)[] = [];
+    // Pi 1.0.x：system prompt 不再是 TranscriptContext 独立字段，
+    // 由 leading SystemMessage（context.messages[0]）携带；override 文本
+    // 落在 sections（preamble 等），content 可能为空串。
+    const leadingSystemPrompt = (context: {
+      messages: ReadonlyArray<{ role: string; content: unknown; sections?: Record<string, unknown> }>;
+    }) => {
+      const first = context.messages[0];
+      if (!first || first.role !== "system") return undefined;
+      const parts = [
+        typeof first.content === "string" ? first.content : "",
+        ...Object.values(first.sections ?? {}).map((v) => (typeof v === "string" ? v : "")),
+      ];
+      const joined = parts.join("\n");
+      return joined === "" ? undefined : joined;
+    };
     const { adapter, faux } = await makeLevel2Adapter();
     faux.setResponses([
       (context) => {
-        capturedSystems.push(context.systemPrompt);
+        capturedSystems.push(leadingSystemPrompt(context));
         return fauxAssistantMessage([fauxText("ok")]);
       },
       (context) => {
-        capturedSystems.push(context.systemPrompt);
+        capturedSystems.push(leadingSystemPrompt(context));
         return fauxAssistantMessage([fauxText("ok")]);
       },
     ]);

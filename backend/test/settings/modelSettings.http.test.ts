@@ -122,7 +122,7 @@ describe("HTTP /api/settings/model（M4.3.7.5）", () => {
     const body = await getJson(server, "/api/settings/model");
     const settings = body["settings"] as Record<string, unknown>;
     expect(settings["runtimePhase"]).toBe("healthy");
-    expect(settings["runtimeVersion"]).toBe("0.84.4");
+    expect(settings["runtimeVersion"]).toBe("1.0.1");
     expect(settings["configurationSource"]).toBe("not_configured");
     expect(settings["apiKeyConfigured"]).toBe(false);
     expect(Object.keys(settings)).not.toContain("apiKey");
@@ -161,7 +161,7 @@ describe("HTTP /api/settings/model（M4.3.7.5）", () => {
       server,
       "PUT",
       "/api/settings/model",
-      JSON.stringify({ model: "zai-coding-cn/glm-5.2" }),
+      JSON.stringify({ model: "zai-coding-cn/glm-5.3-flash" }),
     );
     expect(keep.status).toBe(200);
     const body = await getJson(server, "/api/settings/model");
@@ -171,7 +171,7 @@ describe("HTTP /api/settings/model（M4.3.7.5）", () => {
       server,
       "PUT",
       "/api/settings/model",
-      JSON.stringify({ model: "zai-coding-cn/glm-5.2", apiKey: "" }),
+      JSON.stringify({ model: "zai-coding-cn/glm-5.3-flash", apiKey: "" }),
     );
     expect(empty.status).toBe(400);
   });
@@ -254,7 +254,7 @@ describe("HTTP /api/settings/model（M4.3.7.5）", () => {
   });
 
   it("env 覆盖场景：configurationSource=environment（GET 如实提示）", async () => {
-    const server = await makeSettingsServer({ piModel: "zai-coding-cn/glm-5.2" });
+    const server = await makeSettingsServer({ piModel: "zai-coding-cn/glm-5.3-flash" });
     const body = await getJson(server, "/api/settings/model");
     const settings = body["settings"] as Record<string, unknown>;
     expect(settings["configurationSource"]).toBe("environment");

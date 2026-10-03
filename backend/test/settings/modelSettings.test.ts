@@ -213,12 +213,12 @@ describe("ModelSettingsService：保存语义", () => {
   it("保存 model 不带 apiKey：保持原 key（auth.json 不变）", async () => {
     const { agentDir, service } = await makeHarness();
     await service.saveModel({ model: "zai-coding-cn/glm-5.3", apiKey: SENTINEL_KEY });
-    await service.saveModel({ model: "zai-coding-cn/glm-5.2" });
+    await service.saveModel({ model: "zai-coding-cn/glm-5.3-flash" });
 
     const auth = await readFile(join(agentDir, "auth.json"), "utf8");
     expect(auth).toContain(SENTINEL_KEY);
     const status = await service.getStatus();
-    expect(status.model).toBe("zai-coding-cn/glm-5.2");
+    expect(status.model).toBe("zai-coding-cn/glm-5.3-flash");
     expect(status.apiKeyConfigured).toBe(true);
   });
 
@@ -321,7 +321,7 @@ describe("ModelSettingsService：保存语义", () => {
 describe("ModelSettingsService：env 覆盖优先级", () => {
   it("PAPERTEAM_PI_MODEL 设置时：configurationSource=environment，生效模型为 env 值", async () => {
     const { service } = await makeHarness({
-      env: { piModel: "zai-coding-cn/glm-5.2" },
+      env: { piModel: "zai-coding-cn/glm-5.3-flash" },
     });
     // 用户仍可保存本地配置（对 env 不生效，但持久化）
     const status = await service.saveModel({
@@ -330,7 +330,7 @@ describe("ModelSettingsService：env 覆盖优先级", () => {
     });
     expect(status.configurationSource).toBe("environment");
     expect(status.envOverride).toBe(true);
-    expect(status.model).toBe("zai-coding-cn/glm-5.2"); // env 覆盖
+    expect(status.model).toBe("zai-coding-cn/glm-5.3-flash"); // env 覆盖
     expect(status.savedModel).toBe("zai-coding-cn/glm-5.3"); // 本地保存值如实展示
     expect(status.detail).toContain("环境变量");
     expect(status.modelPhase).toBe("configured"); // env 模型可用
@@ -393,13 +393,13 @@ describe("ModelSettingsService：Runtime reload 与 busy 保护", () => {
     expect(String((harness.sessions.created[0]?.model as { id?: string })?.id)).toBe("glm-5.3");
 
     // 切换模型（不带 key：沿用已保存凭据）
-    await harness.service.saveModel({ model: "zai-coding-cn/glm-5.2" });
+    await harness.service.saveModel({ model: "zai-coding-cn/glm-5.3-flash" });
     const task2 = await harness.adapter.runAgent({ agentId: "writer", task: "再写一段" });
     expect(task2.status).toBe("completed");
-    expect(String((harness.sessions.created[1]?.model as { id?: string })?.id)).toBe("glm-5.2");
+    expect(String((harness.sessions.created[1]?.model as { id?: string })?.id)).toBe("glm-5.3-flash");
     // 旧会话被释放（模型变更只影响新 run；空闲会话重建）
     expect(harness.sessions.created[0]?.disposed()).toBe(true);
-    expect(task2.metadata?.["model"]).toBe("zai-coding-cn/glm-5.2");
+    expect(task2.metadata?.["model"]).toBe("zai-coding-cn/glm-5.3-flash");
   });
 
   it("在途 run 存在时保存/清除 → MODEL_CONFIG_BUSY（409），且不落盘", async () => {
@@ -416,7 +416,7 @@ describe("ModelSettingsService：Runtime reload 与 busy 保护", () => {
     });
     try {
       const busyError = await harness.service
-        .saveModel({ model: "zai-coding-cn/glm-5.2" })
+        .saveModel({ model: "zai-coding-cn/glm-5.3-flash" })
         .catch((error: unknown) => error);
       expect(busyError).toBeInstanceOf(ModelConfigBusyError);
       expect((busyError as BusinessError).httpStatus).toBe(409);

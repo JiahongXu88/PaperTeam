@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { evidenceToolsForRole } from "../../src/evidence/tools.js";
 import {
@@ -46,10 +46,11 @@ async function evidenceLineCount(f: GroundingFixture): Promise<number> {
 }
 
 /**
- * ExtensionContext 只由 Pi runtime 构造；被测工具的 execute 只消费
- * (toolCallId, params) 前两个参数，测试以空占位补齐后三个参数位。
+ * ExtensionToolContext（Pi 1.0.x tool execute 契约）只由 Pi runtime 构造；
+ * 被测工具的 execute 只消费 (toolCallId, params) 前两个参数，测试以空占位
+ * 补齐后三个参数位。
  */
-const NOOP_CTX = undefined as unknown as ExtensionContext;
+const NOOP_CTX = undefined as unknown as ExtensionToolContext;
 
 /** 执行工具并解析 JSON 输出（工具统一 content[0].text = JSON） */
 async function runTool(

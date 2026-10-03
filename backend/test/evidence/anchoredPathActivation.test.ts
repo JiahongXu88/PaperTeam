@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterAll, describe, expect, it, vi } from "vitest";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { SourceStore } from "../../src/sources/SourceStore.js";
@@ -186,7 +186,7 @@ async function seedFullTextLiterature(f: ActivationFixture): Promise<void> {
   await f.retrieval.rebuild(f.projectId);
 }
 
-const NOOP_CTX = undefined as unknown as ExtensionContext;
+const NOOP_CTX = undefined as unknown as ExtensionToolContext;
 
 async function runTool(tool: ToolDefinition, params: unknown): Promise<Record<string, unknown>> {
   const result = await tool.execute("tc-1", params as never, undefined, undefined, NOOP_CTX);
