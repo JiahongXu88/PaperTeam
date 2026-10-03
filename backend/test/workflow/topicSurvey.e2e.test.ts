@@ -17,7 +17,7 @@
  *    awaiting 处 cancel → cancelled。
  */
 
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -286,14 +286,19 @@ describe("topic_survey fixture E2E：主链", () => {
 
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
 
-    // completed：label=survey + 四件 artifact + refs 可回溯
-    const done = await pollRun(runId, (run) => run.status === "completed", undefined, 120_000);
-    expect(done.completion?.label).toBe("survey");
-    expect(done.completion?.summary).toMatchObject({
-      sections: expect.any(Number),
-      matrixEntries: 5,
-      selectedLiterature: 5,
-    });
+    // M11.2：大纲批准后走写作链（writing → citation → review → gate → build）
+    // completed：label=final + 全套产物
+    const done = await pollRun(runId, (run) => run.status === "completed", undefined, 300_000);
+    expect(done.completion?.label).toBe("final");
+    expect(done.completedStages).toContain("writing.sections");
+    expect(done.completedStages).toContain("citation.verify");
+    expect(done.completedStages).toContain("review.run");
+    expect(done.completedStages).toContain("quality.gate");
+    expect(done.completedStages).toContain("build.draft");
+    expect(done.completedStages).toContain("build.final");
+    const writingStage = done.stageResults["writing.sections"] as Record<string, unknown> | undefined;
+    expect(writingStage?.["sectionsWritten"]).toBeGreaterThan(0);
+    expect(writingStage?.["revision"]).toBe(1);
 
     const research = await readProjectJson(projectId, join("research", "research.json"));
     expect(research.plans.length).toBe(1);
@@ -320,6 +325,32 @@ describe("topic_survey fixture E2E：主链", () => {
     );
     expect(badSynthesisRefs).toEqual([]);
     expect(badLiteratureRefs).toEqual([]);
+
+    // ---- M11.2 写作产物：sections / main.tex / references.bib / reviews ----
+    const sectionsDir = join(stack.store.projectDir(projectId), "manuscript", "sections");
+    const sectionNames = (await readdir(sectionsDir)).filter((name) => name.endsWith(".tex"));
+    expect(sectionNames.length).toBe(outline.sections.length);
+    for (const name of sectionNames) {
+      const content = await readFile(join(sectionsDir, name), "utf8");
+      expect(content.trim().length).toBeGreaterThan(10);
+    }
+    const bib = await readFile(
+      join(stack.store.projectDir(projectId), "manuscript", "references.bib"),
+      "utf8",
+    );
+    expect((bib.match(/^@/gm) ?? []).length).toBeGreaterThan(0);
+
+    const reviewSummary = await readProjectJson(projectId, join("reviews", "review-summary-r1.json"));
+    expect(reviewSummary.round).toBe(1);
+    const gate = await readProjectJson(projectId, join("reviews", "quality-gate-r1.json"));
+    const surveyRules = (gate.gate.rules as Array<{ rule: string; passed: boolean }>).filter(
+      (rule) => rule.rule.startsWith("survey_"),
+    );
+    expect(surveyRules.length).toBe(4);
+    expect(surveyRules.every((rule) => rule.passed)).toBe(true);
+    const surveyWriting = await readProjectJson(projectId, join("reviews", "survey-writing-r1.json"));
+    expect(surveyWriting.metrics.totalLiterature).toBe(5);
+    expect(surveyWriting.blockers).toEqual([]);
   }, 600_000);
 });
 
@@ -444,8 +475,10 @@ describe("topic_survey HITL", () => {
       240_000,
     );
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
-    const done = await pollRun(runId, (run) => run.status === "completed", undefined, 120_000);
+    const done = await pollRun(runId, (run) => run.status === "completed", undefined, 300_000);
     expect(completions(done, "survey.outline")).toBe(2);
+    // M11.2：大纲批准后写作链走完（不再是 survey 收口）
+    expect(done.completion?.label).toBe("final");
     const outline = await readProjectJson(projectId, join("manuscript", "outline.json"));
     expect(
       outline.sections.filter((section: any) => Array.isArray(section.synthesisRefs)).length,
@@ -533,7 +566,7 @@ describe("topic_survey resume", () => {
 
     const orchestrator = await restartOrchestrator();
     await orchestrator.resume(runId, { decision: "approve" });
-    // 大纲确认是最后一个 HITL：重启后仍需一次用户输入才 completed
+    // 大纲确认是研究链最后一个 HITL：重启后仍需一次用户输入才进入写作链
     await pollOrchestrator(
       orchestrator,
       runId,
@@ -541,7 +574,7 @@ describe("topic_survey resume", () => {
       360_000,
     );
     await orchestrator.resume(runId, { decision: "approve" });
-    const done = await pollOrchestrator(orchestrator, runId, (run) => run.status === "completed", 120_000);
+    const done = await pollOrchestrator(orchestrator, runId, (run) => run.status === "completed", 300_000);
 
     for (const stageId of ["research.plan", "hitl.research_plan", "survey.search", "survey.fulltext", "survey.matrix", "hitl.matrix_confirm"]) {
       expect(completions(done, stageId), stageId).toBe(completions(restartCountBefore, stageId));
@@ -549,7 +582,7 @@ describe("topic_survey resume", () => {
     // matrix 脚本调用次数不增长（重启后没有重新构建任何条目）
     const matrixCallsAfter = surveyCalls.filter((call) => call.contextScope === "research/survey-matrix").length;
     expect(matrixCallsAfter).toBe(matrixCallsBefore);
-    expect(done.completion?.label).toBe("survey");
+    expect(done.completion?.label).toBe("final");
     await orchestrator.close();
   }, 480_000);
 
@@ -571,7 +604,7 @@ describe("topic_survey resume", () => {
 
     const orchestrator = await restartOrchestrator();
     await orchestrator.resume(runId, { decision: "approve" });
-    const done = await pollOrchestrator(orchestrator, runId, (run) => run.status === "completed", 120_000);
+    const done = await pollOrchestrator(orchestrator, runId, (run) => run.status === "completed", 300_000);
 
     for (const stageId of ["research.plan", "survey.search", "survey.fulltext", "survey.matrix", "survey.synthesis"]) {
       expect(completions(done, stageId), stageId).toBe(completions(before, stageId));

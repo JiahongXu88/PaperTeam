@@ -156,6 +156,10 @@ export class ReviewerService {
     /** 稿件语言（M9.7.4；en 时不注入 zh-only style skill + prompt 语言化） */
     language?: ManuscriptLanguage;
     citationDigest?: string;
+    /** M11.2：Survey Review Profile（academic 模式换综述 rubric；fact/style 不变） */
+    reviewProfile?: "survey";
+    /** M11.2：综述确定性 metrics digest（写作 invariants + metrics 的渲染行） */
+    surveyDigest?: string;
   }): Promise<ModeReviewResult[]> {
     const results = await Promise.all(
       REVIEW_MODES.map((mode) => this.reviewMode({ ...params, mode })),
@@ -190,6 +194,10 @@ export class ReviewerService {
     /** 稿件语言（M9.7.4；en 时不注入 zh-only style skill + prompt 语言化） */
     language?: ManuscriptLanguage;
     citationDigest?: string;
+    /** M11.2：Survey Review Profile（缺省 = 普通论文 rubric，行为与旧版一致） */
+    reviewProfile?: "survey";
+    /** M11.2：综述确定性 metrics digest */
+    surveyDigest?: string;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -496,6 +504,10 @@ export function buildReviewPrompt(params: {
   /** 稿件语言（M9.7.4；en 时 style 检查项以英文表述、finding 用英文撰写） */
   language?: ManuscriptLanguage;
   citationDigest?: string;
+  /** M11.2：Survey Review Profile（academic rubric 切换为综述口径） */
+  reviewProfile?: "survey";
+  /** M11.2：综述确定性 metrics digest（写作 invariants 渲染行） */
+  surveyDigest?: string;
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -530,19 +542,43 @@ export function buildReviewPrompt(params: {
           "输出额外字段 riskScore: 0-100（模板化 / 机械化表达风险的工程口径，越高表示模板化越重；不是生成来源判断）。",
         ];
 
+  const academicSpec =
+    params.reviewProfile === "survey"
+      ? [
+          "你使用 academic review skill（Survey Review Profile——审稿对象是综述论文，不是原创算法论文）：",
+          "不要用「研究空白 / 创新点 / 实验充分性」的原创论文标准；按综述质量维度评审：",
+          "1. 覆盖完整性：是否遗漏主要方法路线 / 重要文献家族（对照下方综述确定性指标的家族覆盖）；",
+          "2. 分类体系（taxonomy）质量：方法分类是否合理、粒度是否恰当、与正文组织是否一致；",
+          "3. 文献均衡性：seminal（奠基性）/ representative（代表性）/ recent（近期）工作是否兼顾；时间线覆盖是否失衡；",
+          "4. 方法比较公正性：横向比较是否真实存在（不是逐篇罗列 A…B…C…）、比较维度是否公平呈现双方；",
+          "5. 引用支撑：综合结论是否有多源引用支撑（两篇论文的共识不得叫「领域共识」）；speculative 内容是否被写成既定事实；",
+          "6. research gap 是否有 synthesis / 文献依据（Writer 不得自造 gap）；future direction 是否区分 grounded 与 speculative；",
+          "7. 是否退化成 literature listing（逐篇摘要式罗列）；synthesis → 正文是否发生语义漂移（正文表述超出综合结论的范围）。",
+          `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
+          "输出额外字段 scores: {覆盖完整性: 0-100, 分类与组织: 0-100, 文献均衡性: 0-100, 比较与论证: 0-100, 引用支撑: 0-100, 写作质量: 0-100} 与 overallScore。",
+        ]
+      : [
+          "你使用 academic review skill：从问题定义、方法合理性、实验充分性、论证逻辑、写作质量评审。",
+          `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
+          "输出额外字段 scores: {问题定义: 0-100, 方法合理性: 0-100, 实验充分性: 0-100, 论证逻辑: 0-100, 写作质量: 0-100} 与 overallScore。",
+        ];
+
   const modeSpecs: Record<ReviewMode, string[]> = {
     fact: [
       "你使用 fact checking skill：把正文拆分为 factual claims，逐条对照 Evidence 判定：",
       "SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED。",
       FACT_EVIDENCE_TOOL_GUIDANCE,
+      ...(params.reviewProfile === "survey"
+        ? [
+            "综述语境：正文的综合结论（机制、对比、趋势、共识）属于事实性 claim，同样逐条核验；",
+            "literature_cited 口径的弱表述（「多项工作表明」）按其较弱强度评价，不要求逐字证据；",
+            "speculative 内容出现在非展望章节或以确定语气呈现时，报 UNSUPPORTED（升级了 claim 强度）。",
+          ]
+        : []),
       "输出额外字段 claims: [{section, claim, verdict, evidenceId?, note?}]；",
       "无已核验（verified）证据支撑的关键论断必须是 UNSUPPORTED 并生成 critical/major issue（blocking 视严重度）。",
     ],
-    academic: [
-      "你使用 academic review skill：从问题定义、方法合理性、实验充分性、论证逻辑、写作质量评审。",
-      `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
-      "输出额外字段 scores: {问题定义: 0-100, 方法合理性: 0-100, 实验充分性: 0-100, 论证逻辑: 0-100, 写作质量: 0-100} 与 overallScore。",
-    ],
+    academic: academicSpec,
     style: styleSpec,
   };
 
@@ -578,6 +614,9 @@ export function buildReviewPrompt(params: {
         : ["（无已核验（verified）Evidence）"]),
     ...(params.citationDigest
       ? ["", "===== 引用核验摘要 =====", params.citationDigest]
+      : []),
+    ...(params.surveyDigest !== undefined
+      ? ["", "===== 综述确定性指标（机器可算信号；评审时对照使用）=====", params.surveyDigest]
       : []),
   ].join("\n");
 }

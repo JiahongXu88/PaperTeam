@@ -36,6 +36,11 @@ import {
   renderDigestLiterature,
   renderDigestStats,
 } from "../survey/outlineDigest.js";
+import type { SurveySectionWritingContext } from "../survey/sectionContext.js";
+import {
+  renderSectionLiteratureLines,
+  renderSectionSynthesisLines,
+} from "../survey/sectionContext.js";
 
 export interface WriterServiceOptions {
   runtime: AgentRuntime;
@@ -371,6 +376,11 @@ export class WriterService {
   /**
    * 写作单个章节（LaTeX 片段，不含文档骨架）。
    * 校验：非空、不含 \documentclass / \begin{document}（骨架由确定性代码生成）。
+   *
+   * M11.2 Survey 模式：params.survey 存在时走综述章节 prompt（按 synthesis
+   * 表达，refs 契约的有界投影），输出后做确定性引用后检——出现的每个
+   * \cite key 必须 ∈ context.allowedCitationKeys（fail-closed，防 Writer
+   * 凭记忆引用输入之外的文献）。缺省（普通论文）行为与旧版完全一致。
    */
   async writeSection(params: {
     projectId: string;
@@ -382,15 +392,30 @@ export class WriterService {
     /** 稿件语言（M9.7.4；undefined = legacy 不注入） */
     language?: ManuscriptLanguage;
     extraInstructions?: string;
+    /** M11.2：Survey 章节写作上下文（存在 = Survey 模式） */
+    survey?: SurveySectionWritingContext;
   }): Promise<{ latex: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
       ...this.timeoutOverride,
-      task: buildSectionPrompt(params),
+      task:
+        params.survey !== undefined
+          ? buildSurveySectionPrompt({
+              section: params.section,
+              outline: params.outline,
+              bibliography: params.bibliography,
+              ...(params.language !== undefined ? { language: params.language } : {}),
+              survey: params.survey,
+            })
+          : buildSectionPrompt(params),
       projectId: params.projectId,
       contextScope: "writing/sections",
       ...(params.language !== undefined ? { language: params.language } : {}),
-      metadata: { role: "writer", skill: "section" },
+      metadata: {
+        role: "writer",
+        skill: "section",
+        ...(params.survey !== undefined ? { documentType: "survey" } : {}),
+      },
     });
     if (task.status !== "completed") {
       throw new AgentRunFailedError(
@@ -408,6 +433,17 @@ export class WriterService {
     }
     if (!hasBalancedBraces(latex)) {
       throw new InvalidLatexOutputError(`章节 ${params.section.id} 花括号不配对`);
+    }
+    // M11.2 Survey 引用后检（确定性）：key 越界 = 契约违约，交 Stage 层重试
+    if (params.survey !== undefined) {
+      const allowed = new Set(params.survey.allowedCitationKeys);
+      const violated = extractCitationKeys(latex).filter((key) => !allowed.has(key));
+      if (violated.length > 0) {
+        throw new InvalidLatexOutputError(
+          `章节 ${params.section.id} 引用了本节契约之外的 citation key：${violated.join("、")}` +
+            `（只允许：${params.survey.allowedCitationKeys.join(", ") || "（无）"}）`,
+        );
+      }
     }
     return { latex, taskId: task.taskId };
   }
@@ -459,6 +495,12 @@ export class WriterService {
      * 裁决，不降低任何守卫）。
      */
     targetFilePath?: string;
+    /**
+     * M11.2 Survey：本节的写作上下文投影（存在 = Survey 修订模式）。注入
+     * 综述结构红线——taxonomy / gap / speculative 语气 / 文献集合不得因
+     * 「修得更漂亮」而被改写；引用白名单与写作阶段同源。
+     */
+    survey?: SurveySectionWritingContext;
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -488,6 +530,7 @@ export class WriterService {
       metadata: {
         role: "writer",
         skill: "revision",
+        ...(params.survey !== undefined ? { documentType: "survey" } : {}),
         ...(params.externalDirectives !== undefined && params.externalDirectives.length > 0
           ? { externalInstructions: params.externalDirectives.length }
           : {}),
@@ -988,6 +1031,8 @@ export function buildRevisePrompt(params: {
    * 输出契约变为「修改后的完整文件」（含导言区），不按章节片段口径校验。
    */
   wholeFile?: boolean;
+  /** M11.2 Survey：本节写作上下文（综述结构红线；缺省不注入） */
+  survey?: SurveySectionWritingContext;
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -1110,6 +1155,7 @@ export function buildRevisePrompt(params: {
     ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
     ...renderClaimRepairBlock(params.claimRepairs ?? []),
     ...externalBlock,
+    ...(params.survey !== undefined ? renderSurveyRevisionConstraints(params.survey) : []),
     "",
     "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 15),
@@ -1467,6 +1513,87 @@ export function buildSectionPrompt(params: {
 }
 
 /**
+ * M11.2 Survey 章节写作 prompt。核心契约（Writer 是表达层，不是第二个
+ * Researcher）：研究已经做完（Matrix → Synthesis → Outline），本 prompt 只
+ * 提供该节 refs 契约的有界投影；按 synthesis 写而不是按论文写；引用 key
+ * 白名单 = context.allowedCitationKeys（输出后有确定性后检，越界即违约）。
+ */
+export function buildSurveySectionPrompt(params: {
+  section: OutlineSection;
+  outline: Outline;
+  bibliography: BibliographyEntryInput[];
+  language?: ManuscriptLanguage;
+  survey: SurveySectionWritingContext;
+}): string {
+  const context = params.survey;
+  const evidenceLines = renderEvidenceLines(context.evidence, params.bibliography, 24);
+  const allowed = context.allowedCitationKeys;
+  const unbacked = allowed.filter((key) => !context.evidenceBackedKeys.includes(key));
+  const contextLabel =
+    context.sectionContext === "framing"
+      ? "框架章节（引言 / 结论 / 背景：只写背景与组织性内容）"
+      : context.sectionContext === "gap"
+        ? "研究空缺章节（内容只能来自绑定的 research_gap synthesis）"
+        : context.sectionContext === "future"
+          ? "展望章节（唯一允许消费 speculative synthesis 的章节）"
+          : "核心正文章节（按方法体系 / 研究问题综合已有结论）";
+  return [
+    `你是一名学术论文写手（Writer）。请撰写综述章节「${params.section.title}」。`,
+    "",
+    ...targetLanguageLines(params.language),
+    ...(params.language !== undefined ? [""] : []),
+    "输出要求：",
+    "1. 只输出该章节的 LaTeX 正文片段：以 \\section{标题} 开始；不要 \\documentclass、\\begin{document}、导言区、文档骨架；不要 Markdown 代码块，不要解释文字。",
+    "2. 可用宏包只有 amsmath / amssymb / natbib（ctexart 文档类）；不使用 tikz 等其他宏包的环境或命令。",
+    "",
+    "综述写作纪律（最重要的规则）：",
+    "1. 这是综述（survey）的一节。研究已经完成——下方「综合产物」就是本节全部的事实来源，你的任务是把它表达成论文，不是重新做研究：不发明 taxonomy / 共识 / 分歧 / 研究空缺 / 未来方向，不引入清单之外的文献，不凭模型常识补充「大家都知道」的具体事实（数字、年份、性能结论）。",
+    "2. 按 synthesis 组织段落，绝不按论文逐篇组织：「论文 A 做了……论文 B 做了……论文 C 做了……」的连续罗列是错误写法。同类工作合并为按方法家族 / 技术路线的综合描述。",
+    "3. 比较内容必须体现 comparison synthesis 给出的维度与两侧依据；趋势内容按时间 / 技术路线组织；consensus 与 disagreement 分开表达，分歧双方都要公平呈现（有双方文献支撑）。",
+    "4. research gap 只能来自本节绑定的 research_gap synthesis；不得提出任何 synthesis 中不存在的新 gap。",
+    "5. future direction 严格区分：grounded（cited_future_work）可陈述文献明确提出的方向；speculative 只能用推测语气（可能 / 值得探索 / 未来可考虑 / 有待验证），不得写成既定结论。",
+    "6. 逐条 synthesis 的措辞强度按其 grounding 分级执行（每条已标注措辞纪律）：evidence_backed 可确定陈述（证据范围内）；literature_cited 只能弱措辞；speculative 只保留不确定性表述。",
+    "7. 引用纪律：只允许引用「本节允许的 citation key」清单内的 key（输出会被逐 key 校验，越界即失败）。事实性论断（机制、方法、数值、结论）优先引用 A 组；一个综合结论允许多 key 并列（如 \\cite{a,b,c}）——多源综合结论不得伪装成单篇论文支撑，也不要机械地每句只引 1 篇。",
+    "8. 上下文不足以支撑某个具体论断时：保守表述或省略，不脑补；可以用 evidence_query 查询证据库确认，无果就弱化。",
+    "",
+    ...CLAIM_DISCIPLINE_LINES,
+    "",
+    "===== 论文大纲（全文结构；本节是其中一节，保持术语一致）=====",
+    `标题：${params.outline.title}`,
+    ...params.outline.sections.map((section) => `- ${section.title}（${section.id}）`),
+    "",
+    "===== 本章节要求 =====",
+    `章节：${params.section.title}（${params.section.file}）｜${contextLabel}`,
+    `目标长度：约 ${params.section.targetLengthWords ?? 500} 字`,
+    ...(context.keyPoints.length > 0
+      ? ["要点：", ...context.keyPoints.map((point) => `- ${point}`)]
+      : []),
+    ...(context.warnings.length > 0
+      ? ["上下文提示（如实处理，不得掩盖）：", ...context.warnings.map((warning) => `- ${warning}`)]
+      : []),
+    "",
+    "===== 综合产物（本节消费的 Structured Synthesis；章节内容的事实来源）=====",
+    ...renderSectionSynthesisLines(context),
+    "",
+    "===== 本节文献清单（literatureRefs 投影；引用候选已并入上方各组）=====",
+    ...renderSectionLiteratureLines(context),
+    "",
+    "===== 本节允许的 citation key（白名单；A 组 = verified evidence 支撑）=====",
+    `A 组（有 verified evidence 支撑；事实性论断的引用必须取自本组）：${
+      context.evidenceBackedKeys.length > 0 ? context.evidenceBackedKeys.join(", ") : "（空——事实性论断只能弱化或删除）"
+    }`,
+    `B 组（文献库条目、无逐字核验证据；仅限文献_cited 口径的泛指性陈述）：${
+      unbacked.length > 0 ? unbacked.join(", ") : "（无）"
+    }`,
+    `全部允许（\\cite 只能用这些 key）：${allowed.length > 0 ? allowed.join(", ") : "（无：本节不要使用 \\cite）"}`,
+    "",
+    "===== Verified Evidence Context（本节绑定 synthesis 的已核验证据）=====",
+    ...evidenceLines,
+    ...(context.evidence.length === 0 ? [] : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
+  ].join("\n");
+}
+
+/**
  * Writer Prompt（M2 有意保持简单）：
  * 要求完整 LaTeX、中文可用、无 Markdown 围栏、不虚构引用、优先保证可编译。
  */
@@ -1485,6 +1612,37 @@ export function buildWriterPrompt(userPrompt: string): string {
     "写作任务：",
     userPrompt,
   ].join("\n");
+}
+
+/**
+ * M11.2 Survey 修订红线块：修订不得破坏综述研究结构。与既有事实 / 引用 /
+ * claim 强度守卫叠加（不是替代）——综述结构（taxonomy / gap 集合 / speculative
+ * 语气 / 文献覆盖）是上游 HITL 批准的研究结论，Writer 无权在修订中改写。
+ */
+function renderSurveyRevisionConstraints(survey: SurveySectionWritingContext): string[] {
+  const speculativeIds = survey.synthesis
+    .filter((item) => item.groundingLevel === "speculative")
+    .map((item) => item.synthesisId);
+  const gapIds = survey.synthesis
+    .filter((item) => item.kind === "research_gap")
+    .map((item) => item.synthesisId);
+  return [
+    "",
+    "===== 综述结构红线（Survey 契约；与上方所有守卫叠加）=====",
+    "本稿是综述（survey）。修订只解决问题清单指向的表达 / 支撑 / 结构问题，不得为了「修得更好看」而改写研究结构：",
+    "- **弱化 ≠ 删除事实**：按「证据不足」弱化某论断时，若其中的数值 / 事实有文献来源归属（其 \\cite 指向的文献报告过它），保留数值并把表述改为归因式陈述（如「文献 [key] 报告了 X」）；只有完全无来源归属的数值才连同数值一起删除。整句删除会触发事实保持守卫（数值消失 = 未授权事实删除），必须避免。",
+    "- 不得更换或新增 taxonomy（方法分类体系以本节绑定的 taxonomy synthesis 为准）；",
+    `- 不得提出新的 research gap${gapIds.length > 0 ? `（本节 gap 只能来自：${gapIds.join("、")}）` : "（本节未绑定 gap synthesis，不得引入任何 gap 表述）"}；`,
+    "- 不得删除支撑性文献引用来简化论述（引用冻结清单仍然有效）；",
+    speculativeIds.length > 0
+      ? `- 以下 speculative synthesis 只能保持推测语气（可能 / 值得探索 / 有待验证），不得升级为确定结论：${speculativeIds.join("、")}；`
+      : "- 推测性内容必须保持推测语气，不得升级为确定结论；",
+    "grounded（cited_future_work）方向与 speculative 方向的区分不得抹平；",
+    `- 新增引用只能使用以下 key：${survey.allowedCitationKeys.length > 0 ? survey.allowedCitationKeys.join(", ") : "（无：不得新增任何引用）"}。`,
+    "",
+    "本节绑定的 synthesis（内容边界；本节论断不得超出其范围）：",
+    ...renderSectionSynthesisLines(survey),
+  ];
 }
 
 /** 剥离模型可能误加的 Markdown 代码围栏 */

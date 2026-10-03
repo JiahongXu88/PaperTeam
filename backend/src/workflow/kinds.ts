@@ -5,8 +5,9 @@
  * - idea_to_paper               从研究想法到论文
  * - existing_paper_improvement  已有 LaTeX / PDF 论文的系统性改进
  * - existing_paper_review       已有论文只读 Review
- * - topic_survey                Topic → Survey Outline（M11.1.4：综述研究链，
- *                               终点是冻结的 Survey Outline，不写正文）
+ * - topic_survey                Topic → Survey（M11.1 综述研究链 + M11.2 写作链：
+ *                               Matrix → Synthesis → Outline → Writing → Review →
+ *                               Revision → Gate → PDF）
  */
 export const WORKFLOW_KINDS = [
   "idea_to_paper",
@@ -24,4 +25,9 @@ export function isWorkflowKind(value: unknown): value is WorkflowKind {
 /** 以已有论文为输入的工作流（PDF / Review Tab 等能力只对这类项目开放） */
 export function isExistingPaperKind(kind: WorkflowKind | undefined): boolean {
   return kind === "existing_paper_improvement" || kind === "existing_paper_review";
+}
+
+/** M11.2：综述类工作流（写作 / 审稿 / 修订 / gate 走 Survey 契约分支） */
+export function isSurveyKind(kind: WorkflowKind | undefined): boolean {
+  return kind === "topic_survey";
 }

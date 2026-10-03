@@ -27,6 +27,7 @@ import {
   type CumulativeFactValidation,
 } from "./cumulativeFactPreservation.js";
 import type { ClaimGapAudit } from "../review/claimGapAudit.js";
+import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { LatexDiagnostic } from "../latex/diagnostics.js";
 import { parseLatexDiagnostics } from "../latex/diagnostics.js";
@@ -313,6 +314,13 @@ export interface QualityGateInput {
    * hitl.revision_validation 的 approve 决策覆盖自动判定（记录在案，不静默）。
    */
   revisionValidation?: RevisionValidationResult;
+  /**
+   * Survey Writing Evaluation（M11.2）：综述写作契约的确定性判定（悬空 refs /
+   * fake citation key / evidence_backed synthesis 可回溯）+ 启发式 metrics。
+   * undefined = 非 survey 项目（规则不出现，普通论文路径零改动）；
+   * blocking 三规则参与 Final 判定，metrics 以 warning 形态呈现（不阻断）。
+   */
+  surveyWriting?: SurveyWritingEvaluation;
 }
 
 export interface QualityGateResult {
@@ -589,6 +597,50 @@ export function evaluateQualityGate(
     });
   }
 
+  // 19-22. Survey Writing（M11.2 §十二：保守分档——契约违约 blocking，
+  // 启发式 metrics 只呈现不阻断；family 失衡 / 罗列倾向交 Reviewer 与人工）
+  if (input.surveyWriting !== undefined) {
+    const evaluation = input.surveyWriting;
+    const byCode = (code: string) => evaluation.blockers.filter((blocker) => blocker.code === code);
+    const dangling = byCode("dangling_refs");
+    const fakeKeys = byCode("fake_citation_key");
+    const untraceable = byCode("synthesis_untraceable");
+    rules.push({
+      rule: "survey_outline_contract",
+      passed: dangling.length === 0,
+      detail:
+        dangling.length === 0
+          ? "outline refs 契约完好（synthesis / literature refs 全部可回溯）"
+          : `悬空 refs ${dangling.length} 处：${dangling.slice(0, 3).map((blocker) => blocker.detail).join("；")}`,
+    });
+    rules.push({
+      rule: "survey_citation_keys_valid",
+      passed: fakeKeys.length === 0,
+      detail:
+        fakeKeys.length === 0
+          ? "正文引用 key 全部在 bibliography 白名单内"
+          : `越界 key ${fakeKeys.length} 处：${fakeKeys.slice(0, 3).map((blocker) => blocker.detail).join("；")}`,
+    });
+    rules.push({
+      rule: "survey_synthesis_traceability",
+      passed: untraceable.length === 0,
+      detail:
+        untraceable.length === 0
+          ? `evidence_backed synthesis 可回溯 ${evaluation.metrics.evidenceBackedUsed}/${evaluation.metrics.evidenceBackedTotal}`
+          : untraceable[0]!.detail,
+    });
+    const { metrics } = evaluation;
+    rules.push({
+      rule: "survey_writing_metrics",
+      passed: true,
+      detail:
+        `文献覆盖 ${metrics.citedLiterature}/${metrics.totalLiterature}；多源引用占比 ${(metrics.multiKeyCiteRatio * 100).toFixed(0)}%；`
+        + `单文献段落占比 ${(metrics.singleKeyParagraphRatio * 100).toFixed(0)}%；罗列游程 ${metrics.listingRuns}；`
+        + `speculative 泄漏信号 ${metrics.speculativeLeakSignals}`
+        + (evaluation.warnings.length > 0 ? `；warnings ${evaluation.warnings.length} 条（明细见产物）` : ""),
+    });
+  }
+
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);
   return {
     passed: reasons.length === 0,
@@ -618,6 +670,7 @@ export async function saveQualityGateReport(
     cumulativeFactPreservation?: CumulativeFactValidation | null;
     evidenceCitationCoverage?: EvidenceCitationCoverage;
     revisionValidation?: RevisionValidationResult;
+    surveyWriting?: SurveyWritingEvaluation;
   } = {},
 ): Promise<string> {
   const dir = projects.reviewsDir(projectId);
@@ -640,6 +693,8 @@ export async function saveQualityGateReport(
       : {}),
     // M6.7：修订条目复核明细（Revision Gate 两条规则的输入；UI / 审计可见）
     ...(extras.revisionValidation !== undefined ? { revisionValidation: extras.revisionValidation } : {}),
+    // M11.2：综述写作契约判定 + metrics 明细（survey 三条 blocking 规则的输入）
+    ...(extras.surveyWriting !== undefined ? { surveyWriting: extras.surveyWriting } : {}),
     ...(typeof summary.reviewedRevision === "number"
       ? { revision: summary.reviewedRevision, reviewedRevision: summary.reviewedRevision }
       : {}),

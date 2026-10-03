@@ -121,7 +121,7 @@ export function NewProjectPage() {
 function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode: EntryMode) => void }) {
   const cards: Array<{ mode: EntryMode; title: string; desc: string }> = [
     { mode: "idea", title: "从研究想法开始", desc: "从一个研究想法出发，完成调研、证据整理、写作与审阅，最终生成论文。" },
-    { mode: "survey", title: "综述调研", desc: "只输入一个主题：系统会检索并遴选文献、构建综述矩阵与跨论文综合，产出可确认的综述大纲（本阶段不写正文）。" },
+    { mode: "survey", title: "综述调研", desc: "只输入一个主题：系统会检索并遴选文献、构建综述矩阵与跨论文综合，确认大纲后继续综述写作、审阅与修订，最终生成综述论文 PDF。" },
     { mode: "existing", title: "导入已有论文", desc: "上传论文 PDF 或 LaTeX 工程归档：PDF 可先做快速 Review（引用核验 + 分章节审阅），两者都可进入系统性改进流程。" },
   ];
   return (

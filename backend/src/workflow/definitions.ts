@@ -36,7 +36,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
 import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
-import { isExistingPaperKind } from "./kinds.js";
+import { isExistingPaperKind, isSurveyKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { normalizeManuscriptLanguage } from "../project/language.js";
@@ -55,6 +55,17 @@ import type { PlanExecutionAcademicResultSnapshot, PlanExecutionWebResultSnapsho
 import type { MatrixService, SurveyEntryPatch } from "../survey/MatrixService.js";
 import type { SynthesisService } from "../survey/SynthesisService.js";
 import type { SurveyOutlineService } from "../survey/OutlineService.js";
+import {
+  SurveyMatrixArtifactStore,
+  SurveySynthesisArtifactStore,
+} from "../survey/surveyArtifacts.js";
+import { fingerprintJson } from "../util/hash.js";
+import { buildSurveySectionContext } from "../survey/sectionContext.js";
+import {
+  evaluateSurveyWriting,
+  renderSurveyMetricsLines,
+  type SurveyWritingEvaluation,
+} from "../survey/writingInvariants.js";
 import { normalizeTaxonomy, UNCLASSIFIED_FAMILY, type SurveyTaxonomy } from "../survey/matrixTypes.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
@@ -352,10 +363,14 @@ async function loadFrozenBaseline(
  * M10.3.1 G2：existing-paper 流程的 review 附带 task-aware claim 适用性审计
  * （claim-gap-audit-r{round}.json，确定性）。Quality Gate 规则 4/5/6 与
  * revision.plan 据此只对「修订引入」口径计数 / 派发。
+ *
+ * M11.2 options.survey：综述流程的 review 附带 Survey Review Profile（academic
+ * rubric 切换）+ 确定性写作 metrics digest，并落盘 survey-writing-r{round}.json
+ * （gate 的 survey 规则与 trace 消费同轮产物）。
  */
 function reviewRunStageInner(
   services: WorkflowServices,
-  options: { existingPaper?: boolean },
+  options: { existingPaper?: boolean; survey?: boolean },
 ): StageSpec {
   return {
     id: "review.run",
@@ -381,6 +396,14 @@ function reviewRunStageInner(
 
       // fan-out：三类 review skill 并行（Promise.all；各 mode 独立 contextScope）
       const language = normalizeManuscriptLanguage(project.language);
+      // M11.2：综述 review 附带确定性写作评估（metrics digest 进 Reviewer 上下文；
+      // 评估产物按轮落盘，供 gate / trace / 报告消费）
+      let surveyWriting: SurveyWritingEvaluation | null = null;
+      let surveyDigest: string | undefined;
+      if (options.survey === true) {
+        surveyWriting = await evaluateSurveyWritingForProject(services, ctx.projectId);
+        surveyDigest = renderSurveyMetricsLines(surveyWriting).join("\n");
+      }
       const results = await services.reviewer.reviewAll({
         projectId: ctx.projectId,
         manuscriptDigest: digest,
@@ -388,6 +411,8 @@ function reviewRunStageInner(
         targetProfile: project.targetProfile,
         ...(language !== undefined ? { language } : {}),
         ...(citationDigest !== undefined ? { citationDigest } : {}),
+        ...(options.survey === true ? { reviewProfile: "survey" as const } : {}),
+        ...(surveyDigest !== undefined ? { surveyDigest } : {}),
       });
 
       // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
@@ -411,6 +436,10 @@ function reviewRunStageInner(
         bibEntries: citationReport?.static.bibEntries ?? [],
       });
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
+      // M11.2：综述写作评估按轮落盘（与 review 同轮配对；gate 消费同轮产物）
+      if (surveyWriting !== null) {
+        await services.reviewArtifacts.saveSurveyWriting(ctx.projectId, round, surveyWriting);
+      }
       // M10.3.1 G2：existing-paper 的 claim 适用性审计（pre-existing / 作者数据
       // 覆盖 / 修订引入；机器可读，gate 与 revision.plan 消费）
       let claimGapAudit: ClaimGapAudit | null = null;
@@ -455,6 +484,20 @@ function reviewRunStageInner(
         claimEvidenceBindingRate: claimGrounding.evidenceBindingRate,
         evidenceFormal: evidenceSelection.formal.length,
         evidenceExcluded: evidenceSelection.excluded,
+        // M11.2：综述确定性指标摘要（survey-writing-r{round}.json 明细）
+        ...(surveyWriting !== null
+          ? {
+              surveyWriting: {
+                blockers: surveyWriting.blockers.length,
+                warnings: surveyWriting.warnings.length,
+                literatureCoverage: surveyWriting.metrics.literatureCoverage,
+                groundedSynthesisUsage: surveyWriting.metrics.groundedSynthesisUsage,
+                multiKeyCiteRatio: surveyWriting.metrics.multiKeyCiteRatio,
+                listingRuns: surveyWriting.metrics.listingRuns,
+                speculativeLeakSignals: surveyWriting.metrics.speculativeLeakSignals,
+              },
+            }
+          : {}),
         // M5.4：可进入语言润色的 style minor finding 数（planner 据此决定是否询问）
         styleMinor: summary.issues.filter(isPolishableStyleIssue).length,
       };
@@ -473,10 +516,13 @@ function reviewRunStageInner(
   };
 }
 
-function qualityGateStage(services: WorkflowServices): StageSpec {
+function qualityGateStage(
+  services: WorkflowServices,
+  options: { survey?: boolean } = {},
+): StageSpec {
   return {
     id: "quality.gate",
-    description: "Quality Gate：确定性判定（引用/事实/审稿/目标可行性）",
+    description: "Quality Gate：确定性判定（引用/事实/审稿/目标可行性；survey 含写作契约）",
     requiredInputs: ["review.run"],
     producedOutputs: ["reviews/quality-gate-r*.json"],
     maxAttempts: 1, // 纯确定性判定，重试无意义
@@ -530,6 +576,13 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         latestValidation !== null && latestValidation.revision === review.reviewedRevision
           ? latestValidation
           : undefined;
+      // M11.2：survey gate 规则输入——优先消费同轮 review 落盘的评估（与 review
+      // 快照对齐）；无同轮产物时（旧 run / 手动触发）现场重算
+      let surveyWriting: SurveyWritingEvaluation | undefined;
+      if (options.survey === true) {
+        const stored = await services.reviewArtifacts.loadSurveyWriting(ctx.projectId, review.round);
+        surveyWriting = stored ?? (await evaluateSurveyWritingForProject(services, ctx.projectId));
+      }
       const gate = evaluateQualityGate(
         {
           review,
@@ -542,6 +595,7 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
           ...(claimGapAudit !== null ? { claimGapAudit } : {}),
           ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
           ...(revisionValidation !== undefined ? { revisionValidation } : {}),
+          ...(surveyWriting !== undefined ? { surveyWriting } : {}),
         },
         QUALITY_THRESHOLDS(services),
       );
@@ -553,6 +607,7 @@ function qualityGateStage(services: WorkflowServices): StageSpec {
         cumulativeFactPreservation,
         ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
         ...(revisionValidation !== undefined ? { revisionValidation } : {}),
+        ...(surveyWriting !== undefined ? { surveyWriting } : {}),
       });
       // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
       // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
@@ -1026,6 +1081,12 @@ function revisionReviseStage(
       const singleFile = outline === null && files.sections.length === 0 && files.mainTex !== null;
       const buildError = readBuildError(ctx.state);
       const evidence = await usableEvidence(services, ctx.projectId);
+      // M11.2：综述修订——加载 survey 契约输入（outline / matrix / synthesis /
+      // bibliography），为带 refs 的目标节注入结构红线（taxonomy / gap /
+      // speculative 语气 / 引用白名单不得在修订中改写）
+      const surveyInputs = isSurveyKind(ctx.state.workflowKind)
+        ? await loadSurveyWritingInputs(services, ctx.projectId)
+        : null;
       // M5.6 真实论文验收暴露的 Writer regression：Existing-Paper 项目没有 research
       // artifact bibliography，修订 prompt 曾写成「无可用文献：不要使用 \cite」，Writer
       // 据此删光了重建稿的全部 \cite。可引用 key 必须以 manuscript/references.bib 为准。
@@ -1108,6 +1169,29 @@ function revisionReviseStage(
                 bibliography,
               )
             : [];
+        // M11.2：本目标的 survey 写作上下文（有 refs 的节；framing / abstract 走通用守卫）
+        const surveyContext =
+          surveyInputs !== null && outline !== null
+            ? (() => {
+                const section = outline.sections.find((candidate) => candidate.id === target.key);
+                if (
+                  section === undefined ||
+                  ((section.synthesisRefs ?? []).length === 0 &&
+                    (section.literatureRefs ?? []).length === 0)
+                ) {
+                  return undefined;
+                }
+                return buildSurveySectionContext({
+                  section,
+                  matrix: surveyInputs.matrix,
+                  synthesis: surveyInputs.synthesis,
+                  bibliography: surveyInputs.bibliography,
+                  evidence: surveyInputs.evidence,
+                  titleBySource: surveyInputs.titleBySource,
+                  yearBySource: surveyInputs.yearBySource,
+                });
+              })()
+            : undefined;
         // 该目标命中的外部意见：指定章节的按匹配；未指定章节的全篇派发
         const targetExternals = externalDirectives.filter((directive) =>
           directive.section !== undefined
@@ -1151,6 +1235,7 @@ function revisionReviseStage(
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
           ...(claimRepairs.length > 0 ? { claimRepairs } : {}),
+          ...(surveyContext !== undefined ? { survey: surveyContext } : {}),
           ...(matchedItems.length > 0
             ? {
                 revisionItems: matchedItems,
@@ -2560,6 +2645,10 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         buildGateReasons: build["buildGateReasons"] ?? [],
         qualityGatePassed: gatePassed,
         qualityGateReasons: gateResult["reasons"] ?? [],
+        // M11.2 §十四：报告层区分「自动修改轮数耗尽 / 不收敛后接受 Draft」与
+        // 「双 Gate 通过自然完结」——qualityGatePassed=false 的 Draft 不是异常，
+        // 是 bounded loop 的正常终态（PASS / IMPROVED / CONVERGED / REGRESSION）
+        ...(outcome !== null && !gatePassed ? { qualityOutcome: outcome } : {}),
         revisionRounds: revisionRoundsUsed(state),
         draftArtifactId: build["draftArtifactId"] ?? null,
         ...(label === "final"
@@ -4638,7 +4727,10 @@ function literatureSelectionStage(services: WorkflowServices): StageSpec {
   };
 }
 
-/** HITL 决策：literature_selection（approve 可携带 payload.candidateIds 增删） */
+/** HITL 决策：literature_selection（approve 可携带 payload.candidateIds 增删）。
+ *  M11.2：candidateIds 同时接受「已 promote（accepted）」的候选——重跑 / 续跑
+ *  场景（前一 run 已批准同一集合）可以原样再次提交，promote 幂等去重；
+ *  只剩 accepted 候选（pending 为空）时默认推荐集退化为既有库（不再新增）。 */
 async function applyLiteratureSelectionDecision(
   services: WorkflowServices,
   state: WorkflowState,
@@ -4654,12 +4746,21 @@ async function applyLiteratureSelectionDecision(
       `decision 只能是 approve / cancel（当前 "${input.decision}"）`,
     );
   }
-  const pending = await services.candidates.list(state.projectId, "pending_review");
-  const byId = new Map(pending.map((candidate) => [candidate.candidateId, candidate]));
+  const [pending, accepted] = await Promise.all([
+    services.candidates.list(state.projectId, "pending_review"),
+    services.candidates.list(state.projectId, "accepted"),
+  ]);
+  const byId = new Map(
+    [...pending, ...accepted].map((candidate) => [candidate.candidateId, candidate]),
+  );
   let selected: string[];
   const raw = input.payload?.["candidateIds"];
   if (raw === undefined) {
     selected = recommendedSurveyCandidateIds(pending);
+    if (selected.length === 0 && accepted.length > 0) {
+      // 续跑：无新待审候选，文献库已有 corpus——保持既有库（空选择不合法）
+      selected = accepted.map((candidate) => candidate.candidateId);
+    }
   } else {
     if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
       throw new WorkflowInvalidStateError(
@@ -4685,6 +4786,13 @@ async function applyLiteratureSelectionDecision(
       );
     }
     selected = ids;
+  }
+  if (selected.length === 0) {
+    throw new WorkflowInvalidStateError(
+      state.runId,
+      state.status,
+      "没有任何可选文献（无待审候选且文献库为空）：请先执行检索或 cancel",
+    );
   }
   state.stageResults["hitl.literature_selection"] = {
     decision: "approve",
@@ -5014,11 +5122,13 @@ function surveySynthesisStage(services: WorkflowServices): StageSpec {
   };
 }
 
-/** survey.outline：直接调用 SurveyOutlineService（validate blocking fail-closed 在服务内） */
+/** survey.outline：直接调用 SurveyOutlineService（validate blocking fail-closed 在服务内）。
+ *  M11.2：无 feedback 且已落盘 outline 对当前 Matrix/Synthesis 新鲜（指纹一致 +
+ *  契约无 blocking）时确定性复用——重跑 / 续跑不重烧规划 Token。 */
 function surveyOutlineStage(services: WorkflowServices): StageSpec {
   return {
     id: "survey.outline",
-    description: "Survey Outline 规划：Synthesis → 综述大纲（契约校验 + feedback 重规划）",
+    description: "Survey Outline 规划：Synthesis → 综述大纲（契约校验 + feedback 重规划；新鲜可复用）",
     requiredInputs: ["survey.synthesis"],
     producedOutputs: ["manuscript/outline.json（synthesisRefs / literatureRefs）"],
     maxAttempts: services.stageMaxAttempts,
@@ -5026,6 +5136,16 @@ function surveyOutlineStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
     async execute(ctx) {
       const feedback = readFeedback(ctx.state.inputs["hitl.outline_confirm"]?.payload);
+      if (feedback === undefined) {
+        const reused = await services.surveyOutline.reuseFreshOutline(ctx.projectId);
+        if (reused !== null) {
+          return {
+            title: reused.title,
+            sections: reused.sections.length,
+            reused: true,
+          };
+        }
+      }
       const build = await services.surveyOutline.buildSurveyOutline(ctx.projectId, {
         ...(feedback !== undefined ? { feedback } : {}),
       });
@@ -5056,7 +5176,7 @@ function surveyOutlineConfirmStage(services: WorkflowServices): StageSpec {
     requiredInputs: ["survey.outline"],
     producedOutputs: ["用户决策"],
     hitl: {
-      prompt: "综述大纲已生成（按方法体系 / 综合结果组织；各节携带 synthesis / literature 引用）。确认后本次综述研究流程完成；也可以带反馈重新规划，或取消",
+      prompt: "综述大纲已生成（按方法体系 / 综合结果组织；各节携带 synthesis / literature 引用）。确认后将进入综述正文写作（分节写作 → 引用核验 → 审稿 → Quality Gate → 修订 → PDF）；也可以带反馈重新规划，或取消",
       options: ["approve", "revise", "cancel"],
       payload: (ctx) => outlineConfirmPayload(services, ctx),
     },
@@ -5100,6 +5220,189 @@ async function applySurveyOutlineDecision(
   );
 }
 
+// ============================================================
+// M11.2：Survey 写作链（Writing → Review → Revision → Gate → PDF）
+// —— 复用 idea_to_paper 的共享后段（planSharedTail + 全部 tail stage 工厂），
+//    本节只补 survey 语义：写作上下文 / review profile / gate 规则 / 修订约束
+// ============================================================
+
+/** survey 写作链共享输入：outline + matrix + synthesis（新鲜性校验）+ bibliography + formal evidence */
+async function loadSurveyWritingInputs(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<{
+  outline: NonNullable<Awaited<ReturnType<ManuscriptService["loadOutline"]>>>;
+  matrix: NonNullable<Awaited<ReturnType<SurveyMatrixArtifactStore["read"]>>>;
+  synthesis: NonNullable<Awaited<ReturnType<SurveySynthesisArtifactStore["read"]>>>;
+  evidence: EvidenceRecord[];
+  bibliography: CanonicalBibliographyEntry[];
+  yearBySource: Map<string, number>;
+  titleBySource: Map<string, string>;
+  files: { file: string; content: string }[];
+}> {
+  const outline = await services.manuscript.loadOutline(projectId);
+  if (outline === null) {
+    throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少综述大纲（manuscript/outline.json 不存在）");
+  }
+  const matrix = await new SurveyMatrixArtifactStore(services.projects).read(projectId);
+  if (matrix === null) {
+    throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 Survey Matrix（research/survey.json）");
+  }
+  const synthesis = await new SurveySynthesisArtifactStore(services.projects).read(projectId);
+  if (synthesis === null) {
+    throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 Structured Synthesis（research/survey-synthesis.json）");
+  }
+  if (synthesis.matrixFingerprint !== fingerprintJson(matrix)) {
+    throw new BusinessError(
+      "STAGE_CONTRACT_VIOLATION",
+      "Survey Synthesis 相对当前 Matrix 已过期（指纹不一致）：请先重跑 survey.synthesis / survey.outline 再进入写作",
+    );
+  }
+  const sourceItems = await services.sources.list(projectId);
+  const yearBySource = new Map(
+    sourceItems
+      .filter((item) => item.metadata.year !== undefined)
+      .map((item) => [item.sourceId, item.metadata.year as number]),
+  );
+  const titleBySource = new Map(
+    sourceItems
+      .filter((item) => item.metadata.title !== undefined && item.metadata.title.trim() !== "")
+      .map((item) => [item.sourceId, item.metadata.title!.trim()]),
+  );
+  const evidence = (await services.evidence.list(projectId)).filter(isFormalEvidence);
+  const bibliography = await buildCanonicalBibliography(services, projectId);
+  const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  return {
+    outline,
+    matrix,
+    synthesis,
+    evidence,
+    bibliography,
+    yearBySource,
+    titleBySource,
+    files: files.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+  };
+}
+
+/** 当前稿件的 Survey Writing 评估（review / gate 共用；survey 项目在写作后必有产物） */
+async function evaluateSurveyWritingForProject(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<SurveyWritingEvaluation> {
+  const inputs = await loadSurveyWritingInputs(services, projectId);
+  return evaluateSurveyWriting({
+    outline: inputs.outline,
+    matrix: inputs.matrix,
+    synthesis: inputs.synthesis,
+    bibliography: inputs.bibliography,
+    evidence: inputs.evidence,
+    files: inputs.files,
+    titleBySource: inputs.titleBySource,
+    yearBySource: inputs.yearBySource,
+  });
+}
+
+/**
+ * survey 写作 stage（id 与普通论文一致 = writing.sections）：逐节构建
+ * SurveySectionContext（refs 契约的有界投影）→ Writer survey 模式 →
+ * 确定性引用后检（writeSection 内）→ 落盘 / main.tex / bib 同步 / 修订提交。
+ */
+function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "writing.sections",
+    description: "Survey Writer 逐节写作（synthesis 驱动；每节有界上下文 + 引用白名单后检）",
+    requiredInputs: ["hitl.outline_confirm"],
+    producedOutputs: ["manuscript/sections/*.tex", "manuscript/main.tex"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 4,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const inputs = await loadSurveyWritingInputs(services, ctx.projectId);
+      const project = await services.projects.getRequired(ctx.projectId);
+      const language = normalizeManuscriptLanguage(project.language);
+      const usedEvidenceIds = new Set<string>();
+      let bytesTotal = 0;
+      const written: string[] = [];
+      for (const [index, section] of inputs.outline.sections.entries()) {
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
+        }
+        const context = buildSurveySectionContext({
+          section,
+          matrix: inputs.matrix,
+          synthesis: inputs.synthesis,
+          bibliography: inputs.bibliography,
+          evidence: inputs.evidence,
+          titleBySource: inputs.titleBySource,
+          yearBySource: inputs.yearBySource,
+        });
+        if (context.danglingSynthesisRefs.length > 0 || context.danglingLiteratureRefs.length > 0) {
+          throw new BusinessError(
+            "STAGE_CONTRACT_VIOLATION",
+            `section ${section.id} 悬空 refs（synthesis：${context.danglingSynthesisRefs.join("、") || "无"}；literature：${context.danglingLiteratureRefs.join("、") || "无"}）——大纲与综合产物不一致，请重跑 survey.outline`,
+          );
+        }
+        const result = await services.writer.writeSection({
+          projectId: ctx.projectId,
+          section,
+          outline: inputs.outline,
+          evidence: context.evidence,
+          bibliography: inputs.bibliography,
+          ...(language !== undefined ? { language } : {}),
+          survey: context,
+        });
+        bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
+        written.push(section.id);
+        for (const record of context.evidence) {
+          usedEvidenceIds.add(record.id);
+        }
+        await ctx.emitProgress({
+          section: section.id,
+          file: section.file,
+          index: index + 1,
+          total: inputs.outline.sections.length,
+        });
+      }
+      for (const evidenceId of usedEvidenceIds) {
+        await safeMarkUsage(services, ctx.projectId, evidenceId, ctx.runId);
+      }
+      await services.manuscript.writeMainTex(ctx.projectId, inputs.outline, inputs.bibliography.length > 0);
+      await services.manuscript.rebuildContext(ctx.projectId, {
+        evidenceStats: await services.evidence.stats(ctx.projectId),
+      });
+      await syncReferencesBib(services, ctx.projectId);
+      const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
+      return {
+        sectionsWritten: written.length,
+        sections: written,
+        bytesTotal,
+        revision: revision.revision,
+        synthesisItems: inputs.synthesis.items.length,
+        matrixEntries: inputs.matrix.entries.length,
+        bibliographyEntries: inputs.bibliography.length,
+        evidenceFormal: inputs.evidence.length,
+      };
+    },
+    async verifyDod(ctx) {
+      const violations: string[] = [];
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      if (outline === null) {
+        return ["manuscript/outline.json 不存在"];
+      }
+      const statuses = await services.manuscript.sectionStatuses(ctx.projectId);
+      for (const section of outline.sections) {
+        const status = statuses.find((candidate) => candidate.id === section.id);
+        if (!status?.exists) {
+          violations.push(`sections/${section.file} 不存在`);
+        } else if (!status.nonEmpty) {
+          violations.push(`sections/${section.file} 内容为空`);
+        }
+      }
+      return violations;
+    },
+  };
+}
+
 export function createTopicSurveyDefinition(services: WorkflowServices): WorkflowDefinition {
   const stages: readonly StageSpec[] = [
     surveyPlanStage(services),
@@ -5112,6 +5415,24 @@ export function createTopicSurveyDefinition(services: WorkflowServices): Workflo
     surveySynthesisStage(services),
     surveyOutlineStage(services),
     surveyOutlineConfirmStage(services),
+    // M11.2 写作链：复用 idea_to_paper 的共享后段 stage 工厂（citation / review /
+    // gate / revision / build 全部同 id 同语义；survey 语义在 stage 工厂 option 内）
+    surveyWritingSectionsStage(services),
+    citationVerifyStage(services),
+    reviewRunStageInner(services, { survey: true }),
+    qualityGateStage(services, { survey: true }),
+    revisionPlanStage(services),
+    revisionRestoreFactsStage(services),
+    revisionReviseStage(services, "revision.revise"),
+    revisionValidateStage(services),
+    revisionValidationDecisionStage(services),
+    revisionRepairStage(services),
+    revisionOverflowStage(),
+    revisionStalledStage(services),
+    stylePolishDecisionStage(services),
+    stylePolishStage(services),
+    buildDraftStage(services),
+    buildFinalStage(services),
   ];
 
   const front = [
@@ -5130,7 +5451,7 @@ export function createTopicSurveyDefinition(services: WorkflowServices): Workflo
   return {
     kind: "topic_survey",
     description:
-      "Topic-to-Survey：综述研究规划 → 确认 → 检索 → 文献遴选 → 全文准备 → Survey Matrix → 矩阵确认 → Structured Synthesis → Survey Outline → 大纲确认（终点是冻结的综述大纲，不写正文）",
+      "Topic-to-Survey：综述研究规划 → 确认 → 检索 → 文献遴选 → 全文准备 → Survey Matrix → 矩阵确认 → Structured Synthesis → Survey Outline → 大纲确认 → Survey 写作 → 引用核验 → 审稿（survey rubric）→ Quality Gate → bounded 修订 → 构建（Draft / Final PDF）",
     stages,
     plan(state: WorkflowState): PlanDecision {
       for (const stageId of front) {
@@ -5138,22 +5459,10 @@ export function createTopicSurveyDefinition(services: WorkflowServices): Workflo
           return { kind: "stage", stageId };
         }
       }
-      const outline = state.stageResults["survey.outline"] ?? {};
-      const matrix = state.stageResults["survey.matrix"] ?? {};
-      const synthesis = state.stageResults["survey.synthesis"] ?? {};
-      const selection = state.stageResults["hitl.literature_selection"] ?? {};
-      return {
-        kind: "complete",
-        label: "survey",
-        summary: {
-          sections: outline["sections"] ?? 0,
-          matrixEntries: matrix["entries"] ?? 0,
-          synthesisItems: synthesis["synthesisItems"] ?? 0,
-          selectedLiterature: Array.isArray(selection["candidateIds"])
-            ? selection["candidateIds"].length
-            : 0,
-        },
-      };
+      if (!("writing.sections" in state.stageResults)) {
+        return { kind: "stage", stageId: "writing.sections" };
+      }
+      return planSharedTail(state, services);
     },
     async onInput(state, stageId, input): Promise<void | "cancel"> {
       switch (stageId) {
@@ -5165,6 +5474,14 @@ export function createTopicSurveyDefinition(services: WorkflowServices): Workflo
           return applyMatrixConfirmDecision(services, state, input);
         case "hitl.outline_confirm":
           return applySurveyOutlineDecision(state, input);
+        case "hitl.revision_overflow":
+          return applyOverflowDecision(state, input);
+        case "hitl.revision_stalled":
+          return applyStalledDecision(state, input);
+        case "hitl.revision_validation":
+          return applyRevisionValidationDecision(services, state, input);
+        case "hitl.style_polish":
+          return applyStylePolishDecision(state, input);
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }

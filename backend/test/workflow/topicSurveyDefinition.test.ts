@@ -1,10 +1,12 @@
 /**
- * topic_survey Workflow 定义测试（M11.1.4 第一层：definition 纯函数）。
+ * topic_survey Workflow 定义测试（M11.1.4 第一层 + M11.2 写作链接入）。
  *
  * 覆盖：
  * 1. stage 注册表顺序 = 设计的 stage graph（Research Plan → HITL → Search →
- *    Selection → Fulltext → Matrix → HITL → Synthesis → Outline → HITL）；
- * 2. plan() 线性推进 + 完成 label=survey（summary 字段来自 stageResults）;
+ *    Selection → Fulltext → Matrix → HITL → Synthesis → Outline → HITL →
+ *    Writing → 共享后段 citation / review / gate / revision / build）；
+ * 2. plan() 线性推进：前段走完 → writing.sections → 接入 planSharedTail
+ *    （首个尾段 stage = citation.verify）；
  * 3. HITL 节点的 options 契约（decision 集合）；
  * 4. recommendedSurveyCandidateIds 纯函数（学术形态优先 / 年份降序 / 上限）。
  *
@@ -21,7 +23,23 @@ import type { WorkflowServices } from "../../src/workflow/definitions.js";
 import type { CandidateSource } from "../../src/sources/CandidateStore.js";
 import type { WorkflowState } from "../../src/workflow/types.js";
 
-const definition = createTopicSurveyDefinition({} as unknown as WorkflowServices);
+const services = {
+  review: { maxRevisionRounds: 2 },
+} as unknown as WorkflowServices;
+const definition = createTopicSurveyDefinition(services);
+
+const FRONT = [
+  "research.plan",
+  "hitl.research_plan",
+  "survey.search",
+  "hitl.literature_selection",
+  "survey.fulltext",
+  "survey.matrix",
+  "hitl.matrix_confirm",
+  "survey.synthesis",
+  "survey.outline",
+  "hitl.outline_confirm",
+] as const;
 
 function stateWith(completed: string[]): WorkflowState {
   const stageResults: Record<string, Record<string, unknown>> = {};
@@ -46,95 +64,54 @@ function stateWith(completed: string[]): WorkflowState {
 }
 
 describe("topic_survey definition", () => {
-  it("stage 顺序符合设计（plan → hitl → search → selection → fulltext → matrix → hitl → synthesis → outline → hitl）", () => {
+  it("stage 顺序符合设计（前段研究链 + M11.2 写作链共享后段）", () => {
     expect(definition.kind).toBe("topic_survey");
     expect(definition.stages.map((stage) => stage.id)).toEqual([
-      "research.plan",
-      "hitl.research_plan",
-      "survey.search",
-      "hitl.literature_selection",
-      "survey.fulltext",
-      "survey.matrix",
-      "hitl.matrix_confirm",
-      "survey.synthesis",
-      "survey.outline",
-      "hitl.outline_confirm",
+      ...FRONT,
+      "writing.sections",
+      "citation.verify",
+      "review.run",
+      "quality.gate",
+      "revision.plan",
+      "revision.restore_facts",
+      "revision.revise",
+      "revision.validate",
+      "hitl.revision_validation",
+      "revision.repair_latex",
+      "hitl.revision_overflow",
+      "hitl.revision_stalled",
+      "hitl.style_polish",
+      "revision.style_polish",
+      "build.draft",
+      "build.final",
     ]);
   });
 
-  it("plan() 从空 state 依次推进每个前置 stage，全部完成后 label=survey 收口", () => {
-    const sequence = [
-      "research.plan",
-      "hitl.research_plan",
-      "survey.search",
-      "hitl.literature_selection",
-      "survey.fulltext",
-      "survey.matrix",
-      "hitl.matrix_confirm",
-      "survey.synthesis",
-      "survey.outline",
-      "hitl.outline_confirm",
-    ];
+  it("plan() 从空 state 依次推进前段，前段完成 → writing.sections → 尾段 citation.verify", () => {
     const state = stateWith([]);
-    for (const expected of sequence) {
+    for (const expected of FRONT) {
       const decision = definition.plan(state);
       expect(decision).toEqual({ kind: "stage", stageId: expected });
       state.stageResults[expected] = {};
     }
-    const completion = definition.plan(state);
-    expect(completion.kind).toBe("complete");
-    if (completion.kind === "complete") {
-      expect(completion.label).toBe("survey");
-      expect(completion.summary).toEqual({
-        sections: 0,
-        matrixEntries: 0,
-        synthesisItems: 0,
-        selectedLiterature: 0,
-      });
-    }
+    // M11.2：大纲确认后进入综述写作，而不是 complete
+    expect(definition.plan(state)).toEqual({ kind: "stage", stageId: "writing.sections" });
+    state.stageResults["writing.sections"] = {};
+    // 写作完成 → 接入共享后段（首个尾段 stage = citation.verify）
+    expect(definition.plan(state)).toEqual({ kind: "stage", stageId: "citation.verify" });
   });
 
-  it("完成 summary 从 stageResults 汇总（sections / matrixEntries / selectedLiterature）", () => {
-    const state = stateWith([
-      "research.plan",
-      "hitl.research_plan",
-      "survey.search",
-      "hitl.literature_selection",
-      "survey.fulltext",
-      "survey.matrix",
-      "hitl.matrix_confirm",
-      "survey.synthesis",
-      "survey.outline",
-      "hitl.outline_confirm",
-    ]);
-    state.stageResults["survey.outline"]!["sections"] = 9;
-    state.stageResults["survey.matrix"]!["entries"] = 21;
-    state.stageResults["survey.synthesis"]!["synthesisItems"] = 28;
-    state.stageResults["hitl.literature_selection"]!["candidateIds"] = [
-      "C001",
-      "C002",
-      "C003",
-    ];
-    const completion = definition.plan(state);
-    expect(completion).toEqual({
-      kind: "complete",
-      label: "survey",
-      summary: {
-        sections: 9,
-        matrixEntries: 21,
-        synthesisItems: 28,
-        selectedLiterature: 3,
-      },
-    });
-  });
-
-  it("HITL 节点 options 契约：plan 批准 / 文献遴选 / 矩阵确认 / 大纲确认", () => {
+  it("HITL 节点 options 契约：前段四 HITL + 尾段修订 HITL（M11.2 接入）", () => {
     const hitl = definition.stages.filter((stage) => "hitl" in stage);
     expect(hitl.map((stage) => stage.id)).toEqual([
       "hitl.research_plan",
       "hitl.literature_selection",
       "hitl.matrix_confirm",
       "hitl.outline_confirm",
+      "hitl.revision_validation",
+      "hitl.revision_overflow",
+      "hitl.revision_stalled",
+      "hitl.style_polish",
     ]);
     const optionsById = new Map(hitl.map((stage) => [stage.id, stage.hitl.options]));
     expect(optionsById.get("hitl.research_plan")).toEqual(["approve", "revise", "cancel"]);
@@ -143,13 +120,16 @@ describe("topic_survey definition", () => {
     expect(optionsById.get("hitl.outline_confirm")).toEqual(["approve", "revise", "cancel"]);
   });
 
-  it("执行型 stage 的 requiredInputs 防跳步（search 需计划批准、matrix 需全文准备）", () => {
+  it("执行型 stage 的 requiredInputs 防跳步（写作需大纲确认；search 需计划批准、matrix 需全文准备）", () => {
     const byId = new Map(definition.stages.map((stage) => [stage.id, stage]));
     expect(byId.get("survey.search")!.requiredInputs).toEqual(["hitl.research_plan"]);
     expect(byId.get("survey.fulltext")!.requiredInputs).toEqual(["hitl.literature_selection"]);
     expect(byId.get("survey.matrix")!.requiredInputs).toEqual(["survey.fulltext"]);
     expect(byId.get("survey.synthesis")!.requiredInputs).toEqual(["hitl.matrix_confirm"]);
     expect(byId.get("survey.outline")!.requiredInputs).toEqual(["survey.synthesis"]);
+    // M11.2：写作必须在大纲确认之后；review 依赖 citation（共享后段规则）
+    expect(byId.get("writing.sections")!.requiredInputs).toEqual(["hitl.outline_confirm"]);
+    expect(byId.get("quality.gate")!.requiredInputs).toEqual(["review.run"]);
   });
 });
 

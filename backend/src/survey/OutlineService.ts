@@ -29,7 +29,10 @@ import type { WriterService } from "../writer/WriterService.js";
 import { fingerprintJson } from "../util/hash.js";
 import { SurveyMatrixArtifactStore, SurveySynthesisArtifactStore } from "./surveyArtifacts.js";
 import { buildSurveyOutlineDigest } from "./outlineDigest.js";
-import { validateSurveyOutline, type SurveyOutlineValidation } from "./outlineValidation.js";
+import {
+  validateSurveyOutline,
+  type SurveyOutlineValidation,
+} from "./outlineValidation.js";
 
 /** survey 语义校验失败后的重规划上限（首次规划 + 1 次错误反馈重规划） */
 export const SURVEY_OUTLINE_REPLAN_MAX_ATTEMPTS = 2;
@@ -78,6 +81,51 @@ export class SurveyOutlineService {
     this.matrixStore = new SurveyMatrixArtifactStore(options.projects);
     this.synthesisStore = new SurveySynthesisArtifactStore(options.projects);
     this.log = options.log ?? (() => {});
+  }
+
+  /**
+   * M11.2：确定性新鲜度复用——已落盘的 outline.json 在「synthesis 指纹一致 +
+   * survey 契约校验无 blocking」时可直接复用（重跑 / 续跑不重烧规划 Token；
+   * HITL revise 携带 feedback 的路径不走这里，仍强制重规划）。
+   * 返回 null = 不可复用（无 outline / 指纹过期 / 契约违约），调用方走规划。
+   */
+  async reuseFreshOutline(
+    projectId: string,
+    input: { yearBySource?: Map<string, number> } = {},
+  ): Promise<Outline | null> {
+    const outline = await this.manuscript.loadOutline(projectId);
+    if (outline === null) {
+      return null;
+    }
+    // 无任何 refs 的 outline 不是 survey 产物（普通论文 / 遗留项目）——不复用
+    const hasRefs = outline.sections.some(
+      (section) =>
+        (section.synthesisRefs ?? []).length > 0 || (section.literatureRefs ?? []).length > 0,
+    );
+    if (!hasRefs) {
+      return null;
+    }
+    const matrix = await this.matrixStore.read(projectId);
+    const synthesis = await this.synthesisStore.read(projectId);
+    if (matrix === null || synthesis === null) {
+      return null;
+    }
+    if (synthesis.matrixFingerprint !== fingerprintJson(matrix)) {
+      return null; // Matrix 已变化（HITL 修正后）：outline 过期，须重规划
+    }
+    const sourceItems = await this.sources.list(projectId);
+    const yearBySource =
+      input.yearBySource ??
+      new Map(
+        sourceItems
+          .filter((item) => item.metadata.year !== undefined)
+          .map((item) => [item.sourceId, item.metadata.year as number]),
+      );
+    const validation = validateSurveyOutline(outline, { matrix, synthesis, yearBySource });
+    if (validation.blocking.length > 0) {
+      return null;
+    }
+    return outline;
   }
 
   async buildSurveyOutline(

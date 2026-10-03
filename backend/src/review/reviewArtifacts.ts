@@ -25,6 +25,7 @@ import type { RevisionPlan } from "./revisionPlan.js";
 import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
 import type { StylePolishResult } from "./stylePolicy.js";
+import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
@@ -32,6 +33,7 @@ const GATE_PATTERN = /^quality-gate-r(\d+)\.json$/;
 const PLAN_PATTERN = /^revision-plan-r(\d+)\.json$/;
 const VALIDATION_PATTERN = /^revision-validation-r(\d+)\.json$/;
 const CLAIM_GROUNDING_PATTERN = /^claim-grounding-r(\d+)\.json$/;
+const SURVEY_WRITING_PATTERN = /^survey-writing-r(\d+)\.json$/;
 
 /** 按轮落盘的 Quality Gate 产物（saveQualityGateReport 的结构） */
 export interface QualityGateArtifact {
@@ -99,6 +101,54 @@ export class ReviewArtifactStore {
     const fileName = this.existingReviewFileName(round);
     await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), report);
     return `reviews/${fileName}`;
+  }
+
+  // ---- Survey Writing Evaluation（M11.2：按轮的综述写作契约 + metrics） ----
+
+  surveyWritingFileName(round: number): string {
+    return `survey-writing-r${round}.json`;
+  }
+
+  async saveSurveyWriting(
+    projectId: string,
+    round: number,
+    evaluation: SurveyWritingEvaluation,
+  ): Promise<string> {
+    const fileName = this.surveyWritingFileName(round);
+    await writeJsonAtomic(
+      join(this.projects.reviewsDir(projectId), fileName),
+      { round, evaluatedAt: new Date().toISOString(), ...evaluation },
+    );
+    return `reviews/${fileName}`;
+  }
+
+  /** 某一轮的 Survey Writing 评估（无文件 / 损坏 → null） */
+  async loadSurveyWriting(
+    projectId: string,
+    round: number,
+  ): Promise<(SurveyWritingEvaluation & { round: number }) | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.surveyWritingFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !Array.isArray((parsed as Record<string, unknown>)["blockers"]) ||
+      typeof (parsed as Record<string, unknown>)["metrics"] !== "object"
+    ) {
+      return null;
+    }
+    return parsed as SurveyWritingEvaluation & { round: number };
+  }
+
+  /** 已落盘的 survey-writing 轮次编号，降序（最新在前） */
+  async surveyWritingRounds(projectId: string): Promise<number[]> {
+    return this.rounds(projectId, SURVEY_WRITING_PATTERN);
   }
 
   // ---- Quality Gate 产物（按轮） ----

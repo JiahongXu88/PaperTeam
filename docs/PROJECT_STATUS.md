@@ -1,13 +1,13 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-10-03（**M11.1 COMPLETE — Topic → Survey Research**：
-> M11.0 冻结审计 ✅ / M11.1.1 Survey Matrix ✅（`96feb9f`）/ M11.1.2 Structured
-> Synthesis ✅（`ad5819a`）/ M11.1.3 Survey Outline ✅ / M11.1.4 Workflow
-> Integration ✅（topic_survey 正式工作流 + 真实 E2E：只输入 Topic →
-> 70min 跑通 25 篇文献 → 11 节综述大纲，全程仅 4 次 HITL approve）。
-> 正式能力 = Topic → Research → Literature → Matrix → Synthesis → Survey
-> Outline；**不是** Topic → 完整 Survey PDF——剩 M11.2 Writing E2E、M11.3
-> Review / Real Acceptance。详见下方 M11 段。）
+> 更新日期：2026-10-03（**M11.2 PARTIAL — Survey Writing E2E**：综述写作链
+> 全部机制交付并接入 topic_survey 工作流（写作上下文 / 引用白名单后检 /
+> Survey Review Profile / gate 四规则 / 修订结构红线，零新 Agent）；两次真实
+> E2E 验证 Topic → 写作 → 审稿 → 修订 → gate → **PDF 编译成功**，survey 专属
+> 规则 6/6 轮全过、引用 0 捏造、claim 回溯链完整；但修订轮的弱化/重写触发
+> Fact Preservation 守卫（两跑均终止 FACT_PRESERVATION_FAILED，Draft 冻结被
+> 拦截——守卫行为正确，弱化语义与授权通道的结构性冲突待 M11.3 前裁决）。
+> 前一状态 M11.1 COMPLETE（Topic → Survey Research）见下方 M11 段。）
 > 前一状态 2026-09-22（**M8 COMPLETE — Controlled Deep Research Loop
 > （2026-09-20 启动 → 2026-09-22 收口）**：M8.1 Research Plan 一等产物（`e24e387`）/
 > M8.2 Plan Execution（`59e4c9f`）/ M8.3.1 Iteration Foundation（`af519bc`）/
@@ -1439,7 +1439,98 @@ outline，不进正文写作）。要点：
 
 **M11.1 — Topic → Survey Research ✅ COMPLETE（2026-10-03）**：正式能力 =
 Topic → Research → Literature → Matrix → Synthesis → Survey Outline
-（M11.1.1~M11.1.4 全部收口）；判定可进入 M11.2 Survey Writing E2E。
+（M11.1.1~M11.1.4 全部收口）。
+
+**M11.2 — Survey Writing E2E ⚠️ PARTIAL（2026-10-03）**：把 Survey Research
+正式接入既有 Writing / Citation / Review / Revision / Gate / PDF 链（零新
+Agent / 零平行系统——写作链 stage 与 idea_to_paper 共享后段同 id 同语义）。
+判定 PARTIAL 的唯一原因：两次真实 E2E 都终止在 `FACT_PRESERVATION_FAILED`
+（见下「真实 E2E 与核心发现」）——修订轮的事实改写被既有安全守卫正确拦截，
+workflow 级 Draft 产物冻结未达成（PDF 编译本身成功）。要点：
+
+- **SurveySectionContext（`survey/sectionContext.ts` 纯函数）**：每节写作的
+  有界表达层输入——refs 契约投影（synthesis claim + grounding 措辞纪律 +
+  绑定 Evidence + 文献元数据）+ 引用候选组（一个 synthesis → 多 evidenceIds
+  → 多 key，`\cite{a,b,c}` 多源并列是契约的一部分）+ 每节白名单
+  `allowedCitationKeys`（framing 节 = 全 bibliography）。悬空 refs fail-closed。
+- **Writer survey 模式（复用既有 Writer，零新 Agent）**：`writeSection` 增
+  `survey?` 分支（`buildSurveySectionPrompt`：按 synthesis 表达 / 禁逐篇罗列 /
+  comparison 维度 / consensus-disagreement 分列 / gap 只来自 research_gap /
+  future 区分 grounded-speculative / grounding 分级措辞——evidence_backed 可
+  确定、literature_cited 弱措辞、speculative 只留不确定性表述）；输出后做
+  **确定性引用后检**（\cite key ⊆ 白名单，越界 = 契约违约拒绝重试）。
+  `reviseSection` 增 survey 约束块（「综述结构红线」：不得换 taxonomy / 造
+  gap / 删支撑引用 / 升级 speculative 语气 / 越白名单引用 + 弱化 ≠ 删除事实
+  ——有来源归属的数值改归因式陈述保留）。普通论文路径逐字节兼容。
+- **确定性 Invariant Checker + Metrics（`survey/writingInvariants.ts`）**：
+  blocking 三类（悬空 refs / fake citation key / evidence_backed synthesis
+  不可回溯——候选组 key 全未被正文引用）+ 启发式 warning（单 key 段落占比、
+  连续罗列游程、多源占比低、family 覆盖缺口、speculative-only 来源被既定
+  章节引用、非展望章强断言未来措辞）。按轮落盘
+  `reviews/survey-writing-r{round}.json`。
+- **Survey Review Profile（复用 ReviewerService）**：`reviewProfile="survey"`
+  时 academic rubric 切换为综述维度（覆盖完整性 / 分类与组织 / 文献均衡性
+  [seminal-representative-recent] / 比较与论证 / 引用支撑 / 写作质量）+
+  listing / 语义漂移检查；fact 模式追加综述语境行（弱措辞口径评价、
+  speculative 升级判 UNSUPPORTED）；确定性 metrics digest 注入审稿上下文；
+  style 不变。IssueCategory 复用既有枚举。
+- **Quality Gate survey 四规则（扩展既有 gate，非第二套）**：
+  `survey_outline_contract` / `survey_citation_keys_valid` /
+  `survey_synthesis_traceability`（blocking）+ `survey_writing_metrics`
+  （呈现不阻断——保守分档，启发式不进硬门）。产物随 gate 落盘。
+- **Workflow 接线**：`topic_survey` 在 `hitl.outline_confirm` 后接入
+  `planSharedTail`（writing.sections[survey 模式] → citation.verify →
+  review.run[survey profile] → quality.gate[survey 规则] → bounded revision
+  尾段[带 refs 节注入 survey 约束] → build.draft/final）。completion summary
+  增 `qualityOutcome`（区分「修订预算耗尽后接受 Draft」与系统失败）。
+  `hitl.literature_selection` 支持已 promote 候选的幂等重提（重跑语义）；
+  `survey.outline` 增确定性新鲜度复用（`reuseFreshOutline`：指纹一致 + 契约
+  无 blocking → 不重烧规划 Token）。前端最小接入（stage 时间线 + 文案）。
+- **测试**：新增 6 文件 39 用例（sectionContext 8 / writingInvariants 10 /
+  writerSurvey 6 / reviewerSurveyProfile 5 / surveyGate 6 / reuseFreshOutline 2
+  + topicSurveyDefinition 重写 7）+ topicSurvey.e2e 扩展（主链到 final + PDF
+  产物断言）+ 新 topicSurveyWriting.e2e（修订轮红线注入 + ghost key
+  fail-closed，2 用例）+ scriptedRuntime survey 白名单解析。全量：backend
+  2218/0（1 个既有 fullText.http ENOTEMPTY flake 单跑通过）+ frontend 267/0 +
+  双侧 build + typecheck 通过。
+- **真实 E2E 与核心发现（两跑，报告 `e2e/.tmp/m1112-survey-e2e/`）**：主题
+  「多目标跟踪中的数据关联方法」。**Run 1**（只输入 Topic + 5×HITL approve，
+  136min）：25 篇文献（21 全文）→ Matrix 25 → Synthesis 40 → 12 节大纲 →
+  **写作 12 节 12.5min** → citation.verify 全绿（cited 25 / missing 0 /
+  hallucinated 0）→ review×3 + 修订×2 → stalled(REGRESSION) → accept_draft →
+  `FACT_PRESERVATION_FAILED`（rev2→rev3 未授权事实删除 30 项）。**Run 2**
+  （同项目幂等续跑 +「弱化 ≠ 删除事实」红线，114min / $8.38 / 280 turns /
+  tokens in-out-cacheRead = 1.19M-549K-16.5M）：语料自然增长 29 篇（23 全文）
+  → Synthesis 70（32 evidence_backed）→ fresh draft 质量显著更好（首轮
+  critical 0 / blocking 0 / academic 80 / unsupported 6）→ 修订 3 轮 + 验证
+  HITL×2 → stalled → revise_more → accept_draft → `FACT_PRESERVATION_FAILED`
+  （rev5→rev6 **方向结论反转 3 项**）。两跑共 6 次 gate 评估——**survey 四
+  规则 6/6 全过**（refs 契约完好、引用 key 全合法、evidence_backed 可回溯
+  26/26 与 32/32、罗列游程 0、speculative 泄漏 0、文献覆盖 25/25 与 29/29、
+  多源并列 21-23%）。正文人工质检：taxonomy 两级体系 + 诚实 unclassified；
+  跨方法比较真横向（共享维度 + 5 项分歧双方有据 + 混合证据如实标注）；
+  literature_cited 全程弱措辞（「据其报道…尚待证据级核验」）；future 显式
+  区分「文献明确方向 / 由空缺推断（仅具推测性质）」；10/10 evidence_backed
+  claim 回溯链完整（manuscript→synthesis→verified evidence→source→key→被
+  引用）。PDF 编译成功（249KB），但 workflow 级 Draft 冻结被守卫阻止。
+- **核心发现（根因，M11.3 前须裁决）**：**survey 弱化语义与 Fact Preservation
+  授权通道的结构性冲突**。fact reviewer 把综述综合结论当 claim 核验（正确）
+  → 修订指示弱化/删除 → Writer 删除数值/反转比较措辞 → fact preservation
+  把删除/反转判为未授权事实改写（正确）→ 下一轮计划又派发恢复 → 振荡 →
+  REGRESSION → accept_draft 后 Draft 冻结被硬阻止。两个守卫各自正确、组合
+  在 survey 语境失稳。候选解（未实施）：授权通道识别「计划明确指示弱化/删除
+  的节内 prose 数值删除」（带 planItemId 审计）；或 survey 语境把「文献报告
+  值」与「作者实验事实」分层（报告值的真值通道 = 引用+证据，已由
+  claim grounding / citation integrity 把守）。
+- **其他如实记录**：Run 1 trace 文件被 resume 进程覆盖（模型 turns/tokens
+  统计丢失；stage 时长已从 events.jsonl 重建）；重跑的文献遴选默认集会把
+  上一轮未入选的 pending 候选补入（Run 2 语料 25→29——幂等但非「冻结语料」
+  语义）；`PAPERTEAM_CITATION_MAX_METADATA_LOOKUPS` 提到 60 以覆盖 25+ 篇。
+
+**M11.2 判定：PARTIAL——能力与机制全部交付且真实链路验证到守卫层；workflow
+级 Draft/Final 冻结被事实安全守卫阻止（系统按设计拒绝冻结含未授权事实改写
+的产物），PDF 编译成功但无 workflow 祝圣产物。M11.3 前必须先裁决弱化-守卫
+冲突（上方候选解）。**
 
 **M5.1 Runtime Lifecycle Reliability — 第一批（✅ 2026-09-11）**：
 AgentRuntime 契约 v2 形状不变（唯一扩展：`AgentEvent.seq?` 可选字段 +

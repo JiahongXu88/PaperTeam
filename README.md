@@ -8,6 +8,7 @@ Idea 到论文交付、以及已有论文系统性改进。
 
 ```text
 Idea → Research → Evidence Grounding → Feasibility → Writing → Review / Revision Loop → Quality Gate → LaTeX / PDF
+Topic → Survey Research（Matrix / Synthesis / Outline）→ Survey Writing → Review / Revision → Quality Gate → Survey PDF
 ```
 
 ![PaperTeam 工作台](docs/images/projects-light.png)
@@ -17,10 +18,11 @@ Idea → Research → Evidence Grounding → Feasibility → Writing → Review 
 PaperTeam 用**少量专业 Agent + 确定性编排**完成学术论文的生产与审阅闭环：
 
 - **Idea-to-Paper**：输入研究想法，Researcher 完成调研 → 证据落地（evidence.ground）→ 可行性评估（不承诺达不到的目标），经人工确认后进入大纲、分节写作、引用核验、审稿-修订闭环，最终产出 LaTeX / PDF（Draft / Final 双产物语义）。
+- **Topic-to-Survey（M11）**：只输入一个主题——检索 / 遴选 / 全文 → Survey Matrix（逐篇结构化理解）→ Structured Synthesis（七类跨论文综合，grounding 只由代码判定）→ 综述大纲（refs 契约 + 人工确认）→ 综述写作（按 synthesis 表达，引用白名单后检）→ Survey Review Profile 审稿 → 修订（综述结构红线：不换 taxonomy / 不造 gap / 不升级 speculative）→ Quality Gate（survey 四规则）→ 综述 PDF。
 - **Existing Paper — Quick Review**：导入论文 PDF，只读分析——引用真实性核验（Crossref / OpenAlex / arXiv）→ 论断-引用语义一致性 → 分章节审阅 → 可导出报告；不修改论文。
 - **Existing Paper — Improvement**：PDF 确定性重建为可修订稿件 → 审稿基线 → 改进计划（人工确认）→ Writer 逐节修订 → 质量门禁 → Draft / Final。
 
-三条主路径共享同一套质量基础设施：**多 Agent 工作流（HITL / 取消 / 断点恢复）、文献库与混合检索、证据接地（Retrieved ≠ Verified ≠ Grounded）、引用完整性、Evidence 工作台、确定性 Quality Gate、不可变版本链（历史 / 比较 / 恢复）**。
+三条主路径共享同一套质量基础设施：**多 Agent 工作流（HITL / 取消 / 断点恢复）、文献库与混合检索、证据接地（Retrieved ≠ Verified ≠ Grounded）、引用完整性、Evidence 工作台、确定性 Quality Gate、不可变版本链（历史 / 比较 / 恢复）**。综述路径（Topic-to-Survey）同样走这套基础设施，其写作 / 审稿 / 修订 / 构建后段与 Idea-to-Paper 共用同一组 stage。
 
 ## 工作流程（用户视角）
 

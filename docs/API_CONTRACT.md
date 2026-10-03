@@ -467,19 +467,39 @@
 >   走 M4.3 PDF Review Foundation 链路（PaperMap → Citation Integrity →
 >   ReviewContextBuilder 分章节 → ReviewFinding → 聚合报告），与旧
 >   `POST /api/projects/:id/review`（manuscriptDigest 三路审稿）互不复用。
-- **M11.1.4 `topic_survey`（Topic → Survey Outline）**：completion label =
-  `survey`（终点是冻结的综述大纲，不写正文）。stage graph：
+- **M11.1.4 `topic_survey`（Topic → Survey）**：M11.2 起终点从「冻结大纲」
+  扩展为「综述论文 PDF」——前段研究链（M11.1.4）不变，大纲确认后接入
+  **idea_to_paper 共享后段**（同 id 同语义）：`hitl.outline_confirm`
+  （approve/revise/cancel；M11.2 文案改为「确认后进入综述正文写作」）→
+  `writing.sections`（survey 模式：逐节 `SurveySectionContext` = refs 契约的
+  有界投影[每节 synthesis claim / grounding 措辞纪律 / 绑定 Evidence / 文献
+  元数据 / 引用白名单]；Writer 输出做确定性引用后检——\cite key 越界即
+  契约违约拒绝）→ `citation.verify` → `review.run`（**Survey Review
+  Profile**：academic rubric 切换为综述维度[覆盖完整性 / 分类与组织 /
+  文献均衡性 / 比较与论证 / 引用支撑 / 写作质量] + 确定性 metrics digest
+  注入；fact/style 不变；附 `reviews/survey-writing-r{round}.json` 评估产物）→
+  `quality.gate`（新增 survey 四规则：`survey_outline_contract`[悬空 refs] /
+  `survey_citation_keys_valid`[fake key] / `survey_synthesis_traceability`
+  [evidence_backed 可回溯]为 blocking，`survey_writing_metrics`[罗列倾向 /
+  多源占比 / 覆盖 / speculative 信号]只呈现不阻断）→ revision 尾段
+  （bounded；带 refs 章节的修订 prompt 注入「综述结构红线」：不得换
+  taxonomy / 造 gap / 升级 speculative 语气 / 越白名单引用）→
+  `build.draft` / `build.final` → END（completion label = `final` / `draft`；
+  `qualityGatePassed=false` 的 Draft 携带 `qualityOutcome` 字段区分
+  「修订轮数耗尽 / 不收敛后接受」与系统失败）。前段 stage graph：
   `research.plan`（survey 语义研究计划 + surveyProfile）→ `hitl.research_plan`
   （approve/revise/cancel）→ `survey.search`（执行计划检索 + 结果快照物化为
-  候选）→ `hitl.literature_selection`（approve[+payload.candidateIds 增删]/
-  cancel；缺省推荐集 = 学术形态优先、年份降序、上限 25）→ `survey.fulltext`
+  候选）→ `hitl.literature_selection`（approve[+payload.candidateIds 增删，
+  M11.2 起同时接受已 promote 的候选——重跑幂等]/cancel；缺省推荐集 =
+  学术形态优先、年份降序、上限 25）→ `survey.fulltext`
   （promote + 批量全文解析 + 结构化解析等待；partial success）→
   `survey.matrix`（复用 MatrixService；taxonomy 意图来自 surveyProfile）→
   `hitl.matrix_confirm`（approve / revise[+payload.entryPatches，校验与
   PUT /survey/matrix/:entryId 一致] / cancel）→ `survey.synthesis`（复用
   SynthesisService；Matrix 指纹复用）→ `survey.outline`（复用
-  SurveyOutlineService；blocking fail-closed）→ `hitl.outline_confirm`
-  （approve/revise/cancel）→ END。HITL 全部走既有
+  SurveyOutlineService；blocking fail-closed；**M11.2 确定性新鲜度复用**：
+  无 feedback 且已落盘 outline 对当前 Matrix/Synthesis 指纹一致且契约校验
+  无 blocking 时直接复用，不重烧规划）。HITL 全部走既有
   `POST /api/runs/:runId/resume`；独立 survey build API（matrix / synthesis /
   outline）保留用于 debug / 手动重建，正式用户路径优先 Workflow API。
 > - 快速 Review 只读，不修改论文正文；系统性改进（existing_paper_improvement）

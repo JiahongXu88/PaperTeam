@@ -210,3 +210,51 @@ describe("SurveyOutlineService", () => {
     }
   });
 });
+
+describe("SurveyOutlineService.reuseFreshOutline（M11.2 确定性新鲜度复用）", () => {
+  it("新鲜 outline（指纹一致 + 契约无 blocking）→ 复用；不再调用 planner", async () => {
+    const fixture = await newSurveyFixture();
+    try {
+      for (const paper of FIXTURE_PAPERS) {
+        await addFulltextPaper(fixture.sources, fixture.projectId, paper);
+      }
+      await fixture.matrix.buildMatrix(fixture.projectId, {});
+      await fixture.synthesis.buildSynthesis(fixture.projectId, {});
+      await fixture.outline.buildSurveyOutline(fixture.projectId, {});
+
+      let plannerCalls = 0;
+      fixture.runtime.setOutlineScript((input) => {
+        plannerCalls += 1;
+        return defaultOutlineOutput(input);
+      });
+      const reused = await fixture.outline.reuseFreshOutline(fixture.projectId);
+      expect(reused).not.toBeNull();
+      expect(reused!.sections.length).toBeGreaterThan(0);
+      expect(plannerCalls).toBe(0);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("Matrix 变化（指纹过期）→ null（须重规划）；无 outline → null", async () => {
+    const fixture = await newSurveyFixture();
+    try {
+      for (const paper of FIXTURE_PAPERS) {
+        await addFulltextPaper(fixture.sources, fixture.projectId, paper);
+      }
+      await fixture.matrix.buildMatrix(fixture.projectId, {});
+      await fixture.synthesis.buildSynthesis(fixture.projectId, {});
+      await fixture.outline.buildSurveyOutline(fixture.projectId, {});
+
+      // Matrix 修正（taxonomy patch）→ 指纹变化
+      const matrixBefore = await fixture.matrix.getMatrix(fixture.projectId);
+      const first = matrixBefore!.entries[0]!;
+      await fixture.matrix.updateEntry(fixture.projectId, first.entryId, {
+        methodFamily: "survey",
+      });
+      expect(await fixture.outline.reuseFreshOutline(fixture.projectId)).toBeNull();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+});

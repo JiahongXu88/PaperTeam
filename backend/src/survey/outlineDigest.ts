@@ -87,8 +87,9 @@ export interface SurveyOutlineDigestMeta {
   titleBySource?: Map<string, string>;
 }
 
-/** detail → 确定性单行摘要（Outline 组织只需关键字段，不复制完整结构） */
-function summarizeDetail(detail: SynthesisDetail | undefined): string | undefined {
+/** detail → 确定性单行摘要（Outline 组织只需关键字段，不复制完整结构）。
+ * M11.2 起被 sectionContext（写作上下文投影）复用——两处 digest 的 detail 行同口径。 */
+export function summarizeDetail(detail: SynthesisDetail | undefined): string | undefined {
   if (detail === undefined) {
     return undefined;
   }

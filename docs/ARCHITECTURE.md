@@ -864,7 +864,10 @@ backend/src/
 │                  ReferenceExtractor（IEEE / GB/T 7714 / APA 著录解析）、SectionReviewService
 ├── workflow/      WorkflowOrchestrator（引擎）、definitions（四条 workflow 的
 │                  stage 注册表 + plan/onInput 确定性规划器；M11.1.4 起含
-│                  topic_survey——Topic→Survey Outline，completion label=survey）、
+│                  topic_survey——M11.2 起为 Topic→Survey PDF：前段研究链
+│                  （Matrix/Synthesis/Outline）+ 复用 idea_to_paper 共享后段
+│                  [writing→citation→review→gate→revision→build]，completion
+│                  label=final/draft）、
 │                  kinds（WorkflowKind 常量）、
 │                  runStore（checkpoint 持久化）、eventLog（Domain Event JSONL）、types
 ├── agents/        ResearcherService、FeasibilityService、ReviewerService（业务角色，
@@ -890,6 +893,15 @@ backend/src/
 │                  RetrievalService（RRF hybrid + 签名自动增量刷新 + 生命周期）、
 │                  contextPacker（token 预算打包 + 引用标记）、tools
 │                  （retrieve_library）——见 §15
+├── survey/        M11.1 综述研究链 + M11.2 写作上下文：matrixTypes / MatrixService
+│                  （per-paper 结构化理解 → research/survey.json）、synthesisTypes /
+│                  groundingRules / SynthesisService（七类跨论文综合 → survey-synthesis
+│                  .json；groundingLevel 只由代码判定）、outlineDigest / outlineValidation /
+│                  OutlineService（Synthesis → 综述大纲；refs 契约 + 确定性新鲜度复用）、
+│                  sectionContext（M11.2 SurveySectionWritingContext：refs 契约 → 每节
+│                  有界写作投影 + 引用候选组）、writingInvariants（M11.2 确定性
+│                  Invariant Checker + metrics：悬空 refs / fake key / evidence_backed
+│                  可回溯 blocking；罗列 / 多源 / 覆盖启发式 warning）、surveyArtifacts
 ├── manuscript/    ManuscriptService（outline / main.tex 组装 / context.yaml）、
 │                  LatexFiles（\input 递归收集）
 ├── citation/      StaticCitationChecker（Layer 1）、metadataProviders（Layer 2：

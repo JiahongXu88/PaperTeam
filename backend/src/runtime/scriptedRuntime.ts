@@ -147,6 +147,26 @@ export const RESEARCH_JSON_TWO_REFS = JSON.stringify({
 /** [cite:drop] 项目的实验章节：在 SECTION_TEX 之上多引用一条 lewis2020rag（只在实验章节出现） */
 export const SECTION_TEX_TWO_CITES = `${SECTION_TEX}\n\n开创性工作亦见 \\cite{lewis2020rag}。`;
 
+/**
+ * M11.2 survey 章节片段：多引用 + 综合式叙述形态（镜像真实综述 Writer 的
+ * 期望输出——多条 \cite 分布在多个段落并含多 key 并列；key 由运行时按
+ * survey prompt 的白名单行重写）。8 个 cite 命令保证 5-8 篇 corpus 的
+ * survey_synthesis_traceability（每个 evidence_backed 候选组至少一个 key 被引用）。
+ */
+export const SURVEY_SECTION_TEX = [
+  "\\section{综述章节标题}",
+  "",
+  "本节按方法体系综合梳理现有工作 \\cite{gao2023survey}。多篇工作在该方向上给出了一致的观察 \\cite{gao2023survey}。",
+  "从技术路线演进看，早期方法依赖手工设计，近期工作转向端到端框架 \\cite{gao2023survey}。",
+  "",
+  "在身份保持维度上，不同方法族的取舍存在明显分歧 \\cite{gao2023survey}，",
+  "而对外观特征的依赖程度则是横向比较的关键维度之一 \\cite{gao2023survey,lewis2020rag}。",
+  "",
+  "多项工作报告了遮挡场景下的身份漂移现象 \\cite{lewis2023rag}；针对高密度场景的",
+  "关联稳定性也有一致结论 \\cite{lewis2020rag}。综合来看，现有文献普遍关注该问题 \\cite{gao2023survey}，",
+  "但跨方法的系统性对比仍然有限 \\cite{lewis2023rag}。",
+].join("\n");
+
 /** \\cite 族命令（脚本化 Writer 只做「原样保留」，不解析 key） */
 const SCRIPTED_CITE_PATTERN = /\\(?:cite|citep|citet|citealp|citealt|parencite|textcite|autocite)\*?(?:\[[^\]\n]*\])*\{[^{}]*\}/g;
 
@@ -164,8 +184,19 @@ const ALLOWED_KEYS_PATTERN = /只允许引用以下参考文献 key[:：]\s*([^�
 /** M9.7.2 分组白名单行：行尾「）：key1, key2」的 key 列表（空组行以（…）收尾，无 key 不命中） */
 const GROUPED_ALLOWED_KEYS_PATTERN = /[ \t]*-[ \t]*[AB] 组[^\n]*?[）：][ \t]*([A-Za-z0-9_.:+*-][^。\n]*)/g;
 
+/** M11.2 survey prompt 白名单行：`全部允许（\cite 只能用这些 key）：a, b` */
+const SURVEY_ALLOWED_KEYS_PATTERN = /全部允许（\\cite 只能用这些 key）[:：]\s*([^。\n]+)/;
+
 /** prompt 没有 allowed-keys 行 → null（非章节 prompt：保持原样）；有行但无合法 key（无可用文献）→ []（剥离） */
 function allowedKeysFromPrompt(task: string): string[] | null {
+  // M11.2 survey prompt 的白名单行（每节 refs 契约派生）：`全部允许（\cite 只能用这些 key）：a, b`
+  const surveyMatch = SURVEY_ALLOWED_KEYS_PATTERN.exec(task);
+  if (surveyMatch !== null) {
+    return (surveyMatch[1] ?? "")
+      .split(/[,，、\s]+/)
+      .map((key) => key.trim())
+      .filter((key) => /^[A-Za-z0-9_.:+*-]+$/.test(key));
+  }
   if (!task.includes("只允许引用以下参考文献 key")) {
     return null;
   }
@@ -854,8 +885,9 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         projectFactDrift.add(input.projectId);
       }
       let output = LATEX_DOC;
-      if (scope === "research") {
-        // research prompt 内嵌 researchIdea：解析 E2E 转向标记并按项目记忆
+      if (scope === "research" || scope === "research/survey-plan") {
+        // research prompt 内嵌 researchIdea（survey：project.title）——解析 E2E
+        // 转向标记并按项目记忆（M11.2：topic_survey 的 fail/pass 轮次脚本驱动）
         if (projectId !== "") {
           const reviewMarker = REVIEW_MARKER.exec(input.task);
           if (reviewMarker !== null) {
@@ -885,15 +917,17 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
             projectStrengthEscalate.add(projectId);
           }
         }
-        output = projectCiteDrop.has(projectId) ? RESEARCH_JSON_TWO_REFS : RESEARCH_JSON;
+        if (scope === "research/survey-plan") {
+          // M11.1.4 topic_survey：survey 语义研究规划（plan + surveyProfile）
+          output = options.surveyPlanOutput ?? SURVEY_PLAN_JSON;
+        } else {
+          output = projectCiteDrop.has(projectId) ? RESEARCH_JSON_TWO_REFS : RESEARCH_JSON;
+        }
       } else if (scope === "research/existing-analysis") {
         output = EXISTING_ANALYSIS_JSON;
       } else if (scope === "research/revision-plan") {
         // M10.3 修订研究规划：requirements 驱动 queries 的 draft 计划
         output = REVISION_RESEARCH_PLAN_JSON;
-      } else if (scope === "research/survey-plan") {
-        // M11.1.4 topic_survey：survey 语义研究规划（plan + surveyProfile）
-        output = options.surveyPlanOutput ?? SURVEY_PLAN_JSON;
       } else if (scope === "research/revision-evidence") {
         // M10.3 锚定证据提案：无 chunk 锚定的 legacy 候选（unverified 追加路径）
         output = REVISION_EVIDENCE_JSON;
@@ -909,14 +943,16 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "writing/outline") {
         output = OUTLINE_JSON;
       } else if (scope === "writing/sections") {
-        // M9.5：cite key 从 prompt allowed keys 重写（镜像真实 Writer——不自造 key）
+        // M9.5：cite key 从 prompt allowed keys 重写（镜像真实 Writer——不自造 key）；
+        // M11.2：survey prompt（refs 契约上下文）→ 综述章节形态 fixture
         const allowed = allowedKeysFromPrompt(input.task);
+        const base = input.task.includes("综述写作纪律") ? SURVEY_SECTION_TEX : SECTION_TEX;
         output =
           projectLatexModes.get(projectId) !== undefined && targetsIntroduction(input.task)
             ? `${reciteToAllowedKeys(SECTION_TEX, allowed)}\n${UNDEFINED_MACRO_TEX}`
             : projectCiteDrop.has(projectId) && targetsExperiments(input.task)
               ? reciteToAllowedKeys(SECTION_TEX_TWO_CITES, allowed)
-              : reciteToAllowedKeys(SECTION_TEX, allowed);
+              : reciteToAllowedKeys(base, allowed);
       } else if (scope === "writing/revision") {
         // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
         // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
