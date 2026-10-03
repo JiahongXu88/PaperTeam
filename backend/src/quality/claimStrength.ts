@@ -47,7 +47,7 @@ export interface ClaimStrengthFinding {
 }
 
 /** 强表述 marker（中文为主，学术写作高频；新增须保持保守——误报比漏报伤害大） */
-const STRONG_MARKERS: readonly string[] = [
+export const STRONG_MARKERS: readonly string[] = [
   "显著提升",
   "显著提高",
   "显著改善",

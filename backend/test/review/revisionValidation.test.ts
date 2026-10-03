@@ -87,6 +87,8 @@ const OK_FACT: FactPreservationSummary = {
   formatChanges: [],
   allowedChanges: 0,
   allowedRemovals: 0,
+  allowedWeakenings: 0,
+  weakeningAuthorizationCount: 0,
   planId: "plan-r1-rev2",
   ok: true,
 };

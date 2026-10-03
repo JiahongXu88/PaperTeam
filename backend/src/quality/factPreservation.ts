@@ -29,9 +29,15 @@
 
 import type { RevisionPlan, RevisionPlanItem } from "../review/revisionPlan.js";
 import {
+  deriveClaimGroundingWeakeningAuthorizations,
+  derivePlanWeakeningAuthorizations,
+  type WeakeningAuthorizationInput,
+} from "../review/weakeningAuthorization.js";
+import {
   extractMathSegments,
   extractNumericTokens,
 } from "../review/styleInvariants.js";
+import { STRONG_MARKERS } from "./claimStrength.js";
 
 export interface FactTexFile {
   /** 相对 manuscript 目录的 POSIX 路径 */
@@ -103,6 +109,10 @@ export interface FactPreservationSummary {
   /** 有计划 / Evidence 依据被放行的变更与删除数（审计口径） */
   allowedChanges: number;
   allowedRemovals: number;
+  /** M11.2.1：typed weakening 授权（类别核验通过）放行的弱化数（审计口径） */
+  allowedWeakenings: number;
+  /** M11.2.1：参与判定的弱化授权条数（来源 = 台账 + 匹配计划派生） */
+  weakeningAuthorizationCount: number;
   planId: string | null;
   /** 全部违规数组为空（formatChanges 不参与） */
   ok: boolean;
@@ -119,11 +129,20 @@ export interface FactPreservationInput {
   evidenceTexts?: string[];
   /**
    * M10.3.1：当前 references.bib 中的既有 key。新增表格行若引用既有 key 且
-   * 剥离 key 后不含任何数字（方法论对比行，非实验数值），授权为
+   * 剥离 key 后不含任何数字（方法论比较行，非实验数值），授权为
    * bib_keyed_row——此类行是引用层的合法对象（key 只能来自既有 bib 或
    * evidence-backed 追加），不是 Fact Preservation 要拦的实验事实。
    */
   bibliographyKeys?: string[];
+  /**
+   * M11.2.1 typed weakening 授权（Reviewer Finding → Revision Plan → 台账 /
+   * 匹配轮次计划现场派生）。每条授权经类型化类别核验后才放行对应 delta：
+   * - weaken_claim_strength：只覆盖方向类 finding，且要求文件级不变量成立
+   *   （方向词只减不增 / 数值只授权删除 / 强表述 marker 只减不增）；
+   * - remove_unsupported_detail：只覆盖授权文本点名的数值删除（swap 配对成
+   *   changed，永远不放行）。
+   */
+  weakeningAuthorizations?: WeakeningAuthorizationInput[];
 }
 
 // ---- 提取：表格 ----
@@ -386,6 +405,11 @@ interface AuthorizationContext {
   bibliographyKeys: string[];
   needsEvidenceItems: RevisionPlanItem[];
   /**
+   * M11.2.1：typed weakening 授权（weaken_claim_strength / remove_unsupported_detail）。
+   * 来源 = 台账 + 调用方现场派生（匹配轮次计划 + 同轮 claim grounding）。
+   */
+  weakeningEntries: WeakeningAuthorizationInput[];
+  /**
    * M10.3.1：fact_preserve 条目的恢复方向授权。这类条目的 problem 文本包含
    * 「before → after」片段——若进入通用 planTexts 会把「保留违规值」也判为
    * plan_value_correction（漂移被要求恢复它的计划洗白）。因此 fact_preserve
@@ -405,8 +429,19 @@ function buildAuthorization(
   improvementPlanItems: FactPreservationInput["improvementPlanItems"],
   evidenceTexts: readonly string[],
   bibliographyKeys: readonly string[] = [],
+  weakeningAuthorizations: readonly WeakeningAuthorizationInput[] = [],
 ): AuthorizationContext {
-  const plannedItems = (plan?.items ?? []).filter((item) => item.status === "planned");
+  /**
+   * M11.2.1：匹配轮次计划（sourceRevision == previous）的条目授权在条目生命
+   * 周期内持续有效。旧口径只认 planned——但 gate / validation 在 Writer 执行后
+   * 消费，条目届时已 applied / validated / approved，授权系统性失效（M11.2 振荡
+   * 的结构性成因之一：计划明确要求的修改被判「无依据」）。与 M10.3.1 对
+   * restoreAuths 的生命周期修复同语义；skipped（从未派发）/ rejected（复核
+   * 否定）除外。
+   */
+  const plannedItems = (plan?.items ?? []).filter(
+    (item) => item.status !== "skipped" && item.status !== "rejected",
+  );
   const planTexts = plannedItems
     .filter((item) => item.kind !== "fact_preserve")
     .map((item) => ({
@@ -443,6 +478,7 @@ function buildAuthorization(
     evidenceTexts: [...evidenceTexts],
     bibliographyKeys: [...bibliographyKeys],
     needsEvidenceItems,
+    weakeningEntries: [...weakeningAuthorizations],
     restoreAuths,
   };
 }
@@ -555,6 +591,12 @@ function valueRemovalAuthorized(
     if (restore.removeValues.some((value) => mentionsValue([value], before))) {
       return { basis: "planned_fact_restore", planItemId: restore.id };
     }
+  }
+  // M11.2.1：remove_unsupported_detail 授权文本点名该值（claim grounding /
+  // finding 原文里的数值——只授权删除方向；替换在配对层进 changed 不放行）
+  const weakeningRemoval = findUnsupportedDetailRemoval(auth, before, file);
+  if (weakeningRemoval !== null) {
+    return { basis: "authorized_unsupported_detail_removal", planItemId: weakeningRemoval };
   }
   return null;
 }
@@ -672,8 +714,15 @@ function formulaChangeAuthorized(auth: AuthorizationContext): { basis: string; p
   return null;
 }
 
-/** 方向结论变更授权：计划明确提及该结论方向（点名变更词或「结论表述」） */
-const DIRECTION_AUTH_WORDS = /(结论|表述|优势|一致|方向|劣势|劣于|优于|高于|低于|比较)/;
+/**
+ * 方向结论变更授权：计划**显式**要求修正结论方向（M11.2.1 收紧——旧口径的
+ * 「结论|表述|比较」过宽，计划条目生命周期修复后会让任何提及这些常用词的
+ * finding 变成整文件方向变更的 blanket 授权。方向语义的合法通道改为 typed
+ * weakening（weaken_claim_strength，类别核验），显式方向修正仍走本通道但
+ * 须点名修正语义）。
+ */
+const DIRECTION_AUTH_WORDS =
+  /(方向(?:反转|相反|写反|颠倒|弄反)|结论方向|方向性结论有误|应为[^。；]{0,12}(?:高于|低于|优于|劣于|超过|不及)|更正为[^。；]{0,12}(?:高于|低于|优于|劣于))/;
 
 function directionChangeAuthorized(
   auth: AuthorizationContext,
@@ -683,6 +732,162 @@ function directionChangeAuthorized(
   for (const entry of entries) {
     if (DIRECTION_AUTH_WORDS.test(entry.text) && sectionRefMatchesFile(entry.section, file)) {
       return { basis: "planned_direction_change", planItemId: entry.id };
+    }
+  }
+  return null;
+}
+
+// ---- M11.2.1：typed weakening 的类别核验（确定性） ----
+
+/**
+ * 弱化类别核验的方向词表（判定词全表 + 常见比较 / 程度词），按极性分组。
+ * 核验口径 = 文件级**极性**多重集「只减不增」：
+ * - 合法弱化（重排 / 拆句 / 删强断言词 / 同极性 paraphrase「提升→提高」）
+ *   不增加任何极性方向词的出现次数；
+ * - 真实方向反转必然引入 previous 没有的反极性方向词（提升→下降：负向 +1）。
+ */
+const WEAKENING_DIRECTION_VOCAB: ReadonlyArray<{ word: string; polarity: "positive" | "negative" }> = [
+  { word: "高于", polarity: "positive" },
+  { word: "低于", polarity: "negative" },
+  { word: "优于", polarity: "positive" },
+  { word: "劣于", polarity: "negative" },
+  { word: "超过", polarity: "positive" },
+  { word: "不及", polarity: "negative" },
+  { word: "提升", polarity: "positive" },
+  { word: "下降", polarity: "negative" },
+  { word: "增加", polarity: "positive" },
+  { word: "减少", polarity: "negative" },
+  { word: "升至", polarity: "positive" },
+  { word: "降至", polarity: "negative" },
+  { word: "提高", polarity: "positive" },
+  { word: "降低", polarity: "negative" },
+  { word: "增大", polarity: "positive" },
+  { word: "减小", polarity: "negative" },
+  { word: "加快", polarity: "positive" },
+  { word: "放慢", polarity: "negative" },
+  { word: "超越", polarity: "positive" },
+  { word: "胜过", polarity: "positive" },
+  { word: "领先", polarity: "positive" },
+  { word: "落后", polarity: "negative" },
+  { word: "反超", polarity: "positive" },
+  { word: "恶化", polarity: "negative" },
+  { word: "退化", polarity: "negative" },
+  { word: "改善", polarity: "positive" },
+  { word: "变差", polarity: "negative" },
+  { word: "变好", polarity: "positive" },
+  { word: "好转", polarity: "positive" },
+  { word: "变快", polarity: "positive" },
+  { word: "变慢", polarity: "negative" },
+];
+
+function directionPolarityCounts(content: string): { positive: number; negative: number } {
+  let positive = 0;
+  let negative = 0;
+  for (const { word, polarity } of WEAKENING_DIRECTION_VOCAB) {
+    let count = 0;
+    let at = content.indexOf(word);
+    while (at !== -1) {
+      count += 1;
+      at = content.indexOf(word, at + word.length);
+    }
+    if (polarity === "positive") {
+      positive += count;
+    } else {
+      negative += count;
+    }
+  }
+  return { positive, negative };
+}
+
+/** 强表述 marker 出现次数（claimStrength 的 STRONG_MARKERS；evidence 文本无关的文件级计数） */
+function strongMarkerCounts(content: string): Map<string, number> {
+  const lower = content.toLowerCase();
+  const counts = new Map<string, number>();
+  for (const marker of STRONG_MARKERS) {
+    let count = 0;
+    let at = lower.indexOf(marker);
+    while (at !== -1) {
+      count += 1;
+      at = lower.indexOf(marker, at + marker.length);
+    }
+    if (count > 0) {
+      counts.set(marker, count);
+    }
+  }
+  return counts;
+}
+
+/** 弱化类别核验结果（covered = 可按 weaken_claim_strength 放行） */
+interface WeakeningClassCheck {
+  covered: boolean;
+  /** 首个不成立的不变量（covered=false 时非空；审计 / 报告用） */
+  violation: string;
+  /** 强表述 marker 净新增（epistemic_strengthening 检测复用） */
+  strongMarkerAdds: string[];
+}
+
+/**
+ * weaken_claim_strength 的类别核验（文件级；纯函数）：
+ * 1. 方向词**按极性**只减不增（真实方向反转引入反极性词；同极性 paraphrase
+ *    是合法弱化）。方向词增删的位置语义（哪个 claim 的方向）不做句子级
+ *    追溯——那是被证伪的启发式（M11.2 振荡根源），文件级极性守恒是更弱的
+ *    但鲁棒的不变量；
+ * 2. 强表述 marker 只减不增（「可能 → 已经证明」是授权方向的逆向）。
+ * 数值通道与方向通道正交：数值的新增 / 删除 / 替换由 prose-number 与表格
+ * 通道按自己的授权裁决（remove_unsupported_detail 只授权删除方向），本核验
+ * 不重复判定——任一通道的违规都会令 summary.ok=false，检测能力不降低。
+ *
+ * 诚实边界：同文件两处反极性互换（A 正→负、B 负→正，极性计数不变）检测
+ * 不到——依赖每轮 claim grounding 复核与人工 HITL（与模块头声明一致）。
+ */
+function weakeningClassCheck(previous: string, current: string): WeakeningClassCheck {
+  // 2. 强表述 marker（先算：任一分支都可能要引用 strongMarkerAdds）
+  const previousStrong = strongMarkerCounts(previous);
+  const currentStrong = strongMarkerCounts(current);
+  const strongMarkerAdds: string[] = [];
+  for (const [marker, count] of currentStrong) {
+    if (count > (previousStrong.get(marker) ?? 0)) {
+      strongMarkerAdds.push(marker);
+    }
+  }
+  // 1. 方向词极性多重集
+  const previousDirections = directionPolarityCounts(previous);
+  const currentDirections = directionPolarityCounts(current);
+  if (currentDirections.positive > previousDirections.positive) {
+    return { covered: false, violation: "新增正向方向词", strongMarkerAdds };
+  }
+  if (currentDirections.negative > previousDirections.negative) {
+    return { covered: false, violation: "新增反向方向词", strongMarkerAdds };
+  }
+  if (strongMarkerAdds.length > 0) {
+    return { covered: false, violation: `新增强表述「${strongMarkerAdds[0] ?? ""}」`, strongMarkerAdds };
+  }
+  return { covered: true, violation: "", strongMarkerAdds };
+}
+
+/**
+ * 文件是否有任一 weaken_claim_strength 授权覆盖（section 宽松匹配，
+ * 与派发侧同口径）。
+ */
+function weakeningCoversFile(auth: AuthorizationContext, file: string): boolean {
+  return auth.weakeningEntries.some(
+    (entry) => entry.kind === "weaken_claim_strength" && sectionRefMatchesFile(entry.section, file),
+  );
+}
+
+/** remove_unsupported_detail 授权点名该值时返回其 itemId（文件匹配 + 授权文本含值） */
+function findUnsupportedDetailRemoval(
+  auth: AuthorizationContext,
+  value: string,
+  file: string,
+): string | null {
+  for (const entry of auth.weakeningEntries) {
+    if (
+      entry.kind === "remove_unsupported_detail" &&
+      sectionRefMatchesFile(entry.section, file) &&
+      mentionsValue([entry.targetSpan], value)
+    ) {
+      return entry.itemId;
     }
   }
   return null;
@@ -886,6 +1091,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     input.improvementPlanItems,
     input.evidenceTexts ?? [],
     input.bibliographyKeys ?? [],
+    input.weakeningAuthorizations ?? [],
   );
   const changedFacts: FactFinding[] = [];
   const removedFacts: FactFinding[] = [];
@@ -896,12 +1102,18 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
   const formatChanges: FactFinding[] = [];
   let allowedChanges = 0;
   let allowedRemovals = 0;
+  let allowedWeakenings = 0;
+  /** M11.2.1：文件级弱化类别核验缓存（每文件一次；weaken 授权覆盖才计算） */
+  const weakeningCheckByFile = new Map<string, WeakeningClassCheck | null>();
+  /** M11.2.1：当前文件的方向类 finding 计数（4d 的作用域条件） */
+  let directionalFindingsInFile = 0;
 
   const currentFiles = new Map(input.current.files.map((file) => [file.file, normalizeContent(file.content)]));
 
   for (const previousFile of input.previous.files) {
     const previous = normalizeContent(previousFile.content);
     const current = currentFiles.get(previousFile.file);
+    directionalFindingsInFile = 0;
 
     // -- 1. 表格：同表同行同列的数值变化 / 整表整行消失 / 新增行 --
     const previousTables = parseTables(previous);
@@ -1318,10 +1530,34 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     const currentHasNegative = currentClaims.some((claim) => claim.polarity === "disadvantage");
     const currentHasParity = currentClaims.some((claim) => claim.polarity === "parity");
     const grantDirection = () => directionChangeAuthorized(auth, previousFile.file);
+    /**
+     * M11.2.1：typed weakening 覆盖（weaken_claim_strength + 类别核验）。
+     * 真实 E2E 的振荡形态：Writer 按 finding / claim grounding 合法弱化（加
+     * 「据其报道」限定、拆分长句重排）后，句子级首指标 / 末方向词启发式把重排
+     * 误判为 metric_direction_flip。类别核验（方向词只减不增 / 数值稳定 /
+     * 强表述只减不增）证明「只有断言强度变化」时放行并计数审计。
+     */
+    const weakeningCheck = (): WeakeningClassCheck | null => {
+      if (!weakeningCoversFile(auth, previousFile.file)) {
+        return null;
+      }
+      let cached = weakeningCheckByFile.get(previousFile.file);
+      if (cached === undefined) {
+        cached = weakeningClassCheck(previous, current);
+        weakeningCheckByFile.set(previousFile.file, cached);
+      }
+      return cached;
+    };
     const directional = (finding: Omit<FactFinding, "kind">): void => {
+      directionalFindingsInFile += 1;
       const grant = grantDirection();
       if (grant !== null) {
         allowedChanges += 1;
+        return;
+      }
+      const weakCheck = weakeningCheck();
+      if (weakCheck !== null && weakCheck.covered) {
+        allowedWeakenings += 1;
         return;
       }
       directionalChanges.push({
@@ -1375,6 +1611,32 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
           before: snippet(previousClaim.text),
           after: snippet(flip.text),
           reason: "metric_direction_flip",
+        });
+      }
+    }
+
+    // -- 4d. M11.2.1：授权弱化语境下的断言升级（epistemic strengthening） --
+    // 弱化授权只覆盖「强度下降」方向。Reviewer 要求弱化的同一文件里出现净新增
+    // 强表述 marker（可能 → 已经证明 / 据报道 → 显著提升）= 授权方向的逆向，
+    // 必须显式呈现，不得被弱化授权静默吞掉。作用域限定为「该文件确有方向类
+    // finding」（弱化语境真实被消费）——无方向 finding 的纯措辞升级由
+    // claimStrength 在 Revision Validation 独立裁决（block / needs_review /
+    // 用户 HITL 决策，M6.7 语义不变），本守卫不重复裁决。
+    {
+      const weakCheck = weakeningCheck();
+      if (weakCheck !== null && weakCheck.strongMarkerAdds.length > 0 && directionalFindingsInFile > 0) {
+        directionalChanges.push({
+          kind: "directional",
+          file: previousFile.file,
+          section: "(global)",
+          before: snippet("（该章节原有断言强度）"),
+          after: snippet(`新增强表述：${weakCheck.strongMarkerAdds.slice(0, 3).join("/")}`),
+          reason: "epistemic_strengthening",
+          classification: classAFinding(
+            "direction_changed",
+            undefined,
+            weakCheck.strongMarkerAdds.slice(0, 3).join("/"),
+          ),
         });
       }
     }
@@ -1456,6 +1718,8 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     formatChanges: cap(formatChanges),
     allowedChanges,
     allowedRemovals,
+    allowedWeakenings,
+    weakeningAuthorizationCount: auth.weakeningEntries.length,
     planId: input.plan?.planId ?? null,
     ok:
       changedFacts.length === 0 &&
@@ -1536,8 +1800,8 @@ export function describeFactPreservation(summary: FactPreservationSummary): stri
   const base = `rev-${summary.previousRevision}→rev-${summary.currentRevision}`;
   if (summary.ok) {
     return `${base} 实验事实保持通过（授权变更 ${summary.allowedChanges} 项 / 授权删除 ${summary.allowedRemovals} 项${
-      summary.formatChanges.length > 0 ? ` / 格式等价差异 ${summary.formatChanges.length} 项不计违规` : ""
-    }）`;
+      summary.allowedWeakenings > 0 ? ` / 授权弱化 ${summary.allowedWeakenings} 项（typed，类别核验通过）` : ""
+    }${summary.formatChanges.length > 0 ? ` / 格式等价差异 ${summary.formatChanges.length} 项不计违规` : ""}）`;
   }
   const parts: string[] = [];
   const sample = (findings: FactFinding[], label: string): string => {
@@ -1570,6 +1834,7 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import type { EvidenceStore } from "../evidence/EvidenceStore.js";
 import { readSnapshotTex } from "./citationPreservation.js";
+import { readWeakeningAuthorizations } from "./cumulativeFactPreservation.js";
 
 export interface FactPreservationDeps {
   projects: ProjectStore;
@@ -1629,6 +1894,25 @@ export async function computeFactPreservation(
     record.quote ?? "",
   ]);
   const bibliographyKeys = await readBibliographyKeys(deps.projects, projectId);
+  /**
+   * M11.2.1 typed weakening 授权（三源合并，派生纯函数与 revision.plan 落台账
+   * 同源）：
+   * 1. 匹配轮次计划现场派生——条目授权在生命周期内持续有效（gate / validation
+   *    消费时条目已 applied / validated / approved，这是 M11.2 振荡的结构性
+   *    成因之一；历史项目无台账也能当场解释合法弱化）；
+   * 2. 同轮 claim grounding 的 UNSUPPORTED / CONTRADICTED claim（Reviewer
+   *    fact 模式的结构化弱化裁决）；
+   * 3. 授权台账（append-only：跨轮持续 + 审计追溯 + cumulative 口径）。
+   */
+  const weakeningAuthorizations: WeakeningAuthorizationInput[] = [];
+  if (plan !== null) {
+    weakeningAuthorizations.push(...derivePlanWeakeningAuthorizations(plan));
+    const grounding = await deps.reviewArtifacts.loadClaimGrounding(projectId, plan.reviewRound);
+    if (grounding !== null) {
+      weakeningAuthorizations.push(...deriveClaimGroundingWeakeningAuthorizations(grounding));
+    }
+  }
+  weakeningAuthorizations.push(...(await readWeakeningAuthorizations(deps.projects, projectId)));
   return evaluateFactPreservation({
     previous: { revision: previousRecord.revision, files: previousFiles },
     current: { revision: currentRecord.revision, files: currentFiles },
@@ -1636,6 +1920,7 @@ export async function computeFactPreservation(
     ...(improvementPlanItems.length > 0 ? { improvementPlanItems } : {}),
     evidenceTexts,
     ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
+    weakeningAuthorizations,
   });
 }
 

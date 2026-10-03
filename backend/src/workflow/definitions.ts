@@ -32,6 +32,7 @@
  * 其输出必须通过各 Stage 的 DoD 校验。
  */
 
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
@@ -85,11 +86,16 @@ import {
   type FactTexFile,
 } from "../quality/factPreservation.js";
 import {
+  appendWeakeningAuthorizations,
   computeCumulativeFactPreservation,
   findFrozenBaselineRevision,
   recordImprovementPlanApproval,
   type CumulativeFactValidation,
 } from "../quality/cumulativeFactPreservation.js";
+import {
+  deriveClaimGroundingWeakeningAuthorizations,
+  derivePlanWeakeningAuthorizations,
+} from "../review/weakeningAuthorization.js";
 import { applyFactRestore, planFactRestore, restoreValueDelta } from "../quality/factRestore.js";
 import { computeClaimGapAudit, type ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
@@ -781,6 +787,29 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         ...(evidenceLinks.length > 0 ? { evidenceLinks } : {}),
       });
       await services.reviewArtifacts.savePlan(ctx.projectId, plan);
+      /**
+       * M11.2.1：typed weakening 授权落台账（append-only，幂等去重）。授权链 =
+       * Reviewer Finding（needsEvidence / 弱化措辞）+ 同轮 claim grounding 的
+       * UNSUPPORTED claim → 计划条目 → 台账。台账使授权跨条目生命周期与跨轮
+       * 持续（pairwise gate 消费时条目已 applied/validated；cumulative 口径也
+       * 依赖台账解释 Frozen → Current 的合法弱化差异）。
+       */
+      const weakeningAuthorizations = derivePlanWeakeningAuthorizations(plan, { plannedOnly: true });
+      const claimGroundingForAuth = await services.reviewArtifacts.loadClaimGrounding(
+        ctx.projectId,
+        summary.round,
+      );
+      weakeningAuthorizations.push(
+        ...(claimGroundingForAuth !== null
+          ? deriveClaimGroundingWeakeningAuthorizations(claimGroundingForAuth)
+          : []),
+      );
+      const recordedWeakenings = await appendWeakeningAuthorizations(
+        services.projects,
+        ctx.projectId,
+        weakeningAuthorizations,
+        { runId: ctx.runId },
+      );
       // 回填本轮 iteration 记录的 planId（UI / 审计可从轮次回溯计划）
       const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
       const currentIteration = iterations.find((record) => record.gateRound === summary.round);
@@ -797,6 +826,9 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         planned: plan.summary.planned,
         skipped: plan.summary.skipped,
         ...(plan.summary.external !== undefined ? { external: plan.summary.external } : {}),
+        // M11.2.1：本轮落账的 typed weakening 授权（幂等去重后新增数）
+        weakeningAuthorizations: weakeningAuthorizations.length,
+        ...(recordedWeakenings > 0 ? { weakeningAuthorizationsRecorded: recordedWeakenings } : {}),
         // M10.3.1：确定性可恢复的累计违规数（plan() 据此路由 revision.restore_facts）
         ...(factRegressions.length > 0
           ? { restorableFacts: factRegressions.filter((entry) => entry.restorable === true).length }
@@ -938,10 +970,26 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
                 academicScore: record.scorecard.academicScore,
                 failedRuleIds: record.scorecard.failedRuleIds,
               };
+        /**
+         * M11.2.1：失败归因分类（§14——报告与 artifact 必须区分「正常运行但
+         * 质量未达」与「系统 bug / execution failure」）。确定性：剩余 gate
+         * 阻止项若全部是质量语义（评分 / open issues / claim 覆盖）=
+         * QUALITY_NOT_REACHED；事实 / 引用保持或契约类规则仍在失败 =
+         * SYSTEM_FAILED（守卫语义未满足，冻结产物不安全）。
+         */
+        const gateReasons = ((gate["reasons"] as unknown[]) ?? []).map((reason) => String(reason));
+        const failureClass = gateReasons.some((reason) =>
+          /^(fact_preservation|cumulative_fact_preservation|citation_preservation|survey_outline_contract|survey_citation_keys_valid|survey_synthesis_traceability)[:：]/.test(
+            reason,
+          ),
+        )
+          ? "SYSTEM_FAILED"
+          : "QUALITY_NOT_REACHED";
         return {
           outcome: typeof gate["outcome"] === "string" ? gate["outcome"] : null,
           gateRound,
           gateReasons: gate["reasons"] ?? [],
+          failureClass,
           review: {
             critical: review["critical"] ?? 0,
             major: review["major"] ?? 0,
@@ -5307,6 +5355,87 @@ async function evaluateSurveyWritingForProject(
  * SurveySectionContext（refs 契约的有界投影）→ Writer survey 模式 →
  * 确定性引用后检（writeSection 内）→ 落盘 / main.tex / bib 同步 / 修订提交。
  */
+/**
+ * M11.2.1：大纲结构指纹（幂等跳过判定用）。只取 sections 的结构性字段
+ * （id / file / title / refs / keyPoints）——abstract 由修订流程写回
+ * outline.abstract，不参与「大纲是否变化」的判定；targetLengthWords 属于
+ * 意图参数，写作已完成后不构成重写依据。
+ */
+function surveyOutlineFingerprint(outline: {
+  sections: Array<{
+    id: string;
+    file: string;
+    title: string;
+    synthesisRefs?: string[];
+    literatureRefs?: string[];
+    keyPoints?: string[];
+  }>;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        outline.sections.map((section) => [
+          section.id,
+          section.file,
+          section.title,
+          [...(section.synthesisRefs ?? [])].sort(),
+          [...(section.literatureRefs ?? [])].sort(),
+          section.keyPoints ?? [],
+        ]),
+      ),
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
+/**
+ * M11.2.1：survey 写作幂等跳过（真实项目续跑语义）。满足以下全部条件时
+ * 跳过逐节重写、不产生新修订：
+ * - 已存在任一 writing.sections 修订（此前完成过写作）；
+ * - 该修订快照中的 outline.json 结构指纹与当前 outline 一致（大纲未被
+ *   重新确认改变——变了则如实重写）；
+ * - 当前全部章节文件存在且非空（修订可能改写过它们，正是要保留的稿面）。
+ * 收益：M11.2 真实项目恢复运行时不再整篇重写（重写会制造 rev-N→rev-N+1 的
+ * 全量 pairwise 假漂移，正是振荡源头之一）；成本集中在 review / revision。
+ */
+async function surveyWritingSkippable(
+  services: WorkflowServices,
+  projectId: string,
+  outline: import("../manuscript/ManuscriptService.js").Outline | null,
+): Promise<{ skip: boolean; revision?: number }> {
+  if (outline === null || outline.sections.length === 0) {
+    return { skip: false };
+  }
+  const statuses = await services.manuscript.sectionStatuses(projectId);
+  const allWritten = outline.sections.every((section) => {
+    const status = statuses.find((candidate) => candidate.id === section.id);
+    return status?.exists === true && status.nonEmpty === true;
+  });
+  if (!allWritten) {
+    return { skip: false };
+  }
+  const state = await services.revisions.load(projectId);
+  const writingRevision = [...state.revisions]
+    .filter((record) => record.reason === "writing.sections")
+    .sort((a, b) => b.revision - a.revision)[0];
+  if (writingRevision === undefined) {
+    return { skip: false };
+  }
+  try {
+    const raw = await readFile(
+      join(services.revisions.snapshotDir(projectId, writingRevision.revision), "outline.json"),
+      "utf8",
+    );
+    const snapshotOutline = JSON.parse(raw) as import("../manuscript/ManuscriptService.js").Outline;
+    if (surveyOutlineFingerprint(snapshotOutline) !== surveyOutlineFingerprint(outline)) {
+      return { skip: false };
+    }
+  } catch {
+    return { skip: false }; // 快照不可读：如实重写（不猜测）
+  }
+  return { skip: true, revision: writingRevision.revision };
+}
+
 function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
   return {
     id: "writing.sections",
@@ -5318,6 +5447,21 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
     async execute(ctx) {
       const inputs = await loadSurveyWritingInputs(services, ctx.projectId);
+      // M11.2.1：幂等跳过（大纲结构未变 + 章节齐全 → 保留既有稿面，不重写）
+      const skip = await surveyWritingSkippable(services, ctx.projectId, inputs.outline);
+      if (skip.skip) {
+        await ctx.emitProgress({ reusedRevision: skip.revision ?? 0 });
+        return {
+          sectionsWritten: inputs.outline.sections.length,
+          sections: inputs.outline.sections.map((section) => section.id),
+          bytesTotal: 0,
+          reusedFromRevision: skip.revision ?? null,
+          synthesisItems: inputs.synthesis.items.length,
+          matrixEntries: inputs.matrix.entries.length,
+          bibliographyEntries: inputs.bibliography.length,
+          evidenceFormal: inputs.evidence.length,
+        };
+      }
       const project = await services.projects.getRequired(ctx.projectId);
       const language = normalizeManuscriptLanguage(project.language);
       const usedEvidenceIds = new Set<string>();

@@ -48,11 +48,16 @@ export interface ExpectedFactChange {
   basis?: string;
 }
 
-/** 台账条目：一次已批准的改进计划条目（授权事实 = 条目文本 + expectedFactChanges） */
+/**
+ * 台账条目：一次已批准的改进计划条目（授权事实 = 条目文本 + expectedFactChanges）。
+ * M11.2.1：授权来源扩展两类 typed weakening（Reviewer Finding → Revision Plan /
+ * Claim Grounding UNSUPPORTED），经 authorizationKind 走独立的类型化核验通道，
+ * 不进 improvementTexts 通用授权（防「弱化授权点名过的数值」反向洗白重加）。
+ */
 export interface FactAuthorizationEntry {
   recordedAt: string;
-  /** 批准来源（当前唯一通道：hitl.plan_confirm approve） */
-  source: "improvement_plan_approved";
+  /** 批准来源（M11.2.1 前唯一通道：hitl.plan_confirm approve） */
+  source: "improvement_plan_approved" | "revision_plan_weakening" | "claim_grounding_unsupported";
   runId?: string;
   /** improvement-plan 条目的稳定标识（improvement:{index}；同轮重复登记按 id+文本去重） */
   itemId: string;
@@ -62,6 +67,15 @@ export interface FactAuthorizationEntry {
   expectedFactChanges?: ExpectedFactChange[];
   relatedEvidenceIds?: string[];
   instructionId?: string;
+  /** M11.2.1 typed weakening：类型（存在即走类型化通道，text 即 targetSpan） */
+  authorizationKind?: "weaken_claim_strength" | "remove_unsupported_detail";
+  /** targetSpan 追溯（finding / claim 原文指纹；findingId / claimId 二选一） */
+  findingId?: string;
+  claimId?: string;
+  /** 创建轮次（review round；审计追溯） */
+  round?: number;
+  /** 授权理由（人读；来自派生函数） */
+  reason?: string;
 }
 
 export interface FactAuthorizationLedger {
@@ -127,16 +141,76 @@ export async function appendFactAuthorizations(
 
 function entryFingerprint(entry: FactAuthorizationEntry): string {
   return createHash("sha256")
-    .update(`${entry.itemId}|${entry.section}|${entry.text}`)
+    .update(`${entry.itemId}|${entry.section}|${entry.text}|${entry.authorizationKind ?? ""}`)
     .digest("hex")
     .slice(0, 16);
+}
+
+/**
+ * M11.2.1：台账中的 typed weakening 条目 → Fact Preservation 类型化输入口径。
+ * 与 improvement 通道互斥（见 ledgerToImprovementItems 的过滤）。
+ */
+export function readWeakeningAuthorizations(
+  projects: ProjectStore,
+  projectId: string,
+): Promise<import("../review/weakeningAuthorization.js").WeakeningAuthorizationInput[]> {
+  return readFactAuthorizations(projects, projectId).then((entries) =>
+    entries
+      .filter((entry) => entry.authorizationKind !== undefined)
+      .map((entry) => ({
+        kind: entry.authorizationKind as NonNullable<FactAuthorizationEntry["authorizationKind"]>,
+        section: entry.section,
+        targetSpan: entry.text,
+        itemId: entry.itemId,
+        ...(entry.findingId !== undefined ? { findingId: entry.findingId } : {}),
+        ...(entry.claimId !== undefined ? { claimId: entry.claimId } : {}),
+        ...(entry.round !== undefined ? { round: entry.round } : {}),
+        ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+      })),
+  );
+}
+
+/**
+ * M11.2.1：typed weakening 授权入账（append-only；与 appendFactAuthorizations
+ * 同指纹幂等去重）。调用点 = revision.plan 落盘后（计划条目 + 同轮 claim
+ * grounding 的确定性派生）。
+ */
+export async function appendWeakeningAuthorizations(
+  projects: ProjectStore,
+  projectId: string,
+  authorizations: readonly import("../review/weakeningAuthorization.js").WeakeningAuthorizationInput[],
+  options: { runId?: string; now?: string } = {},
+): Promise<number> {
+  if (authorizations.length === 0) {
+    return 0;
+  }
+  const now = options.now ?? new Date().toISOString();
+  const entries: FactAuthorizationEntry[] = authorizations.map((authorization) => ({
+    recordedAt: now,
+    source: authorization.claimId !== undefined ? "claim_grounding_unsupported" : "revision_plan_weakening",
+    ...(options.runId !== undefined ? { runId: options.runId } : {}),
+    itemId: `${authorization.kind}:${authorization.itemId}`,
+    section: authorization.section,
+    text: authorization.targetSpan,
+    authorizationKind: authorization.kind,
+    ...(authorization.findingId !== undefined ? { findingId: authorization.findingId } : {}),
+    ...(authorization.claimId !== undefined ? { claimId: authorization.claimId } : {}),
+    ...(authorization.round !== undefined ? { round: authorization.round } : {}),
+    ...(authorization.reason !== undefined ? { reason: authorization.reason } : {}),
+  }));
+  return appendFactAuthorizations(projects, projectId, entries);
 }
 
 /** 台账 → evaluateFactPreservation 的 improvementPlanItems 输入口径（与 pairwise 同构） */
 function ledgerToImprovementItems(
   entries: readonly FactAuthorizationEntry[],
 ): { section: string; action: string; rationale?: string }[] {
-  return entries.map((entry) => ({
+  return entries
+    // M11.2.1：typed weakening 走独立类型化通道——其 targetSpan 点名过的数值若
+    // 进入通用授权，会被 valueAdditionAuthorized 反向放行（弱化删除过的值重新
+    // 加回 = 洗白）。类型化通道只放行「弱化 / 删除」两个方向。
+    .filter((entry) => entry.authorizationKind === undefined)
+    .map((entry) => ({
     section: entry.section,
     action: entry.text,
     ...(entry.expectedFactChanges !== undefined && entry.expectedFactChanges.length > 0
@@ -197,6 +271,8 @@ export interface CumulativeFactValidation {
   /** 有授权被放行的变更数（台账 / Evidence 口径） */
   authorizedChanges: number;
   authorizedRemovals: number;
+  /** M11.2.1：typed weakening（类别核验通过）放行的弱化数 */
+  authorizedWeakenings: number;
   formatChanges: number;
   /** 授权来源统计（审计：台账几条 / 证据几条） */
   authorizationSources: { ledgerEntries: number; evidenceRecords: number };
@@ -271,6 +347,20 @@ export async function computeCumulativeFactPreservation(
   // fact_preserve 条目是恢复指令（其 problem 文本包含 before → after 片段），
   // 绝不进入累计授权——否则漂移会被「要求恢复它的计划」洗白。
   const bibliographyKeys = await readBibliographyKeys(deps.projects, projectId);
+  // M11.2.1：typed weakening 走独立通道（弱化 / 删除方向 + 类别核验），与
+  // improvement 通用授权互斥（见 ledgerToImprovementItems 过滤）
+  const weakeningEntries = ledger
+    .filter((entry) => entry.authorizationKind !== undefined)
+    .map((entry) => ({
+      kind: entry.authorizationKind as NonNullable<FactAuthorizationEntry["authorizationKind"]>,
+      section: entry.section,
+      targetSpan: entry.text,
+      itemId: entry.itemId,
+      ...(entry.findingId !== undefined ? { findingId: entry.findingId } : {}),
+      ...(entry.claimId !== undefined ? { claimId: entry.claimId } : {}),
+      ...(entry.round !== undefined ? { round: entry.round } : {}),
+      ...(entry.reason !== undefined ? { reason: entry.reason } : {}),
+    }));
   const summary: FactPreservationSummary = evaluateFactPreservation({
     previous: { revision: baseline.revision, files: baselineFiles as FactTexFile[] },
     current: { revision: current, files: currentFiles as FactTexFile[] },
@@ -278,6 +368,7 @@ export async function computeCumulativeFactPreservation(
     improvementPlanItems: ledgerToImprovementItems(ledger),
     evidenceTexts,
     ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
+    weakeningAuthorizations: weakeningEntries,
   });
   const unresolved = [
     ...summary.changedFacts,
@@ -307,6 +398,7 @@ export async function computeCumulativeFactPreservation(
     resolvedViolations,
     authorizedChanges: summary.allowedChanges,
     authorizedRemovals: summary.allowedRemovals,
+    authorizedWeakenings: summary.allowedWeakenings,
     formatChanges: summary.formatChanges.length,
     authorizationSources: {
       ledgerEntries: ledger.length,
