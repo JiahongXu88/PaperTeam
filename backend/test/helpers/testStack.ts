@@ -269,6 +269,7 @@ export async function startTestStack(
   const cleanup = async () => {
     await orchestrator.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await stack.ingestion.drainBackground();
     if (options.root === undefined) {
       await rm(root, { recursive: true, force: true });
     }

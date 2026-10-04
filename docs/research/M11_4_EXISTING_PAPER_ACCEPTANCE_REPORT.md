@@ -1,126 +1,144 @@
 # M11.4 Completion Report
 
-状态：**PARTIAL — deterministic import accepted; model-stage blocked by runtime channel mismatch**  
-更新：2026-10-04（Asia/Shanghai）  
-Git 基线：`main` @ `73357234129a59e5e1954e105df25ed339f424d3`，与 `origin/main` 一致；开工时工作区干净。  
-真实 fixture：`D:\PaperTeamData\M10.3-real-paper-case`（原目录只读；未复制或修改）。
+状态：**PARTIAL / AUTHOR_DECISION_REQUIRED** — 真实工作流已推进到安全返修与质量门；不满足 M11.4 COMPLETE 条件。
+更新：2026-10-05（Asia/Shanghai）
+项目：p-ee063d5608ff；恢复 run：w-c6a9c9d45c86（终态 cancelled，保留 checkpoints）。
+Fixture：D:\PaperTeamData\M10.3-real-paper-case（源目录未修改）。
+Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 
 ## 1. Git
 
-- 当前任务起点：`7335723 fix(model-settings): support Z.AI general API connectivity`
-- 开工状态：`main`，`HEAD == origin/main`，working tree clean。
-- 当前实现未提交；最终状态、commit、push 待完成。
+- 基线：main，HEAD 与 origin/main 均为 0ae283333eac92c15d2de134dc5d2e1f81dd132e；开工时 clean。
+- 本轮改动含 Review cancellation/timeout 收敛、checkpoint continue、Reviewer 4 计划链接回退、后台 ingestion drain 测试清理及文档。最终提交和推送状态见本节更新。
+- 无 node_modules、fixture、项目运行产物或凭证文件进入版本控制。
 
 ## 2. Real Fixture
 
-- MANIFEST 确认主稿为冻结 CEA 投稿版 `manuscript/source/paper.tex`，bibliography 为 `refs.bib`（25 entries），含 10 个 PDF figure；另有 26 页 LaTeX PDF、19 页 Word 投稿 PDF。
-- 反馈材料：`feedback/response_to_reviewers.md`、`response_submission_system_text.txt`、`response_letter_submitted.pdf`、`revision_change_log.md`、`response_QA.md`。
-- 回复 Markdown 明确将意见标为“要点归纳”，每项包含意见要点、作者回应与修改位置；它不是 reviewer 原始逐字稿。人工 ground truth 只能按语义对照。
-- 已确认确定性 parser 的目标块：编辑意见 1 条 + 外审意见 1–4 共 4 条；author response 不作为意见导入。
-- source fixture 未改动。正确目录结构的验收项目为 `p-ee063d5608ff`；无效扁平化打包诊断项目为 `p-4b7ad6e615bc`。两者均位于默认 `backend/projects` workspace，不进入 git。
+- 真实 CEA 投稿稿件与作者整理的 Reviewer 反馈、response letter、revision change log 均在 fixture。反馈 Markdown 标明意见为归纳要点，不是审稿人逐字原文；作者回复只用于 ground truth 对照，不作为评论导入。
+- 主稿包含 4 个 section、15 个 subsection、10 个 figure、11 个 table、36 个公式/算法环境、49 个 cite 命令及 25 条 bibliography。
+- fixture 原件保持不变；验收运行使用项目副本 p-ee063d5608ff。
 
 ## 3. Existing Paper Ingestion
 
-- 已有 `/api/projects/import-paper` 支持 PDF / LaTeX；`LatexImporter`、existing-paper workflow 与 M10.4.4 dispatch 已存在。
-- 成功通过 `/api/projects/import-paper` 导入真实 LaTeX 工程，12 个工程文件。首个 ZIP 因 `paper.bbl` 不属于允许类型被拒绝并回滚；过滤后的一次试包把 `figs/` 扁平化，baseline compile 检出缺图；修正 ZIP 内目录为 `figs/` 后导入 `p-ee063d5608ff`，baseline compile `xelatex+bibtex PASS`。
-- 真实主稿结构：4 个 section、15 个 subsection、10 个 figure、11 个 table、36 个公式/算法环境、49 个 cite 命令、25 个 bibliography entries。编译得到 26 页 A4 PDF（3,635,757 bytes）。
-- 正确导入工程含 `paper.tex`、`refs.bib` 与 10 个 `figs/*.pdf`；原始 fixture 未改。临时 ZIP 与 26 张 PDF 渲染 PNG 仍在本机临时目录；删除命令被执行策略拒绝，未纳入 Git。
+- 使用既有 LaTeX import API 导入真实论文，12 个工程文件。
+- 原始基线 xelatex+bibtex 编译 PASS，26 页。Citation baseline：25 cited keys，0 missing，0 hallucinated。
+- 原稿导入、基线 build 和原始稿检查通过；最终修订稿 PDF 未生成。
 
 ## 4. Reviewer Comment Batch Import
 
-- 已增加确定性 Markdown parser、`ExternalInstructionStore.addBatch` 原子有序写入与预览/批量导入 API：
-  - `POST /api/projects/:id/external-instructions/parse`
-  - `POST /api/projects/:id/external-instructions/batch`
-- 已增加前端解析预览和显式确认；复用现有 ExternalInstruction 数据模型，不增加生产依赖。
-- 正确项目 `p-ee063d5608ff` 真实服务预览：`sourceBlocks=5`、`parsed=5`、`parserDuplicates=0`、`existingDuplicates=0`；确认导入后 `created=5`、重复 `0`，5 条状态均 `pending`。ID 与上一项目同文指纹：`x-599c4c2121`（Editor）、`x-7a549a1a7d`（Reviewer 1）、`x-e667067fc9`（Reviewer 2）、`x-11a99c04f6`（Reviewer 3）、`x-d6fdd433f0`（Reviewer 4）。重复提交验证 `created=0 / duplicateIds=5 / persisted=5`。
-- 前端增加现有状态 coverage：total / handled / partially handled / unresolved / conflict（需作者决策）/ pending。
-- parser 测试覆盖编辑/Reviewer 标题、显式意见要点、排除作者回应、保守整段 fallback、顺序、去重与超长拒绝。
-- 定向测试：`backend/test/review/externalInstructions.test.ts` 22/22 PASS。
+- 批量导入 5 条：1 条 Editor + Reviewer 1–4；parser 输出 5、导入 5、重复 0、漏项 0。评论 ID：x-599c4c2121、x-7a549a1a7d、x-e667067fc9、x-11a99c04f6、x-d6fdd433f0。
+- 重复提交确定性验证无新增且仍保留 5 条。前端提供解析确认与 coverage 展示。
+- 原始反馈含作者回复，parser 未将回复误导入为评论。
 
 ## 5. Comment Parsing
 
-- 真实 fixture dry-run 与服务预览结果一致：1 Editor + 4 reviewer；0 遗漏、0 parser duplicate；作者回应未进入评论。
-- parser 不调用模型、不臆造意见；未识别结构整段保留；重复项显式计数。
+- 使用确定性 Markdown 解析；遵循保守分块、原文保留和去重规则。结果 5/5 与 fixture 意见块数一致，无静默丢失或臆造评论。
+- fixture 提供的是作者摘要，所以不能声称已验证对任意审稿人原始格式的普遍解析能力。
 
 ## 6. Priority Semantics
 
-- 既有逻辑将外部意见放入 mandatory 计划；确定性 Fact/Citation Gate 仍为安全边界。
-- 新导入默认 `pending`，不会因作者回复而标成已处理。
-- 本轮未生成真实 Revision Plan（配置 blocker）。既有单测验证 external mandatory 优先级及 conflict 留档；全量已有 Fact/Citation gate 回归通过。
+- External reviewer/editor 意见进入 mandatory revision planning；确定性 Fact/Citation Safety 仍优先于任何外部修改要求。
+- 本次真实链路未将外部意见降为 internal recommendation。安全冲突由确定性验证阻止。
+- 批量导入后初始状态均 pending；最终状态均为 unresolved，未把计划或作者回复冒充完成。
 
 ## 7. Finding Dispatch
 
-- 既有 M10.4.4 heading/section dispatch 实现与测试位于 `backend/src`、`backend/test/workflow/m1044DispatchE2E.test.ts`、`backend/test/manuscript/m1044DispatchMatch.test.ts`。
-- 真实评论到稿件 target 覆盖尚未运行。
+- 当前 target 指向主稿 main.tex；5 条外部意见都保留 instruction linkage。无评论被 dispatch 阶段静默丢弃。
+- review 包含对论文缺失实验/边界条件的 findings；无法安全匹配到现有事实的内容进入作者决策，而未擅自写入实验结果。
 
 ## 8. Revision Plan
 
-- 既有 `revisionPlan.ts` 支持 external instruction linkage（`instructionId`、`sourceText`、mandatory）。
-- 真实计划需先于任何 Writer 调用检查；尚未生成。
+- 生成 17 个 plan items，5 条外部评论 linkage 为 5/5；Reviewer 4 的 linkage 缺口由确定性 fallback 修复并在同项目重规划。
+- 对要求设备实验或极端场景证据的意见标出作者决策；未引入新 citation 或无证据 claim。计划覆盖 reviewer intent，但最终执行仍受 Fact Guard 阻止。
+- bounded targeted search 执行 7 个查询，未找到可验证证据（0 evidence records）；没有将开放式 research 接入写作。
 
 ## 9. Real Revision E2E
 
-- 尚未启动。唯一 blocker 为当前 runtime channel 不符合用户指定的 `general_api`；GLM 余额停止条件未触发；本轮模型调用为 0。
+- 原 run Review attempt 1 timeout，attempt 2 完成并落盘。修复 lifecycle 后做单路真实 Review smoke，HTTP 200，结束 activeRuns/activeExecutions 均为 0。
+- 后续修订产生了方向性事实偏移。确定性 revision validation 拒绝了 17 项 metric_direction_flip；先前 revision 对冻结基线也有 6 项事实保护问题。Workflow 按既有 reject/restore 路径恢复到冻结基线稿衍生版本（restore revision 5）。
+- unsafe 修订未被接受；run 在 revision overflow HITL checkpoint 取消。没有继续消耗模型调用去追逐评分。
 
 ## 10. Comment Coverage
 
-- 当前 total=5；handled=0、partially_handled=0、unresolved=0、conflict/author decision=0、pending=5。尚未进入返修，不能把 pending 计作完成。
+- 总计 5；Addressed 0；Partially addressed 0；Unresolved 5；Pending 0。
+- 计划阶段识别出 2 条需作者决定（需要新增真实实验/边界场景数据）；它们仍以 unresolved 计入当前持久状态，不能计作已解决。
+- External instruction 状态全部明确，无意见静默消失。
 
 ## 11. Reviewer Comment Response Trace
 
-- 当前有 external instruction status、revision plan linkage、revision outcome 与 change log；尚未验证是否足以导出可读的逐条 trace。
+- 持久化的 external instruction、plan linkage、revision validation 和恢复记录可还原评论→计划→安全拒绝/未解决。
+- 本轮没有生成完整、面向用户的逐条 Comment Response Trace artifact；这是产品验收缺口。当前报告不把内部 linkage 夸称为最终 response letter。
 
 ## 12. Fact Preservation
 
-- 复用 M11.2.1 / M11.2.3 已冻结机制；真实返修前后尚无对比。
+- **未通过真实返修验收。** Revision validator 在不安全稿件中发现 17 个方向性事实偏移；此前修订稿还记录 6 项相对冻结基线的事实保护问题。
+- 系统拒绝 unsafe revision 并恢复到冻结稿衍生版本，体现 fail-closed 机制；但由于没有安全可接受的 revised manuscript，不能把 preservation 判为全通过。
 
 ## 13. Citation Preservation
 
-- 复用现有 `citationPreservation` 确定性 Gate；真实返修前后尚无对比。
+- 修订审计：25 个既有唯一 citation keys 保持一致；0 removed、0 added、0 hallucinated、0 missing；有 1 个 citation unverifiable。
+- Citation safety 检查通过。不存在新增幻觉引用。
 
 ## 14. Figure / Table / LaTeX Integrity
 
-- 正确导入副本的 10 个 figure 和 25 个 bibliography entries 在位；baseline compile 通过，PDF 共 26 页。返修前后差分尚不存在。
+- 原始导入工程的 figures、tables、labels 和 LaTeX baseline 编译通过。
+- unsafe revision 被拒绝并恢复；没有把该稿作为交付品。未对最终修订稿做 compile，因此 revised figure/table/LaTeX integrity 不可判 PASS。
 
 ## 15. Ground Truth Comparison
 
-- 采用 `response_to_reviewers.md` 的意见要点与 `revision_change_log.md` 比较方向及章节覆盖，不要求字符串一致。
-- 尚未比对 PaperTeam revision。
+- 已读取作者 response 与 revision change log，作为语义比较依据。
+- PaperTeam 识别出需补实验和边界条件证据的核心 intent，并正确拒绝伪造数据；但返修未被接受，无法完成最终人工修改与系统修改的逐条结果比较。ground truth 对照未完成。
 
 ## 16. Revised PDF
 
-- **修订稿 PDF 未生成**。已成功生成的是未改动基线稿 PDF（26 页），不能作为 Revised Draft 交付。
+- **未生成 revised draft PDF。** 仅原始 baseline PDF 编译成功，因此 PDF 条件未满足。
 
 ## 17. Codex Manual Product Inspection
 
-- Codex 对基线 PDF 抽查渲染页 1、13、17、26：中文/英文摘要、正文公式、图表和参考文献页面可读，未见裁切/重叠。仅为 Codex 人工视觉检查，不是独立 Reviewer，也不是修订稿检查。
+- 这是 Codex 对 artifact 的人工检查，不是独立 Reviewer 模型。
+- 原始 baseline PDF 抽查页 1、13、17、26，可读且核心结构、图表、参考文献未见明显版式损坏。
+- 最终返修被拒绝且无 revised PDF，故无法执行修订稿的完整人工检查清单。
 
 ## 18. Tests
 
-- backend full tests（`npm test -- --maxWorkers=1`）：**2377 passed / 0 failed / 15 skipped（2392 tests；215 passed files + 3 skipped files）**，耗时 334.26 秒。跳过项为 live smoke tests。
-- frontend full tests：**280 passed / 0 failed / 0 skipped（27 files）**。
-- root `npm run typecheck`：通过（backend + frontend）。
-- root `npm run build`：通过（backend + frontend）；frontend build 有既有 bundle >500 kB 提示。
-- 定向 backend external instruction tests：22/22；frontend panel tests：8/8。此前高并发运行出现的临时超时/Windows `EBUSY` 在单 worker 全量运行中未复现。
+- Backend full: npm test -- --maxWorkers=1：**2382 passed / 0 failed / 15 skipped；215 passed files / 3 skipped files；共 2397 tests，耗时 362.34 秒**。跳过项为 live smoke。
+- Frontend full：**280 passed / 0 failed / 0 skipped（27 files）**。
+- Backend targeted Reviewer/Writer/Orchestrator：61/61 passed；Ingestion HTTP cleanup regression：13/13 passed。
+- Backend typecheck、frontend typecheck、frontend build 均 PASS。Frontend build 有现存 chunk >500 kB 提示。
+- 本次 backend build 在最终 ingestion cleanup patch 后需以收尾实跑结果补录。
 
 ## 19. Runtime / Tokens / Cost
 
-- 截至本报告：本轮 PaperTeam 模型请求 0、GLM tokens 0、usage cost `$0`；没有发生扣费的模型调用。
-- dev runtime：Pi 1.0.1 healthy；model=`zai/glm-5.3`、provider=`zai`、configurationSource=`stored`、credential exists=`true`、source=`stored`。`GET /api/settings/model` 显示 `apiChannel=coding_plan`。本机 `C:\Users\Administrator\.paperteam\settings\model.json` 保存了模型，但没有 `apiChannel=general_api` 绑定，因此该运行时回落默认 `coding_plan`。这只能证明当前 runtime 的通道配置，不代表个人 Key 不存在或账户余额为零。个人 Key 的 credential 内容未读取；未启动模型任务。
+- 估算总费用约 **$0.8067128**，来自累计 runtime usage counters；这是模型 usage 估算，不是账户余额查询。
+- 已知 token 累计约 247,494 input / 86,443 output / 至少 257,856 cache-read；其中部分早期 cache-read counter 在进程安全重启后未保留，因此 cache-read 总量不完整。
+- 最小 runtime smoke 成功；修复后的单路 Review smoke：15 input、1186 output、6976 cacheRead、2 turns、$0.00705316、89,254 ms。未输出或读取 credential 内容。
+- PaperTeam runtime 使用已保存的 Z.AI / GLM-5.3 / General API；credential exists=true，source=stored。
 
 ## 20. GLM API Quota Status
 
-- `NOT_TRIGGERED`。没有余额/额度错误；runtime usage totals 为 0 runs / 0 tokens / 0 estimated cost；本轮实际 GLM 成本 `$0`。这是本地 usage，不是账户余额读数；本轮没有证据表明账户余额为零。
-- 遇到明确余额/额度耗尽或 HTTP 402 时立即停止所有新模型调用，并将状态改为 `GLM_API_QUOTA_EXHAUSTED`。
+- **NOT EXHAUSTED / NOT TRIGGERED。** 未收到 402、insufficient balance/quota 或 billing exhaustion。网络 timeout 不作为余额耗尽证据。
+- 当前无 active model request。不要为追求分数重复启动无新信息的调用。
 
 ## 21. Known Limitations
 
-- fixture 反馈是作者总结的意见要点，不是外审原文。
-- 当前 runtime 通道是 coding_plan，不符合用户明确指定的 general_api；未擅自修改设置或尝试付费模型请求。
-- 正确项目的基线编译 PDF 已生成，但 revised PDF、真实 dispatch/plan/revision/gate 尚未执行。
-- 一次无效打包试项目 `p-4b7ad6e615bc` 保留作诊断记录；正式恢复点为 `p-ee063d5608ff`。
-- 临时诊断文件仍在本机：`D:\Projects\PaperTeam\tmp\pdfs\m114-baseline-*.png`（26 张，gitignored）与 `C:\Users\Administrator\AppData\Local\Temp\paperteam-m114-fixture.zip`。删除命令被执行策略拒绝两次；文件未进入 Git，未尝试绕过策略。
+- 主要 blocker 是科研决策：需要作者提供新增实验/真实数据并确认结果解释；系统不能替作者创造这些事实。
+- 外部意见目前可批量导入、解析、链接到计划并留有明确状态，但最终逐条 response trace artifact 与 revised PDF 缺失。
+- 当前恢复项目仍为 p-ee063d5608ff；源 fixture 未改动。run w-c6a9c9d45c86 在 revision overflow HITL 终止。取得作者所需数据后从同项目的安全恢复版本继续，无需重新导入。
+- 不进入 M11.5 Closure Readiness，因为 M11.4 未 PASS。
+
+## Review Timeout / Cancellation Incident
+
+- 原事件包含 original/retry 与 reviewer 子任务；观察到本地 Review sessions 有在途 outbound TLS 连接。客户端连接关闭后的 provider 远端状态无法观测，记录为 remote state unknown；不能简单归为 stale bookkeeping。
+- 根因在 PaperTeam：review workflow 未传递 stage AbortSignal；Promise.all 首错即退出，没有取消/等待 sibling；timeout/retry 竞态可能让旧 stage 尚未收敛就启动 retry。
+- 修复：ReviewerService 使用同一轮 linked AbortController，失败时取消 siblings 并等待 allSettled；workflow 传递 stage signal；timeout 后等待 stage promise settle 再决定 retry；checkpoint continue 复用已落盘阶段。另修复测试环境 ingestion background task drain，避免 teardown 与临时目录删除竞态。
+- deterministic reviewer/workflow/runtime tests 与真实单路 Review smoke 通过；全量 backend suite 2382/0/15。收敛后 active request/execution/permit 为 0；没有 Pi 层故障证据，也未创建 Pi upstream issue。
+- Review timeout incident 的调用已计入上方 usage；无 quota exhaustion。
+
+## Pi Upstream Findings
+
+- 未将该 incident 归因 Pi。PaperTeam 的信号传递与 Promise lifecycle 已足以解释并修复问题；没有进行独立 Pi repro，也未创建 upstream issue，避免无证据提交重复/噪声报告。
+- 当前没有 evidence 显示 Pi 1.0.1 provider/streaming 边界存在此故障。
 
 ## 22. Verdict
 
-**PARTIAL — RUNTIME_API_CHANNEL_MISMATCH**。真实论文正确 ingest 并 baseline compile；批量导入 5 条（编辑 1 + reviewer 4），漏掉 0、重复 0，当前 pending 5。停在 `p-ee063d5608ff` / `external-instructions.batch`。本地状态确认模型 credential exists=`true` / stored，但本次 dev runtime 的 `apiChannel` 是默认 `coding_plan`；保存配置中缺少 `general_api` 通道绑定。它不表示个人 Key 不存在或账户余额为零。因通道与用户指定不一致，没有调用模型；本地 usage 为 0 requests / 0 tokens / `$0`，未触发 `GLM_API_QUOTA_EXHAUSTED`。恢复已保存 General API 通道配置并确认该 PaperTeam runtime 读取到后，从此项目继续 Dispatch / Revision Plan；先审计划再调用 Revision。当前 M11.4 不可 COMPLETE，不可进入 M11 Closure。
+**PARTIAL / AUTHOR_DECISION_REQUIRED — M11.4 尚未 COMPLETE。** 已验证真实 import、批量 comment ingestion、5/5 计划 linkage、GLM General API runtime、Review lifecycle 收敛与 citation preservation；但事实保护拒绝返修、5 条评论均未最终解决、revised PDF 和完整 response trace 缺失。恢复点为原项目 p-ee063d5608ff 的安全恢复稿；待作者提供真实实验数据/科学判断后继续。M11 当前不能进入 Closure。

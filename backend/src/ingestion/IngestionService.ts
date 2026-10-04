@@ -163,6 +163,11 @@ export class IngestionService {
       });
   }
 
+  /** Wait until fire-and-forget ingestion jobs accepted so far have settled. */
+  async drainBackground(): Promise<void> {
+    await this.backgroundChain;
+  }
+
   private async ingestInner(projectId: string, sourceId: string): Promise<ParsedDocument> {
     const item = await this.sources.getRequired(projectId, sourceId);
     if (item.fileName === undefined) {

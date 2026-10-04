@@ -168,6 +168,122 @@ describe("ReviewerService（fake runtime）", () => {
     expect(new Set(scopes).size).toBe(3);
   });
 
+  it("一条 Review 失败时取消同轮请求并等待全部 Runtime 任务收敛", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-review-cancel-"));
+    tempRoots.push(root);
+    const projects = new ProjectStore({ root });
+    const project = await projects.create("审稿取消测试");
+    const calls: { scope?: string; signal?: AbortSignal }[] = [];
+    const runtime: AgentRuntime = {
+      provider: "pi",
+      healthCheck: async () => ({
+        ok: true,
+        provider: "pi",
+        status: "healthy",
+        detail: "ok",
+        latencyMs: 1,
+        checkedAt: new Date().toISOString(),
+      }),
+      startAgent: async () => { throw new Error("not used"); },
+      runAgent: async (input) => {
+        calls.push({ scope: input.contextScope, signal: input.signal });
+        if (input.contextScope === "review/fact") {
+          return makeAgentTask("upstream timeout", input.agentId, "failed");
+        }
+        return new Promise((resolve) => {
+          const signal = input.signal;
+          if (signal?.aborted) {
+            resolve(makeAgentTask("cancelled", input.agentId, "cancelled"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            resolve(makeAgentTask("cancelled", input.agentId, "cancelled"));
+          }, { once: true });
+        });
+      },
+      getTask: () => { throw new Error("not implemented"); },
+      close: async () => {},
+    };
+    const service = new ReviewerService({ runtime, agentId: "reviewer", projects, log: () => {} });
+
+    await expect(service.reviewAll({
+      projectId: project.id,
+      manuscriptDigest: "paper",
+      evidence: [],
+    })).rejects.toBeInstanceOf(AgentRunFailedError);
+
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.signal?.aborted === true)).toBe(true);
+  });
+
+  it("workflow cancel 会同时 abort 三个 reviewer，并等它们进入终态", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-review-round-cancel-"));
+    tempRoots.push(root);
+    const projects = new ProjectStore({ root });
+    const project = await projects.create("整轮取消测试");
+    const calls: { scope?: string; signal?: AbortSignal }[] = [];
+    let markStarted!: () => void;
+    const allStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const parent = new AbortController();
+    const runtime: AgentRuntime = {
+      provider: "pi",
+      healthCheck: async () => ({
+        ok: true,
+        provider: "pi",
+        status: "healthy",
+        detail: "ok",
+        latencyMs: 1,
+        checkedAt: new Date().toISOString(),
+      }),
+      startAgent: async () => { throw new Error("not used"); },
+      runAgent: async (input) => {
+        calls.push({ scope: input.contextScope, signal: input.signal });
+        if (calls.length === 3) markStarted();
+        return new Promise((resolve) => {
+          const signal = input.signal;
+          if (signal?.aborted) {
+            resolve(makeAgentTask("cancelled", input.agentId, "cancelled"));
+            return;
+          }
+          signal?.addEventListener("abort", () => {
+            resolve(makeAgentTask("cancelled", input.agentId, "cancelled"));
+          }, { once: true });
+        });
+      },
+      getTask: () => { throw new Error("not implemented"); },
+      close: async () => {},
+    };
+    const service = new ReviewerService({ runtime, agentId: "reviewer", projects, log: () => {} });
+    const round = service.reviewAll({
+      projectId: project.id,
+      manuscriptDigest: "paper",
+      evidence: [],
+      signal: parent.signal,
+    });
+    await allStarted;
+    parent.abort();
+
+    await expect(round).rejects.toBeInstanceOf(AgentRunFailedError);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.signal?.aborted === true)).toBe(true);
+  });
+
+  it("workflow 在请求启动前取消时不发送 Review 或结构化修复请求", async () => {
+    const { service, calls, projectId } = await newService(() => JSON.stringify(FACT_OK));
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(service.reviewMode({
+      projectId,
+      mode: "fact",
+      manuscriptDigest: "paper",
+      evidence: [],
+      signal: controller.signal,
+    })).rejects.toBeInstanceOf(AgentRunFailedError);
+
+    expect(calls).toHaveLength(0);
+  });
+
   it("非 JSON 输出 → AgentRunFailedError", async () => {
     const { service, projectId } = await newService(() => "我认为这篇论文还不错");
     await expect(

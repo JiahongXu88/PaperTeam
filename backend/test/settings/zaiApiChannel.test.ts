@@ -103,7 +103,7 @@ interface Harness {
   modelRuntime: ModelRuntime;
   adapter: PiRuntimeAdapter;
   service: ModelSettingsService;
-  sessions: { created: { model: unknown }[]; factory: unknown };
+  sessions: { created: { model: unknown; glm53ThinkingLevel?: unknown }[]; factory: unknown };
 }
 
 async function makeHarness(options?: { hang?: boolean }): Promise<Harness> {
@@ -113,10 +113,17 @@ async function makeHarness(options?: { hang?: boolean }): Promise<Harness> {
     authPath: join(agentDir, "auth.json"),
     modelsPath: join(agentDir, "models.json"),
   });
-  const created: { model: unknown; disposed: () => boolean }[] = [];
-  const factory = async (params: { model?: unknown }): Promise<AgentSession> => {
+  const created: { model: unknown; glm53ThinkingLevel?: unknown; disposed: () => boolean }[] = [];
+  const factory = async (params: {
+    model?: unknown;
+    settingsManager?: { getModelThinkingLevel(provider: string, modelId: string): unknown };
+  }): Promise<AgentSession> => {
     const session = new FakeSession(params.model, options?.hang ?? false);
-    created.push({ model: params.model, disposed: () => session.disposed });
+    created.push({
+      model: params.model,
+      glm53ThinkingLevel: params.settingsManager?.getModelThinkingLevel("zai-coding-cn", "glm-5.3"),
+      disposed: () => session.disposed,
+    });
     return session as unknown as AgentSession;
   };
   const adapter = new PiRuntimeAdapter({
@@ -395,6 +402,7 @@ describe("Z.AI 通道：endpoint resolver 与注册", () => {
     expect(task.status).toBe("completed");
     const sessionModel = harness.sessions.created[0]!.model as { baseUrl?: string; id?: string };
     expect(sessionModel.baseUrl).toBe(ZAI_CODING_CN_GENERAL);
+    expect(harness.sessions.created[0]!.glm53ThinkingLevel).toBe("low");
 
     // Test Connection 路径：同样请求按量 endpoint（payload 级）
     const captured: CapturedRequest = {};

@@ -174,10 +174,34 @@ export class ReviewerService {
     reviewProfile?: "survey";
     /** M11.2：综述确定性 metrics digest（写作 invariants + metrics 的渲染行） */
     surveyDigest?: string;
+    /** Workflow stage cancellation scope shared by every mode in this review round. */
+    signal?: AbortSignal;
   }): Promise<ModeReviewResult[]> {
-    const results = await Promise.all(
-      REVIEW_MODES.map((mode) => this.reviewMode({ ...params, mode })),
-    );
+    const roundController = new AbortController();
+    const abortRound = () => roundController.abort();
+    if (params.signal?.aborted) {
+      roundController.abort();
+    } else {
+      params.signal?.addEventListener("abort", abortRound, { once: true });
+    }
+
+    const reviews = REVIEW_MODES.map(async (mode) => {
+      try {
+        return await this.reviewMode({ ...params, signal: roundController.signal, mode });
+      } catch (error) {
+        // A failed mode must stop its siblings. allSettled below waits for their
+        // runtime cancellation and bookkeeping cleanup before the stage retries.
+        roundController.abort();
+        throw error;
+      }
+    });
+    const settled = await Promise.allSettled(reviews);
+    params.signal?.removeEventListener("abort", abortRound);
+    const rejected = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+    if (rejected !== undefined) {
+      throw rejected.reason;
+    }
+    const results = settled.map((item) => (item as PromiseFulfilledResult<ModeReviewResult>).value);
     this.log(
       `[reviewer] projectId=${params.projectId} 三路 review 完成：issues=${results.reduce(
         (sum, result) => sum + result.issues.length,
@@ -212,6 +236,8 @@ export class ReviewerService {
     reviewProfile?: "survey";
     /** M11.2：综述确定性 metrics digest */
     surveyDigest?: string;
+    /** Shared review-round cancellation scope, inherited from the workflow stage. */
+    signal?: AbortSignal;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -219,6 +245,9 @@ export class ReviewerService {
     let lastError: AgentRunFailedError | undefined;
 
     for (let attempt = 0; attempt <= REVIEW_REPAIR_MAX_ATTEMPTS; attempt += 1) {
+      if (params.signal?.aborted) {
+        throw new AgentRunFailedError(`Review（${params.mode}）已取消`);
+      }
       const task = await this.runtime.runAgent({
         agentId: this.agentId,
         ...this.timeoutOverride,
@@ -228,6 +257,7 @@ export class ReviewerService {
             : buildReviewRepairPrompt(params.mode, lastOutput, validationErrors),
         projectId: params.projectId,
         contextScope,
+        ...(params.signal !== undefined ? { signal: params.signal } : {}),
         ...(params.language !== undefined ? { language: params.language } : {}),
         metadata: {
           role: "reviewer",

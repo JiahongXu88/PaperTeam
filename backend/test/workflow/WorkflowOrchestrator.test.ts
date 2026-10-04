@@ -337,6 +337,9 @@ describe("WorkflowOrchestrator：StageContract 与重试", () => {
   });
 
   it("stage 超时：timeout 分类并按重试策略处理", async () => {
+    let activeAttempts = 0;
+    let maxActiveAttempts = 0;
+    let settledAttempts = 0;
     const definition: WorkflowDefinition = {
       ...linearDefinition([]),
       stages: [
@@ -344,7 +347,11 @@ describe("WorkflowOrchestrator：StageContract 与重试", () => {
           maxAttempts: 2,
           timeoutMs: 40,
           execute: async () => {
-            await delay(500);
+            activeAttempts += 1;
+            maxActiveAttempts = Math.max(maxActiveAttempts, activeAttempts);
+            await delay(80);
+            activeAttempts -= 1;
+            settledAttempts += 1;
             return { late: true };
           },
         }),
@@ -360,6 +367,9 @@ describe("WorkflowOrchestrator：StageContract 与重试", () => {
 
     expect(finished.stageHistory).toHaveLength(2);
     expect(finished.stageHistory.every((r) => r.error?.category === "timeout")).toBe(true);
+    expect(maxActiveAttempts).toBe(1);
+    expect(activeAttempts).toBe(0);
+    expect(settledAttempts).toBe(2);
   }, 15_000);
 });
 
@@ -596,6 +606,50 @@ describe("WorkflowOrchestrator：取消", () => {
 
     const finished = await waitForStatus(harness.orchestrator, run.runId, ["cancelled"]);
     expect(finished.status).toBe("cancelled");
+  });
+
+  it("continueCancelled 从最后一个 checkpoint 继续，不重跑已完成 stage", async () => {
+    let firstRuns = 0;
+    let secondAttempts = 0;
+    let secondStarted = false;
+    let rejectSecond: ((error: Error) => void) | undefined;
+    const definition: WorkflowDefinition = {
+      ...linearDefinition([]),
+      stages: [
+        stepStage("first", { execute: async () => { firstRuns += 1; return { saved: true }; } }),
+        stepStage("second", {
+        execute: async (attempt) => {
+          secondAttempts += 1;
+          if (secondAttempts === 1) {
+              secondStarted = true;
+              await new Promise<Record<string, unknown>>((_, reject) => { rejectSecond = reject; });
+            }
+            return { attempt };
+          },
+          onSignal: (signal) => signal.addEventListener("abort", () => rejectSecond?.(new Error("aborted")), { once: true }),
+        }),
+      ],
+      plan: (state) => {
+        const next = ["first", "second"].find((id) => !(id in state.stageResults));
+        return next === undefined
+          ? { kind: "complete", label: "draft", summary: { done: true } }
+          : { kind: "stage", stageId: next };
+      },
+    };
+    const harness = await createHarness(() => definition);
+    const run = await harness.orchestrator.createRun(harness.projectId, "idea_to_paper");
+    await waitUntil(() => secondStarted, 5_000, "second stage 启动");
+    await harness.orchestrator.cancel(run.runId);
+    await waitForStatus(harness.orchestrator, run.runId, ["cancelled"]);
+
+    const continued = await harness.orchestrator.continueCancelled(run.runId);
+    expect(continued.status).toBe("running");
+    const completed = await waitForStatus(harness.orchestrator, run.runId, ["completed"]);
+
+    expect(firstRuns).toBe(1);
+    expect(secondAttempts).toBe(2);
+    expect(completed.completedStages).toEqual(["first", "second"]);
+    expect(completed.stageResults["first"]).toEqual({ saved: true });
   });
 });
 

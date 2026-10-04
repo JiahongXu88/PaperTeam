@@ -444,6 +444,7 @@ function reviewRunStageInner(
         projectId: ctx.projectId,
         manuscriptDigest: digest,
         evidence,
+        signal: ctx.signal,
         targetProfile: project.targetProfile,
         ...(language !== undefined ? { language } : {}),
         ...(citationDigest !== undefined ? { citationDigest } : {}),
@@ -4594,6 +4595,10 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         ...(feedback !== undefined ? { feedback } : {}),
         validEvidenceIds: evidenceIds.map((record) => record.id),
         validInstructionIds: instructions.map((instruction) => instruction.instructionId),
+        externalInstructions: instructions.map((instruction) => ({
+          instructionId: instruction.instructionId,
+          text: instruction.text,
+        })),
       });
       await writeJsonAtomic(
         join(services.projects.researchDir(ctx.projectId), "improvement-plan.json"),

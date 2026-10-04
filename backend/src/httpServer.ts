@@ -660,6 +660,16 @@ async function handleRequest(
       sendJson(res, 200, { run });
       return;
     }
+    if (action === "/continue") {
+      if (method !== "POST") {
+        res.setHeader("Allow", "POST");
+        sendJson(res, 405, { status: "method_not_allowed", method });
+        return;
+      }
+      const run = await services.orchestrator.continueCancelled(runId);
+      sendJson(res, 200, { run });
+      return;
+    }
     if (action === "/cancel") {
       if (method !== "POST") {
         res.setHeader("Allow", "POST");

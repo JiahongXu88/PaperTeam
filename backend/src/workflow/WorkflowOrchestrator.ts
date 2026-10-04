@@ -279,6 +279,56 @@ export class WorkflowOrchestrator {
     return structuredClone(handle.state);
   }
 
+  /** Continue a cancelled run from its persisted stage checkpoint (explicit recovery action). */
+  async continueCancelled(runId: string): Promise<WorkflowState> {
+    const handle = await this.requireHandle(runId);
+    if (handle.state.status !== "cancelled" || handle.resuming) {
+      throw new WorkflowInvalidStateError(
+        runId,
+        handle.resuming ? "resuming" : handle.state.status,
+        "continue（仅 cancelled WorkflowRun 可从 checkpoint 继续）",
+      );
+    }
+    handle.resuming = true;
+    try {
+      if (handle.loop !== null) {
+        await handle.loop.catch(() => {});
+      }
+      if (handle.state.status !== "cancelled" || handle.abortControllers.size !== 0) {
+        throw new WorkflowInvalidStateError(
+          runId,
+          handle.state.status,
+          "continue（旧执行循环尚未收敛）",
+        );
+      }
+      if (await this.hasActiveRun(handle.state.projectId)) {
+        throw new WorkflowInvalidStateError(
+          runId,
+          "project_busy",
+          "continue（同一项目已有活跃 WorkflowRun）",
+        );
+      }
+
+      handle.cancelRequested = false;
+      handle.state.status = "running";
+      delete handle.state.finishedAt;
+      delete handle.state.error;
+      handle.state.progress = undefined;
+      this.touch(handle.state);
+      await this.runStore.saveCheckpoint(handle.state);
+      await this.emit(handle, {
+        type: "workflow.resumed",
+        stageId: handle.state.currentStage,
+        message: "从最后一个持久化 checkpoint 继续执行",
+        data: { recovery: "cancelled_checkpoint" },
+      });
+      this.startLoop(runId);
+      return structuredClone(handle.state);
+    } finally {
+      handle.resuming = false;
+    }
+  }
+
   /**
    * 请求取消：abort 在途 stage 并标记；执行循环在下个检查点终结并落盘。
    * awaiting_input / pending（无执行循环）立即终结。
@@ -581,6 +631,7 @@ export class WorkflowOrchestrator {
         | { ok: true; result: Record<string, unknown> }
         | { ok: false; category: StageFailureCategory; code: string; message: string }
       > => {
+        let stageExecution: Promise<Record<string, unknown>> | undefined;
         try {
           // 超时按"无进展时长"计：几十节的分章节审阅总时长随论文长度线性增长，
           // 只要 stage 持续汇报进度就不该被固定预算杀掉；不汇报进度的 stage 语义与整体超时相同
@@ -606,7 +657,8 @@ export class WorkflowOrchestrator {
               }),
             log: (message) => this.log(`[workflow ${state.runId}] ${message}`),
           };
-          const result = await deadline.race(stage.execute(ctx));
+          stageExecution = Promise.resolve().then(() => stage.execute(ctx));
+          const result = await deadline.race(stageExecution);
 
           // DoD 校验（StageContract：Agent 返回文本 ≠ 成功，产出必须确定性可检）
           const violations = (await stage.verifyDod?.(ctx)) ?? [];
@@ -622,6 +674,10 @@ export class WorkflowOrchestrator {
           } else if (error instanceof TimeoutSignal) {
             // 超时的 stage 仍在运行：必须 abort，否则重试的第二次尝试会与它并发（同一会话 / 同一产物目录）
             controller.abort();
+            // Abort is cooperative. Do not release the stage attempt / retry
+            // boundary until its services have observed cancellation and
+            // settled their AgentRun handles and permits.
+            await stageExecution?.then(() => undefined, () => undefined);
             return { ok: false, category: "timeout", code: "STAGE_FAILED", message: error.message };
           } else if (error instanceof BusinessError) {
             return {

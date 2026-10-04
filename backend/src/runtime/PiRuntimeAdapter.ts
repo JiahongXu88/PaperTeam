@@ -888,6 +888,13 @@ export class PiRuntimeAdapter implements AgentRuntime {
     // 共享 in-memory settings：关闭 auto-compaction（见文件头取舍）
     this.settingsManager = SettingsManager.inMemory({
       compaction: { enabled: false },
+      // Pi 默认 thinking level 是 medium。GLM-5.3 不支持 disabled；Test
+      // Connection 已按模型 metadata 选 low，这里为两个官方 provider slot
+      // 设置相同的模型级默认，确保真实 Agent Run 编码为 enabled + low。
+      modelThinkingLevels: {
+        "zai/glm-5.3": "low",
+        "zai-coding-cn/glm-5.3": "low",
+      },
     });
 
     this.modelRuntime =

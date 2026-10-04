@@ -717,6 +717,8 @@ export class WriterService {
     validEvidenceIds?: string[];
     /** 合法外部意见 id 清单（instructionId 校验用） */
     validInstructionIds?: string[];
+    /** 外部意见原文；用于对模型漏链意见生成保守的 author-decision 计划项 */
+    externalInstructions?: { instructionId: string; text: string }[];
   }): Promise<ImprovementPlan> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -835,6 +837,28 @@ export class WriterService {
             }
           : {}),
       });
+    }
+    // 模型输出不能决定外部意见是否从计划中消失。对每条未链接意见补一个
+    // 保守的人工决策项；它明确禁止 Writer 推测、补实验或改论文事实。
+    const linkedInstructions = new Set(
+      items.flatMap((item) => (item.instructionId === undefined ? [] : [item.instructionId])),
+    );
+    for (const instruction of params.externalInstructions ?? []) {
+      if (linkedInstructions.has(instruction.instructionId) || items.length >= 20) {
+        continue;
+      }
+      items.push({
+        section: params.sectionFiles[0] ?? "main.tex",
+        action:
+          `作者决策必需：${instruction.text}。当前计划未能提出有证据支持的安全修改；` +
+          "本轮不得据此改写论文、补造结果或推断事实，等待作者提供材料或决定。",
+        rationale: `外部意见 ${instruction.instructionId} 未被模型计划覆盖；保留其可追踪状态，防止意见静默丢失。`,
+        priority: "high",
+        instructionId: instruction.instructionId,
+        relatedEvidenceIds: [],
+        expectedFactChanges: [],
+      });
+      linkedInstructions.add(instruction.instructionId);
     }
     if (items.length === 0) {
       throw new AgentRunFailedError("改进计划：没有合法条目");

@@ -430,6 +430,53 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
   });
 });
 
+describe("WriterService improvement plan comment coverage", () => {
+  it("模型漏链外部意见时补 author-decision 计划项，不允许推测事实", async () => {
+    const runtime = new FakeRuntime(() =>
+      completedTask(
+        JSON.stringify({
+          plan: [
+            {
+              section: "main.tex",
+              action: "修正摘要措辞",
+              rationale: "编辑意见",
+              priority: "high",
+              instructionId: "x-editor",
+            },
+          ],
+        }),
+      ),
+    );
+    const writer = new WriterService({ runtime, agentId: "writer" });
+
+    const plan = await writer.planImprovement({
+      projectId: "p-abc",
+      issues: [],
+      analysisDigest: "分析",
+      feasibilityLevel: "LOW",
+      sectionFiles: ["main.tex"],
+      validInstructionIds: ["x-editor", "x-reviewer"],
+      externalInstructions: [
+        { instructionId: "x-editor", text: "凝练创新性表述" },
+        { instructionId: "x-reviewer", text: "补充低光照失效模式数据" },
+      ],
+    });
+
+    expect(plan.items).toHaveLength(2);
+    expect(plan.items[0]?.instructionId).toBe("x-editor");
+    expect(plan.items[1]).toMatchObject({
+      section: "main.tex",
+      instructionId: "x-reviewer",
+      priority: "high",
+      relatedEvidenceIds: [],
+      expectedFactChanges: [],
+    });
+    expect(plan.items[1]?.action).toContain("补充低光照失效模式数据");
+    expect(plan.items[1]?.action).toContain("作者决策必需");
+    expect(plan.items[1]?.action).toContain("不得据此改写论文、补造结果或推断事实");
+  });
+});
+
 describe("WriterService M9.7.6：大纲结构化输出修复（outline repair）", () => {
   const OUTLINE_ARGS = {
     projectId: "p-abc",
