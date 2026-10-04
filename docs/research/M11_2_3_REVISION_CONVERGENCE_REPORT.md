@@ -24,7 +24,13 @@ Case A MOT 振荡（81→77）：真实续跑验证（§8，本轮新语义全�
 
 ## 1. Git
 
-（收尾时回填：commit hash / diff 摘要）
+- commit：`552529f`（main，已 push；HEAD == origin/main，working tree clean）
+- 基线：`8573706`（M11.2.1 + Pi 1.0.1 soak 后）
+- 变更：29 文件，+4163/−47——产品代码 14 文件（review/quality/evidence/workflow/
+  writer/serviceStack）、新增 2 源模块（`claimResolution.ts`、
+  `TargetedGroundingService.ts`）、新增 6 测试文件（61 用例）、3 个一次性真实验证
+  驱动脚本（`scripts/m1123-*.mjs`）、2 文档
+- 检查：无 secret、无论文大文件、无 model dump、无 e2e temp（gitignored）、无 Pi repro
 
 ## 2. Root Cause
 
