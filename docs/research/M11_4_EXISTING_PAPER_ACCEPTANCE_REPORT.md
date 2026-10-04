@@ -15,6 +15,9 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 ## 2. Real Fixture
 
 - 真实 CEA 投稿稿件与作者整理的 Reviewer 反馈、response letter、revision change log 均在 fixture。反馈 Markdown 标明意见为归纳要点，不是审稿人逐字原文；作者回复只用于 ground truth 对照，不作为评论导入。
+- **最终 checkpoint 审计发现输入稿版本问题**：`manuscript/source/paper.tex` 与项目首次导入文件及当前 restore revision 5 的 `main.tex` SHA256 相同；fixture 的 `manuscript/VERSION_README.md` 将其标为 `论文返修稿_20260905_v1`、READY 的投稿前最终返修版本。稿件已经含有这些评论对应的人工修改。fixture 另有 `manuscript/historical/paper_before_revision.tex`（返修前稿），但它没有作为本项目输入。
+- 因此，本轮不是在原始返修前稿上重做人工 revision 的等价测试；comment unresolved 是 PaperTeam 处理状态，不能推断人工返修内容不存在。恢复时须先确定验收要检查“已有最终稿的意见覆盖”还是“从返修前稿重演 revision”。
+- 额外数据源确实在 fixture 内：`experiments/reports/submission_basis/rdk_x3_full_pipeline_report.md`、`extreme_scene_experiment_report.md`、`fair_ablation_new_detector.md`，以及 `experiments/data/board_c0_20260904/` 与 `experiments/data/fair_ablation/` 原始/聚合结果。此前的 “writer evidence_query=0” 表示这些材料没有进入 PaperTeam 当前 Evidence Store，不表示作者没有实验数据。
 - 主稿包含 4 个 section、15 个 subsection、10 个 figure、11 个 table、36 个公式/算法环境、49 个 cite 命令及 25 条 bibliography。
 - fixture 原件保持不变；验收运行使用项目副本 p-ee063d5608ff。
 
@@ -49,7 +52,8 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 ## 8. Revision Plan
 
 - 生成 17 个 plan items，5 条外部评论 linkage 为 5/5；Reviewer 4 的 linkage 缺口由确定性 fallback 修复并在同项目重规划。
-- 对要求设备实验或极端场景证据的意见标出作者决策；未引入新 citation 或无证据 claim。计划覆盖 reviewer intent，但最终执行仍受 Fact Guard 阻止。
+- 对要求设备实验或极端场景证据的意见标出作者决策；未引入新 citation 或无证据 claim。计划有 17 项且外部 linkage 5/5，但 external items 的 section 是 `(global)`，只定位到 `main.tex`，未证明章节级 target 精度。
+- 原始测量/报告在 fixture 已存在；7 个 bounded queries 的 0 个 verified evidence records 反映 Evidence Store handoff 不完整。应将已有报告与数据作为本地证据绑定后再评价，不应要求作者重做实验。
 - bounded targeted search 执行 7 个查询，未找到可验证证据（0 evidence records）；没有将开放式 research 接入写作。
 
 ## 9. Real Revision E2E
@@ -61,7 +65,8 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 ## 10. Comment Coverage
 
 - 总计 5；Addressed 0；Partially addressed 0；Unresolved 5；Pending 0。
-- 计划阶段识别出 2 条需作者决定（需要新增真实实验/边界场景数据）；它们仍以 unresolved 计入当前持久状态，不能计作已解决。
+- 持久状态中 5 条均为 unresolved；计划阶段把 Reviewer 2 与 Reviewer 4 标记为作者决策，因为当前 Evidence Store 未含外部本地实验资产。最终只读审计确认对应真实板端/极端场景报告与 raw data 在 fixture 中，故“作者尚未提供数据”并非准确 blocker。
+- 只读比对显示当前导入的最终稿已经包含编辑意见、近年引用、RDK X3 部署、UA-DETRAC 视角边界与极端场景分析的人工修订内容。此类文本覆盖尚未被 PaperTeam 的 comment outcome/response trace 正式核验，所以 workflow status 仍保持 unresolved；不能静默改成 addressed。
 - External instruction 状态全部明确，无意见静默消失。
 
 ## 11. Reviewer Comment Response Trace
@@ -71,7 +76,7 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 
 ## 12. Fact Preservation
 
-- **未通过真实返修验收。** Revision validator 在不安全稿件中发现 17 个方向性事实偏移；此前修订稿还记录 6 项相对冻结基线的事实保护问题。
+- **候选返修未通过。** Revision validator 在不安全候选稿中发现 17 个方向性事实偏移；此前候选稿还记录 6 项相对冻结基线的事实保护问题。两者均未接受，revision 5 已按正式 restore 恢复到与导入 revision 1 相同 fingerprint 的稿件。当前保存稿没有保留候选漂移；这不等于 PaperTeam 成功产出了新的安全返修。
 - 系统拒绝 unsafe revision 并恢复到冻结稿衍生版本，体现 fail-closed 机制；但由于没有安全可接受的 revised manuscript，不能把 preservation 判为全通过。
 
 ## 13. Citation Preservation
@@ -86,8 +91,8 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 
 ## 15. Ground Truth Comparison
 
-- 已读取作者 response 与 revision change log，作为语义比较依据。
-- PaperTeam 识别出需补实验和边界条件证据的核心 intent，并正确拒绝伪造数据；但返修未被接受，无法完成最终人工修改与系统修改的逐条结果比较。ground truth 对照未完成。
+- 已读取作者 response、revision change log、fixture 版本说明与实验报告。当前导入稿 SHA256 对应 frozen READY final revision，不是返修前稿；逐条人工 ground truth 修改已经体现在 baseline。
+- PaperTeam 没有做可靠的 baseline comment coverage reconciliation，仍将意见计划化，并对已有论断进行了生成式重写；Fact Guard 正确拒绝危险候选稿。语义对照证据存在，但正式逐条 trace/outcome 未生成。若继续 M11.4，先核验当前稿是否满足各 comment，再决定是否有真实 delta，禁止无差异地再改写全文。
 
 ## 16. Revised PDF
 
@@ -96,7 +101,7 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 ## 17. Codex Manual Product Inspection
 
 - 这是 Codex 对 artifact 的人工检查，不是独立 Reviewer 模型。
-- 原始 baseline PDF 抽查页 1、13、17、26，可读且核心结构、图表、参考文献未见明显版式损坏。
+- baseline/frozen final PDF 抽查页 1、13、17、26，可读且核心结构、图表、参考文献未见明显版式损坏。fixture 的 VERSION_README 记录该 26 页稿已独立编译审计；项目也对同一 SHA256 的导入稿 baseline compile PASS。
 - 最终返修被拒绝且无 revised PDF，故无法执行修订稿的完整人工检查清单。
 
 ## 18. Tests
@@ -121,7 +126,29 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 
 ## 21. Known Limitations
 
-- 主要 blocker 是科研决策：需要作者提供新增实验/真实数据并确认结果解释；系统不能替作者创造这些事实。
+- **当前没有证据支持“作者尚未提供 RDK X3 / 极端场景实验数据”**：fixture 内已有 RDK X3 500 帧×3 组 benchmark、18 分钟稳定性报告及 raw aggregate；低照度/高密度报告和逐片段 raw metrics 也存在。缺口是这些本地材料没有被纳入 PaperTeam Evidence Store（本次 7 个 evidence queries 均返回 0 verified records）。不得再将此错误描述为实验不存在。
+- 需明确的恢复决策是稿件 lineage：当前项目导入的是 READY 的人工最终返修稿；返修前快照另存为 `manuscript/historical/paper_before_revision.tex`。若目标是审验系统从原稿返修的能力，必须将该历史快照作为明确基线；若继续当前项目，则应审验现有 final draft 的 comment coverage 并只处理真实剩余差异。
+- 已有作者 response 明确记录了 Reviewer 3 对 UA-DETRAC 域差异的解释，以及 Reviewer 4 对低照度额外 IDS、高密度检测召回瓶颈的披露；它们可作为 ground truth，不需作者重新决定同一解释。对 editor 与 Reviewer 1 的人工改动也有明确位置和引用变更记录。
+
+## 23. Read-only Closeout: Comment-by-comment / Required Input
+
+以下“workflow status”来自 `reviews/external-instructions.json`，5 条当前全为 `unresolved`；“稿件覆盖”是对导入稿与 fixture 的只读对照，不代表 PaperTeam 已经写出或登记 response trace。
+
+| ID / 来源 | Reviewer intent 与 target | PaperTeam 当前状态 | 已有材料 / 未完成原因 |
+|---|---|---|---|
+| `x-599c4c2121` Editor | 凝练创新边界；摘要、引言贡献列表、结论第 4 段 | workflow unresolved；final manuscript 已含 ground-truth 改写 | `response_to_reviewers.md` 和 `revision_change_log.md` 记录了 4 点贡献组织及修改位置。剩余是 outcome trace，没有新增科研输入需求。 |
+| `x-7a549a1a7d` Reviewer 1 | 补近期车载/交通跟踪研究，引用不少于 20 篇；引言第 3 段、不足总结、refs | workflow unresolved；final manuscript 已列相关文献、25 条 refs | frozen README 与 refs.bib 确认 25 条；ground truth 记录新增 6 篇。仍须核对引用内容/适配性并落 comment outcome；不能把 reference count alone 当完整语义验证。 |
+| `x-e667067fc9` Reviewer 2 | 真实车载边缘平台部署性能；§3.8、Table 11，并同步摘要/贡献/结论 | workflow unresolved；final manuscript 已含 RDK X3 §3.8 / Table 11 | 真实报告与 board raw results 存于 fixture。C0 全链路 E2E 1495.63±4.19 ms / 0.669 FPS；ByteTrack 901.54±0.68 ms；500 帧×3 轮；18 分钟稳定性。系统未将来源材料导入 Evidence Store，且此前生成修订出现无关事实漂移。 |
+| `x-11a99c04f6` Reviewer 3 | 说明 UA-DETRAC 固定监控视角与车载场景定位关系；§3.2.2 | workflow unresolved；final manuscript 已有域差异说明 | ground truth 明确不把 UA-DETRAC 称为车载第一视角数据，限定为道路交通共有问题，并用 RDK X3 部署补充工程证据。无需新的科研判断；需将现有完成状态写入 trace。 |
+| `x-d6fdd433f0` Reviewer 4 | 低照度/高密度下性能与失效模式；§3.7/Table 10、§3.9、结论 | workflow unresolved；final manuscript 已有定量分析 | 3 类场景×9 clips×200 帧=5400 帧；raw extreme metrics 在 fixture。低照度 MRG-DTM IDS 35 vs IoU 24、Norm-IDS 1.89 vs 1.30；高密度 IDS 47 vs 45、Norm-IDS 0.78 vs 0.74。稿件如实记录低照度更差及高密度检测召回局限。 |
+
+**作者输入分类**
+
+- **Type A（必须真实、禁止生成）**：当前没有发现需要作者新做的实验输入。Reviewer 2 与 4 对应的真实实验报告和结果已在给定 fixture 中；若未来重新运行模型阶段，先以本地材料建立 evidence provenance，不得让 Writer创造数据。
+- **Type B（作者科研判断）**：主要科学立场已在现有 `response_to_reviewers.md` / frozen final manuscript 中记录，包括 UA-DETRAC 的域差异、低照度下本文 IDS 恶化，以及 RDK X3 实测速度低于实时。没有证据要求作者重新决定这些相同立场；若作者准备改变它们才需要新确认。
+- **Type C（可基于现有材料确定性处理）**：核对 comment 与 final manuscript 段落、引用及实验报告的对应；标注已覆盖/残余问题；生成逐条 response trace；对恢复后的稿件做确定性 LaTeX build 和 PDF 检查。这些尚未完成，原因是本轮进入停止调用/总结阶段，而不是缺材料。
+
+**唯一需要用户明确的恢复决策**：验收基线应继续使用项目当前导入的 READY 人工最终返修稿（它已经含所有 ground-truth edits），还是要把 fixture 中的历史返修前稿作为“系统返修能力”测试 baseline。当前项目 `p-ee063d5608ff` 对应前者。没有该选择，不应盲目继续自动重写或把旧 run 直接续跑成最终返修。
 - 外部意见目前可批量导入、解析、链接到计划并留有明确状态，但最终逐条 response trace artifact 与 revised PDF 缺失。
 - 当前恢复项目仍为 p-ee063d5608ff；源 fixture 未改动。run w-c6a9c9d45c86 在 revision overflow HITL 终止。取得作者所需数据后从同项目的安全恢复版本继续，无需重新导入。
 - 不进入 M11.5 Closure Readiness，因为 M11.4 未 PASS。
@@ -141,4 +168,4 @@ Quota：未触发 GLM_API_QUOTA_EXHAUSTED；未发现余额耗尽错误。
 
 ## 22. Verdict
 
-**PARTIAL / AUTHOR_DECISION_REQUIRED — M11.4 尚未 COMPLETE。** 已验证真实 import、批量 comment ingestion、5/5 计划 linkage、GLM General API runtime、Review lifecycle 收敛与 citation preservation；但事实保护拒绝返修、5 条评论均未最终解决、revised PDF 和完整 response trace 缺失。恢复点为原项目 p-ee063d5608ff 的安全恢复稿；待作者提供真实实验数据/科学判断后继续。M11 当前不能进入 Closure。
+**PARTIAL / AUTHOR_DECISION_REQUIRED — M11.4 尚未 COMPLETE；这不是整个项目 SYSTEM_FAILED。** 当前 run 在 overflow HITL 被取消。其间质量门对未接受的候选修订报告 SYSTEM_FAILED（事实上保护/证据守卫未通过）；候选已拒绝并 restore，不能将该候选作为当前稿。另发现 M11.4 起始稿是已完成的人工 final revision，而非返修前稿；证据源材料存在但未被导入 Evidence Store。尚缺 PaperTeam 可读的逐条响应 trace，以及 PaperTeam 产出的 post-workflow revised PDF/对应 gate 验收。恢复前先选择 baseline lineage；随后只核验现稿与评论的差异、导入已有本地证据、生成可追踪 outcome。不要重新导入评论或盲目重跑全文 revision。M11 暂不能进入 Closure。
