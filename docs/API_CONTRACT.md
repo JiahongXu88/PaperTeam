@@ -154,12 +154,12 @@
 
 | 端点 | 说明 | 前端消费方 |
 |---|---|---|
-| `GET /api/settings/model` | `{settings: ModelSettingsView}`（生效配置/provider/凭据状态/configurationSource/runtimePhase/modelPhase；**永不返回 key 本体**） | ModelSettingsPage「当前状态」 |
-| `PUT /api/settings/model` | `{model: "provider/model-id", apiKey?, agents?, visionModel?}`（model-id 段可含 `/`，按首个 `/` 拆 provider）；apiKey **字段省略 = 保持原 Key**，空字符串 = 400；`visionModel`（M10.2）= `"provider/model-id"` 显式设置（须目录声明 image input，text-only → 400）/ `null` 清除（回落「默认模型 image-capable 时复用」）/ 字段省略 = 保持现有；成功 → `{settings}`（含 `vision` 解析视图：source=vision_setting\|default_model\|unavailable + 原因） | ModelSettingsPage（Save + VisionModelPanel） |
+| `GET /api/settings/model` | `{settings: ModelSettingsView}`（生效配置/provider/凭据状态/configurationSource/runtimePhase/modelPhase/apiChannel?；**永不返回 key 本体**） | ModelSettingsPage「当前状态」 |
+| `PUT /api/settings/model` | `{model: "provider/model-id", apiKey?, agents?, visionModel?, apiChannel?}`（model-id 段可含 `/`，按首个 `/` 拆 provider）；apiKey **字段省略 = 保持原 Key**，空字符串 = 400；`visionModel`（M10.2）= `"provider/model-id"` 显式设置（须目录声明 image input，text-only → 400）/ `null` 清除（回落「默认模型 image-capable 时复用」）/ 字段省略 = 保持现有；`apiChannel`（Z.AI 双通道）= `"coding_plan"`（默认，Pi 内置 Coding endpoint）/ `"general_api"`（按量 endpoint，经 Pi provider baseUrl override）；字段省略 = 保持现有；仅 zai / zai-coding-cn 合法（其他 provider → 400）；切换通道 = Runtime 配置变化（在途 run → 409）；成功 → `{settings}`（含 `vision` 解析视图：source=vision_setting\|default_model\|unavailable + 原因） | ModelSettingsPage（Save + VisionModelPanel + API 通道选择器） |
 | `DELETE /api/settings/model/key` | 清除本地保存的 API Key（agentDir auth.json；env 凭据仍在时模型保持 configured）→ `{settings}` | ModelSettingsPage（Clear Key） |
-| `GET /api/settings/model/options` | provider 列表 `{providers: [{id,name,authConfigured,apiKeyLoginSupported,modelCount,source}]}`（`source: "builtin" \| "custom"`；安全 metadata，无 key） | Provider 搜索选择器（分组：已有凭据 / 自定义 / 常用 / 其他折叠） |
+| `GET /api/settings/model/options` | provider 列表 `{providers: [{id,name,authConfigured,apiKeyLoginSupported,apiChannelSupported?,modelCount,source}]}`（`source: "builtin" \| "custom"`；`apiChannelSupported=true` 仅 Z.AI 家族；安全 metadata，无 key） | Provider 搜索选择器（分组：已有凭据 / 自定义 / 常用 / 其他折叠） |
 | `GET /api/settings/model/options?provider=x` | 单 provider 模型目录 `{provider, models: [{modelId,displayName,contextWindow?,reasoning?,input?}]}` | Model 下拉 |
-| `POST /api/settings/model/test` | Test Connection `{model, apiKey?}` → 200 `{result: {ok,provider,model,latencyMs? \| code,detail?}}`（失败分类：AUTH_FAILED / MODEL_NOT_FOUND / PROVIDER_UNAVAILABLE / RATE_LIMITED / TIMEOUT / UNKNOWN；detail 截断+脱敏） | ModelSettingsPage（Test Connection） |
+| `POST /api/settings/model/test` | Test Connection `{model, apiKey?, apiChannel?}` → 200 `{result: {ok,provider,model,latencyMs? \| code,detail?}}`（失败分类：AUTH_FAILED / MODEL_NOT_FOUND / PROVIDER_UNAVAILABLE / RATE_LIMITED / TIMEOUT / BAD_REQUEST / UNKNOWN；detail 截断+脱敏）。reasoning 由模型 metadata 驱动（不支持 thinking=off 的模型如 GLM-5.3 自动用最低档位 low，不发送 thinking.disabled）；apiChannel 与保存后的真实 Runtime 共用同一 endpoint resolver | ModelSettingsPage（Test Connection） |
 | `GET /api/settings/model/custom-providers` | 自定义提供商列表 `{providers: CustomProviderView[]}`（配置本体 + `authConfigured`；无 key） | 模型设置「自定义提供商」表 |
 | `PUT /api/settings/model/custom-providers/:id` | 新建 / 整体替换 `{provider: CustomProviderInput, apiKey?}`（路径 id 必须等于 `provider.id`；id 与内置 / models.json 提供商冲突 → 400；在途 run → 409 MODEL_CONFIG_BUSY；`headers` 里不允许 Authorization / x-api-key 等认证头）→ `{provider, settings}`；成功后该 provider 立即出现在 `/options` | 自定义提供商表单 |
 | `DELETE /api/settings/model/custom-providers/:id` | 删除：从 Runtime 注销 + 删除其 auth.json 凭据 + 若模型偏好指向它则一并清除 → `{settings}`；未知 id → 404 NOT_FOUND | 自定义提供商表（行内确认） |
@@ -175,6 +175,14 @@
 >   409 `MODEL_CONFIG_BUSY`（不中断活跃任务），且不落盘（前置空闲检查）。
 > - **持久化**：本地配置写在 PaperTeam 用户数据目录（默认 `~/.paperteam`），
 >   不进仓库；重启后由启动装配恢复（env 缺省时 stored 生效）。
+> - **Z.AI API 通道**（zai / zai-coding-cn）：Coding Plan = Pi 内置 Coding
+>   endpoint（默认，旧 settings 无 `apiChannel` 字段即此通道，向后兼容）；
+>   General API（按量）= `https://api.z.ai/api/paas/v4` /
+>   `https://open.bigmodel.cn/api/paas/v4`（经 Pi 1.0.1 provider baseUrl
+>   override，不 fork / 不改 node_modules）。通道存在 model.json（非
+>   secret，provider 级绑定）；API Key 仍只走 auth.json，不复制不迁移。
+>   Test Connection 与保存后的真实 Agent Runtime 共用同一 endpoint
+>   resolver（不会出现「测试走 A 通道、真实调用走 B 通道」）。
 > - Test Connection 不创建 AgentSession / 不写 Workspace / 不污染会话历史；
 >   携带未保存 Key 时经 `options.apiKey` 覆盖式注入（不落盘）。
 

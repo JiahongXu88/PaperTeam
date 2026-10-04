@@ -9,6 +9,7 @@ import { createScriptedRuntime } from "./runtime/scriptedRuntime.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
 import { CustomProviderStore } from "./settings/CustomProviderStore.js";
+import { applyStoredApiChannels } from "./settings/apiChannels.js";
 import { ModelSettingsService, registerStoredCustomProviders } from "./settings/ModelSettingsService.js";
 import { ScriptedVisionRuntime } from "./vision/scriptedVisionRuntime.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
@@ -114,6 +115,9 @@ export async function startBackend(): Promise<void> {
   if (customProviderCount > 0) {
     console.log(`  providers:    ${customProviderCount} 个自定义提供商已注入 Runtime`);
   }
+  // Z.AI API 通道：存储的 general_api 绑定同样先于 adapter 解析启动模型注入
+  // （Pi provider baseUrl override；与 Settings 保存 / Test Connection 同一 resolver）
+  await applyStoredApiChannels(modelRuntime, modelSettingsStore, (message) => console.log(message));
   // scripted 实现含 no-op reconfigure / unknown 模型状态；两边都满足
   // AgentRuntime ∩ ModelSettingsRuntime，下游（服务栈 / Settings）无需感知差异
   const runtime: AgentRuntime & import("./settings/ModelSettingsService.js").ModelSettingsRuntime =

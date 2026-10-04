@@ -16,7 +16,7 @@ import {
   useTestModelConnection,
 } from "../hooks/queries.js";
 import { formatApiError, formatApiErrorDetail } from "../utils/errors.js";
-import type { ModelSettingsView, ModelTestResultCode } from "../types/api.js";
+import type { ApiChannel, ModelSettingsView, ModelTestResultCode } from "../types/api.js";
 
 /**
  * 模型设置。
@@ -24,6 +24,10 @@ import type { ModelSettingsView, ModelTestResultCode } from "../types/api.js";
  * 安全约束（docs/API_CONTRACT.md）：API Key 输入框每次进入页面为空，永不回填已保存值；
  * 显示 / 隐藏只作用于本次输入；不写 localStorage / URL；GET 响应不含 key 本体。
  * provider + modelId 由后端 DTO 显式提供（modelId 可含 "/"），前端不拆字符串。
+ *
+ * Z.AI API 通道（provider 支持 双通道 时显示）：Coding Plan（订阅 Key，默认）/
+ * 按量 API（个人 Key / API 余额）。通道是产品语义（不是 URL），Test Connection
+ * 与保存后的真实 Runtime 使用同一通道。
  */
 
 const SOURCE_LABEL: Record<ModelSettingsView["configurationSource"], string> = {
@@ -41,11 +45,17 @@ const KEY_SOURCE_LABEL: Record<ModelSettingsView["apiKeySource"], string> = {
 const TEST_CODE_LABEL: Record<ModelTestResultCode, string> = {
   AUTH_FAILED: "API Key 无效或认证失败",
   MODEL_NOT_FOUND: "找不到所选模型",
-  PROVIDER_UNAVAILABLE: "模型服务不可达",
-  RATE_LIMITED: "请求过于频繁，请稍后重试",
+  PROVIDER_UNAVAILABLE: "模型服务不可达（网络或上游故障）",
+  RATE_LIMITED: "请求受限（限流 / 配额 / 账户余额不足，详见详细信息）",
   TIMEOUT: "连接超时，请检查网络或模型服务",
+  BAD_REQUEST: "请求被服务拒绝（模型或参数不支持，详见详细信息）",
   UNKNOWN: "未知错误",
 };
+
+const API_CHANNEL_OPTIONS: ReadonlyArray<{ value: ApiChannel; label: string; hint: string }> = [
+  { value: "coding_plan", label: "Coding Plan", hint: "Z.AI Coding Plan 订阅 Key（默认）" },
+  { value: "general_api", label: "按量 API", hint: "个人 API Key / API 余额（按量计费 endpoint）" },
+];
 
 export function ModelSettingsPage() {
   const settingsQuery = useModelSettings();
@@ -77,6 +87,8 @@ export function ModelSettingsPage() {
 function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   const [providerId, setProviderId] = useState(settings.provider ?? "");
   const [modelId, setModelId] = useState(settings.modelId ?? "");
+  // Z.AI API 通道：生效 provider 支持双通道时从存储值恢复，否则默认 Coding Plan
+  const [apiChannel, setApiChannel] = useState<ApiChannel>(settings.apiChannel ?? "coding_plan");
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -92,8 +104,9 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   const models = modelsQuery.data !== undefined && "models" in modelsQuery.data ? modelsQuery.data.models : undefined;
   const selectedModel = providerId !== "" && modelId !== "" ? `${providerId}/${modelId}` : "";
   const selectedProvider = providers?.find((provider) => provider.id === providerId);
+  const channelSupported = selectedProvider?.apiChannelSupported === true;
 
-  // 改了模型 / provider 之后，上一次的测试结果与「已保存」提示不再对应当前选择
+  // 改了模型 / provider / 通道之后，上一次的测试结果与「已保存」提示不再对应当前选择
   const resetFeedback = () => {
     test.reset();
     save.reset();
@@ -102,6 +115,13 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
   const onProviderChange = (next: string) => {
     setProviderId(next);
     setModelId("");
+    // 换 provider 后通道回到默认（存储的通道绑定按 provider 隔离）
+    setApiChannel("coding_plan");
+    resetFeedback();
+  };
+
+  const onApiChannelChange = (next: ApiChannel) => {
+    setApiChannel(next);
     resetFeedback();
   };
 
@@ -111,7 +131,11 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
     }
     const typedKey = apiKeyInput.trim();
     save.mutate(
-      { model: selectedModel, ...(typedKey !== "" ? { apiKey: typedKey } : {}) },
+      {
+        model: selectedModel,
+        ...(typedKey !== "" ? { apiKey: typedKey } : {}),
+        ...(channelSupported ? { apiChannel } : {}),
+      },
       { onSuccess: () => setApiKeyInput("") },
     );
   };
@@ -121,7 +145,11 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
       return;
     }
     const typedKey = apiKeyInput.trim();
-    test.mutate({ model: selectedModel, ...(typedKey !== "" ? { apiKey: typedKey } : {}) });
+    test.mutate({
+      model: selectedModel,
+      ...(typedKey !== "" ? { apiKey: typedKey } : {}),
+      ...(channelSupported ? { apiChannel } : {}),
+    });
   };
 
   const handleClearKey = () => {
@@ -151,6 +179,14 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
               <dt>模型</dt>
               <dd className="mono">{settings.model ?? "（未配置）"}</dd>
             </div>
+            {settings.apiChannel !== undefined ? (
+              <div className="kv-row">
+                <dt>API 通道</dt>
+                <dd data-testid="active-api-channel">
+                  {settings.apiChannel === "general_api" ? "按量 API" : "Coding Plan"}
+                </dd>
+              </div>
+            ) : null}
             <div className="kv-row">
               <dt>API Key</dt>
               <dd>
@@ -218,6 +254,31 @@ function ModelSettingsBody({ settings }: { settings: ModelSettingsView }) {
             />
             <span className="field-help">{providerId === "" ? "请先选择模型提供商" : "输入名称或 Model ID 筛选；Model ID 可以包含「/」"}</span>
           </div>
+
+          {channelSupported ? (
+            <div className="field" data-testid="api-channel-field">
+              <label id="api-channel-label">API 通道</label>
+              <div className="segmented" role="radiogroup" aria-labelledby="api-channel-label" data-testid="api-channel">
+                {API_CHANNEL_OPTIONS.map((option) => (
+                  <label key={option.value} className="segmented-option" title={option.hint}>
+                    <input
+                      type="radio"
+                      name="api-channel"
+                      value={option.value}
+                      checked={apiChannel === option.value}
+                      onChange={() => onApiChannelChange(option.value)}
+                      data-testid={`api-channel-${option.value}`}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+              <span className="field-help">
+                Coding Plan：使用 Z.AI Coding Plan Key；按量 API：使用个人 API Key / API 余额。
+                测试连接与保存后的实际任务使用同一通道、同一 endpoint。
+              </span>
+            </div>
+          ) : null}
 
           <div className="field">
             <label htmlFor="model-api-key">API Key</label>

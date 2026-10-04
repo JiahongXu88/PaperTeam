@@ -694,12 +694,15 @@ async function handleRequest(
 /**
  * /api/settings/model 路由组：
  *   GET    /api/settings/model                 状态（含 per-Agent 视图；不含任何 key）
- *   PUT    /api/settings/model                 保存 {model, apiKey?, agents?}
+ *   PUT    /api/settings/model                 保存 {model, apiKey?, agents?, apiChannel?}
  *                                            （apiKey 省略 = 保持原 Key；agents 省略 =
- *             保持现有 override，存在时整体替换，键值 null = 继承默认）
+ *             保持现有 override，存在时整体替换，键值 null = 继承默认；
+ *             apiChannel 省略 = 保持现有通道，"coding_plan" / "general_api"
+ *             仅对 Z.AI 家族 provider 合法——general_api 经 baseUrl override
+ *             指向按量 endpoint，真实 Runtime 与 Test Connection 同一 resolver）
  *   DELETE /api/settings/model/key             清除本地保存的 API Key
  *   GET    /api/settings/model/options         provider 列表（?provider= 查该 provider 模型）
- *   POST   /api/settings/model/test            Test Connection {model, apiKey?}
+ *   POST   /api/settings/model/test            Test Connection {model, apiKey?, apiChannel?}
  *   GET    /api/settings/model/custom-providers          自定义提供商列表（不含 key）
  *   PUT    /api/settings/model/custom-providers/:id      新建 / 整体替换 {provider, apiKey?}
  *   DELETE /api/settings/model/custom-providers/:id      删除（连同其本地凭据与指向它的模型偏好）
@@ -707,6 +710,7 @@ async function handleRequest(
  * 安全约束：所有响应不携带 key 本体；apiKey 只经 PUT/test 请求体进入，
  * 不落任何日志（请求体从不打印）。agents 配置本身不含任何 key——
  * per-Agent 只保存 provider/model 规格，credential 按 provider 复用。
+ * apiChannel 是非 secret 的产品语义（通道），不存 URL、不进 auth.json。
  */
 async function handleModelSettingsRoutes(
   req: IncomingMessage,
@@ -759,6 +763,18 @@ async function handleModelSettingsRoutes(
           '字段 visionModel 必须是 "provider/model-id" 字符串或 null（清除）',
         );
       }
+      // apiChannel（Z.AI 双通道，可选）：缺省 = 保持现有；值域在服务层校验
+      const apiChannelField = body["apiChannel"];
+      if (
+        apiChannelField !== undefined &&
+        apiChannelField !== "coding_plan" &&
+        apiChannelField !== "general_api"
+      ) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          '字段 apiChannel 必须是 "coding_plan" 或 "general_api"',
+        );
+      }
       const settings = await service.saveModel({
         model,
         ...(typeof apiKeyField === "string" ? { apiKey: apiKeyField } : {}),
@@ -768,6 +784,7 @@ async function handleModelSettingsRoutes(
         ...(visionModelField !== undefined
           ? { visionModel: visionModelField === null ? null : String(visionModelField) }
           : {}),
+        ...(apiChannelField !== undefined ? { apiChannel: apiChannelField } : {}),
       });
       sendJson(res, 200, { settings });
       return true;
@@ -800,9 +817,22 @@ async function handleModelSettingsRoutes(
     if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
       throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
     }
+    // apiChannel（Z.AI 双通道，可选）：Test 与保存后的真实 Runtime 用同一通道
+    const apiChannelField = body["apiChannel"];
+    if (
+      apiChannelField !== undefined &&
+      apiChannelField !== "coding_plan" &&
+      apiChannelField !== "general_api"
+    ) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        '字段 apiChannel 必须是 "coding_plan" 或 "general_api"',
+      );
+    }
     const result = await service.testConnection({
       model,
       ...(typeof apiKeyField === "string" && apiKeyField !== "" ? { apiKey: apiKeyField } : {}),
+      ...(apiChannelField !== undefined ? { apiChannel: apiChannelField } : {}),
     });
     sendJson(res, 200, { result });
     return true;

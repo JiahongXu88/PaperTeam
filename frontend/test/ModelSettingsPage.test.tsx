@@ -56,11 +56,12 @@ const storedSettings: ModelSettingsView = {
   modelPhase: "configured",
   modelDetail: "模型 zai-coding-cn/glm-5.3 已配置",
   detail: "模型配置来自设置页保存的本地配置。",
+  apiChannel: "coding_plan",
 };
 
 const providers: { providers: ModelProviderOptionView[] } = {
   providers: [
-    { id: "zai-coding-cn", name: "Z.AI Coding CN", authConfigured: true, apiKeyLoginSupported: true, modelCount: 2, source: "builtin" },
+    { id: "zai-coding-cn", name: "Z.AI Coding CN", authConfigured: true, apiKeyLoginSupported: true, apiChannelSupported: true, modelCount: 2, source: "builtin" },
     { id: "anthropic", name: "Anthropic", authConfigured: false, apiKeyLoginSupported: true, modelCount: 1, source: "builtin" },
     { id: "openrouter", name: "OpenRouter", authConfigured: false, apiKeyLoginSupported: true, modelCount: 2, source: "builtin" },
     // 小众提供商：默认折叠进「其他」
@@ -253,12 +254,15 @@ describe("ModelSettingsPage", () => {
 
     const input = await screen.findByTestId("api-key-input");
     fireEvent.change(input, { target: { value: "sk-test-new-key" } });
+    // 等 provider 目录就绪（Z.AI 通道选择器出现），payload 才携带当前通道
+    await screen.findByTestId("api-channel-field");
     fireEvent.click(screen.getByTestId("save-model"));
 
     await waitFor(() => {
       expect(saveModelSettings).toHaveBeenCalledWith({
         model: "zai-coding-cn/glm-5.3",
         apiKey: "sk-test-new-key",
+        apiChannel: "coding_plan",
       });
     });
     await waitFor(() => {
@@ -289,11 +293,16 @@ describe("ModelSettingsPage", () => {
     vi.mocked(testModelConnection).mockResolvedValue(result);
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
 
-    fireEvent.click(await screen.findByTestId("test-connection"));
+    // 等 provider 目录就绪（通道选择器出现）再点击，payload 才携带当前通道
+    await screen.findByTestId("api-channel-field");
+    fireEvent.click(screen.getByTestId("test-connection"));
     expect(await screen.findByTestId("test-result")).toHaveTextContent("连接正常");
     expect(screen.getByTestId("test-result")).toHaveTextContent("812ms");
-    // 未输入 Key → 不携带 apiKey
-    expect(testModelConnection).toHaveBeenCalledWith({ model: "zai-coding-cn/glm-5.3" });
+    // 未输入 Key → 不携带 apiKey；Z.AI 家族 provider 携带当前通道
+    expect(testModelConnection).toHaveBeenCalledWith({
+      model: "zai-coding-cn/glm-5.3",
+      apiChannel: "coding_plan",
+    });
   });
 
   it("测试连接失败：显示稳定失败分类的中文文案", async () => {
@@ -486,5 +495,110 @@ describe("ModelSettingsPage", () => {
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
     expect(await screen.findByText("危险操作")).toBeInTheDocument();
     expect(screen.getByText("清除本地保存的 API Key")).toBeInTheDocument();
+  });
+});
+
+describe("ModelSettingsPage：Z.AI API 通道", () => {
+  it("Z.AI provider 显示 API 通道选择器：默认 Coding Plan，当前配置区同步显示", async () => {
+    mockApi();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    const field = await screen.findByTestId("api-channel-field");
+    expect(field).toHaveTextContent("API 通道");
+    expect(screen.getByTestId("api-channel-coding_plan")).toBeChecked();
+    expect(screen.getByTestId("api-channel-general_api")).not.toBeChecked();
+    expect(screen.getByTestId("active-api-channel")).toHaveTextContent("Coding Plan");
+  });
+
+  it("其他 provider（anthropic）不显示 API 通道选择器", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    await screen.findByTestId("api-channel-field"); // Z.AI 默认 provider 有
+    await selectProvider(user, /Anthropic/);
+    await selectModel(user, /Claude Opus X/);
+    expect(screen.queryByTestId("api-channel-field")).not.toBeInTheDocument();
+    // 非 Z.AI provider：Save 不携带 apiChannel 字段
+    vi.mocked(saveModelSettings).mockResolvedValue({ ...storedSettings });
+    fireEvent.click(screen.getByTestId("save-model"));
+    await waitFor(() => {
+      expect(saveModelSettings).toHaveBeenCalledWith({ model: "anthropic/claude-opus-x" });
+    });
+  });
+
+  it("切到按量 API：Test 与 Save 请求携带 apiChannel=general_api", async () => {
+    mockApi();
+    vi.mocked(saveModelSettings).mockResolvedValue({ ...storedSettings });
+    vi.mocked(testModelConnection).mockResolvedValue({
+      ok: true,
+      provider: "zai-coding-cn",
+      model: "zai-coding-cn/glm-5.3",
+      latencyMs: 500,
+    });
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    fireEvent.click(await screen.findByTestId("api-channel-general_api"));
+    expect(screen.getByTestId("api-channel-general_api")).toBeChecked();
+
+    fireEvent.click(screen.getByTestId("test-connection"));
+    await waitFor(() => {
+      expect(testModelConnection).toHaveBeenCalledWith({
+        model: "zai-coding-cn/glm-5.3",
+        apiChannel: "general_api",
+      });
+    });
+
+    fireEvent.click(screen.getByTestId("save-model"));
+    await waitFor(() => {
+      expect(saveModelSettings).toHaveBeenCalledWith({
+        model: "zai-coding-cn/glm-5.3",
+        apiChannel: "general_api",
+      });
+    });
+  });
+
+  it("重新打开 Settings：存储的 general_api 通道恢复选中", async () => {
+    mockApi({ settings: { apiChannel: "general_api" } });
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    expect(await screen.findByTestId("api-channel-general_api")).toBeChecked();
+    expect(screen.getByTestId("api-channel-coding_plan")).not.toBeChecked();
+    expect(screen.getByTestId("active-api-channel")).toHaveTextContent("按量 API");
+  });
+
+  it("切换 provider 后通道回到默认 Coding Plan", async () => {
+    mockApi({ settings: { apiChannel: "general_api" } });
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    expect(await screen.findByTestId("api-channel-general_api")).toBeChecked();
+    // 切到 anthropic（选择器消失），再切回 Z.AI Coding CN：通道重置为默认。
+    // combobox 已聚焦时二次点击不重开列表（onFocus 只触发一次），走输入筛选路径
+    await selectProvider(user, /Anthropic/);
+    expect(screen.queryByTestId("api-channel-field")).not.toBeInTheDocument();
+    const input = screen.getByTestId("provider-combobox-input");
+    await user.clear(input);
+    await user.type(input, "z");
+    await user.click(await screen.findByRole("option", { name: /Z\.AI Coding CN/ }));
+    expect(screen.getByTestId("api-channel-field")).toBeInTheDocument();
+    expect(screen.getByTestId("api-channel-coding_plan")).toBeChecked();
+    expect(screen.getByTestId("api-channel-general_api")).not.toBeChecked();
+  });
+
+  it("Test Connection 失败（BAD_REQUEST）：显示稳定的中文分类文案", async () => {
+    mockApi();
+    vi.mocked(testModelConnection).mockResolvedValue({
+      ok: false,
+      provider: "zai-coding-cn",
+      model: "zai-coding-cn/glm-5.3",
+      code: "BAD_REQUEST",
+      detail: "400 thinking type disabled is not supported",
+    });
+    renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
+
+    fireEvent.click(await screen.findByTestId("test-connection"));
+    expect(await screen.findByTestId("test-result")).toHaveTextContent("请求被服务拒绝");
+    expect(screen.getByTestId("test-result")).toHaveTextContent("thinking type disabled");
   });
 });

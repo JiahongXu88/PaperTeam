@@ -109,6 +109,7 @@ import {
   testModelConnection,
 } from "../api/settings.js";
 import type {
+  ApiChannel,
   CitationSemanticMode,
   StylePolicy,
   CreateProjectInput,
@@ -1151,6 +1152,8 @@ export function useSaveModelSettings() {
       agents?: Record<string, string | null>;
       /** Vision 模型（M10.2）：省略 = 保持现有；null = 清除 */
       visionModel?: string | null;
+      /** Z.AI API 通道：省略 = 保持现有；coding_plan / general_api */
+      apiChannel?: ApiChannel;
     }) => saveModelSettings(input),
     onSuccess: invalidate,
   });
@@ -1182,10 +1185,11 @@ export function useDeleteCustomProvider() {
   return useMutation({ mutationFn: (id: string) => deleteCustomProvider(id), onSuccess: invalidate });
 }
 
-/** Test Connection：携带当前填写但未保存的 model/key；不改缓存 */
+/** Test Connection：携带当前填写但未保存的 model/key/通道；不改缓存 */
 export function useTestModelConnection() {
   return useMutation({
-    mutationFn: (input: { model: string; apiKey?: string }) => testModelConnection(input),
+    mutationFn: (input: { model: string; apiKey?: string; apiChannel?: ApiChannel }) =>
+      testModelConnection(input),
   });
 }
 

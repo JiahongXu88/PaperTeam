@@ -10,6 +10,7 @@
  *   → resolveStartupModelSpec（--model > env PAPERTEAM_PI_MODEL > model.json）
  *   → ModelRuntime.create（auth.json / models.json 在 config.pi.agentDir）
  *   → registerStoredCustomProviders（Settings UI 自定义 provider 先注入）
+ *   → applyStoredApiChannels（Z.AI 通道 baseUrl override 先注入）
  *   → new PiRuntimeAdapter（evaluation 不注入 skills / 角色工具面：
  *     live 臂只用自包含 prompt 的生成与 judge，不依赖工作区工具）
  *
@@ -26,6 +27,7 @@ import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { loadConfig } from "../config/config.js";
 import { applyEnvFile, findEnvFile } from "../config/envFile.js";
 import { PiRuntimeAdapter, parseModelSpec } from "../runtime/PiRuntimeAdapter.js";
+import { applyStoredApiChannels } from "../settings/apiChannels.js";
 import { CustomProviderStore } from "../settings/CustomProviderStore.js";
 import { registerStoredCustomProviders } from "../settings/ModelSettingsService.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "../settings/ModelSettingsStore.js";
@@ -109,6 +111,9 @@ export async function createLiveEvaluationRuntime(options: {
   if (customProviderCount > 0) {
     log(`[live-eval] 自定义 provider 已注入：${customProviderCount} 个`);
   }
+  // Z.AI API 通道（与 index.ts 同序）：存储的 general_api 绑定先于 adapter
+  // 解析启动模型注入，保证 evaluation 与产品 Runtime 使用同一 endpoint
+  await applyStoredApiChannels(modelRuntime, modelSettingsStore, log);
 
   const workspaceRoot = await mkdtemp(join(tmpdir(), "paperteam-eval-live-"));
   const runtime = new PiRuntimeAdapter({

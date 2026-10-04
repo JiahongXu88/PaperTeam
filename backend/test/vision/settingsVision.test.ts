@@ -28,6 +28,9 @@ function fakeCatalog(models: Record<string, string[]>): ModelRuntime {
     getProviders: () => [],
     getProvider: () => undefined,
     getModels: () => [],
+    // Z.AI API 通道注册面（saveModel 末尾同步；fake 无 extension 层，no-op）
+    registerProvider: () => {},
+    unregisterProvider: () => {},
   } as unknown as ModelRuntime;
 }
 

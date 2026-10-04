@@ -6,7 +6,9 @@
  * - 模型目录：providers / per-provider models 的安全 metadata DTO
  * - 保存：模型偏好 → ModelSettingsStore；API Key → ModelRuntime.login
  *   （官方 credential 写路径：RuntimeCredentials.modify → agentDir/auth.json，
- *   并同步 provider 快照；Key 不进日志）
+ *   并同步 provider 快照；Key 不进日志）；Z.AI API 通道 → 存储绑定 +
+ *   syncApiChannelRegistrations（Pi provider baseUrl override，Test 与
+ *   真实 Runtime 共享同一 resolver，见 apiChannels.ts）
  * - 清除：ModelRuntime.logout（删 auth.json 条目 + 内存覆盖层 + 同步）
  * - Test Connection：completeSimple 最小真实调用（可携带未保存的 Key，
  *   经 options.apiKey 覆盖式注入，不落盘、不建 AgentSession、不写 Workspace）
@@ -24,6 +26,12 @@
  */
 
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+  getSupportedThinkingLevels,
+  type Api,
+  type Model,
+  type ThinkingLevel,
+} from "@earendil-works/pi-ai";
 
 import { BusinessError, ModelConfigBusyError, NotFoundError } from "../errors.js";
 import { parseModelSpec } from "../runtime/PiRuntimeAdapter.js";
@@ -31,6 +39,13 @@ import { PI_RUNTIME_VERSION } from "../runtime/pi/version.js";
 import type { RuntimeHealth } from "../runtime/types.js";
 import { isImageCapable, resolveVisionModel } from "../vision/capabilities.js";
 import type { VisionUnavailableReason } from "../vision/types.js";
+import {
+  type ApiChannel,
+  isApiChannelValue,
+  resolveApiChannelBaseUrl,
+  supportsApiChannels,
+  syncApiChannelRegistrations,
+} from "./apiChannels.js";
 import {
   type CustomProviderConfig,
   type CustomProviderStore,
@@ -41,10 +56,14 @@ import {
   AGENT_MODEL_KEYS,
   type AgentModelKey,
   type ModelSettingsStore,
+  type StoredModelSettings,
 } from "./ModelSettingsStore.js";
 
 /** Test Connection 的最小真实调用超时（毫秒） */
 const TEST_CONNECTION_TIMEOUT_MS = 30_000;
+
+/** Test Connection 的输出预算（提示词只要求回答 OK，压低以最小化按量计费成本） */
+const TEST_CONNECTION_MAX_TOKENS = 64;
 
 /** 返回给前端的错误详情截断上限（不透传 Pi/provider 原始长文本） */
 const DETAIL_MAX_CHARS = 300;
@@ -92,6 +111,12 @@ export interface ModelSettingsStatus {
   modelDetail: string;
   /** 人读状态说明（env 覆盖提示在此） */
   detail: string;
+  /**
+   * Z.AI API 通道（生效 provider 支持双通道时才有值）：
+   * coding_plan（默认）/ general_api。Test Connection 与真实 Runtime
+   * 共享同一通道 → 同一 endpoint；无 key 本体。
+   */
+  apiChannel?: ApiChannel;
   /** per-Agent 模型配置视图（M5.7；含 override 与生效值；无 key） */
   agents?: AgentModelView[];
   /** Vision 模型解析视图（M10.2：显式设置 > 默认模型复用；不可用时明确说明） */
@@ -138,6 +163,8 @@ export interface ModelProviderOption {
   authConfigured: boolean;
   /** 是否支持经 Settings UI 保存 API Key（provider.auth.apiKey.login 存在） */
   apiKeyLoginSupported: boolean;
+  /** 是否支持 Coding Plan / General API 双通道选择（Z.AI 家族 provider） */
+  apiChannelSupported?: boolean;
   modelCount: number;
   /** builtin = Pi 内置或 agentDir/models.json；custom = Settings UI 添加的自定义提供商 */
   source: "builtin" | "custom";
@@ -162,6 +189,7 @@ export type ModelTestResultCode =
   | "PROVIDER_UNAVAILABLE"
   | "RATE_LIMITED"
   | "TIMEOUT"
+  | "BAD_REQUEST"
   | "UNKNOWN";
 
 export interface ModelTestResult {
@@ -254,6 +282,9 @@ export class ModelSettingsService {
     // M10.2 Vision 解析视图：显式 visionModel > 默认模型（须 image-capable + 凭据）
     const vision = this.toVisionModelView(stored.visionModel, effectiveModel);
 
+    // Z.AI API 通道视图（生效 provider 支持双通道时才有值；无 key 本体）
+    const apiChannel = effectiveApiChannel(parsed?.provider, stored);
+
     return {
       ...(parsed !== undefined ? { provider: parsed.provider } : {}),
       ...(parsed !== undefined ? { modelId: parsed.modelId } : {}),
@@ -268,6 +299,7 @@ export class ModelSettingsService {
       modelPhase: modelStatus.phase,
       modelDetail: modelStatus.detail,
       detail: describeSource(configurationSource),
+      ...(apiChannel !== undefined ? { apiChannel } : {}),
       agents: AGENT_MODEL_KEYS.map((key) => this.toAgentModelView(key, stored, effectiveModel)),
       vision,
     };
@@ -449,6 +481,8 @@ export class ModelSettingsService {
         ...(preferenceCleared ? {} : preferences.model !== undefined ? { model: preferences.model } : {}),
         ...(visionCleared ? {} : preferences.visionModel !== undefined ? { visionModel: preferences.visionModel } : {}),
         ...(Object.keys(keptAgents).length > 0 ? { agents: keptAgents } : {}),
+        // Z.AI 通道绑定与被删 provider 无关（custom id 不可能是 zai 家族），保留
+        ...(preferences.apiChannel !== undefined ? { apiChannel: preferences.apiChannel } : {}),
       });
       this.log(`[model-settings] 指向自定义提供商 ${id} 的模型偏好已随删除一并清除`);
     }
@@ -463,6 +497,10 @@ export class ModelSettingsService {
    * 保存模型偏好（必填）与 API Key（可选；省略 = 保持原 Key），
    * 以及 per-Agent override（可选；字段缺省 = 保持现有 override，字段存在时
    * 整体替换——键缺省 / null = 该 Agent 继承默认）。
+   * Z.AI API 通道（可选）：字段缺省 = 保持现有绑定；coding_plan = 清除
+   * baseUrl override（回到 Pi 默认 Coding endpoint）；general_api = 经
+   * Pi provider baseUrl override 指向按量 endpoint。通道变更与模型变更
+   * 一样视为 Runtime 配置变化（在途 run > 0 时 409 拒绝）。
    * 语义：先持久化，再重载 Runtime（在途 run > 0 时 409 拒绝，
    * 全部落盘但 Runtime 保持旧配置——下次空闲保存即可对齐；此处直接
    * 抛出，不产生半应用状态）。
@@ -476,6 +514,8 @@ export class ModelSettingsService {
      * （回落到「默认模型 image-capable 时复用」的解析规则）。
      */
     visionModel?: string | null;
+    /** Z.AI API 通道：undefined = 保持现有；coding_plan / general_api 见上 */
+    apiChannel?: ApiChannel;
   }): Promise<ModelSettingsStatus> {
     // 前置空闲检查：避免「已落盘但 Runtime 被拒」的半应用状态
     // （reconfigure 内部仍有一致性守卫，双保险）
@@ -493,6 +533,22 @@ export class ModelSettingsService {
       throw new BusinessError(
         "INVALID_REQUEST",
         `模型 ${provider}/${modelId} 不在注册表（可在 GET /api/settings/model/options?provider=${provider} 查看可用模型）`,
+      );
+    }
+
+    // Z.AI API 通道：字段缺省 = 保持现有绑定（旧客户端兼容）；
+    // 显式提供时模型 provider 必须支持双通道（防止前端状态错位静默落盘）。
+    // 先于任何写路径（含 apiKey 落盘）校验，避免「Key 已写、通道被拒」的半应用
+    if (input.apiChannel !== undefined && !isApiChannelValue(input.apiChannel)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `apiChannel 必须是 "coding_plan" 或 "general_api"`,
+      );
+    }
+    if (input.apiChannel !== undefined && !supportsApiChannels(provider)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `provider ${provider} 不支持 API 通道选择（仅 Z.AI 家族 provider：zai / zai-coding-cn）`,
       );
     }
 
@@ -521,19 +577,29 @@ export class ModelSettingsService {
     // 清除（null / 空串）与保持（undefined）语义同 agents。
     const visionModel = this.validateVisionModel(input.visionModel, storedNow.visionModel);
 
+    // 通道绑定（provider 级）：general_api 落盘；coding_plan / 切换到其他
+    // provider 的模型时清除，不残留 baseUrl override
+    const apiChannel = resolveNextApiChannelBinding(input.apiChannel, provider, storedNow.apiChannel);
+
     await this.store.write({
       model: spec,
       ...(agents !== undefined ? { agents } : {}),
       // null（清除）/ undefined（保持且当前为空）都表现为字段缺省
       ...(visionModel != null ? { visionModel } : {}),
+      ...(apiChannel !== undefined ? { apiChannel } : {}),
     });
     this.log(
       `[model-settings] 已保存模型偏好：${spec}` +
+        (apiChannel !== undefined ? `（通道：general_api）` : "") +
         (visionModel !== undefined ? `（vision：${visionModel ?? "（未设置）"}）` : "") +
         (agents !== undefined && Object.keys(agents).length > 0
           ? `（per-Agent override：${Object.keys(agents).join(", ")}）`
           : ""),
     );
+
+    // 通道注册（幂等；先于 reconfigure——applyModelConfig 重新 getModel
+    // 时即取到 override 后的 baseUrl，真实 Agent 与 Test Connection 同源）
+    syncApiChannelRegistrations(this.modelRuntime, { apiChannel }, this.log);
 
     // 生效值仍按优先级解析（env 覆盖时 Runtime 保持 env 配置）；
     // 同样收敛 SDK 错误对象（可能内嵌 credential）
@@ -658,9 +724,16 @@ export class ModelSettingsService {
    * 最小真实 Provider 调用：验证 模型存在 / 凭据有效 / Provider 可达 / LLM 响应。
    * 携带用户当前填写但尚未保存的 Key 时经 options.apiKey 覆盖式注入
    * （不落盘）；不创建 AgentSession、不写 Workspace、不污染会话历史。
-   * 日志不打印请求体（可能含 Key）。
+   * apiChannel（可选）与保存/真实 Runtime 共享同一 resolver：general_api 时
+   * 对本次调用应用按量 endpoint（未保存也按所选通道测试，不会出现「测试
+   * 走 A 通道、保存后真实调用走 B 通道」的错位）。日志不打印请求体（可能含 Key）。
    */
-  async testConnection(input: { model: string; apiKey?: string }): Promise<ModelTestResult> {
+  async testConnection(input: {
+    model: string;
+    apiKey?: string;
+    /** Z.AI API 通道（默认 coding_plan；与 saveModel 语义一致） */
+    apiChannel?: ApiChannel;
+  }): Promise<ModelTestResult> {
     const spec = input.model.trim();
     const parsed = parseModelSpec(spec);
     if (parsed === undefined) {
@@ -670,7 +743,24 @@ export class ModelSettingsService {
       );
     }
     const { provider, modelId } = parsed;
-    const model = this.modelRuntime.getModel(provider, modelId);
+    if (input.apiChannel !== undefined && !isApiChannelValue(input.apiChannel)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `apiChannel 必须是 "coding_plan" 或 "general_api"`,
+      );
+    }
+    if (input.apiChannel !== undefined && !supportsApiChannels(provider)) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        `provider ${provider} 不支持 API 通道选择（仅 Z.AI 家族 provider：zai / zai-coding-cn）`,
+      );
+    }
+    // 通道缺省时回落到存储的绑定（与真实 Runtime 一致）；无绑定 / 旧客户端 = coding_plan
+    const channel: ApiChannel =
+      input.apiChannel ??
+      effectiveApiChannel(provider, await this.store.load()) ??
+      "coding_plan";
+    let model = this.modelRuntime.getModel(provider, modelId);
     if (model === undefined) {
       return {
         ok: false,
@@ -679,6 +769,11 @@ export class ModelSettingsService {
         code: "MODEL_NOT_FOUND",
         detail: `模型 ${provider}/${modelId} 不在注册表`,
       };
+    }
+    // 与真实 Runtime 同一 resolver；仅 general_api 需要替换 baseUrl
+    const baseUrlOverride = resolveApiChannelBaseUrl(provider, channel);
+    if (baseUrlOverride !== undefined && model.baseUrl !== baseUrlOverride) {
+      model = { ...model, baseUrl: baseUrlOverride };
     }
 
     const apiKey =
@@ -692,6 +787,7 @@ export class ModelSettingsService {
         detail: `provider ${provider} 无可用凭据（请填写 API Key，或先保存/设置环境变量）`,
       };
     }
+    const reasoning = testConnectionReasoning(model);
 
     const startedAt = Date.now();
     let message: { stopReason?: string; errorMessage?: string };
@@ -710,7 +806,10 @@ export class ModelSettingsService {
           ],
         },
         {
-          maxTokens: 2048,
+          maxTokens: TEST_CONNECTION_MAX_TOKENS,
+          // GLM-5.3 等不支持 thinking=off 的模型必须显式给最低档位，
+          // 否则 Pi 的 zai thinkingFormat 会编码成 thinking.disabled → 400
+          ...(reasoning !== undefined ? { reasoning } : {}),
           ...(apiKey !== undefined ? { apiKey } : {}),
           signal,
         },
@@ -730,13 +829,15 @@ export class ModelSettingsService {
       const code = aborted || signal.aborted ? "TIMEOUT" : classifyFailure(rawDetail);
       const detail = redact(truncate(rawDetail, DETAIL_MAX_CHARS), [apiKey, ...this.knownSecrets()]);
       this.log(
-        `[model-settings] Test Connection 失败：${provider}/${modelId} code=${code}` +
-          `（不打印请求体与 key）`,
+        `[model-settings] Test Connection 失败：${provider}/${modelId} channel=${channel}` +
+          ` code=${code} detail=${detail}（不打印请求体与 key）`,
       );
       return { ok: false, provider, model: spec, code, detail };
     }
 
-    this.log(`[model-settings] Test Connection 成功：${provider}/${modelId}（${latencyMs}ms）`);
+    this.log(
+      `[model-settings] Test Connection 成功：${provider}/${modelId} channel=${channel}（${latencyMs}ms）`,
+    );
     return { ok: true, provider, model: spec, latencyMs };
   }
 
@@ -850,6 +951,7 @@ export class ModelSettingsService {
       name: provider?.name ?? providerId,
       authConfigured: this.getAuthStatus(providerId).configured,
       apiKeyLoginSupported: this.supportsApiKeyLogin(providerId),
+      ...(supportsApiChannels(providerId) ? { apiChannelSupported: true } : {}),
       modelCount: this.modelRuntime.getModels(providerId).length,
       source: customIds.has(providerId) ? "custom" : "builtin",
     };
@@ -895,13 +997,74 @@ function classifyFailure(rawDetail: string): ModelTestResultCode {
   if (/\b404\b|model_not_found|does not exist|not found/.test(text)) {
     return "MODEL_NOT_FOUND";
   }
-  if (/\b5\d\d\b|internal server error|bad gateway|service unavailable|econnrefused|enotfound|fetch failed|network/.test(text)) {
-    return "PROVIDER_UNAVAILABLE";
+  // 400 家族（含 thinking 参数不被模型支持等请求级拒绝）：与认证/限流/5xx 区分开
+  if (/\b400\b|bad[_ ]request|invalid[_ ]request|invalid_request_error/.test(text)) {
+    return "BAD_REQUEST";
   }
-  if (/abort|timeout|timed out/.test(text)) {
+  if (/abort|timeout|timed out|etimedout/.test(text)) {
     return "TIMEOUT";
   }
+  // 5xx 与网络层失败（OpenAI SDK 的 "Connection error." 等）都归「服务不可达」
+  if (
+    /\b5\d\d\b|internal server error|bad gateway|service unavailable|econnrefused|enotfound|econnreset|socket hang up|fetch failed|network|connection error|connection refused|connection closed/.test(
+      text,
+    )
+  ) {
+    return "PROVIDER_UNAVAILABLE";
+  }
   return "UNKNOWN";
+}
+
+/**
+ * Test Connection 的 reasoning 档位（模型 metadata 驱动，不维护第二份模型
+ * 能力表，也不按模型 id 硬编码）：
+ * - 模型不支持 reasoning → undefined（不注入）
+ * - 支持 off → undefined（最低成本；Pi 会编码成各家的 off/none 语义）
+ * - 不支持 off（如 GLM-5.3：thinkingLevelMap.off=null）→ 最低可用档位
+ *   （GLM-5.3 → low）。这类模型若不显式给档位，Pi 的 zai thinkingFormat
+ *   会发送 thinking.type=disabled，服务端 400 拒绝。
+ */
+function testConnectionReasoning(model: Model<Api>): ThinkingLevel | undefined {
+  if (model.reasoning !== true) {
+    return undefined;
+  }
+  const levels = getSupportedThinkingLevels(model);
+  if (levels.includes("off")) {
+    return undefined;
+  }
+  return levels.find((level) => level !== "off");
+}
+
+/**
+ * 计算 saveModel 后的通道绑定：字段缺省 = 保持现有；general_api = 绑定
+ * 本次保存的 provider；coding_plan = 清除该 provider 的绑定（切回 Coding
+ * endpoint，不残留 override）。其他 provider 的既有绑定不受影响。
+ */
+function resolveNextApiChannelBinding(
+  input: ApiChannel | undefined,
+  provider: string,
+  current: StoredModelSettings["apiChannel"],
+): StoredModelSettings["apiChannel"] {
+  if (input === undefined) {
+    return current;
+  }
+  if (input === "general_api") {
+    return { provider, channel: "general_api" };
+  }
+  return current?.provider === provider ? undefined : current;
+}
+
+/** 生效 provider 的通道视图（不支持双通道 → undefined；否则 coding_plan/general_api） */
+function effectiveApiChannel(
+  provider: string | undefined,
+  stored: StoredModelSettings,
+): ApiChannel | undefined {
+  if (provider === undefined || !supportsApiChannels(provider)) {
+    return undefined;
+  }
+  return stored.apiChannel?.provider === provider && stored.apiChannel.channel === "general_api"
+    ? "general_api"
+    : "coding_plan";
 }
 
 function truncate(text: string, maxChars: number): string {

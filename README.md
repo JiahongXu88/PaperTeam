@@ -134,6 +134,15 @@ Backend 保存到 `~/.paperteam`，不进仓库、任何接口不回显）；也
 支持 Anthropic / OpenAI 兼容网关与自定义 Provider（三种协议、额外请求头、模型目录）。
 不配置模型时应用正常启动（Agent 调用返回结构化失败，不伪造成功）。
 
+Z.AI（`zai` / `zai-coding-cn`）需按 Key 类型选择 **API 通道**：
+
+- **Coding Plan**（默认）：Z.AI Coding Plan 订阅 Key（Coding endpoint）
+- **按量 API**：个人充值 / API 余额 Key（`https://api.z.ai/api/paas/v4`，
+  zai-coding-cn 对应 `https://open.bigmodel.cn/api/paas/v4`）
+
+两种 Key 不能从内容判断，请在页面上显式选择；测试连接与保存后的真实任务使用同一
+通道、同一 endpoint。
+
 ### 依赖说明
 
 | 依赖 | 用途 | 何时需要 |

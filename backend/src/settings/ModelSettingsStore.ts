@@ -90,7 +90,15 @@ export function agentModelKeyForScope(scope: string | undefined): AgentModelKey 
   return undefined;
 }
 
-/** 持久化的模型偏好（版本化 schema；v1 只有 model；M5.7 增加可选 agents；M10.2 增加可选 visionModel） */
+/** Z.AI API 通道绑定（provider 级；非 secret，随模型偏好持久化） */
+export interface StoredApiChannelBinding {
+  /** 绑定针对的双通道 provider（zai / zai-coding-cn） */
+  provider: string;
+  /** 目前只有非默认通道需要持久化（coding_plan = 缺省，不落盘） */
+  channel: "general_api";
+}
+
+/** 持久化的模型偏好（版本化 schema；v1 只有 model；M5.7 增加可选 agents；M10.2 增加可选 visionModel；Z.AI 通道增加可选 apiChannel） */
 export interface StoredModelSettings {
   /** 生效默认偏好 "provider/model-id"（缺省 = 未保存） */
   model?: string;
@@ -105,8 +113,30 @@ export interface StoredModelSettings {
    * 保存时已校验模型目录声明 image input——这里只存偏好，不做能力判定。
    */
   visionModel?: string;
+  /**
+   * Z.AI API 通道（provider 级绑定）：general_api = 按量 endpoint override；
+   * 缺省 = Coding Plan（Pi provider 默认 endpoint，向后兼容旧 settings）。
+   * 绑定到具体 provider，避免切换模型提供商后通道语义漂移。
+   */
+  apiChannel?: StoredApiChannelBinding;
   /** 上次保存时间（ISO；诊断用） */
   savedAt?: string;
+}
+
+/** 磁盘 JSON → API 通道绑定（防御性：形状不符 / 非双通道 provider → 忽略） */
+function readApiChannelBinding(value: unknown): StoredApiChannelBinding | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record["provider"] !== "string" ||
+    record["provider"].trim() === "" ||
+    record["channel"] !== "general_api"
+  ) {
+    return undefined;
+  }
+  return { provider: record["provider"].trim(), channel: "general_api" };
 }
 
 /** 磁盘 JSON → agents override（防御性：只接受已知键的非空字符串值） */
@@ -153,9 +183,11 @@ export class ModelSettingsStore {
     const savedAt = (parsed as Record<string, unknown>)["savedAt"];
     const visionModel = (parsed as Record<string, unknown>)["visionModel"];
     const agents = readAgentOverrides((parsed as Record<string, unknown>)["agents"]);
+    const apiChannel = readApiChannelBinding((parsed as Record<string, unknown>)["apiChannel"]);
     return {
       ...(typeof model === "string" && model.trim() !== "" ? { model: model.trim() } : {}),
       ...(typeof visionModel === "string" && visionModel.trim() !== "" ? { visionModel: visionModel.trim() } : {}),
+      ...(apiChannel !== undefined ? { apiChannel } : {}),
       ...(typeof savedAt === "string" ? { savedAt } : {}),
       ...(agents !== undefined ? { agents } : {}),
     };
@@ -184,6 +216,7 @@ export class ModelSettingsStore {
     await writeJsonAtomic(this.filePath, {
       ...(settings.model !== undefined ? { model: settings.model } : {}),
       ...(settings.visionModel !== undefined ? { visionModel: settings.visionModel } : {}),
+      ...(settings.apiChannel !== undefined ? { apiChannel: settings.apiChannel } : {}),
       ...agents,
       savedAt: new Date().toISOString(),
     });

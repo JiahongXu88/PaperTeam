@@ -1,5 +1,6 @@
 import { apiClient } from "./client.js";
 import type {
+  ApiChannel,
   CustomProviderInput,
   CustomProviderView,
   ModelOptionsView,
@@ -20,7 +21,8 @@ import type {
  *   DELETE /api/settings/model/custom-providers/:id  → { settings }
  *
  * Key 只经 PUT/test 请求体发往同源 Backend；GET 响应不含 key，
- * 任何返回值都不落 localStorage/sessionStorage。
+ * 任何返回值都不落 localStorage/sessionStorage。apiChannel 是非 secret 的
+ * 通道选择（Z.AI 家族 provider），与保存后的真实 Runtime 用同一通道。
  */
 
 export async function getModelSettings(signal?: AbortSignal): Promise<ModelSettingsView> {
@@ -45,6 +47,11 @@ export async function saveModelSettings(input: {
    * 须为目录声明 image input 的模型（Backend 校验拒绝 text-only）。
    */
   visionModel?: string | null;
+  /**
+   * Z.AI API 通道：省略 = 保持现有；coding_plan = Pi 默认 Coding endpoint；
+   * general_api = 按量 endpoint（baseUrl override）。仅双通道 provider 合法。
+   */
+  apiChannel?: ApiChannel;
 }): Promise<ModelSettingsView> {
   const body = await apiClient.put<{ settings: ModelSettingsView }>("/api/settings/model", input);
   return body.settings;
@@ -72,6 +79,8 @@ export async function getModelOptions(
 export async function testModelConnection(input: {
   model: string;
   apiKey?: string;
+  /** Z.AI API 通道（与保存后的真实 Runtime 用同一通道测试） */
+  apiChannel?: ApiChannel;
 }): Promise<ModelTestResultView> {
   const body = await apiClient.post<{ result: ModelTestResultView }>(
     "/api/settings/model/test",

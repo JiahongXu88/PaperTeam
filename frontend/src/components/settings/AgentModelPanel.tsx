@@ -35,8 +35,9 @@ const TEST_CODE_LABEL: Record<ModelTestResultCode, string> = {
   AUTH_FAILED: "API Key 无效或认证失败",
   MODEL_NOT_FOUND: "找不到所选模型",
   PROVIDER_UNAVAILABLE: "模型服务不可达",
-  RATE_LIMITED: "请求过于频繁，请稍后重试",
+  RATE_LIMITED: "请求受限（限流 / 配额 / 账户余额不足）",
   TIMEOUT: "连接超时，请检查网络或模型服务",
+  BAD_REQUEST: "请求被服务拒绝（模型或参数不支持）",
   UNKNOWN: "未知错误",
 };
 

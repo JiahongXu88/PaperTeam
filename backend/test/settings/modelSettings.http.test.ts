@@ -233,6 +233,46 @@ describe("HTTP /api/settings/model（M4.3.7.5）", () => {
     expect(result["code"]).toBe("MODEL_NOT_FOUND");
   });
 
+  it("PUT/POST apiChannel：合法值透传；非法值 400；状态 DTO 回显通道", async () => {
+    const server = await makeSettingsServer();
+    // 保存 general_api → 状态回显；model.json 语义由服务层测试覆盖
+    const put = await request(
+      server,
+      "PUT",
+      "/api/settings/model",
+      JSON.stringify({ model: "zai-coding-cn/glm-5.3", apiChannel: "general_api" }),
+    );
+    expect(put.status).toBe(200);
+    expect((JSON.parse(put.text)["settings"] as Record<string, unknown>)["apiChannel"]).toBe(
+      "general_api",
+    );
+
+    const invalidPut = await request(
+      server,
+      "PUT",
+      "/api/settings/model",
+      JSON.stringify({ model: "zai-coding-cn/glm-5.3", apiChannel: "premium" }),
+    );
+    expect(invalidPut.status).toBe(400);
+
+    const invalidTest = await request(
+      server,
+      "POST",
+      "/api/settings/model/test",
+      JSON.stringify({ model: "zai-coding-cn/glm-5.3", apiChannel: "nope" }),
+    );
+    expect(invalidTest.status).toBe(400);
+
+    // 非双通道 provider 显式传通道 → 400（防前端状态错位静默落盘）
+    const wrongProvider = await request(
+      server,
+      "PUT",
+      "/api/settings/model",
+      JSON.stringify({ model: "anthropic/claude-opus-4-5", apiChannel: "general_api" }),
+    );
+    expect(wrongProvider.status).toBe(400);
+  });
+
   it("方法不允许与未知子路径：405 / 404", async () => {
     const server = await makeSettingsServer();
     expect((await request(server, "POST", "/api/settings/model", "{}")).status).toBe(405);

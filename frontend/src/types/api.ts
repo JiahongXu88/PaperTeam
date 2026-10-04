@@ -701,6 +701,9 @@ export interface AgentModelSettingView {
   authConfigured?: boolean;
 }
 
+/** Z.AI API 通道（Coding Plan 订阅 / General 按量 API；用户选通道，不是 URL） */
+export type ApiChannel = "coding_plan" | "general_api";
+
 /** GET /api/settings/model 的 settings DTO（无任何 key 字段） */
 export interface ModelSettingsView {
   provider?: string;
@@ -717,6 +720,8 @@ export interface ModelSettingsView {
   modelPhase: "configured" | "not_configured" | "unknown";
   modelDetail: string;
   detail: string;
+  /** Z.AI API 通道（生效 provider 支持双通道时才有值；旧 Backend 缺省 = Coding Plan） */
+  apiChannel?: ApiChannel;
   /** per-Agent 模型配置视图（M5.7；旧 Backend 可能缺省） */
   agents?: AgentModelSettingView[];
   /** Vision 模型解析视图（M10.2；旧 Backend 可能缺省） */
@@ -741,6 +746,8 @@ export interface ModelProviderOptionView {
   name: string;
   authConfigured: boolean;
   apiKeyLoginSupported: boolean;
+  /** 是否支持 Coding Plan / General API 双通道选择（Z.AI 家族 provider；缺省 = 不支持） */
+  apiChannelSupported?: boolean;
   modelCount: number;
   /** builtin = Pi 内置 / models.json；custom = 设置页添加的自定义提供商 */
   source: "builtin" | "custom";
@@ -796,6 +803,7 @@ export type ModelTestResultCode =
   | "PROVIDER_UNAVAILABLE"
   | "RATE_LIMITED"
   | "TIMEOUT"
+  | "BAD_REQUEST"
   | "UNKNOWN";
 
 /** POST /api/settings/model/test 的结果 */
