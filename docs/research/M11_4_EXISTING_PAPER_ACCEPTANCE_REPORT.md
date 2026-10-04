@@ -24,7 +24,7 @@ PaperTeam：`D:\Projects\PaperTeam`
 
 - 开始前：`main`；`HEAD == origin/main == 7dbfdb58584543e06fd6e2c10b908e27990c86ce`；working tree clean。
 - 本次没有修改产品代码。只更新本报告和 `docs/PROJECT_STATUS.md`；运行项目、candidate、临时编译产物均在 gitignored 项目数据或 `%TEMP%`。
-- 最终 Git 状态、验证后的提交状态见收尾记录。无 fixture、PDF、API Key、`auth.json`、凭证或实验大文件加入 Git。
+- 两份文档已提交到本地 `main`；未 push。最终 working tree clean，HEAD/`origin/main` 对照以收尾时 `git log` 为准。无 fixture、PDF、API Key、`auth.json`、凭证或实验大文件加入 Git。
 
 ## 3. Why Previous Attempt Was Invalid
 
