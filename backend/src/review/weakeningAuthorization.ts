@@ -30,8 +30,11 @@ import type { RevisionPlan, RevisionPlanItem } from "./revisionPlan.js";
 import type { ClaimGroundingReport } from "./claimGrounding.js";
 import { isUnsupportedVerdict } from "./claimGrounding.js";
 
-/** 授权类型（语义见模块头） */
-export type WeakeningAuthorizationKind = "weaken_claim_strength" | "remove_unsupported_detail";
+/** 授权类型（语义见模块头；remove_claim 为 M11.2.3 新增窄授权） */
+export type WeakeningAuthorizationKind =
+  | "weaken_claim_strength"
+  | "remove_unsupported_detail"
+  | "remove_claim";
 
 /** Fact Preservation 消费的最小输入形状（台账条目 / 匹配计划现场派生共用） */
 export interface WeakeningAuthorizationInput {
@@ -167,6 +170,39 @@ export function deriveClaimGroundingWeakeningAuthorizations(
 /** describe 口径（gate / 报告用） */
 export function describeWeakeningAuthorizations(entries: readonly WeakeningAuthorizationInput[]): string {
   const weaken = entries.filter((entry) => entry.kind === "weaken_claim_strength").length;
-  const removal = entries.length - weaken;
-  return `授权弱化 ${weaken} 条 / 授权删细节 ${removal} 条`;
+  const removal = entries.filter((entry) => entry.kind === "remove_unsupported_detail").length;
+  const removalClaim = entries.filter((entry) => entry.kind === "remove_claim").length;
+  return `授权弱化 ${weaken} 条 / 授权删细节 ${removal} 条 / 授权删 claim ${removalClaim} 条`;
+}
+
+/**
+ * M11.2.3：Claim Resolution Contract → typed 授权（纯函数）。
+ * 只消费两个产生删除语义的动作（窄授权，不放大）：
+ * - remove_unsupported_detail：claim 含数字且无 grounding 通路——数值只许删；
+ * - remove_claim：弱化形态不可接受且语料无法支撑——整条删除（claim 文本点名，
+ *   Fact Preservation 侧按 remove_unsupported_detail 同一消费路径放行「删除」
+ *   方向，永远不放行替换 / 加强）。
+ * use_existing_evidence / ground_existing_source 不产生授权（它们不改事实）；
+ * weaken 的授权已由 deriveClaimGroundingWeakeningAuthorizations 覆盖，不重复铸造。
+ */
+export function deriveClaimResolutionAuthorizations(
+  resolutions: readonly import("./claimResolution.js").ClaimResolution[],
+  round: number,
+): WeakeningAuthorizationInput[] {
+  const entries: WeakeningAuthorizationInput[] = [];
+  for (const resolution of resolutions) {
+    if (resolution.action !== "remove_unsupported_detail" && resolution.action !== "remove_claim") {
+      continue;
+    }
+    entries.push({
+      kind: resolution.action,
+      section: resolution.section,
+      targetSpan: resolution.claim.slice(0, TARGET_SPAN_MAX_LENGTH),
+      itemId: `resolution:${resolution.claimId}`,
+      claimId: resolution.claimId,
+      round,
+      reason: `claim resolution r${round}（${resolution.action}）：${resolution.basis}`,
+    });
+  }
+  return entries;
 }

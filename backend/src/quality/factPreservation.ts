@@ -875,7 +875,11 @@ function weakeningCoversFile(auth: AuthorizationContext, file: string): boolean 
   );
 }
 
-/** remove_unsupported_detail 授权点名该值时返回其 itemId（文件匹配 + 授权文本含值） */
+/**
+ * remove_unsupported_detail / remove_claim 授权点名该值时返回其 itemId
+ * （文件匹配 + 授权文本含值）。M11.2.3：remove_claim 与删细节同一消费路径
+ * ——都只放行「删除」方向；替换进 changed 桶、加强被弱化类别核验拦截。
+ */
 function findUnsupportedDetailRemoval(
   auth: AuthorizationContext,
   value: string,
@@ -883,7 +887,7 @@ function findUnsupportedDetailRemoval(
 ): string | null {
   for (const entry of auth.weakeningEntries) {
     if (
-      entry.kind === "remove_unsupported_detail" &&
+      (entry.kind === "remove_unsupported_detail" || entry.kind === "remove_claim") &&
       sectionRefMatchesFile(entry.section, file) &&
       mentionsValue([entry.targetSpan], value)
     ) {
@@ -1080,6 +1084,80 @@ function claimSentences(content: string): ClaimSentence[] {
 // ---- 主判定（纯函数） ----
 
 const MAX_FINDINGS_PER_BUCKET = 30;
+
+/**
+ * M11.2.3（D-1）：pairwise fact 违规的 factRestore 数值投影。
+ *
+ * 背景（Case B 实录）：survey 项目（无冻结基线）的 pairwise 违规此前不提取
+ * restoreValues / removeValues——rev N 的「无依据新增」在 rev N+1 按计划删除后，
+ * 删除动作自身被判 number_removed（无授权）→ 加也拦、删也拦的结构性死锁
+ * （FACT_PRESERVATION_FAILED 反复触发）。existing-paper 的累计路径
+ * （buildCumulativeFactRegressions）自 M10.3.1 起就提取双清单，本函数把同一
+ * 语义投影到 pairwise 路径：
+ * - added_unsupported → removeValues：授权「删除该无依据新增」。行级提取（值
+ *   所在行的全部数字 token）：新增时被 isFactLikeAddition 过滤的裸整数（年份
+ *   等）删除时同样进 missing 多重集——只点名 classification.newValue 一值会漏
+ *   （Case B 的 "-2026" 与 "2025" 同句），行级清单消除该不对称。
+ * - removed → restoreValues：授权「重新加回被删原值」（行级，同上）。
+ * - changed → restoreValues=[旧值] + removeValues=[新值]（与累计路径
+ *   numericPart 同语义；值级而非行级——swap 的替换语义须双值精确点名）。
+ * - direction / formula / placeholder / format：不投影（factRestore 通道只参与
+ *   数值类 value*Authorized 判定；这些类别的授权走各自既有通道）。
+ *
+ * 授权消费 = buildAuthorization 的 restoreAuths（M10.3.1 既有）：只放行
+ * 「删除被点名值 / 改回旧值 / 加回旧值」三个方向，永不放行替换与加强。
+ */
+export function projectPairwiseFactRestore(
+  finding: Pick<FactFinding, "kind" | "file" | "classification">,
+  files: readonly { file: string; content: string }[],
+): { restoreValues?: string[]; removeValues?: string[] } {
+  const numericPart = (value: string | undefined): string | undefined => {
+    if (value === undefined) {
+      return undefined;
+    }
+    const stripped = value.replace(/[^\d.%‰eE+\-−]/g, "").trim();
+    return /\d/.test(stripped) ? stripped : undefined;
+  };
+  const content = files.find((entry) => entry.file === finding.file)?.content;
+  /** 值所在行的全部数字 token（与 pairwise 判定同源 token 化；定位失败回退单值） */
+  const lineNumericTokens = (value: string | undefined): string[] => {
+    const stripped = numericPart(value);
+    if (stripped === undefined || content === undefined) {
+      return stripped !== undefined ? [stripped] : [];
+    }
+    const index = indexOfToken(content, stripped);
+    if (index < 0) {
+      return [stripped];
+    }
+    const tokens = proseNumberTokens(lineOf(content, index));
+    return tokens.length > 0 ? tokens : [stripped];
+  };
+  const compact = (values: string[]): string[] | undefined => {
+    const unique = [...new Set(values.filter((value) => value !== ""))];
+    if (unique.length === 0) {
+      return undefined;
+    }
+    return unique.slice(0, 12);
+  };
+
+  if (finding.kind === "added_unsupported") {
+    return { removeValues: compact(lineNumericTokens(finding.classification?.newValue)) };
+  }
+  if (finding.kind === "removed") {
+    return { restoreValues: compact(lineNumericTokens(finding.classification?.oldValue)) };
+  }
+  if (finding.kind === "changed") {
+    return {
+      ...(compact([numericPart(finding.classification?.oldValue) ?? ""]) !== undefined
+        ? { restoreValues: compact([numericPart(finding.classification?.oldValue) ?? ""]) }
+        : {}),
+      ...(compact([numericPart(finding.classification?.newValue) ?? ""]) !== undefined
+        ? { removeValues: compact([numericPart(finding.classification?.newValue) ?? ""]) }
+        : {}),
+    };
+  }
+  return {};
+}
 
 function cap(items: FactFinding[]): FactFinding[] {
   return items.slice(0, MAX_FINDINGS_PER_BUCKET);

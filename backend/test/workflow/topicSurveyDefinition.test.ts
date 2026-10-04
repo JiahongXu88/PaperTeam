@@ -73,6 +73,7 @@ describe("topic_survey definition", () => {
       "review.run",
       "quality.gate",
       "revision.plan",
+      "evidence.ground_claims",
       "revision.restore_facts",
       "revision.revise",
       "revision.validate",

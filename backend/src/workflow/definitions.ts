@@ -43,6 +43,8 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import { normalizeManuscriptLanguage } from "../project/language.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
+import type { TargetedGroundingService } from "../evidence/TargetedGroundingService.js";
+import type { ChunkStore } from "../retrieval/ChunkStore.js";
 import { EvidenceSelectionService, isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import type { ResearchCoverageService } from "../agents/researchCoverage.js";
 import type { ResearchPlanExecutionService } from "../agents/researchPlanExecution.js";
@@ -83,6 +85,8 @@ import {
 import {
   computeFactPreservation,
   describeFactPreservation,
+  projectPairwiseFactRestore,
+  type FactFinding,
   type FactTexFile,
 } from "../quality/factPreservation.js";
 import {
@@ -94,10 +98,15 @@ import {
 } from "../quality/cumulativeFactPreservation.js";
 import {
   deriveClaimGroundingWeakeningAuthorizations,
+  deriveClaimResolutionAuthorizations,
   derivePlanWeakeningAuthorizations,
 } from "../review/weakeningAuthorization.js";
 import { applyFactRestore, planFactRestore, restoreValueDelta } from "../quality/factRestore.js";
-import { computeClaimGapAudit, type ClaimGapAudit } from "../review/claimGapAudit.js";
+import { computeClaimGapAudit, tagIssueRootCauses, type ClaimGapAudit } from "../review/claimGapAudit.js";
+import {
+  computeClaimResolutions,
+  type ClaimResolutionReport,
+} from "../review/claimResolution.js";
 import type { LatexCompiler } from "../latex/LatexCompiler.js";
 import { diagnosticFiles, type LatexDiagnostic } from "../latex/diagnostics.js";
 import {
@@ -119,6 +128,7 @@ import {
   filterByCitedKeys,
   mergeArtifactBibliography,
   renderBibEntry,
+  resolveEvidenceCitationKey,
   type CanonicalBibliographyEntry,
 } from "../citation/bibliography.js";
 import { extractCitationKeys, parseBib } from "../citation/StaticCitationChecker.js";
@@ -139,7 +149,7 @@ import {
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
-import { buildRevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
+import { buildRevisionPlan, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import {
   applyRevisionItemTransitions,
   findStuckAppliedItems,
@@ -169,7 +179,10 @@ import {
 import { checkStyleInvariants } from "../review/styleInvariants.js";
 import {
   judgeOutcome,
+  judgeConvergence,
   scorecardOf,
+  scorecardWithConvergenceMetrics,
+  scorecardDelta,
   MAX_AUTO_LATEX_REPAIRS,
 } from "../review/revisionOutcome.js";
 import type { PaperArtifactStore } from "../artifacts/ArtifactStore.js";
@@ -202,6 +215,13 @@ export interface WorkflowServices {
   evidence: EvidenceStore;
   /** Evidence Grounding 管道（M6.5：evidence.ground stage 消费） */
   evidenceGrounding: EvidenceGroundingService;
+  /**
+   * 定向证据采证（M11.2.3 D-3：evidence.ground_claims stage 消费——
+   * unsupported claim × 在库全文 → verified evidence，不重跑检索管线）。
+   */
+  targetedGrounding: TargetedGroundingService;
+  /** chunk 存储（M11.2.3：resolution context 的源可采证性判定；只读） */
+  chunkStore: ChunkStore;
   /**
    * Evidence 使用策略（M6.6 §9/§10：原 workflow 本地 usableEvidence 下沉至此）：
    * 哪些 Evidence 可进入 Writer / Reviewer 正式上下文（verified + 三件套锚点）。
@@ -430,9 +450,10 @@ function reviewRunStageInner(
       }
       const summary = aggregateReviews(results, round, reportPaths);
       summary.reviewedRevision = revision;
-      await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       // M9.7.6 Claim Grounding：fact claims 的确定性证据绑定整理（复用 verdict，
       // 无新 LLM 判定）。citation key 解析与 Writer 引用 / coverage gate 同源。
+      // M11.2.3：先于 summary 落盘计算——rootCauseKey 标注（D-2 根因口径）要
+      // 写进聚合 issues，gate 规则 5/6 据此去重。
       const factClaims = results.find((result) => result.mode === "fact")?.claims ?? [];
       const claimGrounding = computeClaimGroundingReport({
         projectId: ctx.projectId,
@@ -441,11 +462,6 @@ function reviewRunStageInner(
         formalEvidence: evidence,
         bibEntries: citationReport?.static.bibEntries ?? [],
       });
-      await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
-      // M11.2：综述写作评估按轮落盘（与 review 同轮配对；gate 消费同轮产物）
-      if (surveyWriting !== null) {
-        await services.reviewArtifacts.saveSurveyWriting(ctx.projectId, round, surveyWriting);
-      }
       // M10.3.1 G2：existing-paper 的 claim 适用性审计（pre-existing / 作者数据
       // 覆盖 / 修订引入；机器可读，gate 与 revision.plan 消费）
       let claimGapAudit: ClaimGapAudit | null = null;
@@ -467,6 +483,26 @@ function reviewRunStageInner(
           await services.reviewArtifacts.saveClaimGapAudit(ctx.projectId, claimGapAudit);
         }
       }
+      // M11.2.3（D-2）：fact 路为每条 UNSUPPORTED claim 配套产出 issue——把
+      // 该 issue 回填 rootCauseKey=claimId（audit 已归因的指纹除外，防双重排除），
+      // gate 规则 5/6 不再把同一根因重复计入 blocking / critical 口径。
+      const auditExcludedFingerprints = new Set(
+        (claimGapAudit?.issueAttribution ?? [])
+          .filter((entry) => entry.excluded)
+          .map((entry) => entry.fingerprint),
+      );
+      const tagged = tagIssueRootCauses(
+        summary.issues,
+        claimGrounding.claims.filter((entry) => isUnsupportedVerdict(entry.verdict)),
+        { excludeFingerprints: auditExcludedFingerprints },
+      );
+      summary.issues = tagged.issues;
+      await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
+      await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
+      // M11.2：综述写作评估按轮落盘（与 review 同轮配对；gate 消费同轮产物）
+      if (surveyWriting !== null) {
+        await services.reviewArtifacts.saveSurveyWriting(ctx.projectId, round, surveyWriting);
+      }
       return {
         round,
         revision,
@@ -477,6 +513,14 @@ function reviewRunStageInner(
         academicScore: summary.scores.academicScore ?? -1,
         styleRisk: summary.scores.styleRisk ?? -1,
         unsupportedCriticalClaims: summary.unsupportedCriticalClaims,
+        // M11.2.3：披露口径拆分 + 根因标注计数（trace / 报告可观测）
+        ...(claimGrounding.unsupportedClaims > 0
+          ? {
+              unsupportedOpaque: claimGrounding.opaqueUnsupportedClaims,
+              unsupportedTransparent: claimGrounding.transparentUnsupportedClaims,
+              claimRootCausedIssues: tagged.counts,
+            }
+          : {}),
         ...(claimGapAudit !== null
           ? {
               claimGapAudit: {
@@ -589,6 +633,8 @@ function qualityGateStage(
         const stored = await services.reviewArtifacts.loadSurveyWriting(ctx.projectId, review.round);
         surveyWriting = stored ?? (await evaluateSurveyWritingForProject(services, ctx.projectId));
       }
+      // M11.2.3（D-2）：同轮 claim grounding（披露口径拆分 + 根因去重的输入）
+      const claimGrounding = await services.reviewArtifacts.loadClaimGrounding(ctx.projectId, review.round);
       const gate = evaluateQualityGate(
         {
           review,
@@ -599,6 +645,7 @@ function qualityGateStage(
           factPreservation,
           cumulativeFactPreservation,
           ...(claimGapAudit !== null ? { claimGapAudit } : {}),
+          ...(claimGrounding !== null ? { claimGrounding } : {}),
           ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
           ...(revisionValidation !== undefined ? { revisionValidation } : {}),
           ...(surveyWriting !== undefined ? { surveyWriting } : {}),
@@ -611,16 +658,27 @@ function qualityGateStage(
         citationPreservation,
         factPreservation,
         cumulativeFactPreservation,
+        ...(claimGrounding !== null ? { claimGrounding } : {}),
         ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
         ...(revisionValidation !== undefined ? { revisionValidation } : {}),
         ...(surveyWriting !== undefined ? { surveyWriting } : {}),
       });
       // 收敛判定（D-0026，确定性无 LLM）：与 iteration-history 上一轮 scorecard
       // 对比得 PASS / IMPROVED / CONVERGED / REGRESSION；逐轮追加记录（按 gateRound 幂等）
-      const scorecard = scorecardOf(gate, review);
+      // M11.2.3（D-4）：scorecard 追加 unsupported 口径与 fact / citation 违规数；
+      // judgeConvergence 跨轮判 PROGRESS / STALLED / REGRESSED（planSharedTail
+      // 消费 stage result，不再让「还有轮数」自动续跑不收敛的循环）
+      const scorecard = scorecardWithConvergenceMetrics(
+        scorecardOf(gate, review),
+        claimGrounding,
+        factPreservation,
+        citationPreservation,
+      );
       const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
       const previous = iterations.at(-1)?.scorecard ?? null;
       const outcome = judgeOutcome(scorecard, previous);
+      const convergence = judgeConvergence([...iterations.map((record) => record.scorecard), scorecard]);
+      const delta = scorecardDelta(scorecard, previous);
       await services.reviewArtifacts.appendIteration(ctx.projectId, {
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
         reviewRound: review.round,
@@ -640,6 +698,13 @@ function qualityGateStage(
           academicScore: review.scores.academicScore,
           styleRisk: review.scores.styleRisk,
           outcome,
+          ...(convergence !== null ? { convergence } : {}),
+          ...(claimGrounding !== null
+            ? {
+                unsupportedOpaque: claimGrounding.opaqueUnsupportedClaims,
+                unsupportedTransparent: claimGrounding.transparentUnsupportedClaims,
+              }
+            : {}),
           ...(cumulativeFactPreservation !== null
             ? {
                 cumulativeFactViolations: cumulativeFactPreservation.unresolvedViolations.length,
@@ -652,7 +717,7 @@ function qualityGateStage(
         },
         gate.passed
           ? "Quality Gate 通过"
-          : `Quality Gate 未通过：${gate.reasons.length} 项阻止（${outcome ?? "首轮无对比"}）`,
+          : `Quality Gate 未通过：${gate.reasons.length} 项阻止（${outcome ?? "首轮无对比"}${convergence !== null ? ` / ${convergence}` : ""}）`,
       );
       return {
         passed: gate.passed,
@@ -660,7 +725,16 @@ function qualityGateStage(
         reasons: gate.reasons.slice(0, 8),
         round,
         outcome,
+        // M11.2.3：确定性收敛状态与轮次质量差（planSharedTail / stalled payload 消费）
+        ...(convergence !== null ? { convergence } : {}),
+        revisionDelta: delta,
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
+        ...(claimGrounding !== null
+          ? {
+              unsupportedOpaque: claimGrounding.opaqueUnsupportedClaims,
+              unsupportedTransparent: claimGrounding.transparentUnsupportedClaims,
+            }
+          : {}),
         ...(cumulativeFactPreservation !== null
           ? {
               cumulativeFactViolations: cumulativeFactPreservation.unresolvedViolations.length,
@@ -734,10 +808,10 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       if (cumulativeState !== null && !cumulativeState.ok) {
         factRegressions = await buildCumulativeFactRegressions(services, ctx.projectId, cumulativeState);
       } else if (factState !== null && !factState.ok) {
-        factRegressions = summarizeFactRegressions(factState).map((entry) => ({
-          file: entry.file,
-          detail: entry.detail,
-        }));
+        // M11.2.3（D-1）：pairwise 违规同步投影 factRestore 数值清单（survey /
+        // idea 项目此前只给 file+detail——「无依据新增」被删除后删除动作自身
+        // 无授权，加也拦删也拦的结构性死锁，见 projectPairwiseFactRestore 注释）
+        factRegressions = await summarizePairwiseFactRegressions(services, ctx.projectId, factState);
       } else {
         factRegressions = [];
       }
@@ -786,6 +860,9 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
           : {}),
         ...(evidenceLinks.length > 0 ? { evidenceLinks } : {}),
       });
+      // M11.2.3（D-4 §15）：planned 条目投影 mustPreserve 约束（事实 / 引用
+      // 基线的最小投影——Writer 改前就知道哪些绝不能动，而不是事后被守卫打回）
+      await attachMustPreserveConstraints(services, ctx.projectId, plan);
       await services.reviewArtifacts.savePlan(ctx.projectId, plan);
       /**
        * M11.2.1：typed weakening 授权落台账（append-only，幂等去重）。授权链 =
@@ -810,6 +887,32 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         weakeningAuthorizations,
         { runId: ctx.runId },
       );
+      /**
+       * M11.2.3（D-1/D-3）：Unsupported Claim Resolution Contract（survey）。
+       * Evidence First：每条 unsupported claim 先确定 resolution（已有证据绑定 →
+       * 在库全文定向采证 → bounded 补搜索 → 透明披露交作者 / 弱化 / 删除阶梯），
+       * ground_existing_source 由 evidence.ground_claims stage 采证后回绑派发；
+       * remove_unsupported_detail / remove_claim 铸窄授权（只放行删除方向）。
+       */
+      let claimResolution: ClaimResolutionReport | null = null;
+      if (isSurveyKind(ctx.state.workflowKind) && claimGroundingForAuth !== null) {
+        const resolutionContext = await buildClaimResolutionContext(services, ctx.projectId);
+        claimResolution = computeClaimResolutions(
+          claimGroundingForAuth.claims.filter((entry) => isUnsupportedVerdict(entry.verdict)),
+          resolutionContext,
+          { projectId: ctx.projectId, round: summary.round },
+        );
+        await services.reviewArtifacts.saveClaimResolution(ctx.projectId, claimResolution);
+        const resolutionAuthorizations = deriveClaimResolutionAuthorizations(
+          claimResolution.resolutions,
+          summary.round,
+        );
+        if (resolutionAuthorizations.length > 0) {
+          await appendWeakeningAuthorizations(services.projects, ctx.projectId, resolutionAuthorizations, {
+            runId: ctx.runId,
+          });
+        }
+      }
       // 回填本轮 iteration 记录的 planId（UI / 审计可从轮次回溯计划）
       const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
       const currentIteration = iterations.find((record) => record.gateRound === summary.round);
@@ -829,6 +932,15 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         // M11.2.1：本轮落账的 typed weakening 授权（幂等去重后新增数）
         weakeningAuthorizations: weakeningAuthorizations.length,
         ...(recordedWeakenings > 0 ? { weakeningAuthorizationsRecorded: recordedWeakenings } : {}),
+        // M11.2.3：resolution contract 概要（groundClaims 驱动 evidence.ground_claims）
+        ...(claimResolution !== null
+          ? {
+              claimResolution: claimResolution.counts,
+              groundClaims: claimResolution.counts.ground_existing_source,
+              resolutionAuthorizations:
+                claimResolution.counts.remove_unsupported_detail + claimResolution.counts.remove_claim,
+            }
+          : {}),
         // M10.3.1：确定性可恢复的累计违规数（plan() 据此路由 revision.restore_facts）
         ...(factRegressions.length > 0
           ? { restorableFacts: factRegressions.filter((entry) => entry.restorable === true).length }
@@ -845,6 +957,86 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       return plan === null
         ? [`reviews/${services.reviewArtifacts.planFileName(summary.round)} 不存在`]
         : [];
+    },
+  };
+}
+
+/**
+ * M11.2.3（D-3 §8）：定向证据采证——对 resolution 判定 ground_existing_source
+ * 的 claim，在**已有全文**的源上做 chunk 检索 → 逐字 quote → 三段核验
+ * （quote 逐字 / metadata / semantic judge）→ verified evidence 落库。
+ * 不重跑 Search / Matrix / Synthesis（零新文献检索）；失败如实回落弱化 /
+ * 删除（resolution 阶梯的第 4-7 步），不硬配证据。
+ */
+function evidenceGroundClaimsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "evidence.ground_claims",
+    description: "定向证据采证（在库全文 → verified evidence → 回绑 claim 修复派发）",
+    requiredInputs: ["revision.plan"],
+    producedOutputs: ["evidence/evidence.jsonl（verified 追加）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 2, // 每 claim ≤3 chunk 的语义 judge，预算放宽
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
+      }
+      const resolution = await services.reviewArtifacts.loadClaimResolution(ctx.projectId, summary.round);
+      if (resolution === null) {
+        return { round: summary.round, requests: 0, verifiedClaims: 0, verifiedEvidence: 0, outcomes: [] };
+      }
+      const requests = resolution.resolutions
+        .filter(
+          (entry): entry is typeof entry & { sourceIds: string[] } =>
+            entry.action === "ground_existing_source" &&
+            entry.sourceIds !== undefined &&
+            entry.sourceIds.length > 0,
+        )
+        .map((entry) => ({
+          claimId: entry.claimId,
+          claim: entry.claim,
+          section: entry.section,
+          sourceIds: entry.sourceIds,
+        }));
+      if (requests.length === 0) {
+        return { round: summary.round, requests: 0, verifiedClaims: 0, verifiedEvidence: 0, outcomes: [] };
+      }
+      const result = await services.targetedGrounding.groundClaims(ctx.projectId, requests, {
+        ...(ctx.signal.aborted ? { signal: ctx.signal } : {}),
+      });
+      await ctx.emitDomain(
+        "evidence.ground_claims",
+        {
+          round: summary.round,
+          requests: requests.length,
+          verifiedClaims: result.verifiedClaims,
+          verifiedEvidence: result.verifiedEvidence,
+          unsupportedByJudge: result.unsupportedByJudge,
+        },
+        `定向采证完成：${result.verifiedClaims}/${requests.length} 条 claim 获得 verified evidence`,
+      );
+      return {
+        round: summary.round,
+        requests: requests.length,
+        verifiedClaims: result.verifiedClaims,
+        verifiedEvidence: result.verifiedEvidence,
+        unsupportedByJudge: result.unsupportedByJudge,
+        outcomes: result.outcomes.map((outcome) => ({
+          claimId: outcome.claimId,
+          status: outcome.status,
+          evidenceIds: outcome.evidenceIds,
+          ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+        })),
+      };
+    },
+    async verifyDod(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        return ["缺少 review 汇总"];
+      }
+      const resolution = await services.reviewArtifacts.loadClaimResolution(ctx.projectId, summary.round);
+      return resolution === null ? ["缺少 claim-resolution 产物（revision.plan 未产出）"] : [];
     },
   };
 }
@@ -969,6 +1161,15 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
                 blocking: record.scorecard.blocking,
                 academicScore: record.scorecard.academicScore,
                 failedRuleIds: record.scorecard.failedRuleIds,
+                ...(record.scorecard.unsupportedOpaque !== undefined
+                  ? { unsupportedOpaque: record.scorecard.unsupportedOpaque }
+                  : {}),
+                ...(record.scorecard.factViolations !== undefined
+                  ? { factViolations: record.scorecard.factViolations }
+                  : {}),
+                ...(record.scorecard.citationViolations !== undefined
+                  ? { citationViolations: record.scorecard.citationViolations }
+                  : {}),
               };
         /**
          * M11.2.1：失败归因分类（§14——报告与 artifact 必须区分「正常运行但
@@ -976,17 +1177,39 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
          * 阻止项若全部是质量语义（评分 / open issues / claim 覆盖）=
          * QUALITY_NOT_REACHED；事实 / 引用保持或契约类规则仍在失败 =
          * SYSTEM_FAILED（守卫语义未满足，冻结产物不安全）。
+         * M11.2.3（D-4 §17/§18）：新增两个正常终态语义——
+         * - NO_PROGRESS：跨轮 judgeConvergence 判 STALLED（连续两轮核心阻断
+         *   指标无改善）——不是失败，是 bounded loop 的诚实停止；
+         * - AUTHOR_DECISION_REQUIRED：剩余阻止项只有学术评分，且同轮 claim
+         *   resolution 存在 author_decision_required（透明自述类 / 作者事实）
+         *   ——进一步处置需要作者输入，语言模型改稿无法解决。
          */
         const gateReasons = ((gate["reasons"] as unknown[]) ?? []).map((reason) => String(reason));
-        const failureClass = gateReasons.some((reason) =>
+        const convergence = typeof gate["convergence"] === "string" ? gate["convergence"] : null;
+        const guardFailed = gateReasons.some((reason) =>
           /^(fact_preservation|cumulative_fact_preservation|citation_preservation|survey_outline_contract|survey_citation_keys_valid|survey_synthesis_traceability)[:：]/.test(
             reason,
           ),
-        )
+        );
+        let authorDecisionClaims = 0;
+        if (!guardFailed && convergence === "STALLED") {
+          const reviewRound = typeof review["round"] === "number" ? review["round"] : null;
+          if (reviewRound !== null) {
+            const resolution = await services.reviewArtifacts.loadClaimResolution(ctx.projectId, reviewRound);
+            authorDecisionClaims =
+              resolution?.counts.author_decision_required ?? 0;
+          }
+        }
+        const failureClass = guardFailed
           ? "SYSTEM_FAILED"
-          : "QUALITY_NOT_REACHED";
+          : convergence === "STALLED"
+            ? authorDecisionClaims > 0
+              ? "AUTHOR_DECISION_REQUIRED"
+              : "NO_PROGRESS"
+            : "QUALITY_NOT_REACHED";
         return {
           outcome: typeof gate["outcome"] === "string" ? gate["outcome"] : null,
+          ...(convergence !== null ? { convergence } : {}),
           gateRound,
           gateReasons: gate["reasons"] ?? [],
           failureClass,
@@ -1000,6 +1223,8 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
             skipped: typeof plan["skipped"] === "number" ? plan["skipped"] : null,
           },
           scorecard: { current: compare(currentIteration), previous: compare(previousIteration) },
+          // M11.2.3（§16）：本轮质量差值（resolved / new regressions）
+          ...(gate["revisionDelta"] !== undefined ? { revisionDelta: gate["revisionDelta"] } : {}),
         };
       },
     },
@@ -1196,6 +1421,9 @@ function revisionReviseStage(
         revisionSummary !== null
           ? await services.reviewArtifacts.loadClaimGrounding(ctx.projectId, revisionSummary.round)
           : null;
+      // M11.2.3（D-3）：定向采证结果（evidence.ground_claims stage 产物）——
+      // claim grounding 报告是采证前快照，新 verified evidence 在此回绑派发
+      const groundedClaims = collectGroundedClaimEvidence(ctx.state);
       let claimRepairsDispatched = 0;
       for (const [index, target] of targets.entries()) {
         if (ctx.signal.aborted) {
@@ -1217,6 +1445,7 @@ function revisionReviseStage(
                 bibliography,
               )
             : [];
+        mergeGroundedEvidenceIntoRepairs(claimRepairs, groundedClaims, evidenceById, bibliography);
         // M11.2：本目标的 survey 写作上下文（有 refs 的节；framing / abstract 走通用守卫）
         const surveyContext =
           surveyInputs !== null && outline !== null
@@ -2332,8 +2561,190 @@ function summarizeFactRegressions(
   );
 }
 
-/** 最新 gate 产物里的实验事实保持失败明细（通过 / 不可比较 / 无产物 → null） */
-async function latestFactPreservationFailure(
+/**
+ * M11.2.3（D-1）：pairwise fact 违规 → factRegressions（含 factRestore 数值
+ * 清单）。展示聚合沿用 summarizeFactRegressions 的口径（每文件 ≤2 条、总量
+ * ≤8）；数值投影遍历全部违规桶（不受展示上限约束——授权完整性优先）：
+ * added → removeValues（当前快照行级）；removed → restoreValues（上一快照
+ * 行级）；changed → 双值精确点名（与累计路径同语义）。
+ */
+async function summarizePairwiseFactRegressions(
+  services: WorkflowServices,
+  projectId: string,
+  factState: import("../quality/factPreservation.js").FactPreservationSummary,
+): Promise<
+  {
+    file: string;
+    detail: string;
+    restoreValues?: string[];
+    removeValues?: string[];
+  }[]
+> {
+  const previousFiles =
+    factState.previousRevision !== undefined
+      ? await readSnapshotTex(services.revisions.snapshotDir(projectId, factState.previousRevision))
+      : null;
+  const currentFiles =
+    factState.currentRevision !== undefined
+      ? await readSnapshotTex(services.revisions.snapshotDir(projectId, factState.currentRevision))
+      : null;
+  const display = summarizeFactRegressions(factState);
+  const detailToFile = new Map(display.map((entry) => [`${entry.file}|${entry.detail}`, entry.file]));
+  const regressions: {
+    file: string;
+    detail: string;
+    restoreValues?: string[];
+    removeValues?: string[];
+  }[] = [];
+  for (const [file, detail] of detailToFile) {
+    regressions.push({ file, detail });
+  }
+  // 数值投影：按 finding 全量投影（file + 值集合合并，避免同文件多条目重复授权）
+  const buckets: FactFinding[][] = [
+    factState.changedFacts,
+    factState.removedFacts,
+    factState.addedUnsupportedFacts,
+  ];
+  const valuesByFile = new Map<string, { restoreValues: Set<string>; removeValues: Set<string> }>();
+  for (const bucket of buckets) {
+    for (const finding of bucket) {
+      const files =
+        finding.kind === "added_unsupported" ? currentFiles : finding.kind === "removed" ? previousFiles : null;
+      const projection = projectPairwiseFactRestore(finding, files ?? []);
+      const entry = valuesByFile.get(finding.file) ?? { restoreValues: new Set<string>(), removeValues: new Set<string>() };
+      for (const value of projection.restoreValues ?? []) {
+        entry.restoreValues.add(value);
+      }
+      for (const value of projection.removeValues ?? []) {
+        entry.removeValues.add(value);
+      }
+      valuesByFile.set(finding.file, entry);
+    }
+  }
+  for (const regression of regressions) {
+    const values = valuesByFile.get(regression.file);
+    if (values === undefined) {
+      continue;
+    }
+    if (values.restoreValues.size > 0) {
+      regression.restoreValues = [...values.restoreValues].slice(0, 12);
+    }
+    if (values.removeValues.size > 0) {
+      regression.removeValues = [...values.removeValues].slice(0, 12);
+    }
+  }
+  return regressions;
+}
+
+/**
+ * M11.2.3（D-3）：resolution context 现场构建——源的可 grounding 性
+ * （fulltext chunks 在库 / metadata_only）+ 章节引用源投影（outline
+ * literatureRefs）+ 词面相关度（claim ↔ 源标题）。targetedSearchBudget
+ * 缺省 0：补搜索是运维级 bounded 动作，不作为分类器默认出口（§9）。
+ */
+async function buildClaimResolutionContext(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<import("../review/claimResolution.js").ClaimResolutionContext> {
+  const sources = await services.sources.list(projectId);
+  const chunkedSourceIds = new Set<string>();
+  for (const source of sources) {
+    try {
+      const chunks = await services.chunkStore.readChunks(projectId, source.sourceId);
+      if (chunks !== null && chunks.length > 0) {
+        chunkedSourceIds.add(source.sourceId);
+      }
+    } catch {
+      // 无 chunk 文件 = 不可定向采证（如实呈现，不抛错阻断计划）
+    }
+  }
+  const groundability = sources.map((source) => ({
+    sourceId: source.sourceId,
+    ...(source.metadata.title !== undefined && source.metadata.title.trim() !== ""
+      ? { title: source.metadata.title }
+      : {}),
+    hasChunks: chunkedSourceIds.has(source.sourceId),
+    metadataOnly: source.status === "metadata_only" || source.status === "pending",
+  }));
+  // 章节引用源投影：outline literatureRefs（survey 的确定性引用面）
+  const sectionCitedSourceIds: Record<string, string[]> = {};
+  try {
+    const outline = await services.manuscript.loadOutline(projectId);
+    for (const section of outline?.sections ?? []) {
+      if (section.literatureRefs !== undefined && section.literatureRefs.length > 0) {
+        const fileKey = section.file ?? section.id ?? section.title ?? "";
+        if (fileKey !== "") {
+          sectionCitedSourceIds[fileKey] = [...section.literatureRefs];
+        }
+      }
+    }
+  } catch {
+    // 无 outline（非 survey 结构）→ 只用词面相关度通道
+  }
+  return { sources: groundability, sectionCitedSourceIds, targetedSearchBudget: 0 };
+}
+
+/**
+ * M11.2.3（D-4 §15）：planned 条目的 mustPreserve 投影（最小约束——不是整节
+ * 冻结）。数值 = 条目目标章节正文数值 token（≤40，剔除该条目已授权改动的
+ * removeValues / restoreValues）；citationKeys = 章节现有 \cite keys（≤30）。
+ * 投影只进 Writer prompt（改前约束），Fact / Citation 守卫判定口径不变。
+ */
+async function attachMustPreserveConstraints(
+  services: WorkflowServices,
+  projectId: string,
+  plan: RevisionPlan,
+): Promise<void> {
+  const planned = plan.items.filter((item) => item.status === "planned" && item.section !== "(global)");
+  if (planned.length === 0) {
+    return;
+  }
+  const revision = await services.revisions.currentRevision(projectId);
+  const files = await readSnapshotTex(services.revisions.snapshotDir(projectId, revision));
+  if (files === null) {
+    return;
+  }
+  const fileForSection = (sectionRef: string): { file: string; content: string } | null => {
+    const ref = sectionRef.trim().replaceAll("\\", "/").toLowerCase();
+    for (const file of files) {
+      const path = file.file.replaceAll("\\", "/").toLowerCase();
+      const stem = (path.split("/").pop() ?? path).replace(/\.tex$/, "");
+      if (ref === path || ref === path.split("/").pop() || ref === stem || path.endsWith(ref) || (stem !== "" && ref.includes(stem))) {
+        return file;
+      }
+    }
+    return null;
+  };
+  for (const item of planned) {
+    const file = fileForSection(item.section);
+    if (file === null) {
+      continue;
+    }
+    const authorized = new Set([
+      ...(item.factRestore?.restoreValues ?? []),
+      ...(item.factRestore?.removeValues ?? []),
+    ]);
+    const values = [
+      ...new Set(
+        (file.content.match(/[-−]?\d+(?:\.\d+)?[%‰]?/g) ?? [])
+          .map((token) => token.replace("−", "-"))
+          .filter((token) => !authorized.has(token) && token.length >= 2),
+      ),
+    ].slice(0, 40);
+    const citationKeys = [...new Set(file.content.match(/\\cite\{([^}]*)\}/g) ?? [])]
+      .flatMap((raw) => raw.slice(6, -1).split(",").map((key) => key.trim()))
+      .filter((key) => key !== "")
+      .slice(0, 30);
+    if (values.length > 0 || citationKeys.length > 0) {
+      item.mustPreserve = {
+        ...(values.length > 0 ? { values } : {}),
+        ...(citationKeys.length > 0 ? { citationKeys } : {}),
+      };
+    }
+  }
+}
+
+/** 最新 gate 产物里的实验事实保持失败明细（通过 / 不可比较 / 无产物 → null） */async function latestFactPreservationFailure(
   services: WorkflowServices,
   projectId: string,
 ): Promise<import("../quality/factPreservation.js").FactPreservationSummary | null> {
@@ -2669,6 +3080,12 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const gatePassed = gateResult["passed"] === true;
   const gateRound = typeof gateResult["round"] === "number" ? gateResult["round"] : 0;
   const outcome = typeof gateResult["outcome"] === "string" ? gateResult["outcome"] : null;
+  // M11.2.3（D-4）：确定性收敛状态（PROGRESS / STALLED / REGRESSED）——
+  // STALLED（连续两轮核心阻断指标无改善）优先于轮数预算：不再自动续跑，
+  // 按 NO_PROGRESS 语义进 HITL；REGRESSED（新增 critical / fact / citation
+  // 回归）同样先停下（修新回归或人工决策，不「还有轮数就继续」）。
+  const convergence =
+    typeof gateResult["convergence"] === "string" ? gateResult["convergence"] : null;
   const overflowAnswered = "hitl.revision_overflow" in state.stageResults;
   const roundsLeft = revisionRoundsUsed(state) < revisionBudget(state, services);
   const build = state.stageResults["build.draft"] ?? {};
@@ -2761,7 +3178,15 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   // ---- Quality Gate 失败：质量语义不阻塞 Draft，但 Final 必须通过 ----
   // 不收敛（连续无实质改善 / 退化）优先于预算判定：预算耗尽时也按「不收敛」
   // 向用户说明（而不是误导性的「轮数用完」）；回答只对本轮 gate 有效
-  if ((outcome === "CONVERGED" || outcome === "REGRESSION") && !stalledAnswered) {
+  // M11.2.3：跨轮 STALLED（judgeConvergence：连续两轮核心阻断指标无改善）
+  // 并入同一优先级——自动循环是 bounded 的，「还有轮数」不再是不收敛时继续
+  // 的理由。REGRESSED 只观测不抢跑：守卫类回归（fact / citation 违规上升）
+  // 有确定性修复路径（fact_preserve 派发 / restore_facts），先给一轮修复
+  // 机会；若修复不动核心指标，下一轮自然落入 STALLED。
+  if (
+    (outcome === "CONVERGED" || outcome === "REGRESSION" || convergence === "STALLED") &&
+    !stalledAnswered
+  ) {
     return { kind: "stage", stageId: "hitl.revision_stalled" };
   }
   if (roundsLeft) {
@@ -2791,6 +3216,16 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         : 0;
       if (restorableFacts > 0 && restoreIdx < planIdx) {
         return { kind: "stage", stageId: "revision.restore_facts" };
+      }
+      // M11.2.3（D-3 §7 Evidence First）：计划含「在库全文可定向采证」的
+      // unsupported claim → 先采证再派发 Writer（修文字前先补证据；采证不
+      // 改稿，不触发尾部重走；本轮已采证过（groundIdx ≥ planIdx）不重复）
+      const groundClaims = typeof planResult["groundClaims"] === "number"
+        ? (planResult["groundClaims"] as number)
+        : 0;
+      const groundIdx = lastCompletionIndex(state, "evidence.ground_claims");
+      if (groundClaims > 0 && groundIdx < planIdx) {
+        return { kind: "stage", stageId: "evidence.ground_claims" };
       }
       return { kind: "stage", stageId: "revision.revise" };
     }
@@ -3367,6 +3802,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     reviewRunStage(services),
     qualityGateStage(services),
     revisionPlanStage(services),
+    evidenceGroundClaimsStage(services),
     revisionRestoreFactsStage(services),
     revisionReviseStage(services, "revision.revise"),
     revisionValidateStage(services),
@@ -4075,6 +4511,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     revisionValidateStage(services),
     revisionValidationDecisionStage(services),
     revisionPlanStage(services),
+    evidenceGroundClaimsStage(services),
     revisionRestoreFactsStage(services),
     revisionRepairStage(services),
     revisionOverflowStage(),
@@ -5566,6 +6003,7 @@ export function createTopicSurveyDefinition(services: WorkflowServices): Workflo
     reviewRunStageInner(services, { survey: true }),
     qualityGateStage(services, { survey: true }),
     revisionPlanStage(services),
+    evidenceGroundClaimsStage(services),
     revisionRestoreFactsStage(services),
     revisionReviseStage(services, "revision.revise"),
     revisionValidateStage(services),
@@ -6037,6 +6475,67 @@ function latestReviewSummary(
   projectId: string,
 ): Promise<ReviewSummary | null> {
   return services.reviewArtifacts.latestSummary(projectId);
+}
+
+/**
+ * M11.2.3（D-3）：读取 evidence.ground_claims stage 结果 → claimId → 新
+ * verified evidenceIds（采证回绑的输入；stage 不存在 / 无结果 → 空 map）。
+ */
+function collectGroundedClaimEvidence(state: WorkflowState): Map<string, string[]> {
+  const result = state.stageResults["evidence.ground_claims"] ?? {};
+  const outcomes = Array.isArray(result["outcomes"]) ? result["outcomes"] : [];
+  const grounded = new Map<string, string[]>();
+  for (const outcome of outcomes) {
+    if (typeof outcome !== "object" || outcome === null) {
+      continue;
+    }
+    const record = outcome as Record<string, unknown>;
+    const claimId = typeof record["claimId"] === "string" ? record["claimId"] : null;
+    const evidenceIds = Array.isArray(record["evidenceIds"])
+      ? record["evidenceIds"].filter((id): id is string => typeof id === "string")
+      : [];
+    if (claimId !== null && evidenceIds.length > 0) {
+      grounded.set(claimId, evidenceIds);
+    }
+  }
+  return grounded;
+}
+
+/**
+ * M11.2.3（D-3）：定向采证的 verified evidence 追加进 Claim Repair 候选
+ * （确定性；去重——已在候选里的 evidenceId 不重复渲染）。
+ */
+function mergeGroundedEvidenceIntoRepairs(
+  claimRepairs: ClaimRepairDirective[],
+  groundedClaims: ReadonlyMap<string, string[]>,
+  evidenceById: ReadonlyMap<string, EvidenceRecord>,
+  bibliography: readonly import("../review/claimGrounding.js").ClaimGroundingBibEntry[],
+): void {
+  if (groundedClaims.size === 0 || claimRepairs.length === 0) {
+    return;
+  }
+  for (const directive of claimRepairs) {
+    const evidenceIds = groundedClaims.get(directive.claimId);
+    if (evidenceIds === undefined) {
+      continue;
+    }
+    for (const evidenceId of evidenceIds) {
+      if (directive.candidates.some((candidate) => candidate.evidenceId === evidenceId)) {
+        continue;
+      }
+      const record = evidenceById.get(evidenceId);
+      if (record === undefined) {
+        continue;
+      }
+      const key = resolveEvidenceCitationKey(record, bibliography);
+      directive.candidates.push({
+        evidenceId: record.id,
+        claim: record.claim,
+        ...(record.quote !== undefined && record.quote !== "" ? { quote: record.quote } : {}),
+        ...(key !== null ? { citationKey: key } : {}),
+      });
+    }
+  }
 }
 
 /** 修订指令：以 ReviewIssue 形式表达，可按目标章节匹配 */

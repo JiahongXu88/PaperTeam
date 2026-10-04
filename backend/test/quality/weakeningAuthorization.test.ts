@@ -133,6 +133,8 @@ function claimGroundingReport(claims: Array<{ section: string; claim: string; ve
     evidenceBoundClaims: 0,
     evidenceBindingRate: 0,
     unsupportedClaimIds: [],
+    opaqueUnsupportedClaims: claims.filter((claim) => claim.verdict !== "SUPPORTED").length,
+    transparentUnsupportedClaims: 0,
     claims: claims.map((claim, index) => ({
       claimId: `c-test${index}`,
       section: claim.section,

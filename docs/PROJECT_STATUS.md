@@ -1,6 +1,6 @@
 # PaperTeam 项目状态
 
-> 更新日期：2026-10-03（**M11.2 PARTIAL — Survey Writing E2E**：综述写作链
+> 更新日期：2026-10-04（**M11.2.3 PASS — Revision Convergence under Degraded Evidence**：D-1 修订授权语义完整化（pairwise factRestore 行级投影 + 方向分化指令 + remove_claim 窄授权——Case B「加也拦删也拦」死锁在真实 delta 上定论解除）+ D-2 披露口径与根因去重（opaque/transparent 分级 + rootCauseKey——同一根因不再重复计因）+ D-3 TargetedGroundingService（在库全文定向采证真实 2/4 verified）+ D-4 收敛控制（judgeConvergence + mustPreserve 前置约束 + NO_PROGRESS/AUTHOR_DECISION_REQUIRED 终态）；MOT 真实续跑 r9–r11 连续三轮 IMPROVED、critical 2→1 / blocking 4→1 / major 5→1 单调降、两轮修订零事实/引用违规（vs 旧口径 8 轮 IMPROVED↔REGRESSION 振荡），终态诚实停在 QUALITY_NOT_REACHED + Draft PDF 冻结；成本 $2.5 / 34min。**M11.3 判 READY（GO）**，附三条风险登记（reviewer 判分/枚举方差最重——同文本 65→41 claims、score 77→73）。详见 [research/M11_2_3_REVISION_CONVERGENCE_REPORT.md](research/M11_2_3_REVISION_CONVERGENCE_REPORT.md)。前一状态 M11.2 PARTIAL 见下方 M11 段。）
 > 全部机制交付并接入 topic_survey 工作流（写作上下文 / 引用白名单后检 /
 > Survey Review Profile / gate 四规则 / 修订结构红线，零新 Agent）；两次真实
 > E2E 验证 Topic → 写作 → 审稿 → 修订 → gate → **PDF 编译成功**，survey 专属
@@ -1440,6 +1440,28 @@ outline，不进正文写作）。要点：
 **M11.1 — Topic → Survey Research ✅ COMPLETE（2026-10-03）**：正式能力 =
 Topic → Research → Literature → Matrix → Synthesis → Survey Outline
 （M11.1.1~M11.1.4 全部收口）。
+
+**M11.2.3 — Revision Convergence under Degraded Evidence ✅ PASS（2026-10-04）**：解决
+M11.2/M11.3 预验收登记的四项决策——D-1 授权语义（`projectPairwiseFactRestore` 行级
+removeValues/restoreValues 补齐 survey/idea 的 pairwise 路径 + fact_preserve 指令方向分化
++ `remove_claim` 窄授权 + `claimResolution.ts` 七类 Resolution Contract：Evidence First
+阶梯 use_existing_evidence→ground_existing_source→targeted_search(bounded,默认 0 预算)
+→author_decision→remove_detail→weaken→remove_claim）；D-2 根因口径
+（`classifyClaimDisclosure` 归因+缺口双 marker 的 transparent_unverified 分级 +
+`tagIssueRootCauses` rootCauseKey + gate 规则 4 只计 opaque、5/6 去重——「诚实限定」
+与「凭空捏造」不再同罪，凭空断言仍 fail-closed）；D-3 `TargetedGroundingService` +
+`evidence.ground_claims` stage（claim×在库 chunks→逐字 quote→三段核验；真实采证
+S005/S009 2/4 verified、S016 被 metadata 如实拒、不硬配）；D-4 收敛
+（scorecard 增 unsupportedOpaque/factViolations/citationViolations + `judgeConvergence`
+PROGRESS/STALLED/REGRESSED + STALLED→NO_PROGRESS 优先停轮 + REGRESSED 只观测不抢跑
+（守卫回归先给确定性修复轮）+ mustPreserve 前置约束进 Writer prompt + failureClass 增
+NO_PROGRESS/AUTHOR_DECISION_REQUIRED）。真实验收：Case B 死锁真实 delta 解除
+（旧计划 ok=false→新投影 ok=true，PART A 零模型成本）；MOT 续跑 r9–r11 三轮单调
+IMPROVED 零回归（34min/$2.34/57 turns，语料零漂移）。**新发现**：reviewer 判分/枚举
+轮间方差（同文本 65→41 claims、77→73 分、style 30→48）——M11.3 验收建议以多轮分布
++ 守卫零违规为主口径；resume 的 fulltext 网络非确定性会漂移语料（Case B 5/25→13/25
+实录，workaround=驱动禁用再解析）。61 新测试；backend 2340+frontend 271 全绿。
+判定：M11.2.3 COMPLETE；**M11.3 READY（GO）**。
 
 **M11.2 — Survey Writing E2E ⚠️ PARTIAL（2026-10-03）**：把 Survey Research
 正式接入既有 Writing / Citation / Review / Revision / Gate / PDF 链（零新

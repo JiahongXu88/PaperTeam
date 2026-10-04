@@ -309,3 +309,59 @@ function sectionsCompatible(a: string, b: string): boolean {
 function compactSlice(text: string, maxLength: number): string {
   return text.replace(/\s+/g, "").slice(0, maxLength);
 }
+
+/**
+ * M11.2.3（D-2 根因口径）：issue → 本轮 unsupported claim 的根因标注。
+ *
+ * 结构：fact 路按 Reviewer 契约（prompt：无证据支撑的关键论断必须
+ * UNSUPPORTED 并生成 critical/major issue）为同一根因同时产出 claim 级裁决
+ * 与 issue 级 finding——规则 4（claim 口径）与规则 5/6（issue 口径）会把同一
+ * 问题机械算成多个独立严重问题（M11.3 审计：r8 的 4 条失败规则里 3 条由同一
+ * 批回归喂料）。本标注器用与 claimGapAudit 归因同源的确定性匹配（章节兼容 +
+ * 描述词面重合 / 逐字包含）把 finding 回填 rootCauseKey = claimId；gate 据此
+ * 去重计数（各规则仍分别报告，但 Quality Score / Blocking Count 不再重复计因）。
+ *
+ * 与 claimGapAudit 的分工：audit 只归因「被排除」的 claim（existing-paper
+ * 作者级）；本标注覆盖全部本轮 unsupported claim（含计入阻断口径的 opaque），
+ * excludeFingerprints 传入 audit 已归因的指纹防止双重排除。
+ */
+export function tagIssueRootCauses(
+  issues: readonly ReviewIssue[],
+  unsupportedClaims: readonly ClaimGroundingEntry[],
+  options: { excludeFingerprints?: ReadonlySet<string> } = {},
+): { issues: ReviewIssue[]; counts: { blocking: number; critical: number; major: number } } {
+  const tagged: ReviewIssue[] = issues.map((issue) => ({ ...issue }));
+  let blocking = 0;
+  let critical = 0;
+  let major = 0;
+  for (const issue of tagged) {
+    const relevant =
+      (issue.category === "fact" || issue.category === "evidence_gap") &&
+      (issue.severity === "critical" || issue.severity === "major" || issue.blocking);
+    if (!relevant || options.excludeFingerprints?.has(findingFingerprint(issue))) {
+      continue;
+    }
+    const descriptionTerms = termSet(issue.description);
+    const compactDescription = issue.description.replace(/\s+/g, "");
+    const attributed = unsupportedClaims.find(
+      (claim) =>
+        isUnsupportedVerdict(claim.verdict) &&
+        sectionsCompatible(issue.section, claim.section) &&
+        (jaccard(descriptionTerms, termSet(claim.claim)) >= 0.2 ||
+          compactDescription.includes(compactSlice(claim.claim, 24))),
+    );
+    if (attributed === undefined) {
+      continue;
+    }
+    issue.rootCauseKey = attributed.claimId;
+    if (issue.severity === "critical") {
+      critical += 1;
+    } else if (issue.severity === "major") {
+      major += 1;
+    }
+    if (issue.blocking) {
+      blocking += 1;
+    }
+  }
+  return { issues: tagged, counts: { blocking, critical, major } };
+}

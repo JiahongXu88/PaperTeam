@@ -64,6 +64,7 @@ import type { VisionModelCandidates, VisionModelRuntime } from "./vision/types.j
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
 import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
+import { TargetedGroundingService } from "./evidence/TargetedGroundingService.js";
 import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { MatrixService } from "./survey/MatrixService.js";
 import { SynthesisService } from "./survey/SynthesisService.js";
@@ -187,6 +188,8 @@ export interface ServiceStack {
   evidenceGrounding: EvidenceGroundingService;
   /** Evidence 使用策略（M6.6：formal = verified + 锚点才进 Writer/Reviewer 正式上下文） */
   evidenceSelection: EvidenceSelectionService;
+  /** 定向证据采证（M11.2.3：unsupported claim × 在库全文 → verified evidence） */
+  targetedGrounding: TargetedGroundingService;
   /** chunk 精确回取（M6.5：get_chunk 工具与 quote 校验共用锚点；只读） */
   chunkAccess: ChunkAccess;
   sources: SourceStore;
@@ -632,6 +635,15 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   });
   // M6.6 Evidence 使用策略（usableEvidence 下沉；verified + 三件套锚点才进正式上下文）
   const evidenceSelection = new EvidenceSelectionService(evidence);
+  // M11.2.3 Targeted Evidence Grounding：unsupported claim × 在库全文的定向
+  // 采证（retrieval 词面选 chunk → 逐字 quote → 上述三段核验管道；不新增
+  // 判定器，不重跑检索管线）。供 workflow evidence.ground_claims stage 消费。
+  const targetedGrounding = new TargetedGroundingService({
+    projects: options.projects,
+    retrieval,
+    evidenceGrounding,
+    log,
+  });
   // M11.1.1 Survey Matrix：复用 retrieval（单篇检索）+ chunkAccess（anchor 核验）
   // + researcher 角色（contextScope=research/survey-matrix，roleConfig research/* 前缀
   // 规则已映射，无新增角色）；不写 EvidenceStore（Matrix ≠ Verified Evidence）
@@ -722,6 +734,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     evidenceCandidates,
     evidenceGrounding,
     evidenceSelection,
+    targetedGrounding,
     chunkAccess,
     sources,
     candidates,
@@ -768,6 +781,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       evidence,
       evidenceGrounding,
       evidenceSelection,
+      targetedGrounding,
+      chunkStore,
       candidates,
       coverage,
       planExecution,

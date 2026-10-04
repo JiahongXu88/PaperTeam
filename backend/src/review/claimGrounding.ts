@@ -46,6 +46,59 @@ export function isUnsupportedVerdict(verdict: FactVerdict): boolean {
   return verdict === "UNSUPPORTED" || verdict === "CONTRADICTED";
 }
 
+/**
+ * M11.2.3（D-2）：UNSUPPORTED claim 的披露口径分类——「凭空断言」与「透明
+ * 未核验转述」不同罪。判定对象是 claim 文本自身的确定性 marker（与
+ * weakeningAuthorization 的弱化指令词表同族，但语义更严：透明转述须同时
+ * 具备来源归因 + 核验缺口声明）：
+ * - transparent_unverified：如「文献摘要报告 X，但当前尚缺全文证据核验」/
+ *   「据其原文自述且未经独立核验」——诚实披露证据边界，severity 低于
+ *   fabricated / overclaimed assertion，但仍不是 evidence-backed（不入
+ *   SUPPORTED，学术评分照常反映引用支撑缺口）。
+ * - opaque_assertion：如「已有研究证明 X 一定有效」——无归因无披露的
+ *   强断言，维持 UNSUPPORTED 的完整阻断语义。
+ * 诚实边界：marker 级确定性判定，不是语义理解。学术阈值不动（口径修复
+ * 只修「同一根因的重复惩罚与透明披露的分级」，见 gates 规则 4/5/6）。
+ */
+export type ClaimDisclosure = "opaque_assertion" | "transparent_unverified";
+
+/** 来源归因 marker（转述范围限定到具体来源；不是普遍化断言） */
+const DISCLOSURE_ATTRIBUTION_MARKERS: readonly string[] = [
+  "据其原文自述",
+  "据其自述",
+  "据其摘要",
+  "摘要级",
+  "据报道",
+  "据其报告",
+  "据其报道",
+  "据文献报告",
+  "据文献报道",
+  "文献摘要报告",
+  "作者自述",
+];
+
+/** 核验缺口声明 marker（显式承认证据未核验 / 待全文） */
+const DISCLOSURE_UNVERIFIED_MARKERS: readonly string[] = [
+  "待核验",
+  "尚待验证",
+  "尚待证据",
+  "尚待证据级核验",
+  "未经独立核验",
+  "未经独立验证",
+  "未经核验",
+  "尚缺全文证据",
+  "待全文核验",
+  "无全文核验",
+  "尚无全文级核验",
+];
+
+export function classifyClaimDisclosure(claimText: string): ClaimDisclosure {
+  const text = claimText.trim();
+  const hasAttribution = DISCLOSURE_ATTRIBUTION_MARKERS.some((marker) => text.includes(marker));
+  const hasUnverified = DISCLOSURE_UNVERIFIED_MARKERS.some((marker) => text.includes(marker));
+  return hasAttribution && hasUnverified ? "transparent_unverified" : "opaque_assertion";
+}
+
 export interface EvidenceCandidate {
   evidenceId: string;
   score: number;
@@ -115,6 +168,8 @@ export interface ClaimGroundingEntry {
   citationKey?: string;
   /** UNSUPPORTED / CONTRADICTED 的修复候选（formal 池词面 Top-K；可空） */
   repairCandidates: EvidenceCandidate[];
+  /** M11.2.3（D-2）：UNSUPPORTED claim 的披露口径（凭空断言 vs 透明未核验转述） */
+  disclosure?: ClaimDisclosure;
 }
 
 export interface ClaimGroundingReport {
@@ -136,6 +191,13 @@ export interface ClaimGroundingReport {
   evidenceBindingRate: number;
   /** UNSUPPORTED + CONTRADICTED 的 claimId 列表 */
   unsupportedClaimIds: string[];
+  /**
+   * M11.2.3（D-2）：unsupported 的披露口径拆分——opaque 计入
+   * unsupported_critical_claims_zero 阻断口径；transparent 单独可见
+   * （gate 明细 + 评分仍如实反映，不是 evidence-backed）。
+   */
+  opaqueUnsupportedClaims: number;
+  transparentUnsupportedClaims: number;
   claims: ClaimGroundingEntry[];
   /** 参与绑定的 formal evidence 池规模（审计：分母口径） */
   formalEvidencePool: number;
@@ -168,6 +230,8 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
   let unsupported = 0;
   let contradicted = 0;
   let bound = 0;
+  let opaqueUnsupported = 0;
+  let transparentUnsupported = 0;
   for (const check of input.factClaims) {
     const claimId = claimFingerprint(check.section, check.claim);
     const evidenceRecord =
@@ -195,6 +259,14 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
     if (isUnsupportedVerdict(check.verdict)) {
       unsupportedClaimIds.push(claimId);
     }
+    const disclosure = isUnsupportedVerdict(check.verdict)
+      ? classifyClaimDisclosure(check.claim)
+      : undefined;
+    if (disclosure === "transparent_unverified") {
+      transparentUnsupported += 1;
+    } else if (disclosure === "opaque_assertion") {
+      opaqueUnsupported += 1;
+    }
     entries.push({
       claimId,
       section: check.section,
@@ -211,6 +283,7 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
       repairCandidates: isUnsupportedVerdict(check.verdict)
         ? findEvidenceCandidates(check.claim, input.formalEvidence)
         : [],
+      ...(disclosure !== undefined ? { disclosure } : {}),
     });
   }
   const total = entries.length;
@@ -228,6 +301,8 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
     evidenceBoundClaims: bound,
     evidenceBindingRate: total === 0 ? 0 : Number((bound / total).toFixed(4)),
     unsupportedClaimIds,
+    opaqueUnsupportedClaims: opaqueUnsupported,
+    transparentUnsupportedClaims: transparentUnsupported,
     claims: entries,
     formalEvidencePool: formalById.size,
   };

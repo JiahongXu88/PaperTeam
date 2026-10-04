@@ -999,10 +999,20 @@ function renderRevisionItemsBlock(
       const record = evidenceById?.get(id);
       return record !== undefined ? `[${id}] ${record.claim.slice(0, 100)}` : `[${id}]（证据库中不可用：按无证据处理）`;
     });
+    // M11.2.3（D-4 §15）：mustPreserve 前置约束——目标章节的事实 / 引用基线
+    // 投影（已剔除授权改动的值）。Writer 改前就知道哪些绝对不能动。
+    const mustPreserveLines: string[] = [];
+    if (item.mustPreserve?.values !== undefined && item.mustPreserve.values.length > 0) {
+      mustPreserveLines.push(`  绝对不可变动的数值（改写前后逐字保留）：${item.mustPreserve.values.join("、")}`);
+    }
+    if (item.mustPreserve?.citationKeys !== undefined && item.mustPreserve.citationKeys.length > 0) {
+      mustPreserveLines.push(`  绝对不可移除的引用（本条目修改不得丢弃）：\\cite{${item.mustPreserve.citationKeys.slice(0, 12).join(", ")}${item.mustPreserve.citationKeys.length > 12 ? ", …" : ""}}`);
+    }
     return [
       `- [${item.id}]（${item.kind}${item.riskLevel !== undefined ? ` / risk=${item.riskLevel}` : ""}）${item.problem}`,
       `  修改要求：${item.instruction}`,
       ...(constraints.length > 0 ? [`  约束：${constraints.join("；")}`] : []),
+      ...mustPreserveLines,
       ...(related.length > 0
         ? [`  修改前该论述依据的证据（修改后表述必须仍被其支撑，否则弱化）：${related.join("；")}`]
         : []),

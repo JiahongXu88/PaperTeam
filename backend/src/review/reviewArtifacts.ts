@@ -20,6 +20,7 @@ import type { FactPreservationSummary } from "../quality/factPreservation.js";
 import type { CumulativeFactValidation } from "../quality/cumulativeFactPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import type { ClaimGroundingReport } from "./claimGrounding.js";
+import type { ClaimResolutionReport } from "./claimResolution.js";
 import type { ClaimGapAudit } from "./claimGapAudit.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { RevisionValidationResult } from "./revisionValidation.js";
@@ -267,6 +268,42 @@ export class ReviewArtifactStore {
     const rounds = await this.rounds(projectId, CLAIM_GROUNDING_PATTERN);
     const round = rounds[0];
     return round === undefined ? null : this.loadClaimGrounding(projectId, round);
+  }
+
+  // ---- Claim Resolution（M11.2.3：Unsupported Claim Resolution Contract，按轮） ----
+
+  claimResolutionFileName(round: number): string {
+    return `claim-resolution-r${round}.json`;
+  }
+
+  async saveClaimResolution(projectId: string, report: ClaimResolutionReport): Promise<string> {
+    const fileName = this.claimResolutionFileName(report.round);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), report);
+    return `reviews/${fileName}`;
+  }
+
+  /**
+   * 读取某一轮的 Claim Resolution（无文件 / 结构损坏 → null；非 survey 或
+   * M11.2.3 之前的项目没有该产物属正常态）。
+   */
+  async loadClaimResolution(projectId: string, round: number): Promise<ClaimResolutionReport | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), this.claimResolutionFileName(round)), "utf8"),
+      );
+    } catch {
+      return null;
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as Record<string, unknown>)["round"] !== "number" ||
+      !Array.isArray((parsed as Record<string, unknown>)["resolutions"])
+    ) {
+      return null;
+    }
+    return parsed as ClaimResolutionReport;
   }
 
   // ---- Claim Gap Audit（M10.3.1 G2：task-aware 适用性审计，按轮） ----

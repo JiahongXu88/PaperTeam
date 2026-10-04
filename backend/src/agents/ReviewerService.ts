@@ -54,6 +54,13 @@ export interface ReviewIssue {
   reason?: string;
   /** 修复的 Evidence 依赖声明（M6.7 §13；缺省由 category 推断） */
   evidenceRequirement?: EvidenceRequirement;
+  /**
+   * M11.2.3（D-2 根因口径）：该 finding 归因到的 claimId（c-…）——fact 路按
+   * Reviewer 契约为每条 UNSUPPORTED claim 配套产出 issue，同一根因不得在
+   * claim 级（规则 4）与 issue 级（规则 5/6）重复计入。确定性回填（review.run
+   * 的 tagIssueRootCauses），不是模型自报。
+   */
+  rootCauseKey?: string;
 }
 
 /**

@@ -27,6 +27,8 @@ import {
   type CumulativeFactValidation,
 } from "./cumulativeFactPreservation.js";
 import type { ClaimGapAudit } from "../review/claimGapAudit.js";
+import type { ClaimGroundingReport } from "../review/claimGrounding.js";
+import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { LatexDiagnostic } from "../latex/diagnostics.js";
@@ -300,6 +302,14 @@ export interface QualityGateInput {
    */
   claimGapAudit?: ClaimGapAudit;
   /**
+   * Claim Grounding（M11.2.3 D-2）：同轮 claim grounding 报告。提供时规则 4
+   * 按披露口径只计 opaque_assertion（transparent_unverified 单独呈现不阻断），
+   * 规则 5/6 对 rootCauseKey 归因到本轮 unsupported claim 的 finding 去重——
+   * 同一根因（无证据论断）不再被 claim / blocking / critical 口径重复计因。
+   * undefined = 未提供（旧项目 / 单元输入，按原口径）。
+   */
+  claimGrounding?: ClaimGroundingReport;
+  /**
    * Evidence Citation Coverage（M6.6 §13）：正文引用 key ↔ Verified Evidence
    * 的覆盖结果。undefined = 调用方未计算（规则不出现）；提供了则呈现
    * citations_evidence_backed 规则（未覆盖计数可见；只有
@@ -364,49 +374,84 @@ export function evaluateQualityGate(
   });
 
   // 4. unsupported / contradicted 关键 claim = 0（M10.3.1：existing-paper 语境
-  //    只计修订引入口径——原稿既有 claim / 作者数据覆盖的 claim 不要求作为新
-  //    claim 重证，但逐条留档在 claim-gap-audit，作者裁决）
+  //    只计修订引入口径；M11.2.3：claimGrounding 可用时按披露口径只计
+  //    opaque_assertion——transparent_unverified（据来源转述 + 未核验声明）
+  //    单独呈现不阻断，不是 evidence-backed，学术评分照常反映缺口）
   const audit = input.claimGapAudit;
-  const unsupported = audit !== undefined
-    ? audit.counts.revisionIntroduced
-    : (input.review.unsupportedCriticalClaims ?? 0);
+  const claimGrounding = input.claimGrounding;
+  const unsupported =
+    audit !== undefined
+      ? audit.counts.revisionIntroduced
+      : claimGrounding !== undefined
+        ? claimGrounding.opaqueUnsupportedClaims
+        : (input.review.unsupportedCriticalClaims ?? 0);
   rules.push({
     rule: "unsupported_critical_claims_zero",
     passed: unsupported === 0,
     detail:
       audit !== undefined
         ? `修订引入 UNSUPPORTED/CONTRADICTED claim ${unsupported} 条（另有原稿既有 ${audit.counts.excludedPreExisting} 条 / 作者数据覆盖 ${audit.counts.excludedAuthorData} 条——返修语境不重证，见 claim-gap-audit）`
-        : `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
+        : claimGrounding !== undefined
+          ? `UNSUPPORTED/CONTRADICTED claim ${claimGrounding.unsupportedClaims} 条（凭空断言 ${claimGrounding.opaqueUnsupportedClaims} 条计入阻断；透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条单独呈现不阻断——口径见 M11.2.3）`
+          : `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
   });
+  // 4b. 透明未核验转述的可见性（informational：永远通过，只呈现计数——
+  //     「诚实限定」不是 evidence-backed，也不应凭空消失）
+  if (claimGrounding !== undefined && claimGrounding.transparentUnsupportedClaims > 0) {
+    rules.push({
+      rule: "transparent_unverified_reported",
+      passed: true,
+      detail: `透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条（据来源转述 + 声明未核验；不阻断，作者裁决是否取全文 / 删除）`,
+    });
+  }
 
-  // 5. blocking review issue = 0（M10.3.1：归因到被排除 claim 的 blocking 不计）
+  // 5. blocking review issue = 0（M10.3.1：归因到被排除 claim 的不计；
+  //    M11.2.3：rootCauseKey 归因到本轮 unsupported claim 的不计——同一根因
+  //    已由规则 4 的 claim 口径覆盖，不重复计入 blocking 口径）
+  const unsupportedClaimIds = new Set(claimGrounding?.unsupportedClaimIds ?? []);
+  const rootCauseCounted = (predicate: (issue: ReviewIssue) => boolean): number =>
+    input.review.issues.filter(
+      (issue) =>
+        issue.rootCauseKey !== undefined &&
+        unsupportedClaimIds.has(issue.rootCauseKey) &&
+        predicate(issue),
+    ).length;
   const blockingTotal = input.review.counts.blocking;
   const blockingExcluded = audit?.counts.issues.excludedBlocking ?? 0;
-  const blockingEffective = Math.max(0, blockingTotal - blockingExcluded);
+  const blockingRootCaused = rootCauseCounted((issue) => issue.blocking);
+  const blockingEffective = Math.max(0, blockingTotal - blockingExcluded - blockingRootCaused);
   rules.push({
     rule: "blocking_issues_zero",
     passed: blockingEffective === 0,
     detail:
-      audit !== undefined && blockingExcluded > 0
-        ? `blocking issue ${blockingEffective} 条（另有 ${blockingExcluded} 条归因于原稿既有 / 作者数据覆盖 claim，返修语境不计入）`
+      blockingExcluded + blockingRootCaused > 0
+        ? `blocking issue ${blockingEffective} 条（另有 ${blockingExcluded} 条归因于原稿既有 / 作者数据覆盖 claim${blockingRootCaused > 0 ? `、${blockingRootCaused} 条为 unsupported claim 的同根因 finding（规则 4 已计）` : ""}，不重复计入）`
         : `blocking issue ${blockingTotal} 条`,
   });
 
-  // 6. 未解决的 critical / major = 0（M10.3.1 同 5 的归因口径）
+  // 6. 未解决的 critical / major = 0（M10.3.1 同 5 的归因口径；M11.2.3 根因去重同上）
+  const criticalRootCaused = rootCauseCounted((issue) => issue.severity === "critical");
+  const majorRootCaused = rootCauseCounted((issue) => issue.severity === "major");
   const criticalEffective = Math.max(
     0,
-    input.review.openCritical - (audit?.counts.issues.excludedCritical ?? 0),
+    input.review.openCritical -
+      (audit?.counts.issues.excludedCritical ?? 0) -
+      criticalRootCaused,
   );
   const majorEffective = Math.max(
     0,
-    input.review.openMajor - (audit?.counts.issues.excludedMajor ?? 0),
+    input.review.openMajor - (audit?.counts.issues.excludedMajor ?? 0) - majorRootCaused,
   );
   rules.push({
     rule: "open_critical_major_zero",
     passed: criticalEffective === 0 && majorEffective === 0,
     detail: `critical=${criticalEffective} major=${majorEffective}${
-      audit !== undefined && (audit.counts.issues.excludedCritical > 0 || audit.counts.issues.excludedMajor > 0)
-        ? `（归因排除 critical ${audit.counts.issues.excludedCritical} / major ${audit.counts.issues.excludedMajor} 条）`
+      (audit?.counts.issues.excludedCritical ?? 0) +
+        (audit?.counts.issues.excludedMajor ?? 0) +
+        criticalRootCaused +
+        majorRootCaused >
+      0
+        ? `（归因排除 critical ${(audit?.counts.issues.excludedCritical ?? 0) + criticalRootCaused} / major ${(audit?.counts.issues.excludedMajor ?? 0) + majorRootCaused} 条——含 unsupported claim 同根因 finding）`
         : ""
     }`,
   });

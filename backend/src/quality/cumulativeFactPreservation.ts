@@ -68,7 +68,7 @@ export interface FactAuthorizationEntry {
   relatedEvidenceIds?: string[];
   instructionId?: string;
   /** M11.2.1 typed weakening：类型（存在即走类型化通道，text 即 targetSpan） */
-  authorizationKind?: "weaken_claim_strength" | "remove_unsupported_detail";
+  authorizationKind?: "weaken_claim_strength" | "remove_unsupported_detail" | "remove_claim";
   /** targetSpan 追溯（finding / claim 原文指纹；findingId / claimId 二选一） */
   findingId?: string;
   claimId?: string;

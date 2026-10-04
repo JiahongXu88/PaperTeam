@@ -137,6 +137,17 @@ export interface RevisionPlanItem {
     restoreValues?: string[];
     removeValues?: string[];
   };
+  /**
+   * M11.2.3（D-4 §15）：mustPreserve 约束（目标章节事实 / 引用基线的最小投影，
+   * 已剔除本条目授权改动的值）。只进 Writer prompt（改前约束：绝对不能动的
+   * 数值与 citation keys）；Fact / Citation 守卫判定口径不变（事后拦截兜底）。
+   */
+  mustPreserve?: {
+    /** 目标章节正文数值 token（≤40；改写中不得增删改） */
+    values?: string[];
+    /** 目标章节现有 \cite keys（≤30；不得无计划移除） */
+    citationKeys?: string[];
+  };
 }
 
 export interface RevisionPlan {
@@ -343,6 +354,15 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     const hasRestore =
       (regression.restoreValues !== undefined && regression.restoreValues.length > 0) ||
       (regression.removeValues !== undefined && regression.removeValues.length > 0);
+    // M11.2.3（D-1）：指令随违规方向分化——「无依据新增」的正确处置是删除
+    // （原值不存在，谈不上恢复）；旧指令一律「恢复上一修订原值」会让 Writer
+    // 对新增类违规执行删除 / 改写后，下一轮 pairwise 又把删除判为违规
+    // （Case B 的加也拦删也拦死锁，修订指令层成因之一）。
+    const isAdditionOnly =
+      (regression.removeValues?.length ?? 0) > 0 && (regression.restoreValues?.length ?? 0) === 0;
+    const instruction = isAdditionOnly
+      ? `删除该无依据新增内容（本条目已授权删除下列值：${(regression.removeValues ?? []).join("、")}）。只许删除：不得改写后保留、不得替换为其他值、不得移位重述；删除后表述须保持连贯且不引入新数值`
+      : "恢复上一修订中的实验事实原值（表格数值 / 正文数字与单位 / 公式 / 方向性结论 / 协议表述）。修订不是重写：只有计划明确授权（依据 Evidence 修正数值）时才允许改值，且新值必须逐字来自 Evidence";
     items.push({
       id:
         regression.violationKey !== undefined
@@ -352,8 +372,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       priority: "high",
       section: regression.file,
       problem: `实验事实被无依据修改：${regression.detail.slice(0, 260)}`,
-      instruction:
-        "恢复上一修订中的实验事实原值（表格数值 / 正文数字与单位 / 公式 / 方向性结论 / 协议表述）。修订不是重写：只有计划明确授权（依据 Evidence 修正数值）时才允许改值，且新值必须逐字来自 Evidence",
+      instruction,
       expectedOutcome: "实验事实保持规则（fact_preservation）转为通过",
       // restorable 条目同样保持 planned：先由 revision.restore_facts 确定性恢复
       // 并回写 validated；恢复失败（定位失效等）时 Writer 派发仍是兜底路径——
