@@ -3,6 +3,7 @@ import type {
   ExternalInstructionSource,
   ExternalInstructionView,
   ExternalInstructionsResponse,
+  ExternalCommentBatchPreview,
   RevisionPlanView,
 } from "../types/api.js";
 
@@ -42,6 +43,27 @@ export async function addExternalInstruction(
     input,
   );
   return body.instruction;
+}
+
+export async function previewExternalInstructionBatch(projectId: string, markdown: string): Promise<ExternalCommentBatchPreview> {
+  return apiClient.post<ExternalCommentBatchPreview>(
+    `/api/projects/${encodeURIComponent(projectId)}/external-instructions/parse`,
+    { markdown },
+  );
+}
+
+export async function addExternalInstructionBatch(projectId: string, markdown: string): Promise<{
+  created: ExternalInstructionView[];
+  duplicateIds: string[];
+  instructions: ExternalInstructionView[];
+  parsedCount: number;
+  sourceBlocks: number;
+  parserDuplicates: number;
+}> {
+  return apiClient.post(
+    `/api/projects/${encodeURIComponent(projectId)}/external-instructions/batch`,
+    { markdown },
+  );
 }
 
 export async function deleteExternalInstruction(

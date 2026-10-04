@@ -82,7 +82,10 @@ import {
 import { DEFAULT_STYLE_POLICY, STYLE_POLICIES, isStylePolicy, type StylePolicy } from "./review/stylePolicy.js";
 import {
   EXTERNAL_INSTRUCTION_SOURCES,
+  EXTERNAL_BATCH_MAX_CHARS,
   EXTERNAL_TEXT_MAX_CHARS,
+  externalInstructionId,
+  parseExternalCommentBatch,
   type ExternalInstructionSource,
 } from "./review/externalInstructions.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
@@ -2616,6 +2619,39 @@ async function handleProjectResourceRoutes(
   // 不改稿件、不触发 run、不携带任何凭据。Quick Review 的只读红线不受影响。
   if (resource === "external-instructions") {
     const instructions = await stack.externalInstructions.load(projectId);
+    if (rest === "/parse" && method === "POST") {
+      const body = await readJsonBody(req);
+      const markdown = typeof body["markdown"] === "string" ? body["markdown"] : "";
+      if (markdown.trim() === "") throw new BusinessError("INVALID_REQUEST", "字段 markdown 必须为非空字符串");
+      try {
+        const parsed = parseExternalCommentBatch(markdown);
+        const existingIds = new Set(instructions.map((item) => item.instructionId));
+        sendJson(res, 200, {
+          ...parsed,
+          existingDuplicates: parsed.comments.filter((item) =>
+            existingIds.has(externalInstructionId(item.source, item.reviewerLabel, item.text)),
+          ).length,
+        });
+      } catch (error) {
+        throw new BusinessError("INVALID_REQUEST", error instanceof Error ? error.message : "批量意见解析失败");
+      }
+      return true;
+    }
+    if (rest === "/batch" && method === "POST") {
+      const body = await readJsonBody(req);
+      const markdown = typeof body["markdown"] === "string" ? body["markdown"] : "";
+      if (markdown.trim() === "") throw new BusinessError("INVALID_REQUEST", "字段 markdown 必须为非空字符串");
+      if (markdown.length > EXTERNAL_BATCH_MAX_CHARS) throw new BusinessError("INVALID_REQUEST", `批量意见文本超过 ${EXTERNAL_BATCH_MAX_CHARS} 字符上限`);
+      let parsed: ReturnType<typeof parseExternalCommentBatch>;
+      try {
+        parsed = parseExternalCommentBatch(markdown);
+      } catch (error) {
+        throw new BusinessError("INVALID_REQUEST", error instanceof Error ? error.message : "批量意见导入失败");
+      }
+      const result = await stack.externalInstructions.addBatch(projectId, parsed.comments);
+      sendJson(res, 200, { ...result, parsedCount: parsed.comments.length, sourceBlocks: parsed.sourceBlocks, parserDuplicates: parsed.duplicateBlocks });
+      return true;
+    }
     if (rest === "") {
       if (method === "GET") {
         sendJson(res, 200, {

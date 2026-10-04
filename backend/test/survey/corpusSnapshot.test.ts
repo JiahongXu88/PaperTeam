@@ -18,7 +18,6 @@ import { join } from "node:path";
 
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { SourceStore } from "../../src/sources/SourceStore.js";
-import { BusinessError } from "../../src/errors.js";
 import {
   CorpusSnapshotService,
   buildCorpusRows,
@@ -31,7 +30,6 @@ import { MatrixService } from "../../src/survey/MatrixService.js";
 import { startTestStack } from "../helpers/testStack.js";
 import { runtimeFromScript } from "../helpers/fakeRuntime.js";
 import { createTopicSurveyDefinition, type WorkflowServices } from "../../src/workflow/definitions.js";
-import type { StageSpec } from "../../src/workflow/types.js";
 
 const NOW = () => new Date("2026-10-04T08:00:00.000Z");
 
@@ -294,7 +292,10 @@ describe("survey.fulltext 冻结语义（workflow 接线，真实 stack + fake r
       expect(frozen.counts).toEqual({ total: 2, hasFulltext: 1, fulltextBasis: 0, abstractBasis: 0 });
 
       const definition = createTopicSurveyDefinition(services);
-      const stage = definition.stages.find((entry) => entry.id === "survey.fulltext") as StageSpec;
+      const stage = definition.stages.find((entry) => entry.id === "survey.fulltext");
+      if (stage === undefined || "hitl" in stage) {
+        throw new Error("survey.fulltext must be an execution stage");
+      }
       const result = (await stage.execute({
         runId: "w-test",
         projectId,

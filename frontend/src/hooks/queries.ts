@@ -93,6 +93,7 @@ import {
   regenerateSkillSummary,
 } from "../api/skills.js";
 import {
+  addExternalInstructionBatch,
   addExternalInstruction,
   deleteExternalInstruction,
   getRevisionPlan,
@@ -1211,6 +1212,17 @@ export function useAddExternalInstruction(projectId: string) {
   return useMutation({
     mutationFn: (input: Parameters<typeof addExternalInstruction>[1]) =>
       addExternalInstruction(projectId, input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.externalInstructions(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.revisionPlan(projectId) });
+    },
+  });
+}
+
+export function useAddExternalInstructionBatch(projectId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (markdown: string) => addExternalInstructionBatch(projectId, markdown),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.externalInstructions(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.revisionPlan(projectId) });

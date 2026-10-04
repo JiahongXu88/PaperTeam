@@ -84,6 +84,78 @@ export interface ExternalInstruction {
 
 /** 意见全文长度上限（超出拒绝；防误贴整篇稿件撑爆 prompt） */
 export const EXTERNAL_TEXT_MAX_CHARS = 8_000;
+export const EXTERNAL_BATCH_MAX_CHARS = 200_000;
+export const EXTERNAL_BATCH_MAX_COMMENTS = 100;
+
+export interface ParsedExternalComment {
+  source: ExternalInstructionSource;
+  reviewerLabel?: string;
+  text: string;
+}
+
+/**
+ * Conservative Markdown importer. It only splits on explicit reviewer/editor
+ * headings and extracts an explicitly labelled "意见要点" when present. If no
+ * recognized structure exists, the full input remains one comment block.
+ */
+export function parseExternalCommentBatch(markdown: string): {
+  comments: ParsedExternalComment[];
+  sourceBlocks: number;
+  duplicateBlocks: number;
+} {
+  if (markdown.length > EXTERNAL_BATCH_MAX_CHARS) {
+    throw new Error(`批量意见文本超过 ${EXTERNAL_BATCH_MAX_CHARS} 字符上限`);
+  }
+  const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
+  const headings: Array<{ index: number; label: string; source: ExternalInstructionSource; reviewerLabel?: string }> = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^#{1,6}\s+(.+?)\s*$/.exec(lines[index] ?? "");
+    if (match === null) continue;
+    const title = (match[1] ?? "").trim();
+    const reviewer = /^(?:外审意见|reviewer(?:\s*#?\s*\d+)?\s*:?)\s*(\d+)?/i.exec(title);
+    const editor = /^(?:编辑意见|editor(?:\s+comments?)?)(?:\s*[:：].*)?$/i.test(title);
+    if (reviewer !== null) {
+      const number = /(?:外审意见\s*|reviewer\s*#?\s*)(\d+)/i.exec(title)?.[1];
+      headings.push({ index, label: title, source: "journal_reviewer", ...(number ? { reviewerLabel: `Reviewer ${number}` } : {}) });
+    } else if (editor) {
+      headings.push({ index, label: title, source: "editor", reviewerLabel: "Editor" });
+    }
+  }
+
+  const rawBlocks: ParsedExternalComment[] = [];
+  if (headings.length === 0) {
+    const text = markdown.trim();
+    if (text !== "") rawBlocks.push({ source: "journal_reviewer", text });
+  } else {
+    for (let i = 0; i < headings.length; i += 1) {
+      const heading = headings[i]!;
+      const nextHeading = headings[i + 1]?.index ?? lines.length;
+      const section = lines.slice(heading.index + 1, nextHeading).join("\n");
+      const issue = /(?:\*\*意见要点\*\*|\*\*Comment\s*(?:summary)?\*\*)\s*[：:]?\s*([\s\S]*?)(?=\n\s*\*\*(?:回应|Response|具体修改|修改位置)\*\*|$)/i.exec(section);
+      const text = (issue?.[1] ?? section).trim();
+      if (text !== "") rawBlocks.push({
+        source: heading.source,
+        ...(heading.reviewerLabel ? { reviewerLabel: heading.reviewerLabel } : {}),
+        text,
+      });
+    }
+  }
+  if (rawBlocks.length > EXTERNAL_BATCH_MAX_COMMENTS) {
+    throw new Error(`解析出 ${rawBlocks.length} 条意见，超过 ${EXTERNAL_BATCH_MAX_COMMENTS} 条上限`);
+  }
+  const seen = new Set<string>();
+  const comments: ParsedExternalComment[] = [];
+  for (const block of rawBlocks) {
+    if (block.text.length > EXTERNAL_TEXT_MAX_CHARS) {
+      throw new Error(`单条意见超过 ${EXTERNAL_TEXT_MAX_CHARS} 字符上限，未导入任何意见`);
+    }
+    const key = `${block.source}|${block.reviewerLabel ?? ""}|${block.text.trim().replace(/\s+/g, " ")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    comments.push(block);
+  }
+  return { comments, sourceBlocks: rawBlocks.length, duplicateBlocks: rawBlocks.length - comments.length };
+}
 
 /** Writer 对单条意见在单个章节的执行报告（%%%PT-OUTCOMES%%% 行解析结果） */
 export type ExternalOutcomeKind = "applied" | "conflict" | "not_applicable" | "unreported";
@@ -279,6 +351,39 @@ export class ExternalInstructionStore {
     };
     await this.save(projectId, [...existing, instruction]);
     return instruction;
+  }
+
+  /** Atomic ordered batch import; existing and in-batch duplicates are reported, never reordered. */
+  async addBatch(projectId: string, inputs: ParsedExternalComment[]): Promise<{
+    created: ExternalInstruction[];
+    duplicateIds: string[];
+    instructions: ExternalInstruction[];
+  }> {
+    const existing = await this.load(projectId);
+    const known = new Set(existing.map((item) => item.instructionId));
+    const created: ExternalInstruction[] = [];
+    const duplicateIds: string[] = [];
+    const now = new Date().toISOString();
+    for (const input of inputs) {
+      const instructionId = externalInstructionId(input.source, input.reviewerLabel, input.text);
+      if (known.has(instructionId)) {
+        duplicateIds.push(instructionId);
+        continue;
+      }
+      known.add(instructionId);
+      created.push({
+        instructionId,
+        source: input.source,
+        ...(input.reviewerLabel ? { reviewerLabel: input.reviewerLabel } : {}),
+        text: input.text,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const instructions = [...existing, ...created];
+    if (created.length > 0) await this.save(projectId, instructions);
+    return { created, duplicateIds, instructions };
   }
 
   /** 删除一条（返回删除后的列表；不存在 → null） */

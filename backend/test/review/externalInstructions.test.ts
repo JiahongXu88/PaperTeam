@@ -21,6 +21,7 @@ import {
   applyDispatchOutcome,
   externalInstructionId,
   ExternalInstructionStore,
+  parseExternalCommentBatch,
   reverifyHandledInstructions,
 } from "../../src/review/externalInstructions.js";
 import type {
@@ -36,6 +37,47 @@ afterAll(async () => {
 });
 
 const NOW = "2026-09-16T12:00:00.000Z";
+
+describe("parseExternalCommentBatch", () => {
+  it("按明确的编辑/外审标题提取意见要点，保留顺序并排除作者回应", () => {
+    const parsed = parseExternalCommentBatch(`# 回复信
+
+## 编辑意见：突出创新点
+**意见要点**：请凝练核心贡献。
+**回应**：感谢编辑，我们已修改。
+
+## 外审意见 1：补充相关研究
+**意见要点**：请补充车载视角相关研究。
+**回应**：我们补充了相关文献。
+
+## 外审意见 2：补充部署实验
+**意见要点**：请增加真实边缘设备实验。
+**回应**：已完成实验。
+`);
+    expect(parsed.comments).toEqual([
+      { source: "editor", reviewerLabel: "Editor", text: "请凝练核心贡献。" },
+      { source: "journal_reviewer", reviewerLabel: "Reviewer 1", text: "请补充车载视角相关研究。" },
+      { source: "journal_reviewer", reviewerLabel: "Reviewer 2", text: "请增加真实边缘设备实验。" },
+    ]);
+    expect(parsed.sourceBlocks).toBe(3);
+    expect(parsed.duplicateBlocks).toBe(0);
+  });
+
+  it("无法识别结构时整段保留；重复块按顺序去重，不截断超长输入", () => {
+    expect(parseExternalCommentBatch("Reviewer feedback without a heading").comments).toHaveLength(1);
+    const parsed = parseExternalCommentBatch("## Reviewer 1\n相同意见\n\n## Reviewer 1\n相同意见");
+    expect(parsed.comments).toHaveLength(1);
+    expect(parsed.duplicateBlocks).toBe(1);
+    expect(() => parseExternalCommentBatch(`## Reviewer 1\n${"x".repeat(8_001)}`)).toThrow(/单条意见超过/);
+  });
+
+  it("Reviewer 内的 Major/Minor 子标题不丢内容；无法可靠拆分时保留较大的意见块", () => {
+    const parsed = parseExternalCommentBatch("## Reviewer 1\n### Major Comments\n补充实验说明。\n### Minor Comments\n修正文中术语。");
+    expect(parsed.comments).toHaveLength(1);
+    expect(parsed.comments[0]?.text).toContain("补充实验说明。");
+    expect(parsed.comments[0]?.text).toContain("修正文中术语。");
+  });
+});
 
 function instruction(overrides: Partial<ExternalInstruction> = {}): ExternalInstruction {
   const text = overrides.text ?? "请补充高密度场景的失效原因分析。";
@@ -79,6 +121,20 @@ describe("ExternalInstructionStore", () => {
     expect((await store.load("p-1")).length).toBe(1);
     expect(await store.remove("p-1", added!.instructionId)).toEqual([]);
     expect(await store.remove("p-1", "x-nonexistent")).toBeNull();
+  });
+
+  it("批量导入保持输入顺序，重复项显式返回且重复提交幂等", async () => {
+    const { store } = await makeStore();
+    const comments = [
+      { source: "editor" as const, reviewerLabel: "Editor", text: "编辑意见" },
+      { source: "journal_reviewer" as const, reviewerLabel: "Reviewer 1", text: "外审意见" },
+    ];
+    const first = await store.addBatch("p-1", comments);
+    expect(first.created.map((item) => item.text)).toEqual(["编辑意见", "外审意见"]);
+    const second = await store.addBatch("p-1", comments);
+    expect(second.created).toHaveLength(0);
+    expect(second.duplicateIds).toHaveLength(2);
+    expect(second.instructions.map((item) => item.text)).toEqual(["编辑意见", "外审意见"]);
   });
 
   it("损坏的 external-instructions.json → 空列表（不阻塞）", async () => {

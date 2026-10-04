@@ -20,6 +20,8 @@ import { renderWithProviders } from "./helpers.js";
 vi.mock("../src/api/externalInstructions.js", () => ({
   listExternalInstructions: vi.fn(),
   addExternalInstruction: vi.fn(),
+  addExternalInstructionBatch: vi.fn(),
+  previewExternalInstructionBatch: vi.fn(),
   deleteExternalInstruction: vi.fn(),
   getRevisionPlan: vi.fn(),
 }));
@@ -46,6 +48,33 @@ afterEach(() => {
 });
 
 describe("ExternalInstructionsPanel（M5.7）", () => {
+  it("批量意见先预览，再显式确认导入", async () => {
+    const markdown = "## Reviewer 1\n请补充相关工作。";
+    api.listExternalInstructions.mockResolvedValue({ instructions: [], sectionOptions: [] });
+    api.previewExternalInstructionBatch.mockResolvedValue({
+      comments: [{ source: "journal_reviewer", reviewerLabel: "Reviewer 1", text: "请补充相关工作。" }],
+      sourceBlocks: 1,
+      duplicateBlocks: 0,
+      existingDuplicates: 0,
+    });
+    api.addExternalInstructionBatch.mockResolvedValue({
+      created: [instructionView({ reviewerLabel: "Reviewer 1", text: "请补充相关工作。" })],
+      duplicateIds: [],
+      instructions: [],
+      parsedCount: 1,
+      sourceBlocks: 1,
+      parserDuplicates: 0,
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ExternalInstructionsPanel projectId="p-1" />, { route: "/projects/p-1?tab=review" });
+    await user.type(await screen.findByTestId("external-batch-input"), markdown);
+    await user.click(screen.getByTestId("external-batch-preview"));
+    expect(await screen.findByTestId("external-batch-preview-results")).toHaveTextContent("Reviewer 1");
+    expect(api.addExternalInstructionBatch).not.toHaveBeenCalled();
+    await user.click(screen.getByTestId("external-batch-confirm"));
+    await waitFor(() => expect(api.addExternalInstructionBatch).toHaveBeenCalledWith("p-1", markdown));
+  });
+
   it("添加意见：来源 / 标识 / 章节 / 原文 → addExternalInstruction 收到完整 payload", async () => {
     api.listExternalInstructions.mockResolvedValue({
       instructions: [],

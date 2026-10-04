@@ -152,7 +152,7 @@ describe("planSharedTail completion（qualityStatus 进 summary）", () => {
   }
 
   it("overflow accept_draft → completion(draft) 携带 QUALITY_NOT_REACHED + 用户可读 message", () => {
-    const plan = definition.plan(tailState({ convergence: "PROGRESS" }), services);
+    const plan = definition.plan(tailState({ convergence: "PROGRESS" }));
     expect(plan.kind).toBe("complete");
     if (plan.kind !== "complete") {
       return;
@@ -163,10 +163,7 @@ describe("planSharedTail completion（qualityStatus 进 summary）", () => {
   });
 
   it("STALLED + authorDecisionClaims → AUTHOR_DECISION_REQUIRED", () => {
-    const plan = definition.plan(
-      tailState({ convergence: "STALLED", authorDecisionClaims: 1 }),
-      services,
-    );
+    const plan = definition.plan(tailState({ convergence: "STALLED", authorDecisionClaims: 1 }));
     expect(plan.kind).toBe("complete");
     if (plan.kind !== "complete") {
       return;

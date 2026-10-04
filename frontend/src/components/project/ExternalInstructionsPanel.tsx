@@ -2,12 +2,14 @@ import { useState } from "react";
 
 import { Icon } from "../common/Icon.js";
 import {
+  useAddExternalInstructionBatch,
   useAddExternalInstruction,
   useDeleteExternalInstruction,
   useExternalInstructions,
 } from "../../hooks/queries.js";
 import { formatApiError } from "../../utils/errors.js";
-import type { ExternalInstructionSource, ExternalInstructionView } from "../../types/api.js";
+import { previewExternalInstructionBatch } from "../../api/externalInstructions.js";
+import type { ExternalCommentBatchPreview, ExternalInstructionSource, ExternalInstructionView } from "../../types/api.js";
 
 /**
  * 外部修改意见面板（M5.7）：期刊专家 / 编辑 / 导师 / 用户要求 → 修订计划。
@@ -42,6 +44,7 @@ const STATUS_VIEW: Record<
 > = {
   pending: { label: "待派发", tone: "neutral" },
   handled: { label: "已处理", tone: "ok" },
+  already_satisfied: { label: "当前稿已满足（历史意见）", tone: "ok" },
   partially_handled: { label: "部分处理", tone: "info" },
   unresolved: { label: "未处理", tone: "warn" },
   conflict: { label: "与事实 / Evidence 冲突", tone: "warn" },
@@ -52,6 +55,7 @@ const TEXT_MAX_CHARS = 8000;
 export function ExternalInstructionsPanel({ projectId }: { projectId: string }) {
   const query = useExternalInstructions(projectId);
   const add = useAddExternalInstruction(projectId);
+  const addBatch = useAddExternalInstructionBatch(projectId);
   const remove = useDeleteExternalInstruction(projectId);
 
   const [source, setSource] = useState<ExternalInstructionSource>("journal_reviewer");
@@ -59,9 +63,21 @@ export function ExternalInstructionsPanel({ projectId }: { projectId: string }) 
   const [section, setSection] = useState("");
   const [text, setText] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [batchMarkdown, setBatchMarkdown] = useState("");
+  const [batchPreview, setBatchPreview] = useState<ExternalCommentBatchPreview | null>(null);
+  const [batchError, setBatchError] = useState<string | null>(null);
+  const [previewingBatch, setPreviewingBatch] = useState(false);
 
   const instructions = query.data?.instructions ?? [];
   const sectionOptions = query.data?.sectionOptions ?? [];
+  const coverage = {
+    total: instructions.length,
+    addressed: instructions.filter((item) => item.status === "handled" || item.status === "already_satisfied").length,
+    partial: instructions.filter((item) => item.status === "partially_handled").length,
+    unresolved: instructions.filter((item) => item.status === "unresolved").length,
+    authorDecision: instructions.filter((item) => item.status === "conflict").length,
+    pending: instructions.filter((item) => item.status === "pending").length,
+  };
 
   const canSubmit = text.trim() !== "" && !add.isPending;
 
@@ -95,6 +111,66 @@ export function ExternalInstructionsPanel({ projectId }: { projectId: string }) 
         手工录入期刊外审专家、编辑、导师或你自己的修改要求。意见以最高业务优先级进入修订计划；
         但任何意见都不会绕过事实 / 引用 / 证据等确定性安全门禁——与实验事实冲突时会明确标记冲突并保留原结果。
       </p>
+
+      <div className="field" data-testid="external-batch-import">
+        <label htmlFor="ext-batch-markdown">批量导入 Reviewer / 编辑意见（Markdown 或纯文本）</label>
+        <textarea
+          id="ext-batch-markdown"
+          value={batchMarkdown}
+          onChange={(event) => {
+            setBatchMarkdown(event.target.value);
+            setBatchPreview(null);
+            setBatchError(null);
+          }}
+          rows={6}
+          placeholder={"## Reviewer 1\n1. 请补充相关工作。\n\n## Reviewer 2\n请解释实验边界。"}
+          data-testid="external-batch-input"
+        />
+        <div className="form-actions">
+          <button
+            type="button"
+            className="btn"
+            disabled={!batchMarkdown.trim() || previewingBatch || addBatch.isPending}
+            onClick={() => {
+              setPreviewingBatch(true);
+              setBatchError(null);
+              void previewExternalInstructionBatch(projectId, batchMarkdown)
+                .then(setBatchPreview)
+                .catch((error: unknown) => setBatchError(formatApiError(error)))
+                .finally(() => setPreviewingBatch(false));
+            }}
+            data-testid="external-batch-preview"
+          >
+            {previewingBatch ? "解析中…" : "解析并预览"}
+          </button>
+          {batchPreview !== null ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={batchPreview.comments.length === 0 || addBatch.isPending}
+              onClick={() => addBatch.mutate(batchMarkdown, { onSuccess: () => { setBatchMarkdown(""); setBatchPreview(null); } })}
+              data-testid="external-batch-confirm"
+            >
+              {addBatch.isPending ? "导入中…" : `确认导入 ${batchPreview.comments.length} 条`}
+            </button>
+          ) : null}
+        </div>
+        {batchError !== null ? <p className="form-error" role="alert">解析失败：{batchError}</p> : null}
+        {addBatch.isError ? <p className="form-error" role="alert">批量导入失败：{formatApiError(addBatch.error)}</p> : null}
+        {batchPreview !== null ? (
+          <div className="note note-info" data-testid="external-batch-preview-results">
+            <p>解析到 {batchPreview.sourceBlocks} 个意见块，去重后 {batchPreview.comments.length} 条；已有重复 {batchPreview.existingDuplicates} 条。</p>
+            <ol>
+              {batchPreview.comments.map((comment, index) => (
+                <li key={`${comment.reviewerLabel ?? comment.source}-${index}`}>
+                  <strong>{comment.reviewerLabel ?? SOURCE_LABEL[comment.source]}</strong>: {comment.text}
+                </li>
+              ))}
+            </ol>
+            <p className="field-help">请核对拆分结果后确认。无法识别结构时会将整段保留为一条意见；确认后意见以 mandatory 进入修订计划。</p>
+          </div>
+        ) : null}
+      </div>
 
       <form
         className="external-instruction-form"
@@ -190,6 +266,10 @@ export function ExternalInstructionsPanel({ projectId }: { projectId: string }) 
       ) : null}
 
       {instructions.length > 0 ? (
+        <>
+        <div className="note note-info" data-testid="external-comment-coverage">
+          评论覆盖：总计 {coverage.total} · 已处理 {coverage.addressed} · 部分处理 {coverage.partial} · 未解决 {coverage.unresolved} · 冲突/需作者决策 {coverage.authorDecision} · 待派发 {coverage.pending}
+        </div>
         <ul className="external-instruction-list" data-testid="external-instruction-list">
           {instructions.map((instruction) => {
             const status = STATUS_VIEW[instruction.status];
@@ -267,6 +347,7 @@ export function ExternalInstructionsPanel({ projectId }: { projectId: string }) 
             );
           })}
         </ul>
+        </>
       ) : (
         !query.isPending && !query.isError ? (
           <p className="panel-empty">暂无外部修改意见。系统行为与未加入本功能前完全一致。</p>

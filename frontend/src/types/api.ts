@@ -826,13 +826,27 @@ export type ExternalInstructionSource =
   | "advisor"
   | "other";
 
+export interface ParsedExternalCommentView {
+  source: ExternalInstructionSource;
+  reviewerLabel?: string;
+  text: string;
+}
+
+export interface ExternalCommentBatchPreview {
+  comments: ParsedExternalCommentView[];
+  sourceBlocks: number;
+  duplicateBlocks: number;
+  existingDuplicates: number;
+}
+
 /** 处理状态（确定性判定：handled 需要真实文件变化 + gate 复核通过） */
 export type ExternalInstructionStatus =
   | "pending"
   | "handled"
   | "partially_handled"
   | "unresolved"
-  | "conflict";
+  | "conflict"
+  | "already_satisfied";
 
 export interface ExternalInstructionView {
   instructionId: string;
