@@ -159,7 +159,12 @@ export interface WorkflowRunView {
     payload?: Record<string, unknown>;
   } | null;
   error?: { code: string; message: string; stageId?: string } | null;
-  completion?: { label: "final" | "draft" | "review" | "survey" } | null;
+  completion?: {
+    label: "final" | "draft" | "review" | "survey";
+    /** M11.3：产品终态语义（质量未达标 ≠ 系统崩溃）；后端 classifyTerminalStatus 同口径 */
+    qualityStatus?: string;
+    qualityStatusMessage?: string;
+  } | null;
   /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
   /** 已完成 stage id（按完成顺序；重复执行的 stage 只出现一次） */

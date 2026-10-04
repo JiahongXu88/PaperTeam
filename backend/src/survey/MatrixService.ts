@@ -296,6 +296,50 @@ export class MatrixService {
   }
 
   /**
+   * M11.3（Phase C）：失效「可升级」条目——源已有全文文件而条目仍按
+   * abstract_only 记录（语料显式 refresh 后）。移除的条目在下一次
+   * buildMatrix 中重建（fulltext 深度 + 锚定），matrix 内容指纹随之变化，
+   * Synthesis / Outline 按既有 staleness 链重算（§18：语料变而 matrix
+   * 指纹不变是被禁止的）。返回失效条数（0 = 无可升级条目）。
+   */
+  async invalidateUpgradableEntries(projectId: string): Promise<number> {
+    await this.projects.getRequired(projectId);
+    const artifact = await this.store.read(projectId);
+    if (artifact === null) {
+      return 0;
+    }
+    const sources = await this.sources.list(projectId);
+    const hasFile = new Set(
+      sources
+        .filter(
+          (item) =>
+            item.sourceRole !== "reference" &&
+            item.status !== "rejected" &&
+            item.fileName !== undefined &&
+            item.fileName !== "" &&
+            item.status !== "metadata_only",
+        )
+        .map((item) => item.sourceId),
+    );
+    const kept = artifact.entries.filter(
+      (entry) => !(hasFile.has(entry.sourceId) && entry.interpretationDepth !== "fulltext"),
+    );
+    const invalidated = artifact.entries.length - kept.length;
+    if (invalidated === 0) {
+      return 0;
+    }
+    await this.store.write(projectId, {
+      ...artifact,
+      updatedAt: this.now().toISOString(),
+      entries: kept,
+    });
+    this.log(
+      `[survey] projectId=${projectId} 语料 refresh 失效可升级条目：${invalidated}（下次构建按 fulltext 深度重建）`,
+    );
+    return invalidated;
+  }
+
+  /**
    * HITL 修正单个条目（PUT /survey/matrix/:entryId）。
    * 校验严格 fail-closed（非法 taxonomy 标签 / 超长字段 / 无效 anchor → 400，
    * 不静默截断或剔除——与构建路径对模型输出的宽容归一不同，人的输入应得到

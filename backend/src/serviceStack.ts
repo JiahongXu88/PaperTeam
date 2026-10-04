@@ -67,6 +67,7 @@ import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js
 import { TargetedGroundingService } from "./evidence/TargetedGroundingService.js";
 import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { MatrixService } from "./survey/MatrixService.js";
+import { CorpusSnapshotService } from "./survey/CorpusSnapshotService.js";
 import { SynthesisService } from "./survey/SynthesisService.js";
 import { SurveyOutlineService } from "./survey/OutlineService.js";
 import { WriterService } from "./writer/WriterService.js";
@@ -220,6 +221,8 @@ export interface ServiceStack {
    * research/survey.json（Research 阶段派生产物；不写 EvidenceStore）
    */
   survey: MatrixService;
+  /** M11.3：研究语料冻结 / 显式补齐（refresh_missing_fulltext） */
+  corpus: CorpusSnapshotService;
   /**
    * Survey Synthesis（M11.1.2）：Matrix → 跨论文 Structured Synthesis →
    * research/survey-synthesis.json（groundingLevel 由确定性规则判定；
@@ -658,6 +661,17 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...longRun,
     log,
   });
+  // M11.3 Research Corpus Snapshot：survey.fulltext 冻结基线 + 显式
+  // refresh_missing_fulltext（补齐 → revision+1 + matrix 可升级条目失效）
+  const corpus = new CorpusSnapshotService({
+    projects: options.projects,
+    listSources: (pid) => sources.list(pid),
+    resolveFullTextBatch: (pid, sourceIds, batchOptions) =>
+      sourceImport.resolveFullTextBatch(pid, sourceIds, batchOptions ?? {}),
+    ingest: (pid, sourceId) => ingestion.ingest(pid, sourceId),
+    invalidateUpgradableMatrixEntries: (pid) => survey.invalidateUpgradableEntries(pid),
+    log,
+  });
   // M11.1.2 Structured Synthesis：Matrix → 跨论文综合（七类）；taxonomy 确定性
   // 聚合 + 其余六类 bounded batch 走 researcher（contextScope=research/
   // survey-synthesis，research/* 前缀规则已映射）；evidence 升级复用
@@ -747,6 +761,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     loop,
     retrieval,
     survey,
+    corpus,
     synthesis,
     surveyOutline,
     parsedDocuments,
@@ -791,6 +806,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       discovery,
       ingestion,
       survey,
+      corpus,
       synthesis,
       surveyOutline,
       manuscript,

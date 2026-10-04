@@ -217,6 +217,51 @@ describe("HitlPanel：payload 渲染（统一 shell，按 stageId 差异化）",
     expect(screen.queryByTestId("hitl-approve")).toBeNull();
   });
 
+  it("修订不收敛节点（M11.3）：failureClass 终态语义渲染——NO_PROGRESS 不是系统崩溃", async () => {
+    renderHitl(
+      hitlRunFixture({
+        currentStage: "hitl.revision_stalled",
+        awaiting: {
+          stageId: "hitl.revision_stalled",
+          prompt: "修订迭代不再收敛，请决策",
+          options: ["accept_draft", "revise_more", "cancel"],
+          payload: {
+            outcome: "CONVERGED",
+            convergence: "STALLED",
+            failureClass: "NO_PROGRESS",
+            failureMessage: "自动修订已达到收敛上限，继续自动修改预计收益有限；当前稿可作为 Draft 使用。",
+            gateReasons: ["academic_score_threshold: 74 < 80"],
+          },
+        },
+      }),
+    );
+    const stalled = await screen.findByTestId("hitl-terminal-status");
+    expect(stalled).toHaveTextContent("终态判定");
+    expect(stalled).toHaveTextContent("自动修订已达收敛上限");
+    expect(stalled).toHaveTextContent("继续自动修改预计收益有限");
+  });
+
+  it("修订不收敛节点（M11.3）：SYSTEM_FAILED 呈现守卫语义（danger 徽章）", async () => {
+    renderHitl(
+      hitlRunFixture({
+        currentStage: "hitl.revision_stalled",
+        awaiting: {
+          stageId: "hitl.revision_stalled",
+          prompt: "修订迭代不再收敛，请决策",
+          options: ["accept_draft", "revise_more", "cancel"],
+          payload: {
+            outcome: "REGRESSION",
+            failureClass: "SYSTEM_FAILED",
+            gateReasons: ["fact_preservation: 存在未授权事实改写"],
+          },
+        },
+      }),
+    );
+    const stalled = await screen.findByTestId("hitl-terminal-status");
+    expect(stalled).toHaveTextContent("系统级失败");
+    expect(stalled).toHaveTextContent("守卫未满足");
+  });
+
   it("未知 stageId / 无 payload：只显示 prompt，不虚构内容", async () => {
     renderHitl(
       hitlRunFixture({

@@ -34,6 +34,12 @@ export interface ReviewSummary {
   openCritical: number;
   openMajor: number;
   unsupportedCriticalClaims: number;
+  /**
+   * M11.3（Phase D）：被确定性检测反证的 build 类 finding（review digest 视图
+   * 伪影——真实稿件无该结构问题）。不计入 issues / counts（不再阻断、不派发
+   * Writer），单独保留供报告 / 前端透明展示。
+   */
+  disconfirmedIssues?: ReviewIssue[];
   reportPaths: string[];
 }
 

@@ -382,6 +382,29 @@ export const ITERATION_OUTCOME_STYLES: Record<string, StatusStyle> = {
   REGRESSION: { label: "出现退化", tone: "danger" },
 };
 
+/**
+ * M11.3 产品终态语义（stalled/overflow HITL 的 failureClass + run 完成的
+ * qualityStatus 同一注册表）：QUALITY_NOT_REACHED / NO_PROGRESS /
+ * AUTHOR_DECISION_REQUIRED 是诚实终态（amber，不是红色系统崩溃）；
+ * 只有 SYSTEM_FAILED 用 danger。
+ */
+export const TERMINAL_STATUS_STYLES: Record<string, StatusStyle> = {
+  PASS: { label: "质量验收通过", tone: "ok" },
+  QUALITY_NOT_REACHED: { label: "质量未达标（Draft 可用）", tone: "warn" },
+  NO_PROGRESS: { label: "自动修订已达收敛上限", tone: "warn" },
+  AUTHOR_DECISION_REQUIRED: { label: "需要作者裁决", tone: "accent" },
+  SYSTEM_FAILED: { label: "系统级失败（守卫未满足）", tone: "danger" },
+};
+
+/** TERMINAL_STATUS_STYLES 的用户可读说明（与后端 classifyTerminalStatus 同口径） */
+export const TERMINAL_STATUS_HINTS: Record<string, string> = {
+  PASS: "质量验收通过，论文已冻结。",
+  QUALITY_NOT_REACHED: "论文已生成，但自动质量验收未达到目标；Draft 可用，剩余问题见质量报告。",
+  NO_PROGRESS: "自动修订已达到收敛上限，继续自动修改预计收益有限；当前稿可作为 Draft 使用。",
+  AUTHOR_DECISION_REQUIRED: "自动修订已停止：剩余问题需要作者提供研究判断或额外数据（语言模型改稿无法解决）。",
+  SYSTEM_FAILED: "事实 / 引用守卫未满足（冻结产物不安全）——系统级失败，需要排查修订链。",
+};
+
 /** 修订来源（ManuscriptVersionDTO.source）的中文标签：用户看到的是业务动作，不是工程标识 */
 export const REVISION_SOURCE_LABELS: Record<string, string> = {
   baseline: "初始基线",

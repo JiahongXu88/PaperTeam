@@ -77,9 +77,21 @@ function readCompletion(value: unknown): WorkflowRunView["completion"] {
     return null;
   }
   const label = value["label"];
-  return label === "final" || label === "draft" || label === "review" || label === "survey"
-    ? { label }
-    : null;
+  if (label !== "final" && label !== "draft" && label !== "review" && label !== "survey") {
+    return null;
+  }
+  // M11.3：产品终态语义（PASS / QUALITY_NOT_REACHED / NO_PROGRESS /
+  // AUTHOR_DECISION_REQUIRED / SYSTEM_FAILED）——完成不是非黑即白，质量
+  // 未达标的 Draft 是正常终态（不是系统崩溃）
+  const summary = isRecord(value["summary"]) ? (value["summary"] as Record<string, unknown>) : null;
+  const qualityStatus = typeof summary?.["qualityStatus"] === "string" ? (summary["qualityStatus"] as string) : undefined;
+  const qualityStatusMessage =
+    typeof summary?.["qualityStatusMessage"] === "string" ? (summary["qualityStatusMessage"] as string) : undefined;
+  return {
+    label,
+    ...(qualityStatus !== undefined ? { qualityStatus } : {}),
+    ...(qualityStatusMessage !== undefined ? { qualityStatusMessage } : {}),
+  };
 }
 
 function readProgress(value: unknown): WorkflowRunView["progress"] {

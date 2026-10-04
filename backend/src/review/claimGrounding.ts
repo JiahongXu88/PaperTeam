@@ -101,12 +101,145 @@ export function classifyClaimDisclosure(claimText: string): ClaimDisclosure {
 
 export interface EvidenceCandidate {
   evidenceId: string;
+  /** 候选证据所属源（M11.3 支持质量门槛：来源合法性判定） */
+  sourceId?: string;
   score: number;
   matchedTerms: number;
 }
 
 /**
- * unsupported claim → formal evidence 池的确定性词面匹配（§9）。
+ * M11.3（Phase B）：数值密集 claim 要求 direct 级支持——含数字的论断
+ * （性能数值 / 百分比 / 规模）不得由 partial 级证据短路绑定。
+ */
+export function claimRequiresDirectSupport(claimText: string): boolean {
+  return /\d/.test(claimText);
+}
+
+/**
+ * M11.3（Phase B）证据记录级支持质量（§10）：
+ * - 已 verified + 锚点（isFormalEvidence，既有口径）；
+ * - verificationLevel ≠ metadata——metadata-only 记录不得伪装成正文证据；
+ * - supportStrength 达到 claim 所需最低等级：含数字 claim 要求 direct，
+ *   其余 direct / partial 皆可；strength 缺失 = 不足（fail-closed，不猜）。
+ */
+export function meetsEvidenceSupportQuality(record: EvidenceRecord, claimText: string): boolean {
+  if ((record.verificationLevel ?? "") === "metadata") {
+    return false;
+  }
+  const strength = record.supportStrength;
+  if (strength === undefined) {
+    return false;
+  }
+  if (strength === "direct") {
+    return true;
+  }
+  return strength === "partial" && !claimRequiresDirectSupport(claimText);
+}
+
+/**
+ * M11.3（Phase B）数值锚定：claim 中的特征数字（小数 / 百分比 / ≥3 位整数，
+ * 剔除纯年份）必须在证据文本中出现至少一个——数值 claim 与不含该数值的
+ * 词面相似证据不得短路（「词面相关 ≠ 支撑该数值」）。
+ */
+export function distinctiveNumbers(text: string): string[] {
+  const matches = text.match(/\d+(?:\.\d+)?/g) ?? [];
+  return matches.filter((value) => {
+    if (value.includes(".")) {
+      return true;
+    }
+    if (value.length < 3) {
+      return false;
+    }
+    const numeric = Number.parseInt(value, 10);
+    return !(numeric >= 1900 && numeric <= 2099); // 纯年份不构成特征数值
+  });
+}
+
+/** bibliography key → sourceId（claim 点名文献的源映射；无 sourceId 条目跳过） */
+function bibKeySourceIndex(bibEntries: readonly ClaimGroundingBibEntry[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const entry of bibEntries) {
+    if (entry.key.trim() !== "" && (entry.sourceId ?? "").trim() !== "") {
+      index.set(entry.key, entry.sourceId!);
+    }
+  }
+  return index;
+}
+
+/**
+ * 章节引用键归一化（M11.3）：claim.section（如 sections/taxonomy-framework.tex）
+ * 与 outline section.file / id（taxonomy-framework.tex / taxonomy-framework）
+ * 统一按「去路径、去扩展名、小写」成同一键——M11.2.3 的投影因键形不一致
+ * 从未真正命中（claimResolution.groundableSourcesFor 一直拿到空引用面）。
+ */
+export function normalizeSectionKey(ref: string): string {
+  const normalized = ref.trim().replaceAll("\\", "/").toLowerCase();
+  const base = normalized.split("/").pop() ?? normalized;
+  return base.replace(/\.tex$/, "");
+}
+
+/** outline literatureRefs（entryId = M-{sourceId}，M11.1.1）→ sourceId 列表 */
+export function literatureRefSourceIds(refs: readonly string[]): string[] {
+  const sourceIds: string[] = [];
+  for (const ref of refs) {
+    const value = ref.trim();
+    if (value === "") {
+      continue;
+    }
+    const sourceId = value.startsWith("M-") ? value.slice(2) : value;
+    if (!sourceIds.includes(sourceId)) {
+      sourceIds.push(sourceId);
+    }
+  }
+  return sourceIds;
+}
+
+/**
+ * M11.3（Phase B）来源合法性（§10 第 4 条）：候选证据的源必须与 claim 存在
+ * 合法关联。优先级：
+ * 1. claim 文本点名了具体文献（出现完整 bib key，如「miah2024learning …」）
+ *    → 严格限定到点名源（claim 是关于那几篇的，其他源的证据词面再像也不算）；
+ * 2. 否则若章节引用面已知（outline literatureRefs 投影）→ 限定到章节引用源；
+ * 3. 都不可得 → 不限定（无信息，不因缺投影而误杀）。
+ */
+/** 章节引用面查找（键形兼容：归一化键优先，原键回退——旧投影 / 测试夹具） */
+export function lookupSectionCitedSourceIds(
+  map: Record<string, string[]> | undefined,
+  section: string,
+): string[] {
+  if (map === undefined) {
+    return [];
+  }
+  const normalized = normalizeSectionKey(section);
+  return map[normalized] ?? map[section.trim()] ?? [];
+}
+
+export function eligibleSourceIdsForClaim(
+  claimText: string,
+  options: { section?: string; sectionCitedSourceIds?: Record<string, string[]>; bibEntries?: readonly ClaimGroundingBibEntry[] } = {},
+): { scope: "claim_named" | "section_cited" | "all"; sourceIds?: string[] } {
+  const bib = options.bibEntries ?? [];
+  if (bib.length > 0) {
+    const keyToSource = bibKeySourceIndex(bib);
+    const named: string[] = [];
+    for (const [key, sourceId] of keyToSource) {
+      if (claimText.includes(key) && !named.includes(sourceId)) {
+        named.push(sourceId);
+      }
+    }
+    if (named.length > 0) {
+      return { scope: "claim_named", sourceIds: named };
+    }
+  }
+  const cited = lookupSectionCitedSourceIds(options.sectionCitedSourceIds, options.section ?? "");
+  if (cited.length > 0) {
+    return { scope: "section_cited", sourceIds: cited };
+  }
+  return { scope: "all" };
+}
+
+/**
+ * unsupported claim → formal evidence 池的确定性词面匹配（§9 + M11.3 §10/§11）。
  *
  * 打分对象 = evidence 的 claim + quote + source title（证据「自称能支撑什么」的
  * 全部文本面）；tokenize 与 lexical 检索同源（中英兼容，CJK bigram）。排序：
@@ -114,27 +247,57 @@ export interface EvidenceCandidate {
  * 池内每条证据只按自身 token 集合打分（df/长度归一在此规模下不增加区分度，
  * 保持实现最小）；不同词命中数 < 2 的直接不返回——宁可空候选走 WEAKEN/REMOVE，
  * 不把不相关证据强配给 claim。
+ *
+ * M11.3（Phase B）候选资格三层门槛（防「词面相关 ≠ 真支撑」的过早短路）：
+ * 1. 记录级：meetsEvidenceSupportQuality（verified+锚点 且 非 metadata 级 且
+ *    strength 达 claim 所需最低等级）；
+ * 2. 来源级：eligibleSourceIdsForClaim（claim 点名 → 章节 citation 面 → 全池）；
+ * 3. 数值锚定：claim 含特征数字时，证据文本须含其中至少一个数字。
+ * 不达标候选不进 Repair Context（resolution ladder 第 1 级随之不短路，
+ * 自然落到 ground / search / weaken / remove 阶梯——§11）。
  */
 export function findEvidenceCandidates(
   claimText: string,
   formalEvidence: readonly EvidenceRecord[],
-  options: { topK?: number } = {},
+  options: {
+    topK?: number;
+    section?: string;
+    sectionCitedSourceIds?: Record<string, string[]>;
+    bibEntries?: readonly ClaimGroundingBibEntry[];
+  } = {},
 ): EvidenceCandidate[] {
   const topK = options.topK ?? CLAIM_REPAIR_TOP_K;
   const claimTerms = new Set(tokenizeText(claimText));
   if (claimTerms.size === 0) {
     return [];
   }
+  const eligibility = eligibleSourceIdsForClaim(claimText, options);
+  const eligibleSources =
+    eligibility.sourceIds !== undefined ? new Set(eligibility.sourceIds) : null;
+  const anchorNumbers = distinctiveNumbers(claimText);
   const hits: EvidenceCandidate[] = [];
   for (const record of formalEvidence) {
     if (!isFormalEvidence(record)) {
       continue; // 只有 formal（verified + 锚点）证据可进 Repair Context
+    }
+    if (!meetsEvidenceSupportQuality(record, claimText)) {
+      continue; // M11.3：记录级支持质量不足（metadata 伪装 / strength 不达 claim 所需）
+    }
+    const sourceId = record.source?.sourceId;
+    if (eligibleSources !== null && (sourceId === undefined || !eligibleSources.has(sourceId))) {
+      continue; // M11.3：来源与 claim 无合法关联（非点名源 / 非本章引用源）
     }
     const evidenceText = [
       record.claim,
       record.quote ?? "",
       record.source?.title ?? "",
     ].join("\n");
+    if (
+      anchorNumbers.length > 0 &&
+      !anchorNumbers.some((value) => evidenceText.includes(value))
+    ) {
+      continue; // M11.3：数值锚定失败（词面像但不含 claim 的特征数值）
+    }
     const evidenceTerms = new Set(tokenizeText(evidenceText));
     let matchedTerms = 0;
     for (const term of claimTerms) {
@@ -148,7 +311,12 @@ export function findEvidenceCandidates(
     // score = 覆盖率（命中 claim 词占比）× 池内区分度（命中词在证据文本中的占比）
     const coverage = matchedTerms / claimTerms.size;
     const evidenceHit = matchedTerms / Math.max(1, evidenceTerms.size);
-    hits.push({ evidenceId: record.id, score: Number((coverage * evidenceHit).toFixed(6)), matchedTerms });
+    hits.push({
+      evidenceId: record.id,
+      ...(sourceId !== undefined ? { sourceId } : {}),
+      score: Number((coverage * evidenceHit).toFixed(6)),
+      matchedTerms,
+    });
   }
   hits.sort((a, b) => b.matchedTerms - a.matchedTerms || b.score - a.score || (a.evidenceId < b.evidenceId ? -1 : 1));
   return hits.slice(0, topK);
@@ -212,6 +380,11 @@ export interface ClaimGroundingInput {
   formalEvidence: readonly EvidenceRecord[];
   /** bibliography 摘要（citation key 解析；空数组 = 不解析 key） */
   bibEntries: readonly ClaimGroundingBibEntry[];
+  /**
+   * M11.3（Phase B）：章节引用源投影（outline literatureRefs；file key →
+   * sourceIds）——候选证据来源合法性判定（§10）。缺省 = 无投影（不限定来源）。
+   */
+  sectionCitedSourceIds?: Record<string, string[]>;
   generatedAt?: string;
 }
 
@@ -281,7 +454,13 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
           })()
         : {}),
       repairCandidates: isUnsupportedVerdict(check.verdict)
-        ? findEvidenceCandidates(check.claim, input.formalEvidence)
+        ? findEvidenceCandidates(check.claim, input.formalEvidence, {
+            section: check.section,
+            ...(input.sectionCitedSourceIds !== undefined
+              ? { sectionCitedSourceIds: input.sectionCitedSourceIds }
+              : {}),
+            bibEntries: input.bibEntries,
+          })
         : [],
       ...(disclosure !== undefined ? { disclosure } : {}),
     });

@@ -7,6 +7,8 @@ import { RegistryStatus } from "../common/StatusBadge.js";
 import {
   FEASIBILITY_LEVEL_STYLES,
   ITERATION_OUTCOME_STYLES,
+  TERMINAL_STATUS_HINTS,
+  TERMINAL_STATUS_STYLES,
   stageLabel,
   statusStyleOf,
 } from "../common/status.js";
@@ -1082,6 +1084,8 @@ function StylePolishPayload({
 function StalledPayload({ payload }: { payload: Record<string, unknown> }) {
   const outcome = typeof payload["outcome"] === "string" ? payload["outcome"] : undefined;
   const gateReasons = readStringArray(payload["gateReasons"]);
+  const failureClass = typeof payload["failureClass"] === "string" ? payload["failureClass"] : undefined;
+  const failureMessage = typeof payload["failureMessage"] === "string" ? payload["failureMessage"] : undefined;
   const scorecard = payload["scorecard"];
   const current = readScorecard(scorecard, "current");
   const previous = readScorecard(scorecard, "previous");
@@ -1090,6 +1094,15 @@ function StalledPayload({ payload }: { payload: Record<string, unknown> }) {
   const skipped = typeof (plan as Record<string, unknown> | undefined)?.["skipped"] === "number" ? (plan as Record<string, number>)["skipped"] : null;
   return (
     <div className="hitl-payload" data-testid="hitl-payload-stalled">
+      {failureClass !== undefined ? (
+        <p className="hitl-payload-level" data-testid="hitl-terminal-status">
+          终态判定：
+          <RegistryStatus style={statusStyleOf(TERMINAL_STATUS_STYLES, failureClass, failureClass)} />
+          <span className="field-help">
+            {failureMessage ?? TERMINAL_STATUS_HINTS[failureClass] ?? ""}
+          </span>
+        </p>
+      ) : null}
       {outcome !== undefined ? (
         <p className="hitl-payload-level">
           收敛判定：

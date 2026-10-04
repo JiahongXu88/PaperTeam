@@ -56,6 +56,7 @@ import type { ResearchDiscoveryService } from "../search/researchDiscoveryServic
 import type { IngestionService } from "../ingestion/IngestionService.js";
 import type { PlanExecutionAcademicResultSnapshot, PlanExecutionWebResultSnapshot } from "../agents/researchPlanExecution.js";
 import type { MatrixService, SurveyEntryPatch } from "../survey/MatrixService.js";
+import type { CorpusSnapshotService } from "../survey/CorpusSnapshotService.js";
 import type { SynthesisService } from "../survey/SynthesisService.js";
 import type { SurveyOutlineService } from "../survey/OutlineService.js";
 import {
@@ -138,6 +139,7 @@ import { readSemanticMode } from "../citation/semanticMode.js";
 import type { PaperStore } from "../paper/PaperStore.js";
 import type { PaperMapService } from "../paper/PaperMapService.js";
 import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
+import { disconfirmBuildFindings, repairCitationSyntax } from "../citation/citationSyntax.js";
 import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
 import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
 import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
@@ -146,6 +148,8 @@ import {
   buildClaimRepairDirectives,
   computeClaimGroundingReport,
   isUnsupportedVerdict,
+  literatureRefSourceIds,
+  normalizeSectionKey,
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
@@ -180,6 +184,7 @@ import { checkStyleInvariants } from "../review/styleInvariants.js";
 import {
   judgeOutcome,
   judgeConvergence,
+  classifyTerminalStatus,
   scorecardOf,
   scorecardWithConvergenceMetrics,
   scorecardDelta,
@@ -265,6 +270,11 @@ export interface WorkflowServices {
    * 结构化理解；不复制抽取逻辑，构建 / 增量 / taxonomy 重校验全部在服务内）。
    */
   survey: MatrixService;
+  /**
+   * Research Corpus Snapshot（M11.3：survey.fulltext 冻结 / resume no-op /
+   * 显式 refresh_missing_fulltext——补齐只经此通道，revision+指纹+staleness 传播）。
+   */
+  corpus: CorpusSnapshotService;
   /**
    * Survey Synthesis（M11.1.4：survey.synthesis stage 消费——Matrix 指纹复用 /
    * 全量重建；grounding 规则零旁路）。
@@ -455,12 +465,15 @@ function reviewRunStageInner(
       // M11.2.3：先于 summary 落盘计算——rootCauseKey 标注（D-2 根因口径）要
       // 写进聚合 issues，gate 规则 5/6 据此去重。
       const factClaims = results.find((result) => result.mode === "fact")?.claims ?? [];
+      // M11.3（Phase B）：章节引用面投影 → 候选证据来源合法性（§10）
+      const sectionCitedSourceIds = await projectOutlineCitedSourceIds(services, ctx.projectId);
       const claimGrounding = computeClaimGroundingReport({
         projectId: ctx.projectId,
         round,
         factClaims,
         formalEvidence: evidence,
         bibEntries: citationReport?.static.bibEntries ?? [],
+        ...(Object.keys(sectionCitedSourceIds).length > 0 ? { sectionCitedSourceIds } : {}),
       });
       // M10.3.1 G2：existing-paper 的 claim 适用性审计（pre-existing / 作者数据
       // 覆盖 / 修订引入；机器可读，gate 与 revision.plan 消费）
@@ -497,6 +510,44 @@ function reviewRunStageInner(
         { excludeFingerprints: auditExcludedFingerprints },
       );
       summary.issues = tagged.issues;
+      // M11.3（Phase D）：build 类结构指控与真实文件确定性交叉核验——
+      // 指控「截断 / cite 未闭合」而真实文件检测无此问题 = digest 视图伪影
+      // （MOT 实录：2500 字符硬切恰好落在 \cite{ng 中间，连续三轮烧修订）。
+      // 反证 finding 移出 issues / counts（不阻断、不派发），单独保留透明展示。
+      const latexForCheck = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      const filesForDisconfirmation = latexForCheck.sections.map((section) => ({
+        file: section.relativePath,
+        content: section.content,
+      }));
+      const disconfirmed = disconfirmBuildFindings(
+        summary.issues,
+        filesForDisconfirmation,
+        citationReport?.static.bibEntries.map((entry) => entry.key) ?? [],
+      );
+      if (disconfirmed.disconfirmedCount > 0) {
+        const flagged = new Set(
+          summary.issues.filter((issue) => disconfirmed.isDisconfirmed(issue)),
+        );
+        summary.disconfirmedIssues = [...flagged];
+        summary.issues = summary.issues.filter((issue) => !flagged.has(issue));
+        for (const issue of flagged) {
+          if (issue.severity === "critical") {
+            summary.counts.critical -= 1;
+            summary.openCritical -= 1;
+          } else if (issue.severity === "major") {
+            summary.counts.major -= 1;
+            summary.openMajor -= 1;
+          } else if (issue.severity === "minor") {
+            summary.counts.minor -= 1;
+          }
+          if (issue.blocking) {
+            summary.counts.blocking -= 1;
+          }
+        }
+        ctx.log(
+          `[review] 反证 ${disconfirmed.disconfirmedCount} 条 build finding（真实稿件无对应结构问题，review digest 视图伪影，不计入阻断）`,
+        );
+      }
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
       // M11.2：综述写作评估按轮落盘（与 review 同轮配对；gate 消费同轮产物）
@@ -679,6 +730,17 @@ function qualityGateStage(
       const outcome = judgeOutcome(scorecard, previous);
       const convergence = judgeConvergence([...iterations.map((record) => record.scorecard), scorecard]);
       const delta = scorecardDelta(scorecard, previous);
+      // M11.3（Phase E）：同轮 author_decision_required claim 数——终态语义
+      // （AUTHOR_DECISION_REQUIRED vs NO_PROGRESS）在 gate 结果里一次算清，
+      // stalled payload 与 completion summary 共用（classifyTerminalStatus）
+      const claimResolution = await services.reviewArtifacts.loadClaimResolution(ctx.projectId, review.round);
+      const authorDecisionClaims = claimResolution?.counts.author_decision_required ?? 0;
+      const terminal = classifyTerminalStatus({
+        gatePassed: gate.passed,
+        gateReasons: gate.reasons,
+        convergence,
+        authorDecisionClaims,
+      });
       await services.reviewArtifacts.appendIteration(ctx.projectId, {
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
         reviewRound: review.round,
@@ -727,6 +789,9 @@ function qualityGateStage(
         outcome,
         // M11.2.3：确定性收敛状态与轮次质量差（planSharedTail / stalled payload 消费）
         ...(convergence !== null ? { convergence } : {}),
+        // M11.3（Phase E）：产品终态语义（completion summary / stalled payload 共用）
+        ...(gate.passed ? {} : { terminalStatus: terminal.status, terminalMessage: terminal.message }),
+        ...(authorDecisionClaims > 0 ? { authorDecisionClaims } : {}),
         revisionDelta: delta,
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
         ...(claimGrounding !== null
@@ -1186,13 +1251,8 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
          */
         const gateReasons = ((gate["reasons"] as unknown[]) ?? []).map((reason) => String(reason));
         const convergence = typeof gate["convergence"] === "string" ? gate["convergence"] : null;
-        const guardFailed = gateReasons.some((reason) =>
-          /^(fact_preservation|cumulative_fact_preservation|citation_preservation|survey_outline_contract|survey_citation_keys_valid|survey_synthesis_traceability)[:：]/.test(
-            reason,
-          ),
-        );
         let authorDecisionClaims = 0;
-        if (!guardFailed && convergence === "STALLED") {
+        if (convergence === "STALLED") {
           const reviewRound = typeof review["round"] === "number" ? review["round"] : null;
           if (reviewRound !== null) {
             const resolution = await services.reviewArtifacts.loadClaimResolution(ctx.projectId, reviewRound);
@@ -1200,19 +1260,25 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
               resolution?.counts.author_decision_required ?? 0;
           }
         }
-        const failureClass = guardFailed
-          ? "SYSTEM_FAILED"
-          : convergence === "STALLED"
-            ? authorDecisionClaims > 0
-              ? "AUTHOR_DECISION_REQUIRED"
-              : "NO_PROGRESS"
-            : "QUALITY_NOT_REACHED";
+        // M11.3（Phase E）：终态语义统一走 classifyTerminalStatus（与 completion
+        // summary / 报告同口径；guard 判定收敛进纯函数）
+        const terminal = classifyTerminalStatus({
+          gatePassed: false,
+          gateReasons,
+          convergence:
+            convergence === "PROGRESS" || convergence === "STALLED" || convergence === "REGRESSED"
+              ? convergence
+              : null,
+          authorDecisionClaims,
+        });
+        const failureClass = terminal.status;
         return {
           outcome: typeof gate["outcome"] === "string" ? gate["outcome"] : null,
           ...(convergence !== null ? { convergence } : {}),
           gateRound,
           gateReasons: gate["reasons"] ?? [],
           failureClass,
+          ...(terminal.status !== "SYSTEM_FAILED" ? { failureMessage: terminal.message } : {}),
           review: {
             critical: review["critical"] ?? 0,
             major: review["major"] ?? 0,
@@ -1328,6 +1394,43 @@ function revisionReportStage(services: WorkflowServices): StageSpec {
         return ["build/revision-response.md 不存在"];
       }
     },
+  };
+}
+
+/**
+ * M11.3（Phase D）：manuscript 全部 section 的确定性 citation 语法归一。
+ * 修的只是 outcome 唯一明确的结构问题（见 citationSyntax.repairCitationSyntax）；
+ * 返回计数供 stage result / 报告消费。写盘发生在修订 commit 之前（同修订号）。
+ */
+async function normalizeManuscriptCitationSyntax(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<{ fixed: number; unresolved: number; fixes: { kind: string; count: number }[] }> {
+  const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  const bibliography = await manuscriptBibliography(services, projectId);
+  const bibKeys = bibliography.map((entry) => entry.key);
+  let fixed = 0;
+  const fixCounts = new Map<string, number>();
+  const unresolvedIssues: unknown[] = [];
+  for (const section of files.sections) {
+    const result = repairCitationSyntax(section.content, section.relativePath, bibKeys);
+    if (result.repaired) {
+      await writeFile(
+        join(services.projects.manuscriptDir(projectId), section.relativePath),
+        result.content,
+        "utf8",
+      );
+      fixed += result.fixes.reduce((sum, fix) => sum + fix.count, 0);
+      for (const fix of result.fixes) {
+        fixCounts.set(fix.kind, (fixCounts.get(fix.kind) ?? 0) + fix.count);
+      }
+    }
+    unresolvedIssues.push(...result.unresolved);
+  }
+  return {
+    fixed,
+    unresolved: unresolvedIssues.length,
+    fixes: [...fixCounts.entries()].map(([kind, count]) => ({ kind, count })),
   };
 }
 
@@ -1564,6 +1667,12 @@ function revisionReviseStage(
       }
       // M9.5：修订可能增删 \cite——bib 同步在提交前，引用表与正文同一修订号
       await syncReferencesBib(services, ctx.projectId);
+      // M11.3（Phase D）：确定性 citation 语法归一（§20–§24）——只修 outcome
+      // 唯一明确的结构问题（空 cite 移除 / 空 key 段清理 / 同命令重复 key 去重 /
+      // key 完整命中 bib 的未闭合补右括号）；绝不猜 key（残缺 key 留
+      // unresolved，编译诊断 / Quality Gate 报错 → Writer / 作者决策）。
+      // 归一发生在提交前：与 Writer 改动落在同一修订号，守卫按同一口径核验。
+      const syntaxNormalize = await normalizeManuscriptCitationSyntax(services, ctx.projectId);
       // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
       const revision = await services.revisions.commit(ctx.projectId, stageId, ctx.runId);
       // M6.7 §5：派发条目 planned → applied（状态机落盘；携带修订号与确定性
@@ -1635,6 +1744,10 @@ function revisionReviseStage(
         ...(dispatchedItems.length > 0 ? { appliedItems: dispatchedItems.length } : {}),
         ...(externalDirectives.length > 0
           ? { externalInstructions: externalDirectives.length }
+          : {}),
+        // M11.3：确定性语法归一结果（透明可观测）
+        ...(syntaxNormalize.fixed > 0 || syntaxNormalize.unresolved > 0
+          ? { citationSyntax: syntaxNormalize }
           : {}),
       };
     },
@@ -2647,11 +2760,27 @@ async function buildClaimResolutionContext(
   projectId: string,
 ): Promise<import("../review/claimResolution.js").ClaimResolutionContext> {
   const sources = await services.sources.list(projectId);
+  // M11.3（Phase C）：冻结语料基线——快照在时，只有「基线口径 fulltext」的源
+  // 可定向采证（matrix 消费过的全文）。快照后漂移到盘的全文文件（老项目在
+  // 冻结特性前磁盘已漂移 / 显式 refresh 前的网络恢复）不得改变当前 Run 的
+  // Research Basis：它们要进基线只能走显式 refresh → matrix 重建 → 新 revision。
+  const corpusSnapshot = await services.corpus.get(projectId).catch(() => null);
+  const basisRow = new Map((corpusSnapshot?.sources ?? []).map((row) => [row.sourceId, row]));
+  const groundableInBasis = (sourceId: string): boolean => {
+    if (corpusSnapshot === null) {
+      return true; // 未冻结（首跑 / 老项目）——保持既有行为
+    }
+    const row = basisRow.get(sourceId);
+    if (row === undefined) {
+      return false; // 快照后才入库的源不属于冻结基线
+    }
+    return row.basisDepth === "fulltext" || (row.basisDepth === null && row.hasFulltext);
+  };
   const chunkedSourceIds = new Set<string>();
   for (const source of sources) {
     try {
       const chunks = await services.chunkStore.readChunks(projectId, source.sourceId);
-      if (chunks !== null && chunks.length > 0) {
+      if (chunks !== null && chunks.length > 0 && groundableInBasis(source.sourceId)) {
         chunkedSourceIds.add(source.sourceId);
       }
     } catch {
@@ -2666,22 +2795,36 @@ async function buildClaimResolutionContext(
     hasChunks: chunkedSourceIds.has(source.sourceId),
     metadataOnly: source.status === "metadata_only" || source.status === "pending",
   }));
-  // 章节引用源投影：outline literatureRefs（survey 的确定性引用面）
+  // 章节引用源投影：outline literatureRefs（survey 的确定性引用面）。
+  // M11.3：键归一化 + entryId（M-{sourceId}）→ sourceId——M11.2.3 的投影因
+  // 键形不一致（sections/x.tex vs x.tex）与 entryId 前缀从未真正命中。
+  const sectionCitedSourceIds = await projectOutlineCitedSourceIds(services, projectId);
+  return { sources: groundability, sectionCitedSourceIds, targetedSearchBudget: 0 };
+}
+
+/** M11.3：outline literatureRefs → { 归一化章节键 → sourceIds }（两处消费共用） */
+async function projectOutlineCitedSourceIds(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<Record<string, string[]>> {
   const sectionCitedSourceIds: Record<string, string[]> = {};
   try {
     const outline = await services.manuscript.loadOutline(projectId);
     for (const section of outline?.sections ?? []) {
       if (section.literatureRefs !== undefined && section.literatureRefs.length > 0) {
-        const fileKey = section.file ?? section.id ?? section.title ?? "";
-        if (fileKey !== "") {
-          sectionCitedSourceIds[fileKey] = [...section.literatureRefs];
+        const sourceIds = literatureRefSourceIds(section.literatureRefs);
+        for (const key of [section.file, section.id]) {
+          const normalized = key !== undefined ? normalizeSectionKey(key) : "";
+          if (normalized !== "" && sourceIds.length > 0) {
+            sectionCitedSourceIds[normalized] = sourceIds;
+          }
         }
       }
     }
   } catch {
     // 无 outline（非 survey 结构）→ 只用词面相关度通道
   }
-  return { sources: groundability, sectionCitedSourceIds, targetedSearchBudget: 0 };
+  return sectionCitedSourceIds;
 }
 
 /**
@@ -3101,8 +3244,21 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const stalledDecision = stalledMarker !== undefined ? readMarkerDecision(state, "hitl.revision_stalled") : null;
   const stalledAnswered = stalledDecision !== null && stalledGateRound >= gateRound;
 
-  const completion = (label: "final" | "draft") =>
-    ({
+  const completion = (label: "final" | "draft") => {
+    // M11.3（Phase E）：产品终态语义（gate 结果带同轮 author_decision 口径；
+    // 旧 run 的 gate 结果无该字段 → classifyTerminalStatus 内按 0 处理）
+    const terminal = gatePassed
+      ? classifyTerminalStatus({ gatePassed, gateReasons: [], convergence: null })
+      : classifyTerminalStatus({
+          gatePassed,
+          gateReasons: (gateResult["reasons"] as unknown[] | undefined)?.map((reason) => String(reason)) ?? [],
+          convergence: convergence === "PROGRESS" || convergence === "STALLED" || convergence === "REGRESSED" ? convergence : null,
+          authorDecisionClaims:
+            typeof gateResult["authorDecisionClaims"] === "number"
+              ? (gateResult["authorDecisionClaims"] as number)
+              : 0,
+        });
+    return {
       kind: "complete",
       label,
       summary: {
@@ -3110,6 +3266,10 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         buildGateReasons: build["buildGateReasons"] ?? [],
         qualityGatePassed: gatePassed,
         qualityGateReasons: gateResult["reasons"] ?? [],
+        // M11.3：产品终态语义（PASS / QUALITY_NOT_REACHED / NO_PROGRESS /
+        // AUTHOR_DECISION_REQUIRED / SYSTEM_FAILED + 用户可读 message）
+        qualityStatus: terminal.status,
+        qualityStatusMessage: terminal.message,
         // M11.2 §十四：报告层区分「自动修改轮数耗尽 / 不收敛后接受 Draft」与
         // 「双 Gate 通过自然完结」——qualityGatePassed=false 的 Draft 不是异常，
         // 是 bounded loop 的正常终态（PASS / IMPROVED / CONVERGED / REGRESSION）
@@ -3120,7 +3280,8 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
           ? { finalArtifactId: state.stageResults["build.final"]?.["finalArtifactId"] ?? null }
           : {}),
       },
-    }) satisfies PlanDecision;
+    } satisfies PlanDecision;
+  };
 
   // accept_draft（overflow 或 stalled 的回答）→ 构建 Draft PDF 后完成。
   // M5.4/M5.6：用户显式 apply_once 时，Draft 构建前同样提供一次语言润色（Quality
@@ -5292,17 +5453,46 @@ async function applyLiteratureSelectionDecision(
  * 降级 abstract_only / metadata_only 不终止）→ 同步等待结构化解析（Matrix 的
  * fulltext 锚定依赖 chunk 就绪）。零选择（无 pending、文献库已有 corpus）时
  * 直接对文献库执行——支持「用户在暂停期间手动 promote」的续跑。
+ *
+ * M11.3（Phase C）Corpus Freeze：首次完成后冻结 Research Corpus Snapshot
+ * （research/corpus-snapshot.json）。此后普通 resume 本 stage 是确定性 no-op
+ * ——不再重试全文解析（网络恢复不得改变已冻结研究基线；Case B 实录
+ * 5/25→13/25 的隐式漂移通道就此关闭）。补齐缺失全文走显式
+ * refresh_missing_fulltext（CorpusSnapshotService.refresh，新 corpus revision
+ * + matrix 可升级条目失效 → staleness 链传播）。
  */
 function surveyFulltextStage(services: WorkflowServices): StageSpec {
   return {
     id: "survey.fulltext",
-    description: "入选文献入库（promote）+ 全文解析 + 结构化解析等待（partial success）",
+    description: "入选文献入库（promote）+ 全文解析 + 结构化解析等待（partial success；已冻结语料 = no-op）",
     requiredInputs: ["hitl.literature_selection"],
     producedOutputs: ["sources 入库 + 全文挂载 + chunks（Matrix fulltext 锚定前提）"],
     maxAttempts: services.stageMaxAttempts,
     timeoutMs: services.stageTimeoutMs * 2,
     retryable: ["transient", "timeout"],
     async execute(ctx) {
+      // 冻结语义：快照在 → 普通 resume 不碰语料（resume ≠ refresh corpus）
+      const frozen = await services.corpus.get(ctx.projectId);
+      if (frozen !== null) {
+        return {
+          frozen: true,
+          corpusRevision: frozen.revision,
+          corpusFingerprint: frozen.fingerprint,
+          sources: frozen.counts.total,
+          fulltextResolved: frozen.counts.hasFulltext,
+          fulltextBasis: frozen.counts.fulltextBasis,
+          fulltextSkipped: 0,
+          promoted: 0,
+          alreadyExists: 0,
+          promoteFailed: 0,
+          fulltextNotFound: frozen.counts.total - frozen.counts.hasFulltext,
+          fulltextNotResolvable: 0,
+          fulltextFailed: 0,
+          ingested: 0,
+          ingestSkipped: 0,
+          ingestFailed: 0,
+        };
+      }
       const marker = ctx.state.stageResults["hitl.literature_selection"] ?? {};
       const candidateIds = Array.isArray(marker["candidateIds"])
         ? (marker["candidateIds"] as string[]).filter((id): id is string => typeof id === "string")
@@ -5366,11 +5556,18 @@ function surveyFulltextStage(services: WorkflowServices): StageSpec {
           ingestFailed += 1;
         }
       }
+      // M11.3：首次完成 → 冻结研究语料（幂等；basisDepth 待 matrix 构建后 sync）
+      const frozenNow = await services.corpus.freeze(ctx.projectId, {
+        matrix: await services.survey.getMatrix(ctx.projectId).catch(() => null),
+      });
       return {
         selected: candidateIds.length,
         promoted,
         alreadyExists,
         promoteFailed,
+        frozen: true,
+        corpusRevision: frozenNow.revision,
+        corpusFingerprint: frozenNow.fingerprint,
         sources: sourceIds.length,
         fulltextResolved: fulltext.summary.resolved,
         fulltextNotFound: fulltext.summary.notFound,
@@ -5417,6 +5614,9 @@ function surveyMatrixStage(services: WorkflowServices): StageSpec {
         },
       });
       const matrix = build.matrix;
+      // M11.3（Phase C）：语料基线深度对齐（refresh 后重建的条目把快照的
+      // basisDepth 升到 fulltext——指纹变化，revision 不动）
+      await services.corpus.syncBasisDepth(ctx.projectId, matrix).catch(() => {});
       const byFamily = new Map<string, number>();
       let unclassified = 0;
       for (const entry of matrix.entries) {
@@ -5770,7 +5970,8 @@ async function loadSurveyWritingInputs(
 }
 
 /** 当前稿件的 Survey Writing 评估（review / gate 共用；survey 项目在写作后必有产物） */
-async function evaluateSurveyWritingForProject(
+/** M11.3 起导出：Reviewer Stability 审计复用同轮 survey digest 条件。 */
+export async function evaluateSurveyWritingForProject(
   services: WorkflowServices,
   projectId: string,
 ): Promise<SurveyWritingEvaluation> {
@@ -6405,8 +6606,12 @@ async function safeMarkUsage(
   }
 }
 
-/** 构建审稿 / 理解用的稿件摘要（大纲 + 各节内容截断；或导入项目全部 tex） */
-async function buildManuscriptDigest(services: WorkflowServices, projectId: string): Promise<string> {
+/**
+ * 构建审稿 / 理解用的稿件摘要（大纲 + 各节内容截断；或导入项目全部 tex）。
+ * M11.3 起导出：Reviewer Stability 审计需要在与 review.run 完全相同的
+ * digest 条件下重复采样（scripts/m113-reviewer-stability.mjs）。
+ */
+export async function buildManuscriptDigest(services: WorkflowServices, projectId: string): Promise<string> {
   const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
   const outline = await services.manuscript.loadOutline(projectId);
   const parts: string[] = [];
@@ -6425,13 +6630,63 @@ async function buildManuscriptDigest(services: WorkflowServices, projectId: stri
     // \subsection 边界切块，否则 2000 字符截断会让审稿与论文理解几乎失明
     parts.push(...splitSingleFileDigest(files.mainTex.content));
   }
-  for (const section of files.sections.slice(0, 15)) {
-    parts.push(`[${section.relativePath}]\n${section.content.slice(0, 2500)}`);
+  for (const section of files.sections.slice(0, 24)) {
+    parts.push(`[${section.relativePath}]\n${sliceForDigest(section.content, SECTION_DIGEST_BUDGET)}`);
   }
   if (parts.length === 0) {
     throw new BusinessError("STAGE_CONTRACT_VIOLATION", "manuscript 目录没有任何 .tex 文件");
   }
-  return parts.join("\n\n").slice(0, 40_000);
+  return parts.join("\n\n").slice(0, 60_000);
+}
+
+/** M11.3：单节 digest 预算（中文综述节常 2500–4000 字符；24 节 × 3600 ≈ 86k，总量由 60k 总预算兜底） */
+const SECTION_DIGEST_BUDGET = 3600;
+
+/** digest 截断的系统注（防 reviewer 把视图截断误判为稿件缺陷） */
+const DIGEST_TRUNCATION_NOTE =
+  "…【系统注：本节超出审稿视图预算，此处为系统截断——完整内容以 manuscript 文件为准，截断处不构成稿件缺陷，不要据此报 build/结构问题】";
+
+/**
+ * M11.3（Phase D 根因修复）：digest 的句子边界安全截断。
+ *
+ * 旧行为的实证危害（MOT r9–r11）：`content.slice(0, 2500)` 恰好切在
+ * `\cite{ng2023traffic` 的 `ng` 之间——reviewer 如实报告「\cite 未闭合 /
+ * 段落截断」，连续三轮烧 Writer 修订（稿件本身完好、编译通过）。修复：
+ * - 绝不切在 `\cite{…}` 族命令内部（扩到命令闭合处再回退）；
+ * - 在预算内回退到最后一个句子边界（。！？!?；或换行）；
+ * - 截断时附加显式系统注，让 reviewer 知道这是视图截断不是稿件缺陷。
+ */
+export function sliceForDigest(content: string, budget: number): string {
+  if (content.length <= budget) {
+    return content;
+  }
+  let cut = budget;
+  // 不得切在未闭合的 \cite/\ref 族命令内：预算点向前扫描最近的 `{` 命令起始
+  const commandStart = /\\(?:cite[a-zA-Z]*|ref|eqref|autoref|label)\*?(?:\[[^\]\n]*\])*\{$/;
+  for (let guard = 0; guard < 8 && cut > 0; guard += 1) {
+    const head = content.slice(0, cut);
+    const openAt = head.lastIndexOf("{");
+    if (openAt !== -1) {
+      const tail = content.slice(openAt + 1);
+      // 命令形态且右括号不在同一行内出现 → 截断点落在命令内部，回退到 `{` 前
+      const before = head.slice(Math.max(0, openAt - 30), openAt);
+      if (commandStart.test(before) && !/^[^{}\n]*\}/.test(tail)) {
+        cut = openAt;
+        continue;
+      }
+    }
+    break;
+  }
+  // 回退到句界（段落边界优先，其次句号/分号）；找不到再退到词间空白
+  const window = content.slice(0, cut);
+  let boundary = Math.max(window.lastIndexOf("\n"), window.lastIndexOf("。"), window.lastIndexOf("！"), window.lastIndexOf("？"), window.lastIndexOf(";"), window.lastIndexOf("；"));
+  if (boundary === -1 || boundary < budget * 0.5) {
+    boundary = window.lastIndexOf(" ");
+  }
+  if (boundary > 0) {
+    cut = boundary + 1;
+  }
+  return content.slice(0, cut).trimEnd() + "\n" + DIGEST_TRUNCATION_NOTE;
 }
 
 /**

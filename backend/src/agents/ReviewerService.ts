@@ -61,6 +61,13 @@ export interface ReviewIssue {
    * 的 tagIssueRootCauses），不是模型自报。
    */
   rootCauseKey?: string;
+  /**
+   * M11.3（Phase D）：该 finding 被确定性检测反证——build 类结构指控（截断 /
+   * cite 未闭合）在真实稿件文件中不存在（review digest 视图伪影）。不计入
+   * blocking / critical 口径、不派发 Writer 修复（修一个不存在的问题只会
+   * 引入回归）。确定性回填（review.run 的 disconfirmBuildFindings）。
+   */
+  deterministicDisconfirmed?: boolean;
 }
 
 /**

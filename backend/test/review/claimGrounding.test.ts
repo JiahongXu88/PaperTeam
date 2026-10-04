@@ -29,6 +29,10 @@ function evidence(input: Partial<EvidenceRecord> & { id: string }): EvidenceReco
   return {
     claim: "",
     verificationStatus: "verified",
+    // M11.3：formal 池缺省携带真实管线的质量字段（verified → direct/fulltext）；
+    // 质量门槛（meetsEvidenceSupportQuality）的负例见 evidenceSupportQuality.test.ts
+    supportStrength: "direct",
+    verificationLevel: "fulltext",
     source: { sourceId: `S-${input.id}`, title: `Paper ${input.id}`, year: 2023 },
     location: { chunk: `${input.id}:SEC01:0001:a1b2c3d4e5` },
     createdBy: "test",

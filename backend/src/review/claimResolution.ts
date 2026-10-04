@@ -27,7 +27,7 @@
  * traceable（weakeningAuthorization 台账），Fact Preservation 依旧 fail-closed。
  */
 
-import { isUnsupportedVerdict, type ClaimGroundingEntry } from "./claimGrounding.js";
+import { isUnsupportedVerdict, lookupSectionCitedSourceIds, type ClaimGroundingEntry } from "./claimGrounding.js";
 import { assessWeakenedClaim } from "./weakenedClaim.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 
@@ -86,7 +86,9 @@ function groundableSourcesFor(
   entry: ClaimGroundingEntry,
   context: ClaimResolutionContext,
 ): SourceGroundability[] {
-  const cited = context.sectionCitedSourceIds?.[entry.section] ?? [];
+  // M11.3：章节键归一化命中（claim.section = sections/x.tex ↔ 投影键 = x；
+  // 双键兼容旧投影 / 测试夹具的原始键形）
+  const cited = lookupSectionCitedSourceIds(context.sectionCitedSourceIds, entry.section);
   const byId = new Map(context.sources.map((source) => [source.sourceId, source]));
   const ranked: SourceGroundability[] = [];
   // 1) 章节引用的源（survey literatureRefs 的确定性投影）

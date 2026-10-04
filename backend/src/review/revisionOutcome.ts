@@ -43,6 +43,74 @@ export const MAX_AUTO_LATEX_REPAIRS = 2;
  */
 export type RevisionConvergence = "PROGRESS" | "STALLED" | "REGRESSED";
 
+/**
+ * M11.3（Phase E）产品终态语义（工作流完成 / HITL / 报告的统一口径）。
+ *
+ * - PASS：双 Gate 通过，正常 Final / Draft 冻结；
+ * - QUALITY_NOT_REACHED：论文已生成，但自动质量验收未达到目标（正常终态，
+ *   不是系统崩溃——Draft PDF 可用，剩余问题如实呈现）；
+ * - NO_PROGRESS：自动修订已达收敛上限，继续自动修改预计收益有限；
+ * - AUTHOR_DECISION_REQUIRED：需要作者提供额外信息 / 研究判断 / 数据；
+ * - SYSTEM_FAILED：守卫类规则（事实 / 引用保持、survey 契约）未满足——
+ *   冻结产物不安全，属系统级失败语义。
+ *
+ * 判定确定性（无 LLM）：gateReasons 的守卫类前缀 → SYSTEM_FAILED；
+ * 否则 STALLED 收敛 + 同轮 author_decision_required claim > 0 →
+ * AUTHOR_DECISION_REQUIRED；STALLED → NO_PROGRESS；其余 → QUALITY_NOT_REACHED。
+ */
+export type TerminalStatusKind =
+  | "PASS"
+  | "QUALITY_NOT_REACHED"
+  | "NO_PROGRESS"
+  | "AUTHOR_DECISION_REQUIRED"
+  | "SYSTEM_FAILED";
+
+const GUARD_RULE_PREFIX =
+  /^(fact_preservation|cumulative_fact_preservation|citation_preservation|survey_outline_contract|survey_citation_keys_valid|survey_synthesis_traceability)[:：]/;
+
+export interface TerminalStatusInput {
+  gatePassed: boolean;
+  gateReasons: readonly string[];
+  convergence: RevisionConvergence | null;
+  /** 同轮 claim resolution 中 author_decision_required 的条数（0 / 缺省 = 无） */
+  authorDecisionClaims?: number;
+}
+
+export interface TerminalStatus {
+  status: TerminalStatusKind;
+  /** 用户可读语义（前端 / 报告直接消费；不暴露内部术语） */
+  message: string;
+}
+
+export function classifyTerminalStatus(input: TerminalStatusInput): TerminalStatus {
+  if (input.gatePassed) {
+    return { status: "PASS", message: "质量验收通过，论文已冻结。" };
+  }
+  const guardFailed = input.gateReasons.some((reason) => GUARD_RULE_PREFIX.test(reason));
+  if (guardFailed) {
+    return {
+      status: "SYSTEM_FAILED",
+      message: "事实 / 引用守卫未满足（冻结产物不安全）——系统级失败，需要排查修订链。",
+    };
+  }
+  if (input.convergence === "STALLED") {
+    if ((input.authorDecisionClaims ?? 0) > 0) {
+      return {
+        status: "AUTHOR_DECISION_REQUIRED",
+        message: "自动修订已停止：剩余问题需要作者提供研究判断或额外数据（语言模型改稿无法解决）。",
+      };
+    }
+    return {
+      status: "NO_PROGRESS",
+      message: "自动修订已达到收敛上限，继续自动修改预计收益有限；当前稿可作为 Draft 使用。",
+    };
+  }
+  return {
+    status: "QUALITY_NOT_REACHED",
+    message: "论文已生成，但自动质量验收未达到目标；Draft 可用，剩余问题见质量报告。",
+  };
+}
+
 /** 一轮迭代的可比记分卡（iteration-history 的确定性内容） */
 export interface IterationScorecard {
   gatePassed: boolean;

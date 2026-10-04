@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { Icon } from "../common/Icon.js";
+import { RegistryStatus } from "../common/StatusBadge.js";
 import { Loading } from "../common/StateViews.js";
 import { InlineConfirm } from "../common/RowMenu.js";
 import { HitlPanel } from "./HitlPanel.js";
 import { QualityGatePanel } from "./QualityGatePanel.js";
-import { COMPLETION_LABELS, stageLabel } from "../common/status.js";
+import { COMPLETION_LABELS, TERMINAL_STATUS_STYLES, stageLabel, statusStyleOf } from "../common/status.js";
 import { RunStatusBadge } from "./Badges.js";
 import { WORKFLOW_KIND_LABELS } from "../../constants/projectMeta.js";
 import { buildStageTimeline, type StageTimelineItem } from "./workflowTimeline.js";
@@ -503,12 +504,22 @@ function CompletedBlock({
   const completedCount = timeline.filter((item) => item.state === "completed").length;
   const sections = run.stageHistory?.find((record) => record.stageId === "review.sections" && record.status === "completed");
   const duration = formatDurationBetween(run.startedAt, run.finishedAt);
+  const qualityStatus = run.completion?.qualityStatus;
   return (
-    <div className="note note-success" role="status" data-testid="workflow-completed">
+    <div className={`note ${qualityStatus !== undefined && qualityStatus !== "PASS" ? "note-warn" : "note-success"}`} role="status" data-testid="workflow-completed">
       <span>
-        <span className="note-mark">✓</span> 任务已完成
+        <span className="note-mark">{qualityStatus !== undefined && qualityStatus !== "PASS" ? "●" : "✓"}</span> 任务已完成
         {run.completion !== null && run.completion !== undefined ? (
           <span className="muted">（产出：{COMPLETION_LABELS[run.completion.label] ?? run.completion.label}）</span>
+        ) : null}
+        {qualityStatus !== undefined ? (
+          <>
+            {"，"}
+            <RegistryStatus style={statusStyleOf(TERMINAL_STATUS_STYLES, qualityStatus, qualityStatus)} />
+            {run.completion?.qualityStatusMessage !== undefined ? (
+              <span className="muted">（{run.completion.qualityStatusMessage}）</span>
+            ) : null}
+          </>
         ) : null}
         ：{completedCount} / {timeline.length} 个阶段
         {duration !== undefined ? `，总耗时 ${duration}` : ""}

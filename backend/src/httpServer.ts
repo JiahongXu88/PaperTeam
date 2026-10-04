@@ -1776,6 +1776,28 @@ async function handleProjectResourceRoutes(
   //      Research 阶段派生产物，≠ Verified Evidence）----
   if (resource === "survey") {
     await stack.projects.getRequired(projectId);
+    // M11.3（Phase C）：GET /survey/corpus——研究语料快照（未冻结 → null）
+    if (rest === "/corpus") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const snapshot = await stack.corpus.get(projectId);
+      sendJson(res, 200, { snapshot });
+      return true;
+    }
+    // M11.3（Phase C）：POST /survey/corpus/refresh——显式补齐缺失全文
+    // （resume 的对立面：补齐 → corpus revision+1 + matrix 可升级条目失效，
+    // 后续 matrix/synthesis/outline 按 staleness 链重算；普通 resume 不漂移）
+    if (rest === "/corpus/refresh") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const outcome = await stack.corpus.refresh(projectId);
+      sendJson(res, 200, { outcome });
+      return true;
+    }
     // GET /survey/matrix：读取矩阵（未构建 → matrix:null，与「损坏」区分）
     if (rest === "/matrix") {
       if (method !== "GET") {
