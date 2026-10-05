@@ -1,6 +1,6 @@
 # M11.4 Final Acceptance Report
 
-**最新结论：FAIL — Attempt 5 在 `assessment.target` 连续遭遇 GLM request timeout，run 终态 `SYSTEM_FAILED`；未到达 Planner/Writer，故 M11.4 产品验收仍未完成。** Attempt 2 和 Attempt 4 的历史结论保留在下文；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF，详见文末「Attempt 5 — Validation-Aware Final Blind Revalidation」。不启动 Attempt 6 或 M11.5。
+**最新结论：M11.4 Product Acceptance INCONCLUSIVE — Attempt 5 的 workflow run 在 `assessment.target` 失败（`AGENT_RUN_FAILED`）；Planner、Writer 与 Revision Harness 均未运行，不能判为 Harness validation failure。** Attempt 2、4、5 的原始事实与验收范围保留；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF。M11.4.5 diagnostics 见本报告新增章节；不启动 Attempt 6 或 M11.5。
 
 更新：2026-10-05（Asia/Shanghai；Attempt 5）
 
@@ -420,7 +420,7 @@ Backend full suite：`npm --prefix backend test -- --testTimeout=30000`，218 fi
 
 ## Attempt 5 — Validation-Aware Final Blind Revalidation
 
-**日期：2026-10-05。Verdict: FAIL / `SYSTEM_FAILED`。** Attempt 5 使用了新的隔离项目和正确返修前 baseline；blind path gate、真实评论解析/导入、真实 Source ingestion、baseline build、citation audit 与真实 GLM 审稿均通过。但 GLM-5.3 的 `assessment.target` 调用先后发生 300 秒 execution timeout 和 `Request timed out`，workflow 的两次 stage 尝试均失败，run 以 `AGENT_RUN_FAILED` 结束。流程未到达 Planner、Writer 或 Patch Harness，因此不能回答 Harness 是否能在真实 Writer 首次出错后完成安全修复。停止真实实验；不启动 Attempt 6 或 M11.5。
+**日期：2026-10-05。Run outcome: FAILED / M11.4 acceptance: INCONCLUSIVE。** Attempt 5 使用了新的隔离项目和正确返修前 baseline；blind path gate、真实评论解析/导入、真实 Source ingestion、baseline build、citation audit 与真实 GLM 审稿均通过。但 GLM-5.3 的 `assessment.target` 调用先后发生 300 秒 execution timeout 和 `Request timed out`，workflow 的两次 stage 尝试均失败，run 以 `AGENT_RUN_FAILED` 结束。流程未到达 Planner、Writer 或 Patch Harness，因此不能回答 Harness 是否能在真实 Writer 首次出错后完成安全修复。此为 run failure / inconclusive acceptance，不是 Harness validation failure。停止真实实验；不启动 Attempt 6 或 M11.5。
 
 ### Git / 隔离项目
 
@@ -468,5 +468,51 @@ Backend full suite：`npm --prefix backend test -- --testTimeout=30000`，218 fi
 - Run trace：52,757 input tokens、8,684 output tokens、50,368 cache-read、18 assistant turns；估算 `$0.12516508`（provider list-price 估值，不是账单）；wall duration 678,757 ms（11 分 18.8 秒）。
 - Quota exhaustion：**NO**。Pi upstream：没有证据显示是 Pi 1.0.1 产品缺陷；未提交 upstream issue。
 - Full regression：Backend `npm test -- --testTimeout=30000 --maxWorkers=4` — 220 files passed / 3 skipped，2,426 passed / 15 skipped；Frontend `npm test` — 27 files、280 passed；root `npm run typecheck` 与 `npm run build` PASS。Build 有既存 Vite >500 kB chunk warning；tests 有既存 query/jsdom stderr warning。
-- Attempt 5 结论：**M11.4 — FAIL / NOT_READY_FOR_M11_5**，唯一 blocker 为真实 run 在 `assessment.target` 两次 Provider request timeout（`SYSTEM_FAILED`）。没有将其混归为模型科学能力限制、额度耗尽或 Evidence Gap；不启动 Attempt 6。代码修复 commit 已推送；本报告及 `docs/PROJECT_STATUS.md` 随本次验收记录更新。
+- Attempt 5 结论：**RUN FAILED / INCONCLUSIVE；M11.4 revalidation 未完成**。真实 workflow 在 `assessment.target` 失败（Run terminal `failed`，事件映射 `AGENT_RUN_FAILED`）；Planner/Writer/Harness 未运行，因此该 Attempt 不能计作 Harness Product Failure。无 402/quota exhaustion 信号；不启动 Attempt 6。Attempt 5 在当时提交的中文 reviewer 标题修复仍保留。
 - M11.5 未启动；`READY_FOR_M11_5_CLOSURE`：**false**。
+
+## M11.4.5 assessment.target Timeout Root Cause
+
+**Attempt 5 语义更正：RUN FAILED / INCONCLUSIVE。** Workflow run 确实以 `AGENT_RUN_FAILED` 失败，但执行路径停在 `assessment.target`；Planner / Writer / Revision Harness 未运行，因此 Attempt 5 不能作为 Harness 产品失败或通过的证据。M11.4 产品 revalidation 未完成。
+
+### Timeout owner 与生命周期证据
+
+- Run trace：`D:\PaperTeamData\M11.4-attempt5\projects\p-f52b496cb6f3\workflow\runs\w-4c0cc322d84a\run-trace.json`；workflow events、stage records 与 performance report 互相吻合。
+- 调用链：`workflow/definitions.ts:feasibilityStage` → `agents/FeasibilityService.ts:assess` / `buildFeasibilityPrompt` → `runtime/types.ts:AgentRuntime.runAgent` → `runtime/PiRuntimeAdapter.ts:runOnSession` → Pi AgentSession `prompt` → Pi model stream/provider adapter → Z.AI General API HTTP。
+- `assessment.target` 使用默认 execution budget 300,000 ms（`PiRuntimeAdapter.ts`）；first-activity watchdog 为 180,000 ms。第一次 `agent.task` 精确运行 300,017 ms，trace `task.errorCode=EXECUTION_TIMEOUT`，stage record 为 `AGENT_TIMEOUT`。所以第一次 timeout 由 PaperTeam PiRuntimeAdapter 的 execution timer 触发；不是 stage idle timeout（stage 在 agent settle 后仅约 31ms 收口），也不是 Pi 自己的 timeout。
+- 第一次 agent run 有 4 个 model turns / 3 次 agent auto-retry；第一个 turn 观测到首活动 6,293 ms，后续 stream errors 发生在 execution deadline 前后。PaperTeam 发出 `session.abort()` 后等待 `session.prompt()` settle，Pi 记录最后一个 turn 为 `aborted`，adapter 执行 `waitForIdle()` 并标记会话 rotation。stage retry 于首 attempt settle 后约 218 ms 启动。
+- 第二次 stage attempt 运行 177,219 ms 后 Pi session 以 `error` 终态返回 `Request timed out.`；4 个 model turns / 3 次 agent auto-retry，首活动约 10,656 ms。task error code 为 `RUN_FAILED`，PaperTeam 没有先触发 300s timeout。FeasibilityService 将它包装为 `AGENT_RUN_FAILED`，workflow 因而记录 `transient`。
+- trace 证明本地 Pi prompt/session 在两次 attempt 结束前已 settle，且 workflow stage retry 只在前一次 `stage.execute` Promise settle 后进行；没有 active run 并发或 permit 泄漏的已知证据。trace 不包含远端 request ID、HTTP response/error cause、abort timestamp 或 provider 端 active 状态，故不能证明 Z.AI 服务端在本地 abort 后已停止执行，也不能进一步区分 Pi adapter、HTTP transport、代理/网络与 Z.AI 对第二次 `Request timed out.` 的贡献。
+- Attempt 5 只保存 `model.ttfbMs` / `task.firstActivityMs`，没有逐次 HTTP request start、first token、abort sent、stream closed、permit release 的独立时间戳；不能把 first activity 等同可见文本 token。第一次已记录 first-activity 6.293s、第二次 10.656s；首次 HTTP request 与最终 settlement 的分离数据不存在。
+
+### assessment.target Context Inventory
+
+Stage contract 是依据已有论文理解报告与 Evidence 统计，评估目标档次可行性并返回结构化结论；不是重读全文或重审 reviewer comments。源码 prompt 输入由固定评估指令/task-aware existing-paper 规则、项目 target metadata/research idea、ResearchReport 的 domain overview（最多 600 字符）、researchGaps / potentialContributions（各最多 5 条）和 Evidence 聚合计数组成。
+
+| Component | assessment 发送规则 | Attempt 5 是否包含 |
+|---|---|---|
+| System/role prompt | Pi researcher role 默认指令（152 chars）/已分配 skill；trace 不记录工具 schema 与完整序列化 body | 有；本次本机角色 prompt 152 chars，Attempt 5 skills 展开信息没有保存 |
+| 固定 assessment 指令与 task-aware 规则 | 结构化输出 contract + existing-paper applicability 规则 | 1,566 chars |
+| Project target metadata | documentType / targetProfile / targetVenue | 55 chars |
+| Research digest | Attempt 5 ResearchReport 有界字段 | 1,298 chars；ResearchReport 序列化总量 2,239 chars（未全部进入 prompt） |
+| Evidence | total 与 status 计数 | 78 chars；总记录数为 0 |
+| Full manuscript | 不由 FeasibilityService 读取或拼接 | 否 |
+| Reviewer comments | 不由 FeasibilityService 读取或拼接 | 否 |
+| Evidence/source blocks 与 chunks | 仅传 total/status counts；source corpus 不进入 prompt | 否 |
+| Workflow history / tool results | FeasibilityService 未传 history；Pi session context 属于运行时会话层，原始请求体未留存 | 未见重复注入证据；无法审计 Pi 实际序列化 body |
+| Previous failed attempt output | stage 两次调用重新构建相同 assessment task；timeout attempt 无 output；timeout 后 adapter 标记 session rotation | 无证据显示第二次携带首次 partial output |
+
+Attempt 5 prompt 重建：assessment task 2,997 chars；轻量字符估算约 899 tokens，Pi researcher role prompt 152 chars（另有未记录的 Pi/tool serialization overhead）。Run 全局累计 52,757 input / 8,684 output / 50,368 cache-read tokens 包含此前 `import.understand` 与 3 路 `review.run`；两次 assessment 的失败模型 turns 均记录 0 usage token，不能把全 run 累计视为 assessment prompt 大小。现存代码证明没有 Evidence corpus 或全文注入；历史请求体未保留，因此实际 provider tokenization 无法精确重建。不将其定性为 `ASSESSMENT_CONTEXT_OVERLOAD`。本阶段新增 prompt size-only 日志（不记录内容），并增加 large-evidence-count boundary regression；prompt 尚未缩减，固定 contract 输出只有 2,997 chars。
+
+### Retry policy / Pi / provider 判断
+
+- Runtime `session.prompt` 内部在一个 run 中观察到最多 3 次 auto-retry；Workflow stage 对 timeout/transient 最多 2 次（`stageMaxAttempts`）。层层叠加导致一次 assessment stage 最多可经历两组 Pi retry，bounded 但偏重；没有重试前 settlement 缺陷的 trace 证据。M11.4.5 新增前不改全局 300s execution budget，不改 provider/model/key，也不降低事实、引用或范围 guard。
+- 实际安装版本是 `@earendil-works/pi-coding-agent@1.0.1` 与 `@earendil-works/pi-ai@1.0.1`。当前证据不足以确认 Pi upstream bug：第一次由 PaperTeam timer 先触发，第二次是下游 `Request timed out.`，但没有独立 HTTP repro 和 cause/response body。未查到或创建上游 Issue；`NO_CONFIRMED_PI_UPSTREAM_BUG`。未做 standalone Pi repro。
+- 没有网络/代理快照、HTTP 状态或 provider request ID，因此不能定性 `PROVIDER_RELIABILITY_BLOCKER`，也不能把错误笼统归因 Provider。
+
+### M11.4.5 当前状态
+
+- deterministic targeted tests：124 passed（新增 prompt boundary + workflow orchestrator + PiRuntimeAdapter），包括 execution timeout abort、adapter settle 及 stage retry 等已有覆盖。
+- 最小真实 assessment smoke：**PASS**。用临时 synthetic project 直接调用 `FeasibilityService.assess`（未创建 workflow）；Z.AI / GLM-5.3 / General API 返回合法 `INSUFFICIENT`，task `pi-14d58991-37cd-4765-9a49-206d4b069d2a` completed，1,197 input / 983 output / 2,688 cache-read tokens，113,302 ms，估算 `$0.00669988`，完成时 `activeRuns=0`。smoke prompt 为 1,973 chars / 约 737 tokens。未单独记录 first-token 延迟，故无法与 Attempt 5 的 first-activity 对比。
+- 接近真实规模 smoke：未另跑。Attempt 5 重建的实际业务 prompt 仅 2,997 chars / 约 899 estimated tokens；没有完整稿件或 Evidence corpus 输入，额外扩大到“接近真实”不会检验不同 context 路径。当前 synthetic smoke 与 Attempt 5 prompt 规模同一量级。
+- Full backend：221 files passed / 3 skipped，2,427 passed / 15 skipped；Frontend：27 files / 280 passed；Backend 与 Frontend typecheck/build PASS。尚未 commit/push；M11.4.5 **NOT COMPLETE / NOT READY**，不得启动 Attempt 6。

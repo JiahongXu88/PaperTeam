@@ -93,14 +93,20 @@ export class FeasibilityService {
     assessKind?: "idea" | "existing_paper";
   }): Promise<FeasibilityResult> {
     const project = await this.projects.getRequired(params.projectId);
+    const prompt = buildFeasibilityPrompt(
+      project,
+      params.research,
+      params.evidenceStats,
+      params.assessKind ?? "idea",
+    );
+    // Record only bounded size metadata, never prompt content. This makes the
+    // preflight payload auditable without leaking manuscript or source text.
+    this.log(
+      `[feasibility] projectId=${params.projectId} promptChars=${prompt.length} promptTokensEstimate=${estimatePromptTokens(prompt)} researchChars=${JSON.stringify(params.research).length} evidenceTotal=${params.evidenceStats.total}`,
+    );
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
-      task: buildFeasibilityPrompt(
-        project,
-        params.research,
-        params.evidenceStats,
-        params.assessKind ?? "idea",
-      ),
+      task: prompt,
       projectId: params.projectId,
       contextScope: "research/feasibility",
       metadata: { role: "researcher", skill: "feasibility" },
@@ -207,6 +213,12 @@ export class FeasibilityService {
     );
     return { ...report, reportPath, taskId: task.taskId };
   }
+}
+
+/** Conservative size estimate for diagnostics only; runtime context checks remain authoritative. */
+function estimatePromptTokens(prompt: string): number {
+  const cjk = (prompt.match(/[\u3400-\u9fff]/g) ?? []).length;
+  return Math.ceil(cjk / 1.5 + (prompt.length - cjk) / 4);
 }
 
 /** 读取最近一次 feasibility 报告 */
