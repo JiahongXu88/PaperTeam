@@ -213,3 +213,15 @@ Reviewer 2 / 4 的真实实验材料已在 fixture 且进入 EvidenceStore，不
 - **Attempt 1 — invalid baseline:** `p-ee063d5608ff` 从 Human Final 再返修，作为历史实验保留，不纳入本轮产品能力结论。
 - **Attempt 2 — correct baseline:** `p-083018b5b6b7` 从 `paper_before_revision.tex` 起跑；candidate rev 3 SHA 与 Guard 结果按上文记录；最终失败。
 - 本轮源码和 fixture 未修改。产品修复及新一轮验收尚未执行。
+
+## 26. M11.4.1 Controlled Existing-Paper Revision Scope（implementation checkpoint）
+
+更新：2026-10-05。Attempt 1 / Attempt 2 结论和产物保持不变。以下是针对 Attempt 2 结构性失败的产品修复；**Attempt 3 尚未运行，因此本节不改变 M11.4 FAIL verdict，也不表示 M11.4.1 acceptance 已完成。**
+
+- **Typed action / NO-OP dispatch**：`RevisionPlanItem.actionType` 增加 `modify | noop | author_decision_required | evidence_only`。`collectPlanDirectives` 只派发 planned 且可执行的条目；NO-OP 必须携带 `logicalSection`、原文 `coverageQuote` 和证据 IDs，并由系统核验 quote 确实存在于当前目标、证据状态有效、协议适用后，才写入 `already_satisfied` resolution trace。自然语言中的 “NO-OP / already covered” 不触发关闭。未通过核验时不调用 Writer，保留 unresolved trace 和 remaining issue。
+- **Single-file logical targets / patches**：新增轻量 LaTeX heading / label 定位器；单文件 `main.tex` 的 section-level target 作为 Writer 输入。按当前 target 内容生成局部替换，apply 前重新解析目标并检查 SHA-256；目标内容已变化则 fail closed。Apply 后 scope guard 检查差异只能落在授权 span；同时检查 `\end{document}` 后是否新增内容，并在一轮开始时拒绝重叠 patch。Fact / Citation Preservation 仍独立运行。
+- **Evidence protocol scope**：EvidenceRecord 支持 `{protocolId,status}`。来自明确命名来源 `fair_ablation_new_detector` 的 Evidence 标为 current；`old_coco_pretrained_detector` 标为 superseded。结构化实验数据和 fulltext grounding 均继承来源协议。Revision item 指定 `protocolId` 后，只有相同 protocol 且 status=current 的 Evidence 进入该 Writer 上下文；NO-OP 也执行同一适用性检查。
+- **Comment outcome trace**：外部意见持久化 `resolutionTrace`，包含 comment / plan item / action / target / evidence / patch / verification / status / summary / remaining issue。修改项在实际 diff 后记录结果；后续 gate 同时核验 Fact 和 Citation Preservation，失败回退 unresolved，成功更新 trace verification。NO-OP 在 coverage + evidence verification 成功后进入 already_satisfied。
+- **Regression coverage**：新增 scope/protocol fixtures 覆盖四 NO-OP + 一 MODIFY、RDK X3 的 baseline quote + verified Evidence、局部 subsection patch、摘要越界、范围内数字仍由 Fact Guard 判定、旧 COCO 协议拒绝、document end 后追加文本拒绝、overlap 检测及 Comment trace。该组测试证明纯机制边界；仍需真实 Attempt 3 验收实际成本、五条评论终态、Citation/Fact gate、PDF 与 held-out 对照。
+- **验证**：backend `npm test -- --maxWorkers=1` — 216 files passed / 3 skipped；2392 passed / 15 skipped；backend typecheck/build PASS。frontend `npm test` — 280 passed；typecheck/build PASS（保留既有 >500 kB chunk warning）。最终 `git diff --check` / secret scan 与 Git 同步将在提交前记录。
+- **当前限制**：没有新建 Attempt 3 项目、Candidate Freeze、Revised PDF 或 Human Final 后验比较；没有读取 Human Final/change log用于生成。GLM Attempt 3 成本与状态均待测。

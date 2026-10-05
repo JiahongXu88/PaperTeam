@@ -703,6 +703,7 @@ export class WriterService {
     feedback?: string;
     /** 现有章节文件（相对 manuscript/ 的 POSIX 路径；section 字段必须从中选择） */
     sectionFiles: string[];
+    logicalTargets?: { file: string; logicalSection: string; heading: string; label?: string }[];
     /** M10.3：原稿冻结事实基线要点（表格 / 引用 / 硬件 / 占位） */
     baselineDigest?: string;
     /** M10.3：分层证据摘要（verified 外部文献 + user_confirmed 作者实验） */
@@ -715,6 +716,7 @@ export class WriterService {
     authorGoal?: string;
     /** 合法证据 id 清单（relatedEvidenceIds 校验用；缺省不校验但也不注入提示） */
     validEvidenceIds?: string[];
+    validEvidenceProtocolScopes?: Record<string, { protocolId: string; status: "current" | "historical" | "superseded" }>;
     /** 合法外部意见 id 清单（instructionId 校验用） */
     validInstructionIds?: string[];
     /** 外部意见原文；用于对模型漏链意见生成保守的 author-decision 计划项 */
@@ -727,7 +729,7 @@ export class WriterService {
         "你是一名论文写手（Writer）。请基于审稿问题与目标差距，为已有 LaTeX 论文制定分节改进计划（只规划，不写正文）。",
         "",
         "只输出一个 JSON 对象（不要 Markdown 围栏）：",
-        '{"plan": [{"section": "sections/xxx.tex", "action": "具体改法（要点名涉及的旧值与新值）", "rationale": "对应的问题或差距（含依据）", "priority": "high|medium|low",',
+        '{"plan": [{"section": "sections/xxx.tex", "logicalSection": "subsec:datasets（如适用）", "actionType": "modify|noop|author_decision_required", "coverageQuote": "NO-OP 时逐字摘录当前稿内容", "protocolId": "当前实验协议 id（如适用）", "action": "具体改法（要点名涉及的旧值与新值）", "rationale": "对应的问题或差距（含依据）", "priority": "high|medium|low",',
         '  "instructionId": "对应外部意见 id（可选，须来自意见清单）", "relatedEvidenceIds": ["依据证据 id（可选，须来自证据清单）"],',
         '  "expectedFactChanges": [{"before": "旧值", "after": "新值", "basis": "证据 id 或依据说明"}]}]}',
         "",
@@ -736,11 +738,15 @@ export class WriterService {
         ...(params.sectionFiles.length > 0
           ? params.sectionFiles.map((file) => `   - ${file}`)
           : ["   - （未识别到章节文件：section 使用 main.tex）"]),
+        ...(params.logicalTargets !== undefined && params.logicalTargets.length > 0
+          ? ["   可用逻辑章节 target（single-file 项目必须选择；不得把 main.tex 当作整稿 scope）：", ...params.logicalTargets.map((target) => `   - file=${target.file}; logicalSection=${target.logicalSection}; heading=${target.heading}${target.label ? `; label=${target.label}` : ""}`)]
+          : []),
         "2. 优先处理 critical / blocking 问题与编译错误。",
         "3. 证据不足的论断计划为「弱化或删除」，不允许计划编造实验或引用。",
         "4. 修改实验数值的条目必须：action 点名旧值与新值 + expectedFactChanges 逐条列出 + relatedEvidenceIds 给出作者实验证据（user_confirmed）或已核验文献证据。没有证据授权的数值修改不允许进入计划。",
         "5. 证据分层纪律：verified（已核验文献）只支撑外部事实论述；user_confirmed（作者实验）只授权作者自身实验数值变更，不得当作外部科学事实验证。",
         "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
+        "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection），并绑定可核验证据；不能仅用 rationale 写‘已覆盖’。系统会再确定性核对原文与证据，核验失败即不会关闭 comment。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
         "",
         `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,
@@ -800,9 +806,30 @@ export class WriterService {
         record["priority"] === "high" || record["priority"] === "medium" || record["priority"] === "low"
           ? record["priority"]
           : "medium";
+      const actionType = record["actionType"] === "noop" || record["actionType"] === "author_decision_required"
+        ? record["actionType"]
+        : "modify";
+      const planText = `${action} ${typeof record["rationale"] === "string" ? record["rationale"] : ""}`;
+      const protocolId = typeof record["protocolId"] === "string" && record["protocolId"].trim() !== ""
+        ? record["protocolId"].trim()
+        : /fair[-_ ]?ablation|公平(?:实验|协议)|newly fine[- ]tuned detector/i.test(planText)
+          ? "fair_ablation_new_detector"
+          : "";
+      const linkedEvidenceIds = Array.isArray(record["relatedEvidenceIds"])
+        ? record["relatedEvidenceIds"].filter((id): id is string =>
+            typeof id === "string" &&
+            (validEvidence.size === 0 || validEvidence.has(id.trim())) &&
+            (protocolId === "" || params.validEvidenceProtocolScopes?.[id.trim()]?.protocolId === protocolId &&
+              params.validEvidenceProtocolScopes[id.trim()]?.status === "current"),
+          ).map((id) => id.trim()).slice(0, 8)
+        : [];
       items.push({
         section,
         action,
+        actionType,
+        ...(typeof record["logicalSection"] === "string" ? { logicalSection: record["logicalSection"].trim() } : {}),
+        ...(typeof record["coverageQuote"] === "string" ? { coverageQuote: record["coverageQuote"].trim() } : {}),
+        ...(protocolId !== "" ? { protocolId } : {}),
         ...(typeof record["rationale"] === "string" && record["rationale"].trim() !== ""
           ? { rationale: record["rationale"].trim() }
           : {}),
@@ -812,17 +839,7 @@ export class WriterService {
         validInstructions.has(record["instructionId"].trim())
           ? { instructionId: record["instructionId"].trim() }
           : {}),
-        ...(Array.isArray(record["relatedEvidenceIds"])
-          ? {
-              relatedEvidenceIds: record["relatedEvidenceIds"]
-                .filter(
-                  (id): id is string =>
-                    typeof id === "string" && (validEvidence.size === 0 || validEvidence.has(id.trim())),
-                )
-                .map((id) => id.trim())
-                .slice(0, 8),
-            }
-          : {}),
+        ...(Array.isArray(record["relatedEvidenceIds"]) ? { relatedEvidenceIds: linkedEvidenceIds } : {}),
         ...(Array.isArray(record["expectedFactChanges"])
           ? {
               expectedFactChanges: record["expectedFactChanges"]
@@ -870,6 +887,10 @@ export class WriterService {
 export interface ImprovementPlanItem {
   section: string;
   action: string;
+  actionType?: "modify" | "noop" | "author_decision_required";
+  logicalSection?: string;
+  coverageQuote?: string;
+  protocolId?: string;
   rationale?: string;
   priority: "high" | "medium" | "low";
   /** M10.3：对应外部意见 id（确定性校验通过后保留） */
@@ -1146,7 +1167,8 @@ export function buildRevisePrompt(params: {
           "1b. **交付方式契约**：修改后的完整文件内容必须出现在你的**最终回复消息**里（正文输出）。不要改用 write/edit 工具直接改写文件来替代交付——只有最终消息会被采纳为修订结果；最终消息为空将被判失败。",
         ]
       : [
-          "1. 只输出修订后的该章节完整 LaTeX 正文片段（\\section 起）；不要文档骨架、不要解释。",
+          "1. 只输出修订后的当前 target 内容片段；不要文档骨架、不要解释。",
+          "1a. 修改边界严格限于当前 target。不得改动其他章节、摘要、数字、公式、citation、figure/table 或方法描述；仅当本条计划明确授权且给出依据时才可触及对应内容。只需改一句时，只改那一句及必要的语法衔接。",
         ]),
     "2. 这是一次**受限修订（revision）**，不是重写：逐条解决下列针对本章节的问题，只修改问题指向的位置及保持连贯所需的最小上下文；其余内容逐字保留。",
     "3. **实验事实默认冻结**：当前稿件中的实验数值（含小数位 / 百分比 / 区间 / 单位）、表格内容、"

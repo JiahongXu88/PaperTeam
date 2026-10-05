@@ -37,6 +37,7 @@ import {
 } from "./candidates.js";
 import type { EvidenceCandidateStore } from "./candidates.js";
 import type { EvidenceAppendInput, EvidenceStore } from "./EvidenceStore.js";
+import { inferExperimentProtocolScope } from "./protocolScope.js";
 import { buildEvidenceJudgePrompt, parseEvidenceJudgeOutput } from "./evidenceJudge.js";
 import { MIN_NORMALIZED_QUOTE_LENGTH, normalizeForQuoteMatch, verifyQuoteInChunk } from "./quoteVerification.js";
 
@@ -209,11 +210,13 @@ export class EvidenceGroundingService {
     // ---- Stage 1：Quote Verification（确定性） ----
     let chunk: SourceChunk;
     let sourceMeta: SourceMetadata;
+    let sourceFileName: string;
     let sourceLine: string;
     try {
       const resolved = await this.chunkAccess.resolve(projectId, candidate.chunkId);
       chunk = resolved.chunk;
       sourceMeta = resolved.source.metadata;
+      sourceFileName = resolved.source.fileName ?? "";
       sourceLine = [
         resolved.source.metadata.title ?? resolved.source.sourceId,
         resolved.source.metadata.year !== undefined ? `（${resolved.source.metadata.year}）` : "",
@@ -326,6 +329,7 @@ export class EvidenceGroundingService {
     }
 
     // ---- 通过：转正进 EvidenceStore（唯一 grounded 写入口） ----
+    const protocolScope = inferExperimentProtocolScope(sourceFileName || sourceMeta.title || "");
     const appendInput: EvidenceAppendInput = {
       claim: candidate.claim,
       ...(candidate.summary !== undefined ? { summary: candidate.summary } : {}),
@@ -355,6 +359,7 @@ export class EvidenceGroundingService {
       verificationMethod: `evidence-grounding/v1 quote=exact metadata=${metadataOutcome} judge=${judged.verdict}`,
       supportStrength: judged.verdict === "supported" ? "direct" : "partial",
       verificationLevel: "fulltext",
+      ...(protocolScope !== undefined ? { protocolScope } : {}),
     };
     // 幂等守卫：append 与 markResolved 之间中断会让候选仍为 pending，
     // 重跑时先查是否已有同文 verified 记录（chunk+claim+quote 全等）→ 复用

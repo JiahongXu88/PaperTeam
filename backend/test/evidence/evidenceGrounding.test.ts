@@ -147,6 +147,31 @@ describe("propose：候选提案校验", () => {
 });
 
 describe("ground：三段核验生命周期", () => {
+  it("grounding 根据明确来源文件名保留 current / superseded protocol scope", async () => {
+    const current = await fixture({
+      sourceFileName: "fair_ablation_new_detector.md",
+      provider: fakeScholarlyProvider(() => ({ kind: "match", record: canonicalRecord() })),
+    });
+    const proposal = await current.grounding.propose(current.projectId, {
+      sourceId: "S001", chunkId: current.chunkId, claim: CLAIM, quote: GOOD_QUOTE, proposedBy: "researcher",
+    });
+    const result = await current.grounding.ground(current.projectId, proposal.candidate.candidateId);
+    expect(result.status).toBe("verified");
+    const currentRecord = await current.evidence.get(current.projectId, result.evidenceId!);
+    expect(currentRecord?.protocolScope).toEqual({ protocolId: "fair_ablation_new_detector", status: "current" });
+
+    const historical = await fixture({
+      sourceFileName: "old_coco_pretrained_detector.md",
+      provider: fakeScholarlyProvider(() => ({ kind: "match", record: canonicalRecord() })),
+    });
+    const oldProposal = await historical.grounding.propose(historical.projectId, {
+      sourceId: "S001", chunkId: historical.chunkId, claim: CLAIM, quote: GOOD_QUOTE, proposedBy: "researcher",
+    });
+    const oldResult = await historical.grounding.ground(historical.projectId, oldProposal.candidate.candidateId);
+    const oldRecord = await historical.evidence.get(historical.projectId, oldResult.evidenceId!);
+    expect(oldRecord?.protocolScope).toEqual({ protocolId: "old_coco_pretrained_detector", status: "superseded" });
+  });
+
   it("全通过 → verified：EvidenceRecord 字段完整（quote 精确 + metadata match + judge supported）", async () => {
     const f = await fixture({
       provider: fakeScholarlyProvider((): LookupOutcome => ({

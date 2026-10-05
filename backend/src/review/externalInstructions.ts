@@ -78,6 +78,7 @@ export interface ExternalInstruction {
   statusNote?: string;
   /** 冲突依据（Writer 报告中引用的稿件数字 / Evidence 摘录） */
   conflictBasis?: string;
+  resolutionTrace?: CommentResolutionTrace;
   createdAt: string;
   updatedAt: string;
 }
@@ -91,6 +92,19 @@ export interface ParsedExternalComment {
   source: ExternalInstructionSource;
   reviewerLabel?: string;
   text: string;
+}
+
+export interface CommentResolutionTrace {
+  commentId: string;
+  planItemIds: string[];
+  actionType: "modify" | "noop" | "author_decision_required" | "evidence_only";
+  target?: string;
+  evidenceIds: string[];
+  patchIds: string[];
+  verification: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
+  status: ExternalInstructionStatus;
+  resolutionSummary: string;
+  remainingIssue?: string;
 }
 
 /**
@@ -170,6 +184,11 @@ export interface ExternalOutcomeReport {
    * applied 的"已处理"判定需要它——不采信 Writer 自称执行）。
    */
   targetChanged?: boolean;
+  target?: string;
+  planItemIds?: string[];
+  evidenceIds?: string[];
+  patchIds?: string[];
+  verification?: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
 }
 
 /**
@@ -430,6 +449,11 @@ export function applyDispatchOutcome(
       return {
         ...instruction,
         status: "unresolved",
+        resolutionTrace: {
+          commentId: instruction.instructionId, planItemIds: [], actionType: "modify", evidenceIds: [], patchIds: [],
+          verification: {}, status: "unresolved", resolutionSummary: "No revision target matched the comment.",
+          remainingIssue: `指定章节未匹配：${instruction.section ?? "(global)"}`,
+        },
         statusNote: `指定章节未匹配到稿件文件：${instruction.section ?? "(global)"}（请修正章节或改为不限定）`,
         updatedAt: now,
       };
@@ -444,6 +468,14 @@ export function applyDispatchOutcome(
       return {
         ...instruction,
         status: "conflict",
+        resolutionTrace: {
+          commentId: instruction.instructionId,
+          planItemIds: conflict.planItemIds ?? [], actionType: "modify", target: conflict.target,
+          evidenceIds: conflict.evidenceIds ?? [], patchIds: conflict.patchIds ?? [],
+          verification: conflict.verification ?? {}, status: "conflict",
+          resolutionSummary: conflict.basis ?? "Writer reported a conflict; manuscript facts were preserved.",
+          remainingIssue: conflict.basis ?? "Author decision required.",
+        },
         ...(conflict.basis !== undefined ? { conflictBasis: conflict.basis } : {}),
         statusNote: "该意见与稿件实验事实 / Evidence 冲突：系统未篡改事实，保留原结果并报告冲突",
         updatedAt: now,
@@ -457,6 +489,18 @@ export function applyDispatchOutcome(
       return {
         ...instruction,
         status: allReported ? "handled" : "partially_handled",
+        resolutionTrace: {
+          commentId: instruction.instructionId,
+          planItemIds: appliedReports.flatMap((report) => report.planItemIds ?? []),
+          actionType: "modify",
+          target: appliedReports.map((report) => report.target).filter((value): value is string => value !== undefined).join(", ") || undefined,
+          evidenceIds: [...new Set(appliedReports.flatMap((report) => report.evidenceIds ?? []))],
+          patchIds: appliedReports.flatMap((report) => report.patchIds ?? []),
+          verification: appliedReports.reduce((acc, report) => ({ ...acc, ...(report.verification ?? {}) }), {}),
+          status: allReported ? "handled" : "partially_handled",
+          resolutionSummary: appliedReports.map((report) => report.basis ?? "Scoped revision applied.").join("; "),
+          ...(!allReported ? { remainingIssue: "Some dispatched targets did not report an outcome." } : {}),
+        },
         ...(allReported
           ? { statusNote: undefined, conflictBasis: undefined }
           : { statusNote: "部分章节已执行，其余未返回报告" }),
@@ -468,6 +512,14 @@ export function applyDispatchOutcome(
       return {
         ...instruction,
         status: "unresolved",
+        resolutionTrace: {
+          commentId: instruction.instructionId,
+          planItemIds: reports.flatMap((report) => report.planItemIds ?? []), actionType: "modify",
+          evidenceIds: reports.flatMap((report) => report.evidenceIds ?? []), patchIds: reports.flatMap((report) => report.patchIds ?? []),
+          verification: {}, status: "unresolved",
+          resolutionSummary: "Writer reported no applicable change or no verifiable patch.",
+          remainingIssue: "Coverage or patch verification did not pass.",
+        },
         statusNote: "Writer 报告已执行，但目标文件没有实际变化（不采信自称已处理）",
         updatedAt: now,
       };
@@ -476,6 +528,13 @@ export function applyDispatchOutcome(
     return {
       ...instruction,
       status: "unresolved",
+      resolutionTrace: {
+        commentId: instruction.instructionId, planItemIds: reports.flatMap((report) => report.planItemIds ?? []),
+        actionType: "modify", evidenceIds: reports.flatMap((report) => report.evidenceIds ?? []),
+        patchIds: reports.flatMap((report) => report.patchIds ?? []), verification: {}, status: "unresolved",
+        resolutionSummary: "All reported targets were not applicable or omitted execution results.",
+        remainingIssue: "No verified resolution.",
+      },
       statusNote: "派发的章节均报告不适用或未报告执行结果",
       updatedAt: now,
     };
@@ -493,20 +552,53 @@ export function reverifyHandledInstructions(
   instructions: ExternalInstruction[],
   factPreservation: { ok: boolean } | null | undefined,
   now: string,
+  citationPreservation?: { ok: boolean } | null,
 ): { instructions: ExternalInstruction[]; changed: boolean } {
-  if (factPreservation === null || factPreservation === undefined || factPreservation.ok) {
+  if (factPreservation === null || factPreservation === undefined || citationPreservation === null || citationPreservation === undefined) {
     return { instructions, changed: false };
   }
+  const failed = factPreservation?.ok === false || citationPreservation?.ok === false;
   let changed = false;
   const next = instructions.map((instruction): ExternalInstruction => {
     if (instruction.status !== "handled") {
       return instruction;
     }
+    const verification = {
+      ...(instruction.resolutionTrace?.verification ?? {}),
+      ...(factPreservation !== null && factPreservation !== undefined ? { fact: factPreservation.ok } : {}),
+      ...(citationPreservation !== null && citationPreservation !== undefined ? { citation: citationPreservation.ok } : {}),
+    };
+    if (!failed && instruction.resolutionTrace !== undefined &&
+      instruction.resolutionTrace.verification.fact === verification.fact &&
+      instruction.resolutionTrace.verification.citation === verification.citation) return instruction;
     changed = true;
+    if (!failed) {
+      return {
+        ...instruction,
+        resolutionTrace: {
+          ...(instruction.resolutionTrace ?? {
+            commentId: instruction.instructionId, planItemIds: [], actionType: "modify" as const,
+            evidenceIds: [], patchIds: [], status: "handled" as const, resolutionSummary: "Revision passed preservation checks.",
+          }),
+          verification,
+          status: "handled",
+          remainingIssue: undefined,
+        },
+        updatedAt: now,
+      };
+    }
     return {
       ...instruction,
       status: "unresolved",
-      statusNote: "执行该意见的修订未通过事实保持检查，已回到待处理（恢复轮将重新执行）",
+      ...(instruction.resolutionTrace !== undefined ? { resolutionTrace: {
+        ...instruction.resolutionTrace,
+        verification,
+        status: "unresolved",
+        remainingIssue: factPreservation?.ok === false ? "Fact preservation failed." : "Citation preservation failed.",
+      } } : {}),
+      statusNote: factPreservation.ok === false
+        ? "执行该意见的修订未通过事实保持检查，已回到待处理（恢复轮将重新执行）"
+        : "执行该意见的修订未通过引用保持检查，已回到待处理（恢复轮将重新执行）",
       updatedAt: now,
     };
   });

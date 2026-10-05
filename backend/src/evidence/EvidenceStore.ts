@@ -75,6 +75,7 @@ export interface EvidenceRecord {
   verificationMethod?: string;
   supportStrength?: SupportStrength;
   verificationLevel?: VerificationLevel;
+  protocolScope?: { protocolId: string; status: "current" | "historical" | "superseded" };
   /** 辅助字段（0-1）；不得成为 Quality Gate 的核心判定依据 */
   confidence?: number;
   relatedSections?: string[];
@@ -94,6 +95,7 @@ export interface EvidenceAppendInput {
   verificationMethod?: string;
   supportStrength?: SupportStrength;
   verificationLevel?: VerificationLevel;
+  protocolScope?: { protocolId: string; status: "current" | "historical" | "superseded" };
   confidence?: number;
   relatedSections?: string[];
 }
@@ -218,6 +220,9 @@ export class EvidenceStore {
       ...(input.verificationLevel !== undefined
         ? { verificationLevel: requireEnum(input.verificationLevel, VERIFICATION_LEVELS, "verificationLevel") }
         : {}),
+      ...(input.protocolScope !== undefined && input.protocolScope.protocolId.trim() !== ""
+        ? { protocolScope: { protocolId: input.protocolScope.protocolId.trim(), status: input.protocolScope.status } }
+        : {}),
       ...(typeof input.confidence === "number" && input.confidence >= 0 && input.confidence <= 1
         ? { confidence: input.confidence }
         : {}),
@@ -310,6 +315,7 @@ export class EvidenceStore {
       verificationMethod?: string;
       verificationLevel?: VerificationLevel;
       supportStrength?: SupportStrength;
+      protocolScope?: { protocolId: string; status: "current" | "historical" | "superseded" };
     },
   ): Promise<EvidenceRecord> {
     return this.enqueue(projectId, async () => {
@@ -344,6 +350,9 @@ export class EvidenceStore {
           : {}),
         ...(patch.supportStrength !== undefined
           ? { supportStrength: requireEnum(patch.supportStrength, SUPPORT_STRENGTHS, "supportStrength") }
+          : {}),
+        ...(patch.protocolScope !== undefined && patch.protocolScope.protocolId.trim() !== ""
+          ? { protocolScope: { protocolId: patch.protocolScope.protocolId.trim(), status: patch.protocolScope.status } }
           : {}),
         updatedAt: this.now().toISOString(),
       };

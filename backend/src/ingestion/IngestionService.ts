@@ -27,6 +27,7 @@
 
 import { BusinessError, EvidenceValueMismatchError, NotFoundError } from "../errors.js";
 import type { EvidenceStore } from "../evidence/EvidenceStore.js";
+import { inferExperimentProtocolScope } from "../evidence/protocolScope.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { SourceItem, SourceStore } from "../sources/SourceStore.js";
 import { CsvParser } from "./csvTabular.js";
@@ -345,6 +346,7 @@ export class IngestionService {
         `claim 未包含记录值（${describeAddress(input)} ${cell.header}=${cell.value}；claim 应提到该值）`,
       );
     }
+    const protocolScope = inferExperimentProtocolScope(item.originalName ?? item.fileName ?? "");
     const created = await this.evidence.append(
       projectId,
       {
@@ -365,6 +367,7 @@ export class IngestionService {
         verificationStatus: "unverified",
         verificationMethod: "user-confirmed:experiment-data",
         verificationLevel: "user_confirmed",
+        ...(protocolScope !== undefined ? { protocolScope } : {}),
       },
       createdBy,
     );

@@ -338,6 +338,7 @@ export interface EvidenceRecordView {
   verificationMethod?: string;
   supportStrength?: EvidenceSupportStrength;
   verificationLevel?: EvidenceVerificationLevel;
+  protocolScope?: { protocolId: string; status: "current" | "historical" | "superseded" };
   /** 辅助字段（0-1）；不参与 Quality Gate 判定，仅参考展示 */
   confidence?: number;
   relatedSections?: string[];
@@ -858,6 +859,18 @@ export interface ExternalInstructionView {
   status: ExternalInstructionStatus;
   statusNote?: string;
   conflictBasis?: string;
+  resolutionTrace?: {
+    commentId: string;
+    planItemIds: string[];
+    actionType: RevisionActionType;
+    target?: string;
+    evidenceIds: string[];
+    patchIds: string[];
+    verification: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
+    status: ExternalInstructionStatus;
+    resolutionSummary: string;
+    remainingIssue?: string;
+  };
   createdAt: string;
   updatedAt: string;
 }
@@ -878,6 +891,7 @@ export type RevisionPlanItemKind =
   | "gate_blocker";
 
 export type RevisionPlanItemPriority = "mandatory" | "high" | "medium" | "low";
+export type RevisionActionType = "modify" | "noop" | "author_decision_required" | "evidence_only";
 
 export interface RevisionPlanItemView {
   id: string;
@@ -888,6 +902,8 @@ export interface RevisionPlanItemView {
   instruction: string;
   expectedOutcome: string;
   status: "planned" | "skipped";
+  actionType?: RevisionActionType;
+  logicalSection?: string;
   needsEvidence?: boolean;
   note?: string;
   source?: "external" | "internal";

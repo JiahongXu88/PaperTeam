@@ -69,6 +69,9 @@ export type RevisionPlanItemStatus =
  */
 export type RevisionReason = "quality" | "style_polish";
 
+/** Execution intent is machine-readable; prose containing NO-OP has no control effect. */
+export type RevisionActionType = "modify" | "noop" | "author_decision_required" | "evidence_only";
+
 /**
  * 条目优先级。mandatory（M5.7）只用于外部 / 用户修改意见：最高**业务**
  * 修改优先级（排序与派发都先于内部审稿意见），但不提升任何安全 Gate
@@ -91,6 +94,9 @@ export interface RevisionPlanItem {
   instruction: string;
   expectedOutcome: string;
   status: RevisionPlanItemStatus;
+  actionType?: RevisionActionType;
+  logicalSection?: string;
+  protocolRequirement?: { protocolId: string };
   /** 证据不足类问题：修订时只能弱化 / 删除，不允许编造 */
   needsEvidence?: boolean;
   /**
@@ -177,6 +183,11 @@ export interface RevisionPlan {
   items: RevisionPlanItem[];
 }
 
+/** NO-OP is a routing decision: verified no-op items never become Writer directives. */
+export function dispatchableRevisionItems(items: readonly RevisionPlanItem[]): RevisionPlanItem[] {
+  return items.filter((item) => item.status === "planned" && item.actionType !== "noop" && item.actionType !== "author_decision_required");
+}
+
 /** ReviewIssue 的确定性指纹（跨轮跟踪同一问题的稳定 id） */
 export function findingFingerprint(issue: Pick<ReviewIssue, "category" | "section" | "description">): string {
   const hash = createHash("sha256")
@@ -258,6 +269,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         instruction.status === "already_satisfied"
           ? "skipped"
           : "planned",
+      actionType: instruction.status === "already_satisfied" ? "noop" : "modify",
       source: "external",
       riskLevel: "high",
       ...(instruction.reviewerLabel !== undefined ? { reviewerLabel: instruction.reviewerLabel } : {}),

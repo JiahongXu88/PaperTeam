@@ -203,7 +203,7 @@ describe("M10.3 外部意见 already_satisfied 终态", () => {
       status: "handled",
     };
     const failed = { ok: false };
-    const reverted = reverifyHandledInstructions([satisfied, handled], failed, "t");
+    const reverted = reverifyHandledInstructions([satisfied, handled], failed, "t", { ok: true });
     expect(reverted.instructions.find((entry) => entry.instructionId === satisfied.instructionId)?.status).toBe(
       "already_satisfied",
     );

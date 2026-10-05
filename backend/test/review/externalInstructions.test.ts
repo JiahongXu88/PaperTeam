@@ -163,6 +163,11 @@ describe("applyDispatchOutcome（确定性状态机）", () => {
       NOW,
     );
     expect(instructions[0]!.status).toBe("handled");
+    expect(instructions[0]!.resolutionTrace).toMatchObject({
+      commentId: instructions[0]!.instructionId,
+      status: "handled",
+      actionType: "modify",
+    });
   });
 
   it("applied 但无文件变化 → unresolved（不采信自称已处理）", () => {
@@ -173,6 +178,11 @@ describe("applyDispatchOutcome（确定性状态机）", () => {
     );
     expect(instructions[0]!.status).toBe("unresolved");
     expect(instructions[0]!.statusNote).toContain("没有实际变化");
+    expect(instructions[0]!.resolutionTrace).toMatchObject({
+      commentId: instructions[0]!.instructionId,
+      status: "unresolved",
+      remainingIssue: "Coverage or patch verification did not pass.",
+    });
   });
 
   it("conflict → status=conflict + 保留依据（即使其他章节 applied）", () => {
@@ -247,7 +257,7 @@ describe("reverifyHandledInstructions（gate 复核自愈）", () => {
   });
 
   function applyOrKeep(target: ExternalInstruction, fact: { ok: boolean } | null): ExternalInstruction {
-    return reverifyHandledInstructions([target], fact, NOW).instructions[0]!;
+    return reverifyHandledInstructions([target], fact, NOW, fact === null ? null : { ok: true }).instructions[0]!;
   }
 });
 
@@ -297,6 +307,19 @@ describe("buildRevisionPlan 的 external 条目", () => {
     expect(item!.status).toBe("skipped");
     expect(item!.priority).toBe("mandatory");
     expect(item!.note).toContain("IDS = 24");
+    expect(plan.summary.planned).toBe(0);
+  });
+
+  it("已经登记为已满足的意见使用 typed noop，且不会进入 planned 派发", () => {
+    const satisfied = instruction({ status: "already_satisfied", statusNote: "baseline section and verified evidence checked" });
+    const plan = buildRevisionPlan({
+      projectId: "p-1",
+      sourceRevision: 2,
+      reviewRound: 2,
+      summary,
+      externalInstructions: [satisfied],
+    });
+    expect(plan.items[0]).toMatchObject({ actionType: "noop", status: "skipped" });
     expect(plan.summary.planned).toBe(0);
   });
 

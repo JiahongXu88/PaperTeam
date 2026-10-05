@@ -139,6 +139,7 @@ export interface FixtureOptions {
   judge?: JudgeScript;
   /** 不注入 judge runtime（Stage 3 不可用形态） */
   withoutJudge?: boolean;
+  sourceFileName?: string;
 }
 
 export async function newGroundingFixture(
@@ -157,7 +158,7 @@ export async function newGroundingFixture(
 
   // 文献 S001 入库（带完整 metadata 供 Stage 2 比对）
   await sources.add(projectId, {
-    fileName: "survey.txt",
+    fileName: options.sourceFileName ?? "survey.txt",
     content: Buffer.from(`# Introduction\n\n${CHUNK_TEXT}\n`, "utf8"),
     metadata: {
       title: SOURCE_TITLE,

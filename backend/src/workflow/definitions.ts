@@ -153,7 +153,9 @@ import {
   type ClaimRepairDirective,
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
-import { buildRevisionPlan, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
+import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
+import { applyRevisionSpan, checkRevisionScope, hasNewContentAfterDocumentEnd, locateLatexSections, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import {
   applyRevisionItemTransitions,
   findStuckAppliedItems,
@@ -168,6 +170,7 @@ import {
   applyDispatchOutcome,
   type ExternalDirectiveDispatch,
   type ExternalDispatchResult,
+  type ExternalInstruction,
   type ExternalInstructionStore,
   type ExternalOutcomeReport,
   reverifyHandledInstructions,
@@ -901,6 +904,7 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         externalInstructionList,
         gateArtifact?.factPreservation ?? null,
         new Date().toISOString(),
+        gateArtifact?.citationPreservation ?? null,
       );
       if (reverified.changed) {
         await services.externalInstructions.save(ctx.projectId, reverified.instructions);
@@ -1498,6 +1502,14 @@ function revisionReviseStage(
       if (targets.length === 0) {
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有任何可修订的章节文件");
       }
+      const boundedTargets = targets.flatMap((target) => target.logicalSpan !== undefined ? [target.logicalSpan] : []);
+      for (let index = 0; index < boundedTargets.length; index += 1) {
+        for (let other = index + 1; other < boundedTargets.length; other += 1) {
+          if (revisionSpansOverlap(boundedTargets[index]!, boundedTargets[other]!)) {
+            throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_PATCH_OVERLAP");
+          }
+        }
+      }
       // M10.4.4 派发覆盖诊断（确定性、只读）：进入派发的 finding 有多少真正
       // 命中修订目标——unmatched 条目不会进入任何 Writer prompt（永久滞留
       // planned，需复审 / HITL 兜底）；multiTarget = 命中多个目标（M9.7.6
@@ -1577,7 +1589,9 @@ function revisionReviseStage(
         const targetExternals = externalDirectives.filter((directive) =>
           directive.section !== undefined
             ? sectionMatches(directive.section, target)
-            : true,
+            : target.logicalSpan !== undefined
+              ? matchedItems.some((item) => item.instructionId === directive.instructionId)
+              : true,
         );
         if (
           issues.length === 0 &&
@@ -1592,18 +1606,33 @@ function revisionReviseStage(
         const sectionMeta = outline?.sections.find((section) => section.id === target.key);
         const isAbstractTarget = target.key === "abstract";
         // M10.3：单文件项目的 main.tex 目标 = 整文件修订（输出完整文件）
-        const isWholeFileTarget = singleFile && target.relativePath === "main.tex";
+        const isWholeFileTarget = singleFile && target.relativePath === "main.tex" && target.logicalSpan === undefined;
+        const targetFilePath = join(services.projects.manuscriptDir(ctx.projectId), target.relativePath);
+        const fileBefore = target.logicalSpan !== undefined ? await readFile(targetFilePath, "utf8") : undefined;
+        const resolvedSpan = target.logicalSpan !== undefined
+          ? locateLatexSections(target.relativePath, fileBefore ?? "").find((span) => span.logicalSection === target.logicalSpan?.logicalSection)
+          : undefined;
+        if (target.logicalSpan !== undefined && resolvedSpan === undefined) {
+          throw new BusinessError("STAGE_CONTRACT_VIOLATION", `Revision target no longer resolves: ${target.logicalSpan.logicalSection}`);
+        }
+        const requiredProtocols = new Set(matchedItems.flatMap((item) => item.protocolRequirement ? [item.protocolRequirement.protocolId] : []));
+        if (requiredProtocols.size > 1) {
+          throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_PROTOCOL_SCOPE_CONFLICT");
+        }
+        const targetEvidence = requiredProtocols.size === 1
+          ? filterEvidenceForProtocol(evidence, { protocolId: [...requiredProtocols][0]! })
+          : evidence;
         const result = await services.writer.reviseSection({
           projectId: ctx.projectId,
           section: {
             id: target.key,
             file: target.relativePath.replaceAll("\\", "/").split("/").pop() ?? target.key,
-            title: isAbstractTarget ? "摘要" : (sectionMeta?.title ?? target.key),
+            title: isAbstractTarget ? "摘要" : (sectionMeta?.title ?? resolvedSpan?.heading ?? target.key),
           },
           outline: outline ?? { title: project.title, sections: [] },
-          currentLatex: target.currentLatex,
+          currentLatex: resolvedSpan?.content ?? target.currentLatex,
           issues,
-          evidence,
+          evidence: targetEvidence,
           bibliography,
           ...(isWholeFileTarget
             ? {
@@ -1638,7 +1667,15 @@ function revisionReviseStage(
           }
         }
         for (const report of result.externalOutcomes ?? []) {
-          externalOutcomeReports.push({ ...report, targetChanged });
+          externalOutcomeReports.push({
+            ...report,
+            targetChanged,
+            target: `${target.relativePath}#${target.key}`,
+            planItemIds: matchedItems.map((item) => item.id),
+            evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+            patchIds: target.logicalSpan !== undefined ? [`patch:${target.logicalSpan.originalHash.slice(0, 12)}`] : [],
+            verification: target.logicalSpan !== undefined ? { scope: true } : {},
+          });
         }
         if (isAbstractTarget) {
           // 摘要修订写回 outline.abstract（独立可写载体）；后续 writeMainTex 重组时生效
@@ -1647,9 +1684,27 @@ function revisionReviseStage(
             await services.manuscript.saveOutline(ctx.projectId, outline);
           }
         } else {
+          let output = result.latex.trim() + "\n";
+          if (resolvedSpan !== undefined && fileBefore !== undefined) {
+            const latestFile = await readFile(targetFilePath, "utf8");
+            const latestSpan = locateLatexSections(target.relativePath, latestFile)
+              .find((span) => span.logicalSection === resolvedSpan.logicalSection);
+            if (latestSpan === undefined || latestSpan.originalHash !== resolvedSpan.originalHash) {
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_TARGET_STALE");
+            }
+            const candidate = applyRevisionSpan(latestFile, latestSpan, result.latex.trim());
+            const scope = checkRevisionScope(latestFile, candidate, latestSpan);
+            if (!scope.allowed) {
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", scope.reason ?? "REVISION_SCOPE_VIOLATION");
+            }
+            if (hasNewContentAfterDocumentEnd(latestFile, candidate)) {
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_SOURCE_HYGIENE_VIOLATION");
+            }
+            output = candidate;
+          }
           await writeFile(
-            join(services.projects.manuscriptDir(ctx.projectId), target.relativePath),
-            result.latex.trim() + "\n",
+            targetFilePath,
+            output,
             "utf8",
           );
         }
@@ -4587,6 +4642,16 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         // 计划条目必须指向真实存在的章节文件（PDF 重建项目为 sections/secNN.tex）；
         // 单文件 LaTeX 项目 sections 为空 → 条目使用 main.tex
         sectionFiles: files.sections.map((file) => file.relativePath).slice(0, 20),
+        ...(files.sections.length === 0 && files.mainTex !== null
+          ? {
+              logicalTargets: locateLatexSections("main.tex", files.mainTex.content).map((span) => ({
+                file: span.file,
+                logicalSection: span.logicalSection,
+                heading: span.heading,
+                ...(span.label !== undefined ? { label: span.label } : {}),
+              })).slice(0, 80),
+            }
+          : {}),
         ...(baselineDigest !== undefined ? { baselineDigest } : {}),
         ...(evidenceDigest !== undefined ? { evidenceDigest } : {}),
         ...(coverageDigest !== undefined ? { coverageDigest } : {}),
@@ -4594,6 +4659,9 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         ...(authorGoal !== undefined ? { authorGoal } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
         validEvidenceIds: evidenceIds.map((record) => record.id),
+        validEvidenceProtocolScopes: Object.fromEntries(
+          evidenceIds.flatMap((record) => record.protocolScope !== undefined ? [[record.id, record.protocolScope]] : []),
+        ),
         validInstructionIds: instructions.map((instruction) => instruction.instructionId),
         externalInstructions: instructions.map((instruction) => ({
           instructionId: instruction.instructionId,
@@ -6810,6 +6878,7 @@ export interface RevisionTarget {
   key: string;
   relativePath: string;
   currentLatex: string;
+  logicalSpan?: RevisionSpan;
 }
 
 /** shared loop：以落盘的确定性修订计划为准（计划缺失时回退执行期派生） */
@@ -6828,9 +6897,7 @@ async function collectPlanDirectives(
   }
   const directives: RevisionDirective[] = [];
   for (const item of plan.items) {
-    if (item.status !== "planned") {
-      continue; // minor / gate 阻止项 / 已终态条目：记录但不派发（D-0026 收敛纪律）
-    }
+    if (!dispatchableRevisionItems([item]).length) continue;
     if (item.kind === "external_instruction") {
       // M5.7：外部意见经独立通道派发（collectExternalDirectives，携带执行报告
       // 协议与状态回写）；计划里的 external 条目是审计快照，不重复派发
@@ -6838,7 +6905,7 @@ async function collectPlanDirectives(
     }
     const issue = revisionPlanItemToIssue(item);
     directives.push({
-      match: (target: RevisionTarget) => (sectionMatches(item.section, target) ? issue : null),
+      match: (target: RevisionTarget) => (revisionItemMatchesTarget(item, target) ? issue : null),
       item,
     });
   }
@@ -6904,6 +6971,33 @@ function revisionPlanItemToIssue(item: RevisionPlanItem): ReviewIssue {
   };
 }
 
+function recordUnresolvedPlanOutcome(
+  instructions: ExternalInstruction[],
+  item: { instructionId?: string; relatedEvidenceIds?: string[]; logicalSection?: string },
+  index: number,
+  reason: string,
+  summary: string,
+): void {
+  if (item.instructionId === undefined) return;
+  const instruction = instructions.find((candidate) => candidate.instructionId === item.instructionId);
+  if (instruction === undefined || instruction.status === "handled" || instruction.status === "conflict") return;
+  instruction.status = "unresolved";
+  instruction.statusNote = `${reason}: ${summary}`;
+  instruction.resolutionTrace = {
+    commentId: instruction.instructionId,
+    planItemIds: [`improvement:${index + 1}`],
+    actionType: "author_decision_required",
+    ...(item.logicalSection !== undefined ? { target: `main.tex#${item.logicalSection}` } : {}),
+    evidenceIds: item.relatedEvidenceIds ?? [],
+    patchIds: [],
+    verification: { scope: false, evidence: false },
+    status: "unresolved",
+    resolutionSummary: summary,
+    remainingIssue: reason,
+  };
+  instruction.updatedAt = new Date().toISOString();
+}
+
 /** shared loop：最新 review 汇总的问题 + 引用核验问题；apply：改进计划条目 */
 async function collectRevisionDirectives(
   services: WorkflowServices,
@@ -6922,6 +7016,10 @@ async function collectRevisionDirectives(
           items?: {
             section: string;
             action: string;
+            actionType?: "modify" | "noop" | "author_decision_required";
+            logicalSection?: string;
+            coverageQuote?: string;
+            protocolId?: string;
             rationale?: string;
             priority?: string;
             instructionId?: string;
@@ -6929,9 +7027,72 @@ async function collectRevisionDirectives(
           }[];
         };
       };
-      return (plan.plan?.items ?? []).map((item, index) => ({
-        match: (target: RevisionTarget) =>
-          sectionMatches(item.section, target) ? planItemToIssue(item) : null,
+      const items = plan.plan?.items ?? [];
+      const evidence = await services.evidence.list(projectId);
+      const evidenceById = new Map(evidence.map((record) => [record.id, record]));
+      const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+      const source = files.mainTex?.content ?? "";
+      const spans = locateLatexSections("main.tex", source);
+      const instructions = await services.externalInstructions.load(projectId);
+      let instructionsChanged = false;
+      const actionable = items.filter((item) => {
+        if (item.actionType === "author_decision_required") {
+          recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), "AUTHOR_DECISION_REQUIRED", "This plan item requires an author decision.");
+          instructionsChanged = true;
+          return false;
+        }
+        if (item.actionType !== "noop") return true;
+        const evidenceIds = item.relatedEvidenceIds ?? [];
+        const coverage = verifyNoopCoverage({
+          logicalSection: item.logicalSection,
+          coverageQuote: item.coverageQuote,
+          evidenceIds,
+          ...(item.protocolId !== undefined ? { protocolId: item.protocolId } : {}),
+        }, spans, evidenceById);
+        if (!coverage.verified) {
+          recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), coverage.reason ?? "NOOP_COVERAGE_FAILED", "NO-OP coverage verification failed; no Writer call was made.");
+          instructionsChanged = true;
+          return false;
+        }
+        if (item.instructionId !== undefined) {
+          const index = instructions.findIndex((instruction) => instruction.instructionId === item.instructionId);
+          const instruction = instructions[index];
+          if (instruction !== undefined && instruction.status !== "handled" && instruction.status !== "conflict") {
+            instructions[index] = {
+              ...instruction,
+              status: "already_satisfied",
+              statusNote: `确定性 baseline coverage 通过：${item.logicalSection}; 原文引文与 evidence 核验通过。`,
+              resolutionTrace: {
+                commentId: instruction.instructionId,
+                planItemIds: [`improvement:${items.indexOf(item) + 1}`],
+                actionType: "noop",
+                target: `main.tex#${item.logicalSection}`,
+                evidenceIds,
+                patchIds: [],
+                verification: { scope: true, evidence: true },
+                status: "already_satisfied",
+                resolutionSummary: "Baseline already contains the requested content, verified quote, and evidence.",
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            instructionsChanged = true;
+          }
+        }
+        return false;
+      });
+      if (instructionsChanged) await services.externalInstructions.save(projectId, instructions);
+      return actionable.map((item, index) => ({
+        match: (target: RevisionTarget) => {
+          const matches =
+            (item.logicalSection !== undefined && target.logicalSpan?.logicalSection === item.logicalSection) ||
+            (item.logicalSection !== undefined && target.logicalSpan?.heading.toLowerCase() === item.logicalSection.toLowerCase()) ||
+            revisionItemMatchesTarget({
+            id: `improvement:${items.indexOf(item) + 1}`, kind: "review_finding", priority: item.priority === "high" ? "high" : "medium",
+            section: item.section, problem: item.rationale ?? item.action, instruction: item.action, expectedOutcome: item.action,
+            status: "planned", ...(item.instructionId ? { instructionId: item.instructionId } : {}),
+          }, target);
+          return matches ? planItemToIssue(item) : null;
+        },
         // M10.3：改进计划条目以伪 RevisionPlanItem 形态携带证据与意见关联——
         // Writer 修订 prompt 据此注入「修改前依据」（itemEvidence 池），Fact
         // Preservation 的授权口径不变（improvementPlanItems 通道）
@@ -6946,11 +7107,14 @@ async function collectRevisionDirectives(
                 : item.priority === "low"
                   ? ("low" as const)
                   : ("medium" as const),
-          section: item.section,
+          section: item.logicalSection ?? item.section,
           problem: item.rationale ?? item.action.slice(0, 200),
           instruction: item.action,
           expectedOutcome: item.action.slice(0, 160),
           status: "planned" as const,
+          actionType: item.actionType ?? "modify",
+          ...(item.protocolId !== undefined ? { protocolRequirement: { protocolId: item.protocolId } } : {}),
+          ...(item.logicalSection !== undefined ? { logicalSection: item.logicalSection } : {}),
           ...(item.instructionId !== undefined ? { instructionId: item.instructionId } : {}),
           ...(item.instructionId !== undefined ? { source: "external" as const } : {}),
           ...(item.relatedEvidenceIds !== undefined && item.relatedEvidenceIds.length > 0
@@ -7139,6 +7303,9 @@ export function sectionMatches(sectionRef: string, target: RevisionTarget): bool
   const path = target.relativePath.replaceAll("\\", "/").toLowerCase();
   const fileName = path.split("/").pop() ?? path;
   const stem = fileName.replace(/\.tex$/, "");
+  if (target.logicalSpan !== undefined && (ref === path || ref === fileName || ref === stem)) {
+    return false; // file identity is not a logical subsection authorization
+  }
   if (
     ref === path ||
     ref === fileName ||
@@ -7152,6 +7319,14 @@ export function sectionMatches(sectionRef: string, target: RevisionTarget): bool
     return true;
   }
   return sectionRefNamesHeading(sectionRef, headingsOfContent(target, target.currentLatex));
+}
+
+function revisionItemMatchesTarget(item: RevisionPlanItem, target: RevisionTarget): boolean {
+  if (sectionMatches(item.section, target)) return true;
+  if (target.logicalSpan === undefined) return false;
+  const text = `${item.problem}\n${item.instruction}`.toLocaleLowerCase();
+  const heading = target.logicalSpan.heading.toLocaleLowerCase().trim();
+  return heading.length >= 5 && text.includes(heading);
 }
 
 /** 修订目标列表：有大纲按大纲；否则用全部非 main 的 tex；指令引用的额外文件一并纳入 */
@@ -7188,9 +7363,24 @@ function listRevisionTargets(
       add(file.relativePath, file.relativePath, file.content);
     }
   } else if (files.mainTex !== null) {
-    // M10.3：单文件 LaTeX 导入项目（无 \input / 无大纲）——main.tex 是用户
-    // 全部内容，作为整文件修订目标（writeMainTex 不会运行，不存在重组覆盖）
-    targets.push({ key: "main.tex", relativePath: "main.tex", currentLatex: files.mainTex.content });
+    // M11.4.1: main.tex is a physical file, not a logical revision scope.
+    const spans = locateLatexSections("main.tex", files.mainTex.content);
+    if (spans.length > 0) {
+      for (const span of spans) {
+        const target: RevisionTarget = {
+          key: span.logicalSection,
+          relativePath: "main.tex",
+          currentLatex: span.content,
+          logicalSpan: span,
+        };
+        if (directives.some((directive) => directive.match(target) !== null)) targets.push(target);
+      }
+    } else {
+      // No heading means there is no safe patch boundary; fail closed unless an explicit
+      // whole-file build repair is the only directive.
+      const wholeFileRepair = directives.some((directive) => directive.item?.kind === "build_error");
+      if (wholeFileRepair) targets.push({ key: "main.tex", relativePath: "main.tex", currentLatex: files.mainTex.content });
+    }
   }
   // 指令引用了不在目标中的现有文件（如导入项目的自定义路径）→ 追加。
   // 有大纲时根 main.tex 是 writeMainTex 的确定性组装产物（含 outline.abstract），

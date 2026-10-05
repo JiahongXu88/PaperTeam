@@ -2038,6 +2038,10 @@ async function handleProjectResourceRoutes(
         // 核验字段（人工登记时已知的核验结论）走枚举校验
         const source = body["source"];
         const location = body["location"];
+        const protocolScope = body["protocolScope"];
+        if (protocolScope !== undefined && (!isRecord(protocolScope) || typeof protocolScope["protocolId"] !== "string" || typeof protocolScope["status"] !== "string")) {
+          throw new BusinessError("INVALID_REQUEST", "protocolScope 必须包含 protocolId 和 status");
+        }
         const record = await stack.evidence.append(
           projectId,
           {
@@ -2046,6 +2050,10 @@ async function handleProjectResourceRoutes(
             ...(typeof body["quote"] === "string" ? { quote: body["quote"] } : {}),
             ...(isRecord(source) ? { source: source as EvidenceSourceRef } : {}),
             ...(isRecord(location) ? { location: location as EvidenceLocation } : {}),
+            ...(isRecord(protocolScope) ? { protocolScope: {
+              protocolId: readStringField(protocolScope, "protocolId") ?? "",
+              status: requireEnumField(protocolScope["status"], ["current", "historical", "superseded"] as const, "protocolScope.status"),
+            } } : {}),
             ...(typeof body["verificationStatus"] === "string"
               ? {
                   verificationStatus: requireEnumField(
@@ -2154,6 +2162,10 @@ async function handleProjectResourceRoutes(
       if (status === undefined) {
         throw new BusinessError("INVALID_REQUEST", "请求体必须包含 verificationStatus");
       }
+      const protocolScope = body["protocolScope"];
+      if (protocolScope !== undefined && (!isRecord(protocolScope) || typeof protocolScope["protocolId"] !== "string" || typeof protocolScope["status"] !== "string")) {
+        throw new BusinessError("INVALID_REQUEST", "protocolScope 必须包含 protocolId 和 status");
+      }
       const record = await stack.evidence.updateVerification(projectId, evidenceId, {
         verificationStatus: requireEnumField(status, VERIFICATION_STATUSES, "verificationStatus"),
         ...(typeof body["verificationMethod"] === "string"
@@ -2165,6 +2177,10 @@ async function handleProjectResourceRoutes(
         ...(typeof body["supportStrength"] === "string"
           ? { supportStrength: requireEnumField(body["supportStrength"], SUPPORT_STRENGTHS, "supportStrength") }
           : {}),
+        ...(isRecord(protocolScope) ? { protocolScope: {
+          protocolId: readStringField(protocolScope, "protocolId") ?? "",
+          status: requireEnumField(protocolScope["status"], ["current", "historical", "superseded"] as const, "protocolScope.status"),
+        } } : {}),
       });
       sendJson(res, 200, { evidence: record });
       return true;
