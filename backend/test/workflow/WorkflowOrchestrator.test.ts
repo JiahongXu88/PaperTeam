@@ -253,6 +253,34 @@ describe("WorkflowOrchestrator：run 创建与状态转换", () => {
 });
 
 describe("WorkflowOrchestrator：StageContract 与重试", () => {
+  it("Planner structured repair exhausted 后不触发整 stage 重试", async () => {
+    let attempts = 0;
+    const definition: WorkflowDefinition = {
+      ...linearDefinition([]),
+      stages: [
+        stepStage("plan.improvement", {
+          maxAttempts: 2,
+          retryable: ["contract_violation"],
+          execute: () => {
+            attempts += 1;
+            throw new BusinessError("MODEL_REPAIR_EXHAUSTED", "structured repair budget exhausted");
+          },
+        }),
+      ],
+      plan: (state) =>
+        "plan.improvement" in state.stageResults
+          ? { kind: "complete", label: "draft", summary: {} }
+          : { kind: "stage", stageId: "plan.improvement" },
+    };
+    const harness = await createHarness(() => definition);
+    const run = await harness.orchestrator.createRun(harness.projectId, "idea_to_paper");
+    const finished = await waitForStatus(harness.orchestrator, run.runId, ["failed"]);
+
+    expect(attempts).toBe(1);
+    expect(finished.stageHistory).toHaveLength(1);
+    expect(finished.stageHistory[0]?.error?.code).toBe("MODEL_REPAIR_EXHAUSTED");
+  });
+
   it("DoD 违规：contract_violation 失败并按 maxAttempts 重试后 run 失败", async () => {
     let attempts = 0;
     const definition: WorkflowDefinition = {

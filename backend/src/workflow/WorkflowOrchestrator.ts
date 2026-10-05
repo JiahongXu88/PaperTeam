@@ -779,7 +779,8 @@ export class WorkflowOrchestrator {
 
       const retryable = stage.retryable.includes(outcome.category) &&
         outcome.code !== "DIRECT_WORKSPACE_MUTATION" &&
-        outcome.code !== "REVISION_WORKSPACE_RECOVERY_FAILED";
+        outcome.code !== "REVISION_WORKSPACE_RECOVERY_FAILED" &&
+        outcome.code !== "MODEL_REPAIR_EXHAUSTED";
       if (retryable && attempt < stage.maxAttempts) {
         this.log(`[workflow ${state.runId}] stage ${stage.id} 第 ${attempt} 次失败，准备重试`);
         if (this.retryDelayMs > 0) {
