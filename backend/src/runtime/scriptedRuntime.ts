@@ -549,12 +549,14 @@ export const IMPROVEMENT_PLAN_JSON = JSON.stringify({
   plan: [
     {
       section: "sections/experiments.tex",
+      actionType: "modify",
       action: "补充统计显著性检验并弱化过强结论",
       rationale: "审稿指出缺少显著性检验",
       priority: "high",
     },
     {
       section: "sections/introduction.tex",
+      actionType: "modify",
       action: "增加最新基线的相关工作讨论",
       rationale: "相关工作覆盖不足",
       priority: "medium",
@@ -1002,6 +1004,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
             ? JSON.stringify({
                 plan: sectionFiles.slice(0, 2).map((section, index) => ({
                   section,
+                  actionType: "modify",
                   action: index === 0 ? "补充关键论证并收敛过强表述" : "补全与相关工作的对比讨论",
                   rationale: "基于审稿发现与目标差距",
                   priority: index === 0 ? "high" : "medium",
@@ -1012,6 +1015,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                   plan: [
                     {
                       section: "main.tex",
+                      actionType: "modify",
                       action: "补充关键论证并收敛过强表述",
                       rationale: "基于审稿发现与目标差距",
                       priority: "high",

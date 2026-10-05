@@ -6980,19 +6980,29 @@ function recordUnresolvedPlanOutcome(
 ): void {
   if (item.instructionId === undefined) return;
   const instruction = instructions.find((candidate) => candidate.instructionId === item.instructionId);
-  if (instruction === undefined || instruction.status === "handled" || instruction.status === "conflict" || instruction.status === "already_satisfied") return;
+  if (instruction === undefined || instruction.status === "handled" || instruction.status === "conflict") return;
+  // A same-comment NO-OP may cover one subrequirement while another plan item
+  // still requires an author decision. Preserve both item traces and keep the
+  // composite comment open. Historical imported already_satisfied records
+  // (empty planItemIds) remain terminal.
+  if (instruction.status === "already_satisfied" && (instruction.resolutionTrace?.planItemIds.length ?? 0) === 0) return;
+  const priorTrace = instruction.resolutionTrace;
   instruction.status = "unresolved";
   instruction.statusNote = `${reason}: ${summary}`;
   instruction.resolutionTrace = {
     commentId: instruction.instructionId,
-    planItemIds: [`improvement:${index + 1}`],
+    planItemIds: [...new Set([...(priorTrace?.planItemIds ?? []), `improvement:${index + 1}`])],
     actionType: "author_decision_required",
     ...(item.logicalSection !== undefined ? { target: `main.tex#${item.logicalSection}` } : {}),
-    evidenceIds: item.relatedEvidenceIds ?? [],
-    patchIds: [],
-    verification: { scope: false, evidence: false },
+    evidenceIds: [...new Set([...(priorTrace?.evidenceIds ?? []), ...(item.relatedEvidenceIds ?? [])])],
+    patchIds: priorTrace?.patchIds ?? [],
+    verification: {
+      ...(priorTrace?.verification ?? {}),
+      scope: priorTrace?.verification.scope ?? false,
+      evidence: priorTrace?.verification.evidence ?? false,
+    },
     status: "unresolved",
-    resolutionSummary: summary,
+    resolutionSummary: [priorTrace?.resolutionSummary, summary].filter(Boolean).join("; "),
     remainingIssue: reason,
   };
   instruction.updatedAt = new Date().toISOString();
@@ -7056,6 +7066,30 @@ async function collectRevisionDirectives(
         }, spans, evidenceById);
         if (!coverage.verified) {
           recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), coverage.reason ?? "NOOP_COVERAGE_FAILED", "NO-OP coverage verification failed; no Writer call was made.");
+          instructionsChanged = true;
+          return false;
+        }
+        const unresolvedSibling = items.find((candidate) =>
+          item.instructionId !== undefined &&
+          candidate.instructionId === item.instructionId &&
+          candidate.actionType === "author_decision_required",
+        );
+        if (unresolvedSibling !== undefined) {
+          recordUnresolvedPlanOutcome(
+            instructions,
+            item,
+            items.indexOf(item),
+            "PARTIAL_COMMENT_REMAINS_OPEN",
+            `This NO-OP verified one baseline subrequirement, but another item still requires an author decision: ${unresolvedSibling.action}`,
+          );
+          const instruction = instructions.find((candidate) => candidate.instructionId === item.instructionId);
+          if (instruction?.resolutionTrace !== undefined) {
+            instruction.resolutionTrace.verification = {
+              ...instruction.resolutionTrace.verification,
+              scope: true,
+              evidence: true,
+            };
+          }
           instructionsChanged = true;
           return false;
         }
