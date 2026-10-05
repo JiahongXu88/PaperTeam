@@ -120,7 +120,7 @@ describe("Existing Paper workflow direct mutation boundary", () => {
       file: "main.tex",
       logicalTarget: expect.any(String),
       planItemIds: expect.any(Array),
-      commentIds: expect.arrayContaining([expect.any(String)]),
+      commentIds: expect.any(Array),
       beforeFileHash: createHash("sha256").update(snapshot).digest("hex"),
       ...(recoveryFails ? {} : { afterFileHash: createHash("sha256").update(snapshot).digest("hex") }),
       workspaceIntegrity: { ok: false, directMutationDetected: true, recoveryAttempted: true, recoverySucceeded: !recoveryFails },
@@ -138,11 +138,17 @@ describe("Existing Paper workflow direct mutation boundary", () => {
     const root = await mkdtemp(join(tmpdir(), "paperteam-citation-patch-"));
     const scripted = scriptedIdeaRuntime();
     let injected = 0;
+    let citationRepairs = 0;
     const runtime: AgentRuntime = {
       ...scripted.runtime,
       async runAgent(input: RunAgentInput) {
         const result = await scripted.runtime.runAgent(input);
-        if (input.contextScope === "writing/revision-proposal" && input.task.includes("Datasets") && result.output) {
+        if (input.contextScope === "writing/revision-proposal" && input.task.includes("Patch-local validation repair") && result.output) {
+          citationRepairs += 1;
+          result.output = result.output.replace(/\\cite\{missing_fake_key\}/g, "");
+        }
+        if (input.contextScope === "writing/revision-proposal" && input.task.includes("Datasets") &&
+          !input.task.includes("Patch-local validation repair") && result.output) {
           injected++;
           result.output = `${String.raw`\cite{missing_fake_key}`}\n${result.output}`;
         }
@@ -163,27 +169,154 @@ describe("Existing Paper workflow direct mutation boundary", () => {
     const finalRun = await until(stack, runId, ["failed", "completed"]);
     expect(finalRun.status, JSON.stringify(finalRun.error)).toBe("completed");
     expect(injected).toBe(1);
-    expect(await readFile(join(root, project.id, "manuscript", "main.tex"), "utf8")).toContain("missing_fake_key");
-    expect(scripted.calls.filter((call) => call.contextScope === "writing/revision-proposal")).toHaveLength(2);
-    const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", "patch-validation-rev-2.json"), "utf8")) as {
-      records: Array<{ logicalTarget: string; commentIds: string[]; citation: { ok: boolean; findingIds: string[]; violations: string[] } }>;
-      summary: { publishable: boolean; unattributedViolations: string[] };
+    expect(citationRepairs).toBeGreaterThan(0);
+    expect(await readFile(join(root, project.id, "manuscript", "main.tex"), "utf8")).not.toContain("missing_fake_key");
+    expect(scripted.calls.filter((call) => call.contextScope === "writing/revision-proposal")).toHaveLength(4);
+    const revisions = await stack.stack.revisions.load(project.id);
+    const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", `patch-validation-rev-${revisions.current}.json`), "utf8")) as {
+      records: Array<{ logicalTarget: string; commentIds: string[]; attempt?: number; overall: string; citation: { ok: boolean; findingIds: string[]; addedKeys: string[]; violations: string[] } }>;
+      attemptHistory?: Array<{ logicalTarget: string; attempt?: number; overall: string; citation: { ok: boolean } }>;
+      summary: { publishable: boolean; unattributedViolations: string[]; logicalPatchCount: number; repairSuccessCount: number };
     };
-    const bad = artifact.records.find((record) => !record.citation.ok)!;
-    const good = artifact.records.find((record) => record.citation.ok)!;
-    expect(artifact.records.map((record) => ({ target: record.logicalTarget, citation: record.citation }))).toHaveLength(2);
+    const attempts = [...artifact.records, ...(artifact.attemptHistory ?? [])];
+    expect(attempts.find((record) => record.attempt === 0)).toMatchObject({ overall: "fail", citation: { ok: false, addedKeys: ["missing_fake_key"], violations: ["citation key missing_fake_key is not in verified bibliography"] } });
+    expect(attempts.find((record) => record.attempt === 1)).toMatchObject({ overall: "pass", citation: { ok: true } });
+    expect(artifact.summary).toMatchObject({ publishable: true, logicalPatchCount: 2, repairSuccessCount: 1 });
     const gateDebug = await readFile(join(root, project.id, "reviews", "quality-gate-r2.json"), "utf8");
-    expect(bad, `${JSON.stringify(finalRun.stageHistory.map((stage) => stage.stageId))}; ${gateDebug}; ${JSON.stringify(artifact.summary)}; ${JSON.stringify(artifact.records)}`).toBeDefined();
-    expect(bad.logicalTarget).toContain("Datasets");
-    expect(bad.citation).toMatchObject({ ok: false, violations: ["MISSING_CITATION_KEY"] });
-    expect(bad.citation.findingIds).toHaveLength(1);
-    expect(good.logicalTarget).toContain("Conclusion");
-    expect(good.citation.ok).toBe(true);
-    expect(artifact.summary.publishable).toBe(false);
+    expect(gateDebug).toContain("patch_validation_publishable");
     expect(artifact.summary.unattributedViolations).toEqual([]);
     const instructionFile = await stack.stack.externalInstructions.load(project.id);
-    expect(instructionFile.find((entry) => entry.text.includes("datasets"))?.status).toBe("unresolved");
+    expect(instructionFile.find((entry) => entry.text.includes("datasets"))?.status).toBe("handled");
     expect(instructionFile.find((entry) => entry.text.includes("conclusion"))?.status).toBe("handled");
+  });
+
+  it("bounds repeated direction-flip repair and keeps the rejected candidate out of the manuscript", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-direction-repair-"));
+    const scripted = scriptedIdeaRuntime();
+    let primaryCalls = 0;
+    let repairCalls = 0;
+    const runtime: AgentRuntime = {
+      ...scripted.runtime,
+      async runAgent(input: RunAgentInput) {
+        if (input.contextScope === "writing/revision-proposal") {
+          const instructionId = /--- 意见 (x-[a-z0-9]+)（/.exec(input.task)?.[1] ?? "x-missing";
+          const outcome = `\n%%%PT-OUTCOMES%%% [{"instructionId":"${instructionId}","outcome":"applied","basis":"preserved the measured decline"}]`;
+          if (input.task.includes("Revise only the patch identified below.")) {
+            repairCalls += 1;
+            const base = await scripted.runtime.runAgent(input);
+            return { ...base, status: "completed", output: `MOTA 提升 from 45 to 28.${outcome}`, taskId: `repair-${repairCalls}` };
+          }
+          primaryCalls += 1;
+          const base = await scripted.runtime.runAgent(input);
+          return { ...base, status: "completed", output: `MOTA 提升 from 45 to 28.${outcome}`, taskId: `primary-${primaryCalls}` };
+        }
+        return scripted.runtime.runAgent(input);
+      },
+    };
+    const stack = await startTestStack(runtime, { root, registerCleanup: (fn) => cleanups.push(fn) });
+    const project = await stack.store.create("synthetic direction repair");
+    const manuscript = String.raw`\documentclass{article}
+\begin{document}
+\section{Conclusion}
+MOTA 下降 from 45 to 28.
+\end{document}`;
+    const archive = zip([{ name: "main.tex", data: manuscript }, { name: "references.bib", data: "" }]);
+    expect((await stack.request("POST", `/api/projects/${project.id}/import`, { archiveBase64: archive.toString("base64") })).status).toBe(200);
+    expect((await stack.request("POST", `/api/projects/${project.id}/external-instructions`, { source: "journal_reviewer", text: "Clarify the MOTA outcome without changing the measured direction.", section: "Conclusion" })).status).toBe(200);
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, { kind: "existing_paper_improvement" });
+    const runId = created.body.runId as string;
+    await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm", { timeoutMs: 30_000 });
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+    const terminal = await until(stack, runId, ["failed", "completed"]);
+    expect(terminal.status, JSON.stringify(terminal.stageHistory.slice(-4))).toBe("completed");
+    expect(primaryCalls).toBe(2);
+    expect(repairCalls).toBe(2);
+    const revisions = await stack.stack.revisions.load(project.id);
+    const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", `patch-validation-rev-${revisions.current}.json`), "utf8")) as {
+      records: Array<{ originalPatchId?: string; attempt?: number; overall: string; logicalTarget: string; rootViolationIds?: string[] }>;
+      attemptHistory?: Array<{ originalPatchId?: string; attempt?: number; rootViolationIds?: string[]; overall: string }>;
+      summary: { publishable: boolean; failedPatches: number; attemptCount: number; repairExhaustedCount: number };
+    };
+    const all = [...artifact.records, ...(artifact.attemptHistory ?? [])];
+    expect(all.filter((record) => record.overall === "fail" && record.rootViolationIds?.includes("metric_direction_flip"))).toHaveLength(2);
+    expect(artifact.summary).toMatchObject({ publishable: false, failedPatches: 1, attemptCount: 2, repairExhaustedCount: 1 });
+    expect(await readFile(join(root, project.id, "manuscript", "main.tex"), "utf8")).toContain("MOTA 下降 from 45 to 28");
+  });
+
+  it("promotes a repaired metric direction as a new validated attempt and addresses its comment", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-direction-repair-pass-"));
+    const scripted = scriptedIdeaRuntime();
+    let primaryCalls = 0;
+    let repairCalls = 0;
+    let linkedInstructionId = "";
+    const runtime: AgentRuntime = {
+      ...scripted.runtime,
+      async runAgent(input: RunAgentInput) {
+        if (input.contextScope === "writing/revision-proposal") {
+          const instructionId = /--- 意见 (x-[a-z0-9]+)（/.exec(input.task)?.[1] ?? (linkedInstructionId || "x-missing");
+          linkedInstructionId = instructionId;
+          const outcome = `\n%%%PT-OUTCOMES%%% [{"instructionId":"${instructionId}","outcome":"applied","basis":"restored the verified metric direction"}]`;
+          if (input.task.includes("Revise only the patch identified below.")) {
+            repairCalls += 1;
+            const base = await scripted.runtime.runAgent(input);
+            return { ...base, status: "completed", output: `The measured result remains MOTA 下降 from 45 to 28.${outcome}`, taskId: `repair-pass-${repairCalls}` };
+          }
+          primaryCalls += 1;
+          const base = await scripted.runtime.runAgent(input);
+          return { ...base, status: "completed", output: `MOTA 提升 from 45 to 28. The dataset used 999 samples.${outcome}`, taskId: `primary-pass-${primaryCalls}` };
+        }
+        return scripted.runtime.runAgent(input);
+      },
+    };
+    const stack = await startTestStack(runtime, { root, registerCleanup: (fn) => cleanups.push(fn) });
+    const project = await stack.store.create("synthetic direction repair pass");
+    const manuscript = String.raw`\documentclass{article}
+\begin{document}
+\section{Conclusion}
+MOTA 下降 from 45 to 28.
+\end{document}`;
+    const archive = zip([{ name: "main.tex", data: manuscript }, { name: "references.bib", data: "" }]);
+    expect((await stack.request("POST", `/api/projects/${project.id}/import`, { archiveBase64: archive.toString("base64") })).status).toBe(200);
+    expect((await stack.request("POST", `/api/projects/${project.id}/external-instructions`, { source: "journal_reviewer", text: "Clarify the MOTA outcome without changing the measured direction.", section: "Conclusion" })).status).toBe(200);
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, { kind: "existing_paper_improvement" });
+    const runId = created.body.runId as string;
+    await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm", { timeoutMs: 30_000 });
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+    const terminal = await until(stack, runId, ["failed", "completed"]);
+    expect(terminal.status, JSON.stringify(terminal.error)).toBe("completed");
+    expect(primaryCalls).toBeGreaterThanOrEqual(1);
+    expect(repairCalls).toBeGreaterThanOrEqual(1);
+    const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", "patch-validation-rev-2.json"), "utf8")) as {
+      records: Array<{ patchId: string; originalPatchId?: string; attempt?: number; parentAttempt?: number; overall: string; fact: { ok: boolean } }>;
+      attemptHistory?: Array<{ patchId: string; attempt?: number; overall: string; rootViolationIds?: string[] }>;
+      summary: { publishable: boolean; logicalPatchCount: number; attemptCount: number; acceptedPatchCount: number; repairSuccessCount: number };
+    };
+    const all = [...artifact.records, ...(artifact.attemptHistory ?? [])];
+    expect(all.find((record) => record.attempt === 0)).toMatchObject({ patchId: expect.stringMatching(/\.a0$/), overall: "fail", rootViolationIds: expect.arrayContaining(["metric_direction_flip", "unsupported_claim"]) });
+    expect(all.find((record) => record.attempt === 1)).toMatchObject({ patchId: expect.stringMatching(/\.a1$/), originalPatchId: expect.any(String), parentAttempt: 0, overall: "pass", fact: { ok: true } });
+    expect(artifact.summary).toMatchObject({ publishable: true, logicalPatchCount: 1, attemptCount: 2, acceptedPatchCount: 1, repairSuccessCount: 1 });
+    const instructions = await stack.stack.externalInstructions.load(project.id);
+    expect(instructions[0]?.status).toBe("handled");
+    expect(await readFile(join(root, project.id, "manuscript", "main.tex"), "utf8")).toContain("The measured result remains MOTA 下降 from 45 to 28");
+
+    const brokenProject = await stack.store.create("synthetic repair promotion failure");
+    expect((await stack.request("POST", `/api/projects/${brokenProject.id}/import`, { archiveBase64: archive.toString("base64") })).status).toBe(200);
+    expect((await stack.request("POST", `/api/projects/${brokenProject.id}/external-instructions`, { source: "journal_reviewer", text: "Clarify the MOTA outcome without changing the measured direction.", section: "Conclusion" })).status).toBe(200);
+    const savePatchValidation = stack.stack.reviewArtifacts.savePatchValidation.bind(stack.stack.reviewArtifacts);
+    vi.spyOn(stack.stack.reviewArtifacts, "savePatchValidation").mockImplementation(async (projectId, validationArtifact) => {
+      if (projectId === brokenProject.id && validationArtifact.records.some((record) => (record.attempt ?? 0) > 0 && record.overall === "pass")) {
+        throw new Error("injected artifact promotion failure");
+      }
+      return savePatchValidation(projectId, validationArtifact);
+    });
+    const brokenRunResult = await stack.request("POST", `/api/projects/${brokenProject.id}/workflows`, { kind: "existing_paper_improvement" });
+    const brokenRunId = brokenRunResult.body.runId as string;
+    await pollRunUntilAwaiting(stack, brokenRunId, "hitl.plan_confirm", { timeoutMs: 30_000 });
+    await stack.request("POST", `/api/runs/${brokenRunId}/resume`, { decision: "approve" });
+    const brokenTerminal = await until(stack, brokenRunId, ["failed", "completed"]);
+    expect(brokenTerminal.status).toBe("failed");
+    expect(brokenTerminal.error?.code ?? brokenTerminal.error?.["code"]).toBe("REPAIR_PIPELINE_ERROR");
+    expect(await readFile(join(root, brokenProject.id, "manuscript", "main.tex"), "utf8")).toBe(manuscript);
   });
 
 });

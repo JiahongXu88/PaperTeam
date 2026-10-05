@@ -26,6 +26,14 @@ export interface PatchCitationAttribution {
 
 export interface PatchValidationRecord {
   patchId: string;
+  /** Immutable generation/repair lineage; absent on legacy records. */
+  attempt?: number;
+  parentAttempt?: number;
+  repairReasonFindingIds?: string[];
+  originalPatchId?: string;
+  rootViolationIds?: string[];
+  modelRole?: "revision.primary" | "revision.escalation";
+  finalStatus?: "accepted" | "rejected" | "exhausted" | "no_progress";
   revisionId: string;
   file: string;
   logicalTarget: string;
@@ -51,10 +59,19 @@ export interface PatchValidationArtifact {
   revisionId: string;
   revision: number;
   records: PatchValidationRecord[];
+  /** Failed and superseded generations retained for audit; summary uses records only. */
+  attemptHistory?: PatchValidationRecord[];
   summary: RevisionValidationSummary;
 }
 
 export interface RevisionValidationSummary {
+  /** Number of logical patch lineages, independent of retries. */
+  logicalPatchCount?: number;
+  attemptCount?: number;
+  acceptedPatchCount?: number;
+  failedLogicalPatchCount?: number;
+  repairSuccessCount?: number;
+  repairExhaustedCount?: number;
   totalPatches: number;
   passedPatches: number;
   failedPatches: number;
@@ -64,6 +81,12 @@ export interface RevisionValidationSummary {
   citationOk: boolean;
   evidenceOk: boolean;
   publishable: boolean;
+  patchFirstPassPassRate?: number;
+  patchRepairAttempts?: number;
+  patchRepairSuccessRate?: number;
+  violationsByType?: Record<string, number>;
+  escalationCount?: number;
+  finalAcceptedPatchCount?: number;
 }
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
@@ -135,18 +158,45 @@ export function attributeCitationChangesToPatches(input: {
   return { findings, unattributed: findings.filter((finding) => finding.patchId === undefined) };
 }
 
-export function summarizePatchValidation(records: readonly PatchValidationRecord[], unattributedViolations: string[] = []): RevisionValidationSummary {
-  const allPass = records.every((record) => record.overall === "pass");
+export function summarizePatchValidation(records: readonly PatchValidationRecord[], unattributedViolations: string[] = [], attempts: readonly PatchValidationRecord[] = records): RevisionValidationSummary {
+  const firstByPatch = new Map<string, PatchValidationRecord>();
+  const finalByPatch = new Map<string, PatchValidationRecord>();
+  for (const record of attempts) {
+    const key = record.originalPatchId ?? record.patchId.replace(/\.a\d+$/, "");
+    const first = firstByPatch.get(key);
+    if (first === undefined || (record.attempt ?? 0) < (first.attempt ?? 0)) firstByPatch.set(key, record);
+    const final = finalByPatch.get(key);
+    if (final === undefined || (record.overall === "pass" && final.overall !== "pass") ||
+      (record.overall === final.overall && (record.attempt ?? 0) >= (final.attempt ?? 0))) finalByPatch.set(key, record);
+  }
+  const finalRecords = [...finalByPatch.values()];
+  const allPass = finalRecords.every((record) => record.overall === "pass");
+  const repairAttempts = attempts.filter((record) => (record.attempt ?? 0) > 0);
+  const repairedPatches = [...finalByPatch].filter(([key]) => attempts.some((record) => (record.originalPatchId ?? record.patchId.replace(/\.a\d+$/, "")) === key && (record.attempt ?? 0) > 0));
+  const violationsByType: Record<string, number> = {};
+  for (const record of attempts) for (const violation of record.rootViolationIds ?? []) violationsByType[violation] = (violationsByType[violation] ?? 0) + 1;
   return {
-    totalPatches: records.length,
-    passedPatches: records.filter((record) => record.overall === "pass").length,
-    failedPatches: records.filter((record) => record.overall === "fail").length,
+    totalPatches: finalRecords.length,
+    passedPatches: finalRecords.filter((record) => record.overall === "pass").length,
+    failedPatches: finalRecords.filter((record) => record.overall === "fail").length,
+    logicalPatchCount: finalRecords.length,
+    attemptCount: attempts.length,
+    acceptedPatchCount: finalRecords.filter((record) => record.overall === "pass" && record.finalStatus !== "rejected" && record.finalStatus !== "exhausted" && record.finalStatus !== "no_progress").length,
+    failedLogicalPatchCount: finalRecords.filter((record) => record.overall !== "pass").length,
+    repairSuccessCount: repairedPatches.filter(([, record]) => record.overall === "pass").length,
+    repairExhaustedCount: finalRecords.filter((record) => record.finalStatus === "exhausted" || record.finalStatus === "no_progress").length,
     unattributedViolations: [...unattributedViolations],
-    scopeOk: records.every((record) => record.scope.ok),
-    factOk: records.every((record) => record.fact.ok),
-    citationOk: records.every((record) => record.citation.ok),
-    evidenceOk: records.every((record) => record.evidence.ok),
+    scopeOk: finalRecords.every((record) => record.scope.ok),
+    factOk: finalRecords.every((record) => record.fact.ok),
+    citationOk: finalRecords.every((record) => record.citation.ok),
+    evidenceOk: finalRecords.every((record) => record.evidence.ok),
     publishable: allPass && unattributedViolations.length === 0,
+    patchFirstPassPassRate: firstByPatch.size === 0 ? 1 : [...firstByPatch.values()].filter((record) => record.overall === "pass").length / firstByPatch.size,
+    patchRepairAttempts: repairAttempts.length,
+    patchRepairSuccessRate: repairedPatches.length === 0 ? 1 : repairedPatches.filter(([, record]) => record.overall === "pass").length / repairedPatches.length,
+    violationsByType,
+    escalationCount: attempts.filter((record) => record.modelRole === "revision.escalation").length,
+    finalAcceptedPatchCount: finalRecords.filter((record) => record.overall === "pass").length,
   };
 }
 
@@ -155,11 +205,18 @@ export function validationForComment(records: readonly PatchValidationRecord[], 
 } | null {
   const owned = records.filter((record) => record.commentIds.includes(commentId));
   if (owned.length === 0) return null;
+  const final = new Map<string, PatchValidationRecord>();
+  for (const record of owned) {
+    const key = record.originalPatchId ?? record.patchId;
+    const previous = final.get(key);
+    if (previous === undefined || (record.overall === "pass" && previous.overall !== "pass") || (record.overall === previous.overall && (record.attempt ?? 0) >= (previous.attempt ?? 0))) final.set(key, record);
+  }
+  const selected = [...final.values()];
   return {
-    fact: owned.every((record) => record.fact.ok),
-    citation: owned.every((record) => record.citation.ok),
-    evidence: owned.every((record) => record.evidence.ok),
-    overall: owned.every((record) => record.overall === "pass"),
+    fact: selected.every((record) => record.fact.ok),
+    citation: selected.every((record) => record.citation.ok),
+    evidence: selected.every((record) => record.evidence.ok),
+    overall: selected.every((record) => record.overall === "pass"),
   };
 }
 

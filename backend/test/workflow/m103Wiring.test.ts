@@ -321,14 +321,14 @@ describe("M10.3 existing_paper_improvement 接线（单文件项目全流程）"
     const active = research.plans?.find((plan) => plan.status !== undefined);
     expect(active?.status === "done" || research.plans?.every((plan) => plan.status === "done")).toBe(true);
 
-    // 单文件修订：main.tex 保留全部事实与引用（scripted whole-file：逐字保留 + 标记行）
+    // 单文件项目仍按 logicalSection 定向修订；已验证的事实与引用必须保留。
     const revised = await readFile(join(stack.root, projectId, "manuscript", "main.tex"), "utf8");
     expect(revised).toContain("\\documentclass");
     expect(revised).toContain("12.4");
     expect(revised).toContain("82.4");
     expect(revised).toContain("RDK X3");
     expect(revised).toContain("\\cite{a}");
-    expect(revised).toContain("scripted whole-file revision");
+    expect(revised).not.toContain("scripted whole-file revision");
 
     // already_satisfied 意见未被派发改稿，并保留导入时的审计 trace。
     const instructions = await stack.request("GET", `/api/projects/${projectId}/external-instructions`);

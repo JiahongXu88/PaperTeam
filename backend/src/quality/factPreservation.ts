@@ -2002,6 +2002,45 @@ export async function computeFactPreservation(
   });
 }
 
+/** Evaluate a not-yet-applied single-patch candidate against the immutable source snapshot. */
+export async function computeFactPreservationForCandidate(
+  deps: FactPreservationDeps,
+  projectId: string,
+  sourceRevision: number,
+  candidateFiles: FactTexFile[],
+): Promise<FactPreservationSummary | null> {
+  if (sourceRevision <= 0) return null;
+  const previousFiles = await readSnapshotTex(deps.revisions.snapshotDir(projectId, sourceRevision));
+  if (previousFiles === null || previousFiles.length === 0) return null;
+  let plan: import("../review/revisionPlan.js").RevisionPlan | null = null;
+  for (const round of await deps.reviewArtifacts.planRounds(projectId)) {
+    const candidate = await deps.reviewArtifacts.loadPlan(projectId, round);
+    if (candidate !== null && candidate.sourceRevision === sourceRevision && candidate.revisionReason !== "style_polish") {
+      plan = candidate;
+      break;
+    }
+  }
+  const improvementPlanItems = await readImprovementPlanItems(deps.projects, projectId);
+  const evidenceTexts = (await deps.evidence.list(projectId)).flatMap((record) => [record.claim, record.summary ?? "", record.quote ?? ""]);
+  const bibliographyKeys = await readBibliographyKeys(deps.projects, projectId);
+  const weakeningAuthorizations: WeakeningAuthorizationInput[] = [];
+  if (plan !== null) {
+    weakeningAuthorizations.push(...derivePlanWeakeningAuthorizations(plan));
+    const grounding = await deps.reviewArtifacts.loadClaimGrounding(projectId, plan.reviewRound);
+    if (grounding !== null) weakeningAuthorizations.push(...deriveClaimGroundingWeakeningAuthorizations(grounding));
+  }
+  weakeningAuthorizations.push(...(await readWeakeningAuthorizations(deps.projects, projectId)));
+  return evaluateFactPreservation({
+    previous: { revision: sourceRevision, files: previousFiles },
+    current: { revision: sourceRevision + 1, files: candidateFiles },
+    plan,
+    ...(improvementPlanItems.length > 0 ? { improvementPlanItems } : {}),
+    evidenceTexts,
+    ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
+    weakeningAuthorizations,
+  });
+}
+
 /**
  * M10.3.1：当前 manuscript 目录 bib 文件的 key 清单（bib-keyed 方法论行的
  * 授权通道）。bib 文件缺失 / 不可解析 → 空清单（该通道中性关闭，其余授权不变）。

@@ -98,6 +98,27 @@ describe("patch citation attribution", () => {
       evidence: { ok: true, violations: [] }, apply: { ok: true, status: "applied" }, overall: "pass",
     };
     expect(summarizePatchValidation([record])).toMatchObject({ totalPatches: 1, passedPatches: 1, failedPatches: 0, publishable: true });
+    const failedAttempt: PatchValidationRecord = { ...record, patchId: "p1.a0", originalPatchId: "p1", attempt: 0, rootViolationIds: ["metric_direction_flip"], overall: "fail" };
+    const repairedAttempt: PatchValidationRecord = { ...record, patchId: "p1.a1", originalPatchId: "p1", attempt: 1, finalStatus: "accepted", overall: "pass" };
+    expect(summarizePatchValidation([repairedAttempt], [], [failedAttempt, repairedAttempt])).toMatchObject({
+      logicalPatchCount: 1,
+      attemptCount: 2,
+      acceptedPatchCount: 1,
+      failedLogicalPatchCount: 0,
+      repairSuccessCount: 1,
+      patchFirstPassPassRate: 0,
+      patchRepairAttempts: 1,
+      patchRepairSuccessRate: 1,
+      violationsByType: { metric_direction_flip: 1 },
+      finalAcceptedPatchCount: 1,
+    });
+    const p1 = { ...record, patchId: "P1", finalStatus: "accepted" as const };
+    const p2Fail = { ...record, patchId: "P2.a0", originalPatchId: "P2", attempt: 0, overall: "fail" as const };
+    const p2Pass = { ...record, patchId: "P2.a1", originalPatchId: "P2", attempt: 1, finalStatus: "accepted" as const };
+    const p3 = { ...record, patchId: "P3", finalStatus: "accepted" as const };
+    expect(summarizePatchValidation([p1, p2Pass, p3], [], [p1, p2Fail, p2Pass, p3])).toMatchObject({
+      logicalPatchCount: 3, attemptCount: 4, acceptedPatchCount: 3, failedLogicalPatchCount: 0, publishable: true,
+    });
     const failed = { ...record, fact: { ok: false, findingIds: ["f1"], violations: ["numeric drift"] }, overall: "fail" as const };
     expect(summarizePatchValidation([failed], ["UNATTRIBUTED_FACT_VIOLATION"])).toMatchObject({ totalPatches: 1, failedPatches: 1, factOk: false, publishable: false });
     const citationFail: PatchValidationRecord = {
@@ -107,5 +128,8 @@ describe("patch citation attribution", () => {
     expect(validationForComment([citationFail, siblingPass], "comment-A")).toMatchObject({ citation: false, overall: false });
     expect(validationForComment([citationFail, siblingPass], "comment-B")).toMatchObject({ fact: true, citation: true, overall: true });
     expect(validationForComment([citationFail, siblingPass], "noop-comment")).toBeNull();
+    const lineageFail = { ...record, patchId: "P2.a0", originalPatchId: "P2", attempt: 0, commentIds: ["comment-repaired"], fact: { ok: false, findingIds: ["f"], violations: ["direction flip"] }, overall: "fail" as const };
+    const lineagePass = { ...record, patchId: "P2.a1", originalPatchId: "P2", attempt: 1, commentIds: ["comment-repaired"] };
+    expect(validationForComment([lineageFail, lineagePass], "comment-repaired")).toMatchObject({ overall: true, fact: true });
   });
 });

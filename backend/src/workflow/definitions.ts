@@ -85,6 +85,7 @@ import {
 } from "../quality/citationPreservation.js";
 import {
   computeFactPreservation,
+  computeFactPreservationForCandidate,
   describeFactPreservation,
   projectPairwiseFactRestore,
   type FactFinding,
@@ -157,6 +158,7 @@ import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type R
 import { applyRevisionSpan, checkGlobalRevisionScope, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
+import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
 import {
   applyRevisionItemTransitions,
   findStuckAppliedItems,
@@ -712,6 +714,7 @@ function qualityGateStage(
         ? await services.reviewArtifacts.loadPatchValidation(ctx.projectId, review.reviewedRevision)
         : null;
       if (patchValidation !== null && typeof review.reviewedRevision === "number") {
+        const finalPatchRecords = selectFinalPatchRecords(patchValidation.records);
         const sourceRevision = Math.max(0, review.reviewedRevision - 1);
         const previousTex = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
         const currentTex = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, review.reviewedRevision));
@@ -720,7 +723,7 @@ function qualityGateStage(
           ...factPreservation.directionalChanges, ...factPreservation.formulaChanges, ...factPreservation.placeholderRegressions,
         ];
         const assignedFacts = new Set<FactFinding>();
-        for (const record of patchValidation.records) {
+        for (const record of finalPatchRecords) {
           const ownFacts = facts.filter((finding) => finding.file === record.file &&
             (finding.section.toLocaleLowerCase() === record.logicalTarget.toLocaleLowerCase() ||
               finding.section.toLocaleLowerCase().includes(record.logicalTarget.toLocaleLowerCase()) ||
@@ -739,7 +742,7 @@ function qualityGateStage(
           ? attributeCitationChangesToPatches({
               before: previousMain,
               after: currentMain,
-              patches: patchValidation.records.flatMap((record) => {
+              patches: finalPatchRecords.flatMap((record) => {
                 const span = locateLatexSections("main.tex", previousMain).find((candidate) => candidate.logicalSection === record.logicalTarget);
               return span === undefined ? [] : [{ patchId: record.patchId, planItemIds: record.planItemIds, commentIds: record.commentIds, span, addedKeys: record.citation.addedKeys, removedKeys: record.citation.removedKeys }];
               }),
@@ -758,7 +761,7 @@ function qualityGateStage(
             addedViolations.set(finding.patchId, list);
           }
         }
-        for (const record of patchValidation.records) {
+        for (const record of finalPatchRecords) {
           const own = attribution.findings.filter((finding) => finding.patchId === record.patchId);
           const violations = addedViolations.get(record.patchId) ?? [];
           record.citation = {
@@ -770,10 +773,10 @@ function qualityGateStage(
           };
           record.overall = record.scope.ok && record.workspaceIntegrity.ok && record.fact.ok && record.citation.ok && record.evidence.ok && record.apply.ok ? "pass" : "fail";
         }
-        patchValidation.summary = summarizePatchValidation(patchValidation.records, [
+        patchValidation.summary = summarizePatchValidation(finalPatchRecords, [
           ...unattributed.map(() => "UNATTRIBUTED_FACT_VIOLATION"),
           ...unapportionedCitation.map((finding) => finding.code === "AMBIGUOUS_PATCH_ATTRIBUTION" ? finding.code : "UNATTRIBUTED_CITATION_VIOLATION"),
-        ]);
+        ], [...patchValidation.records, ...(patchValidation.attemptHistory ?? [])]);
         patchValidation.summary.publishable = patchValidation.summary.publishable &&
           (factPreservation?.ok ?? false) && (citationPreservation?.ok ?? false) &&
           gate.passed && readBuildError(ctx.state) === undefined;
@@ -1728,8 +1731,7 @@ function revisionReviseStage(
           : evidence;
         let result: Awaited<ReturnType<typeof services.writer.reviseSection>> | undefined;
         let writerFailure: unknown;
-        try {
-          result = await services.writer.reviseSection({
+        const writerParams = {
           projectId: ctx.projectId,
           section: {
             id: target.key,
@@ -1742,11 +1744,7 @@ function revisionReviseStage(
           evidence: targetEvidence,
           bibliography,
           ...(isWholeFileTarget
-            ? {
-                wholeFile: true,
-                // M10.3.1：模型改用 write/edit 直接改盘时的确定性回退读取路径
-                targetFilePath: join(services.projects.manuscriptDir(ctx.projectId), target.relativePath),
-              }
+            ? { wholeFile: true, targetFilePath: join(services.projects.manuscriptDir(ctx.projectId), target.relativePath) }
             : {}),
           ...(resolvedSpan !== undefined ? { proposalOnly: true } : {}),
           ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
@@ -1754,13 +1752,10 @@ function revisionReviseStage(
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
           ...(claimRepairs.length > 0 ? { claimRepairs } : {}),
           ...(surveyContext !== undefined ? { survey: surveyContext } : {}),
-          ...(matchedItems.length > 0
-            ? {
-                revisionItems: matchedItems,
-                itemEvidence,
-              }
-            : {}),
-          });
+          ...(matchedItems.length > 0 ? { revisionItems: matchedItems, itemEvidence } : {}),
+        };
+        try {
+          result = await services.writer.reviseSection(writerParams);
         } catch (error) {
           writerFailure = error;
         }
@@ -1821,6 +1816,113 @@ function revisionReviseStage(
         }
         if (writerFailure !== undefined) throw writerFailure;
         if (result === undefined) throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_WRITER_NO_RESULT");
+        let acceptedAttempt = 0;
+        if (resolvedSpan !== undefined && fileBefore !== undefined && result.latex.trim() !== "") {
+          const basePatchId = `patch:${resolvedSpan.originalHash.slice(0, 12)}`;
+          const priorRoots: string[][] = [];
+          const priorProposalHashes: string[] = [];
+          for (let attempt = 0; attempt <= 2; attempt += 1) {
+            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim());
+            const failures: { code: RevisionViolationCode; detail: string; evidenceId?: string; metric?: string }[] = [];
+            const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
+            if (!scope.allowed) failures.push({ code: "scope_violation", detail: scope.reason ?? "revision scope violation" });
+            if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) failures.push({ code: "scope_violation", detail: "new content after document end" });
+
+            const baselineFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision));
+            const baselineTarget = baselineFiles?.find((file) => file.file === target.relativePath);
+            if (baselineFiles !== null && baselineFiles !== undefined && baselineTarget !== undefined) {
+              const candidateFiles = baselineFiles.map((file) => file.file === target.relativePath ? { ...file, content: candidate } : file);
+              const fact = await computeFactPreservationForCandidate(services, ctx.projectId, currentRevision, candidateFiles);
+              if (fact !== null) {
+                for (const finding of fact.directionalChanges) failures.push({ code: finding.reason.includes("flip") || finding.reason.includes("advantage") ? "metric_direction_flip" : "fact_direction_drift", detail: `${finding.before} → ${finding.after}: ${finding.reason}`, metric: finding.before.slice(0, 50) });
+                for (const finding of fact.addedUnsupportedFacts) failures.push({ code: "unsupported_claim", detail: `${finding.before} → ${finding.after}: ${finding.reason}` });
+              }
+            }
+            const originalKeys = new Set(extractCitationKeys(resolvedSpan.file, resolvedSpan.content).keys);
+            const candidateKeys = new Set(extractCitationKeys(resolvedSpan.file, result.latex).keys);
+            for (const key of originalKeys) {
+              if (!candidateKeys.has(key)) failures.push({ code: "citation_removed", detail: `existing citation key ${key} was removed` });
+            }
+            for (const key of candidateKeys) {
+              if (!originalKeys.has(key) && !bibliography.some((entry) => entry.key === key)) failures.push({ code: "citation_hallucinated", detail: `citation key ${key} is not in verified bibliography` });
+            }
+            for (const evidenceId of matchedItems.flatMap((item) => item.relatedEvidenceIds ?? [])) {
+              const evidenceRecord = evidenceById.get(evidenceId);
+              if (evidenceRecord === undefined || evidenceRecord.verificationStatus !== "verified" ||
+                evidenceRecord.protocolScope?.status === "superseded" ||
+                (recordProtocolId !== undefined && (evidenceRecord.protocolScope?.status !== "current" || evidenceRecord.protocolScope.protocolId !== recordProtocolId))) {
+                failures.push({ code: "evidence_protocol_mismatch", detail: `Evidence ${evidenceId} is not verified/current for this patch`, evidenceId });
+              }
+            }
+            const failuresKey = [...new Set(failures.map((failure) => failure.code))].sort();
+            if (failures.length === 0) {
+              acceptedAttempt = attempt;
+              break;
+            }
+
+            const failed: PatchValidationRecord = {
+              patchId: `${basePatchId}.a${attempt}`, originalPatchId: basePatchId, attempt,
+              ...(attempt > 0 ? { parentAttempt: attempt - 1, repairReasonFindingIds: [...(patchValidationRecords.find((record) => record.originalPatchId === basePatchId && record.attempt === attempt - 1)?.fact.findingIds ?? []), ...(patchValidationRecords.find((record) => record.originalPatchId === basePatchId && record.attempt === attempt - 1)?.citation.findingIds ?? [])] } : {}),
+              planItemIds: matchedItems.map((item) => item.id),
+              commentIds: [...new Set([...matchedItems.flatMap((item) => item.instructionId ? [item.instructionId] : []), ...targetExternals.map((directive) => directive.instructionId)])],
+              revisionId: `rev-${currentRevision + 1}`, file: target.relativePath, logicalTarget: resolvedSpan.logicalSection,
+              evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+              ...(recordProtocolId !== undefined ? { protocolId: recordProtocolId } : {}),
+              beforeFileHash: revisionSourceHash(fileBefore), beforeTargetHash: resolvedSpan.originalHash,
+              proposedReplacementHash: revisionSourceHash(result.latex.trim()), afterFileHash: revisionSourceHash(candidate),
+              scope: { ok: !failures.some((failure) => failure.code === "scope_violation"), violations: failures.filter((failure) => failure.code === "scope_violation").map((failure) => failure.detail) },
+              workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
+              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim"].includes(failure.code)).map((failure) => failure.detail) },
+              citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },
+              evidence: { ok: true, violations: [] }, apply: { ok: false, status: "rejected" }, overall: "fail", failedStage: "candidate_validation",
+              rootViolationIds: failuresKey, modelRole: "revision.primary", finalStatus: attempt === 2 ? "exhausted" : "rejected",
+            };
+            patchValidationRecords.push(failed);
+            if (!scope.allowed || failures.some((failure) => failure.code === "scope_violation")) break;
+            const sameRoot = priorRoots.length > 0 && priorRoots[priorRoots.length - 1]!.join("|") === failuresKey.join("|");
+            const proposalHash = revisionSourceHash(result.latex.trim());
+            const sameProposal = priorProposalHashes.at(-1) === proposalHash;
+            priorRoots.push(failuresKey);
+            priorProposalHashes.push(proposalHash);
+            if (attempt >= 2 || (sameRoot && sameProposal)) {
+              failed.finalStatus = sameRoot && sameProposal ? "no_progress" : "exhausted";
+              break;
+            }
+            const evidenceIds = [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))];
+            const allowedEvidence = targetEvidence.filter((entry) => evidenceIds.includes(entry.id) && entry.verificationStatus === "verified" && entry.protocolScope?.status !== "superseded");
+            const directive: PatchRepairDirective = {
+              patchId: basePatchId, planItemIds: matchedItems.map((item) => item.id),
+              commentIds: failed.commentIds, logicalTarget: resolvedSpan.logicalSection,
+              originalText: resolvedSpan.content, proposedText: result.latex,
+              mustPreserve: [...new Set(matchedItems.flatMap((item) => item.mustPreserve?.values ?? []))],
+              evidenceIds: allowedEvidence.map((entry) => entry.id), ...(recordProtocolId ? { protocolId: recordProtocolId } : {}),
+              validationFailures: failures, forbiddenChanges: ["Change the verified direction or numeric values", "Modify any other patch or target", "Use evidence outside the listed verified IDs"], repairAttempt: attempt + 1,
+            };
+            const diskNow = await readFile(targetFilePath, "utf8");
+            if (revisionSourceHash(diskNow) !== revisionSourceHash(fileBefore)) throw new BusinessError("DIRECT_WORKSPACE_MUTATION", `patch repair workspace changed: ${basePatchId}`);
+            result = await services.writer.reviseSection({ ...writerParams, currentLatex: result.latex, evidence: allowedEvidence, patchRepairContext: buildPatchRepairPrompt(directive) });
+            const diskAfterRepair = await readFile(targetFilePath, "utf8");
+            if (revisionSourceHash(diskAfterRepair) !== revisionSourceHash(fileBefore)) {
+              await writeFile(targetFilePath, fileBefore, "utf8");
+              throw new BusinessError("DIRECT_WORKSPACE_MUTATION", `patch repair directly mutated workspace: ${basePatchId}`);
+            }
+          }
+          if (patchValidationRecords.some((record) => record.originalPatchId === basePatchId)) {
+            const priorAttempts = patchValidationRecords.filter((record) => record.originalPatchId === basePatchId);
+            const finalAttempt = priorAttempts[priorAttempts.length - 1]!;
+            if (finalAttempt.overall === "fail" && acceptedAttempt === 0) {
+              // A rejected candidate did not create currentRevision + 1. Store its
+              // fail-closed validation artifact alongside the unchanged current revision.
+              await services.reviewArtifacts.savePatchValidation(ctx.projectId, { revisionId: finalAttempt.revisionId, revision: currentRevision, records: patchValidationRecords, summary: summarizePatchValidation(selectFinalPatchRecords(patchValidationRecords), [], patchValidationRecords) });
+              // Keep the rejected proposal out of the manuscript while allowing sibling patches
+              // to finish; the persisted failed record keeps the candidate gate fail-closed.
+              await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
+              continue;
+            }
+          }
+          // The final applied PatchValidationRecord is appended below. Earlier failed
+          // records remain immutable so revision.validate can move them to attemptHistory.
+        }
         // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）。
         // M9.7.6 P0：一条 finding 的 section 引用可能命中多个修订目标（如
         // 「sections/a.tex（并见 sections/b.tex）」），同 id 只记一次，
@@ -1916,8 +2018,15 @@ function revisionReviseStage(
               await persistScopeFailure("REVISION_FINAL_WORKSPACE_MISMATCH", actualFinal);
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_FINAL_WORKSPACE_MISMATCH");
             }
+            const finalPatchId = `patch:${resolvedSpan.originalHash.slice(0, 12)}`;
             const patchRecord: PatchValidationRecord = {
-              patchId: `patch:${resolvedSpan.originalHash.slice(0, 12)}`,
+              patchId: acceptedAttempt > 0 ? `${finalPatchId}.a${acceptedAttempt}` : finalPatchId,
+              ...(acceptedAttempt > 0 ? {
+                originalPatchId: finalPatchId, attempt: acceptedAttempt, parentAttempt: acceptedAttempt - 1,
+                repairReasonFindingIds: patchValidationRecords.filter((record) => record.originalPatchId === finalPatchId && record.attempt === acceptedAttempt - 1).flatMap((record) => [...record.fact.findingIds, ...record.citation.findingIds]),
+                rootViolationIds: patchValidationRecords.find((record) => record.originalPatchId === finalPatchId)?.rootViolationIds ?? [],
+                finalStatus: "accepted" as const, modelRole: "revision.primary" as const,
+              } : { finalStatus: "accepted" as const }),
               revisionId: `rev-${currentRevision + 1}`,
               file: target.relativePath,
               logicalTarget: resolvedSpan.logicalSection,
@@ -1954,10 +2063,18 @@ function revisionReviseStage(
               overall: "pass",
             };
             patchValidationRecords.push(patchRecord);
-            await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
-              revisionId: patchRecord.revisionId, revision: currentRevision + 1,
-              records: patchValidationRecords, summary: summarizePatchValidation(patchValidationRecords),
-            });
+            try {
+              await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
+                revisionId: patchRecord.revisionId, revision: currentRevision + 1,
+                records: patchValidationRecords, summary: summarizePatchValidation(patchValidationRecords),
+              });
+            } catch (error) {
+              if (acceptedAttempt > 0) {
+                await writeFile(targetFilePath, fileBefore, "utf8");
+                throw new BusinessError("REPAIR_PIPELINE_ERROR", `REPAIR_RESULT_NOT_PROMOTED: ${finalPatchId}.a${acceptedAttempt}${error instanceof Error ? ` (${error.message})` : ""}`);
+              }
+              throw error;
+            }
             revised.push(target.key);
             await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
             continue;
@@ -2114,12 +2231,18 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
       const round = summary.round;
       const plan = await services.reviewArtifacts.loadPlan(ctx.projectId, round);
       const revision = await services.revisions.currentRevision(ctx.projectId);
-      const sourceRevision =
-        plan?.sourceRevision !== undefined && plan.sourceRevision > 0 && plan.sourceRevision < revision
+      let sourceRevision =
+        plan?.sourceRevision !== undefined && plan.sourceRevision >= 0 && plan.sourceRevision <= revision
           ? plan.sourceRevision
           : Math.max(0, revision - 1);
-      const previousFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
+      let previousFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
       const currentFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, revision));
+      // Existing-paper imports may have only the current baseline snapshot. If no revision
+      // was applied, validate against that immutable baseline rather than inventing rev-0.
+      if (previousFiles === null && sourceRevision === 0 && revision > 0) {
+        previousFiles = currentFiles;
+        sourceRevision = revision;
+      }
       if (previousFiles === null || currentFiles === null) {
         // 快照缺失：如实失败（修订复核不能凭空跳过；restore 路径同样会走 null 中性规则）
         throw new BusinessError(
@@ -2132,7 +2255,13 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
       const patchArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, revision);
       if (patchArtifact !== null) {
         const texFile = (files: typeof previousFiles, file: string) => files.find((entry) => entry.file === file)?.content;
-        const patchRecords = patchArtifact.records;
+        const attemptRecords = patchArtifact.records;
+        const patchRecords = selectFinalPatchRecords(attemptRecords);
+        patchArtifact.attemptHistory = [
+          ...(patchArtifact.attemptHistory ?? []),
+          ...attemptRecords.filter((record) => !patchRecords.includes(record)),
+        ];
+        patchArtifact.records = patchRecords;
         const factFindings: FactFinding[] = factPreservation === null ? [] : [
           ...factPreservation.changedFacts, ...factPreservation.removedFacts, ...factPreservation.addedUnsupportedFacts,
           ...factPreservation.directionalChanges, ...factPreservation.formulaChanges, ...factPreservation.placeholderRegressions,
@@ -2191,7 +2320,7 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
         for (const record of patchRecords) {
           record.overall = record.scope.ok && record.workspaceIntegrity.ok && record.fact.ok && record.citation.ok && record.evidence.ok && record.apply.ok ? "pass" : "fail";
         }
-        patchArtifact.summary = summarizePatchValidation(patchRecords, unattributed);
+        patchArtifact.summary = summarizePatchValidation(patchRecords, unattributed, attemptRecords);
         patchArtifact.summary.publishable = patchArtifact.summary.publishable && (factPreservation?.ok ?? false) && (citationPreservation?.ok ?? false);
         await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchArtifact);
       }
@@ -2228,7 +2357,9 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
           };
           record.overall = record.scope.ok && record.workspaceIntegrity.ok && record.fact.ok && record.citation.ok && record.evidence.ok && record.apply.ok ? "pass" : "fail";
         }
-        finalizedPatchArtifact.summary = summarizePatchValidation(finalizedPatchArtifact.records, finalizedPatchArtifact.summary.unattributedViolations);
+        finalizedPatchArtifact.summary = summarizePatchValidation(finalizedPatchArtifact.records, finalizedPatchArtifact.summary.unattributedViolations, [
+          ...finalizedPatchArtifact.records, ...(finalizedPatchArtifact.attemptHistory ?? []),
+        ]);
         finalizedPatchArtifact.summary.publishable = finalizedPatchArtifact.summary.publishable && result.ok;
         await services.reviewArtifacts.savePatchValidation(ctx.projectId, finalizedPatchArtifact);
       }
@@ -4999,7 +5130,7 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         ...(instructionDigest !== undefined ? { instructionDigest } : {}),
         ...(authorGoal !== undefined ? { authorGoal } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
-        validEvidenceIds: evidenceIds.map((record) => record.id),
+        validEvidenceIds: evidenceIds.filter((record) => record.verificationStatus === "verified" && record.protocolScope?.status !== "superseded").map((record) => record.id),
         validEvidenceProtocolScopes: Object.fromEntries(
           evidenceIds.flatMap((record) => record.protocolScope !== undefined ? [[record.id, record.protocolScope]] : []),
         ),

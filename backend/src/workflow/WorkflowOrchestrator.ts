@@ -1144,6 +1144,7 @@ export function classifyBusinessError(error: BusinessError): StageFailureCategor
       return "runtime_unavailable";
     case "LATEX_COMPILE_FAILED":
     case "STAGE_CONTRACT_VIOLATION":
+    case "MODEL_REPAIR_EXHAUSTED":
     case "EVIDENCE_VALIDATION":
     case "IMPORT_VALIDATION":
       return "contract_violation";

@@ -393,3 +393,27 @@ Backend full suite：`npm --prefix backend test -- --testTimeout=30000`，218 fi
 ### 25. M11.5 Closure Readiness
 
 **NOT READY FOR M11.5 CLOSURE。** 不启动 M11.5。当前只记录少数 blocker：模型/Planner 结构化 Evidence linkage；Writer 对受保护事实的稳定 preservation；PatchValidationSummary 的 Fact finding attribution；以及评估者 blind isolation 的流程污染。应由后续明确授权的工作处理并安排新验收，当前不自动重跑。
+
+## M11.4.4 Validation-Aware Revision Harness
+
+**第一次 M11.4.4 实现检查点（策略/helper 部分完成）**：已将结构化 Planner repair 接入 `WriterService.planImprovement`，并在 `revision.apply` 中加入 scoped candidate validation、最多两次 patch-local Writer repair、失败记录与 fail-closed 路径。当时 held-out reader 尚未接入 acceptance reader/orchestrator，且 workflow regression matrix 不完整；故该检查点未标记 COMPLETE。第一次检查时的验证结果及历史结论保留如下。
+
+- Attempt 4 root causes 保持 §30 原结论：Planner 缺结构化 Evidence linkage、Writer 出现 metric direction flip、Fact finding attribution 不完整；blind evaluation 因 freeze 前展示作者回复而污染。
+- `revisionHarness.ts` 提供结构化字段动作契约、EvidenceStore membership/status/protocol 校验、窄字段 repair prompt、typed patch directive、预算/no-progress/escalation 决策、最终 patch 选择和 held-out reader。Planner 实际执行由 `WriterService.planImprovement` 校验并在最多 2 次结构化修复后拒绝；fact-changing item 必须链接 verified Evidence。
+- `revision.apply` 对 scoped patch 候选运行 global scope、Fact 和未知 citation key 检查；失败只对当前 patch 重试，保留 root violation/attempt lineage，重复根因提前停止。候选不通过时不落盘，并将失败 validation 绑定到当前 revision，供 Gate fail closed。Revision Validation 保留失败 attempt 历史并按最终 patch record 汇总。
+- Escalation 目前仅实现 provider/model agnostic deterministic policy；未接入任何 provider switching。没有配置 escalation model 时返回 exhausted；真实强模型调用数为 0。
+- Held-out reader 通过 manifest 中 `heldOutPaths` 与 Candidate Freeze 时间戳实施路径级读取限制并检查 realpath containment；但仓库尚无 acceptance reader/orchestrator 接入此 API，因此端到端执行代理隔离未证实。
+- workflow/Writer 单测覆盖 direction flip fail-closed、有界 retry、Citation candidate rejection、Planner missing Evidence repair、E999/superseded reject 与两次耗尽；policy tests 覆盖 escalation 禁用/启用、no-progress、final patch 选择、held-out freeze predicate。仍缺部分 unsupported/protocol/NO-OP isolation 与 Candidate Freeze acceptance integration tests。
+- 验证：Backend full（4 workers）220 passed / 3 skipped，2422 passed / 15 skipped；Frontend 280 passed；backend/frontend typecheck 与 build 通过。默认高并行 backend run 曾有 2 项超时/trace 失败，重跑 4 workers 全绿；相应取消和 trace 文件独立重跑通过。GLM calls = 0；未运行 Attempt 5；未创建真实论文验收 Project；未调用真实 Reviewer/Writer；未调查 Pi upstream（当前无 evidence 指向 Pi）。尚未 commit/push。
+- 第一次检查点结论：**NOT_READY**。当时 `revision.apply` 在成功 repair 后仍因最后一条 attempt 是 initial FAIL 而提前 `continue`；此真实断点在本次 continuation 中复现并修复。
+
+**Continuation — Repair Promotion & Revalidation Closure（仍属 M11.4.4，没有创建 M11.4.5）**
+
+- 根因：Writer repair response 已更新局部 `result`，validators 也运行在安全的 `fileBefore` 和不可变 revision snapshot 上；但成功后 promotion 前的分支只看历史 `finalAttempt.overall === "fail"`，未看 `acceptedAttempt`，因此丢掉通过的修复候选，且没有新 accepted record。修复后只在没有通过的 attempt 时 fail closed；成功 attempt 继续落盘并创建独立 patch version。
+- lineage：`P.a0` 初次失败、`P.a1/a2` repair 分别保存；包含 parent attempt、repair finding IDs、root violations、model role 和 final status。attempt history 保留 initial FAIL；summary 以通过的 accepted version 为 final、按 logical lineage 计数，并另列 attempt、repair success/exhaustion。Comment validation 同样选 lineage 最终通过记录。
+- workflow E2E：Fake Writer 首次输出 metric direction flip 和 unsupported numeric claim，Fact Guard FAIL；targeted repair 恢复方向并移除无支持细节，attempt 1 完整验证 PASS，Comment handled，Candidate patch summary publishable。Initial FAIL 与 Repair PASS 两条记录均留存。Citation hallucination 删除 invalid key 后 repair attempt PASS。持续错误 repair 在第二次相同输出/根因时 bounded no-progress；promotion artifact 保存失败会恢复 baseline 并 fail loud 为 `REPAIR_PIPELINE_ERROR`。
+- Planner：结构化输出在 `WriterService.planImprovement` 实际链路进行 bounded repair；Evidence 缺链可修复，unknown/superseded Evidence 被拒绝。修复响应只更新初次失败字段；合法项 action、comment linkage、intent 和 target 从原始 plan 继承。超过预算以 `MODEL_REPAIR_EXHAUSTED` 停止，不继续 Writer。
+- Acceptance read boundary：新增 `AcceptanceEvaluationReader` 作为 fixture/acceptance 专用读取入口，封装 generation read、held-out read 和 freeze。Freeze 前 human final/author response、change log、final PDF 拒绝；共享 response 文件仅解析并返回 Editor/Reviewer blocks，作者回复段落不会返回；Candidate gate 不 publishable 时拒绝 freeze，freeze 后 evaluation reader 才允许读取 held-out。该路径不改全局文件权限，也未执行真实 acceptance attempt。
+- Gate / provider：所有 repair 候选仍需 scope、Fact、Citation、Evidence 检查并成功 apply 才能被接纳；未降低 Candidate Gate。默认不自动换模型/provider；无 escalation model 时 bounded exhausted。GLM calls = 0，未运行 Attempt 5、未创建真实论文项目、未调用真实 Reviewer/Writer、未进入 M11.5，未调查 Pi upstream。
+- Targeted 终验：workflow patch repair / Citation / Fact、Planner、PatchValidation summary、Held-out reader 和 model routing 回归通过；核心 metric direction → targeted repair → PASS workflow E2E 同时断言 initial fail history、repair pass record、summary final version、logical vs attempt count、Comment handled。Promotion error rollback/classification 和 no-progress 亦有回归。
+- 全量终验：backend `npm test -- --testTimeout=30000 --maxWorkers=4` — 220 files passed / 3 skipped，2425 passed / 15 skipped；frontend `npm test` — 27 files / 280 passed；root `npm run typecheck`、`npm run build` 均 PASS。Frontend build 有既存 Vite >500 kB chunk warning。`git diff --check` PASS。无 GLM/provider 调用。随后按用户要求提交并推送至 `origin/main`；最终 commit、HEAD/origin/main 与 clean working tree 状态由本节末次补记确认。M11.4 Product Acceptance 仍为 **FAIL / pending Attempt 5**；本次只将实现状态标为 COMPLETE 与 READY_FOR_M11_4_ATTEMPT_5，不代表真实产品验收通过。

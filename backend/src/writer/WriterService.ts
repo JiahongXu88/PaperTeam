@@ -10,7 +10,7 @@
 
 import { readFile } from "node:fs/promises";
 
-import { AgentRunFailedError, InvalidLatexOutputError } from "../errors.js";
+import { AgentRunFailedError, BusinessError, InvalidLatexOutputError } from "../errors.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { ManuscriptLanguage } from "../project/language.js";
 import { targetLanguageLines } from "../project/language.js";
@@ -503,12 +503,15 @@ export class WriterService {
      * 「修得更漂亮」而被改写；引用白名单与写作阶段同源。
      */
     survey?: SurveySectionWritingContext;
+    /** Targeted validation-aware repair context; never expands the target scope. */
+    patchRepairContext?: string;
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
       params.buildError === undefined &&
       (params.externalDirectives ?? []).length === 0 &&
-      (params.claimRepairs ?? []).length === 0
+      (params.claimRepairs ?? []).length === 0 &&
+      params.patchRepairContext === undefined
     ) {
       // 无问题章节原样返回（不烧 Token）
       return { latex: params.currentLatex, taskId: "(unchanged)" };
@@ -724,6 +727,8 @@ export class WriterService {
     validInstructionIds?: string[];
     /** 外部意见原文；用于对模型漏链意见生成保守的 author-decision 计划项 */
     externalInstructions?: { instructionId: string; text: string }[];
+    /** Internal, bounded structured-field repair state. */
+    structuredRepair?: { request: string; attempts: number; originalPlan?: unknown[]; invalidFields?: Record<number, string[]> };
   }): Promise<ImprovementPlan> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -762,6 +767,9 @@ export class WriterService {
         ...(params.instructionDigest !== undefined
           ? ["", "===== 外部修改意见 =====", params.instructionDigest]
           : []),
+        ...(params.externalInstructions !== undefined && params.externalInstructions.length > 0
+          ? ["", "===== External comment linkage: IDs and original text (linkage only) =====", JSON.stringify(params.externalInstructions)]
+          : []),
         ...(params.coverageDigest !== undefined
           ? ["", "===== 文献需求覆盖 =====", params.coverageDigest]
           : []),
@@ -779,6 +787,14 @@ export class WriterService {
             (issue) =>
               `- [${issue.severity}${issue.blocking ? "/blocking" : ""}][${issue.section}] ${issue.description}`,
           ),
+        ...(params.structuredRepair !== undefined
+          ? [
+              "",
+              "===== STRUCTURED OUTPUT REPAIR (highest priority) =====",
+              params.structuredRepair.request,
+              "Only repair the invalid structured fields. Do not replan valid items or change scientific intent. Return JSON only.",
+            ]
+          : []),
       ].join("\n"),
       projectId: params.projectId,
       contextScope: "writing/improvement-plan",
@@ -788,14 +804,28 @@ export class WriterService {
       throw new AgentRunFailedError(task.error ?? `改进计划任务以 ${task.status} 状态结束`);
     }
     const parsed = extractJsonObject(task.output ?? "", "改进计划");
-    const rawPlan = parsed["plan"];
-    if (!Array.isArray(rawPlan) || rawPlan.length === 0) {
+    const rawPlanValue = parsed["plan"];
+    if (!Array.isArray(rawPlanValue) || rawPlanValue.length === 0) {
       throw new AgentRunFailedError("改进计划：缺少非空 plan 数组");
     }
+    const rawPlan = params.structuredRepair?.originalPlan !== undefined && params.structuredRepair.invalidFields !== undefined
+      ? params.structuredRepair.originalPlan.map((original, index) => {
+          const allowedFields = params.structuredRepair!.invalidFields![index] ?? [];
+          if (allowedFields.length === 0) return original;
+          const repaired = rawPlanValue[index];
+          if (typeof original !== "object" || original === null || typeof repaired !== "object" || repaired === null) return original;
+          const merged = { ...(original as Record<string, unknown>) };
+          for (const field of allowedFields) {
+            if (Object.prototype.hasOwnProperty.call(repaired, field)) merged[field] = (repaired as Record<string, unknown>)[field];
+          }
+          return merged;
+        })
+      : rawPlanValue;
     const validEvidence = new Set(params.validEvidenceIds ?? []);
     const validInstructions = new Set(params.validInstructionIds ?? []);
+    const structuredFailures: { itemIndex: number; field: string; code: string; message: string }[] = [];
     const items: ImprovementPlanItem[] = [];
-    for (const raw of rawPlan.slice(0, 20)) {
+    for (const [itemIndex, raw] of rawPlan.slice(0, 20).entries()) {
       if (typeof raw !== "object" || raw === null) {
         continue;
       }
@@ -819,19 +849,58 @@ export class WriterService {
           ? "fair_ablation_new_detector"
           : "";
       const linkedEvidenceIds = Array.isArray(record["relatedEvidenceIds"])
-        ? record["relatedEvidenceIds"].filter((id): id is string =>
-            typeof id === "string" &&
-            (validEvidence.size === 0 || validEvidence.has(id.trim())) &&
-            (protocolId === "" || params.validEvidenceProtocolScopes?.[id.trim()]?.protocolId === protocolId &&
-              params.validEvidenceProtocolScopes[id.trim()]?.status === "current"),
-          ).map((id) => id.trim()).slice(0, 8)
+        ? record["relatedEvidenceIds"].flatMap((id): string[] => {
+            if (typeof id !== "string" || id.trim() === "") {
+              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "INVALID_EVIDENCE_ID", message: "Evidence ID must be a non-empty string" });
+              return [];
+            }
+            const evidenceId = id.trim();
+            const scope = params.validEvidenceProtocolScopes?.[evidenceId];
+            if (scope?.status === "superseded") {
+              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "EVIDENCE_SUPERSEDED", message: `${evidenceId} is superseded` });
+              return [];
+            }
+            if (!validEvidence.has(evidenceId)) {
+              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "INVALID_EVIDENCE_ID", message: `${evidenceId} is not an allowed verified Evidence ID` });
+              return [];
+            }
+            if (protocolId !== "" && (scope?.protocolId !== protocolId || scope.status !== "current")) {
+              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "EVIDENCE_PROTOCOL_MISMATCH", message: `${evidenceId} is not current evidence for ${protocolId}` });
+              return [];
+            }
+            return [evidenceId];
+          }).slice(0, 8)
         : [];
+      const logicalSection = typeof record["logicalSection"] === "string" ? record["logicalSection"].trim() : "";
+      const coverageQuote = typeof record["coverageQuote"] === "string" ? record["coverageQuote"].trim() : "";
+      if (params.sectionFiles.length > 0 && !params.sectionFiles.includes(section) && section !== "main.tex") {
+        structuredFailures.push({ itemIndex, field: "section", code: "TARGET_NOT_ALLOWED", message: `${section} is not an existing manuscript section` });
+      }
+      if (params.logicalTargets !== undefined && params.logicalTargets.length > 0 &&
+        (logicalSection === "" || !params.logicalTargets.some((target) => target.file === section && target.logicalSection === logicalSection))) {
+        structuredFailures.push({ itemIndex, field: "logicalSection", code: "TARGET_REQUIRED", message: "single-file plan items must select a listed logicalSection" });
+      }
+      if (actionType === "noop") {
+        if (!coverageQuote) structuredFailures.push({ itemIndex, field: "coverageQuote", code: "NOOP_COVERAGE_REQUIRED", message: "noop requires a verbatim coverage quote" });
+        if (!logicalSection) structuredFailures.push({ itemIndex, field: "logicalSection", code: "TARGET_REQUIRED", message: "noop requires a logical target" });
+        if (linkedEvidenceIds.length === 0) structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "EVIDENCE_LINK_REQUIRED", message: "noop requires verified evidence linkage" });
+        if (typeof record["rationale"] !== "string" || record["rationale"].trim() === "") structuredFailures.push({ itemIndex, field: "rationale", code: "NOOP_VERIFICATION_REQUIRED", message: "noop requires a verification basis" });
+      }
+      if (Array.isArray(record["expectedFactChanges"]) && record["expectedFactChanges"].length > 0 && linkedEvidenceIds.length === 0) {
+        structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "FACT_CHANGE_EVIDENCE_REQUIRED", message: "fact-changing plan items require verified Evidence linkage" });
+      }
+      if (actionType === "author_decision_required" && (typeof record["rationale"] !== "string" || record["rationale"].trim() === "")) {
+        structuredFailures.push({ itemIndex, field: "rationale", code: "DECISION_REASON_REQUIRED", message: "author_decision_required needs a decision reason" });
+      }
+      if (typeof record["instructionId"] === "string" && !validInstructions.has(record["instructionId"].trim())) {
+        structuredFailures.push({ itemIndex, field: "instructionId", code: "INVALID_COMMENT_LINK", message: `${record["instructionId"]} is not a current comment/instruction ID` });
+      }
       items.push({
         section,
         action,
         actionType,
-        ...(typeof record["logicalSection"] === "string" ? { logicalSection: record["logicalSection"].trim() } : {}),
-        ...(typeof record["coverageQuote"] === "string" ? { coverageQuote: record["coverageQuote"].trim() } : {}),
+        ...(logicalSection ? { logicalSection } : {}),
+        ...(coverageQuote ? { coverageQuote } : {}),
         ...(protocolId !== "" ? { protocolId } : {}),
         ...(typeof record["rationale"] === "string" && record["rationale"].trim() !== ""
           ? { rationale: record["rationale"].trim() }
@@ -882,6 +951,34 @@ export class WriterService {
     }
     if (items.length === 0) {
       throw new AgentRunFailedError("改进计划：没有合法条目");
+    }
+    if (structuredFailures.length > 0) {
+      const attempts = params.structuredRepair?.attempts ?? 0;
+      if (attempts >= 2) {
+        throw new BusinessError("MODEL_REPAIR_EXHAUSTED", `STRUCTURED_OUTPUT_REPAIR_EXHAUSTED: ${JSON.stringify(structuredFailures)}`);
+      }
+      const allowedEvidence = (params.validEvidenceIds ?? []).map((id) => {
+        const scope = params.validEvidenceProtocolScopes?.[id];
+        return scope === undefined ? id : `${id} (${scope.protocolId}; ${scope.status})`;
+      });
+      const request = [
+        `Original structured output: ${JSON.stringify(parsed["plan"])}`,
+        `Validation errors: ${JSON.stringify(structuredFailures)}`,
+        `Allowed Evidence IDs and protocol metadata: ${allowedEvidence.join(", ") || "(none)"}`,
+        `Original reviewer comments: ${JSON.stringify(params.issues.map((issue) => ({ section: issue.section, category: issue.category, description: issue.description })))}`,
+        `External comment linkage: ${JSON.stringify(params.externalInstructions ?? [])}`,
+        "Do not invent Evidence IDs. Do not bind superseded evidence. Do not modify valid plan items.",
+      ].join("\n");
+      const invalidFields = Object.fromEntries([...new Set(structuredFailures.map((failure) => failure.itemIndex))].map((index) => [index, [...new Set(structuredFailures.filter((failure) => failure.itemIndex === index).map((failure) => failure.field))]]));
+      const originalPlan = params.structuredRepair?.originalPlan ?? rawPlanValue.slice(0, 20);
+      const previouslyAllowed = params.structuredRepair?.invalidFields ?? {};
+      const mergedInvalidFields = { ...previouslyAllowed };
+      for (const [index, fields] of Object.entries(invalidFields)) {
+        const numericIndex = Number(index);
+        mergedInvalidFields[numericIndex] = [...new Set([...(mergedInvalidFields[numericIndex] ?? []), ...fields])];
+      }
+      this.log(`[writer] projectId=${params.projectId} Planner structured repair attempt=${attempts + 1} failures=${JSON.stringify(structuredFailures)}`);
+      return this.planImprovement({ ...params, structuredRepair: { request, attempts: attempts + 1, originalPlan, invalidFields: mergedInvalidFields } });
     }
     return { items };
   }
@@ -1091,6 +1188,7 @@ export function buildRevisePrompt(params: {
   wholeFile?: boolean;
   /** M11.2 Survey：本节写作上下文（综述结构红线；缺省不注入） */
   survey?: SurveySectionWritingContext;
+  patchRepairContext?: string;
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -1151,6 +1249,7 @@ export function buildRevisePrompt(params: {
         : ["（无审稿问题）"]),
       ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
       ...renderClaimRepairBlock(params.claimRepairs ?? []),
+      ...(params.patchRepairContext !== undefined ? ["", "===== Patch-local validation repair =====", params.patchRepairContext] : []),
       ...externalBlock,
       "",
       "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
@@ -1213,6 +1312,7 @@ export function buildRevisePrompt(params: {
       : ["（无审稿问题）"]),
     ...renderRevisionItemsBlock(params.revisionItems ?? [], params.evidenceById),
     ...renderClaimRepairBlock(params.claimRepairs ?? []),
+    ...(params.patchRepairContext !== undefined ? ["", "===== Patch-local validation repair =====", params.patchRepairContext] : []),
     ...externalBlock,
     ...(params.survey !== undefined ? renderSurveyRevisionConstraints(params.survey) : []),
     "",

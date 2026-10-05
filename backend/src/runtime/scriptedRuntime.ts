@@ -996,11 +996,25 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         // （M4.8；PDF 重建项目为 sections/secNN.tex）——脚本从中取前两个，
         // 提取不到时保持静态 fixture（兼容旧 prompt 形态的用例）。
         // M10.3：单文件项目（无 sections/）→ 条目指向 main.tex（整文件修订）
-        const sectionFiles = [...input.task.matchAll(/^\s*- (sections\/[a-z0-9-]+\.tex)$/gm)].map(
+        const sectionFiles = [...input.task.matchAll(/^\s*- (sections\/[a-z0-9_-]+\.tex)$/gm)].map(
           (match) => match[1] ?? "",
         );
+        const logicalTargets = [...input.task.matchAll(/^\s*- file=([^;]+); logicalSection=([^;]+); heading=([^\r\n]+)/gm)];
+        const linkage = /External comment linkage:\s*(\[[^\r\n]*\])/m.exec(input.task)?.[1];
+        const linkedInstructions = linkage === undefined ? [] : JSON.parse(linkage) as Array<{ instructionId?: unknown; text?: unknown }>;
+        const instructionIds = linkedInstructions.flatMap((item) => typeof item.instructionId === "string" ? [item.instructionId] : []);
+        const targetForInstruction = (index: number): RegExpMatchArray | undefined => {
+          const description = String(linkedInstructions[index]?.text ?? "").toLocaleLowerCase();
+          const matching = logicalTargets.find((target) => {
+            const heading = String(target[3] ?? "").replace(/\\[{}]/g, "").toLocaleLowerCase();
+            const headingWords = heading.split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 3);
+            return headingWords.some((word) => description.includes(word)) ||
+              (heading.includes("dataset") && /dataset|数据集/.test(description));
+          });
+          return matching ?? logicalTargets[0];
+        };
         output =
-          sectionFiles.length >= 2
+          sectionFiles.length >= 1
             ? JSON.stringify({
                 plan: sectionFiles.slice(0, 2).map((section, index) => ({
                   section,
@@ -1010,11 +1024,25 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                   priority: index === 0 ? "high" : "medium",
                 })),
               })
-            : input.task.includes("section 使用 main.tex")
+              : input.task.includes("section 使用 main.tex") && logicalTargets.length > 0 && instructionIds.length > 1
+              ? JSON.stringify({ plan: instructionIds.map((instructionId, index) => {
+                  const target = targetForInstruction(index)!;
+                  return ({
+                  section: target[1]?.trim() ?? "main.tex",
+                  logicalSection: target[2]?.trim(),
+                  instructionId,
+                  actionType: "modify",
+                  action: "针对对应审稿意见澄清原有内容",
+                  rationale: "保留可验证事实并回应对应意见",
+                  priority: "medium",
+                }); }) })
+              : input.task.includes("section 使用 main.tex")
               ? JSON.stringify({
                   plan: [
                     {
                       section: "main.tex",
+                      ...(targetForInstruction(0) !== undefined ? { logicalSection: targetForInstruction(0)?.[2]?.trim() } : {}),
+                      ...(instructionIds[0] !== undefined ? { instructionId: instructionIds[0] } : {}),
                       actionType: "modify",
                       action: "补充关键论证并收敛过强表述",
                       rationale: "基于审稿发现与目标差距",

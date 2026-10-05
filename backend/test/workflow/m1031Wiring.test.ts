@@ -99,8 +99,8 @@ const SINGLE_FILE_ARCHIVE = buildZip([
   { name: "refs.bib", data: Buffer.from("@article{a, title={A Good Paper}, year={2020}}", "utf8") },
 ]);
 
-describe("M10.3.1 G1 闭环：未授权漂移 → 确定性恢复 → Final", () => {
-  it("drift → cumulative gate FAIL → restore_facts 恢复冻结段落 → gate 通过 → Final", async () => {
+describe("M10.3.1 compatibility: targeted revision keeps frozen facts", () => {
+  it("candidate repair keeps frozen metrics and final gate passes without deterministic restore", async () => {
     const scripted = scriptedIdeaRuntime({ reviewSequence: ["pass"] });
     const stack = await startTestStack(scripted.runtime, {
       registerCleanup: (cleanup) => cleanups.push(cleanup),
@@ -172,9 +172,11 @@ describe("M10.3.1 G1 闭环：未授权漂移 → 确定性恢复 → Final", ()
     const finished = body["run"] as WorkflowState;
     expect(finished.completion?.label).toBe("final");
     expect(finished.completedStages).toEqual(
-      expect.arrayContaining(["revision.apply", "revision.restore_facts", "quality.gate", "build.final"]),
+      expect.arrayContaining(["revision.apply", "quality.gate", "build.final"]),
     );
-    // 恢复闭环未依赖 stalled/overflow 的 accept_draft
+    // Validation-aware patch repair prevents the drift before restore_facts is needed.
+    expect(finished.completedStages).not.toContain("revision.restore_facts");
+    // 修复闭环未依赖 stalled/overflow 的 accept_draft
     expect(decisions).not.toContain("hitl.revision_stalled");
 
     // 恢复后：漂移值消失、冻结原值回归
@@ -187,7 +189,7 @@ describe("M10.3.1 G1 闭环：未授权漂移 → 确定性恢复 → Final", ()
     expect(revised).toContain("82.4");
     expect(revised).toContain("12.4");
 
-    // 最终 gate：累计事实保持通过 + 历史违规进入 resolved
+    // 最终 gate：累计事实保持通过；没有被接受的漂移需要标记为 resolved。
     const gateFiles = ["quality-gate-r1.json", "quality-gate-r2.json", "quality-gate-r3.json", "quality-gate-r4.json"];
     let finalGate: { gate: { passed: boolean; rules: { rule: string; passed: boolean }[] }; cumulativeFactPreservation?: { ok: boolean; resolvedViolations: unknown[]; unresolvedViolations: unknown[] } } | null = null;
     for (const file of gateFiles) {
@@ -203,24 +205,7 @@ describe("M10.3.1 G1 闭环：未授权漂移 → 确定性恢复 → Final", ()
     expect(cumulativeRule).toBeDefined();
     expect(cumulativeRule!.passed).toBe(true);
     expect(finalGate!.cumulativeFactPreservation?.unresolvedViolations).toHaveLength(0);
-    expect(finalGate!.cumulativeFactPreservation?.resolvedViolations?.length).toBeGreaterThanOrEqual(1);
-
-    // 修订计划条目：fact_preserve 终态 validated（deterministic_restore）
-    const planFiles = ["revision-plan-r1.json", "revision-plan-r2.json", "revision-plan-r3.json", "revision-plan-r4.json"];
-    let restoreItem: { id: string; status: string; resolution?: string } | undefined;
-    for (const file of planFiles) {
-      try {
-        const parsed = JSON.parse(await readFile(join(stack.root, projectId, "reviews", file), "utf8")) as {
-          items: { id: string; kind: string; status: string; resolution?: string }[];
-        };
-        restoreItem = parsed.items.find((item) => item.kind === "fact_preserve" && item.status === "validated");
-      } catch {
-        // 继续
-      }
-    }
-    expect(restoreItem).toBeDefined();
-    expect(restoreItem!.id).toMatch(/^fact-preserve:/);
-    expect(restoreItem!.resolution).toContain("deterministic_restore");
+    expect(finalGate!.cumulativeFactPreservation?.resolvedViolations).toHaveLength(0);
 
     // 授权台账：plan_confirm approve 落盘（改进计划条目固化）
     const ledger = JSON.parse(
