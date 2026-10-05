@@ -54,7 +54,7 @@ type FakeBehavior =
       usageTurns?: (FakeUsage | undefined)[];
     }
   | { kind: "errorStop"; message: string; usageTurns?: (FakeUsage | undefined)[] }
-  | { kind: "preflightReject"; message: string }
+  | { kind: "preflightReject"; message: string; error?: Error }
   | { kind: "hangUntilAbort" }
   /** 先产出若干带 usage 的 assistant turn（message_end），再挂起直到 abort（usage 保留路径测试） */
   | { kind: "turnsThenHang"; turnUsages: FakeUsage[] };
@@ -145,7 +145,7 @@ class FakeAgentSession {
     const behavior = this.behavior;
     try {
       if (behavior.kind === "preflightReject") {
-        throw new Error(behavior.message);
+        throw behavior.error ?? new Error(behavior.message);
       }
       this.emit({ type: "agent_start" } as AgentSessionEvent);
       if (behavior.kind === "hangUntilAbort") {
@@ -1520,6 +1520,103 @@ describe("PiRuntimeAdapter（Timeout 分层：queue / execution 阶段）", () =
     expect(task.executionDurationMs).toBeGreaterThanOrEqual(100);
     expect(task.queueDurationMs).toBeDefined(); // 经历过（瞬时）排队
     expect(task.totalDurationMs).toBeGreaterThanOrEqual(task.executionDurationMs ?? 0);
+    const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(lifecycle).toMatchObject({
+      agentRunId: handle.taskId,
+      abortReason: "PAPERTEAM_EXECUTION_TIMEOUT",
+      timerSource: "PiRuntimeAdapter.executionTimeoutMs",
+      configuredTimeoutMs: 150,
+      transportSettlement: "session_abort_and_waitForIdle_settled",
+    });
+    expect(lifecycle.requestId).toEqual(expect.any(String));
+    expect(lifecycle.paperteamTimeoutAt).toEqual(expect.any(String));
+    expect(lifecycle.abortRequestedAt).toEqual(expect.any(String));
+    expect(lifecycle.localRequestSettledAt).toEqual(expect.any(String));
+    expect(Date.parse(String(lifecycle.abortRequestedAt))).toBeGreaterThanOrEqual(Date.parse(String(lifecycle.paperteamTimeoutAt)));
+    expect(Date.parse(String(lifecycle.localRequestSettledAt))).toBeGreaterThanOrEqual(Date.parse(String(lifecycle.abortRequestedAt)));
+    expect(adapter.runtimeStats().activeRuns).toBe(0);
+    await adapter.close();
+  });
+
+  it("Pi session 的 Request timed out 与 PaperTeam deadline 分开分类并保留 request correlation", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "errorStop", message: "Request timed out. api_key=secret-value" });
+    const adapter = await makeLevel1Adapter(factory, { executionTimeoutMs: 5_000, firstActivityTimeoutMs: 0 });
+    const handle = await adapter.startAgent({
+      agentId: "researcher",
+      task: "synthetic assessment request",
+      projectId: "p",
+      metadata: { stage: "assessment.target", stageAttempt: 2 },
+    });
+    const task = await handle.result();
+    const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(task.status).toBe("failed");
+    expect(task.errorCode).toBe("RUN_FAILED");
+    expect(lifecycle).toMatchObject({
+      agentRunId: handle.taskId,
+      stage: "assessment.target",
+      stageAttempt: 2,
+      errorSource: "pi_session_assistant_error",
+      errorName: "PiAssistantError",
+      timeoutClass: "PI_REQUEST_TIMEOUT",
+    });
+    expect(lifecycle.errorMessage).toBe("Request timed out. api_key=[REDACTED]");
+    expect(lifecycle.paperteamTimeoutAt).toBeUndefined();
+    expect(lifecycle.abortRequestedAt).toBeUndefined();
+    expect(lifecycle.localRequestSettledAt).toEqual(expect.any(String));
+    expect(lifecycle.requestId).toEqual(expect.any(String));
+    await adapter.close();
+  });
+
+  it("prompt error diagnostic 保留有界 cause chain 与 transport timeout 分类", async () => {
+    const factory = createFakeFactory();
+    const cause = Object.assign(new Error("socket timed out"), { code: "ETIMEDOUT" });
+    const error = new Error("fetch failed", { cause });
+    factory.setBehavior({ kind: "preflightReject", message: error.message, error });
+    const adapter = await makeLevel1Adapter(factory, { firstActivityTimeoutMs: 0 });
+    const task = await adapter.runAgent({ agentId: "researcher", task: "synthetic", projectId: "p" });
+    const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(task.errorCode).toBe("PROMPT_REJECTED");
+    expect(lifecycle).toMatchObject({
+      errorSource: "pi_session_prompt",
+      errorName: "Error",
+      errorMessage: "fetch failed",
+      causeName: "Error",
+      causeMessage: "socket timed out",
+      timeoutClass: "TRANSPORT_TIMEOUT",
+    });
+    await adapter.close();
+  });
+
+  it("structured HTTP 504 error 保留 status/provider code 并分类为 provider timeout", async () => {
+    const factory = createFakeFactory();
+    const error = Object.assign(new Error("Gateway timeout"), { status: 504, code: "gateway_timeout" });
+    factory.setBehavior({ kind: "preflightReject", message: error.message, error });
+    const adapter = await makeLevel1Adapter(factory, { firstActivityTimeoutMs: 0 });
+    const task = await adapter.runAgent({ agentId: "researcher", task: "synthetic", projectId: "p" });
+    const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(lifecycle).toMatchObject({
+      topLevelCode: "gateway_timeout",
+      httpStatus: 504,
+      timeoutClass: "PROVIDER_TIMEOUT",
+    });
+    await adapter.close();
+  });
+
+  it("lifecycle trace separates first assistant activity from first visible text token", async () => {
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "complete", output: "visible", streamEvents: 1 });
+    const adapter = await makeLevel1Adapter(factory, { firstActivityTimeoutMs: 0 });
+    const handle = await adapter.startAgent({ agentId: "writer", task: "small prompt", projectId: "p" });
+    const task = await handle.result();
+    const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(lifecycle.firstActivityAt).toEqual(expect.any(String));
+    expect(lifecycle.firstTextTokenAt).toEqual(expect.any(String));
+    expect(Date.parse(String(lifecycle.firstActivityAt))).toBeLessThanOrEqual(Date.parse(String(lifecycle.firstTextTokenAt)));
+    expect(lifecycle.sessionSettledAt).toEqual(expect.any(String));
+    expect(lifecycle.streamEndedAt).toEqual(expect.any(String));
+    expect(lifecycle.durationMs).toEqual(expect.any(Number));
+    expect(JSON.stringify(lifecycle)).not.toContain("small prompt");
     await adapter.close();
   });
 

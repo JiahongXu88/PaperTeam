@@ -299,6 +299,8 @@ export interface TaskSettleInfo {
    * provider 活动即终态（含 first-activity 超时）时缺省——不伪造。
    */
   firstActivityMs?: number;
+  /** Redacted request lifecycle diagnostics from PiRuntimeAdapter; prompt body is excluded. */
+  requestLifecycle?: Record<string, unknown>;
   usage?: {
     inputTokens: number;
     outputTokens: number;
@@ -577,6 +579,9 @@ export class TaskTraceRecorder {
     }
     if (typeof info.firstActivityMs === "number") {
       span.attributes["task.firstActivityMs"] = Math.max(0, info.firstActivityMs);
+    }
+    if (info.requestLifecycle !== undefined) {
+      span.attributes["request.lifecycle"] = JSON.stringify(info.requestLifecycle);
     }
     if (info.usage !== undefined) {
       span.attributes["task.inputTokens"] = info.usage.inputTokens;

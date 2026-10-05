@@ -537,6 +537,9 @@ interface RunState {
   agentId: string;
   /** startAgent 受理时刻（epoch ms；计时字段唯一事实源） */
   requestedAt: number;
+  requestStartedAtMs?: number;
+  /** Per-Pi prompt lifecycle diagnostics; contains no prompt or credential data. */
+  requestLifecycle?: Record<string, unknown>;
   /** 进入 per-session 队列时刻（epoch ms；未入队任务缺省） */
   queuedAtMs?: number;
   /** 进入执行（session.prompt 开始）时刻（epoch ms；未执行任务缺省） */
@@ -1581,6 +1584,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
         : {}),
       ...(state.usage !== undefined ? { usage: { ...state.usage } } : {}),
       ...(state.skillsAssigned !== undefined ? { skills: skillsOf(state) } : {}),
+      ...(state.requestLifecycle !== undefined
+        ? { metadata: { ...(task.metadata ?? {}), requestLifecycle: { ...state.requestLifecycle } } }
+        : {}),
     };
     // M10.4.4：首活动时长进诊断 metadata（未观测到 provider 活动即缺省，不伪造）
     const firstActivityMs =
@@ -1592,7 +1598,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
     }
     // M10.4.0：任务终态收敛 trace span（resolve / reject 两条路径的唯一收口点）
     state.trace?.taskSettled(
-      firstActivityMs !== undefined ? { ...enriched, firstActivityMs } : enriched,
+      {
+        ...enriched,
+        ...(firstActivityMs !== undefined ? { firstActivityMs } : {}),
+        ...(state.requestLifecycle !== undefined ? { requestLifecycle: state.requestLifecycle } : {}),
+      },
     );
     state.trace = undefined;
     return enriched;
@@ -1642,6 +1652,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
       // timeout 已先发起 abort 时归因保持 timeout（abortInitiator 只记首个）
       if (!state.abortRequested) {
         state.abortRequested = true;
+        if (state.requestLifecycle !== undefined) {
+          state.requestLifecycle.abortRequestedAt = new Date(this.now()).toISOString();
+          state.requestLifecycle.abortReason = "CANCELLED";
+        }
         if (state.abortInitiator === undefined) {
           state.abortInitiator = "cancel";
         }
@@ -2091,6 +2105,30 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const { taskId, input, message, state, sessionKey } = context;
     this.attachEventForwarder(managed, taskId, state);
 
+    const requestId = randomUUID();
+    const requestStartedAtMs = this.now();
+    state.requestStartedAtMs = requestStartedAtMs;
+    const modelLabel = managed.modelLabel;
+    state.requestLifecycle = {
+      requestId,
+      agentRunId: taskId,
+      ...(state.traceScope !== undefined ? {
+        workflowRunId: state.traceScope.runId,
+        stage: state.traceScope.stageId,
+        stageAttempt: state.traceScope.attempt,
+      } : typeof input.metadata?.["stage"] === "string" ? { stage: input.metadata["stage"] } : {}),
+      ...(state.traceScope === undefined && typeof input.metadata?.["stageAttempt"] === "number"
+        ? { stageAttempt: input.metadata["stageAttempt"] }
+        : {}),
+      model: modelLabel,
+      provider: modelLabel?.split("/")[0],
+      requestStartedAt: new Date(requestStartedAtMs).toISOString(),
+      promptStartedAt: new Date(requestStartedAtMs).toISOString(),
+      promptChars: message.length,
+      messageCount: 1,
+      toolCount: managed.role.tools.length,
+    };
+
     // 执行阶段超时（M5.1 分层）：只在 session.prompt 开始后计时。
     // timeout 与 cancel 竞态的归因规则：abortInitiator 只记首个发起
     // session.abort 的一方——deadline 先到 → timed_out；cancel 先到 →
@@ -2102,6 +2140,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
         return;
       }
       state.abortRequested = true;
+      state.requestLifecycle!.paperteamTimeoutAt = new Date(this.now()).toISOString();
+      state.requestLifecycle!.abortRequestedAt = new Date(this.now()).toISOString();
+      state.requestLifecycle!.abortReason = "PAPERTEAM_EXECUTION_TIMEOUT";
+      state.requestLifecycle!.timerSource = "PiRuntimeAdapter.executionTimeoutMs";
+      state.requestLifecycle!.configuredTimeoutMs = executionTimeoutMs;
       state.abortInitiator = "timeout";
       state.abortTimeoutPhase = "execution";
       this.log(`[pi-runtime] runAgent ${taskId} 执行超时（${executionTimeoutMs}ms），执行 abort`);
@@ -2125,6 +2168,11 @@ export class PiRuntimeAdapter implements AgentRuntime {
         }
         state.firstActivityTimer = undefined;
         state.abortRequested = true;
+        state.requestLifecycle!.paperteamTimeoutAt = new Date(this.now()).toISOString();
+        state.requestLifecycle!.abortRequestedAt = new Date(this.now()).toISOString();
+        state.requestLifecycle!.abortReason = "PAPERTEAM_FIRST_ACTIVITY_TIMEOUT";
+        state.requestLifecycle!.timerSource = "PiRuntimeAdapter.firstActivityTimeoutMs";
+        state.requestLifecycle!.configuredTimeoutMs = this.firstActivityTimeoutMs;
         state.abortInitiator = "timeout";
         state.abortTimeoutPhase = "first_activity";
         // 超时可观测（trace 事件 + 结构化错误码），不伪装成普通 provider error
@@ -2150,6 +2198,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
     } catch (error) {
       promptError = error;
     } finally {
+      const settledAt = this.now();
+      state.requestLifecycle!.sessionSettledAt = new Date(settledAt).toISOString();
+      state.requestLifecycle!.streamEndedAt = new Date(settledAt).toISOString();
+      state.requestLifecycle!.localRequestSettledAt = new Date(settledAt).toISOString();
+      state.requestLifecycle!.durationMs = Math.max(0, settledAt - requestStartedAtMs);
+      state.requestLifecycle!.transportSettlement = "pi_session_prompt_settled";
       clearTimeout(timer);
       this.clearFirstActivityTimer(state);
       this.eventForwarders.delete(taskId);
@@ -2158,6 +2212,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
     if (state.abortInitiator === "timeout") {
       const phase = state.abortTimeoutPhase ?? "execution";
       await managed.session.waitForIdle().catch(() => {});
+      state.requestLifecycle!.localRequestSettledAt = new Date(this.now()).toISOString();
+      state.requestLifecycle!.transportSettlement = "session_abort_and_waitForIdle_settled";
       // self-healing（M5.2 任务 K3）：执行超时后底层会话状态不确定
       //（waitForIdle 已收敛，但流中断点后的会话复用没有上游保证），
       // 标记下一安全边界重建——只恢复 Runtime 后续可用性，不重试本任务
@@ -2172,6 +2228,9 @@ export class PiRuntimeAdapter implements AgentRuntime {
       // prompt 前置校验 / compaction 互斥等同步拒绝：结构化失败（底层细节只进日志）。
       // prompt 抛异常意味着会话状态不确定 → 标记待重建（self-healing）
       const detail = promptError instanceof Error ? promptError.message : String(promptError);
+      state.requestLifecycle!.errorAt = new Date(this.now()).toISOString();
+      state.requestLifecycle!.errorSource = "pi_session_prompt";
+      Object.assign(state.requestLifecycle!, serializeErrorDiagnostics(promptError));
       this.log(`[pi-runtime] runAgent ${taskId} prompt 被拒绝：${detail}`);
       this.markNeedsRotation(managed, "prompt_exception");
       return this.buildTask({
@@ -2205,13 +2264,19 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
     if (stopReason === "error") {
       const errorText = last?.errorMessage ?? "Pi agent run 以 error 终态结束";
-      this.log(`[pi-runtime] runAgent ${taskId} 终态=error：${errorText}`);
+      const safeErrorText = redactDiagnosticString(errorText).slice(0, 500);
+      state.requestLifecycle!.errorAt = new Date(this.now()).toISOString();
+      state.requestLifecycle!.errorSource = "pi_session_assistant_error";
+      state.requestLifecycle!.errorName = "PiAssistantError";
+      state.requestLifecycle!.errorMessage = safeErrorText;
+      state.requestLifecycle!.timeoutClass = /timed out|timeout/i.test(errorText) ? "PI_REQUEST_TIMEOUT" : "UNKNOWN_PROVIDER_FAILURE";
+      this.log(`[pi-runtime] runAgent ${taskId} 终态=error：${safeErrorText}`);
       return this.buildTask({
         taskId,
         agentId: input.agentId,
         status: "failed",
         sessionKey,
-        error: errorText,
+        error: safeErrorText,
         errorCode: "RUN_FAILED",
       });
     }
@@ -2807,7 +2872,18 @@ export class PiRuntimeAdapter implements AgentRuntime {
       ) {
         state.sawProviderActivity = true;
         state.firstActivityAtMs = this.now();
+        state.requestLifecycle!.firstActivityAt = new Date(state.firstActivityAtMs).toISOString();
+        state.requestLifecycle!.firstActivityLatencyMs = Math.max(0, state.firstActivityAtMs - (state.requestStartedAtMs ?? state.firstActivityAtMs));
         this.clearFirstActivityTimer(state);
+      }
+      state.requestLifecycle!.lastActivityAt = new Date(this.now()).toISOString();
+      const streamEvent = (event as { assistantMessageEvent?: { type?: string; delta?: string } }).assistantMessageEvent;
+      if (event.type === "message_update" && streamEvent?.type === "text_delta" &&
+          typeof streamEvent.delta === "string" && streamEvent.delta.length > 0 &&
+          (event as { message?: { role?: unknown } }).message?.role === "assistant" &&
+          state.requestLifecycle!.firstTextTokenAt === undefined) {
+        state.requestLifecycle!.firstTextTokenAt = new Date(this.now()).toISOString();
+        state.requestLifecycle!.firstTextTokenLatencyMs = Math.max(0, this.now() - (state.requestStartedAtMs ?? this.now()));
       }
       if (event.type === "tool_execution_start") {
         recordSkillAccess(state, managed, event);
@@ -2975,6 +3051,10 @@ export class PiRuntimeAdapter implements AgentRuntime {
       state.cancelRequested = true;
       if (state.phase === "running" && !state.abortRequested) {
         state.abortRequested = true;
+        if (state.requestLifecycle !== undefined) {
+          state.requestLifecycle.abortRequestedAt = new Date(this.now()).toISOString();
+          state.requestLifecycle.abortReason = "RUNTIME_CLOSED";
+        }
         if (state.abortInitiator === undefined) {
           state.abortInitiator = "cancel";
         }
@@ -3268,6 +3348,40 @@ function skillsOf(state: RunState): AgentTaskSkills {
 /** 错误消息提取（诊断日志用，不含堆栈） */
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Bounded cause-chain projection for diagnostics. Never serialize headers, request bodies, or secrets. */
+function serializeErrorDiagnostics(error: unknown): Record<string, unknown> {
+  const top = error as { code?: unknown; name?: unknown; message?: unknown; status?: unknown; statusCode?: unknown; cause?: unknown };
+  const cause = top && typeof top === "object" ? top.cause as { name?: unknown; message?: unknown; code?: unknown; cause?: unknown } : undefined;
+  const httpStatus = Number.isInteger(top?.status) ? top.status : Number.isInteger(top?.statusCode) ? top.statusCode : undefined;
+  const name = typeof top?.name === "string" ? top.name : "Error";
+  const msg = typeof top?.message === "string" ? top.message : errorText(error);
+  const code = typeof top?.code === "string" ? top.code : undefined;
+  const causeName = typeof cause?.name === "string" ? cause.name : undefined;
+  const causeMessage = typeof cause?.message === "string" ? cause.message.slice(0, 500) : undefined;
+  const timeoutClass = httpStatus === 504 ? "PROVIDER_TIMEOUT"
+    : /Timeout|timed out/i.test(name) && /APIConnectionTimeout/.test(name) ? "PI_REQUEST_TIMEOUT"
+      : /UND_ERR|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(`${code ?? ""} ${cause?.code ?? ""}`) ? "TRANSPORT_TIMEOUT"
+        : /abort/i.test(name) || /abort/i.test(msg) ? "ABORTED"
+          : /timeout|timed out/i.test(`${name} ${msg}`) ? "PI_REQUEST_TIMEOUT"
+            : "UNKNOWN_PROVIDER_FAILURE";
+  return {
+    topLevelCode: code,
+    errorName: name,
+    errorMessage: redactDiagnosticString(msg).slice(0, 500),
+    ...(causeName !== undefined ? { causeName } : {}),
+    ...(causeMessage !== undefined ? { causeMessage: redactDiagnosticString(causeMessage).slice(0, 500) } : {}),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    timeoutClass,
+  };
+}
+
+function redactDiagnosticString(value: string): string {
+  return value
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|zai-[A-Za-z0-9_-]{8,})\b/g, "[REDACTED_KEY]")
+    .replace(/\b(api[_-]?key|authorization|cookie|set-cookie)\b\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
 }
 
 /**

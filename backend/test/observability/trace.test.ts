@@ -53,8 +53,8 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-function scopeOf(projectId = "p-trace", runId = "w-trace", stageId = "review.run"): TraceScope {
-  return { projectId, runId, stageId, attempt: 1, stageSpanId: "span-stage" };
+function scopeOf(projectId = "p-trace", runId = "w-trace", stageId = "review.run", attempt = 1): TraceScope {
+  return { projectId, runId, stageId, attempt, stageSpanId: "span-stage" };
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +413,22 @@ describe("PiRuntimeAdapter trace 集成", () => {
     expect(tool?.status).toBe("ok");
     expect(agentTask?.attributes["task.id"]).toBe(task.taskId);
     expect(agentTask?.attributes["task.inputTokens"]).toBe(11);
+    const requestLifecycle = JSON.parse(String(agentTask?.attributes["request.lifecycle"])) as Record<string, unknown>;
+    expect(requestLifecycle).toMatchObject({ agentRunId: task.taskId, stage: "revision.revise", stageAttempt: 1 });
+    expect(requestLifecycle.requestId).toEqual(expect.any(String));
+    expect(requestLifecycle.firstActivityAt).toEqual(expect.any(String));
+    expect(requestLifecycle.firstTextTokenAt).toBeUndefined(); // fake stream emits message_end but no visible text_delta
+    expect(JSON.stringify(requestLifecycle)).not.toContain("修订第 3 节");
+    const retryTask = await runInTraceScope(scopeOf("p-adapter", "w-adapter", "revision.revise", 2), () =>
+      adapter.runAgent({ agentId: "writer", task: "synthetic retry", projectId: "p-adapter" }),
+    );
+    const firstLifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    const retryLifecycle = retryTask.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(retryLifecycle.stageAttempt).toBe(2);
+    expect(retryLifecycle.requestId).not.toBe(firstLifecycle.requestId);
+    expect(Date.parse(String(firstLifecycle.sessionSettledAt))).toBeLessThanOrEqual(
+      Date.parse(String(retryLifecycle.requestStartedAt)),
+    );
     await adapter.close();
   });
 
@@ -542,13 +558,25 @@ describe("Workflow trace 集成（scripted runtime）", () => {
     expect(finished).toBe(true);
 
     const runDir = join(stack.root, project.id, "workflow", "runs", runId);
-    const traceDoc = JSON.parse(await readFile(join(runDir, "run-trace.json"), "utf8")) as {
+    const tracePath = join(runDir, "run-trace.json");
+    let traceDoc: {
       traceId: string;
       workflowKind: string;
       runStatus?: string;
       finishedAtMs?: number;
       spans: { name: string; status: string; attributes: Record<string, unknown> }[];
-    };
+    } | undefined;
+    const traceFlushDeadline = Date.now() + 5_000;
+    while (Date.now() < traceFlushDeadline) {
+      traceDoc = JSON.parse(await readFile(tracePath, "utf8")) as typeof traceDoc;
+      if (traceDoc?.runStatus === "completed") {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (traceDoc?.runStatus !== "completed") {
+      throw new Error("workflow 已 completed，但 run-trace.json 未在 5 秒内刷新为 completed");
+    }
     expect(traceDoc.traceId).toBe(runId);
     expect(traceDoc.workflowKind).toBe("existing_paper_improvement");
     expect(traceDoc.runStatus).toBe("completed");
