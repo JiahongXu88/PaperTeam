@@ -59,4 +59,24 @@ describe("held-out EvaluationSet read boundary", () => {
     expect(reader.isFrozen()).toBe(true);
     await expect(reader.read("evaluation/author-response.md")).resolves.toBe("held-out answer");
   });
+  it("parses Chinese Editor and Reviewer headings while cutting off Chinese author replies", async () => {
+    const root = await fixture();
+    await writeFile(join(root, "feedback.md"), [
+      "## 编辑意见：请明确贡献边界。", "评论正文。", "**作者回复：**我们已按最终稿修改。",
+      "## 审稿意见 1：请解释指标方向。", "请核实该指标的变化方向。", "**作者回复**", "最终答案不得进入生成集。",
+      "## 审稿意见 2：补充证据。", "请提供证据来源。",
+    ].join("\n"), "utf8");
+    const reader = new AcceptanceEvaluationReader(root, {
+      generationPaths: ["baseline.tex"],
+      heldOutPaths: ["evaluation/author-response.md"],
+      reviewerCommentPaths: ["feedback.md"],
+    });
+    const comments = await reader.readReviewerComments("feedback.md");
+    expect(comments).toEqual([
+      { heading: "Editor", content: "评论正文。" },
+      { heading: "Reviewer 1", content: "请核实该指标的变化方向。" },
+      { heading: "Reviewer 2", content: "请提供证据来源。" },
+    ]);
+    expect(JSON.stringify(comments)).not.toContain("最终答案不得进入生成集");
+  });
 });

@@ -54,17 +54,23 @@ export class AcceptanceEvaluationReader {
     const blocks: ReviewerCommentBlock[] = [];
     for (let i = 0; i < headings.length; i += 1) {
       const heading = headings[i]![2]!.trim();
-      if (!/^(?:editor|reviewer)\b/i.test(heading)) continue;
+      const reviewerMatch = /^(?:reviewer\s*#?\s*(\d+)?|(?:外审|审稿|评审)(?:意见|人|专家)\s*[#＃：:]?\s*(\d+))(?=$|[\s：:])/i.exec(heading);
+      const editorMatch = /^(?:editor(?:\s+comments?)?|编辑(?:意见)?|主编意见)(?:\s*[:：].*)?$/i.test(heading);
+      if (reviewerMatch === null && !editorMatch) continue;
       const start = headings[i]!.index! + headings[i]![0].length;
       let end = i + 1 < headings.length ? headings[i + 1]!.index! : source.length;
       for (let j = i + 1; j < headings.length; j += 1) {
-        if (/^(?:author(?:s)?\s+(?:response|reply)|response\s+to\s+(?:reviewer|editor))/i.test(headings[j]![2]!.trim())) { end = headings[j]!.index!; break; }
+        if (/^(?:author(?:s)?\s+(?:response|reply)|response\s+to\s+(?:reviewer|editor)|作者(?:回复|答复)|(?:审稿|编辑)回复)/i.test(headings[j]![2]!.trim())) { end = headings[j]!.index!; break; }
       }
       const segment = source.slice(start, end);
-      const authorMarker = /^(?:author(?:s)?\s+(?:response|reply)|response\s+from\s+author(?:s)?)\s*:/im.exec(segment);
+      const authorMarker = /^(?:\*{0,2}\s*)?(?:author(?:s)?\s+(?:response|reply)|response\s+from\s+author(?:s)?|作者(?:回复|答复)|(?:审稿|编辑)回复)\s*[:：]?(?:\s*\*{0,2})?/im.exec(segment);
       if (authorMarker !== null) end = start + authorMarker.index;
       const content = source.slice(start, end).trim();
-      if (content) blocks.push({ heading, content });
+      if (content) {
+        const reviewerNumber = reviewerMatch?.[1] ?? reviewerMatch?.[2];
+        const label = editorMatch ? "Editor" : reviewerNumber ? `Reviewer ${reviewerNumber}` : heading;
+        blocks.push({ heading: label, content });
+      }
     }
     if (blocks.length === 0) throw new HeldOutAccessError("no parseable Editor/Reviewer comment blocks found");
     return blocks;
