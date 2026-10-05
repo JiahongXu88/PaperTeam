@@ -202,26 +202,55 @@ Reviewer 2 / 4 的真实实验材料已在 fixture 且进入 EvidenceStore，不
 
 ## 24. M11.4 Verdict
 
-**FAIL — Existing Paper Revision Product Acceptance 未通过。** 返修前稿 baseline、导入、评论解析、实验 Evidence 接入、Plan linkage、Citation Preservation 和临时 LaTeX 编译大体正常；然而核心要求 Fact Preservation 失败，Candidate rev 3 的 17 项修改全部被拒绝，且 Reviewer 4 协议出现 Evidence misuse。不能以守卫曾经拒绝不安全候选来宣称返修能力通过。
+**FAIL — Existing Paper Revision Product Acceptance 未通过。** Attempt 2 的结论见历史记录；Attempt 3 的 scoped Writer 调用和 protocol Evidence 已接入，但 Writer 对工作区的直接文件写入绕过了冻结基线 scope diff，Fact Preservation 发现 6 项方向漂移并阻止 Candidate 导出。不能以守卫曾经拒绝不安全候选来宣称返修能力通过。
 
 ## 25. M11.5 Closure Readiness
 
-**Not ready。** M11.4 未通过，不进入 M11.5 Closure Readiness Audit。后续收口应先修正 existing-paper writer 的 single-file scope/NO-OP 执行边界及 Evidence 协议混用，再用新的隔离项目从同一返修前稿重验；保持同一 Generation/Evaluation Separation，仍不得将 Human Final 回灌 Writer。
+**Not ready。** M11.4 未通过，不进入 M11.5 Closure Readiness Audit。后续收口应先让 scope guard 对冻结的 writer 前文件快照与最终文件做差分，并关闭可绕过结构化 patch 的直接写文件通道；再修复 patch 级 Fact outcome 归因，之后才可按授权建立新的隔离验收项目。不得复用 Attempt 3 生成项目或降低 Guard。
 
 ### Attempt history
 
 - **Attempt 1 — invalid baseline:** `p-ee063d5608ff` 从 Human Final 再返修，作为历史实验保留，不纳入本轮产品能力结论。
 - **Attempt 2 — correct baseline:** `p-083018b5b6b7` 从 `paper_before_revision.tex` 起跑；candidate rev 3 SHA 与 Guard 结果按上文记录；最终失败。
-- 本轮源码和 fixture 未修改。产品修复及新一轮验收尚未执行。
+- 产品修复与测试提交见 §26–§27。Attempt 3 记录见 §27；由于 Attempt 3 已触发事实安全失败，不启动第四次验收。
 
 ## 26. M11.4.1 Controlled Existing-Paper Revision Scope（implementation checkpoint）
 
-更新：2026-10-05。Attempt 1 / Attempt 2 结论和产物保持不变。以下是针对 Attempt 2 结构性失败的产品修复；**Attempt 3 尚未运行，因此本节不改变 M11.4 FAIL verdict，也不表示 M11.4.1 acceptance 已完成。**
+更新：2026-10-05。Attempt 1 / Attempt 2 结论和产物保持不变。以下记录 M11.4.1 产品实现与 Attempt 3 验收；Attempt 3 发现仍有 scope enforcement 缺陷，因此 **M11.4.1 implementation 未达到 COMPLETE，M11.4 继续 FAIL**。
 
 - **Typed action / NO-OP dispatch**：`RevisionPlanItem.actionType` 增加 `modify | noop | author_decision_required | evidence_only`。`collectPlanDirectives` 只派发 planned 且可执行的条目；NO-OP 必须携带 `logicalSection`、原文 `coverageQuote` 和证据 IDs，并由系统核验 quote 确实存在于当前目标、证据状态有效、协议适用后，才写入 `already_satisfied` resolution trace。自然语言中的 “NO-OP / already covered” 不触发关闭。未通过核验时不调用 Writer，保留 unresolved trace 和 remaining issue。
 - **Single-file logical targets / patches**：新增轻量 LaTeX heading / label 定位器；单文件 `main.tex` 的 section-level target 作为 Writer 输入。按当前 target 内容生成局部替换，apply 前重新解析目标并检查 SHA-256；目标内容已变化则 fail closed。Apply 后 scope guard 检查差异只能落在授权 span；同时检查 `\end{document}` 后是否新增内容，并在一轮开始时拒绝重叠 patch。Fact / Citation Preservation 仍独立运行。
 - **Evidence protocol scope**：EvidenceRecord 支持 `{protocolId,status}`。来自明确命名来源 `fair_ablation_new_detector` 的 Evidence 标为 current；`old_coco_pretrained_detector` 标为 superseded。结构化实验数据和 fulltext grounding 均继承来源协议。Revision item 指定 `protocolId` 后，只有相同 protocol 且 status=current 的 Evidence 进入该 Writer 上下文；NO-OP 也执行同一适用性检查。
 - **Comment outcome trace**：外部意见持久化 `resolutionTrace`，包含 comment / plan item / action / target / evidence / patch / verification / status / summary / remaining issue。修改项在实际 diff 后记录结果；后续 gate 同时核验 Fact 和 Citation Preservation，失败回退 unresolved，成功更新 trace verification。NO-OP 在 coverage + evidence verification 成功后进入 already_satisfied。
 - **Regression coverage**：新增 scope/protocol fixtures 覆盖四 NO-OP + 一 MODIFY、RDK X3 的 baseline quote + verified Evidence、局部 subsection patch、摘要越界、范围内数字仍由 Fact Guard 判定、旧 COCO 协议拒绝、document end 后追加文本拒绝、overlap 检测及 Comment trace。该组测试证明纯机制边界；仍需真实 Attempt 3 验收实际成本、五条评论终态、Citation/Fact gate、PDF 与 held-out 对照。
-- **验证**：backend `npm test -- --maxWorkers=1` — 216 files passed / 3 skipped；2392 passed / 15 skipped；backend typecheck/build PASS。frontend `npm test` — 280 passed；typecheck/build PASS（保留既有 >500 kB chunk warning）。最终 `git diff --check` / secret scan 与 Git 同步将在提交前记录。
-- **当前限制**：没有新建 Attempt 3 项目、Candidate Freeze、Revised PDF 或 Human Final 后验比较；没有读取 Human Final/change log用于生成。GLM Attempt 3 成本与状态均待测。
+- **验证**：backend `npm test -- --maxWorkers=1` — 216 files passed / 3 skipped；2393 passed / 15 skipped；backend typecheck/build PASS。frontend `npm test` — 280 passed；typecheck/build PASS（保留既有 >500 kB chunk warning）。`git diff --check` PASS，修复 commits 已 push 到 `origin/main`。
+- **当前限制**：Attempt 3 暴露 scope guard 使用了 writer 后的文件作为比较基线；见下节。没有通过 Guard 的 Candidate Freeze、Revised PDF 或 Human Final 后验比较；没有读取 Human Final/change log用于生成。
+
+## 27. M11.4 Real Acceptance Attempt 3 — FAIL
+
+**项目与输入**
+
+- Project `p-1fdaa03d9189`，Run `w-d4b399ef87e2`。输入为正确 pre-revision baseline `D:\PaperTeamData\M10.3-real-paper-case\manuscript\historical\paper_before_revision.tex`，项目导入为单文件 `main.tex`；baseline `contentHash=8e08f8fa9224a70d8dff972264a348b888f930c9b017e0d934a6eb4f55959849`。
+- 5 条 comments 导入。Plan 6 项：4 MODIFY、Reviewer 1 文献数量要求 1 NO-OP、同一 Reviewer 1 comment 的主题文献缺口 1 author_decision_required。NO-OP 和 author-decision 子项均未派给 Writer。NO-OP trace 确认了原文 quote 与 E006；同一 comment 保留 `improvement:5` / `improvement:6`、E006、scope/evidence verification，并正确保持 unresolved（仍有作者决策）。
+- 4 个 MODIFY patch 共调用 Writer 4 次，合计 10,859 input / 6,727 output tokens，成本估算 $0.05765。Run trace 截止停止时为 14 model turns、52,287 input / 11,710 output tokens、估算 $0.15192。费用是 provider list-price 估算。
+
+**首轮 Candidate 与 Gate**
+
+- rev 2 记录 4 个 patch；每条 trace 显示 `scope=true`、citation=true。Citation 核验 25 keys、missing=0、hallucinated=0、unverifiable=1。
+- Fact Preservation **FAIL**：rev-1→rev-2 有 6 项结论方向漂移，Quality Gate 另报 1 条 revision-introduced unsupported claim。变化跨到训练策略、消融/轨迹稳定性和结论等未授权 section。Fact Guard 正确阻止不安全 Candidate 发布。
+- RDK X3 的 E001 与 Reviewer 4 fair-ablation 的 E003/E005 按当前协议进入计划；没有发现旧 COCO protocol Evidence 被派给本轮 Writer。单文件逻辑 section patch 生效，但全局范围检查没有捕获工作区直接写入。
+- Comment outcome：Reviewer 1 复合 comment 的 NO-OP + author decision trace 已正确聚合；其余 4 条修改 comment 均被整篇 revision 的 Fact FAIL 一起回退为 unresolved，并标记 `fact=false`。系统没有把具体失败归因到对应 patch。
+- rev 2 不构成通过 Guard 的 Candidate Freeze；未生成 PaperTeam Revised Draft PDF。Human Final、作者回复和 change log 均未读取，held-out comparison 未执行。未进入 M11.5。
+
+**根因与停止点**
+
+- `backend/src/workflow/definitions.ts` 在调用 Writer 前读取 `fileBefore`，但 Writer Pi 会话持有项目 `write/edit` 工具。Apply 后重新读取 `latestFile`，并用 `checkRevisionScope(latestFile, candidate, latestSpan)` 做 scope check。若 Writer 已直接改写其他章节，这些变化已进入 `latestFile`，因而不出现在此处差分里；记录中的 `scope=true` 是假阳性。Fact Preservation 后续检测到 6 项方向漂移并挡住发布。
+- `reverifyHandledInstructions` 使用全局 `factPreservation.ok` 将每条 handled comment 一并降级，没有基于 patch/target 的归因。这是 Comment outcome trace 的第二个剩余 blocker。
+- Quality Gate 失败后 Workflow 已进入 bounded `revision.revise`。为避免再次调用 Writer，停止 Backend；未生成 rev 3。Attempt 3 判 FAIL，不做第四次真实验收。
+
+**验证与 Git**
+
+- Backend full tests：216 passed / 3 skipped files；2393 passed / 15 skipped tests。Backend typecheck/build PASS。Frontend full tests：280 passed；typecheck/build PASS（既有 Vite chunk warning）。
+- 修复 commits `fa3fb9a`、`f5ad478`、`c9b4f55` 已 push。文档改动前 `HEAD == origin/main == c9b4f55d859cc8d2a692bb05a587e24220d9bb7c`，working tree clean。文档更新后的 diff check 与 Git 同步待本次收尾。
+
+**Verdict**：M11.4.1 implementation **PARTIAL / FAIL**；M11.4 Product Acceptance **FAIL**。下一步 blocker 是以不可变 writer 前快照与最终文件计算全局 diff，并阻断/隔离 Writer 对项目文件的直接写入；同时实现 patch 级 Fact outcome attribution。不要降低 Guard、复用 Attempt 3 作为新生成项目或盲目重跑。
