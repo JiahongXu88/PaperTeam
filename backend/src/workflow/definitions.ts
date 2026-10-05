@@ -154,7 +154,7 @@ import {
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
-import { applyRevisionSpan, checkRevisionScope, hasNewContentAfterDocumentEnd, locateLatexSections, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { applyRevisionSpan, checkGlobalRevisionScope, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import {
   applyRevisionItemTransitions,
@@ -900,11 +900,42 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       // M5.7 外部修改意见：先以最新 gate 复核 handled（该轮修订触发 Fact
       // Preservation FAIL → 降级 unresolved 重新派发，恢复闭环自愈），再整体入计划
       const externalInstructionList = await services.externalInstructions.load(ctx.projectId);
+      const patchFailures = new Map<string, { fact?: boolean; citation?: boolean }>();
+      const factSummary = gateArtifact?.factPreservation;
+      const citationSummary = gateArtifact?.citationPreservation;
+      for (const instruction of externalInstructionList) {
+        const target = instruction.resolutionTrace?.target;
+        if (!target) continue;
+        const file = target.split("#", 1)[0] ?? "";
+        const factFindings = factSummary === undefined || factSummary === null ? [] : [
+          ...factSummary.changedFacts, ...factSummary.removedFacts, ...factSummary.addedUnsupportedFacts,
+          ...factSummary.directionalChanges, ...factSummary.formulaChanges, ...factSummary.placeholderRegressions,
+        ];
+        const targetSection = target.split("#").slice(1).join("#").toLocaleLowerCase();
+        const ownFactFailure = factFindings.some((finding) => finding.file === file &&
+          (targetSection === finding.section.toLocaleLowerCase() ||
+            targetSection.includes(finding.section.toLocaleLowerCase()) ||
+            finding.section.toLocaleLowerCase().includes(targetSection)));
+        // Citation Preservation reports file/key locations. Attribute only when this
+        // file has exactly one handled patch owner; ambiguous multi-patch files stay
+        // candidate-level and cannot contaminate unrelated comments.
+        const filePatchOwners = externalInstructionList.filter((candidate) =>
+          candidate.status === "handled" && candidate.resolutionTrace?.target?.split("#", 1)[0] === file);
+        const uniqueFileOwner = filePatchOwners.length === 1 && filePatchOwners[0]?.instructionId === instruction.instructionId;
+        const ownCitationFailure = uniqueFileOwner &&
+          (citationSummary?.unexpectedRemoved.some((entry) => entry.files.includes(file)) ?? false);
+        patchFailures.set(instruction.instructionId, {
+          ...(factSummary ? { fact: !ownFactFailure } : {}),
+          ...(citationSummary?.ok === true ? { citation: true } : {}),
+          ...(uniqueFileOwner && ownCitationFailure ? { citation: false } : {}),
+        });
+      }
       const reverified = reverifyHandledInstructions(
         externalInstructionList,
         gateArtifact?.factPreservation ?? null,
         new Date().toISOString(),
         gateArtifact?.citationPreservation ?? null,
+        patchFailures,
       );
       if (reverified.changed) {
         await services.externalInstructions.save(ctx.projectId, reverified.instructions);
@@ -1622,7 +1653,10 @@ function revisionReviseStage(
         const targetEvidence = requiredProtocols.size === 1
           ? filterEvidenceForProtocol(evidence, { protocolId: [...requiredProtocols][0]! })
           : evidence;
-        const result = await services.writer.reviseSection({
+        let result: Awaited<ReturnType<typeof services.writer.reviseSection>> | undefined;
+        let writerFailure: unknown;
+        try {
+          result = await services.writer.reviseSection({
           projectId: ctx.projectId,
           section: {
             id: target.key,
@@ -1641,6 +1675,7 @@ function revisionReviseStage(
                 targetFilePath: join(services.projects.manuscriptDir(ctx.projectId), target.relativePath),
               }
             : {}),
+          ...(resolvedSpan !== undefined ? { proposalOnly: true } : {}),
           ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
@@ -1652,7 +1687,20 @@ function revisionReviseStage(
                 itemEvidence,
               }
             : {}),
-        });
+          });
+        } catch (error) {
+          writerFailure = error;
+        }
+        if (resolvedSpan !== undefined && fileBefore !== undefined) {
+          const afterWriter = await readFile(targetFilePath, "utf8");
+          const beforeHash = revisionSourceHash(fileBefore);
+          if (hasRevisionWorkspaceMutation(beforeHash, afterWriter)) {
+            await writeFile(targetFilePath, fileBefore, "utf8");
+            throw new BusinessError("STAGE_CONTRACT_VIOLATION", `DIRECT_WORKSPACE_MUTATION patch:${resolvedSpan.originalHash.slice(0, 12)} target:${resolvedSpan.logicalSection}`);
+          }
+        }
+        if (writerFailure !== undefined) throw writerFailure;
+        if (result === undefined) throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_WRITER_NO_RESULT");
         // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）。
         // M9.7.6 P0：一条 finding 的 section 引用可能命中多个修订目标（如
         // 「sections/a.tex（并见 sections/b.tex）」），同 id 只记一次，
@@ -1670,7 +1718,7 @@ function revisionReviseStage(
           externalOutcomeReports.push({
             ...report,
             targetChanged,
-            target: `${target.relativePath}#${target.key}`,
+            target: `${target.relativePath}#${target.logicalSpan?.heading ?? target.key}`,
             planItemIds: matchedItems.map((item) => item.id),
             evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
             patchIds: target.logicalSpan !== undefined ? [`patch:${target.logicalSpan.originalHash.slice(0, 12)}`] : [],
@@ -1687,20 +1735,35 @@ function revisionReviseStage(
           let output = result.latex.trim() + "\n";
           if (resolvedSpan !== undefined && fileBefore !== undefined) {
             const latestFile = await readFile(targetFilePath, "utf8");
-            const latestSpan = locateLatexSections(target.relativePath, latestFile)
-              .find((span) => span.logicalSection === resolvedSpan.logicalSection);
-            if (latestSpan === undefined || latestSpan.originalHash !== resolvedSpan.originalHash) {
-              throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_TARGET_STALE");
+            const sha256 = revisionSourceHash;
+            // fileBefore is the immutable revision boundary. A scoped Writer may only
+            // return a proposal; any disk mutation is rejected and the snapshot restored.
+            if (sha256(latestFile) !== sha256(fileBefore)) {
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_BASELINE_STALE");
             }
-            const candidate = applyRevisionSpan(latestFile, latestSpan, result.latex.trim());
-            const scope = checkRevisionScope(latestFile, candidate, latestSpan);
+            const actualBeforeApply = await readFile(targetFilePath, "utf8");
+            if (sha256(actualBeforeApply) !== sha256(fileBefore)) {
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_BASELINE_STALE");
+            }
+            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim());
+            const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
             if (!scope.allowed) {
-              throw new BusinessError("STAGE_CONTRACT_VIOLATION", scope.reason ?? "REVISION_SCOPE_VIOLATION");
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", `${scope.reason ?? "REVISION_SCOPE_VIOLATION"} patch:${resolvedSpan.originalHash.slice(0, 12)} target:${resolvedSpan.logicalSection}`);
             }
-            if (hasNewContentAfterDocumentEnd(latestFile, candidate)) {
+            if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) {
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_SOURCE_HYGIENE_VIOLATION");
             }
             output = candidate;
+            await writeFile(targetFilePath, output, "utf8");
+            const actualFinal = await readFile(targetFilePath, "utf8");
+            const finalScope = checkGlobalRevisionScope(fileBefore, actualFinal, [resolvedSpan]);
+            if (sha256(actualFinal) !== sha256(output) || !finalScope.allowed) {
+              await writeFile(targetFilePath, fileBefore, "utf8");
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_FINAL_WORKSPACE_MISMATCH");
+            }
+            revised.push(target.key);
+            await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
+            continue;
           }
           await writeFile(
             targetFilePath,

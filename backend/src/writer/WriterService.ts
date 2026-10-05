@@ -495,6 +495,8 @@ export class WriterService {
      * 裁决，不降低任何守卫）。
      */
     targetFilePath?: string;
+    /** Existing-paper scoped revision: proposal-only session with mutation tools removed. */
+    proposalOnly?: boolean;
     /**
      * M11.2 Survey：本节的写作上下文投影（存在 = Survey 修订模式）。注入
      * 综述结构红线——taxonomy / gap / speculative 语气 / 文献集合不得因
@@ -525,7 +527,8 @@ export class WriterService {
           : {}),
       }),
       projectId: params.projectId,
-      contextScope: "writing/revision",
+      contextScope: params.proposalOnly ? "writing/revision-proposal" : "writing/revision",
+      ...(params.proposalOnly ? { toolPolicy: "read_only" as const } : {}),
       ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: {
         role: "writer",
@@ -555,7 +558,7 @@ export class WriterService {
       // M10.3.1：整文件目标——模型用 write/edit 工具直接改写文件而最终消息为空
       // 时，磁盘上的真实变更就是修订结果（确定性读取；继续走下方全部 DoD 与
       // 下游 Fact Preservation / Quality Gate，不降低任何守卫）
-      if (params.wholeFile === true && params.targetFilePath !== undefined) {
+      if (params.wholeFile === true && params.targetFilePath !== undefined && !params.proposalOnly) {
         const onDisk = await readFile(params.targetFilePath, "utf8");
         const diskLatex = stripStrayOutcomeLines(stripCodeFence(onDisk)).trim();
         if (diskLatex !== "" && diskLatex !== params.currentLatex.trim()) {

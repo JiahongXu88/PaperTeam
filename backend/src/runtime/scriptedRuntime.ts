@@ -955,7 +955,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
             : projectCiteDrop.has(projectId) && targetsExperiments(input.task)
               ? reciteToAllowedKeys(SECTION_TEX_TWO_CITES, allowed)
               : reciteToAllowedKeys(base, allowed);
-      } else if (scope === "writing/revision") {
+      } else if (scope === "writing/revision" || scope === "writing/revision-proposal") {
         // 真实模型回归（2026-09-10 真实 smoke）：修订 prompt 携带 \documentclass
         // 说明目标被误当成了完整文档（组装根 main.tex）——真实 Writer 此时返回
         // 完整骨架并被 DoD 拒绝。脚本化 Writer 镜象该行为，防止此类回归静默通过。

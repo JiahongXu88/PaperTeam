@@ -79,6 +79,8 @@ export interface RuntimeHealth {
 /** 发起一次 Agent 任务（由 PiRuntimeAdapter 真实执行） */
 export interface RunAgentInput {
   agentId: string;
+  /** Per-run tool restriction. `read_only` removes workspace mutation tools for this session. */
+  toolPolicy?: "default" | "read_only";
   task: string;
   projectId?: string;
   /**

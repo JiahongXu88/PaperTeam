@@ -330,6 +330,15 @@ describe("buildRevisionPlan 的 external 条目", () => {
     expect(plan.summary.planned).toBe(0);
   });
 
+  it("只按 comment 自身 patch 失败降级，其他 handled 与 NO-OP 独立保留", () => {
+    const first = instruction({ status: "handled", text: "patch A" });
+    const second = instruction({ status: "handled", text: "patch B" });
+    const noop = instruction({ status: "already_satisfied", text: "noop" });
+    const result = reverifyHandledInstructions([first, second, noop], { ok: false }, NOW, { ok: true },
+      new Map([[first.instructionId, { fact: false }]]));
+    expect(result.instructions.map((item) => item.status)).toEqual(["unresolved", "handled", "already_satisfied"]);
+  });
+
   it("已经登记为已满足的意见使用 typed noop，且不会进入 planned 派发", () => {
     const satisfied = instruction({ status: "already_satisfied", statusNote: "baseline section and verified evidence checked" });
     const plan = buildRevisionPlan({

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 
 import { inferExperimentProtocolScope, isEvidenceEligibleForProtocol } from "../src/evidence/protocolScope.js";
 import type { EvidenceRecord } from "../src/evidence/EvidenceStore.js";
@@ -6,6 +7,8 @@ import { dispatchableRevisionItems, type RevisionPlanItem } from "../src/review/
 import {
   applyRevisionSpan,
   checkRevisionScope,
+  checkGlobalRevisionScope,
+  hasRevisionWorkspaceMutation,
   hasNewContentAfterDocumentEnd,
   locateLatexSections,
   revisionSpansOverlap,
@@ -63,6 +66,39 @@ describe("existing-paper revision scope", () => {
     const target = locateLatexSections("main.tex", baseline).find((span) => span.label === "subsec:datasets")!;
     const candidate = baseline.replace("Keep this abstract-like content", "Changed abstract");
     expect(checkRevisionScope(baseline, candidate, target)).toMatchObject({ allowed: false, reason: "REVISION_SCOPE_VIOLATION" });
+  });
+
+  it("global diff is anchored to immutable input even when a later baseline is contaminated", () => {
+    const immutable = paper.replaceAll("\\n", "\n");
+    const target = locateLatexSections("main.tex", immutable).find((span) => span.label === "subsec:datasets")!;
+    const candidate = applyRevisionSpan(immutable, target, target.content.replace("fixed camera", "fixed surveillance"))
+      .replace("Table values remain 0.76", "Table values remain 0.99");
+    expect(checkGlobalRevisionScope(immutable, candidate, [target])).toMatchObject({ allowed: false, reason: "REVISION_SCOPE_VIOLATION" });
+  });
+
+  it("accepts a clean scoped candidate and rejects a stale baseline", () => {
+    const immutable = paper.replaceAll("\\n", "\n");
+    const target = locateLatexSections("main.tex", immutable).find((span) => span.label === "subsec:datasets")!;
+    const candidate = applyRevisionSpan(immutable, target, target.content.replace("fixed camera", "fixed surveillance"));
+    expect(checkGlobalRevisionScope(immutable, candidate, [target]).allowed).toBe(true);
+    expect(checkGlobalRevisionScope(immutable.replace("Overview", "Changed"), candidate, [target])).toMatchObject({ allowed: false });
+  });
+
+  it("detects direct workspace mutation by full-file snapshot hash", () => {
+    const immutable = paper.replaceAll("\\n", "\n");
+    const hash = createHash("sha256").update(immutable).digest("hex");
+    expect(hasRevisionWorkspaceMutation(hash, immutable.replace("fixed camera", "changed camera"))).toBe(true);
+    expect(hasRevisionWorkspaceMutation(hash, immutable)).toBe(false);
+  });
+
+  it("allows two deterministic non-overlapping scoped patches in one whole-file candidate", () => {
+    const immutable = paper.replaceAll("\\n", "\n");
+    const spans = locateLatexSections("main.tex", immutable);
+    const datasets = spans.find((span) => span.label === "subsec:datasets")!;
+    const results = spans.find((span) => span.heading === "Results")!;
+    let candidate = applyRevisionSpan(immutable, results, results.content.replace("0.76", "0.77"));
+    candidate = applyRevisionSpan(candidate, { ...datasets, originalHash: createHash("sha256").update(candidate.slice(datasets.start, datasets.end)).digest("hex"), content: candidate.slice(datasets.start, datasets.end) }, candidate.slice(datasets.start, datasets.end).replace("fixed camera", "fixed surveillance"));
+    expect(checkGlobalRevisionScope(immutable, candidate, [datasets, results]).allowed).toBe(true);
   });
 
   it("allows scope validation to pass a scoped numeric change for Fact Guard to judge separately", () => {

@@ -254,3 +254,17 @@ Reviewer 2 / 4 的真实实验材料已在 fixture 且进入 EvidenceStore，不
 - 修复 commits `fa3fb9a`、`f5ad478`、`c9b4f55` 已 push。文档改动前 `HEAD == origin/main == c9b4f55d859cc8d2a692bb05a587e24220d9bb7c`，working tree clean。文档更新后的 diff check 与 Git 同步待本次收尾。
 
 **Verdict**：M11.4.1 implementation **PARTIAL / FAIL**；M11.4 Product Acceptance **FAIL**。下一步 blocker 是以不可变 writer 前快照与最终文件计算全局 diff，并阻断/隔离 Writer 对项目文件的直接写入；同时实现 patch 级 Fact outcome attribution。不要降低 Guard、复用 Attempt 3 作为新生成项目或盲目重跑。
+
+## 28. M11.4.2 Immutable Revision Boundary（engineering implementation）
+
+状态：实现完成后等待真实重新验收。Attempt 1–3 的历史事实不变；本阶段没有 Attempt 4，没有创建验收项目、Reviewer/Writer smoke 或调用 GLM。GLM calls = 0。
+
+- **Attempt 3 根因修复**：此前 `latestFile` 是 Writer 调用后读取的，且被当成 scope diff 的 before，直接写入的其他章节因此从比较中消失。另一个问题是 handled comment 使用全局 Fact/Citation `ok` 回写状态，导致一个失败 patch 污染无关 comment。
+- **Tool restriction**：Pi `createAgentSession` 使用已有 `tools` allowlist。Existing-paper scoped revision 现在通过 `toolPolicy: "read_only"` 创建单独 `writing/revision-proposal` 会话，只含 `read/grep/find/ls`，不含 `write/edit/apply_patch`。普通 `writing/revision` 仍保留原 Writer 权限，不影响新论文写作及其他 Writer 场景。该边界同时由 PaperTeam snapshot hash 检查兜底。
+- **Immutable snapshot / apply**：每个 section patch 在调用前固定 `fileBefore` 全文和解析出的目标 span（含原文 SHA-256）。Writer 只返回 section proposal；系统以 `applyRevisionSpan(fileBefore, span, proposal)` 在内存构造 candidate。`checkGlobalRevisionScope(fileBefore, candidate, [span])` 对完整文件差异判定，而不是比较 Writer 后的 workspace。
+- **Workspace integrity**：Writer 调用完成或抛错后立即读取文件。hash 不同则以 snapshot 恢复文件并返回 `DIRECT_WORKSPACE_MUTATION`，该 invocation 不进入 apply。Apply 前再次核对 baseline，失配 fail closed；确定性写盘后再读 `actualFinalFile`，要求其 SHA-256 等于 candidate，并对 immutable snapshot 再跑 global scope diff，否则恢复 snapshot 并拒绝。文档尾部内容仍由 source hygiene guard 拒绝。
+- **Patch-level outcome**：scope 错误信息携带 patch hash 与 logical target。Gate reverify 按 resolutionTrace 的 file/section 与 Fact finding 的 file/section 做确定性匹配，只降级自身被命中的 comment；无法按 section 归因的 citation failure 保持 candidate-level gate failure，不扩散到 comment。already_satisfied NO-OP 不参与 handled patch 回写。Candidate publish gate 的全局安全要求未降低。
+- **Regression tests**：新增 6 个确定性用例：immutable global diff 捕获目标外变化、clean scoped diff / stale baseline、全文 hash direct mutation 检测、多个不重叠 patch、proposal-only Writer policy 且普通 Writer 保持默认权限、单个 comment patch Fact FAIL 不污染其他 handled / NO-OP。原有协议 current/superseded 覆盖继续通过；scripted runtime 同时识别 proposal-only revision scope。
+- **验证**：backend 全量 `npm test -- --maxWorkers=1` — 216 files passed / 3 skipped；2399 passed / 15 skipped。最终 targeted revision/external-instruction/workflow 回归 — 5 files / 52 tests passed；backend typecheck/build PASS。Frontend — 27 files / 280 tests passed；typecheck/build PASS（既有 Vite >500 kB chunk warning）。`git diff --check` PASS。未执行任何真实 M11.4 acceptance，也未生成 Revised PDF。
+
+**M11.4.2 implementation verdict**：COMPLETE（仅在本次全量验证通过后生效）。**M11.4 Product Acceptance** 仍为 FAIL / pending Attempt 4 revalidation。停止点：`READY_FOR_M11_4_ATTEMPT_4`；是否启动由用户决定。

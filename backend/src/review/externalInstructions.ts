@@ -600,26 +600,32 @@ export function reverifyHandledInstructions(
   factPreservation: { ok: boolean } | null | undefined,
   now: string,
   citationPreservation?: { ok: boolean } | null,
+  patchFailures?: ReadonlyMap<string, { fact?: boolean; citation?: boolean }>,
 ): { instructions: ExternalInstruction[]; changed: boolean } {
   if (factPreservation === null || factPreservation === undefined || citationPreservation === null || citationPreservation === undefined) {
     return { instructions, changed: false };
   }
-  const failed = factPreservation?.ok === false || citationPreservation?.ok === false;
   let changed = false;
   const next = instructions.map((instruction): ExternalInstruction => {
     if (instruction.status !== "handled") {
       return instruction;
     }
+    // A gate failure is candidate-wide. Only a failure attributed to this
+    // instruction's own patch may change its outcome.
+    const ownFailure = patchFailures === undefined
+      ? { fact: factPreservation.ok, citation: citationPreservation.ok }
+      : patchFailures.get(instruction.instructionId);
+    if (ownFailure === undefined) return instruction;
     const verification = {
       ...(instruction.resolutionTrace?.verification ?? {}),
-      ...(factPreservation !== null && factPreservation !== undefined ? { fact: factPreservation.ok } : {}),
-      ...(citationPreservation !== null && citationPreservation !== undefined ? { citation: citationPreservation.ok } : {}),
+      ...(ownFailure.fact !== undefined ? { fact: ownFailure.fact } : {}),
+      ...(ownFailure.citation !== undefined ? { citation: ownFailure.citation } : {}),
     };
-    if (!failed && instruction.resolutionTrace !== undefined &&
+    if (instruction.resolutionTrace !== undefined &&
       instruction.resolutionTrace.verification.fact === verification.fact &&
       instruction.resolutionTrace.verification.citation === verification.citation) return instruction;
     changed = true;
-    if (!failed) {
+    if (ownFailure.fact !== false && ownFailure.citation !== false) {
       return {
         ...instruction,
         resolutionTrace: {
@@ -641,9 +647,9 @@ export function reverifyHandledInstructions(
         ...instruction.resolutionTrace,
         verification,
         status: "unresolved",
-        remainingIssue: factPreservation?.ok === false ? "Fact preservation failed." : "Citation preservation failed.",
+        remainingIssue: ownFailure.fact === false ? "Fact preservation failed for this patch." : "Citation preservation failed for this patch.",
       } } : {}),
-      statusNote: factPreservation.ok === false
+      statusNote: ownFailure.fact === false
         ? "执行该意见的修订未通过事实保持检查，已回到待处理（恢复轮将重新执行）"
         : "执行该意见的修订未通过引用保持检查，已回到待处理（恢复轮将重新执行）",
       updatedAt: now,

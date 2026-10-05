@@ -18,6 +18,52 @@ export interface RevisionScopeDiff {
   reason?: string;
 }
 
+export interface AuthorizedRevisionScope { start: number; end: number; originalHash: string; }
+
+/** Validate the complete immutable-before → candidate diff against every authorized span. */
+export function checkGlobalRevisionScope(
+  baseline: string,
+  candidate: string,
+  scopes: readonly AuthorizedRevisionScope[],
+): RevisionScopeDiff {
+  const ordered = [...scopes].sort((a, b) => a.start - b.start);
+  if (ordered.some((scope, index) => hash(baseline.slice(scope.start, scope.end)) !== scope.originalHash ||
+    (index > 0 && ordered[index - 1]!.end > scope.start))) {
+    return { allowed: false, outsideScopeChanges: 1, reason: "REVISION_TARGET_STALE" };
+  }
+  let oldCursor = 0;
+  let newCursor = 0;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const scope = ordered[index]!;
+    const unchangedPrefix = baseline.slice(oldCursor, scope.start);
+    if (candidate.slice(newCursor, newCursor + unchangedPrefix.length) !== unchangedPrefix) {
+      return { allowed: false, outsideScopeChanges: 1, reason: "REVISION_SCOPE_VIOLATION" };
+    }
+    newCursor += unchangedPrefix.length;
+    const next = ordered[index + 1];
+    if (next !== undefined) {
+      const unchangedGap = baseline.slice(scope.end, next.start);
+      if (unchangedGap !== "") {
+        const anchor = candidate.indexOf(unchangedGap, newCursor);
+        if (anchor < 0) return { allowed: false, outsideScopeChanges: 1, reason: "REVISION_SCOPE_VIOLATION" };
+        newCursor = anchor;
+      }
+    } else {
+      const unchangedSuffix = baseline.slice(scope.end);
+      if (unchangedSuffix !== "" && !candidate.endsWith(unchangedSuffix)) {
+        return { allowed: false, outsideScopeChanges: 1, reason: "REVISION_SCOPE_VIOLATION" };
+      }
+      return { allowed: true, outsideScopeChanges: 0 };
+    }
+    oldCursor = scope.end;
+  }
+  return ordered.length === 0 && baseline === candidate
+    ? { allowed: true, outsideScopeChanges: 0 }
+    : ordered.length === 0
+      ? { allowed: false, outsideScopeChanges: 1, reason: "REVISION_SCOPE_VIOLATION" }
+      : { allowed: true, outsideScopeChanges: 0 };
+}
+
 export interface NoopCoverageCheck {
   logicalSection?: string;
   coverageQuote?: string;
@@ -26,6 +72,12 @@ export interface NoopCoverageCheck {
 }
 
 const hash = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+export function revisionSourceHash(value: string): string { return hash(value); }
+
+export function hasRevisionWorkspaceMutation(snapshotHash: string, currentContent: string): boolean {
+  return hash(currentContent) !== snapshotHash;
+}
 
 /** Lightweight structural locator for single-file LaTeX manuscripts. */
 export function locateLatexSections(file: string, source: string): RevisionSpan[] {

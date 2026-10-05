@@ -13,7 +13,7 @@ import type { EvidenceRecord } from "../src/evidence/EvidenceStore.js";
 /** 可编程的假 Runtime：记录调用并返回预设任务结果 */
 class FakeRuntime implements AgentRuntime {
   readonly provider = "pi" as const;
-  readonly calls: { agentId: string; task: string; projectId?: string }[] = [];
+  readonly calls: { agentId: string; task: string; projectId?: string; contextScope?: string; toolPolicy?: string }[] = [];
   private result: () => AgentTask;
 
   constructor(result: () => AgentTask) {
@@ -25,7 +25,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async startAgent(input: import("../src/runtime/types.js").RunAgentInput): Promise<import("../src/runtime/types.js").AgentRunHandle> {
-    this.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId });
+    this.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId, contextScope: input.contextScope, toolPolicy: input.toolPolicy });
     const task = this.result();
     return {
       taskId: task.taskId,
@@ -37,7 +37,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async runAgent(input: import("../src/runtime/types.js").RunAgentInput): Promise<AgentTask> {
-    this.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId });
+    this.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId, contextScope: input.contextScope, toolPolicy: input.toolPolicy });
     return this.result();
   }
 
@@ -72,6 +72,17 @@ const VALID_LATEX = [
 ].join("\n");
 
 describe("WriterService", () => {
+  it("scoped revision uses proposal-only read-only Runtime policy; normal Writer remains default", async () => {
+    let call = 0;
+    const runtime = new FakeRuntime(() => completedTask(call++ === 0 ? "\\section{Datasets}\nUpdated." : VALID_LATEX));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.reviseSection({ projectId: "p-abc", section: { id: "datasets", file: "main.tex", title: "Datasets" }, outline: { title: "t", sections: [] },
+      currentLatex: "\\section{Datasets}\nOld.", issues: [{ category: "fact", severity: "minor", section: "datasets", description: "clarify", blocking: false }],
+      evidence: [], bibliography: [], proposalOnly: true });
+    expect(runtime.calls[0]).toMatchObject({ contextScope: "writing/revision-proposal", toolPolicy: "read_only" });
+    await writer.write({ projectId: "p-abc", prompt: "write" });
+    expect(runtime.calls[1]?.toolPolicy).toBeUndefined();
+  });
   it("正确调用 AgentRuntime 并提取 LaTeX 输出", async () => {
     const runtime = new FakeRuntime(() => completedTask(VALID_LATEX));
     const writer = new WriterService({ runtime, agentId: "writer" });

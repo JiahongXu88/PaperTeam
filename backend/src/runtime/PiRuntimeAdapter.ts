@@ -2425,7 +2425,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     input: RunAgentInput,
     scope: string | undefined,
   ): Promise<ManagedSession> {
-    const role = resolveRoleConfig(scope);
+    const role = resolveRoleConfig(scope, input.toolPolicy ?? "default");
     const cwd = this.resolveWorkspaceCwd(input.projectId);
     const created = await this.createPiSession(role, cwd, scope, input.projectId, input.language);
     const nowMs = this.now();

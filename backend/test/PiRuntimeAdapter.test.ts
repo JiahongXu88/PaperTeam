@@ -2776,6 +2776,9 @@ describe("Pi role 映射", () => {
       expect(config.tools).not.toContain("powershell");
     }
     expect(resolveRoleConfig("writing/x").tools).toContain("write");
+    expect(resolveRoleConfig("writing/revision-proposal", "read_only").tools).not.toContain("write");
+    expect(resolveRoleConfig("writing/revision-proposal", "read_only").tools).not.toContain("edit");
+    expect(resolveRoleConfig("writing/x").tools).toContain("edit");
     expect(resolveRoleConfig("review/fact").tools).not.toContain("write");
   });
 });

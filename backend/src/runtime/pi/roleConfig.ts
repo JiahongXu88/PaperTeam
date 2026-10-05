@@ -98,8 +98,11 @@ function roleKeyForScope(scope: string | undefined): PiRoleKey {
 }
 
 /** 按归一化后的 contextScope 解析角色配置 */
-export function resolveRoleConfig(contextScope: string | undefined): PiRoleConfig {
-  return ROLE_CONFIGS[roleKeyForScope(contextScope)];
+export function resolveRoleConfig(contextScope: string | undefined, toolPolicy: "default" | "read_only" = "default"): PiRoleConfig {
+  const role = ROLE_CONFIGS[roleKeyForScope(contextScope)];
+  return toolPolicy === "read_only"
+    ? { ...role, tools: role.tools.filter((tool) => !["write", "edit", "apply_patch"].includes(tool)) }
+    : role;
 }
 
 /** 全部角色配置（诊断/测试用） */
