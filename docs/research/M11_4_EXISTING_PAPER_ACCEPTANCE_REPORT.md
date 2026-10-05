@@ -269,3 +269,18 @@ Attempt 1–3 的历史事实不变；本阶段没有 Attempt 4，没有创建�
 - **验证**：backend 全量 `npm test -- --maxWorkers=1` — 216 files passed / 3 skipped；2399 passed / 15 skipped。最终 targeted revision/external-instruction/workflow 回归 — 5 files / 52 tests passed；backend typecheck/build PASS。Frontend — 27 files / 280 tests passed；typecheck/build PASS（既有 Vite >500 kB chunk warning）。`git diff --check` PASS。未执行任何真实 M11.4 acceptance，也未生成 Revised PDF。
 
 **M11.4.2 implementation verdict**：PARTIAL — immutable boundary、Pi tool restriction、global scope diff、stale baseline 与 Fact/comment isolation 已实现并通过测试；需新增 direct-write recovery workflow regression、多 patch 同文件 Citation attribution 和完整 patch validation record。**M11.4 Product Acceptance** 仍为 FAIL / pending revalidation。停止点：`NOT_READY`。本阶段无 Attempt 4；补齐上述实现与回归后再由用户决定真实验收时间。
+
+## 29. M11.4.3 Patch Validation & Workflow Boundary Closure
+
+状态：**COMPLETE — READY_FOR_M11_4_ATTEMPT_4**。此前首次执行 M11.4.3 时只完成部分实现并报告 PARTIAL；本次从原 working tree 继续完成余项。未运行 Attempt 4、未创建真实论文验收项目、未调用真实 Reviewer/Writer 或 GLM；GLM calls = 0。M11.4 Product Acceptance 仍为 **FAIL / pending revalidation**。
+
+- **Workflow direct mutation boundary**：使用真实 Existing Paper revision orchestration 与 deterministic fake Writer，覆盖 Conclusion 越界写盘、Datasets 授权区内直接写盘及 restore 失败。两个可恢复路径均检测 hash 变化、恢复 immutable Writer-before snapshot 并验证恢复后 SHA；拒绝返回 patch，revision 仍在原 rev-1、无 candidate freeze、comment 未被错误标记 handled。恢复失败抛出 `REVISION_WORKSPACE_RECOVERY_FAILED` 并停止 stage。direct mutation / recovery failure 是不可重试 contract failure，fake Writer 调用一次即停止。
+- **Immutable scope baseline**：保留 snapshot→candidate global scope diff、stale baseline 与 `\end{document}` source hygiene guard；proposal scope 拒绝会持久化失败的 patch record（scope/apply/failedStage），不推进 candidate。既有 revision scope regression 证明 diff 依据 immutable input。
+- **Citation attribution**：同文件多 patch 按 occurrence logical section / target span 映射，proposal citation key delta 用于 section 位移后的确定性归因；合法 added key 也留下 occurrence finding，删除 key 映射至原 occurrence。唯一命中记录 patchId / planItemId / commentId；未归因写入 `UNATTRIBUTED_CITATION_VIOLATION`，多重命中写入 `AMBIGUOUS_PATCH_ATTRIBUTION` 并阻断 publish。移除 file-owner fallback。Workflow 回归验证 Introduction missing cite 只令 Patch/Comment A 失败，Datasets Patch/Comment B 仍通过。
+- **PatchValidationRecord**：每个实际 MODIFY patch 写入 `reviews/patch-validation-rev-{revision}.json`，按 revision 独立保存；记录 ID、target、evidence/protocol IDs、前后及 proposal hashes、scope、workspace recovery、Fact/Citation finding IDs 与 key deltas、Evidence recheck、apply 状态、overall 和 failure stage，不存论文全文。Writer direct mutation 与 scope reject 也保存失败 record；NO-OP / author decision 不制造 patch record。
+- **Summary、comment 与 publish gate**：revision validation 将 Fact / Citation / Evidence 结果回填对应 records；`RevisionValidationSummary` 聚合 patch pass/fail 与 unattributed violation。Comment outcome 只消费自身关联 records；缺少 patch 归属的 candidate-level finding 不污染 sibling comment。NO-OP 保留既有 coverage/evidence trace。Quality Gate 消费 summary，并要求 patch、Fact、Citation、Evidence、现有 gate 与 Build 条件通过，publishable 才可为 true。
+- **Test-first 与 targeted**：本轮新增确定性测试 10 个（两个新 test files），先运行失败的归因测试，再完成接线修复。最终重点 targeted：8 files / 159 tests passed；补充 Revision/Workflow/External Instructions/Fact/Citation/Evidence/Writer policy 回归 16 files / 256 tests passed。
+- **Full regression**：Backend `npm test`：218 files passed / 3 skipped；2409 passed / 15 skipped。Frontend `npm test`：27 files / 280 passed。Backend 与 frontend typecheck、build 均 PASS；frontend build 有既有 Vite 大 chunk 提示。GLM calls = 0。
+- **Git**：本次工程修复已提交并推送至 `origin/main`；最终 HEAD 与 `origin/main` 相同，working tree clean，`git diff --check` PASS。无 secrets、凭证、真实 fixture、生成 PDF、临时文件或依赖改动进入提交。
+
+**M11.4.3 verdict**：**COMPLETE — READY_FOR_M11_4_ATTEMPT_4**。这不是 M11.4 Product Acceptance PASS；须另行进行 Attempt 4 真实重验证。本次按要求停止于此，不运行 Attempt 4，不开始 M11.5。

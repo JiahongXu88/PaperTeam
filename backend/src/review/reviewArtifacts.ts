@@ -27,6 +27,7 @@ import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
 import type { StylePolishResult } from "./stylePolicy.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
+import type { PatchValidationArtifact } from "./patchValidation.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
@@ -387,6 +388,21 @@ export class ReviewArtifactStore {
     const fileName = this.validationFileName(result.reviewRound);
     await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), result);
     return `reviews/${fileName}`;
+  }
+
+  patchValidationFileName(revision: number): string { return `patch-validation-rev-${revision}.json`; }
+
+  async savePatchValidation(projectId: string, artifact: PatchValidationArtifact): Promise<string> {
+    const fileName = this.patchValidationFileName(artifact.revision);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), artifact);
+    return `reviews/${fileName}`;
+  }
+
+  async loadPatchValidation(projectId: string, revision: number): Promise<PatchValidationArtifact | null> {
+    try {
+      const parsed = JSON.parse(await readFile(join(this.projects.reviewsDir(projectId), this.patchValidationFileName(revision)), "utf8")) as PatchValidationArtifact;
+      return parsed.revision === revision && Array.isArray(parsed.records) ? parsed : null;
+    } catch { return null; }
   }
 
   /** 读取某一轮的验证产物（无文件 / 结构损坏 → null；防御性校验同 loadGate） */

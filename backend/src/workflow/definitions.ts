@@ -156,6 +156,7 @@ import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import { applyRevisionSpan, checkGlobalRevisionScope, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
+import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
 import {
   applyRevisionItemTransitions,
   findStuckAppliedItems,
@@ -707,6 +708,86 @@ function qualityGateStage(
         },
         QUALITY_THRESHOLDS(services),
       );
+      const patchValidation = typeof review.reviewedRevision === "number"
+        ? await services.reviewArtifacts.loadPatchValidation(ctx.projectId, review.reviewedRevision)
+        : null;
+      if (patchValidation !== null && typeof review.reviewedRevision === "number") {
+        const sourceRevision = Math.max(0, review.reviewedRevision - 1);
+        const previousTex = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
+        const currentTex = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, review.reviewedRevision));
+        const facts: FactFinding[] = factPreservation === null ? [] : [
+          ...factPreservation.changedFacts, ...factPreservation.removedFacts, ...factPreservation.addedUnsupportedFacts,
+          ...factPreservation.directionalChanges, ...factPreservation.formulaChanges, ...factPreservation.placeholderRegressions,
+        ];
+        const assignedFacts = new Set<FactFinding>();
+        for (const record of patchValidation.records) {
+          const ownFacts = facts.filter((finding) => finding.file === record.file &&
+            (finding.section.toLocaleLowerCase() === record.logicalTarget.toLocaleLowerCase() ||
+              finding.section.toLocaleLowerCase().includes(record.logicalTarget.toLocaleLowerCase()) ||
+              record.logicalTarget.toLocaleLowerCase().includes(finding.section.toLocaleLowerCase())));
+          ownFacts.forEach((finding) => assignedFacts.add(finding));
+          record.fact = {
+            ok: ownFacts.length === 0,
+            findingIds: ownFacts.map((finding) => `fact:${review.reviewedRevision}:${finding.file}:${finding.section}:${finding.kind}`),
+            violations: ownFacts.map((finding) => finding.reason),
+          };
+        }
+        const unattributed = facts.filter((finding) => !assignedFacts.has(finding));
+        const previousMain = previousTex?.find((file) => file.file === "main.tex")?.content;
+        const currentMain = currentTex?.find((file) => file.file === "main.tex")?.content;
+        const attribution = previousMain !== undefined && currentMain !== undefined
+          ? attributeCitationChangesToPatches({
+              before: previousMain,
+              after: currentMain,
+              patches: patchValidation.records.flatMap((record) => {
+                const span = locateLatexSections("main.tex", previousMain).find((candidate) => candidate.logicalSection === record.logicalTarget);
+              return span === undefined ? [] : [{ patchId: record.patchId, planItemIds: record.planItemIds, commentIds: record.commentIds, span, addedKeys: record.citation.addedKeys, removedKeys: record.citation.removedKeys }];
+              }),
+              knownKeys: new Set(citation?.static.bibEntries.map((entry) => entry.key) ?? []),
+            })
+          : { findings: [], unattributed: [] };
+        const unapportionedCitation = attribution.unattributed.filter((finding) =>
+          finding.code !== "REMOVED_CITATION_KEY" || (citationPreservation?.unexpectedRemovedKeys.includes(finding.key) ?? true));
+        const addedViolations = new Map<string, string[]>();
+        for (const finding of attribution.findings) {
+          const violation = finding.code === "MISSING_CITATION_KEY" ||
+            (finding.code === "REMOVED_CITATION_KEY" && (citationPreservation?.unexpectedRemovedKeys.includes(finding.key) ?? true));
+          if (finding.patchId !== undefined && violation) {
+            const list = addedViolations.get(finding.patchId) ?? [];
+            list.push(finding.code);
+            addedViolations.set(finding.patchId, list);
+          }
+        }
+        for (const record of patchValidation.records) {
+          const own = attribution.findings.filter((finding) => finding.patchId === record.patchId);
+          const violations = addedViolations.get(record.patchId) ?? [];
+          record.citation = {
+            ok: record.citation.ok && violations.length === 0,
+            findingIds: [...new Set([...record.citation.findingIds, ...own.map((finding) => `citation:${review.reviewedRevision}:${finding.code}:${finding.key}`)])],
+            addedKeys: [...new Set([...record.citation.addedKeys, ...own.filter((finding) => finding.code === "MISSING_CITATION_KEY" || finding.code === "ADDED_CITATION_KEY").map((finding) => finding.key)])],
+            removedKeys: [...new Set([...record.citation.removedKeys, ...own.filter((finding) => finding.code === "REMOVED_CITATION_KEY").map((finding) => finding.key)])],
+            violations: [...new Set([...record.citation.violations, ...violations])],
+          };
+          record.overall = record.scope.ok && record.workspaceIntegrity.ok && record.fact.ok && record.citation.ok && record.evidence.ok && record.apply.ok ? "pass" : "fail";
+        }
+        patchValidation.summary = summarizePatchValidation(patchValidation.records, [
+          ...unattributed.map(() => "UNATTRIBUTED_FACT_VIOLATION"),
+          ...unapportionedCitation.map((finding) => finding.code === "AMBIGUOUS_PATCH_ATTRIBUTION" ? finding.code : "UNATTRIBUTED_CITATION_VIOLATION"),
+        ]);
+        patchValidation.summary.publishable = patchValidation.summary.publishable &&
+          (factPreservation?.ok ?? false) && (citationPreservation?.ok ?? false) &&
+          gate.passed && readBuildError(ctx.state) === undefined;
+        await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchValidation);
+        gate.rules.push({
+          rule: "patch_validation_publishable",
+          passed: patchValidation.summary.publishable,
+          detail: `patches=${patchValidation.summary.passedPatches}/${patchValidation.summary.totalPatches}; unattributed=${patchValidation.summary.unattributedViolations.length}`,
+        });
+        if (!patchValidation.summary.publishable) {
+          gate.reasons.push("patch_validation_publishable");
+          gate.passed = false;
+        }
+      }
       // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
       const round = review.round;
       await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, {
@@ -901,34 +982,21 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       // Preservation FAIL → 降级 unresolved 重新派发，恢复闭环自愈），再整体入计划
       const externalInstructionList = await services.externalInstructions.load(ctx.projectId);
       const patchFailures = new Map<string, { fact?: boolean; citation?: boolean }>();
-      const factSummary = gateArtifact?.factPreservation;
-      const citationSummary = gateArtifact?.citationPreservation;
+      const currentPatchValidation = await services.reviewArtifacts.loadPatchValidation(
+        ctx.projectId,
+        await services.revisions.currentRevision(ctx.projectId),
+      );
       for (const instruction of externalInstructionList) {
-        const target = instruction.resolutionTrace?.target;
-        if (!target) continue;
-        const file = target.split("#", 1)[0] ?? "";
-        const factFindings = factSummary === undefined || factSummary === null ? [] : [
-          ...factSummary.changedFacts, ...factSummary.removedFacts, ...factSummary.addedUnsupportedFacts,
-          ...factSummary.directionalChanges, ...factSummary.formulaChanges, ...factSummary.placeholderRegressions,
-        ];
-        const targetSection = target.split("#").slice(1).join("#").toLocaleLowerCase();
-        const ownFactFailure = factFindings.some((finding) => finding.file === file &&
-          (targetSection === finding.section.toLocaleLowerCase() ||
-            targetSection.includes(finding.section.toLocaleLowerCase()) ||
-            finding.section.toLocaleLowerCase().includes(targetSection)));
-        // Citation Preservation reports file/key locations. Attribute only when this
-        // file has exactly one handled patch owner; ambiguous multi-patch files stay
-        // candidate-level and cannot contaminate unrelated comments.
-        const filePatchOwners = externalInstructionList.filter((candidate) =>
-          candidate.status === "handled" && candidate.resolutionTrace?.target?.split("#", 1)[0] === file);
-        const uniqueFileOwner = filePatchOwners.length === 1 && filePatchOwners[0]?.instructionId === instruction.instructionId;
-        const ownCitationFailure = uniqueFileOwner &&
-          (citationSummary?.unexpectedRemoved.some((entry) => entry.files.includes(file)) ?? false);
-        patchFailures.set(instruction.instructionId, {
-          ...(factSummary ? { fact: !ownFactFailure } : {}),
-          ...(citationSummary?.ok === true ? { citation: true } : {}),
-          ...(uniqueFileOwner && ownCitationFailure ? { citation: false } : {}),
-        });
+        const ownValidation = currentPatchValidation !== null
+          ? validationForComment(currentPatchValidation.records, instruction.instructionId)
+          : null;
+        if (ownValidation !== null) {
+          patchFailures.set(instruction.instructionId, {
+            fact: ownValidation.fact,
+            citation: ownValidation.citation,
+          });
+          continue;
+        }
       }
       const reverified = reverifyHandledInstructions(
         externalInstructionList,
@@ -1484,6 +1552,7 @@ function revisionReviseStage(
     producedOutputs: ["manuscript/sections/*.tex（修订）"],
     maxAttempts: services.stageMaxAttempts,
     timeoutMs: services.stageTimeoutMs * 4,
+    // Direct workspace mutation is a deterministic contract violation; never replay Writer.
     retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
     async execute(ctx) {
       const outline = await services.manuscript.loadOutline(ctx.projectId);
@@ -1522,6 +1591,8 @@ function revisionReviseStage(
         (directive) => directive.section !== undefined,
       );
       const externalOutcomeReports: ExternalOutcomeReport[] = [];
+      const patchValidationRecords: PatchValidationRecord[] = [];
+      const currentRevision = await services.revisions.currentRevision(ctx.projectId);
 
       const targets = listRevisionTargets(outline, files, [
         ...directives,
@@ -1581,6 +1652,8 @@ function revisionReviseStage(
         const matchedItems = matchedDirectives
           .map((directive) => directive.item)
           .filter((item): item is RevisionPlanItem => item !== undefined);
+        const protocolIds = [...new Set(matchedItems.flatMap((item) => item.protocolRequirement?.protocolId ? [item.protocolRequirement.protocolId] : []))];
+        const recordProtocolId = protocolIds.length === 1 ? protocolIds[0] : undefined;
         // M9.7.6：UNSUPPORTED / CONTRADICTED claim 的 evidence-aware Repair
         // Context（复用该轮 claim grounding 报告；候选只含 formal evidence）。
         const claimRepairs: ClaimRepairDirective[] =
@@ -1692,11 +1765,58 @@ function revisionReviseStage(
           writerFailure = error;
         }
         if (resolvedSpan !== undefined && fileBefore !== undefined) {
-          const afterWriter = await readFile(targetFilePath, "utf8");
           const beforeHash = revisionSourceHash(fileBefore);
-          if (hasRevisionWorkspaceMutation(beforeHash, afterWriter)) {
-            await writeFile(targetFilePath, fileBefore, "utf8");
-            throw new BusinessError("STAGE_CONTRACT_VIOLATION", `DIRECT_WORKSPACE_MUTATION patch:${resolvedSpan.originalHash.slice(0, 12)} target:${resolvedSpan.logicalSection}`);
+          let afterWriter: string | null = null;
+          try { afterWriter = await readFile(targetFilePath, "utf8"); } catch { /* missing / unreadable workspace is a mutation signal */ }
+          if (afterWriter === null || hasRevisionWorkspaceMutation(beforeHash, afterWriter)) {
+            const failedRecord: PatchValidationRecord = {
+              patchId: `patch:${resolvedSpan.originalHash.slice(0, 12)}`,
+              revisionId: `rev-${currentRevision + 1}`,
+              file: target.relativePath,
+              logicalTarget: resolvedSpan.logicalSection,
+              planItemIds: matchedItems.map((item) => item.id),
+              commentIds: [...new Set([
+                ...matchedItems.flatMap((item) => item.instructionId ? [item.instructionId] : []),
+                ...targetExternals.map((directive) => directive.instructionId),
+              ])],
+              evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+              ...(recordProtocolId !== undefined ? { protocolId: recordProtocolId } : {}),
+              beforeFileHash: beforeHash,
+              beforeTargetHash: resolvedSpan.originalHash,
+              proposedReplacementHash: result?.latex !== undefined ? revisionSourceHash(result.latex.trim()) : "",
+              afterFileHash: afterWriter === null ? "unreadable" : revisionSourceHash(afterWriter),
+              scope: { ok: false, violations: ["DIRECT_WORKSPACE_MUTATION"] },
+              workspaceIntegrity: { ok: false, directMutationDetected: true, recoveryAttempted: true, recoverySucceeded: false },
+              fact: { ok: false, findingIds: [], violations: ["NOT_RUN_DIRECT_WORKSPACE_MUTATION"] },
+              citation: { ok: false, findingIds: [], addedKeys: [], removedKeys: [], violations: ["NOT_RUN_DIRECT_WORKSPACE_MUTATION"] },
+              evidence: { ok: false, violations: ["NOT_RUN_DIRECT_WORKSPACE_MUTATION"] },
+              apply: { ok: false, status: "rejected" },
+              overall: "fail",
+              failedStage: "workspaceIntegrity",
+            };
+            try {
+              await writeFile(targetFilePath, fileBefore, "utf8");
+              const restored = await readFile(targetFilePath, "utf8");
+              if (revisionSourceHash(restored) !== beforeHash) throw new Error("snapshot hash mismatch");
+              failedRecord.afterFileHash = revisionSourceHash(restored);
+              failedRecord.workspaceIntegrity.recoverySucceeded = true;
+            } catch (error) {
+              patchValidationRecords.push(failedRecord);
+              await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
+                revisionId: failedRecord.revisionId, revision: currentRevision + 1,
+                records: patchValidationRecords, summary: summarizePatchValidation(patchValidationRecords),
+              });
+              throw new BusinessError(
+                "REVISION_WORKSPACE_RECOVERY_FAILED",
+                `REVISION_WORKSPACE_RECOVERY_FAILED patch:${resolvedSpan.originalHash.slice(0, 12)} target:${resolvedSpan.logicalSection}${error instanceof Error ? ` (${error.message})` : ""}`,
+              );
+            }
+            patchValidationRecords.push(failedRecord);
+            await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
+              revisionId: failedRecord.revisionId, revision: currentRevision + 1,
+              records: patchValidationRecords, summary: summarizePatchValidation(patchValidationRecords),
+            });
+            throw new BusinessError("DIRECT_WORKSPACE_MUTATION", `DIRECT_WORKSPACE_MUTATION patch:${resolvedSpan.originalHash.slice(0, 12)} target:${resolvedSpan.logicalSection}`);
           }
         }
         if (writerFailure !== undefined) throw writerFailure;
@@ -1746,11 +1866,45 @@ function revisionReviseStage(
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_BASELINE_STALE");
             }
             const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim());
+            const persistScopeFailure = async (violation: string, rejectedCandidate: string): Promise<void> => {
+              const failed: PatchValidationRecord = {
+                patchId: `patch:${resolvedSpan.originalHash.slice(0, 12)}`,
+                revisionId: `rev-${currentRevision + 1}`,
+                file: target.relativePath,
+                logicalTarget: resolvedSpan.logicalSection,
+                planItemIds: matchedItems.map((item) => item.id),
+                commentIds: [...new Set([
+                  ...matchedItems.flatMap((item) => item.instructionId ? [item.instructionId] : []),
+                  ...targetExternals.map((directive) => directive.instructionId),
+                ])],
+                evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+                ...(recordProtocolId !== undefined ? { protocolId: recordProtocolId } : {}),
+                beforeFileHash: revisionSourceHash(fileBefore),
+                beforeTargetHash: resolvedSpan.originalHash,
+                proposedReplacementHash: revisionSourceHash(result.latex.trim()),
+                afterFileHash: revisionSourceHash(rejectedCandidate),
+                scope: { ok: false, violations: [violation] },
+                workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
+                fact: { ok: false, findingIds: [], violations: ["NOT_RUN_SCOPE_REJECTED"] },
+                citation: { ok: false, findingIds: [], addedKeys: [], removedKeys: [], violations: ["NOT_RUN_SCOPE_REJECTED"] },
+                evidence: { ok: false, violations: ["NOT_RUN_SCOPE_REJECTED"] },
+                apply: { ok: false, status: "rejected" },
+                overall: "fail",
+                failedStage: "scope",
+              };
+              patchValidationRecords.push(failed);
+              await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
+                revisionId: failed.revisionId, revision: currentRevision + 1,
+                records: patchValidationRecords, summary: summarizePatchValidation(patchValidationRecords),
+              });
+            };
             const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
             if (!scope.allowed) {
+              await persistScopeFailure(scope.reason ?? "REVISION_SCOPE_VIOLATION", candidate);
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", `${scope.reason ?? "REVISION_SCOPE_VIOLATION"} patch:${resolvedSpan.originalHash.slice(0, 12)} target:${resolvedSpan.logicalSection}`);
             }
             if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) {
+              await persistScopeFailure("REVISION_SOURCE_HYGIENE_VIOLATION", candidate);
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_SOURCE_HYGIENE_VIOLATION");
             }
             output = candidate;
@@ -1759,8 +1913,51 @@ function revisionReviseStage(
             const finalScope = checkGlobalRevisionScope(fileBefore, actualFinal, [resolvedSpan]);
             if (sha256(actualFinal) !== sha256(output) || !finalScope.allowed) {
               await writeFile(targetFilePath, fileBefore, "utf8");
+              await persistScopeFailure("REVISION_FINAL_WORKSPACE_MISMATCH", actualFinal);
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_FINAL_WORKSPACE_MISMATCH");
             }
+            const patchRecord: PatchValidationRecord = {
+              patchId: `patch:${resolvedSpan.originalHash.slice(0, 12)}`,
+              revisionId: `rev-${currentRevision + 1}`,
+              file: target.relativePath,
+              logicalTarget: resolvedSpan.logicalSection,
+              planItemIds: matchedItems.map((item) => item.id),
+              commentIds: [...new Set([
+                ...matchedItems.flatMap((item) => item.instructionId ? [item.instructionId] : []),
+                ...targetExternals.map((directive) => directive.instructionId),
+              ])],
+              evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+              ...(recordProtocolId !== undefined ? { protocolId: recordProtocolId } : {}),
+              beforeFileHash: revisionSourceHash(fileBefore),
+              beforeTargetHash: resolvedSpan.originalHash,
+              proposedReplacementHash: revisionSourceHash(result.latex.trim()),
+              afterFileHash: revisionSourceHash(actualFinal),
+              scope: { ok: true, violations: [] },
+              workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
+              fact: { ok: true, findingIds: [], violations: [] },
+              citation: (() => {
+                const beforeKeys = new Set(extractCitationKeys(resolvedSpan.file, resolvedSpan.content).keys);
+                const proposalKeys = new Set(extractCitationKeys(resolvedSpan.file, result.latex).keys);
+                const addedKeys = [...proposalKeys].filter((key) => !beforeKeys.has(key));
+                const removedKeys = [...beforeKeys].filter((key) => !proposalKeys.has(key));
+                const missingKeys = addedKeys.filter((key) => !bibliography.some((entry) => entry.key === key));
+                return {
+                  ok: missingKeys.length === 0,
+                  findingIds: missingKeys.map((key) => `citation:${currentRevision + 1}:MISSING_CITATION_KEY:${key}`),
+                  addedKeys,
+                  removedKeys,
+                  violations: missingKeys.map(() => "MISSING_CITATION_KEY"),
+                };
+              })(),
+              evidence: { ok: true, violations: [] },
+              apply: { ok: true, status: "applied" },
+              overall: "pass",
+            };
+            patchValidationRecords.push(patchRecord);
+            await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
+              revisionId: patchRecord.revisionId, revision: currentRevision + 1,
+              records: patchValidationRecords, summary: summarizePatchValidation(patchValidationRecords),
+            });
             revised.push(target.key);
             await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
             continue;
@@ -1932,6 +2129,72 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
       }
       const factPreservation = await computeFactPreservation(services, ctx.projectId, revision);
       const citationPreservation = await computeCitationPreservation(services, ctx.projectId, revision);
+      const patchArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, revision);
+      if (patchArtifact !== null) {
+        const texFile = (files: typeof previousFiles, file: string) => files.find((entry) => entry.file === file)?.content;
+        const patchRecords = patchArtifact.records;
+        const factFindings: FactFinding[] = factPreservation === null ? [] : [
+          ...factPreservation.changedFacts, ...factPreservation.removedFacts, ...factPreservation.addedUnsupportedFacts,
+          ...factPreservation.directionalChanges, ...factPreservation.formulaChanges, ...factPreservation.placeholderRegressions,
+        ];
+        const factAssigned = new Set<FactFinding>();
+        for (const record of patchRecords) {
+          const matching = factFindings.filter((finding) => finding.file === record.file &&
+            (finding.section.toLocaleLowerCase() === record.logicalTarget.toLocaleLowerCase() ||
+              finding.section.toLocaleLowerCase().includes(record.logicalTarget.toLocaleLowerCase()) ||
+              record.logicalTarget.toLocaleLowerCase().includes(finding.section.toLocaleLowerCase())));
+          for (const finding of matching) factAssigned.add(finding);
+          record.fact = {
+            ok: matching.length === 0,
+            findingIds: matching.map((finding) => `fact:${revision}:${finding.file}:${finding.section}:${finding.kind}`),
+            violations: matching.map((finding) => finding.reason),
+          };
+        }
+        const unattributedFact = factFindings.filter((finding) => !factAssigned.has(finding));
+        const citationFindings = [] as { patchId?: string; code: string; key: string; commentIds?: string[] }[];
+        const previousMain = texFile(previousFiles, "main.tex");
+        const currentMain = texFile(currentFiles, "main.tex");
+        if (previousMain !== undefined && currentMain !== undefined) {
+          const spans = locateLatexSections("main.tex", previousMain);
+          const attribution = attributeCitationChangesToPatches({
+            before: previousMain,
+            after: currentMain,
+            patches: patchRecords.map((record) => {
+              const span = spans.find((candidate) => candidate.logicalSection === record.logicalTarget);
+              return span === undefined ? null : { patchId: record.patchId, planItemIds: record.planItemIds, commentIds: record.commentIds, span, addedKeys: record.citation.addedKeys, removedKeys: record.citation.removedKeys };
+            }).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+            knownKeys: new Set((await services.citation.latestReport(ctx.projectId))?.static.bibEntries.map((entry) => entry.key) ?? []),
+          });
+          for (const finding of attribution.findings) {
+            citationFindings.push({ ...(finding.patchId ? { patchId: finding.patchId } : {}), code: finding.code, key: finding.key, ...(finding.commentIds ? { commentIds: finding.commentIds } : {}) });
+          }
+          for (const record of patchRecords) {
+            const own = attribution.findings.filter((finding) => finding.patchId === record.patchId);
+            const violations = own.filter((finding) => finding.code === "MISSING_CITATION_KEY" ||
+              (finding.code === "REMOVED_CITATION_KEY" && (citationPreservation?.unexpectedRemovedKeys.includes(finding.key) ?? true)));
+            record.citation = {
+              ok: record.citation.ok && violations.length === 0,
+              findingIds: [...new Set([...record.citation.findingIds, ...own.map((finding) => `citation:${revision}:${finding.code}:${finding.key}`)])],
+              addedKeys: [...new Set([...record.citation.addedKeys, ...own.filter((finding) => finding.code === "MISSING_CITATION_KEY" || finding.code === "ADDED_CITATION_KEY").map((finding) => finding.key)])],
+              removedKeys: [...new Set([...record.citation.removedKeys, ...own.filter((finding) => finding.code === "REMOVED_CITATION_KEY").map((finding) => finding.key)])],
+              violations: [...new Set([...record.citation.violations, ...violations.map((finding) => finding.code)])],
+            };
+          }
+        }
+        const unattributed = [
+          ...unattributedFact.map(() => "UNATTRIBUTED_FACT_VIOLATION"),
+          ...citationFindings.filter((finding) => finding.patchId === undefined &&
+            (finding.code === "AMBIGUOUS_PATCH_ATTRIBUTION" || finding.code === "ADDED_CITATION_KEY" || finding.code === "MISSING_CITATION_KEY" ||
+              (finding.code === "REMOVED_CITATION_KEY" && (citationPreservation?.unexpectedRemovedKeys.includes(finding.key) ?? true))))
+            .map((finding) => finding.code === "AMBIGUOUS_PATCH_ATTRIBUTION" ? finding.code : "UNATTRIBUTED_CITATION_VIOLATION"),
+        ];
+        for (const record of patchRecords) {
+          record.overall = record.scope.ok && record.workspaceIntegrity.ok && record.fact.ok && record.citation.ok && record.evidence.ok && record.apply.ok ? "pass" : "fail";
+        }
+        patchArtifact.summary = summarizePatchValidation(patchRecords, unattributed);
+        patchArtifact.summary.publishable = patchArtifact.summary.publishable && (factPreservation?.ok ?? false) && (citationPreservation?.ok ?? false);
+        await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchArtifact);
+      }
       const evidenceRecords = await services.evidence.list(ctx.projectId);
       // 新增引用的 evidence-backed 判定（与 gate 覆盖同源）
       const citationReport = await services.citation.latestReport(ctx.projectId);
@@ -1954,6 +2217,21 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
         evidenceRecords,
         evidenceLinks,
       });
+      const finalizedPatchArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, revision);
+      if (finalizedPatchArtifact !== null) {
+        for (const record of finalizedPatchArtifact.records) {
+          const staleEvidence = record.evidenceIds.filter((id) =>
+            result.evidenceRecheck.find((entry) => entry.evidenceId === id)?.stillFormal !== true);
+          record.evidence = {
+            ok: staleEvidence.length === 0,
+            violations: staleEvidence.map((id) => `EVIDENCE_NOT_FORMAL:${id}`),
+          };
+          record.overall = record.scope.ok && record.workspaceIntegrity.ok && record.fact.ok && record.citation.ok && record.evidence.ok && record.apply.ok ? "pass" : "fail";
+        }
+        finalizedPatchArtifact.summary = summarizePatchValidation(finalizedPatchArtifact.records, finalizedPatchArtifact.summary.unattributedViolations);
+        finalizedPatchArtifact.summary.publishable = finalizedPatchArtifact.summary.publishable && result.ok;
+        await services.reviewArtifacts.savePatchValidation(ctx.projectId, finalizedPatchArtifact);
+      }
       // 条目终态回写（applied → validated / rejected / needs_review；非法流转 = 编排缺陷，如实抛错）
       if (plan !== null && result.items.length > 0) {
         const transitions: RevisionItemTransition[] = result.items.map((item) => ({
