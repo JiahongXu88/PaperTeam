@@ -1,6 +1,6 @@
 # M11.4 Final Acceptance Report
 
-**最新结论：M11.4 Product Acceptance INCONCLUSIVE — Attempt 5 的 workflow run 在 `assessment.target` 失败（`AGENT_RUN_FAILED`）；Planner、Writer 与 Revision Harness 均未运行，不能判为 Harness validation failure。M11.4.5 future diagnostics 收口于 `PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER`，并记录 Pi structured-error limitation；由于 backend full regression 有两项本机 Docling smoke 失败，M11.4.5 仍为 PARTIAL / NOT_READY。** Attempt 2、4、5 原始事实与验收范围保留；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF。不启动 Attempt 6 或 M11.5。
+**最新结论：M11.4 Product Acceptance INCONCLUSIVE — Attempt 5 在 `assessment.target` 失败（`AGENT_RUN_FAILED`）；Planner、Writer 与 Revision Harness 均未运行，不能判为 Harness validation failure。M11.4.5 工程与回归门现已 COMPLETE：Pi limitation 以 `PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER` 安全收敛；Docling smoke 根因为宿主机提交内存压力，恢复资源后隔离、顺序、并行与 Backend full 均通过。当前 `READY_FOR_NEXT_M11_4_REVALIDATION`。** Attempt 2、4、5 原始事实与验收范围保留；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF。不启动 Attempt 6 或 M11.5。
 
 更新：2026-10-05（Asia/Shanghai；Attempt 5）
 
@@ -541,5 +541,28 @@ Attempt 5 prompt 重建：assessment task 2,997 chars；轻量字符估算约 89
 - deterministic targeted tests：124 passed（新增 prompt boundary + workflow orchestrator + PiRuntimeAdapter），包括 execution timeout abort、adapter settle 及 stage retry 等已有覆盖。
 - 最小真实 assessment smoke：**PASS**。用临时 synthetic project 直接调用 `FeasibilityService.assess`（未创建 workflow）；Z.AI / GLM-5.3 / General API 返回合法 `INSUFFICIENT`，task `pi-14d58991-37cd-4765-9a49-206d4b069d2a` completed，1,197 input / 983 output / 2,688 cache-read tokens，113,302 ms，估算 `$0.00669988`，完成时 `activeRuns=0`。smoke prompt 为 1,973 chars / 约 737 tokens。未单独记录 first-token 延迟，故无法与 Attempt 5 的 first-activity 对比。
 - 接近真实规模 smoke：未另跑。Attempt 5 重建的实际业务 prompt 仅 2,997 chars / 约 899 estimated tokens；没有完整稿件或 Evidence corpus 输入，额外扩大到“接近真实”不会检验不同 context 路径。当前 synthetic smoke 与 Attempt 5 prompt 规模同一量级。
-- Full backend：221 files passed / 3 skipped，2,427 passed / 15 skipped；Frontend：27 files / 280 passed；Backend 与 Frontend typecheck/build PASS。
-- Git：commit `b23cc4a fix(assessment): make target preflight observable` 已推送。M11.4.5 **NOT COMPLETE / NOT READY**：Attempt 5 没有保存 HTTP request ID / cause / abort 及 remote settlement 证据，第二次 `Request timed out.` 的责任层与远端 abort 收敛不可判定；真实 smoke 也未捕获 first-token 时点。没有据此声称 Pi 或 Z.AI bug，也没有开始完整 workflow revalidation。
+- Full backend（正式默认 4 workers）：221 files passed / 3 skipped，2,432 passed / 15 skipped，0 failed；Frontend：27 files / 280 passed；Backend 与 Frontend typecheck/build PASS。
+- M11.4.5 **COMPLETE**；`READY_FOR_NEXT_M11_4_REVALIDATION`。Attempt 5 的历史低层 timeout owner 与远端 abort settlement 仍不可恢复，按已记录的 Pi upstream limitation + safe fallback 归档，不再阻塞下一次 revalidation。M11.4 仍为 **INCONCLUSIVE / pending real revalidation**，本轮未运行该 revalidation、Attempt 6 或 M11.5。
+
+### M11.4.5 continuation — Docling Real Smoke Regression Closure (2026-10-05)
+
+- **失败用例：** `backend/test/ingestion/doclingReal.smoke.test.ts` 的 `PDF → docling → 结构化 blocks（正文 / 表格 / 图 / 页码 provenance）` 与 `全链：上传 → ingest → chunker 消费（docling kind + 页码 chunk）`；共同 fixture 为 `backend/test/fixtures/pdf/attention.pdf`（2,215,244 bytes）。前者直接调用 `DoclingParser.parseFile`；后者经 `IngestionService.ingest(project.id, source.sourceId)` 调用同一 parser，再由 `SourceChunker` 消费。
+- **实际退出码：** 十进制 `3221225477` = `0xC0000005` = Windows `STATUS_ACCESS_VIOLATION`。PowerShell 同时确认十六进制值；微软文档将该异常码标为 `STATUS_ACCESS_VIOLATION`（[Microsoft Learn](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/8bf7f401-baf8-4037-9f6e-eab81724b832)）。Application / Windows Error Reporting 日志未找到能归属 Python、Torch 或具体 native module 的条目；此码只说明发生访问违规，不足以单独归因 Docling 缺陷。
+- **分层定位与环境：** PaperTeam 使用 Node `execFile`（无 shell、默认继承 cwd），`windowsHide=true`、UTF-8、测试 timeout 880,000 ms、stdout/stderr callback capture、maxBuffer 128 MiB；child env 增加 `PYTHONIOENCODING=utf8` 与 `PYTHONDONTWRITEBYTECODE=1`。Python executable 为 `C:\Users\Administrator\AppData\Local\Python\pythoncore-3.14-64\python.exe`，Python 3.14.4、Windows 11 x64；Docling 2.131.0、docling-core 2.99.0、docling-parse 7.22.1、torch 2.14.0、numpy 2.5.2（OpenBLAS 0.3.34，MAX_THREADS=24）、onnxruntime 1.29.0、rapidocr 3.9.2、PyMuPDF 1.28.2。`PAPERTEAM_DOCLING_PYTHON` 未设置，`python`/`python3` 均解析到该安装。
+- **Direct command：** 在仓库根目录按实际脚本与 fixture 执行 `python backend/tools/parse_document_docling.py backend/test/fixtures/pdf/attention.pdf --figures-dir=<invocation-temp>\figures`。资源紧张期间 direct invocation 约 20.7 s 返回脚本级退出码 4 和 JSON `parse_failed`；stderr 报 `DefaultCPUAllocator: not enough memory: you tried to allocate 2097152 bytes`。另一轮 wrapper stderr 为重复 OpenBLAS allocation failures；线程限额实验有一轮 child 以 `0xC0000005` 退出。故 PaperTeam wrapper 已排除；direct parser 在相同资源压力下也无法完成模型加载，但未能在资源充足条件下复现稳定 native crash。
+- **Root cause：** 本机当时由外部托管的 `paperteam-decision-model-lab` Python 进程占用约 15.8–16.1 GiB 私有提交量；Windows 系统提交一度约 37 / 39.6 GiB、可用物理内存约 1.1 GiB。Docling child 本身观察到约 1.78 GiB 私有提交后遇到 OpenBLAS/Torch allocation failures 或访问违规。隔离失败时没有第二个 Docling child；因此不是测试并发 Docling 进程造成。该外部进程后来不再运行（未由本轮结束），提交量恢复至 18.6 / 26.0 GiB、可用物理内存约 6.6 GiB；同一依赖、fixture 和默认 child env 下 smoke 随即稳定通过。分类为**本地宿主机资源提交压力**，不是 PaperTeam production bug、测试临时目录 bug、Docling 稳定 upstream crash 或损坏的本地安装。
+- **并发、temp 与 cache：** 两条 `it` 在单个 test file 中按序执行。Vitest 原始默认 worker 数由本机 20 个 logical CPU 推为 19，fileParallelism=true；同一 backend full 还可能并行运行 PyMuPDF/Python parser tests。每轮 test 通过 `mkdtemp(os.tmpdir(), "paperteam-docling-smoke-")` 获得独立根目录；第一个用例 figures 在该根的 `figures` 下，ingest 路径经 `ParsedDocumentStore.figuresDir(projectId, sourceId)` 按 project/source 隔离。fixture 只读；HuggingFace model cache 是共享的既有只读缓存，没有删除或改写。观察到的真实并发 Docling 数为 2 时两进程均成功，未发现 temp/cache/file collision。child 结束后没有残留 Python parser 进程；资源失败的直接调用与 Vitest stderr/返回结果均有记录。诊断期间被 Node worker OOM 中断的临时目录留在系统 `%TEMP%` 外部目录，不在仓库或 Git 变更中。
+- **Reproduction matrix：**
+
+  | 场景 | 结果 |
+  |---|---|
+  | 资源压力期：结构化 blocks 单测隔离重复 | 失败：OpenBLAS allocation / `0xC0000005`；另一轮 Torch allocator error |
+  | 资源压力期：upload→ingest→chunker 单测隔离重复 | 3 次均失败；两次 ingestion 返回 `status=failed`，一次宿主提交压力导致 Vitest Node worker heap/IPC failure |
+  | 资源恢复后 A：结构化 blocks 单测隔离 3 次 | PASS 3/3，47.7–54.7 s |
+  | 资源恢复后 A：upload→ingest→chunker 单测隔离 3 次 | PASS 3/3，47.5–54.5 s |
+  | B：同文件两条 smoke 顺序执行 | PASS 2/2，93.6 s |
+  | C：两个独立 Vitest 进程同时各跑一条真实 smoke | PASS 2/2，约 61.6–61.9 s；各自 Python child 峰值 private bytes 约 3.0 GiB |
+  | D：Backend full | 首次默认 19 workers 时两条 Docling smoke 都通过；完整 suite 另有 repairLoop cancellation timeout。正式 4-worker 配置下全套 PASS，Docling 两条 smoke 均通过（约 61 s/条） |
+
+- **Test runner 调整：** 默认 19 workers 的 full suite 两次触发 `workflow/repairLoop.test.ts` 协作取消用例 timeout（该 suite 隔离复跑 4/4）；沿用仓库历史 4-worker full regression 基线，将 `backend/package.json` 的测试脚本固定为 `vitest run --maxWorkers=4`。这是有并发度的资源友好测试 runner 配置，不是全局串行；未改断言、没有 skip、没有把 real smoke 变 mock。该设置后完整 backend 回归通过。
+- **最终验证：** Docling/document ingestion/PDF/source targeted suite 133 passed；Backend full 正式 4 workers：221 files passed / 3 skipped，2,432 passed / 15 skipped，0 failed；Frontend：27 files / 280 passed；backend/frontend typecheck、build 与 `git diff --check` 均 PASS。未搜索 Docling upstream：资源充足时 direct command 与两 smoke 均稳定成功，不满足 upstream crash 搜索条件。未修改 production ingestion、Pi 或 provider 代码；GLM calls = 0；未运行 M11.4 real revalidation、Attempt 6、Planner、Writer、Revision Harness 或 M11.5。
