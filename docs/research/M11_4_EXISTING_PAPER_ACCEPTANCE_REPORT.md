@@ -1,6 +1,6 @@
 # M11.4 Final Acceptance Report
 
-**最新结论：M11.4 Product Acceptance INCONCLUSIVE — Attempt 5 的 workflow run 在 `assessment.target` 失败（`AGENT_RUN_FAILED`）；Planner、Writer 与 Revision Harness 均未运行，不能判为 Harness validation failure。M11.4.5 future diagnostics 收口于 `PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER`，并记录 Pi structured-error limitation；M11.4.5 工程状态仍待全量回归、commit/push 收尾。** Attempt 2、4、5 原始事实与验收范围保留；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF。不启动 Attempt 6 或 M11.5。
+**最新结论：M11.4 Product Acceptance INCONCLUSIVE — Attempt 5 的 workflow run 在 `assessment.target` 失败（`AGENT_RUN_FAILED`）；Planner、Writer 与 Revision Harness 均未运行，不能判为 Harness validation failure。M11.4.5 future diagnostics 收口于 `PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER`，并记录 Pi structured-error limitation；由于 backend full regression 有两项本机 Docling smoke 失败，M11.4.5 仍为 PARTIAL / NOT_READY。** Attempt 2、4、5 原始事实与验收范围保留；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF。不启动 Attempt 6 或 M11.5。
 
 更新：2026-10-05（Asia/Shanghai；Attempt 5）
 
@@ -509,6 +509,7 @@ Backend full suite：`npm --prefix backend test -- --testTimeout=30000`，218 fi
 - **Verification:** targeted PiRuntimeAdapter/runtime-watchdog/trace/agent-model suites: 160 passed; backend typecheck and frontend typecheck passed; root backend+frontend build passed; frontend full suite 27 files / 280 passed. Backend full suite with single thread pool: 220 files passed / 3 skipped, 2,430 passed / 15 skipped, 2 failed. Both failures were `test/ingestion/doclingReal.smoke.test.ts` using the real local Docling parser, which exited with Windows code `3221225477`; the isolated `LatexCompiler.test.ts` suite passed 16/16. The earlier backend 4-worker/fork attempts hit process memory exhaustion and are not counted as completed runs. No real provider smoke was run for this fallback-only change; the preceding lifecycle-instrumentation smoke remains recorded above (GLM-5.3 PASS, 141.144 s, estimated $0.009725).
 - **GitHub limitation:** related [Discussion #3363](https://github.com/earendil-works/pi/discussions/3363) is recorded as the existing umbrella for structured provider error fidelity. No issue/comment was submitted because `gh auth status` reported no authenticated GitHub host and no browser session was available. Repro source analysis and 1.0.1 repro attempt are recorded above.
 - **Readiness:** `FUTURE_ERROR_FIDELITY` is bounded to a known Pi upstream limitation. Use `PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER` only when Pi has flattened the error and PaperTeam's timer did not fire. Do not label it `Z.AI_TIMEOUT` or `PI_BUG`. Attempt 5's historical owner remains permanently unavailable. Because the required backend full suite has two real Docling smoke failures, M11.4.5 does not satisfy its strict full-regression completion gate in this run. No Attempt 6, Planner, Writer, Revision Harness acceptance, or M11.5 was run.
+- **Git:** implementation commit `acdf5e4` was pushed to `origin/main`. The follow-up documentation-only commit records final regression/Git status; final HEAD and cleanliness are verified in the turn's Git audit.
 
 ### assessment.target Context Inventory
 
