@@ -284,3 +284,112 @@ Attempt 1–3 的历史事实不变；本阶段没有 Attempt 4，没有创建�
 - **Git**：本次工程修复已提交并推送至 `origin/main`；最终 HEAD 与 `origin/main` 相同，working tree clean，`git diff --check` PASS。无 secrets、凭证、真实 fixture、生成 PDF、临时文件或依赖改动进入提交。
 
 **M11.4.3 verdict**：**COMPLETE — READY_FOR_M11_4_ATTEMPT_4**。这不是 M11.4 Product Acceptance PASS；须另行进行 Attempt 4 真实重验证。本次按要求停止于此，不运行 Attempt 4，不开始 M11.5。
+
+## 30. Attempt 4 — Final Real Revalidation
+
+**日期：2026-10-05。Verdict: FAIL。** Attempt 4 在全新隔离项目中使用指定返修前论文和 5 条真实外审意见完成产品链路。Fact Preservation 与 Candidate Gate 正确拒绝了不安全修改；没有安全 Candidate Freeze、PaperTeam Revised Draft PDF 或 held-out Human Final 对照。不得启动 Attempt 5。
+
+### 1. Verdict
+
+Attempt 4 **FAIL**。硬门未通过：6 个真实 RevisionPatch 对应的 PatchValidationRecord 中 4 pass、2 fail；两条失败均为 Fact Preservation metric-direction flip。NO-OP 缺少可机器验证的 Evidence linkage，因此按 `NOOP_EVIDENCE_REQUIRED` 失败关闭；5 条外部评论全部保留 unresolved。Candidate 不可发布。额外的隔离限制：在候选冻结前，助手工具输出曾展示真实作者回复段落；该内容没有导入项目或提供给 GLM，但人的盲评隔离已受污染，故不能声称本次完全盲测。人工最终稿、change log、最终 PDF 未读取。
+
+### 2. Git
+
+开始时分支 `main`，working tree clean，`HEAD == origin/main == fe30db3c4af049d60a9e082d3f28db6155e28134`。本次仅更新本报告与 `docs/PROJECT_STATUS.md`；验证后提交并推送文档。最终 hash 与 clean 状态见本节完成后的 Git 验证记录。
+
+### 3. Project / Run
+
+全新隔离 Project `p-5a7c00eb2fc1`，Run `w-8a058823c601`。Attempt 4 未复用此前三个 Project。Run 因候选 gate 失败而取消收尾；随后通过 revision restore 将工作稿恢复到 baseline 内容，形成 revision 5。无 Attempt 5。
+
+### 4. Baseline Integrity
+
+基线是指定的 `manuscript/historical/paper_before_revision.tex`，SHA-256 `423CF0E0C66612AD7C801785D60F183367BCFDA5D46C1E32E1610B2F87E46D30`。与人工最终稿区分；本轮导入 Product 工作文件后 SHA 完全一致。配套导入原 bibliography 与 figures/assets；导入 API 接受 12 项且无 warning，baseline xelatex+bibtex build PASS。初始 citation 检查：25 keys，missing 0、hallucinated 0、unused 0、duplicate/bad/mismatched 0、unverifiable 1。返修拒绝后恢复稿 SHA 仍等于基线。
+
+### 5. Generation vs Evaluation Isolation
+
+返修生成链只接触返修前论文、解析后的真实外审意见、原 bibliography/figures/tables 和本地实验材料；人工最终稿、revision change log、最终 PDF 未打开，未进入 Planner、Writer、Reviewer、Evidence 或 Prompt。**例外：**在 Candidate Freeze 前，读取真实 `response_to_reviewers.md` 的工具输出时，助手看到了作者回复段落。回复没有作为 Project Source 上传，GLM 的运行 Source trace 未包含它（Writer accessed=none）；但人类评估者的知识隔离已经受影响。后续没有用该信息改写或重跑 Candidate，也没有打开其他 held-out 材料。
+
+### 6. Comment Import
+
+Parser batch 显示 5 个独立 comment blocks；5 parsed、5 imported、0 lost、0 duplicated。评论集合为 1 Editor + 4 Reviewers。导入输入仅包含 comment 摘要/问题，不包含作者回复文本。
+
+### 7. Local Evidence
+
+上传并接入 3 份指定报告、board_c0_20260904 与 fair_ablation 数据文件，以及 baseline Source，共 24 accepted Sources（9 个 `.log` 因扩展名白名单被拒；日志不是本轮必需的合法文本证据）。报告经 Source→structured/fulltext→chunks→EvidenceStore，未整篇塞入 Writer prompt。研究执行 8 queries / 7 executed / 1 web query failed（本地 SearXNG 不可用）；Semantic Scholar 限流。自动 `research.propose` 新增 0，`evidence.ground` 处理/验证 0。运行中按真实 Source chunk 建立 E001–E007；RDK X3 与两条 fair-ablation 数值记录均有来源锚点。物理实验材料存在，不构成实验缺口。
+
+### 8. Revision Plan
+
+Revision Plan 有 17 个最终条目，5/5 external comments linked。Plan 分出 modify、noop、author_decision_required 等 typed action，没有强迫所有评论 MODIFY。问题是 Evidence ID 没写入 `relatedEvidenceIds`：虽然部分 rationale 提及 E001/E002/E003，最后数组仍为空；三轮计划后仍如此。一个 Research 查询因本地检索服务不可用不影响 comment linkage，但降低了新增文献研究覆盖。
+
+### 9. NO-OP / Author Decision
+
+NO-OP 未调用 Writer。确定性 coverage/evidence/protocol verification 对缺少 `relatedEvidenceIds` 的条目返回 `NOOP_EVIDENCE_REQUIRED`，因此没有把评论伪标为 addressed。5 条外部 comment 最终都 unresolved。部分计划项提出作者对训练/损失实现歧义作决定；这是模型建议的科学决策问题，不是缺少物理实验，也未冒充外审评论完成。
+
+### 10. Scoped Writer
+
+Existing Paper Writer 实际 allowlist 为 `read/grep/find/ls`；无 `write/edit/apply_patch`。6 次 section-level revision proposal/apply invocation 使用局部 logical target 与必要上下文，由 PaperTeam deterministic apply。Writer invocation 期间 workspace hash 未变，direct mutation=0；未触发 recovery。`revision.revise` 有一次 stale target contract error，workflow 自动重试后成功，未重复绕过安全门。
+
+### 11. Patch Validation Records
+
+rev2 持久化 6/6 `PatchValidationRecord`，4 pass、2 fail。记录均覆盖 workspace integrity、scope、fact、citation、evidence、apply、overall。失败项 Fact 为 `metric_direction_flip`；summary fail-closed，`publishable=false`。summary 另记录 5 个 `UNATTRIBUTED_FACT_VIOLATION`，说明 Fact finding 到 patch/comment 的归因仍有缺口。rev3 验证阶段也持久化 6 条记录，其中 4 pass、2 fail；未进入可发布状态。
+
+### 12. Scope Integrity
+
+Writer 前 immutable whole-file snapshot 与最终文件作 global diff，`scopeOk=true`，outside-scope diff=0。Patch 的逻辑 section scope 验证通过；workspace hash 在 Writer 前后相同。该项真实验证了 M11.4.3 的直接写盘防御和全局范围检查。
+
+### 13. Fact Preservation
+
+**FAIL。** rev1→rev2 发现 6 项结论方向漂移，quality gate 同时发现 revision-introduced unsupported claim；rev3 bounded revision 后同类 metric-direction flip 仍存在，累计未经授权漂移仍被拒。Guard 没有降低，也没有通过不安全 Candidate。相同核心 Fact root cause 连续两轮无改善，按 bounded policy 停止 Writer 修订。
+
+### 14. Citation Preservation
+
+rev2 / rev3 Citation Preservation 均 PASS；missing=0、hallucinated=0，citation keys 仍为 25。rev2 citation verify 另有 unverifiable=1；rev3 为 unverifiable=4。没有因 unverifiable 将 missing/hallucinated 计数伪报为 0；报告保留该限制。多 patch 同文件的 attribution 路径实际执行，PatchValidation summary citation attribution 为 pass。
+
+### 15. Evidence Protocol Integrity
+
+fair_ablation_new_detector 的 A/B 比较作为 `current` protocol Evidence；旧 `old_coco_pretrained_detector` 明确标为 `superseded`。Planner 将 Reviewer 4 关联到当前 protocol；旧 COCO Evidence 没有作为当前 claim 支持材料提供给 Writer。Protocol scope gate 未见绕过。报告中 2 条 fair-ablation current evidence 与 1 条 superseded COCO 历史记录可区分。
+
+### 16. Comment Outcomes
+
+五条 external comment 最终状态：Editor unresolved；Reviewer 1 unresolved；Reviewer 2 unresolved；Reviewer 3 unresolved；Reviewer 4 unresolved。原因均为候选无法通过所需 closure/gates（包括 NO-OP Evidence linkage 缺失以及修改项 Fact validation fail）；系统没有把任一评论标成 addressed。独立 NO-OP 结果没有被其他 patch 的失败误判为成功。
+
+### 17. Candidate Publish Gate
+
+`PatchValidationSummary.publishable=false`，Fact FAIL，quality gate FAIL（blocking findings、unsupported claim、Fact drift、patch summary 等）。因此 Candidate Freeze 不允许、不曾发生；held-out ground truth 保持未读。没有把临时 revision 或 restored baseline 当作返修 Candidate。
+
+### 18. Revised PDF
+
+未生成 PaperTeam Revised Draft PDF。仅有 baseline import build 的 PDF/构建产物，不是 revised deliverable。Candidate 未 publishable，故不进行返修稿 PDF 交付或 PDF 视觉验收。
+
+### 19. Held-Out Human Comparison
+
+未执行，也不允许执行：没有安全 Candidate Freeze。人工最终稿、作者回复的其他部分、revision_change_log、人工最终 PDF 未读取。由于工具输出曾展示作者回复段落，人的 blind evaluation 已污染；未来若重做真实盲测，应在新评估环境中避免对该材料进行读取，且不得把它回灌本轮 Writer。
+
+### 20. Cost / Runtime
+
+Run trace：27 agent runs（4 researcher、7 reviewer、16 writer），73 assistant turns；input 154,177、output 43,365、cacheRead 794,432、cacheWrite 0。估算费用 `$0.61320612`（provider list-price 估算，不是实际账单）；聚合 task duration 2,308.9 秒，wall runtime 约 41 分 34 秒。成本高于理想的 scoped revision；主要是 research/reviewer 多轮与 16 次 Writer agent run，且三轮 Plan、bounded revise/review 反复运行。token 统计不等于 GLM 实际计费明细。
+
+### 21. Pi Upstream Investigation
+
+无证据指向 Pi Runtime / Pi 1.0.1 / provider SDK 的 upstream 问题；未创建或评论 Pi issue，也无 workaround。观察到的问题位于 PaperTeam 的 Planner/Writer 输出与 patch attribution；stale target 曾被 PaperTeam workflow 自动恢复。无需 Pi 调查。
+
+### 22. Tests
+
+Backend full suite：`npm --prefix backend test -- --testTimeout=30000`，218 files passed / 3 skipped，2409 passed / 15 skipped。Frontend `npm --prefix frontend test`：27 files、280 passed。Backend/frontend `npm run typecheck` 与 `npm run build` 均 PASS。早先默认 timeout full-suite 执行分别遇到一个 trace 间歇失败和一个 5 秒测试超时；对应单文件复跑通过，延长 timeout 后最终全量后端回归通过。Frontend 有既存 mock-query stderr warning；build 有既存 Vite >500 kB chunk warning。测试结果是本地代码回归，不会改变真实产品验收 FAIL。
+
+### 23. Known Limitations
+
+- Planner 未稳定把理由中提及的 Evidence IDs 填入机器可验证字段，NO-OP 无法闭环。
+- Writer 在 scoped proposal 中仍输出造成方向事实漂移的内容，Fact Guard 正确挡住；bounded 第二轮没有改善。
+- PatchValidationSummary 有未归因 Fact findings，需作为后续工程/产品 blocker 保留，不能降级 Gate。
+- 自动 research/evidence grounding 本轮受本地搜索与学术服务限制；已提供的本地实验材料仍在 EvidenceStore。
+- 人类评估者读取到作者回复段落，盲测隔离不完整；模型生成链未获得该内容。
+- 无 publishable Candidate、Revised PDF 或 held-out comparison。
+
+### 24. M11.4 Verdict
+
+**M11.4 — FAIL。** 真实产品问题仍在：NO-OP Evidence linkage 不完整、Fact Preservation 连续拒绝 Writer 生成；同时 summary attribution 不完整。虽然 direct mutation、global scope、citation 与 protocol 门表现正确，不能抵消 Candidate 不可发布。没有降低 Guard、没有人工答案回灌、没有创建 Attempt 5。
+
+### 25. M11.5 Closure Readiness
+
+**NOT READY FOR M11.5 CLOSURE。** 不启动 M11.5。当前只记录少数 blocker：模型/Planner 结构化 Evidence linkage；Writer 对受保护事实的稳定 preservation；PatchValidationSummary 的 Fact finding attribution；以及评估者 blind isolation 的流程污染。应由后续明确授权的工作处理并安排新验收，当前不自动重跑。
