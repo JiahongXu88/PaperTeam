@@ -1557,8 +1557,9 @@ describe("PiRuntimeAdapter（Timeout 分层：queue / execution 阶段）", () =
       stage: "assessment.target",
       stageAttempt: 2,
       errorSource: "pi_session_assistant_error",
+      sourceLayer: "pi-coding-agent/AgentSession",
       errorName: "PiAssistantError",
-      timeoutClass: "PI_REQUEST_TIMEOUT",
+      timeoutClass: "PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER",
     });
     expect(lifecycle.errorMessage).toBe("Request timed out. api_key=[REDACTED]");
     expect(lifecycle.paperteamTimeoutAt).toBeUndefined();
@@ -1579,6 +1580,7 @@ describe("PiRuntimeAdapter（Timeout 分层：queue / execution 阶段）", () =
     expect(task.errorCode).toBe("PROMPT_REJECTED");
     expect(lifecycle).toMatchObject({
       errorSource: "pi_session_prompt",
+      sourceLayer: "paperteam/pi-runtime-adapter",
       errorName: "Error",
       errorMessage: "fetch failed",
       causeName: "Error",
@@ -1597,9 +1599,34 @@ describe("PiRuntimeAdapter（Timeout 分层：queue / execution 阶段）", () =
     const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
     expect(lifecycle).toMatchObject({
       topLevelCode: "gateway_timeout",
+      sourceLayer: "paperteam/pi-runtime-adapter",
       httpStatus: 504,
       timeoutClass: "PROVIDER_TIMEOUT",
     });
+    await adapter.close();
+  });
+
+  it("可见的 APIConnectionTimeoutError metadata 保留 class/code/cause 并归类为 SDK timeout", async () => {
+    const factory = createFakeFactory();
+    const cause = Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+    const error = Object.assign(new Error("Request timed out."), {
+      name: "APIConnectionTimeoutError",
+      code: "ETIMEDOUT",
+      cause,
+    });
+    factory.setBehavior({ kind: "preflightReject", message: error.message, error });
+    const adapter = await makeLevel1Adapter(factory, { firstActivityTimeoutMs: 0 });
+    const task = await adapter.runAgent({ agentId: "researcher", task: "synthetic", projectId: "p" });
+    const lifecycle = task.metadata?.["requestLifecycle"] as Record<string, unknown>;
+    expect(lifecycle).toMatchObject({
+      sourceLayer: "paperteam/pi-runtime-adapter",
+      errorName: "APIConnectionTimeoutError",
+      topLevelCode: "ETIMEDOUT",
+      causeName: "Error",
+      causeMessage: "socket closed",
+      timeoutClass: "PI_SDK_REQUEST_TIMEOUT",
+    });
+    expect(lifecycle.httpStatus).toBeUndefined();
     await adapter.close();
   });
 

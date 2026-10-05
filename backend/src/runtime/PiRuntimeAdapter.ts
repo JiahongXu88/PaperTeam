@@ -2267,9 +2267,12 @@ export class PiRuntimeAdapter implements AgentRuntime {
       const safeErrorText = redactDiagnosticString(errorText).slice(0, 500);
       state.requestLifecycle!.errorAt = new Date(this.now()).toISOString();
       state.requestLifecycle!.errorSource = "pi_session_assistant_error";
+      state.requestLifecycle!.sourceLayer = "pi-coding-agent/AgentSession";
       state.requestLifecycle!.errorName = "PiAssistantError";
       state.requestLifecycle!.errorMessage = safeErrorText;
-      state.requestLifecycle!.timeoutClass = /timed out|timeout/i.test(errorText) ? "PI_REQUEST_TIMEOUT" : "UNKNOWN_PROVIDER_FAILURE";
+      state.requestLifecycle!.timeoutClass = /timed out|timeout/i.test(errorText)
+        ? "PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER"
+        : "UNKNOWN_PROVIDER_FAILURE";
       this.log(`[pi-runtime] runAgent ${taskId} 终态=error：${safeErrorText}`);
       return this.buildTask({
         taskId,
@@ -3361,12 +3364,13 @@ function serializeErrorDiagnostics(error: unknown): Record<string, unknown> {
   const causeName = typeof cause?.name === "string" ? cause.name : undefined;
   const causeMessage = typeof cause?.message === "string" ? cause.message.slice(0, 500) : undefined;
   const timeoutClass = httpStatus === 504 ? "PROVIDER_TIMEOUT"
-    : /Timeout|timed out/i.test(name) && /APIConnectionTimeout/.test(name) ? "PI_REQUEST_TIMEOUT"
+    : /Timeout|timed out/i.test(name) && /APIConnectionTimeout/.test(name) ? "PI_SDK_REQUEST_TIMEOUT"
       : /UND_ERR|ECONN|ETIMEDOUT|EAI_AGAIN/i.test(`${code ?? ""} ${cause?.code ?? ""}`) ? "TRANSPORT_TIMEOUT"
         : /abort/i.test(name) || /abort/i.test(msg) ? "ABORTED"
-          : /timeout|timed out/i.test(`${name} ${msg}`) ? "PI_REQUEST_TIMEOUT"
+          : /timeout|timed out/i.test(`${name} ${msg}`) ? "PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER"
             : "UNKNOWN_PROVIDER_FAILURE";
   return {
+    sourceLayer: "paperteam/pi-runtime-adapter",
     topLevelCode: code,
     errorName: name,
     errorMessage: redactDiagnosticString(msg).slice(0, 500),
