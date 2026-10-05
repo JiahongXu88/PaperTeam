@@ -330,13 +330,20 @@ describe("M10.3 existing_paper_improvement 接线（单文件项目全流程）"
     expect(revised).toContain("\\cite{a}");
     expect(revised).toContain("scripted whole-file revision");
 
-    // already_satisfied 意见未被派发改稿（稿件不含该意见驱动的改动标记），
-    // 且指令状态保持 already_satisfied
+    // already_satisfied 意见未被派发改稿，并保留导入时的审计 trace。
     const instructions = await stack.request("GET", `/api/projects/${projectId}/external-instructions`);
-    const round1 = (instructions.body["instructions"] as { status: string; instructionId: string }[]).find(
+    const round1 = (instructions.body["instructions"] as {
+      status: string;
+      instructionId: string;
+      resolutionTrace?: { verification: { fact?: boolean; citation?: boolean }; status: string; actionType: string };
+    }[]).find(
       (entry) => entry.instructionId.startsWith("x-"),
     );
     expect(round1?.status).toBe("already_satisfied");
+    expect(round1?.resolutionTrace).toMatchObject({
+      status: "already_satisfied",
+      actionType: "noop",
+    });
 
     // 产物：Revision Trace 报告（含 already_satisfied 意见投影；不虚构意见）
     const response = await readFile(join(stack.root, projectId, "build", "revision-response.md"), "utf8");

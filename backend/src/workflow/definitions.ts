@@ -6980,7 +6980,7 @@ function recordUnresolvedPlanOutcome(
 ): void {
   if (item.instructionId === undefined) return;
   const instruction = instructions.find((candidate) => candidate.instructionId === item.instructionId);
-  if (instruction === undefined || instruction.status === "handled" || instruction.status === "conflict") return;
+  if (instruction === undefined || instruction.status === "handled" || instruction.status === "conflict" || instruction.status === "already_satisfied") return;
   instruction.status = "unresolved";
   instruction.statusNote = `${reason}: ${summary}`;
   instruction.resolutionTrace = {
@@ -7041,7 +7041,12 @@ async function collectRevisionDirectives(
           instructionsChanged = true;
           return false;
         }
-        if (item.actionType !== "noop") return true;
+        if (item.actionType !== "modify" && item.actionType !== "noop") {
+          recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), "REVISION_ACTION_TYPE_REQUIRED", "Plan item has no recognized typed action; Writer dispatch was skipped.");
+          instructionsChanged = true;
+          return false;
+        }
+        if (item.actionType === "modify") return true;
         const evidenceIds = item.relatedEvidenceIds ?? [];
         const coverage = verifyNoopCoverage({
           logicalSection: item.logicalSection,

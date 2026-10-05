@@ -185,7 +185,14 @@ export interface RevisionPlan {
 
 /** NO-OP is a routing decision: verified no-op items never become Writer directives. */
 export function dispatchableRevisionItems(items: readonly RevisionPlanItem[]): RevisionPlanItem[] {
-  return items.filter((item) => item.status === "planned" && item.actionType !== "noop" && item.actionType !== "author_decision_required");
+  return items.filter(
+    (item) =>
+      item.status === "planned" &&
+      (item.actionType === "modify" ||
+        // Legacy finding plans have no typed action; preserve their existing modify semantics.
+        // External instructions fail closed until they carry an explicit action.
+        (item.actionType === undefined && item.kind !== "external_instruction")),
+  );
 }
 
 /** ReviewIssue 的确定性指纹（跨轮跟踪同一问题的稳定 id） */

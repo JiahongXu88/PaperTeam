@@ -42,6 +42,8 @@ describe("existing-paper revision scope", () => {
     });
     const dispatch = dispatchableRevisionItems([
       item("noop-1", "noop"), item("noop-2", "noop"), item("noop-3", "noop"), item("noop-4", "noop"), item("modify-1", "modify"),
+      { id: "untyped", kind: "external_instruction", priority: "mandatory", section: "subsec:datasets",
+        problem: "coverage", instruction: "author decision required", expectedOutcome: "addressed", status: "planned" },
     ]);
     expect(dispatch.map((entry) => entry.id)).toEqual(["modify-1"]);
   });

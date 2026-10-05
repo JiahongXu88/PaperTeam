@@ -123,6 +123,26 @@ describe("ExternalInstructionStore", () => {
     expect(await store.remove("p-1", "x-nonexistent")).toBeNull();
   });
 
+  it("already_satisfied 导入自动形成可持久化的 typed NO-OP trace", async () => {
+    const { store } = await makeStore();
+    const added = await store.add("p-1", {
+      source: "journal_reviewer",
+      text: "投稿版已补充车载视角文献。",
+      reviewerLabel: "Reviewer 1",
+      initialStatus: "already_satisfied",
+      statusNote: "投稿版引言已补充六篇车载视角文献，依据为已批准稿。",
+      now: NOW,
+    });
+    const loaded = await store.load("p-1");
+    expect(added?.status).toBe("already_satisfied");
+    expect(loaded[0]?.resolutionTrace).toMatchObject({
+      commentId: added?.instructionId,
+      actionType: "noop",
+      status: "already_satisfied",
+      resolutionSummary: "投稿版引言已补充六篇车载视角文献，依据为已批准稿。",
+    });
+  });
+
   it("批量导入保持输入顺序，重复项显式返回且重复提交幂等", async () => {
     const { store } = await makeStore();
     const comments = [

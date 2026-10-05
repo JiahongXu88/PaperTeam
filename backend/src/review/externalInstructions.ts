@@ -252,6 +252,38 @@ export function externalInstructionId(
   return `x-${hash}`;
 }
 
+function readResolutionTrace(value: unknown): CommentResolutionTrace | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const verification = record["verification"];
+  const validAction = ["modify", "noop", "author_decision_required", "evidence_only"].includes(String(record["actionType"]));
+  const validVerification = typeof verification === "object" && verification !== null && !Array.isArray(verification);
+  if (
+    typeof record["commentId"] !== "string" || !Array.isArray(record["planItemIds"]) ||
+    !record["planItemIds"].every((item) => typeof item === "string") || !validAction ||
+    !Array.isArray(record["evidenceIds"]) || !record["evidenceIds"].every((item) => typeof item === "string") ||
+    !Array.isArray(record["patchIds"]) || !record["patchIds"].every((item) => typeof item === "string") ||
+    !validVerification || !isStatus(record["status"]) || typeof record["resolutionSummary"] !== "string"
+  ) return undefined;
+  const flags: CommentResolutionTrace["verification"] = {};
+  for (const key of ["scope", "fact", "citation", "evidence"] as const) {
+    const candidate = (verification as Record<string, unknown>)[key];
+    if (typeof candidate === "boolean") flags[key] = candidate;
+  }
+  return {
+    commentId: record["commentId"],
+    planItemIds: record["planItemIds"] as string[],
+    actionType: record["actionType"] as CommentResolutionTrace["actionType"],
+    ...(typeof record["target"] === "string" ? { target: record["target"] } : {}),
+    evidenceIds: record["evidenceIds"] as string[],
+    patchIds: record["patchIds"] as string[],
+    verification: flags,
+    status: record["status"],
+    resolutionSummary: record["resolutionSummary"],
+    ...(typeof record["remainingIssue"] === "string" ? { remainingIssue: record["remainingIssue"] } : {}),
+  };
+}
+
 /** 磁盘 JSON → 指令列表（防御性：损坏条目丢弃；结构损坏 → 空列表） */
 export function readExternalInstructions(value: unknown): ExternalInstruction[] {
   if (typeof value !== "object" || value === null) {
@@ -296,6 +328,9 @@ export function readExternalInstructions(value: unknown): ExternalInstruction[] 
       ...(typeof record["statusNote"] === "string" ? { statusNote: record["statusNote"] } : {}),
       ...(typeof record["conflictBasis"] === "string"
         ? { conflictBasis: record["conflictBasis"] }
+        : {}),
+      ...(readResolutionTrace(record["resolutionTrace"]) !== undefined
+        ? { resolutionTrace: readResolutionTrace(record["resolutionTrace"]) }
         : {}),
       createdAt,
       updatedAt: typeof record["updatedAt"] === "string" ? record["updatedAt"] : createdAt,
@@ -365,6 +400,18 @@ export class ExternalInstructionStore {
       ...(input.section !== undefined ? { section: input.section } : {}),
       status: satisfied ? "already_satisfied" : "pending",
       ...(satisfied ? { statusNote: input.statusNote } : {}),
+      ...(satisfied ? {
+        resolutionTrace: {
+          commentId: instructionId,
+          planItemIds: [],
+          actionType: "noop" as const,
+          evidenceIds: [],
+          patchIds: [],
+          verification: {},
+          status: "already_satisfied" as const,
+          resolutionSummary: input.statusNote!.trim(),
+        },
+      } : {}),
       createdAt: now,
       updatedAt: now,
     };
