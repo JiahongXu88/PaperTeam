@@ -1,8 +1,8 @@
 # M11.4 Final Acceptance Report
 
-**结论：FAIL — M11.4 Existing Paper Revision Product Acceptance 未完成。** 正确的返修前稿成功导入，5 条意见和本地实验资料均进入新项目；但 Writer 在首次修订后触发事实守卫失败，后续整稿修订又产生 17 项被拒变更。Candidate 已在读取人工 ground truth 前冻结。未发布 PaperTeam Revised PDF。不得将本轮标为 COMPLETE，也不得进入 M11.5 Closure。
+**最新结论：FAIL — Attempt 5 在 `assessment.target` 连续遭遇 GLM request timeout，run 终态 `SYSTEM_FAILED`；未到达 Planner/Writer，故 M11.4 产品验收仍未完成。** Attempt 2 和 Attempt 4 的历史结论保留在下文；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF，详见文末「Attempt 5 — Validation-Aware Final Blind Revalidation」。不启动 Attempt 6 或 M11.5。
 
-更新：2026-10-05（Asia/Shanghai）
+更新：2026-10-05（Asia/Shanghai；Attempt 5）
 
 Project：`p-083018b5b6b7`
 
@@ -417,3 +417,56 @@ Backend full suite：`npm --prefix backend test -- --testTimeout=30000`，218 fi
 - Gate / provider：所有 repair 候选仍需 scope、Fact、Citation、Evidence 检查并成功 apply 才能被接纳；未降低 Candidate Gate。默认不自动换模型/provider；无 escalation model 时 bounded exhausted。GLM calls = 0，未运行 Attempt 5、未创建真实论文项目、未调用真实 Reviewer/Writer、未进入 M11.5，未调查 Pi upstream。
 - Targeted 终验：workflow patch repair / Citation / Fact、Planner、PatchValidation summary、Held-out reader 和 model routing 回归通过；核心 metric direction → targeted repair → PASS workflow E2E 同时断言 initial fail history、repair pass record、summary final version、logical vs attempt count、Comment handled。Promotion error rollback/classification 和 no-progress 亦有回归。
 - 全量终验：backend `npm test -- --testTimeout=30000 --maxWorkers=4` — 220 files passed / 3 skipped，2425 passed / 15 skipped；frontend `npm test` — 27 files / 280 passed；root `npm run typecheck`、`npm run build` 均 PASS。Frontend build 有既存 Vite >500 kB chunk warning。`git diff --check` PASS。无 GLM/provider 调用。实现 commit `223b979`（`feat(revision): complete validation-aware repair harness`）已推送 `origin/main`；文档闭环记录随后的 docs commit 推送后再次确认 HEAD == origin/main 且 working tree clean。M11.4 Product Acceptance 仍为 **FAIL / pending Attempt 5**；本次只将实现状态标为 COMPLETE 与 READY_FOR_M11_4_ATTEMPT_5，不代表真实产品验收通过。
+
+## Attempt 5 — Validation-Aware Final Blind Revalidation
+
+**日期：2026-10-05。Verdict: FAIL / `SYSTEM_FAILED`。** Attempt 5 使用了新的隔离项目和正确返修前 baseline；blind path gate、真实评论解析/导入、真实 Source ingestion、baseline build、citation audit 与真实 GLM 审稿均通过。但 GLM-5.3 的 `assessment.target` 调用先后发生 300 秒 execution timeout 和 `Request timed out`，workflow 的两次 stage 尝试均失败，run 以 `AGENT_RUN_FAILED` 结束。流程未到达 Planner、Writer 或 Patch Harness，因此不能回答 Harness 是否能在真实 Writer 首次出错后完成安全修复。停止真实实验；不启动 Attempt 6 或 M11.5。
+
+### Git / 隔离项目
+
+- 开始时：`main`，`HEAD == origin/main == 518141e157e2918327c8bbf02ae47d4d4571471c`，working tree clean。
+- 盲评 reader 的真实中文标题兼容缺陷在导入评论前暴露并修复：commit `f0c237f1441ae32f8c26e9064cdd4f05eb6161bb`，已推送 `origin/main`。新测试覆盖中文 Editor/Reviewer 标题及作者回复截断。
+- 新项目：`p-f52b496cb6f3`；唯一 workflow run：`w-4c0cc322d84a`。项目和运行产物位于 `D:\PaperTeamData\M11.4-attempt5`，未使用 Attempt 1–4 的 Project。Run baseline SHA 与起始 SHA 一致。
+
+### Baseline / Comments / Blind Gate
+
+- Existing Paper baseline：`D:\PaperTeamData\M10.3-real-paper-case\manuscript\historical\paper_before_revision.tex`，SHA256 `423CF0E0C66612AD7C801785D60F183367BCFDA5D46C1E32E1610B2F87E46D30`。导入的是该文件副本，入口 `paper.tex`；含原始 `refs.bib` 与 10 个 PDF figures，共 12 个工程文件。真实 `xelatex+bibtex` baseline build PASS，26 页，0 import warnings。没有使用 `manuscript/source/paper.tex`。
+- 返修前稿引用审计：25 个已引用 bibliography keys，`missing=0`、`hallucinated=0`。这是 baseline audit；Candidate 的 Citation Preservation 未运行。
+- 评论经 `AcceptanceEvaluationReader.readReviewerComments()` 解析后才进入 Project：1 Editor + 4 Reviewer，5 parsed / 5 imported / 0 lost / 0 duplicated。评论 IDs 与历史 fixture 一致。Author response 没有作为 Source、指令或 prompt 输入。
+- Candidate Freeze 前实际调用 path gate：人工最终稿、共享回复信原文件、`revision_change_log.md`、最终 PDF 四条直接读取均返回 `HELD_OUT_ACCESS_BLOCKED`；回复信的 comment-only reader 只返回 5 个评论块，不返回作者回复。未读取 Human Final、作者回复、change log 或 final PDF 的内容。没有 Candidate Freeze，因此也没有进入 held-out evaluation reader。
+
+### Evidence / Workflow 进度
+
+- 指定的 3 份实验报告及 `board_c0_20260904`、`fair_ablation` 数据共 23 个 Source 全部上传成功；23/23 有 structured document 与 blocks/chunks（合计 6,541 blocks），无整份报告直接塞给 Writer。Source role 为 `evidence`。
+- 真实 run 完成 `import.parse`、`import.baseline_build`、`import.inventory`、`import.baseline`、`import.understand`、`citation.verify`、`review.run`；Review 三路完成，记录 23 findings。Citation 阶段报告 25 cited、0 missing、0 hallucinated。
+- `assessment.target` 第一次调用：300,017 ms 后 `timed_out`，0 input/output token；workflow 启动配置内的第二次 stage 尝试。第二次调用以 `Request timed out` 失败，177,219 ms，0 input/output token。无 HTTP 402、insufficient balance、quota/billing exhausted 信号；timeout 不记作 quota exhaustion。
+- `research.plan`、`plan.improvement`、`revision.apply` 均未执行；EvidenceStore 中没有 EvidenceRecord。因此 current fair-ablation / superseded old-COCO 的 Evidence protocol 尚未经过本 run 的 Planner/Harness 校验。不得将 Source ingestion 描述为 Evidence protocol PASS。
+
+### Patch / Candidate / Held-Out 结果
+
+| 指标 | Attempt 5 结果 |
+|---|---|
+| Planner first-pass valid rate / structured repairs | N/A：未到达 Planner；repair 0 |
+| Logical patches / first-pass patch pass | N/A：Writer 未运行 |
+| Targeted repair attempts / successes / exhausted | 0 / 0 / 0（Harness 未运行；成功率 N/A） |
+| `metric_direction_flip` / Harness 修复成功 | 0 / 0（未运行） |
+| unsupported claim / Citation repair | 0 / 0（未运行） |
+| repair pipeline errors / unattributed violations | 0 / 0（未运行） |
+| final accepted patches | 0；无 logical patch |
+| direct workspace mutation / outside-scope diff | 0 observed；patch stage 未执行，故这两项未实证 |
+| Fact Preservation | N/A：无 Candidate |
+| Citation Preservation | N/A：无 Candidate；baseline missing/hallucinated 均为 0 |
+| Comment outcomes | 5 条均 pending；workflow failure 前无 outcome，不伪标 addressed |
+| Candidate publishable / freeze | false / 未冻结 |
+| PaperTeam Revised PDF | 未生成 |
+| held-out Human comparison | 未执行；没有 FULL/PARTIAL/DIFFERENT_BUT_REASONABLE/MISS 评级 |
+| author experiment / decision | 本次未到达 Planner，不能作完整判定；输入材料已存在，不因本次 timeout 推断需补实验 |
+
+### Usage / Regression / Final State
+
+- Model：`Z.AI / zai/glm-5.3 / general_api`，沿用已保存的个人 Key；未切 provider/model/channel，也未输出凭据。
+- Run trace：52,757 input tokens、8,684 output tokens、50,368 cache-read、18 assistant turns；估算 `$0.12516508`（provider list-price 估值，不是账单）；wall duration 678,757 ms（11 分 18.8 秒）。
+- Quota exhaustion：**NO**。Pi upstream：没有证据显示是 Pi 1.0.1 产品缺陷；未提交 upstream issue。
+- Full regression：Backend `npm test -- --testTimeout=30000 --maxWorkers=4` — 220 files passed / 3 skipped，2,426 passed / 15 skipped；Frontend `npm test` — 27 files、280 passed；root `npm run typecheck` 与 `npm run build` PASS。Build 有既存 Vite >500 kB chunk warning；tests 有既存 query/jsdom stderr warning。
+- Attempt 5 结论：**M11.4 — FAIL / NOT_READY_FOR_M11_5**，唯一 blocker 为真实 run 在 `assessment.target` 两次 Provider request timeout（`SYSTEM_FAILED`）。没有将其混归为模型科学能力限制、额度耗尽或 Evidence Gap；不启动 Attempt 6。代码修复 commit 已推送；本报告及 `docs/PROJECT_STATUS.md` 随本次验收记录更新。
+- M11.5 未启动；`READY_FOR_M11_5_CLOSURE`：**false**。
