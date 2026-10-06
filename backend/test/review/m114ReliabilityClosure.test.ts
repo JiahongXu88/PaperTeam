@@ -538,4 +538,100 @@ describe("M11.4 Reliability Closure：归因数值指纹档与 claimIndex lineag
     expect(linked[0]?.rootCauseKey).toBeUndefined();
     expect(linked[1]?.rootCauseKey).toBeUndefined();
   });
+
+  it("academic 类 finding 引用 claim 过半数值（Run C 实证）→ 数值指纹档跨 category 归因", () => {
+    const audit = computeClaimGapAudit({
+      projectId: "p-c", round: 3, baselineRevision: 1,
+      unsupportedClaims: [mainTableClaim],
+      issues: [issue({
+        category: "academic",
+        section: "实验与结果/消融实验",
+        description: "主表（表4/表5）中本文方法在 BDD100K 验证集上 MOTA=71.2、IDF1=74.0、IDS=8200，而消融表（表7）为 68.1、72.5、10800，两处数值明显矛盾。",
+      })],
+      frozenFiles,
+      authorEvidence: [],
+    });
+    expect(audit.claims[0]?.applicability).toBe("excluded_pre_existing");
+    expect(audit.issueAttribution[0]?.excluded).toBe(true);
+    expect(audit.issueAttribution[0]?.claimId).toBe("c-d508d2b1eb60");
+  });
+
+  it("academic 类 finding 无数值引用且词面重叠低 → 弱证据档不越 category（不误伤）", () => {
+    const audit = computeClaimGapAudit({
+      projectId: "p-c", round: 3, baselineRevision: 1,
+      unsupportedClaims: [mainTableClaim],
+      issues: [issue({
+        category: "academic",
+        section: "结论",
+        description: "结论新增对冲表述与摘要正面声明自相矛盾，核心贡献有效性被否定。",
+      })],
+      frozenFiles,
+      authorEvidence: [],
+    });
+    expect(audit.issueAttribution[0]?.excluded).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F14：候选级与 cumulative 同授权标准（revision-plan 文本不得自我授权新增）
+// ---------------------------------------------------------------------------
+
+describe("M11.4 Reliability Closure：strict 候选授权口径（Run C 实证）", () => {
+  const PREVIOUS = [
+    "\\section{方法}",
+    "特征融合采用「替代或融合」的可变表述，取决于写入门控状态。",
+    "\\end{document}",
+  ].join("\n");
+  const CURRENT = [
+    "\\section{方法}",
+    "特征融合统一为：",
+    "\\begin{equation}",
+    "\\mathbf{g}_t^k = \\beta\\, \\bar{\\mathbf{f}}_t^k + (1-\\beta)\\, f_{t^{\\prime}}^k,",
+    "\\end{equation}",
+    "其中 $\\beta$ 为固定融合权重。",
+    "\\end{document}",
+  ].join("\n");
+  // round-2 修订计划的 finding 条目 instruction 点名该公式（机器生成文本）
+  const planNamingFormula = {
+    schemaVersion: 1,
+    planId: "plan-r2-rev2",
+    projectId: "p-c",
+    sourceRevision: 2,
+    reviewRound: 2,
+    createdAt: new Date().toISOString(),
+    summary: { critical: 0, major: 1, blocking: 0, minorRecorded: 0, planned: 1, skipped: 0 },
+    items: [{
+      id: "f-abc123def456",
+      kind: "review_finding",
+      priority: "medium",
+      section: "main.tex",
+      problem: "表述不统一",
+      instruction: "统一为 \\mathbf{g}_t^k = \\beta\\, \\bar{\\mathbf{f}}_t^k + (1-\\beta)\\, f_{t^{\\prime}}^k",
+      expectedOutcome: "统一表述",
+      status: "planned",
+    }],
+  } as never;
+
+  function evaluate(strict: boolean) {
+    return evaluateFactPreservation({
+      previous: { revision: 2, files: [{ file: "main.tex", content: PREVIOUS }] },
+      current: { revision: 3, files: [{ file: "main.tex", content: CURRENT }] },
+      plan: planNamingFormula,
+      improvementPlanItems: [],
+      evidenceTexts: [],
+      weakeningAuthorizations: [],
+      ...(strict ? { strictPlanTextAuthorization: true } : {}),
+    });
+  }
+
+  it("宽松口径（gate pairwise 旧行为）：计划文本点名 → 公式新增被授权", () => {
+    const summary = evaluate(false);
+    expect(summary.addedUnsupportedFacts.filter((f) => f.reason === "formula_added")).toHaveLength(0);
+  });
+
+  it("严格口径（patch 候选 / cumulative 同标准）：计划文本不授权 → 公式新增被拦", () => {
+    const summary = evaluate(true);
+    expect(summary.addedUnsupportedFacts.filter((f) => f.reason === "formula_added")).toHaveLength(1);
+    expect(summary.ok).toBe(false);
+  });
 });

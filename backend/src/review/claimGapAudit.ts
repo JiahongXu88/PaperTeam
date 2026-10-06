@@ -278,9 +278,13 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
     });
   }
 
-  // ---- issue 归因（fact / evidence_gap 类 → 被排除 / 灰区 claim） ----
+  // ---- issue 归因（→ 被排除 / 灰区 claim） ----
   // 灰区 claim 的伴随 finding 同样不计入规则 5/6 阻断口径（作者裁决层，
   // Revision Task Gate 的 authorDecisions 与投稿风险清单会呈现，不静默）。
+  // M11.4 Reliability Closure（Run C 实证）：heavy finding 任意 category 都参与
+  // 归因——强证据档（数值指纹 / 逐字引用 / 直接 id join）不依赖 category 标签
+  //（学术审稿人把主表/消融矛盾 finding 标 academic，fact 审稿人标 fact——
+  // 标签是噪声）；弱证据档（章节兼容 + 词元覆盖）仅限 fact / evidence_gap。
   const excludedClaims = classifications.filter(
     (item) => item.applicability !== "revision_introduced",
   );
@@ -289,12 +293,11 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
   let excludedMajor = 0;
   let excludedBlocking = 0;
   for (const issue of input.issues) {
-    const relevant =
-      (issue.category === "fact" || issue.category === "evidence_gap") &&
-      (issue.severity === "critical" || issue.severity === "major" || issue.blocking);
-    if (!relevant) {
+    const heavy = issue.severity === "critical" || issue.severity === "major" || issue.blocking;
+    if (!heavy) {
       continue;
     }
+    const allowTermTier = issue.category === "fact" || issue.category === "evidence_gap";
     const descriptionTerms = termSet(issue.description);
     const compactDescription = issue.description.replace(/\s+/g, "");
     // M11.4 Reliability Closure：直接 id join 优先（claimIndex lineage /
@@ -302,11 +305,11 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
     const directJoin = issue.rootCauseKey !== undefined
       ? excludedClaims.find((claim) => claim.claimId === issue.rootCauseKey)
       : undefined;
-    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（两档 + 数值指纹档）
+    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（分层证据 + 数值指纹档）
     const attributed = directJoin ??
       excludedClaims.find(
         (claim) =>
-          claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, issue.description, compactDescription),
+          claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, issue.description, compactDescription, allowTermTier),
       );
     const excluded = attributed !== undefined;
     if (excluded) {
@@ -380,19 +383,16 @@ function sectionsCompatible(a: string, b: string): boolean {
 }
 
 /**
- * M11.4 Attempt 8 修复：claim ↔ finding 描述的归因谓词（两档）。
+ * M11.4 Attempt 8 修复：claim ↔ finding 描述的归因谓词（分层证据强度）。
  *
- * - 常规档：章节兼容 ∧ claim 词元在描述词元中的覆盖率 ≥ 0.5；
- * - 引用档：覆盖率 ≥ 0.75——描述逐字引用 claim 内容时（finding 描述引用基线
- *   原句、claim 是其转述），引文本身就是归因证据，章节标签噪声（同一 reviewer
- *   对 claim 与 issue 的节标注不完全一致，实证："消融实验（tab:ablation_mgdtm
- *   分析）" vs "…分析段"）不能破坏归因。
- *
- * M11.4 Reliability Closure 追加数值指纹档（8c 实证：p-85d7749054b9 的
- * 主表/消融表不一致 finding——描述是「问题」的元描述（“两处不一致未解释”），
- * 与 claim 原文（数值罗列）词面重叠结构性 < 0.5；但它引用了 claim 4 个数值中
- * 的 3 个（71.2 / 74.0 / 8200）。数值是最强指纹：claim 数值 ≥ 2 且描述含其
- * 半数以上 → 同一对象；单数值 claim 要求章节兼容（数值指纹不足）。
+ * - 常规档（弱证据，仅 fact / evidence_gap 类）：章节兼容 ∧ claim 词元在
+ *   描述词元中的覆盖率 ≥ 0.5；
+ * - 引用档（强证据，任意类）：覆盖率 ≥ 0.75 或逐字片段——描述逐字引用 claim
+ *   内容时，引文本身就是归因证据，章节标签噪声不能破坏归因；
+ * - 数值指纹档（强证据，任意类）：claim 数值 ≥ 2 且描述含其半数以上 → 同一
+ *   对象（Run C 实证：学术审稿人把主表/消融表矛盾 finding 标 category=academic
+ *   ——同款 finding 在 8c 被标 fact；category 标签是噪声，数值指纹不是。
+ *   强证据档不依赖 category，弱证据档保留 category 佐证）。
  */
 function claimMatchesFinding(
   issueSection: string,
@@ -401,9 +401,11 @@ function claimMatchesFinding(
   descriptionTerms: ReadonlySet<string>,
   descriptionText: string,
   compactDescription: string,
+  allowTermTier: boolean = true,
 ): boolean {
   const containment = termContainment(termSet(claimText), descriptionTerms);
   if (
+    allowTermTier &&
     sectionsCompatible(issueSection, claimSection) && containment >= 0.5
   ) {
     return true;
@@ -507,6 +509,10 @@ export function tagIssueRootCauses(
   let critical = 0;
   let major = 0;
   for (const issue of tagged) {
+    // D-2 契约保持：root-cause 标注只服务 fact 路的 claim/issue 配对去重
+    //（M11.2.3 语义不变）；跨 category 归因（数值指纹等强证据档）由
+    // computeClaimGapAudit 的 issueAttribution 承担（F15），它同样驱动
+    // classifyFindingOrigins 的 excludedFingerprints 归层。
     const relevant =
       (issue.category === "fact" || issue.category === "evidence_gap") &&
       (issue.severity === "critical" || issue.severity === "major" || issue.blocking);
@@ -527,14 +533,16 @@ export function tagIssueRootCauses(
       }
       continue;
     }
+    const allowTermTier = issue.category === "fact" || issue.category === "evidence_gap";
     const descriptionTerms = termSet(issue.description);
     const compactDescription = issue.description.replace(/\s+/g, "");
-    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（与 audit 同口径；
-    // rootCauseKey 断链则 Revision Task Gate 的 finding 归层退回修改区间启发式）
+    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（与 audit 同口径：
+    // 强证据档任意 category，弱证据档仅 fact / evidence_gap；rootCauseKey
+    // 断链则 Revision Task Gate 的 finding 归层退回修改区间启发式）
     const attributed = unsupportedClaims.find(
       (claim) =>
         isUnsupportedVerdict(claim.verdict) &&
-        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, issue.description, compactDescription),
+        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, issue.description, compactDescription, allowTermTier),
     );
     if (attributed === undefined) {
       continue;

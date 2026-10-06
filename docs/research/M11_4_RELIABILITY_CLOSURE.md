@@ -145,5 +145,24 @@ round-2 无法恢复（表格 cell 非段落恢复对象）→ cumulative 守卫
 （unauthorized_fact_change → bounded repair；mustPreserve 点名旧值）。合法保留该类
 澄清的通道是计划 expectedFactChanges + Evidence 绑定（提示规则 4 既有）。
 
+## 3.4 Post-fix Run C（p-af86ff877f8f / w-c470dca1adf0）——5/7 PASS，两个深层缺口
+
+修复生效面：意见闭环 PASS（Editor/R3 handled、R4 conflict、R1/R2 author_decision）；
+patch_substance PASS；revision_introduced 0；buildOk=true；academic 79 vs 基线 70。
+两个残留 FAIL（真实数据回放验证修复均有效，`.tmp-dbg` probe）：
+
+1. **授权标准不一致（洗白通道）**：round-2 Writer 按修订计划 finding 条目的
+   instruction（含新公式 $\mathbf{g}_t^k=\beta\bar{f}+(1-\beta)f_{t'}$）新增公式——
+   pairwise/candidate 层用**未经用户批准的修订计划文本**授权放行（lenient ok=true），
+   cumulative 层按「只认已批准台账+Evidence」判漂移（不可恢复）→ 守卫 FAIL。
+   **F14**：`strictPlanTextAuthorization`（patch 候选级启用）= 与 cumulative 同
+   标准——修订计划文本不进新增授权（restoreAuths 恢复方向保留）；真实数据验证
+   STRICT 口径 formula_added=1 被拦。
+2. **category 标签噪声挡住数值指纹**：主表/消融矛盾 finding 本轮被学术审稿人标
+   `category=academic`（8c 同款被标 fact）——归因的 category 过滤把它挡在数值
+   指纹档外 → 误层 modified_existing → 任务层 blocking。**F15**：归因分层证据
+   强度——强证据档（数值指纹/逐字引用/直接 id join）任意 category；弱证据档
+   （章节+词元覆盖）仅 fact/evidence_gap。真实数据验证 excludedBlocking 3→4。
+
 （后续章节 9-20 在收口时补：deterministic regressions / real-run 结果 / 稳定性统计 /
 memory audit / Docker / tests / git / final readiness。）

@@ -143,6 +143,12 @@ export interface FactPreservationInput {
    *   changed，永远不放行）。
    */
   weakeningAuthorizations?: WeakeningAuthorizationInput[];
+  /**
+   * M11.4 Reliability Closure：patch 候选级启用（与 cumulative gate 同授权
+   * 标准）——revision-plan 文本不作为新增值/公式的授权依据（防机器计划
+   * 文本自我授权的洗白通道；restoreAuths 恢复方向不受影响）。
+   */
+  strictPlanTextAuthorization?: boolean;
 }
 
 // ---- 提取：表格 ----
@@ -450,6 +456,7 @@ function buildAuthorization(
   evidenceTexts: readonly string[],
   bibliographyKeys: readonly string[] = [],
   weakeningAuthorizations: readonly WeakeningAuthorizationInput[] = [],
+  options: { strictPlanTextAuthorization?: boolean } = {},
 ): AuthorizationContext {
   /**
    * M11.2.1：匹配轮次计划（sourceRevision == previous）的条目授权在条目生命
@@ -462,13 +469,23 @@ function buildAuthorization(
   const plannedItems = (plan?.items ?? []).filter(
     (item) => item.status !== "skipped" && item.status !== "rejected",
   );
-  const planTexts = plannedItems
-    .filter((item) => item.kind !== "fact_preserve")
-    .map((item) => ({
-      id: item.id,
-      section: item.section,
-      text: `${item.problem}\n${item.instruction}\n${item.expectedOutcome}`,
-    }));
+  /**
+   * M11.4 Reliability Closure（Run C 实证：p-af86ff877f8f，round-2 修订计划
+   * finding 条目的 instruction 文本点名新公式 → pairwise/candidate 层自我授权
+   * 放行，cumulative 层按「只认已批准台账 + Evidence」判漂移——两条链路授权
+   * 标准不一致 = 洗白通道（机器生成的修订计划文本不得授权它自己要求的新增；
+   * fact_preserve 的 restoreAuths 恢复方向授权不受影响）。
+   * strictPlanTextAuthorization（patch 候选级启用）= 与 cumulative 同标准。
+   */
+  const planTexts = options.strictPlanTextAuthorization === true
+    ? []
+    : plannedItems
+      .filter((item) => item.kind !== "fact_preserve")
+      .map((item) => ({
+        id: item.id,
+        section: item.section,
+        text: `${item.problem}\n${item.instruction}\n${item.expectedOutcome}`,
+      }));
   const improvementTexts = (improvementPlanItems ?? []).map((item, index) => ({
     id: `improvement-plan:${index}`,
     section: item.section,
@@ -1345,6 +1362,9 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     input.evidenceTexts ?? [],
     input.bibliographyKeys ?? [],
     input.weakeningAuthorizations ?? [],
+    ...(input.strictPlanTextAuthorization !== undefined
+      ? [{ strictPlanTextAuthorization: input.strictPlanTextAuthorization }]
+      : []),
   );
   const changedFacts: FactFinding[] = [];
   const removedFacts: FactFinding[] = [];
@@ -2276,6 +2296,10 @@ export async function computeFactPreservationForCandidate(
     evidenceTexts,
     ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
     weakeningAuthorizations,
+    // M11.4 Reliability Closure：候选级与 cumulative 同标准——revision-plan
+    // 指令文本不授权新增（Run C 实证：round-2 计划文本自我授权新公式，
+    // patch 层放行、gate 层判漂移且不可恢复）
+    strictPlanTextAuthorization: true,
   });
 }
 
