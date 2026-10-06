@@ -136,16 +136,48 @@ function numbersCoveredBy(numbers: readonly string[], text: string): boolean {
   });
 }
 
-/** 无数字 claim 的词面重合（冻结基线段落级最佳匹配） */
-const PRE_EXISTING_TOKEN_OVERLAP = 0.35;
+/**
+ * 无数字 claim 的转述覆盖（M11.4 audit 修复）：claim 词元在冻结基线
+ * 句 / 段落中的最佳覆盖率（非对称 containment）。
+ *
+ * 旧实现的缺陷（实证：Attempt 7 r1 —— 审阅对象就是冻结基线本身，仍产出
+ * 1 条 revision_introduced）：旧路线用 claim 与基线「整段」的 Jaccard
+ * （对称相似度）≥ 0.35 判 pre-existing。Reviewer 提取的 claim 是其转述
+ * 短语（~10-15 个 token），与上百 token 的段落 Jaccard 数学上限 ≈
+ * |claim| / |段落| ≈ 0.05-0.15 —— 结构上不可能达到 0.35，导致所有
+ * 无数字的基线既有 claim（经转述）一律误判为修订引入。改用 claim 词元
+ * 覆盖率（|claim ∩ 参考| / |claim|）：转述基线句的 claim 共享绝大多数
+ * 内容词元（≥0.6），真正新引入的 claim 含基线没有的实体/概念词元。
+ */
+const PRE_EXISTING_TERM_CONTAINMENT = 0.6;
+
+/** claim 词元在参考词元集中的覆盖率（转述检测；分母 = claim 词元数） */
+function termContainment(claimTerms: ReadonlySet<string>, referenceTerms: ReadonlySet<string>): number {
+  if (claimTerms.size === 0) {
+    return 0;
+  }
+  let hit = 0;
+  for (const term of claimTerms) {
+    if (referenceTerms.has(term)) {
+      hit += 1;
+    }
+  }
+  return hit / claimTerms.size;
+}
 
 export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
   const frozenAll = input.frozenFiles.map((file) => file.content).join("\n");
   const frozenNumbers = new Set(numberRuns(frozenAll));
-  const frozenParagraphTerms = input.frozenFiles
+  // 句级 + 段落级参考词元集（句级为主：转述通常对应单句；段落兜底跨句表述）
+  const frozenBlocks = input.frozenFiles
     .flatMap((file) => file.content.replace(/\r\n/g, "\n").split(/\n\s*\n/))
-    .filter((block) => block.trim() !== "")
-    .map((block) => termSet(block));
+    .filter((block) => block.trim() !== "");
+  const frozenParagraphTerms = frozenBlocks.map((block) => termSet(block));
+  const frozenSentenceTerms = frozenBlocks
+    .flatMap((block) => block.split(/(?<=[。！？!?；;])/))
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence !== "")
+    .map((sentence) => termSet(sentence));
 
   const classifications: ClaimGapClassification[] = [];
   for (const entry of input.unsupportedClaims) {
@@ -184,23 +216,20 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
         continue;
       }
     } else {
-      // 无数字 claim：与冻结基线段落词面重合 → 原稿既有表述
+      // 无数字 claim：词元在冻结基线句 / 段落中的最佳覆盖 → 原稿既有表述（转述）
       const claimTerms = termSet(entry.claim);
-      const best =
-        claimTerms.size === 0
-          ? 0
-          : frozenParagraphTerms.reduce(
-              (max, terms) => Math.max(max, jaccard(claimTerms, terms)),
-              0,
-            );
-      if (best >= PRE_EXISTING_TOKEN_OVERLAP) {
+      const best = [ ...frozenSentenceTerms, ...frozenParagraphTerms ].reduce(
+        (max, terms) => Math.max(max, termContainment(claimTerms, terms)),
+        0,
+      );
+      if (best >= PRE_EXISTING_TERM_CONTAINMENT) {
         classifications.push({
           claimId: entry.claimId,
           section: entry.section,
           claim: entry.claim,
           verdict: entry.verdict,
           applicability: "excluded_pre_existing",
-          basis: `claim 措辞与冻结基线 rev-${input.baselineRevision} 段落高度重合（词面重合度 ${best.toFixed(2)}）——原论文既有内容，返修语境不作为新 claim 重证（作者裁决）`,
+          basis: `claim 词元在冻结基线 rev-${input.baselineRevision} 句/段落中覆盖率 ${best.toFixed(2)}（≥ ${PRE_EXISTING_TERM_CONTAINMENT}，转述检测）——原论文既有内容，返修语境不作为新 claim 重证（作者裁决）`,
         });
         continue;
       }

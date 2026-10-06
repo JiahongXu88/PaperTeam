@@ -7179,7 +7179,8 @@ export async function buildManuscriptDigest(services: WorkflowServices, projectI
   if (parts.length === 0) {
     throw new BusinessError("STAGE_CONTRACT_VIOLATION", "manuscript 目录没有任何 .tex 文件");
   }
-  return parts.join("\n\n").slice(0, 60_000);
+  // M11.4：总预算截断同样走句界安全切（裸 slice 会切在词中/命令内且无告知）
+  return sliceForDigest(parts.join("\n\n"), 60_000);
 }
 
 /** M11.3：单节 digest 预算（中文综述节常 2500–4000 字符；24 节 × 3600 ≈ 86k，总量由 60k 总预算兜底） */
@@ -7233,9 +7234,19 @@ export function sliceForDigest(content: string, budget: number): string {
 }
 
 /**
- * 单文件论文 digest 切块（M10.3）：preamble+摘要 为一块，其后每个
- * \section / \subsection 起始一段。总块数 ≤ 18、每块 ≤ 2600 字符——
- * 与分节项目的 digest 量级一致，不因单文件形态丢失正文可见性。
+ * 单文件论文 digest 切块（M10.3；M11.4 audit 修复）：
+ * preamble+摘要 为一块，其后每个 \section / \subsection / \subsubsection
+ * 起始一段。
+ *
+ * M11.4 修复（实证：Attempt 7 clean run p-d12dc28ad850）：
+ * - 旧「≤18 块」上限在真实返修稿（4 section + 15 subsection + 16
+ *   subsubsection = 36 块）上把实验章后半（主对比 / 消融 / 极端场景 /
+ *   边缘部署 / 结论）整体丢弃——reviewer 只见 44% 正文，三轮
+ *   实验充分性恒 25/35，学术评分被截断视图压顶。上限提高到 64
+ *   （总量仍由 60k 总预算兜底，成本有界）。
+ * - 每块截断从裸 slice(0, 2600) 换成 sliceForDigest（句界安全 + 显式
+ *   截断系统注）——M11.3 Phase D 已为分节路径修复同一缺陷类
+ *   （截断误报 build/结构问题），单文件路径此前漏改。
  */
 function splitSingleFileDigest(content: string): string[] {
   const normalized = content.replace(/\r\n/g, "\n");
@@ -7259,8 +7270,8 @@ function splitSingleFileDigest(content: string): string[] {
       position === 0
         ? "main.tex（导言 + 标题 + 摘要）"
         : `main.tex · ${headerMatch?.[1]?.trim() ?? `第 ${position} 段`}`;
-    parts.push(`[${label}]\n${chunk.slice(0, 2600)}`);
-    if (parts.length >= 18) {
+    parts.push(`[${label}]\n${sliceForDigest(chunk, 2600)}`);
+    if (parts.length >= 64) {
       break;
     }
   }
