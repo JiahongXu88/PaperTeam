@@ -92,6 +92,33 @@ describe("M11.4 Reliability Closure：fallback 计划条目 actionType", () => {
     expect(fallback?.actionType).toBe("author_decision_required");
   });
 
+  it("修复耗尽时：无证据的事实变更条目确定性降级为 author_decision_required（Run J 实证）", async () => {
+    let call = 0;
+    const planItem = {
+      section: "main.tex", action: "把 MOTA 71.2 改为 73.5", rationale: "依据实验", priority: "high",
+      commentRefs: ["C1"], expectedFactChanges: [{ before: "71.2", after: "73.5" }],
+    };
+    const runtime = new FakeRuntime(JSON.stringify({ plan: [planItem] }));
+    runtime.runAgent = async (input: { task: string }) => {
+      runtime.calls.push(input.task);
+      call += 1;
+      // 两轮修复都坚持保留 expectedFactChanges（不绑定证据）——实证形态
+      return { taskId: "t", agentId: "writer", status: "completed", createdAt: "", updatedAt: "", output: JSON.stringify({ plan: [planItem] }), events: [] } as never;
+    };
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({
+      projectId: "p-j", issues: [], analysisDigest: "", feasibilityLevel: "MEDIUM", sectionFiles: [],
+      validInstructionIds: ["c1"], validEvidenceIds: [],
+      externalInstructions: [{ instructionId: "c1", text: "改数值" }],
+      commentAliases: [{ ref: "C1", canonicalId: "c1", text: "改数值" }],
+      evidenceAliases: [],
+    });
+    expect(runtime.calls.length).toBeGreaterThanOrEqual(3); // 首次 + ≥2 轮修复
+    const item = plan.items.find((i) => i.instructionId === "c1");
+    expect(item?.actionType).toBe("author_decision_required");
+    expect(item?.expectedFactChanges ?? []).toHaveLength(0);
+  });
+
   it("模型自有条目缺 actionType 时仍缺省 modify（既有语义不变）", async () => {
     const runtime = new FakeRuntime(JSON.stringify({ plan: [{
       section: "main.tex", action: "修改引言", rationale: "r", priority: "high", commentRefs: ["C1"],

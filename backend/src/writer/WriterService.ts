@@ -1025,6 +1025,30 @@ export class WriterService {
     if (structuredFailures.length > 0) {
       const attempts = params.structuredRepair?.attempts ?? 0;
       if (attempts >= 2) {
+        /**
+         * M11.4 Reliability Closure（Run J 实证：w-2f418319b74e，模型两轮修复
+         * 仍保留无证据的 expectedFactChanges → 阶段失败烧掉整 run）。修复通道
+         * 对「模型坚持事实变更」可能结构性不可满足；此时机器执行确定性降级
+         * （§13：模型给 intent proposal，machine resolve actionType）：清空
+         * expectedFactChanges、actionType=author_decision_required（意见保留
+         * 链接 → 合法作者裁决闭环），而不是把无害的条目缺陷升级为 run 失败。
+         * 其它类别失败维持 fail-closed（仍抛 MODEL_REPAIR_EXHAUSTED）。
+         */
+        const downgradeable = new Set(
+          structuredFailures.filter((failure) => failure.code === "FACT_CHANGE_EVIDENCE_REQUIRED").map((failure) => failure.itemIndex),
+        );
+        const residual = structuredFailures.filter((failure) => failure.code !== "FACT_CHANGE_EVIDENCE_REQUIRED");
+        const downgraded = items.map((item, index) =>
+          downgradeable.has(index) &&
+          (item.expectedFactChanges ?? []).length > 0 &&
+          (item.relatedEvidenceIds ?? []).length === 0
+            ? { ...item, expectedFactChanges: [], actionType: "author_decision_required" as const }
+            : item,
+        );
+        if (residual.length === 0 && downgraded.some((item, index) => downgradeable.has(index) && item.actionType === "author_decision_required")) {
+          this.log(`[writer] projectId=${params.projectId} Planner structured repair exhausted -> deterministic downgrade to author_decision_required for ${downgradeable.size} fact-change item(s) without evidence`);
+          return { items: downgraded };
+        }
         throw new BusinessError("MODEL_REPAIR_EXHAUSTED", `STRUCTURED_OUTPUT_REPAIR_EXHAUSTED: ${JSON.stringify(structuredFailures)}`);
       }
       const request = [
