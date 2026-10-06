@@ -236,6 +236,54 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
     expect(pdf).toContain("%PDF-1.5");
   });
 
+  it("M11.4 分层 gate：任务层成功但投稿层未达（academic<80 / style 超线）→ REVISION_TASK_COMPLETE + Draft，不再追问 overflow", async () => {
+    // 序列：r1=fail（基线轮：UNSUPPORTED claim + critical）→ r2=fail2
+    // （fact 净、无 critical/blocking、73 分、majors）——r2 时任务层全部满足
+    // （守卫过、claim 净、findings 仅 major、非回归 73 vs 66、意见全闭环），
+    // 投稿层仍被 academic<80 / style>35 / majors 拦住：产出 Draft + 终态
+    // REVISION_TASK_COMPLETE（旧语义：继续修订 → 预算耗尽 → overflow 追问）。
+    const scripted = scriptedIdeaRuntime({ reviewSequence: ["fail", "fail2"] });
+    const stack = await startTestStack(scripted.runtime, {
+      registerCleanup: (cleanup) => cleanups.push(cleanup),
+    });
+    const project = await stack.store.create("分层 gate 测试", { targetProfile: "core_journal" });
+    const imported = await stack.request("POST", `/api/projects/${project.id}/import`, {
+      archiveBase64: IMPORT_ARCHIVE.toString("base64"),
+    });
+    expect(imported.status).toBe(200);
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {
+      kind: "existing_paper_improvement",
+    });
+    const runId = created.body["runId"] as string;
+    await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
+    await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
+    const finished = await pollRun(stack, runId, ["completed"]);
+
+    expect(finished.status).toBe("completed");
+    // 任务成功 → 修订候选 Draft（不是 Final——投稿层未达）
+    const summary = finished.completion?.summary as Record<string, unknown> | undefined;
+    expect(finished.completion?.label).toBe("draft");
+    expect(summary?.["qualityStatus"]).toBe("REVISION_TASK_COMPLETE");
+    expect(summary?.["revisionTaskVerdict"]).toBe("PASS");
+    expect(summary?.["revisionTaskSuccess"]).toBe(true);
+    expect(summary?.["publicationReadiness"]).toBe("NOT_READY");
+    // gate 产物携带分层判定（可解释：checks + 投稿风险清单）
+    const gate = JSON.parse(
+      await readFile(join(stack.root, project.id, "reviews", "quality-gate-r2.json"), "utf8"),
+    ) as {
+      gate?: {
+        passed?: boolean;
+        revisionTask?: { verdict?: string; success?: boolean; checks?: { check: string; passed: boolean }[] };
+        publicationReadiness?: { verdict?: string };
+      };
+    };
+    expect(gate.gate?.passed).toBe(false);
+    expect(gate.gate?.revisionTask?.verdict).toBe("PASS");
+    expect(gate.gate?.revisionTask?.success).toBe(true);
+    expect(gate.gate?.revisionTask?.checks?.every((check) => check.passed)).toBe(true);
+    expect(gate.gate?.publicationReadiness?.verdict).toBe("NOT_READY");
+  });
+
   it("未导入直接启动 → run 失败并给出明确指引（fail fast）", async () => {
     const stack = await newStack();
     const project = await stack.store.create("未导入项目");

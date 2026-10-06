@@ -390,6 +390,7 @@ export const ITERATION_OUTCOME_STYLES: Record<string, StatusStyle> = {
  */
 export const TERMINAL_STATUS_STYLES: Record<string, StatusStyle> = {
   PASS: { label: "质量验收通过", tone: "ok" },
+  REVISION_TASK_COMPLETE: { label: "返修任务完成（投稿就绪性另见报告）", tone: "ok" },
   QUALITY_NOT_REACHED: { label: "质量未达标（Draft 可用）", tone: "warn" },
   NO_PROGRESS: { label: "自动修订已达收敛上限", tone: "warn" },
   AUTHOR_DECISION_REQUIRED: { label: "需要作者裁决", tone: "accent" },
@@ -399,6 +400,8 @@ export const TERMINAL_STATUS_STYLES: Record<string, StatusStyle> = {
 /** TERMINAL_STATUS_STYLES 的用户可读说明（与后端 classifyTerminalStatus 同口径） */
 export const TERMINAL_STATUS_HINTS: Record<string, string> = {
   PASS: "质量验收通过，论文已冻结。",
+  REVISION_TASK_COMPLETE:
+    "返修任务完成：外审意见全部闭环、修订引入违规为零；论文整体投稿就绪性未达标（剩余为全稿质量 / 基线继承风险），修订稿以 Draft 形式提供。",
   QUALITY_NOT_REACHED: "论文已生成，但自动质量验收未达到目标；Draft 可用，剩余问题见质量报告。",
   NO_PROGRESS: "自动修订已达到收敛上限，继续自动修改预计收益有限；当前稿可作为 Draft 使用。",
   AUTHOR_DECISION_REQUIRED: "自动修订已停止：剩余问题需要作者提供研究判断或额外数据（语言模型改稿无法解决）。",

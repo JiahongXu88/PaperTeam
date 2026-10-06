@@ -6,6 +6,7 @@
  */
 
 import { EvidenceStore } from "./evidence/EvidenceStore.js";
+import { DEFAULT_REVISION_TASK_POLICY, type RevisionTaskPolicy } from "./quality/revisionTaskGate.js";
 import { GenerationService } from "./generation/GenerationService.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { LatexImporter } from "./import/LatexImporter.js";
@@ -104,6 +105,8 @@ export interface ServiceStackOptions {
     reviewConcurrency?: number;
     /** benchmark / 诊断：限制单次审阅章节数（缺省 0 = 不限制） */
     reviewSectionLimit?: number;
+    /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
+    revisionTask?: Partial<RevisionTaskPolicy>;
   };
   /** PaperMap 章节摘要并发度（缺省 3） */
   summaryConcurrency?: number;
@@ -836,6 +839,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
           : {}),
         reviewConcurrency: options.review?.reviewConcurrency ?? 3,
         reviewSectionLimit: options.review?.reviewSectionLimit ?? 0,
+        revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
     },
   };

@@ -339,6 +339,28 @@ export interface QualityGateResult {
   rules: { rule: string; passed: boolean; detail: string }[];
   thresholds: QualityGateThresholds;
   checkedAt: string;
+  /**
+   * M11.4 Product Closure：existing-paper 分层判定——Revision Task Success
+   * （本轮返修是否正确完成）。undefined = 非 existing-paper 工作流 / legacy
+   * 模式 / 旧产物（读取方按 legacy 单层 gate.passed 语义解释，不 crash）。
+   */
+  revisionTask?: {
+    verdict: "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED";
+    success: boolean;
+    checks: { check: string; passed: boolean; detail: string }[];
+    reasons: string[];
+    authorDecisions: { instructions: number; greyZoneClaims: number; unknownOriginFindings: number };
+  };
+  /**
+   * M11.4：投稿就绪层（整篇是否适合作为最终投稿候选）。gate.passed 在
+   * existing-paper 语境下的语义 = 本层 READY（全稿规则 + 任务成功）；本字段
+   * 额外携带基线继承风险清单（作者裁决层，不阻塞任务层）。
+   */
+  publicationReadiness?: {
+    verdict: "READY" | "NOT_READY" | "AUTHOR_DECISION_REQUIRED";
+    reasons: string[];
+    baselineInheritedRisks: { description: string; origin: string; reviewerRequired: boolean }[];
+  };
 }
 
 /** Quality Gate 判定（确定性；Draft 不经过本判定） */

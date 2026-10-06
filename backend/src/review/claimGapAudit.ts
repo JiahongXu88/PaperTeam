@@ -13,6 +13,8 @@
  *   原论文既有内容；返修语境不重证，交作者裁决（修订引入的改写除外）；
  * - excluded_author_data（A）：claim 数值由 user_confirmed 作者实验证据
  *   覆盖（数值 ⊆ 证据文本）→ 已有 Evidence 只是未关联（作者数据层）；
+ * - grey_zone_author_decision（M11.4）：转述覆盖 ∈ [0.4, 0.6) 的灰区 claim
+ *   ——无法确定性归层，不按引入计罚也不静默豁免，转作者裁决通道；
  * - revision_introduced：其余 → 修订引入的无支撑 claim，仍按原规则阻断。
  *
  * 同时给出 issue 归因：fact / evidence_gap 类 critical / major / blocking
@@ -31,7 +33,11 @@ import { isUnsupportedVerdict, type ClaimGroundingEntry } from "./claimGrounding
 import { normalizeNumericToken } from "../quality/factPreservation.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 
-export type ClaimApplicability = "excluded_pre_existing" | "excluded_author_data" | "revision_introduced";
+export type ClaimApplicability =
+  | "excluded_pre_existing"
+  | "excluded_author_data"
+  | "grey_zone_author_decision"
+  | "revision_introduced";
 
 export interface ClaimGapClassification {
   claimId: string;
@@ -71,6 +77,8 @@ export interface ClaimGapAudit {
     unsupportedTotal: number;
     excludedPreExisting: number;
     excludedAuthorData: number;
+    /** 灰区（转述覆盖 0.4–0.6）：既不按引入计罚，也不静默豁免——转作者裁决 */
+    greyZone: number;
     revisionIntroduced: number;
     /** 归因排除后的 issue 口径（规则 4/5/6 消费） */
     issues: {
@@ -150,6 +158,13 @@ function numbersCoveredBy(numbers: readonly string[], text: string): boolean {
  * 内容词元（≥0.6），真正新引入的 claim 含基线没有的实体/概念词元。
  */
 const PRE_EXISTING_TERM_CONTAINMENT = 0.6;
+/**
+ * 灰区下界（M11.4 Product Closure）：转述覆盖 ∈ [0.4, 0.6) 的 claim 既不能
+ * 确证为基线既有，也不能确证为修订引入（实证：Attempt 7 r3 的 c-7b1a 0.48，
+ * 基线存在措辞最接近的转述但覆盖不足）。二值判罚的两侧都是错判——按作者
+ * 裁决通道呈现（gate 规则 4 不计罚，Revision Task Gate 计入 authorDecisions）。
+ */
+const GREY_ZONE_TERM_CONTAINMENT = 0.4;
 
 /** claim 词元在参考词元集中的覆盖率（转述检测；分母 = claim 词元数） */
 function termContainment(claimTerms: ReadonlySet<string>, referenceTerms: ReadonlySet<string>): number {
@@ -233,6 +248,17 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
         });
         continue;
       }
+      if (best >= GREY_ZONE_TERM_CONTAINMENT) {
+        classifications.push({
+          claimId: entry.claimId,
+          section: entry.section,
+          claim: entry.claim,
+          verdict: entry.verdict,
+          applicability: "grey_zone_author_decision",
+          basis: `claim 词元对冻结基线 rev-${input.baselineRevision} 的最佳覆盖率 ${best.toFixed(2)} 落在灰区 [${GREY_ZONE_TERM_CONTAINMENT}, ${PRE_EXISTING_TERM_CONTAINMENT})——无法确定性归层，转作者裁决（不按修订引入计罚，也不静默豁免）`,
+        });
+        continue;
+      }
     }
     classifications.push({
       claimId: entry.claimId,
@@ -244,7 +270,9 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
     });
   }
 
-  // ---- issue 归因（fact / evidence_gap 类 → 被排除 claim） ----
+  // ---- issue 归因（fact / evidence_gap 类 → 被排除 / 灰区 claim） ----
+  // 灰区 claim 的伴随 finding 同样不计入规则 5/6 阻断口径（作者裁决层，
+  // Revision Task Gate 的 authorDecisions 与投稿风险清单会呈现，不静默）。
   const excludedClaims = classifications.filter(
     (item) => item.applicability !== "revision_introduced",
   );
@@ -294,6 +322,9 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
   const excludedAuthorData = classifications.filter(
     (item) => item.applicability === "excluded_author_data",
   ).length;
+  const greyZone = classifications.filter(
+    (item) => item.applicability === "grey_zone_author_decision",
+  ).length;
   const revisionIntroduced = classifications.filter(
     (item) => item.applicability === "revision_introduced",
   ).length;
@@ -311,6 +342,7 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
       unsupportedTotal: classifications.length,
       excludedPreExisting,
       excludedAuthorData,
+      greyZone,
       revisionIntroduced,
       issues: {
         critical: input.issues.filter((issue) => issue.severity === "critical").length,

@@ -164,6 +164,10 @@ export interface WorkflowRunView {
     /** M11.3：产品终态语义（质量未达标 ≠ 系统崩溃）；后端 classifyTerminalStatus 同口径 */
     qualityStatus?: string;
     qualityStatusMessage?: string;
+    /** M11.4：existing-paper 分层判定（旧 run 无该字段 → 单层语义） */
+    revisionTaskVerdict?: "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED";
+    revisionTaskSuccess?: boolean;
+    publicationReadiness?: "READY" | "NOT_READY" | "AUTHOR_DECISION_REQUIRED" | null;
   } | null;
   /** 当前 stage 的进度快照（如分章节审阅的 index / total / findings） */
   progress?: { stageId: string; data: Record<string, unknown>; updatedAt: string } | null;
@@ -362,6 +366,20 @@ export interface QualityGateResultView {
   rules: QualityGateRuleView[];
   thresholds: { academicPassScore: number; styleRiskMax: number; requireFeasibility: boolean };
   checkedAt: string;
+  /** M11.4：existing-paper 分层判定（Revision Task Success）；旧产物无该字段 = legacy 单层语义 */
+  revisionTask?: {
+    verdict: "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED";
+    success: boolean;
+    checks: { check: string; passed: boolean; detail: string }[];
+    reasons: string[];
+    authorDecisions: { instructions: number; greyZoneClaims: number; unknownOriginFindings: number };
+  };
+  /** M11.4：投稿就绪层（gate.passed 的语义来源 + 基线继承风险清单） */
+  publicationReadiness?: {
+    verdict: "READY" | "NOT_READY" | "AUTHOR_DECISION_REQUIRED";
+    reasons: string[];
+    baselineInheritedRisks: { description: string; origin: string; reviewerRequired: boolean }[];
+  };
 }
 
 /** 每轮 gate 摘要（轮次切换器数据源；blockerCount = reasons.length） */

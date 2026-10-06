@@ -87,10 +87,29 @@ function readCompletion(value: unknown): WorkflowRunView["completion"] {
   const qualityStatus = typeof summary?.["qualityStatus"] === "string" ? (summary["qualityStatus"] as string) : undefined;
   const qualityStatusMessage =
     typeof summary?.["qualityStatusMessage"] === "string" ? (summary["qualityStatusMessage"] as string) : undefined;
+  // M11.4：existing-paper 分层判定（旧 run 无该字段 → 单层语义）
+  const revisionTaskVerdict =
+    summary?.["revisionTaskVerdict"] === "PASS" ||
+    summary?.["revisionTaskVerdict"] === "FAIL" ||
+    summary?.["revisionTaskVerdict"] === "AUTHOR_DECISION_REQUIRED"
+      ? (summary["revisionTaskVerdict"] as "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED")
+      : undefined;
+  const revisionTaskSuccess = summary?.["revisionTaskSuccess"] === true ? true : undefined;
+  const publicationReadiness =
+    summary?.["publicationReadiness"] === "READY" ||
+    summary?.["publicationReadiness"] === "NOT_READY" ||
+    summary?.["publicationReadiness"] === "AUTHOR_DECISION_REQUIRED"
+      ? (summary["publicationReadiness"] as "READY" | "NOT_READY" | "AUTHOR_DECISION_REQUIRED")
+      : summary?.["publicationReadiness"] === null
+        ? null
+        : undefined;
   return {
     label,
     ...(qualityStatus !== undefined ? { qualityStatus } : {}),
     ...(qualityStatusMessage !== undefined ? { qualityStatusMessage } : {}),
+    ...(revisionTaskVerdict !== undefined ? { revisionTaskVerdict } : {}),
+    ...(revisionTaskSuccess !== undefined ? { revisionTaskSuccess } : {}),
+    ...(publicationReadiness !== undefined ? { publicationReadiness } : {}),
   };
 }
 

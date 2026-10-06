@@ -281,7 +281,17 @@ describe("外部修改意见 × improvement workflow（M5.7）", () => {
   });
 
   it("gate 失败轮：revision.plan 含 mandatory external 条目（handled → skipped 留档，不重复派发）", async () => {
-    const stack = await newStack(["fail", "fail", "pass"], { maxRevisionRounds: 4 });
+    // M11.4：本测试验证 revision.plan 对 handled 意见的留档行为。fixture 基线
+    // 含「准确率提升 12.4%」→ r2 的 UNSUPPORTED claim 归层 pre-existing →
+    // 分层 gate（task_scoped 缺省）下任务层在 r2 即成功（REVISION_TASK_COMPLETE
+    // 直接产出 Draft，不再派发 r2 计划）。该行为已由 existingPaper.test.ts 的
+    // 分层 gate 用例覆盖；此处显式切 legacy 模式保持本用例的原始验证目的
+    // （gate 失败 → plan 对 handled 意见 skipped 留档）。
+    const scripted = scriptedIdeaRuntime({ reviewSequence: ["fail", "fail", "pass"] });
+    const stack = await startTestStack(scripted.runtime, {
+      registerCleanup: (cleanup) => cleanups.push(cleanup),
+      review: { maxRevisionRounds: 4, revisionTask: { mode: "legacy" } },
+    });
     const projectId = await importProject(stack, "计划含外部意见项目");
     const added = await stack.request("POST", `/api/projects/${projectId}/external-instructions`, {
       source: "advisor",

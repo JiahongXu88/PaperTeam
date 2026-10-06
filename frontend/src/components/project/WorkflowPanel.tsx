@@ -505,10 +505,12 @@ function CompletedBlock({
   const sections = run.stageHistory?.find((record) => record.stageId === "review.sections" && record.status === "completed");
   const duration = formatDurationBetween(run.startedAt, run.finishedAt);
   const qualityStatus = run.completion?.qualityStatus;
+  // M11.4：REVISION_TASK_COMPLETE 是任务成功终态（投稿就绪性另见报告），按成功渲染
+  const qualitySucceeded = qualityStatus === undefined || qualityStatus === "PASS" || qualityStatus === "REVISION_TASK_COMPLETE";
   return (
-    <div className={`note ${qualityStatus !== undefined && qualityStatus !== "PASS" ? "note-warn" : "note-success"}`} role="status" data-testid="workflow-completed">
+    <div className={`note ${qualitySucceeded ? "note-success" : "note-warn"}`} role="status" data-testid="workflow-completed">
       <span>
-        <span className="note-mark">{qualityStatus !== undefined && qualityStatus !== "PASS" ? "●" : "✓"}</span> 任务已完成
+        <span className="note-mark">{qualitySucceeded ? "✓" : "●"}</span> 任务已完成
         {run.completion !== null && run.completion !== undefined ? (
           <span className="muted">（产出：{COMPLETION_LABELS[run.completion.label] ?? run.completion.label}）</span>
         ) : null}

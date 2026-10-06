@@ -225,6 +225,34 @@ describe("WorkflowPanel 终态", () => {
     expect(screen.getByRole("button", { name: /导出报告/ })).toBeEnabled();
   });
 
+  it("M11.4：REVISION_TASK_COMPLETE 终态按成功渲染（返修任务完成 + 投稿就绪性另见报告）", async () => {
+    mockRuns([
+      runFixture({
+        status: "completed",
+        currentStage: undefined,
+        progress: null,
+        finishedAt: "2026-10-07T00:20:00.000Z",
+        completion: {
+          label: "draft",
+          qualityStatus: "REVISION_TASK_COMPLETE",
+          qualityStatusMessage: "返修任务完成：外审意见全部闭环；投稿就绪性另见报告。",
+          revisionTaskVerdict: "PASS",
+          revisionTaskSuccess: true,
+          publicationReadiness: "NOT_READY",
+        },
+        completedStages: ["import.parse", "review.run", "revision.apply", "quality.gate", "build.draft"],
+        stageHistory: [],
+      }),
+    ]);
+    renderWithProviders(<WorkflowPanel projectId="p-flow0001" onOpenTab={vi.fn()} connection="closed" />);
+    const completed = await screen.findByTestId("workflow-completed");
+    expect(completed).toHaveTextContent("任务已完成");
+    // 成功语义（✓ / note-success），不是质量未达标的警示形态
+    expect(completed.className).toContain("note-success");
+    expect(completed).toHaveTextContent("返修任务完成");
+    expect(completed).toHaveTextContent("投稿就绪性另见报告");
+  });
+
   it("历史运行列表：多条 run 可切换查看", async () => {
     const user = userEvent.setup();
     const latest = runFixture();

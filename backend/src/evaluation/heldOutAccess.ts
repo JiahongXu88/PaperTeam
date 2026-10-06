@@ -76,7 +76,19 @@ export class AcceptanceEvaluationReader {
     return blocks;
   }
 
-  freezeCandidate(input: { publishable: boolean; candidateId: string; frozenAt?: string }): void {
+  freezeCandidate(input: {
+    publishable: boolean;
+    candidateId: string;
+    frozenAt?: string;
+    /**
+     * M11.4 Product Closure：冻结层级登记（不改变解锁行为，只让验收协议可区分）。
+     * - revision_candidate：Revision Task Success 后冻结修订候选（任务层全过，
+     *   投稿就绪性风险随报告交作者）；
+     * - publication_candidate（缺省，兼容既有调用）：全部验收 gate 通过。
+     * 两层都解锁 held-out 读取（评估纪律：冻结是解锁前提，层级是协议语义）。
+     */
+    layer?: "revision_candidate" | "publication_candidate";
+  }): void {
     if (!input.publishable) throw new HeldOutAccessError("Candidate Freeze requires every acceptance gate to pass");
     if (!input.candidateId.trim()) throw new HeldOutAccessError("Candidate Freeze requires a candidate ID");
     this.manifest.candidateFrozenAt = input.frozenAt ?? new Date().toISOString();

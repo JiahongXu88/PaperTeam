@@ -108,6 +108,13 @@ import {
 import { applyFactRestore, planFactRestore, restoreValueDelta } from "../quality/factRestore.js";
 import { computeClaimGapAudit, tagIssueRootCauses, type ClaimGapAudit } from "../review/claimGapAudit.js";
 import {
+  classifyFindingOrigins,
+  evaluateRevisionTaskGate,
+  type ExternalInstructionSnapshot,
+  type RevisionTaskGateResult,
+  type RevisionTaskPolicy,
+} from "../quality/revisionTaskGate.js";
+import {
   computeClaimResolutions,
   type ClaimResolutionReport,
 } from "../review/claimResolution.js";
@@ -322,6 +329,8 @@ export interface WorkflowServices {
     reviewConcurrency: number;
     /** benchmark / 诊断：限制单次审阅的章节数（0 = 不限制） */
     reviewSectionLimit: number;
+    /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
+    revisionTaskPolicy: RevisionTaskPolicy;
   };
 }
 
@@ -715,6 +724,15 @@ function qualityGateStage(
       const patchValidation = typeof review.reviewedRevision === "number"
         ? await services.reviewArtifacts.loadPatchValidation(ctx.projectId, review.reviewedRevision)
         : null;
+      // M11.4 Product Closure：existing-paper 分层 gate（Revision Task Success vs
+      // Publication Ready）。任务层成功时修订循环不再追逐投稿层（whole-paper /
+      // 基线继承）问题；非 existing-paper（idea_to_paper / topic_survey）与
+      // legacy 模式维持原 gate.passed 单层语义，零行为变化。
+      const taskScoped =
+        isExistingPaperKind(ctx.state.workflowKind) && services.review.revisionTaskPolicy.mode === "task_scoped";
+      let revisionTask: RevisionTaskGateResult | null = null;
+      let patchSubstanceOk: boolean | null = null;
+      let modifiedSections: string[] = [];
       if (patchValidation !== null && typeof review.reviewedRevision === "number") {
         const finalPatchRecords = selectFinalPatchRecords(patchValidation.records);
         const sourceRevision = Math.max(0, review.reviewedRevision - 1);
@@ -779,19 +797,107 @@ function qualityGateStage(
           ...unattributed.map(() => "UNATTRIBUTED_FACT_VIOLATION"),
           ...unapportionedCitation.map((finding) => finding.code === "AMBIGUOUS_PATCH_ATTRIBUTION" ? finding.code : "UNATTRIBUTED_CITATION_VIOLATION"),
         ], [...patchValidation.records, ...(patchValidation.attemptHistory ?? [])]);
-        patchValidation.summary.publishable = patchValidation.summary.publishable &&
+        // M11.4：patch 实质（patches 全过 + 无未归因违规 + 事实/引用保持 + 无
+        // build error）先于级联捕获——分层语义下任务层与投稿层消费不同级联
+        patchSubstanceOk = patchValidation.summary.publishable &&
           (factPreservation?.ok ?? false) && (citationPreservation?.ok ?? false) &&
-          gate.passed && readBuildError(ctx.state) === undefined;
-        await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchValidation);
-        gate.rules.push({
-          rule: "patch_validation_publishable",
-          passed: patchValidation.summary.publishable,
-          detail: `patches=${patchValidation.summary.passedPatches}/${patchValidation.summary.totalPatches}; unattributed=${patchValidation.summary.unattributedViolations.length}`,
+          readBuildError(ctx.state) === undefined;
+        // 本轮修订修改区间（finding 归层输入：logicalTarget + 对应 heading + 文件路径
+        // ——finding.section 可能是任一命名空间：逻辑名 / 标题 / 相对文件路径）
+        modifiedSections = finalPatchRecords.flatMap((record) => {
+          const span = previousMain !== undefined
+            ? locateLatexSections("main.tex", previousMain).find((candidate) => candidate.logicalSection === record.logicalTarget)
+            : undefined;
+          return [record.logicalTarget, record.file, ...(span !== undefined ? [span.heading] : [])];
         });
-        if (!patchValidation.summary.publishable) {
-          gate.reasons.push("patch_validation_publishable");
-          gate.passed = false;
+        if (!taskScoped) {
+          // 旧级联（非 existing-paper / legacy）：与 gate.passed AND——呈现级重复，
+          // 非独立失败源（M11.4 审计定性），行为保持不变
+          patchValidation.summary.publishable = patchSubstanceOk && gate.passed;
+          await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchValidation);
+          gate.rules.push({
+            rule: "patch_validation_publishable",
+            passed: patchValidation.summary.publishable,
+            detail: `patches=${patchValidation.summary.passedPatches}/${patchValidation.summary.totalPatches}; unattributed=${patchValidation.summary.unattributedViolations.length}`,
+          });
+          if (!patchValidation.summary.publishable) {
+            gate.reasons.push("patch_validation_publishable");
+            gate.passed = false;
+          }
         }
+      }
+      // M11.4：existing-paper 任务层判定 + 投稿层合成（确定性，无 LLM）
+      if (taskScoped) {
+        const instructions = await services.externalInstructions.load(ctx.projectId);
+        const instructionSnapshots: ExternalInstructionSnapshot[] = instructions.map((instruction) => ({
+          instructionId: instruction.instructionId,
+          status: instruction.status,
+          authorDecision:
+            instruction.status === "conflict" ||
+            (instruction.statusNote ?? "").startsWith("AUTHOR_DECISION_REQUIRED"),
+        }));
+        // 冻结基线学术分 = 本轮之前最早的 review 汇总（r1 审阅 rev-1 基线）；
+        // 无更早轮（首轮即被 gate）→ null（非回归检查不适用，如实记录）
+        const summaries = await services.reviewArtifacts.listSummaries(ctx.projectId);
+        const baselineSummary = summaries.find((summary) => summary.round < review.round);
+        const findingOrigins = classifyFindingOrigins(review.issues, claimGapAudit, modifiedSections);
+        revisionTask = evaluateRevisionTaskGate({
+          gateRules: gate.rules,
+          externalInstructions: instructionSnapshots,
+          claimGapAudit,
+          findingOrigins,
+          patchSubstanceOk,
+          academicScore: review.scores.academicScore,
+          baselineAcademicScore: baselineSummary?.scores.academicScore ?? null,
+          policy: services.review.revisionTaskPolicy,
+        });
+        if (patchValidation !== null) {
+          // 分层级联：patch 产物作为「修订候选」可发布 = 实质通过且任务层未 FAIL。
+          // AUTHOR_DECISION_REQUIRED 不拖垮已全过的投稿层（M5.7 conflict 语义：
+          // 系统如实报告冲突并保留条目，不因此冻结对合格稿件的 Final 判定；
+          // 待作者裁决项随 publicationReadiness 呈现）
+          const publishable = patchSubstanceOk === true && revisionTask.verdict !== "FAIL";
+          patchValidation.summary.publishable = publishable;
+          await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchValidation);
+          gate.rules.push({
+            rule: "patch_validation_publishable",
+            passed: publishable,
+            detail: `patches=${patchValidation.summary.passedPatches}/${patchValidation.summary.totalPatches}; unattributed=${patchValidation.summary.unattributedViolations.length}`,
+          });
+          if (!publishable) {
+            gate.reasons.push("patch_validation_publishable");
+            gate.passed = false;
+          }
+        } else if (revisionTask.verdict === "FAIL") {
+          // 无 patch 产物（本轮无 Writer 派发）时任务层 FAIL 也要拦住投稿层：
+          // gate.passed 必须不与任务失败矛盾（否则未闭环意见也能冻结 Final）
+          gate.passed = false;
+          gate.reasons.push(`revision_task: ${revisionTask.verdict}`);
+        }
+        // 投稿层合成：READY = 全稿规则（含 patch 级联）&& 任务成功；
+        // AUTHOR_DECISION 项待裁决时报告层给 AUTHOR_DECISION_REQUIRED（不阻断已过的规则层）
+        const publicationVerdict: "READY" | "NOT_READY" | "AUTHOR_DECISION_REQUIRED" =
+          revisionTask.verdict === "FAIL"
+            ? "NOT_READY"
+            : revisionTask.verdict === "AUTHOR_DECISION_REQUIRED"
+              ? "AUTHOR_DECISION_REQUIRED"
+              : gate.passed
+                ? "READY"
+                : "NOT_READY";
+        gate.revisionTask = {
+          verdict: revisionTask.verdict,
+          success: revisionTask.success,
+          checks: revisionTask.checks,
+          reasons: revisionTask.reasons,
+          authorDecisions: revisionTask.authorDecisions,
+        };
+        gate.publicationReadiness = {
+          verdict: publicationVerdict,
+          reasons: publicationVerdict === "READY"
+            ? []
+            : [...gate.reasons, ...revisionTask.publication.reasons].slice(0, 12),
+          baselineInheritedRisks: revisionTask.publication.risks,
+        };
       }
       // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
       const round = review.round;
@@ -830,6 +936,7 @@ function qualityGateStage(
         gateReasons: gate.reasons,
         convergence,
         authorDecisionClaims,
+        revisionTaskSuccess: revisionTask?.success ?? undefined,
       });
       await services.reviewArtifacts.appendIteration(ctx.projectId, {
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
@@ -881,6 +988,15 @@ function qualityGateStage(
         ...(convergence !== null ? { convergence } : {}),
         // M11.3（Phase E）：产品终态语义（completion summary / stalled payload 共用）
         ...(gate.passed ? {} : { terminalStatus: terminal.status, terminalMessage: terminal.message }),
+        // M11.4 Product Closure：分层判定（planSharedTail / completion summary 消费）
+        ...(revisionTask !== null
+          ? {
+              revisionTaskSuccess: revisionTask.success,
+              revisionTaskVerdict: revisionTask.verdict,
+              revisionTaskReasons: revisionTask.reasons.slice(0, 6),
+              publicationReadiness: gate.publicationReadiness?.verdict ?? null,
+            }
+          : {}),
         ...(authorDecisionClaims > 0 ? { authorDecisionClaims } : {}),
         revisionDelta: delta,
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
@@ -3784,9 +3900,24 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const stalledDecision = stalledMarker !== undefined ? readMarkerDecision(state, "hitl.revision_stalled") : null;
   const stalledAnswered = stalledDecision !== null && stalledGateRound >= gateRound;
 
+  // M11.4 Product Closure：existing-paper 分层 gate——任务层成功（外审意见闭环 +
+  // 修订引入违规为零 + 守卫全过 + 无实质回退）时返修任务已完成，剩余 failing
+  // 规则属投稿就绪层（whole-paper 质量 / 基线继承风险 / 绝对学术线）。继续
+  // 自动修订只会追逐作者级问题（Attempt 7 实录：Writer 被派发补充论文里本来就
+  // 存在的实验）。直接产出修订候选 Draft（明确标记非投稿就绪），不进
+  // stalled / overflow 追问。
+  const revisionTaskSuccess = gateResult["revisionTaskSuccess"] === true;
+  const revisionTaskVerdict =
+    gateResult["revisionTaskVerdict"] === "PASS" ||
+    gateResult["revisionTaskVerdict"] === "FAIL" ||
+    gateResult["revisionTaskVerdict"] === "AUTHOR_DECISION_REQUIRED"
+      ? (gateResult["revisionTaskVerdict"] as "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED")
+      : null;
+
   const completion = (label: "final" | "draft") => {
     // M11.3（Phase E）：产品终态语义（gate 结果带同轮 author_decision 口径；
-    // 旧 run 的 gate 结果无该字段 → classifyTerminalStatus 内按 0 处理）
+    // 旧 run 的 gate 结果无该字段 → classifyTerminalStatus 内按 0 处理；
+    // M11.4：分层 gate 的任务层结果一并传入）
     const terminal = gatePassed
       ? classifyTerminalStatus({ gatePassed, gateReasons: [], convergence: null })
       : classifyTerminalStatus({
@@ -3797,6 +3928,7 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
             typeof gateResult["authorDecisionClaims"] === "number"
               ? (gateResult["authorDecisionClaims"] as number)
               : 0,
+          ...(revisionTaskSuccess ? { revisionTaskSuccess: true } : {}),
         });
     return {
       kind: "complete",
@@ -3806,10 +3938,23 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         buildGateReasons: build["buildGateReasons"] ?? [],
         qualityGatePassed: gatePassed,
         qualityGateReasons: gateResult["reasons"] ?? [],
-        // M11.3：产品终态语义（PASS / QUALITY_NOT_REACHED / NO_PROGRESS /
-        // AUTHOR_DECISION_REQUIRED / SYSTEM_FAILED + 用户可读 message）
+        // M11.3：产品终态语义（PASS / REVISION_TASK_COMPLETE / QUALITY_NOT_REACHED /
+        // NO_PROGRESS / AUTHOR_DECISION_REQUIRED / SYSTEM_FAILED + 用户可读 message）
         qualityStatus: terminal.status,
         qualityStatusMessage: terminal.message,
+        // M11.4：分层判定（existing-paper；旧 run 无该字段 → 单层语义）
+        ...(revisionTaskVerdict !== null
+          ? {
+              revisionTaskVerdict,
+              revisionTaskSuccess,
+              publicationReadiness:
+                gateResult["publicationReadiness"] === "READY" ||
+                gateResult["publicationReadiness"] === "NOT_READY" ||
+                gateResult["publicationReadiness"] === "AUTHOR_DECISION_REQUIRED"
+                  ? (gateResult["publicationReadiness"] as "READY" | "NOT_READY" | "AUTHOR_DECISION_REQUIRED")
+                  : null,
+            }
+          : {}),
         // M11.2 §十四：报告层区分「自动修改轮数耗尽 / 不收敛后接受 Draft」与
         // 「双 Gate 通过自然完结」——qualityGatePassed=false 的 Draft 不是异常，
         // 是 bounded loop 的正常终态（PASS / IMPROVED / CONVERGED / REGRESSION）
@@ -3874,6 +4019,14 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
       return { kind: "stage", stageId: "hitl.revision_overflow" };
     }
     return completion("draft"); // 用户知情接受（无 PDF 产出，buildOk=false 如实记录）
+  }
+
+  // ---- M11.4：任务层成功但投稿层未就绪 → 返修任务完成，产出修订候选 Draft ----
+  // 不再进入 stalled / overflow / 自动续轮（投稿层剩余项是作者级裁决，Writer
+  // 无法也不应单方解决）；Draft 完成态为 REVISION_TASK_COMPLETE（completion
+  // 内 classifyTerminalStatus 消费 revisionTaskSuccess）。
+  if (revisionTaskSuccess) {
+    return draftPath();
   }
 
   // ---- Quality Gate 失败：质量语义不阻塞 Draft，但 Final 必须通过 ----

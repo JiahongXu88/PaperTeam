@@ -220,6 +220,7 @@ export async function startBackend(): Promise<void> {
       styleRiskMax: config.review.styleRiskMax,
       reviewConcurrency: config.review.reviewConcurrency,
       reviewSectionLimit: config.review.reviewSectionLimit,
+      revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,
     citation: {

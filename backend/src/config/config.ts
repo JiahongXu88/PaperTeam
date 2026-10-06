@@ -54,6 +54,31 @@ export interface ReviewConfig {
   summaryConcurrency: number;
   /** 单次 review.sections 最多审阅的章节数（benchmark / 诊断用；0 = 不限制） */
   reviewSectionLimit: number;
+  /**
+   * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
+   * （Revision Task Success vs Publication Ready）。集中 typed 配置，
+   * 不散落 magic number；idea_to_paper / topic_survey 不受影响。
+   */
+  revisionTask: RevisionTaskPolicyConfig;
+}
+
+/**
+ * M11.4（Option C）：calibrated floor + relative non-regression +
+ * blocking findings hard gate 的分层策略。
+ * - mode：task_scoped（分层，缺省）/ legacy（回退 gate.passed 单层语义）。
+ * - academicFloor：任务层绝对下限。null = 未校准不启用（诚实缺省——
+ *   benchmark 真实 revision family 不足时绝不伪装已校准）。
+ * - academicFloorStatus：floor 数值的证据状态（calibrated / provisional /
+ *   unavailable），呈现层据此标注。
+ * - regressionTolerance：非回归容差（分）。吸收单样本评审方差
+ *   （M11.4 benchmark 实测同锚点 sd 5–12）；candidate ≥ baseline − 容差
+ *   即视为无实质回退，机械的严格不小于会被噪声支配。
+ */
+export interface RevisionTaskPolicyConfig {
+  mode: "task_scoped" | "legacy";
+  academicFloor: number | null;
+  academicFloorStatus: "calibrated" | "provisional" | "unavailable";
+  regressionTolerance: number;
 }
 
 export interface PiRuntimeConfig {
@@ -256,6 +281,8 @@ const SEARCH_TIMEOUT_MAX_MS = 60_000;
 const DEFAULT_MAX_REVISION_ROUNDS = 2;
 const DEFAULT_ACADEMIC_PASS_SCORE = 80;
 const DEFAULT_STYLE_RISK_MAX = 35;
+/** M11.4：非回归容差缺省（benchmark 同锚点 sd 5–12 的上沿取整；env 可覆盖） */
+const DEFAULT_REVISION_TASK_REGRESSION_TOLERANCE = 10;
 const DEFAULT_REVIEW_CONCURRENCY = 3;
 const DEFAULT_SUMMARY_CONCURRENCY = 3;
 /** 批量全文解析默认并发（M9.3）：resolver 链 + 下载是外呼，3 与 review/summary 同档 */
@@ -468,6 +495,22 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: 100,
       }),
+      revisionTask: {
+        mode: readOptionalValue(source, "PAPERTEAM_REVISION_TASK_POLICY") === "legacy" ? "legacy" : "task_scoped",
+        academicFloor:
+          readOptionalValue(source, "PAPERTEAM_REVISION_TASK_ACADEMIC_FLOOR") !== undefined
+            ? readInt(source, "PAPERTEAM_REVISION_TASK_ACADEMIC_FLOOR", { default: 0, min: 0, max: 100 })
+            : null,
+        academicFloorStatus: (() => {
+          const value = readOptionalValue(source, "PAPERTEAM_REVISION_TASK_FLOOR_STATUS");
+          return value === "calibrated" || value === "provisional" ? value : "unavailable";
+        })(),
+        regressionTolerance: readInt(source, "PAPERTEAM_REVISION_TASK_REGRESSION_TOLERANCE", {
+          default: DEFAULT_REVISION_TASK_REGRESSION_TOLERANCE,
+          min: 0,
+          max: 40,
+        }),
+      },
       // 并发度是性能调优项，不是正确性约束：0 / 负数 / 超上限 / 非数字一律
       // 回退默认值继续跑（不让一次手滑让整个后端拒绝启动）
       reviewConcurrency: readIntWithFallback(source, "PAPERTEAM_REVIEW_CONCURRENCY", {

@@ -44,9 +44,14 @@ export const MAX_AUTO_LATEX_REPAIRS = 2;
 export type RevisionConvergence = "PROGRESS" | "STALLED" | "REGRESSED";
 
 /**
- * M11.3（Phase E）产品终态语义（工作流完成 / HITL / 报告的统一口径）。
+ * M11.3（Phase E）产品终态语义（工作流完成 / HITL / 报告的统一口径）；
+ * M11.4 Product Closure 追加 REVISION_TASK_COMPLETE（分层 gate）。
  *
  * - PASS：双 Gate 通过，正常 Final / Draft 冻结；
+ * - REVISION_TASK_COMPLETE：existing-paper 分层语义——返修任务成功（外审意见
+ *   闭环 + 修订引入违规为零 + 守卫全过 + 无实质回退），但投稿就绪层未达
+ *   （whole-paper 质量 / 基线继承风险 / 绝对学术线）。修订稿作为 Draft 提供，
+ *   剩余风险交作者裁决（正常终态，不是失败）；
  * - QUALITY_NOT_REACHED：论文已生成，但自动质量验收未达到目标（正常终态，
  *   不是系统崩溃——Draft PDF 可用，剩余问题如实呈现）；
  * - NO_PROGRESS：自动修订已达收敛上限，继续自动修改预计收益有限；
@@ -55,11 +60,13 @@ export type RevisionConvergence = "PROGRESS" | "STALLED" | "REGRESSED";
  *   冻结产物不安全，属系统级失败语义。
  *
  * 判定确定性（无 LLM）：gateReasons 的守卫类前缀 → SYSTEM_FAILED；
- * 否则 STALLED 收敛 + 同轮 author_decision_required claim > 0 →
- * AUTHOR_DECISION_REQUIRED；STALLED → NO_PROGRESS；其余 → QUALITY_NOT_REACHED。
+ * 任务层成功（M11.4）→ REVISION_TASK_COMPLETE；否则 STALLED 收敛 + 同轮
+ * author_decision_required claim > 0 → AUTHOR_DECISION_REQUIRED；STALLED →
+ * NO_PROGRESS；其余 → QUALITY_NOT_REACHED。
  */
 export type TerminalStatusKind =
   | "PASS"
+  | "REVISION_TASK_COMPLETE"
   | "QUALITY_NOT_REACHED"
   | "NO_PROGRESS"
   | "AUTHOR_DECISION_REQUIRED"
@@ -74,6 +81,12 @@ export interface TerminalStatusInput {
   convergence: RevisionConvergence | null;
   /** 同轮 claim resolution 中 author_decision_required 的条数（0 / 缺省 = 无） */
   authorDecisionClaims?: number;
+  /**
+   * M11.4：existing-paper 分层 gate 的任务层结果（undefined = 非 existing-paper
+   * / legacy 模式 / 旧 run——单层语义不变）。true 时守卫已全过（任务层包含
+   * 守卫检查），终态取 REVISION_TASK_COMPLETE 而非 QUALITY_NOT_REACHED。
+   */
+  revisionTaskSuccess?: boolean;
 }
 
 export interface TerminalStatus {
@@ -91,6 +104,13 @@ export function classifyTerminalStatus(input: TerminalStatusInput): TerminalStat
     return {
       status: "SYSTEM_FAILED",
       message: "事实 / 引用守卫未满足（冻结产物不安全）——系统级失败，需要排查修订链。",
+    };
+  }
+  if (input.revisionTaskSuccess === true) {
+    return {
+      status: "REVISION_TASK_COMPLETE",
+      message:
+        "返修任务完成：外审意见全部闭环、修订引入违规为零；论文整体投稿就绪性未达标（剩余为全稿质量 / 基线继承风险，见 publication readiness 报告），修订稿以 Draft 形式提供。",
     };
   }
   if (input.convergence === "STALLED") {
