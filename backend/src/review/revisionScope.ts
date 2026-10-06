@@ -160,6 +160,31 @@ export function hasNewContentAfterDocumentEnd(baseline: string, candidate: strin
   return newTail !== oldTail && newTail.trim() !== "";
 }
 
+/**
+ * M11.4 Reliability Closure（Run F 实证：R2 的 noop 引文用「……」拼接两段
+ * 真实原文——节略引文是规范引用形态，逐字 includes 会误拒）。节略引文核验：
+ * 按 ……/…/... 切段，每段（≥4 字符）逐字存在于 span，多段时要求出现顺序
+ * 递增；单段退化回纯 includes。总引文字符过短（<12）仍拒绝（防碎片匹配）。
+ */
+function quoteCoveredInSpan(quote: string, spanContent: string): boolean {
+  if (spanContent.includes(quote)) return true;
+  const segments = quote
+    .split(/……|…|\.\.\./)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  if (segments.length < 2) return false;
+  const meaningful = segments.filter((segment) => segment.length >= 4);
+  if (meaningful.length < 2 || meaningful.join("").length < 12) return false;
+  let searchFrom = 0;
+  for (const segment of segments) {
+    if (segment.length < 4) continue;
+    const at = spanContent.indexOf(segment, searchFrom);
+    if (at < 0) return false;
+    searchFrom = at + segment.length;
+  }
+  return true;
+}
+
 export function verifyNoopCoverage(
   item: NoopCoverageCheck,
   spans: readonly RevisionSpan[],
@@ -168,7 +193,7 @@ export function verifyNoopCoverage(
   const span = spans.find((candidate) => candidate.logicalSection === item.logicalSection);
   if (span === undefined) return { verified: false, reason: "NOOP_TARGET_UNRESOLVED" };
   const quote = item.coverageQuote?.trim();
-  if (!quote || !span.content.includes(quote)) return { verified: false, reason: "NOOP_COVERAGE_QUOTE_MISSING" };
+  if (!quote || !quoteCoveredInSpan(quote, span.content)) return { verified: false, reason: "NOOP_COVERAGE_QUOTE_MISSING" };
   /**
    * M11.4 Reliability Closure（Run E 实证：w-b5e989fe6426，Planner 对三条
    * 意见给出基线覆盖 noop 但无 Evidence 可绑——「参考文献 ≥20 篇」「已有部署

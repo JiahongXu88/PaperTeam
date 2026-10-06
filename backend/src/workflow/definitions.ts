@@ -7901,7 +7901,19 @@ async function collectRevisionDirectives(
           ...(item.protocolId !== undefined ? { protocolId: item.protocolId } : {}),
         }, spans, evidenceById);
         if (!coverage.verified) {
-          recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), coverage.reason ?? "NOOP_COVERAGE_FAILED", "NO-OP coverage verification failed; no Writer call was made.");
+          /**
+           * M11.4 Reliability Closure（Run F 实证）：Planner 主张基线已覆盖、
+           * 确定性引文核验失败——这既不是系统故障也不是可自动修复项：基线
+           * 是否满足该意见无法机器确认，诚实终态 = 作者裁决（引文失败原因
+           * 如实记录），而不是 plain unresolved（会被任务层判系统 FAIL）。
+           */
+          recordUnresolvedPlanOutcome(
+            instructions,
+            item,
+            items.indexOf(item),
+            "AUTHOR_DECISION_REQUIRED",
+            `Planner 主张基线已覆盖该意见（actionType=noop），但确定性核验未通过（${coverage.reason ?? "NOOP_COVERAGE_FAILED"}；引文与目标章节不匹配）——基线覆盖需作者确认。`,
+          );
           instructionsChanged = true;
           return false;
         }

@@ -329,7 +329,8 @@ describe("M11.4 Reliability Closure：removed 类违规的确定性段落恢复"
 describe("M11.4 Reliability Closure：noop 的 coverageQuote 即已满足证明", () => {
   const span = {
     file: "main.tex", start: 0, end: 100, logicalSection: "subsec:edge_deploy",
-    heading: "车载边缘设备部署实验", content: "本节给出真实道路视频在车载级边缘平台上的完整链路部署实验，E2E 延迟为 1495.63 ms。",
+    heading: "车载边缘设备部署实验",
+    content: "本节给出真实道路视频在车载级边缘平台上的完整链路部署实验，E2E 延迟为 1495.63 ms。当前实现尚未达到视频帧率量级，本文以验证可部署性为目标，如实报告上述结果。",
     originalHash: "h",
   };
 
@@ -360,6 +361,31 @@ describe("M11.4 Reliability Closure：noop 的 coverageQuote 即已满足证明"
     );
     expect(result.verified).toBe(false);
     expect(result.reason).toBe("NOOP_EVIDENCE_UNVERIFIED");
+  });
+
+  it("节略引文（……拼接两段真实原文，Run F 实证）→ 分段逐字 + 顺序核验通过", () => {
+    const result = verifyNoopCoverage(
+      { logicalSection: "subsec:edge_deploy", coverageQuote: "E2E 延迟为 1495.63 ms。……本文以验证可部署性为目标，如实报告上述结果", evidenceIds: [] },
+      [span],
+      new Map(),
+    );
+    expect(result.verified).toBe(true);
+  });
+
+  it("节略引文某段不在 span / 顺序颠倒 → 仍拒绝", () => {
+    const reversed = verifyNoopCoverage(
+      { logicalSection: "subsec:edge_deploy", coverageQuote: "本文以验证可部署性为目标……E2E 延迟为 1495.63 ms。", evidenceIds: [] },
+      [span],
+      new Map(),
+    );
+    expect(reversed.verified).toBe(false);
+    const missing = verifyNoopCoverage(
+      { logicalSection: "subsec:edge_deploy", coverageQuote: "这段话根本不存在于基线……另一段也不存在基线之中啊", evidenceIds: [] },
+      [span],
+      new Map(),
+    );
+    expect(missing.verified).toBe(false);
+    expect(missing.reason).toBe("NOOP_COVERAGE_QUOTE_MISSING");
   });
 });
 
