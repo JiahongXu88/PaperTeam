@@ -130,6 +130,13 @@ import { buildRevisionBaseline } from "../review/revisionBaseline.js";
 import { writeRevisionResponse } from "../review/revisionResponse.js";
 import type { WriterService } from "../writer/WriterService.js";
 import { reclassifyAuthorInputActions } from "../writer/WriterService.js";
+
+/**
+ * M11.4 Reliability Closure（Run A 实证）：修订元注记 / 决策标记 / 执行报告行
+ * 出现在论文正文 = 内容污染（【修订说明】裸 λ_ 曾直接炸掉 LaTeX 编译）。
+ * 候选级拒绝 + bounded repair（见 revision.revise 的 revision_meta_text 失败码）。
+ */
+const REVISION_META_TEXT_PATTERN = /【(修订说明|修订注记?|修复说明|执行报告|派发说明|决策点|待作者确认|待作者裁决|作者决策[：:]?)】|%%%PT-OUTCOMES%%%/;
 import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readPlanChain } from "../agents/researchPlan.js";
@@ -1976,6 +1983,16 @@ function revisionReviseStage(
             if (structureBefore !== structureCandidate) {
               failures.push({ code: "scope_violation", detail: `REVISION_STRUCTURE_DAMAGE: candidate changes the section structure (${structureBefore} -> ${structureCandidate} sections)` });
             }
+            /**
+             * M11.4 Reliability Closure（Run A 实证：p-fce3f34e28c3，Writer 把
+             * 「【修订说明】f-60cada…（λ_smooth=0.5 与表8 …）」执行注记实体写进
+             * 正文——一处污染同时造成 LaTeX 编译失败（裸 λ_ 进 text mode）与
+             * unauthorized 超参数新增）。修订元注记 / 决策标记 / 结果报告行
+             * 永远不属于论文正文：候选级直接拒绝并进 bounded repair 通道。
+             */
+            if (REVISION_META_TEXT_PATTERN.test(result.latex)) {
+              failures.push({ code: "revision_meta_text", detail: "REVISION_META_TEXT_IN_MANUSCRIPT: 修订执行注记/决策标记/报告行不得写进论文正文（删除全部标记文本后重写该 span；说明信息只允许出现在最后单独一行的执行报告）" });
+            }
 
             const baselineFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision));
             const baselineTarget = baselineFiles?.find((file) => file.file === target.relativePath);
@@ -2032,7 +2049,7 @@ function revisionReviseStage(
               ...(recordProtocolId !== undefined ? { protocolId: recordProtocolId } : {}),
               beforeFileHash: revisionSourceHash(fileBefore), beforeTargetHash: resolvedSpan.originalHash,
               proposedReplacementHash: revisionSourceHash(result.latex.trim()), afterFileHash: revisionSourceHash(candidate),
-              scope: { ok: !failures.some((failure) => failure.code === "scope_violation"), violations: failures.filter((failure) => failure.code === "scope_violation").map((failure) => failure.detail) },
+              scope: { ok: !failures.some((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text"), violations: failures.filter((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text").map((failure) => failure.detail) },
               workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
               fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
               citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },

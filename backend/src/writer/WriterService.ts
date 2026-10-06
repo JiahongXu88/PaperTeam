@@ -766,8 +766,8 @@ export class WriterService {
         "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
         "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection），并绑定可核验证据；不能仅用 rationale 写‘已覆盖’。系统会再确定性核对原文与证据，核验失败即不会关闭 comment。",
         "8. 需要事实或实验依据的意见：有兼容证据时必须选择对应 EV alias；没有时应给出 evidence gap 或 author_decision_required，不得编造 Evidence。",
-        "9. action 的执行不得依赖作者输入：凡需要「由作者确认 / 待作者确认」才能落笔的条目（如实现细节二选一、超参数最终取值），必须 actionType=author_decision_required 并在 rationale 写明决策点——modify 条目里写「待作者确认」会导致系统把未决问题写进正文（确定性守卫会拦截并判任务失败）。",
-        "10. 不得计划新增基线没有的分析性 / 方法论论断（如指标间循环评测风险、构造性论证、机制有效性声明），除非绑定支持它的 EV 证据——此类新增论断会被事实核验判 UNSUPPORTED 并按修订引入违规阻断。",
+        "9. action 的执行不得依赖作者输入：凡需要「由作者确认 / 待作者确认」才能落笔的条目（如实现细节二选一、超参数最终取值），必须 actionType=author_decision_required 并在 rationale 写明决策点。注意：只把真正依赖作者输入的条目标为 author_decision_required——有证据支撑的修改（EV 别名可绑定）和纯表述 / 结构 / 弱化类修改仍然应当 modify，不要为保守而把所有意见推向作者决策。",
+        "10. 不得计划新增基线没有的分析性 / 方法论论断（如指标间循环评测风险、构造性论证、机制有效性声明），除非绑定支持它的 EV 证据——此类新增论断会被事实核验判 UNSUPPORTED 并按修订引入违规阻断。对证据不足的既有论断，正确动作是弱化该论断本身（weaken），不是新增一条与之并存的相反表述。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
         "",
         `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,
@@ -1302,6 +1302,7 @@ export function buildRevisePrompt(params: {
           "e. 输出的最后一行必须单独一行执行报告（单行 JSON 数组，不要代码块）：",
           `   ${EXTERNAL_OUTCOMES_MARKER} [{"instructionId":"<id>","outcome":"applied|conflict|not_applicable","basis":"<依据：conflict 必填，引用稿件具体数值>"}]`,
           "   每条派发意见恰好一项；applied 只在本节真实修改时使用，不得为提高完成率虚报。",
+          "f. 弱化论断 = 修改该论断本身（或删除）；不得新增与稿内未弱化旧论断并存的反向 / 对冲表述（自相矛盾会被复审判 blocking）。修订说明 / 决策点 / 待作者确认等执行注记只允许出现在最后的执行报告行，绝对不得写进正文。",
         ]
       : [];
   const externalBlock =
@@ -1383,6 +1384,8 @@ export function buildRevisePrompt(params: {
     "6. 不得新增本章节当前内容与问题清单中都不存在的实验细节、数字、超参数或因果解释。"
       + "当稿件内容与 Evidence 不一致时，不要虚构或静默调和——报告冲突（保留原表述）。",
     "7. 学术语言优化不得改变 claim 强度（可能 / 表明 / 证明 不互换）与比较方向（高于 / 低于 / 优于 / 劣于 不互换）。",
+    "7b. 弱化论断 = 修改该论断本身（或删除）；不得新增与稿内未弱化旧论断并存的反向 / 对冲表述（自相矛盾会被复审判 blocking）。",
+    "7c. 【修订说明】【决策点】【待作者确认】等执行注记与 %%%PT-OUTCOMES%%% 报告行**绝不允许写进正文**——它们只属于输出末尾的执行报告（无外部意见派发时不要输出报告行）；裸希腊字母/下标写进正文还会导致编译失败。",
     "8. 可用宏包只有 amsmath / amssymb / natbib（ctexart 文档类）；不要使用 tikz 等"
       + "其他宏包的环境或命令（图形以文字描述或 table 呈现），否则无法编译。",
     "9. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",

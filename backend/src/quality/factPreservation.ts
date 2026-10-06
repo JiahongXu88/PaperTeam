@@ -1678,6 +1678,13 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     //    写作阶段的新章节文件不在本循环内——新增审查只针对既有稿） --
     const previousProseCompact = normalizeForProseExtraction(stripTablesAndMath(previous)).replace(/\s+/g, "");
     const currentProse = normalizeForProseExtraction(stripTablesAndMath(current));
+    /**
+     * M11.4 Reliability Closure（Run A 实证）：同一参数的等值重述（基线
+     * λ_smooth=0.50，修订写 λ_smooth=0.5——normalizeNumericToken 两侧同为
+     * 0.5，但整串 compact 形态不同）不是新超参数事实，是格式等价重述
+     * （formatChanges 审计，不计违规）。
+     */
+    const previousAssignments = [...previousProseCompact.matchAll(ASSIGNMENT_PATTERN)];
     for (const match of currentProse.matchAll(ASSIGNMENT_PATTERN)) {
       const whole = (match[0] ?? "").replace(/\s+/g, "");
       const value = match[2] ?? "";
@@ -1687,6 +1694,24 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       const grant = valueAdditionAuthorized(auth, value, previousFile.file);
       if (grant !== null) {
         allowedChanges += 1;
+        continue;
+      }
+      const lhs = (match[1] ?? "").replace(/\s+/g, "");
+      const normalizedValue = normalizeNumericToken(value);
+      const equivalentRestatement = lhs !== "" && normalizedValue !== "" && previousAssignments.some(
+        (prior) =>
+          (prior[1] ?? "").replace(/\s+/g, "") === lhs &&
+          normalizeNumericToken(prior[2] ?? "") === normalizedValue,
+      );
+      if (equivalentRestatement) {
+        formatChanges.push({
+          kind: "changed",
+          file: previousFile.file,
+          section: nearestSection(currentProse, match.index ?? 0),
+          before: "",
+          after: snippet(whole),
+          reason: "assignment_format_restatement",
+        });
         continue;
       }
       addedUnsupportedFacts.push({

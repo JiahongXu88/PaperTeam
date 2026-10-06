@@ -392,6 +392,36 @@ describe("M11.4 Reliability Closure：【待作者确认】正文占位检测（
   });
 });
 
+describe("M11.4 Reliability Closure：同参数等值重述不算新增超参数（Run A 实证）", () => {
+  function evaluate(previous: string, current: string) {
+    return evaluateFactPreservation({
+      previous: { revision: 1, files: [{ file: "main.tex", content: previous }] },
+      current: { revision: 2, files: [{ file: "main.tex", content: current }] },
+      plan: null,
+      improvementPlanItems: [],
+      evidenceTexts: [],
+      weakeningAuthorizations: [],
+    });
+  }
+
+  it("基线 λ_smooth＝0.50（全角等号），修订写 λ_smooth=0.5 → 同参数等值重述（不计违规）", () => {
+    const previous = "\\section{训练}\n本文最终设置取 λ_smooth＝0.50，权重扫描见表。\n\\end{document}";
+    const current = "\\section{训练}\n本文最终设置取 λ_smooth=0.5，权重扫描见表。\n\\end{document}";
+    const summary = evaluate(previous, current);
+    expect(summary.addedUnsupportedFacts.filter((f) => f.reason === "hyperparameter_assignment")).toHaveLength(0);
+    expect(summary.formatChanges.filter((f) => f.reason === "assignment_format_restatement").length).toBeGreaterThan(0);
+    expect(summary.ok).toBe(true);
+  });
+
+  it("基线没有的参数赋值（新增 λ_gate=0.7）仍判 unauthorized", () => {
+    const previous = "\\section{方法}\n模板容量 r=16，检索维度 128。\n\\end{document}";
+    const current = "\\section{方法}\n模板容量 r=16，检索维度 128，门控阈值 λ_gate=0.7。\n\\end{document}";
+    const summary = evaluate(previous, current);
+    expect(summary.addedUnsupportedFacts.filter((f) => f.reason === "hyperparameter_assignment").length).toBeGreaterThan(0);
+    expect(summary.ok).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // F5：claim↔finding 归因（数值指纹档 + claimIndex lineage + 直接 id join）
 // ---------------------------------------------------------------------------
