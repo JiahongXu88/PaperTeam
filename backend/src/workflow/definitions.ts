@@ -5089,7 +5089,18 @@ function reviewEvidenceSupplyStage(services: WorkflowServices): StageSpec {
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
       const instructions = await services.externalInstructions.load(ctx.projectId);
-      const sources = (await services.sources.list(ctx.projectId)).filter((source) => source.status !== "failed" && source.status !== "pending");
+      const sourceItems = await services.sources.list(ctx.projectId);
+      // Uploaded text / structured assets stay SourceStatus=pending after their
+      // ParsedDocument is written; pending here means the legacy Source index
+      // has not transitioned, not that the successfully parsed local Source is
+      // unusable. Admit only a fresh, successful parsed document in that case.
+      const sourceCandidates = await Promise.all(sourceItems.map(async (source) => {
+        if (source.status === "failed" || source.status === "rejected") return null;
+        if (source.status !== "pending") return source;
+        const document = await services.ingestion.getDocument(ctx.projectId, source.sourceId).catch(() => null);
+        return document !== null && document.status !== "failed" ? source : null;
+      }));
+      const sources = sourceCandidates.filter((source): source is NonNullable<typeof source> => source !== null);
       const evidenceBefore = await services.evidence.list(ctx.projectId);
       const result = instructions.length > 0 && sources.length > 0
         ? await services.targetedGrounding.groundClaims(ctx.projectId, instructions.slice(0, 10).map((instruction) => ({

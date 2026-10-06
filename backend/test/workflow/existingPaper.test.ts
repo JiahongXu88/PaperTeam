@@ -113,6 +113,59 @@ async function pollRun(
 }
 
 describe("existing_paper_improvement workflow（HTTP e2e）", () => {
+  it("Evidence Supply includes successfully ingested local Sources whose Source index remains pending", async () => {
+    const stack = await newStack(["pass"]);
+    const project = await stack.store.create("已有论文本地证据供给");
+    const imported = await stack.request("POST", `/api/projects/${project.id}/import`, {
+      archiveBase64: IMPORT_ARCHIVE.toString("base64"),
+    });
+    expect(imported.status).toBe(200);
+
+    const sourceUpload = await stack.request("POST", `/api/projects/${project.id}/sources`, {
+      fileName: "RDK_X3_board_report.md",
+      contentBase64: Buffer.from("RDK X3 board deployment performance report: measured device latency and throughput.", "utf8").toString("base64"),
+      sourceRole: "evidence",
+    });
+    expect(sourceUpload.status).toBe(201);
+    expect((sourceUpload.body["ingestion"] as { status: string }).status).toBe("ok");
+    const sourceId = (sourceUpload.body["source"] as { sourceId: string }).sourceId;
+    const sourceList = await stack.request("GET", `/api/projects/${project.id}/sources`);
+    expect((sourceList.body["sources"] as Array<{ sourceId: string; status: string }>).find((item) => item.sourceId === sourceId)?.status).toBe("pending");
+
+    const instruction = await stack.request("POST", `/api/projects/${project.id}/external-instructions`, {
+      source: "journal_reviewer",
+      reviewerLabel: "Reviewer 1",
+      text: "Please clarify the RDK X3 board deployment performance evidence.",
+    });
+    expect(instruction.status).toBe(200);
+
+    const groundedRequests: { claimId: string; sourceIds: string[] }[] = [];
+    vi.spyOn(stack.stack.targetedGrounding, "groundClaims").mockImplementation(async (_projectId, requests) => {
+      groundedRequests.push(...requests.map(({ claimId, sourceIds }) => ({ claimId, sourceIds })));
+      return {
+        outcomes: requests.map((request) => ({ claimId: request.claimId, status: "no_candidate" as const, evidenceIds: [], attempts: [] })),
+        verifiedClaims: 0,
+        verifiedEvidence: 0,
+        unsupportedByJudge: 0,
+      };
+    });
+
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {
+      kind: "existing_paper_improvement",
+    });
+    const runId = created.body["runId"] as string;
+    const waiting = await pollRunUntilAwaiting(stack, runId, "hitl.plan_confirm");
+    const supply = waiting.stageResults["evidence.supply.review"] as { sourcesConsidered: number; verified: number };
+    expect(supply.sourcesConsidered).toBe(1);
+    expect(supply.verified).toBe(0);
+    expect(groundedRequests).toHaveLength(1);
+    expect(groundedRequests[0]?.sourceIds).toEqual([sourceId]);
+    expect((await stack.stack.evidence.list(project.id)).filter((record) => record.source?.sourceId === sourceId)).toHaveLength(0);
+
+    await stack.request("POST", `/api/runs/${runId}/cancel`, {});
+    await pollRun(stack, runId, ["cancelled"]);
+  });
+
   it("导入 → 全流程 → Final：产物齐全、计划与改造生效", async () => {
     const stack = await newStack(["pass"]);
     const project = await stack.store.create("已有论文改造", { targetProfile: "core_journal" });
