@@ -766,6 +766,8 @@ export class WriterService {
         "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
         "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection），并绑定可核验证据；不能仅用 rationale 写‘已覆盖’。系统会再确定性核对原文与证据，核验失败即不会关闭 comment。",
         "8. 需要事实或实验依据的意见：有兼容证据时必须选择对应 EV alias；没有时应给出 evidence gap 或 author_decision_required，不得编造 Evidence。",
+        "9. action 的执行不得依赖作者输入：凡需要「由作者确认 / 待作者确认」才能落笔的条目（如实现细节二选一、超参数最终取值），必须 actionType=author_decision_required 并在 rationale 写明决策点——modify 条目里写「待作者确认」会导致系统把未决问题写进正文（确定性守卫会拦截并判任务失败）。",
+        "10. 不得计划新增基线没有的分析性 / 方法论论断（如指标间循环评测风险、构造性论证、机制有效性声明），除非绑定支持它的 EV 证据——此类新增论断会被事实核验判 UNSUPPORTED 并按修订引入违规阻断。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
         "",
         `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,
@@ -1081,6 +1083,25 @@ export interface ImprovementPlanItem {
 
 export interface ImprovementPlan {
   items: ImprovementPlanItem[];
+}
+
+/**
+ * M11.4 Reliability Closure（Run 1 实证：p-c923662f9c48 improvement:11/12/14）：
+ * Planner 把「由作者确认 X 后二选一写明」的作者决策语义写进 modify 条目的
+ * action 文本 → Writer 无从裁决，只能把【待作者确认】问句实体写进正文 →
+ * 修订引入违规、任务层 FAIL。actionType 合法性是机器可判定约束：modify 的
+ * 执行不得依赖作者输入，凡 action 文本点名需要作者确认 / 裁决的条目确定性
+ * 重分类为 author_decision_required（保留原文；不派发 Writer，意见走合法
+ * 作者裁决闭环）。§13：模型给 intent proposal，machine resolve actionType。
+ */
+const AUTHOR_INPUT_REQUIRED_PATTERN = /(待|需|由)作者确认|待作者(裁决|决定|选择|提供|补[充充])/;
+
+export function reclassifyAuthorInputActions<T extends { action: string; actionType?: string }>(items: readonly T[]): T[] {
+  return items.map((item) =>
+    item.actionType === "modify" && AUTHOR_INPUT_REQUIRED_PATTERN.test(item.action)
+      ? { ...item, actionType: "author_decision_required" as const }
+      : item,
+  );
 }
 
 /**

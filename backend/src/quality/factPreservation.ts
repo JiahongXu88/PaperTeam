@@ -206,9 +206,15 @@ function parseTables(content: string): LatexTable[] {
 
 // ---- 提取：占位 / 方向 / 协议哨兵 ----
 
-const PLACEHOLDER_PATTERN = /(待回填|待补充|待验证|待确认|待归档|暂无数据|待实验产出|TBD|TODO)/g;
+/**
+ * M11.4 Reliability Closure（Run 1 实证）：「待作者确认 / 待作者裁决」是未决
+ * 作者决策标记写进正文（Planner 把作者决策语义放进 modify 条目时 Writer 的
+ * 唯一落笔形态）——真占位符，不属于对冲语豁免（对冲语是「尚待验证」类认识
+ * 论限定，不含「作者」主体）。
+ */
+const PLACEHOLDER_PATTERN = /(待回填|待补充|待验证|待确认|待归档|暂无数据|待实验产出|待作者确认|待作者裁决|待作者决定|TBD|TODO)/g;
 /** .test() 用（/g 正则的 test 有 lastIndex 状态，必须与 matchAll 分开） */
-const PLACEHOLDER_TEST = /(待回填|待补充|待验证|待确认|待归档|暂无数据|待实验产出|TBD|TODO)/;
+const PLACEHOLDER_TEST = /(待回填|待补充|待验证|待确认|待归档|暂无数据|待实验产出|待作者确认|待作者裁决|待作者决定|TBD|TODO)/;
 
 /**
  * M11.4 Attempt 8：副词对冲形态剥离。占位守卫的靶标是**占位标记**（把具体

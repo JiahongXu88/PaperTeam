@@ -611,6 +611,55 @@ export function applyDispatchOutcome(
 }
 
 /**
+ * M11.4 Reliability Closure：patch-backed outcome 覆盖（确定性，§14 的
+ * 「comment closure 由 accepted patches 推导，不依赖 LLM 自报」）。
+ *
+ * Run 1 实证（p-c923662f9c48，Reviewer 2）：意见的计划条目正确命中目标、
+ * 候选 patch 通过全部守卫并被接受、目标真实变化——机器 lineage 已构成执行
+ * 证据；但 Writer 的自报行写 not_applicable，聚合把意见记 unresolved →
+ * 任务层假 FAIL。本函数在存在 patch 证据时把该意见的 not_applicable /
+ * unreported 自报覆盖为 applied（自报留档在 basis）；conflict 是更强的
+ * 诚实信号，不覆盖；已自报 applied 的不重复覆盖。
+ */
+export function applyPatchBackedOutcomeOverrides(
+  reports: readonly ExternalOutcomeReport[],
+  patchEvidence: {
+    instructionIds: readonly string[];
+    target: string;
+    planItemIds: readonly string[];
+    patchIds: readonly string[];
+    evidenceIds?: readonly string[];
+  },
+): ExternalOutcomeReport[] {
+  const backedIds = new Set(patchEvidence.instructionIds);
+  if (backedIds.size === 0) {
+    return reports as ExternalOutcomeReport[];
+  }
+  let changed = false;
+  const next = reports.map((report): ExternalOutcomeReport => {
+    if (!backedIds.has(report.instructionId)) {
+      return report;
+    }
+    if (report.outcome === "applied" || report.outcome === "conflict") {
+      return report;
+    }
+    changed = true;
+    return {
+      ...report,
+      outcome: "applied",
+      targetChanged: true,
+      target: patchEvidence.target,
+      planItemIds: [...patchEvidence.planItemIds],
+      patchIds: [...patchEvidence.patchIds],
+      ...(patchEvidence.evidenceIds !== undefined ? { evidenceIds: [...patchEvidence.evidenceIds] } : {}),
+      verification: { ...(report.verification ?? {}), scope: true },
+      basis: `deterministic patch attribution: accepted patch ${patchEvidence.patchIds.join(", ")} at ${patchEvidence.target}（Writer 自报 ${report.outcome}，以机器 patch lineage 为准）`,
+    };
+  });
+  return changed ? next : (reports as ExternalOutcomeReport[]);
+}
+
+/**
  * revision.plan 构建时的 gate 复核（确定性自愈）：handled 意见对应的修订
  * 若在最新 gate 产物中触发 Fact Preservation FAIL（Writer 为满足意见而改了
  * 事实，被 gate 拦截），降级回 unresolved 重新进入派发（恢复闭环由

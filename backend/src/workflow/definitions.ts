@@ -129,6 +129,7 @@ import { buildAssetInventory } from "../import/assetInventory.js";
 import { buildRevisionBaseline } from "../review/revisionBaseline.js";
 import { writeRevisionResponse } from "../review/revisionResponse.js";
 import type { WriterService } from "../writer/WriterService.js";
+import { reclassifyAuthorInputActions } from "../writer/WriterService.js";
 import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readPlanChain } from "../agents/researchPlan.js";
@@ -181,6 +182,7 @@ import {
 } from "../review/revisionValidation.js";
 import {
   applyDispatchOutcome,
+  applyPatchBackedOutcomeOverrides,
   type ExternalDirectiveDispatch,
   type ExternalDispatchResult,
   type ExternalInstruction,
@@ -1716,7 +1718,7 @@ function revisionReviseStage(
       const sectionScopedExternals = externalDirectives.filter(
         (directive) => directive.section !== undefined,
       );
-      const externalOutcomeReports: ExternalOutcomeReport[] = [];
+      let externalOutcomeReports: ExternalOutcomeReport[] = [];
       const patchValidationRecords: PatchValidationRecord[] = [];
       const currentRevision = await services.revisions.currentRevision(ctx.projectId);
 
@@ -2113,6 +2115,24 @@ function revisionReviseStage(
             patchIds: target.logicalSpan !== undefined ? [`patch:${target.logicalSpan.originalHash.slice(0, 12)}`] : [],
             verification: target.logicalSpan !== undefined ? { scope: true } : {},
           });
+        }
+        /**
+         * M11.4 Reliability Closure（Run 1 实证：p-c923662f9c48 R2）：意见对应
+         * 的计划条目命中本目标、候选 patch 通过全部守卫并被接受、目标真实变化
+         * ——机器 lineage 已构成 §14 的执行证据（accepted patch + target 对应 +
+         * guards PASS）。Writer 自报 not_applicable / unreported 与该证据冲突时，
+         * 以确定性 lineage 为准（自报留档在 basis）。conflict 是更强的诚实信号，
+         * 不覆盖（其本身即合法 author_decision 终态）。
+         */
+        if (targetChanged && resolvedSpan !== undefined) {
+          const patchBacked = applyPatchBackedOutcomeOverrides(externalOutcomeReports, {
+            instructionIds: matchedItems.flatMap((item) => item.instructionId !== undefined ? [item.instructionId] : []),
+            target: `${target.relativePath}#${target.logicalSpan?.heading ?? target.key}`,
+            planItemIds: matchedItems.map((item) => item.id),
+            patchIds: [`patch:${resolvedSpan.originalHash.slice(0, 12)}`],
+            evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+          });
+          if (patchBacked !== externalOutcomeReports) externalOutcomeReports = patchBacked;
         }
         if (isAbstractTarget) {
           // 摘要修订写回 outline.abstract（独立可写载体）；后续 writeMainTex 重组时生效
@@ -5491,8 +5511,17 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
           generatedAt: new Date().toISOString(),
           // M11.4 Reliability Closure：落盘即赋稳定 id（improvement:N）——派发
           // 指令、意见 resolutionTrace、patch planItemIds 共用同一编号空间
-          //（8c 实证：两个通道各自编号，同号不同条，lineage 错位）
-          plan: { ...plan, items: plan.items.map((item, index) => ({ id: `improvement:${index + 1}`, ...item })) },
+          //（8c 实证：两个通道各自编号，同号不同条，lineage 错位）；同时执行
+          // author-input 确定性重分类（modify 且 action 依赖作者确认 →
+          // author_decision_required，Run 1 实证：不重分类则 Writer 把
+          //【待作者确认】写进正文）
+          plan: {
+            ...plan,
+            items: reclassifyAuthorInputActions(plan.items).map((item, index) => ({
+              id: `improvement:${index + 1}`,
+              ...item,
+            })),
+          },
         },
       );
       return {
