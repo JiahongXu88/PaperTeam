@@ -683,6 +683,44 @@ describe("M11.4 Reliability Closure：归因数值指纹档与 claimIndex lineag
     });
     expect(audit.issueAttribution[0]?.excluded).toBe(false);
   });
+
+  it("evidence_gap finding 不引数值但 section 带表标签（Run Q 实证）→ 标识符指纹档归因", () => {
+    const tableClaim: ClaimGroundingEntry = {
+      ...mainTableClaim,
+      claimId: "c-cff35e69",
+      section: "对比实验结果与分析",
+      claim: "表 tab:main_bdd100k 与 tab:main_uadetrac 中的 MOTA/IDF1/IDS/J_tr 数值为本方法相对各基线的优势结果",
+    };
+    const audit = computeClaimGapAudit({
+      projectId: "p-q", round: 3, baselineRevision: 1,
+      unsupportedClaims: [tableClaim],
+      issues: [issue({
+        category: "evidence_gap",
+        section: "sections/main.tex（对比实验 tab:main_bdd100k、tab:main_uadetrac）",
+        description: "两张主对比表的全部数值在证据库中无任何已核验记录支撑",
+      })],
+      frozenFiles: [{ file: "main.tex", content: "表 tab:main_bdd100k 与 tab:main_uadetrac 中的 MOTA/IDF1/IDS/J_tr 数值为本方法相对各基线的优势结果。" }],
+      authorEvidence: [],
+    });
+    expect(audit.claims[0]?.applicability).toBe("excluded_pre_existing");
+    expect(audit.issueAttribution[0]?.excluded).toBe(true);
+    expect(audit.issueAttribution[0]?.claimId).toBe("c-cff35e69");
+  });
+
+  it("finding 与 claim 引用不同表标签 → 标识符档不误伤", () => {
+    const audit = computeClaimGapAudit({
+      projectId: "p-q", round: 3, baselineRevision: 1,
+      unsupportedClaims: [mainTableClaim],
+      issues: [issue({
+        category: "evidence_gap",
+        section: "sections/main.tex（消融实验 tab:ablation_smooth）",
+        description: "权重扫描表数值无任何已核验记录支撑",
+      })],
+      frozenFiles,
+      authorEvidence: [],
+    });
+    expect(audit.issueAttribution[0]?.excluded).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

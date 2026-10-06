@@ -383,6 +383,24 @@ function sectionsCompatible(a: string, b: string): boolean {
 }
 
 /**
+ * M11.4 Reliability Closure（Run Q 实证）：可引用标识符指纹——finding 的
+ * section / description 与 claim 共享 ≥1 个规范标签（tab:…/fig:…/sec:… 等）
+ * 即同一对象（标签是稿件全局唯一的规范 id，比词面/数值更强：finding 把表标签
+ * 写在 section 字段、claim 写在正文，两者都不含对方词元时仍可归因）。
+ */
+const REFERENCABLE_ID_PATTERN = /(?:tab|fig|eq|sec|subsec|subsubsec|alg|table|figure):[A-Za-z0-9_-]{2,}/g;
+
+function referencableIds(...texts: readonly string[]): Set<string> {
+  const ids = new Set<string>();
+  for (const text of texts) {
+    for (const match of text.matchAll(REFERENCABLE_ID_PATTERN)) {
+      ids.add(match[0].toLowerCase().replace(/^(table|figure):/, (m) => (m.startsWith("table") ? "tab:" : "fig:")));
+    }
+  }
+  return ids;
+}
+
+/**
  * M11.4 Attempt 8 修复：claim ↔ finding 描述的归因谓词（分层证据强度）。
  *
  * - 常规档（弱证据，仅 fact / evidence_gap 类）：章节兼容 ∧ claim 词元在
@@ -392,7 +410,11 @@ function sectionsCompatible(a: string, b: string): boolean {
  * - 数值指纹档（强证据，任意类）：claim 数值 ≥ 2 且描述含其半数以上 → 同一
  *   对象（Run C 实证：学术审稿人把主表/消融表矛盾 finding 标 category=academic
  *   ——同款 finding 在 8c 被标 fact；category 标签是噪声，数值指纹不是。
- *   强证据档不依赖 category，弱证据档保留 category 佐证）。
+ *   强证据档不依赖 category，弱证据档保留 category 佐证）；
+ * - 标识符指纹档（强证据，任意类）：共享 ≥1 个规范标签（Run Q 实证：
+ *   evidence_gap finding「两张主对比表的全部数值…无支撑」不引任何数值/词元，
+ *   但其 section 字段带 tab:main_bdd100k/tab:main_uadetrac，与 claim 的表标签
+ *   重合——同一对象）。
  */
 function claimMatchesFinding(
   issueSection: string,
@@ -403,6 +425,15 @@ function claimMatchesFinding(
   compactDescription: string,
   allowTermTier: boolean = true,
 ): boolean {
+  const findingIds = referencableIds(issueSection, descriptionText, compactDescription);
+  const claimIds = referencableIds(claimSection, claimText);
+  if (findingIds.size > 0 && claimIds.size > 0) {
+    for (const id of findingIds) {
+      if (claimIds.has(id)) {
+        return true;
+      }
+    }
+  }
   const containment = termContainment(termSet(claimText), descriptionTerms);
   if (
     allowTermTier &&
