@@ -465,6 +465,22 @@ export class ExternalInstructionStore {
 }
 
 /**
+ * 已记录的合法「待作者裁决」终态标记（statusNote 前缀）。M11.4 Reliability
+ * Closure（8c 实证 p-85d7749054b9 R2）：同一意见的 plan item 已判
+ * AUTHOR_DECISION_REQUIRED 后，后续派发目标回报 not_applicable / unreported /
+ * applied-无实据时，旧的 last-write-wins 聚合会把标记覆盖成 plain unresolved
+ * ——合法的 author_decision 闭环被降级，翻转任务层 verdict。未验证为解决的
+ * 派发回报不得抹除已记录的作者裁决标记（conflict / verified applied 仍是
+ * 更强终态，可正常覆盖）。
+ */
+const PRESERVED_AUTHOR_DECISION_PREFIXES = ["AUTHOR_DECISION_REQUIRED", "EVIDENCE_ONLY_RECORDED"] as const;
+
+function preservedAuthorDecisionNote(statusNote: string | undefined): string | undefined {
+  if (statusNote === undefined) return undefined;
+  return PRESERVED_AUTHOR_DECISION_PREFIXES.some((prefix) => statusNote.startsWith(prefix)) ? statusNote : undefined;
+}
+
+/**
  * 把一轮派发结果应用到指令状态（纯函数；确定性）。
  * 同一 instructionId 多章节报告聚合：
  * - 任一 conflict → conflict（保留依据）
@@ -473,6 +489,8 @@ export class ExternalInstructionStore {
  * - 有 applied 但所有 applied 目标都无文件变化 → unresolved（自称执行无实据，不采信）
  * - 其余（全部 not_applicable / unreported）→ unresolved
  * unmatched（章节指错，没有任何目标命中）→ unresolved + 说明。
+ * 已记录的 AUTHOR_DECISION_REQUIRED / EVIDENCE_ONLY_RECORDED 标记在
+ * unresolved 写入分支中保留（见 preservedAuthorDecisionNote）。
  */
 export function applyDispatchOutcome(
   instructions: ExternalInstruction[],
@@ -501,7 +519,8 @@ export function applyDispatchOutcome(
           verification: {}, status: "unresolved", resolutionSummary: "No revision target matched the comment.",
           remainingIssue: `指定章节未匹配：${instruction.section ?? "(global)"}`,
         },
-        statusNote: `指定章节未匹配到稿件文件：${instruction.section ?? "(global)"}（请修正章节或改为不限定）`,
+        statusNote: preservedAuthorDecisionNote(instruction.statusNote)
+          ?? `指定章节未匹配到稿件文件：${instruction.section ?? "(global)"}（请修正章节或改为不限定）`,
         updatedAt: now,
       };
     }
@@ -567,7 +586,8 @@ export function applyDispatchOutcome(
           resolutionSummary: "Writer reported no applicable change or no verifiable patch.",
           remainingIssue: "Coverage or patch verification did not pass.",
         },
-        statusNote: "Writer 报告已执行，但目标文件没有实际变化（不采信自称已处理）",
+        statusNote: preservedAuthorDecisionNote(instruction.statusNote)
+          ?? "Writer 报告已执行，但目标文件没有实际变化（不采信自称已处理）",
         updatedAt: now,
       };
     }
@@ -582,7 +602,8 @@ export function applyDispatchOutcome(
         resolutionSummary: "All reported targets were not applicable or omitted execution results.",
         remainingIssue: "No verified resolution.",
       },
-      statusNote: "派发的章节均报告不适用或未报告执行结果",
+      statusNote: preservedAuthorDecisionNote(instruction.statusNote)
+        ?? "派发的章节均报告不适用或未报告执行结果",
       updatedAt: now,
     };
   });
