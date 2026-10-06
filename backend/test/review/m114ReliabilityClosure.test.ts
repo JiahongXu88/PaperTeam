@@ -12,8 +12,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentRuntime, AgentTask } from "../../src/runtime/types.js";
-import { WriterService } from "../../src/writer/WriterService.js";
-import { applyDispatchOutcome, type ExternalInstruction } from "../../src/review/externalInstructions.js";
+import { WriterService, reclassifyAuthorInputActions } from "../../src/writer/WriterService.js";
+import { applyDispatchOutcome, applyPatchBackedOutcomeOverrides, type ExternalInstruction, type ExternalOutcomeReport } from "../../src/review/externalInstructions.js";
 import { planFactRestore, applyFactRestore } from "../../src/quality/factRestore.js";
 import { evaluateFactPreservation } from "../../src/quality/factPreservation.js";
 import { computeClaimGapAudit, resolveClaimIndexLinks, tagIssueRootCauses } from "../../src/review/claimGapAudit.js";
@@ -297,6 +297,98 @@ describe("M11.4 Reliability Closure：removed 类违规的确定性段落恢复"
     const currentChanged = "\\section{实验}\n本方法 MOTA 73.5，IDF1 74.3。\n\\end{document}";
     const plan = planFactRestore([{ file: "main.tex", content: frozenChanged }], [{ file: "main.tex", content: currentChanged }], violations);
     expect(plan.restorable).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run 1 新失败形态：patch-backed closure / author-input 重分类 / 待作者确认占位
+// ---------------------------------------------------------------------------
+
+describe("M11.4 Reliability Closure：patch-backed outcome 覆盖（Run 1 R2 实证）", () => {
+  const reports: ExternalOutcomeReport[] = [
+    { instructionId: "x-r2", outcome: "not_applicable", basis: "target not related", targetChanged: false, target: "main.tex#metrics" },
+    { instructionId: "x-r4", outcome: "conflict", basis: "数字冲突", targetChanged: false },
+    { instructionId: "x-editor", outcome: "applied", basis: "done", targetChanged: true },
+  ];
+
+  it("机器 patch lineage（accepted+target 对应+真实变更）覆盖 not_applicable 自报", () => {
+    const next = applyPatchBackedOutcomeOverrides(reports, {
+      instructionIds: ["x-r2"],
+      target: "main.tex#车载边缘设备部署实验",
+      planItemIds: ["improvement:5"],
+      patchIds: ["patch:9f1e9bedb73e"],
+    });
+    const r2 = next.find((r) => r.instructionId === "x-r2");
+    expect(r2?.outcome).toBe("applied");
+    expect(r2?.targetChanged).toBe(true);
+    expect(r2?.basis).toContain("deterministic patch attribution");
+    expect(r2?.patchIds).toEqual(["patch:9f1e9bedb73e"]);
+    // 其余意见不受影响
+    expect(next.find((r) => r.instructionId === "x-r4")?.outcome).toBe("conflict");
+    expect(next.find((r) => r.instructionId === "x-editor")?.outcome).toBe("applied");
+  });
+
+  it("conflict 与 applied 自报不被覆盖；无匹配意见时原样返回", () => {
+    const untouched = applyPatchBackedOutcomeOverrides(reports, {
+      instructionIds: ["x-r4", "x-editor", "x-none"],
+      target: "t",
+      planItemIds: ["p"],
+      patchIds: ["patch:x"],
+    });
+    expect(untouched.find((r) => r.instructionId === "x-r4")?.outcome).toBe("conflict");
+    expect(untouched.find((r) => r.instructionId === "x-editor")?.basis).toBe("done");
+    const same = applyPatchBackedOutcomeOverrides(reports, { instructionIds: [], target: "t", planItemIds: [], patchIds: [] });
+    expect(same).toBe(reports);
+  });
+});
+
+describe("M11.4 Reliability Closure：author-input modify 条目确定性重分类（Run 1 实证）", () => {
+  it("modify 且 action 依赖作者确认 → author_decision_required", () => {
+    const items = reclassifyAuthorInputActions([
+      { action: "由作者确认模板存储时刻速度 vs 当前卡尔曼速度，二选一写明", actionType: "modify" },
+      { action: "待作者确认 L_mem 的梯度路径是否 detach 后统一表述", actionType: "modify" },
+      { action: "需作者确认 λ_smooth 最终取值（0.25 / 0.50）后改表", actionType: "modify" },
+    ]);
+    expect(items.every((item) => item.actionType === "author_decision_required")).toBe(true);
+  });
+
+  it("普通 modify / noop 不受影响", () => {
+    const items = reclassifyAuthorInputActions([
+      { action: "删除『均优于』强断言，改为中性概括", actionType: "modify" },
+      { action: "基线已包含部署实验", actionType: "noop" },
+      { action: "由作者确认（原文已含此短语但非 modify）", actionType: "author_decision_required" },
+    ]);
+    expect(items[0]?.actionType).toBe("modify");
+    expect(items[1]?.actionType).toBe("noop");
+    expect(items[2]?.actionType).toBe("author_decision_required");
+  });
+});
+
+describe("M11.4 Reliability Closure：【待作者确认】正文占位检测（Run 1 实证）", () => {
+  function evaluate(previous: string, current: string) {
+    return evaluateFactPreservation({
+      previous: { revision: 1, files: [{ file: "main.tex", content: previous }] },
+      current: { revision: 2, files: [{ file: "main.tex", content: current }] },
+      plan: null,
+      improvementPlanItems: [],
+      evidenceTexts: [],
+      weakeningAuthorizations: [],
+    });
+  }
+
+  it("新增【待作者确认】未决标记（数值保留）→ placeholder 回归触发", () => {
+    const previous = "\\section{方法}\n本方法使用 3 级模板存储，检索维度为 128。\n\\end{document}";
+    const current = "\\section{方法}\n本方法使用 3 级模板存储，检索维度为 128。外推速度来源【待作者确认：模板存储时刻速度 / 当前卡尔曼速度】。\n\\end{document}";
+    const summary = evaluate(previous, current);
+    expect(summary.placeholderRegressions.length).toBeGreaterThan(0);
+    expect(summary.ok).toBe(false);
+  });
+
+  it("「尚待验证」对冲语仍不触发（04e4655 语义保持）", () => {
+    const previous = "\\section{实验}\n本表数值的实验记录尚未完成核验，趋势为初步解读。\n\\end{document}";
+    const current = "\\section{实验}\n本表数值的实验记录尚未完成核验，趋势为初步解读，机制贡献能否保持尚待验证。\n\\end{document}";
+    const summary = evaluate(previous, current);
+    expect(summary.placeholderRegressions).toHaveLength(0);
   });
 });
 
