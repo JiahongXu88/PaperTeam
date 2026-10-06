@@ -41,6 +41,7 @@ import { isExistingPaperKind, isSurveyKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { normalizeManuscriptLanguage } from "../project/language.js";
+import { tokenizeText } from "../retrieval/tokenize.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { TargetedGroundingService } from "../evidence/TargetedGroundingService.js";
@@ -106,7 +107,7 @@ import {
   derivePlanWeakeningAuthorizations,
 } from "../review/weakeningAuthorization.js";
 import { applyFactRestore, planFactRestore, restoreValueDelta } from "../quality/factRestore.js";
-import { computeClaimGapAudit, tagIssueRootCauses, type ClaimGapAudit } from "../review/claimGapAudit.js";
+import { computeClaimGapAudit, resolveClaimIndexLinks, tagIssueRootCauses, type ClaimGapAudit } from "../review/claimGapAudit.js";
 import {
   classifyFindingOrigins,
   evaluateRevisionTaskGate,
@@ -493,6 +494,10 @@ function reviewRunStageInner(
         bibEntries: citationReport?.static.bibEntries ?? [],
         ...(Object.keys(sectionCitedSourceIds).length > 0 ? { sectionCitedSourceIds } : {}),
       });
+      // M11.4 Reliability Closure：claimIndex creator-side lineage → rootCauseKey
+      //（存在性 + 弱佐证校验；audit 归因与任务层归层消费同一 id）。先于
+      // claimGapAudit 执行——audit 的直接 id join 依赖该回填。
+      summary.issues = resolveClaimIndexLinks(summary.issues, factClaims);
       // M10.3.1 G2：existing-paper 的 claim 适用性审计（pre-existing / 作者数据
       // 覆盖 / 修订引入；机器可读，gate 与 revision.plan 消费）
       let claimGapAudit: ClaimGapAudit | null = null;
@@ -1840,6 +1845,20 @@ function revisionReviseStage(
         if (target.logicalSpan !== undefined && resolvedSpan === undefined) {
           throw new BusinessError("STAGE_CONTRACT_VIOLATION", `Revision target no longer resolves: ${target.logicalSpan.logicalSection}`);
         }
+        /**
+         * M11.4 Reliability Closure（F3b preserve-by-construction 前置投影）：
+         * improvement 流派发的伪计划条目没有 mustPreserve（revision 流由
+         * attachMustPreserveConstraints 投影）——Writer 改写前不知道 span 内
+         * 哪些数值绝对不能动（8b 实证：为「创新性凝练」重写引言段时顺带删除
+         * 56.8\% AP 既有事实）。此处对缺失 mustPreserve 的条目按目标 span 数值
+         * token 投影（授权豁免口径与 factPreservation 的 improvement 文本授权
+         * 通道一致：条目 instruction/expectedOutcome 点名的旧值/新值放行）。
+         * 只进 prompt（改前约束）；守卫判定口径不变（候选级 F3a 拦截兜底）。
+         */
+        const writerItems = projectSpanMustPreserve(
+          matchedItems,
+          resolvedSpan?.content ?? target.currentLatex,
+        );
         const requiredProtocols = new Set(matchedItems.flatMap((item) => item.protocolRequirement ? [item.protocolRequirement.protocolId] : []));
         if (requiredProtocols.size > 1) {
           throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_PROTOCOL_SCOPE_CONFLICT");
@@ -1870,7 +1889,7 @@ function revisionReviseStage(
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
           ...(claimRepairs.length > 0 ? { claimRepairs } : {}),
           ...(surveyContext !== undefined ? { survey: surveyContext } : {}),
-          ...(matchedItems.length > 0 ? { revisionItems: matchedItems, itemEvidence } : {}),
+          ...(matchedItems.length > 0 ? { revisionItems: writerItems, itemEvidence } : {}),
         };
         try {
           result = await services.writer.reviseSection(writerParams);
@@ -1964,6 +1983,19 @@ function revisionReviseStage(
               if (fact !== null) {
                 for (const finding of fact.directionalChanges) failures.push({ code: finding.reason.includes("flip") || finding.reason.includes("advantage") ? "metric_direction_flip" : "fact_direction_drift", detail: `${finding.before} → ${finding.after}: ${finding.reason}`, metric: finding.before.slice(0, 50) });
                 for (const finding of fact.addedUnsupportedFacts) failures.push({ code: "unsupported_claim", detail: `${finding.before} → ${finding.after}: ${finding.reason}` });
+                /**
+                 * M11.4 Reliability Closure（8b 实证：p-e4f0737aa7e4，Writer 重写
+                 * 引言段删除 56.8\% AP 既有事实）：候选级校验此前只覆盖方向翻转与
+                 * 无依据新增——数值删除 / 占位替换 / 公式删除三类违规在 patch 层
+                 * 静默通过、进修订后才由 gate 爆炸，bounded patch repair 从未获得
+                 * 修复机会，2 轮预算耗尽即 run 级 permanent FAIL。三类违规在此进入
+                 * 与 direction/added 同一 repair 通道（提交前拦截 + 定向修复）；
+                 * 授权口径不变（evaluateFactPreservation 内部已做授权过滤，
+                 * removedFacts 等列表只含未授权项）。
+                 */
+                for (const finding of fact.removedFacts) failures.push({ code: "unauthorized_fact_removal", detail: `${finding.before.slice(0, 120)}（被删除）: ${finding.reason}${finding.classification?.oldValue !== undefined ? `（值 ${finding.classification.oldValue}）` : ""}`, metric: finding.classification?.oldValue ?? finding.before.slice(0, 50) });
+                for (const finding of fact.placeholderRegressions) failures.push({ code: "placeholder_regression", detail: `${finding.before} → ${finding.after}: ${finding.reason}` });
+                for (const finding of fact.formulaChanges) failures.push({ code: "unauthorized_formula_change", detail: `${finding.before.slice(0, 90)} → ${finding.after.slice(0, 90)}: ${finding.reason}` });
               }
             }
             const originalKeys = new Set(extractCitationKeys(resolvedSpan.file, resolvedSpan.content).keys);
@@ -2000,7 +2032,7 @@ function revisionReviseStage(
               proposedReplacementHash: revisionSourceHash(result.latex.trim()), afterFileHash: revisionSourceHash(candidate),
               scope: { ok: !failures.some((failure) => failure.code === "scope_violation"), violations: failures.filter((failure) => failure.code === "scope_violation").map((failure) => failure.detail) },
               workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
-              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim"].includes(failure.code)).map((failure) => failure.detail) },
+              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
               citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },
               evidence: { ok: true, violations: [] }, apply: { ok: false, status: "rejected" }, overall: "fail", failedStage: "candidate_validation",
               rootViolationIds: failuresKey, modelRole: "revision.primary", finalStatus: attempt === 2 ? "exhausted" : "rejected",
@@ -2018,11 +2050,18 @@ function revisionReviseStage(
             }
             const evidenceIds = [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))];
             const allowedEvidence = targetEvidence.filter((entry) => evidenceIds.includes(entry.id) && entry.verificationStatus === "verified" && entry.protocolScope?.status !== "superseded");
+            // M11.4 Reliability Closure：删除/占位违规的修复指令必须点名被删的
+            // 具体数值（mustPreserve）——repair prompt 据 this 构建「恢复这些值」
+            // 的确定性约束，而不是泛泛「保持事实」。
+            const removalMustPreserve = failures
+              .filter((failure) => failure.code === "unauthorized_fact_removal" || failure.code === "placeholder_regression")
+              .map((failure) => failure.metric)
+              .filter((value): value is string => typeof value === "string" && value.trim() !== "");
             const directive: PatchRepairDirective = {
               patchId: basePatchId, planItemIds: matchedItems.map((item) => item.id),
               commentIds: failed.commentIds, logicalTarget: resolvedSpan.logicalSection,
               originalText: resolvedSpan.content, proposedText: result.latex,
-              mustPreserve: [...new Set(matchedItems.flatMap((item) => item.mustPreserve?.values ?? []))],
+              mustPreserve: [...new Set([...matchedItems.flatMap((item) => item.mustPreserve?.values ?? []), ...removalMustPreserve])],
               evidenceIds: allowedEvidence.map((entry) => entry.id), ...(recordProtocolId ? { protocolId: recordProtocolId } : {}),
               validationFailures: failures, forbiddenChanges: ["Change the verified direction or numeric values", "Modify any other patch or target", "Use evidence outside the listed verified IDs"], repairAttempt: attempt + 1,
             };
@@ -3541,6 +3580,48 @@ async function attachMustPreserveConstraints(
       };
     }
   }
+}
+
+/**
+ * M11.4 Reliability Closure（F3b）：目标 span 数值 → mustPreserve 前置投影
+ * （improvement 流伪条目专用；revision 流已由 attachMustPreserveConstraints
+ * 处理，此处不覆盖既有投影）。授权豁免 = 条目 instruction/expectedOutcome 文本
+ * 点名的数值——与 factPreservation 的 improvement 计划文本授权通道同口径
+ *（readImprovementPlanItems 把 action/rationale 并入授权文本）。
+ */
+function projectSpanMustPreserve(
+  items: readonly RevisionPlanItem[],
+  spanContent: string,
+): RevisionPlanItem[] {
+  if (items.length === 0) {
+    return [...items];
+  }
+  return items.map((item) => {
+    if (item.mustPreserve?.values !== undefined && item.mustPreserve.values.length > 0) {
+      return item;
+    }
+    const authorized = new Set(
+      (`${item.instruction} ${item.expectedOutcome}`.match(/[-−]?\d+(?:\.\d+)?[%‰]?/g) ?? [])
+        .map((token) => token.replace("−", "-")),
+    );
+    const values = [
+      ...new Set(
+        (spanContent.match(/[-−]?\d+(?:\.\d+)?[%‰]?/g) ?? [])
+          .map((token) => token.replace("−", "-"))
+          .filter((token) => !authorized.has(token) && token.length >= 2),
+      ),
+    ].slice(0, 40);
+    if (values.length === 0) {
+      return item;
+    }
+    return {
+      ...item,
+      mustPreserve: {
+        values,
+        ...(item.mustPreserve?.citationKeys !== undefined ? { citationKeys: item.mustPreserve.citationKeys } : {}),
+      },
+    };
+  });
 }
 
 /** 最新 gate 产物里的实验事实保持失败明细（通过 / 不可比较 / 无产物 → null） */async function latestFactPreservationFailure(
@@ -5282,6 +5363,48 @@ function reviewEvidenceSupplyStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/**
+ * M11.4 Reliability Closure（F7）：意见 ↔ 基线章节词面相关提示（确定性，
+ * 只提示不决策）。每条意见取词面重叠 ≥2 的章节标题 Top-3——Reviewer 前提
+ * 可能已被基线反驳（「缺少 X 实验」而基线已有 X 小节），Planner 需要先看到
+ * 这些章节才能给出 actionType=noop + coverageQuote 的合法闭环。
+ */
+function buildCommentTargetHints(
+  commentAliases: readonly { ref: string; reviewerLabel?: string; text: string }[],
+  logicalTargets: readonly { heading: string; logicalSection: string }[] | undefined,
+): string[] {
+  if (logicalTargets === undefined || logicalTargets.length === 0 || commentAliases.length === 0) {
+    return [];
+  }
+  const hints: string[] = [];
+  for (const alias of commentAliases) {
+    const commentTerms = new Set(tokenizeText(alias.text).filter((token) => token.length >= 2));
+    if (commentTerms.size === 0) {
+      continue;
+    }
+    const scored = logicalTargets
+      .map((target) => {
+        const headingTerms = new Set([...tokenizeText(target.heading), ...tokenizeText(target.logicalSection)]);
+        let shared = 0;
+        for (const term of commentTerms) {
+          if (headingTerms.has(term)) {
+            shared += 1;
+          }
+        }
+        return { target, shared };
+      })
+      .filter((entry) => entry.shared >= 2)
+      .sort((a, b) => b.shared - a.shared || a.target.logicalSection.localeCompare(b.target.logicalSection))
+      .slice(0, 3);
+    if (scored.length > 0) {
+      hints.push(
+        `${alias.ref}${alias.reviewerLabel !== undefined ? `（${alias.reviewerLabel}）` : ""} 可能相关的基线章节：${scored.map((entry) => `${entry.target.heading}（${entry.target.logicalSection}）`).join("、")}`,
+      );
+    }
+  }
+  return hints;
+}
+
 function improvementPlanStage(services: WorkflowServices): StageSpec {
   return {
     id: "plan.improvement",
@@ -5318,6 +5441,23 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         ...(alias.value.supportStrength ? { supportStrength: alias.value.supportStrength } : {}),
         ...(alias.value.verificationLevel ? { verificationLevel: alias.value.verificationLevel } : {}),
       }));
+      const logicalTargets = files.sections.length === 0 && files.mainTex !== null
+        ? locateLatexSections("main.tex", files.mainTex.content).map((span) => ({
+            file: span.file,
+            logicalSection: span.logicalSection,
+            heading: span.heading,
+            ...(span.label !== undefined ? { label: span.label } : {}),
+          })).slice(0, 80)
+        : undefined;
+      /**
+       * M11.4 Reliability Closure（F7，8c 实证 R1/R2）：评论前提可能已被基线
+       * 反驳（R2「缺少部署实验」而基线已有 subsec:edge_deploy 全套数值；R1
+       * 「参考文献不少于 20 篇」而基线已引 25 key）——Planner 输入此前没有
+       * 「意见 ↔ 基线章节」的可见性，只能猜 modify / author_decision。此处
+       * 注入确定性词面相关章节提示（只提示，不决策；noop 的确定性核验
+       * verifyNoopCoverage 兜底错误引文）。
+       */
+      const commentTargetHints = buildCommentTargetHints(commentAliases, logicalTargets);
       const plan = await services.writer.planImprovement({
         projectId: ctx.projectId,
         issues: review?.issues ?? [],
@@ -5327,16 +5467,8 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         // 计划条目必须指向真实存在的章节文件（PDF 重建项目为 sections/secNN.tex）；
         // 单文件 LaTeX 项目 sections 为空 → 条目使用 main.tex
         sectionFiles: files.sections.map((file) => file.relativePath).slice(0, 20),
-        ...(files.sections.length === 0 && files.mainTex !== null
-          ? {
-              logicalTargets: locateLatexSections("main.tex", files.mainTex.content).map((span) => ({
-                file: span.file,
-                logicalSection: span.logicalSection,
-                heading: span.heading,
-                ...(span.label !== undefined ? { label: span.label } : {}),
-              })).slice(0, 80),
-            }
-          : {}),
+        ...(logicalTargets !== undefined ? { logicalTargets } : {}),
+        ...(commentTargetHints.length > 0 ? { commentTargetHints } : {}),
         ...(baselineDigest !== undefined ? { baselineDigest } : {}),
         ...(coverageDigest !== undefined ? { coverageDigest } : {}),
         ...(authorGoal !== undefined ? { authorGoal } : {}),
@@ -5355,7 +5487,13 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
       });
       await writeJsonAtomic(
         join(services.projects.researchDir(ctx.projectId), "improvement-plan.json"),
-        { generatedAt: new Date().toISOString(), plan },
+        {
+          generatedAt: new Date().toISOString(),
+          // M11.4 Reliability Closure：落盘即赋稳定 id（improvement:N）——派发
+          // 指令、意见 resolutionTrace、patch planItemIds 共用同一编号空间
+          //（8c 实证：两个通道各自编号，同号不同条，lineage 错位）
+          plan: { ...plan, items: plan.items.map((item, index) => ({ id: `improvement:${index + 1}`, ...item })) },
+        },
       );
       return {
         items: plan.items.length,
@@ -7607,7 +7745,7 @@ function revisionPlanItemToIssue(item: RevisionPlanItem): ReviewIssue {
 
 function recordUnresolvedPlanOutcome(
   instructions: ExternalInstruction[],
-  item: { instructionId?: string; relatedEvidenceIds?: string[]; logicalSection?: string },
+  item: { id?: string; instructionId?: string; relatedEvidenceIds?: string[]; logicalSection?: string },
   index: number,
   reason: string,
   summary: string,
@@ -7625,7 +7763,7 @@ function recordUnresolvedPlanOutcome(
   instruction.statusNote = `${reason}: ${summary}`;
   instruction.resolutionTrace = {
     commentId: instruction.instructionId,
-    planItemIds: [...new Set([...(priorTrace?.planItemIds ?? []), `improvement:${index + 1}`])],
+    planItemIds: [...new Set([...(priorTrace?.planItemIds ?? []), item.id ?? `improvement:${index + 1}`])],
     actionType: "author_decision_required",
     ...(item.logicalSection !== undefined ? { target: `main.tex#${item.logicalSection}` } : {}),
     evidenceIds: [...new Set([...(priorTrace?.evidenceIds ?? []), ...(item.relatedEvidenceIds ?? [])])],
@@ -7658,6 +7796,7 @@ async function collectRevisionDirectives(
       ) as {
         plan?: {
           items?: {
+            id?: string;
             section: string;
             action: string;
             actionType?: "modify" | "noop" | "author_decision_required" | "evidence_only";
@@ -7767,7 +7906,8 @@ async function collectRevisionDirectives(
             (item.logicalSection !== undefined && target.logicalSpan?.logicalSection === item.logicalSection) ||
             (item.logicalSection !== undefined && target.logicalSpan?.heading.toLowerCase() === item.logicalSection.toLowerCase()) ||
             revisionItemMatchesTarget({
-            id: `improvement:${items.indexOf(item) + 1}`, kind: "review_finding", priority: item.priority === "high" ? "high" : "medium",
+            // M11.4 Reliability Closure：优先消费落盘稳定 id（同 trace / patch 空间）
+            id: item.id ?? `improvement:${items.indexOf(item) + 1}`, kind: "review_finding", priority: item.priority === "high" ? "high" : "medium",
             section: item.section, problem: item.rationale ?? item.action, instruction: item.action, expectedOutcome: item.action,
             status: "planned", ...(item.instructionId ? { instructionId: item.instructionId } : {}),
           }, target);
@@ -7777,7 +7917,7 @@ async function collectRevisionDirectives(
         // Writer 修订 prompt 据此注入「修改前依据」（itemEvidence 池），Fact
         // Preservation 的授权口径不变（improvementPlanItems 通道）
         item: {
-          id: `improvement:${index + 1}`,
+          id: item.id ?? `improvement:${index + 1}`,
           kind: "review_finding" as const,
           priority:
             item.instructionId !== undefined

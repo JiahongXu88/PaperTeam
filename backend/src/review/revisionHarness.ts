@@ -5,6 +5,7 @@ export type RevisionViolationCode =
   | "metric_direction_flip" | "unsupported_claim" | "fact_direction_drift"
   | "citation_missing" | "citation_hallucinated" | "citation_removed"
   | "evidence_protocol_mismatch" | "scope_violation" | "unattributed_fact_violation"
+  | "unauthorized_fact_removal" | "placeholder_regression" | "unauthorized_formula_change"
   | "AUTHOR_DECISION_REQUIRED";
 
 export interface StructuredPlanItem {

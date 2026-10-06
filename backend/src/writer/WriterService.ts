@@ -725,6 +725,13 @@ export class WriterService {
     validEvidenceIds?: string[];
     validEvidenceProtocolScopes?: Record<string, { protocolId: string; status: "current" | "historical" | "superseded" }>;
     commentAliases?: { ref: string; canonicalId: string; text: string; reviewerLabel?: string }[];
+    /**
+     * M11.4 Reliability Closure（F7）：意见 ↔ 基线章节词面相关提示（确定性，
+     * 由 plan.improvement stage 计算）。只进 prompt 的候选可见性——评论前提
+     * 可能已被基线反驳（如「缺少 X 实验」而基线已有 X 小节），此时合法计划是
+     * noop + coverageQuote + evidenceRefs，而不是 modify / author_decision。
+     */
+    commentTargetHints?: string[];
     evidenceAliases?: { ref: string; canonicalId: string; claim: string; provenance: string; protocolStatus: string; supportStrength?: string; verificationLevel?: string }[];
     /** 合法外部意见 id 清单（instructionId 校验用） */
     validInstructionIds?: string[];
@@ -773,6 +780,14 @@ export class WriterService {
           : []),
         ...(params.externalInstructions !== undefined && params.externalInstructions.length > 0
           ? ["", "===== External comment linkage aliases (linkage only) =====", ...((params.commentAliases ?? buildPlannerAliases(params.externalInstructions, "C", (item) => item.instructionId).map((alias) => ({ ...alias, text: alias.value.text }))).map((item) => `${item.ref} [${"reviewerLabel" in item ? item.reviewerLabel ?? "Reviewer" : "Reviewer"}] ${item.text}`)), `Only use comment references from: [${(params.commentAliases ?? buildPlannerAliases(params.externalInstructions, "C", (item) => item.instructionId)).map((item) => item.ref).join(",")}]`]
+          : []),
+        ...(params.commentTargetHints !== undefined && params.commentTargetHints.length > 0
+          ? [
+              "",
+              "===== Baseline coverage check（评论前提可能已被基线反驳）=====",
+              ...params.commentTargetHints,
+              "先核对每条意见：若基线相关章节已包含意见要求的内容，该意见必须计划为 actionType=noop（coverageQuote 逐字摘录该章节内容 + evidenceRefs 绑定可核验证据），不得再计划 modify。以上章节仅是词面候选，无关章节不要强行关联。",
+            ]
           : []),
         ...(params.evidenceAliases !== undefined
           ? ["", "===== Eligible verified Evidence aliases =====", ...(params.evidenceAliases.length === 0 ? ["No eligible evidence is available."] : params.evidenceAliases.map((item) => `${item.ref}: ${item.claim}; provenance=${item.provenance}; protocol=${item.protocolStatus}; support=${item.supportStrength ?? "unknown"}; level=${item.verificationLevel ?? "unknown"}`)), `Only use evidence references from: [${params.evidenceAliases.map((item) => item.ref).join(",")}]`]
@@ -982,6 +997,11 @@ export class WriterService {
         action:
           `作者决策必需：${instruction.text}。当前计划未能提出有证据支持的安全修改；` +
           "本轮不得据此改写论文、补造结果或推断事实，等待作者提供材料或决定。",
+        // M11.4 Reliability Closure（8c 实证：p-85d7749054b9 R1/R3）：兜底条目
+        // 由机器生成，actionType 是机器自有字段，必须随条目一起落盘——缺失时
+        // collectRevisionDirectives 按未识别类型跳过，意见被记 plain unresolved
+        // 而非合法 author_decision 闭环，翻转任务层 verdict。
+        actionType: "author_decision_required",
         rationale: `外部意见 ${instruction.instructionId} 未被模型计划覆盖；保留其可追踪状态，防止意见静默丢失。`,
         priority: "high",
         instructionId: instruction.instructionId,
@@ -1036,6 +1056,13 @@ export class WriterService {
 }
 
 export interface ImprovementPlanItem {
+  /**
+   * M11.4 Reliability Closure：持久化时由机器赋的稳定条目 id
+   * （improvement:N，N = 落盘序）。派发指令 / 意见 resolutionTrace /
+   * patch planItemIds 共用同一 id 空间（8c 实证：trace 用全量序、派发用
+   * actionable 序，同号不同条，lineage 错位）。模型不产出该字段。
+   */
+  id?: string;
   section: string;
   action: string;
   actionType?: "modify" | "noop" | "author_decision_required";
