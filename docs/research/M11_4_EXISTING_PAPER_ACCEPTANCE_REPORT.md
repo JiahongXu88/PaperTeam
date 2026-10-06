@@ -1,8 +1,8 @@
 # M11.4 Final Acceptance Report
 
-> **Attempt 6 update (2026-10-06): INCONCLUSIVE / SYSTEM_FAILED; M11.4 is NOT COMPLETE; NOT_READY_FOR_M11_5.** Full evidence is appended below. The Attempt 5 summary remains historical and is superseded by this update.
+> **Attempt 7 preflight (2026-10-06): INCONCLUSIVE / RESOURCE_PRESSURE_BLOCKER; no Project or Run created; M11.4 is NOT COMPLETE; NOT_READY_FOR_M11_5.** Attempt 6 remains the latest executed product run. Attempt 7 stopped before Docling, tests, or paid model calls because only 3.99 GiB system commit remained (18.55/22.54 GiB used).
 
-**最新结论：M11.4 Product Acceptance INCONCLUSIVE — Attempt 5 在 `assessment.target` 失败（`AGENT_RUN_FAILED`）；Planner、Writer 与 Revision Harness 均未运行，不能判为 Harness validation failure。M11.4.5 工程与回归门现已 COMPLETE：Pi limitation 以 `PI_PROVIDER_REQUEST_TIMEOUT_UNKNOWN_OWNER` 安全收敛；Docling smoke 根因为宿主机提交内存压力，恢复资源后隔离、顺序、并行与 Backend full 均通过。当前 `READY_FOR_NEXT_M11_4_REVALIDATION`。** Attempt 2、4、5 原始事实与验收范围保留；Attempt 5 未冻结 Candidate、未读取 Human Final/作者回复/change log/PDF。不启动 Attempt 6 或 M11.5。
+**最新结论：Attempt 7 未进入 acceptance run，因宿主机 commit 可用量仅 3.99 GiB（18.55/22.54 GiB 已用）而按资源门停止，分类 `RESOURCE_PRESSURE_BLOCKER`。无 Attempt 7 Project/Run，未调用付费模型；M11.4 仍未完成，`NOT_READY_FOR_M11_5`。Attempt 6 是最近一次真实 run，仍为 INCONCLUSIVE / SYSTEM_FAILED。** 2026-10-06 preflight 确认 Git 为 main 且 HEAD == origin/main == `caceae86180977a27354a5a877855d9cce4b1f66`、工作区干净；正确 baseline SHA256 为 `423CF0E0C66612AD7C801785D60F183367BCFDA5D46C1E32E1610B2F87E46D30`。held-out 文件未读取。
 
 更新：2026-10-05（Asia/Shanghai；Attempt 5）
 
@@ -626,3 +626,28 @@ Attempt 6 does **not** satisfy the product acceptance criteria: no valid improve
 - Planner-only GLM-5.3 / Z.AI General API smoke: 5 comments / 5 C aliases; 3 verified-fixture EV aliases; 5 final plan items; 1 structured repair; all 5 canonical comment links resolved; final `WriterService.planImprovement` validation returned successfully; no revision Writer call was made. The captured raw-output alias check observed 0 invalid comment refs and 0 invalid Evidence refs, but the first-pass full structured-valid count was not captured reliably; the final plan selected 0 Evidence refs. Usage: 8,048 input / 2,083 output / 7,360 cache-read, estimated `$0.022346`, 67.7 seconds across two calls. No `PLANNER_MODEL_CONTRACT_LIMIT` observed.
 - Final validation: Backend full (4 workers) **224 files passed / 3 skipped; 2,443 passed / 15 skipped; 0 failed**; Frontend full **27 files / 280 passed**; Backend and Frontend typecheck/build passed. Frontend build retains the existing >500 kB chunk warning. `git diff --check` and final Git sync checks are pending.
 - Code and status documentation are not yet committed or pushed in this checkpoint. `READY_FOR_M11_4_ATTEMPT_7` is **true** after commit `64390ce` was pushed and HEAD matched `origin/main` with a clean working tree. The uncaptured first-pass-valid metric is reported as unavailable rather than inferred.
+
+## Attempt 7 — Final Existing-Paper Product Revalidation (2026-10-06)
+
+**Verdict: INCONCLUSIVE — `RESOURCE_PRESSURE_BLOCKER`.** This is a preflight stop, not a product run and not a PaperTeam regression finding. No Attempt 7 Project or Run was created. No automatic Attempt 8 or M11.5 work was started.
+
+### Preflight
+
+- Repository: `D:\Projects\PaperTeam`; branch `main`; `HEAD == origin/main == caceae86180977a27354a5a877855d9cce4b1f66`; working tree was clean at entry.
+- Windows memory snapshot: physical memory 15.68 GiB total / 5.62 GiB free; system commit limit 22.54 GiB / 18.55 GiB used / 3.99 GiB available (82.3% committed). `C:\pagefile.sys`: 7,027 MiB allocated, 1,637 MiB current usage, 3,083 MiB peak. Largest observed process private commit was Chrome at 0.79 GiB; no `paperteam-decision-model-lab` process was present. No external process was terminated.
+- Resource Gate: **BLOCKED**. Available commit was judged insufficient for a Docling/native parser run with Torch/OpenBLAS already in the process environment. Per the requested gate, no Docling smoke, tests, Project/Run creation, or paid GLM call was started. This is `RESOURCE_PRESSURE_BLOCKER`, not `INFRASTRUCTURE_REVALIDATION_BLOCKER` from a failed execution.
+- Correct baseline file: `D:\PaperTeamData\M10.3-real-paper-case\manuscript\historical\paper_before_revision.tex`; SHA256 `423CF0E0C66612AD7C801785D60F183367BCFDA5D46C1E32E1610B2F87E46D30` (matches expected). Baseline build was not run because the resource gate stopped execution.
+- Held-out isolation: no Human Final, Author Response content, change log, final PDF, or final-only material was read. Reviewer comments were not imported because no Project was created. Pre-freeze isolation check is therefore **not executed**, not a passed runtime test; no leakage occurred during this preflight.
+
+### Product run and acceptance metrics
+
+- New Project ID / Run ID / start time: **none / none / no run started**.
+- Comments parsed/imported: 0/0; no comments lost or duplicated (not applicable; no import).
+- Targeted Evidence Supply, assessment, Planner, Writer, Patch Harness, Candidate Gate, Revised PDF, and held-out comparison: **not run**. All stage metrics are N/A, not zero-result product outcomes.
+- `assessment.target` requestId, stageAttempt, firstActivity, firstTextToken, duration, timeout classification, settlement: N/A. GLM input/output/cache-read tokens and cost: 0 for Attempt 7; provider timeout: no; quota exhaustion: no.
+- Candidate freeze/publishability, Fact/Citation/Evidence checks, comment outcomes, PDF inspection, and safety comparison: not reached.
+- Tests/typecheck/build: not run in this preflight. No commits were made.
+
+### Attempt 7 decision
+
+Resource preflight criterion A did not pass, so the acceptance criteria were not evaluated. Attempt 7 is **INCONCLUSIVE / RESOURCE_PRESSURE_BLOCKER**; M11.4 is **NOT COMPLETE**; `READY_FOR_M11_5_CLOSURE=false`. Stop here. This record does not authorize automatic continuation.
