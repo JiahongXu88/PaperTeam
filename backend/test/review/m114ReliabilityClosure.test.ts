@@ -15,6 +15,7 @@ import type { AgentRuntime, AgentTask } from "../../src/runtime/types.js";
 import { WriterService, reclassifyAuthorInputActions } from "../../src/writer/WriterService.js";
 import { applyDispatchOutcome, applyPatchBackedOutcomeOverrides, type ExternalInstruction, type ExternalOutcomeReport } from "../../src/review/externalInstructions.js";
 import { planFactRestore, applyFactRestore } from "../../src/quality/factRestore.js";
+import { verifyNoopCoverage } from "../../src/review/revisionScope.js";
 import { evaluateFactPreservation } from "../../src/quality/factPreservation.js";
 import { computeClaimGapAudit, resolveClaimIndexLinks, tagIssueRootCauses } from "../../src/review/claimGapAudit.js";
 import { claimFingerprint } from "../../src/review/claimGrounding.js";
@@ -318,6 +319,47 @@ describe("M11.4 Reliability Closure：removed 类违规的确定性段落恢复"
     const currentChanged = "\\section{实验}\n本方法 MOTA 73.5，IDF1 74.3。\n\\end{document}";
     const plan = planFactRestore([{ file: "main.tex", content: frozenChanged }], [{ file: "main.tex", content: currentChanged }], violations);
     expect(plan.restorable).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F16：evidence-free noop（Run E 实证：基线覆盖的证明是稿件引文本身）
+// ---------------------------------------------------------------------------
+
+describe("M11.4 Reliability Closure：noop 的 coverageQuote 即已满足证明", () => {
+  const span = {
+    file: "main.tex", start: 0, end: 100, logicalSection: "subsec:edge_deploy",
+    heading: "车载边缘设备部署实验", content: "本节给出真实道路视频在车载级边缘平台上的完整链路部署实验，E2E 延迟为 1495.63 ms。",
+    originalHash: "h",
+  };
+
+  it("无 Evidence 绑定 + 引文逐字命中 → verified（合法基线覆盖 noop）", () => {
+    const result = verifyNoopCoverage(
+      { logicalSection: "subsec:edge_deploy", coverageQuote: "完整链路部署实验，E2E 延迟为 1495.63 ms", evidenceIds: [] },
+      [span],
+      new Map(),
+    );
+    expect(result.verified).toBe(true);
+  });
+
+  it("引文不在目标 span → 仍拒绝（引文核验不放松）", () => {
+    const result = verifyNoopCoverage(
+      { logicalSection: "subsec:edge_deploy", coverageQuote: "这句话不在基线中", evidenceIds: [] },
+      [span],
+      new Map(),
+    );
+    expect(result.verified).toBe(false);
+    expect(result.reason).toBe("NOOP_COVERAGE_QUOTE_MISSING");
+  });
+
+  it("绑定了未核验 Evidence → 拒绝（绑定即校验）", () => {
+    const result = verifyNoopCoverage(
+      { logicalSection: "subsec:edge_deploy", coverageQuote: "完整链路部署实验", evidenceIds: ["E9"] },
+      [span],
+      new Map(),
+    );
+    expect(result.verified).toBe(false);
+    expect(result.reason).toBe("NOOP_EVIDENCE_UNVERIFIED");
   });
 });
 

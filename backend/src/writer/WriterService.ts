@@ -764,7 +764,7 @@ export class WriterService {
         "4. 修改实验数值的条目必须：action 点名旧值与新值 + expectedFactChanges 逐条列出 + evidenceRefs 选择 allowlist 中支持该变更的证据。没有证据授权的数值修改不允许进入计划。",
         "5. 证据分层纪律：verified（已核验文献）只支撑外部事实论述；user_confirmed（作者实验）只授权作者自身实验数值变更，不得当作外部科学事实验证。",
         "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
-        "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection），并绑定可核验证据；不能仅用 rationale 写‘已覆盖’。系统会再确定性核对原文与证据，核验失败即不会关闭 comment。",
+        "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection，引用足以证明意见要求的内容已在基线中）；若存在可核验的 EV 证据则一并绑定（增强，非必需）。不能仅用 rationale 写‘已覆盖’。系统会确定性核验引文逐字存在于目标章节，核验失败即不会关闭 comment。",
         "8. 需要事实或实验依据的意见：有兼容证据时必须选择对应 EV alias；没有时应给出 evidence gap 或 author_decision_required，不得编造 Evidence。",
         "9. action 的执行不得依赖作者输入：凡需要「由作者确认 / 待作者确认」才能落笔的条目（如实现细节二选一、超参数最终取值），必须 actionType=author_decision_required 并在 rationale 写明决策点。注意：只把真正依赖作者输入的条目标为 author_decision_required——有证据支撑的修改（EV 别名可绑定）和纯表述 / 结构 / 弱化类修改仍然应当 modify，不要为保守而把所有意见推向作者决策。",
         "10. 不得计划新增基线没有的分析性 / 方法论论断（如指标间循环评测风险、构造性论证、机制有效性声明），除非绑定支持它的 EV 证据——此类新增论断会被事实核验判 UNSUPPORTED 并按修订引入违规阻断。对证据不足的既有论断，正确动作是弱化该论断本身（weaken），不是新增一条与之并存的相反表述。",
@@ -925,7 +925,10 @@ export class WriterService {
       if (actionType === "noop") {
         if (!coverageQuote) structuredFailures.push({ itemIndex, field: "coverageQuote", code: "NOOP_COVERAGE_REQUIRED", message: "noop requires a verbatim coverage quote" });
         if (!logicalSection) structuredFailures.push({ itemIndex, field: "logicalSection", code: "TARGET_REQUIRED", message: "noop requires a logical target" });
-        if (linkedEvidenceIds.length === 0) structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "EVIDENCE_LINK_REQUIRED", message: "noop requires verified evidence linkage" });
+        // M11.4 Reliability Closure（Run E 实证）：Evidence 绑定不再强制——
+        // 基线覆盖类 noop（引用数达标 / 已有部署章节）的证明就是稿件引文本身；
+        // 旧的 EVIDENCE_LINK_REQUIRED 使合法 noop 结构性无解（repair 耗尽 →
+        // 阶段失败）。核验口径见 verifyNoopCoverage（引文逐字 + 绑定则校验）。
         if (typeof record["rationale"] !== "string" || record["rationale"].trim() === "") structuredFailures.push({ itemIndex, field: "rationale", code: "NOOP_VERIFICATION_REQUIRED", message: "noop requires a verification basis" });
       }
       if (Array.isArray(record["expectedFactChanges"]) && record["expectedFactChanges"].length > 0 && linkedEvidenceIds.length === 0) {

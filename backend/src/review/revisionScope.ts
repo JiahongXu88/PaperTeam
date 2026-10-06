@@ -169,7 +169,14 @@ export function verifyNoopCoverage(
   if (span === undefined) return { verified: false, reason: "NOOP_TARGET_UNRESOLVED" };
   const quote = item.coverageQuote?.trim();
   if (!quote || !span.content.includes(quote)) return { verified: false, reason: "NOOP_COVERAGE_QUOTE_MISSING" };
-  if (item.evidenceIds.length === 0) return { verified: false, reason: "NOOP_EVIDENCE_REQUIRED" };
+  /**
+   * M11.4 Reliability Closure（Run E 实证：w-b5e989fe6426，Planner 对三条
+   * 意见给出基线覆盖 noop 但无 Evidence 可绑——「参考文献 ≥20 篇」「已有部署
+   * 章节」的覆盖证明就是稿件本身，不是 Evidence 记录；旧的 NOOP_EVIDENCE_
+   * REQUIRED 使这类合法 noop 结构性无解，structured repair 两轮耗尽 → 阶段
+   * 失败）。已满足的证明 = coverageQuote 逐字存在于目标 span（上方确定性
+   * 核验）；Evidence 绑定降为增强项（绑了才校验其状态/协议）。
+   */
   for (const id of item.evidenceIds) {
     const record = evidenceById.get(id);
     if (record === undefined || (record.verificationStatus !== "verified" && record.verificationLevel !== "user_confirmed")) {
