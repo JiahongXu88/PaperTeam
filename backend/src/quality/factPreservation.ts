@@ -2288,7 +2288,34 @@ export async function computeFactPreservationForCandidate(
     if (grounding !== null) weakeningAuthorizations.push(...deriveClaimGroundingWeakeningAuthorizations(grounding));
   }
   weakeningAuthorizations.push(...(await readWeakeningAuthorizations(deps.projects, projectId)));
-  return evaluateFactPreservation({
+  /**
+   * M11.4 Reliability Closure（Run P 实证：w-ff42920a8421，metric 方向翻转
+   * 分两步各自通过 pairwise 授权、在 cumulative（对冻结基线）口径才可见——
+   * 候选校验只比 sourceRevision 会漏掉跨轮累积漂移）。追加冻结基线口径：
+   * candidate 对最早修订（existing-paper 冻结稿）再评一次，取两次违规的并集
+   * （frozen 口径无 plan / 台账授权差异由 strict 标准吸收；非 existing-paper
+   * 无冻结基线时该口径自然缺省）。
+   */
+  const state = await deps.revisions.load(projectId);
+  const ordered = [...state.revisions].sort((a, b) => a.revision - b.revision);
+  const frozen = ordered[0];
+  let frozenSummary: import("./factPreservation.js").FactPreservationSummary | null = null;
+  if (frozen !== undefined && frozen.revision < sourceRevision) {
+    const frozenFiles = await readSnapshotTex(deps.revisions.snapshotDir(projectId, frozen.revision));
+    if (frozenFiles !== null && frozenFiles.length > 0) {
+      frozenSummary = evaluateFactPreservation({
+        previous: { revision: frozen.revision, files: frozenFiles },
+        current: { revision: sourceRevision + 1, files: candidateFiles },
+        plan: null,
+        ...(improvementPlanItems.length > 0 ? { improvementPlanItems } : {}),
+        evidenceTexts,
+        ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
+        weakeningAuthorizations,
+        strictPlanTextAuthorization: true,
+      });
+    }
+  }
+  const pairwise = evaluateFactPreservation({
     previous: { revision: sourceRevision, files: previousFiles },
     current: { revision: sourceRevision + 1, files: candidateFiles },
     plan,
@@ -2301,6 +2328,17 @@ export async function computeFactPreservationForCandidate(
     // patch 层放行、gate 层判漂移且不可恢复）
     strictPlanTextAuthorization: true,
   });
+  if (frozenSummary === null) return pairwise;
+  return {
+    ...pairwise,
+    changedFacts: cap([...pairwise.changedFacts, ...frozenSummary.changedFacts]),
+    removedFacts: cap([...pairwise.removedFacts, ...frozenSummary.removedFacts]),
+    addedUnsupportedFacts: cap([...pairwise.addedUnsupportedFacts, ...frozenSummary.addedUnsupportedFacts]),
+    directionalChanges: cap([...pairwise.directionalChanges, ...frozenSummary.directionalChanges]),
+    formulaChanges: cap([...pairwise.formulaChanges, ...frozenSummary.formulaChanges]),
+    placeholderRegressions: cap([...pairwise.placeholderRegressions, ...frozenSummary.placeholderRegressions]),
+    ok: pairwise.ok && frozenSummary.ok,
+  };
 }
 
 /**
