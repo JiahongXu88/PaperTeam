@@ -1829,6 +1829,16 @@ function revisionReviseStage(
             const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
             if (!scope.allowed) failures.push({ code: "scope_violation", detail: scope.reason ?? "revision scope violation" });
             if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) failures.push({ code: "scope_violation", detail: "new content after document end" });
+            // M11.4（Attempt 7 实录）：scoped 提案可能破坏 span 自身的章节结构
+            // （丢失 \subsection 命令 / 边界换行粘连），候选落盘后 locateLatexSections
+            // 解析不出对应 span，后续 target 以 "Revision target no longer resolves"
+            // fatal 终结整个 run。结构卫生检查：候选的章节数量必须与写前文件一致
+            // （改写标题文本是既有合法行为；丢失/粘连/新增章节命令 = 结构损伤）。
+            const structureBefore = locateLatexSections(target.relativePath, fileBefore).length;
+            const structureCandidate = locateLatexSections(target.relativePath, candidate).length;
+            if (structureBefore !== structureCandidate) {
+              failures.push({ code: "scope_violation", detail: `REVISION_STRUCTURE_DAMAGE: candidate changes the section structure (${structureBefore} -> ${structureCandidate} sections)` });
+            }
 
             const baselineFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision));
             const baselineTarget = baselineFiles?.find((file) => file.file === target.relativePath);

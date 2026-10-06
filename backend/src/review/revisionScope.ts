@@ -111,7 +111,15 @@ export function applyRevisionSpan(source: string, span: RevisionSpan, replacemen
   if (hash(current) !== span.originalHash) {
     throw new Error(`REVISION_TARGET_STALE: ${span.logicalSection}`);
   }
-  return source.slice(0, span.start) + replacement + source.slice(span.end);
+  // M11.4（Attempt 7 实录）：span 原内容以换行结尾而 replacement 不带尾换行时，
+  // 后续文本（通常是下一个 \section/\subsection 命令）会被粘连到行中，
+  // locateLatexSections 随之解析不出该章节，修订链以
+  // "Revision target no longer resolves" fatal 终结。补齐边界换行，
+  // 保持行结构在 span 边界处不变。
+  const normalized = replacement.endsWith("\n") || !current.endsWith("\n")
+    ? replacement
+    : `${replacement}\n`;
+  return source.slice(0, span.start) + normalized + source.slice(span.end);
 }
 
 /** Exact prefix/suffix boundary check: all changed text must fit the authorized span. */

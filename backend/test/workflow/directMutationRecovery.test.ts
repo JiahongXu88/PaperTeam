@@ -97,7 +97,8 @@ describe("Existing Paper workflow direct mutation boundary", () => {
       const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", "patch-validation-rev-2.json"), "utf8")) as { records: Array<Record<string, unknown>>; summary: Record<string, unknown> };
       expect(artifact.records[0]).toMatchObject({ overall: "pass", scope: { ok: true }, workspaceIntegrity: { ok: true, directMutationDetected: false }, apply: { ok: true, status: "applied" } });
       expect(artifact.records[0]).toMatchObject({ fact: { ok: true }, citation: { ok: true, findingIds: [], violations: [] }, evidence: { ok: true } });
-      expect(artifact.summary).toMatchObject({ totalPatches: 1, passedPatches: 1, failedPatches: 0 });
+      // M11.4 边界换行修复后结构保持完整：第二轮还能再派发并应用一个 scoped patch
+      expect(artifact.summary).toMatchObject({ totalPatches: 2, passedPatches: 2, failedPatches: 0 });
       const gate = JSON.parse(await readFile(join(root, project.id, "reviews", "quality-gate-r2.json"), "utf8")) as { gate: { rules: Array<{ rule: string; passed: boolean }> } };
       expect(gate.gate.rules).toContainEqual(expect.objectContaining({ rule: "patch_validation_publishable", passed: true }));
       return;
@@ -181,7 +182,7 @@ describe("Existing Paper workflow direct mutation boundary", () => {
     const attempts = [...artifact.records, ...(artifact.attemptHistory ?? [])];
     expect(attempts.find((record) => record.attempt === 0)).toMatchObject({ overall: "fail", citation: { ok: false, addedKeys: ["missing_fake_key"], violations: ["citation key missing_fake_key is not in verified bibliography"] } });
     expect(attempts.find((record) => record.attempt === 1)).toMatchObject({ overall: "pass", citation: { ok: true } });
-    expect(artifact.summary).toMatchObject({ publishable: true, logicalPatchCount: 2, repairSuccessCount: 1 });
+    expect(artifact.summary).toMatchObject({ publishable: true, logicalPatchCount: 3, repairSuccessCount: 1 });
     const gateDebug = await readFile(join(root, project.id, "reviews", "quality-gate-r2.json"), "utf8");
     expect(gateDebug).toContain("patch_validation_publishable");
     expect(artifact.summary.unattributedViolations).toEqual([]);
@@ -204,11 +205,11 @@ describe("Existing Paper workflow direct mutation boundary", () => {
           if (input.task.includes("Revise only the patch identified below.")) {
             repairCalls += 1;
             const base = await scripted.runtime.runAgent(input);
-            return { ...base, status: "completed", output: `MOTA 提升 from 45 to 28.${outcome}`, taskId: `repair-${repairCalls}` };
+            return { ...base, status: "completed", output: `\\section{Conclusion}\nMOTA 提升 from 45 to 28.${outcome}`, taskId: `repair-${repairCalls}` };
           }
           primaryCalls += 1;
           const base = await scripted.runtime.runAgent(input);
-          return { ...base, status: "completed", output: `MOTA 提升 from 45 to 28.${outcome}`, taskId: `primary-${primaryCalls}` };
+          return { ...base, status: "completed", output: `\\section{Conclusion}\nMOTA 提升 from 45 to 28.${outcome}`, taskId: `primary-${primaryCalls}` };
         }
         return scripted.runtime.runAgent(input);
       },
@@ -259,11 +260,11 @@ MOTA 下降 from 45 to 28.
           if (input.task.includes("Revise only the patch identified below.")) {
             repairCalls += 1;
             const base = await scripted.runtime.runAgent(input);
-            return { ...base, status: "completed", output: `The measured result remains MOTA 下降 from 45 to 28.${outcome}`, taskId: `repair-pass-${repairCalls}` };
+            return { ...base, status: "completed", output: `\\section{Conclusion}\nThe measured result remains MOTA 下降 from 45 to 28.${outcome}`, taskId: `repair-pass-${repairCalls}` };
           }
           primaryCalls += 1;
           const base = await scripted.runtime.runAgent(input);
-          return { ...base, status: "completed", output: `MOTA 提升 from 45 to 28. The dataset used 999 samples.${outcome}`, taskId: `primary-pass-${primaryCalls}` };
+          return { ...base, status: "completed", output: `\\section{Conclusion}\nMOTA 提升 from 45 to 28. The dataset used 999 samples.${outcome}`, taskId: `primary-pass-${primaryCalls}` };
         }
         return scripted.runtime.runAgent(input);
       },
