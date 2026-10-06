@@ -44,6 +44,8 @@ import { normalizeManuscriptLanguage } from "../project/language.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { TargetedGroundingService } from "../evidence/TargetedGroundingService.js";
+import { selectReviewerSourceIds } from "../evidence/revisionSourceSelection.js";
+import { buildPlannerAliases, plannerEligibleEvidence } from "../review/plannerAliases.js";
 import type { ChunkStore } from "../retrieval/ChunkStore.js";
 import { EvidenceSelectionService, isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import type { ResearchCoverageService } from "../agents/researchCoverage.js";
@@ -5076,6 +5078,36 @@ function researchProposeStage(services: WorkflowServices): StageSpec {
   };
 }
 
+function reviewEvidenceSupplyStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "evidence.supply.review",
+    description: "按审稿意见从已有本地 Sources 定向 grounding 并走现有 Evidence verification",
+    requiredInputs: ["assessment.target"],
+    producedOutputs: ["evidence/evidence.jsonl（verified 追加）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const instructions = await services.externalInstructions.load(ctx.projectId);
+      const sources = (await services.sources.list(ctx.projectId)).filter((source) => source.status !== "failed" && source.status !== "pending");
+      const evidenceBefore = await services.evidence.list(ctx.projectId);
+      const result = instructions.length > 0 && sources.length > 0
+        ? await services.targetedGrounding.groundClaims(ctx.projectId, instructions.slice(0, 10).map((instruction) => ({
+            claimId: instruction.instructionId, claim: instruction.text.slice(0, 1200),
+            section: instruction.section ?? "", sourceIds: selectReviewerSourceIds(instruction.text, sources),
+          })), { signal: ctx.signal })
+        : { outcomes: [], verifiedClaims: 0, verifiedEvidence: 0, unsupportedByJudge: 0 };
+      const candidates = result.outcomes.reduce((sum, outcome) => sum + outcome.attempts.length, 0);
+      const rejected = result.outcomes.reduce((sum, outcome) => sum + outcome.attempts.filter((attempt) => ["mismatch", "rejected", "unverifiable", "failed"].includes(attempt.outcome)).length, 0);
+      const evidenceAfter = await services.evidence.list(ctx.projectId);
+      const priorIds = new Set(evidenceBefore.map((record) => record.id));
+      const protocolRejected = evidenceAfter.filter((record) => !priorIds.has(record.id) && record.protocolScope?.status === "superseded").length;
+      const proposals = result.outcomes.reduce((sum, outcome) => sum + outcome.attempts.filter((attempt) => attempt.outcome !== "skipped").length, 0);
+      return { sourcesConsidered: sources.length, chunksRetrieved: candidates, groundedCandidates: proposals, proposals, verified: result.verifiedEvidence, rejected, protocolRejected };
+    },
+  };
+}
+
 function improvementPlanStage(services: WorkflowServices): StageSpec {
   return {
     id: "plan.improvement",
@@ -5096,15 +5128,22 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
       // M10.3：计划输入扩展——A 原稿基线 / B user_confirmed 实验证据 /
       // E verified 文献证据 / 需求覆盖 / 外部意见 / 作者目标
       const baselineDigest = await readBaselineDigest(services, ctx.projectId);
-      const evidenceDigest = await buildEvidenceDigest(services, ctx.projectId);
       const coverageDigest = await buildCoverageDigest(services, ctx.projectId);
-      const instructionDigest = await buildInstructionDigest(services, ctx.projectId);
       const authorGoal = readAuthorGoal(ctx.state.request);
       // 确定性 id 清单：Writer 条目的 relatedEvidenceIds / instructionId 只能从中选取
       const [evidenceIds, instructions] = await Promise.all([
         services.evidence.list(ctx.projectId),
         services.externalInstructions.load(ctx.projectId),
       ]);
+      const eligibleEvidence = plannerEligibleEvidence(evidenceIds);
+      const commentAliases = buildPlannerAliases(instructions.slice(0, 20), "C", (item) => item.instructionId).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, text: alias.value.text, reviewerLabel: alias.value.reviewerLabel }));
+      const evidenceAliases = buildPlannerAliases(eligibleEvidence, "EV", (item) => item.id).map((alias) => ({
+        ref: alias.ref, canonicalId: alias.canonicalId, claim: alias.value.claim,
+        provenance: `${alias.value.source?.title ?? alias.value.source?.sourceId ?? "source"}${alias.value.location?.chunk ? ` / ${alias.value.location.chunk}` : ""}`,
+        protocolStatus: alias.value.protocolScope?.status ?? "unspecified",
+        ...(alias.value.supportStrength ? { supportStrength: alias.value.supportStrength } : {}),
+        ...(alias.value.verificationLevel ? { verificationLevel: alias.value.verificationLevel } : {}),
+      }));
       const plan = await services.writer.planImprovement({
         projectId: ctx.projectId,
         issues: review?.issues ?? [],
@@ -5125,12 +5164,10 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
             }
           : {}),
         ...(baselineDigest !== undefined ? { baselineDigest } : {}),
-        ...(evidenceDigest !== undefined ? { evidenceDigest } : {}),
         ...(coverageDigest !== undefined ? { coverageDigest } : {}),
-        ...(instructionDigest !== undefined ? { instructionDigest } : {}),
         ...(authorGoal !== undefined ? { authorGoal } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
-        validEvidenceIds: evidenceIds.filter((record) => record.verificationStatus === "verified" && record.protocolScope?.status !== "superseded").map((record) => record.id),
+        validEvidenceIds: eligibleEvidence.map((record) => record.id),
         validEvidenceProtocolScopes: Object.fromEntries(
           evidenceIds.flatMap((record) => record.protocolScope !== undefined ? [[record.id, record.protocolScope]] : []),
         ),
@@ -5139,6 +5176,8 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
           instructionId: instruction.instructionId,
           text: instruction.text,
         })),
+        commentAliases,
+        evidenceAliases,
       });
       await writeJsonAtomic(
         join(services.projects.researchDir(ctx.projectId), "improvement-plan.json"),
@@ -5148,6 +5187,7 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         items: plan.items.length,
         evidenceLinkedItems: plan.items.filter((item) => (item.relatedEvidenceIds ?? []).length > 0).length,
         instructionLinkedItems: plan.items.filter((item) => item.instructionId !== undefined).length,
+        evidenceSupply: ctx.state.stageResults["evidence.supply.review"] ?? { plannerEligibleEvidence: eligibleEvidence.length },
       };
     },
     async verifyDod(ctx) {
@@ -5210,6 +5250,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     evidenceSupplyStage(services, ["research.execute"]),
     researchProposeStage(services),
     evidenceGroundStage(services, ["research.propose"]),
+    reviewEvidenceSupplyStage(services),
     improvementPlanStage(services),
     planConfirmStage(services),
     revisionReviseStage(services, "revision.apply"),
@@ -5243,7 +5284,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     "hitl.research_plan",
     "research.execute",
   ];
-  const frontPost = ["plan.improvement", "hitl.plan_confirm", "revision.apply"];
+  const frontPost = ["evidence.supply.review", "plan.improvement", "hitl.plan_confirm", "revision.apply"];
 
   return {
     kind: "existing_paper_improvement",
@@ -7027,54 +7068,6 @@ async function readBaselineDigest(
   }
 }
 
-/**
- * M10.3 §8：证据分层 digest（improvement plan 输入 B/E）。
- * 两种 Evidence 用途严格区分：verified（grounded）= 外部文献证据，可支撑
- * related work / 外部事实论述；user_confirmed = 作者自身实验事实，只授权
- * 修改作者自己的实验数值，绝不等于「外部科学事实已验证」。
- */
-async function buildEvidenceDigest(
-  services: WorkflowServices,
-  projectId: string,
-): Promise<string | undefined> {
-  const records = await services.evidence.list(projectId);
-  const verified = records.filter((record) => record.verificationStatus === "verified");
-  const userConfirmed = records.filter(
-    (record) => record.verificationLevel === "user_confirmed" && record.verificationStatus !== "mismatch",
-  );
-  if (verified.length === 0 && userConfirmed.length === 0) {
-    return undefined;
-  }
-  const parts: string[] = [];
-  if (verified.length > 0) {
-    parts.push(
-      `【已核验外部文献证据（verified，可用于外部事实论述与引用）${verified.length} 条】`,
-      ...verified.slice(0, 10).map(
-        (record) =>
-          `- [${record.id}] ${record.claim.slice(0, 160)}${record.quote !== undefined ? `（引文："${record.quote.slice(0, 100)}"）` : ""}`,
-      ),
-    );
-  }
-  if (userConfirmed.length > 0) {
-    parts.push(
-      `【作者实验证据（user_confirmed：只授权修改作者自身实验事实，不是外部科学事实验证）${userConfirmed.length} 条】`,
-      ...userConfirmed.slice(0, 15).map((record) => {
-        const location = record.location ?? {};
-        const origin =
-          location.path !== undefined
-            ? `path=${location.path}`
-            : location.sheet !== undefined
-              ? `sheet=${location.sheet} row=${location.row ?? "?"} col=${location.column ?? "?"}`
-              : location.figureBlockId !== undefined
-                ? `figure=${location.figureBlockId}`
-                : "（无结构化定位）";
-        return `- [${record.id}] ${record.claim.slice(0, 160)}（${origin}）`;
-      }),
-    );
-  }
-  return parts.join("\n");
-}
-
 /** M10.3：requirement coverage digest（计划输入：文献需求覆盖现状） */
 async function buildCoverageDigest(
   services: WorkflowServices,
@@ -7095,22 +7088,6 @@ async function buildCoverageDigest(
   } catch {
     return undefined;
   }
-}
-
-/** M10.3：外部意见 digest（计划输入 F：含已落实的历史意见——作者目标常以此为载体） */
-async function buildInstructionDigest(
-  services: WorkflowServices,
-  projectId: string,
-): Promise<string | undefined> {
-  const instructions = await services.externalInstructions.load(projectId);
-  if (instructions.length === 0) {
-    return undefined;
-  }
-  const lines = instructions.slice(0, 12).map((instruction) => {
-    const label = `${instruction.source}${instruction.reviewerLabel !== undefined ? `·${instruction.reviewerLabel}` : ""}`;
-    return `- [${instruction.instructionId}][${instruction.status}][${label}] ${firstLine(instruction.text, 160)}`;
-  });
-  return `外部修改意见（状态：pending=待处理 / already_satisfied=已在当前稿落实 / conflict=与事实冲突）：\n${lines.join("\n")}`;
 }
 
 /** run request 的作者修订目标（prompt 字段；M10.3 真实案例的作者路线说明） */

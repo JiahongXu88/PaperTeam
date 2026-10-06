@@ -18,6 +18,7 @@ import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
+import { buildPlannerAliases, resolvePlannerRefs } from "../review/plannerAliases.js";
 import type { ClaimRepairDirective } from "../review/claimGrounding.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
@@ -723,6 +724,8 @@ export class WriterService {
     /** 合法证据 id 清单（relatedEvidenceIds 校验用；缺省不校验但也不注入提示） */
     validEvidenceIds?: string[];
     validEvidenceProtocolScopes?: Record<string, { protocolId: string; status: "current" | "historical" | "superseded" }>;
+    commentAliases?: { ref: string; canonicalId: string; text: string; reviewerLabel?: string }[];
+    evidenceAliases?: { ref: string; canonicalId: string; claim: string; provenance: string; protocolStatus: string; supportStrength?: string; verificationLevel?: string }[];
     /** 合法外部意见 id 清单（instructionId 校验用） */
     validInstructionIds?: string[];
     /** 外部意见原文；用于对模型漏链意见生成保守的 author-decision 计划项 */
@@ -738,7 +741,7 @@ export class WriterService {
         "",
         "只输出一个 JSON 对象（不要 Markdown 围栏）：",
         '{"plan": [{"section": "sections/xxx.tex", "logicalSection": "subsec:datasets（如适用）", "actionType": "modify|noop|author_decision_required", "coverageQuote": "NO-OP 时逐字摘录当前稿内容", "protocolId": "当前实验协议 id（如适用）", "action": "具体改法（要点名涉及的旧值与新值）", "rationale": "对应的问题或差距（含依据）", "priority": "high|medium|low",',
-        '  "instructionId": "对应外部意见 id（可选，须来自意见清单）", "relatedEvidenceIds": ["依据证据 id（可选，须来自证据清单）"],',
+        '  "commentRefs": ["C1"], "evidenceRefs": ["EV1"],',
         '  "expectedFactChanges": [{"before": "旧值", "after": "新值", "basis": "证据 id 或依据说明"}]}]}',
         "",
         "要求：",
@@ -751,10 +754,11 @@ export class WriterService {
           : []),
         "2. 优先处理 critical / blocking 问题与编译错误。",
         "3. 证据不足的论断计划为「弱化或删除」，不允许计划编造实验或引用。",
-        "4. 修改实验数值的条目必须：action 点名旧值与新值 + expectedFactChanges 逐条列出 + relatedEvidenceIds 给出作者实验证据（user_confirmed）或已核验文献证据。没有证据授权的数值修改不允许进入计划。",
+        "4. 修改实验数值的条目必须：action 点名旧值与新值 + expectedFactChanges 逐条列出 + evidenceRefs 选择 allowlist 中支持该变更的证据。没有证据授权的数值修改不允许进入计划。",
         "5. 证据分层纪律：verified（已核验文献）只支撑外部事实论述；user_confirmed（作者实验）只授权作者自身实验数值变更，不得当作外部科学事实验证。",
         "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
         "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection），并绑定可核验证据；不能仅用 rationale 写‘已覆盖’。系统会再确定性核对原文与证据，核验失败即不会关闭 comment。",
+        "8. 需要事实或实验依据的意见：有兼容证据时必须选择对应 EV alias；没有时应给出 evidence gap 或 author_decision_required，不得编造 Evidence。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
         "",
         `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,
@@ -768,7 +772,10 @@ export class WriterService {
           ? ["", "===== 外部修改意见 =====", params.instructionDigest]
           : []),
         ...(params.externalInstructions !== undefined && params.externalInstructions.length > 0
-          ? ["", "===== External comment linkage: IDs and original text (linkage only) =====", JSON.stringify(params.externalInstructions)]
+          ? ["", "===== External comment linkage aliases (linkage only) =====", ...((params.commentAliases ?? buildPlannerAliases(params.externalInstructions, "C", (item) => item.instructionId).map((alias) => ({ ...alias, text: alias.value.text }))).map((item) => `${item.ref} [${"reviewerLabel" in item ? item.reviewerLabel ?? "Reviewer" : "Reviewer"}] ${item.text}`)), `Only use comment references from: [${(params.commentAliases ?? buildPlannerAliases(params.externalInstructions, "C", (item) => item.instructionId)).map((item) => item.ref).join(",")}]`]
+          : []),
+        ...(params.evidenceAliases !== undefined
+          ? ["", "===== Eligible verified Evidence aliases =====", ...(params.evidenceAliases.length === 0 ? ["No eligible evidence is available."] : params.evidenceAliases.map((item) => `${item.ref}: ${item.claim}; provenance=${item.provenance}; protocol=${item.protocolStatus}; support=${item.supportStrength ?? "unknown"}; level=${item.verificationLevel ?? "unknown"}`)), `Only use evidence references from: [${params.evidenceAliases.map((item) => item.ref).join(",")}]`]
           : []),
         ...(params.coverageDigest !== undefined
           ? ["", "===== 文献需求覆盖 =====", params.coverageDigest]
@@ -816,13 +823,21 @@ export class WriterService {
           if (typeof original !== "object" || original === null || typeof repaired !== "object" || repaired === null) return original;
           const merged = { ...(original as Record<string, unknown>) };
           for (const field of allowedFields) {
-            if (Object.prototype.hasOwnProperty.call(repaired, field)) merged[field] = (repaired as Record<string, unknown>)[field];
+            const repairedRecord = repaired as Record<string, unknown>;
+            const actualField = field === "relatedEvidenceIds" && Object.prototype.hasOwnProperty.call(repairedRecord, "evidenceRefs") ? "evidenceRefs" : field;
+            if (Object.prototype.hasOwnProperty.call(repairedRecord, actualField)) merged[actualField] = repairedRecord[actualField];
           }
           return merged;
         })
       : rawPlanValue;
     const validEvidence = new Set(params.validEvidenceIds ?? []);
     const validInstructions = new Set(params.validInstructionIds ?? []);
+    const evidenceAliasList = params.evidenceAliases ?? buildPlannerAliases(
+      (params.validEvidenceIds ?? []).map((canonicalId) => ({ canonicalId })), "EV", (item) => item.canonicalId,
+    ).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, claim: "verified evidence", provenance: "project source", protocolStatus: "eligible" }));
+    const commentAliasList = params.commentAliases ?? buildPlannerAliases(
+      params.externalInstructions ?? [], "C", (item) => item.instructionId,
+    ).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, text: alias.value.text }));
     const structuredFailures: { itemIndex: number; field: string; code: string; message: string }[] = [];
     const items: ImprovementPlanItem[] = [];
     for (const [itemIndex, raw] of rawPlan.slice(0, 20).entries()) {
@@ -848,24 +863,34 @@ export class WriterService {
         : /fair[-_ ]?ablation|公平(?:实验|协议)|newly fine[- ]tuned detector/i.test(planText)
           ? "fair_ablation_new_detector"
           : "";
-      const linkedEvidenceIds = Array.isArray(record["relatedEvidenceIds"])
-        ? record["relatedEvidenceIds"].flatMap((id): string[] => {
+      const rawEvidenceRefs = record["evidenceRefs"] ?? (params.evidenceAliases === undefined ? record["relatedEvidenceIds"] : undefined);
+      if (params.evidenceAliases !== undefined && record["relatedEvidenceIds"] !== undefined && record["evidenceRefs"] === undefined) {
+        structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "EVIDENCE_ALIAS_REQUIRED", message: "Use evidenceRefs aliases; canonical Evidence IDs are not accepted in Planner output" });
+      }
+      let resolvedEvidenceRefs: string[] = [];
+      if (Array.isArray(rawEvidenceRefs)) {
+        try { resolvedEvidenceRefs = rawEvidenceRefs.every((id) => typeof id === "string" && /^EV\d+$/i.test(id.trim()))
+          ? resolvePlannerRefs(rawEvidenceRefs as string[], evidenceAliasList, "EV")
+          : rawEvidenceRefs as string[]; } catch { resolvedEvidenceRefs = rawEvidenceRefs as string[]; }
+      }
+      const linkedEvidenceIds = Array.isArray(rawEvidenceRefs)
+        ? resolvedEvidenceRefs.flatMap((id): string[] => {
             if (typeof id !== "string" || id.trim() === "") {
-              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "INVALID_EVIDENCE_ID", message: "Evidence ID must be a non-empty string" });
+              structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "INVALID_EVIDENCE_ID", message: "Evidence reference must be a non-empty string" });
               return [];
             }
             const evidenceId = id.trim();
             const scope = params.validEvidenceProtocolScopes?.[evidenceId];
             if (scope?.status === "superseded") {
-              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "EVIDENCE_SUPERSEDED", message: `${evidenceId} is superseded` });
+              structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "EVIDENCE_SUPERSEDED", message: `${evidenceId} is superseded` });
               return [];
             }
             if (!validEvidence.has(evidenceId)) {
-              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "INVALID_EVIDENCE_ID", message: `${evidenceId} is not an allowed verified Evidence ID` });
+              structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "INVALID_EVIDENCE_ID", message: `${evidenceId} is not an allowed verified Evidence reference` });
               return [];
             }
             if (protocolId !== "" && (scope?.protocolId !== protocolId || scope.status !== "current")) {
-              structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "EVIDENCE_PROTOCOL_MISMATCH", message: `${evidenceId} is not current evidence for ${protocolId}` });
+              structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "EVIDENCE_PROTOCOL_MISMATCH", message: `${evidenceId} is not current evidence for ${protocolId}` });
               return [];
             }
             return [evidenceId];
@@ -883,19 +908,30 @@ export class WriterService {
       if (actionType === "noop") {
         if (!coverageQuote) structuredFailures.push({ itemIndex, field: "coverageQuote", code: "NOOP_COVERAGE_REQUIRED", message: "noop requires a verbatim coverage quote" });
         if (!logicalSection) structuredFailures.push({ itemIndex, field: "logicalSection", code: "TARGET_REQUIRED", message: "noop requires a logical target" });
-        if (linkedEvidenceIds.length === 0) structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "EVIDENCE_LINK_REQUIRED", message: "noop requires verified evidence linkage" });
+        if (linkedEvidenceIds.length === 0) structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "EVIDENCE_LINK_REQUIRED", message: "noop requires verified evidence linkage" });
         if (typeof record["rationale"] !== "string" || record["rationale"].trim() === "") structuredFailures.push({ itemIndex, field: "rationale", code: "NOOP_VERIFICATION_REQUIRED", message: "noop requires a verification basis" });
       }
       if (Array.isArray(record["expectedFactChanges"]) && record["expectedFactChanges"].length > 0 && linkedEvidenceIds.length === 0) {
-        structuredFailures.push({ itemIndex, field: "relatedEvidenceIds", code: "FACT_CHANGE_EVIDENCE_REQUIRED", message: "fact-changing plan items require verified Evidence linkage" });
+        structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "FACT_CHANGE_EVIDENCE_REQUIRED", message: "fact-changing plan items require verified Evidence linkage" });
       }
       if (actionType === "author_decision_required" && (typeof record["rationale"] !== "string" || record["rationale"].trim() === "")) {
         structuredFailures.push({ itemIndex, field: "rationale", code: "DECISION_REASON_REQUIRED", message: "author_decision_required needs a decision reason" });
       }
-      if (typeof record["instructionId"] === "string" && !validInstructions.has(record["instructionId"].trim())) {
-        structuredFailures.push({ itemIndex, field: "instructionId", code: "INVALID_COMMENT_LINK", message: `${record["instructionId"]} is not a current comment/instruction ID` });
+      const rawCommentRefs = record["commentRefs"] ?? (params.commentAliases === undefined && typeof record["instructionId"] === "string" ? [record["instructionId"]] : []);
+      if (params.commentAliases !== undefined && record["instructionId"] !== undefined && record["commentRefs"] === undefined) {
+        structuredFailures.push({ itemIndex, field: "commentRefs", code: "COMMENT_ALIAS_REQUIRED", message: "Use commentRefs aliases; canonical comment IDs are not accepted in Planner output" });
       }
-      items.push({
+      let resolvedCommentRefs: string[] = [];
+      if (Array.isArray(rawCommentRefs)) {
+        try { resolvedCommentRefs = rawCommentRefs.every((id) => typeof id === "string" && /^C\d+$/i.test(id.trim()))
+          ? resolvePlannerRefs(rawCommentRefs as string[], commentAliasList, "C")
+          : rawCommentRefs as string[]; } catch { resolvedCommentRefs = rawCommentRefs as string[]; }
+      }
+      const instructionId = resolvedCommentRefs.find((id) => validInstructions.has(id));
+      if (Array.isArray(rawCommentRefs) && rawCommentRefs.length > 0 && instructionId === undefined) {
+        structuredFailures.push({ itemIndex, field: "commentRefs", code: "INVALID_COMMENT_LINK", message: `Choose comment references from ${commentAliasList.map((item) => item.ref).join(",")}` });
+      }
+      const plannedItem: ImprovementPlanItem = {
         section,
         action,
         actionType,
@@ -907,11 +943,10 @@ export class WriterService {
           : {}),
         priority,
         // 确定性校验：id 必须存在于系统清单，模型自造 id 一律剥离
-        ...(typeof record["instructionId"] === "string" &&
-        validInstructions.has(record["instructionId"].trim())
-          ? { instructionId: record["instructionId"].trim() }
+        ...(instructionId !== undefined
+          ? { instructionId }
           : {}),
-        ...(Array.isArray(record["relatedEvidenceIds"]) ? { relatedEvidenceIds: linkedEvidenceIds } : {}),
+        ...(Array.isArray(rawEvidenceRefs) ? { relatedEvidenceIds: linkedEvidenceIds } : {}),
         ...(Array.isArray(record["expectedFactChanges"])
           ? {
               expectedFactChanges: record["expectedFactChanges"]
@@ -925,7 +960,13 @@ export class WriterService {
                 .slice(0, 6),
             }
           : {}),
-      });
+      };
+      const linkedCommentIds = resolvedCommentRefs.filter((id) => validInstructions.has(id));
+      if (linkedCommentIds.length > 1) {
+        for (const id of linkedCommentIds.slice(0, Math.max(0, 20 - items.length))) items.push({ ...plannedItem, instructionId: id });
+      } else {
+        items.push(plannedItem);
+      }
     }
     // 模型输出不能决定外部意见是否从计划中消失。对每条未链接意见补一个
     // 保守的人工决策项；它明确禁止 Writer 推测、补实验或改论文事实。
@@ -957,19 +998,15 @@ export class WriterService {
       if (attempts >= 2) {
         throw new BusinessError("MODEL_REPAIR_EXHAUSTED", `STRUCTURED_OUTPUT_REPAIR_EXHAUSTED: ${JSON.stringify(structuredFailures)}`);
       }
-      const allowedEvidence = (params.validEvidenceIds ?? []).map((id) => {
-        const scope = params.validEvidenceProtocolScopes?.[id];
-        return scope === undefined ? id : `${id} (${scope.protocolId}; ${scope.status})`;
-      });
       const request = [
         `Original structured output: ${JSON.stringify(parsed["plan"])}`,
         `Validation errors: ${JSON.stringify(structuredFailures)}`,
-        `Allowed Evidence IDs and protocol metadata: ${allowedEvidence.join(", ") || "(none)"}`,
+        `Allowed Evidence references: ${evidenceAliasList.map((item) => item.ref).join(", ") || "(none)"}`,
+        `Allowed comment references: ${commentAliasList.map((item) => item.ref).join(", ") || "(none)"}`,
         `Original reviewer comments: ${JSON.stringify(params.issues.map((issue) => ({ section: issue.section, category: issue.category, description: issue.description })))}`,
-        `External comment linkage: ${JSON.stringify(params.externalInstructions ?? [])}`,
-        "Do not invent Evidence IDs. Do not bind superseded evidence. Do not modify valid plan items.",
+        "Only use commentRefs from the comment allowlist and evidenceRefs from the evidence allowlist. Do not invent IDs. Repair only the invalid structured fields; do not modify valid intent, action, or target.",
       ].join("\n");
-      const invalidFields = Object.fromEntries([...new Set(structuredFailures.map((failure) => failure.itemIndex))].map((index) => [index, [...new Set(structuredFailures.filter((failure) => failure.itemIndex === index).map((failure) => failure.field))]]));
+      const invalidFields = Object.fromEntries([...new Set(structuredFailures.map((failure) => failure.itemIndex))].map((index) => [index, [...new Set(structuredFailures.filter((failure) => failure.itemIndex === index).map((failure) => failure.field === "evidenceRefs" ? "relatedEvidenceIds" : failure.field))]]));
       const originalPlan = params.structuredRepair?.originalPlan ?? rawPlanValue.slice(0, 20);
       const previouslyAllowed = params.structuredRepair?.invalidFields ?? {};
       const mergedInvalidFields = { ...previouslyAllowed };

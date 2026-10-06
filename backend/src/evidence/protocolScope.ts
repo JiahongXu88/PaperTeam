@@ -13,6 +13,11 @@ export function inferExperimentProtocolScope(sourceName: string): EvidenceRecord
   if (/old[_-]coco[_-]pretrained|coco[_-]pretrained[_-]detector/.test(normalized)) {
     return { protocolId: "old_coco_pretrained_detector", status: "superseded" };
   }
+  // This report documents the earlier COCO-pretrained detector experiment. The
+  // current fair ablation is explicitly the new-detector report below.
+  if (/(?:^|-)extreme_scene_experiment_report\.md$/.test(normalized)) {
+    return { protocolId: "old_coco_pretrained_detector", status: "superseded" };
+  }
   return undefined;
 }
 

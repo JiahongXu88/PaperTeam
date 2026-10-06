@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { BusinessError, EvidenceValidationError } from "../../src/errors.js";
+import { inferExperimentProtocolScope } from "../../src/evidence/protocolScope.js";
 import { parseEvidenceJudgeOutput, buildEvidenceJudgePrompt } from "../../src/evidence/evidenceJudge.js";
 import type { LookupOutcome } from "../../src/citation/scholarly.js";
 import {
@@ -148,6 +149,7 @@ describe("propose：候选提案校验", () => {
 
 describe("ground：三段核验生命周期", () => {
   it("grounding 根据明确来源文件名保留 current / superseded protocol scope", async () => {
+    expect(inferExperimentProtocolScope("extreme_scene_experiment_report.md")).toEqual({ protocolId: "old_coco_pretrained_detector", status: "superseded" });
     const current = await fixture({
       sourceFileName: "fair_ablation_new_detector.md",
       provider: fakeScholarlyProvider(() => ({ kind: "match", record: canonicalRecord() })),

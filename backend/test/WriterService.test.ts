@@ -442,6 +442,93 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
 });
 
 describe("WriterService improvement plan comment coverage", () => {
+  it("resolves run-local comment/evidence aliases and keeps canonical IDs out of the prompt", async () => {
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [{
+      section: "main.tex", action: "Address comment", rationale: "Grounded", priority: "high",
+      commentRefs: ["C1"], evidenceRefs: ["EV1"],
+    }] })));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({
+      projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [],
+      validInstructionIds: ["long-comment-uuid"], validEvidenceIds: ["long-evidence-id"],
+      externalInstructions: [{ instructionId: "long-comment-uuid", text: "补充部署性能" }],
+      commentAliases: [{ ref: "C1", canonicalId: "long-comment-uuid", text: "补充部署性能", reviewerLabel: "Reviewer 2" }],
+      evidenceAliases: [{ ref: "EV1", canonicalId: "long-evidence-id", claim: "deployment latency", provenance: "report.md / chunk-1", protocolStatus: "current", supportStrength: "direct", verificationLevel: "fulltext" }],
+    });
+    expect(plan.items[0]).toMatchObject({ instructionId: "long-comment-uuid", relatedEvidenceIds: ["long-evidence-id"] });
+    expect(runtime.calls[0]?.task).toContain("C1 [Reviewer 2]");
+    expect(runtime.calls[0]?.task).toContain("EV1: deployment latency");
+    expect(runtime.calls[0]?.task).not.toContain("long-comment-uuid");
+    expect(runtime.calls[0]?.task).not.toContain("long-evidence-id");
+  });
+
+  it("repairs invalid aliases from the allowlist and preserves plan intent", async () => {
+    let call = 0;
+    const runtime = new FakeRuntime(() => completedTask("{}"));
+    runtime.runAgent = async (input) => {
+      runtime.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId, contextScope: input.contextScope, toolPolicy: input.toolPolicy });
+      call += 1;
+      return completedTask(JSON.stringify({ plan: [{
+        section: "main.tex", action: "Address deployment performance", rationale: "Reviewer asks", priority: "high",
+        commentRefs: [call === 1 ? "C99" : "C1"], evidenceRefs: [call === 1 ? "EV999" : "EV1"],
+      }] }));
+    };
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({
+      projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [],
+      validInstructionIds: ["comment-canonical"], validEvidenceIds: ["evidence-canonical"],
+      externalInstructions: [{ instructionId: "comment-canonical", text: "deployment performance" }],
+      commentAliases: [{ ref: "C1", canonicalId: "comment-canonical", text: "deployment performance" }],
+      evidenceAliases: [{ ref: "EV1", canonicalId: "evidence-canonical", claim: "latency", provenance: "report/chunk", protocolStatus: "current" }],
+    });
+    expect(plan.items[0]).toMatchObject({ action: "Address deployment performance", instructionId: "comment-canonical", relatedEvidenceIds: ["evidence-canonical"] });
+    expect(runtime.calls).toHaveLength(2);
+    expect(runtime.calls[1]?.task).toContain("Allowed Evidence references: EV1");
+    expect(runtime.calls[1]?.task).toContain("Allowed comment references: C1");
+  });
+
+  it("expands one planned item with multiple comment aliases into canonical linked items", async () => {
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [{
+      section: "main.tex", action: "Clarify shared limitation", rationale: "Both comments ask this", priority: "high", commentRefs: ["C1", "C2"],
+    }] })));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({
+      projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [],
+      validInstructionIds: ["comment-a", "comment-b"],
+      externalInstructions: [{ instructionId: "comment-a", text: "A" }, { instructionId: "comment-b", text: "B" }],
+      commentAliases: [{ ref: "C1", canonicalId: "comment-a", text: "A" }, { ref: "C2", canonicalId: "comment-b", text: "B" }],
+      evidenceAliases: [], validEvidenceIds: [],
+    });
+    expect(plan.items.map((item) => item.instructionId)).toEqual(["comment-a", "comment-b"]);
+    expect(plan.items.map((item) => item.action)).toEqual(["Clarify shared limitation", "Clarify shared limitation"]);
+  });
+
+  it("states explicitly when no eligible Evidence alias is available", async () => {
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [{ section: "main.tex", action: "Record evidence gap", rationale: "No local support", priority: "high", actionType: "author_decision_required", evidenceRefs: [] }] })));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await writer.planImprovement({ projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [], evidenceAliases: [], validEvidenceIds: [] });
+    expect(runtime.calls[0]?.task).toContain("No eligible evidence is available.");
+    expect(runtime.calls[0]?.task).toContain("Only use evidence references from: []");
+  });
+
+  it("rejects canonical machine IDs when alias context is active", async () => {
+    let call = 0;
+    const runtime = new FakeRuntime(() => completedTask("{}"));
+    runtime.runAgent = async (input) => {
+      runtime.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId, contextScope: input.contextScope, toolPolicy: input.toolPolicy });
+      call += 1;
+      return completedTask(JSON.stringify({ plan: [{
+        section: "main.tex", action: "Address request", rationale: "Evidence-backed", priority: "high",
+        ...(call === 1 ? { instructionId: "comment-long-canonical", relatedEvidenceIds: ["evidence-long-canonical"] } : { commentRefs: ["C1"], evidenceRefs: ["EV1"] }),
+      }] }));
+    };
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({ projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [], validInstructionIds: ["comment-long-canonical"], validEvidenceIds: ["evidence-long-canonical"], externalInstructions: [{ instructionId: "comment-long-canonical", text: "Address request" }], commentAliases: [{ ref: "C1", canonicalId: "comment-long-canonical", text: "Address request" }], evidenceAliases: [{ ref: "EV1", canonicalId: "evidence-long-canonical", claim: "fact", provenance: "source/chunk", protocolStatus: "current" }] });
+    expect(plan.items[0]).toMatchObject({ instructionId: "comment-long-canonical", relatedEvidenceIds: ["evidence-long-canonical"] });
+    expect(runtime.calls).toHaveLength(2);
+    expect(runtime.calls[1]?.task).toContain("Allowed Evidence references: EV1");
+  });
+
   it("repairs a missing fact Evidence link using only the allowlisted ID", async () => {
     const target = { file: "main.tex", logicalSection: "section:Results", heading: "Results" };
     const base = { section: "main.tex", logicalSection: target.logicalSection, actionType: "modify", action: "Preserve the measured change", rationale: "E003 is the supporting experiment", priority: "high", expectedFactChanges: [{ before: "45", after: "28", basis: "E003" }] };

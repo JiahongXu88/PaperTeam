@@ -154,6 +154,7 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
         "citation.verify",
         "review.run",
         "assessment.target",
+        "evidence.supply.review",
         "plan.improvement",
         "hitl.plan_confirm",
         "revision.apply",
@@ -161,6 +162,7 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
         "build.draft",
       ]),
     );
+    expect(finished.completedStages.indexOf("evidence.supply.review")).toBeLessThan(finished.completedStages.indexOf("plan.improvement"));
 
     // 改造真实发生：计划针对的章节被改写
     const intro = await readFile(
