@@ -1674,6 +1674,14 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       if (previousClaim.metric === null || previousClaim.direction === null) {
         continue;
       }
+      // 保留性守卫：原 claim 句子逐字仍在当前文本中 → 该结论本身未被翻转。
+      // 真实论文对同一指标常同时含负向（局限/消融边界）与正向（优势）结论；
+      // 文件级交叉配对若不检查保留性，未修改的 baseline 也会被交叉判死
+      // （M11.4 Attempt 7 实录：baseline==baseline 产生 6 条恒定 flip，
+      // scoped patch 候选全部被误拒且 repair 永远 no_progress）。
+      if (currentClaims.some((claim) => claim.text === previousClaim.text)) {
+        continue;
+      }
       const previousPositive = POSITIVE_DIRECTION.has(previousClaim.direction);
       const flip = currentClaims.find(
         (claim) =>

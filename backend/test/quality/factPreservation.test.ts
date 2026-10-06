@@ -258,6 +258,38 @@ describe("Fact Preservation：方向性结论", () => {
     expect(summary.ok).toBe(false);
     expect(summary.directionalChanges.some((finding) => finding.reason === "metric_direction_flip")).toBe(true);
   });
+
+  it("同指标正负结论并存且原负向句子保留（未修改文本）→ PASS（4c 保留性守卫）", () => {
+    // 真实论文常态：局限/消融段的负向结论与结果段的正向优势并存于同一文件。
+    // previous == current 时不得交叉判死（M11.4 Attempt 7 实录的 baseline 假阳性）。
+    const tex = [
+      "\\section{结果}",
+      "在统一检测器的前提下，本文方法的 MOTA 与 IDF1 优于 YOLOv11+Kalman 基线。",
+      "\\section{消融}",
+      "当 $\\lambda_{\\text{smooth}}$ 较小（0.25--0.5）时，MOTA 与 IDF1 基本不受影响。",
+      "\\section{结论}",
+      "低照度下每千目标帧身份切换次数明显增多，是当前方法的主要代价。",
+    ].join("\n");
+    const summary = evaluate({ "sections/experiments.tex": tex }, { "sections/experiments.tex": tex });
+    expect(summary.directionalChanges.filter((finding) => finding.reason === "metric_direction_flip")).toHaveLength(0);
+    expect(summary.ok).toBe(true);
+  });
+
+  it("负向句子被删除且存在同指标优势结论 → FAIL（真方向对调仍拦截）", () => {
+    const previous = [
+      "\\section{对比}",
+      "本文方法的 FPS 低于基线，实时性存在明显不足。",
+      "本文方法的 MOTA 高于基线。",
+    ].join("\n");
+    const current = [
+      "\\section{对比}",
+      "本文方法的 FPS 高于基线，满足实时需求。",
+      "本文方法的 MOTA 高于基线。",
+    ].join("\n");
+    const summary = evaluate({ "sections/experiments.tex": previous }, { "sections/experiments.tex": current });
+    expect(summary.ok).toBe(false);
+    expect(summary.directionalChanges.some((finding) => finding.reason === "metric_direction_flip")).toBe(true);
+  });
 });
 
 // ---- 公式 / 方法事实 ----
