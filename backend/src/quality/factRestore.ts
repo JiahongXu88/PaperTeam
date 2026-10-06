@@ -95,8 +95,17 @@ function citationKeysOf(text: string): Set<string> {
   return keys;
 }
 
-/** 数值锚点（changed → oldValue/newValue 对；added → newValue） */
-function numericAnchors(finding: FactFinding): { anchor: string; requiresFrozenOld?: string } | null {
+/**
+ * 数值锚点（changed → oldValue/newValue 对；added → newValue；removed →
+ * oldValue，锚点在冻结稿侧）。
+ * M11.4 Reliability Closure（8b 实证：p-e4f0737aa7e4 引言 56.8\% AP 被删除，
+ * restorable=false → 唯一修复路径是 Writer 且失败 → run 级 permanent FAIL）：
+ * removed 类此前被显式排除。恢复方向 = 冻结稿中含被删值的段落（唯一锚点）
+ * → 当前稿最佳相似段落（Jaccard + 领先幅度）→ 整段替换回冻结段落。
+ */
+function numericAnchors(
+  finding: FactFinding,
+): { anchor: string; requiresFrozenOld?: string; restoreKind: "changed" | "added" | "removed" } | null {
   const classification = finding.classification;
   if (classification === undefined) {
     return null;
@@ -105,15 +114,21 @@ function numericAnchors(finding: FactFinding): { anchor: string; requiresFrozenO
     if (classification.oldValue === undefined || classification.newValue === undefined) {
       return null;
     }
-    return { anchor: classification.newValue, requiresFrozenOld: classification.oldValue };
+    return { anchor: classification.newValue, requiresFrozenOld: classification.oldValue, restoreKind: "changed" };
   }
   if (finding.kind === "added_unsupported") {
     if (classification.newValue === undefined) {
       return null;
     }
-    return { anchor: classification.newValue };
+    return { anchor: classification.newValue, restoreKind: "added" };
   }
-  return null; // directional / formula / placeholder / removed：不做段落恢复
+  if (finding.kind === "removed") {
+    if (classification.oldValue === undefined || classification.oldValue.trim() === "") {
+      return null;
+    }
+    return { anchor: classification.oldValue, restoreKind: "removed" };
+  }
+  return null; // directional / formula / placeholder：不做段落恢复
 }
 
 export interface RestorableSpan {
@@ -164,7 +179,7 @@ export function planFactRestore(
       skipped.push({
         violationKey: finding.violationKey,
         reason: "not_value_scoped",
-        detail: `${finding.reason}（方向 / 公式 / 占位 / 删除类违规不做确定性段落恢复）`,
+        detail: `${finding.reason}（方向 / 公式 / 占位类违规不做确定性段落恢复）`,
       });
       continue;
     }
@@ -175,6 +190,88 @@ export function planFactRestore(
         violationKey: finding.violationKey,
         reason: "file_scope",
         detail: "违规涉及冻结稿中不存在（或当前已删除）的文件，不做文件级恢复",
+      });
+      continue;
+    }
+    /**
+     * M11.4 Reliability Closure：removed 类违规的确定性恢复（方向与 changed /
+     * added 相反——锚点值只存在于冻结稿）。定位 = 冻结稿中唯一含被删值的段落
+     * + 当前稿同文件最佳相似段落（词面 Jaccard，须有明确领先幅度）；引用守卫
+     * 与其它类一致（当前段落新增的 \cite 不能被恢复连带删除）。任一定位歧义
+     * → 不恢复，保持 gate FAIL + needs_user_confirmation。
+     */
+    if (anchors.restoreKind === "removed") {
+      const frozenParagraphs = splitParagraphs(frozenContent);
+      const frozenHits = frozenParagraphs.filter((paragraph) =>
+        containsNumericToken(paragraphText(paragraph), anchors.anchor),
+      );
+      if (frozenHits.length === 0) {
+        skipped.push({
+          violationKey: finding.violationKey,
+          reason: "frozen_anchor_not_found",
+          detail: `冻结稿中未定位到含被删值 ${anchors.anchor} 的段落`,
+        });
+        continue;
+      }
+      if (frozenHits.length > 1) {
+        skipped.push({
+          violationKey: finding.violationKey,
+          reason: "frozen_anchor_ambiguous",
+          detail: `冻结稿中 ${frozenHits.length} 个段落含被删值 ${anchors.anchor}，无法唯一归属`,
+        });
+        continue;
+      }
+      const frozenParagraphText = paragraphText(frozenHits[0]!);
+      const frozenTerms = termSet(frozenParagraphText);
+      const currentParagraphs = splitParagraphs(currentContent);
+      let best: { paragraph: Paragraph; similarity: number } | null = null;
+      let secondBest = 0;
+      for (const candidate of currentParagraphs) {
+        const candidateText = paragraphText(candidate);
+        if (candidateText === frozenParagraphText) {
+          continue; // 完全相同：值应存在，不是漂移载体
+        }
+        if (containsNumericToken(candidateText, anchors.anchor)) {
+          continue; // 该段已含此值（重复出现侧）：不是丢失载体
+        }
+        const similarity = jaccard(frozenTerms, termSet(candidateText));
+        if (best === null || similarity > best.similarity) {
+          secondBest = best?.similarity ?? secondBest;
+          best = { paragraph: candidate, similarity };
+        } else if (similarity > secondBest) {
+          secondBest = similarity;
+        }
+      }
+      if (best === null || best.similarity < MIN_SIMILARITY || best.similarity - secondBest < MIN_MARGIN) {
+        skipped.push({
+          violationKey: finding.violationKey,
+          reason: "current_match_ambiguous",
+          detail: `当前稿中无足够相似且唯一领先的段落（best=${best?.similarity.toFixed(2) ?? "无"} / margin=${best !== null ? (best.similarity - secondBest).toFixed(2) : "无"}；被删值 ${anchors.anchor}）`,
+        });
+        continue;
+      }
+      const currentText = paragraphText(best.paragraph);
+      const claimKey = `${finding.file}|${best.paragraph.startLine}`;
+      if (claimedParagraphs.has(claimKey)) {
+        continue;
+      }
+      const lostCitations = [...citationKeysOf(currentText)].filter(
+        (key) => !citationKeysOf(frozenParagraphText).has(key),
+      );
+      if (lostCitations.length > 0) {
+        skipped.push({
+          violationKey: finding.violationKey,
+          reason: "would_lose_citations",
+          detail: `恢复将连带删除当前段落新增引用：${lostCitations.slice(0, 4).join("、")}`,
+        });
+        continue;
+      }
+      claimedParagraphs.add(claimKey);
+      restorable.push({
+        file: finding.file,
+        currentParagraph: currentText,
+        frozenParagraph: frozenParagraphText,
+        resolves: [finding.violationKey],
       });
       continue;
     }
