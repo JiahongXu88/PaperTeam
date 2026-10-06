@@ -24,9 +24,25 @@ export interface StructuredPlanItem {
 
 export interface StructuredPlanFailure { field: string; code: string; message: string }
 
+/** 合法 typed action（与 StructuredPlanItem.actionType / externalInstructions 契约一致） */
+const LEGAL_ACTION_TYPES: ReadonlySet<string> = new Set([
+  "modify", "noop", "author_decision_required", "evidence_only",
+]);
+
 export function validateStructuredPlanItem(item: StructuredPlanItem, evidence: readonly EvidenceRecord[]): StructuredPlanFailure[] {
   const failures: StructuredPlanFailure[] = [];
   const fail = (field: string, code: string, message: string): void => { failures.push({ field, code, message }); };
+  /**
+   * M11.4 Attempt 8 修复（实证：clean run p-85d7749054b9，R1/R3 两条计划条目
+   * 的 action 文本写着「作者决策必需：」但 actionType 字段缺失）——旧校验只
+   * 检查各类型自己的约束，actionType 缺失/未识别时静默通过，派发侧
+   * （collectRevisionDirectives）按未识别类型跳过并把意见记成 unresolved，
+   * 而不是走合法的 author_decision 闭环或结构化修复通道。字段级 fail 让
+   * bounded structured repair 把 actionType 补齐（repair prompt 已含原始条目）。
+   */
+  if (!LEGAL_ACTION_TYPES.has(String(item.actionType ?? ""))) {
+    fail("actionType", "ACTION_TYPE_REQUIRED", "actionType must be one of modify / noop / author_decision_required / evidence_only");
+  }
   if (!item.commentId?.trim()) fail("commentId", "COMMENT_LINK_REQUIRED", "comment linkage is required");
   if (!item.expectedOutcome?.trim()) fail("expectedOutcome", "EXPECTED_OUTCOME_REQUIRED", "expected outcome is required");
   if (item.actionType === "modify" && !(item.logicalTarget ?? item.target)?.trim()) fail("logicalTarget", "TARGET_REQUIRED", "modify requires a logical target");

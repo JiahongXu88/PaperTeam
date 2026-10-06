@@ -7660,7 +7660,7 @@ async function collectRevisionDirectives(
           items?: {
             section: string;
             action: string;
-            actionType?: "modify" | "noop" | "author_decision_required";
+            actionType?: "modify" | "noop" | "author_decision_required" | "evidence_only";
             logicalSection?: string;
             coverageQuote?: string;
             protocolId?: string;
@@ -7682,6 +7682,13 @@ async function collectRevisionDirectives(
       const actionable = items.filter((item) => {
         if (item.actionType === "author_decision_required") {
           recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), "AUTHOR_DECISION_REQUIRED", "This plan item requires an author decision.");
+          instructionsChanged = true;
+          return false;
+        }
+        if (item.actionType === "evidence_only") {
+          // 合法类型但无 Writer 派发语义（证据链接即计划响应）——fail-closed：
+          // 意见保持 open 待作者/证据确认，如实记录原因（不误称「未识别类型」）
+          recordUnresolvedPlanOutcome(instructions, item, items.indexOf(item), "EVIDENCE_ONLY_RECORDED", "evidence_only item: no Writer dispatch (evidence linkage is the planned response); instruction remains open for author confirmation.");
           instructionsChanged = true;
           return false;
         }

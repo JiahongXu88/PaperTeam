@@ -1,5 +1,7 @@
 # M11.4 Final Acceptance Report
 
+> **Attempt 8 (2026-10-06/07): FAIL（任务层三次 clean run 均未达合法终态）；M11.4 NOT COMPLETE；NOT_READY_FOR_M11_5。分层 gate 产品行为本身验证正确（80 不再阻塞任务层、守卫零假阳性、归因修复后回放=AUTHOR_DECISION_REQUIRED），本轮共 root-cause 并修复 6 个确定性 gate/audit 缺陷（2b4b170 + 04e4655 + 本次 harness 修复）；但 Planner/Writer 模型行为逐 run 方差（字段缺失 / 占位替换 / 未授权删除 / not_applicable 误报）与归因对审稿人标签噪声的鲁棒性缺口使 fixture 无法在单次 clean run 内落到合法终态。精确 blocker 见 Attempt 8 §判决。**
+
 > **Attempt 7 (2026-10-06): INCONCLUSIVE / RESOURCE_PRESSURE_BLOCKER; M11.4 is NOT COMPLETE; NOT_READY_FOR_M11_5.** After the preflight blocker cleared, a fresh Project/Run reached import, baseline build, citation verification, and `review.run`; the run was cancelled when system commit headroom fell to 2.48 GiB. Evidence Supply, Planner, Writer, Patch Harness, Candidate Gate, Revised PDF, and held-out comparison were not reached.
 
 **最新结论：Attempt 7 在资源恢复后使用新 Project `p-d8b4339fb73e` / Run `w-983f8980f137`，完成正确 baseline build 与 citation audit，但在 `review.run` 期间 Commit 余量最低降至 2.48 GiB。为遵守资源门，取消该 Run 并停止后续付费调用；分类 `INCONCLUSIVE / RESOURCE_PRESSURE_BLOCKER`。Evidence Supply、assessment.target、Planner、Writer、Patch Harness、Candidate Gate、Revised PDF、Human comparison 均未到达；M11.4 未完成，`NOT_READY_FOR_M11_5`。初次资源阻断及 Git 提交记录见下文。Baseline SHA256 `423CF0E0C66612AD7C801785D60F183367BCFDA5D46C1E32E1610B2F87E46D30`；held-out 内容未读取。
@@ -717,3 +719,72 @@ Resource preflight criterion A did not pass, so the acceptance criteria were not
 ### Attempt 7 final decision
 
 Engineering-discovery runs: `p-b9f5b82421a3` / `w-13acfdfd562c`, `p-e05a3a9de5cf` / `w-3ea863440edf`, `p-46275a6770f4` / `w-fa9001d17495` (each invalidated by the fixed defect, retained as history). Final clean acceptance run: **`p-d12dc28ad850` / `w-80ffbbbf69a5` — mechanically complete, candidate not publishable.** M11.4 Product Acceptance **FAIL / `MODEL_CAPABILITY_LIMIT`** (academic-quality outcome below the product gate within bounded repair; no harness defect remains in the exercised chain). No Candidate Freeze, no Revised-PDF deliverable, no held-out Human comparison (blocked correctly by the freeze gate). `READY_FOR_M11_5_CLOSURE=false`. Stop here: no Attempt 8, no M11.5, no model A/B, no guard changes.
+
+## Attempt 8 — Quality-Gate-Layered Clean Revalidation (2026-10-06/07)
+
+**Verdict: FAIL（任务层）；分层 gate 产品行为验证正确；M11.4 NOT COMPLETE；`READY_FOR_M11_5_CLOSURE=false`。** 本轮在 Option C 分层 gate（2c7854e）之上执行三次真实 clean run。第一次 run 的任务层 FAIL 经根因分析全部为确定性匹配器伪影（6 项缺陷全部 root-cause + 回归 + 修复 + 真实数据回放验证）；修复后的两次 clean run 中，确定性守卫与 claim 归因层零假阳性（8c：守卫 9/9 PASS、claim 8/8 pre-existing、修订引入 0、80 从未作为任务层失败理由出现），但每次 run 在 Planner/Writer 模型行为上暴露新的方差面（未授权删除 / 占位替换 / actionType 字段缺失 / not_applicable 误报），无一次在 clean run 内落到合法任务终态（PASS 或 AUTHOR_DECISION_REQUIRED）。
+
+### Preflight / 环境
+
+- Git 起点：`main`，`HEAD == origin/main == 2c7854e`，clean；修复期间两笔提交（`2b4b170`、`04e4655`，均已 push，每笔后 HEAD == origin/main）。
+- 资源 preflight：free commit 采样 2.94→7.01→7.24 GiB（趋势稳定上升，略低于 8 GiB 不机械拦截）；开机 4.4h；物理 16 GB。**运行窗口最低 free commit = 3.55 GiB**（00:10:31，三次 run 期间；3 GiB 底线未触及，零取消、零用户进程干预，60s 低频监控全程记录于 `commit-samples.csv`）。
+- Coding Plan：Model Settings = `zai-coding-cn/glm-5.3` + `coding_plan` + vision `glm-5.3-flash`；Test Connection PASS（1200ms）；backend 启动后 `activeRuns=0`（无自动恢复旧 run）。
+- Baseline：`paper_before_revision.tex` SHA256 `423CF0E0C66612AD7C801785D60F183367BCFDA5D46C1E32E1610B2F87E46D30`（certutil 复核）；三次 run 导入期 baseline xelatex+bibtex build 均 PASS（12 entries / 0 warnings / 26 页 / 25 引用键）。
+- Held-out isolation：三次 run 全程 blocked（Human Final / 原始 response / change log / final PDF 四路径 `HELD_OUT_ACCESS_BLOCKED`；reviewer comments 5 blocks 正常解析）。**Candidate Freeze 从未发生 ⇒ held-out 内容从未读取。**
+
+### 三次 clean run
+
+| | 8a（工程发现） | 8b（修复后重验） | 8c（最终验收） |
+|---|---|---|---|
+| Project / Run | `p-db07e4273daa` / `w-e3ff6274abc5` | `p-e4f0737aa7e4` / `w-297e1f6b0063` | `p-85d7749054b9` / `w-47c7bcde3e88` |
+| wall / turns | 16m08s / 80 | 19m23s / 90 | 17m07s / 82 |
+| 终态 | completed(draft) | **failed**（`FACT_PRESERVATION_FAILED`，Draft 构建被阻） | completed(draft) |
+| Revision Task | FAIL（4 匹配器伪影） | FAIL（真实违规被拦） | FAIL（2 检查） |
+| academic r1→r3 | 72 → **81** | 72 → 69 | 72 → 76 |
+| usage（Coding Plan） | 577,820 in / 62,933 out / 3.59M cache-read | 507,934 in / 71,232 out | 576,785 in / 62,387 out |
+
+三次 run 共同链路（全真实）：import（baseline build PASS）→ citation.verify（25 keys / 0 missing / 0 hallucinated / 0 duplicate / 1 unverifiable）→ review.run → assessment.target → research.plan（HITL approve）→ evidence.supply.review（sourcesConsidered=23，pending-Source 修复连续验证）→ plan.improvement（C#/EV# alias + 结构化修复收敛，无 canonical ID 泄漏）→ plan_confirm（HITL approve）→ revision.apply/revise → 逐 patch PatchValidation → quality gate（分层）→ overflow（HITL accept_draft）→ 终态。Writer proposal-only 边界全程保持（read/grep/find/ls；**direct mutation = 0**，35 patch validations 全记录 scope/fact/citation/evidence/apply）。
+
+### Review digest 全量可见（§22 验证）
+
+单文件 digest：**36/36 section blocks 全部进入（64 块上限未触及）**，可见 ~39,773 / 43,008 字符（**~92%**，残差为超长块的 2600 字/块预算）；结论 / 部署 / 消融 / 极端场景 / 对比实验 / 总体框架 / 损失全部可见。实证：r1 基线学术分 72（Attempt 7 截断口径 58–64），8a 修订后 81。**44% 截断时代结束**；每块截断带句界安全 + 系统注。
+
+### 工程发现与修复（每项：确定性复现 → 最小修复 → 回归 → push）
+
+Commit `2b4b170`（四缺陷 + 归因谓词）：
+
+1. **numberRuns 区间连字符**：`1400-200-400` 被读成负数 token（-200/-400），基线正数无法命中 → 基线既有数据集统计（c-e965ba5d2331，数字全部逐字存在于基线 L383/395）误判 revision_introduced。修复：负号仅在其前一字符非数字/连字符时生效（真负数语义保留）。
+2. **全文级 containment 兜底**：reviewer 表格压缩标签（"消融与 λ_smooth 扫描数值"）不对应任何单句（句级 0.38 < 0.4），三张消融表全为基线既有（rev-1 L648–714）。修复：句/段落级未达阈值时用全文级（直接检验「新 claim 含基线没有的词元」判据）。
+3. **issue 归因谓词**：对称 Jaccard 对「短 claim 转述 vs 长 finding 描述」上限 ≈0.15（MRG-DTM blocking finding 逐字引用基线句却归因失败 → 误层 modified_existing）。修复：两档谓词（章节兼容 ∧ containment≥0.5，或引用级 containment≥0.75——后者同时免疫 reviewer 节标签噪声「…分析」vs「…分析段」）；`tagIssueRootCauses` 同口径（rootCauseKey 断链修复）。
+4. **公式 alpha-rename 配对**：评审在 r2 指出基线真缺陷（`w_t^k` 同时表示边界框宽度与平滑权重，符号冲突），计划指示改 `\omega_t^k`，Writer 一致替换后累计守卫记 4 项未授权漂移 → 结构性死锁（评审要求改名、累计守卫禁止改名、round-2 计划无累计授权通道）。修复：missing×added 一致、单射、结构保持的符号重命名（基名单字母/希腊命令、上下标组逐字相同、无数字）配对进 formatChanges；数值变化（ε→2ε）、语义换名（objness→DFL、MOTA→IDF1）、映射冲突仍违规。
+
+Commit `04e4655`：
+
+5. **占位守卫误伤对冲语**：「尚待验证/仍待确认」是授权弱化通道的正常产物（8b rev-3 两处对冲语被记 placeholder_regression 并阻断 Draft 构建），非占位标记。修复：剥离副词对冲形态后再计数/判定；真占位（数值→待回填）仍拦。
+
+Commit（本轮第三笔）：
+
+6. **计划条目 actionType 缺失静默通过**：8c 的 R1/R3 条目 action 文本写「作者决策必需：」但 `actionType` 字段缺失 → harness 校验静默通过 → 派发侧按未识别类型跳过 → 意见被记 unresolved（而非合法 author_decision 闭环）。修复：harness 字段级校验 `ACTION_TYPE_REQUIRED`（进入既有 bounded structured repair）；`evidence_only`（合法类型）在派发侧如实记录（`EVIDENCE_ONLY_RECORDED`，fail-closed 不发明 handled 语义）。
+
+**修复验证（真实数据回放）**：`scripts/m114-replay-attempt8-r3.mjs`（只读无模型）对 8a r3 真实产物重放——任务层 7 项检查全 PASS，verdict = **AUTHOR_DECISION_REQUIRED**（仅剩 3 条真实作者级意见：主对比/消融/edge_deploy 表数值无已核验证据需作者确认、文献缺口、UA-DETRAC 视角定位、超参数披露），academic 81 vs 72 带内。8b 数据回放：占位伪影消失，唯一残留 = 真实的 56.8%（YOLOv7 AP）未授权删除（Writer 两轮均未恢复）。
+
+### 三次 run 的剩余失败因子（修复后仍存在的）
+
+- **8b（合法拦截）**：round-1 Writer 未授权删除引言中 YOLOv7 56.8% AP 事实；round-2 计划 fact_preserve 条目指示恢复，Writer 以对冲语替代未恢复原值 → 累计守卫拦截，Draft 构建阻断（`FACT_PRESERVATION_FAILED`）。守卫行为正确（拒绝交付事实受损稿）。确定性 restore 通道按设计不覆盖删除类违规（`not_value_scoped`）。
+- **8c（两检查 FAIL）**：① `reviewer_requirements_closed` 2/5 + 3 未闭环——R1/R3 因缺陷 6（actionType 缺失）；R2 因 Writer 对已含部署实验的章节报 not_applicable（与 Attempt 7 观察同一语义缺口：comment-as-claim grounding 无法表达「评审断言被源材料反驳 ⇒ 基线已覆盖」，作者级）；② `no_revision_blocking_findings` 2 条——abstract/主对比表 claim 与 E001 公平消融证据的冲突（即 Closure 文档预告的基线继承作者级矛盾），本次因 finding 节标签为多节复合形式（"abstract / subsec:main_results"）+ 中英文节名混用（摘要 vs abstract）导致归因谓词未命中（引用级 containment 亦未达 0.75）——归因对 reviewer 标签噪声的鲁棒性仍是缺口。
+- 8c 正面验证：守卫 9/9 PASS、claim 8/8 pre-existing、修订引入 0、patch 35/35、非回归 PASS（76 vs 72）、floor 未启用如实呈现、**academicScore<80 仅出现在投稿层规则（76<80 → publication NOT_READY），从未作为任务层失败理由**——§53 关键验证通过。
+
+### 判决
+
+- **分层 gate 产品语义验证正确**：两层分离真实生效（任务层六检查 + 投稿层独立判定 + baseline inherited 风险清单）；Attempt 7 式「59<80 单层误杀」不可能复发（三次 run 学术分 69/76/81 均未被任务层引用）。
+- **确定性守卫层经 6 项修复后零假阳性**（8c 全绿 + 两轮回放验证），且对真实违规（8b 删除/占位）保持正确拦截——**无科研造假**：全部数字可溯源（基线/已核验证据/计划授权），无编造 FPS/latency/mAP/MOTA/IDF1/HOTA。
+- **Attempt 8 未达 M11.4 COMPLETE**：三次 clean run 无一次落到「Revision Task PASS」或「合法作者决策终态」。剩余 blocker（按优先级）：
+  1. **Planner/Writer 模型行为可靠性**（主 blocker）：同一 fixture 三次 run 三种失败形态（伪影已修后依次为：符号重命名死锁→已修；未授权删除+不恢复→8b；actionType 缺失+not_applicable→8c）。bounded repair 内模型合规率不足以稳定落到合法终态。
+  2. **归因谓词对 reviewer 标签噪声的鲁棒性**：多节复合标签 / 中英节名混用 / 跨节引用的 finding 归因（本次 2 条 blocking finding 未命中引用级阈值）。
+  3. **两个已知作者级语义缺口**：R2「评审断言被材料反驳」无法闭环（coverage/refutation 语义）；ADR 数值确认类意见（表格数值无已核验证据）只能作者裁决——这是产品如实呈现，不是缺陷。
+- Held-out comparison 未执行（无 Candidate Freeze；isolation 未破坏）。Pairwise 校准证据未接入生产 gate（按 §59）。
+- 全量回归与 Git 收口见下节。
+
+### Attempt 8 final decision
+
+**M11.4 Product Acceptance = NOT COMPLETE（精确 blocker 如上三条）；`READY_FOR_M11_5_CLOSURE=false`。** 对 §81 的诚实回答：**NO——尚不能可靠完成**。分层 gate 与确定性守卫已达到「正确区分任务成功与投稿就绪、零假阳性拦截、无造假」的标准；但「可靠完成返修」还要求修订执行链在 bounded 轮内稳定合规，这一层在三次采样中均为模型行为方差所阻。停止本轮：无 Attempt 9、无 M11.5、无模型 A/B、无 gate 重设计（后续方向属作者决策：模型侧合规策略 vs 归因鲁棒性工程 vs 语义缺口设计）。

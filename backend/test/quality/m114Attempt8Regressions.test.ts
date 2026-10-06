@@ -26,6 +26,7 @@ import { describe, expect, it } from "vitest";
 
 import { computeClaimGapAudit, tagIssueRootCauses } from "../../src/review/claimGapAudit.js";
 import { evaluateFactPreservation } from "../../src/quality/factPreservation.js";
+import { validateStructuredPlanItem } from "../../src/review/revisionHarness.js";
 import type { ClaimGroundingEntry } from "../../src/review/claimGrounding.js";
 import type { ReviewIssue } from "../../src/agents/ReviewerService.js";
 
@@ -332,5 +333,44 @@ describe("M11.4 Attempt 8：公式符号一致重命名 → formatChanges", () =
     ].join("\n");
     const summary = evaluate(previous, current);
     expect(summary.placeholderRegressions.length + summary.changedFacts.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 修复 6：结构化计划条目必须携带合法 actionType（Attempt 8 run 8c 实证）
+// ---------------------------------------------------------------------------
+
+describe("M11.4 Attempt 8：计划条目 actionType 字段校验", () => {
+  it("actionType 缺失（旧口径静默通过）→ ACTION_TYPE_REQUIRED，进入结构化修复通道", () => {
+    // clean run p-85d7749054b9 实证形态：action 文本写着「作者决策必需：」，
+    // 但 actionType 字段缺失 → 派发侧按未识别类型跳过 → 意见被记 unresolved
+    const failures = validateStructuredPlanItem(
+      { commentId: "x-1", expectedOutcome: "作者裁决文献取舍", reason: "引言引用偏少" } as never,
+      [],
+    );
+    expect(failures.map((f) => f.code)).toContain("ACTION_TYPE_REQUIRED");
+    expect(failures.find((f) => f.code === "ACTION_TYPE_REQUIRED")?.field).toBe("actionType");
+  });
+
+  it("四个合法 actionType 不触发 ACTION_TYPE_REQUIRED（evidence_only 仍要求证据语义）", () => {
+    for (const actionType of ["modify", "noop", "author_decision_required", "evidence_only"]) {
+      const failures = validateStructuredPlanItem(
+        {
+          actionType,
+          commentId: "x-1",
+          expectedOutcome: "outcome",
+          ...(actionType === "noop" ? { coverageQuote: "q", verificationBasis: "basis", target: "t" } : {}),
+          ...(actionType === "author_decision_required" ? { reason: "r" } : {}),
+          ...(actionType === "evidence_only" ? { requiredEvidence: true } : {}),
+        } as never,
+        [],
+      );
+      expect(failures.map((f) => f.code)).not.toContain("ACTION_TYPE_REQUIRED");
+    }
+    const evidenceOnly = validateStructuredPlanItem(
+      { actionType: "evidence_only", commentId: "x-1", expectedOutcome: "o" } as never,
+      [],
+    );
+    expect(evidenceOnly.map((f) => f.code)).toContain("EVIDENCE_SEMANTICS_REQUIRED");
   });
 });
