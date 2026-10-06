@@ -127,5 +127,23 @@ unauthorized 新增；③ 结论新增对冲表述与摘要正面声明自相矛
 | 结论 vs 摘要自相矛盾 | M5：模型弱化时新增并存反表述而非改写原论断 | prompt 7b/规则 10（弱化=改原论断；不得并存反向表述）——行为残余风险按多 run 统计 |
 | 5/5 意见全 punt 作者决策（合法但低质） | 规则 9/10 措辞过度吓退（Editor 凝练类也无端 punt） | 规则 9 加反 punt 条款（真依赖作者输入才 author_decision） |
 
+## 3.3 Post-fix Run B（p-8fb1a3cc92fc / w-9ce79eedf543）——6/7 PASS，最后一个候选校验洞
+
+修复生效面（相对 Run A 全部好转）：**no_revision_blocking_findings PASS**（元注记污染与
+自相矛盾消失）；buildOk=true；revision_introduced 0；**R2 经 patch-backed override
+合法 handled**（Writer 自报 not_applicable 被机器 lineage 覆盖）；Editor handled；
+R4 conflict（合法作者裁决闭环）；R1/R3 author_decision。意见闭环 2 handled +
+3 author_decision = 0 open ✓。唯一 FAIL 因子：
+
+Writer 给 tab:baseline_source 的 DeepSORT 来源 cell 追加「（自实现，ReID 特征
+统一为 128 维，非官方实现）」——对基线公平性的诚实澄清（评审方向正确），但未走
+计划授权（expectedFactChanges+Evidence），且 **F3 候选校验的 changedFacts 类未映射**
+（8b 是删除类、这次是修改类）→ patch 层放行 → gate 层判 table_cell 漂移 →
+round-2 无法恢复（表格 cell 非段落恢复对象）→ cumulative 守卫 FAIL。
+
+**F13（14eeec8 后补）**：changedFacts（未授权值变更，含表格 cell）进候选校验
+（unauthorized_fact_change → bounded repair；mustPreserve 点名旧值）。合法保留该类
+澄清的通道是计划 expectedFactChanges + Evidence 绑定（提示规则 4 既有）。
+
 （后续章节 9-20 在收口时补：deterministic regressions / real-run 结果 / 稳定性统计 /
 memory audit / Docker / tests / git / final readiness。）

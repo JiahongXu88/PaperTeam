@@ -2013,6 +2013,16 @@ function revisionReviseStage(
                  * removedFacts 等列表只含未授权项）。
                  */
                 for (const finding of fact.removedFacts) failures.push({ code: "unauthorized_fact_removal", detail: `${finding.before.slice(0, 120)}（被删除）: ${finding.reason}${finding.classification?.oldValue !== undefined ? `（值 ${finding.classification.oldValue}）` : ""}`, metric: finding.classification?.oldValue ?? finding.before.slice(0, 50) });
+                /**
+                 * M11.4 Reliability Closure（Run B 实证：p-8fb1a3cc92fc，Writer 给
+                 * tab:baseline_source 的 DeepSORT 来源 cell 追加「自实现，ReID 特征
+                 * 统一为 128 维」诚实澄清——科学上有价值但未走计划授权，patch 层
+                 * 放行 → gate 层判 changed 漂移 → round-2 恢复不了（表格 cell 非
+                 * 段落恢复对象）→ 任务层唯一 FAIL 因子。未授权值变更与删除同类，
+                 * 必须在提交前进入 repair 通道（改回原值，或由计划 expectedFactChanges
+                 * + Evidence 走合法授权）。
+                 */
+                for (const finding of fact.changedFacts) failures.push({ code: "unauthorized_fact_change", detail: `${String(finding.before).slice(0, 100)} → ${String(finding.after).slice(0, 100)}: ${finding.reason}`, metric: finding.classification?.oldValue ?? String(finding.before).slice(0, 50) });
                 for (const finding of fact.placeholderRegressions) failures.push({ code: "placeholder_regression", detail: `${finding.before} → ${finding.after}: ${finding.reason}` });
                 for (const finding of fact.formulaChanges) failures.push({ code: "unauthorized_formula_change", detail: `${finding.before.slice(0, 90)} → ${finding.after.slice(0, 90)}: ${finding.reason}` });
               }
@@ -2051,7 +2061,7 @@ function revisionReviseStage(
               proposedReplacementHash: revisionSourceHash(result.latex.trim()), afterFileHash: revisionSourceHash(candidate),
               scope: { ok: !failures.some((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text"), violations: failures.filter((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text").map((failure) => failure.detail) },
               workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
-              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
+              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
               citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },
               evidence: { ok: true, violations: [] }, apply: { ok: false, status: "rejected" }, overall: "fail", failedStage: "candidate_validation",
               rootViolationIds: failuresKey, modelRole: "revision.primary", finalStatus: attempt === 2 ? "exhausted" : "rejected",
@@ -2073,7 +2083,7 @@ function revisionReviseStage(
             // 具体数值（mustPreserve）——repair prompt 据 this 构建「恢复这些值」
             // 的确定性约束，而不是泛泛「保持事实」。
             const removalMustPreserve = failures
-              .filter((failure) => failure.code === "unauthorized_fact_removal" || failure.code === "placeholder_regression")
+              .filter((failure) => failure.code === "unauthorized_fact_removal" || failure.code === "placeholder_regression" || failure.code === "unauthorized_fact_change")
               .map((failure) => failure.metric)
               .filter((value): value is string => typeof value === "string" && value.trim() !== "");
             const directive: PatchRepairDirective = {

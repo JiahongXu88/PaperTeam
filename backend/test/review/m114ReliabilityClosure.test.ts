@@ -234,6 +234,27 @@ describe("M11.4 Reliability Closure：span 内数值删除 / 占位替换的检�
     expect(summary.removedFacts).toHaveLength(0);
     expect(summary.placeholderRegressions).toHaveLength(0);
   });
+
+  it("表格 cell 文本被追加事实性澄清（Run B 实证形态）→ changedFacts 非空", () => {
+    const previous = [
+      "\\section{实验}",
+      "\\begin{table}",
+      "\\caption{对比方法来源}",
+      "\\begin{tabular}{ll}",
+      "方法 & 来源 \\\\",
+      "YOLOv11+DeepSORT & DeepSORT 的外观关联思想 \\\\",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\end{document}",
+    ].join("\n");
+    const current = previous.replace(
+      "DeepSORT 的外观关联思想",
+      "DeepSORT 的外观关联思想（自实现，ReID 特征统一为 128 维，非官方实现）",
+    );
+    const summary = evaluate(previous, current);
+    expect(summary.changedFacts.length).toBeGreaterThan(0);
+    expect(summary.ok).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

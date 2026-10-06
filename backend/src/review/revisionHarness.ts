@@ -5,7 +5,7 @@ export type RevisionViolationCode =
   | "metric_direction_flip" | "unsupported_claim" | "fact_direction_drift"
   | "citation_missing" | "citation_hallucinated" | "citation_removed"
   | "evidence_protocol_mismatch" | "scope_violation" | "unattributed_fact_violation"
-  | "unauthorized_fact_removal" | "placeholder_regression" | "unauthorized_formula_change"
+  | "unauthorized_fact_removal" | "unauthorized_fact_change" | "placeholder_regression" | "unauthorized_formula_change"
   | "revision_meta_text"
   | "AUTHOR_DECISION_REQUIRED";
 
