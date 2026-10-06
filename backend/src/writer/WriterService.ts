@@ -994,7 +994,11 @@ export class WriterService {
       items.flatMap((item) => (item.instructionId === undefined ? [] : [item.instructionId])),
     );
     for (const instruction of params.externalInstructions ?? []) {
-      if (linkedInstructions.has(instruction.instructionId) || items.length >= 20) {
+      // M11.4 Reliability Closure（Run H 实证：p-32bc3d63d06a，模型恰好用满
+      // 20 条上限，R4 未被链接 → 旧的 items.length>=20 守卫把兜底条目静默
+      // 丢弃 → 意见 pending → 任务层 FAIL。「外部意见不得从计划中消失」是
+      // 机器不变量，兜底不受模型条目上限约束（20 条上限只限模型输出）。
+      if (linkedInstructions.has(instruction.instructionId)) {
         continue;
       }
       items.push({

@@ -74,6 +74,24 @@ describe("M11.4 Reliability Closure：fallback 计划条目 actionType", () => {
     }
   });
 
+  it("模型用满 20 条上限时，未链接意见的兜底条目仍必须生成（Run H 实证）", async () => {
+    const twentyItems = Array.from({ length: 20 }, (_, n) => ({
+      section: "main.tex", action: `修改 ${n + 1}`, rationale: "r", priority: "low",
+    }));
+    const runtime = new FakeRuntime(JSON.stringify({ plan: twentyItems }));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({
+      projectId: "p-h", issues: [], analysisDigest: "", feasibilityLevel: "MEDIUM", sectionFiles: [],
+      validInstructionIds: ["x-r4"], validEvidenceIds: [],
+      externalInstructions: [{ instructionId: "x-r4", text: "补充极端场景分析" }],
+      commentAliases: [{ ref: "C1", canonicalId: "x-r4", text: "补充极端场景分析" }],
+      evidenceAliases: [],
+    });
+    expect(plan.items.length).toBe(21);
+    const fallback = plan.items.find((item) => item.instructionId === "x-r4");
+    expect(fallback?.actionType).toBe("author_decision_required");
+  });
+
   it("模型自有条目缺 actionType 时仍缺省 modify（既有语义不变）", async () => {
     const runtime = new FakeRuntime(JSON.stringify({ plan: [{
       section: "main.tex", action: "修改引言", rationale: "r", priority: "high", commentRefs: ["C1"],
