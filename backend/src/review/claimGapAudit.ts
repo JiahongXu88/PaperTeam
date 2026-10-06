@@ -107,29 +107,23 @@ export interface ClaimGapAuditInput {
   generatedAt?: string;
 }
 
-/** 数值 run（归一化；与 factPreservation 授权匹配同源思想） */
+/**
+ * 数值 run（归一化；与 factPreservation 授权匹配同源思想）。
+ * M11.4 Attempt 8 修复：紧随数字之后的连字符是区间分隔符（"1400-200-400
+ * 划分"），不是负号——旧正则把审稿人转述里的区间读成负数 token（-200/-400），
+ * 基线只存正数（200 段/400 段）→ 「全部数值存在于基线」被单个伪影数值破坏，
+ * 基线既有数据集统计整条误判 revision_introduced（实证：c-e965ba5d2331，
+ * clean run p-db07e4273daa）。负号仅在其前一字符不是数字/连字符时生效
+ * （"提升 -3.0" 仍产生带符号 token，方向语义不丢）。
+ */
 function numberRuns(text: string): string[] {
-  return [...text.matchAll(/[-−]?\d+(?:,\d{3})*(?:\.\d+)?/g)]
+  return [...text.matchAll(/(?:(?<![\d.\-−–—])[-−])?\d+(?:,\d{3})*(?:\.\d+)?/g)]
     .map((match) => normalizeNumericToken(match[0] ?? ""))
     .filter((token) => token !== "");
 }
 
 function termSet(text: string): Set<string> {
   return new Set(tokenizeText(text));
-}
-
-function jaccard(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
-  if (a.size === 0 && b.size === 0) {
-    return 0;
-  }
-  let intersection = 0;
-  for (const term of a) {
-    if (b.has(term)) {
-      intersection += 1;
-    }
-  }
-  const union = a.size + b.size - intersection;
-  return union === 0 ? 0 : intersection / union;
 }
 
 /** claim 数值是否全部出现在参考文本（含表格 / 正文；千分位容错） */
@@ -193,6 +187,15 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence !== "")
     .map((sentence) => termSet(sentence));
+  /**
+   * M11.4 Attempt 8：全文级参考词元集（兜底层）。Reviewer 对表格 / 多句内容
+   * 的压缩标签（"消融与 λ_smooth 扫描数值"）不对应任何单句 / 段落——句级
+   * containment 对这类标签结构性失效（实证：c-dc50babe7207，0.38 < 0.4 灰区，
+   * 三张消融表全部是基线既有内容）。文档级 containment 直接检验设计文档声
+   * 明的判据——「真正新引入的 claim 含基线没有的实体/概念词元」——词元全部
+   * 存在于全文任何位置时该判据不成立。仅在句/段落级未达阈值时启用。
+   */
+  const frozenDocumentTerms = termSet(frozenAll);
 
   const classifications: ClaimGapClassification[] = [];
   for (const entry of input.unsupportedClaims) {
@@ -237,25 +240,30 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
         (max, terms) => Math.max(max, termContainment(claimTerms, terms)),
         0,
       );
-      if (best >= PRE_EXISTING_TERM_CONTAINMENT) {
+      // M11.4 Attempt 8：全文级兜底（表格/多句压缩标签不对应单句，见
+      // frozenDocumentTerms 的注释）；句/段落级优先，未达阈值时才消费全文级。
+      const docLevel = termContainment(claimTerms, frozenDocumentTerms);
+      if (best >= PRE_EXISTING_TERM_CONTAINMENT || docLevel >= PRE_EXISTING_TERM_CONTAINMENT) {
         classifications.push({
           claimId: entry.claimId,
           section: entry.section,
           claim: entry.claim,
           verdict: entry.verdict,
           applicability: "excluded_pre_existing",
-          basis: `claim 词元在冻结基线 rev-${input.baselineRevision} 句/段落中覆盖率 ${best.toFixed(2)}（≥ ${PRE_EXISTING_TERM_CONTAINMENT}，转述检测）——原论文既有内容，返修语境不作为新 claim 重证（作者裁决）`,
+          basis: best >= PRE_EXISTING_TERM_CONTAINMENT
+            ? `claim 词元在冻结基线 rev-${input.baselineRevision} 句/段落中覆盖率 ${best.toFixed(2)}（≥ ${PRE_EXISTING_TERM_CONTAINMENT}，转述检测）——原论文既有内容，返修语境不作为新 claim 重证（作者裁决）`
+            : `claim 词元在冻结基线 rev-${input.baselineRevision} 全文中的覆盖率 ${docLevel.toFixed(2)}（≥ ${PRE_EXISTING_TERM_CONTAINMENT}，表格/多句压缩标签全文兜底；句级最佳 ${best.toFixed(2)}）——原论文既有内容，返修语境不作为新 claim 重证（作者裁决）`,
         });
         continue;
       }
-      if (best >= GREY_ZONE_TERM_CONTAINMENT) {
+      if (best >= GREY_ZONE_TERM_CONTAINMENT || docLevel >= GREY_ZONE_TERM_CONTAINMENT) {
         classifications.push({
           claimId: entry.claimId,
           section: entry.section,
           claim: entry.claim,
           verdict: entry.verdict,
           applicability: "grey_zone_author_decision",
-          basis: `claim 词元对冻结基线 rev-${input.baselineRevision} 的最佳覆盖率 ${best.toFixed(2)} 落在灰区 [${GREY_ZONE_TERM_CONTAINMENT}, ${PRE_EXISTING_TERM_CONTAINMENT})——无法确定性归层，转作者裁决（不按修订引入计罚，也不静默豁免）`,
+          basis: `claim 词元对冻结基线 rev-${input.baselineRevision} 的覆盖率（句/段落级 ${best.toFixed(2)} / 全文级 ${docLevel.toFixed(2)}）落在灰区 [${GREY_ZONE_TERM_CONTAINMENT}, ${PRE_EXISTING_TERM_CONTAINMENT})——无法确定性归层，转作者裁决（不按修订引入计罚，也不静默豁免）`,
         });
         continue;
       }
@@ -289,11 +297,10 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
     }
     const descriptionTerms = termSet(issue.description);
     const compactDescription = issue.description.replace(/\s+/g, "");
+    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（两档；见其注释）
     const attributed = excludedClaims.find(
       (claim) =>
-        sectionsCompatible(issue.section, claim.section) &&
-        (jaccard(descriptionTerms, termSet(claim.claim)) >= 0.2 ||
-          compactDescription.includes(compactSlice(claim.claim, 24))),
+        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, compactDescription),
     );
     const excluded = attributed !== undefined;
     if (excluded) {
@@ -366,6 +373,34 @@ function sectionsCompatible(a: string, b: string): boolean {
   return x === y || x.includes(y) || y.includes(x);
 }
 
+/**
+ * M11.4 Attempt 8 修复：claim ↔ finding 描述的归因谓词（两档）。
+ *
+ * - 常规档：章节兼容 ∧ claim 词元在描述词元中的覆盖率 ≥ 0.5；
+ * - 引用档：覆盖率 ≥ 0.75——描述逐字引用 claim 内容时（finding 描述引用基线
+ *   原句、claim 是其转述），引文本身就是归因证据，章节标签噪声（同一 reviewer
+ *   对 claim 与 issue 的节标注不完全一致，实证："消融实验（tab:ablation_mgdtm
+ *   分析）" vs "…分析段"）不能破坏归因。
+ * 对称 Jaccard 对「短 claim vs 长描述」上限 ≈ |claim|/|描述| ≈ 0.15 < 0.2，
+ * 结构性不可达（clean run p-db07e4273daa：MRG-DTM blocking finding 归因
+ * 失败 → 误层 modified_existing → Revision Task 假 FAIL）。
+ */
+function claimMatchesFinding(
+  issueSection: string,
+  claimSection: string,
+  claimText: string,
+  descriptionTerms: ReadonlySet<string>,
+  compactDescription: string,
+): boolean {
+  const containment = termContainment(termSet(claimText), descriptionTerms);
+  if (
+    sectionsCompatible(issueSection, claimSection) && containment >= 0.5
+  ) {
+    return true;
+  }
+  return containment >= 0.75 || compactDescription.includes(compactSlice(claimText, 24));
+}
+
 /** claim 的空白剥离前缀片段（用于 issue 描述的逐字包含判定；两侧都去空白） */
 function compactSlice(text: string, maxLength: number): string {
   return text.replace(/\s+/g, "").slice(0, maxLength);
@@ -404,12 +439,12 @@ export function tagIssueRootCauses(
     }
     const descriptionTerms = termSet(issue.description);
     const compactDescription = issue.description.replace(/\s+/g, "");
+    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（与 audit 同口径；
+    // rootCauseKey 断链则 Revision Task Gate 的 finding 归层退回修改区间启发式）
     const attributed = unsupportedClaims.find(
       (claim) =>
         isUnsupportedVerdict(claim.verdict) &&
-        sectionsCompatible(issue.section, claim.section) &&
-        (jaccard(descriptionTerms, termSet(claim.claim)) >= 0.2 ||
-          compactDescription.includes(compactSlice(claim.claim, 24))),
+        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, compactDescription),
     );
     if (attributed === undefined) {
       continue;

@@ -715,6 +715,161 @@ function formulaChangeAuthorized(auth: AuthorizationContext): { basis: string; p
 }
 
 /**
+ * M11.4 Attempt 8：一致的公式符号重命名（alpha-rename）配对。
+ *
+ * 真实缺陷形态（clean run p-db07e4273daa / w-e3ff6274abc5）：评审在 round 2
+ * 指出基线符号冲突——`w_t^k = 1/(s_t^k+ε)` 的平滑权重 `w_t^k` 与同小节
+ * `s_t^k = sqrt(w_t^k h_t^k)` 的边界框宽度 `w_t^k` 同名不同义——修订计划指示
+ * 改用 `\omega_t^k`；Writer 一致替换后，公式多重集 diff 把「旧公式消失 + 新
+ * 公式出现」记为 formula_removed_or_changed / formula_added 各 2 项，累计
+ * 事实保持判 4 项未授权漂移 → Revision Task 必然 FAIL。结构不变、跨全部
+ * 公式一致且单射的符号替换是**表示层变更**（alpha-rename 不改变任何陈述
+ * 事实——这正是绑定换名的定义），归入 formatChanges 审计，不进违规桶。
+ *
+ * 判定（确定性，无 LLM）：
+ * - missing × added 两两配对：whitespace token 序列长度相等，除被映射的
+ *   符号 token 外逐 token 相同；
+ * - 被映射 token 两侧都必须是「短标识符」：无数字（数值是事实）、长度有界、
+ *   基名为单字母或希腊命令（多字母词 MOTA/IDF1 与结构命令 \frac/\sqrt 不
+ *   参与映射——防止语义换名被误配）；
+ * - 映射跨全部配对一致（同旧 token 恒映同新 token）且单射（不同旧 token
+ *   不映到同一新 token）；不满足者留在违规桶，由授权通道裁决。
+ */
+const GREEK_COMMAND_NAMES = new Set([
+  "alpha", "beta", "gamma", "delta", "epsilon", "varepsilon", "zeta", "eta", "theta",
+  "vartheta", "iota", "kappa", "lambda", "mu", "nu", "xi", "pi", "varpi", "rho",
+  "varrho", "sigma", "varsigma", "tau", "upsilon", "phi", "varphi", "chi", "psi",
+  "omega", "Gamma", "Delta", "Theta", "Lambda", "Xi", "Pi", "Sigma", "Upsilon",
+  "Phi", "Psi", "Omega",
+]);
+
+/** 符号 token 结构：`\omega_t^k` / `w_t^k` / `T_k`（基名 + 上下标组） */
+const SYMBOL_TOKEN_PARTS = /^(\\?)([a-zA-Z]+)((?:[_^](?:\{[^0-9{}]*\}|[a-zA-Z]+))*)$/;
+
+interface SymbolTokenParts {
+  command: string;
+  base: string;
+  groups: string;
+}
+
+/**
+ * 符号 token 解析；null = 非符号形态（结构命令 / 多字母词 / 含数字 / 超长）。
+ * 基名只允许单字母或（带反斜杠的）希腊命令——`L_{objness}` 这类「字母基 +
+ * 词下标」可解析，但其**下标组**承载语义（损失项名），见 renameablePair。
+ */
+function symbolTokenParts(token: string): SymbolTokenParts | null {
+  if (token.length > 16 || /\d/.test(token)) {
+    return null;
+  }
+  const match = SYMBOL_TOKEN_PARTS.exec(token);
+  if (match === null) {
+    return null;
+  }
+  const command = match[1] ?? "";
+  const base = match[2] ?? "";
+  const singleLetterBase = command === "" && base.length === 1;
+  const greekCommandBase = command === "\\" && GREEK_COMMAND_NAMES.has(base);
+  if (!singleLetterBase && !greekCommandBase) {
+    return null;
+  }
+  return { command, base, groups: match[3] ?? "" };
+}
+
+/**
+ * 合法换名对：两侧都可解析为符号 token，且**只有基名变化**——上下标组必须
+ * 逐字相同（`w_t^k → \omega_t^k` 的 `_t^k` 不动；`L_{objness} → L_{DFL}`
+ * 的下标组变化是损失项替换 = 事实变化，不放行）。
+ */
+function renameablePair(from: string, to: string): boolean {
+  const fromParts = symbolTokenParts(from);
+  const toParts = symbolTokenParts(to);
+  if (fromParts === null || toParts === null) {
+    return false;
+  }
+  return fromParts.groups === toParts.groups;
+}
+
+/** 单对公式的换名映射；null = 不可配对（结构不同 / 非法 token / 与已确立映射冲突） */
+function renameMappingBetween(
+  before: string,
+  after: string,
+  established: ReadonlyMap<string, string>,
+  establishedInverse: ReadonlyMap<string, string>,
+): Array<[string, string]> | null {
+  const a = before.split(" ");
+  const b = after.split(" ");
+  if (a.length !== b.length) {
+    return null;
+  }
+  const local: Array<[string, string]> = [];
+  const localInverse = new Map<string, string>();
+  for (let i = 0; i < a.length; i += 1) {
+    const from = a[i]!;
+    const to = b[i]!;
+    if (from === to) {
+      continue;
+    }
+    if (!renameablePair(from, to)) {
+      return null;
+    }
+    if (localInverse.has(to) && localInverse.get(to) !== from) {
+      return null; // 单射：不同旧 token 不得映到同一新 token
+    }
+    localInverse.set(to, from);
+    const existing = local.findIndex(([f]) => f === from);
+    if (existing >= 0) {
+      if (local[existing]![1] !== to) {
+        return null;
+      }
+      continue;
+    }
+    local.push([from, to]);
+  }
+  if (local.length === 0) {
+    return null;
+  }
+  for (const [from, to] of local) {
+    if (established.has(from) && established.get(from) !== to) {
+      return null;
+    }
+    if (establishedInverse.has(to) && establishedInverse.get(to) !== from) {
+      return null;
+    }
+  }
+  return local;
+}
+
+/** 公式多重集 diff 的 alpha-rename 配对（贪心；结构不匹配者自然落选） */
+function pairNotationRenames(
+  missing: readonly string[],
+  added: readonly string[],
+): { pairs: Array<{ before: string; after: string }>; mapping: Map<string, string> } {
+  const mapping = new Map<string, string>();
+  const inverse = new Map<string, string>();
+  const usedAdded = new Set<number>();
+  const pairs: Array<{ before: string; after: string }> = [];
+  for (const before of missing) {
+    for (let j = 0; j < added.length; j += 1) {
+      if (usedAdded.has(j)) {
+        continue;
+      }
+      const local = renameMappingBetween(before, added[j]!, mapping, inverse);
+      if (local === null) {
+        continue;
+      }
+      for (const [from, to] of local) {
+        mapping.set(from, to);
+        inverse.set(to, from);
+      }
+      usedAdded.add(j);
+      pairs.push({ before, after: added[j]! });
+      break;
+    }
+  }
+  return { pairs, mapping };
+}
+
+/**
  * 方向结论变更授权：计划**显式**要求修正结论方向（M11.2.1 收紧——旧口径的
  * 「结论|表述|比较」过宽，计划条目生命周期修复后会让任何提及这些常用词的
  * finding 变成整文件方向变更的 blanket 授权。方向语义的合法通道改为 typed
@@ -1561,11 +1716,38 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     }
 
     // -- 3. 公式：数学片段多重集（归一化空白）；缺失 → formulaChanges；
-    //    新增 → added_unsupported（新公式 = 新增方法事实；仅既有文件参与） --
+    //    新增 → added_unsupported（新公式 = 新增方法事实；仅既有文件参与）。
+    //    M11.4 Attempt 8：missing × added 先做 alpha-rename 配对（一致符号
+    //    重命名 = 表示层变更，进 formatChanges 审计），未配对者照旧走违规/
+    //    授权通道 --
     const previousMath = extractMathSegments(previous);
     const currentMath = extractMathSegments(current);
     const mathDiff = multisetDiff(previousMath, currentMath);
+    const notationRenames = pairNotationRenames(mathDiff.missing, mathDiff.added);
+    const renamedBefore = new Set(notationRenames.pairs.map((pair) => pair.before));
+    const renamedAfter = new Set(notationRenames.pairs.map((pair) => pair.after));
+    for (const pair of notationRenames.pairs) {
+      const at = previous.indexOf(pair.before.split(" ")[0] ?? "");
+      formatChanges.push({
+        kind: "formula",
+        file: previousFile.file,
+        section: at >= 0 ? nearestSection(previous, at) : "(global)",
+        before: snippet(pair.before, 70),
+        after: snippet(pair.after, 70),
+        reason: "formula_notation_rename",
+        classification: {
+          category: "B",
+          type: "formula_notation_renamed",
+          severity: "low",
+          oldValue: snippet(pair.before, 40),
+          newValue: snippet(pair.after, 40),
+        },
+      });
+    }
     for (const segment of mathDiff.missing) {
+      if (renamedBefore.has(segment)) {
+        continue;
+      }
       const grant = formulaChangeAuthorized(auth);
       if (grant !== null) {
         allowedChanges += 1;
@@ -1583,6 +1765,9 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       });
     }
     for (const segment of mathDiff.added) {
+      if (renamedAfter.has(segment)) {
+        continue;
+      }
       const grant = formulaAdditionAuthorized(auth, segment) ?? formulaChangeAuthorized(auth);
       if (grant !== null) {
         allowedChanges += 1;
