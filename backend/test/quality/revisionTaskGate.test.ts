@@ -279,6 +279,35 @@ describe("classifyFindingOrigins（finding 来源归层）", () => {
     expect(origins[0]?.origin).toBe("revision_introduced");
   });
 
+  it("F23：引用数值全部位于未修改表格（即使章节在修改区间）→ baseline_inherited", () => {
+    const origins = classifyFindingOrigins(
+      [
+        issue({
+          description: "BDD100K 主表（MOTA 71.2、IDF1 74.0、IDS 8200、J_trk 0.96）、UA-DETRAC 主表及全部消融表中的核心数值均无已核验 Evidence 支撑",
+        }),
+        issue({
+          description: "主表与消融表仍内部矛盾：主表本文方法 MOTA 71.2 / IDF1 74.0 / IDS 8200 / J_trk 0.96，消融表同一配置为 68.1 / 72.5 / 10800",
+        }),
+      ],
+      null,
+      ["实验与结果"],
+      { unchangedTableNumbers: new Set(["71.2", "74", "8200", "0.96", "68.1", "72.5", "10800"]) },
+    );
+    expect(origins[0]?.origin).toBe("baseline_inherited");
+    expect(origins[1]?.origin).toBe("baseline_inherited");
+    expect(origins[0]?.basis).toContain("未被修订修改");
+  });
+
+  it("F23 不误伤：引用了未修改表格之外的数值 → 维持修改区间归层", () => {
+    const origins = classifyFindingOrigins(
+      [issue({ description: "修订新增表述声称 MOTA 99.9 / IDF1 99.8，与表中 71.2 矛盾" })],
+      null,
+      ["实验与结果"],
+      { unchangedTableNumbers: new Set(["71.2", "74", "8200"]) },
+    );
+    expect(origins[0]?.origin).toBe("modified_existing");
+  });
+
   it("rootCauseKey → 灰区 claim → unknown_origin；excluded claim → baseline_inherited", () => {
     const audit: ClaimGapAudit = {
       ...noClaimsAudit,

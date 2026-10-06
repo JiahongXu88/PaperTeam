@@ -108,6 +108,7 @@ import {
 } from "../review/weakeningAuthorization.js";
 import { applyFactRestore, planFactRestore, restoreValueDelta } from "../quality/factRestore.js";
 import { computeClaimGapAudit, resolveClaimIndexLinks, tagIssueRootCauses, type ClaimGapAudit } from "../review/claimGapAudit.js";
+import { normalizeNumericToken as factPreservationNormalizeNumericToken } from "../quality/factPreservation.js";
 import {
   classifyFindingOrigins,
   evaluateRevisionTaskGate,
@@ -854,7 +855,17 @@ function qualityGateStage(
         // 无更早轮（首轮即被 gate）→ null（非回归检查不适用，如实记录）
         const summaries = await services.reviewArtifacts.listSummaries(ctx.projectId);
         const baselineSummary = summaries.find((summary) => summary.round < review.round);
-        const findingOrigins = classifyFindingOrigins(review.issues, claimGapAudit, modifiedSections);
+        /**
+         * M11.4 F23：与冻结基线逐字一致的表格数值集合（字节级 lineage 的
+         * 归层数据源）。Run P/Q/R 实证：审稿人对同一基线遗留问题（主表/
+         * 消融表数值无证据、内部矛盾）的措辞变体无法穷举词面归因；但表格
+         * 本身未被修订修改（Fact Guard 保证任何 cell 变更都会被拦）——引用
+         * 数值全部落在未修改表格的 finding 是基线遗留，不是修订引入。
+         */
+        const unchangedTableNumbers = await computeUnchangedTableNumbers(services, ctx.projectId);
+        const findingOrigins = classifyFindingOrigins(review.issues, claimGapAudit, modifiedSections, {
+          ...(unchangedTableNumbers !== null ? { unchangedTableNumbers } : {}),
+        });
         revisionTask = evaluateRevisionTaskGate({
           gateRules: gate.rules,
           externalInstructions: instructionSnapshots,
@@ -5430,6 +5441,54 @@ function reviewEvidenceSupplyStage(services: WorkflowServices): StageSpec {
       return { sourcesConsidered: sources.length, chunksRetrieved: candidates, groundedCandidates: proposals, proposals, verified: result.verifiedEvidence, rejected, protocolRejected };
     },
   };
+}
+
+/**
+ * M11.4 F23：冻结基线 ↔ 当前修订中逐字一致的表格块数值集合（字节级
+ * lineage）。表格块 = \begin{table}…\end{table} 整块；一致性按去空白归一
+ * 后字节比较。返回 null = 无冻结基线可比（口径不适用）。
+ */
+async function computeUnchangedTableNumbers(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<Set<string> | null> {
+  const TABLE_BLOCK = /\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g;
+  const numbersOf = (block: string): string[] => {
+    const set = new Set<string>();
+    for (const match of block.matchAll(/[-−]?\d+(?:\.\d+)?/g)) {
+      const token = normalizeNumericTokenForTables(match[0] ?? "");
+      if (token !== "") set.add(token);
+    }
+    return [...set];
+  };
+  const baseline = await loadFrozenBaseline(services, projectId, { existingPaper: true });
+  if (baseline === null) return null;
+  const currentRevision = await services.revisions.currentRevision(projectId);
+  const currentFiles = await readSnapshotTex(services.revisions.snapshotDir(projectId, currentRevision));
+  if (currentFiles === null) return null;
+  const normalize = (text: string) => text.replace(/\s+/g, "");
+  const baselineTables = new Map<string, string[]>();
+  for (const file of baseline.files) {
+    for (const block of file.content.matchAll(TABLE_BLOCK)) {
+      const key = `${file.file}|${normalize(block[0] ?? "")}`;
+      baselineTables.set(key, numbersOf(block[0] ?? ""));
+    }
+  }
+  const result = new Set<string>();
+  for (const file of currentFiles) {
+    for (const block of file.content.matchAll(TABLE_BLOCK)) {
+      const key = `${file.file}|${normalize(block[0] ?? "")}`;
+      if (baselineTables.has(key)) {
+        for (const token of numbersOf(block[0] ?? "")) result.add(token);
+      }
+    }
+  }
+  return result;
+}
+
+/** 表格数值归一（与 findingNumberTokens 同源：factPreservation.normalizeNumericToken） */
+function normalizeNumericTokenForTables(token: string): string {
+  return factPreservationNormalizeNumericToken(token);
 }
 
 /**

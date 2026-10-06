@@ -30,6 +30,19 @@ import type { ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { ExternalInstructionStatus } from "../review/externalInstructions.js";
 import { findingFingerprint } from "../review/revisionPlan.js";
+import { normalizeNumericToken } from "./factPreservation.js";
+
+/** finding 描述中的数值 token（归一化；F23 lineage 用）。词边界守卫：跳过
+ * 标识符内嵌数字（BDD100K / E001 / mAP50 中的数字不是数值语义）。 */
+function findingNumberTokens(text: string): string[] {
+  return [
+    ...new Set(
+      [...text.matchAll(/(?<![A-Za-z0-9_.])[-−]?\d+(?:\.\d+)?(?![A-Za-z0-9_])/g)]
+        .map((m) => normalizeNumericToken(m[0] ?? ""))
+        .filter((t) => t !== ""),
+    ),
+  ];
+}
 
 /** 任务层判定（gate.passed 不再是唯一终态） */
 export type RevisionTaskVerdict = "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED";
@@ -351,14 +364,19 @@ export function evaluateRevisionTaskGate(input: RevisionTaskGateInput): Revision
 /**
  * finding 来源归层（§16，确定性）：
  * 1. rootCauseKey / issueAttribution → claimGapAudit 的 claim 适用性；
- * 2. finding 章节不在本轮修订修改区间 → baseline_inherited；
- * 3. finding 章节在修改区间 → modified_existing（claim 归层已豁免者除外）；
- * 4. 无章节信息 → unknown_origin（转作者裁决，不二值判罚）。
+ * 2. 【M11.4 F23】数值字节级 lineage：finding 引用 ≥2 个数值且全部位于与
+ *    冻结基线逐字一致的表格（未被修订修改）→ baseline_inherited（无论章节
+ *    是否在修改区间——修改区间的启发式会被"改了同节文字但没动表"的场景
+ *    误伤：Run P/Q/R 实证，审稿人对基线表格的三种措辞变体）；
+ * 3. finding 章节不在本轮修订修改区间 → baseline_inherited；
+ * 4. finding 章节在修改区间 → modified_existing（claim 归层已豁免者除外）；
+ * 5. 无章节信息 → unknown_origin（转作者裁决，不二值判罚）。
  */
 export function classifyFindingOrigins(
   issues: readonly ReviewIssue[],
   claimGapAudit: ClaimGapAudit | null,
   modifiedSections: readonly string[],
+  options: { unchangedTableNumbers?: ReadonlySet<string> } = {},
 ): FindingOriginEntry[] {
   const claimsById = new Map((claimGapAudit?.claims ?? []).map((claim) => [claim.claimId, claim]));
   const excludedFingerprints = new Set(
@@ -394,6 +412,26 @@ export function classifyFindingOrigins(
     } else if (excludedFingerprints.has(fingerprint)) {
       origin = "baseline_inherited";
       basis = "claimGapAudit issueAttribution excluded（原稿既有 / 作者数据覆盖 claim 的伴随 finding）";
+    } else if (options.unchangedTableNumbers !== undefined) {
+      // F23：数值字节级 lineage（先于章节启发式——字节证据强于章节名匹配）
+      const numbers = findingNumberTokens(issue.description);
+      if (numbers.length >= 2 && numbers.every((token) => options.unchangedTableNumbers!.has(token))) {
+        origin = "baseline_inherited";
+        basis = `finding 引用的 ${numbers.length} 个数值全部位于与冻结基线逐字一致的表格（未被修订修改）——基线遗留问题，非修订引入`;
+        entries.push({ fingerprint, section: issue.section, severity: issue.severity, blocking: issue.blocking, origin, basis, description: issue.description });
+        continue;
+      }
+      const inModified = sectionModified(issue.section);
+      if (inModified === null) {
+        origin = "unknown_origin";
+        basis = "finding 无章节归属，无法与修订区间比对（转作者裁决）";
+      } else if (inModified) {
+        origin = "modified_existing";
+        basis = "finding 位于本轮修订修改区间（修改区间的问题由修订负责）";
+      } else {
+        origin = "baseline_inherited";
+        basis = "finding 章节未被本轮修订修改——基线既有问题（投稿层风险，不阻塞任务层）";
+      }
     } else {
       const inModified = sectionModified(issue.section);
       if (inModified === null) {
