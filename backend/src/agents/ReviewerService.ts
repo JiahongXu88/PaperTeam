@@ -68,6 +68,14 @@ export interface ReviewIssue {
    * 引入回归）。确定性回填（review.run 的 disconfirmBuildFindings）。
    */
   deterministicDisconfirmed?: boolean;
+  /**
+   * M11.4 Reliability Closure（creator-side lineage）：fact 模式下该 issue
+   * 来源 claim 在同轮 claims 数组中的下标（模型创建两者时自行声明）。机器
+   * 做存在性 + 弱佐证校验（resolveClaimIndexLinks）后转为 rootCauseKey——
+   * 元描述型 finding（「仍声称均优于…无证据支撑」）与 claim 原文词面重叠
+   * 结构性不足，文本匹配不可达（8c 实证）。非 fact 模式 / 非法下标被丢弃。
+   */
+  claimIndex?: number;
 }
 
 /**
@@ -480,6 +488,11 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
         ? { evidenceRequirement: readEvidenceRequirement(record) }
         : {}),
       blocking: record["blocking"] === true,
+      // M11.4 Reliability Closure：creator-side claim lineage（仅 fact 模式有
+      // claims 数组；非法值静默丢弃——弱佐证校验在 resolveClaimIndexLinks）
+      ...(typeof record["claimIndex"] === "number" && Number.isInteger(record["claimIndex"]) && record["claimIndex"] >= 0
+        ? { claimIndex: record["claimIndex"] as number }
+        : {}),
     });
   }
   return issues;
@@ -621,6 +634,7 @@ export function buildReviewPrompt(params: {
         : []),
       "输出额外字段 claims: [{section, claim, verdict, evidenceId?, note?}]；",
       "无已核验（verified）证据支撑的关键论断必须是 UNSUPPORTED 并生成 critical/major issue（blocking 视严重度）。",
+      "issue 若源自某条 claim 的核验结论，在该 issue 中填写 claimIndex（该 claim 在 claims 数组中的 0 基下标）——用于确定性地把 finding 归因到其来源 claim。",
     ],
     academic: academicSpec,
     style: styleSpec,

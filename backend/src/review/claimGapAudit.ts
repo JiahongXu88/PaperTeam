@@ -29,7 +29,7 @@
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { findingFingerprint } from "./revisionPlan.js";
-import { isUnsupportedVerdict, type ClaimGroundingEntry } from "./claimGrounding.js";
+import { isUnsupportedVerdict, claimFingerprint, type ClaimGroundingEntry } from "./claimGrounding.js";
 import { normalizeNumericToken } from "../quality/factPreservation.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 
@@ -297,11 +297,17 @@ export function computeClaimGapAudit(input: ClaimGapAuditInput): ClaimGapAudit {
     }
     const descriptionTerms = termSet(issue.description);
     const compactDescription = issue.description.replace(/\s+/g, "");
-    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（两档；见其注释）
-    const attributed = excludedClaims.find(
-      (claim) =>
-        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, compactDescription),
-    );
+    // M11.4 Reliability Closure：直接 id join 优先（claimIndex lineage /
+    // 机器回填的 rootCauseKey 指向被排除 claim → 直接归因，词面匹配只做兜底）
+    const directJoin = issue.rootCauseKey !== undefined
+      ? excludedClaims.find((claim) => claim.claimId === issue.rootCauseKey)
+      : undefined;
+    // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（两档 + 数值指纹档）
+    const attributed = directJoin ??
+      excludedClaims.find(
+        (claim) =>
+          claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, issue.description, compactDescription),
+      );
     const excluded = attributed !== undefined;
     if (excluded) {
       if (issue.severity === "critical") {
@@ -381,15 +387,19 @@ function sectionsCompatible(a: string, b: string): boolean {
  *   原句、claim 是其转述），引文本身就是归因证据，章节标签噪声（同一 reviewer
  *   对 claim 与 issue 的节标注不完全一致，实证："消融实验（tab:ablation_mgdtm
  *   分析）" vs "…分析段"）不能破坏归因。
- * 对称 Jaccard 对「短 claim vs 长描述」上限 ≈ |claim|/|描述| ≈ 0.15 < 0.2，
- * 结构性不可达（clean run p-db07e4273daa：MRG-DTM blocking finding 归因
- * 失败 → 误层 modified_existing → Revision Task 假 FAIL）。
+ *
+ * M11.4 Reliability Closure 追加数值指纹档（8c 实证：p-85d7749054b9 的
+ * 主表/消融表不一致 finding——描述是「问题」的元描述（“两处不一致未解释”），
+ * 与 claim 原文（数值罗列）词面重叠结构性 < 0.5；但它引用了 claim 4 个数值中
+ * 的 3 个（71.2 / 74.0 / 8200）。数值是最强指纹：claim 数值 ≥ 2 且描述含其
+ * 半数以上 → 同一对象；单数值 claim 要求章节兼容（数值指纹不足）。
  */
 function claimMatchesFinding(
   issueSection: string,
   claimSection: string,
   claimText: string,
   descriptionTerms: ReadonlySet<string>,
+  descriptionText: string,
   compactDescription: string,
 ): boolean {
   const containment = termContainment(termSet(claimText), descriptionTerms);
@@ -398,7 +408,73 @@ function claimMatchesFinding(
   ) {
     return true;
   }
-  return containment >= 0.75 || compactDescription.includes(compactSlice(claimText, 24));
+  if (containment >= 0.75 || compactDescription.includes(compactSlice(claimText, 24))) {
+    return true;
+  }
+  // 数值指纹：必须用原始描述（含空白）——去空白会把 "IDF1 74.0" 压成
+  // "IDF174.0"，数值边界被破坏（74.0 → 174.0），指纹失真。
+  const claimNumbers = [...new Set(numberRuns(claimText))];
+  if (claimNumbers.length >= 2) {
+    const descriptionNumbers = new Set(numberRuns(descriptionText));
+    const shared = claimNumbers.filter((token) => descriptionNumbers.has(token)).length;
+    if (shared / claimNumbers.length >= 0.5) {
+      return true;
+    }
+  } else if (claimNumbers.length === 1) {
+    const descriptionNumbers = new Set(numberRuns(descriptionText));
+    if (
+      descriptionNumbers.has(claimNumbers[0]!) &&
+      sectionsCompatible(issueSection, claimSection)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * M11.4 Reliability Closure：claimIndex creator-side lineage 解析（确定性）。
+ *
+ * fact Reviewer 同轮产出 claims 与 issues——issue 可携带 claimIndex（claims
+ * 数组下标）声明其来源 claim。这是「创建者侧 lineage」：模型只命名自己刚生成
+ * 的产物下标，机器做存在性 + 弱佐证校验（章节兼容 / 词元覆盖 ≥ 0.3 / 数值指纹
+ * 之一），错下标不采信。比词面匹配优先：8c 实证的元描述 finding（“摘要仍声称
+ * 均优于…无证据支撑”）与 claim 原文词面重叠 < 0.5，结构上不可归因。
+ * 返回同形 issues，命中者携带 rootCauseKey=claimId（调用方在 claim grounding
+ * 之后、claimGapAudit 之前执行；audit 归因与任务层归层消费同一 id）。
+ */
+export function resolveClaimIndexLinks<T extends { claimIndex?: number; section: string; description: string; rootCauseKey?: string }>(
+  issues: readonly T[],
+  factClaims: readonly { section: string; claim: string }[],
+): T[] {
+  if (factClaims.length === 0) {
+    return [...issues];
+  }
+  return issues.map((issue) => {
+    if (issue.rootCauseKey !== undefined) {
+      return issue; // 机器已回填（防重复消费）；保留
+    }
+    const index = issue.claimIndex;
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0 || index >= factClaims.length) {
+      return issue;
+    }
+    const claim = factClaims[index]!;
+    // 弱佐证（防错下标）：章节兼容 / claim 词元覆盖 ≥ 0.3 / 数值指纹（≥半数）
+    const descriptionTerms = termSet(issue.description);
+    const claimTerms = termSet(claim.claim);
+    const containment = termContainment(claimTerms, descriptionTerms);
+    const claimNumbers = [...new Set(numberRuns(claim.claim))];
+    const descriptionNumbers = new Set(numberRuns(issue.description));
+    const numericCorroborated =
+      claimNumbers.length >= 2 &&
+      claimNumbers.filter((token) => descriptionNumbers.has(token)).length / claimNumbers.length >= 0.5;
+    const corroborated =
+      sectionsCompatible(issue.section, claim.section) || containment >= 0.3 || numericCorroborated;
+    if (!corroborated) {
+      return issue;
+    }
+    return { ...issue, rootCauseKey: claimFingerprint(claim.section, claim.claim) };
+  });
 }
 
 /** claim 的空白剥离前缀片段（用于 issue 描述的逐字包含判定；两侧都去空白） */
@@ -437,6 +513,20 @@ export function tagIssueRootCauses(
     if (!relevant || options.excludeFingerprints?.has(findingFingerprint(issue))) {
       continue;
     }
+    // M11.4 Reliability Closure：claimIndex lineage 已回填 rootCauseKey 且指向
+    // 本轮 unsupported claim → 机器 lineage 优先，不再重跑词面匹配（防止
+    // 元描述 finding 被 word面匹配置换/丢失）
+    if (issue.rootCauseKey !== undefined && unsupportedClaims.some((claim) => claim.claimId === issue.rootCauseKey)) {
+      if (issue.severity === "critical") {
+        critical += 1;
+      } else if (issue.severity === "major") {
+        major += 1;
+      }
+      if (issue.blocking) {
+        blocking += 1;
+      }
+      continue;
+    }
     const descriptionTerms = termSet(issue.description);
     const compactDescription = issue.description.replace(/\s+/g, "");
     // M11.4 Attempt 8：归因谓词集中到 claimMatchesFinding（与 audit 同口径；
@@ -444,7 +534,7 @@ export function tagIssueRootCauses(
     const attributed = unsupportedClaims.find(
       (claim) =>
         isUnsupportedVerdict(claim.verdict) &&
-        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, compactDescription),
+        claimMatchesFinding(issue.section, claim.section, claim.claim, descriptionTerms, issue.description, compactDescription),
     );
     if (attributed === undefined) {
       continue;
