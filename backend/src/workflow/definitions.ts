@@ -1737,6 +1737,28 @@ function revisionReviseStage(
         })),
       ]);
       if (targets.length === 0) {
+        /**
+         * M11.4 Reliability Closure（Run M 实证：w-b52ff28ae148，计划 5 条全部
+         * author_decision_required——全部意见合法走作者裁决/基线覆盖闭环，本轮
+         * 没有 Writer 可执行条目。旧逻辑把「无可派发」当契约违反烧掉整个 run。
+         * 无可派发条目是合法轮次（合法终态=作者裁决）：跳过派发，正常进入
+         * 复审/gate；只有「有派发条目但零目标命中」仍属契约违反。
+         */
+        if (directives.length === 0) {
+          await ctx.emitDomain(
+            "revision.skipped",
+            { reason: "no_dispatchable_items", externalInstructions: externalDirectives.length },
+            "本轮计划无可派发条目（全部为作者裁决 / 基线覆盖闭环）——跳过 Writer 派发，直接进入复审",
+          );
+          return {
+            revisedSections: 0,
+            sections: [],
+            revision: currentRevision,
+            changed: false,
+            findingDispatch: { total: 0, matched: 0, unmatched: 0, multiTarget: 0 },
+            ...(externalDirectives.length > 0 ? { externalInstructions: externalDirectives.length } : {}),
+          };
+        }
         throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有任何可修订的章节文件");
       }
       const boundedTargets = targets.flatMap((target) => target.logicalSpan !== undefined ? [target.logicalSpan] : []);

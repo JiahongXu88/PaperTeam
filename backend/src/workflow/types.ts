@@ -215,6 +215,7 @@ export type WorkflowDomainEventType =
   | "fact_preservation.cumulative_unresolved"
   | "fact_restore.applied"
   | "fact_restore.skipped"
+  | "revision.skipped"
   | "evidence.ground_claims"
   | "final.created"
   | "style_polish.applied"
