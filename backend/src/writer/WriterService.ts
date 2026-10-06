@@ -1005,8 +1005,22 @@ export class WriterService {
         `Allowed comment references: ${commentAliasList.map((item) => item.ref).join(", ") || "(none)"}`,
         `Original reviewer comments: ${JSON.stringify(params.issues.map((issue) => ({ section: issue.section, category: issue.category, description: issue.description })))}`,
         "Only use commentRefs from the comment allowlist and evidenceRefs from the evidence allowlist. Do not invent IDs. Repair only the invalid structured fields; do not modify valid intent, action, or target.",
+        ...(structuredFailures.some((failure) => failure.code === "FACT_CHANGE_EVIDENCE_REQUIRED")
+          ? [
+              "FACT_CHANGE_EVIDENCE_REQUIRED has exactly two legal resolutions: (a) add evidenceRefs selecting from the allowed Evidence references that actually support the change, or (b) set expectedFactChanges to [] and change actionType to author_decision_required, keeping section/logicalSection/action and stating the decision need in rationale. Never attach an Evidence reference that does not actually support the change.",
+            ]
+          : []),
       ].join("\n");
-      const invalidFields = Object.fromEntries([...new Set(structuredFailures.map((failure) => failure.itemIndex))].map((index) => [index, [...new Set(structuredFailures.filter((failure) => failure.itemIndex === index).map((failure) => failure.field === "evidenceRefs" ? "relatedEvidenceIds" : failure.field))]]));
+      // FACT_CHANGE_EVIDENCE_REQUIRED 的合法修复不只「补证据」：把无证据支持的
+      // 事实变更降级为 author_decision_required（清空 expectedFactChanges）同样
+      // 合法且更诚实。这两个字段必须进入可修复集合，否则诚实模型（拒绝伪造
+      // evidence 链接）在 repair 通道里无解，bounded repair 构造性不可收敛。
+      const invalidFields = Object.fromEntries([...new Set(structuredFailures.map((failure) => failure.itemIndex))].map((index) => [index, [...new Set([
+        ...structuredFailures.filter((failure) => failure.itemIndex === index).map((failure) => failure.field === "evidenceRefs" ? "relatedEvidenceIds" : failure.field),
+        ...(structuredFailures.some((failure) => failure.itemIndex === index && failure.code === "FACT_CHANGE_EVIDENCE_REQUIRED")
+          ? ["expectedFactChanges", "actionType", "rationale"]
+          : []),
+      ])]]));
       const originalPlan = params.structuredRepair?.originalPlan ?? rawPlanValue.slice(0, 20);
       const previouslyAllowed = params.structuredRepair?.invalidFields ?? {};
       const mergedInvalidFields = { ...previouslyAllowed };

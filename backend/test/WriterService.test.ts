@@ -542,6 +542,35 @@ describe("WriterService improvement plan comment coverage", () => {
     expect(runtime.calls[1]?.task).toContain("Only repair the invalid structured fields");
   });
 
+  it("downgrades an evidence-less fact-changing item to author decision instead of deadlocking repair", async () => {
+    const target = { file: "main.tex", logicalSection: "section:Results", heading: "Results" };
+    const base = { section: "main.tex", logicalSection: target.logicalSection, actionType: "modify", action: "Add deployment benchmark table", rationale: "Reviewer asks for deployment validation", priority: "high", expectedFactChanges: [{ before: "no table", after: "board table", basis: "board report" }] };
+    let call = 0;
+    const runtime = new FakeRuntime(() => completedTask("{}"));
+    runtime.runAgent = async (input) => {
+      runtime.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId, contextScope: input.contextScope, toolPolicy: input.toolPolicy });
+      call += 1;
+      return completedTask(JSON.stringify({ plan: [call === 1 ? base : { ...base, actionType: "author_decision_required", expectedFactChanges: [] }] }));
+    };
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({ projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [], logicalTargets: [target], evidenceAliases: [], validEvidenceIds: [] });
+    expect(plan.items[0]).toMatchObject({ actionType: "author_decision_required", action: "Add deployment benchmark table", logicalSection: target.logicalSection });
+    expect(plan.items[0]?.expectedFactChanges).toEqual([]);
+    expect(runtime.calls).toHaveLength(2);
+    expect(runtime.calls[1]?.task).toContain("exactly two legal resolutions");
+    expect(runtime.calls[1]?.task).toContain("author_decision_required");
+  });
+
+  it("still exhausts when the model keeps an unsupported fact change across bounded repairs", async () => {
+    const target = { file: "main.tex", logicalSection: "section:Results", heading: "Results" };
+    const base = { section: "main.tex", logicalSection: target.logicalSection, actionType: "modify", action: "Preserve the measured change", rationale: "No eligible evidence exists", priority: "high", expectedFactChanges: [{ before: "45", after: "28", basis: "unknown" }], relatedEvidenceIds: [] };
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [base] })));
+    runtime.runAgent = async (input) => { runtime.calls.push({ agentId: input.agentId, task: input.task, projectId: input.projectId, contextScope: input.contextScope, toolPolicy: input.toolPolicy }); return completedTask(JSON.stringify({ plan: [base] })); };
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    await expect(writer.planImprovement({ projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [], logicalTargets: [target], evidenceAliases: [], validEvidenceIds: [] })).rejects.toMatchObject({ code: "MODEL_REPAIR_EXHAUSTED" });
+    expect(runtime.calls).toHaveLength(3);
+  });
+
   it("repairs only invalid planner fields and preserves valid item intent and targets", async () => {
     const target = { file: "main.tex", logicalSection: "section:Results", heading: "Results" };
     const valid = { section: "main.tex", logicalSection: target.logicalSection, actionType: "modify", action: "Clarify the reported outcome", rationale: "Address the reviewer comment", priority: "high" };
