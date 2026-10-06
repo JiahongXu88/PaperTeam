@@ -210,8 +210,22 @@ const PLACEHOLDER_PATTERN = /(待回填|待补充|待验证|待确认|待归档|
 /** .test() 用（/g 正则的 test 有 lastIndex 状态，必须与 matchAll 分开） */
 const PLACEHOLDER_TEST = /(待回填|待补充|待验证|待确认|待归档|暂无数据|待实验产出|TBD|TODO)/;
 
+/**
+ * M11.4 Attempt 8：副词对冲形态剥离。占位守卫的靶标是**占位标记**（把具体
+ * 实验事实替换成「待回填/TODO」——去内容化），不是认识论限定语：「能否…
+ * 保持尚待验证」「仍待确认」是评审要求的合法弱化措辞（weakening 授权通道的
+ * 正常产物），其中包含的「待验证」子串不构成占位（实证：clean run
+ * p-e4f0737aa7e4 rev-3 的两处「尚待验证」对冲语被记为 placeholder_regression，
+ * 阻断 Draft 构建）。剥离常见副词引导的对冲形态后再计数/判定。
+ */
+const HEDGED_PLACEHOLDER_PATTERN = /(?:尚|仍|还|亟|亟待|有望|有待)(?:待验证|待确认|待补充|待回填|待归档|待实验产出)/g;
+
+function stripHedgedPlaceholders(text: string): string {
+  return text.replace(HEDGED_PLACEHOLDER_PATTERN, "");
+}
+
 function countPlaceholders(content: string): number {
-  return [...content.matchAll(PLACEHOLDER_PATTERN)].length;
+  return [...stripHedgedPlaceholders(content).matchAll(PLACEHOLDER_PATTERN)].length;
 }
 
 /** 硬件型号（保守白名单：常见边缘板卡 / GPU / SoC 形态） */
@@ -1393,7 +1407,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
             continue;
           }
           const numericChange = /\d/.test(before) || /\d/.test(after);
-          const placeholderNow = PLACEHOLDER_TEST.test(after);
+          const placeholderNow = PLACEHOLDER_TEST.test(stripHedgedPlaceholders(after));
           if (!numericChange && !placeholderNow) {
             continue; // 纯措辞单元格：不属事实
           }

@@ -301,4 +301,36 @@ describe("M11.4 Attempt 8：公式符号一致重命名 → formatChanges", () =
     // 至少一条 formula 违规保留
     expect(summary.formulaChanges.length + summary.addedUnsupportedFacts.length).toBeGreaterThan(0);
   });
+
+  it("副词对冲语（尚待验证/仍待确认）不是占位标记 → 不触发 placeholder 回归", () => {
+    // Attempt 8 clean run p-e4f0737aa7e4 实证形态：评审要求弱化无证据数值结论，
+    // Writer 按授权加「尚待验证」限定语 → 被记 placeholder_regression → Draft 构建被阻断
+    const previous = [
+      "\\section{实验}",
+      "本表数值的实验记录尚未完成核验，表中趋势为初步解读，权重取值需结合场景权衡。",
+      "\\end{document}",
+    ].join("\n");
+    const current = [
+      "\\section{实验}",
+      "本表数值的实验记录尚未完成核验，表中趋势为初步解读，机制贡献能否保持尚待验证，权重取值仍待确认。",
+      "\\end{document}",
+    ].join("\n");
+    const summary = evaluate(previous, current);
+    expect(summary.placeholderRegressions).toHaveLength(0);
+  });
+
+  it("真占位标记（数值 → 待回填）仍触发 placeholder 回归", () => {
+    const previous = [
+      "\\section{实验}",
+      "本方法 MOTA 为 71.2，IDF1 为 74.0。",
+      "\\end{document}",
+    ].join("\n");
+    const current = [
+      "\\section{实验}",
+      "本方法 MOTA 待回填，IDF1 待回填。",
+      "\\end{document}",
+    ].join("\n");
+    const summary = evaluate(previous, current);
+    expect(summary.placeholderRegressions.length + summary.changedFacts.length).toBeGreaterThan(0);
+  });
 });
