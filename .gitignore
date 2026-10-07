@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# 服务器本地 compose override（机器配置，如 volume 绑定独立数据盘；不入库）
+compose.override.yml
 
 # ===== Node =====
 node_modules/
