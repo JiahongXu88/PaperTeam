@@ -171,6 +171,10 @@ describe("POST /api/projects/:id/workflows（完整 idea_to_paper 流程）", ()
     // M3.2：双 Gate 通过 → Final
     expect(run.completion?.label).toBe("final");
     expect(run.completedStages).toEqual([
+      // M12 A9：target 三 stage（未配置 target → 显式 no-op）排在 research.idea 之前
+      "target.benchmark",
+      "target.profile",
+      "target.readiness",
       "research.idea",
       "evidence.ground",
       "research.feasibility",

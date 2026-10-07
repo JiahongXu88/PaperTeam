@@ -228,6 +228,13 @@ import {
 } from "../quality/gates.js";
 import type { Outline } from "../manuscript/ManuscriptService.js";
 import { collectLatexFiles, type LatexProjectFiles } from "../manuscript/LatexFiles.js";
+import {
+  readinessGateAdvisory,
+  renderPlannerTargetDigest,
+  renderTargetExpectationsBlock,
+  renderTargetReferenceBlock,
+} from "../target/promptBlocks.js";
+import type { TargetServices } from "../target/services.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import type {
   PlanDecision,
@@ -327,6 +334,12 @@ export interface WorkflowServices {
   artifacts: PaperArtifactStore;
   /** Finalize：双 Gate 对齐校验 + Final 冻结（确定性，无 LLM） */
   finalize: FinalizeService;
+  /**
+   * M12 A9：Target Publication Intelligence 服务束（buildTargetServices 产物）。
+   * **可选**——未接线（旧测试栈 / target 未配置）时 target.* stage 显式 no-op
+   * （零模型调用 / 零 HITL / 不改任何终态语义），既有工作流行为不变。
+   */
+  targets?: TargetServices;
   stageTimeoutMs: number;
   stageMaxAttempts: number;
   /** bounded loop 与 Quality Gate 阈值 */
@@ -468,6 +481,8 @@ function reviewRunStageInner(
         surveyWriting = await evaluateSurveyWritingForProject(services, ctx.projectId);
         surveyDigest = renderSurveyMetricsLines(surveyWriting).join("\n");
       }
+      // M12 A9：目标带数值期望（fresh profile 才有；仅 academic 模式消费）
+      const targetExpectations = await readTargetExpectationsBlock(services, ctx.projectId);
       const results = await services.reviewer.reviewAll({
         projectId: ctx.projectId,
         manuscriptDigest: digest,
@@ -478,6 +493,7 @@ function reviewRunStageInner(
         ...(citationDigest !== undefined ? { citationDigest } : {}),
         ...(options.survey === true ? { reviewProfile: "survey" as const } : {}),
         ...(surveyDigest !== undefined ? { surveyDigest } : {}),
+        ...(targetExpectations !== undefined ? { targetExpectations } : {}),
       });
 
       // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
@@ -719,6 +735,8 @@ function qualityGateStage(
       }
       // M11.2.3（D-2）：同轮 claim grounding（披露口径拆分 + 根因去重的输入）
       const claimGrounding = await services.reviewArtifacts.loadClaimGrounding(ctx.projectId, review.round);
+      // M12 A9：Target Readiness advisory（additive 透传；零规则参与、零阻断）
+      const targetReadiness = await readTargetReadinessAdvisory(services, ctx.projectId);
       const gate = evaluateQualityGate(
         {
           review,
@@ -733,6 +751,7 @@ function qualityGateStage(
           ...(evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage } : {}),
           ...(revisionValidation !== undefined ? { revisionValidation } : {}),
           ...(surveyWriting !== undefined ? { surveyWriting } : {}),
+          ...(targetReadiness !== undefined ? { targetReadiness } : {}),
         },
         QUALITY_THRESHOLDS(services),
       );
@@ -4451,6 +4470,272 @@ function evidenceGroundStage(
   };
 }
 
+// ============================================================
+// M12 A9：Target Publication Intelligence stages
+//（target.benchmark → target.profile → target.readiness，插在 feasibility 之前）
+// ============================================================
+
+/** target stage 的显式 no-op 结果（零模型调用 / 零 HITL；终态语义不变） */
+function targetSkipResult(reason: string): Record<string, unknown> {
+  return { skipped: true, reason };
+}
+
+/**
+ * target 三 stage 的 advisory 纪律兜底（M12.0 §15：Target Readiness 不阻断）：
+ * discovery / 提取 / 评估的失败（未配置检索 provider、网络、artifact 损坏等）
+ * 如实记入 stage result（reason 带错误码与消息），但**不使主 workflow 失败**——
+ * target 参照系缺席时下游 stage 以「benchmark 未冻结」显式 no-op。产品语义：
+ * 目标智能增强写作流程，绝不改变既有 workflow 终态。
+ */
+function targetAdvisoryReason(error: unknown): string {
+  const code = error instanceof BusinessError ? error.code : error instanceof Error ? error.name : "unknown";
+  const message = error instanceof Error ? error.message : String(error);
+  return `target 参照系建立失败（${code}：${message}）——advisory 语义不阻断主流程`;
+}
+
+/**
+ * target.benchmark：benchmark 语料冻结。三层 no-op 判定（诚实跳过，不静默）：
+ * 1. services.targets 未接线（旧栈 / target 未配置部署）；
+ * 2. benchmark artifact 已冻结 → 幂等返回（resume ≠ refresh 纪律——普通 run
+ *    不得改写已冻结参照系，更新走显式 refresh）；
+ * 3. 项目未配置 researchField（discovery 的确定性检索词来源；无字段无从检索）。
+ * 配置齐全且未冻结 → discoverAndFreeze（A6 默认流程：auto-select 8–15、
+ * 零暂停）。requiresAttention 四触发（<5 篇 / venue 歧义 / venue 未解析 /
+ * 空检索）如实透传——advisory 语义照常继续，profile/readiness 按语料事实
+ * 降级 INSUFFICIENT_EVIDENCE，不新增任何 HITL 暂停。
+ */
+function targetBenchmarkStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "target.benchmark",
+    description:
+      "Target benchmark 语料发现与冻结（venue 过滤检索 + 引用数排序 auto-select 8–15 篇；未配置 / 已冻结 / 未接线 → 显式 no-op）",
+    requiredInputs: [],
+    producedOutputs: ["research/target-benchmark.json（配置 target 时）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      if (services.targets === undefined) {
+        return targetSkipResult("target services 未接线（services.targets 缺省）——no-op");
+      }
+      const existing = await services.targets.benchmark.get(ctx.projectId);
+      if (existing !== null) {
+        return {
+          skipped: false,
+          alreadyFrozen: true,
+          revision: existing.revision,
+          papers: effectiveTargetPaperCount(existing.papers),
+          sufficiency: existing.selection?.sufficiency ?? null,
+          requiresAttention: existing.selection?.requiresAttention ?? [],
+        };
+      }
+      const project = await services.projects.getRequired(ctx.projectId);
+      const researchField = project.researchField?.trim() ?? "";
+      if (researchField === "") {
+        return targetSkipResult(
+          "项目未配置 researchField（benchmark discovery 的确定性检索词来源）——无 target 参照系可建立，no-op",
+        );
+      }
+      let result: Awaited<ReturnType<typeof services.targets.discovery.discoverAndFreeze>>;
+      try {
+        result = await services.targets.discovery.discoverAndFreeze(ctx.projectId, {
+          target: {
+            documentType: project.documentType ?? "",
+            targetProfile: project.targetProfile ?? "",
+            ...(project.targetVenue !== undefined && project.targetVenue.trim() !== ""
+              ? { targetVenue: project.targetVenue.trim() }
+              : {}),
+            researchField,
+          },
+        });
+      } catch (error) {
+        // advisory 兜底：未配置检索 provider / 网络 / 检索失败——如实记录，不阻断主 workflow
+        return targetSkipResult(targetAdvisoryReason(error));
+      }
+      return {
+        skipped: false,
+        alreadyFrozen: result.alreadyFrozen,
+        revision: result.artifact.revision,
+        papers: effectiveTargetPaperCount(result.artifact.papers),
+        savedSourceIds: result.savedSourceIds.length,
+        venueDegraded: result.discovery.venueDegraded,
+        sufficiency: result.selection.selection.sufficiency,
+        requiresAttention: result.selection.selection.requiresAttention,
+      };
+    },
+  };
+}
+
+/** target.profile：确定性提取 + bounded method/writing 摘要（freshness 保证） */
+function targetProfileStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "target.profile",
+    description: "Target Profile 提取（分位带 + bounded method/writing 摘要；benchmark 未冻结 / 未接线 → no-op）",
+    requiredInputs: ["target.benchmark"],
+    producedOutputs: ["research/target-profile.json（配置 target 时）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      if (services.targets === undefined) {
+        return targetSkipResult("target services 未接线——no-op");
+      }
+      let benchmark: Awaited<ReturnType<typeof services.targets.benchmark.get>>;
+      try {
+        benchmark = await services.targets.benchmark.get(ctx.projectId);
+      } catch (error) {
+        // artifact 损坏 fail-closed 抛错——advisory 兜底：记录后继续（不阻断主 workflow）
+        return targetSkipResult(targetAdvisoryReason(error));
+      }
+      if (benchmark === null) {
+        return targetSkipResult("benchmark 语料未冻结（target.benchmark 为 no-op）——profile 无数据源");
+      }
+      let current: Awaited<ReturnType<typeof services.targets.profile.ensureCurrent>>;
+      try {
+        current = await services.targets.profile.ensureCurrent(ctx.projectId);
+      } catch (error) {
+        return targetSkipResult(targetAdvisoryReason(error));
+      }
+      const { profile, regenerated } = current;
+      return {
+        skipped: false,
+        regenerated,
+        benchmarkRevision: profile.benchmarkRevision,
+        n: profile.n,
+        availability: Object.fromEntries(
+          (Object.keys(profile.dimensions) as Array<keyof typeof profile.dimensions>).map((name) => [
+            name,
+            profile.dimensions[name].availability,
+          ]),
+        ),
+      };
+    },
+  };
+}
+
+/**
+ * target.readiness：当前稿 × profile → 四档判决。无手稿（idea_to_paper 前段）
+ * → INSUFFICIENT_EVIDENCE 产物（诚实「无观测点」），不 crash 不阻断。
+ */
+function targetReadinessStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "target.readiness",
+    description: "Target Readiness 评估（六维四档 advisory 判决 + 结构化差距；无手稿 → INSUFFICIENT_EVIDENCE 产物）",
+    requiredInputs: ["target.profile"],
+    producedOutputs: ["research/target-readiness.json（配置 target 时）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout"],
+    async execute(ctx) {
+      if (services.targets === undefined) {
+        return targetSkipResult("target services 未接线——no-op");
+      }
+      let benchmark: Awaited<ReturnType<typeof services.targets.benchmark.get>>;
+      try {
+        benchmark = await services.targets.benchmark.get(ctx.projectId);
+      } catch (error) {
+        return targetSkipResult(targetAdvisoryReason(error));
+      }
+      if (benchmark === null) {
+        return targetSkipResult("benchmark 语料未冻结（target.benchmark 为 no-op）——readiness 无参照系");
+      }
+      let artifact: Awaited<ReturnType<typeof services.targets.gap.evaluate>>;
+      try {
+        artifact = await services.targets.gap.evaluate(ctx.projectId);
+      } catch (error) {
+        return targetSkipResult(targetAdvisoryReason(error));
+      }
+      return {
+        skipped: false,
+        overall: artifact.overall.verdict,
+        verdicts: Object.fromEntries(artifact.dimensions.map((entry) => [entry.dimension, entry.verdict])),
+        manuscriptRevision: artifact.manuscriptRevision,
+      };
+    },
+  };
+}
+
+/** M12 A9：target 三 stage 工厂（idea_to_paper / existing_paper_improvement 共用） */
+export function targetStages(services: WorkflowServices): StageSpec[] {
+  return [targetBenchmarkStage(services), targetProfileStage(services), targetReadinessStage(services)];
+}
+
+/** 冻结语料的有效条目数（未 excluded） */
+function effectiveTargetPaperCount(papers: Array<{ excluded?: unknown }>): number {
+  return papers.filter((paper) => paper.excluded === undefined).length;
+}
+
+/**
+ * M12 A9 消费入口：目标实证参照系块（profile fresh + 最新 readiness）。
+ * 任一前提不满足（未接线 / 未冻结 / profile 陈旧且未重建 / readiness 未评估 /
+ * 产物损坏）→ undefined（消费端 prompt 与旧版逐字节一致，不因 target 缺席
+ * 改变既有行为）。这里只读不建：重建（LLM 摘要）只发生在 target.profile
+ * stage / ensureCurrent 显式调用。
+ */
+async function readTargetReferenceBlock(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  if (services.targets === undefined) {
+    return undefined;
+  }
+  try {
+    const envelope = await services.targets.profile.get(projectId);
+    const readiness = await services.targets.gap.get(projectId);
+    return (
+      renderTargetReferenceBlock(envelope !== null && envelope.fresh ? envelope.profile : null, readiness) ?? undefined
+    );
+  } catch {
+    return undefined; // 损坏产物不阻断主流程（fail-closed 语义在 target.* stage 内）
+  }
+}
+
+/** M12 A9：Reviewer academic 模式的目标带数值期望块（fresh profile 才注入） */
+async function readTargetExpectationsBlock(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  if (services.targets === undefined) {
+    return undefined;
+  }
+  try {
+    const envelope = await services.targets.profile.get(projectId);
+    return renderTargetExpectationsBlock(envelope !== null && envelope.fresh ? envelope.profile : null) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** M12 A9：Planner 的目标带差距 digest（readiness 存在才注入；advisory 不立项） */
+async function readPlannerTargetDigest(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<string | undefined> {
+  if (services.targets === undefined) {
+    return undefined;
+  }
+  try {
+    return renderPlannerTargetDigest(await services.targets.gap.get(projectId));
+  } catch {
+    return undefined;
+  }
+}
+
+/** M12 A9：Quality Gate 的 targetReadiness advisory 投影（readiness 存在才透传） */
+async function readTargetReadinessAdvisory(
+  services: WorkflowServices,
+  projectId: string,
+) {
+  if (services.targets === undefined) {
+    return undefined;
+  }
+  try {
+    return readinessGateAdvisory(await services.targets.gap.get(projectId));
+  } catch {
+    return undefined;
+  }
+}
+
 function feasibilityStage(services: WorkflowServices, id = "research.feasibility"): StageSpec {
   return {
     id,
@@ -4464,11 +4749,15 @@ function feasibilityStage(services: WorkflowServices, id = "research.feasibility
     async execute(ctx) {
       const artifact = await requireResearchArtifact(services, ctx.projectId);
       const evidenceStats = await services.evidence.stats(ctx.projectId);
+      // M12 A9：目标实证参照系（fresh profile + 最新 readiness；陈旧/缺失/
+      // 未接线 → 不注入，prompt 与旧版逐字节一致）
+      const targetReference = await readTargetReferenceBlock(services, ctx.projectId);
       const result = await services.feasibility.assess({
         projectId: ctx.projectId,
         research: artifact.report,
         evidenceStats,
         ...(id === "assessment.target" ? { assessKind: "existing_paper" as const } : {}),
+        ...(targetReference !== undefined ? { targetReference } : {}),
       });
       return {
         level: result.level,
@@ -4805,6 +5094,8 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
 
 export function createIdeaToPaperDefinition(services: WorkflowServices): WorkflowDefinition {
   const stages: readonly StageSpec[] = [
+    // M12 A9：target 三 stage（未配置 target / 未接线 → 显式 no-op，零行为变化）
+    ...targetStages(services),
     researchIdeaStage(services),
     evidenceGroundStage(services),
     feasibilityStage(services),
@@ -4832,6 +5123,11 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
   ];
 
   const front = [
+    // M12 A9：参照系先行（profile 供 feasibility/Reviewer/Writer 消费；
+    // readiness 此时无手稿 → INSUFFICIENT_EVIDENCE 产物，诚实无观测点）
+    "target.benchmark",
+    "target.profile",
+    "target.readiness",
     "research.idea",
     "evidence.ground",
     "research.feasibility",
@@ -4843,7 +5139,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
   return {
     kind: "idea_to_paper",
     description:
-      "Idea-to-Paper：调研 → 可行性 → 确认 → 大纲 → 确认 →（证据供给提示，条件出现）→ 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订 + 修订复核）→ 构建",
+      "Idea-to-Paper：（目标参照系，条件 no-op）→ 调研 → 可行性 → 确认 → 大纲 → 确认 →（证据供给提示，条件出现）→ 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订 + 修订复核）→ 构建",
     stages,
     plan(state: WorkflowState): PlanDecision {
       for (const stageId of front) {
@@ -5586,6 +5882,9 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
        * verifyNoopCoverage 兜底错误引文）。
        */
       const commentTargetHints = buildCommentTargetHints(commentAliases, logicalTargets);
+      // M12 A9：目标带 readiness 差距 digest（作者可选上下文；不自动立项——
+      // 修订范围仍由外审意见与作者裁决主导；readiness 缺席 → 不注入，prompt 不变）
+      const targetReadinessDigest = await readPlannerTargetDigest(services, ctx.projectId);
       const plan = await services.writer.planImprovement({
         projectId: ctx.projectId,
         issues: review?.issues ?? [],
@@ -5600,6 +5899,7 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         ...(baselineDigest !== undefined ? { baselineDigest } : {}),
         ...(coverageDigest !== undefined ? { coverageDigest } : {}),
         ...(authorGoal !== undefined ? { authorGoal } : {}),
+        ...(targetReadinessDigest !== undefined ? { targetReadinessDigest } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
         validEvidenceIds: eligibleEvidence.map((record) => record.id),
         validEvidenceProtocolScopes: Object.fromEntries(
@@ -5690,6 +5990,8 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     importInventoryStage(services),
     importBaselineStage(services),
     importUnderstandStage(services),
+    // M12 A9：target 三 stage（未配置 target / 未接线 → 显式 no-op，零行为变化）
+    ...targetStages(services),
     citationVerifyStage(services),
     reviewRunStageInner(services, { existingPaper: true }),
     feasibilityStage(services, "assessment.target"),
@@ -5726,6 +6028,11 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     "import.inventory",
     "import.baseline",
     "import.understand",
+    // M12 A9：目标参照系在评估/审稿消费前建立（import 后 manuscript 已就绪，
+    // readiness 有观测点；未配置 target → no-op）
+    "target.benchmark",
+    "target.profile",
+    "target.readiness",
     "citation.verify",
     "review.run",
     "assessment.target",
@@ -5738,7 +6045,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
   return {
     kind: "existing_paper_improvement",
     description:
-      "Existing-LaTeX Improvement：结构解析 → 基线编译 → 资产清单 → 事实基线 → 论文理解 → 引用审计 → 审稿 → 目标评估 →（M10.3：修订研究计划 → 批准 → 检索执行 → 证据供给提示 → 锚定提案 → 三段核验）→ 改进计划 → 确认 → 逐节改造 →（共享后段：复审 / Quality Gate / bounded 修订 + 修订复核 / 构建）→ Revision Trace 报告",
+      "Existing-LaTeX Improvement：结构解析 → 基线编译 → 资产清单 → 事实基线 → 论文理解 →（目标参照系，条件 no-op）→ 引用审计 → 审稿 → 目标评估 →（M10.3：修订研究计划 → 批准 → 检索执行 → 证据供给提示 → 锚定提案 → 三段核验）→ 改进计划 → 确认 → 逐节改造 →（共享后段：复审 / Quality Gate / bounded 修订 + 修订复核 / 构建）→ Revision Trace 报告",
     stages,
     plan(state: WorkflowState): PlanDecision {
       for (const stageId of frontPre) {

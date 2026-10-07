@@ -29,6 +29,7 @@ import {
 import type { ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { ClaimGroundingReport } from "../review/claimGrounding.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
+import type { TargetReadinessGateAdvisory } from "../target/promptBlocks.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { LatexCompileResult, LatexCompiler } from "../latex/LatexCompiler.js";
 import type { LatexDiagnostic } from "../latex/diagnostics.js";
@@ -331,6 +332,13 @@ export interface QualityGateInput {
    * blocking 三规则参与 Final 判定，metrics 以 warning 形态呈现（不阻断）。
    */
   surveyWriting?: SurveyWritingEvaluation;
+  /**
+   * M12 A9：Target Readiness advisory 投影（readinessGateAdvisory 产物）。
+   * **零阻断**：不进任何规则、不影响 passed / revisionTask / publicationReadiness
+   * 判定——只随 gate 结果透传（UI / 报告可见）。undefined = 无 target 配置 /
+   * 未评估（既有项目行为完全不变）。
+   */
+  targetReadiness?: TargetReadinessGateAdvisory;
 }
 
 export interface QualityGateResult {
@@ -361,6 +369,11 @@ export interface QualityGateResult {
     reasons: string[];
     baselineInheritedRisks: { description: string; origin: string; reviewerRequired: boolean }[];
   };
+  /**
+   * M12 A9：Target Readiness advisory（additive 透传字段；不参与任何判定——
+   * 三层语义冻结：Correctness / Publication Ready / Target Readiness 互不侵蚀）。
+   */
+  targetReadiness?: TargetReadinessGateAdvisory;
 }
 
 /** Quality Gate 判定（确定性；Draft 不经过本判定） */
@@ -715,6 +728,8 @@ export function evaluateQualityGate(
     rules,
     thresholds,
     checkedAt: new Date().toISOString(),
+    // M12 A9：advisory 透传（零规则参与——targetReadiness 不影响本函数任何判定）
+    ...(input.targetReadiness !== undefined ? { targetReadiness: input.targetReadiness } : {}),
   };
 }
 

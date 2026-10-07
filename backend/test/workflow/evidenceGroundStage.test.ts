@@ -100,7 +100,15 @@ describe("evidence.ground stage（idea_to_paper）", () => {
     const run = await pollRun(stack, runId, ["awaiting_input", "failed", "cancelled"]);
     expect(run.status).toBe("awaiting_input");
     expect(run.awaiting?.stageId).toBe("hitl.feasibility_confirm");
-    expect(run.completedStages).toEqual(["research.idea", "evidence.ground", "research.feasibility"]);
+    // M12 A9：target 三 stage（未配置 target → 显式 no-op）排在 research.idea 之前
+    expect(run.completedStages).toEqual([
+      "target.benchmark",
+      "target.profile",
+      "target.readiness",
+      "research.idea",
+      "evidence.ground",
+      "research.feasibility",
+    ]);
 
     // 候选转正：verified + EvidenceRecord
     const stored = await stack.stack.evidenceCandidates.get(project.id, candidate.candidateId);

@@ -85,12 +85,18 @@ export class FeasibilityService {
   /**
    * 评估目标可行性（Idea-to-Paper：调研之后；Existing-Paper：审计之后）。
    * assessKind 用于区分两类工作流的措辞与依据。
+   *
+   * M12 A9：可选 targetReference（Target Profile / Readiness 的渲染块，
+   * promptBlocks.renderTargetReferenceBlock 产物）——把纯 LLM 先验变成有
+   * 实证参照系的判断。undefined → prompt 与旧版逐字节一致（零行为变化）。
    */
   async assess(params: {
     projectId: string;
     research: ResearchReport;
     evidenceStats: EvidenceStats;
     assessKind?: "idea" | "existing_paper";
+    /** 目标实证参照系块（benchmark 观测 + readiness 差距；缺省不注入） */
+    targetReference?: string;
   }): Promise<FeasibilityResult> {
     const project = await this.projects.getRequired(params.projectId);
     const prompt = buildFeasibilityPrompt(
@@ -98,6 +104,7 @@ export class FeasibilityService {
       params.research,
       params.evidenceStats,
       params.assessKind ?? "idea",
+      params.targetReference,
     );
     // Record only bounded size metadata, never prompt content. This makes the
     // preflight payload auditable without leaking manuscript or source text.
@@ -296,6 +303,11 @@ export function buildFeasibilityPrompt(
   research: ResearchReport,
   evidenceStats: EvidenceStats,
   assessKind: "idea" | "existing_paper",
+  /**
+   * M12 A9：目标实证参照系块（renderTargetReferenceBlock 产物）。可选——
+   * undefined 时 prompt 与旧版逐字节一致（回归测试锁定）。
+   */
+  targetReference?: string,
 ): string {
   const subject =
     assessKind === "existing_paper" ? "当前论文与目标档次的差距" : "当前研究 Idea 与目标档次";
@@ -354,5 +366,6 @@ export function buildFeasibilityPrompt(
     "",
     "===== Evidence 现状 =====",
     `Evidence 总数：${evidenceStats.total}（verified=${evidenceStats.byStatus.verified}，unverified=${evidenceStats.byStatus.unverified}，contradictory=${evidenceStats.contradictory}）`,
+    ...(targetReference !== undefined ? ["", targetReference] : []),
   ].join("\n");
 }

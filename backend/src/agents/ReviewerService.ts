@@ -182,6 +182,11 @@ export class ReviewerService {
     reviewProfile?: "survey";
     /** M11.2：综述确定性 metrics digest（写作 invariants + metrics 的渲染行） */
     surveyDigest?: string;
+    /**
+     * M12 A9：目标带数值期望块（target/promptBlocks.renderTargetExpectationsBlock
+     * 产物；仅 academic 模式注入）。undefined → 各模式 prompt 与旧版逐字节一致。
+     */
+    targetExpectations?: string;
     /** Workflow stage cancellation scope shared by every mode in this review round. */
     signal?: AbortSignal;
   }): Promise<ModeReviewResult[]> {
@@ -244,6 +249,8 @@ export class ReviewerService {
     reviewProfile?: "survey";
     /** M11.2：综述确定性 metrics digest */
     surveyDigest?: string;
+    /** M12 A9：目标带数值期望块（仅 academic 模式注入；undefined → prompt 不变） */
+    targetExpectations?: string;
     /** Shared review-round cancellation scope, inherited from the workflow stage. */
     signal?: AbortSignal;
   }): Promise<ModeReviewResult> {
@@ -565,6 +572,12 @@ export function buildReviewPrompt(params: {
   reviewProfile?: "survey";
   /** M11.2：综述确定性 metrics digest（写作 invariants 渲染行） */
   surveyDigest?: string;
+  /**
+   * M12 A9：目标带数值期望块（renderTargetExpectationsBlock 产物）。仅注入
+   * academic 模式的 rubric；undefined → 全部模式 prompt 与旧版逐字节一致
+   * （回归测试锁定）。
+   */
+  targetExpectations?: string;
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -613,11 +626,18 @@ export function buildReviewPrompt(params: {
           "7. 是否退化成 literature listing（逐篇摘要式罗列）；synthesis → 正文是否发生语义漂移（正文表述超出综合结论的范围）。",
           `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
           "输出额外字段 scores: {覆盖完整性: 0-100, 分类与组织: 0-100, 文献均衡性: 0-100, 比较与论证: 0-100, 引用支撑: 0-100, 写作质量: 0-100} 与 overallScore。",
+          // M12 A9：目标带数值期望（benchmark 观测）——academic 模式专有注入
+          ...(params.targetExpectations !== undefined
+            ? ["", params.targetExpectations]
+            : []),
         ]
       : [
           "你使用 academic review skill：从问题定义、方法合理性、实验充分性、论证逻辑、写作质量评审。",
           `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
           "输出额外字段 scores: {问题定义: 0-100, 方法合理性: 0-100, 实验充分性: 0-100, 论证逻辑: 0-100, 写作质量: 0-100} 与 overallScore。",
+          ...(params.targetExpectations !== undefined
+            ? ["", params.targetExpectations]
+            : []),
         ];
 
   const modeSpecs: Record<ReviewMode, string[]> = {

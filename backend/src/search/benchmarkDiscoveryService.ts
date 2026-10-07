@@ -33,6 +33,7 @@ import type { SourceImportService } from "../sources/SourceImportService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { TargetBenchmarkService } from "../target/TargetBenchmarkService.js";
 import type { BenchmarkTargetSpec, TargetBenchmarkPaper } from "../target/types.js";
+import { benchmarkFingerprint } from "../target/TargetBenchmarkService.js";
 import { selectRecommended, type BenchmarkSelectionResult } from "../target/selection.js";
 import type { AcademicSearchService } from "./academicSearchService.js";
 import type { SearchDiagnostics, SearchOptions } from "./types.js";
@@ -297,10 +298,17 @@ export class BenchmarkDiscoveryService {
 
   // ---- 默认流程（A6：一键 discover → auto-select → 入库 → freeze）----
 
-  async discoverAndFreeze(
+  /** discover → auto-select → role=reference 入库 → papers 行装配（freeze/refresh 共用内核） */
+  private async discoverSelectPersist(
     projectId: string,
     input: DiscoverAndFreezeInput,
-  ): Promise<DiscoverAndFreezeResult> {
+  ): Promise<{
+    discovery: BenchmarkDiscoveryResult;
+    selection: BenchmarkSelectionResult<BenchmarkCandidate>;
+    savedSourceIds: string[];
+    upgradedToBoth: Array<{ sourceId: string; reason: string }>;
+    papers: TargetBenchmarkPaper[];
+  }> {
     const discovery = await this.discover(projectId, input);
     const venueStatus =
       discovery.venueResolution.status === "skipped_no_target_venue"
@@ -347,6 +355,15 @@ export class BenchmarkDiscoveryService {
           source.status !== "metadata_only",
       });
     }
+    return { discovery, selection, savedSourceIds, upgradedToBoth, papers };
+  }
+
+  async discoverAndFreeze(
+    projectId: string,
+    input: DiscoverAndFreezeInput,
+  ): Promise<DiscoverAndFreezeResult> {
+    const { discovery, selection, savedSourceIds, upgradedToBoth, papers } =
+      await this.discoverSelectPersist(projectId, input);
     const existing = await this.targets.get(projectId);
     const artifact = await this.targets.freeze(projectId, {
       target: input.target,
@@ -366,6 +383,47 @@ export class BenchmarkDiscoveryService {
       artifact,
       alreadyFrozen: existing !== null,
     };
+  }
+
+  /**
+   * 显式 refresh（M12 Batch 2 HTTP / HITL）：重新发现 + 重选 → 有效集合与当前
+   * 冻结指纹不同才 revision+1 重写（TargetBenchmarkService.refresh）；相同 →
+   * 幂等返回既有 artifact（changed=false，不空转 revision）。未冻结 →
+   * INVALID_REQUEST（refresh 语义只对既有冻结集合成立，先 discover 冻结）。
+   */
+  async rediscoverAndRefresh(
+    projectId: string,
+    input: DiscoverAndFreezeInput,
+  ): Promise<{
+    artifact: import("../target/types.js").TargetBenchmarkArtifact;
+    changed: boolean;
+    discovery: BenchmarkDiscoveryResult;
+    selection: BenchmarkSelectionResult<BenchmarkCandidate>;
+  }> {
+    const existing = await this.targets.get(projectId);
+    if (existing === null) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        "benchmark 语料尚未冻结（无 target-benchmark.json）；先执行 discovery 冻结",
+      );
+    }
+    const { discovery, selection, papers } = await this.discoverSelectPersist(projectId, input);
+    const newFingerprint = benchmarkFingerprint(papers);
+    if (newFingerprint === existing.fingerprint) {
+      this.log(
+        `[target] projectId=${projectId} 显式 refresh：重发现集合与当前冻结一致（fingerprint=${existing.fingerprint}）——幂等返回，revision 不变`,
+      );
+      return { artifact: existing, changed: false, discovery, selection };
+    }
+    const artifact = await this.targets.refresh(projectId, {
+      target: input.target,
+      papers,
+      selection: selection.selection,
+    });
+    this.log(
+      `[target] projectId=${projectId} 显式 refresh：${existing.fingerprint} → ${artifact.fingerprint}（revision=${artifact.revision}）`,
+    );
+    return { artifact, changed: true, discovery, selection };
   }
 }
 

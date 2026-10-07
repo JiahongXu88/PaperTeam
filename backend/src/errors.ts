@@ -79,7 +79,10 @@ export type BusinessErrorCode =
   | "FIGURE_SPEC_INVALID"
   | "FIGURE_COMPILE_FAILED"
   | "FIGURE_COMPILE_TIMEOUT"
-  | "FIGURE_PACKAGE_MISSING";
+  | "FIGURE_PACKAGE_MISSING"
+  // ---- Target profile / readiness（M12.1 A7/A8 derived artifact 损坏 fail-closed）----
+  | "TARGET_PROFILE_CORRUPTED"
+  | "TARGET_READINESS_CORRUPTED";
 
 /** 错误码 → HTTP 状态码 */
 const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
@@ -152,6 +155,8 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   FIGURE_COMPILE_FAILED: 422,
   FIGURE_COMPILE_TIMEOUT: 504,
   FIGURE_PACKAGE_MISSING: 503,
+  TARGET_PROFILE_CORRUPTED: 500,
+  TARGET_READINESS_CORRUPTED: 500,
 };
 
 export class BusinessError extends Error {

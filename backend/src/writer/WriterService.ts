@@ -721,6 +721,13 @@ export class WriterService {
     instructionDigest?: string;
     /** M10.3：作者修订目标（run prompt） */
     authorGoal?: string;
+    /**
+     * M12 A9：目标带 readiness 差距 digest（target/promptBlocks.
+     * renderPlannerTargetDigest 产物）。advisory 作者可选上下文——只提供
+     * 「与 benchmark 观测带的距离」可见性，**不构成立项依据**（修订范围仍由
+     * 审稿意见与作者裁决主导）。undefined → prompt 与旧版逐字节一致。
+     */
+    targetReadinessDigest?: string;
     /** 合法证据 id 清单（relatedEvidenceIds 校验用；缺省不校验但也不注入提示） */
     validEvidenceIds?: string[];
     validEvidenceProtocolScopes?: Record<string, { protocolId: string; status: "current" | "historical" | "superseded" }>;
@@ -796,6 +803,14 @@ export class WriterService {
           : []),
         ...(params.coverageDigest !== undefined
           ? ["", "===== 文献需求覆盖 =====", params.coverageDigest]
+          : []),
+        ...(params.targetReadinessDigest !== undefined
+          ? [
+              "",
+              "===== 目标带差距（advisory——作者可选上下文，不自动立项）=====",
+              params.targetReadinessDigest,
+              "以上差距是当前稿与 benchmark 观测带的距离陈述（非官方投稿要求，也不是稿件事实错误）。只有当作者明确要求追赶目标带时才据此规划；否则修订范围仍以审稿问题与作者目标为准。",
+            ]
           : []),
         ...(params.evidenceDigest !== undefined
           ? ["", "===== 证据（分层）=====", params.evidenceDigest]
