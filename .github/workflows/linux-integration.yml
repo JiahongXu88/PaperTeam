@@ -70,21 +70,36 @@ jobs:
             -v paperteam-hf-ci:/data/hf-cache \
             paperteam-backend-docling:ci
           sleep 5
-          # 基线 python 进程数（后端启动后）
-          baseline=$(docker exec pt-docling sh -c "ps -e -o comm= | grep -c '^python' || true")
+          # 基线 python 进程数（后端启动后；经 /proc 计数——slim 镜像无 ps）
+          count_python() {
+            docker exec pt-docling sh -c 'n=0; for f in /proc/[0-9]*/comm; do read -r c < "$f" 2>/dev/null || continue; case "$c" in python*) n=$((n+1));; esac; done; echo $n'
+          }
+          baseline=$(count_python)
           echo "baseline python processes: $baseline"
-          # docker cp fixture + 直接驱动解析工具（与 DoclingParser.execFile 同一入口）
+          # docker cp fixture + 直接驱动解析工具（与 DoclingParser.execFile 同一入口）。
+          # 失败时先 dump 结构化错误 JSON 再退出——错误信息只在该文件里
           docker cp backend/test/fixtures/pdf/attention.pdf pt-docling:/tmp/attention.pdf
+          set +e
           docker exec pt-docling /opt/paperteam-docling-venv/bin/python /app/backend/tools/parse_document_docling.py /tmp/attention.pdf --figures-dir=/tmp/figs > /tmp/docling-out.json
+          rc=$?
+          set -e
+          echo "--- docling tool output (rc=$rc) ---"
+          cat /tmp/docling-out.json || true
+          echo ""
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::docling 解析工具退出码 $rc（结构化错误见上方 JSON）"
+            docker logs --tail 30 pt-docling || true
+            exit 1
+          fi
           # 结构化产物断言：ok / parser=docling / blocks 非空
           jq -e '.ok == true and .parser.id == "docling" and (.blocks | length) > 50' /tmp/docling-out.json
           jq -r '"blocks=\(.blocks|length) pages=\(.pageCount // 0) parser=\(.parser.version)"' /tmp/docling-out.json
           # 子进程干净退出：解析结束后无残留 python 进程（baseline 与运行中一致）
-          after=$(docker exec pt-docling sh -c "ps -e -o comm= | grep -c '^python' || true")
+          after=$(count_python)
           echo "post-parse python processes: $after"
           if [ "$after" -gt "$baseline" ]; then
             echo "::error::docling 子进程未退出（python 进程 $baseline → $after）"
-            docker exec pt-docling ps -ef || true
+            docker exec pt-docling sh -c 'for f in /proc/[0-9]*/cmdline; do tr "\0" " " < "$f" 2>/dev/null && echo; done' || true
             exit 1
           fi
           # 模型缓存确实落在 /data/hf-cache（volume 持久化路径，非容器可写层）
