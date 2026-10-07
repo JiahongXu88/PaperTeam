@@ -79,11 +79,13 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 
 WORKDIR /app/backend
 # 只带运行需要的内容：dist / 生产 node_modules / 审计 seed（Skill Registry）/ PDF 解析脚本
+# venue-seeds.json（M12.1 A2 种子表；venueResolution 启动即加载，缺失会使进程退出）
 COPY --from=backend-build /app/backend/package.json ./package.json
 COPY --from=backend-build /app/backend/node_modules ./node_modules
 COPY --from=backend-build /app/backend/dist ./dist
 COPY backend/skills ./skills
 COPY backend/tools ./tools
+COPY backend/resources ./resources
 
 # 非 root：数据目录归 paperteam 用户；volume 首次挂载为空时由 entrypoint 修正属主
 RUN groupadd --system paperteam && useradd --system --gid paperteam --create-home --home-dir /home/paperteam paperteam \
