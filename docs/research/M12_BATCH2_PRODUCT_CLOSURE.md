@@ -141,7 +141,7 @@ Batch 1 已落地四道隔离（role 过滤 / propose fail-closed / ground 纵�
 
 - `npm run typecheck`（backend+frontend）/ `npm run build`（backend+frontend）/ `npm test`（backend 2,798 + frontend 287）/ `git diff --check` 全 PASS；
 - 三个 live smoke（真实 OpenAlex ×2 用例 + 真实 GLM-5.3 摘要 + 真实 glm-5.3-flash 视觉理解）全过；
-- GitHub CI：`9302809`（typebox 修复）run 37576226286 **✓✓ 全绿**；最终 HEAD push 后复验见 PROJECT_STATUS。
+- GitHub CI：`9302809`（typebox 修复）run 37576226286 ✓✓；Batch 2 收口后两次接力修复——`56038ea`（live smoke 残留未用 import 致 ubuntu Typecheck TS6133；本地 vitest 不做类型检查的已知坑）与 `457d823`（**Dockerfile 补 COPY backend/resources**：venueResolution 生产接线后启动即加载种子表，镜像缺该文件 → promise rejection 杀进程——9302809 加的 docker-logs dump 让该崩溃在日志里直接可见）；**最终 HEAD `457d823` = origin/main，run 37588467466 ✓ test(ubuntu) + ✓ docker build smoke 全绿，working tree clean**。
 
 ---
 
