@@ -8,7 +8,16 @@
  * 禁止让模型输出一坨 Markdown 作为唯一事实源。
  */
 
-export const FINDING_CATEGORIES = ["fact", "academic", "style", "citation", "consistency"] as const;
+export const FINDING_CATEGORIES = [
+  "fact",
+  "academic",
+  "style",
+  "citation",
+  "consistency",
+  // M12.2 B3：视觉类目（figure/table 环境与图表一致性检查的产出）。
+  // additive 追加在末尾——旧 JSON 不含该值仍可读，序列化路径零迁移。
+  "visual",
+] as const;
 export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
 export const FINDING_SEVERITIES = ["critical", "major", "minor", "info"] as const;
@@ -16,6 +25,25 @@ export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 
 export const FINDING_STATUSES = ["open", "resolved", "dismissed"] as const;
 export type FindingStatus = (typeof FINDING_STATUSES)[number];
+
+/**
+ * M12.2 B3 视觉 finding 的核验状态（Figure ≠ Evidence 纪律的落地形态）：
+ * - verified_deterministic：确定性检查产出（label/ref/数字一致性等，机器可复核）；
+ * - model_observation：vision 模型的结构化观察——**永远不是自动核验的证据**，
+ *   只作为待作者复核的审稿事实呈现；
+ * - needs_author_review：无法自动判定（启发式 caption 匹配 / 模型不确定 /
+ *   检查执行失败后的显式待办），绝不静默丢弃。
+ */
+export const FINDING_VERIFICATION_STATUSES = [
+  "verified_deterministic",
+  "model_observation",
+  "needs_author_review",
+] as const;
+export type FindingVerificationStatus = (typeof FINDING_VERIFICATION_STATUSES)[number];
+
+/** 视觉检查自评置信度（与 vision/types.ts 的 VisionConfidence 值域对齐；本模块自持防反向依赖） */
+export const FINDING_VISUAL_CONFIDENCES = ["high", "medium", "low"] as const;
+export type FindingVisualConfidence = (typeof FINDING_VISUAL_CONFIDENCES)[number];
 
 function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
   return typeof value === "string" && (values as readonly string[]).includes(value);
@@ -25,10 +53,23 @@ export interface ReviewFinding {
   findingId: string;
   category: FindingCategory;
   severity: FindingSeverity;
-  /** provenance：至少 page / sectionId / chunkId 之一必填（构造函数保证） */
+  /** provenance：至少 page / sectionId / chunkId / figureEnvRef（visual）之一必填（构造函数保证） */
   sectionId?: string;
   page?: number;
   chunkId?: string;
+  /**
+   * M12.2 B3 视觉锚（仅 visual 类目使用；additive 可选）：
+   * VisualArtifactView id（如 "tex:main.tex:figure-2" / "pdf:S0001:B0005"）
+   * 或 LaTeX 环境 ref。作为 provenance 的第四种形态（与 EvidenceLocation 的
+   * figureBlockId 先例一致）。
+   */
+  figureEnvRef?: string;
+  /** 资产预览路径（pdf: figures/<sid>/<name>；latex: includegraphics 相对路径；gen: figs/generated/…） */
+  assetRef?: string;
+  /** 视觉检查自评置信度（visual 类目；缺省 = 未给出） */
+  visualConfidence?: FindingVisualConfidence;
+  /** 核验状态（visual 类目；确定性检查恒 verified_deterministic，模型观察恒非 verified） */
+  verificationStatus?: FindingVerificationStatus;
   /** 关联正文论断（citation / fact 类 finding 常有） */
   claimText?: string;
   message: string;
@@ -66,6 +107,10 @@ export function createFinding(input: {
   sectionId?: string;
   page?: number;
   chunkId?: string;
+  figureEnvRef?: string;
+  assetRef?: string;
+  visualConfidence?: FindingVisualConfidence;
+  verificationStatus?: FindingVerificationStatus;
   claimText?: string;
   suggestion?: string;
   evidenceIds?: string[];
@@ -75,10 +120,13 @@ export function createFinding(input: {
   if (
     input.sectionId === undefined &&
     input.page === undefined &&
-    input.chunkId === undefined
+    input.chunkId === undefined &&
+    // M12.2 B3：visual 类目允许以 figureEnvRef 作为唯一 provenance
+    //（图表锚本身即可定位；见 ReviewFinding.figureEnvRef 注释）
+    input.figureEnvRef === undefined
   ) {
     throw new Error(
-      `createFinding(${input.findingId}) 缺少 provenance：需要 sectionId / page / chunkId 至少其一`,
+      `createFinding(${input.findingId}) 缺少 provenance：需要 sectionId / page / chunkId / figureEnvRef 至少其一`,
     );
   }
   if (input.message.trim() === "") {
@@ -91,6 +139,12 @@ export function createFinding(input: {
     ...(input.sectionId !== undefined ? { sectionId: input.sectionId } : {}),
     ...(input.page !== undefined ? { page: input.page } : {}),
     ...(input.chunkId !== undefined ? { chunkId: input.chunkId } : {}),
+    ...(input.figureEnvRef !== undefined ? { figureEnvRef: input.figureEnvRef } : {}),
+    ...(input.assetRef !== undefined ? { assetRef: input.assetRef } : {}),
+    ...(input.visualConfidence !== undefined ? { visualConfidence: input.visualConfidence } : {}),
+    ...(input.verificationStatus !== undefined
+      ? { verificationStatus: input.verificationStatus }
+      : {}),
     ...(input.claimText !== undefined ? { claimText: input.claimText } : {}),
     message: input.message,
     ...(input.suggestion !== undefined ? { suggestion: input.suggestion } : {}),
@@ -108,7 +162,16 @@ export function createFinding(input: {
   };
 }
 
-/** 防御性读取（磁盘 JSON → ReviewFinding；结构损坏返回 undefined） */
+/**
+ * 防御性读取（磁盘 JSON → ReviewFinding；结构损坏返回 undefined）。
+ *
+ * M12.2 B3 additive 语义：
+ * - 旧 JSON（无 figureEnvRef/assetRef/visualConfidence/verificationStatus、
+ *   category 不含 visual）必须原样可读——新字段全部 optional，缺省即通过；
+ * - 新字段「存在但类型/枚举非法」视为结构损坏（整条丢弃并计入 readFindings
+ *   的 dropped，绝不带病进聚合层）；
+ * - provenance 判定同步扩展：visual 类目允许仅 figureEnvRef。
+ */
 export function readFinding(value: unknown): ReviewFinding | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
@@ -121,6 +184,10 @@ export function readFinding(value: unknown): ReviewFinding | undefined {
   const status = record["status"];
   const source = typeof record["source"] === "string" ? record["source"] : undefined;
   const createdAt = typeof record["createdAt"] === "string" ? record["createdAt"] : undefined;
+  const figureEnvRef = record["figureEnvRef"];
+  const assetRef = record["assetRef"];
+  const visualConfidence = record["visualConfidence"];
+  const verificationStatus = record["verificationStatus"];
   if (
     findingId === undefined ||
     message === undefined ||
@@ -129,7 +196,14 @@ export function readFinding(value: unknown): ReviewFinding | undefined {
     !isOneOf(FINDING_CATEGORIES, category) ||
     !isOneOf(FINDING_SEVERITIES, severity) ||
     !isOneOf(FINDING_STATUSES, status) ||
-    (record["sectionId"] === undefined && record["page"] === undefined && record["chunkId"] === undefined)
+    (record["sectionId"] === undefined &&
+      record["page"] === undefined &&
+      record["chunkId"] === undefined &&
+      figureEnvRef === undefined) ||
+    (figureEnvRef !== undefined && typeof figureEnvRef !== "string") ||
+    (assetRef !== undefined && typeof assetRef !== "string") ||
+    (visualConfidence !== undefined && !isOneOf(FINDING_VISUAL_CONFIDENCES, visualConfidence)) ||
+    (verificationStatus !== undefined && !isOneOf(FINDING_VERIFICATION_STATUSES, verificationStatus))
   ) {
     return undefined;
   }

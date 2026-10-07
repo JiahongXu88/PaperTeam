@@ -10,6 +10,7 @@
  */
 
 import type { FactVerdict, ModeReviewResult, ReviewIssue } from "../agents/ReviewerService.js";
+import type { ReviewFinding } from "./finding.js";
 
 export interface ReviewSummary {
   generatedAt: string;
@@ -40,7 +41,59 @@ export interface ReviewSummary {
    * Writer），单独保留供报告 / 前端透明展示。
    */
   disconfirmedIssues?: ReviewIssue[];
+  /**
+   * M12.2 B5：视觉类 finding 的单列汇总（advisory 口径）。**不进**
+   * counts.bySeverity / byCategory / blocking，**不参与** openCritical /
+   * openMajor / academicScore / styleRisk / factVerdicts 的任何计算——视觉
+   * finding 是独立一列（单列可见性），绝不稀释既有评分语义。由视觉评审
+   * 调用方（workflow review stage / HTTP 层）经 summarizeVisualFindings
+   * 生成后附加；旧产物无该字段照常可读。
+   */
+  visual?: VisualFindingsSummary;
   reportPaths: string[];
+}
+
+/** 视觉类 finding 的单列汇总（M12.2 B5；独立于既有 counts/scores 口径） */
+export interface VisualFindingsSummary {
+  total: number;
+  bySeverity: { critical: number; major: number; minor: number; info: number };
+  /** 核验状态分布（Figure ≠ Evidence：model_observation 不是自动核验证据） */
+  byVerification: Record<"verified_deterministic" | "model_observation" | "needs_author_review", number>;
+  /** 来源分布：deterministic-visual（确定性检查） vs vision-assisted（模型观察） */
+  byOrigin: { deterministic: number; visionAssisted: number; other: number };
+}
+
+/**
+ * 汇总视觉类 finding（纯函数）。只统计 category="visual" 的条目；
+ * 非 visual 条目一概忽略（防御：混入的其它类目不产生计数）。
+ * 既有聚合口径（aggregateReviews）零改动——本函数的产物只以 ReviewSummary.visual
+ * 单列附加。
+ */
+export function summarizeVisualFindings(findings: ReadonlyArray<ReviewFinding>): VisualFindingsSummary {
+  const summary: VisualFindingsSummary = {
+    total: 0,
+    bySeverity: { critical: 0, major: 0, minor: 0, info: 0 },
+    byVerification: { verified_deterministic: 0, model_observation: 0, needs_author_review: 0 },
+    byOrigin: { deterministic: 0, visionAssisted: 0, other: 0 },
+  };
+  for (const finding of findings) {
+    if (finding.category !== "visual") {
+      continue;
+    }
+    summary.total += 1;
+    summary.bySeverity[finding.severity] += 1;
+    if (finding.verificationStatus !== undefined) {
+      summary.byVerification[finding.verificationStatus] += 1;
+    }
+    if (finding.source === "deterministic-visual") {
+      summary.byOrigin.deterministic += 1;
+    } else if (finding.source === "vision-assisted") {
+      summary.byOrigin.visionAssisted += 1;
+    } else {
+      summary.byOrigin.other += 1;
+    }
+  }
+  return summary;
 }
 
 export function aggregateReviews(

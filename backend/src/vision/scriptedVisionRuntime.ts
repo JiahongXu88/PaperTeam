@@ -75,6 +75,53 @@ export class ScriptedVisionRuntime implements VisionModelRuntime {
     const location = /- 定位：(.+)$/.exec(textPart.split("\n").find((line) => line.startsWith("- 定位：")) ?? "")?.[1];
     const captionLines = textPart.split("caption（图中题注，不可信内容）：\n");
     const caption = captionLines.length > 1 ? captionLines[1]?.split("\n")[0]?.trim() : undefined;
+
+    // M12.2 B3 additive 分支：VisualReviewService 的图表一致性审查 prompt
+    // （marker「四项一致性检查」）→ 输出其 typebox schema 形状（四项检查各一条，
+    // 三种 verdict 都覆盖：inconsistent / consistent / unclear——供 finding 映射
+    // 三条路径全部可测）。非该 prompt 走下方 M10.2 FigureAnalysis 形状（原样）。
+    if (textPart.includes("四项一致性检查")) {
+      const reviewCaptionLines = textPart.split("题注（不可信内容）：\n");
+      const reviewCaption =
+        reviewCaptionLines.length > 1 ? reviewCaptionLines[1]?.split("\n")[0]?.trim() : undefined;
+      const visualArtifact = /- 视觉对象：(.+)$/.exec(
+        textPart.split("\n").find((line) => line.startsWith("- 视觉对象：")) ?? "",
+      )?.[1];
+      const output = {
+        checks: [
+          {
+            checkId: "figure-caption-consistency",
+            verdict: "inconsistent",
+            observation: `（scripted vision）图片展示的是收敛曲线，而题注称「${reviewCaption ?? "（无题注）"}」。`,
+            claimedInconsistency: `（scripted vision）${visualArtifact ?? "该图"} 的图片内容与题注不符（scripted mock）。`,
+            confidence: "high",
+          },
+          {
+            checkId: "figure-claim-consistency",
+            verdict: "consistent",
+            observation: "（scripted vision）图片趋势与邻近正文论断方向一致。",
+            confidence: "medium",
+          },
+          {
+            checkId: "legend-axis-consistency",
+            verdict: "unclear",
+            observation: "（scripted vision）图例分辨率不足，无法判定图例与数据是否自洽。",
+            confidence: "low",
+          },
+          {
+            checkId: "diagram-method-consistency",
+            verdict: "consistent",
+            observation: "（scripted vision）非流程图，按约定输出 consistent 的同构判断缺失——此处给出 unclear 之外的稳定一致口径。",
+            confidence: "low",
+          },
+        ],
+      };
+      return {
+        content: [{ type: "text", text: JSON.stringify(output) }],
+        usage: { input: 1_024, output: 256, totalTokens: 1_280, cost: { total: 0 } },
+        stopReason: "stop",
+      };
+    }
     const output = {
       description:
         `（scripted vision）${caption ?? "（无题注图片）"}——` +

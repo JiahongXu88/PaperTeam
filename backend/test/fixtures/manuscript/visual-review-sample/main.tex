@@ -1,0 +1,89 @@
+% M12 Batch 2 B3 fixture：确定性视觉检查的数值一致性 / 题注匹配 / 未解析引用用例。
+% 预期事实（测试断言锁定）：
+%   - tab:main（Table 1）：MOT tracklet MOTA=78.2 / IDS=101；Ours MOTA=81.6 / IDS=79
+%   - 数值冲突 TP：正文写 "MOTA of 76.3"（表值 78.2）→ table-text-numeric finding
+%   - 数值一致：Ours MOTA 81.6 + IDS 79 与表一致 → 无 finding
+%   - 假阳性守卫 1（同数异境）：101 出现在无指标/行绑定的句子 → 无 finding
+%   - 假阳性守卫 2（他指标）：79 FPS（FPS 不是表头指标）→ 无 finding
+%   - 假阳性守卫 3（增量语）：MOTA improved by 3 points → 无 finding
+%   - 题注不符 TP：Table 2 shows the per-sequence ablation（实为 cost components）→ mismatch finding
+%   - 题注相符：Table 3 reports the per-sequence ablation → 无 finding
+%   - \ref 相符：fig:overview / tab:assoc 描述与题注词面重叠 → 无 finding
+%   - 未解析引用：fig:missing-asset → unresolved finding
+%   - 未引用：tab:ablation 仅字面提及（无 \ref）→ unreferenced info finding
+%   - 缺 caption：第二个 figure → missing-caption finding
+\documentclass[10pt,twocolumn]{article}
+\usepackage{graphicx}
+\begin{document}
+
+\section{Experiments}
+
+MOT tracklet achieves a MOTA of 76.3 on this benchmark, as shown in
+Table~\ref{tab:main}. Ours attains a MOTA of 81.6 with only 79 IDS errors,
+confirming the gains in Table~\ref{tab:main} summarizes the benchmark comparison.
+
+Each sequence contains at most 101 frames for tracking.
+Ours runs at 79 FPS on the edge device.
+The MOTA metric improved by 3 points across variants.
+
+Table 2 shows the per-sequence ablation results in detail.
+Table 3 reports the per-sequence ablation results.
+Table~\ref{tab:assoc} lists the association cost components.
+Figure~\ref{fig:overview} illustrates the architecture.
+Figure~\ref{fig:missing-asset} is referenced nowhere else.
+
+\begin{figure}[t]
+  \centering
+  \caption{Overall architecture of the proposed tracker.}
+  \label{fig:overview}
+  \includegraphics[width=0.9\linewidth]{figs/overview.pdf}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.5\linewidth]{figs/no-caption.pdf}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \caption{Main results on the benchmark.}
+  \label{tab:main}
+  \begin{tabular}{lcc}
+    \hline
+    Method & MOTA & IDS \\
+    \hline
+    MOT tracklet & 78.2 & 101 \\
+    Ours & 81.6 & 79 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Association cost components.}
+  \label{tab:assoc}
+  \begin{tabular}{lc}
+    \hline
+    Component & Weight \\
+    \hline
+    IoU & 0.4 \\
+    Appearance & 0.6 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Per-sequence ablation results.}
+  \label{tab:ablation}
+  \begin{tabular}{lcc}
+    \hline
+    Variant & MOTA & IDF1 \\
+    \hline
+    baseline & 78.2 & 0.742 \\
+    full & 81.6 & 0.786 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\end{document}
