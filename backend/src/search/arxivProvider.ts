@@ -12,6 +12,7 @@ import type { CanonicalPaperRecord } from "../citation/integrity.js";
 import type { ProviderHttpClient } from "./providerHttp.js";
 import type { AcademicSearchProvider, AcademicSearchResult, SearchOptions } from "./types.js";
 import { clampLimit } from "./openalexProvider.js";
+import { effectiveVenueNames, matchesVenueName } from "./venueFilter.js";
 
 const QUERY_URL = "https://export.arxiv.org/api/query";
 
@@ -45,6 +46,10 @@ export class ArxivSearchProvider implements AcademicSearchProvider {
     });
     const results: AcademicSearchResult[] = [];
     let rank = 0;
+    // M12.1 A1：arXiv 无 venue 字段——venueNames 非空时逐条后滤必然全空
+    // （record.venue 恒 undefined → matchesVenueName false）。这是 graceful 的
+    // 「provider 不支持该过滤」：返回空结果集，不算失败，HealthSnapshot 正常。
+    const venueNames = effectiveVenueNames(opts.venueNames);
     for (const block of [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((match) => match[1] ?? "")) {
       const mapped = toResult(block);
       if (mapped === null) {
@@ -56,6 +61,10 @@ export class ArxivSearchProvider implements AcademicSearchProvider {
         continue;
       }
       if (opts.yearTo !== undefined && (year === undefined || year > opts.yearTo)) {
+        continue;
+      }
+      // venue 客户端后滤（共享规则见 venueFilter.ts）
+      if (!matchesVenueName(mapped.record.venue, venueNames)) {
         continue;
       }
       rank += 1;

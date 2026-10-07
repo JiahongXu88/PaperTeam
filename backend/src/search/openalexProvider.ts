@@ -12,6 +12,7 @@
  * （超时 / 重试 / 429 Retry-After / 熔断），provider 自身不写第二套 retry。
  */
 
+import { BusinessError } from "../errors.js";
 import { rebuildAbstract } from "../citation/scholarly.js";
 import { buildIdentity, normalizeDoi, type SourceIdentity } from "../sources/identity.js";
 import type { CanonicalPaperRecord } from "../citation/integrity.js";
@@ -81,6 +82,23 @@ export class OpenAlexSearchProvider implements AcademicSearchProvider {
     }
     if (opts.openAccessOnly === true) {
       filters.push("is_oa:true");
+    }
+    // M12.1 A1：venue 服务端过滤——identity 是 source id（S…），不是 display
+    // name。多个 id 用 `|` OR（OpenAlex filter 语法）；与其它 filter 间仍是
+    // 逗号 AND。venueNames 不在此消费（display name 错配风险见 venueFilter.ts）
+    const venueSourceIds = (opts.venueSourceIds ?? [])
+      .map((id) => id.trim())
+      .filter((id) => id !== "");
+    if (venueSourceIds.length > 0) {
+      const unique = [...new Set(venueSourceIds)];
+      const invalid = unique.find((id) => !/^S\d+$/.test(id));
+      if (invalid !== undefined) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `venueSourceIds 含非法 OpenAlex source id："${invalid}"（期望 S<digits> 形态，如 S4210176548）`,
+        );
+      }
+      filters.push(`primary_location.source.id:${unique.join("|")}`);
     }
     if (filters.length > 0) {
       params.set("filter", filters.join(","));

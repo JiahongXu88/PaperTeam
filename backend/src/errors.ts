@@ -72,7 +72,14 @@ export type BusinessErrorCode =
   | "INGESTION_PARSER_UNAVAILABLE"
   | "EVIDENCE_VALUE_MISMATCH"
   | "NOT_FOUND"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "TARGET_BENCHMARK_CORRUPTED"
+  | "VISUAL_INVENTORY_CORRUPTED"
+  // ---- Figures（M12.3 确定性图表生成；末尾追加，勿重排既有项） ----
+  | "FIGURE_SPEC_INVALID"
+  | "FIGURE_COMPILE_FAILED"
+  | "FIGURE_COMPILE_TIMEOUT"
+  | "FIGURE_PACKAGE_MISSING";
 
 /** 错误码 → HTTP 状态码 */
 const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
@@ -139,6 +146,12 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   EVIDENCE_VALUE_MISMATCH: 422,
   NOT_FOUND: 404,
   INTERNAL_ERROR: 500,
+  TARGET_BENCHMARK_CORRUPTED: 500,
+  VISUAL_INVENTORY_CORRUPTED: 500,
+  FIGURE_SPEC_INVALID: 422,
+  FIGURE_COMPILE_FAILED: 422,
+  FIGURE_COMPILE_TIMEOUT: 504,
+  FIGURE_PACKAGE_MISSING: 503,
 };
 
 export class BusinessError extends Error {
@@ -507,6 +520,38 @@ export class ModelConfigBusyError extends BusinessError {
       "MODEL_CONFIG_BUSY",
       `当前有 ${activeRuns} 个 Agent Run 正在执行，暂不能变更模型配置（不会中断活跃任务，请等待完成后再试）`,
     );
+  }
+}
+
+// ---- Figures（M12.3 确定性图表生成）----
+
+/** PlotSpec / DiagramSpec 校验不通过（列引用缺失 / 非有限数值 / 结构非法等）：422 */
+export class FigureSpecInvalidError extends BusinessError {
+  constructor(detail: string) {
+    super("FIGURE_SPEC_INVALID", `图表 spec 校验失败：${detail}`);
+  }
+}
+
+/** 单图 xelatex 编译失败（非宏包缺失类：语法错误 / 产物缺失）：422 */
+export class FigureCompileFailedError extends BusinessError {
+  constructor(detail?: string) {
+    super("FIGURE_COMPILE_FAILED", "图表编译失败", detail);
+  }
+}
+
+/** 单图编译超时：504 */
+export class FigureCompileTimeoutError extends BusinessError {
+  constructor(detail?: string) {
+    super("FIGURE_COMPILE_TIMEOUT", "图表编译超时", detail);
+  }
+}
+
+/** TeX 发行版缺少图表所需宏包（pgfplots / tikz 等；附宏包名）：503 */
+export class FigurePackageMissingError extends BusinessError {
+  readonly packageName: string;
+  constructor(packageName: string, detail?: string) {
+    super("FIGURE_PACKAGE_MISSING", `LaTeX 宏包缺失：${packageName}`, detail);
+    this.packageName = packageName;
   }
 }
 

@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "description": "M12.1 A2 venue 种子表（curated，宁缺勿错）。openalexSourceId 只收录 2026-10-07 经 api.openalex.org/sources 直接核验过 display_name 的高置信 id；未核验 / OpenAlex 侧存在多 source 归属歧义（同会议两个 source id）的条目一律省略该字段并在 notes 说明，交由运行时 openalex_lookup 或作者裁决。注意：S4306402567 是 bioRxiv（repository），不是 CVPR——任务书示例 id 有误，勿沿用。",
+  "seeds": [
+    {
+      "canonicalId": "cvpr",
+      "displayName": "CVPR",
+      "aliases": [
+        "CVPR",
+        "IEEE/CVF Conference on Computer Vision and Pattern Recognition",
+        "IEEE Conference on Computer Vision and Pattern Recognition",
+        "Computer Vision and Pattern Recognition",
+        "IEEE Computer Society Conference on Computer Vision and Pattern Recognition"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4210176548",
+      "notes": "OpenAlex source display_name 为 'IEEE Computer Society Conference on CV&PR/Proceedings'（核验 2026-10-07）。"
+    },
+    {
+      "canonicalId": "iccv",
+      "displayName": "ICCV",
+      "aliases": [
+        "ICCV",
+        "IEEE/CVF International Conference on Computer Vision",
+        "IEEE International Conference on Computer Vision",
+        "International Conference on Computer Vision"
+      ],
+      "venueType": "conference",
+      "notes": "OpenAlex 同时收录 S7407086902（IEEE International Conference on Computer Vision）与 S4363607764（IEEE/CVF …）两个 ICCV source；单 id 过滤会漏另一侧收录的论文，宁缺勿错——解析时走 openalex_lookup 由作者裁决。"
+    },
+    {
+      "canonicalId": "eccv",
+      "displayName": "ECCV",
+      "aliases": [
+        "ECCV",
+        "European Conference on Computer Vision"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4306418318"
+    },
+    {
+      "canonicalId": "neurips",
+      "displayName": "NeurIPS",
+      "aliases": [
+        "NeurIPS",
+        "NIPS",
+        "Advances in Neural Information Processing Systems",
+        "Neural Information Processing Systems",
+        "Annual Conference on Neural Information Processing Systems"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4363606243",
+      "notes": "OpenAlex display_name 为小写 'neural information processing systems'（核验 2026-10-07）。"
+    },
+    {
+      "canonicalId": "icml",
+      "displayName": "ICML",
+      "aliases": [
+        "ICML",
+        "International Conference on Machine Learning",
+        "Proceedings of the International Conference on Machine Learning"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4306419644"
+    },
+    {
+      "canonicalId": "iclr",
+      "displayName": "ICLR",
+      "aliases": [
+        "ICLR",
+        "International Conference on Learning Representations"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4306419637"
+    },
+    {
+      "canonicalId": "aaai",
+      "displayName": "AAAI",
+      "aliases": [
+        "AAAI",
+        "Proceedings of the AAAI Conference on Artificial Intelligence",
+        "AAAI Conference on Artificial Intelligence"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4210191458"
+    },
+    {
+      "canonicalId": "ijcai",
+      "displayName": "IJCAI",
+      "aliases": [
+        "IJCAI",
+        "International Joint Conference on Artificial Intelligence",
+        "Proceedings of the International Joint Conference on Artificial Intelligence"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4306419999"
+    },
+    {
+      "canonicalId": "acm-mm",
+      "displayName": "ACM Multimedia",
+      "aliases": [
+        "ACM Multimedia",
+        "ACM MM",
+        "ACM International Conference on Multimedia",
+        "ACM SIGGRAPH Multimedia"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4363608757"
+    },
+    {
+      "canonicalId": "acl",
+      "displayName": "ACL",
+      "aliases": [
+        "ACL",
+        "Annual Meeting of the Association for Computational Linguistics",
+        "Meeting of the Association for Computational Linguistics",
+        "Association for Computational Linguistics"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4363608652"
+    },
+    {
+      "canonicalId": "emnlp",
+      "displayName": "EMNLP",
+      "aliases": [
+        "EMNLP",
+        "Conference on Empirical Methods in Natural Language Processing",
+        "Empirical Methods in Natural Language Processing"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4363608991"
+    },
+    {
+      "canonicalId": "kdd",
+      "displayName": "KDD",
+      "aliases": [
+        "KDD",
+        "ACM SIGKDD Conference on Knowledge Discovery and Data Mining",
+        "ACM SIGKDD International Conference on Knowledge Discovery and Data Mining",
+        "Knowledge Discovery and Data Mining"
+      ],
+      "venueType": "conference",
+      "notes": "OpenAlex 同时收录 S7407088418 与 S4363608767 两个 KDD source——同 ICCV 处理（省略 id，宁缺勿错）。"
+    },
+    {
+      "canonicalId": "icra",
+      "displayName": "ICRA",
+      "aliases": [
+        "ICRA",
+        "IEEE International Conference on Robotics and Automation",
+        "International Conference on Robotics and Automation"
+      ],
+      "venueType": "conference",
+      "openalexSourceId": "S4210217939"
+    },
+    {
+      "canonicalId": "tpami",
+      "displayName": "IEEE TPAMI",
+      "aliases": [
+        "TPAMI",
+        "IEEE Transactions on Pattern Analysis and Machine Intelligence",
+        "Transactions on Pattern Analysis and Machine Intelligence",
+        "IEEE TPAMI"
+      ],
+      "venueType": "journal",
+      "openalexSourceId": "S199944782"
+    },
+    {
+      "canonicalId": "ijcv",
+      "displayName": "IJCV",
+      "aliases": [
+        "IJCV",
+        "International Journal of Computer Vision"
+      ],
+      "venueType": "journal",
+      "openalexSourceId": "S25538012"
+    },
+    {
+      "canonicalId": "tip",
+      "displayName": "IEEE TIP",
+      "aliases": [
+        "TIP",
+        "IEEE Transactions on Image Processing",
+        "Transactions on Image Processing",
+        "IEEE TIP"
+      ],
+      "venueType": "journal",
+      "openalexSourceId": "S4210173141"
+    },
+    {
+      "canonicalId": "jmlr",
+      "displayName": "JMLR",
+      "aliases": [
+        "JMLR",
+        "Journal of Machine Learning Research"
+      ],
+      "venueType": "journal",
+      "openalexSourceId": "S118988714"
+    },
+    {
+      "canonicalId": "tmlr",
+      "displayName": "TMLR",
+      "aliases": [
+        "TMLR",
+        "Transactions on Machine Learning Research"
+      ],
+      "venueType": "journal",
+      "openalexSourceId": "S4393919742"
+    },
+    {
+      "canonicalId": "pattern-recognition",
+      "displayName": "Pattern Recognition",
+      "aliases": [
+        "Pattern Recognition",
+        "Pattern Recognition Journal"
+      ],
+      "venueType": "journal",
+      "notes": "Elsevier Pattern Recognition——openalexSourceId 未核验，省略（命中种子仍可用于 venueNames 客户端过滤）。"
+    },
+    {
+      "canonicalId": "nature-machine-intelligence",
+      "displayName": "Nature Machine Intelligence",
+      "aliases": [
+        "Nature Machine Intelligence",
+        "Nat Mach Intell"
+      ],
+      "venueType": "journal",
+      "notes": "openalexSourceId 未核验，省略（同上）。"
+    },
+    {
+      "canonicalId": "sigir",
+      "displayName": "SIGIR",
+      "aliases": [
+        "SIGIR",
+        "ACM SIGIR Conference on Research and Development in Information Retrieval",
+        "Special Interest Group on Information Retrieval"
+      ],
+      "venueType": "conference",
+      "notes": "openalexSourceId 未核验，省略（同上）。"
+    }
+  ]
+}

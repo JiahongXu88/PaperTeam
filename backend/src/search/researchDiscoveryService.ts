@@ -137,6 +137,8 @@ export class ResearchDiscoveryService {
         ...(record.year !== undefined ? { year: record.year } : {}),
         ...(record.venue !== undefined ? { venue: record.venue } : {}),
         ...(record.abstract !== undefined ? { snippetOrAbstract: record.abstract } : {}),
+        // M12.1 A3：引用数快照（fusion 已按多源 max 合并；provider 实测值）
+        ...(fused.citationCount !== undefined ? { citationCount: fused.citationCount } : {}),
         query,
         origin: "academic_search",
         // 主来源 = 融合后最强 provider（fusion 排序保证 sources[0]）
@@ -256,6 +258,8 @@ export class ResearchDiscoveryService {
         query,
         origin: "academic_search",
         provider: snapshot.provider,
+        // M12.1 A3：执行快照冻结的引用数（provider 真实返回投影）透传
+        ...(snapshot.citationCount !== undefined ? { citationCount: snapshot.citationCount } : {}),
         // M9.9 Phase 4：需求供给检索的执行快照 → 候选 provenance（服务端记录，
         // 调用方不可按值伪造需求关联的其它字段——requirementId 只作 linkage）
         ...(requirementId !== undefined ? { requirementId } : {}),

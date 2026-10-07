@@ -131,7 +131,6 @@ describe("OpenAlexSearchProvider", () => {
 
 // ---- Semantic Scholar ----
 
-describe("SemanticScholarSearchProvider", () => {
   const s2Body = {
     data: [
       {
@@ -148,6 +147,7 @@ describe("SemanticScholarSearchProvider", () => {
     ],
   };
 
+describe("SemanticScholarSearchProvider", () => {
   it("元数据归一化：DOI/arXiv/externalIds/引用数/OA/年度过滤参数", async () => {
     const rec = recorder([() => json(s2Body)]);
     const provider = new SemanticScholarSearchProvider({ http: makeHttp(rec.impl) });
@@ -198,7 +198,6 @@ describe("SemanticScholarSearchProvider", () => {
 
 // ---- arXiv ----
 
-describe("ArxivSearchProvider", () => {
   const atom = (entries: string[]) => `<?xml version="1.0"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
 ${entries.join("\n")}
@@ -223,6 +222,7 @@ ${entries.join("\n")}
   <author><name>Carol Wu</name></author>
 </entry>`;
 
+describe("ArxivSearchProvider", () => {
   it("查询映射 + Atom 解析（新式 ID 去版本号 / 作者 / 年份 / 摘要 / PDF URL）", async () => {
     const rec = recorder([() => new Response(atom([entryNew, entryOld]), { status: 200 })]);
     const provider = new ArxivSearchProvider({ http: makeHttp(rec.impl) });
@@ -326,5 +326,105 @@ describe("AMinerSearchProvider", () => {
       expect(call.url).toContain("/api/paper/search?");
       expect(call.url).not.toMatch(/pro|qa|relation|detail|person|org/i);
     }
+  });
+});
+
+// ---- venue 过滤（M12.1 A1；M12.0 §4.5 冻结）----
+
+describe("SearchOptions venue 过滤", () => {
+  it("OpenAlex：无 venue → URL 不含 venue filter（行为与引入前一致）", async () => {
+    const rec = recorder([() => json({ results: [] })]);
+    const provider = new OpenAlexSearchProvider({ http: makeHttp(rec.impl) });
+    await provider.search("tracking", { limit: 5, yearFrom: 2022 });
+    const filter = new URL(rec.calls[0]!.url).searchParams.get("filter");
+    expect(filter).toBe("publication_year:>2021");
+    expect(filter ?? "").not.toContain("primary_location");
+  });
+
+  it("OpenAlex：venueSourceIds → filter 含 primary_location.source.id:S…|S…（与年份/OA 逗号 AND）", async () => {
+    const rec = recorder([() => json({ results: [] })]);
+    const provider = new OpenAlexSearchProvider({ http: makeHttp(rec.impl) });
+    await provider.search("tracking", {
+      limit: 5,
+      yearFrom: 2020,
+      yearTo: 2024,
+      openAccessOnly: true,
+      venueSourceIds: ["S4210176548", "S4306418318", "S4210176548"],
+    });
+    expect(new URL(rec.calls[0]!.url).searchParams.get("filter")).toBe(
+      "publication_year:2020-2024,is_oa:true,primary_location.source.id:S4210176548|S4306418318",
+    );
+  });
+
+  it("OpenAlex：非法 source id → INVALID_REQUEST（fail-fast，不发请求）", async () => {
+    const rec = recorder([() => json({ results: [] })]);
+    const provider = new OpenAlexSearchProvider({ http: makeHttp(rec.impl) });
+    await expect(provider.search("x", { venueSourceIds: ["cvpr"] })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+    });
+    expect(rec.calls).toHaveLength(0);
+  });
+
+  it("OpenAlex：venueNames 不消费（display name 不是服务端 identity，不静默过滤）", async () => {
+    const rec = recorder([() => json({ results: [] })]);
+    const provider = new OpenAlexSearchProvider({ http: makeHttp(rec.impl) });
+    await provider.search("x", { venueNames: ["CVPR"] });
+    expect(new URL(rec.calls[0]!.url).searchParams.get("filter")).toBeNull();
+  });
+
+  it("S2：venueNames 客户端后滤（归一化全等 + 卷号尾巴包含命中；不匹配 → 空）", async () => {
+    const hit = { ...s2Body.data[0]!, venue: "Advances in Neural Information Processing Systems 30" };
+    const miss = { ...s2Body.data[0]!, paperId: "zzz999", venue: "ACL Anthology" };
+    const rec = recorder([
+      () => json({ data: [hit, miss, s2Body.data[0]!] }),
+      () => json({ data: [miss] }),
+      () => json({ data: [hit, miss] }),
+    ]);
+    const provider = new SemanticScholarSearchProvider({ http: makeHttp(rec.impl) });
+    // 包含（全称 alias 命中卷号尾巴变体；短侧 44 字符 ≥ 长度门）+ 全等（NAACL）
+    const results = await provider.search("x", {
+      venueNames: ["Advances in Neural Information Processing Systems", "NAACL"],
+    });
+    expect(results.map((r) => r.record.venue)).toEqual([
+      "Advances in Neural Information Processing Systems 30",
+      "NAACL",
+    ]);
+    // 短缩写（<6 字符归一化）不做包含匹配——只允许全等命中（长度门防错配）
+    const abbrevOnly = await provider.search("x", { venueNames: ["NeurIPS"] });
+    expect(abbrevOnly.map((r) => r.record.venue)).toEqual([]);
+    // 无一命中 → 空结果（不是错误）
+    await expect(provider.search("x", { venueNames: ["SIGMOD"] })).resolves.toEqual([]);
+    // 无 venueNames → 不过滤（行为不变）
+    const unfiltered = await provider.search("x");
+    expect(unfiltered).toHaveLength(2);
+  });
+
+  it("arXiv：无 venue 字段——venueNames 非空时 graceful 空结果，healthSnapshot 正常", async () => {
+    const rec = recorder([() => new Response(atom([entryNew, entryOld]), { status: 200 })]);
+    const provider = new ArxivSearchProvider({ http: makeHttp(rec.impl) });
+    await expect(provider.search("agents", { venueNames: ["CVPR"] })).resolves.toEqual([]);
+    expect(provider.healthSnapshot().state).toBe("healthy");
+    expect(provider.healthSnapshot().consecutiveFailures).toBe(0);
+  });
+
+  it("AMiner：venueNames 客户端后滤（大小写/空白不敏感）", async () => {
+    const aminerCard = (id: string, venue: string) => ({
+      id,
+      title: `AMiner paper ${id}`,
+      doi: `10.1000/aminer-${id}`,
+      first_author: "Xu Jiahong",
+      year: 2022,
+      venue_name: venue,
+    });
+    const rec = recorder([
+      () =>
+        json({
+          code: 0,
+          data: [aminerCard("a1", "ieee  tpami"), aminerCard("a2", "Other Venue")],
+        }),
+    ]);
+    const provider = new AMinerSearchProvider({ http: makeHttp(rec.impl), apiKey: "t" });
+    const results = await provider.search("x", { venueNames: ["IEEE TPAMI"] });
+    expect(results.map((r) => r.record.venue)).toEqual(["ieee  tpami"]);
   });
 });

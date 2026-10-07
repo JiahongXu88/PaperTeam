@@ -96,6 +96,14 @@ export interface SourceMetadata {
   venue?: string;
   /** 摘要（resolver / BibTeX 导入；M6.4 chunk 检索复用；≤3000 字符） */
   abstract?: string;
+  /**
+   * 引用数——**发现时快照**（M12.1 A3，补 G3）：provider 检索/candidate
+   * promotion 时从真实 provider 响应透传（fusion 已按多源 max 合并），
+   * provider provenance，**LLM 不得生成**（save_candidates 等工具链的值只能
+   * 来自进程内检索缓存/执行快照的 provider 真实返回，按值伪造入口不存在）。
+   * 非负整数；metadataMerge 层按既有 provenance 规则合并（不降级覆盖）。
+   */
+  citationCount?: number;
 }
 
 export interface SourceItem {
@@ -875,6 +883,14 @@ function sanitizeMetadata(metadata: SourceMetadata | undefined): SourceMetadata 
   }
   if (typeof metadata.abstract === "string" && metadata.abstract.trim() !== "") {
     out.abstract = metadata.abstract.trim().slice(0, 3000);
+  }
+  // citationCount：发现时快照（provider 实测；非负整数才收，防 NaN/负数脏值）
+  if (
+    typeof metadata.citationCount === "number" &&
+    Number.isInteger(metadata.citationCount) &&
+    metadata.citationCount >= 0
+  ) {
+    out.citationCount = metadata.citationCount;
   }
   return out;
 }

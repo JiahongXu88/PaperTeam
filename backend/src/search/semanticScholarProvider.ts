@@ -14,6 +14,7 @@ import type { CanonicalPaperRecord } from "../citation/integrity.js";
 import type { ProviderHttpClient } from "./providerHttp.js";
 import type { AcademicSearchProvider, AcademicSearchResult, SearchOptions } from "./types.js";
 import { clampLimit } from "./openalexProvider.js";
+import { effectiveVenueNames, matchesVenueName } from "./venueFilter.js";
 
 const SEARCH_URL = "https://api.semanticscholar.org/graph/v1/paper/search";
 
@@ -123,6 +124,10 @@ function toResult(
     return null;
   }
   const venue = typeof item["venue"] === "string" && item["venue"] !== "" ? item["venue"] : undefined;
+  // M12.1 A1：venue 客户端后滤（共享规则见 venueFilter.ts；无 venueNames 不滤）
+  if (!matchesVenueName(venue, effectiveVenueNames(opts.venueNames))) {
+    return null;
+  }
   const abstract = typeof item["abstract"] === "string" && item["abstract"] !== "" ? item["abstract"] : undefined;
   const record: CanonicalPaperRecord = {
     provider: "semantic-scholar",

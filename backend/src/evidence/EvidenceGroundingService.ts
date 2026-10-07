@@ -151,7 +151,16 @@ export class EvidenceGroundingService {
       );
     }
     // chunk 必须真实存在且可回取（quote 校验的锚点）：无效锚点在提案期拒绝
-    await this.chunkAccess.resolve(projectId, input.chunkId);
+    const resolved = await this.chunkAccess.resolve(projectId, input.chunkId);
+    // M12.1（M12.0 §5 第 1 道隔离的供给链增补）：reference 源（benchmark
+    // 范文）不进 evidence 候选链——「这类论文通常怎么写」≠「claim 是否被
+    // 支撑」（D-0012）。这是唯一的候选入口（propose_evidence 工具 / JSON
+    // 锚定路径 / targeted grounding 全部经此），fail-closed 拒绝。
+    if (resolved.source.sourceRole === "reference") {
+      throw new EvidenceValidationError(
+        `来源 ${sourceId} 是 reference 角色（benchmark 范文）——reference 源不进入 Evidence 候选链（M12.0 §5 Benchmark/Evidence 隔离）`,
+      );
+    }
 
     const existing = await this.candidates.query(projectId, {
       status: "pending",
@@ -212,11 +221,13 @@ export class EvidenceGroundingService {
     let sourceMeta: SourceMetadata;
     let sourceFileName: string;
     let sourceLine: string;
+    let sourceRole: string;
     try {
       const resolved = await this.chunkAccess.resolve(projectId, candidate.chunkId);
       chunk = resolved.chunk;
       sourceMeta = resolved.source.metadata;
       sourceFileName = resolved.source.fileName ?? "";
+      sourceRole = resolved.source.sourceRole;
       sourceLine = [
         resolved.source.metadata.title ?? resolved.source.sourceId,
         resolved.source.metadata.year !== undefined ? `（${resolved.source.metadata.year}）` : "",
@@ -225,6 +236,16 @@ export class EvidenceGroundingService {
       // chunk 缺失 / 来源删除 / id 失效：系统性无法核验（可重建后 retry）
       const reason = error instanceof BusinessError ? error.code.toLowerCase() : "chunk_access_failed";
       return this.markUnverifiable(projectId, candidate, `${reason}:${brief(error)}`);
+    }
+    // M12.1 防御纵深：propose 已按 role 拒绝 reference 源；此处拦截本过滤
+    // 上线前入队的历史候选。unverifiable（可 retry）：若作者把该源角色改为
+    // evidence/both，重试即按正常三段核验走。
+    if (sourceRole === "reference") {
+      return this.markUnverifiable(
+        projectId,
+        candidate,
+        `reference_source_not_evidence:来源 ${candidate.sourceId} 是 reference 角色（benchmark 范文），不进入 Evidence 核验链（M12.0 §5）`,
+      );
     }
     const chunkText = chunk.text;
     const quoteCheck = verifyQuoteInChunk(candidate.quote, chunkText);

@@ -1026,6 +1026,19 @@ function candidateMetadataOf(candidate: CandidateSource): SourceMetadata {
   if (candidate.snippetOrAbstract !== undefined) {
     metadata.abstract = candidate.snippetOrAbstract.slice(0, 3000);
   }
+  // M12.1 A3：引用数快照随 promotion 透传进 SourceMetadata。provenance 语义
+  // 沿用本条 merge 的 inferred 档——metadataMerge 的层级规则保证它不会覆盖
+  // resolved/user 级已有值（provider 实测值不被低可信来源反向污染的对称面：
+  // 高可信档的快照也不被后到的 inferred 改写）；新条目路径直接落字段。
+  // LLM 红线：candidate.citationCount 的唯一写入口是服务端 save* 函数
+  // （provider 真实返回），Agent 无法按值伪造。
+  if (
+    typeof candidate.citationCount === "number" &&
+    Number.isInteger(candidate.citationCount) &&
+    candidate.citationCount >= 0
+  ) {
+    metadata.citationCount = candidate.citationCount;
+  }
   return metadata;
 }
 

@@ -21,7 +21,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { BusinessError, EvidenceValueMismatchError, NotFoundError } from "../errors.js";
+import { BusinessError, EvidenceValidationError, EvidenceValueMismatchError, NotFoundError } from "../errors.js";
 import { claimMentionsValue, summarizeDocument, type ParsedDocumentSummary } from "../ingestion/IngestionService.js";
 import type { IngestionService } from "../ingestion/IngestionService.js";
 import type { ParsedDocumentStore } from "../ingestion/ParsedDocumentStore.js";
@@ -367,6 +367,15 @@ export class VisionAnalysisService {
     }
     await this.projects.getRequired(projectId);
     const item = await this.sources.getRequired(projectId, sourceId);
+    // M12.1（M12.0 §5 第 3 道隔离）：reference 源（benchmark 范文）的图片
+    // 候选事实禁止确认进 Evidence——UI 不提供该动作，服务端在此校验
+    // （前端缺席不是防线，服务端才是）。reference 源的 Vision 分析本身
+    // 不受限（视觉规范参照是合法用途），只有 confirm → Evidence 被禁。
+    if (item.sourceRole === "reference") {
+      throw new EvidenceValidationError(
+        `文献 ${sourceId} 是 reference 角色（benchmark 范文）——其图片候选事实不允许确认为 Evidence（M12.0 §5 Benchmark/Evidence 隔离；视觉规范参照 ≠ 证据来源）`,
+      );
+    }
     const claim = input.claim.trim();
     if (claim === "") {
       throw new BusinessError("INVALID_REQUEST", "claim 不能为空");

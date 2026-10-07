@@ -69,6 +69,13 @@ export interface CandidateSource {
    * 用户动作写入，不承载文献事实；不建 PRISMA 筛选状态机。
    */
   selectionReason?: string;
+  /**
+   * 引用数——发现时快照（M12.1 A3）：provider 检索结果 / 执行快照透传的
+   * provider 实测值（fusion max 合并后），**LLM 不得生成**（写入口只有
+   * saveAcademicCandidates / saveAcademicSnapshotCandidates 等服务端函数，
+   * 值源自 provider 真实返回）。同身份合并时只填空缺（首次发现定快照）。
+   */
+  citationCount?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -88,6 +95,8 @@ export interface AddCandidateInput {
   query?: string;
   /** 供给的需求 id（M9.9 provenance；同身份合并时只填空缺） */
   requirementId?: string;
+  /** 引用数快照（provider 实测；同身份合并时只填空缺——M12.1 A3） */
+  citationCount?: number;
   origin?: CandidateOrigin;
   provider?: string;
 }
@@ -201,6 +210,7 @@ export class CandidateStore {
               : {}),
             ...(input.query !== undefined ? { query: input.query } : {}),
             ...(input.requirementId !== undefined ? { requirementId: input.requirementId } : {}),
+            ...(input.citationCount !== undefined ? { citationCount: input.citationCount } : {}),
           }),
           updatedAt: this.now().toISOString(),
         };
@@ -238,6 +248,12 @@ export class CandidateStore {
         ...(input.query !== undefined && input.query.trim() !== "" ? { query: input.query.trim() } : {}),
         ...(input.requirementId !== undefined && input.requirementId.trim() !== ""
           ? { requirementId: input.requirementId.trim() }
+          : {}),
+        // 引用数快照（M12.1 A3）：只收非负整数（provider 实测形态），脏值丢弃
+        ...(typeof input.citationCount === "number" &&
+        Number.isInteger(input.citationCount) &&
+        input.citationCount >= 0
+          ? { citationCount: input.citationCount }
           : {}),
         status: "pending_review",
         createdAt: timestamp,
@@ -450,6 +466,7 @@ function fillEmpty(
       | "snippetOrAbstract"
       | "query"
       | "requirementId"
+      | "citationCount"
     >
   >,
 ): CandidateSource {

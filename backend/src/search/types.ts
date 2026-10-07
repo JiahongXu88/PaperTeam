@@ -20,6 +20,24 @@ export interface SearchOptions {
   yearTo?: number;
   /** 只保留开放获取结果（provider 原生支持则服务端过滤，否则客户端过滤） */
   openAccessOnly?: boolean;
+  /**
+   * OpenAlex source id（如 "S4210176548"，CVPR 在 OpenAlex 的 proceedings
+   * source）。M12.1 A1（M12.0 §4.5 冻结命名）：OpenAlex provider 映射为
+   * 服务端 filter `primary_location.source.id:S1|S2`——venue filtering 的
+   * identity 是 source id，**不匹配 display name**；其余 provider 忽略
+   * 本字段（venue 语义由 venueNames 客户端后滤承担）。
+   */
+  venueSourceIds?: string[];
+  /**
+   * venue 显示名（客户端匹配其它 provider 用的 venue 名；M12.0 §4.5 冻结
+   * 命名）。非空时，无服务端 venue 过滤能力的 provider（Semantic Scholar /
+   * arXiv / AMiner）按共享匹配规则（search/venueFilter.ts：归一化后全等，
+   * 或短侧 ≥6 字符的包含关系）后滤 record.venue。arXiv 无 venue 字段 →
+   * 结果为空（graceful，不算 provider 失败）。OpenAlex 不消费本字段
+   * （它的 venue 过滤以 venueSourceIds 为唯一 identity，避免 display name
+   * 错配静默过滤掉正确结果）。无 venue filter 时行为与本字段存在前完全一致。
+   */
+  venueNames?: string[];
   /** 语言提示（"zh" / "en"；不支持语言的 provider 忽略） */
   language?: string;
   signal?: AbortSignal;

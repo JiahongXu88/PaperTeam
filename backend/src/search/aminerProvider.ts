@@ -19,6 +19,7 @@
 import { buildIdentity, normalizeDoi, type SourceIdentity } from "../sources/identity.js";
 import type { CanonicalPaperRecord } from "../citation/integrity.js";
 import type { EnvelopeInspector, ProviderHttpClient } from "./providerHttp.js";
+import { effectiveVenueNames, matchesVenueName } from "./venueFilter.js";
 import type { AcademicSearchProvider, AcademicSearchResult, SearchOptions } from "./types.js";
 import { clampLimit } from "./openalexProvider.js";
 
@@ -147,6 +148,11 @@ function toResult(
     // 免费层无 OA 字段：无法判定的一律不放行（不猜测）
     return null;
   }
+  const venue = firstNonEmpty(item["venue_name"]);
+  // M12.1 A1：venue 客户端后滤（共享规则见 venueFilter.ts；无 venueNames 不滤）
+  if (!matchesVenueName(venue, effectiveVenueNames(opts.venueNames))) {
+    return null;
+  }
   const identity: SourceIdentity | null = buildIdentity({
     ...(doi !== undefined ? { doi } : {}),
     ...(id !== undefined ? { aminerId: id } : {}),
@@ -157,7 +163,6 @@ function toResult(
   if (identity === null) {
     return null;
   }
-  const venue = firstNonEmpty(item["venue_name"]);
   const record: CanonicalPaperRecord = {
     provider: "aminer",
     recordId: id ?? "",
