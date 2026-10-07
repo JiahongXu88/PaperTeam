@@ -60,9 +60,12 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
   const reviewRun = runs.data?.find((run) => run.workflowKind === "existing_paper_review");
   const reviewActive = isRunActive(reviewRun);
   const modelConfigured = runtimeStatus.data?.model.phase === "configured";
-  // M9.1：idea 项目的论文生成入口。任意 kind 的活跃 run 都占用项目
+  // M9.1：写稿类项目（idea / survey）的生成入口。任意 kind 的活跃 run 都占用项目
   //（后端 createRun 拒绝已有活跃 run 的项目），按钮据此在「启动 / 查看进度」间切换。
-  const ideaProject = !isExistingPaper(project.workflowKind);
+  // M11.5：综述项目按 topic_survey 启动（不再误发 idea_to_paper），入口文案随 kind 区分。
+  const isSurvey = project.workflowKind === "topic_survey";
+  const paperProject = !isExistingPaper(project.workflowKind);
+  const paperKind: WorkflowKind = isSurvey ? "topic_survey" : "idea_to_paper";
   const activeRun = runs.data?.find((run) => isRunActive(run));
   const hasAnyRun = (runs.data?.length ?? 0) > 0;
 
@@ -148,9 +151,9 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
         ) : null}
       </section>
 
-      {ideaProject ? (
+      {paperProject ? (
         <section className="aside-card aside-section" data-testid="aside-start-paper-section">
-          <h2 className="aside-title">生成论文</h2>
+          <h2 className="aside-title">{isSurvey ? "综述调研" : "生成论文"}</h2>
           <div className="aside-actions">
             {activeRun !== undefined ? (
               <button type="button" className="btn btn-primary btn-block" onClick={() => onOpenTab("workflow")}>
@@ -161,13 +164,21 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
               <button
                 type="button"
                 className="btn btn-primary btn-block"
-                onClick={() => startPaper.mutate({ projectId: project.id, kind: "idea_to_paper" })}
+                onClick={() => startPaper.mutate({ projectId: project.id, kind: paperKind })}
                 disabled={startPaper.isPending || !modelConfigured}
                 title={modelConfigured ? undefined : "需要先在「设置 → 模型设置」配置模型"}
                 data-testid="aside-start-paper"
               >
                 <Icon name="play" />
-                {startPaper.isPending ? "启动中…" : hasAnyRun ? "重新生成论文" : "开始生成论文"}
+                {startPaper.isPending
+                  ? "启动中…"
+                  : isSurvey
+                    ? hasAnyRun
+                      ? "重新开始综述调研"
+                      : "开始综述调研"
+                    : hasAnyRun
+                      ? "重新生成论文"
+                      : "开始生成论文"}
               </button>
             )}
           </div>
@@ -182,7 +193,9 @@ export function ProjectAside({ project, onOpenTab }: { project: ProjectView; onO
             </p>
           ) : null}
           <p className="field-help">
-            从研究想法出发的完整链路：调研 → 证据核验 → 可行性 → 大纲 → 写作 → 审稿 → 修订 → 质量门禁。
+            {isSurvey
+              ? "从主题出发的综述链路：文献检索与遴选 → 综述矩阵 → 跨论文综合 → 大纲确认 → 综述写作 → 审阅 → 修订 → PDF。"
+              : "从研究想法出发的完整链路：调研 → 证据核验 → 可行性 → 大纲 → 写作 → 审稿 → 修订 → 质量门禁。"}
           </p>
         </section>
       ) : null}

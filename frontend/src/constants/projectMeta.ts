@@ -15,8 +15,21 @@ export const WORKFLOW_KIND_LABELS: Record<WorkflowKind, string> = {
   topic_survey: "综述调研",
 };
 
-/** documentType 建议值（Backend DOCUMENT_TYPES） */
+/**
+ * 任务 / 活动记录语境的 workflowKind 文案（动作描述，比徽章缩略语更口语）。
+ * 与 WORKFLOW_KIND_LABELS 一一对应，避免同一 kind 在不同页面出现第三种叫法。
+ */
+export const WORKFLOW_KIND_RUN_LABELS: Record<WorkflowKind, string> = {
+  idea_to_paper: "从想法到论文",
+  existing_paper_improvement: "系统性改进",
+  existing_paper_review: "快速 Review",
+  topic_survey: "综述论文生成",
+};
+
+/** documentType 建议值（Backend DOCUMENT_TYPES；research_article / survey 为创建页两档默认值，必须可显示） */
 export const DOCUMENT_TYPE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "research_article", label: "研究论文" },
+  { value: "survey", label: "综述论文" },
   { value: "undergraduate_thesis", label: "本科毕业论文" },
   { value: "master_thesis", label: "硕士学位论文" },
   { value: "doctoral_thesis", label: "博士学位论文" },

@@ -6,7 +6,14 @@ import { Loading } from "../common/StateViews.js";
 import { InlineConfirm } from "../common/RowMenu.js";
 import { HitlPanel } from "./HitlPanel.js";
 import { QualityGatePanel } from "./QualityGatePanel.js";
-import { COMPLETION_LABELS, TERMINAL_STATUS_STYLES, stageLabel, statusStyleOf } from "../common/status.js";
+import {
+  COMPLETION_LABELS,
+  PUBLICATION_READINESS_STYLES,
+  REVISION_TASK_VERDICT_STYLES,
+  TERMINAL_STATUS_STYLES,
+  stageLabel,
+  statusStyleOf,
+} from "../common/status.js";
 import { RunStatusBadge } from "./Badges.js";
 import { WORKFLOW_KIND_LABELS } from "../../constants/projectMeta.js";
 import { buildStageTimeline, type StageTimelineItem } from "./workflowTimeline.js";
@@ -531,6 +538,18 @@ function CompletedBlock({
           </>
         ) : null}
         。
+        {run.completion?.revisionTaskVerdict !== undefined ? (
+          <span className="workflow-layered-result" data-testid="workflow-layered-result">
+            <br />
+            返修任务 <RegistryStatus style={statusStyleOf(REVISION_TASK_VERDICT_STYLES, run.completion.revisionTaskVerdict)} />
+            {" · "}投稿就绪性{" "}
+            {typeof run.completion.publicationReadiness === "string" ? (
+              <RegistryStatus style={statusStyleOf(PUBLICATION_READINESS_STYLES, run.completion.publicationReadiness)} />
+            ) : (
+              <span className="muted">未评估（旧任务）</span>
+            )}
+          </span>
+        ) : null}
       </span>
       {isReviewKind ? (
         <span className="workflow-result-actions">

@@ -18,7 +18,7 @@ import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { SourcesPanel } from "../components/project/SourcesPanel.js";
 import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
 import { readSectionProgress } from "../components/project/workflowTimeline.js";
-import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
+import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS, WORKFLOW_KIND_RUN_LABELS } from "../constants/projectMeta.js";
 import { isRunActive, useArchiveProject, useProject, useProjectRuns, useRenameProject } from "../hooks/queries.js";
 import { useWorkflowEvents } from "../hooks/workflowEvents.js";
 import { ApiError } from "../api/client.js";
@@ -40,8 +40,8 @@ const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; no
   { id: "overview", label: "概览" },
   { id: "paper", label: "论文产出", notReviewOnly: true },
   { id: "pdf", label: "PDF 与结构" },
-  // M7.1c：Discovery（检索 → 候选审阅 → Promote 入库）排在文献库上游
-  { id: "discovery", label: "Discovery" },
+  // M7.1c：文献发现（检索 → 候选审阅 → Promote 入库）排在文献库上游
+  { id: "discovery", label: "文献发现" },
   { id: "sources", label: "文献库" },
   { id: "evidence", label: "证据" },
   { id: "citations", label: "引用核验" },
@@ -99,7 +99,7 @@ function ProjectRunsPanel({ projectId }: { projectId: string }) {
             </span>
             <div className="gutter-body">
               <span className="run-title">
-                {run.workflowKind === "existing_paper_review" ? "快速 Review" : run.workflowKind === "existing_paper_improvement" ? "系统性改进" : "从想法到论文"}
+                {WORKFLOW_KIND_RUN_LABELS[run.workflowKind]}
                 {run.completion !== null && run.completion !== undefined ? (
                   <span className="muted">，产出 {COMPLETION_LABELS[run.completion.label] ?? run.completion.label}</span>
                 ) : null}

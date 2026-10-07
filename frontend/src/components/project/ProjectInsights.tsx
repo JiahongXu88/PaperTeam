@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { usePaper, usePaperReviewReport, useCitations, useProjectRuns, useInvalidateReviewOutputs, isRunActive } from "../../hooks/queries.js";
 import { formatDateTime } from "../../utils/format.js";
 import { RunStatusBadge } from "./Badges.js";
+import { WORKFLOW_KIND_RUN_LABELS } from "../../constants/projectMeta.js";
 import { Icon } from "../common/Icon.js";
 
 export function ProjectInsights({ projectId }: { projectId: string }) {
@@ -34,7 +35,7 @@ export function RecentActivity({ projectId, createdAt }: { projectId: string; cr
   const runs = useProjectRuns(projectId);
   return <section className="home-activity card card-pad"><div className="section-head"><h2>最近活动</h2><Icon name="clock" /></div><p className="panel-sub">当前论文的工作记录</p><ol className="activity-list">
     {runs.isError && <li>任务记录暂时无法读取</li>}
-    {runs.data?.slice(0,3).map(run => <li key={run.runId}><i /><div><span>{run.workflowKind === 'existing_paper_review' ? '论文 Review' : run.workflowKind === 'existing_paper_improvement' ? '论文改进' : '论文生成'}</span><time>{formatDateTime(run.updatedAt)}</time></div><RunStatusBadge status={run.status} /></li>)}
+    {runs.data?.slice(0,3).map(run => <li key={run.runId}><i /><div><span>{WORKFLOW_KIND_RUN_LABELS[run.workflowKind]}</span><time>{formatDateTime(run.updatedAt)}</time></div><RunStatusBadge status={run.status} /></li>)}
     <li><i /><div><span>创建论文项目</span><time>{formatDateTime(createdAt)}</time></div></li>
   </ol><Link className="home-text-link" to={`/projects/${projectId}`}>查看项目记录 <Icon name="chevron-right" /></Link></section>;
 }

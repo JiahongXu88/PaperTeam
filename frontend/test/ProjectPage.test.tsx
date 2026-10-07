@@ -155,12 +155,13 @@ describe("ProjectPage Tab 导航（UX Polish 2026-09）", () => {
     expect(screen.getByRole("tab", { name: "PDF 与结构" })).toHaveAttribute("aria-selected", "true");
   });
 
-  it("M7.1c：?tab=discovery 进入 Discovery（检索 → 候选审阅）", async () => {
+  it("M7.1c：?tab=discovery 进入文献发现（检索 → 候选审阅）", async () => {
     renderProjectAt("/projects/p-tab00000001?tab=discovery");
 
     expect(await screen.findByText("研究检索")).toBeInTheDocument();
     expect(screen.getByText("候选文献")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Discovery" })).toHaveAttribute("aria-selected", "true");
+    // M11.5：tab 名从 Discovery 统一为中文「文献发现」（与 HITL 提示同口径）
+    expect(screen.getByRole("tab", { name: "文献发现" })).toHaveAttribute("aria-selected", "true");
   });
 
   it("无效 / 未开放 tab 回退概览；?tab=evidence 进入证据工作台", async () => {
