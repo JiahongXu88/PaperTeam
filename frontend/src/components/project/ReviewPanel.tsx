@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { Icon, type IconName } from "../common/Icon.js";
 import { Loading } from "../common/StateViews.js";
@@ -29,6 +30,14 @@ import {
 } from "../../hooks/queries.js";
 import { formatApiError, summarizeRunError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
+import {
+  assetPreviewOf,
+  getVisualReviewReport,
+  runVisualReview,
+  type VisualReviewFindingView,
+  type VisualReviewReportView,
+  type VisualVerificationStatus,
+} from "../../api/visuals.js";
 import type { CitationSemanticMode, ExistingReviewReportView, ReviewFindingView, StylePolicy, WorkflowKind, WorkflowRunView } from "../../types/api.js";
 import type { PaperSectionView } from "../../types/paper.js";
 
@@ -303,6 +312,9 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
       ) : !active ? (
         <p className="panel-empty">{reviewRun?.status === "completed" ? "Review 已完成，正在载入报告…" : "尚未开始 Review。"}</p>
       ) : null}
+
+      {/* M12.2 B5：视觉检查（独立于文本 Review——确定性检查恒可运行，vision 按 capability 降级） */}
+      <VisualReviewSection projectId={projectId} />
     </section>
   );
 }
@@ -652,6 +664,264 @@ function FindingCard({ finding, sectionTitle }: { finding: ReviewFindingView; se
             <span>{finding.suggestion}</span>
           </div>
         ) : null}
+      </div>
+    </article>
+  );
+}
+
+// ---- M12.2 B5：视觉检查（多模态 Review）----
+//
+// 与文本 Review 报告（ReportBlock）完全分离的独立数据源（GET visual-reviews/latest）。
+// 纪律：
+// - 「确定性视觉检查」与「Vision 辅助审查」两组**绝不混排**——前者是机器可
+//   复核的事实（verified_deterministic），后者是模型观察（model_observation，
+//   永不冒充已核验）；
+// - vision 不可用是预期状态（当前部署默认文本模型）：如实给出原因码与
+//   「确定性-only 模式」标注，不渲染任何「全部通过」语义；
+// - 「尚未运行」与「已运行但无发现」严格区分；
+// - 预览走受控资产路由；不可预览时给出明确原因，不显示坏图。
+
+const VISUAL_VERIFICATION_LABELS: Record<VisualVerificationStatus, string> = {
+  verified_deterministic: "确定性核验",
+  model_observation: "模型观察（未核验）",
+  needs_author_review: "需作者复核",
+};
+
+const VISUAL_CONFIDENCE_LABELS: Record<string, string> = { high: "高", medium: "中", low: "低" };
+
+const VISUAL_CHECK_LABELS: Record<string, string> = {
+  "label-ref-resolution": "图表引用解析",
+  "duplicate-label": "label 重复",
+  "missing-caption": "caption 缺失",
+  "unreferenced-artifact": "未引用图表",
+  "table-text-numeric": "表-文数值一致性",
+  "caption-reference-mismatch": "题注-描述匹配",
+  "figure-caption-consistency": "图-题注一致性",
+  "figure-claim-consistency": "图-正文论断一致性",
+  "legend-axis-consistency": "图例/坐标轴自洽",
+  "diagram-method-consistency": "流程图-方法描述一致性",
+};
+
+const VISUAL_CHECK_STATUS_LABELS: Record<string, string> = {
+  passed: "通过",
+  finding: "有发现",
+  skipped: "未运行",
+  failed: "执行失败",
+};
+
+function VisualReviewSection({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient();
+  const visualQuery = useQuery({
+    queryKey: ["visual-review", projectId],
+    queryFn: ({ signal }) => getVisualReviewReport(projectId, signal),
+  });
+  const runVisual = useMutation({
+    mutationFn: () => runVisualReview(projectId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["visual-review", projectId] });
+    },
+  });
+
+  return (
+    <section className="section-block" data-testid="visual-review-section">
+      <div className="section-head">
+        <h3>视觉检查</h3>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => runVisual.mutate()}
+          disabled={runVisual.isPending}
+          data-testid="run-visual-review"
+          title="确定性视觉检查（图表引用/caption/数值一致性）+ Vision 模型图表审查（按模型能力降级）"
+        >
+          <Icon name={visualQuery.data === null ? "play" : "refresh"} />
+          {runVisual.isPending ? "运行中…" : visualQuery.data === null ? "运行视觉检查" : "重新运行"}
+        </button>
+      </div>
+
+      {runVisual.isError ? (
+        <p className="form-error" role="alert" data-testid="visual-run-error">
+          运行失败：{formatApiError(runVisual.error)}
+        </p>
+      ) : null}
+
+      {visualQuery.isPending ? (
+        <p className="faint">加载视觉检查状态…</p>
+      ) : visualQuery.isError ? (
+        <p className="note note-info" role="status" data-testid="visual-status-error">
+          <span>视觉检查状态暂不可用（{formatApiError(visualQuery.error)}）。</span>
+        </p>
+      ) : visualQuery.data === null ? (
+        <div className="state-block state-empty" data-testid="visual-not-run">
+          <strong>尚未运行视觉检查</strong>
+          <span>
+            确定性检查（图表引用、caption、表-文数值一致性）不依赖视觉模型，随时可运行；
+            Vision 辅助审查在配置 image 输入模型后自动加入。
+          </span>
+        </div>
+      ) : (
+        <VisualReportBlock projectId={projectId} report={visualQuery.data} />
+      )}
+    </section>
+  );
+}
+
+function VisualReportBlock({ projectId, report }: { projectId: string; report: VisualReviewReportView }) {
+  const deterministic = report.findings.filter((finding) => finding.source === "deterministic-visual");
+  const visionAssisted = report.findings.filter((finding) => finding.source === "vision-assisted");
+  const deterministicChecks = report.checks.filter((check) => check.kind === "deterministic");
+  const visionChecks = report.checks.filter((check) => check.kind === "vision");
+  const capability = report.capability;
+
+  return (
+    <div data-testid="visual-review-report">
+      <p className="panel-sub" data-testid="visual-report-meta">
+        覆盖 {report.artifacts.total} 个图表对象（figure {report.artifacts.figures} / table {report.artifacts.tables}）·
+        运行于 {formatDateTime(report.runAt)}
+        {report.round !== undefined ? `（round ${report.round}）` : ""}
+      </p>
+
+      {/* capability 透明化：vision 不可用 = 预期降级态，绝不伪装成已检查 */}
+      {capability.visionAvailable ? (
+        <p className="note note-info" role="status" data-testid="visual-vision-available">
+          <span>
+            <span className="note-mark">●</span> Vision 辅助审查已运行（{capability.modelSpec ?? "未知模型"}）：
+            完成 {capability.visionFiguresCompleted} 图 / 失败 {capability.visionFiguresFailed} 图
+            {capability.skippedFigures.length > 0 ? ` / ${capability.skippedFigures.length} 图不可送审（资产缺失或非 PNG/JPEG）` : ""}
+          </span>
+        </p>
+      ) : (
+        <p className="note note-warn" role="status" data-testid="visual-vision-unavailable">
+          <span>
+            <span className="note-mark">●</span> Vision 辅助审查未运行（原因 {capability.reason ?? "not_configured"}：
+            {capability.detail}）——当前为「确定性-only 模式」，以下视觉事实全部来自机器可复核的确定性检查。
+          </span>
+        </p>
+      )}
+
+      {/* 组 1：确定性视觉检查（与模型观察严格分离） */}
+      <div className="review-list-head" data-testid="visual-deterministic-group">
+        <h4>确定性视觉检查</h4>
+        <span className="review-list-note">{deterministic.length > 0 ? `${deterministic.length} 条确定性发现` : "无确定性发现"}</span>
+      </div>
+      <details className="details-block">
+        <summary>检查项执行状态（{deterministicChecks.length} 项确定性检查）</summary>
+        <ul className="stage-list">
+          {deterministicChecks.map((check) => (
+            <li key={check.checkId} className={`stage-item stage-${check.status === "passed" ? "done" : check.status === "finding" ? "current" : "todo"}`}>
+              <span className="stage-name">{VISUAL_CHECK_LABELS[check.checkId] ?? check.checkId}</span>
+              <span className="stage-detail">
+                {VISUAL_CHECK_STATUS_LABELS[check.status] ?? check.status}
+                {check.detail !== undefined ? ` · ${check.detail}` : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </details>
+      {deterministic.length > 0 ? (
+        <div className="finding-list">
+          {deterministic.map((finding) => (
+            <VisualFindingCard key={finding.findingId} projectId={projectId} finding={finding} />
+          ))}
+        </div>
+      ) : (
+        <p className="note note-success" role="status">
+          <span>
+            <span className="note-mark">✓</span> 确定性视觉检查未发现问题。
+          </span>
+        </p>
+      )}
+
+      {/* 组 2：Vision 辅助审查（模型观察——永不冒充已核验） */}
+      <div className="review-list-head" data-testid="visual-vision-group">
+        <h4>Vision 辅助审查</h4>
+        <span className="review-list-note">
+          {capability.visionAvailable
+            ? visionAssisted.length > 0
+              ? `${visionAssisted.length} 条模型观察`
+              : "无模型观察"
+            : "未运行（模型不可用）"}
+        </span>
+      </div>
+      {!capability.visionAvailable ? (
+        <p className="panel-empty" data-testid="visual-vision-skipped">
+          Vision 检查项（{visionChecks.map((check) => VISUAL_CHECK_LABELS[check.checkId] ?? check.checkId).join("、")}）未运行。
+          配置 image 输入模型后重新运行即可加入。
+        </p>
+      ) : visionAssisted.length > 0 ? (
+        <div className="finding-list">
+          {visionAssisted.map((finding) => (
+            <VisualFindingCard key={finding.findingId} projectId={projectId} finding={finding} />
+          ))}
+        </div>
+      ) : (
+        <p className="note note-success" role="status">
+          <span>
+            <span className="note-mark">✓</span> Vision 辅助审查未产生模型观察。
+          </span>
+        </p>
+      )}
+
+      {report.notes.length > 0 ? (
+        <details className="details-block">
+          <summary>运行说明（{report.notes.length} 条）</summary>
+          <ul>
+            {report.notes.map((note, index) => (
+              <li key={index} className="faint">{note}</li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function VisualFindingCard({ projectId, finding }: { projectId: string; finding: VisualReviewFindingView }) {
+  const severity = statusStyleOf(SEVERITY_STYLES, finding.severity);
+  const preview = assetPreviewOf(projectId, finding);
+  return (
+    <article className={`finding-card finding-${finding.severity}`} data-testid="visual-finding-card">
+      <span className={`finding-page${finding.page === undefined && finding.chunkId === undefined ? " finding-page-empty" : ""}`}>
+        {finding.page !== undefined ? `p${finding.page}` : finding.chunkId ?? "—"}
+      </span>
+      <div className="finding-body">
+        <div className="finding-tags">
+          <span className={`sev-badge sev-badge-${finding.severity}`}>{severity.label}</span>
+          <span className="chip chip-tone-info">{finding.source === "deterministic-visual" ? "确定性" : "Vision 观察"}</span>
+          {finding.verificationStatus !== undefined ? (
+            <span className="chip">{VISUAL_VERIFICATION_LABELS[finding.verificationStatus]}</span>
+          ) : null}
+          {finding.visualConfidence !== undefined ? (
+            <span className="finding-section">置信度 {VISUAL_CONFIDENCE_LABELS[finding.visualConfidence] ?? finding.visualConfidence}</span>
+          ) : null}
+        </div>
+        {finding.figureEnvRef !== undefined ? (
+          <p className="finding-section mono" title="图表锚（VisualArtifactView id）">
+            {finding.figureEnvRef}
+          </p>
+        ) : null}
+        <p className="finding-message">{finding.message}</p>
+        {finding.claimText !== undefined ? (
+          <blockquote className="finding-claim">
+            <Icon name="quote" />
+            <span>{finding.claimText}</span>
+          </blockquote>
+        ) : null}
+        {preview.kind === "image" ? (
+          <figure className="visual-preview" data-testid="visual-asset-preview">
+            <img src={preview.url} alt={`图表资产预览（${finding.figureEnvRef ?? finding.findingId}）`} loading="lazy" style={{ maxWidth: "100%", maxHeight: "240px", borderRadius: "var(--radius, 6px)", border: "1px solid var(--border, #ddd)" }} />
+          </figure>
+        ) : preview.kind === "pdf" ? (
+          <p className="visual-preview" data-testid="visual-asset-preview">
+            <a className="btn-link" href={preview.url} target="_blank" rel="noreferrer">
+              打开图表 PDF 预览
+            </a>
+          </p>
+        ) : (
+          <p className="faint" data-testid="visual-asset-unavailable">
+            预览不可用：{preview.reason}
+          </p>
+        )}
       </div>
     </article>
   );
