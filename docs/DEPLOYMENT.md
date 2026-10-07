@@ -4,6 +4,17 @@
 > WSL2 Ubuntu 24.04 + Docker Engine 29.8 / Compose v5.5（未安装 Docker Desktop：公司环境
 > 无法确认其商业授权，改用 WSL2 内的 Docker Engine；见 docs/M5_ACCEPTANCE.md §4.7）。
 > §7 清单逐项真实执行并通过；构建期需要 apt / pip 镜像（§3）。
+>
+> **M12.2.5 增量**（详见 [deployment/linux-server.md](deployment/linux-server.md) 与
+> [deployment/dual-runtime.md](deployment/dual-runtime.md)）：
+> - backend 显式 `PAPERTEAM_HOST=0.0.0.0`（裸跑进程的缺省已收紧为回环 `127.0.0.1`）；
+> - 镜像新增 `texlive-latex-extra`（standalone.cls——图表编译必需）并在构建期
+>   `kpsewhich` 验证 standalone/pgfplots/ctexart；
+> - 可选 `backend-docling` 构建目标（docling 结构化解析 + `HF_HOME=/data/hf-cache`
+>   模型缓存 volume；compose 经 `PAPERTEAM_BACKEND_IMAGE` 切换）；
+> - CI docker smoke 扩展：图表真实编译（含 CJK）、容器重启持久化、compose
+>   down/up 持久化（`.github/workflows/ci.yml`）；docling 全链在
+>   `.github/workflows/linux-integration.yml`（main push + 手动触发）。
 
 形态：单机、单用户、Linux / Docker。不做 Kubernetes / HA / autoscaling / 多租户 /
 Redis / 外部任务队列 / System Admin / 登录系统。

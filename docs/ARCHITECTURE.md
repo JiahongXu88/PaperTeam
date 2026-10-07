@@ -947,6 +947,14 @@ PaperTeam/
 运行时数据均在仓库外：论文项目 workspace 在 `PROJECTS_ROOT`（默认 backend/projects/），
 Pi 配置目录在用户级 `~/.paperteam/runtime/pi/agent/`（见 §6.0），二者均被 .gitignore 排除。
 
+**M12.2.5 dual-runtime 口径**：`PROJECTS_ROOT` + `PAPERTEAM_RUNTIME_ROOT` 是
+PaperTeam 的两个数据根事实源（同一套代码在 Windows 本地与 Linux 服务器运行，
+各机数据根独立；模型配置与 credentials 挂在 runtimeRoot 下、永不同步）。HTTP
+监听地址由 `PAPERTEAM_HOST` 控制（缺省回环 `127.0.0.1`——无鉴权服务的保守
+默认；Docker 镜像内显式 `0.0.0.0` 供 nginx 反代）。部署手册见
+[deployment/linux-server.md](deployment/linux-server.md) 与
+[deployment/dual-runtime.md](deployment/dual-runtime.md)。
+
 
 ## 12. PDF Review + Citation Integrity + Skill Registry（M4.3 已实现）
 

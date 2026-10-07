@@ -53,6 +53,7 @@ PaperTeam 能力声明的证据来源，只增不删。当前工程状态摘要�
 - [M12_BATCH1_DETERMINISTIC_FOUNDATIONS.md](M12_BATCH1_DETERMINISTIC_FOUNDATIONS.md) — Batch 1 确定性基础层实施（A1–A6 benchmark 全链 + B1–B2 视觉投影 + C1–C3 图表管线；含隔离证明与三个真实 smoke）
 - [M12_BATCH2_PRODUCT_CLOSURE.md](M12_BATCH2_PRODUCT_CLOSURE.md) — Batch 2 产品收口（A7–A10 Target Profile/Readiness/UI + B3–B5 多模态评审 + GitHub CI 79 连败根因修复；真实 OpenAlex/GLM-5.3/glm-5.3-flash 视觉 smoke）
 - [M12_BATCH2_TRACK_A_HANDOFF.md](M12_BATCH2_TRACK_A_HANDOFF.md) / [M12_BATCH2_TRACK_B_HANDOFF.md](M12_BATCH2_TRACK_B_HANDOFF.md) — 双轨 subagent 交接契约（工厂签名 / HTTP 路由 / 偏差记录）
+- [M12_2_5_LINUX_DUAL_RUNTIME_CLOSURE.md](M12_2_5_LINUX_DUAL_RUNTIME_CLOSURE.md) — Linux & dual-runtime 收口（PAPERTEAM_HOST/图表 CJK/docling 镜像/doctor 三档/CI 持久化与 Linux 集成验收；公司-个人 credentials 隔离契约）
 
 ## Runtime / 架构审计
 

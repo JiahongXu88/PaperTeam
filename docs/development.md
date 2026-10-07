@@ -79,7 +79,7 @@ PaperTeam/
 | `PAPERTEAM_PI_MODEL` / `PAPERTEAM_PI_API_KEY` | 模型与 Key（优先级高于 UI 保存） |
 | `PAPERTEAM_PI_RUN_TIMEOUT_MS` / `PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS` | 通用 / 长任务超时 |
 | `PAPERTEAM_PI_MAX_CONCURRENT_RUNS` / `PAPERTEAM_PI_MAX_QUEUED_RUNS` | 全局并发与等待队列 |
-| `PAPERTEAM_PROJECTS_ROOT` / `PAPERTEAM_RUNTIME_ROOT` | 项目与运行时数据目录 |
+| `PROJECTS_ROOT` / `PAPERTEAM_RUNTIME_ROOT` | 项目与运行时数据目录（注意：前者无 `PAPERTEAM_` 前缀——历史事实源变量名） |
 | `PAPERTEAM_TEST_RUNTIME` | `scripted` = 测试注入确定性 Agent 实现 |
 
 ## 6. 约定

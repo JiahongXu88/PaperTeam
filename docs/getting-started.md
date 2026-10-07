@@ -72,5 +72,9 @@ docker compose build && docker compose up -d
 curl -fsS http://localhost:8080/ready
 ```
 
-镜像内已含 Python/pymupdf、XeLaTeX/bibtex 与中文字体。依赖审计与验收清单见
-[DEPLOYMENT.md](DEPLOYMENT.md)。
+镜像内已含 Python/pymupdf、XeLaTeX/bibtex（含图表所需的 standalone/pgfplots/tikz）
+与中文字体（Fandol + Noto CJK）。依赖审计与验收清单见
+[DEPLOYMENT.md](DEPLOYMENT.md)；Linux 服务器完整手册见
+[deployment/linux-server.md](deployment/linux-server.md)（含 docling 结构化解析
+的可选镜像）；「公司 Windows 本地 + 个人 Linux 服务器」双运行时与 credentials
+边界见 [deployment/dual-runtime.md](deployment/dual-runtime.md)。

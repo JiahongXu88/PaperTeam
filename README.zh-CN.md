@@ -95,6 +95,8 @@ curl -fsS http://localhost:8080/ready
 
 更多细节：[docs/getting-started.md](docs/getting-started.md) ·
 [Docker/Linux 部署](docs/DEPLOYMENT.md) ·
+[Linux 服务器手册](docs/deployment/linux-server.md) ·
+[双运行时（Windows 本地 + Linux 服务器）](docs/deployment/dual-runtime.md) ·
 [模型配置](docs/model-configuration.md)
 
 ## 工作原理
@@ -155,6 +157,8 @@ telemetry。** 你的论文只在你配置的模型 Provider 的 API 调用中�
 | [系统架构](docs/ARCHITECTURE.md) | 系统设计与架构红线 |
 | [开发指南](docs/development.md) | 开发环境、测试层次、仓库结构 |
 | [部署](docs/DEPLOYMENT.md) | Docker / 单机 Linux 部署 |
+| [Linux 服务器手册](docs/deployment/linux-server.md) | Ubuntu 24.04 自托管（Docker / 原生、docling、备份） |
+| [双运行时](docs/deployment/dual-runtime.md) | Windows 本地 + Linux 服务器，各机独立 credentials |
 | [项目状态](docs/PROJECT_STATUS.md) | 当前工程状态与里程碑记录 |
 | [研究报告索引](docs/research/README.md) | 实验 / 验收 / 审计报告总目录 |
 | [API 契约](docs/API_CONTRACT.md) | HTTP API / DTO / SSE 契约 |

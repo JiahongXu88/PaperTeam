@@ -103,6 +103,8 @@ curl -fsS http://localhost:8080/ready
 
 More details: [docs/getting-started.md](docs/getting-started.md) ·
 [docs/deployment (Docker/Linux)](docs/DEPLOYMENT.md) ·
+[Linux server guide](docs/deployment/linux-server.md) ·
+[dual-runtime (Windows local + Linux server)](docs/deployment/dual-runtime.md) ·
 [docs/model-configuration.md](docs/model-configuration.md)
 
 ## How it works
@@ -168,6 +170,8 @@ Your paper leaves the machine only as model API calls to the provider you config
 | [Architecture](docs/ARCHITECTURE.md) | System design and architecture red lines |
 | [Development](docs/development.md) | Dev setup, test layers, repository layout |
 | [Deployment](docs/DEPLOYMENT.md) | Docker / single-host Linux deployment |
+| [Linux server](docs/deployment/linux-server.md) | Ubuntu 24.04 self-hosted guide (Docker / native, docling, backup) |
+| [Dual runtime](docs/deployment/dual-runtime.md) | Windows local + Linux server, isolated credentials per machine |
 | [Project status](docs/PROJECT_STATUS.md) | Current engineering status and milestone log |
 | [Research reports](docs/research/README.md) | Index of experiment / acceptance / audit reports |
 | [API contract](docs/API_CONTRACT.md) | HTTP API / DTO / SSE contract |
