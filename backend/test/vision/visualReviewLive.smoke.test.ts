@@ -11,7 +11,7 @@
  */
 
 import { afterAll, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile, cp, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
