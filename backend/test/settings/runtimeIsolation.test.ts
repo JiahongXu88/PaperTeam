@@ -36,25 +36,28 @@ async function tmp(): Promise<string> {
 
 describe("M12.2.5 双运行时配置隔离", () => {
   it("resolveRuntimeRoot：不同机器（不同 env）解析到不同根；默认仍是各自 home", () => {
-    const machineA = resolveRuntimeRoot({ PAPERTEAM_RUNTIME_ROOT: join("X:\\", "company", "paperteam") });
-    const machineB = resolveRuntimeRoot({ PAPERTEAM_RUNTIME_ROOT: "/var/lib/paperteam" });
-    expect(machineA).not.toBe(machineB);
+    // 平台中立绝对路径（Linux CI 上 X:\ 形态会被 ConfigError 正确拒绝——那本身
+    // 是另一条被 config.test 覆盖的行为，这里测的是「两个根互不相同」）
+    const machineA = resolve(tmpdir(), "pt-machine-a", "paperteam");
+    const machineB = resolve(tmpdir(), "pt-machine-b", "paperteam");
+    expect(resolveRuntimeRoot({ PAPERTEAM_RUNTIME_ROOT: machineA })).not.toBe(
+      resolveRuntimeRoot({ PAPERTEAM_RUNTIME_ROOT: machineB }),
+    );
     // 未设置时按各自 OS 用户 home（同机同用户才可能相同——公司机与服务器天然不同）
     expect(resolveRuntimeRoot({})).toBe(join(homedir(), ".paperteam"));
   });
 
   it("config 派生路径随 runtimeRoot 隔离：agentDir / settings 都在各自根下", () => {
-    const rootA = "X:\\company\\paperteam";
-    const rootB = "/var/lib/paperteam";
+    const rootA = resolve(tmpdir(), "pt-machine-a", "paperteam");
+    const rootB = resolve(tmpdir(), "pt-machine-b", "paperteam");
     const configA = loadConfig({ PAPERTEAM_RUNTIME_ROOT: rootA });
     const configB = loadConfig({ PAPERTEAM_RUNTIME_ROOT: rootB });
-    // resolve 与 config 内部同语义（POSIX 绝对路径在 Windows 上会补当前盘符——平台无关断言）
     expect(configA.pi.agentDir).toBe(resolve(rootA, "runtime", "pi", "agent"));
     expect(configB.pi.agentDir).toBe(resolve(rootB, "runtime", "pi", "agent"));
     expect(configA.pi.agentDir).not.toBe(configB.pi.agentDir);
     // projects root 也随部署独立（同一 env 上不同值互不影响）
-    expect(loadConfig({ PROJECTS_ROOT: "D:\\PaperTeamData\\projects" }).projectsRoot).not.toBe(
-      loadConfig({ PROJECTS_ROOT: "/srv/paperteam/projects" }).projectsRoot,
+    expect(loadConfig({ PROJECTS_ROOT: join(rootA, "projects") }).projectsRoot).not.toBe(
+      loadConfig({ PROJECTS_ROOT: join(rootB, "projects") }).projectsRoot,
     );
   });
 
