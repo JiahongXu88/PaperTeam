@@ -637,3 +637,17 @@ interface GeneratedFigureRecord {
 23. 当前必须作者裁决的架构分歧？——**无**。全部分歧已按工程判断冻结（§17）；仅三个非阻塞默认值待作者事后认可（§22 末行）。
 
 **READY_FOR_M12_1 = true。**
+
+---
+
+## 24. Implementation Status（Batch 1 回填，2026-10-07）
+
+§18.4 预判的并行首轮 **A1–A6 + B1–B2 + C1–C3 已一轮完成**（基线 `7cd9433` → Batch 1 收口）。实施详情、schema 终稿、隔离证明、smoke 与测试数字见 [M12_BATCH1_DETERMINISTIC_FOUNDATIONS.md](M12_BATCH1_DETERMINISTIC_FOUNDATIONS.md)。要点回填：
+
+- 冻结方案全部按本报告实现，**零架构偏差**；两处任务书/示例级修正：
+  1. §18.1 A6 的 `hitl.benchmark_selection` 按任务书产品层修正落地为「默认自动选择（8–15 带内目标 12）→ 冻结 → 继续，正常流程零暂停；optional 调整能力（exclude/addPaper/confirm）服务端齐备；requiresAttention 仅四触发」；
+  2. 任务书示例 OpenAlex id `S4306402567` 实为 bioRxiv（实施时经线上 API 核验纠正；CVPR = `S4210176548`）。
+- §5 四道 Benchmark/Evidence 隔离全部落地（第 1 道的供给链增补 + 第 3 道 vision confirm 服务端校验为本轮新代码），targeted 回归在库。
+- B1/B2 相对本报告 §8.1/§8.2 的 additive 字段（figureType/linkedSection/extraction/headers/rows/references/notes）均在实施报告 §3 记录理由。
+- C3 错误模型五类（invalid_spec/tool_unavailable/package_missing/compile_failed/timeout）即 §11.1「doctor/预检」的 compiler-required minimum 形态；doctor 正式收口仍在 C6。
+- Batch 1 后状态：**M12.1/12.2/12.3 均 PARTIAL**（deterministic foundation 层 COMPLETE；剩余 A7–A10 / B3–B5 / C4–C6 见实施报告 §9，其中 A7→A8→A9 与 C5 必须串行）。

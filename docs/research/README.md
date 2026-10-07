@@ -50,6 +50,7 @@ PaperTeam 能力声明的证据来源，只增不删。当前工程状态摘要�
 ## M12 — Publication Intelligence × Multimodal × Deterministic Figures
 
 - [M12_0_FAST_ARCHITECTURE_AUDIT.md](M12_0_FAST_ARCHITECTURE_AUDIT.md) — M12 快速架构审计与三方向冻结（Target Publication / Multimodal / 确定性图表）
+- [M12_BATCH1_DETERMINISTIC_FOUNDATIONS.md](M12_BATCH1_DETERMINISTIC_FOUNDATIONS.md) — Batch 1 确定性基础层实施（A1–A6 benchmark 全链 + B1–B2 视觉投影 + C1–C3 图表管线；含隔离证明与三个真实 smoke）
 
 ## Runtime / 架构审计
 
