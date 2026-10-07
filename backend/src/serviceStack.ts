@@ -62,6 +62,14 @@ import type { DocumentParser } from "./ingestion/types.js";
 import { FigureAnalysisStore } from "./vision/FigureAnalysisStore.js";
 import { VisionAnalysisService } from "./vision/VisionAnalysisService.js";
 import type { VisionModelCandidates, VisionModelRuntime } from "./vision/types.js";
+import { buildVisualReviewService } from "./vision/VisualReviewService.js";
+import type { VisualReviewService } from "./vision/VisualReviewService.js";
+import { buildTargetServices } from "./target/services.js";
+import type { TargetServices } from "./target/services.js";
+import { VenueResolutionService } from "./search/venueResolution.js";
+import { FigureStore } from "./figures/figureStore.js";
+import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
 import { EvidenceGroundingService } from "./evidence/EvidenceGroundingService.js";
 import { EvidenceSelectionService } from "./evidence/EvidenceSelectionService.js";
@@ -173,6 +181,12 @@ export interface ServiceStackOptions {
     modelCandidates?: () => VisionModelCandidates | Promise<VisionModelCandidates>;
     requestTimeoutMs?: number;
   };
+  /**
+   * M12 A7：TargetProfile 的 method/writing 摘要模型（默认文本模型即可，
+   * 不需 vision）。index.ts 从生效默认模型装配（目录命中 + 凭据确认）；
+   * 缺省 → 两维如实 UNAVAILABLE（不伪造）。
+   */
+  targetSummaryModel?: import("./target/TargetProfileService.js").TargetSummaryModel;
   log?: (message: string) => void;
 }
 
@@ -245,6 +259,10 @@ export interface ServiceStack {
   figureAnalyses: FigureAnalysisStore;
   /** M10.2：Minimal Multimodal Document Understanding 编排（figure → Vision → 检索 / 确认） */
   vision: VisionAnalysisService;
+  /** M12.2 B3：Multimodal 视觉评审（确定性六项恒运行 + vision 四项按 capability 降级；advisory） */
+  visualReview: VisualReviewService;
+  /** M12.1 A5–A8：Target Publication Intelligence 服务束（benchmark 冻结→discovery→profile→readiness） */
+  targets: TargetServices;
   pdfAnalyzer: BuiltinPdfAnalyzer;
   manuscript: ManuscriptService;
   citation: CitationService;
@@ -462,8 +480,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       log(`[search] SearXNG 未注册：${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  const academicSearch = new AcademicSearchService({ providers: academicProviders, log });
   const discovery = new ResearchDiscoveryService({
-    academic: new AcademicSearchService({ providers: academicProviders, log }),
+    academic: academicSearch,
     web: new WebSearchService(webProviders),
     candidates,
   });
@@ -588,6 +607,46 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   });
   vision.attachAnalyzedHook(async (projectId, sourceId) => {
     await retrieval.rebuildSource(projectId, sourceId);
+  });
+  // M12.2 B3 Visual Review（多模态评审）：确定性六项检查恒运行；vision 四项
+  // 复用 M10.2 同一 seam（options.vision），不可用时如实 skipped（capability
+  // 报告给原因码，绝不让评审失败）。pdf_parsed 侧只消费非 reference 源
+  // （benchmark 语料是规范参照，不进稿件评审——与 M12.0 §5 隔离同向）；
+  // 生成图经 figureStore 视图（assetRef 带 figs/generated/ 前缀）。
+  const visualReview = buildVisualReviewService({
+    projects: options.projects,
+    ...(options.vision?.modelRuntime !== undefined ? { modelRuntime: options.vision.modelRuntime } : {}),
+    ...(options.vision?.modelCandidates !== undefined ? { modelCandidates: options.vision.modelCandidates } : {}),
+    parsedSources: {
+      listSourceIds: async (projectId) =>
+        (await sources.list(projectId))
+          .filter((item) => item.sourceRole !== "reference")
+          .map((item) => item.sourceId),
+      loadDocument: (projectId, sourceId) => parsedDocuments.load(projectId, sourceId),
+      readFigureAsset: async (projectId, sourceId, assetName) => {
+        try {
+          return await readFile(join(parsedDocuments.figuresDir(projectId, sourceId), assetName));
+        } catch {
+          return null;
+        }
+      },
+    },
+    generatedFigures: async (projectId) => {
+      const store = new FigureStore(join(options.projects.manuscriptDir(projectId), "figs", "generated"));
+      try {
+        return (await store.list()).map((record) => ({
+          figId: record.figId,
+          kind: record.kind,
+          caption: record.caption,
+          ...(record.insertedIn?.label !== undefined ? { label: record.insertedIn.label } : {}),
+          assetRef: `figs/generated/${record.assets.pdf}`,
+          createdAt: record.createdAt,
+        }));
+      } catch {
+        return []; // manifest 损坏不阻断视觉评审（生成图侧如实缺席）
+      }
+    },
+    log,
   });
   // M7.2 FullTextResolver（P-D 修复）：resolver 与 search provider 共享同一
   // ProviderHttpClient（超时 / 重试 / 熔断 / 健康一体）；Unpaywall email 复用
@@ -738,6 +797,27 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     manuscript,
     paperStore,
   });
+  // M12.1 A5–A8 Target Publication Intelligence：discovery（venue 过滤 + 引用数
+  // 排序 + 恒 role=reference 入库）→ benchmark 冻结（revision 模式）→ profile
+  // （确定性提取为主 + bounded 摘要）→ readiness（四档 advisory 判决）。
+  // VenueResolution 此前仅测试自建（Batch 1 smoke），生产接线在此；summaryModel
+  // 由 index.ts 从生效默认模型装配（缺省 → method/writing 两维如实 UNAVAILABLE）。
+  const venueResolution = new VenueResolutionService({
+    http: providerHttp,
+    ...(searchConfig.openalexMailto !== undefined ? { mailto: searchConfig.openalexMailto } : {}),
+  });
+  const targets = buildTargetServices({
+    projects: options.projects,
+    academic: academicSearch,
+    venues: venueResolution,
+    candidates,
+    imports: sourceImport,
+    sources,
+    parsedDocuments,
+    revisions,
+    ...(options.targetSummaryModel !== undefined ? { summaryModel: options.targetSummaryModel } : {}),
+    log,
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -771,6 +851,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ingestion,
     figureAnalyses,
     vision,
+    visualReview,
+    targets,
     pdfAnalyzer,
     manuscript,
     citation,
@@ -794,6 +876,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       projects: options.projects,
       generation,
       researcher,
+      targets,
       feasibility,
       reviewer,
       evidence,

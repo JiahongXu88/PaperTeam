@@ -4,7 +4,7 @@ import { createBackendHttpServer } from "./httpServer.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { PiRuntimeAdapter } from "./runtime/PiRuntimeAdapter.js";
+import { PiRuntimeAdapter, parseModelSpec } from "./runtime/PiRuntimeAdapter.js";
 import { createScriptedRuntime } from "./runtime/scriptedRuntime.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
@@ -118,6 +118,18 @@ export async function startBackend(): Promise<void> {
   // Z.AI API 通道：存储的 general_api 绑定同样先于 adapter 解析启动模型注入
   // （Pi provider baseUrl override；与 Settings 保存 / Test Connection 同一 resolver）
   await applyStoredApiChannels(modelRuntime, modelSettingsStore, (message) => console.log(message));
+  // M12 A7：TargetProfile 的 method/writing 摘要模型——生效默认模型（文本即可）
+  // 目录命中 + 凭据确认才装配；否则两维如实 UNAVAILABLE（不伪造、不阻塞）
+  let targetSummaryModel: import("./target/TargetProfileService.js").TargetSummaryModel | undefined;
+  if (effectiveModelSpec !== undefined) {
+    const parsedSpec = parseModelSpec(effectiveModelSpec);
+    if (parsedSpec !== undefined) {
+      const catalogEntry = modelRuntime.getModel(parsedSpec.provider, parsedSpec.modelId);
+      if (catalogEntry !== undefined && modelRuntime.hasConfiguredAuth(parsedSpec.provider)) {
+        targetSummaryModel = { caller: modelRuntime, catalogEntry, spec: effectiveModelSpec };
+      }
+    }
+  }
   // scripted 实现含 no-op reconfigure / unknown 模型状态；两边都满足
   // AgentRuntime ∩ ModelSettingsRuntime，下游（服务栈 / Settings）无需感知差异
   const runtime: AgentRuntime & import("./settings/ModelSettingsService.js").ModelSettingsRuntime =
@@ -253,6 +265,7 @@ export async function startBackend(): Promise<void> {
     ...(config.pdf.doclingPythonCommand !== undefined
       ? { doclingPythonCommand: config.pdf.doclingPythonCommand }
       : {}),
+    ...(targetSummaryModel !== undefined ? { targetSummaryModel } : {}),
     log: (message) => console.log(message),
   });
   // Existing-LaTeX 导入器：栈内单例（projectImport 的 format=latex 路径与

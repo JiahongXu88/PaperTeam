@@ -34,6 +34,9 @@ import type { RuntimeStatusService } from "./runtime/statusService.js";
 import type { ServiceStack } from "./serviceStack.js";
 import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
 import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
+import { resolveGeneratedFigureAsset, resolveSourceFigureAsset } from "./vision/figureAssets.js";
+import { FigureStore } from "./figures/figureStore.js";
+import type { BenchmarkTargetSpec } from "./target/types.js";
 import type { SurveyEntryPatch } from "./survey/MatrixService.js";
 import {
   type SurveyFieldAnchor,
@@ -1122,6 +1125,36 @@ async function handleProjectResourceRoutes(
       return true;
     }
 
+    // M12.2 B4：source 抽图资产（sources/figures/<sid>/<name>；扁平名白名单 +
+    // 词法/realpath 双重包含校验 + ParsedDocument 登记先于读盘——vision/figureAssets.ts）
+    const figureAssetMatch = /^\/([A-Z]\d{2,})\/figures\/([^/]+)$/.exec(rest);
+    if (figureAssetMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const result = await resolveSourceFigureAsset({
+        projects: stack.projects,
+        documents: { load: (pid, sid) => stack.parsedDocuments.load(pid, sid) },
+        projectId,
+        sourceId: figureAssetMatch[1] ?? "",
+        assetName: decodeURIComponent(figureAssetMatch[2] ?? ""),
+      });
+      if (!result.ok) {
+        sendJson(res, result.failure.httpStatus, {
+          error: { code: result.failure.code, message: result.failure.message },
+        });
+        return true;
+      }
+      res.writeHead(200, {
+        "Content-Type": result.asset.mimeType,
+        "Content-Length": result.asset.byteLength,
+        "Cache-Control": "private, max-age=3600",
+      });
+      res.end(result.asset.bytes);
+      return true;
+    }
+
     const itemMatch = /^\/([A-Z]\d{2,})$/.exec(rest);
     if (itemMatch) {
       const sourceId = itemMatch[1] ?? "";
@@ -1450,6 +1483,198 @@ async function handleProjectResourceRoutes(
         },
       );
       sendJson(res, 200, result);
+      return true;
+    }
+    return false;
+  }
+
+  // ---- visual-reviews（M12.2 B3：多模态视觉评审——确定性六项恒运行 + vision 四项按 capability 降级）----
+  if (resource === "visual-reviews") {
+    await stack.projects.getRequired(projectId);
+    if (rest === "/latest") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      // 从未运行 → {report:null}（前端以 null 区分「尚未运行」，非 404）
+      const report = await stack.visualReview.latestVisualReview(projectId);
+      sendJson(res, 200, { report });
+      return true;
+    }
+    if (rest === "/run") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const result = await stack.visualReview.runForProject(projectId);
+      sendJson(res, 200, { report: result });
+      return true;
+    }
+    return false;
+  }
+
+  // ---- figures（M12.2 B4：生成图资产 figs/generated/<figId>.pdf——manifest 登记先于读盘）----
+  if (resource === "figures") {
+    const generatedMatch = /^\/generated\/([^/]+)$/.exec(rest);
+    if (generatedMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const store = new FigureStore(
+        join(stack.projects.manuscriptDir(projectId), "figs", "generated"),
+      );
+      const result = await resolveGeneratedFigureAsset({
+        projects: stack.projects,
+        projectId,
+        fileName: decodeURIComponent(generatedMatch[1] ?? ""),
+        registry: {
+          listFigIds: async () => {
+            try {
+              return (await store.list()).map((record) => record.figId);
+            } catch {
+              return []; // manifest 损坏按无登记处理（stale_asset 如实返回）
+            }
+          },
+        },
+      });
+      if (!result.ok) {
+        sendJson(res, result.failure.httpStatus, {
+          error: { code: result.failure.code, message: result.failure.message },
+        });
+        return true;
+      }
+      res.writeHead(200, {
+        "Content-Type": result.asset.mimeType,
+        "Content-Length": result.asset.byteLength,
+        "Cache-Control": "private, max-age=3600",
+      });
+      res.end(result.asset.bytes);
+      return true;
+    }
+    return false;
+  }
+
+  // ---- target（M12.1 A5–A8：Target Publication Intelligence——benchmark 冻结 / profile / readiness；advisory）----
+  if (resource === "target") {
+    await stack.projects.getRequired(projectId);
+    const targets = stack.targets;
+    if (rest === "/benchmark") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      // 未冻结 → {benchmark:null}（前端区分「尚未发现」；损坏 → TARGET_BENCHMARK_CORRUPTED 500）
+      sendJson(res, 200, { benchmark: await targets.benchmark.get(projectId) });
+      return true;
+    }
+    if (rest === "/benchmark/discover" || rest === "/benchmark/refresh") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readOptionalJsonBody(req);
+      const targetCount = readTargetCount(body);
+      const project = await stack.projects.getRequired(projectId);
+      const target = benchmarkTargetSpecOf(project);
+      const input = { target, ...(targetCount !== undefined ? { targetCount } : {}) };
+      if (rest === "/benchmark/discover") {
+        const result = await targets.discovery.discoverAndFreeze(projectId, input);
+        sendJson(res, 200, {
+          revision: result.artifact.revision,
+          papers: effectiveBenchmarkPapers(result.artifact.papers),
+          savedSourceIds: result.savedSourceIds.length,
+          venueDegraded: result.discovery.venueDegraded,
+          sufficiency: result.selection.selection.sufficiency,
+          requiresAttention: result.selection.selection.requiresAttention,
+          alreadyFrozen: result.alreadyFrozen,
+        });
+        return true;
+      }
+      const result = await targets.discovery.rediscoverAndRefresh(projectId, input);
+      sendJson(res, 200, { benchmark: result.artifact, changed: result.changed });
+      return true;
+    }
+    if (rest === "/benchmark/papers") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const sourceId = readStringField(body, "sourceId");
+      if (sourceId === undefined) {
+        sendJson(res, 400, { status: "error", error: { code: "INVALID_REQUEST", message: "请求体必须包含非空字符串字段 sourceId" } });
+        return true;
+      }
+      const benchmark = await targets.benchmark.addPaper(projectId, {
+        sourceId,
+        ...(Number.isFinite(body["citationCount"] as number) ? { citationCount: body["citationCount"] as number } : {}),
+        ...(readStringField(body, "venueRaw") !== undefined ? { venueRaw: readStringField(body, "venueRaw") } : {}),
+        ...(readStringField(body, "inclusionReason") !== undefined ? { inclusionReason: readStringField(body, "inclusionReason") } : {}),
+      });
+      sendJson(res, 200, { benchmark });
+      return true;
+    }
+    const excludeMatch = /^\/benchmark\/papers\/([A-Za-z0-9][A-Za-z0-9._-]*)\/exclude$/.exec(rest);
+    if (excludeMatch) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const reason = readStringField(body, "reason");
+      const benchmark = await targets.benchmark.exclude(projectId, excludeMatch[1] ?? "", reason ?? "");
+      sendJson(res, 200, { benchmark });
+      return true;
+    }
+    if (rest === "/benchmark/confirm") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, { benchmark: await targets.benchmark.confirm(projectId) });
+      return true;
+    }
+    if (rest === "/profile") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const envelope = await targets.profile.get(projectId);
+      if (envelope === null) {
+        sendJson(res, 200, { profile: null, fresh: null });
+        return true;
+      }
+      sendJson(res, 200, {
+        profile: envelope.profile,
+        fresh: envelope.fresh,
+        ...(envelope.staleReason !== undefined ? { staleReason: envelope.staleReason } : {}),
+      });
+      return true;
+    }
+    if (rest === "/profile/regenerate") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const { profile } = await targets.profile.ensureCurrent(projectId);
+      sendJson(res, 200, { profile });
+      return true;
+    }
+    if (rest === "/readiness") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      sendJson(res, 200, { readiness: await targets.gap.get(projectId) });
+      return true;
+    }
+    if (rest === "/readiness/evaluate") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, { readiness: await targets.gap.evaluate(projectId) });
       return true;
     }
     return false;
@@ -3815,6 +4040,41 @@ function readSurveyEntryPatch(body: Record<string, unknown>): SurveyEntryPatch {
 function readStringField(body: Record<string, unknown>, field: string): string | undefined {
   const value = body[field];
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** target benchmark 发现类请求体的 targetCount（可选；提供但非法 → 400） */
+function readTargetCount(body: Record<string, unknown>): number | undefined {
+  const raw = body["targetCount"];
+  if (raw === undefined) {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 100) {
+    throw new BusinessError("INVALID_REQUEST", `targetCount 必须是 1–100 的整数：${String(raw)}`);
+  }
+  return value;
+}
+
+/** target.benchmark 请求体 target 组装（口径同 workflow targetBenchmarkStage） */
+function benchmarkTargetSpecOf(project: {
+  documentType?: string;
+  targetProfile?: string;
+  targetVenue?: string;
+  researchField?: string;
+}): BenchmarkTargetSpec {
+  return {
+    documentType: project.documentType ?? "",
+    targetProfile: project.targetProfile ?? "",
+    ...(project.targetVenue !== undefined && project.targetVenue.trim() !== ""
+      ? { targetVenue: project.targetVenue.trim() }
+      : {}),
+    researchField: project.researchField?.trim() ?? "",
+  };
+}
+
+/** 冻结语料的有效条目数（未 excluded；discover 响应与 stage 口径一致） */
+function effectiveBenchmarkPapers(papers: ReadonlyArray<{ excluded?: unknown }>): number {
+  return papers.filter((paper) => paper.excluded === undefined).length;
 }
 
 /** POST /survey/synthesis/build 请求体的 kinds 过滤（非法值 → 400；缺省全部七类） */
