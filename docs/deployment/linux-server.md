@@ -73,8 +73,9 @@ curl -fsS http://127.0.0.1:8080/ready | jq .ready       # true（TeX/Python 缺�
 # 1) 构建 docling 增强镜像（+~4GB：torch CPU 栈；首次约 10 分钟）
 docker build --target backend-docling -t paperteam-backend-docling:local .
 
-# 2) .env 里切换镜像 + （可选）并发
+# 2) .env 里切换镜像 + 构建目标 + （可选）并发
 echo 'PAPERTEAM_BACKEND_IMAGE=paperteam-backend-docling:local' >> .env
+echo 'PAPERTEAM_BACKEND_TARGET=backend-docling' >> .env
 # echo 'PAPERTEAM_DOCLING_CONCURRENCY=2' >> .env
 
 # 3) 重建 backend
@@ -156,6 +157,7 @@ WantedBy=multi-user.target
 | `PAPERTEAM_PI_MAX_QUEUED_RUNS` | `32` | Agent 等待队列容量 |
 | `PAPERTEAM_WEB_PORT` | `8080` | compose：web 对外端口 |
 | `PAPERTEAM_BACKEND_IMAGE` | `paperteam-backend:local` | compose：backend 镜像（切 docling 增强镜像用） |
+| `PAPERTEAM_BACKEND_TARGET` | `backend` | compose：`docker compose build` 的构建目标（docling 部署须与镜像同步设 `backend-docling`） |
 | `HF_ENDPOINT` / `HF_HOME` | — | docling 模型下载镜像 / 缓存目录（镜像内 `HF_HOME=/data/hf-cache`） |
 
 完整清单见根目录 `.env.example`。
@@ -222,7 +224,8 @@ docker compose start backend
 ```bash
 cd PaperTeam
 git pull
-docker compose build          # 或先构建 docling 目标再切 PAPERTEAM_BACKEND_IMAGE
+docker compose build          # docling 部署：.env 同时设 PAPERTEAM_BACKEND_IMAGE +
+                              # PAPERTEAM_BACKEND_TARGET=backend-docling，此命令即构建正确目标
 docker compose up -d          # 滚动重建容器；volume 数据不动
 ```
 

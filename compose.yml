@@ -17,6 +17,8 @@
 # 结构化 PDF 解析（docling，可选，M12.2.5）：
 #   docker build --target backend-docling -t paperteam-backend-docling:local .
 #   并在 .env 设置 PAPERTEAM_BACKEND_IMAGE=paperteam-backend-docling:local
+#   与 PAPERTEAM_BACKEND_TARGET=backend-docling（后者让后续 docker compose build
+#   重建 docling 目标而非 base——漏设会把 docling 镜像静默覆盖为基镜像）
 #   （未设置 = 基镜像；PDF 解析自动降级 pymupdf 文本层，行为不变）
 #
 # 受限网络构建：PAPERTEAM_APT_MIRROR=http://mirrors.ustc.edu.cn PAPERTEAM_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
@@ -28,7 +30,10 @@ services:
   backend:
     build:
       context: .
-      target: backend
+      # docling 部署（.env 设 PAPERTEAM_BACKEND_IMAGE=paperteam-backend-docling:local）必须
+      # 同时设 PAPERTEAM_BACKEND_TARGET=backend-docling：否则 `docker compose build` 会按
+      # 默认 backend 目标构建并打上 docling 镜像名，静默覆盖掉 docling venv（结构化解析降级）
+      target: ${PAPERTEAM_BACKEND_TARGET:-backend}
       args:
         APT_MIRROR: ${PAPERTEAM_APT_MIRROR:-}
         PIP_INDEX_URL: ${PAPERTEAM_PIP_INDEX_URL:-}
