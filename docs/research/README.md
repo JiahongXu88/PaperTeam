@@ -47,6 +47,10 @@ PaperTeam 能力声明的证据来源，只增不删。当前工程状态摘要�
 - [M11_4_RELIABILITY_CLOSURE.md](M11_4_RELIABILITY_CLOSURE.md) — 可靠性收口（21 次真实 run 定论）
 - [M11_5_CLOSURE_REPORT.md](M11_5_CLOSURE_REPORT.md) — M11 产品 / 文档 / 开源收口
 
+## M12 — Publication Intelligence × Multimodal × Deterministic Figures
+
+- [M12_0_FAST_ARCHITECTURE_AUDIT.md](M12_0_FAST_ARCHITECTURE_AUDIT.md) — M12 快速架构审计与三方向冻结（Target Publication / Multimodal / 确定性图表）
+
 ## Runtime / 架构审计
 
 - [AGENT_ARCHITECTURE_AUDIT.md](AGENT_ARCHITECTURE_AUDIT.md) — Agent 架构审计
