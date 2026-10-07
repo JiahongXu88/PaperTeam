@@ -1,0 +1,21 @@
+% Smoke B fixture 从文件：跨文件 \ref（引用 main.tex 的 tab:main 与 fig:arch）
+% 与本文件自己的 table 环境（caption 在 label 前）。
+\subsection{Association Details}
+\label{sec:association}
+
+The association cost follows Table~\ref{tab:assoc-cost} and the
+architecture of Figure~\ref{fig:arch} in the main file.
+
+\begin{table}[h]
+  \centering
+  \label{tab:assoc-cost}
+  \caption{Association cost components.}
+  \begin{tabular}{lc}
+    \hline
+    Component & Weight \\
+    \hline
+    IoU & 0.4 \\
+    Appearance & 0.6 \\
+    \hline
+  \end{tabular}
+\end{table}

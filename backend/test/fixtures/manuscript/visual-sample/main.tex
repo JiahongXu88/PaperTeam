@@ -1,0 +1,86 @@
+% M12 Batch 1 Smoke B fixture：带 figure/figure*/table/table* 环境的两文件手稿。
+% 形态覆盖：caption 在 label 前（fig:arch）/ caption 在 label 后（tab:main）/
+% figure* 跨栏 / table* / 缺 caption（tab:appendix-extra）/ 缺 label（第二个 figure）/
+% 相对路径 includegraphics / 重复 \ref / 跨文件引用（sections/method.tex 引 tab:main）/
+% 一个 unresolved ref（fig:missing-asset）。
+\documentclass[10pt,twocolumn]{article}
+\usepackage{graphicx}
+\begin{document}
+
+\section{Introduction}
+Multi-object tracking requires joint detection and association.
+Figure~\ref{fig:arch} shows the overall pipeline and
+Table~\ref{tab:main} reports the main comparison results.
+The architecture is discussed again in Section~\ref{sec:method}
+with reference to Figure~\ref{fig:arch} (repeated reference).
+A missing asset is referenced as Figure~\ref{fig:missing-asset}.
+
+\begin{figure}[t]
+  \centering
+  \caption{Overview of the proposed tracking pipeline.}
+  \label{fig:arch}
+  \includegraphics[width=0.9\linewidth]{figs/architecture.pdf}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \caption{Qualitative results on the dense-crowd sequence.}
+  \label{fig:qualitative}
+  \includegraphics[width=0.95\textwidth]{figs/qualitative.png}
+\end{figure*}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.5\linewidth]{figs/no-caption.pdf}
+\end{figure}
+
+\section{Method}
+\label{sec:method}
+The method section reuses the main comparison of
+Table~\ref{tab:main} and references Figure~\ref{fig:qualitative}.
+
+\begin{table}[t]
+  \centering
+  \caption{Main results on the benchmark.}
+  \label{tab:main}
+  \begin{tabular}{lcc}
+    \hline
+    Method & MOTA & IDS \\
+    \hline
+    Baseline & 62.4 & 118 \\
+    Ours & 65.1 & 79 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\begin{table*}[t]
+  \centering
+  \caption{Per-sequence ablation results.}
+  \label{tab:ablation}
+  \begin{tabular}{lccc}
+    \hline
+    Variant & MOTA & IDF1 & IDS \\
+    \hline
+    w/o memory & 63.0 & 0.742 & 101 \\
+    full model & 65.1 & 0.786 & 79 \\
+    \hline
+  \end{tabular}
+\end{table*}
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lc}
+    \hline
+    Extra & Count \\
+    \hline
+    A & 1 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\input{sections/method}
+
+\section{Conclusion}
+We presented a deterministic visual inventory fixture.
+
+\end{document}
