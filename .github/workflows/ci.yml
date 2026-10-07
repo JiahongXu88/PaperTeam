@@ -81,11 +81,18 @@ jobs:
           docker run --rm paperteam-backend:ci xelatex --version | head -n 1
           docker run --rm paperteam-backend:ci bibtex --version | head -n 1
           docker run -d --name pt-smoke -e PAPERTEAM_TEST_RUNTIME=scripted paperteam-backend:ci
+          ready=0
           for i in $(seq 1 30); do
             if docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"; then
-              echo ready; break
+              echo ready; ready=1; break
             fi
             sleep 2
           done
+          # 容器提前退出时 /ready 永远探不通——必须先 dump 启动日志再判失败，否则 crash 原因不可见
+          docker logs pt-smoke || true
+          if [ "$ready" != "1" ]; then
+            echo "::error::backend container never became ready (see docker logs above)"
+            exit 1
+          fi
           docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(async r=>{console.log(r.status, await r.text()); process.exit(r.status===200?0:1)})"
           docker stop -t 45 pt-smoke
