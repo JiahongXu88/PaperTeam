@@ -45,16 +45,27 @@ export function findChrome() {
     }
     return override;
   }
-  const candidates = [
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-    process.env.LOCALAPPDATA
-      ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
-      : undefined,
-  ].filter(Boolean);
+  // 平台候选（M12.2.5：Linux CI / 服务器自检可用；Windows 为既有路径）
+  const candidates = (
+    process.platform === "win32"
+      ? [
+          "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+          "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+          process.env.LOCALAPPDATA
+            ? `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`
+            : undefined,
+        ]
+      : [
+          "/usr/bin/google-chrome",
+          "/usr/bin/google-chrome-stable",
+          "/usr/bin/chromium-browser",
+          "/usr/bin/chromium",
+          "/snap/bin/chromium",
+        ]
+  ).filter(Boolean);
   const found = candidates.find((path) => existsSync(path));
   if (!found) {
-    throw new Error("未找到本机 Chrome；请设置 PAPERTEAM_ACCEPTANCE_CHROME 指向 chrome.exe");
+    throw new Error("未找到本机 Chrome/Chromium；请设置 PAPERTEAM_ACCEPTANCE_CHROME 指向可执行文件");
   }
   return found;
 }
@@ -84,8 +95,21 @@ export function pidAlive(pid) {
   }
 }
 
-/** 读某 pid 的完整命令行（PowerShell 单引号避免引号转义问题）；失败返回 null */
+/**
+ * 读某 pid 的完整命令行；失败返回 null。
+ * Windows：PowerShell 单引号避免引号转义问题；POSIX：/proc/<pid>/cmdline
+ * （NUL 分隔 → 空格）。
+ */
 export function processCommandLine(pid) {
+  if (process.platform !== "win32") {
+    try {
+      const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      const joined = cmdline.split("\0").filter(Boolean).join(" ").trim();
+      return joined === "" ? null : joined;
+    } catch {
+      return null;
+    }
+  }
   const query = spawnSync(
     "powershell",
     ["-NoProfile", "-Command", `Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' | Select-Object -ExpandProperty CommandLine`],
@@ -95,6 +119,19 @@ export function processCommandLine(pid) {
     return null;
   }
   return query.stdout.trim() || null;
+}
+
+/** 终止进程树（Windows taskkill /T；POSIX SIGTERM→SIGKILL——renderer 随浏览器主进程退出） */
+export function killProcessTree(pid) {
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"]);
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // 已退出
+  }
 }
 
 /** 该 pid 是否是「带着我们 user-data-dir 的 Chrome」——kill 前的硬校验 */
@@ -217,7 +254,7 @@ export async function start({ port = DEFAULT_PORT, headless = false, chromePath 
   } catch (error) {
     // 端口没起来（极端竞态：选好的端口被抢）→ 只清理我们刚拉起的这个 pid，不碰别人
     if (pidAlive(child.pid)) {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"]);
+      killProcessTree(child.pid);
     }
     throw error;
   }
@@ -254,8 +291,9 @@ export async function stop({ purge = false } = {}) {
       hint: `请人工确认 pid ${state.pid} 后处理；本工具只关闭自己启动的 acceptance 浏览器`,
     };
   }
-  spawnSync("taskkill", ["/PID", String(state.pid), "/T", "/F"]);
-  // 等进程树真正退出（最多 10s），避免留下监听端口的孤儿 renderer
+  killProcessTree(state.pid);
+  // 等进程树真正退出（最多 10s），避免留下监听端口的孤儿 renderer（POSIX
+  // SIGTERM 后仍存活则 SIGKILL 兜底——Chrome 主进程退出会带走 renderer）
   const deadline = Date.now() + 10_000;
   while (pidAlive(state.pid) && Date.now() < deadline) {
     await new Promise((sleep) => setTimeout(sleep, 200));
@@ -308,8 +346,28 @@ export async function status() {
   };
 }
 
-/** netstat 核验：该端口的所有 LISTENING 都只绑 loopback（selftest 用） */
+/** netstat / ss 核验：该端口的所有 LISTENING 都只绑 loopback（selftest 用） */
 export function loopbackOnly(port) {
+  if (process.platform !== "win32") {
+    // POSIX：ss -ltn（Ubuntu 预装）；不可用时如实报告，不算通过
+    const ss = spawnSync("ss", ["-ltn"], { encoding: "utf8", timeout: 15_000 });
+    if (ss.status !== 0) {
+      return { ok: false, reason: "ss-failed", lines: [] };
+    }
+    const rows = ss.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/))
+      .filter((parts) => parts[0]?.toLowerCase() === "listen")
+      .filter((parts) => {
+        const local = parts[3] ?? "";
+        return local === `127.0.0.1:${port}` || local === `[::1]:${port}` || local === `0.0.0.0:${port}` || local === `*:${port}`;
+      });
+    const offenders = rows.filter((parts) => {
+      const local = parts[3] ?? "";
+      return local.startsWith("0.0.0.0") || local.startsWith("*") || local === `[::]:${port}`;
+    });
+    return { ok: offenders.length === 0 && rows.length > 0, listeners: rows.map((parts) => parts[3]), offenders: offenders.map((parts) => parts[3]) };
+  }
   const netstat = spawnSync("netstat", ["-ano", "-p", "tcp"], { encoding: "utf8", timeout: 15_000 });
   if (netstat.status !== 0) {
     return { ok: false, reason: "netstat-failed", lines: [] };

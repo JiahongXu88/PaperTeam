@@ -38,6 +38,7 @@ RUN npm run build \
 FROM ${NODE_IMAGE} AS backend
 ENV NODE_ENV=production \
     PAPERTEAM_PORT=3000 \
+    PAPERTEAM_HOST=0.0.0.0 \
     PROJECTS_ROOT=/data/projects \
     PAPERTEAM_RUNTIME_ROOT=/data/runtime \
     PAPERTEAM_PDF_PYTHON=/opt/paperteam-venv/bin/python \
@@ -51,7 +52,8 @@ ENV NODE_ENV=production \
 #   texlive-latex-base      amsmath / amssymb / natbib
 #   texlive-latex-recommended  xcolor / graphicx / hyperref 等导入论文常用包
 #   texlive-lang-chinese    ctex 文档类 + Fandol 中文字体
-#   texlive-pictures        pgf/tikz（导入论文；PaperTeam 自身模板不用）
+#   texlive-pictures        pgf/tikz/pgfplots（图表编译 + 导入论文）
+#   texlive-latex-extra     standalone.cls（FigureCompiler 图表模板必需；M12.2.5）
 #   texlive-bibtex-extra + biber   biblatex 参考文献（导入论文）
 #   latexmk                 可选便捷工具（M9.5.1 起 LatexCompiler 用 xelatex+bibtex 显式编排，不再调用 latexmk）
 #   fonts-noto-cjk          兜底中文字体（fontspec 按名引用时可用）
@@ -68,14 +70,18 @@ RUN if [ -n "$APT_MIRROR" ]; then \
       python3 python3-venv \
       git \
       texlive-xetex texlive-latex-base texlive-latex-recommended \
-      texlive-lang-chinese texlive-pictures texlive-bibtex-extra biber latexmk \
+      texlive-lang-chinese texlive-pictures texlive-latex-extra \
+      texlive-bibtex-extra biber latexmk \
       fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/* \
  && python3 -m venv /opt/paperteam-venv \
  && ${PIP_INDEX_URL:+env PIP_INDEX_URL="$PIP_INDEX_URL"} /opt/paperteam-venv/bin/pip install --no-cache-dir "pymupdf>=1.24,<2" \
  && /opt/paperteam-venv/bin/python -c "import pymupdf; print('pymupdf', pymupdf.__version__)" \
  && xelatex --version | head -n 1 \
- && bibtex --version | head -n 1
+ && bibtex --version | head -n 1 \
+ && kpsewhich standalone.cls \
+ && kpsewhich pgfplots.sty \
+ && kpsewhich ctexart.cls
 
 WORKDIR /app/backend
 # 只带运行需要的内容：dist / 生产 node_modules / 审计 seed（Skill Registry）/ PDF 解析脚本
@@ -105,6 +111,23 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # 使用 exec 形式：SIGTERM 直达 node（registerShutdown 协作式收敛，见 index.ts）
 ENTRYPOINT ["paperteam-entrypoint"]
 CMD ["node", "dist/index.js"]
+
+# ---------- 3b. Backend + docling（可选目标；M12.2.5） ----------
+# 结构化 PDF 解析（版面 / 表格 / 图片抽取）完整形态：在 backend 之上加装
+# 独立 venv 的 docling（torch CPU 栈，+~4GB 镜像），基镜像保持轻量——
+# 不需要结构化解析的用户继续用 backend（pymupdf 文本层自动降级，行为不变）。
+# 构建：docker build --target backend-docling -t paperteam-backend-docling:local .
+# 使用：compose 里设 PAPERTEAM_BACKEND_IMAGE=paperteam-backend-docling:local
+# （compose 的 image: 字段已改为变量），HF 模型缓存持久化到 /data/hf-cache。
+ARG PIP_INDEX_URL=""
+FROM backend AS backend-docling
+ENV PAPERTEAM_DOCLING_PYTHON=/opt/paperteam-docling-venv/bin/python \
+    HF_HOME=/data/hf-cache
+RUN python3 -m venv /opt/paperteam-docling-venv \
+ && ${PIP_INDEX_URL:+env PIP_INDEX_URL="$PIP_INDEX_URL"} /opt/paperteam-docling-venv/bin/pip install --no-cache-dir "docling>=2,<3" \
+ && /opt/paperteam-docling-venv/bin/python -c "import docling; print('docling', docling.__version__)" \
+ && mkdir -p /data/hf-cache \
+ && chown -R paperteam:paperteam /data/hf-cache /opt/paperteam-docling-venv
 
 # ---------- 4. Web（nginx：静态资源 + 同源反向代理） ----------
 FROM nginx:1.27-alpine AS web

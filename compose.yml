@@ -3,14 +3,21 @@
 #   web      nginx：Frontend 静态资源 + /api /health /ready 同源反向代理（唯一对外端口）
 #   backend  Node 22 + Pi SDK + Python/pymupdf + XeLaTeX/latexmk/biber（不对外发布端口）
 #
-# 事实源在两个 named volume（删除 / 重建容器后 project / revisions / evidence /
+# 事实源在 named volume（删除 / 重建容器后 project / revisions / evidence /
 # checkpoints / artifacts / installed Skills / provenance / runtime settings 仍在）：
 #   paperteam-projects → PROJECTS_ROOT=/data/projects
 #   paperteam-runtime  → PAPERTEAM_RUNTIME_ROOT=/data/runtime
+#   paperteam-hf       → /data/hf-cache（仅 backend-docling 镜像使用：docling
+#                        模型缓存持久化，容器重建不重复下载；基镜像挂载无害）
 #
 # 密钥：不写进镜像、不写进本文件。把模型 Key 放在同目录 .env（已被 .gitignore 忽略），
 # 或直接在 Settings → 模型设置 页面保存（落到 runtime volume 的 auth.json）。
 # .env 缺失时也能启动（模型 not_configured，UI 会提示配置）。
+#
+# 结构化 PDF 解析（docling，可选，M12.2.5）：
+#   docker build --target backend-docling -t paperteam-backend-docling:local .
+#   并在 .env 设置 PAPERTEAM_BACKEND_IMAGE=paperteam-backend-docling:local
+#   （未设置 = 基镜像；PDF 解析自动降级 pymupdf 文本层，行为不变）
 #
 # 受限网络构建：PAPERTEAM_APT_MIRROR=http://mirrors.ustc.edu.cn PAPERTEAM_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 #   docker compose build   （缺省官方源；只影响构建期下载来源，不改变镜像内容）
@@ -25,7 +32,7 @@ services:
       args:
         APT_MIRROR: ${PAPERTEAM_APT_MIRROR:-}
         PIP_INDEX_URL: ${PAPERTEAM_PIP_INDEX_URL:-}
-    image: paperteam-backend:local
+    image: ${PAPERTEAM_BACKEND_IMAGE:-paperteam-backend:local}
     restart: unless-stopped
     env_file:
       - path: .env
@@ -33,6 +40,8 @@ services:
     environment:
       NODE_ENV: production
       PAPERTEAM_PORT: "3000"
+      # 容器内必须绑 0.0.0.0（nginx 反代经 docker 网络访问）；后端缺省 127.0.0.1
+      PAPERTEAM_HOST: 0.0.0.0
       PROJECTS_ROOT: /data/projects
       PAPERTEAM_RUNTIME_ROOT: /data/runtime
       PAPERTEAM_PDF_PYTHON: /opt/paperteam-venv/bin/python
@@ -50,6 +59,7 @@ services:
     volumes:
       - paperteam-projects:/data/projects
       - paperteam-runtime:/data/runtime
+      - paperteam-hf:/data/hf-cache
     expose:
       - "3000"
     # SIGTERM → 不接受新任务 → queued 收敛 / running 协作式 abort → checkpoint 落盘 → sessions close → 退出
@@ -92,3 +102,4 @@ services:
 volumes:
   paperteam-projects:
   paperteam-runtime:
+  paperteam-hf:

@@ -1,0 +1,93 @@
+name: Linux Integration
+
+# M12.2.5 Linux 集成验收：真实 docling 工具链（重依赖：torch CPU 栈 + HF 模型
+# 下载）不进每 push 的 CI（ci.yml 保持轻量），在 main push + 手动触发时执行：
+#   native  ：ubuntu runner pip install docling → 真实 PDF→docling→ingestion
+#             全链测试（backend/test/ingestion/doclingReal.smoke.test.ts）
+#   docker  ：backend-docling 镜像构建（独立 venv）→ 容器内直接驱动
+#             parse_document_docling.py → 结构化 JSON + 子进程干净退出（无僵尸）
+#             + 模型缓存持久化 volume 验证
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docling-native:
+    name: docling native（ubuntu runner · 真实全链）
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend deps
+        run: npm --prefix backend ci --no-audit --no-fund
+      - name: Install docling（torch CPU 栈）
+        run: |
+          python3 --version
+          python3 -m pip install --user --break-system-packages "docling>=2,<3" "pymupdf>=1.24,<2" \
+            || python3 -m pip install --user "docling>=2,<3" "pymupdf>=1.24,<2"
+          python3 -c "import docling; print('docling', docling.__version__)"
+      - name: Run real docling ingestion smoke（PDF → docling → blocks → IngestionService）
+        run: npm --prefix backend test -- doclingReal
+        env:
+          CI: "true"
+          # runner 在海外：直连 HuggingFace（不设 HF_ENDPOINT，避免镜像站干扰）
+
+  docling-docker:
+    name: docling docker（backend-docling 镜像 · 子进程生命周期）
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend-docling image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: backend-docling
+          push: false
+          load: true
+          tags: paperteam-backend-docling:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke（docling venv + 工具脚本 → 结构化 JSON + 干净退出 + 模型缓存落 volume）
+        run: |
+          # 镜像内 docling 可导入（venv 完整性）
+          docker run --rm paperteam-backend-docling:ci /opt/paperteam-docling-venv/bin/python -c "import docling; print('docling', docling.__version__)"
+          # 带模型缓存 volume 启动后端（脚本级驱动工具；不动模型配置）
+          docker run -d --name pt-docling \
+            -e PAPERTEAM_TEST_RUNTIME=scripted \
+            -v paperteam-hf-ci:/data/hf-cache \
+            paperteam-backend-docling:ci
+          sleep 5
+          # 基线 python 进程数（后端启动后）
+          baseline=$(docker exec pt-docling sh -c "ps -e -o comm= | grep -c '^python' || true")
+          echo "baseline python processes: $baseline"
+          # docker cp fixture + 直接驱动解析工具（与 DoclingParser.execFile 同一入口）
+          docker cp backend/test/fixtures/pdf/attention.pdf pt-docling:/tmp/attention.pdf
+          docker exec pt-docling /opt/paperteam-docling-venv/bin/python /app/backend/tools/parse_document_docling.py /tmp/attention.pdf --figures-dir=/tmp/figs > /tmp/docling-out.json
+          # 结构化产物断言：ok / parser=docling / blocks 非空
+          jq -e '.ok == true and .parser.id == "docling" and (.blocks | length) > 50' /tmp/docling-out.json
+          jq -r '"blocks=\(.blocks|length) pages=\(.pageCount // 0) parser=\(.parser.version)"' /tmp/docling-out.json
+          # 子进程干净退出：解析结束后无残留 python 进程（baseline 与运行中一致）
+          after=$(docker exec pt-docling sh -c "ps -e -o comm= | grep -c '^python' || true")
+          echo "post-parse python processes: $after"
+          if [ "$after" -gt "$baseline" ]; then
+            echo "::error::docling 子进程未退出（python 进程 $baseline → $after）"
+            docker exec pt-docling ps -ef || true
+            exit 1
+          fi
+          # 模型缓存确实落在 /data/hf-cache（volume 持久化路径，非容器可写层）
+          docker exec pt-docling sh -c "test -d /data/hf-cache && find /data/hf-cache -maxdepth 3 -type d | head -5"
+          docker stop -t 45 pt-docling
+          docker volume rm paperteam-hf-ci || true

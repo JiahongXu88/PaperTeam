@@ -10,7 +10,7 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import type { ParsedDocument } from "../../src/ingestion/types.js";
@@ -110,6 +110,8 @@ describe("M12 B4 source 抽图解析：攻击面（全部在文件系统访问�
     "a/../../fig-001.png", // 嵌套前缀遍历
     "sub/fig-001.png", // 目录分隔（扁平名不允许）
     "/etc/passwd", // posix 绝对路径
+    "/../../etc/passwd", // posix 绝对 + 遍历（M12.2.5：Linux 侧深遍历形态）
+    "%2e%2e%2Fx.png", // 单次解码后仍是编码点段（charset 白名单拒绝 % 字符）
     "C:\\Windows\\system32\\x.png", // Windows 盘符绝对路径
     "\\\\server\\share\\x.png", // UNC
     "fig-001.png\0.png", // NUL
@@ -188,6 +190,31 @@ describe("M12 B4 source 抽图解析：攻击面（全部在文件系统访问�
       }
     }
   });
+
+  it("M12.2.5 相对目标符号链接逃逸（Linux CI 上真实执行）：相对 ../ 指向根外 → invalid_path；registry 登记不能豁免", async () => {
+    // 相对目标形态：链接文件名合法（png / 登记内），realpath 指向根外——
+    // lexical containment 会被骗过，realpath 层必须拒绝（Linux CI 必跑；
+    // 无特权 Windows 跳过）
+    const outsideRoot = await mkdtemp(join(tmpdir(), "paperteam-rel-"));
+    roots.push(outsideRoot);
+    const outsideAsset = join(outsideRoot, "escape.png");
+    await writeFile(outsideAsset, PNG_BYTES);
+    const { projects, projectId, figuresDir } = await makeSetup();
+    let linkCreated = true;
+    try {
+      await symlink(relative(figuresDir, outsideAsset), join(figuresDir, "escape.png"));
+    } catch {
+      linkCreated = false;
+    }
+    if (linkCreated) {
+      const documents = documentsAccess(docWithAssets("escape.png"));
+      const result = await resolveSourceFigureAsset({ projects, documents, projectId, sourceId: "S0001", assetName: "escape.png" });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.failure.code).toBe("invalid_path");
+      }
+    }
+  });
 });
 
 describe("M12 B4 生成图解析", () => {
@@ -214,7 +241,20 @@ describe("M12 B4 生成图解析", () => {
 
   it("形态不符（非 fig-<hex>.pdf）→ unsupported_asset；遍历/分隔符 → invalid_path", async () => {
     const { projects, projectId } = await makeGenerated();
-    for (const name of ["main.pdf", "fig-XYZ.pdf", "../manifest.json", "fig-0123456789ab.pdf\\x", "fig-0123456789ab.tex", "fig-0123456789ab.pdf.pdf"]) {
+    for (const name of [
+      "main.pdf",
+      "fig-XYZ.pdf",
+      "../manifest.json",
+      "fig-0123456789ab.pdf\\x",
+      "fig-0123456789ab.tex",
+      "fig-0123456789ab.pdf.pdf",
+      // M12.2.5：POSIX 侧攻击形态（Linux 路径不能绕过守卫）
+      "/etc/passwd",
+      "../../etc/passwd",
+      "..%2F..%2Fetc%2Fpasswd",
+      "%2e%2e%2Ffig-0123456789ab.pdf",
+      "..\\..\\secret.pdf",
+    ]) {
       const result = await resolveGeneratedFigureAsset({ projects, projectId, fileName: name, registry });
       expect(result.ok, name).toBe(false);
     }

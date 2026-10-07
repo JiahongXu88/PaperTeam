@@ -95,4 +95,65 @@ jobs:
             exit 1
           fi
           docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(async r=>{console.log(r.status, await r.text()); process.exit(r.status===200?0:1)})"
+
+      # M12.2.5 Smoke 4：Linux 图表编译（TeX Live + standalone/pgfplots/tikz/ctex + Fandol）
+      - name: Figure compile smoke（pgfplots line/bar/scatter + TikZ + CJK + specHash 缓存）
+        run: |
+          docker cp docker/figure-smoke.mjs pt-smoke:/tmp/figure-smoke.mjs
+          docker exec -e PAPERTEAM_FIGURE_SMOKE_DIST=/app/backend/dist pt-smoke node /tmp/figure-smoke.mjs
+
+      # M12.2.5 Smoke 3：容器重启后数据仍在（named volume 持久化）
+      - name: Persistence smoke（create project → docker restart → data survives）
+        run: |
+          create() {
+            docker exec pt-smoke node -e "
+              fetch('http://127.0.0.1:3000/api/projects', {
+                method: 'POST',
+                headers: {'content-type': 'application/json'},
+                body: JSON.stringify({title: 'persistence-smoke'}),
+              }).then(async r => { const body = await r.json(); console.log(r.status, body.project?.id ?? 'NO_ID'); process.exit(r.status===201?0:1); })
+                .catch(e => { console.error(String(e)); process.exit(1); });
+            "
+          }
+          create
+          docker restart pt-smoke
+          ready=0
+          for i in $(seq 1 30); do
+            if docker exec pt-smoke node -e "fetch('http://127.0.0.1:3000/ready').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))" 2>/dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != "1" ]; then docker logs pt-smoke || true; echo "::error::restart 后 /ready 未恢复"; exit 1; fi
+          docker exec pt-smoke node -e "
+            fetch('http://127.0.0.1:3000/api/projects?scope=all')
+              .then(async r => { const body = await r.json(); const hit = (body.projects ?? []).some(p => p.title === 'persistence-smoke'); console.log('persisted:', hit); process.exit(hit?0:1); })
+              .catch(e => { console.error(String(e)); process.exit(1); });
+          "
           docker stop -t 45 pt-smoke
+
+      # M12.2.5 Smoke 2：web（nginx 同源）+ compose 全栈起停 + down/up 持久化
+      - name: Compose smoke（web 同源代理 + compose down/up 后数据仍在）
+        run: |
+          docker tag paperteam-backend:ci paperteam-backend:local
+          docker tag paperteam-web:ci paperteam-web:local
+          docker compose up -d --no-build
+          healthy=0
+          for i in $(seq 1 45); do
+            state=$(docker compose ps --format json backend | jq -r '.Health // .State' 2>/dev/null || echo unknown)
+            if [ "$state" = "healthy" ]; then healthy=1; break; fi
+            sleep 2
+          done
+          if [ "$healthy" != "1" ]; then docker compose logs backend || true; echo "::error::compose backend 未达 healthy"; exit 1; fi
+          # 经 nginx（同源）创建项目：唯一对外端口 8080 走完整链路
+          curl -fsS -X POST http://127.0.0.1:8080/api/projects -H 'content-type: application/json' -d '{"title":"compose-persistence-smoke"}' | jq -e '.project.id'
+          curl -fsS http://127.0.0.1:8080/health | jq -e '.status == "ok"'
+          docker compose down
+          docker compose up -d --no-build
+          healthy=0
+          for i in $(seq 1 45); do
+            state=$(docker compose ps --format json backend | jq -r '.Health // .State' 2>/dev/null || echo unknown)
+            if [ "$state" = "healthy" ]; then healthy=1; break; fi
+            sleep 2
+          done
+          if [ "$healthy" != "1" ]; then docker compose logs backend || true; echo "::error::compose down/up 后 backend 未达 healthy"; exit 1; fi
+          curl -fsS 'http://127.0.0.1:8080/api/projects?scope=all' | jq -e 'any(.projects[]; .title == "compose-persistence-smoke")'
+          docker compose down

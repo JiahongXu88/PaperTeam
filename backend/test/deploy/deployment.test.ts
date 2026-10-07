@@ -195,7 +195,7 @@ describe("M5.5 部署文件契约（Dockerfile / compose / nginx / .dockerignore
     expect(instructions).not.toMatch(/auth\.json/);
     expect(instructions).not.toMatch(/API_KEY\s*=|ANTHROPIC|OPENAI_API|sk-[A-Za-z0-9]{10,}/);
     expect(instructions).not.toMatch(/texlive-full/);
-    for (const dep of ["python3", "texlive-xetex", "texlive-lang-chinese", "latexmk", "biber", "git", "fonts-noto-cjk", "pymupdf"]) {
+    for (const dep of ["python3", "texlive-xetex", "texlive-latex-extra", "texlive-lang-chinese", "latexmk", "biber", "git", "fonts-noto-cjk", "pymupdf"]) {
       expect(dockerfile).toContain(dep);
     }
     // engines：root package.json 允许 Node 22.22.3+ / 24.15+ / 25.9+；镜像用 node:22
@@ -212,18 +212,34 @@ describe("M5.5 部署文件契约（Dockerfile / compose / nginx / .dockerignore
     // 数据根由环境变量指向 volume，不落在容器可写层的仓库目录
     expect(dockerfile).toMatch(/PROJECTS_ROOT=\/data\/projects/);
     expect(dockerfile).toMatch(/PAPERTEAM_RUNTIME_ROOT=\/data\/runtime/);
+    // M12.2.5：容器内显式绑 0.0.0.0（后端缺省是回环——容器里必须放开给 nginx）
+    expect(dockerfile).toMatch(/PAPERTEAM_HOST=0\.0\.0\.0/);
+    // M12.2.5：图表编译所需宏包在构建期 kpsewhich 验证（standalone/pgfplots/ctexart）
+    expect(dockerfile).toMatch(/kpsewhich standalone\.cls/);
+    expect(dockerfile).toMatch(/kpsewhich pgfplots\.sty/);
+    expect(dockerfile).toMatch(/kpsewhich ctexart\.cls/);
+    // M12.2.5：可选 backend-docling 目标（独立 venv；不 COPY 任何密钥）
+    expect(dockerfile).toMatch(/FROM backend AS backend-docling/);
+    expect(dockerfile).toMatch(/PAPERTEAM_DOCLING_PYTHON=\/opt\/paperteam-docling-venv\/bin\/python/);
+    expect(dockerfile).toMatch(/HF_HOME=\/data\/hf-cache/);
     // Linux 路径纯净
     expect(dockerfile).not.toMatch(/[A-Za-z]:\\|cmd\.exe|powershell/i);
     const entrypoint = await read("docker/backend-entrypoint.sh");
     expect(entrypoint).toMatch(/setpriv --reuid=paperteam/);
     expect(entrypoint).toMatch(/exec "\$@"/);
     expect(entrypoint).not.toMatch(/\r/);
+    // M12.2.5：HF_HOME（docling 模型缓存 volume）与两个数据根同规则的属主修正
+    expect(entrypoint).toMatch(/HF_CACHE_DIR="\$\{HF_HOME:-\}"/);
   });
 
   it("compose.yml：双 named volume 挂到两个数据根；backend 只 expose 不 publish；web 唯一对外端口；env_file 可缺省；stop_grace_period ≥ 停机预算；无密钥", async () => {
     const compose = await read("compose.yml");
     expect(compose).toMatch(/paperteam-projects:\/data\/projects/);
     expect(compose).toMatch(/paperteam-runtime:\/data\/runtime/);
+    // M12.2.5：docling 模型缓存 volume；后端容器内显式 0.0.0.0；镜像可切换（docling 目标）
+    expect(compose).toMatch(/paperteam-hf:\/data\/hf-cache/);
+    expect(compose).toMatch(/PAPERTEAM_HOST: 0\.0\.0\.0/);
+    expect(compose).toMatch(/\$\{PAPERTEAM_BACKEND_IMAGE:-paperteam-backend:local\}/);
     expect(compose).toMatch(/PROJECTS_ROOT: \/data\/projects/);
     expect(compose).toMatch(/PAPERTEAM_RUNTIME_ROOT: \/data\/runtime/);
     const backendBlock = compose.slice(compose.indexOf("  backend:"), compose.indexOf("  web:"));

@@ -8,9 +8,13 @@ set -eu
 
 PROJECTS_ROOT="${PROJECTS_ROOT:-/data/projects}"
 RUNTIME_ROOT="${PAPERTEAM_RUNTIME_ROOT:-/data/runtime}"
+# HF_HOME（backend-docling 目标设置；基镜像未设时跳过）：docling 模型缓存
+# volume 的属主修正与两个数据根同规则
+HF_CACHE_DIR="${HF_HOME:-}"
 
 if [ "$(id -u)" = "0" ]; then
-  for dir in "$PROJECTS_ROOT" "$RUNTIME_ROOT" /app/latex-cache; do
+  for dir in "$PROJECTS_ROOT" "$RUNTIME_ROOT" /app/latex-cache $HF_CACHE_DIR; do
+    [ -z "$dir" ] && continue
     mkdir -p "$dir"
     # 只在属主不对时修正目录本身及其子树（volume 首挂载为空，代价可忽略；
     # 已有数据的 volume 通常已是 paperteam 属主，不重复遍历）
