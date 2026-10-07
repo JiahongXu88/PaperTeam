@@ -123,7 +123,12 @@ ARG PIP_INDEX_URL=""
 FROM backend AS backend-docling
 ENV PAPERTEAM_DOCLING_PYTHON=/opt/paperteam-docling-venv/bin/python \
     HF_HOME=/data/hf-cache
-RUN python3 -m venv /opt/paperteam-docling-venv \
+# libgl1 + libglib2.0-0：docling 图像链（cv2 / torchvision 的 libGL 依赖）在
+# slim 基镜像缺失——真实解析首跑即 libGL.so.1 not found（M12.2.5 CI 实测）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/paperteam-docling-venv \
  && ${PIP_INDEX_URL:+env PIP_INDEX_URL="$PIP_INDEX_URL"} /opt/paperteam-docling-venv/bin/pip install --no-cache-dir "docling>=2,<3" \
  && /opt/paperteam-docling-venv/bin/python -c "import docling; print('docling', docling.__version__)" \
  && mkdir -p /data/hf-cache \
