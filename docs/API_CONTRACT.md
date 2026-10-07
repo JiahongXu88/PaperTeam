@@ -15,6 +15,9 @@
 > 与 Quality Gate 新规则 `revision_items_resolved` / `claim_strength_guard`；
 > `reviews/revision-validation-r{n}.json` 产物随 gate 产物
 > `revisionValidation` 字段可见）。
+> 2026-10-07 M12 Batch 2：Target Publication（§1.2m target 十端点）与 Visual Review
+> （§1.2m visual-reviews + 图资产）正式消费（TargetPanel / ReviewPanel）；错误码新增
+> TARGET_PROFILE_CORRUPTED / TARGET_READINESS_CORRUPTED。
 > 2026-09-18 M7.0：产品化收口——§1.2 文献库（sources CRUD + import/*）
 > 与 `POST …/sources` 前端正式消费（SourcesPanel「文献库」标签页：五种入库
 > 方式、幂等与 resolver 结论如实展示；DTO 见 §2 sources 块）；无后端变更。
@@ -460,6 +463,41 @@
 > - **错误码新增**：SURVEY_OUTLINE_INVALID(422)。
 > - **尚缺（勿提前宣称）**：Workflow Integration（M11.1.4）/ Survey
 >   Writing E2E（M11.2）/ Review / Real Acceptance（M11.3）。
+
+### 1.2m M12 Batch 2 Target Publication / Visual Review API（已实现；TargetPanel / ReviewPanel 正式消费 ✅）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/projects/:id/target/benchmark` | M12.1 A5：读冻结的 benchmark 语料（`research/target-benchmark.json`）。200 `{benchmark: TargetBenchmarkArtifact \| null}`——未冻结 = null（非 404）；损坏 → **500 TARGET_BENCHMARK_CORRUPTED**。artifact 见 Batch 1（schemaVersion/revision/fingerprint/target/papers/selection?/confirmedAt?；papers 恒 sourceRole=reference） | TargetPanel |
+| `POST /api/projects/:id/target/benchmark/discover` | M12.1 A6 一键发现+冻结：`{targetCount?（1–100 整数，缺省 12）}`；target 由 ProjectMetadata 组装（documentType/targetProfile/targetVenue/researchField）。200 `{revision, papers（有效条目数）, savedSourceIds（数）, venueDegraded, sufficiency, requiresAttention, alreadyFrozen}`。缺 researchField / 非法 targetCount → **400 INVALID_REQUEST**（repo 口径） | TargetPanel「发现 Benchmark」 |
+| `POST /api/projects/:id/target/benchmark/refresh` | 显式 refresh：重发现+重选 → 与当前冻结**指纹不同才 revision+1**（相同幂等返回 changed=false，不空转）。200 `{benchmark, changed}`；未冻结 → 400 | TargetPanel「重新发现」 |
+| `POST /api/projects/:id/target/benchmark/papers` | 追加单篇：`{sourceId（必填，须已以 role=reference 入库）, citationCount?, venueRaw?, inclusionReason?}` → `benchmark.addPaper`（幂等；revision+1） | TargetPanel |
+| `POST /api/projects/:id/target/benchmark/papers/:sid/exclude` | 剔除：`{reason（非空 ≤500 字）}` → 同 revision 剔除标记（指纹重算）；条目不存在 → 404 | TargetPanel |
+| `POST /api/projects/:id/target/benchmark/confirm` | HITL 确认审计标记（幂等，首次写 confirmedAt）→ `{benchmark}` | TargetPanel |
+| `GET /api/projects/:id/target/profile` | M12.1 A7：`{profile: TargetPublicationProfile \| null, fresh: boolean \| null, staleReason?}`——未生成 = `{profile:null, fresh:null}`；损坏 → **500 TARGET_PROFILE_CORRUPTED**。profile：`{schemaVersion:1, benchmarkRevision, corpusFingerprint, extractorSchemaVersion, n, dimensions:{structure/literature/experiments/visuals/method/writing 各含 availability(available\|unavailable\|insufficient)+coverage+reason? + 维度专属分位带 Distribution{n,min,p25,median,p75,max}…}, provenance:{deterministicFields, modelSummarizedFields, model?, summaryFailure?}, generatedAt, notes}`（freshness 三键任一不符 → fresh:false + staleReason，陈旧不被静默消费） | TargetPanel Profile 区 |
+| `POST /api/projects/:id/target/profile/regenerate` | ensureCurrent（缺失/陈旧才重建；含 ≤2 次摘要模型调用）→ `{profile}`；未冻结 benchmark → 404 | TargetPanel「重建」 |
+| `GET /api/projects/:id/target/readiness` | M12.1 A8：`{readiness: TargetReadinessArtifact \| null}`；损坏 → **500 TARGET_READINESS_CORRUPTED**。artifact：`{schemaVersion:1, evaluatedAt, benchmarkRevision, manuscriptRevision, dimensions:[{dimension, verdict(MEETS_TARGET\|PARTIALLY_MEETS_TARGET\|BELOW_TARGET\|INSUFFICIENT_EVIDENCE), observed, targetRange, gaps[], confidence, evidenceBasis}], overall:{verdict, summary}, provenance:{basis:"benchmark_observation", disclaimer, profileGeneratedAt}}`——**advisory 语义，无任何数值分数门** | TargetPanel Readiness 区 |
+| `POST /api/projects/:id/target/readiness/evaluate` | 评估当前稿（覆写；manuscriptRevision 对齐 RevisionStore）→ `{readiness}`；未冻结 → 404 | TargetPanel「评估」 |
+| `GET /api/projects/:id/visual-reviews/latest` | M12.2 B3：最新视觉评审报告。200 `{report: VisualReviewReport \| null}`——从未运行 = null（非 404） | ReviewPanel 视觉区 |
+| `POST /api/projects/:id/visual-reviews/run` | 运行视觉评审（同步；确定性六项恒运行 + vision 四项按 capability）→ `{report}`（含 round，落盘 `reviews/visual-review-r<n>.json` 并重建 `research/manuscript-visuals.json`）。report：`{schemaVersion, projectId, runAt, round?, inputs, artifacts, findings:[ReviewFinding（category="visual"；source=deterministic-visual\|vision-assisted；figureEnvRef?/assetRef?/visualConfidence?/verificationStatus=verified_deterministic\|model_observation\|needs_author_review）], checks:[{checkId, kind, status(passed\|finding\|skipped\|failed)}], capability:{visionAvailable, reason?, skippedChecks[], skippedFigures[], visionFiguresCompleted/Failed, usage?}, notes}` | ReviewPanel「运行视觉检查」 |
+| `GET /api/projects/:id/sources/:sid/figures/:name` | M12.2 B4（补 G8）：source 抽图资产（png/jpg/jpeg）。安全：扁平名白名单 + 词法/realpath 双重包含 + **ParsedDocument figure 登记先于读盘**（重解析残留 → 404 stale_asset）。错误码：`invalid_project`→404 / `invalid_path`·`unsupported_asset`→400 / `missing_artifact`·`stale_asset`→404 | ReviewPanel 图像预览 |
+| `GET /api/projects/:id/figures/generated/:name` | M12.2 B4：生成图资产（`figs/generated/fig-<hex>.pdf`，application/pdf；figureStore manifest 登记校验同上） | ReviewPanel PDF 链接 |
+
+> 2026-10-07 M12 Batch 2 语义约定：
+> - **三层 readiness 语义分离**（M12.0 §15）：Revision Task Success /
+>   Publication Readiness（M11.4 两层）不变；Target Readiness 是 advisory
+>   （不进 Quality Gate 任何规则、不阻断任何终态）；`targetReadiness?`
+>   只是 gate 结果的透传字段。
+> - **workflow target 三 stage**（target.benchmark→profile→readiness，位于
+>   feasibility 前）永不改变主 workflow 终态：未接线 / 已冻结 / 无
+>   researchField / discovery 失败（如未配置检索 provider）→ 显式 skipped
+>   +reason，主流程继续。
+> - **Benchmark ≠ Evidence**：target 语料恒 role=reference；profile 提取只读
+>   parser facts；视觉评审 pdf 侧过滤 reference 源。
+> - **模型判断 ≠ verified**：vision findings 恒 model_observation /
+>   needs_author_review（Figure ≠ Evidence 纪律）；vision 不可用时 capability
+>   如实报告 skipped，绝不宣称全部视觉检查通过。
+> - **错误码新增**：TARGET_PROFILE_CORRUPTED(500) / TARGET_READINESS_CORRUPTED(500)。
 
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
