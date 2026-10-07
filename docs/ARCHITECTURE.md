@@ -16,6 +16,10 @@
 > §15 Retrieval → §16 Evidence Grounding → §17 Evidence-aware Writing →
 > M6.7 Revision Safety → §18 Evaluation（含 M6.9 live / 多模型）；M6
 > 最终流水线总图见 §1.3。
+> **M7–M11 已完成（2026-09-20 → 2026-10-07）**：M7 检索激活与全文、M8 受控
+> 深研循环、M9 全文 E2E 与证据供给、M10 已有论文返修（Docling / scoped
+> patches / 外部意见）、M11 综述管线与返修可靠性收口（21 次真实 run）——
+> 增量索引见 §20；产品视角见 [product-guide.md](product-guide.md)。
 
 ## 1. 总体架构
 
@@ -71,7 +75,7 @@ PaperTeam Backend（backend/）
    └── Admin               系统管理后台
    │
    ▼
-Pi SDK in-process（@earendil-works/pi-coding-agent 0.84.4，无子进程）
+Pi SDK in-process（@earendil-works/pi-coding-agent 1.0.1，无子进程）
    │
    ├── Researcher    领域调研、文献检索、Evidence 生成、可行性分析支持
    ├── Writer        分节写作与 revision
@@ -363,7 +367,7 @@ Reviewer、Experiment subsystem 均在 backlog（M5 未含，见 M5_PLAN §2）�
 ### 6.0 Runtime 形态与 dev 启动（M3.8：Pi in-process）
 
 Pi SDK 是**唯一正式 Runtime**：Backend 进程内嵌入
-`@earendil-works/pi-coding-agent`（0.84.4 精确 pin），全部 Agent 执行发生在
+`@earendil-works/pi-coding-agent`（1.0.1 精确 pin），全部 Agent 执行发生在
 Backend 进程内。（历史：M3.5/M3.6 曾使用 OpenClaw Gateway，M3.8 迁移到 Pi 并移除
 全部相关基础设施，演进见 DECISIONS.md D-0019/D-0020；用户磁盘上的旧
 `~/.paperteam/runtime/openclaw/` state 无害，可忽略。）
@@ -542,7 +546,7 @@ review/fact、review/academic、review/style、sources/pdf-analysis。
 
 ### 6.4 PiRuntimeAdapter（M3.8 正式 baseline）
 
-Pi（`@earendil-works/pi-coding-agent` **0.84.4** 精确 pin）是**唯一正式
+Pi（`@earendil-works/pi-coding-agent` **1.0.1** 精确 pin）是**唯一正式
 Runtime**（演进历史见 DECISIONS.md D-0019/D-0020）。所有 Pi 细节封装在
 `backend/src/runtime/PiRuntimeAdapter.ts` 与 `pi/` 内部，业务代码不 import
 `@earendil-works/*`。
@@ -1642,3 +1646,26 @@ judge、同一网关公共混杂、quote 拦截路径本批未触发（有效性
 产物文件统一公开名（GLM-5.3 等）；内部路由别名只经
 `PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL` 环境变量注入，不入库不入报告。
 live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。
+
+## 20. M7–M11 增量架构（现状索引）
+
+> M6 冻结（§1.3 / D-0041）之后的架构增量按「模块 + 指针」索引在此，不逐文件
+> 展开；每个模块的实现与验收细节以对应研究报告为准。§1–§19 的分层与红线
+> （Authoritative State / 会话 / 事件 / 双 Gate / 零新 Agent 倾向）在 M7–M11
+> 全程保持，无架构性替换。
+
+| 增量 | 内容 | 关键位置 / 报告 |
+| --- | --- | --- |
+| M7 检索激活 + 全文 | Discovery 接线到 Researcher 工具面；FullTextResolution（DOI/arXiv → PDF） | `backend/src/search/`；[research/M7_FINAL_REPORT.md](research/M7_FINAL_REPORT.md) |
+| M8 受控深研循环 | Research Plan 一等产物 → 执行审计 → Coverage Analyzer → Gap + HITL + Loop Policy → 多轮受控 Executor（三处 HITL 断点、崩溃恢复按磁盘事实重算） | `backend/src/research/`；[research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md](research/M8_DEEP_RESEARCH_VALIDATION_REPORT.md) |
+| M9 全文 E2E + 证据供给 | 全文获取、锚定证据、确定性参考文献（xelatex→bibtex→xelatex×2 显式编排）、Targeted Evidence Supply、Fact Preservation 双 Gate | `backend/src/latex/`、`backend/src/evidence/`；[research/M9.6_FULL_PAPER_E2E_ACCEPTANCE.md](research/M9.6_FULL_PAPER_E2E_ACCEPTANCE.md) |
+| M10 文档理解 + 已有论文返修 | Docling 结构化 ingestion（版面/表格，回退 pymupdf）；PDF→LaTeX 确定性重建；外部修改意见（External Instructions）状态机；scoped patches + PatchValidationRecord；Agent Trace | `backend/src/ingestion/`、`backend/src/review/`；[research/M10.3_EXISTING_PAPER_REVISION_REPORT.md](research/M10.3_EXISTING_PAPER_REVISION_REPORT.md) |
+| M11 综述管线 | 第四类 workflow `topic_survey`：Survey Matrix（逐篇结构化、chunk anchor fail-closed）→ Structured Synthesis（grounding 判定表，LLM 无权自评）→ Outline（refs 契约）→ 写作不变量 → gate 四规则（survey_*） | `backend/src/survey/`、`backend/src/workflow/definitions.ts`；[research/M11_3_SURVEY_PRODUCT_ACCEPTANCE.md](research/M11_3_SURVEY_PRODUCT_ACCEPTANCE.md) |
+| M11.4 分层判定 | Revision Task Gate（任务层：意见闭环+守卫+patch 实质+非回归）与 Publication Readiness（投稿层：全稿规则）分离；verdict 三态；学术 80 分不再是任务层硬门 | `backend/src/quality/revisionTaskGate.ts`；[research/M11_4_QUALITY_GATE_PRODUCT_CLOSURE.md](research/M11_4_QUALITY_GATE_PRODUCT_CLOSURE.md) |
+| M11.4 可靠性收口 | 23 项 machine-owned invariant 修复；21 次真实 run；comment closure 由 accepted-patch lineage / 确定性引文核验推导 | [research/M11_4_RELIABILITY_CLOSURE.md](research/M11_4_RELIABILITY_CLOSURE.md) |
+| Runtime 升级 | Pi SDK 0.84.4 → **1.0.1**（M11.4.5 请求生命周期遥测：first activity / first text token / requestId×stageAttempt 关联） | [research/PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md](research/PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md) |
+
+产品视角的入口（两条产品路径、HITL 节点、终态语义）见
+[product-guide.md](product-guide.md)；返修链路与分层判定语义见
+[existing-paper-revision.md](existing-paper-revision.md)；模型配置面见
+[model-configuration.md](model-configuration.md)。
