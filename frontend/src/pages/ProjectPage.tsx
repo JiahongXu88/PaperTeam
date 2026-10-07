@@ -16,6 +16,7 @@ import { ProjectAside, isExistingPaper } from "../components/project/ProjectAsid
 import { QualityGateSummaryLink } from "../components/project/QualityGatePanel.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { SourcesPanel } from "../components/project/SourcesPanel.js";
+import { TargetPanel } from "../components/project/TargetPanel.js";
 import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
 import { readSectionProgress } from "../components/project/workflowTimeline.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS, WORKFLOW_KIND_RUN_LABELS } from "../constants/projectMeta.js";
@@ -33,7 +34,7 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "evidence" | "citations" | "review" | "workflow";
+type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "evidence" | "citations" | "target" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean }> = [
@@ -45,6 +46,8 @@ const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; no
   { id: "sources", label: "文献库" },
   { id: "evidence", label: "证据" },
   { id: "citations", label: "引用核验" },
+  // M12.1 A10：目标投稿（benchmark 语料 → target profile → readiness；advisory）
+  { id: "target", label: "目标投稿" },
   { id: "review", label: "Review", existingOnly: true },
   { id: "workflow", label: "工作流" },
 ];
@@ -444,6 +447,8 @@ export function ProjectPage() {
             />
           ) : tab === "citations" ? (
             <CitationsPanel projectId={project.id} />
+          ) : tab === "target" ? (
+            <TargetPanel projectId={project.id} />
           ) : tab === "workflow" ? (
             <WorkflowPanel projectId={project.id} project={project} onOpenTab={openTab} connection={connection} />
           ) : (
