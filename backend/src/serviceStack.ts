@@ -144,6 +144,11 @@ export interface ServiceStackOptions {
   /** DoclingParser 的解释器覆盖（PAPERTEAM_DOCLING_PYTHON）；注入 structuredParser 时忽略 */
   doclingPythonCommand?: string;
   /**
+   * DoclingParser 解析子进程并发上限（PAPERTEAM_DOCLING_CONCURRENCY；默认 1；
+   * M12.2.5——torch 子进程逐个执行，避免资源争抢；注入 structuredParser 时忽略）
+   */
+  doclingMaxConcurrency?: number;
+  /**
    * Research Discovery（M6.3）：Academic / Web Search provider 装配。
    * 缺省零配置 = OpenAlex + arXiv + 匿名 S2（学术链路可用），SearXNG / AMiner
    * 未配置不注册；disabledProviders 可显式关停任一源。fetchImpl 供测试注入。
@@ -530,6 +535,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     new DoclingParser({
       ...(options.doclingPythonCommand !== undefined
         ? { pythonCommand: options.doclingPythonCommand }
+        : {}),
+      ...(options.doclingMaxConcurrency !== undefined
+        ? { maxConcurrency: options.doclingMaxConcurrency }
         : {}),
       log,
     });

@@ -205,9 +205,28 @@ export interface FullTextConfig {
   batchConcurrency: number;
 }
 
+/** Ingestion 并发配置（M12.2.5 dual-runtime；可缺省） */
+export interface IngestionConfig {
+  /**
+   * docling 解析子进程的进程级并发上限（PAPERTEAM_DOCLING_CONCURRENCY；
+   * 默认 1——docling 是 CPU/内存密集（torch）子进程，逐个执行避免 N 个
+   * torch 进程同时争抢（本地保守值；服务器资源充足可调 2）。性能调优项：
+   * 无效值回退默认，不阻断启动（与 reviewConcurrency 同纪律）。
+   */
+  doclingConcurrency: number;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
+  /**
+   * HTTP 监听地址（PAPERTEAM_HOST；默认 127.0.0.1——单用户本地工具的保守
+   * 默认，未显式配置不暴露到网络接口）。Linux 服务器 / Docker 内由部署
+   * 配置显式设为 0.0.0.0（backend 容器需被 nginx 访问）；PaperTeam 无
+   * 鉴权，任何非回环绑定都应配合 SSH tunnel / 私有网络使用（见
+   * docs/deployment/linux-server.md）。
+   */
+  host: string;
   /** PaperTeam 用户级 Runtime 根目录（skills store 等挂在其下） */
   runtimeRoot: string;
   /** Pi Runtime 配置（唯一 Runtime） */
@@ -224,6 +243,7 @@ export interface AppConfig {
   search: SearchConfig;
   retrieval: RetrievalConfig;
   fullText: FullTextConfig;
+  ingestion: IngestionConfig;
   skills: SkillsConfig;
   /**
    * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
@@ -251,6 +271,13 @@ export interface AgentIds {
 }
 
 const DEFAULT_PORT = 3000;
+/**
+ * HTTP 监听地址默认：回环（单用户本地工具的保守默认）。此前省略 host 时
+ * Node 会绑定全部接口（::/0.0.0.0）——对无鉴权服务是意外的网络暴露面。
+ */
+const DEFAULT_HOST = "127.0.0.1";
+/** host 合法字符：IP（v4/v6）、主机名；显式排除路径分隔符与空白 */
+const HOST_PATTERN = /^[A-Za-z0-9._:\[\]-]{1,255}$/;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 const DEFAULT_RUN_TIMEOUT_MS = 300_000;
 /**
@@ -287,6 +314,8 @@ const DEFAULT_REVIEW_CONCURRENCY = 3;
 const DEFAULT_SUMMARY_CONCURRENCY = 3;
 /** 批量全文解析默认并发（M9.3）：resolver 链 + 下载是外呼，3 与 review/summary 同档 */
 const DEFAULT_FULLTEXT_BATCH_CONCURRENCY = 3;
+/** docling 解析默认并发（M12.2.5）：本地保守值 1（逐个 torch 子进程） */
+const DEFAULT_DOCLING_CONCURRENCY = 1;
 /** 并发度允许范围：1（纯串行）到 8（Provider 限流压力已明显） */
 const CONCURRENCY_MIN = 1;
 const CONCURRENCY_MAX = 8;
@@ -355,6 +384,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
   return {
     env: readNodeEnv(source),
     port: readPort(source),
+    host: readHost(source),
     runtimeRoot: resolveRuntimeRoot(source),
     pi: {
       model: readOptionalValue(source, "PAPERTEAM_PI_MODEL"),
@@ -579,6 +609,13 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         max: CONCURRENCY_MAX,
       }),
     },
+    ingestion: {
+      doclingConcurrency: readIntWithFallback(source, "PAPERTEAM_DOCLING_CONCURRENCY", {
+        default: DEFAULT_DOCLING_CONCURRENCY,
+        min: CONCURRENCY_MIN,
+        max: CONCURRENCY_MAX,
+      }),
+    },
   };
 }
 
@@ -635,6 +672,21 @@ function readPort(source: Record<string, string | undefined>): number {
     );
   }
   return port;
+}
+
+/** 监听地址（缺省回环；0.0.0.0 / :: / 主机名 / IP 均可，拒绝空白与路径字符） */
+function readHost(source: Record<string, string | undefined>): string {
+  const raw = source["PAPERTEAM_HOST"];
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_HOST;
+  }
+  const host = raw.trim();
+  if (!HOST_PATTERN.test(host)) {
+    throw new ConfigError(
+      `PAPERTEAM_HOST 只能是 IP / IPv6 / 主机名（如 127.0.0.1、0.0.0.0、::1），当前为 "${host}"`,
+    );
+  }
+  return host;
 }
 
 /** 通用整型超时配置读取（缺省 / 越界报错） */

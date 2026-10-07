@@ -42,6 +42,12 @@ export interface DoclingParserOptions {
   probeImport?: string;
   timeoutMs?: number;
   maxBufferBytes?: number;
+  /**
+   * 解析子进程的进程级并发上限（PAPERTEAM_DOCLING_CONCURRENCY；默认 1）。
+   * docling 是 CPU/内存密集（torch）子进程：显式 ingest 与后台链并行到达时
+   * 由本信号量收敛为逐个执行，避免 N 个 torch 同时争抢（M12.2.5）。
+   */
+  maxConcurrency?: number;
   log?: (message: string) => void;
 }
 
@@ -59,7 +65,11 @@ export class DoclingParser implements DocumentParser {
   private readonly scriptPath: string;
   private readonly timeoutMs: number;
   private readonly maxBufferBytes: number;
+  private readonly maxConcurrency: number;
   private readonly log: (message: string) => void;
+  /** 信号量状态：在途解析数 + FIFO 等待者（maxConcurrency 收敛 torch 并发） */
+  private activeParses = 0;
+  private readonly parseWaiters: Array<() => void> = [];
 
   constructor(options: DoclingParserOptions = {}) {
     this.log = options.log ?? (() => {});
@@ -71,6 +81,7 @@ export class DoclingParser implements DocumentParser {
     this.scriptPath = resolve(options.scriptPath ?? defaultDoclingScriptPath());
     this.timeoutMs = options.timeoutMs ?? 600_000;
     this.maxBufferBytes = options.maxBufferBytes ?? 128 * 1024 * 1024;
+    this.maxConcurrency = Math.max(1, Math.floor(options.maxConcurrency ?? 1));
   }
 
   checkAvailability(): Promise<DoclingToolchainStatus> {
@@ -90,8 +101,35 @@ export class DoclingParser implements DocumentParser {
       ...(options.figuresDir !== undefined ? [`--figures-dir=${resolve(options.figuresDir)}`] : []),
       ...(options.formulas === true ? ["--formulas"] : []),
     ];
-    const stdout = await this.exec(toolchain.command, toolchain.args, args);
-    return this.validate(stdout, basename(absolutePath));
+    await this.acquireParseSlot();
+    try {
+      const stdout = await this.exec(toolchain.command, toolchain.args, args);
+      return this.validate(stdout, basename(absolutePath));
+    } finally {
+      this.releaseParseSlot();
+    }
+  }
+
+  /** FIFO 信号量：超并发上限时排队（不失败——上游已有 source 级去重/串行链） */
+  private acquireParseSlot(): Promise<void> {
+    if (this.activeParses < this.maxConcurrency) {
+      this.activeParses += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolvePromise) => {
+      this.parseWaiters.push(() => {
+        this.activeParses += 1;
+        resolvePromise();
+      });
+    });
+  }
+
+  private releaseParseSlot(): void {
+    this.activeParses -= 1;
+    const next = this.parseWaiters.shift();
+    if (next !== undefined) {
+      next();
+    }
   }
 
   private exec(

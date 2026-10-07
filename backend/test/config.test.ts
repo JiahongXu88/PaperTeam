@@ -201,4 +201,24 @@ describe("loadConfig", () => {
     // 超时越界报错
     expect(() => loadConfig({ PAPERTEAM_SEARCH_TIMEOUT_MS: "100" })).toThrow(ConfigError);
   });
+
+  it("M12.2.5 PAPERTEAM_HOST：默认 127.0.0.1（保守回环）；合法值采用；非法值拒绝启动", () => {
+    expect(loadConfig({}).host).toBe("127.0.0.1");
+    expect(loadConfig({ PAPERTEAM_HOST: "0.0.0.0" }).host).toBe("0.0.0.0");
+    expect(loadConfig({ PAPERTEAM_HOST: "::1" }).host).toBe("::1");
+    expect(loadConfig({ PAPERTEAM_HOST: "  lan-host.example.org " }).host).toBe("lan-host.example.org");
+    // 非法：路径分隔符 / 空白 / 空
+    expect(() => loadConfig({ PAPERTEAM_HOST: "0.0.0.0/24" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_HOST: "bad host" })).toThrow(ConfigError);
+    expect(() => loadConfig({ PAPERTEAM_HOST: "/etc/" })).toThrow(ConfigError);
+  });
+
+  it("M12.2.5 docling 并发：默认 1（逐个 torch 子进程）；合法值采用；非法值回退默认", () => {
+    expect(loadConfig({}).ingestion.doclingConcurrency).toBe(1);
+    expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "2" }).ingestion.doclingConcurrency).toBe(2);
+    expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "8" }).ingestion.doclingConcurrency).toBe(8);
+    // 性能调优项：非法值静默回退（与 reviewConcurrency 同纪律）
+    expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "0" }).ingestion.doclingConcurrency).toBe(1);
+    expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "abc" }).ingestion.doclingConcurrency).toBe(1);
+  });
 });

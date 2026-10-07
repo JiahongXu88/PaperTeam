@@ -265,6 +265,7 @@ export async function startBackend(): Promise<void> {
     ...(config.pdf.doclingPythonCommand !== undefined
       ? { doclingPythonCommand: config.pdf.doclingPythonCommand }
       : {}),
+    doclingMaxConcurrency: config.ingestion.doclingConcurrency,
     ...(targetSummaryModel !== undefined ? { targetSummaryModel } : {}),
     log: (message) => console.log(message),
   });
@@ -374,9 +375,10 @@ export async function startBackend(): Promise<void> {
     modelSettings,
     readiness,
   });
-  server.listen(config.port, () => {
+  server.listen(config.port, config.host, () => {
+    const displayHost = config.host === "0.0.0.0" || config.host === "::" ? "localhost" : config.host;
     console.log(
-      `PaperTeam Backend listening on http://localhost:${config.port}` +
+      `PaperTeam Backend listening on http://${displayHost}:${config.port} (bind ${config.host}; PAPERTEAM_HOST 可改绑定点)` +
         ` (GET /health, GET /api/runtime/status, GET|POST /api/projects,` +
         ` POST /api/projects/:id/generate, POST /api/projects/:id/workflows,` +
         ` GET /api/runs/:runId[/events])`,
