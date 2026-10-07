@@ -268,4 +268,37 @@ describe("renderPlotTeX", () => {
     expect(tex).toContain("(0.2, 0.3)");
     expect(tex).not.toContain("0.30000000000000004");
   });
+
+  it("M12.2.5 CJK 探测：中文文本插入 ctex 导言；纯 ASCII 不插入（字节确定性）", () => {
+    const ascii = compilePlotTeX(plotSpec({}));
+    expect(ascii).not.toContain("ctex");
+    const header = ascii.split("\\begin{document}")[0] ?? "";
+    expect(header).toBe(
+      "\\documentclass[border=2pt]{standalone}\n\\usepackage{pgfplots}\n\\pgfplotsset{compat=1.18}\n",
+    );
+
+    // title 含中文
+    const cjkTitle = compilePlotTeX(plotSpec({ extra: { title: "消融实验结果" } }));
+    expect(cjkTitle).toContain("\\usepackage[UTF8]{ctex}");
+    // series 名含中文
+    const cjkSeries = compilePlotTeX(
+      plotSpec({ series: [{ name: "本文方法", column: "ours" }, { name: "基线", column: "baseline" }] }),
+    );
+    expect(cjkSeries).toContain("\\usepackage[UTF8]{ctex}");
+    // 轴名含中文
+    const cjkAxis = compilePlotTeX(plotSpec({ extra: { axis: { xLabel: "轮次" } } }));
+    expect(cjkAxis).toContain("\\usepackage[UTF8]{ctex}");
+    // 类目标签含中文（bar）
+    const dataset = { columns: ["variant", "score"], rows: [["基线", 62.4], ["本文", 63.0]] };
+    const cjkCategory = compilePlotTeX(
+      plotSpec({ plotType: "bar", dataset, series: [{ name: "MOTA", column: "score" }] }),
+    );
+    expect(cjkCategory).toContain("\\usepackage[UTF8]{ctex}");
+    // 全角标点也触发（，！）
+    const fullWidth = compilePlotTeX(plotSpec({ extra: { title: "A，B" } }));
+    expect(fullWidth).toContain("\\usepackage[UTF8]{ctex}");
+    // 插入位置：documentclass 之后、pgfplots 之前
+    expect(cjkTitle.indexOf("ctex}")).toBeGreaterThan(cjkTitle.indexOf("standalone}"));
+    expect(cjkTitle.indexOf("ctex}")).toBeLessThan(cjkTitle.indexOf("pgfplots}"));
+  });
 });

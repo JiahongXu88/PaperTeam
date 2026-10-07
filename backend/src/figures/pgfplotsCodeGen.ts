@@ -33,7 +33,7 @@
  *    这里对漏网缺失防御性抛错（codegen 不静默产出坏数据图）。
  */
 
-import { escapeLatex } from "./latexEscape.js";
+import { containsCjk, escapeLatex } from "./latexEscape.js";
 import type { NormalizedPlotSpec } from "./spec.js";
 
 /**
@@ -166,6 +166,18 @@ function plotLines(spec: NormalizedPlotSpec, rows: readonly PlotRow[]): string[]
   return lines;
 }
 
+/** plot 全部用户可见文本（title / 轴名 / series 名 / 类目标签）的 CJK 探测 */
+function plotHasCjk(spec: NormalizedPlotSpec, rows: readonly PlotRow[]): boolean {
+  const texts: Array<string | undefined> = [
+    spec.title,
+    spec.axis.xLabel,
+    spec.axis.yLabel,
+    ...spec.data.series.map((series) => series.name),
+    ...rows.map((row) => row.category),
+  ];
+  return texts.some((text) => text !== undefined && containsCjk(text));
+}
+
 /** PlotSpec → 独立编译的 standalone TeX 文档（字节确定性） */
 export function renderPlotTeX(spec: NormalizedPlotSpec): string {
   const rows = prepareRows(spec);
@@ -194,6 +206,10 @@ export function renderPlotTeX(spec: NormalizedPlotSpec): string {
 
   const lines: string[] = [
     "\\documentclass[border=2pt]{standalone}",
+    // CJK 文本（title / 轴名 / series 名 / 类目标签）→ ctex 导言（按平台
+    // 自动选字体：Windows 中易体系 / TeX Live Fandol；无 CJK 不加载，保持
+    // 纯 ASCII 图的编译零额外依赖）
+    ...(plotHasCjk(spec, rows) ? ["\\usepackage[UTF8]{ctex}"] : []),
     "\\usepackage{pgfplots}",
     "\\pgfplotsset{compat=1.18}",
     "\\begin{document}",

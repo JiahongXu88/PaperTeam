@@ -30,7 +30,7 @@
  *    （spec 序，on background layer + fit）→ 标题。
  */
 
-import { escapeLatex, escapeLatexMultiline } from "./latexEscape.js";
+import { containsCjk, escapeLatex, escapeLatexMultiline } from "./latexEscape.js";
 import { formatNumber } from "./pgfplotsCodeGen.js";
 import type { NormalizedDiagramSpec } from "./spec.js";
 
@@ -197,6 +197,17 @@ function mm(value: number): string {
   return `${formatNumber(value)}mm`;
 }
 
+/** diagram 全部用户可见文本（节点 / 边 / group 标签 / 标题）的 CJK 探测 */
+function diagramHasCjk(spec: NormalizedDiagramSpec): boolean {
+  const texts: Array<string | undefined> = [
+    spec.title,
+    ...spec.nodes.map((node) => node.label),
+    ...spec.edges.map((edge) => edge.label),
+    ...spec.groups.map((group) => group.label),
+  ];
+  return texts.some((text) => text !== undefined && containsCjk(text));
+}
+
 /** DiagramSpec → 独立编译的 standalone TeX 文档（字节确定性） */
 export function renderDiagramTeX(spec: NormalizedDiagramSpec): string {
   const boxes = spec.variant === "comparison" ? layoutComparison(spec) : layoutPipeline(spec);
@@ -204,6 +215,8 @@ export function renderDiagramTeX(spec: NormalizedDiagramSpec): string {
 
   const lines: string[] = [
     "\\documentclass[border=2pt]{standalone}",
+    // CJK 文本（节点 / 边 / group 标签 / 标题）→ ctex 导言（同 plot 侧口径）
+    ...(diagramHasCjk(spec) ? ["\\usepackage[UTF8]{ctex}"] : []),
     "\\usepackage{tikz}",
     "\\usetikzlibrary{positioning,arrows.meta,fit,backgrounds}",
     "\\begin{document}",

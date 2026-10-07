@@ -231,4 +231,29 @@ describe("renderDiagramTeX", () => {
     expect(declared.indexOf("{A};")).toBeLessThan(declared.indexOf("{B};"));
     expect(permuted.indexOf("{C};")).toBeLessThan(permuted.indexOf("{A};"));
   });
+
+  it("M12.2.5 CJK 探测：中文标签插入 ctex 导言；纯 ASCII 不插入", () => {
+    const base = {
+      variant: "pipeline",
+      layout: "vertical",
+      nodes: [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ],
+      edges: [{ from: "a", to: "b" }],
+    };
+    const ascii = compileDiagramTeX(base);
+    expect(ascii).not.toContain("ctex");
+
+    const cjk = compileDiagramTeX({ ...base, nodes: [{ id: "a", label: "特征提取" }, { id: "b", label: "B" }] });
+    expect(cjk).toContain("\\usepackage[UTF8]{ctex}");
+    expect(cjk.indexOf("ctex}")).toBeGreaterThan(cjk.indexOf("standalone}"));
+    expect(cjk.indexOf("ctex}")).toBeLessThan(cjk.indexOf("tikz}"));
+
+    const cjkEdge = compileDiagramTeX({ ...base, edges: [{ from: "a", to: "b", label: "损失回传" }] });
+    expect(cjkEdge).toContain("\\usepackage[UTF8]{ctex}");
+
+    const cjkTitle = compileDiagramTeX({ ...base, title: "总体框架" });
+    expect(cjkTitle).toContain("\\usepackage[UTF8]{ctex}");
+  });
 });

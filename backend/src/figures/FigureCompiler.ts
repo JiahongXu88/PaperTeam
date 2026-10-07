@@ -48,6 +48,7 @@ import {
   FigureSpecInvalidError,
   LatexToolUnavailableError,
 } from "../errors.js";
+import { FONT_ISSUE_HINT, FONT_ISSUE_PATTERN } from "../latex/diagnostics.js";
 import { renderPlotTeX } from "./pgfplotsCodeGen.js";
 import {
   computeSpecHash,
@@ -351,6 +352,18 @@ export class FigureCompiler {
               kind: "package_missing",
               message: `LaTeX 宏包缺失：${packageName}（TeX 发行版需安装该宏包；MiKTeX 可自动安装，TeX Live 见对应包名）`,
               packageName,
+              logExcerpt: excerpt,
+            },
+          };
+        }
+        // 字体缺失形态（fontspec / xeCJK / not loadable）：给出平台可执行
+        // 建议，不让用户只看到 "xelatex failed"（M12.2.5 字体专项）
+        if (FONT_ISSUE_PATTERN.test(log)) {
+          return {
+            ok: false,
+            failure: {
+              kind: "compile_failed",
+              message: `xelatex exitCode=${result.code}；${excerpt}（${FONT_ISSUE_HINT}）`,
               logExcerpt: excerpt,
             },
           };

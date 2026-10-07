@@ -17,7 +17,34 @@ export interface LatexDiagnostic {
   message: string;
   /** 出错位置附近的内容行（供 Writer 精确定位；≤3 行） */
   contextLines: string[];
+  /**
+   * 字体问题分类（M12.2.5）：message 命中 fontspec / xeCJK / 字体不可加载
+   * 形态时为 "font"，此时 hint 给出平台可执行的安装建议——用户不应只看到
+   * "xelatex failed" 而不知道是字体缺失。
+   */
+  kind?: "font";
+  /** kind 存在时的可执行修复建议（安装什么 / 用哪个包管理器） */
+  hint?: string;
 }
+
+/**
+ * 字体缺失形态（xelatex 日志；MiKTeX 与 TeX Live 同形）：
+ *   ! Package fontspec Error: The font "SimSun" cannot be found.
+ *   ! Package xeCJK Error: Font "FandolSong-Regular" not available.
+ *   ! Font \U/cmmi/m/it/10 not loadable: Metric (TFM) file not found.
+ *   ! LaTeX Error: The font size ... is not available.
+ */
+export const FONT_ISSUE_PATTERN =
+  /fontspec|xeCJK|CJKfam|not loadable|font .*not found|font .*cannot be found|font size .*not available|Missing character/i;
+
+/**
+ * 字体问题的平台修复建议。不区分发行版的自动探测（MiKTeX 自动安装 /
+ * TeX Live 包管理器差异大）——两条都给，用户按平台取用。
+ */
+export const FONT_ISSUE_HINT =
+  "疑似字体缺失：TeX Live/Linux 安装 texlive-lang-chinese（Fandol 中文字体）与 fonts-noto-cjk；" +
+  "MiKTeX/Windows 通常会自动安装缺失包（或在 MiKTeX Console → Packages 手动安装 ctex）；" +
+  "Docker 镜像已内置两者。";
 
 /** 最多保留的诊断条数（多错误日志只取前几个，上下文预算可控） */
 export const MAX_DIAGNOSTICS = 5;
@@ -70,6 +97,7 @@ export function parseLatexDiagnostics(log: string): LatexDiagnostic[] {
         line: lineNo ?? lastLineNo,
         message: message.slice(0, 300),
         contextLines,
+        ...(FONT_ISSUE_PATTERN.test(message) ? { kind: "font" as const, hint: FONT_ISSUE_HINT } : {}),
       });
       if (diagnostics.length >= MAX_DIAGNOSTICS) {
         return diagnostics;

@@ -87,3 +87,38 @@ export function escapeLatexMultiline(text: string): string {
     .map(escapeLine)
     .join("\\\\");
 }
+
+/**
+ * CJK 字符判定（M12.2.5 图表 codegen 的 CJK preamble 探测）。
+ *
+ * 图表模板（standalone + pgfplots/TikZ）不加载任何 CJK 字体设置——中文
+ * 标签会渲染为缺字形。探测到 CJK 文本时 codegen 插入
+ * `\usepackage[UTF8]{ctex}`：ctex 按平台自动选字体（Windows: 中易宋体系；
+ * Linux/TeX Live: Fandol[texlive-lang-chinese]；Docker 镜像两者齐备），
+ * 与正文模板（ctexart）同一依赖面，不引入按名引用的额外字体。
+ * 码点谓词（非正则字面量）保持源文件纯 ASCII，与本模块纪律一致。
+ */
+const CJK_CODE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x1100, 0x11ff], // Hangul Jamo（含于谚文区块起点，保守覆盖）
+  [0x2e80, 0x303f], // CJK 部首 / 康熙部首 / CJK 标点（。「」等）
+  [0x3040, 0x30ff], // 平假名 / 片假名
+  [0x3130, 0x318f], // 谚文兼容字母
+  [0x3400, 0x4dbf], // CJK 统一表意文字扩展 A
+  [0x4e00, 0x9fff], // CJK 统一表意文字
+  [0xac00, 0xd7af], // 谚文音节
+  [0xf900, 0xfaff], // CJK 兼容表意文字
+  [0xff00, 0xffef], // 全角形（Fullwidth Forms：，！？ＡＢＣ 等）
+];
+
+/** 文本是否含任一 CJK / 全角字符（逐码点；空串恒 false） */
+export function containsCjk(text: string): boolean {
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    for (const [low, high] of CJK_CODE_RANGES) {
+      if (code >= low && code <= high) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
