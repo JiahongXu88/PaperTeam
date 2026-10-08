@@ -76,14 +76,23 @@ function rootOnlyRunner(): CommandRunner {
 }
 
 /** 首个 writing/repair 模型调用挂起（修复中取消用） */
-function hangOnRepairRuntime(base: AgentRuntime): { runtime: AgentRuntime; release: () => void } {
+function hangOnRepairRuntime(base: AgentRuntime): {
+  runtime: AgentRuntime;
+  release: () => void;
+  entered: Promise<void>;
+} {
   let releaseHang: (() => void) | undefined;
   let consumed = false;
+  let resolveEntered!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    resolveEntered = resolve;
+  });
   const runtime: AgentRuntime = {
     ...base,
     runAgent: (input: RunAgentInput) => {
       if (input.contextScope === "writing/repair" && !consumed) {
         consumed = true;
+        resolveEntered();
         return new Promise<void>((resolve) => {
           releaseHang = resolve;
         }).then(() => base.runAgent(input));
@@ -91,26 +100,28 @@ function hangOnRepairRuntime(base: AgentRuntime): { runtime: AgentRuntime; relea
       return base.runAgent(input);
     },
   };
-  return { runtime, release: () => releaseHang?.() };
+  return { runtime, release: () => releaseHang?.(), entered };
 }
 
 async function newStack(
   options: { failFirst?: number; hangRepair?: boolean; rootOnly?: boolean } = {},
-): Promise<{ stack: TestStack; release: () => void }> {
+): Promise<{ stack: TestStack; release: () => void; waitRepairStarted: () => Promise<void> }> {
   const scripted = scriptedIdeaRuntime(); // review 全 pass：聚焦编译-修复链路
   const latexRunner = options.rootOnly === true ? rootOnlyRunner() : flakyRunner(options.failFirst ?? 0);
   let runtime: AgentRuntime = scripted.runtime;
   let release = scripted.release;
+  let waitRepairStarted = async () => {};
   if (options.hangRepair === true) {
     const wrapped = hangOnRepairRuntime(scripted.runtime);
     runtime = wrapped.runtime;
     release = wrapped.release;
+    waitRepairStarted = () => wrapped.entered;
   }
   const stack = await startTestStack(runtime, {
     latexRunner,
     registerCleanup: (cleanup) => cleanups.push(cleanup),
   });
-  return { stack, release };
+  return { stack, release, waitRepairStarted };
 }
 
 async function pollRun(
@@ -231,7 +242,7 @@ describe("bounded LaTeX repair loop", () => {
   });
 
   it("修复执行中协作式取消：cancel 请求登记后生效，无修复完成记录", async () => {
-    const { stack, release } = await newStack({ failFirst: 1, hangRepair: true });
+    const { stack, release, waitRepairStarted } = await newStack({ failFirst: 1, hangRepair: true });
     const project = await stack.store.create("修复取消测试");
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
@@ -250,6 +261,10 @@ describe("bounded LaTeX repair loop", () => {
       }
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+
+    // currentStage is persisted before execute() reaches runAgent; wait for the
+    // runtime boundary too so release() cannot race ahead of the injected hang.
+    await waitRepairStarted();
 
     const cancelResponse = await stack.request("POST", `/api/runs/${runId}/cancel`, {});
     expect(cancelResponse.status).toBe(200);
