@@ -25,9 +25,13 @@ append 使用稳定请求指纹和 receipt 返回相同成功响应；因 label 
 
 边界：项目锁只覆盖本进程 FigureService；其他 Manuscript 工作流、外部编辑器及跨进程写入不共享该锁。恢复采用前后哈希检测，能阻断已发生的额外修改，但不能提供跨进程原子 compare-and-swap。已完成 receipt 仅保存最近一笔；旧请求在后续操作后不会保证返回旧成功响应，但同一 figId 不会重复 append。电源断电后的目录 rename 持久性、跨进程同时写、完整生产 Docker 路径和真实服务器均未验证。本批因此是受控单进程架构下的 Figure 恢复机制，不宣称跨进程事务隔离。
 
-Doctor CI timing flake：待 Figure CI 收口后调查；若未调查，标记 NOT VERIFIED。下一步 Claude 应先核对最终 CI / Linux Integration，然后处理 doctor timing flake 与 `RevisionStore.restore` 静态风险评估，不展开第二套恢复框架。
+### Doctor timing flake
 
-Git commit 与 CI run：待推送后补记；提交无法在自身内容中准确记录最终 SHA，以 Git 历史和最终汇报为准。
+根因是 `backend/test/scripts/doctorDeployment.test.ts` 的三个部署形态断言运行完整 `doctor.mjs` 时，继承宿主机 PATH，因而同时触发真实 TeX 图表编译、Python/Docling import 和 Docker 探测；这些检查与部署形态输出断言无关，耗时可跨越默认 5 秒 Vitest 预算。测试子进程现清空命令搜索 PATH，并清除显式 Python 探针解释器变量；仍运行真实 doctor 脚本、检查三种形态的原输出，且子进程超时会显式失败。测试和子进程各设有 10 秒上限，生产 doctor 未改。Windows 单 worker 3/3 PASS（测试合计约 149 ms）；backend typecheck PASS。Linux CI 结果以最终 HEAD 为准。修复提交 `431c9f2`。
+
+下一步 Claude 应核对最终 CI / Linux Integration；随后可静态审计 `RevisionStore.restore` 多文件一致性风险，但不要同时展开第二套复杂恢复框架。跨进程同时写是未来单独立项的架构边界。
+
+Git：Figure 实现 `c2c66a8`，Figure 文档 `192b1fa`，补充显式 label / 外部编辑测试 `fc1c407`，资产检查 / replace 子进程终止 `9372717`，Doctor 测试 `431c9f2`。Figure 最终代码提交 `9372717` 的 [CI #169](https://github.com/JiahongXu88/PaperTeam/actions/runs/37760100511) 与 [Linux Integration #16](https://github.com/JiahongXu88/PaperTeam/actions/runs/37760100523) 均 Success。Doctor 与本次文档提交后的最终工作流结果需以 Actions 最新运行和最终汇报为准；提交无法在自身内容中写入自身 SHA。
 
 - 日期：2026-10-08。开始 SHA：`0673e08140cae0a672463e16ac7ed6c1164180f3`；开始时 `main == origin/main`，工作区干净。
 - 架构决策沿用 M13.0：`DATABASE_DECISION = NO_GO`，继续 File-backed Storage。
