@@ -38,6 +38,12 @@ afterAll(async () => {
 
 const NOW = "2026-09-16T12:00:00.000Z";
 
+async function makeStore() {
+  const root = await mkdtemp(join(tmpdir(), "ext-store-"));
+  tempDirs.push(root);
+  return { root, store: new ExternalInstructionStore(new ProjectStore({ root })) };
+}
+
 describe("parseExternalCommentBatch", () => {
   it("按明确的编辑/外审标题提取意见要点，保留顺序并排除作者回应", () => {
     const parsed = parseExternalCommentBatch(`# 回复信
@@ -96,11 +102,6 @@ function instruction(overrides: Partial<ExternalInstruction> = {}): ExternalInst
 }
 
 describe("ExternalInstructionStore", () => {
-  async function makeStore() {
-    const root = await mkdtemp(join(tmpdir(), "ext-store-"));
-    tempDirs.push(root);
-    return { root, store: new ExternalInstructionStore(new ProjectStore({ root })) };
-  }
 
   it("add / load / remove 往返；同内容幂等（指纹 id 去重）", async () => {
     const { store } = await makeStore();
@@ -157,14 +158,17 @@ describe("ExternalInstructionStore", () => {
     expect(second.instructions.map((item) => item.text)).toEqual(["编辑意见", "外审意见"]);
   });
 
-  it("损坏的 external-instructions.json → 空列表（不阻塞）", async () => {
+  it("损坏的 external-instructions.json fail-closed，不会按空列表覆盖", async () => {
     const root = await mkdtemp(join(tmpdir(), "ext-corrupt-"));
     tempDirs.push(root);
     const projects = new ProjectStore({ root });
     const { mkdir } = await import("node:fs/promises");
     await mkdir(join(root, "p-1", "reviews"), { recursive: true });
     await writeFile(join(root, "p-1", "reviews", "external-instructions.json"), "{broken", "utf8");
-    expect(await new ExternalInstructionStore(projects).load("p-1")).toEqual([]);
+    const store = new ExternalInstructionStore(projects);
+    await expect(store.load("p-1")).rejects.toMatchObject({ code: "EXTERNAL_INSTRUCTION_CONFLICT" });
+    await expect(store.add("p-1", { source: "user", text: "new" })).rejects.toMatchObject({ code: "EXTERNAL_INSTRUCTION_CONFLICT" });
+    expect(await (await import("node:fs/promises")).readFile(join(root, "p-1", "reviews", "external-instructions.json"), "utf8")).toBe("{broken");
   });
 });
 
@@ -279,6 +283,49 @@ describe("reverifyHandledInstructions（gate 复核自愈）", () => {
   function applyOrKeep(target: ExternalInstruction, fact: { ok: boolean } | null): ExternalInstruction {
     return reverifyHandledInstructions([target], fact, NOW, fact === null ? null : { ok: true }).instructions[0]!;
   }
+
+  it("serializes concurrent adds, duplicate adds, and add/remove interleaving", async () => {
+    const { store } = await makeStore();
+    const a = { source: "journal_reviewer" as const, reviewerLabel: "Reviewer 1", text: "A" };
+    const b = { source: "editor" as const, reviewerLabel: "Editor", text: "B" };
+    const [first, second] = await Promise.all([store.add("p-1", a), store.add("p-1", b)]);
+    expect(first?.instructionId).toBe(externalInstructionId(a.source, a.reviewerLabel, a.text));
+    expect(second?.instructionId).toBe(externalInstructionId(b.source, b.reviewerLabel, b.text));
+    expect(await store.load("p-1")).toHaveLength(2);
+    const duplicates = await Promise.all(Array.from({ length: 8 }, () => store.add("p-1", a)));
+    expect(duplicates.every((item) => item === null)).toBe(true);
+    await Promise.all([store.remove("p-1", first!.instructionId), store.add("p-1", {
+      source: "advisor", text: "C",
+    })]);
+    expect((await store.load("p-1")).map((item) => item.text)).toEqual(["B", "C"]);
+  });
+
+  it("status update retains concurrent import and rejects stale same-comment status", async () => {
+    const { store } = await makeStore();
+    const first = await store.add("p-1", { source: "journal_reviewer", text: "A" });
+    const before = structuredClone(await store.load("p-1"));
+    const after = structuredClone(before);
+    after[0]!.status = "unresolved";
+    await Promise.all([
+      store.addBatch("p-1", [{ source: "editor", text: "B", reviewerLabel: "Editor" }]),
+      store.saveChanges("p-1", before, after),
+    ]);
+    expect((await store.load("p-1")).map((item) => [item.text, item.status])).toEqual([
+      ["A", "unresolved"], ["B", "pending"],
+    ]);
+    await store.update("p-1", (current) => current.map((item) => item.instructionId === first!.instructionId
+      ? { ...item, status: "conflict" } : item));
+    await expect(store.saveChanges("p-1", before, after)).rejects.toMatchObject({ code: "EXTERNAL_INSTRUCTION_CONFLICT" });
+    expect((await store.load("p-1"))[0]?.status).toBe("conflict");
+    await Promise.all([
+      store.update("p-1", (current) => current.map((item) => item.instructionId === first!.instructionId
+        ? { ...item, status: "handled" } : item)),
+      store.add("p-1", { source: "advisor", text: "C" }),
+    ]);
+    expect((await store.load("p-1")).map((item) => [item.text, item.status])).toEqual([
+      ["A", "handled"], ["B", "pending"], ["C", "pending"],
+    ]);
+  });
 });
 
 describe("buildRevisionPlan 的 external 条目", () => {

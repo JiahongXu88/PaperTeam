@@ -23,6 +23,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 
@@ -340,7 +341,15 @@ export function readExternalInstructions(value: unknown): ExternalInstruction[] 
 }
 
 export class ExternalInstructionStore {
+  private readonly queues = new Map<string, Promise<unknown>>();
   constructor(private readonly projects: ProjectStore) {}
+
+  private enqueue<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.queues.get(projectId) ?? Promise.resolve();
+    const task = previous.then(operation);
+    this.queues.set(projectId, task.catch(() => undefined));
+    return task;
+  }
 
   private filePath(projectId: string): string {
     return join(this.projects.reviewsDir(projectId), INSTRUCTIONS_FILE);
@@ -350,22 +359,68 @@ export class ExternalInstructionStore {
     let text: string;
     try {
       text = await readFile(this.filePath(projectId), "utf8");
-    } catch {
-      return [];
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return [];
+      throw error;
     }
     try {
-      return readExternalInstructions(JSON.parse(text));
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== "object" || parsed === null ||
+          (parsed as { schemaVersion?: unknown }).schemaVersion !== 1 ||
+          !Array.isArray((parsed as { instructions?: unknown }).instructions)) {
+        throw new Error("invalid external instruction store");
+      }
+      const records = (parsed as { instructions: unknown[] }).instructions;
+      const instructions = readExternalInstructions(parsed);
+      if (instructions.length !== records.length) throw new Error("unreadable external instruction record");
+      return instructions;
     } catch {
-      return [];
+      throw new BusinessError("EXTERNAL_INSTRUCTION_CONFLICT", "external-instructions.json 损坏；禁止按空意见覆盖");
     }
   }
 
   async save(projectId: string, instructions: ExternalInstruction[]): Promise<void> {
+    return this.enqueue(projectId, () => this.saveUnqueued(projectId, instructions));
+  }
+
+  private async saveUnqueued(projectId: string, instructions: ExternalInstruction[]): Promise<void> {
     // reviews/ 目录可能尚未创建（项目刚建 / 首条意见先于任何 review 落盘）
-    await mkdir(this.projects.reviewsDir(projectId), { recursive: true }).catch(() => {});
+    await mkdir(this.projects.reviewsDir(projectId), { recursive: true });
     await writeJsonAtomic(this.filePath(projectId), {
       schemaVersion: 1,
       instructions,
+    });
+  }
+
+  /** Recompute a status transition on the latest record set under the project queue. */
+  async update(projectId: string, transform: (current: ExternalInstruction[]) => ExternalInstruction[]): Promise<ExternalInstruction[]> {
+    return this.enqueue(projectId, async () => {
+      const current = await this.load(projectId);
+      const next = transform(current);
+      if (JSON.stringify(next) !== JSON.stringify(current)) await this.saveUnqueued(projectId, next);
+      return next;
+    });
+  }
+
+  /** Apply an already computed, potentially in-place transition without erasing newer additions. */
+  async saveChanges(projectId: string, before: ExternalInstruction[], after: ExternalInstruction[]): Promise<ExternalInstruction[]> {
+    return this.enqueue(projectId, async () => {
+      const latest = await this.load(projectId);
+      const oldById = new Map(before.map((item) => [item.instructionId, item]));
+      const changed = after.filter((item) => JSON.stringify(item) !== JSON.stringify(oldById.get(item.instructionId)));
+      const changes = new Map(changed.map((item) => [item.instructionId, item]));
+      if (changed.some((item) => !oldById.has(item.instructionId)))
+        throw new BusinessError("EXTERNAL_INSTRUCTION_CONFLICT", "状态更新含未知意见");
+      if (changed.some((item) => !latest.some((current) => current.instructionId === item.instructionId)))
+        throw new BusinessError("EXTERNAL_INSTRUCTION_CONFLICT", "意见在状态计算期间被删除");
+      for (const item of latest) {
+        if (changes.has(item.instructionId) && JSON.stringify(item) !== JSON.stringify(oldById.get(item.instructionId))) {
+          throw new BusinessError("EXTERNAL_INSTRUCTION_CONFLICT", `意见 ${item.instructionId} 在状态计算期间变化`);
+        }
+      }
+      const next = latest.map((item) => changes.get(item.instructionId) ?? item);
+      if (changed.length > 0) await this.saveUnqueued(projectId, next);
+      return next;
     });
   }
 
@@ -383,6 +438,13 @@ export class ExternalInstructionStore {
     initialStatus?: "already_satisfied";
     statusNote?: string;
     now?: string;
+  }): Promise<ExternalInstruction | null> {
+    return this.enqueue(projectId, () => this.addInner(projectId, input));
+  }
+
+  private async addInner(projectId: string, input: {
+    source: ExternalInstructionSource; text: string; reviewerLabel?: string; section?: string;
+    initialStatus?: "already_satisfied"; statusNote?: string; now?: string;
   }): Promise<ExternalInstruction | null> {
     const now = input.now ?? new Date().toISOString();
     const instructionId = externalInstructionId(input.source, input.reviewerLabel, input.text);
@@ -415,7 +477,7 @@ export class ExternalInstructionStore {
       createdAt: now,
       updatedAt: now,
     };
-    await this.save(projectId, [...existing, instruction]);
+    await this.saveUnqueued(projectId, [...existing, instruction]);
     return instruction;
   }
 
@@ -424,6 +486,12 @@ export class ExternalInstructionStore {
     created: ExternalInstruction[];
     duplicateIds: string[];
     instructions: ExternalInstruction[];
+  }> {
+    return this.enqueue(projectId, () => this.addBatchInner(projectId, inputs));
+  }
+
+  private async addBatchInner(projectId: string, inputs: ParsedExternalComment[]): Promise<{
+    created: ExternalInstruction[]; duplicateIds: string[]; instructions: ExternalInstruction[];
   }> {
     const existing = await this.load(projectId);
     const known = new Set(existing.map((item) => item.instructionId));
@@ -448,18 +516,22 @@ export class ExternalInstructionStore {
       });
     }
     const instructions = [...existing, ...created];
-    if (created.length > 0) await this.save(projectId, instructions);
+    if (created.length > 0) await this.saveUnqueued(projectId, instructions);
     return { created, duplicateIds, instructions };
   }
 
   /** 删除一条（返回删除后的列表；不存在 → null） */
   async remove(projectId: string, instructionId: string): Promise<ExternalInstruction[] | null> {
+    return this.enqueue(projectId, () => this.removeInner(projectId, instructionId));
+  }
+
+  private async removeInner(projectId: string, instructionId: string): Promise<ExternalInstruction[] | null> {
     const existing = await this.load(projectId);
     if (!existing.some((instruction) => instruction.instructionId === instructionId)) {
       return null;
     }
     const next = existing.filter((instruction) => instruction.instructionId !== instructionId);
-    await this.save(projectId, next);
+    await this.saveUnqueued(projectId, next);
     return next;
   }
 }

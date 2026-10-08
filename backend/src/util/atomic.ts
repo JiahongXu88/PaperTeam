@@ -23,16 +23,16 @@ const RENAME_RETRY_DELAYS_MS = [20, 60, 150, 400];
  */
 let tmpSequence = 0;
 
-/** 原子写入文本文件（utf8）：tmp → fsync → rename；失败时清理临时文件 */
-export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
+/** 原子写入文本或二进制文件：tmp → fsync → rename；失败时清理临时文件 */
+export async function writeFileAtomic(filePath: string, content: string | Uint8Array, options?: { tempDir?: string }): Promise<void> {
   const tmpPath = join(
-    dirname(filePath),
+    options?.tempDir ?? dirname(filePath),
     `.${basename(filePath)}.${process.pid}-${Date.now()}-${(tmpSequence += 1)}.tmp`,
   );
   try {
     const handle = await open(tmpPath, "w");
     try {
-      await handle.writeFile(content, "utf8");
+      await handle.writeFile(content);
       await handle.sync();
     } finally {
       await handle.close();
@@ -45,8 +45,8 @@ export async function writeFileAtomic(filePath: string, content: string): Promis
 }
 
 /** 原子写入 JSON（带换行，便于 diff 与人工检查） */
-export async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
-  await writeFileAtomic(filePath, JSON.stringify(value, null, 2) + "\n");
+export async function writeJsonAtomic(filePath: string, value: unknown, options?: { tempDir?: string }): Promise<void> {
+  await writeFileAtomic(filePath, JSON.stringify(value, null, 2) + "\n", options);
 }
 
 async function renameWithRetry(from: string, to: string): Promise<void> {

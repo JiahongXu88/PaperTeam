@@ -381,6 +381,17 @@ describe("M6.4 RetrievalService：生命周期（Index = Derived State）", () =
     expect(existsSync(join(f.root, f.projectId, "sources", "chunks", `${a.sourceId}.jsonl`))).toBe(false);
   });
 
+  it("删除后即使显式 invalidate 未执行，下一次检索仍按 Source 索引签名排除旧 chunk", async () => {
+    const f = await newRetrievalFixture();
+    const a = await f.addTextSource("alpha.md", ALPHA_DOC);
+    expect((await f.retrieval.search(f.projectId, "ByteTrack MOT17")).results.length).toBeGreaterThan(0);
+    await f.sources.remove(f.projectId, a.sourceId);
+    // Simulates the HTTP path's invalidateSource failure after authoritative deletion.
+    const result = await f.retrieval.search(f.projectId, "ByteTrack MOT17");
+    expect(result.results).toEqual([]);
+    expect((await f.retrieval.stats(f.projectId)).sources.total).toBe(0);
+  });
+
   it("重启语义：全新服务实例 lazy 重建检索能力（无需用户重传论文）", async () => {
     const f = await newRetrievalFixture();
     await f.addTextSource("alpha.md", ALPHA_DOC);

@@ -1171,7 +1171,9 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         patchFailures,
       );
       if (reverified.changed) {
-        await services.externalInstructions.save(ctx.projectId, reverified.instructions);
+        await services.externalInstructions.update(ctx.projectId, (current) =>
+          reverifyHandledInstructions(current, gateArtifact?.factPreservation ?? null,
+            new Date().toISOString(), gateArtifact?.citationPreservation ?? null, patchFailures).instructions);
       }
       // M6.7 §5/§6：citation 类条目的 relatedEvidenceIds —— bib key ↔ verified
       // evidence 关联（与 Writer 引用标注 / Gate 覆盖判定同源 matchBibliographyKey）
@@ -2415,8 +2417,9 @@ function revisionReviseStage(
         };
         const applied = applyDispatchOutcome(instructions, dispatch, new Date().toISOString());
         if (applied.changed) {
-          await services.externalInstructions.save(ctx.projectId, applied.instructions);
-          const conflicts = applied.instructions.filter(
+          const updatedInstructions = await services.externalInstructions.update(ctx.projectId, (current) =>
+            applyDispatchOutcome(current, dispatch, new Date().toISOString()).instructions);
+          const conflicts = updatedInstructions.filter(
             (instruction) => instruction.status === "conflict",
           ).length;
           await ctx.emitDomain(
@@ -8261,6 +8264,7 @@ async function collectRevisionDirectives(
       const source = files.mainTex?.content ?? "";
       const spans = locateLatexSections("main.tex", source);
       const instructions = await services.externalInstructions.load(projectId);
+      const instructionBaseline = structuredClone(instructions);
       let instructionsChanged = false;
       const actionable = items.filter((item) => {
         if (item.actionType === "author_decision_required") {
@@ -8355,7 +8359,7 @@ async function collectRevisionDirectives(
         }
         return false;
       });
-      if (instructionsChanged) await services.externalInstructions.save(projectId, instructions);
+      if (instructionsChanged) await services.externalInstructions.saveChanges(projectId, instructionBaseline, instructions);
       return actionable.map((item, index) => ({
         match: (target: RevisionTarget) => {
           const matches =

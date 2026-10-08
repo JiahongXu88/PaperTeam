@@ -19,11 +19,32 @@ import { join, relative, sep } from "node:path";
 
 import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
-import { writeJsonAtomic } from "../util/atomic.js";
+import { writeFileAtomic, writeJsonAtomic } from "../util/atomic.js";
 
 /** 快照目录名（同时是 revisions.json 所在 manuscript/ 下的排除项） */
 const REVISIONS_DIR = "revisions";
 const REVISIONS_FILE = "revisions.json";
+const RESTORE_INTENT_FILE = "restore-intent.json";
+
+interface RestoreIntent {
+  schemaVersion: 1;
+  status: "pending" | "complete";
+  sourceRevision: number;
+  baseRevision: number;
+  targetRevision: number;
+  targetFingerprint: string;
+  createdAt: string;
+  /** null means the path does not exist at that end of the operation. */
+  files: { path: string; before: string | null; after: string | null }[];
+}
+
+function hashBytes(content: Buffer): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function recoveryRequired(detail: string): never {
+  throw new BusinessError("REVISION_RECOVERY_REQUIRED", `Manuscript restore 需要人工对账：${detail}`);
+}
 
 export interface RevisionRecord {
   revision: number;
@@ -70,23 +91,38 @@ export class ManuscriptRevisionStore {
     this.now = options.now ?? (() => new Date());
   }
 
-  /** 当前修订状态（无 revisions.json → current 0；损坏 → 防御性视为 0 并如实记录） */
+  /** 未完成 restore 会阻断只读版本判断，避免把半恢复稿当成当前修订。 */
   async load(projectId: string): Promise<RevisionState> {
+    const intent = await this.readRestoreIntent(projectId);
+    if (intent?.status === "pending") recoveryRequired("存在未完成的 restore；请重试 restore 或 commit 以恢复");
+    return this.loadState(projectId);
+  }
+
+  private async loadState(projectId: string): Promise<RevisionState> {
+    let raw: string;
     try {
-      const raw = await readFile(this.revisionsPath(projectId), "utf8");
+      raw = await readFile(this.revisionsPath(projectId), "utf8");
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return emptyState();
+      throw error;
+    }
+    try {
       const parsed = JSON.parse(raw) as Partial<RevisionState>;
       if (
-        typeof parsed["current"] !== "number" ||
+        parsed["schemaVersion"] !== 1 ||
+        !Number.isSafeInteger(parsed["current"]) || parsed["current"]! < 0 ||
         !Array.isArray(parsed["revisions"]) ||
         !parsed["revisions"].every(
           (record) =>
             typeof record === "object" &&
             record !== null &&
-            typeof (record as RevisionRecord)["revision"] === "number" &&
-            typeof (record as RevisionRecord)["fingerprint"] === "string",
-        )
+            Number.isSafeInteger((record as RevisionRecord)["revision"]) &&
+            /^[0-9a-f]{64}$/.test((record as RevisionRecord)["fingerprint"]),
+        ) ||
+        parsed["revisions"].length !== parsed["current"] ||
+        !parsed["revisions"].every((record, index) => record.revision === index + 1)
       ) {
-        return emptyState();
+        throw new Error("invalid revision registry");
       }
       return {
         schemaVersion: 1,
@@ -94,7 +130,7 @@ export class ManuscriptRevisionStore {
         revisions: parsed["revisions"] as RevisionRecord[],
       };
     } catch {
-      return emptyState();
+      throw new BusinessError("REVISION_STORE_CORRUPTED", "revisions.json 损坏；禁止将历史当作空修订重写");
     }
   }
 
@@ -169,68 +205,161 @@ export class ManuscriptRevisionStore {
     projectId: string,
     revision: number,
   ): Promise<{ revision: number; created: boolean; restoredFrom: number }> {
-    const state = await this.load(projectId);
+    const recovered = await this.recoverRestore(projectId);
+    if (recovered !== null && recovered.restoredFrom === revision) return recovered;
+    const state = await this.loadState(projectId);
     const source = state.revisions.find((record) => record.revision === revision);
     if (source === undefined) {
       throw new BusinessError("NOT_FOUND", `修订 ${revision} 不存在`);
     }
-    // 快照 → 工作树：先清掉现有工作树文件（保留 revisions/ 与 revisions.json），
-    // 再复制快照内容；随后走 commitInner 的正常指纹/快照/登记流程
     const snapshotDir = this.snapshotDir(projectId, revision);
     const snapshotFiles = await listSnapshotFiles(snapshotDir);
     if (snapshotFiles.length === 0) {
       throw new BusinessError("STAGE_CONTRACT_VIOLATION", `修订 ${revision} 快照为空（无法恢复）`);
     }
-    const manuscriptDir = this.projects.manuscriptDir(projectId);
-    for (const file of await this.listWorkTreeFiles(projectId)) {
-      await rm(file.absolutePath, { force: true });
+    const snapshotFingerprint = await fingerprintFiles(projectId, snapshotFiles.map((file) => ({
+      relativePath: file.relativePath, absolutePath: join(snapshotDir, file.relativePath),
+    })));
+    if (snapshotFingerprint !== source.fingerprint) {
+      throw new BusinessError("REVISION_STORE_CORRUPTED", `修订 ${revision} 快照与登记指纹不一致；工作树未修改`);
     }
-    for (const file of snapshotFiles) {
-      const target = join(manuscriptDir, file.relativePath);
-      await mkdir(join(target, ".."), { recursive: true });
-      await copyFile(join(snapshotDir, file.relativePath), target);
+    const currentFiles = await this.listWorkTreeFiles(projectId);
+    const currentFingerprint = await fingerprintFiles(projectId, currentFiles);
+    if (currentFingerprint === source.fingerprint) {
+      return { revision: state.current, created: false, restoredFrom: revision };
     }
-    const result = await this.commitRestored(projectId, revision, state);
-    return { ...result, restoredFrom: revision };
+    // Do not reuse an orphan rev-N directory from an interrupted ordinary commit.
+    const nextDir = this.snapshotDir(projectId, state.current + 1);
+    if ((await listSnapshotFiles(nextDir)).length > 0) recoveryRequired(`rev-${state.current + 1} 存在未登记文件`);
+    const before = new Map(await Promise.all(currentFiles.map(async (file) =>
+      [file.relativePath, hashBytes(await readFile(file.absolutePath))] as const)));
+    const after = new Map(await Promise.all(snapshotFiles.map(async (file) =>
+      [file.relativePath, hashBytes(await readFile(join(snapshotDir, file.relativePath)))] as const)));
+    const paths = [...new Set([...before.keys(), ...after.keys()])].sort();
+    const intent: RestoreIntent = {
+      schemaVersion: 1, status: "pending", sourceRevision: revision,
+      baseRevision: state.current, targetRevision: state.current + 1,
+      targetFingerprint: source.fingerprint, createdAt: this.now().toISOString(),
+      files: paths.map((path) => ({ path, before: before.get(path) ?? null, after: after.get(path) ?? null })),
+    };
+    await writeJsonAtomic(this.restoreIntentPath(projectId), intent, { tempDir: join(this.projects.manuscriptDir(projectId), REVISIONS_DIR) });
+    await testBoundary("intent");
+    return this.applyRestore(projectId, intent);
   }
 
-  /** restore 专用 commit：内容与当前一致时（created=false）不丢 restoredFrom 事实 */
-  private async commitRestored(
-    projectId: string,
-    restoredFrom: number,
-    state: RevisionState,
-  ): Promise<{ revision: number; created: boolean }> {
-    const files = await this.listWorkTreeFiles(projectId);
-    if (files.length === 0) {
-      return { revision: state.current, created: false };
+  private restoreIntentPath(projectId: string): string {
+    return join(this.projects.manuscriptDir(projectId), RESTORE_INTENT_FILE);
+  }
+
+  private async readRestoreIntent(projectId: string): Promise<RestoreIntent | null> {
+    let raw: string;
+    try { raw = await readFile(this.restoreIntentPath(projectId), "utf8"); }
+    catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") return null;
+      throw error;
     }
-    const fingerprint = await fingerprintFiles(projectId, files);
-    const latest = state.revisions[state.revisions.length - 1];
-    if (latest !== undefined && latest.fingerprint === fingerprint) {
-      return { revision: state.current, created: false };
+    let intent: RestoreIntent;
+    try { intent = JSON.parse(raw) as RestoreIntent; } catch { return recoveryRequired("restore intent JSON 损坏"); }
+    const validHash = (value: unknown) => value === null || (typeof value === "string" && /^[0-9a-f]{64}$/.test(value));
+    if (intent === null || typeof intent !== "object" || intent.schemaVersion !== 1 || !["pending", "complete"].includes(intent.status) ||
+      !Number.isSafeInteger(intent.sourceRevision) || intent.sourceRevision < 1 ||
+      !Number.isSafeInteger(intent.baseRevision) || intent.baseRevision < 0 ||
+      intent.targetRevision !== intent.baseRevision + 1 ||
+      !validHash(intent.targetFingerprint) || typeof intent.targetFingerprint !== "string" ||
+      typeof intent.createdAt !== "string" || !Array.isArray(intent.files) || intent.files.length === 0 ||
+      !intent.files.every((file) => file !== null && typeof file === "object" && typeof file.path === "string" &&
+        !file.path.startsWith("/") && !file.path.includes("\\") &&
+        file.path.split("/").every((part) => part !== "" && part !== "." && part !== "..") &&
+        ![REVISIONS_DIR, REVISIONS_FILE, RESTORE_INTENT_FILE].includes(file.path.split("/")[0]!) &&
+        validHash(file.before) && validHash(file.after)) ||
+      new Set(intent.files.map((file) => file.path)).size !== intent.files.length) {
+      return recoveryRequired("restore intent 结构或路径无效");
     }
-    const revision = state.current + 1;
-    const snapshotDir = this.snapshotDir(projectId, revision);
-    await mkdir(snapshotDir, { recursive: true });
-    for (const file of files) {
-      const target = join(snapshotDir, file.relativePath);
+    return intent;
+  }
+
+  private async recoverRestore(projectId: string): Promise<{ revision: number; created: boolean; restoredFrom: number } | null> {
+    const intent = await this.readRestoreIntent(projectId);
+    if (intent?.status !== "pending") return null;
+    return this.applyRestore(projectId, intent);
+  }
+
+  private async applyRestore(projectId: string, intent: RestoreIntent): Promise<{ revision: number; created: boolean; restoredFrom: number }> {
+    const state = await this.loadState(projectId);
+    const committed = state.revisions.at(-1);
+    if (state.current === intent.targetRevision) {
+      if (committed?.reason !== "revision.restore" || committed.restoredFrom !== intent.sourceRevision ||
+          committed.fingerprint !== intent.targetFingerprint) recoveryRequired("版本登记已前进，但与 restore intent 不符");
+      await writeJsonAtomic(this.restoreIntentPath(projectId), { ...intent, status: "complete" }, { tempDir: join(this.projects.manuscriptDir(projectId), REVISIONS_DIR) });
+      return { revision: intent.targetRevision, created: true, restoredFrom: intent.sourceRevision };
+    }
+    if (state.current !== intent.baseRevision) recoveryRequired("版本登记在恢复期间发生变化");
+    const source = state.revisions.find((record) => record.revision === intent.sourceRevision);
+    if (source?.fingerprint !== intent.targetFingerprint) recoveryRequired("源修订指纹与 intent 不符");
+    const snapshotDir = this.snapshotDir(projectId, intent.sourceRevision);
+    const snapshotFiles = await listSnapshotFiles(snapshotDir);
+    if (snapshotFiles.length === 0 ||
+        await fingerprintFiles(projectId, snapshotFiles.map((file) => ({
+          relativePath: file.relativePath, absolutePath: join(snapshotDir, file.relativePath),
+        }))) !== intent.targetFingerprint) recoveryRequired("源快照在恢复期间变化或损坏");
+    const expectedAfter = intent.files.filter((file) => file.after !== null).map((file) => file.path).sort();
+    if (JSON.stringify(snapshotFiles.map((file) => file.relativePath)) !== JSON.stringify(expectedAfter))
+      recoveryRequired("源快照文件集合与 intent 不符");
+    const manuscriptDir = this.projects.manuscriptDir(projectId);
+    const actual = await this.listWorkTreeFiles(projectId);
+    if (actual.some((file) => !intent.files.some((change) => change.path === file.relativePath)))
+      recoveryRequired("恢复后工作树出现额外文件；保留外部修改");
+    // Whole-tree preflight before any write; each file accepts only the original or intended bytes.
+    for (const change of intent.files) {
+      const observed = await optionalHash(join(manuscriptDir, change.path));
+      if (observed !== change.before && observed !== change.after)
+        recoveryRequired(`${change.path} 与恢复前后指纹均不一致；保留外部修改`);
+    }
+    for (const change of intent.files) {
+      const path = join(manuscriptDir, change.path);
+      const observed = await optionalHash(path);
+      if (observed === change.after) continue;
+      if (observed !== change.before) recoveryRequired(`${change.path} 在恢复期间变化`);
+      if (change.after === null) await rm(path, { force: true });
+      else {
+        const content = await readFile(join(snapshotDir, change.path));
+        if (hashBytes(content) !== change.after) recoveryRequired(`${change.path} 源快照在写入前变化`);
+        await mkdir(join(path, ".."), { recursive: true });
+        await writeFileAtomic(path, content, { tempDir: join(manuscriptDir, REVISIONS_DIR) });
+      }
+      await testBoundary("workspace");
+    }
+    const finalFiles = await this.listWorkTreeFiles(projectId);
+    if (await fingerprintFiles(projectId, finalFiles) !== intent.targetFingerprint)
+      recoveryRequired("恢复后的工作树指纹不匹配");
+    const nextDir = this.snapshotDir(projectId, intent.targetRevision);
+    const existingNext = await listSnapshotFiles(nextDir);
+    if (existingNext.some((file) => !expectedAfter.includes(file.relativePath)))
+      recoveryRequired("新修订快照存在意外文件");
+    for (const change of intent.files.filter((file) => file.after !== null)) {
+      const target = join(nextDir, change.path);
+      const observed = await optionalHash(target);
+      if (observed === change.after) continue;
+      if (observed !== null) recoveryRequired(`新修订快照 ${change.path} 与目标不符`);
       await mkdir(join(target, ".."), { recursive: true });
-      await copyFile(file.absolutePath, target);
+      await writeFileAtomic(target, await readFile(join(snapshotDir, change.path)), { tempDir: join(manuscriptDir, REVISIONS_DIR) });
+      await testBoundary("snapshot");
     }
+    const newFiles = await listSnapshotFiles(nextDir);
+    if (await fingerprintFiles(projectId, newFiles.map((file) => ({
+      relativePath: file.relativePath, absolutePath: join(nextDir, file.relativePath),
+    }))) !== intent.targetFingerprint) recoveryRequired("新修订快照指纹不匹配");
     const record: RevisionRecord = {
-      revision,
-      createdAt: this.now().toISOString(),
-      reason: "revision.restore",
-      restoredFrom,
-      fingerprint,
+      revision: intent.targetRevision, createdAt: intent.createdAt, reason: "revision.restore",
+      restoredFrom: intent.sourceRevision, fingerprint: intent.targetFingerprint,
     };
-    const next: RevisionState = {
-      schemaVersion: 1,
-      current: revision,
-      revisions: [...state.revisions, record],
-    };
-    await writeJsonAtomic(this.revisionsPath(projectId), next);
-    return { revision, created: true };
+    await testBoundary("before-commit");
+    await writeJsonAtomic(this.revisionsPath(projectId), {
+      schemaVersion: 1, current: intent.targetRevision, revisions: [...state.revisions, record],
+    } satisfies RevisionState, { tempDir: join(manuscriptDir, REVISIONS_DIR) });
+    await testBoundary("commit");
+    await writeJsonAtomic(this.restoreIntentPath(projectId), { ...intent, status: "complete" }, { tempDir: join(manuscriptDir, REVISIONS_DIR) });
+    return { revision: intent.targetRevision, created: true, restoredFrom: intent.sourceRevision };
   }
 
   private async commitInner(
@@ -238,7 +367,8 @@ export class ManuscriptRevisionStore {
     reason: string,
     runId?: string,
   ): Promise<{ revision: number; created: boolean }> {
-    const state = await this.load(projectId);
+    await this.recoverRestore(projectId);
+    const state = await this.loadState(projectId);
     const files = await this.listWorkTreeFiles(projectId);
     if (files.length === 0) {
       // 空工作树没有可版本化的事实；如实返回当前（不制造空修订）
@@ -251,11 +381,19 @@ export class ManuscriptRevisionStore {
     }
     const revision = state.current + 1;
     const snapshotDir = this.snapshotDir(projectId, revision);
-    await mkdir(snapshotDir, { recursive: true });
-    for (const file of files) {
-      const target = join(snapshotDir, file.relativePath);
-      await mkdir(join(target, ".."), { recursive: true });
-      await copyFile(file.absolutePath, target);
+    const existing = await listSnapshotFiles(snapshotDir);
+    if (existing.length > 0) {
+      if (JSON.stringify(existing.map((file) => file.relativePath)) !== JSON.stringify(files.map((file) => file.relativePath)) ||
+          await fingerprintFiles(projectId, existing.map((file) => ({
+            relativePath: file.relativePath, absolutePath: join(snapshotDir, file.relativePath),
+          }))) !== fingerprint) recoveryRequired(`rev-${revision} 存在不完整或不匹配的未登记快照`);
+    } else {
+      await mkdir(snapshotDir, { recursive: true });
+      for (const file of files) {
+        const target = join(snapshotDir, file.relativePath);
+        await mkdir(join(target, ".."), { recursive: true });
+        await copyFile(file.absolutePath, target);
+      }
     }
     const record: RevisionRecord = {
       revision,
@@ -288,8 +426,9 @@ export class ManuscriptRevisionStore {
       let names: string[];
       try {
         names = await readdir(dir);
-      } catch {
-        return;
+      } catch (error) {
+        if ((error as { code?: string }).code === "ENOENT" && dir === root) return;
+        throw error;
       }
       for (const name of names) {
         if (dir === root && name === REVISIONS_DIR) {
@@ -298,12 +437,16 @@ export class ManuscriptRevisionStore {
         if (dir === root && name === REVISIONS_FILE) {
           continue;
         }
+        if (dir === root && name === RESTORE_INTENT_FILE) {
+          continue;
+        }
         const absolutePath = join(dir, name);
         let info;
         try {
           info = await stat(absolutePath);
-        } catch {
-          continue;
+        } catch (error) {
+          if ((error as { code?: string }).code === "ENOENT") continue;
+          throw error;
         }
         if (info.isDirectory()) {
           await walk(absolutePath, root, acc);
@@ -363,6 +506,30 @@ async function fingerprintFiles(projectId: string, files: WorkTreeFile[]): Promi
 
 function emptyState(): RevisionState {
   return { schemaVersion: 1, current: 0, revisions: [] };
+}
+
+async function optionalHash(path: string): Promise<string | null> {
+  try { return hashBytes(await readFile(path)); }
+  catch (error) {
+    if ((error as { code?: string }).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** Deterministic test seam; the child process uses SIGKILL at a real disk boundary. */
+let testBoundaryHits = 0;
+let previousTestBoundary: string | undefined;
+async function testBoundary(name: string): Promise<void> {
+  const configured = process.env["PAPERTEAM_RESTORE_TEST_FAILURE"];
+  if (configured !== previousTestBoundary) { testBoundaryHits = 0; previousTestBoundary = configured; }
+  if (process.env["NODE_ENV"] !== "test" || configured !== name) return;
+  testBoundaryHits += 1;
+  if (testBoundaryHits !== Number(process.env["PAPERTEAM_RESTORE_TEST_HIT"] ?? "1")) return;
+  if (process.env["PAPERTEAM_RESTORE_TEST_EXIT"] === "1") {
+    process.kill(process.pid, "SIGKILL");
+    process.exit(73);
+  }
+  throw Object.assign(new Error(`RESTORE_TEST_INTERRUPTED:${name}`), { code: "EIO" });
 }
 
 /** RevisionState → API 视图（不含指纹） */
