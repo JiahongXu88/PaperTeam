@@ -1672,6 +1672,9 @@ live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。
 | M11.4 分层判定 | Revision Task Gate（任务层：意见闭环+守卫+patch 实质+非回归）与 Publication Readiness（投稿层：全稿规则）分离；verdict 三态；学术 80 分不再是任务层硬门 | `backend/src/quality/revisionTaskGate.ts`；[research/M11_4_QUALITY_GATE_PRODUCT_CLOSURE.md](research/M11_4_QUALITY_GATE_PRODUCT_CLOSURE.md) |
 | M11.4 可靠性收口 | 23 项 machine-owned invariant 修复；21 次真实 run；comment closure 由 accepted-patch lineage / 确定性引文核验推导 | [research/M11_4_RELIABILITY_CLOSURE.md](research/M11_4_RELIABILITY_CLOSURE.md) |
 | Runtime 升级 | Pi SDK 0.84.4 → **1.0.1**（M11.4.5 请求生命周期遥测：first activity / first text token / requestId×stageAttempt 关联） | [research/PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md](research/PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md) |
+| M12.1 Target Intelligence | Benchmark 语料（role=reference + 冻结 manifest）→ 确定性 profile 分位带（+bounded 摘要）→ readiness 四档 advisory 判决；三层质量语义分离 | `backend/src/target/`；[research/M12_BATCH2_PRODUCT_CLOSURE.md](research/M12_BATCH2_PRODUCT_CLOSURE.md) |
+| M12.2 Multimodal Review | VisualArtifactView 三源投影（pdf_parsed/latex_env/generated）+ 确定性六项视觉检查恒运行 + vision 四项按 capability 降级 | `backend/src/vision/VisualReviewService.ts`；[research/M12_BATCH2_PRODUCT_CLOSURE.md](research/M12_BATCH2_PRODUCT_CLOSURE.md) |
+| M12.3 图表生成（Batch 3） | 数据集候选（ParsedDocument 提取 + sourceId/blockId 锚）→ PlotSpec/DiagramSpec → pgfplots/TikZ → 独立 xelatex → 矢量 PDF 资产（figId=specHash）；受控手稿插入（append/replace + label lineage）；caption↔dataset 真实性守卫（三桶数值声明分桶 + 全称/计数/单位 UNVERIFIED）；Writer 图形白名单守卫；doctor 部署形态分离 | `backend/src/figures/`、`backend/src/serviceStack.ts`（figures 服务）；[research/M12_BATCH3_FIGURE_GENERATION_CLOSURE.md](research/M12_BATCH3_FIGURE_GENERATION_CLOSURE.md) |
 
 产品视角的入口（两条产品路径、HITL 节点、终态语义）见
 [product-guide.md](product-guide.md)；返修链路与分层判定语义见

@@ -1562,3 +1562,112 @@ select {
   font-size: var(--fs-label);
   color: var(--text-muted);
 }
+
+/* ---- M12.3 C4 学术图表工作区（FiguresPanel）---- */
+
+/* 表单行（2/3/4 列网格；窄屏自动单列） */
+.form-row-2,
+.form-row-3,
+.form-row-4 {
+  display: grid;
+  gap: var(--s-4) var(--s-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-row-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.form-row-4 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@media (max-width: 960px) {
+  .form-row-2,
+  .form-row-3,
+  .form-row-4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* label（上标签 + 下控件）在图表表单内的排布 */
+.form-grid label,
+.form-row-2 label,
+.form-row-3 label,
+.form-row-4 label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--fs-label);
+  color: var(--text-secondary);
+  min-width: 0;
+}
+
+/* 按钮行 */
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  align-items: center;
+}
+
+.btn-row-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  align-items: stretch;
+}
+
+/* 可选中的 chip（series 列多选 / 确认框） */
+.chip-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-sm);
+  background: var(--bg-surface);
+  font-size: var(--fs-label);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chip-select:has(input:checked) {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary-text);
+}
+
+/* 校验 issue 列表 */
+.note-list {
+  margin: var(--s-2) 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--fs-meta);
+}
+
+.note-warn-line {
+  color: var(--warning);
+}
+
+/* 图表 PDF 内联预览（浏览器原生 viewer） */
+.figure-preview {
+  grid-column: 1 / -1;
+  margin-top: var(--s-3);
+}
+
+/* 插入表单容器（gutter-row 内展开） */
+.panel-inner {
+  grid-column: 1 / -1;
+  margin-top: var(--s-3);
+  padding: var(--s-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-muted);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}

@@ -36,6 +36,7 @@ import { AgentMultimodalAnalyzer } from "./sources/PdfAnalyzer.js";
 import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
 import { resolveGeneratedFigureAsset, resolveSourceFigureAsset } from "./vision/figureAssets.js";
 import { FigureStore } from "./figures/figureStore.js";
+import type { InsertParams } from "./figures/FigureService.js";
 import type { BenchmarkTargetSpec } from "./target/types.js";
 import type { SurveyEntryPatch } from "./survey/MatrixService.js";
 import {
@@ -1513,8 +1514,9 @@ async function handleProjectResourceRoutes(
     return false;
   }
 
-  // ---- figures（M12.2 B4：生成图资产 figs/generated/<figId>.pdf——manifest 登记先于读盘）----
+  // ---- figures（M12 Batch 3 C4：学术图表产品 API + B4 生成图资产服务）----
   if (resource === "figures") {
+    // B4 资产路由（figs/generated/<figId>.pdf——manifest 登记先于读盘）
     const generatedMatch = /^\/generated\/([^/]+)$/.exec(rest);
     if (generatedMatch) {
       if (method !== "GET") {
@@ -1550,6 +1552,80 @@ async function handleProjectResourceRoutes(
         "Cache-Control": "private, max-age=3600",
       });
       res.end(result.asset.bytes);
+      return true;
+    }
+
+    // ---- C4 产品 API（全部零 LLM；spec/caption 校验 + 编译 + 插入）----
+    const figures = stack.figures;
+    if (rest === "") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      await stack.projects.getRequired(projectId);
+      sendJson(res, 200, { figures: await figures.list(projectId) });
+      return true;
+    }
+    if (rest === "/datasets") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      sendJson(res, 200, { datasets: await figures.listDatasets(projectId) });
+      return true;
+    }
+    const datasetMatch = /^\/datasets\/([^/]+)\/([^/]+)$/.exec(rest);
+    if (datasetMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const dataset = await figures.getDataset(
+        projectId,
+        decodeURIComponent(datasetMatch[1] ?? ""),
+        decodeURIComponent(datasetMatch[2] ?? ""),
+      );
+      sendJson(res, 200, { dataset });
+      return true;
+    }
+    if (rest === "/validate") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const { kind, spec } = await readFigureSpecBody(req);
+      const result = await figures.validate(projectId, kind, spec);
+      sendJson(res, 200, { result });
+      return true;
+    }
+    if (rest === "/generate") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const { kind, spec } = await readFigureSpecBody(req);
+      const result = await figures.generate(projectId, kind, spec);
+      sendJson(res, 200, { figure: result });
+      return true;
+    }
+    if (rest === "/insert") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const params = await readFigureInsertBody(req);
+      const result = await figures.insert(projectId, params);
+      sendJson(res, 200, { insertion: result });
+      return true;
+    }
+    const figureMatch = /^\/(fig-[0-9a-f]{12,64})$/.exec(rest);
+    if (figureMatch) {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const figure = await figures.get(projectId, figureMatch[1] ?? "");
+      sendJson(res, 200, { figure });
       return true;
     }
     return false;
@@ -3840,6 +3916,68 @@ function parseJsonObject(text: string): Record<string, unknown> {
     throw new BusinessError("INVALID_REQUEST", "请求体必须是 JSON 对象");
   }
   return parsed as Record<string, unknown>;
+}
+
+// ---- Figures 请求体（M12 Batch 3 C4；spec 含 inlineDataset，放宽到 8MB）----
+
+const MAX_FIGURE_BODY_BYTES = 8 * 1024 * 1024;
+
+/** {kind: "plot"|"diagram", spec: object}（validate / generate 共用） */
+async function readFigureSpecBody(
+  req: IncomingMessage,
+): Promise<{ kind: "plot" | "diagram"; spec: unknown }> {
+  const body = await readJsonBody(req, MAX_FIGURE_BODY_BYTES);
+  const kind = body["kind"];
+  if (kind !== "plot" && kind !== "diagram") {
+    throw new BusinessError("INVALID_REQUEST", '字段 kind 必须是 "plot" 或 "diagram"');
+  }
+  const spec = body["spec"];
+  if (typeof spec !== "object" || spec === null || Array.isArray(spec)) {
+    throw new BusinessError("INVALID_REQUEST", "字段 spec 必须是 JSON 对象（PlotSpec / DiagramSpec）");
+  }
+  return { kind, spec };
+}
+
+/** 插入参数（C5；字段级校验，服务层做语义校验） */
+async function readFigureInsertBody(req: IncomingMessage): Promise<InsertParams> {
+  const body = await readJsonBody(req);
+  const figId = readStringField(body, "figId");
+  if (figId === undefined || !/^fig-[0-9a-f]{12,64}$/.test(figId)) {
+    throw new BusinessError("INVALID_REQUEST", "字段 figId 必须形如 fig-<12+位hex>");
+  }
+  const mode = body["mode"];
+  if (mode !== "append" && mode !== "replace") {
+    throw new BusinessError("INVALID_REQUEST", '字段 mode 必须是 "append" 或 "replace"');
+  }
+  const sectionId = readStringField(body, "sectionId");
+  const file = readStringField(body, "file");
+  if (sectionId !== undefined && file !== undefined) {
+    throw new BusinessError("INVALID_REQUEST", "sectionId 与 file 只能提供一个");
+  }
+  if (mode === "replace" && sectionId !== undefined) {
+    throw new BusinessError("INVALID_REQUEST", "replace 模式请用 file 指定目标（已有论文无 outline 章节）");
+  }
+  const label = readStringField(body, "label");
+  const caption = readStringField(body, "caption");
+  const widthExpression = readStringField(body, "widthExpression");
+  const referenceSentence = readStringField(body, "referenceSentence");
+  const replaceLabel = readStringField(body, "replaceLabel");
+  const confirmUnverified = body["confirmUnverified"];
+  if (confirmUnverified !== undefined && typeof confirmUnverified !== "boolean") {
+    throw new BusinessError("INVALID_REQUEST", "字段 confirmUnverified 必须是布尔值");
+  }
+  return {
+    figId,
+    mode,
+    ...(sectionId !== undefined ? { sectionId } : {}),
+    ...(file !== undefined ? { file } : {}),
+    ...(label !== undefined ? { label } : {}),
+    ...(caption !== undefined ? { caption } : {}),
+    ...(widthExpression !== undefined ? { widthExpression } : {}),
+    ...(referenceSentence !== undefined ? { referenceSentence } : {}),
+    ...(replaceLabel !== undefined ? { replaceLabel } : {}),
+    ...(typeof confirmUnverified === "boolean" ? { confirmUnverified } : {}),
+  };
 }
 
 const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;

@@ -58,8 +58,10 @@ export interface GeneratedFigureRecord {
   assets: { tex: string; pdf: string };
   /** 候选 caption（plot 来自 spec.caption，diagram 来自 title；插入手稿时快照到 insertedIn） */
   caption: string;
-  /** 本轮（C1–C3）恒空——C5 手稿插入时回填 file/label/revision */
+  /** C5 手稿插入后回填的当前位置（被替换后清除，改记 supersededBy） */
   insertedIn?: { file: string; label: string; revision: number };
+  /** 本图在某 (file, label) 位置被替换时指向取代它的 figId（append-only lineage） */
+  supersededBy?: string;
   createdAt: string;
   /** 编译诊断摘要（时长 + 结果一句话；不含完整日志） */
   compiler?: { durationMs: number; diagnostics: string };
@@ -183,6 +185,50 @@ export class FigureStore {
       figures,
     } satisfies FigureManifest);
     return merged;
+  }
+
+  /**
+   * C5 手稿插入的 manifest 回写：
+   * - 目标图 insertedIn = {file, label, revision}；
+   * - 同（file, label）位置的旧图 insertedIn 清除并记 supersededBy（append-only
+   *   语义的 lineage：旧资产与 spec.json 不删，替换可追溯）。
+   */
+  async recordInsertion(params: {
+    figId: string;
+    insertedIn: { file: string; label: string; revision: number };
+  }): Promise<GeneratedFigureRecord | undefined> {
+    const manifest = await this.loadManifest();
+    let updated: GeneratedFigureRecord | undefined;
+    const figures = manifest.figures.map((record): GeneratedFigureRecord => {
+      const sameSlot =
+        record.insertedIn !== undefined &&
+        record.insertedIn.file === params.insertedIn.file &&
+        record.insertedIn.label === params.insertedIn.label &&
+        record.figId !== params.figId;
+      if (record.figId === params.figId) {
+        updated = { ...record, insertedIn: params.insertedIn };
+        return updated;
+      }
+      if (sameSlot) {
+        const { insertedIn: _drop, ...rest } = record;
+        return { ...rest, supersededBy: params.figId };
+      }
+      return record;
+    });
+    await writeJsonAtomic(this.manifestPath, {
+      schemaVersion: MANIFEST_SCHEMA_VERSION,
+      figures,
+    } satisfies FigureManifest);
+    return updated;
+  }
+
+  /** 读某图的持久化 spec（spec.json；缺失 → null） */
+  async loadSpec(figId: string): Promise<unknown> {
+    try {
+      return JSON.parse(await readFile(join(this.rootDir, `${figId}.spec.json`), "utf8"));
+    } catch {
+      return null;
+    }
   }
 }
 

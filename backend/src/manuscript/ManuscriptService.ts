@@ -110,6 +110,8 @@ export class ManuscriptService {
   /**
    * 确定性生成 main.tex（\input 各 section）。
    * 章节按 outline 顺序；有 bibliography 时含 \bibliography{references}。
+   * graphicx（M12.3 C5）：加载图片宏包——正文只 \includegraphics 已登记的
+   * 生成图资产（figs/generated/），tikz/pgfplots 永不进正文。
    */
   async writeMainTex(projectId: string, outline: Outline, withBibliography: boolean): Promise<string> {
     validateOutline(outline);
@@ -117,6 +119,7 @@ export class ManuscriptService {
       "\\documentclass[UTF8]{ctexart}",
       "\\usepackage{amsmath}",
       "\\usepackage{amssymb}",
+      "\\usepackage{graphicx}",
       ...(withBibliography
         ? ["\\usepackage[numbers]{natbib}"]
         : []),

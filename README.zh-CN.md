@@ -53,6 +53,7 @@
 | 修订安全 | 受限范围 patch + 不可变快照；事实 / 引用 / 证据保持守卫用代码拒绝未授权数值改动、结论升级、引用丢失 |
 | 人工决策（HITL） | 11 类决策点（大纲 / 计划 / 可行性 / 修订超限……），任务暂停等你确认，随 checkpoint 持久化，刷新与重启后可恢复 |
 | 模型配置 | 按角色独立指定模型（Writer / Researcher / Reviewer / Planner），内置 + 自定义 Provider（三种协议）、Z.AI 双通道、测试连接 |
+| 学术图表 | 从真实数据集确定性生成图表（已解析的 CSV/XLSX/JSON/表格 → PlotSpec/DiagramSpec → pgfplots/TikZ → 矢量 PDF）；题注真实性守卫；受控插入手稿（M12.3） |
 | 产物 | 不可变 Draft / Final；xelatex + bibtex 显式编排编译；修订历史可比较、可恢复 |
 | 可观测 | SSE 实时阶段进度、运行历史、按 Agent × 模型的 token / 成本归因 |
 

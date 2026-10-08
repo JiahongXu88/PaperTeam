@@ -15,6 +15,7 @@ import type { Server } from "node:http";
 
 import { createBackendHttpServer } from "../../src/httpServer.js";
 import { LatexCompiler, type CommandRunner } from "../../src/latex/LatexCompiler.js";
+import { FigureCompiler } from "../../src/figures/FigureCompiler.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import type { AgentRuntime } from "../../src/runtime/types.js";
 import { createScriptedRuntime } from "../../src/runtime/scriptedRuntime.js";
@@ -78,6 +79,24 @@ export const fakeFailingRunner: CommandRunner = async (command, args) => {
   }
   return { code: 1, stdout: "! Undefined control sequence.", stderr: "" };
 };
+
+/**
+ * M12.3 C4：FigureCompiler 假 runner——真实写出 .tex 侧产物并产出 %PDF 魔数
+ * PDF（与 LatexCompiler 的假 runner 同构；单图编译按 <figId>.tex → <figId>.pdf）。
+ */
+export const fakeFigureRunner: import("../../src/figures/FigureCompiler.js").CommandRunner =
+  async (command, args, opts) => {
+    if (args.includes("--version")) {
+      return { code: 0, stdout: `${command} 1.0`, stderr: "" };
+    }
+    const texArg = args.find((arg) => arg.endsWith(".tex"));
+    if (texArg !== undefined) {
+      const { writeFile } = await import("node:fs/promises");
+      await writeFile(join(opts.cwd, texArg.replace(/\.tex$/, ".pdf")), "%PDF-1.5");
+      return { code: 0, stdout: "compiled", stderr: "" };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
 
 export type ServiceStackOptionsCitation = Parameters<typeof buildServiceStack>[0]["citation"];
 export type ServiceStackOptionsReview = Parameters<typeof buildServiceStack>[0]["review"];
@@ -179,6 +198,8 @@ export async function startTestStack(
     ingestion?: ServiceStackOptionsIngestion;
     /** M10.2 Vision 模型接入（缺省不装配 = analyze 全部 skipped；测试注入 fake） */
     vision?: ServiceStackOptionsVision;
+    /** M12.3 C4：FigureCompiler runner 注入（缺省 fakeFigureRunner——离线可测全链） */
+    figureRunner?: import("../../src/figures/FigureCompiler.js").CommandRunner;
     /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
     root?: string;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
@@ -228,6 +249,9 @@ export async function startTestStack(
       ...(options.ingestion ?? {}),
     },
     ...(options.vision !== undefined ? { vision: options.vision } : {}),
+    figures: {
+      compiler: new FigureCompiler({ runner: options.figureRunner ?? fakeFigureRunner }),
+    },
     log: () => {},
   });
   // Existing-LaTeX 导入器：栈内单例（import-paper 的 latex 路径与 /:id/import 共用）

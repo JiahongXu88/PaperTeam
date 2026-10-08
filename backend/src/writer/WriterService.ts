@@ -19,6 +19,7 @@ import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import { buildPlannerAliases, resolvePlannerRefs } from "../review/plannerAliases.js";
+import { screenWriterGraphics } from "../figures/writerGraphicsGuard.js";
 import type { ClaimRepairDirective } from "../review/claimGrounding.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
@@ -435,6 +436,12 @@ export class WriterService {
     if (!hasBalancedBraces(latex)) {
       throw new InvalidLatexOutputError(`章节 ${params.section.id} 花括号不配对`);
     }
+    // M12.3 C5/C6 图形白名单（确定性）：全新章节不允许任何 \includegraphics /
+    // tikz / pgfplots——插图只能走图表流水线受控 action，Writer 只用 \ref 引用
+    const graphicsViolation = screenWriterGraphics({ output: latex });
+    if (graphicsViolation !== null) {
+      throw new InvalidLatexOutputError(`章节 ${params.section.id} ${graphicsViolation}`);
+    }
     // M11.2 Survey 引用后检（确定性）：key 越界 = 契约违约，交 Stage 层重试
     if (params.survey !== undefined) {
       const allowed = new Set(params.survey.allowedCitationKeys);
@@ -593,6 +600,13 @@ export class WriterService {
     }
     if (!hasBalancedBraces(latex)) {
       throw new InvalidLatexOutputError(`章节 ${params.section.id} 修订花括号不配对`);
+    }
+    // M12.3 C5/C6 图形白名单（确定性）：修订输出的 \includegraphics 路径集合
+    // 必须与基线一致（不增不删不改）；tikz / pgfplots 恒禁。已插入的受控图
+    // 资产经此在 Writer 路径上不可破坏。
+    const graphicsViolation = screenWriterGraphics({ output: latex, baseline: params.currentLatex });
+    if (graphicsViolation !== null) {
+      throw new InvalidLatexOutputError(`章节 ${params.section.id} 修订${graphicsViolation}`);
     }
     return {
       latex,
@@ -1244,8 +1258,10 @@ function buildRepairPrompt(params: {
     "1. 只输出修复后的该章节完整 LaTeX 正文片段；不要文档骨架、不要解释。",
     "2. 只做让编译通过所需的最小修改（修正语法 / 未定义命令 / 环境配对 / 数学模式）。",
     "3. 不改变论述内容，不增删 \\cite 引用，不新增宏包或参考文献。",
-    "4. 可用宏包只有 amsmath / amssymb / natbib；诊断指向 tikz 等未定义环境时，"
-      + "把该环境整体替换为文字描述或删除（前导不会为它加包）。",
+    "4. 可用宏包只有 amsmath / amssymb / natbib / graphicx；诊断指向 tikz / pgfplots 等未定义"
+      + "环境时，把该环境整体替换为文字描述或删除（前导不会为它加包）。graphicx 只服务于已由"
+      + "图表流水线插入的 \\includegraphics{figs/generated/...} 受控图资产——修复时不要改写或"
+      + "新增任何 \\includegraphics 路径。",
     "",
     "===== 编译错误摘要 =====",
     params.buildError.slice(0, 500),
@@ -1432,8 +1448,10 @@ export function buildRevisePrompt(params: {
     "7. 学术语言优化不得改变 claim 强度（可能 / 表明 / 证明 不互换）与比较方向（高于 / 低于 / 优于 / 劣于 不互换）。",
     "7b. 弱化论断 = 修改该论断本身（或删除）；不得新增与稿内未弱化旧论断并存的反向 / 对冲表述（自相矛盾会被复审判 blocking）。",
     "7c. 【修订说明】【决策点】【待作者确认】等执行注记与 %%%PT-OUTCOMES%%% 报告行**绝不允许写进正文**——它们只属于输出末尾的执行报告（无外部意见派发时不要输出报告行）；裸希腊字母/下标写进正文还会导致编译失败。",
-    "8. 可用宏包只有 amsmath / amssymb / natbib（ctexart 文档类）；不要使用 tikz 等"
-      + "其他宏包的环境或命令（图形以文字描述或 table 呈现），否则无法编译。",
+    "8. 可用宏包只有 amsmath / amssymb / natbib / graphicx（ctexart 文档类）；不要使用 tikz /"
+      + "pgfplots 等图形宏包的环境或命令，也不要手写 \\includegraphics——插图由图表流水线以受控"
+      + "action 插入（已登记的 figs/generated/ 资产）。正文里只允许用 \\ref{fig:...} 引用已存在的"
+      + "figure label；需要新图时在执行报告里说明需求，不要自行编造图形或实验曲线。",
     "9. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     "   - 修订特则：本章节现有的 B 组引用按第 10/11 条保留（不因缺证据而删除）；但不得新增 B 组引用，也不得把原本 A 组支撑的论断改由 B 组支撑。",
@@ -1851,7 +1869,9 @@ export function buildSurveySectionPrompt(params: {
     ...(params.language !== undefined ? [""] : []),
     "输出要求：",
     "1. 只输出该章节的 LaTeX 正文片段：以 \\section{标题} 开始；不要 \\documentclass、\\begin{document}、导言区、文档骨架；不要 Markdown 代码块，不要解释文字。",
-    "2. 可用宏包只有 amsmath / amssymb / natbib（ctexart 文档类）；不使用 tikz 等其他宏包的环境或命令。",
+    "2. 可用宏包只有 amsmath / amssymb / natbib / graphicx（ctexart 文档类）；不使用 tikz / pgfplots"
+      + "等图形宏包的环境或命令，也不手写 \\includegraphics（插图由图表流水线受控插入；正文只用"
+      + "\\ref{fig:...} 引用已存在的图）。",
     "",
     "综述写作纪律（最重要的规则）：",
     "1. 这是综述（survey）的一节。研究已经完成——下方「综合产物」就是本节全部的事实来源，你的任务是把它表达成论文，不是重新做研究：不发明 taxonomy / 共识 / 分歧 / 研究空缺 / 未来方向，不引入清单之外的文献，不凭模型常识补充「大家都知道」的具体事实（数字、年份、性能结论）。",

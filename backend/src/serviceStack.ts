@@ -68,6 +68,8 @@ import { buildTargetServices } from "./target/services.js";
 import type { TargetServices } from "./target/services.js";
 import { VenueResolutionService } from "./search/venueResolution.js";
 import { FigureStore } from "./figures/figureStore.js";
+import { FigureCompiler } from "./figures/FigureCompiler.js";
+import { FigureService } from "./figures/FigureService.js";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
@@ -192,6 +194,13 @@ export interface ServiceStackOptions {
    * 缺省 → 两维如实 UNAVAILABLE（不伪造）。
    */
   targetSummaryModel?: import("./target/TargetProfileService.js").TargetSummaryModel;
+  /**
+   * M12.3 C4：FigureCompiler 注入（测试注入 fake runner；缺省真实 spawn
+   * xelatex——生产形态）。服务层（FigureService）恒由栈内构造。
+   */
+  figures?: {
+    compiler?: FigureCompiler;
+  };
   log?: (message: string) => void;
 }
 
@@ -266,6 +275,8 @@ export interface ServiceStack {
   vision: VisionAnalysisService;
   /** M12.2 B3：Multimodal 视觉评审（确定性六项恒运行 + vision 四项按 capability 降级；advisory） */
   visualReview: VisualReviewService;
+  /** M12.3 C4/C5：学术图表产品服务（数据集候选 → spec → 编译 → 插入；零 LLM） */
+  figures: FigureService;
   /** M12.1 A5–A8：Target Publication Intelligence 服务束（benchmark 冻结→discovery→profile→readiness） */
   targets: TargetServices;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -826,6 +837,17 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...(options.targetSummaryModel !== undefined ? { summaryModel: options.targetSummaryModel } : {}),
     log,
   });
+  // M12.3 C4/C5 Figure 产品服务：数据集候选（ParsedDocument 提取）→ spec 校验
+  // （含来源锚反查防篡改）→ FigureCompiler（xelatex 单遍 + specHash 缓存）→
+  // 受控手稿插入（append/replace + caption 真实性硬闸）。per-project 串行化
+  // 在服务内（manifest 互斥）；本层零 LLM。
+  const figures = new FigureService({
+    projects: options.projects,
+    sources,
+    documents: parsedDocuments,
+    revisions,
+    compiler: options.figures?.compiler ?? new FigureCompiler(),
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -860,6 +882,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     figureAnalyses,
     vision,
     visualReview,
+    figures,
     targets,
     pdfAnalyzer,
     manuscript,

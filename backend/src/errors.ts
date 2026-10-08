@@ -82,7 +82,18 @@ export type BusinessErrorCode =
   | "FIGURE_PACKAGE_MISSING"
   // ---- Target profile / readiness（M12.1 A7/A8 derived artifact 损坏 fail-closed）----
   | "TARGET_PROFILE_CORRUPTED"
-  | "TARGET_READINESS_CORRUPTED";
+  | "TARGET_READINESS_CORRUPTED"
+  // ---- Figures C4–C6（M12 Batch 3：产品 API / 插入 / 守卫；末尾追加） ----
+  | "FIGURE_NOT_FOUND"
+  | "FIGURE_ASSET_MISSING"
+  | "FIGURE_LABEL_CONFLICT"
+  | "FIGURE_LABEL_NOT_FOUND"
+  | "FIGURE_SCOPE_VIOLATION"
+  | "FIGURE_DATASET_STALE"
+  | "FIGURE_SOURCE_MISSING"
+  | "FIGURE_CAPTION_UNSUPPORTED"
+  | "FIGURE_CAPTION_UNVERIFIED"
+  | "FIGURE_ALREADY_INSERTED";
 
 /** 错误码 → HTTP 状态码 */
 const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
@@ -157,6 +168,16 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   FIGURE_PACKAGE_MISSING: 503,
   TARGET_PROFILE_CORRUPTED: 500,
   TARGET_READINESS_CORRUPTED: 500,
+  FIGURE_NOT_FOUND: 404,
+  FIGURE_ASSET_MISSING: 409,
+  FIGURE_LABEL_CONFLICT: 409,
+  FIGURE_LABEL_NOT_FOUND: 404,
+  FIGURE_SCOPE_VIOLATION: 403,
+  FIGURE_DATASET_STALE: 409,
+  FIGURE_SOURCE_MISSING: 409,
+  FIGURE_CAPTION_UNSUPPORTED: 422,
+  FIGURE_CAPTION_UNVERIFIED: 422,
+  FIGURE_ALREADY_INSERTED: 409,
 };
 
 export class BusinessError extends Error {
@@ -557,6 +578,78 @@ export class FigurePackageMissingError extends BusinessError {
   constructor(packageName: string, detail?: string) {
     super("FIGURE_PACKAGE_MISSING", `LaTeX 宏包缺失：${packageName}`, detail);
     this.packageName = packageName;
+  }
+}
+
+// ---- Figures C4–C6（M12 Batch 3：产品 API / 插入 / 真实性守卫）----
+
+/** figId 未登记（manifest 不含该图）：404 */
+export class FigureNotFoundError extends BusinessError {
+  constructor(figId: string) {
+    super("FIGURE_NOT_FOUND", `图表未登记：${figId}`);
+  }
+}
+
+/** 已登记但 PDF 资产缺失（被手工删除 / 编译产物丢失）：409 */
+export class FigureAssetMissingError extends BusinessError {
+  constructor(figId: string) {
+    super("FIGURE_ASSET_MISSING", `图表 PDF 资产缺失：${figId}（请重新生成）`, `资产文件 ${figId}.pdf 不在 figs/generated/ 下`);
+  }
+}
+
+/** label 与全稿既有 figure label 冲突：409 */
+export class FigureLabelConflictError extends BusinessError {
+  constructor(label: string) {
+    super("FIGURE_LABEL_CONFLICT", `figure label 冲突：${label}（全稿已存在同名列）`);
+  }
+}
+
+/** replace 目标 label 不存在：404 */
+export class FigureLabelNotFoundError extends BusinessError {
+  constructor(label: string, file: string) {
+    super("FIGURE_LABEL_NOT_FOUND", `替换目标不存在：${file} 中没有 label 为 ${label} 的 figure 环境`);
+  }
+}
+
+/** 修订安全边界：已有论文项目不允许直接新增 figure 环境（须走受控替换或修订工作流）：403 */
+export class FigureScopeViolationError extends BusinessError {
+  constructor(detail: string) {
+    super("FIGURE_SCOPE_VIOLATION", "图表插入被修订安全边界拒绝", detail);
+  }
+}
+
+/** 数据集已变化（source 重解析后 datasetHash 不一致）：409 */
+export class FigureDatasetStaleError extends BusinessError {
+  constructor(detail: string) {
+    super("FIGURE_DATASET_STALE", "图表数据已过期", detail);
+  }
+}
+
+/** 数据来源缺失（sourceId 不存在 / 解析产物缺失）：409 */
+export class FigureSourceMissingError extends BusinessError {
+  constructor(detail: string) {
+    super("FIGURE_SOURCE_MISSING", "图表数据来源缺失", detail);
+  }
+}
+
+/** caption 定量声明被数据否定（确定性守卫：violation）：422 */
+export class FigureCaptionUnsupportedError extends BusinessError {
+  constructor(detail: string) {
+    super("FIGURE_CAPTION_UNSUPPORTED", "caption 定量声明与数据不符（已拦截插入）", detail);
+  }
+}
+
+/** caption 存在无法可靠校验的声明（AUTHOR_REVIEW_REQUIRED）：422 */
+export class FigureCaptionUnverifiedError extends BusinessError {
+  constructor(detail: string) {
+    super("FIGURE_CAPTION_UNVERIFIED", "caption 存在需作者确认的声明（AUTHOR_REVIEW_REQUIRED）", detail);
+  }
+}
+
+/** 同一图已在同文件同 label 位置插入（防无意重复插入）：409 */
+export class FigureAlreadyInsertedError extends BusinessError {
+  constructor(figId: string, file: string) {
+    super("FIGURE_ALREADY_INSERTED", `图表已插入：${figId} 已在 ${file} 中（如需更新请使用 replace 模式）`);
   }
 }
 

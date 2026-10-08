@@ -60,6 +60,7 @@ section-by-section review, exportable as a report, no changes to your paper.
 | Revision safety | Scoped patches with immutable snapshots; fact/citation/evidence preservation guards reject unauthorized value changes, claim escalation, and citation loss |
 | Human-in-the-loop | 11 decision points (outline, plan, feasibility, revision overflow, …) that pause the run, persist with checkpoints, and survive refresh/restart |
 | Model configuration | Per-role model assignment (Writer / Researcher / Reviewers / Planner), built-in and custom providers (3 protocols), Z.AI Coding-Plan vs pay-per-use channels, test-connection |
+| Academic figures | Deterministic chart generation from your real datasets (parsed CSV/XLSX/JSON/tabular sources → PlotSpec/DiagramSpec → pgfplots/TikZ → vector PDF), caption-truthfulness guards, controlled insertion into the manuscript (M12.3) |
 | Output | Immutable Draft / Final artifacts; xelatex + bibtex explicit orchestration; revision history with compare and restore |
 | Observability | Live per-stage progress over SSE, run history, token/cost attribution per agent × model |
 
