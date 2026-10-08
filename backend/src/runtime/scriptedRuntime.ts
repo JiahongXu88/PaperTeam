@@ -17,6 +17,7 @@ import type {
   AgentTask,
   RuntimeHealth,
   RuntimeModelStatus,
+  RunAgentInput,
 } from "./types.js";
 import { extractNumericTokens } from "../review/styleInvariants.js";
 
@@ -837,6 +838,7 @@ function targetsExperiments(task: string): boolean {
 export interface ScriptedRuntime {
   runtime: ScriptedAgentRuntime;
   calls: { agentId: string; contextScope?: string }[];
+  tasks: RunAgentInput[];
   release: () => void;
 }
 
@@ -853,6 +855,7 @@ export interface ScriptedAgentRuntime extends AgentRuntime {
 /** 按 contextScope 脚本化的 fake Runtime（不访问任何模型 / 网络） */
 export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): ScriptedRuntime {
   const calls: { agentId: string; contextScope?: string }[] = [];
+  const tasks: RunAgentInput[] = [];
   const feasibilitySequence = options.feasibilitySequence ?? [FEASIBILITY_HIGH_JSON];
   const reviewSequence = options.reviewSequence ?? reviewSequenceFromEnv() ?? ["pass"];
   let feasibilityIndex = 0;
@@ -875,6 +878,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
     healthCheck: async () => makeHealth(true),
     runAgent: async (input) => {
       calls.push({ agentId: input.agentId, contextScope: input.contextScope });
+      tasks.push(input);
       if (!hangConsumed) {
         await new Promise<void>((resolve) => {
           hangResolve = resolve;
@@ -1141,6 +1145,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   return {
     runtime,
     calls,
+    tasks,
     release: () => hangResolve?.(),
   };
 }

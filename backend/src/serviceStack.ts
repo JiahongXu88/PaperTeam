@@ -924,6 +924,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       coverage,
       planExecution,
       sources,
+      experimentPackages,
       sourceImport,
       discovery,
       ingestion,

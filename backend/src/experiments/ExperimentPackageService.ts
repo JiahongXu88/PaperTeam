@@ -77,10 +77,48 @@ export interface ExperimentPackage {
   warnings: string[];
 }
 
+export interface ConfirmedExperimentWorkflowContext {
+  schemaVersion: 1;
+  status: "author_confirmed_not_externally_verified";
+  truncated: boolean;
+  observations: Array<{
+    packageId: string;
+    packageHash: string;
+    groupId: string;
+    sourceId: string;
+    blockId: string;
+    path: string;
+    metric: string;
+    value: number;
+    unit: "percentage" | "unknown";
+    direction: "higher" | "lower" | "unknown";
+    row?: number;
+    sheet?: string;
+    column?: string;
+    jsonPath?: string;
+    method?: string;
+    dataset?: string;
+    seed?: string;
+    protocol?: string;
+    split?: string;
+  }>;
+}
+
 const RESULT_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".yaml", ".yml"]);
 const SOURCE_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".yaml", ".yml", ".md", ".txt", ".ipynb"]);
 const SECRET_PATTERN = /(api.?key|secret|password|token|credential|authorization)/i;
 const CONTEXT_COLUMNS = /^(method|model|dataset|seed|split|epoch|run|variant|protocol|step|iteration|fold|id)$/i;
+const MAX_WORKFLOW_OBSERVATIONS = 100;
+const SAFE_CONTEXT_LABEL = /^[\p{L}\p{N}][\p{L}\p{N} ._+:/%()\-]{0,95}$/u;
+const SECRET_VALUE_PATTERN = /(?:\bsk-[A-Za-z0-9_-]{12,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAIza[A-Za-z0-9_-]{30,}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b)/;
+
+function safeContextLabel(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = value.normalize("NFKC").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  return SAFE_CONTEXT_LABEL.test(normalized) && !SECRET_PATTERN.test(normalized) && !SECRET_VALUE_PATTERN.test(normalized)
+    ? normalized
+    : undefined;
+}
 
 function classify(path: string): Pick<PackageFile, "role" | "roleBasis" | "roleConfidence" | "groupId"> {
   const lower = path.toLowerCase();
@@ -338,5 +376,47 @@ export class ExperimentPackageService {
       ["main_result", "baseline_result", "ablation_result"].includes(file.role) &&
       (file.parseStatus === "ok" || file.parseStatus === "partial")
     ))));
+  }
+
+  async workflowContext(projectId: string): Promise<ConfirmedExperimentWorkflowContext> {
+    const items = await this.list(projectId);
+    const observations: ConfirmedExperimentWorkflowContext["observations"] = [];
+    let truncated = false;
+    for (const item of items) {
+      const confirmedGroups = new Set(item.groups.filter((group) => group.status === "confirmed").map((group) => group.id));
+      if (confirmedGroups.size === 0) continue;
+      const eligibleFiles = new Set(item.files
+        .filter((file) => confirmedGroups.has(file.groupId) &&
+          ["main_result", "baseline_result", "ablation_result"].includes(file.role) &&
+          file.sourceId !== undefined && ["ok", "partial"].includes(file.parseStatus))
+        .map((file) => `${file.groupId}\0${file.path}\0${file.sourceId}`));
+      for (const observation of item.observations) {
+        if (!eligibleFiles.has(`${observation.groupId}\0${observation.path}\0${observation.sourceId}`)) continue;
+        if (observations.length >= MAX_WORKFLOW_OBSERVATIONS) { truncated = true; break; }
+        observations.push({
+          packageId: item.packageId,
+          packageHash: item.packageHash,
+          groupId: observation.groupId,
+          sourceId: observation.sourceId,
+          blockId: observation.blockId,
+          path: safeContextLabel(observation.path) ?? "[path omitted]",
+          metric: safeContextLabel(observation.metric) ?? "[metric label omitted]",
+          value: observation.value,
+          unit: observation.unit,
+          direction: observation.direction,
+          ...(observation.row !== undefined ? { row: observation.row } : {}),
+          ...(observation.sheet !== undefined ? { sheet: safeContextLabel(observation.sheet) } : {}),
+          ...(observation.column !== undefined ? { column: safeContextLabel(observation.column) } : {}),
+          ...(observation.jsonPath !== undefined ? { jsonPath: safeContextLabel(observation.jsonPath) } : {}),
+          ...(safeContextLabel(observation.method) !== undefined ? { method: safeContextLabel(observation.method) } : {}),
+          ...(safeContextLabel(observation.dataset) !== undefined ? { dataset: safeContextLabel(observation.dataset) } : {}),
+          ...(safeContextLabel(observation.seed) !== undefined ? { seed: safeContextLabel(observation.seed) } : {}),
+          ...(safeContextLabel(observation.protocol) !== undefined ? { protocol: safeContextLabel(observation.protocol) } : {}),
+          ...(safeContextLabel(observation.split) !== undefined ? { split: safeContextLabel(observation.split) } : {}),
+        });
+      }
+      if (truncated) break;
+    }
+    return { schemaVersion: 1, status: "author_confirmed_not_externally_verified", truncated, observations };
   }
 }

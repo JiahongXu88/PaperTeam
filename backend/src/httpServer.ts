@@ -929,6 +929,11 @@ async function handleProjectResourceRoutes(
   // ---- Experiment Packages: binary ZIP stream, bounded independently of JSON bodies ----
   if (resource === "experiment-packages") {
     await stack.projects.getRequired(projectId);
+    if (rest === "/workflow-context") {
+      if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
+      sendJson(res, 200, await stack.experimentPackages.workflowContext(projectId));
+      return true;
+    }
     if (rest === "") {
       if (method === "GET") { sendJson(res, 200, { packages: await stack.experimentPackages.list(projectId) }); return true; }
       if (method === "POST") {

@@ -4,17 +4,20 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { ExperimentPackageService } from "../../src/experiments/ExperimentPackageService.js";
+import { createIdeaToPaperDefinition } from "../../src/workflow/definitions.js";
+import type { StageRunContext } from "../../src/workflow/types.js";
 import { startTestStack, scriptedIdeaRuntime, type TestStack } from "../helpers/testStack.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
 const fixture = (name: string) => join(import.meta.dirname, "..", "fixtures", "experiments", name);
 
-async function setup(): Promise<{ stack: TestStack; projectId: string }> {
-  const stack = await startTestStack(scriptedIdeaRuntime().runtime, { registerCleanup: (cleanup) => cleanups.push(cleanup) });
+async function setup(): Promise<{ stack: TestStack; projectId: string; scripted: ReturnType<typeof scriptedIdeaRuntime> }> {
+  const scripted = scriptedIdeaRuntime();
+  const stack = await startTestStack(scripted.runtime, { registerCleanup: (cleanup) => cleanups.push(cleanup) });
   const created = await stack.request("POST", "/api/projects", { title: "Synthetic experiment package", researchIdea: "synthetic test", workflowKind: "idea_to_paper" });
   expect(created.status).toBe(201);
-  return { stack, projectId: (created.body["project"] as { id: string }).id };
+  return { stack, projectId: (created.body["project"] as { id: string }).id, scripted };
 }
 
 async function upload(stack: TestStack, projectId: string, name: string) {
@@ -26,6 +29,44 @@ async function upload(stack: TestStack, projectId: string, name: string) {
 }
 
 describe("experiment package ZIP and product chain", () => {
+  it("exposes only bounded author-confirmed observations to the Research Workflow", async () => {
+    const { stack, projectId, scripted } = await setup();
+    const uploaded = await upload(stack, projectId, "synthetic-normal.zip");
+    const item = uploaded.body["package"] as { packageId: string };
+    await stack.request("POST", `/api/projects/${projectId}/experiment-packages/${item.packageId}/confirm`, { groupIds: ["main"] });
+
+    const apiContext = await stack.request("GET", `/api/projects/${projectId}/experiment-packages/workflow-context`);
+    expect(apiContext.body["status"]).toBe("author_confirmed_not_externally_verified");
+    const observations = apiContext.body["observations"] as Array<Record<string, unknown>>;
+    expect(observations).toContainEqual(expect.objectContaining({
+      metric: "HOTA", value: 63.4, sourceId: expect.any(String), blockId: expect.any(String), row: 2, column: "D", groupId: "main",
+    }));
+    expect(observations.every((entry) => entry["groupId"] === "main")).toBe(true);
+
+    const researchStage = createIdeaToPaperDefinition(stack.stack.workflowServices).stages.find((stage) => stage.id === "research.idea");
+    if (researchStage === undefined || !("execute" in researchStage)) throw new Error("research.idea stage is unavailable");
+    const result = await researchStage.execute({
+      runId: "test-experiment-context", projectId, attempt: 1, state: {} as StageRunContext["state"],
+      signal: new AbortController().signal, emitProgress: async () => {}, emitDomain: async () => {}, log: () => {},
+    });
+    expect(result["confirmedExperimentObservations"]).toBe(observations.length);
+    const researchPrompt = scripted.tasks.find((task) => task.contextScope === "research")?.task ?? "";
+    expect(researchPrompt).toContain("作者确认的结构化实验观测（非外部核验证据）");
+    expect(researchPrompt).toContain('"metric":"HOTA","value":63.4');
+    expect(researchPrompt).toContain('"sourceId":"S');
+    expect(researchPrompt).not.toContain("config/model.json");
+    expect(researchPrompt).not.toContain("logs/main_train.log");
+    expect(researchPrompt).not.toContain("protocol-v1");
+
+    const manifestPath = join(stack.store.projectDir(projectId), "experiments", item.packageId, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { observations: Array<Record<string, unknown>> };
+    const target = manifest.observations.find((entry) => entry["metric"] === "HOTA" && entry["groupId"] === "main")!;
+    target["method"] = `sk-${"A".repeat(32)}`;
+    await writeFile(manifestPath, JSON.stringify(manifest));
+    const sanitized = await stack.stack.experimentPackages.workflowContext(projectId);
+    expect(sanitized.observations.find((entry) => entry.metric === "HOTA")?.method).toBeUndefined();
+  });
+
   it("rejects traversal, case collision, symlink and extreme compression before Source writes", async () => {
     const { stack, projectId } = await setup();
     for (const name of ["synthetic-malicious-traversal.zip", "synthetic-malicious-drive.zip", "synthetic-malicious-duplicate.zip", "synthetic-malicious-unicode.zip", "synthetic-malicious-symlink.zip", "synthetic-malicious-ratio.zip", "synthetic-malicious-count.zip", "synthetic-malicious-depth.zip", "synthetic-malicious-crc.zip"]) {

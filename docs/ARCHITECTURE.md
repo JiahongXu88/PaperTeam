@@ -1678,6 +1678,7 @@ live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。
 | M12.1 Target Intelligence | Benchmark 语料（role=reference + 冻结 manifest）→ 确定性 profile 分位带（+bounded 摘要）→ readiness 四档 advisory 判决；三层质量语义分离 | `backend/src/target/`；[research/M12_BATCH2_PRODUCT_CLOSURE.md](research/M12_BATCH2_PRODUCT_CLOSURE.md) |
 | M12.2 Multimodal Review | VisualArtifactView 三源投影（pdf_parsed/latex_env/generated）+ 确定性六项视觉检查恒运行 + vision 四项按 capability 降级 | `backend/src/vision/VisualReviewService.ts`；[research/M12_BATCH2_PRODUCT_CLOSURE.md](research/M12_BATCH2_PRODUCT_CLOSURE.md) |
 | M12.3 图表生成（Batch 3） | 数据集候选（ParsedDocument 提取 + sourceId/blockId 锚）→ PlotSpec/DiagramSpec → pgfplots/TikZ → 独立 xelatex → 矢量 PDF 资产（figId=specHash）；受控手稿插入（append/replace + label lineage）；caption↔dataset 真实性守卫（三桶数值声明分桶 + 全称/计数/单位 UNVERIFIED）；Writer 图形白名单守卫；doctor 部署形态分离 | `backend/src/figures/`、`backend/src/serviceStack.ts`（figures 服务）；[research/M12_BATCH3_FIGURE_GENERATION_CLOSURE.md](research/M12_BATCH3_FIGURE_GENERATION_CLOSURE.md) |
+| M13.2 实验数据包 | 有界 ZIP inventory → 既有 Ingestion/Source → 候选分组与来源锚定指标 → 作者确认；确认结果进入 Figure/Dataset 与 Researcher 的受限结构化上下文，Evidence 仍独立验证；ZIP 原文不执行、不进入通用文献 prompt | `backend/src/experiments/`、`backend/src/workflow/definitions.ts`；[research/M13_2_EXPERIMENT_PACKAGE_DESIGN.md](research/M13_2_EXPERIMENT_PACKAGE_DESIGN.md)、[research/M13_2_EXPERIMENT_PACKAGE_ACCEPTANCE.md](research/M13_2_EXPERIMENT_PACKAGE_ACCEPTANCE.md) |
 
 产品视角的入口（两条产品路径、HITL 节点、终态语义）见
 [product-guide.md](product-guide.md)；返修链路与分层判定语义见

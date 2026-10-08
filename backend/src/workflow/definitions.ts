@@ -53,6 +53,7 @@ import type { ResearchCoverageService } from "../agents/researchCoverage.js";
 import type { ResearchPlanExecutionService } from "../agents/researchPlanExecution.js";
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
+import type { ExperimentPackageService } from "../experiments/ExperimentPackageService.js";
 import type { CandidateStore, CandidateSource } from "../sources/CandidateStore.js";
 import type { SourceImportService } from "../sources/SourceImportService.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
@@ -282,6 +283,8 @@ export interface WorkflowServices {
    */
   planExecution: ResearchPlanExecutionService;
   sources: SourceStore;
+  /** 作者确认实验观测只读上下文；绝不转成 Verified Evidence */
+  experimentPackages: ExperimentPackageService;
   /**
    * 文献入库路径编排（M11.1.4：topic_survey 的 survey.fulltext stage 消费——
    * 批量 promote 选中候选 + 批量全文解析；全部走既有幂等语义）。
@@ -4403,7 +4406,8 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
     timeoutMs: services.stageTimeoutMs,
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
-      const result = await services.researcher.research({ projectId: ctx.projectId });
+      const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
+      const result = await services.researcher.research({ projectId: ctx.projectId, experimentContext });
       // M9.7.4：待审候选数随 stage 结果暴露（planEvidenceSupply 纯函数消费，
       // 决定是否在写作前呈现 evidence-supply HITL；只读，绝不自动 promote）
       const pendingCandidates = (await services.candidates.list(ctx.projectId, "pending_review")).length;
@@ -4415,6 +4419,8 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
         bibliographyCount: result.bibliographyCount,
         gaps: result.report.researchGaps.length,
         candidatePending: pendingCandidates,
+        confirmedExperimentObservations: experimentContext.observations.length,
+        experimentContextTruncated: experimentContext.truncated,
       };
     },
     async verifyDod(ctx) {
