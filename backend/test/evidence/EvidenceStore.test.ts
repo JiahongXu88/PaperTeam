@@ -148,6 +148,55 @@ describe("EvidenceStore：query / updateVerification / markUsage", () => {
 });
 
 describe("EvidenceStore：持久化与容错", () => {
+  it("更新后保留未来字段及当前版本无法识别的原始行，重载仍隔离未知状态", async () => {
+    const { evidence, projectId, store } = await newProject();
+    const first = await evidence.append(projectId, {
+      claim: "有来源的结论",
+      source: { sourceId: "S001" },
+      location: { figureBlockId: "B001" },
+    }, "researcher");
+    const path = join(store.evidenceDir(projectId), "evidence.jsonl");
+    const original = JSON.parse((await readFile(path, "utf8")).trim()) as Record<string, unknown>;
+    const extended = {
+      ...original,
+      futureAssessment: { decision: "experimental", score: 7 },
+      source: { ...(original.source as object), futureProvenance: { chain: ["A", "B"] } },
+      location: { ...(original.location as object), futureBlock: "B002" },
+    };
+    const future = { ...original, id: "E009", verificationStatus: "future_verified", futureGuard: true };
+    const futureLine = `  ${JSON.stringify(future)}  `;
+    const brokenLine = '{"id":"E010","claim":';
+    await writeFile(path, [JSON.stringify(extended), futureLine, brokenLine, ""].join("\n"), "utf8");
+
+    expect(await evidence.list(projectId)).toHaveLength(1);
+    expect((await evidence.stats(projectId)).skippedLines).toBe(2);
+    await expect(evidence.updateVerification(projectId, "E009", { verificationStatus: "verified" }))
+      .rejects.toMatchObject({ code: "NOT_FOUND" });
+    await evidence.updateVerification(projectId, first.id, { verificationStatus: "verified" });
+    await evidence.markUsage(projectId, first.id, { usedBy: "run:w-1" });
+
+    const persisted = (await readFile(path, "utf8")).split("\n");
+    expect(JSON.parse(persisted[0]!)).toMatchObject({
+      id: first.id,
+      verificationStatus: "verified",
+      usedBy: ["run:w-1"],
+      futureAssessment: extended.futureAssessment,
+      source: { sourceId: "S001", futureProvenance: { chain: ["A", "B"] } },
+      location: { figureBlockId: "B001", futureBlock: "B002" },
+    });
+    expect(persisted[1]).toBe(futureLine);
+    expect(persisted[2]).toBe(brokenLine);
+
+    const reloaded = new EvidenceStore(store);
+    expect(await reloaded.get(projectId, first.id)).toMatchObject({
+      futureAssessment: extended.futureAssessment,
+      source: { sourceId: "S001", futureProvenance: { chain: ["A", "B"] } },
+    });
+    expect(await reloaded.get(projectId, "E009")).toBeNull();
+    expect((await reloaded.stats(projectId)).skippedLines).toBe(2);
+    expect((await reloaded.append(projectId, { claim: "后续记录" }, "user")).id).toBe("E010");
+  });
+
   it("损坏行被跳过（计数进 stats.skippedLines），其余记录可用", async () => {
     const { evidence, projectId, store } = await newProject();
     await evidence.append(projectId, { claim: "good-1" }, "user");

@@ -179,13 +179,9 @@ export class EvidenceStore {
   async append(projectId: string, input: EvidenceAppendInput, createdBy: string): Promise<EvidenceRecord> {
     return this.enqueue(projectId, async () => {
       const claim = requireNonEmpty(input.claim, "claim");
-      const { records } = await this.loadAll(projectId);
+      const { maxExistingId } = await this.loadAll(projectId);
       // id 冲突防御（损坏行导致编号回退时避免覆盖）
-      const maxExisting = records.reduce((max, item) => {
-        const numeric = Number(item.id.replace(/^E/, ""));
-        return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
-      }, 0);
-      const record = this.buildRecord({ ...input, claim }, `E${String(maxExisting + 1).padStart(3, "0")}`, createdBy);
+      const record = this.buildRecord({ ...input, claim }, `E${String(maxExistingId + 1).padStart(3, "0")}`, createdBy);
       await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
       await appendFile(this.filePath(projectId), JSON.stringify(record) + "\n", "utf8");
       return record;
@@ -244,11 +240,8 @@ export class EvidenceStore {
       return [];
     }
     return this.enqueue(projectId, async () => {
-      const { records } = await this.loadAll(projectId);
-      let maxExisting = records.reduce((max, item) => {
-        const numeric = Number(item.id.replace(/^E/, ""));
-        return Number.isFinite(numeric) ? Math.max(max, numeric) : max;
-      }, 0);
+      const { maxExistingId } = await this.loadAll(projectId);
+      let maxExisting = maxExistingId;
       const appended: EvidenceRecord[] = [];
       const lines: string[] = [];
       for (const { input, createdBy } of items) {
@@ -319,7 +312,7 @@ export class EvidenceStore {
     },
   ): Promise<EvidenceRecord> {
     return this.enqueue(projectId, async () => {
-      const { records } = await this.loadAll(projectId);
+      const { records, lines, recordLineIndexes } = await this.loadAll(projectId);
       const index = records.findIndex((record) => record.id === id);
       if (index === -1) {
         throw new NotFoundError("Evidence", id);
@@ -357,7 +350,7 @@ export class EvidenceStore {
         updatedAt: this.now().toISOString(),
       };
       records[index] = updated;
-      await this.rewrite(projectId, records);
+      await this.rewrite(projectId, lines, recordLineIndexes[index]!, updated);
       return updated;
     });
   }
@@ -369,7 +362,7 @@ export class EvidenceStore {
     usage: { section?: string; usedBy?: string },
   ): Promise<EvidenceRecord> {
     return this.enqueue(projectId, async () => {
-      const { records } = await this.loadAll(projectId);
+      const { records, lines, recordLineIndexes } = await this.loadAll(projectId);
       const index = records.findIndex((record) => record.id === id);
       if (index === -1) {
         throw new NotFoundError("Evidence", id);
@@ -382,7 +375,7 @@ export class EvidenceStore {
         updatedAt: this.now().toISOString(),
       };
       records[index] = updated;
-      await this.rewrite(projectId, records);
+      await this.rewrite(projectId, lines, recordLineIndexes[index]!, updated);
       return updated;
     });
   }
@@ -407,26 +400,34 @@ export class EvidenceStore {
 
   private async loadAll(
     projectId: string,
-  ): Promise<{ records: EvidenceRecord[]; skippedLines: number }> {
+  ): Promise<{ records: EvidenceRecord[]; skippedLines: number; lines: string[]; recordLineIndexes: number[]; maxExistingId: number }> {
     let raw: string;
     try {
       raw = await readFile(this.filePath(projectId), "utf8");
     } catch (error) {
       // 只有「尚无文件」等于空库；读失败（权限 / IO）必须冒泡，否则下一次 rewrite 会把旧记录清空
       if ((error as { code?: string }).code === "ENOENT") {
-        return { records: [], skippedLines: 0 };
+        return { records: [], skippedLines: 0, lines: [], recordLineIndexes: [], maxExistingId: 0 };
       }
       throw error;
     }
     const records: EvidenceRecord[] = [];
+    const lines = raw.split("\n");
+    const recordLineIndexes: number[] = [];
     let skippedLines = 0;
-    for (const line of raw.split("\n")) {
+    let maxExistingId = 0;
+    for (const [lineIndex, line] of lines.entries()) {
       const trimmed = line.trim();
       if (trimmed === "") {
         continue;
       }
       try {
         const parsed = JSON.parse(trimmed) as EvidenceRecord;
+        // 当前版本不认识的记录仍占用其 canonical ID，避免后续 append 撞号。
+        if (typeof parsed === "object" && parsed !== null && typeof parsed.id === "string" && /^E\d+$/.test(parsed.id)) {
+          const numericId = Number(parsed.id.slice(1));
+          if (Number.isSafeInteger(numericId)) maxExistingId = Math.max(maxExistingId, numericId);
+        }
         if (
           typeof parsed === "object" &&
           parsed !== null &&
@@ -435,6 +436,7 @@ export class EvidenceStore {
           VERIFICATION_STATUSES.includes(parsed.verificationStatus)
         ) {
           records.push(parsed);
+          recordLineIndexes.push(lineIndex);
           continue;
         }
         skippedLines += 1;
@@ -442,13 +444,13 @@ export class EvidenceStore {
         skippedLines += 1;
       }
     }
-    return { records, skippedLines };
+    return { records, skippedLines, lines, recordLineIndexes, maxExistingId };
   }
 
-  private async rewrite(projectId: string, records: EvidenceRecord[]): Promise<void> {
-    const content =
-      records.map((record) => JSON.stringify(record)).join("\n") +
-      (records.length > 0 ? "\n" : "");
+  private async rewrite(projectId: string, lines: string[], lineIndex: number, updated: EvidenceRecord): Promise<void> {
+    // 仅重写目标行；未知字段、未来版本记录和无法解析的原始行均保持原样。
+    lines[lineIndex] = JSON.stringify(updated);
+    const content = lines.join("\n");
     await mkdir(this.projects.evidenceDir(projectId), { recursive: true });
     await writeFileAtomic(this.filePath(projectId), content);
   }
