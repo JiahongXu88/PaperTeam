@@ -1,5 +1,34 @@
 # M13.1 Codex handoff — P1 file-backed reliability
 
+## Batch 2 — Durable Figure insertion（2026-10-08）
+
+基线 `main == origin/main == 9bd2fbc8cdf2784edb6f8d99257ac9b3c0241286`，工作区干净。沿用 `DATABASE_DECISION = NO_GO`。本批没有修改真实论文文件、启动 ECS 或调用模型。
+
+### 状态模型与不变量
+
+`manuscript/figs/generated/insertion-intent.json` 是每项目单条 write-ahead intent。`pending` 在第一项业务写入前原子持久化，包含规范化请求指纹、目标 `.tex` 路径、目标文件及可选 `main.tex` 与 Figure manifest 的前后 SHA-256、预期内容、修订号和原响应。`complete` 只在 Manuscript、graphicx、manifest lineage、派生 Visual Inventory 全部写入后记录。新操作覆盖上一条已完成的 receipt；不引入通用事务引擎。
+
+`FigureService.insert/generate/list/get` 在共同的项目级进程内锁下先恢复 pending 操作。恢复对所有业务文件先做全量指纹预检：只接受原始状态或本次操作的目标状态；任何第三种状态返回 HTTP 409 `FIGURE_RECOVERY_REQUIRED`，保留现有字节，不自动回滚。随后只补写仍处于原始状态的文件，重建 `manuscript-visuals.json`，最后标记 intent complete。单文件写入继续走原有 tmp+fsync+rename。inventory 是派生视图，恢复时从当前 Manuscript 重建。intent 写入前崩溃意味着业务文件尚未写；intent 写后任一边界崩溃由下一次 Figure API 调用恢复。恢复失败保持 pending，阻断后续 Figure 操作。
+
+append 使用稳定请求指纹和 receipt 返回相同成功响应；因 label 在 intent 中提前确定，目标文件写后重试不会重新分配 label。即使较晚再次请求且 receipt 已被新操作覆盖，manifest 的 `insertedIn` 也阻止同一 figId 再 append。replace 在写前计算新旧图完整 lineage，保持目标环境的位置和 label；如果 manifest 对该 slot 声称的旧图与手稿资产不同，则阻断。重新编译同一图时保留现有 `insertedIn/supersededBy`，避免另一路生成操作抹掉 lineage。目标为 `main.tex` 时 graphicx 与目标变换合并为一次写入，避免旧 main 内容覆盖 Figure。
+
+现有 Scope、来源/数据陈旧、caption truthfulness 与作者确认检查仍在准备 intent 之前执行；HTTP 请求字段保持兼容，不要求前端 idempotency key。`FigureStore.loadManifest` 仅将 ENOENT 当作空 manifest，其他读取错误上抛。
+
+### 故障注入与验证
+
+- 定向 Figure HTTP 测试：append 在 target/main/before-manifest/manifest/before-inventory/inventory 边界，replace 在 target/before-manifest/manifest/before-inventory/inventory 边界注入异常；写入前的故障点注入模拟 `EIO`。每次使用重新构造的 FigureService 重试并检查 Figure 环境仅一次、manifest lineage、graphicx 和 Inventory。
+- 独立 Node 子进程通过 `vite-node` 运行真实 `FigureService.insert()`，目标 `.tex` 写后 `SIGKILL`，父进程从磁盘 pending intent 恢复。同一请求重复调用返回相同 label。测试用环境开关只在 `NODE_ENV=test` 生效。
+- append 与 replace 的故障后外部手稿编辑均返回 `FIGURE_RECOVERY_REQUIRED`，不覆盖编辑、不伪造 lineage；连续两次 replace 验证旧→中→新链。
+- Windows 本地：`test/figures/figureHttp.test.ts` 25/25 PASS；Figure + Manuscript 定向回归 11 files / 160 tests PASS（其中原有 figureReal smoke 执行了 3 次小型 TeX 编译）；backend typecheck PASS；`git diff --check` PASS。`EXCEPTION_RECOVERY_PASS`、`PROCESS_RESTART_RECOVERY_PASS`、`ABRUPT_PROCESS_TERMINATION_PASS` 均有测试证据。Linux 结果以本批最终 commit 的 CI 为准。
+
+修改文件：`backend/src/figures/{FigureService,figureStore,insertionRecovery}.ts`、`backend/src/errors.ts`、`backend/test/figures/{figureHttp.test,figureCrashChild}.ts`、本 handoff 与 `docs/PROJECT_STATUS.md`。
+
+边界：项目锁只覆盖本进程 FigureService；其他 Manuscript 工作流、外部编辑器及跨进程写入不共享该锁。恢复采用前后哈希检测，能阻断已发生的额外修改，但不能提供跨进程原子 compare-and-swap。已完成 receipt 仅保存最近一笔；旧请求在后续操作后不会保证返回旧成功响应，但同一 figId 不会重复 append。电源断电后的目录 rename 持久性、跨进程同时写、完整生产 Docker 路径和真实服务器均未验证。本批因此是受控单进程架构下的 Figure 恢复机制，不宣称跨进程事务隔离。
+
+Doctor CI timing flake：待 Figure CI 收口后调查；若未调查，标记 NOT VERIFIED。下一步 Claude 应先核对最终 CI / Linux Integration，然后处理 doctor timing flake 与 `RevisionStore.restore` 静态风险评估，不展开第二套恢复框架。
+
+Git commit 与 CI run：待推送后补记；提交无法在自身内容中准确记录最终 SHA，以 Git 历史和最终汇报为准。
+
 - 日期：2026-10-08。开始 SHA：`0673e08140cae0a672463e16ac7ed6c1164180f3`；开始时 `main == origin/main`，工作区干净。
 - 架构决策沿用 M13.0：`DATABASE_DECISION = NO_GO`，继续 File-backed Storage。
 
