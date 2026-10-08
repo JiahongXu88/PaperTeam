@@ -20,6 +20,18 @@ export interface ArchiveEntryInfo {
   compressedSize: number;
 }
 
+const CRC_TABLE = Uint32Array.from({ length: 256 }, (_, index) => {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  return value >>> 0;
+});
+
+function updateCrc(previous: number, data: Buffer): number {
+  let value = previous;
+  for (const byte of data) value = CRC_TABLE[(value ^ byte) & 0xff]! ^ (value >>> 8);
+  return value >>> 0;
+}
+
 function unsafe(message: string): never {
   throw new BusinessError("EXPERIMENT_ARCHIVE_UNSAFE", message);
 }
@@ -102,13 +114,16 @@ export async function visitArchive(
             const stream = await zip.openReadStreamPromise(entry);
             const chunks: Buffer[] = [];
             let size = 0;
+            let crc = 0xffffffff;
             for await (const chunk of stream) {
               const data = chunk as Buffer;
               size += data.length;
               if (size > PACKAGE_LIMITS.fileBytes || size > entry.uncompressedSize) unsafe("ZIP 文件流超过声明大小");
+              crc = updateCrc(crc, data);
               chunks.push(data);
             }
             if (size !== entry.uncompressedSize) unsafe("ZIP 文件流大小不一致");
+            if (((crc ^ 0xffffffff) >>> 0) !== (entry.crc32 >>> 0)) unsafe("ZIP 文件 CRC 校验失败");
             await onFile(info, Buffer.concat(chunks, size));
           }
           zip.readEntry();

@@ -202,6 +202,8 @@ export class ExperimentPackageService {
       const { hash } = await hashArchive(archivePath);
       const packageId = `ep-${hash.slice(0, 32)}`;
       const inventory = await visitArchive(archivePath);
+      // Validate every compressed stream and CRC before creating any Source or manifest.
+      await visitArchive(archivePath, async () => {});
       let item: ExperimentPackage;
       try { item = await this.get(projectId, packageId); if (item.status === "ready" || item.status === "partial") return { item, created: false }; }
       catch (error) {

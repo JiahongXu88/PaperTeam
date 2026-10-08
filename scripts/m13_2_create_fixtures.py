@@ -1,6 +1,6 @@
 """Rebuild the small, explicitly synthetic M13.2 experiment ZIP fixtures."""
 from pathlib import Path
-from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED
+from zipfile import ZipFile, ZipInfo, ZIP_DEFLATED, ZIP_STORED
 import json
 
 root = Path(__file__).resolve().parents[1] / "backend/test/fixtures/experiments"
@@ -51,3 +51,8 @@ with ZipFile(root / "synthetic-malicious-unicode.zip", "w", ZIP_DEFLATED) as z:
     z.writestr("cafe\u0301.csv", "metric,value\ntest,2\n")
 with ZipFile(root / "synthetic-malicious-drive.zip", "w", ZIP_DEFLATED) as z:
     z.writestr("C:/outside.csv", "metric,value\ntest,1\n")
+crc_path = root / "synthetic-malicious-crc.zip"
+with ZipFile(crc_path, "w", ZIP_STORED) as z:
+    z.writestr("results.csv", "metric,value\ntest,12345\n")
+damaged = crc_path.read_bytes().replace(b"test,12345", b"test,12346", 1)
+crc_path.write_bytes(damaged)
