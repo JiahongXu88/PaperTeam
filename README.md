@@ -7,7 +7,10 @@
 literature, grounds claims in verified evidence, drafts and reviews papers, compiles
 them to LaTeX/PDF — and when you already have a manuscript and reviewer comments, it
 revises the manuscript comment by comment without breaking your facts or citations,
-and tells you honestly when a decision belongs to you.
+and tells you honestly when a decision belongs to you. It also benchmarks your paper
+against a target publication, reviews your figures and tables (deterministic checks
+plus optional vision model), and compiles publication-grade vector figures from your
+real datasets.
 
 [查看中文文档（README.zh-CN）](README.zh-CN.md)
 
@@ -49,6 +52,52 @@ advisor comments, and PaperTeam:
 You can also run a read-only **Quick Review** on any PDF: citation integrity +
 section-by-section review, exportable as a report, no changes to your paper.
 
+### 3. Benchmark your paper against a target publication
+
+Set a target profile (paper type, target venue, research field) and PaperTeam builds
+an empirical reference frame: venue-filtered, citation-ranked benchmark discovery
+(real OpenAlex source filtering) → an auto-selected set of 8–15 reference papers →
+frozen benchmark / profile / readiness artifacts. You get six readiness dimensions
+with four-tier verdicts (meets / partially meets / below target / insufficient
+evidence) and quantile bands from the real corpus — consumed as advisory context by
+feasibility, reviewer, and planner prompts.
+
+Honest boundary: this is **quality benchmarking against a reference corpus, not a
+promise of publication success**. There is deliberately no numeric "score"; target
+stages are advisory-only and can never block or alter a workflow verdict; benchmark
+papers are role-isolated so they can never leak into your evidence pool.
+
+### 4. Multimodal review of figures and tables
+
+A visual review pass runs over the **registered visual assets** of your project —
+figures and tables from parsed PDFs, LaTeX environments, and generated figures.
+Six deterministic checks always run (label-reference resolution, duplicate labels,
+missing captions, unreferenced artifacts, table numeric consistency, caption-reference
+mismatch); when you configure a vision model, four more model-assisted checks run
+(figure-caption, figure-claim, legend-axis, diagram-method consistency).
+
+Honest boundary: this reviews **supported visual assets, not arbitrary PDF visual
+understanding** — embedded PDF figures without an extractable image asset are
+reported as skipped, never guessed. Model observations are never auto-verified, and
+visual findings never enter blocking gates.
+
+### 5. Compile academic figures from your real data
+
+Upload a dataset (CSV/XLSX/JSON or a table block from a parsed source) and PaperTeam
+compiles publication-grade vector figures: validated PlotSpec / DiagramSpec →
+deterministic pgfplots/TikZ codegen → single-pass xelatex → vector PDF, with
+content-addressed caching (same spec → same figure, byte-stable figId). Figures are
+inserted into the manuscript through a controlled path (environment emitter +
+whitelisted label + one controlled `\ref`), guarded by caption-truthfulness checks
+that verify numeric claims in captions against the dataset itself.
+
+Honest boundary: this is a **deterministic figure compiler driven by your real
+data, not a generative image model** — data must come from an anchored source block
+(or an explicitly-declared manual origin), tampering with the dataset is rejected at
+generation, and unverified caption claims require your confirmation before insertion.
+Coverage is 4 data-plot types + 2 diagram templates; arbitrary experiment-ZIP
+auto-recognition is explicitly not claimed.
+
 ## Key features
 
 | Area | What it does |
@@ -60,6 +109,8 @@ section-by-section review, exportable as a report, no changes to your paper.
 | Revision safety | Scoped patches with immutable snapshots; fact/citation/evidence preservation guards reject unauthorized value changes, claim escalation, and citation loss |
 | Human-in-the-loop | 11 decision points (outline, plan, feasibility, revision overflow, …) that pause the run, persist with checkpoints, and survive refresh/restart |
 | Model configuration | Per-role model assignment (Writer / Researcher / Reviewers / Planner), built-in and custom providers (3 protocols), Z.AI Coding-Plan vs pay-per-use channels, test-connection |
+| Target intelligence | Venue-filtered benchmark discovery → frozen benchmark/profile/readiness artifacts; six-dimension × four-tier verdicts with quantile bands; advisory-only, benchmark papers isolated from evidence (M12.1) |
+| Multimodal review | 6 deterministic + 4 optional vision-model checks over registered figure/table assets; model observations never auto-verified; findings never enter blocking gates (M12.2) |
 | Academic figures | Deterministic chart generation from your real datasets (parsed CSV/XLSX/JSON/tabular sources → PlotSpec/DiagramSpec → pgfplots/TikZ → vector PDF), caption-truthfulness guards, controlled insertion into the manuscript (M12.3) |
 | Output | Immutable Draft / Final artifacts; xelatex + bibtex explicit orchestration; revision history with compare and restore |
 | Observability | Live per-stage progress over SSE, run history, token/cost attribution per agent × model |
@@ -146,6 +197,10 @@ PaperTeam is built around what it will *not* do:
   you explicitly accept the risk.
 - **No fabricated citations.** Only verified evidence enters the writing context;
   references are checked against external bibliographic databases.
+- **No fabricated figures.** Figures are compiled deterministically from anchored
+  real datasets; numeric claims in captions are verified against the data, and
+  unverified claims need your confirmation before insertion. A figure is never
+  treated as evidence.
 - **Revision success ≠ publication ready.** Comment closure, deterministic guards,
   and full-manuscript readiness are reported separately, with author decisions
   surfaced instead of silently resolved.
@@ -185,14 +240,19 @@ Docs are written in Chinese; translations are tracked as future work.
 **Alpha / MVP — active development.** The two core workflows (topic-to-paper and
 existing-paper revision) are implemented and validated on real runs: the revision
 workflow completed a reliability program of 21 real runs with zero guard false
-positives and zero fabricated-content leaks. Deterministic components are covered by
-a large vitest suite plus Playwright E2E (scripted agent runtime — no model needed
-to run tests).
+positives and zero fabricated-content leaks. The M12 line — target publication
+intelligence, multimodal review, and deterministic academic figures — is feature
+complete, verified with real GLM model calls on Windows and a real Linux server
+deployment (Docker Compose; in-container xelatex figure compilation). Deterministic
+components are covered by 2,860 backend + 292 frontend tests plus CI-verified Docker
+smokes (scripted agent runtime — no model needed to run tests).
 
-Current limits, honestly: no visual review of figures/layout; PDF rebuild is
-text-level (no original figures); single-user, no auth/multi-tenancy; some actions
-remain author decisions by design. Full list in
-[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) and
+Current limits, honestly: visual review covers registered assets only (embedded PDF
+figures without extractable assets are skipped); figure coverage is 4 data-plot +
+2 diagram templates; PDF rebuild is text-level plus controlled figure insertion;
+browser E2E for the M12 features and product screenshots are still pending;
+single-user, no auth/multi-tenancy; some actions remain author decisions by design.
+Full list in [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) and
 [docs/product-guide.md](docs/product-guide.md).
 
 ## Contributing

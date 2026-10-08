@@ -16,7 +16,7 @@
 > §15 Retrieval → §16 Evidence Grounding → §17 Evidence-aware Writing →
 > M6.7 Revision Safety → §18 Evaluation（含 M6.9 live / 多模型）；M6
 > 最终流水线总图见 §1.3。
-> **M7–M11 已完成（2026-09-20 → 2026-10-07）**：M7 检索激活与全文、M8 受控
+> **M7–M12 已完成（2026-09-20 → 2026-10-08）**：M7 检索激活与全文、M8 受控
 > 深研循环、M9 全文 E2E 与证据供给、M10 已有论文返修（Docling / scoped
 > patches / 外部意见）、M11 综述管线与返修可靠性收口（21 次真实 run）——
 > 增量索引见 §20；产品视角见 [product-guide.md](product-guide.md)。
@@ -1655,11 +1655,11 @@ judge、同一网关公共混杂、quote 拦截路径本批未触发（有效性
 `PAPERTEAM_EVAL_GLM53_GATEWAY_MODEL` 环境变量注入，不入库不入报告。
 live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。
 
-## 20. M7–M11 增量架构（现状索引）
+## 20. M7–M12 增量架构（现状索引）
 
 > M6 冻结（§1.3 / D-0041）之后的架构增量按「模块 + 指针」索引在此，不逐文件
 > 展开；每个模块的实现与验收细节以对应研究报告为准。§1–§19 的分层与红线
-> （Authoritative State / 会话 / 事件 / 双 Gate / 零新 Agent 倾向）在 M7–M11
+> （Authoritative State / 会话 / 事件 / 双 Gate / 零新 Agent 倾向）在 M7–M12
 > 全程保持，无架构性替换。
 
 | 增量 | 内容 | 关键位置 / 报告 |

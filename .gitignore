@@ -88,3 +88,4 @@ e2e/.tmp/
 # ===== Python 工具字节码缓存（backend/tools 解析脚本） =====
 __pycache__/
 *.pyc
+.ghtoken.tmp
