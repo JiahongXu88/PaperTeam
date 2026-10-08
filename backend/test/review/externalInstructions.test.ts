@@ -300,6 +300,17 @@ describe("reverifyHandledInstructions（gate 复核自愈）", () => {
     expect((await store.load("p-1")).map((item) => item.text)).toEqual(["B", "C"]);
   });
 
+  it("损坏的 resolutionTrace 不会在下一次意见写入时静默丢失", async () => {
+    const { root, store } = await makeStore();
+    const added = await store.add("p-1", { source: "journal_reviewer", text: "A" });
+    const path = join(root, "p-1", "reviews", "external-instructions.json");
+    const raw = JSON.parse(await (await import("node:fs/promises")).readFile(path, "utf8"));
+    raw.instructions[0].resolutionTrace = { status: "handled", commentId: added!.instructionId };
+    await writeFile(path, JSON.stringify(raw));
+    await expect(store.add("p-1", { source: "editor", text: "B" })).rejects.toMatchObject({ code: "EXTERNAL_INSTRUCTION_CONFLICT" });
+    expect((await (await import("node:fs/promises")).readFile(path, "utf8"))).toContain('"resolutionTrace"');
+  });
+
   it("status update retains concurrent import and rejects stale same-comment status", async () => {
     const { store } = await makeStore();
     const first = await store.add("p-1", { source: "journal_reviewer", text: "A" });

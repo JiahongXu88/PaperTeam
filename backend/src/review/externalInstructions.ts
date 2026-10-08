@@ -373,6 +373,11 @@ export class ExternalInstructionStore {
       const records = (parsed as { instructions: unknown[] }).instructions;
       const instructions = readExternalInstructions(parsed);
       if (instructions.length !== records.length) throw new Error("unreadable external instruction record");
+      if (records.some((entry) => typeof entry === "object" && entry !== null &&
+          Object.hasOwn(entry, "resolutionTrace") &&
+          readResolutionTrace((entry as Record<string, unknown>)["resolutionTrace"]) === undefined)) {
+        throw new Error("unreadable resolution trace");
+      }
       return instructions;
     } catch {
       throw new BusinessError("EXTERNAL_INSTRUCTION_CONFLICT", "external-instructions.json 损坏；禁止按空意见覆盖");
