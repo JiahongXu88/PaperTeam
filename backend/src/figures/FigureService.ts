@@ -35,11 +35,8 @@ import type { SourceStore, SourceItem } from "../sources/SourceStore.js";
 import type { ParsedDocumentStore } from "../ingestion/ParsedDocumentStore.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import { collectLatexFiles, normalizeTexPath } from "../manuscript/LatexFiles.js";
-import {
-  buildVisualInventory,
-  persistVisualInventory,
-} from "../manuscript/visualInventory.js";
-import { writeFileAtomic } from "../util/atomic.js";
+import { buildVisualInventory } from "../manuscript/visualInventory.js";
+import { change, hashText, recoverInsertion, requestFingerprint, saveIntent, type InsertionIntent } from "./insertionRecovery.js";
 import { FigureCompiler, figureFailureToBusinessError } from "./FigureCompiler.js";
 import {
   FigureStore,
@@ -258,6 +255,7 @@ export class FigureService {
   async generate(projectId: string, kind: "plot" | "diagram", spec: unknown): Promise<GenerateResult> {
     await this.projects.getRequired(projectId);
     return withProjectLock(projectId, async () => {
+      await recoverInsertion(this.projects, projectId, this.store(projectId));
       // 来源锚反查：声称来自 source 的数据必须逐字节来自该 source（防篡改）
       if (kind === "plot") {
         const pre = validatePlotSpec(spec);
@@ -316,36 +314,42 @@ export class FigureService {
 
   async list(projectId: string): Promise<FigureView[]> {
     await this.projects.getRequired(projectId);
-    const store = this.store(projectId);
-    const records = await store.list();
-    const sourceItems = await this.sources.list(projectId);
-    const views: FigureView[] = [];
-    for (const record of records) {
-      views.push(await this.toView(projectId, record, sourceItems));
-    }
-    return views;
+    return withProjectLock(projectId, async () => {
+      const store = this.store(projectId);
+      await recoverInsertion(this.projects, projectId, store);
+      const records = await store.list();
+      const sourceItems = await this.sources.list(projectId);
+      const views: FigureView[] = [];
+      for (const record of records) {
+        views.push(await this.toView(projectId, record, sourceItems));
+      }
+      return views;
+    });
   }
 
   async get(projectId: string, figId: string): Promise<FigureView & { spec: unknown; captionValidation?: CaptionValidation }> {
     await this.projects.getRequired(projectId);
-    const store = this.store(projectId);
-    const record = await store.get(figId);
-    if (record === undefined) {
-      throw new FigureNotFoundError(figId);
-    }
-    const spec = await store.loadSpec(figId);
-    const view = await this.toView(projectId, record);
-    let captionValidation: CaptionValidation | undefined;
-    if (record.kind === "plot" && spec !== null) {
-      const validated = validatePlotSpec(spec);
-      if (validated.ok && validated.spec !== undefined) {
-        const caption = record.caption.trim() === "" ? undefined : record.caption;
-        if (caption !== undefined) {
-          captionValidation = validateCaptionAgainstDataset(caption, validated.spec);
+    return withProjectLock(projectId, async () => {
+      const store = this.store(projectId);
+      await recoverInsertion(this.projects, projectId, store);
+      const record = await store.get(figId);
+      if (record === undefined) {
+        throw new FigureNotFoundError(figId);
+      }
+      const spec = await store.loadSpec(figId);
+      const view = await this.toView(projectId, record);
+      let captionValidation: CaptionValidation | undefined;
+      if (record.kind === "plot" && spec !== null) {
+        const validated = validatePlotSpec(spec);
+        if (validated.ok && validated.spec !== undefined) {
+          const caption = record.caption.trim() === "" ? undefined : record.caption;
+          if (caption !== undefined) {
+            captionValidation = validateCaptionAgainstDataset(caption, validated.spec);
+          }
         }
       }
-    }
-    return { ...view, spec, ...(captionValidation !== undefined ? { captionValidation } : {}) };
+      return { ...view, spec, ...(captionValidation !== undefined ? { captionValidation } : {}) };
+    });
   }
 
   private async toView(
@@ -448,6 +452,13 @@ export class FigureService {
     const project = await this.projects.getRequired(projectId);
     return withProjectLock(projectId, async () => {
       const store = this.store(projectId);
+      const requestHash = requestFingerprint(params);
+      const recovered = await recoverInsertion(this.projects, projectId, store);
+      if (recovered?.status === "complete" && recovered.requestHash === requestHash &&
+          hashText(await readFile(join(this.projects.manuscriptDir(projectId), recovered.targetFile), "utf8")) === recovered.target.after &&
+          hashText(await readFile(store.manifestPath, "utf8")) === recovered.manifest.after) {
+        return recovered.result;
+      }
       const record = await store.get(params.figId);
       if (record === undefined) {
         throw new FigureNotFoundError(params.figId);
@@ -539,6 +550,10 @@ export class FigureService {
           throw new BusinessError("INVALID_REQUEST", "replace 模式必须提供 replaceLabel（或 label）");
         }
         const fullLabel = rawLabel.trim().startsWith("fig:") ? rawLabel.trim() : `fig:${rawLabel.trim()}`;
+        if (record.insertedIn !== undefined &&
+            (record.insertedIn.file !== targetFile || record.insertedIn.label !== fullLabel)) {
+          throw new FigureAlreadyInsertedError(params.figId, record.insertedIn.file);
+        }
         const found = findFigureEnvByLabel(targetFile, target.content, fullLabel);
         if (found === undefined) {
           throw new FigureLabelNotFoundError(fullLabel, targetFile);
@@ -596,33 +611,33 @@ export class FigureService {
         newContent = applyAppendInsertion(target.content, environment, labelBody, params.referenceSentence);
       }
 
-      // 落盘：目标文件 + main.tex graphicx（幂等注入）
-      await writeFileAtomic(join(manuscriptDir, targetFile), newContent);
       let graphicxInjected = false;
+      let mainChange: ReturnType<typeof change> | undefined;
       if (files.mainTex !== null && files.mainTex.relativePath === "main.tex") {
-        const preamble = ensureGraphicxPreamble(files.mainTex.content);
+        const preamble = ensureGraphicxPreamble(targetFile === "main.tex" ? newContent : files.mainTex.content);
         if (preamble.injected) {
-          await writeFileAtomic(this.projects.mainTexPath(projectId), preamble.content);
           graphicxInjected = true;
+          if (targetFile === "main.tex") newContent = preamble.content;
+          else mainChange = change(files.mainTex.content, preamble.content);
         }
       }
-
-      // manifest 回填 lineage + inventory 重建（derived 投影跟手稿同步）
       const revision = await this.revisions.currentRevision(projectId);
       const fullLabel = `fig:${labelBody}`;
-      const updated = await store.recordInsertion({
+      const manifestBefore = await readFile(store.manifestPath, "utf8");
+      const manifest = await store.loadManifest();
+      if (params.mode === "replace") {
+        const occupant = manifest.figures.filter((entry) =>
+          entry.figId !== params.figId && entry.insertedIn?.file === targetFile && entry.insertedIn.label === fullLabel);
+        if (occupant.length > 1 || (occupant.length === 1 && previousPath !== `figs/generated/${occupant[0]!.figId}.pdf`)) {
+          throw new BusinessError("FIGURE_RECOVERY_REQUIRED", `目标 ${targetFile} 的 Figure 资产与 manifest lineage 不一致`);
+        }
+      }
+      const planned = store.planInsertion(manifest, {
         figId: params.figId,
         insertedIn: { file: targetFile, label: fullLabel, revision },
       });
-      const refreshedFiles = await collectLatexFiles(manuscriptDir);
-      const refreshedInventory = buildVisualInventory(
-        refreshedFiles.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
-        { manuscriptRevision: revision },
-      );
-      await persistVisualInventory(this.projects, projectId, refreshedInventory);
-
-      return {
-        record: updated ?? record,
+      const result: InsertResult = {
+        record: planned.updated,
         file: targetFile,
         label: fullLabel,
         environment: renderFigureEnvironment({
@@ -636,6 +651,17 @@ export class FigureService {
         authorConfirmedUnverified: params.confirmUnverified === true,
         ...(captionValidation !== undefined ? { captionValidation } : {}),
       };
+      const intent: InsertionIntent = {
+        schemaVersion: 1, status: "pending", requestHash, targetFile,
+        target: change(target.content, newContent),
+        ...(mainChange !== undefined ? { main: mainChange } : {}),
+        manifest: change(manifestBefore, JSON.stringify(planned.manifest, null, 2) + "\n"),
+        revision, result,
+      };
+      // Write-ahead record precedes every manuscript, preamble and lineage write.
+      await saveIntent(store, intent);
+      const completed = await recoverInsertion(this.projects, projectId, store);
+      return completed!.result;
     });
   }
 

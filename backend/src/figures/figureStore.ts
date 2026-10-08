@@ -115,8 +115,11 @@ export class FigureStore {
     let raw: string;
     try {
       raw = await readFile(this.manifestPath, "utf8");
-    } catch {
-      return { schemaVersion: MANIFEST_SCHEMA_VERSION, figures: [] };
+    } catch (error) {
+      if ((error as { code?: string }).code === "ENOENT") {
+        return { schemaVersion: MANIFEST_SCHEMA_VERSION, figures: [] };
+      }
+      throw error;
     }
     let parsed: unknown;
     try {
@@ -174,8 +177,12 @@ export class FigureStore {
 
     const manifest = await this.loadManifest();
     const existing = manifest.figures.find((record) => record.figId === params.record.figId);
-    const merged: GeneratedFigureRecord =
-      existing === undefined ? params.record : { ...params.record, createdAt: existing.createdAt };
+    const merged: GeneratedFigureRecord = existing === undefined ? params.record : {
+      ...params.record,
+      createdAt: existing.createdAt,
+      ...(existing.insertedIn !== undefined ? { insertedIn: existing.insertedIn } : {}),
+      ...(existing.supersededBy !== undefined ? { supersededBy: existing.supersededBy } : {}),
+    };
     const figures = manifest.figures.filter(
       (record) => record.figId !== params.record.figId && record.specHash !== params.record.specHash,
     );
@@ -198,6 +205,16 @@ export class FigureStore {
     insertedIn: { file: string; label: string; revision: number };
   }): Promise<GeneratedFigureRecord | undefined> {
     const manifest = await this.loadManifest();
+    const planned = this.planInsertion(manifest, params);
+    await writeJsonAtomic(this.manifestPath, planned.manifest);
+    return planned.updated;
+  }
+
+  /** 纯计算 lineage，供持久化 intent 在写手稿前固定 manifest 结果。 */
+  planInsertion(manifest: FigureManifest, params: {
+    figId: string;
+    insertedIn: { file: string; label: string; revision: number };
+  }): { manifest: FigureManifest; updated: GeneratedFigureRecord } {
     let updated: GeneratedFigureRecord | undefined;
     const figures = manifest.figures.map((record): GeneratedFigureRecord => {
       const sameSlot =
@@ -215,11 +232,10 @@ export class FigureStore {
       }
       return record;
     });
-    await writeJsonAtomic(this.manifestPath, {
-      schemaVersion: MANIFEST_SCHEMA_VERSION,
-      figures,
-    } satisfies FigureManifest);
-    return updated;
+    if (updated === undefined) {
+      throw new FigureStoreCorruptedError(`插入目标 ${params.figId} 不在 manifest`);
+    }
+    return { manifest: { schemaVersion: MANIFEST_SCHEMA_VERSION, figures }, updated };
   }
 
   /** 读某图的持久化 spec（spec.json；缺失 → null） */

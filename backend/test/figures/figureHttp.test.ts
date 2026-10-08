@@ -17,11 +17,15 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { afterAll, describe, expect, it } from "vitest";
 
 import { startTestStack, scriptedIdeaRuntime, type TestStack } from "../helpers/testStack.js";
 import type { ParsedDocument } from "../../src/ingestion/types.js";
+import { FigureService } from "../../src/figures/FigureService.js";
+import { FigureCompiler } from "../../src/figures/FigureCompiler.js";
+import { FigureStore } from "../../src/figures/figureStore.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterAll(async () => {
@@ -639,5 +643,152 @@ describe("figures insert（C5 受控插入）", () => {
     });
     expect(insert.status).toBe(409);
     expect((insert.body["error"] as { code: string }).code).toBe("FIGURE_DATASET_STALE");
+  });
+});
+
+describe("figure durable insertion recovery", () => {
+  function restarted(stack: TestStack): FigureService {
+    return new FigureService({
+      projects: stack.stack.projects,
+      sources: stack.stack.sources,
+      documents: stack.stack.parsedDocuments,
+      revisions: stack.stack.revisions,
+      compiler: new FigureCompiler(),
+    });
+  }
+
+  async function fixture(): Promise<{ stack: TestStack; projectId: string; firstId: string; secondId: string }> {
+    const stack = await newStack();
+    const projectId = await createProject(stack, "idea_to_paper");
+    await seedNewPaperManuscript(stack, projectId);
+    const ids: string[] = [];
+    for (const title of ["First diagram", "Second diagram"]) {
+      const response = await stack.request("POST", `/api/projects/${projectId}/figures/generate`, {
+        kind: "diagram",
+        spec: { layout: "vertical", title, nodes: [{ id: "a", label: title }], edges: [] },
+      });
+      expect(response.status).toBe(200);
+      ids.push((response.body["figure"] as { record: { figId: string } }).record.figId);
+    }
+    return { stack, projectId, firstId: ids[0]!, secondId: ids[1]! };
+  }
+
+  for (const boundary of ["target", "main", "before-manifest", "manifest", "before-inventory", "inventory"]) {
+    it(`append ${boundary} failure then new service retry is idempotent`, async () => {
+      const { stack, projectId, firstId } = await fixture();
+      const params = { figId: firstId, mode: "append" as const, sectionId: "results" };
+      process.env["PAPERTEAM_FIGURE_TEST_FAILURE"] = boundary;
+      if (boundary.startsWith("before-")) process.env["PAPERTEAM_FIGURE_TEST_WRITE_FAILURE"] = "1";
+      try {
+        await expect(stack.stack.figures.insert(projectId, params)).rejects.toThrow(`FIGURE_TEST_INTERRUPTED:${boundary}`);
+      } finally {
+        delete process.env["PAPERTEAM_FIGURE_TEST_FAILURE"];
+        delete process.env["PAPERTEAM_FIGURE_TEST_WRITE_FAILURE"];
+      }
+      const result = await restarted(stack).insert(projectId, params);
+      expect((await restarted(stack).insert(projectId, params)).label).toBe(result.label);
+      const dir = stack.stack.projects.manuscriptDir(projectId);
+      const tex = await readFile(join(dir, "sections", "results.tex"), "utf8");
+      expect(tex.split(`figs/generated/${firstId}.pdf`).length - 1).toBe(1);
+      expect(await readFile(join(dir, "main.tex"), "utf8")).toContain("\\usepackage{graphicx}");
+      const store = new FigureStore(join(dir, "figs", "generated"));
+      expect((await store.get(firstId))?.insertedIn?.label).toBe(result.label);
+      const inventory = await readFile(join(stack.stack.projects.researchDir(projectId), "manuscript-visuals.json"), "utf8");
+      expect(inventory).toContain(`${firstId}.pdf`);
+    });
+  }
+
+  for (const boundary of ["target", "before-manifest", "manifest", "before-inventory", "inventory"]) {
+    it(`replace ${boundary} failure preserves lineage after restart`, async () => {
+      const { stack, projectId, firstId, secondId } = await fixture();
+      await restarted(stack).insert(projectId, { figId: firstId, mode: "append", sectionId: "results", label: "stable" });
+      const params = { figId: secondId, mode: "replace" as const, file: "sections/results.tex", replaceLabel: "fig:stable" };
+      process.env["PAPERTEAM_FIGURE_TEST_FAILURE"] = boundary;
+      if (boundary.startsWith("before-")) process.env["PAPERTEAM_FIGURE_TEST_WRITE_FAILURE"] = "1";
+      try {
+        await expect(stack.stack.figures.insert(projectId, params)).rejects.toThrow(`FIGURE_TEST_INTERRUPTED:${boundary}`);
+      } finally {
+        delete process.env["PAPERTEAM_FIGURE_TEST_FAILURE"];
+        delete process.env["PAPERTEAM_FIGURE_TEST_WRITE_FAILURE"];
+      }
+      await restarted(stack).insert(projectId, params);
+      const dir = stack.stack.projects.manuscriptDir(projectId);
+      const tex = await readFile(join(dir, "sections", "results.tex"), "utf8");
+      expect(tex).toContain(`figs/generated/${secondId}.pdf`);
+      expect(tex).not.toContain(`figs/generated/${firstId}.pdf`);
+      expect(tex).toContain("\\label{fig:stable}");
+      const store = new FigureStore(join(dir, "figs", "generated"));
+      expect((await store.get(firstId))?.supersededBy).toBe(secondId);
+      expect((await store.get(firstId))?.insertedIn).toBeUndefined();
+      expect((await store.get(secondId))?.insertedIn?.label).toBe("fig:stable");
+    });
+  }
+
+  it("foreign manuscript edit after interruption blocks recovery without overwriting", async () => {
+    const { stack, projectId, firstId } = await fixture();
+    const params = { figId: firstId, mode: "append" as const, sectionId: "results" };
+    process.env["PAPERTEAM_FIGURE_TEST_FAILURE"] = "target";
+    try { await expect(stack.stack.figures.insert(projectId, params)).rejects.toThrow(); }
+    finally { delete process.env["PAPERTEAM_FIGURE_TEST_FAILURE"]; }
+    const path = join(stack.stack.projects.manuscriptDir(projectId), "sections", "results.tex");
+    await writeFile(path, (await readFile(path, "utf8")) + "% later edit\n", "utf8");
+    await expect(restarted(stack).insert(projectId, params)).rejects.toMatchObject({ code: "FIGURE_RECOVERY_REQUIRED" });
+    expect(await readFile(path, "utf8")).toContain("% later edit");
+    const store = new FigureStore(join(stack.stack.projects.manuscriptDir(projectId), "figs", "generated"));
+    expect((await store.get(firstId))?.insertedIn).toBeUndefined();
+  });
+
+  it("replace interruption plus later manuscript edit blocks lineage commit", async () => {
+    const { stack, projectId, firstId, secondId } = await fixture();
+    await restarted(stack).insert(projectId, { figId: firstId, mode: "append", sectionId: "results", label: "stable" });
+    const params = { figId: secondId, mode: "replace" as const, file: "sections/results.tex", replaceLabel: "fig:stable" };
+    process.env["PAPERTEAM_FIGURE_TEST_FAILURE"] = "target";
+    try { await expect(stack.stack.figures.insert(projectId, params)).rejects.toThrow(); }
+    finally { delete process.env["PAPERTEAM_FIGURE_TEST_FAILURE"]; }
+    const path = join(stack.stack.projects.manuscriptDir(projectId), "sections", "results.tex");
+    await writeFile(path, (await readFile(path, "utf8")) + "% subsequent author edit\n", "utf8");
+    await expect(restarted(stack).insert(projectId, params)).rejects.toMatchObject({ code: "FIGURE_RECOVERY_REQUIRED" });
+    expect(await readFile(path, "utf8")).toContain("% subsequent author edit");
+    const store = new FigureStore(join(stack.stack.projects.manuscriptDir(projectId), "figs", "generated"));
+    expect((await store.get(firstId))?.insertedIn?.label).toBe("fig:stable");
+    expect((await store.get(firstId))?.supersededBy).toBeUndefined();
+    expect((await store.get(secondId))?.insertedIn).toBeUndefined();
+  });
+
+  it("two successive replacements form a complete lineage chain", async () => {
+    const { stack, projectId, firstId, secondId } = await fixture();
+    const third = await stack.request("POST", `/api/projects/${projectId}/figures/generate`, {
+      kind: "diagram", spec: { layout: "vertical", title: "Third diagram", nodes: [{ id: "c", label: "Third" }], edges: [] },
+    });
+    const thirdId = (third.body["figure"] as { record: { figId: string } }).record.figId;
+    const service = restarted(stack);
+    await service.insert(projectId, { figId: firstId, mode: "append", sectionId: "results", label: "stable" });
+    await service.insert(projectId, { figId: secondId, mode: "replace", file: "sections/results.tex", replaceLabel: "fig:stable" });
+    await restarted(stack).insert(projectId, { figId: thirdId, mode: "replace", file: "sections/results.tex", replaceLabel: "fig:stable" });
+    const store = new FigureStore(join(stack.stack.projects.manuscriptDir(projectId), "figs", "generated"));
+    expect((await store.get(firstId))?.supersededBy).toBe(secondId);
+    expect((await store.get(secondId))?.supersededBy).toBe(thirdId);
+    expect((await store.get(thirdId))?.insertedIn?.label).toBe("fig:stable");
+  });
+
+  it("SIGKILL in child after target write recovers in parent service", async () => {
+    const { stack, projectId, firstId } = await fixture();
+    const child = spawnSync(process.execPath, [
+      join(process.cwd(), "node_modules", "vite-node", "vite-node.mjs"),
+      join(process.cwd(), "test", "figures", "figureCrashChild.ts"),
+      stack.stack.projects.manuscriptDir(projectId),
+      stack.stack.projects.researchDir(projectId), projectId, firstId,
+    ], {
+      cwd: process.cwd(), timeout: 20_000, encoding: "utf8",
+      env: { ...process.env, NODE_ENV: "test", PAPERTEAM_FIGURE_TEST_FAILURE: "target", PAPERTEAM_FIGURE_TEST_EXIT: "1" },
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status === 0).toBe(false);
+    const intentPath = join(stack.stack.projects.manuscriptDir(projectId), "figs", "generated", "insertion-intent.json");
+    expect(JSON.parse(await readFile(intentPath, "utf8")).status).toBe("pending");
+    const params = { figId: firstId, mode: "append" as const, sectionId: "results" };
+    const result = await restarted(stack).insert(projectId, params);
+    expect(result.record.insertedIn?.label).toBe(result.label);
+    expect((await restarted(stack).insert(projectId, params)).label).toBe(result.label);
   });
 });
