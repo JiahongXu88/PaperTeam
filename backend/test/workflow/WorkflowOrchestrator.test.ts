@@ -916,6 +916,20 @@ describe("Domain Event 日志（events.jsonl）", () => {
     await waitForStatus(harness.orchestrator, run.runId, ["completed"]);
     const eventsPath = harness.runStore.eventsPath(harness.projectId, run.runId);
 
+    // run 终态与 workflow.completed 事件落盘是两次异步写：并行负载下终态可先
+    // 可见——轮询至末事件齐再追加损坏行（防时序 flake；同上例的等待口径）
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const events = (await readEventLog(eventsPath)).events;
+      if (events[events.length - 1]?.type === "workflow.completed") {
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`等待 workflow.completed 事件落盘超时（当前 ${events.length} 条）`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
     await writeFile(eventsPath, "{\"broken-json\n", { flag: "a" });
     const result = await readEventLog(eventsPath);
     expect(result.skippedLines).toBe(1);
