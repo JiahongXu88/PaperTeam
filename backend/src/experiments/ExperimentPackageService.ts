@@ -163,7 +163,10 @@ export class ExperimentPackageService {
     catch (error) { if ((error as { code?: string }).code === "ENOENT") throw new NotFoundError("实验包", packageId); throw error; }
     try {
       const item = JSON.parse(raw) as ExperimentPackage;
-      if (item.schemaVersion !== 1 || item.packageId !== packageId || !Array.isArray(item.files) || !Array.isArray(item.groups) || !Array.isArray(item.observations)) throw new Error();
+      if (item.schemaVersion !== 1 || item.packageId !== packageId || !/^[a-f0-9]{64}$/.test(item.packageHash) || typeof item.originalName !== "string" ||
+        !["inventory", "importing", "ready", "partial"].includes(item.status) || !Array.isArray(item.files) || !Array.isArray(item.groups) ||
+        !Array.isArray(item.observations) || !Array.isArray(item.relationCandidates) || !Array.isArray(item.warnings) ||
+        item.files.some((file) => !file || typeof file.path !== "string" || typeof file.bytes !== "number" || typeof file.role !== "string" || typeof file.groupId !== "string")) throw new Error();
       return item;
     } catch { throw new BusinessError("EXPERIMENT_MANIFEST_CORRUPTED", "实验包 Manifest 损坏，已停止读写"); }
   }

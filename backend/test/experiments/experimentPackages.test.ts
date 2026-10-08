@@ -28,7 +28,7 @@ async function upload(stack: TestStack, projectId: string, name: string) {
 describe("experiment package ZIP and product chain", () => {
   it("rejects traversal, case collision, symlink and extreme compression before Source writes", async () => {
     const { stack, projectId } = await setup();
-    for (const name of ["synthetic-malicious-traversal.zip", "synthetic-malicious-duplicate.zip", "synthetic-malicious-symlink.zip", "synthetic-malicious-ratio.zip"]) {
+    for (const name of ["synthetic-malicious-traversal.zip", "synthetic-malicious-drive.zip", "synthetic-malicious-duplicate.zip", "synthetic-malicious-unicode.zip", "synthetic-malicious-symlink.zip", "synthetic-malicious-ratio.zip", "synthetic-malicious-count.zip", "synthetic-malicious-depth.zip"]) {
       const result = await upload(stack, projectId, name);
       expect(result.status, name).toBe(422);
       expect((result.body["error"] as { code: string }).code, name).toBe("EXPERIMENT_ARCHIVE_UNSAFE");
@@ -106,6 +106,15 @@ describe("experiment package ZIP and product chain", () => {
     const get = await stack.request("GET", `/api/projects/${projectId}/experiment-packages/${item.packageId}`);
     expect(get.status).toBe(500);
     expect((get.body["error"] as { code: string }).code).toBe("EXPERIMENT_MANIFEST_CORRUPTED");
+  });
+
+  it("registers nested archives as unsupported without expanding them", async () => {
+    const { stack, projectId } = await setup();
+    const result = await upload(stack, projectId, "synthetic-malicious-nested.zip");
+    expect(result.status).toBe(201);
+    const item = result.body["package"] as { files: Array<{ path: string; parseStatus: string }> };
+    expect(item.files).toEqual([expect.objectContaining({ path: "nested.zip", parseStatus: "unsupported" })]);
+    expect(await stack.stack.sources.list(projectId)).toHaveLength(0);
   });
 
   it("holds incompatible protocols as conflicts and persists an author grouping edit", async () => {

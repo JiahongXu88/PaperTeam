@@ -41,3 +41,13 @@ with ZipFile(root / "synthetic-malicious-symlink.zip", "w", ZIP_DEFLATED) as z:
     z.writestr(link, "../../outside.csv")
 with ZipFile(root / "synthetic-malicious-nested.zip", "w", ZIP_DEFLATED) as z:
     z.writestr("nested.zip", (root / "synthetic-malicious-ratio.zip").read_bytes())
+with ZipFile(root / "synthetic-malicious-count.zip", "w", ZIP_DEFLATED) as z:
+    for i in range(201):
+        z.writestr(f"files/f{i:03}.txt", "SYNTHETIC")
+with ZipFile(root / "synthetic-malicious-depth.zip", "w", ZIP_DEFLATED) as z:
+    z.writestr("a/b/c/d/e/f/g/h/i/results.csv", "metric,value\ntest,1\n")
+with ZipFile(root / "synthetic-malicious-unicode.zip", "w", ZIP_DEFLATED) as z:
+    z.writestr("café.csv", "metric,value\ntest,1\n")
+    z.writestr("cafe\u0301.csv", "metric,value\ntest,2\n")
+with ZipFile(root / "synthetic-malicious-drive.zip", "w", ZIP_DEFLATED) as z:
+    z.writestr("C:/outside.csv", "metric,value\ntest,1\n")
