@@ -220,7 +220,16 @@ M12.0 冻结语义落地——**Writer 不允许输出任意原始 TikZ/PGFPlots
 演示红线：不宣称支持任意格式乱序 ZIP 实验包自动识别（未实现）；方法图走
 DiagramSpec 表单（模板化 TikZ，非自由绘图）。
 
-## 20. 下一阶段建议
+## 20. Git / CI / 部署记录
+
+- **提交**：`6db034e`（feat(figures): M12 Batch 3 产品收口，34 files / +5,969 −40）+ `a20a528`（fix(test): events.jsonl 时序 flake 轮询修复——CI 并行负载下终态可见先于 workflow.completed 事件落盘，既有测试的等待口径缺口，非本轮功能性回归）。
+- **GitHub CI**：`6db034e` 首跑 Test 步 1 失败（上述 flake，docker job 连带 skip）→ `a20a528` **CI run 37728925205 success**（ubuntu test 全量 + docker build smoke：镜像构建 / 容器 ready / **容器内真实图表编译 smoke（figure-smoke.mjs 5 用例含 CJK + specHash 缓存）** / restart 持久化 / compose down-up）。
+- **Linux Integration**：**run 37728925181 @ a20a528 success**（docling native 全链 + backend-docling 镜像内解析 + 无残留子进程 + HF 缓存落 volume）。
+- **doctor 精修**：docker 形态的 docling 检查按容器内 venv 探测判定（compose ps 的 Image 字段可能是 sha256 digest，不可靠）——本服务器如实报「backend-docling 镜像在运行」。
+- **服务器部署**：`git pull`（HEAD == origin/main）→ `docker compose build`（backend-docling + web 两目标，工作树规范形态）→ `up -d` 滚动重建 → 双容器 healthy；`.env` / compose.override / 三 volume / 模型配置 / HF 缓存全部保留；**Runtime Doctor 自动检测 docker 形态全 PASS（exit 0）**。
+- **服务器宿主机增量**：Node 22.20.0（~/.local 用户目录 tarball，未动系统）+ pymupdf（pip --user）——为「Server First」执行全量回归所需；镜像内依赖不受影响。
+
+## 21. 下一阶段建议
 
 1. M12 Final Closure：三条产品线 Demo 打磨 + README 截图更新 + M12_3 收口报告合并视图。
 2. 修订工作流的 insert_figure 计划条目类型（M11 修订计划 ↔ 图表 action 的审批桥——本轮以「replace-only + 修订工作流内不改」的保守边界替代）。
@@ -229,7 +238,7 @@ DiagramSpec 表单（模板化 TikZ，非自由绘图）。
 
 ---
 
-## 21. M12 完成度判定
+## 22. M12 完成度判定
 
 - **M12.3（Academic Figure Generation）**：C1–C6 全部 COMPLETE（C1–C3 Batch 1 + C4–C6 本轮，真实服务器验收）。
 - **M12.1（Target Publication Intelligence）**：Batch 2 COMPLETE（未回归）。

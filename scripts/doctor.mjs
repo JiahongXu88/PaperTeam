@@ -401,12 +401,23 @@ function checkPdfToolchain(mode) {
 function checkDocling(pdfInterpreter, mode) {
   if (mode === "docker") {
     const doclingPython = process.env.PAPERTEAM_DOCLING_PYTHON?.trim();
+    // 宿主机 doctor 看不到容器内 venv——用容器内解释器探测判定（镜像名字段
+    // 可能是 sha256 digest，不可靠；backend-docling 镜像的 venv 路径是事实源）
+    const probe = run(
+      "docker",
+      ["compose", "exec", "-T", "backend", "sh", "-c", "test -x /opt/paperteam-docling-venv/bin/python && echo yes"],
+      20_000,
+      repoRoot,
+    );
+    const doclingAvailable = probe !== null && probe.trim() === "yes";
     report(
       "docling 结构化解析",
       "PASS",
       doclingPython !== undefined
         ? `部署模式（docker）：PAPERTEAM_DOCLING_PYTHON=${doclingPython}（镜像内置）`
-        : "部署模式（docker）：基镜像为 pymupdf 文本层（结构化解析用 backend-docling 镜像）",
+        : doclingAvailable
+          ? "部署模式（docker）：backend-docling 镜像在运行（容器内 docling venv 在位，结构化解析可用）"
+          : "部署模式（docker）：backend 基镜像为 pymupdf 文本层（结构化解析用 backend-docling 镜像）",
     );
     return;
   }
