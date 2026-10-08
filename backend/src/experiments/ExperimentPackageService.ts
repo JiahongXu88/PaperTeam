@@ -328,6 +328,10 @@ export class ExperimentPackageService {
     const items = await this.list(projectId);
     const source = await this.sources.get(projectId, sourceId);
     if (!source) return false;
-    return items.some((item) => item.groups.some((group) => group.status === "confirmed" && group.filePaths.some((path) => item.files.some((file) => file.path === path && file.sourceId === sourceId && file.hash === source.contentHash))));
+    return items.some((item) => item.groups.some((group) => group.status === "confirmed" && group.filePaths.some((path) => item.files.some((file) =>
+      file.path === path && file.sourceId === sourceId && file.hash === source.contentHash &&
+      ["main_result", "baseline_result", "ablation_result"].includes(file.role) &&
+      (file.parseStatus === "ok" || file.parseStatus === "partial")
+    ))));
   }
 }

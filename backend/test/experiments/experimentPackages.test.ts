@@ -50,11 +50,13 @@ describe("experiment package ZIP and product chain", () => {
     expect(second.body["created"]).toBe(false);
     const before = await stack.request("GET", `/api/projects/${projectId}/figures/datasets`);
     expect(before.body["datasets"]).toEqual([]);
-    const confirmed = await stack.request("POST", `/api/projects/${projectId}/experiment-packages/${item.packageId}/confirm`, { groupIds: ["main", "baseline-a", "ablation-no-attention"] });
+    const confirmed = await stack.request("POST", `/api/projects/${projectId}/experiment-packages/${item.packageId}/confirm`, { groupIds: ["main", "baseline-a", "ablation-no-attention", "shared-config"] });
     expect(confirmed.status).toBe(200);
     const data = await stack.request("GET", `/api/projects/${projectId}/figures/datasets`);
     const datasets = data.body["datasets"] as Array<{ sourceId: string; blockId: string; datasetHash: string; columns: string[] }>;
     const mainSource = item.files.find((entry) => entry.path === "main/results.csv")!.sourceId!;
+    const configSource = item.files.find((entry) => entry.path === "config/model.json")!.sourceId!;
+    expect(datasets.some((entry) => entry.sourceId === configSource)).toBe(false);
     const main = datasets.find((entry) => entry.sourceId === mainSource)!;
     expect(main.datasetHash).toMatch(/^[a-f0-9]{64}$/);
     expect(main.columns).toContain("HOTA");
