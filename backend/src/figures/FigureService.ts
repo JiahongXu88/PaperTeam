@@ -73,6 +73,7 @@ export interface FigureServiceDeps {
   documents: ParsedDocumentStore;
   revisions: ManuscriptRevisionStore;
   compiler: FigureCompiler;
+  experimentPackages?: { isConfirmedSource(projectId: string, sourceId: string): Promise<boolean> };
 }
 
 /** 列表视图（manifest 记录 + 派生状态） */
@@ -159,6 +160,7 @@ export class FigureService {
   private readonly documents: ParsedDocumentStore;
   private readonly revisions: ManuscriptRevisionStore;
   private readonly compiler: FigureCompiler;
+  private readonly experimentPackages?: FigureServiceDeps["experimentPackages"];
 
   constructor(deps: FigureServiceDeps) {
     this.projects = deps.projects;
@@ -166,6 +168,7 @@ export class FigureService {
     this.documents = deps.documents;
     this.revisions = deps.revisions;
     this.compiler = deps.compiler;
+    this.experimentPackages = deps.experimentPackages;
   }
 
   private store(projectId: string): FigureStore {
@@ -180,6 +183,7 @@ export class FigureService {
     const items = await this.sources.list(projectId);
     const candidates: DatasetCandidate[] = [];
     for (const item of items) {
+      if (item.origin === "EXPERIMENT_PACKAGE" && !await this.experimentPackages?.isConfirmedSource(projectId, item.sourceId)) continue;
       const document = await this.documents.load(projectId, item.sourceId);
       if (document === null || document.status === "failed") {
         continue;
@@ -216,6 +220,9 @@ export class FigureService {
     const item = items.find((entry) => entry.sourceId === sourceId);
     if (item === undefined) {
       throw new FigureSourceMissingError(`source ${sourceId} 不存在于项目 ${projectId}`);
+    }
+    if (item.origin === "EXPERIMENT_PACKAGE" && !await this.experimentPackages?.isConfirmedSource(projectId, sourceId)) {
+      throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", "实验包来源尚未由作者确认");
     }
     const document = await this.documents.load(projectId, sourceId);
     if (document === null) {

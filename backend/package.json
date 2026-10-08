@@ -17,13 +17,15 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "1.0.1",
     "@types/node": "^22.10.0",
+    "@types/yauzl": "3.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.0.1",
-    "typebox": "1.3.27",
     "exceljs": "^4.4.0",
-    "yaml": "^2.9.1"
+    "typebox": "1.3.27",
+    "yaml": "^2.9.1",
+    "yauzl": "3.4.0"
   }
 }

@@ -53,7 +53,8 @@ export type SourceOrigin =
   | "ARXIV_IMPORT"
   | "URL_IMPORT"
   | "BIBTEX_IMPORT"
-  | "AGENT_RETRIEVED";
+  | "AGENT_RETRIEVED"
+  | "EXPERIMENT_PACKAGE";
 /**
  * 条目状态：metadata_only（有元数据无全文）→ pending（有文件待解析）→
  * available / partial / failed（解析终态）+ rejected（人工否决）。
@@ -220,6 +221,7 @@ const SOURCE_ORIGINS: readonly SourceOrigin[] = [
   "URL_IMPORT",
   "BIBTEX_IMPORT",
   "AGENT_RETRIEVED",
+  "EXPERIMENT_PACKAGE",
 ];
 const SOURCE_VERSION_TYPES: readonly SourceVersionType[] = [
   "preprint",

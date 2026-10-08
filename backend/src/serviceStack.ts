@@ -70,6 +70,7 @@ import { VenueResolutionService } from "./search/venueResolution.js";
 import { FigureStore } from "./figures/figureStore.js";
 import { FigureCompiler } from "./figures/FigureCompiler.js";
 import { FigureService } from "./figures/FigureService.js";
+import { ExperimentPackageService } from "./experiments/ExperimentPackageService.js";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { EvidenceCandidateStore } from "./evidence/candidates.js";
@@ -277,6 +278,7 @@ export interface ServiceStack {
   visualReview: VisualReviewService;
   /** M12.3 C4/C5：学术图表产品服务（数据集候选 → spec → 编译 → 插入；零 LLM） */
   figures: FigureService;
+  experimentPackages: ExperimentPackageService;
   /** M12.1 A5–A8：Target Publication Intelligence 服务束（benchmark 冻结→discovery→profile→readiness） */
   targets: TargetServices;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -841,12 +843,14 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // （含来源锚反查防篡改）→ FigureCompiler（xelatex 单遍 + specHash 缓存）→
   // 受控手稿插入（append/replace + caption 真实性硬闸）。per-project 串行化
   // 在服务内（manifest 互斥）；本层零 LLM。
+  const experimentPackages = new ExperimentPackageService(options.projects, sources, ingestion, parsedDocuments);
   const figures = new FigureService({
     projects: options.projects,
     sources,
     documents: parsedDocuments,
     revisions,
     compiler: options.figures?.compiler ?? new FigureCompiler(),
+    experimentPackages,
   });
   return {
     runtime: options.runtime,
@@ -883,6 +887,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     vision,
     visualReview,
     figures,
+    experimentPackages,
     targets,
     pdfAnalyzer,
     manuscript,

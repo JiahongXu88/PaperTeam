@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, open, readFile, rmdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 import {
   BusinessError,
@@ -37,6 +38,8 @@ import { MAX_SOURCE_BYTES } from "./sources/SourceStore.js";
 import { resolveGeneratedFigureAsset, resolveSourceFigureAsset } from "./vision/figureAssets.js";
 import { FigureStore } from "./figures/figureStore.js";
 import type { InsertParams } from "./figures/FigureService.js";
+import { PACKAGE_LIMITS } from "./experiments/archive.js";
+import type { ExperimentRole } from "./experiments/ExperimentPackageService.js";
 import type { BenchmarkTargetSpec } from "./target/types.js";
 import type { SurveyEntryPatch } from "./survey/MatrixService.js";
 import {
@@ -922,6 +925,72 @@ async function handleProjectResourceRoutes(
   const projectId = base[1] ?? "";
   const resource = base[2] ?? "";
   const rest = base[3] ?? "";
+
+  // ---- Experiment Packages: binary ZIP stream, bounded independently of JSON bodies ----
+  if (resource === "experiment-packages") {
+    await stack.projects.getRequired(projectId);
+    if (rest === "") {
+      if (method === "GET") { sendJson(res, 200, { packages: await stack.experimentPackages.list(projectId) }); return true; }
+      if (method === "POST") {
+        if (req.headers["content-type"]?.split(";")[0]?.trim() !== "application/zip") throw new BusinessError("INVALID_REQUEST", "实验包上传需要 application/zip");
+        const declared = Number(req.headers["content-length"] ?? 0);
+        if (Number.isFinite(declared) && declared > PACKAGE_LIMITS.archiveBytes) throw new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限");
+        req.setTimeout(120_000, () => {
+          if (!res.headersSent) sendJson(res, 408, { status: "error", error: { code: "EXPERIMENT_UPLOAD_TIMEOUT", message: "实验包上传超时（120 秒）" } });
+          req.destroy();
+        });
+        const directory = await mkdtemp(join(tmpdir(), "paperteam-experiment-"));
+        const upload = join(directory, "upload.zip");
+        try {
+          const file = await open(upload, "wx");
+          try {
+            let size = 0;
+            for await (const chunk of req) {
+              const data = chunk as Buffer;
+              size += data.length;
+              if (size > PACKAGE_LIMITS.archiveBytes) throw new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限");
+              await file.write(data);
+            }
+          } finally { await file.close(); }
+          let originalName = "experiment.zip";
+          if (typeof req.headers["x-package-name"] === "string") {
+            try { originalName = decodeURIComponent(req.headers["x-package-name"]).slice(0, 200); }
+            catch { throw new BusinessError("INVALID_REQUEST", "X-Package-Name 编码无效"); }
+          }
+          const result = await stack.experimentPackages.importZip(projectId, upload, originalName);
+          sendJson(res, result.created ? 201 : 200, { package: result.item, created: result.created });
+        } finally {
+          await unlink(upload).catch(() => {});
+          await rmdir(directory).catch(() => {});
+        }
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method); return true;
+    }
+    const match = /^\/(ep-[a-f0-9]{32})(\/confirm)?$/.exec(rest);
+    if (!match) return false;
+    const packageId = match[1]!;
+    if (match[2]) {
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const body = await readJsonBody(req);
+      const groupIds = body["groupIds"];
+      if (!Array.isArray(groupIds) || groupIds.some((id) => typeof id !== "string")) throw new BusinessError("INVALID_REQUEST", "groupIds 必须是字符串数组");
+      sendJson(res, 200, { package: await stack.experimentPackages.confirm(projectId, packageId, groupIds) });
+      return true;
+    }
+    if (method === "GET") { sendJson(res, 200, { package: await stack.experimentPackages.view(projectId, packageId) }); return true; }
+    if (method === "PATCH") {
+      const body = await readJsonBody(req);
+      const path = readStringField(body, "path");
+      const role = readStringField(body, "role") as ExperimentRole | undefined;
+      const groupId = readStringField(body, "groupId");
+      const roles: ExperimentRole[] = ["main_result", "baseline_result", "ablation_result", "experiment_config", "training_log", "evaluation_log", "dataset_description", "figure_asset", "notebook", "source_code", "documentation", "unknown"];
+      if (!path || !role || !roles.includes(role) || !groupId) throw new BusinessError("INVALID_REQUEST", "需要合法的 path、role、groupId");
+      sendJson(res, 200, { package: await stack.experimentPackages.editFile(projectId, packageId, path, role, groupId) });
+      return true;
+    }
+    sendMethodNotAllowed(res, "GET, PATCH", method); return true;
+  }
 
   // ---- sources（M6.2：Project Literature Library——文件上传 / 导入 / 候选 / 版本关系）----
   if (resource === "sources") {

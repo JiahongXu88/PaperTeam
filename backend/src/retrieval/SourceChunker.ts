@@ -106,6 +106,11 @@ export class SourceChunker {
    * 巨量全文不进 note/log）。
    */
   async chunkSource(projectId: string, item: SourceItem, filePath: string): Promise<SourceChunkResult> {
+    // Package files may contain credentials or hostile instructions in config/log/README.
+    // They are consumed through explicit parsed-data/Evidence/Figure paths, never raw RAG text.
+    if (item.origin === "EXPERIMENT_PACKAGE") {
+      return skipped(item.sourceId, "full_text_unavailable", "实验包原文不进入模型检索；使用已确认的结构化数据入口");
+    }
     if (item.fileName === undefined) {
       return skipped(item.sourceId, "full_text_unavailable", "metadata-only 条目（无原始文件）");
     }
