@@ -57,6 +57,10 @@ PaperTeam 能力声明的证据来源，只增不删。当前工程状态摘要�
 - [M12_BATCH3_FIGURE_GENERATION_CLOSURE.md](M12_BATCH3_FIGURE_GENERATION_CLOSURE.md) — Batch 3 图表生成产品收口（C4 API/UI + C5 手稿受控插入 + C6 真实性守卫 + doctor 部署形态；新加坡 ECS 真实验收）
 - [M12_FINAL_CLOSURE.md](M12_FINAL_CLOSURE.md) — M12 最终收口（状态口径统一 / README 双语 / 三个 Demo 方案 / 技术亮点 / CI 证据链 / 已知限制与 PENDING 项如实登记）
 
+## M13 — Storage & Architecture Evolution
+
+- [M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md](M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md) — 存储架构只读评估（全库 store 审计 / 读写并发模型 / 事务边界分类 / events.jsonl flake 归因 / 三方案决策矩阵；DATABASE_DECISION = NO-GO — Keep File-backed，SQLite 为触发后唯一候选）
+
 ## Runtime / 架构审计
 
 - [AGENT_ARCHITECTURE_AUDIT.md](AGENT_ARCHITECTURE_AUDIT.md) — Agent 架构审计

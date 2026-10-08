@@ -356,9 +356,12 @@ Reviewer、Experiment subsystem 均在 backlog（M5 未含，见 M5_PLAN §2）�
   项目级 `evidence/evidence.jsonl` 持久化；EvidenceStore 保持接口抽象，项目内查询
   优先使用内存索引 / 文件扫描等轻量实现，M3 不提前引入数据库。
 - **结构化状态**（WorkflowRun、ReviewReport、Issue、SystemLog 等）：与 EvidenceStore
-  同口径——M3 文件优先、不提前引入数据库；SQLite 是否引入（后续可切 PostgreSQL）
-  及具体索引方式，待真实数据规模 / 查询性能 / 并发 / 跨项目检索需求出现后再评估。
-  文件内容仍在 Workspace。
+  同口径——M3 文件优先、不提前引入数据库。**M13.0 已完成正式评估（2026-10-08）：
+  DATABASE_DECISION = NO-GO — Keep File-backed**（全库 store 审计 + 26 真实项目实测；
+  EvidenceStore 更新类写放大、四处无补偿多文件序列等发现问题全部有文件侧修法；
+  再评估触发器与触发后 benchmark 设计见
+  [research/M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md](research/M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md)；
+  若触发则 SQLite 为唯一候选，PostgreSQL 挂起至多用户立项）。文件内容仍在 Workspace。
 - **版本管理**：服务器端 Git；前端只展示业务版本号（V12/V13…，Draft / Final 标记）；
   Existing-Paper 导入产生 baseline 快照版本。
 
