@@ -820,4 +820,31 @@ describe("figure durable insertion recovery", () => {
     expect(result.record.insertedIn?.label).toBe(result.label);
     expect((await restarted(stack).insert(projectId, params)).label).toBe(result.label);
   });
+
+  it("SIGKILL in child after replace manifest write rebuilds inventory and lineage", async () => {
+    const { stack, projectId, firstId, secondId } = await fixture();
+    await restarted(stack).insert(projectId, { figId: firstId, mode: "append", sectionId: "results", label: "stable" });
+    const child = spawnSync(process.execPath, [
+      join(process.cwd(), "node_modules", "vite-node", "vite-node.mjs"),
+      join(process.cwd(), "test", "figures", "figureCrashChild.ts"),
+      stack.stack.projects.manuscriptDir(projectId),
+      stack.stack.projects.researchDir(projectId), projectId, secondId, "replace",
+    ], {
+      cwd: process.cwd(), timeout: 20_000, encoding: "utf8",
+      env: { ...process.env, NODE_ENV: "test", PAPERTEAM_FIGURE_TEST_FAILURE: "manifest", PAPERTEAM_FIGURE_TEST_EXIT: "1" },
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status === 0).toBe(false);
+    const dir = stack.stack.projects.manuscriptDir(projectId);
+    const store = new FigureStore(join(dir, "figs", "generated"));
+    expect((await store.get(firstId))?.supersededBy).toBe(secondId);
+    const intentPath = join(store.root, "insertion-intent.json");
+    expect(JSON.parse(await readFile(intentPath, "utf8")).status).toBe("pending");
+    const params = { figId: secondId, mode: "replace" as const, file: "sections/results.tex", replaceLabel: "fig:stable" };
+    await restarted(stack).insert(projectId, params);
+    expect((await store.get(secondId))?.insertedIn?.label).toBe("fig:stable");
+    const inventory = await readFile(join(stack.stack.projects.researchDir(projectId), "manuscript-visuals.json"), "utf8");
+    expect(inventory).toContain(`${secondId}.pdf`);
+    expect(inventory).not.toContain(`${firstId}.pdf`);
+  });
 });

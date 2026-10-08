@@ -17,9 +17,9 @@ append 使用稳定请求指纹和 receipt 返回相同成功响应；因 label 
 ### 故障注入与验证
 
 - 定向 Figure HTTP 测试：append 在 target/main/before-manifest/manifest/before-inventory/inventory 边界，replace 在 target/before-manifest/manifest/before-inventory/inventory 边界注入异常；写入前的故障点注入模拟 `EIO`。每次使用重新构造的 FigureService 重试并检查 Figure 环境仅一次、manifest lineage、graphicx 和 Inventory。
-- 独立 Node 子进程通过 `vite-node` 运行真实 `FigureService.insert()`，目标 `.tex` 写后 `SIGKILL`，父进程从磁盘 pending intent 恢复。同一请求重复调用返回相同 label。测试用环境开关只在 `NODE_ENV=test` 生效。
+- 独立 Node 子进程通过 `vite-node` 运行真实 `FigureService.insert()`：append 在目标 `.tex` 写后、replace 在 manifest 写后分别 `SIGKILL`，父进程从磁盘 pending intent 恢复并核对 lineage / Inventory。同一请求重复调用返回相同 label。测试用环境开关只在 `NODE_ENV=test` 生效。
 - append 与 replace 的故障后外部手稿编辑均返回 `FIGURE_RECOVERY_REQUIRED`，不覆盖编辑、不伪造 lineage；连续两次 replace 验证旧→中→新链。
-- Windows 本地：`test/figures/figureHttp.test.ts` 27/27 PASS（追加不同请求冲突、显式 label 及 main.tex 外部编辑）；此前 Figure + Manuscript 定向回归 11 files / 160 tests PASS（其中原有 figureReal smoke 执行了 3 次小型 TeX 编译）；backend typecheck PASS；`git diff --check` PASS。`EXCEPTION_RECOVERY_PASS`、`PROCESS_RESTART_RECOVERY_PASS`、`ABRUPT_PROCESS_TERMINATION_PASS` 均有测试证据。Linux 结果以本批最终 commit 的 CI 为准。
+- Windows 本地：`test/figures/figureHttp.test.ts` 28/28 PASS（追加不同请求冲突、显式 label、main.tex 外部编辑及 replace 子进程终止）；此前 Figure + Manuscript 定向回归 11 files / 160 tests PASS（其中原有 figureReal smoke 执行了 3 次小型 TeX 编译）；backend typecheck PASS；`git diff --check` PASS。`EXCEPTION_RECOVERY_PASS`、`PROCESS_RESTART_RECOVERY_PASS`、`ABRUPT_PROCESS_TERMINATION_PASS` 均有测试证据。Linux 结果以本批最终 commit 的 CI 为准。
 
 修改文件：`backend/src/figures/{FigureService,figureStore,insertionRecovery}.ts`、`backend/src/errors.ts`、`backend/test/figures/{figureHttp.test,figureCrashChild}.ts`、本 handoff 与 `docs/PROJECT_STATUS.md`。
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { FigureService } from "../../src/figures/FigureService.js";
 import { FigureCompiler } from "../../src/figures/FigureCompiler.js";
 
-const [manuscriptDir, researchDir, projectId, figId] = process.argv.slice(2);
+const [manuscriptDir, researchDir, projectId, figId, mode] = process.argv.slice(2);
 if (!manuscriptDir || !researchDir || !projectId || !figId) process.exit(2);
 const service = new FigureService({
   projects: {
@@ -17,5 +17,7 @@ const service = new FigureService({
   revisions: { currentRevision: async () => 0 } as never,
   compiler: new FigureCompiler(),
 });
-await service.insert(projectId, { figId, mode: "append", sectionId: "results" });
+await service.insert(projectId, mode === "replace"
+  ? { figId, mode: "replace", file: "sections/results.tex", replaceLabel: "fig:stable" }
+  : { figId, mode: "append", sectionId: "results" });
 process.exit(0);

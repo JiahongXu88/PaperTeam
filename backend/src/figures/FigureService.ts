@@ -455,7 +455,10 @@ export class FigureService {
       const requestHash = requestFingerprint(params);
       const recovered = await recoverInsertion(this.projects, projectId, store);
       if (recovered?.status === "complete" && recovered.requestHash === requestHash &&
+          await store.pdfAssetExists(recovered.result.record) &&
           hashText(await readFile(join(this.projects.manuscriptDir(projectId), recovered.targetFile), "utf8")) === recovered.target.after &&
+          (recovered.main === undefined ||
+            hashText(await readFile(this.projects.mainTexPath(projectId), "utf8")) === recovered.main.after) &&
           hashText(await readFile(store.manifestPath, "utf8")) === recovered.manifest.after) {
         return recovered.result;
       }

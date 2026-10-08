@@ -62,6 +62,8 @@ export async function readIntent(store: FigureStore): Promise<InsertionIntent | 
       !/^[0-9a-f]{64}$/.test(value.requestHash) || !value.result ||
       value.result.file !== value.targetFile ||
       typeof value.result.environment !== "string" || !value.target.content.includes(value.result.environment) ||
+      !/^fig-[0-9a-f]+$/.test(value.result.record?.figId ?? "") ||
+      value.result.record.assets?.pdf !== `${value.result.record.figId}.pdf` ||
       typeof value.revision !== "number") {
     return recoveryRequired("intent 结构或路径无效");
   }
@@ -82,6 +84,9 @@ export async function saveIntent(store: FigureStore, intent: InsertionIntent): P
 export async function recoverInsertion(projects: ProjectStore, projectId: string, store: FigureStore): Promise<InsertionIntent | null> {
   const intent = await readIntent(store);
   if (intent === null || intent.status === "complete") return intent;
+  if (!(await store.pdfAssetExists(intent.result.record))) {
+    recoveryRequired(`图表 ${intent.result.record.figId} 的 PDF 资产缺失`);
+  }
   const manuscriptDir = projects.manuscriptDir(projectId);
   const targetPath = join(manuscriptDir, intent.targetFile);
   const mainPath = projects.mainTexPath(projectId);
