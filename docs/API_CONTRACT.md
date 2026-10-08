@@ -841,3 +841,19 @@ interface WorkflowDomainEvent {
 - 新增可选字段向后兼容，可在小版本直接追加；
 - Backend `errors.ts` 的错误码是稳定契约，前端按 `code` 分支（如
   `PROJECT_NOT_FOUND` → 「项目不存在」态）。
+
+## 5. M13.2 Experiment Packages
+
+Base path: `/api/projects/:id/experiment-packages`. All responses are JSON; errors retain the common `{status:"error",error:{code,message}}` shape.
+
+| Method/path | Input | Response |
+| --- | --- | --- |
+| `POST /` | Raw `application/zip` stream, optional URL-encoded `X-Package-Name` | `201 {package,created:true}`; same archive `200 {package,created:false}` |
+| `GET /` | — | `{packages: ExperimentPackage[]}` |
+| `GET /:packageId` | — | `{package}` including current Source-drift conflicts |
+| `PATCH /:packageId` | `{path,role,groupId}` | `{package}`; invalidates prior group confirmations |
+| `POST /:packageId/confirm` | `{groupIds:string[]}` | `{package}`; author confirmation only |
+
+Limits: 16 MiB raw ZIP, 200 files, 20 MiB per file, 64 MiB inflated total, depth 8, ratio 100:1, 120-second upload idle timeout. Archive structural hazards return `EXPERIMENT_ARCHIVE_UNSAFE` (422), size limit `EXPERIMENT_ARCHIVE_LIMIT` (413), corrupted manifest `EXPERIMENT_MANIFEST_CORRUPTED` (500, fail-closed), stale/conflicting confirmation `EXPERIMENT_CONFIRM_CONFLICT` (409). Per-file parser failure is a visible `parseStatus=failed` inside a `partial` package.
+
+The package record carries exact ZIP-relative paths, file hashes, canonical Source IDs, role/group candidates and rationale, individual metric observations with block/row/column or JSON path, and config-result relation candidates. These candidate relations are not scientific facts. ZIP files are never executed. Package Sources are excluded from raw retrieval prompts. Confirmed result Sources become available through existing `/figures/datasets` and Figure APIs; author-selected cells use existing `/sources/:sid/records/evidence` and remain `user_confirmed` / `unverified`.

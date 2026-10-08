@@ -14,7 +14,8 @@ export type SourceOrigin =
   | "ARXIV_IMPORT"
   | "URL_IMPORT"
   | "BIBTEX_IMPORT"
-  | "AGENT_RETRIEVED";
+  | "AGENT_RETRIEVED"
+  | "EXPERIMENT_PACKAGE";
 
 /** 条目状态：metadata_only（有元数据无全文）→ pending → available / partial / failed + rejected */
 export type SourceStatus =

@@ -59,6 +59,7 @@ const ORIGIN_LABELS: Record<SourceOrigin, string> = {
   URL_IMPORT: "URL 导入",
   BIBTEX_IMPORT: "BibTeX 导入",
   AGENT_RETRIEVED: "检索入库",
+  EXPERIMENT_PACKAGE: "实验数据包",
 };
 
 const TYPE_LABELS: Record<SourceType, string> = {
@@ -713,7 +714,8 @@ export function SourcesPanel({ projectId }: { projectId: string }) {
     );
   };
 
-  const selectableIds = (data ?? []).filter((source) => source.fileName === undefined).map((source) => source.sourceId);
+  const literature = (data ?? []).filter((source) => source.origin !== "EXPERIMENT_PACKAGE");
+  const selectableIds = literature.filter((source) => source.fileName === undefined).map((source) => source.sourceId);
   // 列表刷新后清掉已不可选择的勾选（如条目已获得全文）
   const effectiveSelected = new Set([...selected].filter((id) => selectableIds.includes(id)));
   const actionBusy = resolve.isPending || batch.isPending || attach.isPending;
@@ -724,7 +726,7 @@ export function SourcesPanel({ projectId }: { projectId: string }) {
       <section className="panel section-block">
         <div className="section-head">
           <h2>文献列表</h2>
-          <span className="section-note">{data?.length ?? 0} 条</span>
+          <span className="section-note">{literature.length} 条</span>
         </div>
         {selectableIds.length > 0 ? (
           <div className="action-row">
@@ -784,13 +786,13 @@ export function SourcesPanel({ projectId }: { projectId: string }) {
             detail={formatApiErrorDetail(error)}
             onRetry={() => void refetch()}
           />
-        ) : data === undefined || data.length === 0 ? (
+        ) : literature.length === 0 ? (
           <p className="panel-empty">
             还没有文献。上传 PDF、粘贴 BibTeX，或用 DOI / arXiv / URL 标识导入。
           </p>
         ) : (
           <ul className="source-list">
-            {data.map((source) => (
+            {literature.map((source) => (
               <SourceRow
                 key={source.sourceId}
                 source={source}

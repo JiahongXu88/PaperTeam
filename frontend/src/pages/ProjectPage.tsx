@@ -10,6 +10,7 @@ import { CitationsPanel } from "../components/project/CitationsPanel.js";
 import { DiscoveryPanel } from "../components/project/DiscoveryPanel.js";
 import { EvidencePanel } from "../components/project/EvidencePanel.js";
 import { FiguresPanel } from "../components/project/FiguresPanel.js";
+import { ExperimentPackagesPanel } from "../components/project/ExperimentPackagesPanel.js";
 import { ManuscriptOverviewCard } from "../components/project/ManuscriptOverviewCard.js";
 import { PaperPanel } from "../components/project/PaperPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
@@ -35,7 +36,7 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "evidence" | "citations" | "figures" | "target" | "review" | "workflow";
+type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "evidence" | "citations" | "figures" | "experiments" | "target" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
 const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean }> = [
@@ -44,6 +45,7 @@ const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; no
   { id: "pdf", label: "PDF 与结构" },
   // M12.3 C4：学术图表（数据集 → PlotSpec/DiagramSpec → 矢量 PDF → 受控插入论文）
   { id: "figures", label: "学术图表", notReviewOnly: true },
+  { id: "experiments", label: "实验数据包" },
   // M7.1c：文献发现（检索 → 候选审阅 → Promote 入库）排在文献库上游
   { id: "discovery", label: "文献发现" },
   { id: "sources", label: "文献库" },
@@ -452,6 +454,8 @@ export function ProjectPage() {
             <CitationsPanel projectId={project.id} />
           ) : tab === "figures" ? (
             <FiguresPanel projectId={project.id} />
+          ) : tab === "experiments" ? (
+            <ExperimentPackagesPanel projectId={project.id} />
           ) : tab === "target" ? (
             <TargetPanel projectId={project.id} />
           ) : tab === "workflow" ? (
