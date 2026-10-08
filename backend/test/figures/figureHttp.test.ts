@@ -738,6 +738,35 @@ describe("figure durable insertion recovery", () => {
     expect((await store.get(firstId))?.insertedIn).toBeUndefined();
   });
 
+  it("explicit label survives interruption; a different request cannot append the same figId", async () => {
+    const { stack, projectId, firstId } = await fixture();
+    const original = { figId: firstId, mode: "append" as const, sectionId: "results", label: "author-label" };
+    process.env["PAPERTEAM_FIGURE_TEST_FAILURE"] = "target";
+    try { await expect(stack.stack.figures.insert(projectId, original)).rejects.toThrow(); }
+    finally { delete process.env["PAPERTEAM_FIGURE_TEST_FAILURE"]; }
+    const other = { figId: firstId, mode: "append" as const, sectionId: "method", label: "another-label" };
+    await expect(restarted(stack).insert(projectId, other)).rejects.toMatchObject({ code: "FIGURE_ALREADY_INSERTED" });
+    expect((await restarted(stack).insert(projectId, original)).label).toBe("fig:author-label");
+    const dir = stack.stack.projects.manuscriptDir(projectId);
+    const results = await readFile(join(dir, "sections", "results.tex"), "utf8");
+    const method = await readFile(join(dir, "sections", "method.tex"), "utf8");
+    expect(results.split(`figs/generated/${firstId}.pdf`).length - 1).toBe(1);
+    expect(method).not.toContain(`figs/generated/${firstId}.pdf`);
+  });
+
+  it("later main.tex edit prevents recovery from replacing the preamble", async () => {
+    const { stack, projectId, firstId } = await fixture();
+    const params = { figId: firstId, mode: "append" as const, sectionId: "results" };
+    process.env["PAPERTEAM_FIGURE_TEST_FAILURE"] = "target";
+    try { await expect(stack.stack.figures.insert(projectId, params)).rejects.toThrow(); }
+    finally { delete process.env["PAPERTEAM_FIGURE_TEST_FAILURE"]; }
+    const mainPath = join(stack.stack.projects.manuscriptDir(projectId), "main.tex");
+    await writeFile(mainPath, (await readFile(mainPath, "utf8")) + "% edited after crash\n", "utf8");
+    await expect(restarted(stack).insert(projectId, params)).rejects.toMatchObject({ code: "FIGURE_RECOVERY_REQUIRED" });
+    expect(await readFile(mainPath, "utf8")).toContain("% edited after crash");
+    expect(await readFile(mainPath, "utf8")).not.toContain("\\usepackage{graphicx}");
+  });
+
   it("replace interruption plus later manuscript edit blocks lineage commit", async () => {
     const { stack, projectId, firstId, secondId } = await fixture();
     await restarted(stack).insert(projectId, { figId: firstId, mode: "append", sectionId: "results", label: "stable" });
