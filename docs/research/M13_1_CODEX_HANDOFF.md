@@ -20,5 +20,5 @@
 ## 状态与后续
 
 - Doctor CI flake 未审计（可选任务）。Evidence 记录若含无法解析的残缺 ID，无法据此分配下一 ID；跨进程并发仍是 M13.0 已登记的架构边界。未检查现有用户数据，也未启动服务器。
-- CI 状态：待 push 后核验。
+- CI 状态：代码及首版 handoff 提交 `02152b0` 的 [CI run 37755159341](https://github.com/JiahongXu88/PaperTeam/actions/runs/37755159341) 与 [Linux Integration run 37755159401](https://github.com/JiahongXu88/PaperTeam/actions/runs/37755159401) 均为 Success。本文档状态补记提交会重新触发 CI，其结果应以最终 HEAD 的 Actions 页面为准。
 - 最终 Git SHA：本文件所在的 handoff 提交（`git rev-parse HEAD`；提交无法在自身内容中写入自身 SHA）。代码修复 SHA：`1474bb9`。
