@@ -250,6 +250,13 @@ function ResearchArticleForm({
           <textarea id="researchIdea" name="researchIdea" rows={5} value={form.researchIdea} onChange={update("researchIdea")} placeholder="用一段话描述研究问题、动机与初步思路" />
           <span className="field-help">研究想法是主线的起点：Researcher 会据此完成调研与可行性分析。</span>
         </div>
+        <div className="note" data-testid="experiment-data-hint">
+          <span>
+            <strong>实验数据：</strong>研究论文通常基于你自己的实验结果。创建项目后，在项目工作台的「实验数据」页上传实验
+            ZIP（解析 → 核对实验范围 → 确认后进入写作上下文）；也可以先创建项目、稍后再上传。启动科研实验相关的写作流程前，
+            系统会明确提示实验数据门禁——不是创建时就必须上传。
+          </span>
+        </div>
         <div className="form-grid">
           <div className="field">
             <label htmlFor="researchField">研究领域</label>

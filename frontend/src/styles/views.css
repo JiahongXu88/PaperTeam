@@ -3457,3 +3457,66 @@
   font-size: var(--fs-secondary);
   color: var(--text-secondary);
 }
+
+/* ---- M13.5 实验数据工作台 ---- */
+
+.experiment-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--s-3);
+  margin: var(--s-3) 0;
+}
+
+.experiment-summary-card {
+  padding: var(--s-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-muted);
+}
+
+.experiment-summary-value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.experiment-summary-label {
+  font-weight: 600;
+  margin-top: var(--s-1);
+}
+
+.experiment-summary-hint {
+  font-size: var(--fs-meta);
+  margin-top: var(--s-1);
+}
+
+.experiment-step {
+  margin-top: var(--s-4);
+}
+
+.experiment-step h3 {
+  margin-bottom: var(--s-2);
+}
+
+.experiment-group {
+  margin-top: var(--s-2);
+}
+
+.experiment-filter-row {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--s-3);
+}
+
+.experiment-filter-row label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--fs-secondary);
+}
+
+.suggestion-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}

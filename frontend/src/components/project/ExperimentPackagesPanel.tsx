@@ -1,21 +1,98 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { ErrorState, Loading } from "../common/StateViews.js";
-import { confirmExperimentGroups, confirmExperimentMetricEvidence, editExperimentFile, getExperimentPackage, listExperimentPackages, requestExperimentUnderstanding, uploadExperimentPackage, type ExperimentRole } from "../../api/experimentPackages.js";
+import {
+  confirmExperimentGroups,
+  confirmExperimentMetricEvidence,
+  editExperimentFile,
+  getExperimentPackage,
+  listExperimentPackages,
+  queryExperimentObservations,
+  requestExperimentUnderstanding,
+  setExperimentScopeWorkflowUse,
+  uploadExperimentPackage,
+  type ExperimentRole,
+  type ExperimentPackageView,
+  type ExperimentSplitScopeView,
+  type MetricObservationView,
+} from "../../api/experimentPackages.js";
 import { formatApiError } from "../../utils/errors.js";
 
+/**
+ * 实验数据工作台（M13.5 重构）。
+ *
+ * 信息架构：上传实验包 → AI 辅助整理 → 核对实验范围与指标 → 作者确认 →
+ * 用于论文写作。面向不熟悉内部概念（Source/Group ID）的作者：
+ * - 摘要卡先行（文件/解析/组/待确认/指标），技术细节（SHA、内部枚举）
+ *   收进折叠区；
+ * - 「同一结果文件包含多个评测范围（Dev25/Confirmation13/Full38）」按
+ *   范围分别核对，科研隔离边界（确认 ≠ 允许进入工作流）在 UI 显式表达；
+ * - 指标浏览走服务端过滤 + 分页（不再把全部观测塞进 DOM、不自动选优）；
+ * - 文件清单默认折叠，支持搜索/过滤/分页；普通文档不强迫逐个处理；
+ * - AI 建议可逐条采纳（仍走确定性 editFile，不自动写事实）。
+ */
+
 const roles: ExperimentRole[] = ["main_result", "baseline_result", "ablation_result", "experiment_config", "training_log", "evaluation_log", "dataset_description", "figure_asset", "notebook", "source_code", "documentation", "unknown"];
-const directionLabel = (direction: string) => direction === "higher" ? " ↑越高越好" : direction === "lower" ? " ↓越低越好" : "";
+
+const ROLE_LABEL: Record<ExperimentRole, string> = {
+  main_result: "主结果",
+  baseline_result: "基线结果",
+  ablation_result: "消融结果",
+  experiment_config: "实验配置",
+  training_log: "训练日志",
+  evaluation_log: "评测日志",
+  dataset_description: "数据集说明",
+  figure_asset: "图片资产",
+  notebook: "Notebook",
+  source_code: "源代码",
+  documentation: "文档",
+  unknown: "待定",
+};
+
+const GROUP_ROLE_LABEL: Record<string, string> = { main: "主实验", baseline: "基线", ablation: "消融", other: "其他" };
+
+const PARSE_LABEL: Record<string, string> = { pending: "等待解析", ok: "已解析", partial: "部分解析", failed: "解析失败", unsupported: "不支持的类型" };
+
+const directionLabel = (direction: string) => (direction === "higher" ? " ↑" : direction === "lower" ? " ↓" : "");
+
+const SPLIT_LABEL = (split: string) => (split === "unknown" ? "未声明范围" : split);
+
+const WORKFLOW_USE_LABEL: Record<ExperimentSplitScopeView["workflowUse"], string> = {
+  allowed: "允许进入工作流",
+  excluded: "已排除",
+  undecided: "未决定",
+};
+
+function scopeStatusText(scope: ExperimentSplitScopeView): string {
+  if (scope.status === "confirmed") return "已确认";
+  if (scope.status === "conflict") return "有矛盾";
+  return "待核对";
+}
+
+/** 步骤完成态引导（当前包；纯计算，不用 hook） */
+function stepState(item: {
+  status: string;
+  files: Array<{ parseStatus: string }>;
+  groups: Array<{ status: string; splitScopes?: ExperimentSplitScopeView[] }>;
+  semanticSuggestions?: unknown;
+}) {
+  {
+    const parsed = item.status === "ready" || item.status === "partial";
+    const understood = item.semanticSuggestions !== undefined;
+    const allScopes = item.groups.flatMap((group) => group.splitScopes ?? []);
+    const confirmedScopes = allScopes.filter((scope) => scope.status === "confirmed");
+    const workflowReady = confirmedScopes.filter((scope) => scope.workflowUse === "allowed");
+    return { parsed, understood, allScopes, confirmedScopes, workflowReady };
+  }
+}
 
 export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
-  const [evidenceIndex, setEvidenceIndex] = useState<number | null>(null);
-  const [claim, setClaim] = useState("");
   const list = useQuery({ queryKey: ["experiment-packages", projectId], queryFn: () => listExperimentPackages(projectId) });
   const currentId = selectedId ?? list.data?.[0]?.packageId ?? null;
   const detail = useQuery({ queryKey: ["experiment-package", projectId, currentId], queryFn: () => getExperimentPackage(projectId, currentId!), enabled: currentId !== null });
@@ -25,116 +102,791 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
     await queryClient.invalidateQueries({ queryKey: ["figure-datasets", projectId] });
   };
   const upload = useMutation({
-    mutationFn: async () => { if (!file) throw new Error("请选择 ZIP 文件"); return uploadExperimentPackage(projectId, file); },
-    onSuccess: async (item) => { setSelectedId(item.packageId); setMessage("已读取实验包；请检查候选分组与指标，再确认可用结果。"); await refresh(item.packageId); },
+    mutationFn: async () => {
+      if (!file) throw new Error("请选择 ZIP 文件");
+      return uploadExperimentPackage(projectId, file);
+    },
+    onSuccess: async (item) => {
+      setSelectedId(item.packageId);
+      setMessage("实验包已读取。下一步：核对实验范围与指标，或先运行 AI 辅助实验理解。");
+      await refresh(item.packageId);
+    },
   });
   const edit = useMutation({
     mutationFn: (input: { path: string; role: ExperimentRole; groupId: string }) => editExperimentFile(projectId, currentId!, input),
-    onSuccess: async () => { setMessage("文件分类已更新，先前分组确认已失效。"); await refresh(currentId!); },
-  });
-  const confirm = useMutation({
-    mutationFn: (groupIds: string[]) => confirmExperimentGroups(projectId, currentId!, groupIds),
-    onSuccess: async () => { setMessage("作者确认已保存；有来源的数据现在可在学术图表中选择。"); await refresh(currentId!); },
-  });
-  const evidence = useMutation({
-    mutationFn: async () => {
-      const observation = detail.data?.observations[evidenceIndex ?? -1];
-      if (!observation) throw new Error("请选择一条指标");
-      return confirmExperimentMetricEvidence(projectId, observation, claim);
-    },
-    onSuccess: (result) => { setMessage(`已登记 ${result.evidence.id}：${result.evidence.verificationLevel} / ${result.evidence.verificationStatus}；仍需独立核验。`); setEvidenceIndex(null); setClaim(""); },
-  });
-  const understand = useMutation({
-    mutationFn: () => requestExperimentUnderstanding(projectId, currentId!),
-    onSuccess: async (item) => {
-      const suggestions = item.semanticSuggestions;
-      setMessage(suggestions
-        ? `语义理解完成（${suggestions.model}，${(suggestions.durationMs / 1000).toFixed(1)}s，输入 ${suggestions.usage?.input ?? "?"} tok）：角色建议 ${suggestions.roleSuggestions.length} 条、发现 ${suggestions.findings.length} 条——全部需作者确认。`
-        : "语义理解未产生建议。");
+    onSuccess: async () => {
+      setMessage("文件分类已更新；该包的全部确认与工作流授权已失效，请重新核对。");
       await refresh(currentId!);
     },
   });
-  return <section className="panel" aria-label="实验数据包">
-    <h2>实验数据包</h2>
-    <p className="muted">上传 ZIP 后查看文件、候选关系和真实解析值。分类与分组是建议；作者确认不等于 Evidence Verification。</p>
-    <div className="form-row">
-      <label>选择 ZIP <input aria-label="选择实验 ZIP" type="file" accept=".zip,application/zip" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /></label>
-      <button type="button" disabled={!file || upload.isPending} onClick={() => upload.mutate()}>{upload.isPending ? "上传并解析中…" : "上传实验包"}</button>
-    </div>
-    <p className="muted">上限：ZIP 16 MiB、200 个文件、单文件 20 MiB、解压总量 64 MiB；不会执行包内代码。目录可先在本机压缩为 ZIP。</p>
-    {upload.isError && <p role="alert" className="run-error">{formatApiError(upload.error)}</p>}
-    {evidence.isError && <p role="alert" className="run-error">{formatApiError(evidence.error)}</p>}
-    {(edit.isError || confirm.isError) && <p role="alert" className="run-error">{formatApiError(edit.error ?? confirm.error)}</p>}
-    {message && <p role="status">{message}</p>}
-    {list.isPending ? <Loading label="加载实验包…" /> : list.isError ? <ErrorState title="实验包加载失败" message={formatApiError(list.error)} onRetry={() => void list.refetch()} /> : <>
-      {list.data?.length === 0 && <p className="panel-empty">尚无实验数据包。</p>}
-      {list.data && list.data.length > 0 && <label>选择实验包 <select aria-label="实验包" value={currentId ?? ""} onChange={(event) => setSelectedId(event.target.value)}>
-        {list.data.map((item) => <option key={item.packageId} value={item.packageId}>{item.originalName} · {item.status} · {item.observationCount} 条观测</option>)}
-      </select></label>}
-    </>}
-    {currentId && (detail.isPending ? <Loading label="加载实验包详情…" /> : detail.isError ? <ErrorState title="实验包详情加载失败" message={formatApiError(detail.error)} onRetry={() => void detail.refetch()} /> : detail.data && <>
-      <h3>{detail.data.originalName}</h3>
-      <p className="muted">状态：{detail.data.status} · SHA-256：{detail.data.packageHash.slice(0, 16)}… · 已解析 {detail.data.files.filter((entry) => entry.parseStatus === "ok").length}/{detail.data.files.length} 文件</p>
-      {detail.data.warnings.length > 0 && <ul>{detail.data.warnings.map((warning, index) => <li key={index} className="note-warn-line">{warning}</li>)}</ul>}
-      {(detail.data.reportedVerdicts?.length ?? 0) > 0 && <>
-        <h3>源材料判定（Source-Reported Verdict）</h3>
-        <p className="muted">以下判定原样引自包内文件的 verdict/decision 字段；PaperTeam 不重算、不解读、不据此自动得出任何结论。</p>
-        <ul>{detail.data.reportedVerdicts!.map((verdict, index) => <li key={index}><strong>{verdict.value}</strong> <small>—— {verdict.path} · {verdict.field}</small></li>)}</ul>
-      </>}
-      <h3>GLM 辅助理解（候选建议）</h3>
-      <p className="muted">用当前生效模型对本包做一次有界语义理解，产出角色建议与发现陈述。建议经确定性校验（锚点与数值逐条核对），全部 <em>needs_author_confirmation</em>——不会自动改写任何文件角色或分组。</p>
+  const confirm = useMutation({
+    mutationFn: (input: { groupIds?: string[]; scopeIds?: string[] }) => confirmExperimentGroups(projectId, currentId!, input.groupIds ?? [], input.scopeIds),
+    onSuccess: async () => {
+      setMessage("作者确认已保存。确认 = 记录真实；是否允许进入论文工作流需单独授权。");
+      await refresh(currentId!);
+    },
+  });
+  const workflowUse = useMutation({
+    mutationFn: (input: { scopeId: string; use: "allowed" | "excluded" }) => setExperimentScopeWorkflowUse(projectId, currentId!, input.scopeId, input.use),
+    onSuccess: async () => {
+      await refresh(currentId!);
+    },
+  });
+
+  const item = detail.data;
+  const steps = item !== undefined ? stepState(item) : undefined;
+
+  return (
+    <section className="panel" aria-label="实验数据包">
+      <h2>实验数据</h2>
+      <p className="muted">
+        上传实验 ZIP 后：AI 辅助整理 → 核对实验范围与指标 → 作者确认 → 用于论文写作。
+        解析与建议只是辅助；作者确认不等于 Evidence Verification，实验包不会自动生成 Verified Evidence。
+      </p>
+
+      {/* 步骤 1：上传 */}
       <div className="form-row">
-        <button type="button" disabled={understand.isPending || detail.data.status === "inventory" || detail.data.status === "importing"} onClick={() => understand.mutate()}>{understand.isPending ? "理解中…" : "运行语义理解"}</button>
+        <label>
+          选择 ZIP <input aria-label="选择实验 ZIP" type="file" accept=".zip,application/zip" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+        </label>
+        <button type="button" disabled={!file || upload.isPending} onClick={() => upload.mutate()}>
+          {upload.isPending ? "上传并解析中…" : "上传实验包"}
+        </button>
       </div>
-      {understand.isError && <p role="alert" className="run-error">{formatApiError(understand.error)}</p>}
-      {detail.data.semanticSuggestions && <div className="panel">
-        <p className="muted">模型 {detail.data.semanticSuggestions.model} · {(detail.data.semanticSuggestions.durationMs / 1000).toFixed(1)}s{detail.data.semanticSuggestions.usage?.totalTokens !== undefined ? ` · ${detail.data.semanticSuggestions.usage.totalTokens} tok` : ""} · {new Date(detail.data.semanticSuggestions.generatedAt).toLocaleString()}</p>
-        {detail.data.semanticSuggestions.roleSuggestions.length > 0 && <><strong>角色建议</strong><ul>{detail.data.semanticSuggestions.roleSuggestions.map((suggestion, index) => <li key={index}>
-          <code>{suggestion.path}</code> → {suggestion.suggestedRole} / <code>{suggestion.suggestedGroupId}</code> — {suggestion.rationale}
-          <div><small>锚点：{suggestion.anchors.join("、")}</small></div>
-        </li>)}</ul></>}
-        {detail.data.semanticSuggestions.findings.length > 0 && <><strong>发现陈述（数值已逐条核对）</strong><ul>{detail.data.semanticSuggestions.findings.map((finding, index) => <li key={index}>
-          {finding.claim} <small>（{finding.confidence} · 锚点：{finding.anchors.join("、")}）</small>
-        </li>)}</ul></>}
-        {detail.data.semanticSuggestions.notes.length > 0 && <><strong>校验记录</strong><ul>{detail.data.semanticSuggestions.notes.map((note, index) => <li key={index} className="note-warn-line">{note}</li>)}</ul></>}
-      </div>}
-      {detail.data.relationCandidates.length > 0 && <><h3>配置与结果关联候选</h3><ul>{detail.data.relationCandidates.map((relation) => <li key={`${relation.configPath}-${relation.groupId}`}>
-        {relation.configPath} → {relation.groupId} · {relation.status}；相符：{relation.matchedFields.join(", ") || "无"}；冲突：{relation.conflictingFields.join(", ") || "无"}
-      </li>)}</ul></>}
-      <h3>实验分组</h3>
-      <ul>{detail.data.groups.map((group) => <li key={group.id}>
-        <strong>{group.id}</strong> · {group.role} · {group.status} · {group.filePaths.length} 文件
-        <div className="muted">依据：{group.basis}</div>
-        {group.conflicts.map((conflict) => <p key={conflict} className="run-error">{conflict}</p>)}
-        {group.status !== "confirmed" && <button type="button" disabled={confirm.isPending || group.status === "conflict"} onClick={() => confirm.mutate([group.id])}>确认此组</button>}
-      </li>)}</ul>
-      {detail.data.groups.some((group) => group.status === "candidate") && <button type="button" disabled={confirm.isPending} onClick={() => confirm.mutate(detail.data!.groups.filter((group) => group.status === "candidate").map((group) => group.id))}>批量确认无冲突分组</button>}
-      <h3>文件清单</h3>
-      <div style={{ overflowX: "auto" }}><table><thead><tr><th>路径</th><th>大小</th><th>类型 / 解析</th><th>候选角色</th><th>实验组</th><th>来源</th></tr></thead><tbody>
-        {detail.data.files.map((entry) => <tr key={entry.path}>
-          <td>{entry.path}<br /><small>SHA {entry.hash.slice(0, 12)}…</small></td><td>{entry.bytes} B</td><td>{entry.kind} / {entry.parseStatus}{entry.warning && <small className="run-error"> {entry.warning}</small>}</td>
-          <td><select aria-label={`${entry.path} 角色`} value={entry.role} disabled={edit.isPending} onChange={(event) => edit.mutate({ path: entry.path, role: event.target.value as ExperimentRole, groupId: entry.groupId })}>{roles.map((role) => <option key={role} value={role}>{role}</option>)}</select><small>{entry.roleBasis} · {entry.roleConfidence}</small></td>
-          <td><input aria-label={`${entry.path} 分组`} defaultValue={entry.groupId} key={`${entry.path}-${entry.groupId}`} onBlur={(event) => { const groupId = event.target.value.trim(); if (groupId && groupId !== entry.groupId) edit.mutate({ path: entry.path, role: entry.role, groupId }); }} /></td>
-          <td>{entry.sourceId ?? "未建立 Source"}</td>
-        </tr>)}
-      </tbody></table></div>
-      <h3>指标观测（原始值）</h3>
-      <p className="muted">单位与优化方向为 unknown 时不计算相对提升；同一模型的多 seed 不自动选优。每行保留来源锚。</p>
-      <div style={{ overflowX: "auto" }}><table><thead><tr><th>实验组</th><th>Method</th><th>Dataset</th><th>Seed</th><th>Metric</th><th>Value</th><th>来源</th></tr></thead><tbody>
-        {detail.data.observations.slice(0, 100).map((observation, index) => <tr key={`${observation.sourceId}-${observation.blockId}-${observation.metric}-${index}`}>
-          <td>{observation.groupId}</td><td>{observation.method ?? "—"}</td><td>{observation.dataset ?? "—"}</td><td>{observation.seed ?? "—"}</td><td>{observation.metric}{directionLabel(observation.direction)}</td><td>{observation.value}</td>
-          <td>{observation.path} · {observation.sourceId}/{observation.blockId} {observation.sheet ?? ""} {observation.row ? `row ${observation.row}` : ""} {observation.column ?? observation.jsonPath ?? ""}<br />
-            {detail.data!.groups.some((group) => group.id === observation.groupId && group.status === "confirmed") && <button type="button" onClick={() => { setEvidenceIndex(index); setClaim(""); }}>作为作者确认的 Evidence…</button>}
-          </td>
-        </tr>)}
-      </tbody></table></div>
-      {(detail.data.observationCount ?? detail.data.observations.length) > 100 && <p className="muted">共 {detail.data.observationCount ?? detail.data.observations.length} 条观测；仅预览前 100 条；原始解析记录保存在 Source 中。</p>}
-      {evidenceIndex !== null && <div className="panel"><label>论文 claim（必须包含原始数值）<input aria-label="Evidence claim" value={claim} onChange={(event) => setClaim(event.target.value)} /></label>
-        <button type="button" disabled={!claim.trim() || evidence.isPending} onClick={() => evidence.mutate()}>确认这条来源数据</button><button type="button" onClick={() => setEvidenceIndex(null)}>取消</button>
-        <p className="muted">该操作只登记 user_confirmed / unverified，不会自动提升为 grounded_verified。</p>
-      </div>}
-      {detail.data.groups.some((group) => group.status === "confirmed") && <p><Link to={`?tab=figures`}>用已确认数据生成学术图表 →</Link></p>}
-      <p className="muted">已解析 ≠ 已关联 ≠ 作者已确认 ≠ Evidence Verification。实验包不会自动生成 Verified Evidence。</p>
-    </>)}
-  </section>;
+      <p className="muted">上限：ZIP 16 MiB、200 个文件、单文件 20 MiB、解压总量 64 MiB；不会执行包内代码。目录可先在本机压缩为 ZIP。</p>
+      {upload.isError && (
+        <p role="alert" className="run-error">
+          {formatApiError(upload.error)}
+        </p>
+      )}
+      {(edit.isError || confirm.isError || workflowUse.isError) && (
+        <p role="alert" className="run-error">
+          {formatApiError(edit.error ?? confirm.error ?? workflowUse.error)}
+        </p>
+      )}
+      {message && <p role="status">{message}</p>}
+
+      {list.isPending ? (
+        <Loading label="加载实验包…" />
+      ) : list.isError ? (
+        <ErrorState title="实验包加载失败" message={formatApiError(list.error)} onRetry={() => void list.refetch()} />
+      ) : (
+        <>
+          {list.data?.length === 0 && <p className="panel-empty">尚无实验数据包：上传实验 ZIP 后开始整理。</p>}
+          {list.data !== undefined && list.data.length > 0 && (
+            <label>
+              选择实验包{" "}
+              <select aria-label="实验包" value={currentId ?? ""} onChange={(event) => setSelectedId(event.target.value)}>
+                {list.data.map((entry) => (
+                  <option key={entry.packageId} value={entry.packageId}>
+                    {entry.originalName} · {PARSE_LABEL[entry.status] ?? entry.status} · {entry.observationCount} 条指标
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </>
+      )}
+
+      {currentId !== null &&
+        (detail.isPending ? (
+          <Loading label="加载实验包详情…" />
+        ) : detail.isError ? (
+          <ErrorState title="实验包详情加载失败" message={formatApiError(detail.error)} onRetry={() => void detail.refetch()} />
+        ) : (
+          item !== undefined && (
+            <>
+              <h3>{item.originalName}</h3>
+
+              {/* 解析摘要卡 */}
+              <div className="experiment-summary-grid">
+                <SummaryCard label="文件" value={item.files.length} hint={`已解析 ${item.files.filter((entry) => entry.parseStatus === "ok").length} · 部分 ${item.files.filter((entry) => entry.parseStatus === "partial").length} · 失败 ${item.files.filter((entry) => entry.parseStatus === "failed").length} · 不支持 ${item.files.filter((entry) => entry.parseStatus === "unsupported").length}`} />
+                <SummaryCard label="实验组" value={item.groups.length} hint={`已确认 ${item.groups.filter((group) => group.status === "confirmed").length} · 待处理 ${item.groups.filter((group) => group.status === "candidate").length} · 有冲突 ${item.groups.filter((group) => group.status === "conflict").length}`} />
+                <SummaryCard label="待确认范围" value={steps?.allScopes.filter((scope) => scope.status === "candidate").length ?? 0} hint={`共 ${steps?.allScopes.length ?? 0} 个评测范围（split）`} />
+                <SummaryCard label="指标观测" value={item.observationCount ?? item.observations.length} hint="真实解析值；不自动选优" />
+              </div>
+
+              <NextStepGuidance item={item} workflowReadyCount={steps?.workflowReady.length ?? 0} />
+
+              {item.warnings.length > 0 && (
+                <details className="details-block">
+                  <summary>警告（{item.warnings.length}）</summary>
+                  <ul>
+                    {item.warnings.map((warning, index) => (
+                      <li key={index} className="note-warn-line">
+                        {warning}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              <details className="details-block">
+                <summary>源材料判定与技术详情</summary>
+                <p className="muted">SHA-256：{item.packageHash.slice(0, 16)}… · schema v{item.schemaVersion} · 导入于 {new Date(item.importedAt).toLocaleString()}</p>
+                {(item.reportedVerdicts?.length ?? 0) > 0 && (
+                  <>
+                    <p className="muted">以下判定原样引自包内文件的 verdict/decision 字段；PaperTeam 不重算、不解读、不据此自动得出任何结论。</p>
+                    <ul>
+                      {item.reportedVerdicts!.map((verdict, index) => (
+                        <li key={index}>
+                          <strong>{verdict.value}</strong> <small>—— {verdict.path} · {verdict.field}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {item.relationCandidates.length > 0 && (
+                  <>
+                    <strong>配置与结果关联候选</strong>
+                    <ul>
+                      {item.relationCandidates.map((relation) => (
+                        <li key={`${relation.configPath}-${relation.groupId}`}>
+                          {relation.configPath} → {relation.groupId} · {relation.status === "conflict" ? "字段冲突" : "候选"}；相符：{relation.matchedFields.join(", ") || "无"}；冲突：{relation.conflictingFields.join(", ") || "无"}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </details>
+
+              {/* 步骤 2：AI 辅助实验理解 */}
+              <UnderstandingSection projectId={projectId} packageId={currentId} item={item} applyEdit={edit.mutate} editPending={edit.isPending} />
+
+              {/* 步骤 3：核对实验范围与分组 */}
+              <ScopesSection item={item} confirmPending={confirm.isPending} onConfirm={(input) => confirm.mutate(input)} onWorkflowUse={(input) => workflowUse.mutate(input)} workflowPending={workflowUse.isPending} />
+
+              {/* 步骤 4：指标浏览 */}
+              <MetricsBrowser projectId={projectId} packageId={currentId} confirmedGroupIds={new Set(item.groups.filter((group) => group.status === "confirmed").map((group) => group.id))} />
+
+              {/* 步骤 5：文件清单（默认折叠） */}
+              <FilesSection item={item} editPending={edit.isPending} onEdit={(input) => edit.mutate(input)} />
+
+              {/* 用于论文写作 */}
+              <WorkflowReadySection item={item} workflowReadyScopes={steps?.workflowReady ?? []} />
+            </>
+          )
+        ))}
+    </section>
+  );
+}
+
+function SummaryCard({ label, value, hint }: { label: string; value: number; hint: string }) {
+  return (
+    <div className="experiment-summary-card" data-testid={`summary-${label}`}>
+      <div className="experiment-summary-value">{value}</div>
+      <div className="experiment-summary-label">{label}</div>
+      <div className="muted experiment-summary-hint">{hint}</div>
+    </div>
+  );
+}
+
+function NextStepGuidance({ item, workflowReadyCount }: { item: { status: string; semanticSuggestions?: unknown; groups: Array<{ status: string; splitScopes?: ExperimentSplitScopeView[] }> }; workflowReadyCount: number }) {
+  const pendingScopes = item.groups.flatMap((group) => group.splitScopes ?? []).filter((scope) => scope.status === "candidate").length;
+  const conflicts = item.groups.filter((group) => group.status === "conflict").length;
+  let text: string;
+  if (item.status === "inventory" || item.status === "importing") text = "正在解析包内文件…";
+  else if (conflicts > 0) text = "存在需要处理的冲突（见「核对实验范围与分组」）；真正的矛盾不能通过改名消除。";
+  else if (pendingScopes > 0) text = `下一步：逐个核对并确认 ${pendingScopes} 个待确认的实验范围（见「核对实验范围与分组」）。`;
+  else if (workflowReadyCount === 0) text = item.groups.some((group) => group.splitScopes?.some((scope) => scope.status === "confirmed")) ? "范围已确认。若要用于当前论文工作流，请对相应范围选择「允许进入工作流」。" : "下一步：确认实验组，或先运行 AI 辅助实验理解。";
+  else text = `${workflowReadyCount} 个实验范围已确认并允许进入论文工作流；可以启动论文流程或生成学术图表。`;
+  return (
+    <p className="note" role="status" data-testid="experiment-next-step">
+      <span>{text}</span>
+    </p>
+  );
+}
+
+function UnderstandingSection({
+  projectId,
+  packageId,
+  item,
+  applyEdit,
+  editPending,
+}: {
+  projectId: string;
+  packageId: string;
+  item: ExperimentPackageView;
+  applyEdit: (input: { path: string; role: ExperimentRole; groupId: string }) => void;
+  editPending: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [message, setMessage] = useState("");
+  const understand = useMutation({
+    mutationFn: () => requestExperimentUnderstanding(projectId, packageId),
+    onSuccess: async (result) => {
+      const suggestions = result.semanticSuggestions;
+      setMessage(
+        suggestions
+          ? `语义理解完成（模型 ${suggestions.model}，${(suggestions.durationMs / 1000).toFixed(1)}s，输入 ${suggestions.usage?.input ?? "?"} tok）：角色建议 ${suggestions.roleSuggestions.length} 条、发现 ${suggestions.findings.length} 条——全部需作者确认，可逐条采纳。`
+          : "语义理解未产生建议。",
+      );
+      await queryClient.invalidateQueries({ queryKey: ["experiment-package", projectId, packageId] });
+    },
+  });
+  const suggestions = item.semanticSuggestions;
+  const appliedPaths = useMemo(() => new Set(item.files.filter((file) => file.roleBasis === "作者修改").map((file) => file.path)), [item.files]);
+  return (
+    <section className="panel experiment-step" aria-label="AI 辅助实验理解">
+      <h3>AI 辅助实验理解</h3>
+      <p className="muted">
+        用当前生效的默认模型对本包做一次有界语义理解，产出角色建议与发现陈述。建议经确定性校验（锚点与数值逐条核对），全部
+        <em> 需作者确认</em>——采纳后仍走确定性校验与业务状态机，不会自动改写观测或生成 Evidence。
+      </p>
+      <div className="form-row">
+        <button type="button" disabled={understand.isPending || item.status === "inventory" || item.status === "importing"} onClick={() => understand.mutate()}>
+          {understand.isPending ? "理解中…" : "运行语义理解"}
+        </button>
+        {suggestions !== undefined && (
+          <span className="muted">
+            模型 {suggestions.model} · {(suggestions.durationMs / 1000).toFixed(1)}s{suggestions.usage?.totalTokens !== undefined ? ` · ${suggestions.usage.totalTokens} tok` : ""} · {new Date(suggestions.generatedAt).toLocaleString()}
+          </span>
+        )}
+      </div>
+      {understand.isError && (
+        <p role="alert" className="run-error">
+          {formatApiError(understand.error)}
+        </p>
+      )}
+      {message && <p role="status">{message}</p>}
+      {suggestions !== undefined && (
+        <div className="panel">
+          {suggestions.roleSuggestions.length > 0 && (
+            <>
+              <strong>角色建议（可逐条采纳）</strong>
+              <ul className="suggestion-list">
+                {suggestions.roleSuggestions.map((suggestion, index) => {
+                  const current = item.files.find((file) => file.path === suggestion.path);
+                  const alreadyApplied = appliedPaths.has(suggestion.path) || (current !== undefined && current.role === suggestion.suggestedRole && current.groupId === suggestion.suggestedGroupId);
+                  return (
+                    <li key={index}>
+                      <code>{suggestion.path}</code> → 识别为 {ROLE_LABEL[suggestion.suggestedRole]} / 组 <code>{suggestion.suggestedGroupId}</code>
+                      <div className="muted">{suggestion.rationale}（依据：{suggestion.anchors.join("、")}）</div>
+                      <div className="action-row">
+                        <button
+                          type="button"
+                          className="btn btn-small"
+                          disabled={editPending || alreadyApplied || current === undefined}
+                          onClick={() => applyEdit({ path: suggestion.path, role: suggestion.suggestedRole, groupId: suggestion.suggestedGroupId })}
+                        >
+                          {alreadyApplied ? "已采纳/已是该分类" : "采纳"}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
+          {suggestions.findings.length > 0 && (
+            <>
+              <strong>发现陈述（数值已逐条核对）</strong>
+              <ul>
+                {suggestions.findings.map((finding, index) => (
+                  <li key={index}>
+                    {finding.claim} <small>（可信度 {finding.confidence} · 锚点：{finding.anchors.join("、")}）</small>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          {suggestions.notes.length > 0 && (
+            <>
+              <strong>校验记录</strong>
+              <ul>
+                {suggestions.notes.map((note, index) => (
+                  <li key={index} className="note-warn-line">
+                    {note}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ScopesSection({
+  item,
+  confirmPending,
+  onConfirm,
+  onWorkflowUse,
+  workflowPending,
+}: {
+  item: ExperimentPackageView;
+  confirmPending: boolean;
+  onConfirm: (input: { groupIds?: string[]; scopeIds?: string[] }) => void;
+  onWorkflowUse: (input: { scopeId: string; use: "allowed" | "excluded" }) => void;
+  workflowPending: boolean;
+}) {
+  const [batchConfirm, setBatchConfirm] = useState(false);
+  const batchTargets = item.groups
+    .filter((group) => group.status === "candidate" && (group.splitScopes ?? []).length === 1 && (group.splitScopes?.[0]?.status ?? "") === "candidate")
+    .map((group) => group.splitScopes![0]!.id);
+  return (
+    <section className="panel experiment-step" aria-label="核对实验范围与分组">
+      <h3>核对实验范围与分组</h3>
+      <p className="muted">
+        实验组按来源文件归类；同一结果文件可能包含多种评测范围（如开发集 / 确认集 / 完整集），需要分别核对。
+        确认 = 该范围的记录真实、归属正确；「允许进入工作流」是独立的授权——确认集 / held-out 材料未经显式授权不会进入论文写作上下文。
+      </p>
+      {item.groups.map((group) => {
+        const scopes = group.splitScopes;
+        const multiScope = (scopes?.length ?? 0) > 1;
+        const confirmedScopeCount = scopes?.filter((scope) => scope.status === "confirmed").length ?? 0;
+        return (
+          <details key={group.id} className="details-block experiment-group" open={group.status !== "confirmed"} data-testid={`experiment-group-${group.id}`}>
+            <summary>
+              {GROUP_ROLE_LABEL[group.role] ?? group.role} · <code>{group.id}</code>
+              <span className="muted">
+                {" "}
+                · {group.filePaths.length} 文件 · {group.status === "confirmed" ? "已确认" : group.status === "conflict" ? "有冲突" : "待确认"}
+                {multiScope ? ` · ${scopes!.length} 个评测范围（已确认 ${confirmedScopeCount}）` : ""}
+              </span>
+            </summary>
+            <div className="muted">分组依据：{group.basis}</div>
+            {group.conflicts.map((conflict) => (
+              <p key={conflict} className="run-error">
+                {conflict}
+              </p>
+            ))}
+            {scopes !== undefined && scopes.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table className="data-table" data-testid={`scope-table-${group.id}`}>
+                  <thead>
+                    <tr>
+                      <th>评测范围（split）</th>
+                      <th className="num">指标条数</th>
+                      <th className="num">指标种数</th>
+                      <th>来源文件</th>
+                      <th>协议</th>
+                      <th>状态</th>
+                      <th>用于论文工作流</th>
+                      <th aria-label="操作" />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {scopes.map((scope) => (
+                      <tr key={scope.id} data-testid={`scope-row-${scope.id}`}>
+                        <td>{SPLIT_LABEL(scope.split)}</td>
+                        <td className="num">{scope.observationCount}</td>
+                        <td className="num">{scope.metricCount}</td>
+                        <td>
+                          {scope.filePaths.map((path) => (
+                            <div key={path}>
+                              <code>{path}</code>
+                            </div>
+                          ))}
+                        </td>
+                        <td>{scope.protocols.length > 0 ? scope.protocols.join(" / ") : "—"}</td>
+                        <td>
+                          {scopeStatusText(scope)}
+                          {scope.conflicts.map((conflict) => (
+                            <div key={conflict} className="run-error">
+                              {conflict}
+                            </div>
+                          ))}
+                        </td>
+                        <td>{scope.status === "confirmed" ? WORKFLOW_USE_LABEL[scope.workflowUse] : "（确认后可授权）"}</td>
+                        <td>
+                          {scope.status !== "conflict" && scope.status !== "confirmed" && (
+                            <button type="button" className="btn btn-small" disabled={confirmPending || group.status === "conflict"} onClick={() => onConfirm({ scopeIds: [scope.id] })}>
+                              确认此范围
+                            </button>
+                          )}
+                          {scope.status === "confirmed" && (
+                            <span className="action-row">
+                              {scope.workflowUse !== "allowed" && (
+                                <button type="button" className="btn btn-small" disabled={workflowPending} onClick={() => onWorkflowUse({ scopeId: scope.id, use: "allowed" })}>
+                                  允许进入工作流
+                                </button>
+                              )}
+                              {scope.workflowUse !== "excluded" && (
+                                <button type="button" className="btn btn-small" disabled={workflowPending} onClick={() => onWorkflowUse({ scopeId: scope.id, use: "excluded" })}>
+                                  {scope.workflowUse === "allowed" ? "改为排除" : "排除"}
+                                </button>
+                              )}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="muted">该组没有指标观测（普通文档 / 配置等），不影响实验范围核对。</p>
+            )}
+            {!multiScope && group.status !== "confirmed" && group.status !== "conflict" && (
+              <button type="button" className="btn btn-small" disabled={confirmPending} onClick={() => onConfirm({ groupIds: [group.id] })}>
+                确认此组
+              </button>
+            )}
+            {multiScope && group.status === "candidate" && <p className="muted">该组包含多个评测范围：请在上表按范围分别确认，不能整组一键确认。</p>}
+          </details>
+        );
+      })}
+      {batchTargets.length > 0 && (
+        <div className="action-row">
+          {batchConfirm ? (
+            <span className="inline-confirm" role="group" aria-label="确认批量确认范围">
+              <span>
+                将确认 {batchTargets.length} 个无冲突、单一范围实验组（{batchTargets.map((id) => id.split("@")[0]).join("、")}）。确认前请已抽查各组数值；普通文档不在此列。
+              </span>
+              <button type="button" className="btn btn-small btn-primary" disabled={confirmPending} onClick={() => { onConfirm({ groupIds: batchTargets.map((id) => id.split("@")[0]) }); setBatchConfirm(false); }}>
+                确认
+              </button>
+              <button type="button" className="btn btn-small" onClick={() => setBatchConfirm(false)}>
+                取消
+              </button>
+            </span>
+          ) : (
+            <button type="button" className="btn btn-small" onClick={() => setBatchConfirm(true)}>
+              批量确认无冲突的单一范围组（{batchTargets.length} 个）
+            </button>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+const METRICS_PAGE_SIZE = 50;
+
+function MetricsBrowser({ projectId, packageId, confirmedGroupIds }: { projectId: string; packageId: string; confirmedGroupIds: Set<string> }) {
+  const [split, setSplit] = useState("");
+  const [groupId, setGroupId] = useState("");
+  const [metric, setMetric] = useState("");
+  const [method, setMethod] = useState("");
+  const [path, setPath] = useState("");
+  const [page, setPage] = useState(1);
+  const [evidenceTarget, setEvidenceTarget] = useState<MetricObservationView | null>(null);
+  const [claim, setClaim] = useState("");
+  const [message, setMessage] = useState("");
+  const query = useQuery({
+    queryKey: ["experiment-observations", projectId, packageId, split, groupId, metric, method, path, page],
+    queryFn: () => queryExperimentObservations(projectId, packageId, { ...(split !== "" ? { split } : {}), ...(groupId !== "" ? { groupId } : {}), ...(metric !== "" ? { metric } : {}), ...(method !== "" ? { method } : {}), ...(path !== "" ? { path } : {}), page, pageSize: METRICS_PAGE_SIZE }),
+  });
+  const queryClient = useQueryClient();
+  const evidence = useMutation({
+    mutationFn: async () => {
+      if (evidenceTarget === null) throw new Error("请选择一条指标");
+      return confirmExperimentMetricEvidence(projectId, evidenceTarget, claim);
+    },
+    onSuccess: (result) => {
+      setMessage(`已登记 ${result.evidence.id}：${result.evidence.verificationLevel} / ${result.evidence.verificationStatus}；仍需独立核验。`);
+      setEvidenceTarget(null);
+      setClaim("");
+    },
+  });
+  const resetFilters = () => {
+    setSplit("");
+    setGroupId("");
+    setMetric("");
+    setMethod("");
+    setPath("");
+    setPage(1);
+  };
+  const result = query.data;
+  const totalPages = result !== undefined ? Math.max(1, Math.ceil(result.total / result.pageSize)) : 1;
+  return (
+    <section className="panel experiment-step" aria-label="指标浏览">
+      <h3>指标浏览</h3>
+      <p className="muted">真实解析值（单位与优化方向未知时不计算相对提升；多 seed 不自动选优）。每条可定位到源文件与行列。</p>
+      <div className="form-row experiment-filter-row">
+        <label>
+          评测范围
+          <select aria-label="按评测范围筛选" value={split} onChange={(event) => { setSplit(event.target.value); setPage(1); }}>
+            <option value="">全部</option>
+            {result?.facets.splits.map((value) => (
+              <option key={value} value={value}>
+                {SPLIT_LABEL(value)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          实验组
+          <select aria-label="按实验组筛选" value={groupId} onChange={(event) => { setGroupId(event.target.value); setPage(1); }}>
+            <option value="">全部</option>
+            {result?.facets.groupIds.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          指标
+          <select aria-label="按指标筛选" value={metric} onChange={(event) => { setMetric(event.target.value); setPage(1); }}>
+            <option value="">全部</option>
+            {result?.facets.metrics.map((value) => (
+              <option key={value} value={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Method
+          <input aria-label="按 method 筛选" value={method} placeholder="包含匹配" onChange={(event) => { setMethod(event.target.value); setPage(1); }} />
+        </label>
+        <label>
+          来源文件
+          <input aria-label="按来源路径筛选" value={path} placeholder="包含匹配" onChange={(event) => { setPath(event.target.value); setPage(1); }} />
+        </label>
+        <button type="button" className="btn btn-small" onClick={resetFilters}>
+          重置筛选
+        </button>
+      </div>
+      {query.isPending ? (
+        <Loading label="加载指标…" />
+      ) : query.isError ? (
+        <ErrorState title="指标加载失败" message={formatApiError(query.error)} onRetry={() => void query.refetch()} />
+      ) : result !== undefined ? (
+        <>
+          <p className="muted">
+            共 {result.total} 条 · 第 {result.page}/{totalPages} 页
+          </p>
+          <div style={{ overflowX: "auto" }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>范围</th>
+                  <th>实验组</th>
+                  <th>Method</th>
+                  <th>Seed</th>
+                  <th>指标</th>
+                  <th>值</th>
+                  <th>来源定位</th>
+                  <th aria-label="操作" />
+                </tr>
+              </thead>
+              <tbody>
+                {result.observations.map((observation, index) => (
+                  <tr key={`${observation.sourceId}-${observation.blockId}-${observation.metric}-${index}`}>
+                    <td>{observation.split !== undefined ? SPLIT_LABEL(observation.split) : "—"}</td>
+                    <td>{observation.groupId}</td>
+                    <td>{observation.method ?? "—"}</td>
+                    <td>{observation.seed ?? "—"}</td>
+                    <td>
+                      {observation.metric}
+                      {directionLabel(observation.direction)}
+                    </td>
+                    <td>{observation.value}</td>
+                    <td>
+                      <code>{observation.path}</code>
+                      <small>
+                        {" "}
+                        {observation.sheet !== undefined ? `${observation.sheet} ` : ""}
+                        {observation.row !== undefined ? `行 ${observation.row}` : ""} {observation.column ?? observation.jsonPath ?? ""}
+                      </small>
+                    </td>
+                    <td>
+                      {confirmedGroupIds.has(observation.groupId) && (
+                        <button type="button" className="btn btn-small" onClick={() => { setEvidenceTarget(observation); setClaim(""); }}>
+                          作为作者确认的 Evidence…
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="action-row">
+            <button type="button" className="btn btn-small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+              上一页
+            </button>
+            <button type="button" className="btn btn-small" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>
+              下一页
+            </button>
+          </div>
+        </>
+      ) : null}
+      {evidenceTarget !== null && (
+        <div className="panel">
+          <label>
+            论文 claim（必须包含原始数值）
+            <input aria-label="Evidence claim" value={claim} onChange={(event) => setClaim(event.target.value)} />
+          </label>
+          <button type="button" disabled={!claim.trim() || evidence.isPending} onClick={() => evidence.mutate()}>
+            确认这条来源数据（{evidenceTarget.metric} = {evidenceTarget.value}）
+          </button>
+          <button type="button" onClick={() => setEvidenceTarget(null)}>
+            取消
+          </button>
+          <p className="muted">该操作只登记 user_confirmed / unverified，不会自动提升为 grounded_verified。</p>
+        </div>
+      )}
+      {evidence.isError && (
+        <p role="alert" className="run-error">
+          {formatApiError(evidence.error)}
+        </p>
+      )}
+      {message && (
+        <p role="status" onDoubleClick={() => void queryClient.invalidateQueries({ queryKey: ["experiment-package", projectId, packageId] })}>
+          {message}
+        </p>
+      )}
+    </section>
+  );
+}
+
+const FILES_PAGE_SIZE = 20;
+
+function FilesSection({ item, editPending, onEdit }: { item: NonNullable<ReturnType<typeof getExperimentPackage> extends Promise<infer T> ? T : never>; editPending: boolean; onEdit: (input: { path: string; role: ExperimentRole; groupId: string }) => void }) {
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const filtered = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return item.files.filter(
+      (file) =>
+        (keyword === "" || file.path.toLowerCase().includes(keyword)) &&
+        (roleFilter === "" || file.role === roleFilter) &&
+        (statusFilter === "" || file.parseStatus === statusFilter),
+    );
+  }, [item.files, search, roleFilter, statusFilter]);
+  const totalPages = Math.max(1, Math.ceil(filtered.length / FILES_PAGE_SIZE));
+  const visible = filtered.slice((page - 1) * FILES_PAGE_SIZE, page * FILES_PAGE_SIZE);
+  const pendingCount = item.files.filter((file) => file.groupId === "unresolved").length;
+  return (
+    <section className="panel experiment-step" aria-label="文件清单">
+      <details className="details-block">
+        <summary>
+          文件清单（{item.files.length} 个文件{pendingCount > 0 ? ` · ${pendingCount} 个待分组` : ""}；默认折叠，可搜索筛选）
+        </summary>
+        <div className="form-row experiment-filter-row">
+          <label>
+            搜索
+            <input aria-label="搜索文件" type="search" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="按路径搜索" />
+          </label>
+          <label>
+            角色
+            <select aria-label="按角色筛选" value={roleFilter} onChange={(event) => { setRoleFilter(event.target.value); setPage(1); }}>
+              <option value="">全部</option>
+              {roles.map((role) => (
+                <option key={role} value={role}>
+                  {ROLE_LABEL[role]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            解析状态
+            <select aria-label="按解析状态筛选" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1); }}>
+              <option value="">全部</option>
+              {Object.entries(PARSE_LABEL).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <p className="muted">
+          共 {filtered.length} 个 · 第 {page}/{totalPages} 页
+        </p>
+        <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>路径</th>
+                <th>大小 / 解析</th>
+                <th>角色（{ROLE_LABEL.unknown} 需处理）</th>
+                <th aria-label="操作" />
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((entry) => (
+                <tr key={entry.path} data-testid={`file-row-${entry.path}`}>
+                  <td>
+                    <code>{entry.path}</code>
+                    <br />
+                    <small className="muted">SHA {entry.hash.slice(0, 12)}…</small>
+                  </td>
+                  <td>
+                    {entry.bytes} B · {PARSE_LABEL[entry.parseStatus] ?? entry.parseStatus}
+                    {entry.warning !== undefined && (
+                      <small className="run-error"> {entry.warning}</small>
+                    )}
+                  </td>
+                  <td>
+                    {ROLE_LABEL[entry.role] ?? entry.role} · 组 <code>{entry.groupId}</code>
+                    <br />
+                    <small className="muted">
+                      {entry.roleBasis} · {entry.roleConfidence === "high" ? "高置信" : "候选"}
+                    </small>
+                  </td>
+                  <td>
+                    <details className="details-block">
+                      <summary>修改分类</summary>
+                      <div className="form-row">
+                        <select aria-label={`${entry.path} 角色`} defaultValue={entry.role} disabled={editPending} onChange={(event) => onEdit({ path: entry.path, role: event.target.value as ExperimentRole, groupId: entry.groupId })}>
+                          {roles.map((role) => (
+                            <option key={role} value={role}>
+                              {ROLE_LABEL[role]}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          aria-label={`${entry.path} 分组`}
+                          defaultValue={entry.groupId}
+                          key={`${entry.path}-${entry.groupId}`}
+                          onBlur={(event) => {
+                            const groupId = event.target.value.trim();
+                            if (groupId !== "" && groupId !== entry.groupId) onEdit({ path: entry.path, role: entry.role, groupId });
+                          }}
+                        />
+                      </div>
+                      <p className="muted">修改任一文件会使该包的全部确认与工作流授权失效（需重新核对）。</p>
+                    </details>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="action-row">
+          <button type="button" className="btn btn-small" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+            上一页
+          </button>
+          <button type="button" className="btn btn-small" disabled={page >= totalPages} onClick={() => setPage((value) => value + 1)}>
+            下一页
+          </button>
+        </div>
+      </details>
+    </section>
+  );
+}
+
+function WorkflowReadySection({ item, workflowReadyScopes }: { item: NonNullable<ReturnType<typeof getExperimentPackage> extends Promise<infer T> ? T : never>; workflowReadyScopes: ExperimentSplitScopeView[] }) {
+  const legacyConfirmed = item.groups.filter((group) => group.status === "confirmed" && group.splitScopes === undefined);
+  return (
+    <section className="panel experiment-step" aria-label="用于论文写作">
+      <h3>用于论文写作</h3>
+      {workflowReadyScopes.length > 0 ? (
+        <>
+          <p>
+            已确认并允许进入当前论文工作流的实验范围：{workflowReadyScopes.map((scope) => `${scope.id.split("@")[0]}（${SPLIT_LABEL(scope.split)}）`).join("、")}。
+            这些观测会作为作者确认的实验上下文进入研究/写作流程；它们仍不是 Verified Evidence——引用前走 Evidence 核验。
+          </p>
+          <p>
+            <Link to="?tab=figures">用已确认数据生成学术图表 →</Link>
+          </p>
+        </>
+      ) : legacyConfirmed.length > 0 ? (
+        <p className="muted">
+          已确认实验组：{legacyConfirmed.map((group) => group.id).join("、")}（旧版整组确认；其观测按既有规则进入工作流上下文）。
+        </p>
+      ) : (
+        <p className="muted">尚无确认并授权的实验范围。确认范围后在上方选择「允许进入工作流」。</p>
+      )}
+      <p className="muted">已解析 ≠ 已关联 ≠ 作者已确认 ≠ 允许进入工作流 ≠ Evidence Verification。</p>
+    </section>
+  );
 }

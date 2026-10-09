@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent } from "react";
 import { Link, useNavigate, useSearchParams, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 
 import { ErrorState, Loading } from "../components/common/StateViews.js";
 import { Icon } from "../components/common/Icon.js";
@@ -11,6 +12,7 @@ import { DiscoveryPanel } from "../components/project/DiscoveryPanel.js";
 import { EvidencePanel } from "../components/project/EvidencePanel.js";
 import { FiguresPanel } from "../components/project/FiguresPanel.js";
 import { ExperimentPackagesPanel } from "../components/project/ExperimentPackagesPanel.js";
+import { listExperimentPackages } from "../api/experimentPackages.js";
 import { ManuscriptOverviewCard } from "../components/project/ManuscriptOverviewCard.js";
 import { PaperPanel } from "../components/project/PaperPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
@@ -175,6 +177,37 @@ function CurrentWorkflowCard({ projectId, onOpenTab }: { projectId: string; onOp
   );
 }
 
+function ExperimentDataCard({ projectId, onOpenTab }: { projectId: string; onOpenTab: (tab: OpenableTab) => void }) {
+  const list = useQuery({ queryKey: ["experiment-packages", projectId], queryFn: () => listExperimentPackages(projectId) });
+  const count = list.data?.length ?? 0;
+  return (
+    <section className="panel section-block" data-testid="experiment-data-card">
+      <div className="section-head">
+        <h2>实验数据</h2>
+      </div>
+      {count === 0 ? (
+        <>
+          <p className="muted">
+            研究论文的写作以你的实验结果为事实基础。尚未上传实验数据：上传实验 ZIP（结果表 / 配置 / 日志等），
+            系统会解析并请你核对实验范围与指标，确认后的结果进入写作上下文。也可以稍后再上传——但启动科研实验相关的
+            写作流程前，系统会检查实验数据门禁并明确说明缺口。
+          </p>
+          <button type="button" className="btn btn-primary" onClick={() => onOpenTab("experiments")} data-testid="upload-experiment-data-cta">
+            上传实验数据
+          </button>
+        </>
+      ) : (
+        <>
+          <p className="muted">已上传 {count} 个实验数据包。在「实验数据」标签页核对实验范围、确认并授权可用于写作的结果。</p>
+          <button type="button" className="btn" onClick={() => onOpenTab("experiments")}>
+            打开实验数据
+          </button>
+        </>
+      )}
+    </section>
+  );
+}
+
 function OverviewTab({ project, onOpenTab, onOpenGate }: { project: ProjectView; onOpenTab: (tab: OpenableTab) => void; onOpenGate: () => void }) {
   const meta: Array<[string, string]> = [];
   if (project.researchField) {
@@ -198,6 +231,7 @@ function OverviewTab({ project, onOpenTab, onOpenGate }: { project: ProjectView;
   return (
     <div className="panel-stack">
       <ManuscriptOverviewCard projectId={project.id} workflowKind={project.workflowKind} onOpenTab={onOpenTab} />
+      {project.workflowKind === "idea_to_paper" ? <ExperimentDataCard projectId={project.id} onOpenTab={onOpenTab} /> : null}
       <CurrentWorkflowCard projectId={project.id} onOpenTab={onOpenTab} />
       {project.workflowKind !== "existing_paper_review" ? (
         <QualityGateSummaryLink projectId={project.id} onOpenTab={() => onOpenGate()} />

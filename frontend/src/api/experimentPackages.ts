@@ -5,13 +5,29 @@ export interface PackageFileView {
   path: string; hash: string; bytes: number; kind: string; parseStatus: string;
   sourceId?: string; role: ExperimentRole; roleBasis: string; roleConfidence: string; groupId: string; warning?: string;
 }
+export interface ExperimentSplitScopeView {
+  id: string;
+  split: string;
+  status: "candidate" | "confirmed" | "conflict";
+  conflicts: string[];
+  confirmedAt?: string;
+  /** allowed = 允许进入当前工作流上下文；excluded = 明确排除；undecided = 未决 */
+  workflowUse: "allowed" | "excluded" | "undecided";
+  workflowUseDecidedAt?: string;
+  observationCount: number;
+  metricCount: number;
+  filePaths: string[];
+  protocols: string[];
+}
 export interface ExperimentGroupView {
   id: string; role: string; filePaths: string[]; basis: string;
   status: "candidate" | "confirmed" | "conflict"; conflicts: string[]; confirmedAt?: string;
+  /** M13.5：观测级实验范围（schema v2；无观测的组没有该字段） */
+  splitScopes?: ExperimentSplitScopeView[];
 }
 export interface MetricObservationView {
   sourceId: string; path: string; blockId: string; row?: number; sheet?: string; column?: string; jsonPath?: string;
-  method?: string; dataset?: string; seed?: string; metric: string; value: number; unit: string; direction: string; groupId: string;
+  method?: string; dataset?: string; seed?: string; protocol?: string; split?: string; metric: string; value: number; unit: string; direction: string; groupId: string;
 }
 export interface ReportedVerdictView {
   path: string; field: string; value: string;
@@ -69,9 +85,32 @@ export async function editExperimentFile(projectId: string, packageId: string, i
   const result = await apiClient.patch<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}`, input);
   return result.package;
 }
-export async function confirmExperimentGroups(projectId: string, packageId: string, groupIds: string[]): Promise<ExperimentPackageView> {
-  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/confirm`, { groupIds });
+export async function confirmExperimentGroups(projectId: string, packageId: string, groupIds: string[], scopeIds?: string[]): Promise<ExperimentPackageView> {
+  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/confirm`, { groupIds, ...(scopeIds !== undefined ? { scopeIds } : {}) });
   return result.package;
+}
+/** M13.5：范围级工作流授权（与确认独立的科研隔离决策；范围须已确认） */
+export async function setExperimentScopeWorkflowUse(projectId: string, packageId: string, scopeId: string, use: "allowed" | "excluded"): Promise<ExperimentPackageView> {
+  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/workflow-use`, { scopeId, use });
+  return result.package;
+}
+/** M13.5：指标浏览查询（服务端过滤 + 分页 + facet；展示真实观测不选优） */
+export interface ObservationQueryResult {
+  total: number; page: number; pageSize: number;
+  observations: Array<MetricObservationView & { split?: string }>;
+  facets: { splits: string[]; groupIds: string[]; methods: string[]; metrics: string[]; paths: string[] };
+}
+export async function queryExperimentObservations(
+  projectId: string,
+  packageId: string,
+  filters: { split?: string; groupId?: string; method?: string; metric?: string; path?: string; page?: number; pageSize?: number },
+): Promise<ObservationQueryResult> {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== "") search.set(key, String(value));
+  }
+  const query = search.toString();
+  return apiClient.get<ObservationQueryResult>(`${base(projectId)}/${packageId}/observations${query !== "" ? `?${query}` : ""}`);
 }
 export async function requestExperimentUnderstanding(projectId: string, packageId: string): Promise<ExperimentPackageView> {
   const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/understand`, {});
