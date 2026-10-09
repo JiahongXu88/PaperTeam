@@ -145,17 +145,14 @@ test("添加 → 获取模型 → 选择 → 测试连接 → 保存 → 设为�
       expect.arrayContaining(["glm-5.3", "glm-5.3-air"]),
     );
   } finally {
-    // 恢复默认模型偏好 + 删除测试提供商（幂等）
-    if (beforeBody.settings.model !== undefined) {
-      await request.put("/api/settings/model", {
-        data: {
-          model: beforeBody.settings.model,
-          ...(beforeBody.settings.agents !== undefined ? { agents: beforeBody.settings.agents } : {}),
-          ...(beforeBody.settings.visionModel !== null && beforeBody.settings.visionModel !== undefined
-            ? { visionModel: beforeBody.settings.visionModel }
-            : {}),
-        },
+    // 恢复默认模型偏好 + 删除测试提供商（幂等）。
+    // 注意：GET /settings/model 的 agents/vision 是视图对象（非 PUT 载荷形态），
+    // 本测试只改默认模型，因此只回放 model 字段（其余字段省略 = 保持现有）。
+    if (typeof beforeBody.settings.model === "string" && beforeBody.settings.model !== "") {
+      const restored = await request.put("/api/settings/model", {
+        data: { model: beforeBody.settings.model },
       });
+      expect(restored.ok()).toBe(true);
     }
     await request.delete(`/api/settings/model/custom-providers/${PROVIDER_ID}`);
   }
