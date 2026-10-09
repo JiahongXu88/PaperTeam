@@ -162,11 +162,18 @@ describe("experiment package ZIP and product chain", () => {
     const { stack, projectId } = await setup();
     const conflict = await upload(stack, projectId, "synthetic-protocol-conflict.zip");
     expect(conflict.status).toBe(201);
-    const item = conflict.body["package"] as { packageId: string; groups: Array<{ id: string; status: string; conflicts: string[] }> };
+    // M13.5：同一范围内的 protocol 矛盾（B 类）落到观测级范围的 conflicts 上，
+    // 组级状态仍为 conflict、确认仍被拒——真冲突不能被换组名洗掉
+    const item = conflict.body["package"] as { packageId: string; groups: Array<{ id: string; status: string; conflicts: string[]; splitScopes?: Array<{ id: string; split: string; status: string; conflicts: string[] }> }> };
     expect(item.groups.find((group) => group.id === "main")?.status).toBe("conflict");
-    expect(item.groups.find((group) => group.id === "main")?.conflicts).toContainEqual(expect.stringContaining("protocol 不一致"));
+    const scope = item.groups.find((group) => group.id === "main")?.splitScopes?.[0];
+    expect(scope?.split).toBe("unknown");
+    expect(scope?.status).toBe("conflict");
+    expect(scope?.conflicts).toContainEqual(expect.stringContaining("protocol 不一致"));
     const confirm = await stack.request("POST", `/api/projects/${projectId}/experiment-packages/${item.packageId}/confirm`, { groupIds: ["main"] });
     expect(confirm.status).toBe(409);
+    const scopeConfirm = await stack.request("POST", `/api/projects/${projectId}/experiment-packages/${item.packageId}/confirm`, { groupIds: [], scopeIds: [scope!.id] });
+    expect(scopeConfirm.status).toBe(409);
     const edited = await stack.request("PATCH", `/api/projects/${projectId}/experiment-packages/${item.packageId}`, { path: "main/results.csv", role: "baseline_result", groupId: "baseline-edited" });
     expect(edited.status).toBe(200);
     const reloaded = await stack.request("GET", `/api/projects/${projectId}/experiment-packages/${item.packageId}`);

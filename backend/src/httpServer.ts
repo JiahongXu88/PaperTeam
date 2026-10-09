@@ -1101,7 +1101,7 @@ async function handleProjectResourceRoutes(
       }
       sendMethodNotAllowed(res, "GET, POST", method); return true;
     }
-    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand)?$/.exec(rest);
+    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand|\/workflow-use|\/observations)?$/.exec(rest);
     if (!match) return false;
     const packageId = match[1]!;
     if (match[2] === "/understand") {
@@ -1109,12 +1109,46 @@ async function handleProjectResourceRoutes(
       sendPackage(200, await stack.experimentPackages.understand(projectId, packageId));
       return true;
     }
+    if (match[2] === "/workflow-use") {
+      // M13.5 范围级工作流授权（与确认独立的科研隔离决策）
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const body = await readJsonBody(req);
+      const scopeId = readStringField(body, "scopeId");
+      const use = readStringField(body, "use");
+      if (!scopeId || (use !== "allowed" && use !== "excluded")) throw new BusinessError("INVALID_REQUEST", "需要合法的 scopeId 与 use（allowed / excluded）");
+      sendPackage(200, await stack.experimentPackages.setScopeWorkflowUse(projectId, packageId, scopeId, use));
+      return true;
+    }
+    if (match[2] === "/observations") {
+      // M13.5 指标浏览（只读，有界分页 + 过滤 + facet）
+      if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
+      const query = new URL(req.url ?? "/", "http://localhost").searchParams;
+      const numberField = (name: string) => {
+        const raw = query.get(name);
+        return raw !== null && raw !== "" && /^\d+$/.test(raw) ? Number(raw) : undefined;
+      };
+      const result = await stack.experimentPackages.queryObservations(projectId, packageId, {
+        split: query.get("split") ?? undefined,
+        groupId: query.get("groupId") ?? undefined,
+        method: query.get("method") ?? undefined,
+        metric: query.get("metric") ?? undefined,
+        path: query.get("path") ?? undefined,
+        page: numberField("page"),
+        pageSize: numberField("pageSize"),
+      });
+      sendJson(res, 200, result);
+      return true;
+    }
     if (match[2]) {
       if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
       const body = await readJsonBody(req);
-      const groupIds = body["groupIds"];
-      if (!Array.isArray(groupIds) || groupIds.some((id) => typeof id !== "string")) throw new BusinessError("INVALID_REQUEST", "groupIds 必须是字符串数组");
-      sendPackage(200, await stack.experimentPackages.confirm(projectId, packageId, groupIds));
+      const groupIds = body["groupIds"] ?? [];
+      const scopeIds = body["scopeIds"] ?? [];
+      if (!Array.isArray(groupIds) || groupIds.some((id) => typeof id !== "string") || !Array.isArray(scopeIds) || scopeIds.some((id) => typeof id !== "string")) {
+        throw new BusinessError("INVALID_REQUEST", "groupIds / scopeIds 必须是字符串数组");
+      }
+      if (groupIds.length === 0 && scopeIds.length === 0) throw new BusinessError("INVALID_REQUEST", "需要至少一个 groupIds 或 scopeIds");
+      sendPackage(200, await stack.experimentPackages.confirm(projectId, packageId, groupIds, scopeIds));
       return true;
     }
     if (method === "GET") { sendPackage(200, await stack.experimentPackages.view(projectId, packageId)); return true; }

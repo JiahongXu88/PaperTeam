@@ -64,6 +64,39 @@ export interface ExperimentGroup {
   status: "candidate" | "confirmed" | "conflict";
   conflicts: string[];
   confirmedAt?: string;
+  /**
+   * 观测级实验范围划分（M13.5，schema v2）：同组观测按 split 值细分为
+   * 可独立确认的范围。同一结果文件含多个 split（如 Dev25 / Confirmation13 /
+   * Full38）不再整组判 conflict——按范围分别管理与确认。无观测的组
+   * （documentation 等）没有该字段。
+   */
+  splitScopes?: ExperimentSplitScope[];
+}
+/**
+ * 实验范围（split scope）。语义边界（M13.5）：
+ * - status=confirmed 表示「作者确认该范围的观测记录真实、归属正确」；
+ * - workflowUse 表示「允许进入当前论文工作流上下文」——与确认是两个独立
+ *   决策：多范围组的 confirmation/held-out 范围即便确认真实，也必须经作者
+ *   显式授权才进入 Researcher 上下文（科研隔离边界）；
+ * - conflicts 只承载真正的协议矛盾（同一范围内 protocol 互相矛盾）与
+ *   来源失效；「不同 split 共存」本身不是冲突。
+ */
+export interface ExperimentSplitScope {
+  /** 稳定标识 `${groupId}@${slug}`；groupId 合法字符集不含 @、slug 不含 @ */
+  id: string;
+  /** split 原值；未声明 split 的观测归入 "unknown"（不自动补全、不推断） */
+  split: string;
+  status: "candidate" | "confirmed" | "conflict";
+  conflicts: string[];
+  confirmedAt?: string;
+  /** allowed = 允许进入当前工作流上下文；excluded = 明确排除；undecided = 未决（多范围组确认后的缺省） */
+  workflowUse: "allowed" | "excluded" | "undecided";
+  workflowUseDecidedAt?: string;
+  observationCount: number;
+  metricCount: number;
+  filePaths: string[];
+  /** 该范围内出现的 protocol 值（展示用；跨范围差异不算冲突） */
+  protocols: string[];
 }
 export interface ExperimentRelationCandidate {
   configPath: string;
@@ -81,7 +114,8 @@ export interface ReportedVerdict {
   value: string;
 }
 export interface ExperimentPackage {
-  schemaVersion: 1;
+  /** v1 = 文件级分组（无 splitScopes）；v2 = rebuild 后带观测级实验范围 */
+  schemaVersion: 1 | 2;
   packageId: string;
   packageHash: string;
   originalName: string;
@@ -264,14 +298,16 @@ function pushScaleConflictWarnings(item: ExperimentPackage): void {
     if (observation.value <= 0) continue;
     const leaf = observation.metric.split(/[./]/).pop() ?? observation.metric;
     if (METRIC_DIRECTION.get(leaf.toUpperCase()) !== "higher") continue;
-    const key = `${observation.groupId}\0${leaf}`;
+    // M13.5：标度混用告警收敛到同一实验范围（groupId × split）内——
+    // 不同 split 的同名指标本就不可直接比较，跨范围数值差异不告警
+    const key = `${observation.groupId}\0${observationScopeKey(observation)}\0${leaf}`;
     const values = byKey.get(key) ?? [];
     values.push(observation.value);
     byKey.set(key, values);
   }
   for (const [key, values] of byKey) {
     if (values.length < 2) continue;
-    const [groupId, leaf] = key.split("\0") as [string, string];
+    const [groupId, scopeKey, leaf] = key.split("\0") as [string, string, string];
     const hasFraction = values.some((value) => value <= 1);
     const hasPercent = values.some((value) => value >= 30);
     if (!hasFraction || !hasPercent) continue;
@@ -280,7 +316,7 @@ function pushScaleConflictWarnings(item: ExperimentPackage): void {
     const ratio = max / Math.max(min, 1e-12);
     if (ratio < 30 || ratio > 300) continue;
     item.warnings.push(
-      `指标 ${leaf} 在实验组 ${groupId} 内同时存在小数（${min}）与百分数量级（${max}）数值：疑似标度混用；确认与出图前请核对各来源口径`,
+      `指标 ${leaf} 在实验组 ${groupId}${scopeKey !== SPLIT_UNKNOWN ? `（范围 ${scopeKey}）` : ""} 内同时存在小数（${min}）与百分数量级（${max}）数值：疑似标度混用；确认与出图前请核对各来源口径`,
     );
   }
 }
@@ -370,6 +406,77 @@ export interface WorkflowObservationCandidate {
 /** 码位全序：不用 localeCompare——跨平台 CI（Windows/Linux）必须逐字节一致 */
 function compareCodepoints(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** M13.5：未声明 split 的观测归入的范围值（保留 Unknown，不自动补全、不推断） */
+export const SPLIT_UNKNOWN = "unknown";
+
+/** scope id 片段：split 原值 → 稳定 slug；不可映射时用序号兜底（确定性） */
+function scopeSlug(split: string, index: number): string {
+  if (split === SPLIT_UNKNOWN) return SPLIT_UNKNOWN;
+  const slug = split.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  return slug !== "" ? slug : `split-${index + 1}`;
+}
+
+/**
+ * 由组观测构建观测级实验范围（M13.5，确定性）：
+ * - 范围键 = 观测 split 原值（缺失 → unknown）；slug 冲突（两个不同原值
+ *   折叠出同一 slug）按码位序追加 -2/-3 消解，绝不合并不同 split；
+ * - 范围内 protocol 互相矛盾（B 类真冲突）→ scope.conflicts + status=conflict；
+ *   不同 split 共存本身不是冲突（A 类，可分别确认）。
+ */
+function buildSplitScopes(groupId: string, observations: MetricObservation[]): ExperimentSplitScope[] {
+  const bySplit = new Map<string, MetricObservation[]>();
+  for (const observation of observations) {
+    const key = observation.split ?? SPLIT_UNKNOWN;
+    const list = bySplit.get(key) ?? [];
+    list.push(observation);
+    bySplit.set(key, list);
+  }
+  const usedSlugs = new Set<string>();
+  const scopes: ExperimentSplitScope[] = [];
+  for (const [rawSplit, scopeObservations] of [...bySplit.entries()].sort((a, b) => compareCodepoints(a[0], b[0]))) {
+    let slug = scopeSlug(rawSplit, scopes.length);
+    if (usedSlugs.has(slug)) {
+      for (let suffix = 2; ; suffix += 1) {
+        const candidate = `${slug}-${suffix}`;
+        if (!usedSlugs.has(candidate)) {
+          slug = candidate;
+          break;
+        }
+      }
+    }
+    usedSlugs.add(slug);
+    const protocols = [...new Set(scopeObservations.map((observation) => observation.protocol).filter((value): value is string => value !== undefined && value !== ""))];
+    const conflicts: string[] = [];
+    if (protocols.length > 1) {
+      conflicts.push(`该范围内 protocol 不一致：${protocols.join(" / ")}`);
+    }
+    scopes.push({
+      id: `${groupId}@${slug}`,
+      split: rawSplit,
+      status: conflicts.length > 0 ? "conflict" : "candidate",
+      conflicts,
+      workflowUse: "undecided",
+      observationCount: scopeObservations.length,
+      metricCount: new Set(scopeObservations.map((observation) => observation.metric)).size,
+      filePaths: [...new Set(scopeObservations.map((observation) => observation.path))],
+      protocols,
+    });
+  }
+  return scopes;
+}
+
+/** scope id → groupId + 范围定位（groupId 合法字符集不含 @，首个 @ 前即组 id） */
+function parseScopeId(scopeId: string): { groupId: string } | undefined {
+  const at = scopeId.indexOf("@");
+  if (at <= 0 || at === scopeId.length - 1) return undefined;
+  return { groupId: scopeId.slice(0, at) };
+}
+
+/** 观测所属范围的 split 键（与 buildSplitScopes 的键一致） */
+function observationScopeKey(observation: Pick<MetricObservation, "split">): string {
+  return observation.split ?? SPLIT_UNKNOWN;
 }
 
 /** 组内稳定锚点全序：先来源文件（sourceId/path），再块内物理位置（row/column/jsonPath），
@@ -477,7 +584,7 @@ export class ExperimentPackageService {
     catch (error) { if ((error as { code?: string }).code === "ENOENT") throw new NotFoundError("实验包", packageId); throw error; }
     try {
       const item = JSON.parse(raw) as ExperimentPackage;
-      if (item.schemaVersion !== 1 || item.packageId !== packageId || !/^[a-f0-9]{64}$/.test(item.packageHash) || typeof item.originalName !== "string" ||
+      if ((item.schemaVersion !== 1 && item.schemaVersion !== 2) || item.packageId !== packageId || !/^[a-f0-9]{64}$/.test(item.packageHash) || typeof item.originalName !== "string" ||
         !["inventory", "importing", "ready", "partial"].includes(item.status) || !Array.isArray(item.files) || !Array.isArray(item.groups) ||
         !Array.isArray(item.observations) || !Array.isArray(item.relationCandidates) || !Array.isArray(item.warnings) ||
         (item.reportedVerdicts !== undefined && (!Array.isArray(item.reportedVerdicts) || item.reportedVerdicts.some((verdict) =>
@@ -485,6 +592,10 @@ export class ExperimentPackageService {
         (item.semanticSuggestions !== undefined && (typeof item.semanticSuggestions !== "object" || item.semanticSuggestions === null ||
           !Array.isArray(item.semanticSuggestions.roleSuggestions) || !Array.isArray(item.semanticSuggestions.findings) || !Array.isArray(item.semanticSuggestions.notes) ||
           typeof item.semanticSuggestions.model !== "string")) ||
+        item.groups.some((group) => group.splitScopes !== undefined && (!Array.isArray(group.splitScopes) || group.splitScopes.some((scope) =>
+          !scope || typeof scope.id !== "string" || typeof scope.split !== "string" ||
+          !["candidate", "confirmed", "conflict"].includes(scope.status) || !Array.isArray(scope.conflicts) ||
+          !["allowed", "excluded", "undecided"].includes(scope.workflowUse) || typeof scope.observationCount !== "number"))) ||
         item.files.some((file) => !file || typeof file.path !== "string" || typeof file.bytes !== "number" || typeof file.role !== "string" || typeof file.groupId !== "string")) throw new Error();
       return item;
     } catch { throw new BusinessError("EXPERIMENT_MANIFEST_CORRUPTED", "实验包 Manifest 损坏，已停止读写"); }
@@ -586,12 +697,13 @@ export class ExperimentPackageService {
         }
       }
     }
-    for (const group of groups.values()) if (group.conflicts.length) group.status = "conflict";
+    // M13.5 观测级实验范围：同组观测按 split 细分为可独立确认的范围。
+    // 「split 不一致」不再整组判 conflict（真实 A2e 包 main 组三范围曾被
+    // 此规则死锁）；真正的协议矛盾只看同一范围内。
     for (const group of groups.values()) {
-      for (const field of ["protocol", "split"] as const) {
-        const values = new Set(item.observations.filter((observation) => observation.groupId === group.id).map((observation) => observation[field]).filter((value): value is string => !!value));
-        if (values.size > 1) group.conflicts.push(`${field} 不一致：${[...values].join(" / ")}`);
-      }
+      const groupObservations = item.observations.filter((observation) => observation.groupId === group.id);
+      group.splitScopes = buildSplitScopes(group.id, groupObservations);
+      if (group.splitScopes.some((scope) => scope.status === "conflict")) group.status = "conflict";
       if (group.conflicts.length) group.status = "conflict";
     }
     for (const file of item.files.filter((entry) => entry.role === "experiment_config" && entry.sourceId && entry.parseStatus !== "failed")) {
@@ -609,7 +721,12 @@ export class ExperimentPackageService {
         if (group.role === "other") continue;
         const observation = item.observations.find((entry) => entry.groupId === group.id);
         if (!observation) continue;
-        const comparisons: Array<[string, string | undefined]> = [["model", observation.method], ["method", observation.method], ["dataset", observation.dataset], ["seed", observation.seed], ["protocol", observation.protocol], ["split", observation.split]];
+        // 多范围组的 split 字段与单一观测比较无意义（范围内 split 恒定，
+        // 跨范围差异是预期而非冲突）——跳过 split 字段，其余字段照常逐值比较
+        const multiScope = (group.splitScopes?.length ?? 0) > 1;
+        const comparisons: Array<[string, string | undefined]> = multiScope
+          ? [["model", observation.method], ["method", observation.method], ["dataset", observation.dataset], ["seed", observation.seed], ["protocol", observation.protocol]]
+          : [["model", observation.method], ["method", observation.method], ["dataset", observation.dataset], ["seed", observation.seed], ["protocol", observation.protocol], ["split", observation.split]];
         const matchedFields = comparisons.filter(([field, value]) => value !== undefined && config.get(field) === value).map(([field]) => field);
         const conflictingFields = comparisons.filter(([field, value]) => value !== undefined && config.has(field) && config.get(field) !== value).map(([field]) => field);
         if (matchedFields.length === 0 && conflictingFields.length === 0) continue;
@@ -620,6 +737,7 @@ export class ExperimentPackageService {
     item.groups = [...groups.values()];
     item.warnings = item.files.filter((file) => file.parseStatus === "failed").map((file) => `${file.path}: 解析失败`);
     if (item.files.some((file) => file.groupId === "unresolved")) item.warnings.push("部分文件的实验分组未确定，需作者核对");
+    item.schemaVersion = 2;
     pushScaleConflictWarnings(item);
   }
   async editFile(projectId: string, packageId: string, path: string, role: ExperimentRole, groupId: string): Promise<ExperimentPackage> {
@@ -634,22 +752,84 @@ export class ExperimentPackageService {
       return item;
     });
   }
-  async confirm(projectId: string, packageId: string, groupIds: string[]): Promise<ExperimentPackage> {
+  /**
+   * 作者确认（M13.5 双粒度）：
+   * - groupIds（v1 兼容路径）：整组确认。组含多个实验范围时拒绝——
+   *   「split 不一致」已不是冲突，但也不允许把多个评测范围当成一个结果
+   *   集合一键确认（Dev25 / Confirmation13 / Full38 必须分别核对）。
+   *   单范围组确认后该范围自动允许进入工作流（与 v1 行为一致）。
+   * - scopeIds（v2 路径）：按范围确认（`groupId@slug`）。确认只声明
+   *   「该范围观测记录真实、归属正确」；多范围组是否允许进入当前工作流
+   *   是独立决策（setScopeWorkflowUse），不会因确认而隐式放行。
+   */
+  async confirm(projectId: string, packageId: string, groupIds: string[], scopeIds?: string[]): Promise<ExperimentPackage> {
     return this.enqueue(projectId, async () => {
       const item = await this.get(projectId, packageId);
       if (item.status !== "ready" && item.status !== "partial") throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", "实验包尚未完成解析");
-      for (const id of groupIds) {
-        const group = item.groups.find((entry) => entry.id === id);
-        if (!group) throw new BusinessError("INVALID_REQUEST", `不存在实验组 ${id}`);
-        for (const path of group.filePaths) {
-          const file = item.files.find((entry) => entry.path === path)!;
-          if (!file.sourceId || file.parseStatus === "failed") continue;
+      const checkSourcesAlive = async (paths: string[]): Promise<void> => {
+        for (const path of paths) {
+          const file = item.files.find((entry) => entry.path === path);
+          if (!file || !file.sourceId || file.parseStatus === "failed") continue;
           const source = await this.sources.get(projectId, file.sourceId);
           if (!source || source.contentHash !== file.hash) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${path} 来源已删除或变化`);
         }
+      };
+      for (const id of groupIds) {
+        const group = item.groups.find((entry) => entry.id === id);
+        if (!group) throw new BusinessError("INVALID_REQUEST", `不存在实验组 ${id}`);
+        const scopeCount = group.splitScopes?.length ?? 0;
+        if (scopeCount > 1) {
+          throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `实验组 ${id} 包含 ${scopeCount} 个评测范围（${group.splitScopes!.map((scope) => scope.split).join(" / ")}），请按范围分别确认`);
+        }
+        await checkSourcesAlive(group.filePaths);
         if (group.conflicts.length) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${id} 有未解决冲突`);
+        if ((group.splitScopes ?? []).some((scope) => scope.conflicts.length > 0)) {
+          throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${id} 存在范围内协议矛盾，需先解决（${group.splitScopes!.filter((scope) => scope.conflicts.length > 0).map((scope) => scope.id).join("、")}）`);
+        }
         group.status = "confirmed"; group.confirmedAt ??= new Date().toISOString();
+        // 单范围组：确认即允许进入工作流（沿用 v1「确认 = 可用于写作」语义；
+        // 多范围组的隔离边界靠 scopeIds + setScopeWorkflowUse 显式表达）
+        const only = group.splitScopes?.[0];
+        if (only !== undefined && only.status !== "conflict") {
+          only.status = "confirmed"; only.confirmedAt ??= new Date().toISOString();
+          if (only.workflowUse === "undecided") { only.workflowUse = "allowed"; only.workflowUseDecidedAt = new Date().toISOString(); }
+        }
       }
+      for (const scopeId of scopeIds ?? []) {
+        const parsed = parseScopeId(scopeId);
+        const group = parsed === undefined ? undefined : item.groups.find((entry) => entry.id === parsed.groupId);
+        const scope = group?.splitScopes?.find((entry) => entry.id === scopeId);
+        if (group === undefined || scope === undefined) throw new BusinessError("INVALID_REQUEST", `不存在实验范围 ${scopeId}`);
+        await checkSourcesAlive(scope.filePaths);
+        if (scope.status === "conflict" || scope.conflicts.length > 0) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${scopeId} 有未解决冲突（${scope.conflicts.join("；")}）`);
+        if (group.conflicts.length > 0) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${group.id} 有组级未解决冲突（${group.conflicts.join("；")}）`);
+        scope.status = "confirmed"; scope.confirmedAt ??= new Date().toISOString();
+        // 范围全部确认后组整体置 confirmed（图表等组级消费方沿用该信号）
+        if ((group.splitScopes ?? []).every((entry) => entry.status === "confirmed")) {
+          group.status = "confirmed"; group.confirmedAt ??= new Date().toISOString();
+        }
+      }
+      await this.save(projectId, item);
+      return item;
+    });
+  }
+
+  /**
+   * 范围级工作流授权（M13.5）：confirmed 范围是否允许进入当前论文工作流
+   * 上下文（Researcher / 写作）。与「确认记录真实」是两个独立决策：
+   * confirmation / held-out 范围即便确认真实，未经显式授权也不会被注入
+   * 模型上下文。excluded 可随时改回 allowed（作者显式更改隔离边界）。
+   */
+  async setScopeWorkflowUse(projectId: string, packageId: string, scopeId: string, use: "allowed" | "excluded"): Promise<ExperimentPackage> {
+    return this.enqueue(projectId, async () => {
+      const item = await this.get(projectId, packageId);
+      if (item.status !== "ready" && item.status !== "partial") throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", "实验包尚未完成解析");
+      const parsed = parseScopeId(scopeId);
+      const group = parsed === undefined ? undefined : item.groups.find((entry) => entry.id === parsed.groupId);
+      const scope = group?.splitScopes?.find((entry) => entry.id === scopeId);
+      if (group === undefined || scope === undefined) throw new BusinessError("INVALID_REQUEST", `不存在实验范围 ${scopeId}`);
+      if (scope.status !== "confirmed") throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `范围 ${scopeId} 尚未确认；请先按范围确认再授权工作流使用`);
+      scope.workflowUse = use; scope.workflowUseDecidedAt = new Date().toISOString();
       await this.save(projectId, item);
       return item;
     });
@@ -721,23 +901,88 @@ export class ExperimentPackageService {
     });
   }
 
+  /**
+   * 指标浏览查询（M13.5 UI 支撑；只读）：按 split / 实验组 / method /
+   * metric / 来源路径过滤 + 分页。展示真实观测（不选优、不聚合）；
+   * 每条保留完整来源锚。facet 数量有界（码位序前 N）。
+   */
+  async queryObservations(
+    projectId: string,
+    packageId: string,
+    filters: { split?: string; groupId?: string; method?: string; metric?: string; path?: string; page?: number; pageSize?: number },
+  ): Promise<{
+    total: number;
+    page: number;
+    pageSize: number;
+    observations: MetricObservation[];
+    facets: { splits: string[]; groupIds: string[]; methods: string[]; metrics: string[]; paths: string[] };
+  }> {
+    const item = await this.get(projectId, packageId);
+    const page = Math.max(1, filters.page ?? 1);
+    const pageSize = Math.min(200, Math.max(1, filters.pageSize ?? 50));
+    const normalized = (value: string | undefined) => value?.trim().toLowerCase() || undefined;
+    const wantSplit = normalized(filters.split);
+    const wantGroup = normalized(filters.groupId);
+    const wantMethod = normalized(filters.method);
+    const wantMetric = normalized(filters.metric);
+    const wantPath = normalized(filters.path);
+    const filtered = item.observations.filter((observation) =>
+      (wantSplit === undefined || observationScopeKey(observation).toLowerCase() === wantSplit) &&
+      (wantGroup === undefined || observation.groupId.toLowerCase() === wantGroup) &&
+      (wantMethod === undefined || (observation.method ?? "").toLowerCase().includes(wantMethod)) &&
+      (wantMetric === undefined || observation.metric.toLowerCase().includes(wantMetric)) &&
+      (wantPath === undefined || observation.path.toLowerCase().includes(wantPath)));
+    const sorted = [...filtered].sort(compareObservationAnchors);
+    const start = (page - 1) * pageSize;
+    const facet = (values: string[], limit: number) => [...new Set(values)].sort(compareCodepoints).slice(0, limit);
+    return {
+      total: sorted.length,
+      page,
+      pageSize,
+      observations: sorted.slice(start, start + pageSize),
+      facets: {
+        splits: facet(item.observations.map(observationScopeKey), 50),
+        groupIds: facet(item.observations.map((observation) => observation.groupId), 50),
+        methods: facet(item.observations.map((observation) => observation.method ?? "").filter((value) => value !== ""), 100),
+        metrics: facet(item.observations.map((observation) => observation.metric), 200),
+        paths: facet(item.observations.map((observation) => observation.path), 200),
+      },
+    };
+  }
+
   async workflowContext(projectId: string): Promise<ConfirmedExperimentWorkflowContext> {
     const items = await this.list(projectId);
     // 资格边界与原先一致：作者确认组内的结果角色文件 + 存活 Source + ok/partial
     // 解析状态（JSONL 特征流在指标提取层就不产生观测）。合格观测先全量收集，
-    // 再交给确定性代表性选择——不再按登记顺序截断（M13.3.1）
+    // 再交给确定性代表性选择——不再按登记顺序截断（M13.3.1）。
+    // M13.5 范围门禁：组带 splitScopes（schema v2）时，观测还必须落在
+    // 「已确认 且 workflowUse=allowed」的范围内——confirmation / held-out
+    // 范围未经作者显式授权不得进入 Researcher 上下文。单范围组在整组确认
+    // 时已自动 allowed（与 v1 行为一致）；v1 旧包（无 scopes）整组沿用
+    // 确认即进入的旧语义，不受影响。
     const candidates: WorkflowObservationCandidate[] = [];
     for (const item of items) {
-      const confirmedGroups = new Set(item.groups.filter((group) => group.status === "confirmed").map((group) => group.id));
-      if (confirmedGroups.size === 0) continue;
-      const eligibleFiles = new Set(item.files
-        .filter((file) => confirmedGroups.has(file.groupId) &&
-          ["main_result", "baseline_result", "ablation_result"].includes(file.role) &&
-          file.sourceId !== undefined && ["ok", "partial"].includes(file.parseStatus))
-        .map((file) => `${file.groupId}\0${file.path}\0${file.sourceId}`));
-      for (const observation of item.observations) {
-        if (!eligibleFiles.has(`${observation.groupId}\0${observation.path}\0${observation.sourceId}`)) continue;
-        candidates.push({ packageId: item.packageId, packageHash: item.packageHash, observation });
+      for (const group of item.groups) {
+        const scopes = group.splitScopes;
+        // v1 旧包（无 scopes）：整组确认即进入（既有语义，不因升级失效）
+        // v2：范围级资格——scope confirmed + workflowUse=allowed 的观测进入；
+        // 组级状态不参与（作者可以只确认/只授权部分范围，其余范围永不进入）
+        const groupEligible = scopes === undefined ? group.status === "confirmed" : undefined;
+        const allowedSplits = scopes !== undefined
+          ? new Set(scopes.filter((scope) => scope.status === "confirmed" && scope.workflowUse === "allowed").map((scope) => scope.split))
+          : undefined;
+        if (groupEligible === false || allowedSplits?.size === 0) continue;
+        const allowedFiles = new Set(item.files
+          .filter((file) => file.groupId === group.id &&
+            ["main_result", "baseline_result", "ablation_result"].includes(file.role) &&
+            file.sourceId !== undefined && ["ok", "partial"].includes(file.parseStatus))
+          .map((file) => `${group.id}\0${file.path}\0${file.sourceId}`));
+        for (const observation of item.observations) {
+          if (observation.groupId !== group.id) continue;
+          if (!allowedFiles.has(`${observation.groupId}\0${observation.path}\0${observation.sourceId}`)) continue;
+          if (allowedSplits !== undefined && !allowedSplits.has(observationScopeKey(observation))) continue;
+          candidates.push({ packageId: item.packageId, packageHash: item.packageHash, observation });
+        }
       }
     }
     const selected = selectWorkflowObservations(candidates);
