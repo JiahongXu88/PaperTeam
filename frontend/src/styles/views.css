@@ -689,6 +689,21 @@
   color: var(--danger);
 }
 
+.model-catalog-block {
+  margin-bottom: var(--s-3);
+}
+
+.catalog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-2);
+}
+
+.catalog-toolbar-status {
+  font-size: var(--fs-secondary);
+}
+
 .model-catalog {
   max-height: 18rem;
   overflow-y: auto;

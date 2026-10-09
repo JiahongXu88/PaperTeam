@@ -595,13 +595,15 @@ describe("Z.AI 通道：endpoint resolver 与注册", () => {
 // ---- 错误诊断与日志 ----
 
 describe("Z.AI 通道：错误分类与日志", () => {
-  it("400 → BAD_REQUEST；Connection error → PROVIDER_UNAVAILABLE（不再 UNKNOWN）", async () => {
+  it("400 → THINKING_INCOMPATIBLE（M13.5 细化：reasoning 模型的 thinking 类 400 单独分类）；Connection error → PROVIDER_UNAVAILABLE（不再 UNKNOWN）", async () => {
     const badService = serviceWithOutcome({
       stopReason: "error",
       errorMessage: "400 Bad Request: thinking type disabled is not supported",
     });
     const badResult = await badService.testConnection({ model: "zai-coding-cn/glm-5.3" });
-    expect(badResult.code).toBe("BAD_REQUEST");
+    // M13.5：reasoning 模型上 thinking 参数被 400 拒绝 → THINKING_INCOMPATIBLE
+    //（比笼统 BAD_REQUEST 更可行动；GLM-5.3 正常探测走显式 low 档不会走到这）
+    expect(badResult.code).toBe("THINKING_INCOMPATIBLE");
 
     const connService = serviceWithOutcome({ stopReason: "error", errorMessage: "Connection error." });
     const connResult = await connService.testConnection({ model: "zai-coding-cn/glm-5.3" });

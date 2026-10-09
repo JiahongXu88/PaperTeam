@@ -778,12 +778,19 @@ export type CustomProviderApi = "anthropic-messages" | "openai-completions" | "o
 export interface CustomProviderModelInput {
   id: string;
   name: string;
+  /** 模型是否具备推理能力（能力元数据，与网关能否承载 thinking 字段无关） */
   reasoning: boolean;
   contextWindow: number;
   maxTokens: number;
   input: Array<"text" | "image">;
   /** 上下文/输出数值是否经确认（上游目录提供或用户显式编辑）；缺省 = 保守默认值 */
   metadataVerified?: boolean;
+  /**
+   * M13.5：thinking 请求参数兼容模式。"omit" = 当前网关不能携带任何
+   * thinking/reasoning 字段（new-api 类网关按字段存在性路由渠道），注册层
+   * 对所有调用路径彻底不发送该字段；缺省 = 按模型能力正常编码。
+   */
+  thinkingRequest?: "omit";
 }
 
 /**
@@ -866,6 +873,7 @@ export type ModelTestResultCode =
   | "RATE_LIMITED"
   | "TIMEOUT"
   | "BAD_REQUEST"
+  | "THINKING_INCOMPATIBLE"
   | "UNKNOWN";
 
 /** POST /api/settings/model/test 的结果 */

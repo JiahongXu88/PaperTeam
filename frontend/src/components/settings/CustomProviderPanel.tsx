@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   useDeleteCustomProvider,
@@ -66,6 +66,7 @@ const TEST_CODE_LABEL: Record<string, string> = {
   RATE_LIMITED: "请求受限（限流 / 配额 / 账户余额不足）",
   TIMEOUT: "连接超时，请检查网络或模型服务",
   BAD_REQUEST: "请求被服务拒绝（模型或参数不支持，详见详细信息）",
+  THINKING_INCOMPATIBLE: "网关没有支持 thinking 的渠道：探针对推理模型会携带 thinking 字段。若该模型经此网关不需要 thinking，展开模型把「thinking 参数」设为「不发送」后重试",
   UNKNOWN: "未知错误",
 };
 
@@ -77,6 +78,8 @@ interface ModelEntry {
   maxTokens: string;
   reasoning: boolean;
   image: boolean;
+  /** M13.5：omit = 该网关不能携带 thinking/reasoning 字段（见 CustomProviderModelInput） */
+  thinkingRequest: "auto" | "omit";
   /** 数值来自上游目录或用户显式编辑；false = 保守默认值（UI 标记未验证） */
   metadataVerified: boolean;
 }
@@ -106,6 +109,7 @@ function newEntry(options?: { id?: string; name?: string; contextWindow?: number
     maxTokens: String(DEFAULT_MAX_TOKENS),
     reasoning: false,
     image: false,
+    thinkingRequest: "auto",
     metadataVerified: options?.metadataVerified ?? false,
   };
 }
@@ -146,6 +150,7 @@ function formFrom(provider: CustomProviderView): FormState {
         maxTokens: String(model.maxTokens),
         reasoning: model.reasoning,
         image: model.input.includes("image"),
+        thinkingRequest: model.thinkingRequest === "omit" ? "omit" : "auto",
         metadataVerified: model.metadataVerified ?? false,
       };
     }),
@@ -214,6 +219,7 @@ function toInput(form: FormState): { input: CustomProviderInput } | { error: str
         maxTokens: Number(row.maxTokens.trim()),
         input: row.image ? ["text", "image"] : ["text"],
         ...(row.metadataVerified ? { metadataVerified: true } : {}),
+        ...(row.thinkingRequest === "omit" ? { thinkingRequest: "omit" as const } : {}),
       })),
       ...(form.modelsPath.trim() !== "" ? { modelsPath: form.modelsPath.trim() } : {}),
     },
@@ -380,6 +386,8 @@ function CustomProviderForm({
   const [showKey, setShowKey] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [catalog, setCatalog] = useState<DiscoveredModelView[] | null>(null);
+  const [catalogOpen, setCatalogOpen] = useState(true);
+  const catalogBlockRef = useRef<HTMLDivElement | null>(null);
   const [search, setSearch] = useState("");
   const [manualId, setManualId] = useState("");
   const [testModelId, setTestModelId] = useState("");
@@ -452,6 +460,7 @@ function CustomProviderForm({
           if (result.ok) {
             setCatalog(result.models ?? []);
             setSearch("");
+            setCatalogOpen(true);
             setLocalError(null);
           } else {
             setCatalog(null);
@@ -550,6 +559,21 @@ function CustomProviderForm({
     }
     return [...groups.entries()];
   }, [filteredCatalog]);
+
+  // 目录收起（M13.5）：点击目录区域外或按 Esc 关闭；已选模型与搜索词不丢失
+  //（选择存在 form.models，搜索词存在 state，重新展开即恢复）
+  useEffect(() => {
+    if (catalog === null || !catalogOpen) {
+      return;
+    }
+    const onPointerDown = (event: MouseEvent) => {
+      if (catalogBlockRef.current !== null && event.target instanceof Node && !catalogBlockRef.current.contains(event.target)) {
+        setCatalogOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [catalog, catalogOpen]);
 
   const discoveryResult = discover.data;
   const selectedCount = form.models.length;
@@ -661,58 +685,90 @@ function CustomProviderForm({
         ) : null}
 
         {catalog !== null ? (
-          <div className="field">
-            <label htmlFor="cp-model-search">搜索模型（{selectedCount} 个已选）</label>
-            <input
-              id="cp-model-search"
-              type="search"
-              value={search}
-              placeholder="按 Model ID 或名称筛选"
-              onChange={(event) => setSearch(event.target.value)}
-              data-testid="model-search"
-            />
-          </div>
-        ) : null}
-        {catalog !== null ? (
-          <div className="model-catalog" data-testid="model-catalog" role="group" aria-label="可用模型列表">
-            {groupedCatalog.length === 0 ? (
-              <p className="model-catalog-empty muted">
-                {catalog.length === 0 ? "目录为空：该服务返回了 0 个模型，可手动添加" : "没有匹配的模型"}
-              </p>
-            ) : (
-              groupedCatalog.map(([group, entries]) => (
-                <div key={group} className="model-catalog-group">
-                  {group !== "" ? <div className="model-catalog-group-label muted">{group}</div> : null}
-                  {entries.map((entry) => {
-                    const checked = form.models.some((row) => row.id === entry.id);
-                    return (
-                      <label key={entry.id} className="model-catalog-row">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(event) =>
-                            event.target.checked
-                              ? addModel({
-                                  id: entry.id,
-                                  name: entry.name,
-                                  contextWindow: entry.contextWindow,
-                                  metadataVerified: entry.contextWindow !== undefined,
-                                })
-                              : removeModel(entry.id)
-                          }
-                          data-testid={`catalog-model-${entry.id}`}
-                        />
-                        <span className="mono">{entry.id}</span>
-                        {entry.name !== undefined && entry.name !== entry.id ? <span className="muted">{entry.name}</span> : null}
-                        {entry.contextWindow !== undefined ? (
-                          <span className="model-catalog-meta muted">{Math.round(entry.contextWindow / 1000)}k 上下文</span>
-                        ) : null}
-                      </label>
-                    );
-                  })}
+          <div className="model-catalog-block" ref={catalogBlockRef} data-testid="model-catalog-block">
+            <div className="catalog-toolbar">
+              <button
+                type="button"
+                className="btn btn-small"
+                onClick={() => setCatalogOpen((value) => !value)}
+                aria-expanded={catalogOpen}
+                aria-controls="cp-model-catalog"
+                data-testid="toggle-model-catalog"
+              >
+                {catalogOpen ? "收起模型目录" : `展开模型目录（${catalog.length} 个）`}
+              </button>
+              <span className="muted catalog-toolbar-status">
+                已选 {selectedCount} 个
+                {search.trim() !== "" ? " · 搜索生效中" : ""}
+              </span>
+            </div>
+            {catalogOpen ? (
+              <>
+                <div className="field">
+                  <label htmlFor="cp-model-search">搜索模型</label>
+                  <input
+                    id="cp-model-search"
+                    type="search"
+                    value={search}
+                    placeholder="按 Model ID 或名称筛选"
+                    onChange={(event) => setSearch(event.target.value)}
+                    data-testid="model-search"
+                  />
                 </div>
-              ))
-            )}
+                <div
+                  className="model-catalog"
+                  id="cp-model-catalog"
+                  role="group"
+                  aria-label="可用模型列表"
+                  data-testid="model-catalog"
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setCatalogOpen(false);
+                    }
+                  }}
+                >
+                  {groupedCatalog.length === 0 ? (
+                    <p className="model-catalog-empty muted">
+                      {catalog.length === 0 ? "目录为空：该服务返回了 0 个模型，可手动添加" : "没有匹配的模型"}
+                    </p>
+                  ) : (
+                    groupedCatalog.map(([group, entries]) => (
+                      <div key={group} className="model-catalog-group">
+                        {group !== "" ? <div className="model-catalog-group-label muted">{group}</div> : null}
+                        {entries.map((entry) => {
+                          const checked = form.models.some((row) => row.id === entry.id);
+                          return (
+                            <label key={entry.id} className="model-catalog-row">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) =>
+                                  event.target.checked
+                                    ? addModel({
+                                        id: entry.id,
+                                        name: entry.name,
+                                        contextWindow: entry.contextWindow,
+                                        metadataVerified: entry.contextWindow !== undefined,
+                                      })
+                                    : removeModel(entry.id)
+                                }
+                                data-testid={`catalog-model-${entry.id}`}
+                              />
+                              <span className="mono">{entry.id}</span>
+                              {entry.name !== undefined && entry.name !== entry.id ? <span className="muted">{entry.name}</span> : null}
+                              {entry.contextWindow !== undefined ? (
+                                <span className="model-catalog-meta muted">{Math.round(entry.contextWindow / 1000)}k 上下文</span>
+                              ) : null}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            ) : null}
           </div>
         ) : null}
 
@@ -753,6 +809,11 @@ function CustomProviderForm({
                   {!entry.metadataVerified ? (
                     <span className="badge-unverified" title="上下文窗口 / 最大输出为保守默认值，未经上游目录确认">
                       未验证
+                    </span>
+                  ) : null}
+                  {entry.thinkingRequest === "omit" ? (
+                    <span className="badge-unverified" title="该网关不携带 thinking 字段（注册层不发送）">
+                      无 thinking
                     </span>
                   ) : null}
                 </summary>
@@ -798,7 +859,7 @@ function CustomProviderForm({
                         checked={entry.reasoning}
                         onChange={(event) => updateEntry(entry.key, { reasoning: event.target.checked })}
                       />
-                      <span>支持推理（thinking）</span>
+                      <span>模型支持推理（能力标记）</span>
                     </label>
                     <label className="check">
                       <input
@@ -808,6 +869,24 @@ function CustomProviderForm({
                       />
                       <span>支持图片输入</span>
                     </label>
+                    <span className="field-help">「支持推理」描述模型能力，不影响请求编码</span>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`model-thinking-${entry.key}`}>thinking 参数（网关兼容）</label>
+                    <select
+                      id={`model-thinking-${entry.key}`}
+                      value={entry.thinkingRequest}
+                      onChange={(event) => updateEntry(entry.key, { thinkingRequest: event.target.value as ModelEntry["thinkingRequest"] })}
+                      data-testid={`model-thinking-request-${entry.id}`}
+                    >
+                      <option value="auto">自动（按模型能力发送）</option>
+                      <option value="omit">不发送（网关不支持 thinking 字段）</option>
+                    </select>
+                    <span className="field-help">
+                      部分网关按「请求里是否出现 thinking 字段」选择渠道：模型本身支持推理、但网关没有
+                      thinking 渠道时，任何 thinking 请求（含关闭指令）都会失败——此处改为「不发送」即可正常调用，
+                      代价是该模型经此网关不使用思考能力。
+                    </span>
                   </div>
                 </div>
                 <div className="action-row">

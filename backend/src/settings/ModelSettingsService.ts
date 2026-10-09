@@ -196,6 +196,7 @@ export type ModelTestResultCode =
   | "RATE_LIMITED"
   | "TIMEOUT"
   | "BAD_REQUEST"
+  | "THINKING_INCOMPATIBLE"
   | "UNKNOWN";
 
 export interface ModelTestResult {
@@ -1039,8 +1040,11 @@ export class ModelSettingsService {
     const stopReason = message.stopReason;
     if (stopReason === "error" || stopReason === "aborted") {
       const rawDetail = message.errorMessage ?? `stopReason=${stopReason}`;
-      const code = aborted || signal.aborted ? "TIMEOUT" : classifyFailure(rawDetail);
-      const detail = redact(truncate(rawDetail, DETAIL_MAX_CHARS), [apiKey, ...this.knownSecrets()]);
+      const code = aborted || signal.aborted ? "TIMEOUT" : classifyFailure(rawDetail, model);
+      const hint = code === "THINKING_INCOMPATIBLE"
+        ? "；探针对推理模型会携带 thinking 字段（未请求档位时为 disabled），该错误通常意味着当前网关没有支持 thinking 的渠道——可在自定义提供商中把该模型的 thinking 参数设为「不发送」后重试"
+        : "";
+      const detail = redact(truncate(rawDetail, DETAIL_MAX_CHARS), [apiKey, ...this.knownSecrets()]) + hint;
       this.log(
         `[model-settings] Test Connection 失败：${provider}/${modelId} ${logContext}` +
           ` code=${code} detail=${detail}（不打印请求体与 key）`,
@@ -1199,7 +1203,7 @@ function describeSource(source: ModelSettingsStatus["configurationSource"]): str
 }
 
 /** Provider 错误文本 → 稳定失败分类（只看 HTTP 状态与关键词，不透传原始栈） */
-function classifyFailure(rawDetail: string): ModelTestResultCode {
+function classifyFailure(rawDetail: string, model?: Model<Api>): ModelTestResultCode {
   const text = rawDetail.toLowerCase();
   if (/\b401\b|\b403\b|unauthorized|forbidden|invalid[_ ]api[_ ]key|invalid_api_key|authentication/.test(text)) {
     return "AUTH_FAILED";
@@ -1209,6 +1213,13 @@ function classifyFailure(rawDetail: string): ModelTestResultCode {
   }
   if (/\b404\b|model_not_found|does not exist|not found/.test(text)) {
     return "MODEL_NOT_FOUND";
+  }
+  // thinking 不兼容（M13.5）：探针对 reasoning 模型必然携带 thinking 字段
+  // （未请求档位时为 {type:"disabled"}）。网关按「字段存在」路由渠道时，
+  // 无 thinking 渠道即报 500 渠道不存在 / 400 thinking 不支持——受控 A/B
+  // 已实证同一配置仅翻转 thinking 字段存在性即稳定翻转结果。
+  if (model?.reasoning === true && isThinkingIncompatError(text)) {
+    return "THINKING_INCOMPATIBLE";
   }
   // 400 家族（含 thinking 参数不被模型支持等请求级拒绝）：与认证/限流/5xx 区分开
   if (/\b400\b|bad[_ ]request|invalid[_ ]request|invalid_request_error/.test(text)) {
@@ -1228,11 +1239,27 @@ function classifyFailure(rawDetail: string): ModelTestResultCode {
   return "UNKNOWN";
 }
 
+/** thinking 字段触发的网关路由失败特征（脱敏文本匹配；只做分类提示，不断言网关内部行为） */
+function isThinkingIncompatError(text: string): boolean {
+  const thinkingRejected = /thinking|reasoning[_ ](?:param|field|token)/.test(text) &&
+    /\b400\b|bad[_ ]request|not[_ ]support|不支持|invalid[_ ]request/.test(text);
+  const channelMissing = /渠道/.test(text) && /不存在|不可用|无可用/.test(text);
+  const channelMissingEn = /(?:no\s+)?available\s+channel/.test(text);
+  return thinkingRejected || channelMissing || channelMissingEn;
+}
+
 /**
  * Test Connection 的 reasoning 档位（模型 metadata 驱动，不维护第二份模型
  * 能力表，也不按模型 id 硬编码）：
- * - 模型不支持 reasoning → undefined（不注入）
- * - 支持 off → undefined（最低成本；Pi 会编码成各家的 off/none 语义）
+ * - 模型不支持 reasoning / thinkingRequest=omit（注册时 reasoning=false）
+ *   → undefined（探针不请求任何 thinking 档位）
+ * - 支持 off → undefined。注意（M13.5 实证修正）：undefined 在 Pi 选项层
+ *   就是「本次不请求 thinking」的唯一合法编码（SimpleStreamOptions.reasoning
+ *   不接受 "off"，传 "off" 会因真值性反而走 enabled 编码）；但 anthropic
+ *   协议下 Pi 对 reasoning:true 的模型仍会发送 thinking:{type:"disabled"}——
+ *   字段本身仍在请求体里。网关按字段存在性路由渠道时（new-api 类），
+ *   这依然会 500；此类网关兼容性必须经 thinkingRequest="omit"（注册层
+ *   reasoning=false）解决，不能靠选项层表达。
  * - 不支持 off（如 GLM-5.3：thinkingLevelMap.off=null）→ 最低可用档位
  *   （GLM-5.3 → low）。这类模型若不显式给档位，Pi 的 zai thinkingFormat
  *   会发送 thinking.type=disabled，服务端 400 拒绝。

@@ -38,6 +38,7 @@ const TEST_CODE_LABEL: Record<ModelTestResultCode, string> = {
   RATE_LIMITED: "请求受限（限流 / 配额 / 账户余额不足）",
   TIMEOUT: "连接超时，请检查网络或模型服务",
   BAD_REQUEST: "请求被服务拒绝（模型或参数不支持）",
+  THINKING_INCOMPATIBLE: "网关没有支持 thinking 的渠道：对推理模型的测试会携带 thinking 字段。若经此网关不需要 thinking，可在「自定义提供商」中把该模型的 thinking 参数设为「不发送」",
   UNKNOWN: "未知错误",
 };
 

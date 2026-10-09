@@ -29,7 +29,7 @@ export type CustomModelInput = (typeof CUSTOM_MODEL_INPUTS)[number];
 export interface CustomProviderModel {
   id: string;
   name: string;
-  /** 是否支持 thinking / reasoning（网关不支持时必须为 false，否则请求头会带上 beta 特性） */
+  /** 模型是否具备推理能力（能力元数据；与当前网关能否承载 thinking 字段无关） */
   reasoning: boolean;
   contextWindow: number;
   maxTokens: number;
@@ -39,6 +39,18 @@ export interface CustomProviderModel {
    * 缺省 / false = 保守默认值，未经上游验证（UI 需明确标记，不得假装已知）。
    */
   metadataVerified?: boolean;
+  /**
+   * thinking 请求参数的网关兼容模式（M13.5，与 reasoning 语义解耦）：
+   * - "auto"（缺省）：按模型能力正常编码——未请求档位时 Pi 对 reasoning
+   *   模型发送 thinking:{type:"disabled"}，请求档位时发送 enabled；
+   * - "omit"：当前网关/代理不能携带任何 thinking 字段（new-api 类网关按
+   *   「字段是否存在」路由渠道：分组下无 thinking 渠道时，enabled 与
+   *   disabled 同样报 500 渠道不存在）。注册进 Pi 时该模型 reasoning 置
+   *   false——仅请求编码层面永不携带 thinking 字段与 interleaved-thinking
+   *   beta 头，覆盖 Test Connection / 语义理解 / 摘要 / Vision / 真实
+   *   Agent 会话全部调用路径；能力元数据保留在 reasoning 字段。
+   */
+  thinkingRequest?: "omit";
 }
 
 export interface CustomProviderConfig {
@@ -266,7 +278,10 @@ function readModelsPath(raw: unknown): string | undefined {
   return trimmed;
 }
 
-/** 转成 Pi `registerProvider` 需要的形状（cost 全零：网关计费不在 PaperTeam 内核算） */
+/** 转成 Pi `registerProvider` 需要的形状（cost 全零：网关计费不在 PaperTeam 内核算）。
+ * M13.5：thinkingRequest="omit" 的模型注册时 reasoning 置 false——这是让 Pi
+ * 的 anthropic-messages 编码层彻底不发送 thinking 字段（含 disabled）与
+ * thinking 相关 beta 头的唯一单点手段；能力元数据保留在 store 层。 */
 export function toProviderConfigInput(config: CustomProviderInput): ProviderConfigInput {
   return {
     name: config.name,
@@ -277,7 +292,7 @@ export function toProviderConfigInput(config: CustomProviderInput): ProviderConf
     models: config.models.map((model) => ({
       id: model.id,
       name: model.name,
-      reasoning: model.reasoning,
+      reasoning: model.thinkingRequest === "omit" ? false : model.reasoning,
       input: [...model.input],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: model.contextWindow,
@@ -353,6 +368,10 @@ function readModels(raw: unknown): CustomProviderModel[] {
     if (reasoning !== undefined && typeof reasoning !== "boolean") {
       throw new BusinessError("INVALID_REQUEST", `models[${index}].reasoning 必须是布尔值`);
     }
+    const thinkingRequestRaw = record["thinkingRequest"];
+    if (thinkingRequestRaw !== undefined && thinkingRequestRaw !== "auto" && thinkingRequestRaw !== "omit") {
+      throw new BusinessError("INVALID_REQUEST", `models[${index}].thinkingRequest 只能是 "auto" 或 "omit"`);
+    }
     const metadataVerifiedRaw = record["metadataVerified"];
     if (metadataVerifiedRaw !== undefined && typeof metadataVerifiedRaw !== "boolean") {
       throw new BusinessError("INVALID_REQUEST", `models[${index}].metadataVerified 必须是布尔值`);
@@ -378,6 +397,7 @@ function readModels(raw: unknown): CustomProviderModel[] {
       maxTokens,
       input,
       ...(metadataVerifiedRaw !== undefined ? { metadataVerified: metadataVerifiedRaw } : {}),
+      ...(thinkingRequestRaw === "omit" ? { thinkingRequest: "omit" as const } : {}),
     };
   });
 }
