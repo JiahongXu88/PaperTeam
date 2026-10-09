@@ -195,3 +195,9 @@ Source + ok/partial，JSONL 特征流在指标提取层就不产生观测）：
 
 **ECS 未重新验证**：本轮不启动服务器、不重新上传实验 ZIP、不调用真实
 模型；服务器保持关机，修复待下次 ECS 部署生效。
+
+**CI 追记（2026-10-09）**：`d7f16b8` 的 GitHub Actions **CI 全绿**
+（5m56s）与 **Linux Integration 全绿**（14m38s）；本地 Windows 全量
+backend vitest 重跑 2,923/2,943 通过（20 skipped 为既有跳过；首轮并发
+负载下 1 个既有 SSE/时序 flake，单轮重跑全绿——与 M13.3 验收时同类基
+线）。ECS 保持关机，未启动、未重新部署。
