@@ -5,8 +5,11 @@ import userEvent from "@testing-library/user-event";
 import { ExperimentPackagesPanel } from "../src/components/project/ExperimentPackagesPanel.js";
 import { renderWithProviders } from "./helpers.js";
 import type { ExperimentPackageSummaryView, ExperimentPackageView, ObservationQueryResult } from "../src/api/experimentPackages.js";
+import { EXPERIMENT_ARCHIVE_MAX_BYTES } from "../src/api/experimentPackages.js";
 
 vi.mock("../src/api/experimentPackages.js", () => ({
+  EXPERIMENT_ARCHIVE_MAX_BYTES: 16 * 1024 * 1024,
+  experimentArchiveLimitMessage: (file: File) => `ZIP 文件过大：当前文件 ${(file.size / (1024 * 1024)).toFixed(2)} MiB，最大允许 16 MiB。请精简实验包后重试。文件：${file.name}`,
   listExperimentPackages: vi.fn(), getExperimentPackage: vi.fn(), uploadExperimentPackage: vi.fn(),
   editExperimentFile: vi.fn(), confirmExperimentGroups: vi.fn(), confirmExperimentMetricEvidence: vi.fn(),
   requestExperimentUnderstanding: vi.fn(), setExperimentScopeWorkflowUse: vi.fn(), queryExperimentObservations: vi.fn(),
@@ -83,5 +86,23 @@ describe("ExperimentPackagesPanel（M13.5 工作台）", () => {
     await userEvent.click(screen.getByText("上传实验包"));
     await waitFor(() => expect(api.uploadExperimentPackage).toHaveBeenCalledWith("p-test", file));
     expect(await screen.findByText(/实验包已读取/)).toBeTruthy();
+  });
+
+  it("超限文件在上传前显示含文件名的中文错误，且可选择新文件重试", async () => {
+    renderWithProviders(<ExperimentPackagesPanel projectId="p-test" />);
+    const input = screen.getByLabelText("选择实验 ZIP");
+    const large = new File(["x"], "results-20MiB.zip", { type: "application/zip" });
+    Object.defineProperty(large, "size", { value: 20 * 1024 * 1024 });
+    await userEvent.upload(input, large);
+    await userEvent.click(screen.getByRole("button", { name: "上传实验包" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("ZIP 文件过大：当前文件 20.00 MiB，最大允许 16 MiB。");
+    expect(screen.getByRole("alert")).toHaveTextContent("results-20MiB.zip");
+    expect(api.uploadExperimentPackage).not.toHaveBeenCalled();
+
+    const valid = new File(["PK\x03\x04"], "retry.zip", { type: "application/zip" });
+    Object.defineProperty(valid, "size", { value: EXPERIMENT_ARCHIVE_MAX_BYTES });
+    await userEvent.upload(input, valid);
+    await userEvent.click(screen.getByRole("button", { name: "上传实验包" }));
+    await waitFor(() => expect(api.uploadExperimentPackage).toHaveBeenCalledWith("p-test", valid));
   });
 });

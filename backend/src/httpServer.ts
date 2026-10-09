@@ -176,14 +176,15 @@ export function createBackendHttpServer({
       modelSettings,
       readiness,
     }).catch((error: unknown) => {
+      if (req.aborted || (req.destroyed && error instanceof Error && (error as NodeJS.ErrnoException).code === "ECONNRESET")) return;
       const businessError = toBusinessError(error);
       if (businessError !== error) {
         // 未归类异常：完整原因只进日志，响应体只给稳定的 INTERNAL_ERROR
         console.error(`[http] 未处理错误（${req.method ?? "?"} ${req.url ?? "?"}）:`, error);
       }
-      if (!res.headersSent) {
+      if (!res.destroyed && !res.headersSent) {
         sendBusinessError(res, businessError);
-      } else {
+      } else if (!res.destroyed) {
         res.end();
       }
     });
@@ -1067,24 +1068,102 @@ async function handleProjectResourceRoutes(
       if (method === "POST") {
         if (req.headers["content-type"]?.split(";")[0]?.trim() !== "application/zip") throw new BusinessError("INVALID_REQUEST", "实验包上传需要 application/zip");
         const declared = Number(req.headers["content-length"] ?? 0);
-        if (Number.isFinite(declared) && declared > PACKAGE_LIMITS.archiveBytes) throw new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限");
+        const rejectOversize = async (): Promise<void> => {
+          // A Vite proxy may still be forwarding this request body when it receives
+          // an early 413. Drain a bounded tail first so ordinary oversize uploads
+          // finish through the proxy before its upstream response arrives.
+          const drainBudget = 32 * 1024 * 1024;
+          const drainTimeout = setTimeout(() => req.destroy(), 5_000);
+          let drained = 0;
+          let complete = false;
+          try {
+            for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+              drained += (chunk as Buffer).length;
+              if (drained > drainBudget) {
+                req.pause();
+                break;
+              }
+            }
+            complete = req.complete;
+          } catch {
+            // Disconnect or bounded-drain close is expected after the 413 is sent.
+          } finally {
+            clearTimeout(drainTimeout);
+          }
+          if (!res.destroyed && !res.headersSent) {
+            sendBusinessError(res, new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限"));
+            if (!complete) res.once("finish", () => req.destroy());
+          }
+        };
+        if (Number.isFinite(declared) && declared > PACKAGE_LIMITS.archiveBytes) {
+          await rejectOversize();
+          return true;
+        }
         req.setTimeout(120_000, () => {
-          if (!res.headersSent) sendJson(res, 408, { status: "error", error: { code: "EXPERIMENT_UPLOAD_TIMEOUT", message: "实验包上传超时（120 秒）" } });
-          req.destroy();
+          if (!res.headersSent) {
+            sendJson(res, 408, { status: "error", error: { code: "EXPERIMENT_UPLOAD_TIMEOUT", message: "实验包上传超时（120 秒）" } });
+            res.once("finish", () => req.destroy());
+          } else {
+            req.destroy();
+          }
         });
         const directory = await mkdtemp(join(tmpdir(), "paperteam-experiment-"));
         const upload = join(directory, "upload.zip");
+        const uploadDeadline = setTimeout(() => {
+          if (!res.destroyed && !res.headersSent) {
+            sendJson(res, 408, { status: "error", error: { code: "EXPERIMENT_UPLOAD_TIMEOUT", message: "实验包上传超时（120 秒）" } });
+            res.once("finish", () => req.destroy());
+          } else {
+            req.destroy();
+          }
+        }, 120_000);
         try {
           const file = await open(upload, "wx");
+          let fileClosed = false;
+          let oversize = false;
+          let overflowDrain = 0;
+          let overflowIncomplete = false;
+          let overflowTimer: NodeJS.Timeout | undefined;
           try {
             let size = 0;
-            for await (const chunk of req) {
+            for await (const chunk of req.iterator({ destroyOnReturn: false })) {
               const data = chunk as Buffer;
+              if (oversize) {
+                overflowDrain += data.length;
+                if (overflowDrain > 32 * 1024 * 1024) {
+                  overflowIncomplete = true;
+                  req.pause();
+                  break;
+                }
+                continue;
+              }
               size += data.length;
-              if (size > PACKAGE_LIMITS.archiveBytes) throw new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限");
+              if (size > PACKAGE_LIMITS.archiveBytes) {
+                oversize = true;
+                await file.close();
+                fileClosed = true;
+                await unlink(upload).catch(() => {});
+                overflowDrain = size - PACKAGE_LIMITS.archiveBytes;
+                // Consume only a bounded tail before replying; the proxy is still
+                // writing this request until it sees its final upstream response.
+                overflowTimer = setTimeout(() => {
+                  overflowIncomplete = true;
+                  if (!res.destroyed && !res.headersSent) sendBusinessError(res, new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限"));
+                  req.destroy();
+                }, 5_000);
+                continue;
+              }
               await file.write(data);
             }
-          } finally { await file.close(); }
+          } finally {
+            if (!fileClosed) await file.close();
+            if (overflowTimer !== undefined) clearTimeout(overflowTimer);
+          }
+          if (oversize) {
+            if (!res.destroyed && !res.headersSent) sendBusinessError(res, new BusinessError("EXPERIMENT_ARCHIVE_LIMIT", "ZIP 超过 16 MiB 上限"));
+            if (overflowIncomplete || !req.complete) res.once("finish", () => req.destroy());
+            return true;
+          }
           let originalName = "experiment.zip";
           if (typeof req.headers["x-package-name"] === "string") {
             try { originalName = decodeURIComponent(req.headers["x-package-name"]).slice(0, 200); }
@@ -1094,6 +1173,7 @@ async function handleProjectResourceRoutes(
           const { observations, ...importedRest } = result.item;
           sendJson(res, result.created ? 201 : 200, { package: { ...importedRest, observations: observations.slice(0, 200), observationCount: observations.length }, created: result.created });
         } finally {
+          clearTimeout(uploadDeadline);
           await unlink(upload).catch(() => {});
           await rmdir(directory).catch(() => {});
         }

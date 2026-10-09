@@ -6,6 +6,8 @@ import { ErrorState, Loading } from "../common/StateViews.js";
 import {
   confirmExperimentGroups,
   confirmExperimentMetricEvidence,
+  EXPERIMENT_ARCHIVE_MAX_BYTES,
+  experimentArchiveLimitMessage,
   editExperimentFile,
   getExperimentPackage,
   listExperimentPackages,
@@ -93,6 +95,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [message, setMessage] = useState("");
+  const [uploadValidationError, setUploadValidationError] = useState("");
   const list = useQuery({ queryKey: ["experiment-packages", projectId], queryFn: () => listExperimentPackages(projectId) });
   const currentId = selectedId ?? list.data?.[0]?.packageId ?? null;
   const detail = useQuery({ queryKey: ["experiment-package", projectId, currentId], queryFn: () => getExperimentPackage(projectId, currentId!), enabled: currentId !== null });
@@ -147,13 +150,21 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
       {/* 步骤 1：上传 */}
       <div className="form-row">
         <label>
-          选择 ZIP <input aria-label="选择实验 ZIP" type="file" accept=".zip,application/zip" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+          选择 ZIP <input aria-label="选择实验 ZIP" type="file" accept=".zip,application/zip" onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadValidationError(""); upload.reset(); }} />
         </label>
-        <button type="button" disabled={!file || upload.isPending} onClick={() => upload.mutate()}>
+        <button type="button" disabled={!file || upload.isPending} onClick={() => {
+          if (file && file.size > EXPERIMENT_ARCHIVE_MAX_BYTES) {
+            setUploadValidationError(experimentArchiveLimitMessage(file));
+            return;
+          }
+          setUploadValidationError("");
+          upload.mutate();
+        }}>
           {upload.isPending ? "上传并解析中…" : "上传实验包"}
         </button>
       </div>
       <p className="muted">上限：ZIP 16 MiB、200 个文件、单文件 20 MiB、解压总量 64 MiB；不会执行包内代码。目录可先在本机压缩为 ZIP。</p>
+      {uploadValidationError && <p role="alert" className="run-error">{uploadValidationError}</p>}
       {upload.isError && (
         <p role="alert" className="run-error">
           {formatApiError(upload.error)}

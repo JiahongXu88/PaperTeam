@@ -59,6 +59,14 @@ export interface ExperimentPackageSummaryView {
 }
 const base = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/experiment-packages`;
 
+/** Backend authoritative limit: compressed ZIP request bytes. */
+export const EXPERIMENT_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
+
+export function experimentArchiveLimitMessage(file: Pick<File, "name" | "size">): string {
+  const sizeMiB = (file.size / (1024 * 1024)).toFixed(2);
+  return `ZIP 文件过大：当前文件 ${sizeMiB} MiB，最大允许 16 MiB。请精简实验包后重试。文件：${file.name}`;
+}
+
 export async function listExperimentPackages(projectId: string): Promise<ExperimentPackageSummaryView[]> {
   const result = await apiClient.get<{ packages: ExperimentPackageSummaryView[] }>(base(projectId));
   return result.packages;
@@ -68,16 +76,27 @@ export async function getExperimentPackage(projectId: string, packageId: string)
   return result.package;
 }
 export async function uploadExperimentPackage(projectId: string, file: File): Promise<ExperimentPackageView> {
+  if (file.size > EXPERIMENT_ARCHIVE_MAX_BYTES) {
+    throw new ApiError(413, "EXPERIMENT_ARCHIVE_LIMIT", experimentArchiveLimitMessage(file));
+  }
   let response: Response;
   try {
     response = await fetch(apiUrl(base(projectId)), {
       method: "POST", headers: { "Content-Type": "application/zip", "X-Package-Name": encodeURIComponent(file.name), Accept: "application/json" }, body: file,
     });
-  } catch { throw new ApiError(0, "NETWORK_ERROR", "无法连接 PaperTeam 后端"); }
+  } catch (cause) {
+    throw new ApiError(0, "NETWORK_ERROR", "无法连接 PaperTeam 后端服务，请确认服务已启动。", cause instanceof Error ? cause.message : String(cause));
+  }
   let body: { package?: ExperimentPackageView; error?: { code?: string; message?: string } };
   try { body = await response.json() as typeof body; }
   catch { throw new ApiError(response.status, "INVALID_RESPONSE", "上传响应不是 JSON"); }
-  if (!response.ok) throw new ApiError(response.status, body.error?.code ?? "HTTP_ERROR", body.error?.message ?? "实验包上传失败");
+  if (!response.ok) {
+    const code = response.status === 413 ? "EXPERIMENT_ARCHIVE_LIMIT" : body.error?.code ?? "HTTP_ERROR";
+    const message = code === "EXPERIMENT_ARCHIVE_LIMIT"
+      ? experimentArchiveLimitMessage(file)
+      : body.error?.message ?? `实验包上传失败（HTTP ${response.status}）`;
+    throw new ApiError(response.status, code, message);
+  }
   if (!body.package) throw new ApiError(response.status, "INVALID_RESPONSE", "上传响应缺少实验包");
   return body.package;
 }
