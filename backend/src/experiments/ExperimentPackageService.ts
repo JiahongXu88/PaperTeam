@@ -15,6 +15,7 @@ import {
   SEMANTIC_LIMITS,
   UNDERSTANDING_SYSTEM_PROMPT,
   buildUnderstandingContext,
+  minimumReasoningLevel,
   parseUnderstandingOutput,
   validateSuggestions,
   type ExperimentModelRuntime,
@@ -595,10 +596,12 @@ export class ExperimentPackageService {
       const context = buildUnderstandingContext(item);
       const signal = AbortSignal.timeout(SEMANTIC_LIMITS.requestTimeoutMs);
       const startedAt = Date.now();
+      // GLM-5.3 类不支持 off 的模型必须显式给最低 thinking 档位（否则 400 code 1210）
+      const reasoning = minimumReasoningLevel(model);
       const message = await semantic.runtime.completeSimple(model, {
         systemPrompt: UNDERSTANDING_SYSTEM_PROMPT,
         messages: [{ role: "user", content: [{ type: "text", text: context }], timestamp: Date.now() }],
-      }, { maxTokens: SEMANTIC_LIMITS.maxOutputTokens, signal });
+      }, { maxTokens: SEMANTIC_LIMITS.maxOutputTokens, ...(reasoning !== undefined ? { reasoning } : {}), signal });
       const durationMs = Date.now() - startedAt;
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         throw new BusinessError("SEMANTIC_MODEL_FAILED", `语义理解模型调用失败（${signal.aborted ? "超时" : message.errorMessage ?? message.stopReason}）`);

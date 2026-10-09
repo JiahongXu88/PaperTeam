@@ -17,7 +17,24 @@
  */
 
 import { extractJsonObject } from "../agents/outputParsing.js";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ExperimentPackage, ExperimentRole, PackageFile } from "./ExperimentPackageService.js";
+
+/**
+ * 不支持关闭 thinking 的模型（GLM-5.3：off=null）必须显式给最低可用档位，
+ * 否则 Pi 的 zai thinkingFormat 会发送 disabled → 服务端 400（code 1210）。
+ * 与 ModelSettingsService.testConnectionReasoning 同规则。
+ */
+export function minimumReasoningLevel(model: unknown): string | undefined {
+  if (model === null || typeof model !== "object" || (model as { reasoning?: unknown }).reasoning !== true) {
+    return undefined;
+  }
+  const levels = getSupportedThinkingLevels(model as Parameters<typeof getSupportedThinkingLevels>[0]);
+  if (levels.includes("off")) {
+    return undefined;
+  }
+  return levels.find((level) => level !== "off");
+}
 
 /** pi ModelRuntime 能力子集（生产直接传 adapter 暴露的 modelRuntime） */
 export interface ExperimentModelRuntime {
