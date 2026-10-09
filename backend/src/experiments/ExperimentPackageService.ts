@@ -360,6 +360,95 @@ function metricObservations(file: PackageFile, document: ParsedDocument): Metric
   return observations;
 }
 
+/** workflowContext 代表性选择的内部候选：携带包上下文的原始观测（选择在原始数据上进行，输出时才做标签清洗） */
+export interface WorkflowObservationCandidate {
+  packageId: string;
+  packageHash: string;
+  observation: MetricObservation;
+}
+
+/** 码位全序：不用 localeCompare——跨平台 CI（Windows/Linux）必须逐字节一致 */
+function compareCodepoints(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** 组内稳定锚点全序：先来源文件（sourceId/path），再块内物理位置（row/column/jsonPath），
+ * 兜底 metric/value——与文件登记顺序无关；同组观测集合不变则选择不变 */
+function compareObservationAnchors(a: MetricObservation, b: MetricObservation): number {
+  return compareCodepoints(a.sourceId, b.sourceId)
+    || compareCodepoints(a.path, b.path)
+    || compareCodepoints(a.blockId, b.blockId)
+    || (a.row ?? 0) - (b.row ?? 0)
+    || compareCodepoints(a.column ?? "", b.column ?? "")
+    || compareCodepoints(a.jsonPath ?? "", b.jsonPath ?? "")
+    || compareCodepoints(a.metric, b.metric)
+    || a.value - b.value;
+}
+
+/**
+ * Workflow Context 代表性选择（M13.3.1，确定性两阶段；导出仅供测试）：
+ * 原实现按登记顺序截断前 100 条，单文件大结果集会把其他作者确认组完全
+ * 挤出 Researcher 上下文（真实验收：2,311 条观测只进了 main 组 JSON 的
+ * 前 100 条）。改为：
+ * - 覆盖阶段：按组键（packageId\0groupId 码位序）先保证每个有效组至少
+ *   一条——组数超出预算时按同一组序截断（明确、稳定、可解释，不声称
+ *   全覆盖）；随后组间轮转，依次补齐各组尚未覆盖的 metric、来源文件
+ *   （path）。只按锚点与标签的覆盖面选择：绝不按数值大小/方向挑"更好"
+ *   的结果，不聚合、不改写、不虚构任何观测。
+ * - 填充阶段：按组轮转、组内按锚点序填充剩余容量。
+ * 返回顺序即选择顺序（组序 × 轮转序）；全程无随机源、无时钟、无输入
+ * 枚举顺序依赖——包/文件登记顺序变化不会让某个有效组失去覆盖。
+ */
+export function selectWorkflowObservations(candidates: WorkflowObservationCandidate[]): WorkflowObservationCandidate[] {
+  if (candidates.length === 0) return [];
+  const byGroup = new Map<string, { packageId: string; groupId: string; items: WorkflowObservationCandidate[]; picked: Set<number> }>();
+  for (const candidate of candidates) {
+    const key = `${candidate.packageId}\0${candidate.observation.groupId}`;
+    const group = byGroup.get(key) ?? { packageId: candidate.packageId, groupId: candidate.observation.groupId, items: [], picked: new Set<number>() };
+    group.items.push(candidate);
+    byGroup.set(key, group);
+  }
+  const groups = [...byGroup.values()]
+    .map((group) => ({ ...group, items: [...group.items].sort((a, b) => compareObservationAnchors(a.observation, b.observation)) }))
+    .sort((a, b) => compareCodepoints(a.packageId, b.packageId) || compareCodepoints(a.groupId, b.groupId));
+  const selected: WorkflowObservationCandidate[] = [];
+  const hasBudget = () => selected.length < MAX_WORKFLOW_OBSERVATIONS;
+  /** 组内锚点序第一条未选且满足需要的观测下标 */
+  const nextUnpicked = (group: (typeof groups)[number], wanted: (index: number) => boolean): number => {
+    for (let index = 0; index < group.items.length; index += 1) if (!group.picked.has(index) && wanted(index)) return index;
+    return -1;
+  };
+  const pick = (group: (typeof groups)[number], index: number): void => { group.picked.add(index); selected.push(group.items[index]!); };
+  for (const group of groups) {
+    if (!hasBudget()) break;
+    const index = nextUnpicked(group, () => true);
+    if (index !== -1) pick(group, index);
+  }
+  // metric → path 两个覆盖维度 + 无差别填充，统一为组间轮转（每轮每组至多一条）
+  for (const dimension of ["metric", "path"] as const) {
+    let progress = true;
+    while (progress && hasBudget()) {
+      progress = false;
+      for (const group of groups) {
+        if (!hasBudget()) break;
+        const covered = new Set([...group.picked].map((index) => group.items[index]!.observation[dimension]));
+        const index = nextUnpicked(group, (candidate) => !covered.has(group.items[candidate]!.observation[dimension]));
+        if (index !== -1) { pick(group, index); progress = true; }
+      }
+    }
+  }
+  let progress = true;
+  while (progress && hasBudget()) {
+    progress = false;
+    for (const group of groups) {
+      if (!hasBudget()) break;
+      const index = nextUnpicked(group, () => true);
+      if (index !== -1) { pick(group, index); progress = true; }
+    }
+  }
+  return selected;
+}
+
 export class ExperimentPackageService {
   private readonly queues = new Map<string, Promise<unknown>>();
   private readonly semanticModel?: { runtime: ExperimentModelRuntime; defaultModel: () => string | undefined | Promise<string | undefined> };
@@ -634,8 +723,10 @@ export class ExperimentPackageService {
 
   async workflowContext(projectId: string): Promise<ConfirmedExperimentWorkflowContext> {
     const items = await this.list(projectId);
-    const observations: ConfirmedExperimentWorkflowContext["observations"] = [];
-    let truncated = false;
+    // 资格边界与原先一致：作者确认组内的结果角色文件 + 存活 Source + ok/partial
+    // 解析状态（JSONL 特征流在指标提取层就不产生观测）。合格观测先全量收集，
+    // 再交给确定性代表性选择——不再按登记顺序截断（M13.3.1）
+    const candidates: WorkflowObservationCandidate[] = [];
     for (const item of items) {
       const confirmedGroups = new Set(item.groups.filter((group) => group.status === "confirmed").map((group) => group.id));
       if (confirmedGroups.size === 0) continue;
@@ -646,31 +737,37 @@ export class ExperimentPackageService {
         .map((file) => `${file.groupId}\0${file.path}\0${file.sourceId}`));
       for (const observation of item.observations) {
         if (!eligibleFiles.has(`${observation.groupId}\0${observation.path}\0${observation.sourceId}`)) continue;
-        if (observations.length >= MAX_WORKFLOW_OBSERVATIONS) { truncated = true; break; }
-        observations.push({
-          packageId: item.packageId,
-          packageHash: item.packageHash,
-          groupId: observation.groupId,
-          sourceId: observation.sourceId,
-          blockId: observation.blockId,
-          path: safeContextLabel(observation.path) ?? "[path omitted]",
-          metric: safeContextLabel(observation.metric) ?? "[metric label omitted]",
-          value: observation.value,
-          unit: observation.unit,
-          direction: observation.direction,
-          ...(observation.row !== undefined ? { row: observation.row } : {}),
-          ...(observation.sheet !== undefined ? { sheet: safeContextLabel(observation.sheet) } : {}),
-          ...(observation.column !== undefined ? { column: safeContextLabel(observation.column) } : {}),
-          ...(observation.jsonPath !== undefined ? { jsonPath: safeContextLabel(observation.jsonPath) } : {}),
-          ...(safeContextLabel(observation.method) !== undefined ? { method: safeContextLabel(observation.method) } : {}),
-          ...(safeContextLabel(observation.dataset) !== undefined ? { dataset: safeContextLabel(observation.dataset) } : {}),
-          ...(safeContextLabel(observation.seed) !== undefined ? { seed: safeContextLabel(observation.seed) } : {}),
-          ...(safeContextLabel(observation.protocol) !== undefined ? { protocol: safeContextLabel(observation.protocol) } : {}),
-          ...(safeContextLabel(observation.split) !== undefined ? { split: safeContextLabel(observation.split) } : {}),
-        });
+        candidates.push({ packageId: item.packageId, packageHash: item.packageHash, observation });
       }
-      if (truncated) break;
     }
-    return { schemaVersion: 1, status: "author_confirmed_not_externally_verified", truncated, observations };
+    const selected = selectWorkflowObservations(candidates);
+    return {
+      schemaVersion: 1,
+      status: "author_confirmed_not_externally_verified",
+      // truncated 只反映总量限制（有合格观测因预算未被选中）；未确认/不合格
+      // 观测不进入候选，也不计入截断判断
+      truncated: selected.length < candidates.length,
+      observations: selected.map(({ packageId, packageHash, observation }) => ({
+        packageId,
+        packageHash,
+        groupId: observation.groupId,
+        sourceId: observation.sourceId,
+        blockId: observation.blockId,
+        path: safeContextLabel(observation.path) ?? "[path omitted]",
+        metric: safeContextLabel(observation.metric) ?? "[metric label omitted]",
+        value: observation.value,
+        unit: observation.unit,
+        direction: observation.direction,
+        ...(observation.row !== undefined ? { row: observation.row } : {}),
+        ...(observation.sheet !== undefined ? { sheet: safeContextLabel(observation.sheet) } : {}),
+        ...(observation.column !== undefined ? { column: safeContextLabel(observation.column) } : {}),
+        ...(observation.jsonPath !== undefined ? { jsonPath: safeContextLabel(observation.jsonPath) } : {}),
+        ...(safeContextLabel(observation.method) !== undefined ? { method: safeContextLabel(observation.method) } : {}),
+        ...(safeContextLabel(observation.dataset) !== undefined ? { dataset: safeContextLabel(observation.dataset) } : {}),
+        ...(safeContextLabel(observation.seed) !== undefined ? { seed: safeContextLabel(observation.seed) } : {}),
+        ...(safeContextLabel(observation.protocol) !== undefined ? { protocol: safeContextLabel(observation.protocol) } : {}),
+        ...(safeContextLabel(observation.split) !== undefined ? { split: safeContextLabel(observation.split) } : {}),
+      })),
+    };
   }
 }

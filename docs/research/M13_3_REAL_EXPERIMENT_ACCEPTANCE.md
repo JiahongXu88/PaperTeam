@@ -153,3 +153,45 @@ ablation-a3 / opp-universe；txt 表格新增 156 条行列锚观测，总观测
 3. 语义理解每包一次全量重跑；增量/缓存（包 hash 不变时复用）未做。
 4. 盲测基线项目保留在服务器上供对照，后续可清理。
 5. 远程带宽下 Docling PDF 解析大文件仍慢（与实验包无关，未在本轮范围）。
+
+## 11. M13.3.1 后续修复：Workflow Context 代表性选择（2026-10-09）
+
+第 10.1 条遗留问题的定向修复；不改变上文 M13.3 验收事实。
+
+**原问题**：`workflowContext` 按 manifest 登记顺序截断前 100 条观测。
+真实 Phase 9.0 包的 2,311 条合格观测中，前 100 条全部来自 main 组 JSON，
+其余作者确认实验臂（txt 指标表观测）完全进不了 Researcher 上下文。
+
+**新选择策略**（`ExperimentPackageService.selectWorkflowObservations`，确
+定性两阶段；资格过滤边界与原先逐字一致——确认组 + 结果角色 + 存活
+Source + ok/partial，JSONL 特征流在指标提取层就不产生观测）：
+
+1. 覆盖阶段：按组键（`packageId\0groupId` 码位序）保证每个有效组至少一
+   条；组数超过 100 时按同一组序截断（明确、稳定、可解释，不声称全部
+   覆盖）；随后组间轮转，依次补齐各组尚未覆盖的 metric、来源文件
+   （path）。
+2. 填充阶段：组间轮转、组内按稳定锚点序（sourceId/path/blockId/row/
+   column/jsonPath/metric/value 码位比较）填满剩余容量。
+
+总量预算 `MAX_WORKFLOW_OBSERVATIONS = 100` 不变；只按锚点与标签覆盖面
+选择，绝不按数值大小/方向挑"更好"的结果，不聚合、不改写、不虚构观测，
+不自动创建 Verified Evidence；`truncated` 精确反映"有合格观测因预算未
+被选中"（未确认/不合格观测不进入候选、不计入截断判断）。全程无随机源、
+无时钟、无 locale 依赖；包与文件登记顺序变化不改变选择结果。
+
+**合成回归**（`backend/test/experiments/experimentWorkflowContext.test.ts`，
+9 个单元 + 2 个 e2e，全绿）：单组超预算不挤掉小组；6 组均衡（组间差
+≤1）；组内多指标在容量允许时覆盖；同组第二来源文件覆盖；≤100 全保留
+且 `truncated=false`；>100 截断为 100 且 `truncated=true`；重复调用与
+登记顺序颠倒输出不变；105 组按组键序截断为前 100 组（每组 1 条）；
+不同 packageId 的同名组不合并。e2e 走真实 ZIP 导入 + 作者确认链路：未
+确认组始终排除；JSONL 特征流即便被作者标成结果角色也不进入；确认但无
+结果观测的组不占名额；每条返回观测与 manifest 原始记录逐字段一致
+（jsonPath 以 `$.` 开头时不匹配既有安全标签正则、按原清洗规则省略——
+修复前后的既有行为，非本次改动）。
+
+**验证**：backend typecheck / build 通过；实验包套件与 Researcher 消费
+方定向测试通过；GitHub CI 与 Linux Integration 结果见下方追记。
+
+**ECS 未重新验证**：本轮不启动服务器、不重新上传实验 ZIP、不调用真实
+模型；服务器保持关机，修复待下次 ECS 部署生效。
