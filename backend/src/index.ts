@@ -267,11 +267,11 @@ export async function startBackend(): Promise<void> {
       : {}),
     doclingMaxConcurrency: config.ingestion.doclingConcurrency,
     ...(targetSummaryModel !== undefined ? { targetSummaryModel } : {}),
-    // M13.3 实验包语义理解：与 Test Connection / 真实任务同一 ModelRuntime
-    // 与生效默认模型（可用性由 understand() 按目录 + 凭据复核）
+    // M13.3 实验包语义理解：与 Test Connection / 真实任务同一 ModelRuntime；
+    // 默认模型按调用时读取存储偏好（UI 保存切换后即时生效），回落启动快照
     experimentSemanticModel: {
       runtime: modelRuntime,
-      defaultModel: () => effectiveModelSpec,
+      defaultModel: async () => (await modelSettingsStore.load()).model ?? effectiveModelSpec,
     },
     log: (message) => console.log(message),
   });
