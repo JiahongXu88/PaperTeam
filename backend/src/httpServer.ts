@@ -929,13 +929,27 @@ async function handleProjectResourceRoutes(
   // ---- Experiment Packages: binary ZIP stream, bounded independently of JSON bodies ----
   if (resource === "experiment-packages") {
     await stack.projects.getRequired(projectId);
+    // M13.3 有界载荷：完整 manifest（含全量指标观测）可达数 MB；远程访问
+    // （SSH 隧道 / 弱带宽）下逐请求 10s+ 不可用。列表只回摘要；详情与
+    // 变更响应统一截断 observations 至 200 条并附 observationCount 总数
+    // （磁盘 manifest 不变，workflow-context 仍读全量）。
+    const sendPackage = (status: number, item: Awaited<ReturnType<typeof stack.experimentPackages.view>>) => {
+      const { observations, ...rest } = item;
+      sendJson(res, status, { package: { ...rest, observations: observations.slice(0, 200), observationCount: observations.length } });
+    };
+    const packageSummary = (item: Awaited<ReturnType<typeof stack.experimentPackages.view>>) => ({
+      packageId: item.packageId, packageHash: item.packageHash, originalName: item.originalName,
+      importedAt: item.importedAt, status: item.status,
+      fileCount: item.files.length, groupCount: item.groups.length,
+      observationCount: item.observations.length, warningCount: item.warnings.length,
+    });
     if (rest === "/workflow-context") {
       if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
       sendJson(res, 200, await stack.experimentPackages.workflowContext(projectId));
       return true;
     }
     if (rest === "") {
-      if (method === "GET") { sendJson(res, 200, { packages: await stack.experimentPackages.list(projectId) }); return true; }
+      if (method === "GET") { sendJson(res, 200, { packages: (await stack.experimentPackages.list(projectId)).map(packageSummary) }); return true; }
       if (method === "POST") {
         if (req.headers["content-type"]?.split(";")[0]?.trim() !== "application/zip") throw new BusinessError("INVALID_REQUEST", "实验包上传需要 application/zip");
         const declared = Number(req.headers["content-length"] ?? 0);
@@ -963,7 +977,8 @@ async function handleProjectResourceRoutes(
             catch { throw new BusinessError("INVALID_REQUEST", "X-Package-Name 编码无效"); }
           }
           const result = await stack.experimentPackages.importZip(projectId, upload, originalName);
-          sendJson(res, result.created ? 201 : 200, { package: result.item, created: result.created });
+          const { observations, ...importedRest } = result.item;
+          sendJson(res, result.created ? 201 : 200, { package: { ...importedRest, observations: observations.slice(0, 200), observationCount: observations.length }, created: result.created });
         } finally {
           await unlink(upload).catch(() => {});
           await rmdir(directory).catch(() => {});
@@ -977,7 +992,7 @@ async function handleProjectResourceRoutes(
     const packageId = match[1]!;
     if (match[2] === "/understand") {
       if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
-      sendJson(res, 200, { package: await stack.experimentPackages.understand(projectId, packageId) });
+      sendPackage(200, await stack.experimentPackages.understand(projectId, packageId));
       return true;
     }
     if (match[2]) {
@@ -985,10 +1000,10 @@ async function handleProjectResourceRoutes(
       const body = await readJsonBody(req);
       const groupIds = body["groupIds"];
       if (!Array.isArray(groupIds) || groupIds.some((id) => typeof id !== "string")) throw new BusinessError("INVALID_REQUEST", "groupIds 必须是字符串数组");
-      sendJson(res, 200, { package: await stack.experimentPackages.confirm(projectId, packageId, groupIds) });
+      sendPackage(200, await stack.experimentPackages.confirm(projectId, packageId, groupIds));
       return true;
     }
-    if (method === "GET") { sendJson(res, 200, { package: await stack.experimentPackages.view(projectId, packageId) }); return true; }
+    if (method === "GET") { sendPackage(200, await stack.experimentPackages.view(projectId, packageId)); return true; }
     if (method === "PATCH") {
       const body = await readJsonBody(req);
       const path = readStringField(body, "path");
@@ -996,7 +1011,7 @@ async function handleProjectResourceRoutes(
       const groupId = readStringField(body, "groupId");
       const roles: ExperimentRole[] = ["main_result", "baseline_result", "ablation_result", "experiment_config", "training_log", "evaluation_log", "dataset_description", "figure_asset", "notebook", "source_code", "documentation", "unknown"];
       if (!path || !role || !roles.includes(role) || !groupId) throw new BusinessError("INVALID_REQUEST", "需要合法的 path、role、groupId");
-      sendJson(res, 200, { package: await stack.experimentPackages.editFile(projectId, packageId, path, role, groupId) });
+      sendPackage(200, await stack.experimentPackages.editFile(projectId, packageId, path, role, groupId));
       return true;
     }
     sendMethodNotAllowed(res, "GET, PATCH", method); return true;

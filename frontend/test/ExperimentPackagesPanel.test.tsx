@@ -4,11 +4,12 @@ import userEvent from "@testing-library/user-event";
 
 import { ExperimentPackagesPanel } from "../src/components/project/ExperimentPackagesPanel.js";
 import { renderWithProviders } from "./helpers.js";
-import type { ExperimentPackageView } from "../src/api/experimentPackages.js";
+import type { ExperimentPackageSummaryView, ExperimentPackageView } from "../src/api/experimentPackages.js";
 
 vi.mock("../src/api/experimentPackages.js", () => ({
   listExperimentPackages: vi.fn(), getExperimentPackage: vi.fn(), uploadExperimentPackage: vi.fn(),
   editExperimentFile: vi.fn(), confirmExperimentGroups: vi.fn(), confirmExperimentMetricEvidence: vi.fn(),
+  requestExperimentUnderstanding: vi.fn(),
 }));
 const api = await import("../src/api/experimentPackages.js");
 
@@ -19,10 +20,14 @@ const packageView: ExperimentPackageView = {
   observations: [{ sourceId: "S001", path: "main/results.csv", blockId: "B0001", row: 2, column: "D", method: "Ours", dataset: "MOT17", seed: "42", metric: "HOTA", value: 63.4, unit: "unknown", direction: "unknown", groupId: "main" }],
   relationCandidates: [], warnings: [],
 };
+const packageSummary: ExperimentPackageSummaryView = {
+  packageId: packageView.packageId, packageHash: packageView.packageHash, originalName: packageView.originalName,
+  importedAt: packageView.importedAt, status: "ready", fileCount: 1, groupCount: 1, observationCount: 1, warningCount: 0,
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(api.listExperimentPackages).mockResolvedValue([packageView]);
+  vi.mocked(api.listExperimentPackages).mockResolvedValue([packageSummary]);
   vi.mocked(api.getExperimentPackage).mockResolvedValue(packageView);
   vi.mocked(api.uploadExperimentPackage).mockResolvedValue(packageView);
   vi.mocked(api.confirmExperimentGroups).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed" }] });

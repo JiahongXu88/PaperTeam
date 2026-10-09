@@ -134,14 +134,15 @@ describe("M13.3 deterministic experiment understanding", () => {
     expect(item.warnings).toContainEqual(expect.stringContaining("指标 HOTA 在实验组 main 内同时存在小数（0.6261）与百分数量级（62.61）"));
     expect(item.warnings.some((warning) => warning.includes("IDSW"))).toBe(false);
 
-    // JSONL 即便被作者标成结果角色也不产生指标观测（行流 ≠ 指标表）
+    // JSONL 即便被作者标成结果角色也不产生指标观测（行流 ≠ 指标表）。
+    // 经服务层读全量 manifest（HTTP 详情响应的 observations 已有界截断）
     await stack.request("PATCH", `/api/projects/${projectId}/experiment-packages/${item.packageId}`, { path: "events/stream.jsonl", role: "main_result", groupId: "main" });
-    let current = (await (await fetch(`http://127.0.0.1:${stack.port()}/api/projects/${projectId}/experiment-packages/${item.packageId}`)).json() as { package: ExperimentPackage }).package;
+    let current = await stack.stack.experimentPackages.get(projectId, item.packageId);
     expect(current.observations.some((observation) => observation.path === "events/stream.jsonl")).toBe(false);
 
     // 作者把 A0 表格标为 baseline 后：表格数值进入观测（行/列锚 + 方向）
     await stack.request("PATCH", `/api/projects/${projectId}/experiment-packages/${item.packageId}`, { path: "results/A0/summary.txt", role: "baseline_result", groupId: "baseline-a0" });
-    current = (await (await fetch(`http://127.0.0.1:${stack.port()}/api/projects/${projectId}/experiment-packages/${item.packageId}`)).json() as { package: ExperimentPackage }).package;
+    current = await stack.stack.experimentPackages.get(projectId, item.packageId);
     const tableObservation = current.observations.find((observation) => observation.path === "results/A0/summary.txt" && observation.column === "HOTA")!;
     expect(tableObservation.value).toBe(51.2);
     expect(tableObservation.row).toBe(2);

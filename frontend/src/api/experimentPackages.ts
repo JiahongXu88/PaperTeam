@@ -31,12 +31,20 @@ export interface ExperimentPackageView {
   schemaVersion: number; packageId: string; packageHash: string; originalName: string; importedAt: string;
   status: "inventory" | "importing" | "ready" | "partial";
   files: PackageFileView[]; groups: ExperimentGroupView[]; observations: MetricObservationView[]; relationCandidates: Array<{ configPath: string; groupId: string; status: string; basis: string; matchedFields: string[]; conflictingFields: string[] }>;
+  /** 详情响应附带：磁盘上的观测总数（observations 已截断为前 200 条的有界载荷） */
+  observationCount?: number;
   reportedVerdicts?: ReportedVerdictView[]; semanticSuggestions?: SemanticSuggestionsView; warnings: string[];
+}
+/** 列表摘要（M13.3：列表不再携带全量 manifest——远程弱带宽可用性） */
+export interface ExperimentPackageSummaryView {
+  packageId: string; packageHash: string; originalName: string; importedAt: string;
+  status: "inventory" | "importing" | "ready" | "partial";
+  fileCount: number; groupCount: number; observationCount: number; warningCount: number;
 }
 const base = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/experiment-packages`;
 
-export async function listExperimentPackages(projectId: string): Promise<ExperimentPackageView[]> {
-  const result = await apiClient.get<{ packages: ExperimentPackageView[] }>(base(projectId));
+export async function listExperimentPackages(projectId: string): Promise<ExperimentPackageSummaryView[]> {
+  const result = await apiClient.get<{ packages: ExperimentPackageSummaryView[] }>(base(projectId));
   return result.packages;
 }
 export async function getExperimentPackage(projectId: string, packageId: string): Promise<ExperimentPackageView> {

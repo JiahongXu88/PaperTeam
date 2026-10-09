@@ -69,7 +69,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
     {list.isPending ? <Loading label="加载实验包…" /> : list.isError ? <ErrorState title="实验包加载失败" message={formatApiError(list.error)} onRetry={() => void list.refetch()} /> : <>
       {list.data?.length === 0 && <p className="panel-empty">尚无实验数据包。</p>}
       {list.data && list.data.length > 0 && <label>选择实验包 <select aria-label="实验包" value={currentId ?? ""} onChange={(event) => setSelectedId(event.target.value)}>
-        {list.data.map((item) => <option key={item.packageId} value={item.packageId}>{item.originalName} · {item.status}</option>)}
+        {list.data.map((item) => <option key={item.packageId} value={item.packageId}>{item.originalName} · {item.status} · {item.observationCount} 条观测</option>)}
       </select></label>}
     </>}
     {currentId && (detail.isPending ? <Loading label="加载实验包详情…" /> : detail.isError ? <ErrorState title="实验包详情加载失败" message={formatApiError(detail.error)} onRetry={() => void detail.refetch()} /> : detail.data && <>
@@ -128,7 +128,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
           </td>
         </tr>)}
       </tbody></table></div>
-      {detail.data.observations.length > 100 && <p className="muted">仅预览前 100 条；原始解析记录保存在 Source 中。</p>}
+      {(detail.data.observationCount ?? detail.data.observations.length) > 100 && <p className="muted">共 {detail.data.observationCount ?? detail.data.observations.length} 条观测；仅预览前 100 条；原始解析记录保存在 Source 中。</p>}
       {evidenceIndex !== null && <div className="panel"><label>论文 claim（必须包含原始数值）<input aria-label="Evidence claim" value={claim} onChange={(event) => setClaim(event.target.value)} /></label>
         <button type="button" disabled={!claim.trim() || evidence.isPending} onClick={() => evidence.mutate()}>确认这条来源数据</button><button type="button" onClick={() => setEvidenceIndex(null)}>取消</button>
         <p className="muted">该操作只登记 user_confirmed / unverified，不会自动提升为 grounded_verified。</p>
