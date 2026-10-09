@@ -15,6 +15,10 @@ vi.mock("../src/api/projects.js", () => ({
   renameProject: vi.fn(),
 }));
 
+vi.mock("../src/api/runs.js", () => ({
+  listProjectRuns: vi.fn(async () => []),
+}));
+
 vi.mock("../src/api/runtime.js", () => ({
   getRuntimeStatus: vi.fn(async () => ({
     backend: { ok: true },
@@ -26,6 +30,7 @@ vi.mock("../src/api/runtime.js", () => ({
 }));
 
 const { listProjects } = await import("../src/api/projects.js");
+const { listProjectRuns } = await import("../src/api/runs.js");
 
 const projects: ProjectView[] = [
   {
@@ -60,8 +65,8 @@ describe("ProjectsPage", () => {
     vi.mocked(listProjects).mockResolvedValue(projects);
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
 
-    expect(await screen.findByText("检索增强生成综述")).toBeInTheDocument();
-    expect(screen.getByText("多模态跟踪改进")).toBeInTheDocument();
+    expect((await screen.findAllByText("检索增强生成综述")).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("多模态跟踪改进").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("想法成文")).toBeInTheDocument();
     expect(screen.getByText("论文改进")).toBeInTheDocument();
     expect(screen.getByText("已创建")).toBeInTheDocument();
@@ -69,11 +74,29 @@ describe("ProjectsPage", () => {
     expect(screen.getByText(/信息检索/)).toBeInTheDocument();
   });
 
+  it("Agent 活动：只展示运行 API 返回的工作流记录，没有任务时显示空状态", async () => {
+    vi.mocked(listProjects).mockResolvedValue([projects[0]!]);
+    vi.mocked(listProjectRuns).mockResolvedValueOnce([{
+      runId: "run-actual-1",
+      projectId: projects[0]!.id,
+      workflowKind: "topic_survey",
+      status: "running",
+      currentStage: "survey.synthesis",
+      createdAt: "2026-09-02T08:00:00.000Z",
+      updatedAt: "2026-09-02T08:10:00.000Z",
+    }]);
+    renderWithProviders(<ProjectsPage />, { route: "/projects" });
+
+    expect(await screen.findByText("综述论文生成")).toBeInTheDocument();
+    expect(screen.getByText("当前阶段：跨论文综合")).toBeInTheDocument();
+    expect(screen.getAllByText("运行中").length).toBeGreaterThanOrEqual(1);
+  });
+
   it("行内主内容是指向 workspace 的链接；··· 菜单提供 打开 / 重命名 / 归档", async () => {
     vi.mocked(listProjects).mockResolvedValue(projects);
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
 
-    await screen.findByText("检索增强生成综述");
+    await screen.findAllByText("检索增强生成综述");
     // 主内容 Link 指向 workspace（菜单按钮在 Link 之外）
     expect(screen.getAllByRole("link", { name: /检索增强生成综述/ })[0]).toHaveAttribute(
       "href",
@@ -98,7 +121,7 @@ describe("ProjectsPage", () => {
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
 
     const user = userEvent.setup();
-    await screen.findByText("检索增强生成综述");
+    await screen.findAllByText("检索增强生成综述");
     await user.click(screen.getByTestId("project-row-menu"));
     await user.click(screen.getByRole("menuitem", { name: "归档项目" }));
     // 行内确认后才真正调用归档
@@ -113,12 +136,9 @@ describe("ProjectsPage", () => {
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
 
     expect(await screen.findByText("还没有论文项目")).toBeInTheDocument();
-    // 空态按钮与页头按钮同名（都指向 /projects/new）
-    const links = screen.getAllByRole("link", { name: "新建项目" });
-    expect(links.length).toBeGreaterThanOrEqual(1);
-    for (const link of links) {
-      expect(link).toHaveAttribute("href", "/projects/new");
-    }
+    expect(screen.getByRole("link", { name: "开始创建" })).toHaveAttribute("href", "/projects/new");
+    expect(screen.getByRole("link", { name: /创建新论文/ })).toHaveAttribute("href", "/projects/new");
+    expect(screen.getByText("暂无运行任务")).toBeInTheDocument();
   });
 
   it("错误：显示错误信息，点击重试后恢复", async () => {
@@ -131,13 +151,14 @@ describe("ProjectsPage", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("无法连接");
     await userEvent.setup().click(screen.getByRole("button", { name: "重试" }));
-    expect(await screen.findByText("检索增强生成综述")).toBeInTheDocument();
+    expect((await screen.findAllByText("检索增强生成综述")).length).toBeGreaterThanOrEqual(1);
   });
 
-  it("页头：提供新建项目入口", async () => {
+  it("首页：提供创建和已有论文导入入口", async () => {
     vi.mocked(listProjects).mockResolvedValue(projects);
     renderWithProviders(<ProjectsPage />, { route: "/projects" });
-    await waitFor(() => expect(screen.getByText("论文项目")).toBeInTheDocument());
-    expect(screen.getByRole("link", { name: /新建项目/ })).toHaveAttribute("href", "/projects/new");
+    await waitFor(() => expect(screen.getByRole("heading", { name: "选择一个开始方式" })).toBeInTheDocument());
+    expect(screen.getByRole("link", { name: /创建新论文/ })).toHaveAttribute("href", "/projects/new");
+    expect(screen.getByRole("link", { name: /修改已有论文/ })).toHaveAttribute("href", "/projects/new?mode=existing");
   });
 });

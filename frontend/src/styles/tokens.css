@@ -126,7 +126,9 @@
 
   --brand-landscape: url("../assets/brand/mountain-light.png");
   --brand-landscape-opacity: .54;
-  --brand-card-image: url("../assets/brand/mountain-dark.png");
+  --home-hero-image: url("../assets/brand/mountain-hero-light.png");
+  --brand-card-image: url("../assets/brand/mountain-brand.png");
+  --brand-card-shade: linear-gradient(180deg, rgba(29, 40, 52, .2), rgba(17, 26, 35, .12) 45%, rgba(17, 26, 35, .52));
   --paper-bg: #fffefa;
   --paper-ink: #4d5765;
   --paper-line: #b5bcc4;
@@ -194,6 +196,8 @@
 
   --brand-landscape: url("../assets/brand/mountain-dark.png");
   --brand-landscape-opacity: .60;
+  --home-hero-image: url("../assets/brand/mountain-hero-dark.png");
+  --brand-card-shade: linear-gradient(180deg, rgba(12, 19, 27, .4), rgba(12, 19, 27, .14) 45%, rgba(12, 19, 27, .68));
   --paper-stage: #222d38;
   --surface-glow: rgba(184,205,230,.025);
   --brand-warm: rgba(247,119,58,.08);

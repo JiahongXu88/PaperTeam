@@ -1,8 +1,8 @@
-import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ErrorState } from "../components/common/StateViews.js";
-import { PageHeader } from "../components/common/PageHeader.js";
+import { Icon } from "../components/common/Icon.js";
 import { CITATION_SEMANTIC_MODE_OPTIONS } from "../components/common/status.js";
 import { TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
 import { useCreateProject, useCreateWorkflowRun, useImportProjectPaper, useRuntimeStatus } from "../hooks/queries.js";
@@ -17,7 +17,7 @@ import type {
 } from "../types/api.js";
 
 /**
- * 新建项目：顶层只问一件事——写新论文，还是修改已有论文？
+ * 新建项目：创建研究论文 / 综述论文，或导入已有论文；
  *   A. 创建新论文（M11.2.1：论文类型是用户概念——研究论文 / 综述论文；
  *      documentType → workflowKind 的映射由后端作为最终事实源完成）
  *   B. 修改已有论文（File First 导入：PDF + 目标即提交，标题由 PDF 自动识别，
@@ -36,7 +36,7 @@ const LIMITS = {
 type EntryMode = "new" | "existing";
 
 /** 创建新论文的论文类型（documentType 值与 Backend DOCUMENT_TYPES 对齐） */
-type PaperType = "research_article" | "survey";
+type PaperType = "research_article" | "survey" | "thesis";
 
 const PAPER_TYPE_OPTIONS: ReadonlyArray<{ value: PaperType; title: string; desc: string }> = [
   {
@@ -48,6 +48,11 @@ const PAPER_TYPE_OPTIONS: ReadonlyArray<{ value: PaperType; title: string; desc:
     value: "survey",
     title: "综述论文",
     desc: "只输入一个主题：系统会检索并遴选文献、构建综述矩阵与跨论文综合，确认大纲后继续综述写作、审阅与修订，最终生成综述论文 PDF。",
+  },
+  {
+    value: "thesis",
+    title: "学位论文",
+    desc: "硕士 / 博士学位论文，可从研究主题开始或基于已有小论文扩展。",
   },
 ];
 
@@ -118,22 +123,78 @@ function toCreateInput(form: FormState): CreateProjectInput {
 }
 
 export function NewProjectPage() {
-  const [mode, setMode] = useState<EntryMode>("new");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [mode, setMode] = useState<EntryMode>(searchParams.get("mode") === "existing" ? "existing" : "new");
   const [paperType, setPaperType] = useState<PaperType>("research_article");
+  useEffect(() => setMode(searchParams.get("mode") === "existing" ? "existing" : "new"), [searchParams]);
+  const switchMode = (next: EntryMode) => {
+    setMode(next);
+    setSearchParams(next === "existing" ? { mode: "existing" } : {}, { replace: true });
+  };
 
   return (
-    <section className="page page-narrow">
-      <PageHeader title="新建项目" sub="创建一篇新论文（研究论文或综述论文），或导入已有论文做 Review 与修改。" />
+    <section className="page page-narrow create-paper-page">
+      <header className="create-paper-hero">
+        <span className="home-kicker">CREATE NEW PAPER</span>
+        <h1>创建新论文</h1>
+        <p>选择论文类型和创建方式，让研究流程从正确的材料与目标开始。</p>
+      </header>
       {mode === "new" ? (
-        paperType === "research_article" ? (
-          <ResearchArticleForm paperType={paperType} onSelectPaperType={setPaperType} onSwitchMode={setMode} />
+        paperType === "thesis" ? (
+          <ThesisSelection onSelectPaperType={setPaperType} onSwitchMode={switchMode} />
+        ) : paperType === "research_article" ? (
+          <ResearchArticleForm paperType={paperType} onSelectPaperType={setPaperType} onSwitchMode={switchMode} />
         ) : (
-          <SurveyForm paperType={paperType} onSelectPaperType={setPaperType} onSwitchMode={setMode} />
+          <SurveyForm paperType={paperType} onSelectPaperType={setPaperType} onSwitchMode={switchMode} />
         )
       ) : (
-        <ExistingPaperForm onSwitchMode={setMode} />
+        <ExistingPaperForm onSwitchMode={switchMode} />
       )}
     </section>
+  );
+}
+
+/** 学位论文 UI 仅供选择流程与材料；该类型不连接项目创建或文件上传 API。 */
+function ThesisSelection({ onSelectPaperType, onSwitchMode }: { onSelectPaperType: (type: PaperType) => void; onSwitchMode: (mode: EntryMode) => void }) {
+  const [source, setSource] = useState<"topic" | "expand">("topic");
+  const [file, setFile] = useState<File | null>(null);
+  return (
+    <div className="thesis-selection" data-testid="thesis-selection">
+      <section className="create-step">
+        <h2><span>01</span> 选择论文类型</h2>
+        <PaperTypeCards current="thesis" onSelect={onSelectPaperType} />
+      </section>
+      <section className="create-step">
+        <div className="create-step-title"><h2><span>02</span> 选择创建方式</h2><p>学位论文可以从新主题开始，也可以基于已有小论文扩展。</p></div>
+        <div className="thesis-source-options">
+          <label className={`thesis-source-card${source === "topic" ? " selected" : ""}`}>
+            <input type="radio" name="thesis-source" value="topic" checked={source === "topic"} onChange={() => setSource("topic")} />
+            <strong>从研究主题开始</strong><span>从研究问题出发，构建学位论文整体结构。</span>
+          </label>
+          <label className={`thesis-source-card${source === "expand" ? " selected" : ""}`}>
+            <input type="radio" name="thesis-source" value="expand" checked={source === "expand"} onChange={() => setSource("expand")} />
+            <strong>基于已有小论文扩展</strong><span>围绕已有成果，扩展背景、方法、实验和章节。</span>
+          </label>
+        </div>
+      </section>
+      {source === "expand" ? (
+        <section className="create-step thesis-material-step">
+          <div className="create-step-title"><h2><span>03</span> 提供已有小论文</h2><p>选择原有 PDF 或 LaTeX 工程，展示材料入口。</p></div>
+          <label className="thesis-material-picker">
+            <input type="file" aria-label="选择已有论文材料（PDF 或 ZIP）" accept=".pdf,application/pdf,.zip,application/zip" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+            <span className="thesis-upload-icon"><Icon name="upload" /></span>
+            <span><strong>{file?.name ?? "选择 PDF 或 LaTeX 项目 ZIP"}</strong><small>PDF 文件或包含 LaTeX 工程的 ZIP 归档</small></span>
+            <span className="btn">选择文件</span>
+          </label>
+        </section>
+      ) : null}
+      <div className="thesis-availability" role="status"><Icon name="info-circle" /><span>学位论文创建尚未接入当前工作流。这里的选择和文件仅用于界面预览，不会创建项目或上传材料。</span></div>
+      <div className="form-actions thesis-actions">
+        <Link to="/projects" className="btn">取消</Link>
+        <button type="button" className="btn btn-primary" disabled>继续设置</button>
+      </div>
+      <button type="button" className="text-button" onClick={() => onSwitchMode("existing")}>修改已有论文 <Icon name="chevron-right" /></button>
+    </div>
   );
 }
 
@@ -228,13 +289,13 @@ function ResearchArticleForm({
   return (
     <form className="panel form-panel" onSubmit={onSubmit} noValidate data-testid="research-article-form">
       <fieldset className="form-section">
-        <legend>你想做什么？</legend>
-        <ModeCards current="new" onSelect={onSwitchMode} />
+        <legend>01 选择论文类型</legend>
+        <PaperTypeCards current={paperType} onSelect={onSelectPaperType} />
       </fieldset>
 
       <fieldset className="form-section">
-        <legend>论文类型</legend>
-        <PaperTypeCards current={paperType} onSelect={onSelectPaperType} />
+        <legend>02 选择创建方式</legend>
+        <ModeCards current="new" onSelect={onSwitchMode} />
       </fieldset>
 
       <fieldset className="form-section">
@@ -409,13 +470,13 @@ function SurveyForm({
   return (
     <form className="panel form-panel" onSubmit={(event) => void onSubmit(event)} noValidate data-testid="survey-form">
       <fieldset className="form-section">
-        <legend>你想做什么？</legend>
-        <ModeCards current="new" onSelect={onSwitchMode} />
+        <legend>01 选择论文类型</legend>
+        <PaperTypeCards current={paperType} onSelect={onSelectPaperType} />
       </fieldset>
 
       <fieldset className="form-section">
-        <legend>论文类型</legend>
-        <PaperTypeCards current={paperType} onSelect={onSelectPaperType} />
+        <legend>02 选择创建方式</legend>
+        <ModeCards current="new" onSelect={onSwitchMode} />
       </fieldset>
 
       <fieldset className="form-section">

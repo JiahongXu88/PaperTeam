@@ -2138,9 +2138,17 @@
 
   .sidebar-nav {
     flex-direction: row;
+    width: 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
 
+  .sidebar-group-label { display: none; }
+
   .sidebar-link {
+    flex: none;
+    white-space: nowrap;
     min-height: 36px;
     font-size: var(--fs-body);
   }
@@ -2201,6 +2209,12 @@
   .review-toolbar-tools .search-field {
     width: 100%;
   }
+}
+
+@media (max-width: 640px) {
+  .app-sidebar { align-items: flex-start; }
+  .sidebar-brand { min-height: 34px; }
+  .home-project-list .home-current .project-row-side .btn { margin-left: 0; }
 }
 
 /* ============================================================

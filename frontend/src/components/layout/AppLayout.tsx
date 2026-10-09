@@ -13,9 +13,7 @@ import type { ProjectView } from "../../types/api.js";
 
 /**
  * 应用外壳：深色侧栏 + 内容列（顶栏 + 页面）。
- *
- * 侧栏只放真实可用的入口：论文项目 / Skills / 设置，加最近项目快捷入口；
- * 底部是运行环境指示。顶栏左侧是由路由推导的面包屑，右侧是主题切换与「新建项目」。
+ * 侧栏提供首页、创建、稿件修改、Skills、设置和最近项目入口。
  * 品牌字标即"返回论文项目"。
  */
 
@@ -129,7 +127,7 @@ function SidebarRecent() {
         <SidebarRecentItem key={project.id} project={project} />
       ))}
       {data.length > RECENT_LIMIT ? (
-        <Link to="/projects" className="sidebar-recent-link sidebar-recent-more">
+        <Link to="/projects?view=list" className="sidebar-recent-link sidebar-recent-more">
           <Icon name="more" />
           <span className="sidebar-recent-title">更多项目</span>
         </Link>
@@ -155,11 +153,14 @@ function TopbarBreadcrumb() {
 
   let items: Array<{ label: string; to?: string }> = [];
   if (location.pathname === "/projects") {
-    items = [{ label: "论文项目" }];
+    items = [{ label: location.search.includes("view=list") ? "我的项目" : "工作台首页" }];
   } else if (location.pathname === "/projects/new") {
-    items = [{ label: "论文项目", to: "/projects" }, { label: "新建项目" }];
+    items = [
+      { label: "工作台首页", to: "/projects" },
+      { label: location.search.includes("mode=existing") ? "修改已有论文" : "创建新论文" },
+    ];
   } else if (isProjectRoute) {
-    items = [{ label: "论文项目", to: "/projects" }, { label: project.data?.title ?? "项目" }];
+    items = [{ label: "我的项目", to: "/projects?view=list" }, { label: project.data?.title ?? "项目" }];
   } else if (location.pathname === "/skills") {
     items = [{ label: "Skills" }];
   } else if (location.pathname.startsWith("/settings")) {
@@ -196,6 +197,10 @@ export function AppLayout() {
   const location = useLocation();
   // 项目列表与新建页自身已有「新建项目」入口，顶栏不重复
   const showCreate = location.pathname !== "/projects" && location.pathname !== "/projects/new";
+  const createIsActive = location.pathname === "/projects/new" && !location.search.includes("mode=existing");
+  const importIsActive = location.pathname === "/projects/new" && location.search.includes("mode=existing");
+  const projectsIsActive = location.pathname === "/projects" && location.search.includes("view=list");
+  const dashboardIsActive = location.pathname === "/projects" && !location.search.includes("view=list");
 
   return (
     <div className="app-shell">
@@ -208,10 +213,24 @@ export function AppLayout() {
           </span>
         </Link>
         <nav className="sidebar-nav" aria-label="全局导航">
-          <NavLink to="/projects" className={navLinkClass} end={false}>
-            <Icon name="document" />
-            <span>论文项目</span>
+          <span className="sidebar-group-label">工作空间</span>
+          <NavLink to="/projects" className={() => dashboardIsActive ? "sidebar-link active" : "sidebar-link"} end>
+            <Icon name="grid" />
+            <span>工作台首页</span>
           </NavLink>
+          <NavLink to="/projects/new" className={() => createIsActive ? "sidebar-link active" : "sidebar-link"}>
+            <Icon name="plus" />
+            <span>创建新论文</span>
+          </NavLink>
+          <NavLink to="/projects/new?mode=existing" className={() => importIsActive ? "sidebar-link active" : "sidebar-link"}>
+            <Icon name="edit" />
+            <span>修改已有论文</span>
+          </NavLink>
+          <NavLink to="/projects?view=list" className={() => projectsIsActive ? "sidebar-link active" : "sidebar-link"}>
+            <Icon name="document" />
+            <span>我的项目</span>
+          </NavLink>
+          <span className="sidebar-group-label sidebar-tools-label">工具</span>
           <NavLink to="/skills" className={navLinkClass}>
             <Icon name="grid" />
             <span>Skills</span>
@@ -223,11 +242,11 @@ export function AppLayout() {
         </nav>
         <SidebarRecent />
         <div className="sidebar-footer">
-          <div className="sidebar-brand-card" aria-hidden="true"><span>Better<br />Research<br />Higher Impact</span><small>探索，从未止步。</small></div>
+          <div className="sidebar-brand-card"><span>Better Research<br />Higher Impact</span></div>
           <div className="sidebar-bottom"><RuntimeStatusChip /><Link to="/settings/appearance" aria-label="外观设置"><Icon name="gear" /></Link></div>
         </div>
       </aside>
-      <div className={`app-body${location.pathname === "/projects" ? " app-body-home" : ""}`}>
+      <div className={`app-body${location.pathname === "/projects" ? " app-body-home" : ""}${location.pathname === "/projects/new" ? " app-body-create" : ""}`}>
         <div className="workspace-landscape" aria-hidden="true"><span>Better Research<br />Higher Impact</span></div>
         <header className="topbar">
           <TopbarBreadcrumb />

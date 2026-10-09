@@ -11,7 +11,13 @@
 
 [Read this README in English](README.md)
 
-![PaperTeam 工作台](docs/images/projects-light.png)
+![PaperTeam V2.1 工作台（浅色）](docs/images/projects-light.png)
+
+![PaperTeam V2.1 工作台（深色）](docs/images/projects-dark.png)
+
+![创建新论文：研究论文、综述论文与学位论文类型选择](docs/images/create-paper.png)
+
+学位论文目前只提供界面选择。创建学位论文项目和将已有小论文扩展为学位论文，尚未实现。
 
 ## 它能帮你做什么
 
@@ -220,7 +226,8 @@ runtime——跑测试不需要模型）。
 
 当前的诚实限制：视觉审查只覆盖已登记资产（无可抽取资产的 PDF 内嵌图报
 skipped）；图表覆盖 = 4 种数据图 + 2 种方法图模板；PDF 重建为文本级 + 受控
-图表插入；M12 功能的浏览器 E2E 与产品截图待补；单用户、无鉴权 / 多租户；
+图表插入；M12 功能的浏览器 E2E 仍待补；PaperTeam V2.1 工作台与新建论文
+界面截图已展示；单用户、无鉴权 / 多租户；
 部分决定按设计保留给作者。完整清单见
 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) 与
 [docs/product-guide.md](docs/product-guide.md)。

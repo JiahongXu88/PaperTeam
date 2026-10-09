@@ -50,19 +50,32 @@ function renderAt(route: string) {
 }
 
 describe("routing", () => {
-  it("/ 重定向到 /projects（渲染项目列表）", async () => {
+  it("/ 重定向到 /projects（渲染工作台首页）", async () => {
     renderAt("/");
-    expect(await screen.findByRole("heading", { name: "论文项目" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "选择一个开始方式" })).toBeInTheDocument();
   });
 
-  it("/projects 渲染项目列表页", async () => {
+  it("/projects 渲染工作台首页，所有项目仍有独立入口", async () => {
     renderAt("/projects");
-    expect(await screen.findByRole("heading", { name: "论文项目" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "选择一个开始方式" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "全部项目" })).toHaveAttribute("href", "/projects?view=list");
   });
 
   it("/projects/new 渲染创建页", async () => {
     renderAt("/projects/new");
-    expect(await screen.findByRole("heading", { name: "新建项目" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "创建新论文" })).toBeInTheDocument();
+    expect(screen.getByTestId("paper-type-thesis")).toBeInTheDocument();
+  });
+
+  it("侧栏修改已有论文入口打开原有稿件导入流程", async () => {
+    renderAt("/projects/new?mode=existing");
+    expect(await screen.findByTestId("existing-import-form")).toBeInTheDocument();
+    expect(screen.getByLabelText("选择论文 PDF（.pdf）")).toBeInTheDocument();
+  });
+
+  it("/projects?view=list 保留全部项目列表入口", async () => {
+    renderAt("/projects?view=list");
+    expect(await screen.findByRole("heading", { name: "我的项目" })).toBeInTheDocument();
   });
 
   it("未知路径渲染 404", async () => {

@@ -14,7 +14,14 @@ real datasets.
 
 [查看中文文档（README.zh-CN）](README.zh-CN.md)
 
-![PaperTeam workbench](docs/images/projects-light.png)
+![PaperTeam V2.1 workbench — light theme](docs/images/projects-light.png)
+
+![PaperTeam V2.1 workbench — dark theme](docs/images/projects-dark.png)
+
+![Create new paper — research, survey, and thesis type selection](docs/images/create-paper.png)
+
+The thesis option is currently a UI selection only. Creating a thesis project or
+expanding an existing paper into a thesis is not implemented.
 
 ## What you can do with it
 
@@ -250,7 +257,8 @@ smokes (scripted agent runtime — no model needed to run tests).
 Current limits, honestly: visual review covers registered assets only (embedded PDF
 figures without extractable assets are skipped); figure coverage is 4 data-plot +
 2 diagram templates; PDF rebuild is text-level plus controlled figure insertion;
-browser E2E for the M12 features and product screenshots are still pending;
+browser E2E for the M12 features remains pending; the PaperTeam V2.1 workbench and
+new-paper UI screenshots are included above;
 single-user, no auth/multi-tenancy; some actions remain author decisions by design.
 Full list in [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) and
 [docs/product-guide.md](docs/product-guide.md).
