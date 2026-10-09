@@ -198,6 +198,8 @@ export async function startTestStack(
     ingestion?: ServiceStackOptionsIngestion;
     /** M10.2 Vision 模型接入（缺省不装配 = analyze 全部 skipped；测试注入 fake） */
     vision?: ServiceStackOptionsVision;
+    /** M13.3 实验包语义理解模型（缺省不装配 = understand 结构化 503；测试注入 fake） */
+    experimentSemanticModel?: ServiceStackOptionsExperiments;
     /** M12.3 C4：FigureCompiler runner 注入（缺省 fakeFigureRunner——离线可测全链） */
     figureRunner?: import("../../src/figures/FigureCompiler.js").CommandRunner;
     /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
@@ -249,6 +251,7 @@ export async function startTestStack(
       ...(options.ingestion ?? {}),
     },
     ...(options.vision !== undefined ? { vision: options.vision } : {}),
+    ...(options.experimentSemanticModel !== undefined ? { experimentSemanticModel: options.experimentSemanticModel } : {}),
     figures: {
       compiler: new FigureCompiler({ runner: options.figureRunner ?? fakeFigureRunner }),
     },

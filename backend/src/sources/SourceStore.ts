@@ -242,6 +242,8 @@ const ALLOWED_EXTENSIONS: readonly string[] = [
   // M10.1.1 常见科研 / 工程资产
   ".tex",
   ".json",
+  ".jsonl", // M13.3 行流记录（与 JSON 同级登记；行式解析见 ingestion/jsonlStructured）
+  ".ndjson",
   ".yaml",
   ".yml",
   ".ipynb",
@@ -277,6 +279,9 @@ export function sourceTypeFromFileName(fileName: string): SourceType {
     return "latex";
   }
   if (lower.endsWith(".json")) {
+    return "json";
+  }
+  if (lower.endsWith(".jsonl") || lower.endsWith(".ndjson")) {
     return "json";
   }
   if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {

@@ -13,6 +13,7 @@
  *          分节命令 → section）
  *   JSON/YAML: 轻量结构化投影（叶子路径 structured_record，jsonPath
  *          provenance；YAML 带行号）
+ *   JSONL:  行式记录流（每行一条 structured_record，行号 provenance；M13.3）
  *   ipynb: NotebookParser（静态解析：cell 块 + 文本输出块 + 图片输出资产；
  *          绝不执行 cell 代码）
  *   PNG/JPG: ImageAssetParser（登记：签名 + 尺寸 + 资产落位；不理解内容）
@@ -33,6 +34,7 @@ import type { SourceItem, SourceStore } from "../sources/SourceStore.js";
 import { CsvParser } from "./csvTabular.js";
 import { ImageAssetParser } from "./imageAsset.js";
 import { JsonParser } from "./jsonStructured.js";
+import { JsonlParser } from "./jsonlStructured.js";
 import { NotebookParser } from "./notebookParser.js";
 import {
   assetKindOfFileName,
@@ -440,6 +442,7 @@ function buildAssetParsers(options: IngestionServiceOptions): ReadonlyMap<AssetP
     ["latex", new TextAssetParser("latex")],
     ["code", new TextAssetParser("code")],
     ["json", new JsonParser()],
+    ["jsonl", new JsonlParser()],
     ["yaml", new YamlParser()],
     ["notebook", new NotebookParser()],
     ["image", new ImageAssetParser()],

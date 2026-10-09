@@ -972,9 +972,14 @@ async function handleProjectResourceRoutes(
       }
       sendMethodNotAllowed(res, "GET, POST", method); return true;
     }
-    const match = /^\/(ep-[a-f0-9]{32})(\/confirm)?$/.exec(rest);
+    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand)?$/.exec(rest);
     if (!match) return false;
     const packageId = match[1]!;
+    if (match[2] === "/understand") {
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      sendJson(res, 200, { package: await stack.experimentPackages.understand(projectId, packageId) });
+      return true;
+    }
     if (match[2]) {
       if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
       const body = await readJsonBody(req);

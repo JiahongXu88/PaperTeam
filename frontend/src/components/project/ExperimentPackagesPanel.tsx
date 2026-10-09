@@ -3,10 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { ErrorState, Loading } from "../common/StateViews.js";
-import { confirmExperimentGroups, confirmExperimentMetricEvidence, editExperimentFile, getExperimentPackage, listExperimentPackages, uploadExperimentPackage, type ExperimentRole } from "../../api/experimentPackages.js";
+import { confirmExperimentGroups, confirmExperimentMetricEvidence, editExperimentFile, getExperimentPackage, listExperimentPackages, requestExperimentUnderstanding, uploadExperimentPackage, type ExperimentRole } from "../../api/experimentPackages.js";
 import { formatApiError } from "../../utils/errors.js";
 
 const roles: ExperimentRole[] = ["main_result", "baseline_result", "ablation_result", "experiment_config", "training_log", "evaluation_log", "dataset_description", "figure_asset", "notebook", "source_code", "documentation", "unknown"];
+const directionLabel = (direction: string) => direction === "higher" ? " ↑越高越好" : direction === "lower" ? " ↓越低越好" : "";
 
 export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
@@ -43,6 +44,16 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
     },
     onSuccess: (result) => { setMessage(`已登记 ${result.evidence.id}：${result.evidence.verificationLevel} / ${result.evidence.verificationStatus}；仍需独立核验。`); setEvidenceIndex(null); setClaim(""); },
   });
+  const understand = useMutation({
+    mutationFn: () => requestExperimentUnderstanding(projectId, currentId!),
+    onSuccess: async (item) => {
+      const suggestions = item.semanticSuggestions;
+      setMessage(suggestions
+        ? `语义理解完成（${suggestions.model}，${(suggestions.durationMs / 1000).toFixed(1)}s，输入 ${suggestions.usage?.input ?? "?"} tok）：角色建议 ${suggestions.roleSuggestions.length} 条、发现 ${suggestions.findings.length} 条——全部需作者确认。`
+        : "语义理解未产生建议。");
+      await refresh(currentId!);
+    },
+  });
   return <section className="panel" aria-label="实验数据包">
     <h2>实验数据包</h2>
     <p className="muted">上传 ZIP 后查看文件、候选关系和真实解析值。分类与分组是建议；作者确认不等于 Evidence Verification。</p>
@@ -65,6 +76,28 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
       <h3>{detail.data.originalName}</h3>
       <p className="muted">状态：{detail.data.status} · SHA-256：{detail.data.packageHash.slice(0, 16)}… · 已解析 {detail.data.files.filter((entry) => entry.parseStatus === "ok").length}/{detail.data.files.length} 文件</p>
       {detail.data.warnings.length > 0 && <ul>{detail.data.warnings.map((warning, index) => <li key={index} className="note-warn-line">{warning}</li>)}</ul>}
+      {(detail.data.reportedVerdicts?.length ?? 0) > 0 && <>
+        <h3>源材料判定（Source-Reported Verdict）</h3>
+        <p className="muted">以下判定原样引自包内文件的 verdict/decision 字段；PaperTeam 不重算、不解读、不据此自动得出任何结论。</p>
+        <ul>{detail.data.reportedVerdicts!.map((verdict, index) => <li key={index}><strong>{verdict.value}</strong> <small>—— {verdict.path} · {verdict.field}</small></li>)}</ul>
+      </>}
+      <h3>GLM 辅助理解（候选建议）</h3>
+      <p className="muted">用当前生效模型对本包做一次有界语义理解，产出角色建议与发现陈述。建议经确定性校验（锚点与数值逐条核对），全部 <em>needs_author_confirmation</em>——不会自动改写任何文件角色或分组。</p>
+      <div className="form-row">
+        <button type="button" disabled={understand.isPending || detail.data.status === "inventory" || detail.data.status === "importing"} onClick={() => understand.mutate()}>{understand.isPending ? "理解中…" : "运行语义理解"}</button>
+      </div>
+      {understand.isError && <p role="alert" className="run-error">{formatApiError(understand.error)}</p>}
+      {detail.data.semanticSuggestions && <div className="panel">
+        <p className="muted">模型 {detail.data.semanticSuggestions.model} · {(detail.data.semanticSuggestions.durationMs / 1000).toFixed(1)}s{detail.data.semanticSuggestions.usage?.totalTokens !== undefined ? ` · ${detail.data.semanticSuggestions.usage.totalTokens} tok` : ""} · {new Date(detail.data.semanticSuggestions.generatedAt).toLocaleString()}</p>
+        {detail.data.semanticSuggestions.roleSuggestions.length > 0 && <><strong>角色建议</strong><ul>{detail.data.semanticSuggestions.roleSuggestions.map((suggestion, index) => <li key={index}>
+          <code>{suggestion.path}</code> → {suggestion.suggestedRole} / <code>{suggestion.suggestedGroupId}</code> — {suggestion.rationale}
+          <div><small>锚点：{suggestion.anchors.join("、")}</small></div>
+        </li>)}</ul></>}
+        {detail.data.semanticSuggestions.findings.length > 0 && <><strong>发现陈述（数值已逐条核对）</strong><ul>{detail.data.semanticSuggestions.findings.map((finding, index) => <li key={index}>
+          {finding.claim} <small>（{finding.confidence} · 锚点：{finding.anchors.join("、")}）</small>
+        </li>)}</ul></>}
+        {detail.data.semanticSuggestions.notes.length > 0 && <><strong>校验记录</strong><ul>{detail.data.semanticSuggestions.notes.map((note, index) => <li key={index} className="note-warn-line">{note}</li>)}</ul></>}
+      </div>}
       {detail.data.relationCandidates.length > 0 && <><h3>配置与结果关联候选</h3><ul>{detail.data.relationCandidates.map((relation) => <li key={`${relation.configPath}-${relation.groupId}`}>
         {relation.configPath} → {relation.groupId} · {relation.status}；相符：{relation.matchedFields.join(", ") || "无"}；冲突：{relation.conflictingFields.join(", ") || "无"}
       </li>)}</ul></>}
@@ -89,7 +122,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
       <p className="muted">单位与优化方向为 unknown 时不计算相对提升；同一模型的多 seed 不自动选优。每行保留来源锚。</p>
       <div style={{ overflowX: "auto" }}><table><thead><tr><th>实验组</th><th>Method</th><th>Dataset</th><th>Seed</th><th>Metric</th><th>Value</th><th>来源</th></tr></thead><tbody>
         {detail.data.observations.slice(0, 100).map((observation, index) => <tr key={`${observation.sourceId}-${observation.blockId}-${observation.metric}-${index}`}>
-          <td>{observation.groupId}</td><td>{observation.method ?? "—"}</td><td>{observation.dataset ?? "—"}</td><td>{observation.seed ?? "—"}</td><td>{observation.metric}</td><td>{observation.value}</td>
+          <td>{observation.groupId}</td><td>{observation.method ?? "—"}</td><td>{observation.dataset ?? "—"}</td><td>{observation.seed ?? "—"}</td><td>{observation.metric}{directionLabel(observation.direction)}</td><td>{observation.value}</td>
           <td>{observation.path} · {observation.sourceId}/{observation.blockId} {observation.sheet ?? ""} {observation.row ? `row ${observation.row}` : ""} {observation.column ?? observation.jsonPath ?? ""}<br />
             {detail.data!.groups.some((group) => group.id === observation.groupId && group.status === "confirmed") && <button type="button" onClick={() => { setEvidenceIndex(index); setClaim(""); }}>作为作者确认的 Evidence…</button>}
           </td>

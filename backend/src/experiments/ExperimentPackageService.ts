@@ -1,16 +1,25 @@
 import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 import { BusinessError, NotFoundError } from "../errors.js";
 import { assetKindOfFileName } from "../ingestion/parserRegistry.js";
 import type { IngestionService } from "../ingestion/IngestionService.js";
 import type { ParsedDocumentStore } from "../ingestion/ParsedDocumentStore.js";
-import type { ParsedDocument, ParsedRecordBlock } from "../ingestion/types.js";
+import type { ParsedDocument, ParsedRecordBlock, ParsedTableBlock } from "../ingestion/types.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import { hashArchive, sourceNameFor, visitArchive, type ArchiveEntryInfo } from "./archive.js";
+import {
+  SEMANTIC_LIMITS,
+  UNDERSTANDING_SYSTEM_PROMPT,
+  buildUnderstandingContext,
+  parseUnderstandingOutput,
+  validateSuggestions,
+  type ExperimentModelRuntime,
+  type SemanticSuggestions,
+} from "./semanticUnderstanding.js";
 
 export type ExperimentRole = "main_result" | "baseline_result" | "ablation_result" | "experiment_config" | "training_log" | "evaluation_log" | "dataset_description" | "figure_asset" | "notebook" | "source_code" | "documentation" | "unknown";
 export interface PackageFile {
@@ -63,6 +72,13 @@ export interface ExperimentRelationCandidate {
   matchedFields: string[];
   conflictingFields: string[];
 }
+/** 源材料报告的判定（M13.3：从 verdict/decision 类字符串字段原样提取；
+ * 系统不重算、不解读，仅保留原始表述与锚点） */
+export interface ReportedVerdict {
+  path: string;
+  field: string;
+  value: string;
+}
 export interface ExperimentPackage {
   schemaVersion: 1;
   packageId: string;
@@ -74,6 +90,9 @@ export interface ExperimentPackage {
   groups: ExperimentGroup[];
   observations: MetricObservation[];
   relationCandidates: ExperimentRelationCandidate[];
+  reportedVerdicts?: ReportedVerdict[];
+  /** GLM 辅助理解（M13.3）：候选建议 + 模型归因；全部 needs_author_confirmation */
+  semanticSuggestions?: SemanticSuggestions;
   warnings: string[];
 }
 
@@ -105,12 +124,28 @@ export interface ConfirmedExperimentWorkflowContext {
 }
 
 const RESULT_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".yaml", ".yml"]);
-const SOURCE_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".yaml", ".yml", ".md", ".txt", ".ipynb"]);
+const SOURCE_EXTENSIONS = new Set([".csv", ".xlsx", ".json", ".jsonl", ".ndjson", ".yaml", ".yml", ".md", ".txt", ".ipynb"]);
 const SECRET_PATTERN = /(api.?key|secret|password|token|credential|authorization)/i;
 const CONTEXT_COLUMNS = /^(method|model|dataset|seed|split|epoch|run|variant|protocol|step|iteration|fold|id)$/i;
 const MAX_WORKFLOW_OBSERVATIONS = 100;
 const SAFE_CONTEXT_LABEL = /^[\p{L}\p{N}][\p{L}\p{N} ._+:/%()\-]{0,95}$/u;
 const SECRET_VALUE_PATTERN = /(?:\bsk-[A-Za-z0-9_-]{12,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|\bAIza[A-Za-z0-9_-]{30,}\b|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b)/;
+
+/**
+ * 标准多目标跟踪评测指标方向词表（TrackEval / MOT Challenge 通行语义；
+ * 按指标名全词匹配填充 direction，未收录指标保持 unknown——不猜方向）。
+ */
+const METRIC_DIRECTION: ReadonlyMap<string, "higher" | "lower"> = new Map([
+  ["HOTA", "higher"], ["HOTA(0)", "higher"], ["DETA", "higher"], ["ASSA", "higher"],
+  ["MOTA", "higher"], ["MOTP", "higher"], ["MODA", "higher"], ["SMOTA", "higher"],
+  ["IDF1", "higher"], ["IDR", "higher"], ["IDP", "higher"], ["IDTP", "higher"],
+  ["DETRE", "higher"], ["DETPR", "higher"], ["ASSRE", "higher"], ["ASSPR", "higher"],
+  ["LOCA", "higher"], ["OWTA", "higher"], ["CLR_RE", "higher"], ["CLR_PR", "higher"],
+  ["IDSW", "lower"], ["FRAG", "lower"],
+]);
+/** 源材料判定字段名（JSON 叶子键 / 表列名的全词匹配；只取字符串值） */
+const VERDICT_FIELD = /^(?:verdict|final_verdict|overall_verdict|decision|conclusion)$/i;
+const MAX_REPORTED_VERDICTS = 8;
 
 function safeContextLabel(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -128,6 +163,7 @@ function classify(path: string): Pick<PackageFile, "role" | "roleBasis" | "roleC
   let role: ExperimentRole = "unknown";
   let basis = "缺少可判定的文件名或路径线索";
   if (ext === ".ipynb") { role = "notebook"; basis = "Notebook 扩展名"; }
+  else if ([".jsonl", ".ndjson"].includes(ext)) { role = "unknown"; basis = "JSONL 行流；按记录流登记（角色待定，不参与指标提取）"; }
   else if ([".png", ".jpg", ".jpeg", ".pdf", ".svg"].includes(ext)) { role = "figure_asset"; basis = "图像扩展名"; }
   else if ([".py", ".sh", ".ps1", ".r", ".ts"].includes(ext)) { role = "source_code"; basis = "源码扩展名；仅登记，不执行"; }
   else if (ext === ".log" || tokens.includes("log")) { role = tokens.includes("eval") || tokens.includes("evaluation") ? "evaluation_log" : "training_log"; basis = "日志路径/扩展名"; }
@@ -144,32 +180,171 @@ function classify(path: string): Pick<PackageFile, "role" | "roleBasis" | "roleC
   return { role, roleBasis: basis, roleConfidence: groupToken || role === "source_code" || role === "figure_asset" ? "high" : "candidate", groupId };
 }
 
+/**
+ * 兄弟目录同名文件 → 候选平行实验臂（M13.3，确定性）：
+ * 同一 basename 出现在 ≥2 个互为兄弟的目录（如 results/A0/summary.txt 与
+ * results/A1/summary.txt）时，把这些文件的 groupId 细化为 arm-<目录名>。
+ * 只细化原本 unresolved 的文件；目录名须为短 slug。这是候选分组——
+ * 臂的语义角色（baseline / 主方法 / 消融）不由此推断，由作者确认。
+ */
+function refineSiblingArmGroups(files: Array<Pick<PackageFile, "path" | "groupId" | "roleBasis">>): void {
+  const byBase = new Map<string, Array<{ path: string; dir: string }>>();
+  for (const file of files) {
+    const base = basename(file.path);
+    const entries = byBase.get(base) ?? [];
+    entries.push({ path: file.path, dir: dirname(file.path) });
+    byBase.set(base, entries);
+  }
+  const armDirs = new Map<string, string>(); // file path -> arm groupId
+  for (const entries of byBase.values()) {
+    if (entries.length < 2) continue;
+    const dirs = [...new Set(entries.map((entry) => entry.dir))];
+    if (dirs.length < 2) continue;
+    const grandparents = new Set(dirs.map((dir) => dirname(dir)));
+    if (grandparents.size !== 1) continue;
+    for (const dir of dirs) {
+      const name = basename(dir);
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(name)) continue;
+      for (const entry of entries.filter((candidate) => candidate.dir === dir)) {
+        armDirs.set(entry.path, `arm-${name.toLowerCase()}`);
+      }
+    }
+  }
+  for (const file of files) {
+    const arm = armDirs.get(file.path);
+    if (arm !== undefined && file.groupId === "unresolved") {
+      file.groupId = arm;
+      file.roleBasis = `${file.roleBasis}；兄弟目录同名文件（候选平行实验臂）`;
+    }
+  }
+}
+
+/**
+ * 源材料判定提取（M13.3）：JSON/YAML 投影叶子与表格单元中字段名为
+ * verdict/decision/conclusion 且值为非空字符串（≤200 字符）→ 原样登记。
+ * 这是 Source-Reported Verdict——只引用原始表述，系统不重算、不解读，
+ * 也不把它变成任何自动化结论。
+ */
+function collectReportedVerdicts(item: ExperimentPackage, file: PackageFile, document: ParsedDocument): void {
+  const verdicts = item.reportedVerdicts ?? [];
+  for (const block of document.blocks) {
+    if (verdicts.length >= MAX_REPORTED_VERDICTS) break;
+    if (block.type === "structured_record") {
+      for (const cell of block.cells) {
+        if (verdicts.length >= MAX_REPORTED_VERDICTS) break;
+        const leaf = cell.header.startsWith("$.") ? (cell.header.split(".").pop() ?? "") : cell.header;
+        if (!VERDICT_FIELD.test(leaf)) continue;
+        const value = cell.value.trim();
+        if (value === "" || value.length > 200 || value === "null" || value === "undefined") continue;
+        if (SECRET_PATTERN.test(value) || SECRET_VALUE_PATTERN.test(value)) continue;
+        verdicts.push({ path: file.path, field: cell.header, value });
+      }
+    }
+  }
+  if (verdicts.length > 0) item.reportedVerdicts = verdicts;
+}
+
+/**
+ * 同组同名指标的小数/百分数标度混用告警（M13.3）：同一实验组内同一指标
+ * 叶名同时存在 ≤1 的小数与 ≥30 的数值（比值落在 30–300）→ 疑似 0.626 与
+ * 62.613 两套标度并存。两值都来自真实文件，不判错——只提醒作者在确认与
+ * 出图前核对口径（图表把两种标度画进同一轴是真实的科研事故路径）。
+ */
+function pushScaleConflictWarnings(item: ExperimentPackage): void {
+  const byKey = new Map<string, number[]>();
+  for (const observation of item.observations) {
+    if (observation.value <= 0) continue;
+    const leaf = observation.metric.split(/[./]/).pop() ?? observation.metric;
+    const key = `${observation.groupId}\0${leaf}`;
+    const values = byKey.get(key) ?? [];
+    values.push(observation.value);
+    byKey.set(key, values);
+  }
+  for (const [key, values] of byKey) {
+    if (values.length < 2) continue;
+    const [groupId, leaf] = key.split("\0") as [string, string];
+    const hasFraction = values.some((value) => value <= 1);
+    const hasPercent = values.some((value) => value >= 30);
+    if (!hasFraction || !hasPercent) continue;
+    const min = Math.min(...values.filter((value) => value <= 1));
+    const max = Math.max(...values.filter((value) => value >= 30));
+    const ratio = max / Math.max(min, 1e-12);
+    if (ratio < 30 || ratio > 300) continue;
+    item.warnings.push(
+      `指标 ${leaf} 在实验组 ${groupId} 内同时存在小数（${min}）与百分数量级（${max}）数值：疑似标度混用；确认与出图前请核对各来源口径`,
+    );
+  }
+}
+
+/** 指标名 → 标准方向（词表未收录返回 unknown——不猜）。leaf = 路径最后一段 */
+function directionOf(metric: string): "higher" | "lower" | "unknown" {
+  const leaf = metric.split(/[./]/).pop() ?? metric;
+  return METRIC_DIRECTION.get(leaf.toUpperCase()) ?? "unknown";
+}
+
 function metricObservations(file: PackageFile, document: ParsedDocument): MetricObservation[] {
   if (!["main_result", "baseline_result", "ablation_result"].includes(file.role)) return [];
+  // JSONL 行流是逐事件/逐机会的特征记录（score、cosine、frame…），不是
+  // 实验级指标表：即便作者把它标成结果角色，也不提取指标观测——它的
+  // 首要用途是图表数据集（见 figures/datasets.ts），进 context 会以
+  // 数千条特征值淹没真正的实验指标。
+  if (document.parser.id === "jsonl") return [];
   const observations: MetricObservation[] = [];
   for (const block of document.blocks) {
-    if (block.type !== "structured_record") continue;
-    const record = block as ParsedRecordBlock;
-    const context = new Map(record.cells.map((cell) => [cell.header.toLowerCase(), cell.value]));
-    for (const cell of record.cells) {
-      if (CONTEXT_COLUMNS.test(cell.header) || SECRET_PATTERN.test(cell.header)) continue;
-      const numeric = cell.value.trim();
-      if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(numeric)) continue;
-      const value = Number(numeric);
-      if (!Number.isFinite(value) || observations.length >= 5000) continue;
-      const metric = cell.header.startsWith("$.") ? cell.header.replace(/^\$\./, "") : cell.header;
-      observations.push({
-        sourceId: file.sourceId!, path: file.path, blockId: block.blockId,
-        ...(block.provenance.row !== undefined ? { row: block.provenance.row } : {}),
-        ...(block.provenance.sheet !== undefined ? { sheet: block.provenance.sheet } : {}),
-        ...(cell.letter !== undefined ? { column: cell.letter } : {}),
-        ...(block.provenance.jsonPath !== undefined ? { jsonPath: block.provenance.jsonPath } : {}),
-        ...(context.get("method") ?? context.get("model") ? { method: context.get("method") ?? context.get("model") } : {}),
-        ...(context.get("dataset") ? { dataset: context.get("dataset") } : {}),
-        ...(context.get("seed") ? { seed: context.get("seed") } : {}),
-        ...(context.get("protocol") ? { protocol: context.get("protocol") } : {}),
-        ...(context.get("split") ? { split: context.get("split") } : {}),
-        metric, value, unit: "unknown", direction: "unknown", groupId: file.groupId,
+    if (block.type === "structured_record") {
+      const record = block as ParsedRecordBlock;
+      const context = new Map(record.cells.map((cell) => [cell.header.toLowerCase(), cell.value]));
+      for (const cell of record.cells) {
+        if (CONTEXT_COLUMNS.test(cell.header) || SECRET_PATTERN.test(cell.header)) continue;
+        const numeric = cell.value.trim();
+        if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(numeric)) continue;
+        const value = Number(numeric);
+        if (!Number.isFinite(value) || observations.length >= 5000) continue;
+        const metric = cell.header.startsWith("$.") ? cell.header.replace(/^\$\./, "") : cell.header;
+        observations.push({
+          sourceId: file.sourceId!, path: file.path, blockId: block.blockId,
+          ...(block.provenance.row !== undefined ? { row: block.provenance.row } : {}),
+          ...(block.provenance.sheet !== undefined ? { sheet: block.provenance.sheet } : {}),
+          ...(cell.letter !== undefined ? { column: cell.letter } : {}),
+          ...(block.provenance.jsonPath !== undefined ? { jsonPath: block.provenance.jsonPath } : {}),
+          ...(context.get("method") ?? context.get("model") ? { method: context.get("method") ?? context.get("model") } : {}),
+          ...(context.get("dataset") ? { dataset: context.get("dataset") } : {}),
+          ...(context.get("seed") ? { seed: context.get("seed") } : {}),
+          ...(context.get("protocol") ? { protocol: context.get("protocol") } : {}),
+          ...(context.get("split") ? { split: context.get("split") } : {}),
+          metric, value, unit: "unknown", direction: directionOf(metric), groupId: file.groupId,
+        });
+      }
+    } else if (block.type === "table") {
+      // 空白对齐表 / PDF 表格中的结果表（M13.3）：表头 = 指标名，每行一条观测；
+      // 行号 = 表头物理行 + 行序（与 Excel 1-based 行号约定一致）。
+      const table = block as ParsedTableBlock;
+      const baseRow = table.provenance.row ?? 1;
+      table.rows.forEach((row, rowIndex) => {
+        const context = new Map<string, string>();
+        table.headers.forEach((header, index) => {
+          if (CONTEXT_COLUMNS.test(header)) context.set(header.toLowerCase(), row[index] ?? "");
+        });
+        for (let index = 0; index < table.headers.length; index += 1) {
+          const header = table.headers[index]!;
+          if (CONTEXT_COLUMNS.test(header) || SECRET_PATTERN.test(header)) continue;
+          const numeric = (row[index] ?? "").trim();
+          if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(numeric)) continue;
+          const value = Number(numeric);
+          if (!Number.isFinite(value) || observations.length >= 5000) continue;
+          observations.push({
+            sourceId: file.sourceId!, path: file.path, blockId: block.blockId,
+            row: baseRow + 1 + rowIndex,
+            column: header,
+            ...(table.provenance.sheet !== undefined ? { sheet: table.provenance.sheet } : {}),
+            ...(context.get("method") ?? context.get("model") ? { method: context.get("method") ?? context.get("model") } : {}),
+            ...(context.get("dataset") ? { dataset: context.get("dataset") } : {}),
+            ...(context.get("seed") ? { seed: context.get("seed") } : {}),
+            ...(context.get("protocol") ? { protocol: context.get("protocol") } : {}),
+            ...(context.get("split") ? { split: context.get("split") } : {}),
+            metric: header, value, unit: "unknown", direction: directionOf(header), groupId: file.groupId,
+          });
+        }
       });
     }
   }
@@ -178,7 +353,10 @@ function metricObservations(file: PackageFile, document: ParsedDocument): Metric
 
 export class ExperimentPackageService {
   private readonly queues = new Map<string, Promise<unknown>>();
-  constructor(private readonly projects: ProjectStore, private readonly sources: SourceStore, private readonly ingestion: IngestionService, private readonly documents: ParsedDocumentStore) {}
+  private readonly semanticModel?: { runtime: ExperimentModelRuntime; defaultModel: () => string | undefined | Promise<string | undefined> };
+  constructor(private readonly projects: ProjectStore, private readonly sources: SourceStore, private readonly ingestion: IngestionService, private readonly documents: ParsedDocumentStore, options?: { semanticModel?: { runtime: ExperimentModelRuntime; defaultModel: () => string | undefined | Promise<string | undefined> } }) {
+    this.semanticModel = options?.semanticModel;
+  }
 
   private root(projectId: string): string { return join(this.projects.projectDir(projectId), "experiments"); }
   private dir(projectId: string, packageId: string): string { return join(this.root(projectId), packageId); }
@@ -204,6 +382,11 @@ export class ExperimentPackageService {
       if (item.schemaVersion !== 1 || item.packageId !== packageId || !/^[a-f0-9]{64}$/.test(item.packageHash) || typeof item.originalName !== "string" ||
         !["inventory", "importing", "ready", "partial"].includes(item.status) || !Array.isArray(item.files) || !Array.isArray(item.groups) ||
         !Array.isArray(item.observations) || !Array.isArray(item.relationCandidates) || !Array.isArray(item.warnings) ||
+        (item.reportedVerdicts !== undefined && (!Array.isArray(item.reportedVerdicts) || item.reportedVerdicts.some((verdict) =>
+          !verdict || typeof verdict.path !== "string" || typeof verdict.field !== "string" || typeof verdict.value !== "string"))) ||
+        (item.semanticSuggestions !== undefined && (typeof item.semanticSuggestions !== "object" || item.semanticSuggestions === null ||
+          !Array.isArray(item.semanticSuggestions.roleSuggestions) || !Array.isArray(item.semanticSuggestions.findings) || !Array.isArray(item.semanticSuggestions.notes) ||
+          typeof item.semanticSuggestions.model !== "string")) ||
         item.files.some((file) => !file || typeof file.path !== "string" || typeof file.bytes !== "number" || typeof file.role !== "string" || typeof file.groupId !== "string")) throw new Error();
       return item;
     } catch { throw new BusinessError("EXPERIMENT_MANIFEST_CORRUPTED", "实验包 Manifest 损坏，已停止读写"); }
@@ -247,7 +430,9 @@ export class ExperimentPackageService {
       catch (error) {
         if (!(error instanceof NotFoundError)) throw error;
         const displayName = originalName.replaceAll("\\", "/").split("/").pop()?.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200) || "experiment.zip";
-        item = { schemaVersion: 1, packageId, packageHash: hash, originalName: displayName, importedAt: new Date().toISOString(), status: "inventory", files: inventory.map((entry) => ({ path: entry.path, hash: "", bytes: entry.size, compressedBytes: entry.compressedSize, kind: assetKindOfFileName(entry.path), parseStatus: "pending", ...classify(entry.path) })), groups: [], observations: [], relationCandidates: [], warnings: [] };
+        const files = inventory.map((entry) => ({ path: entry.path, hash: "", bytes: entry.size, compressedBytes: entry.compressedSize, kind: assetKindOfFileName(entry.path), parseStatus: "pending" as const, ...classify(entry.path) }));
+        refineSiblingArmGroups(files);
+        item = { schemaVersion: 1, packageId, packageHash: hash, originalName: displayName, importedAt: new Date().toISOString(), status: "inventory", files, groups: [], observations: [], relationCandidates: [], warnings: [] };
         await mkdir(this.dir(projectId, packageId), { recursive: true });
         await copyFile(archivePath, join(this.dir(projectId, packageId), "original.zip"));
         await this.save(projectId, item);
@@ -297,7 +482,10 @@ export class ExperimentPackageService {
         const source = await this.sources.get(projectId, file.sourceId);
         if (!source || source.contentHash !== file.hash) { group.conflicts.push(`来源 ${file.path} 已删除或内容变化`); continue; }
         const document = await this.documents.load(projectId, file.sourceId);
-        if (document) item.observations.push(...metricObservations(file, document));
+        if (document) {
+          item.observations.push(...metricObservations(file, document));
+          collectReportedVerdicts(item, file, document);
+        }
       }
     }
     for (const group of groups.values()) if (group.conflicts.length) group.status = "conflict";
@@ -334,6 +522,7 @@ export class ExperimentPackageService {
     item.groups = [...groups.values()];
     item.warnings = item.files.filter((file) => file.parseStatus === "failed").map((file) => `${file.path}: 解析失败`);
     if (item.files.some((file) => file.groupId === "unresolved")) item.warnings.push("部分文件的实验分组未确定，需作者核对");
+    pushScaleConflictWarnings(item);
   }
   async editFile(projectId: string, packageId: string, path: string, role: ExperimentRole, groupId: string): Promise<ExperimentPackage> {
     return this.enqueue(projectId, async () => {
@@ -376,6 +565,60 @@ export class ExperimentPackageService {
       ["main_result", "baseline_result", "ablation_result"].includes(file.role) &&
       (file.parseStatus === "ok" || file.parseStatus === "partial")
     ))));
+  }
+
+  /**
+   * GLM 辅助语义理解（M13.3）：一次有界模型调用 → 确定性校验 → 存入
+   * manifest（needs_author_confirmation）。不修改 files/groups/observations；
+   * 作者仍通过 editFile / confirm 消费建议。模型不可用 / 输出不合法 →
+   * 结构化失败，不伪装成功。
+   */
+  async understand(projectId: string, packageId: string): Promise<ExperimentPackage> {
+    return this.enqueue(projectId, async () => {
+      const item = await this.get(projectId, packageId);
+      if (item.status !== "ready" && item.status !== "partial") throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", "实验包尚未完成解析");
+      const semantic = this.semanticModel;
+      if (semantic === undefined) throw new BusinessError("SEMANTIC_MODEL_UNAVAILABLE", "语义理解模型未装配（模型未配置或服务未启用）");
+      const spec = (await semantic.defaultModel())?.trim();
+      const separator = spec?.indexOf("/") ?? -1;
+      if (!spec || separator <= 0 || separator >= spec.length - 1) throw new BusinessError("SEMANTIC_MODEL_UNAVAILABLE", "生效默认模型规格非法，无法执行语义理解");
+      const provider = spec.slice(0, separator);
+      const modelId = spec.slice(separator + 1);
+      const model = semantic.runtime.getModel(provider, modelId);
+      if (model === undefined) throw new BusinessError("SEMANTIC_MODEL_UNAVAILABLE", `模型 ${spec} 不在注册表`);
+      if (!semantic.runtime.hasConfiguredAuth(provider)) throw new BusinessError("SEMANTIC_MODEL_UNAVAILABLE", `provider ${provider} 无可用凭据`);
+      const context = buildUnderstandingContext(item);
+      const signal = AbortSignal.timeout(SEMANTIC_LIMITS.requestTimeoutMs);
+      const startedAt = Date.now();
+      const message = await semantic.runtime.completeSimple(model, {
+        systemPrompt: UNDERSTANDING_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: [{ type: "text", text: context }], timestamp: Date.now() }],
+      }, { maxTokens: SEMANTIC_LIMITS.maxOutputTokens, signal });
+      const durationMs = Date.now() - startedAt;
+      if (message.stopReason === "error" || message.stopReason === "aborted") {
+        throw new BusinessError("SEMANTIC_MODEL_FAILED", `语义理解模型调用失败（${signal.aborted ? "超时" : message.errorMessage ?? message.stopReason}）`);
+      }
+      const text = (message.content ?? []).map((part) => part.type === "text" ? part.text ?? "" : "").join("");
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseUnderstandingOutput(text);
+      } catch (error) {
+        throw new BusinessError("SEMANTIC_MODEL_FAILED", `语义理解输出不是合法 JSON（${error instanceof Error ? error.message : String(error)}）`);
+      }
+      const { suggestions, notes } = validateSuggestions(parsed, item);
+      item.semanticSuggestions = {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        model: spec,
+        durationMs,
+        ...(message.usage !== undefined ? { usage: message.usage } : {}),
+        roleSuggestions: suggestions.roleSuggestions,
+        findings: suggestions.findings,
+        notes,
+      };
+      await this.save(projectId, item);
+      return item;
+    });
   }
 
   async workflowContext(projectId: string): Promise<ConfirmedExperimentWorkflowContext> {

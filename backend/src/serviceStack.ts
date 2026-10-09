@@ -196,6 +196,15 @@ export interface ServiceStackOptions {
    */
   targetSummaryModel?: import("./target/TargetProfileService.js").TargetSummaryModel;
   /**
+   * M13.3 实验包 GLM 辅助语义理解模型接入。缺省 = 不装配（understand
+   * 结构化 SEMANTIC_MODEL_UNAVAILABLE）；生产由 index.ts 注入共享
+   * ModelRuntime + 生效默认模型；测试注入 fake。
+   */
+  experimentSemanticModel?: {
+    runtime: import("./experiments/semanticUnderstanding.js").ExperimentModelRuntime;
+    defaultModel: () => string | undefined | Promise<string | undefined>;
+  };
+  /**
    * M12.3 C4：FigureCompiler 注入（测试注入 fake runner；缺省真实 spawn
    * xelatex——生产形态）。服务层（FigureService）恒由栈内构造。
    */
@@ -843,7 +852,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // （含来源锚反查防篡改）→ FigureCompiler（xelatex 单遍 + specHash 缓存）→
   // 受控手稿插入（append/replace + caption 真实性硬闸）。per-project 串行化
   // 在服务内（manifest 互斥）；本层零 LLM。
-  const experimentPackages = new ExperimentPackageService(options.projects, sources, ingestion, parsedDocuments);
+  const experimentPackages = new ExperimentPackageService(options.projects, sources, ingestion, parsedDocuments,
+    options.experimentSemanticModel !== undefined ? { semanticModel: options.experimentSemanticModel } : {});
   const figures = new FigureService({
     projects: options.projects,
     sources,

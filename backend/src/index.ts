@@ -267,6 +267,12 @@ export async function startBackend(): Promise<void> {
       : {}),
     doclingMaxConcurrency: config.ingestion.doclingConcurrency,
     ...(targetSummaryModel !== undefined ? { targetSummaryModel } : {}),
+    // M13.3 实验包语义理解：与 Test Connection / 真实任务同一 ModelRuntime
+    // 与生效默认模型（可用性由 understand() 按目录 + 凭据复核）
+    experimentSemanticModel: {
+      runtime: modelRuntime,
+      defaultModel: () => effectiveModelSpec,
+    },
     log: (message) => console.log(message),
   });
   // Existing-LaTeX 导入器：栈内单例（projectImport 的 format=latex 路径与

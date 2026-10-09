@@ -13,10 +13,25 @@ export interface MetricObservationView {
   sourceId: string; path: string; blockId: string; row?: number; sheet?: string; column?: string; jsonPath?: string;
   method?: string; dataset?: string; seed?: string; metric: string; value: number; unit: string; direction: string; groupId: string;
 }
+export interface ReportedVerdictView {
+  path: string; field: string; value: string;
+}
+export interface SemanticRoleSuggestionView {
+  path: string; suggestedRole: ExperimentRole; suggestedGroupId: string; rationale: string; anchors: string[]; status: "needs_author_confirmation";
+}
+export interface SemanticFindingView {
+  claim: string; confidence: "high" | "medium" | "low"; anchors: string[]; status: "needs_author_confirmation";
+}
+export interface SemanticSuggestionsView {
+  schemaVersion: number; generatedAt: string; model: string; durationMs: number;
+  usage?: { input?: number; output?: number; totalTokens?: number; cost?: { total?: number | string } };
+  roleSuggestions: SemanticRoleSuggestionView[]; findings: SemanticFindingView[]; notes: string[];
+}
 export interface ExperimentPackageView {
   schemaVersion: number; packageId: string; packageHash: string; originalName: string; importedAt: string;
   status: "inventory" | "importing" | "ready" | "partial";
-  files: PackageFileView[]; groups: ExperimentGroupView[]; observations: MetricObservationView[]; relationCandidates: Array<{ configPath: string; groupId: string; status: string; basis: string; matchedFields: string[]; conflictingFields: string[] }>; warnings: string[];
+  files: PackageFileView[]; groups: ExperimentGroupView[]; observations: MetricObservationView[]; relationCandidates: Array<{ configPath: string; groupId: string; status: string; basis: string; matchedFields: string[]; conflictingFields: string[] }>;
+  reportedVerdicts?: ReportedVerdictView[]; semanticSuggestions?: SemanticSuggestionsView; warnings: string[];
 }
 const base = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/experiment-packages`;
 
@@ -48,6 +63,10 @@ export async function editExperimentFile(projectId: string, packageId: string, i
 }
 export async function confirmExperimentGroups(projectId: string, packageId: string, groupIds: string[]): Promise<ExperimentPackageView> {
   const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/confirm`, { groupIds });
+  return result.package;
+}
+export async function requestExperimentUnderstanding(projectId: string, packageId: string): Promise<ExperimentPackageView> {
+  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/understand`, {});
   return result.package;
 }
 export async function confirmExperimentMetricEvidence(projectId: string, observation: MetricObservationView, claim: string): Promise<{ evidence: { id: string; verificationLevel: string; verificationStatus: string } }> {

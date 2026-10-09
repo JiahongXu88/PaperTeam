@@ -19,6 +19,7 @@ export type SourceAssetKind =
   | "markdown" // .md
   | "latex" // .tex
   | "json"
+  | "jsonl" // .jsonl（NDJSON 行流）
   | "yaml" // .yaml / .yml
   | "code" // 常见源码扩展名
   | "notebook" // .ipynb
@@ -82,6 +83,9 @@ export function assetKindOfFileName(fileName: string): SourceAssetKind {
   if (lower.endsWith(".json")) {
     return "json";
   }
+  if (lower.endsWith(".jsonl") || lower.endsWith(".ndjson")) {
+    return "jsonl";
+  }
   if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {
     return "yaml";
   }
@@ -117,6 +121,7 @@ export function documentKindOfAssetKind(kind: SourceAssetKind): ParsedDocumentKi
       return "pdf";
     case "csv":
     case "xlsx":
+    case "jsonl": // 行式记录流，存储模型与表格同构（每行一条记录）
       return "tabular";
     case "text":
     case "markdown":
@@ -149,6 +154,8 @@ export function defaultMimeOfAssetKind(kind: SourceAssetKind): string {
       return "application/x-tex";
     case "json":
       return "application/json";
+    case "jsonl":
+      return "application/x-ndjson";
     case "yaml":
       return "application/yaml";
     case "code":

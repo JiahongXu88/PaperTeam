@@ -3,7 +3,10 @@
  *
  * 最小必要解析纪律：
  * - 全部按 UTF-8 文本处理（二进制 / 非 UTF-8 显式拒绝，不猜编码）；
- * - TXT：空行分段块，lineStart/lineEnd 物理行 provenance；
+ * - TXT：先尝试空白对齐表判定（M13.3：TrackEval 之类原生评测输出就是
+ *   空白分隔定宽表——整文件所有行同列数 + 数据格以数值为主时按 table
+ *   块解析，保留列结构；判据不满足即回落普通文本，不猜半张表）；
+ * - TXT（非表格）：空行分段块，lineStart/lineEnd 物理行 provenance；
  * - Markdown：ATX 标题（#{1,6}）→ section + section_header 块（零新依赖，
  *   不为 Markdown AST 引入重库）；
  * - LaTeX：\\section / \\subsection 等命令行 → section；不执行、不展开宏、
@@ -65,7 +68,9 @@ export class TextAssetParser implements DocumentParser {
     const blocks =
       this.mode === "code"
         ? codeBlocks(text, fileName, notes)
-        : textBlocks(text, fileName, this.mode);
+        : this.mode === "text"
+          ? whitespaceTableBlocks(text, fileName) ?? textBlocks(text, fileName, this.mode)
+          : textBlocks(text, fileName, this.mode);
     if (blocks.length === 0) {
       throw new DocumentParseFailedError(`${labelOf(this.mode)} 未解析出任何内容块`);
     }
@@ -274,8 +279,7 @@ function splitOversizedParagraph(
   return parts;
 }
 
-/** 源码：行窗口块（≤ maxCodeBlockLines；≥20 行后在空行边界优先切分） */
-function codeBlocks(text: string, fileName: string, notes: string[]): ParsedBlock[] {
+/** 源码：行窗口块（≤ maxCodeBlockLines；≥20 行后在空行边界优先切分） */function codeBlocks(text: string, fileName: string, notes: string[]): ParsedBlock[] {
   const language = languageOfFileName(fileName) ?? "unknown";
   const lines = splitLines(text);
   const blocks: ParsedBlock[] = [];
@@ -325,4 +329,62 @@ function codeBlocks(text: string, fileName: string, notes: string[]): ParsedBloc
   }
   flush();
   return blocks;
+}
+
+/**
+ * 空白对齐表判定（M13.3，仅整文件）：
+ * - 非空行全部按空白切分后列数一致（含表头行），列数 4–256；
+ * - 数据格（表头行以外）≥ 80% 为有限数值（评测输出的天然形态）；
+ * - 行数 ≤ maxTableRows；不满足任一条 → null（回落普通文本，不猜半张表）。
+ * 典型来源：TrackEval per-class summary、基准测试原生 stdout 表。
+ */
+export function whitespaceTable(text: string): { headers: string[]; rows: string[][]; headerLine: number } | null {
+  const lines: TextLine[] = splitLines(text).filter((line) => line.content.trim() !== "");
+  if (lines.length < 2 || lines.length > INGESTION_LIMITS.maxTableRows + 1) {
+    return null;
+  }
+  const headers = lines[0]!.content.trim().split(/\s+/);
+  if (headers.length < 4 || headers.length > 256) {
+    return null;
+  }
+  const rows: string[][] = [];
+  let numeric = 0;
+  let cells = 0;
+  for (const line of lines.slice(1)) {
+    const tokens = line.content.trim().split(/\s+/);
+    if (tokens.length !== headers.length) {
+      return null;
+    }
+    for (const token of tokens) {
+      cells += 1;
+      if (Number.isFinite(Number(token))) {
+        numeric += 1;
+      }
+    }
+    rows.push(tokens);
+  }
+  if (cells === 0 || numeric / cells < 0.8) {
+    return null;
+  }
+  return { headers, rows, headerLine: lines[0]!.number };
+}
+
+function whitespaceTableBlocks(text: string, fileName: string): ParsedBlock[] | null {
+  const table = whitespaceTable(text);
+  if (table === null) {
+    return null;
+  }
+  return [whitespaceTableBlock(table, fileName)];
+}
+
+function whitespaceTableBlock(table: { headers: string[]; rows: string[][]; headerLine: number }, fileName: string): ParsedBlock {
+  return {
+    blockId: "B0001",
+    type: "table",
+    provenance: { fileName, row: table.headerLine },
+    headers: table.headers,
+    rows: table.rows,
+    rowCount: table.rows.length,
+    columnCount: table.headers.length,
+  };
 }
