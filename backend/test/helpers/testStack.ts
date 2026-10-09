@@ -104,6 +104,7 @@ export type ServiceStackOptionsSearch = Parameters<typeof buildServiceStack>[0][
 export type ServiceStackOptionsFullText = Parameters<typeof buildServiceStack>[0]["fullText"];
 export type ServiceStackOptionsIngestion = Parameters<typeof buildServiceStack>[0]["ingestion"];
 export type ServiceStackOptionsVision = NonNullable<Parameters<typeof buildServiceStack>[0]["vision"]>;
+export type ServiceStackOptionsExperiments = NonNullable<Parameters<typeof buildServiceStack>[0]["experimentSemanticModel"]>;
 
 /** 测试默认的离线文档解析 stub：PDF 上传的后台 ingestion 立即失败（不 spawn python/docling） */
 const offlineDocumentParser: DocumentParser = {

@@ -46,6 +46,11 @@ export interface DatasetPayload extends DatasetCandidate {
   inlineDataset: InlineDataset;
 }
 
+/** 数据集单元格字符串上限（与 spec InlineDataset CELL_STRING_MAX_LENGTH 对齐；
+ * 超长文本（JSONL 嵌套字段、长描述）在「数据集视图」层截断——原始解析
+ * 记录仍是 source of truth，锚点不变，只是图表单元格不再让整个 spec 被拒） */
+const DATASET_CELL_MAX_CHARS = 300;
+
 /** 数值化解析：确定性、无发明（千分位逗号与首尾空白剥离；失败返回原字符串） */
 function coerceCell(raw: string): number | string | null {
   const trimmed = raw.trim();
@@ -65,7 +70,14 @@ function coerceCell(raw: string): number | string | null {
       return numeric;
     }
   }
-  return trimmed;
+  // 类目文本：单行化 + 有界截断（保持 spec 可用；不改变原始记录）
+  const singleLine = trimmed.replace(/[\u0000-\u001F\u007F\u2028\u2029]+/g, " ");
+  if (singleLine.length === 0) {
+    return null;
+  }
+  return singleLine.length > DATASET_CELL_MAX_CHARS
+    ? `${singleLine.slice(0, DATASET_CELL_MAX_CHARS - 1)}…`
+    : singleLine;
 }
 
 function tableBlockToDataset(block: ParsedBlock): DatasetPayload | null {
