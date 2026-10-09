@@ -140,9 +140,11 @@ describe("M13.3 deterministic experiment understanding", () => {
     let current = await stack.stack.experimentPackages.get(projectId, item.packageId);
     expect(current.observations.some((observation) => observation.path === "events/stream.jsonl")).toBe(false);
 
-    // 作者把 A0 表格标为 baseline 后：表格数值进入观测（行/列锚 + 方向）
+    // 作者把 A0 表格标为 baseline 后：表格数值进入观测（行/列锚 + 方向）；
+    // rebuild 重跑不累积重复 verdict（真实材料实证：编辑后曾出现 5 份重复）
     await stack.request("PATCH", `/api/projects/${projectId}/experiment-packages/${item.packageId}`, { path: "results/A0/summary.txt", role: "baseline_result", groupId: "baseline-a0" });
     current = await stack.stack.experimentPackages.get(projectId, item.packageId);
+    expect(current.reportedVerdicts).toHaveLength(1);
     const tableObservation = current.observations.find((observation) => observation.path === "results/A0/summary.txt" && observation.column === "HOTA")!;
     expect(tableObservation.value).toBe(51.2);
     expect(tableObservation.row).toBe(2);

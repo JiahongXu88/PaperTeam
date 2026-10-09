@@ -242,6 +242,9 @@ function collectReportedVerdicts(item: ExperimentPackage, file: PackageFile, doc
       const value = cell.value.trim();
       if (value === "" || value.length > 200 || value === "null" || value === "undefined") continue;
       if (SECRET_PATTERN.test(value) || SECRET_VALUE_PATTERN.test(value)) continue;
+      // rebuild 会在每次导入/编辑后重跑：同锚点同值的判定只登记一次，
+      // 不随重建次数累积（真实材料实证：编辑两次后出现 5 份重复）
+      if (verdicts.some((verdict) => verdict.path === file.path && verdict.field === cell.header && verdict.value === value)) continue;
       verdicts.push({ path: file.path, field: cell.header, value });
     }
   }
