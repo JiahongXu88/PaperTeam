@@ -85,10 +85,10 @@ const M133_ZIP = buildStoreZip([
   { path: "results/A1/summary.txt", data: ARM_TABLE("52.7", "11") },
   { path: "results/A2/summary.txt", data: ARM_TABLE("51.9", "12") },
   { path: "notes/about.txt", data: "This is prose, not a table.\nIt has sentences of varying word counts that do not align.\n" },
-  { path: "events/stream.jsonl", data: '{"clip":"c1","frame":1,"score":0.5,"door":"T1"}\n{"clip":"c1","frame":2,"score":0.7,"door":"T2"}\n{"clip":"c2","frame":1,"score":0.9,"door":"T1"}\n' },
-  { path: "verdict.json", data: JSON.stringify({ verdict: "SYNTHETIC TEST NO-GO", gate: false }) },
-  { path: "main/metrics.json", data: JSON.stringify({ HOTA: 0.6261, IDSW: 12 }) },
-  { path: "main/summary_metrics.json", data: JSON.stringify({ HOTA: 62.61 }) },
+  { path: "events/stream.jsonl", data: '{"clip":"c1","frame":1,"score":0.5,"door":"T1","decision":"commit"}\n{"clip":"c1","frame":2,"score":0.7,"door":"T2"}\n{"clip":"c2","frame":1,"score":0.9,"door":"T1"}\n' },
+  { path: "verdict.json", data: JSON.stringify({ verdict: "SYNTHETIC TEST NO-GO", decisions: [{ decision: "commit" }, { decision: "abort" }], gate: false }) },
+  { path: "main/metrics.json", data: JSON.stringify({ HOTA: 0.6261, IDSW: 79 }) },
+  { path: "main/summary_metrics.json", data: JSON.stringify({ HOTA: 62.61, IDSW: 1 }) },
 ]);
 
 async function upload(stack: TestStack, projectId: string) {
@@ -122,15 +122,17 @@ describe("M13.3 deterministic experiment understanding", () => {
     expect(stream.role).toBe("unknown");
     expect(stream.roleBasis).toContain("JSONL 行流");
 
-    // 源材料判定原样登记
-    expect(item.reportedVerdicts).toContainEqual({ path: "verdict.json", field: "$.verdict", value: "SYNTHETIC TEST NO-GO" });
+    // 源材料判定原样登记：顶层 verdict；数组内逐条 decision 与 JSONL 行流
+    // 字段被排除（Phase 9.0 真实材料实证的噪声路径）
+    expect(item.reportedVerdicts).toEqual([{ path: "verdict.json", field: "$.verdict", value: "SYNTHETIC TEST NO-GO" }]);
 
-    // 指标方向词表 + 标度混用告警
+    // 指标方向词表 + 标度混用告警（比率型指标才告警；计数型 IDSW 不告警）
     const hota = item.observations.find((observation) => observation.metric.endsWith("HOTA") && observation.value === 0.6261)!;
     expect(hota.direction).toBe("higher");
-    const idsw = item.observations.find((observation) => observation.metric.endsWith("IDSW") && observation.value === 12)!;
+    const idsw = item.observations.find((observation) => observation.metric.endsWith("IDSW") && observation.value === 79)!;
     expect(idsw.direction).toBe("lower");
     expect(item.warnings).toContainEqual(expect.stringContaining("指标 HOTA 在实验组 main 内同时存在小数（0.6261）与百分数量级（62.61）"));
+    expect(item.warnings.some((warning) => warning.includes("IDSW"))).toBe(false);
 
     // JSONL 即便被作者标成结果角色也不产生指标观测（行流 ≠ 指标表）
     await stack.request("PATCH", `/api/projects/${projectId}/experiment-packages/${item.packageId}`, { path: "events/stream.jsonl", role: "main_result", groupId: "main" });
@@ -173,7 +175,7 @@ describe("M13.3 deterministic experiment understanding", () => {
           findings: [
             { claim: "SYNTHETIC TEST NO-GO 判定记录在 verdict.json", confidence: "high", anchors: ["verdict.json"] },
             { claim: "HOTA 从 0.6261 变为 0.9999", confidence: "high", anchors: ["main/metrics.json"] },
-            { claim: "IDSW 为 12", confidence: "medium", anchors: ["main/metrics.json"] },
+            { claim: "IDSW 为 79", confidence: "medium", anchors: ["main/metrics.json"] },
           ],
         }) }],
         usage: { input: 2100, output: 380 },
@@ -193,7 +195,7 @@ describe("M13.3 deterministic experiment understanding", () => {
     expect(suggestions.roleSuggestions).toHaveLength(1);
     expect(suggestions.roleSuggestions[0]).toMatchObject({ path: "results/A0/summary.txt", suggestedRole: "baseline_result", status: "needs_author_confirmation" });
     // 无数值 / 数值可核验的 finding 保留；捏造 0.9999 的丢弃
-    expect(suggestions.findings.map((finding) => finding.claim)).toContain("IDSW 为 12");
+    expect(suggestions.findings.map((finding) => finding.claim)).toContain("IDSW 为 79");
     expect(suggestions.findings.some((finding) => finding.claim.includes("0.9999"))).toBe(false);
     expect(suggestions.notes.join(" ")).toContain("数值未在锚定文件观测中找到");
     // 上下文有界：观测摘要每文件 ≤ 上限

@@ -220,41 +220,46 @@ function refineSiblingArmGroups(files: Array<Pick<PackageFile, "path" | "groupId
 }
 
 /**
- * 源材料判定提取（M13.3）：JSON/YAML 投影叶子与表格单元中字段名为
- * verdict/decision/conclusion 且值为非空字符串（≤200 字符）→ 原样登记。
- * 这是 Source-Reported Verdict——只引用原始表述，系统不重算、不解读，
- * 也不把它变成任何自动化结论。
+ * 源材料判定提取（M13.3）：JSON/YAML 顶层叶子中字段名为 verdict/decision/
+ * conclusion 且值为非空字符串（≤200 字符）→ 原样登记。
+ * 排除两类噪声（Phase 9.0 真实材料实证）：数组内的逐条 decision（如
+ * $.decisions[N].decision = "commit"——那是逐记录动作，不是实验判定）与
+ * JSONL 行流字段（同一理由）。这是 Source-Reported Verdict——只引用原始
+ * 表述，系统不重算、不解读，也不把它变成任何自动化结论。
  */
 function collectReportedVerdicts(item: ExperimentPackage, file: PackageFile, document: ParsedDocument): void {
+  if (document.parser.id === "jsonl") return;
   const verdicts = item.reportedVerdicts ?? [];
   for (const block of document.blocks) {
     if (verdicts.length >= MAX_REPORTED_VERDICTS) break;
-    if (block.type === "structured_record") {
-      for (const cell of block.cells) {
-        if (verdicts.length >= MAX_REPORTED_VERDICTS) break;
-        const leaf = cell.header.startsWith("$.") ? (cell.header.split(".").pop() ?? "") : cell.header;
-        if (!VERDICT_FIELD.test(leaf)) continue;
-        const value = cell.value.trim();
-        if (value === "" || value.length > 200 || value === "null" || value === "undefined") continue;
-        if (SECRET_PATTERN.test(value) || SECRET_VALUE_PATTERN.test(value)) continue;
-        verdicts.push({ path: file.path, field: cell.header, value });
-      }
+    if (block.type !== "structured_record") continue;
+    for (const cell of block.cells) {
+      if (verdicts.length >= MAX_REPORTED_VERDICTS) break;
+      if (cell.header.includes("[") || block.provenance.jsonPath?.includes("[")) continue;
+      const leaf = cell.header.startsWith("$.") ? (cell.header.split(".").pop() ?? "") : cell.header;
+      if (!VERDICT_FIELD.test(leaf)) continue;
+      const value = cell.value.trim();
+      if (value === "" || value.length > 200 || value === "null" || value === "undefined") continue;
+      if (SECRET_PATTERN.test(value) || SECRET_VALUE_PATTERN.test(value)) continue;
+      verdicts.push({ path: file.path, field: cell.header, value });
     }
   }
   if (verdicts.length > 0) item.reportedVerdicts = verdicts;
 }
 
 /**
- * 同组同名指标的小数/百分数标度混用告警（M13.3）：同一实验组内同一指标
- * 叶名同时存在 ≤1 的小数与 ≥30 的数值（比值落在 30–300）→ 疑似 0.626 与
- * 62.613 两套标度并存。两值都来自真实文件，不判错——只提醒作者在确认与
- * 出图前核对口径（图表把两种标度画进同一轴是真实的科研事故路径）。
+ * 同组同名指标的小数/百分数标度混用告警（M13.3）：仅适用于比率型指标
+ * （标准 MOT 词表中 direction=higher 的 HOTA/IDF1 一类——0.626 与 62.613
+ * 两种标度并存是真实事故路径）。计数型指标（IDSW/Frag 的逐片段 1/2/3
+ * 对池化 79/284）与未知指标不适用——Phase 9.0 真实材料实证的假阳性
+ * 路径。两值都来自真实文件，不判错——只提醒作者在确认与出图前核对口径。
  */
 function pushScaleConflictWarnings(item: ExperimentPackage): void {
   const byKey = new Map<string, number[]>();
   for (const observation of item.observations) {
     if (observation.value <= 0) continue;
     const leaf = observation.metric.split(/[./]/).pop() ?? observation.metric;
+    if (METRIC_DIRECTION.get(leaf.toUpperCase()) !== "higher") continue;
     const key = `${observation.groupId}\0${leaf}`;
     const values = byKey.get(key) ?? [];
     values.push(observation.value);
