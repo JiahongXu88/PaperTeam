@@ -23,7 +23,9 @@ export default defineConfig({
   outputDir: "test-results",
   use: {
     baseURL: process.env.PAPERTEAM_E2E_BASE_URL ?? "http://localhost:5173",
-    channel: "chrome",
+    // 缺省用本机 Chrome；PAPERTEAM_E2E_CHANNEL=bundled 改用 Playwright 内置
+    // Chromium（无 Chrome 的环境，如 ECS 服务器本地验收）
+    ...(process.env.PAPERTEAM_E2E_CHANNEL === "bundled" ? {} : { channel: "chrome" as const }),
     headless: process.env.PAPERTEAM_E2E_HEADLESS !== "0",
     viewport: { width: 1440, height: 900 },
     locale: "zh-CN",

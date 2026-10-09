@@ -28,10 +28,20 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     }
   };
 
+  /** 远程隧道（跨境 SSH -L）偶发 keep-alive 半开：首访挂起时重载一次重试 */
+  const gotoTab = async (page: import("@playwright/test").Page, url: string, probe: () => Promise<unknown>) => {
+    await page.goto(url);
+    try {
+      await probe();
+    } catch {
+      await page.reload();
+      await probe();
+    }
+  };
+
   test("1-3 上传真实 ZIP → 解析完成 → 文件清单与实验分组", async ({ page }) => {
     test.setTimeout(300_000);
     await page.goto("/projects/new");
-    await page.getByRole("radio", { name: /从研究想法开始/ }).check();
     await page.getByLabel(/论文标题/).fill(`M13-3 E2E Real ZIP ${Date.now().toString(36)}`);
     await page.getByLabel("研究想法", { exact: true }).fill("E2E isolation project for real experiment package acceptance. Safe to delete.");
     await page.getByRole("button", { name: "创建项目" }).click();
@@ -46,9 +56,9 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     // 17 个文件全部登记、无 unsupported（.jsonl 与空白表在新解析器下可读）
     await expect(page.getByRole("heading", { name: /real-experiment\.zip/ })).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText(/已解析 1[56]\/17 文件/)).toBeVisible({ timeout: 120_000 });
-    const rows = page.locator("table tbody tr");
-    await expect(rows).toHaveCount(17, { timeout: 60_000 });
-    await expect(page.locator("td", { hasText: "unsupported" })).toHaveCount(0);
+    const fileTable = page.locator("table").filter({ has: page.locator("td", { hasText: "PACKAGE_README.md" }) });
+    await expect(fileTable.locator("tbody tr")).toHaveCount(17, { timeout: 60_000 });
+    await expect(fileTable.locator("td", { hasText: "unsupported" })).toHaveCount(0);
 
     // 兄弟目录 → 候选平行实验臂
     await expect(page.getByText("arm-a0", { exact: true }).first()).toBeVisible();
@@ -56,17 +66,22 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     await shots(page, "01-experiments-files");
   });
 
-  test("4-5 源材料判定（NO-GO 原样）与标度混用告警", async ({ page }) => {
-    await page.goto(`/projects/${projectId}?tab=experiments`);
-    await expect(page.getByRole("heading", { name: "源材料判定（Source-Reported Verdict）" })).toBeVisible();
-    await expect(page.getByText(/NO-GO/).first()).toBeVisible();
-    await expect(page.getByText(/PaperTeam 不重算、不解读/)).toBeVisible();
-    await expect(page.getByText(/疑似标度混用/).first()).toBeVisible();
+  test("4-5 源材料判定（NO-GO 原样）与无假标度告警", async ({ page }) => {
+    test.setTimeout(240_000);
+    await gotoTab(page, `/projects/${projectId}?tab=experiments`, () =>
+      expect(page.getByRole("heading", { name: "源材料判定（Source-Reported Verdict）" })).toBeVisible({ timeout: 45_000 }));
+    await expect(page.getByText(/NO-GO/).first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(/PaperTeam 不重算、不解读/)).toBeVisible({ timeout: 30_000 });
+    // 干净状态无假告警：计数型指标（IDSW/Frag 逐片段 vs 池化）不触发标度混用
+    // （正例由后端合成测试覆盖；真实材料当前观测中不存在同比率型混标）
+    await expect(page.getByText(/疑似标度混用/)).toHaveCount(0);
     await shots(page, "02-verdict-and-warning");
   });
 
   test("6-8 作者角色修改 → 分组确认 → workflow-context 有界", async ({ page, request }) => {
-    await page.goto(`/projects/${projectId}?tab=experiments`);
+    test.setTimeout(300_000);
+    await gotoTab(page, `/projects/${projectId}?tab=experiments`, () =>
+      expect(page.getByRole("heading", { name: /real-experiment\.zip/ })).toBeVisible({ timeout: 45_000 }));
 
     // 机会行流（JSONL）由作者登记为结果数据（图表数据集入口；指标观测被行流守卫挡住）
     const streamRow = page.locator("tr", { hasText: "cps_opportunities.jsonl" });
@@ -85,7 +100,7 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     await a0Group.blur();
 
     for (const groupId of ["main", "opp-universe", "baseline-a0"]) {
-      const groupItem = page.locator("section li").filter({ has: page.locator("strong", { hasText: groupId }) });
+      const groupItem = page.locator("ul").filter({ has: page.locator("strong", { hasText: groupId }) }).first();
       await groupItem.getByRole("button", { name: "确认此组" }).click();
       await expect(page.getByText(/作者确认已保存/)).toBeVisible({ timeout: 30_000 });
     }
@@ -103,13 +118,14 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
   });
 
   test("9-11 真实数据集 → pgfplots 散点图（真实 XeLaTeX）→ PDF 可读", async ({ page, request }) => {
-    await page.goto(`/projects/${projectId}?tab=figures`);
+    test.setTimeout(420_000);
+    await gotoTab(page, `/projects/${projectId}?tab=figures`, () =>
+      expect(page.getByTestId("plot-dataset-select")).toBeVisible({ timeout: 45_000 }));
     const datasetSelect = page.getByTestId("plot-dataset-select");
-    await expect(datasetSelect).toBeVisible({ timeout: 30_000 });
     // 机会行流数据集（2074 行）
     const options = datasetSelect.locator("option");
     const oppOption = options.filter({ hasText: /cps_opportunities/ }).first();
-    await expect(oppOption).toBeVisible({ timeout: 30_000 });
+    await expect(oppOption).toBeVisible({ timeout: 90_000 });
     await datasetSelect.selectOption({ label: (await oppOption.textContent()) ?? "" });
 
     await page.getByTestId("plot-type-select").selectOption("scatter");
