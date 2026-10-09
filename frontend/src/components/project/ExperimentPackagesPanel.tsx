@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
@@ -742,6 +742,9 @@ function FilesSection({ item, editPending, onEdit }: { item: NonNullable<ReturnT
   const [roleFilter, setRoleFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [page, setPage] = useState(1);
+  /** 用户在本会话中刚选过的角色（路径 → 角色）：组名 blur 提交时用最新
+   * 选择，避免刷新竞态把刚改的角色用过期 entry.role 回写掉 */
+  const roleDrafts = useRef(new Map<string, ExperimentRole>());
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return item.files.filter(
@@ -826,7 +829,7 @@ function FilesSection({ item, editPending, onEdit }: { item: NonNullable<ReturnT
                     <details className="details-block">
                       <summary>修改分类</summary>
                       <div className="form-row">
-                        <select aria-label={`${entry.path} 角色`} defaultValue={entry.role} disabled={editPending} onChange={(event) => onEdit({ path: entry.path, role: event.target.value as ExperimentRole, groupId: entry.groupId })}>
+                        <select aria-label={`${entry.path} 角色`} defaultValue={entry.role} disabled={editPending} onChange={(event) => { roleDrafts.current.set(entry.path, event.target.value as ExperimentRole); onEdit({ path: entry.path, role: event.target.value as ExperimentRole, groupId: entry.groupId }); }}>
                           {roles.map((role) => (
                             <option key={role} value={role}>
                               {ROLE_LABEL[role]}
@@ -839,7 +842,7 @@ function FilesSection({ item, editPending, onEdit }: { item: NonNullable<ReturnT
                           key={`${entry.path}-${entry.groupId}`}
                           onBlur={(event) => {
                             const groupId = event.target.value.trim();
-                            if (groupId !== "" && groupId !== entry.groupId) onEdit({ path: entry.path, role: entry.role, groupId });
+                            if (groupId !== "" && groupId !== entry.groupId) onEdit({ path: entry.path, role: roleDrafts.current.get(entry.path) ?? entry.role, groupId });
                           }}
                         />
                       </div>

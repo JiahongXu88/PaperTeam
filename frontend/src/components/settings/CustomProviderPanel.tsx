@@ -561,7 +561,8 @@ function CustomProviderForm({
   }, [filteredCatalog]);
 
   // 目录收起（M13.5）：点击目录区域外或按 Esc 关闭；已选模型与搜索词不丢失
-  //（选择存在 form.models，搜索词存在 state，重新展开即恢复）
+  //（选择存在 form.models，搜索词存在 state，重新展开即恢复）。Esc 用
+  // document 级监听（焦点在页面内即可触发，不依赖焦点恰好在目录容器里）
   useEffect(() => {
     if (catalog === null || !catalogOpen) {
       return;
@@ -571,8 +572,18 @@ function CustomProviderForm({
         setCatalogOpen(false);
       }
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setCatalogOpen(false);
+      }
+    };
     document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
   }, [catalog, catalogOpen]);
 
   const discoveryResult = discover.data;
@@ -721,12 +732,6 @@ function CustomProviderForm({
                   role="group"
                   aria-label="可用模型列表"
                   data-testid="model-catalog"
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.preventDefault();
-                      setCatalogOpen(false);
-                    }
-                  }}
                 >
                   {groupedCatalog.length === 0 ? (
                     <p className="model-catalog-empty muted">

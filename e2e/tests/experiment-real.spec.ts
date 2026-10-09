@@ -53,14 +53,20 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     await page.getByLabel("选择实验 ZIP").setInputFiles({ name: "real-experiment.zip", mimeType: "application/zip", buffer: zip });
     await page.getByRole("button", { name: "上传实验包" }).click();
 
-    // 17 个文件全部登记、无 unsupported（.jsonl 与空白表在新解析器下可读）
+    // 17 个文件全部登记（M13.5：摘要卡展示文件总数与解析分布）
     await expect(page.getByRole("heading", { name: /real-experiment\.zip/ })).toBeVisible({ timeout: 120_000 });
-    await expect(page.getByText(/已解析 1[56]\/17 文件/)).toBeVisible({ timeout: 120_000 });
+    const fileCard = page.locator(".experiment-summary-card").filter({ hasText: "文件" });
+    await expect(fileCard.locator(".experiment-summary-value")).toHaveText("17", { timeout: 120_000 });
+    await expect(fileCard.locator(".experiment-summary-hint")).toContainText(/已解析 1[56]/, { timeout: 120_000 });
+
+    // 文件清单默认折叠：展开后再断言行数（无 unsupported）
+    const filesDetails = page.locator("details").filter({ hasText: /^文件清单/ });
+    await filesDetails.first().locator("> summary").click();
     const fileTable = page.locator("table").filter({ has: page.locator("td", { hasText: "PACKAGE_README.md" }) });
     await expect(fileTable.locator("tbody tr")).toHaveCount(17, { timeout: 60_000 });
-    await expect(fileTable.locator("td", { hasText: "unsupported" })).toHaveCount(0);
+    await expect(fileTable.locator("td", { hasText: "不支持的类型" })).toHaveCount(0);
 
-    // 兄弟目录 → 候选平行实验臂
+    // 兄弟目录 → 候选平行实验臂（实验分组区按组渲染，组 id 可见）
     await expect(page.getByText("arm-a0", { exact: true }).first()).toBeVisible();
     await expect(page.getByText("arm-a3", { exact: true }).first()).toBeVisible();
     await shots(page, "01-experiments-files");
@@ -69,7 +75,10 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
   test("4-5 源材料判定（NO-GO 原样）与无假标度告警", async ({ page }) => {
     test.setTimeout(240_000);
     await gotoTab(page, `/projects/${projectId}?tab=experiments`, () =>
-      expect(page.getByRole("heading", { name: "源材料判定（Source-Reported Verdict）" })).toBeVisible({ timeout: 45_000 }));
+      expect(page.getByRole("heading", { name: /real-experiment\.zip/ })).toBeVisible({ timeout: 45_000 }));
+    // M13.5：技术细节收进折叠区——展开后断言源材料判定原样呈现
+    const techDetails = page.locator("details").filter({ hasText: "源材料判定与技术详情" });
+    await techDetails.locator("> summary").click();
     await expect(page.getByText(/NO-GO/).first()).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(/PaperTeam 不重算、不解读/)).toBeVisible({ timeout: 30_000 });
     // 干净状态无假告警：计数型指标（IDSW/Frag 逐片段 vs 池化）不触发标度混用
@@ -83,24 +92,31 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     await gotoTab(page, `/projects/${projectId}?tab=experiments`, () =>
       expect(page.getByRole("heading", { name: /real-experiment\.zip/ })).toBeVisible({ timeout: 45_000 }));
 
+    // M13.5：文件清单折叠 + 每行的「修改分类」抽屉
+    const filesDetails = page.locator("details").filter({ hasText: /^文件清单/ });
+    await filesDetails.first().locator("> summary").click();
+
     // 机会行流（JSONL）由作者登记为结果数据（图表数据集入口；指标观测被行流守卫挡住）
     const streamRow = page.locator("tr", { hasText: "cps_opportunities.jsonl" });
-    await streamRow.locator("select").first().selectOption("main_result");
-    await expect(streamRow.locator("select").first()).toHaveValue("main_result");
-    const groupInput = streamRow.locator("input");
+    await streamRow.locator("details").filter({ hasText: "修改分类" }).locator("> summary").click();
+    const streamEdit = streamRow.locator("details").filter({ hasText: "修改分类" });
+    await streamEdit.locator("select").first().selectOption("main_result");
+    const groupInput = streamEdit.locator("input");
     await groupInput.fill("opp-universe");
     await groupInput.blur();
-    await expect(streamRow.locator("input")).toHaveValue("opp-universe");
 
     // A0 原生 TrackEval 表 → baseline（表格观测经行列锚进入）
     const a0Row = page.locator("tr", { hasText: "results/A0/pedestrian_summary.txt" });
-    await a0Row.locator("select").first().selectOption("baseline_result");
-    const a0Group = a0Row.locator("input");
+    await a0Row.locator("details").filter({ hasText: "修改分类" }).locator("> summary").click();
+    const a0Edit = a0Row.locator("details").filter({ hasText: "修改分类" });
+    await a0Edit.locator("select").first().selectOption("baseline_result");
+    const a0Group = a0Edit.locator("input");
     await a0Group.fill("baseline-a0");
     await a0Group.blur();
 
+    // M13.5：确认按钮在「核对实验范围与分组」的组卡片上（单范围组）
     for (const groupId of ["main", "opp-universe", "baseline-a0"]) {
-      const groupItem = page.locator("li").filter({ has: page.locator("strong", { hasText: new RegExp(`^${groupId}$`) }) });
+      const groupItem = page.locator("details.experiment-group").filter({ has: page.locator("code", { hasText: new RegExp(`^${groupId}$`) }) });
       await groupItem.getByRole("button", { name: "确认此组" }).click();
       await expect(page.getByText(/作者确认已保存/)).toBeVisible({ timeout: 30_000 });
     }
