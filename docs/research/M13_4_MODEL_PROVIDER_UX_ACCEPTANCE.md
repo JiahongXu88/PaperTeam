@@ -165,7 +165,7 @@ Pi 的 `prepareRequest` 对未注册 provider 直接抛 `Unknown provider`，无
 ## 9. Git 与 CI
 
 - 直接在 main 实施（按任务要求）；commit 内容：backend（发现模块 / id 生成 / 服务方法 / 路由 / 测试）、frontend（面板重构 / 类型 / hooks / CSS / 测试）、e2e（mock 网关规格）、文档（API_CONTRACT / 本报告）。
-- CI：GitHub CI + Linux Integration 提交后触发，结果见 push 后的 commit status（本轮本机已全量验证的口径如 §8）。
+- CI：commit `cbea342` 的 **GitHub CI ✅ success** 与 **Linux Integration ✅ success**（2026-10-09 实测）。
 - 完成态核验：HEAD == origin/main、working tree clean。
 
 ## 10. 未实现能力（如实声明）
