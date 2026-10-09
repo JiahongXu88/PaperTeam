@@ -652,27 +652,218 @@
   padding-top: var(--s-5);
 }
 
-/* 模型目录编辑：单元格里直接放输入框，列宽跟随内容 */
-.model-rows td {
+/* M13.4：单列为主的向导式表单——输入框限宽、发现条 / 目录 / 已选模型分区 */
+
+.custom-provider-form .field input[type="text"],
+.custom-provider-form .field input[type="url"],
+.custom-provider-form .field input[type="password"],
+.custom-provider-form .field input[type="search"],
+.custom-provider-form .field select {
+  max-width: 32rem;
+  width: 100%;
+}
+
+.custom-provider-form .field textarea,
+.custom-provider-form .manual-add-row input {
+  max-width: 100%;
+}
+
+.discovery-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--s-3);
+}
+
+.discovery-status {
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+}
+
+.discovery-status.ok {
+  color: var(--success);
+}
+
+.discovery-status.error {
+  color: var(--danger);
+}
+
+.model-catalog {
+  max-height: 18rem;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-muted);
   padding: var(--s-2);
+  margin-bottom: var(--s-3);
 }
 
-.model-rows input[type="text"] {
-  min-width: 96px;
+.model-catalog-group + .model-catalog-group {
+  margin-top: var(--s-2);
 }
 
-.model-rows td:nth-child(3) input,
-.model-rows td:nth-child(4) input {
-  width: 110px;
+.model-catalog-group-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: var(--s-1) var(--s-2);
+}
+
+.model-catalog-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.model-catalog-row:hover {
+  background: var(--bg-hover);
+}
+
+.model-catalog-row .mono {
+  font-size: var(--fs-secondary);
+}
+
+.model-catalog-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  accent-color: var(--accent-primary);
+}
+
+.model-catalog-meta {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.model-catalog-empty {
+  margin: 0;
+  padding: var(--s-3);
+}
+
+.manual-add-row {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  margin-bottom: var(--s-3);
+}
+
+.manual-add-row input {
+  flex: 1;
   min-width: 0;
   font-family: var(--font-mono);
 }
 
-.model-rows input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  margin: 10px 0 0;
-  accent-color: var(--accent-primary);
+.selected-models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.selected-models-head {
+  font-size: var(--fs-secondary);
+}
+
+.selected-model {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  padding: 0 var(--s-3);
+}
+
+.selected-model summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--fs-secondary);
+  flex-wrap: wrap;
+}
+
+.selected-model summary::-webkit-details-marker {
+  display: none;
+}
+
+.selected-model summary::before {
+  content: "▸";
+  color: var(--text-muted);
+  transition: transform var(--t-fast) ease;
+}
+
+.selected-model[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.selected-model-body {
+  padding: var(--s-2) 0 var(--s-3);
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.badge-unverified {
+  display: inline-block;
+  padding: 0 var(--s-2);
+  border-radius: var(--r-pill);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--warning);
+  background: var(--warning-soft, color-mix(in srgb, var(--warning) 12%, transparent));
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  white-space: nowrap;
+}
+
+.test-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.test-row .field {
+  flex: 1;
+  min-width: 14rem;
+  max-width: 24rem;
+}
+
+.advanced-block {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--bg-surface-muted);
+  margin-top: var(--s-2);
+}
+
+.advanced-block > summary {
+  cursor: pointer;
+  padding: var(--s-3) var(--s-4);
+  font-size: var(--fs-secondary);
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.advanced-body {
+  padding: var(--s-3) var(--s-4) var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  border-top: 1px dashed var(--border-subtle);
+}
+
+@media (max-width: 720px) {
+  .custom-provider-form .field input[type="text"],
+  .custom-provider-form .field input[type="url"],
+  .custom-provider-form .field input[type="password"],
+  .custom-provider-form .field input[type="search"],
+  .custom-provider-form .field select {
+    max-width: 100%;
+  }
+
+  .test-row .field {
+    max-width: 100%;
+  }
 }
 
 .settings-actions {

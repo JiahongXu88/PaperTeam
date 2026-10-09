@@ -34,6 +34,11 @@ export interface CustomProviderModel {
   contextWindow: number;
   maxTokens: number;
   input: CustomModelInput[];
+  /**
+   * contextWindow / maxTokens 是否经过确认（上游目录返回或用户显式编辑）。
+   * 缺省 / false = 保守默认值，未经上游验证（UI 需明确标记，不得假装已知）。
+   */
+  metadataVerified?: boolean;
 }
 
 export interface CustomProviderConfig {
@@ -47,10 +52,16 @@ export interface CustomProviderConfig {
   /** 额外请求头（不允许认证头；Key 走 credential storage） */
   headers: Record<string, string>;
   models: CustomProviderModel[];
+  /**
+   * 模型发现路径覆盖（高级设置；如 "/openai/v1/models"）。
+   * 缺省 = 按 baseUrl / 协议自动推导（避免 /v1/v1/models 之类的重复拼接）。
+   * 只影响「获取可用模型」目录请求，不影响推理路径。
+   */
+  modelsPath?: string;
   updatedAt: string;
 }
 
-/** 校验通过、尚未打时间戳的输入 */
+/** 校验通过、尚未打时间戳的输入（id 为空串 = 由服务端自动生成） */
 export type CustomProviderInput = Omit<CustomProviderConfig, "updatedAt">;
 
 /** Pi 未从包入口导出 ProviderConfigInput：从 registerProvider 签名推导，避免 deep import */
@@ -60,8 +71,65 @@ const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const MAX_MODELS = 200;
 const MAX_HEADERS = 20;
 const MAX_TEXT = 200;
+const MAX_MODELS_PATH = 200;
 /** 认证头只能经 API Key 路径进入（落 auth.json、不回显、可清除） */
 const FORBIDDEN_HEADERS = new Set(["authorization", "x-api-key", "api-key", "x-goog-api-key"]);
+
+/**
+ * 从任意名称提取合法 id 片段：小写化、非 [a-z0-9] 连续段折叠为单个连字符、
+ * 去首尾连字符。中文名称通常完全被折叠掉（返回空串，由调用方走域名 / 兜底）。
+ */
+export function slugifyProviderSeed(seed: string): string {
+  return seed
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+}
+
+/**
+ * 自动生成合法、稳定、唯一的 provider id（M13.4：用户不再手填）。
+ * 优先级：名称 slug > Base URL 主机名 slug > "custom-provider" 兜底；
+ * 冲突时追加 -2 / -3 … 序号（绝不覆盖已有提供商）。
+ *
+ * `taken` 应同时覆盖已存储的自定义 id 与 Runtime 已注册（内置 / models.json）id。
+ */
+export function generateProviderId(options: {
+  name: string;
+  baseUrl: string;
+  taken: (id: string) => boolean;
+}): string {
+  let seed = slugifyProviderSeed(options.name);
+  if (seed === "") {
+    try {
+      seed = slugifyProviderSeed(new URL(options.baseUrl).hostname);
+    } catch {
+      seed = "";
+    }
+  }
+  if (seed === "") {
+    seed = "custom-provider";
+  }
+  if (!PROVIDER_ID_PATTERN.test(seed)) {
+    seed = `p${seed}`.slice(0, 40);
+  }
+  if (!options.taken(seed)) {
+    return seed;
+  }
+  for (let suffix = 2; suffix <= 99; suffix += 1) {
+    const candidate = `${seed.slice(0, 40 - String(suffix).length)}-${suffix}`;
+    if (!options.taken(candidate)) {
+      return candidate;
+    }
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    `无法为该提供商生成唯一 id（"${seed}" 已有过多同名条目），请在名称中补充可识别的英文片段`,
+  );
+}
 
 interface StoredFile {
   version: 1;
@@ -120,8 +188,13 @@ export function validateCustomProviderInput(raw: unknown): CustomProviderInput {
   }
   const record = raw as Record<string, unknown>;
 
-  const id = readText(record, "id");
-  if (!PROVIDER_ID_PATTERN.test(id)) {
+  // id 允许缺省 / 空串（新建时由服务端自动生成；编辑走 PUT 路径必带 id）
+  const idRaw = record["id"];
+  if (idRaw !== undefined && typeof idRaw !== "string") {
+    throw new BusinessError("INVALID_REQUEST", "id 必须是字符串");
+  }
+  const id = idRaw !== undefined ? idRaw.trim() : "";
+  if (id !== "" && !PROVIDER_ID_PATTERN.test(id)) {
     throw new BusinessError("INVALID_REQUEST", "id 只能包含小写字母、数字和连字符，且以字母或数字开头（最长 40 字符）");
   }
   const name = readText(record, "name");
@@ -151,6 +224,7 @@ export function validateCustomProviderInput(raw: unknown): CustomProviderInput {
 
   const headers = readHeaders(record["headers"]);
   const models = readModels(record["models"]);
+  const modelsPath = readModelsPath(record["modelsPath"]);
 
   return {
     id,
@@ -160,7 +234,36 @@ export function validateCustomProviderInput(raw: unknown): CustomProviderInput {
     authHeader: authHeaderRaw ?? false,
     headers,
     models,
+    ...(modelsPath !== undefined ? { modelsPath } : {}),
   };
+}
+
+/** 模型发现路径覆盖：必须以 / 开头的单一路径（无查询 / 锚点 / 空白），可整体省略 */
+function readModelsPath(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null || raw === "") {
+    return undefined;
+  }
+  if (typeof raw !== "string") {
+    throw new BusinessError("INVALID_REQUEST", "modelsPath 必须是字符串");
+  }
+  const trimmed = raw.trim();
+  if (trimmed === "") {
+    return undefined;
+  }
+  if (
+    !trimmed.startsWith("/") ||
+    trimmed.length > MAX_MODELS_PATH ||
+    /\s/.test(trimmed) ||
+    trimmed.includes("?") ||
+    trimmed.includes("#") ||
+    trimmed.includes("//")
+  ) {
+    throw new BusinessError(
+      "INVALID_REQUEST",
+      'modelsPath 必须是形如 "/v1/models" 的绝对路径（不含查询参数，且不能与 baseUrl 拼出 "//"）',
+    );
+  }
+  return trimmed;
 }
 
 /** 转成 Pi `registerProvider` 需要的形状（cost 全零：网关计费不在 PaperTeam 内核算） */
@@ -250,6 +353,10 @@ function readModels(raw: unknown): CustomProviderModel[] {
     if (reasoning !== undefined && typeof reasoning !== "boolean") {
       throw new BusinessError("INVALID_REQUEST", `models[${index}].reasoning 必须是布尔值`);
     }
+    const metadataVerifiedRaw = record["metadataVerified"];
+    if (metadataVerifiedRaw !== undefined && typeof metadataVerifiedRaw !== "boolean") {
+      throw new BusinessError("INVALID_REQUEST", `models[${index}].metadataVerified 必须是布尔值`);
+    }
     const contextWindow = readPositiveInt(record, "contextWindow", index, 200_000);
     const maxTokens = readPositiveInt(record, "maxTokens", index, 8_192);
     const inputRaw = record["input"];
@@ -263,7 +370,15 @@ function readModels(raw: unknown): CustomProviderModel[] {
         input.unshift("text");
       }
     }
-    return { id, name, reasoning: reasoning ?? false, contextWindow, maxTokens, input };
+    return {
+      id,
+      name,
+      reasoning: reasoning ?? false,
+      contextWindow,
+      maxTokens,
+      input,
+      ...(metadataVerifiedRaw !== undefined ? { metadataVerified: metadataVerifiedRaw } : {}),
+    };
   });
 }
 

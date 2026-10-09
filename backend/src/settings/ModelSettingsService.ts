@@ -47,11 +47,17 @@ import {
   syncApiChannelRegistrations,
 } from "./apiChannels.js";
 import {
+  type CustomProviderApi,
   type CustomProviderConfig,
   type CustomProviderStore,
+  generateProviderId,
   toProviderConfigInput,
   validateCustomProviderInput,
 } from "./CustomProviderStore.js";
+import {
+  type DiscoveryResult,
+  discoverModels,
+} from "./ModelDiscovery.js";
 import {
   AGENT_MODEL_KEYS,
   type AgentModelKey,
@@ -396,14 +402,29 @@ export class ModelSettingsService {
   /**
    * 新建或整体替换一个自定义提供商：校验 → 注入 ModelRuntime → 落盘 →
    * （可选）保存 Key。id 与内置 / models.json 提供商冲突时拒绝，避免遮蔽官方目录。
+   *
+   * M13.4：id 允许缺省 / 空串——由 generateProviderId 从名称（或 baseUrl
+   * 主机名）自动生成，冲突自动加序号，绝不覆盖已有条目；编辑走 PUT 时
+   * id 必填（路由已保证 path === body.id），保持不变。
    */
   async saveCustomProvider(
     raw: unknown,
     apiKey?: string,
   ): Promise<{ provider: CustomProviderView; settings: ModelSettingsStatus }> {
     this.assertIdle();
-    const input = validateCustomProviderInput(raw);
+    let input = validateCustomProviderInput(raw);
     const stored = await this.customProviders.load();
+    if (input.id === "") {
+      input = {
+        ...input,
+        id: generateProviderId({
+          name: input.name,
+          baseUrl: input.baseUrl,
+          taken: (id) =>
+            stored.some((config) => config.id === id) || this.modelRuntime.getProvider(id) !== undefined,
+        }),
+      };
+    }
     const existing = stored.find((config) => config.id === input.id);
     if (existing === undefined && this.modelRuntime.getProvider(input.id) !== undefined) {
       throw new BusinessError("INVALID_REQUEST", `id "${input.id}" 与已有提供商冲突，请换一个 id`);
@@ -489,6 +510,181 @@ export class ModelSettingsService {
     this.log(`[model-settings] 已删除自定义提供商 ${id}`);
     await this.reconfigureSafely(this.env.piModel ?? (await this.store.load()).model, []);
     return this.getStatus();
+  }
+
+  // ---- 模型目录发现（POST /api/settings/model/custom-providers/discover-models） ----
+
+  /**
+   * 通过 Backend 请求网关的模型目录（M13.4）。校验逻辑与 saveCustomProvider
+   * 完全同源（复用 validateCustomProviderInput），保证「发现看到的」与
+   * 「保存后的」是同一份配置语义。
+   *
+   * 凭据优先级：请求体 apiKey > 已保存凭据（providerId 已注册时经
+   * ModelRuntime.getAuth 解析，含 PAPERTEAM_PI_API_KEY 内存覆盖层）> 无凭据
+   * （部分本地网关免认证，仍允许尝试）。不为获取目录强迫用户重输 Key。
+   * key 本体不进日志、不进返回值。
+   */
+  async discoverCustomProviderModels(input: {
+    baseUrl: string;
+    api?: CustomProviderApi;
+    authHeader?: boolean;
+    headers?: Record<string, string>;
+    modelsPath?: string;
+    apiKey?: string;
+    /** 编辑已有提供商时传入：优先复用其已保存凭据 */
+    providerId?: string;
+  }): Promise<DiscoveryResult & { authSource: "request" | "stored" | "none" }> {
+    const normalized = validateCustomProviderInput({
+      id: "discovery",
+      name: "discovery",
+      baseUrl: input.baseUrl,
+      api: input.api ?? "anthropic-messages",
+      authHeader: input.authHeader ?? true,
+      headers: input.headers ?? {},
+      modelsPath: input.modelsPath,
+      models: [{ id: "probe" }],
+    });
+
+    const requestKey = input.apiKey !== undefined && input.apiKey.trim() !== "" ? input.apiKey.trim() : undefined;
+    let authSource: "request" | "stored" | "none" = requestKey !== undefined ? "request" : "none";
+    let apiKey = requestKey;
+    if (apiKey === undefined && input.providerId !== undefined && input.providerId !== "") {
+      const stored = await this.resolveStoredApiKey(input.providerId);
+      if (stored !== undefined) {
+        apiKey = stored;
+        authSource = "stored";
+      }
+    }
+
+    const result = await discoverModels({
+      baseUrl: normalized.baseUrl,
+      api: normalized.api,
+      authHeader: normalized.authHeader,
+      headers: normalized.headers,
+      ...(normalized.modelsPath !== undefined ? { modelsPath: normalized.modelsPath } : {}),
+      ...(apiKey !== undefined ? { apiKey } : {}),
+    });
+    if (result.ok) {
+      this.log(
+        `[model-settings] 模型目录发现成功：${safeHost(normalized.baseUrl)}${result.sourcePath}` +
+          `（${result.models.length} 个模型${result.truncated ? "，已截断" : ""}，authSource=${authSource}）`,
+      );
+    } else {
+      this.log(
+        `[model-settings] 模型目录发现失败：${safeHost(normalized.baseUrl)} code=${result.code}` +
+          ` paths=${result.attemptedPaths.join(",")}（detail 不含 key）`,
+      );
+    }
+    return { ...result, authSource };
+  }
+
+  /** 从 Pi credential 体系解析已保存的 key（auth.json / env 注入的内存覆盖层）；失败/缺失 → undefined */
+  private async resolveStoredApiKey(providerId: string): Promise<string | undefined> {
+    try {
+      const auth = await this.modelRuntime.getAuth(providerId);
+      const key = auth?.auth.apiKey;
+      if (key !== undefined && key !== "") {
+        return key;
+      }
+      // authHeader=true 时 Pi 会把 Bearer 头合成进 auth.headers；取回裸 key
+      const header =
+        auth?.auth.headers?.["Authorization"] ?? auth?.auth.headers?.["authorization"];
+      const bearer = /^Bearer (.+)$/.exec(header ?? "");
+      return bearer?.[1];
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ---- 保存前 Test Connection（POST /api/settings/model/custom-providers/test） ----
+
+  /**
+   * 对尚未保存的自定义提供商配置做最小真实调用（M13.4）。技术实现：
+   * 以（生成或既有的）id 临时注册进 ModelRuntime → completeSimple 真实探测
+   * → finally 恢复原状。注册只存在于内存扩展层（不动 credential、不动
+   * custom-providers.json），失败不会留下半配置；restore 失败时以存储为
+   * 准重放既有条目并记录日志。
+   *
+   * 与 testConnection 的区别：这里 provider 可能尚未保存，因此凭据只来自
+   * 请求体 apiKey 或既有 providerId 的已保存凭据。
+   */
+  async testCustomProvider(input: {
+    provider: unknown;
+    modelId: string;
+    apiKey?: string;
+  }): Promise<ModelTestResult> {
+    const parsed = validateCustomProviderInput(input.provider);
+    const modelId = input.modelId.trim();
+    const model = parsed.models.find((entry) => entry.id === modelId);
+    if (model === undefined) {
+      return {
+        ok: false,
+        provider: parsed.id === "" ? "(未保存)" : parsed.id,
+        model: modelId,
+        code: "MODEL_NOT_FOUND",
+        detail: `Model ID "${modelId}" 不在本次提交的模型列表中`,
+      };
+    }
+
+    const stored = await this.customProviders.load();
+    const testId =
+      parsed.id !== ""
+        ? parsed.id
+        : generateProviderId({
+            name: parsed.name,
+            baseUrl: parsed.baseUrl,
+            taken: (id) =>
+              stored.some((config) => config.id === id) || this.modelRuntime.getProvider(id) !== undefined,
+          });
+    const existing = stored.find((config) => config.id === testId);
+    if (existing === undefined && this.modelRuntime.getProvider(testId) !== undefined) {
+      throw new BusinessError("INVALID_REQUEST", `id "${testId}" 与已有提供商冲突，请换一个 id`);
+    }
+
+    const apiKey = input.apiKey !== undefined && input.apiKey.trim() !== "" ? input.apiKey.trim() : undefined;
+    if (apiKey === undefined && existing !== undefined && !this.getAuthStatus(testId).configured) {
+      return {
+        ok: false,
+        provider: testId,
+        model: modelId,
+        code: "AUTH_FAILED",
+        detail: "该提供商没有已保存的凭据：请填写 API Key 后再测试",
+      };
+    }
+
+    // 临时注册 → 探测 → finally 恢复（内存扩展层；不动磁盘与凭据）
+    if (existing !== undefined) {
+      this.modelRuntime.unregisterProvider(testId);
+    }
+    let registered = false;
+    try {
+      this.modelRuntime.registerProvider(testId, toProviderConfigInput({ ...parsed, id: testId }));
+      registered = true;
+      const runtimeModel = this.modelRuntime.getModel(testId, modelId);
+      if (runtimeModel === undefined) {
+        return {
+          ok: false,
+          provider: testId,
+          model: modelId,
+          code: "MODEL_NOT_FOUND",
+          detail: `模型 ${testId}/${modelId} 注册后仍不可见（Runtime 拒绝了该定义）`,
+        };
+      }
+      return await this.probeModel(runtimeModel, `${testId}/${modelId}`, apiKey, `channel=custom`);
+    } finally {
+      if (registered) {
+        this.modelRuntime.unregisterProvider(testId);
+      }
+      if (existing !== undefined) {
+        try {
+          this.modelRuntime.registerProvider(existing.id, toProviderConfigInput(existing));
+        } catch (error) {
+          this.log(
+            `[model-settings] 测试后恢复提供商 ${existing.id} 注册失败（以 custom-providers.json 为准，重启重放）：${errorText(error)}`,
+          );
+        }
+      }
+    }
   }
 
   // ---- 保存（PUT /api/settings/model） ----
@@ -787,6 +983,23 @@ export class ModelSettingsService {
         detail: `provider ${provider} 无可用凭据（请填写 API Key，或先保存/设置环境变量）`,
       };
     }
+
+    return this.probeModel(model, spec, apiKey, `channel=${channel}`);
+  }
+
+  /**
+   * 最小真实调用的公共实现（testConnection 与 testCustomProvider 共享）：
+   * completeSimple 一次 "Reply with exactly: OK"，失败分类 + 脱敏 + 截断。
+   * 日志不打印请求体（可能含 Key）。
+   */
+  private async probeModel(
+    model: Model<Api>,
+    spec: string,
+    apiKey: string | undefined,
+    logContext: string,
+  ): Promise<ModelTestResult> {
+    const provider = model.provider;
+    const modelId = model.id;
     const reasoning = testConnectionReasoning(model);
 
     const startedAt = Date.now();
@@ -829,14 +1042,14 @@ export class ModelSettingsService {
       const code = aborted || signal.aborted ? "TIMEOUT" : classifyFailure(rawDetail);
       const detail = redact(truncate(rawDetail, DETAIL_MAX_CHARS), [apiKey, ...this.knownSecrets()]);
       this.log(
-        `[model-settings] Test Connection 失败：${provider}/${modelId} channel=${channel}` +
+        `[model-settings] Test Connection 失败：${provider}/${modelId} ${logContext}` +
           ` code=${code} detail=${detail}（不打印请求体与 key）`,
       );
       return { ok: false, provider, model: spec, code, detail };
     }
 
     this.log(
-      `[model-settings] Test Connection 成功：${provider}/${modelId} channel=${channel}（${latencyMs}ms）`,
+      `[model-settings] Test Connection 成功：${provider}/${modelId} ${logContext}（${latencyMs}ms）`,
     );
     return { ok: true, provider, model: spec, latencyMs };
   }
@@ -1073,6 +1286,15 @@ function truncate(text: string, maxChars: number): string {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** 日志友好的主机名（baseUrl 无效时给占位符，绝不抛错） */
+function safeHost(baseUrl: string): string {
+  try {
+    return new URL(baseUrl).host;
+  } catch {
+    return "(无效地址)";
+  }
 }
 
 /** 把已知 secret（如用户提交的 key）从文本中抹除后再返回/落日志 */

@@ -27,8 +27,11 @@ vi.mock("../src/api/settings.js", () => ({
   clearModelApiKey: vi.fn(),
   testModelConnection: vi.fn(),
   getCustomProviders: vi.fn(),
+  createCustomProvider: vi.fn(),
   saveCustomProvider: vi.fn(),
   deleteCustomProvider: vi.fn(),
+  discoverCustomProviderModels: vi.fn(),
+  testCustomProviderModel: vi.fn(),
 }));
 
 const {
@@ -38,7 +41,8 @@ const {
   clearModelApiKey,
   testModelConnection,
   getCustomProviders,
-  saveCustomProvider,
+  createCustomProvider,
+  discoverCustomProviderModels,
   deleteCustomProvider,
 } = await import("../src/api/settings.js");
 
@@ -422,9 +426,20 @@ describe("ModelSettingsPage", () => {
     expect(await screen.findByText(/没有匹配/)).toBeInTheDocument();
   });
 
-  it("自定义提供商：空态 → 表单提交 → payload 形状正确，成功后选中新提供商", async () => {
+  it("自定义提供商：新流程（名称/地址/Key → 获取模型 → 选择 → 保存）payload 形状正确，成功后选中新提供商", async () => {
     mockApi();
-    vi.mocked(saveCustomProvider).mockResolvedValue({ provider: customGateway, settings: storedSettings });
+    vi.mocked(discoverCustomProviderModels).mockResolvedValue({
+      ok: true,
+      models: [
+        { id: "claude-x", name: "Claude X" },
+        { id: "glm-5.3", ownedBy: "zhipu", contextWindow: 128000 },
+      ],
+      sourcePath: "/v1/models",
+      total: 2,
+      truncated: false,
+      authSource: "request",
+    });
+    vi.mocked(createCustomProvider).mockResolvedValue({ provider: customGateway, settings: storedSettings });
     const user = userEvent.setup();
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });
 
@@ -433,30 +448,40 @@ describe("ModelSettingsPage", () => {
     const form = await screen.findByTestId("custom-provider-form");
     expect(form).toBeInTheDocument();
 
+    // 不再要求用户填写 Provider ID（高级设置只读显示「保存时自动生成」）
+    expect(screen.getByTestId("custom-provider-id")).toHaveValue("保存时自动生成");
+
     // 缺必填项：前端即时提示，不发请求
     await user.click(screen.getByTestId("save-custom-provider"));
-    expect(await screen.findByTestId("custom-provider-error")).toHaveTextContent("请填写提供商 id 与 Base URL");
-    expect(saveCustomProvider).not.toHaveBeenCalled();
+    expect(await screen.findByTestId("custom-provider-error")).toHaveTextContent("请填写服务名称与 API 地址");
+    expect(createCustomProvider).not.toHaveBeenCalled();
 
-    await user.type(screen.getByLabelText(/提供商 id/), "My-Gateway");
-    await user.type(screen.getByLabelText("显示名称"), "My Gateway");
-    await user.type(screen.getByLabelText(/Base URL/), "https://gw.example.test");
-    await user.type(screen.getByLabelText("额外请求头（可选）"), "X-Tenant: research");
-    await user.type(screen.getByLabelText("模型 1 的 Model ID"), "claude-x");
-    await user.click(screen.getByLabelText("模型 1 支持图片输入"));
+    await user.type(screen.getByLabelText(/服务名称/), "My Gateway");
+    await user.type(screen.getByLabelText(/API 地址/), "https://gw.example.test");
     await user.type(screen.getByTestId("custom-provider-api-key"), "sk-custom-key");
+    await user.click(screen.getByTestId("discover-models"));
+    expect(await screen.findByTestId("model-catalog")).toBeInTheDocument();
+
+    await user.click(screen.getByTestId("catalog-model-claude-x"));
+    // 勾选带目录上下文的模型：数值来自上游；未提供上下文的模型用保守默认并标记未验证
+    await user.click(screen.getByTestId("catalog-model-glm-5.3"));
+    expect(screen.getAllByText("未验证").length).toBeGreaterThan(0);
+
     await user.click(screen.getByTestId("save-custom-provider"));
 
     await waitFor(() => {
-      expect(saveCustomProvider).toHaveBeenCalledWith({
+      expect(createCustomProvider).toHaveBeenCalledWith({
         provider: {
-          id: "my-gateway",
+          id: "",
           name: "My Gateway",
           baseUrl: "https://gw.example.test",
           api: "anthropic-messages",
           authHeader: true,
-          headers: { "X-Tenant": "research" },
-          models: [{ id: "claude-x", name: "claude-x", reasoning: false, contextWindow: 200000, maxTokens: 8192, input: ["text", "image"] }],
+          headers: {},
+          models: [
+            { id: "claude-x", name: "Claude X", reasoning: false, contextWindow: 200000, maxTokens: 8192, input: ["text"] },
+            { id: "glm-5.3", name: "glm-5.3", reasoning: false, contextWindow: 128000, maxTokens: 8192, input: ["text"], metadataVerified: true },
+          ],
         },
         apiKey: "sk-custom-key",
       });
@@ -467,7 +492,7 @@ describe("ModelSettingsPage", () => {
     expect(screen.getByTestId("provider-combobox-input")).toHaveValue("my-gateway");
   });
 
-  it("自定义提供商：列表行 → 编辑回填 → 删除需行内确认", async () => {
+  it("自定义提供商：列表行 → 编辑回填（不回显 Key、模型保留）→ 取消脏改动需确认 → 删除需行内确认", async () => {
     mockApi({ customProviders: [customGateway] });
     vi.mocked(deleteCustomProvider).mockResolvedValue(storedSettings);
     const user = userEvent.setup();
@@ -478,18 +503,34 @@ describe("ModelSettingsPage", () => {
     expect(row).toHaveTextContent("未配置");
 
     await user.click(screen.getByTestId("edit-my-gateway"));
-    expect(await screen.findByTestId("custom-provider-form")).toHaveTextContent("编辑 my-gateway");
-    expect(screen.getByLabelText(/提供商 id/)).toBeDisabled();
-    expect(screen.getByLabelText(/Base URL/)).toHaveValue("https://gw.example.test");
-    expect(screen.getByLabelText("模型 1 的 Model ID")).toHaveValue("claude-x");
-    await user.click(screen.getByRole("button", { name: "取消" }));
+    const form = await screen.findByTestId("custom-provider-form");
+    expect(form).toHaveTextContent("编辑 My Gateway");
+    expect(screen.getByLabelText(/API 地址/)).toHaveValue("https://gw.example.test");
+    expect(screen.getByTestId("custom-provider-api-key")).toHaveValue("");
+    expect(screen.getByTestId("selected-models")).toHaveTextContent("claude-x");
+    // 编辑时高级设置默认展开，Provider ID 只读且保持不变
+    expect(screen.getByTestId("custom-provider-id")).toHaveValue("my-gateway");
+
+    // 未修改直接取消：不弹确认
+    await user.click(screen.getByTestId("cancel-edit"));
+    await waitFor(() => expect(screen.queryByTestId("custom-provider-form")).not.toBeInTheDocument());
+
+    // 修改后取消：需要确认放弃
+    await user.click(screen.getByTestId("edit-my-gateway"));
+    await user.type(screen.getByLabelText(/服务名称/), "!");
+    await user.click(screen.getByTestId("cancel-edit"));
+    expect(await screen.findByTestId("confirm-discard")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "继续编辑" }));
+    expect(screen.queryByTestId("confirm-discard")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("cancel-edit"));
+    await user.click(await screen.findByTestId("confirm-discard"));
+    await waitFor(() => expect(screen.queryByTestId("custom-provider-form")).not.toBeInTheDocument());
 
     await user.click(screen.getByTestId("delete-my-gateway"));
     expect(deleteCustomProvider).not.toHaveBeenCalled();
     await user.click(screen.getByTestId("confirm-delete-my-gateway"));
     await waitFor(() => expect(deleteCustomProvider).toHaveBeenCalledWith("my-gateway"));
   });
-
   it("危险操作区：中文标题与说明", async () => {
     mockApi();
     renderWithProviders(<ModelSettingsPage />, { route: "/settings/model" });

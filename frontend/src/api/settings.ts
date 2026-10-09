@@ -1,8 +1,10 @@
 import { apiClient } from "./client.js";
 import type {
   ApiChannel,
+  CustomProviderApi,
   CustomProviderInput,
   CustomProviderView,
+  ModelDiscoveryResultView,
   ModelOptionsView,
   ModelSettingsView,
   ModelTestResultView,
@@ -17,10 +19,16 @@ import type {
  *   GET    /api/settings/model/options  → { options }（?provider= 单 provider 模型）
  *   POST   /api/settings/model/test     → { result }
  *   GET    /api/settings/model/custom-providers      → { providers }
+ *   POST   /api/settings/model/custom-providers      → { provider, settings }
+ *            （新建；provider.id 空串 → 服务端自动生成，随响应返回）
  *   PUT    /api/settings/model/custom-providers/:id  → { provider, settings }
  *   DELETE /api/settings/model/custom-providers/:id  → { settings }
+ *   POST   /api/settings/model/custom-providers/discover-models → { result }
+ *            （Backend 代发网关模型目录请求；key 只经请求头，不进 URL）
+ *   POST   /api/settings/model/custom-providers/test → { result }
+ *            （保存前真实调用：临时注册 → completeSimple → 恢复）
  *
- * Key 只经 PUT/test 请求体发往同源 Backend；GET 响应不含 key，
+ * Key 只经 POST/PUT/test 请求体发往同源 Backend；GET 响应不含 key，
  * 任何返回值都不落 localStorage/sessionStorage。apiChannel 是非 secret 的
  * 通道选择（Z.AI 家族 provider），与保存后的真实 Runtime 用同一通道。
  */
@@ -94,6 +102,18 @@ export async function getCustomProviders(signal?: AbortSignal): Promise<CustomPr
   return body.providers;
 }
 
+/** 新建（provider.id 空串 → 服务端自动生成合法唯一 id） */
+export async function createCustomProvider(input: {
+  provider: CustomProviderInput;
+  /** 省略 = 不保存 Key（可稍后补填） */
+  apiKey?: string;
+}): Promise<{ provider: CustomProviderView; settings: ModelSettingsView }> {
+  return apiClient.post<{ provider: CustomProviderView; settings: ModelSettingsView }>(
+    "/api/settings/model/custom-providers",
+    input,
+  );
+}
+
 export async function saveCustomProvider(input: {
   provider: CustomProviderInput;
   /** 省略 = 保持该提供商已保存的 Key */
@@ -103,6 +123,38 @@ export async function saveCustomProvider(input: {
     `/api/settings/model/custom-providers/${encodeURIComponent(input.provider.id)}`,
     input,
   );
+}
+
+/** 获取可用模型：Backend 代发网关模型目录请求（编辑已有提供商时可复用其已保存 Key） */
+export async function discoverCustomProviderModels(input: {
+  baseUrl: string;
+  api?: CustomProviderApi;
+  authHeader?: boolean;
+  headers?: Record<string, string>;
+  modelsPath?: string;
+  /** 留空/省略且 providerId 已注册时，Backend 复用已保存凭据 */
+  apiKey?: string;
+  providerId?: string;
+}): Promise<ModelDiscoveryResultView> {
+  const body = await apiClient.post<{ result: ModelDiscoveryResultView }>(
+    "/api/settings/model/custom-providers/discover-models",
+    input,
+  );
+  return body.result;
+}
+
+/** 保存前测试连接：临时注册 → 真实最小调用 → 恢复（失败不留半配置） */
+export async function testCustomProviderModel(input: {
+  provider: CustomProviderInput;
+  modelId: string;
+  /** 省略时，编辑场景由 Backend 复用已保存凭据 */
+  apiKey?: string;
+}): Promise<ModelTestResultView> {
+  const body = await apiClient.post<{ result: ModelTestResultView }>(
+    "/api/settings/model/custom-providers/test",
+    input,
+  );
+  return body.result;
 }
 
 export async function deleteCustomProvider(id: string): Promise<ModelSettingsView> {

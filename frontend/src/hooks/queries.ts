@@ -101,12 +101,15 @@ import {
 } from "../api/externalInstructions.js";
 import {
   clearModelApiKey,
+  createCustomProvider,
   deleteCustomProvider,
+  discoverCustomProviderModels,
   getCustomProviders,
   getModelOptions,
   getModelSettings,
   saveCustomProvider,
   saveModelSettings,
+  testCustomProviderModel,
   testModelConnection,
 } from "../api/settings.js";
 import type {
@@ -1172,11 +1175,15 @@ export function useCustomProviders() {
   });
 }
 
-/** 新建 / 整体替换自定义提供商；成功后 provider 目录、模型目录与状态一起失效 */
+/**
+ * 新建 / 整体替换自定义提供商；成功后 provider 目录、模型目录与状态一起失效。
+ * M13.4：provider.id === "" 时走 POST 新建（服务端自动生成 id），否则 PUT 替换。
+ */
 export function useSaveCustomProvider() {
   const invalidate = useInvalidateModelState();
   return useMutation({
-    mutationFn: (input: { provider: CustomProviderInput; apiKey?: string }) => saveCustomProvider(input),
+    mutationFn: (input: { provider: CustomProviderInput; apiKey?: string }) =>
+      input.provider.id === "" ? createCustomProvider(input) : saveCustomProvider(input),
     onSuccess: invalidate,
   });
 }
@@ -1191,6 +1198,22 @@ export function useTestModelConnection() {
   return useMutation({
     mutationFn: (input: { model: string; apiKey?: string; apiChannel?: ApiChannel }) =>
       testModelConnection(input),
+  });
+}
+
+/** 获取可用模型（M13.4）：Backend 代发网关目录请求；不改缓存 */
+export function useDiscoverCustomProviderModels() {
+  return useMutation({
+    mutationFn: (input: Parameters<typeof discoverCustomProviderModels>[0]) =>
+      discoverCustomProviderModels(input),
+  });
+}
+
+/** 保存前测试自定义提供商（M13.4）：临时注册 → 真实调用 → 恢复；不改缓存 */
+export function useTestCustomProviderModel() {
+  return useMutation({
+    mutationFn: (input: Parameters<typeof testCustomProviderModel>[0]) =>
+      testCustomProviderModel(input),
   });
 }
 

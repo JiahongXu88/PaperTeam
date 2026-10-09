@@ -1,14 +1,34 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-import { useDeleteCustomProvider, useSaveCustomProvider } from "../../hooks/queries.js";
-import type { CustomProviderApi, CustomProviderInput, CustomProviderView } from "../../types/api.js";
+import {
+  useDeleteCustomProvider,
+  useDiscoverCustomProviderModels,
+  useSaveCustomProvider,
+  useTestCustomProviderModel,
+} from "../../hooks/queries.js";
+import type {
+  CustomProviderApi,
+  CustomProviderInput,
+  CustomProviderView,
+  DiscoveredModelView,
+  ModelDiscoveryErrorCodeView,
+} from "../../types/api.js";
 import { formatApiError } from "../../utils/errors.js";
 
 /**
  * 自定义模型提供商（Anthropic / OpenAI 兼容网关、私有部署）的列表与编辑表单。
  *
- * 配置本体（Base URL / 协议 / 模型目录 / 额外请求头）由 Backend 持久化并注入 Pi Runtime；
- * API Key 与内置提供商走同一条保存路径（本机 auth.json，不回显）。
+ * M13.4 重构（参考 CC Switch 的供应商配置 UX）：
+ * 用户流程 = 服务名称 → API 地址 → API Key → 获取模型 → 选择模型 →
+ * 测试连接 → 保存。Provider ID 由服务端自动生成（高级设置只读显示）；
+ * 协议 / 认证头 / 额外请求头 / 发现路径收入默认折叠的高级设置；
+ * 模型列表优先自动发现（Backend 代发请求，复用已保存凭据），
+ * 目录不可用时手动添加兜底；上下文窗口等元数据缺省为保守值并明确
+ * 标记「未经上游验证」。
+ *
+ * 安全约束：API Key 只经本表单发往同源 Backend（编辑时不回显，留空 =
+ * 继续使用已保存 Key）；目录发现与测试连接均由 Backend 完成，凭据不进
+ * 浏览器存储 / URL / 日志。
  */
 
 const API_LABEL: Record<CustomProviderApi, string> = {
@@ -18,12 +38,38 @@ const API_LABEL: Record<CustomProviderApi, string> = {
 };
 
 const API_HELP: Record<CustomProviderApi, string> = {
-  "anthropic-messages": "请求 {Base URL}/v1/messages；Claude 官方与多数 Claude 兼容网关使用此协议。",
-  "openai-completions": "请求 {Base URL}/chat/completions；OpenAI 兼容网关、vLLM、Ollama 等通常使用此协议。",
-  "openai-responses": "请求 {Base URL}/responses；仅 OpenAI Responses API 兼容的服务使用。",
+  "anthropic-messages": "请求 {Base URL}/v1/messages；Claude 官方与多数公司网关使用此协议。",
+  "openai-completions": "请求 {Base URL}/chat/completions（Base URL 需含 /v1，如 https://api.openai.com/v1）；OpenAI 兼容网关、vLLM、Ollama 等常用。",
+  "openai-responses": "请求 {Base URL}/responses（Base URL 需含 /v1）；仅 OpenAI Responses API 兼容的服务使用。",
 };
 
-interface ModelRow {
+/** 未提供目录元数据时的保守默认（明确标记「未经上游验证」，可修改） */
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+const DEFAULT_MAX_TOKENS = 8_192;
+
+const DISCOVERY_ERROR_LABEL: Record<ModelDiscoveryErrorCodeView, string> = {
+  AUTH_FAILED: "认证失败：请检查 API Key 是否正确、是否有该服务的权限",
+  NOT_SUPPORTED: "该服务未提供模型目录接口（这不代表网关不可用）：请手动添加 Model ID",
+  RATE_LIMITED: "请求被限流：请稍后重试",
+  SERVER_ERROR: "网关服务错误：请稍后重试或检查服务状态",
+  TIMEOUT: "请求超时：请检查网络或稍后重试",
+  BAD_RESPONSE: "目录响应无法解析（格式不符合 {data:[...]} 等已知结构）",
+  REDIRECTED: "请求被重定向到其他主机，已拒绝转发认证信息；请改用最终地址",
+  NETWORK: "无法连接网关：请检查地址与网络",
+  UNKNOWN: "未知错误",
+};
+
+const TEST_CODE_LABEL: Record<string, string> = {
+  AUTH_FAILED: "API Key 无效或认证失败",
+  MODEL_NOT_FOUND: "找不到所选模型",
+  PROVIDER_UNAVAILABLE: "模型服务不可达（网络或上游故障）",
+  RATE_LIMITED: "请求受限（限流 / 配额 / 账户余额不足）",
+  TIMEOUT: "连接超时，请检查网络或模型服务",
+  BAD_REQUEST: "请求被服务拒绝（模型或参数不支持，详见详细信息）",
+  UNKNOWN: "未知错误",
+};
+
+interface ModelEntry {
   key: number;
   id: string;
   name: string;
@@ -31,24 +77,37 @@ interface ModelRow {
   maxTokens: string;
   reasoning: boolean;
   image: boolean;
+  /** 数值来自上游目录或用户显式编辑；false = 保守默认值（UI 标记未验证） */
+  metadataVerified: boolean;
 }
 
 interface FormState {
+  /** "" = 新建（服务端自动生成 id）；编辑时为既有 id */
   id: string;
   name: string;
   baseUrl: string;
+  apiKey: string;
   api: CustomProviderApi;
   authHeader: boolean;
   headersText: string;
-  models: ModelRow[];
-  apiKey: string;
+  modelsPath: string;
+  models: ModelEntry[];
 }
 
 let rowKey = 0;
 
-function emptyRow(): ModelRow {
+function newEntry(options?: { id?: string; name?: string; contextWindow?: number; metadataVerified?: boolean }): ModelEntry {
   rowKey += 1;
-  return { key: rowKey, id: "", name: "", contextWindow: "200000", maxTokens: "8192", reasoning: false, image: false };
+  return {
+    key: rowKey,
+    id: options?.id ?? "",
+    name: options?.name ?? "",
+    contextWindow: String(options?.contextWindow ?? DEFAULT_CONTEXT_WINDOW),
+    maxTokens: String(DEFAULT_MAX_TOKENS),
+    reasoning: false,
+    image: false,
+    metadataVerified: options?.metadataVerified ?? false,
+  };
 }
 
 function emptyForm(): FormState {
@@ -56,11 +115,12 @@ function emptyForm(): FormState {
     id: "",
     name: "",
     baseUrl: "",
+    apiKey: "",
     api: "anthropic-messages",
     authHeader: true,
     headersText: "",
-    models: [emptyRow()],
-    apiKey: "",
+    modelsPath: "",
+    models: [],
   };
 }
 
@@ -69,31 +129,47 @@ function formFrom(provider: CustomProviderView): FormState {
     id: provider.id,
     name: provider.name,
     baseUrl: provider.baseUrl,
+    apiKey: "",
     api: provider.api,
     authHeader: provider.authHeader,
     headersText: Object.entries(provider.headers)
       .map(([name, value]) => `${name}: ${value}`)
       .join("\n"),
+    modelsPath: provider.modelsPath ?? "",
     models: provider.models.map((model) => {
       rowKey += 1;
       return {
         key: rowKey,
         id: model.id,
-        name: model.name,
+        name: model.name === model.id ? "" : model.name,
         contextWindow: String(model.contextWindow),
         maxTokens: String(model.maxTokens),
         reasoning: model.reasoning,
         image: model.input.includes("image"),
+        metadataVerified: model.metadataVerified ?? false,
       };
     }),
-    apiKey: "",
   };
 }
 
-/** 表单 → 请求体；返回错误文案时表示前端就能判定的缺失项（其余交给 Backend 校验） */
-function toInput(form: FormState): { input: CustomProviderInput } | { error: string } {
+/** 脏检查快照：排除 row key 与 apiKey（Key 单独参与比较） */
+function formSnapshot(form: FormState): string {
+  return JSON.stringify({
+    id: form.id,
+    name: form.name,
+    baseUrl: form.baseUrl,
+    api: form.api,
+    authHeader: form.authHeader,
+    headersText: form.headersText,
+    modelsPath: form.modelsPath,
+    models: form.models.map(({ key: _key, ...rest }) => rest),
+  });
+}
+
+/** 解析额外请求头文本；格式非法时返回错误文案 */
+function parseHeadersText(text: string): { headers: Record<string, string> } | { error: string } {
   const headers: Record<string, string> = {};
-  for (const line of form.headersText.split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (trimmed === "") {
       continue;
@@ -104,14 +180,20 @@ function toInput(form: FormState): { input: CustomProviderInput } | { error: str
     }
     headers[trimmed.slice(0, separator).trim()] = trimmed.slice(separator + 1).trim();
   }
-  const models = form.models.filter((row) => row.id.trim() !== "" || row.name.trim() !== "");
+  return { headers };
+}
+
+/** 表单 → 请求体；返回错误文案 = 前端即可判定的缺失项（其余交给 Backend 校验） */
+function toInput(form: FormState): { input: CustomProviderInput } | { error: string } {
+  const headers = parseHeadersText(form.headersText);
+  if ("error" in headers) {
+    return headers;
+  }
+  const models = form.models.filter((row) => row.id.trim() !== "");
   if (models.length === 0) {
-    return { error: "至少填写一个模型的 Model ID" };
+    return { error: "请至少添加一个模型（自动发现或手动输入 Model ID）" };
   }
   for (const row of models) {
-    if (row.id.trim() === "") {
-      return { error: "每个模型都需要 Model ID" };
-    }
     if (!/^\d+$/.test(row.contextWindow.trim()) || !/^\d+$/.test(row.maxTokens.trim())) {
       return { error: `模型 ${row.id} 的上下文窗口 / 最大输出必须是正整数` };
     }
@@ -119,11 +201,11 @@ function toInput(form: FormState): { input: CustomProviderInput } | { error: str
   return {
     input: {
       id: form.id.trim(),
-      name: form.name.trim() === "" ? form.id.trim() : form.name.trim(),
+      name: form.name.trim(),
       baseUrl: form.baseUrl.trim(),
       api: form.api,
       authHeader: form.authHeader,
-      headers,
+      headers: headers.headers,
       models: models.map((row) => ({
         id: row.id.trim(),
         name: row.name.trim() === "" ? row.id.trim() : row.name.trim(),
@@ -131,7 +213,9 @@ function toInput(form: FormState): { input: CustomProviderInput } | { error: str
         contextWindow: Number(row.contextWindow.trim()),
         maxTokens: Number(row.maxTokens.trim()),
         input: row.image ? ["text", "image"] : ["text"],
+        ...(row.metadataVerified ? { metadataVerified: true } : {}),
       })),
+      ...(form.modelsPath.trim() !== "" ? { modelsPath: form.modelsPath.trim() } : {}),
     },
   };
 }
@@ -139,11 +223,13 @@ function toInput(form: FormState): { input: CustomProviderInput } | { error: str
 export function CustomProviderPanel({
   providers,
   loading,
+  authConfiguredById,
   onSaved,
 }: {
   providers: CustomProviderView[] | undefined;
   loading: boolean;
-  /** 保存成功后回调（上层据此把"模型提供商"切到刚保存的 provider） */
+  /** 编辑表单判断「留空 = 继续使用已保存 Key」时需要凭据状态（列表条目自带，容错独立提供） */
+  authConfiguredById?: Record<string, boolean>;
   onSaved?: (providerId: string) => void;
 }) {
   const [editing, setEditing] = useState<FormState | null>(null);
@@ -163,7 +249,9 @@ export function CustomProviderPanel({
         ) : null}
       </div>
       <p className="panel-sub">
-        接入 Anthropic / OpenAI 兼容的网关或私有部署：填写 Base URL、协议与模型列表，保存后即可在上方「模型提供商」中选择。API Key 与内置提供商一样只保存在本机 Backend。
+        接入 Anthropic / OpenAI 兼容的网关或私有部署：填写名称、地址与 API Key，
+        点击「获取可用模型」自动拉取模型列表，选择后保存即可在上方「模型提供商」中使用。
+        API Key 与内置提供商一样只保存在本机 Backend。
       </p>
 
       {loading ? <p className="muted">加载自定义提供商…</p> : null}
@@ -262,7 +350,7 @@ export function CustomProviderPanel({
       {editing !== null ? (
         <CustomProviderForm
           initial={editing}
-          existingIds={(providers ?? []).map((provider) => provider.id)}
+          authConfigured={editing.id !== "" && (authConfiguredById?.[editing.id] ?? providers?.find((provider) => provider.id === editing.id)?.authConfigured === true)}
           onCancel={() => setEditing(null)}
           onSaved={(providerId) => {
             setEditing(null);
@@ -276,20 +364,34 @@ export function CustomProviderPanel({
 
 function CustomProviderForm({
   initial,
-  existingIds,
+  authConfigured,
   onCancel,
   onSaved,
 }: {
   initial: FormState;
-  existingIds: string[];
+  /** 编辑对象已有保存的凭据（控制 API Key 帮助文案） */
+  authConfigured: boolean;
   onCancel: () => void;
   onSaved: (providerId: string) => void;
 }) {
+  const isEdit = initial.id !== "";
   const [form, setForm] = useState(initial);
   const [localError, setLocalError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [catalog, setCatalog] = useState<DiscoveredModelView[] | null>(null);
+  const [search, setSearch] = useState("");
+  const [manualId, setManualId] = useState("");
+  const [testModelId, setTestModelId] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(
+    initial.api !== "anthropic-messages" || initial.authHeader !== true || initial.headersText !== "" || initial.modelsPath !== "" || isEdit,
+  );
   const save = useSaveCustomProvider();
-  const isEdit = existingIds.includes(initial.id) && initial.id !== "";
+  const discover = useDiscoverCustomProviderModels();
+  const test = useTestCustomProviderModel();
+
+  const initialSnapshot = useMemo(() => formSnapshot(initial), [initial]);
+  const dirty = formSnapshot(form) !== initialSnapshot || form.apiKey !== "";
 
   const update = <K extends keyof FormState>(field: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -297,7 +399,7 @@ function CustomProviderForm({
     save.reset();
   };
 
-  const updateRow = (key: number, patch: Partial<ModelRow>) => {
+  const updateEntry = (key: number, patch: Partial<ModelEntry>) => {
     setForm((current) => ({
       ...current,
       models: current.models.map((row) => (row.key === key ? { ...row, ...patch } : row)),
@@ -305,9 +407,101 @@ function CustomProviderForm({
     setLocalError(null);
   };
 
+  const addModel = (options: { id: string; name?: string; contextWindow?: number; metadataVerified?: boolean }) => {
+    setForm((current) => {
+      if (current.models.some((row) => row.id === options.id)) {
+        return current;
+      }
+      return { ...current, models: [...current.models, newEntry(options)] };
+    });
+    setLocalError(null);
+  };
+
+  const removeModel = (id: string) => {
+    setForm((current) => ({ ...current, models: current.models.filter((row) => row.id !== id) }));
+    if (testModelId === id) {
+      setTestModelId("");
+      test.reset();
+    }
+  };
+
+  const runDiscovery = () => {
+    const baseUrl = form.baseUrl.trim();
+    if (baseUrl === "") {
+      setLocalError("请先填写 API 地址");
+      return;
+    }
+    const headers = parseHeadersText(form.headersText);
+    if ("error" in headers) {
+      setLocalError(headers.error);
+      return;
+    }
+    const typedKey = form.apiKey.trim();
+    discover.mutate(
+      {
+        baseUrl,
+        api: form.api,
+        authHeader: form.authHeader,
+        headers: headers.headers,
+        ...(form.modelsPath.trim() !== "" ? { modelsPath: form.modelsPath.trim() } : {}),
+        ...(typedKey !== "" ? { apiKey: typedKey } : {}),
+        ...(isEdit ? { providerId: form.id } : {}),
+      },
+      {
+        onSuccess: (result) => {
+          if (result.ok) {
+            setCatalog(result.models ?? []);
+            setSearch("");
+            setLocalError(null);
+          } else {
+            setCatalog(null);
+          }
+        },
+      },
+    );
+  };
+
+  const addManualModel = () => {
+    const id = manualId.trim();
+    if (id === "") {
+      setLocalError("请输入 Model ID");
+      return;
+    }
+    if (/\s/.test(id)) {
+      setLocalError("Model ID 不能包含空白字符");
+      return;
+    }
+    if (form.models.some((row) => row.id === id)) {
+      setLocalError(`模型 ${id} 已在列表中`);
+      return;
+    }
+    addModel({ id });
+    setManualId("");
+    setLocalError(null);
+  };
+
+  const runTest = () => {
+    const modelId = (testModelId !== "" ? testModelId : form.models[0]?.id ?? "").trim();
+    if (modelId === "") {
+      setLocalError("请先选择要测试的模型");
+      return;
+    }
+    const converted = toInput(form);
+    if ("error" in converted) {
+      setLocalError(converted.error);
+      return;
+    }
+    const typedKey = form.apiKey.trim();
+    test.mutate({
+      provider: converted.input,
+      modelId,
+      ...(typedKey !== "" ? { apiKey: typedKey } : {}),
+    });
+  };
+
   const submit = () => {
-    if (form.id.trim() === "" || form.baseUrl.trim() === "") {
-      setLocalError("请填写提供商 id 与 Base URL");
+    if (form.name.trim() === "" || form.baseUrl.trim() === "") {
+      setLocalError("请填写服务名称与 API 地址");
       return;
     }
     const converted = toInput(form);
@@ -322,6 +516,44 @@ function CustomProviderForm({
     );
   };
 
+  const requestCancel = () => {
+    if (!dirty) {
+      onCancel();
+      return;
+    }
+    setConfirmDiscard(true);
+  };
+
+  const filteredCatalog = useMemo(() => {
+    if (catalog === null) {
+      return [];
+    }
+    const keyword = search.trim().toLowerCase();
+    if (keyword === "") {
+      return catalog;
+    }
+    return catalog.filter(
+      (entry) => entry.id.toLowerCase().includes(keyword) || (entry.name ?? "").toLowerCase().includes(keyword),
+    );
+  }, [catalog, search]);
+
+  const groupedCatalog = useMemo(() => {
+    const groups = new Map<string, DiscoveredModelView[]>();
+    for (const entry of filteredCatalog) {
+      const group = entry.ownedBy ?? "";
+      const list = groups.get(group);
+      if (list === undefined) {
+        groups.set(group, [entry]);
+      } else {
+        list.push(entry);
+      }
+    }
+    return [...groups.entries()];
+  }, [filteredCatalog]);
+
+  const discoveryResult = discover.data;
+  const selectedCount = form.models.length;
+
   return (
     <form
       className="settings-form custom-provider-form"
@@ -331,35 +563,28 @@ function CustomProviderForm({
         submit();
       }}
     >
-      <h3 className="panel-title">{isEdit ? `编辑 ${initial.id}` : "新建自定义提供商"}</h3>
+      <h3 className="panel-title">{isEdit ? `编辑 ${initial.name || initial.id}` : "添加自定义提供商"}</h3>
 
       <fieldset className="form-section">
-        <legend>提供商</legend>
-        <div className="form-grid">
-          <div className="field">
-            <label htmlFor="cp-id">
-              提供商 id <span className="required">*</span>
-            </label>
-            <input
-              id="cp-id"
-              type="text"
-              value={form.id}
-              disabled={isEdit}
-              placeholder="如 my-gateway"
-              autoComplete="off"
-              spellCheck={false}
-              onChange={(event) => update("id", event.target.value.toLowerCase())}
-            />
-            <span className="field-help">小写字母、数字、连字符；模型规格写作 id/model-id，保存后不可改</span>
-          </div>
-          <div className="field">
-            <label htmlFor="cp-name">显示名称</label>
-            <input id="cp-name" type="text" value={form.name} placeholder="留空则用 id" onChange={(event) => update("name", event.target.value)} />
-          </div>
+        <legend>基本信息</legend>
+        <div className="field">
+          <label htmlFor="cp-name">
+            服务名称 <span className="required">*</span>
+          </label>
+          <input
+            id="cp-name"
+            type="text"
+            value={form.name}
+            placeholder="如：公司 GLM 网关"
+            autoComplete="off"
+            onChange={(event) => update("name", event.target.value)}
+            data-testid="custom-provider-name"
+          />
+          <span className="field-help">仅用于界面显示，可以是任意语言</span>
         </div>
         <div className="field">
           <label htmlFor="cp-base-url">
-            Base URL <span className="required">*</span>
+            API 地址 <span className="required">*</span>
           </label>
           <input
             id="cp-base-url"
@@ -369,122 +594,14 @@ function CustomProviderForm({
             autoComplete="off"
             spellCheck={false}
             onChange={(event) => update("baseUrl", event.target.value)}
+            data-testid="custom-provider-base-url"
           />
-          <span className="field-help">不含 /v1/messages、/chat/completions 这类路径；协议决定请求路径</span>
-        </div>
-        <div className="form-grid">
-          <div className="field">
-            <label htmlFor="cp-api">接口协议</label>
-            <select id="cp-api" value={form.api} onChange={(event) => update("api", event.target.value as CustomProviderApi)}>
-              {(Object.keys(API_LABEL) as CustomProviderApi[]).map((api) => (
-                <option key={api} value={api}>
-                  {API_LABEL[api]}
-                </option>
-              ))}
-            </select>
-            <span className="field-help">{API_HELP[form.api]}</span>
-          </div>
-          <div className="field">
-            <label htmlFor="cp-auth-header">认证方式</label>
-            <label className="check" htmlFor="cp-auth-header">
-              <input
-                id="cp-auth-header"
-                type="checkbox"
-                checked={form.authHeader}
-                onChange={(event) => update("authHeader", event.target.checked)}
-              />
-              <span>用 Authorization: Bearer 发送 API Key</span>
-            </label>
-            <span className="field-help">
-              {form.api === "anthropic-messages" ? "不勾选则用 Anthropic 原生的 x-api-key 头；多数网关需要 Bearer。" : "OpenAI 协议本就使用 Bearer，此项通常保持勾选。"}
-            </span>
-          </div>
+          <span className="field-help">
+            网关根地址，不含 /v1/messages、/chat/completions 等路径后缀（协议在高级设置中选择）
+          </span>
         </div>
         <div className="field">
-          <label htmlFor="cp-headers">额外请求头（可选）</label>
-          <textarea
-            id="cp-headers"
-            rows={2}
-            value={form.headersText}
-            placeholder={"每行一个，格式 名称: 值\nX-Tenant: research"}
-            spellCheck={false}
-            onChange={(event) => update("headersText", event.target.value)}
-          />
-          <span className="field-help">不能放 Authorization / x-api-key 等认证头，Key 请填在下方</span>
-        </div>
-      </fieldset>
-
-      <fieldset className="form-section">
-        <legend>模型列表</legend>
-        <div className="table-scroll">
-          <table className="data-table model-rows" data-testid="custom-model-rows">
-            <thead>
-              <tr>
-                <th>Model ID</th>
-                <th>显示名称</th>
-                <th>上下文窗口</th>
-                <th>最大输出</th>
-                <th>推理</th>
-                <th>图片</th>
-                <th aria-label="操作" />
-              </tr>
-            </thead>
-            <tbody>
-              {form.models.map((row, index) => (
-                <tr key={row.key}>
-                  <td>
-                    <input
-                      type="text"
-                      aria-label={`模型 ${index + 1} 的 Model ID`}
-                      value={row.id}
-                      placeholder="claude-sonnet-4-5"
-                      spellCheck={false}
-                      onChange={(event) => updateRow(row.key, { id: event.target.value })}
-                    />
-                  </td>
-                  <td>
-                    <input type="text" aria-label={`模型 ${index + 1} 的显示名称`} value={row.name} placeholder="留空则用 Model ID" onChange={(event) => updateRow(row.key, { name: event.target.value })} />
-                  </td>
-                  <td>
-                    <input type="text" inputMode="numeric" aria-label={`模型 ${index + 1} 的上下文窗口`} value={row.contextWindow} onChange={(event) => updateRow(row.key, { contextWindow: event.target.value })} />
-                  </td>
-                  <td>
-                    <input type="text" inputMode="numeric" aria-label={`模型 ${index + 1} 的最大输出`} value={row.maxTokens} onChange={(event) => updateRow(row.key, { maxTokens: event.target.value })} />
-                  </td>
-                  <td>
-                    <input type="checkbox" aria-label={`模型 ${index + 1} 支持推理`} checked={row.reasoning} onChange={(event) => updateRow(row.key, { reasoning: event.target.checked })} />
-                  </td>
-                  <td>
-                    <input type="checkbox" aria-label={`模型 ${index + 1} 支持图片输入`} checked={row.image} onChange={(event) => updateRow(row.key, { image: event.target.checked })} />
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      className="btn btn-small"
-                      aria-label={`移除模型 ${index + 1}`}
-                      disabled={form.models.length === 1}
-                      onClick={() => setForm((current) => ({ ...current, models: current.models.filter((item) => item.key !== row.key) }))}
-                    >
-                      移除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="action-row">
-          <button type="button" className="btn btn-small" onClick={() => setForm((current) => ({ ...current, models: [...current.models, emptyRow()] }))} data-testid="add-model-row">
-            添加模型
-          </button>
-          <span className="field-help">「推理」只在服务端确实支持 thinking 时勾选，否则请求会带上不被接受的参数。</span>
-        </div>
-      </fieldset>
-
-      <fieldset className="form-section">
-        <legend>凭据</legend>
-        <div className="field">
-          <label htmlFor="cp-api-key">API Key{isEdit ? "（留空则保留已保存的 Key）" : ""}</label>
+          <label htmlFor="cp-api-key">API Key{isEdit && authConfigured ? "（留空则继续使用已保存的 Key）" : ""}</label>
           <div className="input-group">
             <input
               id="cp-api-key"
@@ -492,7 +609,7 @@ function CustomProviderForm({
               value={form.apiKey}
               autoComplete="off"
               spellCheck={false}
-              placeholder={isEdit ? "留空则保留当前 Key" : "可稍后在上方「模型与凭据」中填写"}
+              placeholder={isEdit ? (authConfigured ? "留空则继续使用已保存的 Key" : "输入新的 API Key") : "输入网关分发的 API Key（本地免认证服务可留空）"}
               onChange={(event) => update("apiKey", event.target.value)}
               data-testid="custom-provider-api-key"
             />
@@ -500,9 +617,354 @@ function CustomProviderForm({
               {showKey ? "隐藏" : "显示"}
             </button>
           </div>
-          <span className="field-help">只发往本机 Backend 保存，不会回显。</span>
+          <span className="field-help">只发往本机 Backend 保存（不回显）；获取模型与测试连接都会使用它</span>
         </div>
       </fieldset>
+
+      <fieldset className="form-section">
+        <legend>模型</legend>
+        <div className="discovery-bar">
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={runDiscovery}
+            disabled={discover.isPending}
+            data-testid="discover-models"
+            title="由 Backend 请求网关的模型目录（OpenAI 兼容 /v1/models 等）；不会向浏览器暴露 Key"
+          >
+            {discover.isPending ? "获取中…" : "获取可用模型"}
+          </button>
+          {discoveryResult !== undefined && discoveryResult.ok ? (
+            <span className="discovery-status ok" data-testid="discovery-status" role="status">
+              ✓ {discoveryResult.models?.length ?? 0} 个模型
+              {discoveryResult.sourcePath !== undefined ? `（来自 ${discoveryResult.sourcePath}）` : ""}
+              {discoveryResult.authSource === "stored" ? "，使用已保存的 Key" : ""}
+              {discoveryResult.truncated ? "，已截断" : ""}
+            </span>
+          ) : discoveryResult !== undefined && !discoveryResult.ok ? (
+            <span className="discovery-status error" data-testid="discovery-status" role="alert">
+              {DISCOVERY_ERROR_LABEL[discoveryResult.code ?? "UNKNOWN"]}
+            </span>
+          ) : (
+            <span className="discovery-status muted">从网关自动拉取模型列表；目录不可用时可在下方手动添加</span>
+          )}
+        </div>
+        {discoveryResult !== undefined && !discoveryResult.ok && discoveryResult.detail !== undefined ? (
+          <p className="note note-warn" role="status">
+            <span>{discoveryResult.detail}</span>
+          </p>
+        ) : null}
+        {discover.isError ? (
+          <p className="form-error" role="alert">
+            获取失败：{formatApiError(discover.error)}
+          </p>
+        ) : null}
+
+        {catalog !== null ? (
+          <div className="field">
+            <label htmlFor="cp-model-search">搜索模型（{selectedCount} 个已选）</label>
+            <input
+              id="cp-model-search"
+              type="search"
+              value={search}
+              placeholder="按 Model ID 或名称筛选"
+              onChange={(event) => setSearch(event.target.value)}
+              data-testid="model-search"
+            />
+          </div>
+        ) : null}
+        {catalog !== null ? (
+          <div className="model-catalog" data-testid="model-catalog" role="group" aria-label="可用模型列表">
+            {groupedCatalog.length === 0 ? (
+              <p className="model-catalog-empty muted">
+                {catalog.length === 0 ? "目录为空：该服务返回了 0 个模型，可手动添加" : "没有匹配的模型"}
+              </p>
+            ) : (
+              groupedCatalog.map(([group, entries]) => (
+                <div key={group} className="model-catalog-group">
+                  {group !== "" ? <div className="model-catalog-group-label muted">{group}</div> : null}
+                  {entries.map((entry) => {
+                    const checked = form.models.some((row) => row.id === entry.id);
+                    return (
+                      <label key={entry.id} className="model-catalog-row">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) =>
+                            event.target.checked
+                              ? addModel({
+                                  id: entry.id,
+                                  name: entry.name,
+                                  contextWindow: entry.contextWindow,
+                                  metadataVerified: entry.contextWindow !== undefined,
+                                })
+                              : removeModel(entry.id)
+                          }
+                          data-testid={`catalog-model-${entry.id}`}
+                        />
+                        <span className="mono">{entry.id}</span>
+                        {entry.name !== undefined && entry.name !== entry.id ? <span className="muted">{entry.name}</span> : null}
+                        {entry.contextWindow !== undefined ? (
+                          <span className="model-catalog-meta muted">{Math.round(entry.contextWindow / 1000)}k 上下文</span>
+                        ) : null}
+                      </label>
+                    );
+                  })}
+                </div>
+              ))
+            )}
+          </div>
+        ) : null}
+
+        <div className="manual-add-row">
+          <label className="visually-hidden" htmlFor="cp-manual-model">
+            手动添加 Model ID
+          </label>
+          <input
+            id="cp-manual-model"
+            type="text"
+            value={manualId}
+            placeholder="手动添加 Model ID（目录不支持时使用）"
+            spellCheck={false}
+            onChange={(event) => setManualId(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addManualModel();
+              }
+            }}
+            data-testid="manual-model-id"
+          />
+          <button type="button" className="btn btn-small" onClick={addManualModel} data-testid="add-manual-model">
+            添加
+          </button>
+        </div>
+
+        {form.models.length > 0 ? (
+          <div className="selected-models" data-testid="selected-models">
+            <div className="selected-models-head muted">
+              已选模型 <span className="num">{selectedCount}</span> 个；点击展开可编辑名称、上下文窗口等参数
+            </div>
+            {form.models.map((entry) => (
+              <details key={entry.key} className="selected-model">
+                <summary>
+                  <span className="mono">{entry.id}</span>
+                  {entry.name.trim() !== "" && entry.name !== entry.id ? <span className="muted">（{entry.name}）</span> : null}
+                  {!entry.metadataVerified ? (
+                    <span className="badge-unverified" title="上下文窗口 / 最大输出为保守默认值，未经上游目录确认">
+                      未验证
+                    </span>
+                  ) : null}
+                </summary>
+                <div className="form-grid selected-model-body">
+                  <div className="field">
+                    <label htmlFor={`model-name-${entry.key}`}>显示名称</label>
+                    <input
+                      id={`model-name-${entry.key}`}
+                      type="text"
+                      value={entry.name}
+                      placeholder="留空则用 Model ID"
+                      onChange={(event) => updateEntry(entry.key, { name: event.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`model-context-${entry.key}`}>上下文窗口</label>
+                    <input
+                      id={`model-context-${entry.key}`}
+                      type="text"
+                      inputMode="numeric"
+                      value={entry.contextWindow}
+                      aria-describedby={`model-context-help-${entry.key}`}
+                      onChange={(event) => updateEntry(entry.key, { contextWindow: event.target.value, metadataVerified: true })}
+                    />
+                    <span className="field-help" id={`model-context-help-${entry.key}`}>
+                      {entry.metadataVerified ? "" : "默认保守值，未经上游验证；"}确认后可修改
+                    </span>
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`model-max-${entry.key}`}>最大输出</label>
+                    <input
+                      id={`model-max-${entry.key}`}
+                      type="text"
+                      inputMode="numeric"
+                      value={entry.maxTokens}
+                      onChange={(event) => updateEntry(entry.key, { maxTokens: event.target.value, metadataVerified: true })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={entry.reasoning}
+                        onChange={(event) => updateEntry(entry.key, { reasoning: event.target.checked })}
+                      />
+                      <span>支持推理（thinking）</span>
+                    </label>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={entry.image}
+                        onChange={(event) => updateEntry(entry.key, { image: event.target.checked })}
+                      />
+                      <span>支持图片输入</span>
+                    </label>
+                  </div>
+                </div>
+                <div className="action-row">
+                  <button type="button" className="btn btn-small btn-danger" onClick={() => removeModel(entry.id)}>
+                    移除模型
+                  </button>
+                </div>
+              </details>
+            ))}
+          </div>
+        ) : (
+          <p className="muted" data-testid="no-models-hint">
+            尚未选择模型：点击「获取可用模型」，或在上方手动输入 Model ID。
+          </p>
+        )}
+      </fieldset>
+
+      <fieldset className="form-section">
+        <legend>测试连接（保存前）</legend>
+        <div className="test-row">
+          <div className="field">
+            <label htmlFor="cp-test-model">测试模型</label>
+            <select
+              id="cp-test-model"
+              value={testModelId !== "" ? testModelId : form.models[0]?.id ?? ""}
+              onChange={(event) => {
+                setTestModelId(event.target.value);
+                test.reset();
+              }}
+              disabled={form.models.length === 0}
+              data-testid="test-model-select"
+            >
+              {form.models.length === 0 ? <option value="">（请先选择模型）</option> : null}
+              {form.models.map((entry) => (
+                <option key={entry.key} value={entry.id}>
+                  {entry.id}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            className="btn"
+            onClick={runTest}
+            disabled={form.models.length === 0 || test.isPending}
+            data-testid="test-custom-provider"
+            title="用当前配置发起一次最小真实调用（不保存；测试成功 ≠ 已保存）"
+          >
+            {test.isPending ? "测试中…" : "测试连接"}
+          </button>
+        </div>
+        {test.data !== undefined ? (
+          test.data.ok ? (
+            <p className="note note-success" role="status" data-testid="custom-test-result">
+              <span>
+                <span className="note-mark">✓</span> 连接正常：{test.data.model}（{test.data.latencyMs}ms）。保存后即可在默认模型与
+                Per-Agent 配置中选择。
+              </span>
+            </p>
+          ) : (
+            <div className="note note-error" role="alert" data-testid="custom-test-result">
+              <span>
+                <span className="note-mark">✗</span> {TEST_CODE_LABEL[test.data.code ?? "UNKNOWN"] ?? "测试失败"}
+                {test.data.detail !== undefined ? (
+                  <details className="details-block" style={{ marginTop: "var(--s-2)" }}>
+                    <summary>详细信息</summary>
+                    <div className="details-body mono">{test.data.detail}</div>
+                  </details>
+                ) : null}
+              </span>
+            </div>
+          )
+        ) : null}
+        {test.isError ? (
+          <p className="form-error" role="alert">
+            测试请求失败：{formatApiError(test.error)}
+          </p>
+        ) : null}
+      </fieldset>
+
+      <details className="advanced-block" data-testid="advanced-settings" open={advancedOpen}>
+        <summary
+          onClick={(event) => {
+            event.preventDefault();
+            setAdvancedOpen((value) => !value);
+          }}
+        >
+          高级设置（协议 / 认证 / 发现路径 / 技术详情）
+        </summary>
+        <div className="advanced-body">
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="cp-api">接口协议</label>
+              <select id="cp-api" value={form.api} onChange={(event) => update("api", event.target.value as CustomProviderApi)}>
+                {(Object.keys(API_LABEL) as CustomProviderApi[]).map((api) => (
+                  <option key={api} value={api}>
+                    {API_LABEL[api]}
+                  </option>
+                ))}
+              </select>
+              <span className="field-help">{API_HELP[form.api]}</span>
+            </div>
+            <div className="field">
+              <label htmlFor="cp-auth-header">认证方式</label>
+              <label className="check" htmlFor="cp-auth-header">
+                <input
+                  id="cp-auth-header"
+                  type="checkbox"
+                  checked={form.authHeader}
+                  onChange={(event) => update("authHeader", event.target.checked)}
+                />
+                <span>用 Authorization: Bearer 发送 API Key</span>
+              </label>
+              <span className="field-help">
+                {form.api === "anthropic-messages" ? "不勾选则用 Anthropic 原生的 x-api-key 头；多数公司网关需要 Bearer。" : "OpenAI 协议本就使用 Bearer，此项通常保持勾选。"}
+              </span>
+            </div>
+          </div>
+          <div className="field">
+            <label htmlFor="cp-models-path">模型发现路径（可选）</label>
+            <input
+              id="cp-models-path"
+              type="text"
+              value={form.modelsPath}
+              placeholder="自动（/v1/models 或 /models，按地址推导）"
+              spellCheck={false}
+              onChange={(event) => update("modelsPath", event.target.value)}
+            />
+            <span className="field-help">仅影响「获取可用模型」，不影响推理路径；网关目录在非标准位置时填写，如 /openai/v1/models</span>
+          </div>
+          <div className="field">
+            <label htmlFor="cp-headers">额外请求头（可选）</label>
+            <textarea
+              id="cp-headers"
+              rows={2}
+              value={form.headersText}
+              placeholder={"每行一个，格式 名称: 值\nX-Tenant: research"}
+              spellCheck={false}
+              onChange={(event) => update("headersText", event.target.value)}
+            />
+            <span className="field-help">不能放 Authorization / x-api-key 等认证头，Key 请填在上方</span>
+          </div>
+          <div className="field">
+            <label htmlFor="cp-provider-id">Provider ID（只读）</label>
+            <input
+              id="cp-provider-id"
+              type="text"
+              value={isEdit ? form.id : "保存时自动生成"}
+              readOnly
+              disabled={!isEdit}
+              className="mono"
+              data-testid="custom-provider-id"
+            />
+            <span className="field-help">系统内部唯一标识（模型规格写作 id/model-id），由服务端自动生成并保持不变</span>
+          </div>
+        </div>
+      </details>
 
       {localError !== null ? (
         <p className="form-error" role="alert" data-testid="custom-provider-error">
@@ -516,9 +978,26 @@ function CustomProviderForm({
       ) : null}
 
       <div className="form-actions">
-        <button type="button" className="btn" onClick={onCancel} disabled={save.isPending}>
-          取消
-        </button>
+        {confirmDiscard ? (
+          <span className="inline-confirm" role="group" aria-label="确认放弃未保存的修改">
+            <span>有未保存的修改。</span>
+            <button
+              type="button"
+              className="btn btn-small btn-danger"
+              onClick={onCancel}
+              data-testid="confirm-discard"
+            >
+              放弃修改
+            </button>
+            <button type="button" className="btn btn-small" onClick={() => setConfirmDiscard(false)}>
+              继续编辑
+            </button>
+          </span>
+        ) : (
+          <button type="button" className="btn" onClick={requestCancel} disabled={save.isPending} data-testid="cancel-edit">
+            取消
+          </button>
+        )}
         <button type="submit" className="btn btn-primary" disabled={save.isPending} data-testid="save-custom-provider">
           {save.isPending ? "保存中…" : isEdit ? "保存修改" : "保存提供商"}
         </button>

@@ -782,9 +782,14 @@ export interface CustomProviderModelInput {
   contextWindow: number;
   maxTokens: number;
   input: Array<"text" | "image">;
+  /** 上下文/输出数值是否经确认（上游目录提供或用户显式编辑）；缺省 = 保守默认值 */
+  metadataVerified?: boolean;
 }
 
-/** PUT /api/settings/model/custom-providers/:id 的 provider 字段 */
+/**
+ * PUT /api/settings/model/custom-providers/:id 的 provider 字段
+ * （POST 新建时 id 传空串，由服务端自动生成并随响应返回）
+ */
 export interface CustomProviderInput {
   id: string;
   name: string;
@@ -793,12 +798,50 @@ export interface CustomProviderInput {
   authHeader: boolean;
   headers: Record<string, string>;
   models: CustomProviderModelInput[];
+  /** 高级设置：模型发现路径覆盖（缺省 = 按 baseUrl/协议自动推导） */
+  modelsPath?: string;
 }
 
 /** GET /api/settings/model/custom-providers 条目（不含 key） */
 export interface CustomProviderView extends CustomProviderInput {
   updatedAt: string;
   authConfigured: boolean;
+}
+
+/** 模型目录发现返回的单个模型（安全 metadata；无 key） */
+export interface DiscoveredModelView {
+  id: string;
+  name?: string;
+  ownedBy?: string;
+  /** 上游目录提供的上下文窗口（缺省 = 未经上游验证） */
+  contextWindow?: number;
+}
+
+export type ModelDiscoveryErrorCodeView =
+  | "AUTH_FAILED"
+  | "NOT_SUPPORTED"
+  | "RATE_LIMITED"
+  | "SERVER_ERROR"
+  | "TIMEOUT"
+  | "BAD_RESPONSE"
+  | "REDIRECTED"
+  | "NETWORK"
+  | "UNKNOWN";
+
+/** POST /api/settings/model/custom-providers/discover-models 的结果 */
+export interface ModelDiscoveryResultView {
+  ok: boolean;
+  /** ok=true 时有值 */
+  models?: DiscoveredModelView[];
+  sourcePath?: string;
+  total?: number;
+  truncated?: boolean;
+  /** ok=false 时有值 */
+  code?: ModelDiscoveryErrorCodeView;
+  detail?: string;
+  attemptedPaths?: string[];
+  /** 凭据来源：request = 本次输入的 Key；stored = 已保存 Key；none = 免认证尝试 */
+  authSource: "request" | "stored" | "none";
 }
 
 /** 单个模型目录条目（安全 metadata） */

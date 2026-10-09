@@ -256,6 +256,44 @@ describe("HTTP /api/settings/model/custom-providers", () => {
 
     expect((await request(server, "DELETE", "/api/settings/model/custom-providers/my-gateway")).status).toBe(200);
     expect((await request(server, "DELETE", "/api/settings/model/custom-providers/my-gateway")).status).toBe(404);
-    expect((await request(server, "POST", "/api/settings/model/custom-providers")).status).toBe(405);
+    // M13.4：POST 成为新建入口（provider.id 缺省由服务端生成）；缺 provider → 400
+    expect((await request(server, "POST", "/api/settings/model/custom-providers")).status).toBe(400);
+  });
+
+  it("POST 新建：id 缺省 → 自动生成（名称 slug），返回体带生成后的 id；重复名称 → 自动加序号；编辑 PUT 保持 id 不变", async () => {
+    const { server } = await makeServer();
+    const created = await request(server, "POST", "/api/settings/model/custom-providers", {
+      provider: { ...GATEWAY, id: undefined, name: "Company GLM Gateway" },
+    });
+    expect(created.status).toBe(200);
+    expect((created.body["provider"] as Record<string, unknown>)["id"]).toBe("company-glm-gateway");
+
+    // 中文名称中的英文片段保留为 slug
+    const mixed = await request(server, "POST", "/api/settings/model/custom-providers", {
+      provider: { ...GATEWAY, id: undefined, name: "公司 GLM 网关" },
+    });
+    expect((mixed.body["provider"] as Record<string, unknown>)["id"]).toBe("glm");
+
+    // 纯中文名称完全折叠 → 落到 baseUrl 主机名
+    const chinese = await request(server, "POST", "/api/settings/model/custom-providers", {
+      provider: { ...GATEWAY, id: undefined, name: "智谱网关" },
+    });
+    expect((chinese.body["provider"] as Record<string, unknown>)["id"]).toBe("gateway-example-test");
+
+    // 同名冲突 → -2 序号；绝不覆盖已有条目
+    const dup = await request(server, "POST", "/api/settings/model/custom-providers", {
+      provider: { ...GATEWAY, id: undefined, name: "Company GLM Gateway" },
+    });
+    expect((dup.body["provider"] as Record<string, unknown>)["id"]).toBe("company-glm-gateway-2");
+    expect(((await request(server, "GET", "/api/settings/model/custom-providers")).body["providers"] as unknown[]).length).toBe(4);
+
+    // 编辑既有提供商：PUT 路径 id = 生成 id，改名后 id 保持不变
+    const renamed = await request(server, "PUT", "/api/settings/model/custom-providers/company-glm-gateway", {
+      provider: { ...GATEWAY, id: "company-glm-gateway", name: "Renamed Gateway" },
+    });
+    expect(renamed.status).toBe(200);
+    expect((renamed.body["provider"] as Record<string, unknown>)["name"]).toBe("Renamed Gateway");
+    const list = (await request(server, "GET", "/api/settings/model/custom-providers")).body["providers"] as Array<Record<string, unknown>>;
+    expect(list.filter((entry) => entry["id"] === "company-glm-gateway").length).toBe(1);
   });
 });

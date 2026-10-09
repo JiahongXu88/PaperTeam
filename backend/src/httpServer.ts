@@ -724,8 +724,18 @@ async function handleRequest(
  *   GET    /api/settings/model/options         provider 列表（?provider= 查该 provider 模型）
  *   POST   /api/settings/model/test            Test Connection {model, apiKey?, apiChannel?}
  *   GET    /api/settings/model/custom-providers          自定义提供商列表（不含 key）
- *   PUT    /api/settings/model/custom-providers/:id      新建 / 整体替换 {provider, apiKey?}
+ *   POST   /api/settings/model/custom-providers          新建（provider.id 可缺省，
+ *            服务端自动生成合法唯一 id，冲突自动加序号，绝不覆盖已有条目）
+ *   PUT    /api/settings/model/custom-providers/:id      整体替换 {provider, apiKey?}
+ *            （path 必须等于 provider.id——编辑时 id 不变）
  *   DELETE /api/settings/model/custom-providers/:id      删除（连同其本地凭据与指向它的模型偏好）
+ *   POST   /api/settings/model/custom-providers/discover-models  模型目录发现
+ *            {baseUrl, api?, authHeader?, headers?, modelsPath?, apiKey?, providerId?}
+ *            （Backend 代发请求规避 CORS；key 只经请求头，绝不进 URL/日志；
+ *            providerId 已注册时优先复用其已保存凭据；404/405 ≠ 网关不可用）
+ *   POST   /api/settings/model/custom-providers/test     保存前 Test Connection
+ *            {provider, modelId, apiKey?}（临时注册→真实 completeSimple→恢复；
+ *            失败不留半配置；成功 ≠ 已保存）
  *
  * 安全约束：所有响应不携带 key 本体；apiKey 只经 PUT/test 请求体进入，
  * 不落任何日志（请求体从不打印）。agents 配置本身不含任何 key——
@@ -863,13 +873,105 @@ async function handleModelSettingsRoutes(
       sendJson(res, 200, { providers: await service.listCustomProviders() });
       return true;
     }
-    res.setHeader("Allow", "GET");
+    if (method === "POST") {
+      // M13.4 新建：provider.id 可缺省 / 空串（服务端自动生成）；返回体带生成后的 id
+      const body = await readJsonBody(req);
+      const provider = body["provider"];
+      if (typeof provider !== "object" || provider === null || Array.isArray(provider)) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含对象字段 provider");
+      }
+      const apiKeyField = body["apiKey"];
+      if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
+        throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
+      }
+      const result = await service.saveCustomProvider(
+        provider,
+        typeof apiKeyField === "string" ? apiKeyField : undefined,
+      );
+      sendJson(res, 200, result);
+      return true;
+    }
+    res.setHeader("Allow", "GET, POST");
     sendJson(res, 405, { status: "method_not_allowed", method });
     return true;
   }
 
+  if (pathname === "/api/settings/model/custom-providers/discover-models" && method === "POST") {
+    const body = await readJsonBody(req);
+    const baseUrl = readStringField(body, "baseUrl");
+    if (baseUrl === undefined) {
+      throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 baseUrl");
+    }
+    const apiKeyField = body["apiKey"];
+    if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
+      throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
+    }
+    const providerIdField = body["providerId"];
+    if (providerIdField !== undefined && typeof providerIdField !== "string") {
+      throw new BusinessError("INVALID_REQUEST", "字段 providerId 必须是字符串");
+    }
+    const apiField = body["api"];
+    if (
+      apiField !== undefined &&
+      apiField !== "anthropic-messages" &&
+      apiField !== "openai-completions" &&
+      apiField !== "openai-responses"
+    ) {
+      throw new BusinessError(
+        "INVALID_REQUEST",
+        '字段 api 必须是 "anthropic-messages" / "openai-completions" / "openai-responses"',
+      );
+    }
+    const authHeaderField = body["authHeader"];
+    if (authHeaderField !== undefined && typeof authHeaderField !== "boolean") {
+      throw new BusinessError("INVALID_REQUEST", "字段 authHeader 必须是布尔值");
+    }
+    const headersField = body["headers"];
+    if (headersField !== undefined && (typeof headersField !== "object" || headersField === null || Array.isArray(headersField))) {
+      throw new BusinessError("INVALID_REQUEST", "字段 headers 必须是对象");
+    }
+    const modelsPathField = body["modelsPath"];
+    if (modelsPathField !== undefined && typeof modelsPathField !== "string") {
+      throw new BusinessError("INVALID_REQUEST", "字段 modelsPath 必须是字符串");
+    }
+    const result = await service.discoverCustomProviderModels({
+      baseUrl,
+      ...(apiField !== undefined ? { api: apiField } : {}),
+      ...(authHeaderField !== undefined ? { authHeader: authHeaderField } : {}),
+      ...(headersField !== undefined ? { headers: headersField as Record<string, string> } : {}),
+      ...(modelsPathField !== undefined ? { modelsPath: modelsPathField } : {}),
+      ...(typeof apiKeyField === "string" && apiKeyField !== "" ? { apiKey: apiKeyField } : {}),
+      ...(typeof providerIdField === "string" && providerIdField !== "" ? { providerId: providerIdField } : {}),
+    });
+    sendJson(res, 200, { result });
+    return true;
+  }
+
+  if (pathname === "/api/settings/model/custom-providers/test" && method === "POST") {
+    const body = await readJsonBody(req);
+    const provider = body["provider"];
+    if (typeof provider !== "object" || provider === null || Array.isArray(provider)) {
+      throw new BusinessError("INVALID_REQUEST", "请求体必须包含对象字段 provider");
+    }
+    const modelId = readStringField(body, "modelId");
+    if (modelId === undefined) {
+      throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空字符串字段 modelId");
+    }
+    const apiKeyField = body["apiKey"];
+    if (apiKeyField !== undefined && typeof apiKeyField !== "string") {
+      throw new BusinessError("INVALID_REQUEST", "字段 apiKey 必须是字符串");
+    }
+    const result = await service.testCustomProvider({
+      provider,
+      modelId,
+      ...(typeof apiKeyField === "string" && apiKeyField !== "" ? { apiKey: apiKeyField } : {}),
+    });
+    sendJson(res, 200, { result });
+    return true;
+  }
+
   const customProviderMatch = /^\/api\/settings\/model\/custom-providers\/([^/]+)$/.exec(pathname);
-  if (customProviderMatch !== null) {
+  if (customProviderMatch !== null && customProviderMatch[1] !== "discover-models" && customProviderMatch[1] !== "test") {
     const id = decodeURIComponent(customProviderMatch[1] ?? "");
     if (method === "PUT") {
       const body = await readJsonBody(req);
@@ -899,8 +1001,20 @@ async function handleModelSettingsRoutes(
   }
 
   // 不匹配的子路径（如 GET /api/settings/model/key）：交给上层 404
-  if (pathname === "/api/settings/model/key" || pathname === "/api/settings/model/options" || pathname === "/api/settings/model/test") {
-    res.setHeader("Allow", pathname === "/api/settings/model/key" ? "DELETE" : pathname === "/api/settings/model/options" ? "GET" : "POST");
+  if (
+    pathname === "/api/settings/model/key" ||
+    pathname === "/api/settings/model/options" ||
+    pathname === "/api/settings/model/test" ||
+    pathname === "/api/settings/model/custom-providers/discover-models" ||
+    pathname === "/api/settings/model/custom-providers/test"
+  ) {
+    const allow =
+      pathname === "/api/settings/model/key"
+        ? "DELETE"
+        : pathname === "/api/settings/model/options"
+          ? "GET"
+          : "POST";
+    res.setHeader("Allow", allow);
     sendJson(res, 405, { status: "method_not_allowed", method });
     return true;
   }
