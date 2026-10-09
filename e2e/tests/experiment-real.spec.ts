@@ -122,11 +122,11 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     await gotoTab(page, `/projects/${projectId}?tab=figures`, () =>
       expect(page.getByTestId("plot-dataset-select")).toBeVisible({ timeout: 45_000 }));
     const datasetSelect = page.getByTestId("plot-dataset-select");
-    // 机会行流数据集（2074 行）
+    // 机会行流数据集（2074 行）；<option> 在闭合 select 内不可见，用 count 断言
     const options = datasetSelect.locator("option");
     const oppOption = options.filter({ hasText: /cps_opportunities/ }).first();
-    await expect(oppOption).toBeVisible({ timeout: 90_000 });
-    await datasetSelect.selectOption({ label: (await oppOption.textContent()) ?? "" });
+    await expect(options.filter({ hasText: /cps_opportunities/ })).toHaveCount(1, { timeout: 90_000 });
+    await datasetSelect.selectOption(await oppOption.getAttribute("value"));
 
     await page.getByTestId("plot-type-select").selectOption("scatter");
     await page.getByTestId("plot-x-select").selectOption("score");
