@@ -100,7 +100,7 @@ test.describe.serial("M13.3 真实实验包浏览器验收", () => {
     await a0Group.blur();
 
     for (const groupId of ["main", "opp-universe", "baseline-a0"]) {
-      const groupItem = page.locator("ul").filter({ has: page.locator("strong", { hasText: groupId }) }).first();
+      const groupItem = page.locator("li").filter({ has: page.locator("strong", { hasText: new RegExp(`^${groupId}$`) }) });
       await groupItem.getByRole("button", { name: "确认此组" }).click();
       await expect(page.getByText(/作者确认已保存/)).toBeVisible({ timeout: 30_000 });
     }
