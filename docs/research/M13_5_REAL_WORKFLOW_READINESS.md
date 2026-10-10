@@ -134,12 +134,14 @@ schema v2（`ExperimentPackage.schemaVersion: 1|2`，v1 原样可读、语义不
 
 ## 12. GitHub CI / Linux Integration
 
-本轮 5 个提交：`2257b3e`（thinking 兼容修复）、`8c5d16b`（split-aware grouping）、`8c34df3`（工作台 UI + 上传入口 + 目录收起）、`e2e + 竞态修复`、`docs`（本报告）。推送后 CI 结果见下表（push 走 127.0.0.1:7890 代理重试法）。
+本轮 5 个提交：`2257b3e`（thinking 兼容修复）、`fcaba1c`（split-aware grouping）、`8c34df3`（工作台 UI + 上传入口 + 目录收起）、`8abe8c9`（e2e + 竞态修复）、`ee82d93`（docs）。作者随后在同基线上追加了两个提交（`592b21b` 实验 ZIP 上传错误处理前端化、`6cfdcd7` V2.1 工作台视觉迭代——保留 M13.5 全部交互与 testid，并补充了新前端测试；合并后 HEAD 前端 326 测试 / 前后端 typecheck 全过）。推送后核验：
 
 | 项 | 结果 |
 |---|---|
-| GitHub CI | 见提交后补记（推送后核验） |
-| Linux Integration | 见提交后补记（推送后核验） |
+| GitHub CI | **PASS**（`CI` 5m54s success） |
+| Linux Integration | **PASS**（14m26s / 6m19s success） |
+
+（推送当晚 7890 代理通道中断，经 FlClash 恢复后落地；期间用本地中继兜底，未改任何系统网络配置。）
 
 ## 13. 已知剩余限制
 
