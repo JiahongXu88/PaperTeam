@@ -5037,6 +5037,9 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       const evidence = evidenceSelection.formal;
       // M9.5：写作允许引用的 key = canonical bibliography（确定性 key）
       const bibliography = await buildCanonicalBibliography(services, ctx.projectId);
+      // M13.5.4：作者确认 + 授权的实验观测是实验数值的唯一来源（Writer 文件工具
+      // 已被工作区隔离挡在实验原始材料之外）；空上下文也要显式注入（禁写数值）
+      const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
 
       let bytesTotal = 0;
       const written: string[] = [];
@@ -5050,6 +5053,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           outline,
           evidence,
           bibliography,
+          experimentContext,
           ...(language !== undefined ? { language } : {}),
         });
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);

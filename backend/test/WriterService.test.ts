@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import { AgentRunFailedError, InvalidLatexOutputError } from "../src/errors.js";
 import type { AgentRuntime, AgentTask } from "../src/runtime/types.js";
 import type { ReviewIssue } from "../src/agents/ReviewerService.js";
-import { WriterService, buildWriterPrompt, partitionEvidenceBackedKeys } from "../src/writer/WriterService.js";
+import { WriterService, buildSectionPrompt, buildWriterPrompt, partitionEvidenceBackedKeys, renderExperimentContextLines } from "../src/writer/WriterService.js";
 import type { EvidenceRecord } from "../src/evidence/EvidenceStore.js";
 
 /** 可编程的假 Runtime：记录调用并返回预设任务结果 */
@@ -940,5 +940,57 @@ describe("WriterService M10.3.1：整文件修订交付契约（工具改盘 / �
     });
     expect(runtime.calls[0]!.task).toContain("交付方式契约");
     expect(runtime.calls[0]!.task).toContain("最终回复消息");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M13.5.4 Writer 实验上下文：授权观测是实验数值的唯一来源；无授权时明确禁写数值
+// ---------------------------------------------------------------------------
+
+describe("WriterService（M13.5.4 experimentContext prompt）", () => {
+  const outline = {
+    title: "T",
+    abstract: "A",
+    sections: [{ id: "experiments", title: "实验设置与结果", file: "experiments.tex" }],
+  } as unknown as Parameters<typeof buildSectionPrompt>[0]["outline"];
+  const section = outline.sections[0]!;
+
+  it("undefined = legacy 不注入；空上下文 = 明确禁止写入任何具体实验数值", () => {
+    expect(renderExperimentContextLines(undefined)).toEqual([]);
+    const prompt = buildSectionPrompt({
+      section,
+      outline,
+      evidence: [],
+      bibliography: [],
+      experimentContext: { schemaVersion: 1, status: "author_confirmed_not_externally_verified", truncated: false, observations: [] },
+    });
+    expect(prompt).toContain("没有任何经作者确认并授权进入工作流的实验观测");
+    expect(prompt).toContain("不得出现任何具体实验指标数值");
+    expect(prompt).toContain("不得从工作区其它文件补充数值");
+    expect(buildSectionPrompt({ section, outline, evidence: [], bibliography: [] })).not.toContain("Experiment Context");
+  });
+
+  it("有授权观测：逐条列出（实验组/范围/指标/值/方向/来源）+ 只能来自上表的数值纪律", () => {
+    const prompt = buildSectionPrompt({
+      section,
+      outline,
+      evidence: [],
+      bibliography: [],
+      experimentContext: {
+        schemaVersion: 1,
+        status: "author_confirmed_not_externally_verified",
+        truncated: false,
+        observations: [
+          { packageId: "ep-1", packageHash: "h", groupId: "main", sourceId: "S014", blockId: "B1", path: "data/overall_metrics.csv", metric: "IDSW", value: 67, unit: "unknown", direction: "lower", split: "Dev25", method: "ours" },
+          { packageId: "ep-1", packageHash: "h", groupId: "main", sourceId: "S014", blockId: "B1", path: "data/overall_metrics.csv", metric: "HOTA_pooled", value: 0.62803, unit: "unknown", direction: "higher", split: "Dev25" },
+        ],
+      },
+    });
+    expect(prompt).toContain("共 2 条");
+    expect(prompt).toContain("- [main/Dev25] IDSW=67（↓; ours; 来源 data/overall_metrics.csv）");
+    expect(prompt).toContain("- [main/Dev25] HOTA_pooled=0.62803（↑; 来源 data/overall_metrics.csv）");
+    expect(prompt).toContain("只能来自上表");
+    expect(prompt).toContain("不得把作者确认表述成外部核验");
+    expect(prompt).not.toContain("Confirmation13");
   });
 });

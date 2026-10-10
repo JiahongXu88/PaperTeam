@@ -16,6 +16,7 @@ import type { ManuscriptLanguage } from "../project/language.js";
 import { targetLanguageLines } from "../project/language.js";
 import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
+import type { ConfirmedExperimentWorkflowContext } from "../experiments/ExperimentPackageService.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import { buildPlannerAliases, resolvePlannerRefs } from "../review/plannerAliases.js";
@@ -396,6 +397,12 @@ export class WriterService {
     extraInstructions?: string;
     /** M11.2：Survey 章节写作上下文（存在 = Survey 模式） */
     survey?: SurveySectionWritingContext;
+    /**
+     * M13.5.4：作者已确认并授权进入工作流的实验观测（唯一允许写入正文的实验
+     * 数值来源）。undefined = legacy 不注入；存在但为空 = 明确告知「没有任何
+     * 授权数据」，正文不得出现具体实验指标数值。
+     */
+    experimentContext?: ConfirmedExperimentWorkflowContext;
   }): Promise<{ latex: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -1793,6 +1800,40 @@ export function buildOutlineRepairPrompt(
   ].join("\n");
 }
 
+/** 实验上下文 prompt 行（M13.5.4）：授权观测逐条列出 + 数值纪律；无授权时明确禁写数值 */
+export function renderExperimentContextLines(context: ConfirmedExperimentWorkflowContext | undefined): string[] {
+  if (context === undefined) {
+    return [];
+  }
+  const header = "===== 作者已确认并授权的实验观测（Experiment Context；实验数值的唯一允许来源）=====";
+  if (context.observations.length === 0) {
+    return [
+      "",
+      header,
+      "（当前没有任何经作者确认并授权进入工作流的实验观测。）",
+      "实验数值纪律：正文不得出现任何具体实验指标数值、超参数或统计量；大纲 / 研究想法中作者本人陈述的结论只能按原样转述并注明为作者陈述；" +
+        "尚无授权数据支撑的实验内容必须如实写成「待补 / 待作者授权」，不得从工作区其它文件补充数值，不得编造。",
+    ];
+  }
+  const lines = context.observations.map((observation) => {
+    const scope = [observation.groupId, observation.split ?? "-"].join("/");
+    const tags = [observation.method, observation.dataset, observation.seed !== undefined ? `seed=${observation.seed}` : undefined, observation.protocol]
+      .filter((tag): tag is string => tag !== undefined && tag !== "")
+      .join("; ");
+    const unit = observation.unit === "percentage" ? "%" : "";
+    const direction = observation.direction === "higher" ? "↑" : observation.direction === "lower" ? "↓" : "方向未知";
+    return `- [${scope}] ${observation.metric}=${observation.value}${unit}（${direction}${tags ? `; ${tags}` : ""}; 来源 ${observation.path}）`;
+  });
+  return [
+    "",
+    header,
+    `状态：${context.status}（作者确认 ≠ 外部核验）；共 ${context.observations.length} 条${context.truncated ? "（已截断）" : ""}。`,
+    ...lines,
+    "实验数值纪律：正文中的全部实验指标数值只能来自上表，并按上表的实验组 / 评测范围归属表述；上表没有的指标、范围、对照或统计量一律不得写入具体数值，须如实标注为待补实验；" +
+      "不得从工作区其它文件补充数值，不得编造，不得把作者确认表述成外部核验。",
+  ];
+}
+
 export function buildSectionPrompt(params: {
   section: OutlineSection;
   outline: Outline;
@@ -1801,6 +1842,7 @@ export function buildSectionPrompt(params: {
   styleProfile?: Record<string, unknown>;
   language?: ManuscriptLanguage;
   extraInstructions?: string;
+  experimentContext?: ConfirmedExperimentWorkflowContext;
 }): string {
   return [
     `你是一名学术论文写手（Writer）。请撰写论文章节「${params.section.title}」。`,
@@ -1834,6 +1876,7 @@ export function buildSectionPrompt(params: {
     "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 20),
     ...(params.evidence.length === 0 ? [] : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
+    ...renderExperimentContextLines(params.experimentContext),
   ].join("\n");
 }
 

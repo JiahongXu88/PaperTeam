@@ -611,6 +611,35 @@ PiRuntimeAdapter
   `npm run dev` 直启 Backend（§6.0）。
 - **诊断**：`GET /api/runtime/status` 为 Pi 形状（§6.0.2）。
 
+### 6.4.1 工作区隔离（Workspace Guard，M13.5.4）
+
+真实 run（p-14afa81bd7fa / w-b5596d231aaa）暴露：Agent 会话 cwd 是整个项目
+目录，Pi 内置 `read / ls / grep / find` 对路径无任何限制，Writer 直接读到了
+实验包原始文件（`sources/papers/S0xx-overall_metrics…csv`、验证报告）与
+`experiments/<pkg>/manifest.json`，把作者**未确认 / 未授权**的评测范围数值写进
+了实验章节——M13.5 的范围级授权（workflowContext 零注入）在文件工具层被整体
+绕过。
+
+- **机制**：`runtime/pi/workspaceGuard.ts` 用 Pi 官方工具工厂
+  （`createReadToolDefinition` 等）+ 受控 `operations` 生成**同名**
+  `read / ls / find / grep / write / edit`，经 `PiRuntimeOptions.workspaceGuard`
+  按会话（projectId / cwd / role / skill 目录 / 角色工具白名单）注入为
+  customTools；Pi 注册表里 customTools 同名覆盖内置工具，内置的无限制文件
+  访问被整体替换。`grep` 自实现（内置 grep 走 ripgrep 子进程，operations
+  拦不住文件读取）。
+- **读边界**：项目目录 + skill 版本快照目录（只读）；项目内 `experiments/`、
+  `workflow/` 整体不可见；`sources/{papers,parsed,chunks}` 下属于
+  `EXPERIMENT_PACKAGE` 来源的条目不可见；来源清单不可用时整个 `sources/`
+  不可见（fail closed）；项目外一律拒绝（含 `..` 穿越与绝对路径）。`ls` 过滤
+  隐藏条目，`find` / `grep` 的遍历只进入可读目录。
+- **写边界**：`write / edit` 只允许 `manuscript/`（稿件是 Writer 的唯一产物）。
+- **授权数据的唯一入口**：`ExperimentPackageService.workflowContext`（作者确认
+  + 授权的观测）——Researcher（research.idea）与 Writer（writing.sections，
+  `renderExperimentContextLines`）都经 prompt 注入；空上下文也显式注入（禁写
+  任何具体实验数值，缺失处如实标注待补）。
+- **不改变**：scripted runtime / 测试栈无感；未配置 `workspaceGuard` 的
+  Adapter 保持旧行为（测试用）。
+
 ### 6.5 长程运行治理（M5.1/M5.2 已实现）
 
 `PiRuntimeAdapter` 在 AgentRuntime 契约 v2 之上叠加的四层治理（全部进程内

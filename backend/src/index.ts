@@ -5,6 +5,7 @@ import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter, parseModelSpec } from "./runtime/PiRuntimeAdapter.js";
+import { createWorkspaceGuardPolicy, createWorkspaceGuardTools } from "./runtime/pi/workspaceGuard.js";
 import { createScriptedRuntime } from "./runtime/scriptedRuntime.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
 import type { AgentRuntime, RuntimeHealth } from "./runtime/types.js";
@@ -213,6 +214,36 @@ export async function startBackend(): Promise<void> {
               );
             }
             return tools;
+          },
+          // M13.5.4 工作区隔离：Agent 文件工具只能看项目目录（+ skill 快照只读根），
+          // experiments/ 与 workflow/ 整体不可见，EXPERIMENT_PACKAGE 来源文件不可见；
+          // 来源清单不可用时整个 sources/ 不可见（fail closed）；写入只限 manuscript/。
+          // 授权实验数据的唯一入口仍是 experimentPackages.workflowContext（结构化 prompt）。
+          workspaceGuard: async ({ projectId, cwd, skillDirs, toolNames }) => {
+            let protectedSourceIds: string[] = [];
+            let protectAllSources = false;
+            if (projectId !== undefined) {
+              if (stackRef === undefined) {
+                protectAllSources = true;
+              } else {
+                try {
+                  protectedSourceIds = (await stackRef.sources.list(projectId))
+                    .filter((item) => item.origin === "EXPERIMENT_PACKAGE")
+                    .map((item) => item.sourceId);
+                } catch (error) {
+                  protectAllSources = true;
+                  console.warn(
+                    `[workspace-guard] 读取项目 ${projectId} 来源清单失败，整个 sources/ 对 Agent 不可见：${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  );
+                }
+              }
+            }
+            return createWorkspaceGuardTools(
+              createWorkspaceGuardPolicy({ projectDir: cwd, readOnlyRoots: skillDirs, protectedSourceIds, protectAllSources }),
+              { cwd, toolNames },
+            );
           },
         });
 

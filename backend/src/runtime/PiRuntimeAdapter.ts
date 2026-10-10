@@ -369,6 +369,8 @@ export interface PiRuntimeOptions {
     settingsManager: SettingsManager;
     sessionManager: SessionManager;
     resourceLoader: ResourceLoader;
+    /** 本会话最终注入的 customTools（全局 + 角色 + 工作区隔离；测试断言用） */
+    customTools?: ToolDefinition[];
   }) => Promise<AgentSession>;
   /**
    * 附加自定义工具（createAgentSession customTools；测试注入用，生产角色
@@ -397,6 +399,19 @@ export interface PiRuntimeOptions {
   ) => RuntimeSkillAssignment[];
   /** 按角色注入的自定义工具（如 researcher/citation 的受控学术检索） */
   roleCustomTools?: (role: PiRoleKey, projectId?: string) => ToolDefinition[];
+  /**
+   * M13.5.4 工作区隔离：按会话（projectId / cwd / role / skill 目录 / 角色工具
+   * 白名单）返回受控的同名文件工具（read / ls / find / grep / write / edit），
+   * 作为 customTools 注入——Pi 注册表里 customTools 同名覆盖内置工具，因此
+   * 内置的无限制文件访问被整体替换。缺省 = 不隔离（测试 / 旧行为）。
+   */
+  workspaceGuard?: (context: {
+    projectId?: string;
+    cwd: string;
+    role: PiRoleKey;
+    skillDirs: string[];
+    toolNames: string[];
+  }) => Promise<ToolDefinition[]> | ToolDefinition[];
   /**
    * per-Agent 模型 override（M5.7）：返回当前全部业务 Agent 的 override 规格
    * （AgentModelKey → "provider/model-id"）。缺省键 = 继承默认模型。
@@ -762,6 +777,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
   private readonly roleSkillDirs: NonNullable<PiRuntimeOptions["roleSkillDirs"]> | undefined;
   private readonly roleSkills: NonNullable<PiRuntimeOptions["roleSkills"]> | undefined;
   private readonly roleCustomTools: NonNullable<PiRuntimeOptions["roleCustomTools"]> | undefined;
+  private readonly workspaceGuard: NonNullable<PiRuntimeOptions["workspaceGuard"]> | undefined;
   private readonly agentModelSpecs: NonNullable<PiRuntimeOptions["agentModelSpecs"]> | undefined;
   private readonly log: (message: string) => void;
 
@@ -866,6 +882,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
     this.roleSkillDirs = options.roleSkillDirs;
     this.roleSkills = options.roleSkills;
     this.roleCustomTools = options.roleCustomTools;
+    this.workspaceGuard = options.workspaceGuard;
     this.agentModelSpecs = options.agentModelSpecs;
     this.log = options.log ?? ((message) => console.log(message));
   }
@@ -2602,7 +2619,25 @@ export class PiRuntimeAdapter implements AgentRuntime {
     const sessionManager = SessionManager.inMemory(cwd);
     // 角色级自定义工具（受控学术检索等）与全局 customTools 合并注入
     const roleTools = this.roleCustomTools?.(role.role, projectId) ?? [];
-    const allCustomTools = [...(this.customTools ?? []), ...roleTools];
+    // M13.5.4 工作区隔离：受控同名文件工具最后注入（同名覆盖内置 + 前面的自定义工具）
+    const guardTools =
+      this.workspaceGuard !== undefined
+        ? await this.workspaceGuard({
+            ...(projectId !== undefined ? { projectId } : {}),
+            cwd,
+            role: role.role,
+            skillDirs,
+            toolNames: [...role.tools],
+          })
+        : [];
+    if (guardTools.length > 0) {
+      this.log(
+        `[pi-runtime] 工作区隔离已启用 role=${role.role} scope=${scope ?? "-"} guarded=[${guardTools
+          .map((tool) => tool.name)
+          .join(",")}]`,
+      );
+    }
+    const allCustomTools = [...(this.customTools ?? []), ...roleTools, ...guardTools];
     const session =
       this.createSessionImpl !== undefined
         ? await this.createSessionImpl({
@@ -2614,6 +2649,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
             settingsManager: this.settingsManager!,
             sessionManager,
             resourceLoader,
+            customTools: allCustomTools,
           })
         : (
             await createAgentSession({

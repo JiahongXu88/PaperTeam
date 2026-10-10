@@ -30,6 +30,7 @@ import { Type } from "typebox";
 
 import { PiRuntimeAdapter } from "../src/runtime/PiRuntimeAdapter.js";
 import type { PiRuntimeOptions } from "../src/runtime/PiRuntimeAdapter.js";
+import { createWorkspaceGuardPolicy, createWorkspaceGuardTools } from "../src/runtime/pi/workspaceGuard.js";
 import type { AgentEvent } from "../src/runtime/types.js";
 import { resolveRoleConfig } from "../src/runtime/pi/roleConfig.js";
 import {
@@ -3409,4 +3410,78 @@ describe("PiRuntimeAdapter（Level 2：M5.2 context budget / rotation）", () =>
     expect(adapter.runtimeStats().managedSessions).toBe(0); // 会话未创建
     await adapter.close();
   }, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// M13.5.4 工作区隔离：受控同名文件工具经 workspaceGuard 注入到会话 customTools
+// ---------------------------------------------------------------------------
+
+describe("PiRuntimeAdapter（M13.5.4 workspaceGuard 注入）", () => {
+  it("按会话上下文（projectId / cwd / role / 角色工具白名单）生成受控工具并注入 customTools；缺省不注入", async () => {
+    const seen: Array<{ projectId?: string; cwd: string; role: string; toolNames: string[]; skillDirs: string[] }> = [];
+    const captured: Array<{ role: string; customToolNames: string[] }> = [];
+    const factory = createFakeFactory();
+    const workspaceRoot = await makeTempDir("pi-l1-ws-guard-");
+    const adapter = new PiRuntimeAdapter({
+      agentDir: await makeTempDir("pi-l1-agent-guard-"),
+      workspaceRoot,
+      modelRuntime: stubModelRuntime(),
+      model: { provider: "fake", id: "fake-1" } as PiModel,
+      createSession: (async (params: { cwd: string; role: { role: string }; customTools?: Array<{ name: string }> }) => {
+        captured.push({ role: params.role.role, customToolNames: (params.customTools ?? []).map((tool) => tool.name) });
+        return factory.factory(params);
+      }) as NonNullable<PiRuntimeOptions["createSession"]>,
+      roleCustomTools: () => [
+        defineTool({
+          name: "evidence_query",
+          label: "evidence_query",
+          description: "stub",
+          parameters: Type.Object({}),
+          execute: async () => ({ content: [{ type: "text", text: "ok" }], details: undefined }),
+        }),
+      ],
+      workspaceGuard: (context) => {
+        seen.push({ ...context });
+        // 用真实的受控工具工厂（与生产接线同一函数）
+        return createWorkspaceGuardTools(
+          createWorkspaceGuardPolicy({ projectDir: context.cwd, readOnlyRoots: context.skillDirs, protectedSourceIds: ["S001"] }),
+          { cwd: context.cwd, toolNames: context.toolNames },
+        );
+      },
+      log: () => {},
+    });
+    const task = await adapter.runAgent({ agentId: "w", task: "write", projectId: "p-guard", contextScope: "writing/sections" });
+    expect(task.status).toBe("completed");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.projectId).toBe("p-guard");
+    expect(seen[0]!.role).toBe("writer");
+    expect(seen[0]!.cwd).toBe(join(workspaceRoot, "p-guard"));
+    expect(seen[0]!.toolNames).toEqual(["read", "write", "edit", "grep", "find", "ls"]);
+    // customTools = 角色工具 + 受控同名文件工具（同名覆盖内置由 Pi 注册表保证）
+    expect(captured[0]!.role).toBe("writer");
+    expect(captured[0]!.customToolNames).toEqual(["evidence_query", "read", "ls", "find", "grep", "write", "edit"]);
+
+    // reviewer 只有只读白名单 → 不生成 write / edit
+    const review = await adapter.runAgent({ agentId: "r", task: "review", projectId: "p-guard", contextScope: "review/academic" });
+    expect(review.status).toBe("completed");
+    expect(captured[1]!.role).toBe("reviewer");
+    expect(captured[1]!.customToolNames).toEqual(["evidence_query", "read", "ls", "find", "grep"]);
+    await adapter.close();
+
+    // 缺省（未配置 workspaceGuard）：customTools 只有角色工具——旧行为不变
+    const plain = createFakeFactory();
+    const plainCaptured: string[][] = [];
+    const plainAdapter = await makeLevel1Adapter(
+      {
+        factory: async (params: { cwd: string; role: { role: string }; customTools?: Array<{ name: string }> }) => {
+          plainCaptured.push((params.customTools ?? []).map((tool) => tool.name));
+          return plain.factory(params);
+        },
+      },
+      { roleCustomTools: () => [] },
+    );
+    await plainAdapter.runAgent({ agentId: "w", task: "write", projectId: "p-plain", contextScope: "writing/sections" });
+    expect(plainCaptured[0]).toEqual([]);
+    await plainAdapter.close();
+  });
 });
