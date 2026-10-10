@@ -2185,12 +2185,34 @@ export interface FactPreservationDeps {
  * 修订的修改」，而是新草稿的起点。若仍按修订语义与上一 run 的终稿比较，会把整篇重写
  * 判成「事实被删 / 占位替换 / 引用无依据删除」（r6：fact 22 条、citation 24 个 key），
  * 进而 REGRESSED → 直接 stalled，且 build.draft 以 FACT_PRESERVATION_FAILED 拒绝 Draft。
- * 保持规则只对修订链（revision.*、style_polish 等）生效；新草稿提交返回「不可比较」。
+ * 保持规则只对修订链（revision.*、style_polish 等）与新项目首个 run 的 outline→writing
+ * 生效；在已有稿件上新起 run 的大纲 / 写作提交返回「不可比较」（isFreshDraftRewrite）。
  */
 const FRESH_DRAFT_COMMIT_REASONS: ReadonlySet<string> = new Set(["outline.plan", "writing.sections"]);
 
 export function isFreshDraftCommit(reason: string | undefined): boolean {
   return reason !== undefined && FRESH_DRAFT_COMMIT_REASONS.has(reason);
+}
+
+/**
+ * 「新 run 在已有稿件上整体重写」判定：当前记录是新草稿提交（outline.plan /
+ * writing.sections），且修订链在本 run 之前已有其它修订（第一条属于本 run 的记录不是
+ * 链首；无 runId 的旧记录 = 无法归属，同样视为重写）。新项目的首个 run 从链首开始，
+ * 其 outline → writing 仍可比较。
+ */
+export function isFreshDraftRewrite(
+  ordered: readonly { reason: string; runId?: string }[],
+  index: number,
+): boolean {
+  const current = ordered[index];
+  if (current === undefined || !isFreshDraftCommit(current.reason)) {
+    return false;
+  }
+  if (current.runId === undefined) {
+    return true;
+  }
+  const firstOfRun = ordered.findIndex((record) => record.runId === current.runId);
+  return firstOfRun > 0;
 }
 
 /**
@@ -2218,8 +2240,11 @@ export async function computeFactPreservation(
   if (currentRecord.reason === "revision.restore") {
     return null; // 用户显式恢复历史修订：不是 Writer 改稿，不做保持比较
   }
-  if (isFreshDraftCommit(currentRecord.reason)) {
-    return null; // 新 run 的大纲 / 写作整体重写：新草稿起点，不与上一稿做修订保持比较
+  if (isFreshDraftRewrite(ordered, index)) {
+    // 在已有稿件的项目上新起一个 run：大纲 / 写作提交整体重写上一 run 的稿件，不是修订，
+    // 不做保持比较。新项目的首个 run（修订链从本 run 开始）仍按既有语义比较
+    // （首轮「引用只增不减」PASS 的可见性保留）
+    return null;
   }
   const [previousFiles, currentFiles] = await Promise.all([
     readSnapshotTex(deps.revisions.snapshotDir(projectId, previousRecord.revision)),
