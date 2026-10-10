@@ -155,12 +155,23 @@ export interface IterationRecord {
   revision: number;
   reviewRound: number;
   gateRound: number;
+  /**
+   * Round 2：产生本记录的 workflow run。收敛判定（judgeConvergence / outcome /
+   * scorecard delta）只在同一 run 内比较——新 run 的首轮不与上一 run 的终稿比较
+   * （否则整篇重写被判 REGRESSED 直接 stalled）。旧记录无该字段 = 其它 run。
+   */
+  runId?: string;
   /** 对比结论（首轮无上一轮 → null） */
   outcome: RevisionOutcome | null;
   /** 依据的修订计划（本轮之后的修订所用的 plan） */
   planId?: string;
   completedAt: string;
   scorecard: IterationScorecard;
+}
+
+/** 同一 run 的迭代记录（旧记录无 runId → 视为其它 run，不参与本 run 的收敛比较） */
+export function iterationsForRun<T extends { runId?: string }>(records: readonly T[], runId: string): T[] {
+  return records.filter((record) => record.runId === runId);
 }
 
 /** academicScore 单轮大幅下滑阈值（>10 分视为退化信号之一） */

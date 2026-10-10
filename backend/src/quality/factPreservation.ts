@@ -2180,8 +2180,23 @@ export interface FactPreservationDeps {
 }
 
 /**
+ * Round 2（真实 run w-43cfc5703257 实录）：在已有稿件的项目上再次运行 idea_to_paper，
+ * 新 run 的 outline.plan / writing.sections 提交会整体重写章节文件；它们不是「对前一
+ * 修订的修改」，而是新草稿的起点。若仍按修订语义与上一 run 的终稿比较，会把整篇重写
+ * 判成「事实被删 / 占位替换 / 引用无依据删除」（r6：fact 22 条、citation 24 个 key），
+ * 进而 REGRESSED → 直接 stalled，且 build.draft 以 FACT_PRESERVATION_FAILED 拒绝 Draft。
+ * 保持规则只对修订链（revision.*、style_polish 等）生效；新草稿提交返回「不可比较」。
+ */
+const FRESH_DRAFT_COMMIT_REASONS: ReadonlySet<string> = new Set(["outline.plan", "writing.sections"]);
+
+export function isFreshDraftCommit(reason: string | undefined): boolean {
+  return reason !== undefined && FRESH_DRAFT_COMMIT_REASONS.has(reason);
+}
+
+/**
  * 计算被审阅修订相对其前一修订的实验事实保持结果。
- * 返回 null = 不可比较（无前序修订 / 快照缺失 / reason=revision.restore），规则中性不参与。
+ * 返回 null = 不可比较（无前序修订 / 快照缺失 / reason=revision.restore /
+ * 新草稿提交 outline.plan、writing.sections），规则中性不参与。
  */
 export async function computeFactPreservation(
   deps: FactPreservationDeps,
@@ -2202,6 +2217,9 @@ export async function computeFactPreservation(
   const previousRecord = ordered[index - 1]!;
   if (currentRecord.reason === "revision.restore") {
     return null; // 用户显式恢复历史修订：不是 Writer 改稿，不做保持比较
+  }
+  if (isFreshDraftCommit(currentRecord.reason)) {
+    return null; // 新 run 的大纲 / 写作整体重写：新草稿起点，不与上一稿做修订保持比较
   }
   const [previousFiles, currentFiles] = await Promise.all([
     readSnapshotTex(deps.revisions.snapshotDir(projectId, previousRecord.revision)),

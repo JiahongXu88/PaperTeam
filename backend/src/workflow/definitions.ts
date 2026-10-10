@@ -212,6 +212,7 @@ import { checkStyleInvariants } from "../review/styleInvariants.js";
 import {
   judgeOutcome,
   judgeConvergence,
+  iterationsForRun,
   classifyTerminalStatus,
   scorecardOf,
   scorecardWithConvergenceMetrics,
@@ -986,7 +987,9 @@ function qualityGateStage(
         factPreservation,
         citationPreservation,
       );
-      const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
+      // Round 2：收敛只在同一 run 内比较（iteration-history 跨 run 累积；新 run 的
+      // 首轮没有「上一轮」——整篇重写不是对上一 run 终稿的退化）
+      const iterations = iterationsForRun(await services.reviewArtifacts.loadIterations(ctx.projectId), ctx.runId);
       const previous = iterations.at(-1)?.scorecard ?? null;
       const outcome = judgeOutcome(scorecard, previous);
       const convergence = judgeConvergence([...iterations.map((record) => record.scorecard), scorecard]);
@@ -1007,6 +1010,7 @@ function qualityGateStage(
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
         reviewRound: review.round,
         gateRound: round,
+        runId: ctx.runId,
         outcome,
         completedAt: new Date().toISOString(),
         scorecard,
@@ -1502,8 +1506,8 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
         const review = ctx.state.stageResults["review.run"] ?? {};
         const plan = ctx.state.stageResults["revision.plan"] ?? {};
         const gateRound = typeof gate["round"] === "number" ? gate["round"] : null;
-        // 前后两轮记分卡对比（iteration-history；payload 允许 async 读产物）
-        const iterations = await services.reviewArtifacts.loadIterations(ctx.projectId);
+        // 前后两轮记分卡对比（iteration-history；payload 允许 async 读产物；Round 2：只看本 run）
+        const iterations = iterationsForRun(await services.reviewArtifacts.loadIterations(ctx.projectId), ctx.runId);
         const currentIteration =
           gateRound !== null ? iterations.find((record) => record.gateRound === gateRound) : undefined;
         const previousIteration =

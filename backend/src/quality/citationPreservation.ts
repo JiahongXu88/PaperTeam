@@ -27,6 +27,7 @@
  */
 
 import { readFile, readdir } from "node:fs/promises";
+import { isFreshDraftCommit } from "./factPreservation.js";
 import { join, relative } from "node:path";
 
 import { extractCitationOccurrences } from "../citation/StaticCitationChecker.js";
@@ -330,6 +331,9 @@ export async function computeCitationPreservation(
   const previousRecord = ordered[index - 1]!;
   if (currentRecord.reason === "revision.restore") {
     return null; // 用户显式恢复历史修订：不是 Writer 改稿，不做保持比较
+  }
+  if (isFreshDraftCommit(currentRecord.reason)) {
+    return null; // Round 2：新 run 的大纲 / 写作整体重写——新草稿起点，不做引用保持比较
   }
   const [previousFiles, currentFiles] = await Promise.all([
     readSnapshotTex(deps.revisions.snapshotDir(projectId, previousRecord.revision)),
