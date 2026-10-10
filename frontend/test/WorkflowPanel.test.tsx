@@ -83,6 +83,31 @@ describe("WorkflowPanel 运行中", () => {
     vi.mocked(runsApi.cancelWorkflowRun).mockReset();
   });
 
+  it("idea_to_paper：target.* 三 stage 计入时间线与阶段进度（与 API completedStages 一致）", async () => {
+    mockRuns([
+      runFixture({
+        workflowKind: "idea_to_paper",
+        currentStage: "research.feasibility",
+        progress: null,
+        completedStages: ["target.benchmark", "target.profile", "target.readiness", "research.idea", "evidence.ground"],
+        stageHistory: [
+          { stageId: "target.benchmark", attempt: 1, status: "completed", startedAt: "2026-10-10T04:51:59.688Z", finishedAt: "2026-10-10T04:51:59.693Z" },
+          { stageId: "target.profile", attempt: 1, status: "completed", startedAt: "2026-10-10T04:51:59.706Z", finishedAt: "2026-10-10T04:51:59.709Z" },
+          { stageId: "target.readiness", attempt: 1, status: "completed", startedAt: "2026-10-10T04:51:59.718Z", finishedAt: "2026-10-10T04:51:59.725Z" },
+          { stageId: "research.idea", attempt: 1, status: "completed", startedAt: "2026-10-10T04:51:59.733Z", finishedAt: "2026-10-10T04:58:24.000Z" },
+          { stageId: "evidence.ground", attempt: 1, status: "completed", startedAt: "2026-10-10T04:58:24.100Z", finishedAt: "2026-10-10T04:58:24.400Z" },
+        ],
+      }),
+    ]);
+    renderWithProviders(<WorkflowPanel projectId="p-flow0001" onOpenTab={noop} connection="open" />);
+    const timeline = await screen.findByTestId("stage-timeline");
+    expect(timeline.querySelector('[data-stage="target.benchmark"]')?.getAttribute("data-stage-state")).toBe("completed");
+    expect(timeline.querySelector('[data-stage="target.readiness"]')?.getAttribute("data-stage-state")).toBe("completed");
+    expect(timeline.querySelector('[data-stage="research.feasibility"]')?.getAttribute("data-stage-state")).toBe("running");
+    // 5 个已完成（含 3 个 target.*）/ 23 个阶段（20 + 3）
+    expect(screen.getByText("阶段进度").nextElementSibling).toHaveTextContent("5 / 23 个阶段");
+  });
+
   it("时间线状态 + 17/33 进度 + 运行中 / 等待 / 已重试 / 失败 + 取消入口", async () => {
     mockRuns([runFixture()]);
     renderWithProviders(<WorkflowPanel projectId="p-flow0001" onOpenTab={noop} connection="open" />);

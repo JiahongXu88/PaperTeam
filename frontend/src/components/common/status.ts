@@ -318,6 +318,10 @@ export const STAGE_LABELS: Record<string, string> = {
   "citation.claims": "核验论断与引用一致性",
   "review.sections": "分章节审阅",
   "review.aggregate": "生成 Review 报告",
+  // M12 A9 目标参照系（idea_to_paper / existing_paper_improvement 共用；未配置 target 时为显式 no-op）
+  "target.benchmark": "目标期刊文献基准",
+  "target.profile": "目标期刊实证画像",
+  "target.readiness": "目标就绪度判定",
   // idea_to_paper
   "research.idea": "调研",
   "evidence.ground": "证据核验",
@@ -472,6 +476,11 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "review.aggregate" },
   ],
   idea_to_paper: [
+    // M12 A9：target 三 stage 先行（条件 no-op，但确实计入 completedStages——
+    // 不列出会让「阶段进度」与 API 的 completedStages 对不上）
+    { stageId: "target.benchmark", conditional: true },
+    { stageId: "target.profile", conditional: true },
+    { stageId: "target.readiness", conditional: true },
     { stageId: "research.idea" },
     { stageId: "evidence.ground" },
     { stageId: "research.feasibility" },
@@ -523,6 +532,9 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "import.parse" },
     { stageId: "import.baseline_build" },
     { stageId: "import.understand" },
+    { stageId: "target.benchmark", conditional: true },
+    { stageId: "target.profile", conditional: true },
+    { stageId: "target.readiness", conditional: true },
     { stageId: "citation.verify" },
     { stageId: "review.run" },
     { stageId: "assessment.target" },
