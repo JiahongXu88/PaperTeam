@@ -285,3 +285,51 @@ describe("evaluateBuildGate（与质量语义分离）", () => {
     expect(DEFAULT_QUALITY_THRESHOLDS.styleRiskMax).toBe(35);
   });
 });
+
+describe("Round 2：作者授权实验数据的 claim 披露口径", () => {
+  it("author_experiment_data 不计入凭空断言阻断；单独呈现为 informational 规则", () => {
+    const claimGrounding = {
+      schemaVersion: 1 as const,
+      reportId: "cg-r1",
+      projectId: "p1",
+      round: 1,
+      generatedAt: "2026-10-10T00:00:00.000Z",
+      totalClaims: 2,
+      supportedClaims: 0,
+      partiallySupportedClaims: 0,
+      unsupportedClaims: 2,
+      contradictedClaims: 0,
+      evidenceBoundClaims: 0,
+      evidenceBindingRate: 0,
+      unsupportedClaimIds: ["c-1", "c-2"],
+      opaqueUnsupportedClaims: 0,
+      transparentUnsupportedClaims: 0,
+      authorDataUnsupportedClaims: 2,
+      claims: [],
+      formalEvidencePool: 0,
+    };
+    const gate = evaluateQualityGate({
+      review: passingReview,
+      citation: cleanCitation(),
+      evidence: cleanEvidence,
+      feasibility: highFeasibility,
+      claimGrounding,
+    });
+    const rule4 = gate.rules.find((rule) => rule.rule === "unsupported_critical_claims_zero");
+    expect(rule4?.passed).toBe(true);
+    expect(rule4?.detail).toContain("作者授权实验数据 2 条单独呈现不阻断");
+    const info = gate.rules.find((rule) => rule.rule === "author_experiment_data_reported");
+    expect(info?.passed).toBe(true);
+    expect(info?.detail).toContain("未经外部核验");
+    // 对照：同样 2 条若是凭空断言 → 阻断
+    const opaque = evaluateQualityGate({
+      review: passingReview,
+      citation: cleanCitation(),
+      evidence: cleanEvidence,
+      feasibility: highFeasibility,
+      claimGrounding: { ...claimGrounding, opaqueUnsupportedClaims: 2, authorDataUnsupportedClaims: 0 },
+    });
+    expect(opaque.rules.find((rule) => rule.rule === "unsupported_critical_claims_zero")?.passed).toBe(false);
+    expect(opaque.rules.find((rule) => rule.rule === "author_experiment_data_reported")).toBeUndefined();
+  });
+});

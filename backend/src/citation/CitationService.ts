@@ -27,6 +27,7 @@ import {
   type MetadataVerificationResult,
 } from "./metadataProviders.js";
 import { ProviderCooldownRegistry, ScholarlyHttpClient, type ScholarlyHttpClientOptions } from "./scholarlyHttp.js";
+import { runRateLimitRecovery, type RateLimitRecoveryTelemetry } from "./rateLimitRecovery.js";
 
 export interface CitationReport {
   generatedAt: string;
@@ -38,6 +39,15 @@ export interface CitationReport {
     skipped: number;
     results: MetadataVerificationResult[];
     byStatus: { verified: number; mismatch: number; not_found: number; unverifiable: number };
+    /**
+     * Round 2：不可判定条目按瞬时失败分类（rate_limited / timeout / network_error /
+     * server_error / http_error / other）——PROVIDER_ERROR 与「查到但无法比对」分开报告
+     */
+    byErrorKind?: Record<string, number>;
+    /** 限流恢复 pass 遥测（轮数 / 等待 / 补查 / 恢复 / 是否超预算） */
+    recovery?: RateLimitRecoveryTelemetry;
+    /** 本次核验的 HTTP 层遥测增量（请求 / 重试 / 429 / 冷却短路 / 等待） */
+    http?: { requests: number; retries: number; rateLimited: number; cooldownSkips: number; totalWaitMs: number; pacingWaitMs: number };
   };
   /** 汇总（Quality Gate 消费；hallucinated = metadata not_found） */
   summary: {
@@ -73,6 +83,8 @@ export interface CitationServiceOptions {
   /** HTTP 层参数覆盖（重试 / 退避 / 冷却帽；测试与部署调参用） */
   httpOptions?: Partial<ScholarlyHttpClientOptions>;
   now?: () => Date;
+  /** 恢复 pass 的等待实现（默认 setTimeout；测试注入） */
+  sleep?: (ms: number) => Promise<void>;
   log?: (message: string) => void;
 }
 
@@ -85,6 +97,7 @@ export class CitationService {
   private readonly providers: CitationMetadataProvider[];
   private readonly rateLimitRecoveryMs: number;
   private readonly now: () => Date;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
 
   constructor(options: CitationServiceOptions) {
@@ -106,6 +119,7 @@ export class CitationService {
     ];
     this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 60_000;
     this.now = options.now ?? (() => new Date());
+    this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log = options.log ?? (() => {});
   }
 
@@ -130,6 +144,8 @@ export class CitationService {
       .slice(0, this.maxLookups);
 
     const results: MetadataVerificationResult[] = [];
+    let recovery: RateLimitRecoveryTelemetry | undefined;
+    const httpBefore = { ...this.http.telemetry };
     if (this.metadataEnabled) {
       const ctx: MetadataProviderContext = {
         http: this.http,
@@ -153,42 +169,58 @@ export class CitationService {
           results.push(result);
         }
       }
-      // M13.6 限流恢复：因 429 不可判定的条目在 provider 冷却结束落入预算内时
-      // 等待并只补查这些条目（不重跑全部；成功条目保持复用）
-      const rateLimited = results
-        .map((result, index) => ({ result, index }))
-        .filter((item) => item.result.status === "unverifiable" && item.result.errorKind === "rate_limited");
-      if (rateLimited.length > 0 && this.rateLimitRecoveryMs > 0) {
-        const nowMs = this.now().getTime();
-        const retryAtMs = Math.min(
-          ...rateLimited.map((item) => nowMs + (item.result.retryAfterMs ?? 0)),
-        );
-        const waitMs = Math.max(0, retryAtMs - nowMs);
-        if (waitMs <= this.rateLimitRecoveryMs) {
-          if (waitMs > 0) {
-            this.log(
-              `[citation] projectId=${projectId} ${rateLimited.length} 条限流条目等待 ${Math.round(waitMs / 1000)}s 后补查`,
-            );
-            await new Promise((resolve) => setTimeout(resolve, waitMs));
-          }
-          for (const item of rateLimited) {
-            const refreshed = (await verifyEntry(candidates[item.index]!)) ?? item.result;
-            if (refreshed.status !== "unverifiable" || refreshed.errorKind !== "rate_limited") {
-              results[item.index] = refreshed;
+      // M13.6 限流恢复（Round 2 修订：实时冷却提示 + 有界多轮，见 rateLimitRecovery.ts）：
+      // 因 429 不可判定的条目在 provider 冷却结束、且落入预算内时只补查这些条目
+      // （不重跑全部；成功条目保持复用）
+      const isRateLimited = (result: MetadataVerificationResult): boolean =>
+        result.status === "unverifiable" && result.errorKind === "rate_limited";
+      const pendingIndexes = (): number[] =>
+        results.map((result, index) => (isRateLimited(result) ? index : -1)).filter((index) => index >= 0);
+      if (pendingIndexes().length > 0) {
+        recovery = await runRateLimitRecovery({
+          budgetMs: this.rateLimitRecoveryMs,
+          now: () => this.now().getTime(),
+          sleep: this.sleep,
+          pending: pendingIndexes,
+          waitHintMs: () => {
+            // 注册表里仍在冷却的 provider 的最早恢复时间；没有冷却提示时退回条目快照
+            const live = this.http.cooldowns.earliestRecoveryMs();
+            if (live > 0) {
+              return live;
             }
-          }
-        } else {
-          this.log(
-            `[citation] projectId=${projectId} ${rateLimited.length} 条限流条目冷却 ${Math.round(waitMs / 1000)}s 超过恢复预算：如实返回不可判定（下次核验自动补查）`,
-          );
-        }
+            const snapshots = pendingIndexes().map((index) => results[index]!.retryAfterMs ?? 0);
+            return snapshots.length === 0 ? 0 : Math.min(...snapshots);
+          },
+          retry: async (index) => {
+            const previous = results[index]!;
+            const refreshed = (await verifyEntry(candidates[index]!)) ?? previous;
+            results[index] = refreshed; // 仍限流也更新（最新冷却提示）
+            return !isRateLimited(refreshed);
+          },
+          log: this.log,
+          label: `[citation] projectId=${projectId}`,
+        });
       }
     }
 
     const byStatus = { verified: 0, mismatch: 0, not_found: 0, unverifiable: 0 };
+    const byErrorKind: Record<string, number> = {};
     for (const result of results) {
       byStatus[result.status] += 1;
+      if (result.status === "unverifiable") {
+        const kind = result.errorKind ?? "other";
+        byErrorKind[kind] = (byErrorKind[kind] ?? 0) + 1;
+      }
     }
+    const httpAfter = this.http.telemetry;
+    const http = {
+      requests: httpAfter.requests - httpBefore.requests,
+      retries: httpAfter.retries - httpBefore.retries,
+      rateLimited: httpAfter.rateLimited - httpBefore.rateLimited,
+      cooldownSkips: httpAfter.cooldownSkips - httpBefore.cooldownSkips,
+      totalWaitMs: httpAfter.totalWaitMs - httpBefore.totalWaitMs,
+      pacingWaitMs: httpAfter.pacingWaitMs - httpBefore.pacingWaitMs,
+    };
 
     const report: CitationReport = {
       generatedAt: this.now().toISOString(),
@@ -200,6 +232,9 @@ export class CitationService {
         skipped: Math.max(0, candidates.length - results.length),
         results,
         byStatus,
+        byErrorKind,
+        ...(recovery !== undefined ? { recovery } : {}),
+        http,
       },
       summary: {
         citedCount: staticResult.citedKeys.length,
@@ -217,7 +252,10 @@ export class CitationService {
     await mkdir(reviewsDir, { recursive: true });
     await writeJsonAtomic(this.reportPath(projectId), report);
     this.log(
-      `[citation] projectId=${projectId} 核验完成：cited=${report.summary.citedCount} missing=${report.summary.missingKeys} hallucinated=${report.summary.hallucinated}`,
+      `[citation] projectId=${projectId} 核验完成：cited=${report.summary.citedCount} missing=${report.summary.missingKeys} hallucinated=${report.summary.hallucinated}` +
+        ` verified=${byStatus.verified} unverifiable=${byStatus.unverifiable}（${Object.entries(byErrorKind).map(([kind, count]) => `${kind}=${count}`).join(" ") || "无瞬时失败"}）` +
+        ` http=${http.requests}req/${http.rateLimited}×429/${http.cooldownSkips}skip` +
+        (recovery !== undefined ? ` 恢复=${recovery.passes}轮/补查${recovery.retried}/成功${recovery.recovered}/等待${Math.round(recovery.waitedMs / 1000)}s${recovery.overBudget ? "/超预算" : ""}` : ""),
     );
     return report;
   }

@@ -581,14 +581,24 @@ export class WriterService {
     // GLM-5.3 会把 RevisionPlanItem id 当 instructionId 上报 PT-OUTCOMES（m910 E2E
     // rev3 实录：协议行连同 JSON 进入正文，其数字片段被 Fact Preservation 判为
     // added_number）。协议行不可能是合法 LaTeX 内容，无论是否派发过外部意见都剥离。
-    let latex = stripStrayOutcomeLines(stripCodeFence(bodyLatex)).trim();
+    // Round 2 真实 run（w-d678566b94c1 rev-8）：Writer 把逐条执行注记（"- f-…：…" /
+    // "- c-…：WEAKEN——…" markdown 列表）追加在正文末尾——Fact Preservation 判为
+    // added_number，作者只能 reject 恢复。执行注记永远不是合法 LaTeX 正文，确定性剥离
+    // 并记日志（不改变任何正文行）。
+    const notes = stripRevisionExecutionNotes(stripStrayOutcomeLines(stripCodeFence(bodyLatex)));
+    if (notes.removed.length > 0) {
+      this.log(
+        `[writer] projectId=${params.projectId} 章节 ${params.section.id} 修订输出混入 ${notes.removed.length} 行执行注记，已剥离（首行：${notes.removed[0]!.slice(0, 80)}）`,
+      );
+    }
+    let latex = notes.latex.trim();
     if (latex === "") {
       // M10.3.1：整文件目标——模型用 write/edit 工具直接改写文件而最终消息为空
       // 时，磁盘上的真实变更就是修订结果（确定性读取；继续走下方全部 DoD 与
       // 下游 Fact Preservation / Quality Gate，不降低任何守卫）
       if (params.wholeFile === true && params.targetFilePath !== undefined && !params.proposalOnly) {
         const onDisk = await readFile(params.targetFilePath, "utf8");
-        const diskLatex = stripStrayOutcomeLines(stripCodeFence(onDisk)).trim();
+        const diskLatex = stripRevisionExecutionNotes(stripStrayOutcomeLines(stripCodeFence(onDisk))).latex.trim();
         if (diskLatex !== "" && diskLatex !== params.currentLatex.trim()) {
           latex = diskLatex;
         }
@@ -1613,6 +1623,64 @@ export function stripStrayOutcomeLines(latex: string): string {
     .split(/\r?\n/)
     .filter((line) => !line.trim().startsWith(EXTERNAL_OUTCOMES_MARKER))
     .join("\n");
+}
+
+/**
+ * 剥离修订输出里的「执行注记」（Round 2 真实 run rev-8 实录）：Writer 在正文末尾
+ * 追加 markdown 列表逐条汇报计划条目的处理（"- f-11922287a3ba：无消融 Evidence…"、
+ * "- c-c1381fec7c49：WEAKEN——…"、"- fact-preserve（placeholder_regression）：…"），
+ * 或写出【修订说明】【决策点】【待作者确认】类注记行。这些行不是 LaTeX 正文
+ * （LaTeX 列表用 \item，不用 markdown 项目符号），其中的数字片段会被 Fact
+ * Preservation 判为 added_number，整轮修订只能被作者 reject。
+ *
+ * 规则（确定性、保守）：
+ * 1. 带执行注记标记的行无论位置都剥离：markdown 项目符号 + 计划/claim/finding id
+ *    （f-/c-/s-/val-/cg- + 6 位以上十六进制）或 fact-preserve 前缀；【修订说明】等
+ *    方括号注记；项目符号 + 「WEAKEN——/REMOVE——/SUPPORT——/KEEP——」动作词。
+ * 2. 正文末尾连续的 markdown 项目符号块若含 ≥1 条上述标记行，整块剥离（同一份
+ *    执行报告里的其它条目如 "- 2020、25 及 \cite{ua2020} 逐字保留"）。
+ * 3. 其它行一律原样保留——不剥离任何 LaTeX 内容。
+ */
+export function stripRevisionExecutionNotes(latex: string): { latex: string; removed: string[] } {
+  const lines = latex.split(/\r?\n/);
+  const bullet = /^\s*[-*•]\s+/;
+  const idToken = /\b(?:f|c|s|r|val|cg)-[0-9a-f]{6,}\b/i;
+  const markerLine = /^\s*(?:[-*•]\s+)?【(?:修订说明|决策点|待作者确认|执行报告|执行注记|修订注记)】/;
+  const actionWord = /^\s*[-*•]\s+[^\n]{0,80}?(?:：|:)\s*(?:WEAKEN|REMOVE|SUPPORT|KEEP|REPLACE|applied|conflict|not_applicable)\b/;
+  const isNote = (line: string): boolean =>
+    markerLine.test(line) ||
+    (bullet.test(line) && (idToken.test(line) || /^\s*[-*•]\s+fact-preserve/.test(line) || actionWord.test(line)));
+  const removed: string[] = [];
+  const kept = lines.map((line) => (isNote(line) ? (removed.push(line), null) : line));
+  // 规则 2：末尾连续项目符号块（忽略空行）若含标记行 → 整块剥离
+  let end = kept.length - 1;
+  while (end >= 0 && (kept[end] === null || kept[end]!.trim() === "")) end -= 1;
+  let start = end;
+  let blockHasNote = false;
+  while (start >= 0) {
+    const line = kept[start];
+    if (line === null) {
+      blockHasNote = true;
+      start -= 1;
+      continue;
+    }
+    if (line === undefined || line.trim() === "" || bullet.test(line)) {
+      start -= 1;
+      continue;
+    }
+    break;
+  }
+  if (blockHasNote) {
+    for (let index = start + 1; index <= end; index += 1) {
+      const line = kept[index];
+      if (line !== null && line !== undefined && bullet.test(line)) {
+        removed.push(line);
+        kept[index] = null;
+      }
+    }
+  }
+  const result = kept.filter((line): line is string => line !== null).join("\n");
+  return { latex: removed.length > 0 ? result.replace(/\n{3,}$/, "\n") : latex, removed };
 }
 
 /** 解析大纲 sections 数组（防御性）；surveyRefs=true 时解析 M11.1.3 refs 字段 */

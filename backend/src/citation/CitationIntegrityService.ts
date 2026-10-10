@@ -24,6 +24,7 @@ import type {
 } from "./integrity.js";
 import { deriveClaimSeverity } from "./integrity.js";
 import { METADATA_VERIFICATION_VERSION, ScholarlyResolver, type ScholarlyResolverOptions } from "./scholarly.js";
+import { runRateLimitRecovery } from "./rateLimitRecovery.js";
 import { SoftwareReferenceResolver, type SoftwareResolverOptions } from "./softwareResolver.js";
 import { extractRepositoryRef, inferReferenceKind } from "./referenceKinds.js";
 import type { CitationSemanticMode } from "./semanticMode.js";
@@ -270,7 +271,7 @@ export class CitationIntegrityService {
     /** 外部检索画像（性能诊断：按 provider 的调用 / 命中 / 耗时） */
     profile: MetadataLookupProfile;
     /** M13.6 限流恢复画像：等待毫秒 / 补查条数 / 补查成功条数 */
-    recovery: { waitedMs: number; retried: number; recovered: number };
+    recovery: { waitedMs: number; retried: number; recovered: number; passes?: number; overBudget?: boolean };
   }> {
     await this.projects.getRequired(projectId);
     const references = await this.store.loadReferences<ReferenceEntry>(projectId);
@@ -319,51 +320,59 @@ export class CitationIntegrityService {
       byStatus[record.status] += 1;
       records.push(record);
     }
-    // ---- M13.6 限流恢复 pass：只补查因限流失败的条目 ----
-    const recovery = { waitedMs: 0, retried: 0, recovered: 0 };
+    // ---- M13.6 限流恢复 pass（Round 2 修订：实时冷却提示 + 有界多轮，见 rateLimitRecovery.ts）：
+    // 只补查因限流失败的条目 ----
     const isAborted = (): boolean => options.signal?.aborted === true;
-    const rateLimited = records
-      .map((record, index) => ({ record, index }))
-      .filter((entry) => entry.record.status === "PROVIDER_ERROR" && entry.record.providerError?.kind === "rate_limited");
-    if (rateLimited.length > 0 && this.rateLimitRecoveryMs > 0 && !isAborted()) {
-      const nowMs = this.now().getTime();
-      const retryAtMs = Math.min(
-        ...rateLimited.map((entry) => {
-          const parsed = Date.parse(entry.record.retryNotBefore ?? "");
-          return Number.isFinite(parsed) ? parsed : nowMs;
-        }),
-      );
-      const waitMs = Math.max(0, retryAtMs - nowMs);
-      if (waitMs <= this.rateLimitRecoveryMs) {
-        if (waitMs > 0) {
-          this.log(
-            `[citation-integrity] projectId=${projectId} ${rateLimited.length} 条限流条目等待 ${Math.round(waitMs / 1000)}s 后补查（预算 ${Math.round(this.rateLimitRecoveryMs / 1000)}s）`,
-          );
-          const waited = await abortableSleep(waitMs, options.signal);
-          recovery.waitedMs = waited;
+    const isRateLimited = (index: number): boolean => {
+      const record = records[index];
+      return record !== undefined && record.status === "PROVIDER_ERROR" && record.providerError?.kind === "rate_limited";
+    };
+    const pendingIndexes = (): number[] =>
+      records
+        .map((record, index) => (isRateLimited(index) && targets[index]?.referenceId === record.referenceId ? index : -1))
+        .filter((index) => index >= 0); // 防御：索引错位的条目不动状态
+    const recoveryRun = await runRateLimitRecovery({
+      budgetMs: pendingIndexes().length > 0 ? this.rateLimitRecoveryMs : 0,
+      now: () => this.now().getTime(),
+      sleep: async (ms) => {
+        await abortableSleep(ms, options.signal);
+      },
+      isAborted,
+      pending: pendingIndexes,
+      waitHintMs: () => {
+        // 共享冷却注册表的实时提示优先；fake provider（无 HTTP 层）时退回条目 retryNotBefore
+        const live = this.resolver.cooldowns.earliestRecoveryMs();
+        if (live > 0) {
+          return live;
         }
-        if (!isAborted()) {
-          for (const entry of rateLimited) {
-            const reference = targets[entry.index]!;
-            if (reference.referenceId !== entry.record.referenceId) continue; // 防御：索引错位不动状态
-            const refreshed = await this.verifyReference(projectId, reference, options.signal);
-            recovery.retried += 1;
-            if (refreshed.status !== "PROVIDER_ERROR") {
-              recovery.recovered += 1;
-              byStatus.PROVIDER_ERROR -= 1;
-              byStatus[refreshed.status] += 1;
-              records[entry.index] = refreshed;
-            } else {
-              records[entry.index] = refreshed; // 更新 retryNotBefore 等最新冷却信息
-            }
-          }
+        const nowMs = this.now().getTime();
+        const hints = pendingIndexes().map((index) => {
+          const parsed = Date.parse(records[index]!.retryNotBefore ?? "");
+          return Number.isFinite(parsed) ? Math.max(0, parsed - nowMs) : 0;
+        });
+        return hints.length === 0 ? 0 : Math.min(...hints);
+      },
+      retry: async (index) => {
+        const refreshed = await this.verifyReference(projectId, targets[index]!, options.signal);
+        if (refreshed.status !== "PROVIDER_ERROR") {
+          byStatus.PROVIDER_ERROR -= 1;
+          byStatus[refreshed.status] += 1;
+          records[index] = refreshed;
+          return true;
         }
-      } else {
-        this.log(
-          `[citation-integrity] projectId=${projectId} ${rateLimited.length} 条限流条目冷却 ${Math.round(waitMs / 1000)}s 超过恢复预算 ${Math.round(this.rateLimitRecoveryMs / 1000)}s：如实返回 PROVIDER_ERROR（下次核验自动补查）`,
-        );
-      }
-    }
+        records[index] = refreshed; // 更新 retryNotBefore 等最新冷却信息
+        return false;
+      },
+      log: this.log,
+      label: `[citation-integrity] projectId=${projectId}`,
+    });
+    const recovery = {
+      waitedMs: recoveryRun.waitedMs,
+      retried: recoveryRun.retried,
+      recovered: recoveryRun.recovered,
+      passes: recoveryRun.passes,
+      overBudget: recoveryRun.overBudget,
+    };
     await this.saveStage(projectId, {
       stage: "metadata",
       status: "ok",

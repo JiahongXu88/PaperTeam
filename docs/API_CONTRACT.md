@@ -143,6 +143,18 @@
 > 同义）。语义核验记录带结构化 `reasonCode`（NO_EVIDENCE / ABSTRACT_ONLY /
 > PROVIDER_ERROR / REFERENCE_UNVERIFIED / …），证据等级新增 repository / official_docs。
 >
+> 2026-10-10 Round 2（真实论文第二轮）：限流恢复 pass 改为「实时冷却提示 + 有界多轮」
+> （等待取 ProviderCooldownRegistry 的最早恢复时间，不再用失败快照的 min；补查中再次 429
+> 则下一轮继续等待，直到无限流条目 / 预算耗尽 / 零进展且无冷却提示）；学术库请求带
+> provider 级礼貌节奏（arXiv ≥3s、Crossref 0.5s）。`GET …/citation-report` 的 `metadata`
+> 新增可选字段：`byErrorKind`（unverifiable 按 rate_limited / timeout / … 分类）、
+> `recovery`（passes / waitedMs / retried / recovered / overBudget）、`http`（本次请求 /
+> 重试 / 429 / 冷却短路 / 等待增量）。`POST …/citations/verify-metadata` 的 `recovery`
+> 新增 `passes` / `overBudget`。Claim grounding 新增披露口径 `author_experiment_data`
+> （数值全部来自作者授权进入工作流的实验观测：不计入凭空断言阻断、不派发数值删除，
+> Quality Gate 以 informational 规则 `author_experiment_data_reported` 呈现；仍非
+> evidence-backed）。
+>
 > M4.3 语义约定（前端依赖的事实）：**NOT_FOUND**（多源一致查无）≠ **PROVIDER_ERROR**
 > （检索暂时失败）≠ probable fabrication（≥3 源全一致零 error 才标记）；
 > 语义 verdict 固定（SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED /

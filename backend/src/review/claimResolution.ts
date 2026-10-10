@@ -174,6 +174,17 @@ export function classifyClaimResolution(
     };
   }
 
+  // 4a. Round 2：数值全部来自作者授权实验观测——不是「凭空数字」，禁止走数值删除阶梯；
+  //     进一步处置（外部核验 / 补实验）属作者裁决，不自动改稿
+  if (entry.disclosure === "author_experiment_data") {
+    return {
+      ...base,
+      action: "author_decision_required",
+      basis: "author_experiment_data_authorized",
+      reason: `该论断的数值全部来自作者确认并授权进入工作流的实验观测（${(entry.authorizedObservations ?? []).slice(0, 4).join("、")}）——不计入凭空断言，不得按「无 grounding 数值」删除；是否补外部核验属作者裁决`,
+    };
+  }
+
   // 4. 已透明披露的未核验转述：诚实终态已达成，不自动改稿（口径属作者）
   if (entry.disclosure === "transparent_unverified") {
     return {

@@ -521,6 +521,17 @@ function reviewRunStageInner(
       const factClaims = results.find((result) => result.mode === "fact")?.claims ?? [];
       // M11.3（Phase B）：章节引用面投影 → 候选证据来源合法性（§10）
       const sectionCitedSourceIds = await projectOutlineCitedSourceIds(services, ctx.projectId);
+      // Round 2：作者授权进入工作流的实验观测值——数值全部被覆盖的 UNSUPPORTED claim
+      // 披露为 author_experiment_data（Writer / Revision 据同一表写数值，Reviewer 没有
+      // 外部文献可核；不计入凭空断言阻断，也不派发「数值删除」修订）
+      const authorizedObservations = isSurveyKind(ctx.state.workflowKind)
+        ? []
+        : (await services.experimentPackages.workflowContext(ctx.projectId)).observations.map((observation) => ({
+            value: observation.value,
+            metric: observation.metric,
+            groupId: observation.groupId,
+            ...(observation.split !== undefined ? { split: observation.split } : {}),
+          }));
       const claimGrounding = computeClaimGroundingReport({
         projectId: ctx.projectId,
         round,
@@ -528,6 +539,7 @@ function reviewRunStageInner(
         formalEvidence: evidence,
         bibEntries: citationReport?.static.bibEntries ?? [],
         ...(Object.keys(sectionCitedSourceIds).length > 0 ? { sectionCitedSourceIds } : {}),
+        ...(authorizedObservations.length > 0 ? { authorizedObservations } : {}),
       });
       // M11.4 Reliability Closure：claimIndex creator-side lineage → rootCauseKey
       //（存在性 + 弱佐证校验；audit 归因与任务层归层消费同一 id）。先于

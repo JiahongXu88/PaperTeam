@@ -225,8 +225,16 @@ export async function startTestStack(
     review: { sectionRetryBackoffMs: [0, 0], ...(options.review ?? {}) },
     // 测试默认完全离线：关闭旧 metadata 查询，scholarly resolver 不挂任何 provider
     // （否则 citation.metadata stage 会真的去查 crossref / openalex，网络慢时整条链路超时）
+    // Round 2：生产接线给学术库加了 provider 级礼貌节奏（arXiv 3s / Crossref 0.5s）；
+    // 测试栈默认关闭节奏（fake fetch 不需要礼貌，否则 5s 用例超时），显式传入可覆盖
     ...(options.citation
-      ? { citation: options.citation }
+      ? {
+          citation: {
+            ...options.citation,
+            httpOptions: { minRequestIntervalMs: {}, ...(options.citation.httpOptions ?? {}) },
+            scholarly: { minRequestIntervalMs: {}, ...(options.citation.scholarly ?? {}) },
+          },
+        }
       : { citation: { metadataEnabled: false, scholarly: { providers: [] } } }),
     // search 同理：默认全部 academic provider 禁用（research 端点按 not configured
     // 结构化失败）；需要驱动真实 provider 逻辑的 http 测试注入 fetchImpl + 白名单

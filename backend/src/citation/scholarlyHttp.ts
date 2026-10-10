@@ -94,6 +94,24 @@ export class ProviderCooldownRegistry {
   untilOf(provider: string): number {
     return this.until.get(provider) ?? 0;
   }
+
+  /** 仍在冷却的 provider 及其剩余毫秒（恢复 pass 的实时等待提示；已过期不列出） */
+  coolingProviders(): Array<{ provider: string; remainingMs: number }> {
+    const nowMs = this.now();
+    const cooling: Array<{ provider: string; remainingMs: number }> = [];
+    for (const [provider, until] of this.until) {
+      if (until > nowMs) {
+        cooling.push({ provider, remainingMs: until - nowMs });
+      }
+    }
+    return cooling;
+  }
+
+  /** 最早恢复的冷却 provider 的剩余毫秒（无冷却 → 0） */
+  earliestRecoveryMs(): number {
+    const cooling = this.coolingProviders();
+    return cooling.length === 0 ? 0 : Math.min(...cooling.map((entry) => entry.remainingMs));
+  }
 }
 
 export interface ScholarlyFetchInit {
@@ -122,6 +140,11 @@ export interface ScholarlyHttpClientOptions {
   backoffJitterMs?: number;
   /** 跨组件共享冷却（缺省 = 客户端私有状态） */
   cooldownRegistry?: ProviderCooldownRegistry;
+  /**
+   * provider 级最小请求间隔（毫秒；按 provider 名）。同一 provider 的相邻请求
+   * 间隔不足时先等待再发（礼貌节奏，例如 arXiv API 条款要求 ≥3s/请求）。缺省无节奏。
+   */
+  minRequestIntervalMs?: Record<string, number>;
   log?: (message: string) => void;
 }
 
@@ -141,6 +164,8 @@ export interface ScholarlyHttpTelemetry {
   cooldownSkips: number;
   /** 重试等待累计（毫秒） */
   totalWaitMs: number;
+  /** 礼貌节奏等待累计（毫秒；minRequestIntervalMs 触发） */
+  pacingWaitMs: number;
   byProvider: Map<string, { requests: number; rateLimited: number; errors: number }>;
 }
 
@@ -175,6 +200,8 @@ export class ScholarlyHttpClient {
   private readonly backoffBaseMs: number;
   private readonly backoffJitterMs: number;
   private readonly registry: ProviderCooldownRegistry;
+  private readonly minRequestIntervalMs: Record<string, number>;
+  private readonly lastRequestAt = new Map<string, number>();
   private readonly log: (message: string) => void;
   readonly telemetry: ScholarlyHttpTelemetry = {
     requests: 0,
@@ -182,6 +209,7 @@ export class ScholarlyHttpClient {
     rateLimited: 0,
     cooldownSkips: 0,
     totalWaitMs: 0,
+    pacingWaitMs: 0,
     byProvider: new Map(),
   };
 
@@ -197,7 +225,25 @@ export class ScholarlyHttpClient {
     this.backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     this.backoffJitterMs = options.backoffJitterMs ?? DEFAULT_BACKOFF_JITTER_MS;
     this.registry = options.cooldownRegistry ?? new ProviderCooldownRegistry(this.now);
+    this.minRequestIntervalMs = { ...(options.minRequestIntervalMs ?? {}) };
     this.log = options.log ?? (() => {});
+  }
+
+  /** 礼貌节奏：同 provider 相邻请求间隔不足 minRequestIntervalMs 时等待差值 */
+  private async pace(provider: string, signal?: AbortSignal): Promise<void> {
+    const interval = this.minRequestIntervalMs[provider] ?? 0;
+    if (interval <= 0) {
+      return;
+    }
+    const last = this.lastRequestAt.get(provider);
+    if (last !== undefined) {
+      const waitMs = last + interval - this.now();
+      if (waitMs > 0) {
+        this.telemetry.pacingWaitMs += waitMs;
+        await this.sleepImpl(waitMs, signal);
+      }
+    }
+    this.lastRequestAt.set(provider, this.now());
   }
 
   /** 共享冷却注册表（CitationIntegrityService 恢复pass读「下一次可重试时间」） */
@@ -233,6 +279,7 @@ export class ScholarlyHttpClient {
           { retryAfterMs: cooling, attempts: attempt, waitedMs },
         );
       }
+      await this.pace(provider, init.signal);
       this.telemetry.requests += 1;
       this.providerStat(provider).requests += 1;
       let error: ScholarlyHttpError;

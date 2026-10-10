@@ -60,7 +60,65 @@ export function isUnsupportedVerdict(verdict: FactVerdict): boolean {
  * 诚实边界：marker 级确定性判定，不是语义理解。学术阈值不动（口径修复
  * 只修「同一根因的重复惩罚与透明披露的分级」，见 gates 规则 4/5/6）。
  */
-export type ClaimDisclosure = "opaque_assertion" | "transparent_unverified";
+export type ClaimDisclosure = "opaque_assertion" | "transparent_unverified" | "author_experiment_data";
+
+/**
+ * 授权实验观测（Round 2）：claim 的全部数值都能在作者确认并授权进入工作流的
+ * 观测值里找到 → 披露口径 author_experiment_data——作者自己的实验结果不需要
+ * 外部文献重证（与 M10.3.1 claimGapAudit 的 excluded_author_data 同一原则，
+ * 但数据来源是 M13.5/M13.6 的 workflowContext 而不是 user_confirmed Evidence，
+ * 因此 idea_to_paper 工作流也能覆盖）。诚实边界：仍不是 evidence-backed，
+ * 不入 SUPPORTED；gate 单独呈现计数，不计入「凭空断言」阻断口径。
+ */
+export interface AuthorizedObservationValue {
+  value: number;
+  metric?: string;
+  split?: string;
+  groupId?: string;
+}
+
+/** claim 文本中的独立数值 run（排除粘连在字母上的数字，如 Dev25 / IDF1 / S014） */
+export function claimNumberRuns(text: string): string[] {
+  return [...text.matchAll(/(?<![\p{L}\d.])\d+(?:\.\d+)?(?![\p{L}\d])/gu)]
+    .map((match) => match[0] ?? "")
+    .filter((token) => token !== "");
+}
+
+function numericEquals(a: number, b: number): boolean {
+  const scale = Math.max(1, Math.abs(a), Math.abs(b));
+  return Math.abs(a - b) <= 1e-9 * scale;
+}
+
+/**
+ * claim 的全部数值是否都由授权观测值覆盖（≥1 个数值；数值比较按浮点相等，
+ * 0.628030 与 0.62803 视为同一值）。返回命中的观测标签（metric@split=value）
+ * 以便报告溯源；不覆盖 → null。
+ */
+export function authorizedObservationsCovering(
+  claimText: string,
+  observations: readonly AuthorizedObservationValue[],
+): string[] | null {
+  if (observations.length === 0) {
+    return null;
+  }
+  const numbers = [...new Set(claimNumberRuns(claimText))];
+  if (numbers.length === 0) {
+    return null;
+  }
+  const labels: string[] = [];
+  for (const token of numbers) {
+    const value = Number(token);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    const hit = observations.find((observation) => numericEquals(observation.value, value));
+    if (hit === undefined) {
+      return null;
+    }
+    labels.push(`${hit.metric ?? "?"}${hit.split !== undefined ? `@${hit.split}` : ""}=${hit.value}`);
+  }
+  return labels;
+}
 
 /** 来源归因 marker（转述范围限定到具体来源；不是普遍化断言） */
 const DISCLOSURE_ATTRIBUTION_MARKERS: readonly string[] = [
@@ -336,8 +394,10 @@ export interface ClaimGroundingEntry {
   citationKey?: string;
   /** UNSUPPORTED / CONTRADICTED 的修复候选（formal 池词面 Top-K；可空） */
   repairCandidates: EvidenceCandidate[];
-  /** M11.2.3（D-2）：UNSUPPORTED claim 的披露口径（凭空断言 vs 透明未核验转述） */
+  /** M11.2.3（D-2）：UNSUPPORTED claim 的披露口径（凭空断言 vs 透明未核验转述 vs 作者授权实验数据） */
   disclosure?: ClaimDisclosure;
+  /** disclosure=author_experiment_data 时命中的授权观测标签（metric@split=value；溯源） */
+  authorizedObservations?: string[];
 }
 
 export interface ClaimGroundingReport {
@@ -366,6 +426,11 @@ export interface ClaimGroundingReport {
    */
   opaqueUnsupportedClaims: number;
   transparentUnsupportedClaims: number;
+  /**
+   * Round 2：数值全部由作者授权实验观测覆盖的 UNSUPPORTED claim 数（单独呈现，
+   * 不计入凭空断言阻断口径；仍不是 evidence-backed）。缺省 0（旧报告兼容）。
+   */
+  authorDataUnsupportedClaims?: number;
   claims: ClaimGroundingEntry[];
   /** 参与绑定的 formal evidence 池规模（审计：分母口径） */
   formalEvidencePool: number;
@@ -385,6 +450,11 @@ export interface ClaimGroundingInput {
    * sourceIds）——候选证据来源合法性判定（§10）。缺省 = 无投影（不限定来源）。
    */
   sectionCitedSourceIds?: Record<string, string[]>;
+  /**
+   * Round 2：作者确认并授权进入工作流的实验观测值（workflowContext）。提供时，
+   * 数值全部被覆盖的 UNSUPPORTED claim 披露为 author_experiment_data。
+   */
+  authorizedObservations?: readonly AuthorizedObservationValue[];
   generatedAt?: string;
 }
 
@@ -405,6 +475,8 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
   let bound = 0;
   let opaqueUnsupported = 0;
   let transparentUnsupported = 0;
+  let authorDataUnsupported = 0;
+  const authorizedObservations = input.authorizedObservations ?? [];
   for (const check of input.factClaims) {
     const claimId = claimFingerprint(check.section, check.claim);
     const evidenceRecord =
@@ -432,11 +504,18 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
     if (isUnsupportedVerdict(check.verdict)) {
       unsupportedClaimIds.push(claimId);
     }
-    const disclosure = isUnsupportedVerdict(check.verdict)
-      ? classifyClaimDisclosure(check.claim)
+    // Round 2：UNSUPPORTED（非 CONTRADICTED）且数值全部由授权观测覆盖 → 作者实验数据
+    const authorizedHit =
+      check.verdict === "UNSUPPORTED" ? authorizedObservationsCovering(check.claim, authorizedObservations) : null;
+    const disclosure: ClaimDisclosure | undefined = isUnsupportedVerdict(check.verdict)
+      ? authorizedHit !== null
+        ? "author_experiment_data"
+        : classifyClaimDisclosure(check.claim)
       : undefined;
     if (disclosure === "transparent_unverified") {
       transparentUnsupported += 1;
+    } else if (disclosure === "author_experiment_data") {
+      authorDataUnsupported += 1;
     } else if (disclosure === "opaque_assertion") {
       opaqueUnsupported += 1;
     }
@@ -463,6 +542,7 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
           })
         : [],
       ...(disclosure !== undefined ? { disclosure } : {}),
+      ...(authorizedHit !== null ? { authorizedObservations: authorizedHit } : {}),
     });
   }
   const total = entries.length;
@@ -482,6 +562,7 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
     unsupportedClaimIds,
     opaqueUnsupportedClaims: opaqueUnsupported,
     transparentUnsupportedClaims: transparentUnsupported,
+    authorDataUnsupportedClaims: authorDataUnsupported,
     claims: entries,
     formalEvidencePool: formalById.size,
   };

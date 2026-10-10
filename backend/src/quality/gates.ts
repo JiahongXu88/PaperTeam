@@ -427,7 +427,7 @@ export function evaluateQualityGate(
       audit !== undefined
         ? `修订引入 UNSUPPORTED/CONTRADICTED claim ${unsupported} 条（另有原稿既有 ${audit.counts.excludedPreExisting} 条 / 作者数据覆盖 ${audit.counts.excludedAuthorData} 条——返修语境不重证，见 claim-gap-audit）`
         : claimGrounding !== undefined
-          ? `UNSUPPORTED/CONTRADICTED claim ${claimGrounding.unsupportedClaims} 条（凭空断言 ${claimGrounding.opaqueUnsupportedClaims} 条计入阻断；透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条单独呈现不阻断——口径见 M11.2.3）`
+          ? `UNSUPPORTED/CONTRADICTED claim ${claimGrounding.unsupportedClaims} 条（凭空断言 ${claimGrounding.opaqueUnsupportedClaims} 条计入阻断；透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条单独呈现不阻断${(claimGrounding.authorDataUnsupportedClaims ?? 0) > 0 ? `；作者授权实验数据 ${claimGrounding.authorDataUnsupportedClaims} 条单独呈现不阻断` : ""}——口径见 M11.2.3）`
           : `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
   });
   // 4b. 透明未核验转述的可见性（informational：永远通过，只呈现计数——
@@ -437,6 +437,17 @@ export function evaluateQualityGate(
       rule: "transparent_unverified_reported",
       passed: true,
       detail: `透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条（据来源转述 + 声明未核验；不阻断，作者裁决是否取全文 / 删除）`,
+    });
+  }
+
+  // 4c. 作者授权实验数据的可见性（Round 2，informational：永远通过——数值来自
+  //     作者确认并授权进入工作流的观测，不需要外部文献重证；但仍不是 evidence-backed，
+  //     报告里如实标注「作者确认、未经外部核验」）
+  if (claimGrounding !== undefined && (claimGrounding.authorDataUnsupportedClaims ?? 0) > 0) {
+    rules.push({
+      rule: "author_experiment_data_reported",
+      passed: true,
+      detail: `作者授权实验数据 ${claimGrounding.authorDataUnsupportedClaims} 条（数值全部来自已授权观测；不阻断，但仍为作者确认、未经外部核验）`,
     });
   }
 
