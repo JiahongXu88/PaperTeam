@@ -854,8 +854,12 @@ function CustomProviderForm({
                       type="text"
                       inputMode="numeric"
                       value={entry.maxTokens}
+                      aria-describedby={`model-max-help-${entry.key}`}
                       onChange={(event) => updateEntry(entry.key, { maxTokens: event.target.value, metadataVerified: true })}
                     />
+                    <span className="field-help" id={`model-max-help-${entry.key}`}>
+                      单次回复的 token 上限；推理模型的 thinking 与正文共用。调研 / 写作等结构化长输出建议 ≥ 32768，过低会被截断导致任务失败
+                    </span>
                   </div>
                   <div className="field">
                     <label className="check">

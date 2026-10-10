@@ -66,15 +66,31 @@ export function extractJsonObject(raw: string, what: string): Record<string, unk
     if (text[from] !== "{") {
       continue;
     }
-    const candidate = tryBalancedJson(text, from);
-    if (candidate !== undefined) {
-      return candidate;
+    const attempt = tryBalancedJson(text, from);
+    if (attempt.kind === "parsed") {
+      return attempt.value;
+    }
+    if (attempt.kind === "unterminated") {
+      // 该 "{" 直到文本末尾都没有闭合：之后的每个 "{" 都是它的嵌套子对象，
+      // 继续回退只会抓到一个碎片（例如 bibliography 里的某一条）并报出
+      // 误导性的「缺少字段 X」。这是输出被截断的确定性信号，直接如实报告。
+      throw new StructuredOutputError(
+        `${what}：输出的 JSON 不完整（对象未闭合，疑似被模型输出上限截断）`,
+        "json_parse",
+      );
     }
   }
   throw new StructuredOutputError(`${what}：输出的 JSON 无法解析`, "json_parse");
 }
 
-function tryBalancedJson(text: string, start: number): Record<string, unknown> | undefined {
+type BalancedJsonAttempt =
+  | { kind: "parsed"; value: Record<string, unknown> }
+  /** 闭合了但不是合法 JSON 对象（可能是说明文字里的花括号）→ 继续尝试下一个 "{" */
+  | { kind: "invalid" }
+  /** 直到文本末尾都未闭合（截断信号） */
+  | { kind: "unterminated" };
+
+function tryBalancedJson(text: string, start: number): BalancedJsonAttempt {
   let depth = 0;
   let inString = false;
   let escaped = false;
@@ -100,16 +116,16 @@ function tryBalancedJson(text: string, start: number): Record<string, unknown> |
         try {
           const parsed = JSON.parse(text.slice(start, index + 1)) as unknown;
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-            return parsed as Record<string, unknown>;
+            return { kind: "parsed", value: parsed as Record<string, unknown> };
           }
-          return undefined;
+          return { kind: "invalid" };
         } catch {
-          return undefined;
+          return { kind: "invalid" };
         }
       }
     }
   }
-  return undefined;
+  return { kind: "unterminated" };
 }
 
 // ---- 结构化字段的防御性读取 ----

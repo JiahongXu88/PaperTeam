@@ -1151,6 +1151,10 @@ export function classifyBusinessError(error: BusinessError): StageFailureCategor
       return "contract_violation";
     case "PDF_PARSER_UNAVAILABLE":
       return "runtime_unavailable";
+    case "AGENT_OUTPUT_TRUNCATED":
+      // 模型输出上限截断：原样重跑同一 prompt 只会再次截断（真实 run 实证），
+      // 必须由用户提高 Provider 模型 maxTokens / 降低 thinking 档位后重跑
+      return "permanent";
     default:
       return "permanent";
   }

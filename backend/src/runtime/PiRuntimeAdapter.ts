@@ -138,6 +138,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+  AgentOutputTruncatedError,
   AgentRunFailedError,
   AgentRuntimeUnavailableError,
   AgentTimeoutError,
@@ -1629,7 +1630,8 @@ export class PiRuntimeAdapter implements AgentRuntime {
       status: "failed",
       sessionKey: state.sessionKey,
       error: message,
-      errorCode: "RUN_FAILED",
+      // 输出截断单独建码（可观测：与 provider error / 解析失败区分）
+      errorCode: error instanceof AgentOutputTruncatedError ? "OUTPUT_TRUNCATED" : "RUN_FAILED",
     });
   }
 
@@ -2293,6 +2295,21 @@ export class PiRuntimeAdapter implements AgentRuntime {
         status: "cancelled",
         sessionKey,
         error: "任务已取消（session.abort）",
+      });
+    }
+
+    if (stopReason === "length") {
+      // 最终回合被模型输出上限截断：截断文本不是可信产出（结构化解析会误抓
+      // 嵌套子对象并报出误导性的「缺少字段」），原样重跑只会再次撞上同一上限。
+      // 单独建码（AGENT_OUTPUT_TRUNCATED，Stage 归类 permanent）并给出修复路径。
+      const maxTokens = managed.model.maxTokens;
+      this.log(
+        `[pi-runtime] runAgent ${taskId} 终态=length（输出被 maxTokens=${maxTokens ?? "?"} 截断，model=${managed.modelLabel}）`,
+      );
+      throw new AgentOutputTruncatedError({
+        ...(typeof maxTokens === "number" && maxTokens > 0 ? { maxTokens } : {}),
+        modelLabel: managed.modelLabel,
+        detail: `taskId=${taskId} sessionKey=${sessionKey} stopReason=length`,
       });
     }
 

@@ -33,6 +33,7 @@ import type { PiRuntimeOptions } from "../src/runtime/PiRuntimeAdapter.js";
 import type { AgentEvent } from "../src/runtime/types.js";
 import { resolveRoleConfig } from "../src/runtime/pi/roleConfig.js";
 import {
+  AgentOutputTruncatedError,
   AgentRunFailedError,
   AgentRuntimeUnavailableError,
   AgentTimeoutError,
@@ -54,6 +55,8 @@ type FakeBehavior =
       usageTurns?: (FakeUsage | undefined)[];
     }
   | { kind: "errorStop"; message: string; usageTurns?: (FakeUsage | undefined)[] }
+  /** 最终 assistant 回合撞上模型 maxTokens（stopReason="length"）：output 为被截断的文本 */
+  | { kind: "lengthStop"; output: string }
   | { kind: "preflightReject"; message: string; error?: Error }
   | { kind: "hangUntilAbort" }
   /** 先产出若干带 usage 的 assistant turn（message_end），再挂起直到 abort（usage 保留路径测试） */
@@ -177,7 +180,12 @@ class FakeAgentSession {
         return;
       }
       const isError = behavior.kind === "errorStop";
-      const text2 = isError ? "" : behavior.kind === "complete" ? behavior.output : "";
+      const isLength = behavior.kind === "lengthStop";
+      const text2 = isError
+        ? ""
+        : behavior.kind === "complete" || behavior.kind === "lengthStop"
+          ? behavior.output
+          : "";
       const usageTurns =
         behavior.kind === "complete"
           ? behavior.usageTurns
@@ -203,7 +211,7 @@ class FakeAgentSession {
         const message = {
           role: "assistant",
           content: [{ type: "text", text: text2 }],
-          stopReason: isError ? "error" : "stop",
+          stopReason: isError ? "error" : isLength ? "length" : "stop",
           ...(isError ? { errorMessage: behavior.message } : {}),
         };
         if (behavior.kind === "complete" && behavior.streamEvents !== undefined) {
@@ -487,6 +495,32 @@ describe("PiRuntimeAdapter（Level 1：fake session）", () => {
     });
     expect(task.status).toBe("failed");
     expect(task.error).toContain("provider 502");
+  });
+
+  it("runAgent 终态 stopReason=length：reject AgentOutputTruncatedError，不把截断文本当产出", async () => {
+    // 2026-10-10 真实 run w-b06991bbe160：Researcher 最终 JSON 在 8192 tokens 处被截断，
+    // 旧行为把截断文本当 completed 返回 → 解析器误报「缺少字段 domainOverview」并原样重试
+    const factory = createFakeFactory();
+    factory.setBehavior({ kind: "lengthStop", output: '{"plan": {"questions": ["q1"]}, "domainOverview": "被截' });
+    const adapter = await makeLevel1Adapter(factory);
+    const handle = await adapter.startAgent({
+      agentId: "researcher",
+      task: "research",
+      projectId: "proj-a",
+      contextScope: "research",
+    });
+    const error = await handle.result().catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AgentOutputTruncatedError);
+    const truncated = error as AgentOutputTruncatedError;
+    expect(truncated.code).toBe("AGENT_OUTPUT_TRUNCATED");
+    expect(truncated.message).toContain("stopReason=length");
+    expect(truncated.message).toContain("最大输出");
+    // 结构化终态：failed + OUTPUT_TRUNCATED（与 provider error 的 RUN_FAILED 区分）
+    const task = await adapter.getTask(handle.taskId).catch(() => undefined);
+    if (task !== undefined) {
+      expect(task.status).toBe("failed");
+      expect(task.errorCode).toBe("OUTPUT_TRUNCATED");
+    }
   });
 
   it("runAgent 前置拒绝（prompt throw）：结构化 failed 任务", async () => {

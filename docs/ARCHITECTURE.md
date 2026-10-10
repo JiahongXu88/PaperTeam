@@ -511,7 +511,8 @@ AgentRuntime.startAgent(input)
     （同步终态语义：settle 才 resolve；失败/中断不 reject，落在 transcript
     assistant 消息 stopReason）→ 终态归因为 AgentTask
   → handle.result()：completed / failed（stopReason=error）/ cancelled
-    （cancelRequested + aborted|error）/ 超时 reject AgentTimeoutError
+    （cancelRequested + aborted|error）/ 超时 reject AgentTimeoutError /
+    输出截断（stopReason=length）reject AgentOutputTruncatedError
 ```
 
 事件：会话创建即 `session.subscribe()`，Pi 事件映射为 PaperTeam AgentEvent
@@ -590,7 +591,10 @@ PiRuntimeAdapter
 - **终态归因**：`session.prompt()` 同步终态语义；transcript assistant 消息
   `stopReason`：`"error"` → failed；`"aborted"`（或工具执行中 abort 的
   `"error" + "This operation was aborted"`，以 cancelRequested 意图归因）→
-  cancelled；超时 → `AgentTimeoutError`（handle.result() reject）。
+  cancelled；超时 → `AgentTimeoutError`（handle.result() reject）；
+  `"length"`（最终回合撞上模型 maxTokens）→ `AgentOutputTruncatedError`
+  （reject，`AGENT_OUTPUT_TRUNCATED`，Stage 归类 permanent 不重试——截断文本
+  不是可信产出，原样重跑只会再次截断；消息直接给出提高「最大输出」的修复路径）。
 - **timeout**：Pi SDK 无内建 run 超时；Adapter 定时器 + `session.abort()`。
 - **事件**：会话创建即 `session.subscribe()`，映射为 PaperTeam AgentEvent
   （agent_start / message_start / message_update / message_end /

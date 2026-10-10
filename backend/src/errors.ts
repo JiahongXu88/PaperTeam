@@ -16,6 +16,7 @@ export type BusinessErrorCode =
   | "PROJECT_NOT_FOUND"
   | "AGENT_RUNTIME_UNAVAILABLE"
   | "AGENT_RUN_FAILED"
+  | "AGENT_OUTPUT_TRUNCATED"
   | "AGENT_TIMEOUT"
   | "INVALID_LATEX_OUTPUT"
   | "LATEX_TOOL_UNAVAILABLE"
@@ -113,6 +114,7 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   PROJECT_NOT_FOUND: 404,
   AGENT_RUNTIME_UNAVAILABLE: 502,
   AGENT_RUN_FAILED: 502,
+  AGENT_OUTPUT_TRUNCATED: 502,
   AGENT_TIMEOUT: 504,
   INVALID_LATEX_OUTPUT: 502,
   LATEX_TOOL_UNAVAILABLE: 500,
@@ -270,6 +272,35 @@ export class AgentRuntimeUnavailableError extends BusinessError {
 export class AgentRunFailedError extends BusinessError {
   constructor(message: string, detail?: string) {
     super("AGENT_RUN_FAILED", `Agent 任务失败：${message}`, detail);
+  }
+}
+
+/**
+ * Agent 最终回合被模型输出 token 上限截断（transcript assistant 消息
+ * stopReason="length"）。截断文本不是可信产出：结构化解析会误抓嵌套子对象
+ * 并报出误导性的「缺少字段」；原样重跑同一 prompt 只会再次撞上同一上限
+ * （2026-10-10 真实 run w-b06991bbe160：两次尝试均 8192 tokens 截断）。
+ * 因此单独建码并归类为 permanent——不进入 transient 重试，错误消息直接给出
+ * 修复路径（提高 Provider 模型「最大输出」/ 降低 thinking 档位）。
+ */
+export class AgentOutputTruncatedError extends BusinessError {
+  /** 本次请求生效的模型输出上限（Pi Model.maxTokens；未知时缺省） */
+  readonly maxTokens?: number;
+  /** 模型标签（provider/model-id） */
+  readonly modelLabel?: string;
+
+  constructor(options: { maxTokens?: number; modelLabel?: string; detail?: string } = {}) {
+    const cap = options.maxTokens !== undefined ? `${options.maxTokens} tokens` : "模型 maxTokens";
+    const model = options.modelLabel !== undefined ? `（${options.modelLabel}）` : "";
+    super(
+      "AGENT_OUTPUT_TRUNCATED",
+      `Agent 输出被模型输出上限截断：最终回合 stopReason=length，已达 ${cap}${model}。` +
+        "截断的文本不可作为产出解析。请在「设置 → 模型 → 自定义 Provider」中提高该模型的「最大输出」" +
+        "（推理模型的 thinking 与正文共用此上限；结构化长输出建议 ≥ 32768），或降低 thinking 档位后重新运行。",
+      options.detail,
+    );
+    this.maxTokens = options.maxTokens;
+    this.modelLabel = options.modelLabel;
   }
 }
 

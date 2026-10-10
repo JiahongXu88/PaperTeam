@@ -12,7 +12,13 @@ import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
 
-import { AgentRunFailedError, BusinessError, WorkflowInvalidStateError, type StageFailureCategory } from "../../src/errors.js";
+import {
+  AgentOutputTruncatedError,
+  AgentRunFailedError,
+  BusinessError,
+  WorkflowInvalidStateError,
+  type StageFailureCategory,
+} from "../../src/errors.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { appendEventLine, readEventLog } from "../../src/workflow/eventLog.js";
 import { WorkflowOrchestrator } from "../../src/workflow/WorkflowOrchestrator.js";
@@ -362,6 +368,37 @@ describe("WorkflowOrchestrator：StageContract 与重试", () => {
     const finished = await waitForStatus(harness.orchestrator, run.runId, ["failed"]);
     expect(attempts).toBe(1);
     expect(finished.error?.code).toBe("IMPORT_VALIDATION");
+  });
+
+  it("Agent 输出被 maxTokens 截断（AGENT_OUTPUT_TRUNCATED）：归类 permanent，首次失败即终止不重试", async () => {
+    // 真实 run w-b06991bbe160：同一 prompt 原样重跑两次都在 8192 tokens 处截断——
+    // 重试只浪费时间与 token，必须用户提高「最大输出」后再跑
+    let attempts = 0;
+    const definition: WorkflowDefinition = {
+      ...linearDefinition([]),
+      stages: [
+        stepStage("research.idea", {
+          maxAttempts: 2,
+          retryable: ["transient", "timeout", "runtime_unavailable"],
+          execute: () => {
+            attempts += 1;
+            throw new AgentOutputTruncatedError({ maxTokens: 8192, modelLabel: "glm/claude-fable-5-1" });
+          },
+        }),
+      ],
+      plan: (state) =>
+        "research.idea" in state.stageResults
+          ? { kind: "complete", label: "draft", summary: {} }
+          : { kind: "stage", stageId: "research.idea" },
+    };
+    const harness = await createHarness(() => definition);
+    const run = await harness.orchestrator.createRun(harness.projectId, "idea_to_paper");
+    const finished = await waitForStatus(harness.orchestrator, run.runId, ["failed"]);
+    expect(attempts).toBe(1);
+    expect(finished.error?.code).toBe("AGENT_OUTPUT_TRUNCATED");
+    expect(finished.stageHistory[0]?.error?.category).toBe("permanent");
+    expect(finished.error?.message).toContain("8192");
+    expect(finished.error?.message).toContain("最大输出");
   });
 
   it("stage 超时：timeout 分类并按重试策略处理", async () => {
