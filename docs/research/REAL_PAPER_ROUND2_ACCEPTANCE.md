@@ -1,8 +1,7 @@
 # Real Research Paper — Round 2 Unattended Acceptance (desensitized)
 
-> Status: **IN PROGRESS** — this file is updated at the delivery checkpoints
-> (A: before run start, B: first real run terminal, C: fixes + regression,
-> D: task end). It contains engineering facts only. Manuscript text, LaTeX,
+> Status: **COMPLETE (Round 2 = PARTIAL: Draft ready, Final not reachable with the authorized material)** —
+> checkpoints A (before run start), B (first real run terminal), C (fixes + regression), D (task end). It contains engineering facts only. Manuscript text, LaTeX,
 > experiment details, raw logs and PDFs are never committed to this public
 > repository; they are synced to a private artifacts repository controlled by
 > the author.
@@ -147,14 +146,108 @@ Telemetry: 63 requests, 7×429, 46 cooldown skips, 31 s pacing wait. OpenAlex
 still returns `Retry-After ≈ 44 567 s` for this host; the OpenAlex field fixes
 remain untested today (provider unavailable, not a code path failure).
 
-### C.3 Re-run decision
+### C.3 Re-run decision and the second defect found by the re-run
 
-Criteria met (task §7.1): fix 2 changes the scientific-fact consumption path
-(claim grounding / gate / resolution for authorized observations), fix 3 changes
-revision behaviour, fix 1 changes citation outcomes. Backend rebuilt and
-restarted on `4247ad7`; `workflow-context` re-checked (8 Dev25 observations);
-**run 7 `w-43cfc5703257`** started through the UI at 2026-10-10T11:41:43Z.
+Criteria met (task §7.1): fix 2 changes the scientific-fact consumption path,
+fix 3 changes revision behaviour, fix 1 changes citation outcomes. Backend
+rebuilt on `4247ad7`; **run 7 `w-43cfc5703257`** started 11:41:43Z.
 
-## D. Checkpoint D — final
+Run 7 exposed a fourth defect, specific to *re-running `idea_to_paper` on a
+project that already has a manuscript* (exactly this task's scenario): the new
+`outline.plan` / `writing.sections` commits rewrote the section files, and the
+quality gate compared them to the previous run's final manuscript with
+*revision* preservation rules → `fact_preservation` (22 findings — including
+"TBD" = tracking-by-detection matched as a placeholder token) and
+`citation_keys_preserved` (24 keys) failed; `judgeConvergence` saw the previous
+run's rounds in iteration-history → REGRESSED → `SYSTEM_FAILED` →
+`hitl.revision_stalled` with no revision attempted, and `build.draft` would have
+refused the Draft (`FACT_PRESERVATION_FAILED`). Run 7 was cancelled at that gate
+(31 min, 49 turns) — the only sane option.
 
-_pending_
+| # | Area | Fix | Tests |
+| --- | --- | --- | --- |
+| 4 | workflow / quality (`0a5d832`, refined `560a8de`) | `isFreshDraftRewrite`: outline/writing commits of a run whose revision chain has records from *before* that run are "not comparable" for fact / citation preservation (first-run outline→writing keeps the existing visibility, which two CI e2e suites assert); `IterationRecord.runId` + `iterationsForRun` so convergence/outcome/delta are judged within the current run | `freshDraftPreservation` (7); `citationPreservationGate` / `factPreservationGate` e2e green |
+| 5 | citation (`c3da2ef`) | providers whose `Retry-After` exceeds the cooldown cap (OpenAlex: 12–13 h) are marked unavailable; the recovery wait hint skips them (runs 7/8 lost 90–100 s per round waiting for OpenAlex) | `unavailableProvider` (3; unit-level only, not exercised by a live run) |
+
+CI: `0a5d832` CI failed on the two preservation e2e suites (the first version of
+fix 4 was too broad) → `560a8de` CI + Linux Integration green.
+
+**Run 8 `w-00fb26766399`** started 12:14:45Z on `0a5d832` (fixes 1–4 live).
+
+## D. Checkpoint D — final (run `w-00fb26766399`)
+
+**Terminal: `completed` / label `draft`, Draft PDF `art-draft-rev15` (22 pages,
+0 diagnostics). Quality Gate FAIL (honest, `QUALITY_NOT_REACHED`). No Final.**
+
+| Item | run 6 (M13.6 code) | run 8 (all fixes) |
+| --- | --- | --- |
+| Wall clock / HITL wait | 45m24s / ≈11 min | 42m10s / ≈5 min |
+| Turns · output · cache read · cache write | 78 · 171 653 · 3.01 M · 0.91 M | 104 · 151 815 · 6.02 M · 0.69 M |
+| Stage errors / retries | 0 / 0 | 0 / 0 |
+| Citation (cited → verified / rate_limited) | 31 → 6 / 25 (r3), 11 / 20 (r5) | 21 → **19 / 2** (both rounds; the 2 are OpenAlex-only) |
+| Gate: opaque unsupported | 27 (incl. the Dev25 numbers) | 20 (literature only; Dev25 claim exempt as author data) |
+| Gate: fact / citation preservation | n/a | not comparable for the fresh draft ✔ (no false SYSTEM_FAILED) |
+| Gate: critical / major (effective) · score · styleRisk | 0 / 4 · 54 · 36 | 0 / 6 · 40 · 46 |
+| Terminal classification at the stalled gate | QUALITY_NOT_REACHED (overflow) | QUALITY_NOT_REACHED (CONVERGED) |
+| HITL | approve / approve / continue / **approve** / **reject** (leaked notes) / accept_draft | approve / approve / continue / **reject** (fabricated formulas) / accept_draft |
+
+Run 8 observations:
+
+- The Writer, asked by the plan for "method precision", **invented formulas and
+  hyper-parameters** (a linear uncertainty radius, a linear gap bound, "匀速模型")
+  that do not exist in the author's method notes; the fact guard flagged them
+  (`formula_added`) and the revision was rejected (restore). This is the right
+  guard behaviour; the Writer-side rule is logged as follow-up NB-R2-3.
+- No execution-note leak in any run-8 revision (fix 3 had nothing to strip).
+- Fix 2 exempted the authorized Dev25 results claim; the abstract in run 7 used
+  rounded ranges (0.626–0.628) which are deliberately *not* exempted.
+- Remaining gate blockers are research-material limits: 0 verified literature
+  evidence (79 pending candidates were not promoted — an author action), no
+  ablation / fair baseline / reproducibility details in the authorized package,
+  Confirmation13 / Full38 unauthorized. The Draft states all of these as pending.
+
+Three-run totals: output 401 921 tokens, cache read 10.84 M, cache write 1.90 M;
+**cost NOT_AVAILABLE** (provider returns cost=0). Full backend suite on the final
+tree: 3054 passed / 20 skipped / 3 failed = the pre-existing SSE timing flakes (`httpWorkflowApi` 409, `sseCancelSemantics` ×2, `orchestratorHardening` file-level) which pass when run alone (19/19). GitHub CI / Linux Integration on `c3da2ef`: CI **success** (observed 21:08 local); Linux Integration still in progress when this report was committed (both workflows were green on the previous code commit `560a8de`; the author can confirm the final status on the Actions tab).
+
+### D.1 Delivery
+
+- Public: `JiahongXu88/PaperTeam` main — code fixes 1–5 + tests + this report.
+  Commits this round: `9875ee0`, `9606553`, `4247ad7`, `0d94aef`, `0a5d832`, `560a8de`, `c3da2ef`, plus the final report commit.
+- Private (verified `visibility: PRIVATE` before every push):
+  `JiahongXu88/PaperTeam-RealPaper-Results` — Draft PDFs rev9 (21 p) and rev15 (22 p),
+  LaTeX snapshots, review / gate / claim-grounding / citation reports, run traces,
+  HITL payloads, 18 UI screenshots, monitor data, run log and the private final
+  report. Nothing from the private set is in the public repo.
+- Local: `D:\Reports\PaperTeamRuns\RealPaperRound2\` (FINAL_REPORT.md, RUN_LOG.md, artifacts/, shots/, logs/).
+
+### D.2 Verdict
+
+| | |
+| --- | --- |
+| 原始项目复用 | yes — same project, no new project, historical runs kept |
+| 实验包自动升级 | v2 already on disk; `ensure-upgraded` idempotent (verified) |
+| Dev25 授权与来源核对 | yes — UI one-shot, provenance checked against the ZIP fact ledger |
+| Confirmation13 / Full38 隔离 | yes — undecided; zero occurrences in all PDFs |
+| Workflow Context | 8 Dev25 observations, re-verified before each run |
+| Fable 模型与 Tool Calling | stable — 231 turns across 3 runs, no provider errors, no thinking-signature 400 |
+| Research / Writing / Reviewer / Revision | all executed; Reviewer honest; Revision guarded (2 rejects were correct) |
+| Citation Verification | 6/31 → 19/21 verified; remaining = OpenAlex ban (provider-side) |
+| Quality Gate | FAIL (honest) both runs |
+| Draft PDF | rev9 21 p, rev15 22 p (clean text, no leaked notes, no unauthorized scopes) |
+| Final PDF | not produced (gate not passed; not forced) |
+| Bugs fixed | 5 (+ test-stack pacing, CI refinement) |
+| Re-runs | 2 (run 7 cancelled on a real defect; run 8 completed) |
+| ENGINEERING_STABLE | true |
+| EXPERIMENT_CONTEXT_VALID | true |
+| RESEARCH_INTEGRITY_PRESERVED | true |
+| WORKFLOW_COMPLETED | true (runs 6 and 8) |
+| DRAFT_READY | true |
+| PUBLICATION_READY | false |
+| REAL_PAPER_ROUND2 | **PARTIAL** |
+| PUBLIC_GITHUB_SYNCED | true |
+| PRIVATE_ARTIFACTS_SYNCED | true |
+
+Author decisions outstanding: Full38 / Confirmation13 authorization; promotion of
+pending literature candidates; the missing experiments (E01–E11); method-detail
+source material for the Writer (NB-R2-3).
