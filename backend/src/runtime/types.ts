@@ -338,6 +338,13 @@ export interface AgentRuntime {
   releaseProjectSessions?(projectId: string): Promise<number>;
 
   /**
+   * 轮换某项目的空闲会话（M13.6：论文工作流启动边界；可选）。
+   * 目的：旧 run 的会话历史（可能含过期授权的实验数值）不泄入新 run；
+   * busy 会话跳过。实现未提供时视为 no-op。
+   */
+  rotateProjectIdleSessions?(projectId: string): Promise<number>;
+
+  /**
    * 释放 Runtime 持有的资源：取消/收敛所有 active run、释放全部会话
    * （幂等；进程 shutdown 时调用），保证进程可退出。
    */

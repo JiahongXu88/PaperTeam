@@ -189,6 +189,12 @@ export class ReviewerService {
     targetExpectations?: string;
     /** Workflow stage cancellation scope shared by every mode in this review round. */
     signal?: AbortSignal;
+    /**
+     * M13.6：实验数据使用口径（renderExperimentPolicyLines 产物，范围级授权
+     * 视图、无具体数值）。三路模式共享——审稿对「实验数据可用性」的判断与
+     * Writer / Feasibility 同一口径（无授权范围的数值表述 = 实验支撑缺口）。
+     */
+    experimentPolicyLines?: string[];
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -253,6 +259,8 @@ export class ReviewerService {
     targetExpectations?: string;
     /** Shared review-round cancellation scope, inherited from the workflow stage. */
     signal?: AbortSignal;
+    /** M13.6：实验数据使用口径（范围级授权视图；undefined → prompt 不变） */
+    experimentPolicyLines?: string[];
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -578,6 +586,8 @@ export function buildReviewPrompt(params: {
    * （回归测试锁定）。
    */
   targetExpectations?: string;
+  /** M13.6：实验数据使用口径（范围级授权视图、无具体数值；undefined → 不注入） */
+  experimentPolicyLines?: string[];
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -692,6 +702,12 @@ export function buildReviewPrompt(params: {
         : ["（无已核验（verified）Evidence）"]),
     ...(params.citationDigest
       ? ["", "===== 引用核验摘要 =====", params.citationDigest]
+      : []),
+    ...(params.experimentPolicyLines !== undefined
+      ? [
+          ...params.experimentPolicyLines,
+          "审稿口径：稿件中的具体实验数值只可能来自「已授权进入工作流」的范围；出现于摘要 / 正文但不在授权范围内的数值表述按实验支撑缺口如实报告（不要推测数值来源，也不要因授权存在而降低其他维度的审稿标准）。",
+        ]
       : []),
     ...(params.surveyDigest !== undefined
       ? ["", "===== 综述确定性指标（机器可算信号；评审时对照使用）=====", params.surveyDigest]

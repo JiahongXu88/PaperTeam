@@ -97,6 +97,12 @@ export class FeasibilityService {
     assessKind?: "idea" | "existing_paper";
     /** 目标实证参照系块（benchmark 观测 + readiness 差距；缺省不注入） */
     targetReference?: string;
+    /**
+     * M13.6：实验数据使用口径（renderExperimentPolicyLines 产物，只含范围级
+     * 授权视图、无具体数值）。缺省不注入——可行性评估据此区分「作者已授权
+     * 的实验数据可用」与「待补实验」，避免把已有数据误列为缺失。
+     */
+    experimentPolicyLines?: string[];
   }): Promise<FeasibilityResult> {
     const project = await this.projects.getRequired(params.projectId);
     const prompt = buildFeasibilityPrompt(
@@ -105,6 +111,7 @@ export class FeasibilityService {
       params.evidenceStats,
       params.assessKind ?? "idea",
       params.targetReference,
+      params.experimentPolicyLines,
     );
     // Record only bounded size metadata, never prompt content. This makes the
     // preflight payload auditable without leaking manuscript or source text.
@@ -308,6 +315,8 @@ export function buildFeasibilityPrompt(
    * undefined 时 prompt 与旧版逐字节一致（回归测试锁定）。
    */
   targetReference?: string,
+  /** M13.6：实验数据使用口径（renderExperimentPolicyLines 产物）；缺省不注入 */
+  experimentPolicyLines?: string[],
 ): string {
   const subject =
     assessKind === "existing_paper" ? "当前论文与目标档次的差距" : "当前研究 Idea 与目标档次";
@@ -367,5 +376,6 @@ export function buildFeasibilityPrompt(
     "===== Evidence 现状 =====",
     `Evidence 总数：${evidenceStats.total}（verified=${evidenceStats.byStatus.verified}，unverified=${evidenceStats.byStatus.unverified}，contradictory=${evidenceStats.contradictory}）`,
     ...(targetReference !== undefined ? ["", targetReference] : []),
+    ...(experimentPolicyLines !== undefined ? experimentPolicyLines : []),
   ].join("\n");
 }

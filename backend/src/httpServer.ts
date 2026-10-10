@@ -599,6 +599,29 @@ async function handleRequest(
     // M11.1.4：topic_survey 的可选范围参数（topic = project.title，不重复传；
     // 年份范围 / 篇幅目标 / 目标期刊只作检索与规划意图，不是硬过滤）
     const surveyScope = kind === "topic_survey" ? readSurveyScopeFields(body) : {};
+    // M13.6 运行前检查：(1) v1 实验包自动升级到范围级（幂等；失败不阻断启动，
+    // 旧语义照旧可用）；(2) 轮换项目空闲会话——旧 run 的会话历史（可能含过期
+    // 授权的实验数值）不再泄入新 run（NB-6 的产品化收口，不依赖重启 backend）
+    if (services.stack !== undefined && kind !== "topic_survey") {
+      try {
+        const upgrade = await services.stack.experimentPackages.ensureSchemaUpgraded(projectId);
+        if (upgrade.upgraded.length > 0) {
+          console.log(
+            `[http] 运行前自动升级实验包 v1→v2：${upgrade.upgraded.length} 个；保留确认 ${upgrade.preservedConfirmations.length} 个，需重核 ${upgrade.resetConfirmations.length} 个`,
+          );
+        }
+      } catch (error) {
+        console.error(`[http] 运行前实验包升级失败（不阻断启动）:`, errorText(error));
+      }
+    }
+    try {
+      const rotated = await services.runtime.rotateProjectIdleSessions?.(projectId) ?? 0;
+      if (rotated > 0) {
+        console.log(`[http] 运行前轮换项目空闲会话：${rotated} 个（旧 run 会话历史不进入新 run）`);
+      }
+    } catch (error) {
+      console.error(`[http] 运行前会话轮换失败（不阻断启动）:`, errorText(error));
+    }
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
       // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
@@ -1054,13 +1077,20 @@ async function handleProjectResourceRoutes(
     };
     const packageSummary = (item: Awaited<ReturnType<typeof stack.experimentPackages.view>>) => ({
       packageId: item.packageId, packageHash: item.packageHash, originalName: item.originalName,
-      importedAt: item.importedAt, status: item.status,
+      importedAt: item.importedAt, status: item.status, schemaVersion: item.schemaVersion,
       fileCount: item.files.length, groupCount: item.groups.length,
       observationCount: item.observations.length, warningCount: item.warnings.length,
     });
     if (rest === "/workflow-context") {
       if (method !== "GET") { sendMethodNotAllowed(res, "GET", method); return true; }
       sendJson(res, 200, await stack.experimentPackages.workflowContext(projectId));
+      return true;
+    }
+    if (rest === "/ensure-upgraded") {
+      // M13.6 v1 → v2 自动兼容：显式 POST（普通 GET 不做副作用）；幂等
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const result = await stack.experimentPackages.ensureSchemaUpgraded(projectId);
+      sendJson(res, 200, { ...result });
       return true;
     }
     if (rest === "") {
@@ -1181,12 +1211,31 @@ async function handleProjectResourceRoutes(
       }
       sendMethodNotAllowed(res, "GET, POST", method); return true;
     }
-    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand|\/workflow-use|\/observations|\/rebuild)?$/.exec(rest);
+    const match = /^\/(ep-[a-f0-9]{32})(\/confirm|\/understand|\/workflow-use|\/use-for-paper|\/observations|\/rebuild)?$/.exec(rest);
     if (!match) return false;
     const packageId = match[1]!;
     if (match[2] === "/understand") {
       if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
       sendPackage(200, await stack.experimentPackages.understand(projectId, packageId));
+      return true;
+    }
+    if (match[2] === "/use-for-paper") {
+      // M13.6「用于当前论文」：一次提交完成所选范围的确认 + 工作流授权；
+      // excludeScopeIds 显式取消授权（立即生效于后续 run）
+      if (method !== "POST") { sendMethodNotAllowed(res, "POST", method); return true; }
+      const body = await readJsonBody(req);
+      const stringArrayField = (name: string): string[] => {
+        const value = body[name] ?? [];
+        if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+          throw new BusinessError("INVALID_REQUEST", `${name} 必须是字符串数组`);
+        }
+        return value as string[];
+      };
+      sendPackage(200, await stack.experimentPackages.applyWorkflowUse(projectId, packageId, {
+        groupIds: stringArrayField("groupIds"),
+        scopeIds: stringArrayField("scopeIds"),
+        excludeScopeIds: stringArrayField("excludeScopeIds"),
+      }));
       return true;
     }
     if (match[2] === "/rebuild") {

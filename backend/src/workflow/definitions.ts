@@ -54,6 +54,7 @@ import type { ResearchPlanExecutionService } from "../agents/researchPlanExecuti
 import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCoverage.js";
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ExperimentPackageService } from "../experiments/ExperimentPackageService.js";
+import { renderExperimentPolicyLines } from "../experiments/experimentPolicy.js";
 import type { CandidateStore, CandidateSource } from "../sources/CandidateStore.js";
 import type { SourceImportService } from "../sources/SourceImportService.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
@@ -486,6 +487,10 @@ function reviewRunStageInner(
       }
       // M12 A9：目标带数值期望（fresh profile 才有；仅 academic 模式消费）
       const targetExpectations = await readTargetExpectationsBlock(services, ctx.projectId);
+      // M13.6：实验数据使用口径（三路 review 共享；综述无实验数据）
+      const experimentPolicyLines = options.survey === true
+        ? undefined
+        : renderExperimentPolicyLines(await services.experimentPackages.experimentPolicy(ctx.projectId));
       const results = await services.reviewer.reviewAll({
         projectId: ctx.projectId,
         manuscriptDigest: digest,
@@ -497,6 +502,7 @@ function reviewRunStageInner(
         ...(options.survey === true ? { reviewProfile: "survey" as const } : {}),
         ...(surveyDigest !== undefined ? { surveyDigest } : {}),
         ...(targetExpectations !== undefined ? { targetExpectations } : {}),
+        ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
       });
 
       // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
@@ -1738,6 +1744,11 @@ function revisionReviseStage(
       const surveyInputs = isSurveyKind(ctx.state.workflowKind)
         ? await loadSurveyWritingInputs(services, ctx.projectId)
         : null;
+      // M13.6：修订与写作共享同一实验数值来源（授权观测表）；无授权时修订
+      // 也不得引入具体实验数值（与 writeSection 同一纪律）
+      const revisionExperimentContext = isSurveyKind(ctx.state.workflowKind)
+        ? undefined
+        : await services.experimentPackages.workflowContext(ctx.projectId);
       // M5.6 真实论文验收暴露的 Writer regression：Existing-Paper 项目没有 research
       // artifact bibliography，修订 prompt 曾写成「无可用文献：不要使用 \cite」，Writer
       // 据此删光了重建稿的全部 \cite。可引用 key 必须以 manuscript/references.bib 为准。
@@ -1956,6 +1967,7 @@ function revisionReviseStage(
           ...(claimRepairs.length > 0 ? { claimRepairs } : {}),
           ...(surveyContext !== undefined ? { survey: surveyContext } : {}),
           ...(matchedItems.length > 0 ? { revisionItems: writerItems, itemEvidence } : {}),
+          ...(revisionExperimentContext !== undefined ? { experimentContext: revisionExperimentContext } : {}),
         };
         try {
           result = await services.writer.reviseSection(writerParams);
@@ -4761,12 +4773,18 @@ function feasibilityStage(services: WorkflowServices, id = "research.feasibility
       // M12 A9：目标实证参照系（fresh profile + 最新 readiness；陈旧/缺失/
       // 未接线 → 不注入，prompt 与旧版逐字节一致）
       const targetReference = await readTargetReferenceBlock(services, ctx.projectId);
+      // M13.6：实验数据使用口径（范围级授权视图，无具体数值）——可行性评估
+      // 据此区分「作者已授权数据可用」与「真实待补实验」
+      const experimentPolicyLines = renderExperimentPolicyLines(
+        await services.experimentPackages.experimentPolicy(ctx.projectId),
+      );
       const result = await services.feasibility.assess({
         projectId: ctx.projectId,
         research: artifact.report,
         evidenceStats,
         ...(id === "assessment.target" ? { assessKind: "existing_paper" as const } : {}),
         ...(targetReference !== undefined ? { targetReference } : {}),
+        experimentPolicyLines,
       });
       return {
         level: result.level,
@@ -4835,6 +4853,9 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
       // LLM 自造的 bibliography key 不再进入下游。
       const bibliography = await buildCanonicalBibliography(services, ctx.projectId);
       const feedback = readFeedback(ctx.state.inputs["hitl.outline_confirm"]?.payload);
+      // M13.6（NB-11）：大纲 / 摘要与正文共享同一实验数值纪律——授权观测表
+      // 注入大纲规划（无授权 = 摘要 / keyPoints 禁写具体数值）
+      const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
       const outline = await services.writer.planOutline({
         projectId: ctx.projectId,
         researchDigest: {
@@ -4848,6 +4869,7 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
         documentType: project.documentType,
         ...(language !== undefined ? { language } : {}),
         ...(feedback !== undefined ? { feedback } : {}),
+        ...(experimentContext !== undefined ? { experimentContext } : {}),
       });
       await services.manuscript.saveOutline(ctx.projectId, outline);
       await services.manuscript.writeBibliography(ctx.projectId, bibliography);
@@ -6212,6 +6234,8 @@ function citationMetadataStage(services: WorkflowServices): StageSpec {
           softwareCalls: result.profile.software.apiCalls + result.profile.software.htmlCalls,
           byProvider: result.profile.byProvider,
         },
+        // M13.6 限流恢复画像（等待 / 补查 / 补查成功）
+        rateLimitRecovery: result.recovery,
       };
     },
   };

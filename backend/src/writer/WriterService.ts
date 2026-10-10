@@ -294,6 +294,11 @@ export class WriterService {
     feedback?: string;
     /** M11.1.3：Survey 大纲 digest（存在 = Survey 模式；章节结构来自七类 synthesis） */
     surveyDigest?: SurveyOutlineDigest;
+    /**
+     * M13.6：作者已确认并授权的实验观测（NB-11：大纲/摘要与正文同一数值
+     * 纪律）。缺省不注入；Survey 模式忽略（综述无实验数据）。
+     */
+    experimentContext?: ConfirmedExperimentWorkflowContext;
   }): Promise<Outline & { repair?: { attempts: number; errors: string[] } }> {
     const survey = params.surveyDigest !== undefined;
     if (!survey && params.researchDigest === undefined) {
@@ -520,6 +525,11 @@ export class WriterService {
     survey?: SurveySectionWritingContext;
     /** Targeted validation-aware repair context; never expands the target scope. */
     patchRepairContext?: string;
+    /**
+     * M13.6：作者已确认并授权的实验观测（与 writeSection 同一来源）；修订
+     * 引入 / 修正实验数值时的唯一允许来源。缺省不注入。
+     */
+    experimentContext?: ConfirmedExperimentWorkflowContext;
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -1357,6 +1367,11 @@ export function buildRevisePrompt(params: {
   /** M11.2 Survey：本节写作上下文（综述结构红线；缺省不注入） */
   survey?: SurveySectionWritingContext;
   patchRepairContext?: string;
+  /**
+   * M13.6：作者已确认并授权进入工作流的实验观测（与写作阶段同一来源）。
+   * 修订引入 / 修正实验数值时，这是唯一允许的数值来源；缺省不注入。
+   */
+  experimentContext?: ConfirmedExperimentWorkflowContext;
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -1424,6 +1439,7 @@ export function buildRevisePrompt(params: {
       "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
       ...renderEvidenceLines(params.evidence, params.bibliography, 15),
       `（${EVIDENCE_QUERY_GUIDANCE}）`,
+      ...renderExperimentContextLines(params.experimentContext),
     ].join("\n");
   }
   return [
@@ -1492,6 +1508,7 @@ export function buildRevisePrompt(params: {
     "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 15),
     `（${EVIDENCE_QUERY_GUIDANCE}）`,
+    ...renderExperimentContextLines(params.experimentContext),
   ].join("\n");
 }
 
@@ -1686,6 +1703,12 @@ export function buildOutlinePrompt(params: {
   documentType?: string;
   language?: ManuscriptLanguage;
   feedback?: string;
+  /**
+   * M13.6（NB-11 收口）：作者已确认并授权的实验观测。大纲与摘要必须和
+   * 正文遵守同一实验数值纪律——授权数值只来自该表，无授权数据时摘要 /
+   * keyPoints 不得出现具体实验数值。缺省不注入（行为与旧版一致）。
+   */
+  experimentContext?: ConfirmedExperimentWorkflowContext;
 }): string {
   return [
     "你是一名学术论文写手（Writer）。请基于调研结果与 Evidence 规划论文大纲（只规划，不写正文）。",
@@ -1703,6 +1726,8 @@ export function buildOutlinePrompt(params: {
     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
     "3. 引用纪律（可引用的参考文献 key 按 verified evidence 支撑分组；正文写作时事实性论断必须取 A 组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
+    "4. 摘要与 keyPoints 的实验数值纪律和正文一致：具体实验指标数值只允许来自下方作者授权的实验观测表；"
+      + "没有该表支撑的实验内容写成「待补实验」，不得出现具体数值，也不得从调研材料之外编造。",
     ...(params.feedback ? ["", "用户对上一版大纲的修改意见（必须落实）：", params.feedback] : []),
     "",
     "===== 调研摘要 =====",
@@ -1716,6 +1741,7 @@ export function buildOutlinePrompt(params: {
     ...(params.evidence.length === 0
       ? []
       : [`（${EVIDENCE_QUERY_GUIDANCE}）`]),
+    ...renderExperimentContextLines(params.experimentContext),
   ].join("\n");
 }
 

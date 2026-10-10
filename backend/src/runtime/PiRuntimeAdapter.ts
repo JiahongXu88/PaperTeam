@@ -3138,6 +3138,44 @@ export class PiRuntimeAdapter implements AgentRuntime {
     return matchingSessions.length;
   }
 
+  /**
+   * 轮换某项目的全部空闲会话（M13.6 NB-6 收口）：dispose 旧会话并按同一
+   * sessionKey / 模型 / Skill 重建（generation +1，历史清空）。busy 会话
+   * 跳过（不打断在途任务）。在论文工作流启动前调用——旧 run 的会话历史
+   * （可能含已过期授权的实验数值、上次稿件内容）不再有机会泄入新 run 的
+   * 输出；Workspace / checkpoint 是事实源，会话只是可丢弃执行上下文。
+   */
+  async rotateProjectIdleSessions(projectId: string): Promise<number> {
+    if (this.closed) {
+      return 0;
+    }
+    const owned = (sessionKey: string): boolean => {
+      const peer = sessionKey.split(":")[2] ?? "";
+      return peer === `paperteam-${projectId}` || peer.startsWith(`paperteam-${projectId}--`);
+    };
+    const targets = [...this.sessions.values()].filter((managed) => owned(managed.key) && !managed.needsRotation);
+    let rotated = 0;
+    let skippedBusy = 0;
+    for (const managed of targets) {
+      if (!this.isSessionIdle(managed)) {
+        skippedBusy += 1;
+        continue;
+      }
+      try {
+        await this.rotateSession(managed, "workflow_run_boundary");
+        rotated += 1;
+      } catch {
+        // rotateSession 失败时已标记 needsRotation（下一安全边界自愈），不阻断启动
+      }
+    }
+    if (rotated > 0 || skippedBusy > 0) {
+      this.log(
+        `[pi-runtime] run 边界会话轮换：projectId=${projectId} rotated=${rotated} skippedBusy=${skippedBusy}`,
+      );
+    }
+    return rotated;
+  }
+
   // ---- 生命周期 ----
 
   /** 取消/收敛全部在途 run 并释放所有 AgentSession（幂等；进程 shutdown 时调用） */
