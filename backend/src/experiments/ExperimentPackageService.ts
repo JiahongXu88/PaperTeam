@@ -474,6 +474,26 @@ function parseScopeId(scopeId: string): { groupId: string } | undefined {
   return { groupId: scopeId.slice(0, at) };
 }
 
+/**
+ * 组观测内容签名（M13.6 v1→v2 兼容用）：该组全部观测的锚点 + 数值逐条
+ * 序列化后按码位排序拼接。确定性（与登记顺序无关）；升级前后签名一致 =
+ * 「来源、范围和内容仍一致」，旧确认可以映射；不一致 = 提取层曾变化，
+ * 保持待确认（不偷偷放行）。
+ */
+function groupObservationSignature(item: ExperimentPackage, groupId: string): string {
+  return item.observations
+    .filter((observation) => observation.groupId === groupId)
+    .map((observation) =>
+      [
+        observation.sourceId, observation.path, observation.blockId,
+        observation.row ?? "", observation.sheet ?? "", observation.column ?? "", observation.jsonPath ?? "",
+        observation.metric, observation.value,
+      ].join("\u0000"),
+    )
+    .sort(compareCodepoints)
+    .join("\u0001");
+}
+
 /** 观测所属范围的 split 键（与 buildSplitScopes 的键一致） */
 function observationScopeKey(observation: Pick<MetricObservation, "split">): string {
   return observation.split ?? SPLIT_UNKNOWN;
@@ -772,6 +792,212 @@ export class ExperimentPackageService {
       await this.save(projectId, item);
       return item;
     });
+  }
+  /**
+   * v1 → v2 自动兼容（M13.6）：把 M13.5 之前导入的 schema v1 包确定性升级到
+   * 观测级范围（splitScopes）。幂等：v2 包原样跳过；重复调用结果不变。
+   *
+   * 触发时机（均显式 POST / 运行前检查，不在普通 GET 里做副作用）：
+   * 实验数据页打开时 / 论文工作流启动前。升级不改任何文件分类与归属、
+   * 不重创建 Source、原始 ZIP 不变（rebuild 只重算派生结构，指标来自
+   * 已落盘的解析产物）。
+   *
+   * 旧确认映射（保守）：仅当重建后该组无冲突、观测内容签名与升级前一致、
+   * 且恰好落在单一范围（或无观测的组）时，把 v1 的「整组确认 = 进入工作流」
+   * 语义映射为 scope confirmed + workflowUse=allowed。多范围 / 内容变化 /
+   * 出现冲突的组保持待确认——不偷偷放行，作者按范围重新核对。
+   */
+  async ensureSchemaUpgraded(projectId: string): Promise<{
+    upgraded: string[];
+    preservedConfirmations: Array<{ packageId: string; groupId: string }>;
+    resetConfirmations: Array<{ packageId: string; groupId: string; reason: string }>;
+  }> {
+    return this.enqueue(projectId, async () => {
+      await this.projects.getRequired(projectId);
+      let ids: string[];
+      try { ids = await readdir(this.root(projectId)); }
+      catch (error) { if ((error as { code?: string }).code === "ENOENT") return { upgraded: [], preservedConfirmations: [], resetConfirmations: [] }; throw error; }
+      const upgraded: string[] = [];
+      const preservedConfirmations: Array<{ packageId: string; groupId: string }> = [];
+      const resetConfirmations: Array<{ packageId: string; groupId: string; reason: string }> = [];
+      for (const id of ids.filter((candidate) => /^ep-[a-f0-9]{32}$/.test(candidate))) {
+        let item: ExperimentPackage;
+        try { item = await this.get(projectId, id); } catch { continue; }
+        if (item.schemaVersion !== 1 || (item.status !== "ready" && item.status !== "partial")) continue;
+        const confirmedBefore = new Map(
+          item.groups
+            .filter((group) => group.status === "confirmed")
+            .map((group) => [group.id, { confirmedAt: group.confirmedAt, signature: groupObservationSignature(item, group.id) }]),
+        );
+        await this.rebuild(projectId, item);
+        for (const [groupId, snapshot] of confirmedBefore) {
+          const group = item.groups.find((entry) => entry.id === groupId);
+          if (group === undefined) {
+            resetConfirmations.push({ packageId: id, groupId, reason: "重建后该实验组不再存在" });
+            continue;
+          }
+          const scopes = group.splitScopes ?? [];
+          if (group.conflicts.length > 0 || scopes.some((scope) => scope.status === "conflict")) {
+            resetConfirmations.push({ packageId: id, groupId, reason: "按范围级规则重查后存在冲突，需作者处理" });
+            continue;
+          }
+          if (scopes.length > 1) {
+            resetConfirmations.push({ packageId: id, groupId, reason: `升级后划分为 ${scopes.length} 个评测范围（${scopes.map((scope) => scope.split).join(" / ")}），原整组确认无法唯一映射——请按范围分别确认` });
+            continue;
+          }
+          if (scopes.length === 1 && groupObservationSignature(item, groupId) !== snapshot.signature) {
+            resetConfirmations.push({ packageId: id, groupId, reason: "重建后的观测内容与升级前不一致（提取层曾变化），需作者重新核对" });
+            continue;
+          }
+          // v1 语义映射：整组确认 = 该组（唯一）范围确认并进入工作流
+          group.status = "confirmed"; group.confirmedAt ??= snapshot.confirmedAt;
+          const scope = scopes[0];
+          if (scope !== undefined) {
+            scope.status = "confirmed"; scope.confirmedAt ??= snapshot.confirmedAt;
+            if (scope.workflowUse === "undecided") { scope.workflowUse = "allowed"; scope.workflowUseDecidedAt = new Date().toISOString(); }
+          }
+          preservedConfirmations.push({ packageId: id, groupId });
+        }
+        await this.save(projectId, item);
+        upgraded.push(id);
+      }
+      return { upgraded, preservedConfirmations, resetConfirmations };
+    });
+  }
+  /**
+   * 「用于当前论文」一次性确认 + 授权（M13.6）：把「确认记录真实」与「允许
+   * 进入工作流」合并为一次作者操作（普通单范围包一次点击；多 split 包一次
+   * 勾选提交）。服务端仍走正式状态机：
+   * - groupIds：单（零）范围组——确认 + allowed（与 v1 整组确认语义一致）；
+   * - scopeIds：多范围组的范围——确认该范围 + allowed；
+   * - excludeScopeIds：已确认范围的显式排除（取消授权立即生效于后续 run）。
+   * 全部目标先校验后应用（任一目标非法 → 整批拒绝，不产生半应用状态）；
+   * 未选中的范围保持 undecided（不进入上下文，也不标成明确排除）。
+   */
+  async applyWorkflowUse(
+    projectId: string,
+    packageId: string,
+    selection: { groupIds?: string[]; scopeIds?: string[]; excludeScopeIds?: string[] },
+  ): Promise<ExperimentPackage> {
+    return this.enqueue(projectId, async () => {
+      const item = await this.get(projectId, packageId);
+      if (item.status !== "ready" && item.status !== "partial") throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", "实验包尚未完成解析");
+      const groupIds = [...new Set(selection.groupIds ?? [])];
+      const scopeIds = [...new Set(selection.scopeIds ?? [])];
+      const excludeScopeIds = [...new Set(selection.excludeScopeIds ?? [])];
+      if (groupIds.length === 0 && scopeIds.length === 0 && excludeScopeIds.length === 0) {
+        throw new BusinessError("INVALID_REQUEST", "需要至少一个 groupIds / scopeIds / excludeScopeIds");
+      }
+      const checkSourcesAlive = async (paths: string[]): Promise<void> => {
+        for (const path of paths) {
+          const file = item.files.find((entry) => entry.path === path);
+          if (!file || !file.sourceId || file.parseStatus === "failed") continue;
+          const source = await this.sources.get(projectId, file.sourceId);
+          if (!source || source.contentHash !== file.hash) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${path} 来源已删除或变化`);
+        }
+      };
+      const overlap = scopeIds.filter((scopeId) => excludeScopeIds.includes(scopeId));
+      if (overlap.length > 0) throw new BusinessError("INVALID_REQUEST", `同一范围不能同时选择与排除：${overlap.join("、")}`);
+      // ---- 校验阶段（不改动任何状态） ----
+      const groupTargets: ExperimentGroup[] = [];
+      for (const id of groupIds) {
+        const group = item.groups.find((entry) => entry.id === id);
+        if (!group) throw new BusinessError("INVALID_REQUEST", `不存在实验组 ${id}`);
+        const scopeCount = group.splitScopes?.length ?? 0;
+        if (scopeCount > 1) {
+          throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `实验组 ${id} 包含 ${scopeCount} 个评测范围（${group.splitScopes!.map((scope) => scope.split).join(" / ")}），请在范围级选择中勾选`);
+        }
+        await checkSourcesAlive(group.filePaths);
+        if (group.conflicts.length) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${id} 有未解决冲突`);
+        if ((group.splitScopes ?? []).some((scope) => scope.conflicts.length > 0)) {
+          throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${id} 存在范围内协议矛盾，需先解决`);
+        }
+        groupTargets.push(group);
+      }
+      const scopeTargets: ExperimentSplitScope[] = [];
+      for (const scopeId of scopeIds) {
+        const parsed = parseScopeId(scopeId);
+        const group = parsed === undefined ? undefined : item.groups.find((entry) => entry.id === parsed.groupId);
+        const scope = group?.splitScopes?.find((entry) => entry.id === scopeId);
+        if (group === undefined || scope === undefined) throw new BusinessError("INVALID_REQUEST", `不存在实验范围 ${scopeId}`);
+        await checkSourcesAlive(scope.filePaths);
+        if (scope.status === "conflict" || scope.conflicts.length > 0) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${scopeId} 有未解决冲突（${scope.conflicts.join("；")}）`);
+        if (group.conflicts.length > 0) throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `${group.id} 有组级未解决冲突（${group.conflicts.join("；")}）`);
+        scopeTargets.push(scope);
+      }
+      const excludeTargets: ExperimentSplitScope[] = [];
+      for (const scopeId of excludeScopeIds) {
+        const parsed = parseScopeId(scopeId);
+        const group = parsed === undefined ? undefined : item.groups.find((entry) => entry.id === parsed.groupId);
+        const scope = group?.splitScopes?.find((entry) => entry.id === scopeId);
+        if (group === undefined || scope === undefined) throw new BusinessError("INVALID_REQUEST", `不存在实验范围 ${scopeId}`);
+        if (scope.status !== "confirmed" && !scopeTargets.includes(scope)) {
+          throw new BusinessError("EXPERIMENT_CONFIRM_CONFLICT", `范围 ${scopeId} 尚未确认；排除只对已确认范围有意义`);
+        }
+        excludeTargets.push(scope);
+      }
+      // ---- 应用阶段（校验全部通过） ----
+      const decidedAt = new Date().toISOString();
+      for (const group of groupTargets) {
+        group.status = "confirmed"; group.confirmedAt ??= decidedAt;
+        const only = group.splitScopes?.[0];
+        if (only !== undefined && only.status !== "conflict") {
+          only.status = "confirmed"; only.confirmedAt ??= decidedAt;
+          only.workflowUse = "allowed"; only.workflowUseDecidedAt = decidedAt;
+        }
+      }
+      for (const scope of scopeTargets) {
+        scope.status = "confirmed"; scope.confirmedAt ??= decidedAt;
+        scope.workflowUse = "allowed"; scope.workflowUseDecidedAt = decidedAt;
+        const parsed = parseScopeId(scope.id)!;
+        const group = item.groups.find((entry) => entry.id === parsed.groupId)!;
+        if ((group.splitScopes ?? []).every((entry) => entry.status === "confirmed")) {
+          group.status = "confirmed"; group.confirmedAt ??= decidedAt;
+        }
+      }
+      for (const scope of excludeTargets) {
+        scope.workflowUse = "excluded"; scope.workflowUseDecidedAt = decidedAt;
+      }
+      await this.save(projectId, item);
+      return item;
+    });
+  }
+  /**
+   * Experiment Policy 摘要（M13.6，只读）：全部包的范围级授权视图（供
+   * Feasibility / Reviewer / Revision 等角色共享同一实验数据口径——不注入
+   * 原始数值表）。v1 旧包只有整组确认信号（legacyConfirmedGroupIds）。
+   */
+  async experimentPolicy(projectId: string): Promise<{
+    entries: Array<{
+      packageId: string; groupId: string; scopeId: string; split: string;
+      status: "candidate" | "confirmed" | "conflict"; workflowUse: "allowed" | "excluded" | "undecided";
+      observationCount: number; metricCount: number;
+    }>;
+    legacyConfirmedGroupIds: string[];
+  }> {
+    const items = await this.list(projectId);
+    const entries: Array<{
+      packageId: string; groupId: string; scopeId: string; split: string;
+      status: "candidate" | "confirmed" | "conflict"; workflowUse: "allowed" | "excluded" | "undecided";
+      observationCount: number; metricCount: number;
+    }> = [];
+    const legacyConfirmedGroupIds: string[] = [];
+    for (const item of items) {
+      for (const group of item.groups) {
+        if (group.splitScopes === undefined) {
+          if (group.status === "confirmed") legacyConfirmedGroupIds.push(group.id);
+          continue;
+        }
+        for (const scope of group.splitScopes) {
+          entries.push({
+            packageId: item.packageId, groupId: group.id, scopeId: scope.id, split: scope.split,
+            status: scope.status, workflowUse: scope.workflowUse,
+            observationCount: scope.observationCount, metricCount: scope.metricCount,
+          });
+        }
+      }
+    }
+    return { entries, legacyConfirmedGroupIds };
   }
   /**
    * 作者确认（M13.5 双粒度）：
