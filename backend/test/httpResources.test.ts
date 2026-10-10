@@ -244,6 +244,8 @@ describe("citation-check / manuscript / context / feasibility", () => {
       fetchImpl: async () => {
         throw new TypeError("offline");
       },
+      // M13.6：网络故障按指数退避重试（生产 500ms 基数）——测试用快速退避
+      httpOptions: { backoffBaseMs: 1, backoffJitterMs: 0 },
     });
     const project = await stack.store.create("引用 API 测试");
     // 直接写入手稿文件（不经 workflow）

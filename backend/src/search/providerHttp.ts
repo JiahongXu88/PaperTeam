@@ -256,6 +256,13 @@ export interface ProviderHttpClientOptions {
   /** 退避基数与抖动上限（有界抖动：uniform(0, jitterMs) 加性） */
   backoffBaseMs?: number;
   backoffJitterMs?: number;
+  /**
+   * 跨栈共享的 provider 冷却（M13.6）：citation 栈（ScholarlyResolver /
+   * CitationService）与检索栈对同一上游（Semantic Scholar / Crossref /
+   * OpenAlex）共享限流状态——一边 429 进入冷却，另一边的请求也被短路，
+   * 不再各自重试形成请求风暴。缺省 = 不共享（行为与旧版一致）。
+   */
+  cooldownRegistry?: { remaining(provider: string): number; record(provider: string, cooldownMs: number): number };
   log?: (message: string) => void;
 }
 
@@ -312,6 +319,7 @@ export class ProviderHttpClient {
   private readonly retryAfterCooldownCapMs: number;
   private readonly backoffBaseMs: number;
   private readonly backoffJitterMs: number;
+  private readonly cooldownRegistry?: { remaining(provider: string): number; record(provider: string, cooldownMs: number): number };
   private readonly log: (message: string) => void;
   private readonly trackers = new Map<string, ProviderHealthTracker>();
 
@@ -329,6 +337,7 @@ export class ProviderHttpClient {
       options.retryAfterCooldownCapMs ?? DEFAULT_RETRY_AFTER_COOLDOWN_CAP_MS;
     this.backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     this.backoffJitterMs = options.backoffJitterMs ?? DEFAULT_BACKOFF_JITTER_MS;
+    this.cooldownRegistry = options.cooldownRegistry;
     this.log = options.log ?? (() => {});
   }
 
@@ -405,6 +414,17 @@ export class ProviderHttpClient {
           retryAfterMs: gate.retryAfterMs,
         });
       }
+      // M13.6 跨栈共享冷却：citation 栈记录的 429 冷却同样短路检索栈请求
+      const sharedCooldown = this.cooldownRegistry?.remaining(profile.name) ?? 0;
+      if (sharedCooldown > 0) {
+        tracker.recordRateLimit(sharedCooldown, "跨栈共享限流冷却（citation / search 同上游）");
+        throw new ProviderHttpError(
+          "rate_limited",
+          profile.name,
+          `[${profile.name}] 共享限流冷却中（citation / search 同上游），${Math.ceil(sharedCooldown / 1000)}s 后自动恢复`,
+          { retryAfterMs: sharedCooldown },
+        );
+      }
       try {
         const body = await this.fetchOnce(profile.name, url, init, timeoutMs, mode);
         tracker.recordSuccess();
@@ -419,6 +439,8 @@ export class ProviderHttpClient {
         if (lastError.kind === "rate_limited") {
           const cooldown = this.clampCooldown(lastError.retryAfterMs);
           tracker.recordRateLimit(cooldown, lastError.message);
+          // M13.6：同上游的 citation 栈同步进入冷却（避免两边各自重试轰炸）
+          this.cooldownRegistry?.record(profile.name, cooldown);
         } else if (
           lastError.kind === "timeout" ||
           lastError.kind === "network_error" ||

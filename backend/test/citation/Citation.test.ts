@@ -22,6 +22,7 @@ import {
   titlesMatch,
   type MetadataProviderContext,
 } from "../../src/citation/metadataProviders.js";
+import { ScholarlyHttpClient } from "../../src/citation/scholarlyHttp.js";
 import { CitationService, decideMetadataResult } from "../../src/citation/CitationService.js";
 import { normalizeDoi } from "../../src/citation/metadataProviders.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
@@ -116,7 +117,8 @@ describe("checkCitations（静态层）", () => {
 // ---- metadata providers（注入 fetch，不依赖真实网络） ----
 
 function makeCtx(fetchImpl: typeof fetch, timeoutMs = 500): MetadataProviderContext {
-  return { fetchImpl, timeoutMs };
+  // 快速退避：失败路径测试触发重试但不拖慢（生产默认 500ms 基数）
+  return { http: new ScholarlyHttpClient({ fetchImpl, timeoutMs, backoffBaseMs: 1, backoffJitterMs: 0 }) };
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -376,6 +378,7 @@ describe("CitationService", () => {
       fetchImpl: async () => {
         throw new TypeError("fetch failed: offline");
       },
+      httpOptions: { backoffBaseMs: 1, backoffJitterMs: 0 },
       log: () => {},
     });
     const report = await service.verify(projectId);

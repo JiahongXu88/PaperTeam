@@ -24,6 +24,7 @@ import { TITLE_STRONG_THRESHOLD } from "./candidateScoring.js";
 import { REFERENCE_NORMALIZATION_VERSION, titleQueryVariants, titleSimilarity } from "./referenceText.js";
 import { arxivIdFromDoi } from "../sources/identity.js";
 import { fingerprintJson } from "../util/hash.js";
+import { ProviderCooldownRegistry, ScholarlyHttpClient, ScholarlyHttpError, type ScholarlyHttpClientOptions, type ScholarlyHttpTelemetry } from "./scholarlyHttp.js";
 
 export { compareFields } from "./candidateScoring.js";
 export { arxivIdFromDoi } from "../sources/identity.js";
@@ -38,17 +39,22 @@ export interface ScholarlyQuery {
   arxivId?: string;
 }
 
+/** 瞬时失败的机器可读分类（M13.6）：限流 ≠ 超时 ≠ 不存在，供上层决定重试资格 */
+export type LookupErrorKind = "rate_limited" | "timeout" | "aborted" | "network_error" | "server_error" | "http_error";
+
 export type LookupOutcome =
   | { kind: "match"; record: CanonicalPaperRecord }
   | { kind: "mismatch"; record: CanonicalPaperRecord; mismatches: CitationFieldMismatch[] }
   | { kind: "ambiguous"; candidates: CanonicalPaperRecord[] }
   | { kind: "not_found" }
-  | { kind: "error"; note: string };
+  | { kind: "error"; note: string; errorKind?: LookupErrorKind; retryAfterMs?: number }
 
 export interface ProviderContext {
-  fetchImpl: typeof fetch;
-  timeoutMs: number;
+  /** 共享 HTTP 执行器（M13.6：重试 / 退避 / 冷却 / 取消一体；provider 不自带重试层） */
+  http: ScholarlyHttpClient;
   contactEmail?: string;
+  /** 本次 resolve 的取消信号（等待与请求全程可取消） */
+  signal?: AbortSignal;
 }
 
 export interface ScholarlyProvider {
@@ -58,35 +64,40 @@ export interface ScholarlyProvider {
 
 // ---- 共用 HTTP ----
 
-async function fetchJson(
-  url: string,
-  ctx: ProviderContext,
-  userAgent: string,
-): Promise<{ ok: true; body: unknown } | { ok: false; reason: string; httpStatus?: number }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ctx.timeoutMs);
-  try {
-    const response = await ctx.fetchImpl(url, {
-      signal: controller.signal,
-      headers: {
-        "User-Agent": userAgent,
-        Accept: "application/json",
-        ...(ctx.contactEmail ? { "X-User-Agent": `mailto:${ctx.contactEmail}` } : {}),
-      },
-    });
-    if (response.status === 404) {
-      return { ok: false, reason: "http-404", httpStatus: 404 };
-    }
-    if (!response.ok) {
-      return { ok: false, reason: `http-${response.status}`, httpStatus: response.status };
-    }
-    return { ok: true, body: (await response.json()) as unknown };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: message.includes("abort") ? `timeout(${ctx.timeoutMs}ms)` : message };
-  } finally {
-    clearTimeout(timer);
-  }
+/**
+ * ScholarlyHttpError → LookupOutcome.error（保留机器可读分类与建议等待；
+ * note 保留 `http-404` 字样——runPlan 的 DOI 404 回退标题检索依赖它）。
+ */
+function httpFailure(providerLabel: string, error: ScholarlyHttpError): LookupOutcome {
+  const detail =
+    error.kind === "rate_limited"
+      ? `429 限流${error.retryAfterMs !== undefined ? `（${Math.ceil(error.retryAfterMs / 1000)}s 后可重试）` : ""}`
+      : error.status !== undefined
+        ? `http-${error.status}`
+        : error.message.replace(/^\[.*?\]\s*/, "");
+  return {
+    kind: "error",
+    note: `${providerLabel} 查询失败：${detail}`,
+    ...(error.kind === "rate_limited" || error.kind === "timeout" || error.kind === "network_error" || error.kind === "server_error"
+      ? { errorKind: error.kind }
+      : {}),
+    ...(error.retryAfterMs !== undefined && error.retryAfterMs > 0 ? { retryAfterMs: error.retryAfterMs } : {}),
+  };
+}
+
+/** provider 共用请求头（Crossref 礼仪：mailto 进 User-Agent / X-User-Agent） */
+function scholarlyHeaders(ctx: ProviderContext, userAgent: string): Record<string, string> {
+  return {
+    "User-Agent": userAgent,
+    Accept: "application/json",
+    ...(ctx.contactEmail ? { "X-User-Agent": `mailto:${ctx.contactEmail}` } : {}),
+  };
+}
+
+function toHttpError(error: unknown): ScholarlyHttpError {
+  return error instanceof ScholarlyHttpError
+    ? error
+    : new ScholarlyHttpError("network_error", "", error instanceof Error ? error.message : String(error));
 }
 
 /** 搜索候选条数：标题比对严格，多取两条只提升召回不放宽判定 */
@@ -109,11 +120,16 @@ export class CrossrefProvider implements ScholarlyProvider {
       query.doi !== undefined
         ? `https://api.crossref.org/works/${encodeURIComponent(query.doi)}`
         : `https://api.crossref.org/works?rows=${SEARCH_ROWS}&query.bibliographic=${encodeURIComponent(query.title ?? "")}`;
-    const result = await fetchJson(url, ctx, "PaperTeam/0.1 (scholarly verification; mailto:support@paperteam.local)");
-    if (!result.ok) {
-      return { kind: "error", note: `crossref 查询失败：${result.reason}` };
+    let body: unknown;
+    try {
+      body = await ctx.http.fetchJson(this.name, url, {
+        signal: ctx.signal,
+        headers: scholarlyHeaders(ctx, "PaperTeam/0.1 (scholarly verification; mailto:support@paperteam.local)"),
+      });
+    } catch (error) {
+      return httpFailure("crossref", toHttpError(error));
     }
-    const items = extractCrossrefItems(result.body, query.doi !== undefined);
+    const items = extractCrossrefItems(body, query.doi !== undefined);
     const now = new Date().toISOString();
     const candidates = items.map((item) => crossrefToRecord(item, now)).filter(hasTitle);
     return pickFromSearch(query, candidates);
@@ -160,8 +176,11 @@ function crossrefToRecord(item: Record<string, unknown>, now: string): Canonical
       ...(title !== undefined && title !== "" ? { title } : {}),
       ...(authors !== undefined && authors.length > 0 ? { authors } : {}),
       ...(Number.isFinite(year) ? { year: year as number } : {}),
-      ...(typeof item["container-title"] === "string" ? { venue: item["container-title"] as string } : {}),
       ...(typeof item["DOI"] === "string" ? { doi: (item["DOI"] as string).toLowerCase() } : {}),
+      // Crossref 的 container-title 是字符串数组（旧代码按 string 读 → venue 恒缺）
+      ...(firstString(item["container-title"]) !== undefined && firstString(item["container-title"]) !== ""
+        ? { venue: firstString(item["container-title"])! }
+        : {}),
       ...(typeof item["URL"] === "string" ? { url: item["URL"] as string } : {}),
       ...(typeof item["abstract"] === "string" ? { abstract: stripXml(item["abstract"] as string) } : {}),
     },
@@ -197,16 +216,21 @@ export class OpenAlexProvider implements ScholarlyProvider {
       query.doi !== undefined
         ? `https://api.openalex.org/works/https://doi.org/${query.doi}`
         : `https://api.openalex.org/works?search=${encodeURIComponent(query.title ?? "")}&per-page=${SEARCH_ROWS}`;
-    const result = await fetchJson(url, ctx, "PaperTeam/0.1 (scholarly verification)");
-    if (!result.ok) {
-      return { kind: "error", note: `openalex 查询失败：${result.reason}` };
+    let body: unknown;
+    try {
+      body = await ctx.http.fetchJson(this.name, url, {
+        signal: ctx.signal,
+        headers: scholarlyHeaders(ctx, "PaperTeam/0.1 (scholarly verification)"),
+      });
+    } catch (error) {
+      return httpFailure("openalex", toHttpError(error));
     }
     const now = new Date().toISOString();
-    const body = result.body as Record<string, unknown>;
-    const items: Array<Record<string, unknown>> = Array.isArray(body["results"])
-      ? (body["results"] as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS)
-      : typeof body["id"] === "string"
-        ? [body]
+    const record = body as Record<string, unknown>;
+    const items: Array<Record<string, unknown>> = Array.isArray(record["results"])
+      ? (record["results"] as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS)
+      : typeof record["id"] === "string"
+        ? [record]
         : [];
     const candidates = items
       .map((item) => openalexToRecord(item, now))
@@ -226,18 +250,33 @@ function openalexToRecord(item: Record<string, unknown>, now: string): Canonical
         },
       )
     : undefined;
+  // M13.6 字段修复：OpenAlex works 的标题字段是 display_name（旧字段 title
+  // 已弃用且普遍为 null——真实 Run 26/31 未能核验的主因之一）；venue 走
+  // primary_location.source（host_venue 已弃用，保留兜底）。
+  const titleRaw =
+    (typeof item["display_name"] === "string" && item["display_name"] !== "" ? item["display_name"] as string : undefined) ??
+    (typeof item["title"] === "string" && item["title"] !== "" ? item["title"] as string : undefined);
+  const primaryLocation = item["primary_location"];
+  const venue =
+    typeof primaryLocation === "object" && primaryLocation !== null
+      ? (primaryLocation as Record<string, unknown>)["source"]
+      : undefined;
+  const venueName =
+    typeof venue === "object" && venue !== null && typeof (venue as Record<string, unknown>)["display_name"] === "string"
+      ? ((venue as Record<string, unknown>)["display_name"] as string)
+      : typeof item["host_venue"] === "object" && item["host_venue"] !== null
+        ? String((item["host_venue"] as Record<string, unknown>)["display_name"] ?? "")
+        : "";
   return record(
     {
       provider: "openalex",
       recordId: typeof item["id"] === "string" ? (item["id"] as string).replace("https://openalex.org/", "") : "",
-      ...(typeof item["title"] === "string" && item["title"] !== "" ? { title: item["title"] as string } : {}),
+      ...(titleRaw !== undefined ? { title: titleRaw } : {}),
       ...(authors !== undefined && authors.filter((a) => a !== "").length > 0
         ? { authors: authors.filter((a) => a !== "") }
         : {}),
       ...(typeof item["publication_year"] === "number" ? { year: item["publication_year"] as number } : {}),
-      ...(typeof item["host_venue"] === "object" && item["host_venue"] !== null
-        ? { venue: String((item["host_venue"] as Record<string, unknown>)["display_name"] ?? "") }
-        : {}),
+      ...(venueName !== "" ? { venue: venueName } : {}),
       ...(doi !== undefined ? { doi } : {}),
       ...(doiRaw !== undefined ? { url: `https://doi.org/${doi}` } : {}),
       ...(item["abstract_inverted_index"] != null &&
@@ -282,15 +321,20 @@ export class SemanticScholarProvider implements ScholarlyProvider {
       query.doi !== undefined
         ? `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(query.doi)}?fields=${fields}`
         : `https://api.semanticscholar.org/graph/v1/paper/search?limit=${SEARCH_ROWS}&fields=${fields}&query=${encodeURIComponent(query.title ?? "")}`;
-    const result = await fetchJson(url, ctx, "PaperTeam/0.1 (scholarly verification)");
-    if (!result.ok) {
-      return { kind: "error", note: `semantic-scholar 查询失败：${result.reason}` };
+    let body: unknown;
+    try {
+      body = await ctx.http.fetchJson(this.name, url, {
+        signal: ctx.signal,
+        headers: scholarlyHeaders(ctx, "PaperTeam/0.1 (scholarly verification)"),
+      });
+    } catch (error) {
+      return httpFailure("semantic-scholar", toHttpError(error));
     }
-    const body = result.body as Record<string, unknown>;
-    const items: Array<Record<string, unknown>> = Array.isArray(body["data"])
-      ? (body["data"] as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS)
-      : body["paperId"] !== undefined
-        ? [body]
+    const recordBody = body as Record<string, unknown>;
+    const items: Array<Record<string, unknown>> = Array.isArray(recordBody["data"])
+      ? (recordBody["data"] as Array<Record<string, unknown>>).slice(0, SEARCH_ROWS)
+      : recordBody["paperId"] !== undefined
+        ? [recordBody]
         : [];
     const now = new Date().toISOString();
     const candidates = items
@@ -336,46 +380,38 @@ export class ArxivLookupProvider implements ScholarlyProvider {
     }
     const term = query.arxivId !== undefined ? `id:${query.arxivId}` : `ti:"${query.title}"`;
     const url = `https://export.arxiv.org/api/query?max_results=${SEARCH_ROWS}&search_query=${encodeURIComponent(term)}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ctx.timeoutMs);
+    let xml: string;
     try {
-      const response = await ctx.fetchImpl(url, {
-        signal: controller.signal,
+      xml = await ctx.http.fetchText(this.name, url, {
+        signal: ctx.signal,
         headers: { "User-Agent": "PaperTeam/0.1 (scholarly verification)" },
       });
-      if (!response.ok) {
-        return { kind: "error", note: `arxiv 查询失败：http-${response.status}` };
-      }
-      const xml = await response.text();
-      const now = new Date().toISOString();
-      const candidates: CanonicalPaperRecord[] = [];
-      for (const block of [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((m) => m[1] ?? "")) {
-        const title = decodeXml(/<title>([\s\S]*?)<\/title>/.exec(block)?.[1] ?? "");
-        const idMatch = /<id>http:\/\/arxiv\.org\/abs\/([^<\s]+)<\/id>/.exec(block);
-        const summary = decodeXml(/<summary>([\s\S]*?)<\/summary>/.exec(block)?.[1] ?? "");
-        if (title !== "") {
-          candidates.push(
-            record(
-              {
-                provider: "arxiv",
-                recordId: idMatch?.[1] ?? "",
-                title,
-                ...(idMatch?.[1] !== undefined ? { arxivId: idMatch[1].replace(/v\d+$/, "") } : {}),
-                ...(summary !== "" ? { abstract: summary.slice(0, 3000) } : {}),
-                ...(query.year !== undefined ? { year: query.year } : {}),
-              },
-              now,
-            ),
-          );
-        }
-      }
-      return pickFromSearch(query, candidates);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { kind: "error", note: `arxiv 查询失败：${message}` };
-    } finally {
-      clearTimeout(timer);
+      return httpFailure("arxiv", toHttpError(error));
     }
+    const now = new Date().toISOString();
+    const candidates: CanonicalPaperRecord[] = [];
+    for (const block of [...xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g)].map((m) => m[1] ?? "")) {
+      const title = decodeXml(/<title>([\s\S]*?)<\/title>/.exec(block)?.[1] ?? "");
+      const idMatch = /<id>http:\/\/arxiv\.org\/abs\/([^<\s]+)<\/id>/.exec(block);
+      const summary = decodeXml(/<summary>([\s\S]*?)<\/summary>/.exec(block)?.[1] ?? "");
+      if (title !== "") {
+        candidates.push(
+          record(
+            {
+              provider: "arxiv",
+              recordId: idMatch?.[1] ?? "",
+              title,
+              ...(idMatch?.[1] !== undefined ? { arxivId: idMatch[1].replace(/v\d+$/, "") } : {}),
+              ...(summary !== "" ? { abstract: summary.slice(0, 3000) } : {}),
+              ...(query.year !== undefined ? { year: query.year } : {}),
+            },
+            now,
+          ),
+        );
+      }
+    }
+    return pickFromSearch(query, candidates);
   }
 }
 
@@ -488,10 +524,9 @@ export const METADATA_VERIFICATION_VERSION = `v4.n${REFERENCE_NORMALIZATION_VERS
 
 // ---- Resolver（编排 + 缓存 + 语义裁决） ----
 
-export interface ScholarlyResolverOptions {
+export interface ScholarlyResolverOptions extends ScholarlyHttpClientOptions {
   providers?: ScholarlyProvider[];
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
+  /** CrossRef 礼仪邮箱（User-Agent / X-User-Agent） */
   contactEmail?: string;
   /** 相邻 provider 调用之间的礼貌间隔（默认 0；live 用 100ms） */
   politenessDelayMs?: number;
@@ -504,16 +539,17 @@ export interface ResolverVerdict {
   canonical?: CanonicalPaperRecord;
   mismatches?: CitationFieldMismatch[];
   candidates?: CanonicalPaperRecord[];
-  attempts: Array<{ provider: string; outcome: string; note?: string }>;
+  attempts: Array<{ provider: string; outcome: string; note?: string; errorKind?: LookupErrorKind; retryAfterMs?: number }>;
   cacheHits: number;
 }
 
 export class ScholarlyResolver {
   private readonly providers: ScholarlyProvider[];
-  private readonly ctx: ProviderContext;
+  private readonly http: ScholarlyHttpClient;
+  private readonly contactEmail?: string;
   private readonly delayMs: number;
   private readonly log: (message: string) => void;
-  /** 查询级缓存（key = provider+query 指纹） */
+  /** 查询级缓存（key = provider+query 指纹；瞬时失败不进缓存，见 lookupCached） */
   private readonly cache = new Map<string, LookupOutcome>();
   readonly cacheSize = 200;
 
@@ -522,13 +558,13 @@ export class ScholarlyResolver {
   /** 按 provider 的调用画像（性能诊断用；随 providerCalls 同步累积） */
   readonly byProvider = new Map<
     ScholarlyProviderName,
-    { calls: number; notFound: number; errors: number; cacheHits: number; totalMs: number }
+    { calls: number; notFound: number; errors: number; cacheHits: number; totalMs: number; rateLimited: number }
   >();
 
   private providerStat(name: ScholarlyProviderName) {
     let stat = this.byProvider.get(name);
     if (stat === undefined) {
-      stat = { calls: 0, notFound: 0, errors: 0, cacheHits: 0, totalMs: 0 };
+      stat = { calls: 0, notFound: 0, errors: 0, cacheHits: 0, totalMs: 0, rateLimited: 0 };
       this.byProvider.set(name, stat);
     }
     return stat;
@@ -541,13 +577,48 @@ export class ScholarlyResolver {
       new SemanticScholarProvider(),
       new ArxivLookupProvider(),
     ];
-    this.ctx = {
-      fetchImpl: options.fetchImpl ?? fetch,
-      timeoutMs: options.timeoutMs ?? 8_000,
-      ...(options.contactEmail !== undefined ? { contactEmail: options.contactEmail } : {}),
-    };
+    const { providers: _providers, politenessDelayMs: _delay, log, ...httpOptions } = options;
+    // 共享 HTTP 执行器：重试 / Retry-After / 退避 / provider 冷却 / 取消都在
+    // 这一层（M13.6 前是固定 300ms 重试一次 + error 也进缓存）
+    this.http = new ScholarlyHttpClient({ ...httpOptions, log: log ?? (() => {}) });
+    this.contactEmail = options.contactEmail;
     this.delayMs = options.politenessDelayMs ?? 0;
-    this.log = options.log ?? (() => {});
+    this.log = log ?? (() => {});
+  }
+
+  /** resolver 的 HTTP 冷却状态（CitationIntegrityService 的恢复 pass 读取） */
+  get cooldowns(): ProviderCooldownRegistry {
+    return this.http.cooldowns;
+  }
+
+  /** HTTP 层遥测（429 次数 / 冷却短路 / 等待累计；报告与日志用） */
+  get httpTelemetry(): ScholarlyHttpTelemetry {
+    return this.http.telemetry;
+  }
+
+  private contextFor(signal: AbortSignal | undefined): ProviderContext {
+    return {
+      http: this.http,
+      ...(this.contactEmail !== undefined ? { contactEmail: this.contactEmail } : {}),
+      ...(signal !== undefined ? { signal } : {}),
+    };
+  }
+
+  /** 礼貌间隔（可取消：aborted 时立即结束等待并按 error 返回） */
+  private async politeDelay(signal: AbortSignal | undefined): Promise<void> {
+    if (this.delayMs <= 0 || signal?.aborted) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, this.delayMs);
+      const onAbort = () => {
+        clearTimeout(timer);
+        signal!.removeEventListener("abort", onAbort);
+        reject(new ScholarlyHttpError("aborted", "", "礼貌间隔中被取消"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      void timer;
+    });
   }
 
   /**
@@ -557,11 +628,15 @@ export class ScholarlyResolver {
    * 标题 query variants（断词拼合 / 保留连字符 / 原文）。某一步 not_found 才试下一步；
    * error 立即停止该 provider（限流时不再加压），不把失败折叠成 not_found。
    * 字段比对始终以原始 reference 字段为准（variant 只用于检索）。
+   *
+   * M13.6：options.signal 全程生效（请求与等待都可取消）；provider 冷却期内的
+   * 查询被冷却闸门短路（rate_limited error，不发网络请求）。
    */
-  async resolve(query: ScholarlyQuery): Promise<ResolverVerdict> {
+  async resolve(query: ScholarlyQuery, options: { signal?: AbortSignal } = {}): Promise<ResolverVerdict> {
     const attempts: ResolverVerdict["attempts"] = [];
     let notFoundCount = 0;
     let firstAmbiguous: CanonicalPaperRecord[] | undefined;
+    const ctx = this.contextFor(options.signal);
 
     const plan = buildQueryPlan(query);
     if (plan.length === 0) {
@@ -573,10 +648,11 @@ export class ScholarlyResolver {
     }
 
     for (const provider of this.providers) {
-      if (this.delayMs > 0 && attempts.length > 0) {
-        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      await this.politeDelay(options.signal).catch(() => {});
+      if (options.signal?.aborted) {
+        return { outcome: "unresolved", attempts, cacheHits: this.telemetry.cacheHits };
       }
-      const step = await this.runPlan(provider, plan);
+      const step = await this.runPlan(provider, plan, ctx);
       const outcome = step.outcome;
       switch (outcome.kind) {
         case "match":
@@ -590,7 +666,7 @@ export class ScholarlyResolver {
           // 不一致 → mismatch；权威源不可确认 → unresolved（保守：宁可
           // unresolved，不给 wrong match）。
           if (mismatches.length === 0 && query.title === undefined && query.doi !== undefined) {
-            const cross = await this.crossCheckArxivDoi(query.doi, outcome.record);
+            const cross = await this.crossCheckArxivDoi(query.doi, outcome.record, ctx);
             if (cross !== undefined) {
               attempts.push({ provider: "arxiv-authority", outcome: cross.kind === "match" ? "match" : cross.kind, note: cross.note });
               if (cross.kind === "mismatch") {
@@ -624,7 +700,13 @@ export class ScholarlyResolver {
           notFoundCount += 1;
           break;
         case "error":
-          attempts.push({ provider: provider.name, outcome: "error", note: outcome.note });
+          attempts.push({
+            provider: provider.name,
+            outcome: "error",
+            note: outcome.note,
+            ...(outcome.errorKind !== undefined ? { errorKind: outcome.errorKind } : {}),
+            ...(outcome.retryAfterMs !== undefined ? { retryAfterMs: outcome.retryAfterMs } : {}),
+          });
           break;
       }
     }
@@ -647,6 +729,7 @@ export class ScholarlyResolver {
   private async crossCheckArxivDoi(
     doi: string,
     candidate: CanonicalPaperRecord,
+    ctx: ProviderContext,
   ): Promise<
     | { kind: "match"; note: string }
     | { kind: "mismatch"; note: string; mismatches: CitationFieldMismatch[] }
@@ -661,7 +744,7 @@ export class ScholarlyResolver {
     if (arxiv === undefined) {
       return { kind: "unresolved", note: `arXiv DOI（${doi}）无权威源可交叉验证（未配置 arxiv provider）` };
     }
-    const outcome = await this.lookupCached(arxiv, { arxivId });
+    const outcome = await this.lookupCached(arxiv, { arxivId }, ctx);
     if (outcome.kind !== "match" && outcome.kind !== "mismatch") {
       return { kind: "unresolved", note: `arXiv 权威源无法确认 arxiv:${arxivId}（${outcome.kind}）` };
     }
@@ -687,14 +770,15 @@ export class ScholarlyResolver {
   private async runPlan(
     provider: ScholarlyProvider,
     plan: QueryStep[],
+    ctx: ProviderContext,
   ): Promise<{ outcome: LookupOutcome; note: string }> {
     let last: LookupOutcome = { kind: "not_found" };
     const tried: string[] = [];
     for (const [index, step] of plan.entries()) {
       if (this.delayMs > 0 && index > 0) {
-        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+        await this.politeDelay(ctx.signal).catch(() => {});
       }
-      last = await this.lookupCached(provider, step.query);
+      last = await this.lookupCached(provider, step.query, ctx);
       tried.push(step.label);
       if (last.kind === "not_found") {
         continue;
@@ -709,7 +793,15 @@ export class ScholarlyResolver {
     return { outcome: last, note: `查询：${tried.join(" → ")}` };
   }
 
-  private async lookupCached(provider: ScholarlyProvider, query: ScholarlyQuery): Promise<LookupOutcome> {
+  /**
+   * 查询级缓存（key = provider+query 指纹）。
+   *
+   * M13.6 纪律：瞬时失败（429/超时/网络/5xx）**不进缓存**——限流形成的错误
+   * 结果不能长期复用；provider 冷却期内的重复查询由冷却闸门短路（不发网络
+   * 请求）。重试与退避由共享 ScholarlyHttpClient 统一执行（本层不再叠加
+   * 第二套 300ms 重试——避免重试叠加）。
+   */
+  private async lookupCached(provider: ScholarlyProvider, query: ScholarlyQuery, ctx: ProviderContext): Promise<LookupOutcome> {
     const key = `${provider.name}:${fingerprintJson(query)}`;
     const stat = this.providerStat(provider.name);
     const cached = this.cache.get(key);
@@ -718,22 +810,33 @@ export class ScholarlyResolver {
       stat.cacheHits += 1;
       return cached;
     }
+    // 冷却闸门：provider 冷却期内直接返回可恢复的 rate_limited（无网络请求）
+    const cooling = this.http.cooldowns.remaining(provider.name);
+    if (cooling > 0) {
+      this.telemetry.providerCalls += 1;
+      stat.calls += 1;
+      stat.rateLimited += 1;
+      return {
+        kind: "error",
+        note: `${provider.name} 查询失败：429 限流（冷却中，${Math.ceil(cooling / 1000)}s 后自动恢复）`,
+        errorKind: "rate_limited",
+        retryAfterMs: cooling,
+      };
+    }
     this.telemetry.providerCalls += 1;
     stat.calls += 1;
     const startedAt = Date.now();
-    let outcome = await provider.lookup(query, this.ctx);
-    // 单次重试（网络抖动/5xx；重试仍失败如实报 error）
-    if (outcome.kind === "error") {
-      this.telemetry.retries += 1;
-      this.log(`[scholarly] ${provider.name} 失败（${outcome.note}），重试一次`);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      outcome = await provider.lookup(query, this.ctx);
-    }
+    const outcome = await provider.lookup(query, ctx);
     stat.totalMs += Date.now() - startedAt;
     if (outcome.kind === "not_found") {
       stat.notFound += 1;
     } else if (outcome.kind === "error") {
       stat.errors += 1;
+      if (outcome.errorKind === "rate_limited") {
+        stat.rateLimited += 1;
+        this.log(`[scholarly] ${provider.name} 限流：${outcome.note}`);
+      }
+      return outcome; // 瞬时失败不缓存（冷却结束后可重试）
     }
     if (this.cache.size >= this.cacheSize) {
       const oldest = this.cache.keys().next().value;
@@ -748,8 +851,9 @@ export class ScholarlyResolver {
   /** 受控检索（search_papers 工具 / semantic 证据用）：跨 crossref+openalex */
   async search(keywords: string, limit = 5): Promise<CanonicalPaperRecord[]> {
     const results: CanonicalPaperRecord[] = [];
+    const ctx = this.contextFor(undefined);
     for (const provider of this.providers.filter((p) => p.name === "crossref" || p.name === "openalex")) {
-      const outcome = await this.lookupCached(provider, { title: keywords });
+      const outcome = await this.lookupCached(provider, { title: keywords }, ctx);
       if (outcome.kind === "match") {
         results.push(outcome.record);
       } else if (outcome.kind === "ambiguous") {

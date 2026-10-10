@@ -24,6 +24,7 @@ import {
   type ScholarlyProvider,
   type ScholarlyQuery,
 } from "../../src/citation/scholarly.js";
+import { ScholarlyHttpClient } from "../../src/citation/scholarlyHttp.js";
 import type { CanonicalPaperRecord, CitationVerificationRecord, ReferenceEntry } from "../../src/citation/integrity.js";
 import { CitationIntegrityService } from "../../src/citation/CitationIntegrityService.js";
 import { HYPHENATION_MARKER, stripHyphenationMarkers } from "../../src/citation/referenceText.js";
@@ -267,8 +268,9 @@ describe("多 provider 错误语义与 query plan", () => {
     const verdict = await resolver.resolve({ title: "Some Real Paper Nobody Indexed Yet", year: 2026 });
     expect(verdict.outcome).toBe("unresolved");
     expect(verdict.attempts.map((a) => a.outcome)).toEqual(["not_found", "error", "error"]);
-    // error 的 provider 不再被后续 variant 加压：每个只调用 2 次（1 次 + 1 次重试）
-    expect(limited.queries).toHaveLength(2);
+    // error 的 provider 不再被后续 variant 加压（M13.6：重试下沉共享 HTTP 层，
+    // resolver 层 1 次即停）
+    expect(limited.queries).toHaveLength(1);
   });
 
   it("error 的 provider 不会为 variants 重复加压；not_found 才试下一个 variant", async () => {
@@ -328,7 +330,7 @@ describe("多 provider 错误语义与 query plan", () => {
           },
         }),
       }) as unknown as Response) as unknown as typeof fetch;
-    const ctx: ProviderContext = { fetchImpl, timeoutMs: 1000 };
+    const ctx: ProviderContext = { http: new ScholarlyHttpClient({ fetchImpl, timeoutMs: 1000 }) };
     const outcome = await new CrossrefProvider().lookup({ title: OCSORT_QUERY.title!, year: 2023 }, ctx);
     expect(outcome.kind).toBe("match");
     if (outcome.kind === "match") {
@@ -340,7 +342,7 @@ describe("多 provider 错误语义与 query plan", () => {
     const xml = `<feed><entry><id>http://arxiv.org/abs/2110.06864v3</id><title>ByteTrack: Multi-Object Tracking by
   Associating Every Detection Box</title><summary>We propose ByteTrack.</summary></entry></feed>`;
     const fetchImpl = (async () => ({ ok: true, status: 200, text: async () => xml }) as unknown as Response) as unknown as typeof fetch;
-    const outcome = await new ArxivLookupProvider().lookup({ title: BYTETRACK_QUERY.title!, year: 2022 }, { fetchImpl, timeoutMs: 1000 });
+    const outcome = await new ArxivLookupProvider().lookup({ title: BYTETRACK_QUERY.title!, year: 2022 }, { http: new ScholarlyHttpClient({ fetchImpl, timeoutMs: 1000 }) });
     expect(outcome.kind).toBe("match");
   });
 });

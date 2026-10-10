@@ -38,6 +38,7 @@ import { CandidateStore } from "./sources/CandidateStore.js";
 import { SourceImportService } from "./sources/SourceImportService.js";
 import { BuiltinPdfAnalyzer } from "./sources/PdfAnalyzer.js";
 import { ProviderHttpClient } from "./search/providerHttp.js";
+import { ProviderCooldownRegistry, type ScholarlyHttpClientOptions } from "./citation/scholarlyHttp.js";
 import { AcademicSearchService } from "./search/academicSearchService.js";
 import { OpenAlexSearchProvider } from "./search/openalexProvider.js";
 import { SemanticScholarSearchProvider } from "./search/semanticScholarProvider.js";
@@ -130,6 +131,9 @@ export interface ServiceStackOptions {
     fetchImpl?: typeof fetch;
     /** scholarly resolver（PDF 引用核验；测试注入 providers/fetch） */
     scholarly?: ScholarlyResolverOptions;
+    /** HTTP 层参数覆盖与限流恢复预算（M13.6；测试与部署调参用） */
+    httpOptions?: Partial<ScholarlyHttpClientOptions>;
+    rateLimitRecoveryMs?: number;
   };
   /** Final PDF parser 注入（测试用 fake parser；缺省 PyMuPdfParser） */
   paperParser?: PdfParser;
@@ -350,8 +354,13 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     projects: options.projects,
     log,
   });
+  // M13.6 跨栈共享 provider 冷却：检索栈（ProviderHttpClient）与 citation 栈
+  // （ScholarlyResolver / CitationService）对同一上游（S2 / Crossref / OpenAlex）
+  // 共享 429 冷却状态——一边限流进入冷却，另一边的请求也被短路，不各自重试
+  const providerCooldown = new ProviderCooldownRegistry();
   const citation = new CitationService({
     projects: options.projects,
+    cooldownRegistry: providerCooldown,
     ...(options.citation?.metadataEnabled !== undefined
       ? { metadataEnabled: options.citation.metadataEnabled }
       : {}),
@@ -366,6 +375,10 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       : {}),
     ...(options.citation?.fetchImpl !== undefined
       ? { fetchImpl: options.citation.fetchImpl }
+      : {}),
+    ...(options.citation?.httpOptions !== undefined ? { httpOptions: options.citation.httpOptions } : {}),
+    ...(options.citation?.rateLimitRecoveryMs !== undefined
+      ? { rateLimitRecoveryMs: options.citation.rateLimitRecoveryMs }
       : {}),
     log,
   });
@@ -412,6 +425,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // 显式注入的 scholarly.providers 优先于 disable（测试用 fake provider 提供 metadata 记录
   // 以驱动语义核验，见 citationSemanticMode.test）。
   const scholarlyOptions: ScholarlyResolverOptions = {
+    cooldownRegistry: providerCooldown,
     ...(options.citation?.metadataTimeoutMs !== undefined
       ? { timeoutMs: options.citation.metadataTimeoutMs }
       : {}),
@@ -470,6 +484,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const providerHttp = new ProviderHttpClient({
     ...(options.search?.fetchImpl !== undefined ? { fetchImpl: options.search.fetchImpl } : {}),
     defaultTimeoutMs: searchConfig.providerTimeoutMs,
+    cooldownRegistry: providerCooldown,
     log,
   });
   const disabled = new Set(searchConfig.disabledProviders);

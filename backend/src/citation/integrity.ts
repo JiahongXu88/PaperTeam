@@ -182,6 +182,18 @@ export interface CitationVerificationRecord {
    */
   algorithmVersion?: string;
   error?: string;
+  /**
+   * PROVIDER_ERROR 的机器可读分类（M13.6）：rate_limited ≠ 不存在 ≠ 超时。
+   * 限流 / 超时 / 网络 / 5xx 是可重试的瞬时失败（本字段 + retryNotBefore
+   * 声明重试资格与下一次可重试时间）；404 等权威否定不会出现在这里。
+   */
+  providerError?: {
+    kind: "rate_limited" | "timeout" | "network_error" | "server_error" | "aborted" | "http_error";
+    /** 建议等待（毫秒；来自 Retry-After / provider 冷却） */
+    retryAfterMs?: number;
+  };
+  /** 可重试失败的最早可重试时间（ISO 8601；冷却截止） */
+  retryNotBefore?: string;
 }
 
 // ---- Layer 2：semantic verification（(claim, citation) 单记录） ----

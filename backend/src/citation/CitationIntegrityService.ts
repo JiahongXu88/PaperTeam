@@ -103,6 +103,13 @@ export interface CitationIntegrityOptions {
   maxMetadataLookups?: number;
   /** semantic 核验上限（默认 30；token 控制） */
   maxSemanticVerifications?: number;
+  /**
+   * M13.6 限流恢复预算（毫秒；默认 60s，≤0 关闭）：verifyMetadata 首轮过后，
+   * 因 429 限流失败的条目在 provider 冷却结束时间落入预算内时等待并补查
+   * （只补查失败条目，不重跑全部）；超预算如实返回 PROVIDER_ERROR（下次
+   * 核验自动重试——PROVIDER_ERROR 不复用）。
+   */
+  rateLimitRecoveryMs?: number;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -116,6 +123,7 @@ export class CitationIntegrityService {
   private readonly citationAgentId: string | undefined;
   private readonly maxLookups: number;
   private readonly maxSemantic: number;
+  private readonly rateLimitRecoveryMs: number;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
 
@@ -133,6 +141,7 @@ export class CitationIntegrityService {
     this.citationAgentId = options.citationAgentId;
     this.maxLookups = options.maxMetadataLookups ?? 40;
     this.maxSemantic = options.maxSemanticVerifications ?? 30;
+    this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 60_000;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
   }
@@ -243,6 +252,11 @@ export class CitationIntegrityService {
   /**
    * 逐条核验（文件粒度持久化 + 指纹跳过：第 37 条失败不影响前 36 条，
    * 重跑只补缺失/变化条目）。默认上限 maxLookups 条。
+   *
+   * M13.6 限流恢复：首轮过后，因 429 限流失败（providerError.kind=rate_limited）
+   * 的条目若 provider 冷却结束时间落入恢复预算（rateLimitRecoveryMs）内，
+   * 等待后只补查这些条目（成功验证过的条目不动）；超预算如实返回
+   * PROVIDER_ERROR + retryNotBefore（下次核验自动重试）。
    */
   async verifyMetadata(
     projectId: string,
@@ -255,6 +269,8 @@ export class CitationIntegrityService {
     telemetry: { providerCalls: number; cacheHits: number; retries: number };
     /** 外部检索画像（性能诊断：按 provider 的调用 / 命中 / 耗时） */
     profile: MetadataLookupProfile;
+    /** M13.6 限流恢复画像：等待毫秒 / 补查条数 / 补查成功条数 */
+    recovery: { waitedMs: number; retried: number; recovered: number };
   }> {
     await this.projects.getRequired(projectId);
     const references = await this.store.loadReferences<ReferenceEntry>(projectId);
@@ -299,9 +315,54 @@ export class CitationIntegrityService {
         reused += 1;
         continue;
       }
-      const record = await this.verifyReference(projectId, reference);
+      const record = await this.verifyReference(projectId, reference, options.signal);
       byStatus[record.status] += 1;
       records.push(record);
+    }
+    // ---- M13.6 限流恢复 pass：只补查因限流失败的条目 ----
+    const recovery = { waitedMs: 0, retried: 0, recovered: 0 };
+    const isAborted = (): boolean => options.signal?.aborted === true;
+    const rateLimited = records
+      .map((record, index) => ({ record, index }))
+      .filter((entry) => entry.record.status === "PROVIDER_ERROR" && entry.record.providerError?.kind === "rate_limited");
+    if (rateLimited.length > 0 && this.rateLimitRecoveryMs > 0 && !isAborted()) {
+      const nowMs = this.now().getTime();
+      const retryAtMs = Math.min(
+        ...rateLimited.map((entry) => {
+          const parsed = Date.parse(entry.record.retryNotBefore ?? "");
+          return Number.isFinite(parsed) ? parsed : nowMs;
+        }),
+      );
+      const waitMs = Math.max(0, retryAtMs - nowMs);
+      if (waitMs <= this.rateLimitRecoveryMs) {
+        if (waitMs > 0) {
+          this.log(
+            `[citation-integrity] projectId=${projectId} ${rateLimited.length} 条限流条目等待 ${Math.round(waitMs / 1000)}s 后补查（预算 ${Math.round(this.rateLimitRecoveryMs / 1000)}s）`,
+          );
+          const waited = await abortableSleep(waitMs, options.signal);
+          recovery.waitedMs = waited;
+        }
+        if (!isAborted()) {
+          for (const entry of rateLimited) {
+            const reference = targets[entry.index]!;
+            if (reference.referenceId !== entry.record.referenceId) continue; // 防御：索引错位不动状态
+            const refreshed = await this.verifyReference(projectId, reference, options.signal);
+            recovery.retried += 1;
+            if (refreshed.status !== "PROVIDER_ERROR") {
+              recovery.recovered += 1;
+              byStatus.PROVIDER_ERROR -= 1;
+              byStatus[refreshed.status] += 1;
+              records[entry.index] = refreshed;
+            } else {
+              records[entry.index] = refreshed; // 更新 retryNotBefore 等最新冷却信息
+            }
+          }
+        }
+      } else {
+        this.log(
+          `[citation-integrity] projectId=${projectId} ${rateLimited.length} 条限流条目冷却 ${Math.round(waitMs / 1000)}s 超过恢复预算 ${Math.round(this.rateLimitRecoveryMs / 1000)}s：如实返回 PROVIDER_ERROR（下次核验自动补查）`,
+        );
+      }
     }
     await this.saveStage(projectId, {
       stage: "metadata",
@@ -314,7 +375,8 @@ export class CitationIntegrityService {
       updatedAt: this.now().toISOString(),
     });
     this.log(
-      `[citation-integrity] projectId=${projectId} metadata 核验：checked=${targets.length} reused=${reused} verified=${byStatus.VERIFIED} not_found=${byStatus.NOT_FOUND} provider_error=${byStatus.PROVIDER_ERROR}`,
+      `[citation-integrity] projectId=${projectId} metadata 核验：checked=${targets.length} reused=${reused} verified=${byStatus.VERIFIED} not_found=${byStatus.NOT_FOUND} provider_error=${byStatus.PROVIDER_ERROR}` +
+        (recovery.retried > 0 ? ` 限流补查=${recovery.retried}（成功 ${recovery.recovered}，等待 ${Math.round(recovery.waitedMs / 1000)}s）` : ""),
     );
     const profile: MetadataLookupProfile = {
       providerCalls: this.resolver.telemetry.providerCalls,
@@ -335,6 +397,7 @@ export class CitationIntegrityService {
         retries: profile.retries,
       },
       profile,
+      recovery,
     };
   }
 
@@ -347,12 +410,13 @@ export class CitationIntegrityService {
   private async verifyReference(
     projectId: string,
     reference: ReferenceEntry,
+    signal?: AbortSignal,
   ): Promise<CitationVerificationRecord> {
     const kind = inferReferenceKind(reference);
     const record =
       kind === "software"
         ? await this.verifySoftwareReference(reference)
-        : await this.verifyScholarlyReference(reference);
+        : await this.verifyScholarlyReference(reference, signal);
     await this.store.saveRecord(projectId, "metadata", reference.referenceId, record);
     return record;
   }
@@ -420,14 +484,18 @@ export class CitationIntegrityService {
   /** scholarly 类：学术库多源核验（原有链路） */
   private async verifyScholarlyReference(
     reference: ReferenceEntry,
+    signal?: AbortSignal,
   ): Promise<CitationVerificationRecord> {
-    const verdict = await this.resolver.resolve({
-      ...(reference.title !== undefined ? { title: reference.title } : {}),
-      ...(reference.authors !== undefined ? { authors: reference.authors } : {}),
-      ...(reference.year !== undefined ? { year: reference.year } : {}),
-      ...(reference.doi !== undefined ? { doi: reference.doi } : {}),
-      ...(reference.arxivId !== undefined ? { arxivId: reference.arxivId } : {}),
-    });
+    const verdict = await this.resolver.resolve(
+      {
+        ...(reference.title !== undefined ? { title: reference.title } : {}),
+        ...(reference.authors !== undefined ? { authors: reference.authors } : {}),
+        ...(reference.year !== undefined ? { year: reference.year } : {}),
+        ...(reference.doi !== undefined ? { doi: reference.doi } : {}),
+        ...(reference.arxivId !== undefined ? { arxivId: reference.arxivId } : {}),
+      },
+      signal !== undefined ? { signal } : {},
+    );
     const notFoundAttempts = verdict.attempts.filter((attempt) => attempt.outcome === "not_found").length;
     const status: CitationMetadataStatus =
       verdict.outcome === "match"
@@ -445,6 +513,25 @@ export class CitationIntegrityService {
       notFoundAttempts >= 3 &&
       verdict.attempts.every((attempt) => attempt.outcome === "not_found") &&
       (reference.title !== undefined || reference.doi !== undefined);
+    // M13.6：瞬时失败的机器可读分类 + 重试资格（限流 ≠ 不存在 ≠ 超时）。
+    // 优先报告 rate_limited（决定恢复 pass 与 retryNotBefore）；否则取首个
+    // 瞬时失败分类。
+    const transientAttempt =
+      verdict.attempts.find((attempt) => attempt.errorKind === "rate_limited") ??
+      verdict.attempts.find((attempt) => attempt.errorKind !== undefined);
+    const providerError =
+      status === "PROVIDER_ERROR" && transientAttempt?.errorKind !== undefined
+        ? {
+            kind: transientAttempt.errorKind,
+            ...(transientAttempt.retryAfterMs !== undefined && transientAttempt.retryAfterMs > 0
+              ? { retryAfterMs: transientAttempt.retryAfterMs }
+              : {}),
+          }
+        : undefined;
+    const retryNotBeforeMs =
+      providerError?.kind === "rate_limited"
+        ? this.now().getTime() + (providerError.retryAfterMs ?? 0)
+        : undefined;
     return {
       referenceId: reference.referenceId,
       status,
@@ -474,6 +561,10 @@ export class CitationIntegrityService {
       algorithmVersion: METADATA_VERIFICATION_VERSION,
       ...(verdict.outcome === "unresolved"
         ? { error: verdict.attempts.find((a) => a.outcome === "error")?.note ?? "多源检索未获结论" }
+        : {}),
+      ...(providerError !== undefined ? { providerError } : {}),
+      ...(retryNotBeforeMs !== undefined
+        ? { retryNotBefore: new Date(retryNotBeforeMs).toISOString() }
         : {}),
     };
   }
@@ -1035,6 +1126,26 @@ function deriveSeverityFor(
     probableFabrication: metadata?.probableFabrication ?? false,
     verdict: "SKIPPED",
     priority: claim.priority,
+  });
+}
+
+/** 可取消等待（M13.6 恢复 pass）：aborted 时提前结束并抛出 WORKFLOW_CANCELLED */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const startedAt = Date.now();
+    if (signal?.aborted) {
+      reject(new BusinessError("WORKFLOW_CANCELLED", "引用真实性核验已被取消"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(Date.now() - startedAt);
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new BusinessError("WORKFLOW_CANCELLED", "引用真实性核验已被取消"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

@@ -23,8 +23,10 @@ import {
   OpenAlexProvider,
   ArxivProvider,
   type CitationMetadataProvider,
+  type MetadataProviderContext,
   type MetadataVerificationResult,
 } from "./metadataProviders.js";
+import { ProviderCooldownRegistry, ScholarlyHttpClient, type ScholarlyHttpClientOptions } from "./scholarlyHttp.js";
 
 export interface CitationReport {
   generatedAt: string;
@@ -64,6 +66,12 @@ export interface CitationServiceOptions {
   fetchImpl?: typeof fetch;
   /** 可注入 provider 列表（测试） */
   providers?: CitationMetadataProvider[];
+  /** 跨组件共享的 provider 冷却（M13.6：与检索栈 / scholarly resolver 同状态） */
+  cooldownRegistry?: ProviderCooldownRegistry;
+  /** 限流恢复预算（毫秒；默认 60s，≤0 关闭——等待冷却结束后只补查限流条目） */
+  rateLimitRecoveryMs?: number;
+  /** HTTP 层参数覆盖（重试 / 退避 / 冷却帽；测试与部署调参用） */
+  httpOptions?: Partial<ScholarlyHttpClientOptions>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -72,10 +80,10 @@ export class CitationService {
   private readonly projects: ProjectStore;
   private readonly metadataEnabled: boolean;
   private readonly maxLookups: number;
-  private readonly timeoutMs: number;
   private readonly contactEmail?: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly http: ScholarlyHttpClient;
   private readonly providers: CitationMetadataProvider[];
+  private readonly rateLimitRecoveryMs: number;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
 
@@ -83,14 +91,20 @@ export class CitationService {
     this.projects = options.projects;
     this.metadataEnabled = options.metadataEnabled ?? true;
     this.maxLookups = options.maxMetadataLookups ?? 20;
-    this.timeoutMs = options.metadataTimeoutMs ?? 8_000;
     this.contactEmail = options.contactEmail;
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.http = new ScholarlyHttpClient({
+      ...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
+      ...(options.metadataTimeoutMs !== undefined ? { timeoutMs: options.metadataTimeoutMs } : {}),
+      ...(options.cooldownRegistry !== undefined ? { cooldownRegistry: options.cooldownRegistry } : {}),
+      ...(options.httpOptions ?? {}),
+      log: options.log ?? (() => {}),
+    });
     this.providers = options.providers ?? [
       new CrossRefProvider(),
       new OpenAlexProvider(),
       new ArxivProvider(),
     ];
+    this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 60_000;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
   }
@@ -117,12 +131,11 @@ export class CitationService {
 
     const results: MetadataVerificationResult[] = [];
     if (this.metadataEnabled) {
-      const ctx = {
-        fetchImpl: this.fetchImpl,
-        timeoutMs: this.timeoutMs,
-        ...(this.contactEmail ? { contactEmail: this.contactEmail } : {}),
+      const ctx: MetadataProviderContext = {
+        http: this.http,
+        ...(this.contactEmail !== undefined ? { contactEmail: this.contactEmail } : {}),
       };
-      for (const entry of candidates) {
+      const verifyEntry = async (entry: (typeof candidates)[number]): Promise<MetadataVerificationResult | undefined> => {
         // 每个 provider 依次尝试：verified 即停止；not_found 与 unverifiable 区分记录
         const perProvider: MetadataVerificationResult[] = [];
         for (const provider of this.providers) {
@@ -132,9 +145,42 @@ export class CitationService {
             break; // 有明确比对结论即停止
           }
         }
-        const decisive = decideMetadataResult(perProvider);
-        if (decisive !== undefined) {
-          results.push(decisive);
+        return decideMetadataResult(perProvider);
+      };
+      for (const entry of candidates) {
+        const result = await verifyEntry(entry);
+        if (result !== undefined) {
+          results.push(result);
+        }
+      }
+      // M13.6 限流恢复：因 429 不可判定的条目在 provider 冷却结束落入预算内时
+      // 等待并只补查这些条目（不重跑全部；成功条目保持复用）
+      const rateLimited = results
+        .map((result, index) => ({ result, index }))
+        .filter((item) => item.result.status === "unverifiable" && item.result.errorKind === "rate_limited");
+      if (rateLimited.length > 0 && this.rateLimitRecoveryMs > 0) {
+        const nowMs = this.now().getTime();
+        const retryAtMs = Math.min(
+          ...rateLimited.map((item) => nowMs + (item.result.retryAfterMs ?? 0)),
+        );
+        const waitMs = Math.max(0, retryAtMs - nowMs);
+        if (waitMs <= this.rateLimitRecoveryMs) {
+          if (waitMs > 0) {
+            this.log(
+              `[citation] projectId=${projectId} ${rateLimited.length} 条限流条目等待 ${Math.round(waitMs / 1000)}s 后补查`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+          }
+          for (const item of rateLimited) {
+            const refreshed = (await verifyEntry(candidates[item.index]!)) ?? item.result;
+            if (refreshed.status !== "unverifiable" || refreshed.errorKind !== "rate_limited") {
+              results[item.index] = refreshed;
+            }
+          }
+        } else {
+          this.log(
+            `[citation] projectId=${projectId} ${rateLimited.length} 条限流条目冷却 ${Math.round(waitMs / 1000)}s 超过恢复预算：如实返回不可判定（下次核验自动补查）`,
+          );
         }
       }
     }

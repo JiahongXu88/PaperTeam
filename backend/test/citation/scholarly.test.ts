@@ -16,6 +16,7 @@ import {
   type ScholarlyProvider,
   type ScholarlyQuery,
 } from "../../src/citation/scholarly.js";
+import { ScholarlyHttpClient } from "../../src/citation/scholarlyHttp.js";
 import type { CanonicalPaperRecord } from "../../src/citation/integrity.js";
 import { CitationIntegrityService } from "../../src/citation/CitationIntegrityService.js";
 import { PaperStore } from "../../src/paper/PaperStore.js";
@@ -77,7 +78,7 @@ describe("M4.3.4 ScholarlyResolver（mock providers）", () => {
     expect(verdict.attempts.map((a) => a.outcome)).toEqual(["error", "match"]);
   });
 
-  it("全部来源失败（含重试）→ UNRESOLVED（绝不 NOT_FOUND）", async () => {
+  it("全部来源失败 → UNRESOLVED（绝不 NOT_FOUND；重试已下沉共享 HTTP 层）", async () => {
     let calls = 0;
     const failing = new FakeProvider("crossref", () => {
       calls += 1;
@@ -86,8 +87,11 @@ describe("M4.3.4 ScholarlyResolver（mock providers）", () => {
     const resolver = new ScholarlyResolver({ providers: [failing] });
     const verdict = await resolver.resolve({ title: "Some Paper" });
     expect(verdict.outcome).toBe("unresolved");
-    expect(calls).toBe(2); // 1 次 + 1 次重试
-    expect(resolver.telemetry.retries).toBe(1);
+    // M13.6：resolver 不再叠加第二套 300ms 重试——真实 provider 的重试 / 退避
+    // 在共享 ScholarlyHttpClient（见 scholarlyHttp.test）；error 立即停止该
+    // provider，不为后续 variant 加压
+    expect(calls).toBe(1);
+    expect(resolver.telemetry.retries).toBe(0);
   });
 
   it("≥2 来源权威 not_found → NOT_FOUND；ambiguous 优先于 unresolved", async () => {
@@ -198,7 +202,7 @@ describe("M4.3.4 ScholarlyResolver（mock providers）", () => {
       }) as unknown as Response;
     const outcome = await provider.lookup(
       { doi: "10.1000/fake", title: "Attention Is All You Need" },
-      { fetchImpl: okResponse as unknown as typeof fetch, timeoutMs: 1000 },
+      { http: new ScholarlyHttpClient({ fetchImpl: okResponse as unknown as typeof fetch, timeoutMs: 1000 }) },
     );
     expect(outcome.kind).toBe("match");
     if (outcome.kind === "match") {
@@ -207,10 +211,7 @@ describe("M4.3.4 ScholarlyResolver（mock providers）", () => {
     }
     const notFound = await provider.lookup(
       { doi: "10.9999/none" },
-      {
-        fetchImpl: (async () => ({ ok: false, status: 404 }) as Response) as unknown as typeof fetch,
-        timeoutMs: 1000,
-      },
+      { http: new ScholarlyHttpClient({ fetchImpl: (async () => ({ ok: false, status: 404 }) as Response) as unknown as typeof fetch, timeoutMs: 1000 }) },
     );
     expect(notFound.kind).toBe("error"); // DOI 404 只说明 Crossref 没有，不是全局不存在
   });
