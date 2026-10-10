@@ -271,7 +271,7 @@ export function HitlPanel({
         <AdjustForm
           key={`${run.runId}-adjust`}
           pending={pending}
-          suggested={readStringArray(awaiting.payload?.["suggestedTargetAdjustment"])}
+          suggested={readStringList(awaiting.payload?.["suggestedTargetAdjustment"])}
           onSubmit={(payload) => submit({ action: "adjust", payload })}
           onCancel={() => setOpenForm(null)}
         />
@@ -844,12 +844,16 @@ function FeasibilityPayload({ payload }: { payload: Record<string, unknown> }) {
   const missing = readStringArray(payload["missingRequirements"]);
   const experiments = readStringArray(payload["requiredExperiments"]);
   const recommendations = readStringArray(payload["recommendations"]);
+  // Backend 把 suggestedTargetAdjustment 以「；」拼成单个字符串（FeasibilityService），
+  // 旧实现按数组读取导致该建议从未显示——这里兼容字符串与数组两种形状。
+  const adjustments = readStringList(payload["suggestedTargetAdjustment"]);
   if (
     level === undefined &&
     reasons.length === 0 &&
     missing.length === 0 &&
     experiments.length === 0 &&
-    recommendations.length === 0
+    recommendations.length === 0 &&
+    adjustments.length === 0
   ) {
     return null;
   }
@@ -865,6 +869,11 @@ function FeasibilityPayload({ payload }: { payload: Record<string, unknown> }) {
       <HitlList title="尚缺的条件" items={missing} tone="warn" empty="暂无明显缺口" />
       <HitlList title="需要补充的实验" items={experiments} empty="暂无" />
       <HitlList title="建议" items={recommendations} empty="暂无" />
+      {adjustments.length > 0 ? (
+        <div data-testid="hitl-target-adjustment">
+          <HitlList title="目标调整建议（可在「调整目标」中采纳；是否下调由作者决定）" items={adjustments} tone="warn" />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1356,6 +1365,20 @@ function HitlList({
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+/**
+ * 字符串或字符串数组 → 条目列表。字符串按中文/英文分号与换行拆分（Backend 的
+ * suggestedTargetAdjustment 以「；」拼接多条建议），空白条目丢弃。
+ */
+function readStringList(value: unknown): string[] {
+  if (typeof value === "string") {
+    return value
+      .split(/[；;\r\n]+/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+  }
+  return readStringArray(value);
 }
 
 function planPriorityTone(priority: string): string {

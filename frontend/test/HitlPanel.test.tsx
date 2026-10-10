@@ -96,6 +96,33 @@ describe("HitlPanel：payload 渲染（统一 shell，按 stageId 差异化）",
     expect(panel).toHaveTextContent("先固定评估协议，再做消融");
   });
 
+  it("可行性节点：suggestedTargetAdjustment 为 Backend 拼接的字符串时也要显示（按「；」拆条）", async () => {
+    renderHitl(
+      hitlRunFixture({
+        awaiting: {
+          stageId: "hitl.feasibility_confirm",
+          prompt: "调研与可行性评估已完成，请确认研究目标后继续",
+          options: ["approve", "adjust", "cancel"],
+          payload: {
+            level: "MEDIUM",
+            reasons: ["方法贡献点明确"],
+            missingRequirements: [],
+            requiredExperiments: [],
+            recommendations: [],
+            suggestedTargetAdjustment: "若能补齐消融，当前核心期刊目标可维持。；若仅有单指标对比，建议下调为一般期刊。",
+          },
+        },
+      }),
+    );
+    const block = await screen.findByTestId("hitl-target-adjustment");
+    expect(block).toHaveTextContent("当前核心期刊目标可维持");
+    expect(block).toHaveTextContent("建议下调为一般期刊");
+    expect(block.querySelectorAll("li")).toHaveLength(2);
+    // 调整目标表单沿用同一拆分结果
+    await userEvent.click(screen.getByTestId("hitl-adjust"));
+    expect(await screen.findByTestId("hitl-adjust-form")).toHaveTextContent("建议下调为一般期刊");
+  });
+
   it("大纲节点：标题 + 摘要 + 章节列表；动作只有 继续 / 提出修改意见 / 取消任务", async () => {
     renderHitl(
       hitlRunFixture({
@@ -316,8 +343,8 @@ describe("HitlPanel：决策提交", () => {
     // 空表单：提交禁用 + 提示
     expect(screen.getByTestId("hitl-adjust-submit")).toBeDisabled();
     expect(screen.getByText("至少填写一项才会提交。")).toBeInTheDocument();
-    // 表单里的评估建议来自后端 payload
-    expect(screen.getByText(/下调为核心期刊/)).toBeInTheDocument();
+    // 表单里的评估建议来自后端 payload（payload 区块也会展示同一建议，故限定在表单内查询）
+    expect(within(screen.getByTestId("hitl-adjust-form")).getByText(/下调为核心期刊/)).toBeInTheDocument();
 
     await user.selectOptions(await screen.findByTestId("hitl-target-profile"), "core_journal");
     await user.type(screen.getByTestId("hitl-target-venue"), "  ");
