@@ -321,6 +321,6 @@ describe("C. ScholarlyHttpClient 礼貌节奏", () => {
     expect(registry.coolingProviders().map((entry) => entry.provider).sort()).toEqual(["crossref", "openalex"]);
     nowMs += 10_000;
     expect(registry.earliestRecoveryMs()).toBe(110_000);
-    expect(registry.coolingProviders()).toEqual([{ provider: "openalex", remainingMs: 110_000 }]);
+    expect(registry.coolingProviders()).toEqual([{ provider: "openalex", remainingMs: 110_000, unavailable: false }]);
   });
 });

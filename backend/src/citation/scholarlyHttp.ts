@@ -63,8 +63,27 @@ export class ScholarlyHttpError extends Error {
  */
 export class ProviderCooldownRegistry {
   private readonly until = new Map<string, number>();
+  /**
+   * Round 2（NB-R2-2）：服务端给出的 Retry-After 远超冷却帽（真实 run：OpenAlex 12–13 小时）
+   * 时，provider 在可预见的时间内不可用。冷却仍按帽值记录（闸门语义不变），但恢复 pass
+   * 的等待提示应跳过这类 provider——否则每轮核验都白等 90–100s 再被同一个 429 打回。
+   */
+  private readonly unavailableUntil = new Map<string, number>();
 
   constructor(private readonly now: () => number = Date.now) {}
+
+  /** 记录「服务端声明的真实恢复时间」（epoch ms；超过冷却帽的 Retry-After）；不缩短既有记录 */
+  markUnavailableUntil(provider: string, untilMs: number): void {
+    const current = this.unavailableUntil.get(provider) ?? 0;
+    if (untilMs > current) {
+      this.unavailableUntil.set(provider, untilMs);
+    }
+  }
+
+  /** provider 是否仍处于服务端声明的长时不可用期 */
+  isUnavailable(provider: string): boolean {
+    return (this.unavailableUntil.get(provider) ?? 0) > this.now();
+  }
 
   /** 记录冷却（相对毫秒）；返回更新后的剩余毫秒 */
   record(provider: string, cooldownMs: number): number {
@@ -95,21 +114,24 @@ export class ProviderCooldownRegistry {
     return this.until.get(provider) ?? 0;
   }
 
-  /** 仍在冷却的 provider 及其剩余毫秒（恢复 pass 的实时等待提示；已过期不列出） */
-  coolingProviders(): Array<{ provider: string; remainingMs: number }> {
+  /** 仍在冷却的 provider 及其剩余毫秒（恢复 pass 的实时等待提示；已过期不列出；标注长时不可用） */
+  coolingProviders(): Array<{ provider: string; remainingMs: number; unavailable: boolean }> {
     const nowMs = this.now();
-    const cooling: Array<{ provider: string; remainingMs: number }> = [];
+    const cooling: Array<{ provider: string; remainingMs: number; unavailable: boolean }> = [];
     for (const [provider, until] of this.until) {
       if (until > nowMs) {
-        cooling.push({ provider, remainingMs: until - nowMs });
+        cooling.push({ provider, remainingMs: until - nowMs, unavailable: this.isUnavailable(provider) });
       }
     }
     return cooling;
   }
 
-  /** 最早恢复的冷却 provider 的剩余毫秒（无冷却 → 0） */
-  earliestRecoveryMs(): number {
-    const cooling = this.coolingProviders();
+  /**
+   * 最早恢复的冷却 provider 的剩余毫秒（无冷却 → 0）。默认跳过服务端声明长时不可用的
+   * provider（等它没有意义）；全部都不可用时同样返回 0（调用方零进展守卫会停止补查）。
+   */
+  earliestRecoveryMs(options: { includeUnavailable?: boolean } = {}): number {
+    const cooling = this.coolingProviders().filter((entry) => options.includeUnavailable === true || !entry.unavailable);
     return cooling.length === 0 ? 0 : Math.min(...cooling.map((entry) => entry.remainingMs));
   }
 }
@@ -293,6 +315,10 @@ export class ScholarlyHttpClient {
         this.providerStat(provider).rateLimited += 1;
         const cooldown = this.clampCooldown(error.retryAfterMs);
         this.registry.record(provider, cooldown);
+        if (error.retryAfterMs !== undefined && error.retryAfterMs > this.cooldownCapMs) {
+          // Retry-After 远超冷却帽：按服务端声明记录真实不可用期（恢复 pass 不再等它）
+          this.registry.markUnavailableUntil(provider, this.now() + error.retryAfterMs);
+        }
         this.log(
           `[scholarly-http] ${provider} 429 限流（第 ${attempt} 次尝试；Retry-After=${error.retryAfterMs !== undefined ? `${Math.round(error.retryAfterMs / 1000)}s` : "无"} → 冷却 ${Math.round(cooldown / 1000)}s）`,
         );
