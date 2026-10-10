@@ -78,7 +78,7 @@ export interface CitationServiceOptions {
   providers?: CitationMetadataProvider[];
   /** 跨组件共享的 provider 冷却（M13.6：与检索栈 / scholarly resolver 同状态） */
   cooldownRegistry?: ProviderCooldownRegistry;
-  /** 限流恢复预算（毫秒；默认 60s，≤0 关闭——等待冷却结束后只补查限流条目） */
+  /** 限流恢复预算（毫秒；默认 120s（Round 2：真实 run 60s 只够一轮补查），≤0 关闭——等待冷却结束后只补查限流条目） */
   rateLimitRecoveryMs?: number;
   /** HTTP 层参数覆盖（重试 / 退避 / 冷却帽；测试与部署调参用） */
   httpOptions?: Partial<ScholarlyHttpClientOptions>;
@@ -117,7 +117,7 @@ export class CitationService {
       new OpenAlexProvider(),
       new ArxivProvider(),
     ];
-    this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 60_000;
+    this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 120_000;
     this.now = options.now ?? (() => new Date());
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.log = options.log ?? (() => {});

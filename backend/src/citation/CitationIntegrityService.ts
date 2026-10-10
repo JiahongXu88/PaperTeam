@@ -105,7 +105,7 @@ export interface CitationIntegrityOptions {
   /** semantic 核验上限（默认 30；token 控制） */
   maxSemanticVerifications?: number;
   /**
-   * M13.6 限流恢复预算（毫秒；默认 60s，≤0 关闭）：verifyMetadata 首轮过后，
+   * M13.6 限流恢复预算（毫秒；默认 120s——Round 2 真实 run 实测 60s 只够一轮补查，≤0 关闭）：verifyMetadata 首轮过后，
    * 因 429 限流失败的条目在 provider 冷却结束时间落入预算内时等待并补查
    * （只补查失败条目，不重跑全部）；超预算如实返回 PROVIDER_ERROR（下次
    * 核验自动重试——PROVIDER_ERROR 不复用）。
@@ -142,7 +142,7 @@ export class CitationIntegrityService {
     this.citationAgentId = options.citationAgentId;
     this.maxLookups = options.maxMetadataLookups ?? 40;
     this.maxSemantic = options.maxSemanticVerifications ?? 30;
-    this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 60_000;
+    this.rateLimitRecoveryMs = options.rateLimitRecoveryMs ?? 120_000;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
   }

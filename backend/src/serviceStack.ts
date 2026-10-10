@@ -358,9 +358,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // （ScholarlyResolver / CitationService）对同一上游（S2 / Crossref / OpenAlex）
   // 共享 429 冷却状态——一边限流进入冷却，另一边的请求也被短路，不各自重试
   const providerCooldown = new ProviderCooldownRegistry();
-  // Round 2：学术库礼貌节奏（arXiv API 条款 ≥3s/请求；Crossref 匿名池保守 2 req/s）。
+  // Round 2：学术库礼貌节奏（arXiv API 条款 ≥3s/请求；Crossref 匿名池实测 0.5s 仍每 ~8 请求一次 429 → 保守 1 req/s）。
   // 只在生产接线给默认值；显式 httpOptions 可覆盖（测试 / 调参）
-  const defaultMinRequestIntervalMs: Record<string, number> = { arxiv: 3_000, crossref: 500 };
+  const defaultMinRequestIntervalMs: Record<string, number> = { arxiv: 3_000, crossref: 1_000 };
   const citation = new CitationService({
     projects: options.projects,
     cooldownRegistry: providerCooldown,
