@@ -208,7 +208,7 @@ Run 8 observations:
 
 Three-run totals: output 401 921 tokens, cache read 10.84 M, cache write 1.90 M;
 **cost NOT_AVAILABLE** (provider returns cost=0). Full backend suite on the final
-tree: 3054 passed / 20 skipped / 3 failed = the pre-existing SSE timing flakes (`httpWorkflowApi` 409, `sseCancelSemantics` ×2, `orchestratorHardening` file-level) which pass when run alone (19/19). GitHub CI / Linux Integration on `c3da2ef`: CI **success** (observed 21:08 local); Linux Integration still in progress when this report was committed (both workflows were green on the previous code commit `560a8de`; the author can confirm the final status on the Actions tab).
+tree: 3054 passed / 20 skipped / 3 failed = the pre-existing SSE timing flakes (`httpWorkflowApi` 409, `sseCancelSemantics` ×2, `orchestratorHardening` file-level) which pass when run alone (19/19). GitHub CI / Linux Integration on `c3da2ef`: CI **success** and Linux Integration **success** (both confirmed via the Actions API at 21:17 local; also green on `560a8de`).
 
 ### D.1 Delivery
 
