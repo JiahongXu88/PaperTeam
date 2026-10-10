@@ -254,6 +254,54 @@ describe("M13.5 观测级实验范围（split scopes）", () => {
     expect(context.observations).toHaveLength(8); // main 3 行×2 指标 + baseline 1 行×2 指标
   });
 
+  it("v1 旧包显式重新整理分组：升级到范围级核对、确认与授权失效、不改观测", async () => {
+    const { stack, projectId } = await makeStack();
+    const packageId = await upload(stack, projectId, MULTI_SPLIT_ZIP, "legacy-v1-rebuild.zip");
+    const base = `/api/projects/${projectId}/experiment-packages/${packageId}`;
+    const before = await stack.request("GET", base);
+    const beforeBody = before.body["package"] as PackageBody;
+    // 手工降级为 v1：无 splitScopes、main 整组 conflict（M13.5 之前的死锁形态）、baseline 已确认
+    const manifestPath = join(stack.store.projectDir(projectId), "experiments", packageId, "manifest.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as PackageBody & { schemaVersion: number };
+    manifest.schemaVersion = 1;
+    for (const group of manifest.groups) delete (group as { splitScopes?: unknown }).splitScopes;
+    const legacyMain = manifest.groups.find((group) => group.id === "main")!;
+    legacyMain.status = "conflict";
+    legacyMain.conflicts = ["split 不一致：Dev25 / Confirmation13 / Full38"];
+    const legacyBaseline = manifest.groups.find((group) => group.id === "baseline-a0")!;
+    legacyBaseline.status = "confirmed";
+    await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+
+    const wrongMethod = await stack.request("GET", `${base}/rebuild`);
+    expect(wrongMethod.status).toBe(405);
+
+    const rebuilt = await stack.request("POST", `${base}/rebuild`, {});
+    expect(rebuilt.status).toBe(200);
+    const body = rebuilt.body["package"] as PackageBody;
+    expect(body.schemaVersion).toBe(2);
+    const main = body.groups.find((group) => group.id === "main")!;
+    expect(main.status).toBe("candidate");
+    expect(main.conflicts).toEqual([]);
+    expect(main.splitScopes!.map((scope) => scope.split).sort()).toEqual(["Confirmation13", "Dev25", "Full38"]);
+    expect(main.splitScopes!.every((scope) => scope.status === "candidate" && scope.workflowUse === "undecided")).toBe(true);
+    // 既有确认失效（组是重建的）
+    expect(body.groups.find((group) => group.id === "baseline-a0")!.status).toBe("candidate");
+    // 观测值与来源锚点逐条不变
+    expect(body.observationCount ?? body.observations.length).toBe(beforeBody.observationCount ?? beforeBody.observations.length);
+    expect(body.observations.map((observation) => [observation.path, observation.metric, observation.value, observation.split]))
+      .toEqual(beforeBody.observations.map((observation) => [observation.path, observation.metric, observation.value, observation.split]));
+    // 工作流上下文：重建后没有任何确认 → 零注入；持久化重读一致
+    expect((await stack.stack.experimentPackages.workflowContext(projectId)).observations).toHaveLength(0);
+    const reread = await stack.request("GET", base);
+    expect((reread.body["package"] as PackageBody).schemaVersion).toBe(2);
+    // 重建后沿正常路径：确认 Dev25 + 授权 → 上下文恰为 Dev25
+    await stack.request("POST", `${base}/confirm`, { scopeIds: ["main@Dev25"] });
+    await stack.request("POST", `${base}/workflow-use`, { scopeId: "main@Dev25", use: "allowed" });
+    const context = await stack.stack.experimentPackages.workflowContext(projectId);
+    expect(context.observations.length).toBeGreaterThan(0);
+    expect(context.observations.every((observation) => observation.split === "Dev25" && observation.groupId === "main")).toBe(true);
+  });
+
   it("指标浏览查询：按范围过滤、分页有界、facet 有界", async () => {
     const { stack, projectId } = await makeStack();
     const packageId = await upload(stack, projectId, MULTI_SPLIT_ZIP, "query.zip");

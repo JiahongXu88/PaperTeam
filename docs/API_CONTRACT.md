@@ -858,6 +858,7 @@ Base path: `/api/projects/:id/experiment-packages`. All responses are JSON; erro
 | `PATCH /:packageId` | `{path,role,groupId}` | `{package}`; invalidates prior group confirmations |
 | `POST /:packageId/confirm` | `{groupIds:string[]}` | `{package}`; author confirmation only |
 | `POST /:packageId/understand` | — (M13.3) | `{package}` with `semanticSuggestions`; model unavailable `SEMANTIC_MODEL_UNAVAILABLE` (503), call/output failure `SEMANTIC_MODEL_FAILED` (502) |
+| `POST /:packageId/rebuild` | — (M13.5.3) | `{package}`; explicit author-triggered re-grouping with the current rules (observation-level split scopes), upgrades a legacy v1 manifest to schema v2. Never changes file roles / group ids / observation values; all prior group confirmations and workflow authorizations are invalidated (groups are rebuilt). Package still parsing → 400 `INVALID_REQUEST` |
 
 Limits: 16 MiB raw ZIP, 200 files, 20 MiB per file, 64 MiB inflated total, depth 8, ratio 100:1, 120-second upload idle timeout. Archive structural hazards return `EXPERIMENT_ARCHIVE_UNSAFE` (422), size limit `EXPERIMENT_ARCHIVE_LIMIT` (413), corrupted manifest `EXPERIMENT_MANIFEST_CORRUPTED` (500, fail-closed), stale/conflicting confirmation `EXPERIMENT_CONFIRM_CONFLICT` (409). Per-file parser failure is a visible `parseStatus=failed` inside a `partial` package.
 

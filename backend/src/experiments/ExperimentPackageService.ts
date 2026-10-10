@@ -753,6 +753,27 @@ export class ExperimentPackageService {
     });
   }
   /**
+   * 重新整理分组（M13.5.3）：用当前分组规则（观测级 split 范围）重建整包的
+   * 组 / 范围 / 观测 / 关联候选，并把 manifest 升级到 schema v2。
+   *
+   * 场景：M13.5 之前导入的 v1 包把「同一结果文件含多个 split」整组判为
+   * conflict，而 v1 包只在作者编辑某个文件分类后才会 rebuild——作者面对
+   * 「有冲突」却没有任何不改数据的出口。本操作是显式、作者触发的重建：
+   * 不改任何文件角色 / 分组归属 / 观测值，只重算派生结构。
+   *
+   * 代价与编辑文件一致：既有的组确认与工作流授权全部失效（组是重建的），
+   * 需按范围重新核对——这是有意的，重建后的范围是新的确认对象。
+   */
+  async rebuildPackage(projectId: string, packageId: string): Promise<ExperimentPackage> {
+    return this.enqueue(projectId, async () => {
+      const item = await this.get(projectId, packageId);
+      if (item.status === "inventory" || item.status === "importing") throw new BusinessError("INVALID_REQUEST", "实验包仍在解析中，暂不能重新整理分组");
+      await this.rebuild(projectId, item);
+      await this.save(projectId, item);
+      return item;
+    });
+  }
+  /**
    * 作者确认（M13.5 双粒度）：
    * - groupIds（v1 兼容路径）：整组确认。组含多个实验范围时拒绝——
    *   「split 不一致」已不是冲突，但也不允许把多个评测范围当成一个结果

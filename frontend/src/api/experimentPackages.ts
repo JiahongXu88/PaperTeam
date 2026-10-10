@@ -113,6 +113,15 @@ export async function setExperimentScopeWorkflowUse(projectId: string, packageId
   const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/workflow-use`, { scopeId, use });
   return result.package;
 }
+/**
+ * M13.5.3：显式重新整理分组——用当前规则（观测级 split 范围）重建组 / 范围并升级到 schema v2。
+ * 不改任何文件角色、分组归属或观测值；既有的组确认与工作流授权失效，需重新核对。
+ * 面向 M13.5 之前导入、因「split 不一致」整组判冲突而无法按范围确认的 v1 旧包。
+ */
+export async function rebuildExperimentPackage(projectId: string, packageId: string): Promise<ExperimentPackageView> {
+  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/rebuild`, {});
+  return result.package;
+}
 /** M13.5：指标浏览查询（服务端过滤 + 分页 + facet；展示真实观测不选优） */
 export interface ObservationQueryResult {
   total: number; page: number; pageSize: number;

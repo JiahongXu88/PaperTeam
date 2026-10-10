@@ -14,6 +14,7 @@ import {
   queryExperimentObservations,
   requestExperimentUnderstanding,
   setExperimentScopeWorkflowUse,
+  rebuildExperimentPackage,
   uploadExperimentPackage,
   type ExperimentRole,
   type ExperimentPackageView,
@@ -132,6 +133,14 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
   const workflowUse = useMutation({
     mutationFn: (input: { scopeId: string; use: "allowed" | "excluded" }) => setExperimentScopeWorkflowUse(projectId, currentId!, input.scopeId, input.use),
     onSuccess: async () => {
+      await refresh(currentId!);
+    },
+  });
+  // M13.5.3：旧版（v1）包显式重新整理分组——升级到范围级核对；不改数据，确认与授权失效
+  const rebuild = useMutation({
+    mutationFn: () => rebuildExperimentPackage(projectId, currentId!),
+    onSuccess: async () => {
+      setMessage("已按当前规则重新整理分组并升级到范围级核对；该包既有的确认与工作流授权已失效，请按范围重新核对。");
       await refresh(currentId!);
     },
   });
@@ -265,7 +274,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
               <UnderstandingSection projectId={projectId} packageId={currentId} item={item} applyEdit={edit.mutate} editPending={edit.isPending} />
 
               {/* 步骤 3：核对实验范围与分组 */}
-              <ScopesSection item={item} confirmPending={confirm.isPending} onConfirm={(input) => confirm.mutate(input)} onWorkflowUse={(input) => workflowUse.mutate(input)} workflowPending={workflowUse.isPending} />
+              <ScopesSection item={item} confirmPending={confirm.isPending} onConfirm={(input) => confirm.mutate(input)} onWorkflowUse={(input) => workflowUse.mutate(input)} workflowPending={workflowUse.isPending} onRebuild={() => rebuild.mutate()} rebuildPending={rebuild.isPending} rebuildError={rebuild.error instanceof Error ? rebuild.error.message : null} />
 
               {/* 步骤 4：指标浏览 */}
               <MetricsBrowser projectId={projectId} packageId={currentId} confirmedGroupIds={new Set(item.groups.filter((group) => group.status === "confirmed").map((group) => group.id))} />
@@ -425,14 +434,23 @@ function ScopesSection({
   onConfirm,
   onWorkflowUse,
   workflowPending,
+  onRebuild,
+  rebuildPending,
+  rebuildError,
 }: {
   item: ExperimentPackageView;
   confirmPending: boolean;
   onConfirm: (input: { groupIds?: string[]; scopeIds?: string[] }) => void;
   onWorkflowUse: (input: { scopeId: string; use: "allowed" | "excluded" }) => void;
   workflowPending: boolean;
+  onRebuild: () => void;
+  rebuildPending: boolean;
+  rebuildError: string | null;
 }) {
   const [batchConfirm, setBatchConfirm] = useState(false);
+  const [rebuildConfirm, setRebuildConfirm] = useState(false);
+  // v1 旧包：没有观测级范围（splitScopes），同文件多 split 会被整组判冲突且无法按范围确认
+  const legacy = item.schemaVersion < 2;
   const batchTargets = item.groups
     .filter((group) => group.status === "candidate" && (group.splitScopes ?? []).length === 1 && (group.splitScopes?.[0]?.status ?? "") === "candidate")
     .map((group) => group.splitScopes![0]!.id);
@@ -443,6 +461,31 @@ function ScopesSection({
         实验组按来源文件归类；同一结果文件可能包含多种评测范围（如开发集 / 确认集 / 完整集），需要分别核对。
         确认 = 该范围的记录真实、归属正确；「允许进入工作流」是独立的授权——确认集 / held-out 材料未经显式授权不会进入论文写作上下文。
       </p>
+      {legacy && (
+        <div className="callout" data-testid="legacy-package-notice">
+          <p>
+            该实验包按旧版规则分组（schema v{item.schemaVersion}）：同一结果文件内的多个评测范围会被整组判为「有冲突」，且无法按范围分别确认或授权。
+            「重新整理分组」会用当前规则重建实验组与评测范围（不改任何文件分类、归属或指标数值），升级到范围级核对。
+          </p>
+          <p className="muted">代价：该包既有的组确认与工作流授权全部失效，需要按范围重新核对。</p>
+          {rebuildConfirm ? (
+            <span className="inline-confirm" role="group" aria-label="确认重新整理分组">
+              <span>确定重新整理分组？既有确认与授权将失效。</span>
+              <button type="button" className="btn btn-small btn-primary" data-testid="rebuild-package-confirm" disabled={rebuildPending} onClick={() => { onRebuild(); setRebuildConfirm(false); }}>
+                确定
+              </button>
+              <button type="button" className="btn btn-small" onClick={() => setRebuildConfirm(false)}>
+                取消
+              </button>
+            </span>
+          ) : (
+            <button type="button" className="btn btn-small" data-testid="rebuild-package" disabled={rebuildPending} onClick={() => setRebuildConfirm(true)}>
+              {rebuildPending ? "正在重新整理…" : "重新整理分组（升级到范围级核对）"}
+            </button>
+          )}
+          {rebuildError && <p className="run-error">{rebuildError}</p>}
+        </div>
+      )}
       {item.groups.map((group) => {
         const scopes = group.splitScopes;
         const multiScope = (scopes?.length ?? 0) > 1;

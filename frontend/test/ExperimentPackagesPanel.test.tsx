@@ -13,6 +13,7 @@ vi.mock("../src/api/experimentPackages.js", () => ({
   listExperimentPackages: vi.fn(), getExperimentPackage: vi.fn(), uploadExperimentPackage: vi.fn(),
   editExperimentFile: vi.fn(), confirmExperimentGroups: vi.fn(), confirmExperimentMetricEvidence: vi.fn(),
   requestExperimentUnderstanding: vi.fn(), setExperimentScopeWorkflowUse: vi.fn(), queryExperimentObservations: vi.fn(),
+  rebuildExperimentPackage: vi.fn(),
 }));
 const api = await import("../src/api/experimentPackages.js");
 
@@ -77,6 +78,29 @@ describe("ExperimentPackagesPanel（M13.5 工作台）", () => {
     // 确认后刷新的数据里 scope 已确认 → 出现授权按钮
     await userEvent.click(await screen.findByRole("button", { name: "允许进入工作流" }));
     await waitFor(() => expect(api.setExperimentScopeWorkflowUse).toHaveBeenCalledWith("p-test", packageView.packageId, "main@Dev25", "allowed"));
+  });
+
+  it("v1 旧包显示「重新整理分组」入口；二次确认后调用 rebuild 并刷新为范围级视图", async () => {
+    const legacyView: ExperimentPackageView = {
+      ...packageView,
+      schemaVersion: 1,
+      groups: [{ id: "main", role: "main", filePaths: ["main/results.csv"], basis: "路径候选", status: "conflict", conflicts: ["split 不一致：Dev25 / Confirmation13 / Full38"] }],
+    };
+    vi.mocked(api.getExperimentPackage).mockResolvedValue(legacyView);
+    vi.mocked(api.rebuildExperimentPackage).mockImplementation(async () => {
+      vi.mocked(api.getExperimentPackage).mockResolvedValue(packageView);
+      return packageView;
+    });
+    renderWithProviders(<ExperimentPackagesPanel projectId="p-test" />);
+    expect(await screen.findByTestId("legacy-package-notice")).toBeInTheDocument();
+    // 一次点击只进入二次确认，不调用 API
+    await userEvent.click(screen.getByTestId("rebuild-package"));
+    expect(api.rebuildExperimentPackage).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId("rebuild-package-confirm"));
+    await waitFor(() => expect(api.rebuildExperimentPackage).toHaveBeenCalledWith("p-test", packageView.packageId));
+    // 刷新后是 v2 范围级视图：通知消失，出现范围确认按钮
+    await waitFor(() => expect(screen.queryByTestId("legacy-package-notice")).not.toBeInTheDocument());
+    expect(await screen.findByRole("button", { name: "确认此范围" })).toBeInTheDocument();
   });
 
   it("上传真实 File 对象并显示处理反馈", async () => {
