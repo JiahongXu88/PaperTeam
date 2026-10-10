@@ -55,6 +55,8 @@ export interface ExperimentPackageView {
 export interface ExperimentPackageSummaryView {
   packageId: string; packageHash: string; originalName: string; importedAt: string;
   status: "inventory" | "importing" | "ready" | "partial";
+  /** M13.6：v1 旧包在面板加载时自动升级（ensureExperimentPackagesUpgraded） */
+  schemaVersion?: number;
   fileCount: number; groupCount: number; observationCount: number; warningCount: number;
 }
 const base = (projectId: string) => `/api/projects/${encodeURIComponent(projectId)}/experiment-packages`;
@@ -117,9 +119,36 @@ export async function setExperimentScopeWorkflowUse(projectId: string, packageId
  * M13.5.3：显式重新整理分组——用当前规则（观测级 split 范围）重建组 / 范围并升级到 schema v2。
  * 不改任何文件角色、分组归属或观测值；既有的组确认与工作流授权失效，需重新核对。
  * 面向 M13.5 之前导入、因「split 不一致」整组判冲突而无法按范围确认的 v1 旧包。
+ * M13.6：面板加载 / 工作流启动前的 ensureExperimentPackagesUpgraded 已覆盖
+ * 普通路径；本入口保留为高级诊断 / 恢复操作。
  */
 export async function rebuildExperimentPackage(projectId: string, packageId: string): Promise<ExperimentPackageView> {
   const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/rebuild`, {});
+  return result.package;
+}
+/** M13.6：v1 旧包自动升级结果（幂等；已被升级的确认按内容签名保守保留或重置） */
+export interface EnsureUpgradeResult {
+  upgraded: string[];
+  preservedConfirmations: Array<{ packageId: string; groupId: string }>;
+  resetConfirmations: Array<{ packageId: string; groupId: string; reason: string }>;
+}
+/** M13.6：把 v1 实验包确定性升级到范围级核对（无副作用 GET 之外的显式 POST；幂等） */
+export async function ensureExperimentPackagesUpgraded(projectId: string): Promise<EnsureUpgradeResult> {
+  return apiClient.post<EnsureUpgradeResult>(`${base(projectId)}/ensure-upgraded`, {});
+}
+/**
+ * M13.6「用于当前论文」：一次提交完成所选范围的确认 + 工作流授权。
+ * - groupIds：单（零）范围组（确认 + allowed）；
+ * - scopeIds：多范围组的范围（确认 + allowed）；
+ * - excludeScopeIds：取消先前授权（立即生效于后续 run）。
+ * 未选中的范围保持 undecided（不进入上下文，也不标成明确排除）。
+ */
+export async function applyExperimentWorkflowUse(
+  projectId: string,
+  packageId: string,
+  selection: { groupIds?: string[]; scopeIds?: string[]; excludeScopeIds?: string[] },
+): Promise<ExperimentPackageView> {
+  const result = await apiClient.post<{ package: ExperimentPackageView }>(`${base(projectId)}/${packageId}/use-for-paper`, selection);
   return result.package;
 }
 /** M13.5：指标浏览查询（服务端过滤 + 分页 + facet；展示真实观测不选优） */

@@ -13,7 +13,7 @@ vi.mock("../src/api/experimentPackages.js", () => ({
   listExperimentPackages: vi.fn(), getExperimentPackage: vi.fn(), uploadExperimentPackage: vi.fn(),
   editExperimentFile: vi.fn(), confirmExperimentGroups: vi.fn(), confirmExperimentMetricEvidence: vi.fn(),
   requestExperimentUnderstanding: vi.fn(), setExperimentScopeWorkflowUse: vi.fn(), queryExperimentObservations: vi.fn(),
-  rebuildExperimentPackage: vi.fn(),
+  rebuildExperimentPackage: vi.fn(), ensureExperimentPackagesUpgraded: vi.fn(), applyExperimentWorkflowUse: vi.fn(),
 }));
 const api = await import("../src/api/experimentPackages.js");
 
@@ -46,6 +46,8 @@ beforeEach(() => {
   vi.mocked(api.confirmExperimentGroups).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed", splitScopes: [{ ...packageView.groups[0]!.splitScopes![0]!, status: "confirmed", workflowUse: "undecided" }] }] });
   vi.mocked(api.editExperimentFile).mockResolvedValue(packageView);
   vi.mocked(api.setExperimentScopeWorkflowUse).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed", splitScopes: [{ ...packageView.groups[0]!.splitScopes![0]!, status: "confirmed", workflowUse: "allowed" }] }] });
+  vi.mocked(api.ensureExperimentPackagesUpgraded).mockResolvedValue({ upgraded: [], preservedConfirmations: [], resetConfirmations: [] });
+  vi.mocked(api.applyExperimentWorkflowUse).mockResolvedValue({ ...packageView, groups: [{ ...packageView.groups[0]!, status: "confirmed", splitScopes: [{ ...packageView.groups[0]!.splitScopes![0]!, status: "confirmed", workflowUse: "allowed" }] }] });
 });
 
 describe("ExperimentPackagesPanel（M13.5 工作台）", () => {
@@ -128,5 +130,70 @@ describe("ExperimentPackagesPanel（M13.5 工作台）", () => {
     await userEvent.upload(input, valid);
     await userEvent.click(screen.getByRole("button", { name: "上传实验包" }));
     await waitFor(() => expect(api.uploadExperimentPackage).toHaveBeenCalledWith("p-test", valid));
+  });
+
+  it("M13.6：列表含 v1 旧包时自动调用 ensure-upgraded 并刷新", async () => {
+    vi.mocked(api.listExperimentPackages).mockResolvedValue([{ ...packageSummary, schemaVersion: 1 }]);
+    vi.mocked(api.ensureExperimentPackagesUpgraded).mockResolvedValue({
+      upgraded: [packageView.packageId],
+      preservedConfirmations: [],
+      resetConfirmations: [{ packageId: packageView.packageId, groupId: "main", reason: "升级后划分为 3 个评测范围" }],
+    });
+    renderWithProviders(<ExperimentPackagesPanel projectId="p-test" />);
+    await waitFor(() => expect(api.ensureExperimentPackagesUpgraded).toHaveBeenCalledWith("p-test"));
+    expect(await screen.findByText(/已自动升级 1 个旧版实验包/)).toBeTruthy();
+    await waitFor(() => expect(api.listExperimentPackages).toHaveBeenCalledTimes(2));
+  });
+
+  it("M13.6：单范围包默认勾选，一次「用于本文写作」提交 groupIds（确认 + 授权合一）", async () => {
+    renderWithProviders(<ExperimentPackagesPanel projectId="p-test" />);
+    expect(await screen.findByTestId("use-for-paper-check-main@Dev25")).toBeTruthy();
+    expect(screen.getByTestId("use-for-paper-check-main@Dev25")).toBeChecked();
+    await userEvent.click(screen.getByTestId("use-for-paper-submit"));
+    await waitFor(() => expect(api.applyExperimentWorkflowUse).toHaveBeenCalledWith("p-test", packageView.packageId, { groupIds: ["main"] }));
+  });
+
+  it("M13.6：多范围包按范围勾选一次提交（未勾选的已授权范围被显式排除）", async () => {
+    const multiScopeView: ExperimentPackageView = {
+      ...packageView,
+      groups: [{
+        id: "main", role: "main", filePaths: ["main/results.csv"], basis: "路径候选", status: "candidate", conflicts: [],
+        splitScopes: [
+          { id: "main@Confirmation13", split: "Confirmation13", status: "confirmed", conflicts: [], workflowUse: "allowed", observationCount: 8, metricCount: 2, filePaths: ["main/results.csv"], protocols: [] },
+          { id: "main@Dev25", split: "Dev25", status: "candidate", conflicts: [], workflowUse: "undecided", observationCount: 8, metricCount: 2, filePaths: ["main/results.csv"], protocols: [] },
+          { id: "main@Full38", split: "Full38", status: "candidate", conflicts: [], workflowUse: "undecided", observationCount: 20, metricCount: 2, filePaths: ["main/results.csv"], protocols: [] },
+        ],
+      }],
+    };
+    vi.mocked(api.getExperimentPackage).mockResolvedValue(multiScopeView);
+    renderWithProviders(<ExperimentPackagesPanel projectId="p-test" />);
+    const devCheck = await screen.findByTestId("use-for-paper-check-main@Dev25");
+    expect(screen.getByTestId("use-for-paper-check-main@Confirmation13")).toBeChecked();
+    expect(devCheck).not.toBeChecked();
+    expect(screen.getByTestId("use-for-paper-check-main@Full38")).not.toBeChecked();
+    await userEvent.click(devCheck);
+    await userEvent.click(screen.getByTestId("use-for-paper-check-main@Confirmation13"));
+    await userEvent.click(screen.getByTestId("use-for-paper-submit"));
+    await waitFor(() =>
+      expect(api.applyExperimentWorkflowUse).toHaveBeenCalledWith("p-test", packageView.packageId, {
+        scopeIds: ["main@Dev25"],
+        excludeScopeIds: ["main@Confirmation13"],
+      }),
+    );
+  });
+
+  it("M13.6：有冲突的范围不可勾选并说明原因（不偷偷放行）", async () => {
+    const conflictView: ExperimentPackageView = {
+      ...packageView,
+      groups: [{
+        id: "main", role: "main", filePaths: ["main/results.csv"], basis: "路径候选", status: "conflict", conflicts: ["来源已删除"],
+        splitScopes: [{ id: "main@Dev25", split: "Dev25", status: "candidate", conflicts: [], workflowUse: "undecided", observationCount: 1, metricCount: 1, filePaths: ["main/results.csv"], protocols: [] }],
+      }],
+    };
+    vi.mocked(api.getExperimentPackage).mockResolvedValue(conflictView);
+    renderWithProviders(<ExperimentPackagesPanel projectId="p-test" />);
+    const check = await screen.findByTestId("use-for-paper-check-main@Dev25");
+    expect(check).toBeDisabled();
+    expect(screen.getByText("所在实验组有未解决冲突")).toBeTruthy();
   });
 });

@@ -1,11 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 
 import { ErrorState, Loading } from "../common/StateViews.js";
 import {
+  applyExperimentWorkflowUse,
   confirmExperimentGroups,
   confirmExperimentMetricEvidence,
+  ensureExperimentPackagesUpgraded,
   EXPERIMENT_ARCHIVE_MAX_BYTES,
   experimentArchiveLimitMessage,
   editExperimentFile,
@@ -24,16 +26,16 @@ import {
 import { formatApiError } from "../../utils/errors.js";
 
 /**
- * 实验数据工作台（M13.5 重构）。
+ * 实验数据工作台（M13.5 重构；M13.6 收敛用户操作成本）。
  *
- * 信息架构：上传实验包 → AI 辅助整理 → 核对实验范围与指标 → 作者确认 →
- * 用于论文写作。面向不熟悉内部概念（Source/Group ID）的作者：
- * - 摘要卡先行（文件/解析/组/待确认/指标），技术细节（SHA、内部枚举）
- *   收进折叠区；
- * - 「同一结果文件包含多个评测范围（Dev25/Confirmation13/Full38）」按
- *   范围分别核对，科研隔离边界（确认 ≠ 允许进入工作流）在 UI 显式表达；
- * - 指标浏览走服务端过滤 + 分页（不再把全部观测塞进 DOM、不自动选优）；
- * - 文件清单默认折叠，支持搜索/过滤/分页；普通文档不强迫逐个处理；
+ * 信息架构：上传实验包 →（v1 旧包自动升级）→ 用于当前论文（一次勾选提交
+ * = 确认 + 授权）→ AI 辅助整理 / 范围明细 / 指标浏览（核对与高级操作）。
+ * 面向不熟悉内部概念（Source/Group ID）的作者：
+ * - 普通单范围包：上传解析后一次「用于本文写作」完成全部手续；
+ * - 多范围包（Dev25/Confirmation13/Full38）：汇总勾选「哪些允许用于当前
+ *   论文」一次提交；未勾选范围不进入工作流上下文（科研隔离边界不放宽）；
+ * - 确认 ≠ 授权 ≠ Evidence Verification 的边界在 UI 与文案显式保留；
+ * - 指标浏览走服务端过滤 + 分页（不把全部观测塞进 DOM、不自动选优）；
  * - AI 建议可逐条采纳（仍走确定性 editFile，不自动写事实）。
  */
 
@@ -105,6 +107,41 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
     await queryClient.invalidateQueries({ queryKey: ["experiment-package", projectId, packageId] });
     await queryClient.invalidateQueries({ queryKey: ["figure-datasets", projectId] });
   };
+  const refreshAll = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["experiment-packages", projectId] });
+    if (currentId !== null) {
+      await queryClient.invalidateQueries({ queryKey: ["experiment-package", projectId, currentId] });
+      await queryClient.invalidateQueries({ queryKey: ["figure-datasets", projectId] });
+    }
+  };
+  // M13.6：v1 旧包自动升级（幂等 POST；每个会话至多自动触发一次，失败如实
+  // 展示并保留「重新整理分组」高级入口，不自动重试轰炸）
+  const ensureUpgrade = useMutation({
+    mutationFn: () => ensureExperimentPackagesUpgraded(projectId),
+    onSuccess: async (result) => {
+      if (result.upgraded.length > 0) {
+        setMessage(
+          `已自动升级 ${result.upgraded.length} 个旧版实验包到范围级核对` +
+            (result.resetConfirmations.length > 0
+              ? `；${result.resetConfirmations.length} 个旧确认因范围划分变化需重新核对（未偷偷放行）`
+              : ""),
+        );
+        await refreshAll();
+      }
+    },
+  });
+  const ensureAttempted = useRef(false);
+  useEffect(() => {
+    if (
+      !ensureAttempted.current &&
+      !ensureUpgrade.isPending &&
+      list.data !== undefined &&
+      list.data.some((entry) => (entry.schemaVersion ?? 2) < 2)
+    ) {
+      ensureAttempted.current = true;
+      ensureUpgrade.mutate();
+    }
+  }, [list.data, ensureUpgrade]);
   const upload = useMutation({
     mutationFn: async () => {
       if (!file) throw new Error("请选择 ZIP 文件");
@@ -144,6 +181,21 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
       await refresh(currentId!);
     },
   });
+  // M13.6「用于当前论文」：一次提交 = 所选范围确认 + 授权；取消勾选 = 显式排除
+  const useForPaper = useMutation({
+    mutationFn: (selection: { groupIds?: string[]; scopeIds?: string[]; excludeScopeIds?: string[] }) =>
+      applyExperimentWorkflowUse(projectId, currentId!, selection),
+    onSuccess: async (_item, selection) => {
+      const allowedCount = (selection.groupIds?.length ?? 0) + (selection.scopeIds?.length ?? 0);
+      const excludedCount = selection.excludeScopeIds?.length ?? 0;
+      setMessage(
+        `已更新用于当前论文的实验范围：${allowedCount} 个范围已确认并授权进入工作流` +
+          (excludedCount > 0 ? `；${excludedCount} 个范围已排除（立即生效于后续运行）` : "") +
+          "。未勾选的范围不会进入论文上下文。",
+      );
+      await refresh(currentId!);
+    },
+  });
 
   const item = detail.data;
   const steps = item !== undefined ? stepState(item) : undefined;
@@ -179,9 +231,9 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
           {formatApiError(upload.error)}
         </p>
       )}
-      {(edit.isError || confirm.isError || workflowUse.isError) && (
+      {(edit.isError || confirm.isError || workflowUse.isError || useForPaper.isError || ensureUpgrade.isError) && (
         <p role="alert" className="run-error">
-          {formatApiError(edit.error ?? confirm.error ?? workflowUse.error)}
+          {formatApiError(edit.error ?? confirm.error ?? workflowUse.error ?? useForPaper.error ?? ensureUpgrade.error)}
         </p>
       )}
       {message && <p role="status">{message}</p>}
@@ -227,6 +279,9 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
               </div>
 
               <NextStepGuidance item={item} workflowReadyCount={steps?.workflowReady.length ?? 0} />
+
+              {/* 用于当前论文（M13.6：一次勾选提交 = 确认 + 授权） */}
+              <UseForPaperSection item={item} pending={useForPaper.isPending} onApply={(selection) => useForPaper.mutate(selection)} />
 
               {item.warnings.length > 0 && (
                 <details className="details-block">
@@ -302,18 +357,160 @@ function SummaryCard({ label, value, hint }: { label: string; value: number; hin
 }
 
 function NextStepGuidance({ item, workflowReadyCount }: { item: { status: string; semanticSuggestions?: unknown; groups: Array<{ status: string; splitScopes?: ExperimentSplitScopeView[] }> }; workflowReadyCount: number }) {
-  const pendingScopes = item.groups.flatMap((group) => group.splitScopes ?? []).filter((scope) => scope.status === "candidate").length;
+  const allScopes = item.groups.flatMap((group) => group.splitScopes ?? []);
+  const pendingScopes = allScopes.filter((scope) => scope.status === "candidate").length;
   const conflicts = item.groups.filter((group) => group.status === "conflict").length;
   let text: string;
   if (item.status === "inventory" || item.status === "importing") text = "正在解析包内文件…";
   else if (conflicts > 0) text = "存在需要处理的冲突（见「核对实验范围与分组」）；真正的矛盾不能通过改名消除。";
-  else if (pendingScopes > 0) text = `下一步：逐个核对并确认 ${pendingScopes} 个待确认的实验范围（见「核对实验范围与分组」）。`;
-  else if (workflowReadyCount === 0) text = item.groups.some((group) => group.splitScopes?.some((scope) => scope.status === "confirmed")) ? "范围已确认。若要用于当前论文工作流，请对相应范围选择「允许进入工作流」。" : "下一步：确认实验组，或先运行 AI 辅助实验理解。";
+  else if (pendingScopes > 0 && workflowReadyCount === 0) text = `下一步：在「用于当前论文」中勾选允许使用的实验范围并一次提交（共 ${pendingScopes} 个待确认范围）——一次提交即完成确认与授权。`;
+  else if (workflowReadyCount === 0) text = allScopes.some((scope) => scope.status === "confirmed")
+    ? "范围已确认。若要用于当前论文工作流，请在「用于当前论文」中勾选相应范围。"
+    : "下一步：在「用于当前论文」中勾选范围并提交，或先运行 AI 辅助实验理解。";
   else text = `${workflowReadyCount} 个实验范围已确认并允许进入论文工作流；可以启动论文流程或生成学术图表。`;
   return (
     <p className="note" role="status" data-testid="experiment-next-step">
       <span>{text}</span>
     </p>
+  );
+}
+
+/**
+ * 「用于当前论文」汇总选择（M13.6）：
+ * - 单范围、无冲突的普通实验组默认勾选——一次提交即完成「确认 + 允许进入
+ *   工作流」（上传到当前论文项目的意图即默认写作使用意图）；
+ * - 多范围组逐范围勾选（Dev25 / Confirmation13 / Full38 必须显式选择，
+ *   不因同包其它范围被选中而放行）；
+ * - 已授权范围的取消勾选 = 显式排除（excludeScopeIds，立即生效）；
+ * - 有冲突 / 组级冲突的范围不可勾选（须先在明细区解决矛盾）。
+ */
+function UseForPaperSection({
+  item,
+  pending,
+  onApply,
+}: {
+  item: ExperimentPackageView;
+  pending: boolean;
+  onApply: (selection: { groupIds?: string[]; scopeIds?: string[]; excludeScopeIds?: string[] }) => void;
+}) {
+  interface Row {
+    key: string;
+    groupId: string;
+    scopeId?: string;
+    split: string;
+    observationCount: number;
+    metricCount: number;
+    multiScope: boolean;
+    disabled: boolean;
+    reason?: string;
+    previouslyAllowed: boolean;
+    defaultChecked: boolean;
+  }
+  const rows = useMemo<Row[]>(() => {
+    const result: Row[] = [];
+    for (const group of item.groups) {
+      const scopes = group.splitScopes ?? [];
+      if (scopes.length === 0) continue; // 无观测组（文档/配置）不参与工作流授权
+      for (const scope of scopes) {
+        const scopeConflicts = scope.status === "conflict" || scope.conflicts.length > 0;
+        const groupConflicts = group.conflicts.length > 0 || group.status === "conflict";
+        result.push({
+          key: scope.id,
+          groupId: group.id,
+          scopeId: scope.id,
+          split: scope.split,
+          observationCount: scope.observationCount,
+          metricCount: scope.metricCount,
+          multiScope: scopes.length > 1,
+          disabled: scopeConflicts || groupConflicts,
+          reason: scopeConflicts
+            ? "该范围存在协议矛盾，需先在「核对实验范围与分组」处理"
+            : groupConflicts
+              ? "所在实验组有未解决冲突"
+              : undefined,
+          previouslyAllowed: scope.workflowUse === "allowed",
+          // 单范围无冲突组：默认勾选（未处理过）或保持当前授权状态；
+          // 多范围组：只有已授权的默认勾选（confirmation / held-out 必须显式选择）
+          defaultChecked:
+            scopes.length === 1 && !scopeConflicts && !groupConflicts
+              ? scope.workflowUse === "allowed" || scope.status === "candidate"
+              : scope.workflowUse === "allowed",
+        });
+      }
+    }
+    return result;
+  }, [item]);
+  const [checked, setChecked] = useState<Record<string, boolean>>(() => Object.fromEntries(rows.map((row) => [row.key, row.defaultChecked])));
+  // 跟随服务端事实重新同步：包切换或行集合/默认值变化（如 v1 自动升级后
+  // rows 从空变为三范围、授权提交后的回读）时重置勾选状态；纯刷新（签名
+  // 不变）不打断用户进行中的勾选
+  const rowsSignature = `${item.packageId}:${rows.map((row) => `${row.key}=${row.defaultChecked ? 1 : 0}`).join(",")}`;
+  const [initializedFor, setInitializedFor] = useState(rowsSignature);
+  if (initializedFor !== rowsSignature) {
+    setInitializedFor(rowsSignature);
+    setChecked(Object.fromEntries(rows.map((row) => [row.key, row.defaultChecked])));
+  }
+  const toggle = (key: string) => setChecked((previous) => ({ ...previous, [key]: !previous[key] }));
+  const submit = () => {
+    const groupIds = rows
+      .filter((row) => !row.multiScope && row.scopeId !== undefined && checked[row.key] === true && !row.disabled)
+      .map((row) => row.groupId);
+    const scopeIds = rows
+      .filter((row) => row.multiScope && row.scopeId !== undefined && checked[row.key] === true && !row.disabled)
+      .map((row) => row.scopeId!);
+    const excludeScopeIds = rows
+      .filter((row) => row.previouslyAllowed && checked[row.key] !== true)
+      .map((row) => row.key);
+    onApply({
+      ...(groupIds.length > 0 ? { groupIds } : {}),
+      ...(scopeIds.length > 0 ? { scopeIds } : {}),
+      ...(excludeScopeIds.length > 0 ? { excludeScopeIds } : {}),
+    });
+  };
+  const allowedCount = rows.filter((row) => checked[row.key] === true && !row.disabled).length;
+  const parsed = item.status === "ready" || item.status === "partial";
+  return (
+    <section className="panel experiment-step" aria-label="用于当前论文">
+      <h3>用于当前论文</h3>
+      <p className="muted">
+        这些实验结果中，哪些允许用于当前论文？勾选后一次提交即可完成「确认记录真实 + 允许进入写作上下文」；
+        未勾选的范围不会进入论文上下文（也不会被标成明确排除）。确认集 / held-out 等独立评测范围必须由你显式勾选。
+      </p>
+      {rows.length === 0 ? (
+        <p className="muted">该包没有可用的实验结果范围（无指标观测）。上传包含结果文件的实验 ZIP 后可在此选择。</p>
+      ) : (
+        <>
+          <ul className="suggestion-list" data-testid="use-for-paper-list">
+            {rows.map((row) => (
+              <li key={row.key} data-testid={`use-for-paper-row-${row.key}`}>
+                <label className={row.disabled ? "muted" : undefined}>
+                  <input
+                    type="checkbox"
+                    data-testid={`use-for-paper-check-${row.key}`}
+                    aria-label={`允许 ${row.groupId}（${SPLIT_LABEL(row.split)}）用于当前论文`}
+                    disabled={pending || row.disabled || !parsed}
+                    checked={checked[row.key] === true}
+                    onChange={() => toggle(row.key)}
+                  />{" "}
+                  实验组 <code>{row.groupId}</code> · 范围 {SPLIT_LABEL(row.split)}
+                  {row.multiScope ? "" : "（单一范围）"} · {row.observationCount} 条观测 / {row.metricCount} 种指标
+                  {row.split === "unknown" ? <span className="note-warn-line">（未声明评测范围：确认前请核对数据口径）</span> : ""}
+                </label>
+                {row.reason !== undefined && <div className="run-error">{row.reason}</div>}
+              </li>
+            ))}
+          </ul>
+          <div className="action-row">
+            <button type="button" className="btn btn-primary" data-testid="use-for-paper-submit" disabled={pending || !parsed} onClick={submit}>
+              {pending ? "提交中…" : `用于本文写作（${allowedCount} 项）`}
+            </button>
+            <span className="muted">
+              已确认 + 授权 ≠ 外部核验（Verified Evidence）；论文中的实验数值仍只来自这些授权观测。
+            </span>
+          </div>
+        </>
+      )}
+    </section>
   );
 }
 
@@ -464,10 +661,10 @@ function ScopesSection({
       {legacy && (
         <div className="callout" data-testid="legacy-package-notice">
           <p>
-            该实验包按旧版规则分组（schema v{item.schemaVersion}）：同一结果文件内的多个评测范围会被整组判为「有冲突」，且无法按范围分别确认或授权。
-            「重新整理分组」会用当前规则重建实验组与评测范围（不改任何文件分类、归属或指标数值），升级到范围级核对。
+            该实验包仍按旧版规则分组（schema v{item.schemaVersion}）：自动升级未能完成（通常是解析仍在进行或刚失败）。
+            「重新整理分组」是用当前规则重建实验组与评测范围的高级恢复操作（不改任何文件分类、归属或指标数值），升级到范围级核对。
           </p>
-          <p className="muted">代价：该包既有的组确认与工作流授权全部失效，需要按范围重新核对。</p>
+          <p className="muted">代价：该包既有的组确认与工作流授权全部失效，需要按范围重新核对。常规情况下打开本页或启动工作流时会自动完成升级，无需手动操作。</p>
           {rebuildConfirm ? (
             <span className="inline-confirm" role="group" aria-label="确认重新整理分组">
               <span>确定重新整理分组？既有确认与授权将失效。</span>
@@ -941,7 +1138,7 @@ function WorkflowReadySection({ item, workflowReadyScopes }: { item: NonNullable
           已确认实验组：{legacyConfirmed.map((group) => group.id).join("、")}（旧版整组确认；其观测按既有规则进入工作流上下文）。
         </p>
       ) : (
-        <p className="muted">尚无确认并授权的实验范围。确认范围后在上方选择「允许进入工作流」。</p>
+        <p className="muted">尚无确认并授权的实验范围。在「用于当前论文」中勾选范围并一次提交即可。</p>
       )}
       <p className="muted">已解析 ≠ 已关联 ≠ 作者已确认 ≠ 允许进入工作流 ≠ Evidence Verification。</p>
     </section>
