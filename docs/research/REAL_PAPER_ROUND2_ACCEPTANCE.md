@@ -117,11 +117,43 @@ academicScore 54 (< 80), styleRisk 36 (> 35), feasibility LOW.
   hyper-parameters, Dev25 composition) in the authorized material; 0 verified
   literature evidence (79 pending candidates were not promoted this round).
 
-## C. Checkpoint C — fixes and regression
+## C. Checkpoint C — fixes and regression (commits `9606553`, `4247ad7`)
 
-_pending — three fixes are implemented and unit-tested in the working tree
-(see RUN_LOG in the private repo); full backend suite running; commit/push and
-bounded re-run follow._
+### C.1 Fixes (all with regression tests; backend typecheck clean)
+
+| # | Area | Defect observed on run `w-d678566b94c1` | Fix | Tests |
+| --- | --- | --- | --- | --- |
+| 1 | citation (M13.6 §2) | recovery pass waited "0 s" (min over stale per-entry `retryAfterMs`), ran once, every re-query hit the silent cooldown short-circuit → 0 recovered in 3 rounds | `rateLimitRecovery.ts`: shared bounded multi-pass loop driven by the live `ProviderCooldownRegistry.earliestRecoveryMs()`, zero-progress guard, per-pass logs; used by `CitationService` and `CitationIntegrityService`. `ScholarlyHttpClient` provider pacing (`minRequestIntervalMs`; production arXiv 3 s / Crossref 1 s, test stack off). `citation-report.metadata` gains `byErrorKind` / `recovery` / `http`. Budget 60 s → 120 s | `rateLimitRecoveryLoop.test.ts` (10), existing `rateLimitRecovery` (9) + `scholarlyHttp` (12) green |
+| 2 | review / quality | authorized Dev25 numbers counted as opaque UNSUPPORTED claims; claim resolution would direct the Writer to delete them | `claimGrounding`: disclosure `author_experiment_data` when all claim numbers are covered by workflow-context observations (numeric compare, letter-glued digits like `Dev25` ignored); not counted in rule 4, informational rule `author_experiment_data_reported`; `claimResolution` → `author_decision_required`. CONTRADICTED / partially covered claims unchanged; nothing becomes SUPPORTED | `authorExperimentDataClaims.test.ts` (5), `Gates.test.ts` (+1) |
+| 3 | writer | revision appended per-item execution notes (markdown bullets) to section files → fact-preservation `added_number` → author forced to reject the round | `stripRevisionExecutionNotes` in `reviseSection` (also on-disk fallback path); deterministic, logged, never removes LaTeX lines | `revisionExecutionNotes.test.ts` (4, incl. the rev-8 sample) |
+
+Full backend suite on the fix tree: 3044 passed / 3 failed → 2 pre-existing
+SSE flakes (`sseCancelSemantics`, `httpWorkflowApi`; pass when run alone) + 1
+pacing-induced 5 s timeout in `httpResources` (test stack now disables pacing;
+fixed before commit). Second full run on the final tree: see Checkpoint D.
+
+### C.2 Fix 1 validated on the real manuscript before any re-run
+
+`POST /api/projects/:id/citation-check` on the same 31-entry bibliography with the
+fixed backend (fresh cooldown registry):
+
+| | run 6 r3 | run 6 r4 | run 6 r5 | after fix 1 |
+| --- | --- | --- | --- | --- |
+| verified | 6 | 5 | 11 | **22** |
+| unverifiable (rate_limited) | 25 | 26 | 20 | 9 |
+| recovery | 0 recovered | 0 | 0 | 1 pass, 18 retried, 9 recovered; 2nd pass fell 2 s outside the 60 s budget → budget raised to 120 s |
+
+Telemetry: 63 requests, 7×429, 46 cooldown skips, 31 s pacing wait. OpenAlex
+still returns `Retry-After ≈ 44 567 s` for this host; the OpenAlex field fixes
+remain untested today (provider unavailable, not a code path failure).
+
+### C.3 Re-run decision
+
+Criteria met (task §7.1): fix 2 changes the scientific-fact consumption path
+(claim grounding / gate / resolution for authorized observations), fix 3 changes
+revision behaviour, fix 1 changes citation outcomes. Backend rebuilt and
+restarted on `4247ad7`; `workflow-context` re-checked (8 Dev25 observations);
+**run 7 `w-43cfc5703257`** started through the UI at 2026-10-10T11:41:43Z.
 
 ## D. Checkpoint D — final
 
