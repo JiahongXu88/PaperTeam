@@ -226,6 +226,10 @@ export type HitlDecisionInput =
   | { action: "skip" }
   /** 仅 hitl.evidence_supply（M9.7.4）：以当前已核验证据继续写作 */
   | { action: "continue" }
+  /** 仅 hitl.revision_validation（M6.7）：拒绝本轮修订并恢复修订前版本 */
+  | { action: "reject" }
+  /** 仅 hitl.revision_validation（M6.7）：保留修订但标记待人工确认（Draft/Final 仍受事实保持门禁约束） */
+  | { action: "needs_review" }
   | { action: "cancel" };
 
 // ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----

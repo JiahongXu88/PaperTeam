@@ -60,6 +60,8 @@ export function HitlPanel({
   const queryClient = useQueryClient();
   const [openForm, setOpenForm] = useState<OpenForm>(null);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  // hitl.revision_validation：拒绝修订（恢复修订前版本）是破坏性动作，需二次确认
+  const [confirmingReject, setConfirmingReject] = useState(false);
   // M5.4 hitl.style_polish：勾选要应用的 style 建议（null = 尚未改动，取 payload 默认全选）
   const [styleSelection, setStyleSelection] = useState<string[] | null>(null);
   const formId = useId();
@@ -99,6 +101,10 @@ export function HitlPanel({
   const hasApply = options.includes("apply");
   const hasSkip = options.includes("skip");
   const hasContinue = options.includes("continue");
+  // hitl.revision_validation（M6.7）后端选项 approve / reject / needs_review：
+  // 旧实现只渲染了 approve，作者在 UI 上无法拒绝或标记待确认（真实 run 实测）
+  const hasReject = options.includes("reject");
+  const hasNeedsReview = options.includes("needs_review");
   const hasCancel = options.includes("cancel");
   const supportsForm = hasAdjust || hasRevise;
   const styleFindings = awaiting.stageId === "hitl.style_polish" ? readStyleFindings(awaiting.payload) : [];
@@ -181,6 +187,36 @@ export function HitlPanel({
             {pending && resume.variables?.input.action === "continue" ? "提交中…" : "以当前证据继续写作"}
           </button>
         ) : null}
+        {hasNeedsReview ? (
+          <button
+            type="button"
+            className="btn"
+            data-testid="hitl-needs-review"
+            disabled={pending}
+            title="保留本轮修订，但标记为待人工确认：被拒绝的事实漂移条目仍会阻断 Draft / Final 的事实保持门禁，直到按修订计划恢复或经 Evidence 支撑修正"
+            onClick={() => submit({ action: "needs_review" })}
+          >
+            <Icon name="edit" />
+            {pending && resume.variables?.input.action === "needs_review" ? "提交中…" : "保留修订，标记待确认"}
+          </button>
+        ) : null}
+        {hasReject && !confirmingReject ? (
+          <button
+            type="button"
+            className="btn"
+            data-testid="hitl-reject"
+            disabled={pending}
+            title="拒绝本轮修订并恢复修订前版本（被拒绝的条目回到待处理）"
+            onClick={() => {
+              setConfirmingReject(true);
+              setOpenForm(null);
+              setConfirmingCancel(false);
+            }}
+          >
+            <Icon name="refresh" />
+            拒绝并恢复修订前版本
+          </button>
+        ) : null}
         {hasAcceptDraft ? (
           <button
             type="button"
@@ -255,6 +291,17 @@ export function HitlPanel({
         ) : null}
       </div>
 
+      {hasReject && confirmingReject ? (
+        <InlineConfirm
+          message="确定拒绝本轮修订并恢复修订前版本吗？本轮自动修订的全部改动会被撤回，复核中被拒绝的条目回到待处理。"
+          confirmLabel="拒绝并恢复"
+          danger
+          pending={pending && resume.variables?.input.action === "reject"}
+          testId="hitl-reject-confirm"
+          onConfirm={() => submit({ action: "reject" })}
+          onCancel={() => setConfirmingReject(false)}
+        />
+      ) : null}
       {hasCancel && confirmingCancel ? (
         <InlineConfirm
           message="确定取消整个任务吗？已完成的阶段与结果会保留，之后的阶段不再执行。"

@@ -123,6 +123,43 @@ describe("HitlPanel：payload 渲染（统一 shell，按 stageId 差异化）",
     expect(await screen.findByTestId("hitl-adjust-form")).toHaveTextContent("建议下调为一般期刊");
   });
 
+  it("修订复核节点：approve / reject / needs_review 三个后端选项都有 UI 动作；reject 需二次确认", async () => {
+    const user = userEvent.setup();
+    const fixture = hitlRunFixture({
+      currentStage: "hitl.revision_validation",
+      awaiting: {
+        stageId: "hitl.revision_validation",
+        prompt: "本轮修订的自动复核发现风险项",
+        options: ["approve", "reject", "needs_review"],
+        payload: {
+          validationId: "val-r1-rev3",
+          revision: 3,
+          sourceRevision: 2,
+          items: [{ id: "f-1", kind: "review_finding", section: "sections/experiments.tex", status: "rejected", category: "fact_preservation", reasons: ["placeholder_regression"] }],
+          rejectedItems: [{ id: "f-1", category: "fact_preservation", reason: "placeholder_regression", evidence: [] }],
+        },
+      },
+    });
+    vi.mocked(runsApi.resumeWorkflowRun).mockResolvedValue(hitlRunFixture({ status: "running", awaiting: null, currentStage: "citation.verify" }));
+    renderHitl(fixture);
+    await screen.findByTestId("hitl-panel");
+    expect(screen.getByTestId("hitl-approve")).toBeInTheDocument();
+    expect(screen.getByTestId("hitl-needs-review")).toBeInTheDocument();
+    expect(screen.getByTestId("hitl-reject")).toBeInTheDocument();
+    // needs_review 直接提交
+    await user.click(screen.getByTestId("hitl-needs-review"));
+    await waitFor(() => expect(vi.mocked(runsApi.resumeWorkflowRun)).toHaveBeenCalledWith("w-hitl00001", { action: "needs_review" }));
+    // reject：先二次确认，确认后才提交 decision=reject
+    vi.mocked(runsApi.resumeWorkflowRun).mockClear();
+    renderHitl(fixture);
+    const rejectButtons = await screen.findAllByTestId("hitl-reject");
+    await user.click(rejectButtons[rejectButtons.length - 1]!);
+    expect(vi.mocked(runsApi.resumeWorkflowRun)).not.toHaveBeenCalled();
+    const confirm = await screen.findByTestId("hitl-reject-confirm");
+    await user.click(within(confirm).getByRole("button", { name: "拒绝并恢复" }));
+    await waitFor(() => expect(vi.mocked(runsApi.resumeWorkflowRun)).toHaveBeenCalledWith("w-hitl00001", { action: "reject" }));
+  });
+
   it("大纲节点：标题 + 摘要 + 章节列表；动作只有 继续 / 提出修改意见 / 取消任务", async () => {
     renderHitl(
       hitlRunFixture({
