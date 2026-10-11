@@ -106,10 +106,15 @@ export function locateLatexSections(file: string, source: string): RevisionSpan[
   });
 }
 
-export function applyRevisionSpan(source: string, span: RevisionSpan, replacement: string): string {
+export function applyRevisionSpan(source: string, span: RevisionSpan, replacement: string, options: { preserveBoundaryWhitespace?: boolean } = {}): string {
   const current = source.slice(span.start, span.end);
   if (hash(current) !== span.originalHash) {
     throw new Error(`REVISION_TARGET_STALE: ${span.logicalSection}`);
+  }
+  if (options.preserveBoundaryWhitespace) {
+    // A sentence-scoped replacement cannot authorize incidental whitespace loss
+    // at the containing section's boundaries (Writer responses are trimmed).
+    replacement = (current.match(/^\s*/)?.[0] ?? "") + replacement.trim() + (current.match(/\s*$/)?.[0] ?? "");
   }
   // M11.4（Attempt 7 实录）：span 原内容以换行结尾而 replacement 不带尾换行时，
   // 后续文本（通常是下一个 \section/\subsection 命令）会被粘连到行中，

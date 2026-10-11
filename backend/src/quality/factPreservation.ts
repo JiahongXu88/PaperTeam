@@ -93,6 +93,8 @@ export interface FactClassification {
 }
 
 export interface FactPreservationSummary {
+  /** Exact source bindings for accepted formula additions (legacy reports omit this). */
+  formulaAuthorizations?: { file: string; expression: string; sourceId: string; planItemId: string }[];
   previousRevision: number;
   currentRevision: number;
   changedFacts: FactFinding[];
@@ -149,6 +151,8 @@ export interface FactPreservationInput {
    * 文本自我授权的洗白通道；restoreAuths 恢复方向不受影响）。
    */
   strictPlanTextAuthorization?: boolean;
+  /** Verified source quotes, kept separate from model-written claims/summaries. */
+  formulaSources?: { id: string; text: string }[];
 }
 
 // ---- 提取：表格 ----
@@ -425,6 +429,8 @@ function lineOf(content: string, index: number): string {
 // ---- 授权 ----
 
 interface AuthorizationContext {
+  strictFormulaAuthorization: boolean;
+  formulaSources: { id: string; text: string }[];
   planTexts: { id: string; section: string; text: string }[];
   improvementTexts: { id: string; section: string; text: string }[];
   evidenceTexts: string[];
@@ -456,7 +462,7 @@ function buildAuthorization(
   evidenceTexts: readonly string[],
   bibliographyKeys: readonly string[] = [],
   weakeningAuthorizations: readonly WeakeningAuthorizationInput[] = [],
-  options: { strictPlanTextAuthorization?: boolean } = {},
+  options: { strictPlanTextAuthorization?: boolean; formulaSources?: { id: string; text: string }[] } = {},
 ): AuthorizationContext {
   /**
    * M11.2.1：匹配轮次计划（sourceRevision == previous）的条目授权在条目生命
@@ -510,6 +516,8 @@ function buildAuthorization(
       removeValues: item.factRestore.removeValues ?? [],
     }));
   return {
+    strictFormulaAuthorization: options.strictPlanTextAuthorization === true,
+    formulaSources: options.formulaSources ?? [],
     planTexts,
     improvementTexts,
     evidenceTexts: [...evidenceTexts],
@@ -717,6 +725,16 @@ function formulaAdditionAuthorized(
   segment: string,
 ): { basis: string; planItemId: string } | null {
   const entries = [...auth.planTexts, ...auth.improvementTexts];
+  if (auth.strictFormulaAuthorization) {
+    // Reviewer/Planner intent is permission to edit, never a scientific source.
+    // Preserve commands, case, braces and operators: the legacy skeleton erases
+    // Greek symbols and fractions and cannot prove expression fidelity.
+    const canonical = (text: string): string => text.replace(/\\label\{[^{}]*\}/g, "").replace(/\s+/g, "");
+    const source = auth.formulaSources.find(entry => canonical(entry.text) === canonical(segment) ||
+      extractMathSegments(entry.text).some(math => canonical(math) === canonical(segment)));
+    const plan = entries.find(entry => FORMULA_WORDS.test(entry.text));
+    return source && plan ? { basis: `verified_formula_source:${source.id}`, planItemId: plan.id } : null;
+  }
   const skeleton = formulaSkeleton(segment);
   if (skeleton.length >= 6) {
     for (const entry of entries) {
@@ -742,6 +760,7 @@ function formulaAdditionAuthorized(
 }
 
 function formulaChangeAuthorized(auth: AuthorizationContext): { basis: string; planItemId: string } | null {
+  if (auth.strictFormulaAuthorization) return null;
   const entries = [...auth.planTexts, ...auth.improvementTexts];
   for (const entry of entries) {
     if (FORMULA_WORDS.test(entry.text)) {
@@ -1356,15 +1375,15 @@ function cap(items: FactFinding[]): FactFinding[] {
 }
 
 export function evaluateFactPreservation(input: FactPreservationInput): FactPreservationSummary {
+  const formulaAuthorizations: NonNullable<FactPreservationSummary["formulaAuthorizations"]> = [];
   const auth = buildAuthorization(
     input.plan,
     input.improvementPlanItems,
     input.evidenceTexts ?? [],
     input.bibliographyKeys ?? [],
     input.weakeningAuthorizations ?? [],
-    ...(input.strictPlanTextAuthorization !== undefined
-      ? [{ strictPlanTextAuthorization: input.strictPlanTextAuthorization }]
-      : []),
+    { ...(input.strictPlanTextAuthorization !== undefined ? { strictPlanTextAuthorization: input.strictPlanTextAuthorization } : {}),
+      ...(input.formulaSources !== undefined ? { formulaSources: input.formulaSources } : {}) },
   );
   const changedFacts: FactFinding[] = [];
   const removedFacts: FactFinding[] = [];
@@ -1835,6 +1854,9 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       }
       const grant = formulaAdditionAuthorized(auth, segment) ?? formulaChangeAuthorized(auth);
       if (grant !== null) {
+        if (grant.basis.startsWith("verified_formula_source:")) formulaAuthorizations.push({
+          file: previousFile.file, expression: segment, sourceId: grant.basis.slice("verified_formula_source:".length), planItemId: grant.planItemId,
+        });
         allowedChanges += 1;
         continue;
       }
@@ -2044,6 +2066,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
 
   const summary: FactPreservationSummary = {
     previousRevision: input.previous.revision,
+    formulaAuthorizations,
     currentRevision: input.current.revision,
     changedFacts: cap(changedFacts),
     removedFacts: cap(removedFacts),
@@ -2322,7 +2345,11 @@ export async function computeFactPreservationForCandidate(
     }
   }
   const improvementPlanItems = await readImprovementPlanItems(deps.projects, projectId);
-  const evidenceTexts = (await deps.evidence.list(projectId)).flatMap((record) => [record.claim, record.summary ?? "", record.quote ?? ""]);
+  const evidenceRecords = await deps.evidence.list(projectId);
+  const evidenceTexts = evidenceRecords.flatMap((record) => [record.claim, record.summary ?? "", record.quote ?? ""]);
+  const formulaSources = evidenceRecords.filter(record => record.verificationStatus === "verified" &&
+    record.protocolScope?.status !== "superseded" && record.supportStrength !== "contradictory" && record.quote)
+    .map(record => ({ id: record.id, text: record.quote! }));
   const bibliographyKeys = await readBibliographyKeys(deps.projects, projectId);
   const weakeningAuthorizations: WeakeningAuthorizationInput[] = [];
   if (plan !== null) {
@@ -2355,6 +2382,7 @@ export async function computeFactPreservationForCandidate(
         ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
         weakeningAuthorizations,
         strictPlanTextAuthorization: true,
+        formulaSources,
       });
     }
   }
@@ -2370,6 +2398,7 @@ export async function computeFactPreservationForCandidate(
     // 指令文本不授权新增（Run C 实证：round-2 计划文本自我授权新公式，
     // patch 层放行、gate 层判漂移且不可恢复）
     strictPlanTextAuthorization: true,
+    formulaSources,
   });
   if (frozenSummary === null) return pairwise;
   return {

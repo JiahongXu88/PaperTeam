@@ -97,8 +97,11 @@ describe("Existing Paper workflow direct mutation boundary", () => {
       const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", "patch-validation-rev-2.json"), "utf8")) as { records: Array<Record<string, unknown>>; summary: Record<string, unknown> };
       expect(artifact.records[0]).toMatchObject({ overall: "pass", scope: { ok: true }, workspaceIntegrity: { ok: true, directMutationDetected: false }, apply: { ok: true, status: "applied" } });
       expect(artifact.records[0]).toMatchObject({ fact: { ok: true }, citation: { ok: true, findingIds: [], violations: [] }, evidence: { ok: true } });
-      // M11.4 边界换行修复后结构保持完整：第二轮还能再派发并应用一个 scoped patch
-      expect(artifact.summary).toMatchObject({ totalPatches: 2, passedPatches: 2, failedPatches: 0 });
+      // Alias-aware planning now targets Datasets directly; no unrelated Introduction
+      // patch is generated via the old unlinked-comment fallback.
+      expect(artifact.summary).toMatchObject({ totalPatches: 1, passedPatches: 1, failedPatches: 0 });
+      expect(artifact.records[0]).toMatchObject({ logicalTarget: "section:Datasets" });
+      expect(await readFile(join(root, project.id, "manuscript", "main.tex"), "utf8")).toContain("Intro baseline.");
       const gate = JSON.parse(await readFile(join(root, project.id, "reviews", "quality-gate-r2.json"), "utf8")) as { gate: { rules: Array<{ rule: string; passed: boolean }> } };
       expect(gate.gate.rules).toContainEqual(expect.objectContaining({ rule: "patch_validation_publishable", passed: true }));
       return;
@@ -172,7 +175,8 @@ describe("Existing Paper workflow direct mutation boundary", () => {
     expect(injected).toBe(1);
     expect(citationRepairs).toBeGreaterThan(0);
     expect(await readFile(join(root, project.id, "manuscript", "main.tex"), "utf8")).not.toContain("missing_fake_key");
-    expect(scripted.calls.filter((call) => call.contextScope === "writing/revision-proposal")).toHaveLength(4);
+    // Two requested targets + one local repair, with no unrelated Introduction pass.
+    expect(scripted.calls.filter((call) => call.contextScope === "writing/revision-proposal")).toHaveLength(3);
     const revisions = await stack.stack.revisions.load(project.id);
     const artifact = JSON.parse(await readFile(join(root, project.id, "reviews", `patch-validation-rev-${revisions.current}.json`), "utf8")) as {
       records: Array<{ logicalTarget: string; commentIds: string[]; attempt?: number; overall: string; citation: { ok: boolean; findingIds: string[]; addedKeys: string[]; violations: string[] } }>;
@@ -182,7 +186,8 @@ describe("Existing Paper workflow direct mutation boundary", () => {
     const attempts = [...artifact.records, ...(artifact.attemptHistory ?? [])];
     expect(attempts.find((record) => record.attempt === 0)).toMatchObject({ overall: "fail", citation: { ok: false, addedKeys: ["missing_fake_key"], violations: ["citation key missing_fake_key is not in verified bibliography"] } });
     expect(attempts.find((record) => record.attempt === 1)).toMatchObject({ overall: "pass", citation: { ok: true } });
-    expect(artifact.summary).toMatchObject({ publishable: true, logicalPatchCount: 3, repairSuccessCount: 1 });
+    expect(artifact.summary).toMatchObject({ publishable: true, logicalPatchCount: 2, repairSuccessCount: 1 });
+    expect(new Set(artifact.records.map(record => record.logicalTarget))).toEqual(new Set(["section:Datasets", "section:Conclusion"]));
     const gateDebug = await readFile(join(root, project.id, "reviews", "quality-gate-r2.json"), "utf8");
     expect(gateDebug).toContain("patch_validation_publishable");
     expect(artifact.summary.unattributedViolations).toEqual([]);

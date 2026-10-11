@@ -96,6 +96,8 @@ export interface RevisionPlanItem {
   status: RevisionPlanItemStatus;
   actionType?: RevisionActionType;
   logicalSection?: string;
+  /** Optional exact, unique source quote constraining edits inside a logical section. */
+  targetQuote?: string;
   protocolRequirement?: { protocolId: string };
   /** 证据不足类问题：修订时只能弱化 / 删除，不允许编造 */
   needsEvidence?: boolean;
@@ -261,6 +263,8 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
   for (const instruction of input.externalInstructions ?? []) {
     const label = instructionLabel(instruction);
     const firstLine = firstTextLine(instruction.text);
+    const authorDecision = /^AUTHOR_DECISION_REQUIRED\b/.test(instruction.statusNote ?? "");
+    const evidenceOnly = /^EVIDENCE_ONLY_RECORDED\b/.test(instruction.statusNote ?? "");
     items.push({
       id: `external:${instruction.instructionId}`,
       kind: "external_instruction",
@@ -273,10 +277,10 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       status:
         instruction.status === "handled" ||
         instruction.status === "conflict" ||
-        instruction.status === "already_satisfied"
+        instruction.status === "already_satisfied" || authorDecision || evidenceOnly
           ? "skipped"
           : "planned",
-      actionType: instruction.status === "already_satisfied" ? "noop" : "modify",
+      actionType: authorDecision ? "author_decision_required" : evidenceOnly ? "evidence_only" : instruction.status === "already_satisfied" ? "noop" : "modify",
       source: "external",
       riskLevel: "high",
       ...(instruction.reviewerLabel !== undefined ? { reviewerLabel: instruction.reviewerLabel } : {}),
@@ -296,7 +300,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
           }
         : {}),
       ...(instruction.status === "unresolved"
-        ? { note: "上一轮派发未落实，本轮重新派发" }
+        ? { note: authorDecision || evidenceOnly ? instruction.statusNote! : "上一轮派发未落实，本轮重新派发" }
         : {}),
     });
   }

@@ -367,6 +367,10 @@ export async function computeCumulativeFactPreservation(
     plan: null,
     improvementPlanItems: ledgerToImprovementItems(ledger),
     evidenceTexts,
+    strictPlanTextAuthorization: true,
+    formulaSources: evidenceRecords.filter(record => record.verificationStatus === "verified" &&
+      record.protocolScope?.status !== "superseded" && record.supportStrength !== "contradictory" && record.quote)
+      .map(record => ({ id: record.id, text: record.quote! })),
     ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
     weakeningAuthorizations: weakeningEntries,
   });

@@ -177,7 +177,7 @@ import {
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
-import { applyRevisionSpan, checkGlobalRevisionScope, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { applyRevisionSpan, checkGlobalRevisionScope, checkRevisionScope, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
 import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
@@ -1784,7 +1784,14 @@ function revisionReviseStage(
       // M5.7 外部修改意见：独立派发通道（最高业务优先级；不占用 issue 通道，
       // 也不改 Quality Gate 口径）。pending / partially_handled / unresolved 派发；
       // handled / conflict 不再自动派发（conflict 保留在意见列表等人工决策）。
-      const externalDirectives = await collectExternalDirectives(services, ctx.projectId);
+      const authorOwnedComments = new Set((await services.externalInstructions.load(ctx.projectId))
+        .filter(instruction => /^(?:AUTHOR_DECISION_REQUIRED|EVIDENCE_ONLY_RECORDED)\b/.test(instruction.statusNote ?? ""))
+        .map(instruction => instruction.instructionId));
+      // Typed planning already resolved these comments to a non-Writer action.
+      // Their raw, section-addressed text must not reopen dispatch via the parallel
+      // external-comment channel. Safe modify siblings still dispatch via directives.
+      const externalDirectives = (await collectExternalDirectives(services, ctx.projectId))
+        .filter(directive => !authorOwnedComments.has(directive.instructionId));
       const sectionScopedExternals = externalDirectives.filter(
         (directive) => directive.section !== undefined,
       );
@@ -2054,10 +2061,23 @@ function revisionReviseStage(
           const priorRoots: string[][] = [];
           const priorProposalHashes: string[] = [];
           for (let attempt = 0; attempt <= 2; attempt += 1) {
-            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim());
+            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim(), { preserveBoundaryWhitespace: matchedItems.some(item => item.targetQuote !== undefined) });
             const failures: { code: RevisionViolationCode; detail: string; evidenceId?: string; metric?: string }[] = [];
             const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
             if (!scope.allowed) failures.push({ code: "scope_violation", detail: scope.reason ?? "revision scope violation" });
+            const quotes = [...new Set(matchedItems.flatMap(item => item.targetQuote ? [item.targetQuote] : []))];
+            if (quotes.length > 0) {
+              // Reuse the existing immutable prefix/suffix guard inside the section.
+              // Multiple conflicting quotes require explicit replanning, never union
+              // their ranges into a silently broader authorization.
+              const quote = quotes[0]!;
+              const start = resolvedSpan.content.indexOf(quote);
+              const unique = quotes.length === 1 && start >= 0 && resolvedSpan.content.indexOf(quote, start + 1) < 0;
+              const inside = unique && checkRevisionScope(resolvedSpan.content,
+                candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end)),
+                { start, end: start + quote.length, originalHash: revisionSourceHash(quote) }).allowed;
+              if (!inside) failures.push({ code: "scope_violation", detail: unique ? "REVISION_TARGET_QUOTE_SCOPE_VIOLATION" : "REVISION_TARGET_QUOTE_UNRESOLVED" });
+            }
             if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) failures.push({ code: "scope_violation", detail: "new content after document end" });
             // M11.4（Attempt 7 实录）：scoped 提案可能破坏 span 自身的章节结构
             // （丢失 \subsection 命令 / 边界换行粘连），候选落盘后 locateLatexSections
@@ -2267,7 +2287,7 @@ function revisionReviseStage(
             if (sha256(actualBeforeApply) !== sha256(fileBefore)) {
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_BASELINE_STALE");
             }
-            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim());
+            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim(), { preserveBoundaryWhitespace: matchedItems.some(item => item.targetQuote !== undefined) });
             const persistScopeFailure = async (violation: string, rejectedCandidate: string): Promise<void> => {
               const failed: PatchValidationRecord = {
                 patchId: `patch:${resolvedSpan.originalHash.slice(0, 12)}`,
@@ -8316,6 +8336,7 @@ async function collectRevisionDirectives(
             action: string;
             actionType?: "modify" | "noop" | "author_decision_required" | "evidence_only";
             logicalSection?: string;
+            targetQuote?: string;
             coverageQuote?: string;
             protocolId?: string;
             rationale?: string;
@@ -8463,6 +8484,7 @@ async function collectRevisionDirectives(
           actionType: item.actionType ?? "modify",
           ...(item.protocolId !== undefined ? { protocolRequirement: { protocolId: item.protocolId } } : {}),
           ...(item.logicalSection !== undefined ? { logicalSection: item.logicalSection } : {}),
+          ...(item.targetQuote !== undefined ? { targetQuote: item.targetQuote } : {}),
           ...(item.instructionId !== undefined ? { instructionId: item.instructionId } : {}),
           ...(item.instructionId !== undefined ? { source: "external" as const } : {}),
           ...(item.relatedEvidenceIds !== undefined && item.relatedEvidenceIds.length > 0

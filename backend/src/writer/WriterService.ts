@@ -826,8 +826,10 @@ export class WriterService {
         "4. 修改实验数值的条目必须：action 点名旧值与新值 + expectedFactChanges 逐条列出 + evidenceRefs 选择 allowlist 中支持该变更的证据。没有证据授权的数值修改不允许进入计划。",
         "5. 证据分层纪律：verified（已核验文献）只支撑外部事实论述；user_confirmed（作者实验）只授权作者自身实验数值变更，不得当作外部科学事实验证。",
         "6. 每条可验证（不要「整体润色全文」这类无法验证的模糊任务）。",
+        "6a. 只需修改某一句或某段时，增加 targetQuote 字段，逐字复制目标原句/段（须在目标节内唯一）；输出仍为该节替换文本，但 targetQuote 之外的内容必须逐字保留。确需整节修改时不提供 targetQuote，并在 rationale 写明扩大范围的理由。",
         "7. actionType=noop 只能表示 baseline 已满足。必须给出 coverageQuote（逐字摘自指定 logicalSection，引用足以证明意见要求的内容已在基线中）；若存在可核验的 EV 证据则一并绑定（增强，非必需）。不能仅用 rationale 写‘已覆盖’。系统会确定性核验引文逐字存在于目标章节，核验失败即不会关闭 comment。",
         "8. 需要事实或实验依据的意见：有兼容证据时必须选择对应 EV alias；没有时应给出 evidence gap 或 author_decision_required，不得编造 Evidence。",
+        "8a. Reviewer 建议补充公式不等于作者提供了公式。原稿和合法来源未给出完整表达式时，使用 author_decision_required，在 rationale 具体列出缺少的损失项、符号定义、权重取值与计算过程；不得构造公式或推导。有来源时只按来源整理，保持运算关系、变量含义与参数值；已有公式优先保留，只解释文字。",
         "9. action 的执行不得依赖作者输入：凡需要「由作者确认 / 待作者确认」才能落笔的条目（如实现细节二选一、超参数最终取值），必须 actionType=author_decision_required 并在 rationale 写明决策点。注意：只把真正依赖作者输入的条目标为 author_decision_required——有证据支撑的修改（EV 别名可绑定）和纯表述 / 结构 / 弱化类修改仍然应当 modify，不要为保守而把所有意见推向作者决策。",
         "10. 不得计划新增基线没有的分析性 / 方法论论断（如指标间循环评测风险、构造性论证、机制有效性声明），除非绑定支持它的 EV 证据——此类新增论断会被事实核验判 UNSUPPORTED 并按修订引入违规阻断。对证据不足的既有论断，正确动作是弱化该论断本身（weaken），不是新增一条与之并存的相反表述。",
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
@@ -932,7 +934,12 @@ export class WriterService {
         continue;
       }
       const record = raw as Record<string, unknown>;
-      const section = typeof record["section"] === "string" ? record["section"].trim() : "";
+      const rawSection = typeof record["section"] === "string" ? record["section"].trim() : "";
+      const relativeSection = rawSection.replaceAll("\\", "/").replace(/^manuscript\//, "");
+      const allowedFiles = new Set([...params.sectionFiles, ...(params.logicalTargets ?? []).map(target => target.file)]);
+      // A workspace-relative path is an alias only when its exact manuscript-relative
+      // counterpart is already allowed. Never infer an unknown file or target.
+      const section = allowedFiles.has(relativeSection) ? relativeSection : rawSection;
       const action = typeof record["action"] === "string" ? record["action"].trim() : "";
       if (section === "" || action === "") {
         continue;
@@ -984,13 +991,16 @@ export class WriterService {
           }).slice(0, 8)
         : [];
       const logicalSection = typeof record["logicalSection"] === "string" ? record["logicalSection"].trim() : "";
+      const targetQuote = typeof record["targetQuote"] === "string" ? record["targetQuote"].trim() : "";
       const coverageQuote = typeof record["coverageQuote"] === "string" ? record["coverageQuote"].trim() : "";
       if (params.sectionFiles.length > 0 && !params.sectionFiles.includes(section) && section !== "main.tex") {
         structuredFailures.push({ itemIndex, field: "section", code: "TARGET_NOT_ALLOWED", message: `${section} is not an existing manuscript section` });
       }
       if (params.logicalTargets !== undefined && params.logicalTargets.length > 0 &&
-        (logicalSection === "" || !params.logicalTargets.some((target) => target.file === section && target.logicalSection === logicalSection))) {
-        structuredFailures.push({ itemIndex, field: "logicalSection", code: "TARGET_REQUIRED", message: "single-file plan items must select a listed logicalSection" });
+        !params.logicalTargets.some((target) => target.file === section && target.logicalSection === logicalSection)) {
+        const wrongFile = !params.logicalTargets.some(target => target.file === section);
+        structuredFailures.push({ itemIndex, field: wrongFile ? "section" : "logicalSection", code: "TARGET_REQUIRED",
+          message: `Invalid target file=${section}, logicalSection=${logicalSection}. Select an exact allowed pair: ${JSON.stringify(params.logicalTargets.map(target => ({ file: target.file, logicalSection: target.logicalSection })))}` });
       }
       if (actionType === "noop") {
         if (!coverageQuote) structuredFailures.push({ itemIndex, field: "coverageQuote", code: "NOOP_COVERAGE_REQUIRED", message: "noop requires a verbatim coverage quote" });
@@ -1022,6 +1032,7 @@ export class WriterService {
         structuredFailures.push({ itemIndex, field: "commentRefs", code: "INVALID_COMMENT_LINK", message: `Choose comment references from ${commentAliasList.map((item) => item.ref).join(",")}` });
       }
       const plannedItem: ImprovementPlanItem = {
+        ...(targetQuote ? { targetQuote } : {}),
         section,
         action,
         actionType,
@@ -1170,6 +1181,7 @@ export interface ImprovementPlanItem {
   action: string;
   actionType?: "modify" | "noop" | "author_decision_required";
   logicalSection?: string;
+  targetQuote?: string;
   coverageQuote?: string;
   protocolId?: string;
   rationale?: string;
@@ -1350,6 +1362,7 @@ function renderRevisionItemsBlock(
     // M11.2.3（D-4 §15）：mustPreserve 前置约束——目标章节的事实 / 引用基线
     // 投影（已剔除授权改动的值）。Writer 改前就知道哪些绝对不能动。
     const mustPreserveLines: string[] = [];
+    if (item.targetQuote) mustPreserveLines.push(`  唯一允许修改的原文：${item.targetQuote}\n  此引文之外的目标节文本必须逐字保留。`);
     if (item.mustPreserve?.values !== undefined && item.mustPreserve.values.length > 0) {
       mustPreserveLines.push(`  绝对不可变动的数值（改写前后逐字保留）：${item.mustPreserve.values.join("、")}`);
     }

@@ -1005,8 +1005,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         );
         const logicalTargets = [...input.task.matchAll(/^\s*- file=([^;]+); logicalSection=([^;]+); heading=([^\r\n]+)/gm)];
         const linkage = /External comment linkage:\s*(\[[^\r\n]*\])/m.exec(input.task)?.[1];
-        const linkedInstructions = linkage === undefined ? [] : JSON.parse(linkage) as Array<{ instructionId?: unknown; text?: unknown }>;
+        const aliases = [...input.task.matchAll(/^(C\d+) \[[^\]\r\n]*\] (.+)$/gm)];
+        const linkedInstructions = aliases.length > 0
+          ? aliases.map(match => ({ instructionId: match[1], text: match[2] }))
+          : linkage === undefined ? [] : JSON.parse(linkage) as Array<{ instructionId?: unknown; text?: unknown }>;
         const instructionIds = linkedInstructions.flatMap((item) => typeof item.instructionId === "string" ? [item.instructionId] : []);
+        const instructionLink = (id: string): Record<string, unknown> => aliases.length > 0 ? { commentRefs: [id] } : { instructionId: id };
         const targetForInstruction = (index: number): RegExpMatchArray | undefined => {
           const description = String(linkedInstructions[index]?.text ?? "").toLocaleLowerCase();
           const matching = logicalTargets.find((target) => {
@@ -1026,6 +1030,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                   action: index === 0 ? "补充关键论证并收敛过强表述" : "补全与相关工作的对比讨论",
                   rationale: "基于审稿发现与目标差距",
                   priority: index === 0 ? "high" : "medium",
+                  ...(index === 0 && aliases.length > 0 ? { commentRefs: instructionIds } : {}),
                 })),
               })
               : input.task.includes("section 使用 main.tex") && logicalTargets.length > 0 && instructionIds.length > 1
@@ -1034,7 +1039,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                   return ({
                   section: target[1]?.trim() ?? "main.tex",
                   logicalSection: target[2]?.trim(),
-                  instructionId,
+                  ...instructionLink(instructionId),
                   actionType: "modify",
                   action: "针对对应审稿意见澄清原有内容",
                   rationale: "保留可验证事实并回应对应意见",
@@ -1046,7 +1051,7 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
                     {
                       section: "main.tex",
                       ...(targetForInstruction(0) !== undefined ? { logicalSection: targetForInstruction(0)?.[2]?.trim() } : {}),
-                      ...(instructionIds[0] !== undefined ? { instructionId: instructionIds[0] } : {}),
+                      ...(instructionIds[0] !== undefined ? instructionLink(instructionIds[0]) : {}),
                       actionType: "modify",
                       action: "补充关键论证并收敛过强表述",
                       rationale: "基于审稿发现与目标差距",
