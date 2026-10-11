@@ -1,0 +1,127 @@
+{
+  "evidence": [
+    {
+      "id": "E002",
+      "claim": "Transformer dispenses with recurrence, relying entirely on an attention mechanism to draw global dependencies between input and output.",
+      "quote": "Recent work has achieved\nsignificant improvements in computational efficiency through factorization tricks [21] and conditional\ncomputation [32], while also improving model performance in case of the latter. The fundamental\nconstraint of sequential computation, however, remains.\n\nAttention mechanisms have become an integral part of compelling sequence modeling and transduc-\ntion models in various tasks, allowing modeling of dependencies without regard to their distance in\nthe input or output sequences [2, 19]. In all but a few cases [27], however, such attention mechanisms\nare used in conjunction with a recurrent network.\n\nIn this work we propose the Transformer, a model architecture eschewing recurrence and instead\nrelying entirely on an attention mechanism to draw global dependencies between input and output.\nThe Transformer allows for significantly more parallelization and can reach a",
+      "source": {
+        "sourceId": "S001",
+        "title": "Attention Is All You Need",
+        "authors": [
+          "Ashish Vaswani",
+          "Noam Shazeer",
+          "Niki Parmar",
+          "Jakob Uszkoreit",
+          "Llion Jones",
+          "Aidan N. Gomez",
+          "Lukasz Kaiser",
+          "Illia Polosukhin"
+        ],
+        "year": 2017,
+        "url": "https://arxiv.org/abs/1706.03762"
+      },
+      "location": {
+        "page": 2,
+        "section": "Introduction",
+        "chunk": "S001:SEC01:0003:ebde7e2ce6"
+      },
+      "verificationStatus": "verified",
+      "verificationMethod": "evidence-grounding/v1 quote=exact metadata=match judge=supported",
+      "supportStrength": "direct",
+      "verificationLevel": "fulltext",
+      "createdBy": "targeted-grounding:m1123",
+      "createdAt": "2026-10-11T07:42:52.898Z"
+    },
+    {
+      "id": "E001",
+      "claim": "Transformer dispenses with recurrence and convolutions, relying entirely on attention mechanisms.",
+      "quote": "Recent work has achieved\nsignificant improvements in computational efficiency through factorization tricks [21] and conditional\ncomputation [32], while also improving model performance in case of the latter. The fundamental\nconstraint of sequential computation, however, remains.\n\nAttention mechanisms have become an integral part of compelling sequence modeling and transduc-\ntion models in various tasks, allowing modeling of dependencies without regard to their distance in\nthe input or output sequences [2, 19]. In all but a few cases [27], however, such attention mechanisms\nare used in conjunction with a recurrent network.\n\nIn this work we propose the Transformer, a model architecture eschewing recurrence and instead\nrelying entirely on an attention mechanism to draw global dependencies between input and output.\nThe Transformer allows for significantly more parallelization and can reach a",
+      "source": {
+        "sourceId": "S001",
+        "title": "Attention Is All You Need",
+        "authors": [
+          "Ashish Vaswani",
+          "Noam Shazeer",
+          "Niki Parmar",
+          "Jakob Uszkoreit",
+          "Llion Jones",
+          "Aidan N. Gomez",
+          "Lukasz Kaiser",
+          "Illia Polosukhin"
+        ],
+        "year": 2017,
+        "url": "https://arxiv.org/abs/1706.03762"
+      },
+      "location": {
+        "page": 2,
+        "section": "Introduction",
+        "chunk": "S001:SEC01:0003:ebde7e2ce6"
+      },
+      "verificationStatus": "verified",
+      "verificationMethod": "evidence-grounding/v1 quote=exact metadata=match judge=partially_supported",
+      "supportStrength": "partial",
+      "verificationLevel": "fulltext",
+      "createdBy": "targeted-grounding:m1123",
+      "createdAt": "2026-10-11T07:41:42.831Z"
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "vaswani2017attention",
+      "sourceId": "S001",
+      "title": "Attention Is All You Need",
+      "year": 2017
+    }
+  ],
+  "outline": {
+    "title": "注意力序列建模的证据与适用范围",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "界定序列建模综述的范围，说明本文整理文献而非提出新算法。"
+        ]
+      },
+      {
+        "id": "architecture",
+        "title": "架构设计",
+        "file": "architecture.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "说明注意力与循环结构的关系，仅按引文覆盖范围描述。"
+        ]
+      },
+      {
+        "id": "analysis",
+        "title": "证据分析",
+        "file": "analysis.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "区分文献机制描述与性能证明，分析已有证据能够支持的结论。"
+        ]
+      },
+      {
+        "id": "limitations",
+        "title": "局限性",
+        "file": "limitations.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "综述仅采用所给引文，未进行独立复现与跨域评测；不推断算法本身无效。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "综合架构与证据分析；准确概括本文整理工作的贡献与范围。"
+        ]
+      }
+    ]
+  },
+  "instructions": "撰写连续中文综述正文，每节约350字；不是原创算法论文。仅使用给定材料，不调用工具查询补充事实。内部记录：本轮检索未发现更多可用文献；作者确认、尚未核验；待补实验。正式正文保持科学限制。"
+}

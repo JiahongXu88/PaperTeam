@@ -1,0 +1,233 @@
+diff --git a/backend/src/agents/ReviewerService.ts b/backend/src/agents/ReviewerService.ts
+index 31e3685..9cf0c85 100644
+--- a/backend/src/agents/ReviewerService.ts
++++ b/backend/src/agents/ReviewerService.ts
+@@ -679,6 +679,8 @@ export function buildReviewPrompt(params: {
+     ...(languageDirective !== "" ? ["", languageDirective] : []),
+     "",
+     ...modeSpecs[params.mode],
++    "跨章节核对：比较同一概念的定义/缩写、贡献与未来工作、实验对象/范围以及结论限定是否一致。重复论述、术语漂移或矛盾的 issue 必须在 description/reason 中点名两处章节并逐字摘录各自原句；只看到一处或视图已截断时不得猜测另一处内容。",
++    "区分必要呼应与机械重复：摘要/结论概括、支撑不同论点的同源引用、结论旁必要科学限定不应仅因重复出现而报错。机制已完整解释却在其他节无新分析地再解释，才建议保留主展开处并缩短其他处。定义、对象、数值、证据强度或结论方向冲突归 fact/academic，不得用 style-only 润色解决；修复继续受 Fact/Citation/Evidence Guard 约束。",
+     "",
+     "只输出一个 JSON 对象（不要 Markdown 围栏），公共字段：",
+     "{",
+diff --git a/backend/src/workflow/definitions.ts b/backend/src/workflow/definitions.ts
+index 3e3f884..ba94710 100644
+--- a/backend/src/workflow/definitions.ts
++++ b/backend/src/workflow/definitions.ts
+@@ -5099,11 +5099,13 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
+
+       let bytesTotal = 0;
+       const written: string[] = [];
++      const previousSections: { id: string; title: string; latex: string }[] = [];
+       for (const [index, section] of outline.sections.entries()) {
+         if (ctx.signal.aborted) {
+           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
+         }
+         const result = await services.writer.writeSection({
++          previousSections,
+           projectId: ctx.projectId,
+           section,
+           outline,
+@@ -5114,6 +5116,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
+         });
+         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
+         written.push(section.id);
++        previousSections.push({ id: section.id, title: section.title, latex: result.latex });
+         await ctx.emitProgress({
+           section: section.id,
+           file: section.file,
+@@ -7518,6 +7521,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
+       const usedEvidenceIds = new Set<string>();
+       let bytesTotal = 0;
+       const written: string[] = [];
++      const previousSections: { id: string; title: string; latex: string }[] = [];
+       for (const [index, section] of inputs.outline.sections.entries()) {
+         if (ctx.signal.aborted) {
+           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
+@@ -7538,6 +7542,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
+           );
+         }
+         const result = await services.writer.writeSection({
++          previousSections,
+           projectId: ctx.projectId,
+           section,
+           outline: inputs.outline,
+@@ -7548,6 +7553,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
+         });
+         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
+         written.push(section.id);
++        previousSections.push({ id: section.id, title: section.title, latex: result.latex });
+         for (const record of context.evidence) {
+           usedEvidenceIds.add(record.id);
+         }
+diff --git a/backend/src/writer/WriterService.ts b/backend/src/writer/WriterService.ts
+index 4eb6983..8c7e7c3 100644
+--- a/backend/src/writer/WriterService.ts
++++ b/backend/src/writer/WriterService.ts
+@@ -60,6 +60,49 @@ export interface WriterServiceOptions {
+   log?: (message: string) => void;
+ }
+
++/** Explicit manuscript context survives disposable runtime session rotation. */
++export interface WrittenSectionContext {
++  id: string;
++  title: string;
++  latex: string;
++}
++
++/** Organizational context, never verified Evidence. Excerpts end at sentence boundaries. */
++export function renderCrossSectionContext(
++  outline: Outline,
++  section: OutlineSection,
++  previousSections: WrittenSectionContext[] = [],
++): string[] {
++  const lines = [
++    "===== 跨章节论述分工（组织上下文，不是事实证据）=====",
++    ...outline.sections.slice(0, 12).map((item) =>
++      `- ${item.id === section.id ? "当前节" : "其他节"} ${item.title}（${item.id}）：${(item.keyPoints ?? []).slice(0, 6).join("；").slice(0, 600)}`),
++    "本节推进自己的论点；前节已解释的定义与机制仅作必要承接，不重新完整介绍。沿用前文同一概念的名称与缩写；若前文存在事实错误，不能以保持一致为由继承，应以当前 Evidence 为准。",
++    "同一来源可在不同章节支持不同论点；同一段落连续转述同一来源时合理合并引用，但来源归因变化处和新的事实论断处仍须清晰标注，不跨段省略必要引用。",
++    "引言说明范围与组织贡献，核心章节展开依据，局限性集中说明范围与未完成评测，结论综合回答问题。必要定义提醒、摘要与结论呼应、结论旁的适用限定应保留；不得为去重删除真实数值、公式、负结果或科学限制。",
++  ];
++  const prior = previousSections.filter(item => item.id !== section.id).slice(0, 12);
++  if (prior.length === 0) return lines;
++  const excerpt = (text: string, budget: number, tail = false) => {
++    if (text.length <= budget) return text;
++    const fragment = tail ? text.slice(-budget) : text.slice(0, budget);
++    const boundaries = /[。！？；\n]/g;
++    if (tail) {
++      const first = boundaries.exec(fragment);
++      return first ? `【前部省略】${fragment.slice(first.index + 1)}` : "【片段无完整句，省略】";
++    }
++    let last = -1;
++    for (const match of fragment.matchAll(boundaries)) last = match.index! + 1;
++    return last > 0 ? `${fragment.slice(0, last)}【后部省略】` : "【片段无完整句，省略】";
++  };
++  lines.push("已写章节原文摘录（有界视图；省略不表示原稿缺失，不得据此推断事实或允许引用）：");
++  for (const [index, item] of prior.entries()) {
++    lines.push(`[${item.id}] ${item.title}`, excerpt(item.latex, index === prior.length - 1 ? 2400 : index === 0 ? 1200 : 480));
++  }
++  lines.push("上一节结尾（据此自然承接；不强加因果或转折关系）：", excerpt(prior.at(-1)!.latex, 600, true));
++  return lines;
++}
++
+ export interface WriterResult {
+   task: AgentTask;
+   /** 校验后的 LaTeX 文档全文 */
+@@ -408,6 +451,7 @@ export class WriterService {
+     projectId: string;
+     section: OutlineSection;
+     outline: Outline;
++    previousSections?: WrittenSectionContext[];
+     evidence: EvidenceRecord[];
+     bibliography: BibliographyEntryInput[];
+     styleProfile?: Record<string, unknown>;
+@@ -434,6 +478,7 @@ export class WriterService {
+               bibliography: params.bibliography,
+               ...(params.language !== undefined ? { language: params.language } : {}),
+               survey: params.survey,
++              ...(params.previousSections !== undefined ? { previousSections: params.previousSections } : {}),
+             })
+           : buildSectionPrompt(params),
+       projectId: params.projectId,
+@@ -1810,6 +1855,7 @@ export function buildOutlinePrompt(params: {
+     "要求：",
+     "1. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
+     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
++    "跨章节规划：各节 keyPoints 明确本节独有任务，定义与机制指定主要展开章节；其他章节仅作必要呼应。贡献只计已完成工作，局限性集中展开且相关结论保留适用限定。",
+     "3. 引用纪律（可引用的参考文献 key 按 verified evidence 支撑分组；正文写作时事实性论断必须取 A 组）：",
+     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
+     ...MANUSCRIPT_CONTENT_LINES,
+@@ -1871,6 +1917,7 @@ export function buildSurveyOutlinePrompt(params: {
+     "6. Introduction / Conclusion 等框架章节可不带 refs（若给出也必须真实存在且非 speculative）。",
+     "7. speculative 的 synthesis（含推断型 future_direction）只能进入明确的展望 / 未来方向章节；taxonomy / trend / comparison / consensus 等既定结论章节只消费 evidence_backed 或 literature_cited。",
+     "8. 文献分布不均衡时在 keyPoints 说明结构依据（如「X 族占多数，拆两个小节」），不强行让章节平均分配文献。",
++    "跨章节规划：keyPoints 明确各节独有的综合任务；定义与机制指定主要展开章节，框架章节概括而不重复核心分析；综述整理贡献与未来计划分开。",
+     "9. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
+     ...(params.feedback ? ["", "用户对上一版大纲的修改意见（必须落实；不得因此违反上述纪律）：", params.feedback] : []),
+     "",
+@@ -1950,6 +1997,7 @@ export function renderExperimentContextLines(context: ConfirmedExperimentWorkflo
+ export function buildSectionPrompt(params: {
+   section: OutlineSection;
+   outline: Outline;
++  previousSections?: WrittenSectionContext[];
+   evidence: EvidenceRecord[];
+   bibliography: BibliographyEntryInput[];
+   styleProfile?: Record<string, unknown>;
+@@ -1977,6 +2025,7 @@ export function buildSectionPrompt(params: {
+     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
+     "",
+     "===== 论文大纲（全文结构）=====",
++    ...renderCrossSectionContext(params.outline, params.section, params.previousSections),
+     `标题：${params.outline.title}`,
+     ...params.outline.sections.map((section) => `- ${section.title}（${section.id}）`),
+     "",
+@@ -2003,6 +2052,7 @@ export function buildSectionPrompt(params: {
+ export function buildSurveySectionPrompt(params: {
+   section: OutlineSection;
+   outline: Outline;
++  previousSections?: WrittenSectionContext[];
+   bibliography: BibliographyEntryInput[];
+   language?: ManuscriptLanguage;
+   survey: SurveySectionWritingContext;
+@@ -2044,6 +2094,7 @@ export function buildSurveySectionPrompt(params: {
+     ...MANUSCRIPT_CONTENT_LINES,
+     "",
+     "===== 论文大纲（全文结构；本节是其中一节，保持术语一致）=====",
++    ...renderCrossSectionContext(params.outline, params.section, params.previousSections),
+     `标题：${params.outline.title}`,
+     ...params.outline.sections.map((section) => `- ${section.title}（${section.id}）`),
+     "",
+diff --git a/backend/test/writer/crossSectionContext.test.ts b/backend/test/writer/crossSectionContext.test.ts
+new file mode 100644
+index 0000000..caf7c86
+--- /dev/null
++++ b/backend/test/writer/crossSectionContext.test.ts
+@@ -0,0 +1,46 @@
++import { describe, expect, it } from "vitest";
++import { buildSectionPrompt, renderCrossSectionContext } from "../../src/writer/WriterService.js";
++import type { Outline } from "../../src/manuscript/ManuscriptService.js";
++
++const outline: Outline = {
++  title: "公开文献综述",
++  sections: [
++    { id: "intro", title: "引言", file: "intro.tex", keyPoints: ["定义检索增强生成（RAG）"] },
++    { id: "scope", title: "范围", file: "scope.tex", keyPoints: ["仅摘要证据，无独立复现"] },
++  ],
++};
++
++describe("explicit cross-section context", () => {
++  it("a fresh prompt retains prior terminology and scope without promoting prior claims to Evidence", () => {
++    const prompt = buildSectionPrompt({
++      outline, section: outline.sections[1]!, evidence: [], bibliography: [],
++      previousSections: [{ id: "intro", title: "引言", latex: "检索增强生成（RAG）结合不同记忆。本文仅采用摘要，未独立复现。" }],
++    });
++    expect(prompt).toContain("检索增强生成（RAG）结合不同记忆");
++    expect(prompt).toContain("仅摘要证据，无独立复现");
++    expect(prompt).toContain("不是事实证据");
++    expect(prompt).toContain("不能以保持一致为由继承");
++    expect(prompt).toContain("无已核验");
++  });
++
++  it("bounds long history, retains the immediate ending and never edits original manuscript", () => {
++    const latex = "定义保持。".repeat(2000) + "尚缺跨域评测，不能外推。";
++    const history = Array.from({ length: 12 }, (_, i) => ({ id: `s${i}`, title: `Section ${i}`, latex }));
++    const before = structuredClone(history);
++    const rendered = renderCrossSectionContext(outline, outline.sections[1]!, history).join("\n");
++    expect(rendered.length).toBeLessThan(11000);
++    expect(rendered).toContain("上一节结尾");
++    expect(rendered).toContain("尚缺跨域评测，不能外推。");
++    expect(rendered).toContain("后部省略");
++    expect(history).toEqual(before);
++  });
++
++  it("does not echo the target as a prior chapter or require removing necessary repetition", () => {
++    const rendered = renderCrossSectionContext(outline, outline.sections[1]!, [
++      { id: "scope", title: "范围", latex: "TARGET_MUST_NOT_BE_HISTORY" },
++    ]).join("\n");
++    expect(rendered).not.toContain("TARGET_MUST_NOT_BE_HISTORY");
++    expect(rendered).toContain("不得为去重删除真实数值、公式、负结果或科学限制");
++    expect(rendered).toContain("新的事实论断处仍须清晰标注");
++  });
++});

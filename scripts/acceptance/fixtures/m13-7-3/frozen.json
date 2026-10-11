@@ -1,0 +1,128 @@
+{
+  "evidence": [
+    {
+      "id": "E100",
+      "source": {
+        "sourceId": "S101",
+        "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+        "year": 2020,
+        "url": "https://arxiv.org/abs/2004.04906v3"
+      },
+      "claim": "Open-domain question answering relies on efficient passage retrieval to select candidate contexts, where traditional sparse vector space models, such as TF-IDF or BM25, are the de facto method. In this work, we show that retrieval can be practically implemented using dense representations alone, where embeddings are learned from a small number of questions and passages by a simple dual-encoder framework.",
+      "quote": "Open-domain question answering relies on efficient passage retrieval to select candidate contexts, where traditional sparse vector space models, such as TF-IDF or BM25, are the de facto method. In this work, we show that retrieval can be practically implemented using dense representations alone, where embeddings are learned from a small number of questions and passages by a simple dual-encoder framework.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public-abstract exact quote; scope manually checked",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S101:abstract:e2b47a77862b"
+      }
+    },
+    {
+      "id": "E101",
+      "source": {
+        "sourceId": "S102",
+        "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+        "year": 2020,
+        "url": "https://arxiv.org/abs/2005.11401v4"
+      },
+      "claim": "We introduce RAG models where the parametric memory is a pre-trained seq2seq model and the non-parametric memory is a dense vector index of Wikipedia, accessed with a pre-trained neural retriever. We compare two RAG formulations, one which conditions on the same retrieved passages across the whole generated sequence, the other can use different passages per token.",
+      "quote": "We introduce RAG models where the parametric memory is a pre-trained seq2seq model and the non-parametric memory is a dense vector index of Wikipedia, accessed with a pre-trained neural retriever. We compare two RAG formulations, one which conditions on the same retrieved passages across the whole generated sequence, the other can use different passages per token.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public-abstract exact quote; scope manually checked",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S102:abstract:8f02ae15ac57"
+      }
+    },
+    {
+      "id": "E109",
+      "source": {
+        "sourceId": "S101",
+        "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+        "year": 2020,
+        "url": "https://arxiv.org/abs/2004.04906v3"
+      },
+      "claim": "DPR 的双编码器在所有领域及所有语言均优于 BM25。",
+      "quote": "Open-domain question answering relies on efficient passage retrieval to select candidate contexts, where traditional sparse vector space models, such as TF-IDF or BM25, are the de facto method. In this work, we show that retrieval can be practically implemented using dense representations alone, where embeddings are learned from a small number of questions and passages by a simple dual-encoder framework.",
+      "verificationStatus": "verified",
+      "verificationMethod": "exact quote supports dual encoder only; universal superiority unsupported",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S101:abstract:e2b47a77862b"
+      }
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "karpukhin2020dense",
+      "sourceId": "S101",
+      "title": "Dense Passage Retrieval for Open-Domain Question Answering",
+      "year": 2020,
+      "url": "https://arxiv.org/abs/2004.04906v3"
+    },
+    {
+      "key": "lewis2020retrieval",
+      "sourceId": "S102",
+      "title": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "year": 2020,
+      "url": "https://arxiv.org/abs/2005.11401v4"
+    }
+  ],
+  "outline": {
+    "title": "开放域问答中的检索与生成综述",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "界定开放域问答综述范围；本文只比较文献机制，没有独立实验。"
+        ]
+      },
+      {
+        "id": "retrieval",
+        "title": "稠密检索",
+        "file": "retrieval.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 DPR 双编码器机制与候选段落检索；不扩展为所有任务的性能保证。"
+        ]
+      },
+      {
+        "id": "generation",
+        "title": "检索增强生成",
+        "file": "generation.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 RAG 参数化与非参数化记忆；比较序列级与 token 级文段条件。"
+        ]
+      },
+      {
+        "id": "scope",
+        "title": "比较与局限性",
+        "file": "scope.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "比较检索组件与生成系统的论述层次；只有摘要证据，未统一数据集复现，没有本文实验结果。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "概括综述整理贡献，呼应比较维度；未来统一评测属于计划。"
+        ]
+      }
+    ]
+  },
+  "instructions": "撰写连续中文综述正文，每节约350字；不是原创算法论文。仅使用给定材料，不调用工具查询补充事实。内部记录：本轮检索未发现更多可用文献；作者确认、尚未核验；待补实验。正式正文保持科学限制。"
+}
