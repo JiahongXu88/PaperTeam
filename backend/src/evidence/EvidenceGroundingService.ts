@@ -56,7 +56,7 @@ export interface EvidenceProposalInput {
 
 export interface ProposeResult {
   candidate: EvidenceCandidate;
-  /** true = 与既有 pending 候选完全同文（chunkId+claim+quote），复用未重复入队 */
+  /** true = 与既有候选完全同文（chunkId+claim+quote），复用未重复入队 */
   deduplicated: boolean;
 }
 
@@ -98,6 +98,7 @@ export interface EvidenceGroundingServiceOptions {
 }
 
 export class EvidenceGroundingService {
+  private readonly groundQueues = new Map<string, Promise<unknown>>();
   private readonly projects: ProjectStore;
   private readonly candidates: EvidenceCandidateStore;
   private readonly evidence: EvidenceStore;
@@ -125,7 +126,7 @@ export class EvidenceGroundingService {
   /**
    * 提交证据候选：确定性校验（chunkId 格式 / chunk 存在 / sourceId 一致 /
    * quote 非空且非空洞）通过后入队（status=pending）。不写 EvidenceStore。
-   * 完全同文的 pending 候选直接复用（防工具重试 / JSON 与工具双报）。
+   * 完全同文的候选（包括已处置状态）直接复用（防工具重试 / JSON 与工具双报）。
    */
   async propose(projectId: string, input: EvidenceProposalInput): Promise<ProposeResult> {
     await this.projects.getRequired(projectId);
@@ -163,7 +164,6 @@ export class EvidenceGroundingService {
     }
 
     const existing = await this.candidates.query(projectId, {
-      status: "pending",
       chunkId: input.chunkId,
     });
     const duplicate = existing.find(
@@ -196,6 +196,20 @@ export class EvidenceGroundingService {
     candidateId: string,
     options: { retry?: boolean; signal?: AbortSignal } = {},
   ): Promise<GroundResult> {
+    const previous = this.groundQueues.get(projectId) ?? Promise.resolve();
+    const task = previous.catch(() => {}).then(() => this.groundOne(projectId, candidateId, options));
+    this.groundQueues.set(projectId, task);
+    const cleanup = () => { if (this.groundQueues.get(projectId) === task) this.groundQueues.delete(projectId); };
+    task.then(cleanup, cleanup);
+    return task;
+  }
+
+  private async groundOne(
+    projectId: string,
+    candidateId: string,
+    options: { retry?: boolean; signal?: AbortSignal } = {},
+  ): Promise<GroundResult> {
+    options.signal?.throwIfAborted();
     await this.projects.getRequired(projectId);
     const candidate = await this.candidates.get(projectId, candidateId);
     if (candidate === null) {
@@ -348,6 +362,8 @@ export class EvidenceGroundingService {
         metadataOutcome,
       );
     }
+
+    options.signal?.throwIfAborted();
 
     // ---- 通过：转正进 EvidenceStore（唯一 grounded 写入口） ----
     const protocolScope = inferExperimentProtocolScope(sourceFileName || sourceMeta.title || "");

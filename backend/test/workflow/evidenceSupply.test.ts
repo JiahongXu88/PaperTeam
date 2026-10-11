@@ -2,8 +2,8 @@
  * M9.7.4 P1-1 Evidence Supply HITL 测试（workflow 级）。
  *
  * 覆盖（任务书 §8-17~19）：
- * 17. pending Candidate 不被自动晋升（research / evidence.ground / HITL 全链路零 promote）
- * 18. 晋升只能来自用户显式动作（HTTP promote 端点）
+ * 17. manual Candidate 不被自动晋升（自动供给只筛选 academic_search）
+ * 18. 人工候选晋升来自用户显式动作（HTTP promote 端点）
  * 19. HITL 保持边界：payload 如实呈现候选/证据规模；continue 继续、cancel 终止；
  *     无候选（<3）时零打扰
  */
@@ -86,7 +86,8 @@ describe("hitl.evidence_supply（M9.7.4）", () => {
     expect(payload["pendingCandidates"]).toBe(4);
     expect(typeof payload["verifiedEvidenceSources"]).toBe("number");
     expect(Array.isArray(payload["pendingSample"])).toBe(true);
-    expect(String(payload["action"])).toContain("Promote");
+    expect(String(payload["action"])).toContain("未核验缺口不能正式引用");
+    expect(payload["automaticSupply"]).toMatchObject({ reviewed: 0, selected: 0, promoted: 0, formalEvidence: 0 });
 
     // continue：写作继续
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "continue" });

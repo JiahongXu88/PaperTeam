@@ -405,7 +405,7 @@ export class SourceImportService {
   async promoteCandidate(
     projectId: string,
     candidateId: string,
-    input: { sourceRole?: SourceRole; selectionReason?: string } = {},
+    input: { sourceRole?: SourceRole; selectionReason?: string; deferFullText?: boolean } = {},
   ): Promise<PromoteResult> {
     const candidate = await this.candidates.getRequired(projectId, candidateId);
     // 幂等快路径：已 promote 且 library 条目仍在
@@ -457,7 +457,7 @@ export class SourceImportService {
     );
     // M7.2：promote 后台尝试自动获取 OA 全文（fire-and-forget 单次，不阻塞
     // 响应；attachFile 幂等守卫吸收并发竞态；未装配全文能力 = no-op）
-    if (source.status === "metadata_only") {
+    if (source.status === "metadata_only" && input.deferFullText !== true) {
       void this.tryResolveFullText(projectId, source.sourceId).catch((error) => {
         this.log(
           `[sources] promote 后全文解析异常（${projectId}/${source.sourceId}）：${errorText(error)}`,

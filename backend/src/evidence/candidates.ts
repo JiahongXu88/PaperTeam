@@ -161,6 +161,9 @@ export class EvidenceCandidateStore {
       const quote = requireNonEmpty(input.quote, "quote", 2000);
       const proposedBy = requireNonEmpty(input.proposedBy, "proposedBy", 64);
       const { records } = await this.loadAll(projectId);
+      const duplicate = records.find((candidate) => candidate.sourceId === sourceId &&
+        candidate.chunkId === chunkId && candidate.claim === claim && candidate.quote === quote);
+      if (duplicate !== undefined) return duplicate;
       const maxExisting = records.reduce((max, item) => {
         const numeric = Number(item.candidateId.replace(/^EC/, ""));
         return Number.isFinite(numeric) ? Math.max(max, numeric) : max;

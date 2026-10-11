@@ -4,10 +4,10 @@
  * 两条一级工作流共享后段（D-0010）：
  *
  *   Idea-to-Paper 前段：
- *     research.idea → evidence.ground → research.feasibility → HITL(feasibility: approve/adjust/cancel)
+ *     research.idea → evidence.ground（有界文献/全文/RAG/三段核验）→ research.feasibility → HITL(feasibility: approve/adjust/cancel)
  *     → outline.plan → HITL(outline: approve/revise/cancel)
  *     → HITL(evidence_supply: continue/cancel；M9.7.4 条件出现——待审候选 ≥3，
- *       只提示不自动 promote) → writing.sections
+ *       自动供给后仍无 verified 时提示人工补给) → writing.sections
  *   Existing-Paper 前段：
  *     import.parse → import.baseline_build → import.understand → citation.verify
  *     → review.run → assessment.target → plan.improvement → HITL(plan) → revision.apply
@@ -45,6 +45,7 @@ import { tokenizeText } from "../retrieval/tokenize.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { TargetedGroundingService } from "../evidence/TargetedGroundingService.js";
+import { supplyResearchEvidence } from "../evidence/ResearchEvidenceSupply.js";
 import { selectReviewerSourceIds } from "../evidence/revisionSourceSelection.js";
 import { buildPlannerAliases, plannerEligibleEvidence } from "../review/plannerAliases.js";
 import type { ChunkStore } from "../retrieval/ChunkStore.js";
@@ -4437,7 +4438,7 @@ function researchIdeaStage(services: WorkflowServices): StageSpec {
       const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
       const result = await services.researcher.research({ projectId: ctx.projectId, experimentContext });
       // M9.7.4：待审候选数随 stage 结果暴露（planEvidenceSupply 纯函数消费，
-      // 决定是否在写作前呈现 evidence-supply HITL；只读，绝不自动 promote）
+      // 决定是否在写作前呈现 evidence-supply HITL；实际有界供给由 evidence.ground 执行）
       const pendingCandidates = (await services.candidates.list(ctx.projectId, "pending_review")).length;
       return {
         taskId: result.taskId,
@@ -4485,8 +4486,19 @@ function evidenceGroundStage(
     timeoutMs: services.stageTimeoutMs,
     retryable: ["transient", "timeout", "runtime_unavailable"],
     async execute(ctx) {
-      const summary = await services.evidenceGrounding.groundPending(ctx.projectId);
+      const supply = ctx.state.workflowKind === "idea_to_paper"
+        ? await supplyResearchEvidence(
+            services, ctx.projectId, await requireResearchArtifact(services, ctx.projectId),
+            {
+              signal: ctx.signal,
+              progress: (phase, counts) => ctx.log(`[research-evidence-supply:${phase}] ${JSON.stringify(counts)}`),
+            },
+          )
+        : undefined;
+      if (supply !== undefined) ctx.log(`[research-evidence-supply] ${JSON.stringify(supply)}`);
+      const summary = await services.evidenceGrounding.groundPending(ctx.projectId, { signal: ctx.signal });
       return {
+        ...(supply !== undefined ? { researchSupply: supply } : {}),
         pending: summary.pending,
         processed: summary.processed,
         verified: summary.verified,
@@ -4988,8 +5000,9 @@ function evidenceSupplyStage(
     requiredInputs,
     producedOutputs: ["用户决策（continue / cancel）"],
     hitl: {
-      prompt:
-        "研究发现了一批待审候选文献，而当前已核验（verified）证据只覆盖少数来源。你可以先在「文献发现」页审阅并 Promote 候选文献（入库并获取全文后，重新运行研究阶段可扩大证据池、提高后续引用的证据覆盖），也可以直接以当前证据继续写作。",
+      prompt: requiredInputs.includes("hitl.outline_confirm")
+        ? "研究发现了一批候选文献，当前证据仍有缺口。idea_to_paper 已在写作前尝试有界入库、全文定位和三段核验。无法获取全文或核验支持关系的材料仍不能作为正式证据；可补充文献或全文，也可继续写作并保留缺口。"
+        : "研究发现了一批待审候选文献，而当前已核验（verified）证据只覆盖少数来源。你可以先在「文献发现」页审阅并 Promote 候选文献（入库并获取全文后，重新运行研究阶段可扩大证据池、提高后续引用的证据覆盖），也可以直接以当前证据继续写作。",
       options: ["continue", "cancel"],
       payload: async (ctx) => {
         const pending = await services.candidates.list(ctx.projectId, "pending_review");
@@ -5033,8 +5046,11 @@ function evidenceSupplyStage(
             origin: candidate.origin,
           })),
           ...requirementFields,
-          action:
-            "在「文献发现」页 Promote 候选 → 文献库获取全文 → 重跑研究（或本 run 直接 continue 使用现有证据）",
+          ...(ctx.state.stageResults["evidence.ground"]?.["researchSupply"] !== undefined
+            ? { automaticSupply: ctx.state.stageResults["evidence.ground"]!["researchSupply"] } : {}),
+          action: ctx.state.workflowKind === "idea_to_paper"
+            ? "查看自动供给诊断；补充可访问全文或带 chunk 锚点的证据。未核验缺口不能正式引用。"
+            : "在「文献发现」页 Promote 候选 → 文献库获取全文 → 重跑研究（或本 run 直接 continue 使用现有证据）",
         };
       },
     },
@@ -5046,6 +5062,8 @@ function planEvidenceSupply(state: WorkflowState): PlanDecision | null {
   if ("hitl.evidence_supply" in state.stageResults) {
     return null; // 每 run 至多一次
   }
+  const supply = state.stageResults["evidence.ground"]?.["researchSupply"] as { verified?: number } | undefined;
+  if ((supply?.verified ?? 0) > 0) return null;
   const research = state.stageResults["research.idea"] ?? {};
   const pending = typeof research["candidatePending"] === "number" ? research["candidatePending"] : 0;
   return pending >= EVIDENCE_SUPPLY_MIN_PENDING ? { kind: "stage", stageId: "hitl.evidence_supply" } : null;

@@ -83,10 +83,12 @@ export class TargetedGroundingService {
     this.log = options.log ?? (() => {});
   }
 
-  /**
-   * 批量定向采证（每 claim 独立；单 claim 失败不阻断批次）。
-   * 只处理 pending 候选；quote 必须逐字来自 chunk（窗口切片，非合成）。
-   */
+  /** Refresh one source through the existing chunk/index pipeline. */
+  async prepareSource(projectId: string, sourceId: string) {
+    return this.retrieval.rebuildSource(projectId, sourceId);
+  }
+
+  /** Bounded per-claim sampling; provider failures stop the batch. */
   async groundClaims(
     projectId: string,
     requests: readonly TargetedGroundingRequest[],
@@ -95,7 +97,10 @@ export class TargetedGroundingService {
     await this.projects.getRequired(projectId);
     const outcomes: TargetedGroundingOutcome[] = [];
     for (const request of requests) {
-      outcomes.push(await this.groundClaim(projectId, request, options));
+      options.signal?.throwIfAborted();
+      const outcome = await this.groundClaim(projectId, request, options);
+      outcomes.push(outcome);
+      if (outcome.attempts.some((attempt) => /judge_failed|judge_unavailable|rate.limit|429/i.test(attempt.reason ?? ""))) break;
     }
     const verified = outcomes.filter((outcome) => outcome.status === "verified");
     return {
@@ -144,6 +149,7 @@ export class TargetedGroundingService {
       return outcome;
     }
     for (const chunk of chunks) {
+      options.signal?.throwIfAborted();
       const quote = selectQuoteWindow(request.claim, chunk.text);
       if (quote === null) {
         outcome.attempts.push({
@@ -162,16 +168,24 @@ export class TargetedGroundingService {
           quote,
           proposedBy: "targeted-grounding:m1123",
         });
-        const grounded = await this.grounding.ground(projectId, proposed.candidate.candidateId, {
-          ...(options.signal !== undefined ? { signal: options.signal } : {}),
-        });
+        const status = proposed.candidate.status;
+        const grounded = status === "rejected" || status === "mismatch"
+          ? { status, reason: proposed.candidate.statusReason }
+          : await this.grounding.ground(projectId, proposed.candidate.candidateId, {
+              retry: status === "unverifiable",
+              ...(options.signal !== undefined ? { signal: options.signal } : {}),
+            });
         outcome.attempts.push({
           sourceId: chunk.sourceId,
           chunkId: chunk.chunkId,
           outcome: grounded.status,
           ...(grounded.reason !== undefined ? { reason: grounded.reason } : {}),
         });
-        if (grounded.status === "verified" && grounded.evidenceId !== undefined) {
+        if (/judge_failed|judge_unavailable|rate.limit|429/i.test(grounded.reason ?? "")) {
+          outcome.status = "unverified";
+          return outcome;
+        }
+        if (grounded.status === "verified" && "evidenceId" in grounded && grounded.evidenceId !== undefined) {
           outcome.evidenceIds.push(grounded.evidenceId);
           outcome.status = "verified";
           this.log(
@@ -180,6 +194,7 @@ export class TargetedGroundingService {
           return outcome; // 第一个 verified 即满足 claim 级需求（成本 bound）
         }
       } catch (error) {
+        options.signal?.throwIfAborted();
         outcome.attempts.push({
           sourceId: chunk.sourceId,
           chunkId: chunk.chunkId,
@@ -219,29 +234,17 @@ export function selectQuoteWindow(claim: string, chunkText: string): string | nu
   if (claimTerms.size === 0) {
     return text.slice(0, QUOTE_WINDOW_CHARS);
   }
-  const sentences = text.split(/(?<=[。！？.!?])\s+/).filter((part) => part.trim() !== "");
-  if (sentences.length <= 1) {
-    return text.slice(0, QUOTE_WINDOW_CHARS);
-  }
-  let best = "";
+  const starts = [0, ...Array.from(text.matchAll(/(?<=[。！？.!?])\s+/g), (match) => match.index! + match[0].length)];
+  let best = text.slice(0, QUOTE_WINDOW_CHARS);
   let bestHits = -1;
-  let start = 0;
-  while (start < sentences.length) {
-    let window = "";
-    let index = start;
-    while (index < sentences.length && window.length < QUOTE_WINDOW_CHARS) {
-      window = window.length === 0 ? sentences[index]! : `${window} ${sentences[index]!}`;
-      index += 1;
-    }
-    const hits = tokenizeText(window).filter((token) => claimTerms.has(token)).length;
+  for (const start of starts) {
+    const window = text.slice(start, start + QUOTE_WINDOW_CHARS);
+    const hits = new Set(tokenizeText(window).filter((token) => claimTerms.has(token))).size;
     if (hits > bestHits) {
       bestHits = hits;
       best = window;
     }
-    if (bestHits === claimTerms.size) {
-      break; // 全覆盖窗口已找到
-    }
-    start += 1;
+    if (bestHits === claimTerms.size) break;
   }
   return best.slice(0, 2000);
 }
