@@ -283,6 +283,7 @@ describe("claimGrounding 集成：disclosure 与 counts 落进报告", () => {
       id: "E001",
       claim: "已核验的 Z",
       quote: "verified quote",
+      supportStrength: "direct",
       source: { sourceId: "S001", title: "Z source" },
       location: { chunk: "S001:SEC01:0001:abcdef0123" },
       verificationStatus: "verified",

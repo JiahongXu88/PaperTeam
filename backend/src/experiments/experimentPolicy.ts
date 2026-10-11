@@ -24,7 +24,7 @@ export function renderExperimentPolicyLines(policy: ExperimentPolicyView): strin
     return [
       "",
       header,
-      "本项目当前没有已导入的实验数据：涉及实验结论的表述一律按「待补实验」处理，不得出现任何具体实验指标数值、超参数或统计量。",
+      "本项目当前没有已导入的实验数据：不得把未来实验写为已完成结果，应在实验或局限性章节准确说明缺少的评测，不得出现任何具体实验指标数值、超参数或统计量。",
     ];
   }
   const lines: string[] = ["", header];
@@ -44,7 +44,7 @@ export function renderExperimentPolicyLines(policy: ExperimentPolicyView): strin
     );
   } else if (policy.entries.length > 0) {
     lines.push(
-      "口径：当前没有任何已授权进入工作流的实验范围——任何角色不得写出具体实验指标数值、超参数或统计量；缺失的实验支撑应如实标注为待补实验（需作者完成实验数据核对与授权）。",
+      "口径：当前没有任何已授权进入工作流的实验范围——任何角色不得写出具体实验指标数值、超参数或统计量；缺失的实验支撑须在局限性中准确说明，不可声称已验证；核对与授权状态只用于内部决策，不复制到正文。",
     );
   }
   return lines;

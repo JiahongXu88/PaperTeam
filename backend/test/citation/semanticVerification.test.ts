@@ -543,7 +543,8 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     const quoted = byId.get("CT008-AC1")!;
     expect(quoted.verdict).toBe("CONTRADICTED");
     expect(quoted.severity).toBe("critical");
-    expect(quoted.evidence[0]?.text).toContain("[judge 关键引文] improves accuracy substantially");
+    expect(quoted.keyQuote).toBe("improves accuracy substantially");
+    expect(quoted.evidence[0]?.text).toBe(R006_ABSTRACT);
 
     // 全库只有一条真 CONTRADICTED
     expect(result.summary.byVerdict.CONTRADICTED).toBe(1);

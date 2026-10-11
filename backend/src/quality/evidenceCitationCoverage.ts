@@ -26,6 +26,8 @@ export interface EvidenceCitationCoverageInput {
 }
 
 export interface EvidenceCitationCoverage {
+  /** Source-level coverage only; never a claim-support verdict. Legacy optional. */
+  supportByKey?: Record<string, { direct: number; partial: number; other: number }>;
   /** 每个 cited key 是否有对应 verified evidence 覆盖 */
   byKey: Record<string, boolean>;
   covered: string[];
@@ -39,8 +41,9 @@ export function computeEvidenceCitationCoverage(
   // formal evidence 覆盖的 bib key 集合（匹配规则与 Writer 引用关联同源：
   // sourceId 精确 → DOI → 归一化 title+年份）
   const coveredKeys = new Set<string>();
+  const supportByKey: NonNullable<EvidenceCitationCoverage["supportByKey"]> = {};
   for (const record of input.evidenceRecords) {
-    if (!isFormalEvidence(record)) {
+    if (!isFormalEvidence(record) || record.verificationLevel === "metadata") {
       continue;
     }
     const sourceId = record.source?.sourceId?.trim();
@@ -56,6 +59,9 @@ export function computeEvidenceCitationCoverage(
     }
     if (key !== null) {
       coveredKeys.add(key);
+      const counts = supportByKey[key] ?? { direct: 0, partial: 0, other: 0 };
+      counts[record.supportStrength === "direct" ? "direct" : record.supportStrength === "partial" ? "partial" : "other"] += 1;
+      supportByKey[key] = counts;
     }
   }
   const byKey: Record<string, boolean> = {};
@@ -68,5 +74,5 @@ export function computeEvidenceCitationCoverage(
     byKey[key] = backed;
     (backed ? covered : uncovered).push(key);
   }
-  return { byKey, covered, uncovered };
+  return { byKey, covered, uncovered, supportByKey };
 }

@@ -22,6 +22,7 @@ import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
+import { isOwnResultClaim } from "../citation/citationIntent.js";
 
 /** Repair Context 的候选证据上限（§9：bounded Top-K，3~5） */
 export const CLAIM_REPAIR_TOP_K = 5;
@@ -181,6 +182,7 @@ export function claimRequiresDirectSupport(claimText: string): boolean {
  *   其余 direct / partial 皆可；strength 缺失 = 不足（fail-closed，不猜）。
  */
 export function meetsEvidenceSupportQuality(record: EvidenceRecord, claimText: string): boolean {
+  if (isOwnResultClaim(claimText) && record.verificationLevel !== "user_confirmed") return false;
   if ((record.verificationLevel ?? "") === "metadata") {
     return false;
   }
@@ -352,7 +354,7 @@ export function findEvidenceCandidates(
     ].join("\n");
     if (
       anchorNumbers.length > 0 &&
-      !anchorNumbers.some((value) => evidenceText.includes(value))
+      !anchorNumbers.every((value) => distinctiveNumbers(evidenceText).includes(value))
     ) {
       continue; // M11.3：数值锚定失败（词面像但不含 claim 的特征数值）
     }
@@ -390,6 +392,9 @@ export interface ClaimGroundingEntry {
   evidenceId?: string;
   /** evidenceId 是否解析到 formal evidence（verified + 锚点） */
   evidenceFormal: boolean;
+  /** Deterministic correction of an overstrong Reviewer binding (legacy optional). */
+  reviewerVerdict?: FactVerdict;
+  supportBoundary?: string;
   /** 绑定证据解析出的 citation key（与 Writer 引用 / coverage gate 同源解析链） */
   citationKey?: string;
   /** UNSUPPORTED / CONTRADICTED 的修复候选（formal 池词面 Top-K；可空） */
@@ -477,11 +482,22 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
   let transparentUnsupported = 0;
   let authorDataUnsupported = 0;
   const authorizedObservations = input.authorizedObservations ?? [];
-  for (const check of input.factClaims) {
+  for (const original of input.factClaims) {
+    const check = { ...original };
     const claimId = claimFingerprint(check.section, check.claim);
     const evidenceRecord =
       check.evidenceId !== undefined ? formalById.get(check.evidenceId) : undefined;
     const evidenceFormal = evidenceRecord !== undefined;
+    let supportBoundary: string | undefined;
+    if ((check.verdict === "SUPPORTED" || check.verdict === "PARTIALLY_SUPPORTED") && evidenceRecord !== undefined) {
+      if (!meetsEvidenceSupportQuality(evidenceRecord, check.claim)) {
+        check.verdict = "UNSUPPORTED";
+        supportBoundary = "Bound evidence cannot support this claim's strength, numeric scope or result provenance";
+      } else if (check.verdict === "SUPPORTED" && evidenceRecord.supportStrength === "partial") {
+        check.verdict = "PARTIALLY_SUPPORTED";
+        supportBoundary = "Partial evidence cannot establish the complete claim; verify the covered subclaim against its quote";
+      }
+    }
     if (check.verdict === "SUPPORTED" || check.verdict === "PARTIALLY_SUPPORTED") {
       if (evidenceFormal) {
         bound += 1;
@@ -524,6 +540,7 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
       section: check.section,
       claim: check.claim,
       verdict: check.verdict,
+      ...(supportBoundary !== undefined ? { reviewerVerdict: original.verdict, supportBoundary } : {}),
       ...(check.evidenceId !== undefined ? { evidenceId: check.evidenceId } : {}),
       evidenceFormal,
       ...(evidenceRecord !== undefined
@@ -574,6 +591,8 @@ export interface ClaimRepairCandidateView {
   claim: string;
   quote?: string;
   citationKey?: string;
+  supportStrength?: EvidenceRecord["supportStrength"];
+  verificationLevel?: EvidenceRecord["verificationLevel"];
 }
 
 export interface ClaimRepairDirective {
@@ -611,6 +630,8 @@ export function buildClaimRepairDirectives(
       candidates.push({
         evidenceId: record.id,
         claim: record.claim,
+        ...(record.supportStrength !== undefined ? { supportStrength: record.supportStrength } : {}),
+        ...(record.verificationLevel !== undefined ? { verificationLevel: record.verificationLevel } : {}),
         ...(record.quote !== undefined && record.quote !== "" ? { quote: record.quote } : {}),
         ...(key !== null ? { citationKey: key } : {}),
       });

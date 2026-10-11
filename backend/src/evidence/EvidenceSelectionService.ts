@@ -118,7 +118,23 @@ export class EvidenceSelectionService {
     formal.sort(
       (a, b) => (b.supportStrength === "direct" ? 1 : 0) - (a.supportStrength === "direct" ? 1 : 0),
     );
-    return { formal: formal.slice(0, limit), excluded };
+    // Round-robin sources before truncation: one prolific source must not crowd
+    // every other source out of the Writer/Reviewer snapshot. Within a source,
+    // retain the existing direct-first ordering and stable input order.
+    const queues = new Map<string, EvidenceRecord[]>();
+    for (const record of formal) {
+      const key = record.source!.sourceId!;
+      const queue = queues.get(key) ?? [];
+      queue.push(record);
+      queues.set(key, queue);
+    }
+    const balanced: EvidenceRecord[] = [];
+    for (let index = 0; balanced.length < formal.length; index += 1) {
+      for (const queue of queues.values()) {
+        if (queue[index] !== undefined) balanced.push(queue[index]!);
+      }
+    }
+    return { formal: balanced.slice(0, limit), excluded };
   }
 
   /**

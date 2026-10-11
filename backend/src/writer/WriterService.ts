@@ -18,6 +18,8 @@ import type { BibliographyEntryInput } from "../agents/ResearcherService.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { ConfirmedExperimentWorkflowContext } from "../experiments/ExperimentPackageService.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
+import { CITATION_INTENT_GUIDANCE } from "../citation/citationIntent.js";
+import { isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import { buildPlannerAliases, resolvePlannerRefs } from "../review/plannerAliases.js";
 import { screenWriterGraphics } from "../figures/writerGraphicsGuard.js";
@@ -101,6 +103,7 @@ function renderEvidenceLines(
     const title = record.source?.title?.trim();
     const year = record.source?.year;
     const meta: string[] = [];
+    meta.push(`support=${record.supportStrength ?? "unknown"}`, `level=${record.verificationLevel ?? "unknown"}`, `chunk=${record.location?.chunk ?? "unknown"}`);
     if (key !== null) {
       meta.push(`cite: ${key}`);
     }
@@ -108,7 +111,7 @@ function renderEvidenceLines(
       meta.push(`src: ${title.slice(0, 60)}${year !== undefined ? ` (${year})` : ""}`);
     }
     return `- [${record.id}]${meta.length > 0 ? `（${meta.join("；")}）` : ""} ${record.claim.slice(0, 150)}${
-      record.quote ? `（引文："${record.quote.slice(0, 120)}"）` : ""
+      record.quote ? `（引文："${record.quote.slice(0, 2000)}"）` : ""
     }`;
   });
 }
@@ -119,10 +122,18 @@ function renderEvidenceLines(
  * 弱化 / 标注不确定 / 删除，不存在「凭记忆写得更确定」。
  */
 const CLAIM_DISCIPLINE_LINES = [
+  CITATION_INTENT_GUIDANCE,
   "事实性论断强度纪律（数字 / 年份 / 性能结论 / 方法能力 / 实验结果 / 对论文贡献的具体描述 / 比较性事实）：",
   "- 每写一个这类论断，先在上方 Evidence 中找到能支撑它的 claim（证据说什么写什么：范围、数值、对象、限定词都不得扩大）；",
-  "- 证据只支撑一部分时，只写被支撑的那部分，其余弱化为背景性描述或明确不确定性（如「有报道指出」「尚待验证」）；",
+  "- partial Evidence 的 claim 是待核验命题，不是完整成立的事实；必须核对 quote，只写引文实际覆盖的子命题，不得把 partial 扩成 direct，也不得用「有报道指出」包装未获支持的事实。",
+  "- 按本节论点选择证据；不同来源承担不同论述责任，不为覆盖率凑引用、不反复使用同一证据解释无关论点；相关证据不在快照时先 evidence_query。",
   "- 完全没有证据时删除该具体论断，只保留无争议的背景性叙述；禁止凭模型记忆把具体事实（数字、年份、结论、对比）写得更确定。",
+];
+
+const MANUSCRIPT_CONTENT_LINES = [
+  "正式论文内容边界：检索状态、核验过程、作者授权状态、Evidence 编号、修订过程属于内部工作状态，不属于学术论述。不得将「本轮检索未发现」「作者确认、尚未核验」「待补实验」等工作注记复制到正文。",
+  "科学限制必须保留：在实验或局限性章节集中准确说明尚缺的评测范围、负结果与适用条件；相关结论处保留必要限定，不在引言、方法、讨论机械重复免责。缺少实验意味着不能声称已验证，不能隐藏这一限制。",
+  "方法章节描述实际方法；未来实验计划放在展望或局限性，不列为已完成贡献。各节承担不同论述任务，避免重复同一观点；摘要与结论必要呼应可以保留。",
 ];
 
 /**
@@ -137,6 +148,7 @@ export function partitionEvidenceBackedKeys(
 ): { backedKeys: string[]; unbackedKeys: string[] } {
   const backed = new Set<string>();
   for (const record of evidence) {
+    if (!isFormalEvidence(record) || record.verificationLevel === "metadata") continue;
     const key = resolveEvidenceCitationKey(record, bibliography);
     if (key !== null) {
       backed.add(key);
@@ -187,11 +199,13 @@ function renderCitationDisciplineLines(
   const { backedKeys, unbackedKeys } = partitionEvidenceBackedKeys(evidence, bibliography);
   return [
     backedKeys.length > 0
-      ? `   - A 组（有 verified evidence 支撑；一切事实性论断——机制描述、方法对比、实验数值、结论——的引用必须取自本组）：${backedKeys.join(", ")}`
+      ? `   - A 组（有 verified evidence 支撑；外部事实性论断——机制描述、方法对比、文献数值、文献结论——的引用须在本组逐条核对；本文实验另以授权观测为据）：${backedKeys.join(", ")}`
       : "   - A 组（有 verified evidence 支撑）：（空——当前没有任何可用 key 具备 verified evidence 支撑；事实性论断只能弱化或删除，不得引用 B 组 key 支撑）",
     unbackedKeys.length > 0
       ? `   - B 组（无 verified evidence 支撑；仅限泛指性背景陈述——领域概述、广为人知的概念——不得支撑任何具体事实、数值或结论；证据不足时弱化或删除论断，不得改引本组 key 充数）：${unbackedKeys.join(", ")}`
       : "   - B 组（无 verified evidence 支撑）：（无——全部可用 key 均有证据支撑，按 A 组规则引用）",
+    "   - A/B 只表示该 key 是否关联证据，不代表整篇来源已证明当前论断。A 组仍须逐条核对 quote 与 support；B 组相关背景可正常引用，具体机制、数值、被引观点必须先查询来源证据。",
+    "   - 背景引用没有 Evidence 时，只说明该来源与本节研究方向的关系；不得借背景段落补写具体机制（如如何计算、使用何种结构、能建模何种依赖）、实验性能或因果结论。输出前逐句检查：属于这些具体命题且无覆盖证据的内容须查询证据或省略。",
   ];
 }
 
@@ -1208,7 +1222,7 @@ function renderClaimRepairBlock(repairs: readonly ClaimRepairDirective[]): strin
       repair.candidates.length > 0
         ? repair.candidates.map(
             (candidate) =>
-              `   - [${candidate.evidenceId}]${candidate.citationKey !== undefined ? `（cite: ${candidate.citationKey}）` : ""} ${candidate.claim.slice(0, 150)}${
+              `   - [${candidate.evidenceId}]${candidate.citationKey !== undefined ? `（cite: ${candidate.citationKey}）` : ""}（support=${candidate.supportStrength ?? "unknown"}；level=${candidate.verificationLevel ?? "unknown"}） ${candidate.claim.slice(0, 150)}${
                 candidate.quote !== undefined ? `（引文："${candidate.quote.slice(0, 120)}"）` : ""
               }`,
           )
@@ -1252,6 +1266,7 @@ function buildStylePolishPrompt(params: {
     "4. 不得新增任何事实、数字、例子、引用、实验或结论；不得删除任何承载事实的句子；不得改变段落顺序与章节结构。",
     "5. 不追求「像人写的」：不加第一人称、个人感受、题外话、口语；只追求清晰、准确、术语一致的中文学术表达。",
     "6. 如果某条问题无法在不触及第 3 / 4 条的前提下修改，就原样保留该句。",
+    "来源边界与科研限制必须逐条保留，包括仅摘要、部分支持、适用范围、尚缺某项评测与负结果；不得把删除免责声明理解为删除科学限制。内部注记如承载未知事实，保留并给建议，不擅自改成已验证。",
     "7. 只允许引用以下参考文献 key（且集合必须与当前内容完全一致）：" +
       (params.bibliographyKeys.length > 0 ? params.bibliographyKeys.join(", ") : "（当前无引用：不要使用 \\cite）"),
     "",
@@ -1423,6 +1438,8 @@ export function buildRevisePrompt(params: {
       "1. 只输出修订后的摘要纯文本（100–200 字）；不要 LaTeX 命令、不要解释。",
       "2. 逐条解决下列针对摘要的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
       "3. 摘要是纯文本：不使用任何 LaTeX 命令、宏包或数学环境。",
+      ...CLAIM_DISCIPLINE_LINES,
+      ...MANUSCRIPT_CONTENT_LINES,
       ...(external.length > 0
         ? [
             `4. 外部修改意见（见下方区块）优先处理，但不得虚构数字或结论：与事实冲突时保留事实，报告行给 conflict 与依据；${EXTERNAL_OUTCOMES_MARKER} 报告行必须是输出的最后一行。`,
@@ -1491,6 +1508,7 @@ export function buildRevisePrompt(params: {
     "10. 保留本章节现有的 \\cite 引用及其所支撑的论述（除非某条问题明确要求删除该引用）；不得为了精简而整体删光引用，也不得新增列表之外的 key。",
     ...renderCitationFreezeLines(params.currentLatex),
     ...CLAIM_DISCIPLINE_LINES,
+    ...MANUSCRIPT_CONTENT_LINES,
     ...(params.buildError
       ? ["12. 上一轮编译失败，错误摘要（必须修复）：" + params.buildError]
       : []),
@@ -1794,8 +1812,9 @@ export function buildOutlinePrompt(params: {
     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
     "3. 引用纪律（可引用的参考文献 key 按 verified evidence 支撑分组；正文写作时事实性论断必须取 A 组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
+    ...MANUSCRIPT_CONTENT_LINES,
     "4. 摘要与 keyPoints 的实验数值纪律和正文一致：具体实验指标数值只允许来自下方作者授权的实验观测表；"
-      + "没有该表支撑的实验内容写成「待补实验」，不得出现具体数值，也不得从调研材料之外编造。",
+      + "没有该表支撑的实验内容不得出现具体数值或已验证结论；集中说明具体评测局限，不得从调研材料之外编造。",
     ...(params.feedback ? ["", "用户对上一版大纲的修改意见（必须落实）：", params.feedback] : []),
     "",
     "===== 调研摘要 =====",
@@ -1906,7 +1925,7 @@ export function renderExperimentContextLines(context: ConfirmedExperimentWorkflo
       header,
       "（当前没有任何经作者确认并授权进入工作流的实验观测。）",
       "实验数值纪律：正文不得出现任何具体实验指标数值、超参数或统计量；大纲 / 研究想法中作者本人陈述的结论只能按原样转述并注明为作者陈述；" +
-        "尚无授权数据支撑的实验内容必须如实写成「待补 / 待作者授权」，不得从工作区其它文件补充数值，不得编造。",
+        "尚无授权数据支撑的实验内容不能写成已完成结果；在局限性中准确说明缺少的评测，不复制授权状态，不得从工作区其它文件补充数值，不得编造。",
     ];
   }
   const lines = context.observations.map((observation) => {
@@ -1923,7 +1942,7 @@ export function renderExperimentContextLines(context: ConfirmedExperimentWorkflo
     header,
     `状态：${context.status}（作者确认 ≠ 外部核验）；共 ${context.observations.length} 条${context.truncated ? "（已截断）" : ""}。`,
     ...lines,
-    "实验数值纪律：正文中的全部实验指标数值只能来自上表，并按上表的实验组 / 评测范围归属表述；上表没有的指标、范围、对照或统计量一律不得写入具体数值，须如实标注为待补实验；" +
+    "实验数值纪律：正文中的全部实验指标数值只能来自上表，并按上表的实验组 / 评测范围归属表述；上表没有的指标、范围、对照或统计量一律不得写入具体数值，须在局限性中准确说明缺少的评测，不能作为已完成贡献；" +
       "不得从工作区其它文件补充数值，不得编造，不得把作者确认表述成外部核验。",
   ];
 }
@@ -1950,6 +1969,7 @@ export function buildSectionPrompt(params: {
     "4. 引用纪律（只允许引用以下参考文献 key；按 verified evidence 支撑分组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     ...CLAIM_DISCIPLINE_LINES,
+    ...MANUSCRIPT_CONTENT_LINES,
     "5. 保持与其他章节的术语一致。",
     ...(params.styleProfile
       ? ["6. 参考论文的结构与呈现模式（只学结构，不复制内容）：" + JSON.stringify(params.styleProfile).slice(0, 600)]
@@ -2021,6 +2041,7 @@ export function buildSurveySectionPrompt(params: {
     "8. 上下文不足以支撑某个具体论断时：保守表述或省略，不脑补；可以用 evidence_query 查询证据库确认，无果就弱化。",
     "",
     ...CLAIM_DISCIPLINE_LINES,
+    ...MANUSCRIPT_CONTENT_LINES,
     "",
     "===== 论文大纲（全文结构；本节是其中一节，保持术语一致）=====",
     `标题：${params.outline.title}`,
@@ -2071,6 +2092,7 @@ export function buildWriterPrompt(userPrompt: string): string {
     "3. 不要用 Markdown 代码块（```）包裹输出，不要输出任何解释、前言或结尾说明。",
     "4. 论文结构包含：标题、摘要、引言、结论。",
     "5. 不要虚构参考文献，不需要 \\cite 和参考文献列表。",
+    ...MANUSCRIPT_CONTENT_LINES,
     "6. 优先保证能通过 XeLaTeX 编译：只使用基础宏包（amsmath、amssymb 等），不使用生僻宏包。",
     "",
     "写作任务：",

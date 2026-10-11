@@ -37,6 +37,7 @@
 import { extractJsonObject } from "../agents/outputParsing.js";
 import { AgentRunFailedError } from "../errors.js";
 import { fingerprintJson } from "../util/hash.js";
+import { CITATION_INTENT_GUIDANCE, classifyCitationIntent, isOwnResultClaim, type CitationIntent, type CitationRelevance } from "./citationIntent.js";
 import {
   type ClaimCitationRecord,
   type ClaimPriority,
@@ -66,7 +67,7 @@ const GROUP_EVIDENCE_MEMBER_LIMIT = 6;
  * v5：绑定语义收紧——预告性/组织性论断（拆解 markers 为空）不再继承句内
  *     引用组（model 计划严格绑定；fallback 计划保持全组兜底）。
  */
-export const SEMANTIC_VERIFICATION_VERSION = 5;
+export const SEMANTIC_VERIFICATION_VERSION = 6;
 
 export interface ClaimJudgeOutput {
   verdict: ClaimSupportVerdict;
@@ -135,6 +136,7 @@ export function buildClaimRecords(
           groupRawText: calloutRawText(callout),
           claimIndex: claim.claimIndex,
           claimText: claim.claimText,
+          citationIntent: classifyCitationIntent(claim.claimText),
           sourceSentence: group.sentence,
           sectionId: callout.sectionId,
           page: callout.page,
@@ -167,7 +169,7 @@ export function buildClaimRecords(
  * 方法/实验/评估章节的论断依赖被引来源 → obligatory；引言/相关工作/摘要 → helpful。
  */
 export function classifyPriority(sectionTitle: string): ClaimPriority {
-  return /\b(method|approach|experiment|evaluation|result|implementation|baseline|dataset)\b/i.test(
+  return /方法|实验|评估|结果|实现|基线|数据集|\b(method|approach|experiment|evaluation|result|implementation|baseline|dataset)\b/i.test(
     sectionTitle,
   )
     ? "obligatory"
@@ -241,6 +243,7 @@ function groupMemberLines(
 export function buildJudgePrompt(
   input: {
     claimText: string;
+    sourceSentence?: string;
     /** 组全部成员（含未纳入证据的；展示责任归属） */
     referenceIds: string[];
     references: ReferenceEntry[];
@@ -262,13 +265,18 @@ export function buildJudgePrompt(
   ].join("\n");
 
   const shared = [
+    CITATION_INTENT_GUIDANCE,
+    `【引用用途提示（仍须核对具体命题）】${classifyCitationIntent(input.claimText)}`,
+    "background 只评价相关性；即使 relevant，也不得输出 SUPPORTED，使用 INSUFFICIENT_EVIDENCE（仅表示未证明具体事实）。明确 irrelevant 在 full 模式用 UNSUPPORTED，contradiction_only 模式用 INSUFFICIENT_EVIDENCE，不绕过模式。",
+    "只凭书目标题最多评价背景相关性，不能核验机制或结果。对比时保留来源归因：来源反对本文不等于来源反对本文对它的准确转述。",
+    ...(input.sourceSentence ? [`【原句（保留归因与对比上下文）】${input.sourceSentence}`] : []),
     `【正文原子论断】\n${input.claimText}`,
     "",
     groupIntro,
     "",
     `【检索证据】\n${evidenceLines || "（无证据）"}`,
     "",
-    '只输出一个 JSON 对象（无围栏）：{"verdict": "...", "reason": "一句话中文理由", "keyQuote": "证据中最关键的一句"}',
+    '只输出一个 JSON 对象（无围栏）：{"verdict": "...", "reason": "一句话中文理由", "keyQuote": "证据中最关键的一句", "citationIntent": "background|method|result|comparison", "relevance": "relevant|irrelevant|unknown"}',
   ];
 
   if (mode === "contradiction_only") {
@@ -327,11 +335,14 @@ export function parseJudgeOutput(
   raw: string,
   evidence: EvidenceRecord[],
   mode: CitationSemanticMode = "full",
-): { verdict: ClaimSupportVerdict; reason: string; keyQuote?: string } {
+  claimText?: string,
+): { verdict: ClaimSupportVerdict; reason: string; keyQuote?: string; citationIntent?: CitationIntent; relevance?: CitationRelevance; claimSupported?: boolean } {
   const parsed = extractJsonObject(raw, "引用语义核验结果") as unknown as {
     verdict?: unknown;
     reason?: unknown;
     keyQuote?: unknown;
+    citationIntent?: unknown;
+    relevance?: unknown;
   };
   const allowed = mode === "contradiction_only" ? CONTRADICTION_VERDICTS : VERDICTS;
   const verdict = allowed.includes(parsed.verdict as ClaimSupportVerdict)
@@ -344,7 +355,7 @@ export function parseJudgeOutput(
         : "verdict 缺失或非法（必须是枚举值之一）",
     );
   }
-  const reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 1000) : "";
+  let reason = typeof parsed.reason === "string" ? parsed.reason.trim().slice(0, 1000) : "";
   let keyQuote: string | undefined =
     typeof parsed.keyQuote === "string" && parsed.keyQuote.trim() !== ""
       ? parsed.keyQuote.trim()
@@ -352,7 +363,22 @@ export function parseJudgeOutput(
   if (keyQuote !== undefined && !quoteFromEvidence(keyQuote, evidence)) {
     keyQuote = undefined; // judge 编造的引文：剥离，不进记录
   }
-  return { verdict, reason, ...(keyQuote !== undefined ? { keyQuote } : {}) };
+  const intents: readonly unknown[] = ["background", "method", "result", "comparison"];
+  const relevances: readonly unknown[] = ["relevant", "irrelevant", "unknown"];
+  const citationIntent = intents.includes(parsed.citationIntent) ? parsed.citationIntent as CitationIntent : undefined;
+  const relevance = relevances.includes(parsed.relevance) ? parsed.relevance as CitationRelevance : undefined;
+  let checkedVerdict = verdict;
+  if (claimText !== undefined && isOwnResultClaim(claimText) && verdict === "SUPPORTED") {
+    checkedVerdict = "INSUFFICIENT_EVIDENCE"; // External canonical evidence cannot prove our experiment.
+    reason = `${reason}（外部文献不能证明本文实验结果，须核对本研究授权观测）`.slice(0, 1000);
+  } else if (citationIntent === "background" && (verdict === "SUPPORTED" || verdict === "PARTIALLY_SUPPORTED")) {
+    checkedVerdict = "INSUFFICIENT_EVIDENCE";
+    reason = `${reason}（背景相关性不代表具体论断已获证明）`.slice(0, 1000);
+  }
+  if (relevance === "irrelevant") checkedVerdict = mode === "contradiction_only" ? "INSUFFICIENT_EVIDENCE" : "UNSUPPORTED";
+  return { verdict: checkedVerdict, reason, ...(keyQuote !== undefined ? { keyQuote } : {}),
+    ...(citationIntent !== undefined ? { citationIntent } : {}), ...(relevance !== undefined ? { relevance } : {}),
+    claimSupported: checkedVerdict === "SUPPORTED" };
 }
 
 /** keyQuote 必须来自证据原文（空白不敏感的包含式校验） */

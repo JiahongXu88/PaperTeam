@@ -20,7 +20,8 @@ export type StyleInvariantRule =
   | "math_segments"
   | "latex_structure"
   | "protected_terms"
-  | "sentinel_words";
+  | "sentinel_words"
+  | "source_boundaries";
 
 export interface StyleInvariantViolation {
   rule: StyleInvariantRule;
@@ -355,6 +356,17 @@ export function checkStyleInvariants(
   // F. 哨兵词：计数变化即阻断（保守；不是语义证明）
   compare("sentinel_words", extractSentinelWords(before), extractSentinelWords(after), (diff) =>
     `否定 / 比较 / 结论强度哨兵词计数变化：减少 [${diff.missing.join(", ")}]，增加 [${diff.added.join(", ")}]——需要复审确认语义未变`,
+  );
+
+  // Source scope and scientific limitations are facts too. This deliberately
+  // conservative lexical guard complements, not replaces, semantic re-review.
+  const boundaries = (text: string): string[] => {
+    const prose = proseOf(text).replace(/只(?=在|对|覆盖|适用|支持|包含|依据|涉及|限)/g, "仅");
+    return ["仅", "部分", "摘要", "全文", "尚缺", "尚未", "局限", "负结果", "未经核验", "未经验证", "不支持", "未覆盖"]
+      .flatMap((word) => Array.from({ length: countOccurrences(prose, word) }, () => word)).sort();
+  };
+  compare("source_boundaries", boundaries(before), boundaries(after), (diff) =>
+    `来源范围或科研限制变化：减少 [${diff.missing.join(", ")}]，增加 [${diff.added.join(", ")}]——需要事实复审`,
   );
 
   return { ok: violations.length === 0, violations, checks };

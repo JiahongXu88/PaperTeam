@@ -593,7 +593,7 @@ export function buildReviewPrompt(params: {
     .slice(0, 20)
     .map(
       (record) =>
-        `- [${record.id}] ${record.claim.slice(0, 140)}（${record.verificationStatus}${record.supportStrength ? `/${record.supportStrength}` : ""}${record.location?.chunk ? `；chunk: ${record.location.chunk.slice(0, 60)}` : ""}）`,
+        `- [${record.id}] ${record.claim.slice(0, 140)}（${record.verificationStatus}${record.supportStrength ? `/${record.supportStrength}` : ""}；level=${record.verificationLevel ?? "unknown"}；source=${record.source?.sourceId ?? "unknown"}${record.location?.chunk ? `；chunk: ${record.location.chunk.slice(0, 60)}` : ""}）${record.quote ? ` quote: ${record.quote.slice(0, 2000)}` : ""}`,
     );
 
   // M9.7.4：style lens 的检查项语言化——英文稿件配中文检查文案 + zh-only
@@ -615,7 +615,8 @@ export function buildReviewPrompt(params: {
           "Output the additional field riskScore: 0-100 (engineering measure of templated / mechanical writing risk; higher = more templated; NOT a provenance judgment).",
         ]
       : [
-          "你使用 style review skill（中文学术表达质量，不是 AI 检测）：检查空泛总结、重复表达、机械排比、过度模板化、模糊归因、夸大意义、宣传式措辞、翻译腔 / 不自然表达、段落节奏过度一致、冗余过渡、术语漂移。",
+          "你使用 style review skill（中文学术表达质量，不是 AI 检测）：检查空泛总结、重复表达、机械排比、过度模板化、模糊归因、夸大意义、宣传式措辞、翻译腔 / 不自然表达、段落节奏过度一致、冗余过渡、术语漂移。检查内部工作流注记污染正文（本轮检索、作者确认、尚未核验、待补实验）、跨章节重复免责和将未来实验当作已完成贡献。",
+          "必要科研限制、负结果、来源范围不得删除；建议将内部状态转换为准确的科学局限并集中表述。若改变证据强度或结论方向，归 fact/academic 问题，不能作为 style-only 自动改写。",
           "每条 issue 必须同时给出：section（位置）、description（问题，引用原句片段 ≤ 60 字）、reason（为什么是问题：与前后句逻辑不符 / 评价词无数字支撑 / 同段第 N 次重复 等）、suggestedAction（具体到句的改法或删除）、severity（表达问题通常 minor；只有造成理解歧义才 major）。",
           "「此外 / 然而 / 因此 / 同时」在学术写作中是正常用法：不得仅因出现就报告；只有逻辑关系不符或同段连续多句机械开头才算冗余过渡。正常的中文学术段落应当零或极少 issue。",
           "禁止输出 AI 概率 / 人类概率 / 检测器分数等字段；不评价作者，不做整体印象式泛评。",
@@ -655,6 +656,9 @@ export function buildReviewPrompt(params: {
       "你使用 fact checking skill：把正文拆分为 factual claims，逐条对照 Evidence 判定：",
       "SUPPORTED / PARTIALLY_SUPPORTED / UNSUPPORTED / CONTRADICTED。",
       FACT_EVIDENCE_TOOL_GUIDANCE,
+      "背景引用只评价真实性与相关性，不应因没有 Verified Evidence 就生成关键事实缺口，也不能因此标成 SUPPORTED；具体机制、数值和被引观点仍须逐条核对。对比文献可以反对本文，核验的是归因准确性。",
+      "partial Evidence 不能作为完整 SUPPORTED 的依据，必须核对 quote 实际覆盖的子命题；Evidence.claim 不是已完整证明的命题。外部论文不能支撑本文实验结果，作者实验只消费已授权观测。",
+      "审核/检索/授权状态只属于内部记录。修复建议不得要求在各章重复「尚未核验」「作者确认」「待补实验」；保留具体科研限制和负结果，不能靠免责语句使未支持事实通过。",
       ...(params.reviewProfile === "survey"
         ? [
             "综述语境：正文的综合结论（机制、对比、趋势、共识）属于事实性 claim，同样逐条核验；",

@@ -18,6 +18,7 @@ export type StyleSignalKind =
   | "hollow_summary"
   | "mechanical_enumeration"
   | "mechanical_transitions"
+  | "workflow_note"
   | "overclaim";
 
 export interface StyleSignal {
@@ -99,6 +100,9 @@ export function scanStyleSignals(text: string): StyleSignalReport {
     const number = index + 1;
     const sentences = splitSentences(paragraph);
     for (const sentence of sentences) {
+      if (/本轮检索|当前检索未|待补实验|待作者(?:确认|授权)|作者确认.{0,8}(?:尚未|未经|未)(?:核验|验证)|PaperTeam.{0,12}(?:核验|审核|检索)|系统(?:核验|审核)(?:状态|通过|未通过)/.test(sentence)) {
+        push("workflow_note", sentence, number);
+      }
       for (const pattern of TEMPLATE_OPENINGS) {
         if (pattern.test(sentence)) {
           push("template_opening", sentence, number);
@@ -151,6 +155,7 @@ export function scanStyleSignals(text: string): StyleSignalReport {
     mechanical_enumeration: 0,
     mechanical_transitions: 0,
     overclaim: 0,
+    workflow_note: 0,
   };
   for (const signal of signals) {
     byKind[signal.kind] += 1;

@@ -995,6 +995,7 @@ export class CitationIntegrityService {
     const prompt = buildJudgePrompt(
       {
         claimText: claim.claimText,
+        sourceSentence: claim.sourceSentence,
         referenceIds: claim.referenceIds,
         references,
         metadataRecords,
@@ -1025,7 +1026,7 @@ export class CitationIntegrityService {
       const callMs = Date.now() - modelCallStartedAt;
       telemetry.modelCallMs.push(callMs);
       telemetry.totalModelMs += callMs;
-      const judged = parseJudgeOutput(task.output ?? "", evidence, mode);
+      const judged = parseJudgeOutput(task.output ?? "", evidence, mode, claim.claimText);
       // CONTRADICTED 必须能引用具体 evidence span：judge 引不出逐字 keyQuote
       // （伪造引文已被剥离）→ 矛盾结论不可采信，确定性降级 INSUFFICIENT_EVIDENCE
       let verdict = judged.verdict;
@@ -1039,18 +1040,16 @@ export class CitationIntegrityService {
         // judge 依据现有证据无法判定：证据范围限于 abstract / 仓库描述
         reasonCode = "ABSTRACT_ONLY";
       }
-      const evidenceWithQuote =
-        judged.keyQuote !== undefined
-          ? [
-              {
-                ...evidence[0]!,
-                text: `${evidence[0]!.text}\n[judge 关键引文] ${judged.keyQuote}`,
-              },
-            ]
-          : evidence;
+      // Keep every group's source and original text. A quote from member 2 must
+      // never be appended to member 1 and presented as that member's evidence.
+      const evidenceWithQuote = evidence;
       const record: ClaimCitationRecord = {
         ...base,
         verdict,
+        ...(judged.citationIntent !== undefined ? { citationIntent: judged.citationIntent } : {}),
+        ...(judged.relevance !== undefined ? { relevance: judged.relevance } : {}),
+        claimSupported: verdict === "SUPPORTED",
+        ...(judged.keyQuote !== undefined ? { keyQuote: judged.keyQuote } : {}),
         reason,
         ...(reasonCode !== undefined ? { reasonCode } : {}),
         evidence: evidenceWithQuote,

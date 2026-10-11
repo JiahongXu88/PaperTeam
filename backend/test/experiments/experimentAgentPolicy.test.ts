@@ -65,10 +65,12 @@ describe("renderExperimentContextLines（授权观测表）", () => {
 });
 
 describe("renderExperimentPolicyLines（范围级口径，无数值）", () => {
-  it("零数据：声明没有实验数据 + 待补实验口径", () => {
+  it("零数据：声明没有实验数据 + 具体科学局限，不要求工作流占位正文", () => {
     const lines = renderExperimentPolicyLines({ entries: [], legacyConfirmedGroupIds: [] });
     expect(lines.some((line) => line.includes("没有已导入的实验数据"))).toBe(true);
-    expect(lines.some((line) => line.includes("待补实验"))).toBe(true);
+    expect(lines.some((line) => line.includes("缺少的评测"))).toBe(true);
+    expect(lines.some((line) => line.includes("不得出现任何具体实验指标数值"))).toBe(true);
+    expect(lines.join("\n")).not.toContain("待补实验");
   });
   it("有授权与未授权范围：逐范围列出授权状态（不出现具体数值）", () => {
     const policy: ExperimentPolicyView = {
@@ -142,7 +144,7 @@ describe("Feasibility / Reviewer 共享 Experiment Policy 摘要", () => {
     const policyLines = renderExperimentPolicyLines({ entries: [], legacyConfirmedGroupIds: [] });
     const withPolicy = buildFeasibilityPrompt(project, researchReport, evidenceStats, "idea", undefined, policyLines);
     expect(withPolicy).toContain("Experiment Policy");
-    expect(withPolicy).toContain("待补实验");
+    expect(withPolicy).toContain("缺少的评测");
   });
 
   it("buildReviewPrompt：三路模式共享同一政策块（审稿对实验数据可用性判断与写作层一致）", () => {

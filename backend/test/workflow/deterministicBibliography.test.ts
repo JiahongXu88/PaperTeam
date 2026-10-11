@@ -269,12 +269,13 @@ describe("Writer formalOnly cite 标注（选择层 → prompt）", () => {
     });
     const prompt = tasks[0] ?? "";
     // M9.7.6：Evidence 行携带 source identity（src: title (year)）
-    expect(prompt).toContain("[E001]（cite: gao2023retrieval；");
+    expect(prompt).toContain("[E001]（support=direct；level=fulltext");
+    expect(prompt).toContain("cite: gao2023retrieval；");
     expect(prompt).toContain("src: Retrieval-Augmented Generation");
     // M9.7.2：白名单按 verified evidence 支撑分组（A 组 = E001 命中 key；B 组 = 无证据 key）
     expect(prompt).toContain("只允许引用以下参考文献 key");
     expect(prompt).toContain(
-      "A 组（有 verified evidence 支撑；一切事实性论断——机制描述、方法对比、实验数值、结论——的引用必须取自本组）：gao2023retrieval",
+      "A 组（有 verified evidence 支撑；外部事实性论断——机制描述、方法对比、文献数值、文献结论——的引用须在本组逐条核对；本文实验另以授权观测为据）：gao2023retrieval",
     );
     expect(prompt).toContain("B 组（无 verified evidence 支撑");
     expect(prompt).toContain("vaswani2017attention");

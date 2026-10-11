@@ -292,6 +292,12 @@ export interface ClaimCitationRecord {
   claimIndex?: number;
   /** 原子论断（可独立判断真假的单一命题；拆解自 callout 所在句子） */
   claimText: string;
+  /** Optional intent/relevance projections; legacy records need not contain them. */
+  citationIntent?: import("./citationIntent.js").CitationIntent;
+  relevance?: import("./citationIntent.js").CitationRelevance;
+  claimSupported?: boolean;
+  /** Exact quote retained separately, without rewriting any member's evidence. */
+  keyQuote?: string;
   /** 拆解来源句（展示/追溯用；marker 原样） */
   sourceSentence?: string;
   sectionId: string;

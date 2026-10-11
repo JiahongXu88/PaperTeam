@@ -70,6 +70,7 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 ## M13.7 — Research → RAG → Evidence
 
 - [M13_7_RESEARCH_RAG_EVIDENCE_ACCEPTANCE.md](M13_7_RESEARCH_RAG_EVIDENCE_ACCEPTANCE.md) — 工程闭环、受控回归、新加坡隔离验收、真实证据与Writer消费、Token和限制。
+- [M13_7_2_CITATION_WRITING_QUALITY.md](M13_7_2_CITATION_WRITING_QUALITY.md) — 引用用途、partial 证据边界、中文正文质量、固定回归与有界真实模型对照。
 - [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
 ## Runtime / 架构审计

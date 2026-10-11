@@ -197,7 +197,8 @@ describe("WriterService M6.6：Evidence-aware 写作上下文", () => {
       bibliography: BIBLIOGRAPHY,
     });
     const prompt = runtime.calls[0]!.task;
-    expect(prompt).toContain("[E001]（cite: gao2023survey；src: A Survey of Retrieval-Augmented Generation (2023)）");
+    expect(prompt).toContain("[E001]（support=direct；level=unknown");
+    expect(prompt).toContain("cite: gao2023survey；src: A Survey of Retrieval-Augmented Generation (2023)");
     expect(prompt).toContain("已核验 verified");
     expect(prompt).toContain("evidence_query");
     // 要求 Writer 引用优先使用有已核验证据支撑的 key
@@ -245,7 +246,8 @@ describe("WriterService M6.6：Evidence-aware 写作上下文", () => {
       bibliography: BIBLIOGRAPHY,
     });
     const prompt = runtime.calls[0]!.task;
-    expect(prompt).toContain("[E001]（cite: gao2023survey；src: A Survey of Retrieval-Augmented Generation (2023)）");
+    expect(prompt).toContain("[E001]（support=direct；level=unknown");
+    expect(prompt).toContain("cite: gao2023survey；src: A Survey of Retrieval-Augmented Generation (2023)");
     expect(prompt).toContain("evidence_query");
   });
 });
@@ -296,7 +298,7 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
     const prompt = runtime.calls[0]!.task;
     expect(prompt).toContain("Verified Evidence Context（已核验 verified 证据，引用第一优先来源）");
     expect(prompt).toContain("按 verified evidence 支撑分组");
-    expect(prompt).toContain("引用必须取自本组）：yao2023react");
+    expect(prompt).toContain("本文实验另以授权观测为据）：yao2023react");
     expect(prompt).toContain("不得改引本组 key 充数）：wei2022cot, bommasani2021foundation");
   });
 
@@ -331,7 +333,7 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
       bibliography: [BIB[0]!],
     });
     const prompt = runtime.calls[0]!.task;
-    expect(prompt).toContain("引用必须取自本组）：yao2023react");
+    expect(prompt).toContain("本文实验另以授权观测为据）：yao2023react");
     expect(prompt).toContain("（无——全部可用 key 均有证据支撑，按 A 组规则引用）");
   });
 
@@ -436,7 +438,7 @@ describe("WriterService M9.7.2：Verified Evidence Context + 引用分组", () =
     });
     const prompt = runtime.calls[0]!.task;
     expect(prompt).toContain("正文写作时事实性论断必须取 A 组");
-    expect(prompt).toContain("引用必须取自本组）：yao2023react");
+    expect(prompt).toContain("本文实验另以授权观测为据）：yao2023react");
     expect(prompt).toContain("Verified Evidence Context");
   });
 });
