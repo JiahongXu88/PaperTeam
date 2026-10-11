@@ -5,6 +5,12 @@ PaperTeam 能力声明的证据来源，只增不删。当前工程状态摘要�
 [../PROJECT_STATUS.md](../PROJECT_STATUS.md)；产品视角见
 [../product-guide.md](../product-guide.md)。
 
+## 存放与公开约定
+
+PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析及阶段验收报告默认保存在本目录，不使用 `D:\Reports` 或公司项目文档管理约定。提交前检查并脱敏服务器定位信息、凭据、私人论文和未授权实验材料。
+
+原始报告、诊断日志、临时运行产物和私人证据保存在仓库外 `D:\PaperTeamData/<milestone>/`（例如 `D:\PaperTeamData\M13_7`），不提交 GitHub。Linux 原始产物同样保存在 checkout 之外。
+
 ## M6 — Research Discovery & Evidence-grounded Pipeline（已冻结）
 
 - [M6_FINAL_SUMMARY.md](M6_FINAL_SUMMARY.md) — 里程碑总览（M6.0–M6.9，冻结 D-0041）
@@ -60,6 +66,11 @@ PaperTeam 能力声明的证据来源，只增不删。当前工程状态摘要�
 ## M13 — Storage & Architecture Evolution
 
 - [M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md](M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md) — 存储架构只读评估（全库 store 审计 / 读写并发模型 / 事务边界分类 / events.jsonl flake 归因 / 三方案决策矩阵；DATABASE_DECISION = NO-GO — Keep File-backed，SQLite 为触发后唯一候选）
+
+## M13.7 — Research → RAG → Evidence
+
+- [M13_7_RESEARCH_RAG_EVIDENCE_ACCEPTANCE.md](M13_7_RESEARCH_RAG_EVIDENCE_ACCEPTANCE.md) — 工程闭环、受控回归、新加坡隔离验收、真实证据与Writer消费、Token和限制。
+- [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
 ## Runtime / 架构审计
 
