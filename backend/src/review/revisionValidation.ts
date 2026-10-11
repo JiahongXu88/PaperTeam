@@ -133,6 +133,8 @@ export interface RevisionValidationInput {
   citationPreservation: CitationPreservationSummary | null;
   /** 证据库全量（Evidence Re-validation 的事实源） */
   evidenceRecords: readonly EvidenceRecord[];
+  /** Applied Patch provenance, also present when revision.apply has no RevisionPlan. */
+  patchEvidenceIds?: readonly string[];
   /** bib key → formal evidence id（新增引用 evidence-backed 判定；缺省退化为未覆盖） */
   evidenceLinks?: ReadonlyMap<string, string[]>;
   validatedAt?: string;
@@ -328,7 +330,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
 
   // ---- 4. Evidence Re-validation（applied 条目关联证据仍 formal？） ----
   const evidenceRecheck: EvidenceRecheckEntry[] = [];
-  for (const id of new Set(appliedItems.flatMap((item) => item.relatedEvidenceIds ?? []))) {
+  for (const id of new Set([...appliedItems.flatMap((item) => item.relatedEvidenceIds ?? []), ...(input.patchEvidenceIds ?? [])])) {
     const record = evidenceById.get(id);
     evidenceRecheck.push({ evidenceId: id, stillFormal: record !== undefined && isFormalEvidence(record) });
   }
@@ -496,7 +498,8 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     citationDelta: { added, removed: removedByFile },
     evidenceRecheck,
     uncoveredAddedKeys,
-    ok: !blocked && needsReview === 0,
+    ok: !blocked && needsReview === 0 && !(input.patchEvidenceIds ?? []).some(id =>
+      evidenceRecheck.find(entry => entry.evidenceId === id)?.stillFormal !== true),
     blocked,
   };
 }

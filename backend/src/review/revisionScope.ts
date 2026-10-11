@@ -136,16 +136,14 @@ export function checkRevisionScope(
   if (hash(baseline.slice(allowed.start, allowed.end)) !== allowed.originalHash) {
     return { allowed: false, outsideScopeChanges: 1, reason: "REVISION_TARGET_STALE" };
   }
-  let prefix = 0;
-  while (prefix < baseline.length && prefix < candidate.length && baseline[prefix] === candidate[prefix]) prefix += 1;
-  let suffix = 0;
-  while (
-    suffix < baseline.length - prefix &&
-    suffix < candidate.length - prefix &&
-    baseline[baseline.length - 1 - suffix] === candidate[candidate.length - 1 - suffix]
-  ) suffix += 1;
-  const oldEnd = baseline.length - suffix;
-  const within = prefix >= allowed.start && oldEnd <= allowed.end;
+  // Compare the authorized immutable boundaries directly. A longest-common
+  // prefix can absorb a repeated trailing newline into an insertion and falsely
+  // place that edit outside targetQuote. Fixed prefix/suffix equality preserves
+  // every byte outside the grant without that ambiguous diff alignment.
+  const prefix = baseline.slice(0, allowed.start);
+  const suffix = baseline.slice(allowed.end);
+  const within = candidate.length >= prefix.length + suffix.length &&
+    candidate.startsWith(prefix) && candidate.endsWith(suffix);
   return within
     ? { allowed: true, outsideScopeChanges: 0 }
     : { allowed: false, outsideScopeChanges: 1, reason: "REVISION_SCOPE_VIOLATION" };

@@ -505,6 +505,41 @@ describe("WriterService improvement plan comment coverage", () => {
     expect(plan.items.map((item) => item.action)).toEqual(["Clarify shared limitation", "Clarify shared limitation"]);
   });
 
+  it.each([
+    ["modify", "The model use an adapter.", undefined, "The model use an adapter."],
+    ["modify", "The model use an adapter. The model use an adapter.", undefined, undefined],
+    ["modify", "A different sentence.", undefined, undefined],
+    ["modify", undefined, undefined, undefined],
+    ["modify", "The model use an adapter.", "Explicit stale quote", "Explicit stale quote"],
+    ["noop", "The model use an adapter.", undefined, undefined],
+    ["author_decision_required", "The model use an adapter.", undefined, undefined],
+  ])("normalizes a misplaced modify quote only with unique target content (%s, %s)", async (actionType, content, explicit, expected) => {
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [{
+      section: "manuscript/main.tex", logicalSection: "sec:method", actionType,
+      action: "Correct the grammar", rationale: "Focused reviewer request", priority: "high",
+      coverageQuote: "The model use an adapter.", ...(explicit ? { targetQuote: explicit } : {}),
+    }] })));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({ projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW",
+      sectionFiles: ["main.tex"], logicalTargets: [{ file: "main.tex", logicalSection: "sec:method", heading: "Method", content }] });
+    expect(plan.items[0]?.section).toBe("main.tex");
+    expect(plan.items[0]?.targetQuote).toBe(expected);
+    expect(plan.items[0]?.coverageQuote).toBe("The model use an adapter.");
+  });
+
+  it.each([false, true])("treats unspecified as a display marker unless it names a registered protocol (%s)", async registered => {
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [{ section: "main.tex", actionType: "modify",
+      action: "Add the author-confirmed loss formula", rationale: "EV1 author definition", priority: "high", protocolId: "unspecified",
+      evidenceRefs: ["EV1"], expectedFactChanges: [{ before: "No loss definition", after: "Author-defined loss", basis: "EV1" }] }] })));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const plan = await writer.planImprovement({ projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: ["main.tex"],
+      validEvidenceIds: ["E001"], validEvidenceProtocolScopes: registered ? { E001: { protocolId: "unspecified", status: "current" } } : {},
+      evidenceAliases: [{ ref: "EV1", canonicalId: "E001", claim: "Author definition", provenance: "author material", protocolStatus: registered ? "current" : "unspecified" }] });
+    expect(plan.items[0]?.actionType).toBe("modify");
+    expect(plan.items[0]?.protocolId).toBe(registered ? "unspecified" : undefined);
+    expect(plan.items[0]?.relatedEvidenceIds).toEqual(["E001"]);
+  });
+
   it("states explicitly when no eligible Evidence alias is available", async () => {
     const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan: [{ section: "main.tex", action: "Record evidence gap", rationale: "No local support", priority: "high", actionType: "author_decision_required", evidenceRefs: [] }] })));
     const writer = new WriterService({ runtime, agentId: "writer" });

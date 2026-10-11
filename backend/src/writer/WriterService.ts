@@ -765,7 +765,7 @@ export class WriterService {
     feedback?: string;
     /** 现有章节文件（相对 manuscript/ 的 POSIX 路径；section 字段必须从中选择） */
     sectionFiles: string[];
-    logicalTargets?: { file: string; logicalSection: string; heading: string; label?: string }[];
+    logicalTargets?: { file: string; logicalSection: string; heading: string; label?: string; content?: string }[];
     /** M10.3：原稿冻结事实基线要点（表格 / 引用 / 硬件 / 占位） */
     baselineDigest?: string;
     /** M10.3：分层证据摘要（verified 外部文献 + user_confirmed 作者实验） */
@@ -809,7 +809,7 @@ export class WriterService {
         "你是一名论文写手（Writer）。请基于审稿问题与目标差距，为已有 LaTeX 论文制定分节改进计划（只规划，不写正文）。",
         "",
         "只输出一个 JSON 对象（不要 Markdown 围栏）：",
-        '{"plan": [{"section": "sections/xxx.tex", "logicalSection": "subsec:datasets（如适用）", "actionType": "modify|noop|author_decision_required", "coverageQuote": "NO-OP 时逐字摘录当前稿内容", "protocolId": "当前实验协议 id（如适用）", "action": "具体改法（要点名涉及的旧值与新值）", "rationale": "对应的问题或差距（含依据）", "priority": "high|medium|low",',
+        '{"plan": [{"section": "sections/xxx.tex", "logicalSection": "subsec:datasets（如适用）", "actionType": "modify|noop|author_decision_required", "targetQuote": "modify 局部修改时逐字摘录唯一原句/段", "coverageQuote": "NO-OP 时逐字摘录当前稿内容", "protocolId": "当前实验协议 id（如适用）", "action": "具体改法（要点名涉及的旧值与新值）", "rationale": "对应的问题或差距（含依据）", "priority": "high|medium|low",',
         '  "commentRefs": ["C1"], "evidenceRefs": ["EV1"],',
         '  "expectedFactChanges": [{"before": "旧值", "after": "新值", "basis": "证据 id 或依据说明"}]}]}',
         "",
@@ -952,11 +952,16 @@ export class WriterService {
         ? record["actionType"]
         : "modify";
       const planText = `${action} ${typeof record["rationale"] === "string" ? record["rationale"] : ""}`;
-      const protocolId = typeof record["protocolId"] === "string" && record["protocolId"].trim() !== ""
-        ? record["protocolId"].trim()
-        : /fair[-_ ]?ablation|公平(?:实验|协议)|newly fine[- ]tuned detector/i.test(planText)
-          ? "fair_ablation_new_detector"
-          : "";
+      const rawProtocolId = typeof record["protocolId"] === "string" ? record["protocolId"].trim() : "";
+      // Evidence aliases render absent protocol scope as "unspecified". That
+      // display marker is not an experiment protocol; preserve a real registered
+      // protocol with this name and retain inferred fair-ablation constraints.
+      const explicitProtocolId = rawProtocolId === "unspecified" &&
+        !Object.values(params.validEvidenceProtocolScopes ?? {}).some(scope => scope.protocolId === rawProtocolId)
+        ? "" : rawProtocolId;
+      const protocolId = explicitProtocolId ||
+        (/fair[-_ ]?ablation|公平(?:实验|协议)|newly fine[- ]tuned detector/i.test(planText)
+          ? "fair_ablation_new_detector" : "");
       const rawEvidenceRefs = record["evidenceRefs"] ?? (params.evidenceAliases === undefined ? record["relatedEvidenceIds"] : undefined);
       if (params.evidenceAliases !== undefined && record["relatedEvidenceIds"] !== undefined && record["evidenceRefs"] === undefined) {
         structuredFailures.push({ itemIndex, field: "evidenceRefs", code: "EVIDENCE_ALIAS_REQUIRED", message: "Use evidenceRefs aliases; canonical Evidence IDs are not accepted in Planner output" });
@@ -991,8 +996,17 @@ export class WriterService {
           }).slice(0, 8)
         : [];
       const logicalSection = typeof record["logicalSection"] === "string" ? record["logicalSection"].trim() : "";
-      const targetQuote = typeof record["targetQuote"] === "string" ? record["targetQuote"].trim() : "";
+      let targetQuote = typeof record["targetQuote"] === "string" ? record["targetQuote"].trim() : "";
       const coverageQuote = typeof record["coverageQuote"] === "string" ? record["coverageQuote"].trim() : "";
+      // LIVE M13.7.6: Planner can put a modify quote in the noop field.
+      // Only promote a verbatim unique quote in the exact allowed target. This
+      // narrows scope; explicit targetQuote remains authoritative (even if stale).
+      const targetContent = params.logicalTargets?.find(target =>
+        target.file === section && target.logicalSection === logicalSection)?.content;
+      if (!targetQuote && actionType === "modify" && coverageQuote && targetContent !== undefined) {
+        const at = targetContent.indexOf(coverageQuote);
+        if (at >= 0 && targetContent.indexOf(coverageQuote, at + 1) < 0) targetQuote = coverageQuote;
+      }
       if (params.sectionFiles.length > 0 && !params.sectionFiles.includes(section) && section !== "main.tex") {
         structuredFailures.push({ itemIndex, field: "section", code: "TARGET_NOT_ALLOWED", message: `${section} is not an existing manuscript section` });
       }

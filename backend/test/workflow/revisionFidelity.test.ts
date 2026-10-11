@@ -125,6 +125,45 @@ describe("M13.7.5 production revision.apply fidelity", () => {
       [{ file: "main.tex", content: await run.source() }]);
     expect(fact?.formulaAuthorizations?.[0]?.sourceId).toMatch(/^E/);
   });
+  it.each([true, false])("apply without RevisionPlan rechecks Patch evidence (formal=%s)", async formal => {
+    const run = await setup([method + "\n" + FORMULA], "增加作者提供的损失函数公式，保留原公式。");
+    const evidence = await run.services.evidence.append(run.project.id, { claim: "Author-confirmed loss definition", quote: FORMULA,
+      verificationStatus: "verified", verificationLevel: "user_confirmed", supportStrength: "direct",
+      ...(formal ? { source: { sourceId: "author-loss-material" }, location: { chunk: "author-loss-material:1" } } : {}) }, "user");
+    const path = join(run.stack.store.researchDir(run.project.id), "improvement-plan.json");
+    const data = JSON.parse(await readFile(path, "utf8"));
+    data.plan.items[0].relatedEvidenceIds = [evidence.id];
+    await writeFile(path, JSON.stringify(data));
+    await run.execute();
+    expect((await run.artifact())?.records[0]?.finalStatus).toBe("accepted");
+    await run.validate();
+    const artifact = await run.artifact();
+    expect(artifact?.records[0]?.evidence.ok).toBe(formal);
+    expect(artifact?.summary.publishable).toBe(formal);
+    const validation = await run.services.reviewArtifacts.loadValidation(run.project.id, 1);
+    expect(validation?.planId).toBeNull();
+    expect(validation?.evidenceRecheck).toEqual([{ evidenceId: evidence.id, stillFormal: formal }]);
+    expect(validation?.ok).toBe(formal);
+  });
+
+  it("accepts an authorized formula insertion beside an exact quote with immutable trailing newline", async () => {
+    const run = await setup([method + "\n" + FORMULA], "增加作者提供的损失函数公式，保留原公式。");
+    const evidence = await run.services.evidence.append(run.project.id, { claim: "Author-confirmed loss definition", quote: FORMULA,
+      verificationStatus: "verified", verificationLevel: "user_confirmed", supportStrength: "direct",
+      source: { sourceId: "author-loss-material" }, location: { chunk: "author-loss-material:1" } }, "user");
+    const path = join(run.stack.store.researchDir(run.project.id), "improvement-plan.json");
+    const data = JSON.parse(await readFile(path, "utf8"));
+    data.plan.items[0].relatedEvidenceIds = [evidence.id];
+    data.plan.items[0].targetQuote = String.raw`\begin{equation}\label{eq:encoding} E = u + v \end{equation}`;
+    await writeFile(path, JSON.stringify(data));
+    await run.execute();
+    expect(run.calls()).toBe(1);
+    expect(await run.source()).toContain(FORMULA);
+    expect((await run.artifact())?.records[0]?.scope.ok).toBe(true);
+    await run.validate();
+    expect((await run.artifact())?.summary.publishable).toBe(true);
+  });
+
   it("an accepted sibling is not regenerated when another patch needs repair", async () => {
     const results = locateLatexSections("main.tex", PAPER).find(s => s.label === "sec:results")!.content;
     const fixed = results.replace("Accuracy is", "The accuracy is");
@@ -233,6 +272,25 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     expect(run.calls()).toBe(1);
     expect(await run.source()).toBe(PAPER);
   });
+  it.each([false, true])("misplaced Planner coverageQuote reaches production scope guard (unrelated=%s)", async unrelated => {
+    const response = JSON.stringify({ plan: [{ section: "manuscript/main.tex", logicalSection: "sec:method", actionType: "modify",
+      action: "Correct only the grammar of the first sentence.", rationale: "Focused grammar correction", priority: "high",
+      coverageQuote: "The model use a compact adapter." }] });
+    const proposal = unrelated ? good.replace("The original representation remains frozen.", "We retain the frozen original representation.") : good;
+    const run = await setup([response, proposal]);
+    const plan = await run.stack.stack.writer.planImprovement({ projectId: run.project.id, issues: [], analysisDigest: PAPER,
+      feasibilityLevel: "MEDIUM", sectionFiles: ["main.tex"],
+      logicalTargets: [{ file: "main.tex", logicalSection: "sec:method", heading: "Method", content: method }] });
+    expect(plan.items[0]?.targetQuote).toBe("The model use a compact adapter.");
+    await writeFile(join(run.stack.store.researchDir(run.project.id), "improvement-plan.json"), JSON.stringify({ plan }));
+    await run.execute();
+    expect(run.calls()).toBe(2);
+    expect(await run.source()).toBe(unrelated ? PAPER : PAPER.replace("model use", "model uses"));
+    const artifact = await run.artifact();
+    expect(artifact?.records[0]?.scope.ok).toBe(!unrelated);
+    if (unrelated) expect(artifact?.records[0]?.scope.violations).toContain("REVISION_TARGET_QUOTE_SCOPE_VIOLATION");
+  });
+
   it("Reviewer request to add a formula cannot authorize an invented expression", async () => {
     const run = await setup([good + "\n" + FORMULA], "补充损失函数的数学表达式，并说明各项权重；增加公式。");
     await run.execute();

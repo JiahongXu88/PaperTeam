@@ -68,6 +68,21 @@ describe("existing-paper revision scope", () => {
     expect(checkRevisionScope(baseline, candidate, target)).toMatchObject({ allowed: false, reason: "REVISION_SCOPE_VIOLATION" });
   });
 
+  it.each([
+    ["prefix Q\n", true],
+    ["prefix Q\n\nAuthorized addition.\n", true],
+    ["prefix Replacement\n", true],
+    ["changed Q\n", false],
+    ["prefix Q\nchanged", false],
+    ["prefix Q", false],
+    ["prefix", false],
+  ])("checks fixed quote boundaries with repeated newline suffix: %s", (candidate, allowed) => {
+    const baseline = "prefix Q\n";
+    const target = { start: 7, end: 8, originalHash: createHash("sha256").update("Q").digest("hex") };
+    expect(checkRevisionScope(baseline, candidate, target).allowed).toBe(allowed);
+    expect(checkRevisionScope(baseline, candidate, { ...target, originalHash: "stale" }).allowed).toBe(false);
+  });
+
   it("global diff is anchored to immutable input even when a later baseline is contaminated", () => {
     const immutable = paper.replaceAll("\\n", "\n");
     const target = locateLatexSections("main.tex", immutable).find((span) => span.label === "subsec:datasets")!;

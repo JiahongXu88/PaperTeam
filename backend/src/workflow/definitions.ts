@@ -2665,6 +2665,7 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
         factPreservation,
         citationPreservation,
         evidenceRecords,
+        patchEvidenceIds: patchArtifact?.records.flatMap(record => record.evidenceIds) ?? [],
         evidenceLinks,
       });
       const finalizedPatchArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, revision);
@@ -5959,6 +5960,7 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
             file: span.file,
             logicalSection: span.logicalSection,
             heading: span.heading,
+            content: span.content,
             ...(span.label !== undefined ? { label: span.label } : {}),
           })).slice(0, 80)
         : undefined;
