@@ -2,7 +2,8 @@
 
 `dev.json` is the development topic (Transformer); `frozen.json` is the held-out
 topic (DPR/RAG). Both inputs were frozen before candidate implementation.
-`freeze-sha256.json` hashes the exact input bytes. Quotes preserve their actual
+`freeze-sha256.json` records both LF and CRLF byte hashes so Git checkout line
+ending conversion does not invalidate the freeze. Quotes preserve their actual
 scope: the Transformer snapshot is a previously grounded full-text excerpt;
 DPR/RAG records are manually checked public abstract excerpts, not full-text
 verification. The deliberately broader partial claims must not become facts.

@@ -1,4 +1,10 @@
 {
-  "dev.json": "6db2ae8eef3cf47367112f6920fa304d19926b89f5e240ec240c33e2185cacc7",
-  "frozen.json": "ba09035f8f4f0630eb9f3b4b60810eda85c2a5dc9e82bacfb115a68f167ad891"
+  "dev.json": {
+    "lf": "3101c947cff249519dd4e61195305c9375344cd8fcb83b25cad31c966646e148",
+    "crlf": "6db2ae8eef3cf47367112f6920fa304d19926b89f5e240ec240c33e2185cacc7"
+  },
+  "frozen.json": {
+    "lf": "f9600aacd82a117ba1379869ac8949cfeaac65e25c235a6aa195660c87648ba5",
+    "crlf": "ba09035f8f4f0630eb9f3b4b60810eda85c2a5dc9e82bacfb115a68f167ad891"
+  }
 }

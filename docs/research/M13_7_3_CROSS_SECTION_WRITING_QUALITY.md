@@ -30,7 +30,7 @@
 
 来源为 [Attention Is All You Need](https://arxiv.org/abs/1706.03762)、[DPR v3](https://arxiv.org/abs/2004.04906v3)、[RAG v4](https://arxiv.org/abs/2005.11401v4)。DPR/RAG 的标题、来源页与引文范围已人工核对；摘要记录未伪装成全文核验，也不是本轮 Evidence Judge 全链重新采证。故意更强的 partial.claim 是负例，不是真实论文的结论。
 
-两个 JSON 在候选实现前冻结，SHA256 在资产目录保存；主题不同。开发样本用于确认缺陷，最终样本仅进行一次三版本比较，看到不利结果后没有继续据此调 Prompt 重跑。每节要求约 350 字，相同 Outline、文献池、Evidence、补充要求及空实验授权视图。
+两个 JSON 在候选实现前冻结，SHA256 在资产目录同时保存 LF/CRLF 两种换行形式（内容相同，避免 Git 换行转换使校验失效）；主题不同。开发样本用于确认缺陷，最终样本仅进行一次三版本比较，看到不利结果后没有继续据此调 Prompt 重跑。每节要求约 350 字，相同 Outline、文献池、Evidence、补充要求及空实验授权视图。
 
 版本 A：`a81176e1947415d76836714d23261d0518432609`，M13.7.2 前；版本 B：`a80e949bd189d452e646090922891b8564da8812`，M13.7.2 后；版本 C：在 B 上应用公开的 rejected candidate patch。服务器 A/B 源文件与对应 Git 对象经换行归一后吻合；原始 source/dist 哈希留在私人 code manifest。所有版本使用相同 Runtime adapter 和设置，Writer 业务 prompt builder 与可用 seed skill 来自对应版本。
 
