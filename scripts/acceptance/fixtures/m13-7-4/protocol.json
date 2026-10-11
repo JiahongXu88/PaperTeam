@@ -1,0 +1,29 @@
+{
+  "baseline": "af65ce45afc08123f7253d3e62146abf4f9a8081",
+  "model": "zai/glm-5.3",
+  "maxCalls": 40,
+  "schedule": [
+    "dev baseline,treatment",
+    "heldout baseline,treatment",
+    "heldout treatment,baseline"
+  ],
+  "planningSmokeCalls": 2,
+  "mechanism": "same frozen outline and requirements; treatment adds frozen responsibility only; shared sequential session within each arm; independent sessions across arms/repeats",
+  "evaluation": {
+    "unit": "semantic definition/mechanism explanation with chapter and exact sentence evidence; keyword counts only locate candidates",
+    "harmful": "full re-explanation outside owner without new analysis value; introductions/conclusions short summaries and required scientific qualifications are allowed",
+    "gate": "reduce harmful repetition on dev and both heldout pairs; retain mechanism, limitations, correct terminology/citations; no new unsupported facts or partial escalation; total SDK cost <= baseline +20%; no substantial content compression to claim improvement",
+    "dimensions": [
+      "harmful vs necessary repetition",
+      "responsibility compliance",
+      "logical progression",
+      "terminology/definition consistency",
+      "citation/quote support",
+      "partial negative control",
+      "limitations retained",
+      "internal status leakage",
+      "usage/cache/cost/time"
+    ]
+  },
+  "heldoutPolicy": "Freeze production candidate and prompts before first heldout dispatch; no heldout-informed tuning; retain all failed/unfavorable outputs; controlled/manual contracts test execution separately from planner smoke; no E2E claim"
+}

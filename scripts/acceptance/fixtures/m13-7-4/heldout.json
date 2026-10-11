@@ -1,0 +1,929 @@
+{
+  "outline": {
+    "title": "异质数据下的联邦优化综述",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "界定数据分散的联邦学习综述范围，无本文实验。"
+        ]
+      },
+      {
+        "id": "base",
+        "title": "联邦聚合基础",
+        "file": "base.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "介绍数据留在设备上并聚合本地更新、FedAvg 的迭代模型平均。"
+        ]
+      },
+      {
+        "id": "extension",
+        "title": "异质性与局部更新修正",
+        "file": "extension.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "介绍异质数据的客户端漂移与 SCAFFOLD 使用控制变量修正本地更新。"
+        ]
+      },
+      {
+        "id": "comparison",
+        "title": "综合比较与局限性",
+        "file": "comparison.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "比较模型聚合与局部更新校正的互补层次；不能从摘要推出任意任务性能保证。仅摘要材料、未统一复现。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论与展望",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "总结机制关系与适用限定，将跨任务评测归未来工作。"
+        ]
+      }
+    ]
+  },
+  "responsibility": {
+    "version": 1,
+    "concepts": [
+      {
+        "term": "联邦学习（Federated Learning）",
+        "owner": "base",
+        "reminder": "brief"
+      },
+      {
+        "term": "客户端漂移（client-drift）",
+        "owner": "extension",
+        "reminder": "brief"
+      },
+      {
+        "term": "控制变量（control variates）",
+        "owner": "extension",
+        "reminder": "brief"
+      }
+    ],
+    "chapters": [
+      {
+        "sectionId": "introduction",
+        "goal": "界定分散数据学习问题、文献范围与组织贡献",
+        "questions": [
+          "界定数据分散的联邦学习综述范围，无本文实验。"
+        ],
+        "dependsOn": [],
+        "evidenceIds": []
+      },
+      {
+        "sectionId": "base",
+        "goal": "完整展开数据保留本地、局部更新聚合及迭代模型平均",
+        "questions": [
+          "介绍数据留在设备上并聚合本地更新、FedAvg 的迭代模型平均。"
+        ],
+        "dependsOn": [
+          "introduction"
+        ],
+        "evidenceIds": []
+      },
+      {
+        "sectionId": "extension",
+        "goal": "完整展开异质数据下客户端漂移与控制变量修正的关系",
+        "questions": [
+          "介绍异质数据的客户端漂移与 SCAFFOLD 使用控制变量修正本地更新。"
+        ],
+        "dependsOn": [
+          "base"
+        ],
+        "evidenceIds": []
+      },
+      {
+        "sectionId": "comparison",
+        "goal": "综合比较聚合层与局部更新层的职责，集中讨论性能论证范围",
+        "questions": [
+          "比较模型聚合与局部更新校正的互补层次；不能从摘要推出任意任务性能保证。仅摘要材料、未统一复现。"
+        ],
+        "dependsOn": [
+          "extension"
+        ],
+        "evidenceIds": []
+      },
+      {
+        "sectionId": "conclusion",
+        "goal": "回答异质性处理问题，保留结论限定与未来实证方向",
+        "questions": [
+          "总结机制关系与适用限定，将跨任务评测归未来工作。"
+        ],
+        "dependsOn": [
+          "comparison"
+        ],
+        "evidenceIds": []
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "source": {
+        "sourceId": "S301",
+        "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+        "year": 2016,
+        "url": "https://arxiv.org/abs/1602.05629v4"
+      },
+      "claim": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+      "quote": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S301:abstract:2147e781c756"
+      }
+    },
+    {
+      "id": "E2",
+      "source": {
+        "sourceId": "S302",
+        "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+        "year": 2019,
+        "url": "https://arxiv.org/abs/1910.06378v4"
+      },
+      "claim": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+      "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S302:abstract:a60259269ef6"
+      }
+    },
+    {
+      "id": "E3",
+      "source": {
+        "sourceId": "S301",
+        "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+        "year": 2016,
+        "url": "https://arxiv.org/abs/1602.05629v4"
+      },
+      "claim": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+      "quote": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact excerpt; scope manually checked",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S301:abstract:1bfd430dc9a7"
+      }
+    },
+    {
+      "id": "E4",
+      "source": {
+        "sourceId": "S302",
+        "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+        "year": 2019,
+        "url": "https://arxiv.org/abs/1910.06378v4"
+      },
+      "claim": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+      "quote": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; scoped theoretical statement",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S302:abstract:70bff5f56bd1"
+      }
+    },
+    {
+      "id": "E9",
+      "source": {
+        "sourceId": "S302",
+        "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+        "year": 2019,
+        "url": "https://arxiv.org/abs/1910.06378v4"
+      },
+      "claim": "SCAFFOLD 使用控制变量并在任意任务、任意网络条件及所有客户端采样条件下保证达到全局最优。",
+      "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S302:abstract:a60259269ef6"
+      }
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "mcmahan2016communication",
+      "sourceId": "S301",
+      "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+      "year": 2016,
+      "url": "https://arxiv.org/abs/1602.05629v4"
+    },
+    {
+      "key": "karimireddy2019scaffold",
+      "sourceId": "S302",
+      "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+      "year": 2019,
+      "url": "https://arxiv.org/abs/1910.06378v4"
+    }
+  ],
+  "mode": "survey",
+  "instructions": "只输出本节 LaTeX 正文，约350中文字（允许合理浮动），不重复节标题；各节共同构成中文综述。仅使用给定来源和 Evidence，不查外部资料。保留必要学术内容及限制；无本文实验结果，不编造公式、数值、性能排序；不要报告内部流程。",
+  "surveyContexts": {
+    "introduction": {
+      "sectionId": "introduction",
+      "title": "引言",
+      "keyPoints": [
+        "界定数据分散的联邦学习综述范围，无本文实验。"
+      ],
+      "targetLengthWords": 350,
+      "sectionContext": "framing",
+      "speculativeAllowed": false,
+      "synthesis": [],
+      "literature": [
+        {
+          "entryId": "M-S301",
+          "sourceId": "S301",
+          "family": "联邦优化",
+          "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+          "year": 2016,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "mcmahan2016communication"
+        },
+        {
+          "entryId": "M-S302",
+          "sourceId": "S302",
+          "family": "联邦优化",
+          "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+          "year": 2019,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "karimireddy2019scaffold"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "E1",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "quote": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:2147e781c756"
+          }
+        },
+        {
+          "id": "E2",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        },
+        {
+          "id": "E3",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "quote": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact excerpt; scope manually checked",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:1bfd430dc9a7"
+          }
+        },
+        {
+          "id": "E4",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "quote": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; scoped theoretical statement",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:70bff5f56bd1"
+          }
+        },
+        {
+          "id": "E9",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "SCAFFOLD 使用控制变量并在任意任务、任意网络条件及所有客户端采样条件下保证达到全局最优。",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+          "verificationLevel": "abstract",
+          "supportStrength": "partial",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        }
+      ],
+      "evidenceBackedKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "allowedCitationKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "danglingSynthesisRefs": [],
+      "danglingLiteratureRefs": [],
+      "warnings": []
+    },
+    "base": {
+      "sectionId": "base",
+      "title": "联邦聚合基础",
+      "keyPoints": [
+        "介绍数据留在设备上并聚合本地更新、FedAvg 的迭代模型平均。"
+      ],
+      "targetLengthWords": 350,
+      "sectionContext": "core",
+      "speculativeAllowed": false,
+      "synthesis": [
+        {
+          "synthesisId": "SYN-1",
+          "kind": "taxonomy",
+          "claim": "介绍数据留在设备上并聚合本地更新、FedAvg 的迭代模型平均。",
+          "groundingLevel": "evidence_backed",
+          "evidenceKeys": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "literatureKeys": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "citationCandidates": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "evidenceIds": [
+            "E1",
+            "E3"
+          ],
+          "sourceIds": [
+            "S301",
+            "S302"
+          ]
+        }
+      ],
+      "literature": [
+        {
+          "entryId": "M-S301",
+          "sourceId": "S301",
+          "family": "联邦优化",
+          "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+          "year": 2016,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "mcmahan2016communication"
+        },
+        {
+          "entryId": "M-S302",
+          "sourceId": "S302",
+          "family": "联邦优化",
+          "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+          "year": 2019,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "karimireddy2019scaffold"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "E1",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "quote": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:2147e781c756"
+          }
+        },
+        {
+          "id": "E3",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "quote": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact excerpt; scope manually checked",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:1bfd430dc9a7"
+          }
+        }
+      ],
+      "evidenceBackedKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "allowedCitationKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "danglingSynthesisRefs": [],
+      "danglingLiteratureRefs": [],
+      "warnings": []
+    },
+    "extension": {
+      "sectionId": "extension",
+      "title": "异质性与局部更新修正",
+      "keyPoints": [
+        "介绍异质数据的客户端漂移与 SCAFFOLD 使用控制变量修正本地更新。"
+      ],
+      "targetLengthWords": 350,
+      "sectionContext": "core",
+      "speculativeAllowed": false,
+      "synthesis": [
+        {
+          "synthesisId": "SYN-2",
+          "kind": "taxonomy",
+          "claim": "介绍异质数据的客户端漂移与 SCAFFOLD 使用控制变量修正本地更新。",
+          "groundingLevel": "evidence_backed",
+          "evidenceKeys": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "literatureKeys": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "citationCandidates": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "evidenceIds": [
+            "E2",
+            "E4",
+            "E9"
+          ],
+          "sourceIds": [
+            "S301",
+            "S302"
+          ]
+        }
+      ],
+      "literature": [
+        {
+          "entryId": "M-S301",
+          "sourceId": "S301",
+          "family": "联邦优化",
+          "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+          "year": 2016,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "mcmahan2016communication"
+        },
+        {
+          "entryId": "M-S302",
+          "sourceId": "S302",
+          "family": "联邦优化",
+          "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+          "year": 2019,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "karimireddy2019scaffold"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "E2",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        },
+        {
+          "id": "E4",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "quote": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; scoped theoretical statement",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:70bff5f56bd1"
+          }
+        },
+        {
+          "id": "E9",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "SCAFFOLD 使用控制变量并在任意任务、任意网络条件及所有客户端采样条件下保证达到全局最优。",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+          "verificationLevel": "abstract",
+          "supportStrength": "partial",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        }
+      ],
+      "evidenceBackedKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "allowedCitationKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "danglingSynthesisRefs": [],
+      "danglingLiteratureRefs": [],
+      "warnings": []
+    },
+    "comparison": {
+      "sectionId": "comparison",
+      "title": "综合比较与局限性",
+      "keyPoints": [
+        "比较模型聚合与局部更新校正的互补层次；不能从摘要推出任意任务性能保证。仅摘要材料、未统一复现。"
+      ],
+      "targetLengthWords": 350,
+      "sectionContext": "core",
+      "speculativeAllowed": false,
+      "synthesis": [
+        {
+          "synthesisId": "SYN-3",
+          "kind": "comparison",
+          "claim": "比较模型聚合与局部更新校正的互补层次；不能从摘要推出任意任务性能保证。仅摘要材料、未统一复现。",
+          "groundingLevel": "evidence_backed",
+          "evidenceKeys": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "literatureKeys": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "citationCandidates": [
+            "mcmahan2016communication",
+            "karimireddy2019scaffold"
+          ],
+          "evidenceIds": [
+            "E1",
+            "E2",
+            "E3",
+            "E4",
+            "E9"
+          ],
+          "sourceIds": [
+            "S301",
+            "S302"
+          ]
+        }
+      ],
+      "literature": [
+        {
+          "entryId": "M-S301",
+          "sourceId": "S301",
+          "family": "联邦优化",
+          "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+          "year": 2016,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "mcmahan2016communication"
+        },
+        {
+          "entryId": "M-S302",
+          "sourceId": "S302",
+          "family": "联邦优化",
+          "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+          "year": 2019,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "karimireddy2019scaffold"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "E1",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "quote": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:2147e781c756"
+          }
+        },
+        {
+          "id": "E2",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        },
+        {
+          "id": "E3",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "quote": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact excerpt; scope manually checked",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:1bfd430dc9a7"
+          }
+        },
+        {
+          "id": "E4",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "quote": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; scoped theoretical statement",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:70bff5f56bd1"
+          }
+        },
+        {
+          "id": "E9",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "SCAFFOLD 使用控制变量并在任意任务、任意网络条件及所有客户端采样条件下保证达到全局最优。",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+          "verificationLevel": "abstract",
+          "supportStrength": "partial",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        }
+      ],
+      "evidenceBackedKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "allowedCitationKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "danglingSynthesisRefs": [],
+      "danglingLiteratureRefs": [],
+      "warnings": []
+    },
+    "conclusion": {
+      "sectionId": "conclusion",
+      "title": "结论与展望",
+      "keyPoints": [
+        "总结机制关系与适用限定，将跨任务评测归未来工作。"
+      ],
+      "targetLengthWords": 350,
+      "sectionContext": "future",
+      "speculativeAllowed": true,
+      "synthesis": [],
+      "literature": [
+        {
+          "entryId": "M-S301",
+          "sourceId": "S301",
+          "family": "联邦优化",
+          "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+          "year": 2016,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "mcmahan2016communication"
+        },
+        {
+          "entryId": "M-S302",
+          "sourceId": "S302",
+          "family": "联邦优化",
+          "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+          "year": 2019,
+          "interpretationDepth": "abstract_only",
+          "citationKey": "karimireddy2019scaffold"
+        }
+      ],
+      "evidence": [
+        {
+          "id": "E1",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "quote": "We advocate an alternative that leaves the training data distributed on the mobile devices, and learns a shared model by aggregating locally-computed updates. We term this decentralized approach Federated Learning.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:2147e781c756"
+          }
+        },
+        {
+          "id": "E2",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        },
+        {
+          "id": "E3",
+          "source": {
+            "sourceId": "S301",
+            "title": "Communication-Efficient Learning of Deep Networks from Decentralized Data",
+            "year": 2016,
+            "url": "https://arxiv.org/abs/1602.05629v4"
+          },
+          "claim": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "quote": "We present a practical method for the federated learning of deep networks based on iterative model averaging",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact excerpt; scope manually checked",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S301:abstract:1bfd430dc9a7"
+          }
+        },
+        {
+          "id": "E4",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "quote": "We obtain tight convergence rates for FedAvg and prove that it suffers from `client-drift' when the data is heterogeneous (non-iid), resulting in unstable and slow convergence.",
+          "verificationStatus": "verified",
+          "verificationMethod": "public abstract exact quote; scoped theoretical statement",
+          "verificationLevel": "abstract",
+          "supportStrength": "direct",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:70bff5f56bd1"
+          }
+        },
+        {
+          "id": "E9",
+          "source": {
+            "sourceId": "S302",
+            "title": "SCAFFOLD: Stochastic Controlled Averaging for Federated Learning",
+            "year": 2019,
+            "url": "https://arxiv.org/abs/1910.06378v4"
+          },
+          "claim": "SCAFFOLD 使用控制变量并在任意任务、任意网络条件及所有客户端采样条件下保证达到全局最优。",
+          "quote": "As a solution, we propose a new algorithm (SCAFFOLD) which uses control variates (variance reduction) to correct for the `client-drift' in its local updates.",
+          "verificationStatus": "verified",
+          "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+          "verificationLevel": "abstract",
+          "supportStrength": "partial",
+          "location": {
+            "section": "Abstract",
+            "chunk": "S302:abstract:a60259269ef6"
+          }
+        }
+      ],
+      "evidenceBackedKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "allowedCitationKeys": [
+        "mcmahan2016communication",
+        "karimireddy2019scaffold"
+      ],
+      "danglingSynthesisRefs": [],
+      "danglingLiteratureRefs": [],
+      "warnings": []
+    }
+  }
+}

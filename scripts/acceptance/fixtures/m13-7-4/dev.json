@@ -1,0 +1,222 @@
+{
+  "outline": {
+    "title": "参数高效与量化微调综述",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "说明参数高效适配问题和综述范围，没有本文实验。"
+        ]
+      },
+      {
+        "id": "base",
+        "title": "低秩适配机制",
+        "file": "base.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 LoRA 冻结预训练权重与可训练秩分解矩阵。"
+        ]
+      },
+      {
+        "id": "extension",
+        "title": "量化适配机制",
+        "file": "extension.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 QLoRA 冻结四位量化模型向低秩适配器反传梯度。"
+        ]
+      },
+      {
+        "id": "comparison",
+        "title": "综合比较与局限性",
+        "file": "comparison.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "比较两种机制如何改变可训练对象与存储对象，不能给无证据性能排序；材料仅两篇摘要，未统一复现。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论与展望",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "总结方法关系与限制，未来跨任务评测不是已完成贡献。"
+        ]
+      }
+    ]
+  },
+  "responsibility": {
+    "version": 1,
+    "concepts": [
+      {
+        "term": "LoRA（低秩适配）",
+        "owner": "base",
+        "reminder": "brief"
+      },
+      {
+        "term": "QLoRA（量化低秩适配）",
+        "owner": "extension",
+        "reminder": "brief"
+      }
+    ],
+    "chapters": [
+      {
+        "sectionId": "introduction",
+        "goal": "界定微调资源问题、综述范围与组织贡献",
+        "questions": [
+          "说明参数高效适配问题和综述范围，没有本文实验。"
+        ],
+        "dependsOn": [],
+        "evidenceIds": []
+      },
+      {
+        "sectionId": "base",
+        "goal": "完整展开 LoRA 的冻结预训练权重及可训练低秩分解机制",
+        "questions": [
+          "解释 LoRA 冻结预训练权重与可训练秩分解矩阵。"
+        ],
+        "dependsOn": [
+          "introduction"
+        ],
+        "evidenceIds": [
+          "E1"
+        ]
+      },
+      {
+        "sectionId": "extension",
+        "goal": "完整展开 QLoRA 的量化冻结模型与适配器梯度路径",
+        "questions": [
+          "解释 QLoRA 冻结四位量化模型向低秩适配器反传梯度。"
+        ],
+        "dependsOn": [
+          "base"
+        ],
+        "evidenceIds": [
+          "E2"
+        ]
+      },
+      {
+        "sectionId": "comparison",
+        "goal": "综合参数更新对象与量化对象两条比较轴，集中讨论材料范围限制",
+        "questions": [
+          "比较两种机制如何改变可训练对象与存储对象，不能给无证据性能排序；材料仅两篇摘要，未统一复现。"
+        ],
+        "dependsOn": [
+          "extension"
+        ],
+        "evidenceIds": []
+      },
+      {
+        "sectionId": "conclusion",
+        "goal": "回答研究问题并给出有条件的综合结论和未来评测方向",
+        "questions": [
+          "总结方法关系与限制，未来跨任务评测不是已完成贡献。"
+        ],
+        "dependsOn": [
+          "comparison"
+        ],
+        "evidenceIds": []
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "source": {
+        "sourceId": "S201",
+        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+        "year": 2021,
+        "url": "https://arxiv.org/abs/2106.09685v2"
+      },
+      "claim": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks.",
+      "quote": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S201:abstract:6fcce2ef7bc5"
+      }
+    },
+    {
+      "id": "E2",
+      "source": {
+        "sourceId": "S202",
+        "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.14314v1"
+      },
+      "claim": "QLoRA backpropagates gradients through a frozen, 4-bit quantized pretrained language model into Low Rank Adapters~(LoRA).",
+      "quote": "QLoRA backpropagates gradients through a frozen, 4-bit quantized pretrained language model into Low Rank Adapters~(LoRA).",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S202:abstract:af18435f568f"
+      }
+    },
+    {
+      "id": "E3",
+      "source": {
+        "sourceId": "S202",
+        "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.14314v1"
+      },
+      "claim": "Our results show that QLoRA finetuning on a small high-quality dataset leads to state-of-the-art results, even when using smaller models than the previous SoTA.",
+      "quote": "Our results show that QLoRA finetuning on a small high-quality dataset leads to state-of-the-art results, even when using smaller models than the previous SoTA.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact excerpt; scope manually checked",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S202:abstract:5b2c43dd24a8"
+      }
+    },
+    {
+      "id": "E9",
+      "source": {
+        "sourceId": "S201",
+        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+        "year": 2021,
+        "url": "https://arxiv.org/abs/2106.09685v2"
+      },
+      "claim": "LoRA 的冻结与低秩适配在任何任务都保证与全量微调质量完全相同。",
+      "quote": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S201:abstract:6fcce2ef7bc5"
+      }
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "hu2021lora",
+      "sourceId": "S201",
+      "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+      "year": 2021,
+      "url": "https://arxiv.org/abs/2106.09685v2"
+    },
+    {
+      "key": "dettmers2023qlora",
+      "sourceId": "S202",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "year": 2023,
+      "url": "https://arxiv.org/abs/2305.14314v1"
+    }
+  ],
+  "mode": "ordinary",
+  "instructions": "只输出本节 LaTeX 正文，约350中文字（允许合理浮动），不重复节标题；各节共同构成中文综述。仅使用给定来源和 Evidence，不查外部资料。保留必要学术内容及限制；无本文实验结果，不编造公式、数值、性能排序；不要报告内部流程。"
+}

@@ -1,0 +1,376 @@
+diff --git a/backend/src/manuscript/ManuscriptService.ts b/backend/src/manuscript/ManuscriptService.ts
+index a91ddef..7c20283 100644
+--- a/backend/src/manuscript/ManuscriptService.ts
++++ b/backend/src/manuscript/ManuscriptService.ts
+@@ -19,6 +19,8 @@ import type { EvidenceStats } from "../evidence/EvidenceStore.js";
+ import { renderBibliographyFile, type BibRenderEntry } from "../citation/bibliography.js";
+ import { writeJsonAtomic, writeFileAtomic } from "../util/atomic.js";
+
++import { validateChapterResponsibility, type ChapterResponsibilityContract } from "./chapterResponsibility.js";
++
+ export interface OutlineSection {
+   id: string;
+   /** 章节文件名（sections/ 下，如 introduction.tex） */
+@@ -38,6 +40,7 @@ export interface OutlineSection {
+ }
+
+ export interface Outline {
++  responsibility?: ChapterResponsibilityContract;
+   title: string;
+   abstract?: string;
+   sections: OutlineSection[];
+@@ -313,6 +316,7 @@ export function validateOutline(outline: Outline): string[] {
+     ids.add(section.id);
+     files.add(section.file);
+   }
++  violations.push(...validateChapterResponsibility(outline));
+   return violations;
+ }
+
+diff --git a/backend/src/manuscript/chapterResponsibility.ts b/backend/src/manuscript/chapterResponsibility.ts
+new file mode 100644
+index 0000000..9c22435
+--- /dev/null
++++ b/backend/src/manuscript/chapterResponsibility.ts
+@@ -0,0 +1,84 @@
++import type { Outline } from "./ManuscriptService.js";
++
++/** Organization only. Never a source of scientific facts or citation permission. */
++export interface ChapterResponsibilityContract {
++  version: 1;
++  concepts: Array<{ term: string; owner: string; reminder: "brief" | "reference" }>;
++  chapters: Array<{
++    sectionId: string;
++    goal: string;
++    questions: string[];
++    dependsOn: string[];
++    evidenceIds: string[];
++  }>;
++}
++
++export const RESPONSIBILITY_MAX_CHARS = 6000;
++export const RESPONSIBILITY_PROMPT_MAX_CHARS = 3000;
++
++export function validateChapterResponsibility(outline: Outline): string[] {
++  const raw: unknown = outline.responsibility;
++  if (raw === undefined) return []; // Legacy projects keep their existing behavior.
++  const errors: string[] = [];
++  const object = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
++  const text = (v: unknown, max: number): v is string => typeof v === "string" && v.trim().length > 0 && v.length <= max;
++  const list = (v: unknown, max: number, length: number): v is string[] => Array.isArray(v) && v.length <= max && v.every(x => text(x, length)) && new Set(v).size === v.length;
++  if (!object(raw) || raw.version !== 1 || !Array.isArray(raw.concepts) || !Array.isArray(raw.chapters)) return ["responsibility: expected version=1, concepts[], chapters[]"];
++  if (JSON.stringify(raw).length > RESPONSIBILITY_MAX_CHARS) errors.push("responsibility: exceeds 6000 characters");
++  if (raw.concepts.length > 16) errors.push("responsibility: at most 16 concepts");
++  const ids = new Set(outline.sections.map(s => s.id));
++  const terms = new Set<string>();
++  for (const c of raw.concepts) {
++    if (!object(c) || !text(c.term, 60) || !text(c.owner, 64) || !ids.has(c.owner) || !["brief", "reference"].includes(String(c.reminder))) {
++      errors.push("responsibility: invalid concept or owner"); continue;
++    }
++    const key = c.term.normalize("NFKC").trim().toLocaleLowerCase();
++    if (terms.has(key)) errors.push(`responsibility: duplicate concept owner: ${c.term}`);
++    terms.add(key);
++  }
++  const seen = new Set<string>();
++  for (const c of raw.chapters) {
++    if (!object(c) || !text(c.sectionId, 64) || !ids.has(c.sectionId) || !text(c.goal, 120) || !list(c.questions, 3, 100) || c.questions.length === 0 || !list(c.dependsOn, 4, 64) || !list(c.evidenceIds, 6, 40)) {
++      errors.push("responsibility: invalid chapter"); continue;
++    }
++    if (seen.has(c.sectionId)) errors.push(`responsibility: duplicate chapter: ${c.sectionId}`);
++    seen.add(c.sectionId);
++    if (c.dependsOn.some(id => !ids.has(id) || id === c.sectionId)) errors.push(`responsibility: invalid dependency: ${c.sectionId}`);
++    if (c.evidenceIds.some(id => !/^E\d+$/.test(id))) errors.push(`responsibility: invalid canonical evidence ID: ${c.sectionId}`);
++  }
++  if (seen.size !== ids.size || raw.chapters.length !== ids.size) errors.push("responsibility: every section must have exactly one chapter");
++  if (errors.length === 0) {
++    for (const section of outline.sections) {
++      if (renderChapterResponsibility(outline, section.id).join("\n").length > RESPONSIBILITY_PROMPT_MAX_CHARS) {
++        errors.push("responsibility: projection exceeds 3000 characters"); break;
++      }
++    }
++  }
++  return errors;
++}
++
++/** No preceding manuscript text and no session state: identical after restart/rotation. */
++export function renderChapterResponsibility(outline: Outline, sectionId: string): string[] {
++  const contract = outline.responsibility;
++  if (!contract) return [];
++  const chapter = contract.chapters.find(c => c.sectionId === sectionId);
++  if (!chapter) return [];
++  return [
++    "===== 章节职责（组织约定，不是事实证据）=====",
++    `术语→完整展开章节：${contract.concepts.map(c => `${c.term}→${c.owner}（其他章${c.reminder === "brief" ? "简短回顾" : "回指"}）`).join("；")}`,
++    `本章目标：${chapter.goal}。完整展开：${contract.concepts.filter(c => c.owner === sectionId).map(c => c.term).join("、") || "无；本章组织、综合或总结，不完整介绍已有机制"}`,
++    `当前章必须回答：${chapter.questions.join("；")}。承接：${chapter.dependsOn.join(",") || "无"}。优先证据：${chapter.evidenceIds.join(",") || "沿用本节合法 refs / Evidence"}`,
++    "非 owner 概念至多用一句短提示承接，不再列组成、操作顺序或梯度路径；比较章直接分析比较维度和关系，回指机制章，不重写其定义段。摘要/引言/结论可概括研究问题与结论，不必重述完整技术过程。统一术语与定义范围；只用 quote 明示机制，不凭术语常识补结构细节。职责不是事实或引用许可，优先 ID 未在视图时先 evidence_query；Survey 仍受本节 refs 约束。",
++    "摘要、引言、结论可必要概括；允许为理解当前论点简短回顾定义。不得为去重删除合法公式、数值、引用、负结果或科学限制；限制集中论述，相关结论保留必要限定。贡献/实验仅写已完成且获授权的内容，未来计划归展望；职责与内部执行状态不进入正文。",
++  ];
++}
++
++export function responsibilityPlanningLines(survey: boolean): string[] {
++  return [
++    '同时输出 responsibility: {"version":1,"concepts":[{"term":"统一术语（可含缩写）","owner":"section id","reminder":"brief"}],"chapters":[{"sectionId":"section id","goal":"本章独有论述目标","questions":["必须回答的问题"],"dependsOn":[],"evidenceIds":[]}]}。',
++    "写作前分配主要定义与机制的完整展开章节，每个术语只有一个 owner（并非只能出现一次）；其他章按 brief 简短回顾或 reference 回指。比较章综合分析，不重新完整介绍方法。每节恰好一个 chapter，逻辑关系用 dependsOn，目标≤120字符，问题1–3个各≤100字符，依赖≤4个；概念≤16个，term≤60字符。整个 responsibility≤6000字符，保持简洁。统一术语拼写和定义范围，不创建新定义、事实、公式、实验结果或来源。",
++    survey
++      ? "综述职责从已有 synthesis 组织方法体系/比较/空缺/展望；不套原创方法与实验模板。evidenceIds 留空，重点文献与证据沿用每节合法 synthesisRefs/literatureRefs 映射，不自行编造 ID。"
++      : "原创论文分别安排研究问题、实际方法、授权实验、贡献、限制与展望；不把潜在贡献当已完成结果。evidenceIds 仅可逐字复制下方正式 Evidence 的 canonical ID，每章≤6个，可为空；不创造 ID。",
++  ];
++}
+diff --git a/backend/src/runtime/scriptedRuntime.ts b/backend/src/runtime/scriptedRuntime.ts
+index 62c2ff0..dbd6848 100644
+--- a/backend/src/runtime/scriptedRuntime.ts
++++ b/backend/src/runtime/scriptedRuntime.ts
+@@ -94,6 +94,11 @@ export const FEASIBILITY_INSUFFICIENT_JSON = JSON.stringify({
+ export const OUTLINE_JSON = JSON.stringify({
+   title: "小语料场景下检索增强生成的系统评估",
+   abstract: "本文提出一套小语料 RAG 评估协议并量化检索质量与幻觉率的关系。",
++  responsibility: {
++    version: 1,
++    concepts: [{ term: "RAG", owner: "related-work", reminder: "brief" }],
++    chapters: ["introduction", "related-work", "method", "experiments", "conclusion"].map(sectionId => ({ sectionId, goal: `${sectionId} scoped objective`, questions: [`${sectionId} research question`], dependsOn: [], evidenceIds: [] })),
++  },
+   sections: [
+     { id: "introduction", file: "introduction.tex", title: "引言", targetLengthWords: 300, keyPoints: ["动机", "贡献"] },
+     { id: "related-work", file: "related-work.tex", title: "相关工作", targetLengthWords: 300, keyPoints: ["RAG 检索器", "评估协议"] },
+diff --git a/backend/src/survey/OutlineService.ts b/backend/src/survey/OutlineService.ts
+index 652b22f..5d3c69e 100644
+--- a/backend/src/survey/OutlineService.ts
++++ b/backend/src/survey/OutlineService.ts
+@@ -184,6 +184,7 @@ export class SurveyOutlineService {
+     let feedback: string | undefined = input.feedback;
+     for (let attempt = 1; attempt <= SURVEY_OUTLINE_REPLAN_MAX_ATTEMPTS; attempt += 1) {
+       const outline = await this.writer.planOutline({
++        requireResponsibility: true,
+         projectId,
+         evidence: [],
+         bibliography: [],
+diff --git a/backend/src/workflow/definitions.ts b/backend/src/workflow/definitions.ts
+index 3e3f884..5a898e5 100644
+--- a/backend/src/workflow/definitions.ts
++++ b/backend/src/workflow/definitions.ts
+@@ -4885,6 +4885,7 @@ function outlinePlanStage(services: WorkflowServices): StageSpec {
+       // 注入大纲规划（无授权 = 摘要 / keyPoints 禁写具体数值）
+       const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
+       const outline = await services.writer.planOutline({
++        requireResponsibility: true,
+         projectId: ctx.projectId,
+         researchDigest: {
+           domainOverview: artifact.report.domainOverview,
+@@ -7413,6 +7414,7 @@ export async function evaluateSurveyWritingForProject(
+  * 意图参数，写作已完成后不构成重写依据。
+  */
+ function surveyOutlineFingerprint(outline: {
++  responsibility?: Outline["responsibility"];
+   sections: Array<{
+     id: string;
+     file: string;
+@@ -7425,14 +7427,14 @@ function surveyOutlineFingerprint(outline: {
+   return createHash("sha256")
+     .update(
+       JSON.stringify(
+-        outline.sections.map((section) => [
++        [outline.responsibility ?? null, outline.sections.map((section) => [
+           section.id,
+           section.file,
+           section.title,
+           [...(section.synthesisRefs ?? [])].sort(),
+           [...(section.literatureRefs ?? [])].sort(),
+           section.keyPoints ?? [],
+-        ]),
++        ])],
+       ),
+     )
+     .digest("hex")
+diff --git a/backend/src/writer/WriterService.ts b/backend/src/writer/WriterService.ts
+index 4eb6983..ba5be40 100644
+--- a/backend/src/writer/WriterService.ts
++++ b/backend/src/writer/WriterService.ts
+@@ -34,6 +34,7 @@ import {
+ import { extractCitationKeys, protectedInventory } from "../review/styleInvariants.js";
+ import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
+ import { validateOutline } from "../manuscript/ManuscriptService.js";
++import { renderChapterResponsibility, responsibilityPlanningLines, type ChapterResponsibilityContract } from "../manuscript/chapterResponsibility.js";
+ import { extractJsonObject } from "../agents/outputParsing.js";
+ import type { SurveyOutlineDigest } from "../survey/outlineDigest.js";
+ import {
+@@ -293,6 +294,8 @@ export class WriterService {
+    * repair prompt 显式提示转义规则修复此类漂移；全部失败仍如实抛错。
+    */
+   async planOutline(params: {
++    /** New workflows require the contract; legacy direct callers remain compatible. */
++    requireResponsibility?: boolean;
+     projectId: string;
+     researchDigest?: {
+       domainOverview: string;
+@@ -363,8 +366,16 @@ export class WriterService {
+             ? { abstract: parsed["abstract"].trim() }
+             : {}),
+           sections: readOutlineSections(parsed, { surveyRefs: survey }),
++          ...(parsed["responsibility"] !== undefined ? { responsibility: parsed["responsibility"] as ChapterResponsibilityContract } : {}),
+         };
+         const violations = validateOutline(outline);
++        if (params.requireResponsibility && !outline.responsibility) violations.push("responsibility is required for newly planned outlines");
++        if (outline.responsibility && violations.length === 0) {
++          const allowed = new Set(survey ? [] : params.evidence.filter(isFormalEvidence).map(e => e.id));
++          if (outline.responsibility.chapters.some(c => c.evidenceIds.some(id => !allowed.has(id)))) {
++            violations.push("responsibility: evidenceIds must exist in supplied formal Evidence; survey uses section refs");
++          }
++        }
+         if (violations.length > 0) {
+           throw new InvalidLatexOutputError(`大纲未通过校验：${violations.join("；")}`);
+         }
+@@ -1807,6 +1818,7 @@ export function buildOutlinePrompt(params: {
+     "",
+     ...targetLanguageLines(params.language),
+     ...(params.language !== undefined ? [""] : []),
++    ...responsibilityPlanningLines(false),
+     "要求：",
+     "1. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
+     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
+@@ -1862,6 +1874,7 @@ export function buildSurveyOutlinePrompt(params: {
+     "",
+     ...targetLanguageLines(params.language),
+     ...(params.language !== undefined ? [""] : []),
++    ...responsibilityPlanningLines(true),
+     "组织纪律（综述大纲最重要的规则）：",
+     "1. 这是综述（review article），不是原创算法论文：不要求论证研究空白、不要求潜在贡献 / 创新点、不要求实验设计 / 方法章节。",
+     "2. 按方法体系 / 研究问题组织章节，绝不按论文逐篇组织——「论文 A / 论文 B / 论文 C」式章节是错误结构。",
+@@ -1977,6 +1990,7 @@ export function buildSectionPrompt(params: {
+     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
+     "",
+     "===== 论文大纲（全文结构）=====",
++    ...renderChapterResponsibility(params.outline, params.section.id),
+     `标题：${params.outline.title}`,
+     ...params.outline.sections.map((section) => `- ${section.title}（${section.id}）`),
+     "",
+@@ -2044,6 +2058,7 @@ export function buildSurveySectionPrompt(params: {
+     ...MANUSCRIPT_CONTENT_LINES,
+     "",
+     "===== 论文大纲（全文结构；本节是其中一节，保持术语一致）=====",
++    ...renderChapterResponsibility(params.outline, params.section.id),
+     `标题：${params.outline.title}`,
+     ...params.outline.sections.map((section) => `- ${section.title}（${section.id}）`),
+     "",
+diff --git a/backend/test/manuscript/chapterResponsibility.test.ts b/backend/test/manuscript/chapterResponsibility.test.ts
+new file mode 100644
+index 0000000..41863ab
+--- /dev/null
++++ b/backend/test/manuscript/chapterResponsibility.test.ts
+@@ -0,0 +1,93 @@
++import { mkdtemp, readFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { describe, expect, it } from "vitest";
++import { ManuscriptService, validateOutline, type Outline } from "../../src/manuscript/ManuscriptService.js";
++import { ProjectStore } from "../../src/project/ProjectStore.js";
++import { renderChapterResponsibility, RESPONSIBILITY_PROMPT_MAX_CHARS } from "../../src/manuscript/chapterResponsibility.js";
++import { buildSectionPrompt, buildSurveySectionPrompt, WriterService } from "../../src/writer/WriterService.js";
++import type { AgentRuntime } from "../../src/runtime/types.js";
++
++const sample = (): Outline => ({
++  title: "Study", sections: ["intro", "method", "comparison", "conclusion"].map(id => ({ id, title: id, file: `${id}.tex` })),
++  responsibility: { version: 1,
++    concepts: [{ term: "Mechanism (M)", owner: "method", reminder: "brief" }],
++    chapters: ["intro", "method", "comparison", "conclusion"].map(sectionId => ({ sectionId, goal: `${sectionId} goal`, questions: [`${sectionId} question`], dependsOn: sectionId === "comparison" ? ["method"] : [], evidenceIds: [] })),
++  },
++});
++
++describe("chapter responsibility contract", () => {
++  it("validates ownership, chapter coverage, canonical IDs and bounded schema", () => {
++    expect(validateOutline(sample())).toEqual([]);
++    for (const mutate of [
++      (o: Outline) => o.responsibility!.concepts.push({ term: " mechanism (m) ", owner: "intro", reminder: "reference" }),
++      (o: Outline) => { o.responsibility!.concepts[0]!.owner = "missing"; },
++      (o: Outline) => o.responsibility!.chapters.pop(),
++      (o: Outline) => { o.responsibility!.chapters[0]!.evidenceIds = ["made-up"]; },
++      (o: Outline) => { o.responsibility!.chapters[0]!.goal = "x".repeat(121); },
++      (o: Outline) => { o.responsibility!.chapters[0]!.dependsOn = ["intro"]; },
++      (o: Outline) => { o.responsibility!.chapters[0]!.questions = []; },
++    ]) {
++      const o = sample(); mutate(o); expect(validateOutline(o).join(";")).toContain("responsibility");
++    }
++    const long = sample();
++    long.responsibility!.concepts = Array.from({ length: 16 }, (_, i) => ({ term: `${i}` + "x".repeat(58), owner: "method", reminder: "brief" }));
++    long.sections = Array.from({ length: 20 }, (_, i) => ({ id: `section-${i}`, title: `Section ${i}`, file: `section-${i}.tex` }));
++    long.responsibility!.concepts.forEach(c => { c.owner = "section-0"; });
++    long.responsibility!.chapters = long.sections.map(s => ({ sectionId: s.id, goal: "goal", questions: ["question"], dependsOn: [], evidenceIds: [] }));
++    long.responsibility!.chapters.forEach(c => { c.goal = "x".repeat(120); c.questions = ["q".repeat(100), "z".repeat(100), "y".repeat(100)]; });
++    expect(validateOutline(long).length).toBeGreaterThan(0);
++    const malformed = sample(); malformed.responsibility = null as never;
++    expect(validateOutline(malformed).length).toBeGreaterThan(0);
++  });
++
++  it("survives save/restart and fresh prompts with no prior session or manuscript", async () => {
++    const projects = new ProjectStore({ root: await mkdtemp(join(tmpdir(), "responsibility-")) });
++    const project = await projects.create("test");
++    const before = sample();
++    await new ManuscriptService(projects).saveOutline(project.id, before);
++    const after = await new ManuscriptService(projects).loadOutline(project.id);
++    expect(after).toEqual(before);
++    expect(JSON.parse(await readFile(join(projects.manuscriptDir(project.id), "outline.json"), "utf8"))).toEqual(before);
++    const prompt = buildSectionPrompt({ outline: after!, section: after!.sections[2]!, evidence: [], bibliography: [] });
++    expect(prompt).toContain("comparison question");
++    expect(prompt).not.toContain("method question");
++    expect(prompt).toContain("Mechanism (M)→method");
++    expect(renderChapterResponsibility(after!, "comparison").join("\n").length).toBeLessThanOrEqual(RESPONSIBILITY_PROMPT_MAX_CHARS);
++    expect(after).toEqual(before);
++  });
++
++  it("keeps legacy outlines unchanged and protects necessary academic content", () => {
++    const o = sample(); delete o.responsibility;
++    expect(validateOutline(o)).toEqual([]);
++    expect(renderChapterResponsibility(o, "method")).toEqual([]);
++    const text = renderChapterResponsibility(sample(), "method").join("\n");
++    expect(text).toContain("允许为理解当前论点简短回顾定义");
++    expect(text).toContain("不得为去重删除合法公式、数值、引用、负结果或科学限制");
++  });
++
++  it("both actual writeSection routes receive the contract after session replacement", async () => {
++    const calls: string[] = [];
++    const runtime = { runAgent: async (input: { task: string }) => { calls.push(input.task); return { status: "completed", taskId: "test", output: "\\section{test}\nScoped content." }; } } as unknown as AgentRuntime;
++    const outline = sample();
++    const survey = { sectionId: "comparison", title: "comparison", keyPoints: [], sectionContext: "core", speculativeAllowed: false, synthesis: [], literature: [], evidence: [], evidenceBackedKeys: [], allowedCitationKeys: [], danglingSynthesisRefs: [], danglingLiteratureRefs: [], warnings: [] } as unknown as Parameters<typeof buildSurveySectionPrompt>[0]["survey"];
++    for (const s of [undefined, survey]) {
++      await new WriterService({ runtime, agentId: "writer" }).writeSection({ projectId: "p-test", outline, section: outline.sections[2]!, evidence: [], bibliography: [], ...(s ? { survey: s } : {}) });
++    }
++    expect(calls.every(p => p.includes("comparison question"))).toBe(true);
++    expect(calls[0]).not.toEqual(calls[1]);
++  });
++
++  it("planner parses contracts, rejects fabricated evidence, and requires contracts in new workflows", async () => {
++    let output = sample();
++    const runtime = { runAgent: async () => ({ status: "completed", taskId: "test", output: JSON.stringify(output) }) } as unknown as AgentRuntime;
++    const writer = new WriterService({ runtime, agentId: "writer" });
++    const args = { projectId: "p-test", researchDigest: { domainOverview: "test", researchGaps: [], potentialContributions: [] }, evidence: [], bibliography: [], requireResponsibility: true };
++    expect((await writer.planOutline(args)).responsibility).toEqual(output.responsibility);
++    output.responsibility!.chapters[0]!.evidenceIds = ["E999"];
++    await expect(writer.planOutline(args)).rejects.toThrow("evidenceIds");
++    output = sample(); delete output.responsibility;
++    await expect(writer.planOutline(args)).rejects.toThrow("responsibility is required");
++    expect((await writer.planOutline({ ...args, requireResponsibility: false })).responsibility).toBeUndefined();
++  });
++});
+diff --git a/backend/test/survey/fixtures.ts b/backend/test/survey/fixtures.ts
+index ae7d578..1d03fff 100644
+--- a/backend/test/survey/fixtures.ts
++++ b/backend/test/survey/fixtures.ts
+@@ -407,7 +407,7 @@ export function defaultSynthesisOutput(input: SynthesisScriptInput): string {
+  */
+ export function defaultOutlineOutput(input: OutlineScriptInput): string {
+   const trendAndComparison = [...input.trendIds, ...input.comparisonIds].sort();
+-  return JSON.stringify({
++  const outline = {
+     title: "多目标跟踪数据关联方法综述",
+     abstract: "本文综述多目标跟踪中数据关联方法的研究进展：按方法体系分类梳理运动 / 外观 / 联合关联三类路线，比较其假设与适用场景，归纳共识与分歧，总结研究空缺与未来方向。",
+     sections: [
+@@ -450,7 +450,8 @@ export function defaultOutlineOutput(input: OutlineScriptInput): string {
+       },
+       { id: "conclusion", file: "conclusion.tex", title: "结论", targetLengthWords: 300, keyPoints: ["总结"] },
+     ],
+-  });
++  };
++  return JSON.stringify({ ...outline, responsibility: { version: 1, concepts: [{ term: "数据关联", owner: "taxonomy", reminder: "brief" }], chapters: outline.sections.map(section => ({ sectionId: section.id, goal: section.keyPoints.join("；"), questions: [section.keyPoints[0]], dependsOn: [], evidenceIds: [] })) } });
+ }
+
+ /** 文本型全文条目用的最小合法分析产物（status=ok → available） */

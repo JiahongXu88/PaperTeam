@@ -72,6 +72,7 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [M13_7_RESEARCH_RAG_EVIDENCE_ACCEPTANCE.md](M13_7_RESEARCH_RAG_EVIDENCE_ACCEPTANCE.md) — 工程闭环、受控回归、新加坡隔离验收、真实证据与Writer消费、Token和限制。
 - [M13_7_2_CITATION_WRITING_QUALITY.md](M13_7_2_CITATION_WRITING_QUALITY.md) — 引用用途、partial 证据边界、中文正文质量、固定回归与有界真实模型对照。
 - [M13_7_3_CROSS_SECTION_WRITING_QUALITY.md](M13_7_3_CROSS_SECTION_WRITING_QUALITY.md) — 连续五章真实 A/B、独立冻结主题、失败候选与成本证据；质量验收 PARTIAL，候选未合入。
+- [M13_7_4_CHAPTER_RESPONSIBILITY_PLANNING.md](M13_7_4_CHAPTER_RESPONSIBILITY_PLANNING.md) — 轻量章节职责契约候选、两个新主题与 held-out 重复 A/B、真实规划失败和成本；PARTIAL，候选未合入。
 - [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
 ## Runtime / 架构审计
