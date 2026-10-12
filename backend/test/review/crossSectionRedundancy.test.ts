@@ -104,6 +104,17 @@ describe("analyzeCrossSectionRedundancy", () => {
     expect(loose.options.minShared).toBe(6);
   });
 
+  it("转义百分号不是注释：76.5\\% 之后的正文保留并参与分析（M13.7.8 held-out 实测缺陷）", () => {
+    const latex = "线性分类器取得 76.5\\% 的 top-1 准确率\\cite{a}，本综述未进行统一复现，不能据此给出两条路线的性能排序。% 真正的注释\n下一句。";
+    const stripped = stripLatexForRedundancy(latex);
+    expect(stripped).toContain("76.5%");
+    expect(stripped).toContain("不能据此给出两条路线的性能排序");
+    expect(stripped).not.toContain("真正的注释");
+    const sentences = splitRedundancySentences(stripped);
+    expect(sentences.some((s) => s.includes("性能排序"))).toBe(true);
+    expect(isLimitationSentence(sentences.find((s) => s.includes("性能排序")) ?? "")).toBe(true);
+  });
+
   it("分句与分词是确定性的，功能字 bigram 被过滤", () => {
     expect(splitRedundancySentences("第一句。第二句！第三句？\n第四句")).toHaveLength(4);
     const tokens = tokenizeForRedundancy("LoRA 的秩分解矩阵与 4 位量化");

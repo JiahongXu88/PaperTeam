@@ -114,6 +114,10 @@ const LIMITATION_PATTERNS: RegExp[] = [
 
 export function stripLatexForRedundancy(latex: string): string {
   let text = latex.replace(/\r\n/g, "\n");
+  // M13.7.8：转义百分号 `\%`（如 `76.5\%`）是正文字符，不是注释起点；先换成占位符，
+  // 注释剥离之后再还原为 %，否则该句之后的整段正文会被当作注释删掉（held-out 实测两臂各丢两段）。
+  const ESCAPED_PERCENT = "\u0001";
+  text = text.replace(/\\%/g, ESCAPED_PERCENT);
   // 节标题 / 标签 / 引用标注：不是正文论述
   text = text.replace(/\\(?:sub)*section\*?\{[^{}]*\}/g, "\n");
   text = text.replace(/\\(?:label|ref|eqref|pageref|autoref|cref)\{[^{}]*\}/g, " ");
@@ -128,6 +132,7 @@ export function stripLatexForRedundancy(latex: string): string {
   text = text.replace(/\\[A-Za-z]+\*?/g, " ");
   text = text.replace(/[{}~]/g, " ");
   text = text.replace(/%[^\n]*/g, " ");
+  text = text.replace(/\u0001/g, "%");
   return text;
 }
 

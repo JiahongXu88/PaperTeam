@@ -1,6 +1,9 @@
 # M13.7.8 fixed acceptance assets — argument-unit writing, held-out validation
 
-Status: see [the report](../../../../docs/research/M13_7_8_ARGUMENT_UNIT_HELDOUT_VALIDATION.md).
+Status: **PARTIAL — held-out gate not passed; no production writing change** (recorded execution: 20 Writer tasks /
+20 assistant turns on `zai-coding-cn/glm-5.3`; B restated-char share 25.5 % → 29.5 % on the frozen detector, yet the
+only arm with the full must-retain checklist; C and D pass the number but lose required facts).
+See [the report](../../../../docs/research/M13_7_8_ARGUMENT_UNIT_HELDOUT_VALIDATION.md).
 
 - `heldout.json`: **held-out** topic「视觉自监督表示学习中的对比与非对比方法综述」— SimCLR (2002.05709v3),
   MoCo (1911.05722v3), BYOL (2006.07733v3), SimSiam (2011.10566v1). Five sections (引言 / 基于负样本的对比框架 /
