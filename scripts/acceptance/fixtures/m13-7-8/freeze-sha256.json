@@ -1,0 +1,31 @@
+{
+  "heldout.json": {
+    "lf": "59b022340e4248acf16cb62ea5da392d118617867d256564e19f4da80401bb65",
+    "crlf": "b4a03e607d85ec2bd9a2296f6d495b1e9f66728c0e62a7c25bb423541b13ac76",
+    "bytesLf": 22862
+  },
+  "protocol.json": {
+    "lf": "7462b3ee6a43c034269f06abed4060bd3124005b9c65be6016c54aa6a617e843",
+    "crlf": "fac7ed5bc55584fb9b227fccf96986d254bf2cfb6cc6e09fc056e9136b03f439",
+    "bytesLf": 9225
+  },
+  "concept-markers.json": {
+    "lf": "851d3a88e2182617b4abf75ade7b21ad7845dbbc2ffd669005476504565e48d0",
+    "crlf": "1829ecf4a1aebac1ddff805812f14d123665d8406bbd69d20106319cb1145763",
+    "bytesLf": 4391
+  },
+  "sources-abstracts.json": {
+    "lf": "1e9246d66db46dc4af8530fe440a64af3403fcb753279e8af5f5bf4539bfd247",
+    "crlf": "325976528960e87f25a0980063430a96b235179f6d3a6252601c8d9378008cba",
+    "bytesLf": 6667
+  },
+  "__code": {
+    "scripts/acceptance/argument-unit-writing-live.mjs": "3b5e8a8a1530d86ecf0f068df3c2d7de7bb98bfff029c4caa0dadb354a58650d",
+    "scripts/acceptance/m13-7-8-evaluate.mjs": "079ca78beaf84168e320a5bec2ae32f9044675962f256b9b58429b54f5d02d37",
+    "scripts/acceptance/m13-7-8-compare.mjs": "8f5b27bcae84879d2857464df17dfb6ec3e60a319fc81d85f6a68a1ab630b2fd",
+    "backend/src/review/crossSectionRedundancy.ts": "dac5ce1a1ad171120eb24db544d281b2423f2870796945c93dc0da329afe0ddc",
+    "backend/dist/review/crossSectionRedundancy.js": "91a2b3ed792937cc7afe9c364a3b97c3a5d89a055f59c57ce9e18042ec501d7f",
+    "backend/dist/writer/WriterService.js": "7aab748289c689f1f900edfc4efe3fab177d82d7748a9b05629ac32939ca7a32",
+    "backend/src/writer/WriterService.ts": "8d8ceeaf685691959d152c27d820aaf67e65c50210cd2ab8fef429d0c42adf47"
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "fetchedAt": "2026-10-12",
+  "fetchMethod": "HTTP GET https://arxiv.org/abs/<id> (latest version page); abstract = <meta name=citation_abstract>; arXiv export API returned 429 at fetch time",
+  "papers": {
+    "2002.05709": {
+      "arxivId": "2002.05709",
+      "latestVersion": "v3",
+      "url": "https://arxiv.org/abs/2002.05709v3",
+      "title": "A Simple Framework for Contrastive Learning of Visual Representations",
+      "authors": [
+        "Chen, Ting",
+        "Kornblith, Simon",
+        "Norouzi, Mohammad",
+        "Hinton, Geoffrey"
+      ],
+      "submitted": "2020/02/13",
+      "abstract": "This paper presents SimCLR: a simple framework for contrastive learning of visual representations. We simplify recently proposed contrastive self-supervised learning algorithms without requiring specialized architectures or a memory bank. In order to understand what enables the contrastive prediction tasks to learn useful representations, we systematically study the major components of our framework. We show that (1) composition of data augmentations plays a critical role in defining effective predictive tasks, (2) introducing a learnable nonlinear transformation between the representation and the contrastive loss substantially improves the quality of the learned representations, and (3) contrastive learning benefits from larger batch sizes and more training steps compared to supervised learning. By combining these findings, we are able to considerably outperform previous methods for self-supervised and semi-supervised learning on ImageNet. A linear classifier trained on self-supervised representations learned by SimCLR achieves 76.5% top-1 accuracy, which is a 7% relative improvement over previous state-of-the-art, matching the performance of a supervised ResNet-50. When fine-tuned on only 1% of the labels, we achieve 85.8% top-5 accuracy, outperforming AlexNet with 100X fewer labels.",
+      "abstractChars": 1306,
+      "pageSha256": "e06a1527598e6088c0d9a6ef5cdd9d123e961749be34537857245e7725292453"
+    },
+    "1911.05722": {
+      "arxivId": "1911.05722",
+      "latestVersion": "v3",
+      "url": "https://arxiv.org/abs/1911.05722v3",
+      "title": "Momentum Contrast for Unsupervised Visual Representation Learning",
+      "authors": [
+        "He, Kaiming",
+        "Fan, Haoqi",
+        "Wu, Yuxin",
+        "Xie, Saining",
+        "Girshick, Ross"
+      ],
+      "submitted": "2019/11/13",
+      "abstract": "We present Momentum Contrast (MoCo) for unsupervised visual representation learning. From a perspective on contrastive learning as dictionary look-up, we build a dynamic dictionary with a queue and a moving-averaged encoder. This enables building a large and consistent dictionary on-the-fly that facilitates contrastive unsupervised learning. MoCo provides competitive results under the common linear protocol on ImageNet classification. More importantly, the representations learned by MoCo transfer well to downstream tasks. MoCo can outperform its supervised pre-training counterpart in 7 detection/segmentation tasks on PASCAL VOC, COCO, and other datasets, sometimes surpassing it by large margins. This suggests that the gap between unsupervised and supervised representation learning has been largely closed in many vision tasks.",
+      "abstractChars": 837,
+      "pageSha256": "6c72aa8a1238fe2fe32d2759f69933131e55703024faca36a9413dadf6a4ba46"
+    },
+    "2006.07733": {
+      "arxivId": "2006.07733",
+      "latestVersion": "v3",
+      "url": "https://arxiv.org/abs/2006.07733v3",
+      "title": "Bootstrap your own latent: A new approach to self-supervised Learning",
+      "authors": [
+        "Grill, Jean-Bastien",
+        "Strub, Florian",
+        "Altché, Florent",
+        "Tallec, Corentin",
+        "Richemond, Pierre H.",
+        "Buchatskaya, Elena",
+        "Doersch, Carl",
+        "Pires, Bernardo Avila",
+        "Guo, Zhaohan Daniel",
+        "Azar, Mohammad Gheshlaghi",
+        "Piot, Bilal",
+        "Kavukcuoglu, Koray",
+        "Munos, Rémi",
+        "Valko, Michal"
+      ],
+      "submitted": "2020/06/13",
+      "abstract": "We introduce Bootstrap Your Own Latent (BYOL), a new approach to self-supervised image representation learning. BYOL relies on two neural networks, referred to as online and target networks, that interact and learn from each other. From an augmented view of an image, we train the online network to predict the target network representation of the same image under a different augmented view. At the same time, we update the target network with a slow-moving average of the online network. While state-of-the art methods rely on negative pairs, BYOL achieves a new state of the art without them. BYOL reaches $74.3\\%$ top-1 classification accuracy on ImageNet using a linear evaluation with a ResNet-50 architecture and $79.6\\%$ with a larger ResNet. We show that BYOL performs on par or better than the current state of the art on both transfer and semi-supervised benchmarks. Our implementation and pretrained models are given on GitHub.",
+      "abstractChars": 939,
+      "pageSha256": "3c4b921929c60707d56d95bb602f8b35f8070e1b341e67a5649657f67cf0f385"
+    },
+    "2011.10566": {
+      "arxivId": "2011.10566",
+      "latestVersion": "v1",
+      "url": "https://arxiv.org/abs/2011.10566v1",
+      "title": "Exploring Simple Siamese Representation Learning",
+      "authors": [
+        "Chen, Xinlei",
+        "He, Kaiming"
+      ],
+      "submitted": "2020/11/20",
+      "abstract": "Siamese networks have become a common structure in various recent models for unsupervised visual representation learning. These models maximize the similarity between two augmentations of one image, subject to certain conditions for avoiding collapsing solutions. In this paper, we report surprising empirical results that simple Siamese networks can learn meaningful representations even using none of the following: (i) negative sample pairs, (ii) large batches, (iii) momentum encoders. Our experiments show that collapsing solutions do exist for the loss and structure, but a stop-gradient operation plays an essential role in preventing collapsing. We provide a hypothesis on the implication of stop-gradient, and further show proof-of-concept experiments verifying it. Our \"SimSiam\" method achieves competitive results on ImageNet and downstream tasks. We hope this simple baseline will motivate people to rethink the roles of Siamese architectures for unsupervised representation learning. Code will be made available.",
+      "abstractChars": 1025,
+      "pageSha256": "daca92b8bd9533f1d2f674da01de4b71d52abd6bf942534143a74190482f4b20"
+    }
+  }
+}

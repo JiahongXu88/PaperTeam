@@ -1,0 +1,260 @@
+{
+  "outline": {
+    "title": "视觉自监督表示学习中的对比与非对比方法综述",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "界定视觉自监督表示学习的综述范围：基于负样本的对比方法与无负样本的孪生方法两条路线；材料为四篇公开摘要，没有本文实验。"
+        ]
+      },
+      {
+        "id": "contrastive",
+        "title": "基于负样本的对比框架",
+        "file": "contrastive.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 SimCLR 的数据增强组合、可学习非线性变换与大批量长训练三项发现，以及 MoCo 以队列和动量编码器构建大而一致的动态字典。"
+        ]
+      },
+      {
+        "id": "noncontrastive",
+        "title": "无负样本的孪生方法",
+        "file": "noncontrastive.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 BYOL 以在线网络预测目标网络表示并用慢速移动平均更新目标网络，以及 SimSiam 不用负样本、大批量和动量编码器而依靠停止梯度防止坍缩。"
+        ]
+      },
+      {
+        "id": "comparison",
+        "title": "综合比较与局限性",
+        "file": "comparison.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "沿负样本依赖、批量规模依赖、目标编码器更新方式与防坍缩机制比较两条路线；摘要数值来自不同模型与评测设置，不能据此给出性能排序；材料仅四篇摘要，未统一复现。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论与展望",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "总结两条路线的关系与各自改变的训练要素，保留限制；统一协议下的评测是未来工作而非已完成贡献。"
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "source": { "sourceId": "S301", "title": "A Simple Framework for Contrastive Learning of Visual Representations", "year": 2020, "url": "https://arxiv.org/abs/2002.05709v3" },
+      "claim": "This paper presents SimCLR: a simple framework for contrastive learning of visual representations. We simplify recently proposed contrastive self-supervised learning algorithms without requiring specialized architectures or a memory bank.",
+      "quote": "This paper presents SimCLR: a simple framework for contrastive learning of visual representations. We simplify recently proposed contrastive self-supervised learning algorithms without requiring specialized architectures or a memory bank.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S301:abstract:e1" }
+    },
+    {
+      "id": "E2",
+      "source": { "sourceId": "S301", "title": "A Simple Framework for Contrastive Learning of Visual Representations", "year": 2020, "url": "https://arxiv.org/abs/2002.05709v3" },
+      "claim": "We show that (1) composition of data augmentations plays a critical role in defining effective predictive tasks, (2) introducing a learnable nonlinear transformation between the representation and the contrastive loss substantially improves the quality of the learned representations, and (3) contrastive learning benefits from larger batch sizes and more training steps compared to supervised learning.",
+      "quote": "We show that (1) composition of data augmentations plays a critical role in defining effective predictive tasks, (2) introducing a learnable nonlinear transformation between the representation and the contrastive loss substantially improves the quality of the learned representations, and (3) contrastive learning benefits from larger batch sizes and more training steps compared to supervised learning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S301:abstract:e2" }
+    },
+    {
+      "id": "E3",
+      "source": { "sourceId": "S301", "title": "A Simple Framework for Contrastive Learning of Visual Representations", "year": 2020, "url": "https://arxiv.org/abs/2002.05709v3" },
+      "claim": "A linear classifier trained on self-supervised representations learned by SimCLR achieves 76.5% top-1 accuracy, which is a 7% relative improvement over previous state-of-the-art, matching the performance of a supervised ResNet-50. When fine-tuned on only 1% of the labels, we achieve 85.8% top-5 accuracy, outperforming AlexNet with 100X fewer labels.",
+      "quote": "A linear classifier trained on self-supervised representations learned by SimCLR achieves 76.5% top-1 accuracy, which is a 7% relative improvement over previous state-of-the-art, matching the performance of a supervised ResNet-50. When fine-tuned on only 1% of the labels, we achieve 85.8% top-5 accuracy, outperforming AlexNet with 100X fewer labels.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S301:abstract:e3" }
+    },
+    {
+      "id": "E4",
+      "source": { "sourceId": "S302", "title": "Momentum Contrast for Unsupervised Visual Representation Learning", "year": 2019, "url": "https://arxiv.org/abs/1911.05722v3" },
+      "claim": "We present Momentum Contrast (MoCo) for unsupervised visual representation learning. From a perspective on contrastive learning as dictionary look-up, we build a dynamic dictionary with a queue and a moving-averaged encoder. This enables building a large and consistent dictionary on-the-fly that facilitates contrastive unsupervised learning.",
+      "quote": "We present Momentum Contrast (MoCo) for unsupervised visual representation learning. From a perspective on contrastive learning as dictionary look-up, we build a dynamic dictionary with a queue and a moving-averaged encoder. This enables building a large and consistent dictionary on-the-fly that facilitates contrastive unsupervised learning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S302:abstract:e4" }
+    },
+    {
+      "id": "E5",
+      "source": { "sourceId": "S302", "title": "Momentum Contrast for Unsupervised Visual Representation Learning", "year": 2019, "url": "https://arxiv.org/abs/1911.05722v3" },
+      "claim": "MoCo provides competitive results under the common linear protocol on ImageNet classification. More importantly, the representations learned by MoCo transfer well to downstream tasks. MoCo can outperform its supervised pre-training counterpart in 7 detection/segmentation tasks on PASCAL VOC, COCO, and other datasets, sometimes surpassing it by large margins.",
+      "quote": "MoCo provides competitive results under the common linear protocol on ImageNet classification. More importantly, the representations learned by MoCo transfer well to downstream tasks. MoCo can outperform its supervised pre-training counterpart in 7 detection/segmentation tasks on PASCAL VOC, COCO, and other datasets, sometimes surpassing it by large margins.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S302:abstract:e5" }
+    },
+    {
+      "id": "E6",
+      "source": { "sourceId": "S303", "title": "Bootstrap your own latent: A new approach to self-supervised Learning", "year": 2020, "url": "https://arxiv.org/abs/2006.07733v3" },
+      "claim": "BYOL relies on two neural networks, referred to as online and target networks, that interact and learn from each other. From an augmented view of an image, we train the online network to predict the target network representation of the same image under a different augmented view. At the same time, we update the target network with a slow-moving average of the online network.",
+      "quote": "BYOL relies on two neural networks, referred to as online and target networks, that interact and learn from each other. From an augmented view of an image, we train the online network to predict the target network representation of the same image under a different augmented view. At the same time, we update the target network with a slow-moving average of the online network.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S303:abstract:e6" }
+    },
+    {
+      "id": "E7",
+      "source": { "sourceId": "S303", "title": "Bootstrap your own latent: A new approach to self-supervised Learning", "year": 2020, "url": "https://arxiv.org/abs/2006.07733v3" },
+      "claim": "While state-of-the art methods rely on negative pairs, BYOL achieves a new state of the art without them. BYOL reaches $74.3\\%$ top-1 classification accuracy on ImageNet using a linear evaluation with a ResNet-50 architecture and $79.6\\%$ with a larger ResNet. We show that BYOL performs on par or better than the current state of the art on both transfer and semi-supervised benchmarks.",
+      "quote": "While state-of-the art methods rely on negative pairs, BYOL achieves a new state of the art without them. BYOL reaches $74.3\\%$ top-1 classification accuracy on ImageNet using a linear evaluation with a ResNet-50 architecture and $79.6\\%$ with a larger ResNet. We show that BYOL performs on par or better than the current state of the art on both transfer and semi-supervised benchmarks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12; the abstract itself carries the LaTeX percent markup); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S303:abstract:e7" }
+    },
+    {
+      "id": "E8",
+      "source": { "sourceId": "S304", "title": "Exploring Simple Siamese Representation Learning", "year": 2020, "url": "https://arxiv.org/abs/2011.10566v1" },
+      "claim": "Siamese networks have become a common structure in various recent models for unsupervised visual representation learning. These models maximize the similarity between two augmentations of one image, subject to certain conditions for avoiding collapsing solutions.",
+      "quote": "Siamese networks have become a common structure in various recent models for unsupervised visual representation learning. These models maximize the similarity between two augmentations of one image, subject to certain conditions for avoiding collapsing solutions.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S304:abstract:e8" }
+    },
+    {
+      "id": "E9",
+      "source": { "sourceId": "S304", "title": "Exploring Simple Siamese Representation Learning", "year": 2020, "url": "https://arxiv.org/abs/2011.10566v1" },
+      "claim": "In this paper, we report surprising empirical results that simple Siamese networks can learn meaningful representations even using none of the following: (i) negative sample pairs, (ii) large batches, (iii) momentum encoders. Our experiments show that collapsing solutions do exist for the loss and structure, but a stop-gradient operation plays an essential role in preventing collapsing.",
+      "quote": "In this paper, we report surprising empirical results that simple Siamese networks can learn meaningful representations even using none of the following: (i) negative sample pairs, (ii) large batches, (iii) momentum encoders. Our experiments show that collapsing solutions do exist for the loss and structure, but a stop-gradient operation plays an essential role in preventing collapsing.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S304:abstract:e9" }
+    },
+    {
+      "id": "E10",
+      "source": { "sourceId": "S304", "title": "Exploring Simple Siamese Representation Learning", "year": 2020, "url": "https://arxiv.org/abs/2011.10566v1" },
+      "claim": "Our \"SimSiam\" method achieves competitive results on ImageNet and downstream tasks.",
+      "quote": "Our \"SimSiam\" method achieves competitive results on ImageNet and downstream tasks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": { "section": "Abstract", "chunk": "S304:abstract:e10" }
+    },
+    {
+      "id": "E11",
+      "source": { "sourceId": "S303", "title": "Bootstrap your own latent: A new approach to self-supervised Learning", "year": 2020, "url": "https://arxiv.org/abs/2006.07733v3" },
+      "claim": "无负样本的自举方法在所有视觉任务上都优于基于负样本的对比方法。",
+      "quote": "While state-of-the art methods rely on negative pairs, BYOL achieves a new state of the art without them. BYOL reaches $74.3\\%$ top-1 classification accuracy on ImageNet using a linear evaluation with a ResNet-50 architecture and $79.6\\%$ with a larger ResNet. We show that BYOL performs on par or better than the current state of the art on both transfer and semi-supervised benchmarks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote covers ImageNet linear evaluation, transfer and semi-supervised benchmarks for BYOL only; not a universal superiority claim for the whole family",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": { "section": "Abstract", "chunk": "S303:abstract:e7" }
+    },
+    {
+      "id": "E12",
+      "source": { "sourceId": "S302", "title": "Momentum Contrast for Unsupervised Visual Representation Learning", "year": 2019, "url": "https://arxiv.org/abs/1911.05722v3" },
+      "claim": "MoCo 的队列机制彻底消除了对比学习对大批量训练的依赖。",
+      "quote": "From a perspective on contrastive learning as dictionary look-up, we build a dynamic dictionary with a queue and a moving-averaged encoder. This enables building a large and consistent dictionary on-the-fly that facilitates contrastive unsupervised learning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote supports the queue/moving-averaged-encoder dictionary mechanism, not a statement about batch-size dependence",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": { "section": "Abstract", "chunk": "S302:abstract:e4" }
+    }
+  ],
+  "bibliography": [
+    { "key": "chen2020simclr", "sourceId": "S301", "title": "A Simple Framework for Contrastive Learning of Visual Representations", "year": 2020, "url": "https://arxiv.org/abs/2002.05709v3" },
+    { "key": "he2019moco", "sourceId": "S302", "title": "Momentum Contrast for Unsupervised Visual Representation Learning", "year": 2019, "url": "https://arxiv.org/abs/1911.05722v3" },
+    { "key": "grill2020byol", "sourceId": "S303", "title": "Bootstrap your own latent: A new approach to self-supervised Learning", "year": 2020, "url": "https://arxiv.org/abs/2006.07733v3" },
+    { "key": "chen2020simsiam", "sourceId": "S304", "title": "Exploring Simple Siamese Representation Learning", "year": 2020, "url": "https://arxiv.org/abs/2011.10566v1" }
+  ],
+  "mode": "ordinary",
+  "instructions": "只输出本节 LaTeX 正文，约350中文字（允许合理浮动），不重复节标题；各节共同构成中文综述。仅使用给定来源和 Evidence，不查外部资料。保留必要学术内容及限制；无本文实验结果，不编造公式、数值、性能排序；不要报告内部流程。",
+  "argumentUnits": {
+    "version": 2,
+    "lengthInstructionReplace": {
+      "from": "约350中文字（允许合理浮动），",
+      "to": "长度以下方「目标长度」为上限参考，"
+    },
+    "lengthPolicy": "目标长度是上限参考，不是必须填满的配额：当本节分配到的材料不足以支撑目标长度时，宁可写短，也不为凑字重述已有内容、重复限制声明或补写引文之外的细节。",
+    "sections": {
+      "introduction": {
+        "role": "framing",
+        "targetLengthWords": 180,
+        "evidenceIds": [],
+        "task": "界定视觉自监督表示学习问题与本综述范围：只整理四篇文献的机制关系，没有本文实验。点名「基于负样本的对比方法」与「无负样本的孪生方法」两条路线，并说明它们分别在「基于负样本的对比框架」「无负样本的孪生方法」两节完整展开；本节不解释任何机制细节，不转述任何数值。",
+        "doNotExplain": [
+          { "concept": "SimCLR 的增强组合、非线性变换与大批量长训练机制", "ownerSectionId": "contrastive" },
+          { "concept": "MoCo 的队列与动量编码器字典机制", "ownerSectionId": "contrastive" },
+          { "concept": "BYOL 的在线网络 / 目标网络与慢速移动平均机制", "ownerSectionId": "noncontrastive" },
+          { "concept": "SimSiam 的停止梯度防坍缩机制", "ownerSectionId": "noncontrastive" }
+        ]
+      },
+      "contrastive": {
+        "role": "develop",
+        "targetLengthWords": 400,
+        "evidenceIds": ["E1", "E2", "E3", "E4", "E5"],
+        "task": "这是全文唯一完整解释 SimCLR 与 MoCo 机制的位置：按引文说明 SimCLR 的三项发现（增强组合、可学习非线性变换、大批量与更多训练步）与 MoCo 的字典查询视角、队列与动量编码器；两者的结果只按引文范围转述（SimCLR 线性评测 top-1 与 1% 标签 top-5；MoCo 在 7 项检测/分割任务超过有监督预训练）。提到无负样本方法时最多一句回指「无负样本的孪生方法」一节。",
+        "doNotExplain": [
+          { "concept": "BYOL 的在线网络 / 目标网络与慢速移动平均机制", "ownerSectionId": "noncontrastive" },
+          { "concept": "SimSiam 的停止梯度防坍缩机制", "ownerSectionId": "noncontrastive" }
+        ]
+      },
+      "noncontrastive": {
+        "role": "develop",
+        "targetLengthWords": 400,
+        "evidenceIds": ["E6", "E7", "E8", "E9", "E10"],
+        "task": "这是全文唯一完整解释 BYOL 与 SimSiam 机制的位置：按引文说明 BYOL 的在线网络 / 目标网络、以另一增强视图预测目标表示、目标网络的慢速移动平均更新，以及 SimSiam 不用负样本对、大批量、动量编码器而依靠停止梯度防止坍缩；结果只按引文范围转述（BYOL 线性评测 top-1；SimSiam 具有竞争力）。提到基于负样本的方法时最多一句回指「基于负样本的对比框架」一节。",
+        "doNotExplain": [
+          { "concept": "SimCLR 的增强组合、非线性变换与大批量长训练机制", "ownerSectionId": "contrastive" },
+          { "concept": "MoCo 的队列与动量编码器字典机制", "ownerSectionId": "contrastive" }
+        ]
+      },
+      "comparison": {
+        "role": "compare",
+        "targetLengthWords": 320,
+        "evidenceIds": ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12"],
+        "task": "只做比较，不重新解释机制：沿「是否依赖负样本」「是否依赖大批量」「目标编码器的更新方式」「防坍缩手段」各用一两句对照两条路线（机制细节回指前两节）；E11、E12 的普遍性断言不在引文覆盖范围内，不得写成事实；集中说明材料仅四篇摘要、各文数值来自不同模型与评测设置、未统一复现、不能给出性能排序。这是全文唯一集中陈述这些限制的位置。",
+        "doNotExplain": [
+          { "concept": "SimCLR 的增强组合、非线性变换与大批量长训练机制", "ownerSectionId": "contrastive" },
+          { "concept": "MoCo 的队列与动量编码器字典机制", "ownerSectionId": "contrastive" },
+          { "concept": "BYOL 的在线网络 / 目标网络与慢速移动平均机制", "ownerSectionId": "noncontrastive" },
+          { "concept": "SimSiam 的停止梯度防坍缩机制", "ownerSectionId": "noncontrastive" }
+        ]
+      },
+      "conclusion": {
+        "role": "conclude",
+        "targetLengthWords": 160,
+        "evidenceIds": [],
+        "task": "回答综述问题：两条路线的关系与各自改变的训练要素（只归纳前文已写内容，不新增引文之外的机制细节，不重复数值）；用一句话承接比较一节已集中说明的限制，不再逐条复述；统一协议下的评测只作为未来计划。",
+        "doNotExplain": [
+          { "concept": "SimCLR 的增强组合、非线性变换与大批量长训练机制", "ownerSectionId": "contrastive" },
+          { "concept": "MoCo 的队列与动量编码器字典机制", "ownerSectionId": "contrastive" },
+          { "concept": "BYOL 的在线网络 / 目标网络与慢速移动平均机制", "ownerSectionId": "noncontrastive" },
+          { "concept": "SimSiam 的停止梯度防坍缩机制", "ownerSectionId": "noncontrastive" }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "milestone": "M13.7.8",
+  "baseline": "b97cc147b34fdf25efe20d6032465be2362360ef",
+  "fixture": "heldout.json — 视觉自监督表示学习中的对比与非对比方法综述（SimCLR / MoCo / BYOL / SimSiam）",
+  "fixtureStatus": "held-out: topic, sources and outline never used by M13.7.2–M13.7.7 (those used Transformer, DPR/RAG, LoRA/QLoRA, FedAvg/SCAFFOLD); zero prior occurrence of these papers in the repository",
+  "sources": {
+    "retrieval": "public arXiv abstract pages fetched 2026-10-12 (export API returned 429 at fetch time; the abs-page <meta name=citation_abstract> was used); every quote is asserted to be an exact substring of sources-abstracts.json before freeze",
+    "verificationLevel": "abstract — exact public abstract excerpts, manually scoped; NOT full-text grounding and NOT a production Grounding/Judge verdict",
+    "papers": ["2002.05709v3", "1911.05722v3", "2006.07733v3", "2011.10566v1"]
+  },
+  "informationBudget": {
+    "uniqueQuotes": 11,
+    "uniqueQuoteChars": 3452,
+    "uniqueQuoteWords": 489,
+    "baselineRequiredCjkChars": 1750,
+    "treatmentUpperBoundCjkChars": 1460,
+    "perSectionAssignedQuoteChars": { "introduction": 0, "contrastive": 1695, "noncontrastive": 1499, "comparison": 3452, "conclusion": 0 },
+    "note": "richer than every earlier fixture (538–900 unique quote chars); this is the real budget of four public abstracts, not padding. Sections with 0 assigned evidence (framing / conclude) may cite bibliography keys only as background (B group) — same rule as M13.7.7."
+  },
+  "model": "zai-coding-cn/glm-5.3",
+  "runtime": "PiRuntimeAdapter, production buildSectionPrompt, toolPolicy read_only, 300 s per task, one shared writer session per arm (contextScope writing/acceptance/<arm>/sections), arms in independent projects/sessions",
+  "budget": {
+    "maxWriterTasks": 20,
+    "taskUnit": "one runtime.runAgent call = one Writer task (one section)",
+    "requestUnit": "assistant turns reported by PiRuntimeAdapter usage = underlying provider requests; recorded separately; a task that spends several turns is still one task but several requests — 20 tasks does NOT imply ≤ 20 requests",
+    "retryPolicy": "a task may be retried inside the 20-task budget only for a clear configuration error; the failed record is kept and reported; no retries for unfavorable content"
+  },
+  "arms": [
+    { "id": "glm-baseline", "arm": "baseline", "hypotheses": [], "input": "production buildSectionPrompt: full 12-record evidence snapshot to every section, 约350字 per section, original keyPoints task" },
+    { "id": "glm-argument-unit", "arm": "argument-unit", "hypotheses": ["H1", "H2", "H3"], "input": "per-section evidence partition (argumentUnits.evidenceIds) + per-section upper-bound length (180/400/400/320/160, lengthPolicy) + argument-task block (role, task, doNotExplain with owner section)" },
+    { "id": "glm-evidence-only", "arm": "evidence-only", "hypotheses": ["H1"], "input": "per-section evidence partition only; 约350字 and original instructions/keyPoints unchanged; no argument block" },
+    { "id": "glm-length-only", "arm": "length-only", "hypotheses": ["H2"], "input": "full evidence snapshot; per-section upper-bound length identical to glm-argument-unit (180/400/400/320/160) + the same lengthPolicy sentence; original keyPoints task; no evidence partition; no argument block" }
+  ],
+  "order": "A → B first (stage 1); C and D only if stage 1 passes the gate; if B clearly fails, stop and attribute; no additional arms, seeds or prompt tuning",
+  "designLimits": [
+    "not a full three-factor ablation: no H3-only arm, so B−C and B−D cannot be read as the independent causal contribution of H3 and interactions are not separable",
+    "the per-section upper bounds are shared by B and D (so B−D isolates evidence partition + argument block); they are smaller than 5×350 for framing/conclude sections, so D also carries a planning-level length redistribution, not only the upper-bound semantics",
+    "the shared lengthPolicy sentence necessarily names what not to pad with (restating, repeating limitations, quote-exceeding detail); it is identical in B and D and absent in A and C",
+    "single sample, single sampling run per arm; GLM outputs are not deterministic; no claim of stable generalization"
+  ],
+  "evaluation": {
+    "frozenBefore": "first provider request of this round; markers, thresholds, checklist and these rules are not edited after outputs are seen (if a marker misses a legitimate spelling, both the marker count and the manual count are reported — the marker is NOT widened)",
+    "detector": "analyzeCrossSectionRedundancy defaults (minSentenceChars 12, minShared 6, containment ≥ 0.5, jaccard ≥ 0.2) from backend/dist/review/crossSectionRedundancy.js at the frozen HEAD",
+    "primaryMetric": "restatedCharShare (restated sentence chars / all sentence chars, outline-order later≈earlier)",
+    "gate": {
+      "stage1Pass": "B.restatedCharShare ≤ 0.70 × A.restatedCharShare (≥ 30 % relative drop) AND mustRetain checklist fully present AND no unknown cite key AND no new quote-exceeding factual claim that A does not also have AND no section that skips its task by writing short",
+      "note": "30 % is a pre-registered engineering screen, not proof of generalization; shorter text alone is never counted as improvement"
+    },
+    "secondaryMetrics": ["pairCount", "restatedSentenceCount", "sectionsWithRestatement", "concept carriers outside owner (full re-explanation vs one-sentence back-reference decided by reading)", "limitation sentences per section", "cjk chars / cite commands / unknown keys / numbers outside quotes", "tokens, estimatedCost, seconds, assistant turns"],
+    "manualReading": {
+      "harmfulRestatement": "a later-section sentence that re-explains a mechanism/result already fully explained in its owner section without adding the current section's own analysis; introduction scope summaries, one-sentence back-references ('如「X」一节所述'), comparison-axis reminders and conclusion echoes are NOT counted",
+      "factAudit": "every mechanism / result sentence with a cite is checked against the quote of the cited source; flags: partial-only support, uncovered technical detail, widened performance claim, inference written as fact, unverified claim kept behind a disclaimer",
+      "shortWriteAvoidance": "a section fails its task if a mustRetain item for that section is missing or if a comparison dimension listed in the task is not addressed"
+    },
+    "mustRetain": {
+      "introduction": ["scope: self-supervised visual representation learning, two routes (negative-sample contrastive vs negative-free Siamese)", "no own experiments / four abstracts as material"],
+      "contrastive": ["SimCLR: composition of data augmentations", "SimCLR: learnable nonlinear transformation between representation and contrastive loss", "SimCLR: benefits from larger batch sizes and more training steps", "SimCLR: 76.5% top-1 linear evaluation (matching supervised ResNet-50) and 85.8% top-5 with 1% labels, scope as in quote", "MoCo: contrastive learning as dictionary look-up; queue + moving-averaged encoder; large and consistent dictionary", "MoCo: outperforms supervised pre-training counterpart in 7 detection/segmentation tasks (PASCAL VOC, COCO, others)"],
+      "noncontrastive": ["BYOL: online and target networks", "BYOL: online network predicts target representation of the same image under a different augmented view", "BYOL: target updated with slow-moving average of online network", "BYOL: no negative pairs; 74.3% top-1 ResNet-50 linear, 79.6% larger ResNet", "SimSiam: works without negative pairs, large batches, momentum encoders", "SimSiam: collapsing solutions exist; stop-gradient essential to prevent collapsing", "SimSiam: competitive results on ImageNet and downstream tasks"],
+      "comparison": ["dimension: negative-sample dependence", "dimension: large-batch dependence", "dimension: target-encoder update (moving average / slow-moving average / stop-gradient)", "dimension: collapse-avoidance mechanism", "limitation: no own experiments, four abstracts only", "limitation: numbers come from different models/settings → no performance ranking", "partials E11 / E12 not written as fact"],
+      "conclusion": ["relation of the two routes and what each changes in training", "limitation carried in one sentence", "unified-protocol evaluation as future work, not completed contribution"]
+    },
+    "factAuditRedFlags": ["MoCo removes / eliminates dependence on large batches (E12 partial)", "negative-free methods outperform contrastive methods on all / any tasks (E11 partial)", "cross-paper ranking from 76.5 vs 74.3 vs 79.6 (different models and settings)", "SimSiam outperforms BYOL / MoCo / SimCLR (quote says 'competitive')", "any mechanism detail not in the quotes: temperature, InfoNCE/NT-Xent, projection head dimensions, predictor network, EMA coefficient, queue size, batch size numbers, number of epochs, specific augmentations"]
+  },
+  "noTuning": "no prompt, fixture, marker, threshold or runner edits after the first glm-baseline request; unfavorable outputs retained; no selection among samples"
+}

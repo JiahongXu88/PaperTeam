@@ -1,0 +1,114 @@
+{
+  "fixture": "m13-7-8/heldout.json",
+  "note": "Deterministic concept-distribution markers for the contrastive / non-contrastive SSL fixture, frozen before the first LIVE request. A section 'carries' a concept when every pattern group in `all` matches somewhere in that section's stripped text. Owner = the section designated by argumentUnits to explain it fully. Markers locate candidates; whether a hit is a harmful full re-explanation or a one-sentence back-reference is decided by reading. Markers are NOT widened after outputs are seen; misses are reported alongside manual counts.",
+  "concepts": [
+    {
+      "id": "simclr_mechanism",
+      "label": "SimCLR 机制（增强组合 + 可学习非线性变换）",
+      "owner": "contrastive",
+      "all": [
+        "(增强|增广|扩增).{0,14}(组合|复合|搭配|组成)",
+        "非线性.{0,12}(变换|投影|映射|层|头)"
+      ]
+    },
+    {
+      "id": "simclr_batch",
+      "label": "SimCLR 大批量 / 更多训练步",
+      "owner": "contrastive",
+      "all": [
+        "(更大|较大|大).{0,4}(批量|批次|batch)",
+        "(训练步|训练步数|训练轮|训练时间|迭代)"
+      ]
+    },
+    {
+      "id": "moco_mechanism",
+      "label": "MoCo 机制（队列 + 动量 / 移动平均编码器 → 字典）",
+      "owner": "contrastive",
+      "all": [
+        "队列",
+        "(动量|滑动平均|移动平均|移动均值|指数平均)"
+      ]
+    },
+    {
+      "id": "byol_mechanism",
+      "label": "BYOL 机制（在线网络预测目标网络表示 + 慢速移动平均更新）",
+      "owner": "noncontrastive",
+      "all": [
+        "(在线网络|在线分支|online)",
+        "(目标网络|目标分支|target)",
+        "(移动平均|滑动平均|慢速|缓慢|指数平均|EMA|动量)"
+      ]
+    },
+    {
+      "id": "simsiam_mechanism",
+      "label": "SimSiam 机制（停止梯度防坍缩）",
+      "owner": "noncontrastive",
+      "all": [
+        "(停止梯度|停梯度|stop.?grad|梯度停止|梯度截断|截断梯度|阻断梯度|梯度阻断|梯度截停)",
+        "(坍缩|坍塌|崩塌|塌缩|塌陷|平凡解|collaps)"
+      ]
+    },
+    {
+      "id": "simclr_result",
+      "label": "SimCLR 结果陈述（76.5% top-1）",
+      "owner": "contrastive",
+      "all": [
+        "76\\.5"
+      ]
+    },
+    {
+      "id": "simclr_lowlabel",
+      "label": "SimCLR 1% 标签 85.8% top-5",
+      "owner": "contrastive",
+      "all": [
+        "85\\.8"
+      ]
+    },
+    {
+      "id": "moco_transfer",
+      "label": "MoCo 7 项检测 / 分割任务超过有监督预训练",
+      "owner": "contrastive",
+      "all": [
+        "(7|七)\\s*(个|项|类|种)?[^。；]{0,16}(检测|分割|下游)"
+      ]
+    },
+    {
+      "id": "byol_result",
+      "label": "BYOL 结果陈述（74.3% / 79.6%）",
+      "owner": "noncontrastive",
+      "all": [
+        "(74\\.3|79\\.6)"
+      ]
+    },
+    {
+      "id": "no_own_experiments",
+      "label": "本文无实验 / 未复现 声明",
+      "owner": "comparison",
+      "all": [
+        "(本文|本综述|我们|本节|本研究).{0,16}(未|不|没有|无).{0,10}(实验|复现|评测|验证)"
+      ]
+    },
+    {
+      "id": "no_ranking",
+      "label": "不能给出性能排序 / 不作普适性断言",
+      "owner": "comparison",
+      "all": [
+        "(不能|无法|不作|不应|难以|不宜|不足以|不构成).{0,20}(排序|排名|断言|直接比较|直接对比|横向比较|普适|外推|优劣|孰优孰劣)"
+      ]
+    }
+  ],
+  "negativeControls": [
+    {
+      "id": "e11_escalation",
+      "label": "E11 partial 被写成事实（无负样本方法在所有 / 任何任务上优于对比方法）",
+      "pattern": "(所有|任何|任意|一切|全部|各种).{0,8}(视觉|下游)?.{0,4}(任务|基准|场景).{0,30}(优于|超过|胜过|更好|更优|领先|占优)",
+      "negationWindow": "(不|未|无|缺乏|尚|并非|不能|无法|不足以).{0,40}$"
+    },
+    {
+      "id": "e12_escalation",
+      "label": "E12 partial 被写成事实（MoCo 消除了对大批量的依赖）",
+      "pattern": "(MoCo|动量对比|队列).{0,40}(消除|摆脱|免除|无需|不再需要|不依赖|不再依赖|彻底|解除|摆脱了).{0,14}(大批量|批量|批次|批大小|batch)",
+      "negationWindow": "(不|未|无|缺乏|尚|并非|不能|无法|不足以|没有).{0,40}$"
+    }
+  ]
+}

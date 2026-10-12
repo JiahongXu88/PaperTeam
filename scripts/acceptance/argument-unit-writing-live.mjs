@@ -1,9 +1,16 @@
-/** Bounded M13.7.7 acceptance runner: same-harness model contrast + argument-unit input organization + post-draft collapse.
+/** Bounded M13.7.7 / M13.7.8 acceptance runner: same-harness model contrast + argument-unit input organization (+ its two single-factor
+ * ablations) + post-draft collapse.
  * Usage:
- *   node argument-unit-writing-live.mjs REPO_ROOT INPUT_JSON OUTPUT_DIR --arm baseline|argument-unit --model provider/model
+ *   node argument-unit-writing-live.mjs REPO_ROOT INPUT_JSON OUTPUT_DIR --arm baseline|argument-unit|evidence-only|length-only --model provider/model
  *   node argument-unit-writing-live.mjs REPO_ROOT INPUT_JSON OUTPUT_DIR --arm collapse --model provider/model --source BASELINE_OUTPUT_DIR [--max-targets 3]
- * INPUT_JSON: fixtures/m13-7-7/dev.json shape ({outline, evidence, bibliography, instructions, argumentUnits}).
- * Shared parent OUTPUT_DIR/../model-budget.json counts underlying provider requests (assistant turns) before dispatch (max 20).
+ * INPUT_JSON: fixtures/m13-7-7/dev.json or fixtures/m13-7-8/heldout.json shape ({outline, evidence, bibliography, instructions, argumentUnits}).
+ * Arms (all through production buildSectionPrompt parameters only; production code unchanged):
+ *   baseline       full evidence snapshot, fixture length, fixture instructions (production input organization)
+ *   evidence-only  H1 only: per-section argumentUnits.evidenceIds; length / instructions unchanged
+ *   length-only    H2 only: full evidence; per-section argumentUnits.targetLengthWords as upper bound + lengthPolicy sentence
+ *   argument-unit  H1 + H2 + H3: evidence partition + upper-bound length + argument-task block (role / task / doNotExplain)
+ * Shared parent OUTPUT_DIR/../model-budget.json reserves one Writer TASK per section before dispatch (max 20 tasks) and records the
+ * assistant turns (underlying provider requests) each task actually spent; tasks and requests are reported separately.
  * Runs serially; refuses to overwrite an existing OUTPUT_DIR; keeps failed outputs. --dry-run writes prompts only (no provider request, no reservation).
  * Uses only the runtime model settings already stored under PAPERTEAM_RUNTIME_ROOT (custom providers + auth). Never exports auth.
  * Set PROJECTS_ROOT to a private directory so acceptance projects stay outside the repository.
@@ -27,10 +34,11 @@ for (let i = 2; i < process.argv.length; i += 1) {
 const [repoArg, inputArg, outputArg] = positional;
 if (!repoArg || !inputArg || !outputArg) throw new Error("Expected REPO_ROOT INPUT_JSON OUTPUT_DIR");
 const arm = flags.arm;
-if (!["baseline", "argument-unit", "collapse"].includes(arm)) throw new Error("--arm must be baseline | argument-unit | collapse");
+const WRITING_ARMS = ["baseline", "argument-unit", "evidence-only", "length-only"];
+if (![...WRITING_ARMS, "collapse"].includes(arm)) throw new Error("--arm must be baseline | argument-unit | evidence-only | length-only | collapse");
 const modelSpec = flags.model;
 if (!modelSpec || !/^[a-z0-9-]+\/[A-Za-z0-9._-]+$/.test(modelSpec)) throw new Error("--model provider/model is required");
-const MAX_REQUESTS = 20;
+const MAX_TASKS = 20;
 const maxTargets = Number(flags["max-targets"] ?? 3);
 const repo = resolve(repoArg), output = resolve(outputArg);
 const rel = relative(repo, output);
@@ -46,13 +54,17 @@ for (const section of input.outline.sections) {
   for (const id of unit.evidenceIds) if (!input.evidence.some((e) => e.id === id)) throw new Error(`Unknown evidence ${id} in ${section.id}`);
   for (const item of unit.doNotExplain ?? []) if (!input.outline.sections.some((s) => s.id === item.ownerSectionId)) throw new Error(`Unknown owner ${item.ownerSectionId}`);
 }
+// Length wording swap used by the length-bearing arms (argument-unit / length-only): fixture-declared, must actually occur in the instructions.
+const lengthSwap = input.argumentUnits.lengthInstructionReplace ?? { from: "约350中文字（允许合理浮动），", to: "长度以下方「目标长度」为上限参考，" };
+if (!input.instructions.includes(lengthSwap.from)) throw new Error("instructions do not contain the length wording declared for replacement");
 // Refuse to overwrite a previous run, including failed or unfavorable outputs.
 await mkdir(output);
 const budgetPath = join(output, "..", "model-budget.json");
 let budget;
 try { budget = JSON.parse(await readFile(budgetPath, "utf8")); }
-catch (error) { if (error.code !== "ENOENT") throw error; budget = { maxRequests: MAX_REQUESTS, reservations: [] }; }
-if (budget.maxRequests !== MAX_REQUESTS) throw new Error("Budget must be 20 underlying requests");
+catch (error) { if (error.code !== "ENOENT") throw error; budget = { maxTasks: MAX_TASKS, reservations: [] }; }
+if (budget.maxTasks !== MAX_TASKS) throw new Error("Budget must be 20 Writer tasks");
+const committedTasks = () => budget.reservations.length;
 const committedRequests = () => budget.reservations.reduce((sum, r) => sum + (r.turns ?? 1), 0);
 
 const { loadConfig } = await load("config/config.js");
@@ -82,7 +94,7 @@ const runtime = new PiRuntimeAdapter({ modelSpec, modelRuntime, agentDir: config
   agentModelSpecs: async () => ({}) });
 const project = await new ProjectStore({ root: config.projectsRoot }).create(`M13.7.7 ${arm} ${modelSpec}`);
 const NO_EXPERIMENTS = { status: "none", observations: [], truncated: false };
-const result = { arm, model: modelSpec, inputHash: createHash("sha256").update(inputBytes).digest("hex"), maxRequests: MAX_REQUESTS,
+const result = { arm, model: modelSpec, inputHash: createHash("sha256").update(inputBytes).digest("hex"), maxTasks: MAX_TASKS,
   calls: [], startedAt: new Date().toISOString(),
   scope: "sequential shared-session production buildSectionPrompt (baseline / argument-unit) or production buildRevisePrompt targeted collapse; fixture evidence; no full workflow, no provider re-verification" };
 const save = () => writeFile(join(output, "result.json"), JSON.stringify(result, null, 2));
@@ -95,7 +107,7 @@ const run = async (name, prompt, scope, agentId = config.agents.writer) => {
     result.calls.push({ name, promptChars: prompt.length, status: "dry_run" }); await save();
     return "\\section{" + name + "}\n（dry-run：未调用模型）\n";
   }
-  if (committedRequests() + 1 > budget.maxRequests) throw new Error("GLOBAL_MODEL_REQUEST_BUDGET_EXHAUSTED");
+  if (committedTasks() + 1 > budget.maxTasks) throw new Error("GLOBAL_WRITER_TASK_BUDGET_EXHAUSTED");
   const reservation = { output, arm, name, at: new Date().toISOString() };
   budget.reservations.push(reservation);
   await writeFile(budgetPath, JSON.stringify(budget, null, 2));
@@ -126,20 +138,32 @@ function renderArgumentUnit(unit) {
   ].join("\n");
 }
 
+function buildArmPrompt(section) {
+  const unit = input.argumentUnits.sections[section.id];
+  const partition = unit.evidenceIds.map((id) => input.evidence.find((e) => e.id === id));
+  const bounded = { ...section, targetLengthWords: unit.targetLengthWords };
+  const lengthInstructions = input.instructions.replace(lengthSwap.from, lengthSwap.to);
+  const common = { outline: input.outline, bibliography: input.bibliography, language: "zh", experimentContext: NO_EXPERIMENTS };
+  switch (arm) {
+    case "baseline":
+      return writer.buildSectionPrompt({ ...common, section, evidence: input.evidence, extraInstructions: input.instructions });
+    case "evidence-only":
+      return writer.buildSectionPrompt({ ...common, section, evidence: partition, extraInstructions: input.instructions });
+    case "length-only":
+      return writer.buildSectionPrompt({ ...common, section: bounded, evidence: input.evidence,
+        extraInstructions: `${lengthInstructions}\n长度口径：${input.argumentUnits.lengthPolicy}` });
+    case "argument-unit":
+      return writer.buildSectionPrompt({ ...common, section: bounded, evidence: partition,
+        extraInstructions: `${lengthInstructions}\n${renderArgumentUnit(unit)}` });
+    default:
+      throw new Error(`unsupported writing arm ${arm}`);
+  }
+}
+
 async function writeArm() {
   const written = [];
   for (const section of input.outline.sections) {
-    let prompt;
-    if (arm === "baseline") {
-      prompt = writer.buildSectionPrompt({ section, outline: input.outline, evidence: input.evidence, bibliography: input.bibliography,
-        language: "zh", extraInstructions: input.instructions, experimentContext: NO_EXPERIMENTS });
-    } else {
-      const unit = input.argumentUnits.sections[section.id];
-      const evidence = unit.evidenceIds.map((id) => input.evidence.find((e) => e.id === id));
-      const instructions = input.instructions.replace("约350中文字（允许合理浮动），", "长度以下方「目标长度」为上限参考，");
-      prompt = writer.buildSectionPrompt({ section: { ...section, targetLengthWords: unit.targetLengthWords }, outline: input.outline, evidence,
-        bibliography: input.bibliography, language: "zh", extraInstructions: `${instructions}\n${renderArgumentUnit(unit)}`, experimentContext: NO_EXPERIMENTS });
-    }
+    const prompt = buildArmPrompt(section);
     const latex = await run(section.id, prompt, `writing/acceptance/${arm}/sections`);
     const record = result.calls.at(-1);
     record.outputChars = latex.length;
@@ -244,7 +268,9 @@ try {
 } catch (error) { result.status = "FAILED"; result.error = error.message; process.exitCode = 1; }
 finally {
   result.finishedAt = new Date().toISOString();
+  result.tasksCommitted = committedTasks();
   result.requestsCommitted = committedRequests();
+  result.assistantTurns = result.calls.reduce((sum, c) => sum + (c.usage?.assistantTurns ?? 0), 0);
   await runtime.close(); await save();
-  console.log(JSON.stringify({ status: result.status, arm, model: modelSpec, calls: result.calls.length, requestsCommitted: result.requestsCommitted, error: result.error }));
+  console.log(JSON.stringify({ status: result.status, arm, model: modelSpec, calls: result.calls.length, tasksCommitted: result.tasksCommitted, requestsCommitted: result.requestsCommitted, assistantTurns: result.assistantTurns, error: result.error }));
 }
