@@ -1,6 +1,9 @@
 # M13.7.9 fixed acceptance assets — academic redundancy evaluation + argument-unit refinement (B2)
 
-Status: **see the report** — [M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md](../../../../docs/research/M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md)
+Status: **PASS — Ready for Production Integration** (recorded execution: 30 Writer tasks / 30 assistant turns on
+`zai-coding-cn/glm-5.3`; B2 harmful share 14.3 % → 1.6 % on `heldout-alignment`, 9.8 % → 0.0 % on `heldout-qec`, must-retain
+checklists complete, signposts and verbatim comparison carries 0, cost −18.5 % / −22.9 %; H3-only alone does not de-duplicate).
+Production writing path unchanged — see [the report](../../../../docs/research/M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md)
 (verdict, held-out tables and the dev-stage calibration log live there; this README only describes the frozen assets).
 
 ## Files

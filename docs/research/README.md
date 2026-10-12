@@ -77,6 +77,7 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [M13_7_6_REVISION_LIVE_CLOSURE.md](M13_7_6_REVISION_LIVE_CLOSURE.md) — 最终修复后的真实 Planner/Writer/Patch 复验、局部引文字段及 Patch Evidence 接线收口；D 与完整 Review/Gate 未完成，PARTIAL。
 - [M13_7_7_CROSS_SECTION_ROOT_CAUSE_AND_REDESIGN.md](M13_7_7_CROSS_SECTION_ROOT_CAUSE_AND_REDESIGN.md) — 两轮跨章节失败的源码级根因（相同证据 × 固定长度 × 仅引文事实）、同 Harness 下 GLM-5.3 / Fable 对照、论证单元输入组织最小原型与定向压缩原型的真实 A/B、确定性复述探测器；PARTIAL，生产写作路径未改。
 - [M13_7_8_ARGUMENT_UNIT_HELDOUT_VALIDATION.md](M13_7_8_ARGUMENT_UNIT_HELDOUT_VALIDATION.md) — 论证单元方案的 held-out 验证（新主题 SimCLR/MoCo/BYOL/SimSiam，A/B/C/D 四臂 20 任务）：完整方案未过 −30% 复述门（路标模板句 + 比较节逐字回引），但唯一保全全部必要事实且费用 −25%；仅分证据转为免责重复、仅改长度删光数值；探测器 `\%` 缺陷修复；PARTIAL，不进生产。
+- [M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md](M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md) — 有害学术重复评价层（M/L/P/S/X/E/F/uncertain，指标 A 词面 + 指标 B 有害并列，开发集六臂与人工分类一致）、B2 任务块最小修订（去路标措辞、行为约束、综合式比较）、两个全新 held-out（LLM 偏好对齐 / 超导量子纠错）A vs B2 + H3-only 共 30 任务：有害重复 14.3%→1.6%、9.8%→0.0%，必保事实全保，路标与逐字回述归零，费用 −18.5%/−22.9%；任务块单独不去重；**PASS — Ready for Production Integration**（仅集成设计，生产 Workflow 未改）。
 - [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
 ## Runtime / 架构审计
