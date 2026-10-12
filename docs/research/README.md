@@ -75,6 +75,7 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [M13_7_4_CHAPTER_RESPONSIBILITY_PLANNING.md](M13_7_4_CHAPTER_RESPONSIBILITY_PLANNING.md) — 轻量章节职责契约候选、两个新主题与 held-out 重复 A/B、真实规划失败和成本；PARTIAL，候选未合入。
 - [M13_7_5_REVISION_FIDELITY_TARGETED_REPAIR.md](M13_7_5_REVISION_FIDELITY_TARGETED_REPAIR.md) — 公式来源授权、句级 Scope、定向 Patch Repair 与生产接线审计；确定性修复及真实模型失败证据，PARTIAL。
 - [M13_7_6_REVISION_LIVE_CLOSURE.md](M13_7_6_REVISION_LIVE_CLOSURE.md) — 最终修复后的真实 Planner/Writer/Patch 复验、局部引文字段及 Patch Evidence 接线收口；D 与完整 Review/Gate 未完成，PARTIAL。
+- [M13_7_7_CROSS_SECTION_ROOT_CAUSE_AND_REDESIGN.md](M13_7_7_CROSS_SECTION_ROOT_CAUSE_AND_REDESIGN.md) — 两轮跨章节失败的源码级根因（相同证据 × 固定长度 × 仅引文事实）、同 Harness 下 GLM-5.3 / Fable 对照、论证单元输入组织最小原型与定向压缩原型的真实 A/B、确定性复述探测器；PARTIAL，生产写作路径未改。
 - [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
 ## Runtime / 架构审计

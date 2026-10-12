@@ -1,0 +1,54 @@
+{
+  "fixture": "m13-7-7/dev.json",
+  "note": "Deterministic concept-distribution markers for the LoRA/QLoRA fixture. A section 'carries' a concept when every pattern group in `all` matches somewhere in that section. Owner = the section designated by argumentUnits to explain it fully. Markers locate candidates; whether a hit is a harmful full re-explanation or a one-sentence back-reference is decided by reading.",
+  "concepts": [
+    {
+      "id": "lora_mechanism",
+      "label": "LoRA 机制（冻结权重 + 注入秩分解矩阵）",
+      "owner": "base",
+      "all": [
+        "冻结.{0,24}(权重|模型|主干)",
+        "(秩分解|低秩).{0,12}矩阵"
+      ]
+    },
+    {
+      "id": "qlora_mechanism",
+      "label": "QLoRA 机制（4 比特量化冻结模型 + 梯度反传到适配器）",
+      "owner": "extension",
+      "all": [
+        "(4\\s*(比特|位|bit)|四\\s*(比特|位))",
+        "(梯度|反向传播|反传)"
+      ]
+    },
+    {
+      "id": "qlora_result",
+      "label": "QLoRA 小型高质量数据集结果陈述",
+      "owner": "extension",
+      "all": [
+        "(小型|小规模|较小).{0,8}高质量.{0,12}数据集"
+      ]
+    },
+    {
+      "id": "no_own_experiments",
+      "label": "本文无实验 / 未复现 声明",
+      "owner": "comparison",
+      "all": [
+        "(本文|本综述|我们).{0,16}(未|不|没有).{0,10}(实验|复现)"
+      ]
+    },
+    {
+      "id": "no_ranking",
+      "label": "不能给出性能排序 / 不作普适性断言",
+      "owner": "comparison",
+      "all": [
+        "(不能|无法|不作|不应|难以).{0,16}(排序|断言|比较|普适|外推)"
+      ]
+    }
+  ],
+  "negativeControl": {
+    "id": "e9_escalation",
+    "label": "E9 partial 被写成事实（任意任务与全量微调质量一致）",
+    "pattern": "(任意|任何|所有)任务.{0,30}(完全一致|相同|同样|保证)",
+    "negationWindow": "(不|未|无|缺乏|尚|并非|不能|无法).{0,40}$"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "dev.json": {
+    "lf": "b84c799dab5ea5c1ff2828a2beaa9e081dc3ed87a206bcab42671c8e27b48da8",
+    "crlf": "0a40621bd9844b426ac5908b5bbca99073e4d2b39809fa40e151d43270d8da48",
+    "bytesLf": 9935
+  },
+  "protocol.json": {
+    "lf": "633a428a8426ddfd0ab4a92cca946d9070c7651df10257e9c5bc1d076b45b2c4",
+    "crlf": "94b9f8e4a9d75bcd9d2d3221d23396e2c7201d1b12dcb62a1b73ef91afc6abec",
+    "bytesLf": 2597
+  },
+  "concept-markers.json": {
+    "lf": "042631d0097a119dc808ce279a3c0aeae9047a4bc9d9ea99ec2c81b3a40e3beb",
+    "crlf": "253739008c354ba9db802fd520d73147032d69f8ee80bbb1c4998caa485ae267",
+    "bytesLf": 1978
+  }
+}

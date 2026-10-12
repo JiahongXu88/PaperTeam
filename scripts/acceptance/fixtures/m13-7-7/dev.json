@@ -1,0 +1,237 @@
+{
+  "outline": {
+    "title": "参数高效与量化微调综述",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "说明参数高效适配问题和综述范围，没有本文实验。"
+        ]
+      },
+      {
+        "id": "base",
+        "title": "低秩适配机制",
+        "file": "base.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 LoRA 冻结预训练权重与可训练秩分解矩阵。"
+        ]
+      },
+      {
+        "id": "extension",
+        "title": "量化适配机制",
+        "file": "extension.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 QLoRA 冻结四位量化模型向低秩适配器反传梯度。"
+        ]
+      },
+      {
+        "id": "comparison",
+        "title": "综合比较与局限性",
+        "file": "comparison.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "比较两种机制如何改变可训练对象与存储对象，不能给无证据性能排序；材料仅两篇摘要，未统一复现。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论与展望",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "总结方法关系与限制，未来跨任务评测不是已完成贡献。"
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "source": {
+        "sourceId": "S201",
+        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+        "year": 2021,
+        "url": "https://arxiv.org/abs/2106.09685v2"
+      },
+      "claim": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks.",
+      "quote": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S201:abstract:6fcce2ef7bc5"
+      }
+    },
+    {
+      "id": "E2",
+      "source": {
+        "sourceId": "S202",
+        "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.14314v1"
+      },
+      "claim": "QLoRA backpropagates gradients through a frozen, 4-bit quantized pretrained language model into Low Rank Adapters~(LoRA).",
+      "quote": "QLoRA backpropagates gradients through a frozen, 4-bit quantized pretrained language model into Low Rank Adapters~(LoRA).",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact quote; manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S202:abstract:af18435f568f"
+      }
+    },
+    {
+      "id": "E3",
+      "source": {
+        "sourceId": "S202",
+        "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.14314v1"
+      },
+      "claim": "Our results show that QLoRA finetuning on a small high-quality dataset leads to state-of-the-art results, even when using smaller models than the previous SoTA.",
+      "quote": "Our results show that QLoRA finetuning on a small high-quality dataset leads to state-of-the-art results, even when using smaller models than the previous SoTA.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public abstract exact excerpt; scope manually checked",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S202:abstract:5b2c43dd24a8"
+      }
+    },
+    {
+      "id": "E9",
+      "source": {
+        "sourceId": "S201",
+        "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+        "year": 2021,
+        "url": "https://arxiv.org/abs/2106.09685v2"
+      },
+      "claim": "LoRA 的冻结与低秩适配在任何任务都保证与全量微调质量完全相同。",
+      "quote": "We propose Low-Rank Adaptation, or LoRA, which freezes the pre-trained model weights and injects trainable rank decomposition matrices into each layer of the Transformer architecture, greatly reducing the number of trainable parameters for downstream tasks.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote supports mechanism, not universal guarantee",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S201:abstract:6fcce2ef7bc5"
+      }
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "hu2021lora",
+      "sourceId": "S201",
+      "title": "LoRA: Low-Rank Adaptation of Large Language Models",
+      "year": 2021,
+      "url": "https://arxiv.org/abs/2106.09685v2"
+    },
+    {
+      "key": "dettmers2023qlora",
+      "sourceId": "S202",
+      "title": "QLoRA: Efficient Finetuning of Quantized LLMs",
+      "year": 2023,
+      "url": "https://arxiv.org/abs/2305.14314v1"
+    }
+  ],
+  "mode": "ordinary",
+  "instructions": "只输出本节 LaTeX 正文，约350中文字（允许合理浮动），不重复节标题；各节共同构成中文综述。仅使用给定来源和 Evidence，不查外部资料。保留必要学术内容及限制；无本文实验结果，不编造公式、数值、性能排序；不要报告内部流程。",
+  "argumentUnits": {
+    "version": 1,
+    "lengthPolicy": "目标长度是上限参考，不是必须填满的配额：当本节分配到的材料不足以支撑目标长度时，宁可写短，也不重述由其他章节负责完整展开的机制、不重复已在局限性处集中说明的限制、不补写引文之外的细节。",
+    "sections": {
+      "introduction": {
+        "role": "framing",
+        "targetLengthWords": 180,
+        "evidenceIds": [],
+        "task": "界定参数高效适配问题与本综述范围：只整理两篇文献的机制关系，没有本文实验。点名 LoRA 与 QLoRA 两条路线，并说明它们分别在「低秩适配机制」「量化适配机制」两节完整展开；本节不解释任何机制细节。",
+        "doNotExplain": [
+          {
+            "concept": "LoRA 冻结预训练权重并注入秩分解矩阵的机制",
+            "ownerSectionId": "base"
+          },
+          {
+            "concept": "QLoRA 冻结四位量化模型并把梯度反传到低秩适配器的机制",
+            "ownerSectionId": "extension"
+          }
+        ]
+      },
+      "base": {
+        "role": "develop",
+        "targetLengthWords": 350,
+        "evidenceIds": [
+          "E1",
+          "E9"
+        ],
+        "task": "这是全文唯一完整解释 LoRA 机制的位置：按引文说明冻结什么、训练什么、注入到哪里；E9 的普遍质量保证不在引文覆盖范围内，不得写成事实。",
+        "doNotExplain": [
+          {
+            "concept": "QLoRA 的量化与梯度反传机制",
+            "ownerSectionId": "extension"
+          }
+        ]
+      },
+      "extension": {
+        "role": "develop",
+        "targetLengthWords": 350,
+        "evidenceIds": [
+          "E2",
+          "E3"
+        ],
+        "task": "这是全文唯一完整解释 QLoRA 机制的位置：按引文说明冻结的四位量化模型、梯度反传到低秩适配器，以及小规模高质量数据集上的结果陈述（只按引文范围转述）。提到 LoRA 时只用一句回指「低秩适配机制」一节。",
+        "doNotExplain": [
+          {
+            "concept": "LoRA 冻结预训练权重并注入秩分解矩阵的机制",
+            "ownerSectionId": "base"
+          }
+        ]
+      },
+      "comparison": {
+        "role": "compare",
+        "targetLengthWords": 300,
+        "evidenceIds": [
+          "E1",
+          "E2",
+          "E3",
+          "E9"
+        ],
+        "task": "只做比较，不重新解释机制：沿「可训练对象」「存储对象」两个维度各用一两句对照两种方法（机制细节回指前两节）；集中说明材料仅两篇摘要、未统一复现、不能给出性能排序。这是全文唯一集中陈述这些限制的位置。",
+        "doNotExplain": [
+          {
+            "concept": "LoRA 冻结预训练权重并注入秩分解矩阵的机制",
+            "ownerSectionId": "base"
+          },
+          {
+            "concept": "QLoRA 冻结四位量化模型并把梯度反传到低秩适配器的机制",
+            "ownerSectionId": "extension"
+          }
+        ]
+      },
+      "conclusion": {
+        "role": "conclude",
+        "targetLengthWords": 160,
+        "evidenceIds": [],
+        "task": "回答综述问题：两种机制是什么关系（继承 / 扩展）、各自改变了什么；用一句话承接比较一节已经集中说明的限制，不再逐条复述；未来跨任务评测只作为计划。",
+        "doNotExplain": [
+          {
+            "concept": "LoRA 冻结预训练权重并注入秩分解矩阵的机制",
+            "ownerSectionId": "base"
+          },
+          {
+            "concept": "QLoRA 冻结四位量化模型并把梯度反传到低秩适配器的机制",
+            "ownerSectionId": "extension"
+          }
+        ]
+      }
+    }
+  }
+}

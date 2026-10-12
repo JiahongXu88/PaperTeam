@@ -1,0 +1,42 @@
+{
+  "baseline": "fee574b0036cb099620c6f9712e9b71563164ce6",
+  "fixture": "dev.json (derived from m13-7-4/dev.json: identical outline, evidence, bibliography, instructions; adds argumentUnits only)",
+  "fixtureStatus": "known regression sample (seen by M13.7.4); NOT held-out generalization evidence",
+  "maxUnderlyingRequests": 20,
+  "requestUnit": "assistant turns reported by PiRuntimeAdapter usage (one provider request each); tasks that spend several turns consume several requests",
+  "arms": [
+    {
+      "id": "glm-baseline",
+      "model": "zai-coding-cn/glm-5.3",
+      "input": "baseline",
+      "purpose": "same-day replication of the M13.7.4 baseline failure under the production ordinary-paper prompt"
+    },
+    {
+      "id": "fable-baseline",
+      "model": "glm/claude-fable-5-1",
+      "input": "baseline",
+      "purpose": "model-capability contrast under the identical starved input"
+    },
+    {
+      "id": "glm-argument-unit",
+      "model": "zai-coding-cn/glm-5.3",
+      "input": "argument-unit",
+      "purpose": "harness hypothesis: per-section evidence partition + argumentative role + length release, delivered only through existing buildSectionPrompt parameters"
+    },
+    {
+      "id": "glm-collapse",
+      "model": "zai-coding-cn/glm-5.3",
+      "input": "post-draft targeted collapse of detector-located restatements in glm-baseline",
+      "maxRequests": 3
+    }
+  ],
+  "sharedSession": "each arm shares one writer session across its five sections (contextScope writing/acceptance/<arm>/sections); arms use independent sessions",
+  "evaluation": {
+    "deterministic": "analyzeCrossSectionRedundancy pairs / restated sentences / limitation-sentence distribution; scanStyleSignals",
+    "manual": "per-sentence reading: harmful full re-explanation outside owner, limitation repetition outside the designated section, quote-exceeding mechanism detail, partial E9 escalation, mechanism checklist retained (LoRA freeze, rank decomposition injection, QLoRA 4-bit frozen model, gradient into adapters, small high-quality dataset result with scope, no own experiments, two abstracts only, no ranking)",
+    "cost": "usage input/output/cacheRead/estimatedCost and seconds per arm",
+    "gate": "an arm counts as improved only if harmful restatement drops AND the mechanism/limitation checklist is fully retained AND no new quote-exceeding detail appears; shorter text alone is not improvement"
+  },
+  "frozenBefore": "first provider request of this round",
+  "noTuning": "no prompt or fixture edits after the first glm-baseline request; unfavorable outputs retained"
+}
