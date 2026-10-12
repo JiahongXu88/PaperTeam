@@ -118,6 +118,28 @@ describe("allocateSectionEvidence", () => {
     expect(intro.diagnostics[0]).toContain("超出 4 条上限");
   });
 
+  it("规划者把 partial 钉到 framing / conclude：拒绝并给出 partial_not_allowed_in_role；develop / compare 仍可 pinned partial", () => {
+    // M13.7.11 真实 idea_to_paper Planner：结论节 argument.evidenceIds 含负对照 E011（partial）
+    const outline = structuredClone(OUTLINE);
+    outline.sections[4]!.argument = { evidenceIds: ["E004", "E006"] };
+    outline.sections[0]!.argument = { evidenceIds: ["E006"] };
+    outline.sections[1]!.argument = { evidenceIds: ["E006"] };
+    const units = resolveArgumentUnits({ outline });
+    const result = allocateSectionEvidence({ outline, units, evidence: EVIDENCE });
+    const conclusion = result.sections.find((section) => section.sectionId === "conclusion")!;
+    expect(conclusion.pinned).toEqual(["E004"]);
+    expect(conclusion.evidenceIds).toEqual(["E004"]);
+    expect(conclusion.partialIds).toEqual([]);
+    expect(conclusion.pinnedRejected).toEqual([{ id: "E006", reason: "partial_not_allowed_in_role" }]);
+    expect(conclusion.diagnostics.some((line) => line.includes("E006(partial_not_allowed_in_role)"))).toBe(true);
+    const intro = result.sections.find((section) => section.sectionId === "introduction")!;
+    expect(intro.evidenceIds).toEqual([]);
+    expect(intro.pinnedRejected).toEqual([{ id: "E006", reason: "partial_not_allowed_in_role" }]);
+    const surface = result.sections.find((section) => section.sectionId === "surface")!;
+    expect(surface.pinned).toEqual(["E006"]);
+    expect(surface.partialIds).toContain("E006");
+  });
+
   it("共享：两个 develop 节要点都提到同一事实时允许同时拿到（不强制互斥）", () => {
     const outline = structuredClone(OUTLINE);
     outline.sections[2]!.keyPoints = ["相干增益 G=2.27；与表面码的实时解码延迟 63 µs 对照"];

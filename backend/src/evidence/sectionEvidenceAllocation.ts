@@ -12,7 +12,7 @@
  *   并做覆盖兜底：池中每一条正式 Evidence 至少落到一个 develop 节（没有 develop 节时落到
  *   compare 节），不因每节限量而静默丢掉事实；
  * - partial 记录只交给相关 develop 节与 compare 节（M13.7.7 §8：partial 负例在全部章节
- *   成为「拆弹」吸引子）；
+ *   成为「拆弹」吸引子）——规划者 pinned 到 framing / conclude 的 partial 同样被拒绝；
  * - framing / conclude 不注入正式 Evidence（B2 原型策略；背景引用能力由 B 组 key 保留），
  *   规划者显式 pinned 的除外（有界）；
  * - compare 节拿到整个 formal 池（限量时按相关性取前 N）；
@@ -32,7 +32,7 @@ export interface SectionEvidenceAllocation {
   /** 最终进入本节 prompt 的 Evidence ID（有序：pinned → 相关性 → 覆盖兜底） */
   evidenceIds: string[];
   pinned: string[];
-  pinnedRejected: Array<{ id: string; reason: "unknown" | "not_formal" }>;
+  pinnedRejected: Array<{ id: string; reason: "unknown" | "not_formal" | "partial_not_allowed_in_role" }>;
   relevanceSelected: string[];
   coverageAdded: string[];
   partialIds: string[];
@@ -164,12 +164,17 @@ export function allocateSectionEvidence(params: {
       partialIds: [],
       diagnostics: [],
     };
-    // pinned：规划者指定，只认 formal 池里的 canonical ID
+    // pinned：规划者指定，只认 formal 池里的 canonical ID。partial 记录是待核验命题（M13.7.7 §8：
+    // 在全部章节成为「拆弹」吸引子），只允许进入 develop / compare；规划者把 partial 钉到 framing /
+    // conclude（M13.7.11 真实 Planner：结论节 pinned 了负对照 E011）时逐条拒绝并给出原因。
     for (const id of unit.pinnedEvidenceIds) {
-      if (formalById.has(id)) {
-        if (!allocation.pinned.includes(id)) allocation.pinned.push(id);
-      } else {
+      const formalRecord = formalById.get(id);
+      if (formalRecord === undefined) {
         allocation.pinnedRejected.push({ id, reason: knownIds.has(id) ? "not_formal" : "unknown" });
+      } else if ((unit.role === "framing" || unit.role === "conclude") && formalRecord.supportStrength === "partial") {
+        allocation.pinnedRejected.push({ id, reason: "partial_not_allowed_in_role" });
+      } else if (!allocation.pinned.includes(id)) {
+        allocation.pinned.push(id);
       }
     }
     const scores = scoresBySection.get(unit.sectionId)!;

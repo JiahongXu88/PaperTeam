@@ -14,7 +14,7 @@
  *                   continues through the production planner: writing.sections (idempotent reuse when the outline fingerprint
  *                   matches the written revision) → citation.verify → review.run → quality.gate → revision.* → build.*.
  *   --recover RUN_ID  Second process: recover the run left awaiting input by --interrupt-at and drive it to completion.
- *   --interrupt-at   Exit the process (checkpoint persisted) when the run first awaits the given HITL stage.
+ *   --interrupt-at   Exit the process (checkpoint persisted) when the run first awaits the given HITL stage (`any` = the first HITL).
  * HITL protocol (fixed before LIVE): outline / validation → approve; stalled → --stalled (default accept_draft);
  * overflow → accept_draft; style_polish → skip. No reviewer PASS is ever injected.
  * Model calls are recorded and budgeted through the shared ledger (one reservation per runtime task).
@@ -50,6 +50,8 @@ const recoverRunId = typeof flags.recover === "string" ? flags.recover : undefin
 const interruptAt = typeof flags["interrupt-at"] === "string" ? flags["interrupt-at"] : undefined;
 const stalledDecision = flags.stalled === "revise_more" ? "revise_more" : "accept_draft";
 const maxRevisionRounds = flags["max-revision-rounds"] !== undefined ? Number(flags["max-revision-rounds"]) : undefined;
+const stylePolicy = flags["style-policy"] === "apply_once" ? "apply_once" : undefined;
+const stylePolishDecision = flags["style-polish"] === "apply" ? "apply" : "skip";
 if (maxRevisionRounds !== undefined && (!Number.isInteger(maxRevisionRounds) || maxRevisionRounds < 0 || maxRevisionRounds > 5)) throw new Error("--max-revision-rounds must be 0..5");
 if (!replayFront && recoverRunId === undefined) throw new Error("Choose --replay-front (new run from replayed checkpoint) or --recover RUN_ID");
 const { repo, output } = resolveRepoPaths(repoArg, outputArg);
@@ -82,7 +84,7 @@ const result = {
   maxTasks: MAX_TASKS,
   budgetFile: budgetPath,
   startedAt: new Date().toISOString(),
-  options: { replayFront, recoverRunId: recoverRunId ?? null, interruptAt: interruptAt ?? null, stalledDecision, maxRevisionRounds: maxRevisionRounds ?? config.review.maxRevisionRounds },
+  options: { replayFront, recoverRunId: recoverRunId ?? null, interruptAt: interruptAt ?? null, stalledDecision, maxRevisionRounds: maxRevisionRounds ?? config.review.maxRevisionRounds, stylePolicy: stylePolicy ?? null, stylePolishDecision },
   calls: [],
   hitl: [],
   events: [],
@@ -219,7 +221,7 @@ try {
       createdAt: now,
       updatedAt: now,
       startedAt: now,
-      request: { acceptance: "M13.7.11 stage replay", replayedFront: FRONT },
+      request: { acceptance: "M13.7.11 stage replay", replayedFront: FRONT, ...(stylePolicy !== undefined ? { stylePolicy } : {}) },
       currentStage: "hitl.outline_confirm",
       completedStages: [...FRONT],
       stageResults,
@@ -259,7 +261,8 @@ try {
     if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") break;
     if (run.status === "awaiting_input") {
       const stageId = run.awaiting?.stageId ?? "";
-      if (interruptAt !== undefined && stageId === interruptAt && !result.hitl.some((entry) => entry.stageId === stageId && entry.interrupted)) {
+      const interruptHere = interruptAt !== undefined && (interruptAt === "any" ? result.hitl.length === 0 : stageId === interruptAt);
+      if (interruptHere && !result.hitl.some((entry) => entry.stageId === stageId && entry.interrupted)) {
         result.hitl.push({ stageId, at: new Date().toISOString(), interrupted: true, payload: run.awaiting?.payload ?? null });
         interrupted = true;
         result.status = "INTERRUPTED_AT_HITL";
@@ -271,7 +274,7 @@ try {
         stalledSeen += 1;
         decision = stalledSeen <= 1 ? stalledDecision : "accept_draft";
       } else if (stageId === "hitl.revision_overflow") decision = "accept_draft";
-      else if (stageId === "hitl.style_polish") decision = "skip";
+      else if (stageId === "hitl.style_polish") decision = stylePolishDecision;
       else if (stageId === "hitl.literature_selection") {
         const accepted = await services.candidates.list(projectId, "accepted");
         if (accepted.length > 0) decision = "approve";

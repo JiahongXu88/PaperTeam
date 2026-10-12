@@ -6,7 +6,8 @@
  * - reviews/academic-redundancy-rev{N}.json 只读报告落盘，stage 结果携带摘要；
  * - review.run 的 style 模式注入只读 digest，fact / academic 不注入；Gate 规则集不变；
  * - HITL resume 两次后写作发生；同项目再次 run：指纹相同 → 计划一致；正式证据变化 → 记录 previousFingerprint；
- * - 关闭开关（writing.argumentUnits=false）→ 旧行为（同一证据快照、「约 N 字」、无计划产物）。
+ * - 关闭开关（writing.argumentUnits=false）→ 旧行为（同一证据快照、「约 N 字」、无计划产物）；
+ * - M13.7.11：部分章节已写后的 stage 重试（transient）→ 同一 run attempt 递增、指纹不变、逐节分配一致、全部章节写完。
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -194,6 +195,60 @@ describe("M13.7.10 argument-unit writing（idea_to_paper，scripted）", () => {
     expect(plan3.warnings.some((warning) => warning.includes("正式证据集合已变化"))).toBe(true);
     expect(plan3.sections.find((section) => section.sectionId === "experiments")!.evidence.allocated).toContain(added.id);
   }, 120_000);
+
+  it("部分章节已写后的 stage 重试（M13.7.11 Resume）：同一 run 内 attempt 递增、指纹不变、分配逐节一致、全部章节最终写完", async () => {
+    const scripted = scriptedIdeaRuntime({ reviewSequence: ["pass"] });
+    let sectionCalls = 0;
+    let failed = false;
+    // 第 3 节写作时抛一次瞬时错误（非 BusinessError → transient）；testStack 的 stageMaxAttempts=2 → 整个 stage 重试
+    const runtime = new Proxy(scripted.runtime, {
+      get(target, property, receiver) {
+        if (property !== "runAgent") {
+          const value = Reflect.get(target, property, receiver);
+          return typeof value === "function" ? value.bind(target) : value;
+        }
+        return async (input: Parameters<typeof target.runAgent>[0]) => {
+          if (input.contextScope === "writing/sections") {
+            sectionCalls += 1;
+            if (sectionCalls === 3 && !failed) {
+              failed = true;
+              throw new Error("simulated transient provider failure while writing section 3");
+            }
+          }
+          return target.runAgent(input);
+        };
+      },
+    });
+    const stack = await startTestStack(runtime, { registerCleanup: (cleanup) => cleanups.push(cleanup) });
+    const project = await stack.store.create("论证单元写作重试", { researchIdea: "小语料 RAG 评估" });
+    await seedFormalEvidence(stack, project.id);
+    const { runId, run } = await runToCompletion(stack, project.id);
+    expect(run.status).toBe("completed");
+    const writingRecords = run.stageHistory.filter((record) => record.stageId === "writing.sections");
+    expect(writingRecords.map((record) => record.status)).toEqual(["failed", "completed"]);
+    // 第一次尝试写了 2 节后失败；第二次从头写全部 5 节（Writer 调用 2 + 5；抛错的那次未到达 runtime）
+    const sectionTasks = scripted.tasks.filter((task) => task.contextScope === "writing/sections" && task.projectId === project.id);
+    expect(sectionTasks).toHaveLength(7);
+    const evidenceIdsIn = (task: string): string[] => [...task.matchAll(/^- \[(E\d{3})\]/gm)].map((match) => match[1]!);
+    const fileOf = (task: string): string => /（([a-z-]+\.tex)）/.exec(task)?.[1] ?? "";
+    const attempt1 = sectionTasks.slice(0, 2);
+    for (const first of attempt1) {
+      const again = sectionTasks.slice(2).find((task) => fileOf(task.task) === fileOf(first.task))!;
+      expect(again).toBeDefined();
+      expect(evidenceIdsIn(again.task)).toEqual(evidenceIdsIn(first.task));
+      expect(again.task).toContain(ARGUMENT_UNIT_BLOCK_HEADER);
+    }
+    const plan = await readPlan(stack, project.id);
+    expect(plan.runId).toBe(runId);
+    expect(plan.attempt).toBe(2);
+    expect(plan.previousFingerprint).toBeUndefined();
+    expect(plan.warnings).toEqual([]);
+    expect(plan.sections.every((section) => section.status === "written")).toBe(true);
+    expect(plan.sections.every((section) => section.evidence.consumed.length === section.evidence.allocated.length)).toBe(true);
+    const writing = run.stageResults["writing.sections"] as Record<string, unknown>;
+    expect(writing["sectionsWritten"]).toBe(5);
+    expect((writing["argumentUnits"] as { attempt: number }).attempt).toBe(2);
+  }, 60_000);
 
   it("关闭开关：旧行为（同一证据快照、「约 N 字」、无任务块、无计划产物）", async () => {
     const scripted = scriptedIdeaRuntime({ reviewSequence: ["pass"] });

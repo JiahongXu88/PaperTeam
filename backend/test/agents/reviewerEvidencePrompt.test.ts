@@ -70,6 +70,10 @@ describe("buildReviewPrompt M13.7.10：跨章节学术重复只读 digest", () =
     const base = { projectId: "p-abc", manuscriptDigest: "[main.tex] …", evidence: [] as never[] };
     const style = buildReviewPrompt({ ...base, mode: "style", redundancyDigest: digest });
     expect(style).toContain("===== 跨章节学术重复观察");
+    // M13.7.11 真实 run：style reviewer 把 digest 的「压缩为一句承接」写成「相关局限见第6节」并建议删除「仅摘要」
+    // 限定，润色被 invariant 守卫全量拒绝——使用口径须显式排除路标与科研限制删除
+    expect(style).toContain("不得写成「见第 N 节」");
+    expect(style).toContain("不得建议删除「仅摘要 / 无本文实验 / 不可直接比较 / 不支持排序」");
     expect(style).toContain("uncertain 条目不得直接判为问题");
     expect(style).toContain("[E] conclusion");
     expect(buildReviewPrompt({ ...base, mode: "style" })).not.toContain("跨章节学术重复观察");
