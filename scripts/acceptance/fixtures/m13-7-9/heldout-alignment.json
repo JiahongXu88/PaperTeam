@@ -1,0 +1,463 @@
+{
+  "outline": {
+    "title": "大语言模型偏好对齐方法综述：人类反馈强化学习、直接偏好优化与 AI 反馈",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "界定大语言模型偏好对齐的综述范围：以人类反馈强化学习（RLHF）为参照流程，比较两类降低流程与标注成本的路线——直接偏好优化与以 AI 反馈替代人类标注；材料为四篇公开摘要，没有本文实验。"
+        ]
+      },
+      {
+        "id": "human",
+        "title": "基于人类偏好的对齐：奖励模型强化学习与直接偏好优化",
+        "file": "human.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释 InstructGPT 的监督微调—排序数据—人类反馈强化学习三步流程与其人类评测结果（1.3B 模型输出被偏好于 175B GPT-3、参数少 100 倍、真实性提升与有害输出减少、公开 NLP 数据集回退极小、仍会犯简单错误），以及 DPO 对奖励模型的重新参数化、闭式最优策略与简单分类损失、稳定轻量、无需微调期间采样与大量超参调节，及其与 PPO 式 RLHF 的比较结果。"
+        ]
+      },
+      {
+        "id": "aifeedback",
+        "title": "以 AI 反馈替代人类标注：宪法式 AI 与 RLAIF",
+        "file": "aifeedback.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释宪法式 AI 的两阶段流程（监督阶段的自我批评与修订、强化学习阶段用模型比较样本训练偏好模型并作为奖励信号，即 RLAIF）、仅通过原则列表提供人类监督、得到无害但不回避的助手；以及 RLAIF 用现成 LLM 生成偏好训练奖励模型、在摘要与有益/无害对话任务上与 RLHF 相当、标注模型与策略同尺寸甚至同一检查点仍优于监督微调基线、d-RLAIF 绕过奖励模型训练且优于标准 RLAIF。"
+        ]
+      },
+      {
+        "id": "comparison",
+        "title": "综合比较与局限性",
+        "file": "comparison.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "沿是否显式拟合奖励模型、是否需要强化学习阶段、反馈来源（人类标注 / 原则 / 现成模型）与各文评测任务范围比较各路线；各文结果来自不同模型、任务与评测设置，不能据此给出性能排序；材料仅四篇摘要，未统一复现。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论与展望",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "总结 RLHF 参照流程与两类改进路线的关系及各自改变的环节，保留限制；统一任务与协议下的评测是未来工作而非已完成贡献。"
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "source": {
+        "sourceId": "S401",
+        "title": "Training language models to follow instructions with human feedback",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2203.02155"
+      },
+      "claim": "Making language models bigger does not inherently make them better at following a user's intent. For example, large language models can generate outputs that are untruthful, toxic, or simply not helpful to the user. In other words, these models are not aligned with their users.",
+      "quote": "Making language models bigger does not inherently make them better at following a user's intent. For example, large language models can generate outputs that are untruthful, toxic, or simply not helpful to the user. In other words, these models are not aligned with their users.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S401:abstract:e1"
+      }
+    },
+    {
+      "id": "E2",
+      "source": {
+        "sourceId": "S401",
+        "title": "Training language models to follow instructions with human feedback",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2203.02155"
+      },
+      "claim": "Starting with a set of labeler-written prompts and prompts submitted through the OpenAI API, we collect a dataset of labeler demonstrations of the desired model behavior, which we use to fine-tune GPT-3 using supervised learning. We then collect a dataset of rankings of model outputs, which we use to further fine-tune this supervised model using reinforcement learning from human feedback. We call the resulting models InstructGPT.",
+      "quote": "Starting with a set of labeler-written prompts and prompts submitted through the OpenAI API, we collect a dataset of labeler demonstrations of the desired model behavior, which we use to fine-tune GPT-3 using supervised learning. We then collect a dataset of rankings of model outputs, which we use to further fine-tune this supervised model using reinforcement learning from human feedback. We call the resulting models InstructGPT.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S401:abstract:e2"
+      }
+    },
+    {
+      "id": "E3",
+      "source": {
+        "sourceId": "S401",
+        "title": "Training language models to follow instructions with human feedback",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2203.02155"
+      },
+      "claim": "In human evaluations on our prompt distribution, outputs from the 1.3B parameter InstructGPT model are preferred to outputs from the 175B GPT-3, despite having 100x fewer parameters. Moreover, InstructGPT models show improvements in truthfulness and reductions in toxic output generation while having minimal performance regressions on public NLP datasets. Even though InstructGPT still makes simple mistakes, our results show that fine-tuning with human feedback is a promising direction for aligning language models with human intent.",
+      "quote": "In human evaluations on our prompt distribution, outputs from the 1.3B parameter InstructGPT model are preferred to outputs from the 175B GPT-3, despite having 100x fewer parameters. Moreover, InstructGPT models show improvements in truthfulness and reductions in toxic output generation while having minimal performance regressions on public NLP datasets. Even though InstructGPT still makes simple mistakes, our results show that fine-tuning with human feedback is a promising direction for aligning language models with human intent.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S401:abstract:e3"
+      }
+    },
+    {
+      "id": "E4",
+      "source": {
+        "sourceId": "S402",
+        "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.18290"
+      },
+      "claim": "However, RLHF is a complex and often unstable procedure, first fitting a reward model that reflects the human preferences, and then fine-tuning the large unsupervised LM using reinforcement learning to maximize this estimated reward without drifting too far from the original model.",
+      "quote": "However, RLHF is a complex and often unstable procedure, first fitting a reward model that reflects the human preferences, and then fine-tuning the large unsupervised LM using reinforcement learning to maximize this estimated reward without drifting too far from the original model.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S402:abstract:e4"
+      }
+    },
+    {
+      "id": "E5",
+      "source": {
+        "sourceId": "S402",
+        "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.18290"
+      },
+      "claim": "In this paper we introduce a new parameterization of the reward model in RLHF that enables extraction of the corresponding optimal policy in closed form, allowing us to solve the standard RLHF problem with only a simple classification loss. The resulting algorithm, which we call Direct Preference Optimization (DPO), is stable, performant, and computationally lightweight, eliminating the need for sampling from the LM during fine-tuning or performing significant hyperparameter tuning.",
+      "quote": "In this paper we introduce a new parameterization of the reward model in RLHF that enables extraction of the corresponding optimal policy in closed form, allowing us to solve the standard RLHF problem with only a simple classification loss. The resulting algorithm, which we call Direct Preference Optimization (DPO), is stable, performant, and computationally lightweight, eliminating the need for sampling from the LM during fine-tuning or performing significant hyperparameter tuning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S402:abstract:e5"
+      }
+    },
+    {
+      "id": "E6",
+      "source": {
+        "sourceId": "S402",
+        "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.18290"
+      },
+      "claim": "Our experiments show that DPO can fine-tune LMs to align with human preferences as well as or better than existing methods. Notably, fine-tuning with DPO exceeds PPO-based RLHF in ability to control sentiment of generations, and matches or improves response quality in summarization and single-turn dialogue while being substantially simpler to implement and train.",
+      "quote": "Our experiments show that DPO can fine-tune LMs to align with human preferences as well as or better than existing methods. Notably, fine-tuning with DPO exceeds PPO-based RLHF in ability to control sentiment of generations, and matches or improves response quality in summarization and single-turn dialogue while being substantially simpler to implement and train.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S402:abstract:e6"
+      }
+    },
+    {
+      "id": "E7",
+      "source": {
+        "sourceId": "S403",
+        "title": "Constitutional AI: Harmlessness from AI Feedback",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2212.08073"
+      },
+      "claim": "We experiment with methods for training a harmless AI assistant through self-improvement, without any human labels identifying harmful outputs. The only human oversight is provided through a list of rules or principles, and so we refer to the method as 'Constitutional AI'. The process involves both a supervised learning and a reinforcement learning phase.",
+      "quote": "We experiment with methods for training a harmless AI assistant through self-improvement, without any human labels identifying harmful outputs. The only human oversight is provided through a list of rules or principles, and so we refer to the method as 'Constitutional AI'. The process involves both a supervised learning and a reinforcement learning phase.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S403:abstract:e7"
+      }
+    },
+    {
+      "id": "E8",
+      "source": {
+        "sourceId": "S403",
+        "title": "Constitutional AI: Harmlessness from AI Feedback",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2212.08073"
+      },
+      "claim": "In the supervised phase we sample from an initial model, then generate self-critiques and revisions, and then finetune the original model on revised responses. In the RL phase, we sample from the finetuned model, use a model to evaluate which of the two samples is better, and then train a preference model from this dataset of AI preferences. We then train with RL using the preference model as the reward signal, i.e. we use 'RL from AI Feedback' (RLAIF). As a result we are able to train a harmless but non-evasive AI assistant that engages with harmful queries by explaining its objections to them.",
+      "quote": "In the supervised phase we sample from an initial model, then generate self-critiques and revisions, and then finetune the original model on revised responses. In the RL phase, we sample from the finetuned model, use a model to evaluate which of the two samples is better, and then train a preference model from this dataset of AI preferences. We then train with RL using the preference model as the reward signal, i.e. we use 'RL from AI Feedback' (RLAIF). As a result we are able to train a harmless but non-evasive AI assistant that engages with harmful queries by explaining its objections to them.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S403:abstract:e8"
+      }
+    },
+    {
+      "id": "E9",
+      "source": {
+        "sourceId": "S404",
+        "title": "RLAIF vs. RLHF: Scaling Reinforcement Learning from Human Feedback with AI Feedback",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2309.00267"
+      },
+      "claim": "Reinforcement learning from human feedback (RLHF) has proven effective in aligning large language models (LLMs) with human preferences, but gathering high-quality preference labels is expensive. RL from AI Feedback (RLAIF), introduced in Bai et al., offers a promising alternative that trains the reward model (RM) on preferences generated by an off-the-shelf LLM. Across the tasks of summarization, helpful dialogue generation, and harmless dialogue generation, we show that RLAIF achieves comparable performance to RLHF.",
+      "quote": "Reinforcement learning from human feedback (RLHF) has proven effective in aligning large language models (LLMs) with human preferences, but gathering high-quality preference labels is expensive. RL from AI Feedback (RLAIF), introduced in Bai et al., offers a promising alternative that trains the reward model (RM) on preferences generated by an off-the-shelf LLM. Across the tasks of summarization, helpful dialogue generation, and harmless dialogue generation, we show that RLAIF achieves comparable performance to RLHF.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S404:abstract:e9"
+      }
+    },
+    {
+      "id": "E10",
+      "source": {
+        "sourceId": "S404",
+        "title": "RLAIF vs. RLHF: Scaling Reinforcement Learning from Human Feedback with AI Feedback",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2309.00267"
+      },
+      "claim": "Furthermore, we take a step towards \"self-improvement\" by demonstrating that RLAIF can outperform a supervised fine-tuned baseline even when the AI labeler is the same size as the policy, or even the exact same checkpoint as the initial policy. Finally, we introduce direct-RLAIF (d-RLAIF) - a technique that circumvents RM training by obtaining rewards directly from an off-the-shelf LLM during RL, which achieves superior performance to canonical RLAIF.",
+      "quote": "Furthermore, we take a step towards \"self-improvement\" by demonstrating that RLAIF can outperform a supervised fine-tuned baseline even when the AI labeler is the same size as the policy, or even the exact same checkpoint as the initial policy. Finally, we introduce direct-RLAIF (d-RLAIF) - a technique that circumvents RM training by obtaining rewards directly from an off-the-shelf LLM during RL, which achieves superior performance to canonical RLAIF.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S404:abstract:e10"
+      }
+    },
+    {
+      "id": "E11",
+      "source": {
+        "sourceId": "S402",
+        "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+        "year": 2023,
+        "url": "https://arxiv.org/abs/2305.18290"
+      },
+      "claim": "直接偏好优化（DPO）在所有对齐任务上都优于基于 PPO 的 RLHF。",
+      "quote": "Our experiments show that DPO can fine-tune LMs to align with human preferences as well as or better than existing methods. Notably, fine-tuning with DPO exceeds PPO-based RLHF in ability to control sentiment of generations, and matches or improves response quality in summarization and single-turn dialogue while being substantially simpler to implement and train.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote covers 'as well as or better than existing methods', exceeding PPO-based RLHF only in sentiment control and matching or improving in summarization and single-turn dialogue; not a universal superiority claim",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S402:abstract:e6"
+      }
+    },
+    {
+      "id": "E12",
+      "source": {
+        "sourceId": "S403",
+        "title": "Constitutional AI: Harmlessness from AI Feedback",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2212.08073"
+      },
+      "claim": "AI 反馈方法完全不需要任何人类参与或监督即可完成对齐。",
+      "quote": "We experiment with methods for training a harmless AI assistant through self-improvement, without any human labels identifying harmful outputs. The only human oversight is provided through a list of rules or principles, and so we refer to the method as 'Constitutional AI'. The process involves both a supervised learning and a reinforcement learning phase.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote says no human labels identifying harmful outputs, with the only human oversight provided through a list of rules or principles; it does not support 'no human involvement at all'",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S403:abstract:e7"
+      }
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "ouyang2022instructgpt",
+      "sourceId": "S401",
+      "title": "Training language models to follow instructions with human feedback",
+      "year": 2022,
+      "url": "https://arxiv.org/abs/2203.02155"
+    },
+    {
+      "key": "rafailov2023dpo",
+      "sourceId": "S402",
+      "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model",
+      "year": 2023,
+      "url": "https://arxiv.org/abs/2305.18290"
+    },
+    {
+      "key": "bai2022constitutional",
+      "sourceId": "S403",
+      "title": "Constitutional AI: Harmlessness from AI Feedback",
+      "year": 2022,
+      "url": "https://arxiv.org/abs/2212.08073"
+    },
+    {
+      "key": "lee2023rlaif",
+      "sourceId": "S404",
+      "title": "RLAIF vs. RLHF: Scaling Reinforcement Learning from Human Feedback with AI Feedback",
+      "year": 2023,
+      "url": "https://arxiv.org/abs/2309.00267"
+    }
+  ],
+  "mode": "ordinary",
+  "instructions": "只输出本节 LaTeX 正文，约350中文字（允许合理浮动），不重复节标题；各节共同构成中文综述。仅使用给定来源和 Evidence，不查外部资料。保留必要学术内容及限制；无本文实验结果，不编造公式、数值、性能排序；不要报告内部流程。",
+  "fixtureStatus": "HELD-OUT for M13.7.9: topic, sources and outline never used by M13.7.2–M13.7.8 (Transformer, DPR/RAG, LoRA/QLoRA, FedAvg/SCAFFOLD, SimCLR/MoCo/BYOL/SimSiam); zero prior occurrence of these papers in the repository",
+  "argumentUnitsV2": {
+    "version": 3,
+    "label": "B2",
+    "basedOn": "M13.7.9 B2 protocol (same evidence partition / upper-bound lengths / lengthPolicy design as M13.7.8 Arm B; behavioural cross-section policy; synthesis-style compare task)",
+    "lengthInstructionReplace": {
+      "from": "约350中文字（允许合理浮动），",
+      "to": "长度以下方「目标长度」为上限参考，"
+    },
+    "lengthPolicy": "目标长度是上限参考，不是必须填满的配额：当本节分配到的材料不足以支撑目标长度时，宁可写短，也不为凑字重述已有内容、重复限制声明或补写引文之外的细节。",
+    "crossSectionPolicy": "跨章节分工只约束本节写什么、不写什么，分工本身不进入正文：不写「见某节」「将在某节展开」「已在前文说明」这类指向其他章节的句子，不在节首或节尾预告、回顾论文结构；需要承接时直接点出对象或差异，用半句自然过渡即可。",
+    "roleLabels": {
+      "framing": "framing（界定问题与范围、点名路线及代表工作；不展开机制、不转述数值、不预告各节内容）",
+      "develop": "develop（本节是指定概念的唯一完整展开位置；涉及其他路线时至多半句点出差异）",
+      "compare": "compare（综合与对照：回答关键差异、比较维度、现有证据支持什么、哪些结果不可直接横向比较、还不能判断什么；不是第二遍方法描述）",
+      "conclude": "conclude（综合回答综述问题，一句承接限制，不逐条复述、不写结构性回指）"
+    },
+    "sections": {
+      "introduction": {
+        "role": "framing",
+        "targetLengthWords": 180,
+        "evidenceIds": [],
+        "task": "界定问题与范围：大语言模型需要与用户意图、人类偏好对齐；本综述只整理四篇文献的方法关系，没有本文实验。点名以人类反馈强化学习（InstructGPT）为参照流程，以及两类降低流程与标注成本的路线——直接偏好优化（DPO）与以 AI 反馈替代人类标注（宪法式 AI、RLAIF）。不解释任何机制细节，不转述任何数值，不预告各节内容。",
+        "doNotExplain": [
+          {
+            "concept": "InstructGPT 的监督微调—排序数据—人类反馈强化学习流程及其评测结果",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "DPO 对奖励模型的重新参数化、闭式最优策略与分类损失",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "宪法式 AI 的自我批评 / 修订与 AI 偏好训练两阶段流程",
+            "ownerSectionId": "aifeedback"
+          },
+          {
+            "concept": "RLAIF 用现成 LLM 生成偏好训练奖励模型及 d-RLAIF",
+            "ownerSectionId": "aifeedback"
+          }
+        ]
+      },
+      "human": {
+        "role": "develop",
+        "targetLengthWords": 400,
+        "evidenceIds": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6"
+        ],
+        "task": "这是全文唯一完整解释 InstructGPT 与 DPO 的位置：按引文说明对齐动机（模型更大不必然更能遵循意图；不真实、有害或无用输出），InstructGPT 的三步流程（标注者示范做监督微调、模型输出排序数据、人类反馈强化学习）及其人类评测结果（1.3B 模型输出被偏好于 175B GPT-3、参数少 100 倍；真实性提升、有害输出减少、公开 NLP 数据集回退极小；仍会犯简单错误）；RLHF 的复杂与不稳定（先拟合奖励模型再用强化学习微调且不过度偏离原模型），DPO 的奖励模型重新参数化、闭式最优策略、仅用简单分类损失，稳定、高效、轻量，无需微调期间采样或大量超参调节；DPO 的结果只按引文范围转述（与现有方法相当或更好；情感控制上超过 PPO 式 RLHF；摘要与单轮对话上相当或更优；实现与训练更简单）。涉及 AI 反馈路线时，至多用半句点出差异，不展开、不预告。",
+        "doNotExplain": [
+          {
+            "concept": "宪法式 AI 的自我批评 / 修订与 AI 偏好训练两阶段流程",
+            "ownerSectionId": "aifeedback"
+          },
+          {
+            "concept": "RLAIF 用现成 LLM 生成偏好训练奖励模型及 d-RLAIF",
+            "ownerSectionId": "aifeedback"
+          }
+        ]
+      },
+      "aifeedback": {
+        "role": "develop",
+        "targetLengthWords": 400,
+        "evidenceIds": [
+          "E7",
+          "E8",
+          "E9",
+          "E10"
+        ],
+        "task": "这是全文唯一完整解释宪法式 AI 与 RLAIF 的位置：按引文说明宪法式 AI 不使用任何标识有害输出的人类标签、人类监督只通过一份规则或原则列表提供；监督阶段从初始模型采样、生成自我批评与修订、在修订后的回答上微调；强化学习阶段从微调模型采样、用模型判断两份样本优劣、据此 AI 偏好数据训练偏好模型并作为奖励信号（即 RLAIF）；得到无害但不回避、会解释拒绝理由的助手。RLAIF（Lee 等）用现成 LLM 生成的偏好训练奖励模型；结果只按引文范围转述（在摘要、有益对话、无害对话任务上与 RLHF 相当；标注模型与策略同尺寸甚至同一检查点时仍优于监督微调基线；d-RLAIF 在强化学习中直接从现成 LLM 取得奖励、绕过奖励模型训练，优于标准 RLAIF）。涉及人类偏好路线时，至多用半句点出差异，不展开、不预告。",
+        "doNotExplain": [
+          {
+            "concept": "InstructGPT 的监督微调—排序数据—人类反馈强化学习流程及其评测结果",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "DPO 对奖励模型的重新参数化、闭式最优策略与分类损失",
+            "ownerSectionId": "human"
+          }
+        ]
+      },
+      "comparison": {
+        "role": "compare",
+        "targetLengthWords": 320,
+        "evidenceIds": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7",
+          "E8",
+          "E9",
+          "E10",
+          "E11",
+          "E12"
+        ],
+        "task": "本节是综合与对照，不是第二遍方法描述。依次回答：各路线的关键差异是什么——沿「是否显式拟合奖励模型」「是否需要强化学习阶段」「反馈来源（人类标注 / 原则列表 / 现成模型）」「各文评测任务范围」四个维度，每个维度落到一个对照结论，机制只以半句提醒的方式出现，不复制前两节的句子；现有摘要证据能支持哪些结论；哪些结果不可直接横向比较（各文结果来自不同模型、任务与评测设置、未统一复现，不能给出性能排序）；目前证据还不能判断什么（E11「DPO 在所有任务上优于 RLHF」、E12「AI 反馈完全不需要人类参与」不在引文覆盖范围内，不得写成事实）。这是全文唯一集中陈述材料仅四篇摘要、无本文实验等限制的位置。",
+        "doNotExplain": [
+          {
+            "concept": "InstructGPT 的监督微调—排序数据—人类反馈强化学习流程及其评测结果",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "DPO 对奖励模型的重新参数化、闭式最优策略与分类损失",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "宪法式 AI 的自我批评 / 修订与 AI 偏好训练两阶段流程",
+            "ownerSectionId": "aifeedback"
+          },
+          {
+            "concept": "RLAIF 用现成 LLM 生成偏好训练奖励模型及 d-RLAIF",
+            "ownerSectionId": "aifeedback"
+          }
+        ]
+      },
+      "conclusion": {
+        "role": "conclude",
+        "targetLengthWords": 160,
+        "evidenceIds": [],
+        "task": "回答综述问题：RLHF 参照流程与两类改进路线的关系，以及各自改变的环节（只归纳前文已写内容，不新增引文之外的机制细节，不重复数值）；用一句话承接前文已集中说明的限制，不再逐条复述；统一任务与协议下的评测只作为未来计划。不写指向其他章节的句子。",
+        "doNotExplain": [
+          {
+            "concept": "InstructGPT 的监督微调—排序数据—人类反馈强化学习流程及其评测结果",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "DPO 对奖励模型的重新参数化、闭式最优策略与分类损失",
+            "ownerSectionId": "human"
+          },
+          {
+            "concept": "宪法式 AI 的自我批评 / 修订与 AI 偏好训练两阶段流程",
+            "ownerSectionId": "aifeedback"
+          },
+          {
+            "concept": "RLAIF 用现成 LLM 生成偏好训练奖励模型及 d-RLAIF",
+            "ownerSectionId": "aifeedback"
+          }
+        ]
+      }
+    }
+  }
+}

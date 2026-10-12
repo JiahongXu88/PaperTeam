@@ -1,0 +1,55 @@
+{
+  "dev-simclr.json": {
+    "lf": "c75a98cdad6319184c8647974d2aaa5b8f113aa5bb6166a723875f774aed3711",
+    "crlf": "2a3544183a963358b4fe2ce111808afa4a1da7bbfcb5e991139a17d2b93eb20c",
+    "bytesLf": 33417
+  },
+  "heldout-alignment.json": {
+    "lf": "5aec2287208a26eb30e3e80cc44cbe53666ebc9386df8eb3997909c58864d163",
+    "crlf": "41381576535ba10d13cccf598a479ea6ab6206c9ae7340cc7ffc68d78ab4e443",
+    "bytesLf": 31066
+  },
+  "heldout-qec.json": {
+    "lf": "b5cb528337deb9be24944328b03b391f497e6f5b83429d4dee519aa40fdb72f3",
+    "crlf": "ea0d6d197eb0f61e83d059c57fbfccb92098bd0fcfcb7eb2abba88953d3519ee",
+    "bytesLf": 31461
+  },
+  "sources-abstracts-alignment.json": {
+    "lf": "957e3b11012d0ba42e46a422af6391c897317379dfeb9aeeadc51bd770667461",
+    "crlf": "5f4cc4630a08a6b880fad64f8f8a5f64989d6937f21be9454ad6e0ad280223a8",
+    "bytesLf": 10354
+  },
+  "sources-abstracts-qec.json": {
+    "lf": "bbdb6e670200dfe161383e49ec390007a8f2d4a9291aaa9ee92ad576fd2cb462",
+    "crlf": "bf87ea71cf14779cb616b758dc7fcbe1d668113809beb857e21731e397121b1b",
+    "bytesLf": 19935
+  },
+  "concept-markers-alignment.json": {
+    "lf": "733ad55170d07d1f58e375939cd15349f2ef7ea02248bda8b12bfd4a09c3a7cb",
+    "crlf": "1096ff7e4dd6d976dda0fc021f2e1bfe0c5fd26b28a7a55e67b86f1387c30439",
+    "bytesLf": 4973
+  },
+  "concept-markers-qec.json": {
+    "lf": "045dcdfe5d098c23898c881e2825b2b50b84b16c7ae0adb0e03500aef97f5a06",
+    "crlf": "89c24b9cca6d61060d8a9ee254666489113a22fc0da1cdf758609cd7950db72e",
+    "bytesLf": 4545
+  },
+  "protocol.json": {
+    "lf": "e167d242c7c83e9db2240009f938f35f5a17101246048be9d4473c479b6afa9f",
+    "crlf": "8b622f6cccdcc54829a13a1ba2abcd3500733fac63604cef1d14a853befbc6ab",
+    "bytesLf": 19517
+  },
+  "__code": {
+    "scripts/acceptance/argument-unit-writing-live.mjs": "7fdcccf7480afb773cade74b6c68aca7c242a6b10300e64312eb83a69c0b46b0",
+    "scripts/acceptance/m13-7-9-evaluate.mjs": "19ff1b229b08c0953b1b3d969ce2ba15d5c53924a254de73226822dfb4cc1b20",
+    "scripts/acceptance/m13-7-9-compare.mjs": "42c32da2a1805e1af1ebe576caa79b7a7691f1609ff69d552710e2c4fbefcff4",
+    "scripts/acceptance/m13-7-9-classify.mjs": "e9b8a1d35f003391fd0a49f3f841429d1d933ec4d39930946500569692b69e49",
+    "backend/src/review/academicRedundancyClassifier.ts": "3c1b5103eb4e45ed82e8258e4a3db66ebdd231a9a87a10c50ef157da5da26d1c",
+    "backend/dist/review/academicRedundancyClassifier.js": "d4d1a73d9acdaa382d54a4873c9c3551e3cabb848f92fa7f15f8d527c3990044",
+    "backend/src/review/crossSectionRedundancy.ts": "449ccbcd36f5c45c9404c1e318967a70e87c49ffa93f9d39d48a0bc718cc2070",
+    "backend/dist/review/crossSectionRedundancy.js": "3d520cfc9426325aa3750d4e7ad8c77662ca81d0009fe6a12457d3adc1244cd2",
+    "backend/dist/writer/WriterService.js": "7aab748289c689f1f900edfc4efe3fab177d82d7748a9b05629ac32939ca7a32",
+    "backend/src/writer/WriterService.ts": "8d8ceeaf685691959d152c27d820aaf67e65c50210cd2ab8fef429d0c42adf47",
+    "scripts/acceptance/fixtures/m13-7-8/concept-markers.json": "851d3a88e2182617b4abf75ade7b21ad7845dbbc2ffd669005476504565e48d0"
+  }
+}

@@ -115,6 +115,16 @@ describe("analyzeCrossSectionRedundancy", () => {
     expect(isLimitationSentence(sentences.find((s) => s.includes("性能排序")) ?? "")).toBe(true);
   });
 
+  it("M13.7.9 限制句哨兵补充：不涉及本文实验 / 不作横向排序 / 作者自述 / 仅为四篇摘要 命中；机制句与数值句不命中", () => {
+    expect(isLimitationSentence("本节论述同样基于两篇文献摘要中的作者自述结论，不涉及本文自己的实验。")).toBe(true);
+    expect(isLimitationSentence("上述数值均为原文献在其各自设置下的报告结果，本文未进行新实验，故不作横向性能排序。")).toBe(true);
+    expect(isLimitationSentence("本综述仅基于上述四篇文献的公开摘要梳理其机制关系，不包含本文实验。")).toBe(true);
+    expect(isLimitationSentence("本文材料仅为四篇文献的公开摘要。")).toBe(true);
+    expect(isLimitationSentence("SimCLR 线性评测取得 76.5% 的 top-1 准确率，与有监督 ResNet-50 相当。")).toBe(false);
+    expect(isLimitationSentence("目标网络以在线网络的慢速移动平均进行更新。")).toBe(false);
+    expect(isLimitationSentence("该方法不依赖负样本对、大批量与动量编码器。")).toBe(false);
+  });
+
   it("分句与分词是确定性的，功能字 bigram 被过滤", () => {
     expect(splitRedundancySentences("第一句。第二句！第三句？\n第四句")).toHaveLength(4);
     const tokens = tokenizeForRedundancy("LoRA 的秩分解矩阵与 4 位量化");

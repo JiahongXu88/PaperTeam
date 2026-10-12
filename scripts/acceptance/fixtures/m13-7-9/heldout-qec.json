@@ -1,0 +1,463 @@
+{
+  "outline": {
+    "title": "超导量子纠错实验综述：表面码规模扩展与突破盈亏平衡的逻辑量子比特",
+    "sections": [
+      {
+        "id": "introduction",
+        "title": "引言",
+        "file": "introduction.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "界定超导量子纠错实验的综述范围：以表面码逻辑量子比特随码距扩展的实验与以单个逻辑量子比特突破盈亏平衡为目标的实验为两条路线；材料为四篇公开摘要，没有本文实验。"
+        ]
+      },
+      {
+        "id": "surface",
+        "title": "表面码逻辑量子比特的规模扩展",
+        "file": "surface.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释表面码扩展的前提（物理比特越多保护越强但错误源也越多，错误密度须足够低），距离 5 码略优于距离 3 码集合（每周期逻辑错误 2.914%±0.016% 对 3.028%±0.023%，25 个周期），距离 25 重复码由单个高能事件设定的 1.7×10^-6 每轮错误下限（排除后 1.6×10^-7），首次观测到纠错随比特数增加开始改善；阈值以下的距离 7 与距离 5 码、Λ=2.14±0.02、101 比特距离 7 码每周期 0.143%±0.003%、超过最佳物理比特寿命 2.4±0.3 倍、实时解码延迟 63 µs 与 1.1 µs 周期、距离 29 重复码受约每小时一次（3×10^9 周期）的罕见关联错误事件限制、若规模化则可能满足大规模容错算法要求。"
+        ]
+      },
+      {
+        "id": "breakeven",
+        "title": "突破盈亏平衡的逻辑量子比特实验",
+        "file": "breakeven.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "解释以往纠错尝试因自身引入错误过多而失败、纠错能否延长量子相干曾是开放问题，完全稳定且被纠错的逻辑量子比特以 G=2.27±0.07 的相干增益超过所有参与部件、依靠超导电路制备与无模型强化学习；离散变量编码（如光子数）使码字正交、以往重复纠错演示未超过系统最佳物理比特寿命的盈亏平衡点；微波腔光子数态编码与色散耦合辅助比特、频率梳脉冲重复提取症状并反馈纠错，寿命提升约 16% 超过盈亏平衡。"
+        ]
+      },
+      {
+        "id": "comparison",
+        "title": "综合比较与局限性",
+        "file": "comparison.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "沿编码载体与规模、性能指标口径（每周期逻辑错误率与 Λ 对相干增益与寿命提升）、实时解码与反馈、限制性错误来源比较两条路线；各文指标定义、平台与设置不同，不能据此给出性能排序；材料仅四篇摘要，未统一复现。"
+        ]
+      },
+      {
+        "id": "conclusion",
+        "title": "结论与展望",
+        "file": "conclusion.tex",
+        "targetLengthWords": 350,
+        "keyPoints": [
+          "总结两条路线的关系与各自回答的问题（随规模改善 vs 超过盈亏平衡），保留限制；统一指标下的比较是未来工作而非已完成贡献。"
+        ]
+      }
+    ]
+  },
+  "evidence": [
+    {
+      "id": "E1",
+      "source": {
+        "sourceId": "S501",
+        "title": "Suppressing quantum errors by scaling a surface code logical qubit",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2207.06431"
+      },
+      "claim": "Quantum error correction offers a path to algorithmically-relevant error rates by encoding logical qubits within many physical qubits, where increasing the number of physical qubits enhances protection against physical errors. However, introducing more qubits also increases the number of error sources, so the density of errors must be sufficiently low in order for logical performance to improve with increasing code size.",
+      "quote": "Quantum error correction offers a path to algorithmically-relevant error rates by encoding logical qubits within many physical qubits, where increasing the number of physical qubits enhances protection against physical errors. However, introducing more qubits also increases the number of error sources, so the density of errors must be sufficiently low in order for logical performance to improve with increasing code size.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S501:abstract:e1"
+      }
+    },
+    {
+      "id": "E2",
+      "source": {
+        "sourceId": "S501",
+        "title": "Suppressing quantum errors by scaling a surface code logical qubit",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2207.06431"
+      },
+      "claim": "We find our distance-5 surface code logical qubit modestly outperforms an ensemble of distance-3 logical qubits on average, both in terms of logical error probability over 25 cycles and logical error per cycle ($2.914\\%\\pm 0.016\\%$ compared to $3.028\\%\\pm 0.023\\%$).",
+      "quote": "We find our distance-5 surface code logical qubit modestly outperforms an ensemble of distance-3 logical qubits on average, both in terms of logical error probability over 25 cycles and logical error per cycle ($2.914\\%\\pm 0.016\\%$ compared to $3.028\\%\\pm 0.023\\%$).",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S501:abstract:e2"
+      }
+    },
+    {
+      "id": "E3",
+      "source": {
+        "sourceId": "S501",
+        "title": "Suppressing quantum errors by scaling a surface code logical qubit",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2207.06431"
+      },
+      "claim": "To investigate damaging, low-probability error sources, we run a distance-25 repetition code and observe a $1.7\\times10^{-6}$ logical error per round floor set by a single high-energy event ($1.6\\times10^{-7}$ when excluding this event).",
+      "quote": "To investigate damaging, low-probability error sources, we run a distance-25 repetition code and observe a $1.7\\times10^{-6}$ logical error per round floor set by a single high-energy event ($1.6\\times10^{-7}$ when excluding this event).",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S501:abstract:e3"
+      }
+    },
+    {
+      "id": "E4",
+      "source": {
+        "sourceId": "S501",
+        "title": "Suppressing quantum errors by scaling a surface code logical qubit",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2207.06431"
+      },
+      "claim": "These results mark the first experimental demonstration where quantum error correction begins to improve performance with increasing qubit number, illuminating the path to reaching the logical error rates required for computation.",
+      "quote": "These results mark the first experimental demonstration where quantum error correction begins to improve performance with increasing qubit number, illuminating the path to reaching the logical error rates required for computation.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S501:abstract:e4"
+      }
+    },
+    {
+      "id": "E5",
+      "source": {
+        "sourceId": "S502",
+        "title": "Quantum error correction below the surface code threshold",
+        "year": 2024,
+        "url": "https://arxiv.org/abs/2408.13687"
+      },
+      "claim": "In this work, we present two surface code memories operating below this threshold: a distance-7 code and a distance-5 code integrated with a real-time decoder. The logical error rate of our larger quantum memory is suppressed by a factor of $\\Lambda$ = 2.14 $\\pm$ 0.02 when increasing the code distance by two, culminating in a 101-qubit distance-7 code with 0.143% $\\pm$ 0.003% error per cycle of error correction.",
+      "quote": "In this work, we present two surface code memories operating below this threshold: a distance-7 code and a distance-5 code integrated with a real-time decoder. The logical error rate of our larger quantum memory is suppressed by a factor of $\\Lambda$ = 2.14 $\\pm$ 0.02 when increasing the code distance by two, culminating in a 101-qubit distance-7 code with 0.143% $\\pm$ 0.003% error per cycle of error correction.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S502:abstract:e5"
+      }
+    },
+    {
+      "id": "E6",
+      "source": {
+        "sourceId": "S502",
+        "title": "Quantum error correction below the surface code threshold",
+        "year": 2024,
+        "url": "https://arxiv.org/abs/2408.13687"
+      },
+      "claim": "This logical memory is also beyond break-even, exceeding its best physical qubit's lifetime by a factor of 2.4 $\\pm$ 0.3. We maintain below-threshold performance when decoding in real time, achieving an average decoder latency of 63 $\\mu$s at distance-5 up to a million cycles, with a cycle time of 1.1 $\\mu$s.",
+      "quote": "This logical memory is also beyond break-even, exceeding its best physical qubit's lifetime by a factor of 2.4 $\\pm$ 0.3. We maintain below-threshold performance when decoding in real time, achieving an average decoder latency of 63 $\\mu$s at distance-5 up to a million cycles, with a cycle time of 1.1 $\\mu$s.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S502:abstract:e6"
+      }
+    },
+    {
+      "id": "E7",
+      "source": {
+        "sourceId": "S502",
+        "title": "Quantum error correction below the surface code threshold",
+        "year": 2024,
+        "url": "https://arxiv.org/abs/2408.13687"
+      },
+      "claim": "To probe the limits of our error-correction performance, we run repetition codes up to distance-29 and find that logical performance is limited by rare correlated error events occurring approximately once every hour, or 3 $\\times$ 10$^9$ cycles. Our results present device performance that, if scaled, could realize the operational requirements of large scale fault-tolerant quantum algorithms.",
+      "quote": "To probe the limits of our error-correction performance, we run repetition codes up to distance-29 and find that logical performance is limited by rare correlated error events occurring approximately once every hour, or 3 $\\times$ 10$^9$ cycles. Our results present device performance that, if scaled, could realize the operational requirements of large scale fault-tolerant quantum algorithms.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S502:abstract:e7"
+      }
+    },
+    {
+      "id": "E8",
+      "source": {
+        "sourceId": "S503",
+        "title": "Real-time quantum error correction beyond break-even",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2211.09116"
+      },
+      "claim": "Previous experimental attempts to engineer such a process faced an excessive generation of errors that overwhelmed the error-correcting capability of the process itself. Whether it is practically possible to utilize QEC for extending quantum coherence thus remains an open question. We answer it by demonstrating a fully stabilized and error-corrected logical qubit whose quantum coherence is significantly longer than that of all the imperfect quantum components involved in the QEC process, beating the best of them with a coherence gain of $G = 2.27 \\pm 0.07$. We achieve this performance by combining innovations in several domains including the fabrication of superconducting quantum circuits and model-free reinforcement learning.",
+      "quote": "Previous experimental attempts to engineer such a process faced an excessive generation of errors that overwhelmed the error-correcting capability of the process itself. Whether it is practically possible to utilize QEC for extending quantum coherence thus remains an open question. We answer it by demonstrating a fully stabilized and error-corrected logical qubit whose quantum coherence is significantly longer than that of all the imperfect quantum components involved in the QEC process, beating the best of them with a coherence gain of $G = 2.27 \\pm 0.07$. We achieve this performance by combining innovations in several domains including the fabrication of superconducting quantum circuits and model-free reinforcement learning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S503:abstract:e8"
+      }
+    },
+    {
+      "id": "E9",
+      "source": {
+        "sourceId": "S504",
+        "title": "Beating the break-even point with a discrete-variable-encoded logical qubit",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2211.09319"
+      },
+      "claim": "In most QEC codes, a logical qubit is encoded in some discrete variables, e.g., photon numbers. Such encoding schemes make the codewords orthogonal, so that the encoded quantum information can be unambiguously extracted after processing. Based on such discrete-variable encodings, repetitive QEC demonstrations have been reported on various platforms, but there the lifetime of the encoded logical qubit is still shorter than that of the best available physical qubit in the entire system, which represents a break-even point that needs to be surpassed for any QEC code to be of practical use.",
+      "quote": "In most QEC codes, a logical qubit is encoded in some discrete variables, e.g., photon numbers. Such encoding schemes make the codewords orthogonal, so that the encoded quantum information can be unambiguously extracted after processing. Based on such discrete-variable encodings, repetitive QEC demonstrations have been reported on various platforms, but there the lifetime of the encoded logical qubit is still shorter than that of the best available physical qubit in the entire system, which represents a break-even point that needs to be surpassed for any QEC code to be of practical use.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S504:abstract:e9"
+      }
+    },
+    {
+      "id": "E10",
+      "source": {
+        "sourceId": "S504",
+        "title": "Beating the break-even point with a discrete-variable-encoded logical qubit",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2211.09319"
+      },
+      "claim": "Here we demonstrate a QEC procedure with a logical qubit encoded in photon-number states of a microwave cavity, dispersively coupled to an ancilla superconducting qubit. By applying a pulse featuring a tailored frequency comb to the ancilla, we can repetitively extract the error syndrome with high fidelity and perform error correction with feedback control accordingly, thereby exceeding the break-even point by about 16% lifetime enhancement.",
+      "quote": "Here we demonstrate a QEC procedure with a logical qubit encoded in photon-number states of a microwave cavity, dispersively coupled to an ancilla superconducting qubit. By applying a pulse featuring a tailored frequency comb to the ancilla, we can repetitively extract the error syndrome with high fidelity and perform error correction with feedback control accordingly, thereby exceeding the break-even point by about 16% lifetime enhancement.",
+      "verificationStatus": "verified",
+      "verificationMethod": "public arXiv abstract page exact quote (fetched 2026-10-12); manually scoped fixture, not production judge",
+      "verificationLevel": "abstract",
+      "supportStrength": "direct",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S504:abstract:e10"
+      }
+    },
+    {
+      "id": "E11",
+      "source": {
+        "sourceId": "S502",
+        "title": "Quantum error correction below the surface code threshold",
+        "year": 2024,
+        "url": "https://arxiv.org/abs/2408.13687"
+      },
+      "claim": "表面码实验已经达到大规模容错量子算法所需的逻辑错误率。",
+      "quote": "To probe the limits of our error-correction performance, we run repetition codes up to distance-29 and find that logical performance is limited by rare correlated error events occurring approximately once every hour, or 3 $\\times$ 10$^9$ cycles. Our results present device performance that, if scaled, could realize the operational requirements of large scale fault-tolerant quantum algorithms.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote says the device performance, if scaled, could realize the operational requirements; it does not claim the requirements have been reached",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S502:abstract:e7"
+      }
+    },
+    {
+      "id": "E12",
+      "source": {
+        "sourceId": "S503",
+        "title": "Real-time quantum error correction beyond break-even",
+        "year": 2022,
+        "url": "https://arxiv.org/abs/2211.09116"
+      },
+      "claim": "相干增益 G = 2.27 与表面码的 2.4 倍寿命提升是同一指标，可直接比较两条路线的纠错效果。",
+      "quote": "Whether it is practically possible to utilize QEC for extending quantum coherence thus remains an open question. We answer it by demonstrating a fully stabilized and error-corrected logical qubit whose quantum coherence is significantly longer than that of all the imperfect quantum components involved in the QEC process, beating the best of them with a coherence gain of $G = 2.27 \\pm 0.07$. We achieve this performance by combining innovations in several domains including the fabrication of superconducting quantum circuits and model-free reinforcement learning.",
+      "verificationStatus": "verified",
+      "verificationMethod": "negative control: quote defines the coherence gain relative to the best imperfect component of that experiment only; nothing in the quotes establishes metric equivalence or cross-platform comparability",
+      "verificationLevel": "abstract",
+      "supportStrength": "partial",
+      "location": {
+        "section": "Abstract",
+        "chunk": "S503:abstract:e8"
+      }
+    }
+  ],
+  "bibliography": [
+    {
+      "key": "acharya2022surface",
+      "sourceId": "S501",
+      "title": "Suppressing quantum errors by scaling a surface code logical qubit",
+      "year": 2022,
+      "url": "https://arxiv.org/abs/2207.06431"
+    },
+    {
+      "key": "acharya2024threshold",
+      "sourceId": "S502",
+      "title": "Quantum error correction below the surface code threshold",
+      "year": 2024,
+      "url": "https://arxiv.org/abs/2408.13687"
+    },
+    {
+      "key": "sivak2022breakeven",
+      "sourceId": "S503",
+      "title": "Real-time quantum error correction beyond break-even",
+      "year": 2022,
+      "url": "https://arxiv.org/abs/2211.09116"
+    },
+    {
+      "key": "ni2022discrete",
+      "sourceId": "S504",
+      "title": "Beating the break-even point with a discrete-variable-encoded logical qubit",
+      "year": 2022,
+      "url": "https://arxiv.org/abs/2211.09319"
+    }
+  ],
+  "mode": "ordinary",
+  "instructions": "只输出本节 LaTeX 正文，约350中文字（允许合理浮动），不重复节标题；各节共同构成中文综述。仅使用给定来源和 Evidence，不查外部资料。保留必要学术内容及限制；无本文实验结果，不编造公式、数值、性能排序；不要报告内部流程。",
+  "fixtureStatus": "HELD-OUT for M13.7.9: topic, sources and outline never used by M13.7.2–M13.7.8; zero prior occurrence of these papers in the repository; different field (experimental quantum physics) and a numerically dense argument structure",
+  "argumentUnitsV2": {
+    "version": 3,
+    "label": "B2",
+    "basedOn": "M13.7.9 B2 protocol (same evidence partition / upper-bound lengths / lengthPolicy design as M13.7.8 Arm B; behavioural cross-section policy; synthesis-style compare task)",
+    "lengthInstructionReplace": {
+      "from": "约350中文字（允许合理浮动），",
+      "to": "长度以下方「目标长度」为上限参考，"
+    },
+    "lengthPolicy": "目标长度是上限参考，不是必须填满的配额：当本节分配到的材料不足以支撑目标长度时，宁可写短，也不为凑字重述已有内容、重复限制声明或补写引文之外的细节。",
+    "crossSectionPolicy": "跨章节分工只约束本节写什么、不写什么，分工本身不进入正文：不写「见某节」「将在某节展开」「已在前文说明」这类指向其他章节的句子，不在节首或节尾预告、回顾论文结构；需要承接时直接点出对象或差异，用半句自然过渡即可。",
+    "roleLabels": {
+      "framing": "framing（界定问题与范围、点名路线及代表工作；不展开机制、不转述数值、不预告各节内容）",
+      "develop": "develop（本节是指定概念的唯一完整展开位置；涉及其他路线时至多半句点出差异）",
+      "compare": "compare（综合与对照：回答关键差异、比较维度、现有证据支持什么、哪些结果不可直接横向比较、还不能判断什么；不是第二遍方法描述）",
+      "conclude": "conclude（综合回答综述问题，一句承接限制，不逐条复述、不写结构性回指）"
+    },
+    "sections": {
+      "introduction": {
+        "role": "framing",
+        "targetLengthWords": 180,
+        "evidenceIds": [],
+        "task": "界定问题与范围：量子纠错把逻辑量子比特编码进更多物理资源以压低逻辑错误；本综述只整理四篇超导平台实验文献的关系，没有本文实验。点名两条路线——表面码逻辑量子比特随码距扩展的实验（Acharya 等两项工作）与以单个逻辑量子比特突破盈亏平衡为目标的实验（Sivak 等、Ni 等）。不解释任何机制细节，不转述任何数值，不预告各节内容。",
+        "doNotExplain": [
+          {
+            "concept": "表面码随码距扩展的前提与距离 3 / 5 / 7 码、重复码的具体结果（含全部数值）",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "实时解码延迟、周期时间与罕见关联错误事件的数值",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "相干增益 G=2.27 实验的部件与方法（超导电路制备、无模型强化学习）",
+            "ownerSectionId": "breakeven"
+          },
+          {
+            "concept": "微波腔光子数态编码、辅助比特、频率梳脉冲与 16% 寿命提升",
+            "ownerSectionId": "breakeven"
+          }
+        ]
+      },
+      "surface": {
+        "role": "develop",
+        "targetLengthWords": 400,
+        "evidenceIds": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ],
+        "task": "这是全文唯一完整解释表面码扩展实验的位置：按引文说明扩展前提（更多物理比特增强保护但也增加错误源，错误密度须足够低才能随码距改善）；距离 5 码略优于距离 3 码集合（25 个周期的逻辑错误概率与每周期逻辑错误 2.914%±0.016% 对 3.028%±0.023%）；距离 25 重复码观测到由单个高能事件设定的 1.7×10^-6 每轮逻辑错误下限（排除该事件为 1.6×10^-7）；这是首次纠错随比特数增加开始改善的实验演示。阈值以下工作：距离 7 码与带实时解码器的距离 5 码；码距加二时逻辑错误率被压低 Λ=2.14±0.02 倍；101 比特距离 7 码每周期 0.143%±0.003%；超过最佳物理比特寿命 2.4±0.3 倍；实时解码平均延迟 63 µs（距离 5，至一百万周期），周期 1.1 µs；距离至 29 的重复码受约每小时一次、即 3×10^9 周期一次的罕见关联错误事件限制；作者表述为若规模化则可能满足大规模容错算法的运行要求，不是已达到。全部数值只按引文范围转述。涉及盈亏平衡路线时，至多用半句点出差异，不展开、不预告。",
+        "doNotExplain": [
+          {
+            "concept": "相干增益 G=2.27 实验的部件与方法（超导电路制备、无模型强化学习）",
+            "ownerSectionId": "breakeven"
+          },
+          {
+            "concept": "微波腔光子数态编码、辅助比特、频率梳脉冲与 16% 寿命提升",
+            "ownerSectionId": "breakeven"
+          }
+        ]
+      },
+      "breakeven": {
+        "role": "develop",
+        "targetLengthWords": 400,
+        "evidenceIds": [
+          "E8",
+          "E9",
+          "E10"
+        ],
+        "task": "这是全文唯一完整解释盈亏平衡路线实验的位置：按引文说明以往实验尝试因纠错过程自身产生过多错误而失败、纠错能否实际延长量子相干曾是开放问题；Sivak 等演示完全稳定且被纠错的逻辑量子比特，其相干显著长于参与纠错的所有不完美部件，相干增益 G=2.27±0.07，依靠超导量子电路制备与无模型强化学习等多领域创新。Ni 等指出多数纠错码把逻辑比特编码在离散变量（如光子数）上使码字正交、信息可无歧义提取，以往各平台的重复纠错演示中逻辑比特寿命仍短于系统最佳物理比特，即盈亏平衡点；其实验把逻辑比特编码在微波腔光子数态中、与辅助超导比特色散耦合，用带定制频率梳的脉冲作用于辅助比特以高保真重复提取错误症状并反馈纠错，寿命提升约 16%、超过盈亏平衡点。全部数值只按引文范围转述。涉及表面码路线时，至多用半句点出差异，不展开、不预告。",
+        "doNotExplain": [
+          {
+            "concept": "表面码随码距扩展的前提与距离 3 / 5 / 7 码、重复码的具体结果（含全部数值）",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "实时解码延迟、周期时间与罕见关联错误事件的数值",
+            "ownerSectionId": "surface"
+          }
+        ]
+      },
+      "comparison": {
+        "role": "compare",
+        "targetLengthWords": 320,
+        "evidenceIds": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7",
+          "E8",
+          "E9",
+          "E10",
+          "E11",
+          "E12"
+        ],
+        "task": "本节是综合与对照，不是第二遍方法描述。依次回答：两条路线的关键差异是什么——沿「编码载体与规模」「性能指标口径（每周期逻辑错误率与 Λ 对相干增益与寿命提升百分比）」「实时解码与反馈」「限制性错误来源」四个维度，每个维度落到一个对照结论，机制与数值只以半句提醒的方式出现，不复制前两节的句子；现有摘要证据能支持哪些结论；哪些结果不可直接横向比较（指标定义、平台与设置不同、未统一复现，不能给出性能排序）；目前证据还不能判断什么（E11「表面码已达到大规模容错所需错误率」、E12「G=2.27 与 2.4 倍寿命提升是同一指标可直接比较」不在引文覆盖范围内，不得写成事实）。这是全文唯一集中陈述材料仅四篇摘要、无本文实验等限制的位置。",
+        "doNotExplain": [
+          {
+            "concept": "表面码随码距扩展的前提与距离 3 / 5 / 7 码、重复码的具体结果（含全部数值）",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "实时解码延迟、周期时间与罕见关联错误事件的数值",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "相干增益 G=2.27 实验的部件与方法（超导电路制备、无模型强化学习）",
+            "ownerSectionId": "breakeven"
+          },
+          {
+            "concept": "微波腔光子数态编码、辅助比特、频率梳脉冲与 16% 寿命提升",
+            "ownerSectionId": "breakeven"
+          }
+        ]
+      },
+      "conclusion": {
+        "role": "conclude",
+        "targetLengthWords": 160,
+        "evidenceIds": [],
+        "task": "回答综述问题：两条路线各自回答了什么（随规模改善 vs 超过盈亏平衡）以及它们的关系（只归纳前文已写内容，不新增引文之外的机制细节，不重复数值）；用一句话承接前文已集中说明的限制，不再逐条复述；统一指标下的比较只作为未来计划。不写指向其他章节的句子。",
+        "doNotExplain": [
+          {
+            "concept": "表面码随码距扩展的前提与距离 3 / 5 / 7 码、重复码的具体结果（含全部数值）",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "实时解码延迟、周期时间与罕见关联错误事件的数值",
+            "ownerSectionId": "surface"
+          },
+          {
+            "concept": "相干增益 G=2.27 实验的部件与方法（超导电路制备、无模型强化学习）",
+            "ownerSectionId": "breakeven"
+          },
+          {
+            "concept": "微波腔光子数态编码、辅助比特、频率梳脉冲与 16% 寿命提升",
+            "ownerSectionId": "breakeven"
+          }
+        ]
+      }
+    }
+  }
+}
