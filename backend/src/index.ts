@@ -256,6 +256,7 @@ export async function startBackend(): Promise<void> {
     agentIds: config.agents,
     stageTimeoutMs: config.workflow.stageTimeoutMs,
     stageMaxAttempts: config.workflow.stageMaxAttempts,
+    writing: { argumentUnits: config.workflow.argumentUnitWriting },
     longRunTimeoutMs: config.pi.longRunTimeoutMs,
     review: {
       maxRevisionRounds: config.review.maxRevisionRounds,

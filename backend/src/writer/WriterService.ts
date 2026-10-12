@@ -46,6 +46,13 @@ import {
   renderSectionLiteratureLines,
   renderSectionSynthesisLines,
 } from "../survey/sectionContext.js";
+import {
+  parseOutlineArgument,
+  renderArgumentUnitLines,
+  renderBibliographyIdentityLines,
+  renderTargetLengthLine,
+  type ResolvedArgumentUnit,
+} from "./argumentUnit.js";
 
 export interface WriterServiceOptions {
   runtime: AgentRuntime;
@@ -354,6 +361,7 @@ export class WriterService {
       lastOutput = task.output ?? "";
       try {
         const parsed = extractJsonObject(lastOutput, "大纲结果");
+        const argumentDropped: string[] = [];
         const outline: Outline = {
           title:
             typeof parsed["title"] === "string" && parsed["title"].trim() !== ""
@@ -362,8 +370,19 @@ export class WriterService {
           ...(typeof parsed["abstract"] === "string" && parsed["abstract"].trim() !== ""
             ? { abstract: parsed["abstract"].trim() }
             : {}),
-          sections: readOutlineSections(parsed, { surveyRefs: survey }),
+          sections: readOutlineSections(parsed, {
+            surveyRefs: survey,
+            onArgumentDropped: (sectionId, dropped) => {
+              for (const reason of dropped) argumentDropped.push(`${sectionId}: ${reason}`);
+            },
+          }),
         };
+        if (argumentDropped.length > 0) {
+          // M13.7.10：可选论证单元字段无效 → 诊断 + 降级（不是结构化违约，不进修复循环）
+          this.log(
+            `[writer] projectId=${params.projectId} 大纲 argument 可选字段部分无效（已丢弃 ${argumentDropped.length} 项，按位置 / 标题推断）：${argumentDropped.join("；").slice(0, 400)}`,
+          );
+        }
         const violations = validateOutline(outline);
         if (violations.length > 0) {
           throw new InvalidLatexOutputError(`大纲未通过校验：${violations.join("；")}`);
@@ -422,7 +441,14 @@ export class WriterService {
      * 授权数据」，正文不得出现具体实验指标数值。
      */
     experimentContext?: ConfirmedExperimentWorkflowContext;
-  }): Promise<{ latex: string; taskId: string }> {
+    /**
+     * M13.7.10：本节论证单元（role / task / doNotExplain / 长度上限）。存在 =
+     * 启用 B2 写作组织（任务块 + 上限长度口径）；undefined = 旧 prompt 逐字节不变。
+     */
+    argument?: ResolvedArgumentUnit;
+    /** M13.7.10：compare 节的 partial 证据待核验命题（任务块「还不能判断什么」） */
+    argumentPartialClaims?: string[];
+  }): Promise<{ latex: string; taskId: string; usage?: AgentTask["usage"] }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
       ...this.timeoutOverride,
@@ -434,6 +460,8 @@ export class WriterService {
               bibliography: params.bibliography,
               ...(params.language !== undefined ? { language: params.language } : {}),
               survey: params.survey,
+              ...(params.argument !== undefined ? { argument: params.argument } : {}),
+              ...(params.argumentPartialClaims !== undefined ? { argumentPartialClaims: params.argumentPartialClaims } : {}),
             })
           : buildSectionPrompt(params),
       projectId: params.projectId,
@@ -479,7 +507,7 @@ export class WriterService {
         );
       }
     }
-    return { latex, taskId: task.taskId };
+    return { latex, taskId: task.taskId, ...(task.usage !== undefined ? { usage: task.usage } : {}) };
   }
 
   // ---- 修订 ----
@@ -1731,7 +1759,7 @@ export function stripRevisionExecutionNotes(latex: string): { latex: string; rem
 /** 解析大纲 sections 数组（防御性）；surveyRefs=true 时解析 M11.1.3 refs 字段 */
 function readOutlineSections(
   parsed: Record<string, unknown>,
-  options: { surveyRefs?: boolean } = {},
+  options: { surveyRefs?: boolean; onArgumentDropped?: (sectionId: string, dropped: string[]) => void } = {},
 ): OutlineSection[] {
   const value = parsed["sections"];
   if (!Array.isArray(value)) {
@@ -1761,6 +1789,11 @@ function readOutlineSections(
     }
     const synthesisRefs = options.surveyRefs ? parseRefList(record["synthesisRefs"]) : undefined;
     const literatureRefs = options.surveyRefs ? parseRefList(record["literatureRefs"]) : undefined;
+    // M13.7.10：可选论证单元字段（宽容解析：非法部分丢弃并诊断，不阻断大纲）
+    const argumentParse = parseOutlineArgument(record["argument"], { allowEvidenceIds: !options.surveyRefs });
+    if (argumentParse.dropped.length > 0) {
+      options.onArgumentDropped?.(String(record["id"]), argumentParse.dropped);
+    }
     sections.push({
       id: record["id"].trim().toLowerCase().replaceAll(/[^a-z0-9-]/g, "-").slice(0, 40),
       file: record["file"].trim().toLowerCase(),
@@ -1778,6 +1811,7 @@ function readOutlineSections(
         : {}),
       ...(synthesisRefs !== undefined ? { synthesisRefs } : {}),
       ...(literatureRefs !== undefined ? { literatureRefs } : {}),
+      ...(argumentParse.argument !== undefined ? { argument: argumentParse.argument } : {}),
     });
   }
   return sections;
@@ -1829,7 +1863,8 @@ export function buildOutlinePrompt(params: {
     "只输出一个 JSON 对象（不要 Markdown 围栏），字段：",
     '{"title": "论文标题", "abstract": "摘要（100-200 字）",',
     ' "sections": [{"id": "introduction", "file": "introduction.tex", "title": "引言",',
-    '   "targetLengthWords": 400, "keyPoints": ["要点 1"]}],',
+    '   "targetLengthWords": 400, "keyPoints": ["要点 1"],',
+    '   "argument": {"role": "framing", "evidenceIds": ["E001"]}}],',
     ' "references": []}',
     "",
     ...targetLanguageLines(params.language),
@@ -1837,6 +1872,7 @@ export function buildOutlinePrompt(params: {
     "要求：",
     "1. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
+    "2a. argument 为可选字段：role 取 framing（引言 / 背景：界定范围，不展开机制）/ develop（方法、技术路线、实验等完整展开的正文）/ compare（比较、讨论、局限：综合对照与限制集中陈述）/ conclude（结论、展望）之一；evidenceIds 只能逐字复制下方 Evidence 行首方括号内的编号（本节应完整展开的证据），不得自造；拿不准就省略该字段，由系统按标题与位置推断。",
     "3. 引用纪律（可引用的参考文献 key 按 verified evidence 支撑分组；正文写作时事实性论断必须取 A 组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     ...MANUSCRIPT_CONTENT_LINES,
@@ -1884,7 +1920,8 @@ export function buildSurveyOutlinePrompt(params: {
     ' "sections": [{"id": "introduction", "file": "introduction.tex", "title": "引言",',
     '   "targetLengthWords": 400, "keyPoints": ["要点"],',
     '   "synthesisRefs": ["SYN-…（逐字复制下方综合产物 digest 中的标识）"],',
-    '   "literatureRefs": ["M-S…（逐字复制下方文献清单中的标识）"]}],',
+    '   "literatureRefs": ["M-S…（逐字复制下方文献清单中的标识）"],',
+    '   "argument": {"role": "framing"}}],',
     ' "references": []}',
     "",
     ...targetLanguageLines(params.language),
@@ -1899,6 +1936,7 @@ export function buildSurveyOutlinePrompt(params: {
     "7. speculative 的 synthesis（含推断型 future_direction）只能进入明确的展望 / 未来方向章节；taxonomy / trend / comparison / consensus 等既定结论章节只消费 evidence_backed 或 literature_cited。",
     "8. 文献分布不均衡时在 keyPoints 说明结构依据（如「X 族占多数，拆两个小节」），不强行让章节平均分配文献。",
     "9. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
+    "10. argument 为可选字段：role 取 framing（引言 / 背景：界定范围与路线，不展开机制）/ develop（方法族 / 技术路线的完整展开）/ compare（comparison / consensus / disagreement / 局限：综合对照与限制集中陈述）/ conclude（结论、展望）之一；拿不准就省略，由系统按标题、位置与 synthesis 类型推断。不要输出 evidenceIds（综述证据由 synthesisRefs 投影）。",
     ...(params.feedback ? ["", "用户对上一版大纲的修改意见（必须落实；不得因此违反上述纪律）：", params.feedback] : []),
     "",
     `目标类型：survey（综述）${params.documentType !== undefined ? `（项目登记：${params.documentType}）` : ""}；目标档次：${params.targetProfile ?? "（未填写）"}`,
@@ -1983,7 +2021,21 @@ export function buildSectionPrompt(params: {
   language?: ManuscriptLanguage;
   extraInstructions?: string;
   experimentContext?: ConfirmedExperimentWorkflowContext;
+  /** M13.7.10：论证单元（存在 = 任务块 + 上限长度口径；undefined = 旧 prompt 逐字节不变） */
+  argument?: ResolvedArgumentUnit;
+  argumentPartialClaims?: string[];
 }): string {
+  const argumentLines =
+    params.argument !== undefined
+      ? [
+          "",
+          ...renderArgumentUnitLines(params.argument, {
+            evidenceCount: params.evidence.length,
+            ...(params.argumentPartialClaims !== undefined ? { partialClaims: params.argumentPartialClaims } : {}),
+          }),
+          ...renderBibliographyIdentityLines(params.argument, params.bibliography),
+        ]
+      : [];
   return [
     `你是一名学术论文写手（Writer）。请撰写论文章节「${params.section.title}」。`,
     "",
@@ -2009,10 +2061,11 @@ export function buildSectionPrompt(params: {
     "",
     `===== 本章节要求 =====`,
     `章节：${params.section.title}（${params.section.file}）`,
-    `目标长度：约 ${params.section.targetLengthWords ?? 400} 字`,
+    renderTargetLengthLine(params.section, params.argument, 400),
     ...(params.section.keyPoints?.length
       ? ["要点：", ...params.section.keyPoints.map((point) => `- ${point}`)]
       : []),
+    ...argumentLines,
     "",
     "===== Verified Evidence Context（已核验 verified 证据，引用第一优先来源）=====",
     ...renderEvidenceLines(params.evidence, params.bibliography, 20),
@@ -2033,11 +2086,29 @@ export function buildSurveySectionPrompt(params: {
   bibliography: BibliographyEntryInput[];
   language?: ManuscriptLanguage;
   survey: SurveySectionWritingContext;
+  /** M13.7.10：论证单元（存在 = 任务块 + 上限长度口径；证据投影与白名单不变） */
+  argument?: ResolvedArgumentUnit;
+  argumentPartialClaims?: string[];
 }): string {
   const context = params.survey;
   const evidenceLines = renderEvidenceLines(context.evidence, params.bibliography, 24);
   const allowed = context.allowedCitationKeys;
   const unbacked = allowed.filter((key) => !context.evidenceBackedKeys.includes(key));
+  const argumentLines =
+    params.argument !== undefined
+      ? [
+          "",
+          ...renderArgumentUnitLines(params.argument, {
+            // Survey 的证据来自 refs 投影，不按 role 收窄：不触发 develop 短写提示
+            ...(params.argumentPartialClaims !== undefined ? { partialClaims: params.argumentPartialClaims } : {}),
+          }),
+          // 白名单内 key 的身份（framing / conclude 只看得到 key 时的记忆补写防线）
+          ...renderBibliographyIdentityLines(
+            params.argument,
+            params.bibliography.filter((entry) => context.allowedCitationKeys.includes(entry.key)),
+          ),
+        ]
+      : [];
   const contextLabel =
     context.sectionContext === "framing"
       ? "框架章节（引言 / 结论 / 背景：只写背景与组织性内容）"
@@ -2076,13 +2147,14 @@ export function buildSurveySectionPrompt(params: {
     "",
     "===== 本章节要求 =====",
     `章节：${params.section.title}（${params.section.file}）｜${contextLabel}`,
-    `目标长度：约 ${params.section.targetLengthWords ?? 500} 字`,
+    renderTargetLengthLine(params.section, params.argument, 500),
     ...(context.keyPoints.length > 0
       ? ["要点：", ...context.keyPoints.map((point) => `- ${point}`)]
       : []),
     ...(context.warnings.length > 0
       ? ["上下文提示（如实处理，不得掩盖）：", ...context.warnings.map((warning) => `- ${warning}`)]
       : []),
+    ...argumentLines,
     "",
     "===== 综合产物（本节消费的 Structured Synthesis；章节内容的事实来源）=====",
     ...renderSectionSynthesisLines(context),

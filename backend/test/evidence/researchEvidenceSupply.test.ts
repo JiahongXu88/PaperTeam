@@ -132,9 +132,11 @@ describe("research supply with real stores, lexical retrieval and grounding; con
     expect(run["stageResults"]["evidence.ground"]["researchSupply"]["promoted"]).toBe(1);
     expect(run["stageResults"]["evidence.ground"]["researchSupply"]["formalEvidence"]).toBe(1);
     expect(createIdeaToPaperDefinition(stack.stack.workflowServices).kind).toBe("idea_to_paper");
+    // M13.7.10：Writer 逐节只拿本节分配到的正式 Evidence（引言 / 结论为空），所以要等整个
+    // writing.sections 完成后再断言「证据到达了某个章节的 Writer prompt」，不能只看第一节。
     for (let i = 0; i < 500; i++) {
       run = (await stack.request("GET", `/api/runs/${runId}`)).body["run"] as Record<string, any>;
-      if (scripted.tasks.some((task) => task.contextScope?.startsWith("writing/sections"))) break;
+      if (run["stageResults"]?.["writing.sections"] !== undefined) break;
       if (run["status"] === "awaiting_input") await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "approve" });
       if (["failed", "completed"].includes(run["status"])) break;
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -142,6 +144,8 @@ describe("research supply with real stores, lexical retrieval and grounding; con
     const writerTasks = scripted.tasks.filter((task) => task.contextScope?.startsWith("writing/sections"));
     expect(writerTasks.length).toBeGreaterThan(0);
     expect(writerTasks.some((task) => task.task.includes(claim))).toBe(true);
+    // 引言（framing）不注入正式 Evidence：证据落在正文章节的 prompt 里
+    expect(writerTasks.find((task) => task.task.includes("introduction.tex"))?.task.includes(claim)).toBe(false);
     expect(run["stageResults"]["hitl.evidence_supply"]).toBeUndefined();
     await stack.request("POST", `/api/runs/${runId}/cancel`, {});
   });

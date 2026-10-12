@@ -78,6 +78,7 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [M13_7_7_CROSS_SECTION_ROOT_CAUSE_AND_REDESIGN.md](M13_7_7_CROSS_SECTION_ROOT_CAUSE_AND_REDESIGN.md) — 两轮跨章节失败的源码级根因（相同证据 × 固定长度 × 仅引文事实）、同 Harness 下 GLM-5.3 / Fable 对照、论证单元输入组织最小原型与定向压缩原型的真实 A/B、确定性复述探测器；PARTIAL，生产写作路径未改。
 - [M13_7_8_ARGUMENT_UNIT_HELDOUT_VALIDATION.md](M13_7_8_ARGUMENT_UNIT_HELDOUT_VALIDATION.md) — 论证单元方案的 held-out 验证（新主题 SimCLR/MoCo/BYOL/SimSiam，A/B/C/D 四臂 20 任务）：完整方案未过 −30% 复述门（路标模板句 + 比较节逐字回引），但唯一保全全部必要事实且费用 −25%；仅分证据转为免责重复、仅改长度删光数值；探测器 `\%` 缺陷修复；PARTIAL，不进生产。
 - [M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md](M13_7_9_ACADEMIC_REDUNDANCY_AND_ARGUMENT_UNIT_REFINEMENT.md) — 有害学术重复评价层（M/L/P/S/X/E/F/uncertain，指标 A 词面 + 指标 B 有害并列，开发集六臂与人工分类一致）、B2 任务块最小修订（去路标措辞、行为约束、综合式比较）、两个全新 held-out（LLM 偏好对齐 / 超导量子纠错）A vs B2 + H3-only 共 30 任务：有害重复 14.3%→1.6%、9.8%→0.0%，必保事实全保，路标与逐字回述归零，费用 −18.5%/−22.9%；任务块单独不去重；**PASS — Ready for Production Integration**（仅集成设计，生产 Workflow 未改）。
+- [M13_7_10_ARGUMENT_UNIT_PRODUCTION_INTEGRATION.md](M13_7_10_ARGUMENT_UNIT_PRODUCTION_INTEGRATION.md) — B2 论证单元写作的生产集成：Outline 可选 `argument` 字段 + 确定性角色 / 任务 / 负向范围派生、普通论文逐节正式 Evidence 分配（覆盖兜底 / partial 只进 compare / pinned 只认 canonical ID）、Survey 契约零改动只加任务块、writing-plan / academic-redundancy 只读产物、style 模式只读 digest；两次真实 GLM-5.3 Planner + `writing.sections`：角色全部合法、17 项必保事实全保、负对照显式拒绝、引用零越界、XeLaTeX 编译通过，有害重复 9.8%→7.0%/8.6%（不等价 Baseline）；framing 平台幻觉修复、多 conclude 结构残余；默认启用（可关），**PARTIAL**。
 - [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
 ## Runtime / 架构审计

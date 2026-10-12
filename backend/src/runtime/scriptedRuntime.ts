@@ -826,13 +826,24 @@ function parseReviewSequence(raw: string): ReviewOutcomeName[] | undefined {
 
 /** 当前写作调用是否作用于 introduction（脚本只破坏引言：halt-on-error 一次定位一个文件） */
 function targetsIntroduction(task: string): boolean {
-  // writing/sections 与 writing/repair 的 prompt 携带 introduction.tex；writing/revision 携带「引言」
-  return task.includes("introduction.tex") || task.includes("「引言」");
+  // writing/sections 与 writing/repair 的 prompt 携带 introduction.tex；writing/revision 携带「引言」。
+  // M13.7.10：只认 prompt 的任务头（撰写 / 修订 / 润色「X」或「章节：X（」），不认正文里出现的章节名——
+  // 论证单元任务块会在其他章节的 prompt 里点名「实验」「引言」等 owner 章节标题。
+  return task.includes("introduction.tex") || targetsSectionTitle(task, "引言");
+}
+
+function targetsSectionTitle(task: string, title: string): boolean {
+  return (
+    task.includes(`论文章节「${title}」`) ||
+    task.includes(`综述章节「${title}」`) ||
+    task.includes(`章节：${title}（`) ||
+    task.includes(`章节文件「${title}`)
+  );
 }
 
 /** 当前写作调用是否作用于 experiments（[cite:drop]：只让实验章节多带一条独有引用） */
 function targetsExperiments(task: string): boolean {
-  return task.includes("experiments.tex") || task.includes("「实验」");
+  return task.includes("experiments.tex") || targetsSectionTitle(task, "实验");
 }
 
 export interface ScriptedRuntime {

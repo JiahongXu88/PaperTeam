@@ -115,6 +115,17 @@ describe("analyzeCrossSectionRedundancy", () => {
     expect(isLimitationSentence(sentences.find((s) => s.includes("性能排序")) ?? "")).toBe(true);
   });
 
+  it("M13.7.10 盲区①回归：否定词与谓语之间的插入成分（据此 / 直接 / 由此）不再漏判为非限制句", () => {
+    // M13.7.9 对齐主题 B2 结论的真实句子：按旧哨兵不是限制句，于是被当作「结论逐字搬运 compare」记有害
+    expect(isLimitationSentence("四篇文献的结果来自不同的模型、任务与评测设置，不能据此给出总体性能排序；")).toBe(true);
+    expect(isLimitationSentence("相干增益与寿命提升并非同一口径的指标，不能直接比较。")).toBe(true);
+    expect(isLimitationSentence("各文结果来自不同模型、任务与评测设置，尚不能据此判定哪条路线整体更优。")).toBe(true);
+    expect(isLimitationSentence("现有摘要不足以由此断言无负样本方法普遍优于对比方法。")).toBe(true);
+    // 不是限制句的否定句 / 机制句不命中
+    expect(isLimitationSentence("该编码使码字正交，从而编码的量子信息可无歧义地提取。")).toBe(false);
+    expect(isLimitationSentence("停止梯度操作不改变前向传播的输出。")).toBe(false);
+  });
+
   it("M13.7.9 限制句哨兵补充：不涉及本文实验 / 不作横向排序 / 作者自述 / 仅为四篇摘要 命中；机制句与数值句不命中", () => {
     expect(isLimitationSentence("本节论述同样基于两篇文献摘要中的作者自述结论，不涉及本文自己的实验。")).toBe(true);
     expect(isLimitationSentence("上述数值均为原文献在其各自设置下的报告结果，本文未进行新实验，故不作横向性能排序。")).toBe(true);

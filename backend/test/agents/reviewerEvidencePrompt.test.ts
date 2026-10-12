@@ -63,3 +63,18 @@ describe("buildReviewPrompt M6.6：Evidence-aware Reviewer", () => {
     }
   });
 });
+
+describe("buildReviewPrompt M13.7.10：跨章节学术重复只读 digest", () => {
+  const digest = "修订 rev-2：词面复述占比 20.0%；有害重复占比下界 1.6%（1 句）/ 上界 3.9%（含 1 句 uncertain）。" + String.fromCharCode(10) + "- [E] conclusion：「四篇文献的结果…」——结论逐字搬运 comparison 的句子";
+  it("只注入 style 模式；fact / academic 逐字节不变；未传时 style 也不变", () => {
+    const base = { projectId: "p-abc", manuscriptDigest: "[main.tex] …", evidence: [] as never[] };
+    const style = buildReviewPrompt({ ...base, mode: "style", redundancyDigest: digest });
+    expect(style).toContain("===== 跨章节学术重复观察");
+    expect(style).toContain("uncertain 条目不得直接判为问题");
+    expect(style).toContain("[E] conclusion");
+    expect(buildReviewPrompt({ ...base, mode: "style" })).not.toContain("跨章节学术重复观察");
+    for (const mode of ["fact", "academic"] as const) {
+      expect(buildReviewPrompt({ ...base, mode, redundancyDigest: digest })).toBe(buildReviewPrompt({ ...base, mode }));
+    }
+  });
+});

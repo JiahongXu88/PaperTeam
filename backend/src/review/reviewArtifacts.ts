@@ -28,6 +28,7 @@ import type { IterationRecord } from "./revisionOutcome.js";
 import type { StylePolishResult } from "./stylePolicy.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { PatchValidationArtifact } from "./patchValidation.js";
+import type { AcademicRedundancyReport } from "./academicRedundancyClassifier.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
 const EXISTING_REVIEW_PATTERN = /^existing-review-r(\d+)\.json$/;
@@ -36,6 +37,72 @@ const PLAN_PATTERN = /^revision-plan-r(\d+)\.json$/;
 const VALIDATION_PATTERN = /^revision-validation-r(\d+)\.json$/;
 const CLAIM_GROUNDING_PATTERN = /^claim-grounding-r(\d+)\.json$/;
 const SURVEY_WRITING_PATTERN = /^survey-writing-r(\d+)\.json$/;
+const ACADEMIC_REDUNDANCY_PATTERN = /^academic-redundancy-rev(\d+)\.json$/;
+
+/**
+ * M13.7.10：写作期论证单元计划（reviews/writing-plan.json，最新一次写作覆盖）。
+ * 记录 section 的 role / 任务摘要 / 分配与实际消费的 Evidence ID / 选证依据与不足
+ * 原因 / 本节引用 key / 模型 usage 与耗时——可追溯、可诊断；不是第二套 Outline，
+ * 不参与任何 Gate 判定。
+ */
+export interface WritingPlanSectionRecord {
+  sectionId: string;
+  title: string;
+  role: "framing" | "develop" | "compare" | "conclude";
+  roleSource: string;
+  roleConfidence: string;
+  taskSummary: string;
+  doNotExplain: string[];
+  targetLengthUpperBound: number;
+  lengthSource: string;
+  evidence: {
+    allocated: string[];
+    consumed: string[];
+    pinned: string[];
+    pinnedRejected: Array<{ id: string; reason: string }>;
+    coverageAdded: string[];
+    partial: string[];
+  };
+  citationKeys: { evidenceBacked: string[]; allowed?: string[]; cited?: string[] };
+  diagnostics: string[];
+  usage?: unknown;
+  latencyMs?: number;
+  taskId?: string;
+  status: "planned" | "written" | "failed";
+}
+
+export interface WritingPlanArtifact {
+  schemaVersion: 1;
+  mode: "idea_to_paper" | "topic_survey";
+  runId: string;
+  createdAt: string;
+  updatedAt: string;
+  /** outline 结构 + 正式证据集合的指纹（同输入恒同计划；不同 → 如实记录 previousFingerprint） */
+  fingerprint: string;
+  previousFingerprint?: string;
+  attempt: number;
+  revision?: number;
+  sections: WritingPlanSectionRecord[];
+  unassignedEvidence: string[];
+  warnings: string[];
+}
+
+/** M13.7.10：全文草稿生成后的只读 Academic Redundancy Report（按修订号落盘） */
+export interface AcademicRedundancyArtifact {
+  schemaVersion: 1;
+  revision: number;
+  runId: string;
+  createdAt: string;
+  roles: AcademicRedundancyReport["roles"];
+  summary: AcademicRedundancyReport["summary"];
+  harmfulSentences: AcademicRedundancyReport["harmfulSentences"];
+  uncertainSentences: AcademicRedundancyReport["uncertainSentences"];
+  signpostSentences: AcademicRedundancyReport["signpostSentences"];
+  /** 有界的候选 pair（含原句与分类）；完整探测器输出不落盘 */
+  pairs: AcademicRedundancyReport["pairs"];
+  /** 评价器已知不确定性（M13.7.9 §2.3 三处盲区的当前状态） */
+  knownLimitations: string[];
+}
 
 /** 按轮落盘的 Quality Gate 产物（saveQualityGateReport 的结构） */
 export interface QualityGateArtifact {
@@ -55,6 +122,42 @@ export interface QualityGateArtifact {
 
 export class ReviewArtifactStore {
   constructor(private readonly projects: ProjectStore) {}
+
+  // ---- M13.7.10：写作计划 / 学术重复报告 ----
+
+  writingPlanFileName(): string {
+    return "writing-plan.json";
+  }
+
+  async saveWritingPlan(projectId: string, plan: WritingPlanArtifact): Promise<string> {
+    const fileName = this.writingPlanFileName();
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), plan);
+    return `reviews/${fileName}`;
+  }
+
+  async loadWritingPlan(projectId: string): Promise<WritingPlanArtifact | null> {
+    return this.readJson<WritingPlanArtifact>(projectId, this.writingPlanFileName());
+  }
+
+  academicRedundancyFileName(revision: number): string {
+    return `academic-redundancy-rev${revision}.json`;
+  }
+
+  async saveAcademicRedundancy(projectId: string, artifact: AcademicRedundancyArtifact): Promise<string> {
+    const fileName = this.academicRedundancyFileName(artifact.revision);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), artifact);
+    return `reviews/${fileName}`;
+  }
+
+  /** 最新（修订号最大）的学术重复报告；无 / 损坏 → null */
+  async latestAcademicRedundancy(projectId: string): Promise<AcademicRedundancyArtifact | null> {
+    const revisions = await this.rounds(projectId, ACADEMIC_REDUNDANCY_PATTERN);
+    const latest = revisions[0];
+    if (latest === undefined) {
+      return null;
+    }
+    return this.readJson<AcademicRedundancyArtifact>(projectId, this.academicRedundancyFileName(latest));
+  }
 
   summaryFileName(round: number): string {
     return `review-summary-r${round}.json`;

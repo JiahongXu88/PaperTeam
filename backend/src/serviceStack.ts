@@ -103,6 +103,8 @@ export interface ServiceStackOptions {
   };
   stageTimeoutMs?: number;
   stageMaxAttempts?: number;
+  /** M13.7.10：章节论证单元写作开关（缺省开启；PAPERTEAM_ARGUMENT_UNIT_WRITING） */
+  writing?: { argumentUnits?: boolean };
   /**
    * 长论文阶段（Writer / 三路 Reviewer / 分章节 Reviewer / Researcher）的逐 run 执行超时
    * （PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS）；缺省不覆盖（沿用 Runtime 通用默认）
@@ -982,6 +984,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       finalize,
       stageTimeoutMs: options.stageTimeoutMs ?? 900_000,
       stageMaxAttempts: options.stageMaxAttempts ?? 2,
+      writing: { argumentUnits: options.writing?.argumentUnits ?? true },
       review: {
         maxRevisionRounds: options.review?.maxRevisionRounds ?? 2,
         academicPassScore: options.review?.academicPassScore ?? 80,

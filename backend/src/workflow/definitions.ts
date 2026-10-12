@@ -72,6 +72,18 @@ import {
 import { fingerprintJson } from "../util/hash.js";
 import { buildSurveySectionContext } from "../survey/sectionContext.js";
 import {
+  resolveArgumentUnits,
+  summarizeArgumentTask,
+  type ResolvedArgumentUnit,
+} from "../writer/argumentUnit.js";
+import {
+  allocateSectionEvidence,
+  projectAllocatedEvidence,
+  type SectionEvidenceAllocation,
+} from "../evidence/sectionEvidenceAllocation.js";
+import { classifyAcademicRedundancy } from "../review/academicRedundancyClassifier.js";
+import type { WritingPlanArtifact, WritingPlanSectionRecord } from "../review/reviewArtifacts.js";
+import {
   evaluateSurveyWriting,
   renderSurveyMetricsLines,
   type SurveyWritingEvaluation,
@@ -209,7 +221,7 @@ import {
   readStylePolicy,
   type StylePolishResult,
 } from "../review/stylePolicy.js";
-import { checkStyleInvariants } from "../review/styleInvariants.js";
+import { checkStyleInvariants, extractCitationKeys as extractCitedKeyList } from "../review/styleInvariants.js";
 import {
   judgeOutcome,
   judgeConvergence,
@@ -348,6 +360,11 @@ export interface WorkflowServices {
   targets?: TargetServices;
   stageTimeoutMs: number;
   stageMaxAttempts: number;
+  /**
+   * M13.7.10：写作组织策略。argumentUnits=true → writing.sections 按章节论证单元
+   * 分配 Evidence 并注入 B2 任务块；缺省（旧测试栈未接线）视为开启。
+   */
+  writing?: { argumentUnits: boolean };
   /** bounded loop 与 Quality Gate 阈值 */
   review: {
     maxRevisionRounds: number;
@@ -493,6 +510,8 @@ function reviewRunStageInner(
       const experimentPolicyLines = options.survey === true
         ? undefined
         : renderExperimentPolicyLines(await services.experimentPackages.experimentPolicy(ctx.projectId));
+      // M13.7.10：写作期生成的只读学术重复报告（修订号一致才注入 style 模式；不进 Gate）
+      const redundancyDigest = await buildRedundancyDigest(services, ctx.projectId, revision);
       const results = await services.reviewer.reviewAll({
         projectId: ctx.projectId,
         manuscriptDigest: digest,
@@ -505,6 +524,7 @@ function reviewRunStageInner(
         ...(surveyDigest !== undefined ? { surveyDigest } : {}),
         ...(targetExpectations !== undefined ? { targetExpectations } : {}),
         ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
+        ...(redundancyDigest !== undefined ? { redundancyDigest } : {}),
       });
 
       // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
@@ -5090,12 +5110,228 @@ function planEvidenceSupply(state: WorkflowState): PlanDecision | null {
   return pending >= EVIDENCE_SUPPLY_MIN_PENDING ? { kind: "stage", stageId: "hitl.evidence_supply" } : null;
 }
 
+// ============================================================
+// M13.7.10：章节论证单元写作计划（可追溯产物）与只读学术重复报告
+// ============================================================
+
+/** 计划指纹：大纲结构字段 + 正式证据集合（id / 状态 / 锚点）+（Survey）matrix 指纹——同输入恒同计划 */
+function writingPlanFingerprint(
+  outline: import("../manuscript/ManuscriptService.js").Outline,
+  formal: readonly EvidenceRecord[],
+  extra?: string,
+): string {
+  return fingerprintJson({
+    sections: outline.sections.map((section) => ({
+      id: section.id,
+      title: section.title,
+      keyPoints: section.keyPoints ?? [],
+      targetLengthWords: section.targetLengthWords ?? null,
+      synthesisRefs: section.synthesisRefs ?? [],
+      literatureRefs: section.literatureRefs ?? [],
+      argument: section.argument ?? null,
+    })),
+    evidence: formal
+      .map((record) => ({ id: record.id, status: record.verificationStatus, chunk: record.location?.chunk ?? null, support: record.supportStrength ?? null }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+    ...(extra !== undefined ? { extra } : {}),
+  });
+}
+
+function planSectionRecord(
+  unit: ResolvedArgumentUnit,
+  allocation: SectionEvidenceAllocation,
+  citationKeys: { evidenceBacked: string[]; allowed?: string[] },
+): WritingPlanSectionRecord {
+  return {
+    sectionId: unit.sectionId,
+    title: unit.title,
+    role: unit.role,
+    roleSource: unit.roleSource,
+    roleConfidence: unit.roleConfidence,
+    taskSummary: summarizeArgumentTask(unit),
+    doNotExplain: unit.doNotExplain,
+    targetLengthUpperBound: unit.targetLengthUpperBound,
+    lengthSource: unit.lengthSource,
+    evidence: {
+      allocated: allocation.evidenceIds,
+      consumed: [],
+      pinned: allocation.pinned,
+      pinnedRejected: allocation.pinnedRejected,
+      coverageAdded: allocation.coverageAdded,
+      partial: allocation.partialIds,
+    },
+    citationKeys: {
+      evidenceBacked: citationKeys.evidenceBacked,
+      ...(citationKeys.allowed !== undefined ? { allowed: citationKeys.allowed } : {}),
+    },
+    diagnostics: [...unit.warnings, ...allocation.diagnostics],
+    status: "planned",
+  };
+}
+
+/**
+ * 写作前落盘计划（reviews/writing-plan.json）。同一项目再次写作（重试 / Resume /
+ * 重新生成）时：指纹相同 → attempt 递增、计划不变；指纹不同（Outline 或正式证据集合
+ * 变化）→ 如实记录 previousFingerprint——Writer 只消费当前有效证据，不沿用旧绑定。
+ */
+async function beginWritingPlan(
+  services: WorkflowServices,
+  ctx: { projectId: string; runId: string },
+  input: {
+    mode: WritingPlanArtifact["mode"];
+    outline: import("../manuscript/ManuscriptService.js").Outline;
+    units: readonly ResolvedArgumentUnit[];
+    fingerprint: string;
+    sections: WritingPlanSectionRecord[];
+    unassignedEvidence: string[];
+    warnings: string[];
+  },
+): Promise<WritingPlanArtifact> {
+  const previous = await services.reviewArtifacts.loadWritingPlan(ctx.projectId);
+  const now = new Date().toISOString();
+  const sameRun = previous?.runId === ctx.runId;
+  const plan: WritingPlanArtifact = {
+    schemaVersion: 1,
+    mode: input.mode,
+    runId: ctx.runId,
+    createdAt: sameRun && previous !== null ? previous.createdAt : now,
+    updatedAt: now,
+    fingerprint: input.fingerprint,
+    ...(previous !== null && previous.fingerprint !== input.fingerprint ? { previousFingerprint: previous.fingerprint } : {}),
+    attempt: sameRun && previous !== null ? previous.attempt + 1 : 1,
+    sections: input.sections,
+    unassignedEvidence: input.unassignedEvidence,
+    warnings: [
+      ...input.warnings,
+      ...(previous !== null && previous.fingerprint !== input.fingerprint
+        ? [sameRun
+            ? "同一 run 内重试时大纲或正式证据集合已变化：本次按当前有效证据重新分配（旧绑定不再视为 Verified）"
+            : "相对上一次写作，大纲或正式证据集合已变化：本次按当前有效证据重新分配"]
+        : []),
+    ],
+  };
+  await services.reviewArtifacts.saveWritingPlan(ctx.projectId, plan);
+  return plan;
+}
+
+async function updateWritingPlanSection(
+  services: WorkflowServices,
+  projectId: string,
+  plan: WritingPlanArtifact,
+  sectionId: string,
+  update: { status: WritingPlanSectionRecord["status"]; latencyMs: number; taskId?: string; usage?: unknown; cited?: string[] },
+): Promise<void> {
+  const record = plan.sections.find((section) => section.sectionId === sectionId);
+  if (record === undefined) {
+    return;
+  }
+  record.status = update.status;
+  record.latencyMs = update.latencyMs;
+  if (update.taskId !== undefined) record.taskId = update.taskId;
+  if (update.usage !== undefined) record.usage = update.usage;
+  if (update.status === "written") {
+    record.evidence.consumed = [...record.evidence.allocated];
+  }
+  if (update.cited !== undefined) record.citationKeys.cited = [...new Set(update.cited)].sort();
+  plan.updatedAt = new Date().toISOString();
+  await services.reviewArtifacts.saveWritingPlan(projectId, plan);
+}
+
+/** stage 结果里的有界摘要（checkpoint 可序列化；完整计划在 reviews/writing-plan.json） */
+function summarizeWritingPlan(plan: WritingPlanArtifact): Record<string, unknown> {
+  return {
+    enabled: true,
+    fingerprint: plan.fingerprint.slice(0, 16),
+    attempt: plan.attempt,
+    sections: plan.sections.map((section) => ({
+      id: section.sectionId,
+      role: section.role,
+      roleSource: section.roleSource,
+      evidence: section.evidence.allocated.length,
+      pinnedRejected: section.evidence.pinnedRejected.length,
+      upperBound: section.targetLengthUpperBound,
+      diagnostics: section.diagnostics.length,
+    })),
+    unassignedEvidence: plan.unassignedEvidence.length,
+    warnings: plan.warnings.length,
+  };
+}
+
+const REDUNDANCY_REPORT_KNOWN_LIMITATIONS = [
+  "词面 + 位置规则，不是语义等价证明；类别判据与阈值回显在 thresholds。",
+  "改写过的引言预展开可能召回不足（M13.7.9 盲区②）：P 类数字是下界。",
+  "数学模式内的数字在探测器中被整体占位，不参与词面比对（M13.7.9 盲区③）。",
+  "uncertain 条目不是事实错误，不计入有害下界；本报告不进入 Quality Gate，不触发任何自动删改。",
+];
+
+/** 全文草稿生成后生成只读 Academic Redundancy Report（按修订号落盘；失败不影响写作主流程） */
+async function saveAcademicRedundancyReport(
+  services: WorkflowServices,
+  ctx: { projectId: string; runId: string },
+  revision: number,
+  sections: ReadonlyArray<{ id: string; title: string; latex: string }>,
+  units: readonly ResolvedArgumentUnit[],
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    const roles = Object.fromEntries(units.map((unit) => [unit.sectionId, unit.role]));
+    const report = classifyAcademicRedundancy(sections, { roles });
+    await services.reviewArtifacts.saveAcademicRedundancy(ctx.projectId, {
+      schemaVersion: 1,
+      revision,
+      runId: ctx.runId,
+      createdAt: new Date().toISOString(),
+      roles: report.roles,
+      summary: report.summary,
+      harmfulSentences: report.harmfulSentences,
+      uncertainSentences: report.uncertainSentences,
+      signpostSentences: report.signpostSentences,
+      pairs: report.pairs.slice(0, 60),
+      knownLimitations: REDUNDANCY_REPORT_KNOWN_LIMITATIONS,
+    });
+    return {
+      revision,
+      lexicalShare: Number(report.summary.lexical.restatedCharShare.toFixed(4)),
+      harmfulShare: Number(report.summary.harmful.share.toFixed(4)),
+      harmfulUpperShare: Number(report.summary.harmfulUpperShare.toFixed(4)),
+      harmfulSentences: report.summary.harmful.sentenceCount,
+      uncertainSentences: report.summary.uncertain.sentenceCount,
+      classCounts: report.summary.classCounts,
+    };
+  } catch (error) {
+    return { revision, error: error instanceof Error ? error.message.slice(0, 200) : String(error) };
+  }
+}
+
+/** review.run：最新报告修订号 === 本轮审阅修订号时才注入（有界：至多 8 条有害句 + 计数） */
+async function buildRedundancyDigest(
+  services: WorkflowServices,
+  projectId: string,
+  reviewedRevision: number,
+): Promise<string | undefined> {
+  const report = await services.reviewArtifacts.latestAcademicRedundancy(projectId);
+  if (report === null || report.revision !== reviewedRevision) {
+    return undefined;
+  }
+  const lines = [
+    `修订 rev-${report.revision}：词面复述占比 ${(report.summary.lexical.restatedCharShare * 100).toFixed(1)}%；有害重复占比下界 ${(report.summary.harmful.share * 100).toFixed(1)}%（${report.summary.harmful.sentenceCount} 句）/ 上界 ${(report.summary.harmfulUpperShare * 100).toFixed(1)}%（含 ${report.summary.uncertain.sentenceCount} 句 uncertain）。`,
+  ];
+  if (report.harmfulSentences.length === 0) {
+    lines.push("未发现确定有害的跨章节重复句。");
+  } else {
+    lines.push("确定有害的重复句（类别：M 机制重述 / L 重复免责 / P 引言预展开 / S 路标模板 / X·E 逐字搬运）：");
+    for (const sentence of report.harmfulSentences.slice(0, 8)) {
+      lines.push(`- [${sentence.class}] ${sentence.section}：「${sentence.text.slice(0, 80)}」——${sentence.reason.slice(0, 80)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
 function writingSectionsStage(services: WorkflowServices): StageSpec {
   return {
     id: "writing.sections",
-    description: "Writer 逐节写作（section-based）",
+    description: "Writer 逐节写作（section-based；M13.7.10 章节论证单元 + 逐节证据分配）",
     requiredInputs: ["hitl.outline_confirm"],
-    producedOutputs: ["manuscript/sections/*.tex", "manuscript/main.tex"],
+    producedOutputs: ["manuscript/sections/*.tex", "manuscript/main.tex", "reviews/writing-plan.json"],
     maxAttempts: services.stageMaxAttempts,
     timeoutMs: services.stageTimeoutMs * 4,
     retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
@@ -5118,32 +5354,93 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       // 已被工作区隔离挡在实验原始材料之外）；空上下文也要显式注入（禁写数值）
       const experimentContext = await services.experimentPackages.workflowContext(ctx.projectId);
 
+      // M13.7.10：章节论证单元 + 逐节 Evidence 分配（B2 生产化）。关闭时回到
+      // 旧组织（同一 formal 快照给每一节、「约 N 字」），prompt 与旧版逐字节一致。
+      const argumentUnitsEnabled = services.writing?.argumentUnits ?? true;
+      const allFormal = argumentUnitsEnabled
+        ? (await services.evidenceSelection.selectForWriting(ctx.projectId, { limit: Number.MAX_SAFE_INTEGER })).formal
+        : evidence;
+      const units = argumentUnitsEnabled ? resolveArgumentUnits({ outline }) : undefined;
+      const allocation =
+        units !== undefined ? allocateSectionEvidence({ outline, units, evidence: allFormal }) : undefined;
+      const plan =
+        units !== undefined && allocation !== undefined
+          ? await beginWritingPlan(services, ctx, {
+              mode: "idea_to_paper",
+              outline,
+              units,
+              fingerprint: writingPlanFingerprint(outline, allFormal),
+              sections: units.map((unit, index) => {
+                const sectionAllocation = allocation.sections[index]!;
+                const consumed = projectAllocatedEvidence(sectionAllocation, allFormal);
+                return planSectionRecord(unit, sectionAllocation, {
+                  evidenceBacked: [...new Set(consumed.map((record) => resolveEvidenceCitationKey(record, bibliography)).filter((key): key is string => key !== null))].sort(),
+                });
+              }),
+              unassignedEvidence: allocation.unassigned,
+              warnings: units.flatMap((unit) => unit.warnings),
+            })
+          : undefined;
+
       let bytesTotal = 0;
       const written: string[] = [];
+      const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
+      const usedEvidenceIds = new Set<string>();
       for (const [index, section] of outline.sections.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
         }
-        const result = await services.writer.writeSection({
-          projectId: ctx.projectId,
-          section,
-          outline,
-          evidence,
-          bibliography,
-          experimentContext,
-          ...(language !== undefined ? { language } : {}),
-        });
+        const unit = units?.[index];
+        const sectionAllocation = allocation?.sections[index];
+        const sectionEvidence =
+          sectionAllocation !== undefined ? projectAllocatedEvidence(sectionAllocation, allFormal) : evidence;
+        const startedAt = Date.now();
+        let result: Awaited<ReturnType<WriterService["writeSection"]>>;
+        try {
+          result = await services.writer.writeSection({
+            projectId: ctx.projectId,
+            section,
+            outline,
+            evidence: sectionEvidence,
+            bibliography,
+            experimentContext,
+            ...(language !== undefined ? { language } : {}),
+            ...(unit !== undefined ? { argument: unit } : {}),
+            ...(unit?.role === "compare"
+              ? { argumentPartialClaims: sectionEvidence.filter((record) => record.supportStrength === "partial").map((record) => record.claim) }
+              : {}),
+          });
+        } catch (error) {
+          if (plan !== undefined) {
+            await updateWritingPlanSection(services, ctx.projectId, plan, section.id, { status: "failed", latencyMs: Date.now() - startedAt });
+          }
+          throw error;
+        }
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
         written.push(section.id);
+        writtenLatex.push({ id: section.id, title: section.title, latex: result.latex });
+        for (const record of sectionEvidence) {
+          usedEvidenceIds.add(record.id);
+        }
+        if (plan !== undefined) {
+          await updateWritingPlanSection(services, ctx.projectId, plan, section.id, {
+            status: "written",
+            latencyMs: Date.now() - startedAt,
+            taskId: result.taskId,
+            ...(result.usage !== undefined ? { usage: result.usage } : {}),
+            cited: extractCitedKeyList(result.latex),
+          });
+        }
         await ctx.emitProgress({
           section: section.id,
           file: section.file,
           index: index + 1,
           total: outline.sections.length,
+          ...(unit !== undefined ? { role: unit.role, evidence: sectionEvidence.length } : {}),
         });
       }
-      for (const record of evidence) {
-        await safeMarkUsage(services, ctx.projectId, record.id, ctx.runId);
+      for (const evidenceId of usedEvidenceIds) {
+        await safeMarkUsage(services, ctx.projectId, evidenceId, ctx.runId);
       }
       await services.manuscript.writeMainTex(ctx.projectId, outline, bibliography.length > 0);
       await services.manuscript.rebuildContext(ctx.projectId, {
@@ -5153,13 +5450,24 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       await syncReferencesBib(services, ctx.projectId);
       // 初稿完成：提交首个内容修订
       const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
+      const redundancy =
+        units !== undefined
+          ? await saveAcademicRedundancyReport(services, ctx, revision.revision, writtenLatex, units)
+          : undefined;
+      if (plan !== undefined) {
+        plan.revision = revision.revision;
+        plan.updatedAt = new Date().toISOString();
+        await services.reviewArtifacts.saveWritingPlan(ctx.projectId, plan);
+      }
       return {
         sectionsWritten: written.length,
         sections: written,
         bytesTotal,
         revision: revision.revision,
-        evidenceFormal: evidenceSelection.formal.length,
+        evidenceFormal: argumentUnitsEnabled ? allFormal.length : evidenceSelection.formal.length,
         evidenceExcluded: evidenceSelection.excluded,
+        ...(plan !== undefined ? { argumentUnits: summarizeWritingPlan(plan) } : { argumentUnits: { enabled: false } }),
+        ...(redundancy !== undefined ? { redundancy } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -7537,14 +7845,14 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
       }
       const project = await services.projects.getRequired(ctx.projectId);
       const language = normalizeManuscriptLanguage(project.language);
-      const usedEvidenceIds = new Set<string>();
-      let bytesTotal = 0;
-      const written: string[] = [];
-      for (const [index, section] of inputs.outline.sections.entries()) {
-        if (ctx.signal.aborted) {
-          throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
-        }
-        const context = buildSurveySectionContext({
+      // M13.7.10：Survey 的证据仍以本节 synthesisRefs / literatureRefs 投影为准（契约不变）；
+      // 论证单元只增加 role / task / doNotExplain / 上限长度的组织约定与写作计划产物。
+      const argumentUnitsEnabled = services.writing?.argumentUnits ?? true;
+      const units = argumentUnitsEnabled
+        ? resolveArgumentUnits({ outline: inputs.outline, synthesis: inputs.synthesis })
+        : undefined;
+      const contexts = inputs.outline.sections.map((section) =>
+        buildSurveySectionContext({
           section,
           matrix: inputs.matrix,
           synthesis: inputs.synthesis,
@@ -7552,32 +7860,97 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
           evidence: inputs.evidence,
           titleBySource: inputs.titleBySource,
           yearBySource: inputs.yearBySource,
-        });
+        }),
+      );
+      const plan =
+        units !== undefined
+          ? await beginWritingPlan(services, ctx, {
+              mode: "topic_survey",
+              outline: inputs.outline,
+              units,
+              fingerprint: writingPlanFingerprint(inputs.outline, inputs.evidence, inputs.synthesis.matrixFingerprint),
+              sections: units.map((unit, index) => {
+                const context = contexts[index]!;
+                const ids = context.evidence.map((record) => record.id);
+                return planSectionRecord(
+                  unit,
+                  {
+                    sectionId: unit.sectionId,
+                    role: unit.role,
+                    evidenceIds: ids,
+                    pinned: [],
+                    pinnedRejected: [],
+                    relevanceSelected: ids,
+                    coverageAdded: [],
+                    partialIds: context.evidence.filter((record) => record.supportStrength === "partial").map((record) => record.id),
+                    diagnostics: context.warnings.map((warning) => `survey_context: ${warning}`),
+                  },
+                  { evidenceBacked: context.evidenceBackedKeys, allowed: context.allowedCitationKeys },
+                );
+              }),
+              unassignedEvidence: [],
+              warnings: units.flatMap((unit) => unit.warnings),
+            })
+          : undefined;
+      const usedEvidenceIds = new Set<string>();
+      let bytesTotal = 0;
+      const written: string[] = [];
+      const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
+      for (const [index, section] of inputs.outline.sections.entries()) {
+        if (ctx.signal.aborted) {
+          throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
+        }
+        const context = contexts[index]!;
         if (context.danglingSynthesisRefs.length > 0 || context.danglingLiteratureRefs.length > 0) {
           throw new BusinessError(
             "STAGE_CONTRACT_VIOLATION",
             `section ${section.id} 悬空 refs（synthesis：${context.danglingSynthesisRefs.join("、") || "无"}；literature：${context.danglingLiteratureRefs.join("、") || "无"}）——大纲与综合产物不一致，请重跑 survey.outline`,
           );
         }
-        const result = await services.writer.writeSection({
-          projectId: ctx.projectId,
-          section,
-          outline: inputs.outline,
-          evidence: context.evidence,
-          bibliography: inputs.bibliography,
-          ...(language !== undefined ? { language } : {}),
-          survey: context,
-        });
+        const unit = units?.[index];
+        const startedAt = Date.now();
+        let result: Awaited<ReturnType<WriterService["writeSection"]>>;
+        try {
+          result = await services.writer.writeSection({
+            projectId: ctx.projectId,
+            section,
+            outline: inputs.outline,
+            evidence: context.evidence,
+            bibliography: inputs.bibliography,
+            ...(language !== undefined ? { language } : {}),
+            survey: context,
+            ...(unit !== undefined ? { argument: unit } : {}),
+            ...(unit?.role === "compare"
+              ? { argumentPartialClaims: context.evidence.filter((record) => record.supportStrength === "partial").map((record) => record.claim) }
+              : {}),
+          });
+        } catch (error) {
+          if (plan !== undefined) {
+            await updateWritingPlanSection(services, ctx.projectId, plan, section.id, { status: "failed", latencyMs: Date.now() - startedAt });
+          }
+          throw error;
+        }
         bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
         written.push(section.id);
+        writtenLatex.push({ id: section.id, title: section.title, latex: result.latex });
         for (const record of context.evidence) {
           usedEvidenceIds.add(record.id);
+        }
+        if (plan !== undefined) {
+          await updateWritingPlanSection(services, ctx.projectId, plan, section.id, {
+            status: "written",
+            latencyMs: Date.now() - startedAt,
+            taskId: result.taskId,
+            ...(result.usage !== undefined ? { usage: result.usage } : {}),
+            cited: extractCitedKeyList(result.latex),
+          });
         }
         await ctx.emitProgress({
           section: section.id,
           file: section.file,
           index: index + 1,
           total: inputs.outline.sections.length,
+          ...(unit !== undefined ? { role: unit.role, evidence: context.evidence.length } : {}),
         });
       }
       for (const evidenceId of usedEvidenceIds) {
@@ -7589,6 +7962,15 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
       });
       await syncReferencesBib(services, ctx.projectId);
       const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
+      const redundancy =
+        units !== undefined
+          ? await saveAcademicRedundancyReport(services, ctx, revision.revision, writtenLatex, units)
+          : undefined;
+      if (plan !== undefined) {
+        plan.revision = revision.revision;
+        plan.updatedAt = new Date().toISOString();
+        await services.reviewArtifacts.saveWritingPlan(ctx.projectId, plan);
+      }
       return {
         sectionsWritten: written.length,
         sections: written,
@@ -7598,6 +7980,8 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
         matrixEntries: inputs.matrix.entries.length,
         bibliographyEntries: inputs.bibliography.length,
         evidenceFormal: inputs.evidence.length,
+        ...(plan !== undefined ? { argumentUnits: summarizeWritingPlan(plan) } : { argumentUnits: { enabled: false } }),
+        ...(redundancy !== undefined ? { redundancy } : {}),
       };
     },
     async verifyDod(ctx) {

@@ -18,6 +18,11 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { EvidenceStats } from "../evidence/EvidenceStore.js";
 import { renderBibliographyFile, type BibRenderEntry } from "../citation/bibliography.js";
 import { writeJsonAtomic, writeFileAtomic } from "../util/atomic.js";
+import {
+  normalizeOutlineArgument,
+  validateOutlineArgument,
+  type OutlineArgumentUnit,
+} from "../writer/argumentUnit.js";
 
 export interface OutlineSection {
   id: string;
@@ -35,6 +40,13 @@ export interface OutlineSection {
   synthesisRefs?: string[];
   /** M11.1.3（Survey 专用）：本节覆盖的 SurveyMatrixEntry.entryId 列表（经 Matrix → sourceId 追溯） */
   literatureRefs?: string[];
+  /**
+   * M13.7.10：章节论证单元（可选；旧 Outline 无此字段）。role / task /
+   * evidenceIds / doNotExplain / targetLengthUpperBound 全部可选——缺省由
+   * writer/argumentUnit.resolveArgumentUnits 按位置 / 标题 / Survey 语境确定性
+   * 派生；Planner 可选输出，无效部分在解析时丢弃并诊断，不阻断写作。
+   */
+  argument?: OutlineArgumentUnit;
 }
 
 export interface Outline {
@@ -310,6 +322,8 @@ export function validateOutline(outline: Outline): string[] {
         violations.push(`section ${section.id} 的 ${field} 必须是非空字符串数组`);
       }
     }
+    // M13.7.10：论证单元形状校验（可选字段；语义派生在 writer/argumentUnit）
+    violations.push(...validateOutlineArgument(section.id, section.argument));
     ids.add(section.id);
     files.add(section.file);
   }
@@ -345,6 +359,17 @@ export function normalizeOutlineRefs(outline: Outline): Outline {
         changed = true;
       } else if (normalized.join(" ") !== section.literatureRefs.join(" ")) {
         next.literatureRefs = normalized;
+        changed = true;
+      }
+    }
+    // M13.7.10：argument 归一（去重 / 去空；全空删除键，旧 Outline 无键不新增）
+    if (section.argument !== undefined) {
+      const normalized = normalizeOutlineArgument(section.argument);
+      if (normalized === undefined) {
+        delete next.argument;
+        changed = true;
+      } else if (JSON.stringify(normalized) !== JSON.stringify(section.argument)) {
+        next.argument = normalized;
         changed = true;
       }
     }

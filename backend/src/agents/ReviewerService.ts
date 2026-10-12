@@ -195,6 +195,11 @@ export class ReviewerService {
      * Writer / Feasibility 同一口径（无授权范围的数值表述 = 实验支撑缺口）。
      */
     experimentPolicyLines?: string[];
+    /**
+     * M13.7.10：跨章节学术重复只读观察（academicRedundancyClassifier 的有界 digest）。
+     * 仅注入 style 模式，作为辅助信号——不是缺陷判定，不进 Gate，不触发自动删改。
+     */
+    redundancyDigest?: string;
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -261,6 +266,8 @@ export class ReviewerService {
     signal?: AbortSignal;
     /** M13.6：实验数据使用口径（范围级授权视图；undefined → prompt 不变） */
     experimentPolicyLines?: string[];
+    /** M13.7.10：跨章节重复只读 digest（仅 style 模式注入；undefined → prompt 不变） */
+    redundancyDigest?: string;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -588,6 +595,8 @@ export function buildReviewPrompt(params: {
   targetExpectations?: string;
   /** M13.6：实验数据使用口径（范围级授权视图、无具体数值；undefined → 不注入） */
   experimentPolicyLines?: string[];
+  /** M13.7.10：跨章节学术重复只读 digest（仅 style 模式注入） */
+  redundancyDigest?: string;
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -715,6 +724,14 @@ export function buildReviewPrompt(params: {
       : []),
     ...(params.surveyDigest !== undefined
       ? ["", "===== 综述确定性指标（机器可算信号；评审时对照使用）=====", params.surveyDigest]
+      : []),
+    ...(params.mode === "style" && params.redundancyDigest !== undefined
+      ? [
+          "",
+          "===== 跨章节学术重复观察（确定性词面 / 位置规则的只读信号；辅助定位，不是缺陷判定）=====",
+          params.redundancyDigest,
+          "使用口径：只把其中确属无新增信息的完整重述、位置不当的重复免责或模板化路标句写成 minor style issue（引用原句片段，建议压缩为一句承接）；比较节的必要机制提醒、结论的必要概括、孤立的科学限制句不是问题；uncertain 条目不得直接判为问题。",
+        ]
       : []),
   ].join("\n");
 }

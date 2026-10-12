@@ -28,6 +28,11 @@ export interface WorkflowConfig {
   stageTimeoutMs: number;
   /** 单个 Stage 最大尝试次数（含首次） */
   stageMaxAttempts: number;
+  /**
+   * M13.7.10：章节论证单元写作（B2：逐节证据分配 + 角色 / 任务 / 负向范围 + 上限长度）。
+   * PAPERTEAM_ARGUMENT_UNIT_WRITING；默认开启；设为 false 回到旧的「同一证据快照 + 约 N 字」组织。
+   */
+  argumentUnitWriting: boolean;
 }
 
 export interface CitationConfig {
@@ -492,6 +497,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: STAGE_MAX_ATTEMPTS_MIN,
         max: STAGE_MAX_ATTEMPTS_MAX,
       }),
+      argumentUnitWriting: readBool(source, "PAPERTEAM_ARGUMENT_UNIT_WRITING", true),
     },
     citation: {
       metadataEnabled: readBool(source, "CITATION_METADATA_ENABLED", true),
