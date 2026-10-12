@@ -87,3 +87,4 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [AGENT_ARCHITECTURE_AUDIT.md](AGENT_ARCHITECTURE_AUDIT.md) — Agent 架构审计
 - [PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md](PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md) — Pi SDK 1.0.1 升级与 soak
 - [PI_UPSTREAM_REAL_WORKLOAD_AUDIT_2026-10-03.md](PI_UPSTREAM_REAL_WORKLOAD_AUDIT_2026-10-03.md) — 真实负载下 Pi 上游审计
+- [PI_UPSTREAM_DEEP_AUDIT_2026_10.md](PI_UPSTREAM_DEEP_AUDIT_2026_10.md) — Pi SDK 上游深度审计（1.0.1 / 1.1.0 / main 三版 × Windows / Linux 双平台故障注入；C1 `repairJson` 无效 `\u` 转义修复 UPSTREAM_FIX_READY，C2 工具期 abort 终态已知未合并 PR #8635 新证据，C3 SDK 路径 `httpIdleTimeoutMs` 仅覆盖 header 的文档缺口；复现脚本见 [repros/pi-upstream-audit-2026-10/](repros/pi-upstream-audit-2026-10/README.md)）
