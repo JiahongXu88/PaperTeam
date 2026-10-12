@@ -1,0 +1,14 @@
+{
+  "frozenAt": "2026-10-12T09:42:18.310Z",
+  "files": {
+    "scripts/acceptance/fixtures/m13-7-11/frozen-outline-qec-run2.json": "d3f4467bea3ed5cc575f29041c47d656e2d2e787817499e4f5de4462cafbccd0",
+    "scripts/acceptance/fixtures/m13-7-11/protocol.json": "6668f6fb734422a5224a97e6bcf928f6559cfc9881c64d92033348b5513dfa1a",
+    "scripts/acceptance/fixtures/m13-7-9/heldout-qec.json": "b5cb528337deb9be24944328b03b391f497e6f5b83429d4dee519aa40fdb72f3",
+    "scripts/acceptance/fixtures/m13-7-9/concept-markers-qec.json": "045dcdfe5d098c23898c881e2825b2b50b84b16c7ae0adb0e03500aef97f5a06",
+    "scripts/acceptance/fixtures/m13-7-9/sources-abstracts-qec.json": "bbdb6e670200dfe161383e49ec390007a8f2d4a9291aaa9ee92ad576fd2cb462",
+    "scripts/acceptance/lib/m13-7-live.mjs": "8cb85f0fa3e93b55fd0fa41b2040ab47913f592bd3226abc6c1596d992fe9529",
+    "scripts/acceptance/argument-unit-ab-live.mjs": "d76e7ccd42d263521ef0bb4f3fd0effa7f22240842abad438af42779d544c64c",
+    "scripts/acceptance/survey-tail-live.mjs": "eb1bfdb18890fe8350a538a7d6dea83dfc653b34489fcbfedc5e3f58fc7c3401",
+    "scripts/acceptance/idea-planner-live.mjs": "7fc4bea259c3335191f59f12369931cb2e9e7c14376fef01d277f5827756372c"
+  }
+}

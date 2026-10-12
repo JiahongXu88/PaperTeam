@@ -1,0 +1,58 @@
+{
+  "milestone": "M13.7.11",
+  "baseline": "0a382cece8cc97db60d04a06f38940d6da3b2812",
+  "question": "Does the B2 argument-unit writing strategy, as integrated into the production topic_survey / idea_to_paper workflows in M13.7.10, reliably improve manuscript quality under same-condition production A/B, survive the real Review → Revision → Quality Gate → PDF tail, and does the non-final-conclude rule hold under a real model?",
+  "frozenBeforeFirstLiveRequest": true,
+  "inputs": {
+    "fixture": "scripts/acceptance/fixtures/m13-7-9/heldout-qec.json (research inputs only: title / 4 arXiv abstracts / 12 abstract-level verified evidence incl. 2 partial negative controls; argumentUnitsV2 ignored)",
+    "markers": "scripts/acceptance/fixtures/m13-7-9/concept-markers-qec.json (17 concepts incl. 12 numeric; 2 negative controls E11 / E12) — unchanged",
+    "abstracts": "scripts/acceptance/fixtures/m13-7-9/sources-abstracts-qec.json — unchanged",
+    "frozenOutline": "scripts/acceptance/fixtures/m13-7-11/frozen-outline-qec-run2.json = the REAL GLM-5.3 Planner output of M13.7.10 run 2 (7 sections: introduction / surface-scaling / breakeven-logical-qubits / route-comparison / limitations / future-directions / conclusion; Planner roles framing / develop / develop / compare / compare / conclude / conclude). Used verbatim by both arms; no Planner request in the A/B.",
+    "seeding": "scripts/acceptance/lib/m13-7-live.mjs#seedSurveyFixtureProject — identical to the M13.7.10 seeding (sources S001–S004, formal evidence E001–E012, Survey Matrix abstract_only, Structured Synthesis taxonomy ×2 / comparison ×4 / research_gap / future_direction) + accepted candidates C001–C004 + frozen corpus snapshot (both additions are inert for writing; they exist so the Arm B project can be replayed through the production orchestrator). Dry-run verified: the frozen outline re-binds 0 / 7 / 3 / 12 (2 partial) / 0 / 0 / 0 formal records per section with zero dangling refs — the same projection as M13.7.10 run 2."
+  },
+  "model": "zai-coding-cn/glm-5.3 (the model already configured in the PaperTeam runtime; same as M13.7.9 / M13.7.10)",
+  "runtime": "PiRuntimeAdapter with the production-equivalent wiring (SkillRegistry role skills, retrieve_library / evidence_query tools, workspace guard — mirrors backend/src/index.ts), maxConcurrentRuns 1 for the A/B (one Writer at a time, independent projects → independent sessions), 3 for the tail (three-way review fan-out as in production). Difference from M13.7.10 recorded: M13.7.10 gave the Writer the seed skill dirs and NO tools.",
+  "arms": {
+    "A": "argument-unit-ab-live.mjs --arm A: ServiceStack built with writing.argumentUnits=false (the exact path PAPERTEAM_ARGUMENT_UNIT_WRITING=false takes in index.ts) → surveyWritingSectionsStage without resolveArgumentUnits: same synthesisRefs / literatureRefs projection, legacy 「目标长度：约 N 字」, no task block, no writing-plan / redundancy artefacts. Consistency is asserted from the recorded prompts (armCheck.consistent).",
+    "B": "argument-unit-ab-live.mjs --arm B: writing.argumentUnits=true → B2 task block, upper-bound length, bibliography identity table for framing / conclude, writing-plan.json, academic-redundancy-rev1.json. The non-final conclude (future-directions) receives the M13.7.10 'future directions only' task — this is the LIVE test of that rule.",
+    "sameConditions": "same fixture hash, same frozen outline hash, same seeding code, same model, same adapter wiring, same stage object (createTopicSurveyDefinition → writing.sections), separate projects / processes / sessions, A before B, one sample each, no re-sampling, no prompt / fixture / threshold edits after the first LIVE request"
+  },
+  "tail": {
+    "driver": "survey-tail-live.mjs --replay-front on the Arm B project",
+    "category": "STAGE REPLAY (Outline → PDF on seeded research artefacts), NOT Topic → PDF: a checkpoint marks the ten front stages `replayed` and is handed to WorkflowOrchestrator.recoverInterruptedRuns(); writing.sections is reused through the production idempotent skip (outline fingerprint = written revision); citation.verify → review.run → quality.gate → revision.plan → evidence.ground_claims → revision.restore_facts → revision.revise → revision.validate → … → build.draft / build.final run for real",
+    "hitlProtocol": "hitl.revision_validation → approve; hitl.revision_stalled → accept_draft (revise_more only if ≥ 12 tasks remain, at most once); hitl.revision_overflow → accept_draft; hitl.style_polish → skip (no extra Writer tasks). No reviewer verdict is injected or edited.",
+    "revisionRounds": "production default WORKFLOW_MAX_REVISION_ROUNDS=2 unless the remaining budget forces --max-revision-rounds 1 (recorded)",
+    "resumeEvidence": "(1) checkpoint → recoverInterruptedRuns restarted (replay); (2) --interrupt-at the first revision HITL that appears → process exit → second process --recover RUN_ID → awaiting_input recovered → resume → completion. If no HITL appears before completion, Resume LIVE evidence is limited to (1) + idempotent writing reuse and is reported as such.",
+    "quality": "Review findings must reference sections of THIS manuscript; style reviewer digest injection is verified from the recorded style prompt (rev-1 redundancy report); fact / academic prompts must not contain the digest; Revision patches are checked against the 17 concept markers, negative controls, citation whitelist and numbers-outside-quotes BEFORE and AFTER revision; the final PDF revision must equal the revision the completion summary reports."
+  },
+  "ideaToPaper": {
+    "driver": "idea-planner-live.mjs",
+    "idea": "面向超导量子纠错实验的统一指标比较框架：在同一口径下比较表面码规模扩展与突破盈亏平衡两条路线",
+    "stop": "at hitl.outline_confirm (run cancelled); research.idea + research.feasibility + outline.plan are real; writing is NOT executed (no experiment data → Author Decision / Experiment Requirement boundary)",
+    "checks": "Planner argument fields parsed / dropped as diagnosed; roles derived; every develop section receives relevant formal evidence; compare gets the whole formal pool; pinned evidenceIds only accepted when canonical + formal; partial only in develop/compare; unassigned reported honestly; evidence_insufficient diagnostics accurate"
+  },
+  "topicToPdf": {
+    "rule": "attempted only if ≥ 24 runtime tasks remain after priorities 1–4 (research.plan 1 + matrix ≈ 4 + synthesis ≈ 6 + outline 1 + writing ≈ 6 + review 3 + revision ≥ 3); otherwise reported BLOCKED (budget) with the external-dependency status recorded (SearXNG not running; OpenAlex / arXiv / Crossref reachable; Semantic Scholar 429) and NOT reported as Topic → PDF PASS"
+  },
+  "budget": {
+    "maxRuntimeTasksThisRound": 40,
+    "ledger": "D:/PaperTeamData/M13_7_11/model-budget.json (--budget-file, --max-tasks 40) shared by every driver; one reservation per runtime.runAgent before dispatch; assistant turns recorded per task",
+    "plan": { "ab": "7 + 7 = 14 Writer tasks", "tail": "≤ 14 (review 3 × rounds + revision targets + grounding judges)", "ideaToPaper": "3 (+ grounding judges if any)", "reserve": "≥ 9 for retries / an optional Topic → Literature probe" },
+    "retryPolicy": "stage-level retries follow production WORKFLOW_STAGE_MAX_ATTEMPTS; failed records kept and reported; no re-sampling for unfavourable content; no extension beyond 40"
+  },
+  "evaluation": {
+    "classifier": "backend/src/review/academicRedundancyClassifier.ts DEFAULT_CLASSIFIER_THRESHOLDS (M13.7.9 frozen) with roles from resolveArgumentUnits(frozen outline + synthesis) for BOTH arms (roles are a property of the outline, not of the arm); metric A = restatedCharShare; metric B = harmful share lower / upper bound; classes M / L / P / S / X / E / uncertain",
+    "mustRetain": "scripts/acceptance/fixtures/m13-7-9/protocol.json#evaluation.mustRetain.qec + concept-markers-qec.json (math-mode-aware count + plain count both reported); negative controls E11 / E12 must not be escalated to fact",
+    "citations": "every \\cite key ∈ writing-plan allowed set (B) / references.bib (both); 0 unknown keys",
+    "factAudit": "manual reading of every mechanism / result sentence against the abstract quotes; B must not add red flags A does not have (protocol.json#evaluation.factAuditRedFlags.qec)",
+    "doubleConclude": "future-directions: ≥ 1 future-direction / open-problem statement with speculative hedging; 0 sentences classified M against develop sections; no full route summary; ≤ 1 limitation sentence; conclusion: answers the survey question, ≤ 1 limitation sentence, no mechanism re-explanation; both: cite keys within their allowed sets; verdict LIVE PASS only if all hold in Arm B, else LIVE PARTIAL / FAIL with the sentences quoted",
+    "discriminativeFloor": "Arm A with < 3 harmful sentences or metric-B lower bound < 5 % = low discrimination: the percentage change is reported but not used as a pass criterion",
+    "gatePerArm": "B.harmfulShareLower ≤ 0.70 × A.harmfulShareLower on a topic above the floor AND 17 / 17 concepts present (math-aware) AND 0 unknown keys AND 0 negative-control escalations AND no new quote-exceeding mechanism claim that A does not also have AND no section that skips its task by writing short",
+    "noTuning": "no prompt, fixture, marker, threshold, classifier rule or driver edit after the first LIVE request of this round; unfavourable outputs retained; no sample selection. A technical bug found after the freeze keeps the frozen numbers as gate figures; fixed figures are a supplementary report only."
+  },
+  "verdictRules": {
+    "PASS": "A/B credible improvement with 17/17 facts in B and no new fact / citation violation; double-conclude LIVE PASS; tail completes Review + Gate with real Revision behaviour evidence (or honest skip when no revisable findings) and a PDF aligned to the reported revision; idea_to_paper Planner + allocation real-model evidence; Resume evidence (1)+(2) or (1) with reason; regressions + CI green; Topic → PDF either executed or its blocker shown to be external / budget with the workflow part marked PARTIAL",
+    "PARTIAL": "code and local flows fine but a real E2E, the quality comparison, Revision behaviour or a fact boundary still has an important gap",
+    "FAIL": "severe regression, fact pollution, state corruption, or the writing stage fails under the correct configuration"
+  }
+}

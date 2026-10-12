@@ -1,0 +1,146 @@
+{
+  "title": "超导量子纠错实验综述：表面码规模扩展与突破盈亏平衡的逻辑量子比特",
+  "abstract": "容错量子计算要求逻辑量子比特性能超越其物理 constituents 的错误率。近年来超导平台上出现了两条代表性实验路线：一是通过扩大表面码晶格实现逻辑错误率随规模提升而抑制，二是演示纠错后逻辑量子比特性能突破盈亏平衡点。本文基于四篇代表性实验文献，梳理两条路线的机制与代表性结果，从实时解码与反馈、编码载体与规模、性能指标口径与限制性错误来源四个维度进行对照分析，指出两条路线在指标定义、平台与实验设置上的差异导致其性能尚不可直接横向比较，并展望在统一任务与指标下复现比较这两条路线的未来工作。",
+  "sections": [
+    {
+      "id": "introduction",
+      "file": "introduction.tex",
+      "title": "引言",
+      "targetLengthWords": 400,
+      "keyPoints": [
+        "界定综述范围：超导平台上的量子纠错实验",
+        "指出两条路线：表面码规模扩展与突破盈亏平衡",
+        "说明综述组织方式与材料边界（摘要级文献）"
+      ],
+      "argument": {
+        "role": "framing"
+      }
+    },
+    {
+      "id": "surface-scaling",
+      "file": "surface-scaling.tex",
+      "title": "表面码逻辑量子比特的规模扩展",
+      "targetLengthWords": 500,
+      "keyPoints": [
+        "表面码距离扩大对逻辑错误率的抑制作用",
+        "从低于阈值到跨阈值的实验演进（2022 至 2024）"
+      ],
+      "synthesisRefs": [
+        "SYN-0b449ea32a"
+      ],
+      "literatureRefs": [
+        "M-S001",
+        "M-S002"
+      ],
+      "argument": {
+        "role": "develop"
+      }
+    },
+    {
+      "id": "breakeven-logical-qubits",
+      "file": "breakeven-logical-qubits.tex",
+      "title": "突破盈亏平衡的逻辑量子比特实验",
+      "targetLengthWords": 500,
+      "keyPoints": [
+        "盈亏平衡的定义与实验判据",
+        "纠错后逻辑量子比特性能超越未编码对照的演示"
+      ],
+      "synthesisRefs": [
+        "SYN-bf1475eb51"
+      ],
+      "literatureRefs": [
+        "M-S003",
+        "M-S004"
+      ],
+      "argument": {
+        "role": "develop"
+      }
+    },
+    {
+      "id": "route-comparison",
+      "file": "route-comparison.tex",
+      "title": "两条实验路线的对照分析",
+      "targetLengthWords": 600,
+      "keyPoints": [
+        "实时解码与反馈维度差异",
+        "编码载体与规模维度差异",
+        "性能指标口径维度差异",
+        "限制性错误来源维度差异",
+        "强调各文指标与设置不同，不据此给出性能排序"
+      ],
+      "synthesisRefs": [
+        "SYN-17eefcd872",
+        "SYN-54a50e401c",
+        "SYN-6e09e854e9",
+        "SYN-bed50f0f92"
+      ],
+      "literatureRefs": [
+        "M-S001",
+        "M-S002",
+        "M-S003",
+        "M-S004"
+      ],
+      "argument": {
+        "role": "compare"
+      }
+    },
+    {
+      "id": "limitations",
+      "file": "limitations.tex",
+      "title": "比较局限与现有证据边界",
+      "targetLengthWords": 350,
+      "keyPoints": [
+        "两条路线的性能不可直接横向比较",
+        "材料仅为公开摘要，未在统一指标、平台与设置下复现",
+        "本综述无自有实验，比较限于文献自述口径"
+      ],
+      "synthesisRefs": [
+        "SYN-66d0e59495"
+      ],
+      "literatureRefs": [
+        "M-S001",
+        "M-S002",
+        "M-S003",
+        "M-S004"
+      ],
+      "argument": {
+        "role": "compare"
+      }
+    },
+    {
+      "id": "future-directions",
+      "file": "future-directions.tex",
+      "title": "未来方向与展望",
+      "targetLengthWords": 300,
+      "keyPoints": [
+        "在统一任务、指标与平台下复现并比较两条路线",
+        "说明该方向属于推断性展望，尚无实验验证"
+      ],
+      "synthesisRefs": [
+        "SYN-015159b660"
+      ],
+      "literatureRefs": [
+        "M-S001",
+        "M-S002",
+        "M-S003",
+        "M-S004"
+      ],
+      "argument": {
+        "role": "conclude"
+      }
+    },
+    {
+      "id": "conclusion",
+      "file": "conclusion.tex",
+      "title": "结论",
+      "targetLengthWords": 300,
+      "keyPoints": [
+        "总结两条路线的定位与互补性",
+        "重申统一比较基准尚未建立"
+      ],
+      "argument": {
+        "role": "conclude"
+      }
+    }
+  ]
+}
