@@ -1,0 +1,55 @@
+FINAL  A!=B  "{\"text\":\"See \\url{https://example.org/paper}\"}"
+    A={}
+    B={"text":"See \\url{https://example.org/paper}"}
+FINAL  A!=B  "{\"path\":\"main.tex\",\"content\":\"\\documentclass{article}\\n\\usepackage{graphicx}\\n\"}"
+    A={"path":"main.tex"}
+    B={"path":"main.tex","content":"\\documentclass{article}\n\\usepackage{graphicx}\n"}
+FINAL  A!=B  "{\"text\":\"\\underline{x} and \\upshape\"}"
+    A={}
+    B={"text":"\\underline{x} and \\upshape"}
+FINAL  A!=B  "{\"text\":\"\\u12G4\"}"
+    A={}
+    B={"text":"\\u12G4"}
+FINAL  A!=B  "{\"text\":\"x\\u12\"}"
+    A={}
+    B={"text":"x\\u12"}
+FINAL  A!=B  "{\"text\":\"x\\u\"}"
+    A={}
+    B={"text":"x\\u"}
+FINAL  A!=B  "{\"text\":\"\\uabc\"}"
+    A={}
+    B={"text":"\\uabc"}
+FINAL  A!=B  "{\"text\":\"a\\tb \\cite{x} \\url{y} \\\"q\\\" \\u00e9\"}"
+    A={}
+    B={"text":"a\tb \\cite{x} \\url{y} \"q\" é"}
+FINAL  A!=B  "{\"te\\ut\":\"v\",\"next\":1}"
+    A={}
+    B={"te\\ut":"v","next":1}
+FINAL  A!=B  "{\"a\":1,\"b\":\"\\url{x}\",\"c\":[1,2],\"d\":{\"e\":\"f\"}}"
+    A={"a":1}
+    B={"a":1,"b":"\\url{x}","c":[1,2],"d":{"e":"f"}}
+FINAL  A!=B  "{\"text\":\"\\\\\\url{x}\"}"
+    A={}
+    B={"text":"\\\\url{x}"}
+FINAL  A!=B  "{\"text\":\"\\uline{x}\"}"
+    A={}
+    B={"text":"\\uline{x}"}
+
+=== summary ===
+corpus strings: 20; prefixes checked: 588
+A (main) vs B (minimal): 12 differing prefixes, 12 of them complete inputs
+B (minimal) vs C (old patch): 0 differing prefixes through parseStreamingJson
+
+=== raw repairJson B vs C on truncated escapes ===
+"{\"text\":\"caf\\u00"
+    B="{\"text\":\"caf\\\\u00"
+    C="{\"text\":\"caf\\u00"
+"{\"text\":\"caf\\u"
+    B="{\"text\":\"caf\\\\u"
+    C="{\"text\":\"caf\\u"
+"{\"text\":\"caf\\u00e"
+    B="{\"text\":\"caf\\\\u00e"
+    C="{\"text\":\"caf\\u00e"
+
+=== partial-json throw census over corpus prefixes ===
+partial-json threw on 0 prefixes

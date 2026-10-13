@@ -92,6 +92,34 @@ export const SCENARIOS = {
 		i === 0
 			? { events: toolCallEvents("add_note", String.raw`{"text":"caf\u00e9 \u2014 ok"}`) }
 			: { events: textEvents("done") },
+	// Same inputs streamed one character per delta, to observe every intermediate parseStreamingJson state.
+	"note-url-chars": (i) =>
+		i === 0
+			? {
+					events: toolCallEvents("add_note", String.raw`{"text":"See \url{https://example.org/paper}"}`, {
+						pieces: Number.POSITIVE_INFINITY,
+					}),
+				}
+			: { events: textEvents("done") },
+	"tex-usepackage-chars": (i) =>
+		i === 0
+			? {
+					events: toolCallEvents(
+						"write_tex",
+						String.raw`{"path":"main.tex","content":"\documentclass{article}\n\usepackage{graphicx}\n"}`,
+						{ pieces: Number.POSITIVE_INFINITY },
+					),
+				}
+			: { events: textEvents("done") },
+	// A valid é split across deltas must never flicker into a literal backslash.
+	"note-u-valid-chars": (i) =>
+		i === 0
+			? {
+					events: toolCallEvents("add_note", String.raw`{"text":"café — ok"}`, {
+						pieces: Number.POSITIVE_INFINITY,
+					}),
+				}
+			: { events: textEvents("done") },
 	// Abort-during-tool scenario: first turn calls slow_tool, second turn (if reached) answers.
 	"abort-slow-tool": (i) =>
 		i === 0

@@ -1,0 +1,33 @@
+[main-patched] note-url-chars: 8 states; final=[{"text":"See \\url{https://example.org/paper}"}]
+  {}
+  {"text":""}
+  {"text":"S"}
+  {"text":"Se"}
+  {"text":"See"}
+  {"text":"See "}
+  {}
+  {"text":"See \\url{https://example.org/paper}"}
+[main-patched] tex-usepackage-chars: 13 states; final=[{"path":"main.tex","content":"\\documentclass{article}\n\\usepackage{graphicx}\n"}]
+  {}
+  {"path":""}
+  {"path":"m"}
+  {"path":"ma"}
+  {"path":"mai"}
+  {"path":"main"}
+  {"path":"main."}
+  {"path":"main.t"}
+  {"path":"main.te"}
+  {"path":"main.tex"}
+  {"path":"main.tex","content":""}
+  {"path":"main.tex"}
+  {"path":"main.tex","content":"\\documentclass{article}\n\\usepackage{graphicx}\n"}
+[main-patched] note-u-valid-chars: 9 states; final=[{"text":"café — ok"}]
+  {}
+  {"text":""}
+  {"text":"c"}
+  {"text":"ca"}
+  {"text":"caf"}
+  {"text":"café"}
+  {"text":"café —"}
+  {"text":"café — o"}
+  {"text":"café — ok"}

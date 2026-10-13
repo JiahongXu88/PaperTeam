@@ -1,0 +1,9 @@
+sdk            scenario         stop       turns     tool-received-params               tool-result
+main           note-url         stop       2         (tool not executed)                ERROR: Validation failed for tool "add_note":
+main           note-cite        stop       2         {"text":"See \\cite{knuth84}"}     noted (18 chars)
+main           note-valid       stop       2         {"text":"See \\cite{knuth84} and \ noted (48 chars)
+main           note-u-short     stop       2         (tool not executed)                ERROR: Validation failed for tool "add_note":
+main           note-u-valid     stop       2         {"text":"café — ok"}               noted (9 chars)
+main           tex-usepackage   stop       2         {"path":"main.tex"}                wrote main.tex (NO CONTENT)
+main           tex-cite         stop       2         {"path":"main.tex","content":"\\do wrote main.tex (44 chars)
+main           abort-slow-tool  error      2         errorMessage="This operation was aborted" settled.aborted=true slowTool={"started":true,"abortedSignal":true,"completed":false}

@@ -1,7 +1,10 @@
 # Pi upstream audit — standalone reproduction harness (2026-10)
 
 Deterministic, zero-cost reproductions used by
-[`PI_UPSTREAM_DEEP_AUDIT_2026_10.md`](../../PI_UPSTREAM_DEEP_AUDIT_2026_10.md).
+[`PI_UPSTREAM_DEEP_AUDIT_2026_10.md`](../../PI_UPSTREAM_DEEP_AUDIT_2026_10.md) and
+[`PI_UPSTREAM_CONTRIBUTION_REVIEW_2026_10.md`](../../PI_UPSTREAM_CONTRIBUTION_REVIEW_2026_10.md).
+The candidate upstream patch, its tests and all before/after evidence are in
+[`review/`](review/README.md) (**REVIEW REQUIRED — NOT SUBMITTED UPSTREAM**).
 Nothing here depends on PaperTeam code: the driver talks to the public
 `@earendil-works/pi-coding-agent` SDK and to an in-process fake
 OpenAI-compatible SSE server.
@@ -51,6 +54,7 @@ node run-scenario.mjs --sdk <dir> --scenario tool-then-500-always --retry --retr
 | `note-u-valid` | `café —` | must stay a valid escape |
 | `tex-usepackage` | `write_tex` with `content` holding `\usepackage` | `content` silently dropped (bug) |
 | `tex-cite` | `write_tex` with `\documentclass` / `\cite` only | content preserved (control) |
+| `note-url-chars`, `tex-usepackage-chars`, `note-u-valid-chars` | the same inputs streamed **one character per delta** | the driver's `intermediateArgs` lists every distinct parsed-arguments state seen on `toolcall_delta`; used to show that the C1 fix changes only the final state (see `review/`) |
 | `abort-slow-tool` + `--abort-during-tool` | tool call to a signal-aware sleep, `session.abort()` 1.5 s later | final `stopReason` is `error` + `This operation was aborted` (known upstream bug, PR #8635) |
 | `error-500-then-ok`, `error-500-always`, `tool-then-500-then-ok`, `tool-then-500-always` | HTTP 500 sequences | agent-level retry events, `getContextUsage()` after retry omissions |
 | `stall-no-headers`, `stall-after-headers`, `stall-after-headers-pings`, `drop-mid-stream` | silence before headers, after headers, with SSE comment pings, TCP destroy mid-stream | which timeout fires, error text |

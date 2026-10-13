@@ -159,11 +159,22 @@ const { session } = await createAgentSession({
 });
 
 const events = [];
+// Distinct intermediate tool-call argument snapshots seen on toolcall_delta (what a UI would show mid-stream).
+const intermediateArgs = [];
 const t0 = Date.now();
 const ev = (type, data) => events.push({ t: Date.now() - t0, type, ...data });
 let abortTimer;
 session.subscribe((e) => {
 	switch (e.type) {
+		case "message_update": {
+			const ame = e.assistantMessageEvent;
+			if (ame?.type === "toolcall_delta") {
+				const block = ame.partial?.content?.[ame.contentIndex];
+				const snapshot = JSON.stringify(block?.arguments ?? null);
+				if (intermediateArgs[intermediateArgs.length - 1] !== snapshot) intermediateArgs.push(snapshot);
+			}
+			break;
+		}
 		case "tool_execution_start":
 			ev(e.type, { toolName: e.toolName, args: e.args });
 			if (abortDuringTool && !abortTimer) {
@@ -265,6 +276,7 @@ const summary = {
 	finalErrorMessage: last?.errorMessage ?? null,
 	assistantTurns: assistant.length,
 	toolReceivedParams: received,
+	intermediateArgs,
 	slowToolState,
 	serverRequests: server.requests.map((r) => ({
 		index: r.index,

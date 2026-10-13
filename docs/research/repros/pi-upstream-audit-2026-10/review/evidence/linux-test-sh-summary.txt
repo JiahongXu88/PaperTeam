@@ -1,0 +1,51 @@
+# Linux `./test.sh` ledger — Ubuntu 24.04, Node 22.20.0, 4 vCPU, user-space rg/fd/rustup, pi-env daemon built
+
+All runs use upstream `./test.sh` unmodified (isolated HOME, no API keys). "FAIL" lines are verbatim from the vitest output.
+
+## Run 1 — unpatched upstream main 7d75a0e3e
+
+test.sh exit 0
+FAIL lines: 0
+pi-ai:            144 files passed | 27 skipped;  1342 tests passed | 868 skipped
+pi-coding-agent:  292 files passed | 6 skipped;   2650 tests passed | 50 skipped
+(all other packages passed)
+
+## Run 2 — patched, first commit of this change (eb8e28f00 = json-parse fix + 9 tests)
+
+test.sh exit 1
+FAIL  packages/ai/test/radius-oauth.test.ts > Radius OAuth > exchanges the browser callback code before showing the sign-in page
+      Error: Test timed out in 30000ms. + Unhandled Rejection: TypeError: fetch failed (SocketError: other side closed, local OAuth test server)
+FAIL  packages/coding-agent/test/auth-storage.test.ts > AuthStorage > keeps a coalesced reload alive while another credential reader is waiting
+      AssertionError: expected { type: 'api_key', key: 'old' } to deeply equal { type: 'api_key', key: 'new' }
+pi-ai:            1 failed | 144 passed | 27 skipped files;  1 failed | 1350 passed | 868 skipped tests  (json-parse.test.ts passed)
+pi-coding-agent:  1 failed | 291 passed | 6 skipped files;   1 failed | 2649 passed | 50 skipped tests
+
+## Run 3 — patched eb8e28f00, full rerun
+
+test.sh exit 1
+Same two FAIL lines as run 2.
+
+## Isolation (single-file reruns, same machine)
+
+patched tree eb8e28f00:
+  packages/ai  radius-oauth.test.ts       x3 -> 4/4 passed each time
+  coding-agent auth-storage.test.ts       x3 -> fail, fail, pass ; x5 -> pass, fail, fail, fail, pass
+UNPATCHED pi-ai source (git checkout HEAD~1 -- json-parse.ts) + rebuilt pi-ai dist, same machine:
+  packages/ai  radius-oauth.test.ts       x3 -> 4/4 passed each time
+  coding-agent auth-storage.test.ts       x5 -> fail, fail, pass, pass, fail
+Windows 11, patched tree:
+  coding-agent auth-storage.test.ts       x3 -> 28 passed | 2 skipped each time
+
+Neither file imports packages/ai/src/utils/json-parse.ts. Failure rate is the same with and without the patch.
+Conclusion: pre-existing flakiness of two upstream tests on this host (lock/reload race; local OAuth server under
+full-suite load). Not caused by, and not fixable by, this change. Not skipped, not modified.
+
+## Run 4 — final patch (v3 branch, dc32372af = json-parse fix + 7 tests, emoji literal removed)
+
+npm run check: exit 0
+targeted: json-parse + anthropic-sse-parsing + assistant-message-frame + openai-responses-partial-json-cleanup -> 4 files, 42 tests passed
+test.sh exit 1
+FAIL  packages/coding-agent/test/auth-storage.test.ts > AuthStorage > keeps a coalesced reload alive while another credential reader is waiting
+pi-ai:            145 files passed | 27 skipped;  1349 tests passed | 868 skipped   (whole pi-ai package green, incl. radius-oauth this time)
+pi-coding-agent:  1 failed | 291 passed | 6 skipped files;  1 failed | 2649 passed | 50 skipped tests
+(all other packages passed: agent 91, mcp 407, codemode 212, durable 1228 x2, env 86, tui 55, telemetry 45, chord 15)
