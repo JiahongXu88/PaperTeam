@@ -156,7 +156,10 @@ export function deriveClaimGroundingWeakeningAuthorizations(
       ...base,
       reason: `claim grounding r${report.round}：${claim.verdict}（无已核验证据支撑）`,
     });
-    if (/\d/.test(claim.claim)) {
+    // M13 Final Closure（A1）：拒绝 / 不确定性立场且数值全部锚定正式证据的论断——
+    // 数值不是凭空的，不铸「只许删除数值」授权（resolution 走 author_decision_required）
+    const anchoredRefutation = claim.stance !== undefined && claim.numbersAnchored === true;
+    if (/\d/.test(claim.claim) && !anchoredRefutation) {
       entries.push({
         kind: "remove_unsupported_detail",
         ...base,

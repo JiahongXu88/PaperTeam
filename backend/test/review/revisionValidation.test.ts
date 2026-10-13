@@ -331,6 +331,52 @@ describe("evaluateRevisionValidation", () => {
     expect(result.rejectedItems?.[0]?.evidence[0]).toContain("gao2023survey");
   });
 
+  it("M13 Final Closure A2：修订引入证据池 / 参考文献 / 修订前稿件都没有的具名文献 → rejected（unsupported_named_reference / named_reference）", () => {
+    const after = BEFORE_TEX + "\n本文未覆盖 Krinner 等 2022 年的阈值实验等奠基性工作。";
+    const result = evaluateRevisionValidation(
+      inputOf({
+        currentFiles: [{ file: "sections/experiments.tex", content: after }],
+        referenceVocabulary: ["RAG 可能改善事实准确性", "gao2023survey A survey of RAG"],
+      }),
+    );
+    expect(result.items[0]?.status).toBe("rejected");
+    expect(result.items[0]?.reasonCodes).toContain("unsupported_named_reference");
+    expect(result.items[0]?.category).toBe("named_reference");
+    expect(result.namedReferences?.map((entry) => entry.term)).toEqual(["krinner"]);
+    expect(result.rejectedItems?.[0]?.category).toBe("named_reference");
+    expect(result.rejectedItems?.[0]?.evidence[0]).toContain("Krinner");
+    expect(result.blocked).toBe(true);
+  });
+
+  it("M13 Final Closure A2：具名词已在证据池 / 参考文献 / 其它文件修订前文本中 → 不拒绝；未提供词表 → 不检查", () => {
+    const after = BEFORE_TEX + "\n该结论与 Gao 等的综述一致。";
+    const clean = evaluateRevisionValidation(
+      inputOf({
+        currentFiles: [{ file: "sections/experiments.tex", content: after }],
+        referenceVocabulary: ["Gao et al. A survey of RAG"],
+      }),
+    );
+    expect(clean.items[0]?.status).toBe("validated");
+    expect(clean.namedReferences).toEqual([]);
+    const otherFile = evaluateRevisionValidation(
+      inputOf({
+        previousFiles: [
+          { file: "sections/experiments.tex", content: BEFORE_TEX },
+          { file: "sections/related.tex", content: "Gao 等人的综述…" },
+        ],
+        currentFiles: [
+          { file: "sections/experiments.tex", content: after },
+          { file: "sections/related.tex", content: "Gao 等人的综述…" },
+        ],
+        referenceVocabulary: [],
+      }),
+    );
+    expect(otherFile.items[0]?.status).toBe("validated");
+    const unchecked = evaluateRevisionValidation(inputOf({ currentFiles: [{ file: "sections/experiments.tex", content: after }] }));
+    expect(unchecked.namedReferences).toBeUndefined();
+    expect(unchecked.items[0]?.status).toBe("validated");
+  });
+
   it("M9.10 Phase 4：干净修订 category=null / rejectedItems 空；describe 含分类计数", () => {
     const clean = evaluateRevisionValidation(inputOf());
     expect(clean.items[0]?.category).toBeNull();

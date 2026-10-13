@@ -23,6 +23,7 @@ import { isFormalEvidence } from "../evidence/EvidenceSelectionService.js";
 import { resolveEvidenceCitationKey } from "../citation/bibliography.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 import { isOwnResultClaim } from "../citation/citationIntent.js";
+import { assessPartialRefutation, classifyClaimStance, distinctiveNumbers, numbersAnchoredInEvidence, type ClaimStance } from "./claimStance.js";
 
 /** Repair Context 的候选证据上限（§9：bounded Top-K，3~5） */
 export const CLAIM_REPAIR_TOP_K = 5;
@@ -201,19 +202,7 @@ export function meetsEvidenceSupportQuality(record: EvidenceRecord, claimText: s
  * 剔除纯年份）必须在证据文本中出现至少一个——数值 claim 与不含该数值的
  * 词面相似证据不得短路（「词面相关 ≠ 支撑该数值」）。
  */
-export function distinctiveNumbers(text: string): string[] {
-  const matches = text.match(/\d+(?:\.\d+)?/g) ?? [];
-  return matches.filter((value) => {
-    if (value.includes(".")) {
-      return true;
-    }
-    if (value.length < 3) {
-      return false;
-    }
-    const numeric = Number.parseInt(value, 10);
-    return !(numeric >= 1900 && numeric <= 2099); // 纯年份不构成特征数值
-  });
-}
+export { distinctiveNumbers };
 
 /** bibliography key → sourceId（claim 点名文献的源映射；无 sourceId 条目跳过） */
 function bibKeySourceIndex(bibEntries: readonly ClaimGroundingBibEntry[]): Map<string, string> {
@@ -395,6 +384,14 @@ export interface ClaimGroundingEntry {
   /** Deterministic correction of an overstrong Reviewer binding (legacy optional). */
   reviewerVerdict?: FactVerdict;
   supportBoundary?: string;
+  /**
+   * M13 Final Closure（A1）：claim 立场——refutation（拒绝一条可比性 / 推断 / 等同命题）
+   * 或 uncertainty（声明证据不足以判断）。只在非 assertion 时写入；assertion（含否定
+   * 形态的事实断言）不写字段，旧产物无此字段。
+   */
+  stance?: Exclude<ClaimStance, "assertion">;
+  /** stance 存在时：claim 的特征数字是否全部锚定在正式证据池（无数字 = true） */
+  numbersAnchored?: boolean;
   /** 绑定证据解析出的 citation key（与 Writer 引用 / coverage gate 同源解析链） */
   citationKey?: string;
   /** UNSUPPORTED / CONTRADICTED 的修复候选（formal 池词面 Top-K；可空） */
@@ -471,6 +468,7 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
   const formalById = new Map(
     input.formalEvidence.filter((record) => isFormalEvidence(record)).map((record) => [record.id, record]),
   );
+  const formalPool = [...formalById.values()];
   const entries: ClaimGroundingEntry[] = [];
   const unsupportedClaimIds: string[] = [];
   let supported = 0;
@@ -489,13 +487,40 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
       check.evidenceId !== undefined ? formalById.get(check.evidenceId) : undefined;
     const evidenceFormal = evidenceRecord !== undefined;
     let supportBoundary: string | undefined;
+    let stanceFields: Pick<ClaimGroundingEntry, "stance" | "numbersAnchored"> = {};
     if ((check.verdict === "SUPPORTED" || check.verdict === "PARTIALLY_SUPPORTED") && evidenceRecord !== undefined) {
-      if (!meetsEvidenceSupportQuality(evidenceRecord, check.claim)) {
+      // M13 Final Closure（A1）：对 partial 命题的拒绝 / 不确定性陈述——含数字但数字全部
+      // 锚定在正式证据池、且与被绑定的 partial 记录词项重叠——不是「凭 partial 断言数值」，
+      // 不走 UNSUPPORTED 改判；按 PARTIALLY_SUPPORTED 保留（不升为 SUPPORTED）。四条件任一
+      // 不满足即回落到 M11.3 的原有口径（见 claimStance.assessPartialRefutation）。
+      const refutation =
+        evidenceRecord.supportStrength === "partial" &&
+        claimRequiresDirectSupport(check.claim) &&
+        evidenceRecord.verificationLevel !== "metadata" &&
+        !isOwnResultClaim(check.claim)
+          ? assessPartialRefutation(check.claim, evidenceRecord, formalPool)
+          : null;
+      if (refutation !== null && refutation.qualifies && refutation.stance !== "assertion") {
+        check.verdict = "PARTIALLY_SUPPORTED";
+        supportBoundary = refutation.reason;
+        stanceFields = { stance: refutation.stance, numbersAnchored: refutation.numbersAnchored };
+      } else if (!meetsEvidenceSupportQuality(evidenceRecord, check.claim)) {
         check.verdict = "UNSUPPORTED";
         supportBoundary = "Bound evidence cannot support this claim's strength, numeric scope or result provenance";
       } else if (check.verdict === "SUPPORTED" && evidenceRecord.supportStrength === "partial") {
         check.verdict = "PARTIALLY_SUPPORTED";
         supportBoundary = "Partial evidence cannot establish the complete claim; verify the covered subclaim against its quote";
+      }
+    }
+    if (isUnsupportedVerdict(check.verdict)) {
+      // UNSUPPORTED / CONTRADICTED 的拒绝 / 不确定性立场也记录（resolution 阶梯与授权铸造据此
+      // 不把「数值全部来自正式证据的限制性论断」当作凭空数值删除）
+      const stance = classifyClaimStance(check.claim).stance;
+      if (stance !== "assertion") {
+        stanceFields = {
+          stance,
+          numbersAnchored: numbersAnchoredInEvidence(check.claim, formalPool).anchored,
+        };
       }
     }
     if (check.verdict === "SUPPORTED" || check.verdict === "PARTIALLY_SUPPORTED") {
@@ -541,6 +566,7 @@ export function computeClaimGroundingReport(input: ClaimGroundingInput): ClaimGr
       claim: check.claim,
       verdict: check.verdict,
       ...(supportBoundary !== undefined ? { reviewerVerdict: original.verdict, supportBoundary } : {}),
+      ...stanceFields,
       ...(check.evidenceId !== undefined ? { evidenceId: check.evidenceId } : {}),
       evidenceFormal,
       ...(evidenceRecord !== undefined

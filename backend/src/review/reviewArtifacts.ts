@@ -214,6 +214,26 @@ export class ReviewArtifactStore {
     return `survey-writing-r${round}.json`;
   }
 
+  /**
+   * M13 Final Closure（任务 B）：带内复核的额外 academic 样本逐份落盘
+   * （academic-confirmation-r{round}-s{index}.json；不与 review-r*-academic.json 撞名）。
+   */
+  async saveAcademicConfirmationSample(
+    projectId: string,
+    round: number,
+    index: number,
+    sample: unknown,
+  ): Promise<string> {
+    const fileName = `academic-confirmation-r${round}-s${index}.json`;
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), {
+      round,
+      sampleIndex: index,
+      savedAt: new Date().toISOString(),
+      ...(typeof sample === "object" && sample !== null ? (sample as Record<string, unknown>) : { sample }),
+    });
+    return `reviews/${fileName}`;
+  }
+
   async saveSurveyWriting(
     projectId: string,
     round: number,

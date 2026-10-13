@@ -262,6 +262,8 @@ export async function startBackend(): Promise<void> {
       maxRevisionRounds: config.review.maxRevisionRounds,
       academicPassScore: config.review.academicPassScore,
       styleRiskMax: config.review.styleRiskMax,
+      academicConfirmationBand: config.review.academicConfirmationBand,
+      academicConfirmationSamples: config.review.academicConfirmationSamples,
       reviewConcurrency: config.review.reviewConcurrency,
       reviewSectionLimit: config.review.reviewSectionLimit,
       revisionTask: config.review.revisionTask,

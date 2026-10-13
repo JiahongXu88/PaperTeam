@@ -157,7 +157,19 @@ import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readPlanChain } from "../agents/researchPlan.js";
 import { readFeasibilityReport, type FeasibilityService } from "../agents/FeasibilityService.js";
-import type { ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
+import type { ModeReviewResult, ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
+import {
+  ACADEMIC_CONFIRMATION_SAMPLES_MAX,
+  aggregateAcademicSamples,
+  shouldConfirmAcademicScore,
+  type AcademicScoreConfirmation,
+} from "../review/academicConfirmation.js";
+import {
+  buildReferenceVocabulary,
+  describeIntroducedNamedReferences,
+  findIntroducedNamedReferences,
+} from "../review/namedReferenceGuard.js";
+import { annotateOutlinePartialKeyPoints } from "../writer/partialKeyPoints.js";
 import type { CitationService, CitationReport } from "../citation/CitationService.js";
 import {
   buildBibliographyFromSources,
@@ -370,6 +382,9 @@ export interface WorkflowServices {
     maxRevisionRounds: number;
     academicPassScore: number;
     styleRiskMax: number;
+    /** M13 Final Closure（任务 B）：academicScore 带内复核带宽 / 额外采样上限（缺省 0 = 关闭） */
+    academicConfirmationBand?: number;
+    academicConfirmationSamples?: number;
     /** 单节审阅节内重试的退避（毫秒；缺省 SECTION_REVIEW_BACKOFF_MS，测试可置 0） */
     sectionRetryBackoffMs?: readonly number[];
     /** section review 有界并发度（PAPERTEAM_REVIEW_CONCURRENCY；活跃模型调用上限） */
@@ -512,7 +527,7 @@ function reviewRunStageInner(
         : renderExperimentPolicyLines(await services.experimentPackages.experimentPolicy(ctx.projectId));
       // M13.7.10：写作期生成的只读学术重复报告（修订号一致才注入 style 模式；不进 Gate）
       const redundancyDigest = await buildRedundancyDigest(services, ctx.projectId, revision);
-      const results = await services.reviewer.reviewAll({
+      const reviewParams = {
         projectId: ctx.projectId,
         manuscriptDigest: digest,
         evidence,
@@ -525,7 +540,35 @@ function reviewRunStageInner(
         ...(targetExpectations !== undefined ? { targetExpectations } : {}),
         ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
         ...(redundancyDigest !== undefined ? { redundancyDigest } : {}),
-      });
+      };
+      const results = await services.reviewer.reviewAll(reviewParams);
+
+      // M13 Final Closure（任务 B）：academicScore 带内复核——主样本分数落在阈值对称带内时
+      // 追加有界独立采样（≤ 2 份）取中位数；事实类 critical/major 并入、意见类须跨样本重现。
+      // 不触及 Gate 阈值 / 规则集与双层终态判定（见 review/academicConfirmation.ts）。
+      const confirmationPolicy = {
+        band: services.review.academicConfirmationBand ?? 0,
+        extraSamples: Math.min(services.review.academicConfirmationSamples ?? 0, ACADEMIC_CONFIRMATION_SAMPLES_MAX),
+        threshold: services.review.academicPassScore,
+      };
+      let academicConfirmation: AcademicScoreConfirmation | undefined;
+      const primaryAcademic = results.find((result) => result.mode === "academic");
+      if (primaryAcademic !== undefined && shouldConfirmAcademicScore(primaryAcademic.overallScore, confirmationPolicy)) {
+        const extras: ModeReviewResult[] = [];
+        for (let index = 0; index < confirmationPolicy.extraSamples; index += 1) {
+          if (ctx.signal.aborted) {
+            break;
+          }
+          const extra = await services.reviewer.reviewMode({ ...reviewParams, mode: "academic" });
+          extras.push(extra);
+        }
+        const aggregated = aggregateAcademicSamples({ primary: primaryAcademic, extras, policy: confirmationPolicy });
+        academicConfirmation = aggregated.confirmation;
+        results.splice(results.indexOf(primaryAcademic), 1, aggregated.result);
+        ctx.log(
+          `[review] academic 带内复核：主样本 ${aggregated.confirmation.primaryScore} ∈ [${confirmationPolicy.threshold - confirmationPolicy.band}, ${confirmationPolicy.threshold + confirmationPolicy.band})，额外 ${extras.length} 份 → 样本 ${aggregated.confirmation.samples.map((sample) => sample.overallScore ?? "null").join("/")}，中位数 ${aggregated.confirmation.aggregatedScore}；并入事实类 ${aggregated.confirmation.mergedIssues.factClass} / 重现意见类 ${aggregated.confirmation.mergedIssues.opinionClassReproduced} / 丢弃单样本意见类 ${aggregated.confirmation.mergedIssues.opinionClassDropped}`,
+        );
+      }
 
       // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
       // 「countCompletions + 1」在第二个 run 里与既有文件名撞号的问题
@@ -534,8 +577,19 @@ function reviewRunStageInner(
       for (const result of results) {
         reportPaths.push(await services.reviewer.saveReport(ctx.projectId, round, result));
       }
+      if (academicConfirmation !== undefined) {
+        for (const [index, sample] of academicConfirmation.samples.entries()) {
+          if (index === 0) {
+            continue; // 主样本已随 review-r{round}-academic.json（聚合后）落盘
+          }
+          await services.reviewArtifacts.saveAcademicConfirmationSample(ctx.projectId, round, index, sample);
+        }
+      }
       const summary = aggregateReviews(results, round, reportPaths);
       summary.reviewedRevision = revision;
+      if (academicConfirmation !== undefined) {
+        summary.academicConfirmation = academicConfirmation;
+      }
       // M9.7.6 Claim Grounding：fact claims 的确定性证据绑定整理（复用 verdict，
       // 无新 LLM 判定）。citation key 解析与 Writer 引用 / coverage gate 同源。
       // M11.2.3：先于 summary 落盘计算——rootCauseKey 标注（D-2 根因口径）要
@@ -656,6 +710,16 @@ function reviewRunStageInner(
         academicScore: summary.scores.academicScore ?? -1,
         styleRisk: summary.scores.styleRisk ?? -1,
         unsupportedCriticalClaims: summary.unsupportedCriticalClaims,
+        ...(academicConfirmation !== undefined
+          ? {
+              academicConfirmation: {
+                primaryScore: academicConfirmation.primaryScore,
+                samples: academicConfirmation.samples.map((sample) => sample.overallScore),
+                aggregatedScore: academicConfirmation.aggregatedScore,
+                mergedIssues: academicConfirmation.mergedIssues,
+              },
+            }
+          : {}),
         // M11.2.3：披露口径拆分 + 根因标注计数（trace / 报告可观测）
         ...(claimGrounding.unsupportedClaims > 0
           ? {
@@ -2153,6 +2217,24 @@ function revisionReviseStage(
                 for (const finding of fact.formulaChanges) failures.push({ code: "unauthorized_formula_change", detail: `${finding.before.slice(0, 90)} → ${finding.after.slice(0, 90)}: ${finding.reason}` });
               }
             }
+            // M13 Final Closure（A2）：修订新引入、证据池 / 参考文献 / 修订前稿件都没有的具名文献 /
+            // 作者 / 实体（Reviewer finding 文本经修订污染正文的确定性信号）→ 候选级拒绝 + 修复通道
+            {
+              const introducedNames = findIntroducedNamedReferences({
+                before: fileBefore,
+                after: candidate,
+                allowedTexts: [
+                  ...(baselineFiles ?? []).filter((file) => file.file !== target.relativePath).map((file) => file.content),
+                  ...buildReferenceVocabulary({ evidence, bibEntries: bibliography }),
+                ],
+              });
+              if (introducedNames.length > 0) {
+                failures.push({
+                  code: "unsupported_named_reference",
+                  detail: `UNSUPPORTED_NAMED_REFERENCE: 修订引入证据池 / 参考文献 / 修订前稿件中都不存在的具名文献或实体——${describeIntroducedNamedReferences(introducedNames)}。审稿意见不是事实证据：删除该提及或改为不具名的限制表述，其余逐字保留`,
+                });
+              }
+            }
             const originalKeys = new Set(extractCitationKeys(resolvedSpan.file, resolvedSpan.content).keys);
             const candidateKeys = new Set(extractCitationKeys(resolvedSpan.file, result.latex).keys);
             for (const key of originalKeys) {
@@ -2187,7 +2269,7 @@ function revisionReviseStage(
               proposedReplacementHash: revisionSourceHash(result.latex.trim()), afterFileHash: revisionSourceHash(candidate),
               scope: { ok: !failures.some((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text"), violations: failures.filter((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text").map((failure) => failure.detail) },
               workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
-              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
+              fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unsupported_named_reference", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unsupported_named_reference", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unsupported_named_reference", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
               citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },
               evidence: { ok: true, violations: [] }, apply: { ok: false, status: "rejected" }, overall: "fail", failedStage: "candidate_validation",
               rootViolationIds: failuresKey, modelRole: "revision.primary", finalStatus: attempt === 2 ? "exhausted" : "rejected",
@@ -2244,6 +2326,36 @@ function revisionReviseStage(
           }
           // The final applied PatchValidationRecord is appended below. Earlier failed
           // records remain immutable so revision.validate can move them to attemptHistory.
+        }
+        // M13 Final Closure（A2）：摘要目标不经过候选 patch 管线——在此做具名实体守卫（真实样本：
+        // reviewer 点名「阈值实验、早期重复码演示」经修订写进摘要限制句）。一次有界修复；仍失败则
+        // 保留原摘要（targetChanged=false → 条目按 writer_unchanged 归层，下一轮复审再裁）。
+        if (isAbstractTarget && result.latex.trim() !== "" && result.latex.trim() !== target.currentLatex.trim()) {
+          const manuscriptFiles = (await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision))) ?? [];
+          const abstractAllowed = [
+            ...manuscriptFiles.map((file) => file.content),
+            ...buildReferenceVocabulary({ evidence, bibEntries: bibliography }),
+          ];
+          let introducedNames = findIntroducedNamedReferences({ before: target.currentLatex, after: result.latex, allowedTexts: abstractAllowed });
+          if (introducedNames.length > 0) {
+            ctx.log(`[revision] 摘要修订引入无据具名实体：${describeIntroducedNamedReferences(introducedNames)}；执行一次有界修复`);
+            const repaired = await services.writer.reviseSection({
+              ...writerParams,
+              currentLatex: result.latex,
+              patchRepairContext: [
+                "上一版摘要修订引入了证据池 / 参考文献 / 稿件中都不存在的具名文献或实体：",
+                describeIntroducedNamedReferences(introducedNames),
+                "审稿意见不是事实证据。请删除这些具名提及，或改为不点名的限制表述（如「未覆盖其他类型的实验工作」）；其余内容逐字保留，不新增任何文献、数字或机制。",
+              ].join("\n"),
+            });
+            introducedNames = findIntroducedNamedReferences({ before: target.currentLatex, after: repaired.latex, allowedTexts: abstractAllowed });
+            if (introducedNames.length === 0) {
+              result = { ...repaired, externalOutcomes: result.externalOutcomes ?? repaired.externalOutcomes };
+            } else {
+              ctx.log(`[revision] 摘要修复后仍含无据具名实体（${introducedNames.map((entry) => entry.surface).join("、")}）——保留原摘要，不写入`);
+              result = { ...result, latex: target.currentLatex };
+            }
+          }
         }
         // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）。
         // M9.7.6 P0：一条 finding 的 section 引用可能命中多个修订目标（如
@@ -2687,6 +2799,11 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
         evidenceRecords,
         patchEvidenceIds: patchArtifact?.records.flatMap(record => record.evidenceIds) ?? [],
         evidenceLinks,
+        // M13 Final Closure（A2）：具名实体允许词表 = 证据池 + 参考文献（审稿意见 / 计划文本不在内）
+        referenceVocabulary: buildReferenceVocabulary({
+          evidence: evidenceRecords,
+          bibEntries: citationReport?.static.bibEntries ?? [],
+        }),
       });
       const finalizedPatchArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, revision);
       if (finalizedPatchArtifact !== null) {
@@ -3669,7 +3786,10 @@ async function buildClaimResolutionContext(
   // M11.3：键归一化 + entryId（M-{sourceId}）→ sourceId——M11.2.3 的投影因
   // 键形不一致（sections/x.tex vs x.tex）与 entryId 前缀从未真正命中。
   const sectionCitedSourceIds = await projectOutlineCitedSourceIds(services, projectId);
-  return { sources: groundability, sectionCitedSourceIds, targetedSearchBudget: 0 };
+  // M13 Final Closure（A1）：正式证据池进 context——拒绝 / 不确定性立场的含数字 claim
+  // 只有在数值全部锚定正式证据时才走 author_decision_required（否则照常数值阶梯）
+  const formalEvidence = (await services.evidenceSelection.selectForWriting(projectId)).formal;
+  return { sources: groundability, sectionCitedSourceIds, targetedSearchBudget: 0, formalEvidence };
 }
 
 /** M11.3：outline literatureRefs → { 归一化章节键 → sourceIds }（两处消费共用） */
@@ -5360,7 +5480,16 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       const allFormal = argumentUnitsEnabled
         ? (await services.evidenceSelection.selectForWriting(ctx.projectId, { limit: Number.MAX_SAFE_INTEGER })).formal
         : evidence;
-      const units = argumentUnitsEnabled ? resolveArgumentUnits({ outline }) : undefined;
+      // M13 Final Closure（A3）：Planning → Writing 契约边界——与 partial 证据待核验命题词面重合的
+      // 肯定式 keyPoints 加「待核验命题」标注（内存副本；落盘 outline / 分配 / 写作计划指纹按原始大纲）
+      const keyPointGuard = annotateOutlinePartialKeyPoints(outline, allFormal);
+      const writerOutline = keyPointGuard.outline;
+      if (keyPointGuard.annotations.length > 0) {
+        ctx.log(
+          `[writing] partial keyPoint 守卫：${keyPointGuard.annotations.length} 条要点标注为待核验命题（${keyPointGuard.annotations.map((entry) => `${entry.sectionId}#${entry.keyPointIndex}→${entry.evidenceId}`).join("、")}）`,
+        );
+      }
+      const units = argumentUnitsEnabled ? resolveArgumentUnits({ outline: writerOutline }) : undefined;
       const allocation =
         units !== undefined ? allocateSectionEvidence({ outline, units, evidence: allFormal }) : undefined;
       const plan =
@@ -5386,7 +5515,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       const written: string[] = [];
       const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
       const usedEvidenceIds = new Set<string>();
-      for (const [index, section] of outline.sections.entries()) {
+      for (const [index, section] of writerOutline.sections.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
         }
@@ -5400,7 +5529,7 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
           result = await services.writer.writeSection({
             projectId: ctx.projectId,
             section,
-            outline,
+            outline: writerOutline,
             evidence: sectionEvidence,
             bibliography,
             experimentContext,
@@ -7848,10 +7977,18 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
       // M13.7.10：Survey 的证据仍以本节 synthesisRefs / literatureRefs 投影为准（契约不变）；
       // 论证单元只增加 role / task / doNotExplain / 上限长度的组织约定与写作计划产物。
       const argumentUnitsEnabled = services.writing?.argumentUnits ?? true;
+      // M13 Final Closure（A3）：同普通论文路径——partial 命题 keyPoints 标注（内存副本；指纹按原始大纲）
+      const keyPointGuard = annotateOutlinePartialKeyPoints(inputs.outline, inputs.evidence);
+      const writerOutline = keyPointGuard.outline;
+      if (keyPointGuard.annotations.length > 0) {
+        ctx.log(
+          `[writing] partial keyPoint 守卫：${keyPointGuard.annotations.length} 条要点标注为待核验命题（${keyPointGuard.annotations.map((entry) => `${entry.sectionId}#${entry.keyPointIndex}→${entry.evidenceId}`).join("、")}）`,
+        );
+      }
       const units = argumentUnitsEnabled
-        ? resolveArgumentUnits({ outline: inputs.outline, synthesis: inputs.synthesis })
+        ? resolveArgumentUnits({ outline: writerOutline, synthesis: inputs.synthesis })
         : undefined;
-      const contexts = inputs.outline.sections.map((section) =>
+      const contexts = writerOutline.sections.map((section) =>
         buildSurveySectionContext({
           section,
           matrix: inputs.matrix,
@@ -7896,7 +8033,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
       let bytesTotal = 0;
       const written: string[] = [];
       const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
-      for (const [index, section] of inputs.outline.sections.entries()) {
+      for (const [index, section] of writerOutline.sections.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
         }
@@ -7914,7 +8051,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
           result = await services.writer.writeSection({
             projectId: ctx.projectId,
             section,
-            outline: inputs.outline,
+            outline: writerOutline,
             evidence: context.evidence,
             bibliography: inputs.bibliography,
             ...(language !== undefined ? { language } : {}),

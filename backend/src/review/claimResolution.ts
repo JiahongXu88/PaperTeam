@@ -16,6 +16,9 @@
  * 4. author_decision_required  已透明披露的未核验转述（transparent_unverified）
  *                              无 grounding 通路——诚实终态已达成，进一步处置
  *                              （取全文 / 删除 / 保留）属作者裁决，不自动改稿。
+ *                              M13 Final Closure（A1）：拒绝 / 不确定性立场且数值全部
+ *                              锚定在正式证据池的限制性论断也走此出口——数值不是
+ *                              凭空的，删除数值不是正确处置；是否保留该限制属作者。
  * 5. remove_unsupported_detail 无 grounding 通路且含数字——数值只许删除
  *                              （M11.2.1 既有授权类别）。
  * 6. weaken_claim_strength     无 grounding 通路、无数字、弱化形态可接受
@@ -29,7 +32,9 @@
 
 import { isUnsupportedVerdict, lookupSectionCitedSourceIds, type ClaimGroundingEntry } from "./claimGrounding.js";
 import { assessWeakenedClaim } from "./weakenedClaim.js";
+import { classifyClaimStance, numbersAnchoredInEvidence } from "./claimStance.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
+import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 
 export type ClaimResolutionAction =
   | "use_existing_evidence"
@@ -77,6 +82,11 @@ export interface ClaimResolutionContext {
    * §9 bounded——搜索是运维动作，由调用方按预算授权，不是分类器的默认出口）。
    */
   targetedSearchBudget?: number;
+  /**
+   * M13 Final Closure（A1）：正式证据池（数值锚定判定）。缺省 = 无法核对锚定，
+   * 拒绝 / 不确定性立场的含数字 claim 按原有数值阶梯处理（保守）。
+   */
+  formalEvidence?: readonly EvidenceRecord[];
 }
 
 /** claim 的目标源选取上限（ground_existing_source 每条 claim 最多 3 源） */
@@ -194,6 +204,32 @@ export function classifyClaimResolution(
       reason:
         "该论断已按「据来源转述 + 未核验」透明披露且无 grounding 通路——保持现状不计入阻断口径；是否取全文 / 删除属作者裁决",
     };
+  }
+
+  // 4c. M13 Final Closure（A1）：拒绝 / 不确定性立场（并非同一指标、不可据此判定、
+  //     尚无法判断…）且 claim 的全部特征数字锚定在正式证据池——这些数值是对既有证据
+  //     的转述而非凭空数值，「只许删除数值」会毁掉一条正确的科研限制；是否保留 /
+  //     改写该限制性论断属作者裁决（不自动派发 Writer 删数值）。立场 = assertion
+  //     （含否定形态的事实断言）或任一数字无锚定 → 照常走 5-7。
+  if (/\d/.test(entry.claim)) {
+    const stance = entry.stance ?? classifyClaimStance(entry.claim).stance;
+    const anchored =
+      stance !== "assertion" &&
+      (entry.numbersAnchored ??
+        (context.formalEvidence !== undefined
+          ? numbersAnchoredInEvidence(entry.claim, context.formalEvidence).anchored
+          : false));
+    if (stance !== "assertion" && anchored) {
+      return {
+        ...base,
+        action: "author_decision_required",
+        basis: stance === "refutation" ? "refutation_numbers_anchored" : "uncertainty_numbers_anchored",
+        reason:
+          stance === "refutation"
+            ? "该论断拒绝一条可比性 / 推断命题，所含数值全部来自正式证据——不是凭空数值，不得按「无 grounding 数值」删除；是否保留该科研限制属作者裁决"
+            : "该论断声明现有证据不足以判断，所含数值全部来自正式证据——不是凭空数值，不得按「无 grounding 数值」删除；是否保留该限制性表述属作者裁决",
+      };
+    }
   }
 
   // 5-7. 凭空断言（opaque）：数值 → 删除；可弱化 → 弱化；弱化形态不可接受 → 整条删除

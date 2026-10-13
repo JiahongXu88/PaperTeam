@@ -700,6 +700,8 @@ export function buildReviewPrompt(params: {
     "}",
     "evidenceRequirement：该问题修复是否必须依赖已核验 Evidence——required（修复只能基于现有 verified Evidence，否则弱化/删除）/ optional（有证据更好）/ none（表达/结构/编译类，与外部证据无关）。fact / evidence_gap 类问题应给 required。",
     "纪律：不虚构问题；问题描述必须可定位；确属阻断级（如关键论断无证据、引用不存在）才设 blocking=true。",
+    "审稿意见是修改方向，不是事实证据：description / suggestedAction 中不得引入上方 Evidence 清单之外的具名文献、作者、年份、实验结果或机制描述并要求写入正文；"
+      + "覆盖面 / 文献缺口类意见只以类别或维度描述缺口（如「缺少阈值类实验工作的讨论」）并把 evidenceRequirement 设为 required——Writer 只能用现有 Evidence 回应，不能凭审稿意见补写事实。",
     "",
     "===== 论文稿件（结构化摘要）=====",
     params.manuscriptDigest,

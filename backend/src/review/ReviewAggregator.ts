@@ -11,6 +11,7 @@
 
 import type { FactVerdict, ModeReviewResult, ReviewIssue } from "../agents/ReviewerService.js";
 import type { ReviewFinding } from "./finding.js";
+import type { AcademicScoreConfirmation } from "./academicConfirmation.js";
 
 export interface ReviewSummary {
   generatedAt: string;
@@ -50,6 +51,12 @@ export interface ReviewSummary {
    * 生成后附加；旧产物无该字段照常可读。
    */
   visual?: VisualFindingsSummary;
+  /**
+   * M13 Final Closure（任务 B）：academicScore 带内复核记录（触发条件 / 全部样本 / 中位数 /
+   * 分层并入的 finding 计数）。scores.academicScore 在 triggered=true 时已是中位数；
+   * 旧产物无此字段 = 单样本。
+   */
+  academicConfirmation?: AcademicScoreConfirmation;
   reportPaths: string[];
 }
 

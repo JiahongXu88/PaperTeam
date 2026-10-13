@@ -7,6 +7,7 @@ export type RevisionViolationCode =
   | "evidence_protocol_mismatch" | "scope_violation" | "unattributed_fact_violation"
   | "unauthorized_fact_removal" | "unauthorized_fact_change" | "placeholder_regression" | "unauthorized_formula_change"
   | "revision_meta_text"
+  | "unsupported_named_reference"
   | "AUTHOR_DECISION_REQUIRED";
 
 export interface StructuredPlanItem {

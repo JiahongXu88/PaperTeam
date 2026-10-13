@@ -53,6 +53,14 @@ export interface ReviewConfig {
   academicPassScore: number;
   /** Quality Gate：AI 文风风险上限 */
   styleRiskMax: number;
+  /**
+   * M13 Final Closure（任务 B）：academicScore 带内复核的对称触发带宽（分）。主样本分数落在
+   * [academicPassScore − band, academicPassScore + band) 时追加独立 academic 采样取中位数；
+   * 0 = 关闭。QUALITY_ACADEMIC_CONFIRMATION_BAND，缺省 5。
+   */
+  academicConfirmationBand: number;
+  /** 带内复核的额外采样上限（份；0 = 关闭，最大 2）。QUALITY_ACADEMIC_CONFIRMATION_SAMPLES，缺省 2。 */
+  academicConfirmationSamples: number;
   /** section review 有界并发度（PAPERTEAM_REVIEW_CONCURRENCY；无效值回退默认，不报错） */
   reviewConcurrency: number;
   /** PaperMap 章节摘要有界并发度（PAPERTEAM_SUMMARY_CONCURRENCY；无效值回退默认） */
@@ -312,6 +320,8 @@ const SEARCH_TIMEOUT_MIN_MS = 1_000;
 const SEARCH_TIMEOUT_MAX_MS = 60_000;
 const DEFAULT_MAX_REVISION_ROUNDS = 2;
 const DEFAULT_ACADEMIC_PASS_SCORE = 80;
+const DEFAULT_ACADEMIC_CONFIRMATION_BAND = 5;
+const DEFAULT_ACADEMIC_CONFIRMATION_SAMPLES = 2;
 const DEFAULT_STYLE_RISK_MAX = 35;
 /** M11.4：非回归容差缺省（benchmark 同锚点 sd 5–12 的上沿取整；env 可覆盖） */
 const DEFAULT_REVISION_TASK_REGRESSION_TOLERANCE = 10;
@@ -530,6 +540,16 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         default: DEFAULT_STYLE_RISK_MAX,
         min: 0,
         max: 100,
+      }),
+      academicConfirmationBand: readInt(source, "QUALITY_ACADEMIC_CONFIRMATION_BAND", {
+        default: DEFAULT_ACADEMIC_CONFIRMATION_BAND,
+        min: 0,
+        max: 20,
+      }),
+      academicConfirmationSamples: readInt(source, "QUALITY_ACADEMIC_CONFIRMATION_SAMPLES", {
+        default: DEFAULT_ACADEMIC_CONFIRMATION_SAMPLES,
+        min: 0,
+        max: 2,
       }),
       revisionTask: {
         mode: readOptionalValue(source, "PAPERTEAM_REVISION_TASK_POLICY") === "legacy" ? "legacy" : "task_scoped",

@@ -510,7 +510,13 @@ export function evaluateQualityGate(
     detail:
       academic === null
         ? "缺少 academic 评分"
-        : `academicScore=${academic}（要求 ≥ ${thresholds.academicPassScore}）`,
+        : `academicScore=${academic}（要求 ≥ ${thresholds.academicPassScore}）${
+            input.review.academicConfirmation?.triggered === true
+              ? `；带内复核：${input.review.academicConfirmation.samples.length} 份独立样本 ${input.review.academicConfirmation.samples
+                  .map((sample) => sample.overallScore ?? "null")
+                  .join("/")} 取中位数`
+              : ""
+          }`,
   });
 
   // 8. style risk ≤ 阈值

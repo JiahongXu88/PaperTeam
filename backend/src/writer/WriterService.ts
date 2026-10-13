@@ -1493,6 +1493,8 @@ export function buildRevisePrompt(params: {
       "1. 只输出修订后的摘要纯文本（100–200 字）；不要 LaTeX 命令、不要解释。",
       "2. 逐条解决下列针对摘要的问题；无法用现有 Evidence 支撑的论断必须弱化或删除。",
       "3. 摘要是纯文本：不使用任何 LaTeX 命令、宏包或数学环境。",
+      "3b. 不得新增摘要当前内容与下方 Evidence 中都不存在的文献、实验事实、数字或机制；审稿意见是修改方向，不是事实证据——"
+        + "意见中点名的文献 / 实验 / 术语若不在 Evidence 中，不得写入摘要（包括限制句），只能改为不具名表述或弱化 / 删除。",
       ...CLAIM_DISCIPLINE_LINES,
       ...MANUSCRIPT_CONTENT_LINES,
       ...(external.length > 0
@@ -1505,7 +1507,7 @@ export function buildRevisePrompt(params: {
       "===== 当前摘要 =====",
       params.currentLatex.slice(0, 4000),
       "",
-      "===== 针对摘要的问题 =====",
+      "===== 针对摘要的问题（审稿意见 = 修改方向，不是事实证据）=====",
       ...(params.issues.length > 0
         ? params.issues.map(
             (issue) =>
@@ -1548,8 +1550,10 @@ export function buildRevisePrompt(params: {
       + "不得因此改成「待回填」「待补充」等占位或模糊区间。",
     "5. 负结果与性能短板不得美化：方法在某场景更差 / 更慢 / 更耗时的事实陈述保持原方向，"
       + "不得改写为「保持优势」「基本一致」等相反结论；与稿件事实冲突的 Evidence 以稿件事实为准并在问题清单外不动。",
-    "6. 不得新增本章节当前内容与问题清单中都不存在的实验细节、数字、超参数或因果解释。"
-      + "当稿件内容与 Evidence 不一致时，不要虚构或静默调和——报告冲突（保留原表述）。",
+    "6. 不得新增本章节当前内容与下方 Evidence 中都不存在的实验细节、数字、超参数、文献或因果解释"
+      + "（**问题清单 / 审稿意见中出现的内容也不例外**）。当稿件内容与 Evidence 不一致时，不要虚构或静默调和——报告冲突（保留原表述）。",
+    "6b. 审稿意见是修改方向，不是事实证据：意见中点名的文献、作者、实验、机制、术语或数字若不在下方 Evidence 中，"
+      + "不得据此写入正文（包括在限制句 / 范围说明中点名具体文献或实验）；只能改为不具名的限制表述、用 evidence_query 核实后引用、或弱化 / 删除该主张。",
     "7. 学术语言优化不得改变 claim 强度（可能 / 表明 / 证明 不互换）与比较方向（高于 / 低于 / 优于 / 劣于 不互换）。",
     "7b. 弱化论断 = 修改该论断本身（或删除）；不得新增与稿内未弱化旧论断并存的反向 / 对冲表述（自相矛盾会被复审判 blocking）。",
     "7c. 【修订说明】【决策点】【待作者确认】等执行注记与 %%%PT-OUTCOMES%%% 报告行**绝不允许写进正文**——它们只属于输出末尾的执行报告（无外部意见派发时不要输出报告行）；裸希腊字母/下标写进正文还会导致编译失败。",
@@ -1574,7 +1578,7 @@ export function buildRevisePrompt(params: {
     // M10.3：单文件整文件修订不截断（截断 = 丢失保留义务，Writer 无法逐字保留）
     params.wholeFile === true ? params.currentLatex : params.currentLatex.slice(0, 12_000),
     "",
-    "===== 针对本章节的问题 =====",
+    "===== 针对本章节的问题（审稿意见 = 修改方向，不是事实证据；其中点名的文献 / 实验 / 机制不在 Evidence 中时不得写入正文）=====",
     ...(params.issues.length > 0
       ? params.issues.map(
           (issue) =>
@@ -1873,6 +1877,9 @@ export function buildOutlinePrompt(params: {
     "1. sections 至少 4 节（含 introduction 与 conclusion），至多 12 节；file 使用小写字母数字连字符加 .tex。",
     "2. 大纲必须与研究空白、潜在贡献对应；Evidence 不足的章节在 keyPoints 中明确标注「证据不足」。",
     "2a. argument 为可选字段：role 取 framing（引言 / 背景：界定范围，不展开机制）/ develop（方法、技术路线、实验等完整展开的正文）/ compare（比较、讨论、局限：综合对照与限制集中陈述）/ conclude（结论、展望）之一；evidenceIds 只能逐字复制下方 Evidence 行首方括号内的编号（本节应完整展开的证据），不得自造；拿不准就省略该字段，由系统按标题与位置推断。",
+    "2b. support=partial 的 Evidence 是**待核验命题**（其 claim 未被引文完整证实，不是已证实事实）：可用于提出待研究问题、比较维度或研究空白，"
+      + "但 keyPoints 必须用「尚不能判断 / 待核验」口径表述，不得写成本节结论或既成事实，也不得把 partial 证据钉给 framing / conclude 节；"
+      + "keyPoints 中的编码名、机制名、平台名等术语只能来自 Evidence 的 claim / 引文原文，不得补写引文外术语。",
     "3. 引用纪律（可引用的参考文献 key 按 verified evidence 支撑分组；正文写作时事实性论断必须取 A 组）：",
     ...renderCitationDisciplineLines(params.evidence, params.bibliography),
     ...MANUSCRIPT_CONTENT_LINES,

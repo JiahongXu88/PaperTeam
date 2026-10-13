@@ -114,6 +114,12 @@ export interface ServiceStackOptions {
     maxRevisionRounds?: number;
     academicPassScore?: number;
     styleRiskMax?: number;
+    /**
+     * M13 Final Closure（任务 B）：academicScore 带内复核（缺省 0 = 关闭——单元 / e2e harness
+     * 的 scripted 分数不触发额外采样；生产 index.ts 从 config 传入缺省 band 5 / samples 2）。
+     */
+    academicConfirmationBand?: number;
+    academicConfirmationSamples?: number;
     sectionRetryBackoffMs?: readonly number[];
     /** section review 有界并发度（缺省 3） */
     reviewConcurrency?: number;
@@ -989,6 +995,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         maxRevisionRounds: options.review?.maxRevisionRounds ?? 2,
         academicPassScore: options.review?.academicPassScore ?? 80,
         styleRiskMax: options.review?.styleRiskMax ?? 35,
+        academicConfirmationBand: options.review?.academicConfirmationBand ?? 0,
+        academicConfirmationSamples: options.review?.academicConfirmationSamples ?? 0,
         ...(options.review?.sectionRetryBackoffMs !== undefined
           ? { sectionRetryBackoffMs: options.review.sectionRetryBackoffMs }
           : {}),
