@@ -170,6 +170,14 @@ export interface ServiceStackOptions {
    */
   search?: SearchConfig & { fetchImpl?: typeof fetch };
   /**
+   * M13.8 Research 代理路由的 fetch（index.ts 注入 ResearchFetchRouter.fetch）。只接到
+   * 学术检索 / 全文下载 / 文献元数据核验的 HTTP 客户端（ProviderHttpClient、
+   * ScholarlyHttpClient、SoftwareReferenceResolver）；模型 Runtime / 本机 API 不经过它。
+   * 显式测试 seam（search.fetchImpl / citation.fetchImpl / citation.scholarly.fetchImpl）
+   * 优先——mock fetch 不会被真实代理劫持。缺省 = 内建 fetch（旧版行为逐字节一致）。
+   */
+  researchFetch?: typeof fetch;
+  /**
    * Project Retrieval（M6.4）：chunk 预算覆盖（缺省 400/600/60）与可选
    * EmbeddingProvider（测试注入确定性 provider；生产默认不注册 =
    * lexical-only 健康运行，D-0033 optional 红线）。
@@ -386,7 +394,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       : {}),
     ...(options.citation?.fetchImpl !== undefined
       ? { fetchImpl: options.citation.fetchImpl }
-      : {}),
+      : options.researchFetch !== undefined
+        ? { fetchImpl: options.researchFetch }
+        : {}),
     httpOptions: {
       minRequestIntervalMs: defaultMinRequestIntervalMs,
       ...(options.citation?.httpOptions ?? {}),
@@ -441,6 +451,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const scholarlyOptions: ScholarlyResolverOptions = {
     cooldownRegistry: providerCooldown,
     minRequestIntervalMs: defaultMinRequestIntervalMs,
+    // M13.8：Research 代理（显式 citation.scholarly.fetchImpl 在下方 spread 中覆盖）
+    ...(options.researchFetch !== undefined ? { fetchImpl: options.researchFetch } : {}),
     ...(options.citation?.metadataTimeoutMs !== undefined
       ? { timeoutMs: options.citation.metadataTimeoutMs }
       : {}),
@@ -456,6 +468,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       options.citation?.scholarly?.providers === undefined && options.citation?.metadataEnabled === false
         ? { ...scholarlyOptions, providers: [] }
         : scholarlyOptions,
+    // M13.8：软件引用核验（GitHub API / 仓库页）同属文献元数据核验出口
+    ...(options.researchFetch !== undefined ? { software: { fetchImpl: options.researchFetch } } : {}),
     ...(options.citation?.maxMetadataLookups !== undefined
       ? { maxMetadataLookups: options.citation.maxMetadataLookups }
       : {}),
@@ -497,7 +511,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...(options.search?.aminerApiKey !== undefined ? { aminerApiKey: options.search.aminerApiKey } : {}),
   };
   const providerHttp = new ProviderHttpClient({
-    ...(options.search?.fetchImpl !== undefined ? { fetchImpl: options.search.fetchImpl } : {}),
+    // M13.8：显式测试 seam 优先；否则 Research 代理路由；都没有 = 内建 fetch
+    ...(options.search?.fetchImpl !== undefined
+      ? { fetchImpl: options.search.fetchImpl }
+      : options.researchFetch !== undefined
+        ? { fetchImpl: options.researchFetch }
+        : {}),
     defaultTimeoutMs: searchConfig.providerTimeoutMs,
     cooldownRegistry: providerCooldown,
     log,

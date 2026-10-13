@@ -582,10 +582,28 @@ function ResearchPlanPayload({ payload }: { payload: Record<string, unknown> }) 
   );
 }
 
-/** 文献遴选：候选规模 + 推荐集（approve 可用 payload.candidateIds 增删） */
+/** M13.8 候选相关性标签 → 文案 / chip 色调（与 backend survey/candidateRelevance.ts 的 RelevanceLabel 一致） */
+const RELEVANCE_CHIP: Record<string, { text: string; tone: string }> = {
+  high: { text: "高相关", tone: "chip-tone-accent" },
+  medium: { text: "中相关", tone: "chip-tone-info" },
+  low: { text: "低相关", tone: "chip-tone-warn" },
+  uncertain: { text: "相关性待确认", tone: "chip-tone-neutral" },
+};
+
+/** 文献遴选：候选规模 + 推荐集（approve 可用 payload.candidateIds 增删）；M13.8 起按主题相关性排序并标注 */
 function LiteratureSelectionPayload({ payload }: { payload: Record<string, unknown> }) {
   const pendingCount = typeof payload["pendingCount"] === "number" ? payload["pendingCount"] : 0;
   const recommended = readStringArray(payload["recommendedCandidateIds"]);
+  const basis = typeof payload["recommendationBasis"] === "string" ? payload["recommendationBasis"] : undefined;
+  const relevanceCounts =
+    typeof payload["relevanceCounts"] === "object" && payload["relevanceCounts"] !== null
+      ? (payload["relevanceCounts"] as Record<string, unknown>)
+      : undefined;
+  const familyCoverage =
+    typeof payload["familyCoverage"] === "object" && payload["familyCoverage"] !== null
+      ? Object.entries(payload["familyCoverage"] as Record<string, unknown>).filter(([, count]) => typeof count === "number")
+      : [];
+  const nearDuplicates = typeof payload["nearDuplicatesSuppressed"] === "number" ? payload["nearDuplicatesSuppressed"] : 0;
   const yearRange = payload["yearRange"];
   const from =
     typeof yearRange === "object" && yearRange !== null ? (yearRange as Record<string, unknown>)["from"] : undefined;
@@ -602,25 +620,51 @@ function LiteratureSelectionPayload({ payload }: { payload: Record<string, unkno
         候选文献 {pendingCount} 篇 · 推荐入选 {recommended.length} 篇
         {typeof from === "number" && typeof to === "number" ? `（年份 ${from}–${to}）` : ""}
       </p>
+      {basis === "topic_relevance_v1" && relevanceCounts !== undefined ? (
+        <p className="field-help" data-testid="literature-selection-relevance-summary">
+          相关性：高 {Number(relevanceCounts["high"] ?? 0)} · 中 {Number(relevanceCounts["medium"] ?? 0)} · 低 {Number(relevanceCounts["low"] ?? 0)} · 待确认 {Number(relevanceCounts["uncertain"] ?? 0)}
+          {nearDuplicates > 0 ? ` · 近似重复已排除 ${nearDuplicates}` : ""}
+          {familyCoverage.length > 0 ? `；方法家族覆盖：${familyCoverage.map(([family, count]) => `${family} ${String(count)}`).join("、")}` : ""}
+        </p>
+      ) : basis === "recency_fallback" ? (
+        <p className="field-help" data-testid="literature-selection-relevance-summary">
+          未能从研究计划判断候选相关性（回退为学术形态优先、年份降序），请人工核对推荐集。
+        </p>
+      ) : null}
       <ul className="source-list" data-testid="literature-selection-candidates">
         {candidates.slice(0, 30).map((candidate, index) => {
           const id = typeof candidate["candidateId"] === "string" ? candidate["candidateId"] : String(index);
           const isRecommended = recommended.includes(id);
+          const relevance =
+            typeof candidate["relevance"] === "object" && candidate["relevance"] !== null
+              ? (candidate["relevance"] as Record<string, unknown>)
+              : undefined;
+          const label = typeof relevance?.["label"] === "string" ? relevance["label"] : undefined;
+          const chip = label !== undefined ? RELEVANCE_CHIP[label] : undefined;
+          const reasons = Array.isArray(relevance?.["reasons"]) ? (relevance!["reasons"] as unknown[]).filter((item): item is string => typeof item === "string") : [];
           return (
-            <li key={id} className="source-row">
+            <li key={id} className="source-row" data-testid={`literature-candidate-${id}`}>
               <div className="source-row-main">
                 <span className="source-row-title">{String(candidate["title"])}</span>
                 <span className="source-row-meta">
                   {isRecommended ? <span className="chip chip-tone-accent">推荐</span> : <span className="chip chip-outline">备选</span>}
+                  {chip !== undefined ? (
+                    <span className={`chip ${chip.tone}`} title={reasons.join("；")} data-testid={`literature-relevance-${id}`}>
+                      {chip.text}
+                    </span>
+                  ) : null}
                   {typeof candidate["year"] === "number" ? <span className="chip">{candidate["year"]}</span> : null}
                   {typeof candidate["doi"] === "string" ? <span className="mono">{candidate["doi"]}</span> : null}
                 </span>
+                {reasons.length > 0 ? <span className="field-help">{reasons.join("；")}</span> : null}
               </div>
             </li>
           );
         })}
       </ul>
-      <p className="field-help">推荐集 = 学术形态优先（DOI / arXiv）、按年份降序、上限 25 篇；「继续」按推荐集入库，增删需在决策 payload.candidateIds 中指定（开发者 API / 自动化路径）。</p>
+      <p className="field-help">
+        推荐集 = 主题相关性（研究计划检索词的核心短语 / 核心词命中）、多检索词命中、方法家族覆盖综合排序，剔除近似重复，上限 25 篇；无法确认相关性的候选如实标注「待确认」而不默认入选。「继续」按推荐集入库，增删需在决策 payload.candidateIds 中指定（开发者 API / 自动化路径）。
+      </p>
     </div>
   );
 }

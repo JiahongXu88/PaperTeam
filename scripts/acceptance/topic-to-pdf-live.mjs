@@ -37,6 +37,7 @@ import {
   summarizeCalls,
   createModelRuntime,
   createProductionAdapter,
+  createResearchNetwork,
   dryRunRuntime,
   sha256,
 } from "./lib/m13-7-live.mjs";
@@ -85,6 +86,8 @@ const { WorkflowRunStore } = await load("workflow/runStore.js");
 const { createBackendHttpServer } = await load("httpServer.js");
 
 const config = loadConfig();
+// M13.8：Research 代理与真实服务器同一接线（env > network.json > 直连）；模型调用不经过它
+const researchNetwork = await createResearchNetwork({ load, config });
 const defaultProjectsRoot = resolve(repo, "backend", "projects");
 if (resolve(config.projectsRoot) === defaultProjectsRoot || !process.env.PROJECTS_ROOT) {
   throw new Error(`refusing to run against the default projects root (${config.projectsRoot}); set PROJECTS_ROOT to an isolated acceptance root`);
@@ -116,6 +119,7 @@ const result = {
       semanticScholarKey: config.search.semanticScholarApiKey ? "configured" : "anonymous",
       openalexMailto: config.search.openalexMailto ? "configured" : "none",
     },
+    researchNetwork: researchNetwork.description,
     recover: recoverRunId ?? null,
     reuseProject: reuseProjectId ?? null,
   },
@@ -169,6 +173,7 @@ stack = buildServiceStack({
     ...(config.citation.contactEmail ? { contactEmail: config.citation.contactEmail } : {}),
   },
   search: config.search,
+  researchFetch: researchNetwork.router.fetch,
   fullText: { batchConcurrency: config.fullText.batchConcurrency },
   ...(config.pdf.pythonCommand !== undefined ? { pdfPythonCommand: config.pdf.pythonCommand } : {}),
   ...(config.pdf.doclingPythonCommand !== undefined ? { doclingPythonCommand: config.pdf.doclingPythonCommand } : {}),
@@ -436,6 +441,7 @@ try {
   await new Promise((done) => server.close(done));
   await orchestrator.close();
   if (adapter) await adapter.close();
+  await researchNetwork.router.close().catch(() => {});
   console.log(
     JSON.stringify({
       phase,

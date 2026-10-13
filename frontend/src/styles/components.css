@@ -662,6 +662,14 @@ select {
 .status-tone-accent::before {
   background: var(--accent-primary);
 }
+/* M13.8 网络设置：中性态（直连 / 未探测） */
+.status-tone-neutral {
+  background: var(--bg-subtle, var(--bg-surface));
+  color: var(--text-secondary);
+}
+.status-tone-neutral::before {
+  background: var(--text-tertiary, var(--text-secondary));
+}
 
 /* 分类小标（项目类型、Agent、Skill 归属）：浅底圆角 */
 .chip {

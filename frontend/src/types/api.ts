@@ -890,6 +890,80 @@ export interface ModelTestResultView {
   detail?: string;
 }
 
+// ---- Network Settings（M13.8 Research 代理；非敏感，无 key） ----
+
+export type NetworkProxyProtocol = "http" | "socks5";
+
+/** 代理配置（生效值 / 保存值共用形状） */
+export interface NetworkProxyConfigView {
+  protocol: NetworkProxyProtocol;
+  host: string;
+  port: number;
+}
+
+/** PUT / POST test 的请求体：enabled=false 时 host / port 仍保存（关掉开关不丢输入） */
+export interface NetworkProxyInput {
+  enabled: boolean;
+  protocol: NetworkProxyProtocol;
+  host: string;
+  port: number;
+}
+
+/** GET /api/settings/network 的 settings DTO */
+export interface NetworkSettingsView {
+  /** 生效配置（env 或已启用的保存值）；直连时 null */
+  effective: NetworkProxyConfigView | null;
+  effectiveUrl?: string;
+  source: "environment" | "stored" | "none";
+  envOverride: boolean;
+  saved: (NetworkProxyConfigView & { enabled: boolean }) | null;
+  savedAt?: string;
+  scope: {
+    appliesTo: string[];
+    notAppliedTo: string[];
+    bypass: string;
+  };
+  routerStats: { proxied: number; direct: number; bypassed: number; retiring: number };
+}
+
+export type NetworkCheckId = "proxy" | "arxiv_api" | "arxiv_pdf" | "openalex" | "semantic_scholar" | "crossref";
+
+export type NetworkCheckStatus =
+  | "ok"
+  | "rate_limited"
+  | "http_error"
+  | "timeout"
+  | "proxy_unreachable"
+  | "proxy_rejected"
+  | "network_error"
+  | "not_pdf"
+  | "skipped";
+
+export interface NetworkCheckView {
+  id: NetworkCheckId;
+  label: string;
+  target: string;
+  status: NetworkCheckStatus;
+  httpStatus?: number;
+  latencyMs?: number;
+  firstByteMs?: number;
+  bytes?: number;
+  throughputKBps?: number;
+  retryAfterSeconds?: number;
+  detail: string;
+}
+
+/** POST /api/settings/network/test 的结果 */
+export interface NetworkTestResultView {
+  ok: boolean;
+  mode: "proxy" | "direct";
+  proxy?: string;
+  checkedAt: string;
+  durationMs: number;
+  checks: NetworkCheckView[];
+  summary: string;
+}
+
 // ---- External Instructions / Revision Plan（M5.7） ----
 
 /** 外部修改意见来源（与 Backend EXTERNAL_INSTRUCTION_SOURCES 一致） */

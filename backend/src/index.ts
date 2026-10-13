@@ -14,6 +14,9 @@ import { applyStoredApiChannels } from "./settings/apiChannels.js";
 import { ModelSettingsService, registerStoredCustomProviders } from "./settings/ModelSettingsService.js";
 import { ScriptedVisionRuntime } from "./vision/scriptedVisionRuntime.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
+import { NetworkSettingsService } from "./settings/NetworkSettingsService.js";
+import { NetworkSettingsStore } from "./settings/NetworkSettingsStore.js";
+import { ResearchFetchRouter, formatResearchProxyUrl } from "./network/researchProxy.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { SkillRegistry } from "./skills/SkillRegistry.js";
 import { ReadinessProbe } from "./runtime/readiness.js";
@@ -247,6 +250,33 @@ export async function startBackend(): Promise<void> {
           },
         });
 
+  // M13.8 Research 网络代理：env PAPERTEAM_RESEARCH_PROXY_URL > settings/network.json > 直连。
+  // 只注入学术检索 / 全文下载 / 元数据核验的 HTTP 客户端（buildServiceStack.researchFetch）；
+  // 模型 Runtime / 网关 / 本机 API / docling 不经过它（不触碰进程全局 dispatcher）
+  const researchRouter = new ResearchFetchRouter({ log: (message) => console.log(message) });
+  const networkSettings = new NetworkSettingsService({
+    store: new NetworkSettingsStore({ settingsDir: join(config.runtimeRoot, "settings") }),
+    router: researchRouter,
+    ...(config.research.proxyUrl !== undefined ? { envProxyUrl: config.research.proxyUrl } : {}),
+    hints: {
+      ...(config.search.openalexMailto !== undefined ? { openalexMailto: config.search.openalexMailto } : {}),
+      ...(config.search.semanticScholarApiKey !== undefined
+        ? { semanticScholarApiKey: config.search.semanticScholarApiKey }
+        : {}),
+      ...(config.citation.contactEmail !== undefined ? { crossrefMailto: config.citation.contactEmail } : {}),
+    },
+    log: (message) => console.log(message),
+  });
+  const researchProxy = await networkSettings.applyStartupConfiguration();
+  console.log(
+    `  research net: ${
+      researchProxy === null
+        ? "直连（未配置代理）"
+        : `代理 ${formatResearchProxyUrl(researchProxy)}（来源 ${
+            config.research.proxyUrl !== undefined ? "PAPERTEAM_RESEARCH_PROXY_URL" : "settings/network.json"
+          }；仅学术检索 / 全文下载 / 元数据核验）`
+    }`,
+  );
   const projects = new ProjectStore({ root: config.projectsRoot });
   const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
   const stack = buildServiceStack({
@@ -276,6 +306,7 @@ export async function startBackend(): Promise<void> {
       ...(config.citation.contactEmail ? { contactEmail: config.citation.contactEmail } : {}),
     },
     search: config.search,
+    researchFetch: researchRouter.fetch,
     fullText: { batchConcurrency: config.fullText.batchConcurrency },
     // M10.2 Vision 模型接入：scripted seam（测试）或共享 ModelRuntime（生产，
     // 与 adapter / ModelSettingsService 同一实例）。偏好解析：显式 visionModel
@@ -413,6 +444,7 @@ export async function startBackend(): Promise<void> {
     skills: skillRegistry,
     skillSummaries,
     modelSettings,
+    networkSettings,
     readiness,
   });
   server.listen(config.port, config.host, () => {
@@ -425,7 +457,7 @@ export async function startBackend(): Promise<void> {
     );
   });
 
-  registerShutdown(server, runtime, orchestrator, config.shutdownTimeoutMs);
+  registerShutdown(server, runtime, orchestrator, config.shutdownTimeoutMs, () => researchRouter.close());
 }
 
 function loadDotEnvBestEffort(): void {
@@ -471,6 +503,7 @@ function registerShutdown(
   runtime: AgentRuntime,
   orchestrator: WorkflowOrchestrator,
   shutdownTimeoutMs: number,
+  closeResearchNetwork?: () => Promise<void>,
 ): void {
   let shuttingDown = false;
   const shutdown = (signal: string) => {
@@ -497,6 +530,10 @@ function registerShutdown(
       // 3. 再收敛 Runtime 在途 run / 释放全部 AgentSession / 清理定时器
       await runtime.close().catch((error: unknown) => {
         console.error("[paperteam] Runtime 关闭异常：", errorText(error));
+      });
+      // 3b. 释放 Research 代理 dispatcher（在途学术请求已随编排器 / Runtime 收敛）
+      await closeResearchNetwork?.().catch((error: unknown) => {
+        console.error("[paperteam] Research 代理释放异常：", errorText(error));
       });
       // 4. SSE 长连接会阻止 server.close 完成，主动 closeAllConnections 让退出即时、干净
       server.closeAllConnections?.();

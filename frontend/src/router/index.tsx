@@ -4,6 +4,7 @@ import { AppLayout } from "../components/layout/AppLayout.js";
 import { SettingsLayout } from "../components/layout/SettingsLayout.js";
 import { AppearanceSettingsPage } from "../pages/AppearanceSettingsPage.js";
 import { ModelSettingsPage } from "../pages/ModelSettingsPage.js";
+import { NetworkSettingsPage } from "../pages/NetworkSettingsPage.js";
 import { NewProjectPage } from "../pages/NewProjectPage.js";
 import { NotFoundPage } from "../pages/NotFoundPage.js";
 import { ProjectManagementSettingsPage } from "../pages/ProjectManagementSettingsPage.js";
@@ -21,6 +22,7 @@ import { SkillsPage } from "../pages/SkillsPage.js";
  *   /skills                Skills
  *   /settings              → /settings/model
  *     /settings/model        模型设置
+ *     /settings/network      网络设置（学术检索 / 全文下载的代理；不影响模型 API）
  *     /settings/appearance   外观（主题）
  *     /settings/projects     项目管理（已归档项目：恢复 / 永久删除）
  *   *                      404
@@ -37,6 +39,7 @@ export function AppRoutes() {
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<Navigate to="/settings/model" replace />} />
           <Route path="model" element={<ModelSettingsPage />} />
+          <Route path="network" element={<NetworkSettingsPage />} />
           <Route path="appearance" element={<AppearanceSettingsPage />} />
           <Route path="projects" element={<ProjectManagementSettingsPage />} />
         </Route>

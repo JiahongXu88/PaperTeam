@@ -153,6 +153,29 @@ export async function createModelRuntime({ repo, load, config, modelSpec }) {
 }
 
 /**
+ * M13.8 Research network (mirrors backend/src/index.ts): env PAPERTEAM_RESEARCH_PROXY_URL > <runtimeRoot>/settings/network.json
+ * > direct. Returns the router whose `fetch` must be passed to buildServiceStack({ researchFetch }) so academic search /
+ * OA full-text download / metadata verification take the same route as the real server. Model calls never go through it.
+ */
+export async function createResearchNetwork({ load, config }) {
+  const { ResearchFetchRouter, formatResearchProxyUrl } = await load("network/researchProxy.js");
+  const { NetworkSettingsService } = await load("settings/NetworkSettingsService.js");
+  const { NetworkSettingsStore } = await load("settings/NetworkSettingsStore.js");
+  const router = new ResearchFetchRouter();
+  const service = new NetworkSettingsService({
+    store: new NetworkSettingsStore({ settingsDir: join(config.runtimeRoot, "settings") }),
+    router,
+    ...(config.research?.proxyUrl !== undefined ? { envProxyUrl: config.research.proxyUrl } : {}),
+  });
+  const effective = await service.applyStartupConfiguration();
+  return {
+    router,
+    effective,
+    description: effective === null ? "direct (no research proxy)" : `${formatResearchProxyUrl(effective)} (${config.research?.proxyUrl !== undefined ? "PAPERTEAM_RESEARCH_PROXY_URL" : "settings/network.json"})`,
+  };
+}
+
+/**
  * Production-equivalent adapter (mirrors backend/src/index.ts): SkillRegistry role skills, scholarly / retrieve_library /
  * evidence tools per role, workspace guard. `stackRef()` is read lazily so tools share the stack built afterwards.
  */

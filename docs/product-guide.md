@@ -43,6 +43,9 @@ PaperTeam **不会为研究论文编造实验结果**：
   论文）· 工作流。
 - **设置 → 模型设置**：Provider / Model / API Key / 测试连接 / 按角色独立
   配置 / 自定义 Provider（见 [model-configuration.md](model-configuration.md)）。
+- **设置 → 网络设置**：学术检索 / 文献元数据核验 / 合法全文下载的出口代理（启用 /
+  类型 / 地址 / 端口 / 测试连接）；不影响模型 API 连接（见
+  [network-settings.md](network-settings.md)）。
 - **Skills**：受控学术 Skill 目录（仓库内审计 seed，无任意 URL 安装）。
 
 ## 4. 等你确认的节点（HITL）

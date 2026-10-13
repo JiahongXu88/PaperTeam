@@ -514,6 +514,18 @@
 >   如实报告 skipped，绝不宣称全部视觉检查通过。
 > - **错误码新增**：TARGET_PROFILE_CORRUPTED(500) / TARGET_READINESS_CORRUPTED(500)。
 
+### 1.2n M13.8 已消费 ✅（Network Settings：学术网络代理）
+
+| 端点 | 说明 | 前端消费方 |
+|---|---|---|
+| `GET /api/settings/network` | `{settings: NetworkSettingsView}`：`effective`（生效代理 `{protocol,host,port}` 或 `null` = 直连）/ `effectiveUrl?` / `source`（environment \| stored \| none）/ `envOverride` / `saved`（UI 保存值，含 `enabled=false` 的保留输入）/ `savedAt?` / `scope`（appliesTo / notAppliedTo / bypass 文案）/ `routerStats`（本进程 proxied / direct / bypassed / retiring 计数）。**非敏感，无任何 key** | NetworkSettingsPage「当前生效配置」 |
+| `PUT /api/settings/network` | 保存 `{enabled: boolean, protocol: "http" \| "socks5", host: string, port: number}`（host 不含协议 / 路径 / 账号信息，port 1-65535；非法 → 400 INVALID_REQUEST）→ `{settings}`。写 `<PAPERTEAM_RUNTIME_ROOT>/settings/network.json`；`PAPERTEAM_RESEARCH_PROXY_URL` 未设置时**对后续新的学术请求立即生效**（旧 dispatcher 优雅退役，不中断在途请求）；env 覆盖时保存被接受但不改运行态（`source=environment`） | NetworkSettingsPage（保存配置） |
+| `POST /api/settings/network/test` | 测试连接 `{enabled, protocol, host, port}`（可未保存；`enabled=false` = 直连对照；空体 = 测当前生效配置）→ 200 `{result: {ok, mode: "proxy" \| "direct", proxy?, checkedAt, durationMs, summary, checks: [{id, label, target, status, httpStatus?, latencyMs?, firstByteMs?, bytes?, throughputKBps?, retryAfterSeconds?, detail}]}}`。checks：`proxy`（TCP 可达）/ `arxiv_api` / `arxiv_pdf`（固定探测 arXiv:1706.03762，仅读首 256KB 校验 `%PDF-` 与吞吐）/ `openalex` / `semantic_scholar` / `crossref`；status：ok / rate_limited / http_error / timeout / proxy_unreachable / proxy_rejected / network_error / not_pdf / skipped。`ok` = 代理可达（或直连）+ arXiv API + arXiv PDF 全部 ok；OpenAlex / S2 限流按出口 IP 计，不算代理失败。探测走独立 fetch，不触碰生产 ProviderHttpClient / ScholarlyHttpClient 的熔断与冷却 | NetworkSettingsPage（测试连接） |
+
+> M13.8 边界：代理只注入学术检索 / 全文下载 / 文献元数据核验的 HTTP 客户端（`buildServiceStack.researchFetch`），
+> **不**改进程全局 dispatcher；模型 API（Pi Runtime / 网关 / 自定义 Provider / Test Connection）、本机 API、docling、Git
+> 不经过它。回环 / 私网 / 单标签主机名始终直连。代理 URL 不接受 userinfo。详见 `docs/network-settings.md`。
+
 ### 1.3 Project Entry & Lifecycle（2026-09-07 已消费 ✅）
 
 | 端点 | 说明 | 前端消费方 |
@@ -557,7 +569,14 @@
   （approve/revise/cancel）→ `survey.search`（执行计划检索 + 结果快照物化为
   候选）→ `hitl.literature_selection`（approve[+payload.candidateIds 增删，
   M11.2 起同时接受已 promote 的候选——重跑幂等]/cancel；缺省推荐集 =
-  学术形态优先、年份降序、上限 25）→ `survey.fulltext`
+  **M13.8 主题相关性排序**：研究计划 academic 检索词的核心短语 / 核心词命中 +
+  多检索词命中（executionHistory 快照）+ surveyProfile.taxonomy 方法家族覆盖 +
+  弱引用数 / 时间信号，剔除近似重复，上限 25；payload 新增
+  `recommendationBasis`（`topic_relevance_v1` / `recency_fallback`）、
+  `relevanceCounts {high,medium,low,uncertain}`、`familyCoverage`、
+  `nearDuplicatesSuppressed`，`candidates[]` 按相关性排序并带
+  `relevance {label, score, queryHits, familyMatches, reasons[], nearDuplicateOf?}`；
+  无研究计划上下文时回退旧口径（学术形态优先、年份降序）并如实标注）→ `survey.fulltext`
   （promote + 批量全文解析 + 结构化解析等待；partial success）→
   `survey.matrix`（复用 MatrixService；taxonomy 意图来自 surveyProfile）→
   `hitl.matrix_confirm`（approve / revise[+payload.entryPatches，校验与

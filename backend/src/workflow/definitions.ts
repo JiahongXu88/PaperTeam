@@ -89,6 +89,16 @@ import {
   type SurveyWritingEvaluation,
 } from "../survey/writingInvariants.js";
 import { normalizeTaxonomy, UNCLASSIFIED_FAMILY, type SurveyTaxonomy } from "../survey/matrixTypes.js";
+import {
+  buildQueryHitCounts,
+  legacyRecencyOrder,
+  rankSurveyCandidates,
+  selectRecommendedCandidates,
+  SURVEY_RECOMMENDED_MAX,
+  type RankedCandidate,
+  type RecommendationSelection,
+  type SurveyRelevanceContext,
+} from "../survey/candidateRelevance.js";
 import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import {
@@ -7037,24 +7047,63 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
 // ============================================================
 
 /**
- * 文献遴选推荐集上限（M11.1.4 第一版验收口径：15-25 篇 selected literature；
- * 超出按确定性排序截断，用户可用 payload.candidateIds 增删）。
+ * 推荐文献集（纯函数；HITL 决策与 stage 执行共用同一实现保证确定性）。
+ *
+ * M13.8：有研究计划上下文时按主题相关性 + 多查询命中 + 方法家族覆盖排序并选集
+ * （survey/candidateRelevance.ts；low / uncertain / 近似重复不进推荐集）；无上下文
+ * （旧 artifact / 单元测试）保持 M11.1.4 旧口径：学术形态（DOI / arXiv）优先、年份
+ * 降序（缺年份排后）、candidateId 升序破平、上限 25。
  */
-const SURVEY_RECOMMENDED_MAX = 25;
+export function recommendedSurveyCandidateIds(
+  candidates: readonly CandidateSource[],
+  context?: SurveyRelevanceContext,
+): string[] {
+  if (context === undefined) {
+    return legacyRecencyOrder(candidates)
+      .slice(0, SURVEY_RECOMMENDED_MAX)
+      .map((candidate) => candidate.candidateId);
+  }
+  const ranked = rankSurveyCandidates(candidates, context);
+  return selectRecommendedCandidates(candidates, ranked, {
+    ...(context.taxonomyFamilies !== undefined ? { familyOrder: context.taxonomyFamilies.map((family) => family.label) } : {}),
+  }).candidateIds;
+}
 
 /**
- * 推荐文献集（纯函数，HITL 决策与 stage 执行共用同一实现保证确定性）：
- * 学术形态（DOI / arXiv）优先，年份降序（缺年份排后），candidateId 升序破平。
+ * 从项目与 research artifact 组装相关性上下文并给出推荐（M13.8）：主题 = 项目标题；
+ * 检索词 = 活动计划的 academic 查询；方法家族 = surveyProfile.taxonomy；多查询命中 =
+ * executionHistory 结果快照；年份范围 = run request。HITL payload、approve 缺省与
+ * survey.search 的 recommended 计数共用这一个入口（同一上下文 → 同一推荐集）。
  */
-export function recommendedSurveyCandidateIds(candidates: readonly CandidateSource[]): string[] {
-  const paperLike = candidates.filter(
-    (candidate) => candidate.doi !== undefined || candidate.arxivId !== undefined,
-  );
-  const pool = paperLike.length > 0 ? paperLike : [...candidates];
-  return pool
-    .sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || a.candidateId.localeCompare(b.candidateId))
-    .slice(0, SURVEY_RECOMMENDED_MAX)
-    .map((candidate) => candidate.candidateId);
+export async function surveyRecommendation(
+  services: Pick<WorkflowServices, "projects">,
+  projectId: string,
+  pending: readonly CandidateSource[],
+  request: Record<string, unknown> | undefined,
+): Promise<{ selection: RecommendationSelection; ranked: RankedCandidate[]; context: SurveyRelevanceContext }> {
+  const [project, artifact] = await Promise.all([
+    services.projects.getRequired(projectId),
+    readResearchArtifact(services.projects, projectId),
+  ]);
+  const chain = artifact !== null ? readPlanChain(artifact) : null;
+  const plan = chain?.plans.find((candidate) => candidate.planId === chain.activePlanId);
+  const context: SurveyRelevanceContext = {
+    topic: project.title,
+    ...(plan !== undefined ? { queries: plan.queries.map((query) => ({ query: query.query, kind: query.kind })) } : {}),
+    ...(artifact?.surveyProfile?.taxonomy !== undefined
+      ? { taxonomyFamilies: artifact.surveyProfile.taxonomy.families }
+      : {}),
+    ...(artifact?.executionHistory !== undefined
+      ? { queryHits: buildQueryHitCounts(artifact.executionHistory, plan?.planId) }
+      : {}),
+    ...(typeof request?.["yearFrom"] === "number" ? { yearFrom: request["yearFrom"] as number } : {}),
+    ...(typeof request?.["yearTo"] === "number" ? { yearTo: request["yearTo"] as number } : {}),
+  };
+  const ranked = rankSurveyCandidates(pending, context);
+  const selection = selectRecommendedCandidates(pending, ranked, {
+    ...(context.taxonomyFamilies !== undefined ? { familyOrder: context.taxonomyFamilies.map((family) => family.label) } : {}),
+  });
+  return { selection, ranked, context };
 }
 
 /** run request + project 的综述范围摘要（survey.plan prompt 输入；纯函数） */
@@ -7199,6 +7248,7 @@ function surveySearchStage(services: WorkflowServices): StageSpec {
       const libraryEligible = sources.filter(
         (item) => item.sourceRole !== "reference" && item.status !== "rejected",
       ).length;
+      const recommendation = await surveyRecommendation(services, ctx.projectId, pending, ctx.state.request);
       if (pending.length === 0 && libraryEligible === 0) {
         throw new BusinessError(
           "STAGE_CONTRACT_VIOLATION",
@@ -7213,7 +7263,9 @@ function surveySearchStage(services: WorkflowServices): StageSpec {
         candidatesSaved,
         candidatesMerged,
         pendingCandidates: pending.length,
-        recommended: recommendedSurveyCandidateIds(pending).length,
+        recommended: recommendation.selection.candidateIds.length,
+        recommendationBasis: recommendation.selection.basis,
+        relevanceCounts: recommendation.selection.counts,
         libraryEligible,
       };
     },
@@ -7229,7 +7281,7 @@ function literatureSelectionStage(services: WorkflowServices): StageSpec {
     producedOutputs: ["用户决策（candidateIds）"],
     hitl: {
       prompt:
-        "文献检索已完成，候选清单如下。默认入选「推荐集」（学术形态优先、按年份降序，上限 25 篇）；确认后这些文献将入库（promote）并获取全文，进入综述矩阵构建。也可在决策 payload.candidateIds 中指定增删后的集合（candidateId 列表），或取消",
+        "文献检索已完成，候选清单如下。默认入选「推荐集」（按主题相关性、多检索词命中与方法家族覆盖排序，剔除近似重复；无法确认相关性的候选如实标注，上限 25 篇）；确认后这些文献将入库（promote）并获取全文，进入综述矩阵构建。也可在决策 payload.candidateIds 中指定增删后的集合（candidateId 列表），或取消",
       options: ["approve", "cancel"],
       payload: async (ctx) => {
         const artifact = await readResearchArtifact(services.projects, ctx.projectId);
@@ -7237,6 +7289,9 @@ function literatureSelectionStage(services: WorkflowServices): StageSpec {
         const plan = chain?.plans.find((candidate) => candidate.planId === chain.activePlanId);
         const pending = await services.candidates.list(ctx.projectId, "pending_review");
         const sources = await services.sources.list(ctx.projectId);
+        const recommendation = await surveyRecommendation(services, ctx.projectId, pending, ctx.state.request);
+        const rankedById = new Map(recommendation.ranked.map((entry) => [entry.candidateId, entry]));
+        const pendingById = new Map(pending.map((candidate) => [candidate.candidateId, candidate]));
         const years = pending
           .map((candidate) => candidate.year)
           .filter((year): year is number => typeof year === "number");
@@ -7255,16 +7310,42 @@ function literatureSelectionStage(services: WorkflowServices): StageSpec {
           libraryEligible: sources.filter(
             (item) => item.sourceRole !== "reference" && item.status !== "rejected",
           ).length,
-          recommendedCandidateIds: recommendedSurveyCandidateIds(pending),
-          candidates: pending.slice(0, 40).map((candidate) => ({
-            candidateId: candidate.candidateId,
-            title: candidate.title ?? "(untitled)",
-            ...(candidate.year !== undefined ? { year: candidate.year } : {}),
-            ...(candidate.doi !== undefined ? { doi: candidate.doi } : {}),
-            ...(candidate.arxivId !== undefined ? { arxivId: candidate.arxivId } : {}),
-            origin: candidate.origin,
-            ...(candidate.query !== undefined ? { query: candidate.query } : {}),
-          })),
+          recommendedCandidateIds: recommendation.selection.candidateIds,
+          recommendationBasis: recommendation.selection.basis,
+          relevanceCounts: recommendation.selection.counts,
+          familyCoverage: recommendation.selection.familyCoverage,
+          nearDuplicatesSuppressed: recommendation.selection.nearDuplicatesSuppressed,
+          // 展示顺序 = 相关性排序（推荐集在前），不再是候选创建顺序
+          candidates: recommendation.ranked.slice(0, 40).flatMap((entry) => {
+            const candidate = pendingById.get(entry.candidateId);
+            if (candidate === undefined) {
+              return [];
+            }
+            const ranked = rankedById.get(candidate.candidateId);
+            return [
+              {
+                candidateId: candidate.candidateId,
+                title: candidate.title ?? "(untitled)",
+                ...(candidate.year !== undefined ? { year: candidate.year } : {}),
+                ...(candidate.doi !== undefined ? { doi: candidate.doi } : {}),
+                ...(candidate.arxivId !== undefined ? { arxivId: candidate.arxivId } : {}),
+                origin: candidate.origin,
+                ...(candidate.query !== undefined ? { query: candidate.query } : {}),
+                ...(ranked !== undefined
+                  ? {
+                      relevance: {
+                        label: ranked.relevance,
+                        score: ranked.score,
+                        queryHits: ranked.signals.queryHits,
+                        familyMatches: ranked.signals.familyMatches,
+                        reasons: ranked.reasons,
+                        ...(ranked.signals.nearDuplicateOf !== undefined ? { nearDuplicateOf: ranked.signals.nearDuplicateOf } : {}),
+                      },
+                    }
+                  : {}),
+              },
+            ];
+          }),
         };
       },
     },
@@ -7300,7 +7381,7 @@ async function applyLiteratureSelectionDecision(
   let selected: string[];
   const raw = input.payload?.["candidateIds"];
   if (raw === undefined) {
-    selected = recommendedSurveyCandidateIds(pending);
+    selected = (await surveyRecommendation(services, state.projectId, pending, state.request)).selection.candidateIds;
     if (selected.length === 0 && accepted.length > 0) {
       // 续跑：无新待审候选，文献库已有 corpus——保持既有库（空选择不合法）
       selected = accepted.map((candidate) => candidate.candidateId);

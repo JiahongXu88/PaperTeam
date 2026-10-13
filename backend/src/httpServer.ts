@@ -26,6 +26,7 @@ import type { ParsedDocument } from "./ingestion/types.js";
 import type { GenerationService } from "./generation/GenerationService.js";
 import type { LatexImporter } from "./import/LatexImporter.js";
 import type { ModelSettingsService } from "./settings/ModelSettingsService.js";
+import type { NetworkSettingsService } from "./settings/NetworkSettingsService.js";
 import { MAX_PAPER_PDF_BYTES } from "./paper/PaperIngestService.js";
 import type { ProjectStore } from "./project/ProjectStore.js";
 import { normalizeManuscriptLanguage } from "./project/language.js";
@@ -147,6 +148,8 @@ export interface BackendHttpServerOptions {
   readiness?: ReadinessProbe;
   /** Model Settings（/api/settings/model） */
   modelSettings?: ModelSettingsService;
+  /** Network Settings（/api/settings/network；M13.8 Research 代理） */
+  networkSettings?: NetworkSettingsService;
 }
 
 export function createBackendHttpServer({
@@ -160,6 +163,7 @@ export function createBackendHttpServer({
   skills,
   skillSummaries,
   modelSettings,
+  networkSettings,
   readiness,
 }: BackendHttpServerOptions): Server {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -174,6 +178,7 @@ export function createBackendHttpServer({
       skills,
       skillSummaries,
       modelSettings,
+      networkSettings,
       readiness,
     }).catch((error: unknown) => {
       if (req.aborted || (req.destroyed && error instanceof Error && (error as NodeJS.ErrnoException).code === "ECONNRESET")) return;
@@ -207,6 +212,7 @@ interface Services {
   /** Readiness（GET /ready；M5.5：Runtime + 文件系统 + TeX / Python 工具链） */
   readiness?: ReadinessProbe;
   modelSettings?: ModelSettingsService;
+  networkSettings?: NetworkSettingsService;
 }
 
 async function handleRequest(
@@ -408,6 +414,20 @@ async function handleRequest(
       url,
       services.modelSettings,
     );
+    if (handled) {
+      return;
+    }
+    sendJson(res, 404, { status: "not_found", path: pathname });
+    return;
+  }
+
+  // ---- /api/settings/network（M13.8 Research 代理）----
+  if (pathname === "/api/settings/network" || pathname.startsWith("/api/settings/network/")) {
+    if (services.networkSettings === undefined) {
+      sendJson(res, 503, { status: "unavailable", detail: "Network Settings 服务未配置" });
+      return;
+    }
+    const handled = await handleNetworkSettingsRoutes(req, res, pathname, method, services.networkSettings);
     if (handled) {
       return;
     }
@@ -733,6 +753,71 @@ async function handleRequest(
   }
 
   sendJson(res, 404, { status: "not_found", path: pathname });
+}
+
+/**
+ * /api/settings/network 路由组（M13.8 Research 代理；非敏感配置，无任何 key）：
+ *   GET  /api/settings/network       状态 {settings}（生效配置 / 来源 / env 覆盖 / 保存值 / 作用范围）
+ *   PUT  /api/settings/network       保存 {enabled, protocol, host, port} → {settings}（对后续新请求生效）
+ *   POST /api/settings/network/test  测试连接 {enabled, protocol, host, port}（空体 = 测当前生效配置）→ {result}
+ */
+async function handleNetworkSettingsRoutes(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+  method: string,
+  service: NetworkSettingsService,
+): Promise<boolean> {
+  if (pathname === "/api/settings/network") {
+    if (method === "GET") {
+      sendJson(res, 200, { settings: await service.getStatus() });
+      return true;
+    }
+    if (method === "PUT") {
+      const body = await readJsonBody(req);
+      const settings = await service.save(readNetworkProxyInput(body));
+      sendJson(res, 200, { settings });
+      return true;
+    }
+    res.setHeader("Allow", "GET, PUT");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+  if (pathname === "/api/settings/network/test") {
+    if (method === "POST") {
+      const body = await readOptionalJsonBody(req);
+      const result = await service.test(Object.keys(body).length === 0 ? undefined : readNetworkProxyInput(body));
+      sendJson(res, 200, { result });
+      return true;
+    }
+    res.setHeader("Allow", "POST");
+    sendJson(res, 405, { status: "method_not_allowed", method });
+    return true;
+  }
+  return false;
+}
+
+/** {enabled, protocol, host, port} 形状校验（值域由 NetworkSettingsService 校验 → 400） */
+function readNetworkProxyInput(
+  body: Record<string, unknown>,
+): { enabled: boolean; protocol: string; host: string; port: number | string } {
+  const enabled = body["enabled"];
+  if (typeof enabled !== "boolean") {
+    throw new BusinessError("INVALID_REQUEST", "字段 enabled 必须是布尔值");
+  }
+  const protocol = body["protocol"];
+  if (typeof protocol !== "string") {
+    throw new BusinessError("INVALID_REQUEST", "字段 protocol 必须是字符串（http / socks5）");
+  }
+  const host = body["host"];
+  if (typeof host !== "string") {
+    throw new BusinessError("INVALID_REQUEST", "字段 host 必须是字符串");
+  }
+  const port = body["port"];
+  if (typeof port !== "number" && typeof port !== "string") {
+    throw new BusinessError("INVALID_REQUEST", "字段 port 必须是 1-65535 的整数");
+  }
+  return { enabled, protocol, host, port };
 }
 
 /**

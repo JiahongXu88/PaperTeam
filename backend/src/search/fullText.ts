@@ -17,6 +17,7 @@
  */
 
 import { BusinessError } from "../errors.js";
+import { isPrivateOrLocalHost } from "../network/hosts.js";
 import { normalizeArxivId, type SourceIdentity } from "../sources/identity.js";
 import { MAX_SOURCE_BYTES } from "../sources/SourceStore.js";
 import { ProviderHttpError, type ProviderHttpClient } from "./providerHttp.js";
@@ -228,7 +229,96 @@ export interface DownloadPdfOptions {
   signal?: AbortSignal;
   /** 大小硬帽（缺省 MAX_SOURCE_BYTES，与文献库上传同一上限） */
   maxBytes?: number;
+  /** 按主机的下载节流（缺省进程级 defaultDownloadLimiter；测试注入） */
+  limiter?: HostDownloadLimiter;
 }
+
+/** 主机级下载节流规则：同时在途上限 + 相邻下载起始最小间隔 */
+export interface HostDownloadPolicy {
+  maxConcurrent: number;
+  minIntervalMs: number;
+}
+
+/**
+ * 按主机的下载节流（M13.8）。arXiv 的访问条款要求对 PDF 串行、≥ 3s 间隔的「礼貌」访问；
+ * 真实 run 中 batchConcurrency(3) + promote 钩子的后台尝试叠加成 ≥ 6 路并发 → 代理出口被
+ * arxiv.org 节流（60s 级慢速 + 连接错误）→ 6 个 network_error 在同一瞬间触发共享熔断
+ * （阈值 3）→ 其余文献全部被 circuit_open 短路（10/14 而非 13/14）。
+ * 节流在 downloadPdf 入口按主机排队：arxiv.org / export.arxiv.org 同时只放 1 路、起始间隔
+ * ≥ 1s；其它主机不限制（Unpaywall / OpenAlex 直链来自各出版社，无统一条款）。
+ * 进程级单例（与 M13.6 共享冷却同一纪律）；可注入替换以便测试。
+ */
+export class HostDownloadLimiter {
+  private readonly policies: Array<{ match: (host: string) => boolean; policy: HostDownloadPolicy }>;
+  private readonly state = new Map<string, { inflight: number; lastStartMs: number; waiters: Array<() => void> }>();
+  private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
+
+  constructor(
+    policies: Array<{ hosts: readonly string[]; policy: HostDownloadPolicy }> = [
+      { hosts: ["arxiv.org", "export.arxiv.org"], policy: { maxConcurrent: 1, minIntervalMs: 1_000 } },
+    ],
+    clock: { now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+  ) {
+    this.policies = policies.map((entry) => ({
+      match: (host) => entry.hosts.some((candidate) => host === candidate || host.endsWith(`.${candidate}`)),
+      policy: entry.policy,
+    }));
+    this.now = clock.now ?? Date.now;
+    this.sleep = clock.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  }
+
+  /** 该主机当前在途数（测试 / 诊断） */
+  inflight(host: string): number {
+    const index = this.policyIndex(host);
+    return index < 0 ? 0 : (this.state.get(`policy:${index}`)?.inflight ?? 0);
+  }
+
+  /** 取得许可（无策略的主机立即返回 no-op release）；release 必须且只能调用一次 */
+  async acquire(host: string, signal?: AbortSignal): Promise<() => void> {
+    const index = this.policyIndex(host);
+    if (index < 0) {
+      return () => {};
+    }
+    const policy = this.policies[index]!.policy;
+    // 同一策略组共享一个队列（arxiv.org 与 export.arxiv.org 是同一出口限制）
+    const key = `policy:${index}`;
+    let entry = this.state.get(key);
+    if (entry === undefined) {
+      entry = { inflight: 0, lastStartMs: 0, waiters: [] };
+      this.state.set(key, entry);
+    }
+    for (;;) {
+      signal?.throwIfAborted();
+      if (entry.inflight < policy.maxConcurrent) {
+        const wait = entry.lastStartMs + policy.minIntervalMs - this.now();
+        if (wait > 0) {
+          await this.sleep(wait);
+          continue; // 重新检查在途数（等待期间可能有别的下载起始）
+        }
+        entry.inflight += 1;
+        entry.lastStartMs = this.now();
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          entry!.inflight -= 1;
+          const next = entry!.waiters.shift();
+          next?.();
+        };
+      }
+      await new Promise<void>((resolve) => entry!.waiters.push(resolve));
+    }
+  }
+
+  private policyIndex(host: string): number {
+    const normalized = host.toLowerCase();
+    return this.policies.findIndex((entry) => entry.match(normalized));
+  }
+}
+
+/** 进程级缺省节流器（arXiv 串行 + 1s 间隔） */
+export const defaultDownloadLimiter = new HostDownloadLimiter();
 
 /**
  * 下载 PDF 字节。护栏（agent-search SSRF 逐跳校验教训 → M6.1 ADR §6）：
@@ -240,7 +330,25 @@ export interface DownloadPdfOptions {
  * 4. %PDF- 魔数（landing page / 付费墙 HTML 在此确定性拦截）。
  */
 export async function downloadPdf(url: string, options: DownloadPdfOptions): Promise<DownloadedPdf> {
-  const maxBytes = options.maxBytes ?? MAX_SOURCE_BYTES;
+  const limiter = options.limiter ?? defaultDownloadLimiter;
+  const firstHop = assertDownloadableUrl(url);
+  let release: () => void;
+  try {
+    release = await limiter.acquire(firstHop.hostname, options.signal);
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw downloadFailure("全文下载已被取消", options.signal);
+    }
+    throw error;
+  }
+  try {
+    return await downloadPdfHops(url, options, options.maxBytes ?? MAX_SOURCE_BYTES);
+  } finally {
+    release();
+  }
+}
+
+async function downloadPdfHops(url: string, options: DownloadPdfOptions, maxBytes: number): Promise<DownloadedPdf> {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECT_HOPS; hop += 1) {
     assertDownloadableUrl(current);
@@ -314,52 +422,11 @@ export function assertDownloadableUrl(raw: string): URL {
   return parsed;
 }
 
-/** 内网 / 本地主机判定（字面量级；IPv4 / IPv6 / 保留后缀） */
-export function isPrivateOrLocalHost(host: string): boolean {
-  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".localdomain")) {
-    return true;
-  }
-  // IPv4 字面量
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (ipv4 !== null) {
-    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
-    if (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      a >= 224
-    ) {
-      return true;
-    }
-    return false;
-  }
-  // IPv6 字面量（含 ::ffff:IPv4 映射）
-  if (host.includes(":")) {
-    const lower = host.toLowerCase();
-    if (lower === "::" || lower === "::1") {
-      return true;
-    }
-    const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(lower);
-    if (mapped !== null) {
-      return isPrivateOrLocalHost(mapped[1]!);
-    }
-    const hextet = /^([0-9a-f]{1,4})(?::|$)/.exec(lower);
-    if (hextet !== null) {
-      const first = Number.parseInt(hextet[1]!, 16);
-      if (
-        (first >= 0xfc00 && first <= 0xfdff) || // fc00::/7 unique-local
-        (first >= 0xfe80 && first <= 0xfebf) // fe80::/10 link-local
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-  return false;
-}
+/**
+ * 内网 / 本地主机判定：实现迁至 network/hosts.ts（M13.8 与代理旁路共用同一判定），
+ * 此处保留 re-export 以兼容既有导入路径。
+ */
+export { isPrivateOrLocalHost } from "../network/hosts.js";
 
 // ---- 内部辅助 ----
 

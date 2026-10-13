@@ -885,6 +885,30 @@
   justify-content: flex-end;
 }
 
+/* M13.8 网络设置：开关行与测试结果列表 */
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  cursor: pointer;
+}
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.network-test-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+.network-test-result .source-row {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-1);
+}
+
 .form-panel {
   padding: var(--s-6);
 }

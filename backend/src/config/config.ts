@@ -8,6 +8,12 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
+import {
+  ResearchProxyConfigError,
+  formatResearchProxyUrl,
+  parseResearchProxyUrl,
+} from "../network/researchProxy.js";
+
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
 
@@ -229,6 +235,16 @@ export interface IngestionConfig {
   doclingConcurrency: number;
 }
 
+/** Research 网络出口（M13.8） */
+export interface ResearchNetworkConfig {
+  /**
+   * 学术检索 / 文献元数据核验 / 合法全文下载的出口代理（PAPERTEAM_RESEARCH_PROXY_URL；
+   * `http://host:port` 或 `socks5://host:port`，不接受 userinfo）。缺省 = 直连（旧版行为）；
+   * 存在即覆盖 Settings UI 保存的 network.json。不影响模型 API / 本机 API / 其它出口。
+   */
+  proxyUrl?: string;
+}
+
 export interface AppConfig {
   env: NodeEnv;
   port: number;
@@ -257,6 +273,7 @@ export interface AppConfig {
   retrieval: RetrievalConfig;
   fullText: FullTextConfig;
   ingestion: IngestionConfig;
+  research: ResearchNetworkConfig;
   skills: SkillsConfig;
   /**
    * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
@@ -628,6 +645,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       }),
     },
     retrieval: readRetrievalConfig(source),
+    research: readResearchConfig(source),
     fullText: {
       batchConcurrency: readIntWithFallback(source, "PAPERTEAM_FULLTEXT_BATCH_CONCURRENCY", {
         default: DEFAULT_FULLTEXT_BATCH_CONCURRENCY,
@@ -835,6 +853,22 @@ function readProjectsRoot(source: Record<string, string | undefined>): string {
   const raw = (source[key] ?? "").trim() || DEFAULT_PROJECTS_ROOT;
   // 相对路径基于进程工作目录解析为绝对路径，路径管理集中在服务端
   return resolve(process.cwd(), raw);
+}
+
+/** PAPERTEAM_RESEARCH_PROXY_URL：格式即校验（协议 / 端口 / 无 userinfo），存规范化 URL */
+function readResearchConfig(source: Record<string, string | undefined>): ResearchNetworkConfig {
+  const raw = readOptionalValue(source, "PAPERTEAM_RESEARCH_PROXY_URL");
+  if (raw === undefined) {
+    return {};
+  }
+  try {
+    return { proxyUrl: formatResearchProxyUrl(parseResearchProxyUrl(raw)) };
+  } catch (error) {
+    if (error instanceof ResearchProxyConfigError) {
+      throw new ConfigError(`PAPERTEAM_RESEARCH_PROXY_URL 无效：${error.message}`);
+    }
+    throw error;
+  }
 }
 
 function readOptionalValue(

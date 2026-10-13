@@ -292,3 +292,14 @@ OpenAlex：匿名池持续 429，`Retry-After` 64,880 → 63,609 s（≈ 18 h）
 ## 附：私人产物与可复核清单
 
 `D:\PaperTeamData\M13_Final_Closure\`（不进 Git）：`projects\p-47370dc6a0f0`（完整项目：research / sources / manuscript / reviews / build / workflow runs 的 checkpoint 与 events）；`live\topic-run1`、`live\topic-run1-rerun`（逐任务 prompt / output、`result-*.json`、`project-*` 快照、`pdf-inspection-*.json/.txt`）；`model-budget.json`；`replay\`（claim grounding 重放 JSON、revision validation 重放）；`logs\`（两次全量 vitest、两次 run 日志）；`scratch\`（patch 脚本、PDF 抽查脚本、进度 / 内存脚本）。主要 artifact SHA256（前 16 位）：`build/main.pdf 9b8b8be80605df80`、`main.tex a31d6f0b5492588f`、`references.bib 7b05bdb217c309bb`、`outline.json 745c05ff4e1896ba`、`research.json 2ebec150b85e9774`、`survey.json 6da2f6b9c5e78fa4`、`survey-synthesis.json 78b5d6e95d4a3d4f`、`corpus-snapshot.json 8c053e67824fb14c`。公开报告不含网关地址、密钥、用户真实论文内容。
+
+---
+
+## M13.8 复验追加（2026-10-13；本节只追加，不改动上文 PARTIAL 的历史事实）
+
+本轮（M13.8，报告见 [M13_8_NETWORK_AND_PRODUCT_CLOSURE.md](M13_8_NETWORK_AND_PRODUCT_CLOSURE.md)）清除了上文两项阻断，M13 裁决由 PARTIAL 升为 **COMPLETE — READY_FOR_M14**：
+
+1. **阻断 1（abstract-only 零正式 Evidence）**：接入本机研究代理（`PAPERTEAM_RESEARCH_PROXY_URL` / 设置 → 网络设置；仅学术检索、元数据核验、合法全文下载，不影响模型 API）后，arXiv 全文下载从 60s/1.3MB 提速至秒级；真实语料 fulltext 10/14，生产管线产出 **37 条 verified fulltext Evidence**（含 chunk/page provenance、quote 逐字复检），Fact Reviewer 三轮真实运行（最终 SUPPORTED 10 / PARTIALLY 3 / UNSUPPORTED 5）。
+2. **阻断 2（登记工件未产出）**：真实 Topic → PDF（run 1 + 幂等复用续跑）**正式登记 Draft 工件 `art-draft-rev4`**（build gate 通过；PDF 9 页抽查合格；bibtex 14 键双向闭合）；修订期具名实体守卫真实 fail-closed 拦截 ×2（恢复），未知 cite key 本轮未再出现（三轮 missing=0 / hallucinated=0）。
+
+诚实保留：r3（rev4）academicScore 89 / styleRisk 25 / critical 0，Quality Gate 仍因 5–6 条跨方法比较论断 UNSUPPORTED 而 FAIL → 终态 **Draft / QUALITY_NOT_REACHED**（双层判定如实输出，未强改阈值；Publication Ready 未达即不判 Final）。文献遴选改为主题相关性排序（taxonomy 归类 1/14 → 12/14）。模型预算超出原帽（118/80 任务、127/120 turns；$1.73 estimatedCost），已在 M13.8 报告 §8 全额披露。

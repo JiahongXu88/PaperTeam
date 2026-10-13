@@ -44,6 +44,9 @@ npm run dev           # 构建 backend 并同时启动 Backend :3000 + Vite :517
 - 支持 Pi 内置 Provider、OpenAI 兼容网关与自定义 Provider；Z.AI Key 需按类型
   选择 API 通道（Coding Plan / 按量）。详见
   [model-configuration.md](model-configuration.md)。
+- 公司 / 校园网络下 arXiv 全文下载很慢或 OpenAlex / Semantic Scholar 不可达时，可在
+  **设置 → 网络设置** 配置本机代理（如 `127.0.0.1:7890`）；只作用于学术检索、文献元数据
+  核验与合法全文下载，不影响模型 API。详见 [network-settings.md](network-settings.md)。
 
 ## 4. 跑通第一条链路（不花模型钱的路径）
 

@@ -883,6 +883,10 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
   const projectStrengthEscalate = new Set<string>();
   let hangResolve: (() => void) | undefined;
   let hangConsumed = options.hangFirstCall !== true;
+  // M13.8：release() 早于首个 runAgent 到达时（SSE 测试在 stage.started 后立刻 release，
+  // 而 target.* 等无模型 stage 先于 research.idea 发出 stage.started）不能丢失——
+  // 否则首个调用永久挂起，run 停在 running（计时敏感 flake 的真因）
+  let releasedBeforeHang = false;
 
   const runtime: ScriptedAgentRuntime = {
     provider: "pi",
@@ -891,9 +895,11 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       calls.push({ agentId: input.agentId, contextScope: input.contextScope });
       tasks.push(input);
       if (!hangConsumed) {
-        await new Promise<void>((resolve) => {
-          hangResolve = resolve;
-        });
+        if (!releasedBeforeHang) {
+          await new Promise<void>((resolve) => {
+            hangResolve = resolve;
+          });
+        }
         hangConsumed = true;
       }
       const scope = input.contextScope ?? "";
@@ -1162,7 +1168,13 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
     runtime,
     calls,
     tasks,
-    release: () => hangResolve?.(),
+    release: () => {
+      if (hangResolve !== undefined) {
+        hangResolve();
+      } else {
+        releasedBeforeHang = true;
+      }
+    },
   };
 }
 

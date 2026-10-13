@@ -112,9 +112,11 @@ import {
   testCustomProviderModel,
   testModelConnection,
 } from "../api/settings.js";
+import { getNetworkSettings, saveNetworkSettings, testNetworkSettings } from "../api/network.js";
 import type {
   ApiChannel,
   CitationSemanticMode,
+  NetworkProxyInput,
   StylePolicy,
   CreateProjectInput,
   CustomProviderInput,
@@ -187,6 +189,8 @@ export const queryKeys = {
   modelOptions: ["model-settings", "options"] as const,
   modelOptionsFor: (provider: string) => ["model-settings", "options", provider] as const,
   customProviders: ["model-settings", "custom-providers"] as const,
+  /** 网络设置（M13.8 Research 代理） */
+  networkSettings: ["network-settings"] as const,
   /** 外部修改意见（M5.7；修订派发后失效重取） */
   externalInstructions: (projectId: string) =>
     ["project", projectId, "external-instructions"] as const,
@@ -1161,6 +1165,31 @@ export function useSaveModelSettings() {
     }) => saveModelSettings(input),
     onSuccess: invalidate,
   });
+}
+
+// ---- 网络设置（M13.8 Research 代理） ----
+
+export function useNetworkSettings() {
+  return useQuery({
+    queryKey: queryKeys.networkSettings,
+    queryFn: ({ signal }) => getNetworkSettings(signal),
+  });
+}
+
+/** 保存代理配置；成功后状态失效重取（保存只影响后续学术请求，不触碰模型状态） */
+export function useSaveNetworkSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: NetworkProxyInput) => saveNetworkSettings(input),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.networkSettings });
+    },
+  });
+}
+
+/** 测试连接（候选配置可未保存；不改缓存） */
+export function useTestNetworkSettings() {
+  return useMutation({ mutationFn: (input: NetworkProxyInput) => testNetworkSettings(input) });
 }
 
 export function useClearModelApiKey() {

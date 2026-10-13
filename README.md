@@ -164,7 +164,8 @@ More details: [docs/getting-started.md](docs/getting-started.md) ·
 [docs/deployment (Docker/Linux)](docs/DEPLOYMENT.md) ·
 [Linux server guide](docs/deployment/linux-server.md) ·
 [dual-runtime (Windows local + Linux server)](docs/deployment/dual-runtime.md) ·
-[docs/model-configuration.md](docs/model-configuration.md)
+[docs/model-configuration.md](docs/model-configuration.md) ·
+[docs/network-settings.md](docs/network-settings.md)
 
 ## How it works
 
@@ -230,6 +231,7 @@ Your paper leaves the machine only as model API calls to the provider you config
 | [Existing-paper revision](docs/existing-paper-revision.md) | Reviewer-comment workflow, revision task vs publication readiness |
 | [Evidence & citations](docs/evidence-and-citations.md) | Search → candidate → source → evidence → citation; why Source ≠ Evidence |
 | [Model configuration](docs/model-configuration.md) | Providers, per-role models, custom providers, key storage |
+| [Network settings](docs/network-settings.md) | Optional proxy for academic search / metadata / OA full-text download only (never model APIs) |
 | [Architecture](docs/ARCHITECTURE.md) | System design and architecture red lines |
 | [Development](docs/development.md) | Dev setup, test layers, repository layout |
 | [Deployment](docs/DEPLOYMENT.md) | Docker / single-host Linux deployment |
