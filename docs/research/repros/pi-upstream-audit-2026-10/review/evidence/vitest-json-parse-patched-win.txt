@@ -1,0 +1,10 @@
+
+ RUN  v4.1.11 D:/PaperTeamData/PiUpstreamAudit/pi-upstream/packages/ai
+
+············································
+
+ Test Files  4 passed (4)
+      Tests  44 passed (44)
+   Start at  11:48:14
+   Duration  8.20s (transform 3.98s, setup 0ms, import 15.36s, tests 92ms, environment 0ms)
+

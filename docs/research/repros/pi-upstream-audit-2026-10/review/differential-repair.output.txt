@@ -1,44 +1,73 @@
-FINAL  A!=B  "{\"text\":\"See \\url{https://example.org/paper}\"}"
+CLOSED last A!=B  "{\"text\":\"See \\url{https://example.org/paper}\"}"
     A={}
     B={"text":"See \\url{https://example.org/paper}"}
-FINAL  A!=B  "{\"path\":\"main.tex\",\"content\":\"\\documentclass{article}\\n\\usepackage{graphicx}\\n\"}"
+CLOSED last A!=B  "{\"path\":\"main.tex\",\"content\":\"\\documentclass{article}\\n\\usepackage{graphicx}\\n\"}"
     A={"path":"main.tex"}
     B={"path":"main.tex","content":"\\documentclass{article}\n\\usepackage{graphicx}\n"}
-FINAL  A!=B  "{\"text\":\"\\underline{x} and \\upshape\"}"
+CLOSED last A!=B  "{\"text\":\"\\underline{x} and \\upshape\"}"
     A={}
     B={"text":"\\underline{x} and \\upshape"}
-FINAL  A!=B  "{\"text\":\"\\u12G4\"}"
+CLOSED last A!=B  "{\"text\":\"\\u12G4\"}"
     A={}
     B={"text":"\\u12G4"}
-FINAL  A!=B  "{\"text\":\"x\\u12\"}"
+CLOSED last A!=B  "{\"text\":\"x\\u12\"}"
     A={}
     B={"text":"x\\u12"}
-FINAL  A!=B  "{\"text\":\"x\\u\"}"
+CLOSED last A!=B  "{\"text\":\"x\\u\"}"
     A={}
     B={"text":"x\\u"}
-FINAL  A!=B  "{\"text\":\"\\uabc\"}"
+CLOSED last A!=B  "{\"text\":\"\\uabc\"}"
     A={}
     B={"text":"\\uabc"}
-FINAL  A!=B  "{\"text\":\"a\\tb \\cite{x} \\url{y} \\\"q\\\" \\u00e9\"}"
+CLOSED last A!=B  "{\"text\":\"a\\tb \\cite{x} \\url{y} \\\"q\\\" \\u00e9\"}"
     A={}
     B={"text":"a\tb \\cite{x} \\url{y} \"q\" é"}
-FINAL  A!=B  "{\"te\\ut\":\"v\",\"next\":1}"
+CLOSED last A!=B  "{\"te\\ut\":\"v\",\"next\":1}"
     A={}
     B={"te\\ut":"v","next":1}
-FINAL  A!=B  "{\"a\":1,\"b\":\"\\url{x}\",\"c\":[1,2],\"d\":{\"e\":\"f\"}}"
+CLOSED last A!=B  "{\"a\":1,\"b\":\"\\url{x}\",\"c\":[1,2],\"d\":{\"e\":\"f\"}}"
     A={"a":1}
     B={"a":1,"b":"\\url{x}","c":[1,2],"d":{"e":"f"}}
-FINAL  A!=B  "{\"text\":\"\\\\\\url{x}\"}"
+CLOSED last A!=B  "{\"text\":\"\\\\\\url{x}\"}"
     A={}
     B={"text":"\\\\url{x}"}
-FINAL  A!=B  "{\"text\":\"\\uline{x}\"}"
+CLOSED last A!=B  "{\"text\":\"\\uline{x}\"}"
     A={}
     B={"text":"\\uline{x}"}
+CLOSED mid  A!=B  "{\"text\":\"See \\url{x}\"}"
+    A={}
+    B={"text":"See \\url{x}"}
+CLOSED last A!=B  "{\"text\":\"See \\url{x}\"} "
+    A={}
+    B={"text":"See \\url{x}"}
+CLOSED mid  A!=B  "{\"text\":\"See \\url{x}\"}"
+    A={}
+    B={"text":"See \\url{x}"}
+CLOSED last A!=B  "{\"text\":\"See \\url{x}\"}\n"
+    A={}
+    B={"text":"See \\url{x}"}
 
 === summary ===
-corpus strings: 20; prefixes checked: 588
-A (main) vs B (minimal): 12 differing prefixes, 12 of them complete inputs
+corpus strings: 24; prefixes checked: 679
+A (main) vs B (minimal): 16 differing prefixes
+  closed (object already complete, possibly followed by whitespace): 16
+    of which not the last prefix of their stream (closed object, whitespace still to come): 2
+  open (object not yet closed): 0
 B (minimal) vs C (old patch): 0 differing prefixes through parseStreamingJson
+
+=== closed object followed by streamed whitespace (A vs B at each step) ===
+"{\"text\":\"See \\url{x}\"}"
+    A={}
+    B={"text":"See \\url{x}"}
+"{\"text\":\"See \\url{x}\"} "
+    A={}
+    B={"text":"See \\url{x}"}
+"{\"text\":\"See \\url{x}\"}"
+    A={}
+    B={"text":"See \\url{x}"}
+"{\"text\":\"See \\url{x}\"}\n"
+    A={}
+    B={"text":"See \\url{x}"}
 
 === raw repairJson B vs C on truncated escapes ===
 "{\"text\":\"caf\\u00"

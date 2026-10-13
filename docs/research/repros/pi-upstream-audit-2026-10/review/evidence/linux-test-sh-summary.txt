@@ -49,3 +49,24 @@ FAIL  packages/coding-agent/test/auth-storage.test.ts > AuthStorage > keeps a co
 pi-ai:            145 files passed | 27 skipped;  1349 tests passed | 868 skipped   (whole pi-ai package green, incl. radius-oauth this time)
 pi-coding-agent:  1 failed | 291 passed | 6 skipped files;  1 failed | 2649 passed | 50 skipped tests
 (all other packages passed: agent 91, mcp 407, codemode 212, durable 1228 x2, env 86, tui 55, telemetry 45, chord 15)
+
+## Run 5 — final patch after the independent (ChatGPT) review (v4 branch, 1d4619482 = same source fix + 9 tests)
+
+Applied with `git am` of the Windows format-patch (sha256 d6746db3...005f24) onto 7d75a0e3e.
+npm run check: exit 0
+targeted: json-parse + anthropic-sse-parsing + assistant-message-frame + openai-responses-partial-json-cleanup -> 4 files, 44 tests passed
+./test.sh, run 5a (detached with nohup, exit code NOT captured): every package block completed, FAIL lines: 0
+  pi-ai:            145 files passed | 27 skipped;  1351 tests passed | 868 skipped   (1349 + the 2 new tests)
+  pi-coding-agent:  292 files passed | 6 skipped;   2650 tests passed | 50 skipped    (auth-storage passed this time)
+  (all other packages passed: agent 91, mcp 407, codemode 212, durable 1228 x2, env 86, tui 55, telemetry 45, chord 15)
+./test.sh, run 5b (exit code captured): test.sh exit 1
+FAIL  packages/coding-agent/test/auth-storage.test.ts > AuthStorage > keeps a coalesced reload alive while another credential reader is waiting
+      AssertionError: expected { type: 'api_key', key: 'old' } to deeply equal { type: 'api_key', key: 'new' }
+  pi-ai:            145 files passed | 27 skipped;  1351 tests passed | 868 skipped
+  pi-coding-agent:  1 failed | 291 passed | 6 skipped files;  1 failed | 2649 passed | 50 skipped tests
+  (all other packages passed, same counts as 5a)
+
+Tally over the patched full runs on this host (runs 2, 3, 4, 5a, 5b): auth-storage failed in 4 of 5, radius-oauth in 2 of 5;
+json-parse.test.ts and the whole pi-ai package passed in every run. Run 1 (unpatched) was the only fully green run,
+consistent with the isolation data above (auth-storage fails 3 of 5 on the unpatched tree as well). The auth-storage and
+OAuth code was not modified to make these pass.

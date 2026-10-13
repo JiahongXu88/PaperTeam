@@ -120,6 +120,16 @@ export const SCENARIOS = {
 					}),
 				}
 			: { events: textEvents("done") },
+	// The object closes before the stream ends: one more delta carries only a newline. The closed prefix is a
+	// complete JSON text but still an intermediate state of this stream; its parse changes with the fix.
+	"note-url-trailing-ws-chars": (i) =>
+		i === 0
+			? {
+					events: toolCallEvents("add_note", `${String.raw`{"text":"See \url{https://example.org/paper}"}`}\n`, {
+						pieces: Number.POSITIVE_INFINITY,
+					}),
+				}
+			: { events: textEvents("done") },
 	// Abort-during-tool scenario: first turn calls slow_tool, second turn (if reached) answers.
 	"abort-slow-tool": (i) =>
 		i === 0

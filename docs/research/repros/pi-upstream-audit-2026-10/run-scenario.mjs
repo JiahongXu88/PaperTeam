@@ -161,6 +161,8 @@ const { session } = await createAgentSession({
 const events = [];
 // Distinct intermediate tool-call argument snapshots seen on toolcall_delta (what a UI would show mid-stream).
 const intermediateArgs = [];
+// Every toolcall_delta in order: the raw delta text and the parsed-arguments snapshot after it (not deduplicated).
+const toolcallDeltaTrace = [];
 const t0 = Date.now();
 const ev = (type, data) => events.push({ t: Date.now() - t0, type, ...data });
 let abortTimer;
@@ -172,6 +174,7 @@ session.subscribe((e) => {
 				const block = ame.partial?.content?.[ame.contentIndex];
 				const snapshot = JSON.stringify(block?.arguments ?? null);
 				if (intermediateArgs[intermediateArgs.length - 1] !== snapshot) intermediateArgs.push(snapshot);
+				toolcallDeltaTrace.push({ delta: ame.delta, args: snapshot });
 			}
 			break;
 		}
@@ -277,6 +280,7 @@ const summary = {
 	assistantTurns: assistant.length,
 	toolReceivedParams: received,
 	intermediateArgs,
+	toolcallDeltaTrace,
 	slowToolState,
 	serverRequests: server.requests.map((r) => ({
 		index: r.index,

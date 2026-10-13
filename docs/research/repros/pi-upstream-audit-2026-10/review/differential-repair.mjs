@@ -166,38 +166,94 @@ const corpus = [
 	S('{"text":"', BS, BS, BS, BS, 'u00e9"}'),
 	// \u + exactly 4 non-hex-looking letters that are LaTeX
 	S('{"text":"', BS, 'uline{x}"}'),
+	// A closed object followed by whitespace that the stream delivers after the closing brace. The closed prefix
+	// is a complete JSON text, yet it is still an intermediate state of this stream.
+	S('{"text":"See ', BS, 'url{x}"} '),
+	S('{"text":"See ', BS, 'url{x}"}\n'),
+	// Same shape with a valid \u escape and with the \c control: trailing whitespace must change nothing.
+	S('{"text":"caf', BS, 'u00e9"}\n'),
+	S('{"text":"See ', BS, 'cite{x}"} '),
 ];
 
 function show(v) {
 	return JSON.stringify(v);
 }
 
+/**
+ * Structural classification of a streaming prefix, independent of the repair variants: `closed` when every
+ * object/array opened in the prefix has been closed and only whitespace follows (the prefix is a complete JSON
+ * text, whether or not it parses); `open` otherwise. Backslash handling follows the JSON grammar (a backslash
+ * consumes the next character) so an invalid `\u` cannot desynchronise the string tracker.
+ */
+function classifyPrefix(prefix) {
+	let inString = false;
+	let depth = 0;
+	let opened = false;
+	let closedAt = -1;
+	for (let index = 0; index < prefix.length; index++) {
+		const char = prefix[index];
+		if (inString) {
+			if (char === "\\") index++;
+			else if (char === '"') inString = false;
+			continue;
+		}
+		if (char === '"') inString = true;
+		else if (char === "{" || char === "[") {
+			depth++;
+			opened = true;
+		} else if (char === "}" || char === "]") {
+			depth--;
+			if (opened && depth === 0) closedAt = index;
+		}
+	}
+	if (!opened || depth !== 0 || inString) return "open";
+	return /^\s*$/.test(prefix.slice(closedAt + 1)) ? "closed" : "open";
+}
+
 let abDiffs = 0;
 let bcDiffs = 0;
-let finalFixed = 0;
+let abClosed = 0;
+let abOpen = 0;
+let abClosedNotLast = 0;
 const lines = [];
 for (const full of corpus) {
 	for (let n = 1; n <= full.length; n++) {
 		const prefix = full.slice(0, n);
 		const out = {};
 		for (const [name, fns] of Object.entries(variants)) out[name] = show(fns.parseStreamingJson(prefix));
-		const isFinal = n === full.length;
+		const kind = classifyPrefix(prefix);
+		const tag = `${kind.toUpperCase().padEnd(6)}${n === full.length ? " last" : " mid "}`;
 		if (out.A !== out.B) {
 			abDiffs++;
-			if (isFinal) finalFixed++;
-			lines.push(`${isFinal ? "FINAL " : "prefix"} A!=B  ${show(prefix)}\n    A=${out.A}\n    B=${out.B}`);
+			if (kind === "closed") {
+				abClosed++;
+				if (n !== full.length) abClosedNotLast++;
+			} else abOpen++;
+			lines.push(`${tag} A!=B  ${show(prefix)}\n    A=${out.A}\n    B=${out.B}`);
 		}
 		if (out.B !== out.C) {
 			bcDiffs++;
-			lines.push(`${isFinal ? "FINAL " : "prefix"} B!=C  ${show(prefix)}\n    B=${out.B}\n    C=${out.C}`);
+			lines.push(`${tag} B!=C  ${show(prefix)}\n    B=${out.B}\n    C=${out.C}`);
 		}
 	}
 }
 console.log(lines.join("\n"));
 console.log("\n=== summary ===");
 console.log(`corpus strings: ${corpus.length}; prefixes checked: ${corpus.reduce((a, s) => a + s.length, 0)}`);
-console.log(`A (main) vs B (minimal): ${abDiffs} differing prefixes, ${finalFixed} of them complete inputs`);
+console.log(`A (main) vs B (minimal): ${abDiffs} differing prefixes`);
+console.log(`  closed (object already complete, possibly followed by whitespace): ${abClosed}`);
+console.log(`    of which not the last prefix of their stream (closed object, whitespace still to come): ${abClosedNotLast}`);
+console.log(`  open (object not yet closed): ${abOpen}`);
 console.log(`B (minimal) vs C (old patch): ${bcDiffs} differing prefixes through parseStreamingJson`);
+
+// A closed object with an invalid \u followed by streamed whitespace: show A and B for each step of the tail.
+console.log("\n=== closed object followed by streamed whitespace (A vs B at each step) ===");
+for (const tail of [" ", "\n"]) {
+	const closed = S('{"text":"See ', BS, 'url{x}"}');
+	for (const s of [closed, closed + tail]) {
+		console.log(`${show(s)}\n    A=${show(variants.A.parseStreamingJson(s))}\n    B=${show(variants.B.parseStreamingJson(s))}`);
+	}
+}
 
 // repairJson itself differs between B and C on truncated hex — show it so the reader can see the exact delta.
 console.log("\n=== raw repairJson B vs C on truncated escapes ===");

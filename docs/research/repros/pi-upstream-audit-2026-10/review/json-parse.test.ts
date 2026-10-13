@@ -66,4 +66,23 @@ describe("parseStreamingJson", () => {
 			content: "caf",
 		});
 	});
+
+	it("repairs a closed object even when the stream later appends only whitespace", () => {
+		// The closing brace can arrive before the stream ends; a later delta may add nothing but whitespace.
+		// The closed prefix and the whitespace-extended text are both complete JSON texts and parse the same.
+		const closed = String.raw`{"text":"See \url{https://example.org}"}`;
+		expect(parseStreamingJson(closed)).toEqual({ text: String.raw`See \url{https://example.org}` });
+		expect(parseStreamingJson(`${closed} `)).toEqual({ text: String.raw`See \url{https://example.org}` });
+		expect(parseStreamingJson(`${closed}\n`)).toEqual({ text: String.raw`See \url{https://example.org}` });
+	});
+
+	it("leaves a not yet closed object to the partial parser, as before", () => {
+		// Until the closing brace arrives the repaired text does not parse either, so partial-json decides:
+		// it keeps the text before the escape while the string is open and drops the property once the string closes.
+		expect(parseStreamingJson(String.raw`{"text":"See \url{https://example.org}`)).toEqual({ text: "See " });
+		expect(parseStreamingJson(String.raw`{"text":"See \url{https://example.org}"`)).toEqual({});
+		expect(parseStreamingJson(String.raw`{"path":"main.tex","content":"\usepackage{graphicx}"`)).toEqual({
+			path: "main.tex",
+		});
+	});
 });

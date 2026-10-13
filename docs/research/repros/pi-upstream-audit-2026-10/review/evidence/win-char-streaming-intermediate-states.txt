@@ -1,3 +1,6 @@
+# One character per delta through the public SDK (createAgentSession, openai-completions path), fake in-process SSE server.
+# "distinct intermediate states": consecutive duplicates of the parsed arguments collapsed. For the trailing-whitespace
+# scenario the last three deltas are listed individually to show which delta changes the state.
 
 [v1.2.0] note-url-chars: 7 distinct intermediate states; final tool params = []
   {}
@@ -32,6 +35,19 @@
   {"text":"café —"}
   {"text":"café — o"}
   {"text":"café — ok"}
+
+[v1.2.0] note-url-trailing-ws-chars: 7 distinct intermediate states; final tool params = []
+  {}
+  {"text":""}
+  {"text":"S"}
+  {"text":"Se"}
+  {"text":"See"}
+  {"text":"See "}
+  {}
+  last deltas (48 total):
+    delta="\"" -> {}
+    delta="}" -> {}
+    delta="\n" -> {}
 
 [main-patched] note-url-chars: 8 distinct intermediate states; final tool params = [{"text":"See \\url{https://example.org/paper}"}]
   {}
@@ -68,3 +84,17 @@
   {"text":"café —"}
   {"text":"café — o"}
   {"text":"café — ok"}
+
+[main-patched] note-url-trailing-ws-chars: 8 distinct intermediate states; final tool params = [{"text":"See \\url{https://example.org/paper}"}]
+  {}
+  {"text":""}
+  {"text":"S"}
+  {"text":"Se"}
+  {"text":"See"}
+  {"text":"See "}
+  {}
+  {"text":"See \\url{https://example.org/paper}"}
+  last deltas (48 total):
+    delta="\"" -> {}
+    delta="}" -> {"text":"See \\url{https://example.org/paper}"}
+    delta="\n" -> {"text":"See \\url{https://example.org/paper}"}

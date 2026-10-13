@@ -2,24 +2,24 @@
 
 日期：2026-10-13　执行：Claude Code（Fable 5.1）　性质：Pi SDK 上游贡献深化研究（C1 独立复审、补丁重写、双平台验证、对抗式自审、Review Package）
 
-**本轮零次公开投稿**：未创建 Issue / PR / Discussion / 评论，未推送任何 Pi 分支到公开远程。所有交付物标注 **REVIEW REQUIRED — NOT SUBMITTED UPSTREAM**，等待用户交 ChatGPT 独立审核后再决定是否投稿。
+**本轮零次公开投稿**：未创建 Issue / PR / Discussion / 评论，未推送任何 Pi 分支到公开远程。所有交付物标注 **NOT SUBMITTED UPSTREAM**。2026-10-13 下午追加一轮**投稿前收尾**（§10）：ChatGPT 独立审核结论「APPROVED FOR ISSUE」，两处细节已落实，裁决升级为 **READY_FOR_ISSUE**，由用户本人在 GitHub 开 Issue。
 
 ---
 
 ## 0. 裁决
 
-**READY_FOR_CHATGPT_REVIEW**
+**READY_FOR_ISSUE**（收尾轮后；收尾前为 READY_FOR_CHATGPT_REVIEW）
 
 | 项 | 结论 |
 |---|---|
 | Best Candidate | **C1**：`@earendil-works/pi-ai` `repairJson` 把 `"u"` 放在单字符合法转义集合里，使「`\u` 后非四位十六进制」的无效转义不被修复，工具调用参数整体坍缩为 `{}` 或**静默丢失**后续字段 |
-| 上游状态 | main `7d75a0e3e`（2026-10-12 23:37 UTC）与 v1.2.0（2026-10-12 发布）均**未修复**；`json-parse.ts` 自 2026-04-21 `e58d631c8` 引入 `repairJson` 起从未改动；无等价 Issue / PR |
-| 补丁形态 | 上一轮 `ab9c50d93`（+22 −3）**被推翻**，改为 **1 行源码 + 1 行注释**（`cf79153df`，base `7d75a0e3e`）+ 7 条回归测试 |
-| 验证 | 修复前新测试 3 失败 / 4 通过 → 修复后 7/7；`npm run check` Windows + Linux exit 0；端到端矩阵 1.0.1 / 1.1.0 / 1.2.0 / main 四版本复现、补丁后 7 个 JSON 场景全部恢复；逐字符流式中间态与修复前**逐一相同**；对抗式独立审查 ACCEPT-WITH-NITS（已采纳） |
-| Linux 全量 `./test.sh` | 未打补丁 main：**exit 0，0 FAIL**（上轮环境缺口已全部补齐）；打补丁：出现 2 条**与本补丁无关的既有 flaky 测试**，同机未打补丁隔离复跑同样以相同比例失败（§5.4，如实登记） |
+| 上游状态 | main `7d75a0e3e`（2026-10-12 23:37 UTC）与 v1.2.0（2026-10-12 发布）均**未修复**；`json-parse.ts` 自 2026-04-21 `e58d631c8` 引入 `repairJson` 起从未改动；无等价 Issue / PR（收尾轮 2026-10-13 12:00 复核：main 仍为 `7d75a0e3e`，仍无等价 Issue / PR） |
+| 补丁形态 | 上一轮 `ab9c50d93`（+22 −3）**被推翻**，改为 **1 行源码 + 1 行注释**（收尾轮 `f13d6732a`，base `7d75a0e3e`；源码改动与 `cf79153df` 完全相同）+ 9 条回归测试 |
+| 验证 | 修复前新测试 4 失败 / 5 通过 → 修复后 9/9（含 3 个相邻测试文件共 44/44）；`npm run check` Windows + Linux exit 0；端到端矩阵 1.0.1 / 1.1.0 / 1.2.0 / main 四版本复现、补丁后 7 个 JSON 场景全部恢复；逐字符流式：**对象未闭合的前缀中间态与修复前逐一相同；对象已闭合、后续仍收到空白字符的前缀从 `{}` 变为修复后对象**（§3.3 / §10）；对抗式独立审查 ACCEPT-WITH-NITS（已采纳）；ChatGPT 独立审核 APPROVED FOR ISSUE（两处收尾已落实） |
+| Linux 全量 `./test.sh` | 未打补丁 main：**exit 0，0 FAIL**（上轮环境缺口已全部补齐）；打补丁：出现 2 条**与本补丁无关的既有 flaky 测试**，同机未打补丁隔离复跑同样以相同比例失败（§5.4，如实登记）；收尾轮 v4 结果见 §10 |
 | 其它候选 | C2（工具期 abort）：main 仍复现，PR #8635 仍开放且仍与 main 在 `lazy.ts` 冲突，不另起 PR；C3（SDK 路径 HTTP idle timeout）：代码未变，上游 #9976 以「AI 生成」被关、#9787 开放无回应，降为低优先级文档项；未发现比 C1 更值得提交的新候选 |
 
-一句话：**C1 从「可投稿」打磨为「可经受严肃 Code Review」**——更小（1 行）、有证明（差分 + 77 万输入 fuzz 零回归、流式中间态零变化）、有诚实的测试账本。
+一句话：**C1 从「可投稿」打磨为「可经受严肃 Code Review」**——更小（1 行）、有证明（差分 + 77 万输入 fuzz 零回归、对象未闭合前缀零变化、已闭合前缀的变化被明确登记）、有诚实的测试账本。
 
 ---
 
@@ -60,9 +60,9 @@
 |---|---|
 | 是否符合 `repairJson` 既有设计 | 是，但多余：移除 `"u"` 本身即让非十六进制 `\u` 走既有「无效转义」分支 |
 | 是否错误改变合法 JSON | 否（两版都不会） |
-| 是否改变 Streaming 中途状态 | 否——但旧补丁为此多写的分支并无作用（§2.3） |
+| 是否改变 Streaming 中途状态 | 对象未闭合的前缀：否（两版都不会）；对象已闭合、后续仍收到空白字符的前缀：会从 `{}` 变为修复后对象（收尾轮登记，§3.3）——旧补丁为此多写的分支并无作用（§2.3） |
 | 是否存在更小实现 | **是**：删掉集合里的 `"u"`，1 行 |
-| 测试是否覆盖真正边界 | 旧版 11 条中 2 条测的是不可观察分支；新版 7 条，去掉冗余层，补 Windows 路径、`\\u0041`、`x\u00"` 边界 |
+| 测试是否覆盖真正边界 | 旧版 11 条中 2 条测的是不可观察分支；新版 7 条，去掉冗余层，补 Windows 路径、`\\u0041`、`x\u00"` 边界；收尾轮再加 2 条流式边界（已闭合对象 + 尾随空白；未闭合对象守卫），共 9 条 |
 
 **处置：推翻旧补丁，改写为最小实现。**
 
@@ -74,7 +74,7 @@
 +const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t"]);
 ```
 
-commit `cf79153df`（Windows 研究分支）/ Linux `git am` 同一 patch；`git format-patch --base=7d75a0e3e`，sha256 `8f36bf68…3455d9`。提交信息 `fix(ai): treat \u without four hex digits as an invalid escape in repairJson`，正文按 AGENTS.md「问题 → 具体例子 → 方案」写法，含 LaTeX 与 `C:\users\x` 两类例子。
+commit `cf79153df`（Windows 研究分支）/ Linux `git am` 同一 patch；`git format-patch --base=7d75a0e3e`，sha256 `8f36bf68…3455d9`。提交信息 `fix(ai): treat \u without four hex digits as an invalid escape in repairJson`，正文按 AGENTS.md「问题 → 具体例子 → 方案」写法，含 LaTeX 与 `C:\users\x` 两类例子。**收尾轮 amend 为 `f13d6732a`**（源码 diff 逐字节相同；测试 7 → 9 条；提交信息末句由「streaming prefixes are unaffected」改为区分未闭合 / 已闭合前缀），patch sha256 `d6746db3…005f24`，Linux `git am` 得 `1d4619482`。
 
 ### 2.6 十类输入的逐项结论
 
@@ -89,9 +89,10 @@ commit `cf79153df`（Windows 研究分支）/ Linux `git am` 同一 patch；`git
 | 混合合法与非法（`a\tb \cite{x} \url{y} \"q\" \u00e9`） | `{}` | 全部正确 |
 | 属性名中的 `\u`（`{"te\ut":"v","next":1}`） | `{}` | 键为 `te\ut`，`next` 保留 |
 | 故障后的后续字段（`a`,`b`,`c`,`d`） | 只剩 `a` | 全部保留 |
-| 逐 Token 流式：所有中间前缀 | — | **与修复前逐一相同**（§4.3） |
+| 逐 Token 流式：对象未闭合的中间前缀 | — | **与修复前逐一相同**（§3.3） |
+| 逐 Token 流式：对象已闭合、后续只剩空白字符的前缀 | `{}` | 修复后对象（从 `}` 到达的那个 delta 起；收尾轮登记） |
 
-明确区分的两种语义：**最终完整 JSON** 的修复语义改变（且只对此前必然解析失败的输入）；**流式未完成** 的容错语义零变化（第 2 层始终解析原文）。
+明确区分的三种语义：**最终完整 JSON** 的修复语义改变（且只对此前必然解析失败的输入）；**对象已闭合但流尚未结束**的前缀属于前者（它已是完整 JSON 文本），因此同样改变；**对象未闭合**的容错语义零变化（第 2 层始终解析原文，修复后文本在闭合前同样无法解析）。
 
 ---
 
@@ -99,10 +100,10 @@ commit `cf79153df`（Windows 研究分支）/ Linux `git am` 同一 patch；`git
 
 ### 3.1 纯函数差分（`review/differential-repair.mjs`）
 
-三个变体（A 上游 / B 本补丁 / C 旧补丁）× 20 条语料 × 全部 588 个前缀，经 Pi 原样的 `parseJsonWithRepair` / `parseStreamingJson` 包装：
+三个变体（A 上游 / B 本补丁 / C 旧补丁）× 语料 × 全部前缀，经 Pi 原样的 `parseJsonWithRepair` / `parseStreamingJson` 包装。首轮 20 条语料 / 588 前缀；收尾轮加入 4 条「闭合对象 + 尾随空白」语料并给每个前缀做结构分类（闭合 / 未闭合），共 24 条 / 679 前缀：
 
-- A vs B：**12 处差异，全部是完整输入**（即修复目标）；中间前缀 0 差异。
-- B vs C：**0 差异**；partial-json 在 588 个前缀上抛错 0 次 → 第 3 层不可达，旧补丁多余分支无法被观察。
+- A vs B：**16 处差异，全部是「已闭合」前缀，未闭合前缀 0 差异**。其中 14 处是语料的最后一个前缀（即修复目标），**2 处是已闭合但非最后的前缀**（`{"text":"See \url{x}"}` 后面还要来 ` ` / `\n`）：A 给 `{}`，B 给修复后对象。首轮「12 处差异全部是完整输入、中间前缀 0 差异」的表述只在「中间 = 对象未闭合」的意义下成立，收尾轮已改为上述口径。
+- B vs C：**0 差异**；partial-json 在全部前缀上抛错 0 次 → 第 3 层不可达，旧补丁多余分支无法被观察。
 
 ### 3.2 Standalone Tool Call（公开 SDK + 进程内 fake SSE server，无凭据）
 
@@ -118,11 +119,14 @@ commit `cf79153df`（Windows 研究分支）/ Linux `git am` 同一 patch；`git
 
 **Anthropic 路径**：在 checkout 内临时写了一个与上游 `anthropic-sse-parsing.test.ts`「repairs malformed SSE JSON and malformed streamed tool JSON」同构的测试（`input_json_delta` 三段，`\usepackage`）：上游文件 → 失败（`content` 缺失）；补丁 → 通过。测试文件随后删除，副本存于 `review/evidence/tmp-anthropic-invalid-u.test.ts`（evidence only，不进补丁）。
 
-### 3.3 逐字符流式中间态（新增 `*-chars` 场景，驱动器新增 `intermediateArgs` 记录）
+### 3.3 逐字符流式中间态（新增 `*-chars` 场景，驱动器新增 `intermediateArgs` 记录；收尾轮再加 `note-url-trailing-ws-chars` 与逐 delta 的 `toolcallDeltaTrace`）
 
-- `note-url-chars`：1.2.0 与补丁 main 的中间态序列**完全相同**（`{}` → `{"text":""}` → … → `{"text":"See "}` → `{}`，`\u` 到达即坍缩，与今天 `\c` 的行为一致）；补丁只多出最后一个完整态。
-- `tex-usepackage-chars`：12 个中间态相同，补丁多出最终完整对象。
-- `note-u-valid-chars`（`\u00e9` 被切成多段）：两者 9 个态相同，从未闪成字面反斜杠。
+必须区分两种前缀：
+
+- **对象未闭合的前缀**（字符串未闭合，或 `}` 尚未到达）：修复后的文本同样解析失败，第 2 层 partial-json 仍解析原文，与修复前逐一相同。`note-url-chars`：1.2.0 与补丁 main 的序列相同（`{}` → `{"text":""}` → … → `{"text":"See "}`（字符串未闭合期间即使 `\url{…` 已到达也保持此态）→ `{}`（闭合引号到达、属性被丢，与今天 `\c` 一致））。`tex-usepackage-chars`：12 个态相同。`note-u-valid-chars`（`é` 被切成多段）：9 个态相同，从未闪成字面反斜杠。
+- **对象已闭合的前缀**（`}` 已到达）：此时累积文本已是完整 JSON 文本，**无论流是否结束都会被修复**。`note-url-trailing-ws-chars` 先逐字符流 `{"text":"See \url{…}"}`，再多发一个只含 `\n` 的 delta：1.2.0 在 `}` 和 `\n` 两个 delta 上都是 `{}`；补丁 main 在 `}` delta 上已是 `{"text":"See \\url{…}"}`，并在 `\n` delta 上保持。所以已闭合前缀确实是该流的中间态之一，且其解析结果改变了（原先只能是 `{}`）。尾随空格同理（单元测试覆盖）；合法 `\u` 与 `\c` 的已闭合前缀不变。
+
+首轮报告「中间态与修复前逐一相同 / 只改终态」的表述过于绝对，收尾轮改为上述口径；补丁源码与既有测试均未为此调整。
 
 ### 3.4 跨版本 / 跨平台
 
@@ -213,9 +217,9 @@ Windows 未跑全量 `./test.sh`：开发 shell 中存在 `ANTHROPIC_AUTH_TOKEN`
 6. **是否引入新状态或分支？** 否。
 7. **非必要抽象？** 无。
 8. **是否破坏正常调用者？** 否：`repairJson` 只在 `JSON.parse` 失败后运行；差分 + fuzz 对此前成功输入零差异。
-9. **是否破坏 Streaming？** 否：第 2 层解析原文；588 前缀 + 77 万 fuzz 零中间态差异；逐字符 e2e 序列相同。
+9. **是否破坏 Streaming？** 对象未闭合期间不变：第 2 层解析原文；679 前缀 + 77 万 fuzz 零「未闭合前缀」差异；逐字符 e2e 序列相同。对象已闭合、流尚未结束（后续只有空白字符）的前缀会从 `{}` 变为修复后对象——这是修复本身提前一个 delta 生效，不是回归（§3.3；收尾轮修正了首轮「全部中间态不变」的绝对化表述）。
 10. **更简单实现？** 无。
-11. **回归测试边界是否充分？** 7 条覆盖 LaTeX / Windows 路径 / 3 位十六进制 / 不足四位 / 属性名 / 合法与代理对与已双写 / 后续字段 / 流式截断。
+11. **回归测试边界是否充分？** 9 条覆盖 LaTeX / Windows 路径 / 3 位十六进制 / 不足四位 / 属性名 / 合法与代理对与已双写 / 后续字段 / 流式截断 / 已闭合对象 + 尾随空格与换行 / 未闭合对象守卫。
 12. **能否构造反例击穿？** 对抗式审查找到的唯一「变差」是**完整**载荷里模型自己截断了真实转义（`{"a":"caf\u00e","b":1}`：旧 `{}` → 新字面 `caf\u00e`）。这是 `\c`/`\x` 等既有同策略，且只影响此前就解析失败的输入；登记为 known trade-off，不改。
 13. **是否覆盖已有类似测试？** 上游 `anthropic-sse-parsing.test.ts` 已测 `\H`，未测 `\u`；本补丁不改该文件，新增单元测试文件。
 14. **最小复现是否不依赖 PaperTeam？** 是（5 行 + 公开 harness）。
@@ -233,9 +237,9 @@ Windows 未跑全量 `./test.sh`：开发 shell 中存在 `ANTHROPIC_AUTH_TOKEN`
 - `0001-fix-ai-treat-u-without-four-hex-digits-as-an-invalid.patch`（`git format-patch --base=7d75a0e3e`）。
 - `json-parse.test.ts`（与补丁内相同）。
 - `differential-repair.mjs` + 输出。
-- `evidence/`：Windows / Linux 矩阵、逐字符中间态、vitest 日志、check 日志、Anthropic 路径 evidence 测试、Linux test.sh 账本。
+- `evidence/`：Windows / Linux 矩阵、逐字符中间态（含尾随空白场景的逐 delta 轨迹）、vitest 修复前 / 修复后完整输出（`.txt`，首轮的 `.log` 被仓库 `.gitignore` 的 `*.log` 规则挡在仓库外、README 却引用了它们——收尾轮改名并重新生成）、`npm run check` 完整输出、Anthropic 路径 evidence 测试、Linux test.sh 账本（含收尾轮 v4 运行）。
 
-公开 harness 同步更新：`fake-openai-server.mjs` 新增 3 个 `*-chars` 场景；`run-scenario.mjs` 新增 `intermediateArgs`；`README.md` 加 review 入口。
+公开 harness 同步更新：`fake-openai-server.mjs` 新增 3 个 `*-chars` 场景（收尾轮再加 `note-url-trailing-ws-chars`）；`run-scenario.mjs` 新增 `intermediateArgs`（收尾轮再加逐 delta 的 `toolcallDeltaTrace`）；`README.md` 加 review 入口。
 
 ---
 
@@ -274,3 +278,43 @@ Windows 未跑全量 `./test.sh`：开发 shell 中存在 `ANTHROPIC_AUTH_TOKEN`
 | `D:\PaperTeamData\PiUpstreamAudit\harness\versions\v1.2.0` | 新增 1.2.0 npm 安装 |
 
 不进仓库：Pi 源码、node_modules、原始 JSON 结果、服务器日志全文。
+
+---
+
+## 10. 收尾轮（2026-10-13 下午）：ChatGPT 独立审核后的投稿前整理
+
+**输入**：用户将 `bbb075c` 的 Review Package 交 ChatGPT 独立审查，结论「APPROVED FOR ISSUE——核心修复方向通过」，附两处收尾细节。本轮不做新一轮大规模审计、零次付费模型调用、零次上游投稿。
+
+### 10.1 任务一：Streaming 结论去绝对化 + 边界测试
+
+- **问题**：首轮报告称「所有流式中间态与修复前逐一相同 / 只改终态」。反例：`{"text":"\url{x}"}` 已构成完整 JSON 对象，流却可能继续送来空格或换行；这个前缀虽是中间态，修复前后解析结果却不同（`{}` → 修复后对象）。
+- **验证（修复前后实际表现）**：
+  - 单元测试新增 2 条（`json-parse.test.ts` 7 → 9 条）：「已闭合对象 + 尾随空格 / 换行」在未打补丁源码上 **失败**（`{}`），补丁后通过；「未闭合对象守卫」（字符串未闭合 → `{"text":"See "}`；字符串已闭合但对象未闭合 → `{}`；`content` 未闭合 → `{"path":"main.tex"}`）在两边 **都通过**。未打补丁：4 失败 / 5 通过；补丁：9/9，含相邻 3 文件 44/44（`review/evidence/vitest-json-parse-{unpatched,patched}-win.txt`）。
+  - 差分探针给每个前缀做结构分类：A vs B 16 处差异全部「已闭合」，其中 2 处是已闭合但非最后（尾随空白语料）；「未闭合」0 差异（§3.1）。
+  - e2e 新场景 `note-url-trailing-ws-chars` + 逐 delta `toolcallDeltaTrace`：1.2.0 在 `}` 与 `\n` 两个 delta 都是 `{}`；补丁 main 在 `}` delta 即为修复后对象（§3.3）。
+  - 合法 `\u`（`café — ok`）与 `\c` 的流式序列不变；`\u00` 截断仍得 `caf`。
+- **处置**：Review Package §3.3 / §3.4 / §6 / §11 / §12 与本报告 §0 / §2.4 / §2.6 / §3.1 / §3.3 / §7 全部改为「对象未闭合前缀不变；对象已闭合（可能后跟空白）的前缀改变」的口径；提交信息末句同步改写。**补丁源码未动（仍 1 行 + 1 行注释），既有测试未为挽救旧结论而改动。** 第一次写守卫测试时我把「字符串未闭合」的期望写成 `{}`，实测 partial-json 给 `{"text":"See "}`——改的是我的期望，不是代码。
+
+### 10.2 任务二：测试证据与仓库文件对账
+
+- **问题**：README 引用的 `vitest-json-parse-*.log`、`npm-run-check-patched-win.log` 被 PaperTeam `.gitignore` 的 `*.log` 规则挡在仓库外（`git check-ignore` 证实），GitHub 上不存在。
+- **处置**：按 9 条测试重新生成为 `.txt` 并提交：修复前完整 vitest 输出（4 失败）、修复后完整输出（44 通过）、`npm run check` 完整输出（exit 0）；README §0 清单逐文件核对，明确列出「故意不入库」项。Linux 账本 `linux-test-sh-summary.txt` 追加 Run 5。
+- **Linux `./test.sh` 真实结果（v4 `1d4619482`）**：targeted 44/44、`npm run check` exit 0；全量 run 5a（nohup 分离、**未捕获退出码**）11 个包全部跑完、0 条 FAIL、pi-ai 1351 通过；run 5b（捕获退出码）**exit 1**，唯一失败仍是 `coding-agent/test/auth-storage.test.ts`「keeps a coalesced reload alive…」。打补丁全量 5 次（run 2/3/4/5a/5b）中 auth-storage 失败 4 次、radius-oauth 失败 2 次；pi-ai 与新测试 5 次全绿；唯一全绿的全量运行是未打补丁的 run 1，与同机未打补丁隔离复跑 3/5 失败的数据一致。**不把 exit 1 描述为全绿；未改 Pi 的 auth-storage / OAuth 实现。**
+
+### 10.3 任务三：最终投稿包
+
+| 项 | 值 |
+|---|---|
+| 上游 main 复核（2026-10-13 ~12:00 UTC+8，`git fetch` + `gh api`） | 仍为 `7d75a0e3e`（2026-10-12 23:37 UTC），`json-parse.ts` 最近提交仍为 `e58d631c8`；GitHub 搜索 repairJson / json-parse / unicode escape / invalid escape / VALID_JSON_ESCAPES / usepackage，无新的等价 Issue / PR（#10074 / #9897 / #9265 / #8858 / #6762 / #3694 与首轮一致） |
+| 候选 commit | Windows `f13d6732aa11531cbed936d61072585588ed7577`（`cf79153df` amend：同源码、+2 测试、提交信息末句改写）；Linux `git am` → `1d4619482` |
+| Patch | `review/0001-fix-ai-treat-u-without-four-hex-digits-as-an-invalid.patch`，sha256 `d6746db387d701315e499b553cebb43edc5809c79da3b89a7bc23928e9005f24`，base `7d75a0e3e`，+2 −1 源码 / +88 测试 |
+| 上游 AGENTS.md 检查 | `npm run check` 双平台 exit 0（完整输出入库）；单文件 vitest 按规定命令；未改 CHANGELOG；只 add 自己的文件；`./test.sh` 结果如实登记 |
+| 最小复现 | Review Package §2 五行脚本（1.2.0 上三行输出不变） |
+| 裁决 | **READY_FOR_ISSUE**——Issue 由用户本人以自己口吻在 GitHub 提交（Bug Report，`pkg:ai`，一屏内，说明愿自己提 PR）；本轮零投稿 |
+
+### 10.4 收尾轮新增的坑
+
+- 服务器 `~/.ssh/config` 里的 `paperteam-sg` 仍指旧 IP，超时；需用私人日志里的新地址 + 同一密钥。
+- 服务器 `git am` 需要 committer 身份：非交互 ssh 里用 `GIT_COMMITTER_NAME/EMAIL` 环境变量，不改服务器 git 配置；失败后要先 `git am --abort`。
+- `nohup ./test.sh &` 丢失退出码；要 `bash -c "./test.sh > log; echo exit $? >> log"`。
+- Edit 工具向中文文档写入时偶发把单个汉字写成 U+FFFD（本轮「补丁」一次）；写完用 `grep $'\xEF\xBF\xBD'` 复核。

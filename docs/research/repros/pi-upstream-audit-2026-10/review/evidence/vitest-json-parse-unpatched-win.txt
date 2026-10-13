@@ -1,0 +1,95 @@
+
+ RUN  v4.1.11 D:/PaperTeamData/PiUpstreamAudit/pi-upstream/packages/ai
+
+x··xx··x·
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/json-parse.test.ts > repairJson > doubles the backslash of \u that is not followed by four hex digits
+AssertionError: expected '{"text":"\url{https://example.org}"}' to be '{"text":"\\url{https://example.org}"}' // Object.is equality
+
+Expected: "{"text":"\\url{https://example.org}"}"
+Received: "{"text":"\url{https://example.org}"}"
+
+ ❯ test/json-parse.test.ts:7:72
+      5|  it("doubles the backslash of \\u that is not followed by four hex dig…
+      6|   // LaTeX commands starting with u and Windows paths are the common r…
+      7|   expect(repairJson(String.raw`{"text":"\url{https://example.org}"}`))…
+       |                                                                        ^
+      8|    String.raw`{"text":"\\url{https://example.org}"}`,
+      9|   );
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  test/json-parse.test.ts > parseStreamingJson > repairs an invalid \u escape like any other invalid escape
+AssertionError: expected {} to deeply equal { Object (text) }
+
+- Expected
++ Received
+
+- {
+-   "text": "See \\url{https://example.org}",
+- }
++ {}
+
+ ❯ test/json-parse.test.ts:37:84
+     35|    text: String.raw`See \cite{knuth84}`,
+     36|   });
+     37|   expect(parseStreamingJson(String.raw`{"text":"See \url{https://examp…
+       |                                                                                    ^
+     38|    text: String.raw`See \url{https://example.org}`,
+     39|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  test/json-parse.test.ts > parseStreamingJson > keeps the properties after a value with an invalid \u escape
+AssertionError: expected { path: 'main.tex' } to deeply equal { path: 'main.tex', …(2) }
+
+- Expected
++ Received
+
+  {
+-   "content": "\\documentclass{article}
+- \\usepackage{graphicx}
+- ",
+-   "mode": "w",
+    "path": "main.tex",
+  }
+
+ ❯ test/json-parse.test.ts:47:5
+     45|     String.raw`{"path":"main.tex","content":"\documentclass{article}\n…
+     46|    ),
+     47|   ).toEqual({
+       |     ^
+     48|    path: "main.tex",
+     49|    content: "\\documentclass{article}\n\\usepackage{graphicx}\n",
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  test/json-parse.test.ts > parseStreamingJson > repairs a closed object even when the stream later appends only whitespace
+AssertionError: expected {} to deeply equal { Object (text) }
+
+- Expected
++ Received
+
+- {
+-   "text": "See \\url{https://example.org}",
+- }
++ {}
+
+ ❯ test/json-parse.test.ts:74:38
+     72|   // The closed prefix and the whitespace-extended text are both compl…
+     73|   const closed = String.raw`{"text":"See \url{https://example.org}"}`;
+     74|   expect(parseStreamingJson(closed)).toEqual({ text: String.raw`See \u…
+       |                                      ^
+     75|   expect(parseStreamingJson(`${closed} `)).toEqual({ text: String.raw`…
+     76|   expect(parseStreamingJson(`${closed}\n`)).toEqual({ text: String.raw…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  4 failed | 5 passed (9)
+   Start at  11:48:23
+   Duration  257ms (transform 49ms, setup 0ms, import 68ms, tests 18ms, environment 0ms)
+

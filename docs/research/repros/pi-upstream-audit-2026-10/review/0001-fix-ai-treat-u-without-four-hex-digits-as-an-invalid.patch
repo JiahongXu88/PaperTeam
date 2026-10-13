@@ -1,4 +1,4 @@
-From cf79153df687594e501ee7d38e885bfbb21b05cc Mon Sep 17 00:00:00 2001
+From f13d6732aa11531cbed936d61072585588ed7577 Mon Sep 17 00:00:00 2001
 From: Jiahong Xu <JiahongXu88@users.noreply.github.com>
 Date: Tue, 13 Oct 2026 10:37:15 +0800
 Subject: [PATCH] fix(ai): treat \u without four hex digits as an invalid
@@ -16,13 +16,15 @@ became {"path":"a.tex"}. LaTeX commands starting with u and Windows paths under
 
 Remove "u" from the set. The four-hex-digit check above it already keeps valid
 \uXXXX escapes, so a \u with anything else after it now reaches the existing
-invalid-escape branch. Inputs that parsed before are unchanged, and streaming
-prefixes are unaffected because parseStreamingJson's partial-json fallback
-parses the original text.
+invalid-escape branch. Inputs that parsed before are unchanged. While a
+streamed object is not yet closed the repaired text does not parse either, so
+the partial-json fallback still decides from the original text as before; once
+the closing brace has arrived the prefix is a complete JSON text and is
+repaired, even if the stream later appends only whitespace.
 ---
  packages/ai/src/utils/json-parse.ts |  3 +-
- packages/ai/test/json-parse.test.ts | 69 +++++++++++++++++++++++++++++
- 2 files changed, 71 insertions(+), 1 deletion(-)
+ packages/ai/test/json-parse.test.ts | 88 +++++++++++++++++++++++++++++
+ 2 files changed, 90 insertions(+), 1 deletion(-)
  create mode 100644 packages/ai/test/json-parse.test.ts
 
 diff --git a/packages/ai/src/utils/json-parse.ts b/packages/ai/src/utils/json-parse.ts
@@ -40,10 +42,10 @@ index f39f9f09d..282b7e078 100644
  	const codePoint = char.codePointAt(0);
 diff --git a/packages/ai/test/json-parse.test.ts b/packages/ai/test/json-parse.test.ts
 new file mode 100644
-index 000000000..30481efb7
+index 000000000..8fd91d767
 --- /dev/null
 +++ b/packages/ai/test/json-parse.test.ts
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,88 @@
 +import { describe, expect, it } from "vitest";
 +import { parseStreamingJson, repairJson } from "../src/utils/json-parse.ts";
 +
@@ -112,9 +114,26 @@ index 000000000..30481efb7
 +			content: "caf",
 +		});
 +	});
++
++	it("repairs a closed object even when the stream later appends only whitespace", () => {
++		// The closing brace can arrive before the stream ends; a later delta may add nothing but whitespace.
++		// The closed prefix and the whitespace-extended text are both complete JSON texts and parse the same.
++		const closed = String.raw`{"text":"See \url{https://example.org}"}`;
++		expect(parseStreamingJson(closed)).toEqual({ text: String.raw`See \url{https://example.org}` });
++		expect(parseStreamingJson(`${closed} `)).toEqual({ text: String.raw`See \url{https://example.org}` });
++		expect(parseStreamingJson(`${closed}\n`)).toEqual({ text: String.raw`See \url{https://example.org}` });
++	});
++
++	it("leaves a not yet closed object to the partial parser, as before", () => {
++		// Until the closing brace arrives the repaired text does not parse either, so partial-json decides:
++		// it keeps the text before the escape while the string is open and drops the property once the string closes.
++		expect(parseStreamingJson(String.raw`{"text":"See \url{https://example.org}`)).toEqual({ text: "See " });
++		expect(parseStreamingJson(String.raw`{"text":"See \url{https://example.org}"`)).toEqual({});
++		expect(parseStreamingJson(String.raw`{"path":"main.tex","content":"\usepackage{graphicx}"`)).toEqual({
++			path: "main.tex",
++		});
++	});
 +});
-
-base-commit: 7d75a0e3eb273dff753d49c066ea29fbe7b3b6f6
 -- 
 2.54.0.windows.1
 
