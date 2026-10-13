@@ -13,6 +13,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import {
   ManuscriptService,
+  escapeAbstractPlainText,
   validateOutline,
   type Outline,
 } from "../../src/manuscript/ManuscriptService.js";
@@ -151,6 +152,22 @@ describe("ManuscriptService", () => {
     expect(bib).toContain("@article{gao2023survey,");
     expect(bib).toContain("title = {RAG Survey}");
     expect(bib).toContain("journal = {ACM Computing Surveys}");
+  });
+
+  it("M13 Final Closure：纯文本摘要的 _ & # % 在 main.tex 中被转义（真实 run 1 的 Missing $ inserted）；已转义的不重复转义", async () => {
+    const { manuscript, projectId } = await newProject();
+    const outline = {
+      ...OUTLINE,
+      abstract: "现有文献在 track_query_based、transformer_association 两个方法族无收录；覆盖率约 50% 且 A & B 对比见 #1；已转义 10\\% 保持。",
+    };
+    await manuscript.saveOutline(projectId, outline);
+    await manuscript.writeMainTex(projectId, outline, false);
+    const main = await readFile(mainPath(manuscript, projectId), "utf8");
+    expect(main).toContain("track\\_query\\_based、transformer\\_association");
+    expect(main).toContain("约 50\\% 且 A \\& B 对比见 \\#1");
+    expect(main).toContain("已转义 10\\% 保持");
+    expect(main).not.toContain("10\\\\%");
+    expect(escapeAbstractPlainText("无特殊字符的摘要。")).toBe("无特殊字符的摘要。");
   });
 
   it("writeSection 落盘 + sectionStatuses 反映事实状态", async () => {

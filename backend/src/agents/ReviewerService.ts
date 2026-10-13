@@ -200,6 +200,11 @@ export class ReviewerService {
      * 仅注入 style 模式，作为辅助信号——不是缺陷判定，不进 Gate，不触发自动删改。
      */
     redundancyDigest?: string;
+    /**
+     * M13 Final Closure（A4）：多 key 引用归因只读观察（multiKeyAttribution 的有界 digest）。
+     * 仅注入 fact 模式——提示逐句核对「一篇文献的机制 / 数值是否被归给了整组」；不是缺陷判定。
+     */
+    attributionDigest?: string;
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -268,6 +273,8 @@ export class ReviewerService {
     experimentPolicyLines?: string[];
     /** M13.7.10：跨章节重复只读 digest（仅 style 模式注入；undefined → prompt 不变） */
     redundancyDigest?: string;
+    /** M13 Final Closure（A4）：多 key 引用归因只读 digest（仅 fact 模式注入；undefined → prompt 不变） */
+    attributionDigest?: string;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -597,6 +604,8 @@ export function buildReviewPrompt(params: {
   experimentPolicyLines?: string[];
   /** M13.7.10：跨章节学术重复只读 digest（仅 style 模式注入） */
   redundancyDigest?: string;
+  /** M13 Final Closure（A4）：多 key 引用归因只读 digest（仅 fact 模式注入） */
+  attributionDigest?: string;
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -726,6 +735,14 @@ export function buildReviewPrompt(params: {
       : []),
     ...(params.surveyDigest !== undefined
       ? ["", "===== 综述确定性指标（机器可算信号；评审时对照使用）=====", params.surveyDigest]
+      : []),
+    ...(params.mode === "fact" && params.attributionDigest !== undefined
+      ? [
+          "",
+          "===== 多 key 引用归因观察（确定性词面信号；只读，供逐句核验归因）=====",
+          params.attributionDigest,
+          "使用口径：对列出的句子核对每个被引文献的证据是否真的覆盖该句的具体机制 / 数值；若只有一篇覆盖而其它文献被「等」字或并列引用带入，按归因不准确给出 fact issue（建议拆分引用或改为只引覆盖该内容的文献）；不得据此否定该句的事实本身。",
+        ]
       : []),
     ...(params.mode === "style" && params.redundancyDigest !== undefined
       ? [

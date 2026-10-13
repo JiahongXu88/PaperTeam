@@ -170,6 +170,7 @@ import {
   findIntroducedNamedReferences,
 } from "../review/namedReferenceGuard.js";
 import { annotateOutlinePartialKeyPoints } from "../writer/partialKeyPoints.js";
+import { computeMultiKeyAttribution, renderMultiKeyAttributionDigest } from "../review/multiKeyAttribution.js";
 import type { CitationService, CitationReport } from "../citation/CitationService.js";
 import {
   buildBibliographyFromSources,
@@ -527,6 +528,16 @@ function reviewRunStageInner(
         : renderExperimentPolicyLines(await services.experimentPackages.experimentPolicy(ctx.projectId));
       // M13.7.10：写作期生成的只读学术重复报告（修订号一致才注入 style 模式；不进 Gate）
       const redundancyDigest = await buildRedundancyDigest(services, ctx.projectId, revision);
+      // M13 Final Closure（A4）：多 key 引用归因只读观察（句子具体内容只命中组内一篇的证据）——
+      // 仅注入 fact 模式作为逐句核验提示；产物按轮落盘，不进 Gate、不自动改稿
+      const latexForAttribution = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      const multiKeyAttribution = computeMultiKeyAttribution({
+        files: latexForAttribution.sections.map((section) => ({ file: section.relativePath, content: section.content })),
+        evidence,
+        bibEntries: citationReport?.static.bibEntries ?? [],
+        revision,
+      });
+      const attributionDigest = renderMultiKeyAttributionDigest(multiKeyAttribution);
       const reviewParams = {
         projectId: ctx.projectId,
         manuscriptDigest: digest,
@@ -540,6 +551,7 @@ function reviewRunStageInner(
         ...(targetExpectations !== undefined ? { targetExpectations } : {}),
         ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
         ...(redundancyDigest !== undefined ? { redundancyDigest } : {}),
+        ...(attributionDigest !== undefined ? { attributionDigest } : {}),
       };
       const results = await services.reviewer.reviewAll(reviewParams);
 
@@ -696,6 +708,9 @@ function reviewRunStageInner(
       }
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
+      if (multiKeyAttribution.sentencesWithMultiKeyCite > 0) {
+        await services.reviewArtifacts.saveMultiKeyAttribution(ctx.projectId, round, multiKeyAttribution);
+      }
       // M11.2：综述写作评估按轮落盘（与 review 同轮配对；gate 消费同轮产物）
       if (surveyWriting !== null) {
         await services.reviewArtifacts.saveSurveyWriting(ctx.projectId, round, surveyWriting);
@@ -739,6 +754,15 @@ function reviewRunStageInner(
           : {}),
         evidenceBoundClaims: claimGrounding.evidenceBoundClaims,
         claimEvidenceBindingRate: claimGrounding.evidenceBindingRate,
+        ...(multiKeyAttribution.sentencesWithMultiKeyCite > 0
+          ? {
+              multiKeyAttribution: {
+                sentences: multiKeyAttribution.sentencesWithMultiKeyCite,
+                checkable: multiKeyAttribution.checkable,
+                findings: multiKeyAttribution.findings.length,
+              },
+            }
+          : {}),
         evidenceFormal: evidenceSelection.formal.length,
         evidenceExcluded: evidenceSelection.excluded,
         // M11.2：综述确定性指标摘要（survey-writing-r{round}.json 明细）

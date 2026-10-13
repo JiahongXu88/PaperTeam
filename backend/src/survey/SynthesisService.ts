@@ -601,7 +601,7 @@ export function buildTaxonomyItems(
       entryIds.length <= 10 ? entryIds.join("、") : `${entryIds.slice(0, 10).join("、")} 等 ${entryIds.length} 条`;
     const claim =
       family === UNCLASSIFIED_FAMILY
-        ? `未归类（unclassified）文献 ${entries.length} 篇，等待人工修正 taxonomy 标签（${idList}）`
+        ? `未落入预设方法家族的文献 ${entries.length} 篇（${idList}）——按其摘要所涉技术路线作主题性归组描述；「未归类」是文献库组织状态，不是论文内容`
         : subFamily === undefined
           ? `方法家族 ${family} 收录 ${entries.length} 篇文献（${idList}）`
           : `方法家族 ${family} / ${subFamily} 收录 ${entries.length} 篇文献（${idList}）`;

@@ -54,8 +54,11 @@ if (!Number.isInteger(maxCandidates) || maxCandidates < 3 || maxCandidates > 25)
 const recoverRunId = typeof flags.recover === "string" ? flags.recover : undefined;
 const recoverProjectId = typeof flags["project-id"] === "string" ? flags["project-id"] : undefined;
 if ((recoverRunId === undefined) !== (recoverProjectId === undefined)) throw new Error("--recover RUN_ID requires --project-id");
+/** Start a NEW run on an existing acceptance project (front stages reuse their persisted artefacts idempotently). */
+const reuseProjectId = typeof flags["reuse-project"] === "string" ? flags["reuse-project"] : undefined;
+if (reuseProjectId !== undefined && recoverRunId !== undefined) throw new Error("--reuse-project and --recover are mutually exclusive");
 const topic = typeof flags.topic === "string" ? flags.topic.trim() : "";
-if (recoverRunId === undefined && topic === "") throw new Error("--topic is required for a fresh start");
+if (recoverRunId === undefined && reuseProjectId === undefined && topic === "") throw new Error("--topic is required for a fresh start");
 const field = typeof flags.field === "string" ? flags.field : undefined;
 const language = typeof flags.language === "string" ? flags.language : "zh";
 const yearFrom = flags["year-from"] !== undefined ? Number(flags["year-from"]) : undefined;
@@ -84,7 +87,7 @@ const defaultProjectsRoot = resolve(repo, "backend", "projects");
 if (resolve(config.projectsRoot) === defaultProjectsRoot || !process.env.PROJECTS_ROOT) {
   throw new Error(`refusing to run against the default projects root (${config.projectsRoot}); set PROJECTS_ROOT to an isolated acceptance root`);
 }
-const phase = recoverRunId !== undefined ? "recover" : "start";
+const phase = recoverRunId !== undefined ? "recover" : reuseProjectId !== undefined ? "rerun" : "start";
 const resultPath = join(output, `result-${phase}.json`);
 const result = {
   milestone: "M13 Final Closure",
@@ -112,6 +115,7 @@ const result = {
       openalexMailto: config.search.openalexMailto ? "configured" : "none",
     },
     recover: recoverRunId ?? null,
+    reuseProject: reuseProjectId ?? null,
   },
   budgetFile: budgetPath,
   startedAt: new Date().toISOString(),
@@ -215,7 +219,7 @@ const monitor = setInterval(() => {
   save().catch(() => {});
 }, 30_000);
 
-let projectId = recoverProjectId ?? null;
+let projectId = recoverProjectId ?? reuseProjectId ?? null;
 let runId = recoverRunId ?? null;
 let run = null;
 let validationRejects = 0;
@@ -249,16 +253,23 @@ try {
   await save();
 
   if (recoverRunId === undefined) {
-    const created = await request("POST", "/projects", {
-      title: topic,
-      documentType: "survey",
-      language,
-      ...(field !== undefined ? { researchField: field } : {}),
-    });
-    if (created.status !== 201) throw new Error(`create project failed: ${created.status} ${JSON.stringify(created.body).slice(0, 400)}`);
-    projectId = created.body.project.id;
+    if (reuseProjectId === undefined) {
+      const created = await request("POST", "/projects", {
+        title: topic,
+        documentType: "survey",
+        language,
+        ...(field !== undefined ? { researchField: field } : {}),
+      });
+      if (created.status !== 201) throw new Error(`create project failed: ${created.status} ${JSON.stringify(created.body).slice(0, 400)}`);
+      projectId = created.body.project.id;
+      result.project = { id: projectId, workflowKind: created.body.project.workflowKind, documentType: created.body.project.documentType, language: created.body.project.language };
+    } else {
+      const existing = await request("GET", `/projects/${reuseProjectId}`);
+      if (existing.status !== 200) throw new Error(`reuse project not found: ${existing.status}`);
+      result.project = { id: reuseProjectId, reused: true, title: existing.body.project?.title ?? null, workflowKind: existing.body.project?.workflowKind ?? null };
+      result.topic = existing.body.project?.title ?? null;
+    }
     result.projectId = projectId;
-    result.project = { id: projectId, workflowKind: created.body.project.workflowKind, documentType: created.body.project.documentType, language: created.body.project.language };
     await save();
     const started = await request("POST", `/projects/${projectId}/workflows`, {
       kind: "topic_survey",

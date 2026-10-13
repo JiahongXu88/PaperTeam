@@ -67,6 +67,17 @@ export interface SectionStatus {
 /** 合法章节文件名：小写字母/数字/连字符 + .tex */
 const SECTION_FILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}\.tex$/;
 
+/**
+ * M13 Final Closure（真实 Topic → PDF run 1 实录）：摘要按契约是纯文本（Planner / 修订 Writer 都被要求
+ * 「不使用任何 LaTeX 命令」），但 writeMainTex 曾把它原样放进 \\begin{abstract}——taxonomy 标签
+ * `track_query_based` 的下划线让 xelatex 报 `Missing $ inserted`，build.draft 失败、Draft 无 PDF。
+ * 这里只转义会在 text mode 直接报错的四个字符（_ & # %），且只转义**尚未被转义**的（前面没有反斜杠），
+ * 不触碰 $ / { } / 反斜杠——摘要里偶发的行内数学或既有转义不被破坏。章节 .tex 由 Writer 自行转义，不经此处。
+ */
+export function escapeAbstractPlainText(text: string): string {
+  return text.replace(/(^|[^\\])([_&#%])/g, (_match, before: string, ch: string) => `${before}\\${ch}`);
+}
+
 export class ManuscriptService {
   private readonly projects: ProjectStore;
 
@@ -144,7 +155,7 @@ export class ManuscriptService {
       "\\maketitle",
       "",
       ...(outline.abstract
-        ? ["\\begin{abstract}", outline.abstract.trim(), "\\end{abstract}", ""]
+        ? ["\\begin{abstract}", escapeAbstractPlainText(outline.abstract.trim()), "\\end{abstract}", ""]
         : []),
       ...outline.sections.map((section) => `\\input{sections/${section.file.replace(/\.tex$/, "")}}`),
       "",

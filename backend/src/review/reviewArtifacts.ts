@@ -356,6 +356,16 @@ export class ReviewArtifactStore {
     return `claim-grounding-r${round}.json`;
   }
 
+  /** M13 Final Closure（A4）：多 key 引用归因观察（只读产物；citation-attribution-r{round}.json） */
+  async saveMultiKeyAttribution(projectId: string, round: number, report: unknown): Promise<string> {
+    const fileName = `citation-attribution-r${round}.json`;
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), {
+      round,
+      ...(typeof report === "object" && report !== null ? (report as Record<string, unknown>) : { report }),
+    });
+    return `reviews/${fileName}`;
+  }
+
   async saveClaimGrounding(projectId: string, report: ClaimGroundingReport): Promise<string> {
     const fileName = this.claimGroundingFileName(report.round);
     await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), report);

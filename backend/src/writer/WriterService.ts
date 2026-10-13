@@ -2144,6 +2144,7 @@ export function buildSurveySectionPrompt(params: {
     "6. 逐条 synthesis 的措辞强度按其 grounding 分级执行（每条已标注措辞纪律）：evidence_backed 可确定陈述（证据范围内）；literature_cited 只能弱措辞；speculative 只保留不确定性表述。",
     "7. 引用纪律：只允许引用「本节允许的 citation key」清单内的 key（输出会被逐 key 校验，越界即失败）。事实性论断（机制、方法、数值、结论）优先引用 A 组；一个综合结论允许多 key 并列（如 \\cite{a,b,c}）——多源综合结论不得伪装成单篇论文支撑，也不要机械地每句只引 1 篇。",
     "8. 上下文不足以支撑某个具体论断时：保守表述或省略，不脑补；可以用 evidence_query 查询证据库确认，无果就弱化。",
+    "9. 文献库组织状态不是论文内容：unclassified / 未归类 / 待人工修正 / taxonomy 标签 / 入库 / 核验状态等工作流状态词不得写进正文；描述文献分布时用学术表述（如「未落入上述方法家族的工作按其技术路线归组讨论」），不报告标签统计状态。",
     "",
     ...CLAIM_DISCIPLINE_LINES,
     ...MANUSCRIPT_CONTENT_LINES,
