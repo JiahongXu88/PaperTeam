@@ -55,6 +55,7 @@ export type RevisionItemResolutionReason =
   | "claim_strength_escalation"
   | "evidence_stale"
   | "unsupported_named_reference"
+  | "citation_unknown_key"
   | "no_change_detected"
   | "user_approved"
   | "user_rejected"

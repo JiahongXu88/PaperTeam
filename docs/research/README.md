@@ -66,6 +66,14 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 ## M13 — Storage & Architecture Evolution
 
 - [M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md](M13_0_STORAGE_ARCHITECTURE_ASSESSMENT.md) — 存储架构只读评估（全库 store 审计 / 读写并发模型 / 事务边界分类 / events.jsonl flake 归因 / 三方案决策矩阵；DATABASE_DECISION = NO-GO — Keep File-backed，SQLite 为触发后唯一候选）
+- [M13_1_CODEX_HANDOFF.md](M13_1_CODEX_HANDOFF.md) — 文件后端可靠性 Batch 1/2（EvidenceStore 前向兼容、Figure 插入 write-ahead intent / SHA-256 恢复、SIGKILL 子进程测试）
+- [M13_STABILITY_HARDENING_BATCH3.md](M13_STABILITY_HARDENING_BATCH3.md) — Stability Batch 3（RevisionStore 损坏 fail-closed、restore intent、ExternalInstructionStore 并发；DATABASE_DECISION = NO_GO 维持）
+- [M13_2_EXPERIMENT_PACKAGE_DESIGN.md](M13_2_EXPERIMENT_PACKAGE_DESIGN.md) / [M13_2_EXPERIMENT_PACKAGE_ACCEPTANCE.md](M13_2_EXPERIMENT_PACKAGE_ACCEPTANCE.md) / [M13_2_CODEX_HANDOFF.md](M13_2_CODEX_HANDOFF.md) — 实验包理解（有界 ZIP 导入、保守分组、作者确认、research.idea 上下文；ECS 合成验收 PASS）
+- [M13_3_REAL_EXPERIMENT_ACCEPTANCE.md](M13_3_REAL_EXPERIMENT_ACCEPTANCE.md) — 作者真实实验包验收 + GLM 受控语义理解（PASS 带限制）
+- [M13_4_MODEL_PROVIDER_UX_ACCEPTANCE.md](M13_4_MODEL_PROVIDER_UX_ACCEPTANCE.md) — 自定义 Provider 向导与模型发现（公司网关 43 模型真实验证）
+- [M13_5_REAL_WORKFLOW_READINESS.md](M13_5_REAL_WORKFLOW_READINESS.md) / [M13_5_1_EXPERIMENT_UPLOAD_RELIABILITY.md](M13_5_1_EXPERIMENT_UPLOAD_RELIABILITY.md) / [M13_5_2_OUTPUT_TRUNCATION_HANDLING.md](M13_5_2_OUTPUT_TRUNCATION_HANDLING.md) — 真实工作流就绪（thinking omit、split scopes、上传可靠性、输出截断）
+- [M13_6_EXPERIMENT_ONBOARDING_AND_429_RECOVERY.md](M13_6_EXPERIMENT_ONBOARDING_AND_429_RECOVERY.md) — 实验接入与学术 API 限流恢复（ScholarlyHttpClient / ProviderCooldownRegistry）
+- [M13_FINAL_CLOSURE.md](M13_FINAL_CLOSURE.md) — **M13 最终收口（PARTIAL — BLOCKERS REMAIN）**：否定性命题 grounding 立场 / Reviewer 意见非证据 + 具名实体守卫 / Planner partial 标注 / 多 key 归因信号 / academicScore 带内复核；真实 Topic → PDF 全链路（Draft 终态；暴露并修复摘要转义、状态词泄漏、未知 cite key 三个生产缺陷）；阻断 = abstract-only 语料无正式 Evidence + 登记工件未在真实起点产出；M14 Handoff。
 
 ## M13.7 — Research → RAG → Evidence
 

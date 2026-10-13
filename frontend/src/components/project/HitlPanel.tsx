@@ -1256,6 +1256,7 @@ const REJECTION_CATEGORY_STYLES: Record<string, { label: string; tone: "ok" | "w
   fact_preservation: { label: "事实漂移", tone: "danger" },
   citation_removal_detected: { label: "引用无据删除", tone: "danger" },
   named_reference: { label: "具名文献 / 实体无据引入", tone: "danger" },
+  citation_unknown_key: { label: "引用 key 不存在", tone: "danger" },
   claim_strength: { label: "claim 强度升级", tone: "warn" },
   evidence_stale: { label: "证据失效", tone: "warn" },
 };

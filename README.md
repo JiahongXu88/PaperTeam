@@ -251,8 +251,13 @@ positives and zero fabricated-content leaks. The M12 line — target publication
 intelligence, multimodal review, and deterministic academic figures — is feature
 complete, verified with real GLM model calls on Windows and a real Linux server
 deployment (Docker Compose; in-container xelatex figure compilation). Deterministic
-components are covered by 2,860 backend + 292 frontend tests plus CI-verified Docker
-smokes (scripted agent runtime — no model needed to run tests).
+components are covered by 3,281 backend + 334 frontend tests plus CI-verified Docker
+smokes (scripted agent runtime — no model needed to run tests). M13 final closure
+(2026-10-13): scientific-fact boundary guards (refutation stance for partial claims,
+reviewer findings are not evidence, named-entity / unknown-citation-key fail-closed) and
+bounded reviewer-variance confirmation are in production; a real Topic → PDF run reached
+the Draft terminal on the production orchestrator — abstract-only corpora yield no formal
+Evidence, so Final requires full text; verdict `M13 PARTIAL` (docs/research/M13_FINAL_CLOSURE.md).
 
 Current limits, honestly: visual review covers registered assets only (embedded PDF
 figures without extractable assets are skipped); figure coverage is 4 data-plot +

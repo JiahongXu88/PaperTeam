@@ -2828,6 +2828,8 @@ function revisionValidateStage(services: WorkflowServices): StageSpec {
           evidence: evidenceRecords,
           bibEntries: citationReport?.static.bibEntries ?? [],
         }),
+        // M13 Final Closure：新增 \cite key 必须存在于 bibliography（拼写错误 / 捏造 key fail-closed）
+        ...(citationReport !== null ? { knownBibKeys: citationReport.static.bibEntries.map((entry) => entry.key) } : {}),
       });
       const finalizedPatchArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, revision);
       if (finalizedPatchArtifact !== null) {

@@ -377,6 +377,36 @@ describe("evaluateRevisionValidation", () => {
     expect(unchecked.items[0]?.status).toBe("validated");
   });
 
+  it("M13 Final Closure：修订新增 bibliography 中不存在的 \\cite key（真实 rerun：huang2024mabbamot 拼写错误）→ rejected（citation_unknown_key）；合法新 key 只记提示", () => {
+    const typo = BEFORE_TEX + "\\n该方向的代表工作见\\cite{huang2024mabbamot}。";
+    const result = evaluateRevisionValidation(
+      inputOf({
+        currentFiles: [{ file: "sections/experiments.tex", content: typo }],
+        knownBibKeys: ["gao2023survey", "huang2024mambamot"],
+      }),
+    );
+    expect(result.items[0]?.status).toBe("rejected");
+    expect(result.items[0]?.reasonCodes).toContain("citation_unknown_key");
+    expect(result.items[0]?.category).toBe("citation_unknown_key");
+    expect(result.unknownAddedKeys).toEqual(["huang2024mabbamot"]);
+    expect(result.rejectedItems?.[0]?.evidence[0]).toContain("huang2024mabbamot");
+    expect(result.blocked).toBe(true);
+    // 合法新 key（在 bibliography 中、无 evidence 支撑）：仍只是提示级，不拒绝（既有口径）
+    const legit = evaluateRevisionValidation(
+      inputOf({
+        currentFiles: [{ file: "sections/experiments.tex", content: BEFORE_TEX + "\\n另见\\cite{huang2024mambamot}。" }],
+        knownBibKeys: ["gao2023survey", "huang2024mambamot"],
+      }),
+    );
+    expect(legit.items[0]?.status).toBe("validated");
+    expect(legit.unknownAddedKeys).toEqual([]);
+    expect(legit.uncoveredAddedKeys).toEqual(["huang2024mambamot"]);
+    // 未提供 knownBibKeys → 不检查（旧调用方行为不变）
+    const unchecked = evaluateRevisionValidation(inputOf({ currentFiles: [{ file: "sections/experiments.tex", content: typo }] }));
+    expect(unchecked.items[0]?.status).toBe("validated");
+    expect(unchecked.unknownAddedKeys).toBeUndefined();
+  });
+
   it("M9.10 Phase 4：干净修订 category=null / rejectedItems 空；describe 含分类计数", () => {
     const clean = evaluateRevisionValidation(inputOf());
     expect(clean.items[0]?.category).toBeNull();

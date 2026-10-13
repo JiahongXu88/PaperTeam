@@ -47,6 +47,7 @@ export type RevisionRejectionCategory =
   | "fact_preservation"
   | "citation_removal_detected"
   | "named_reference"
+  | "citation_unknown_key"
   | "claim_strength"
   | "evidence_stale";
 
@@ -111,6 +112,8 @@ export interface RevisionValidationResult {
    * 文献 / 作者 / 实体（Reviewer finding 文本污染正文的确定性信号）。旧产物无此字段。
    */
   namedReferences?: (IntroducedNamedReference & { file: string })[];
+  /** M13 Final Closure：修订新增但 bibliography 中不存在的 key（提供 knownBibKeys 时才有；旧产物无此字段） */
+  unknownAddedKeys?: string[];
   /** 新增引用中无 verified evidence 支撑的 key（提示级，不自动拒绝） */
   uncoveredAddedKeys: string[];
   /** 全部条目 validated 且无 block 级 finding（未考虑用户决策） */
@@ -133,6 +136,12 @@ export interface RevisionValidationInput {
    * 参考文献）。undefined = 不执行 Named Reference 检查（纯单元输入 / 旧调用方）。
    */
   referenceVocabulary?: readonly string[];
+  /**
+   * M13 Final Closure（真实 Topic → PDF rerun 实录）：bibliography 的全部合法 key。提供时，修订新增的
+   * `\cite` key 若不在其中（拼写错误 / 捏造，如 huang2024mabbamot）→ 触达文件的条目 rejected（fail-closed）；
+   * undefined = 不检查（旧调用方 / 纯单元输入）。「新增 key 无 evidence 支撑」仍是提示级（uncoveredAddedKeys）。
+   */
+  knownBibKeys?: readonly string[];
   projectId: string;
   reviewRound: number;
   sourceRevision: number;
@@ -339,6 +348,10 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     }
   }
   const uncoveredAddedKeys = [...new Set(added.filter((entry) => !entry.evidenceBacked).map((entry) => entry.key))];
+  // ---- 2c. 新增 key 必须存在于 bibliography（M13 Final Closure）：拼写错误 / 捏造 key 在修订写入前拦截，
+  //      而不是等到下一轮 citation.verify / gate（综述章节级修订不经过 span 候选管线，没有 citation_hallucinated 检查）
+  const knownKeys = input.knownBibKeys !== undefined ? new Set(input.knownBibKeys) : null;
+  const unknownAddedKeys = knownKeys === null ? [] : added.filter((entry) => !knownKeys.has(entry.key));
 
   // ---- 4. Evidence Re-validation（applied 条目关联证据仍 formal？） ----
   const evidenceRecheck: EvidenceRecheckEntry[] = [];
@@ -414,6 +427,18 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
         settle("rejected", `${violation.file}：${violation.reason}`, violation.code, violation.category, violation.evidence);
       }
     }
+    for (const file of new Set(unknownAddedKeys.map((entry) => entry.file))) {
+      if (itemTouchesFile(item.section, file, contentByFile.get(file))) {
+        const keys = [...new Set(unknownAddedKeys.filter((entry) => entry.file === file).map((entry) => entry.key))];
+        settle(
+          "rejected",
+          `${file}：修订新增了 bibliography 中不存在的引用 key（${keys.join("、")}）——拼写错误或捏造，不得写入`,
+          "citation_unknown_key",
+          "citation_unknown_key",
+          `未知 key：${keys.join("、")}（${file}）`,
+        );
+      }
+    }
     for (const file of new Set(namedReferences.map((entry) => entry.file))) {
       if (itemTouchesFile(item.section, file, contentByFile.get(file))) {
         const terms = namedReferences.filter((entry) => entry.file === file);
@@ -467,6 +492,8 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
         ? "fact_preservation"
         : categories.includes("citation_removal_detected")
           ? "citation_removal_detected"
+          : categories.includes("citation_unknown_key")
+            ? "citation_unknown_key"
           : categories.includes("named_reference")
             ? "named_reference"
           : categories.includes("claim_strength")
@@ -505,6 +532,17 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
         const list = evidenceById2.get(applied.id) ?? [];
         if (list.length < 3) {
           list.push(`markers：${finding.markers.join("/")}（${finding.file}）`);
+        }
+        evidenceById2.set(applied.id, list);
+      }
+    }
+  }
+  for (const entry of unknownAddedKeys) {
+    for (const applied of appliedItems) {
+      if (itemTouchesFile(applied.section, entry.file, contentByFile.get(entry.file))) {
+        const list = evidenceById2.get(applied.id) ?? [];
+        if (list.length < 3) {
+          list.push(`未知引用 key「${entry.key}」（${entry.file}）`);
         }
         evidenceById2.set(applied.id, list);
       }
@@ -557,6 +595,7 @@ export function evaluateRevisionValidation(input: RevisionValidationInput): Revi
     citationDelta: { added, removed: removedByFile },
     evidenceRecheck,
     ...(input.referenceVocabulary !== undefined ? { namedReferences } : {}),
+    ...(knownKeys !== null ? { unknownAddedKeys: [...new Set(unknownAddedKeys.map((entry) => entry.key))] } : {}),
     uncoveredAddedKeys,
     ok: !blocked && needsReview === 0 && !(input.patchEvidenceIds ?? []).some(id =>
       evidenceRecheck.find(entry => entry.evidenceId === id)?.stillFormal !== true),

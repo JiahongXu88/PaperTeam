@@ -65,6 +65,8 @@ const yearFrom = flags["year-from"] !== undefined ? Number(flags["year-from"]) :
 const yearTo = flags["year-to"] !== undefined ? Number(flags["year-to"]) : undefined;
 const targetLength = typeof flags["target-length"] === "string" ? flags["target-length"] : undefined;
 const maxRevisionRounds = flags["max-revision-rounds"] !== undefined ? Number(flags["max-revision-rounds"]) : undefined;
+/** hitl.revision_stalled policy: accept_draft (default) or revise_more ONCE then accept_draft. */
+const stalledDecision = flags.stalled === "revise_more" ? "revise_more" : "accept_draft";
 if (maxRevisionRounds !== undefined && (!Number.isInteger(maxRevisionRounds) || maxRevisionRounds < 0 || maxRevisionRounds > 5)) throw new Error("--max-revision-rounds must be 0..5");
 
 const { repo, output } = resolveRepoPaths(repoArg, outputArg);
@@ -223,6 +225,7 @@ let projectId = recoverProjectId ?? reuseProjectId ?? null;
 let runId = recoverRunId ?? null;
 let run = null;
 let validationRejects = 0;
+let stalledSeen = 0;
 let interrupted = false;
 const onSignal = async () => {
   interrupted = true;
@@ -342,9 +345,13 @@ try {
         rationale = decision === "reject"
           ? "validation blocked by a deterministic guard → restore previous revision (never approve over a guard)"
           : "third blocked validation → needs_review (keeps revision; blocks Final; author decision boundary)";
-      } else if (stageId === "hitl.revision_stalled" || stageId === "hitl.revision_overflow") {
+      } else if (stageId === "hitl.revision_stalled") {
+        stalledSeen += 1;
+        decision = stalledSeen <= 1 ? stalledDecision : "accept_draft";
+        rationale = decision === "revise_more" ? "first stall → one manual revision round (user-equivalent revise_more)" : "NO_PROGRESS → honest draft terminal";
+      } else if (stageId === "hitl.revision_overflow") {
         decision = "accept_draft";
-        rationale = stageId === "hitl.revision_stalled" ? "NO_PROGRESS → honest draft terminal" : "revision budget exhausted → honest draft terminal";
+        rationale = "revision budget exhausted → honest draft terminal";
       } else if (stageId === "hitl.style_polish") {
         decision = "skip";
       }

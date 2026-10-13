@@ -221,8 +221,8 @@ telemetry。** 你的论文只在你配置的模型 Provider 的 API 调用中�
 零误报、零捏造内容泄漏。M12 产品线——目标投稿情报、多模态审查、确定性学术
 图表——已功能收口，Windows 真实 GLM 模型调用与 Linux 真实服务器部署
 （Docker Compose，容器内 xelatex 图表编译）均验证通过。确定性组件由
-2,860 backend + 292 frontend 测试与 CI Docker smoke 覆盖（scripted Agent
-runtime——跑测试不需要模型）。
+3,281 backend + 334 frontend 测试与 CI Docker smoke 覆盖（scripted Agent
+runtime——跑测试不需要模型）。M13 最终收口（2026-10-13）：科研事实边界守卫（否定性命题立场、审稿意见非证据、具名实体 / 未知引用 key fail-closed）与 Reviewer 带内复核已落地；真实 Topic → PDF 在生产 Orchestrator 上跑到 Draft 终态——abstract-only 语料不产生正式 Evidence、Final 需全文可得，判 `M13 PARTIAL`（见 docs/research/M13_FINAL_CLOSURE.md）。
 
 当前的诚实限制：视觉审查只覆盖已登记资产（无可抽取资产的 PDF 内嵌图报
 skipped）；图表覆盖 = 4 种数据图 + 2 种方法图模板；PDF 重建为文本级 + 受控
