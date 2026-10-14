@@ -99,6 +99,13 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [M14_0_THESIS_TEMPLATE_RESEARCH.md](M14_0_THESIS_TEMPLATE_RESEARCH.md) — 中文学位论文 LaTeX 模板调研（10 模板 `gh api` 实读 × 12 维度、本机 MiKTeX 7/10 类在位、ctexbook+biblatex 与 thuthesis 两个编译探针、ThesisDocumentModel + TemplateAdapter 草案、`UNDEFINED_CITATION_PATTERN` biblatex 漏判与 133 s 冷启动）
 - [M14_0_ENGINEERING_READINESS_AUDIT.md](M14_0_ENGINEERING_READINESS_AUDIT.md) — 面向 M14 的工程瓶颈审计（十问逐项带坐标；P0-1 修订 12k 截断 + 整文件覆写、P0-2 Review digest 覆盖上限；7 P1 / 5 P2 / 3 P3；17 项可复用能力；文件后端不触发 SQLite 复评）
 
+## M14.0.1 — Real Thesis–Paper Relationship Study（2026-10-14，只读研究；未改产品代码、未安装 Skill）
+
+- [M14_0_1_REAL_THESIS_PAPER_CORPUS.md](M14_0_1_REAL_THESIS_PAPER_CORPUS.md) — 研究协议与真实语料：32 条候选记录（30 篇开放全文：作者自存档 12 + arXiv 12 + 香港理工 6；内地机构库 0 篇开放全文的探测证据）、15 组核验、**9 组内地正式配对（博士 6 / 硕士 3）+ 1 组港校控制**、6 组反例/受限候选、身份验证证据统计、选择偏差；**PARTIAL**（中国学生硕士正式样本 2 组 < 目标 4）
+- [M14_0_1_THESIS_PAPER_MAPPING_ANALYSIS.md](M14_0_1_THESIS_PAPER_MAPPING_ANALYSIS.md) — 逐案例 Evidence Matrix 与跨案例归纳：核心章 ≈ 小论文的翻译/逐字再现（表格逐位相同）、成果归属只在附录全局声明、6/10 依赖未发表材料、7/10 存在同实验异值或版本冲突（范登平表 4.3、李谨杰表 9、宋品皓基线、白烨 λ 约定等）、选择性删减、公开副本答辩后修订、一篇拆两章/多篇并一章；与 M14.0 假设不一致的 7 条证据
+- [M14_0_1_EVIDENCE_BASED_WORKFLOW_DECISIONS.md](M14_0_1_EVIDENCE_BASED_WORKFLOW_DECISIONS.md) — 11 条架构假设审查、10 个数据模型裁决（SUPPORTED 3 / ADJUST 6 / INSUFFICIENT 1；`SourcePaper` → `ResearchInput`、FrozenFact 三态 + conflict、表格级继承资产）、修订版 `thesis_from_papers` 工作流（新增 `hitl.scope_and_version` / `hitl.fact_conflicts`）、自动化/HITL 边界、P0-1/P0-2 需求细化（含 Review 全文覆盖证明）、M14.1–M14.3 顺序修正、预算账本
+- [M14_0_1_THESIS_SKILL_FEASIBILITY.md](M14_0_1_THESIS_SKILL_FEASIBILITY.md) — Skill 裁决 **SELECTIVE**：`thesis-chapter-expansion-zh`（Writer/Planner 组织与写作方法）规范草案；身份/版本/事实状态/冲突/归属/HITL 全部归确定性系统；小样本 A/B 协议与预算帽；本轮不安装、不接入、不做 A/B
+
 ## Runtime / 架构审计
 
 - [AGENT_ARCHITECTURE_AUDIT.md](AGENT_ARCHITECTURE_AUDIT.md) — Agent 架构审计
