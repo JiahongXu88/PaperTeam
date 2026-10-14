@@ -90,6 +90,15 @@ PaperTeam 是个人开源项目。里程碑计划、技术调研、实验分析�
 - [M13_7_11_PRODUCTION_WRITING_E2E_QUALITY_CLOSURE.md](M13_7_11_PRODUCTION_WRITING_E2E_QUALITY_CLOSURE.md) — B2 生产写作的收口验收：冻结真实 Planner 大纲的同条件生产 A/B（开关在 ServiceStack 构造期、独立进程）：A 本身有害重复 0.0%（低于区分度下限）、B 4.1%，词面 27.5%→16.9%，17 项必保事实双臂全保、B 无 A 的引文外编码红旗；双 conclude 规则 LIVE PASS（单样本）；生产 Orchestrator 上 Outline → PDF Stage Replay 三次 run（gate PASS → final rev1；真实 revision.revise 修复 major 定义颠倒 → rev2 draft IMPROVED；style polish 被 invariant 守卫全量拒绝）；两种真实 Resume + 新增重试测试；真实 idea_to_paper Planner 6/6 角色、28/28 canonical evidenceIds、feasibility LOW 停在实验边界；2 个修复（framing/conclude 拒收 pinned partial、digest 使用口径禁路标与限制删除）+ 4 个记录（partial 否定句被确定性 grounding 误判、style JSON 解析折叠、Reviewer 记忆经修订泄漏、Reviewer 方差）；38/40 任务；Topic → PDF 预算阻塞未执行；**PARTIAL**（B2 维持默认开启，M13.7 未收口）。
 - [RESEARCH_EVIDENCE_SUPPLY.md](RESEARCH_EVIDENCE_SUPPLY.md) — 有界供给实现与边界。
 
+## Pre-M14 — 夜间技术预研（2026-10-13/14，只读；未改产品代码）
+
+- [PRE_M14_OVERNIGHT_RESEARCH_SUMMARY.md](PRE_M14_OVERNIGHT_RESEARCH_SUMMARY.md) — **总汇总（十四问）**：academic-figure-skill 不作 Skill/Renderer 引入、部分借鉴；Contract + Renderer 注册表但 M14 仅保留 TikZ/pgfplots；`thesis_from_papers` 工作流与 10 个数据模型；generic-ctexbook + 学校适配器；2 P0 / 7 P1 工程阻塞；M14.1–M14.3 建议
+- [PRE_M14_ACADEMIC_FIGURE_SKILL_EVALUATION.md](PRE_M14_ACADEMIC_FIGURE_SKILL_EVALUATION.md) — academic-figure-skill 独立评估与 A/B/C 基准（22 会话 + 1 无效试点、75.21 USD；Skill 臂 7.8× 成本 / 5 触顶 / 1 零交付 / 0 native run；臂 C 4/8 可表达与落后项清单）；脚本副本见 [repros/pre-m14-academic-figure-skill/](repros/pre-m14-academic-figure-skill/README.md)
+- [PRE_M14_FIGURE_RENDERING_ARCHITECTURE.md](PRE_M14_FIGURE_RENDERING_ARCHITECTURE.md) — 图表生成技术路线（FigureCompiler 不变量坐标、Skill 解剖、6 路线 × 7 维度对比、matplotlib/pgfplots 中文探针、最小 Figure Contract 接口草案、exit-0 Missing character 静默缺口）
+- [M14_0_THESIS_WORKFLOW_ARCHITECTURE.md](M14_0_THESIS_WORKFLOW_ARCHITECTURE.md) — M14 学位论文 Workflow 架构只读审计（12 模块坐标、复用/新增/阻碍三分表、10 个数据模型草案、stage 状态机与 `hitl.author_decision` 触发条件、11 项风险）
+- [M14_0_THESIS_TEMPLATE_RESEARCH.md](M14_0_THESIS_TEMPLATE_RESEARCH.md) — 中文学位论文 LaTeX 模板调研（10 模板 `gh api` 实读 × 12 维度、本机 MiKTeX 7/10 类在位、ctexbook+biblatex 与 thuthesis 两个编译探针、ThesisDocumentModel + TemplateAdapter 草案、`UNDEFINED_CITATION_PATTERN` biblatex 漏判与 133 s 冷启动）
+- [M14_0_ENGINEERING_READINESS_AUDIT.md](M14_0_ENGINEERING_READINESS_AUDIT.md) — 面向 M14 的工程瓶颈审计（十问逐项带坐标；P0-1 修订 12k 截断 + 整文件覆写、P0-2 Review digest 覆盖上限；7 P1 / 5 P2 / 3 P3；17 项可复用能力；文件后端不触发 SQLite 复评）
+
 ## Runtime / 架构审计
 
 - [AGENT_ARCHITECTURE_AUDIT.md](AGENT_ARCHITECTURE_AUDIT.md) — Agent 架构审计
