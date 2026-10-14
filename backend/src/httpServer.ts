@@ -41,6 +41,7 @@ import { FigureStore } from "./figures/figureStore.js";
 import type { InsertParams } from "./figures/FigureService.js";
 import { PACKAGE_LIMITS } from "./experiments/archive.js";
 import type { ExperimentRole } from "./experiments/ExperimentPackageService.js";
+import { handleResearchInputRoutes } from "./thesis/researchInputRoutes.js";
 import type { BenchmarkTargetSpec } from "./target/types.js";
 import type { SurveyEntryPatch } from "./survey/MatrixService.js";
 import {
@@ -1148,6 +1149,18 @@ async function handleProjectResourceRoutes(
   const projectId = base[1] ?? "";
   const resource = base[2] ?? "";
   const rest = base[3] ?? "";
+
+  // ---- M14.1b Research Inputs & Scientific Facts（研究材料注册 / 事实 / 冲突 / 作者决定）----
+  if (resource === "research-inputs") {
+    await stack.projects.getRequired(projectId);
+    const handled = await handleResearchInputRoutes(req, res, projectId, rest, method, url, {
+      service: stack.researchInputs,
+      readJsonBody: (request) => readJsonBody(request),
+      sendJson,
+      sendMethodNotAllowed,
+    });
+    if (handled) return true;
+  }
 
   // ---- Experiment Packages: binary ZIP stream, bounded independently of JSON bodies ----
   if (resource === "experiment-packages") {

@@ -91,6 +91,11 @@ import { ReviewArtifactStore } from "./review/reviewArtifacts.js";
 import { ExternalInstructionStore } from "./review/externalInstructions.js";
 import type { ScholarlyResolverOptions } from "./citation/scholarly.js";
 import type { WorkflowServices } from "./workflow/definitions.js";
+import { ResearchInputRegistry } from "./thesis/ResearchInputRegistry.js";
+import { ScientificFactStore } from "./thesis/ScientificFactStore.js";
+import { AuthorDecisionStore } from "./thesis/AuthorDecisionStore.js";
+import { ResearchInputService } from "./thesis/ResearchInputService.js";
+import { PdfTextLayerProvider } from "./thesis/textLayer.js";
 
 export interface ServiceStackOptions {
   runtime: AgentRuntime;
@@ -311,6 +316,8 @@ export interface ServiceStack {
   /** M12.3 C4/C5：学术图表产品服务（数据集候选 → spec → 编译 → 插入；零 LLM） */
   figures: FigureService;
   experimentPackages: ExperimentPackageService;
+  /** M14.1b Research Input & Scientific Fact Management */
+  researchInputs: ResearchInputService;
   /** M12.1 A5–A8：Target Publication Intelligence 服务束（benchmark 冻结→discovery→profile→readiness） */
   targets: TargetServices;
   pdfAnalyzer: BuiltinPdfAnalyzer;
@@ -914,6 +921,16 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     compiler: options.figures?.compiler ?? new FigureCompiler(),
     experimentPackages,
   });
+  // M14.1b Research Input & Scientific Fact Management：注册表 / 事实 / 作者决定
+  // 全部文件后端（research/ 目录，原子写）；来源核验的独立文本层复用 paperParser。
+  const researchInputs = new ResearchInputService({
+    registry: new ResearchInputRegistry(options.projects, sources, parsedDocuments, evidence),
+    facts: new ScientificFactStore(options.projects),
+    decisions: new AuthorDecisionStore(options.projects),
+    documents: parsedDocuments,
+    ingestion,
+    textLayer: new PdfTextLayerProvider(options.projects, sources, paperParser, log),
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -950,6 +967,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     visualReview,
     figures,
     experimentPackages,
+    researchInputs,
     targets,
     pdfAnalyzer,
     manuscript,
