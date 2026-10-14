@@ -9,7 +9,7 @@
  * round 从 1 递增；「最新」= 编号最大。
  */
 
-import { readFile, readdir } from "node:fs/promises";
+import { mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { ProjectStore } from "../project/ProjectStore.js";
@@ -19,6 +19,7 @@ import type { CitationPreservationSummary } from "../quality/citationPreservatio
 import type { FactPreservationSummary } from "../quality/factPreservation.js";
 import type { CumulativeFactValidation } from "../quality/cumulativeFactPreservation.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
+import { reviewUnitFileName, type ReviewCoverageSummary, type ReviewUnitRecord } from "./coverageLedger.js";
 import type { ClaimGroundingReport } from "./claimGrounding.js";
 import type { ClaimResolutionReport } from "./claimResolution.js";
 import type { ClaimGapAudit } from "./claimGapAudit.js";
@@ -48,6 +49,10 @@ const ACADEMIC_REDUNDANCY_PATTERN = /^academic-redundancy-rev(\d+)\.json$/;
 export interface WritingPlanSectionRecord {
   sectionId: string;
   title: string;
+  /** M14.1a P0-3：输出文件名（manuscript/sections/ 下；恢复核验定位输出产物） */
+  fileName?: string;
+  /** M14.1a P0-3：完成时的输出内容哈希（与磁盘一致才允许恢复跳过） */
+  outputHash?: string;
   role: "framing" | "develop" | "compare" | "conclude";
   roleSource: string;
   roleConfidence: string;
@@ -200,6 +205,51 @@ export class ReviewArtifactStore {
       }
     }
     return summaries;
+  }
+
+  // ---- M14.1a P0-2：Review Coverage Ledger（单元 journal + 覆盖汇总，原子写） ----
+
+  async saveReviewUnitRecord(projectId: string, record: ReviewUnitRecord): Promise<void> {
+    const roundDir = join(this.projects.reviewsDir(projectId), "review-units", `r${record.round}`);
+    await mkdir(roundDir, { recursive: true });
+    await writeJsonAtomic(join(roundDir, reviewUnitFileName(record.unitId)), record);
+  }
+
+  /** 该轮全部单元 journal 记录（目录缺失 / 单文件损坏 → 空表，如实降级） */
+  async loadReviewUnitRecords(projectId: string, round: number): Promise<ReviewUnitRecord[]> {
+    const roundDir = join(this.projects.reviewsDir(projectId), "review-units", `r${round}`);
+    let names: string[];
+    try {
+      names = await readdir(roundDir);
+    } catch {
+      return [];
+    }
+    const records: ReviewUnitRecord[] = [];
+    for (const name of names.filter((entry) => entry.endsWith(".json"))) {
+      try {
+        const parsed = JSON.parse(await readFile(join(roundDir, name), "utf8")) as ReviewUnitRecord;
+        if (typeof parsed.unitId === "string" && (parsed.status === "completed" || parsed.status === "failed")) {
+          records.push(parsed);
+        }
+      } catch {
+        // 单条 journal 损坏：跳过该单元（其覆盖状态由失败 / 缺失如实反映）
+      }
+    }
+    return records;
+  }
+
+  reviewCoverageFileName(round: number): string {
+    return `review-coverage-r${round}.json`;
+  }
+
+  async saveReviewCoverage(projectId: string, round: number, coverage: ReviewCoverageSummary): Promise<string> {
+    const fileName = this.reviewCoverageFileName(round);
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), coverage);
+    return `reviews/${fileName}`;
+  }
+
+  async loadReviewCoverage(projectId: string, round: number): Promise<ReviewCoverageSummary | null> {
+    return this.readJson<ReviewCoverageSummary>(projectId, this.reviewCoverageFileName(round));
   }
 
   async saveExistingReview(projectId: string, round: number, report: unknown): Promise<string> {

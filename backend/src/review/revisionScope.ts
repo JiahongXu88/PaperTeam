@@ -79,20 +79,61 @@ export function hasRevisionWorkspaceMutation(snapshotHash: string, currentConten
   return hash(currentContent) !== snapshotHash;
 }
 
-/** Lightweight structural locator for single-file LaTeX manuscripts. */
+/** 分节命令（含 starred 变体与可选短标题参数）；只认行首命令，与 M11.4.1 口径一致 */
+const SECTION_COMMAND_PATTERN = /^[ \t]*\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?[ \t]*(?:\[[^\]\n]*\][ \t]*)?\{/gm;
+
+/**
+ * 平衡花括号读取标题（M14.1a）：旧实现 `\{([^}]*)\}` 读不出含嵌套命令的标题
+ * （真实论文 `\subsection{MRG\mbox{-}DTM}`），这类章节在 span 定位里"不存在"，
+ * 其正文被并入前一节。返回标题正文与右花括号后的下标；不闭合返回 null。
+ */
+function readBalancedTitle(source: string, openIndex: number): { title: string; endIndex: number } | null {
+  let depth = 1;
+  let index = openIndex + 1;
+  while (index < source.length && depth > 0) {
+    const char = source[index] as string;
+    if (char === "\\") {
+      index += 2;
+      continue;
+    }
+    if (char === "{") depth += 1;
+    else if (char === "}") depth -= 1;
+    index += 1;
+  }
+  if (depth !== 0) return null;
+  return { title: source.slice(openIndex + 1, index - 1).trim(), endIndex: index };
+}
+
+/**
+ * Structural locator for LaTeX manuscripts (single-file main.tex and per-chapter
+ * files alike). Every heading opens a span that runs to the next heading (or end
+ * of file). M14.1a: titles are read with balanced braces, and logicalSection ids
+ * are unique within a file — the first occurrence keeps the historical
+ * `command:title` / label form, later duplicates get `#2`, `#3`, … in document
+ * order, so two same-titled subsections can never resolve to the same patch target.
+ */
 export function locateLatexSections(file: string, source: string): RevisionSpan[] {
   const headings: Array<{ start: number; command: string; title: string; label?: string }> = [];
-  const pattern = /^\s*\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?\s*\{([^}]*)\}/gm;
-  for (const match of source.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    const rest = source.slice(start + match[0].length, start + match[0].length + 400);
+  SECTION_COMMAND_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SECTION_COMMAND_PATTERN.exec(source)) !== null) {
+    const start = match.index;
+    const openIndex = start + match[0].length - 1;
+    const parsed = readBalancedTitle(source, openIndex);
+    if (parsed === null) continue;
+    const rest = source.slice(parsed.endIndex, parsed.endIndex + 400);
     const label = /^\s*\\label\{([^}]+)\}/.exec(rest)?.[1];
-    headings.push({ start, command: match[1] ?? "section", title: (match[2] ?? "").trim(), ...(label ? { label } : {}) });
+    headings.push({ start, command: match[1] ?? "section", title: parsed.title, ...(label ? { label } : {}) });
+    SECTION_COMMAND_PATTERN.lastIndex = parsed.endIndex;
   }
+  const seen = new Map<string, number>();
   return headings.map((heading, index) => {
     const end = headings[index + 1]?.start ?? source.length;
     const content = source.slice(heading.start, end);
-    const logicalSection = heading.label ?? `${heading.command}:${heading.title}`;
+    const baseId = heading.label ?? `${heading.command}:${heading.title}`;
+    const occurrence = (seen.get(baseId) ?? 0) + 1;
+    seen.set(baseId, occurrence);
+    const logicalSection = occurrence === 1 ? baseId : `${baseId}#${occurrence}`;
     return {
       file,
       logicalSection,

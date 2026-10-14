@@ -504,9 +504,13 @@ export function evaluateQualityGate(
 
   // 7. academic score ≥ 阈值（缺失评分视为不通过——不能因没评就通过）
   const academic = input.review.scores.academicScore;
+  // M14.1a P0-2：覆盖不完整（长文档单元失败 / digest 有损）时，任何部分视图
+  // 分数都不得推导全文学术质量——academic 规则强制 FAIL，独立于分数本身。
+  const coverage = input.review.coverage;
+  const coverageComplete = coverage?.complete ?? true;
   rules.push({
     rule: "academic_score_threshold",
-    passed: academic !== null && academic >= thresholds.academicPassScore,
+    passed: academic !== null && academic >= thresholds.academicPassScore && coverageComplete,
     detail:
       academic === null
         ? "缺少 academic 评分"
@@ -516,7 +520,7 @@ export function evaluateQualityGate(
                   .map((sample) => sample.overallScore ?? "null")
                   .join("/")} 取中位数`
               : ""
-          }`,
+          }${coverageComplete ? "" : `；review coverage 不完整（${coverage!.mode} 模式 ${(coverage!.ratio * 100).toFixed(1)}%，失败单元 ${coverage!.failedUnits}）——部分视图分数不得推导全文学术质量`}`,
   });
 
   // 8. style risk ≤ 阈值
@@ -527,6 +531,27 @@ export function evaluateQualityGate(
     detail:
       styleRisk === null ? "缺少 style 风险评分" : `styleRisk=${styleRisk}（要求 ≤ ${thresholds.styleRiskMax}）`,
   });
+
+  // 8b. M14.1a P0-2：review 覆盖完整性——计划纳入审查的目标正文必须全部由成功
+  // 完成的 Review Unit 覆盖。coverage 是确定性账本（不是模型自述）；旧产物无
+  // 该字段 = digest 单轮语义，按不适用呈现（不改历史判定）。
+  if (coverage === undefined) {
+    rules.push({
+      rule: "review_coverage_complete_not_applicable",
+      passed: true,
+      detail: "本轮 review 产物无 coverage 字段（legacy digest 单轮语义）",
+    });
+  } else {
+    rules.push({
+      rule: "review_coverage_complete",
+      passed: coverage.complete,
+      detail:
+        `${coverage.mode} 模式：实际完成审查 ${coverage.reviewedChars}/${coverage.targetChars} 字符` +
+        `（${(coverage.ratio * 100).toFixed(1)}%；单元 ${coverage.completedUnits}/${coverage.targetUnits}，` +
+        `失败 ${coverage.failedUnits}，复用 ${coverage.reusedUnits}；snapshot ${coverage.snapshotId.slice(0, 12)}）` +
+        (coverage.complete ? "" : "——未覆盖正文不得被任何全文性结论（含学术分数）引用"),
+    });
+  }
 
   // 9. 目标可行性达标（LOW / INSUFFICIENT 阻止 Final；用户知情接受不降低标准）
   // M10.3.1：existing_paper 的 task-aware 适用性在 detail 中可见（required

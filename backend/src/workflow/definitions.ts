@@ -69,7 +69,7 @@ import {
   SurveyMatrixArtifactStore,
   SurveySynthesisArtifactStore,
 } from "../survey/surveyArtifacts.js";
-import { fingerprintJson } from "../util/hash.js";
+import { fingerprintJson, sha256Hex } from "../util/hash.js";
 import { buildSurveySectionContext } from "../survey/sectionContext.js";
 import {
   resolveArgumentUnits,
@@ -274,7 +274,27 @@ import {
   renderTargetReferenceBlock,
 } from "../target/promptBlocks.js";
 import type { TargetServices } from "../target/services.js";
-import { writeJsonAtomic } from "../util/atomic.js";
+import { writeFileAtomic, writeJsonAtomic } from "../util/atomic.js";
+import { mapWithConcurrency } from "../util/concurrency.js";
+import {
+  buildReviewCoveragePlan,
+  computeReviewCoverage,
+  digestIsLossy,
+  type ReviewCoverageSummary,
+  type ReviewUnitPlanEntry,
+} from "../review/coverageLedger.js";
+import {
+  DEFAULT_REVISION_UNIT_MAX_CHARS,
+  baseSpanId,
+  buildUnitEditContext,
+  fileBodySpan,
+  isUnitSpanId,
+  locateFileSpans,
+  mergeAdjacentUnits,
+  partitionSpanIntoUnits,
+  relocateRevisionSpan,
+  resolveUnitByQuotes,
+} from "../review/logicalSpan.js";
 import type {
   PlanDecision,
   ResumeInput,
@@ -383,6 +403,11 @@ export interface WorkflowServices {
   targets?: TargetServices;
   stageTimeoutMs: number;
   stageMaxAttempts: number;
+  /**
+   * M14.1a：修订编辑单元上限（字符）。超过的章节文件 / 标题 span 切成有界
+   * logicalSpan 单元（段落窗口）逐个修订；缺省 DEFAULT_REVISION_UNIT_MAX_CHARS。
+   */
+  revisionUnitMaxChars?: number;
   /**
    * M13.7.10：写作组织策略。argumentUnits=true → writing.sections 按章节论证单元
    * 分配 Evidence 并注入 B2 任务块；缺省（旧测试栈未接线）视为开启。
@@ -541,6 +566,20 @@ function reviewRunStageInner(
       // M13 Final Closure（A4）：多 key 引用归因只读观察（句子具体内容只命中组内一篇的证据）——
       // 仅注入 fact 模式作为逐句核验提示；产物按轮落盘，不进 Gate、不自动改稿
       const latexForAttribution = await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId));
+      // M14.1a P0-2：覆盖计划先于审查执行构建——review 到底看了多少正文由此可证明。
+      // digest 有损（节 >3600 / 总量 >60k / 文件 >24）→ 切换 per-unit 长文档模式；
+      // 否则维持既有单 digest 三路 review（短论文行为零变化，coverage = 完整 digest）。
+      const coverageSourceFiles = latexForAttribution.sections.length > 0
+        ? latexForAttribution.sections
+        : latexForAttribution.mainTex !== null ? [latexForAttribution.mainTex] : [];
+      const unitMaxChars = services.revisionUnitMaxChars ?? DEFAULT_REVISION_UNIT_MAX_CHARS;
+      const coveragePlan = buildReviewCoveragePlan(
+        coverageSourceFiles.map((file) => ({ file: file.relativePath, content: file.content })),
+        unitMaxChars,
+      );
+      const longDocumentMode = digestIsLossy(coverageSourceFiles);
+      const round = await services.reviewArtifacts.nextSummaryRound(ctx.projectId);
+      let coverageSummary: ReviewCoverageSummary;
       const multiKeyAttribution = computeMultiKeyAttribution({
         files: latexForAttribution.sections.map((section) => ({ file: section.relativePath, content: section.content })),
         evidence,
@@ -563,7 +602,177 @@ function reviewRunStageInner(
         ...(redundancyDigest !== undefined ? { redundancyDigest } : {}),
         ...(attributionDigest !== undefined ? { attributionDigest } : {}),
       };
-      const results = await services.reviewer.reviewAll(reviewParams);
+      type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
+      let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
+      if (longDocumentMode) {
+        /**
+         * M14.1a P0-2 长文档模式：每个 Review Unit 一次有界全文审查（单元 ≤
+         * unitMaxChars，永不截断；整篇从不重复发送给任何 Reviewer），per-unit
+         * journal 落盘 reviews/review-units/r{round}/，同 fingerprint 完成单元在
+         * stage retry / 进程重启后零模型调用复用（SectionReviewScheduler 同款
+         * 语义）。单元失败重试 2 次后如实记 failed → 覆盖率下降 → Gate 不允许
+         * 冒充全文 PASS。分数 = 各单元 academicScore / riskScore 的字符加权聚合
+         * （确定性、可追溯），不再用部分 digest 视图冒充全文评分。
+         */
+        const journal = await services.reviewArtifacts.loadReviewUnitRecords(ctx.projectId, round);
+        const journalByUnitId = new Map(journal.filter((record) => record.status === "completed").map((record) => [record.unitId, record]));
+        const spanByUnitId = new Map<string, RevisionSpan>();
+        for (const file of coverageSourceFiles) {
+          for (const span of locateFileSpans(file.relativePath, file.content)) {
+            for (const unit of partitionSpanIntoUnits(span, unitMaxChars).units) {
+              spanByUnitId.set(`${file.relativePath}::${unit.logicalSection}`, unit);
+            }
+          }
+        }
+        const chapterIndex = [...new Set(coveragePlan.units.map((unit) => `${unit.heading}（${unit.file}）`))];
+        const evidenceDigestLines = evidenceSelection.formal.slice(0, 15).map((record, index) =>
+          `- [E${String(index + 1).padStart(3, "0")}] ${record.claim.slice(0, 140)}（${record.verificationStatus}）`);
+        const unitAttempts = 3;
+        const outcomes = await mapWithConcurrency(
+          coveragePlan.units,
+          services.review.reviewConcurrency,
+          async (unit: ReviewUnitPlanEntry) => {
+            const unitSpan = spanByUnitId.get(unit.unitId);
+            if (unitSpan === undefined) {
+              throw new BusinessError("STAGE_CONTRACT_VIOLATION", `REVIEW_UNIT_UNRESOLVED: ${unit.unitId}`);
+            }
+            const reused = journalByUnitId.get(unit.unitId);
+            if (
+              reused !== undefined && reused.snapshotId === coveragePlan.snapshotId &&
+              reused.unitFingerprint === unit.contentHash
+            ) {
+              // 复用 = 同 snapshot 同单元内容的既往成功审查：issues / 分数随
+              // outcome 完整恢复（journal 复用绝不丢 finding）
+              const restored = reused.outcome === undefined ? null : {
+                issues: reused.outcome.issues as unknown as ReviewIssueOfUnit[],
+                academicScore: reused.outcome.academicScore,
+                riskScore: reused.outcome.riskScore,
+                summary: reused.outcome.summary,
+                taskId: reused.taskId ?? "(reused)",
+              };
+              return { unit, record: reused, review: restored, reused: true };
+            }
+            if (ctx.signal.aborted) {
+              throw new BusinessError("WORKFLOW_CANCELLED", "审稿已被取消");
+            }
+            let lastError: unknown;
+            for (let attempt = 1; attempt <= unitAttempts; attempt += 1) {
+              try {
+                const review = await services.reviewer.reviewUnit({
+                  projectId: ctx.projectId,
+                  unit: {
+                    unitId: unit.unitId, file: unit.file, heading: unit.heading,
+                    unitIndex: unit.unitIndex, unitCount: unit.unitCount, text: unitSpan.content,
+                  },
+                  ...(project.title !== "" ? { paperTitle: project.title } : {}),
+                  chapterIndex,
+                  ...(evidenceDigestLines.length > 0 ? { evidenceDigest: evidenceDigestLines } : {}),
+                  ...(citationDigest !== undefined ? { citationDigest } : {}),
+                  ...(language !== undefined ? { language } : {}),
+                  signal: ctx.signal,
+                });
+                const record = {
+                  unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
+                  status: "completed" as const, taskId: review.taskId, issueCount: review.issues.length,
+                  attempts: attempt, updatedAt: new Date().toISOString(),
+                  outcome: {
+                    issues: review.issues as unknown as Array<Record<string, unknown>>,
+                    academicScore: review.academicScore, riskScore: review.riskScore, summary: review.summary,
+                  },
+                };
+                await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
+                return { unit, record, review, reused: false };
+              } catch (error) {
+                lastError = error;
+                if (ctx.signal.aborted && !(error instanceof BusinessError)) {
+                  throw error;
+                }
+              }
+            }
+            const record = {
+              unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
+              status: "failed" as const,
+              error: lastError instanceof Error ? lastError.message.slice(0, 300) : String(lastError).slice(0, 300),
+              attempts: unitAttempts, updatedAt: new Date().toISOString(),
+            };
+            await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
+            return { unit, record, review: null, reused: false };
+          },
+          { signal: ctx.signal },
+        );
+        const failedOutcome = outcomes.find((outcome) => !outcome.ok);
+        if (failedOutcome !== undefined) {
+          throw failedOutcome.error;
+        }
+        const settled = outcomes.map((outcome) => (outcome.ok ? outcome.value : null));
+        const completedUnits = settled.filter((entry): entry is NonNullable<typeof entry> => entry !== null && entry.record.status === "completed");
+        const allRecords = [...journal, ...settled.flatMap((entry) => (entry !== null ? [entry.record] : []))];
+        if (completedUnits.length === 0 && coveragePlan.units.length > 0) {
+          throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVIEW_UNITS_ALL_FAILED");
+        }
+        // 跨章一致性（单次有界调用；失败如实降级为本轮无跨章 finding，不影响正文覆盖率）
+        let crossChapterIssues: Awaited<ReturnType<typeof services.reviewer.reviewCrossChapter>>["issues"] = [];
+        const chapterDigests = [...new Map(coveragePlan.units.map((unit) => {
+          const span = spanByUnitId.get(unit.unitId);
+          return [unit.spanId, { heading: unit.heading, file: unit.file, digest: span === undefined ? "" : sliceForDigest(span.content, 1200) }];
+        })).values()];
+        if (chapterDigests.length >= 2) {
+          try {
+            const cross = await services.reviewer.reviewCrossChapter({
+              projectId: ctx.projectId, chapters: [...chapterDigests],
+              ...(language !== undefined ? { language } : {}), signal: ctx.signal,
+            });
+            crossChapterIssues = cross.issues;
+          } catch (error) {
+            if (ctx.signal.aborted) throw error;
+            ctx.log(`[review] 跨章一致性审查失败（降级为本轮无跨章 finding；正文覆盖不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+          }
+        }
+        coverageSummary = computeReviewCoverage(coveragePlan, round, allRecords, "units");
+        // 复用计数以本轮实际命中 journal 的单元为准（computeReviewCoverage 的
+        // 跨轮口径无法识别同轮 stage 重启——journal 记录 round 相同）
+        coverageSummary.reusedUnits = settled.filter((entry) => entry?.reused === true).length;
+        // 确定性加权聚合：academicScore / styleRisk = 全部完成单元（本次执行 +
+        // journal 复用，二者 review 等价）分数的字符加权平均
+        let scoreWeight = 0;
+        let academicSum = 0;
+        let riskSum = 0;
+        const unitIssues = completedUnits.flatMap((entry) => entry.review?.issues ?? []);
+        for (const entry of completedUnits) {
+          const review = entry.review;
+          if (review === null) continue;
+          if (review.academicScore !== null) { scoreWeight += entry.unit.chars; academicSum += review.academicScore * entry.unit.chars; }
+          if (review.riskScore !== null) { riskSum += review.riskScore * entry.unit.chars; }
+        }
+        const academicScore = scoreWeight === 0 ? null : Math.round(academicSum / scoreWeight);
+        const riskScore = scoreWeight === 0 ? null : Math.round(riskSum / scoreWeight);
+        const freshCount = completedUnits.filter((entry) => !entry.reused).length;
+        results = [
+          { mode: "fact", taskId: `(units:${completedUnits.length}/${coveragePlan.units.length})`, issues: unitIssues, summary: `长文档单元审查：${completedUnits.length}/${coveragePlan.units.length} 单元完成（复用 ${coverageSummary.reusedUnits}，失败 ${coverageSummary.failedUnits}）` },
+          {
+            mode: "academic", taskId: "(units)", issues: crossChapterIssues,
+            ...(academicScore !== null ? { overallScore: academicScore } : {}),
+            summary: `单元分数字符加权聚合（${freshCount} 新执行 + ${coverageSummary.reusedUnits} 复用；coverage ${(coverageSummary.ratio * 100).toFixed(1)}%）`,
+          },
+          {
+            mode: "style", taskId: "(units)", issues: [],
+            ...(riskScore !== null ? { riskScore } : {}),
+            summary: `单元风险字符加权聚合（${freshCount} 新执行 + ${coverageSummary.reusedUnits} 复用）`,
+          },
+        ];
+        ctx.log(
+          `[review] 长文档单元模式：units=${completedUnits.length}/${coveragePlan.units.length}（复用 ${coverageSummary.reusedUnits}，失败 ${coverageSummary.failedUnits}），coverage=${(coverageSummary.ratio * 100).toFixed(1)}%，跨章 finding=${crossChapterIssues.length}`,
+        );
+      } else {
+        results = await services.reviewer.reviewAll(reviewParams);
+        coverageSummary = {
+          mode: "digest", snapshotId: coveragePlan.snapshotId, round,
+          targetUnits: coveragePlan.units.length, completedUnits: coveragePlan.units.length,
+          failedUnits: 0, reusedUnits: 0,
+          targetChars: coveragePlan.targetChars, reviewedChars: coveragePlan.targetChars,
+          ratio: 1, complete: true, failedUnitIds: [],
+        };
+      }
 
       // M13 Final Closure（任务 B）：academicScore 带内复核——主样本分数落在阈值对称带内时
       // 追加有界独立采样（≤ 2 份）取中位数；事实类 critical/major 并入、意见类须跨样本重现。
@@ -575,7 +784,7 @@ function reviewRunStageInner(
       };
       let academicConfirmation: AcademicScoreConfirmation | undefined;
       const primaryAcademic = results.find((result) => result.mode === "academic");
-      if (primaryAcademic !== undefined && shouldConfirmAcademicScore(primaryAcademic.overallScore, confirmationPolicy)) {
+      if (!longDocumentMode && primaryAcademic !== undefined && shouldConfirmAcademicScore(primaryAcademic.overallScore, confirmationPolicy)) {
         const extras: ModeReviewResult[] = [];
         for (let index = 0; index < confirmationPolicy.extraSamples; index += 1) {
           if (ctx.signal.aborted) {
@@ -592,9 +801,8 @@ function reviewRunStageInner(
         );
       }
 
-      // 轮次来自磁盘上已有汇总的编号（跨 run 递增）：修复了旧实现
-      // 「countCompletions + 1」在第二个 run 里与既有文件名撞号的问题
-      const round = await services.reviewArtifacts.nextSummaryRound(ctx.projectId);
+      // 轮次在审查执行前已确定（M14.1a：单元 journal 以 round 为目录，stage
+      // retry / 进程恢复必须落同一轮；编号仍来自磁盘既有汇总，跨 run 递增）
       const reportPaths: string[] = [];
       for (const result of results) {
         reportPaths.push(await services.reviewer.saveReport(ctx.projectId, round, result));
@@ -609,6 +817,8 @@ function reviewRunStageInner(
       }
       const summary = aggregateReviews(results, round, reportPaths);
       summary.reviewedRevision = revision;
+      summary.coverage = coverageSummary;
+      await services.reviewArtifacts.saveReviewCoverage(ctx.projectId, round, coverageSummary);
       if (academicConfirmation !== undefined) {
         summary.academicConfirmation = academicConfirmation;
       }
@@ -1917,13 +2127,60 @@ function revisionReviseStage(
       const patchValidationRecords: PatchValidationRecord[] = [];
       const currentRevision = await services.revisions.currentRevision(ctx.projectId);
 
-      const targets = listRevisionTargets(outline, files, [
+      const listedTargets = listRevisionTargets(outline, files, [
         ...directives,
         ...sectionScopedExternals.map((directive) => ({
           match: (target: RevisionTarget) =>
             sectionMatches(directive.section ?? "", target) ? externalScopeIssue() : null,
         })),
       ]);
+      // M14.1a P0-1：超过编辑单元上限的章节文件 / 标题 span 展开为有界 logicalSpan
+      // 单元目标；指令按确定性定位绑定到单元（定位失败 = unresolved，不猜位置）
+      const unitMaxChars = services.revisionUnitMaxChars ?? DEFAULT_REVISION_UNIT_MAX_CHARS;
+      const expansion = expandLongFileTargets(listedTargets, directives, sectionScopedExternals, unitMaxChars);
+      const targets = expansion.targets;
+      const unresolvedDispatch = expansion.unresolved;
+      /** 指令 → 目标匹配：绑定目标只认绑定键（issue 仍从文件级匹配目标取回）。
+       * M14.1a 严格 id 优先：指令 logicalSection / label 精确命中同文件某 span 时，
+       * 该指令不再经 heading / 路径模糊匹配派给同文件的其它 span（同名标题防误派） */
+      const strictSpanIdsByFile = new Map<string, Set<string>>();
+      for (const directive of directives) {
+        const id = directive.item?.logicalSection;
+        if (id === undefined) continue;
+        for (const target of targets) {
+          if (target.logicalSpan === undefined || target.binding !== undefined) continue;
+          if (target.logicalSpan.logicalSection === id || target.logicalSpan.label === id) {
+            const set = strictSpanIdsByFile.get(target.relativePath) ?? new Set<string>();
+            set.add(id);
+            strictSpanIdsByFile.set(target.relativePath, set);
+          }
+        }
+      }
+      const matchDirective = (directive: RevisionDirective, index: number, target: RevisionTarget): ReviewIssue | null => {
+        if (target.binding !== undefined) {
+          return target.binding.keys.has(`d:${index}`) ? directive.match(target.binding.matchTarget) : null;
+        }
+        const strictId = directive.item?.logicalSection;
+        if (
+          target.logicalSpan !== undefined && strictId !== undefined &&
+          strictSpanIdsByFile.get(target.relativePath)?.has(strictId) === true &&
+          target.logicalSpan.logicalSection !== strictId && target.logicalSpan.label !== strictId
+        ) {
+          return null;
+        }
+        return directive.match(target);
+      };
+      const externalBoundToTarget = (directive: ExternalDirectiveDispatch, target: RevisionTarget): boolean =>
+        target.binding !== undefined
+          ? target.binding.keys.has(`x:${directive.instructionId}`)
+          : sectionMatches(directive.section ?? "", target);
+      if (unresolvedDispatch.length > 0) {
+        await ctx.emitDomain(
+          "revision.dispatch_unresolved",
+          { count: unresolvedDispatch.length, items: unresolvedDispatch.slice(0, 20) },
+          `${unresolvedDispatch.length} 条意见在长章节中无法可靠定位到编辑单元（未派发、不猜位置）：${unresolvedDispatch.slice(0, 3).map((entry) => `${entry.file}: ${entry.summary.slice(0, 40)}（${entry.reason}）`).join("；")}`,
+        );
+      }
       if (targets.length === 0) {
         /**
          * M11.4 Reliability Closure（Run M 实证：w-b52ff28ae148，计划 5 条全部
@@ -1932,18 +2189,20 @@ function revisionReviseStage(
          * 无可派发条目是合法轮次（合法终态=作者裁决）：跳过派发，正常进入
          * 复审/gate；只有「有派发条目但零目标命中」仍属契约违反。
          */
-        if (directives.length === 0) {
+        if (directives.length === 0 || unresolvedDispatch.length > 0) {
           await ctx.emitDomain(
             "revision.skipped",
-            { reason: "no_dispatchable_items", externalInstructions: externalDirectives.length },
-            "本轮计划无可派发条目（全部为作者裁决 / 基线覆盖闭环）——跳过 Writer 派发，直接进入复审",
+            { reason: unresolvedDispatch.length > 0 ? "all_dispatch_unresolved" : "no_dispatchable_items", externalInstructions: externalDirectives.length, unresolved: unresolvedDispatch.length },
+            unresolvedDispatch.length > 0
+              ? `本轮计划条目全部无法在长章节中可靠定位（${unresolvedDispatch.length} 条）——不猜测修改位置，跳过 Writer 派发，直接进入复审`
+              : "本轮计划无可派发条目（全部为作者裁决 / 基线覆盖闭环）——跳过 Writer 派发，直接进入复审",
           );
           return {
             revisedSections: 0,
             sections: [],
             revision: currentRevision,
             changed: false,
-            findingDispatch: { total: 0, matched: 0, unmatched: 0, multiTarget: 0 },
+            findingDispatch: { total: directives.length, matched: 0, unmatched: directives.length, multiTarget: 0, unresolved: unresolvedDispatch.length },
             ...(externalDirectives.length > 0 ? { externalInstructions: externalDirectives.length } : {}),
           };
         }
@@ -1962,7 +2221,7 @@ function revisionReviseStage(
       // planned，需复审 / HITL 兜底）；multiTarget = 命中多个目标（M9.7.6
       // 同 id 合并语义，grounded 多目标派发，显式计数不静默）。
       const dispatchTargetCounts = directives.map(
-        (directive) => targets.filter((target) => directive.match(target) !== null).length,
+        (directive, index) => targets.filter((target) => matchDirective(directive, index, target) !== null).length,
       );
       const dispatchMatched = dispatchTargetCounts.filter((count) => count > 0).length;
       const findingDispatch = {
@@ -1970,6 +2229,8 @@ function revisionReviseStage(
         matched: dispatchMatched,
         unmatched: directives.length - dispatchMatched,
         multiTarget: dispatchTargetCounts.filter((count) => count > 1).length,
+        ...(unresolvedDispatch.length > 0 ? { unresolved: unresolvedDispatch.length } : {}),
+        ...(expansion.expandedFiles > 0 ? { unitTargets: targets.filter((target) => target.binding !== undefined).length, expandedFiles: expansion.expandedFiles } : {}),
       };
       const revised: string[] = [];
       // M6.7：本轮流派发的计划条目（planned → applied 的依据；确定性 diff 补 targetChanged）
@@ -1992,8 +2253,10 @@ function revisionReviseStage(
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "修订已被取消");
         }
-        const matchedDirectives = directives.filter((directive) => directive.match(target) !== null);
-        const issues = matchedDirectives.map((directive) => directive.match(target)) as ReviewIssue[];
+        const matchedDirectives = directives.filter((directive, directiveIndex) => matchDirective(directive, directiveIndex, target) !== null);
+        const issues = matchedDirectives
+          .map((directive) => matchDirective(directive, directives.indexOf(directive), target))
+          .filter((issue): issue is ReviewIssue => issue !== null);
         const matchedItems = matchedDirectives
           .map((directive) => directive.item)
           .filter((item): item is RevisionPlanItem => item !== undefined);
@@ -2001,15 +2264,25 @@ function revisionReviseStage(
         const recordProtocolId = protocolIds.length === 1 ? protocolIds[0] : undefined;
         // M9.7.6：UNSUPPORTED / CONTRADICTED claim 的 evidence-aware Repair
         // Context（复用该轮 claim grounding 报告；候选只含 formal evidence）。
-        const claimRepairs: ClaimRepairDirective[] =
+        let claimRepairs: ClaimRepairDirective[] =
           claimGrounding !== null
             ? buildClaimRepairDirectives(
                 claimGrounding,
-                (claimSection) => sectionMatches(claimSection, target),
+                (claimSection) => sectionMatches(claimSection, target.binding?.matchTarget ?? target),
                 evidenceById,
                 bibliography,
               )
             : [];
+        if (target.binding !== undefined && target.logicalSpan !== undefined && claimRepairs.length > 0) {
+          // M14.1a：claim repair 二次定位到本单元（claim 原文锚点 → 词法）；定位不到
+          // 本单元的 claim 不派发到这里（避免同一文件的每个单元都收到全部 claim）
+          const { fileSpan, allUnits } = target.binding;
+          const span = target.logicalSpan;
+          claimRepairs = claimRepairs.filter((repair) => {
+            const unit = resolveUnitByQuotes(fileSpan, allUnits, [repair.claim]).unit;
+            return unit !== undefined && unit.start < span.end && span.start < unit.end;
+          });
+        }
         mergeGroundedEvidenceIntoRepairs(claimRepairs, groundedClaims, evidenceById, bibliography);
         // M11.2：本目标的 survey 写作上下文（有 refs 的节；framing / abstract 走通用守卫）
         const surveyContext =
@@ -2037,7 +2310,7 @@ function revisionReviseStage(
         // 该目标命中的外部意见：指定章节的按匹配；未指定章节的全篇派发
         const targetExternals = externalDirectives.filter((directive) =>
           directive.section !== undefined
-            ? sectionMatches(directive.section, target)
+            ? externalBoundToTarget(directive, target)
             : target.logicalSpan !== undefined
               ? matchedItems.some((item) => item.instructionId === directive.instructionId)
               : true,
@@ -2058,11 +2331,52 @@ function revisionReviseStage(
         const isWholeFileTarget = singleFile && target.relativePath === "main.tex" && target.logicalSpan === undefined;
         const targetFilePath = join(services.projects.manuscriptDir(ctx.projectId), target.relativePath);
         const fileBefore = target.logicalSpan !== undefined ? await readFile(targetFilePath, "utf8") : undefined;
-        const resolvedSpan = target.logicalSpan !== undefined
-          ? locateLatexSections(target.relativePath, fileBefore ?? "").find((span) => span.logicalSection === target.logicalSpan?.logicalSection)
+        // M14.1a：按 id（章节 span）/ id + 原文（编辑单元）在当前磁盘内容上重新定位；
+        // 同文件兄弟 patch 造成的偏移不影响未触及单元，单元自身内容变化 = stale
+        const relocated = target.logicalSpan !== undefined
+          ? relocateRevisionSpan(target.relativePath, fileBefore ?? "", target.logicalSpan)
           : undefined;
+        const resolvedSpan = relocated !== undefined && relocated.originalHash === target.logicalSpan?.originalHash ? relocated : undefined;
         if (target.logicalSpan !== undefined && resolvedSpan === undefined) {
-          throw new BusinessError("STAGE_CONTRACT_VIOLATION", `Revision target no longer resolves: ${target.logicalSpan.logicalSection}`);
+          // stale / 不可定位的 patch：fail closed 记录并跳过本目标（兄弟 patch 照常），
+          // 不再以 fatal 终结整个 run，也绝不猜位置
+          const staleReason = relocated === undefined ? "REVISION_TARGET_UNRESOLVED" : "REVISION_TARGET_STALE";
+          const staleRecord: PatchValidationRecord = {
+            patchId: `patch:${target.logicalSpan.originalHash.slice(0, 12)}`,
+            revisionId: `rev-${currentRevision + 1}`,
+            file: target.relativePath,
+            logicalTarget: target.logicalSpan.logicalSection,
+            planItemIds: matchedItems.map((item) => item.id),
+            commentIds: [...new Set([
+              ...matchedItems.flatMap((item) => item.instructionId ? [item.instructionId] : []),
+              ...targetExternals.map((directive) => directive.instructionId),
+            ])],
+            evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+            beforeFileHash: revisionSourceHash(fileBefore ?? ""),
+            beforeTargetHash: target.logicalSpan.originalHash,
+            proposedReplacementHash: "",
+            afterFileHash: revisionSourceHash(fileBefore ?? ""),
+            scope: { ok: false, violations: [staleReason] },
+            workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
+            fact: { ok: false, findingIds: [], violations: ["NOT_RUN_TARGET_STALE"] },
+            citation: { ok: false, findingIds: [], addedKeys: [], removedKeys: [], violations: ["NOT_RUN_TARGET_STALE"] },
+            evidence: { ok: false, violations: ["NOT_RUN_TARGET_STALE"] },
+            apply: { ok: false, status: "rejected" },
+            overall: "fail",
+            failedStage: "resolve",
+            finalStatus: "rejected",
+          };
+          patchValidationRecords.push(staleRecord);
+          // 同修订号可能已有既往应用的 patch 工件——合并而不是覆盖（审计线索不丢）
+          const existingArtifact = await services.reviewArtifacts.loadPatchValidation(ctx.projectId, currentRevision);
+          const mergedRecords = [...(existingArtifact?.records ?? []), ...patchValidationRecords];
+          await services.reviewArtifacts.savePatchValidation(ctx.projectId, {
+            revisionId: staleRecord.revisionId, revision: currentRevision,
+            records: mergedRecords, summary: summarizePatchValidation(selectFinalPatchRecords(mergedRecords), [], mergedRecords),
+          });
+          ctx.log(`[revision] ${staleReason}: ${target.relativePath}#${target.logicalSpan.logicalSection} — 目标在当前文件中不可定位或内容已变化，patch 拒绝（不猜位置）`);
+          await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length, stale: target.logicalSpan.logicalSection });
+          continue;
         }
         /**
          * M11.4 Reliability Closure（F3b preserve-by-construction 前置投影）：
@@ -2103,6 +2417,16 @@ function revisionReviseStage(
             ? { wholeFile: true, targetFilePath: join(services.projects.manuscriptDir(ctx.projectId), target.relativePath) }
             : {}),
           ...(resolvedSpan !== undefined ? { proposalOnly: true } : {}),
+          ...(resolvedSpan !== undefined && isUnitSpanId(resolvedSpan.logicalSection) && fileBefore !== undefined
+            ? (() => {
+                // M14.1a：编辑单元的只读相邻上下文（标题 + 前后 800 字）——Writer 看到
+                // 衔接但只能输出本单元的替换文本
+                const base = relocateRevisionSpan(target.relativePath, fileBefore, { logicalSection: baseSpanId(resolvedSpan.logicalSection), content: "" });
+                if (base === undefined) return {};
+                const units = partitionSpanIntoUnits(base, unitMaxChars).units;
+                return { unitContext: buildUnitEditContext(base, resolvedSpan, units) };
+              })()
+            : {}),
           ...(revisionLanguage !== undefined ? { language: revisionLanguage } : {}),
           ...(buildError !== undefined ? { buildError } : {}),
           ...(targetExternals.length > 0 ? { externalDirectives: targetExternals } : {}),
@@ -2147,7 +2471,7 @@ function revisionReviseStage(
               failedStage: "workspaceIntegrity",
             };
             try {
-              await writeFile(targetFilePath, fileBefore, "utf8");
+              await writeFileAtomic(targetFilePath, fileBefore);
               const restored = await readFile(targetFilePath, "utf8");
               if (revisionSourceHash(restored) !== beforeHash) throw new Error("snapshot hash mismatch");
               failedRecord.afterFileHash = revisionSourceHash(restored);
@@ -2186,15 +2510,28 @@ function revisionReviseStage(
             const quotes = [...new Set(matchedItems.flatMap(item => item.targetQuote ? [item.targetQuote] : []))];
             if (quotes.length > 0) {
               // Reuse the existing immutable prefix/suffix guard inside the section.
-              // Multiple conflicting quotes require explicit replanning, never union
-              // their ranges into a silently broader authorization.
-              const quote = quotes[0]!;
-              const start = resolvedSpan.content.indexOf(quote);
-              const unique = quotes.length === 1 && start >= 0 && resolvedSpan.content.indexOf(quote, start + 1) < 0;
-              const inside = unique && checkRevisionScope(resolvedSpan.content,
+              // Multiple quotes: M14.1a — quotes whose unique ranges pairwise overlap
+              // or nest (same region of text) authorize exactly their union range;
+              // disjoint or non-unique quotes still require explicit replanning and
+              // are never unioned into a silently broader authorization.
+              const ranges = quotes
+                .map((quote) => {
+                  const start = resolvedSpan.content.indexOf(quote);
+                  return start >= 0 && resolvedSpan.content.indexOf(quote, start + 1) < 0
+                    ? { start, end: start + quote.length, originalHash: revisionSourceHash(quote) }
+                    : null;
+                })
+                .filter((range): range is { start: number; end: number; originalHash: string } => range !== null);
+              const resolvable = ranges.length === quotes.length;
+              const pairwiseOverlapping = resolvable && ranges.every((range) =>
+                ranges.every((other) => other === range || (range.start < other.end && other.start < range.end)));
+              const authorized = resolvable && pairwiseOverlapping
+                ? { start: Math.min(...ranges.map((range) => range.start)), end: Math.max(...ranges.map((range) => range.end)), originalHash: revisionSourceHash(resolvedSpan.content.slice(Math.min(...ranges.map((range) => range.start)), Math.max(...ranges.map((range) => range.end)))) }
+                : ranges.length === 1 ? ranges[0] : undefined;
+              const inside = authorized !== undefined && checkRevisionScope(resolvedSpan.content,
                 candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end)),
-                { start, end: start + quote.length, originalHash: revisionSourceHash(quote) }).allowed;
-              if (!inside) failures.push({ code: "scope_violation", detail: unique ? "REVISION_TARGET_QUOTE_SCOPE_VIOLATION" : "REVISION_TARGET_QUOTE_UNRESOLVED" });
+                authorized).allowed;
+              if (!inside) failures.push({ code: "scope_violation", detail: authorized === undefined ? "REVISION_TARGET_QUOTE_UNRESOLVED" : "REVISION_TARGET_QUOTE_SCOPE_VIOLATION" });
             }
             if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) failures.push({ code: "scope_violation", detail: "new content after document end" });
             // M11.4（Attempt 7 实录）：scoped 提案可能破坏 span 自身的章节结构
@@ -2341,7 +2678,7 @@ function revisionReviseStage(
             result = await services.writer.reviseSection({ ...writerParams, currentLatex: result.latex, evidence: allowedEvidence, patchRepairContext: buildPatchRepairPrompt(directive) });
             const diskAfterRepair = await readFile(targetFilePath, "utf8");
             if (revisionSourceHash(diskAfterRepair) !== revisionSourceHash(fileBefore)) {
-              await writeFile(targetFilePath, fileBefore, "utf8");
+              await writeFileAtomic(targetFilePath, fileBefore);
               throw new BusinessError("DIRECT_WORKSPACE_MUTATION", `patch repair directly mutated workspace: ${basePatchId}`);
             }
           }
@@ -2496,11 +2833,11 @@ function revisionReviseStage(
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_SOURCE_HYGIENE_VIOLATION");
             }
             output = candidate;
-            await writeFile(targetFilePath, output, "utf8");
+            await writeFileAtomic(targetFilePath, output);
             const actualFinal = await readFile(targetFilePath, "utf8");
             const finalScope = checkGlobalRevisionScope(fileBefore, actualFinal, [resolvedSpan]);
             if (sha256(actualFinal) !== sha256(output) || !finalScope.allowed) {
-              await writeFile(targetFilePath, fileBefore, "utf8");
+              await writeFileAtomic(targetFilePath, fileBefore);
               await persistScopeFailure("REVISION_FINAL_WORKSPACE_MISMATCH", actualFinal);
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_FINAL_WORKSPACE_MISMATCH");
             }
@@ -2556,7 +2893,7 @@ function revisionReviseStage(
               });
             } catch (error) {
               if (acceptedAttempt > 0) {
-                await writeFile(targetFilePath, fileBefore, "utf8");
+                await writeFileAtomic(targetFilePath, fileBefore);
                 throw new BusinessError("REPAIR_PIPELINE_ERROR", `REPAIR_RESULT_NOT_PROMOTED: ${finalPatchId}.a${acceptedAttempt}${error instanceof Error ? ` (${error.message})` : ""}`);
               }
               throw error;
@@ -2565,11 +2902,8 @@ function revisionReviseStage(
             await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
             continue;
           }
-          await writeFile(
-            targetFilePath,
-            output,
-            "utf8",
-          );
+          // M14.1a：章节文件写入原子化（tmp → fsync → rename），进程中断不留半个文件
+          await writeFileAtomic(targetFilePath, output);
         }
         revised.push(target.key);
         await ctx.emitProgress({
@@ -5346,6 +5680,24 @@ async function beginWritingPlan(
   const previous = await services.reviewArtifacts.loadWritingPlan(ctx.projectId);
   const now = new Date().toISOString();
   const sameRun = previous?.runId === ctx.runId;
+  /**
+   * M14.1a P0-3：同一 run 内 stage retry / 进程重启恢复时，输入指纹未变且磁盘
+   * 输出仍与完成记录的 outputHash 一致的章节保留 written 状态（写作循环据此
+   * 跳过，不重复生成）。指纹变化（大纲 / 正式证据集合变化）或输出被外部改动
+   * 的章节回落为 planned 重写——「跳过」必须同时核验输入版本与输出产物。
+   */
+  const resumableSections = sameRun && previous !== null && previous.fingerprint === input.fingerprint
+    ? await Promise.all(previous.sections.map(async (section) =>
+        section.status === "written" && section.outputHash !== undefined
+          ? await sectionOutputMatches(services, ctx.projectId, section)
+          : false))
+    : [];
+  const resumeById = new Map<string, WritingPlanSectionRecord>();
+  if (previous !== null) {
+    previous.sections.forEach((section, index) => {
+      if (resumableSections[index] === true) resumeById.set(section.sectionId, section);
+    });
+  }
   const plan: WritingPlanArtifact = {
     schemaVersion: 1,
     mode: input.mode,
@@ -5355,7 +5707,7 @@ async function beginWritingPlan(
     fingerprint: input.fingerprint,
     ...(previous !== null && previous.fingerprint !== input.fingerprint ? { previousFingerprint: previous.fingerprint } : {}),
     attempt: sameRun && previous !== null ? previous.attempt + 1 : 1,
-    sections: input.sections,
+    sections: input.sections.map((section) => resumeById.get(section.sectionId) ?? section),
     unassignedEvidence: input.unassignedEvidence,
     warnings: [
       ...input.warnings,
@@ -5370,12 +5722,47 @@ async function beginWritingPlan(
   return plan;
 }
 
+/** M14.1a P0-3：章节文件当前内容是否仍等于完成记录的 outputHash（缺文件/空/被改 = false） */
+async function sectionOutputMatches(
+  services: WorkflowServices,
+  projectId: string,
+  record: WritingPlanSectionRecord,
+): Promise<boolean> {
+  if (record.outputHash === undefined || record.fileName === undefined) {
+    return false;
+  }
+  try {
+    const content = await readFile(join(services.projects.manuscriptDir(projectId), "sections", record.fileName), "utf8");
+    return content.trim() !== "" && sha256Hex(content) === record.outputHash;
+  } catch {
+    return false;
+  }
+}
+
+/** M14.1a P0-3：可恢复（跳过重写）的已完成章节：written + 磁盘输出与 outputHash 一致 */
+async function resumableWrittenSection(
+  services: WorkflowServices,
+  projectId: string,
+  plan: WritingPlanArtifact,
+  sectionId: string,
+  fileName: string,
+): Promise<WritingPlanSectionRecord | null> {
+  const record = plan.sections.find((section) => section.sectionId === sectionId);
+  if (record === undefined || record.status !== "written") {
+    return null;
+  }
+  if (record.fileName !== fileName) {
+    return null; // 大纲文件映射变化（指纹虽同但文件重命名）——保守重写
+  }
+  return (await sectionOutputMatches(services, projectId, record)) ? record : null;
+}
+
 async function updateWritingPlanSection(
   services: WorkflowServices,
   projectId: string,
   plan: WritingPlanArtifact,
   sectionId: string,
-  update: { status: WritingPlanSectionRecord["status"]; latencyMs: number; taskId?: string; usage?: unknown; cited?: string[] },
+  update: { status: WritingPlanSectionRecord["status"]; latencyMs: number; taskId?: string; usage?: unknown; cited?: string[]; outputHash?: string },
 ): Promise<void> {
   const record = plan.sections.find((section) => section.sectionId === sectionId);
   if (record === undefined) {
@@ -5385,6 +5772,8 @@ async function updateWritingPlanSection(
   record.latencyMs = update.latencyMs;
   if (update.taskId !== undefined) record.taskId = update.taskId;
   if (update.usage !== undefined) record.usage = update.usage;
+  if (update.outputHash !== undefined) record.outputHash = update.outputHash;
+  else if (update.status !== "written") record.outputHash = undefined;
   if (update.status === "written") {
     record.evidence.consumed = [...record.evidence.allocated];
   }
@@ -5538,9 +5927,11 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
               sections: units.map((unit, index) => {
                 const sectionAllocation = allocation.sections[index]!;
                 const consumed = projectAllocatedEvidence(sectionAllocation, allFormal);
-                return planSectionRecord(unit, sectionAllocation, {
+                const record = planSectionRecord(unit, sectionAllocation, {
                   evidenceBacked: [...new Set(consumed.map((record) => resolveEvidenceCitationKey(record, bibliography)).filter((key): key is string => key !== null))].sort(),
                 });
+                record.fileName = outline.sections.find((section) => section.id === unit.sectionId)?.file ?? "";
+                return record;
               }),
               unassignedEvidence: allocation.unassigned,
               warnings: units.flatMap((unit) => unit.warnings),
@@ -5549,11 +5940,25 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
 
       let bytesTotal = 0;
       const written: string[] = [];
+      const reused: string[] = [];
       const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
       const usedEvidenceIds = new Set<string>();
       for (const [index, section] of writerOutline.sections.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
+        }
+        // M14.1a P0-3：断点恢复——输入指纹未变且磁盘输出未被改动的已完成章节
+        // 直接复用（零 Writer 调用）；重复报告 / usage 统计按原产物计入
+        const resumed = plan !== undefined ? await resumableWrittenSection(services, ctx.projectId, plan, section.id, section.file) : null;
+        if (resumed !== null) {
+          reused.push(section.id);
+          const content = await readFile(join(services.projects.manuscriptDir(ctx.projectId), "sections", section.file), "utf8");
+          writtenLatex.push({ id: section.id, title: section.title, latex: content });
+          for (const evidenceId of resumed.evidence.consumed) {
+            usedEvidenceIds.add(evidenceId);
+          }
+          await ctx.emitProgress({ section: section.id, file: section.file, index: index + 1, total: outline.sections.length, resumed: true });
+          continue;
         }
         const unit = units?.[index];
         const sectionAllocation = allocation?.sections[index];
@@ -5594,6 +5999,9 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
             taskId: result.taskId,
             ...(result.usage !== undefined ? { usage: result.usage } : {}),
             cited: extractCitedKeyList(result.latex),
+            // M14.1a P0-3：输出产物哈希（与 ManuscriptService.writeSection 的
+            // 落盘内容同构：latex.trim() + 换行）——恢复跳过的版本核验依据
+            outputHash: sha256Hex(result.latex.trim() + "\n"),
           });
         }
         await ctx.emitProgress({
@@ -5627,6 +6035,8 @@ function writingSectionsStage(services: WorkflowServices): StageSpec {
       return {
         sectionsWritten: written.length,
         sections: written,
+        ...(reused.length > 0 ? { sectionsReused: reused.length, reusedSections: reused } : {}),
+        ...(reused.length > 0 ? { sectionsReused: reused.length, reusedSections: reused } : {}),
         bytesTotal,
         revision: revision.revision,
         evidenceFormal: argumentUnitsEnabled ? allFormal.length : evidenceSelection.formal.length,
@@ -8116,7 +8526,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
               sections: units.map((unit, index) => {
                 const context = contexts[index]!;
                 const ids = context.evidence.map((record) => record.id);
-                return planSectionRecord(
+                const record = planSectionRecord(
                   unit,
                   {
                     sectionId: unit.sectionId,
@@ -8131,6 +8541,8 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
                   },
                   { evidenceBacked: context.evidenceBackedKeys, allowed: context.allowedCitationKeys },
                 );
+                record.fileName = inputs.outline.sections.find((section) => section.id === unit.sectionId)?.file ?? "";
+                return record;
               }),
               unassignedEvidence: [],
               warnings: units.flatMap((unit) => unit.warnings),
@@ -8139,10 +8551,23 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
       const usedEvidenceIds = new Set<string>();
       let bytesTotal = 0;
       const written: string[] = [];
+      const reused: string[] = [];
       const writtenLatex: Array<{ id: string; title: string; latex: string }> = [];
       for (const [index, section] of writerOutline.sections.entries()) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "写作已被取消");
+        }
+        // M14.1a P0-3：断点恢复（与 idea 路径同一语义：指纹 + outputHash 双核验）
+        const resumed = plan !== undefined ? await resumableWrittenSection(services, ctx.projectId, plan, section.id, section.file) : null;
+        if (resumed !== null) {
+          reused.push(section.id);
+          const content = await readFile(join(services.projects.manuscriptDir(ctx.projectId), "sections", section.file), "utf8");
+          writtenLatex.push({ id: section.id, title: section.title, latex: content });
+          for (const evidenceId of resumed.evidence.consumed) {
+            usedEvidenceIds.add(evidenceId);
+          }
+          await ctx.emitProgress({ section: section.id, file: section.file, index: index + 1, total: inputs.outline.sections.length, resumed: true });
+          continue;
         }
         const context = contexts[index]!;
         if (context.danglingSynthesisRefs.length > 0 || context.danglingLiteratureRefs.length > 0) {
@@ -8187,6 +8612,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
             taskId: result.taskId,
             ...(result.usage !== undefined ? { usage: result.usage } : {}),
             cited: extractCitedKeyList(result.latex),
+            outputHash: sha256Hex(result.latex.trim() + "\n"), // M14.1a P0-3：恢复核验
           });
         }
         await ctx.emitProgress({
@@ -8218,6 +8644,7 @@ function surveyWritingSectionsStage(services: WorkflowServices): StageSpec {
       return {
         sectionsWritten: written.length,
         sections: written,
+        ...(reused.length > 0 ? { sectionsReused: reused.length, reusedSections: reused } : {}),
         bytesTotal,
         revision: revision.revision,
         synthesisItems: inputs.synthesis.items.length,
@@ -8816,6 +9243,201 @@ export interface RevisionTarget {
   relativePath: string;
   currentLatex: string;
   logicalSpan?: RevisionSpan;
+  /**
+   * M14.1a：长章节编辑单元的派发绑定。存在时该目标是某物理文件的一个有界
+   * logicalSpan 单元，哪些指令派发到它由确定性定位（原文引文锚点 / 标题 /
+   * 严格词法）在目标构造期决定——循环里不再用 sectionMatches 的文件身份匹配
+   * （否则同一文件的每个单元都会收到全部意见）。
+   */
+  binding?: RevisionTargetBinding;
+}
+
+export interface RevisionTargetBinding {
+  /** 绑定到本单元的指令键：`d:<directive index>` / `x:<external instructionId>` */
+  keys: Set<string>;
+  /** 用于取回 issue 的文件级匹配目标（无 logicalSpan，文件身份可匹配） */
+  matchTarget: RevisionTarget;
+  /** 本单元所在物理文件的整文件 span 与全部单元（claim repair 等二次定位复用） */
+  fileSpan: RevisionSpan;
+  allUnits: RevisionSpan[];
+}
+
+/** M14.1a：未能可靠定位到编辑单元的派发（不猜位置；透明记录） */
+export interface UnresolvedDispatch {
+  file: string;
+  directive: string;
+  summary: string;
+  reason: string;
+}
+
+/** 指令文本中的原文引文锚点（targetQuote 优先；其后是「」“”""『』内 ≥12 字的片段） */
+function directiveAnchors(item: RevisionPlanItem | undefined, issue: ReviewIssue | null, extraText?: string): string[] {
+  const anchors: string[] = [];
+  if (item?.targetQuote !== undefined && item.targetQuote.trim() !== "") anchors.push(item.targetQuote);
+  const texts = [item?.sourceText, item?.problem, item?.instruction, issue?.description, issue?.suggestedAction, extraText]
+    .filter((text): text is string => typeof text === "string" && text !== "");
+  for (const text of texts) {
+    for (const match of text.matchAll(/[「“"『]([^」”"』]{12,})[」”"』]/g)) {
+      anchors.push(match[1]!);
+    }
+  }
+  return [...new Set(anchors)];
+}
+
+/**
+ * 在一个物理文件内把一条指令定位到唯一编辑单元（确定性；找不到可靠定位即
+ * unresolved，绝不猜）：
+ *   1. 范围收窄：item.logicalSection 命中某 span id，或 section 引用恰好命名
+ *      一个 span 的标题 → 只在该 span 的单元里找；该 span 若只有一个单元即命中。
+ *   2. 原文锚点：targetQuote / 引号片段在（收窄后的）范围内恰好出现一次；
+ *      跨相邻单元的锚点合并两个单元；多次出现 = 歧义。
+ *   3. 否则 unresolved（不做任何词法 / 语义相似度猜测）。
+ */
+function resolveDirectiveUnit(
+  spans: readonly RevisionSpan[],
+  unitsBySpan: ReadonlyMap<string, RevisionSpan[]>,
+  fileSpan: RevisionSpan,
+  allUnits: readonly RevisionSpan[],
+  input: { item?: RevisionPlanItem; issue: ReviewIssue | null; sectionRef?: string; extraText?: string },
+): { unit?: RevisionSpan; matchedBy?: string; reason?: string } {
+  const { item, issue } = input;
+  const sectionRef = input.sectionRef ?? item?.section ?? issue?.section ?? "";
+  let scopeSpan: RevisionSpan | undefined;
+  if (spans.length > 1) {
+    const byId = item?.logicalSection !== undefined
+      ? spans.find((span) => span.logicalSection === item.logicalSection || span.label === item.logicalSection)
+      : undefined;
+    const byHeading = spans.filter((span) => sectionRefNamesHeading(sectionRef, [span.heading]));
+    scopeSpan = byId ?? (byHeading.length === 1 ? byHeading[0] : undefined);
+  } else {
+    scopeSpan = spans[0];
+  }
+  const anchors = directiveAnchors(item, issue, input.extraText);
+  if (scopeSpan !== undefined) {
+    const units = unitsBySpan.get(scopeSpan.logicalSection) ?? [scopeSpan];
+    if (units.length === 1) return { unit: units[0]!, matchedBy: "heading" };
+    const byQuote = resolveUnitByQuotes(scopeSpan, units, anchors);
+    if (byQuote.unit !== undefined) return { unit: byQuote.unit, matchedBy: "quote" };
+    return { reason: byQuote.reason ?? "UNRESOLVED" };
+  }
+  const byQuote = resolveUnitByQuotes(fileSpan, allUnits, anchors);
+  if (byQuote.unit !== undefined) {
+    if (isUnitSpanId(byQuote.unit.logicalSection) && /#u\d+-\d+$/.test(byQuote.unit.logicalSection)) {
+      // 合并单元必须属于同一 span（跨章节边界的引文不构成单一编辑范围）
+      const from = allUnits.find((unit) => unit.start === byQuote.unit!.start);
+      const to = allUnits.find((unit) => unit.end === byQuote.unit!.end);
+      if (from !== undefined && to !== undefined && baseSpanId(from.logicalSection) !== baseSpanId(to.logicalSection)) {
+        return { reason: "ANCHOR_CROSSES_SECTIONS" };
+      }
+    }
+    return { unit: byQuote.unit, matchedBy: "quote" };
+  }
+  return { reason: byQuote.reason ?? "UNRESOLVED" };
+}
+
+/**
+ * M14.1a P0-1：把超过编辑单元上限的目标展开成有界 logicalSpan 单元目标。
+ *
+ * - 整文件目标（outline 的 sections/x.tex、多文件导入的章节文件）> maxChars：
+ *   按标题切 span（无标题 = 整文件 span），每个 span 再按段落窗口切单元；
+ * - 单文件 main.tex 的标题 span > maxChars：同样切单元；
+ * - ≤ maxChars 的目标原样保留（短论文行为零变化）。
+ * 指令按 resolveDirectiveUnit 绑定到单元；同一 span 内重叠的绑定单元合并为一个
+ * 目标（不会出现两个 patch 静默覆盖同一范围）；定位失败的指令记入 unresolved。
+ */
+function expandLongFileTargets(
+  targets: readonly RevisionTarget[],
+  directives: readonly RevisionDirective[],
+  externals: readonly ExternalDirectiveDispatch[],
+  maxChars: number,
+): { targets: RevisionTarget[]; unresolved: UnresolvedDispatch[]; expandedFiles: number } {
+  const out: RevisionTarget[] = [];
+  const unresolved: UnresolvedDispatch[] = [];
+  let expandedFiles = 0;
+  for (const target of targets) {
+    const isSpanTarget = target.logicalSpan !== undefined;
+    const size = isSpanTarget ? target.logicalSpan!.content.length : target.currentLatex.length;
+    const headless = !isSpanTarget && locateLatexSections(target.relativePath, target.currentLatex).length === 0;
+    const preamble = !isSpanTarget && target.currentLatex.includes("\\documentclass");
+    if (target.key === "abstract" || size <= maxChars || (headless && preamble)) {
+      out.push(target);
+      continue;
+    }
+    expandedFiles += 1;
+    const spans = isSpanTarget ? [target.logicalSpan!] : locateFileSpans(target.relativePath, target.currentLatex);
+    const unitsBySpan = new Map<string, RevisionSpan[]>();
+    const allUnits: RevisionSpan[] = [];
+    for (const span of spans) {
+      const units = partitionSpanIntoUnits(span, maxChars).units;
+      unitsBySpan.set(span.logicalSection, units);
+      allUnits.push(...units);
+    }
+    const fileSpan = fileBodySpan(target.relativePath, target.currentLatex);
+    // 文件级匹配目标：无 logicalSpan 时文件身份 / 标题都可匹配；单文件 span 目标沿用其自身
+    const matchTarget: RevisionTarget = isSpanTarget
+      ? target
+      : { key: target.key, relativePath: target.relativePath, currentLatex: target.currentLatex };
+    const candidates: Array<{ key: string; item?: RevisionPlanItem; issue: ReviewIssue | null; sectionRef?: string; extraText?: string; summary: string }> = [];
+    for (const [index, directive] of directives.entries()) {
+      const issue = directive.match(matchTarget);
+      if (issue === null) continue;
+      candidates.push({ key: `d:${index}`, item: directive.item, issue, summary: (directive.item?.problem ?? issue.description).slice(0, 120) });
+    }
+    for (const external of externals) {
+      if (external.section === undefined || !sectionMatches(external.section, matchTarget)) continue;
+      candidates.push({ key: `x:${external.instructionId}`, issue: null, sectionRef: external.section, extraText: external.text, summary: external.text.slice(0, 120) });
+    }
+    if (candidates.length === 0) continue;
+    const bound = new Map<string, { unit: RevisionSpan; keys: Set<string> }>();
+    for (const candidate of candidates) {
+      const resolution = resolveDirectiveUnit(spans, unitsBySpan, fileSpan, allUnits, {
+        ...(candidate.item !== undefined ? { item: candidate.item } : {}),
+        issue: candidate.issue,
+        ...(candidate.sectionRef !== undefined ? { sectionRef: candidate.sectionRef } : {}),
+        ...(candidate.extraText !== undefined ? { extraText: candidate.extraText } : {}),
+      });
+      if (resolution.unit === undefined) {
+        unresolved.push({ file: target.relativePath, directive: candidate.key, summary: candidate.summary, reason: resolution.reason ?? "UNRESOLVED" });
+        continue;
+      }
+      const existing = bound.get(resolution.unit.logicalSection);
+      if (existing !== undefined) existing.keys.add(candidate.key);
+      else bound.set(resolution.unit.logicalSection, { unit: resolution.unit, keys: new Set([candidate.key]) });
+    }
+    // 同一 span 内重叠的绑定单元 → 合并为一个目标（keys 取并集）
+    for (const span of spans) {
+      const units = unitsBySpan.get(span.logicalSection) ?? [span];
+      const entries = [...bound.values()]
+        .filter((entry) => baseSpanId(entry.unit.logicalSection) === span.logicalSection)
+        .sort((a, b) => a.unit.start - b.unit.start);
+      let index = 0;
+      while (index < entries.length) {
+        let current = entries[index]!;
+        let end = current.unit.end;
+        const keys = new Set(current.keys);
+        let next = index + 1;
+        while (next < entries.length && entries[next]!.unit.start < end) {
+          end = Math.max(end, entries[next]!.unit.end);
+          for (const key of entries[next]!.keys) keys.add(key);
+          next += 1;
+        }
+        if (next - index > 1) {
+          const from = units.findIndex((unit) => unit.start === current.unit.start);
+          const to = units.findIndex((unit) => unit.end === end);
+          current = { unit: from >= 0 && to >= from ? mergeAdjacentUnits(units, from, to) : current.unit, keys };
+        }
+        out.push({
+          key: target.key,
+          relativePath: target.relativePath,
+          currentLatex: current.unit.content,
+          logicalSpan: current.unit,
+          binding: { keys: current.keys, matchTarget, fileSpan, allUnits },
+        });
+        index = next;
+      }
+    }
+  }
+  return { targets: out, unresolved, expandedFiles };
 }
 
 /** shared loop：以落盘的确定性修订计划为准（计划缺失时回退执行期派生） */

@@ -24,6 +24,7 @@ import type { ReviewIssue } from "../agents/ReviewerService.js";
 import { buildPlannerAliases, resolvePlannerRefs } from "../review/plannerAliases.js";
 import { screenWriterGraphics } from "../figures/writerGraphicsGuard.js";
 import type { ClaimRepairDirective } from "../review/claimGrounding.js";
+import type { UnitEditContext } from "../review/logicalSpan.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
   EXTERNAL_OUTCOMES_MARKER,
@@ -97,6 +98,19 @@ const EVIDENCE_QUERY_GUIDANCE = [
  * → 引用时使用系统按文献身份确定性生成的 key（LLM 不自造 key）。
  * 行格式：- [E001]（cite: vaswani2017attention；src: ReAct (2023)）claim…（引文："…"）
  */
+/** M14.1a：编辑单元的只读相邻上下文区块（无 unitContext 时不渲染任何行） */
+function renderUnitContextLines(context: UnitEditContext | undefined): string[] {
+  if (context === undefined) return [];
+  return [
+    `===== 相邻上下文（只读，不要输出；章节「${context.heading}」第 ${context.unitIndex}/${context.unitCount} 单元）=====`,
+    "--- 单元之前 ---",
+    context.before.trim() === "" ? "（章节开头）" : context.before,
+    "--- 单元之后 ---",
+    context.after.trim() === "" ? "（章节末尾）" : context.after,
+    "",
+  ];
+}
+
 function renderEvidenceLines(
   evidence: EvidenceRecord[],
   bibliography: BibliographyEntryInput[],
@@ -572,6 +586,12 @@ export class WriterService {
      * 引入 / 修正实验数值时的唯一允许来源。缺省不注入。
      */
     experimentContext?: ConfirmedExperimentWorkflowContext;
+    /**
+     * M14.1a：logicalSpan 编辑单元上下文。currentLatex 是长章节中的一个有界
+     * 编辑单元（段落窗口）时注入其标题与前后相邻文本——只读、不可输出；
+     * Writer 的输出仍是"该单元的完整替换文本"。
+     */
+    unitContext?: UnitEditContext;
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -1452,6 +1472,8 @@ export function buildRevisePrompt(params: {
    * 修订引入 / 修正实验数值时，这是唯一允许的数值来源；缺省不注入。
    */
   experimentContext?: ConfirmedExperimentWorkflowContext;
+  /** M14.1a：logicalSpan 编辑单元的只读上下文（标题 / 前后相邻文本；不属于可编辑内容） */
+  unitContext?: UnitEditContext;
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -1540,6 +1562,11 @@ export function buildRevisePrompt(params: {
       : [
           "1. 只输出修订后的当前 target 内容片段；不要文档骨架、不要解释。",
           "1a. 修改边界严格限于当前 target。不得改动其他章节、摘要、数字、公式、citation、figure/table 或方法描述；仅当本条计划明确授权且给出依据时才可触及对应内容。只需改一句时，只改那一句及必要的语法衔接。",
+          ...(params.unitContext !== undefined
+            ? [
+                `1b. 当前 target 是章节「${params.unitContext.heading}」的第 ${params.unitContext.unitIndex}/${params.unitContext.unitCount} 个编辑单元（连续段落窗口）。输出必须是该单元**全部**文本的修订版（含单元内未改动的段落，逐字保留）；「相邻上下文」区块只供理解衔接，**不得**输出或改写其中任何文字，也不得把单元外的内容搬进单元。`,
+              ]
+            : []),
         ]),
     "2. 这是一次**受限修订（revision）**，不是重写：逐条解决下列针对本章节的问题，只修改问题指向的位置及保持连贯所需的最小上下文；其余内容逐字保留。",
     "3. **实验事实默认冻结**：当前稿件中的实验数值（含小数位 / 百分比 / 区间 / 单位）、表格内容、"
@@ -1574,9 +1601,13 @@ export function buildRevisePrompt(params: {
     ...externalRules,
     ...(params.extraInstructions ? ["", "补充要求：", params.extraInstructions] : []),
     "",
+    ...renderUnitContextLines(params.unitContext),
     "===== 本章节当前内容 =====",
-    // M10.3：单文件整文件修订不截断（截断 = 丢失保留义务，Writer 无法逐字保留）
-    params.wholeFile === true ? params.currentLatex : params.currentLatex.slice(0, 12_000),
+    // M10.3：单文件整文件修订不截断（截断 = 丢失保留义务，Writer 无法逐字保留）。
+    // M14.1a：片段目标同样不截断——目标尺寸由调用方的 logicalSpan 编辑单元
+    // 有界构造（partitionSpanIntoUnits），Writer 看到的就是它要整体替换的全部文本；
+    // 旧的 slice(0, 12_000) 让 >12k 章节的尾部从未进入 prompt 却被输出整体替换。
+    params.currentLatex,
     "",
     "===== 针对本章节的问题（审稿意见 = 修改方向，不是事实证据；其中点名的文献 / 实验 / 机制不在 Evidence 中时不得写入正文）=====",
     ...(params.issues.length > 0

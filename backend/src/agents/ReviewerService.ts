@@ -76,6 +76,13 @@ export interface ReviewIssue {
    * 结构性不足，文本匹配不可达（8c 实证）。非 fact 模式 / 非法下标被丢弃。
    */
   claimIndex?: number;
+  /**
+   * M14.1a P0-2：跨章 Finding 的双（多）位置。`section` 仍是主位置；
+   * relatedSections 记录冲突对端的章节 / 文件（如「第三章符号与第五章不一致」
+   * → section=第三章，relatedSections=[第五章]）。跨章冲突一律视为待核验
+   * finding（blocking=false），系统不得自动将任一版本覆盖为权威事实。
+   */
+  relatedSections?: string[];
 }
 
 /**
@@ -340,6 +347,96 @@ export class ReviewerService {
     );
   }
 
+  /**
+   * M14.1a P0-2：单个 Review Unit 的有界全文审查（长文档模式）。
+   *
+   * 输入是一个编辑单元的**完整**文本（不截断——单元尺寸由 coverageLedger 的
+   * partition 有界保证），外加章节标题、单元序号与全文档章节索引（只读导航，
+   * 不含其他章节正文）。输出契约与三路 review 同一 ReviewIssue 形态，另附该
+   * 单元的 academicScore / riskScore（0-100，供确定性加权聚合为全文档分数；
+   * 代码不填默认值）。跨章问题在本单元视角只报单侧位置，跨章冲突由
+   * reviewCrossChapter 专门产出（双位置）。
+   */
+  async reviewUnit(params: {
+    projectId: string;
+    unit: { unitId: string; file: string; heading: string; unitIndex: number; unitCount: number; text: string };
+    paperTitle?: string;
+    chapterIndex: string[];
+    evidenceDigest?: string[];
+    citationDigest?: string;
+    language?: ManuscriptLanguage;
+    signal?: AbortSignal;
+  }): Promise<{ issues: ReviewIssue[]; academicScore: number | null; riskScore: number | null; summary: string; taskId: string }> {
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: buildUnitReviewPrompt(params),
+      projectId: params.projectId,
+      contextScope: "review/academic/unit",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+      metadata: { role: "reviewer", skill: "unit", unit: params.unit.unitId },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `Review unit（${params.unit.unitId}）任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", `Review unit（${params.unit.unitId}）结果`);
+    const issues = parseIssues(parsed, `Review unit（${params.unit.unitId}）`);
+    const score = (field: string): number | null => {
+      const value = parsed[field];
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) return null;
+      return Math.round(value);
+    };
+    return {
+      issues,
+      academicScore: score("academicScore"),
+      riskScore: score("riskScore"),
+      summary: typeof parsed["summary"] === "string" ? parsed["summary"].slice(0, 400) : "",
+      taskId: task.taskId,
+    };
+  }
+
+  /**
+   * M14.1a P0-2：跨章一致性审查（长文档模式，单次有界调用）。
+   *
+   * 输入是各章的短摘要 digest（不含全文——成本与 60k 预算约束），专门找
+   * 符号 / 定义 / 数值 / 贡献表述的跨章冲突。每条冲突 issue 必须携带
+   * relatedSections（双位置）；这些是**待核验** finding：调用方强制
+   * blocking=false，不触发自动修订，任何一侧都不被系统当作权威版本。
+   */
+  async reviewCrossChapter(params: {
+    projectId: string;
+    chapters: ReadonlyArray<{ heading: string; file: string; digest: string }>;
+    language?: ManuscriptLanguage;
+    signal?: AbortSignal;
+  }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string }> {
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: buildCrossChapterPrompt(params),
+      projectId: params.projectId,
+      contextScope: "review/academic/consistency",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+      metadata: { role: "reviewer", skill: "consistency" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `跨章一致性审查任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "跨章一致性审查结果");
+    const issues = parseIssues(parsed, "跨章一致性审查").map((issue) => ({
+      ...issue,
+      // 待核验：跨章冲突不阻断、不自动修订（只记录双位置，留给作者裁决）
+      blocking: false,
+      ...(issue.relatedSections !== undefined && issue.relatedSections.length > 0 ? {} : { relatedSections: [] as string[] }),
+    }));
+    return {
+      issues: issues.filter((issue) => (issue.relatedSections ?? []).length > 0),
+      summary: typeof parsed["summary"] === "string" ? parsed["summary"].slice(0, 400) : "",
+      taskId: task.taskId,
+    };
+  }
+
   /** 落盘单个 mode 的报告（reviews/review-<round>-<mode>.json） */
   async saveReport(projectId: string, round: number, result: ModeReviewResult): Promise<string> {
     const dir = this.projects.reviewsDir(projectId);
@@ -521,6 +618,14 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
       // claims 数组；非法值静默丢弃——弱佐证校验在 resolveClaimIndexLinks）
       ...(typeof record["claimIndex"] === "number" && Number.isInteger(record["claimIndex"]) && record["claimIndex"] >= 0
         ? { claimIndex: record["claimIndex"] as number }
+        : {}),
+      ...(Array.isArray(record["relatedSections"]) && record["relatedSections"].length > 0
+        ? {
+            relatedSections: (record["relatedSections"] as unknown[])
+              .filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "")
+              .slice(0, 4)
+              .map((entry) => entry.trim()),
+          }
         : {}),
     });
   }
@@ -779,5 +884,87 @@ export function buildReviewRepairPrompt(
     "",
     "===== 上一轮输出 =====",
     previousOutput,
+  ].join("\n");
+}
+
+/** M14.1a P0-2：单元审查 prompt（长文档模式；输出契约与三路 review 同构） */
+function buildUnitReviewPrompt(params: {
+  unit: { unitId: string; file: string; heading: string; unitIndex: number; unitCount: number; text: string };
+  paperTitle?: string;
+  chapterIndex: string[];
+  evidenceDigest?: string[];
+  citationDigest?: string;
+  language?: ManuscriptLanguage;
+}): string {
+  return [
+    "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",
+    ...(params.language !== undefined ? ["稿件语言以该单元原文为准。"] : []),
+    ...(params.paperTitle !== undefined ? [`论文题目：${params.paperTitle}`] : []),
+    "",
+    `章节：「${params.unit.heading}」（文件 ${params.unit.file}；第 ${params.unit.unitIndex}/${params.unit.unitCount} 单元）`,
+    "全文档章节索引（只读导航，不含其他章节正文）：",
+    ...params.chapterIndex.map((entry, index) => `  ${index + 1}. ${entry}`),
+    "",
+    "审查要求：",
+    "1. 只报告能在**本单元原文**中定位的问题；其他章节的问题留给它们自己的单元。",
+    "2. 问题覆盖：事实表述与证据支撑、学术逻辑与论证、引用正确性、表达与结构。不虚构问题。",
+    "3. evidenceRequirement：fact / evidence_gap 类问题应给 required。",
+    "4. 本单元视角发现疑似跨章冲突（与索引中其他章节的符号 / 定义 / 数值 / 表述不一致）时，先记为问题并在 description 中写明冲突章节名，但不要凭单侧文本下结论。",
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏）：",
+    "{",
+    '  "summary": "本单元总体评价（80 字内）",',
+    '  "issues": [{"category": "fact|academic|style|citation|evidence_gap|build",',
+    '    "severity": "critical|major|minor", "section": "' + params.unit.heading + '",',
+    '    "description": "问题描述（必须可在本单元原文中定位）", "evidenceRef": "E001（如有）",',
+    '    "suggestedAction": "修改建议", "evidenceRequirement": "required|optional|none",',
+    '    "reason": "为什么是问题（可选）", "blocking": false}],',
+    '  "academicScore": 0-100（本单元学术质量）,',
+    '  "riskScore": 0-100（本单元 AI 文风风险）',
+    "}",
+    "",
+    ...(params.evidenceDigest !== undefined && params.evidenceDigest.length > 0
+      ? ["===== Verified Evidence（已核验证据摘要）=====", ...params.evidenceDigest.slice(0, 15)]
+      : []),
+    ...(params.citationDigest !== undefined ? ["", `引用统计：${params.citationDigest}`] : []),
+    "",
+    `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
+    params.unit.text,
+  ].join("\n");
+}
+
+/** M14.1a P0-2：跨章一致性审查 prompt（各章短摘要；冲突 finding 必须带双位置） */
+function buildCrossChapterPrompt(params: {
+  chapters: ReadonlyArray<{ heading: string; file: string; digest: string }>;
+  language?: ManuscriptLanguage;
+}): string {
+  return [
+    "你是一名学术审稿人（Reviewer）。请检查这篇长论文各章节之间的**一致性问题**。",
+    "",
+    "只报告跨章（至少两章）问题，例如：",
+    "- 第三章的符号记号与第五章不一致；",
+    "- 第二章的方法定义与第四章的实现描述矛盾；",
+    "- 不同章节引用同一实验结果但数值不同；",
+    "- 各章对同一贡献的表述不一致。",
+    "",
+    "纪律：",
+    "1. 只报告能在摘要中定位依据的冲突；证据不足时不要报。",
+    "2. 每条 issue 的 section 填冲突的**主**章节（标题或文件名），relatedSections 数组填**对端**章节（至少 1 个）。没有对端位置的不算跨章问题，不要报。",
+    "3. 这些冲突是**待核验**发现：不要建议直接改写任何一侧；suggestedAction 给核验步骤（如「核对两处数值，以实验记录为准」）。",
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏）：",
+    "{",
+    '  "summary": "跨章一致性总体评价（80 字内）",',
+    '  "issues": [{"category": "academic", "severity": "major|minor",',
+    '    "section": "主章节标题", "relatedSections": ["对端章节标题"],',
+    '    "description": "冲突描述（含两侧的关键表述/数值）",',
+    '    "suggestedAction": "核验步骤", "blocking": false}]',
+    "}",
+    "",
+    "===== 各章摘要 =====",
+    ...params.chapters.flatMap((chapter) => [
+      `--- ${chapter.heading}（${chapter.file}）---`,
+      chapter.digest,
+    ]),
   ].join("\n");
 }

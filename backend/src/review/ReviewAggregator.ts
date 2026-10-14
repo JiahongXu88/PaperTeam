@@ -12,6 +12,7 @@
 import type { FactVerdict, ModeReviewResult, ReviewIssue } from "../agents/ReviewerService.js";
 import type { ReviewFinding } from "./finding.js";
 import type { AcademicScoreConfirmation } from "./academicConfirmation.js";
+import type { ReviewCoverageSummary } from "./coverageLedger.js";
 
 export interface ReviewSummary {
   generatedAt: string;
@@ -57,6 +58,13 @@ export interface ReviewSummary {
    * 旧产物无此字段 = 单样本。
    */
   academicConfirmation?: AcademicScoreConfirmation;
+  /**
+   * M14.1a P0-2：本轮 review 的正文覆盖账本（长文档单元模式 / 短文档 digest
+   * 模式都填写）。coverage.complete=false 时 Quality Gate 的
+   * review_coverage_complete 失败，academic_score_threshold 不得 PASS。
+   * 旧产物无此字段 = digest 单轮语义（gate 按不适用处理）。
+   */
+  coverage?: ReviewCoverageSummary;
   reportPaths: string[];
 }
 

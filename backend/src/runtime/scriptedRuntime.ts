@@ -1080,6 +1080,16 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope.startsWith("review/section/")) {
         // 快速 Review 的分章节审阅（M4.7 只读红线 E2E：合法 findings，产出零 PDF）
         output = SECTION_FINDINGS_JSON;
+      } else if (scope === "review/academic/unit") {
+        // M14.1a 长文档单元审查：独立 fake 契约（不推进三路 review 轮次计数）
+        output = JSON.stringify({
+          summary: "scripted unit review",
+          issues: [],
+          academicScore: 88,
+          riskScore: 20,
+        });
+      } else if (scope === "review/academic/consistency") {
+        output = JSON.stringify({ summary: "scripted consistency review", issues: [] });
       } else if (scope.startsWith("review/")) {
         // 轮次计数按项目隔离（E2E 单栈多项目互不串台；无 projectId 时退回全局计数）
         if (projectId !== "") {

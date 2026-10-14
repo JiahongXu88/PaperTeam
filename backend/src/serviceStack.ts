@@ -6,6 +6,7 @@
  */
 
 import { EvidenceStore } from "./evidence/EvidenceStore.js";
+import { DEFAULT_REVISION_UNIT_MAX_CHARS } from "./review/logicalSpan.js";
 import { DEFAULT_REVISION_TASK_POLICY, type RevisionTaskPolicy } from "./quality/revisionTaskGate.js";
 import { GenerationService } from "./generation/GenerationService.js";
 import { LatexCompiler } from "./latex/LatexCompiler.js";
@@ -103,6 +104,8 @@ export interface ServiceStackOptions {
   };
   stageTimeoutMs?: number;
   stageMaxAttempts?: number;
+  /** M14.1a：修订编辑单元 / Review Unit 尺寸上限（字符；缺省 9000） */
+  revisionUnitMaxChars?: number;
   /** M13.7.10：章节论证单元写作开关（缺省开启；PAPERTEAM_ARGUMENT_UNIT_WRITING） */
   writing?: { argumentUnits?: boolean };
   /**
@@ -1009,6 +1012,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       finalize,
       stageTimeoutMs: options.stageTimeoutMs ?? 900_000,
       stageMaxAttempts: options.stageMaxAttempts ?? 2,
+      revisionUnitMaxChars: options.revisionUnitMaxChars ?? DEFAULT_REVISION_UNIT_MAX_CHARS,
       writing: { argumentUnits: options.writing?.argumentUnits ?? true },
       review: {
         maxRevisionRounds: options.review?.maxRevisionRounds ?? 2,

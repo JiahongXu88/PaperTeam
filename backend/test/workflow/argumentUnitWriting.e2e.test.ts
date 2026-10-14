@@ -226,17 +226,17 @@ describe("M13.7.10 argument-unit writing（idea_to_paper，scripted）", () => {
     expect(run.status).toBe("completed");
     const writingRecords = run.stageHistory.filter((record) => record.stageId === "writing.sections");
     expect(writingRecords.map((record) => record.status)).toEqual(["failed", "completed"]);
-    // 第一次尝试写了 2 节后失败；第二次从头写全部 5 节（Writer 调用 2 + 5；抛错的那次未到达 runtime）
+    // M14.1a P0-3：第一次尝试写了 2 节后失败；重试只写未完成的后 3 节
+    //（Writer 调用 2 + 3；已完成节按指纹 + outputHash 复用，零重复生成）
     const sectionTasks = scripted.tasks.filter((task) => task.contextScope === "writing/sections" && task.projectId === project.id);
-    expect(sectionTasks).toHaveLength(7);
-    const evidenceIdsIn = (task: string): string[] => [...task.matchAll(/^- \[(E\d{3})\]/gm)].map((match) => match[1]!);
-    const fileOf = (task: string): string => /（([a-z-]+\.tex)）/.exec(task)?.[1] ?? "";
+    expect(sectionTasks).toHaveLength(5);
+    const fileOf = (task: { task: string }): string => /（([a-z-]+\.tex)）/.exec(task.task)?.[1] ?? "";
     const attempt1 = sectionTasks.slice(0, 2);
+    const attempt2 = sectionTasks.slice(2);
+    // 重试不再重写已完成的前两节；只补写后三节
+    expect(attempt2.map((task) => fileOf(task)).sort()).toEqual(["conclusion.tex", "experiments.tex", "method.tex"].sort());
     for (const first of attempt1) {
-      const again = sectionTasks.slice(2).find((task) => fileOf(task.task) === fileOf(first.task))!;
-      expect(again).toBeDefined();
-      expect(evidenceIdsIn(again.task)).toEqual(evidenceIdsIn(first.task));
-      expect(again.task).toContain(ARGUMENT_UNIT_BLOCK_HEADER);
+      expect(attempt2.some((task) => fileOf(task) === fileOf(first))).toBe(false);
     }
     const plan = await readPlan(stack, project.id);
     expect(plan.runId).toBe(runId);
@@ -246,7 +246,8 @@ describe("M13.7.10 argument-unit writing（idea_to_paper，scripted）", () => {
     expect(plan.sections.every((section) => section.status === "written")).toBe(true);
     expect(plan.sections.every((section) => section.evidence.consumed.length === section.evidence.allocated.length)).toBe(true);
     const writing = run.stageResults["writing.sections"] as Record<string, unknown>;
-    expect(writing["sectionsWritten"]).toBe(5);
+    expect(writing["sectionsWritten"]).toBe(3);
+    expect(writing["sectionsReused"]).toBe(2);
     expect((writing["argumentUnits"] as { attempt: number }).attempt).toBe(2);
   }, 60_000);
 

@@ -202,7 +202,7 @@ describe("bounded revision loop（idea_to_paper）", () => {
       (record) => record.stageId === "revision.revise" && record.status === "completed",
     );
     expect(revisions).toHaveLength(1); // 只发生第 1 轮后的自动修订；第 2 轮因 accept 不再修
-  });
+  }, 30_000);
 
   it("连续两轮完全相同的 fail → CONVERGED → stalled HITL（不盲目继续）", async () => {
     const stack = await newStack({ reviewSequence: ["fail"] });

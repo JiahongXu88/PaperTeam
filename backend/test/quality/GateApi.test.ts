@@ -165,6 +165,8 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       "open_critical_major_zero",
       "academic_score_threshold",
       "style_risk_threshold",
+      // M14.1a：覆盖完整性（legacy digest 产物无 coverage 字段 → 不适用呈现）
+      "review_coverage_complete_not_applicable",
       "target_feasibility",
       // M5.6：单一修订无前序可比 → 引用保持规则以中性 id 出现（不是通过，也不是失败）
       "citation_preservation_not_applicable",

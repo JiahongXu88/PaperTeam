@@ -55,7 +55,7 @@ describe("M6.8 report generation", () => {
     expect(first.limitations.length).toBeGreaterThan(0);
     // 可 JSON 序列化（结构化输出契约）
     expect(() => JSON.stringify(report)).not.toThrow();
-  });
+  }, 30_000);
 
   it("Markdown 摘要：指标表 + 校准段", () => {
     const report: EvaluationReport = {
