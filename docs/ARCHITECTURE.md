@@ -1249,6 +1249,14 @@ Draft / Final 卡呈现冻结修订与通过轮次；构建状态卡呈现工具
 编译日志。PLANNED（后续增强）：轮次分数走势图、跨轮问题修复 / 新增 / 仍存在
 明细、每轮 Revision Plan 的 UI 视图。
 
+### 13.7 Long-Document Reliability（M14.1a 已实现）
+
+长文档（学位论文量级）三个可靠性契约：
+
+- **logicalSpan 编辑单元**（`review/logicalSpan.ts`）：>9k 的章节文件/标题 span 切成有界单元（默认 9000，`revisionUnitMaxChars` 可配）；修订指令只经**唯一原文锚点**（targetQuote / 引号片段）绑定到单元，缺失/歧义 = `unresolved`（不派发、不猜，无词法相似度兜底）；Writer 收到单元全文 + 只读相邻上下文（前后 800 字），输出为该单元完整替换文本；定位/哈希/范围/应用全部确定性代码，走同一候选 Guard 链。stale（单元内容已变）/不可定位 → fail-closed patch 记录 + 跳过该目标。
+- **Coverage Ledger**（`review/coverageLedger.ts`）：digest 有损（节>3600 / 总>60k / 文件>24）时长文档 review 切换为 per-unit 模式——每单元一次全文审查、journal 原子落盘（`reviews/review-units/r{N}/`）、同 snapshot 复用零调用；覆盖率只由「snapshotId + 单元哈希双匹配的完成记录」确定性计算，`ReviewSummary.coverage` 携带、`review-coverage-r{N}.json` 落盘；Gate 规则 `review_coverage_complete`，覆盖不完整时 `academic_score_threshold` 强制 FAIL。跨章一致性 finding 携带 `relatedSections` 双位置，强制 blocking=false（待核验）。
+- **章节级恢复**（writing-plan `outputHash`）：同 run 同输入指纹且磁盘输出未被改动的已完成章节在 stage 重试/进程重启后零 Writer 调用复用；任一失配回退重写。
+
 ### 13.8 Session 隔离与恢复（reviewer 上下文纪律）
 
 - Writer 与 Reviewer 是不同专业角色，沿用 `projectId × agentId × contextScope`
