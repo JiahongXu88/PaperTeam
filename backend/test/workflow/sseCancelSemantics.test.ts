@@ -231,8 +231,19 @@ describe("POST /api/runs/:runId/cancel 幂等", () => {
     expect(third.status).toBe(200);
     expect((third.body["run"] as Record<string, unknown>)["status"]).toBe("cancelled");
 
-    const log = await readEventLog(stack, projectId, runId);
-    const cancelledEvents = log.filter((event) => event.type === "workflow.cancelled");
+    // M13.0 已定性：checkpoint-before-commit 崩溃安全序让内存终态可先于
+    // workflow.cancelled 事件 append（无害窗口）。poll 到终态后**有界等待事件
+    // 落盘**再断言恰好一条，而不是立即读一次（CI 满载下必现竞态）。
+    const deadline = Date.now() + 5_000;
+    let cancelledEvents: LoggedEvent[] = [];
+    for (;;) {
+      const log = await readEventLog(stack, projectId, runId);
+      cancelledEvents = log.filter((event) => event.type === "workflow.cancelled");
+      if (cancelledEvents.length >= 1 || Date.now() > deadline) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
     expect(cancelledEvents).toHaveLength(1);
   });
 });

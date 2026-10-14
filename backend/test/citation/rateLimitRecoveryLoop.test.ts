@@ -249,7 +249,10 @@ describe("B. CitationService 复现真实失败模式（冷却短路 + 恢复中
           headers: { "content-type": "application/json" },
         });
       }) as unknown as typeof fetch,
-      httpOptions: { maxRetries: 0, rateLimitDefaultCooldownMs: 60, cooldownCapMs: 60 },
+      // 冷却窗口 250ms：慢机 / CI 满载下 60ms 会被事件循环延迟跨过到期边界，
+      // 让「e3–e5 冷却短路」变成真实请求（passes +1）。窗口放大只影响测试时长
+      //（真实等待两轮 ≈ +0.4s），不改变断言语义。
+      httpOptions: { maxRetries: 0, rateLimitDefaultCooldownMs: 250, cooldownCapMs: 250 },
       rateLimitRecoveryMs: 5_000,
       log: (message) => {
         logs.push(message);
