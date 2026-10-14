@@ -25,6 +25,7 @@
  * - 无章节归属的 gate 阻止项     → kind=gate_blocker，记录不派发（Writer 无从下手）
  */
 
+import type { FindingProjection } from "./findingProjection.js";
 import { createHash } from "node:crypto";
 
 import type { ReviewIssue } from "../agents/ReviewerService.js";
@@ -98,6 +99,14 @@ export interface RevisionPlanItem {
   logicalSection?: string;
   /** Optional exact, unique source quote constraining edits inside a logical section. */
   targetQuote?: string;
+  /**
+   * M14.1b P1：review_finding 条目的 targetQuote 来源记录（确定性投影到被审快照）。
+   * resolved = targetQuote/logicalSection 由快照原文唯一定位；unresolved = 不投影
+   * （下游 M14.1a 按 unresolved 口径处理，不猜位置）。
+   */
+  targetProjection?:
+    | { status: "resolved"; basis: "issue_quote" | "description_fragment"; file: string; scope: "section" | "file" | "document" }
+    | { status: "unresolved"; reason: string; detail?: string };
   protocolRequirement?: { protocolId: string };
   /** 证据不足类问题：修订时只能弱化 / 删除，不允许编造 */
   needsEvidence?: boolean;
@@ -247,6 +256,11 @@ export interface BuildRevisionPlanInput {
    */
   evidenceLinks?: { key: string; evidenceIds: string[] }[];
   /**
+   * M14.1b P1：Finding → targetQuote 投影器（调用方以被审修订快照构造；纯函数）。
+   * 缺省不投影——行为与 M14.1a 完全一致。
+   */
+  projectFinding?: (issue: ReviewIssue) => FindingProjection;
+  /**
    * M10.3.1：claim-gap-audit 归因排除的 finding 指纹（原稿既有 / 作者数据覆盖
    * claim 的伴随 issue——返修语境不作为新 claim 重证）。这些 finding 仍入计划
    * 留档，但 status=skipped 不派发（避免对作者级问题反复修订直到 stalled）。
@@ -316,20 +330,20 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
       // M10.3.1：归因到原稿既有 / 作者数据覆盖 claim 的 issue——留档不派发
       items.push(
         withNote(
-          findingItem(issue, severity === "critical" || blocking ? "high" : severity === "major" ? "medium" : "low", "skipped"),
+          findingItem(issue, severity === "critical" || blocking ? "high" : severity === "major" ? "medium" : "low", "skipped", input.projectFinding),
           `返修语境不适用（claim-gap-audit 归因排除）：${inapplicableNote || "原稿既有 claim，证据完备性属作者裁决"}`,
         ),
       );
       continue;
     }
     if (severity === "critical" || blocking) {
-      items.push(findingItem(issue, "high", "planned"));
+      items.push(findingItem(issue, "high", "planned", input.projectFinding));
     } else if (severity === "major") {
-      items.push(findingItem(issue, "medium", "planned"));
+      items.push(findingItem(issue, "medium", "planned", input.projectFinding));
     } else {
       // minor：记录但不自动修（D-0026：避免小问题来回改导致不收敛）
       items.push(
-        withNote(findingItem(issue, "low", "skipped"), "minor：已记录，不进入自动修订"),
+        withNote(findingItem(issue, "low", "skipped", input.projectFinding), "minor：已记录，不进入自动修订"),
       );
     }
   }
@@ -535,8 +549,10 @@ function findingItem(
   issue: ReviewIssue,
   priority: "high" | "medium" | "low",
   status: RevisionPlanItemStatus,
+  projectFinding?: (issue: ReviewIssue) => FindingProjection,
 ): RevisionPlanItem {
   const needsEvidenceFlag = needsEvidence(issue);
+  const projection = projectFinding !== undefined && status === "planned" ? projectFinding(issue) : undefined;
   return {
     id: findingFingerprint(issue),
     kind: "review_finding",
@@ -552,6 +568,15 @@ function findingItem(
     ...(needsEvidenceFlag ? { needsEvidence: true } : {}),
     riskLevel: riskLevelOf("review_finding", priority) ?? "medium",
     ...relatedEvidenceOf(issue),
+    ...(projection !== undefined && projection.status === "resolved"
+      ? {
+          logicalSection: projection.logicalSection,
+          targetQuote: projection.targetQuote,
+          targetProjection: { status: "resolved" as const, basis: projection.basis, file: projection.file, scope: projection.scope },
+        }
+      : projection !== undefined
+        ? { targetProjection: { status: "unresolved" as const, reason: projection.reason, ...(projection.detail !== undefined ? { detail: projection.detail } : {}) } }
+        : {}),
   };
 }
 

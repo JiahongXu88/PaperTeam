@@ -283,6 +283,7 @@ import {
   type ReviewCoverageSummary,
   type ReviewUnitPlanEntry,
 } from "../review/coverageLedger.js";
+import { projectFindingTarget } from "../review/findingProjection.js";
 import {
   DEFAULT_REVISION_UNIT_MAX_CHARS,
   baseSpanId,
@@ -737,7 +738,10 @@ function reviewRunStageInner(
         let scoreWeight = 0;
         let academicSum = 0;
         let riskSum = 0;
-        const unitIssues = completedUnits.flatMap((entry) => entry.review?.issues ?? []);
+        // M14.1b P1：单元 finding 携带 file + 章节 span id（模型不产出；review.run 确定性附加），
+        // revision.plan 据此把 finding 投影为唯一 targetQuote
+        const unitIssues = completedUnits.flatMap((entry) =>
+          (entry.review?.issues ?? []).map((issue) => ({ ...issue, file: entry.unit.file, logicalSection: entry.unit.spanId })));
         for (const entry of completedUnits) {
           const review = entry.review;
           if (review === null) continue;
@@ -1532,11 +1536,14 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       // M6.7 §5/§6：citation 类条目的 relatedEvidenceIds —— bib key ↔ verified
       // evidence 关联（与 Writer 引用标注 / Gate 覆盖判定同源 matchBibliographyKey）
       const evidenceLinks = await buildEvidenceLinks(services, ctx.projectId);
+      // M14.1b P1：Finding → targetQuote 投影——以被审修订的快照为准（不是当前工作树）
+      const reviewedSnapshot = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
       const plan = buildRevisionPlan({
         projectId: ctx.projectId,
         sourceRevision,
         reviewRound: summary.round,
         summary,
+        ...(reviewedSnapshot !== null ? { projectFinding: (issue) => projectFindingTarget(issue, reviewedSnapshot) } : {}),
         citationMissing: await citationMissingTargets(services, ctx.projectId),
         ...(citationRemoved.length > 0 ? { citationRemoved } : {}),
         ...(factRegressions.length > 0 ? { factRegressions } : {}),

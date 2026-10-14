@@ -83,6 +83,15 @@ export interface ReviewIssue {
    * finding（blocking=false），系统不得自动将任一版本覆盖为权威事实。
    */
   relatedSections?: string[];
+  /**
+   * M14.1b P1：Reviewer 从被审原文逐字摘出的定位片段（≥12 字）。revision.plan 用它
+   * 在被审修订快照中做唯一定位并投影为 targetQuote；不唯一 / 不存在 = 不投影。
+   */
+  quote?: string;
+  /** M14.1b P1：单元审查模式下的来源文件（review.run 附加，模型不产出） */
+  file?: string;
+  /** M14.1b P1：单元审查模式下的章节 span id（review.run 附加，模型不产出） */
+  logicalSection?: string;
 }
 
 /**
@@ -614,6 +623,10 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
         ? { evidenceRequirement: readEvidenceRequirement(record) }
         : {}),
       blocking: record["blocking"] === true,
+      // M14.1b P1：原文定位片段（≥12 字才有定位价值；更短的丢弃）
+      ...(typeof record["quote"] === "string" && record["quote"].trim().replace(/\s+/g, "").length >= 12
+        ? { quote: record["quote"].trim().slice(0, 400) }
+        : {}),
       // M11.4 Reliability Closure：creator-side claim lineage（仅 fact 模式有
       // claims 数组；非法值静默丢弃——弱佐证校验在 resolveClaimIndexLinks）
       ...(typeof record["claimIndex"] === "number" && Number.isInteger(record["claimIndex"]) && record["claimIndex"] >= 0
@@ -916,7 +929,8 @@ function buildUnitReviewPrompt(params: {
     '  "summary": "本单元总体评价（80 字内）",',
     '  "issues": [{"category": "fact|academic|style|citation|evidence_gap|build",',
     '    "severity": "critical|major|minor", "section": "' + params.unit.heading + '",',
-    '    "description": "问题描述（必须可在本单元原文中定位）", "evidenceRef": "E001（如有）",',
+    '    "description": "问题描述（必须可在本单元原文中定位）", "quote": "从本单元原文逐字摘出的定位片段（≥12 字，不改写）",',
+    '    "evidenceRef": "E001（如有）",',
     '    "suggestedAction": "修改建议", "evidenceRequirement": "required|optional|none",',
     '    "reason": "为什么是问题（可选）", "blocking": false}],',
     '  "academicScore": 0-100（本单元学术质量）,',

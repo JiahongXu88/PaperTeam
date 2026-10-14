@@ -1725,3 +1725,18 @@ live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。
 [product-guide.md](product-guide.md)；返修链路与分层判定语义见
 [existing-paper-revision.md](existing-paper-revision.md)；模型配置面见
 [model-configuration.md](model-configuration.md)。
+
+## 21. Research Input & Scientific Fact Management（M14.1b 已实现）
+
+学位论文工作流（`thesis_from_papers`，M14.2）之前必须先可靠回答：用户提供了哪些真实研究材料、它们之间是什么版本关系、哪些事实可用、哪些有冲突、哪些必须由作者决定。`backend/src/thesis/` 以**文件后端 + 确定性代码**实现这一层，不新建 Agent、不新建 PDF parser、不建第二套 EvidenceStore。
+
+五个概念严格分离：**Document Source**（SourceStore 条目，contentHash 去重）→ **ResearchInput**（`research/research-inputs.json`：五类材料 `published_paper / preprint / submitted_manuscript / unpublished_manuscript / experiment_report`，身份 `inputId` 由 sourceId+contentHash 派生——重放幂等、版本互不覆盖；`workId` 成果分组 + `preferredInputId` 跟随版本；scope `proposed / included / excluded / superseded` 只能由作者决定改写）→ **ScientificFact**（`research/scientific-facts.json`：验证三态 `extracted → source_verified → author_confirmed`，与 `conflict.status` 解耦；Provenance 指向 inputId + contentHash + blockId + page（parser 报告才有，不编造）+ 表格行列标签 + surfaceHash）→ **Evidence**（既有 EvidenceStore，引用核验口径不变，ResearchInput 只以 `evidenceLinks` 只读关联）→ **Author Confirmation**（`research/author-decisions.jsonl` append-only；actor 只能是 `user` / `test_fixture`，模型不能生成确认事件）。
+
+- **版本关系**：同 arXiv 基础 id / 同 DOI → `same_work` 由系统 confirmed（元数据事实）；标题相似 / 内容对账 / 模型建议 → `candidate`，确认须 `relation_confirmation` 决定；"发布时间最新" 不等价于权威版本，跟随版本是 `version_selection` 决定。
+- **事实抽取与核验**：`factExtraction.ts` 把 docling `ParsedTableBlock` 的数值单元格抽成 `table_cell` 事实（标签来自 parser caption / 相邻题注；占位表头由首行推导并标记；私用区字形标 `glyphIssues`）；`sourceVerification.ts` 用 PyMuPDF 文本层（独立通道，`PdfTextLayerProvider` 按 contentHash 缓存）同页 token 核验 → `source_verified`；页码未知 / 字形问题 / 文本层缺失一律 fail closed。模型候选只能经 `addStatementFacts` 以 `extracted` 入库，引文逐字命中才 `source_verified`。
+- **冲突检测**（`tableAlignment.ts`）：跨输入表格先做结构 + 内容对齐（列标签一致 + 行数相等 + ≥4 格且 ≥50% 相同 + 行标签兼容 → `comparable`；否则 `candidate` 留给作者，不比较）；只在 comparable 对齐的兼容行对上逐列比较：`value_mismatch`（blocking）/ `rounding_difference` / `unit_incomparable` / `equal_after_unit_normalization`（advisory）。不同实验协议 = 不同表格 → 不会被对齐 → 不是冲突。冲突双方原始事实完整保留；裁决（adopt_fact / keep_both / request_material / defer）绑定当时的 contentHash，新版本出现 = 新冲突记录 unresolved；处于未决冲突的事实拒绝 `author_confirmed`。
+- **Finding → targetQuote**（`review/findingProjection.ts`，P1）：Reviewer 在单元审查中给出 `quote`，`review.run` 附加单元 `file` / 章节 span id；`revision.plan` 对**被审修订快照**做唯一定位（已知 file / span 则范围收窄；0 次 = NOT_FOUND，多次 = AMBIGUOUS，无 ≥12 字锚点 = NO_ANCHOR）→ `RevisionPlanItem.targetQuote` 取文档原文切片并记录 `targetProjection`；unresolved 不投影，M14.1a 的 logicalSpan 口径与 Patch Guard 不变。
+- **下游契约**（`plannerContext.ts`）：`ResearchFactContext` 严格分区 `authorConfirmed / sourceVerifiedUnconfirmed / extractedOnly / conflicted`（只含 included、已选版本、未发表材料已授权的输入），并给出 `pendingDecisions` 与 `writingBlockers`（`VERSION_UNSELECTED / UNPUBLISHED_POLICY_UNDECIDED / CONFLICT_UNRESOLVED`）。`authorDecisionFromResumeInput` 把 workflow `ResumeInput` 映射到同一决定应用层，供 M14.2 的 `hitl.scope_and_version / hitl.fact_conflicts` 复用。
+
+HTTP：`/api/projects/:id/research-inputs`（见 [API_CONTRACT.md §6](API_CONTRACT.md)）。验收报告：[research/M14_1B_RESEARCH_INPUT_FACT_MANAGEMENT_CLOSURE.md](research/M14_1B_RESEARCH_INPUT_FACT_MANAGEMENT_CLOSURE.md)。
+
