@@ -95,6 +95,8 @@ import { ResearchInputRegistry } from "./thesis/ResearchInputRegistry.js";
 import { ScientificFactStore } from "./thesis/ScientificFactStore.js";
 import { AuthorDecisionStore } from "./thesis/AuthorDecisionStore.js";
 import { ResearchInputService } from "./thesis/ResearchInputService.js";
+import { InheritedTableAssetStore } from "./thesis/inheritedAssets.js";
+import { InheritedFigureAssetService } from "./thesis/inheritedFigureAssets.js";
 import { ThesisDocumentService } from "./thesis/ThesisDocumentService.js";
 import { ThesisPlannerService } from "./thesis/ThesisPlannerService.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
@@ -363,6 +365,8 @@ export interface ServiceStack {
   versions: VersionService;
   /** M14.1c：学位论文文档模型（保存 / 装配 / 编译门面） */
   thesisDocuments: ThesisDocumentService;
+  /** M14.3：研究成果图形资产继承（PlotSpec 确定性生成 + 授权 + 受控插入） */
+  inheritedFigures: InheritedFigureAssetService;
   workflowServices: WorkflowServices;
 }
 
@@ -938,6 +942,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   });
   // M14.1b Research Input & Scientific Fact Management：注册表 / 事实 / 作者决定
   // 全部文件后端（research/ 目录，原子写）；来源核验的独立文本层复用 paperParser。
+  // M14.3：继承表格资产 store（research/inherited-table-assets.json）。
+  const inheritedTables = new InheritedTableAssetStore(options.projects);
   const researchInputs = new ResearchInputService({
     registry: new ResearchInputRegistry(options.projects, sources, parsedDocuments, evidence),
     facts: new ScientificFactStore(options.projects),
@@ -945,11 +951,27 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     documents: parsedDocuments,
     ingestion,
     textLayer: new PdfTextLayerProvider(options.projects, sources, paperParser, log),
+    tables: inheritedTables,
   });
   // M14.1c/M14.2：学位论文编译器（独立 600s 预算）与文档服务共享同一实例；
   // M14.2 规划层（贡献提取 / 主线大纲 / 章节映射）经 workflowServices.thesis 消费。
   const thesisLatex = options.thesisLatex ?? new LatexCompiler({ timeoutMs: options.thesisCompileTimeoutMs ?? 600_000 });
   const thesisDocuments = new ThesisDocumentService(options.projects, thesisLatex);
+  // M14.3：图形资产继承（figures service 在下方构造——此处先声明引用，装配顺序见 figures）
+  const inheritedFigures = new InheritedFigureAssetService({
+    projects: options.projects,
+    figures,
+    listResearchInputs: async (projectId) => {
+      const file = await researchInputs.list(projectId);
+      return file.inputs.map((input) => ({
+        inputId: input.inputId,
+        title: input.title,
+        scope: { status: input.scope.status },
+        version: { sourceId: input.version.sourceId, contentHash: input.version.contentHash },
+        ...(input.provenanceUri !== undefined ? { provenanceUri: input.provenanceUri } : {}),
+      }));
+    },
+  });
   const thesisPlanner = new ThesisPlannerService({
     runtime: options.runtime,
     agentId: options.agentIds.writer,
@@ -1018,6 +1040,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     versions,
     manuscriptOverview,
     thesisDocuments,
+    inheritedFigures,
     workflowServices: {
       projects: options.projects,
       generation,
@@ -1080,6 +1103,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         researchInputs,
         documents: thesisDocuments,
         latex: thesisLatex,
+        inheritedTables,
         ...(options.thesis?.allowTestFixtureActor === true ? { allowTestFixtureActor: true } : {}),
       },
     },

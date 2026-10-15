@@ -6,7 +6,7 @@
  * 循环引用与缺失文件记录为 warnings（不中断收集）。
  */
 
-import { readFile, stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 export interface TexFile {
@@ -48,13 +48,31 @@ export async function collectLatexFiles(manuscriptDir: string): Promise<LatexPro
 
   const main = await load("main.tex");
   if (main === null) {
+    // M14.3 thesis 布局回退：thesis_from_papers 项目的 manuscript/ 没有 main.tex
+    //（装配根 main.tex 在 manuscript-thesis/），但 outline 驱动的 sections/*.tex
+    // 是权威稿件集——review / revision / citation 共享后段依赖本函数提供它们。
+    // 真实运行实锤（M14.3 案例 A）：缺这一回退时 reviewer 看到空稿件集 →
+    // 幻觉 section + academicScore=0，修订指令零绑定 → run 烧毁。
+    const sectionFiles = await listSectionFiles(manuscriptDir);
+    if (sectionFiles.length === 0) {
+      return {
+        mainTex: null,
+        sections: [],
+        allTex: [],
+        bibPath: null,
+        bibContent: null,
+        figures: [],
+        warnings,
+      };
+    }
+    const referencesBib = await load("references.bib");
     return {
       mainTex: null,
-      sections: [],
-      allTex: [],
-      bibPath: null,
-      bibContent: null,
-      figures: [],
+      sections: sectionFiles,
+      allTex: sectionFiles,
+      bibPath: referencesBib !== null ? "references.bib" : null,
+      bibContent: referencesBib?.content ?? null,
+      figures: [...new Set(sectionFiles.flatMap((file) => extractFigureReferences(file.content)))],
       warnings,
     };
   }
@@ -106,6 +124,27 @@ export async function collectLatexFiles(manuscriptDir: string): Promise<LatexPro
     figures,
     warnings,
   };
+}
+
+/** thesis 布局：manuscript/sections/*.tex 目录列举（排序稳定；读取失败跳过） */
+async function listSectionFiles(manuscriptDir: string): Promise<TexFile[]> {
+  const sectionsDir = join(manuscriptDir, "sections");
+  let names: string[];
+  try {
+    names = (await readdir(sectionsDir)).filter((name) => name.endsWith(".tex")).sort();
+  } catch {
+    return [];
+  }
+  const files: TexFile[] = [];
+  for (const name of names) {
+    try {
+      const content = await readFile(join(sectionsDir, name), "utf8");
+      files.push({ relativePath: `sections/${name}`, content });
+    } catch {
+      // 单文件不可读跳过（其余节仍可审）
+    }
+  }
+  return files;
 }
 
 /** 提取 \input{…} / \include{…} 引用（不含扩展名时补 .tex） */

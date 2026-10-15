@@ -34,10 +34,10 @@
 
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { join, resolve, sep } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 
 import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
-import { isExistingPaperKind, isSurveyKind } from "./kinds.js";
+import { isExistingPaperKind, isSurveyKind, isThesisKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { normalizeManuscriptLanguage } from "../project/language.js";
@@ -270,6 +270,9 @@ import type { ThesisPlannerService } from "../thesis/ThesisPlannerService.js";
 import type { ResearchInputService } from "../thesis/ResearchInputService.js";
 import { authorDecisionFromResumeInput } from "../thesis/ResearchInputService.js";
 import type { ThesisDocumentService } from "../thesis/ThesisDocumentService.js";
+import type { InheritedTableAssetStore } from "../thesis/inheritedAssets.js";
+import { renderInheritedTableLatex, verifyInheritedTables, inheritedTableLabel } from "../thesis/inheritedAssets.js";
+import { checkCrossChapterConsistency } from "../thesis/crossChapterConsistency.js";
 import type { AuthorDecision } from "../thesis/researchInputTypes.js";
 import type { ThesisChapterPlan } from "../thesis/thesisWorkflowTypes.js";
 import { buildThesisSectionContext, chapterSourceText, sourceProjectionForSection } from "../thesis/thesisWritingContext.js";
@@ -2123,6 +2126,12 @@ function revisionReviseStage(
       const revisionExperimentContext = isSurveyKind(ctx.state.workflowKind)
         ? undefined
         : await services.experimentPackages.workflowContext(ctx.projectId);
+      // M14.3：thesis 修订纪律——写作阶段的【科研事实纪律】注入修订（M14.2 遗留
+      // 缺口）：修订只改语言/结构，实验数值仍以 authorConfirmed 白名单为唯一来源，
+      // 未裁决冲突不得被润色消除，继承表格守卫块不得被改动。
+      const thesisRevisionInputs = isThesisKind(ctx.state.workflowKind)
+        ? await loadThesisRevisionInputs(services, ctx.projectId)
+        : null;
       // M5.6 真实论文验收暴露的 Writer regression：Existing-Paper 项目没有 research
       // artifact bibliography，修订 prompt 曾写成「无可用文献：不要使用 \cite」，Writer
       // 据此删光了重建稿的全部 \cite。可引用 key 必须以 manuscript/references.bib 为准。
@@ -2235,7 +2244,32 @@ function revisionReviseStage(
             ...(externalDirectives.length > 0 ? { externalInstructions: externalDirectives.length } : {}),
           };
         }
-        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "没有任何可修订的章节文件");
+        /**
+         * M14.3（真实案例驱动）：指令存在但全部无法绑定任何章节目标——
+         * reviewer 输出的复合 / 幻觉 section 引用（如「sections/a、sections/b
+         * 及全部正文章节」或拼写不一致的文件名）经计划派生后 match 全空。
+         * 旧语义把这一形态当契约违反烧掉整个 run（27 节已写完的学位论文
+         * 因此失败）。修正：按 unresolved 口径记录并跳过本轮派发（事件流
+         * 可审计，直接进入复审 / gate）；绑定失败明细进入 stage result。
+         */
+        await ctx.emitDomain(
+          "revision.skipped",
+          {
+            reason: "all_directives_unbound",
+            directives: directives.length,
+            samples: directives.slice(0, 3).map((directive) => (directive.item?.problem ?? "").slice(0, 60)),
+          },
+          `本轮 ${directives.length} 条修订指令全部无法绑定到任何章节目标（复合/不一致 section 引用）——跳过 Writer 派发，直接进入复审`,
+        );
+        return {
+          revisedSections: 0,
+          sections: [],
+          revision: currentRevision,
+          changed: false,
+          findingDispatch: { total: directives.length, matched: 0, unmatched: directives.length, multiTarget: 0, unresolved: directives.length },
+          unboundDirectives: directives.length,
+          ...(externalDirectives.length > 0 ? { externalInstructions: externalDirectives.length } : {}),
+        };
       }
       const boundedTargets = targets.flatMap((target) => target.logicalSpan !== undefined ? [target.logicalSpan] : []);
       for (let index = 0; index < boundedTargets.length; index += 1) {
@@ -2430,6 +2464,11 @@ function revisionReviseStage(
           : evidence;
         let result: Awaited<ReturnType<typeof services.writer.reviseSection>> | undefined;
         let writerFailure: unknown;
+        // M14.3：目标章节的 thesis 修订纪律块（确定性；无映射章时退化为全局口径）
+        const thesisRevisionDiscipline =
+          thesisRevisionInputs !== null
+            ? renderThesisRevisionDiscipline(thesisRevisionInputs, basename(target.relativePath))
+            : undefined;
         const writerParams = {
           projectId: ctx.projectId,
           section: {
@@ -2463,6 +2502,7 @@ function revisionReviseStage(
           ...(surveyContext !== undefined ? { survey: surveyContext } : {}),
           ...(matchedItems.length > 0 ? { revisionItems: writerItems, itemEvidence } : {}),
           ...(revisionExperimentContext !== undefined ? { experimentContext: revisionExperimentContext } : {}),
+          ...(thesisRevisionDiscipline !== undefined ? { extraInstructions: thesisRevisionDiscipline } : {}),
         };
         try {
           result = await services.writer.reviseSection(writerParams);
@@ -9107,6 +9147,8 @@ export interface ThesisWorkflowServices {
   documents: ThesisDocumentService;
   /** 学位论文编译器（独立 600s 预算；与 thesisDocuments 共用实例） */
   latex: LatexCompiler;
+  /** M14.3：继承表格资产 store（写作期插入 + gate/build 复核共用） */
+  inheritedTables: InheritedTableAssetStore;
   /** 测试栈显式开启后，HITL resume 才允许 actor=test_fixture（生产不设=拒绝） */
   allowTestFixtureActor?: boolean;
 }
@@ -9556,6 +9598,39 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
       const written: string[] = [];
       const reused: string[] = [];
       const chapterSummaries: Record<string, unknown>[] = [];
+      // M14.3：继承表格插入计划（确定性）。授权资产 → 来源输入所属章（优先
+      // method/experiment 章）→ 该章最后一节文件末尾。幂等：节文件已有守卫块则跳过。
+      const assetsFile = await services.thesis.inheritedTables.load(ctx.projectId);
+      const authorizedAssets = (assetsFile?.assets ?? []).filter((asset) => asset.status === "authorized");
+      const insertionsByFile = new Map<string, typeof authorizedAssets>();
+      const insertionNotes: string[] = [];
+      const insertedRecords: Array<{ assetId: string; chapterId: string; sectionFile: string; latexHash: string }> = [];
+      for (const asset of authorizedAssets) {
+        const chapter =
+          mapping.chapters.find(
+            (entry) =>
+              (entry.responsibility === "method" || entry.responsibility === "experiment") &&
+              entry.sourceInputIds.includes(asset.source.researchInputId),
+          ) ?? mapping.chapters.find((entry) => entry.sourceInputIds.includes(asset.source.researchInputId));
+        if (chapter === undefined || chapter.sectionFiles.length === 0) {
+          insertionNotes.push(`${asset.assetId}:no_target_chapter（来源输入未映射到任何章，未插入）`);
+          continue;
+        }
+        const targetFile = chapter.sectionFiles[chapter.sectionFiles.length - 1]!;
+        const list = insertionsByFile.get(targetFile) ?? [];
+        list.push(asset);
+        insertionsByFile.set(targetFile, list);
+      }
+      const chapterTablesByChapter = new Map<string, Array<{ label: string; captionZh: string; sectionFile: string }>>();
+      for (const [file, assets] of insertionsByFile) {
+        const chapter = mapping.chapters.find((entry) => entry.sectionFiles.includes(file));
+        if (chapter === undefined) continue;
+        const list = chapterTablesByChapter.get(chapter.chapterId) ?? [];
+        for (const asset of assets) {
+          list.push({ label: inheritedTableLabel(asset.assetId), captionZh: asset.captionZh, sectionFile: file });
+        }
+        chapterTablesByChapter.set(chapter.chapterId, list);
+      }
       for (const [index, section] of outline.sections.entries()) {
         if (ctx.signal.aborted) throw new BusinessError("WORKFLOW_CANCELLED", "工作流已被取消");
         const chapter = chapterByFile.get(section.file);
@@ -9567,10 +9642,37 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
         }
         const sectionIndex = chapter.sectionFiles.indexOf(section.file);
         const limitationMode = writingDecisions.limitation.has(chapter.chapterId);
+        const pendingInsertions = insertionsByFile.get(section.file) ?? [];
         const resumed = await resumableWrittenSection(services, ctx.projectId, plan, section.id, section.file);
         if (resumed !== null) {
           reused.push(section.id);
           for (const evidenceId of resumed.evidence.consumed) usedEvidenceIds.add(evidenceId);
+          // M14.3：恢复节的继承表格补插（上轮授权晚于写作的资产在此幂等补齐）
+          const filePath = join(services.projects.manuscriptDir(ctx.projectId), "sections", section.file);
+          try {
+            const current = await readFile(filePath, "utf8");
+            const missing = pendingInsertions.filter((asset) => !current.includes(`% inherited-table:${asset.assetId} begin`));
+            if (missing.length > 0) {
+              const appended = `${current.trim()}\n\n${missing.map((asset) => renderInheritedTableLatex(asset)).join("\n\n")}\n`;
+              await writeFile(filePath, appended, "utf8");
+              for (const asset of missing) {
+                insertedRecords.push({
+                  assetId: asset.assetId,
+                  chapterId: chapter.chapterId,
+                  sectionFile: section.file,
+                  latexHash: sha256Hex(renderInheritedTableLatex(asset)),
+                });
+              }
+              insertionNotes.push(`${section.file}:backfilled ${missing.length} tables（恢复节补插）`);
+              await updateWritingPlanSection(services, ctx.projectId, plan, section.id, {
+                status: "written",
+                latencyMs: 0,
+                outputHash: sha256Hex(appended.trim() + "\n"),
+              });
+            }
+          } catch {
+            // 文件读取失败走非恢复路径重写（下方 writeSection 重建）
+          }
           await ctx.emitProgress({ section: section.id, file: section.file, index: index + 1, total: outline.sections.length, resumed: true, chapter: chapter.chapterId });
           continue;
         }
@@ -9594,6 +9696,9 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
           sourceProjection: projection,
           limitationMode,
           ...(section.literatureRefs !== undefined ? { literatureRefs: section.literatureRefs } : {}),
+          ...(chapterTablesByChapter.get(chapter.chapterId) !== undefined
+            ? { inheritedTables: chapterTablesByChapter.get(chapter.chapterId) }
+            : {}),
         });
         const startedAt = Date.now();
         let result: Awaited<ReturnType<WriterService["writeSection"]>>;
@@ -9611,7 +9716,20 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
           await updateWritingPlanSection(services, ctx.projectId, plan, section.id, { status: "failed", latencyMs: Date.now() - startedAt });
           throw error;
         }
-        bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
+        // M14.3：写作输出 + 继承表格守卫块一次写入（outputHash 覆盖合并内容——
+        // 恢复复用与守卫复核都以合并后的文件为准）
+        const insertionBlocks = pendingInsertions.map((asset) => renderInheritedTableLatex(asset));
+        const sectionLatex =
+          insertionBlocks.length > 0 ? `${result.latex}\n\n${insertionBlocks.join("\n\n")}` : result.latex;
+        bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, sectionLatex);
+        for (const asset of pendingInsertions) {
+          insertedRecords.push({
+            assetId: asset.assetId,
+            chapterId: chapter.chapterId,
+            sectionFile: section.file,
+            latexHash: sha256Hex(renderInheritedTableLatex(asset)),
+          });
+        }
         written.push(section.id);
         chapterSummaries.push(writingContext.summary);
         for (const record of evidence) usedEvidenceIds.add(record.id);
@@ -9621,7 +9739,7 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
           taskId: result.taskId,
           ...(result.usage !== undefined ? { usage: result.usage } : {}),
           cited: extractCitedKeyList(result.latex),
-          outputHash: sha256Hex(result.latex.trim() + "\n"),
+          outputHash: sha256Hex(sectionLatex.trim() + "\n"),
         });
         await ctx.emitProgress({
           section: section.id,
@@ -9643,6 +9761,26 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
       // M14.1c 确定性装配（manuscript-thesis/；源目录只读）
       const model = await services.thesis.documents.loadModel(ctx.projectId);
       const assembly = await services.thesis.documents.assemble(ctx.projectId, outline, model ?? undefined);
+      // M14.3：已插入资产状态落盘（inserted + 定位 + 渲染 hash）
+      if (insertedRecords.length > 0) {
+        const insertedById = new Map(insertedRecords.map((record) => [record.assetId, record]));
+        for (const asset of assetsFile?.assets ?? []) {
+          const record = insertedById.get(asset.assetId);
+          if (record === undefined) continue;
+          asset.status = "inserted";
+          asset.insertion = {
+            sectionFile: record.sectionFile,
+            chapterId: record.chapterId,
+            insertedAt: new Date().toISOString(),
+            latexHash: record.latexHash,
+          };
+          asset.updatedAt = new Date().toISOString();
+        }
+        await services.thesis.inheritedTables.save(ctx.projectId, {
+          ...(assetsFile ?? { schemaVersion: 1 as const, projectId: ctx.projectId, assets: [] }),
+          updatedAt: new Date().toISOString(),
+        });
+      }
       plan.revision = revision.revision;
       plan.updatedAt = new Date().toISOString();
       await services.reviewArtifacts.saveWritingPlan(ctx.projectId, plan);
@@ -9657,6 +9795,9 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
         evidenceFormal: evidence.length,
         assemblyMainTex: assembly.mainTex,
         chaptersWithLimitationMode: [...writingDecisions.limitation],
+        ...(insertedRecords.length > 0
+          ? { inheritedTablesInserted: insertedRecords.length, inheritedTableNotes: insertionNotes.slice(0, 10) }
+          : { inheritedTablesAuthorized: authorizedAssets.length }),
         argumentUnits: summarizeWritingPlan(plan),
       };
     },
@@ -9735,6 +9876,77 @@ async function thesisChapterSourceText(
  * - 结构：ThesisDocumentModel 对 outline 的装配校验（每节恰好映射一次）；
  * - 冲突：plannerContext 未决阻断冲突必须为 0。
  */
+// ---------------------------------------------------------------------------
+// M14.3：thesis 修订纪律（与写作阶段同一事实白名单口径）
+// ---------------------------------------------------------------------------
+
+interface ThesisRevisionInputs {
+  context: import("../thesis/researchInputTypes.js").ResearchFactContext;
+  /** 节文件 → 章（factIds 含 owner 贡献 linkedFactIds 扩展） */
+  chapterByFile: Map<string, { chapterId: string; titleZh: string; factIds: Set<string> }>;
+  /** 本章已插入的继承表格（label 列表；守卫块禁改） */
+  guardedTablesByChapter: Map<string, string[]>;
+}
+
+async function loadThesisRevisionInputs(services: WorkflowServices, projectId: string): Promise<ThesisRevisionInputs | null> {
+  const mapping = await services.thesis.planner.loadMapping(projectId);
+  if (mapping === null) return null;
+  const context = await services.thesis.researchInputs.plannerContext(projectId);
+  const contributions = await services.thesis.planner.loadContributions(projectId);
+  const contributionsById = new Map((contributions?.items ?? []).map((item) => [item.id, item]));
+  const chapterByFile = new Map<string, { chapterId: string; titleZh: string; factIds: Set<string> }>();
+  for (const chapter of mapping.chapters) {
+    const factIds = new Set(chapter.factIds);
+    for (const contributionId of chapter.ownsContributionIds) {
+      for (const factId of contributionsById.get(contributionId)?.linkedFactIds ?? []) factIds.add(factId);
+    }
+    const entry = { chapterId: chapter.chapterId, titleZh: chapter.titleZh, factIds };
+    for (const file of chapter.sectionFiles) chapterByFile.set(file, entry);
+  }
+  const assetsFile = await services.thesis.inheritedTables.load(projectId);
+  const guardedTablesByChapter = new Map<string, string[]>();
+  for (const asset of assetsFile?.assets ?? []) {
+    if (asset.status !== "inserted" || asset.insertion === undefined) continue;
+    const list = guardedTablesByChapter.get(asset.insertion.chapterId) ?? [];
+    list.push(inheritedTableLabel(asset.assetId));
+    guardedTablesByChapter.set(asset.insertion.chapterId, list);
+  }
+  return { context, chapterByFile, guardedTablesByChapter };
+}
+
+/** 单次修订调用的纪律块（≤40 行事实白名单 + 冲突 + 守卫表格警示） */
+function renderThesisRevisionDiscipline(inputs: ThesisRevisionInputs, sectionFile: string): string {
+  const lines: string[] = [];
+  const chapter = inputs.chapterByFile.get(sectionFile);
+  lines.push("【学位论文修订纪律】本次修订对象是学位论文章节，科研事实纪律与写作阶段完全一致：");
+  const scope = chapter !== undefined ? chapter.factIds : new Set<string>();
+  const confirmed =
+    chapter !== undefined
+      ? inputs.context.facts.authorConfirmed.filter((fact) => scope.has(fact.factId))
+      : inputs.context.facts.authorConfirmed;
+  lines.push(
+    `本章「${chapter?.titleZh ?? "（未映射章——按全局口径）"}」的实验指标/参数/数据集数值只能来自以下作者已确认事实（共 ${confirmed.length} 条${confirmed.length > 40 ? "，此处列前 40 条" : ""}）：`,
+  );
+  for (const fact of confirmed.slice(0, 40)) {
+    lines.push(`- ${fact.surface}（${fact.location}）`);
+  }
+  lines.push(
+    "修订只允许改善语言、结构、逻辑衔接；禁止改动上述数值（含等价换算须保持原值口径）、禁止新增任何未列出的具体实验数值、禁止把待确认或冲突数值写成定论。",
+  );
+  if (inputs.context.facts.conflicted.length > 0) {
+    lines.push(
+      `存在 ${inputs.context.facts.conflicted.length} 条未裁决冲突事实：修订不得以任何一方的数值改写正文，也不得通过改写表述隐式消除冲突。`,
+    );
+  }
+  const guarded = chapter !== undefined ? inputs.guardedTablesByChapter.get(chapter.chapterId) : undefined;
+  if (guarded !== undefined && guarded.length > 0) {
+    lines.push(
+      `本章含系统继承表格（${guarded.join("、")}）：表格环境由守卫标记包裹，任何数值/行列改动都会被 Quality Gate 拒绝；如审稿意见认为表格数据有误，正确做法是提请作者决定（修改来源数据须重新授权），不是在修订中直接改表。`,
+    );
+  }
+  return lines.join("\n");
+}
+
 async function computeThesisGateInput(services: WorkflowServices, projectId: string): Promise<ThesisGateInput> {
   const mapping = await services.thesis.planner.loadMapping(projectId);
   const outline = await services.manuscript.loadOutline(projectId);
@@ -9842,6 +10054,67 @@ async function computeThesisGateInput(services: WorkflowServices, projectId: str
     structureViolations.push("outline.json 缺失");
   }
 
+  // ---- M14.3 继承表格守卫（已插入资产 ↔ 章节文件的确定性比对）----
+  const assetsFile = await services.thesis.inheritedTables.load(projectId);
+  const insertedAssets = (assetsFile?.assets ?? []).filter((asset) => asset.status === "inserted");
+  let tables: ThesisGateInput["tables"] | undefined;
+  const sectionFiles: Array<{ file: string; latex: string }> = [];
+  if (outline !== null) {
+    for (const section of outline.sections) {
+      try {
+        sectionFiles.push({
+          file: section.file,
+          latex: await readFile(join(services.projects.manuscriptDir(projectId), "sections", section.file), "utf8"),
+        });
+      } catch {
+        sectionFiles.push({ file: section.file, latex: "" });
+      }
+    }
+  }
+  if (insertedAssets.length > 0) {
+    const verification = verifyInheritedTables(insertedAssets, sectionFiles);
+    tables = {
+      checked: verification.checked,
+      intact: verification.intact,
+      findings: verification.findings.map((finding) => ({
+        assetId: finding.assetId,
+        ok: finding.ok,
+        violations: finding.violations,
+      })),
+    };
+  }
+
+  // ---- M14.3 跨章一致性 MVP（确定性；advisory 不阻断，产物落盘 research/）----
+  let consistency: ThesisGateInput["consistency"];
+  if (mapping !== null && outline !== null) {
+    const sectionContents = new Map(sectionFiles.map((entry) => [entry.file, entry.latex]));
+    const result = checkCrossChapterConsistency({
+      projectId,
+      now: new Date().toISOString(),
+      chapters: mapping.chapters.map((chapter) => ({
+        chapterId: chapter.chapterId,
+        titleZh: chapter.titleZh,
+        sectionFiles: chapter.sectionFiles,
+      })),
+      sectionContents,
+      factContext: context,
+    });
+    try {
+      await writeJsonAtomic(
+        join(services.projects.researchDir(projectId), "cross-chapter-consistency.json"),
+        result,
+      );
+    } catch {
+      // 产物写失败不阻断 gate（内存结果照常进 gate detail）
+    }
+    consistency = {
+      checked: result.checked,
+      findings: result.findings.length,
+      suspicious: result.findings.filter((finding) => finding.severity === "suspicious").length,
+      topFindings: result.findings.slice(0, 5).map((finding) => finding.summary),
+    };
+  }
+
   return {
     drift: {
       checked: drift.checked,
@@ -9860,6 +10133,8 @@ async function computeThesisGateInput(services: WorkflowServices, projectId: str
     },
     structureViolations: structureViolations.slice(0, 10),
     conflictsUnresolved: context.conflicts.unresolved.length,
+    ...(tables !== undefined ? { tables } : {}),
+    ...(consistency !== undefined ? { consistency } : {}),
   };
 }
 

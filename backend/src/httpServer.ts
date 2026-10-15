@@ -1169,6 +1169,7 @@ async function handleProjectResourceRoutes(
     const handled = await handleThesisRoutes(req, res, projectId, rest, method, {
       service: stack.thesisDocuments,
       manuscript: stack.manuscript,
+      ...(stack.inheritedFigures !== undefined ? { figures: stack.inheritedFigures } : {}),
       readJsonBody: (request) => readJsonBody(request),
       sendJson,
       sendMethodNotAllowed,

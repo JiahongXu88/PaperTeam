@@ -372,6 +372,25 @@ export interface ThesisGateInput {
   structureViolations: string[];
   /** thesis_conflicts_resolved（未裁决阻断冲突必须为 0） */
   conflictsUnresolved: number;
+  /**
+   * M14.3 inherited_tables_intact：已插入继承表格的守卫复核（数值 / 行列 /
+   * 标记块完整性）。undefined = 无继承表格资产（规则不出现）。
+   */
+  tables?: {
+    checked: number;
+    intact: number;
+    findings: Array<{ assetId: string; ok: boolean; violations: string[] }>;
+  };
+  /**
+   * M14.3 cross_chapter_consistency：跨章一致性 MVP 的确定性结果摘要
+   * （advisory——不参与 pass/fail；产物在 research/cross-chapter-consistency.json）。
+   */
+  consistency?: {
+    checked: { terms: number; factKeys: number; references: number; chapters: number };
+    findings: number;
+    suspicious: number;
+    topFindings: string[];
+  };
 }
 
 export interface QualityGateResult {
@@ -839,6 +858,29 @@ export function evaluateQualityGate(
           ? "研究事实冲突全部裁决（无未决阻断）"
           : `仍有 ${thesis.conflictsUnresolved} 条未裁决冲突——未裁决数值不得出现在正文`,
     });
+    // M14.3：继承表格守卫（存在已插入资产时必现；数值 / 行列 / 标记块漂移 = FAIL）
+    if (thesis.tables !== undefined) {
+      const broken = thesis.tables.findings.filter((finding) => !finding.ok);
+      rules.push({
+        rule: "inherited_tables_intact",
+        passed: broken.length === 0,
+        detail:
+          broken.length === 0
+            ? `继承表格守卫：${thesis.tables.intact}/${thesis.tables.checked} 资产完整（数值 / 行列 / 标记块一致）`
+            : `继承表格漂移 ${broken.length} 处：${broken.slice(0, 3).map((finding) => `${finding.assetId}（${finding.violations.slice(0, 2).join("；")}）`).join("；")}`,
+      });
+    }
+    // M14.3：跨章一致性（advisory——恒过；确认的未授权数值变更由零漂移规则阻断）
+    if (thesis.consistency !== undefined) {
+      const c = thesis.consistency;
+      rules.push({
+        rule: "cross_chapter_consistency_reported",
+        passed: true,
+        detail:
+          `跨章确定性检查：术语 ${c.checked.terms} / 事实键 ${c.checked.factKeys} / label ${c.checked.references} / 章 ${c.checked.chapters}；` +
+          `发现 ${c.findings} 条（疑似 ${c.suspicious}）——advisory 不阻断${c.topFindings.length > 0 ? `；如 ${c.topFindings[0]}` : ""}`,
+      });
+    }
   }
 
   const reasons = rules.filter((rule) => !rule.passed).map((rule) => `${rule.rule}: ${rule.detail}`);

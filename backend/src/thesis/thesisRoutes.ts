@@ -19,10 +19,14 @@ import type { ManuscriptService } from "../manuscript/ManuscriptService.js";
 import type { ThesisDocumentService } from "./ThesisDocumentService.js";
 import { THESIS_TEMPLATE_ADAPTERS } from "./genericCtexbookAdapter.js";
 import { THESIS_TEMPLATE_IDS, type ThesisDocumentModel } from "./thesisDocumentTypes.js";
+import type { InheritedFigureAssetService } from "./inheritedFigureAssets.js";
+import type { DecisionActor } from "./researchInputTypes.js";
 
 export interface ThesisRouteDeps {
   service: ThesisDocumentService;
   manuscript: ManuscriptService;
+  /** M14.3：图形资产继承（可选装配——缺省路由 404 语义） */
+  figures?: InheritedFigureAssetService;
   readJsonBody: (req: IncomingMessage) => Promise<Record<string, unknown>>;
   sendJson: (res: ServerResponse, status: number, body: unknown) => void;
   sendMethodNotAllowed: (res: ServerResponse, allowed: string, method: string) => void;
@@ -111,7 +115,73 @@ export async function handleThesisRoutes(
     return true;
   }
 
+  // ---- M14.3：研究成果图形资产继承（PlotSpec 确定性生成 + 作者授权 + 受控插入）----
+  if (rest === "/figure-assets") {
+    if (deps.figures === undefined) {
+      return false;
+    }
+    const figures = deps.figures;
+    if (method === "GET") {
+      sendJson(res, 200, await figures.list(projectId));
+      return true;
+    }
+    if (method === "POST") {
+      const body = await readJsonBody(req);
+      const spec = body["spec"];
+      if (spec === undefined || typeof spec !== "object") {
+        throw new BusinessError("INVALID_REQUEST", "请求体需要 spec 字段（PlotSpec / DiagramSpec）");
+      }
+      const kind = body["kind"] === "diagram" ? "diagram" : "plot";
+      const result = await figures.generateAndAuthorize(projectId, {
+        sourceId: requireString(body, "sourceId"),
+        blockId: requireString(body, "blockId"),
+        kind,
+        spec: spec as Record<string, unknown>,
+        caption: requireString(body, "caption"),
+        actor: readActor(body),
+      });
+      sendJson(res, 201, { asset: result.asset, cached: result.cached, ...(result.captionValidation !== undefined ? { captionValidation: result.captionValidation } : {}) });
+      return true;
+    }
+    sendMethodNotAllowed(res, "GET, POST", method);
+    return true;
+  }
+  const figureInsertMatch = /^\/figure-assets\/(fig-[0-9a-f]{12,64})\/insert$/.exec(rest);
+  if (figureInsertMatch !== null && deps.figures !== undefined) {
+    if (method !== "POST") {
+      sendMethodNotAllowed(res, "POST", method);
+      return true;
+    }
+    const body = await readJsonBody(req);
+    const result = await deps.figures.insert(projectId, {
+      figId: figureInsertMatch[1]!,
+      sectionFile: requireString(body, "sectionFile"),
+      ...(typeof body["caption"] === "string" ? { caption: body["caption"] } : {}),
+      ...(typeof body["referenceSentence"] === "string" ? { referenceSentence: body["referenceSentence"] } : {}),
+      actor: readActor(body),
+    });
+    sendJson(res, 200, { asset: result.asset, label: result.label, file: result.file });
+    return true;
+  }
+
   return false;
+}
+
+function requireString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new BusinessError("INVALID_REQUEST", `请求体需要非空字符串字段 ${field}`);
+  }
+  return value.trim();
+}
+
+function readActor(body: Record<string, unknown>): DecisionActor {
+  const actorBody = typeof body["actor"] === "object" && body["actor"] !== null ? (body["actor"] as Record<string, unknown>) : {};
+  return {
+    kind: actorBody["kind"] === "test_fixture" ? "test_fixture" : "user",
+    ...(typeof actorBody["id"] === "string" ? { id: actorBody["id"] } : {}),
+    ...(typeof actorBody["note"] === "string" ? { note: actorBody["note"] } : {}),
+  };
 }
 
 /** 入参基础校验（详细结构校验在 saveModel 的 validateThesisDocumentModel） */

@@ -57,6 +57,10 @@ export async function startBackend(): Promise<void> {
   // PiRuntimeAdapter（浏览器级 E2E 驱动完整真实链路：编排器 / checkpoint / SSE /
   // HTTP / React 全部真实，只有「模型输出」是脚本）。正式环境不设置该变量。
   const useScriptedRuntime = process.env["PAPERTEAM_TEST_RUNTIME"]?.trim() === "scripted";
+  // M14.3 测试专用 seam：与 scripted runtime 同族——浏览器 E2E 的 HITL resume
+  // 允许显式声明 actor=test_fixture（决定台账如实记录 actorKind；不设置 = 生产
+  // 拒绝该 actor，语义不变）。
+  const allowTestFixtureActor = process.env["PAPERTEAM_TEST_ALLOW_FIXTURE_ACTOR"]?.trim() === "1";
   // M10.2 测试专用 seam：PAPERTEAM_TEST_VISION=scripted 时 Vision 分析用确定性
   // 假模型（不访问任何真实模型；链路其余部分全部真实）
   const useScriptedVision = process.env["PAPERTEAM_TEST_VISION"]?.trim() === "scripted";
@@ -302,6 +306,9 @@ export async function startBackend(): Promise<void> {
       revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,
+    // M14.3 测试 seam：仅显式设置 PAPERTEAM_TEST_ALLOW_FIXTURE_ACTOR=1 时开启
+    //（与 scripted runtime 同族；缺省不设置 = 生产拒绝 test_fixture actor）
+    ...(allowTestFixtureActor ? { thesis: { allowTestFixtureActor: true } } : {}),
     citation: {
       metadataEnabled: config.citation.metadataEnabled,
       maxMetadataLookups: config.citation.maxMetadataLookups,

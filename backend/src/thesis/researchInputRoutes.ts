@@ -172,6 +172,25 @@ export async function handleResearchInputRoutes(
     sendJson(res, 200, await service.plannerContext(projectId));
     return true;
   }
+  // M14.3：继承表格资产台账（GET 只读；POST refresh 重建候选——幂等，已授权/
+  // 已插入/已拒绝状态不受影响）。授权经 /decisions（payload.type=table_inheritance）。
+  if (rest === "/table-assets") {
+    if (method === "GET") {
+      const refresh = url.searchParams.get("refresh") === "1";
+      const file = refresh
+        ? (await service.refreshTableCandidates(projectId)).file
+        : await service.listTableAssets(projectId);
+      sendJson(res, 200, { assets: file.assets, updatedAt: file.updatedAt });
+      return true;
+    }
+    if (method === "POST") {
+      const result = await service.refreshTableCandidates(projectId);
+      sendJson(res, 200, { assets: result.file.assets, candidatesBuilt: result.candidatesBuilt, skippedInputs: result.skippedInputs });
+      return true;
+    }
+    sendMethodNotAllowed(res, "GET, POST", method);
+    return true;
+  }
   const item = /^\/(ri-[a-f0-9]{12})(\/extract|\/verify|\/statement-facts)?$/.exec(rest);
   if (item !== null) {
     const inputId = item[1]!;

@@ -51,6 +51,11 @@ export interface ThesisSectionContextInput {
   limitationMode: boolean;
   /** 本节文献主题（outline literatureRefs） */
   literatureRefs?: readonly string[];
+  /**
+   * M14.3：本章系统继承表格（label + 题注 + 插入节文件）。写作只负责在正文
+   * 合适位置以 \ref 引用；表格本体由系统确定性插入，Writer 不得自造替代表格。
+   */
+  inheritedTables?: ReadonlyArray<{ label: string; captionZh: string; sectionFile: string }>;
 }
 
 export function buildThesisSectionContext(input: ThesisSectionContextInput): ThesisSectionWritingContext {
@@ -136,6 +141,21 @@ export function buildThesisSectionContext(input: ThesisSectionContextInput): The
   if (input.limitationMode) {
     lines.push(
       "【作者决定：研究限制口径】本章按作者决定以「研究限制 / 未开展」口径撰写：如实说明材料未齐、实验未开展或数据待补；不得出现任何具体数值，不得虚构进展。",
+    );
+  }
+
+  // M14.3 系统继承表格
+  if (input.inheritedTables !== undefined && input.inheritedTables.length > 0) {
+    const here = input.inheritedTables.filter((table) => table.sectionFile === input.sectionFile);
+    const elsewhere = input.inheritedTables.filter((table) => table.sectionFile !== input.sectionFile);
+    lines.push(
+      "【系统继承表格】以下研究成果表格由系统按作者授权确定性插入本章，数据不可改动：",
+      ...input.inheritedTables.map((table) => `- ${table.captionZh}（\\ref{${table.label}}）`),
+      "正文可在合适位置以 \\ref 引用上述表格并围绕其数据展开分析；禁止自行编写这些表格的替代版本、改写其中数值、或在正文中给出与表格冲突的数字。",
+      ...(here.length > 0
+        ? [`本节末尾将插入：${here.map((table) => table.label).join("、")}（无需在正文输出表格环境）。`]
+        : []),
+      ...(elsewhere.length > 0 ? [`其余继承表格（${elsewhere.map((table) => table.label).join("、")}）在本章其他节插入。`] : []),
     );
   }
 

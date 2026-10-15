@@ -63,10 +63,17 @@ export function stripNonFactualNumbers(text: string): string {
 /**
  * 检查单条已确认事实相对正文的漂移。
  * - 正文含 fact.surface 的归一形态（空白不敏感）→ consistent；
- * - 否则抽取正文数值 token，与 fact.value 逐个 compareFactValues：
+ * - 否则做**句级锚定比对**（M14.3 真实案例修正）：数值比较只发生在「提及该
+ *   事实锚词（subject/dataset/metric/protocol 归一形态，长度≥2）」的句子中：
  *   equal → consistent；rounding_difference / equal_after_unit_normalization →
- *   equivalent_format；其余（value_mismatch）→ unauthorized；
- * - 正文无数值且未提 surface → absent（正文未声称该实验时不算漂移）。
+ *   equivalent_format；邻域 value_mismatch → unauthorized；
+ * - 无锚词可用（弱键：空 row label + 泛化列名 Year/No. 等）或正文无锚定句 →
+ *   absent（机械比对无法定位该事实的声明位置——如实弃权，不猜）。
+ *
+ * 修正动机（案例 A 实测）：数据集统计表的年份（2010）/ 计数（2）等弱键事实
+ * 在旧 ±10× 全文邻域下把章节里任何同数量级数字（如 555）判为「未授权变更」，
+ * 31 处误报烧掉 gate。锚定后：真实指标漂移（句子提及方法/数据集/指标名 +
+ * 数值不符）照常阻断；无关数值不再进入比对。
  */
 export function checkFactDrift(fact: FactView, bodyText: string): FactDriftFinding {
   const stripped = stripNonFactualNumbers(bodyText);
@@ -88,13 +95,37 @@ export function checkFactDrift(fact: FactView, bodyText: string): FactDriftFindi
       detail: "非数值事实，按原文形态比对",
     };
   }
-  const observed = extractNumericTokens(stripNonFactualNumbers(bodyText));
+  // 句级锚定：拆句（小数点安全），筛含锚词的句子。
+  // 锚词按字母数字/中文 token 拆分（剥掉 ↑↓ 等符号后缀，如表头 "S ↑" → "S"）；
+  // 每个 token 以词边界出现（防 DUTS 里的 "s" 误锚；单字母指标 S/E/F 因此可用）。
+  const anchors = anchorTermsOf(fact);
+  const sentences = stripped
+    .split(/(?<=[。；！？;])\s*|(?<=\n)|(?<=\.)(?=\s)/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 0);
+  const anchored = anchors.length === 0
+    ? []
+    : sentences.filter((sentence) =>
+        anchors.some((anchor) => anchor.tokens.every((token) => boundedMatch(sentence, token))),
+      );
+  if (anchored.length === 0) {
+    return {
+      factId: fact.factId,
+      surface: fact.surface,
+      status: "absent",
+      detail:
+        anchors.length === 0
+          ? "弱键事实（无 subject/dataset/metric 锚词）无法机械定位声明句——不计入漂移比对"
+          : "正文未在提及该事实锚词的句子中出现数值（未声称，不是漂移）",
+    };
+  }
+  const observed = extractNumericTokens(anchored.join("\n"));
   if (observed.length === 0) {
     return {
       factId: fact.factId,
       surface: fact.surface,
       status: "absent",
-      detail: "正文未出现任何数值形态（未引用，不是漂移）",
+      detail: "锚定句未出现数值形态（未声称，不是漂移）",
     };
   }
   let equivalent = false;
@@ -145,8 +176,34 @@ export function checkFactDrift(fact: FactView, bodyText: string): FactDriftFindi
     factId: fact.factId,
     surface: fact.surface,
     status: "absent",
-    detail: "正文未引用该已确认值（未声称，不是漂移）",
+    detail: "正文锚定句未引用该已确认值（未声称，不是漂移）",
   };
+}
+
+/** 事实锚词：key 各字段拆为字母数字/中文 token（"S ↑" → ["S"]；"DUTS-TE" → ["DUTS","TE"]） */
+function anchorTermsOf(fact: FactView): Array<{ raw: string; tokens: string[] }> {
+  const raws = [fact.key.subject, fact.key.dataset, fact.key.metric, fact.key.protocol, fact.key.parameter].filter(
+    (term): term is string => term !== undefined && term !== "",
+  );
+  const seen = new Set<string>();
+  const anchors: Array<{ raw: string; tokens: string[] }> = [];
+  for (const raw of raws) {
+    const tokens = raw.toLowerCase().split(/[^a-z0-9一-鿿]+/).filter((token) => token !== "");
+    if (tokens.length === 0) continue;
+    const signature = tokens.join(" ");
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    anchors.push({ raw, tokens });
+  }
+  return anchors;
+}
+
+/** 词边界匹配（大小写不敏感；中文 token 直接包含即可） */
+function boundedMatch(sentence: string, token: string): boolean {
+  if (/[一-鿿]/.test(token)) {
+    return sentence.includes(token);
+  }
+  return new RegExp(`(^|[^A-Za-z0-9])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^A-Za-z0-9]|$)`, "iu").test(sentence);
 }
 
 export function summarizeDrift(findings: readonly FactDriftFinding[]): DriftReport {

@@ -12,6 +12,12 @@ import { sha256Hex } from "../util/hash.js";
 import type { AuthorDecisionStore } from "./AuthorDecisionStore.js";
 import { extractBodyTextFacts } from "./bodyTextFacts.js";
 import { extractTableFacts, extractTables, statementFactId, type ExtractedTable } from "./factExtraction.js";
+import {
+  buildInheritedTableCandidates,
+  InheritedTableAssetStore,
+  type InheritedTableAsset,
+  type InheritedTableAssetFile,
+} from "./inheritedAssets.js";
 import { normalizeSurfaceText, parseFactValue } from "./factValues.js";
 import { buildResearchFactContext } from "./plannerContext.js";
 import type { RegisterResearchInputRequest, RegisterResearchInputResult, ResearchInputRegistry } from "./ResearchInputRegistry.js";
@@ -41,6 +47,8 @@ export interface ResearchInputServiceOptions {
   documents: ParsedDocumentStore;
   ingestion: IngestionService;
   textLayer: TextLayerProvider;
+  /** M14.3：继承表格资产 store（缺省不启用该能力——查询返回空台账） */
+  tables?: InheritedTableAssetStore;
   now?: () => Date;
 }
 
@@ -72,6 +80,9 @@ export class ResearchInputService {
   }
   get decisions(): AuthorDecisionStore {
     return this.deps.decisions;
+  }
+  get tables(): InheritedTableAssetStore | undefined {
+    return this.deps.tables;
   }
 
   /** 注册；ensureParsed=true 时同步等待解析（PDF 可能很慢——只在显式请求 / 验证脚本使用） */
@@ -330,8 +341,73 @@ export class ResearchInputService {
         effects.push(`alignment:${alignment.alignmentId}=${alignment.status}`);
         break;
       }
+      case "table_inheritance": {
+        // M14.3：继承表格授权（authorized → 写作期确定性插入；rejected → 不进入）
+        if (this.deps.tables === undefined) {
+          throw new BusinessError("INVALID_REQUEST", "继承表格资产能力未启用（tables store 缺失）");
+        }
+        const file = await this.deps.tables.load(projectId);
+        const asset = file?.assets.find((entry) => entry.assetId === payload.assetId);
+        if (asset === undefined) {
+          throw new NotFoundError("继承表格资产", payload.assetId);
+        }
+        if (asset.status === "inserted") {
+          throw new BusinessError("INVALID_REQUEST", `资产 ${payload.assetId} 已插入学位论文，不可再变更（数据修改须走新的作者决定）`);
+        }
+        asset.status = payload.outcome === "authorized" ? "authorized" : "rejected";
+        if (payload.captionZh !== undefined && payload.captionZh.trim() !== "") {
+          asset.captionZh = payload.captionZh.trim();
+        }
+        asset.authorization = {
+          decisionId: decision.decisionId,
+          actorKind: decision.actor.kind,
+          authorizedAt: this.now().toISOString(),
+        };
+        asset.updatedAt = this.now().toISOString();
+        await this.deps.tables.save(projectId, { ...file!, updatedAt: asset.updatedAt });
+        effects.push(`table_asset:${asset.assetId}=${asset.status}`);
+        break;
+      }
     }
     return effects;
+  }
+
+  /**
+   * M14.3：刷新继承表格候选（确定性、幂等）。对全部已入选且有解析产物的输入
+   * 重建候选并合并进台账；已授权 / 已插入 / 已拒绝的资产不受候选重建影响。
+   */
+  async refreshTableCandidates(projectId: string): Promise<{ file: InheritedTableAssetFile; candidatesBuilt: number; skippedInputs: string[] }> {
+    if (this.deps.tables === undefined) {
+      return {
+        file: { schemaVersion: 1, projectId, assets: [], updatedAt: this.now().toISOString() },
+        candidatesBuilt: 0,
+        skippedInputs: [],
+      };
+    }
+    const registry = await this.deps.registry.load(projectId);
+    const facts = (await this.deps.facts.load(projectId)).facts;
+    const now = this.now().toISOString();
+    const candidates: InheritedTableAsset[] = [];
+    const skipped: string[] = [];
+    for (const input of registry.inputs) {
+      if (input.scope.status !== "included") continue;
+      const document = await this.deps.documents.load(projectId, input.version.sourceId);
+      if (document === null || document.status === "failed" || document.contentHash !== input.version.contentHash) {
+        skipped.push(input.inputId);
+        continue;
+      }
+      candidates.push(...buildInheritedTableCandidates({ projectId, researchInput: input, tables: extractTables(document), facts, now }));
+    }
+    const file = await this.deps.tables.upsert(projectId, candidates, now);
+    return { file, candidatesBuilt: candidates.length, skippedInputs: skipped };
+  }
+
+  /** M14.3：台账视图（候选 + 状态） */
+  async listTableAssets(projectId: string): Promise<InheritedTableAssetFile> {
+    if (this.deps.tables === undefined) {
+      return { schemaVersion: 1, projectId, assets: [], updatedAt: this.now().toISOString() };
+    }
+    return (await this.deps.tables.load(projectId)) ?? { schemaVersion: 1, projectId, assets: [], updatedAt: this.now().toISOString() };
   }
 
   async plannerContext(projectId: string): Promise<ResearchFactContext> {
@@ -398,6 +474,15 @@ export function authorDecisionFromResumeInput(input: { decision: string; payload
         type: "table_alignment_confirmation",
         alignmentId: str("alignmentId"),
         outcome: input.decision === "confirm_table_alignment" ? "confirmed" : "rejected",
+        ...(optional("rationale") !== undefined ? { rationale: optional("rationale")! } : {}),
+      };
+    case "authorize_table":
+    case "reject_table":
+      return {
+        type: "table_inheritance",
+        assetId: str("assetId"),
+        outcome: input.decision === "authorize_table" ? "authorized" : "rejected",
+        ...(optional("captionZh") !== undefined ? { captionZh: optional("captionZh")! } : {}),
         ...(optional("rationale") !== undefined ? { rationale: optional("rationale")! } : {}),
       };
     default:

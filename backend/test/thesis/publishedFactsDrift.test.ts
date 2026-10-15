@@ -79,10 +79,12 @@ describe("M14.2 published_facts_zero_drift", () => {
   });
 
   it("summarizeDrift 汇总四类计数", () => {
+    // M14.3 句级锚定语义：数值比对发生在含事实锚词（metric=S 等）的句子中；
+    // 无锚词句（"约 0.72"）按 absent 处理——见专测与模块注释。
     const report = summarizeDrift([
       checkFactDrift(fact(), "S 0.724"),
-      checkFactDrift(fact(), "约 0.72"),
-      checkFactDrift(fact(), "提升至 0.811"),
+      checkFactDrift(fact(), "S 指标约为 0.72"),
+      checkFactDrift(fact(), "S 指标提升至 0.811"),
       checkFactDrift(fact(), "无数值"),
     ]);
     expect(report).toMatchObject({ checked: 4, consistent: 1, equivalentFormat: 1, unauthorized: 1, absent: 1 });

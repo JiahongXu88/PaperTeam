@@ -187,6 +187,11 @@ export async function startTestStack(
     latexRunner?: CommandRunner;
     /** M14.2：真实 xelatex/bibtex 编译（服务器验收；缺省 fake runner） */
     realLatex?: boolean;
+    /**
+     * M14.3：真实模型长程运行的 stage 预算覆盖（缺省 10s——脚本模型瞬间完成；
+     * 真实 acceptance 运行传 900_000 与生产对齐）。同时覆盖 stage 重试上限。
+     */
+    stageBudget?: { timeoutMs?: number; maxAttempts?: number };
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
     /** search provider 装配（缺省全关 = 完全离线；http 测试注入 fake fetch / 显式启用单个 provider） */
@@ -229,8 +234,8 @@ export async function startTestStack(
     latex,
     thesisLatex,
     agentIds: { ...AGENT_IDS },
-    stageTimeoutMs: 10_000,
-    stageMaxAttempts: 2,
+    stageTimeoutMs: options.stageBudget?.timeoutMs ?? 10_000,
+    stageMaxAttempts: options.stageBudget?.maxAttempts ?? 2,
     // 测试里节内重试不等退避
     review: { sectionRetryBackoffMs: [0, 0], ...(options.review ?? {}) },
     // 测试默认完全离线：关闭旧 metadata 查询，scholarly resolver 不挂任何 provider

@@ -380,6 +380,12 @@ export const AUTHOR_DECISION_TYPES = [
    * alignmentId，旧决定自然失效）。
    */
   "table_alignment_confirmation",
+  /**
+   * M14.3：研究成果表格继承授权。候选资产（数值单元格已核验）→ 作者授权后成为
+   * 学位论文合法表格，由系统在写作期确定性插入并受守卫保护；拒绝则不进入。
+   * 授权可附带学位论文题注（captionZh 改写合法；数据语义不可变）。
+   */
+  "table_inheritance",
 ] as const;
 export type AuthorDecisionType = (typeof AUTHOR_DECISION_TYPES)[number];
 
@@ -407,6 +413,14 @@ export type AuthorDecisionPayload =
       alignmentId: string;
       outcome: "confirmed" | "rejected";
       /** 拒绝时建议填写（记录到 evidence.rejectionReason） */
+      rationale?: string;
+    }
+  | {
+      type: "table_inheritance";
+      assetId: string;
+      outcome: "authorized" | "rejected";
+      /** 学位论文题注改写（合法排版差异；数据不可变） */
+      captionZh?: string;
       rationale?: string;
     };
 
