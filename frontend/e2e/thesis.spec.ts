@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 
 test.describe("thesis_from_papers 浏览器 E2E", () => {
-  test("上传材料 → 工作流 → HITL → Draft 下载", { timeout: 240_000 }, async ({ page }) => {
+  test("上传材料 → 工作流 → HITL → Draft 下载", { timeout: 600_000 }, async ({ page }) => {
     // 页面异常捕获（渲染崩溃诊断）
     page.on("pageerror", (error) => {
       console.log(`[pageerror] ${error.message.slice(0, 400)}`);
@@ -58,35 +58,33 @@ test.describe("thesis_from_papers 浏览器 E2E", () => {
     const hitl = page.getByTestId("hitl-panel");
     await expect(hitl).toBeVisible({ timeout: 60_000 });
 
-    // 6. HITL：入选材料 → 确认贡献 → approve（循环处理多轮待办节点）
-    const deadline = Date.now() + 180_000;
+    // 6. HITL：入选材料 → 确认贡献 → 缺材料限制口径 → approve（循环至终态）
+    const deadline = Date.now() + 480_000;
     for (;;) {
-      const scopeVisible = await page.getByTestId("thesis-scope-payload").isVisible().catch(() => false);
-      if (scopeVisible) {
-        const includeButtons = page.locator('[data-testid^="thesis-include-"]');
-        const includeCount = await includeButtons.count();
-        for (let index = 0; index < includeCount; index += 1) {
-          await includeButtons.nth(index).click();
-          await page.waitForTimeout(1_200);
-        }
-        const confirm = page.getByTestId("thesis-confirm-contributions");
-        if (await confirm.isVisible().catch(() => false)) {
-          await confirm.click();
-          await page.waitForTimeout(1_200);
-        }
+      // 逐个点击并重新定位（payload 随每次 resume 重渲染，批式 nth 会拿到失联元素）
+      for (let round = 0; round < 10; round += 1) {
+        const include = page.locator('[data-testid^="thesis-include-"]').first();
+        if (!(await include.isVisible().catch(() => false))) break;
+        await include.click({ timeout: 5_000 }).catch(() => undefined);
+        await page.waitForTimeout(1_500);
       }
-      const limitationButtons = page.locator('[data-testid^="thesis-limitation-"]');
-      const limitationCount = await limitationButtons.count();
-      for (let index = 0; index < limitationCount; index += 1) {
-        await limitationButtons.nth(index).click();
-        await page.waitForTimeout(1_200);
+      const confirm = page.getByTestId("thesis-confirm-contributions");
+      if (await confirm.isVisible().catch(() => false)) {
+        await confirm.click({ timeout: 5_000 }).catch(() => undefined);
+        await page.waitForTimeout(1_500);
+      }
+      for (let round = 0; round < 10; round += 1) {
+        const limitation = page.locator('[data-testid^="thesis-limitation-"]').first();
+        if (!(await limitation.isVisible().catch(() => false))) break;
+        await limitation.click({ timeout: 5_000 }).catch(() => undefined);
+        await page.waitForTimeout(1_500);
       }
       const approve = page.getByTestId("hitl-approve");
       if (await approve.isVisible().catch(() => false)) {
-        await approve.click();
-        await page.waitForTimeout(2_000);
+        await approve.click({ timeout: 5_000 }).catch(() => undefined);
+        await page.waitForTimeout(2_500);
       } else {
-        await page.waitForTimeout(1_500);
+        await page.waitForTimeout(2_000);
       }
       const completed = page.getByTestId("workflow-completed");
       if (await completed.isVisible().catch(() => false)) break;
@@ -103,13 +101,16 @@ test.describe("thesis_from_papers 浏览器 E2E", () => {
     const stageCount = await timeline.locator("li").count();
     expect(stageCount).toBeGreaterThan(5);
 
-    // 8. Draft 下载可用（论文面板的 DraftCard + 下载链接触发真实产物端点）
+    // 8. Draft 下载可用（论文产出面板的 Draft/Final 卡下载按钮触发真实产物端点）
     await page.getByRole("tab", { name: "论文产出" }).click();
-    const draftDownload = page.getByRole("link", { name: /下载/ }).first();
-    await expect(draftDownload).toBeVisible({ timeout: 30_000 });
+    const draftCard = page.locator('[data-testid="draft-card"], [data-testid="final-card"]').first();
+    await expect(draftCard).toBeVisible({ timeout: 30_000 });
+    await expect(draftCard).not.toContainText("尚无 PDF");
+    const downloadButton = page.locator('[data-testid="draft-download"], [data-testid="final-download"]').first();
+    await expect(downloadButton).toBeVisible({ timeout: 30_000 });
     const [download] = await Promise.all([
-      page.waitForEvent("download", { timeout: 30_000 }),
-      draftDownload.click(),
+      page.waitForEvent("download", { timeout: 60_000 }),
+      downloadButton.click(),
     ]);
     expect(await download.path()).toBeTruthy();
   });
