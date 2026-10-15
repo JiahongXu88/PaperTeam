@@ -231,6 +231,12 @@ export type HitlDecisionInput =
   | { action: "reject" }
   /** 仅 hitl.revision_validation（M6.7）：保留修订但标记待人工确认（Draft/Final 仍受事实保持门禁约束） */
   | { action: "needs_review" }
+  /** M14.3 thesis_from_papers hitl.scope_and_version：研究材料入选（作者确认归属） */
+  | { action: "include"; payload: { inputId: string } }
+  /** M14.3 hitl.scope_and_version：确认研究贡献归属（模型提案 → 作者确认） */
+  | { action: "confirm_contribution"; payload: { contributionIds: string[] } }
+  /** M14.3 hitl.author_decision：缺材料章按研究限制口径撰写 */
+  | { action: "write_as_limitation"; payload: { subject: string } }
   | { action: "cancel" };
 
 // ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----

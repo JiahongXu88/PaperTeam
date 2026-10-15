@@ -133,6 +133,7 @@ export function HitlPanel({
         payload={awaiting.payload}
         styleSelection={{ selected: selectedStyleIds, onToggle: toggleStyleFinding }}
         supply={{ projectId: run.projectId, onOpenTab }}
+        thesisActions={{ pending, onSubmit: submit }}
       />
 
       <div className="hitl-actions" data-testid="hitl-actions">
@@ -505,11 +506,14 @@ function HitlPayload({
   payload,
   styleSelection,
   supply,
+  thesisActions,
 }: {
   stageId: string;
   payload: Record<string, unknown> | undefined;
   styleSelection?: { selected: string[]; onToggle: (id: string) => void };
   supply?: { projectId: string; onOpenTab?: (tab: EvidenceSupplyTab) => void };
+  /** M14.3 thesis payload 内联决策（与通用按钮同一 resume 通道） */
+  thesisActions?: { pending: boolean; onSubmit: (input: HitlDecisionInput) => void };
 }) {
   if (payload === undefined) {
     return null;
@@ -537,9 +541,10 @@ function HitlPayload({
       return <LiteratureSelectionPayload payload={payload} />;
     case "hitl.matrix_confirm":
       return <MatrixConfirmPayload payload={payload} />;
-    // M14.2 thesis_from_papers HITL payload（研究材料面板承担决策入口，这里如实呈现状态）
+    // M14.2 thesis_from_papers HITL payload（M14.3：决策入口内联——入选 / 确认
+    // 贡献 / 缺材料限制口径直接可点，approve 走通用按钮）
     case "hitl.scope_and_version":
-      return <ThesisScopePayload payload={payload} />;
+      return <ThesisScopePayload payload={payload} pending={thesisActions?.pending ?? false} onSubmit={thesisActions?.onSubmit} />;
     case "hitl.fact_conflicts":
       return <ThesisConflictsPayload payload={payload} />;
     case "hitl.outline_confirm":
@@ -549,7 +554,7 @@ function HitlPayload({
         <OutlinePayload payload={payload} />
       );
     case "hitl.author_decision":
-      return <ThesisAuthorDecisionPayload payload={payload} />;
+      return <ThesisAuthorDecisionPayload payload={payload} pending={thesisActions?.pending ?? false} onSubmit={thesisActions?.onSubmit} />;
     default:
       // 未知 HITL 节点：不虚构内容，prompt 已说明情况
       return null;
@@ -559,7 +564,15 @@ function HitlPayload({
 // ---- M14.2 thesis_from_papers HITL payload ----
 
 /** 范围 / 版本 / 贡献确认：呈现待决输入、贡献与冲突计数（决策在「研究材料」面板或下方 approve） */
-function ThesisScopePayload({ payload }: { payload: Record<string, unknown> }) {
+function ThesisScopePayload({
+  payload,
+  pending: mutationPending,
+  onSubmit,
+}: {
+  payload: Record<string, unknown>;
+  pending: boolean;
+  onSubmit?: (input: HitlDecisionInput) => void;
+}) {
   const inputs = (payload["inputs"] as Record<string, Array<{ inputId: string; title: string }>> | undefined) ?? {};
   const contributions = Array.isArray(payload["contributions"])
     ? (payload["contributions"] as Array<{ id: string; kind: string; statement: string; anchorStatus: string; status: string }>)
@@ -569,6 +582,7 @@ function ThesisScopePayload({ payload }: { payload: Record<string, unknown> }) {
     : [];
   const factCounts = (payload["factCounts"] as Record<string, number> | undefined) ?? {};
   const conflicts = (payload["conflicts"] as { unresolved: unknown[] } | undefined)?.unresolved ?? [];
+  const unconfirmed = contributions.filter((item) => item.status === "proposed");
   return (
     <div className="hitl-payload thesis-scope-payload" data-testid="thesis-scope-payload">
       <div className="hitl-kv">
@@ -584,6 +598,27 @@ function ThesisScopePayload({ payload }: { payload: Record<string, unknown> }) {
           <ul>{pending.map((item) => <li key={`${item.type}:${item.subject}`}><code>{item.subject}</code><span>{item.reason}</span></li>)}</ul>
         </div>
       ) : null}
+      {(inputs.proposed ?? []).length > 0 && onSubmit !== undefined ? (
+        <div className="hitl-list">
+          <h4>待决研究材料（确认属于你的研究成果后入选）</h4>
+          <ul>
+            {(inputs.proposed ?? []).map((item) => (
+              <li key={item.inputId}>
+                <span>{item.title}</span>
+                <button
+                  type="button"
+                  className="text-button"
+                  data-testid={`thesis-include-${item.inputId}`}
+                  disabled={mutationPending}
+                  onClick={() => onSubmit({ action: "include", payload: { inputId: item.inputId } })}
+                >
+                  入选
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {contributions.length > 0 ? (
         <div className="hitl-list">
           <h4>研究贡献（模型提案，需你确认归属）</h4>
@@ -597,9 +632,20 @@ function ThesisScopePayload({ payload }: { payload: Record<string, unknown> }) {
               </li>
             ))}
           </ul>
+          {unconfirmed.length > 0 && onSubmit !== undefined ? (
+            <button
+              type="button"
+              className="btn"
+              data-testid="thesis-confirm-contributions"
+              disabled={mutationPending}
+              onClick={() => onSubmit({ action: "confirm_contribution", payload: { contributionIds: unconfirmed.map((item) => item.id) } })}
+            >
+              确认以上贡献属于我的工作
+            </button>
+          ) : null}
         </div>
       ) : null}
-      <p className="panel-note">逐项决定（入选 / 排除 / 版本 / 未发表政策 / 贡献确认 / 事实确认）请到「研究材料」面板操作；全部决定完成后在此 approve 继续。</p>
+      <p className="panel-note">材料事实确认与冲突裁决在「研究材料」面板操作；范围与贡献全部确认后在此 approve 继续。</p>
     </div>
   );
 }
@@ -669,7 +715,15 @@ function ThesisOutlinePayload({ payload }: { payload: Record<string, unknown> })
 }
 
 /** 缺材料章决定：呈现章节与口径（决策按钮沿用面板通用 approve / 选项） */
-function ThesisAuthorDecisionPayload({ payload }: { payload: Record<string, unknown> }) {
+function ThesisAuthorDecisionPayload({
+  payload,
+  pending,
+  onSubmit,
+}: {
+  payload: Record<string, unknown>;
+  pending: boolean;
+  onSubmit?: (input: HitlDecisionInput) => void;
+}) {
   const missing = Array.isArray(payload["missingChapters"])
     ? (payload["missingChapters"] as Array<{ chapterId: string; titleZh: string; responsibility: string; goal: string }>)
     : [];
@@ -680,6 +734,17 @@ function ThesisAuthorDecisionPayload({ payload }: { payload: Record<string, unkn
           <h4>{chapter.titleZh}（{chapter.responsibility}）</h4>
           <p>{chapter.goal}</p>
           <p className="panel-note">该章声明的贡献没有可写的已确认实验事实。系统不会为其生成任何实验数值。</p>
+          {onSubmit !== undefined ? (
+            <button
+              type="button"
+              className="btn"
+              data-testid={`thesis-limitation-${chapter.chapterId}`}
+              disabled={pending}
+              onClick={() => onSubmit({ action: "write_as_limitation", payload: { subject: chapter.chapterId } })}
+            >
+              按研究限制口径撰写本章
+            </button>
+          ) : null}
         </div>
       ))}
       <p className="panel-note">

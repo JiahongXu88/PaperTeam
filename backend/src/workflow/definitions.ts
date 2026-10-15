@@ -9601,7 +9601,11 @@ function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
       // M14.3：继承表格插入计划（确定性）。授权资产 → 来源输入所属章（优先
       // method/experiment 章）→ 该章最后一节文件末尾。幂等：节文件已有守卫块则跳过。
       const assetsFile = await services.thesis.inheritedTables.load(ctx.projectId);
-      const authorizedAssets = (assetsFile?.assets ?? []).filter((asset) => asset.status === "authorized");
+      // M14.3：authorized + 已 inserted 资产都参与本轮插入——新 run 重写节文件后
+      // 旧守卫块随文件消失，inserted 资产须重插（幂等：内容总是 Writer 新写 + 块追加）。
+      const authorizedAssets = (assetsFile?.assets ?? []).filter(
+        (asset) => asset.status === "authorized" || asset.status === "inserted",
+      );
       const insertionsByFile = new Map<string, typeof authorizedAssets>();
       const insertionNotes: string[] = [];
       const insertedRecords: Array<{ assetId: string; chapterId: string; sectionFile: string; latexHash: string }> = [];

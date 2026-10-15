@@ -12,7 +12,44 @@ import type {
 } from "../types/researchInputs.js";
 
 export async function listResearchInputs(projectId: string): Promise<ResearchInputsFileView> {
-  return apiClient.get<ResearchInputsFileView>(`/api/projects/${encodeURIComponent(projectId)}/research-inputs`);
+  const body = await apiClient.get<{
+    inputs: Array<{
+      inputId: string;
+      inputType: ResearchInputType;
+      title: string;
+      workId: string;
+      version: { contentHash: string };
+      versionLabel?: string;
+      /** 后端为对象（M14.1b 契约）：{ status, updatedAt, decisionId? } */
+      scope: { status: string; updatedAt: string; decisionId?: string };
+      /** 后端为对象：{ status, parser?, notes, ... } */
+      parse: { status: string };
+      publicationStatus?: { value: string };
+      unpublishedMaterialPolicy?: { allowed: boolean };
+    }>;
+    workGroups: ResearchInputsFileView["workGroups"];
+    relations?: unknown[];
+    alignments?: unknown[];
+  }>(`/api/projects/${encodeURIComponent(projectId)}/research-inputs`);
+  // M14.3：后端 ResearchInput 契约（scope/parse/publicationStatus 为对象）→ 面板
+  // 视图（字符串徽章）。此前直接透传导致 React 渲染对象崩溃（浏览器 E2E 实锤）。
+  return {
+    inputs: body.inputs.map((input) => ({
+      inputId: input.inputId,
+      inputType: input.inputType,
+      title: input.title,
+      workId: input.workId,
+      contentHash: input.version.contentHash,
+      ...(input.versionLabel !== undefined ? { versionLabel: input.versionLabel } : {}),
+      scope: input.scope.status,
+      parseStatus: input.parse.status,
+      ...(input.publicationStatus !== undefined ? { publicationStatus: input.publicationStatus.value } : {}),
+      ...(input.unpublishedMaterialPolicy !== undefined
+        ? { unpublishedMaterialAllowed: input.unpublishedMaterialPolicy.allowed }
+        : {}),
+    })),
+    workGroups: body.workGroups,
+  };
 }
 
 export async function registerResearchInput(
