@@ -355,10 +355,12 @@ export function verifyInheritedTableBlock(asset: InheritedTableAsset, block: str
     return { assetId: asset.assetId, ok: false, violations };
   }
   const body = tabular[2] ?? "";
+  // 注意：不做行级 trim——首列为空的表头行以 " & " 开头，trim 会吃掉前导分隔符
+  // 造成列数误判（真实案例：S-measure Table 1 首列空 → 13 列被数成 12）。
   const rows = body
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line !== "" && !/^(\\hline|\\toprule|\\midrule|\\bottomrule)/.test(line))
+    .map((line) => line.replace(/\s+$/, ""))
+    .filter((line) => line.trim() !== "" && !/^\s*(\\hline|\\toprule|\\midrule|\\bottomrule)/.test(line))
     .map((line) =>
       line
         .replace(/\\\\$/, "")

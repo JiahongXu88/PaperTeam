@@ -217,6 +217,20 @@ describe("M14.3 InheritedTableAsset", () => {
       expect(verification.ok).toBe(true);
     });
 
+    it("首列为空的表头行不被误判列数（真实案例：S-measure Table 1 13 列被数成 12）", () => {
+      const wideAsset = {
+        ...asset,
+        structure: {
+          headerRow: ["", "A", "B"],
+          rows: [["x", "0.1", "0.2"]],
+          labelColumnCount: 1,
+        },
+      };
+      const latex = renderInheritedTableLatex(wideAsset);
+      const verification = verifyInheritedTableBlock(wideAsset, extractGuardedTableBlocks(latex).get("ita-0123456789ab"));
+      expect(verification.ok).toBe(true);
+    });
+
     it("批量复核：混合文件定位", () => {
       const intact = renderInheritedTableLatex(asset);
       const other = { ...asset, assetId: "ita-fedcba987654" };
