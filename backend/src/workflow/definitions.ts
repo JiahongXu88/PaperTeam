@@ -271,7 +271,7 @@ import type { ResearchInputService } from "../thesis/ResearchInputService.js";
 import { authorDecisionFromResumeInput } from "../thesis/ResearchInputService.js";
 import type { ThesisDocumentService } from "../thesis/ThesisDocumentService.js";
 import type { InheritedTableAssetStore } from "../thesis/inheritedAssets.js";
-import { renderInheritedTableLatex, verifyInheritedTables, inheritedTableLabel } from "../thesis/inheritedAssets.js";
+import { renderInheritedTableLatex, verifyInheritedTables, inheritedTableLabel, extractGuardedTableBlocks } from "../thesis/inheritedAssets.js";
 import { checkCrossChapterConsistency } from "../thesis/crossChapterConsistency.js";
 import type { AuthorDecision } from "../thesis/researchInputTypes.js";
 import type { ThesisChapterPlan } from "../thesis/thesisWorkflowTypes.js";
@@ -2603,6 +2603,21 @@ function revisionReviseStage(
               if (!inside) failures.push({ code: "scope_violation", detail: authorized === undefined ? "REVISION_TARGET_QUOTE_UNRESOLVED" : "REVISION_TARGET_QUOTE_SCOPE_VIOLATION" });
             }
             if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) failures.push({ code: "scope_violation", detail: "new content after document end" });
+            // M14.3：继承表格守卫块完整性（span 候选）——候选不得改写任何守卫表格块
+            //（真实案例 R3 实锤：修订 Writer 重构守卫表 13→12 列，gate 才事后检出）。
+            // 数值/行列/题注变更只能走作者决定（table_inheritance）路径。
+            const guardedBeforeSpan = extractGuardedTableBlocks(fileBefore);
+            if (guardedBeforeSpan.size > 0) {
+              const guardedCandidateSpan = extractGuardedTableBlocks(candidate);
+              for (const [guardedAssetId, guardedBlock] of guardedBeforeSpan) {
+                if (guardedCandidateSpan.get(guardedAssetId) !== guardedBlock) {
+                  failures.push({
+                    code: "scope_violation",
+                    detail: `INHERITED_TABLE_MODIFICATION: 守卫表格 ${guardedAssetId} 被候选改写（继承表格数据/结构/题注只能经作者决定变更；请原样保留该表格块，只修订其上下文）`,
+                  });
+                }
+              }
+            }
             // M11.4（Attempt 7 实录）：scoped 提案可能破坏 span 自身的章节结构
             // （丢失 \subsection 命令 / 边界换行粘连），候选落盘后 locateLatexSections
             // 解析不出对应 span，后续 target 以 "Revision target no longer resolves"
@@ -2970,6 +2985,23 @@ function revisionReviseStage(
             revised.push(target.key);
             await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
             continue;
+          }
+          // M14.3：继承表格守卫块完整性（文件级目标——thesis 章节文件整文件修订）。
+          // 候选改写守卫块 → 本目标保留原稿（fail-closed；事件可审计），修订不落盘。
+          const guardedBeforeFile = extractGuardedTableBlocks(target.currentLatex);
+          if (guardedBeforeFile.size > 0) {
+            const guardedAfterFile = extractGuardedTableBlocks(output);
+            const guardedViolations = [...guardedBeforeFile.entries()]
+              .filter(([guardedAssetId, guardedBlock]) => guardedAfterFile.get(guardedAssetId) !== guardedBlock)
+              .map(([guardedAssetId]) => guardedAssetId);
+            if (guardedViolations.length > 0) {
+              await ctx.emitDomain(
+                "revision.guarded_table_rejected",
+                { file: target.relativePath, assets: guardedViolations },
+                `${target.relativePath} 的修订候选改写了守卫继承表格（${guardedViolations.join("、")}）——拒绝落盘，目标保留原稿（表格变更须走作者决定）`,
+              );
+              output = target.currentLatex;
+            }
           }
           // M14.1a：章节文件写入原子化（tmp → fsync → rename），进程中断不留半个文件
           await writeFileAtomic(targetFilePath, output);
