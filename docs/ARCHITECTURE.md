@@ -902,12 +902,17 @@ backend/src/
 │                  sectionChunking（TOC/标题 → sections，标题行锚定的 block 归属 → chunks）、
 │                  PaperStore、PaperIngestService、PaperMapService、ReviewContextBuilder、
 │                  ReferenceExtractor（IEEE / GB/T 7714 / APA 著录解析）、SectionReviewService
-├── workflow/      WorkflowOrchestrator（引擎）、definitions（四条 workflow 的
+├── workflow/      WorkflowOrchestrator（引擎）、definitions（五条 workflow 的
 │                  stage 注册表 + plan/onInput 确定性规划器；M11.1.4 起含
 │                  topic_survey——M11.2 起为 Topic→Survey PDF：前段研究链
 │                  （Matrix/Synthesis/Outline）+ 复用 idea_to_paper 共享后段
 │                  [writing→citation→review→gate→revision→build]，completion
-│                  label=final/draft）、
+│                  label=final/draft；M14.2 起含 thesis_from_papers——研究
+│                  成果输入集→学位论文：thesis.ingest→contributions→
+│                  hitl.scope_and_version→[hitl.fact_conflicts]→storyline→
+│                  hitl.outline_confirm→evidence_supply→[hitl.author_decision]
+│                  →thesis 分章写作（事实纪律注入+源文本投影）→共享后段；
+│                  build.draft 走 M14.1c 装配+ctexbook 编译）、
 │                  kinds（WorkflowKind 常量）、
 │                  runStore（checkpoint 持久化）、eventLog（Domain Event JSONL）、types
 ├── agents/        ResearcherService、FeasibilityService、ReviewerService（业务角色，
@@ -1718,6 +1723,7 @@ live 扩展（多场景 / 异模型 judge / Exp2·Exp3 live 化）属 M7。
 | Runtime 升级 | Pi SDK 0.84.4 → **1.0.1**（M11.4.5 请求生命周期遥测：first activity / first text token / requestId×stageAttempt 关联） | [research/PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md](research/PI_1_0_1_UPGRADE_AND_SOAK_REPORT.md) |
 | M12.1 Target Intelligence | Benchmark 语料（role=reference + 冻结 manifest）→ 确定性 profile 分位带（+bounded 摘要）→ readiness 四档 advisory 判决；三层质量语义分离 | `backend/src/target/`；[research/M12_BATCH2_PRODUCT_CLOSURE.md](research/M12_BATCH2_PRODUCT_CLOSURE.md) |
 | M12.2 Multimodal Review | VisualArtifactView 三源投影（pdf_parsed/latex_env/generated）+ 确定性六项视觉检查恒运行 + vision 四项按 capability 降级 | `backend/src/vision/VisualReviewService.ts`；[research/M12_BATCH2_PRODUCT_CLOSURE.md](research/M12_BATCH2_PRODUCT_CLOSURE.md) |
+| M14.2 学位论文工作流 | 第五类 workflow `thesis_from_papers`：ResearchInput→贡献提取（quote 逐字锚定）→范围/版本/贡献/冲突 HITL→主线+两级大纲+章节映射（确定性校验）→分章写作（authorConfirmed 事实纪律注入+源文本投影+限制口径）→gate 四规则（published_facts_zero_drift 等）→ctexbook 装配编译 Draft | `backend/src/thesis/`、`backend/src/workflow/definitions.ts`；[research/M14_2_THESIS_WORKFLOW_CLOSURE.md](research/M14_2_THESIS_WORKFLOW_CLOSURE.md) |
 | M12.3 图表生成（Batch 3） | 数据集候选（ParsedDocument 提取 + sourceId/blockId 锚）→ PlotSpec/DiagramSpec → pgfplots/TikZ → 独立 xelatex → 矢量 PDF 资产（figId=specHash）；受控手稿插入（append/replace + label lineage）；caption↔dataset 真实性守卫（三桶数值声明分桶 + 全称/计数/单位 UNVERIFIED）；Writer 图形白名单守卫；doctor 部署形态分离 | `backend/src/figures/`、`backend/src/serviceStack.ts`（figures 服务）；[research/M12_BATCH3_FIGURE_GENERATION_CLOSURE.md](research/M12_BATCH3_FIGURE_GENERATION_CLOSURE.md) |
 | M13.2 实验数据包 | 有界 ZIP inventory → 既有 Ingestion/Source → 候选分组与来源锚定指标 → 作者确认；确认结果进入 Figure/Dataset 与 Researcher 的受限结构化上下文，Evidence 仍独立验证；ZIP 原文不执行、不进入通用文献 prompt | `backend/src/experiments/`、`backend/src/workflow/definitions.ts`；[research/M13_2_EXPERIMENT_PACKAGE_DESIGN.md](research/M13_2_EXPERIMENT_PACKAGE_DESIGN.md)、[research/M13_2_EXPERIMENT_PACKAGE_ACCEPTANCE.md](research/M13_2_EXPERIMENT_PACKAGE_ACCEPTANCE.md) |
 

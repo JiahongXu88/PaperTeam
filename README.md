@@ -40,6 +40,16 @@ Pick **Create a new paper**, choose a paper type, and PaperTeam runs the full lo
   ablations) instead of inventing results. You confirm the plan, then it proceeds
   through outline → section writing → citation verification → review → revision →
   quality gate → Draft/Final PDF.
+- **Thesis from your papers** — register 1–3+ of your own papers, manuscripts, or
+  experiment reports as research inputs. PaperTeam extracts contributions (with
+  verbatim-quote anchoring), extracts and cross-checks scientific facts across
+  inputs, then asks **you** to decide scope, versions, unpublished-material policy,
+  and conflicting values — never the model. You confirm the storyline, two-level
+  outline, and chapter↔source mapping; chapters are written one by one with
+  author-confirmed facts as the only allowed numeric source (missing-experiment
+  chapters are written as stated limitations, never fabricated), reviewed with
+  provable coverage, gated by `published_facts_zero_drift`, and compiled as a
+  ctexbook thesis PDF (M14.2; generic template — no university-specific claims).
 
 ### 2. Revise an existing paper against reviewer comments
 
@@ -112,9 +122,9 @@ auto-recognition is explicitly not claimed.
 | Literature discovery | Multi-source academic search (OpenAlex, Semantic Scholar, arXiv, AMiner; optional SearXNG web search) with shared HTTP resilience; results stay candidates until you promote them |
 | Library & retrieval | Five ingestion paths (PDF / DOI / arXiv / URL / BibTeX); deterministic chunking + BM25 + optional dense + RRF hybrid search — no vector database required |
 | Evidence grounding | **Retrieved ≠ Verified ≠ Grounded**: candidate evidence passes verbatim-quote, authoritative-metadata, and semantic checks before any writer may cite it |
-| Deterministic quality gates | 13+ explainable rules (citation integrity, fact preservation, feasibility, survey contracts); Build Gate (real LaTeX compile) is separate from Quality Gate |
+| Deterministic quality gates | 17+ explainable rules (citation integrity, fact preservation, feasibility, survey contracts, thesis zero-drift/mapping/structure/conflict); Build Gate (real LaTeX compile) is separate from Quality Gate |
 | Revision safety | Scoped patches with immutable snapshots; fact/citation/evidence preservation guards reject unauthorized value changes, claim escalation, and citation loss |
-| Human-in-the-loop | 11 decision points (outline, plan, feasibility, revision overflow, …) that pause the run, persist with checkpoints, and survive refresh/restart |
+| Human-in-the-loop | 15 decision points (outline, plan, feasibility, revision overflow, thesis scope/version/contributions/fact conflicts/missing material, …) that pause the run, persist with checkpoints, and survive refresh/restart |
 | Model configuration | Per-role model assignment (Writer / Researcher / Reviewers / Planner), built-in and custom providers (3 protocols), Z.AI Coding-Plan vs pay-per-use channels, test-connection |
 | Target intelligence | Venue-filtered benchmark discovery → frozen benchmark/profile/readiness artifacts; six-dimension × four-tier verdicts with quantile bands; advisory-only, benchmark papers isolated from evidence (M12.1) |
 | Multimodal review | 6 deterministic + 4 optional vision-model checks over registered figure/table assets; model observations never auto-verified; findings never enter blocking gates (M12.2) |

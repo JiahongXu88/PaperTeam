@@ -616,7 +616,8 @@
 前端类型与 Backend JSON 逐一对齐；可选字段保持可选，UI 不虚构数据。
 
 ```ts
-type WorkflowKind   = "idea_to_paper" | "existing_paper_improvement" | "existing_paper_review";
+type WorkflowKind   = "idea_to_paper" | "existing_paper_improvement" | "existing_paper_review"
+                   | "topic_survey" | "thesis_from_papers";  // M11.2 综述 / M14.2 学位论文（documentType=master_thesis 等自动路由；显式 workflowKind 优先）
 type ProjectStatus  = "created" | "generated" | "failed";
 
 // 列表与详情同形（Backend project.json 全量返回）
@@ -928,3 +929,29 @@ Base path: `/api/projects/:id/research-inputs`. 研究材料注册 / 版本关�
 
 语义边界：`inputType` 是材料类型，不是学术验证状态；`source_verified` 只表示与所登记来源一致，不代表实验真实性被外部证明；只有作者决定（真实 HTTP 操作 `user`，或测试显式 `test_fixture`）能产生 `author_confirmed`；`extracted / source_verified / author_confirmed` 与 `conflict.status` 解耦。`inputId`（身份）、`sourceId`（来源）、`contentHash`（内容版本）三者分离。
 
+
+## 7. M14.2 thesis_from_papers 工作流
+
+第五类 WorkflowKind（M14.2）。`documentType ∈ {master_thesis, doctoral_thesis, undergraduate_thesis, 学位论文, 硕士论文, 博士论文}` → 自动路由 `thesis_from_papers`（显式 `workflowKind` 优先——「从研究主题开始」路径由前端显式传 `idea_to_paper`）。
+
+Stage 主干（共享后段与 idea/survey 同 id 复用）：
+
+```
+thesis.ingest → thesis.contributions → hitl.scope_and_version → [hitl.fact_conflicts]*
+→ thesis.storyline → hitl.outline_confirm → thesis.evidence_supply → [hitl.author_decision]*
+→ writing.sections → citation.verify → review.run → quality.gate →（bounded 修订 loop）
+→ build.draft（学位论文装配 + ctexbook 编译）→ build.final
+```
+
+HITL 决策经 `POST /api/runs/:id/resume`（`authorDecisionFromResumeInput` 映射）：
+- `hitl.scope_and_version`：`include` / `exclude` / `select_version` / `allow_unpublished` / `deny_unpublished` / `confirm_facts` / `confirm_contribution`(payload `{contributionIds}`) / `reject_contribution` / `approve` / `cancel`；
+- `hitl.fact_conflicts`：`adopt_fact`(payload `{conflictId, adoptedFactId}`) / `keep_both` / `request_material` / `defer` / `approve` / `cancel`（defer 不解除阻断）；
+- `hitl.outline_confirm`：`approve` / `revise`{feedback≤3 次} / `cancel`（approve 同时冻结章节映射）；
+- `hitl.author_decision`：`write_as_limitation`{subject=chapterId} / `defer_chapter` / `attach_experiment_package` / `pause` / `approve` / `cancel`——不存在「编造数值继续写」选项；
+- payload 可携带 `actorKind: "test_fixture"`，**仅测试栈显式开启时接受**（生产 409）。
+
+条件节点由 plan() 纯函数按 state 判定；计数器上限（scope 24 / conflict 16 / author_decision 12 轮）超限 → `fail(AUTHOR_DECISION_REQUIRED)`，不无限停留。
+
+Quality Gate 新规则（thesis 项目必现）：`published_facts_zero_drift`（已确认事实 ↔ 章节正文机械比对；数学环境/交叉引用参数/结构编号剥离后不参与邻域比对）、`thesis_mapping_confirmed`、`thesis_structure_complete`、`thesis_conflicts_resolved`。
+
+新增产物：`research/thesis-contributions.json`、`research/thesis-storyline.json`、`research/chapter-mapping.json`、`manuscript/thesis.json`（M14.1c）、`manuscript-thesis/`（确定性装配）、`build/paper.pdf`（ctexbook 编译，art-draft-rev{n} 注册）。
