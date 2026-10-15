@@ -196,7 +196,7 @@ review.run / revision.plan / revision.revise / revision.validate / 三 HITL（va
 
 ## 18. Git 与 CI 状态
 
-- 交付 commit：`feat(m14.2): thesis_from-papers agent workflow — fifth kind, HITL chain, fact-disciplined chapter writing, zero-drift gate, ctexbook draft` + 收口 docs commit（见仓库 `main`；Windows 提交推送，服务器无 GitHub 凭据）。
+- 交付 commit：`f254105`（feat：代码 + 测试，33 文件）与 `b619521`（docs：收口报告 + 文档六件）；Windows 提交推送（服务器无 GitHub 凭据），`origin/main` 与本地一致。
 - 不提交：私有 PDF、服务器凭据（`/data/paperteam-m14-2/runtime` 隔离目录 600 权限）、API Key、未授权研究数据。
 - CI：push 后 GitHub Actions `test`（build/typecheck/test）+ `docker-build` 随流水线触发；Linux Integration（docling）按既有配置。状态以 Actions 页为准，未完成不宣称替代（本地/服务器等效命令已全绿）。
 
