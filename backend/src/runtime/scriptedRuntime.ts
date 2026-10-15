@@ -29,6 +29,118 @@ export const LATEX_DOC = [
   "\\end{document}",
 ].join("\n");
 
+/**
+ * M14.2 thesis_from_papers fixtures。约定：
+ * - THESIS_CONTRIBUTION_QUOTE 是贡献提取的逐字锚点——测试 fixture 的
+ *   ParsedDocument 文本块必须原样包含该句（锚定核验是确定性的）；
+ * - outline 输出按 prompt 派生（贡献 id 列表 / 输入 id 列表），保证与
+ *   确定性校验（贡献恰被一章拥有、method/experiment 章拥有贡献）自洽。
+ */
+export const THESIS_CONTRIBUTION_QUOTE = "本文提出了一种新的显著性目标检测方法，并在多个数据集上验证了其有效性。";
+
+function thesisContributionsOutput(task: string): string {
+  const titleMatch = /材料标题：(.+)/.exec(task);
+  const title = (titleMatch?.[1] ?? "研究材料").trim();
+  return JSON.stringify({
+    contributions: [
+      { kind: "method", statement: `提出「${title}」的核心方法`, quote: THESIS_CONTRIBUTION_QUOTE },
+      { kind: "experiment_result", statement: `「${title}」的方法在多个数据集上取得显著提升`, quote: THESIS_CONTRIBUTION_QUOTE },
+      { kind: "limitation", statement: `「${title}」的方法在极端低照度场景仍有性能下降`, quote: THESIS_CONTRIBUTION_QUOTE },
+    ],
+  });
+}
+
+function thesisOutlineOutput(task: string): string {
+  const contributionIds = [...task.matchAll(/^- (c-[a-f0-9]{10}) \[/gm)].map((match) => match[1]!);
+  const inputIds = [...task.matchAll(/^- (ri-[a-f0-9]{12}) 「/gm)].map((match) => match[1]!);
+  const factIds = [...task.matchAll(/^- (F[a-f0-9]{16}) \[/gm)].map((match) => match[1]!);
+  const [first, second, ...rest] = contributionIds;
+  const methodOwns = [first, ...rest].filter((id): id is string => id !== undefined);
+  const hasExperiment = second !== undefined;
+  const methodFacts = factIds.filter((_, index) => index % 2 === 0);
+  const experimentFacts = factIds.filter((_, index) => index % 2 === 1);
+  const chapters = [
+    {
+      chapterId: "ch01",
+      titleZh: "绪论",
+      responsibility: "introduction",
+      goal: "介绍研究背景、现状与全文组织",
+      sections: [
+        { file: "intro-background.tex", title: "研究背景与意义", targetLengthWords: 1200, literatureRefs: ["显著性目标检测研究进展"] },
+        { file: "intro-status.tex", title: "国内外研究现状", targetLengthWords: 1500, literatureRefs: ["视频显著性检测方法综述"] },
+        { file: "intro-organization.tex", title: "论文组织结构", targetLengthWords: 600 },
+      ],
+      ownsContributionIds: [],
+      referencesContributionIds: [],
+      sourceInputIds: [],
+      factIds: [],
+    },
+    {
+      chapterId: "ch02",
+      titleZh: "相关理论与技术基础",
+      responsibility: "background",
+      goal: "介绍本文依赖的基础理论与通用技术",
+      sections: [
+        { file: "theory-detection.tex", title: "目标检测基础", targetLengthWords: 1000 },
+        { file: "theory-attention.tex", title: "注意力机制", targetLengthWords: 1000 },
+      ],
+      ownsContributionIds: [],
+      referencesContributionIds: [],
+      sourceInputIds: [],
+      factIds: [],
+    },
+    {
+      chapterId: "ch03",
+      titleZh: "核心方法设计",
+      responsibility: "method",
+      goal: "完整展开本文核心方法",
+      sections: [
+        { file: "method-design.tex", title: "方法总体设计", targetLengthWords: 1800 },
+        { file: "method-analysis.tex", title: "方法有效性分析", targetLengthWords: 1200 },
+      ],
+      ownsContributionIds: methodOwns,
+      referencesContributionIds: [],
+      sourceInputIds: inputIds,
+      factIds: methodFacts,
+    },
+    ...(hasExperiment
+      ? [
+          {
+            chapterId: "ch04",
+            titleZh: "实验验证与分析",
+            responsibility: "experiment",
+            goal: "在公开数据集上验证方法有效性",
+            sections: [{ file: "experiment-analysis.tex", title: "实验验证与分析", targetLengthWords: 2000 }],
+            ownsContributionIds: [second!],
+            referencesContributionIds: [],
+            sourceInputIds: inputIds,
+            factIds: experimentFacts,
+          },
+        ]
+      : []),
+    {
+      chapterId: "ch-final",
+      titleZh: "总结与展望",
+      responsibility: "conclusion",
+      goal: "总结全文工作并展望后续研究方向",
+      sections: [{ file: "conclusion.tex", title: "总结与展望", targetLengthWords: 800 }],
+      ownsContributionIds: [],
+      referencesContributionIds: contributionIds.slice(0, 2),
+      sourceInputIds: [],
+      factIds: [],
+    },
+  ];
+  return JSON.stringify({
+    storyline: {
+      narrative: "围绕显著性目标检测的检测精度与效率问题，先提出核心方法，再在多数据集上系统验证。",
+      structure: contributionIds.length >= 2 ? "progressive" : "parallel",
+      relations: contributionIds.length >= 2 ? [{ type: "extends", fromContributionId: first, toContributionId: second }] : [],
+      contributionsOrder: contributionIds,
+    },
+    chapters,
+  });
+}
+
 /** M6.5 evidence 语义 judge 脚本化输出（citation/evidence/* scope 缺省） */
 export const EVIDENCE_JUDGE_SUPPORTED_JSON = JSON.stringify({
   verdict: "supported",
@@ -948,6 +1060,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         }
       } else if (scope === "research/existing-analysis") {
         output = EXISTING_ANALYSIS_JSON;
+      } else if (scope === "thesis/contributions") {
+        // M14.2：贡献提取（按材料标题派生；quote 与测试 fixture 文本逐字一致）
+        output = thesisContributionsOutput(input.task);
+      } else if (scope === "thesis/outline") {
+        // M14.2：主线 + 两级大纲 + 章节映射（按 prompt 的贡献/输入 id 派生）
+        output = thesisOutlineOutput(input.task);
       } else if (scope === "research/revision-plan") {
         // M10.3 修订研究规划：requirements 驱动 queries 的 draft 计划
         output = REVISION_RESEARCH_PLAN_JSON;

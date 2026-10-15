@@ -93,12 +93,13 @@ class GenericCtexbookAdapter implements ThesisTemplateAdapter {
     const lines: string[] = [];
     // ---- 封面（不伪造：未提供的字段留空）----
     lines.push("\\begin{titlepage}", "  \\centering", "  \\vspace*{2cm}");
-    lines.push(`  {\\Large ${escapeLaTeXText(model.titleZh)}}\\\\[0.6cm]`);
+    lines.push(`  {\\Large ${escapeLaTeXText(model.titleZh)}}`);
     if (model.titleEn !== undefined && model.titleEn.trim() !== "") {
-      lines.push(`  {\\large ${escapeLaTeXText(model.titleEn)}}\\\\[2cm]`);
-    } else {
-      lines.push("  \\\\[2cm]");
+      lines.push("  \\\\[0.6cm]", `  {\\large ${escapeLaTeXText(model.titleEn)}}`);
     }
+    // M14.2 修复（真实编译实锤）：作者 / 学位信息全空时不得出现孤行 \\ ——
+    // 段首的 \\ 会触发 "There's no line here to end"。垂直间距统一走 \\vspace。
+    lines.push("  \\vspace{2cm}");
     const author = model.author;
     if (author?.nameZh !== undefined && author.nameZh.trim() !== "") {
       lines.push(`  ${escapeLaTeXText(author.nameZh)}\\\\[0.3cm]`);

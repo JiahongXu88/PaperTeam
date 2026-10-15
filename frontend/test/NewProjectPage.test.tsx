@@ -403,7 +403,7 @@ describe("NewProjectPage：创建新论文的论文类型（M11.2.1 产品 IA）
     expect(screen.getByLabelText("研究想法")).toBeInTheDocument();
   });
 
-  it("学位论文：展示两种创建方式与材料选择，但不创建项目或上传", async () => {
+  it("学位论文（M14.2）：缺省基于已有小论文扩展，documentType=master_thesis 创建项目（kind 由后端路由 thesis_from_papers）", async () => {
     vi.mocked(createProject).mockClear();
     vi.mocked(importProjectPaper).mockClear();
     const user = userEvent.setup();
@@ -411,17 +411,39 @@ describe("NewProjectPage：创建新论文的论文类型（M11.2.1 产品 IA）
 
     await user.click(screen.getByTestId("paper-type-thesis"));
     expect(screen.getByTestId("thesis-selection")).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /从研究问题出发/ })).toBeChecked();
-    expect(screen.getByRole("radio", { name: /围绕已有成果/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "继续设置" })).toBeDisabled();
-
-    await user.click(screen.getByRole("radio", { name: /围绕已有成果/ }));
-    const material = screen.getByLabelText("选择已有论文材料（PDF 或 ZIP）");
-    await user.upload(material, pdfFile);
-    expect(screen.getByText("MRG-DTM-final.pdf")).toBeInTheDocument();
-    expect(screen.getByText(/不会创建项目或上传材料/)).toBeInTheDocument();
+    // 缺省选中「基于已有小论文扩展」
+    expect(screen.getByRole("radio", { name: /系统提取贡献、规划章节并分章写作/ })).toBeChecked();
+    // 标题必填：空标题提交被前端拦截，不触发创建
+    await user.click(screen.getByTestId("thesis-submit"));
     expect(createProject).not.toHaveBeenCalled();
+
+    await user.type(screen.getByTestId("thesis-title"), "面向视频显著性检测的深度学习研究");
+    await user.click(screen.getByTestId("thesis-submit"));
+    await waitFor(() => expect(createProject).toHaveBeenCalledTimes(1));
+    expect(createProject).toHaveBeenCalledWith({
+      title: "面向视频显著性检测的深度学习研究",
+      documentType: "master_thesis",
+    });
     expect(importProjectPaper).not.toHaveBeenCalled();
+  });
+
+  it("学位论文（M14.2）：从研究主题开始 → 显式 workflowKind=idea_to_paper（显式 kind 优先，不受 documentType 路由影响）", async () => {
+    vi.mocked(createProject).mockClear();
+    const user = userEvent.setup();
+    renderCreateFlow();
+
+    await user.click(screen.getByTestId("paper-type-thesis"));
+    await user.click(screen.getByRole("radio", { name: /从研究问题出发走通用论文流程/ }));
+    await user.type(screen.getByTestId("thesis-title"), "多模态大模型研究");
+    await user.type(screen.getByTestId("thesis-idea"), "研究多模态融合方法");
+    await user.click(screen.getByTestId("thesis-submit"));
+    await waitFor(() => expect(createProject).toHaveBeenCalledTimes(1));
+    expect(createProject).toHaveBeenCalledWith({
+      title: "多模态大模型研究",
+      documentType: "master_thesis",
+      workflowKind: "idea_to_paper",
+      researchIdea: "研究多模态融合方法",
+    });
   });
 
   it("综述论文创建：documentType=survey 且不带 workflowKind / kind（映射归后端）", async () => {

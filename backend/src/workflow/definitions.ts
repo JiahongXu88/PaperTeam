@@ -264,8 +264,19 @@ import {
   loadBuildGateRecord,
   saveQualityGateReport,
   type QualityGateThresholds,
+  type ThesisGateInput,
 } from "../quality/gates.js";
-import type { Outline } from "../manuscript/ManuscriptService.js";
+import type { ThesisPlannerService } from "../thesis/ThesisPlannerService.js";
+import type { ResearchInputService } from "../thesis/ResearchInputService.js";
+import { authorDecisionFromResumeInput } from "../thesis/ResearchInputService.js";
+import type { ThesisDocumentService } from "../thesis/ThesisDocumentService.js";
+import type { AuthorDecision } from "../thesis/researchInputTypes.js";
+import type { ThesisChapterPlan } from "../thesis/thesisWorkflowTypes.js";
+import { buildThesisSectionContext, chapterSourceText, sourceProjectionForSection } from "../thesis/thesisWritingContext.js";
+import { checkFactDrift, summarizeDrift } from "../thesis/publishedFactsDrift.js";
+import { outlineFingerprintFromChapters } from "../thesis/thesisWorkflowTypes.js";
+import { validateThesisDocumentModel } from "../thesis/thesisDocumentTypes.js";
+import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { collectLatexFiles, type LatexProjectFiles } from "../manuscript/LatexFiles.js";
 import {
   readinessGateAdvisory,
@@ -431,6 +442,11 @@ export interface WorkflowServices {
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
+  /**
+   * M14.2：thesis_from_papers 服务束。必填字段——thesis 工厂在 kind 为
+   * thesis_from_papers 时消费；其余 kind 的测试桩经 `as unknown as` 装配不受影响。
+   */
+  thesis: ThesisWorkflowServices;
 }
 
 /** PDF Review Foundation：PaperMap / ReviewContext / Citation Integrity / Section Review */
@@ -1023,11 +1039,11 @@ function reviewRunStageInner(
 
 function qualityGateStage(
   services: WorkflowServices,
-  options: { survey?: boolean } = {},
+  options: { survey?: boolean; thesis?: boolean } = {},
 ): StageSpec {
   return {
     id: "quality.gate",
-    description: "Quality Gate：确定性判定（引用/事实/审稿/目标可行性；survey 含写作契约）",
+    description: "Quality Gate：确定性判定（引用/事实/审稿/目标可行性；survey 含写作契约；thesis 含零漂移/映射/结构/冲突）",
     requiredInputs: ["review.run"],
     producedOutputs: ["reviews/quality-gate-r*.json"],
     maxAttempts: 1, // 纯确定性判定，重试无意义
@@ -1088,6 +1104,11 @@ function qualityGateStage(
         const stored = await services.reviewArtifacts.loadSurveyWriting(ctx.projectId, review.round);
         surveyWriting = stored ?? (await evaluateSurveyWritingForProject(services, ctx.projectId));
       }
+      // M14.2：thesis 规则输入（确定性：已确认事实零漂移 / 映射冻结 / 结构完整 / 冲突清零）
+      let thesisGate: ThesisGateInput | undefined;
+      if (options.thesis === true) {
+        thesisGate = await computeThesisGateInput(services, ctx.projectId);
+      }
       // M11.2.3（D-2）：同轮 claim grounding（披露口径拆分 + 根因去重的输入）
       const claimGrounding = await services.reviewArtifacts.loadClaimGrounding(ctx.projectId, review.round);
       // M12 A9：Target Readiness advisory（additive 透传；零规则参与、零阻断）
@@ -1107,6 +1128,7 @@ function qualityGateStage(
           ...(revisionValidation !== undefined ? { revisionValidation } : {}),
           ...(surveyWriting !== undefined ? { surveyWriting } : {}),
           ...(targetReadiness !== undefined ? { targetReadiness } : {}),
+          ...(thesisGate !== undefined ? { thesis: thesisGate } : {}),
         },
         QUALITY_THRESHOLDS(services),
       );
@@ -3877,23 +3899,38 @@ function revisionOverflowStage(): StageSpec {
   };
 }
 
-function buildDraftStage(services: WorkflowServices): StageSpec {
+function buildDraftStage(services: WorkflowServices, options: { thesis?: boolean } = {}): StageSpec {
   return {
     id: "build.draft",
-    description: "Build Gate：LaTeX 编译产出 PDF（质量语义不阻塞构建；D-0015）",
+    description:
+      options.thesis === true
+        ? "Thesis Build Gate：确定性装配复核 → 学位论文编译（600s 预算）→ Draft 产物注册"
+        : "Build Gate：LaTeX 编译产出 PDF（质量语义不阻塞构建；D-0015）",
     requiredInputs: [],
     producedOutputs: ["build/paper.pdf", "build/compile.log", "build/build-gate.json"],
     maxAttempts: services.stageMaxAttempts,
-    timeoutMs: services.stageTimeoutMs,
+    timeoutMs: options.thesis === true ? services.stageTimeoutMs * 4 : services.stageTimeoutMs,
     retryable: ["transient", "timeout"],
     async execute(ctx) {
+      // M14.2：thesis 项目先做确定性装配复核，编译目标切到 manuscript-thesis/
+      const thesisOptions: { manuscriptDir?: string } = {};
+      if (options.thesis === true) {
+        const outline = await services.manuscript.loadOutline(ctx.projectId);
+        if (outline === null) {
+          throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少大纲（thesis 写作未落盘 outline.json）");
+        }
+        const model = await services.thesis.documents.loadModel(ctx.projectId);
+        await services.thesis.documents.assemble(ctx.projectId, outline, model ?? undefined);
+        thesisOptions.manuscriptDir = services.thesis.documents.thesisManuscriptDir(ctx.projectId);
+      }
       // 编译前读取当前修订：record.revision 是 Finalize 的新鲜度依据
       const revision = await services.revisions.currentRevision(ctx.projectId);
       const { build, compile, record } = await runBuildGateForRevision(
         services.projects,
-        services.latex,
+        options.thesis === true ? services.thesis.latex : services.latex,
         ctx.projectId,
         revision,
+        thesisOptions,
       );
       // M5.6：Draft 不受 Quality Gate 阻塞，但引用保持失败必须在 Draft 路径明确暴露
       // （Final 被阻止的原因不能只藏在 gate 产物里）
@@ -3975,6 +4012,7 @@ function buildDraftStage(services: WorkflowServices): StageSpec {
         buildGateReasons: build.reasons.slice(0, 5),
         tool: compile.tool,
         durationMs: compile.durationMs,
+        ...(options.thesis === true ? { thesis: true } : {}),
         ...(compile.pdfPath !== null ? { pdfPath: "build/paper.pdf" } : {}),
         ...(compile.logPath !== null ? { logPath: "build/compile.log" } : {}),
         ...(compile.error !== undefined ? { buildError: compile.error } : {}),
@@ -9058,6 +9096,1054 @@ async function safeMarkUsage(
  * M11.3 起导出：Reviewer Stability 审计需要在与 review.run 完全相同的
  * digest 条件下重复采样（scripts/m113-reviewer-stability.mjs）。
  */
+// ============================================================
+// M14.2 thesis_from_papers：研究成果输入集 → 学位论文
+// ============================================================
+
+/** thesis 工作流的服务束（serviceStack / testStack 装配；survey 等测试桩不提供） */
+export interface ThesisWorkflowServices {
+  planner: ThesisPlannerService;
+  researchInputs: ResearchInputService;
+  documents: ThesisDocumentService;
+  /** 学位论文编译器（独立 600s 预算；与 thesisDocuments 共用实例） */
+  latex: LatexCompiler;
+  /** 测试栈显式开启后，HITL resume 才允许 actor=test_fixture（生产不设=拒绝） */
+  allowTestFixtureActor?: boolean;
+}
+
+const THESIS_SCOPE_ROUND_CAP = 24;
+const THESIS_CONFLICT_ROUND_CAP = 16;
+const THESIS_AUTHOR_DECISION_ROUND_CAP = 12;
+
+function thesisIngestStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "thesis.ingest",
+    description: "研究输入登记核验：解析状态就绪 + 确定性事实抽取/核验 + 跨输入冲突检测（幂等）",
+    requiredInputs: [],
+    producedOutputs: ["research/research-inputs.json", "research/scientific-facts.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 4,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const registry = await services.thesis.researchInputs.list(ctx.projectId);
+      if (registry.inputs.length === 0) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          "项目没有登记任何研究输入——先上传研究材料并经 /api/projects/:id/research-inputs 登记，再启动学位论文工作流",
+        );
+      }
+      let parsed = 0;
+      let extractedInputs = 0;
+      const skipped: string[] = [];
+      for (const input of registry.inputs) {
+        if (ctx.signal.aborted) throw new BusinessError("WORKFLOW_CANCELLED", "工作流已被取消");
+        await ctx.emitProgress({ input: input.inputId, parse: input.parse.status });
+        if (input.parse.status === "pending") {
+          await services.ingestion.ingest(ctx.projectId, input.version.sourceId);
+          await services.thesis.researchInputs.registry.refreshParse(ctx.projectId, input.inputId);
+        }
+        const fresh = await services.thesis.researchInputs.list(ctx.projectId);
+        const status = fresh.inputs.find((entry) => entry.inputId === input.inputId)?.parse.status ?? input.parse.status;
+        if (status === "full_text" || status === "partial") {
+          parsed += 1;
+          await services.thesis.researchInputs.extractFacts(ctx.projectId, input.inputId);
+          await services.thesis.researchInputs.verifyFacts(ctx.projectId, input.inputId);
+          extractedInputs += 1;
+        } else {
+          skipped.push(`${input.inputId}(${status})`);
+        }
+      }
+      await services.thesis.researchInputs.detectConflicts(ctx.projectId);
+      const context = await services.thesis.researchInputs.plannerContext(ctx.projectId);
+      if (parsed === 0) {
+        throw new BusinessError(
+          "STAGE_CONTRACT_VIOLATION",
+          `没有任何研究输入可解析（${skipped.join("、")}）——材料不可用时不得继续学位论文工作流`,
+        );
+      }
+      return {
+        inputs: registry.inputs.length,
+        parsed,
+        factsExtractedInputs: extractedInputs,
+        skippedInputs: skipped,
+        conflictsUnresolved: context.conflicts.unresolved.length,
+        pendingScopeDecisions: context.pendingDecisions.filter((item) =>
+          item.type === "scope_decision" || item.type === "version_selection" || item.type === "unpublished_material_policy",
+        ).length,
+      };
+    },
+  };
+}
+
+function thesisContributionsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "thesis.contributions",
+    description: "逐输入提取研究贡献提案（quote 逐字锚定；提案不等于作者确认）",
+    requiredInputs: ["thesis.ingest"],
+    producedOutputs: ["research/thesis-contributions.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const result = await services.thesis.planner.extractContributions(ctx.projectId, { signal: ctx.signal });
+      if (result.inputsProcessed === 0) {
+        throw new BusinessError(
+          "STAGE_CONTRACT_VIOLATION",
+          `贡献提取没有处理任何输入（${result.skippedInputs.map((item) => `${item.inputId}:${item.reason}`).join("；")}）`,
+        );
+      }
+      return {
+        inputsProcessed: result.inputsProcessed,
+        proposals: result.proposals,
+        anchored: result.anchored,
+        skippedInputs: result.skippedInputs.length,
+        perInput: result.perInput,
+      };
+    },
+  };
+}
+
+function thesisScopeVersionStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.scope_and_version",
+    description: "作者决定：研究输入入选/排除、版本选择、未发表材料政策、研究贡献确认（authorship 由作者声明，模型不得代答）",
+    requiredInputs: ["thesis.contributions"],
+    producedOutputs: ["research/author-decisions.jsonl"],
+    hitl: {
+      prompt:
+        "请逐项决定：哪些研究材料入选学位论文、版本链跟随哪个版本、未发表材料是否允许纳入；并确认哪些研究贡献属于你本人完成的工作（贡献未确认前不能规划大纲）。",
+      options: [
+        "include",
+        "exclude",
+        "select_version",
+        "allow_unpublished",
+        "deny_unpublished",
+        "confirm_facts",
+        "confirm_contribution",
+        "reject_contribution",
+        "approve",
+        "cancel",
+      ],
+      payload: async (ctx) => buildThesisScopePayload(services, ctx.projectId),
+    },
+  };
+}
+
+async function buildThesisScopePayload(services: WorkflowServices, projectId: string): Promise<Record<string, unknown>> {
+  const context = await services.thesis.researchInputs.plannerContext(projectId);
+  const contributions = await services.thesis.planner.loadContributions(projectId);
+  const items = (contributions?.items ?? []).slice(0, 60);
+  return {
+    inputs: {
+      proposed: context.inputs.proposed,
+      included: context.inputs.included,
+      excluded: context.inputs.excluded,
+      preferredVersionByWork: context.inputs.preferredVersionByWork,
+    },
+    pendingDecisions: context.pendingDecisions,
+    conflicts: {
+      unresolved: context.conflicts.unresolved.slice(0, 20).map((conflict) => ({
+        conflictId: conflict.conflictId,
+        classification: conflict.classification,
+        parties: conflict.parties.map((party) => `${party.raw}@${party.location}`),
+      })),
+    },
+    contributions: items.map((item) => ({
+      id: item.id,
+      researchInputId: item.researchInputId,
+      kind: item.kind,
+      statement: item.statement,
+      anchorStatus: item.anchorStatus,
+      status: item.status,
+    })),
+    factCounts: {
+      authorConfirmed: context.facts.authorConfirmed.length,
+      sourceVerifiedUnconfirmed: context.facts.sourceVerifiedUnconfirmed.length,
+      extractedOnly: context.facts.extractedOnly.length,
+      conflicted: context.facts.conflicted.length,
+    },
+    hint: {
+      include: { payload: { inputId: "ri-…" } },
+      select_version: { payload: { workId: "w-…", preferredInputId: "ri-…" } },
+      confirm_facts: { payload: { factIds: ["f…"] } },
+      confirm_contribution: { payload: { contributionIds: ["c-…"] } },
+    },
+  };
+}
+
+function thesisFactConflictsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.fact_conflicts",
+    description: "作者裁决：同实验异值冲突（adopt_fact / keep_both / request_material / defer；defer 不解除阻断）",
+    requiredInputs: ["hitl.scope_and_version"],
+    producedOutputs: ["research/author-decisions.jsonl"],
+    hitl: {
+      prompt:
+        "以下研究事实存在未裁决的跨来源冲突（同一实验/指标出现不同数值）。请逐条裁决采用哪一方、并存声明、或向作者本人索取材料；未裁决前写作不得继续。",
+      options: ["adopt_fact", "keep_both", "request_material", "defer", "approve", "cancel"],
+      payload: async (ctx) => {
+        const context = await services.thesis.researchInputs.plannerContext(ctx.projectId);
+        return {
+          unresolved: context.conflicts.unresolved.map((conflict) => ({
+            conflictId: conflict.conflictId,
+            classification: conflict.classification,
+            severity: conflict.severity,
+            parties: conflict.parties.map((party) => ({ factId: party.factId, raw: party.raw, location: party.location })),
+          })),
+          hint: { adopt_fact: { payload: { conflictId: "fc-…", adoptedFactId: "f…" } } },
+        };
+      },
+    },
+  };
+}
+
+function thesisStorylineStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "thesis.storyline",
+    description: "研究主线 + 两级大纲 + 章节—来源映射规划（模型提案；确定性校验：贡献/输入/事实引用、每节恰属一章）",
+    requiredInputs: ["hitl.scope_and_version"],
+    producedOutputs: ["research/thesis-storyline.json", "manuscript/outline.json", "manuscript/thesis.json", "research/chapter-mapping.json"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const project = await services.projects.getRequired(ctx.projectId);
+      const feedback = readFeedback(ctx.state.inputs["hitl.outline_confirm"]?.payload);
+      const result = await services.thesis.planner.planStoryline(ctx.projectId, {
+        ...(feedback !== undefined ? { feedback } : {}),
+        signal: ctx.signal,
+        language: normalizeManuscriptLanguage(project.language),
+      });
+      return {
+        structure: result.storyline.structure,
+        narrative: result.storyline.narrative,
+        ...(result.storyline.scopeConcerns !== undefined ? { scopeConcerns: result.storyline.scopeConcerns } : {}),
+        chapters: result.chapters.length,
+        sections: result.outline.sections.length,
+        repairAttempts: result.repairAttempts,
+        taskId: result.taskId,
+      };
+    },
+  };
+}
+
+function thesisOutlineConfirmStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.outline_confirm",
+    description: "作者确认：学位论文大纲 + 章节—来源映射（确认后映射冻结；fragmented 主线须作者知情）",
+    requiredInputs: ["thesis.storyline"],
+    producedOutputs: ["research/chapter-mapping.json"],
+    hitl: {
+      prompt:
+        "请审阅学位论文大纲与章节—来源映射：研究主线、章/节结构、每章拥有的研究贡献与来源输入、缺失材料提示。approve 确认后开始分章写作；revise 携带修改意见重新规划。",
+      options: ["approve", "revise", "cancel"],
+      payload: async (ctx) => {
+        const storyline = await services.thesis.planner.loadStoryline(ctx.projectId);
+        const mapping = await services.thesis.planner.loadMapping(ctx.projectId);
+        const outline = await services.manuscript.loadOutline(ctx.projectId);
+        const missing = await services.thesis.planner.missingMaterialChapters(ctx.projectId);
+        return {
+          storyline: storyline?.storyline ?? null,
+          chapters: (mapping?.chapters ?? []).map((chapter) => ({
+            chapterId: chapter.chapterId,
+            titleZh: chapter.titleZh,
+            responsibility: chapter.responsibility,
+            goal: chapter.goal,
+            sectionFiles: chapter.sectionFiles,
+            ownsContributionIds: chapter.ownsContributionIds,
+            sourceInputIds: chapter.sourceInputIds,
+            factIds: chapter.factIds.length,
+          })),
+          outlineSections: outline?.sections.map((section) => ({ id: section.id, file: section.file, title: section.title })) ?? [],
+          mappingStatus: mapping?.status ?? "missing",
+          missingMaterialChapters: missing.map((chapter) => ({
+            chapterId: chapter.chapterId,
+            titleZh: chapter.titleZh,
+            responsibility: chapter.responsibility,
+          })),
+        };
+      },
+    },
+  };
+}
+
+function thesisEvidenceSupplyStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "thesis.evidence_supply",
+    description: "定向文献补证：绪论/综述主题 → 学术检索 → 候选 → 提升 → 全文 → 定向 grounding（有界 12/6/6）",
+    requiredInputs: ["hitl.outline_confirm"],
+    producedOutputs: ["sources/candidates.json", "evidence/evidence.jsonl"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 2,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      if (outline === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少大纲（thesis.storyline 未落盘 outline.json）");
+      }
+      const themes = [
+        ...new Set(
+          outline.sections
+            .flatMap((section) => section.literatureRefs ?? [])
+            .map((ref) => ref.trim())
+            .filter((ref) => ref !== ""),
+        ),
+      ].slice(0, 4);
+      const missingChapters = await services.thesis.planner.missingMaterialChapters(ctx.projectId);
+      const missingChapterIds = missingChapters.map((chapter) => chapter.chapterId);
+      if (themes.length === 0) {
+        return {
+          skipped: true,
+          themes: 0,
+          missingChapters: missingChapterIds,
+          note: "大纲没有声明文献主题（literatureRefs 为空）——跳过检索补证",
+        };
+      }
+      const queries: string[] = [];
+      const candidatesSaved: number[] = [];
+      let degraded = false;
+      for (const theme of themes) {
+        if (ctx.signal.aborted) throw new BusinessError("WORKFLOW_CANCELLED", "工作流已被取消");
+        try {
+          const response = await services.discovery.academicSearch(theme, { limit: 6 }, ctx.projectId);
+          if (response.results.length === 0) {
+            degraded = true;
+            continue;
+          }
+          const saved = await services.discovery.saveAcademicCandidates(
+            ctx.projectId,
+            theme,
+            response.results,
+            response.results.map((_, index) => index).slice(0, 5),
+          );
+          queries.push(theme);
+          candidatesSaved.push(saved.saved.length);
+        } catch (error) {
+          // 检索通道失败不阻断工作流：如实降级（综述章质量由 review/gate 判定）
+          ctx.log(`thesis evidence supply 检索失败（${theme}）：${(error as Error).message}`);
+          degraded = true;
+        }
+      }
+      // 复用 M10.3 有界供给管线（候选 → 提升 → 全文 → chunk → 定向 grounding）
+      const artifact = {
+        report: {
+          domainOverview: themes.join("。"),
+          relatedWorkDirections: themes,
+        },
+        evidence: themes.map((theme) => ({ claim: `${theme}（学位论文文献综述主题，需要已核验的外部文献支撑）` })),
+      } as unknown as ResearchArtifact;
+      const supply = await supplyResearchEvidence(services, ctx.projectId, artifact, {
+        signal: ctx.signal,
+        progress: (phase, counts) => {
+          void ctx.emitProgress({ phase, ...counts }).catch(() => undefined);
+        },
+      });
+      return {
+        skipped: false,
+        themes: themes.length,
+        queries,
+        candidatesSaved: candidatesSaved.reduce((sum, count) => sum + count, 0),
+        ...(degraded ? { degraded: true } : {}),
+        supply,
+        missingChapters: missingChapterIds,
+      };
+    },
+  };
+}
+
+function thesisAuthorDecisionStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "hitl.author_decision",
+    description: "作者决定：缺实验材料的章（写成研究限制 / 暂缓该章 / 附实验包；不存在「编造数值继续写」选项）",
+    requiredInputs: ["thesis.evidence_supply"],
+    producedOutputs: ["research/author-decisions.jsonl"],
+    hitl: {
+      prompt:
+        "以下章节声明了核心研究贡献，但没有可写的已确认实验事实。请作者决定处理方式：write_as_limitation（以研究限制口径撰写）、defer_chapter（暂缓，仍按限制口径占位）、attach_experiment_package（上传实验包并确认事实后继续）、pause（保持等待）。系统不会为缺失材料生成任何实验数值。",
+      options: ["write_as_limitation", "defer_chapter", "attach_experiment_package", "pause", "approve", "cancel"],
+      payload: async (ctx) => {
+        const missing = await services.thesis.planner.missingMaterialChapters(ctx.projectId);
+        return {
+          missingChapters: missing.map((chapter) => ({
+            chapterId: chapter.chapterId,
+            titleZh: chapter.titleZh,
+            responsibility: chapter.responsibility,
+            goal: chapter.goal,
+            ownsContributionIds: chapter.ownsContributionIds,
+          })),
+          hint: { write_as_limitation: { payload: { subject: "ch-…" } }, attach_experiment_package: { payload: { subject: "ch-…" } } },
+        };
+      },
+    },
+  };
+}
+
+function thesisWritingSectionsStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "writing.sections",
+    description: "Thesis Writer 分章逐节写作（作者确认事实注入 + 源文本投影 + 章级纪律；节级断点恢复）",
+    requiredInputs: ["hitl.outline_confirm"],
+    producedOutputs: ["manuscript/sections/*.tex", "manuscript-thesis/"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs * 4,
+    retryable: ["transient", "timeout", "runtime_unavailable", "contract_violation"],
+    async execute(ctx) {
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      if (outline === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少大纲（thesis.storyline 未落盘 outline.json）");
+      }
+      const mapping = await services.thesis.planner.loadMapping(ctx.projectId);
+      if (mapping === null || mapping.status !== "confirmed") {
+        throw new BusinessError("AUTHOR_DECISION_REQUIRED", "章节映射未确认（hitl.outline_confirm 未 approve）");
+      }
+      const context = await services.thesis.researchInputs.plannerContext(ctx.projectId);
+      if (context.writingBlockers.length > 0) {
+        throw new BusinessError(
+          "AUTHOR_DECISION_REQUIRED",
+          `研究输入出现新的未决阻断（写作前必须解决）：${context.writingBlockers.join("；")}`,
+        );
+      }
+      const missing = await services.thesis.planner.missingMaterialChapters(ctx.projectId);
+      if (missing.length > 0) {
+        throw new BusinessError(
+          "AUTHOR_DECISION_REQUIRED",
+          `仍有缺材料且未获作者决定的章：${missing.map((chapter) => chapter.chapterId).join("、")}`,
+        );
+      }
+      const project = await services.projects.getRequired(ctx.projectId);
+      const language = normalizeManuscriptLanguage(project.language);
+      const contributions = await services.thesis.planner.loadContributions(ctx.projectId);
+      const contributionStatements = new Map(
+        (contributions?.items ?? []).map((item) => [item.id, { statement: item.statement, kind: item.kind }]),
+      );
+      const thesisDecisions: readonly AuthorDecision[] = await services.thesis.researchInputs.decisions.list(ctx.projectId);
+      const writingDecisions = { limitation: new Set<string>(), covered: new Set<string>() };
+      for (const decision of thesisDecisions) {
+        if (decision.payload.type !== "writing_pause" || typeof decision.payload.subject !== "string") continue;
+        writingDecisions.covered.add(decision.payload.subject);
+        if (decision.payload.decision === "write_as_limitation" || decision.payload.decision === "defer") {
+          writingDecisions.limitation.add(decision.payload.subject);
+        }
+      }
+      const evidence = (await services.evidenceSelection.selectForWriting(ctx.projectId)).formal;
+      const bibliography = await buildCanonicalBibliography(services, ctx.projectId);
+      // 章 → 节装配（outline 全序；file → chapter）
+      const chapterByFile = new Map<string, ThesisChapterPlan>();
+      for (const chapter of mapping.chapters) {
+        for (const file of chapter.sectionFiles) chapterByFile.set(file, chapter);
+      }
+      const contributionsById = new Map((contributions?.items ?? []).map((item) => [item.id, item]));
+      // 事实 id 扩展：owner 贡献的 linkedFactIds 并入章节可写事实集合
+      const chapterFactIds = new Map<string, Set<string>>();
+      for (const chapter of mapping.chapters) {
+        const ids = new Set(chapter.factIds);
+        for (const contributionId of chapter.ownsContributionIds) {
+          for (const factId of contributionsById.get(contributionId)?.linkedFactIds ?? []) ids.add(factId);
+        }
+        chapterFactIds.set(chapter.chapterId, ids);
+      }
+      const plan = await beginWritingPlan(services, ctx, {
+        mode: "thesis_from_papers",
+        outline,
+        units: [],
+        fingerprint: writingPlanFingerprint(outline, evidence),
+        sections: outline.sections.map((section) => thesisPlanSectionRecord(section, chapterByFile.get(section.file))),
+        unassignedEvidence: [],
+        warnings: [],
+      });
+      const usedEvidenceIds = new Set<string>();
+      let bytesTotal = 0;
+      const written: string[] = [];
+      const reused: string[] = [];
+      const chapterSummaries: Record<string, unknown>[] = [];
+      for (const [index, section] of outline.sections.entries()) {
+        if (ctx.signal.aborted) throw new BusinessError("WORKFLOW_CANCELLED", "工作流已被取消");
+        const chapter = chapterByFile.get(section.file);
+        if (chapter === undefined) {
+          throw new BusinessError(
+            "STAGE_CONTRACT_VIOLATION",
+            `节 ${section.file} 未映射到任何章（chapter-mapping 与 outline 不一致）`,
+          );
+        }
+        const sectionIndex = chapter.sectionFiles.indexOf(section.file);
+        const limitationMode = writingDecisions.limitation.has(chapter.chapterId);
+        const resumed = await resumableWrittenSection(services, ctx.projectId, plan, section.id, section.file);
+        if (resumed !== null) {
+          reused.push(section.id);
+          for (const evidenceId of resumed.evidence.consumed) usedEvidenceIds.add(evidenceId);
+          await ctx.emitProgress({ section: section.id, file: section.file, index: index + 1, total: outline.sections.length, resumed: true, chapter: chapter.chapterId });
+          continue;
+        }
+        // 章级源文本投影（确定性分窗）
+        const sourceText = await thesisChapterSourceText(services, ctx.projectId, chapter);
+        const projection = sourceText === null
+          ? null
+          : sourceProjectionForSection({
+              text: sourceText,
+              sectionIndex: Math.max(0, sectionIndex),
+              sectionCount: chapter.sectionFiles.length,
+            });
+        const writingContext = buildThesisSectionContext({
+          chapter: { ...chapter, factIds: [...(chapterFactIds.get(chapter.chapterId) ?? new Set<string>())] },
+          sectionFile: section.file,
+          sectionTitle: section.title,
+          sectionIndex: Math.max(0, sectionIndex),
+          sectionCount: chapter.sectionFiles.length,
+          factContext: context,
+          contributionStatements,
+          sourceProjection: projection,
+          limitationMode,
+          ...(section.literatureRefs !== undefined ? { literatureRefs: section.literatureRefs } : {}),
+        });
+        const startedAt = Date.now();
+        let result: Awaited<ReturnType<WriterService["writeSection"]>>;
+        try {
+          result = await services.writer.writeSection({
+            projectId: ctx.projectId,
+            section,
+            outline,
+            evidence,
+            bibliography,
+            ...(language !== undefined ? { language } : {}),
+            extraInstructions: writingContext.extraInstructions,
+          });
+        } catch (error) {
+          await updateWritingPlanSection(services, ctx.projectId, plan, section.id, { status: "failed", latencyMs: Date.now() - startedAt });
+          throw error;
+        }
+        bytesTotal += await services.manuscript.writeSection(ctx.projectId, section, result.latex);
+        written.push(section.id);
+        chapterSummaries.push(writingContext.summary);
+        for (const record of evidence) usedEvidenceIds.add(record.id);
+        await updateWritingPlanSection(services, ctx.projectId, plan, section.id, {
+          status: "written",
+          latencyMs: Date.now() - startedAt,
+          taskId: result.taskId,
+          ...(result.usage !== undefined ? { usage: result.usage } : {}),
+          cited: extractCitedKeyList(result.latex),
+          outputHash: sha256Hex(result.latex.trim() + "\n"),
+        });
+        await ctx.emitProgress({
+          section: section.id,
+          file: section.file,
+          index: index + 1,
+          total: outline.sections.length,
+          chapter: chapter.chapterId,
+          limitationMode,
+        });
+      }
+      for (const evidenceId of usedEvidenceIds) {
+        await safeMarkUsage(services, ctx.projectId, evidenceId, ctx.runId);
+      }
+      await services.manuscript.rebuildContext(ctx.projectId, {
+        evidenceStats: await services.evidence.stats(ctx.projectId),
+      });
+      await syncReferencesBib(services, ctx.projectId);
+      const revision = await services.revisions.commit(ctx.projectId, "writing.sections", ctx.runId);
+      // M14.1c 确定性装配（manuscript-thesis/；源目录只读）
+      const model = await services.thesis.documents.loadModel(ctx.projectId);
+      const assembly = await services.thesis.documents.assemble(ctx.projectId, outline, model ?? undefined);
+      plan.revision = revision.revision;
+      plan.updatedAt = new Date().toISOString();
+      await services.reviewArtifacts.saveWritingPlan(ctx.projectId, plan);
+      return {
+        sectionsWritten: written.length,
+        sections: written,
+        ...(reused.length > 0 ? { sectionsReused: reused.length, reusedSections: reused } : {}),
+        bytesTotal,
+        revision: revision.revision,
+        chapters: mapping.chapters.length,
+        bibliographyEntries: bibliography.length,
+        evidenceFormal: evidence.length,
+        assemblyMainTex: assembly.mainTex,
+        chaptersWithLimitationMode: [...writingDecisions.limitation],
+        argumentUnits: summarizeWritingPlan(plan),
+      };
+    },
+    async verifyDod(ctx) {
+      const violations: string[] = [];
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      if (outline === null) {
+        return ["manuscript/outline.json 不存在"];
+      }
+      const statuses = await services.manuscript.sectionStatuses(ctx.projectId);
+      for (const section of outline.sections) {
+        const status = statuses.find((candidate) => candidate.id === section.id);
+        if (!status?.exists) {
+          violations.push(`sections/${section.file} 不存在`);
+        } else if (!status.nonEmpty) {
+          violations.push(`sections/${section.file} 内容为空`);
+        }
+      }
+      return violations;
+    },
+  };
+}
+
+/** thesis 写作计划的节记录（非 argument-unit 模式：role 由章角色确定性派生） */
+function thesisPlanSectionRecord(section: OutlineSection, chapter: ThesisChapterPlan | undefined): WritingPlanSectionRecord {
+  const role: WritingPlanSectionRecord["role"] =
+    chapter === undefined
+      ? "develop"
+      : chapter.responsibility === "introduction" || chapter.responsibility === "background" || chapter.responsibility === "literature_review"
+        ? "framing"
+        : chapter.responsibility === "conclusion" || chapter.responsibility === "discussion"
+          ? "conclude"
+          : "develop";
+  return {
+    sectionId: section.id,
+    title: section.title,
+    fileName: section.file,
+    role,
+    roleSource: `thesis-chapter:${chapter?.chapterId ?? "unmapped"}`,
+    roleConfidence: "deterministic",
+    taskSummary: chapter?.goal ?? section.title,
+    doNotExplain: [],
+    targetLengthUpperBound: section.targetLengthWords ?? 5000,
+    lengthSource: "outline",
+    evidence: { allocated: [], consumed: [], pinned: [], pinnedRejected: [], coverageAdded: [], partial: [] },
+    citationKeys: { evidenceBacked: [] },
+    diagnostics: [],
+    status: "planned",
+  };
+}
+
+/** 章级来源文本（含原文投影；无来源章 → null） */
+async function thesisChapterSourceText(
+  services: WorkflowServices,
+  projectId: string,
+  chapter: ThesisChapterPlan,
+): Promise<string | null> {
+  if (chapter.sourceInputIds.length === 0) return null;
+  const registry = await services.thesis.researchInputs.list(projectId);
+  const blocks: Array<{ blocks: ReadonlyArray<{ type: string; text?: string; caption?: string }> }> = [];
+  for (const inputId of chapter.sourceInputIds) {
+    const input = registry.inputs.find((entry) => entry.inputId === inputId);
+    if (input === undefined) continue;
+    const document = await services.ingestion.getDocument(projectId, input.version.sourceId);
+    if (document === null || document.contentHash !== input.version.contentHash) continue;
+    blocks.push({ blocks: document.blocks });
+  }
+  if (blocks.length === 0) return null;
+  return chapterSourceText(blocks);
+}
+
+/**
+ * M14.2：thesis gate 规则输入（确定性）。
+ * - 零漂移：已确认事实（author_confirmed ∩ 章节映射）↔ 映射章正文机械比对；
+ * - 映射：confirmed + 自洽指纹 + section 文件与 outline 完全一致 + 引用来源/事实仍有效；
+ * - 结构：ThesisDocumentModel 对 outline 的装配校验（每节恰好映射一次）；
+ * - 冲突：plannerContext 未决阻断冲突必须为 0。
+ */
+async function computeThesisGateInput(services: WorkflowServices, projectId: string): Promise<ThesisGateInput> {
+  const mapping = await services.thesis.planner.loadMapping(projectId);
+  const outline = await services.manuscript.loadOutline(projectId);
+  const context = await services.thesis.researchInputs.plannerContext(projectId);
+  const contributions = await services.thesis.planner.loadContributions(projectId);
+  const contributionsById = new Map((contributions?.items ?? []).map((item) => [item.id, item]));
+
+  // ---- 映射校验 ----
+  const invalidSourceInputs: string[] = [];
+  const invalidFactIds: string[] = [];
+  let fingerprintMatchesOutline = false;
+  if (mapping !== null && outline !== null) {
+    const includedIds = new Set(context.inputs.included.map((input) => input.inputId));
+    const validFactIds = new Set(
+      [
+        ...context.facts.authorConfirmed,
+        ...context.facts.sourceVerifiedUnconfirmed,
+        ...context.facts.extractedOnly,
+      ].map((fact) => fact.factId),
+    );
+    for (const chapter of mapping.chapters) {
+      for (const inputId of chapter.sourceInputIds) {
+        if (!includedIds.has(inputId)) invalidSourceInputs.push(`${chapter.chapterId}:${inputId}`);
+      }
+      for (const factId of chapter.factIds) {
+        if (!validFactIds.has(factId)) invalidFactIds.push(`${chapter.chapterId}:${factId}`);
+      }
+    }
+    const storedFiles = mapping.chapters.flatMap((chapter) => chapter.sectionFiles);
+    const outlineFiles = outline.sections.map((section) => section.file);
+    fingerprintMatchesOutline =
+      outlineFingerprintFromChapters(mapping.chapters) === mapping.outlineFingerprint &&
+      storedFiles.length === outlineFiles.length &&
+      new Set(storedFiles).size === new Set(outlineFiles).size &&
+      storedFiles.every((file) => new Set(outlineFiles).has(file));
+  }
+
+  // ---- 零漂移：已确认事实 ∩（章节 factIds ∪ owner 贡献 linkedFactIds）----
+  const chapterFactIdsByChapter = new Map<string, Set<string>>();
+  if (mapping !== null) {
+    for (const chapter of mapping.chapters) {
+      const ids = new Set(chapter.factIds);
+      for (const contributionId of chapter.ownsContributionIds) {
+        for (const factId of contributionsById.get(contributionId)?.linkedFactIds ?? []) ids.add(factId);
+      }
+      chapterFactIdsByChapter.set(chapter.chapterId, ids);
+    }
+  }
+  const factViewById = new Map(context.facts.authorConfirmed.map((fact) => [fact.factId, fact]));
+  const findings: ThesisGateInput["drift"]["findings"] = [];
+  if (mapping !== null && outline !== null) {
+    const sectionsByChapter = new Map<string, string[]>();
+    for (const chapter of mapping.chapters) {
+      const contents: string[] = [];
+      for (const file of chapter.sectionFiles) {
+        try {
+          contents.push(await readFile(join(services.projects.manuscriptDir(projectId), "sections", file), "utf8"));
+        } catch {
+          contents.push("");
+        }
+      }
+      sectionsByChapter.set(chapter.chapterId, contents);
+    }
+    for (const chapter of mapping.chapters) {
+      const ids = chapterFactIdsByChapter.get(chapter.chapterId) ?? new Set<string>();
+      const body = (sectionsByChapter.get(chapter.chapterId) ?? []).join("\n");
+      if (body.trim() === "") continue;
+      for (const factId of ids) {
+        const fact = factViewById.get(factId);
+        if (fact === undefined || fact.verification !== "author_confirmed") continue;
+        const finding = checkFactDrift(fact, body);
+        findings.push({
+          factId: finding.factId,
+          surface: finding.surface,
+          status: finding.status,
+          detail: finding.detail,
+          ...(finding.observedValue !== undefined ? { observedValue: finding.observedValue } : {}),
+        });
+      }
+    }
+  }
+  const drift = summarizeDrift(
+    findings.map((finding) => ({
+      factId: finding.factId,
+      surface: finding.surface,
+      status: finding.status as "consistent" | "equivalent_format" | "unauthorized" | "absent",
+      detail: finding.detail,
+      ...(finding.observedValue !== undefined ? { observedValue: finding.observedValue } : {}),
+    })),
+  );
+
+  // ---- 结构校验 ----
+  const structureViolations: string[] = [];
+  const model = await services.thesis.documents.loadModel(projectId);
+  if (model === null) {
+    structureViolations.push("thesis.json 缺失（thesis.storyline 未落盘文档模型）");
+  } else if (outline !== null) {
+    structureViolations.push(
+      ...validateThesisDocumentModel(model, {
+        sectionFiles: outline.sections.map((section) => section.file),
+        sectionTitles: new Map(outline.sections.map((section) => [section.file, section.title])),
+      }),
+    );
+  } else {
+    structureViolations.push("outline.json 缺失");
+  }
+
+  return {
+    drift: {
+      checked: drift.checked,
+      consistent: drift.consistent,
+      equivalentFormat: drift.equivalentFormat,
+      unauthorized: drift.unauthorized,
+      absent: drift.absent,
+      findings: findings.slice(0, 50),
+    },
+    mapping: {
+      exists: mapping !== null,
+      confirmed: mapping?.status === "confirmed",
+      fingerprintMatchesOutline,
+      invalidSourceInputs: invalidSourceInputs.slice(0, 20),
+      invalidFactIds: invalidFactIds.slice(0, 20),
+    },
+    structureViolations: structureViolations.slice(0, 10),
+    conflictsUnresolved: context.conflicts.unresolved.length,
+  };
+}
+
+export function createThesisFromPapersDefinition(services: WorkflowServices): WorkflowDefinition {
+  const stages: readonly StageSpec[] = [
+    thesisIngestStage(services),
+    thesisContributionsStage(services),
+    thesisScopeVersionStage(services),
+    thesisFactConflictsStage(services),
+    thesisStorylineStage(services),
+    thesisOutlineConfirmStage(services),
+    thesisEvidenceSupplyStage(services),
+    thesisAuthorDecisionStage(services),
+    thesisWritingSectionsStage(services),
+    // 共享后段（同 id 同语义；quality gate / build 走 thesis 分支工厂）
+    citationVerifyStage(services),
+    reviewRunStageInner(services, {}),
+    qualityGateStage(services, { thesis: true }),
+    revisionPlanStage(services),
+    evidenceGroundClaimsStage(services),
+    revisionRestoreFactsStage(services),
+    revisionReviseStage(services, "revision.revise"),
+    revisionValidateStage(services),
+    revisionValidationDecisionStage(services),
+    revisionRepairStage(services),
+    revisionOverflowStage(),
+    revisionStalledStage(services),
+    stylePolishDecisionStage(services),
+    stylePolishStage(services),
+    buildDraftStage(services, { thesis: true }),
+    buildFinalStage(services),
+  ];
+
+  const front = [
+    "thesis.ingest",
+    "thesis.contributions",
+    "hitl.scope_and_version",
+  ];
+
+  return {
+    kind: "thesis_from_papers",
+    description:
+      "Thesis-from-Papers：研究输入登记核验 → 贡献提取（锚定）→ 范围/版本/贡献确认（HITL）→ 冲突裁决（HITL，条件）→ 主线+两级大纲+章节映射 → 大纲确认（HITL）→ 定向文献补证 → 缺材料作者决定（HITL，条件）→ 分章写作（事实注入）→ 引用核验 → 审稿（长文档单元模式）→ Quality Gate（含 published_facts_zero_drift）→ bounded 修订 → 学位论文装配编译（Draft / Final PDF）",
+    stages,
+    plan(state: WorkflowState): PlanDecision {
+      if ((state.counters?.["thesis.scope_rounds"] ?? 0) > THESIS_SCOPE_ROUND_CAP) {
+        return {
+          kind: "fail",
+          code: "AUTHOR_DECISION_REQUIRED",
+          message: `范围/版本决策轮次超过上限（${THESIS_SCOPE_ROUND_CAP}）——仍有未决事项，请通过研究材料面板处理后重新运行`,
+        };
+      }
+      if ((state.counters?.["thesis.conflict_rounds"] ?? 0) > THESIS_CONFLICT_ROUND_CAP) {
+        return {
+          kind: "fail",
+          code: "AUTHOR_DECISION_REQUIRED",
+          message: `冲突裁决轮次超过上限（${THESIS_CONFLICT_ROUND_CAP}）——冲突仍未解决，不得继续写作`,
+        };
+      }
+      if ((state.counters?.["thesis.author_decision_rounds"] ?? 0) > THESIS_AUTHOR_DECISION_ROUND_CAP) {
+        return {
+          kind: "fail",
+          code: "AUTHOR_DECISION_REQUIRED",
+          message: `缺材料章作者决定轮次超过上限（${THESIS_AUTHOR_DECISION_ROUND_CAP}）`,
+        };
+      }
+      for (const stageId of front) {
+        if (!(stageId in state.stageResults)) {
+          return { kind: "stage", stageId };
+        }
+      }
+      // 条件节点：冲突未裁决（scope 结果记录的数量）→ 先裁决
+      const conflictsPending = readNumberResult(state, "hitl.scope_and_version", "conflictsUnresolved");
+      if (conflictsPending > 0 && !("hitl.fact_conflicts" in state.stageResults)) {
+        return { kind: "stage", stageId: "hitl.fact_conflicts" };
+      }
+      if (!("thesis.storyline" in state.stageResults)) {
+        return { kind: "stage", stageId: "thesis.storyline" };
+      }
+      if (!("hitl.outline_confirm" in state.stageResults)) {
+        return { kind: "stage", stageId: "hitl.outline_confirm" };
+      }
+      if (!("thesis.evidence_supply" in state.stageResults)) {
+        return { kind: "stage", stageId: "thesis.evidence_supply" };
+      }
+      const missingChapters = readNumberArrayResult(state, "thesis.evidence_supply", "missingChapters");
+      if (missingChapters.length > 0 && !("hitl.author_decision" in state.stageResults)) {
+        return { kind: "stage", stageId: "hitl.author_decision" };
+      }
+      if (!("writing.sections" in state.stageResults)) {
+        return { kind: "stage", stageId: "writing.sections" };
+      }
+      return planSharedTail(state, services);
+    },
+    async onInput(state, stageId, input): Promise<void | "cancel"> {
+      switch (stageId) {
+        case "hitl.scope_and_version":
+          return applyThesisScopeDecision(services, state, input);
+        case "hitl.fact_conflicts":
+          return applyThesisFactConflictDecision(services, state, input);
+        case "hitl.outline_confirm":
+          return applyThesisOutlineDecision(services, state, input);
+        case "hitl.author_decision":
+          return applyThesisAuthorDecision(services, state, input);
+        case "hitl.revision_overflow":
+          return applyOverflowDecision(state, input);
+        case "hitl.revision_stalled":
+          return applyStalledDecision(state, input);
+        case "hitl.revision_validation":
+          return applyRevisionValidationDecision(services, state, input);
+        case "hitl.style_polish":
+          return applyStylePolishDecision(state, input);
+        default:
+          throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
+      }
+    },
+  };
+}
+
+function readNumberResult(state: WorkflowState, stageId: string, field: string): number {
+  const value = state.stageResults[stageId]?.[field];
+  return typeof value === "number" ? value : 0;
+}
+
+function readNumberArrayResult(state: WorkflowState, stageId: string, field: string): unknown[] {
+  const value = state.stageResults[stageId]?.[field];
+  return Array.isArray(value) ? value : [];
+}
+
+/** HITL actor 读取：默认 user；test_fixture 仅测试栈显式允许（生产拒绝） */
+function readThesisActor(services: WorkflowServices, payload: Record<string, unknown> | undefined): { kind: "user" | "test_fixture" } {
+  const requested = payload?.["actorKind"];
+  if (requested === "test_fixture") {
+    if (services.thesis.allowTestFixtureActor !== true) {
+      throw new BusinessError("INVALID_REQUEST", "test_fixture 决策只允许在测试栈使用（生产拒绝）");
+    }
+    return { kind: "test_fixture" };
+  }
+  return { kind: "user" };
+}
+
+async function applyThesisScopeDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "cancel") return "cancel";
+  state.counters = state.counters ?? {};
+  state.counters["thesis.scope_rounds"] = (state.counters["thesis.scope_rounds"] ?? 0) + 1;
+  const actor = readThesisActor(services, input.payload);
+  if (input.decision === "confirm_contribution" || input.decision === "reject_contribution") {
+    const ids = readStringArrayPayload(input.payload, "contributionIds");
+    if (ids.length === 0) {
+      throw new WorkflowInvalidStateError(state.runId, state.status, `${input.decision} 需要携带非空 payload.contributionIds`);
+    }
+    await services.thesis.planner.confirmContributions(state.projectId, {
+      contributionIds: ids,
+      outcome: input.decision === "confirm_contribution" ? "confirmed" : "rejected",
+      actorKind: actor.kind,
+    });
+  } else if (input.decision !== "approve") {
+    const payload = authorDecisionFromResumeInput({ decision: input.decision, payload: input.payload });
+    await services.thesis.researchInputs.submitDecision(state.projectId, { actor, payload });
+  }
+  // 重估：范围/版本/未发表全部决定 + ≥1 入选输入 + ≥1 已确认贡献
+  const context = await services.thesis.researchInputs.plannerContext(state.projectId);
+  const pendingScope = context.pendingDecisions.filter((item) =>
+    item.type === "scope_decision" || item.type === "version_selection" || item.type === "unpublished_material_policy",
+  );
+  const contributions = await services.thesis.planner.loadContributions(state.projectId);
+  const confirmed = (contributions?.items ?? []).filter((item) => item.status === "confirmed").length;
+  const resolved = pendingScope.length === 0 && context.inputs.included.length > 0 && confirmed > 0;
+  if (input.decision === "approve" && !resolved) {
+    throw new WorkflowInvalidStateError(
+      state.runId,
+      state.status,
+      `approve 前必须完成全部决定（待决：${pendingScope.map((item) => item.type).join("、") || "无"}；入选输入 ${context.inputs.included.length}；已确认贡献 ${confirmed}）`,
+    );
+  }
+  if (resolved) {
+    state.stageResults["hitl.scope_and_version"] = {
+      resolved: true,
+      included: context.inputs.included.length,
+      confirmedContributions: confirmed,
+      conflictsUnresolved: context.conflicts.unresolved.length,
+    };
+  } else {
+    delete state.stageResults["hitl.scope_and_version"];
+  }
+}
+
+async function applyThesisFactConflictDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "cancel") return "cancel";
+  state.counters = state.counters ?? {};
+  state.counters["thesis.conflict_rounds"] = (state.counters["thesis.conflict_rounds"] ?? 0) + 1;
+  const actor = readThesisActor(services, input.payload);
+  if (input.decision !== "approve") {
+    const payload = authorDecisionFromResumeInput({ decision: input.decision, payload: input.payload });
+    await services.thesis.researchInputs.submitDecision(state.projectId, { actor, payload });
+  }
+  const context = await services.thesis.researchInputs.plannerContext(state.projectId);
+  const unresolved = context.conflicts.unresolved.length;
+  if (input.decision === "approve" && unresolved > 0) {
+    throw new WorkflowInvalidStateError(state.runId, state.status, `仍有 ${unresolved} 条未裁决冲突，不能 approve`);
+  }
+  if (unresolved === 0) {
+    state.stageResults["hitl.fact_conflicts"] = { resolved: true, conflictsResolvedInRound: true };
+  } else {
+    delete state.stageResults["hitl.fact_conflicts"];
+  }
+}
+
+async function applyThesisOutlineDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "approve") {
+    const actor = readThesisActor(services, input.payload);
+    await services.thesis.planner.confirmMapping(state.projectId, actor.kind);
+    state.stageResults["hitl.outline_confirm"] = { decision: "approve" };
+    return;
+  }
+  if (input.decision === "cancel") return "cancel";
+  if (input.decision === "revise") {
+    const feedback = readFeedback(input.payload);
+    if (feedback === undefined) {
+      throw new WorkflowInvalidStateError(state.runId, state.status, "revise 需要携带非空 payload.feedback");
+    }
+    if (countCompletions(state, "thesis.storyline") >= MAX_OUTLINE_REVISIONS) {
+      throw new WorkflowInvalidStateError(
+        state.runId,
+        state.status,
+        `大纲修订次数已达上限（${MAX_OUTLINE_REVISIONS} 次），请 approve 或 cancel`,
+      );
+    }
+    dropStageResult(state, "thesis.storyline");
+    return;
+  }
+  throw new WorkflowInvalidStateError(
+    state.runId,
+    state.status,
+    `decision 只能是 approve / revise / cancel（当前 "${input.decision}"）`,
+  );
+}
+
+async function applyThesisAuthorDecision(
+  services: WorkflowServices,
+  state: WorkflowState,
+  input: ResumeInput,
+): Promise<void | "cancel"> {
+  if (input.decision === "cancel") return "cancel";
+  state.counters = state.counters ?? {};
+  state.counters["thesis.author_decision_rounds"] = (state.counters["thesis.author_decision_rounds"] ?? 0) + 1;
+  const actor = readThesisActor(services, input.payload);
+  if (input.decision !== "approve") {
+    const payload = authorDecisionFromResumeInput({ decision: input.decision, payload: input.payload });
+    await services.thesis.researchInputs.submitDecision(state.projectId, { actor, payload });
+  }
+  const missing = await services.thesis.planner.missingMaterialChapters(state.projectId);
+  if (input.decision === "approve" && missing.length > 0) {
+    throw new WorkflowInvalidStateError(
+      state.runId,
+      state.status,
+      `仍有缺材料且未获决定的章：${missing.map((chapter) => chapter.chapterId).join("、")}`,
+    );
+  }
+  if (missing.length === 0) {
+    state.stageResults["hitl.author_decision"] = { resolved: true };
+  } else {
+    delete state.stageResults["hitl.author_decision"];
+  }
+}
+
+function readStringArrayPayload(payload: Record<string, unknown> | undefined, field: string): string[] {
+  const value = payload?.[field];
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+}
+
 export async function buildManuscriptDigest(services: WorkflowServices, projectId: string): Promise<string> {
   const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
   const outline = await services.manuscript.loadOutline(projectId);

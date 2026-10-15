@@ -96,6 +96,7 @@ import { ScientificFactStore } from "./thesis/ScientificFactStore.js";
 import { AuthorDecisionStore } from "./thesis/AuthorDecisionStore.js";
 import { ResearchInputService } from "./thesis/ResearchInputService.js";
 import { ThesisDocumentService } from "./thesis/ThesisDocumentService.js";
+import { ThesisPlannerService } from "./thesis/ThesisPlannerService.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
 
 export interface ServiceStackOptions {
@@ -106,6 +107,13 @@ export interface ServiceStackOptions {
   latexTimeoutMs?: number;
   /** M14.1c：学位论文编译超时（config.latex.thesisCompileTimeoutMs 注入） */
   thesisCompileTimeoutMs?: number;
+  /**
+   * M14.2：thesis 工作流测试装置。allowTestFixtureActor 只允许测试栈显式开启
+   * （生产栈不设 = HITL resume 拒绝 actor=test_fixture 的决策）。
+   */
+  thesis?: { allowTestFixtureActor?: boolean };
+  /** M14.2：学位论文编译器注入（测试栈用 fake runner；缺省真实 xelatex 预算 600s） */
+  thesisLatex?: LatexCompiler;
   agentIds: {
     writer: string;
     researcher: string;
@@ -938,6 +946,20 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ingestion,
     textLayer: new PdfTextLayerProvider(options.projects, sources, paperParser, log),
   });
+  // M14.1c/M14.2：学位论文编译器（独立 600s 预算）与文档服务共享同一实例；
+  // M14.2 规划层（贡献提取 / 主线大纲 / 章节映射）经 workflowServices.thesis 消费。
+  const thesisLatex = options.thesisLatex ?? new LatexCompiler({ timeoutMs: options.thesisCompileTimeoutMs ?? 600_000 });
+  const thesisDocuments = new ThesisDocumentService(options.projects, thesisLatex);
+  const thesisPlanner = new ThesisPlannerService({
+    runtime: options.runtime,
+    agentId: options.agentIds.writer,
+    projects: options.projects,
+    manuscript,
+    researchInputs,
+    thesisDocuments,
+    documents: parsedDocuments,
+    ...(log !== undefined ? { log } : {}),
+  });
   return {
     runtime: options.runtime,
     agentIds: options.agentIds,
@@ -995,7 +1017,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     finalize,
     versions,
     manuscriptOverview,
-    thesisDocuments: new ThesisDocumentService(options.projects, new LatexCompiler({ timeoutMs: options.thesisCompileTimeoutMs ?? 600_000 })),
+    thesisDocuments,
     workflowServices: {
       projects: options.projects,
       generation,
@@ -1052,6 +1074,13 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         reviewConcurrency: options.review?.reviewConcurrency ?? 3,
         reviewSectionLimit: options.review?.reviewSectionLimit ?? 0,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
+      },
+      thesis: {
+        planner: thesisPlanner,
+        researchInputs,
+        documents: thesisDocuments,
+        latex: thesisLatex,
+        ...(options.thesis?.allowTestFixtureActor === true ? { allowTestFixtureActor: true } : {}),
       },
     },
   };

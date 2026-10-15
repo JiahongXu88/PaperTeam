@@ -40,6 +40,7 @@ import {
   resolveSourceFullText,
   uploadSourceFile,
 } from "../api/sources.js";
+import { listResearchConflicts, listResearchInputs, submitResearchDecision } from "../api/researchInputs.js";
 import {
   academicSearch,
   getResearchProviders,
@@ -153,6 +154,8 @@ export const queryKeys = {
   evidence: (projectId: string) => ["project", projectId, "evidence"] as const,
   /** 项目文献库（M6.2；导入 / 上传 / 删除后失效重取） */
   sources: (projectId: string) => ["project", projectId, "sources"] as const,
+  researchInputs: (projectId: string) => ["project", projectId, "research-inputs"] as const,
+  researchConflicts: (projectId: string) => ["project", projectId, "research-inputs", "conflicts"] as const,
   /** Discovery 候选（M7.1c；检索保存 / promote / reject 后失效重取） */
   candidates: (projectId: string) => ["project", projectId, "candidates"] as const,
   /** Research Plan（M8.1；调研产出 / 编辑保存后失效重取） */
@@ -536,6 +539,37 @@ export function useSources(projectId: string | undefined) {
     queryKey: queryKeys.sources(projectId ?? ""),
     queryFn: ({ signal }) => listSources(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
+  });
+}
+
+/** M14.2：研究输入列表（thesis_from_papers 项目的「研究材料」面板） */
+export function useResearchInputs(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchInputs(projectId ?? ""),
+    queryFn: () => listResearchInputs(projectId ?? ""),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 未裁决研究事实冲突 */
+export function useResearchConflicts(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.researchConflicts(projectId ?? ""),
+    queryFn: () => listResearchConflicts(projectId ?? "", "unresolved"),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 研究输入作者决定（include/exclude/select_version/adopt_fact/confirm_facts…） */
+export function useResearchInputDecision(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Record<string, unknown>) => submitResearchDecision(projectId ?? "", payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchInputs(projectId ?? "") });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.researchConflicts(projectId ?? "") });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projectRuns(projectId ?? "") });
+    },
   });
 }
 

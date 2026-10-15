@@ -311,6 +311,14 @@ export const FINDING_CATEGORY_LABELS: Record<string, string> = {
 
 /** Workflow stage → 用户可读名称（未知 stage 原样显示；与 backend definitions.ts 的 stage id 对齐） */
 export const STAGE_LABELS: Record<string, string> = {
+  // M14.2 thesis_from_papers
+  "thesis.ingest": "研究输入登记核验",
+  "thesis.contributions": "提取研究贡献",
+  "hitl.scope_and_version": "等待确认范围与贡献",
+  "hitl.fact_conflicts": "等待裁决事实冲突",
+  "thesis.storyline": "规划主线与大纲",
+  "thesis.evidence_supply": "定向文献补证",
+  "hitl.author_decision": "等待缺材料决定",
   // existing_paper_review
   "paper.ensure": "解析论文结构",
   "citation.extract": "提取引用",
@@ -514,6 +522,30 @@ export const WORKFLOW_STAGE_SEQUENCES: Record<string, readonly StageSequenceEntr
     { stageId: "survey.outline" },
     { stageId: "hitl.outline_confirm", hitl: true },
     // M11.2 写作链（与 idea_to_paper 共享后段同 id）
+    { stageId: "writing.sections" },
+    { stageId: "citation.verify" },
+    { stageId: "review.run" },
+    { stageId: "quality.gate" },
+    { stageId: "revision.plan", conditional: true },
+    { stageId: "revision.revise", conditional: true },
+    { stageId: "revision.validate", conditional: true },
+    { stageId: "hitl.revision_validation", hitl: true, conditional: true },
+    { stageId: "hitl.revision_stalled", hitl: true, conditional: true },
+    { stageId: "hitl.revision_overflow", hitl: true, conditional: true },
+    { stageId: "build.draft", conditional: true },
+    { stageId: "revision.repair_latex", conditional: true },
+    { stageId: "build.final", conditional: true },
+  ],
+  thesis_from_papers: [
+    // M14.2：研究成果输入集 → 学位论文（前段 + 共享后段，同 id 复用）
+    { stageId: "thesis.ingest" },
+    { stageId: "thesis.contributions" },
+    { stageId: "hitl.scope_and_version", hitl: true },
+    { stageId: "hitl.fact_conflicts", hitl: true, conditional: true },
+    { stageId: "thesis.storyline" },
+    { stageId: "hitl.outline_confirm", hitl: true },
+    { stageId: "thesis.evidence_supply" },
+    { stageId: "hitl.author_decision", hitl: true, conditional: true },
     { stageId: "writing.sections" },
     { stageId: "citation.verify" },
     { stageId: "review.run" },

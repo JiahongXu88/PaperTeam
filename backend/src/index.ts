@@ -29,6 +29,7 @@ import {
   createExistingPaperReviewDefinition,
   createIdeaToPaperDefinition,
   createTopicSurveyDefinition,
+  createThesisFromPapersDefinition,
 } from "./workflow/definitions.js";
 import { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 import { WorkflowRunStore } from "./workflow/runStore.js";
@@ -400,6 +401,8 @@ export async function startBackend(): Promise<void> {
           return createExistingPaperReviewDefinition(stack.workflowServices);
         case "topic_survey":
           return createTopicSurveyDefinition(stack.workflowServices);
+        case "thesis_from_papers":
+          return createThesisFromPapersDefinition(stack.workflowServices);
       }
     },
     log: (message) => console.log(message),

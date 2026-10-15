@@ -30,6 +30,7 @@ import {
   createExistingPaperReviewDefinition,
   createIdeaToPaperDefinition,
   createTopicSurveyDefinition,
+  createThesisFromPapersDefinition,
 } from "../../src/workflow/definitions.js";
 
 export const AGENT_IDS = {
@@ -184,6 +185,8 @@ export async function startTestStack(
   runtime: AgentRuntime,
   options: {
     latexRunner?: CommandRunner;
+    /** M14.2：真实 xelatex/bibtex 编译（服务器验收；缺省 fake runner） */
+    realLatex?: boolean;
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
     /** search provider 装配（缺省全关 = 完全离线；http 测试注入 fake fetch / 显式启用单个 provider） */
@@ -210,14 +213,21 @@ export async function startTestStack(
 ): Promise<TestStack> {
   const root = options.root ?? (await mkdtemp(join(tmpdir(), "paperteam-stack-")));
   const store = new ProjectStore({ root });
+  // M14.2 realLatex（服务器真实编译验收）：不注入 fake runner，走真实 xelatex/bibtex
+  const useRealLatex = options.realLatex === true;
   const latex = new LatexCompiler({
-    timeoutMs: 10_000,
-    runner: options.latexRunner ?? fakeSuccessfulRunner,
+    timeoutMs: useRealLatex ? 300_000 : 10_000,
+    ...(useRealLatex ? {} : { runner: options.latexRunner ?? fakeSuccessfulRunner }),
+  });
+  const thesisLatex = new LatexCompiler({
+    timeoutMs: useRealLatex ? 600_000 : 10_000,
+    ...(useRealLatex ? {} : { runner: options.latexRunner ?? fakeSuccessfulRunner }),
   });
   const stack = buildServiceStack({
     runtime,
     projects: store,
     latex,
+    thesisLatex,
     agentIds: { ...AGENT_IDS },
     stageTimeoutMs: 10_000,
     stageMaxAttempts: 2,
@@ -261,6 +271,8 @@ export async function startTestStack(
     },
     ...(options.vision !== undefined ? { vision: options.vision } : {}),
     ...(options.experimentSemanticModel !== undefined ? { experimentSemanticModel: options.experimentSemanticModel } : {}),
+    // M14.2：测试栈允许 HITL resume 显式携带 actor=test_fixture（生产栈不设 = 拒绝）
+    thesis: { allowTestFixtureActor: true },
     figures: {
       compiler: new FigureCompiler({ runner: options.figureRunner ?? fakeFigureRunner }),
     },
@@ -281,6 +293,8 @@ export async function startTestStack(
           return createExistingPaperReviewDefinition(stack.workflowServices);
         case "topic_survey":
           return createTopicSurveyDefinition(stack.workflowServices);
+        case "thesis_from_papers":
+          return createThesisFromPapersDefinition(stack.workflowServices);
       }
     },
     retryDelayMs: 0,

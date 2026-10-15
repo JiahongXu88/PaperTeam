@@ -8,12 +8,17 @@
  * - topic_survey                Topic → Survey（M11.1 综述研究链 + M11.2 写作链：
  *                               Matrix → Synthesis → Outline → Writing → Review →
  *                               Revision → Gate → PDF）
+ * - thesis_from_papers          M14.2：研究成果输入集 → 学位论文（ResearchInput
+ *                               → 贡献提取 → 范围/版本/冲突 HITL → 两级大纲 +
+ *                               章节映射 → 分章写作（事实注入）→ Review →
+ *                               Revision → Gate → Thesis Draft PDF）
  */
 export const WORKFLOW_KINDS = [
   "idea_to_paper",
   "existing_paper_improvement",
   "existing_paper_review",
   "topic_survey",
+  "thesis_from_papers",
 ] as const;
 
 export type WorkflowKind = (typeof WORKFLOW_KINDS)[number];
@@ -30,4 +35,9 @@ export function isExistingPaperKind(kind: WorkflowKind | undefined): boolean {
 /** M11.2：综述类工作流（写作 / 审稿 / 修订 / gate 走 Survey 契约分支） */
 export function isSurveyKind(kind: WorkflowKind | undefined): boolean {
   return kind === "topic_survey";
+}
+
+/** M14.2：学位论文工作流（thesis_from_papers；写作 / 装配 / gate 走 thesis 契约分支） */
+export function isThesisKind(kind: WorkflowKind | undefined): boolean {
+  return kind === "thesis_from_papers";
 }

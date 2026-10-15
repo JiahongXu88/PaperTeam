@@ -49,9 +49,11 @@ export const DOCUMENT_TYPES: readonly string[] = [
 
 /**
  * M11.2.1：documentType → workflowKind 的产品级映射（后端是最终事实源，
- * 前端不再各自维护映射）。survey 类（综述）→ topic_survey；其余（含未指定）
- * → idea_to_paper（与「workflowKind 缺省视为 idea_to_paper」的既有语义一致）。
- * 显式提供的 workflowKind 优先（导入 / 旧客户端不受影响）。
+ * 前端不再各自维护映射）。survey 类（综述）→ topic_survey；学位论文类
+ * （M14.2）→ thesis_from_papers；其余（含未指定）→ idea_to_paper（与
+ * 「workflowKind 缺省视为 idea_to_paper」的既有语义一致）。
+ * 显式提供的 workflowKind 优先（导入 / 旧客户端不受影响）——「从研究主题
+ * 开始写学位论文」的路径由前端显式传 idea_to_paper，不受本映射影响。
  */
 const SURVEY_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
   "survey",
@@ -62,10 +64,21 @@ const SURVEY_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
   "综述论文",
 ]);
 
+/** M14.2：学位论文 documentType（含中文别名）→ thesis_from_papers */
+const THESIS_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
+  "master_thesis",
+  "doctoral_thesis",
+  "undergraduate_thesis",
+  "学位论文",
+  "硕士论文",
+  "博士论文",
+]);
+
 export function workflowKindForDocumentType(documentType: string | undefined): ProjectWorkflowKind {
-  return documentType !== undefined && SURVEY_DOCUMENT_TYPES.has(documentType.trim())
-    ? "topic_survey"
-    : "idea_to_paper";
+  const normalized = documentType?.trim();
+  if (normalized !== undefined && SURVEY_DOCUMENT_TYPES.has(normalized)) return "topic_survey";
+  if (normalized !== undefined && THESIS_DOCUMENT_TYPES.has(normalized)) return "thesis_from_papers";
+  return "idea_to_paper";
 }
 
 export const TARGET_PROFILES: readonly string[] = [

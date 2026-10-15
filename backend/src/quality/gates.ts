@@ -79,8 +79,10 @@ export async function runBuildGate(
   projects: ProjectStore,
   latex: LatexCompiler,
   projectId: string,
+  options: { manuscriptDir?: string } = {},
 ): Promise<{ build: BuildGateResult; compile: LatexCompileResult }> {
-  const files = await collectLatexFiles(projects.manuscriptDir(projectId));
+  const manuscriptDir = options.manuscriptDir ?? projects.manuscriptDir(projectId);
+  const files = await collectLatexFiles(manuscriptDir);
   const missingIncludes = files.warnings.filter((warning) => warning.includes("无法读取"));
   const bibMissing =
     files.mainTex !== null &&
@@ -90,7 +92,7 @@ export async function runBuildGate(
   let compile: LatexCompileResult;
   try {
     compile = await latex.compile({
-      manuscriptDir: projects.manuscriptDir(projectId),
+      manuscriptDir,
       buildDir: projects.buildDir(projectId),
     });
   } catch (error) {
@@ -158,9 +160,10 @@ export async function runBuildGateForRevision(
   latex: LatexCompiler,
   projectId: string,
   revision: number,
+  options: { manuscriptDir?: string } = {},
 ): Promise<{ build: BuildGateResult; compile: LatexCompileResult; record: BuildGateRecord }> {
   return withCompileLock(projectId, async () => {
-    const { build, compile } = await runBuildGate(projects, latex, projectId);
+    const { build, compile } = await runBuildGate(projects, latex, projectId, options);
     const diagnostics = await readCompileDiagnostics(projects, projectId);
     const record: BuildGateRecord = {
       passed: build.passed,
@@ -339,6 +342,36 @@ export interface QualityGateInput {
    * 未评估（既有项目行为完全不变）。
    */
   targetReadiness?: TargetReadinessGateAdvisory;
+  /**
+   * M14.2 thesis_from_papers：学位论文确定性规则输入。
+   * undefined = 非 thesis 项目（四条规则不出现，其余 kind 零改动）。
+   */
+  thesis?: ThesisGateInput;
+}
+
+/** M14.2：thesis gate 规则输入（definitions.computeThesisGateInput 产出） */
+export interface ThesisGateInput {
+  /** published_facts_zero_drift：已确认事实 ↔ 正文的机械比对 */
+  drift: {
+    checked: number;
+    consistent: number;
+    equivalentFormat: number;
+    unauthorized: number;
+    absent: number;
+    findings: Array<{ factId: string; surface: string; status: string; detail: string; observedValue?: string }>;
+  };
+  /** thesis_mapping_confirmed */
+  mapping: {
+    exists: boolean;
+    confirmed: boolean;
+    fingerprintMatchesOutline: boolean;
+    invalidSourceInputs: string[];
+    invalidFactIds: string[];
+  };
+  /** thesis_structure_complete（ThesisDocumentModel 对 outline 的装配校验） */
+  structureViolations: string[];
+  /** thesis_conflicts_resolved（未裁决阻断冲突必须为 0） */
+  conflictsUnresolved: number;
 }
 
 export interface QualityGateResult {
@@ -760,6 +793,51 @@ export function evaluateQualityGate(
         + `单文献段落占比 ${(metrics.singleKeyParagraphRatio * 100).toFixed(0)}%；罗列游程 ${metrics.listingRuns}；`
         + `speculative 泄漏信号 ${metrics.speculativeLeakSignals}`
         + (evaluation.warnings.length > 0 ? `；warnings ${evaluation.warnings.length} 条（明细见产物）` : ""),
+    });
+  }
+
+  // M14.2 thesis_from_papers：学位论文确定性规则（已确认事实零漂移 / 映射冻结 / 结构完整 / 冲突清零）
+  if (input.thesis !== undefined) {
+    const thesis = input.thesis;
+    rules.push({
+      rule: "published_facts_zero_drift",
+      passed: thesis.drift.unauthorized === 0,
+      detail:
+        thesis.drift.unauthorized === 0
+          ? `已确认事实比对：一致 ${thesis.drift.consistent} / 等价形态 ${thesis.drift.equivalentFormat} / 未引用 ${thesis.drift.absent}（共 ${thesis.drift.checked} 条，零未授权变更）`
+          : `未授权事实变更 ${thesis.drift.unauthorized} 处：${thesis.drift.findings.filter((finding) => finding.status === "unauthorized").slice(0, 3).map((finding) => `${finding.surface} → ${finding.observedValue ?? "?"}（${finding.detail}）`).join("；")}`,
+    });
+    const mappingOk =
+      thesis.mapping.exists && thesis.mapping.confirmed && thesis.mapping.fingerprintMatchesOutline &&
+      thesis.mapping.invalidSourceInputs.length === 0 && thesis.mapping.invalidFactIds.length === 0;
+    rules.push({
+      rule: "thesis_mapping_confirmed",
+      passed: mappingOk,
+      detail: !thesis.mapping.exists
+        ? "章节映射产物缺失（chapter-mapping.json 不存在）"
+        : !thesis.mapping.confirmed
+          ? "章节映射未经作者确认（hitl.outline_confirm 未 approve）"
+          : !thesis.mapping.fingerprintMatchesOutline
+            ? "章节映射与当前大纲结构不一致（outline 已变化，映射失效）"
+            : mappingOk
+              ? `章节映射已确认且与大纲一致（${thesis.mapping.invalidSourceInputs.length} 个失效来源 / ${thesis.mapping.invalidFactIds.length} 个失效事实）`
+              : `映射引用失效：来源 ${thesis.mapping.invalidSourceInputs.join("、") || "无"}；事实 ${thesis.mapping.invalidFactIds.join("、") || "无"}`,
+    });
+    rules.push({
+      rule: "thesis_structure_complete",
+      passed: thesis.structureViolations.length === 0,
+      detail:
+        thesis.structureViolations.length === 0
+          ? "ThesisDocumentModel 装配校验通过（每节恰好映射一章）"
+          : `结构违规 ${thesis.structureViolations.length} 处：${thesis.structureViolations.slice(0, 3).join("；")}`,
+    });
+    rules.push({
+      rule: "thesis_conflicts_resolved",
+      passed: thesis.conflictsUnresolved === 0,
+      detail:
+        thesis.conflictsUnresolved === 0
+          ? "研究事实冲突全部裁决（无未决阻断）"
+          : `仍有 ${thesis.conflictsUnresolved} 条未裁决冲突——未裁决数值不得出现在正文`,
     });
   }
 

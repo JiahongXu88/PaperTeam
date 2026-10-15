@@ -13,6 +13,7 @@ export const WORKFLOW_KIND_LABELS: Record<WorkflowKind, string> = {
   existing_paper_improvement: "论文改进",
   existing_paper_review: "论文 Review",
   topic_survey: "综述调研",
+  thesis_from_papers: "学位论文",
 };
 
 /**
@@ -24,6 +25,7 @@ export const WORKFLOW_KIND_RUN_LABELS: Record<WorkflowKind, string> = {
   existing_paper_improvement: "系统性改进",
   existing_paper_review: "快速 Review",
   topic_survey: "综述论文生成",
+  thesis_from_papers: "研究成果成学位论文",
 };
 
 /** documentType 建议值（Backend DOCUMENT_TYPES；research_article / survey 为创建页两档默认值，必须可显示） */

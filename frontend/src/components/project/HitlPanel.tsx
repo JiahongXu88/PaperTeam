@@ -537,10 +537,156 @@ function HitlPayload({
       return <LiteratureSelectionPayload payload={payload} />;
     case "hitl.matrix_confirm":
       return <MatrixConfirmPayload payload={payload} />;
+    // M14.2 thesis_from_papers HITL payload（研究材料面板承担决策入口，这里如实呈现状态）
+    case "hitl.scope_and_version":
+      return <ThesisScopePayload payload={payload} />;
+    case "hitl.fact_conflicts":
+      return <ThesisConflictsPayload payload={payload} />;
+    case "hitl.outline_confirm":
+      return payload["storyline"] !== undefined ? (
+        <ThesisOutlinePayload payload={payload} />
+      ) : (
+        <OutlinePayload payload={payload} />
+      );
+    case "hitl.author_decision":
+      return <ThesisAuthorDecisionPayload payload={payload} />;
     default:
       // 未知 HITL 节点：不虚构内容，prompt 已说明情况
       return null;
   }
+}
+
+// ---- M14.2 thesis_from_papers HITL payload ----
+
+/** 范围 / 版本 / 贡献确认：呈现待决输入、贡献与冲突计数（决策在「研究材料」面板或下方 approve） */
+function ThesisScopePayload({ payload }: { payload: Record<string, unknown> }) {
+  const inputs = (payload["inputs"] as Record<string, Array<{ inputId: string; title: string }>> | undefined) ?? {};
+  const contributions = Array.isArray(payload["contributions"])
+    ? (payload["contributions"] as Array<{ id: string; kind: string; statement: string; anchorStatus: string; status: string }>)
+    : [];
+  const pending = Array.isArray(payload["pendingDecisions"])
+    ? (payload["pendingDecisions"] as Array<{ type: string; subject: string; reason: string }>)
+    : [];
+  const factCounts = (payload["factCounts"] as Record<string, number> | undefined) ?? {};
+  const conflicts = (payload["conflicts"] as { unresolved: unknown[] } | undefined)?.unresolved ?? [];
+  return (
+    <div className="hitl-payload thesis-scope-payload" data-testid="thesis-scope-payload">
+      <div className="hitl-kv">
+        <span>待决研究材料</span><strong>{(inputs.proposed ?? []).length}</strong>
+        <span>已入选</span><strong>{(inputs.included ?? []).length}</strong>
+        <span>已确认贡献</span><strong>{contributions.filter((item) => item.status === "confirmed").length}/{contributions.length}</strong>
+        <span>已确认事实</span><strong>{factCounts.authorConfirmed ?? 0}</strong>
+        <span>未裁决冲突</span><strong>{conflicts.length}</strong>
+      </div>
+      {pending.length > 0 ? (
+        <div className="hitl-list">
+          <h4>待决事项</h4>
+          <ul>{pending.map((item) => <li key={`${item.type}:${item.subject}`}><code>{item.subject}</code><span>{item.reason}</span></li>)}</ul>
+        </div>
+      ) : null}
+      {contributions.length > 0 ? (
+        <div className="hitl-list">
+          <h4>研究贡献（模型提案，需你确认归属）</h4>
+          <ul>
+            {contributions.map((item) => (
+              <li key={item.id}>
+                <span className={`badge ${item.status === "confirmed" ? "badge-ok" : ""}`}>{item.status === "confirmed" ? "已确认" : "待确认"}</span>
+                <span className="badge">{item.kind}</span>
+                <span>{item.statement}</span>
+                {item.anchorStatus !== "verbatim" ? <span className="badge badge-warn">锚定未逐字命中</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p className="panel-note">逐项决定（入选 / 排除 / 版本 / 未发表政策 / 贡献确认 / 事实确认）请到「研究材料」面板操作；全部决定完成后在此 approve 继续。</p>
+    </div>
+  );
+}
+
+/** 事实冲突：双方数值与定位（裁决入口在「研究材料」面板或下方按选项提交） */
+function ThesisConflictsPayload({ payload }: { payload: Record<string, unknown> }) {
+  const conflicts = Array.isArray(payload["unresolved"])
+    ? (payload["unresolved"] as Array<{ conflictId: string; classification: string; severity: string; parties: Array<{ factId: string; raw: string; location: string }> }>)
+    : [];
+  return (
+    <div className="hitl-payload thesis-conflicts-payload" data-testid="thesis-conflicts-payload">
+      {conflicts.map((conflict) => (
+        <div key={conflict.conflictId} className="hitl-list">
+          <h4>{conflict.classification === "value_mismatch" ? "同实验异值" : conflict.classification}（{conflict.severity}）</h4>
+          <ul>
+            {conflict.parties.map((party) => (
+              <li key={party.factId}><code>{party.raw}</code><span>{party.location}</span></li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      <p className="panel-note">未裁决前写作不会继续；数值裁决在「研究材料」面板的「未裁决冲突」区操作。</p>
+    </div>
+  );
+}
+
+/** 学位论文大纲 + 章节映射确认 */
+function ThesisOutlinePayload({ payload }: { payload: Record<string, unknown> }) {
+  const storyline = (payload["storyline"] as { narrative?: string; structure?: string; scopeConcerns?: string[] } | null) ?? null;
+  const chapters = Array.isArray(payload["chapters"])
+    ? (payload["chapters"] as Array<{ chapterId: string; titleZh: string; responsibility: string; goal: string; ownsContributionIds: string[]; sourceInputIds: string[]; factIds: number }>)
+    : [];
+  const sections = Array.isArray(payload["outlineSections"]) ? (payload["outlineSections"] as Array<{ file: string; title: string }>) : [];
+  const missing = Array.isArray(payload["missingMaterialChapters"])
+    ? (payload["missingMaterialChapters"] as Array<{ chapterId: string; titleZh: string }>)
+    : [];
+  return (
+    <div className="hitl-payload thesis-outline-payload" data-testid="thesis-outline-payload">
+      {storyline !== null ? (
+        <div className="hitl-kv">
+          <span>主线结构</span><strong>{storyline.structure ?? "—"}</strong>
+        </div>
+      ) : null}
+      {storyline?.narrative !== undefined && storyline.narrative !== "" ? <p>{storyline.narrative}</p> : null}
+      {(storyline?.scopeConcerns ?? []).length > 0 ? (
+        <p className="panel-note">范围问题（不硬编统一创新点）：{(storyline?.scopeConcerns ?? []).join("；")}</p>
+      ) : null}
+      <div className="hitl-list">
+        <h4>章节结构（{chapters.length} 章 / {sections.length} 节）</h4>
+        <ul>
+          {chapters.map((chapter) => (
+            <li key={chapter.chapterId}>
+              <strong>{chapter.titleZh}</strong>
+              <span className="badge">{chapter.responsibility}</span>
+              {chapter.ownsContributionIds.length > 0 ? <span className="badge">拥有 {chapter.ownsContributionIds.length} 项贡献</span> : null}
+              {chapter.sourceInputIds.length > 0 ? <span className="badge">来源 {chapter.sourceInputIds.length} 篇</span> : null}
+              <span>{chapter.goal}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {missing.length > 0 ? (
+        <p className="panel-note">缺材料章（写作前需作者决定）：{missing.map((chapter) => chapter.titleZh).join("、")}</p>
+      ) : null}
+    </div>
+  );
+}
+
+/** 缺材料章决定：呈现章节与口径（决策按钮沿用面板通用 approve / 选项） */
+function ThesisAuthorDecisionPayload({ payload }: { payload: Record<string, unknown> }) {
+  const missing = Array.isArray(payload["missingChapters"])
+    ? (payload["missingChapters"] as Array<{ chapterId: string; titleZh: string; responsibility: string; goal: string }>)
+    : [];
+  return (
+    <div className="hitl-payload thesis-author-decision-payload" data-testid="thesis-author-decision-payload">
+      {missing.map((chapter) => (
+        <div key={chapter.chapterId} className="hitl-list">
+          <h4>{chapter.titleZh}（{chapter.responsibility}）</h4>
+          <p>{chapter.goal}</p>
+          <p className="panel-note">该章声明的贡献没有可写的已确认实验事实。系统不会为其生成任何实验数值。</p>
+        </div>
+      ))}
+      <p className="panel-note">
+        处理方式：write_as_limitation（研究限制口径撰写）/ defer_chapter（暂缓）/ attach_experiment_package（上传实验包并在确认事实后继续）。
+      </p>
+    </div>
+  );
 }
 
 // ---- topic_survey HITL payload（M11.1.4：研究计划 / 文献遴选 / 矩阵确认） ----

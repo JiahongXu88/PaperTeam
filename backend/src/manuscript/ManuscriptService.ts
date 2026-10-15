@@ -65,7 +65,7 @@ export interface SectionStatus {
 }
 
 /** 合法章节文件名：小写字母/数字/连字符 + .tex */
-const SECTION_FILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}\.tex$/;
+export const SECTION_FILE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}\.tex$/;
 
 /**
  * M13 Final Closure（真实 Topic → PDF run 1 实录）：摘要按契约是纯文本（Planner / 修订 Writer 都被要求
@@ -110,8 +110,8 @@ export class ManuscriptService {
   }
 
   /** 校验并保存大纲（manuscript/outline.json）；refs 归一（去重 + 升序）后落盘 */
-  async saveOutline(projectId: string, outline: Outline): Promise<Outline> {
-    const violations = validateOutline(outline);
+  async saveOutline(projectId: string, outline: Outline, options: ValidateOutlineOptions = {}): Promise<Outline> {
+    const violations = validateOutline(outline, options);
     if (violations.length > 0) {
       throw new BusinessError("STAGE_CONTRACT_VIOLATION", `大纲校验未通过：${violations.join("；")}`);
     }
@@ -280,7 +280,14 @@ export class ManuscriptService {
 }
 
 /** 大纲校验（DoD 的确定性部分） */
-export function validateOutline(outline: Outline): string[] {
+/** 大纲校验选项：学位论文（M14.2）放宽节数上限（outline 模式差异） */
+export interface ValidateOutlineOptions {
+  /** 节数上限（缺省 20；thesis_from_papers 用 60） */
+  maxSections?: number;
+}
+
+export function validateOutline(outline: Outline, options: ValidateOutlineOptions = {}): string[] {
+  const maxSections = options.maxSections ?? 20;
   const violations: string[] = [];
   if (typeof outline !== "object" || outline === null) {
     return ["outline 不是对象"];
@@ -292,8 +299,8 @@ export function validateOutline(outline: Outline): string[] {
     violations.push("sections 必须是至少 3 项的数组");
     return violations;
   }
-  if (outline.sections.length > 20) {
-    violations.push("sections 数量不能超过 20");
+  if (outline.sections.length > maxSections) {
+    violations.push(`sections 数量不能超过 ${maxSections}`);
   }
   const ids = new Set<string>();
   const files = new Set<string>();

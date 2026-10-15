@@ -14,7 +14,8 @@ export type WorkflowKind =
   | "idea_to_paper"
   | "existing_paper_improvement"
   | "existing_paper_review"
-  | "topic_survey";
+  | "topic_survey"
+  | "thesis_from_papers";
 
 /**
  * 引用语义核验模式（Claim-Citation 一致性核验档位；Backend citation/semanticMode.ts）。

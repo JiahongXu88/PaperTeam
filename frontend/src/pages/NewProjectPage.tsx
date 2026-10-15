@@ -154,47 +154,96 @@ export function NewProjectPage() {
   );
 }
 
-/** 学位论文 UI 仅供选择流程与材料；该类型不连接项目创建或文件上传 API。 */
+/**
+ * M14.2：学位论文创建真实接线。
+ * - 基于已有小论文扩展（缺省）：创建 thesis_from_papers 项目后跳转项目页
+ *   「研究材料」面板登记 ResearchInput（上传 → 登记 → 启动工作流）；
+ * - 从研究主题开始：显式 workflowKind=idea_to_paper + documentType=master_thesis
+ *   （显式 kind 优先——主题路径不受 documentType 路由影响）。
+ */
 function ThesisSelection({ onSelectPaperType, onSwitchMode }: { onSelectPaperType: (type: PaperType) => void; onSwitchMode: (mode: EntryMode) => void }) {
-  const [source, setSource] = useState<"topic" | "expand">("topic");
-  const [file, setFile] = useState<File | null>(null);
+  const [source, setSource] = useState<"topic" | "expand">("expand");
+  const [title, setTitle] = useState("");
+  const [researchIdea, setResearchIdea] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const createProject = useCreateProject();
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmedTitle = title.trim();
+    if (trimmedTitle === "") {
+      setError("请填写学位论文标题");
+      return;
+    }
+    setError(null);
+    const input: CreateProjectInput =
+      source === "expand"
+        ? { title: trimmedTitle, documentType: "master_thesis" }
+        : {
+            title: trimmedTitle,
+            documentType: "master_thesis",
+            workflowKind: "idea_to_paper",
+            ...(picked(researchIdea) !== undefined ? { researchIdea: picked(researchIdea) } : {}),
+          };
+    createProject.mutate(input, {
+      onSuccess: (project) => void navigate(`/projects/${project.id}?tab=research-inputs`),
+      onError: (mutationError) => setError(formatApiError(mutationError)),
+    });
+  };
+
   return (
-    <div className="thesis-selection" data-testid="thesis-selection">
+    <form className="thesis-selection" data-testid="thesis-selection" onSubmit={submit}>
       <section className="create-step">
         <h2><span>01</span> 选择论文类型</h2>
         <PaperTypeCards current="thesis" onSelect={onSelectPaperType} />
       </section>
       <section className="create-step">
-        <div className="create-step-title"><h2><span>02</span> 选择创建方式</h2><p>学位论文可以从新主题开始，也可以基于已有小论文扩展。</p></div>
+        <div className="create-step-title"><h2><span>02</span> 选择创建方式</h2><p>学位论文可以基于你的已有研究成果扩展，也可以从研究主题开始。</p></div>
         <div className="thesis-source-options">
-          <label className={`thesis-source-card${source === "topic" ? " selected" : ""}`}>
-            <input type="radio" name="thesis-source" value="topic" checked={source === "topic"} onChange={() => setSource("topic")} />
-            <strong>从研究主题开始</strong><span>从研究问题出发，构建学位论文整体结构。</span>
-          </label>
           <label className={`thesis-source-card${source === "expand" ? " selected" : ""}`}>
             <input type="radio" name="thesis-source" value="expand" checked={source === "expand"} onChange={() => setSource("expand")} />
-            <strong>基于已有小论文扩展</strong><span>围绕已有成果，扩展背景、方法、实验和章节。</span>
+            <strong>基于已有小论文扩展</strong><span>登记 1–3 篇或更多研究成果，系统提取贡献、规划章节并分章写作（推荐）。</span>
+          </label>
+          <label className={`thesis-source-card${source === "topic" ? " selected" : ""}`}>
+            <input type="radio" name="thesis-source" value="topic" checked={source === "topic"} onChange={() => setSource("topic")} />
+            <strong>从研究主题开始</strong><span>从研究问题出发走通用论文流程，再扩展为学位论文结构。</span>
           </label>
         </div>
       </section>
-      {source === "expand" ? (
-        <section className="create-step thesis-material-step">
-          <div className="create-step-title"><h2><span>03</span> 提供已有小论文</h2><p>选择原有 PDF 或 LaTeX 工程，展示材料入口。</p></div>
-          <label className="thesis-material-picker">
-            <input type="file" aria-label="选择已有论文材料（PDF 或 ZIP）" accept=".pdf,application/pdf,.zip,application/zip" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-            <span className="thesis-upload-icon"><Icon name="upload" /></span>
-            <span><strong>{file?.name ?? "选择 PDF 或 LaTeX 项目 ZIP"}</strong><small>PDF 文件或包含 LaTeX 工程的 ZIP 归档</small></span>
-            <span className="btn">选择文件</span>
+      <section className="create-step">
+        <div className="create-step-title">
+          <h2><span>03</span> {source === "expand" ? "学位论文信息" : "研究主题"}</h2>
+          <p>{source === "expand" ? "创建后进入项目页「研究材料」上传并登记你的研究成果。" : "填写研究想法，走 idea 到论文的通用流程。"}</p>
+        </div>
+        <label className="field">
+          <span>学位论文标题 *</span>
+          <input data-testid="thesis-title" value={title} maxLength={LIMITS.title} onChange={(event) => setTitle(event.target.value)} placeholder="如：面向视频显著性检测的深度学习方法研究" />
+        </label>
+        {source === "topic" ? (
+          <label className="field">
+            <span>研究想法</span>
+            <textarea data-testid="thesis-idea" value={researchIdea} maxLength={LIMITS.researchIdea} rows={4} onChange={(event) => setResearchIdea(event.target.value)} placeholder="简述研究问题与方向" />
           </label>
-        </section>
-      ) : null}
-      <div className="thesis-availability" role="status"><Icon name="info-circle" /><span>学位论文创建尚未接入当前工作流。这里的选择和文件仅用于界面预览，不会创建项目或上传材料。</span></div>
+        ) : null}
+        {error !== null ? <ErrorState>{error}</ErrorState> : null}
+        <div className="thesis-availability" role="status">
+          <Icon name="info-circle" />
+          <span>
+            {source === "expand"
+              ? "创建后需要上传你的研究材料（PDF），并在「研究材料」面板登记为研究输入；材料的发表状态与作者归属由你确认，系统不会把他人的论文当作你的成果。"
+              : "主题路径走通用论文工作流（idea_to_paper）；分章学位论文编排请使用「基于已有小论文扩展」。"}
+          </span>
+        </div>
+      </section>
       <div className="form-actions thesis-actions">
         <Link to="/projects" className="btn">取消</Link>
-        <button type="button" className="btn btn-primary" disabled>继续设置</button>
+        <button type="submit" className="btn btn-primary" data-testid="thesis-submit" disabled={createProject.isPending}>
+          {createProject.isPending ? "创建中…" : source === "expand" ? "创建并登记研究材料" : "创建学位论文项目"}
+        </button>
       </div>
       <button type="button" className="text-button" onClick={() => onSwitchMode("existing")}>修改已有论文 <Icon name="chevron-right" /></button>
-    </div>
+    </form>
   );
 }
 
@@ -220,7 +269,6 @@ function ModeCards({ current, onSelect }: { current: EntryMode; onSelect: (mode:
   );
 }
 
-/** 论文类型卡（创建新论文内部；切换即切换字段集，不丢失已填内容的跨类型字段由各自表单持有） */
 function PaperTypeCards({
   current,
   onSelect,

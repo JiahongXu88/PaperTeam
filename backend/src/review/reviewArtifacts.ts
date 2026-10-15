@@ -78,7 +78,7 @@ export interface WritingPlanSectionRecord {
 
 export interface WritingPlanArtifact {
   schemaVersion: 1;
-  mode: "idea_to_paper" | "topic_survey";
+  mode: "idea_to_paper" | "topic_survey" | "thesis_from_papers";
   runId: string;
   createdAt: string;
   updatedAt: string;

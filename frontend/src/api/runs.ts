@@ -26,6 +26,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set<WorkflowKind>([
   "existing_paper_improvement",
   "existing_paper_review",
   "topic_survey",
+  "thesis_from_papers",
 ]);
 
 const KNOWN_SEMANTIC_MODES: ReadonlySet<string> = new Set<CitationSemanticMode>([

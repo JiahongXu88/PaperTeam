@@ -20,6 +20,7 @@ import { ProjectAside, isExistingPaper } from "../components/project/ProjectAsid
 import { QualityGateSummaryLink } from "../components/project/QualityGatePanel.js";
 import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { SourcesPanel } from "../components/project/SourcesPanel.js";
+import { ResearchInputsPanel } from "../components/project/ResearchInputsPanel.js";
 import { TargetPanel } from "../components/project/TargetPanel.js";
 import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
 import { readSectionProgress } from "../components/project/workflowTimeline.js";
@@ -38,11 +39,13 @@ import type { ProjectView, WorkflowKind, WorkflowRunView } from "../types/api.js
  * 标签进入 URL（?tab=），刷新与分享可恢复；无效值回退概览。
  */
 
-type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "evidence" | "citations" | "figures" | "experiments" | "target" | "review" | "workflow";
+type TabId = "overview" | "paper" | "pdf" | "discovery" | "sources" | "research-inputs" | "evidence" | "citations" | "figures" | "experiments" | "target" | "review" | "workflow";
 type OpenableTab = Exclude<TabId, "overview">;
 
-const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean }> = [
+const TABS: ReadonlyArray<{ id: TabId; label: string; existingOnly?: boolean; notReviewOnly?: boolean; thesisOnly?: boolean }> = [
   { id: "overview", label: "概览" },
+  // M14.2：研究材料（thesis_from_papers 专属：上传/登记/决定 + 启动工作流）
+  { id: "research-inputs", label: "研究材料", thesisOnly: true },
   { id: "paper", label: "论文产出", notReviewOnly: true },
   { id: "pdf", label: "PDF 与结构" },
   // M12.3 C4：学术图表（数据集 → PlotSpec/DiagramSpec → 矢量 PDF → 受控插入论文）
@@ -64,7 +67,9 @@ function visibleTabs(kind: WorkflowKind | undefined) {
     (entry) =>
       (entry.existingOnly !== true || isExistingPaper(kind)) &&
       // 论文产出只对写稿 / 系统性改进开放：快速 Review 只读，不产出 Draft / Final
-      (entry.notReviewOnly !== true || kind !== "existing_paper_review"),
+      (entry.notReviewOnly !== true || kind !== "existing_paper_review") &&
+      // M14.2：研究材料面板只对学位论文工作流开放
+      (entry.thesisOnly !== true || kind === "thesis_from_papers"),
   );
 }
 
@@ -475,6 +480,8 @@ export function ProjectPage() {
             <PdfPanel projectId={project.id} />
           ) : tab === "discovery" ? (
             <DiscoveryPanel projectId={project.id} topic={project.title} />
+          ) : tab === "research-inputs" ? (
+            <ResearchInputsPanel projectId={project.id} />
           ) : tab === "sources" ? (
             <SourcesPanel projectId={project.id} />
           ) : tab === "evidence" ? (
