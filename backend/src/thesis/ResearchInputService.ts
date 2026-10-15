@@ -10,6 +10,7 @@ import type { ParsedDocumentStore } from "../ingestion/ParsedDocumentStore.js";
 import type { ParsedDocument } from "../ingestion/types.js";
 import { sha256Hex } from "../util/hash.js";
 import type { AuthorDecisionStore } from "./AuthorDecisionStore.js";
+import { extractBodyTextFacts } from "./bodyTextFacts.js";
 import { extractTableFacts, extractTables, statementFactId, type ExtractedTable } from "./factExtraction.js";
 import { normalizeSurfaceText, parseFactValue } from "./factValues.js";
 import { buildResearchFactContext } from "./plannerContext.js";
@@ -118,13 +119,33 @@ export class ResearchInputService {
     return document;
   }
 
-  /** 确定性抽取（表格单元格）→ extracted；幂等 */
-  async extractFacts(projectId: string, inputId: string): Promise<{ created: number; unchanged: number; tables: ExtractedTable[]; skippedCells: number; parseStatus: ResearchInput["parse"]["status"] }> {
+  /**
+   * 确定性抽取（表格单元格 + M14.1c 正文数值）→ extracted；幂等。
+   * 噪声表格（封面 / 目录误判）跳过并在返回中透明计数。
+   */
+  async extractFacts(projectId: string, inputId: string): Promise<{
+    created: number;
+    unchanged: number;
+    tables: ExtractedTable[];
+    skippedCells: number;
+    skippedNoiseTables: number;
+    bodyText: { created: number; candidates: number; figureEmbedded: number };
+    parseStatus: ResearchInput["parse"]["status"];
+  }> {
     const input = await this.deps.registry.refreshParse(projectId, inputId);
     const document = await this.loadFreshDocument(projectId, input);
-    const result = extractTableFacts(input, document, this.now().toISOString());
-    const upsert = await this.deps.facts.upsertFacts(projectId, result.facts);
-    return { ...upsert, tables: result.tables, skippedCells: result.skippedCells, parseStatus: input.parse.status };
+    const now = this.now().toISOString();
+    const result = extractTableFacts(input, document, now);
+    const body = extractBodyTextFacts(input, document, now);
+    const upsert = await this.deps.facts.upsertFacts(projectId, [...result.facts, ...body.facts]);
+    return {
+      ...upsert,
+      tables: result.tables,
+      skippedCells: result.skippedCells,
+      skippedNoiseTables: result.skippedNoiseTables,
+      bodyText: { created: body.facts.length, candidates: body.skippedCandidates, figureEmbedded: body.figureEmbeddedCount },
+      parseStatus: input.parse.status,
+    };
   }
 
   /** 来源核验：表格事实对 PyMuPDF 文本层；语句事实对文档全文引文 */
@@ -225,7 +246,11 @@ export class ResearchInputService {
         skipped.push({ inputId: input.inputId, reason: document === null ? "无解析产物" : document.status === "failed" ? "解析失败" : "解析产物版本不匹配" });
         continue;
       }
-      tablesByInput.set(input.inputId, extractTables(document));
+      tablesByInput.set(
+        input.inputId,
+        // M14.1c：噪声表格（封面 / 目录误判）不进入对齐候选
+        extractTables(document).filter((table) => table.noise?.likely !== true),
+      );
       inputs.push(input);
     }
     const now = this.now().toISOString();
@@ -293,6 +318,18 @@ export class ResearchInputService {
         effects.push(`writing:${payload.subject}=${payload.decision}`);
         break;
       }
+      case "table_alignment_confirmation": {
+        // M14.1c：候选表格对齐的作者裁决（确认 → comparable；拒绝 → not_comparable）
+        const alignment = await this.deps.registry.applyAlignmentDecision(
+          projectId,
+          payload.alignmentId,
+          payload.outcome,
+          decision.decisionId,
+          payload.rationale,
+        );
+        effects.push(`alignment:${alignment.alignmentId}=${alignment.status}`);
+        break;
+      }
     }
     return effects;
   }
@@ -355,6 +392,14 @@ export function authorDecisionFromResumeInput(input: { decision: string; payload
     case "defer_chapter":
     case "attach_experiment_package":
       return { type: "writing_pause", subject: str("subject"), decision: input.decision === "defer_chapter" ? "defer" : input.decision };
+    case "confirm_table_alignment":
+    case "reject_table_alignment":
+      return {
+        type: "table_alignment_confirmation",
+        alignmentId: str("alignmentId"),
+        outcome: input.decision === "confirm_table_alignment" ? "confirmed" : "rejected",
+        ...(optional("rationale") !== undefined ? { rationale: optional("rationale")! } : {}),
+      };
     default:
       throw new BusinessError("INVALID_REQUEST", `未知作者决定：${input.decision}`);
   }

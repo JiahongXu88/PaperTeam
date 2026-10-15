@@ -42,6 +42,7 @@ import type { InsertParams } from "./figures/FigureService.js";
 import { PACKAGE_LIMITS } from "./experiments/archive.js";
 import type { ExperimentRole } from "./experiments/ExperimentPackageService.js";
 import { handleResearchInputRoutes } from "./thesis/researchInputRoutes.js";
+import { handleThesisRoutes } from "./thesis/thesisRoutes.js";
 import type { BenchmarkTargetSpec } from "./target/types.js";
 import type { SurveyEntryPatch } from "./survey/MatrixService.js";
 import {
@@ -1155,6 +1156,19 @@ async function handleProjectResourceRoutes(
     await stack.projects.getRequired(projectId);
     const handled = await handleResearchInputRoutes(req, res, projectId, rest, method, url, {
       service: stack.researchInputs,
+      readJsonBody: (request) => readJsonBody(request),
+      sendJson,
+      sendMethodNotAllowed,
+    });
+    if (handled) return true;
+  }
+
+  // ---- M14.1c Thesis Document（学位论文文档模型 / 装配 / 编译）----
+  if (resource === "thesis") {
+    await stack.projects.getRequired(projectId);
+    const handled = await handleThesisRoutes(req, res, projectId, rest, method, {
+      service: stack.thesisDocuments,
+      manuscript: stack.manuscript,
       readJsonBody: (request) => readJsonBody(request),
       sendJson,
       sendMethodNotAllowed,

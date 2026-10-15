@@ -125,19 +125,31 @@ function alignPair(
   }
   const ratio = compared === 0 ? 0 : identical / compared;
   const anyMismatchRow = rowPairs.some((pair) => pair.labelCompatibility === "mismatch");
+  // M14.1c：列标签集合相等但顺序不同（列重排）→ 只能作为候选（作者确认列对应关系）
+  const columnLabelsSetMatch =
+    !columnLabelsMatch &&
+    headersA.length > 0 &&
+    headersA.length === headersB.length &&
+    multisetEqual(headersA, headersB);
   let status: TableAlignment["status"] | null = null;
   let reason: string | undefined;
   if (columnLabelsMatch && a.rows.length === b.rows.length && compared >= MIN_COMPARED_CELLS && ratio >= COMPARABLE_RATIO && !anyMismatchRow) {
     status = "comparable";
-  } else if ((columnLabelsMatch && ratio >= CANDIDATE_RATIO && compared > 0) || (sharedIdentifiers.length >= 2 && ratio >= CANDIDATE_RATIO && compared > 0)) {
+  } else if (
+    (columnLabelsMatch && ratio >= CANDIDATE_RATIO && compared > 0) ||
+    (sharedIdentifiers.length >= 2 && ratio >= CANDIDATE_RATIO && compared > 0) ||
+    (columnLabelsSetMatch && ratio >= CANDIDATE_RATIO && compared > 0)
+  ) {
     status = "candidate";
     reason = anyMismatchRow
       ? "存在行标签不兼容的行对，需作者确认对应关系"
-      : !columnLabelsMatch
-        ? "列标签不一致，只能作为候选"
-        : a.rows.length !== b.rows.length
-          ? "行数不等（增删行），只能作为候选"
-          : `相同单元格比例 ${(ratio * 100).toFixed(0)}% 低于可比阈值`;
+      : columnLabelsSetMatch
+        ? "列标签集合一致但顺序不同（列重排），只能作为候选"
+        : !columnLabelsMatch
+          ? "列标签不一致，只能作为候选"
+          : a.rows.length !== b.rows.length
+            ? "行数不等（增删行），只能作为候选"
+            : `相同单元格比例 ${(ratio * 100).toFixed(0)}% 低于可比阈值`;
   }
   if (status === null) {
     return null;
@@ -159,6 +171,11 @@ function alignPair(
       sharedIdentifiers,
       rowPairs,
       ...(reason !== undefined ? { reason } : {}),
+      // M14.1c：候选对齐展示用表头样本（作者肉眼比对列结构；确定性证据仍是布尔/计数）
+      columnLabelsSample: [
+        a.headers.slice(a.labelColumnCount),
+        b.headers.slice(b.labelColumnCount),
+      ],
     },
     algorithmVersion: RESEARCH_INPUT_ALGORITHM_VERSION,
     createdAt: now,
@@ -178,6 +195,16 @@ function columnPairs(a: ExtractedTable, b: ExtractedTable, headersA: string[], h
     if (matches.length === 1) pairs.push([a.labelColumnCount + i, b.labelColumnCount + matches[0]!]);
   });
   return pairs;
+}
+
+/** 列标签多重集相等（重排检测；归一化后比较） */
+function multisetEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  const sortedA = [...a].sort();
+  const sortedB = [...b].sort();
+  return sortedA.every((value, index) => value === sortedB[index]);
 }
 
 function sharedIdentifierTokens(a: ExtractedTable, b: ExtractedTable): string[] {

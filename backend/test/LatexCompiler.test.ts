@@ -48,12 +48,22 @@ interface FakeToolchain {
   bibtexExit?: number;
   /** .blg 报告的条目数；0 复现 M9.5 事故形态（缺省 2） */
   blgEntries?: number;
+  /** M14.1c：biber 退出码（缺省 0） */
+  biberExit?: number;
+  /** M14.1c：biber .blg 注入 ERROR 行 */
+  biberBlgError?: string;
+  /** M14.1c：biber .blg 注入缺失条目 key */
+  biberMissingKeys?: readonly string[];
   /** 第 N 轮 xelatex 的 main.log 是否提示 Rerun（1-based；缺省全 false） */
   rerunAfter?: readonly boolean[];
   /** Rerun 提示的措辞（缺省 LaTeX 形态；natbib 形态 = "citations correct"） */
   rerunHint?: string;
   /** 最终 main.log 是否含未解析引用警告 */
   undefinedCitations?: boolean;
+  /** M14.1c：未定义引用警告措辞（backtick=natbib / straight=biblatex / reference=\ref / summary=汇总行） */
+  undefinedCitationStyle?: "backtick" | "straight" | "reference" | "summary";
+  /** M14.1c：最终 main.log 要求重跑 biber（不收敛形态） */
+  biberRerunRequest?: boolean;
   /** 该命令的执行结果按超时（被终止）返回 */
   timeoutOn?: string;
 }
@@ -84,11 +94,19 @@ function makeRunner(fake: FakeToolchain = {}): ScriptedRunner {
       xelatexRound += 1;
       const tex = await readFile(join(opts.cwd, "main.tex"), "utf8");
       const cites = [...tex.matchAll(/\\cite\{([^}]*)\}/g)].flatMap((m) => (m[1] ?? "").split(","));
+      const isBiblatex = /\\addbibresource\{|\\printbibliography/.test(tex);
       const auxLines = [
         "\\relax",
         ...cites.map((key) => `\\citation{${key.trim()}}`),
       ];
-      if (/\\bibliography\{|\\addbibresource\{/.test(tex)) {
+      if (isBiblatex) {
+        // biblatex：引用控制走 main.bcf（biber 读 .bcf），aux 无 \bibdata
+        await writeFile(
+          join(opts.cwd, "main.bcf"),
+          `<?xml version="1.0"?>\n<bcf:controlfile version="bcf:1.2" xmlns:bcf="https://sourceforge.net/projects/biblatex">\n${cites.map((key) => `<bcf:citekey>${key.trim()}</bcf:citekey>`).join("\n")}\n</bcf:controlfile>\n`,
+          "utf8",
+        );
+      } else if (/\\bibliography\{/.test(tex)) {
         auxLines.push("\\bibdata{references}", "\\bibstyle{unsrt}");
       }
       await writeFile(join(opts.cwd, "main.aux"), auxLines.join("\n"), "utf8");
@@ -102,7 +120,22 @@ function makeRunner(fake: FakeToolchain = {}): ScriptedRunner {
         );
       }
       if (fake.undefinedCitations) {
-        logLines.push("LaTeX Warning: Citation `kim2019comparison' on page 1 undefined on input line 3.");
+        switch (fake.undefinedCitationStyle) {
+          case "straight":
+            logLines.push("Package biblatex Warning: Citation 'kim2019comparison' on page 1 undefined");
+            break;
+          case "reference":
+            logLines.push("LaTeX Warning: Reference `fig:overview' on page 3 undefined on input line 12.");
+            break;
+          case "summary":
+            logLines.push("LaTeX Warning: There were undefined references.");
+            break;
+          default:
+            logLines.push("LaTeX Warning: Citation `kim2019comparison' on page 1 undefined on input line 3.");
+        }
+      }
+      if (fake.biberRerunRequest) {
+        logLines.push("Package biblatex Warning: Please (re)run Biber on the file main and then rerun LaTeX.");
       }
       await writeFile(join(opts.cwd, "main.log"), logLines.join("\n"), "utf8");
 
@@ -131,6 +164,23 @@ function makeRunner(fake: FakeToolchain = {}): ScriptedRunner {
       return { code: fake.bibtexExit ?? 0, stdout: "fake bibtex: done", stderr: "" };
     }
 
+    if (command === "biber") {
+      const blgLines = ["This is Biber (fake)", "Logfile: main.blg"];
+      if (fake.biberBlgError !== undefined) {
+        blgLines.push(`ERROR - ${fake.biberBlgError}`);
+      }
+      for (const key of fake.biberMissingKeys ?? []) {
+        blgLines.push(`WARN - Missing BibTeX data for citation key '${key}'`);
+      }
+      await writeFile(join(opts.cwd, "main.blg"), blgLines.join("\n"), "utf8");
+      await writeFile(
+        join(opts.cwd, "main.bbl"),
+        fake.biberMissingKeys !== undefined && fake.biberMissingKeys.length > 0 ? "" : "\\entry{kim2019comparison}fake entry",
+        "utf8",
+      );
+      return { code: fake.biberExit ?? 0, stdout: "fake biber: done", stderr: "" };
+    }
+
     return { code: 0, stdout: "", stderr: "" };
   };
   return { runner, calls };
@@ -143,7 +193,7 @@ function compileCalls(scripted: ScriptedRunner): { command: string; args: readon
     .map((call) => ({ command: call.command, args: call.args }));
 }
 
-async function newProjectDirs(options?: { bib?: boolean }): Promise<{
+async function newProjectDirs(options?: { bib?: boolean; biblatex?: boolean }): Promise<{
   manuscriptDir: string;
   buildDir: string;
 }> {
@@ -153,7 +203,20 @@ async function newProjectDirs(options?: { bib?: boolean }): Promise<{
   const buildDir = join(root, "build");
   await mkdir(join(manuscriptDir, "sections"), { recursive: true });
   await mkdir(buildDir, { recursive: true });
-  if (options?.bib === false) {
+  if (options?.biblatex === true) {
+    await writeFile(
+      join(manuscriptDir, "main.tex"),
+      "\\documentclass{ctexbook}\n" +
+        "\\usepackage[backend=biber,style=numeric]{biblatex}\n\\addbibresource{references.bib}\n" +
+        "\\begin{document}\nCite~\\cite{kim2019comparison}.\n\\printbibliography\n\\end{document}\n",
+      "utf8",
+    );
+    await writeFile(
+      join(manuscriptDir, "references.bib"),
+      "@misc{kim2019comparison,\n  author = {Kim},\n  title = {T},\n  year = {2019},\n}\n",
+      "utf8",
+    );
+  } else if (options?.bib === false) {
     await writeFile(
       join(manuscriptDir, "main.tex"),
       "\\documentclass{article}\n\\begin{document}\nPlain text, no bibliography.\n\\end{document}\n",
@@ -412,7 +475,8 @@ describe("LatexCompiler（xelatex + bibtex 显式编排）", () => {
     let toolsAvailable = true;
     try {
       const tool = await probeCompiler.detectTool();
-      toolsAvailable = tool === "xelatex+bibtex";
+      // M14.1c：detectTool 现报告全部可用后端（biber 存在时为 xelatex+bibtex+biber）
+      toolsAvailable = tool.includes("bibtex");
     } catch {
       toolsAvailable = false;
     }
@@ -440,4 +504,148 @@ describe("LatexCompiler（xelatex + bibtex 显式编排）", () => {
     expect(pdfStat.length).toBeGreaterThan(1000);
     },
   );
+});
+
+describe("LatexCompiler M14.1c：biber 双通道 + 未定义引用检测修复", () => {
+  it("biblatex 文档（.bcf 存在）：auto 后端选 biber，编排 xelatex → biber → xelatex × 2", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner();
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    const result = await compiler.compile(dirs);
+
+    expect(result.ok).toBe(true);
+    expect(result.tool).toBe("xelatex+biber");
+    const commands = compileCalls(scripted).map((call) => call.command);
+    expect(commands).toEqual(["xelatex", "biber", "xelatex"]);
+    // bibtex 全程未调用
+    expect(scripted.calls.filter((call) => call.command === "bibtex")).toHaveLength(0);
+  });
+
+  it("显式 bibliography:'biber'（按调用覆盖）：bibtex 文档也走 biber", async () => {
+    const dirs = await newProjectDirs(); // 普通 bibtex 文档
+    const scripted = makeRunner();
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    const result = await compiler.compile({ ...dirs, bibliography: "biber" });
+
+    expect(result.ok).toBe(true);
+    expect(result.tool).toBe("xelatex+biber");
+    expect(compileCalls(scripted).map((call) => call.command)).toEqual([
+      "xelatex", "biber", "xelatex",
+    ]);
+  });
+
+  it("显式 bibliography:'bibtex' 但文档是 biblatex：配置错配明确失败（不静默跳过参考文献）", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner();
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile({ ...dirs, bibliography: "bibtex" })).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("bibtex"),
+    });
+  });
+
+  it("biblatex 文档但 biber 不可用：抛 LatexToolUnavailableError（消息指明 biber）", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({ unavailable: ["biber"] });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_TOOL_UNAVAILABLE",
+      detail: expect.stringContaining("biber"),
+    });
+  });
+
+  it("biber 失败（exitCode != 0）：抛 LatexCompileFailedError，detail 含 exitCode", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({ biberExit: 3 });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("biber exitCode=3"),
+    });
+  });
+
+  it("biber .blg 含 ERROR：编译失败（detail 含错误行）", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({ biberBlgError: "Found BibTeX control file version 0.0, expected 1.2" });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("ERROR - Found BibTeX control file"),
+    });
+  });
+
+  it("biber 缺失 .bib 条目（Missing BibTeX data）：编译失败并列出 key", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({ biberMissingKeys: ["missing2024key"] });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("missing2024key"),
+    });
+  });
+
+  it("[?] 回归：biblatex 直引号措辞的未定义 Citation（旧正则只认反引号 → 曾静默通过）现在失败", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({ undefinedCitations: true, undefinedCitationStyle: "straight" });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("未解析"),
+    });
+  });
+
+  it("未定义 \\ref 交叉引用（Reference … undefined）：编译失败", async () => {
+    const dirs = await newProjectDirs();
+    const scripted = makeRunner({ undefinedCitations: true, undefinedCitationStyle: "reference" });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("未解析"),
+    });
+  });
+
+  it("折行兜底：汇总行 'There were undefined references.' 同样触发失败", async () => {
+    const dirs = await newProjectDirs();
+    const scripted = makeRunner({ undefinedCitations: true, undefinedCitationStyle: "summary" });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("未解析"),
+    });
+  });
+
+  it("biber 已跑但最终日志仍要求重跑 biber：引用链不收敛 → 编译失败", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({ biberRerunRequest: true });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    await expect(compiler.compile(dirs)).rejects.toMatchObject({
+      code: "LATEX_COMPILE_FAILED",
+      detail: expect.stringContaining("未收敛"),
+    });
+  });
+
+  it("biblatex 措辞 'Please rerun LaTeX' 触发追加轮次（rerun 集成于编排上限内）", async () => {
+    const dirs = await newProjectDirs({ biblatex: true });
+    const scripted = makeRunner({
+      rerunAfter: [false, true, false],
+      rerunHint: "Package biblatex Warning: Please rerun LaTeX.",
+    });
+    const compiler = new LatexCompiler({ timeoutMs: 5_000, runner: scripted.runner });
+
+    const result = await compiler.compile(dirs);
+    expect(result.ok).toBe(true);
+    const commands = compileCalls(scripted).map((call) => call.command);
+    expect(commands).toEqual(["xelatex", "biber", "xelatex", "xelatex"]);
+  });
 });

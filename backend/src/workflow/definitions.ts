@@ -7374,6 +7374,20 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
           dropped: Number(sections["dropped"] ?? 0),
           bySeverity,
           byCategory,
+          // M14.1c：显式覆盖块——实际审阅范围可证明；未完成审阅不得冒充 Full Review
+          // （skipped 含 emptySections：reviewed + skipped = sectionsTotal 时全部
+          // 章节有终态；failedSections > 0 或缺口未补齐 → complete=false）
+          coverage: {
+            reviewableSections: Number(sections["sectionsTotal"] ?? 0),
+            reviewed: Number(sections["sectionsReviewed"] ?? 0),
+            skipped: Number(sections["skippedSections"] ?? 0),
+            failed: Array.isArray(sections["failedSections"]) ? sections["failedSections"].length : 0,
+            complete:
+              Array.isArray(sections["failedSections"]) && sections["failedSections"].length === 0
+                ? Number(sections["sectionsReviewed"] ?? 0) + Number(sections["skippedSections"] ?? 0) >=
+                  Number(sections["sectionsTotal"] ?? 0)
+                : false,
+          },
         },
         citationIntegrity: {
           metadataByStatus: integrity.metadataByStatus,

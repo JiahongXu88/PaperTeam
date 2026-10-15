@@ -10,6 +10,11 @@
  * references.bib → PDF 参考文献为空而 latexmk 仍 exit 0。显式编排不经过
  * perl，任何原生 xelatex + bibtex（MiKTeX / TeX Live / WSL）行为一致。
  *
+ * M14.1c 扩展：参考文献后端 bibtex / biber 双通道。biblatex 文档由 xelatex
+ * 产出 main.bcf（控制文件）而非 aux \bibdata——auto 模式按产物判定后端；
+ * 显式配置优先（模板声明决定后端，不因一次编译失败改猜）。biber 路径下
+ * 检查 .blg 的 ERROR / 缺失条目（"Missing BibTeX data for citation key"）。
+ *
  * 编译采用「staging 统一工作目录」：先把 manuscript/ 全部源文件复制进
  * build/，然后在 build/ 内编译（cwd=buildDir，不用 -output-directory）。
  * tex / bib / aux / bbl 全部同目录：bibtex 天然读到正确的 references.bib，
@@ -17,12 +22,15 @@
  * manuscript/ 源目录不被编译产物污染。
  *
  * 编排步骤（全程共享 timeoutMs 预算）：
- *   1. xelatex（产出 main.aux）
- *   2. main.aux 含 \bibdata → bibtex main；bibtex 失败、或 .blg 显示
- *      0 entries（aux 有 \citation）→ 编译失败（M9.5 事故形态显式化）
- *   3. xelatex × 2（渲染 bbl + 解析引用编号）；main.log 提示 Rerun 时
- *      最多追加 2 轮（固定上限保证终止）
- *   4. 终检：main.log 仍有未解析引用 → 编译失败（references 不完整的
+ *   1. xelatex（产出 main.aux；biblatex 另产出 main.bcf）
+ *   2. 后端解析（显式配置 > .bcf 存在 → biber > aux \bibdata → bibtex）；
+ *      bibtex：失败 / .blg 0 entries（aux 有 \citation）→ 失败；
+ *      biber：非零退出 / .blg ERROR / 缺失条目 key → 失败
+ *   3. xelatex × 2（渲染参考文献 + 解析引用编号）；main.log 提示 Rerun
+ *      时最多追加 2 轮（固定上限保证终止）
+ *   4. 终检：main.log 仍有未解析 Citation/Reference（natbib 反引号与
+ *      biblatex 直引号两种措辞 + 汇总行）→ 编译失败；biber 已跑过而日志
+ *      仍要求重跑 biber → 引用链不收敛失败（references 不完整 / [?] 的
  *      PDF 不静默通过）
  *
  * 结果结构化返回：exitCode、短错误、完整日志路径、PDF 路径、耗时。
@@ -74,6 +82,13 @@ export interface LatexCompileResult {
 export interface LatexCompilerOptions {
   /** 整次编译的超时预算（毫秒；覆盖全部编排步骤） */
   timeoutMs: number;
+  /**
+   * 参考文献后端（M14.1c）：
+   *   - "auto"（缺省）：pass 1 后按产物判定——main.bcf 存在 → biber
+   *     （biblatex 控制文件）；main.aux 含 \bibdata → bibtex；
+   *   - "bibtex" / "biber"：模板 / 文档配置显式指定（不因一次编译失败改猜）。
+   */
+  bibliography?: "auto" | "bibtex" | "biber";
   /** 可注入命令执行器（测试用） */
   runner?: CommandRunner;
 }
@@ -88,11 +103,32 @@ const XELATEX_ARGS = ["-interaction=nonstopmode", "-halt-on-error", "main.tex"] 
  * cross-references right / natbib 的 citations correct / hyperref 的
  * outlines right 等）与 "Label(s) may have changed"（M9.5.1 实测：natbib
  * 用自己的措辞，只匹配 cross-references 会漏判 → 提前收敛 → 引用未解析）。
+ * M14.1c：补 biblatex 措辞（"Please rerun LaTeX." / "Please (re)run Biber"）。
  */
-const RERUN_PATTERN = /Rerun to get|Label\(s\) may have changed/;
+const RERUN_PATTERN = /Rerun to get|Label\(s\) may have changed|Please rerun LaTeX/;
 
-/** main.log 中存在未解析引用（bib 缺条目或渲染链故障） */
-const UNDEFINED_CITATION_PATTERN = /Citation `[^']+' on page \d+ undefined/;
+/**
+ * main.log 中存在未解析引用 / 交叉引用（bib 缺条目或渲染链故障）。
+ * M14.1c 修复：M14.0 预研实测——natbib/经典 LaTeX 警告用反引号 ``Citation `key' …''，
+ * biblatex 警告用直引号 ``Citation 'key' …''；旧正则只认反引号形态，biblatex
+ * 路径下未定义引用会静默通过（PDF 出现 [?] 而编译器声称成功）。现在：
+ *   - 两种引号形态的 Citation / Reference 都匹配；
+ *   - 日志折行（长 key 被截断）由汇总行兜底（"There were undefined
+ *     references" / "Citations undefined" 摘要行不折行）。
+ */
+const UNDEFINED_REFERENCE_PATTERNS: readonly RegExp[] = [
+  /Citation [`'][^'"`]+['`] on page \d+ undefined/,
+  /Reference [`'][^'"`]+['`] on page \d+ undefined/,
+  /There were undefined references\./,
+  /Package biblatex Warning: There were undefined citations/,
+  /LaTeX Warning: There were undefined citations/,
+];
+
+/** main.log 仍要求重跑 biber → 引用链未收敛（biber 已跑过而 biblatex 仍不满足） */
+const BIBER_RERUN_PATTERN = /Please \(re\)run (?:Biber|biber)/;
+
+/** biber .blg 中的错误行（真实 biber 形态 "ERROR - …"；退出码非零或解析失败时摘要） */
+const BIBER_ERROR_PATTERN = /^(?:ERROR|FATAL)\s*[:-].*$/m;
 
 /** bibtex .blg 报告未产出任何条目（M9.5 事故形态：打开了错误的 references.bib） */
 const ZERO_ENTRIES_PATTERN = /used 0 entries/i;
@@ -135,34 +171,45 @@ interface CommandStep {
 
 export class LatexCompiler {
   private readonly timeoutMs: number;
+  private readonly bibliography: "auto" | "bibtex" | "biber";
   private readonly runner: CommandRunner;
 
   constructor(options: LatexCompilerOptions) {
     this.timeoutMs = options.timeoutMs;
+    this.bibliography = options.bibliography ?? "auto";
     this.runner = options.runner ?? spawnCommand;
   }
 
   /**
    * 探测本机可用的 LaTeX 工具链。
-   * 返回工具描述（"xelatex+bibtex" / "xelatex"）；xelatex 不可用时抛
-   * LatexToolUnavailableError（bibtex 缺失只降级描述——无 bibliography
-   * 的文档不需要它，compile() 里在确认需要时才硬性要求）。
+   * 返回工具描述（"xelatex+bibtex+biber" / "xelatex+bibtex" / "xelatex"）；
+   * xelatex 不可用时抛 LatexToolUnavailableError（bibtex / biber 缺失只降级
+   * 描述——无 bibliography 的文档不需要它们，compile() 里在确认需要时才硬性要求）。
    */
   async detectTool(): Promise<string> {
     if (!(await this.isToolAvailable("xelatex"))) {
       throw new LatexToolUnavailableError("xelatex 不可用（PATH 中未找到）");
     }
-    return (await this.isToolAvailable("bibtex")) ? "xelatex+bibtex" : "xelatex";
+    const tools: string[] = [];
+    if (await this.isToolAvailable("bibtex")) {
+      tools.push("bibtex");
+    }
+    if (await this.isToolAvailable("biber")) {
+      tools.push("biber");
+    }
+    return tools.length > 0 ? `xelatex+${tools.join("+")}` : "xelatex";
   }
 
   /**
    * 编译项目的 main.tex，产出 build/paper.pdf。
    * 目录约定：manuscriptDir 内有 main.tex（及可选 sections/、references.bib），
    * buildDir 为 staging 编译工作区（源文件复制进来，产物同目录生成）。
+   * bibliography（可选）：按调用覆盖实例级后端配置（学位论文模型声明后端）。
    */
   async compile(params: {
     manuscriptDir: string;
     buildDir: string;
+    bibliography?: "auto" | "bibtex" | "biber";
   }): Promise<LatexCompileResult> {
     if (!(await this.isToolAvailable("xelatex"))) {
       throw new LatexToolUnavailableError("xelatex 不可用（PATH 中未找到）");
@@ -214,21 +261,40 @@ export class LatexCompiler {
         }
       };
 
-      // ---- pass 1：产出 main.aux ----
+      // ---- pass 1：产出 main.aux（biblatex 另产出 main.bcf 控制文件） ----
       let result = await runStep("xelatex pass 1", "xelatex", XELATEX_ARGS);
       failOnBadExit(result);
 
-      // ---- bibtex：aux 声明 \bibdata 时执行（统一工作目录内零环境变量） ----
-      let ranBibtex = false;
+      // ---- 参考文献后端解析（M14.1c）：显式配置优先，auto 按产物判定 ----
       const aux = await readTextIfExists(join(params.buildDir, "main.aux"));
-      if (/\\bibdata\{/.test(aux)) {
+      const bcf = await readTextIfExists(join(params.buildDir, "main.bcf"));
+      const hasBiblatexControl = bcf !== "" && /<bcf:controlfile/i.test(bcf);
+      const hasBibtexData = /\\bibdata\{/.test(aux);
+      let backend: "bibtex" | "biber" | null = null;
+      const bibliographyChoice = params.bibliography ?? this.bibliography;
+      if (bibliographyChoice === "bibtex" || bibliographyChoice === "biber") {
+        backend = bibliographyChoice;
+      } else if (hasBiblatexControl) {
+        backend = "biber";
+      } else if (hasBibtexData) {
+        backend = "bibtex";
+      }
+
+      let ranBibliography = false;
+      if (backend === "bibtex") {
+        if (!hasBibtexData) {
+          // 显式配置 bibtex 但文档实际是 biblatex：配置错误，明确失败（不静默跳过）
+          throw new LatexCompileFailedError(
+            `参考文献后端配置为 bibtex，但文档未声明 \\bibliography（biblatex 文档应配置 biber；完整日志：${logPath}）`,
+          );
+        }
         if (!(await this.isToolAvailable("bibtex"))) {
           throw new LatexToolUnavailableError(
             "main.tex 声明了参考文献但 bibtex 不可用（PATH 中未找到）",
           );
         }
         result = await runStep("bibtex", "bibtex", ["main"]);
-        ranBibtex = true;
+        ranBibliography = true;
         if (result.code !== 0) {
           throw new LatexCompileFailedError(
             `bibtex exitCode=${result.code}；${summarizeLogError(formatStepLog(steps))}（完整日志：${logPath}）`,
@@ -241,9 +307,36 @@ export class LatexCompiler {
             `bibtex 处理 0 条文献：正文有 \\cite 但 references.bib 未被正确读取或条目全部缺失（完整日志：${logPath}）`,
           );
         }
+      } else if (backend === "biber") {
+        if (!(await this.isToolAvailable("biber"))) {
+          throw new LatexToolUnavailableError(
+            "main.tex 使用 biblatex 参考文献但 biber 不可用（PATH 中未找到）",
+          );
+        }
+        result = await runStep("biber", "biber", ["main"]);
+        ranBibliography = true;
+        if (result.code !== 0) {
+          throw new LatexCompileFailedError(
+            `biber exitCode=${result.code}；${summarizeLogError(formatStepLog(steps))}（完整日志：${logPath}）`,
+          );
+        }
+        const blg = await readTextIfExists(join(params.buildDir, "main.blg"));
+        const biberError = BIBER_ERROR_PATTERN.exec(blg);
+        if (biberError !== null) {
+          throw new LatexCompileFailedError(
+            `biber 报告错误：${biberError[0]}（完整日志：${logPath}）`,
+          );
+        }
+        // biber .blg 明确报告缺失条目（正文 \cite 的 key 不在 .bib 中）
+        const missingKeys = [...blg.matchAll(/Missing BibTeX data for citation key '([^']+)'/g)].map((m) => m[1]!);
+        if (missingKeys.length > 0) {
+          throw new LatexCompileFailedError(
+            `biber 缺失参考文献条目：${[...new Set(missingKeys)].slice(0, 5).join(", ")}（references.bib 缺 key；完整日志：${logPath}）`,
+          );
+        }
       }
 
-      // ---- pass 2/3（渲染 bbl + 解析编号）+ Rerun 追加（上限 MAX_RERUN_ROUNDS） ----
+      // ---- pass 2/3（渲染参考文献 + 解析编号）+ Rerun 追加（上限 MAX_RERUN_ROUNDS） ----
       let round = 2;
       for (;;) {
         result = await runStep(`xelatex pass ${round}`, "xelatex", XELATEX_ARGS);
@@ -263,11 +356,18 @@ export class LatexCompiler {
         );
       }
 
-      // ---- 终检：未解析引用不让「references 空」的 PDF 静默通过 ----
+      // ---- 终检：未解析引用 / 交叉引用不让「references 空 / [?]」的 PDF 静默通过 ----
       const finalTexLog = await readTextIfExists(join(params.buildDir, "main.log"));
-      if (UNDEFINED_CITATION_PATTERN.test(finalTexLog)) {
+      const undefinedMatch = UNDEFINED_REFERENCE_PATTERNS.find((pattern) => pattern.test(finalTexLog));
+      if (undefinedMatch !== undefined) {
         throw new LatexCompileFailedError(
-          `存在未解析的 \\cite 引用（references.bib 缺条目或渲染链故障；完整日志：${logPath}）`,
+          `存在未解析的 \\cite / \\ref 引用（references.bib 缺条目或渲染链故障；完整日志：${logPath}）`,
+        );
+      }
+      // biber 已执行而 biblatex 仍要求重跑 biber → 引用链不收敛（重跑 xelatex 无法解决）
+      if (backend === "biber" && BIBER_RERUN_PATTERN.test(finalTexLog)) {
+        throw new LatexCompileFailedError(
+          `biber/biblatex 引用链未收敛（日志仍要求重跑 biber；完整日志：${logPath}）`,
         );
       }
 
@@ -277,7 +377,7 @@ export class LatexCompiler {
 
       return {
         ok: true,
-        tool: ranBibtex ? "xelatex+bibtex" : "xelatex",
+        tool: ranBibliography ? (backend === "biber" ? "xelatex+biber" : "xelatex+bibtex") : "xelatex",
         exitCode: result.code,
         pdfPath: paperPdf,
         logPath,

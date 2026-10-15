@@ -95,12 +95,17 @@ import { ResearchInputRegistry } from "./thesis/ResearchInputRegistry.js";
 import { ScientificFactStore } from "./thesis/ScientificFactStore.js";
 import { AuthorDecisionStore } from "./thesis/AuthorDecisionStore.js";
 import { ResearchInputService } from "./thesis/ResearchInputService.js";
+import { ThesisDocumentService } from "./thesis/ThesisDocumentService.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
 
 export interface ServiceStackOptions {
   runtime: AgentRuntime;
   projects: ProjectStore;
   latex?: LatexCompiler;
+  /** latex 缺省实例的编译超时（生产由 config.latex.compileTimeoutMs 注入） */
+  latexTimeoutMs?: number;
+  /** M14.1c：学位论文编译超时（config.latex.thesisCompileTimeoutMs 注入） */
+  thesisCompileTimeoutMs?: number;
   agentIds: {
     writer: string;
     researcher: string;
@@ -348,12 +353,14 @@ export interface ServiceStack {
   finalize: FinalizeService;
   /** 版本体验：ManuscriptVersionDTO / 确定性 Compare / Restore（M4.8） */
   versions: VersionService;
+  /** M14.1c：学位论文文档模型（保存 / 装配 / 编译门面） */
+  thesisDocuments: ThesisDocumentService;
   workflowServices: WorkflowServices;
 }
 
 export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const log = options.log ?? (() => {});
-  const latex = options.latex ?? new LatexCompiler({ timeoutMs: 120_000 });
+  const latex = options.latex ?? new LatexCompiler({ timeoutMs: options.latexTimeoutMs ?? 120_000 });
   const longRun = options.longRunTimeoutMs !== undefined ? { runTimeoutMs: options.longRunTimeoutMs } : {};
   const writer = new WriterService({
     runtime: options.runtime,
@@ -988,6 +995,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     finalize,
     versions,
     manuscriptOverview,
+    thesisDocuments: new ThesisDocumentService(options.projects, new LatexCompiler({ timeoutMs: options.thesisCompileTimeoutMs ?? 600_000 })),
     workflowServices: {
       projects: options.projects,
       generation,

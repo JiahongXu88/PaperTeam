@@ -340,6 +340,37 @@ export class ResearchInputRegistry {
       return file.alignments;
     });
   }
+
+  /**
+   * M14.1c：候选表格对齐的作者裁决。确认 → comparable（进入冲突检测）；
+   * 拒绝 → not_comparable（附拒绝理由）。决定绑定双方 contentHash：版本变化
+   * 产生新 alignmentId，本决定不自动适用于新版本（作者须重新确认）。
+   */
+  async applyAlignmentDecision(
+    projectId: string,
+    alignmentId: string,
+    outcome: "confirmed" | "rejected",
+    decisionId: string,
+    rationale?: string,
+  ): Promise<TableAlignment> {
+    return this.update(projectId, (file) => {
+      const alignment = file.alignments.find((entry) => entry.alignmentId === alignmentId);
+      if (alignment === undefined) {
+        throw new NotFoundError("表格对齐", alignmentId);
+      }
+      const now = this.now().toISOString();
+      alignment.basis = "author_decision";
+      alignment.decisionId = decisionId;
+      alignment.status = outcome === "confirmed" ? "comparable" : "not_comparable";
+      if (outcome === "rejected") {
+        alignment.evidence.rejectionReason = rationale ?? "作者拒绝候选对齐";
+      } else {
+        delete alignment.evidence.rejectionReason;
+      }
+      alignment.updatedAt = now;
+      return alignment;
+    });
+  }
 }
 
 // ---- helpers ----

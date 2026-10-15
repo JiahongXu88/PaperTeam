@@ -41,6 +41,12 @@ export interface ExtractedTable {
   /** 前导标签列数（这些列的单元格对所有行都不是数值） */
   labelColumnCount: number;
   rows: ExtractedRow[];
+  /**
+   * M14.1c 噪声判定（封面 / 目录被 parser 误识别为表格的定向标记）。
+   * likely=true 时不进入事实抽取与对齐候选；判定只降权不删除——真实表格
+   * 误判可由作者在事实侧补登记，不从解析产物中消失。
+   */
+  noise?: { likely: boolean; reasons: string[] };
 }
 
 export interface ExtractedRow {
@@ -84,6 +90,7 @@ function normalizeTable(block: ParsedTableBlock, document: ParsedDocument, index
   const caption = block.caption !== undefined ? normalizeSurfaceText(block.caption) : undefined;
   const labelInfo = resolveLabel(caption, block, document, index);
   const rowOffset = headerRowDerived ? 1 : 0;
+  const noise = classifyTableNoise({ page: block.provenance.page, caption, headers, rows, labelBasis: labelInfo.basis });
   return {
     blockId: block.blockId,
     ...(block.provenance.page !== undefined ? { page: block.provenance.page } : {}),
@@ -102,7 +109,100 @@ function normalizeTable(block: ParsedTableBlock, document: ParsedDocument, index
         .join(" | "),
       cells,
     })),
+    ...(noise !== undefined ? { noise } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// 噪声表格分类（M14.1c）
+// ---------------------------------------------------------------------------
+
+/** 目录页码列：整列绝大多数是小的连续整数（页码形态） */
+const TOC_KEYWORDS = /目录|contents|参考文献|references|致谢|acknowledg|图目录|表目录|索引|index/i;
+
+export interface TableNoiseInput {
+  page?: number;
+  caption?: string;
+  headers: string[];
+  rows: string[][];
+  labelBasis: FactTableLocation["labelBasis"];
+}
+
+/**
+ * 封面 / 目录等非数据表格的定向判定。规则全部保守（多条共同证据才判噪声，
+ * 避免真实无题注表格被误杀）：
+ *   1. 目录页码形态：≥2 列整列为递增小整数（差值 ≤ 3），或标题/题注含目录类关键词；
+ *   2. 封面区：page ≤ 2 且无题注且无表格标签且行数 ≤ 6 且数据单元格全为短文本；
+ *   3. 退化网格：单行或单列（parser 对版面装饰的常见误判形态）且无题注。
+ */
+export function classifyTableNoise(input: TableNoiseInput): { likely: boolean; reasons: string[] } | undefined {
+  const reasons: string[] = [];
+  const { page, caption, headers, rows, labelBasis } = input;
+  const captionText = caption ?? "";
+
+  if (TOC_KEYWORDS.test(captionText) || (labelBasis === "adjacent_text" && caption !== undefined && TOC_KEYWORDS.test(caption))) {
+    reasons.push("caption_toc_keyword");
+  }
+  const pageLikeColumns = countPageLikeColumns(rows);
+  if (pageLikeColumns >= 2) {
+    reasons.push(`page_number_columns:${pageLikeColumns}`);
+  } else if (pageLikeColumns >= 1 && hasChapterLabelColumn(rows)) {
+    // 两列目录（「章节 | 页码」）：一列页码 + 一列章节标签（第X章 / Chapter n / 参考文献…）
+    reasons.push("toc_page_layout");
+  }
+
+  const noCaption = caption === undefined && labelBasis === "none";
+  const width = Math.max(headers.length, ...rows.map((row) => row.length));
+  if (page !== undefined && page <= 2 && noCaption && rows.length <= 6) {
+    const cells = rows.flat().filter((cell) => cell !== "");
+    const allShortText = cells.every((cell) => cell.length <= 12 && parseFactValue(cell).numeric === undefined);
+    if (allShortText && cells.length > 0) {
+      reasons.push("cover_page_short_text");
+    }
+  }
+  // 退化网格：仅单列（多行单列是 parser 对版面装饰的常见误判形态）；
+  // 单行多列（键值对形态 "Overall: 0.999"）可能是真实数据 → 不按噪声处理
+  if (noCaption && width <= 1) {
+    reasons.push("degenerate_grid");
+  }
+
+  if (reasons.length === 0) {
+    return undefined;
+  }
+  return { likely: true, reasons };
+}
+
+/** 首列 ≥ 60% 为章节标签形态（第X章 / Chapter n / 参考文献 / 致谢 / 附录） */
+function hasChapterLabelColumn(rows: string[][]): boolean {
+  const CHAPTER_LABEL_RE = /^(?:第\s*[一二三四五六七八九十百\d]+\s*章|Chapter\s+\d+|参考文献|致谢|附录|结论)/u;
+  const firstColumn = rows.map((row) => (row[0] ?? "").trim()).filter((cell) => cell !== "");
+  if (firstColumn.length < 3) {
+    return false;
+  }
+  const matched = firstColumn.filter((cell) => CHAPTER_LABEL_RE.test(cell)).length;
+  return matched / firstColumn.length >= 0.6;
+}
+
+/** 整列 ≥ 80% 为 1-999 的整数且列内按行非降序 → 页码列（目录页码跨章跳跃，不限制步长） */
+function countPageLikeColumns(rows: string[][]): number {
+  if (rows.length < 4) {
+    return 0;
+  }
+  const width = Math.max(...rows.map((row) => row.length));
+  let columns = 0;
+  for (let column = 0; column < width; column += 1) {
+    const values = rows.map((row) => parseFactValue(row[column] ?? "").numeric);
+    const present = values.filter((value): value is number => value !== undefined);
+    if (present.length < rows.length * 0.8 || present.length < 3) {
+      continue;
+    }
+    const allSmallInts = present.every((value) => Number.isInteger(value) && value >= 1 && value <= 999);
+    const nonDescending = present.every((value, index) => index === 0 || value >= present[index - 1]!);
+    if (allSmallInts && nonDescending) {
+      columns += 1;
+    }
+  }
+  return columns;
 }
 
 function padTo(cells: string[], width: number): string[] {
@@ -179,6 +279,8 @@ export interface ExtractTableFactsResult {
   tables: ExtractedTable[];
   /** 数值不可解析而未成为事实的单元格数（透明度） */
   skippedCells: number;
+  /** M14.1c：噪声表格（封面 / 目录误判）跳过数 */
+  skippedNoiseTables: number;
 }
 
 /** 确定性表格单元格事实（仅数值单元格；标签列与表头不成为事实） */
@@ -186,7 +288,12 @@ export function extractTableFacts(input: ResearchInput, document: ParsedDocument
   const tables = extractTables(document);
   const facts: ScientificFact[] = [];
   let skippedCells = 0;
+  let skippedNoiseTables = 0;
   for (const table of tables) {
+    if (table.noise?.likely === true) {
+      skippedNoiseTables += 1;
+      continue;
+    }
     for (const row of table.rows) {
       for (let column = table.labelColumnCount; column < table.headers.length; column += 1) {
         const surface = row.cells[column] ?? "";
@@ -248,7 +355,7 @@ export function extractTableFacts(input: ResearchInput, document: ParsedDocument
       }
     }
   }
-  return { facts, tables, skippedCells };
+  return { facts, tables, skippedCells, skippedNoiseTables };
 }
 
 export function tableRefOf(input: ResearchInput, blockId: string): string {

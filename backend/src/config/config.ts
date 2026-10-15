@@ -27,6 +27,12 @@ export type NodeEnv = "development" | "production" | "test";
 export interface LatexConfig {
   /** 单次 LaTeX 编译超时（毫秒） */
   compileTimeoutMs: number;
+  /**
+   * 学位论文编译超时（毫秒）。M14.0 预研实测：高校模板（ctexbook 基）
+   * 首次冷启动 133s+ 超过普通论文 120s 预算——学位论文走独立预算
+   * （缺省 600s；上限同 compileTimeoutMs 的 1800s）。
+   */
+  thesisCompileTimeoutMs: number;
 }
 
 export interface WorkflowConfig {
@@ -328,6 +334,8 @@ const DEFAULT_FIRST_ACTIVITY_TIMEOUT_MS = 180_000;
 const FIRST_ACTIVITY_TIMEOUT_MIN_MS = 0;
 const DEFAULT_PROJECTS_ROOT = "./projects";
 const DEFAULT_LATEX_COMPILE_TIMEOUT_MS = 120_000;
+/** 学位论文编译预算（M14.0 预研：高校模板冷启动 133s+ > 120s 普通预算） */
+const DEFAULT_THESIS_COMPILE_TIMEOUT_MS = 600_000;
 const DEFAULT_STAGE_TIMEOUT_MS = 900_000;
 const DEFAULT_STAGE_MAX_ATTEMPTS = 2;
 const DEFAULT_CITATION_MAX_LOOKUPS = 40;
@@ -509,6 +517,11 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     latex: {
       compileTimeoutMs: readTimeoutMs(source, "LATEX_COMPILE_TIMEOUT_MS", {
         default: DEFAULT_LATEX_COMPILE_TIMEOUT_MS,
+        min: LATEX_TIMEOUT_MIN_MS,
+        max: LATEX_TIMEOUT_MAX_MS,
+      }),
+      thesisCompileTimeoutMs: readTimeoutMs(source, "LATEX_THESIS_COMPILE_TIMEOUT_MS", {
+        default: DEFAULT_THESIS_COMPILE_TIMEOUT_MS,
         min: LATEX_TIMEOUT_MIN_MS,
         max: LATEX_TIMEOUT_MAX_MS,
       }),

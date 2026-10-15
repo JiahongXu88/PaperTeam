@@ -283,6 +283,8 @@ export async function startBackend(): Promise<void> {
     runtime,
     projects,
     latex,
+    latexTimeoutMs: config.latex.compileTimeoutMs,
+    thesisCompileTimeoutMs: config.latex.thesisCompileTimeoutMs,
     agentIds: config.agents,
     stageTimeoutMs: config.workflow.stageTimeoutMs,
     stageMaxAttempts: config.workflow.stageMaxAttempts,

@@ -177,6 +177,16 @@ export interface TableAlignment {
     sharedIdentifiers: string[];
     rowPairs: Array<{ leftRow: number; rightRow: number; labelCompatibility: RowLabelCompatibility }>;
     reason?: string;
+    /**
+     * M14.1c：候选关系展示用的表头样本（两侧数据列的原始表头标签）。确定性
+     * 对齐证据只给布尔 / 计数，作者确认候选对齐时需要肉眼比对列结构。
+     */
+    columnLabelsSample?: [string[], string[]];
+    /**
+     * M14.1c：作者拒绝候选对齐时的理由（basis=author_decision 且 status=
+     * not_comparable 时填写；与 reason（确定性候选原因）区分）。
+     */
+    rejectionReason?: string;
   };
   decisionId?: string;
   algorithmVersion: string;
@@ -246,7 +256,12 @@ export interface FactProvenance {
   surfaceHash: string;
 }
 
-export type FactExtractionMethod = "deterministic_table" | "deterministic_dataset" | "model_candidate" | "manual";
+export type FactExtractionMethod =
+  | "deterministic_table"
+  | "deterministic_dataset"
+  | "deterministic_body_text" // M14.1c：正文数值/数据集/指标/参数确定性抽取（含图内文本层定位）
+  | "model_candidate"
+  | "manual";
 
 export interface FactValue {
   raw: string;
@@ -358,6 +373,13 @@ export const AUTHOR_DECISION_TYPES = [
   "fact_confirmation",
   "unpublished_material_policy",
   "writing_pause",
+  /**
+   * M14.1c：候选表格对齐的作者确认 / 拒绝。列重排 / 拆表 / 增删行等情况确定性
+   * 对齐只能到 candidate——对应关系是否成立由作者裁决；确认后进入可比冲突检测，
+   * 拒绝则标记 not_comparable。决定绑定双方 contentHash（版本变化产生新
+   * alignmentId，旧决定自然失效）。
+   */
+  "table_alignment_confirmation",
 ] as const;
 export type AuthorDecisionType = (typeof AUTHOR_DECISION_TYPES)[number];
 
@@ -378,6 +400,13 @@ export type AuthorDecisionPayload =
       type: "writing_pause";
       subject: string;
       decision: "pause" | "write_as_limitation" | "defer" | "attach_experiment_package";
+      rationale?: string;
+    }
+  | {
+      type: "table_alignment_confirmation";
+      alignmentId: string;
+      outcome: "confirmed" | "rejected";
+      /** 拒绝时建议填写（记录到 evidence.rejectionReason） */
       rationale?: string;
     };
 
@@ -455,4 +484,4 @@ export interface ResearchFactContext {
   writingBlockers: string[];
 }
 
-export const RESEARCH_INPUT_ALGORITHM_VERSION = "m14.1b-v1";
+export const RESEARCH_INPUT_ALGORITHM_VERSION = "m14.1c-v1";
