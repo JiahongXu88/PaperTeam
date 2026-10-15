@@ -27,5 +27,7 @@ export default defineConfig({
     setupFiles: ["./test/setup.ts"],
     // 与 Backend 一致：不注入全局变量，显式 import（vitest/config + RTL）
     globals: false,
+    // M14.3：e2e/ 是 Playwright 浏览器级用例（独立运行：frontend/e2e/run-thesis-e2e.sh）
+    include: ["test/**/*.test.{ts,tsx}"],
   },
 });
