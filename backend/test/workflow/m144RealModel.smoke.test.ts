@@ -29,7 +29,8 @@ import type { StageRunContext } from "../../src/workflow/types.js";
 import { partitionSpanIntoBlockUnits } from "../../src/review/logicalSpan.js";
 import { projectFindingTarget } from "../../src/review/findingProjection.js";
 import type { RevisionPlanItem, RevisionPlan } from "../../src/review/revisionPlan.js";
-import type { ReviewSummary, ReviewIssue } from "../../src/review/ReviewAggregator.js";
+import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
+import type { ReviewIssue } from "../../src/agents/ReviewerService.js";
 
 const live = process.env["PAPERTEAM_M144_SMOKE"] === "1";
 const MODEL_BUDGET = 6;

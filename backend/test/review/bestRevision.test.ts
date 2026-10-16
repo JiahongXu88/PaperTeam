@@ -156,7 +156,15 @@ describe("terminalScorecardForRun / budgetExhausted", () => {
       { runId: "w-1", gateRound: 1, scorecard: scorecard({ critical: 3 }) },
       { runId: "w-1", gateRound: 2, scorecard: scorecard({ critical: 8 }) },
       { runId: "w-2", gateRound: 3, scorecard: scorecard({ critical: 1 }) },
-    ];
+    ].map((entry, index) => ({
+      revision: index + 1,
+      reviewRound: entry.gateRound,
+      gateRound: entry.gateRound,
+      runId: entry.runId,
+      outcome: null,
+      completedAt: new Date().toISOString(),
+      scorecard: entry.scorecard,
+    }));
     expect(terminalScorecardForRun(history, "w-1")?.critical).toBe(8);
   });
 

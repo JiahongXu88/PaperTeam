@@ -21,7 +21,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
 import type { RunAgentInput } from "../../src/runtime/types.js";
 import type { ParsedDocument, ParsedBlock } from "../../src/ingestion/types.js";
-import { tableBlock, textBlock, THESIS_CONTRIBUTION_QUOTE } from "../thesis/fixtures.js";
+import { tableBlock, textBlock } from "../thesis/fixtures.js";
+import { THESIS_CONTRIBUTION_QUOTE } from "../../src/runtime/scriptedRuntime.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterAll(async () => {
