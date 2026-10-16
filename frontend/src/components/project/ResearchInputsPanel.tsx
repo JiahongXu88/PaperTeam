@@ -24,6 +24,7 @@ import {
   useUploadSource,
 } from "../../hooks/queries.js";
 import { registerResearchInput } from "../../api/researchInputs.js";
+import { MissingMaterialPanel } from "./MissingMaterialPanel.js";
 import { formatApiError } from "../../utils/errors.js";
 import { fileToBase64, MAX_PDF_UPLOAD_BYTES, validatePdfFile } from "../../utils/file.js";
 import { RESEARCH_INPUT_TYPE_OPTIONS, type ResearchInputType } from "../../types/researchInputs.js";
@@ -250,6 +251,8 @@ export function ResearchInputsPanel({ projectId }: { projectId: string }) {
           </ul>
         )}
       </div>
+
+      <MissingMaterialPanel projectId={projectId} />
     </section>
   );
 }

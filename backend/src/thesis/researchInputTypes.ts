@@ -386,8 +386,23 @@ export const AUTHOR_DECISION_TYPES = [
    * 授权可附带学位论文题注（captionZh 改写合法；数据语义不可变）。
    */
   "table_inheritance",
+  /**
+   * M14.6：研究材料缺口（MissingMaterialLedger）的作者决定。缺口条目只能由系统 / 模型提出
+   * （proposed），作者决定后才改变状态；决定绑定 gapId（gapId 稳定、指纹变化时条目标 stale）。
+   */
+  "missing_material_decision",
 ] as const;
 export type AuthorDecisionType = (typeof AUTHOR_DECISION_TYPES)[number];
+
+/** M14.6：缺口决定（与 missingMaterialTypes.MissingMaterialDecision 同值；此处内联以避免循环类型依赖） */
+export type MissingMaterialDecisionValue =
+  | "confirm_missing"
+  | "supply_experiment_data"
+  | "supply_research_record"
+  | "supply_manuscript"
+  | "write_as_limitation"
+  | "defer_chapter"
+  | "reject";
 
 export type AuthorDecisionPayload =
   | { type: "scope_decision"; inputId: string; scope: Exclude<ResearchInputScope, "proposed">; rationale?: string }
@@ -422,7 +437,8 @@ export type AuthorDecisionPayload =
       /** 学位论文题注改写（合法排版差异；数据不可变） */
       captionZh?: string;
       rationale?: string;
-    };
+    }
+  | { type: "missing_material_decision"; gapId: string; decision: MissingMaterialDecisionValue; rationale?: string };
 
 export interface AuthorDecision {
   schemaVersion: 1;

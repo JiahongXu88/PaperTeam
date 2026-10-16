@@ -416,7 +416,8 @@ describe("M14.2 thesis_from_papers E2E", () => {
         .filter((task) => task.contextScope === "writing/sections")
         .map((task) => task.task);
       expect(sectionPrompts.length).toBeGreaterThanOrEqual(outline.sections.length);
-      const methodPrompt = sectionPrompts.find((task) => task.includes("核心方法设计"));
+      // M14.6：每节 prompt 都带全文章序（含「核心方法设计」字样）——按章节定位行精确匹配
+      const methodPrompt = sectionPrompts.find((task) => task.includes("本章「核心方法设计」"));
       expect(methodPrompt).toBeTruthy();
       expect(methodPrompt).toContain("作者已确认的研究成果事实");
       expect(methodPrompt).toContain("0.724");

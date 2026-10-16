@@ -11,9 +11,10 @@
  * 衔接」，不是语言扩写；禁止新增数值与结论（M14.0.1 语料结论）。
  */
 
-import type { ResearchFactContext, FactView } from "./researchInputTypes.js";
+import type { ResearchFactContext } from "./researchInputTypes.js";
 import type { ThesisChapterPlan } from "./thesisWorkflowTypes.js";
 import { documentPlainText } from "./sourceVerification.js";
+import { renderResearchFactLine, renderResearchFactTableLines, type ResearchFactPolicyContext } from "./researchFactPolicy.js";
 
 /** 单节源文本投影预算（字符） */
 const SOURCE_PROJECTION_BUDGET = 4_500;
@@ -56,6 +57,11 @@ export interface ThesisSectionContextInput {
    * 合适位置以 \ref 引用；表格本体由系统确定性插入，Writer 不得自造替代表格。
    */
   inheritedTables?: ReadonlyArray<{ label: string; captionZh: string; sectionFile: string }>;
+  /**
+   * M14.6：全文章序与 \ref 引用纪律（chapterReferences.renderChapterOrderLines）——Writer 不得
+   * 猜章号（M14.5 真实 Draft「第四章为实验验证」实为第五章）。
+   */
+  chapterOrderLines?: readonly string[];
 }
 
 export function buildThesisSectionContext(input: ThesisSectionContextInput): ThesisSectionWritingContext {
@@ -66,6 +72,9 @@ export function buildThesisSectionContext(input: ThesisSectionContextInput): The
     `【学位论文章节】本章「${input.chapter.titleZh}」（${responsibilityLabel(input.chapter.responsibility)}）：${input.chapter.goal}`,
     `本节「${input.sectionTitle}」是本章第 ${input.sectionIndex + 1}/${input.sectionCount} 节。`,
   );
+  if (input.chapterOrderLines !== undefined && input.chapterOrderLines.length > 0) {
+    lines.push(...input.chapterOrderLines);
+  }
 
   // 事实纪律（stage 装配时已把 owns 贡献的 linkedFactIds 并入 chapter.factIds）
   const chapterFactIds = new Set(input.chapter.factIds);
@@ -79,7 +88,8 @@ export function buildThesisSectionContext(input: ThesisSectionContextInput): The
       "以下为作者已确认的研究成果事实——正文中的全部实验指标/参数/数据集数值只能来自此表（允许等价单位换算与合理舍入表述，禁止改值）：",
     );
     for (const fact of authorConfirmed.slice(0, MAX_FACT_LINES)) {
-      lines.push(`- ${fact.surface}（${describeFactView(fact)}）`);
+      // M14.6：与 Reviewer / Revision 同源的事实行（Fact ID / 来源锚点 / 核验与确认状态）
+      lines.push(renderResearchFactLine(fact));
     }
     if (authorConfirmed.length > MAX_FACT_LINES) {
       lines.push(`-（其余 ${authorConfirmed.length - MAX_FACT_LINES} 条已确认事实略——写作时按需定性引用，不得虚构数值）`);
@@ -177,38 +187,12 @@ export function buildThesisSectionContext(input: ThesisSectionContextInput): The
  * M14.5（案例 B 真实 run 实证）：Reviewer 的实验数据口径只看实验包（experimentPolicy）——
  * 学位论文项目没有实验包时被告知「本项目当前没有已导入的实验数据」，于是把作者已确认
  * 的研究输入事实（如小论文的 75.37%）判为「无授权数据」并阻断、修订随之删掉正确数值。
- * 本块与 Writer 的科研事实纪律同源：已确认事实 = 合法实验/参数数据来源。
+ * M14.6：渲染下沉到 researchFactPolicy（Writer / Reviewer / Revision 同源事实行）；
+ * review.run 实际消费的是 composeExperimentAndResearchFactPolicyLines（与 Experiment Policy
+ * 合成一个不自相矛盾的口径块），本函数保留给单独需要事实表的调用方。
  */
-export function renderThesisFactPolicyLines(factContext: { facts: { authorConfirmed: FactView[]; sourceVerifiedUnconfirmed: FactView[]; conflicted: FactView[] } }): string[] {
-  const confirmed = factContext.facts.authorConfirmed;
-  if (confirmed.length === 0) return [];
-  const lines: string[] = [
-    "",
-    "===== 学位论文研究输入已确认事实（Research Input Facts；全体审稿角色一致）=====",
-    "本论文由作者已确认的研究输入（已发表/投稿论文、实验报告等）扩展而成；下表数值经来源核验并由作者确认，是本论文合法的实验数据与参数来源（等价于已授权进入工作流的实验数据）。稿件中与下表一致的数值不得判为「无实验数据」「未授权」或「仅见于外部来源」；不在下表且无其他授权来源的具体数值仍按实验支撑缺口如实报告。",
-  ];
-  for (const fact of confirmed.slice(0, MAX_FACT_LINES)) {
-    lines.push(`- ${fact.surface}（${describeFactView(fact)}）`);
-  }
-  if (confirmed.length > MAX_FACT_LINES) {
-    lines.push(`-（其余 ${confirmed.length - MAX_FACT_LINES} 条已确认事实略）`);
-  }
-  if (factContext.facts.sourceVerifiedUnconfirmed.length > 0) {
-    lines.push(`另有 ${factContext.facts.sourceVerifiedUnconfirmed.length} 条仅来源核验、未经作者确认的事实：其数值出现在正文时按「待作者确认」报告。`);
-  }
-  if (factContext.facts.conflicted.length > 0) {
-    lines.push(`存在 ${factContext.facts.conflicted.length} 条未裁决冲突事实：正文选取任一方数值均应报告为未裁决冲突。`);
-  }
-  return lines;
-}
-
-function describeFactView(fact: FactView): string {
-  const key = fact.key;
-  const parts: string[] = [];
-  if (key.subject !== undefined && key.subject !== "") parts.push(key.subject);
-  if (key.dataset !== undefined && key.dataset !== "") parts.push(key.dataset);
-  if (key.metric !== undefined && key.metric !== "") parts.push(key.metric);
-  return parts.length > 0 ? parts.join(" / ") : fact.kind;
+export function renderThesisFactPolicyLines(factContext: ResearchFactPolicyContext): string[] {
+  return renderResearchFactTableLines(factContext);
 }
 
 function responsibilityLabel(responsibility: ThesisChapterPlan["responsibility"]): string {

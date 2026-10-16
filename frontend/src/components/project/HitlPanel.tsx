@@ -25,6 +25,16 @@ import { formatApiError, formatApiErrorDetail } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import type { HitlDecisionInput, WorkflowRunView } from "../../types/api.js";
 import type { EvidenceRequirementView } from "../../types/researchPlan.js";
+import type { MissingMaterialGap, MissingMaterialGapType } from "../../api/thesisMissingMaterials.js";
+import {
+  GAP_TYPE_LABELS,
+  MATERIAL_KIND_LABELS,
+  MISSING_MATERIAL_BOUNDARY_NOTE,
+  ORIGIN_LABELS,
+  STALE_LABEL,
+  STATUS_BADGE_CLASS,
+  STATUS_LABELS,
+} from "./missingMaterialLabels.js";
 
 /**
  * HITL 决策面板（M4.5）：workflow 停在 awaiting_input 时的统一交互壳。
@@ -714,6 +724,68 @@ function ThesisOutlinePayload({ payload }: { payload: Record<string, unknown> })
   );
 }
 
+/** hitl.author_decision 按材料缺口可提交的 decision（与 workflow option 命名一致） */
+type ThesisGapDecision =
+  | "write_as_limitation"
+  | "defer_chapter"
+  | "attach_experiment_package"
+  | "supply_research_record"
+  | "supply_manuscript"
+  | "confirm_missing"
+  | "reject_gap";
+
+const THESIS_GAP_DECISION_LABELS: Record<ThesisGapDecision, string> = {
+  write_as_limitation: "作为研究限制说明",
+  defer_chapter: "暂缓该章",
+  attach_experiment_package: "补充实验数据",
+  supply_research_record: "补充研究记录",
+  supply_manuscript: "补充研究手稿",
+  confirm_missing: "确认为缺口",
+  reject_gap: "排除该建议",
+};
+
+const THESIS_GAP_DECISIONS_BY_TYPE: Record<MissingMaterialGapType, ThesisGapDecision[]> = {
+  planned_chapter_material: [
+    "write_as_limitation",
+    "defer_chapter",
+    "attach_experiment_package",
+    "supply_research_record",
+    "supply_manuscript",
+  ],
+  proposed_scope_gap: ["confirm_missing", "reject_gap"],
+};
+
+/** hitl.author_decision payload.materialGaps 单项（后端 HITL 载荷是账本条目的子集） */
+type ThesisMaterialGap = Pick<
+  MissingMaterialGap,
+  | "gapId"
+  | "gapType"
+  | "origin"
+  | "status"
+  | "chapterId"
+  | "chapterTitleZh"
+  | "title"
+  | "whyInsufficient"
+  | "requiredMaterials"
+  | "canWriteWithoutMaterial"
+  | "requiresExperiment"
+  | "stale"
+>;
+
+function readMaterialGaps(value: unknown): ThesisMaterialGap[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return (value as Record<string, unknown>[]).filter(
+    (entry): entry is Record<string, unknown> & ThesisMaterialGap =>
+      typeof entry === "object" &&
+      entry !== null &&
+      typeof entry["gapId"] === "string" &&
+      typeof entry["title"] === "string" &&
+      (entry["gapType"] === "planned_chapter_material" || entry["gapType"] === "proposed_scope_gap"),
+  );
+}
+
 /** 缺材料章决定：呈现章节与口径（决策按钮沿用面板通用 approve / 选项） */
 function ThesisAuthorDecisionPayload({
   payload,
@@ -727,6 +799,7 @@ function ThesisAuthorDecisionPayload({
   const missing = Array.isArray(payload["missingChapters"])
     ? (payload["missingChapters"] as Array<{ chapterId: string; titleZh: string; responsibility: string; goal: string }>)
     : [];
+  const gaps = readMaterialGaps(payload["materialGaps"]);
   return (
     <div className="hitl-payload thesis-author-decision-payload" data-testid="thesis-author-decision-payload">
       {missing.map((chapter) => (
@@ -747,6 +820,59 @@ function ThesisAuthorDecisionPayload({
           ) : null}
         </div>
       ))}
+      {gaps.length > 0 ? (
+        <div className="hitl-list" data-testid="thesis-material-gaps">
+          <h4>研究材料缺口（{gaps.length}）</h4>
+          <p className="panel-note">{MISSING_MATERIAL_BOUNDARY_NOTE}</p>
+          <ul>
+            {gaps.map((gap) => (
+              <li key={gap.gapId} data-testid={`thesis-material-gap-${gap.gapId}`}>
+                <div className="research-input-head">
+                  <strong>{gap.title}</strong>
+                  <span className="badge">{GAP_TYPE_LABELS[gap.gapType]}</span>
+                  <span className="badge">{ORIGIN_LABELS[gap.origin] ?? gap.origin}</span>
+                  <span className={`badge ${STATUS_BADGE_CLASS[gap.status] ?? ""}`.trim()}>
+                    {STATUS_LABELS[gap.status] ?? gap.status}
+                  </span>
+                  {gap.stale !== undefined ? <span className="badge badge-warn">{STALE_LABEL}</span> : null}
+                </div>
+                <div className="research-input-meta">
+                  <span>对应章节：{gap.chapterTitleZh ?? "—"}</span>
+                  <span>{gap.canWriteWithoutMaterial ? "可先以理论/限制口径撰写" : "须等待真实材料"}</span>
+                </div>
+                <p className="panel-note">原因：{gap.whyInsufficient}</p>
+                {Array.isArray(gap.requiredMaterials) && gap.requiredMaterials.length > 0 ? (
+                  <ul className="conflict-parties">
+                    {gap.requiredMaterials.map((material, index) => (
+                      <li key={`${gap.gapId}-${index}`}>
+                        <span className="badge">{MATERIAL_KIND_LABELS[material.kind] ?? material.kind}</span>
+                        <span>{material.description}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {onSubmit !== undefined ? (
+                  <div className="research-input-ops">
+                    <span>作者决定：</span>
+                    {THESIS_GAP_DECISIONS_BY_TYPE[gap.gapType].map((decision) => (
+                      <button
+                        key={decision}
+                        type="button"
+                        className="text-button"
+                        data-testid={`thesis-gap-${decision}-${gap.gapId}`}
+                        disabled={pending}
+                        onClick={() => onSubmit({ action: decision, payload: { gapId: gap.gapId } })}
+                      >
+                        {THESIS_GAP_DECISION_LABELS[decision]}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <p className="panel-note">
         处理方式：write_as_limitation（研究限制口径撰写）/ defer_chapter（暂缓）/ attach_experiment_package（上传实验包并在确认事实后继续）。
       </p>

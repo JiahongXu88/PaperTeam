@@ -10,6 +10,7 @@ import type { ParsedDocumentStore } from "../ingestion/ParsedDocumentStore.js";
 import type { ParsedDocument } from "../ingestion/types.js";
 import { sha256Hex } from "../util/hash.js";
 import type { AuthorDecisionStore } from "./AuthorDecisionStore.js";
+import type { MissingMaterialDecisionValue } from "./researchInputTypes.js";
 import { extractBodyTextFacts } from "./bodyTextFacts.js";
 import { extractTableFacts, extractTables, statementFactId, type ExtractedTable } from "./factExtraction.js";
 import {
@@ -49,6 +50,8 @@ export interface ResearchInputServiceOptions {
   textLayer: TextLayerProvider;
   /** M14.3：继承表格资产 store（缺省不启用该能力——查询返回空台账） */
   tables?: InheritedTableAssetStore;
+  /** M14.6：研究材料缺口台账（缺省不启用——缺口决定只记账不改状态） */
+  missingMaterials?: import("./MissingMaterialLedger.js").MissingMaterialLedger;
   now?: () => Date;
 }
 
@@ -80,6 +83,9 @@ export class ResearchInputService {
   }
   get decisions(): AuthorDecisionStore {
     return this.deps.decisions;
+  }
+  get missingMaterials(): import("./MissingMaterialLedger.js").MissingMaterialLedger | undefined {
+    return this.deps.missingMaterials;
   }
   get tables(): InheritedTableAssetStore | undefined {
     return this.deps.tables;
@@ -368,6 +374,21 @@ export class ResearchInputService {
         effects.push(`table_asset:${asset.assetId}=${asset.status}`);
         break;
       }
+      case "missing_material_decision": {
+        // M14.6：缺口状态变更只经作者决定；台账未启用时只记账
+        if (this.deps.missingMaterials !== undefined) {
+          const gap = await this.deps.missingMaterials.applyDecision(projectId, {
+            gapId: payload.gapId,
+            decision: payload.decision,
+            decisionId: decision.decisionId,
+            ...(payload.rationale !== undefined ? { rationale: payload.rationale } : {}),
+          });
+          effects.push(`missing_material:${gap.gapId}=${gap.status}`);
+        } else {
+          effects.push(`missing_material:${payload.gapId}=${payload.decision}`);
+        }
+        break;
+      }
     }
     return effects;
   }
@@ -437,6 +458,24 @@ export function authorDecisionFromResumeInput(input: { decision: string; payload
     return value.trim();
   };
   const optional = (field: string): string | undefined => (typeof payload[field] === "string" ? (payload[field] as string) : undefined);
+  // M14.6：带 gapId 的决定路由到研究材料缺口台账（与缺材料章 HITL 共用同一节点）
+  const gapId = optional("gapId");
+  if (gapId !== undefined && gapId.trim() !== "") {
+    const mapping: Record<string, MissingMaterialDecisionValue> = {
+      confirm_missing: "confirm_missing",
+      supply_experiment_data: "supply_experiment_data",
+      attach_experiment_package: "supply_experiment_data",
+      supply_research_record: "supply_research_record",
+      supply_manuscript: "supply_manuscript",
+      write_as_limitation: "write_as_limitation",
+      defer_chapter: "defer_chapter",
+      reject_gap: "reject",
+      reject: "reject",
+    };
+    const mapped = mapping[input.decision];
+    if (mapped === undefined) throw new BusinessError("INVALID_REQUEST", `缺口 ${gapId} 不支持决定：${input.decision}`);
+    return { type: "missing_material_decision", gapId: gapId.trim(), decision: mapped, ...(optional("rationale") !== undefined ? { rationale: optional("rationale")! } : {}) };
+  }
   switch (input.decision) {
     case "include":
     case "exclude":

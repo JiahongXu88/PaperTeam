@@ -68,6 +68,8 @@ export interface ReviewIssue {
    * 引入回归）。确定性回填（review.run 的 disconfirmBuildFindings）。
    */
   deterministicDisconfirmed?: boolean;
+  /** M14.6：确定性反证理由（事实 finding 反证时写入；透明展示） */
+  disconfirmReason?: string;
   /**
    * M11.4 Reliability Closure（creator-side lineage）：fact 模式下该 issue
    * 来源 claim 在同轮 claims 数组中的下标（模型创建两者时自行声明）。机器
@@ -418,6 +420,8 @@ export class ReviewerService {
   async reviewCrossChapter(params: {
     projectId: string;
     chapters: ReadonlyArray<{ heading: string; file: string; digest: string }>;
+    /** M14.6：实验数据使用口径 + 学位论文已确认事实表（undefined → prompt 不变） */
+    experimentPolicyLines?: string[];
     language?: ManuscriptLanguage;
     signal?: AbortSignal;
   }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string }> {
@@ -850,7 +854,7 @@ export function buildReviewPrompt(params: {
     ...(params.experimentPolicyLines !== undefined
       ? [
           ...params.experimentPolicyLines,
-          "审稿口径：稿件中的具体实验数值只可能来自「已授权进入工作流」的范围；出现于摘要 / 正文但不在授权范围内的数值表述按实验支撑缺口如实报告（不要推测数值来源，也不要因授权存在而降低其他维度的审稿标准）。",
+          "审稿口径：稿件中的具体实验数值只可能来自「已授权进入工作流」的实验范围或上述研究输入已确认事实；与已确认事实一致的数值不得判为「无实验数据 / 未授权 / 仅见于外部来源」，只核验其指标口径与表述；其余不在授权范围内的数值表述按实验支撑缺口如实报告（不要推测数值来源，也不要因授权存在而降低其他维度的审稿标准）。",
         ]
       : []),
     ...(params.surveyDigest !== undefined
@@ -959,6 +963,7 @@ function buildUnitReviewPrompt(params: {
 /** M14.1a P0-2：跨章一致性审查 prompt（各章短摘要；冲突 finding 必须带双位置） */
 function buildCrossChapterPrompt(params: {
   chapters: ReadonlyArray<{ heading: string; file: string; digest: string }>;
+  experimentPolicyLines?: string[];
   language?: ManuscriptLanguage;
 }): string {
   return [
@@ -974,6 +979,12 @@ function buildCrossChapterPrompt(params: {
     "1. 只报告能在摘要中定位依据的冲突；证据不足时不要报。",
     "2. 每条 issue 的 section 填冲突的**主**章节（标题或文件名），relatedSections 数组填**对端**章节（至少 1 个）。没有对端位置的不算跨章问题，不要报。",
     "3. 这些冲突是**待核验**发现：不要建议直接改写任何一侧；suggestedAction 给核验步骤（如「核对两处数值，以实验记录为准」）。",
+    ...(params.experimentPolicyLines !== undefined
+      ? [
+          "4. 多章复述同一已确认研究输入事实（数值一致）不是冲突，不要报；只有数值 / 口径不一致才报。",
+          ...params.experimentPolicyLines,
+        ]
+      : []),
     "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
     "{",

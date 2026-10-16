@@ -960,3 +960,25 @@ HITL 决策经 `POST /api/runs/:id/resume`（`authorDecisionFromResumeInput` 映
 Quality Gate 新规则（thesis 项目必现）：`published_facts_zero_drift`（已确认事实 ↔ 章节正文机械比对；数学环境/交叉引用参数/结构编号剥离后不参与邻域比对）、`thesis_mapping_confirmed`、`thesis_structure_complete`、`thesis_conflicts_resolved`。
 
 新增产物：`research/thesis-contributions.json`、`research/thesis-storyline.json`、`research/chapter-mapping.json`、`manuscript/thesis.json`（M14.1c）、`manuscript-thesis/`（确定性装配）、`build/paper.pdf`（ctexbook 编译，art-draft-rev{n} 注册）。
+
+### 7.1 M14.6 扩展（Thesis Quality & Evidence Closure）
+
+Stage 主干新增 `thesis.abstract`（`writing.sections` 之后、`citation.verify` 之前；gate 通过且正文被修订后在 `build.draft` 前刷新；run 级模型预算耗尽时跳过）。stage result：`{saved, abstractZhChars, abstractEnWords, keywordsZh, keywordsEn, violations, advisories, attempts, violationCodes?}`；产物 `research/thesis-abstract.json`、`manuscript/thesis.json`（abstractZh / abstractEn / keywordsZh / keywordsEn）。
+
+`thesis.evidence_supply` stage result 新增 `materialGaps: {created, unchanged, refreshed, staleMarked, resolved, blocking, total}`（研究材料缺口台账同步摘要）。`writing.sections` 新增 `writerConsistency{metaNotesStripped, metaNotesKept, chapterRefRewrites, chapterRefIssues, samples[]}` 与 `assemblyChapterReferences{rewrites, issues, samples[]}`。
+
+`hitl.author_decision`：
+- options：`write_as_limitation` / `defer_chapter` / `attach_experiment_package` / `supply_research_record` / `supply_manuscript` / `confirm_missing` / `reject_gap` / `pause` / `approve` / `cancel`；
+- payload 新增 `materialGaps: Array<{gapId, gapType: "planned_chapter_material"|"proposed_scope_gap", origin: "deterministic"|"storyline_scope_concern"|"model_proposal", status, chapterId?, chapterTitleZh?, title, whyInsufficient, requiredMaterials[{kind, description}], canWriteWithoutMaterial, requiresExperiment, stale?}>` 与 `hint.gap_decision`；
+- resume：`payload.gapId` 存在 → 决定路由为 `missing_material_decision`（映射：`attach_experiment_package → supply_experiment_data`、`reject_gap → reject`，其余同名），对已规划章同时镜像 `writing_pause{subject=chapterId}`；无 `gapId` → 原 `writing_pause{subject}` 语义不变。
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/projects/:id/thesis/missing-materials` | 读台账 `{ledger: {schemaVersion:1, projectId, gaps: MissingMaterialGap[], lastEvaluatedAt?, updatedAt}}`；未生成 → gaps 空 |
+| `POST /api/projects/:id/thesis/missing-materials/:gapId/decision` | body `{decision: confirm_missing|supply_experiment_data|supply_research_record|supply_manuscript|write_as_limitation|defer_chapter|reject, rationale?, actor?: {kind: "user"|"test_fixture"}}` → 经 `ResearchInputService.submitDecision` 记录 `missing_material_decision` 并应用到台账；200 `{gap, decisionId, duplicate}`；未知 gapId / 非法 decision → 400 `INVALID_REQUEST` |
+
+`AuthorDecisionPayload` 新增 `{type: "missing_material_decision", gapId, decision, rationale?}`（`POST /research-inputs/decisions` 同样接受）。
+
+Quality Gate 新规则（thesis 项目）：`thesis_abstract_complete`（阻断）、`workflow_meta_notes_absent`（阻断，高置信词面）、`thesis_citations_present`（适用且零引用且已有可引用材料时阻断；无可引用材料时非阻断但 detail 明示学术引用缺口）、`templated_phrasing_reported`（advisory 恒过）。ReviewSummary 新增 `researchFactDisconfirmed[]`（被确定性反证的事实 finding）；ReviewIssue 新增 `disconfirmReason?`。
+
+前端：`frontend/src/api/thesisMissingMaterials.ts`（`getMissingMaterialLedger` / `submitMissingMaterialDecision`）；`MissingMaterialPanel`（研究材料面板）与 `HitlPanel` 作者决定节点的缺口块（`{action, payload:{gapId}}` 经既有 resume 提交）。

@@ -131,6 +131,9 @@ describe("M14.2 thesis_from_papers definition", () => {
     ]);
     (state.stageResults as Record<string, Record<string, unknown>>)["hitl.scope_and_version"] = { resolved: true, conflictsUnresolved: 0 };
     (state.stageResults as Record<string, Record<string, unknown>>)["thesis.evidence_supply"] = { missingChapters: [] };
+    // M14.6：正文初稿完成后先生成双语摘要（一次），再进入共享后段
+    expect(definition.plan(state)).toEqual({ kind: "stage", stageId: "thesis.abstract" });
+    (state.stageResults as Record<string, Record<string, unknown>>)["thesis.abstract"] = { saved: true };
     const decision = definition.plan(state);
     expect(decision).toEqual({ kind: "stage", stageId: "quality.gate" });
   });
@@ -165,6 +168,10 @@ describe("M14.2 thesis_from_papers definition", () => {
       "write_as_limitation",
       "defer_chapter",
       "attach_experiment_package",
+      "supply_research_record",
+      "supply_manuscript",
+      "confirm_missing",
+      "reject_gap",
       "pause",
       "approve",
       "cancel",

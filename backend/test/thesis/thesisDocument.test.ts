@@ -189,7 +189,8 @@ describe("assembleThesisManuscript（generic-ctexbook 确定性装配）", () =>
     const introTarget = await readFile(join(ws.targetDir, "sections", "intro.tex"), "utf8");
     const introSource = await readFile(join(ws.manuscriptDir, "sections", "intro.tex"), "utf8");
     expect(introTarget.split("\n")).toHaveLength(introSource.split("\n").length);
-    expect(introTarget.split("\n")[0]).toBe("\\chapter{intro}");
+    // M14.6：promoted 章在 \chapter 行尾追加 \label{ch:…}（同一行，行数不变）
+    expect(introTarget.split("\n")[0]).toBe("\\chapter{intro}\\label{ch:ch01}");
     expect(introTarget).toContain("\\label{lbl:intro.tex}");
     // wrapper 副本：逐字原样（与源 method.tex 完全一致）
     const methodTarget = await readFile(join(ws.targetDir, "sections", "method.tex"), "utf8");

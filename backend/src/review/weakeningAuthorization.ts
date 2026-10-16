@@ -159,7 +159,9 @@ export function deriveClaimGroundingWeakeningAuthorizations(
     // M13 Final Closure（A1）：拒绝 / 不确定性立场且数值全部锚定正式证据的论断——
     // 数值不是凭空的，不铸「只许删除数值」授权（resolution 走 author_decision_required）
     const anchoredRefutation = claim.stance !== undefined && claim.numbersAnchored === true;
-    if (/\d/.test(claim.claim) && !anchoredRefutation) {
+    // M14.6（F5）：数值全部来自作者授权观测 / 已确认研究输入事实（disclosure=author_experiment_data）
+    // 的 claim——数值不是凭空的，不铸「只许删除数值」授权（处置属作者裁决）
+    if (/\d/.test(claim.claim) && !anchoredRefutation && claim.disclosure !== "author_experiment_data") {
       entries.push({
         kind: "remove_unsupported_detail",
         ...base,

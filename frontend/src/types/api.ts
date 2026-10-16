@@ -235,9 +235,33 @@ export type HitlDecisionInput =
   | { action: "include"; payload: { inputId: string } }
   /** M14.3 hitl.scope_and_version：确认研究贡献归属（模型提案 → 作者确认） */
   | { action: "confirm_contribution"; payload: { contributionIds: string[] } }
-  /** M14.3 hitl.author_decision：缺材料章按研究限制口径撰写 */
-  | { action: "write_as_limitation"; payload: { subject: string } }
+  /**
+   * M14.3 hitl.author_decision：缺材料章按研究限制口径撰写。
+   * payload 两种形态：{ subject: chapterId }（按章决定）或 { gapId }（按材料缺口决定，
+   * 后端据 payload.gapId 路由到 MissingMaterialLedger）
+   */
+  | { action: "write_as_limitation"; payload: { subject: string } | ThesisGapDecisionPayload }
+  /** hitl.author_decision：暂缓该章（按缺口） */
+  | { action: "defer_chapter"; payload: ThesisGapDecisionPayload }
+  /** hitl.author_decision：补充实验数据（上传实验包并在确认事实后继续） */
+  | { action: "attach_experiment_package"; payload: ThesisGapDecisionPayload }
+  /** hitl.author_decision：补充研究记录 */
+  | { action: "supply_research_record"; payload: ThesisGapDecisionPayload }
+  /** hitl.author_decision：补充研究手稿 */
+  | { action: "supply_manuscript"; payload: ThesisGapDecisionPayload }
+  /** hitl.author_decision：作者确认 Planner / 模型建议的缺口成立 */
+  | { action: "confirm_missing"; payload: ThesisGapDecisionPayload }
+  /** hitl.author_decision：作者排除 Planner / 模型建议的缺口 */
+  | { action: "reject_gap"; payload: ThesisGapDecisionPayload }
+  /** hitl.author_decision：暂停（保留 awaiting，稍后再决定） */
+  | { action: "pause" }
   | { action: "cancel" };
+
+/** hitl.author_decision 按材料缺口决定的 payload（后端据 gapId 路由到 MissingMaterialLedger） */
+export interface ThesisGapDecisionPayload {
+  gapId: string;
+  rationale?: string;
+}
 
 // ---- Workflow Domain Event（SSE 载荷；业务事件，不透传 Pi Runtime 事件） ----
 

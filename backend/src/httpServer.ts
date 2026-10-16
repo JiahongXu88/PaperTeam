@@ -1170,6 +1170,7 @@ async function handleProjectResourceRoutes(
       service: stack.thesisDocuments,
       manuscript: stack.manuscript,
       ...(stack.inheritedFigures !== undefined ? { figures: stack.inheritedFigures } : {}),
+      missingMaterials: { ledger: stack.missingMaterials, researchInputs: stack.researchInputs },
       readJsonBody: (request) => readJsonBody(request),
       sendJson,
       sendMethodNotAllowed,

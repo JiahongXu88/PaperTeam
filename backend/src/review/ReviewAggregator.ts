@@ -43,6 +43,8 @@ export interface ReviewSummary {
    * Writer），单独保留供报告 / 前端透明展示。
    */
   disconfirmedIssues?: ReviewIssue[];
+  /** M14.6（F5）：被确定性反证的事实 finding（要求删除 / 弱化的数值全部为作者已确认研究输入事实） */
+  researchFactDisconfirmed?: Array<{ section: string; description: string; matchedFacts: Array<{ factId: string; surface: string }>; reason: string }>;
   /**
    * M12.2 B5：视觉类 finding 的单列汇总（advisory 口径）。**不进**
    * counts.bySeverity / byCategory / blocking，**不参与** openCritical /

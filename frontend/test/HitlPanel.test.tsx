@@ -641,3 +641,127 @@ describe("HitlPanel：证据供给 payload（M9.9 需求缺口 + Search/Upload/S
     expect(kept.status).toBe("open");
   });
 });
+
+describe("HitlPanel：hitl.author_decision 研究材料缺口（materialGaps → resume payload.gapId）", () => {
+  function authorDecisionRunFixture(materialGaps: unknown[]): WorkflowRunView {
+    return hitlRunFixture({
+      workflowKind: "thesis_from_papers",
+      currentStage: "hitl.author_decision",
+      awaiting: {
+        stageId: "hitl.author_decision",
+        prompt: "部分章节缺少可写的研究材料，请作者决定处理方式",
+        options: [
+          "write_as_limitation",
+          "defer_chapter",
+          "attach_experiment_package",
+          "supply_research_record",
+          "supply_manuscript",
+          "confirm_missing",
+          "reject_gap",
+          "pause",
+          "approve",
+          "cancel",
+        ],
+        payload: { missingChapters: [], materialGaps },
+      },
+    });
+  }
+
+  const plannedGap = {
+    gapId: "g-abc123def0",
+    gapType: "planned_chapter_material",
+    origin: "deterministic",
+    status: "confirmed_missing",
+    chapterId: "ch-4",
+    chapterTitleZh: "第四章 实验与分析",
+    title: "第四章缺少对比实验数据",
+    whyInsufficient: "该章声明的贡献没有可写的已确认实验事实",
+    requiredMaterials: [{ kind: "experiment_data", description: "在公开基准上的对比实验结果" }],
+    canWriteWithoutMaterial: true,
+    requiresExperiment: true,
+  };
+
+  const scopeGap = {
+    gapId: "g-scope00001",
+    gapType: "proposed_scope_gap",
+    origin: "storyline_scope_concern",
+    status: "proposed",
+    title: "缺少消融实验以支撑模块有效性",
+    whyInsufficient: "Planner 认为统一叙事需要消融证据",
+    requiredMaterials: [{ kind: "author_confirmation", description: "作者确认是否纳入研究范围" }],
+    canWriteWithoutMaterial: false,
+    requiresExperiment: true,
+    stale: { since: "2026-10-01T00:00:00.000Z", reason: "research inputs changed" },
+  };
+
+  beforeEach(() => {
+    vi.mocked(runsApi.resumeWorkflowRun).mockReset();
+  });
+
+  it("planned_chapter_material：标题 / 章节 / 材料标签 / 5 个决定按钮；点击「作为研究限制说明」提交 payload.gapId", async () => {
+    vi.mocked(runsApi.resumeWorkflowRun).mockResolvedValue(
+      hitlRunFixture({ status: "running", awaiting: null, currentStage: "write.sections" }),
+    );
+    renderHitl(authorDecisionRunFixture([plannedGap]));
+    const block = await screen.findByTestId("thesis-material-gaps");
+    expect(block).toHaveTextContent("研究材料缺口（1）");
+    expect(block).toHaveTextContent("缺口只有作者决定后才会影响写作；系统不会为缺失材料生成任何实验数值。");
+    const item = within(block).getByTestId("thesis-material-gap-g-abc123def0");
+    expect(item).toHaveTextContent("第四章缺少对比实验数据");
+    expect(item).toHaveTextContent("已规划章节缺材料");
+    expect(item).toHaveTextContent("系统检测");
+    expect(item).toHaveTextContent("已确认缺失");
+    expect(item).toHaveTextContent("对应章节：第四章 实验与分析");
+    expect(item).toHaveTextContent("可先以理论/限制口径撰写");
+    expect(item).toHaveTextContent("原因：该章声明的贡献没有可写的已确认实验事实");
+    expect(item).toHaveTextContent("实验数据");
+    expect(item).not.toHaveTextContent("上游材料已变化");
+    const buttons = within(item).getAllByRole("button");
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      "作为研究限制说明",
+      "暂缓该章",
+      "补充实验数据",
+      "补充研究记录",
+      "补充研究手稿",
+    ]);
+
+    await userEvent.click(within(item).getByRole("button", { name: "作为研究限制说明" }));
+    await waitFor(() =>
+      expect(vi.mocked(runsApi.resumeWorkflowRun)).toHaveBeenCalledWith("w-hitl00001", {
+        action: "write_as_limitation",
+        payload: { gapId: "g-abc123def0" },
+      }),
+    );
+  });
+
+  it("proposed_scope_gap：只给「确认为缺口 / 排除该建议」，stale 标记可见；点击排除提交 reject_gap", async () => {
+    vi.mocked(runsApi.resumeWorkflowRun).mockResolvedValue(
+      hitlRunFixture({ status: "running", awaiting: null, currentStage: "write.sections" }),
+    );
+    renderHitl(authorDecisionRunFixture([scopeGap]));
+    const item = await screen.findByTestId("thesis-material-gap-g-scope00001");
+    expect(item).toHaveTextContent("研究范围建议");
+    expect(item).toHaveTextContent("Planner 建议");
+    expect(item).toHaveTextContent("建议中");
+    expect(item).toHaveTextContent("上游材料已变化，需重新评估");
+    expect(item).toHaveTextContent("对应章节：—");
+    expect(item).toHaveTextContent("须等待真实材料");
+    expect(item).toHaveTextContent("作者确认");
+    const buttons = within(item).getAllByRole("button");
+    expect(buttons.map((button) => button.textContent)).toEqual(["确认为缺口", "排除该建议"]);
+
+    await userEvent.click(within(item).getByRole("button", { name: "排除该建议" }));
+    await waitFor(() =>
+      expect(vi.mocked(runsApi.resumeWorkflowRun)).toHaveBeenCalledWith("w-hitl00001", {
+        action: "reject_gap",
+        payload: { gapId: "g-scope00001" },
+      }),
+    );
+  });
+
+  it("materialGaps 缺失或为空时不渲染缺口区块（旧 payload 兼容）", async () => {
+    renderHitl(authorDecisionRunFixture([]));
+    await screen.findByTestId("thesis-author-decision-payload");
+    expect(screen.queryByTestId("thesis-material-gaps")).toBeNull();
+  });
+});

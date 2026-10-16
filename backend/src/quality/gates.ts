@@ -391,6 +391,14 @@ export interface ThesisGateInput {
     suspicious: number;
     topFindings: string[];
   };
+  /** M14.6 thesis_abstract_complete：双语摘要 + 关键词是否齐备（Draft 可生成 ≠ 结构完整） */
+  abstract?: { present: boolean; detail: string };
+  /** M14.6 workflow_meta_notes_absent：正文中的高置信工作流元注记（确定性词面检测） */
+  metaNotes?: { hits: number; samples: string[] };
+  /** M14.6 templated_phrasing_reported（advisory）：模板化小结 / 公式化过渡 */
+  templatedPhrasing?: { findings: number; byKind: Record<string, number>; samples: string[] };
+  /** M14.6 thesis_citations_present：正式学术引用是否存在（文献综述章 / 文献主题声明时适用） */
+  citations?: { citedCount: number; applicable: boolean; supplyDegraded: boolean; formalEvidence: number; bibEntries: number };
 }
 
 export interface QualityGateResult {
@@ -868,6 +876,54 @@ export function evaluateQualityGate(
           broken.length === 0
             ? `继承表格守卫：${thesis.tables.intact}/${thesis.tables.checked} 资产完整（数值 / 行列 / 标记块一致）`
             : `继承表格漂移 ${broken.length} 处：${broken.slice(0, 3).map((finding) => `${finding.assetId}（${finding.violations.slice(0, 2).join("；")}）`).join("；")}`,
+      });
+    }
+    // M14.6：双语摘要 + 关键词（缺失 → 结构不完整；Draft 仍可构建，不得标 Final/READY）
+    if (thesis.abstract !== undefined) {
+      rules.push({ rule: "thesis_abstract_complete", passed: thesis.abstract.present, detail: thesis.abstract.detail });
+    }
+    // M14.6：工作流元注记不得进入正文（高置信词面；Writer 写作期已剥离，此处是终检）
+    if (thesis.metaNotes !== undefined) {
+      rules.push({
+        rule: "workflow_meta_notes_absent",
+        passed: thesis.metaNotes.hits === 0,
+        detail:
+          thesis.metaNotes.hits === 0
+            ? "正文未检出工作流元注记（高置信词面）"
+            : `正文检出 ${thesis.metaNotes.hits} 处工作流元注记：${thesis.metaNotes.samples.slice(0, 3).join("；")}`,
+      });
+    }
+    // M14.6：模板化表达（advisory——不阻断；进入 Reviewer style 视图与报告）
+    if (thesis.templatedPhrasing !== undefined) {
+      rules.push({
+        rule: "templated_phrasing_reported",
+        passed: true,
+        detail:
+          thesis.templatedPhrasing.findings === 0
+            ? "未检出模板化小结 / 公式化过渡"
+            : `模板化表达 ${thesis.templatedPhrasing.findings} 处（${Object.entries(thesis.templatedPhrasing.byKind).map(([kind, count]) => `${kind} ${count}`).join(" / ")}）——advisory 不阻断；如 ${thesis.templatedPhrasing.samples[0] ?? ""}`,
+      });
+    }
+    // M14.6：学术引用存在性——零幻觉 ≠ 证据充足。文献综述章 / 文献主题声明时适用：
+    // 检索通道可用而零引用 → 学术质量缺口（FAIL）；检索降级（provider 不可用）→ 如实报告缺口但不
+    // 以阻断掩盖工程配置问题（规则 detail 明示「学术引用缺口」）。
+    if (thesis.citations !== undefined) {
+      const c = thesis.citations;
+      const zero = c.citedCount === 0;
+      // 阻断条件：适用 + 零引用 + Writer 确实拿到了可引用材料（正式 Evidence 或 bib 条目）——
+      // 否则（检索降级 / 候选未能成为正式证据）是材料缺口而非 Writer 缺陷，如实报告但不阻断
+      const citable = c.formalEvidence > 0 || c.bibEntries > 0;
+      const blocking = c.applicable && zero && citable;
+      rules.push({
+        rule: "thesis_citations_present",
+        passed: !blocking,
+        detail: !c.applicable
+          ? `无文献综述章 / 文献主题声明——引用存在性不适用（cited=${c.citedCount}）`
+          : !zero
+            ? `正文引用 ${c.citedCount} 个 bib key（正式 Evidence ${c.formalEvidence} 条 / bib 条目 ${c.bibEntries}）`
+            : !citable
+              ? `学术引用缺口：正文零引用且无可引用的正式 Evidence / bib 条目（${c.supplyDegraded ? "学术检索降级 / 不可用" : "检索有候选但未形成正式 Evidence"}）——零幻觉不等于证据充足；非阻断（材料缺口不以 Gate 掩盖），Draft 不得视为引用完整`
+              : `学术引用缺口：已有可引用材料（正式 Evidence ${c.formalEvidence} 条 / bib 条目 ${c.bibEntries}）但正文零引用——文献综述 / 绪论须引用已核验文献`,
       });
     }
     // M14.3：跨章一致性（advisory——恒过；确认的未授权数值变更由零漂移规则阻断）

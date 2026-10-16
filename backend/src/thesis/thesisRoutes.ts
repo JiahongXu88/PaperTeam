@@ -27,6 +27,11 @@ export interface ThesisRouteDeps {
   manuscript: ManuscriptService;
   /** M14.3：图形资产继承（可选装配——缺省路由 404 语义） */
   figures?: InheritedFigureAssetService;
+  /** M14.6：研究材料缺口台账 + 决定入口（经 ResearchInputService 的作者决定链） */
+  missingMaterials?: {
+    ledger: import("./MissingMaterialLedger.js").MissingMaterialLedger;
+    researchInputs: import("./ResearchInputService.js").ResearchInputService;
+  };
   readJsonBody: (req: IncomingMessage) => Promise<Record<string, unknown>>;
   sendJson: (res: ServerResponse, status: number, body: unknown) => void;
   sendMethodNotAllowed: (res: ServerResponse, allowed: string, method: string) => void;
@@ -112,6 +117,49 @@ export async function handleThesisRoutes(
       logPath: result.logPath,
       ...(result.error !== undefined ? { error: result.error } : {}),
     });
+    return true;
+  }
+
+  // ---- M14.6：研究材料缺口台账（MissingMaterialLedger）----
+  if (rest === "/missing-materials") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    if (deps.missingMaterials === undefined) {
+      sendJson(res, 200, { ledger: { schemaVersion: 1, projectId, gaps: [], updatedAt: new Date(0).toISOString() } });
+      return true;
+    }
+    sendJson(res, 200, { ledger: await deps.missingMaterials.ledger.load(projectId) });
+    return true;
+  }
+  const gapDecisionMatch = /^\/missing-materials\/(g-[0-9a-f]{6,64})\/decision$/.exec(rest);
+  if (gapDecisionMatch !== null) {
+    if (method !== "POST") {
+      sendMethodNotAllowed(res, "POST", method);
+      return true;
+    }
+    if (deps.missingMaterials === undefined) {
+      throw new BusinessError("INVALID_REQUEST", "研究材料缺口能力未启用");
+    }
+    const body = await readJsonBody(req);
+    const decision = requireString(body, "decision");
+    const allowed = ["confirm_missing", "supply_experiment_data", "supply_research_record", "supply_manuscript", "write_as_limitation", "defer_chapter", "reject"];
+    if (!allowed.includes(decision)) {
+      throw new BusinessError("INVALID_REQUEST", `缺口决定不合法：${decision}（可选：${allowed.join(" / ")}）`);
+    }
+    const rationale = typeof body["rationale"] === "string" && body["rationale"].trim() !== "" ? body["rationale"].trim() : undefined;
+    const result = await deps.missingMaterials.researchInputs.submitDecision(projectId, {
+      actor: readActor(body),
+      payload: {
+        type: "missing_material_decision",
+        gapId: gapDecisionMatch[1]!,
+        decision: decision as import("./researchInputTypes.js").MissingMaterialDecisionValue,
+        ...(rationale !== undefined ? { rationale } : {}),
+      },
+    });
+    const gap = await deps.missingMaterials.ledger.get(projectId, gapDecisionMatch[1]!);
+    sendJson(res, 200, { gap, decisionId: result.decision.decisionId, duplicate: result.duplicate });
     return true;
   }
 

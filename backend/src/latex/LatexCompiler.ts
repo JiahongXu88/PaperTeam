@@ -130,6 +130,18 @@ const BIBER_RERUN_PATTERN = /Please \(re\)run (?:Biber|biber)/;
 /** biber .blg 中的错误行（真实 biber 形态 "ERROR - …"；退出码非零或解析失败时摘要） */
 const BIBER_ERROR_PATTERN = /^(?:ERROR|FATAL)\s*[:-].*$/m;
 
+/**
+ * bibtex 进程崩溃形态（M14.6）：Windows 崩溃码（0xC0000374 堆损坏 / 0xC0000005 访问违例，
+ * 以 >= 2^31 的无符号形态或负数返回）或非零退出且 stdout / stderr 全空（banner 都没打出来）。
+ */
+function isBibtexCrash(result: CommandResult): boolean {
+  const code = result.code;
+  if (code === 3221226356 || code === 3221225477 || code === -1073740940 || code === -1073741819) {
+    return true;
+  }
+  return code !== 0 && result.stdout.trim() === "" && result.stderr.trim() === "";
+}
+
 /** bibtex .blg 报告未产出任何条目（M9.5 事故形态：打开了错误的 references.bib） */
 const ZERO_ENTRIES_PATTERN = /used 0 entries/i;
 
@@ -295,6 +307,13 @@ export class LatexCompiler {
         }
         result = await runStep("bibtex", "bibtex", ["main"]);
         ranBibliography = true;
+        // M14.6（真实编译验收实证，Windows / MiKTeX 25.12）：7-bit bibtex 对含 UTF-8 作者名（Hönig）的
+        // references.bib 以 0xC0000374（堆损坏）崩溃且零输出（12 次重复 10 次崩溃；bibtex8 0 次）。
+        // 崩溃码 / 零输出的非零退出 → 回退 bibtex8（8-bit 版，TeX Live / MiKTeX 均随发行版提供）；
+        // 回退仍失败才判编译失败。步骤全部记入编译日志（可审计，不静默）。
+        if (result.code !== 0 && isBibtexCrash(result) && (await this.isToolAvailable("bibtex8"))) {
+          result = await runStep("bibtex8 (fallback after bibtex crash)", "bibtex8", ["main"]);
+        }
         if (result.code !== 0) {
           throw new LatexCompileFailedError(
             `bibtex exitCode=${result.code}；${summarizeLogError(formatStepLog(steps))}（完整日志：${logPath}）`,
@@ -458,7 +477,10 @@ function spawnCommand(
     const finalArgs = IS_WINDOWS ? args.map(quoteForWindowsShell) : args;
     let child;
     try {
-      child = spawn(command, finalArgs, { cwd: options.cwd, shell: IS_WINDOWS });
+      // M14.6（真实编译验收实证）：MiKTeX 25.12 的 bibtex 在 stdin 为管道时以 0xC0000374（堆损坏）
+      // 崩溃且零输出（交互 shell / cmd 重定向 / stdin=ignore 均正常）——TeX 工具链从不读 stdin，
+      // 一律 ignore；stdout / stderr 仍管道采集进编译日志。
+      child = spawn(command, finalArgs, { cwd: options.cwd, shell: IS_WINDOWS, stdio: ["ignore", "pipe", "pipe"] });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       resolve({ code: -1, stdout: "", stderr: "", spawnError: message });

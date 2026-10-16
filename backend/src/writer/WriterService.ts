@@ -11,6 +11,7 @@
 import { readFile } from "node:fs/promises";
 
 import { AgentRunFailedError, BusinessError, InvalidLatexOutputError } from "../errors.js";
+import { escapeBarePercentAfterDigits } from "./latexSanitize.js";
 import type { AgentRuntime, AgentTask } from "../runtime/types.js";
 import type { ManuscriptLanguage } from "../project/language.js";
 import { targetLanguageLines } from "../project/language.js";
@@ -492,7 +493,8 @@ export class WriterService {
         task.error ?? `章节 ${params.section.id} 写作任务以 ${task.status} 状态结束`,
       );
     }
-    const latex = stripCodeFence(task.output ?? "").trim();
+    // M14.6：裸百分号（`75.37%`）会被 LaTeX 当注释吞掉后文（案例 B 真实 PDF 实证）——确定性转义
+    const latex = escapeBarePercentAfterDigits(stripCodeFence(task.output ?? "").trim());
     if (latex === "") {
       throw new AgentRunFailedError(`章节 ${params.section.id} 没有返回内容`);
     }
@@ -659,7 +661,7 @@ export class WriterService {
         `[writer] projectId=${params.projectId} 章节 ${params.section.id} 修订输出混入 ${notes.removed.length} 行执行注记，已剥离（首行：${notes.removed[0]!.slice(0, 80)}）`,
       );
     }
-    let latex = notes.latex.trim();
+    let latex = escapeBarePercentAfterDigits(notes.latex.trim());
     if (latex === "") {
       // M10.3.1：整文件目标——模型用 write/edit 工具直接改写文件而最终消息为空
       // 时，磁盘上的真实变更就是修订结果（确定性读取；继续走下方全部 DoD 与
@@ -741,7 +743,7 @@ export class WriterService {
         task.error ?? `章节 ${params.section.id} 语言润色任务以 ${task.status} 状态结束`,
       );
     }
-    const latex = stripCodeFence(task.output ?? "").trim();
+    const latex = escapeBarePercentAfterDigits(stripCodeFence(task.output ?? "").trim());
     if (latex === "") {
       throw new AgentRunFailedError(`章节 ${params.section.id} 语言润色没有返回内容`);
     }

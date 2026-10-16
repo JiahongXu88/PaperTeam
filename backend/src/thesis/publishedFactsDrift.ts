@@ -76,7 +76,8 @@ export function stripNonFactualNumbers(text: string): string {
  * 数值不符）照常阻断；无关数值不再进入比对。
  */
 export function checkFactDrift(fact: FactView, bodyText: string): FactDriftFinding {
-  const stripped = stripNonFactualNumbers(bodyText);
+  // M14.6：Writer 输出经百分号转义后正文形态为 `75.37\%`——比对前还原为 `75.37%`
+  const stripped = stripNonFactualNumbers(bodyText.replace(/\\%/g, "%"));
   const normalizedBody = stripped.replace(/\s+/g, "");
   if (fact.surface !== "" && normalizedBody.includes(fact.surface.replace(/\s+/g, ""))) {
     return {

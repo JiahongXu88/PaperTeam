@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { BusinessError } from "../errors.js";
 import type { Outline } from "../manuscript/ManuscriptService.js";
 import { getThesisTemplateAdapter, escapeThesisShortText, type ThesisTemplateAdapter, type ThesisTemplateContext } from "./genericCtexbookAdapter.js";
+import { chapterLabelLatex, chapterOrder, normalizeChapterReferences, type ChapterOrderEntry, type ChapterReferenceIssue } from "./chapterReferences.js";
 import {
   chapterAssemblyMode,
   validateThesisDocumentModel,
@@ -40,6 +41,14 @@ export interface ThesisAssemblyResult {
   }>;
   /** promoted 模式做过层级改名的节文件（行数 / 行号不变） */
   transformedFiles: string[];
+  /**
+   * M14.6：字面章号引用的确定性归一（装配产物层；源 manuscript 不动）。rewrites = 「第四章」→
+   * `第\ref{ch:…}章`（按邻近章标题解析）；issues = 无法解析 / 序号超界 / 序号与标题不符（已按标题改写）。
+   */
+  chapterReferences: {
+    rewrites: Array<{ file: string; before: string; after: string; chapterId: string }>;
+    issues: Array<{ file: string; literal: string; reason: ChapterReferenceIssue["reason"]; expectedChapterId?: string }>;
+  };
 }
 
 /** 标题层级名（LaTeX 标准层级序）；shiftHeadingLevels 按 index 移动 */
@@ -124,6 +133,8 @@ export async function assembleThesisManuscript(options: AssembleThesisOptions): 
 
   const transformedFiles: string[] = [];
   const chaptersOut: ThesisAssemblyResult["chapters"] = [];
+  const order = chapterOrder(model.chapters.map((chapter) => ({ chapterId: chapter.chapterId, titleZh: chapter.titleZh })));
+  const chapterReferences: ThesisAssemblyResult["chapterReferences"] = { rewrites: [], issues: [] };
 
   // ---- 正文：wrapper / promoted ----
   const mainLines: string[] = [];
@@ -132,7 +143,7 @@ export async function assembleThesisManuscript(options: AssembleThesisOptions): 
   mainLines.push(...adapter.buildFrontmatter(model, ctx), "");
 
   for (const chapter of model.chapters) {
-    mainLines.push(...(await chapterLines(chapter, "main", { adapter, model, ctx, transformedFiles, chaptersOut, manuscriptDir, targetDir })));
+    mainLines.push(...(await chapterLines(chapter, "main", { adapter, model, ctx, transformedFiles, chaptersOut, manuscriptDir, targetDir, order, chapterReferences })));
   }
 
   // ---- 参考文献 ----
@@ -143,7 +154,7 @@ export async function assembleThesisManuscript(options: AssembleThesisOptions): 
   if (model.appendix !== undefined && model.appendix.length > 0) {
     mainLines.push("\\cleardoublepage", "\\appendix", "");
     for (const chapter of model.appendix) {
-      mainLines.push(...(await chapterLines(chapter, "appendix", { adapter, model, ctx, transformedFiles, chaptersOut, manuscriptDir, targetDir })));
+      mainLines.push(...(await chapterLines(chapter, "appendix", { adapter, model, ctx, transformedFiles, chaptersOut, manuscriptDir, targetDir, order, chapterReferences })));
     }
   }
 
@@ -167,6 +178,7 @@ export async function assembleThesisManuscript(options: AssembleThesisOptions): 
     bibliography: ctx.hasBibliography ? (model.bibliography ?? adapter.defaultBibliography) : null,
     chapters: chaptersOut,
     transformedFiles,
+    chapterReferences,
   };
 }
 
@@ -178,6 +190,20 @@ interface ChapterEmitContext {
   chaptersOut: ThesisAssemblyResult["chapters"];
   manuscriptDir: string;
   targetDir: string;
+  order: ChapterOrderEntry[];
+  chapterReferences: ThesisAssemblyResult["chapterReferences"];
+}
+
+/** M14.6：节文件的字面章号归一（装配产物层）；返回是否改写 */
+async function normalizeSectionChapterReferences(file: string, source: string, emit: ChapterEmitContext): Promise<string> {
+  const normalized = normalizeChapterReferences(source, emit.order);
+  for (const rewrite of normalized.rewrites) {
+    emit.chapterReferences.rewrites.push({ file, before: rewrite.before, after: rewrite.after, chapterId: rewrite.chapterId });
+  }
+  for (const issue of normalized.issues) {
+    emit.chapterReferences.issues.push({ file, literal: issue.literal, reason: issue.reason, ...(issue.expectedChapterId !== undefined ? { expectedChapterId: issue.expectedChapterId } : {}) });
+  }
+  return normalized.latex;
 }
 
 function escapeAcknowledgments(text: string): string {
@@ -193,8 +219,20 @@ async function chapterLines(
   const lines: string[] = [];
   emit.chaptersOut.push({ chapterId: chapter.chapterId, titleZh: chapter.titleZh, mode, sectionFiles: [...chapter.sections], part });
   if (mode === "wrapper") {
-    lines.push(`\\chapter{${escapeThesisShortText(chapter.titleZh)}}`, "");
+    // M14.6：章标签（\ref{ch:…} 由装配器解析真实章号；Writer 不写字面章号）
+    lines.push(`\\chapter{${escapeThesisShortText(chapter.titleZh)}}`, chapterLabelLatex(chapter.chapterId), "");
     for (const file of chapter.sections) {
+      // M14.6：字面章号引用归一（只改产物副本；源 manuscript 不动，bounded Revision 的逐字节基线不受影响）
+      try {
+        const source = await readFile(join(emit.manuscriptDir, "sections", file), "utf8");
+        const normalized = await normalizeSectionChapterReferences(file, source, emit);
+        if (normalized !== source) {
+          await writeFile(join(emit.targetDir, "sections", file), normalized, "utf8");
+          emit.transformedFiles.push(file);
+        }
+      } catch {
+        // 节文件缺失由编译阶段如实报错；装配不吞错也不伪造
+      }
       lines.push(`\\input{sections/${file.replace(/\.tex$/, "")}}`, "");
     }
     return lines;
@@ -203,7 +241,10 @@ async function chapterLines(
   // 行数与行号不变（logicalSpan 兼容）；正文 / 标签 / 引用原样。
   const file = chapter.sections[0]!;
   const source = await readFile(join(emit.manuscriptDir, "sections", file), "utf8");
-  const shifted = shiftHeadingLevels(source, 1);
+  let shifted = shiftHeadingLevels(source, 1);
+  // M14.6：章标签插在首个 \chapter 行尾（同一行，行数不变）
+  shifted = shifted.replace(/^(\\chapter\*?(?:\[[^\]]*\])?\{[^}]*\})/m, (match) => `${match}${chapterLabelLatex(chapter.chapterId)}`);
+  shifted = await normalizeSectionChapterReferences(file, shifted, emit);
   if (shifted !== source) {
     emit.transformedFiles.push(file);
   }

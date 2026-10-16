@@ -141,6 +141,23 @@ function thesisOutlineOutput(task: string): string {
   });
 }
 
+/** M14.6：脚本化学位论文双语摘要（无数值；长度满足守卫下限） */
+function thesisAbstractOutput(task: string): string {
+  const titleMatch = /论文题名[：:]\s*(.+)/.exec(task) ?? /标题[：:]\s*(.+)/.exec(task);
+  const title = (titleMatch?.[1] ?? "学位论文").trim().slice(0, 60);
+  const zhSentence = `本文围绕「${title}」所涉及的研究问题展开，系统梳理相关理论基础与研究现状，提出核心方法并给出设计依据，结合已确认的研究材料对方法的有效性进行分析与讨论，并说明研究范围与局限。`;
+  const abstractZh = `${zhSentence}${zhSentence}${zhSentence}`;
+  const enSentence =
+    "This thesis studies the research problem addressed by the confirmed research inputs, reviews the theoretical foundations and related work, presents the core method together with its design rationale, analyses the effectiveness of the method using the confirmed materials, and states the scope and limitations of the study. ";
+  const abstractEn = `${enSentence}${enSentence}${enSentence}`;
+  return JSON.stringify({
+    abstractZh,
+    abstractEn,
+    keywordsZh: ["研究方法", "学位论文", "有效性分析"],
+    keywordsEn: ["research method", "thesis", "effectiveness analysis"],
+  });
+}
+
 /** M6.5 evidence 语义 judge 脚本化输出（citation/evidence/* scope 缺省） */
 export const EVIDENCE_JUDGE_SUPPORTED_JSON = JSON.stringify({
   verdict: "supported",
@@ -1063,6 +1080,12 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
       } else if (scope === "thesis/contributions") {
         // M14.2：贡献提取（按材料标题派生；quote 与测试 fixture 文本逐字一致）
         output = thesisContributionsOutput(input.task);
+      } else if (scope === "thesis/abstract") {
+        // M14.6：脚本化双语摘要（不含任何数值——事实守卫零违规；关键词取自 prompt 题名）
+        output = thesisAbstractOutput(input.task);
+      } else if (scope === "thesis/missing-material") {
+        // M14.6：脚本化范围缺口提案（空——模型不发明缺口；确定性提案由 storyline.scopeConcerns 驱动）
+        output = JSON.stringify({ proposals: [] });
       } else if (scope === "thesis/outline") {
         // M14.2：主线 + 两级大纲 + 章节映射（按 prompt 的贡献/输入 id 派生）
         output = thesisOutlineOutput(input.task);

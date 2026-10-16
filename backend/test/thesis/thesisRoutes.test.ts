@@ -98,7 +98,7 @@ describe("M14.1c HTTP：/api/projects/:id/thesis/*", () => {
       "utf8",
     );
     expect(intro).toContain("sentinel-http-intro");
-    expect(intro.split("\n")[0]).toBe("\\chapter{intro}"); // promoted 层级提升
+    expect(intro.split("\n")[0]).toBe("\\chapter{intro}\\label{ch:ch01}"); // promoted（M14.6：章标签同行） 层级提升
   });
 
   it("无模型时 assemble 404（不猜默认结构）", async () => {

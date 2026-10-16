@@ -268,16 +268,17 @@ describe("M14.4 修订循环收敛与最佳版本恢复（thesis_from_papers 全
     // 循环在第 2 轮 review 后停止（劣化判定优先于剩余轮数；无第 3 轮）
     expect(reviewCompletions(run)).toBe(2);
     expect(reviseCompletions(run)).toBe(1);
-    // 最佳合法版本 = round-1 写作完成态；build 从恢复版本构建
+    // 最佳合法版本 = round-1 写作完成态（M14.6：rev-1 写作 → thesis.abstract 写入 thesis.json →
+    // review.snapshot 提交 rev-2 = 被审版本）；build 从恢复版本构建
     const best = JSON.parse(await readFile(join(stack.store.reviewsDir(projectId), "best-revision.json"), "utf8")) as { revision: number; runId: string };
-    expect(best.revision).toBe(1);
+    expect(best.revision).toBe(2);
     expect(best.runId).toBe(runId);
     const buildResult = run.stageResults?.["build.draft"] ?? {};
-    expect(buildResult["restoredBestFrom"]).toBe(1);
-    expect(run.completion?.summary?.["restoredBestFrom"]).toBe(1);
+    expect(buildResult["restoredBestFrom"]).toBe(2);
+    expect(run.completion?.summary?.["restoredBestFrom"]).toBe(2);
     expect(run.completion?.summary?.["draftArtifactId"]).toMatch(/^art-draft/);
-    // 恢复产生新的不可变修订（rev-3，restoredFrom rev-1；历史不动）
-    expect(buildResult["revision"]).toBe(3);
+    // 恢复产生新的不可变修订（rev-4，restoredFrom rev-2；历史不动）
+    expect(buildResult["revision"]).toBe(4);
     // 恶化轮未污染终态语义：Draft 不冒充 Publication Ready
     expect(run.completion?.summary?.["qualityGatePassed"]).toBe(false);
     expect(run.completion?.summary?.["qualityStatus"]).toBeTruthy();
@@ -292,12 +293,12 @@ describe("M14.4 修订循环收敛与最佳版本恢复（thesis_from_papers 全
     expect(reviewCompletions(run)).toBe(2);
     expect(reviseCompletions(run)).toBe(1);
     const best = JSON.parse(await readFile(join(stack.store.reviewsDir(projectId), "best-revision.json"), "utf8")) as { revision: number };
-    expect(best.revision).toBe(1);
+    expect(best.revision).toBe(2);
     const buildResult = run.stageResults?.["build.draft"] ?? {};
     expect(buildResult["restoredBestFrom"]).toBeUndefined();
     expect(run.completion?.summary?.["restoredBestFrom"]).toBeUndefined();
-    // 交付 = 当前修订（round-2 后的 rev-2），未被回滚
-    expect(buildResult["revision"]).toBe(2);
+    // 交付 = 当前修订（round-2 后的 rev-3：rev-1 写作 / rev-2 摘要快照 / rev-3 修订），未被回滚
+    expect(buildResult["revision"]).toBe(3);
   });
 
   it("场景 F：run 级模型预算耗尽 → 第二轮 review 不再启动（overflow HITL → Draft，优雅降级）", { timeout: 240_000 }, async () => {

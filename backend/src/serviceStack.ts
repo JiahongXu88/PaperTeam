@@ -100,6 +100,9 @@ import { InheritedTableAssetStore } from "./thesis/inheritedAssets.js";
 import { InheritedFigureAssetService } from "./thesis/inheritedFigureAssets.js";
 import { ThesisDocumentService } from "./thesis/ThesisDocumentService.js";
 import { ThesisPlannerService } from "./thesis/ThesisPlannerService.js";
+import { MissingMaterialLedger } from "./thesis/MissingMaterialLedger.js";
+import { MissingMaterialService } from "./thesis/MissingMaterialService.js";
+import { ThesisAbstractService } from "./thesis/thesisAbstract.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
 
 export interface ServiceStackOptions {
@@ -374,6 +377,8 @@ export interface ServiceStack {
   thesisDocuments: ThesisDocumentService;
   /** M14.3：研究成果图形资产继承（PlotSpec 确定性生成 + 授权 + 受控插入） */
   inheritedFigures: InheritedFigureAssetService;
+  /** M14.6：研究材料缺口台账（research/missing-material-ledger.json） */
+  missingMaterials: MissingMaterialLedger;
   workflowServices: WorkflowServices;
 }
 
@@ -962,7 +967,10 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // 全部文件后端（research/ 目录，原子写）；来源核验的独立文本层复用 paperParser。
   // M14.3：继承表格资产 store（research/inherited-table-assets.json）。
   const inheritedTables = new InheritedTableAssetStore(options.projects);
+  // M14.6：研究材料缺口台账（作者决定经 ResearchInputService.submitDecision 应用）
+  const missingMaterials = new MissingMaterialLedger(options.projects);
   const researchInputs = new ResearchInputService({
+    missingMaterials,
     registry: new ResearchInputRegistry(options.projects, sources, parsedDocuments, evidence),
     facts: new ScientificFactStore(options.projects),
     decisions: new AuthorDecisionStore(options.projects),
@@ -1059,6 +1067,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     manuscriptOverview,
     thesisDocuments,
     inheritedFigures,
+    missingMaterials,
     workflowServices: {
       projects: options.projects,
       generation,
@@ -1125,6 +1134,10 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         documents: thesisDocuments,
         latex: thesisLatex,
         inheritedTables,
+        // M14.6：材料缺口台账 + 有界模型提案 + 双语摘要生成
+        missingMaterials,
+        missingMaterialProposals: new MissingMaterialService({ runtime, agentId: options.agentIds.writer, ledger: missingMaterials, projects: options.projects, ...(log !== undefined ? { log } : {}) }),
+        abstract: new ThesisAbstractService({ runtime, agentId: options.agentIds.writer, ...(log !== undefined ? { log } : {}) }),
         ...(options.thesis?.allowTestFixtureActor === true ? { allowTestFixtureActor: true } : {}),
       },
     },

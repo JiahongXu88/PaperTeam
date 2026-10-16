@@ -3,7 +3,12 @@
  *
  *   Review 建议修改实验数值（0.724 → 0.9）
  *     → revision.plan 派发 / revision.revise 产出改值候选（模拟 Writer 违纪）
- *     → Guard（published_facts_zero_drift）拒绝未授权变化（gate FAIL）
+ *     → Guard 拒绝未授权变化
+ *
+ * M14.6（F5）升级：作者已确认研究输入事实的删除 / 改值在**候选级**即被拒绝
+ * （unauthorized_fact_removal：0.724 在候选中消失）——原稿逐字节保留，不再等到 gate 才爆炸；
+ * published_facts_zero_drift 因此如实为零漂移（候选从未落盘）。候选级 patch-validation
+ * 记录保留完整拒绝证据。
  *
  * 对照链路（语言润色不触发守卫）由既有回归覆盖（scriptedRevision 保数字）。
  */
@@ -28,7 +33,7 @@ function mutatingRevision(task: string): string {
   return current.replace(/0\.724/g, "0.9");
 }
 
-describe("M14.3 thesis 修订事实守卫 E2E", () => {
+describe("M14.3/M14.6 thesis 修订事实守卫 E2E", () => {
   let stack: TestStack;
   let scripted: ReturnType<typeof createScriptedRuntime>;
   let revisionMutations = 0;
@@ -81,7 +86,7 @@ describe("M14.3 thesis 修订事实守卫 E2E", () => {
     await stack.cleanup();
   });
 
-  it("review 建议改数值 → 修订候选改值 → drift gate 拒绝（未授权事实变更）", { timeout: 240_000 }, async () => {
+  it("review 建议改数值 → 修订候选改值 → 候选级拒绝（unauthorized_fact_removal）→ 原稿保留、零漂移", { timeout: 240_000 }, async () => {
     const created = await stack.request("POST", "/api/projects", { title: "修订守卫学位论文", language: "zh", documentType: "master_thesis" });
     expect(created.status).toBe(201);
     const projectId = (created.body["project"] as { id: string })["id"];
@@ -224,27 +229,43 @@ describe("M14.3 thesis 修订事实守卫 E2E", () => {
     // 核心断言 1：修订确实发生（Writer 输出过改值候选）
     expect(revisionMutations).toBeGreaterThan(0);
 
-    // 核心断言 2：gate 产物存在 published_facts_zero_drift FAIL（0.724 被改 → 拒绝）
     const projectDir = stack.store.projectDir(projectId);
     const reviewsDir = join(projectDir, "reviews");
     const { readdir } = await import("node:fs/promises");
+
+    // 核心断言 2（M14.6）：候选级 patch-validation 记录了拒绝——根因 unauthorized_fact_removal（0.724 被改掉）
+    const patchFiles = (await readdir(reviewsDir)).filter((name) => /^patch-validation-rev-\d+\.json$/.test(name)).sort();
+    expect(patchFiles.length).toBeGreaterThan(0);
+    const patchRecords = (
+      await Promise.all(
+        patchFiles.map(async (name) => (JSON.parse(await readFile(join(reviewsDir, name), "utf8")) as { records: Array<{ overall: string; rootViolationIds?: string[]; fact: { violations: string[] } }> }).records),
+      )
+    ).flat();
+    const rejected = patchRecords.filter((record) => record.overall === "fail" && (record.rootViolationIds ?? []).includes("unauthorized_fact_removal"));
+    expect(rejected.length, "候选级必须以 unauthorized_fact_removal 拒绝改值候选").toBeGreaterThan(0);
+    expect(rejected[0]!.fact.violations.join("\n")).toContain("0.724");
+    const accepted = patchRecords.filter((record) => record.overall !== "fail");
+    expect(accepted, "改值候选不得有任何被接受的记录").toHaveLength(0);
+
+    // 核心断言 3：原稿逐字节保留——0.724 仍在，0.9 从未落盘
+    const methodDesign = await readFile(join(projectDir, "manuscript", "sections", "method-design.tex"), "utf8");
+    expect(methodDesign).toContain("0.724");
+    expect(methodDesign).not.toContain("0.9");
+
+    // 核心断言 4：最新 gate 的零漂移规则如实为零漂移（候选从未落盘，不是「放行了漂移」）
     const gateFiles = (await readdir(reviewsDir)).filter((name) => /^quality-gate-r\d+\.json$/.test(name)).sort();
     const latestGate = gateFiles[gateFiles.length - 1]!;
-    const gateRaw = await readFile(join(reviewsDir, latestGate), "utf8");
-    const gate = JSON.parse(gateRaw) as {
+    const gate = JSON.parse(await readFile(join(reviewsDir, latestGate), "utf8")) as {
       gate: { passed: boolean; rules: Array<{ rule: string; passed: boolean; detail: string }> };
     };
     const driftRule = gate.gate.rules.find((rule) => rule.rule === "published_facts_zero_drift");
     expect(driftRule).toBeDefined();
-    expect(driftRule!.passed).toBe(false);
-    expect(driftRule!.detail).toContain("0.9");
-    // 核心断言 3：未授权变更不许以 Draft 冒充成功——若 run 终态非 completed，
-    // 其失败必须源于守卫链（accept_draft 后 Draft 的事实保持硬阻断同样合法）
+    expect(driftRule!.passed).toBe(true);
+    expect(driftRule!.detail).not.toContain("0.9");
+    // 终态如实：completed（Draft / stalled 均可）或守卫链失败
     if (terminal !== "completed") {
-      const finalRun = ((await stack.request("GET", `/api/runs/${runId}`)).body["run"] ?? {}) as {
-        error?: { message?: string };
-      };
-      expect(finalRun.error?.message ?? "").toMatch(/事实|drift|fact|Draft/i);
+      const finalRun = ((await stack.request("GET", `/api/runs/${runId}`)).body["run"] ?? {}) as { error?: { message?: string } };
+      expect(finalRun.error?.message ?? "").toMatch(/事实|drift|fact|Draft|修订/i);
     }
   });
 });
