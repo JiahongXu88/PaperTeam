@@ -92,7 +92,7 @@ describe.skipIf(!live)("M14.6 真实 LaTeX 验收（xelatex + bibtex；PyMuPDF �
     await writeFile(join(outDir, "partA-citation-closure.txt"), text, "utf8");
     const citedAuthors = REAL_REFERENCES.filter((ref) => text.includes(ref.authors[0]!.split(" ").pop()!));
     const verdict = {
-      pages: (text.match(/\f/g) ?? []).length + 1,
+      pages: pdfPages(pdfPath),
       hasAbstractZh: text.includes("摘要"),
       hasAbstractEn: /Abstract/.test(text),
       hasReferencesHeading: /参考文献/.test(text),
@@ -143,7 +143,7 @@ describe.skipIf(!live)("M14.6 真实 LaTeX 验收（xelatex + bibtex；PyMuPDF �
     await writeFile(join(outDir, "partB-caseB-rev2-m146.txt"), text, "utf8");
     await writeFile(join(outDir, "partB-assembly.json"), JSON.stringify({ chapterReferences: assembly.chapterReferences, transformedFiles: assembly.transformedFiles, bibliography: assembly.bibliography }, null, 2), "utf8");
     const verdict = {
-      pages: (text.match(/\f/g) ?? []).length + 1,
+      pages: pdfPages(compile.pdfPath!),
       barePercentBefore,
       hasTruncatedSentenceRestored: text.includes("幅度表明"),
       has7537: text.includes("75.37"),
