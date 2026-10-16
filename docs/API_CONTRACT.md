@@ -262,9 +262,14 @@
 > - **产物不可变**：Draft/Final PDF 以 revision 编号落盘（rev{n}），重构建 /
 >   重冻结产生新文件，不改写历史；manifest 只增不改。
 > - **修订 HITL 决策**：`hitl.revision_stalled`（CONVERGED / REGRESSION /
->   计划空）与 `hitl.revision_overflow`（预算耗尽）均为
+>   计划空）与 `hitl.revision_overflow`（预算耗尽，M14.4 起含模型调用 / token
+>   预算耗尽 `modelBudgetExhausted`）均为
 >   `accept_draft / revise_more / cancel`；`accept_draft` 为用户知情接受
->   （buildOk=false 时如实记录无 PDF）。
+>   （buildOk=false 时如实记录无 PDF）。M14.4：stalled payload 携带
+>   `bestValidRevision`（本 run 最佳合法版本：revision / gateRound / blocking /
+>   critical / academicScore）——accept_draft 时若当前稿可证明更差（守卫 /
+>   阻断 / 关键问题主键），Draft 将从该版本自动恢复构建，completion summary
+>   以 `restoredBestFrom` 标注来源修订号。
 > - **修订复核 HITL（M6.7）**：`hitl.revision_validation` 在 Revision
 >   Validation 发现风险项（事实漂移 / 引用无依据丢失 / 强 claim 弱证据）时
 >   出现（先于复审）；decision 为 `approve`（接受本轮修订，条目 → approved，
