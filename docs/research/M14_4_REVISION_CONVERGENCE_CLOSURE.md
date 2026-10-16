@@ -262,7 +262,9 @@ M14.3 R3 暴露的四大遗留（修订整节重写、质量劣化不拦截、�
 
 ### Git 交付
 
-- 提交链：feat（bounded 修订 + 收敛修复 + 预算 + 最佳版本 + 测试）→ docs（收口报告 + 文档更新），推送 origin/main（以最终 `git rev-parse` 为准）。
-- GitHub CI（test + docker-build + Linux Integration）随 push 触发；状态以 Actions 页为准，未完成则如实标注。本轮未连接新加坡服务器；GitHub 自动 CI 不属于服务器开发测试。
+- 提交链：`4e8ee0e`（feat：bounded 修订 + 收敛修复 + 预算 + 最佳版本 + 31 测试）→ `0ff90ec`（docs：收口报告 + PROJECT_STATUS + API_CONTRACT）→ `bd0bf85`（fix：CI typecheck 的测试 import 修正——本地 tsc 曾在新建测试文件前运行，CI 抓出后修复；后续纪律：新建测试后必须重跑 `npm run typecheck`）。
+- 推送：`origin/main` = HEAD = `bd0bf8566a59ba55395509035801d1f8f36152b6`，工作区 clean，`git diff --check` ✅。
+- **GitHub CI：双绿**——CI（build + typecheck + backend/frontend 全量测试，ubuntu）`success` 6m31s；Linux Integration `success` 14m25s（run 38873187999 / 38873187674）。首轮 push 的 CI 曾因上述测试 typecheck 失败（1m2s 快速失败），修复后全绿。
+- 本轮未连接新加坡服务器；GitHub 自动 CI 不属于服务器开发测试。
 
 **M14.4：COMPLETE。**
