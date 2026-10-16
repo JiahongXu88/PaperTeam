@@ -211,4 +211,26 @@ M14.5 修复后 prompt 仍存在三处口径不一致（§2 第一行）。真�
 6. PDF→Word、高校模板家族、Runtime 替换：保持登记不变（任务 §十四）。
 
 ## 20. Git 与 CI 状态
-（提交后以实际 `git rev-parse HEAD` / `origin/main` 与 GitHub Actions 结果填写；见本报告末尾「交付记录」。）
+
+- 提交链（`main`，无额外分支）：
+  1. `01eb6d82` feat(m14.6)：全部生产源码 / 测试 / 配置样例 / 文档 / 本报告（62 个文件）。GitHub CI **failure**（typecheck：env 门控 smoke 中 `pdfPages` 声明未使用——本机最后一次 typecheck 发生在该 helper 加入之前，属提交前验证漏项）；Linux Integration 被后续提交取消。
+  2. `686eecb8` fix(m14.6)：修正该 helper 的使用。GitHub Actions：**CI success（run 38933325130，6m43s）**；**Linux Integration success（run 38933324892，6m55s）**——双绿。
+  3. 本节记录提交（docs）：以最终 `git rev-parse HEAD` = `origin/main` 为准；该提交触发的 CI 在报告落笔时尚在运行，不在此宣称结果。
+- 工作区：`git status --short --branch` → clean；`git diff --check` ✅。
+- 交付产物（本机，不入库）：`D:\PaperTeamData\M14_6\smoke\`（f5 基线 / verify / replay、mm-proposal、abstract、revision ×2、live-search）、`D:\PaperTeamData\M14_6\pdf\`（partA 引用闭环 PDF + 文本层 + compile.log + references.bib；partB 案例 B rev-2 PDF + 文本层 + 装配报告）、`D:\PaperTeamData\M14_6\logs\`（后端全量 / 各 smoke / CI 运行清单）、`m146-global-budget.json`。
+
+### 可复现命令（Windows 本机，backend/ 目录）
+```
+# 确定性回归（全量）
+npx vitest run --maxWorkers=2
+# F5 真实复验（2 次调用）与零调用回放
+PAPERTEAM_M146_F5_SMOKE=1 PAPERTEAM_M146_F5_MODE=verify PAPERTEAM_M146_F5_SCENARIOS=legit,counter PAPERTEAM_M146_MODEL=zai-coding-cn/glm-5.3 npx vitest run test/thesis/m146F5Reviewer.smoke.test.ts
+PAPERTEAM_M146_F5_REPLAY="D:\PaperTeamData\M14_6\smoke\f5-legit+counter-verify-20261016145147.json" npx vitest run test/thesis/m146F5Reviewer.smoke.test.ts
+# 缺口提案 / 摘要 / 修订（各 1 次调用）
+PAPERTEAM_M146_MM_SMOKE=1 PAPERTEAM_M146_MODEL=zai-coding-cn/glm-5.3 npx vitest run test/thesis/m146MissingMaterial.smoke.test.ts
+PAPERTEAM_M146_ABSTRACT_SMOKE=1 PAPERTEAM_M146_MODEL=zai-coding-cn/glm-5.3 npx vitest run test/thesis/m146Abstract.smoke.test.ts
+PAPERTEAM_M146_REVISION_SMOKE=1 PAPERTEAM_M146_MODEL=zai-coding-cn/glm-5.3 npx vitest run test/thesis/m146Revision.smoke.test.ts
+# 实时检索探针（零模型）与真实编译验收（零模型）
+PAPERTEAM_M146_LIVE_SEARCH=1 npx vitest run test/thesis/m146LiveSearch.smoke.test.ts
+PAPERTEAM_M146_REAL_LATEX=1 npx vitest run test/thesis/m146RealLatex.smoke.test.ts
+```
