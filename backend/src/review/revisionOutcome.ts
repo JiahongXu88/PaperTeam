@@ -75,6 +75,16 @@ export type TerminalStatusKind =
 const GUARD_RULE_PREFIX =
   /^(fact_preservation|cumulative_fact_preservation|citation_preservation|survey_outline_contract|survey_citation_keys_valid|survey_synthesis_traceability)[:：]/;
 
+/**
+ * M14.4：有确定性修复路径的守卫类规则（新失败不视为质量退化信号——
+ * fact_preserve 派发 / restore_facts 先获得修复机会）。注意
+ * patch_validation_publishable 不在列：非分层模式下它与 gate.passed 级联
+ * （quality gate 失败的每一轮都会带上它），不是独立的可修复信号——
+ * 把它当豁免会让「无改善 + 质量规则失败」的轮次被判 IMPROVED 继续烧轮次。
+ */
+const REPAIRABLE_GUARD_RULE =
+  /^(fact_preservation|cumulative_fact_preservation|citation_preservation|published_facts_zero_drift)[:：]?/;
+
 export interface TerminalStatusInput {
   gatePassed: boolean;
   gateReasons: readonly string[];
@@ -216,12 +226,41 @@ export function judgeOutcome(
     return "REGRESSION";
   }
 
+  // M14.4：重问题（critical+major）净上升且失败规则数未下降 = 质量退化，不是
+  // 改善。真实 R3 实锤：issues 186→544 逐轮上涨，但 failedRuleIds 每轮微变，
+  // 旧逻辑的 IMPROVED 兜底（不满足 CONVERGED 的 sameRules 前提即落 IMPROVED）
+  // 让劣化循环被判「有实质改善」继续烧预算。academicScore 63→54（差 9 < 10）
+  // 也不触发旧 REGRESSION 条件。
+  // Round 2（确定性回放补强）：失败规则**增加**而重问题无改善同样不是改善——
+  // 改善信号必须是：critical / blocking / 重问题总数下降，或失败规则**减少**。
+  // 例外（既有语义保持）：新增失败全部是守卫类规则（fact / citation /
+  // patch_validation / thesis 零漂移）——它们有确定性修复路径（fact_preserve
+  // 派发 / restore_facts），按 M11.2.3 纪律交修复轮，不因守卫首现而停摆。
+  const openHeavyCurrent = current.critical + current.major;
+  const openHeavyPrior = previous.critical + previous.major;
+  const rulesResolved = current.failedRuleIds.length < previous.failedRuleIds.length;
+  const heavyDelta = openHeavyCurrent - openHeavyPrior;
+  const improvedSignal =
+    current.critical < previous.critical ||
+    current.blocking < previous.blocking ||
+    heavyDelta < 0 ||
+    rulesResolved;
+  if (!improvedSignal) {
+    const previousRules = new Set(previous.failedRuleIds);
+    const newFailed = current.failedRuleIds.filter((id) => !previousRules.has(id));
+    const newFailedAllRepairableGuards = newFailed.length > 0 && newFailed.every((id) => REPAIRABLE_GUARD_RULE.test(id));
+    if (heavyDelta > 0) {
+      return "REGRESSION";
+    }
+    if (heavyDelta === 0 && !newFailedAllRepairableGuards) {
+      return "CONVERGED";
+    }
+  }
+
   // CONVERGED：失败规则集完全相同，且 critical+major 没有下降
   const sameRules =
     current.failedRuleIds.length === previous.failedRuleIds.length &&
     current.failedRuleIds.every((id, index) => id === previous.failedRuleIds[index]);
-  const openHeavyCurrent = current.critical + current.major;
-  const openHeavyPrior = previous.critical + previous.major;
   if (sameRules && openHeavyCurrent >= openHeavyPrior) {
     return "CONVERGED";
   }

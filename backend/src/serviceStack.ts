@@ -33,6 +33,7 @@ import { ResearchCoverageService } from "./agents/researchCoverage.js";
 import { ResearchGapService } from "./agents/researchGap.js";
 import { ResearchLoopService } from "./agents/researchLoop.js";
 import type { AgentRuntime } from "./runtime/types.js";
+import { RunBudgetLedgerRuntime, type RunBudgetLimits } from "./runtime/runBudget.js";
 import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
 import { CandidateStore } from "./sources/CandidateStore.js";
@@ -128,6 +129,12 @@ export interface ServiceStackOptions {
   revisionUnitMaxChars?: number;
   /** M13.7.10：章节论证单元写作开关（缺省开启；PAPERTEAM_ARGUMENT_UNIT_WRITING） */
   writing?: { argumentUnits?: boolean };
+  /**
+   * M14.4 P0-3：run 级模型预算（0 = 不限制）。设置后 buildServiceStack 用
+   * RunBudgetLedgerRuntime 装饰 runtime：超限抛 MODEL_BUDGET_EXCEEDED（不启动
+   * 新模型任务），调用 / token 按 run 落 research/model-ledger.json（重启不重置）。
+   */
+  runBudget?: RunBudgetLimits;
   /**
    * 长论文阶段（Writer / 三路 Reviewer / 分章节 Reviewer / Researcher）的逐 run 执行超时
    * （PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS）；缺省不覆盖（沿用 Runtime 通用默认）
@@ -374,8 +381,19 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const log = options.log ?? (() => {});
   const latex = options.latex ?? new LatexCompiler({ timeoutMs: options.latexTimeoutMs ?? 120_000 });
   const longRun = options.longRunTimeoutMs !== undefined ? { runTimeoutMs: options.longRunTimeoutMs } : {};
+  // M14.4 P0-3：run 级模型预算账本（装饰 runtime；业务服务零改动）。未配置时
+  // 透传原 runtime（行为零变化，测试栈可显式注入小预算验证硬约束）。
+  const runtime: AgentRuntime =
+    options.runBudget !== undefined
+      ? new RunBudgetLedgerRuntime({
+          runtime: options.runtime,
+          limits: options.runBudget,
+          resolveLedgerDir: (projectId) => options.projects.researchDir(projectId),
+        })
+      : options.runtime;
+  const budgetLedger = runtime instanceof RunBudgetLedgerRuntime ? runtime : undefined;
   const writer = new WriterService({
-    runtime: options.runtime,
+    runtime,
     agentId: options.agentIds.writer,
     ...longRun,
     log,
@@ -394,7 +412,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // researcher 构造后移到 evidenceGrounding 之后（M6.5：research 阶段的
   // chunk 锚定 evidence 走候选管道，需要 grounding 服务注入）
   const feasibility = new FeasibilityService({
-    runtime: options.runtime,
+    runtime,
     agentId: options.agentIds.researcher,
     projects: options.projects,
     log,
@@ -451,14 +469,14 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const paperMap = new PaperMapService({
     projects: options.projects,
     store: paperStore,
-    runtime: options.runtime,
+    runtime,
     reviewerAgentId: options.agentIds.reviewer,
     ...(options.summaryConcurrency !== undefined ? { concurrency: options.summaryConcurrency } : {}),
     log,
   });
   const reviewContext = new ReviewContextBuilder({ projects: options.projects, store: paperStore });
   const sectionReview = new SectionReviewService({
-    runtime: options.runtime,
+    runtime,
     reviewerAgentId: options.agentIds.reviewer,
     ...longRun,
   });
@@ -491,7 +509,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   const citationIntegrity = new CitationIntegrityService({
     projects: options.projects,
     store: paperStore,
-    runtime: options.runtime,
+    runtime,
     citationAgentId: options.agentIds.citation,
     scholarly:
       options.citation?.scholarly?.providers === undefined && options.citation?.metadataEnabled === false
@@ -802,7 +820,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     evidence,
     chunkAccess,
     scholarly: citationIntegrity.scholarlyResolver,
-    runtime: options.runtime,
+    runtime,
     citationAgentId: options.agentIds.citation,
     log,
   });
@@ -825,7 +843,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     sources,
     retrieval,
     chunkAccess,
-    runtime: options.runtime,
+    runtime,
     researcherAgentId: options.agentIds.researcher,
     evidence,
     ...longRun,
@@ -850,7 +868,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     projects: options.projects,
     sources,
     chunkAccess,
-    runtime: options.runtime,
+    runtime,
     researcherAgentId: options.agentIds.researcher,
     evidenceGrounding,
     ...longRun,
@@ -867,7 +885,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const researcher = new ResearcherService({
-    runtime: options.runtime,
+    runtime,
     agentId: options.agentIds.researcher,
     projects: options.projects,
     evidence,
@@ -877,7 +895,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     log,
   });
   const reviewer = new ReviewerService({
-    runtime: options.runtime,
+    runtime,
     agentId: options.agentIds.reviewer,
     projects: options.projects,
     ...longRun,
@@ -973,7 +991,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     },
   });
   const thesisPlanner = new ThesisPlannerService({
-    runtime: options.runtime,
+    runtime,
     agentId: options.agentIds.writer,
     projects: options.projects,
     manuscript,
@@ -983,7 +1001,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...(log !== undefined ? { log } : {}),
   });
   return {
-    runtime: options.runtime,
+    runtime,
     agentIds: options.agentIds,
     projects: options.projects,
     writer,
@@ -1098,6 +1116,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         reviewSectionLimit: options.review?.reviewSectionLimit ?? 0,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
+      // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →
+      // planSharedTail 视为无预算约束，行为零变化）
+      ...(budgetLedger !== undefined ? { modelBudget: budgetLedger } : {}),
       thesis: {
         planner: thesisPlanner,
         researchInputs,

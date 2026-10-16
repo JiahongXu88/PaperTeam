@@ -192,6 +192,8 @@ export async function startTestStack(
      * 真实 acceptance 运行传 900_000 与生产对齐）。同时覆盖 stage 重试上限。
      */
     stageBudget?: { timeoutMs?: number; maxAttempts?: number };
+    /** M14.4：run 级模型预算注入（RunBudgetLedgerRuntime 装饰；测试硬约束验证用） */
+    runBudget?: { maxModelCallsPerRun: number; maxRunTokensPerRun: number };
     citation?: ServiceStackOptionsCitation;
     review?: ServiceStackOptionsReview;
     /** search provider 装配（缺省全关 = 完全离线；http 测试注入 fake fetch / 显式启用单个 provider） */
@@ -236,6 +238,8 @@ export async function startTestStack(
     agentIds: { ...AGENT_IDS },
     stageTimeoutMs: options.stageBudget?.timeoutMs ?? 10_000,
     stageMaxAttempts: options.stageBudget?.maxAttempts ?? 2,
+    // M14.4：run 级模型预算（显式注入才生效；缺省不限制，既有测试零变化）
+    ...(options.runBudget !== undefined ? { runBudget: options.runBudget } : {}),
     // 测试里节内重试不等退避
     review: { sectionRetryBackoffMs: [0, 0], ...(options.review ?? {}) },
     // 测试默认完全离线：关闭旧 metadata 查询，scholarly resolver 不挂任何 provider

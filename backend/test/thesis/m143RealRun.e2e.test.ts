@@ -503,7 +503,10 @@ async function decideAndResume(
       decision = "approve";
     }
   } else if (stageId === "hitl.revision_validation" || stageId === "hitl.revision_stalled" || stageId === "hitl.revision_overflow") {
-    decision = stageId === "hitl.revision_overflow" ? "accept_draft" : "approve";
+    // M14.4 修正：stalled 的合法选项是 accept_draft / revise_more / cancel——
+    // 旧驱动答 "approve" 会被 applyStalledDecision 400 拒绝（R3 期间不收敛决策
+    // 无法自动落地，只能人工介入）。确定性验收策略 = 接受当前稿为 Draft。
+    decision = stageId === "hitl.revision_overflow" || stageId === "hitl.revision_stalled" ? "accept_draft" : "approve";
   } else if (stageId === "hitl.style_polish") {
     // M14.3 验收不做语言润色轮（保留建议不应用；科研事实路径已由 review/revision 覆盖）
     decision = "skip";

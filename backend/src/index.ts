@@ -294,6 +294,15 @@ export async function startBackend(): Promise<void> {
     stageTimeoutMs: config.workflow.stageTimeoutMs,
     stageMaxAttempts: config.workflow.stageMaxAttempts,
     writing: { argumentUnits: config.workflow.argumentUnitWriting },
+    // M14.4：run 级模型预算（0 = 不限制；RunBudgetLedgerRuntime 装饰 runtime）
+    ...(config.workflow.maxModelCallsPerRun > 0 || config.workflow.maxRunTokensPerRun > 0
+      ? {
+          runBudget: {
+            maxModelCallsPerRun: config.workflow.maxModelCallsPerRun,
+            maxRunTokensPerRun: config.workflow.maxRunTokensPerRun,
+          },
+        }
+      : {}),
     longRunTimeoutMs: config.pi.longRunTimeoutMs,
     review: {
       maxRevisionRounds: config.review.maxRevisionRounds,

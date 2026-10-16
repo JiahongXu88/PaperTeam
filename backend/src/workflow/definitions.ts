@@ -299,6 +299,13 @@ import {
 } from "../review/coverageLedger.js";
 import { projectFindingTarget } from "../review/findingProjection.js";
 import {
+  selectBestRevision,
+  shouldRestoreBest,
+  terminalScorecardForRun,
+} from "../review/bestRevision.js";
+import type { RunBudgetSnapshot } from "../runtime/runBudget.js";
+import { budgetExhausted } from "../runtime/runBudget.js";
+import {
   DEFAULT_REVISION_UNIT_MAX_CHARS,
   baseSpanId,
   buildUnitEditContext,
@@ -306,6 +313,7 @@ import {
   isUnitSpanId,
   locateFileSpans,
   mergeAdjacentUnits,
+  partitionSpanIntoBlockUnits,
   partitionSpanIntoUnits,
   relocateRevisionSpan,
   resolveUnitByQuotes,
@@ -313,6 +321,7 @@ import {
 import type {
   PlanDecision,
   ResumeInput,
+  StageRunContext,
   StageSpec,
   WorkflowDefinition,
   WorkflowState,
@@ -428,6 +437,17 @@ export interface WorkflowServices {
    * 分配 Evidence 并注入 B2 任务块；缺省（旧测试栈未接线）视为开启。
    */
   writing?: { argumentUnits: boolean };
+  /**
+   * M14.4 P0-3：run 级模型预算账本（可选；未接线 = 无预算约束，行为零变化）。
+   * planSharedTail 在派发新的模型 stage（review.run / revision.revise）前查询：
+   * 预算耗尽 → 走 overflow HITL / Draft 终态（优雅降级，保留产物），而不是
+   * 让 runtime 硬约束在 stage 中途把 run 打失败。硬约束本体在
+   * RunBudgetLedgerRuntime（startAgent 启动前拦截）。
+   */
+  modelBudget?: {
+    /** 同步快照（进程内实时；进程刚启动无缓存时 null = 无预算信号） */
+    snapshotSync(projectId: string, runId: string): RunBudgetSnapshot | null;
+  };
   /** bounded loop 与 Quality Gate 阈值 */
   review: {
     maxRevisionRounds: number;
@@ -1373,6 +1393,24 @@ function qualityGateStage(
         completedAt: new Date().toISOString(),
         scorecard,
       });
+      // M14.4 P0-4：最佳合法版本跟踪（确定性；守卫干净 > blocking > critical >
+      // 分数带宽，严格更好才替换）。终局（stalled / overflow / 预算停止）时
+      // build.draft 从该版本恢复，替代 R3 的人工 rev-3 恢复。
+      if (!gate.passed && typeof review.reviewedRevision === "number") {
+        const incumbentBest = await services.reviewArtifacts.loadBestRevision(ctx.projectId);
+        const bestDecision = selectBestRevision(
+          { revision: review.reviewedRevision, gateRound: round, runId: ctx.runId, scorecard },
+          incumbentBest,
+        );
+        await services.reviewArtifacts.saveBestRevision(ctx.projectId, bestDecision.best);
+        if (bestDecision.changed && incumbentBest !== null && incumbentBest.runId === ctx.runId) {
+          await ctx.emitDomain(
+            "revision.best_updated",
+            { revision: bestDecision.best.revision, gateRound: round, previous: incumbentBest.revision },
+            `最佳合法版本更新：rev-${bestDecision.best.revision}（gateRound ${round}）严格优于 rev-${incumbentBest.revision}`,
+          );
+        }
+      }
       await ctx.emitDomain(
         gate.passed ? "quality_gate.passed" : "quality_gate.failed",
         {
@@ -1948,6 +1986,22 @@ function revisionStalledStage(services: WorkflowServices): StageSpec {
           scorecard: { current: compare(currentIteration), previous: compare(previousIteration) },
           // M11.2.3（§16）：本轮质量差值（resolved / new regressions）
           ...(gate["revisionDelta"] !== undefined ? { revisionDelta: gate["revisionDelta"] } : {}),
+          // M14.4 P0-4：最佳合法版本（accept_draft 时若当前可证明更差，Draft 会
+          // 从该版本恢复构建——决策者需要知道将被交付的是哪个版本）
+          ...(await (async () => {
+            const best = await services.reviewArtifacts.loadBestRevision(ctx.projectId);
+            if (best === null || best.runId !== ctx.runId) return {};
+            return {
+              bestValidRevision: {
+                revision: best.revision,
+                gateRound: best.gateRound,
+                blocking: best.scorecard.blocking,
+                critical: best.scorecard.critical,
+                academicScore: best.scorecard.academicScore,
+                note: "若接受 Draft 且当前稿可证明更差（守卫/阻断/关键问题），系统将从该版本恢复后构建 Draft",
+              },
+            };
+          })()),
         };
       },
     },
@@ -2174,8 +2228,13 @@ function revisionReviseStage(
       ]);
       // M14.1a P0-1：超过编辑单元上限的章节文件 / 标题 span 展开为有界 logicalSpan
       // 单元目标；指令按确定性定位绑定到单元（定位失败 = unresolved，不猜位置）
+      // M14.4 P0-1：thesis 修订 bounded 模式——所有章节文件（不限尺寸）都 span 化：
+      // quote 锚点 → 段落窗口；无锚点 → 整 span 合并单元。文件级整文件覆写
+      // （真实 R3 的整节重写反馈环）在 thesis 路径不再存在。
       const unitMaxChars = services.revisionUnitMaxChars ?? DEFAULT_REVISION_UNIT_MAX_CHARS;
-      const expansion = expandLongFileTargets(listedTargets, directives, sectionScopedExternals, unitMaxChars);
+      const expansion = expandLongFileTargets(listedTargets, directives, sectionScopedExternals, unitMaxChars, {
+        boundedAll: ctx.state.workflowKind === "thesis_from_papers",
+      });
       const targets = expansion.targets;
       const unresolvedDispatch = expansion.unresolved;
       /** 指令 → 目标匹配：绑定目标只认绑定键（issue 仍从文件级匹配目标取回）。
@@ -2469,6 +2528,11 @@ function revisionReviseStage(
           thesisRevisionInputs !== null
             ? renderThesisRevisionDiscipline(thesisRevisionInputs, basename(target.relativePath))
             : undefined;
+        // M14.4：本目标的原文锚点授权（span 候选按引文区间逐字校验；prompt 同步
+        // 告知授权范围，减少「合法修复被范围守卫拒绝」的无效修复轮）
+        const targetAuthorizedQuotes = [
+          ...new Set(matchedItems.flatMap((item) => (item.targetQuote !== undefined ? [item.targetQuote] : []))),
+        ];
         const writerParams = {
           projectId: ctx.projectId,
           section: {
@@ -2485,6 +2549,7 @@ function revisionReviseStage(
             ? { wholeFile: true, targetFilePath: join(services.projects.manuscriptDir(ctx.projectId), target.relativePath) }
             : {}),
           ...(resolvedSpan !== undefined ? { proposalOnly: true } : {}),
+          ...(resolvedSpan !== undefined && targetAuthorizedQuotes.length > 0 ? { authorizedQuotes: targetAuthorizedQuotes } : {}),
           ...(resolvedSpan !== undefined && isUnitSpanId(resolvedSpan.logicalSection) && fileBefore !== undefined
             ? (() => {
                 // M14.1a：编辑单元的只读相邻上下文（标题 + 前后 800 字）——Writer 看到
@@ -2628,6 +2693,15 @@ function revisionReviseStage(
             if (structureBefore !== structureCandidate) {
               failures.push({ code: "scope_violation", detail: `REVISION_STRUCTURE_DAMAGE: candidate changes the section structure (${structureBefore} -> ${structureCandidate} sections)` });
             }
+            // M14.4 P0-2：内容塌缩守卫（span 候选）——局部修复把目标区间压缩成
+            // 摘要式短文 = 质量回归的确定性信号（进入同一 bounded repair 通道）
+            const collapse = revisionContentCollapse(resolvedSpan.content, result.latex);
+            if (collapse !== null) {
+              failures.push({
+                code: "revision_content_loss",
+                detail: `REVISION_CONTENT_COLLAPSE: 候选把目标区间从 ${resolvedSpan.content.length} 字压缩到 ${result.latex.length} 字（保留 ${Math.round(collapse.ratio * 100)}%）——局部修订不得塌缩目标内容；如确需大幅删减请走重新规划或作者决定，并在修复中恢复被删内容`,
+              });
+            }
             /**
              * M11.4 Reliability Closure（Run A 实证：p-fce3f34e28c3，Writer 把
              * 「【修订说明】f-60cada…（λ_smooth=0.5 与表8 …）」执行注记实体写进
@@ -2722,7 +2796,7 @@ function revisionReviseStage(
               ...(recordProtocolId !== undefined ? { protocolId: recordProtocolId } : {}),
               beforeFileHash: revisionSourceHash(fileBefore), beforeTargetHash: resolvedSpan.originalHash,
               proposedReplacementHash: revisionSourceHash(result.latex.trim()), afterFileHash: revisionSourceHash(candidate),
-              scope: { ok: !failures.some((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text"), violations: failures.filter((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text").map((failure) => failure.detail) },
+              scope: { ok: !failures.some((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text" || failure.code === "revision_content_loss"), violations: failures.filter((failure) => failure.code === "scope_violation" || failure.code === "revision_meta_text" || failure.code === "revision_content_loss").map((failure) => failure.detail) },
               workspaceIntegrity: { ok: true, directMutationDetected: false, recoveryAttempted: false, recoverySucceeded: true },
               fact: { ok: !failures.some((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unsupported_named_reference", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)), findingIds: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unsupported_named_reference", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => `${failure.code}:${attempt}`), violations: failures.filter((failure) => ["metric_direction_flip", "fact_direction_drift", "unsupported_claim", "unsupported_named_reference", "unauthorized_fact_removal", "unauthorized_fact_change", "placeholder_regression", "unauthorized_formula_change"].includes(failure.code)).map((failure) => failure.detail) },
               citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },
@@ -3002,6 +3076,24 @@ function revisionReviseStage(
               );
               output = target.currentLatex;
             }
+          }
+          // M14.4 P0-2：内容塌缩守卫（文件级目标）——整文件候选把章节压缩成摘要式
+          // 短文（真实 R3 的整节重写形态之一）→ 拒绝落盘，目标保留原稿。
+          // span 候选在候选校验环内拦截并给修复机会；文件级路径无候选校验环，
+          // 按守卫表格同语义 fail-closed。
+          const fileCollapse = revisionContentCollapse(target.currentLatex, output);
+          if (fileCollapse !== null) {
+            await ctx.emitDomain(
+              "revision.content_collapse_rejected",
+              {
+                file: target.relativePath,
+                beforeChars: target.currentLatex.length,
+                afterChars: output.length,
+                retainedRatio: Number(fileCollapse.ratio.toFixed(3)),
+              },
+              `${target.relativePath} 的修订候选把章节从 ${target.currentLatex.length} 字压缩到 ${output.length} 字（保留 ${Math.round(fileCollapse.ratio * 100)}%）——疑似摘要式重写，拒绝落盘，目标保留原稿`,
+            );
+            output = target.currentLatex;
           }
           // M14.1a：章节文件写入原子化（tmp → fsync → rename），进程中断不留半个文件
           await writeFileAtomic(targetFilePath, output);
@@ -3971,6 +4063,75 @@ function revisionOverflowStage(): StageSpec {
   };
 }
 
+/**
+ * M14.4 P0-4：终局恢复最佳合法版本（确定性、幂等；build.draft thesis 分支前置）。
+ *
+ * 触发条件（全部满足才恢复）：存在同 run 的 best-revision 工件；当前修订不是
+ * 该版本；当前内容也不等价于该版本（防重复恢复）；本 run 终局记分卡**可证明
+ * 劣于**最佳（shouldRestoreBest：守卫干净 / blocking / critical 主键上更差且无
+ * 任何主键更好——分数带内差异不触发，不追 reviewer 噪声）。
+ * 恢复 = RevisionStore.restore（提交新的不可变修订，历史不动）。恢复后：
+ * - 防御性复核新修订快照与最佳版本快照逐文件一致；
+ * - 下游 assemble / 编译 / Build Gate / Fact Preservation 全部按恢复后内容执行
+ *   （Draft 不会因恢复跳过任何检查）；
+ * - 事件 revision.best_restored 可审计（替代 R3 的人工 rev-3 恢复）。
+ */
+async function maybeRestoreBestRevision(
+  services: WorkflowServices,
+  ctx: StageRunContext,
+): Promise<{ restored: boolean; restoredFrom?: number; revision: number; reasons: string[] }> {
+  const currentRevision = await services.revisions.currentRevision(ctx.projectId);
+  const best = await services.reviewArtifacts.loadBestRevision(ctx.projectId);
+  if (best === null) {
+    return { restored: false, revision: currentRevision, reasons: ["无 best-revision 工件（本 run 未发生 gate 失败轮）"] };
+  }
+  if (best.runId !== ctx.runId) {
+    return { restored: false, revision: currentRevision, reasons: [`最佳合法版本属于其它 run（${best.runId}）——不跨 run 恢复`] };
+  }
+  if (best.revision === currentRevision) {
+    return { restored: false, revision: currentRevision, reasons: [`当前修订 rev-${currentRevision} 即最佳合法版本`] };
+  }
+  const filesEqual = async (a: number, b: number): Promise<boolean | null> => {
+    const [left, right] = await Promise.all([
+      readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, a)),
+      readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, b)),
+    ]);
+    if (left === null || right === null) return null;
+    if (left.length !== right.length) return false;
+    const byFile = new Map(right.map((file) => [file.file, file.content]));
+    return left.every((file) => byFile.get(file.file) === file.content);
+  };
+  // 幂等：当前内容已等价于最佳快照（此前恢复过 / 漂移回同内容）→ 不重复恢复
+  const alreadyEquivalent = await filesEqual(currentRevision, best.revision);
+  if (alreadyEquivalent === true) {
+    return { restored: false, revision: currentRevision, reasons: [`当前修订 rev-${currentRevision} 内容与最佳版本 rev-${best.revision} 逐文件一致（已恢复过）`] };
+  }
+  const terminal = terminalScorecardForRun(await services.reviewArtifacts.loadIterations(ctx.projectId), ctx.runId);
+  if (terminal === null) {
+    return { restored: false, revision: currentRevision, reasons: ["本 run 无终局记分卡（无迭代历史）"] };
+  }
+  const verdict = shouldRestoreBest(terminal, best);
+  if (!verdict.restore) {
+    return { restored: false, revision: currentRevision, reasons: verdict.reasons };
+  }
+  const restored = await services.revisions.restore(ctx.projectId, best.revision);
+  if (restored.created) {
+    const verified = await filesEqual(restored.revision, best.revision);
+    if (verified !== true) {
+      throw new BusinessError(
+        "STAGE_CONTRACT_VIOLATION",
+        `最佳版本恢复后快照核验失败（rev-${restored.revision} vs rev-${best.revision}）——不在此状态上构建 Draft`,
+      );
+    }
+    await ctx.emitDomain(
+      "revision.best_restored",
+      { restoredFrom: best.revision, revision: restored.revision, gateRound: best.gateRound, reasons: verdict.reasons },
+      `终局质量劣于最佳合法版本——已从 rev-${best.revision} 恢复（新修订 rev-${restored.revision}，历史不动），Draft 将从恢复后版本构建`,
+    );
+  }
+  return { restored: true, restoredFrom: best.revision, revision: restored.revision, reasons: verdict.reasons };
+}
+
 function buildDraftStage(services: WorkflowServices, options: { thesis?: boolean } = {}): StageSpec {
   return {
     id: "build.draft",
@@ -3984,6 +4145,12 @@ function buildDraftStage(services: WorkflowServices, options: { thesis?: boolean
     timeoutMs: options.thesis === true ? services.stageTimeoutMs * 4 : services.stageTimeoutMs,
     retryable: ["transient", "timeout"],
     async execute(ctx) {
+      // M14.4 P0-4：终局恢复最佳合法版本（thesis 分支前置；确定性、幂等）。
+      // 必须发生在 assemble 之前——装配与编译都消费恢复后的 manuscript。
+      // 非 thesis（existing-paper 等）本轮不动：分层 gate 已有任务层终态语义。
+      const bestRestore = options.thesis === true
+        ? await maybeRestoreBestRevision(services, ctx)
+        : { restored: false, revision: await services.revisions.currentRevision(ctx.projectId), reasons: [] as string[] };
       // M14.2：thesis 项目先做确定性装配复核，编译目标切到 manuscript-thesis/
       const thesisOptions: { manuscriptDir?: string } = {};
       if (options.thesis === true) {
@@ -4098,6 +4265,8 @@ function buildDraftStage(services: WorkflowServices, options: { thesis?: boolean
             }
           : {}),
         ...(preservationView !== null ? { citationPreservation: preservationView } : {}),
+        // M14.4：终局最佳版本恢复（build.draft 前置执行的确定性结果）
+        ...(bestRestore.restored ? { restoredBestFrom: bestRestore.restoredFrom, restoredBestReasons: bestRestore.reasons.slice(0, 2) } : {}),
       };
     },
   };
@@ -4703,41 +4872,7 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const planIdx = lastCompletionIndex(state, "revision.plan");
   const finalIdx = lastCompletionIndex(state, "build.final");
 
-  // 0. M6.7 Revision Validation：修订（revise / apply）写入后必须先过条目级复核
-  //    （Revision ≠ Correct Revision），再进入尾部重走；复核 blocked 且用户未
-  //    决策（回答按 validatedRevision 对齐，下一轮复核不复用旧回答）→ HITL
-  const validateIdx = lastCompletionIndex(state, "revision.validate");
-  if (reviseIdx > -1 && validateIdx < reviseIdx) {
-    return { kind: "stage", stageId: "revision.validate" };
-  }
-  const validateResult = state.stageResults["revision.validate"] ?? {};
-  const validationBlocked = validateResult["blocked"] === true;
-  const validationId = typeof validateResult["validationId"] === "string" ? validateResult["validationId"] : "";
-  const validationMarker = state.stageResults["hitl.revision_validation"] as
-    | Record<string, unknown>
-    | undefined;
-  // 新鲜度按 validationId（轮次+修订号唯一）：修订未产生新修订号时（Writer 输出
-  // 与原文相同，created=false），revision 号会与前一轮撞号，按号判定会误把
-  // 新一轮复核当成已回答
-  const validationAnswered =
-    validationMarker !== undefined && validationMarker["validationId"] === validationId;
-  if (validationBlocked && !validationAnswered) {
-    return { kind: "stage", stageId: "hitl.revision_validation" };
-  }
-
-  // 1. 引用核验须新于最近一次改稿
-  if (!has("citation.verify") || citationIdx < contentIdx) {
-    return { kind: "stage", stageId: "citation.verify" };
-  }
-  // 2. review 须新于其消费的 citation
-  if (!has("review.run") || reviewIdx < citationIdx) {
-    return { kind: "stage", stageId: "review.run" };
-  }
-  // 3. gate 须新于 review
-  if (!has("quality.gate") || gateIdx < reviewIdx) {
-    return { kind: "stage", stageId: "quality.gate" };
-  }
-
+  // ---- gate / 预算上下文（纯 state 派生；提前声明，预算降级分支与规则判定共用）----
   const gateResult = state.stageResults["quality.gate"] ?? {};
   const gatePassed = gateResult["passed"] === true;
   const gateRound = typeof gateResult["round"] === "number" ? gateResult["round"] : 0;
@@ -4749,7 +4884,11 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const convergence =
     typeof gateResult["convergence"] === "string" ? gateResult["convergence"] : null;
   const overflowAnswered = "hitl.revision_overflow" in state.stageResults;
-  const roundsLeft = revisionRoundsUsed(state) < revisionBudget(state, services);
+  // M14.4 容错：legacy 测试桩 / 最小服务束可能不带 review 配置——视为无自动轮数
+  //（与既有「预算耗尽」路径同语义），不让 plan() 在缺失字段上崩溃。
+  const roundsLeft =
+    services.review !== undefined &&
+    revisionRoundsUsed(state) < revisionBudget(state, services);
   const build = state.stageResults["build.draft"] ?? {};
   const buildOk = build["buildOk"] === true;
 
@@ -4822,8 +4961,11 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         // 「双 Gate 通过自然完结」——qualityGatePassed=false 的 Draft 不是异常，
         // 是 bounded loop 的正常终态（PASS / IMPROVED / CONVERGED / REGRESSION）
         ...(outcome !== null && !gatePassed ? { qualityOutcome: outcome } : {}),
+        ...(budgetStop !== null ? { modelBudgetExhausted: true } : {}),
         revisionRounds: revisionRoundsUsed(state),
         draftArtifactId: build["draftArtifactId"] ?? null,
+        // M14.4：Draft 由恢复的最佳合法版本构建（终局质量劣化时的自动止损回滚）
+        ...(build["restoredBestFrom"] !== undefined ? { restoredBestFrom: build["restoredBestFrom"] as number } : {}),
         ...(label === "final"
           ? { finalArtifactId: state.stageResults["build.final"]?.["finalArtifactId"] ?? null }
           : {}),
@@ -4835,15 +4977,73 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   // M5.4/M5.6：用户显式 apply_once 时，Draft 构建前同样提供一次语言润色（Quality
   // Gate 未通过 ≠ 不能润色表达；润色产生新修订后尾部照旧重走复审 / gate）
   const draftPath = (): PlanDecision => {
-    const stylePolishBeforeDraft = planStylePolish(state, gateRound);
-    if (stylePolishBeforeDraft !== null) {
-      return stylePolishBeforeDraft;
+    // M14.4：模型预算耗尽时不再进入润色（润色也是模型调用）
+    if (budgetStop === null) {
+      const stylePolishBeforeDraft = planStylePolish(state, gateRound);
+      if (stylePolishBeforeDraft !== null) {
+        return stylePolishBeforeDraft;
+      }
     }
     if (!has("build.draft") || buildIdx < contentIdx) {
       return { kind: "stage", stageId: "build.draft" };
     }
     return completion("draft");
   };
+
+  // M14.4 P0-3：run 级模型预算——派发新的模型 stage（review.run / revision.revise）
+  // 前检查；耗尽 → overflow HITL / Draft 终态（优雅降级：产物保留、终态如实，
+  // 不让 runtime 硬约束在 stage 中途打失败 run）。硬约束本体在
+  // RunBudgetLedgerRuntime.startAgent（启动前拦截，并发不突破）。
+  const budgetStop =
+    services.modelBudget !== undefined
+      ? (() => {
+          const snapshot = services.modelBudget!.snapshotSync(state.projectId, state.runId);
+          return snapshot !== null && budgetExhausted(snapshot) ? snapshot : null;
+        })()
+      : null;
+  /** 预算耗尽的收口：未回答 overflow → 问一次；已回答 → Draft 链 */
+  const budgetStopPath = (): PlanDecision =>
+    overflowAnswered ? draftPath() : { kind: "stage", stageId: "hitl.revision_overflow" };
+
+  // 0. M6.7 Revision Validation：修订（revise / apply）写入后必须先过条目级复核
+  //    （Revision ≠ Correct Revision），再进入尾部重走；复核 blocked 且用户未
+  //    决策（回答按 validatedRevision 对齐，下一轮复核不复用旧回答）→ HITL
+  const validateIdx = lastCompletionIndex(state, "revision.validate");
+  if (reviseIdx > -1 && validateIdx < reviseIdx) {
+    return { kind: "stage", stageId: "revision.validate" };
+  }
+  const validateResult = state.stageResults["revision.validate"] ?? {};
+  const validationBlocked = validateResult["blocked"] === true;
+  const validationId = typeof validateResult["validationId"] === "string" ? validateResult["validationId"] : "";
+  const validationMarker = state.stageResults["hitl.revision_validation"] as
+    | Record<string, unknown>
+    | undefined;
+  // 新鲜度按 validationId（轮次+修订号唯一）：修订未产生新修订号时（Writer 输出
+  // 与原文相同，created=false），revision 号会与前一轮撞号，按号判定会误把
+  // 新一轮复核当成已回答
+  const validationAnswered =
+    validationMarker !== undefined && validationMarker["validationId"] === validationId;
+  if (validationBlocked && !validationAnswered) {
+    return { kind: "stage", stageId: "hitl.revision_validation" };
+  }
+
+  // 1. 引用核验须新于最近一次改稿
+  if (!has("citation.verify") || citationIdx < contentIdx) {
+    return { kind: "stage", stageId: "citation.verify" };
+  }
+  // 2. review 须新于其消费的 citation
+  if (!has("review.run") || reviewIdx < citationIdx) {
+    if (budgetStop !== null) {
+      // 最后一轮修订未经复审即停（预算优先于「再审一轮」）：条目级
+      // revision.validate（确定性）照常执行，终态 summary 如实标注
+      return budgetStopPath();
+    }
+    return { kind: "stage", stageId: "review.run" };
+  }
+  // 3. gate 须新于 review
+  if (!has("quality.gate") || gateIdx < reviewIdx) {
+    return { kind: "stage", stageId: "quality.gate" };
+  }
 
   if (gatePassed) {
     // gate 通过后若有改稿（含编译修复）：结论已过期，回到尾部重新评审
@@ -4875,7 +5075,7 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
       return { kind: "stage", stageId: "revision.repair_latex" };
     }
     // 修复预算耗尽：仍有修订预算 → 带编译错误上下文修订（复审随之重走）
-    if (roundsLeft) {
+    if (roundsLeft && budgetStop === null) {
       return { kind: "stage", stageId: "revision.revise" };
     }
     if (!overflowAnswered) {
@@ -4943,6 +5143,10 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
       const groundIdx = lastCompletionIndex(state, "evidence.ground_claims");
       if (groundClaims > 0 && groundIdx < planIdx) {
         return { kind: "stage", stageId: "evidence.ground_claims" };
+      }
+      // M14.4 P0-3：模型预算耗尽 → 不再派发修订（优雅降级到 overflow / Draft）
+      if (budgetStop !== null) {
+        return budgetStopPath();
       }
       return { kind: "stage", stageId: "revision.revise" };
     }
@@ -10717,6 +10921,7 @@ function resolveDirectiveUnit(
   fileSpan: RevisionSpan,
   allUnits: readonly RevisionSpan[],
   input: { item?: RevisionPlanItem; issue: ReviewIssue | null; sectionRef?: string; extraText?: string },
+  options: { wholeSpanFallback?: boolean } = {},
 ): { unit?: RevisionSpan; matchedBy?: string; reason?: string } {
   const { item, issue } = input;
   const sectionRef = input.sectionRef ?? item?.section ?? issue?.section ?? "";
@@ -10733,9 +10938,16 @@ function resolveDirectiveUnit(
   const anchors = directiveAnchors(item, issue, input.extraText);
   if (scopeSpan !== undefined) {
     const units = unitsBySpan.get(scopeSpan.logicalSection) ?? [scopeSpan];
-    if (units.length === 1) return { unit: units[0]!, matchedBy: "heading" };
     const byQuote = resolveUnitByQuotes(scopeSpan, units, anchors);
     if (byQuote.unit !== undefined) return { unit: byQuote.unit, matchedBy: "quote" };
+    if (units.length === 1) return { unit: units[0]!, matchedBy: "heading" };
+    // M14.4 thesis bounded：**完全没有锚点**的指令（gate blocker / 无引文的泛化
+    // 章节意见）回退到整 span 合并单元——编辑范围仍不超出该 span，且候选进入
+    // 同一守卫链。注意：带锚点但解析失败（NOT_FOUND / AMBIGUOUS）**不**回退
+    // ——找不到唯一目标时按 M14.1a 纪律 unresolved，不允许悄悄扩大为整节重写。
+    if (options.wholeSpanFallback === true && anchors.length === 0) {
+      return { unit: mergeAdjacentUnits(units, 0, units.length - 1), matchedBy: "heading" };
+    }
     return { reason: byQuote.reason ?? "UNRESOLVED" };
   }
   const byQuote = resolveUnitByQuotes(fileSpan, allUnits, anchors);
@@ -10762,12 +10974,33 @@ function resolveDirectiveUnit(
  * - ≤ maxChars 的目标原样保留（短论文行为零变化）。
  * 指令按 resolveDirectiveUnit 绑定到单元；同一 span 内重叠的绑定单元合并为一个
  * 目标（不会出现两个 patch 静默覆盖同一范围）；定位失败的指令记入 unresolved。
+ *
+ * M14.4 thesis bounded（options.boundedAll）：学位论文修订不再以文件尺寸决定
+ * 是否 span 化——≤ maxChars 的章节文件也展开为段落块单元（quote 锚点绑定到
+ * 引文所在段落窗口；无锚点指令回退整 span 合并单元）。真实 R3 实锤：thesis
+ * 节文件普遍 2–5KB（全部低于旧阈值），文件级派发使 Writer 输出整体覆写章节
+ * 且候选不经过 scope/fact/citation 校验环（186→544 issues 反馈环）。
  */
+/**
+ * M14.4 P0-2：候选内容塌缩信号（确定性纯函数）。局部修订（解决 finding）不应把
+ * 目标区间压缩成摘要式短文——真实 R3 实锤：整文件重写把 2–5KB 章节改写成数百
+ * 字梗概，逐轮丢失正文细节（issues 186→544 / academicScore 63→54 反馈环）。
+ * 触发口径（保守）：绝对缩减 > 300 字符 且 替换文本 < 原文 50%。只拦截「塌缩」，
+ * 不拦截等长/小幅增删与正常精简；大幅删减本应走重新规划 / 作者决定。
+ */
+function revisionContentCollapse(before: string, after: string): { ratio: number; droppedChars: number } | null {
+  const dropped = before.length - after.length;
+  if (dropped <= 300) return null;
+  const ratio = after.length / Math.max(1, before.length);
+  return ratio < 0.5 ? { ratio, droppedChars: dropped } : null;
+}
+
 function expandLongFileTargets(
   targets: readonly RevisionTarget[],
   directives: readonly RevisionDirective[],
   externals: readonly ExternalDirectiveDispatch[],
   maxChars: number,
+  options: { boundedAll?: boolean } = {},
 ): { targets: RevisionTarget[]; unresolved: UnresolvedDispatch[]; expandedFiles: number } {
   const out: RevisionTarget[] = [];
   const unresolved: UnresolvedDispatch[] = [];
@@ -10777,7 +11010,8 @@ function expandLongFileTargets(
     const size = isSpanTarget ? target.logicalSpan!.content.length : target.currentLatex.length;
     const headless = !isSpanTarget && locateLatexSections(target.relativePath, target.currentLatex).length === 0;
     const preamble = !isSpanTarget && target.currentLatex.includes("\\documentclass");
-    if (target.key === "abstract" || size <= maxChars || (headless && preamble)) {
+    const bounded = options.boundedAll === true && !isSpanTarget;
+    if (target.key === "abstract" || (headless && preamble) || (size <= maxChars && !bounded)) {
       out.push(target);
       continue;
     }
@@ -10786,7 +11020,11 @@ function expandLongFileTargets(
     const unitsBySpan = new Map<string, RevisionSpan[]>();
     const allUnits: RevisionSpan[] = [];
     for (const span of spans) {
-      const units = partitionSpanIntoUnits(span, maxChars).units;
+      // thesis bounded：小文件用段落块粒度（quote → 段落窗口）；大文件维持
+      // 贪心装箱（prompt 有界）。两种分法的单元都精确拼回 span 全文。
+      const units = size <= maxChars
+        ? partitionSpanIntoBlockUnits(span).units
+        : partitionSpanIntoUnits(span, maxChars).units;
       unitsBySpan.set(span.logicalSection, units);
       allUnits.push(...units);
     }
@@ -10813,7 +11051,7 @@ function expandLongFileTargets(
         issue: candidate.issue,
         ...(candidate.sectionRef !== undefined ? { sectionRef: candidate.sectionRef } : {}),
         ...(candidate.extraText !== undefined ? { extraText: candidate.extraText } : {}),
-      });
+      }, { wholeSpanFallback: bounded });
       if (resolution.unit === undefined) {
         unresolved.push({ file: target.relativePath, directive: candidate.key, summary: candidate.summary, reason: resolution.reason ?? "UNRESOLVED" });
         continue;

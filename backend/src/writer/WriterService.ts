@@ -592,6 +592,12 @@ export class WriterService {
      * Writer 的输出仍是"该单元的完整替换文本"。
      */
     unitContext?: UnitEditContext;
+    /**
+     * M14.4：本次修订的原文锚点授权（Finding → targetQuote 投影）。存在时
+     * 候选守卫只放行引文区间（多重叠引文 = 并集）内的改动；prompt 显式告知
+     * Writer 授权范围，降低「合法修复被范围守卫拒绝」的无效修复轮。
+     */
+    authorizedQuotes?: string[];
   }): Promise<{ latex: string; taskId: string; externalOutcomes?: ExternalOutcomeReport[] }> {
     if (
       params.issues.length === 0 &&
@@ -1474,6 +1480,8 @@ export function buildRevisePrompt(params: {
   experimentContext?: ConfirmedExperimentWorkflowContext;
   /** M14.1a：logicalSpan 编辑单元的只读上下文（标题 / 前后相邻文本；不属于可编辑内容） */
   unitContext?: UnitEditContext;
+  /** M14.4：原文锚点授权（Finding → targetQuote 投影；候选按引文区间逐字校验） */
+  authorizedQuotes?: string[];
 }): string {
   const external = params.externalDirectives ?? [];
   const externalRules =
@@ -1565,6 +1573,12 @@ export function buildRevisePrompt(params: {
           ...(params.unitContext !== undefined
             ? [
                 `1b. 当前 target 是章节「${params.unitContext.heading}」的第 ${params.unitContext.unitIndex}/${params.unitContext.unitCount} 个编辑单元（连续段落窗口）。输出必须是该单元**全部**文本的修订版（含单元内未改动的段落，逐字保留）；「相邻上下文」区块只供理解衔接，**不得**输出或改写其中任何文字，也不得把单元外的内容搬进单元。`,
+              ]
+            : []),
+          ...(params.authorizedQuotes !== undefined && params.authorizedQuotes.length > 0
+            ? [
+                "1q. **授权修改范围（原文锚点）**：本次修订只允许改动下列引文片段覆盖的文字（含必要的最小语法衔接）；本 target 内引文之外的文字必须**逐字保留**，系统将按此逐字校验候选：",
+                ...params.authorizedQuotes.slice(0, 5).map((quote) => `    「${quote.slice(0, 300)}」`),
               ]
             : []),
         ]),

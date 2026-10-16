@@ -45,6 +45,17 @@ export interface WorkflowConfig {
    * PAPERTEAM_ARGUMENT_UNIT_WRITING；默认开启；设为 false 回到旧的「同一证据快照 + 约 N 字」组织。
    */
   argumentUnitWriting: boolean;
+  /**
+   * M14.4：每个 workflow run 的模型调用硬上限（0 = 不限制）。
+   * RunBudgetLedgerRuntime 在 startAgent 启动前拦截（超限抛 MODEL_BUDGET_EXCEEDED，
+   * 不再启动新模型任务；在途调用自然 settle 入账）。WORKFLOW_MAX_MODEL_CALLS_PER_RUN。
+   */
+  maxModelCallsPerRun: number;
+  /**
+   * M14.4：每个 workflow run 的 token 硬上限（input+output+cacheWrite；0 = 不限制）。
+   * 订阅渠道 per-call 费用不可靠，预算主键是调用数与 token。WORKFLOW_MAX_RUN_TOKENS_PER_RUN。
+   */
+  maxRunTokensPerRun: number;
 }
 
 export interface CitationConfig {
@@ -538,6 +549,16 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         max: STAGE_MAX_ATTEMPTS_MAX,
       }),
       argumentUnitWriting: readBool(source, "PAPERTEAM_ARGUMENT_UNIT_WRITING", true),
+      maxModelCallsPerRun: readInt(source, "WORKFLOW_MAX_MODEL_CALLS_PER_RUN", {
+        default: 0,
+        min: 0,
+        max: 100_000,
+      }),
+      maxRunTokensPerRun: readInt(source, "WORKFLOW_MAX_RUN_TOKENS_PER_RUN", {
+        default: 0,
+        min: 0,
+        max: 2_000_000_000,
+      }),
     },
     citation: {
       metadataEnabled: readBool(source, "CITATION_METADATA_ENABLED", true),

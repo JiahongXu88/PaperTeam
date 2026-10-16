@@ -166,6 +166,36 @@ export function partitionSpanIntoUnits(span: RevisionSpan, maxChars: number = DE
   return { units, oversizeUnits };
 }
 
+/**
+ * M14.4：段落块粒度的编辑单元（thesis bounded revision）。
+ *
+ * 与 partitionSpanIntoUnits 的区别：不做贪心装箱——每个段落块自成单元（#uN 编号
+ * 稳定，relocation / merge 语义不变；单元拼接仍精确还原 span 全文）。用途：
+ * 小于编辑单元上限的章节文件在 thesis 修订模式下也按 quote 锚点绑定到
+ * **段落窗口**（目标 = 引文所在块，跨块引文合并相邻块），Writer 只改引文
+ * 所在段落而不是整个章节文件；无锚点指令回退到合并整 span（仍走同一
+ * 候选守卫链）。块本身超过 maxChars 时保持整块不切（与既有纪律一致）。
+ */
+export function partitionSpanIntoBlockUnits(span: RevisionSpan): UnitPartition {
+  const blocks = splitBlocks(span.content);
+  let oversizeUnits = 0;
+  const units = blocks.map((block, index) => {
+    const content = span.content.slice(block.start, block.end);
+    if (content.length > DEFAULT_REVISION_UNIT_MAX_CHARS) oversizeUnits += 1;
+    return {
+      file: span.file,
+      logicalSection: `${span.logicalSection}#u${index + 1}`,
+      heading: span.heading,
+      ...(span.label !== undefined ? { label: span.label } : {}),
+      start: span.start + block.start,
+      end: span.start + block.end,
+      originalHash: revisionSourceHash(content),
+      content,
+    } satisfies RevisionSpan;
+  });
+  return { units, oversizeUnits };
+}
+
 /** Merge contiguous units [from..to] (inclusive indexes in the partition) into one target span. */
 export function mergeAdjacentUnits(units: readonly RevisionSpan[], from: number, to: number): RevisionSpan {
   const first = units[from];

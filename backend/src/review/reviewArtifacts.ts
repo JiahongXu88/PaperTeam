@@ -26,6 +26,7 @@ import type { ClaimGapAudit } from "./claimGapAudit.js";
 import type { RevisionPlan } from "./revisionPlan.js";
 import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
+import type { BestRevisionArtifact } from "./bestRevision.js";
 import type { StylePolishResult } from "./stylePolicy.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { PatchValidationArtifact } from "./patchValidation.js";
@@ -684,6 +685,25 @@ export class ReviewArtifactStore {
     await writeJsonAtomic(join(this.projects.reviewsDir(projectId), "iteration-history.json"), {
       schemaVersion: 1,
       iterations: next,
+    });
+  }
+
+  /** M14.4：最佳合法版本工件（reviews/best-revision.json；quality.gate 更新，终局恢复消费） */
+  async loadBestRevision(projectId: string): Promise<BestRevisionArtifact | null> {
+    try {
+      const parsed = JSON.parse(
+        await readFile(join(this.projects.reviewsDir(projectId), "best-revision.json"), "utf8"),
+      ) as BestRevisionArtifact;
+      return typeof parsed.revision === "number" && typeof parsed.gateRound === "number" ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveBestRevision(projectId: string, artifact: BestRevisionArtifact): Promise<void> {
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), "best-revision.json"), {
+      schemaVersion: 1,
+      ...artifact,
     });
   }
 
