@@ -298,7 +298,10 @@ run2 主线（节选）：「围绕四旋翼近距垂直飞行中的下洗扰动
 
 ## 21. Git 与 CI 状态
 
-见文末「最终交付」小节（提交后填写）。
+- 提交链（`main`，无额外分支）：`5bd2699`（fix(m14.5)：F1–F10 生产修复 + 跨实验预算账本 + 案例 B 驱动器/基线测试 + 11 确定性用例）→ `3b68703`（docs(m14.5)：本报告 + PROJECT_STATUS）→ 本节记录提交。
+- 推送：`origin/main` = HEAD = `3b68703`（本节提交后以最终 `git rev-parse` 为准），工作区 clean，`git diff --check` ✅。
+- GitHub Actions（3b68703）：**CI success 7m03s（run 38891692669）**；**Linux Integration success（run 38891692672：docling native 3m57s + docling docker 19m05s）**——双绿。
+- 原始学术 PDF、完整模型调用日志（`logs/caseB-run*.log`）、项目产物（`projects-caseB/`）、全局预算账本与评估 JSON 全部留在 `D:\PaperTeamData\M14_5\`，未提交公开仓库。
 
 ---
 
