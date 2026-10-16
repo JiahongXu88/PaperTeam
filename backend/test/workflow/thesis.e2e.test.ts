@@ -422,6 +422,11 @@ describe("M14.2 thesis_from_papers E2E", () => {
       expect(methodPrompt).toContain("0.724");
       // 学位论文章节定位纪律
       expect(sectionPrompts.some((task) => task.includes("【学位论文章节】"))).toBe(true);
+      // M14.5：Reviewer 同样收到作者已确认事实表（否则把小论文数值判为「无实验数据」）
+      const reviewPrompts = scripted.tasks.filter((task) => (task.contextScope ?? "").startsWith("review/")).map((task) => task.task);
+      expect(reviewPrompts.length).toBeGreaterThan(0);
+      expect(reviewPrompts.every((task) => task.includes("学位论文研究输入已确认事实"))).toBe(true);
+      expect(reviewPrompts.some((task) => task.includes("0.724"))).toBe(true);
     },
     300_000,
   );

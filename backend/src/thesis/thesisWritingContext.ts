@@ -173,6 +173,35 @@ export function buildThesisSectionContext(input: ThesisSectionContextInput): The
   };
 }
 
+/**
+ * M14.5（案例 B 真实 run 实证）：Reviewer 的实验数据口径只看实验包（experimentPolicy）——
+ * 学位论文项目没有实验包时被告知「本项目当前没有已导入的实验数据」，于是把作者已确认
+ * 的研究输入事实（如小论文的 75.37%）判为「无授权数据」并阻断、修订随之删掉正确数值。
+ * 本块与 Writer 的科研事实纪律同源：已确认事实 = 合法实验/参数数据来源。
+ */
+export function renderThesisFactPolicyLines(factContext: { facts: { authorConfirmed: FactView[]; sourceVerifiedUnconfirmed: FactView[]; conflicted: FactView[] } }): string[] {
+  const confirmed = factContext.facts.authorConfirmed;
+  if (confirmed.length === 0) return [];
+  const lines: string[] = [
+    "",
+    "===== 学位论文研究输入已确认事实（Research Input Facts；全体审稿角色一致）=====",
+    "本论文由作者已确认的研究输入（已发表/投稿论文、实验报告等）扩展而成；下表数值经来源核验并由作者确认，是本论文合法的实验数据与参数来源（等价于已授权进入工作流的实验数据）。稿件中与下表一致的数值不得判为「无实验数据」「未授权」或「仅见于外部来源」；不在下表且无其他授权来源的具体数值仍按实验支撑缺口如实报告。",
+  ];
+  for (const fact of confirmed.slice(0, MAX_FACT_LINES)) {
+    lines.push(`- ${fact.surface}（${describeFactView(fact)}）`);
+  }
+  if (confirmed.length > MAX_FACT_LINES) {
+    lines.push(`-（其余 ${confirmed.length - MAX_FACT_LINES} 条已确认事实略）`);
+  }
+  if (factContext.facts.sourceVerifiedUnconfirmed.length > 0) {
+    lines.push(`另有 ${factContext.facts.sourceVerifiedUnconfirmed.length} 条仅来源核验、未经作者确认的事实：其数值出现在正文时按「待作者确认」报告。`);
+  }
+  if (factContext.facts.conflicted.length > 0) {
+    lines.push(`存在 ${factContext.facts.conflicted.length} 条未裁决冲突事实：正文选取任一方数值均应报告为未裁决冲突。`);
+  }
+  return lines;
+}
+
 function describeFactView(fact: FactView): string {
   const key = fact.key;
   const parts: string[] = [];

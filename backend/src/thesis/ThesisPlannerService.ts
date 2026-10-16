@@ -369,7 +369,17 @@ export class ThesisPlannerService {
         for (const factId of byId.get(contributionId)?.linkedFactIds ?? []) linked.add(factId);
       }
       const hasUsableFact = usableFacts.some((fact) => linked.has(fact.factId));
-      if (!hasUsableFact && !covered.has(chapter.chapterId)) {
+      // M14.5（案例 B 实证）：章节虽有可写事实（如参数表），但其拥有的 experiment_result
+      // 贡献陈述里含具体数值（「误差降低 75.37%」）而该数值不对应任何可用事实——
+      // Writer 无权写入、Reviewer 必然阻断。这是作者决定（提供实验材料 / 按限制口径写），
+      // 不是模型可以自行解决的问题。
+      const unbackedNumericResult = chapter.ownsContributionIds.some((contributionId) => {
+        const contribution = byId.get(contributionId);
+        if (contribution === undefined || contribution.kind !== "experiment_result") return false;
+        if (!statementHasNumericClaim(contribution.statement)) return false;
+        return !usableFacts.some((fact) => contribution.linkedFactIds.includes(fact.factId));
+      });
+      if ((!hasUsableFact || unbackedNumericResult) && !covered.has(chapter.chapterId)) {
         missing.push(chapter);
       }
     }
@@ -503,6 +513,12 @@ function quoteMatches(quote: string | undefined, documentText: string): boolean 
 
 function normalizeWs(text: string): string {
   return text.replace(/\s+/g, "");
+}
+
+/** 贡献陈述是否包含具体数值结果（年份 / 单个章节号不算；百分比 / 小数 / 千分位计数算） */
+export function statementHasNumericClaim(statement: string): boolean {
+  const numbers = statement.match(/\d+(?:[.,]\d+)+%?|\d+%|\d{2,}(?![\d.])/gu) ?? [];
+  return numbers.some((token) => !/^(?:19|20)\d{2}$/.test(token));
 }
 
 function linkFacts(

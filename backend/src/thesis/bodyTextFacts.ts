@@ -51,6 +51,10 @@ const METRIC_TERMS: Array<{ pattern: RegExp; kind: FactKind; metric: string }> =
   { pattern: /耗时|延迟|时延|运行时间|推理时间/u, kind: "numeric_result", metric: "latency" },
   { pattern: /吞吐/u, kind: "numeric_result", metric: "throughput" },
   { pattern: /信噪比/u, kind: "numeric_result", metric: "psnr" },
+  // M14.5（案例 B 实证：控制类论文的核心结果是误差 / RMSE 的相对变化）
+  { pattern: /均方根误差|跟踪误差|定位误差|预测误差|平均误差|绝对误差/u, kind: "numeric_result", metric: "error" },
+  { pattern: /\bRMSE\b|\bMAE\b|\bMSE\b/, kind: "numeric_result", metric: "error" },
+  { pattern: /\btracking error\b|\bprediction error\b|\blocalization error\b|\bposition error\b/i, kind: "numeric_result", metric: "error" },
   // 英文缩写（词边界，避免 SSR→S 之类误配）
   { pattern: /\bmAP(?:50|75|@[0-9.]+)?\b/, kind: "numeric_result", metric: "map" },
   { pattern: /\bAP(?:50|75)?\b/, kind: "numeric_result", metric: "ap" },
@@ -83,7 +87,14 @@ const PARAMETER_TERMS: Array<{ pattern: RegExp; parameter: string }> = [
 ];
 
 /** 关系词：指标词与数值之间的连接（为/是/=/达到/约/of/is/：…） */
-const RELATION_RE = /(?:为|是|达到了?|达到|约|大约|只有|仅有|稳定在|提升到|降低到|降到|下降到|提升至|降低至|of|is|was|were|reaches|reached|achieves|achieved|to|=|:|：)\s*/u;
+const RELATION_RE = /(?:为|是|达到了?|达到|约|大约|只有|仅有|稳定在|提升到|降低到|降到|下降到|提升至|降低至|降低了|下降了|减少了|提升了|提高了|增加了|of|is|was|were|reaches|reached|achieves|achieved|to|=|:|：)\s*/u;
+
+/**
+ * M14.5：英文「数值在前」的相对变化句式——「a 75.37% reduction in tracking error」。
+ * 指标词之前 ≤ 40 字符窗口内：百分比 + 变化词 + in/of (+ the)。只认百分比（相对变化
+ * 的物理量纲），只认显式变化词，不猜其它数值。
+ */
+const PERCENT_CHANGE_BEFORE_RE = /(\d+(?:\.\d+)?)\s*%\s+(?:reduction|decrease|drop|improvement|increase|gain)\s+(?:in|of)\s+(?:the\s+)?$/i;
 
 /** 数值 token（含千分位 / 指数 / 百分号 / 计数单位 M/K） */
 const NUMBER_TOKEN_RE = /([-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?)\s*([%‰]|[MKk](?![A-Za-z])|[A-Za-z]{1,3}B?)?/u;
@@ -223,7 +234,7 @@ function matchSentence(sentence: Sentence): Array<MatchedCandidate | null> {
 
   for (const term of METRIC_TERMS) {
     for (const metricMatch of matchAll(term.pattern, text)) {
-      const value = valueAfter(text, metricMatch.index + metricMatch[0].length, true);
+      const value = valueAfter(text, metricMatch.index + metricMatch[0].length, true) ?? percentChangeBefore(text, metricMatch.index);
       if (value === null) {
         results.push(null);
         continue;
@@ -275,6 +286,17 @@ function matchSentence(sentence: Sentence): Array<MatchedCandidate | null> {
     });
   }
   return results;
+}
+
+/** 「75.37% reduction in tracking error」：指标词之前的百分比变化（M14.5） */
+function percentChangeBefore(text: string, metricIndex: number): { surface: string; index: number } | null {
+  const windowStart = Math.max(0, metricIndex - 40);
+  const window = text.slice(windowStart, metricIndex);
+  const match = PERCENT_CHANGE_BEFORE_RE.exec(window);
+  if (match === null) {
+    return null;
+  }
+  return { surface: `${match[1]}%`, index: windowStart + match.index };
 }
 
 function matchAll(pattern: RegExp, text: string): RegExpExecArray[] {

@@ -12,7 +12,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { ManuscriptService } from "../../src/manuscript/ManuscriptService.js";
 import { LatexCompiler } from "../../src/latex/LatexCompiler.js";
 import { ThesisDocumentService } from "../../src/thesis/ThesisDocumentService.js";
-import { ThesisPlannerService } from "../../src/thesis/ThesisPlannerService.js";
+import { ThesisPlannerService, statementHasNumericClaim } from "../../src/thesis/ThesisPlannerService.js";
 import { THESIS_CONTRIBUTION_QUOTE } from "../../src/runtime/scriptedRuntime.js";
 import type { AgentRuntime, RunAgentInput } from "../../src/runtime/types.js";
 import { cleanupThesisFixtures, newThesisFixture, tableBlock, textBlock, type ThesisFixture } from "./fixtures.js";
@@ -299,5 +299,64 @@ describe("M14.2 ThesisPlannerService：主线 / 大纲 / 映射", () => {
     });
     const after = await plannerWithOutline.missingMaterialChapters(fx.projectId);
     expect(after.map((chapter) => chapter.chapterId)).toEqual(["ch03"]);
+  });
+
+  it("M14.5 缺材料判断：experiment 章虽有可写事实，但其 experiment_result 贡献含未被任何事实支撑的具体数值 → missing", async () => {
+    // 案例 B 实录：贡献「高度跟踪误差降低 75.37%」逐字锚定但 75.37% 不是任何已确认/已核验事实；
+    // 章节另有参数表事实（可写）→ 旧规则不拦 → Writer 写入 75.37% → Reviewer 阻断。
+    const { fx, planner } = await newPlannerFixture(JSON.stringify({
+      contributions: [
+        { kind: "method", statement: "提出 NDP-NMPC 方法", quote: THESIS_CONTRIBUTION_QUOTE },
+        { kind: "experiment_result", statement: "高度跟踪误差降低了 75.37%", quote: THESIS_CONTRIBUTION_QUOTE },
+        { kind: "experiment_result", statement: "预测实验验证了预测器的有效性", quote: THESIS_CONTRIBUTION_QUOTE },
+      ],
+    }));
+    const input = await fx.importPdf(
+      {
+        fileName: "caseb.pdf",
+        blocks: [
+          textBlock("B0001", 1, `${THESIS_CONTRIBUTION_QUOTE}参数见表。`),
+          tableBlock("B0002", 2, ["Parameter", "Value"], [["N", "20"], ["Qp,z", "400"]], "TABLE III: CONTROL PARAMETERS"),
+        ],
+        textLayer: [{ page: 2, text: "TABLE III: CONTROL PARAMETERS Parameter Value N 20 Qp,z 400" }],
+      },
+      "published_paper",
+    );
+    await fx.service.extractFacts(fx.projectId, input.inputId);
+    await fx.service.verifyFacts(fx.projectId, input.inputId);
+    const facts = await fx.service.facts.list(fx.projectId, { researchInputId: input.inputId });
+    expect(facts.length).toBe(2);
+    await fx.service.submitDecision(fx.projectId, { actor: { kind: "test_fixture" }, payload: { type: "scope_decision", inputId: input.inputId, scope: "included" } });
+    await fx.service.submitDecision(fx.projectId, { actor: { kind: "test_fixture" }, payload: { type: "fact_confirmation", factIds: facts.map((fact) => fact.factId), outcome: "confirmed" } });
+    await planner.extractContributions(fx.projectId);
+    const items = (await planner.loadContributions(fx.projectId))?.items ?? [];
+    const numericResult = items.find((item) => item.statement.includes("75.37"))!;
+    expect(numericResult.linkedFactIds).toEqual([]);
+    const contributionIds = [items.find((item) => item.kind === "method")!.id, numericResult.id, items.find((item) => item.statement.includes("预测实验"))!.id];
+    await planner.confirmContributions(fx.projectId, { contributionIds, outcome: "confirmed", actorKind: "test_fixture" });
+    // ch02 method owns [method, 非数值 experiment_result]；ch03 experiment owns [75.37% 贡献]；两章 factIds 都给参数事实
+    const outline = JSON.parse(outlineJson([contributionIds[0]!, contributionIds[1]!, contributionIds[2]!], [input.inputId])) as { chapters: Array<{ chapterId: string; factIds: string[] }> };
+    for (const chapter of outline.chapters) {
+      if (chapter.chapterId === "ch02" || chapter.chapterId === "ch03") chapter.factIds = facts.map((fact) => fact.factId);
+    }
+    const runtime = fakeRuntime({ "thesis/outline": JSON.stringify(outline) });
+    const plannerWithOutline = buildPlanner(fx, runtime.runtime);
+    await plannerWithOutline.planStoryline(fx.projectId);
+    await plannerWithOutline.confirmMapping(fx.projectId, "test_fixture");
+    const missing = await plannerWithOutline.missingMaterialChapters(fx.projectId);
+    // ch02：有可写事实且其 experiment_result 贡献无具体数值 → 不缺；ch03：75.37% 无事实支撑 → 缺材料
+    expect(missing.map((chapter) => chapter.chapterId)).toEqual(["ch03"]);
+    // 作者决定后不再拦
+    await fx.service.submitDecision(fx.projectId, { actor: { kind: "test_fixture" }, payload: { type: "writing_pause", subject: "ch03", decision: "write_as_limitation", rationale: "测试" } });
+    expect(await plannerWithOutline.missingMaterialChapters(fx.projectId)).toEqual([]);
+  });
+
+  it("M14.5 statementHasNumericClaim：百分比 / 小数 / 千分位计数算数值结果；年份 / 单个小整数不算", () => {
+    expect(statementHasNumericClaim("高度跟踪误差降低了 75.37%")).toBe(true);
+    expect(statementHasNumericClaim("S-measure 达到 0.724")).toBe(true);
+    expect(statementHasNumericClaim("训练集包含 118,287 张图像")).toBe(true);
+    expect(statementHasNumericClaim("在 2023 年提出了新方法")).toBe(false);
+    expect(statementHasNumericClaim("提出 3 个贡献并在第 5 章验证")).toBe(false);
+    expect(statementHasNumericClaim("开展了预测实验以验证有效性")).toBe(false);
   });
 });

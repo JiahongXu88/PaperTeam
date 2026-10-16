@@ -275,7 +275,7 @@ import { renderInheritedTableLatex, verifyInheritedTables, inheritedTableLabel, 
 import { checkCrossChapterConsistency } from "../thesis/crossChapterConsistency.js";
 import type { AuthorDecision } from "../thesis/researchInputTypes.js";
 import type { ThesisChapterPlan } from "../thesis/thesisWorkflowTypes.js";
-import { buildThesisSectionContext, chapterSourceText, sourceProjectionForSection } from "../thesis/thesisWritingContext.js";
+import { buildThesisSectionContext, chapterSourceText, renderThesisFactPolicyLines, sourceProjectionForSection } from "../thesis/thesisWritingContext.js";
 import { checkFactDrift, summarizeDrift } from "../thesis/publishedFactsDrift.js";
 import { outlineFingerprintFromChapters } from "../thesis/thesisWorkflowTypes.js";
 import { validateThesisDocumentModel } from "../thesis/thesisDocumentTypes.js";
@@ -600,7 +600,11 @@ function reviewRunStageInner(
       // M13.6：实验数据使用口径（三路 review 共享；综述无实验数据）
       const experimentPolicyLines = options.survey === true
         ? undefined
-        : renderExperimentPolicyLines(await services.experimentPackages.experimentPolicy(ctx.projectId));
+        : [
+            ...renderExperimentPolicyLines(await services.experimentPackages.experimentPolicy(ctx.projectId)),
+            // M14.5：学位论文项目——作者已确认的研究输入事实是合法数据来源（与 Writer 纪律同源）
+            ...(await thesisFactPolicyLines(services, ctx.projectId)),
+          ];
       // M13.7.10：写作期生成的只读学术重复报告（修订号一致才注入 style 模式；不进 Gate）
       const redundancyDigest = await buildRedundancyDigest(services, ctx.projectId, revision);
       // M13 Final Closure（A4）：多 key 引用归因只读观察（句子具体内容只命中组内一篇的证据）——
@@ -708,6 +712,7 @@ function reviewRunStageInner(
                   chapterIndex,
                   ...(evidenceDigestLines.length > 0 ? { evidenceDigest: evidenceDigestLines } : {}),
                   ...(citationDigest !== undefined ? { citationDigest } : {}),
+                  ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
                   ...(language !== undefined ? { language } : {}),
                   signal: ctx.signal,
                 });
@@ -5025,6 +5030,38 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     validationMarker !== undefined && validationMarker["validationId"] === validationId;
   if (validationBlocked && !validationAnswered) {
     return { kind: "stage", stageId: "hitl.revision_validation" };
+  }
+
+  // 0b. M14.5（案例 B 真实 run 实证）：本轮修订**没有任何候选被接受**（全部被
+  //     候选守卫 fail-closed 拒绝 / 全部意见无法定位 / 无可派发条目）→ 稿件正文与
+  //     上一轮 review 看到的内容相同。再启动一整轮 review（长文档 = N 个单元调用）
+  //     只会在相同文本上得到 reviewer 噪声（run1 实录：major 11→13 / 分数 71→70 被
+  //     判 REGRESSION，白烧 3 次调用）。按「Guard 持续拒绝 / 无进展」语义直接进
+  //     stalled HITL（payload 仍是本轮 gate 的真实记分卡）；作者 accept_draft →
+  //     Draft 链；revise_more → 下一轮计划照常派发。
+  //     只在 revise 是最新的内容变更且晚于本轮 review 时生效（repair_latex / 润色 /
+  //     restore_facts 产生的真实改稿照旧重走复审）。
+  if (
+    reviseIdx > -1 &&
+    reviseIdx === contentIdx &&
+    reviseIdx > reviewIdx &&
+    reviseIdx > gateIdx &&
+    lastCompletionIndex(state, "revision.revise") === reviseIdx &&
+    reviseAppliedNothing(state)
+  ) {
+    if (!stalledAnswered) {
+      return { kind: "stage", stageId: "hitl.revision_stalled" };
+    }
+    if (stalledDecision === "accept_draft" || !roundsLeft || budgetStop !== null) {
+      return budgetStop !== null && !overflowAnswered && stalledDecision !== "accept_draft"
+        ? budgetStopPath()
+        : draftPath();
+    }
+    // revise_more：允许下一轮重新计划（计划新鲜度按 gateRound 判定——同轮计划已
+    // 存在且已派发过 → 必须经过复审才能再派发，避免同一计划反复派发死循环）
+    if (reviseIdx > planIdx) {
+      return { kind: "stage", stageId: "citation.verify" };
+    }
   }
 
   // 1. 引用核验须新于最近一次改稿
@@ -10494,9 +10531,36 @@ export function createThesisFromPapersDefinition(services: WorkflowServices): Wo
   };
 }
 
+/**
+ * M14.5：学位论文项目的 Reviewer 事实口径——项目登记了研究输入且有作者已确认事实时，
+ * 把已确认事实表注入 review prompt（digest 三路 + 长文档单元模式）。非 thesis 项目
+ * （无研究输入）返回空，prompt 不变。
+ */
+async function thesisFactPolicyLines(services: WorkflowServices, projectId: string): Promise<string[]> {
+  const registry = await services.thesis.researchInputs.list(projectId);
+  if (registry.inputs.length === 0) return [];
+  const context = await services.thesis.researchInputs.plannerContext(projectId);
+  return renderThesisFactPolicyLines(context);
+}
+
 function readNumberResult(state: WorkflowState, stageId: string, field: string): number {
   const value = state.stageResults[stageId]?.[field];
   return typeof value === "number" ? value : 0;
+}
+
+/**
+ * M14.5：最近一次 revision.revise 是否「零接受」——没有任何章节/单元被修订、没有
+ * 外部意见派发报告、没有 claim 修复。stage result 字段由 revise 阶段如实填写
+ * （revisedSections / appliedItems / claimRepairs / externalInstructions）。
+ */
+export function reviseAppliedNothing(state: WorkflowState): boolean {
+  const result = state.stageResults["revision.revise"];
+  if (result === undefined) return false;
+  const revised = typeof result["revisedSections"] === "number" ? result["revisedSections"] : 0;
+  const applied = typeof result["appliedItems"] === "number" ? result["appliedItems"] : 0;
+  const claimRepairs = typeof result["claimRepairs"] === "number" ? result["claimRepairs"] : 0;
+  const external = typeof result["externalInstructions"] === "number" ? result["externalInstructions"] : 0;
+  return revised === 0 && applied === 0 && claimRepairs === 0 && external === 0;
 }
 
 function readNumberArrayResult(state: WorkflowState, stageId: string, field: string): unknown[] {

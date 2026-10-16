@@ -23,6 +23,18 @@
  *
  * 重新附着：PAPERTEAM_M143_PROJECT_ID / PAPERTEAM_M143_RUN_ID 指向既有项目与
  * run 时跳过创建/导入，直接进入轮询循环（断点恢复由引擎 checkpoint 承担）。
+ *
+ * M14.5（案例 B 真实验收）增补：
+ * - 案例 B 书目元数据修正（M14.3 的 B 规格曾写错标题/作者——指向了另一篇 arXiv 论文）；
+ * - 预算：PAPERTEAM_M143_MAX_MODEL_CALLS / PAPERTEAM_M143_MAX_RUN_TOKENS → run 级
+ *   RunBudgetLedgerRuntime（M14.4，planner 优雅降级）；PAPERTEAM_M143_GLOBAL_LEDGER +
+ *   PAPERTEAM_M143_GLOBAL_MAX_CALLS / PAPERTEAM_M143_GLOBAL_MAX_TOKENS → 跨实验统一总
+ *   预算（任务 §8.2：单 run 账本不能约束多次实验合计；本驱动在 adapter 之下按文件
+ *   账本硬拦截，重启不重置、失败重试不获新额度、所有 run/smoke 共享同一账本）；
+ * - PAPERTEAM_M143_AUTHOR_DECISION_POLICY=pause：到达 hitl.author_decision 时不自动
+ *   替作者决定，以 awaiting_input 合法暂停收尾（AUTHOR_DECISION_REQUIRED 终态）；
+ *   之后以 PROJECT_ID/RUN_ID 重新附着 + 默认策略即可验证 Resume；
+ * - 报告增加 stageResults / HITL awaiting payload / run 账本 / 全局账本快照。
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -38,6 +50,7 @@ import { ModelSettingsStore, resolveStartupModelSpec } from "../../src/settings/
 import { DoclingParser } from "../../src/ingestion/DoclingParser.js";
 import { LegacyPdfTextParser } from "../../src/ingestion/LegacyPdfTextParser.js";
 import { PyMuPdfParser } from "../../src/paper/PdfParser.js";
+import { GlobalBudgetLedger } from "../helpers/globalBudgetLedger.js";
 import { startTestStack, type TestStack } from "../helpers/testStack.js";
 
 const live = process.env["PAPERTEAM_M143_RUN"] === "1";
@@ -116,18 +129,21 @@ function caseSpec(id: "A" | "B"): CaseSpec {
       ],
     };
   }
+  // M14.5：书目元数据以 arXiv 2304.07794v2 首页与 Crossref DOI 为准（M14.3 的 B 规格
+  // 曾误写为另一篇论文的标题/作者；案例 B 在 M14.3 未实际运行，故未暴露）
   return {
     caseId: "B",
-    title: "M14.3 案例B 李谨杰研究成果学位论文（第三方公开案例研究验证 Draft）",
+    title: "案例B 李谨杰研究成果学位论文（第三方公开案例研究验证 Draft）",
     documentType: "master_thesis",
     inputs: [
       {
-        file: "Li2023_SCGPC_MPC_arXiv2304.07794.pdf",
+        file: "Li2023_NDP_NMPC_CDC_arXiv2304.07794v2.pdf",
         inputType: "published_paper",
-        title: "Sequential convex generation for real-time obstacle avoidance of UAV swarm via self-triggered mini-max MPC",
-        authors: ["Jinjie Li", "Liang Han", "Zhang Ren"],
+        title: "Nonlinear MPC for Quadrotors in Close-Proximity Flight with Neural Network Downwash Prediction",
+        authors: ["Jinjie Li", "Liang Han", "Haoyang Yu", "Yuheng Lin", "Qingdong Li", "Zhang Ren"],
         arxivId: "2304.07794",
-        versionLabel: "arXiv 2304.07794",
+        doi: "10.1109/CDC49753.2023.10383632",
+        versionLabel: "arXiv 2304.07794v2（IEEE CDC 2023 发表；学位论文答辩时为 Submitted）",
         publicationStatus: "published",
         provenanceUri: "https://arxiv.org/abs/2304.07794",
         recency: 2023,
@@ -144,13 +160,20 @@ interface RunReport {
   finishedAt?: string;
   wallMs?: number;
   inputs: Array<{ file: string; sourceId?: string; inputId?: string; blocks?: number; tables?: number; pages?: number; facts?: number }>;
-  hitlDecisions: Array<{ at: string; stageId: string; decision: string; payload: Record<string, unknown> }>;
+  hitlDecisions: Array<{ at: string; stageId: string; decision: string; payload: Record<string, unknown>; awaitingPayload?: unknown }>;
   stageTimeline: Array<{ at: string; event: string; stageId?: string; detail?: string }>;
   finalStatus?: string;
+  /** M14.5：合法暂停（AUTHOR_DECISION_REQUIRED 等）时记录停在哪个 HITL 与其 payload */
+  pausedAt?: { stageId: string; payload?: unknown };
   gate?: Record<string, unknown>;
+  stageResults?: Record<string, unknown>;
   draftArtifact?: Record<string, unknown>;
   usageTotals?: Record<string, unknown>;
   modelCalls?: number;
+  /** M14.5：run 级账本（research/model-ledger.json）与跨实验全局账本快照 */
+  runModelLedger?: unknown;
+  globalBudget?: unknown;
+  budgetConfig?: Record<string, unknown>;
   error?: string;
 }
 
@@ -194,25 +217,56 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
     const usageTotals: Record<string, number> = {
       runs: 0, runsWithUsage: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, estimatedCost: 0, assistantTurns: 0,
     };
+    // ---- M14.5 预算（任务 §8）：run 级（RunBudgetLedgerRuntime）+ 跨实验全局（文件账本）----
+    const perRunMaxCalls = Number(process.env["PAPERTEAM_M143_MAX_MODEL_CALLS"] ?? "0");
+    const perRunMaxTokens = Number(process.env["PAPERTEAM_M143_MAX_RUN_TOKENS"] ?? "0");
+    const globalLedgerPath = process.env["PAPERTEAM_M143_GLOBAL_LEDGER"];
+    const globalMaxCalls = Number(process.env["PAPERTEAM_M143_GLOBAL_MAX_CALLS"] ?? "0");
+    const globalMaxTokens = Number(process.env["PAPERTEAM_M143_GLOBAL_MAX_TOKENS"] ?? "0");
+    const experimentId = process.env["PAPERTEAM_M143_EXPERIMENT_ID"] ?? `m143-case${spec.caseId}-${report.startedAt.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+    const globalLedger = globalLedgerPath !== undefined
+      ? new GlobalBudgetLedger(globalLedgerPath, experimentId, { maxCalls: globalMaxCalls, maxTokens: globalMaxTokens })
+      : undefined;
+    report.budgetConfig = {
+      experimentId,
+      perRun: { maxModelCallsPerRun: perRunMaxCalls, maxRunTokensPerRun: perRunMaxTokens },
+      global: globalLedger !== undefined ? { path: globalLedgerPath, maxCalls: globalMaxCalls, maxTokens: globalMaxTokens } : null,
+      model: startupSpec,
+    };
+    type UsageShape = Partial<Record<"inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "estimatedCost" | "assistantTurns", number>>;
+    const accountUsage = (usage: UsageShape | undefined) => {
+      usageTotals["runs"] = (usageTotals["runs"] ?? 0) + 1;
+      if (usage !== undefined) {
+        usageTotals["runsWithUsage"] = (usageTotals["runsWithUsage"] ?? 0) + 1;
+        for (const key of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "estimatedCost", "assistantTurns"] as const) {
+          usageTotals[key] = (usageTotals[key] ?? 0) + (usage[key] ?? 0);
+        }
+      }
+      globalLedger?.chargeUsage(usage);
+    };
+    // PiRuntimeAdapter.runAgent 内部经 this.startAgent（不经 Proxy）——两个入口都拦截
+    // 不会重复计数；业务服务全部走 runAgent，startAgent 分支为直调兜底。
     const countingAdapter = new Proxy(adapter, {
       get(target, prop) {
         const value = Reflect.get(target, prop, target);
         if (prop === "runAgent" && typeof value === "function") {
           return async (...args: unknown[]) => {
+            globalLedger?.chargeCall(); // 超限抛 MODEL_BUDGET_EXCEEDED（启动前）
             report.modelCalls = (report.modelCalls ?? 0) + 1;
             mark("model-call", `#${report.modelCalls}`);
-            const task = (await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args)) as {
-              usage?: Partial<Record<"inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "estimatedCost" | "assistantTurns", number>>;
-            };
-            usageTotals["runs"] = (usageTotals["runs"] ?? 0) + 1;
-            const usage = task?.usage;
-            if (usage !== undefined) {
-              usageTotals["runsWithUsage"] = (usageTotals["runsWithUsage"] ?? 0) + 1;
-              for (const key of ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "estimatedCost", "assistantTurns"] as const) {
-                usageTotals[key] = (usageTotals[key] ?? 0) + (usage[key] ?? 0);
-              }
-            }
+            const task = (await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args)) as { usage?: UsageShape };
+            accountUsage(task?.usage);
             return task;
+          };
+        }
+        if (prop === "startAgent" && typeof value === "function") {
+          return async (...args: unknown[]) => {
+            globalLedger?.chargeCall();
+            report.modelCalls = (report.modelCalls ?? 0) + 1;
+            mark("model-call", `#${report.modelCalls}（startAgent）`);
+            const handle = (await (value as (...a: unknown[]) => Promise<unknown>).apply(target, args)) as { result: () => Promise<{ usage?: UsageShape }> };
+            void handle.result().then((task) => accountUsage(task?.usage), () => accountUsage(undefined));
+            return handle;
           };
         }
         return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
@@ -224,6 +278,10 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
       realLatex: true,
       root: projectsRoot,
       stageBudget: { timeoutMs: 900_000, maxAttempts: 3 },
+      // M14.5：run 级模型预算由 RunBudgetLedgerRuntime 硬性执行（planner 优雅降级 → Draft）
+      ...(perRunMaxCalls > 0 || perRunMaxTokens > 0
+        ? { runBudget: { maxModelCallsPerRun: perRunMaxCalls, maxRunTokensPerRun: perRunMaxTokens } }
+        : {}),
       ingestion: {
         structuredParser: new DoclingParser({ pythonCommand: doclingPython, timeoutMs: 600_000 }),
         fallbackParser: new LegacyPdfTextParser({ pdfParser: new PyMuPdfParser({}) }),
@@ -307,31 +365,6 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
 
       // ---- 启动工作流（reattach 时复用 runId） ----
       if (runId === undefined) {
-        // M14.3 继承表格：事实确认后刷新候选并授权前 N 张（确定性：verifiedCells 降序）
-        const authorizeLimit = Number(process.env["PAPERTEAM_M143_AUTHORIZE_TABLES"] ?? "0");
-        if (authorizeLimit > 0) {
-          const refresh = await stack.request("POST", `/api/projects/${projectId}/research-inputs/table-assets`);
-          expect(refresh.status).toBeLessThan(300);
-          const assets = (refresh.body["assets"] as Array<{
-            assetId: string;
-            status: string;
-            captionZh: string;
-            verification: { verifiedCells: number };
-          }>) ?? [];
-          const candidates = assets
-            .filter((asset) => asset.status === "candidate")
-            .sort((a, b) => b.verification.verifiedCells - a.verification.verifiedCells);
-          let authorized = 0;
-          for (const asset of candidates.slice(0, authorizeLimit)) {
-            const decision = await stack.request("POST", `/api/projects/${projectId}/research-inputs/decisions`, {
-              actor: { kind: "test_fixture", note: "M14.3 真实材料验收：模拟作者授权表格继承" },
-              payload: { type: "table_inheritance", assetId: asset.assetId, outcome: "authorized" },
-            });
-            expect(decision.status).toBeLessThan(300);
-            authorized += 1;
-          }
-          mark("table-assets-authorized", `${authorized}/${candidates.length} candidates`);
-        }
         const start = await stack.request("POST", `/api/projects/${projectId}/workflows`, { kind: "thesis_from_papers" });
         expect(start.status).toBe(202);
         runId = start.body["runId"] as string;
@@ -340,7 +373,10 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
       mark("workflow-started", runId);
 
       // ---- 主循环：轮询 → HITL 决策（确定性策略）→ 终态 ----
-      const deadline = Date.now() + 12 * 3_600_000;
+      const deadline = Date.now() + Number(process.env["PAPERTEAM_M143_LOOP_HOURS"] ?? "12") * 3_600_000;
+      const authorDecisionPolicy = process.env["PAPERTEAM_M143_AUTHOR_DECISION_POLICY"] === "pause" ? "pause" : "write_as_limitation";
+      // M14.5：在任意 HITL 节点合法暂停（进程退出 → 以 PROJECT_ID/RUN_ID 重新附着验证 checkpoint 恢复与 Resume）
+      const pauseAt = process.env["PAPERTEAM_M143_PAUSE_AT"];
       let lastStage: string | undefined;
       let factsConfirmed = false;
       for (;;) {
@@ -356,13 +392,21 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
         }
         if (runBody.status === "awaiting_input" && runBody.awaiting !== undefined) {
           const { stageId, payload } = runBody.awaiting;
+          // M14.5：缺材料作者决定不自动代答（policy=pause）→ 以合法暂停收尾（AUTHOR_DECISION_REQUIRED）
+          if ((stageId === "hitl.author_decision" && authorDecisionPolicy === "pause") || (pauseAt !== undefined && stageId === pauseAt)) {
+            report.pausedAt = { stageId, payload };
+            report.finalStatus = "awaiting_input";
+            mark("paused-legally", `${stageId}（${stageId === pauseAt ? "PAUSE_AT" : "policy=pause；不替作者决定"}）`, stageId);
+            break;
+          }
           const decisionRecord = await decideAndResume(stack, runId, projectId!, stageId, payload, {
             recencyByInputId,
             factsConfirmedRef: () => factsConfirmed,
             markFactsConfirmed: () => { factsConfirmed = true; },
             mark,
+            authorizeTables: Number(process.env["PAPERTEAM_M143_AUTHORIZE_TABLES"] ?? "0"),
           });
-          report.hitlDecisions.push(decisionRecord);
+          report.hitlDecisions.push({ ...decisionRecord, awaitingPayload: payload });
           continue;
         }
         if (runBody.status === "completed" || runBody.status === "failed" || runBody.status === "cancelled") {
@@ -386,20 +430,37 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
       };
       const gateResult = finalRun.stageResults?.["quality.gate"];
       if (gateResult !== undefined) report.gate = gateResult as Record<string, unknown>;
+      report.stageResults = finalRun.stageResults ?? {};
+      try {
+        report.runModelLedger = JSON.parse(await readFile(join(projectsRoot, projectId!, "research", "model-ledger.json"), "utf8"));
+      } catch {
+        report.runModelLedger = null;
+      }
+      report.globalBudget = globalLedger?.snapshot() ?? null;
       const artifacts = await stack.request("GET", `/api/projects/${projectId}/artifacts`);
+      // M14.5 修正：产物清单字段是 artifactId（ArtifactStore 契约），旧驱动读 item.id 永远 undefined
+      //（M14.3 三轮都未走到这条断言——R3 人工编译——所以从未暴露）
       const drafts = (artifacts.body["artifacts"] as Array<Record<string, unknown>> | undefined)?.filter(
-        (item) => typeof item["id"] === "string" && (item["id"] as string).startsWith("art-draft"),
+        (item) => {
+          const id = item["artifactId"] ?? item["id"];
+          return typeof id === "string" && id.startsWith("art-draft");
+        },
       );
       if (drafts !== undefined && drafts.length > 0) report.draftArtifact = drafts[drafts.length - 1];
       report.usageTotals = usageTotals;
       report.finishedAt = new Date().toISOString();
       report.wallMs = Date.now() - Date.parse(report.startedAt);
       await mkdir(logDir, { recursive: true });
-      await writeFile(join(logDir, `m143-case${spec.caseId}-report.json`), JSON.stringify(report, null, 2), "utf8");
+      await writeFile(join(logDir, `m143-case${spec.caseId}-report-${experimentId}.json`), JSON.stringify(report, null, 2), "utf8");
 
-      expect(report.finalStatus).toBe("completed");
-      expect(report.draftArtifact).toBeDefined();
-      mark("acceptance-done", JSON.stringify({ status: report.finalStatus, draft: report.draftArtifact?.["id"] }));
+      if (report.finalStatus === "awaiting_input") {
+        // 合法暂停终态（AUTHOR_DECISION_REQUIRED）：不是失败，也不冒充 Draft
+        expect(report.pausedAt).toBeDefined();
+      } else {
+        expect(report.finalStatus).toBe("completed");
+        expect(report.draftArtifact).toBeDefined();
+      }
+      mark("acceptance-done", JSON.stringify({ status: report.finalStatus, draft: report.draftArtifact?.["id"], pausedAt: report.pausedAt?.stageId }));
     } finally {
       await adapter.close().catch(() => undefined);
     }
@@ -418,6 +479,8 @@ async function decideAndResume(
     factsConfirmedRef: () => boolean;
     markFactsConfirmed: () => void;
     mark: (event: string, detail?: string, stage?: string) => void;
+    /** M14.3 继承表格：事实确认后授权前 N 张候选（0 = 不授权） */
+    authorizeTables: number;
   },
 ): Promise<{ at: string; stageId: string; decision: string; payload: Record<string, unknown> }> {
   const body: Record<string, unknown> = {};
@@ -458,6 +521,31 @@ async function decideAndResume(
           }
           helpers.markFactsConfirmed();
           helpers.mark("facts-confirmed", `${confirmed} verified facts`);
+          // M14.3 继承表格：候选只对 scope=included 的输入构建（M14.5 发现旧驱动在工作流
+          // 启动前刷新 → 输入尚未入选 → 0 候选 → 从未授权）；现移到入选 + 事实确认之后。
+          if (helpers.authorizeTables > 0) {
+            const refresh = await stack.request("POST", `/api/projects/${projectId}/research-inputs/table-assets`);
+            expect(refresh.status).toBeLessThan(300);
+            const assets = (refresh.body["assets"] as Array<{
+              assetId: string;
+              status: string;
+              captionZh: string;
+              verification: { verifiedCells: number };
+            }>) ?? [];
+            const candidates = assets
+              .filter((asset) => asset.status === "candidate")
+              .sort((a, b) => b.verification.verifiedCells - a.verification.verifiedCells);
+            let authorized = 0;
+            for (const asset of candidates.slice(0, helpers.authorizeTables)) {
+              const decisionResponse = await stack.request("POST", `/api/projects/${projectId}/research-inputs/decisions`, {
+                actor: { kind: "test_fixture", note: "真实材料验收：模拟作者授权表格继承" },
+                payload: { type: "table_inheritance", assetId: asset.assetId, outcome: "authorized" },
+              });
+              expect(decisionResponse.status).toBeLessThan(300);
+              authorized += 1;
+            }
+            helpers.mark("table-assets-authorized", `${authorized}/${candidates.length} candidates`);
+          }
         }
         if (unconfirmed.length > 0) {
           decision = "confirm_contribution";
@@ -518,6 +606,12 @@ async function decideAndResume(
   const resume = await stack.request("POST", `/api/runs/${runId}/resume`, { decision, payload: body });
   if (resume.status >= 300) {
     throw new Error(`resume 失败（${stageId}/${decision} → ${resume.status}）：${JSON.stringify(resume.body).slice(0, 400)}`);
+  }
+  // M14.5：重复 Resume 幂等探针（任务 §七.8）——同一待办已被回答后再次提交必须被状态机拒绝
+  //（不产生第二次决定、不推进第二次）；只在显式开启时执行，结果进入 report。
+  if (process.env["PAPERTEAM_M143_PROBE_DUPLICATE_RESUME"] === "1") {
+    const duplicate = await stack.request("POST", `/api/runs/${runId}/resume`, { decision, payload: body });
+    helpers.mark("duplicate-resume-probe", `${stageId}/${decision} → HTTP ${duplicate.status} ${JSON.stringify(duplicate.body).slice(0, 160)}`, stageId);
   }
   return { at: new Date().toISOString(), stageId, decision, payload: body };
 }

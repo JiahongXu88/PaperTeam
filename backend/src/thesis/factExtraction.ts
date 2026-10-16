@@ -40,6 +40,12 @@ export interface ExtractedTable {
   headerRowDerived: boolean;
   /** 前导标签列数（这些列的单元格对所有行都不是数值） */
   labelColumnCount: number;
+  /**
+   * M14.5：成对键值列表格（表头「Parameter|Value|Parameter|Value|…」）——每个数值单元格的
+   * 行标签取其左侧相邻的键单元格，而不是整行的首列（CDC 论文 Table III：旧抽取把
+   * dtpred=0.1s、Qp,z=400 全部标成首列的 N / Qp,xy）。
+   */
+  pairedKeyValue: boolean;
   rows: ExtractedRow[];
   /**
    * M14.1c 噪声判定（封面 / 目录被 parser 误识别为表格的定向标记）。
@@ -55,6 +61,13 @@ export interface ExtractedRow {
   /** 标签列拼接（"SSAA | explicit"） */
   rowLabel: string;
   cells: string[];
+  /**
+   * M14.5：堆叠式表格（同一表格内第二组「子表头行 + 数据行」，如 CDC 论文 Table II：
+   * 「Setting|Layers|Initialization|Activation」后又出现「Optimizer|Epoch|Learning Rate|
+   * Loss Function」一行再跟数据）——数据行的列标签取最近的子表头行而非顶部表头。
+   * 缺省 = 顶部表头。子表头行本身没有数值单元格，不产生事实。
+   */
+  columnLabels?: string[];
 }
 
 export function extractTables(document: ParsedDocument): ExtractedTable[] {
@@ -90,6 +103,8 @@ function normalizeTable(block: ParsedTableBlock, document: ParsedDocument, index
   const caption = block.caption !== undefined ? normalizeSurfaceText(block.caption) : undefined;
   const labelInfo = resolveLabel(caption, block, document, index);
   const rowOffset = headerRowDerived ? 1 : 0;
+  const subHeaderByRow = detectStackedSubHeaders(headers, rows);
+  const pairedKeyValue = isPairedKeyValueHeader(headers);
   const noise = classifyTableNoise({ page: block.provenance.page, caption, headers, rows, labelBasis: labelInfo.basis });
   return {
     blockId: block.blockId,
@@ -101,6 +116,7 @@ function normalizeTable(block: ParsedTableBlock, document: ParsedDocument, index
     headers,
     headerRowDerived,
     labelColumnCount,
+    pairedKeyValue,
     rows: rows.map((cells, position) => ({
       rowIndex: position + rowOffset,
       rowLabel: cells
@@ -108,9 +124,50 @@ function normalizeTable(block: ParsedTableBlock, document: ParsedDocument, index
         .map((cell) => cell.trim())
         .join(" | "),
       cells,
+      ...(subHeaderByRow.get(position) !== undefined ? { columnLabels: subHeaderByRow.get(position)! } : {}),
     })),
     ...(noise !== undefined ? { noise } : {}),
   };
+}
+
+/**
+ * M14.5：成对键值列表头（偶数宽度 ≥4；偶数位表头全同、奇数位表头全同、两者不同）。
+ * 「Parameter|Value|Parameter|Value|Parameter|Value」命中；普通表头不命中。
+ */
+export function isPairedKeyValueHeader(headers: string[]): boolean {
+  if (headers.length < 4 || headers.length % 2 !== 0) return false;
+  const key = headers[0]!.trim();
+  const value = headers[1]!.trim();
+  if (key === "" || value === "" || key === value) return false;
+  return headers.every((header, index) => header.trim() === (index % 2 === 0 ? key : value));
+}
+
+/**
+ * M14.5：堆叠式子表头检测（保守）。行 r 被视为子表头当且仅当：
+ *   - r 不是首行、所有单元格非空且都不是可解析数值、与顶部表头不完全相同；
+ *   - 紧随其后的数据行 r+1 至少有一个可解析数值单元格。
+ * 命中后，从 r+1 起直到下一个子表头行之前的数据行，列标签改用该行。
+ * 真实数据行（含数值）永远不会被当成子表头；全文本行后面没有数值行也不会。
+ */
+export function detectStackedSubHeaders(headers: string[], rows: string[][]): Map<number, string[]> {
+  const labelsByRow = new Map<number, string[]>();
+  const isNumeric = (cell: string): boolean => cell !== "" && parseFactValue(cell).numeric !== undefined;
+  let active: string[] | undefined;
+  for (let position = 0; position < rows.length; position += 1) {
+    const row = rows[position]!;
+    const next = rows[position + 1];
+    const allText = row.length >= 2 && row.every((cell) => cell.trim() !== "" && !isNumeric(cell));
+    const sameAsHeader = row.every((cell, index) => cell.trim() === (headers[index] ?? "").trim());
+    const nextHasNumeric = next !== undefined && next.some((cell) => isNumeric(cell));
+    if (position > 0 && allText && !sameAsHeader && nextHasNumeric) {
+      active = row.map((cell) => cell.trim());
+      continue;
+    }
+    if (active !== undefined) {
+      labelsByRow.set(position, active);
+    }
+  }
+  return labelsByRow;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +362,10 @@ export function extractTableFacts(input: ResearchInput, document: ParsedDocument
           skippedCells += 1;
           continue;
         }
-        const columnLabel = table.headers[column] ?? "";
+        const columnLabel = row.columnLabels?.[column] ?? table.headers[column] ?? "";
+        // 成对键值列：数值单元格的行标签 = 左侧相邻键单元格（非空时）
+        const pairedKey = table.pairedKeyValue && column % 2 === 1 ? (row.cells[column - 1] ?? "").trim() : "";
+        const rowLabel = pairedKey !== "" ? pairedKey : row.rowLabel;
         const location: FactTableLocation = {
           tableRef: tableRefOf(input, table.blockId),
           ...(table.label !== undefined ? { label: table.label } : {}),
@@ -313,7 +373,7 @@ export function extractTableFacts(input: ResearchInput, document: ParsedDocument
           ...(table.caption !== undefined ? { caption: table.caption } : {}),
           rowIndex: row.rowIndex,
           columnIndex: column,
-          rowLabel: row.rowLabel,
+          rowLabel,
           columnLabel,
           ...(table.headerRowDerived ? { headerRowDerived: true } : {}),
         };
@@ -325,12 +385,12 @@ export function extractTableFacts(input: ResearchInput, document: ParsedDocument
           researchInputId: input.inputId,
           kind: "table_cell",
           key: {
-            subject: normalizeLabel(row.rowLabel),
+            subject: normalizeLabel(rowLabel),
             metric: normalizeLabel(columnLabel),
             ...(table.label !== undefined ? { protocol: `table:${table.label}` } : {}),
           },
           surface,
-          value: { ...value, ...(hasGlyphIssues(row.rowLabel) || hasGlyphIssues(columnLabel) ? { glyphIssues: true } : {}) },
+          value: { ...value, ...(hasGlyphIssues(rowLabel) || hasGlyphIssues(columnLabel) ? { glyphIssues: true } : {}) },
           provenance: {
             researchInputId: input.inputId,
             sourceId: input.version.sourceId,

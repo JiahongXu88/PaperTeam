@@ -373,6 +373,8 @@ export class ReviewerService {
     chapterIndex: string[];
     evidenceDigest?: string[];
     citationDigest?: string;
+    /** M13.6/M14.5：实验数据使用口径 + 学位论文已确认事实表（undefined → prompt 不变） */
+    experimentPolicyLines?: string[];
     language?: ManuscriptLanguage;
     signal?: AbortSignal;
   }): Promise<{ issues: ReviewIssue[]; academicScore: number | null; riskScore: number | null; summary: string; taskId: string }> {
@@ -907,6 +909,7 @@ function buildUnitReviewPrompt(params: {
   chapterIndex: string[];
   evidenceDigest?: string[];
   citationDigest?: string;
+  experimentPolicyLines?: string[];
   language?: ManuscriptLanguage;
 }): string {
   return [
@@ -941,6 +944,12 @@ function buildUnitReviewPrompt(params: {
       ? ["===== Verified Evidence（已核验证据摘要）=====", ...params.evidenceDigest.slice(0, 15)]
       : []),
     ...(params.citationDigest !== undefined ? ["", `引用统计：${params.citationDigest}`] : []),
+    ...(params.experimentPolicyLines !== undefined
+      ? [
+          ...params.experimentPolicyLines,
+          "审稿口径：稿件中的具体实验数值只可能来自「已授权进入工作流」的范围或上述已确认研究输入事实；其余具体数值按实验支撑缺口如实报告。",
+        ]
+      : []),
     "",
     `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
     params.unit.text,

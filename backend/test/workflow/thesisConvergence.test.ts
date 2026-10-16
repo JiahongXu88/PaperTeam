@@ -81,6 +81,8 @@ const ROUND2_STYLE = JSON.stringify({ summary: "模板化表达增多。", riskS
 interface ConvSpec {
   /** 每轮三路 review 输出（academic / fact / style）；缺省 pass */
   rounds: Array<{ academic: string; fact: string; style: string }>;
+  /** M14.5：修订 Writer 提案（缺省 = 当前 span + 无害补充句；场景 I 用于制造被守卫拒绝的候选） */
+  revisionProposal?: (current: string) => string;
 }
 
 function convergenceRuntime(base: ReturnType<typeof scriptedIdeaRuntime>["runtime"], spec: ConvSpec, counter?: { calls: number }) {
@@ -99,7 +101,7 @@ function convergenceRuntime(base: ReturnType<typeof scriptedIdeaRuntime>["runtim
           return {
             agentId: "writer", taskId: `conv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             status: "completed" as const, createdAt: now, updatedAt: now,
-            output: current.trimEnd() + REVISION_APPENDIX, events: [],
+            output: spec.revisionProposal !== undefined ? spec.revisionProposal(current) : current.trimEnd() + REVISION_APPENDIX, events: [],
           } as never;
         }
       }
@@ -330,5 +332,34 @@ describe("M14.4 修订循环收敛与最佳版本恢复（thesis_from_papers 全
     expect(entry.calls).toBeLessThanOrEqual(budget);
     // 无恢复：终局（round-1）即最佳
     expect(run.stageResults?.["build.draft"]?.["restoredBestFrom"]).toBeUndefined();
+  });
+
+  it("场景 I（M14.5 案例 B 实录）：修订候选全部被守卫拒绝（零接受）→ 不再复审相同稿件，直接 stalled → accept_draft → Draft", { timeout: 240_000 }, async () => {
+    // 修订 Writer 输出摘要式重写（内容塌缩）→ span 候选进 bounded repair 通道（同样输出）→
+    // repair 耗尽 fail-closed 拒绝 → revisedSections=0。旧行为：仍提交新修订号并再跑一整轮
+    // review（相同文本 → reviewer 噪声 → 伪 REGRESSION）；新行为：零接受即无进展 → stalled。
+    const spec: ConvSpec = {
+      rounds: [
+        { academic: ROUND1_ACADEMIC, fact: PASS_FACT, style: PASS_STYLE },
+        { academic: ROUND2_ACADEMIC, fact: ROUND2_FACT, style: ROUND2_STYLE },
+      ],
+      revisionProposal: () => "本节已按审稿意见整体重写。",
+    };
+    const { stack, runId, projectId } = await setupConvergenceRun(spec);
+    const run = await poll(stack, runId, "accept_draft");
+    expect(run.status).toBe("completed");
+    expect(run.completion?.label).toBe("draft");
+    // 只审了一轮：零接受的修订不触发第二轮 review
+    expect(reviewCompletions(run)).toBe(1);
+    expect(reviseCompletions(run)).toBe(1);
+    expect(run.stageResults?.["revision.revise"]).toMatchObject({ revisedSections: 0 });
+    // stalled HITL 针对第一轮 gate（payload/标记 gateRound=1），而不是在相同稿件上再判一次
+    expect(run.stageResults?.["hitl.revision_stalled"]).toMatchObject({ decision: "accept_draft", gateRound: 1 });
+    expect(run.stageResults?.["quality.gate"]).toMatchObject({ round: 1 });
+    // 原稿逐字节保留（被拒候选不落盘）：section 文件内容不含重写句
+    const sectionTex = await readFile(join(stack.store.manuscriptDir(projectId), THESIS_SECTION), "utf8");
+    expect(sectionTex).not.toContain("整体重写");
+    // Draft 真实注册
+    expect(run.completion?.summary?.["draftArtifactId"]).toMatch(/^art-draft-rev/);
   });
 });
