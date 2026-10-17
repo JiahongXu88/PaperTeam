@@ -76,6 +76,10 @@ export interface FactAuthorizationEntry {
   round?: number;
   /** 授权理由（人读；来自派生函数） */
   reason?: string;
+  /** M14.8.1-MOT：改进计划条目的动作类型（只有 modify 条目构成事实变更授权） */
+  actionType?: string;
+  /** M14.8.1-MOT：改进计划条目的目标章节（删除授权局部性） */
+  logicalSection?: string;
 }
 
 export interface FactAuthorizationLedger {
@@ -202,17 +206,32 @@ export async function appendWeakeningAuthorizations(
 }
 
 /** 台账 → evaluateFactPreservation 的 improvementPlanItems 输入口径（与 pairwise 同构） */
+/**
+ * M14.8.1-MOT：台账中全部已批准改进计划条目（跨 run，HITL 批准即入账）→ Fact Preservation 授权口径。
+ * 供候选级「对冻结基线」评估使用——与累计 gate 同一授权来源（见 computeCumulativeFactPreservation）。
+ */
+export async function readLedgerImprovementItems(
+  projects: ProjectStore,
+  projectId: string,
+): Promise<{ section: string; action: string; rationale?: string }[]> {
+  return ledgerToImprovementItems(await readFactAuthorizations(projects, projectId));
+}
+
 function ledgerToImprovementItems(
   entries: readonly FactAuthorizationEntry[],
-): { section: string; action: string; rationale?: string }[] {
+): { section: string; action: string; rationale?: string; logicalSection?: string }[] {
   return entries
     // M11.2.1：typed weakening 走独立类型化通道——其 targetSpan 点名过的数值若
     // 进入通用授权，会被 valueAdditionAuthorized 反向放行（弱化删除过的值重新
     // 加回 = 洗白）。类型化通道只放行「弱化 / 删除」两个方向。
     .filter((entry) => entry.authorizationKind === undefined)
+    // M14.8.1-MOT：作者决定 / noop 条目（含机器兜底的「作者决策必需」条目）明令不得据此改写论文——
+    // 其文本点名的数值不构成事实变更授权（旧台账无 actionType：按兜底文本前缀识别）
+    .filter((entry) => (entry.actionType === undefined || entry.actionType === "modify") && !entry.text.startsWith("作者决策必需"))
     .map((entry) => ({
     section: entry.section,
     action: entry.text,
+    ...(entry.logicalSection !== undefined ? { logicalSection: entry.logicalSection } : {}),
     ...(entry.expectedFactChanges !== undefined && entry.expectedFactChanges.length > 0
       ? {
           rationale: [
@@ -468,6 +487,8 @@ export async function recordImprovementPlanApproval(
         expectedFactChanges?: unknown;
         relatedEvidenceIds?: unknown;
         instructionId?: unknown;
+        actionType?: unknown;
+        logicalSection?: unknown;
       }[];
     };
   };
@@ -515,6 +536,10 @@ export async function recordImprovementPlanApproval(
         ? { relatedEvidenceIds: item.relatedEvidenceIds as string[] }
         : {}),
       ...(typeof item.instructionId === "string" ? { instructionId: item.instructionId } : {}),
+      // M14.8.1-MOT：动作类型与目标章节随条目入账——作者决定 / noop 条目不是事实变更授权，
+      // 章节用于删除授权的局部性（factPreservation.valueRemovalAuthorized）
+      ...(typeof item.actionType === "string" ? { actionType: item.actionType } : {}),
+      ...(typeof item.logicalSection === "string" && item.logicalSection.trim() !== "" ? { logicalSection: item.logicalSection.trim() } : {}),
     });
   }
   return appendFactAuthorizations(projects, projectId, entries);

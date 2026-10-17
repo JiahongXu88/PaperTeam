@@ -2384,7 +2384,7 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import type { EvidenceStore } from "../evidence/EvidenceStore.js";
 import { readSnapshotTex } from "./citationPreservation.js";
-import { readWeakeningAuthorizations } from "./cumulativeFactPreservation.js";
+import { readLedgerImprovementItems, readWeakeningAuthorizations } from "./cumulativeFactPreservation.js";
 
 export interface FactPreservationDeps {
   projects: ProjectStore;
@@ -2564,11 +2564,19 @@ export async function computeFactPreservationForCandidate(
   if (frozen !== undefined && frozen.revision < sourceRevision) {
     const frozenFiles = await readSnapshotTex(deps.revisions.snapshotDir(projectId, frozen.revision));
     if (frozenFiles !== null && frozenFiles.length > 0) {
+      /**
+       * M14.8.1-MOT（真实继续返修实录）：对冻结基线的口径跨越此前全部 run——前一 run 经 HITL 批准、
+       * 已合法落盘的事实变更（如删去未经核验的「20--80 帧」）的授权只在当时的改进计划里。后续 run
+       * 只带本 run 的计划条目，冻结口径便把这些既有变更判为未授权，本 run 每个补丁都被同一条旧违规
+       * 拒绝（8/8 实录）。授权来源与累计 gate 对齐：本 run 计划 + 授权台账（全部已批准条目）。
+       */
+      const ledgerItems = await readLedgerImprovementItems(deps.projects, projectId);
+      const frozenAuthorizationItems = [...improvementPlanItems, ...ledgerItems];
       frozenSummary = evaluateFactPreservation({
         previous: { revision: frozen.revision, files: frozenFiles },
         current: { revision: sourceRevision + 1, files: candidateFiles },
         plan: null,
-        ...(improvementPlanItems.length > 0 ? { improvementPlanItems } : {}),
+        ...(frozenAuthorizationItems.length > 0 ? { improvementPlanItems: frozenAuthorizationItems } : {}),
         evidenceTexts,
         ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
         weakeningAuthorizations,

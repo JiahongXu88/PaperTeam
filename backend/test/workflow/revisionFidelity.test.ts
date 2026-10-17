@@ -423,6 +423,34 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     });
   });
 
+  /**
+   * M14.8.1-MOT 继续返修实录：前一 run 经 HITL 批准、已落盘的删除（「20--80 帧」）在后续 run 的冻结口径下
+   * 被判未授权，本 run 每个补丁都被同一条旧违规拒绝（8/8）。冻结口径的授权来源 = 本 run 计划 + 授权台账。
+   */
+  it("a follow-up run keeps earlier HITL-approved fact changes authorized against the frozen baseline; author-decision ledger text never authorizes", async () => {
+    const run = await setup([good]);
+    const { appendFactAuthorizations } = await import("../../src/quality/cumulativeFactPreservation.js");
+    await appendFactAuthorizations(run.stack.store, run.project.id, [
+      { recordedAt: "2026-10-17T00:00:00Z", source: "improvement_plan_approved", runId: "run-a", itemId: "improvement:1",
+        section: "main.tex", text: "删去未经核验的权重值 0.25，改为定性描述。", actionType: "modify", logicalSection: "sec:method" },
+      { recordedAt: "2026-10-17T00:00:00Z", source: "improvement_plan_approved", runId: "run-a", itemId: "improvement:2",
+        section: "main.tex", text: "作者决策必需：请补充实测延迟 9.7 ms。当前计划未能提出有证据支持的安全修改；", actionType: "author_decision_required" },
+    ]);
+    // run A 落盘的修订：删除 0.25（已批准）
+    const revisedByRunA = PAPER.replace("The adapter weight is 0.25.", "The adapter weight is small.");
+    await writeFile(join(run.stack.store.manuscriptDir(run.project.id), "main.tex"), revisedByRunA);
+    await run.services.revisions.commit(run.project.id, "revision.apply");
+    // run B 的候选：只改别处语法，计划里已没有 run A 的删除条目
+    const candidate = revisedByRunA.replace("We study compact models.", "We study compact models carefully.");
+    const fact = await computeFactPreservationForCandidate(run.services, run.project.id, 2, [{ file: "main.tex", content: candidate }]);
+    expect(fact?.removedFacts.filter((finding) => finding.before.includes("0.25"))).toHaveLength(0);
+    expect(fact?.placeholderRegressions ?? []).toHaveLength(0);
+    // 台账中作者决定条目点名的 9.7 不构成授权：新增实测值 9.7 ms 仍被拒
+    const laundering = revisedByRunA.replace("The adapter weight is small.", "The adapter weight is small. The measured latency is 9.7 ms.");
+    const blocked = await computeFactPreservationForCandidate(run.services, run.project.id, 2, [{ file: "main.tex", content: laundering }]);
+    expect(blocked?.ok).toBe(false);
+  });
+
   it("Reviewer request to add a formula cannot authorize an invented expression", async () => {
     const run = await setup([good + "\n" + FORMULA], "补充损失函数的数学表达式，并说明各项权重；增加公式。");
     await run.execute();

@@ -509,6 +509,25 @@ const MAX_OUTLINE_REVISIONS = 3;
 const MAX_PLAN_REVISIONS = 3;
 /** M14.8.1-MOT：改进计划 HITL 展示条目上限（只防病态体量；正常计划全部展示） */
 const HITL_PLAN_ITEMS_MAX = 80;
+/** M14.8.1-MOT：Planner 意见别名表的常规上限（未闭环意见不受此上限约束，必全部入表） */
+const PLANNER_COMMENT_ALIAS_MAX = 20;
+
+/**
+ * M14.8.1-MOT（真实继续返修实录）：别名表此前取 instructions.slice(0, 20)（按录入顺序），第 21 条起
+ * 的意见——恰是后续轮次新增、仍待处理的意见——没有 C# 别名，Planner 无从链接，一律落入
+ * 「作者决定」兜底（R2-6 / R2-7 / R3-1..3 五条可直接修订的意见因此从未被处理）。未闭环意见
+ * 优先编号且全部入表；已闭环意见只作上下文补足到上限。
+ */
+export function orderInstructionsForPlannerAliases<T extends { status: string; statusNote?: string }>(
+  instructions: readonly T[],
+  max: number,
+): T[] {
+  const open = (instruction: T): boolean =>
+    (instruction.status === "pending" || instruction.status === "partially_handled" || instruction.status === "unresolved") &&
+    !(instruction.statusNote ?? "").startsWith("AUTHOR_DECISION_REQUIRED");
+  const opened = instructions.filter(open);
+  return [...opened, ...instructions.filter((instruction) => !open(instruction))].slice(0, Math.max(max, opened.length));
+}
 /** 手动追加修订轮数（HITL revise_more）的绝对上限 */
 const MAX_MANUAL_REVISION_ROUNDS = 3;
 /** 单轮 section review 的章节上限（超出部分如实记录为 skipped） */
@@ -7620,7 +7639,8 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
         services.externalInstructions.load(ctx.projectId),
       ]);
       const eligibleEvidence = plannerEligibleEvidence(evidenceIds);
-      const commentAliases = buildPlannerAliases(instructions.slice(0, 20), "C", (item) => item.instructionId).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, text: alias.value.text, reviewerLabel: alias.value.reviewerLabel }));
+      const aliasedInstructions = orderInstructionsForPlannerAliases(instructions, PLANNER_COMMENT_ALIAS_MAX);
+      const commentAliases = buildPlannerAliases(aliasedInstructions, "C", (item) => item.instructionId).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, text: alias.value.text, reviewerLabel: alias.value.reviewerLabel }));
       const evidenceAliases = buildPlannerAliases(eligibleEvidence, "EV", (item) => item.id).map((alias) => ({
         ref: alias.ref, canonicalId: alias.canonicalId, claim: alias.value.claim,
         provenance: `${alias.value.source?.title ?? alias.value.source?.sourceId ?? "source"}${alias.value.location?.chunk ? ` / ${alias.value.location.chunk}` : ""}`,

@@ -1057,3 +1057,19 @@ describe("WriterService（M13.5.4 experimentContext prompt）", () => {
     expect(prompt).not.toContain("Confirmation13");
   });
 });
+
+describe("M14.8.1-MOT orderInstructionsForPlannerAliases", () => {
+  it("open comments beyond the first 20 always receive aliases; closed comments only fill the remaining slots", async () => {
+    const { orderInstructionsForPlannerAliases } = await import("../src/workflow/definitions.js");
+    const instructions = [
+      ...Array.from({ length: 20 }, (_, index) => ({ instructionId: `closed-${index}`, status: "handled" })),
+      { instructionId: "author-1", status: "unresolved", statusNote: "AUTHOR_DECISION_REQUIRED: needs author" },
+      ...Array.from({ length: 4 }, (_, index) => ({ instructionId: `open-${index}`, status: index === 0 ? "partially_handled" : "pending" })),
+    ];
+    const ordered = orderInstructionsForPlannerAliases(instructions, 20);
+    expect(ordered.slice(0, 4).map((item) => item.instructionId)).toEqual(["open-0", "open-1", "open-2", "open-3"]);
+    expect(ordered).toHaveLength(20);
+    const manyOpen = Array.from({ length: 25 }, (_, index) => ({ instructionId: `o-${index}`, status: "pending" }));
+    expect(orderInstructionsForPlannerAliases(manyOpen, 20)).toHaveLength(25);
+  });
+});
