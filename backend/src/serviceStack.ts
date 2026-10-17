@@ -158,6 +158,8 @@ export interface ServiceStackOptions {
     reviewConcurrency?: number;
     /** benchmark / 诊断：限制单次审阅章节数（缺省 0 = 不限制） */
     reviewSectionLimit?: number;
+    /** M14.8.1-MOT：长文档单元审查跨轮合法缓存（缺省开启） */
+    incrementalUnitReuse?: boolean;
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
     revisionTask?: Partial<RevisionTaskPolicy>;
   };
@@ -1123,6 +1125,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
           : {}),
         reviewConcurrency: options.review?.reviewConcurrency ?? 3,
         reviewSectionLimit: options.review?.reviewSectionLimit ?? 0,
+        incrementalUnitReuse: options.review?.incrementalUnitReuse ?? true,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
       // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →

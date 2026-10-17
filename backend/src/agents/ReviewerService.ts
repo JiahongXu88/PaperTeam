@@ -11,6 +11,7 @@
  * 会话互不污染；输出为统一结构的 ReviewIssue，经确定性校验后落盘 reviews/。
  */
 
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -407,6 +408,27 @@ export class ReviewerService {
       summary: typeof parsed["summary"] === "string" ? parsed["summary"].slice(0, 400) : "",
       taskId: task.taskId,
     };
+  }
+
+  /**
+   * M14.8.1-MOT：单元审查的**请求指纹**——完整 prompt（含单元原文、章节索引、证据 / 引用
+   * 摘要、实验口径、语言）+ 实际将使用的模型 + 注入 Skill 版本 + agentId 的 sha256。
+   * 指纹相同 = 同一审稿请求，既往完成审查可作为合法缓存复用；任一输入变化即失效。
+   * Runtime 无法证明模型 / Skill 一致时返回 null（调用方必须禁用复用）。
+   */
+  async unitRequestFingerprint(params: Parameters<ReviewerService["reviewUnit"]>[0]): Promise<string | null> {
+    const context = await this.runtime.describeAgentContext?.({
+      contextScope: "review/academic/unit",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+    }).catch(() => undefined);
+    if (context === undefined || context.model.trim() === "") return null;
+    return createHash("sha256").update(JSON.stringify({
+      schema: "review-unit-request-v1",
+      agentId: this.agentId,
+      model: context.model,
+      skills: context.skills,
+      prompt: buildUnitReviewPrompt(params),
+    })).digest("hex");
   }
 
   /**

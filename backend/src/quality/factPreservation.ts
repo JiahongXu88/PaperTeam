@@ -38,6 +38,7 @@ import {
   extractNumericTokens,
 } from "../review/styleInvariants.js";
 import { STRONG_MARKERS } from "./claimStrength.js";
+import { locateLatexSections } from "../review/revisionScope.js";
 
 export interface FactTexFile {
   /** 相对 manuscript 目录的 POSIX 路径 */
@@ -126,7 +127,7 @@ export interface FactPreservationInput {
   /** sourceRevision == previous.revision 的确定性修订计划（无则 null） */
   plan: RevisionPlan | null;
   /** Existing-Paper 改进计划条目（与 Citation Preservation 同源） */
-  improvementPlanItems?: { section: string; action: string; rationale?: string }[];
+  improvementPlanItems?: { section: string; action: string; rationale?: string; logicalSection?: string }[];
   /** Evidence 文本（claims + quotes + summaries；新增/替换值的授权依据） */
   evidenceTexts?: string[];
   /**
@@ -262,8 +263,6 @@ const PARITY_WORDS = /(基本一致|大致相当|差异不大|相差不大|性�
 const METRIC_PATTERN =
   /(IDF1|MOTA|IDS\b|ID Switch|HOTA|DetA|AssA|Frag\b|FPS|fps|mAP|AP\b|RSS|Norm-IDS|latency|Latency|漏检|误报|延迟|内存|温度|精度|身份切换|召回|查准)/;
 
-/** 比较方向对（metric 级：同指标的正反词互换） */
-const POSITIVE_DIRECTION = new Set(["高于", "优于", "超过", "提升", "增加", "升至"]);
 
 // ---- 通用工具 ----
 
@@ -432,7 +431,7 @@ interface AuthorizationContext {
   strictFormulaAuthorization: boolean;
   formulaSources: { id: string; text: string }[];
   planTexts: { id: string; section: string; text: string }[];
-  improvementTexts: { id: string; section: string; text: string }[];
+  improvementTexts: { id: string; section: string; text: string; logicalSection?: string }[];
   evidenceTexts: string[];
   bibliographyKeys: string[];
   needsEvidenceItems: RevisionPlanItem[];
@@ -496,6 +495,7 @@ function buildAuthorization(
     id: `improvement-plan:${index}`,
     section: item.section,
     text: `${item.action}\n${item.rationale ?? ""}`,
+    ...(item.logicalSection !== undefined && item.logicalSection.trim() !== "" ? { logicalSection: item.logicalSection.trim() } : {}),
   }));
   const needsEvidenceItems = plannedItems.filter((item) => item.needsEvidence === true);
   // M10.3.1：恢复授权在条目生命周期内持续有效——restore stage 执行后会把条目
@@ -607,24 +607,46 @@ const REMOVAL_WORDS = /(删除|移除|弱化|去掉|删去|剪除)/;
  * 新值被新增通道先行放行后，旧值的删除会被误报）。
  */
 const REPLACEMENT_WORDS = /(→|->|=>|改为|更正为|修正为|替换为|调整为)/;
+/** M14.8.1-MOT：保留声明（「数值保持原样 / 不变 / 保留」）——此类子句点名的数值永不构成删除授权 */
+const PRESERVE_INSTRUCTION_WORDS = /(保持原样|保持不变|保留原|原样保留|逐字保留|不改动|不改变|不变|保留)/;
 
 function valueRemovalAuthorized(
   auth: AuthorizationContext,
   before: string,
   file: string,
+  removedInSpans?: ReadonlySet<string>,
 ): { basis: string; planItemId: string } | null {
   const covering = auth.needsEvidenceItems.find((item) => sectionRefMatchesFile(item.section, file));
   if (covering !== undefined) {
     return { basis: "planned_evidence_removal", planItemId: covering.id };
   }
-  const entries = [...auth.planTexts, ...auth.improvementTexts];
+  /**
+   * M14.8.1-MOT：计划文本的删除 / 替换授权限定在该条目的目标章节内。单文件稿件的条目
+   * section 恒为 main.tex——旧口径下 H4 小节条目「删去…“20--80 帧”」授权了摘要里任意
+   * 一个 80 的删除，把「121 降至 80」→「降至 70」洗白为合法删除 + 无关新增（确定性
+   * 回放 T3）。条目带 logicalSection 且该数值的减少位置可定位时，只认目标章节内的删除。
+   */
+  const localized = (entry: { id: string; section: string; text: string; logicalSection?: string }): boolean =>
+    entry.logicalSection === undefined || removedInSpans === undefined || removedInSpans.size === 0 ||
+    removedInSpans.has(entry.logicalSection.replace(/#u\d+$/, ""));
+  const entries = [...auth.planTexts, ...auth.improvementTexts].filter(localized);
+  /**
+   * M14.8.1-MOT：删除 / 替换词与被删数值须出现在计划文本的**同一条指令子句**中，且该子句
+   * 不是保留声明。真实计划条目常是多指令长文本——「所有数值保持原样（121、80、…）……
+   * (1) 首句…弱化为…」里「80」与「弱化」共现于同一条目，旧口径据此授权删除摘要的 80。
+   */
+  const instructionClauses = (text: string): string[] =>
+    text.split(/[。；;\n]|[（(]\d+[)）]/).map((clause) => clause.trim()).filter((clause) => clause !== "");
+  const clauseAuthorizes = (text: string, words: RegExp): boolean =>
+    instructionClauses(text).some((clause) =>
+      mentionsValue([clause], before) && words.test(clause) && !PRESERVE_INSTRUCTION_WORDS.test(clause));
   for (const entry of entries) {
-    if (mentionsValue([entry.text], before) && REMOVAL_WORDS.test(entry.text)) {
+    if (clauseAuthorizes(entry.text, REMOVAL_WORDS)) {
       return { basis: "planned_value_removal", planItemId: entry.id };
     }
   }
   for (const entry of entries) {
-    if (mentionsValue([entry.text], before) && REPLACEMENT_WORDS.test(entry.text)) {
+    if (clauseAuthorizes(entry.text, REPLACEMENT_WORDS)) {
       return { basis: "planned_value_replacement", planItemId: entry.id };
     }
   }
@@ -1180,6 +1202,34 @@ function proseNumberTokens(content: string): string[] {
   );
 }
 
+/**
+ * M14.8.1-MOT：数值在哪些逻辑章节内减少（prose 数值多重集按 span 比较；span 以
+ * logicalSection 对齐）。用于计划文本删除授权的章节局部性；无法定位时返回空映射，
+ * 调用方回退到文件级口径。
+ */
+function numberDecreaseSpans(file: string, previous: string, current: string): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  let previousSpans: ReturnType<typeof locateLatexSections>;
+  let currentSpans: ReturnType<typeof locateLatexSections>;
+  try {
+    previousSpans = locateLatexSections(file, previous);
+    currentSpans = locateLatexSections(file, current);
+  } catch {
+    return result;
+  }
+  const currentById = new Map(currentSpans.map((span) => [span.logicalSection, span.content]));
+  for (const span of previousSpans) {
+    const before = proseNumberTokens(span.content);
+    const after = proseNumberTokens(currentById.get(span.logicalSection) ?? "");
+    for (const token of multisetDiff(before, after).missing) {
+      const spans = result.get(token) ?? new Set<string>();
+      spans.add(span.logicalSection);
+      result.set(token, spans);
+    }
+  }
+  return result;
+}
+
 function indexOfToken(content: string, token: string): number {
   // M9.10：token 已归一（无千分位逗号）；定位原文时允许数字间出现分隔符。
   // M10.3.1：分隔符扩展容忍 LaTeX 转义（原文 35.9\% 对 token 35.9%；旧模式
@@ -1296,6 +1346,141 @@ function claimSentences(content: string): ClaimSentence[] {
 function claimNumberTokens(text: string): Set<string> {
   const normalized = text.replace(/(\d)\{,\}(?=\d{3})/g, "$1").replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
   return new Set([...normalized.matchAll(/\d+(?:\.\d+)?/g)].map((match) => match[0]));
+}
+
+/**
+ * M14.8.1-MOT：子句级方向原子。句子级启发式（首指标 + 末方向词）在真实中文摘要上
+ * 同时误拒与漏报：①合法拆句 / 重排让被改写的旧长句与任意同指标反向句交叉配对（误拒）；
+ * ②一个长句含多个比较时只看末个方向词——「从 121 降至 80」→「升至」、
+ * 「劣于全部三条外部基线」→「优于」这类外科式翻转完全不可见（确定性回放 T1/T2 漏报）。
+ * 子句（按 。！？；;，,：: 与换行切分，千分位还原）是一个比较的最小载体：拆句 / 重排只移动
+ * 子句、不改变子句内容，而结论翻转必然改变某个子句的方向词或否定词。
+ */
+const CLAUSE_DIRECTION_PATTERN = /高于|低于|优于|劣于|超过|不及|提升|下降|增加|减少|升至|降至|多于|少于|增至|上升|降低|胜过|落后/g;
+const CLAUSE_POSITIVE_DIRECTION = new Set(["高于", "优于", "超过", "提升", "增加", "升至", "多于", "增至", "上升", "胜过"]);
+/** 否定词（子句仅否定词不同 = 结论 / 显著性翻转：「置信区间不含 0」→「含 0」） */
+const CLAUSE_NEGATION_PATTERN = /没有|并非|不|未|无|非/g;
+/** 否定翻转只在承载科研结论的子句上判定（数字 / 指标 / 统计与结论词） */
+const CLAUSE_CLAIM_CONTEXT = /\d|显著|置信|稳健|成立|确认|有效|改善|优势|差异|一致|支持|证实|劣|优/;
+/** 未被否定的显著性 / 稳健性断言（修订只能删减，新增须授权） */
+const SIGNIFICANCE_ASSERTION_PATTERN = /(?<![不未无非])显著(?!性检验)|(?<![不未无非])具(?:有|备)?统计(?:上的?)?稳健性|(?<![不未无非])统计上稳健/g;
+
+interface ClauseAtom {
+  text: string;
+  /** 去空白、方向词替换为 § 的子句框架 */
+  frame: string;
+  /** 方向词极性序列（+/-） */
+  signature: string;
+  numbers: Set<string>;
+  metric: string | null;
+}
+
+function claimClauses(content: string): string[] {
+  const text = normalizeContent(content)
+    .replace(/(^|[^\\])%[^\n]*/g, "$1")
+    .replace(/(\d)\{,\}(?=\d{3})/g, "$1")
+    .replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
+  return text
+    .split(/[。！？；;，,：:\n]/)
+    .map((clause) => clause.replace(/\s+/g, ""))
+    .filter((clause) => clause.length >= 4);
+}
+
+function clauseAtoms(clauses: readonly string[]): ClauseAtom[] {
+  const atoms: ClauseAtom[] = [];
+  for (const clause of clauses) {
+    const directions = [...clause.matchAll(CLAUSE_DIRECTION_PATTERN)].map((match) => match[0]);
+    if (directions.length === 0) continue;
+    atoms.push({
+      text: clause,
+      frame: clause.replace(CLAUSE_DIRECTION_PATTERN, "§"),
+      signature: directions.map((word) => (CLAUSE_POSITIVE_DIRECTION.has(word) ? "+" : "-")).join(""),
+      numbers: claimNumberTokens(clause),
+      metric: METRIC_PATTERN.exec(clause)?.[0] ?? null,
+    });
+  }
+  return atoms;
+}
+
+function countBy<T>(values: readonly T[], key: (value: T) => string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(key(value), (counts.get(key(value)) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * 子句级结论翻转（纯函数）：
+ * (i) 同框架极性变化——子句除方向词外逐字相同、方向极性不同，且旧子句数量减少；
+ * (ii) 数值锚定改写翻转——旧子句消失、新子句为新增，二者同指标、新子句包含旧子句的
+ *      **全部**数值，且两侧方向极性各自单一并相反（改写措辞的同一比较被翻转）；
+ * (iii) 否定翻转——子句除否定词外逐字相同、否定词数量不同（显著性 / 结论成立性翻转）。
+ * 拆句与重排不改变任何子句的内容与数量 → 三条规则都不触发。
+ */
+export function detectClauseConclusionFlips(previous: string, current: string): Array<{ before: string; after: string; reason: "metric_direction_flip" | "conclusion_negation_flip" }> {
+  const previousClauses = claimClauses(previous);
+  const currentClauses = claimClauses(current);
+  const previousTextCount = countBy(previousClauses, (clause) => clause);
+  const currentTextCount = countBy(currentClauses, (clause) => clause);
+  const decreased = (text: string): boolean => (previousTextCount.get(text) ?? 0) > (currentTextCount.get(text) ?? 0);
+  const increased = (text: string): boolean => (currentTextCount.get(text) ?? 0) > (previousTextCount.get(text) ?? 0);
+  const flips: Array<{ before: string; after: string; reason: "metric_direction_flip" | "conclusion_negation_flip" }> = [];
+  const reported = new Set<string>();
+  const report = (before: string, after: string, reason: "metric_direction_flip" | "conclusion_negation_flip"): void => {
+    const key = `${reason}|${before}|${after}`;
+    if (reported.has(key)) return;
+    reported.add(key);
+    flips.push({ before, after, reason });
+  };
+  const previousAtoms = clauseAtoms(previousClauses);
+  const currentAtoms = clauseAtoms(currentClauses);
+  // (i) 同框架极性变化
+  for (const before of previousAtoms) {
+    if (!decreased(before.text)) continue;
+    const after = currentAtoms.find((atom) => atom.frame === before.frame && atom.signature !== before.signature && increased(atom.text));
+    if (after !== undefined) report(before.text, after.text, "metric_direction_flip");
+  }
+  // (ii) 数值锚定的改写翻转
+  const single = (signature: string): string | null => (/^(\+)+$/.test(signature) ? "+" : /^(-)+$/.test(signature) ? "-" : null);
+  for (const before of previousAtoms) {
+    // 指标词缺省（如 IDSW 不命中 METRIC_PATTERN）时要求 ≥2 个数值全部保留，避免单个数字误配
+    if (before.numbers.size === 0 || (before.metric === null && before.numbers.size < 2) || !decreased(before.text)) continue;
+    const beforePolarity = single(before.signature);
+    if (beforePolarity === null) continue;
+    const after = currentAtoms.find((atom) =>
+      atom.metric === before.metric && (previousTextCount.get(atom.text) ?? 0) === 0 &&
+      single(atom.signature) !== null && single(atom.signature) !== beforePolarity &&
+      [...before.numbers].every((token) => atom.numbers.has(token)));
+    if (after !== undefined) report(before.text, after.text, "metric_direction_flip");
+  }
+  // (iii) 否定翻转
+  const stripNegation = (clause: string): string => clause.replace(CLAUSE_NEGATION_PATTERN, "");
+  const negations = (clause: string): number => clause.match(CLAUSE_NEGATION_PATTERN)?.length ?? 0;
+  const currentByStripped = new Map<string, string[]>();
+  for (const clause of new Set(currentClauses)) {
+    if (!increased(clause)) continue;
+    const key = stripNegation(clause);
+    currentByStripped.set(key, [...(currentByStripped.get(key) ?? []), clause]);
+  }
+  for (const before of new Set(previousClauses)) {
+    if (!decreased(before) || !CLAUSE_CLAIM_CONTEXT.test(before)) continue;
+    const after = (currentByStripped.get(stripNegation(before)) ?? []).find((clause) => negations(clause) !== negations(before));
+    if (after !== undefined) report(before, after, "conclusion_negation_flip");
+  }
+  return flips;
+}
+
+/** 未被否定的显著性 / 稳健性断言数量（文件级；修订净新增 = 断言强化） */
+export function countSignificanceAssertions(content: string): number {
+  const text = normalizeContent(content).replace(/(^|[^\\])%[^\n]*/g, "$1").replace(/\s+/g, "");
+  return text.match(SIGNIFICANCE_ASSERTION_PATTERN)?.length ?? 0;
+}
+
+/** 统计非显著限定（不显著 / 不具统计稳健性 / 统计上不稳健 / 区间含 0） */
+const NON_SIGNIFICANCE_QUALIFIER_PATTERN = /不显著|未达(?:到)?显著|不具(?:有|备)?统计(?:上的?)?稳健性|统计上不稳健|不具稳健性|(?<!不)含0|跨越0|包含0/g;
+
+export function countNonSignificanceQualifiers(content: string): number {
+  const text = normalizeContent(content).replace(/(^|[^\\])%[^\n]*/g, "$1").replace(/\s+/g, "");
+  return text.match(NON_SIGNIFICANCE_QUALIFIER_PATTERN)?.length ?? 0;
 }
 
 // ---- 主判定（纯函数） ----
@@ -1577,8 +1762,9 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       }
     }
     const remainingMissing: { token: string; index: number }[] = [];
+    const removalSpans = numberDecreaseSpans(previousFile.file, previous, current);
     for (const missingToken of numberDiff.missing) {
-      if (valueRemovalAuthorized(auth, missingToken, previousFile.file) !== null) {
+      if (valueRemovalAuthorized(auth, missingToken, previousFile.file, removalSpans.get(missingToken)) !== null) {
         allowedRemovals += 1;
       } else {
         remainingMissing.push({ token: missingToken, index: indexOfToken(previous, missingToken) });
@@ -1947,42 +2133,33 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         reason: "parity_to_advantage",
       });
     }
-    // 4c. 同指标比较方向对调（metric + direction 词都出现且方向词极性相反）
-    for (const previousClaim of previousClaims) {
-      if (previousClaim.metric === null || previousClaim.direction === null) {
-        continue;
-      }
-      // 保留性守卫：原 claim 句子逐字仍在当前文本中 → 该结论本身未被翻转。
-      // 真实论文对同一指标常同时含负向（局限/消融边界）与正向（优势）结论；
-      // 文件级交叉配对若不检查保留性，未修改的 baseline 也会被交叉判死
-      // （M11.4 Attempt 7 实录：baseline==baseline 产生 6 条恒定 flip，
-      // scoped patch 候选全部被误拒且 repair 永远 no_progress）。
-      if (currentClaims.some((claim) => claim.text === previousClaim.text)) {
-        continue;
-      }
-      const previousPositive = POSITIVE_DIRECTION.has(previousClaim.direction);
-      // M14.8-MOT：数值锚定配对。句子级启发式取「首个指标词 + 末个方向词」，二者
-      // 未必描述同一比较；Writer 合法拆分/重排长句后，被改写的旧句会与文件里任意一句
-      // 同指标反方向的句子交叉配对（真实摘要实录：「…运动项上限（1.90）超过…（0.80）」
-      // 被判与「身份切换数从 121 降至 80」方向对调，摘要与引言补丁 0/2 通过）。真正的
-      // 结论翻转保留该结论的数值（数值本身的改动由数值守卫独立裁决），因此旧句含数值时
-      // 只与共享至少一个数值的当前句配对；旧句无数值时保持原文件级配对口径不变。
-      const previousNumbers = claimNumberTokens(previousClaim.text);
-      const flip = currentClaims.find(
-        (claim) =>
-          claim.metric === previousClaim.metric &&
-          claim.direction !== null &&
-          POSITIVE_DIRECTION.has(claim.direction) !== previousPositive &&
-          claim.direction !== previousClaim.direction &&
-          (previousNumbers.size === 0 || [...claimNumberTokens(claim.text)].some((token) => previousNumbers.has(token))),
-      );
-      if (flip !== undefined) {
+    // 4c. 结论翻转（M14.8.1-MOT：子句级，取代句子级「首指标 + 末方向词」交叉配对）——
+    // 同框架方向极性变化 / 数值锚定改写翻转 / 否定（显著性）翻转。M14.8 句子级口径在真实
+    // 摘要上把合法拆句 / 重排判为 metric_direction_flip（0/2 补丁通过），460cf57 的数值锚定
+    // 又让「降至→升至」「劣于→优于」「不含 0→含 0」类外科式翻转漏报（确定性回放 T1/T2/T4）。
+    for (const flip of detectClauseConclusionFlips(previous, current)) {
+      const at = previous.replace(/\s+/g, "").indexOf(flip.before);
+      directional({
+        file: previousFile.file,
+        section: at >= 0 ? nearestSection(previous, Math.min(previous.length - 1, at)) : "(global)",
+        before: snippet(flip.before),
+        after: snippet(flip.after),
+        reason: flip.reason,
+      });
+    }
+    // 4c'. 统计非显著限定被删除、同时净新增显著性 / 稳健性断言（「不具统计稳健性的微弱优势」
+    // →「显著优势」）= 统计结论翻转。只在原稿确有非显著限定被删时判定——纯措辞升级
+    //（可能 → 已经证明）仍由 claimStrength 在 Revision Validation 层裁决（M6.7 语义不变）。
+    {
+      const added = countSignificanceAssertions(current) - countSignificanceAssertions(previous);
+      const qualifiersRemoved = countNonSignificanceQualifiers(previous) - countNonSignificanceQualifiers(current);
+      if (added > 0 && qualifiersRemoved > 0) {
         directional({
           file: previousFile.file,
-          section: nearestSection(previous, previousClaim.index),
-          before: snippet(previousClaim.text),
-          after: snippet(flip.text),
-          reason: "metric_direction_flip",
+          section: "(global)",
+          before: snippet(`（原稿非显著限定 ${countNonSignificanceQualifiers(previous)} 处、显著性断言 ${countSignificanceAssertions(previous)} 处）`),
+          after: snippet(`（修订后非显著限定减少 ${qualifiersRemoved} 处、显著性断言净新增 ${added} 处）`),
+          reason: "significance_strengthening",
         });
       }
     }
@@ -2450,7 +2627,7 @@ async function readBibliographyKeys(
 async function readImprovementPlanItems(
   projects: ProjectStore,
   projectId: string,
-): Promise<{ section: string; action: string; rationale?: string }[]> {
+): Promise<{ section: string; action: string; rationale?: string; logicalSection?: string }[]> {
   try {
     const parsed = JSON.parse(
       await readFile(join(projects.researchDir(projectId), "improvement-plan.json"), "utf8"),
@@ -2458,6 +2635,7 @@ async function readImprovementPlanItems(
       plan?: {
         items?: {
           section?: unknown;
+          logicalSection?: unknown;
           action?: unknown;
           rationale?: unknown;
           expectedFactChanges?: unknown;
@@ -2469,6 +2647,8 @@ async function readImprovementPlanItems(
       .map((item) => ({
         section: item.section as string,
         action: item.action as string,
+        // M14.8.1-MOT：目标章节（计划文本删除授权的局部性）
+        ...(typeof item.logicalSection === "string" && item.logicalSection.trim() !== "" ? { logicalSection: item.logicalSection.trim() } : {}),
         ...(typeof item.rationale === "string" ? { rationale: item.rationale as string } : {}),
         // M10.3：expectedFactChanges（before → after）并入授权文本——
         // 计划点名旧值与新值的数值变更是 plan_value_correction 授权

@@ -320,6 +320,99 @@ describe("Fact Preservation：方向性结论", () => {
   });
 });
 
+/**
+ * M14.8.1-MOT：子句级结论守卫（确定性回放 D:\PaperTeamData\MOT_PaperTeam_RevisionRecovery\replay\
+ * fact-replay-*.json 的合成复刻）。旧句子级口径对真实中文长摘要同时误拒（拆句 / 重排）与漏报
+ * （同句多比较时只看末个方向词；数值锚定后的同数值翻转、无数字结论翻转、显著性翻转全部不可见）。
+ */
+describe("Fact Preservation：M14.8.1-MOT 子句级结论守卫（合法改写不误拒 / 真实翻转必拒）", () => {
+  const ABSTRACT = [
+    "\\begin{abstract}",
+    "对 118 个身份切换事件的逐帧取证表明：关联代价中运动项的幅度上限（1.90）超过交并比与外观两项之和（0.80），在 36 起可判定的轨迹吞并中有 14 起由运动项单独决定；针对两类病灶给出两个修正。在 UA-DETRAC 上，H1+H4 使 38 个挑战片段的身份切换数从 121 降至 80（来源组级配对 bootstrap 95\\% 置信区间不含 0），使官方 40 条整段测试序列从 700 降至 497；场景分层显示 H1 的收益集中于低照度。阈值匹配后基座的身份切换数劣于全部三条外部基线；修正后的基座在挑战片段上仅有不具统计稳健性的微弱优势，其 HOTA 在三个协议上均低于 BoT-SORT。",
+    "\\end{abstract}",
+  ].join("\n");
+  const run = (current: string) => evaluate({ "main.tex": ABSTRACT }, { "main.tex": current });
+  const swap = (find: string, replacement: string): string => {
+    expect(ABSTRACT).toContain(find);
+    return ABSTRACT.replace(find, replacement);
+  };
+
+  it.each([
+    ["在「；」处拆句", swap("（来源组级配对 bootstrap 95\\% 置信区间不含 0），使官方 40 条整段测试序列从 700 降至 497；", "（来源组级配对 bootstrap 95\\% 置信区间不含 0）；在官方 40 条整段测试序列上从 700 降至 497；")],
+    ["在「。」处拆句并拆分取证句", swap("（来源组级配对 bootstrap 95\\% 置信区间不含 0），使官方 40 条整段测试序列从 700 降至 497；", "（来源组级配对 bootstrap 95\\% 置信区间不含 0）。在官方 40 条整段测试序列上，身份切换数从 700 降至 497；")
+      .replace("取证表明：关联代价", "取证表明，关联代价").replace("（0.80），在 36 起", "（0.80）。在 36 起")],
+    ["两句前后重排", (() => {
+      const first = "对 118 个身份切换事件的逐帧取证表明：关联代价中运动项的幅度上限（1.90）超过交并比与外观两项之和（0.80），在 36 起可判定的轨迹吞并中有 14 起由运动项单独决定；";
+      const second = "在 UA-DETRAC 上，H1+H4 使 38 个挑战片段的身份切换数从 121 降至 80（来源组级配对 bootstrap 95\\% 置信区间不含 0），使官方 40 条整段测试序列从 700 降至 497；";
+      return swap(first, "@@").replace(second, first).replace("@@", second);
+    })()],
+    ["合法弱化「集中于」→「主要集中于」", swap("H1 的收益集中于低照度", "H1 的收益主要集中于低照度（描述性结论）")],
+  ])("合法改写不误拒：%s", (_label, current) => {
+    const summary = run(current);
+    expect(summary.directionalChanges).toHaveLength(0);
+    expect(summary.ok).toBe(true);
+  });
+
+  it.each([
+    ["无数字结论方向翻转（劣于 → 优于）", swap("劣于全部三条外部基线", "优于全部三条外部基线"), "metric_direction_flip"],
+    ["同数值方向翻转（降至 → 升至，句内另有比较）", swap("从 121 降至 80", "从 121 升至 80"), "metric_direction_flip"],
+    ["拆句同时翻转方向（拆句不是洗白通道）", swap("从 121 降至 80（来源组级配对 bootstrap 95\\% 置信区间不含 0），使官方", "从 121 升至 80（来源组级配对 bootstrap 95\\% 置信区间不含 0）。在官方"), "metric_direction_flip"],
+    ["统计显著性翻转（置信区间不含 0 → 含 0）", swap("置信区间不含 0", "置信区间含 0"), "conclusion_negation_flip"],
+    ["非显著限定删除 + 显著性断言新增", swap("仅有不具统计稳健性的微弱优势", "具有显著优势"), "significance_strengthening"],
+  ])("真实翻转必拒：%s", (_label, current, reason) => {
+    const summary = run(current);
+    expect(summary.ok).toBe(false);
+    expect(summary.directionalChanges.some((finding) => finding.reason === reason)).toBe(true);
+  });
+
+  it("改写措辞的同一比较被翻转（数值全保留、方向相反）→ metric_direction_flip", () => {
+    const previous = "\\section{结果}\n修正后 IDSW 从 44 降至 36。";
+    const current = "\\section{结果}\n在该场景下，修正使 IDSW 由 44 升至 36。";
+    const summary = evaluate({ "main.tex": previous }, { "main.tex": current });
+    expect(summary.directionalChanges.some((finding) => finding.reason === "metric_direction_flip")).toBe(true);
+  });
+
+  it("计划文本的删除授权必须与数值处于同一指令子句：「所有数值保持原样（121、80）…弱化为…」不授权删除 80", () => {
+    const current = swap("从 121 降至 80（", "从 121 降至 70（");
+    const summary = evaluateFactPreservation({
+      previous: snapshot(1, { "main.tex": ABSTRACT }),
+      current: snapshot(2, { "main.tex": current }),
+      plan: null,
+      improvementPlanItems: [{
+        section: "main.tex", logicalSection: "frontmatter",
+        action: "只修改中英文摘要的措辞，所有数值保持原样（121、80、700、497）。(1) 首句“主要源于”弱化为“相当部分源于”。",
+      }],
+      strictPlanTextAuthorization: true,
+    });
+    expect(summary.ok).toBe(false);
+    expect(summary.changedFacts.some((finding) => finding.reason === "prose_number")).toBe(true);
+  });
+
+  it("计划文本的删除授权限定在条目目标章节：H4 小节「删去“20--80 帧”」不授权删除摘要里的 80", () => {
+    const paper = (abstractValue: string, h4: string): string => [
+      "\\begin{document}", "\\maketitle",
+      `在 UA-DETRAC 上，身份切换数从 121 降至 ${abstractValue}，这一结论限于单一数据集的挑战片段协议。`,
+      "\\section{方法}\\label{sec:method}", h4, "\\end{document}",
+    ].join("\n");
+    const before = paper("80", "失联期往往持续 20--80 帧，H4 对其做影子更新。");
+    const items = [{ section: "main.tex", logicalSection: "sec:method", action: "改为定性描述，删去未经量化统计支撑的“20--80 帧”。" }];
+    const legal = evaluateFactPreservation({
+      previous: snapshot(1, { "main.tex": before }),
+      current: snapshot(2, { "main.tex": paper("80", "失联期往往持续较长时间，H4 对其做影子更新。") }),
+      plan: null, improvementPlanItems: items, strictPlanTextAuthorization: true,
+    });
+    expect(legal.removedFacts).toHaveLength(0);
+    const laundered = evaluateFactPreservation({
+      previous: snapshot(1, { "main.tex": before }),
+      current: snapshot(2, { "main.tex": paper("", "失联期往往持续 20--80 帧，H4 对其做影子更新。").replace("降至 ，", "降至较低水平，") }),
+      plan: null, improvementPlanItems: items, strictPlanTextAuthorization: true,
+    });
+    expect(laundered.ok).toBe(false);
+    expect(laundered.removedFacts.length).toBeGreaterThan(0);
+  });
+});
+
+
 // ---- 公式 / 方法事实 ----
 
 describe("Fact Preservation：公式与方法配置", () => {

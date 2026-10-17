@@ -200,10 +200,107 @@ export function applyRevisionSpan(source: string, span: RevisionSpan, replacemen
   // locateLatexSections 随之解析不出该章节，修订链以
   // "Revision target no longer resolves" fatal 终结。补齐边界换行，
   // 保持行结构在 span 边界处不变。
+  // M14.8.1-MOT：补齐的边界换行沿用原 span 的换行风格（CRLF 稿件不混入裸 LF）
   const normalized = replacement.endsWith("\n") || !current.endsWith("\n")
     ? replacement
-    : `${replacement}\n`;
+    : `${replacement}${current.endsWith("\r\n") ? "\r\n" : "\n"}`;
   return source.slice(0, span.start) + normalized + source.slice(span.end);
+}
+
+/**
+ * M14.8.1-MOT：把 Writer 提案的换行风格对齐到目标 span。真实返修稿是 CRLF 文件，
+ * 而 Writer 输出经 stripStrayOutcomeLines 一律归一为 LF——引文外原文逐字节校验因此
+ * 对「只改引文」的理想候选也必然失败（M14.8 的 11/11 REVISION_TARGET_QUOTE_SCOPE_VIOLATION
+ * 由确定性回放复现）。只在 span 一致使用 CRLF 时把提案的裸 LF 还原为 CRLF；
+ * LF / 混合换行的 span 原样不动。
+ */
+export function adaptLineEndingsToSpan(spanContent: string, text: string): string {
+  if (!spanContent.includes("\r\n") || /(^|[^\r])\n/.test(spanContent)) return text;
+  return text.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+}
+
+const isScopeWhitespace = (char: string | undefined): boolean =>
+  char === " " || char === "\t" || char === "\r" || char === "\n";
+
+/** 空白段等价类：含 ≥2 个换行（LaTeX 段落分隔）与普通空白不可互换 */
+const isParagraphBreak = (run: string): boolean => (run.match(/\n/g)?.length ?? 0) >= 2;
+
+/**
+ * M14.8.1-MOT：引文外「仅空白差异」的确定性回填。Writer 必须逐字复制最长 9000 字的
+ * 引文外原文，模型常把双空格折叠、调整缩进——这些差异在 LaTeX 中不改变任何内容，
+ * 却让逐字节守卫拒绝合法局部修订。本函数只在引文外文本与原文**除空白段长度外完全
+ * 相同**（字符逐一相同；空白段一一对应，段落分隔与普通空白不互换）时，用原文字节
+ * 回填引文外区域、保留候选的引文区改写；任何非空白差异 → null（照常判越界）。
+ * 回填后的候选在引文外与原文逐字节一致，守卫强度不变。
+ */
+export function respliceOutOfQuoteWhitespace(
+  baseline: string,
+  candidate: string,
+  allowed: Pick<RevisionSpan, "start" | "end">,
+): string | null {
+  const walk = (
+    base: string, cand: string, from: { b: number; c: number }, until: number, step: 1 | -1,
+  ): number | null => {
+    let b = from.b;
+    let c = from.c;
+    const inBase = (index: number): boolean => (step === 1 ? index < until : index >= until);
+    while (inBase(b)) {
+      if (isScopeWhitespace(base[b])) {
+        let runB = "";
+        while (inBase(b) && isScopeWhitespace(base[b])) { runB = step === 1 ? runB + base[b] : base[b] + runB; b += step; }
+        if (!isScopeWhitespace(cand[c])) return null;
+        let runC = "";
+        while (c >= 0 && c < cand.length && isScopeWhitespace(cand[c])) { runC = step === 1 ? runC + cand[c] : cand[c] + runC; c += step; }
+        if (isParagraphBreak(runB) !== isParagraphBreak(runC)) return null;
+        continue;
+      }
+      if (c < 0 || c >= cand.length || base[b] !== cand[c]) return null;
+      b += step;
+      c += step;
+    }
+    return c;
+  };
+  const prefixEnd = walk(baseline, candidate, { b: 0, c: 0 }, allowed.start, 1);
+  if (prefixEnd === null) return null;
+  const suffixStartExclusive = walk(baseline, candidate, { b: baseline.length - 1, c: candidate.length - 1 }, allowed.end, -1);
+  if (suffixStartExclusive === null) return null;
+  const middleEnd = suffixStartExclusive + 1;
+  if (middleEnd < prefixEnd) return null;
+  return baseline.slice(0, allowed.start) + candidate.slice(prefixEnd, middleEnd) + baseline.slice(allowed.end);
+}
+
+/**
+ * M14.8.1-MOT：span 提案的格式对齐（换行风格 + 引文外空白回填）。输入是 Writer 的
+ * trim 后提案、原 span 与（可选）引文授权区间（span 内偏移）；输出提案在引文外与
+ * 原 span 逐字节一致时才做空白回填，判定口径仍由 checkRevisionScope 逐字节执行。
+ */
+export function alignProposalToSpan(
+  spanContent: string,
+  proposal: string,
+  allowed?: Pick<RevisionSpan, "start" | "end">,
+): { proposal: string; adjustments: Array<"eol_crlf" | "whitespace_resplice"> } {
+  const adjustments: Array<"eol_crlf" | "whitespace_resplice"> = [];
+  let next = adaptLineEndingsToSpan(spanContent, proposal.trim());
+  if (next !== proposal.trim()) adjustments.push("eol_crlf");
+  if (allowed !== undefined) {
+    const lead = spanContent.length - spanContent.trimStart().length;
+    const trimmed = spanContent.trim();
+    const start = allowed.start - lead;
+    const end = allowed.end - lead;
+    if (start >= 0 && end <= trimmed.length && start <= end) {
+      const prefix = trimmed.slice(0, start);
+      const suffix = trimmed.slice(end);
+      const strict = next.length >= prefix.length + suffix.length && next.startsWith(prefix) && next.endsWith(suffix);
+      if (!strict) {
+        const resplice = respliceOutOfQuoteWhitespace(trimmed, next, { start, end });
+        if (resplice !== null) {
+          next = resplice;
+          adjustments.push("whitespace_resplice");
+        }
+      }
+    }
+  }
+  return { proposal: next, adjustments };
 }
 
 /** Exact prefix/suffix boundary check: all changed text must fit the authorized span. */

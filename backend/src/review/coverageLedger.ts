@@ -70,6 +70,99 @@ export interface ReviewUnitRecord {
   /** 完成记录的完整产物（复用时 issues / 分数不丢失） */
   outcome?: ReviewUnitOutcome;
   updatedAt: string;
+  /**
+   * M14.8.1-MOT：审稿请求指纹（ReviewerService.unitRequestFingerprint：完整 prompt + 模型 +
+   * Skill 版本）。跨轮复用的唯一键；旧记录缺省 = 不可证明一致，不跨轮复用。
+   */
+  requestFingerprint?: string;
+  /** M14.8.1-MOT：本记录是跨轮合法缓存（来源轮次与来源记录时间） */
+  reusedFrom?: { round: number; updatedAt: string; taskId?: string };
+}
+
+/** M14.8.1-MOT：增量复审中单元的处置（Fresh / 合法缓存 / 依赖失效重审 / 未审） */
+export type IncrementalUnitDisposition =
+  | "fresh_changed"
+  | "fresh_new"
+  | "fresh_invalidated"
+  | "fresh_no_valid_cache"
+  | "cached"
+  | "heading_only"
+  | "failed";
+
+export interface IncrementalReviewLedger {
+  enabled: boolean;
+  /** 比较基准轮（上一轮单元 journal）；null = 无可比基准 */
+  baselineRound: number | null;
+  changedUnitIds: string[];
+  removedUnitIds: string[];
+  /** 未改动但因依赖失效必须重审的单元及原因 */
+  invalidated: Array<{ unitId: string; reason: string }>;
+  dispositions: Array<{ unitId: string; disposition: IncrementalUnitDisposition; sourceRound?: number }>;
+  freshUnits: number;
+  cachedUnits: number;
+  invalidatedUnits: number;
+  /** 跨章一致性审查恒为本轮新执行（不缓存） */
+  crossChapterFresh: boolean;
+  /** 禁用 / 降级原因（如 runtime 无法证明模型一致） */
+  note?: string;
+}
+
+const SUMMARY_HEADING_PATTERN = /(摘要|引言|绪论|前言|结论|总结|结语|讨论|展望|贡献|局限|abstract|introduction|conclusion|discussion|summary|contribution|limitation)/i;
+const SUMMARY_LABEL_PATTERN = /^sec:(intro|introduction|conclusion|conclusions|discussion|summary|contrib)/i;
+const LATEX_LABEL_PATTERN = /\\label\{([^{}]+)\}/g;
+const LATEX_REF_PATTERN = /\\(?:ref|eqref|autoref|cref|Cref|pageref|nameref)\*?\{([^{}]+)\}/g;
+
+/**
+ * M14.8.1-MOT：增量复审的保守依赖失效（纯函数）。
+ *
+ * 只改了少数章节时，未改动单元的既往审查可复用——但以下单元即使原文未变也必须重审：
+ * 1. 汇总型单元（摘要 / 引言 / 讨论 / 结论 / 贡献 / 局限所在的顶层章节，含其子节）：
+ *    它们复述全文主张，任何正文改动都可能使其与正文产生新冲突；
+ * 2. 引用了改动单元内定义的 \label（表 / 图 / 公式 / 章节）的单元：其论述依赖被改内容。
+ * 基准是上一轮 journal 的单元内容指纹；无基准 → 全部视为改动（等价全量审）。
+ */
+export function planIncrementalInvalidation(input: {
+  units: ReadonlyArray<{ unitId: string; spanId: string; heading: string; contentHash: string; text: string }>;
+  baselineHashes: ReadonlyMap<string, string> | null;
+}): { changed: Set<string>; removed: string[]; invalidated: Map<string, string> } {
+  const changed = new Set<string>();
+  const invalidated = new Map<string, string>();
+  if (input.baselineHashes === null) {
+    for (const unit of input.units) changed.add(unit.unitId);
+    return { changed, removed: [], invalidated };
+  }
+  const currentIds = new Set(input.units.map((unit) => unit.unitId));
+  const removed = [...input.baselineHashes.keys()].filter((unitId) => !currentIds.has(unitId));
+  for (const unit of input.units) {
+    if (input.baselineHashes.get(unit.unitId) !== unit.contentHash) changed.add(unit.unitId);
+  }
+  const anyChange = changed.size > 0 || removed.length > 0;
+  if (!anyChange) return { changed, removed, invalidated };
+  const changedLabels = new Set<string>();
+  for (const unit of input.units) {
+    if (!changed.has(unit.unitId)) continue;
+    for (const match of unit.text.matchAll(LATEX_LABEL_PATTERN)) changedLabels.add(match[1]!.trim());
+  }
+  let topHeading = "";
+  let topSpanId = "";
+  for (const unit of input.units) {
+    if (/^\s*\\(?:chapter|section)\*?\{/.test(unit.text) || unit.spanId === "frontmatter") {
+      topHeading = unit.heading;
+      topSpanId = unit.spanId;
+    }
+    if (changed.has(unit.unitId)) continue;
+    const summary = unit.spanId === "frontmatter" || topSpanId === "frontmatter" ||
+      SUMMARY_HEADING_PATTERN.test(topHeading) || SUMMARY_LABEL_PATTERN.test(topSpanId) ||
+      SUMMARY_HEADING_PATTERN.test(unit.heading) || SUMMARY_LABEL_PATTERN.test(unit.spanId);
+    if (summary) {
+      invalidated.set(unit.unitId, `summary_unit（${topHeading || unit.heading}）：正文有改动，汇总型单元必须重审`);
+      continue;
+    }
+    const refs = [...unit.text.matchAll(LATEX_REF_PATTERN)].flatMap((match) => match[1]!.split(",").map((ref) => ref.trim()));
+    const dependency = refs.find((ref) => changedLabels.has(ref));
+    if (dependency !== undefined) invalidated.set(unit.unitId, `ref_dependency（\\ref{${dependency}} 指向改动单元）`);
+  }
+  return { changed, removed, invalidated };
 }
 
 export interface ReviewCoverageSummary {
@@ -86,6 +179,8 @@ export interface ReviewCoverageSummary {
   ratio: number;
   complete: boolean;
   failedUnitIds: string[];
+  /** M14.8.1-MOT：增量复审账本（Fresh / 合法缓存 / 依赖失效 / 未审；缺省 = 旧产物或 digest 模式） */
+  incremental?: IncrementalReviewLedger;
 }
 
 /** 与 definitions.ts buildManuscriptDigest 相同的截面预算判定（不修改其输出） */
@@ -154,7 +249,7 @@ export function computeReviewCoverage(
   let completedChars = 0;
   let completedUnits = 0;
   let reusedUnits = 0;
-  const failedUnitIds: string[] = [];
+  const failedCandidates: string[] = [];
   const counted = new Set<string>();
   for (const record of records) {
     if (!charsByUnitId.has(record.unitId) || counted.has(record.unitId)) continue;
@@ -167,9 +262,12 @@ export function computeReviewCoverage(
       completedChars += charsByUnitId.get(record.unitId) ?? 0;
       if (record.round !== round) reusedUnits += 1;
     } else if (record.status === "failed") {
-      failedUnitIds.push(record.unitId);
+      failedCandidates.push(record.unitId);
     }
   }
+  // M14.8.1-MOT：同轮 stage 重试时旧 failed 记录排在新 completed 记录之前——单元已完成就
+  // 不再同时计为失败（旧口径会让同一单元既计入完成又出现在 failedUnitIds）
+  const failedUnitIds = [...new Set(failedCandidates.filter((unitId) => !counted.has(unitId)))];
   const targetChars = plan.targetChars;
   return {
     mode,

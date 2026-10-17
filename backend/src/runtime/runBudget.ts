@@ -120,6 +120,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
     this.rotateProjectIdleSessions = options.runtime.rotateProjectIdleSessions?.bind(options.runtime);
     this.runtimeStats = options.runtime.runtimeStats?.bind(options.runtime);
     this.sessionDiagnostics = options.runtime.sessionDiagnostics?.bind(options.runtime);
+    this.describeAgentContext = options.runtime.describeAgentContext?.bind(options.runtime);
   }
 
   async startAgent(input: RunAgentInput): Promise<AgentRunHandle> {
@@ -183,6 +184,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
   readonly rotateProjectIdleSessions?: (projectId: string) => Promise<number>;
   readonly runtimeStats?: () => RuntimeSessionStats;
   readonly sessionDiagnostics?: () => SessionDiagnosticEntry[];
+  readonly describeAgentContext?: AgentRuntime["describeAgentContext"];
 
   // ---- 账本 ----
 

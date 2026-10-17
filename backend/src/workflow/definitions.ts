@@ -219,7 +219,7 @@ import {
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
-import { applyRevisionSpan, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
 import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
@@ -310,8 +310,12 @@ import {
   buildReviewCoveragePlan,
   computeReviewCoverage,
   digestIsLossy,
+  planIncrementalInvalidation,
+  type IncrementalReviewLedger,
+  type IncrementalUnitDisposition,
   type ReviewCoverageSummary,
   type ReviewUnitPlanEntry,
+  type ReviewUnitRecord,
 } from "../review/coverageLedger.js";
 import { projectFindingTarget } from "../review/findingProjection.js";
 import {
@@ -478,6 +482,8 @@ export interface WorkflowServices {
     reviewConcurrency: number;
     /** benchmark / 诊断：限制单次审阅的章节数（0 = 不限制） */
     reviewSectionLimit: number;
+    /** M14.8.1-MOT：长文档单元审查的跨轮合法缓存（缺省开启；PAPERTEAM_REVIEW_INCREMENTAL=0 关闭） */
+    incrementalUnitReuse?: boolean;
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -501,6 +507,8 @@ export interface PaperReviewServices {
 const MAX_FEASIBILITY_ADJUSTMENTS = 3;
 const MAX_OUTLINE_REVISIONS = 3;
 const MAX_PLAN_REVISIONS = 3;
+/** M14.8.1-MOT：改进计划 HITL 展示条目上限（只防病态体量；正常计划全部展示） */
+const HITL_PLAN_ITEMS_MAX = 80;
 /** 手动追加修订轮数（HITL revise_more）的绝对上限 */
 const MAX_MANUAL_REVISION_ROUNDS = 3;
 /** 单轮 section review 的章节上限（超出部分如实记录为 skipped） */
@@ -688,6 +696,45 @@ function reviewRunStageInner(
         const evidenceDigestLines = evidenceSelection.formal.slice(0, 15).map((record, index) =>
           `- [E${String(index + 1).padStart(3, "0")}] ${record.claim.slice(0, 140)}（${record.verificationStatus}）`);
         const unitAttempts = 3;
+        /**
+         * M14.8.1-MOT 增量复审：M14.8 真实返修只改了 3 节，复审却重跑全部 35 个单元
+         * （unit journal 只在同轮复用）。跨轮复用的条件同时满足才成立：
+         *   ① 请求指纹相同（完整 prompt：单元原文 + 章节索引 + 证据 / 引用摘要 + 实验口径 +
+         *      语言；+ 实际模型 + Skill 版本——任一输入变化即失效）；
+         *   ② 单元未改动，且不被依赖失效（汇总型章节在正文有改动时恒重审；引用改动单元
+         *      \label 的单元重审，见 planIncrementalInvalidation）。
+         * 跨章一致性审查恒为新执行；Runtime 无法证明模型一致时不复用（等价全量审）。
+         */
+        const incrementalEnabled = services.review.incrementalUnitReuse !== false;
+        let baselineRound: number | null = null;
+        let baselineRecords: ReviewUnitRecord[] = [];
+        const priorByFingerprint = new Map<string, ReviewUnitRecord>();
+        if (incrementalEnabled) {
+          for (let prior = round - 1; prior >= Math.max(1, round - 4); prior -= 1) {
+            const records = (await services.reviewArtifacts.loadReviewUnitRecords(ctx.projectId, prior))
+              .filter((record) => record.status === "completed");
+            if (records.length === 0) continue;
+            if (baselineRound === null) {
+              baselineRound = prior;
+              baselineRecords = records;
+            }
+            for (const record of records) {
+              if (record.requestFingerprint !== undefined && record.outcome !== undefined && !priorByFingerprint.has(record.requestFingerprint)) {
+                priorByFingerprint.set(record.requestFingerprint, record);
+              }
+            }
+          }
+        }
+        const invalidation = planIncrementalInvalidation({
+          units: coveragePlan.units.map((unit) => ({
+            unitId: unit.unitId, spanId: unit.spanId, heading: unit.heading, contentHash: unit.contentHash,
+            text: spanByUnitId.get(unit.unitId)?.content ?? "",
+          })),
+          baselineHashes: baselineRound === null ? null : new Map(baselineRecords.map((record) => [record.unitId, record.unitFingerprint])),
+        });
+        const baselineUnitIds = new Set(baselineRecords.map((record) => record.unitId));
+        const dispositions = new Map<string, { disposition: IncrementalUnitDisposition; sourceRound?: number }>();
+        let fingerprintUnavailable = false;
         const outcomes = await mapWithConcurrency(
           coveragePlan.units,
           services.review.reviewConcurrency,
@@ -719,6 +766,7 @@ function reviewRunStageInner(
             // 不调用模型（真实论文 41 个单元中 7 个是这种标题单元，每轮白耗 7 次调用）；
             // 记为已完成、零 finding、分数 null（不参与字符加权聚合），覆盖率如实计入。
             if (isHeadingOnlyUnit(unitSpan.content)) {
+              dispositions.set(unit.unitId, { disposition: "heading_only" });
               const summaryText = "仅章节标题，无正文（未调用模型）";
               const record = {
                 unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
@@ -729,23 +777,56 @@ function reviewRunStageInner(
               await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
               return { unit, record, review: { issues: [] as ReviewIssueOfUnit[], academicScore: null, riskScore: null, summary: summaryText, taskId: "(heading-only)" }, reused: false };
             }
+            const unitParams = {
+              projectId: ctx.projectId,
+              unit: {
+                unitId: unit.unitId, file: unit.file, heading: unit.heading,
+                unitIndex: unit.unitIndex, unitCount: unit.unitCount, text: unitSpan.content,
+              },
+              ...(project.title !== "" ? { paperTitle: project.title } : {}),
+              chapterIndex,
+              ...(evidenceDigestLines.length > 0 ? { evidenceDigest: evidenceDigestLines } : {}),
+              ...(citationDigest !== undefined ? { citationDigest } : {}),
+              ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
+              ...(language !== undefined ? { language } : {}),
+              signal: ctx.signal,
+            };
+            const requestFingerprint = incrementalEnabled
+              ? ((await services.reviewer.unitRequestFingerprint?.(unitParams)) ?? null)
+              : null;
+            if (incrementalEnabled && requestFingerprint === null) fingerprintUnavailable = true;
+            const invalidationReason = invalidation.invalidated.get(unit.unitId);
+            const cachedSource = requestFingerprint !== null ? priorByFingerprint.get(requestFingerprint) : undefined;
+            if (invalidation.changed.has(unit.unitId)) {
+              dispositions.set(unit.unitId, { disposition: baselineRound !== null && !baselineUnitIds.has(unit.unitId) ? "fresh_new" : "fresh_changed" });
+            } else if (invalidationReason !== undefined) {
+              dispositions.set(unit.unitId, { disposition: "fresh_invalidated" });
+            } else if (cachedSource !== undefined && cachedSource.outcome !== undefined && cachedSource.unitFingerprint === unit.contentHash) {
+              // 合法缓存：同一审稿请求的既往完成审查（issues / 分数完整恢复；来源可追溯）
+              const record: ReviewUnitRecord = {
+                unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
+                status: "completed", ...(cachedSource.taskId !== undefined ? { taskId: cachedSource.taskId } : {}),
+                issueCount: cachedSource.outcome.issues.length, attempts: 0, updatedAt: new Date().toISOString(),
+                outcome: cachedSource.outcome, requestFingerprint: requestFingerprint!,
+                reusedFrom: { round: cachedSource.round, updatedAt: cachedSource.updatedAt, ...(cachedSource.taskId !== undefined ? { taskId: cachedSource.taskId } : {}) },
+              };
+              await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
+              dispositions.set(unit.unitId, { disposition: "cached", sourceRound: cachedSource.round });
+              return {
+                unit, record, reused: true,
+                review: {
+                  issues: cachedSource.outcome.issues as unknown as ReviewIssueOfUnit[],
+                  academicScore: cachedSource.outcome.academicScore, riskScore: cachedSource.outcome.riskScore,
+                  summary: cachedSource.outcome.summary, taskId: cachedSource.taskId ?? "(cached)",
+                },
+              };
+            } else {
+              dispositions.set(unit.unitId, { disposition: "fresh_no_valid_cache" });
+            }
             let lastError: unknown;
             for (let attempt = 1; attempt <= unitAttempts; attempt += 1) {
               try {
-                const review = await services.reviewer.reviewUnit({
-                  projectId: ctx.projectId,
-                  unit: {
-                    unitId: unit.unitId, file: unit.file, heading: unit.heading,
-                    unitIndex: unit.unitIndex, unitCount: unit.unitCount, text: unitSpan.content,
-                  },
-                  ...(project.title !== "" ? { paperTitle: project.title } : {}),
-                  chapterIndex,
-                  ...(evidenceDigestLines.length > 0 ? { evidenceDigest: evidenceDigestLines } : {}),
-                  ...(citationDigest !== undefined ? { citationDigest } : {}),
-                  ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
-                  ...(language !== undefined ? { language } : {}),
-                  signal: ctx.signal,
-                });
+                const review = await services.reviewer.reviewUnit(unitParams);
                 const record = {
                   unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
                   status: "completed" as const, taskId: review.taskId, issueCount: review.issues.length,
@@ -754,6 +835,7 @@ function reviewRunStageInner(
                     issues: review.issues as unknown as Array<Record<string, unknown>>,
                     academicScore: review.academicScore, riskScore: review.riskScore, summary: review.summary,
                   },
+                  ...(requestFingerprint !== null ? { requestFingerprint } : {}),
                 };
                 await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
                 return { unit, record, review, reused: false };
@@ -771,6 +853,7 @@ function reviewRunStageInner(
               attempts: unitAttempts, updatedAt: new Date().toISOString(),
             };
             await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
+            dispositions.set(unit.unitId, { disposition: "failed" });
             return { unit, record, review: null, reused: false };
           },
           { signal: ctx.signal },
@@ -808,6 +891,26 @@ function reviewRunStageInner(
         // 复用计数以本轮实际命中 journal 的单元为准（computeReviewCoverage 的
         // 跨轮口径无法识别同轮 stage 重启——journal 记录 round 相同）
         coverageSummary.reusedUnits = settled.filter((entry) => entry?.reused === true).length;
+        // M14.8.1-MOT：增量复审账本——Fresh / 合法缓存（来源轮次）/ 依赖失效重审 / 未审 分开记录；
+        // 100% coverage 不等于 100% 本轮重新调用模型
+        {
+          const entries = coveragePlan.units.map((unit) => ({ unitId: unit.unitId, ...(dispositions.get(unit.unitId) ?? { disposition: "cached" as const }) }));
+          const ledger: IncrementalReviewLedger = {
+            enabled: incrementalEnabled,
+            baselineRound,
+            changedUnitIds: [...invalidation.changed].filter(() => baselineRound !== null),
+            removedUnitIds: invalidation.removed,
+            invalidated: [...invalidation.invalidated.entries()].map(([unitId, reason]) => ({ unitId, reason })),
+            dispositions: entries,
+            freshUnits: entries.filter((entry) => entry.disposition.startsWith("fresh_")).length,
+            cachedUnits: entries.filter((entry) => entry.disposition === "cached").length,
+            invalidatedUnits: entries.filter((entry) => entry.disposition === "fresh_invalidated").length,
+            crossChapterFresh: chapterDigests.length >= 2,
+            ...(fingerprintUnavailable ? { note: "runtime 无法证明审稿模型 / Skill 一致：跨轮缓存未启用（等价全量审）" } : {}),
+          };
+          coverageSummary.incremental = ledger;
+          ctx.log(`[review] 增量复审：基准轮 r${baselineRound ?? "-"}，改动 ${ledger.changedUnitIds.length}、依赖失效 ${ledger.invalidatedUnits}、新执行 ${ledger.freshUnits}、合法缓存 ${ledger.cachedUnits}`);
+        }
         // 确定性加权聚合：academicScore / styleRisk = 全部完成单元（本次执行 +
         // journal 复用，二者 review 等价）分数的字符加权平均
         let scoreWeight = 0;
@@ -2754,36 +2857,45 @@ function revisionReviseStage(
         if (writerFailure !== undefined) throw writerFailure;
         if (result === undefined) throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_WRITER_NO_RESULT");
         let acceptedAttempt = 0;
+        let acceptedAlignment: { adjustments: Array<"eol_crlf" | "whitespace_resplice">; candidateRef?: string } | undefined;
         if (resolvedSpan !== undefined && fileBefore !== undefined && result.latex.trim() !== "") {
           const basePatchId = `patch:${resolvedSpan.originalHash.slice(0, 12)}`;
           const priorRoots: string[][] = [];
           const priorProposalHashes: string[] = [];
+          // M14.8.1-MOT：引文授权区间与 span 一同固定（不随修复轮变化）。引文按 span 的
+          // 换行风格对齐后定位（CRLF 稿件里 Planner 引文的裸 LF 不再导致 UNRESOLVED）。
+          const quotes = [...new Set(matchedItems.flatMap(item => item.targetQuote ? [adaptLineEndingsToSpan(resolvedSpan.content, item.targetQuote)] : []))];
+          // Reuse the existing immutable prefix/suffix guard inside the section.
+          // Multiple quotes: M14.1a — quotes whose unique ranges pairwise overlap
+          // or nest (same region of text) authorize exactly their union range;
+          // disjoint or non-unique quotes still require explicit replanning and
+          // are never unioned into a silently broader authorization.
+          const quoteRanges = quotes
+            .map((quote) => {
+              const start = resolvedSpan.content.indexOf(quote);
+              return start >= 0 && resolvedSpan.content.indexOf(quote, start + 1) < 0
+                ? { start, end: start + quote.length, originalHash: revisionSourceHash(quote) }
+                : null;
+            })
+            .filter((range): range is { start: number; end: number; originalHash: string } => range !== null);
+          const quotesResolvable = quoteRanges.length === quotes.length;
+          const pairwiseOverlapping = quotesResolvable && quoteRanges.every((range) =>
+            quoteRanges.every((other) => other === range || (range.start < other.end && other.start < range.end)));
+          const authorized = quotes.length === 0
+            ? undefined
+            : quotesResolvable && pairwiseOverlapping
+              ? { start: Math.min(...quoteRanges.map((range) => range.start)), end: Math.max(...quoteRanges.map((range) => range.end)), originalHash: revisionSourceHash(resolvedSpan.content.slice(Math.min(...quoteRanges.map((range) => range.start)), Math.max(...quoteRanges.map((range) => range.end)))) }
+              : quoteRanges.length === 1 ? quoteRanges[0] : undefined;
           for (let attempt = 0; attempt <= 2; attempt += 1) {
-            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, result.latex.trim(), { preserveBoundaryWhitespace: matchedItems.some(item => item.targetQuote !== undefined) });
+            // M14.8.1-MOT：提案格式对齐（换行风格 + 引文外纯空白差异的原文回填）。判定口径
+            // 不变：引文外仍逐字节校验，对齐只消除 LaTeX 无语义的格式差异。
+            const alignment = alignProposalToSpan(resolvedSpan.content, result.latex.trim(), authorized);
+            const proposal = alignment.proposal;
+            const candidate = applyRevisionSpan(fileBefore, resolvedSpan, proposal, { preserveBoundaryWhitespace: matchedItems.some(item => item.targetQuote !== undefined) });
             const failures: { code: RevisionViolationCode; detail: string; evidenceId?: string; metric?: string }[] = [];
             const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
             if (!scope.allowed) failures.push({ code: "scope_violation", detail: scope.reason ?? "revision scope violation" });
-            const quotes = [...new Set(matchedItems.flatMap(item => item.targetQuote ? [item.targetQuote] : []))];
             if (quotes.length > 0) {
-              // Reuse the existing immutable prefix/suffix guard inside the section.
-              // Multiple quotes: M14.1a — quotes whose unique ranges pairwise overlap
-              // or nest (same region of text) authorize exactly their union range;
-              // disjoint or non-unique quotes still require explicit replanning and
-              // are never unioned into a silently broader authorization.
-              const ranges = quotes
-                .map((quote) => {
-                  const start = resolvedSpan.content.indexOf(quote);
-                  return start >= 0 && resolvedSpan.content.indexOf(quote, start + 1) < 0
-                    ? { start, end: start + quote.length, originalHash: revisionSourceHash(quote) }
-                    : null;
-                })
-                .filter((range): range is { start: number; end: number; originalHash: string } => range !== null);
-              const resolvable = ranges.length === quotes.length;
-              const pairwiseOverlapping = resolvable && ranges.every((range) =>
-                ranges.every((other) => other === range || (range.start < other.end && other.start < range.end)));
-              const authorized = resolvable && pairwiseOverlapping
-                ? { start: Math.min(...ranges.map((range) => range.start)), end: Math.max(...ranges.map((range) => range.end)), originalHash: revisionSourceHash(resolvedSpan.content.slice(Math.min(...ranges.map((range) => range.start)), Math.max(...ranges.map((range) => range.end)))) }
-                : ranges.length === 1 ? ranges[0] : undefined;
               const candidateSection = candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end));
               const inside = authorized !== undefined && checkRevisionScope(resolvedSpan.content, candidateSection, authorized).allowed;
               if (!inside) {
@@ -2924,8 +3036,25 @@ function revisionReviseStage(
               }
             }
             const failuresKey = [...new Set(failures.map((failure) => failure.code))].sort();
+            // M14.8.1-MOT：候选原文落盘（接受 / 拒绝都记录，供确定性回放）
+            const candidateRef = await services.reviewArtifacts.savePatchCandidate(ctx.projectId, `rev-${currentRevision + 1}`, {
+              schemaVersion: 1,
+              patchId: `${basePatchId}.a${attempt}`, originalPatchId: basePatchId, attempt,
+              revisionId: `rev-${currentRevision + 1}`, sourceRevision: currentRevision,
+              file: target.relativePath, logicalTarget: resolvedSpan.logicalSection,
+              planItemIds: matchedItems.map((item) => item.id), authorizedQuotes: quotes,
+              beforeTargetHash: resolvedSpan.originalHash,
+              rawProposal: result.latex.trim(), validatedProposal: proposal,
+              proposalAdjustments: alignment.adjustments,
+              verdict: failures.length === 0 ? "accepted" : "rejected",
+              failures: failures.map((failure) => ({ code: failure.code, detail: failure.detail })),
+              createdAt: new Date().toISOString(),
+            }).catch(() => undefined);
             if (failures.length === 0) {
               acceptedAttempt = attempt;
+              acceptedAlignment = { adjustments: alignment.adjustments, ...(candidateRef !== undefined ? { candidateRef } : {}) };
+              // 落盘与后续 lineage 使用校验通过的对齐后提案（与被校验候选逐字节一致）
+              result = { ...result, latex: proposal };
               break;
             }
 
@@ -2945,9 +3074,19 @@ function revisionReviseStage(
               citation: { ok: !failures.some((failure) => failure.code.startsWith("citation_")), findingIds: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => `${failure.code}:${attempt}`), addedKeys: [...candidateKeys].filter((key) => !originalKeys.has(key)), removedKeys: [...originalKeys].filter((key) => !candidateKeys.has(key)), violations: failures.filter((failure) => failure.code.startsWith("citation_")).map((failure) => failure.detail) },
               evidence: { ok: true, violations: [] }, apply: { ok: false, status: "rejected" }, overall: "fail", failedStage: "candidate_validation",
               rootViolationIds: failuresKey, modelRole: "revision.primary", finalStatus: attempt === 2 ? "exhausted" : "rejected",
+              ...(alignment.adjustments.length > 0 ? { proposalAdjustments: alignment.adjustments } : {}),
+              ...(candidateRef !== undefined ? { candidateRef } : {}),
             };
             patchValidationRecords.push(failed);
-            if (!scope.allowed || failures.some((failure) => failure.code === "scope_violation")) break;
+            /**
+             * M14.8.1-MOT：引文越界（且仅此一类范围违规）进入**一次**有界定向修复——修复轮以
+             * 原文为底稿、附首个越界位置摘录，要求只改引文、其余逐字恢复。其他范围违规
+             * （全局 span 越界 / 引文不可定位 / 结构损伤 / 守卫表格）仍直接拒绝，不修复。
+             */
+            const scopeFailures = failures.filter((failure) => failure.code === "scope_violation");
+            const quoteScopeOnly = scope.allowed && scopeFailures.length > 0 &&
+              scopeFailures.every((failure) => failure.detail.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION"));
+            if (!scope.allowed || (scopeFailures.length > 0 && !(quoteScopeOnly && attempt === 0))) break;
             const sameRoot = priorRoots.length > 0 && priorRoots[priorRoots.length - 1]!.join("|") === failuresKey.join("|");
             const proposalHash = revisionSourceHash(result.latex.trim());
             const sameProposal = priorProposalHashes.at(-1) === proposalHash;
@@ -2972,11 +3111,19 @@ function revisionReviseStage(
               originalText: resolvedSpan.content, proposedText: result.latex,
               mustPreserve: [...new Set([...matchedItems.flatMap((item) => item.mustPreserve?.values ?? []), ...removalMustPreserve])],
               evidenceIds: allowedEvidence.map((entry) => entry.id), ...(recordProtocolId ? { protocolId: recordProtocolId } : {}),
-              validationFailures: failures, forbiddenChanges: ["Change the verified direction or numeric values", "Modify any other patch or target", "Use evidence outside the listed verified IDs"], repairAttempt: attempt + 1,
+              validationFailures: failures,
+              forbiddenChanges: [
+                "Change the verified direction or numeric values", "Modify any other patch or target", "Use evidence outside the listed verified IDs",
+                ...(quoteScopeOnly
+                  ? [`Change any text outside the authorized quote(s) — copy every character outside them verbatim from "Original verified text"; only these quote(s) may be rewritten: ${quotes.map((quote) => JSON.stringify(quote.slice(0, 300))).join(" / ")}`]
+                  : []),
+              ],
+              repairAttempt: attempt + 1,
             };
             const diskNow = await readFile(targetFilePath, "utf8");
             if (revisionSourceHash(diskNow) !== revisionSourceHash(fileBefore)) throw new BusinessError("DIRECT_WORKSPACE_MUTATION", `patch repair workspace changed: ${basePatchId}`);
-            result = await services.writer.reviseSection({ ...writerParams, currentLatex: result.latex, evidence: allowedEvidence, patchRepairContext: buildPatchRepairPrompt(directive) });
+            // 引文越界修复以原文为底稿（上一版越界提案只作参考，见 repair prompt）
+            result = await services.writer.reviseSection({ ...writerParams, currentLatex: quoteScopeOnly ? resolvedSpan.content : result.latex, evidence: allowedEvidence, patchRepairContext: buildPatchRepairPrompt(directive) });
             const diskAfterRepair = await readFile(targetFilePath, "utf8");
             if (revisionSourceHash(diskAfterRepair) !== revisionSourceHash(fileBefore)) {
               await writeFileAtomic(targetFilePath, fileBefore);
@@ -3185,6 +3332,8 @@ function revisionReviseStage(
               evidence: { ok: true, violations: [] },
               apply: { ok: true, status: "applied" },
               overall: "pass",
+              ...(acceptedAlignment !== undefined && acceptedAlignment.adjustments.length > 0 ? { proposalAdjustments: acceptedAlignment.adjustments } : {}),
+              ...(acceptedAlignment?.candidateRef !== undefined ? { candidateRef: acceptedAlignment.candidateRef } : {}),
             };
             patchValidationRecords.push(patchRecord);
             try {
@@ -6930,10 +7079,27 @@ function importBaselineStage(services: WorkflowServices): StageSpec {
       const baseline = buildRevisionBaseline(
         files.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
       );
-      await writeJsonAtomic(
-        join(services.projects.researchDir(ctx.projectId), "revision-baseline.json"),
-        baseline,
-      );
+      const baselinePath = join(services.projects.researchDir(ctx.projectId), "revision-baseline.json");
+      /**
+       * M14.8.1-MOT：同一项目上的后续改进 run（继续返修）会以当前修订重算事实基线——
+       * 这是 Planner 需要的「当前稿件事实」。首次导入的基线（R0 投影）在被覆盖前归档一次
+       * 到 revision-baseline-initial.json，保留完整 lineage（累计事实守卫的冻结基线始终是
+       * revisions.json 的最早修订，不受本文件影响）。
+       */
+      let archivedInitial = false;
+      try {
+        const existing = JSON.parse(await readFile(baselinePath, "utf8")) as { contentHash?: unknown };
+        const initialPath = join(services.projects.researchDir(ctx.projectId), "revision-baseline-initial.json");
+        if (typeof existing.contentHash === "string" && existing.contentHash !== baseline.contentHash) {
+          try {
+            await readFile(initialPath, "utf8");
+          } catch {
+            await writeJsonAtomic(initialPath, existing);
+            archivedInitial = true;
+          }
+        }
+      } catch { /* 首次导入：无既有基线 */ }
+      await writeJsonAtomic(baselinePath, baseline);
       return {
         contentHash: baseline.contentHash.slice(0, 12),
         tables: baseline.tables.length,
@@ -6941,6 +7107,7 @@ function importBaselineStage(services: WorkflowServices): StageSpec {
         figures: baseline.figures.length,
         hardware: baseline.hardware.length,
         placeholders: baseline.placeholders,
+        ...(archivedInitial ? { archivedInitialBaseline: "research/revision-baseline-initial.json" } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -7544,9 +7711,13 @@ function planConfirmStage(services: WorkflowServices): StageSpec {
             ),
           ) as { plan?: { items?: { section: string; action: string; priority: string }[] } };
           const feasibility = (await readFeasibilityReport(services.projects, ctx.projectId))?.report;
+          // M14.8.1-MOT：计划批准即进入事实授权台账——HITL 必须展示全部条目（旧口径只给前 10 条，
+          // M14.8 真实返修 26 条中 16 条作者从未看到即被批准）。上限只防病态体量，并如实报告总数。
+          const allItems = plan.plan?.items ?? [];
           return {
             feasibilityLevel: feasibility?.level ?? null,
-            items: (plan.plan?.items ?? []).slice(0, 10),
+            items: allItems.slice(0, HITL_PLAN_ITEMS_MAX),
+            totalItems: allItems.length,
           };
         } catch {
           return undefined;

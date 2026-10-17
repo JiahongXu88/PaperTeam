@@ -1355,6 +1355,8 @@ function PlanPayload({ payload }: { payload: Record<string, unknown> }) {
   if (level === undefined && items.length === 0) {
     return null;
   }
+  // M14.8.1-MOT：后端给出计划条目总数；展示数少于总数时如实提示（批准即进入事实授权台账）
+  const totalItems = typeof payload["totalItems"] === "number" ? payload["totalItems"] : items.length;
   return (
     <div className="hitl-payload" data-testid="hitl-payload-plan">
       {level !== undefined ? (
@@ -1363,6 +1365,9 @@ function PlanPayload({ payload }: { payload: Record<string, unknown> }) {
           <RegistryStatus style={statusStyleOf(FEASIBILITY_LEVEL_STYLES, level)} />
         </p>
       ) : null}
+      <p className="hitl-payload-level" data-testid="hitl-plan-count">
+        共 {totalItems} 条计划条目{totalItems > items.length ? `（此处展示前 ${items.length} 条，其余请在「修订计划」面板查看后再批准）` : ""}
+      </p>
       <ol className="hitl-plan-list" data-testid="hitl-plan-items">
         {items.map((item, index) => (
           <li key={`${item.section}-${index}`}>

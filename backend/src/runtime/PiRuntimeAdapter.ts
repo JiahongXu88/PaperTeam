@@ -1127,6 +1127,28 @@ export class PiRuntimeAdapter implements AgentRuntime {
     };
   }
 
+  /**
+   * M14.8.1-MOT：某 contextScope 的任务将使用的模型标签与 Skill 版本（不建会话、不调用模型）。
+   * 与 createPiSession 同一解析路径（modelForScope + roleSkills），供跨轮审稿缓存的请求指纹。
+   */
+  async describeAgentContext(input: { contextScope?: string; language?: "zh" | "en" }): Promise<{ model: string; skills: string[] } | undefined> {
+    if (this.closed) return undefined;
+    await this.ensureInitialized();
+    if (this.initError !== undefined || this.model === undefined) return undefined;
+    const scope = input.contextScope;
+    const resolved = this.modelForScope(scope);
+    if (resolved.error !== undefined || resolved.label === "") return undefined;
+    const role = resolveRoleConfig(scope, "default");
+    const assignments: RuntimeSkillAssignment[] =
+      this.roleSkills !== undefined
+        ? this.roleSkills(role.role, scope, input.language)
+        : (this.roleSkillDirs?.(role.role, scope) ?? []).map((dir) => ({ id: basename(dir), contentHash: "unknown", dir }));
+    return {
+      model: resolved.label,
+      skills: assignments.map((assignment) => `${assignment.id}@${assignment.contentHash}`).sort(),
+    };
+  }
+
   /** 模型就绪摘要（RuntimeStatusService 读取；非 AgentRuntime 契约） */
   async modelStatusSnapshot(): Promise<PiModelStatus> {
     if (this.closed) {

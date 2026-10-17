@@ -29,7 +29,7 @@ import type { IterationRecord } from "./revisionOutcome.js";
 import type { BestRevisionArtifact } from "./bestRevision.js";
 import type { StylePolishResult } from "./stylePolicy.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
-import type { PatchValidationArtifact } from "./patchValidation.js";
+import type { PatchCandidateRecord, PatchValidationArtifact } from "./patchValidation.js";
 import type { AcademicRedundancyReport } from "./academicRedundancyClassifier.js";
 
 const SUMMARY_PATTERN = /^review-summary-r(\d+)\.json$/;
@@ -587,6 +587,31 @@ export class ReviewArtifactStore {
       const parsed = JSON.parse(await readFile(join(this.projects.reviewsDir(projectId), this.patchValidationFileName(revision)), "utf8")) as PatchValidationArtifact;
       return parsed.revision === revision && Array.isArray(parsed.records) ? parsed : null;
     } catch { return null; }
+  }
+
+  /**
+   * M14.8.1-MOT：补丁候选原文落盘（接受与拒绝都记录）。M14.8 真实返修 13/16 个候选被拒
+   * 却只留下 hash——事后无法区分守卫误拒、Writer 越界与管线格式错误。候选按
+   * reviews/patch-candidates/rev-{N}/{patchId}.json 存放（单个 span ≤ 数万字符，有界）。
+   */
+  async savePatchCandidate(projectId: string, revisionId: string, record: PatchCandidateRecord): Promise<string> {
+    const safeRevision = revisionId.replace(/[^a-zA-Z0-9_-]+/g, "_");
+    const safePatch = record.patchId.replace(/[^a-zA-Z0-9_.-]+/g, "_").slice(0, 80);
+    const relative = join("patch-candidates", safeRevision, `${safePatch}.json`);
+    await mkdir(join(this.projects.reviewsDir(projectId), "patch-candidates", safeRevision), { recursive: true });
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), relative), record);
+    return `reviews/${relative.replaceAll("\\", "/")}`;
+  }
+
+  async listPatchCandidates(projectId: string, revisionId: string): Promise<PatchCandidateRecord[]> {
+    const dir = join(this.projects.reviewsDir(projectId), "patch-candidates", revisionId.replace(/[^a-zA-Z0-9_-]+/g, "_"));
+    let names: string[];
+    try { names = await readdir(dir); } catch { return []; }
+    const records: PatchCandidateRecord[] = [];
+    for (const name of names.filter((entry) => entry.endsWith(".json")).sort()) {
+      try { records.push(JSON.parse(await readFile(join(dir, name), "utf8")) as PatchCandidateRecord); } catch { /* corrupt entry skipped */ }
+    }
+    return records;
   }
 
   /** 读取某一轮的验证产物（无文件 / 结构损坏 → null；防御性校验同 loadGate） */

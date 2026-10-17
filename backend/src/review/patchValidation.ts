@@ -53,6 +53,36 @@ export interface PatchValidationRecord {
   apply: { ok: boolean; status: "applied" | "rejected" };
   overall: "pass" | "fail";
   failedStage?: string;
+  /** M14.8.1-MOT：提案在校验前做的确定性格式对齐（换行风格 / 引文外空白回填） */
+  proposalAdjustments?: Array<"eol_crlf" | "whitespace_resplice">;
+  /** M14.8.1-MOT：候选原文落盘位置（reviews/patch-candidates/...） */
+  candidateRef?: string;
+}
+
+/**
+ * M14.8.1-MOT：补丁候选原文（Writer 原始提案 + 对齐后提案 + 判定），供事后确定性回放：
+ * 区分守卫误拒、Writer 越界与管线格式错误。
+ */
+export interface PatchCandidateRecord {
+  schemaVersion: 1;
+  patchId: string;
+  originalPatchId: string;
+  attempt: number;
+  revisionId: string;
+  sourceRevision: number;
+  file: string;
+  logicalTarget: string;
+  planItemIds: string[];
+  authorizedQuotes: string[];
+  beforeTargetHash: string;
+  /** Writer 原始提案（trim 后，未对齐） */
+  rawProposal: string;
+  /** 进入校验的提案（对齐后） */
+  validatedProposal: string;
+  proposalAdjustments: Array<"eol_crlf" | "whitespace_resplice">;
+  verdict: "accepted" | "rejected";
+  failures: Array<{ code: string; detail: string }>;
+  createdAt: string;
 }
 
 export interface PatchValidationArtifact {

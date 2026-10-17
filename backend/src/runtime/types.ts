@@ -352,6 +352,13 @@ export interface AgentRuntime {
 
   // ---- 诊断面（可选；GET /api/runtime/status 消费，缺省视为 unknown / 0） ----
 
+  /**
+   * M14.8.1-MOT：解析某 contextScope 的任务**将**使用的模型与 Skill 版本（不发起调用）。
+   * 供跨轮审稿缓存的请求指纹使用——同 prompt + 同模型 + 同 Skill 版本的既往完成审查
+   * 才可复用。实现未提供时调用方必须视为「不可证明一致」（禁用复用）。
+   */
+  describeAgentContext?(input: { contextScope?: string; language?: "zh" | "en" }): Promise<{ model: string; skills: string[] } | undefined>;
+
   /** 模型就绪摘要（Runtime 健康 ≠ 模型就绪） */
   modelStatusSnapshot?(): Promise<RuntimeModelStatus>;
   /** 已解析生效的模型标签 "provider/model-id"（未配置时 undefined） */

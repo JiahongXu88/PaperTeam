@@ -192,12 +192,15 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     await writeFile(path, JSON.stringify(data));
     await run.execute();
     expect(await run.source()).toBe(unrelated ? PAPER : PAPER.replace("model use", "model uses"));
-    expect(run.calls()).toBe(1);
+    // M14.8.1-MOT：引文越界获得一次有界定向修复（脚本 Writer 重复越界提案 → 仍拒绝）
+    expect(run.calls()).toBe(unrelated ? 2 : 1);
     expect(run.tasks[0]).toContain("唯一允许修改的原文");
     if (unrelated) {
       const violations = (await run.artifact())?.records[0]?.scope.violations ?? [];
       // M14.8-MOT：违规码后附引文外首个改动的诊断摘录
       expect(violations.some((violation) => violation.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION（引文"))).toBe(true);
+      expect(run.tasks[1]).toContain("outside the authorized quote");
+      expect(run.tasks[1]).toContain("The model use a compact adapter.");
     }
   });
   it.each(["This quote does not occur in the frozen source.", "The"])("stale or ambiguous targetQuote is fail-closed: %s", async quote => {
@@ -288,7 +291,7 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     expect(plan.items[0]?.targetQuote).toBe("The model use a compact adapter.");
     await writeFile(join(run.stack.store.researchDir(run.project.id), "improvement-plan.json"), JSON.stringify({ plan }));
     await run.execute();
-    expect(run.calls()).toBe(2);
+    expect(run.calls()).toBe(unrelated ? 3 : 2);
     expect(await run.source()).toBe(unrelated ? PAPER : PAPER.replace("model use", "model uses"));
     const artifact = await run.artifact();
     expect(artifact?.records[0]?.scope.ok).toBe(!unrelated);
@@ -296,6 +299,98 @@ describe("M13.7.5 production revision.apply fidelity", () => {
       const violations = artifact?.records[0]?.scope.violations ?? [];
       expect(violations.some((violation) => violation.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION（引文"))).toBe(true);
     }
+  });
+
+  /**
+   * M14.8.1-MOT：真实 MOT 稿是 CRLF 文件，Writer 输出一律归一为 LF——修复前「只改引文」的
+   * 理想候选也必然被引文外逐字节守卫拒绝（M14.8 的 11/11 REVISION_TARGET_QUOTE_SCOPE_VIOLATION）。
+   */
+  describe("M14.8.1-MOT quote-scope reliability (CRLF / whitespace / targeted repair / candidate persistence)", () => {
+    const CRLF = PAPER.replace(/\n/g, "\r\n");
+    const crlfMethod = locateLatexSections("main.tex", CRLF).find(s => s.label === "sec:method")!.content;
+    const withQuote = async (run: Awaited<ReturnType<typeof setup>>) => {
+      const path = join(run.stack.store.researchDir(run.project.id), "improvement-plan.json");
+      const data = JSON.parse(await readFile(path, "utf8"));
+      data.plan.items[0].targetQuote = "The model use a compact adapter.";
+      await writeFile(path, JSON.stringify(data));
+    };
+    it("CRLF manuscript + LF Writer output that edits only the quote is accepted and stays pure CRLF", async () => {
+      const lfProposal = crlfMethod.replace("model use", "model uses").replace(/\r\n/g, "\n").trim();
+      const run = await setup([lfProposal], undefined, undefined, undefined, CRLF);
+      await withQuote(run);
+      await run.execute();
+      const source = await run.source();
+      expect(source).toBe(CRLF.replace("model use", "model uses"));
+      expect(/(^|[^\r])\n/.test(source)).toBe(false);
+      expect(run.calls()).toBe(1);
+      const record = (await run.artifact())?.records.find((entry) => entry.overall === "pass");
+      expect(record?.proposalAdjustments).toEqual(["eol_crlf"]);
+    });
+    it("CRLF manuscript: a substantive out-of-quote edit is still rejected after the single targeted repair", async () => {
+      const overreach = crlfMethod.replace("model use", "model uses").replace("The original representation remains frozen.", "We retain the frozen original representation.").replace(/\r\n/g, "\n").trim();
+      const run = await setup([overreach], undefined, undefined, undefined, CRLF);
+      await withQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(CRLF);
+      expect(run.calls()).toBe(2);
+      const records = (await run.artifact())?.records ?? [];
+      expect(records.every((record) => record.overall === "fail")).toBe(true);
+      expect(records.at(-1)?.scope.violations.some((violation) => violation.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION"))).toBe(true);
+    });
+    it("whitespace-only drift outside the quote is restored from the original bytes (no false rejection)", async () => {
+      const paper = PAPER.replace("The original representation remains frozen.", "The original  representation   remains frozen.");
+      const sectionContent = locateLatexSections("main.tex", paper).find(s => s.label === "sec:method")!.content;
+      const collapsed = sectionContent.replace("model use", "model uses").replace(/ {2,}/g, " ").trim();
+      const run = await setup([collapsed], undefined, undefined, undefined, paper);
+      await withQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(paper.replace("model use", "model uses"));
+      expect(run.calls()).toBe(1);
+      expect((await run.artifact())?.records.find((entry) => entry.overall === "pass")?.proposalAdjustments).toEqual(["whitespace_resplice"]);
+    });
+    it("paragraph breaks are not interchangeable with spaces: merging paragraphs outside the quote is rejected", async () => {
+      const merged = good.replace("\\cite{base}\n\nThe original", "\\cite{base} The original");
+      expect(merged).not.toBe(good);
+      const run = await setup([merged]);
+      await withQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(PAPER);
+    });
+    it("quote-scope targeted repair that restores the outside text is accepted (attempt 1) and both candidates are persisted", async () => {
+      const overreach = good.replace("The original representation remains frozen.", "We retain the frozen original representation.");
+      const run = await setup([overreach, good]);
+      await withQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(PAPER.replace("model use", "model uses"));
+      expect(run.calls()).toBe(2);
+      expect(run.tasks[1]).toContain("outside the authorized quote");
+      const artifact = await run.artifact();
+      const accepted = artifact?.records.find((record) => record.overall === "pass");
+      expect(accepted?.attempt).toBe(1);
+      const candidates = await run.services.reviewArtifacts.listPatchCandidates(run.project.id, `rev-${await run.services.revisions.currentRevision(run.project.id)}`);
+      expect(candidates.map((candidate) => candidate.verdict)).toEqual(["rejected", "accepted"]);
+      expect(candidates[0]?.rawProposal).toContain("We retain the frozen original representation.");
+      expect(candidates[0]?.failures.some((failure) => failure.detail.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION"))).toBe(true);
+      expect(candidates[1]?.authorizedQuotes).toEqual(["The model use a compact adapter."]);
+      expect(accepted?.candidateRef).toMatch(/^reviews\/patch-candidates\/rev-\d+\//);
+    });
+    it("an unsupported measurement added inside the authorized quote is rejected (LF)", async () => {
+      const run = await setup([method.replace("model use a compact adapter.", "model uses a compact adapter. The measured latency is 9.7 ms.").trim()]);
+      await withQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(PAPER);
+    });
+    it("CRLF manuscript: an unsupported measurement appended to a section is rejected", async () => {
+      const run = await setup([crlfMethod.replace(/\r\n/g, "\n").trim() + "\nThe measured latency is 9.7 ms.\n"], undefined, undefined, undefined, CRLF);
+      await run.execute();
+      expect(await run.source()).toBe(CRLF);
+    });
+    it("a fact change inside the quote is still rejected even when the quote-only edit is format-aligned", async () => {
+      const run = await setup([crlfMethod.replace("model use a compact adapter.", "model uses a compact adapter. The measured latency is 9.7 ms.").replace(/\r\n/g, "\n").trim()], undefined, undefined, undefined, CRLF);
+      await withQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(CRLF);
+    });
   });
 
   it("Reviewer request to add a formula cannot authorize an invented expression", async () => {

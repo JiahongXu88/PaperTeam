@@ -90,6 +90,8 @@ export interface ReviewConfig {
   summaryConcurrency: number;
   /** 单次 review.sections 最多审阅的章节数（benchmark / 诊断用；0 = 不限制） */
   reviewSectionLimit: number;
+  /** M14.8.1-MOT：长文档单元审查跨轮合法缓存（PAPERTEAM_REVIEW_INCREMENTAL，缺省 true） */
+  incrementalUnitReuse: boolean;
   /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
@@ -635,6 +637,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: REVIEW_SECTION_LIMIT_MAX,
       }),
+      incrementalUnitReuse: readBool(source, "PAPERTEAM_REVIEW_INCREMENTAL", true),
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")

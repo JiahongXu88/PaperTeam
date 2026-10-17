@@ -213,7 +213,25 @@ describe("HitlPanel：payload 渲染（统一 shell，按 stageId 差异化）",
     );
     expect(await screen.findByTestId("hitl-payload-plan")).toHaveTextContent("补充统计显著性检验");
     expect(screen.getByTestId("hitl-plan-items")).toHaveTextContent("优先处理");
+    // M14.8.1-MOT：条目总数如实呈现（旧 payload 无 totalItems 时按展示数计）
+    expect(screen.getByTestId("hitl-plan-count")).toHaveTextContent("共 2 条计划条目");
     unmount();
+    const truncated = renderWithProviders(
+      <HitlPanel
+        run={hitlRunFixture({
+          workflowKind: "existing_paper_improvement",
+          currentStage: "hitl.plan_confirm",
+          awaiting: {
+            stageId: "hitl.plan_confirm",
+            prompt: "改进计划已生成，请确认后开始逐节改造",
+            options: ["approve", "revise", "cancel"],
+            payload: { items: [{ section: "main.tex", action: "改写摘要", priority: "high" }], totalItems: 90 },
+          },
+        })}
+      />,
+    );
+    expect(await screen.findByTestId("hitl-plan-count")).toHaveTextContent("共 90 条计划条目（此处展示前 1 条");
+    truncated.unmount();
 
     renderWithProviders(
       <HitlPanel

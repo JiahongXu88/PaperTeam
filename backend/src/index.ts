@@ -312,6 +312,7 @@ export async function startBackend(): Promise<void> {
       academicConfirmationSamples: config.review.academicConfirmationSamples,
       reviewConcurrency: config.review.reviewConcurrency,
       reviewSectionLimit: config.review.reviewSectionLimit,
+      incrementalUnitReuse: config.review.incrementalUnitReuse,
       revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,

@@ -150,22 +150,22 @@ function claimGroundingReport(claims: Array<{ section: string; claim: string; ve
 // ---- 1. 合法弱化：PASS ----
 
 describe("Typed Authorized Weakening：合法弱化", () => {
-  it("场景1：hedging 重排触发 metric_direction_flip 假阳性 + weaken 授权 → PASS（allowedWeakenings 审计）", () => {
-    // previous 一句话：HOTA 提升 / 速度下降（方向词 = 末词「下降」→ 与 metric HOTA 配对为负）
+  it("场景1：hedging 重排不再触发 metric_direction_flip 假阳性（M14.8.1 子句级口径；weaken 授权无需介入）", () => {
+    // previous 一句话：HOTA 提升 / 速度下降（旧句子级口径：末方向词「下降」与 metric HOTA 配对为负）
     const previous = [
       "\\section{消融分析}",
       "消融显示加入外观使 HOTA 提升（+0.8），而速度下降。",
     ].join("\n");
-    // current 拆句 + 加「据其原文」：HOTA 的句子方向词变「提升」→ 检测器判 flip；
-    // 但文件级方向词计数不变、数值不变、无强表述新增 = 只有断言强度变化
+    // current 拆句 + 加「据其原文」：旧口径判 flip（假阳性，需 weaken 授权兜底）；M14.8.1 子句级
+    // 口径下两个比较子句的方向词均未变化 → 无方向 finding
     const current = [
       "\\section{消融分析}",
       "据其原文，加入外观使 HOTA 提升（+0.8）。",
       "速度下降。",
     ].join("\n");
     const noAuth = evaluate({ "sections/experiments.tex": previous }, { "sections/experiments.tex": current });
-    expect(noAuth.ok).toBe(false);
-    expect(noAuth.directionalChanges).toHaveLength(1);
+    expect(noAuth.ok).toBe(true);
+    expect(noAuth.directionalChanges).toHaveLength(0);
 
     const withAuth = evaluate(
       { "sections/experiments.tex": previous },
@@ -174,7 +174,7 @@ describe("Typed Authorized Weakening：合法弱化", () => {
     );
     expect(withAuth.ok).toBe(true);
     expect(withAuth.directionalChanges).toHaveLength(0);
-    expect(withAuth.allowedWeakenings).toBe(1);
+    expect(withAuth.allowedWeakenings).toBe(0);
     expect(withAuth.weakeningAuthorizationCount).toBe(1);
   });
 
@@ -201,7 +201,8 @@ describe("Typed Authorized Weakening：合法弱化", () => {
       derived,
     );
     expect(summary.ok).toBe(true);
-    expect(summary.allowedWeakenings).toBe(1);
+    // M14.8.1：子句级口径下重排本身无方向 finding，派生授权保持可用但无需消费
+    expect(summary.allowedWeakenings).toBe(0);
   });
 
   it("场景7：R1 合法弱化后 R2 保持弱化（只改无关措辞）→ PASS", () => {
@@ -312,7 +313,7 @@ describe("Typed Authorized Weakening：授权范围的硬边界", () => {
     expect(validation.claimStrength.some((finding) => finding.action === "block")).toBe(true);
   });
 
-  it("场景5b：弱化重排（方向 finding）夹带断言升级 → FAIL（epistemic_strengthening 显式呈现 + 弱化覆盖被拒）", () => {
+  it("场景5b：弱化重排夹带断言升级 → 仍被拦截（M14.8.1：重排不再产生方向 finding，升级由 claimStrength 通道 block）", () => {
     const previous = "消融显示加入外观使 HOTA 提升（+0.8），而速度下降，据报道可能改善。";
     const current = "据其原文，加入外观使 HOTA 提升（+0.8）。\n速度下降。\n该机制已经证明显著改善。";
     const summary = evaluate(
@@ -320,10 +321,23 @@ describe("Typed Authorized Weakening：授权范围的硬边界", () => {
       { "sections/experiments.tex": current },
       [weakening({})],
     );
-    expect(summary.ok).toBe(false);
-    expect(summary.directionalChanges.some((finding) => finding.reason === "epistemic_strengthening")).toBe(true);
-    // 类别核验拒绝（强表述新增）→ 方向 finding 不被弱化授权放行
+    // 子句级口径：拆句重排不是方向翻转 → 无方向 finding、弱化授权不被消费
+    expect(summary.directionalChanges.some((finding) => finding.reason === "metric_direction_flip")).toBe(false);
     expect(summary.allowedWeakenings).toBe(0);
+    // 断言升级（可能 → 已经证明显著改善）由 Revision Validation 的 claimStrength 裁决为 block
+    const validation = evaluateRevisionValidation({
+      projectId: "p-test",
+      reviewRound: 1,
+      sourceRevision: 1,
+      revision: 2,
+      plan: null,
+      previousFiles: [{ file: "sections/experiments.tex", content: previous }],
+      currentFiles: [{ file: "sections/experiments.tex", content: current }],
+      factPreservation: summary,
+      citationPreservation: null,
+      evidenceRecords: [],
+    });
+    expect(validation.claimStrength.some((finding) => finding.action === "block")).toBe(true);
   });
 
   it("场景6：授权 claim A，Writer 顺便删 fact B → FAIL", () => {
@@ -407,10 +421,10 @@ describe("Typed Authorized Weakening：授权范围的硬边界", () => {
       { "sections/experiments.tex": current },
       [weakening({})],
     );
-    // 弱化重排被放行，但 18 → 25 的累计漂移必须呈现
+    // 弱化重排被放行（M14.8.1 子句级口径：重排不产生方向 finding），但 18 → 25 的累计漂移必须呈现
     expect(summary.ok).toBe(false);
     expect(summary.changedFacts).toHaveLength(1);
-    expect(summary.allowedWeakenings).toBe(1);
+    expect(summary.directionalChanges).toHaveLength(0);
   });
 });
 
