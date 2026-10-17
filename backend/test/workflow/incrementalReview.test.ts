@@ -9,7 +9,7 @@
  *  - Runtime 无法证明模型一致时禁用复用（等价全量审）；跨章一致性审查恒为新执行；
  *  - coverage 计入合法缓存且来源可追溯，gate 的覆盖规则照常成立。
  */
-import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
+import { readFile, readdir, rm, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { startTestStack, scriptedIdeaRuntime } from "../helpers/testStack.js";
@@ -131,6 +131,21 @@ describe("M14.8.1-MOT 增量复审（跨轮合法缓存 + 保守依赖失效）"
     expect(cached.some((unitId) => /ch[1356]\.tex/.test(unitId))).toBe(false);
     expect(calls).toBe(changed.length + invalidated.length);
     expect(r2.coverage?.complete).toBe(true);
+  });
+
+  it("同轮 stage 重试 / 进程重启：journal 恢复沿用原处置，账本不把本轮新执行单元误记为缓存，零额外单元调用", async () => {
+    const h = await setup();
+    await h.runReview();
+    await h.write(3, chapter(3).replace("Paragraph 2: p2 ch3", "Paragraph 2 (revised): p2 ch3"));
+    await h.runReview();
+    const before = (await h.summary(2)).coverage!.incremental!;
+    // 模拟 stage 在写 summary 之前中断：删除 r2 summary 后同轮重跑（journal r2 全部完成）
+    await rm(join(h.stack.store.reviewsDir(h.projectId), "review-summary-r2.json"));
+    expect(await h.runReview()).toBe(0);
+    const after = (await h.summary(2)).coverage!.incremental!;
+    expect(after.freshUnits).toBe(before.freshUnits);
+    expect(after.cachedUnits).toBe(before.cachedUnits);
+    expect(after.dispositions).toEqual(before.dispositions);
   });
 
   it("审稿模型变化：请求指纹失效，全部单元重审", async () => {

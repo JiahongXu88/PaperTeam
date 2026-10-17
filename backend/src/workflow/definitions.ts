@@ -757,6 +757,13 @@ function reviewRunStageInner(
                 summary: reused.outcome.summary,
                 taskId: reused.taskId ?? "(reused)",
               };
+              // M14.8.1-MOT：同轮 journal 恢复（stage 重试 / 进程重启）沿用记录里的原处置，
+              // 增量账本不把本轮新执行的单元误记为跨轮缓存
+              dispositions.set(unit.unitId, reused.disposition !== undefined
+                ? { disposition: reused.disposition, ...(reused.reusedFrom !== undefined ? { sourceRound: reused.reusedFrom.round } : {}) }
+                : reused.reusedFrom !== undefined
+                  ? { disposition: "cached", sourceRound: reused.reusedFrom.round }
+                  : { disposition: reused.taskId === "(heading-only)" ? "heading_only" : "fresh_no_valid_cache" });
               return { unit, record: reused, review: restored, reused: true };
             }
             if (ctx.signal.aborted) {
@@ -771,7 +778,7 @@ function reviewRunStageInner(
               const record = {
                 unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
                 status: "completed" as const, taskId: "(heading-only)", issueCount: 0,
-                attempts: 0, updatedAt: new Date().toISOString(),
+                attempts: 0, updatedAt: new Date().toISOString(), disposition: "heading_only" as const,
                 outcome: { issues: [], academicScore: null, riskScore: null, summary: summaryText },
               };
               await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
@@ -809,6 +816,7 @@ function reviewRunStageInner(
                 issueCount: cachedSource.outcome.issues.length, attempts: 0, updatedAt: new Date().toISOString(),
                 outcome: cachedSource.outcome, requestFingerprint: requestFingerprint!,
                 reusedFrom: { round: cachedSource.round, updatedAt: cachedSource.updatedAt, ...(cachedSource.taskId !== undefined ? { taskId: cachedSource.taskId } : {}) },
+                disposition: "cached",
               };
               await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
               dispositions.set(unit.unitId, { disposition: "cached", sourceRound: cachedSource.round });
@@ -836,6 +844,7 @@ function reviewRunStageInner(
                     academicScore: review.academicScore, riskScore: review.riskScore, summary: review.summary,
                   },
                   ...(requestFingerprint !== null ? { requestFingerprint } : {}),
+                  ...(dispositions.get(unit.unitId) !== undefined ? { disposition: dispositions.get(unit.unitId)!.disposition } : {}),
                 };
                 await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
                 return { unit, record, review, reused: false };

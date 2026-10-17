@@ -77,6 +77,8 @@ export interface ReviewUnitRecord {
   requestFingerprint?: string;
   /** M14.8.1-MOT：本记录是跨轮合法缓存（来源轮次与来源记录时间） */
   reusedFrom?: { round: number; updatedAt: string; taskId?: string };
+  /** M14.8.1-MOT：写入时的增量处置（同轮 journal 恢复时沿用，账本不失真） */
+  disposition?: IncrementalUnitDisposition;
 }
 
 /** M14.8.1-MOT：增量复审中单元的处置（Fresh / 合法缓存 / 依赖失效重审 / 未审） */
