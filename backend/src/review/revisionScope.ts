@@ -355,6 +355,44 @@ export function describeScopeViolation(
   return "候选长度不足以容纳引文外原文";
 }
 
+/**
+ * M14.8.1-MOT：多个互不重叠引文的授权（逐字节）。候选必须由原文的引文外片段按原顺序、逐字节
+ * 拼接而成，引文位置可被任意替换：P0 X1 P1 X2 … Xk Pk（Pi 为原文引文外片段）。每个引文只授权它
+ * 自己的区间——不并集、不扩大授权（M14.1a「不相交引文不得静默合并为更宽授权」的纪律不变）。
+ * 真实返修第 2 轮：审稿 finding 投影的计划条目在同一章节常有多处互不相交的引文，旧口径一律
+ * 判 REVISION_TARGET_QUOTE_UNRESOLVED（33 个候选中 28 个因此直接作废）。
+ */
+export function checkMultiRangeScope(
+  baseline: string,
+  candidate: string,
+  ranges: ReadonlyArray<Pick<RevisionSpan, "start" | "end">>,
+): { allowed: boolean; failedSegment?: number } {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  for (let index = 1; index < sorted.length; index += 1) {
+    if (sorted[index]!.start < sorted[index - 1]!.end) return { allowed: false, failedSegment: index };
+  }
+  const segments: string[] = [];
+  let cursor = 0;
+  for (const range of sorted) {
+    segments.push(baseline.slice(cursor, range.start));
+    cursor = range.end;
+  }
+  segments.push(baseline.slice(cursor));
+  const first = segments[0]!;
+  const last = segments[segments.length - 1]!;
+  if (!candidate.startsWith(first)) return { allowed: false, failedSegment: 0 };
+  const suffixStart = candidate.length - last.length;
+  if (!candidate.endsWith(last) || suffixStart < first.length) return { allowed: false, failedSegment: segments.length - 1 };
+  let at = first.length;
+  for (let index = 1; index < segments.length - 1; index += 1) {
+    const segment = segments[index]!;
+    const found = candidate.indexOf(segment, at);
+    if (found < 0 || found + segment.length > suffixStart) return { allowed: false, failedSegment: index };
+    at = found + segment.length;
+  }
+  return { allowed: true };
+}
+
 export function revisionSpansOverlap(a: RevisionSpan, b: RevisionSpan): boolean {
   return a.file === b.file && a.start < b.end && b.start < a.end;
 }

@@ -219,7 +219,7 @@ import {
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
-import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkMultiRangeScope, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
 import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
@@ -2895,6 +2895,16 @@ function revisionReviseStage(
             : quotesResolvable && pairwiseOverlapping
               ? { start: Math.min(...quoteRanges.map((range) => range.start)), end: Math.max(...quoteRanges.map((range) => range.end)), originalHash: revisionSourceHash(resolvedSpan.content.slice(Math.min(...quoteRanges.map((range) => range.start)), Math.max(...quoteRanges.map((range) => range.end)))) }
               : quoteRanges.length === 1 ? quoteRanges[0] : undefined;
+          // M14.8.1-MOT：多个可唯一定位、互不重叠的引文——逐个引文授权（不并集），引文外原文逐字节
+          // 按序保留（checkMultiRangeScope）。重叠的引文先合并为其各自的并集区间。
+          const multiRanges = authorized === undefined && quotes.length > 1 && quotesResolvable
+            ? [...quoteRanges].sort((a, b) => a.start - b.start).reduce<Array<{ start: number; end: number }>>((merged, range) => {
+                const last = merged[merged.length - 1];
+                if (last !== undefined && range.start < last.end) last.end = Math.max(last.end, range.end);
+                else merged.push({ start: range.start, end: range.end });
+                return merged;
+              }, [])
+            : undefined;
           for (let attempt = 0; attempt <= 2; attempt += 1) {
             // M14.8.1-MOT：提案格式对齐（换行风格 + 引文外纯空白差异的原文回填）。判定口径
             // 不变：引文外仍逐字节校验，对齐只消除 LaTeX 无语义的格式差异。
@@ -2906,14 +2916,19 @@ function revisionReviseStage(
             if (!scope.allowed) failures.push({ code: "scope_violation", detail: scope.reason ?? "revision scope violation" });
             if (quotes.length > 0) {
               const candidateSection = candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end));
-              const inside = authorized !== undefined && checkRevisionScope(resolvedSpan.content, candidateSection, authorized).allowed;
+              const multi = multiRanges !== undefined ? checkMultiRangeScope(resolvedSpan.content, candidateSection, multiRanges) : undefined;
+              const inside = authorized !== undefined
+                ? checkRevisionScope(resolvedSpan.content, candidateSection, authorized).allowed
+                : multi?.allowed === true;
               if (!inside) {
                 failures.push({
                   code: "scope_violation",
-                  detail: authorized === undefined
+                  detail: authorized === undefined && multi === undefined
                     ? "REVISION_TARGET_QUOTE_UNRESOLVED"
-                    // M14.8-MOT：附带引文外首个改动位置与摘录（候选不落盘时唯一的诊断依据）
-                    : `REVISION_TARGET_QUOTE_SCOPE_VIOLATION（${describeScopeViolation(resolvedSpan.content, candidateSection, authorized)}）`,
+                    : authorized === undefined
+                      ? `REVISION_TARGET_QUOTE_SCOPE_VIOLATION（${multiRanges!.length} 处引文授权：引文外第 ${multi!.failedSegment! + 1} 段原文未逐字保留）`
+                      // M14.8-MOT：附带引文外首个改动位置与摘录（候选不落盘时唯一的诊断依据）
+                      : `REVISION_TARGET_QUOTE_SCOPE_VIOLATION（${describeScopeViolation(resolvedSpan.content, candidateSection, authorized)}）`,
                 });
               }
             }

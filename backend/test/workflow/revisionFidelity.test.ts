@@ -391,6 +391,36 @@ describe("M13.7.5 production revision.apply fidelity", () => {
       await run.execute();
       expect(await run.source()).toBe(CRLF);
     });
+    /**
+     * 第 2 轮实录：审稿 finding 投影的条目在同一章节有多处互不相交引文，旧口径一律
+     * REVISION_TARGET_QUOTE_UNRESOLVED（33 个候选中 28 个直接作废）。逐个引文授权、不并集。
+     */
+    const withTwoQuotes = async (run: Awaited<ReturnType<typeof setup>>) => {
+      const path = join(run.stack.store.researchDir(run.project.id), "improvement-plan.json");
+      const data = JSON.parse(await readFile(path, "utf8"));
+      data.plan.items[0].targetQuote = "The model use a compact adapter.";
+      data.plan.items.push({ ...data.plan.items[0], id: "improvement:2", action: "Tighten the second sentence.", targetQuote: "The original representation remains frozen." });
+      await writeFile(path, JSON.stringify(data));
+    };
+    it("two disjoint quotes in one span: editing exactly the two quotes is accepted (no union, every other byte preserved)", async () => {
+      const proposal = good.replace("The original representation remains frozen.", "The original representation is kept frozen.");
+      const run = await setup([proposal]);
+      await withTwoQuotes(run);
+      await run.execute();
+      expect(await run.source()).toBe(PAPER.replace("model use", "model uses").replace("remains frozen", "is kept frozen"));
+      expect(run.calls()).toBe(1);
+    });
+    it("two disjoint quotes in one span: an edit between the quotes is rejected after one targeted repair", async () => {
+      const proposal = good.replace("\\cite{base}\n\nThe original", "\\cite{base} Indeed,\n\nThe original");
+      expect(proposal).not.toBe(good);
+      const run = await setup([proposal]);
+      await withTwoQuotes(run);
+      await run.execute();
+      expect(await run.source()).toBe(PAPER);
+      expect(run.calls()).toBe(2);
+      const violations = (await run.artifact())?.records.at(-1)?.scope.violations ?? [];
+      expect(violations.some((violation) => violation.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION（2 处引文授权"))).toBe(true);
+    });
   });
 
   it("Reviewer request to add a formula cannot authorize an invented expression", async () => {
