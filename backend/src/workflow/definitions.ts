@@ -46,6 +46,13 @@ import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
 import type { TargetedGroundingService } from "../evidence/TargetedGroundingService.js";
 import { supplyResearchEvidence } from "../evidence/ResearchEvidenceSupply.js";
+import {
+  compareAbstractSnapshot,
+  computeAuthorDecisionFingerprint,
+  computeConfirmedFactFingerprint,
+  computeManuscriptSectionsFingerprint,
+  type AbstractSnapshotBinding,
+} from "../thesis/abstractSnapshot.js";
 import { selectReviewerSourceIds } from "../evidence/revisionSourceSelection.js";
 import { buildPlannerAliases, plannerEligibleEvidence } from "../review/plannerAliases.js";
 import type { ChunkStore } from "../retrieval/ChunkStore.js";
@@ -1550,6 +1557,8 @@ function qualityGateStage(
         ...(authorDecisionClaims > 0 ? { authorDecisionClaims } : {}),
         revisionDelta: delta,
         revision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : 0,
+        // M14.7：引用完整性三分语义的原始输入透传（completion summary / 报告消费）
+        ...(thesisGate?.citations !== undefined ? { citations: thesisGate.citations } : {}),
         ...(claimGrounding !== null
           ? {
               unsupportedOpaque: claimGrounding.opaqueUnsupportedClaims,
@@ -4263,6 +4272,37 @@ function buildDraftStage(services: WorkflowServices, options: { thesis?: boolean
       }
       // 编译前读取当前修订：record.revision 是 Finalize 的新鲜度依据
       const revision = await services.revisions.currentRevision(ctx.projectId);
+      // M14.7：终局恢复最佳版本后，摘要绑定可能不再对应恢复后的正文（恢复发生在最后一次
+      // gate 之后，gate 的 ABSTRACT_STALE 判定覆盖不到）——确定性复核并如实标注，不静默改判
+      let abstractSnapshotStale: boolean | undefined;
+      if (options.thesis === true) {
+        try {
+          const staleModel = await services.thesis.documents.loadModel(ctx.projectId);
+          const abstractPresentForStale =
+            staleModel !== null && (staleModel.abstractZh ?? "").trim() !== "" && (staleModel.abstractEn ?? "").trim() !== "";
+          if (abstractPresentForStale) {
+            const staleMapping = await services.thesis.planner.loadMapping(ctx.projectId);
+            const staleArtifact = JSON.parse(
+              await readFile(join(services.projects.researchDir(ctx.projectId), "thesis-abstract.json"), "utf8"),
+            ) as { snapshot?: AbstractSnapshotBinding };
+            const staleContext = await services.thesis.researchInputs.plannerContext(ctx.projectId);
+            abstractSnapshotStale = !compareAbstractSnapshot(staleArtifact.snapshot, {
+              revision,
+              manuscriptFingerprint: await computeManuscriptSectionsFingerprint(
+                services.projects,
+                ctx.projectId,
+                (staleMapping?.chapters ?? []).flatMap((chapter) => chapter.sectionFiles),
+              ),
+              confirmedFactFingerprint: computeConfirmedFactFingerprint(staleContext.facts.authorConfirmed),
+              authorDecisionFingerprint: computeAuthorDecisionFingerprint(
+                await services.thesis.researchInputs.decisions.list(ctx.projectId),
+              ),
+            }).current;
+          }
+        } catch {
+          abstractSnapshotStale = undefined; // 复核失败不阻断构建；gate 侧判定仍为权威口径
+        }
+      }
       const { build, compile, record } = await runBuildGateForRevision(
         services.projects,
         options.thesis === true ? services.thesis.latex : services.latex,
@@ -4366,6 +4406,7 @@ function buildDraftStage(services: WorkflowServices, options: { thesis?: boolean
         ...(preservationView !== null ? { citationPreservation: preservationView } : {}),
         // M14.4：终局最佳版本恢复（build.draft 前置执行的确定性结果）
         ...(bestRestore.restored ? { restoredBestFrom: bestRestore.restoredFrom, restoredBestReasons: bestRestore.reasons.slice(0, 2) } : {}),
+        ...(abstractSnapshotStale === true ? { abstractSnapshotStale: true } : {}),
       };
     },
   };
@@ -4976,6 +5017,8 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const gatePassed = gateResult["passed"] === true;
   const gateRound = typeof gateResult["round"] === "number" ? gateResult["round"] : 0;
   const outcome = typeof gateResult["outcome"] === "string" ? gateResult["outcome"] : null;
+  // M14.7：引用完整性三分（citation integrity ≠ evidence sufficiency ≠ bibliography completeness）
+  const gateCitations = (gateResult["citations"] ?? null) as Record<string, unknown> | null;
   // M11.2.3（D-4）：确定性收敛状态（PROGRESS / STALLED / REGRESSED）——
   // STALLED（连续两轮核心阻断指标无改善）优先于轮数预算：不再自动续跑，
   // 按 NO_PROGRESS 语义进 HITL；REGRESSED（新增 critical / fact / citation
@@ -5061,10 +5104,30 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         // 是 bounded loop 的正常终态（PASS / IMPROVED / CONVERGED / REGRESSION）
         ...(outcome !== null && !gatePassed ? { qualityOutcome: outcome } : {}),
         ...(budgetStop !== null ? { modelBudgetExhausted: true } : {}),
+        // M14.7：引用完整性三分（结构化；零引用 Draft 不因 hallucinated=0 被误读为证据充分）
+        ...(gateCitations !== null
+          ? {
+              citationIntegrity: {
+                citedCount: gateCitations["citedCount"] ?? 0,
+                hallucinated: gateCitations["hallucinated"] ?? 0,
+                missingKeys: gateCitations["missingKeys"] ?? 0,
+                evidenceSufficiency: gateCitations["applicable"] !== true
+                  ? "not_applicable"
+                  : ((gateCitations["citedCount"] as number | undefined) ?? 0) > 0
+                    ? "cited"
+                    : (((gateCitations["formalEvidence"] as number | undefined) ?? 0) > 0 || ((gateCitations["bibEntries"] as number | undefined) ?? 0) > 0)
+                      ? "zero_cited_with_citable_material"
+                      : "no_formal_evidence",
+              },
+            }
+          : {}),
         revisionRounds: revisionRoundsUsed(state),
         draftArtifactId: build["draftArtifactId"] ?? null,
         // M14.4：Draft 由恢复的最佳合法版本构建（终局质量劣化时的自动止损回滚）
         ...(build["restoredBestFrom"] !== undefined ? { restoredBestFrom: build["restoredBestFrom"] as number } : {}),
+        // M14.7：Draft 摘要与最终正文不一致的显式标记（预算耗尽跳过刷新 / 终局恢复最佳
+        // 版本等 gate 未覆盖的窗口；gate 规则 thesis_abstract_snapshot_current 是权威判定）
+        ...(build["abstractSnapshotStale"] === true ? { abstractSnapshotStale: true } : {}),
         ...(label === "final"
           ? { finalArtifactId: state.stageResults["build.final"]?.["finalArtifactId"] ?? null }
           : {}),
@@ -5087,12 +5150,25 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
         return stylePolishBeforeDraft;
       }
     }
-    // Draft（质量未达 / 预算或收敛停止）不刷新摘要：Draft 终态如实保留写作期摘要；
-    // 摘要刷新只在 gate 通过、Final 构建前执行（见下方 gatePassed 分支）
+    // Draft（质量未达 / 预算或收敛停止）不重复生成摘要（预算允许时已在规则 0c 刷新）
     if (!has("build.draft") || buildIdx < contentIdx) {
       return { kind: "stage", stageId: "build.draft" };
     }
-    return completion("draft");
+    if (buildOk) {
+      return completion("draft");
+    }
+    // M14.7：Draft 路径的构建失败同样先走有界 LaTeX 修复（此前修复只在 gate 通过分支
+    // 存在——M14.7 案例 B 真实 run 实证：预算耗尽收口时 \\bm 未定义编译失败直接完成，
+    // 无 Draft 产物）。修复产生修订 → 尾部照旧重走；预算耗尽则如实带 buildOk=false 完成。
+    const draftRepairAttempts = countCompletions(state, "revision.repair_latex");
+    const draftDiagnostics = Array.isArray(build["diagnosticFiles"]) ? build["diagnosticFiles"] : [];
+    if (draftRepairAttempts < MAX_AUTO_LATEX_REPAIRS && draftDiagnostics.length > 0 && budgetStop === null) {
+      return { kind: "stage", stageId: "revision.repair_latex" };
+    }
+    if (roundsLeft && budgetStop === null) {
+      return { kind: "stage", stageId: "revision.revise" };
+    }
+    return completion("draft"); // buildOk=false 如实记录（不伪造 Draft 产物）
   };
 
   // M14.4 P0-3：run 级模型预算——派发新的模型 stage（review.run / revision.revise）
@@ -5164,6 +5240,14 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     }
   }
 
+  // 0c. M14.7：正文在摘要生成之后发生变化（修订 / 修复 / 润色 / 事实恢复）→ 刷新摘要。
+  //     M14.6 只在 gate 通过路径刷新，Draft 终态保留写作期摘要且无过期标记；本轮修正：
+  //     Draft 路径预算允许时同样刷新（交付 Draft 的摘要与最终正文一致），预算耗尽时跳过，
+  //     由 gate 规则 thesis_abstract_snapshot_current 如实标记 ABSTRACT_STALE。
+  //     有界：abstractIdx 更新后不再派发（每次内容变更至多刷新一次）。
+  if (abstractRefreshDue()) {
+    return { kind: "stage", stageId: "thesis.abstract" };
+  }
   // 1. 引用核验须新于最近一次改稿
   if (!has("citation.verify") || citationIdx < contentIdx) {
     return { kind: "stage", stageId: "citation.verify" };
@@ -10043,6 +10127,20 @@ function thesisAbstractStage(services: WorkflowServices): StageSpec {
         { projectId: ctx.projectId, maxRepairAttempts: 1 },
       );
       const ok = result.violations.length === 0;
+      // M14.7：摘要快照绑定——写入 thesis.json 成功时记录「本摘要对应哪一版正文 / 事实 / 决定」
+      //（未成功写入时模型保留旧摘要，绑定不落盘 → Gate 按绑定缺失判 ABSTRACT_STALE，语义正确）
+      const snapshot: AbstractSnapshotBinding = {
+        schemaVersion: 1,
+        revision: await services.revisions.currentRevision(ctx.projectId),
+        manuscriptFingerprint: await computeManuscriptSectionsFingerprint(
+          services.projects,
+          ctx.projectId,
+          mapping.chapters.flatMap((chapter) => chapter.sectionFiles),
+        ),
+        confirmedFactFingerprint: computeConfirmedFactFingerprint(context.facts.authorConfirmed),
+        authorDecisionFingerprint: computeAuthorDecisionFingerprint(decisions),
+        generatedAt: new Date().toISOString(),
+      };
       if (ok) {
         await services.thesis.documents.saveModel(
           ctx.projectId,
@@ -10068,9 +10166,12 @@ function thesisAbstractStage(services: WorkflowServices): StageSpec {
         taskIds: result.taskIds,
         ...(result.usage !== undefined ? { usage: result.usage } : {}),
         inputs: { sections: sections.length, confirmedFacts: context.facts.authorConfirmed.length, contributions: contributions.length, limitationChapters: [...limitationChapters] },
+        // M14.7：快照绑定（saved=true 时才记录；对应 thesis.json 当前摘要）
+        ...(ok ? { snapshot } : {}),
       });
       return {
         saved: ok,
+        ...(ok ? { boundRevision: snapshot.revision, boundManuscriptFingerprint: snapshot.manuscriptFingerprint.slice(0, 16) } : {}),
         abstractZhChars: result.draft.abstractZh.length,
         abstractEnWords: result.draft.abstractEn.split(/\s+/).filter(Boolean).length,
         keywordsZh: result.draft.keywordsZh.length,
@@ -10760,6 +10861,32 @@ async function computeThesisGateInput(services: WorkflowServices, projectId: str
     (model.abstractEn ?? "").trim() !== "" &&
     (model.keywordsZh?.length ?? 0) >= 3 &&
     (model.keywordsEn?.length ?? 0) >= 3;
+  // M14.7：摘要快照绑定新鲜度（摘要存在时；绑定缺失 / 指纹不一致 → ABSTRACT_STALE）
+  let abstractSnapshot: { current: boolean; detail: string } | undefined;
+  if (abstractPresent) {
+    try {
+      const abstractArtifact = JSON.parse(
+        await readFile(join(services.projects.researchDir(projectId), "thesis-abstract.json"), "utf8"),
+      ) as { snapshot?: AbstractSnapshotBinding };
+      abstractSnapshot = compareAbstractSnapshot(abstractArtifact.snapshot, {
+        revision: await services.revisions.currentRevision(projectId),
+        manuscriptFingerprint: await computeManuscriptSectionsFingerprint(
+          services.projects,
+          projectId,
+          sectionFiles.map((entry) => entry.file),
+        ),
+        confirmedFactFingerprint: computeConfirmedFactFingerprint(context.facts.authorConfirmed),
+        authorDecisionFingerprint: computeAuthorDecisionFingerprint(
+          await services.thesis.researchInputs.decisions.list(projectId),
+        ),
+      });
+    } catch (error) {
+      abstractSnapshot = {
+        current: false,
+        detail: `ABSTRACT_STALE：摘要绑定校验异常（${(error as Error).message.slice(0, 120)}）——无法证明与当前正文一致`,
+      };
+    }
+  }
   const abstractInput = {
     present: abstractPresent,
     detail: abstractPresent
@@ -10770,6 +10897,9 @@ async function computeThesisGateInput(services: WorkflowServices, projectId: str
           (model?.keywordsZh?.length ?? 0) < 3 ? "中文关键词不足 3 个" : "",
           (model?.keywordsEn?.length ?? 0) < 3 ? "英文关键词不足 3 个" : "",
         ].filter(Boolean).join("、")}（thesis.abstract 未生成或事实守卫未通过；Draft 可生成但不得视为结构完整）`,
+    ...(abstractSnapshot !== undefined
+      ? { snapshotCurrent: abstractSnapshot.current, snapshotDetail: abstractSnapshot.detail }
+      : {}),
   };
   const metaNoteHits = sectionFiles.flatMap((entry) => detectWorkflowMetaNotes(entry.latex).filter((hit) => hit.confidence === "high").map((hit) => `${entry.file}: ${hit.sentence.slice(0, 60)}`));
   const templated = scanTemplatedPhrasing(sectionFiles.map((entry) => ({ file: entry.file, content: entry.latex })));
@@ -10783,6 +10913,8 @@ async function computeThesisGateInput(services: WorkflowServices, projectId: str
       (outline?.sections.some((section) => (section.literatureRefs ?? []).length > 0) ?? false);
     citationsInput = {
       citedCount: citationReport?.summary.citedCount ?? 0,
+      hallucinated: citationReport?.summary.hallucinated ?? 0,
+      missingKeys: citationReport?.summary.missingKeys ?? 0,
       applicable,
       supplyDegraded: academicCandidates === 0,
       formalEvidence: formal,

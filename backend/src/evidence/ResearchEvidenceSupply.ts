@@ -5,6 +5,12 @@ import type { ResearchArtifact } from "../agents/ResearcherService.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 import { identityKey } from "../sources/identity.js";
 export const RESEARCH_SUPPLY_LIMITS = { candidates: 12, sources: 6, claims: 6 } as const;
+/**
+ * M14.7：单轮供给的语义判定调用上限。上不封顶时 6 claim × 3 chunk = 最多 12 次 judge
+ * 突发会击穿 run 级模型预算（M14.5 run2 写作 16 调用的 2/3）；4 是「verified 即停」
+ * 语义下的合理上界——未判定的 claim 维持无 Evidence 状态（如实，不冒充 rejected）。
+ */
+export const RESEARCH_SUPPLY_JUDGE_CALL_LIMIT = 4 as const;
 type Services = Pick<WorkflowServices, "projects" | "candidates" | "sourceImport" | "sources" | "ingestion" | "targetedGrounding" | "evidenceGrounding" | "evidenceSelection">;
 export async function supplyResearchEvidence(services: Services, projectId: string, artifact: ResearchArtifact, options: { signal?: AbortSignal; progress?: (phase: string, counts: Record<string, number>) => void } = {}) {
   const project = await services.projects.getRequired(projectId);
@@ -12,7 +18,8 @@ export async function supplyResearchEvidence(services: Services, projectId: stri
   const summary = { reviewed: 0, selected: 0, deduplicated: 0, promoted: 0, alreadyExists: 0, promoteFailed: 0,
     fulltext: 0, chunkedSources: 0, chunks: 0, proposed: 0, verified: 0, rejected: 0, unverifiable: 0,
     candidateSourcesPending: 0, evidenceCandidatesBefore: before.total, evidenceCandidatesAfter: before.total, formalEvidence: 0,
-    failures: {} as Record<string, number>, mappings: [] as { claimId: string; sourceId: string; chunkId: string; outcome: string }[] };
+    failures: {} as Record<string, number>, mappings: [] as { claimId: string; sourceId: string; chunkId: string; outcome: string }[],
+    judgeCalls: 0, judgeCallCap: RESEARCH_SUPPLY_JUDGE_CALL_LIMIT };
   const fail = (reason: string) => { summary.failures[reason] = (summary.failures[reason] ?? 0) + 1; };
   const check = () => options.signal?.throwIfAborted();
   check();
@@ -81,7 +88,8 @@ export async function supplyResearchEvidence(services: Services, projectId: stri
   if (usable.length) {
     const grounded = await services.targetedGrounding.groundClaims(projectId, claims.map((claim) => ({
       claimId: `research-${createHash("sha256").update(claim).digest("hex").slice(0, 12)}`, claim, section: "related_work", sourceIds: usable,
-    })), options);
+    })), { signal: options.signal, maxJudgeCalls: RESEARCH_SUPPLY_JUDGE_CALL_LIMIT });
+    summary.judgeCalls = grounded.judgeCallsUsed;
     for (const outcome of grounded.outcomes) {
       if (!outcome.attempts.length) fail("no_relevant_chunk");
       for (const attempt of outcome.attempts) {

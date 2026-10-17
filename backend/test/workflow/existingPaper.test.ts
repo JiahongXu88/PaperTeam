@@ -147,6 +147,7 @@ describe("existing_paper_improvement workflow（HTTP e2e）", () => {
         verifiedClaims: 0,
         verifiedEvidence: 0,
         unsupportedByJudge: 0,
+        judgeCallsUsed: 0,
       };
     });
 

@@ -54,6 +54,8 @@ export interface TargetedGroundingSummary {
   verifiedEvidence: number;
   /** 语义 judge 不支持（unverifiable / rejected）的 claim 数——回落弱化 / 删除 */
   unsupportedByJudge: number;
+  /** M14.7：实际执行的语义判定调用数（ground() 次数；maxJudgeCalls 预算的消耗计量） */
+  judgeCallsUsed: number;
 }
 
 export interface TargetedGroundingServiceOptions {
@@ -92,13 +94,17 @@ export class TargetedGroundingService {
   async groundClaims(
     projectId: string,
     requests: readonly TargetedGroundingRequest[],
-    options: { signal?: AbortSignal } = {},
+    options: { signal?: AbortSignal; maxJudgeCalls?: number } = {},
   ): Promise<TargetedGroundingSummary> {
     await this.projects.getRequired(projectId);
     const outcomes: TargetedGroundingOutcome[] = [];
+    // M14.7：语义判定调用预算（防 6 claim × 3 chunk 的 judge 突发击穿 run 级模型预算；
+    // 未尝试的 claim 不产生 outcome——调用方按「未判定」如实处理，不冒充 rejected）
+    const judgeCalls = { used: 0 };
     for (const request of requests) {
       options.signal?.throwIfAborted();
-      const outcome = await this.groundClaim(projectId, request, options);
+      if (options.maxJudgeCalls !== undefined && judgeCalls.used >= options.maxJudgeCalls) break;
+      const outcome = await this.groundClaim(projectId, request, options, judgeCalls);
       outcomes.push(outcome);
       if (outcome.attempts.some((attempt) => /judge_failed|judge_unavailable|rate.limit|429/i.test(attempt.reason ?? ""))) break;
     }
@@ -110,13 +116,15 @@ export class TargetedGroundingService {
       unsupportedByJudge: outcomes.filter(
         (outcome) => outcome.status === "unverified" || outcome.status === "failed",
       ).length,
+      judgeCallsUsed: judgeCalls.used,
     };
   }
 
   private async groundClaim(
     projectId: string,
     request: TargetedGroundingRequest,
-    options: { signal?: AbortSignal },
+    options: { signal?: AbortSignal; maxJudgeCalls?: number },
+    judgeCalls: { used: number },
   ): Promise<TargetedGroundingOutcome> {
     const outcome: TargetedGroundingOutcome = {
       claimId: request.claimId,
@@ -169,12 +177,28 @@ export class TargetedGroundingService {
           proposedBy: "targeted-grounding:m1123",
         });
         const status = proposed.candidate.status;
+        if (
+          status !== "rejected" && status !== "mismatch" &&
+          options.maxJudgeCalls !== undefined && judgeCalls.used >= options.maxJudgeCalls
+        ) {
+          // 预算内停止：本 chunk 不做语义判定（如实记 skipped，不冒充 rejected / unverifiable）
+          outcome.attempts.push({
+            sourceId: chunk.sourceId,
+            chunkId: chunk.chunkId,
+            outcome: "skipped",
+            reason: `judge 调用预算上限（${options.maxJudgeCalls}）已到——本轮停止语义判定`,
+          });
+          continue;
+        }
         const grounded = status === "rejected" || status === "mismatch"
           ? { status, reason: proposed.candidate.statusReason }
-          : await this.grounding.ground(projectId, proposed.candidate.candidateId, {
-              retry: status === "unverifiable",
-              ...(options.signal !== undefined ? { signal: options.signal } : {}),
-            });
+          : await (async () => {
+              judgeCalls.used += 1;
+              return this.grounding.ground(projectId, proposed.candidate.candidateId, {
+                retry: status === "unverifiable",
+                ...(options.signal !== undefined ? { signal: options.signal } : {}),
+              });
+            })();
         outcome.attempts.push({
           sourceId: chunk.sourceId,
           chunkId: chunk.chunkId,

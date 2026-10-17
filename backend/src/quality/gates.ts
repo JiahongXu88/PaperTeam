@@ -392,13 +392,28 @@ export interface ThesisGateInput {
     topFindings: string[];
   };
   /** M14.6 thesis_abstract_complete：双语摘要 + 关键词是否齐备（Draft 可生成 ≠ 结构完整） */
-  abstract?: { present: boolean; detail: string };
+  abstract?: {
+    present: boolean;
+    detail: string;
+    /** M14.7 thesis_abstract_snapshot_current：摘要快照绑定是否对应当前正文 / 事实 / 决定（缺省 = 无摘要，规则不适用） */
+    snapshotCurrent?: boolean;
+    snapshotDetail?: string;
+  };
   /** M14.6 workflow_meta_notes_absent：正文中的高置信工作流元注记（确定性词面检测） */
   metaNotes?: { hits: number; samples: string[] };
   /** M14.6 templated_phrasing_reported（advisory）：模板化小结 / 公式化过渡 */
   templatedPhrasing?: { findings: number; byKind: Record<string, number>; samples: string[] };
   /** M14.6 thesis_citations_present：正式学术引用是否存在（文献综述章 / 文献主题声明时适用） */
-  citations?: { citedCount: number; applicable: boolean; supplyDegraded: boolean; formalEvidence: number; bibEntries: number };
+  citations?: {
+    citedCount: number;
+    /** M14.7：引用完整性报告补充（hallucinated=0 ≠ 证据充分；零引用 + 无材料 = 材料缺口） */
+    hallucinated?: number;
+    missingKeys?: number;
+    applicable: boolean;
+    supplyDegraded: boolean;
+    formalEvidence: number;
+    bibEntries: number;
+  };
 }
 
 export interface QualityGateResult {
@@ -881,6 +896,15 @@ export function evaluateQualityGate(
     // M14.6：双语摘要 + 关键词（缺失 → 结构不完整；Draft 仍可构建，不得标 Final/READY）
     if (thesis.abstract !== undefined) {
       rules.push({ rule: "thesis_abstract_complete", passed: thesis.abstract.present, detail: thesis.abstract.detail });
+    }
+    // M14.7：摘要快照绑定——摘要存在但绑定快照与当前正文 / 事实 / 决定不一致 → ABSTRACT_STALE
+    //（M14.6 遗留：Draft 保留写作期摘要且无任何过期标记）。Draft 仍可构建预览，但不得视为摘要同步。
+    if (thesis.abstract !== undefined && thesis.abstract.snapshotCurrent !== undefined) {
+      rules.push({
+        rule: "thesis_abstract_snapshot_current",
+        passed: thesis.abstract.snapshotCurrent,
+        detail: thesis.abstract.snapshotDetail ?? "",
+      });
     }
     // M14.6：工作流元注记不得进入正文（高置信词面；Writer 写作期已剥离，此处是终检）
     if (thesis.metaNotes !== undefined) {

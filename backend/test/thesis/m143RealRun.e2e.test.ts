@@ -286,6 +286,16 @@ describe.skipIf(!live)(`M14.3 真实材料端到端（案例 ${caseId}）`, () =
         structuredParser: new DoclingParser({ pythonCommand: doclingPython, timeoutMs: 600_000 }),
         fallbackParser: new LegacyPdfTextParser({ pdfParser: new PyMuPdfParser({}) }),
       },
+      // M14.7：真实学术检索链路（默认仍完全离线，既有行为不变）。显式开启后 OpenAlex +
+      // arXiv 直连、全文 resolver 启用——thesis.evidence_supply 从「检索降级」变为真实
+      // 检索（候选 → 提升 → 全文 → chunk → 有界 grounding judge；judge 上限
+      // RESEARCH_SUPPLY_JUDGE_CALL_LIMIT = 4，防 6 claim × 3 chunk 突发击穿预算）。
+      ...(process.env["PAPERTEAM_M143_LIVE_SEARCH"] === "1"
+        ? {
+            search: { disabledProviders: ["semantic-scholar", "aminer", "searxng"], providerTimeoutMs: 20_000 },
+            fullText: { enabled: true },
+          }
+        : {}),
     });
 
     try {

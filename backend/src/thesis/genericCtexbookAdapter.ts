@@ -81,6 +81,7 @@ class GenericCtexbookAdapter implements ThesisTemplateAdapter {
       "\\documentclass[UTF8,fontset=fandol]{ctexbook}",
       "\\usepackage{amsmath}",
       "\\usepackage{amssymb}",
+      "\\usepackage{bm}",
       "\\usepackage{graphicx}",
       ...(withBib && backend === "biber"
         ? ["\\usepackage[backend=biber,style=numeric]{biblatex}", "\\addbibresource{references.bib}"]
