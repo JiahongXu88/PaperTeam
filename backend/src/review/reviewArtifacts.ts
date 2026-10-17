@@ -578,7 +578,30 @@ export class ReviewArtifactStore {
 
   async savePatchValidation(projectId: string, artifact: PatchValidationArtifact): Promise<string> {
     const fileName = this.patchValidationFileName(artifact.revision);
-    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), artifact);
+    /**
+     * M14.8.1-MOT（真实继续返修实录）：被拒候选的 fail-closed 记录写在「当前修订号」下；
+     * 同一项目上的后续 run 从同一修订号出发时，会覆盖上一个 run 写下的、记录该修订**如何
+     * 产生**的补丁校验（M14.8 run 的 rev-2 产生记录被新 run 的被拒记录整体覆盖）。覆盖前若
+     * 既有记录不是新记录的子集（不同 run / 不同 stage），原样保留到 supersededArtifacts。
+     */
+    const path = join(this.projects.reviewsDir(projectId), fileName);
+    let next: PatchValidationArtifact = artifact;
+    try {
+      const existing = JSON.parse(await readFile(path, "utf8")) as PatchValidationArtifact;
+      if (existing.revision === artifact.revision && Array.isArray(existing.records)) {
+        const incoming = new Set(artifact.records.map((record) => JSON.stringify(record)));
+        const subset = existing.records.every((record) => incoming.has(JSON.stringify(record)));
+        const carried = existing.supersededArtifacts ?? [];
+        const { supersededArtifacts: _ignored, ...existingBody } = existing;
+        next = {
+          ...artifact,
+          ...(subset
+            ? (carried.length > 0 ? { supersededArtifacts: carried } : {})
+            : { supersededArtifacts: [...carried, { ...existingBody, supersededAt: new Date().toISOString() }] }),
+        };
+      }
+    } catch { /* no prior artifact */ }
+    await writeJsonAtomic(path, next);
     return `reviews/${fileName}`;
   }
 

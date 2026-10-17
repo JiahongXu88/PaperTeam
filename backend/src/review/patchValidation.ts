@@ -92,6 +92,11 @@ export interface PatchValidationArtifact {
   /** Failed and superseded generations retained for audit; summary uses records only. */
   attemptHistory?: PatchValidationRecord[];
   summary: RevisionValidationSummary;
+  /**
+   * M14.8.1-MOT：同一修订号下被后续 run / stage 覆盖前的既有产物（原样保留，不参与 summary）——
+   * 继续返修时，上一 run 记录「该修订如何产生」的补丁校验不会因新 run 的被拒记录而丢失。
+   */
+  supersededArtifacts?: Array<Omit<PatchValidationArtifact, "supersededArtifacts"> & { supersededAt: string }>;
 }
 
 export interface RevisionValidationSummary {
