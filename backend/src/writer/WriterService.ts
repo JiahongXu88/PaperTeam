@@ -1134,7 +1134,12 @@ export class WriterService {
       };
       const linkedCommentIds = resolvedCommentRefs.filter((id) => validInstructions.has(id));
       if (linkedCommentIds.length > 1) {
-        for (const id of linkedCommentIds.slice(0, Math.max(0, 20 - items.length))) items.push({ ...plannedItem, instructionId: id });
+        // M14.8.1-MOT（真实 MOT 计划实录）：多意见条目按意见扇出为多条记录。扇出副本是意见
+        // 追踪的簿记，不是新的模型条目（模型条目上限已由 rawPlan.slice(0, 20) 约束）——旧口径
+        // 把副本计入 20 条上限，摘要（6 条意见）与引言（5 条意见）扇出后，后续多意见条目一个
+        // 副本都不剩、整条被静默丢弃，其意见退化为兜底「作者决策」（RDK / 多重比较 / 场景 /
+        // 结论等 6 条可直接修订的意见全部失落）。
+        for (const id of linkedCommentIds) items.push({ ...plannedItem, instructionId: id });
       } else {
         items.push(plannedItem);
       }

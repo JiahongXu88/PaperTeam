@@ -505,6 +505,32 @@ describe("WriterService improvement plan comment coverage", () => {
     expect(plan.items.map((item) => item.action)).toEqual(["Clarify shared limitation", "Clarify shared limitation"]);
   });
 
+  it("M14.8.1-MOT：多意见条目的扇出副本不计入模型条目上限——后续多意见条目不会被静默丢弃为兜底作者决定", async () => {
+    // 真实 MOT 计划形态：摘要条目链接 6 条意见、引言链接 5 条、其后若干条目各链接 2 条
+    const ids = Array.from({ length: 22 }, (_, index) => `comment-${index + 1}`);
+    const aliases = ids.map((id, index) => ({ ref: `C${index + 1}`, canonicalId: id, text: `意见 ${index + 1}` }));
+    const plan = [
+      { section: "main.tex", action: "重写摘要", rationale: "r", priority: "high", commentRefs: ["C1", "C2", "C3", "C4", "C5", "C6"] },
+      { section: "main.tex", action: "修改引言", rationale: "r", priority: "high", commentRefs: ["C7", "C8", "C9", "C10", "C11"] },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        section: "main.tex", action: `修改第 ${index + 3} 节`, rationale: "r", priority: "high",
+        commentRefs: [`C${12 + index * 2}`, `C${13 + index * 2}`],
+      })),
+    ];
+    const runtime = new FakeRuntime(() => completedTask(JSON.stringify({ plan })));
+    const writer = new WriterService({ runtime, agentId: "writer" });
+    const result = await writer.planImprovement({
+      projectId: "p-abc", issues: [], analysisDigest: "", feasibilityLevel: "LOW", sectionFiles: [],
+      validInstructionIds: ids, externalInstructions: ids.map((id, index) => ({ instructionId: id, text: `意见 ${index + 1}` })),
+      commentAliases: aliases, evidenceAliases: [], validEvidenceIds: [],
+    });
+    const modelLinked = new Set(result.items.filter((item) => item.actionType !== "author_decision_required").map((item) => item.instructionId));
+    expect([...modelLinked].sort()).toEqual(ids.slice(0, 21).sort());
+    expect(result.items.filter((item) => item.action.startsWith("修改第 7 节")).map((item) => item.instructionId)).toEqual(["comment-20", "comment-21"]);
+    // 未被任何模型条目链接的意见（comment-22）仍走兜底作者决定，不会静默消失
+    expect(result.items.find((item) => item.instructionId === "comment-22")?.actionType).toBe("author_decision_required");
+  });
+
   it.each([
     ["modify", "The model use an adapter.", undefined, "The model use an adapter."],
     ["modify", "The model use an adapter. The model use an adapter.", undefined, undefined],
