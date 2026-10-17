@@ -127,8 +127,11 @@ export function locateLatexSections(file: string, source: string): RevisionSpan[
     SECTION_COMMAND_PATTERN.lastIndex = parsed.endIndex;
   }
   const seen = new Map<string, number>();
-  return headings.map((heading, index) => {
-    const end = headings[index + 1]?.start ?? source.length;
+  // M14.8-MOT：单文件稿件的最后一节以内联参考文献（thebibliography）结束——参考文献不是
+  // 可审 / 可改的正文，不并入最后一节（否则「结论」单元 7.5k 字符里 6k 是参考文献）
+  const bibliographyStart = headings.length > 0 ? source.indexOf("\\begin{thebibliography}", headings[headings.length - 1]!.start) : -1;
+  const spans: RevisionSpan[] = headings.map((heading, index) => {
+    const end = headings[index + 1]?.start ?? (bibliographyStart >= 0 ? bibliographyStart : source.length);
     const content = source.slice(heading.start, end);
     const baseId = heading.label ?? `${heading.command}:${heading.title}`;
     const occurrence = (seen.get(baseId) ?? 0) + 1;
@@ -145,6 +148,41 @@ export function locateLatexSections(file: string, source: string): RevisionSpan[
       content,
     };
   });
+  const front = frontMatterSpan(file, source, headings[0]?.start);
+  return front !== null ? [front, ...spans] : spans;
+}
+
+/**
+ * M14.8-MOT：`\begin{document}`（与可选的 `\maketitle`）之后、第一个章节命令之前的
+ * 前置正文（单文件期刊稿件的中英文摘要 / 关键词）。此前它不属于任何 span——
+ * 摘要既不被审阅也不可修订，覆盖率却仍报 100%。只在文件含 `\begin{document}` 且
+ * 前置区去掉命令后仍有实质文字时生成；题名 / 作者在 `\maketitle` 之前（含导言区）
+ * 不进入 span。
+ */
+export const FRONT_MATTER_SECTION = "frontmatter";
+
+function frontMatterSpan(file: string, source: string, firstHeading: number | undefined): RevisionSpan | null {
+  if (firstHeading === undefined) return null;
+  const documentBegin = /\\begin\{document\}[^\n]*\n?/.exec(source);
+  if (documentBegin === null || documentBegin.index >= firstHeading) return null;
+  let start = documentBegin.index + documentBegin[0].length;
+  const maketitle = /\\maketitle[^\n]*\n?/.exec(source.slice(start, firstHeading));
+  if (maketitle !== null) start += maketitle.index + maketitle[0].length;
+  const content = source.slice(start, firstHeading);
+  const prose = content
+    .replace(/(^|[^\\])%.*$/gm, "$1")
+    .replace(/\\[a-zA-Z@]+\*?(\[[^\]]*\])?/g, "")
+    .replace(/[{}\s]/g, "");
+  if (prose.length < 40) return null;
+  return {
+    file,
+    logicalSection: FRONT_MATTER_SECTION,
+    heading: "摘要与前置部分",
+    start,
+    end: firstHeading,
+    originalHash: hash(content),
+    content,
+  };
 }
 
 export function applyRevisionSpan(source: string, span: RevisionSpan, replacement: string, options: { preserveBoundaryWhitespace?: boolean } = {}): string {

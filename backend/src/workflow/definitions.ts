@@ -715,6 +715,20 @@ function reviewRunStageInner(
             if (ctx.signal.aborted) {
               throw new BusinessError("WORKFLOW_CANCELLED", "审稿已被取消");
             }
+            // M14.8-MOT：仅含章节命令 / \label 的单元（父章节标题紧跟子章节）没有可审正文——
+            // 不调用模型（真实论文 41 个单元中 7 个是这种标题单元，每轮白耗 7 次调用）；
+            // 记为已完成、零 finding、分数 null（不参与字符加权聚合），覆盖率如实计入。
+            if (isHeadingOnlyUnit(unitSpan.content)) {
+              const summaryText = "仅章节标题，无正文（未调用模型）";
+              const record = {
+                unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
+                status: "completed" as const, taskId: "(heading-only)", issueCount: 0,
+                attempts: 0, updatedAt: new Date().toISOString(),
+                outcome: { issues: [], academicScore: null, riskScore: null, summary: summaryText },
+              };
+              await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
+              return { unit, record, review: { issues: [] as ReviewIssueOfUnit[], academicScore: null, riskScore: null, summary: summaryText, taskId: "(heading-only)" }, reused: false };
+            }
             let lastError: unknown;
             for (let attempt = 1; attempt <= unitAttempts; attempt += 1) {
               try {
@@ -900,7 +914,14 @@ function reviewRunStageInner(
       const authorizedObservations = isSurveyKind(ctx.state.workflowKind)
         ? []
         : [
-            ...(await services.experimentPackages.workflowContext(ctx.projectId)).observations.map((observation) => ({
+            // M14.8-MOT：existing-paper 用「稿件正文数值命中的全部授权观测」（确定性披露，
+            // 不进 prompt，不受 100 条上下文预算限制）；其余工作流沿用上下文选择
+            ...(options.existingPaper === true
+              ? await services.experimentPackages.manuscriptMatchedObservations(
+                ctx.projectId,
+                latexForAttribution.allTex.map((file) => file.content).join("\n"),
+              )
+              : (await services.experimentPackages.workflowContext(ctx.projectId)).observations).map((observation) => ({
               value: observation.value,
               metric: observation.metric,
               groupId: observation.groupId,
@@ -2273,7 +2294,14 @@ function revisionReviseStage(
       // 也不得引入具体实验数值（与 writeSection 同一纪律）
       const revisionExperimentContext = isSurveyKind(ctx.state.workflowKind)
         ? undefined
-        : await services.experimentPackages.workflowContext(ctx.projectId);
+        : await services.experimentPackages.workflowContext(
+          ctx.projectId,
+          // M14.8-MOT：已有论文返修——授权观测按稿件现有数值锚定选择（修订表述
+          // 与原稿实验数值同源，不被与稿件无关的观测挤占 100 条预算）
+          ctx.state.workflowKind === "existing_paper_improvement"
+            ? { anchorText: (await collectLatexFiles(services.projects.manuscriptDir(ctx.projectId))).allTex.map((file) => file.content).join("\n") }
+            : {},
+        );
       // M14.3：thesis 修订纪律——写作阶段的【科研事实纪律】注入修订（M14.2 遗留
       // 缺口）：修订只改语言/结构，实验数值仍以 authorConfirmed 白名单为唯一来源，
       // 未裁决冲突不得被润色消除，继承表格守卫块不得被改动。
@@ -4041,6 +4069,12 @@ export async function appendEvidenceBackedBibEntries(
   if (files.mainTex === null) {
     return 0;
   }
+  // 内联 thebibliography 稿件：参考文献的事实源是正文里的 \bibitem，没有可追加的
+  // .bib 文件（写一个未被 \bibliography 引用的 references.bib 不会进入编译，
+  // 只会制造「看似已补齐」的假象）——不追加，由引用核验如实报告。
+  if (files.bibSource === "thebibliography") {
+    return 0;
+  }
   const bibRelative = files.bibPath ?? "references.bib";
   const manuscriptDir = services.projects.manuscriptDir(projectId);
   let existingContent: string;
@@ -4108,8 +4142,23 @@ async function manuscriptBibliography(
   const merged = new Map<string, BibliographyEntryInput>(
     (await buildCanonicalBibliography(services, projectId)).map((entry) => [entry.key, entry]),
   );
+  // 稿件实际参考文献：\bibliography{refs} 指向的 .bib（不限文件名）或内联
+  // thebibliography 的 \bibitem（M14.8-MOT：此前硬编码 references.bib，refs.bib /
+  // 内联参考文献的稿件 Writer 拿到空 key 清单，会把合法引用当违规删除）
+  let bib: string | null = null;
   try {
-    const bib = await readFile(join(services.projects.manuscriptDir(projectId), "references.bib"), "utf8");
+    bib = (await collectLatexFiles(services.projects.manuscriptDir(projectId))).bibContent;
+  } catch {
+    bib = null;
+  }
+  if (bib === null) {
+    try {
+      bib = await readFile(join(services.projects.manuscriptDir(projectId), "references.bib"), "utf8");
+    } catch {
+      // 无 references.bib：只有 canonical bibliography
+    }
+  }
+  if (bib !== null) {
     for (const entry of parseBib(bib).entries) {
       if (!merged.has(entry.key)) {
         merged.set(entry.key, {
@@ -4120,8 +4169,6 @@ async function manuscriptBibliography(
         });
       }
     }
-  } catch {
-    // 无 references.bib：只有 canonical bibliography
   }
   return [...merged.values()];
 }
@@ -11349,6 +11396,15 @@ const DIGEST_TRUNCATION_NOTE =
  * - 在预算内回退到最后一个句子边界（。！？!?；或换行）；
  * - 截断时附加显式系统注，让 reviewer 知道这是视图截断不是稿件缺陷。
  */
+/** 单元只含章节命令 / \label / 注释 / 空白（无可审正文） */
+export function isHeadingOnlyUnit(content: string): boolean {
+  return content
+    .replace(/(^|[^\\])%.*$/gm, "$1")
+    .replace(/\\(?:part|chapter|(?:sub){0,2}section|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{[^{}\n]*(?:\{[^{}\n]*\}[^{}\n]*)*\}/g, "")
+    .replace(/\\label\{[^}]*\}/g, "")
+    .trim() === "";
+}
+
 export function sliceForDigest(content: string, budget: number): string {
   if (content.length <= budget) {
     return content;

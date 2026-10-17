@@ -9,6 +9,8 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
+import { extractInlineBibliography, hasInlineBibliography, renderInlineBibliographyAsBib } from "./inlineBibliography.js";
+
 export interface TexFile {
   /** 相对 manuscript 目录的路径（POSIX 风格） */
   relativePath: string;
@@ -22,6 +24,12 @@ export interface LatexProjectFiles {
   /** 解析到的 bib 文件（相对路径） */
   bibPath: string | null;
   bibContent: string | null;
+  /**
+   * 参考文献来源：file = bibPath 指向的 .bib；thebibliography = 正文内联的
+   * \bibitem（bibContent 为内存中渲染的等价 BibTeX，**不对应任何文件、不得写回**）；
+   * null = 未找到参考文献。
+   */
+  bibSource?: "file" | "thebibliography" | null;
   /** \includegraphics 等引用的图片相对路径 */
   figures: string[];
   warnings: string[];
@@ -115,12 +123,23 @@ export async function collectLatexFiles(manuscriptDir: string): Promise<LatexPro
 
   const figures = [...new Set(collected.flatMap((file) => extractFigureReferences(file.content)))];
 
+  // GB/T 7714 中文期刊常见：无 .bib，参考文献内联在 thebibliography 环境
+  let bibSource: "file" | "thebibliography" | null = bibPath !== null ? "file" : null;
+  if (bibPath === null) {
+    const inline = collected.flatMap((file) => (hasInlineBibliography(file.content) ? extractInlineBibliography(file.content) : []));
+    if (inline.length > 0) {
+      bibContent = renderInlineBibliographyAsBib(inline);
+      bibSource = "thebibliography";
+    }
+  }
+
   return {
     mainTex: main,
     sections: collected.filter((file) => file.relativePath !== "main.tex"),
     allTex: collected,
     bibPath,
     bibContent,
+    bibSource,
     figures,
     warnings,
   };

@@ -23,6 +23,7 @@ import {
   useCreateWorkflowRun,
   useExportReviewReport,
   useInvalidateReviewOutputs,
+  useManuscriptOverview,
   usePaper,
   usePaperReviewReport,
   useProjectRuns,
@@ -91,6 +92,7 @@ function progressOf(run: WorkflowRunView): { index: number; total: number } | un
 
 export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId: string; workflowKind?: WorkflowKind; onOpenTab: (tab: "pdf" | "citations" | "workflow") => void }) {
   const paper = usePaper(projectId);
+  const manuscript = useManuscriptOverview(projectId);
   const runs = useProjectRuns(projectId);
   const report = usePaperReviewReport(projectId);
   const runtimeStatus = useRuntimeStatus();
@@ -129,6 +131,96 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
   ) : null;
 
   if (doc === null || doc === undefined) {
+    // LaTeX 工程导入的系统性改进项目：稿件就是原 LaTeX 工程（import.parse 直接校验
+    // main.tex，不依赖 PDF 解析），改进流程的基线审阅在工作流内完成——不要求先上传
+    // PDF。快速 Review（existing_paper_review）仍以论文 PDF 为输入。
+    const latexManuscript = workflowKind === "existing_paper_improvement" && manuscript.data?.sourceType === "latex";
+    if (workflowKind === "existing_paper_improvement" && manuscript.isPending) {
+      return <Loading label="加载稿件状态…" />;
+    }
+    if (latexManuscript) {
+      const modelMissing = runtimeStatus.data?.model.phase === "not_configured";
+      const improvementActive = runs.data?.some((run) => run.workflowKind === "existing_paper_improvement" && isRunActive(run)) ?? false;
+      return (
+        <section className="review-panel" data-testid="review-panel">
+          {gateStrip}
+          <div className="review-intro" data-testid="latex-improvement-start">
+            <div className="review-intro-text">
+              <div className="review-intro-title">
+                <h2>系统性改进（LaTeX 工程）</h2>
+              </div>
+              <p className="panel-sub">
+                LaTeX 工程已导入，改进直接在你的原稿上进行：基线编译 → 基线审阅（引用核验 + 分章节审阅）→
+                改进计划确认 → 受控修订 → 质量门禁 → Draft / Final。快速 Review（只读）以论文 PDF 为输入，
+                如需单独的只读报告，请先在「PDF 与结构」上传 PDF。
+              </p>
+            </div>
+            <div className="review-start-controls">
+              <div className="action-row">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => startReview.mutate({ projectId, kind: "existing_paper_improvement", stylePolicy })}
+                  disabled={startReview.isPending || modelMissing || improvementActive}
+                  title="系统性改进：在导入的 LaTeX 原稿上审稿 → 改进计划确认 → 逐节受控修订 → 质量门禁 → Draft / Final"
+                  data-testid="start-improvement"
+                >
+                  <Icon name="play" />
+                  {startReview.isPending ? "启动中…" : "开始系统性改进"}
+                </button>
+                <button type="button" className="btn" onClick={() => onOpenTab("pdf")}>
+                  <Icon name="upload" />
+                  上传 PDF（可选，用于快速 Review）
+                </button>
+              </div>
+              <details className="advanced-options review-start-advanced">
+                <summary>高级选项</summary>
+                <div className="review-semantic-mode-field">
+                  <label htmlFor="review-style-policy">语言风格建议（仅系统性改进）</label>
+                  <select
+                    id="review-style-policy"
+                    value={stylePolicy}
+                    onChange={(event) => setStylePolicy(event.target.value as StylePolicy)}
+                    data-testid="style-policy-select"
+                  >
+                    {STYLE_POLICY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="field-help">{STYLE_POLICY_OPTIONS.find((option) => option.value === stylePolicy)?.help}</span>
+                </div>
+              </details>
+            </div>
+          </div>
+          {improvementActive ? (
+            <div className="note note-info" role="status">
+              <span>
+                系统性改进正在运行。
+                <button type="button" className="btn-link" onClick={() => onOpenTab("workflow")}>
+                  查看工作流
+                </button>
+              </span>
+            </div>
+          ) : null}
+          {modelMissing ? (
+            <div className="note note-warn" role="status" data-testid="review-model-missing">
+              <span>
+                论文已导入。配置模型后即可开始：前往<Link to="/settings/model">模型设置</Link>保存模型与 API Key。
+              </span>
+            </div>
+          ) : null}
+          {startReview.isError ? (
+            <p className="form-error" role="alert">
+              启动失败：{formatApiError(startReview.error)}
+            </p>
+          ) : null}
+          <ExternalInstructionsPanel projectId={projectId} />
+          <RevisionPlanPanel projectId={projectId} />
+        </section>
+      );
+    }
     return (
       <>
         {gateStrip}

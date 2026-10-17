@@ -526,8 +526,52 @@ function compareObservationAnchors(a: MetricObservation, b: MetricObservation): 
  * 返回顺序即选择顺序（组序 × 轮转序）；全程无随机源、无时钟、无输入
  * 枚举顺序依赖——包/文件登记顺序变化不会让某个有效组失去覆盖。
  */
-export function selectWorkflowObservations(candidates: WorkflowObservationCandidate[]): WorkflowObservationCandidate[] {
+export function selectWorkflowObservations(
+  candidates: WorkflowObservationCandidate[],
+  options: { anchorNumbers?: ReadonlySet<string> } = {},
+): WorkflowObservationCandidate[] {
   if (candidates.length === 0) return [];
+  // M14.8-MOT 锚定阶段（仅 existing-paper 传入稿件数值集时启用）：先选「数值在
+  // 稿件正文里出现」的授权观测——真实论文 34,244 条观测 / 预算 100 条时，纯覆盖面
+  // 选择几乎选不到论文实际引用的数值，Writer 的数值表与 review.run 的作者数据披露
+  // 都与稿件脱节。以稿件数值（锚点）为单位轮转：每个锚点取一条最佳观测（聚合层级
+  // 优先 = jsonPath 更浅），锚点按「精度类（≥3 位整数 / ≥4 位有效数字的小数 → 3 位小数 → 两位整数）→ 聚合层级 →
+  // 特异性（命中它的观测越少越可信）→ 正文首次出现位置」排序。只看锚点特征，
+  // 不看数值大小 / 方向；剩余预算回到原有覆盖面选择。
+  const anchors = options.anchorNumbers;
+  const anchored: WorkflowObservationCandidate[] = [];
+  if (anchors !== undefined && anchors.size > 0) {
+    const order = [...anchors];
+    const position = new Map(order.map((token, index) => [token, index]));
+    const byAnchor = new Map<string, WorkflowObservationCandidate[]>();
+    for (const candidate of candidates) {
+      for (const token of anchoredTokens(candidate.observation.value, anchors)) {
+        const list = byAnchor.get(token) ?? [];
+        list.push(candidate);
+        byAnchor.set(token, list);
+      }
+    }
+    const ranked = [...byAnchor.entries()]
+      .map(([token, list]) => ({
+        token,
+        list: [...list].sort((a, b) => jsonPathDepth(a.observation.jsonPath) - jsonPathDepth(b.observation.jsonPath)
+          || compareCodepoints(a.packageId, b.packageId)
+          || compareObservationAnchors(a.observation, b.observation)),
+      }))
+      .sort((a, b) => anchorPrecisionClass(a.token) - anchorPrecisionClass(b.token)
+        || jsonPathDepth(a.list[0]!.observation.jsonPath) - jsonPathDepth(b.list[0]!.observation.jsonPath)
+        || a.list.length - b.list.length
+        || (position.get(a.token) ?? 0) - (position.get(b.token) ?? 0));
+    const taken = new Set<WorkflowObservationCandidate>();
+    for (const { list } of ranked) {
+      if (anchored.length >= MAX_WORKFLOW_OBSERVATIONS) break;
+      const best = list.find((candidate) => !taken.has(candidate));
+      if (best !== undefined) { taken.add(best); anchored.push(best); }
+    }
+    if (anchored.length >= MAX_WORKFLOW_OBSERVATIONS) return anchored;
+    candidates = candidates.filter((candidate) => !taken.has(candidate));
+    if (candidates.length === 0) return anchored;
+  }
   const byGroup = new Map<string, { packageId: string; groupId: string; items: WorkflowObservationCandidate[]; picked: Set<number> }>();
   for (const candidate of candidates) {
     const key = `${candidate.packageId}\0${candidate.observation.groupId}`;
@@ -538,7 +582,7 @@ export function selectWorkflowObservations(candidates: WorkflowObservationCandid
   const groups = [...byGroup.values()]
     .map((group) => ({ ...group, items: [...group.items].sort((a, b) => compareObservationAnchors(a.observation, b.observation)) }))
     .sort((a, b) => compareCodepoints(a.packageId, b.packageId) || compareCodepoints(a.groupId, b.groupId));
-  const selected: WorkflowObservationCandidate[] = [];
+  const selected: WorkflowObservationCandidate[] = [...anchored];
   const hasBudget = () => selected.length < MAX_WORKFLOW_OBSERVATIONS;
   /** 组内锚点序第一条未选且满足需要的观测下标 */
   const nextUnpicked = (group: (typeof groups)[number], wanted: (index: number) => boolean): number => {
@@ -574,6 +618,60 @@ export function selectWorkflowObservations(candidates: WorkflowObservationCandid
     }
   }
   return selected;
+}
+
+/**
+ * 稿件数值锚点（M14.8-MOT）：从 LaTeX 正文提取有效数字 ≥3 位的数值串
+ * （"700"、"57.97"、"0.669"、"597{,}152"→"597152"）。少于 3 位有效数字的
+ * 数（5、12、0.8…）与海量观测巧合相等的概率太高，不作为锚点。
+ */
+export function manuscriptNumberAnchors(text: string): Set<string> {
+  const normalized = text
+    // 参考文献（年份 / 卷期页）、注释、引用 key、长度参数都不是实验数值
+    .replace(/\\begin\{thebibliography\}[\s\S]*?\\end\{thebibliography\}/g, " ")
+    .replace(/(^|[^\\])%.*$/gm, "$1")
+    .replace(/\\(?:cite[pt]?|ref|label|eqref|includegraphics|url|bibliography)\s*(?:\[[^\]]*\])?\s*\{[^}]*\}/g, " ")
+    .replace(/\d+(?:\.\d+)?\s*(?:pt|em|ex|cm|mm|in|bp|\\(?:linewidth|textwidth|columnwidth|hsize|baselineskip))/g, " ")
+    .replace(/(\d)\{,\}(?=\d{3})/g, "$1")
+    .replace(/(\d)\\,(?=\d{3})/g, "$1")
+    .replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
+  const anchors = new Set<string>();
+  for (const match of normalized.matchAll(/\d+(?:\.\d+)?/g)) {
+    const token = match[0];
+    // 两位整数（10–99，如 IDSW 80 / 43）保留为最低精度锚点；其余要求 ≥3 位有效数字
+    if (significantDigits(token) < 3 && !/^[1-9]\d$/.test(token)) continue;
+    // 四位整数 1900–2099 几乎都是年份（发表年 / 数据集年份）
+    if (/^(19|20)\d{2}$/.test(token)) continue;
+    anchors.add(token);
+  }
+  return anchors;
+}
+
+function significantDigits(token: string): number {
+  return token.replace(".", "").replace(/^0+/, "").length;
+}
+
+/** 观测值的文本渲染（原尺度 1–4 位小数；(0,1] 的比例值另试百分数尺度）中命中的锚点 */
+function anchoredTokens(value: number, anchors: ReadonlySet<string>): string[] {
+  if (!Number.isFinite(value)) return [];
+  const renderings = new Set<string>();
+  const abs = Math.abs(value);
+  if (Number.isInteger(abs)) renderings.add(String(abs));
+  for (let digits = 1; digits <= 4; digits += 1) {
+    renderings.add(abs.toFixed(digits));
+    if (abs > 0 && abs <= 1) renderings.add((abs * 100).toFixed(digits));
+  }
+  return [...renderings].filter((rendering) => anchors.has(rendering));
+}
+
+/** 0 = 精确锚点（≥3 位整数或 ≥4 位有效数字的小数），1 = 3 位有效数字小数，2 = 两位整数（巧合相等概率最高） */
+function anchorPrecisionClass(token: string): number {
+  if (!token.includes(".")) return significantDigits(token) >= 3 ? 0 : 2;
+  return significantDigits(token) >= 4 ? 0 : 1;
+}
+
+function jsonPathDepth(path: string | undefined): number {
+  return path === undefined ? 0 : (path.match(/[.[]/g) ?? []).length;
 }
 
 export class ExperimentPackageService {
@@ -1197,7 +1295,53 @@ export class ExperimentPackageService {
     };
   }
 
-  async workflowContext(projectId: string): Promise<ConfirmedExperimentWorkflowContext> {
+  async workflowContext(projectId: string, options: { anchorText?: string } = {}): Promise<ConfirmedExperimentWorkflowContext> {
+    const candidates = await this.eligibleWorkflowCandidates(projectId);
+    const selected = selectWorkflowObservations(candidates, options.anchorText !== undefined ? { anchorNumbers: manuscriptNumberAnchors(options.anchorText) } : {});
+    return {
+      schemaVersion: 1,
+      status: "author_confirmed_not_externally_verified",
+      // truncated 只反映总量限制（有合格观测因预算未被选中）；未确认/不合格
+      // 观测不进入候选，也不计入截断判断
+      truncated: selected.length < candidates.length,
+      observations: selected.map(({ packageId, packageHash, observation }) => ({
+        packageId,
+        packageHash,
+        groupId: observation.groupId,
+        sourceId: observation.sourceId,
+        blockId: observation.blockId,
+        path: safeContextLabel(observation.path) ?? "[path omitted]",
+        metric: safeContextLabel(observation.metric) ?? "[metric label omitted]",
+        value: observation.value,
+        unit: observation.unit,
+        direction: observation.direction,
+        ...(observation.row !== undefined ? { row: observation.row } : {}),
+        ...(observation.sheet !== undefined ? { sheet: safeContextLabel(observation.sheet) } : {}),
+        ...(observation.column !== undefined ? { column: safeContextLabel(observation.column) } : {}),
+        ...(observation.jsonPath !== undefined ? { jsonPath: safeContextLabel(observation.jsonPath) } : {}),
+        ...(safeContextLabel(observation.method) !== undefined ? { method: safeContextLabel(observation.method) } : {}),
+        ...(safeContextLabel(observation.dataset) !== undefined ? { dataset: safeContextLabel(observation.dataset) } : {}),
+        ...(safeContextLabel(observation.seed) !== undefined ? { seed: safeContextLabel(observation.seed) } : {}),
+        ...(safeContextLabel(observation.protocol) !== undefined ? { protocol: safeContextLabel(observation.protocol) } : {}),
+        ...(safeContextLabel(observation.split) !== undefined ? { split: safeContextLabel(observation.split) } : {}),
+      })),
+    };
+  }
+
+  /**
+   * M14.8-MOT：稿件数值命中的**全部**授权观测（不受 100 条上下文预算限制）。
+   * 只供确定性消费（review.run 的作者实验数据披露）——不进入任何模型 prompt；
+   * 资格边界与 workflowContext 完全相同（确认 + 授权范围 + 结果角色文件）。
+   */
+  async manuscriptMatchedObservations(projectId: string, anchorText: string): Promise<MetricObservation[]> {
+    const anchors = manuscriptNumberAnchors(anchorText);
+    if (anchors.size === 0) return [];
+    return (await this.eligibleWorkflowCandidates(projectId))
+      .filter((candidate) => anchoredTokens(candidate.observation.value, anchors).length > 0)
+      .map((candidate) => candidate.observation);
+  }
+
+  private async eligibleWorkflowCandidates(projectId: string): Promise<WorkflowObservationCandidate[]> {
     const items = await this.list(projectId);
     // 资格边界与原先一致：作者确认组内的结果角色文件 + 存活 Source + ok/partial
     // 解析状态（JSONL 特征流在指标提取层就不产生观测）。合格观测先全量收集，
@@ -1232,34 +1376,6 @@ export class ExperimentPackageService {
         }
       }
     }
-    const selected = selectWorkflowObservations(candidates);
-    return {
-      schemaVersion: 1,
-      status: "author_confirmed_not_externally_verified",
-      // truncated 只反映总量限制（有合格观测因预算未被选中）；未确认/不合格
-      // 观测不进入候选，也不计入截断判断
-      truncated: selected.length < candidates.length,
-      observations: selected.map(({ packageId, packageHash, observation }) => ({
-        packageId,
-        packageHash,
-        groupId: observation.groupId,
-        sourceId: observation.sourceId,
-        blockId: observation.blockId,
-        path: safeContextLabel(observation.path) ?? "[path omitted]",
-        metric: safeContextLabel(observation.metric) ?? "[metric label omitted]",
-        value: observation.value,
-        unit: observation.unit,
-        direction: observation.direction,
-        ...(observation.row !== undefined ? { row: observation.row } : {}),
-        ...(observation.sheet !== undefined ? { sheet: safeContextLabel(observation.sheet) } : {}),
-        ...(observation.column !== undefined ? { column: safeContextLabel(observation.column) } : {}),
-        ...(observation.jsonPath !== undefined ? { jsonPath: safeContextLabel(observation.jsonPath) } : {}),
-        ...(safeContextLabel(observation.method) !== undefined ? { method: safeContextLabel(observation.method) } : {}),
-        ...(safeContextLabel(observation.dataset) !== undefined ? { dataset: safeContextLabel(observation.dataset) } : {}),
-        ...(safeContextLabel(observation.seed) !== undefined ? { seed: safeContextLabel(observation.seed) } : {}),
-        ...(safeContextLabel(observation.protocol) !== undefined ? { protocol: safeContextLabel(observation.protocol) } : {}),
-        ...(safeContextLabel(observation.split) !== undefined ? { split: safeContextLabel(observation.split) } : {}),
-      })),
-    };
+    return candidates;
   }
 }
