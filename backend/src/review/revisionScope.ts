@@ -228,6 +228,36 @@ export function checkRevisionScope(
     : { allowed: false, outsideScopeChanges: 1, reason: "REVISION_SCOPE_VIOLATION" };
 }
 
+/**
+ * M14.8-MOT：引文授权区间外改动的可诊断描述（只读；不改变判定）。真实返修 11/11 个
+ * targetQuote 补丁被判 REVISION_TARGET_QUOTE_SCOPE_VIOLATION，而候选文本不落盘——
+ * 无从区分「Writer 实质改写了引文外内容」与「格式归一化（千分位、转义、空白）」。
+ * 返回首个偏离点相对授权区间的位置与前后各 ≤60 字符的原文 / 候选摘录。
+ */
+export function describeScopeViolation(
+  baseline: string,
+  candidate: string,
+  allowed: Pick<RevisionSpan, "start" | "end">,
+): string {
+  const excerpt = (value: string, at: number): string =>
+    JSON.stringify(value.slice(Math.max(0, at - 20), at + 60).replace(/\s+/g, " "));
+  const prefix = baseline.slice(0, allowed.start);
+  let p = 0;
+  while (p < prefix.length && p < candidate.length && prefix[p] === candidate[p]) p += 1;
+  if (p < prefix.length) {
+    return `引文前第 ${prefix.length - p} 字符处改动：原 ${excerpt(baseline, p)} → 候选 ${excerpt(candidate, p)}`;
+  }
+  const suffix = baseline.slice(allowed.end);
+  let s = 0;
+  while (s < suffix.length && s < candidate.length && suffix[suffix.length - 1 - s] === candidate[candidate.length - 1 - s]) s += 1;
+  if (s < suffix.length) {
+    const baseAt = baseline.length - 1 - s;
+    const candAt = candidate.length - 1 - s;
+    return `引文后第 ${suffix.length - 1 - s} 字符处改动：原 ${excerpt(baseline, baseAt)} → 候选 ${excerpt(candidate, candAt)}`;
+  }
+  return "候选长度不足以容纳引文外原文";
+}
+
 export function revisionSpansOverlap(a: RevisionSpan, b: RevisionSpan): boolean {
   return a.file === b.file && a.start < b.end && b.start < a.end;
 }

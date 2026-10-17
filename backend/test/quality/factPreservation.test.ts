@@ -290,6 +290,34 @@ describe("Fact Preservation：方向性结论", () => {
     expect(summary.ok).toBe(false);
     expect(summary.directionalChanges.some((finding) => finding.reason === "metric_direction_flip")).toBe(true);
   });
+
+  it("M14.8-MOT：拆分/改写长摘要句而方向与数值不变 → 不判 metric_direction_flip（数值锚定配对）", () => {
+    // 真实摘要实录：被改写的「…上限（1.90）超过…（0.80）」旧句曾与另一句「从 121 降至 80」交叉配对
+    const previous = [
+      "\\begin{abstract}",
+      "对 118 个身份切换事件的逐帧取证表明：关联代价中运动项的幅度上限（1.90）超过交并比与外观两项之和（0.80），失联轨迹借此压过其余证据。",
+      "在 UA-DETRAC 上，H1+H4 使 38 个挑战片段的身份切换数从 121 降至 80，使官方 40 条整段测试序列从 700 降至 497。",
+      "\\end{abstract}",
+    ].join("\n");
+    const current = [
+      "\\begin{abstract}",
+      "对 118 个身份切换事件的逐帧取证显示，关联代价中运动项的幅度上限（1.90）超过交并比与外观两项之和（0.80）。",
+      "失联轨迹借此压过交并比与外观证据。",
+      "在 UA-DETRAC 上，H1+H4 使 38 个挑战片段的身份切换数从 121 降至 80。",
+      "在官方 40 条整段测试序列上，身份切换数从 700 降至 497。",
+      "\\end{abstract}",
+    ].join("\n");
+    const summary = evaluate({ "sections/abstract.tex": previous }, { "sections/abstract.tex": current });
+    expect(summary.directionalChanges.filter((finding) => finding.reason === "metric_direction_flip")).toHaveLength(0);
+  });
+
+  it("M14.8-MOT：同一数值的结论方向对调（数值保留）→ 仍判 metric_direction_flip", () => {
+    const previous = "\\section{对比}\n修正栈的 HOTA 高于 ByteTrack 匹配臂（58.50 对 57.97），其余结论不变。";
+    const current = "\\section{对比}\n修正栈的 HOTA 低于 ByteTrack 匹配臂（58.50 对 57.97），其余结论不变。";
+    const summary = evaluate({ "sections/experiments.tex": previous }, { "sections/experiments.tex": current });
+    expect(summary.ok).toBe(false);
+    expect(summary.directionalChanges.some((finding) => finding.reason === "metric_direction_flip")).toBe(true);
+  });
 });
 
 // ---- 公式 / 方法事实 ----

@@ -219,7 +219,7 @@ import {
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
-import { applyRevisionSpan, checkGlobalRevisionScope, checkRevisionScope, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { applyRevisionSpan, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
 import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
@@ -2784,10 +2784,17 @@ function revisionReviseStage(
               const authorized = resolvable && pairwiseOverlapping
                 ? { start: Math.min(...ranges.map((range) => range.start)), end: Math.max(...ranges.map((range) => range.end)), originalHash: revisionSourceHash(resolvedSpan.content.slice(Math.min(...ranges.map((range) => range.start)), Math.max(...ranges.map((range) => range.end)))) }
                 : ranges.length === 1 ? ranges[0] : undefined;
-              const inside = authorized !== undefined && checkRevisionScope(resolvedSpan.content,
-                candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end)),
-                authorized).allowed;
-              if (!inside) failures.push({ code: "scope_violation", detail: authorized === undefined ? "REVISION_TARGET_QUOTE_UNRESOLVED" : "REVISION_TARGET_QUOTE_SCOPE_VIOLATION" });
+              const candidateSection = candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end));
+              const inside = authorized !== undefined && checkRevisionScope(resolvedSpan.content, candidateSection, authorized).allowed;
+              if (!inside) {
+                failures.push({
+                  code: "scope_violation",
+                  detail: authorized === undefined
+                    ? "REVISION_TARGET_QUOTE_UNRESOLVED"
+                    // M14.8-MOT：附带引文外首个改动位置与摘录（候选不落盘时唯一的诊断依据）
+                    : `REVISION_TARGET_QUOTE_SCOPE_VIOLATION（${describeScopeViolation(resolvedSpan.content, candidateSection, authorized)}）`,
+                });
+              }
             }
             if (hasNewContentAfterDocumentEnd(fileBefore, candidate)) failures.push({ code: "scope_violation", detail: "new content after document end" });
             // M14.3：继承表格守卫块完整性（span 候选）——候选不得改写任何守卫表格块

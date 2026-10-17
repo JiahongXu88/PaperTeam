@@ -194,7 +194,11 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     expect(await run.source()).toBe(unrelated ? PAPER : PAPER.replace("model use", "model uses"));
     expect(run.calls()).toBe(1);
     expect(run.tasks[0]).toContain("唯一允许修改的原文");
-    if (unrelated) expect((await run.artifact())?.records[0]?.scope.violations).toContain("REVISION_TARGET_QUOTE_SCOPE_VIOLATION");
+    if (unrelated) {
+      const violations = (await run.artifact())?.records[0]?.scope.violations ?? [];
+      // M14.8-MOT：违规码后附引文外首个改动的诊断摘录
+      expect(violations.some((violation) => violation.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION（引文"))).toBe(true);
+    }
   });
   it.each(["This quote does not occur in the frozen source.", "The"])("stale or ambiguous targetQuote is fail-closed: %s", async quote => {
     const run = await setup([good]);
@@ -288,7 +292,10 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     expect(await run.source()).toBe(unrelated ? PAPER : PAPER.replace("model use", "model uses"));
     const artifact = await run.artifact();
     expect(artifact?.records[0]?.scope.ok).toBe(!unrelated);
-    if (unrelated) expect(artifact?.records[0]?.scope.violations).toContain("REVISION_TARGET_QUOTE_SCOPE_VIOLATION");
+    if (unrelated) {
+      const violations = artifact?.records[0]?.scope.violations ?? [];
+      expect(violations.some((violation) => violation.startsWith("REVISION_TARGET_QUOTE_SCOPE_VIOLATION（引文"))).toBe(true);
+    }
   });
 
   it("Reviewer request to add a formula cannot authorize an invented expression", async () => {

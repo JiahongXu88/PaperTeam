@@ -1292,6 +1292,12 @@ function claimSentences(content: string): ClaimSentence[] {
   return sentences;
 }
 
+/** 句内数值串（千分位 {,} / , 还原；用于方向翻转的数值锚定配对） */
+function claimNumberTokens(text: string): Set<string> {
+  const normalized = text.replace(/(\d)\{,\}(?=\d{3})/g, "$1").replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
+  return new Set([...normalized.matchAll(/\d+(?:\.\d+)?/g)].map((match) => match[0]));
+}
+
 // ---- 主判定（纯函数） ----
 
 const MAX_FINDINGS_PER_BUCKET = 30;
@@ -1955,12 +1961,20 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
         continue;
       }
       const previousPositive = POSITIVE_DIRECTION.has(previousClaim.direction);
+      // M14.8-MOT：数值锚定配对。句子级启发式取「首个指标词 + 末个方向词」，二者
+      // 未必描述同一比较；Writer 合法拆分/重排长句后，被改写的旧句会与文件里任意一句
+      // 同指标反方向的句子交叉配对（真实摘要实录：「…运动项上限（1.90）超过…（0.80）」
+      // 被判与「身份切换数从 121 降至 80」方向对调，摘要与引言补丁 0/2 通过）。真正的
+      // 结论翻转保留该结论的数值（数值本身的改动由数值守卫独立裁决），因此旧句含数值时
+      // 只与共享至少一个数值的当前句配对；旧句无数值时保持原文件级配对口径不变。
+      const previousNumbers = claimNumberTokens(previousClaim.text);
       const flip = currentClaims.find(
         (claim) =>
           claim.metric === previousClaim.metric &&
           claim.direction !== null &&
           POSITIVE_DIRECTION.has(claim.direction) !== previousPositive &&
-          claim.direction !== previousClaim.direction,
+          claim.direction !== previousClaim.direction &&
+          (previousNumbers.size === 0 || [...claimNumberTokens(claim.text)].some((token) => previousNumbers.has(token))),
       );
       if (flip !== undefined) {
         directional({
