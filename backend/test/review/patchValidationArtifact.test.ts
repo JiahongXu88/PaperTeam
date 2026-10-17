@@ -49,5 +49,8 @@ describe("ReviewArtifactStore.savePatchValidation（M14.8.1-MOT 覆盖保护）"
     const runB2 = [...runB, record("patch:c", "pass", "h-run-b")];
     await store.savePatchValidation(project.id, { revisionId: "rev-3", revision: 2, records: runB2, summary: summarizePatchValidation(runB2) });
     expect((await store.loadPatchValidation(project.id, 2))?.supersededArtifacts?.[0]?.records).toEqual(runA2);
+    // revision.validate 把非终态记录移入 attemptHistory 的重组不产生冗余副本
+    await store.savePatchValidation(project.id, { revisionId: "rev-3", revision: 2, records: [runB2[1]!], attemptHistory: [runB2[0]!], summary: summarizePatchValidation([runB2[1]!]) });
+    expect((await store.loadPatchValidation(project.id, 2))?.supersededArtifacts).toHaveLength(1);
   });
 });

@@ -589,8 +589,10 @@ export class ReviewArtifactStore {
     try {
       const existing = JSON.parse(await readFile(path, "utf8")) as PatchValidationArtifact;
       if (existing.revision === artifact.revision && Array.isArray(existing.records)) {
-        const incoming = new Set(artifact.records.map((record) => JSON.stringify(record)));
-        const subset = existing.records.every((record) => incoming.has(JSON.stringify(record)));
+        // revision.validate 会把非终态记录移入 attemptHistory——按 records ∪ attemptHistory 判子集，
+        // 同一 stage / run 的重组不产生冗余副本
+        const incoming = new Set([...artifact.records, ...(artifact.attemptHistory ?? [])].map((record) => JSON.stringify(record)));
+        const subset = [...existing.records, ...(existing.attemptHistory ?? [])].every((record) => incoming.has(JSON.stringify(record)));
         const carried = existing.supersededArtifacts ?? [];
         const { supersededArtifacts: _ignored, ...existingBody } = existing;
         next = {
