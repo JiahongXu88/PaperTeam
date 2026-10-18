@@ -424,6 +424,36 @@ describe("M13.7.5 production revision.apply fidelity", () => {
   });
 
   /**
+   * M14.9-MOT：整段删除被引段落（真实返修：清除误入正文的修订说明段落）。段落分隔随删除消失不是
+   * 引文外改动；段内的计划 ID / 数字不是论文事实。删除之外的任何新增仍被拒绝。
+   */
+  describe("M14.9-MOT whole-paragraph quote deletion", () => {
+    const leak = "本次重提交与上一版提案相同。校验失败指向导言区 \\newcommand{\\keywords}[1]，删除是 improvement:23/24 要求的。";
+    const leaked = PAPER.replace("E = u + v \\end{equation}\n", `E = u + v \\end{equation}\n\n${leak}\n`);
+    const leakedMethod = locateLatexSections("main.tex", leaked).find(s => s.label === "sec:method")!.content;
+    const withLeakQuote = async (run: Awaited<ReturnType<typeof setup>>) => {
+      const path = join(run.stack.store.researchDir(run.project.id), "improvement-plan.json");
+      const data = JSON.parse(await readFile(path, "utf8"));
+      data.plan.items[0].targetQuote = leak;
+      data.plan.items[0].action = "整段删除这段误入正文的修订过程说明，其余逐字保留。";
+      await writeFile(path, JSON.stringify(data));
+    };
+    it("deleting the quoted paragraph together with its paragraph break is accepted on the first attempt", async () => {
+      const run = await setup([leakedMethod.replace(`\n\n${leak}`, "").trim()], undefined, undefined, undefined, leaked);
+      await withLeakQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(PAPER);
+      expect(run.calls()).toBe(1);
+    });
+    it("deleting the paragraph but adding text next to it is still rejected", async () => {
+      const run = await setup([leakedMethod.replace(`\n\n${leak}`, " Extra.").trim()], undefined, undefined, undefined, leaked);
+      await withLeakQuote(run);
+      await run.execute();
+      expect(await run.source()).toBe(leaked);
+    });
+  });
+
+  /**
    * M14.8.1-MOT 继续返修实录：前一 run 经 HITL 批准、已落盘的删除（「20--80 帧」）在后续 run 的冻结口径下
    * 被判未授权，本 run 每个补丁都被同一条旧违规拒绝（8/8）。冻结口径的授权来源 = 本 run 计划 + 授权台账。
    */

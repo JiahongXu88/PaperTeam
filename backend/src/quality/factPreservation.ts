@@ -39,6 +39,7 @@ import {
 } from "../review/styleInvariants.js";
 import { STRONG_MARKERS } from "./claimStrength.js";
 import { locateLatexSections } from "../review/revisionScope.js";
+import { stripWriterProcessCommentary } from "../review/writerCommentary.js";
 
 export interface FactTexFile {
   /** 相对 manuscript 目录的 POSIX 路径 */
@@ -1197,8 +1198,9 @@ function proseNumberTokens(content: string): string[] {
   // 由 classifyValuePair 判为 B 类格式变化（formatChanges 审计，不计违规）——
   // 提取层直接归一会把这类变化完全吞掉，失去审计轨迹。
   // M10.3：整文件重排的行内断行 / 前导宏管道先经保守归一（见函数注释）
+  // M14.9-MOT：已进入稿件的修订过程说明段落不是论文事实（删除它不构成删除事实）
   return extractNumericTokens(
-    normalizeForProseExtraction(normalizeFullWidthDigits(stripTablesAndMath(content))),
+    normalizeForProseExtraction(normalizeFullWidthDigits(stripTablesAndMath(stripWriterProcessCommentary(content)))),
   );
 }
 

@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { findWriterProcessCommentary } from "../../src/review/writerCommentary.js";
+import { findWriterProcessCommentary, stripWriterProcessCommentary } from "../../src/review/writerCommentary.js";
 
 const SPAN = [
   "\\subsection{极端场景与修正链}",
@@ -37,5 +37,19 @@ describe("findWriterProcessCommentary", () => {
   it("原文已有的同一词汇不算新增说明", () => {
     const span = `${SPAN}\r\n\r\n本单元的实验在冻结协议下完成。`;
     expect(findWriterProcessCommentary(span, span.replace("冻结协议", "同一冻结协议"))).toBeNull();
+  });
+});
+
+describe("stripWriterProcessCommentary", () => {
+  it("剥离带内部计划 ID 或两处以上流程词汇的段落，正文段落原样保留", () => {
+    const text = `${SPAN}\r\n\r\n本次重提交与上一版提案相同，删除是 improvement:23/24 要求的。\r\n\r\nIDSW 由 121 降至 80。`;
+    const stripped = stripWriterProcessCommentary(text);
+    expect(stripped).not.toContain("improvement:23");
+    expect(stripped).toContain("IDSW 由 121 降至 80。");
+    expect(stripped).toContain("\\begin{table}");
+  });
+  it("只出现一处流程词汇的正文段落不剥离", () => {
+    const text = "本单元的实验在冻结协议下完成，IDSW 为 121。";
+    expect(stripWriterProcessCommentary(text)).toBe(text);
   });
 });

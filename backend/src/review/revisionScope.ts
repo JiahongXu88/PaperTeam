@@ -222,6 +222,20 @@ export function adaptLineEndingsToSpan(spanContent: string, text: string): strin
 const isScopeWhitespace = (char: string | undefined): boolean =>
   char === " " || char === "\t" || char === "\r" || char === "\n";
 
+/**
+ * M14.9-MOT：整段删除被引文本的判定。删除一个段落时，它与相邻段落之间的段落分隔必然随之消失，
+ * 逐字节的引文外守卫会把这判为「引文前第 N 字符处改动」（真实返修：删除误入正文的说明段落
+ * 两次被拒）。只放行这一种形态：候选 = 引文前原文去尾部空白 + 仅空白 + 引文后原文去首部空白，
+ * 引文外的所有非空白字节逐字保留；引文旁的任何新增内容仍按越界处理。
+ */
+export function isWholeQuoteDeletion(spanContent: string, candidateSection: string, range: Pick<RevisionSpan, "start" | "end">): boolean {
+  const before = spanContent.slice(0, range.start).replace(/[ \t\r\n]+$/, "");
+  const after = spanContent.slice(range.end).replace(/^[ \t\r\n]+/, "");
+  if (!candidateSection.startsWith(before) || !candidateSection.endsWith(after)) return false;
+  if (candidateSection.length < before.length + after.length) return false;
+  return /^[ \t\r\n]*$/.test(candidateSection.slice(before.length, candidateSection.length - after.length));
+}
+
 /** 空白段等价类：含 ≥2 个换行（LaTeX 段落分隔）与普通空白不可互换 */
 const isParagraphBreak = (run: string): boolean => (run.match(/\n/g)?.length ?? 0) >= 2;
 

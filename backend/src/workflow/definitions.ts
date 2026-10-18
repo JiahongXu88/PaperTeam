@@ -219,7 +219,7 @@ import {
 } from "../review/claimGrounding.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
-import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkMultiRangeScope, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkMultiRangeScope, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, isWholeQuoteDeletion, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
 import { findWriterProcessCommentary } from "../review/writerCommentary.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
@@ -2938,7 +2938,8 @@ function revisionReviseStage(
               const candidateSection = candidate.slice(resolvedSpan.start, candidate.length - (fileBefore.length - resolvedSpan.end));
               const multi = multiRanges !== undefined ? checkMultiRangeScope(resolvedSpan.content, candidateSection, multiRanges) : undefined;
               const inside = authorized !== undefined
-                ? checkRevisionScope(resolvedSpan.content, candidateSection, authorized).allowed
+                ? checkRevisionScope(resolvedSpan.content, candidateSection, authorized).allowed ||
+                  isWholeQuoteDeletion(resolvedSpan.content, candidateSection, authorized)
                 : multi?.allowed === true;
               if (!inside) {
                 failures.push({

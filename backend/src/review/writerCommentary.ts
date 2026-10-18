@@ -16,12 +16,31 @@ const PROCESS_COMMENTARY_PATTERNS: readonly RegExp[] = [
   /校验器|校验失败|修改要求|修订计划|重提交|上一版(?:提案|输出)|本(?:次|版)提案|编辑单元|本单元|按单元边界|执行说明/,
 ];
 
+/**
+ * 文本块：以空行与章节 / 环境命令起始行为边界（LaTeX 的章节标题前常无空行，只按空行切分会把
+ * 泄漏段落与下一节正文并成一块）。返回原文切片，拼接后与输入逐字节一致。
+ */
+function blocks(text: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  for (const line of text.split(/(?<=\n)/)) {
+    const trimmed = line.trim();
+    if (trimmed === "" || /^\\(?:(?:sub)*section|paragraph|begin|end|item|caption|label)\b/.test(trimmed)) {
+      if (current !== "") result.push(current);
+      current = "";
+      result.push(line);
+      continue;
+    }
+    current += line;
+  }
+  if (current !== "") result.push(current);
+  return result;
+}
+
 function paragraphs(text: string): string[] {
-  return text
-    .replace(/\r\n/g, "\n")
-    .split(/\n[ \t]*\n/)
-    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
-    .filter((paragraph) => paragraph !== "");
+  return blocks(text)
+    .map((block) => block.replace(/\s+/g, " ").trim())
+    .filter((block) => block !== "");
 }
 
 /** 返回首个新增的修订过程说明段落摘录（≤120 字符）；无则 null。 */
@@ -39,4 +58,20 @@ export function findWriterProcessCommentary(originalSpan: string, proposal: stri
     }
   }
   return null;
+}
+
+const ID_MARKER = /\bimprovement:\d+|\bpatch:[0-9a-f]{6,}/;
+const PROCESS_VOCABULARY = /校验器|校验失败|修改要求|修订计划|重提交|上一版(?:提案|输出)|本(?:次|版)提案|编辑单元|本单元|按单元边界|执行说明/g;
+
+/**
+ * 已经进入稿件的修订过程说明段落（带内部计划 / 补丁 ID，或至少两处不同的修订流程词汇）
+ * 不是论文事实：事实守卫的数值提取前整段替换为空白（保留换行），删除它不构成「删除事实」。
+ * M14.9-MOT 真实返修：清除泄漏段落的补丁因段内「[1]」「数值 1」「improvement:23/24」被判
+ * 删除事实而两次被拒。
+ */
+export function stripWriterProcessCommentary(text: string): string {
+  return blocks(text).map((block) => {
+    const commentary = ID_MARKER.test(block) || new Set(block.match(PROCESS_VOCABULARY) ?? []).size >= 2;
+    return commentary ? block.replace(/[^\r\n]/g, " ") : block;
+  }).join("");
 }
