@@ -5,6 +5,7 @@ import { LatexCompiler } from "./latex/LatexCompiler.js";
 import { ProjectStore } from "./project/ProjectStore.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { PiRuntimeAdapter, parseModelSpec } from "./runtime/PiRuntimeAdapter.js";
+import { GlobalBudgetLedger } from "./runtime/globalBudgetLedger.js";
 import { createWorkspaceGuardPolicy, createWorkspaceGuardTools } from "./runtime/pi/workspaceGuard.js";
 import { createScriptedRuntime } from "./runtime/scriptedRuntime.js";
 import { RuntimeStatusService } from "./runtime/statusService.js";
@@ -303,6 +304,19 @@ export async function startBackend(): Promise<void> {
           },
         }
       : {}),
+    // M14.9.1 C1：任务级（跨 run / 跨进程）预算账本——外层任务的所有 run 与脚本共享一个硬上限
+    ...(config.workflow.globalBudget !== undefined
+      ? {
+          globalBudget: {
+            ledger: new GlobalBudgetLedger({
+              path: config.workflow.globalBudget.ledgerPath,
+              limits: { maxCalls: config.workflow.globalBudget.maxCalls, maxTokens: config.workflow.globalBudget.maxTokens },
+              label: "PaperTeam backend",
+            }),
+            outputReserveTokens: config.workflow.globalBudget.outputReserveTokens,
+          },
+        }
+      : {}),
     longRunTimeoutMs: config.pi.longRunTimeoutMs,
     review: {
       maxRevisionRounds: config.review.maxRevisionRounds,
@@ -313,6 +327,8 @@ export async function startBackend(): Promise<void> {
       reviewConcurrency: config.review.reviewConcurrency,
       reviewSectionLimit: config.review.reviewSectionLimit,
       incrementalUnitReuse: config.review.incrementalUnitReuse,
+      inputMode: config.review.inputMode,
+      neutralityPolicy: config.review.neutralityPolicy,
       revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,

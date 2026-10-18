@@ -224,6 +224,8 @@ export class ReviewerService {
      * 仅注入 fact 模式——提示逐句核对「一篇文献的机制 / 数值是否被归给了整组」；不是缺陷判定。
      */
     attributionDigest?: string;
+    /** M14.9.1：元数据中立条款（实验开关） */
+    neutralityPolicy?: boolean;
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -294,6 +296,8 @@ export class ReviewerService {
     redundancyDigest?: string;
     /** M13 Final Closure（A4）：多 key 引用归因只读 digest（仅 fact 模式注入；undefined → prompt 不变） */
     attributionDigest?: string;
+    /** M14.9.1：元数据中立条款（实验开关） */
+    neutralityPolicy?: boolean;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -380,6 +384,8 @@ export class ReviewerService {
     experimentPolicyLines?: string[];
     language?: ManuscriptLanguage;
     signal?: AbortSignal;
+    /** M14.9.1：元数据中立条款（实验开关） */
+    neutralityPolicy?: boolean;
   }): Promise<{ issues: ReviewIssue[]; academicScore: number | null; riskScore: number | null; summary: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -446,6 +452,8 @@ export class ReviewerService {
     experimentPolicyLines?: string[];
     language?: ManuscriptLanguage;
     signal?: AbortSignal;
+    /** M14.9.1：元数据中立条款（实验开关） */
+    neutralityPolicy?: boolean;
   }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -713,6 +721,17 @@ function parseClaims(parsed: Record<string, unknown>, context: string): FactClai
 // ---- Prompt ----
 
 /**
+ * M14.9.1（实验开关 PAPERTEAM_REVIEW_NEUTRALITY_POLICY，缺省关闭）：元数据 / 投稿格式中立条款。
+ * 依据：M14.9.1 影子 A/B——同一 MOT 稿件的原始 LaTeX 两次采样都因题头的作者单位 / 邮箱占位
+ * 产出 build 类 major，结构化盲化输入两次均未出现（科研内容逐项等价）。条款只划清评审范围，
+ * 不改分数口径与 Gate；未经独立 A/B 复核前不得默认启用。
+ */
+export const REVIEW_NEUTRALITY_CLAUSE =
+  "评审范围（中立条款）：作者署名、单位、通信邮箱、基金 / 致谢、投稿元数据（分类号、收稿日期等）与期刊排版要求（Word 模板、双栏、字体、页数、题名字数）不属于学术质量评审——" +
+  "不得因此降低 scores / overallScore / academicScore，也不得据此给出 critical 或 major；如发现投稿材料问题，只能记为 minor、category=style，description 以「投稿清单：」开头。" +
+  "正文的学术表达、术语一致性、论证结构，以及公式、表格、图注的可读性仍属于评审范围。";
+
+/**
  * M6.6 Evidence 消费模式（§M6.6-7）：Reviewer 的 fact 判定从「依赖 workflow
  * 塞入的静态 digest」升级为「主动查询」——digest 仍作为初始上下文（兼容），
  * 但逐 claim 核验时 Reviewer 应通过 evidence_query 查询证据库（§M6.6-10：
@@ -752,6 +771,8 @@ export function buildReviewPrompt(params: {
   redundancyDigest?: string;
   /** M13 Final Closure（A4）：多 key 引用归因只读 digest（仅 fact 模式注入） */
   attributionDigest?: string;
+  /** M14.9.1：元数据中立条款（实验开关；false / 缺省 → prompt 逐字节不变） */
+  neutralityPolicy?: boolean;
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -855,6 +876,7 @@ export function buildReviewPrompt(params: {
     "}",
     "evidenceRequirement：该问题修复是否必须依赖已核验 Evidence——required（修复只能基于现有 verified Evidence，否则弱化/删除）/ optional（有证据更好）/ none（表达/结构/编译类，与外部证据无关）。fact / evidence_gap 类问题应给 required。",
     "纪律：不虚构问题；问题描述必须可定位；确属阻断级（如关键论断无证据、引用不存在）才设 blocking=true。",
+    ...(params.neutralityPolicy === true ? [REVIEW_NEUTRALITY_CLAUSE] : []),
     "审稿意见是修改方向，不是事实证据：description / suggestedAction 中不得引入上方 Evidence 清单之外的具名文献、作者、年份、实验结果或机制描述并要求写入正文；"
       + "覆盖面 / 文献缺口类意见只以类别或维度描述缺口（如「缺少阈值类实验工作的讨论」）并把 evidenceRequirement 设为 required——Writer 只能用现有 Evidence 回应，不能凭审稿意见补写事实。",
     "",
@@ -937,6 +959,7 @@ function buildUnitReviewPrompt(params: {
   citationDigest?: string;
   experimentPolicyLines?: string[];
   language?: ManuscriptLanguage;
+  neutralityPolicy?: boolean;
 }): string {
   return [
     "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",
@@ -952,6 +975,7 @@ function buildUnitReviewPrompt(params: {
     "2. 问题覆盖：事实表述与证据支撑、学术逻辑与论证、引用正确性、表达与结构。不虚构问题。",
     "3. evidenceRequirement：fact / evidence_gap 类问题应给 required。",
     "4. 本单元视角发现疑似跨章冲突（与索引中其他章节的符号 / 定义 / 数值 / 表述不一致）时，先记为问题并在 description 中写明冲突章节名，但不要凭单侧文本下结论。",
+    ...(params.neutralityPolicy === true ? [`5. ${REVIEW_NEUTRALITY_CLAUSE}`] : []),
     "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
     "{",
@@ -987,6 +1011,7 @@ function buildCrossChapterPrompt(params: {
   chapters: ReadonlyArray<{ heading: string; file: string; digest: string }>;
   experimentPolicyLines?: string[];
   language?: ManuscriptLanguage;
+  neutralityPolicy?: boolean;
 }): string {
   return [
     "你是一名学术审稿人（Reviewer）。请检查这篇长论文各章节之间的**一致性问题**。",
@@ -1001,6 +1026,7 @@ function buildCrossChapterPrompt(params: {
     "1. 只报告能在摘要中定位依据的冲突；证据不足时不要报。",
     "2. 每条 issue 的 section 填冲突的**主**章节（标题或文件名），relatedSections 数组填**对端**章节（至少 1 个）。没有对端位置的不算跨章问题，不要报。",
     "3. 这些冲突是**待核验**发现：不要建议直接改写任何一侧；suggestedAction 给核验步骤（如「核对两处数值，以实验记录为准」）。",
+    ...(params.neutralityPolicy === true ? [REVIEW_NEUTRALITY_CLAUSE] : []),
     ...(params.experimentPolicyLines !== undefined
       ? [
           "4. 多章复述同一已确认研究输入事实（数值一致）不是冲突，不要报；只有数值 / 口径不一致才报。",

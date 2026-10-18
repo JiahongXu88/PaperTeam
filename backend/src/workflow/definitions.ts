@@ -36,7 +36,7 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 
-import { BusinessError, WorkflowInvalidStateError } from "../errors.js";
+import { BusinessError, InvalidLatexOutputError, WorkflowInvalidStateError } from "../errors.js";
 import { isExistingPaperKind, isSurveyKind, isThesisKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
@@ -339,6 +339,8 @@ import {
   relocateRevisionSpan,
   resolveUnitByQuotes,
 } from "../review/logicalSpan.js";
+import { evaluateScopedLatexRepair, isSingleFileManuscript, planScopedLatexRepair, type ScopedRepairPlan } from "../review/scopedLatexRepair.js";
+import { stripLatexReviewMetadata } from "../review/blindReviewInput.js";
 import type {
   PlanDecision,
   ResumeInput,
@@ -485,6 +487,10 @@ export interface WorkflowServices {
     reviewSectionLimit: number;
     /** M14.8.1-MOT：长文档单元审查的跨轮合法缓存（缺省开启；PAPERTEAM_REVIEW_INCREMENTAL=0 关闭） */
     incrementalUnitReuse?: boolean;
+    /** M14.9.1 实验开关：digest 模式输入按字段移除身份元数据（缺省 production = 不变） */
+    inputMode?: "production" | "metadata_blind";
+    /** M14.9.1 实验开关：审稿 prompt 追加元数据中立条款（缺省 false = prompt 逐字节不变） */
+    neutralityPolicy?: boolean;
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -689,6 +695,8 @@ function reviewRunStageInner(
         ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
         ...(redundancyDigest !== undefined ? { redundancyDigest } : {}),
         ...(attributionDigest !== undefined ? { attributionDigest } : {}),
+        // M14.9.1 实验开关：缺省关闭时不出现该键（prompt / 单元请求指纹逐字节不变）
+        ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
       };
       type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
       let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
@@ -816,6 +824,7 @@ function reviewRunStageInner(
               ...(citationDigest !== undefined ? { citationDigest } : {}),
               ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
               ...(language !== undefined ? { language } : {}),
+              ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
               signal: ctx.signal,
             };
             const requestFingerprint = incrementalEnabled
@@ -908,6 +917,7 @@ function reviewRunStageInner(
             const cross = await services.reviewer.reviewCrossChapter({
               projectId: ctx.projectId, chapters: [...chapterDigests],
               ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
+              ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
               ...(language !== undefined ? { language } : {}), signal: ctx.signal,
             });
             crossChapterIssues = cross.issues;
@@ -2093,6 +2103,7 @@ function revisionRepairStage(services: WorkflowServices): StageSpec {
         };
       }
       const repaired: string[] = [];
+      const scopedRepairs: Array<{ file: string; targets: string[]; applied: string[]; rejected: Array<{ unit: string; violations: string[] }>; unrepairable: ScopedRepairPlan["unrepairable"] }> = [];
       for (const file of files) {
         if (ctx.signal.aborted) {
           throw new BusinessError("WORKFLOW_CANCELLED", "修复已被取消");
@@ -2106,6 +2117,55 @@ function revisionRepairStage(services: WorkflowServices): StageSpec {
           current = await readFile(absolute, "utf8");
         } catch {
           continue; // 诊断指向的文件已不存在：跳过
+        }
+        const normalizedFile = file.replaceAll("\\", "/").replace(/^\.\//, "");
+        if (outline === null && normalizedFile === "main.tex" && isSingleFileManuscript(current)) {
+          // M14.9.1 C3：单文件稿件的修复只针对诊断所在的编辑单元——模型只看到并只返回该单元，
+          // 单元外逐字节不变；守卫（骨架 / 引用 / label / 事实保持 / 过程说明 / 长度）任一不过即不落盘
+          const plan = planScopedLatexRepair(file, current, diagnostics.filter((diagnostic) => diagnostic.file === file));
+          const report = { file, targets: plan.targets.map((target) => target.unit.logicalSection), applied: [] as string[], rejected: [] as Array<{ unit: string; violations: string[] }>, unrepairable: plan.unrepairable };
+          let working = current;
+          for (const target of plan.targets) {
+            if (ctx.signal.aborted) {
+              throw new BusinessError("WORKFLOW_CANCELLED", "修复已被取消");
+            }
+            const located = relocateRevisionSpan(file, working, target.unit);
+            if (located === undefined) {
+              report.rejected.push({ unit: target.unit.logicalSection, violations: ["REVISION_TARGET_STALE：单元已无法唯一定位"] });
+              continue;
+            }
+            let repairedUnit: string;
+            try {
+              repairedUnit = (await services.writer.repairSection({
+                projectId: ctx.projectId,
+                sectionFile: `${file}（编辑单元 ${target.unit.logicalSection}）`,
+                currentLatex: located.content,
+                buildError,
+                diagnostics: target.diagnostics,
+              })).latex;
+            } catch (error) {
+              if (!(error instanceof InvalidLatexOutputError)) throw error;
+              report.rejected.push({ unit: target.unit.logicalSection, violations: [error.message.slice(0, 200)] });
+              continue;
+            }
+            if (ctx.signal.aborted) {
+              throw new BusinessError("WORKFLOW_CANCELLED", "修复已被取消");
+            }
+            const verdict = evaluateScopedLatexRepair({ file, source: working, target: { ...target, unit: located }, repaired: repairedUnit });
+            if (verdict.ok && verdict.candidate !== undefined) {
+              working = verdict.candidate;
+              report.applied.push(target.unit.logicalSection);
+            } else {
+              report.rejected.push({ unit: target.unit.logicalSection, violations: verdict.violations });
+            }
+          }
+          scopedRepairs.push(report);
+          if (working !== current) {
+            await writeFile(absolute, working, "utf8");
+            repaired.push(file);
+            await ctx.emitProgress({ file, repairedCount: repaired.length, scopedUnits: report.applied });
+          }
+          continue;
         }
         const result = await services.writer.repairSection({
           projectId: ctx.projectId,
@@ -2128,6 +2188,7 @@ function revisionRepairStage(services: WorkflowServices): StageSpec {
       const commit = await services.revisions.commit(ctx.projectId, "revision.repair_latex", ctx.runId);
       return {
         repairedFiles: repaired,
+        ...(scopedRepairs.length > 0 ? { scopedRepairs } : {}),
         attempt: countCompletions(ctx.state, "revision.repair_latex") + 1,
         revision: commit.revision,
         changed: commit.created,
@@ -11581,6 +11642,8 @@ function readStringArrayPayload(payload: Record<string, unknown> | undefined, fi
 
 export async function buildManuscriptDigest(services: WorkflowServices, projectId: string): Promise<string> {
   const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
+  // M14.9.1 实验开关 metadata_blind：审稿视图按字段去掉作者 / 单位 / 邮箱 / 致谢与源码注释（缺省 production = 原样）
+  const reviewInputView = (content: string) => (services.review?.inputMode === "metadata_blind" ? stripLatexReviewMetadata(content).text : content);
   const outline = await services.manuscript.loadOutline(projectId);
   const parts: string[] = [];
   if (outline !== null) {
@@ -11596,10 +11659,10 @@ export async function buildManuscriptDigest(services: WorkflowServices, projectI
   } else if (files.mainTex !== null) {
     // M10.3：单文件 LaTeX 导入项目（无 \input / 无大纲）——按 \section /
     // \subsection 边界切块，否则 2000 字符截断会让审稿与论文理解几乎失明
-    parts.push(...splitSingleFileDigest(files.mainTex.content));
+    parts.push(...splitSingleFileDigest(reviewInputView(files.mainTex.content)));
   }
   for (const section of files.sections.slice(0, 24)) {
-    parts.push(`[${section.relativePath}]\n${sliceForDigest(section.content, SECTION_DIGEST_BUDGET)}`);
+    parts.push(`[${section.relativePath}]\n${sliceForDigest(reviewInputView(section.content), SECTION_DIGEST_BUDGET)}`);
   }
   if (parts.length === 0) {
     throw new BusinessError("STAGE_CONTRACT_VIOLATION", "manuscript 目录没有任何 .tex 文件");

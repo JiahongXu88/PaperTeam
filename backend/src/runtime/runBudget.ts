@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { BusinessError } from "../errors.js";
 import { currentTraceScope } from "../observability/trace.js";
 import { writeJsonAtomic } from "../util/atomic.js";
+import { estimatePromptTokens, type GlobalBudgetLedger } from "./globalBudgetLedger.js";
 import type { AgentRuntime, AgentRunHandle, AgentTask, RunAgentInput, RuntimeHealth, RuntimeModelStatus, RuntimeSessionStats, SessionDiagnosticEntry } from "./types.js";
 
 export interface RunBudgetLimits {
@@ -71,6 +72,12 @@ export interface RunBudgetLedgerOptions {
   limits: RunBudgetLimits;
   /** 项目的账本目录（research/；serviceStack 传 ProjectStore.researchDir） */
   resolveLedgerDir: (projectId: string) => string;
+  /**
+   * M14.9.1 C1：任务级（跨 run / 跨进程）账本。配置后**每一次**模型请求（含无 trace
+   * scope 的直连调用）启动前都在该账本预留「prompt 预估 + outputReserveTokens」，
+   * 超限拒绝启动；耗尽时 snapshot 视为 exceeded，planner 走既有优雅降级（Draft）。
+   */
+  global?: { ledger: GlobalBudgetLedger; outputReserveTokens: number; experimentId?: string };
 }
 
 const LEDGER_FILE = "model-ledger.json";
@@ -105,6 +112,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
   private readonly inner: AgentRuntime;
   private readonly limits: RunBudgetLimits;
   private readonly resolveLedgerDir: (projectId: string) => string;
+  private readonly global: RunBudgetLedgerOptions["global"];
   /** 每项目写串行（读多写少；并发 settle 的计数合并安全） */
   private readonly writeQueues = new Map<string, Promise<void>>();
   /** 进程内账本缓存（写透；同步快照供同步 planner 消费，IO 兜底在 chargeCall） */
@@ -114,6 +122,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
     this.inner = options.runtime;
     this.limits = options.limits;
     this.resolveLedgerDir = options.resolveLedgerDir;
+    this.global = options.global;
     this.provider = options.runtime.provider;
     this.resolvedModel = options.runtime.resolvedModel;
     this.releaseProjectSessions = options.runtime.releaseProjectSessions?.bind(options.runtime);
@@ -127,17 +136,23 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
     const scope = currentTraceScope();
     const projectId = input.projectId ?? scope?.projectId;
     const runId = scope?.runId;
-    if (projectId !== undefined && runId !== undefined) {
-      await this.chargeCall(projectId, runId);
-    }
-    const handle = await this.inner.startAgent(input);
-    if (projectId === undefined || runId === undefined) {
-      return handle;
+    const globalId = projectId !== undefined && runId !== undefined
+      ? await this.chargeCall(projectId, runId, input)
+      : this.reserveGlobal(input, projectId);
+    let handle: AgentRunHandle;
+    try {
+      handle = await this.inner.startAgent(input);
+    } catch (error) {
+      this.settleGlobal(globalId, undefined);
+      throw error;
     }
     // settle 后入账 usage（不阻塞调用方：后台链；失败只丢观测不丢预算计数）
     void handle.result().then(
-      (task) => void this.chargeUsage(projectId, runId, task),
-      () => undefined,
+      (task) => {
+        this.settleGlobal(globalId, task);
+        if (projectId !== undefined && runId !== undefined) void this.chargeUsage(projectId, runId, task);
+      },
+      () => this.settleGlobal(globalId, undefined),
     );
     return handle;
   }
@@ -146,10 +161,17 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
     const scope = currentTraceScope();
     const projectId = input.projectId ?? scope?.projectId;
     const runId = scope?.runId;
-    if (projectId !== undefined && runId !== undefined) {
-      await this.chargeCall(projectId, runId);
+    const globalId = projectId !== undefined && runId !== undefined
+      ? await this.chargeCall(projectId, runId, input)
+      : this.reserveGlobal(input, projectId);
+    let task: AgentTask;
+    try {
+      task = await this.inner.runAgent(input);
+    } catch (error) {
+      this.settleGlobal(globalId, undefined);
+      throw error;
     }
-    const task = await this.inner.runAgent(input);
+    this.settleGlobal(globalId, task);
     if (projectId !== undefined && runId !== undefined) {
       await this.chargeUsage(projectId, runId, task);
     }
@@ -188,8 +210,12 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
 
   // ---- 账本 ----
 
-  /** 预算检查 + 调用计数（启动前；并发调用全部计数，不因 settle 时序漏计） */
-  private async chargeCall(projectId: string, runId: string): Promise<void> {
+  /**
+   * 预算检查 + 调用计数（启动前；并发调用全部计数，不因 settle 时序漏计）。
+   * 顺序：run 级检查（不写）→ 任务级预留（同步，可能拒绝）→ run 级计数落盘——
+   * 任一层拒绝都不会让另一层多记一次未发生的调用。
+   */
+  private async chargeCall(projectId: string, runId: string, input: RunAgentInput): Promise<string | undefined> {
     const ledger = await this.loadLedger(projectId);
     const entry = ledger.entries[runId] ?? emptyEntry(runId);
     const nextCalls = entry.calls + 1;
@@ -200,9 +226,41 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
         `本 run 模型预算已耗尽（${reason}；已完成 ${entry.calls} 次调用 / ${entryTokens(entry)} tokens）——不再启动新的模型任务。已落盘产物保留；可提高预算后从 checkpoint 恢复，或接受当前版本为 Draft`,
       );
     }
+    const globalId = this.reserveGlobal(input, projectId, runId);
     entry.calls = nextCalls;
     entry.updatedAt = new Date().toISOString();
     await this.saveLedger(projectId, withEntry(ledger, entry));
+    return globalId;
+  }
+
+  private reserveGlobal(input: RunAgentInput, projectId: string | undefined, runId?: string): string | undefined {
+    if (this.global === undefined) return undefined;
+    const role = typeof input.metadata?.["role"] === "string" ? input.metadata["role"] : input.agentId;
+    const skill = typeof input.metadata?.["skill"] === "string" ? `/${input.metadata["skill"]}` : "";
+    return this.global.ledger.reserve({
+      experimentId: this.global.experimentId ?? runId ?? projectId ?? "(no-scope)",
+      label: `${role}${skill}${projectId !== undefined ? ` @${projectId}` : ""}${runId !== undefined ? `/${runId}` : ""}`,
+      estimatedTokens: estimatePromptTokens(input.task) + this.global.outputReserveTokens,
+    });
+  }
+
+  private settleGlobal(globalId: string | undefined, task: AgentTask | undefined): void {
+    if (globalId === undefined || this.global === undefined) return;
+    const usage = task?.usage;
+    this.global.ledger.settle(globalId, usage === undefined ? undefined : {
+      inputTokens: usage.inputTokens ?? 0,
+      outputTokens: usage.outputTokens ?? 0,
+      cacheReadTokens: usage.cacheReadTokens ?? 0,
+      cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+      estimatedCost: usage.estimatedCost ?? 0,
+    });
+  }
+
+  /** 任务级账本耗尽原因（未配置 / 未耗尽 → undefined） */
+  private globalExhaustedReason(): string | undefined {
+    if (this.global === undefined) return undefined;
+    const reason = this.global.ledger.snapshot().exhaustedReason;
+    return reason === undefined ? undefined : `任务级预算：${reason}`;
   }
 
   private async chargeUsage(projectId: string, runId: string, task: AgentTask): Promise<void> {
@@ -272,9 +330,10 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
    */
   snapshotSync(projectId: string, runId: string): RunBudgetSnapshot | null {
     const ledger = this.cache.get(projectId);
-    if (ledger === undefined) return null;
-    const entry = ledger.entries[runId] ?? emptyEntry(runId);
-    const reason = this.exceedReason(entry);
+    const globalReason = this.globalExhaustedReason();
+    if (ledger === undefined && globalReason === undefined) return null;
+    const entry = ledger?.entries[runId] ?? emptyEntry(runId);
+    const reason = this.exceedReason(entry) ?? globalReason;
     return {
       runId,
       calls: entry.calls,
@@ -289,7 +348,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
   async snapshot(projectId: string, runId: string): Promise<RunBudgetSnapshot> {
     const ledger = await this.loadLedger(projectId);
     const entry = ledger.entries[runId] ?? emptyEntry(runId);
-    const reason = this.exceedReason(entry);
+    const reason = this.exceedReason(entry) ?? this.globalExhaustedReason();
     return {
       runId,
       calls: entry.calls,

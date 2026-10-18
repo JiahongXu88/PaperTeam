@@ -112,7 +112,9 @@ positive = 0；Writer 越权事实改写进入冻结产物 = 0；held-out isolat
 
 - **实验 ZIP 上限**：文件数 2000、路径段 16（真实审查包 916 文件、仓库同路径最深 13 级）；单文件 20 MiB、
   解压总量 64 MiB、压缩比 100:1、路径长度 512 不变。条目只按流读入内存、不按包内路径落盘。
-  大型包（≈60 万条指标观测、manifest ≈250 MB）可导入，但后端常驻内存约 2.5 GB；仅声明私有 Release 资产哈希的
+  大型包（≈60 万条指标观测、manifest ≈250 MB）可导入；只读路径（view / list / workflowContext / 指标浏览）
+  在 manifest 未变时共享同一份解析结果（M14.9.1：3 个并发 workflowContext 堆峰值 2.3 GB → 0.4 GB），单次解析仍需
+  约 0.85–1.4 GB 堆；仅声明私有 Release 资产哈希的
   清单文件应由作者改为 documentation 角色，避免其字节数进入指标观测。
 - **版本号不是数值事实**：数值提取不从「R5.1」「v2.5」的点后部分切出独立数字；未授权删除的展示位置取该数值
   实际减少的章节（不再取全文第一处文本匹配）。
@@ -121,6 +123,23 @@ positive = 0；Writer 越权事实改写进入冻结产物 = 0；held-out isolat
   替换文本中回应校验结果。已经进入稿件的此类段落在事实守卫的数值提取前剥离——删除它不构成删除事实。
 - **整段删除被引段落**：候选 = 引文前原文去尾部空白 + 仅空白 + 引文后原文去首部空白时，段落分隔随删除消失
   不判为引文外改动；引文旁的任何新增仍越界。
-- **已知边界**：单文件 LaTeX 工程（main.tex 即完整文档）的 `revision.repair_latex` 会因「返回完整文档骨架」
-  失败——该路径是无守卫的整文件改写，未放开；计划确认 HITL 不展示条目的 `actionType`，被 Planner 标为
-  author_decision_required 的条目即使给出了具体改法也不会派发。
+- **已知边界（M14.9，已于 M14.9.1 收口，见 §9）**：单文件 LaTeX 工程的 `revision.repair_latex` 整文件改写失败；
+  计划确认 HITL 不展示条目的 `actionType`。
+
+## 9. 计划处置透明、任务级预算与单元级编译修复（M14.9.1）
+
+- **计划确认（hitl.plan_confirm）**：每条计划显示 `actionType` 与处置——将自动执行（modify，仍过范围 / 事实 /
+  引用 / 编译守卫）、不改稿（noop，引文核验失败则转作者决定）、需要作者决定 · 本轮不执行
+  （author_decision_required）、只记录证据（evidence_only）、动作类型缺失 · 不会执行；显示原因、章节与
+  logicalSection、证据缺口（声明改动事实但无关联证据）与对应外部意见的当前闭环状态。未派发条目在批准前
+  集中汇总，必须勾选「已知悉」才能批准（会话内持久化，计划被重做后失效）；批准不改变动作类型、不绕过守卫，
+  改变处置只能经「修改计划」反馈由 Planner 重新生成。
+- **任务级预算账本**：`PAPERTEAM_GLOBAL_BUDGET_LEDGER`（+ `PAPERTEAM_GLOBAL_MAX_MODEL_CALLS` /
+  `PAPERTEAM_GLOBAL_MAX_TOKENS`）让一个外层任务的多个 improvement run、复审与外部脚本共享同一硬上限：
+  每次请求启动前预留「prompt 预估 + 输出上界」，超限拒绝启动（`MODEL_BUDGET_EXCEEDED`）并持久化
+  `BUDGET_EXHAUSTED`；耗尽后 planner 的预算信号对新 run 同样生效（走既有 Draft 降级，不会自动开新的恢复 run）。
+  per-run 上限（`WORKFLOW_MAX_*`）不变。
+- **单文件稿件的编译修复**：main.tex 含 `\begin{document}` 且无大纲时，诊断行号映射到所在编辑单元
+  （logicalSpan，≤9000 字符），Writer 只收到并只返回该单元；单元原文哈希、骨架 / 导言命令、花括号、`\cite`
+  多重集、`\label` / `\ref` / `\includegraphics`、修订过程说明、长度漂移与整文件事实保持全部通过才落盘，单元外
+  逐字节不变；导言区或无行号的错误如实记为不可修复（不扩大范围）。是否编译通过仍由下一次 build.draft 判定。

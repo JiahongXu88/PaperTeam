@@ -35,6 +35,14 @@ import {
   STATUS_BADGE_CLASS,
   STATUS_LABELS,
 } from "./missingMaterialLabels.js";
+import { PlanConfirmPayload } from "./HitlPlanConfirm.js";
+import {
+  planAckStorageKey,
+  readPlanConfirmItems,
+  summarizePlanConfirm,
+  type PlanConfirmItem,
+  type PlanConfirmSummary,
+} from "./planConfirmView.js";
 
 /**
  * HITL 决策面板（M4.5）：workflow 停在 awaiting_input 时的统一交互壳。
@@ -74,6 +82,8 @@ export function HitlPanel({
   const [confirmingReject, setConfirmingReject] = useState(false);
   // M5.4 hitl.style_polish：勾选要应用的 style 建议（null = 尚未改动，取 payload 默认全选）
   const [styleSelection, setStyleSelection] = useState<string[] | null>(null);
+  // M14.9.1 C0：计划确认中「未派发条目已知悉」——按 run + 计划内容持久化到 sessionStorage（刷新后保留）
+  const [planAck, setPlanAck] = useState<Record<string, boolean>>({});
   const formId = useId();
 
   if (awaiting === null || awaiting === undefined) {
@@ -82,6 +92,15 @@ export function HitlPanel({
 
   const pending = resume.isPending;
   const options = awaiting.options;
+  const planItems = awaiting.stageId === "hitl.plan_confirm" && awaiting.payload !== undefined ? readPlanConfirmItems(awaiting.payload) : [];
+  const planSummary = summarizePlanConfirm(planItems, typeof awaiting.payload?.["totalItems"] === "number" ? awaiting.payload["totalItems"] : undefined);
+  const planAckKey = planAckStorageKey(run.runId, planItems);
+  const planAckChecked = planAck[planAckKey] ?? readSessionFlag(planAckKey);
+  const setPlanAckChecked = (checked: boolean) => {
+    setPlanAck({ ...planAck, [planAckKey]: checked });
+    writeSessionFlag(planAckKey, checked);
+  };
+  const planApproveBlocked = planSummary.notDispatched > 0 && !planAckChecked;
 
   const submit = (input: HitlDecisionInput) => {
     resume.mutate(
@@ -144,6 +163,7 @@ export function HitlPanel({
         styleSelection={{ selected: selectedStyleIds, onToggle: toggleStyleFinding }}
         supply={{ projectId: run.projectId, onOpenTab }}
         thesisActions={{ pending, onSubmit: submit }}
+        planConfirm={{ items: planItems, summary: planSummary, ack: { checked: planAckChecked, onChange: setPlanAckChecked } }}
       />
 
       <div className="hitl-actions" data-testid="hitl-actions">
@@ -178,7 +198,8 @@ export function HitlPanel({
             type="button"
             className="btn btn-primary"
             data-testid="hitl-approve"
-            disabled={pending}
+            disabled={pending || planApproveBlocked}
+            {...(planApproveBlocked ? { title: `有 ${planSummary.notDispatched} 条计划不会自动执行，请先在上方确认已知悉` } : {})}
             onClick={() => submit({ action: "approve" })}
           >
             <Icon name="play" />
@@ -517,6 +538,7 @@ function HitlPayload({
   styleSelection,
   supply,
   thesisActions,
+  planConfirm,
 }: {
   stageId: string;
   payload: Record<string, unknown> | undefined;
@@ -524,6 +546,8 @@ function HitlPayload({
   supply?: { projectId: string; onOpenTab?: (tab: EvidenceSupplyTab) => void };
   /** M14.3 thesis payload 内联决策（与通用按钮同一 resume 通道） */
   thesisActions?: { pending: boolean; onSubmit: (input: HitlDecisionInput) => void };
+  /** M14.9.1 C0：计划确认的条目处置视图 + 未派发条目「已知悉」状态（HitlPanel 持有） */
+  planConfirm?: { items: PlanConfirmItem[]; summary: PlanConfirmSummary; ack: { checked: boolean; onChange: (checked: boolean) => void } };
 }) {
   if (payload === undefined) {
     return null;
@@ -535,8 +559,24 @@ function HitlPayload({
       return <FeasibilityPayload payload={payload} />;
     case "hitl.outline_confirm":
       return <OutlinePayload payload={payload} />;
-    case "hitl.plan_confirm":
-      return <PlanPayload payload={payload} />;
+    case "hitl.plan_confirm": {
+      const level = typeof payload["feasibilityLevel"] === "string" ? payload["feasibilityLevel"] : undefined;
+      if (level === undefined && (planConfirm === undefined || planConfirm.items.length === 0)) return null;
+      return (
+        <PlanConfirmPayload
+          items={planConfirm?.items ?? []}
+          summary={planConfirm?.summary ?? summarizePlanConfirm([], undefined)}
+          ack={planConfirm?.ack ?? { checked: false, onChange: () => {} }}
+          {...(supply !== undefined ? { projectId: supply.projectId } : {})}
+          feasibility={level !== undefined ? (
+            <p className="hitl-payload-level">
+              目标可行性：
+              <RegistryStatus style={statusStyleOf(FEASIBILITY_LEVEL_STYLES, level)} />
+            </p>
+          ) : null}
+        />
+      );
+    }
     case "hitl.revision_overflow":
       return <OverflowPayload payload={payload} />;
     case "hitl.revision_stalled":
@@ -1340,49 +1380,6 @@ function OutlinePayload({ payload }: { payload: Record<string, unknown> }) {
   );
 }
 
-/** 改进计划：可行性等级 + 计划条目（章节 → 动作，优先级） */
-function PlanPayload({ payload }: { payload: Record<string, unknown> }) {
-  const level = typeof payload["feasibilityLevel"] === "string" ? payload["feasibilityLevel"] : undefined;
-  const items = Array.isArray(payload["items"])
-    ? payload["items"].filter(
-        (entry): entry is { section: string; action: string; priority?: string } =>
-          typeof entry === "object" &&
-          entry !== null &&
-          typeof (entry as Record<string, unknown>)["section"] === "string" &&
-          typeof (entry as Record<string, unknown>)["action"] === "string",
-      )
-    : [];
-  if (level === undefined && items.length === 0) {
-    return null;
-  }
-  // M14.8.1-MOT：后端给出计划条目总数；展示数少于总数时如实提示（批准即进入事实授权台账）
-  const totalItems = typeof payload["totalItems"] === "number" ? payload["totalItems"] : items.length;
-  return (
-    <div className="hitl-payload" data-testid="hitl-payload-plan">
-      {level !== undefined ? (
-        <p className="hitl-payload-level">
-          目标可行性：
-          <RegistryStatus style={statusStyleOf(FEASIBILITY_LEVEL_STYLES, level)} />
-        </p>
-      ) : null}
-      <p className="hitl-payload-level" data-testid="hitl-plan-count">
-        共 {totalItems} 条计划条目{totalItems > items.length ? `（此处展示前 ${items.length} 条，其余请在「修订计划」面板查看后再批准）` : ""}
-      </p>
-      <ol className="hitl-plan-list" data-testid="hitl-plan-items">
-        {items.map((item, index) => (
-          <li key={`${item.section}-${index}`}>
-            <span className="hitl-plan-section mono">{item.section}</span>
-            <span className="hitl-plan-action">{item.action}</span>
-            {item.priority !== undefined ? (
-              <span className={`chip chip-tone-${planPriorityTone(item.priority)}`}>{planPriorityLabel(item.priority)}</span>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
 /** 修订耗尽：Gate 结论 + 审稿问题规模 + 构建状态 */
 function OverflowPayload({ payload }: { payload: Record<string, unknown> }) {
   const gatePassed = payload["gatePassed"] === true;
@@ -1798,6 +1795,24 @@ function HitlList({
   );
 }
 
+/** sessionStorage 布尔标记（不可用时静默降级为仅内存态） */
+function readSessionFlag(key: string): boolean {
+  try {
+    return window.sessionStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeSessionFlag(key: string, value: boolean): void {
+  try {
+    if (value) window.sessionStorage.setItem(key, "1");
+    else window.sessionStorage.removeItem(key);
+  } catch {
+    // 存储不可用：确认状态只保留在本次渲染
+  }
+}
+
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
@@ -1814,24 +1829,4 @@ function readStringList(value: unknown): string[] {
       .filter((entry) => entry.length > 0);
   }
   return readStringArray(value);
-}
-
-function planPriorityTone(priority: string): string {
-  if (priority === "high") {
-    return "danger";
-  }
-  if (priority === "low") {
-    return "neutral";
-  }
-  return "warn";
-}
-
-function planPriorityLabel(priority: string): string {
-  if (priority === "high") {
-    return "优先处理";
-  }
-  if (priority === "low") {
-    return "较低优先";
-  }
-  return "常规";
 }

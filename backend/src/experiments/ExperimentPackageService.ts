@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readFile, readdir } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 
 import { BusinessError, NotFoundError } from "../errors.js";
@@ -674,8 +674,25 @@ function jsonPathDepth(path: string | undefined): number {
   return path === undefined ? 0 : (path.match(/[.[]/g) ?? []).length;
 }
 
+/**
+ * M14.9.1 C2：只读路径共享的已解析 Manifest 的空闲保留时长。真实 R5.1 审查包（916 文件、
+ * 59 万条观测）manifest 约 247 MB：view / list / workflowContext / queryObservations 每次都
+ * 重新 JSON.parse，3 个并发 workflowContext 实测堆峰值 2.3 GB（单次 ≈ 1.1 GB）。只读调用方
+ * 在文件 mtime / size 未变时共享同一份解析结果（并发请求共享同一个解析 Promise）；写路径
+ * （get → 修改 → save）仍各自解析独立副本，save 后立即失效共享副本。
+ */
+const SHARED_MANIFEST_IDLE_MS = 120_000;
+
+interface SharedManifest {
+  mtimeMs: number;
+  size: number;
+  item: Promise<ExperimentPackage>;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class ExperimentPackageService {
   private readonly queues = new Map<string, Promise<unknown>>();
+  private readonly shared = new Map<string, SharedManifest>();
   private readonly semanticModel?: { runtime: ExperimentModelRuntime; defaultModel: () => string | undefined | Promise<string | undefined> };
   constructor(private readonly projects: ProjectStore, private readonly sources: SourceStore, private readonly ingestion: IngestionService, private readonly documents: ParsedDocumentStore, options?: { semanticModel?: { runtime: ExperimentModelRuntime; defaultModel: () => string | undefined | Promise<string | undefined> } }) {
     this.semanticModel = options?.semanticModel;
@@ -693,6 +710,42 @@ export class ExperimentPackageService {
   }
   private async save(projectId: string, item: ExperimentPackage): Promise<void> {
     await writeJsonAtomic(this.path(projectId, item.packageId), item);
+    this.dropShared(projectId, item.packageId);
+  }
+  private sharedKey(projectId: string, packageId: string): string { return `${projectId}\0${packageId}`; }
+  private dropShared(projectId: string, packageId: string): void {
+    const key = this.sharedKey(projectId, packageId);
+    const entry = this.shared.get(key);
+    if (entry !== undefined) clearTimeout(entry.timer);
+    this.shared.delete(key);
+  }
+  /**
+   * 只读调用方共享的 Manifest（调用方**不得修改**返回对象；需要修改请用 get() 取独立副本）。
+   * 文件 mtime / size 与缓存不一致 → 重新解析；解析失败不缓存（错误照常抛出）。
+   */
+  private async readShared(projectId: string, packageId: string): Promise<ExperimentPackage> {
+    if (!/^ep-[a-f0-9]{32}$/.test(packageId)) return this.get(projectId, packageId);
+    let info: { mtimeMs: number; size: number };
+    try { info = await stat(this.path(projectId, packageId)); }
+    catch { return this.get(projectId, packageId); }
+    const key = this.sharedKey(projectId, packageId);
+    const cached = this.shared.get(key);
+    const timer = () => {
+      const handle = setTimeout(() => this.shared.delete(key), SHARED_MANIFEST_IDLE_MS);
+      handle.unref?.();
+      return handle;
+    };
+    if (cached !== undefined && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
+      clearTimeout(cached.timer);
+      cached.timer = timer();
+      return cached.item;
+    }
+    if (cached !== undefined) this.dropShared(projectId, packageId);
+    const item = this.get(projectId, packageId);
+    const entry: SharedManifest = { mtimeMs: info.mtimeMs, size: info.size, item, timer: timer() };
+    this.shared.set(key, entry);
+    item.catch(() => { if (this.shared.get(key) === entry) this.dropShared(projectId, packageId); });
+    return item;
   }
   async get(projectId: string, packageId: string): Promise<ExperimentPackage> {
     await this.projects.getRequired(projectId);
@@ -728,7 +781,8 @@ export class ExperimentPackageService {
     return result.sort((a, b) => b.importedAt.localeCompare(a.importedAt));
   }
   async view(projectId: string, packageId: string): Promise<ExperimentPackage> {
-    const item = await this.get(projectId, packageId);
+    await this.projects.getRequired(projectId);
+    const item = await this.readShared(projectId, packageId);
     const invalid = new Set<string>();
     for (const file of item.files) {
       if (!file.sourceId) continue;
@@ -1262,7 +1316,8 @@ export class ExperimentPackageService {
     observations: MetricObservation[];
     facets: { splits: string[]; groupIds: string[]; methods: string[]; metrics: string[]; paths: string[] };
   }> {
-    const item = await this.get(projectId, packageId);
+    await this.projects.getRequired(projectId);
+    const item = await this.readShared(projectId, packageId);
     const page = Math.max(1, filters.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, filters.pageSize ?? 50));
     const normalized = (value: string | undefined) => value?.trim().toLowerCase() || undefined;

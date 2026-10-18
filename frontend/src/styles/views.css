@@ -2565,6 +2565,60 @@
   min-width: 0;
 }
 
+/* M14.9.1 C0：计划确认的处置汇总 / 未派发条目 / 筛选 */
+.hitl-plan-summary,
+.hitl-plan-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin: var(--s-2) 0;
+}
+
+.hitl-plan-filter .btn[aria-pressed="true"] {
+  border-color: var(--accent, currentColor);
+  font-weight: 600;
+}
+
+.hitl-plan-undispatched {
+  margin: var(--s-2) 0 var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-left: 3px solid var(--warning);
+  background: var(--warning-soft);
+  border-radius: var(--r-lg);
+  font-size: var(--fs-secondary);
+}
+
+.hitl-plan-undispatched ul {
+  margin: var(--s-2) 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1, 4px);
+}
+
+.hitl-plan-undispatched li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: baseline;
+}
+
+.hitl-plan-undispatched-lead {
+  margin: 0;
+}
+
+.hitl-plan-ack {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.hitl-plan-details {
+  flex-basis: 100%;
+}
+
 /* 决策表单（adjust / revise） */
 .hitl-form {
   margin-top: var(--s-3);

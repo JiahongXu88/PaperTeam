@@ -34,6 +34,7 @@ import { ResearchGapService } from "./agents/researchGap.js";
 import { ResearchLoopService } from "./agents/researchLoop.js";
 import type { AgentRuntime } from "./runtime/types.js";
 import { RunBudgetLedgerRuntime, type RunBudgetLimits } from "./runtime/runBudget.js";
+import type { GlobalBudgetLedger } from "./runtime/globalBudgetLedger.js";
 import { ReviewerService } from "./agents/ReviewerService.js";
 import { SourceStore } from "./sources/SourceStore.js";
 import { CandidateStore } from "./sources/CandidateStore.js";
@@ -139,6 +140,11 @@ export interface ServiceStackOptions {
    */
   runBudget?: RunBudgetLimits;
   /**
+   * M14.9.1 C1：任务级（跨 run / 跨进程）预算账本。设置后即使未配置 run 级上限也会装饰
+   * runtime：每次模型请求启动前预留、超限拒绝，耗尽时 planner 走既有 Draft 降级。
+   */
+  globalBudget?: { ledger: GlobalBudgetLedger; outputReserveTokens: number };
+  /**
    * 长论文阶段（Writer / 三路 Reviewer / 分章节 Reviewer / Researcher）的逐 run 执行超时
    * （PAPERTEAM_PI_LONG_RUN_TIMEOUT_MS）；缺省不覆盖（沿用 Runtime 通用默认）
    */
@@ -160,6 +166,9 @@ export interface ServiceStackOptions {
     reviewSectionLimit?: number;
     /** M14.8.1-MOT：长文档单元审查跨轮合法缓存（缺省开启） */
     incrementalUnitReuse?: boolean;
+    /** M14.9.1 实验开关（缺省 production / false） */
+    inputMode?: "production" | "metadata_blind";
+    neutralityPolicy?: boolean;
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
     revisionTask?: Partial<RevisionTaskPolicy>;
   };
@@ -391,11 +400,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   // M14.4 P0-3：run 级模型预算账本（装饰 runtime；业务服务零改动）。未配置时
   // 透传原 runtime（行为零变化，测试栈可显式注入小预算验证硬约束）。
   const runtime: AgentRuntime =
-    options.runBudget !== undefined
+    options.runBudget !== undefined || options.globalBudget !== undefined
       ? new RunBudgetLedgerRuntime({
           runtime: options.runtime,
-          limits: options.runBudget,
+          limits: options.runBudget ?? { maxModelCallsPerRun: 0, maxRunTokensPerRun: 0 },
           resolveLedgerDir: (projectId) => options.projects.researchDir(projectId),
+          ...(options.globalBudget !== undefined ? { global: options.globalBudget } : {}),
         })
       : options.runtime;
   const budgetLedger = runtime instanceof RunBudgetLedgerRuntime ? runtime : undefined;
@@ -1126,6 +1136,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         reviewConcurrency: options.review?.reviewConcurrency ?? 3,
         reviewSectionLimit: options.review?.reviewSectionLimit ?? 0,
         incrementalUnitReuse: options.review?.incrementalUnitReuse ?? true,
+        inputMode: options.review?.inputMode ?? "production",
+        neutralityPolicy: options.review?.neutralityPolicy ?? false,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
       // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →

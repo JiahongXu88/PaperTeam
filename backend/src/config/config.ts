@@ -56,6 +56,12 @@ export interface WorkflowConfig {
    * 订阅渠道 per-call 费用不可靠，预算主键是调用数与 token。WORKFLOW_MAX_RUN_TOKENS_PER_RUN。
    */
   maxRunTokensPerRun: number;
+  /**
+   * M14.9.1 C1：任务级（跨 run / 跨进程）预算账本。PAPERTEAM_GLOBAL_BUDGET_LEDGER = 账本
+   * 文件绝对路径（未设 = 不启用）；PAPERTEAM_GLOBAL_MAX_MODEL_CALLS / PAPERTEAM_GLOBAL_MAX_TOKENS
+   * 为上限（只能收紧）；PAPERTEAM_GLOBAL_OUTPUT_RESERVE_TOKENS = 每次请求预留的输出上界。
+   */
+  globalBudget?: { ledgerPath: string; maxCalls: number; maxTokens: number; outputReserveTokens: number };
 }
 
 export interface CitationConfig {
@@ -92,6 +98,13 @@ export interface ReviewConfig {
   reviewSectionLimit: number;
   /** M14.8.1-MOT：长文档单元审查跨轮合法缓存（PAPERTEAM_REVIEW_INCREMENTAL，缺省 true） */
   incrementalUnitReuse: boolean;
+  /**
+   * M14.9.1（实验开关，缺省关闭、未经 A/B 复核）：Reviewer 输入模式。metadata_blind = digest 模式下按字段 / span
+   * 移除作者 / 单位 / 邮箱 / \thanks / 致谢 / 源码注释后再审（PAPERTEAM_REVIEW_INPUT_MODE）。
+   */
+  inputMode: "production" | "metadata_blind";
+  /** M14.9.1（实验开关，缺省关闭、未经 A/B 复核）：审稿 prompt 追加「元数据 / 投稿格式不计入学术评分」条款（PAPERTEAM_REVIEW_NEUTRALITY_POLICY） */
+  neutralityPolicy: boolean;
   /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
@@ -561,6 +574,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: 2_000_000_000,
       }),
+      ...readGlobalBudget(source),
     },
     citation: {
       metadataEnabled: readBool(source, "CITATION_METADATA_ENABLED", true),
@@ -638,6 +652,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         max: REVIEW_SECTION_LIMIT_MAX,
       }),
       incrementalUnitReuse: readBool(source, "PAPERTEAM_REVIEW_INCREMENTAL", true),
+      inputMode: readReviewInputMode(source),
+      neutralityPolicy: readBool(source, "PAPERTEAM_REVIEW_NEUTRALITY_POLICY", false),
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")
@@ -914,4 +930,35 @@ function readOptionalValue(
 ): string | undefined {
   const raw = (source[key] ?? "").trim();
   return raw === "" ? undefined : raw;
+}
+
+/** M14.9.1：Reviewer 输入模式（实验开关；未知值拒绝启动，不静默回退） */
+function readReviewInputMode(source: Record<string, string | undefined>): "production" | "metadata_blind" {
+  const value = readOptionalValue(source, "PAPERTEAM_REVIEW_INPUT_MODE") ?? "production";
+  if (value !== "production" && value !== "metadata_blind") {
+    throw new ConfigError(`PAPERTEAM_REVIEW_INPUT_MODE 只能是 production 或 metadata_blind："${value}"`);
+  }
+  return value;
+}
+
+/** M14.9.1 C1：任务级预算账本（路径未设 = 不启用；路径必须是绝对路径） */
+function readGlobalBudget(source: Record<string, string | undefined>): Pick<WorkflowConfig, "globalBudget"> {
+  const ledgerPath = readOptionalValue(source, "PAPERTEAM_GLOBAL_BUDGET_LEDGER");
+  if (ledgerPath === undefined) return {};
+  if (!isAbsolute(ledgerPath)) {
+    throw new ConfigError(`PAPERTEAM_GLOBAL_BUDGET_LEDGER 必须是绝对路径："${ledgerPath}"`);
+  }
+  const maxCalls = readInt(source, "PAPERTEAM_GLOBAL_MAX_MODEL_CALLS", { default: 0, min: 0, max: 1_000_000 });
+  const maxTokens = readInt(source, "PAPERTEAM_GLOBAL_MAX_TOKENS", { default: 0, min: 0, max: 2_000_000_000 });
+  if (maxCalls === 0 && maxTokens === 0) {
+    throw new ConfigError("PAPERTEAM_GLOBAL_BUDGET_LEDGER 已设置，但 PAPERTEAM_GLOBAL_MAX_MODEL_CALLS / PAPERTEAM_GLOBAL_MAX_TOKENS 均为 0（任务级账本必须至少有一个上限）");
+  }
+  return {
+    globalBudget: {
+      ledgerPath: resolve(ledgerPath),
+      maxCalls,
+      maxTokens,
+      outputReserveTokens: readInt(source, "PAPERTEAM_GLOBAL_OUTPUT_RESERVE_TOKENS", { default: 16_000, min: 0, max: 1_000_000 }),
+    },
+  };
 }
