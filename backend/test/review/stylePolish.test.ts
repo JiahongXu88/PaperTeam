@@ -150,6 +150,11 @@ describe("M5.4 Style Invariant Checker（确定性守卫）", () => {
     expect(checkStyleInvariants(before, before.replace("33.5\\%", "33.5 \\%")).violations.map((v) => v.rule)).not.toContain("numeric_literals");
   });
 
+  it("M14.9-MOT：带点版本号（R5.1 / v2.5）的小数部分不切成独立数值；普通小数与独立整数不受影响", () => {
+    expect(extractNumericTokens("R5.1 已重评，v2.5 版本，YOLO11 检测器")).toEqual([]);
+    expect(extractNumericTokens("均差 0.5，共 1 个协议，表中 1.5 倍")).toEqual(["0.5", "1.5倍", "1个"]);
+  });
+
   it("公式 / \\label / \\eqref / 环境变化 → 阻断", async () => {
     const before = await corpus("E-sensitive-invariants.tex");
     expect(extractMathSegments(before).length).toBe(3);

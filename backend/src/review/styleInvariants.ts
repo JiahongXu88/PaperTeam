@@ -90,8 +90,11 @@ const MATH_ENVS = ["equation", "equation*", "align", "align*", "gather", "gather
  * RTX4090）的词内数字不再被切成 "00K" / "1" 伪 token（真实 E2E 实测这类伪
  * token 与无关删除值配对成假 changed 违规，阻断 Draft）。方向与 §3.10 的
  * 噪声归一一致：只减少假阳性，真实独立数值（前置非字母非数字）不受影响。
+ * M14.9-MOT：同理排除带点版本号的小数部分——「R5.1」「v2.5」的 5 被前缀字母挡住，
+ * 但「.1」仍会被切成独立的 "1"（真实返修：删除修订痕迹「R5.1」被判为删除事实数值 1，
+ * 两个补丁三轮修复全部被拒）。与 mentionsValue 的 (?<![\w.]) 口径一致。
  */
-const NUMBER_PATTERN = /(?<![A-Za-z\\\d])[-−]?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s?(?:%|‰|°C|[A-Za-zμ]{1,6}|倍|个|次|张|项|例|年|月|天|篇|层|条|组|类|种|轮|步|位))?/g;
+const NUMBER_PATTERN = /(?<![A-Za-z\\\d]|[A-Za-z\d]\.)[-−]?\d+(?:,\d{3})*(?:\.\d+)?(?:[eE][-+]?\d+)?(?:\s?(?:%|‰|°C|[A-Za-zμ]{1,6}|倍|个|次|张|项|例|年|月|天|篇|层|条|组|类|种|轮|步|位))?/g;
 
 function normalize(text: string): string {
   return text.replace(/\r\n/g, "\n");

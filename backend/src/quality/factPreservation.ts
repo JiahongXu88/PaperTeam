@@ -1230,6 +1230,26 @@ function numberDecreaseSpans(file: string, previous: string, current: string): M
   return result;
 }
 
+/**
+ * M14.9-MOT：未授权删除的展示位置取「该数值实际减少的章节」内的出现处；旧口径取全文第一处
+ * 文本匹配——真实返修里删除「R5.1」被报成导言区 \newcommand{\keywords}[1] 被删除，Writer
+ * 据此误判并把反驳说明写进了正文。无法按章节定位时回退到全文首处。
+ */
+function locateRemovedToken(file: string, previous: string, token: string, removedInSpans?: ReadonlySet<string>): number {
+  if (removedInSpans !== undefined && removedInSpans.size > 0) {
+    try {
+      for (const span of locateLatexSections(file, previous)) {
+        if (!removedInSpans.has(span.logicalSection)) continue;
+        const at = indexOfToken(span.content, token);
+        if (at >= 0) return span.start + at;
+      }
+    } catch {
+      // 章节解析失败：回退全文口径
+    }
+  }
+  return indexOfToken(previous, token);
+}
+
 function indexOfToken(content: string, token: string): number {
   // M9.10：token 已归一（无千分位逗号）；定位原文时允许数字间出现分隔符。
   // M10.3.1：分隔符扩展容忍 LaTeX 转义（原文 35.9\% 对 token 35.9%；旧模式
@@ -1767,7 +1787,7 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
       if (valueRemovalAuthorized(auth, missingToken, previousFile.file, removalSpans.get(missingToken)) !== null) {
         allowedRemovals += 1;
       } else {
-        remainingMissing.push({ token: missingToken, index: indexOfToken(previous, missingToken) });
+        remainingMissing.push({ token: missingToken, index: locateRemovedToken(previousFile.file, previous, missingToken, removalSpans.get(missingToken)) });
       }
     }
     /**

@@ -220,6 +220,7 @@ import {
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import { buildRevisionPlan, dispatchableRevisionItems, type RevisionPlan, type RevisionPlanItem } from "../review/revisionPlan.js";
 import { adaptLineEndingsToSpan, alignProposalToSpan, applyRevisionSpan, checkMultiRangeScope, checkGlobalRevisionScope, checkRevisionScope, describeScopeViolation, hasNewContentAfterDocumentEnd, hasRevisionWorkspaceMutation, locateLatexSections, revisionSourceHash, revisionSpansOverlap, verifyNoopCoverage, type RevisionSpan } from "../review/revisionScope.js";
+import { findWriterProcessCommentary } from "../review/writerCommentary.js";
 import { filterEvidenceForProtocol } from "../evidence/protocolScope.js";
 import { attributeCitationChangesToPatches, summarizePatchValidation, validationForComment, type PatchValidationRecord } from "../review/patchValidation.js";
 import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
@@ -2995,6 +2996,11 @@ function revisionReviseStage(
              */
             if (REVISION_META_TEXT_PATTERN.test(result.latex)) {
               failures.push({ code: "revision_meta_text", detail: "REVISION_META_TEXT_IN_MANUSCRIPT: 修订执行注记/决策标记/报告行不得写进论文正文（删除全部标记文本后重写该 span；说明信息只允许出现在最后单独一行的执行报告）" });
+            }
+            // M14.9-MOT：无标记的修订过程说明（修复轮 Writer 在正文末尾回应校验结果）同样拒绝
+            const processCommentary = findWriterProcessCommentary(resolvedSpan.content, result.latex);
+            if (processCommentary !== null) {
+              failures.push({ code: "revision_meta_text", detail: `REVISION_PROCESS_COMMENTARY_IN_MANUSCRIPT: 候选正文新增了关于修订过程 / 校验结果的说明（“${processCommentary}”）——替换文本会原样写进论文；只输出该 span 的论文正文，不要在正文中解释、复述或回应校验结果` });
             }
 
             const baselineFiles = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision));

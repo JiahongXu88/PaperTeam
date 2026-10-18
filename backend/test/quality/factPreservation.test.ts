@@ -412,6 +412,43 @@ describe("Fact Preservation：M14.8.1-MOT 子句级结论守卫（合法改写�
   });
 });
 
+/**
+ * M14.9-MOT：删除修订痕迹「R5.1」不是删除事实数值 1（真实返修：§6.3 与 §7.3 两个补丁三轮修复
+ * 全部被判 unauthorized_fact_removal，且违规位置被报成导言区 \newcommand{\keywords}[1]）。
+ */
+describe("Fact Preservation：M14.9-MOT 版本号小数部分与删除定位", () => {
+  const paper = (statistics: string, results: string): string => [
+    "\\documentclass{ctexart}",
+    "\\newcommand{\\keywords}[1]{\\textbf{关键词：}#1}",
+    "\\begin{document}",
+    "\\section{评测器与统计方法}\\label{sec:stats}", statistics,
+    "\\section{实验结果}\\label{sec:results}", results,
+    "\\end{document}",
+  ].join("\n");
+  const statsBefore = "整段协议的子集综合值在 R5 期只报逐序列等权均值，R5.1 已在家用电脑上以冻结评测器重评补齐；判定规则（R3 起冻结）全文适用。";
+  const statsAfter = "整段协议的子集综合值由冻结评测器对冻结轨迹重新评测得到；判定规则全文适用。";
+  const results = "H1+H4 使 IDSW 由 121 降至 80（在协议 1 上未获确认）。";
+
+  it("删除「R5.1」「R5」「R3」修订痕迹 → 不产生删除违规（无计划授权也成立）", () => {
+    const summary = evaluate({ "main.tex": paper(statsBefore, results) }, { "main.tex": paper(statsAfter, results) });
+    expect(summary.removedFacts).toHaveLength(0);
+    expect(summary.ok).toBe(true);
+  });
+
+  it("真实删除数值仍被拒，且违规位置落在数值实际减少的章节而非导言区宏定义", () => {
+    const summary = evaluate(
+      { "main.tex": paper(statsBefore, results) },
+      { "main.tex": paper(statsBefore, "H1+H4 使 IDSW 明显下降至 80（在部分协议上未获确认）。") },
+    );
+    expect(summary.ok).toBe(false);
+    const removedOne = summary.removedFacts.find((finding) => finding.classification?.oldValue === "1");
+    expect(removedOne).toBeDefined();
+    expect(removedOne!.before).toContain("协议");
+    expect(removedOne!.before).not.toContain("newcommand");
+    expect(summary.removedFacts.some((finding) => finding.classification?.oldValue === "121")).toBe(true);
+  });
+});
+
 
 // ---- 公式 / 方法事实 ----
 
