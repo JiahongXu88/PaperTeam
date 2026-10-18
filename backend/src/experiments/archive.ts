@@ -9,8 +9,11 @@ export const PACKAGE_LIMITS = {
   archiveBytes: 16 * 1024 * 1024,
   fileBytes: 20 * 1024 * 1024,
   totalBytes: 64 * 1024 * 1024,
-  entries: 200,
-  depth: 8,
+  // M14.9：真实论文审查包（R5.1，916 文件、仓库同路径最深 13 级）需要更宽的文件数与层级；
+  // 条目只按流读入内存、从不按包内路径落盘，层级不构成路径安全风险。其余大小 / 压缩比上限不变。
+  entries: 2000,
+  depth: 16,
+  pathLength: 512,
   ratio: 100,
 } as const;
 
@@ -45,8 +48,11 @@ function safePath(entry: Entry): string {
   if (segments.some((segment) => segment === "" || segment === "." || segment === ".." || segment.trim() !== segment)) {
     unsafe("ZIP 包含路径穿越或非规范路径");
   }
-  if (segments.length > PACKAGE_LIMITS.depth || name.length > 512) {
-    unsafe("ZIP 目录层级或路径长度超过上限");
+  if (segments.length > PACKAGE_LIMITS.depth) {
+    unsafe(`ZIP 目录层级超过上限（${segments.length} > ${PACKAGE_LIMITS.depth}）：${name.slice(0, 160)}`);
+  }
+  if (name.length > PACKAGE_LIMITS.pathLength) {
+    unsafe(`ZIP 路径长度超过上限（${name.length} > ${PACKAGE_LIMITS.pathLength}）`);
   }
   const unixType = (entry.externalFileAttributes >>> 16) & 0o170000;
   const directory = name.endsWith("/");
@@ -101,7 +107,7 @@ export async function visitArchive(
             zip.readEntry();
             return;
           }
-          if (entries.length >= PACKAGE_LIMITS.entries) unsafe("ZIP 文件数量超过 200");
+          if (entries.length >= PACKAGE_LIMITS.entries) unsafe(`ZIP 文件数量超过 ${PACKAGE_LIMITS.entries}`);
           if (entry.uncompressedSize > PACKAGE_LIMITS.fileBytes) unsafe("ZIP 单文件超过 20 MiB");
           total += entry.uncompressedSize;
           if (total > PACKAGE_LIMITS.totalBytes) unsafe("ZIP 解压总量超过 64 MiB");

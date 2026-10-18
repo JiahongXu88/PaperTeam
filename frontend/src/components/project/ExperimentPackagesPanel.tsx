@@ -224,7 +224,7 @@ export function ExperimentPackagesPanel({ projectId }: { projectId: string }) {
           {upload.isPending ? "上传并解析中…" : "上传实验包"}
         </button>
       </div>
-      <p className="muted">上限：ZIP 16 MiB、200 个文件、单文件 20 MiB、解压总量 64 MiB；不会执行包内代码。目录可先在本机压缩为 ZIP。</p>
+      <p className="muted">上限：ZIP 16 MiB、2000 个文件、目录 16 级、单文件 20 MiB、解压总量 64 MiB；不会执行包内代码。目录可先在本机压缩为 ZIP。</p>
       {uploadValidationError && <p role="alert" className="run-error">{uploadValidationError}</p>}
       {upload.isError && (
         <p role="alert" className="run-error">
