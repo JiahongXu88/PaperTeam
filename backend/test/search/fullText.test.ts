@@ -297,6 +297,19 @@ describe("downloadPdf", () => {
     expect(b.fileName).toBe("fulltext.pdf");
   });
 
+  it("服务端对严格 Accept: application/pdf 回 406（rc-pub 型平台）→ 带回退 Accept 仍可下载", async () => {
+    const accepts: string[] = [];
+    const impl = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const accept = new Headers(init?.headers).get("accept") ?? "";
+      accepts.push(accept);
+      if (!accept.split(",").some((part) => part.trim().startsWith("*/*"))) return new Response("", { status: 406 });
+      return pdfResponse(PDF_BYTES, { "Content-Type": "application/pdf;charset=utf-8" });
+    };
+    const result = await downloadPdf("https://journal.example.cn/rc-pub/front/front-article/download/1/lowqualitypdf/x.pdf", { http: makeHttp(impl as typeof fetch) });
+    expect(result.bytes.equals(PDF_BYTES)).toBe(true);
+    expect(accepts[0]).toMatch(/^application\/pdf/);
+  });
+
   it("非 PDF 字节（HTML 付费墙）→ FULLTEXT_DOWNLOAD_FAILED", async () => {
     const { impl } = routeFetch({
       "https://publisher.org/": () =>

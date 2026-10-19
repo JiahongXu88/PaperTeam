@@ -359,7 +359,9 @@ async function downloadPdfHops(url: string, options: DownloadPdfOptions, maxByte
         current,
         {
           maxBytes,
-          headers: { "User-Agent": USER_AGENT, Accept: "application/pdf" },
+          // 只接受 application/pdf 会被部分中文期刊平台（rc-pub：响应为 application/pdf;charset=utf-8）
+          // 以 406 拒绝；保留 PDF 优先并允许回退，内容是否为 PDF 仍由下方 %PDF- 魔数判定
+          headers: { "User-Agent": USER_AGENT, Accept: "application/pdf,*/*;q=0.8" },
           ...(options.signal !== undefined ? { signal: options.signal } : {}),
         },
       );
