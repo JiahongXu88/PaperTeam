@@ -226,6 +226,11 @@ export class ReviewerService {
     attributionDigest?: string;
     /** M14.9.1：元数据中立条款（实验开关） */
     neutralityPolicy?: boolean;
+    /**
+     * M14.9.3：第三方已发表论文只读评估口径（review/reviewPurpose 渲染）。提供时替代 Experiment Policy；
+     * 缺省 undefined → prompt 逐字节不变。
+     */
+    publishedAssessmentLines?: string[];
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -298,6 +303,8 @@ export class ReviewerService {
     attributionDigest?: string;
     /** M14.9.1：元数据中立条款（实验开关） */
     neutralityPolicy?: boolean;
+    /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
+    publishedAssessmentLines?: string[];
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -386,6 +393,8 @@ export class ReviewerService {
     signal?: AbortSignal;
     /** M14.9.1：元数据中立条款（实验开关） */
     neutralityPolicy?: boolean;
+    /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
+    publishedAssessmentLines?: string[];
   }): Promise<{ issues: ReviewIssue[]; academicScore: number | null; riskScore: number | null; summary: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -454,6 +463,8 @@ export class ReviewerService {
     signal?: AbortSignal;
     /** M14.9.1：元数据中立条款（实验开关） */
     neutralityPolicy?: boolean;
+    /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
+    publishedAssessmentLines?: string[];
   }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -773,6 +784,8 @@ export function buildReviewPrompt(params: {
   attributionDigest?: string;
   /** M14.9.1：元数据中立条款（实验开关；false / 缺省 → prompt 逐字节不变） */
   neutralityPolicy?: boolean;
+  /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 逐字节不变） */
+  publishedAssessmentLines?: string[];
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -890,7 +903,9 @@ export function buildReviewPrompt(params: {
           ...(params.mode === "fact" ? [`（${FACT_EVIDENCE_TOOL_GUIDANCE}）`] : []),
         ]
       : params.mode === "fact"
-        ? ["（无已核验（verified）Evidence：正文中所有强论断都应标记 UNSUPPORTED，可用 evidence_query 查询证据库确认后）"]
+        ? [params.publishedAssessmentLines !== undefined
+            ? "（无已核验（verified）Evidence：引用他人文献的论断可用 evidence_query 核对；论文作者自报的本研究结果不需要外部 Evidence，不得因此判 UNSUPPORTED）"
+            : "（无已核验（verified）Evidence：正文中所有强论断都应标记 UNSUPPORTED，可用 evidence_query 查询证据库确认后）"]
         : ["（无已核验（verified）Evidence）"]),
     ...(params.citationDigest
       ? ["", "===== 引用核验摘要 =====", params.citationDigest]
@@ -901,6 +916,7 @@ export function buildReviewPrompt(params: {
           "审稿口径：稿件中的具体实验数值只可能来自「已授权进入工作流」的实验范围或上述研究输入已确认事实；与已确认事实一致的数值不得判为「无实验数据 / 未授权 / 仅见于外部来源」，只核验其指标口径与表述；其余不在授权范围内的数值表述按实验支撑缺口如实报告（不要推测数值来源，也不要因授权存在而降低其他维度的审稿标准）。",
         ]
       : []),
+    ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
     ...(params.surveyDigest !== undefined
       ? ["", "===== 综述确定性指标（机器可算信号；评审时对照使用）=====", params.surveyDigest]
       : []),
@@ -960,6 +976,7 @@ function buildUnitReviewPrompt(params: {
   experimentPolicyLines?: string[];
   language?: ManuscriptLanguage;
   neutralityPolicy?: boolean;
+  publishedAssessmentLines?: string[];
 }): string {
   return [
     "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",
@@ -1000,6 +1017,7 @@ function buildUnitReviewPrompt(params: {
           "审稿口径：稿件中的具体实验数值只可能来自「已授权进入工作流」的范围或上述已确认研究输入事实；其余具体数值按实验支撑缺口如实报告。",
         ]
       : []),
+    ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
     "",
     `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
     params.unit.text,
@@ -1012,6 +1030,7 @@ function buildCrossChapterPrompt(params: {
   experimentPolicyLines?: string[];
   language?: ManuscriptLanguage;
   neutralityPolicy?: boolean;
+  publishedAssessmentLines?: string[];
 }): string {
   return [
     "你是一名学术审稿人（Reviewer）。请检查这篇长论文各章节之间的**一致性问题**。",
@@ -1033,6 +1052,7 @@ function buildCrossChapterPrompt(params: {
           ...params.experimentPolicyLines,
         ]
       : []),
+    ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
     "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
     "{",

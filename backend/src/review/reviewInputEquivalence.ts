@@ -8,6 +8,7 @@
  */
 
 import { citedKeys, findMetadataSpans, readGroup, renderBibEntries, stripLatexComments, type LatexSourceBundle, type ProjectionOutput } from "./blindReviewInput.js";
+import { cjkCount, isMetadataLine, looksLikeBody } from "./inputFidelityText.js";
 
 export interface ScientificInventory {
   basis: "latex" | "pdf_text";
@@ -22,6 +23,11 @@ export interface ScientificInventory {
   tokens: Map<string, number>;
   /** 授权移除（元数据 span）里出现的数值——不算缺失，单独审计 */
   authorizedRemovedNumbers: string[];
+  /**
+   * M14.9.3：授权移除的原文（PDF 文本层：连续被删行合并为一段）。M14.9.1 只把它们排除出清单，
+   * 被误删的正文因此从未进入「应保留」集合；删除侧审计据此复核每段删除是否真是元数据。
+   */
+  authorizedRemovedRuns?: Array<{ firstLine: number; text: string }>;
 }
 
 export interface EquivalenceReport {
@@ -213,13 +219,35 @@ export function pdfTextInventory(text: string, authorizedDroppedLines: ReadonlyS
   const lines = text.split("\n");
   const kept = lines.filter((_line, index) => !authorizedDroppedLines.has(index + 1)).join("\n");
   const dropped = lines.filter((_line, index) => authorizedDroppedLines.has(index + 1)).join("\n");
+  const authorizedRemovedRuns: Array<{ firstLine: number; text: string }> = [];
+  lines.forEach((line, index) => {
+    if (!authorizedDroppedLines.has(index + 1)) return;
+    const last = authorizedRemovedRuns[authorizedRemovedRuns.length - 1];
+    if (last !== undefined && authorizedDroppedLines.has(index)) last.text += `\n${line}`;
+    else authorizedRemovedRuns.push({ firstLine: index + 1, text: line });
+  });
   return {
     basis: "pdf_text",
     numbers: multiset(numberTokens(kept)),
     math: [], citations: new Map(), captions: [], tables: [], figures: 0, sections: [], references: [],
     tokens: multiset(wordTokens(kept)),
     authorizedRemovedNumbers: numberTokens(dropped),
+    authorizedRemovedRuns,
   };
+}
+
+/**
+ * M14.9.3 删除侧审计：一段「授权删除」扣除元数据字段片段后仍像正文（≥40 汉字带句读 / ≥35 英文词）
+ * → 删除越界。保留侧清单完整不等于删除合法——被删正文根本不在清单里。
+ */
+export function auditAuthorizedRemovals(inventory: ScientificInventory): Array<{ firstLine: number; bodyChars: number; excerpt: string }> {
+  const out: Array<{ firstLine: number; bodyChars: number; excerpt: string }> = [];
+  for (const run of inventory.authorizedRemovedRuns ?? []) {
+    // 逐行剔除可证明的元数据 / 署名行，余下的连续被删行拼接后仍像正文 → 越界
+    const residual = run.text.split("\n").filter((line) => !isMetadataLine(line)).join("");
+    if (looksLikeBody(residual)) out.push({ firstLine: run.firstLine, bodyChars: cjkCount(residual) || residual.length, excerpt: residual.slice(0, 80) });
+  }
+  return out;
 }
 
 /** 对一个投影臂执行等价门（raw 臂即原稿本身：按定义等价，只报告清单规模） */
@@ -321,6 +349,8 @@ export function checkEquivalence(inventory: ScientificInventory, projection: Pro
   if (missingReferences.length > 0) reasons.push(`参考文献条目缺失 ${missingReferences.length}/${inventory.references.length}`);
   if (inventory.basis === "latex" && inventory.figures > 0 && figureMarkers < inventory.figures) reasons.push(`图占位标记 ${figureMarkers} < 图 ${inventory.figures}`);
   if (tokenCoverage < 0.995) reasons.push(`正文词元覆盖率 ${(tokenCoverage * 100).toFixed(2)}% < 99.5%`);
+  const overRemoved = auditAuthorizedRemovals(inventory);
+  if (overRemoved.length > 0) reasons.push(`授权删除越界：${overRemoved.length} 段被删文本扣除元数据后仍是正文（首段第 ${overRemoved[0]!.firstLine} 行：${overRemoved[0]!.excerpt.slice(0, 30)}…）`);
 
   const redactions: Record<string, number> = {};
   for (const redaction of projection.redactions) redactions[redaction.kind] = (redactions[redaction.kind] ?? 0) + 1;

@@ -72,6 +72,7 @@ import {
 } from "./agents/researchLoopPolicy.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
+import { REVIEW_PURPOSES, type ReviewPurpose } from "./review/reviewPurpose.js";
 import {
   evaluateQualityGate,
   runBuildGateForRevision,
@@ -615,6 +616,7 @@ async function handleRequest(
     // M5.4 语言润色策略：只对会修改稿件的工作流有意义；Quick Review 100% 只读，
     // 携带 stylePolicy（任何值）直接 400——不存在「Quick Review 里应用润色」的路径
     const stylePolicy = readStylePolicyField(body, kind);
+    const reviewPurpose = readReviewPurposeField(body, kind);
     // M9.7.4：稿件语言随 run 固化（planner 纯函数层消费——en 项目跳过
     // zh-only 润色链；旧 run 无此字段 = 不过滤，兼容）
     const runLanguage = normalizeManuscriptLanguage(project.language);
@@ -651,6 +653,7 @@ async function handleRequest(
       ...(kind === "existing_paper_review" ? { citationSemanticMode: readCitationSemanticMode(body) } : {}),
       ...(stylePolicy !== undefined ? { stylePolicy } : {}),
       ...(runLanguage !== undefined ? { language: runLanguage } : {}),
+      ...(reviewPurpose !== undefined ? { reviewPurpose } : {}),
       ...surveyScope,
     });
     sendJson(res, 202, { runId: run.runId, status: run.status, workflowKind: run.workflowKind });
@@ -4896,6 +4899,23 @@ function readStylePolicyField(body: Record<string, unknown>, kind: WorkflowKind)
     "INVALID_REQUEST",
     `字段 stylePolicy 只能是 ${STYLE_POLICIES.join("、")}（缺省 ${DEFAULT_STYLE_POLICY}）`,
   );
+}
+
+/**
+ * M14.9.3 审稿目的（可选）：缺省不写入 request（= author_manuscript，行为不变）；只有 idea_to_paper 接受
+ * published_paper_assessment（第三方已发表论文只读评估）；其他工作流 / 非法值 400——已有论文返修等作者稿件
+ * 流程不得借只读口径放宽实验事实守卫。
+ */
+function readReviewPurposeField(body: Record<string, unknown>, kind: WorkflowKind): ReviewPurpose | undefined {
+  const value = body["reviewPurpose"];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !(REVIEW_PURPOSES as readonly string[]).includes(value)) {
+    throw new BusinessError("INVALID_REQUEST", `字段 reviewPurpose 只能是 ${REVIEW_PURPOSES.join("、")}`);
+  }
+  if (value === "published_paper_assessment" && kind !== "idea_to_paper") {
+    throw new BusinessError("INVALID_REQUEST", `reviewPurpose=published_paper_assessment 只适用于 idea_to_paper 只读评估（当前 ${kind}）`);
+  }
+  return value as ReviewPurpose;
 }
 
 /** 语义核验模式（existing_paper_review 专用）：非法值 400；缺省 off（新 run 默认关闭） */

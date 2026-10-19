@@ -33,7 +33,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 
 import { BusinessError, InvalidLatexOutputError, WorkflowInvalidStateError } from "../errors.js";
@@ -63,6 +63,7 @@ import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCove
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ExperimentPackageService } from "../experiments/ExperimentPackageService.js";
 import { renderExperimentPolicyLines } from "../experiments/experimentPolicy.js";
+import { buildPublishedAssessmentView, readReviewPurpose, renderPublishedAssessmentPolicyLines } from "../review/reviewPurpose.js";
 import type { CandidateStore, CandidateSource } from "../sources/CandidateStore.js";
 import type { SourceImportService } from "../sources/SourceImportService.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
@@ -652,7 +653,11 @@ function reviewRunStageInner(
       // M14.6 把 Experiment Policy 与事实表合成一个不自相矛盾的口径块（F5 真实失败形态：
       // 「没有已导入的实验数据」行紧接事实表，reviewer 取前者）
       const thesisConfirmedFacts = await thesisConfirmedResearchFacts(services, ctx.projectId);
-      const experimentPolicyLines = options.survey === true
+      // M14.9.3：审稿目的。缺省 author_manuscript（作者稿件口径，行为不变）；published_paper_assessment 只在
+      // idea_to_paper 只读评估入口生效——第三方已发表论文的自报数值不再按「实验支撑缺口」报告
+      const publishedAssessment = isPublishedAssessmentRun(ctx.state);
+      const publishedAssessmentLines = publishedAssessment ? renderPublishedAssessmentPolicyLines() : undefined;
+      const experimentPolicyLines = options.survey === true || publishedAssessment
         ? undefined
         : await experimentAndResearchFactPolicyLines(services, ctx.projectId);
       // M13.7.10：写作期生成的只读学术重复报告（修订号一致才注入 style 模式；不进 Gate）
@@ -697,6 +702,7 @@ function reviewRunStageInner(
         ...(attributionDigest !== undefined ? { attributionDigest } : {}),
         // M14.9.1 实验开关：缺省关闭时不出现该键（prompt / 单元请求指纹逐字节不变）
         ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
+        ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
       };
       type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
       let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
@@ -825,6 +831,7 @@ function reviewRunStageInner(
               ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
               ...(language !== undefined ? { language } : {}),
               ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
+              ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
               signal: ctx.signal,
             };
             const requestFingerprint = incrementalEnabled
@@ -918,6 +925,7 @@ function reviewRunStageInner(
               projectId: ctx.projectId, chapters: [...chapterDigests],
               ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
               ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
+              ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
               ...(language !== undefined ? { language } : {}), signal: ctx.signal,
             });
             crossChapterIssues = cross.issues;
@@ -1698,12 +1706,34 @@ function qualityGateStage(
           ? "Quality Gate 通过"
           : `Quality Gate 未通过：${gate.reasons.length} 项阻止（${outcome ?? "首轮无对比"}${convergence !== null ? ` / ${convergence}` : ""}）`,
       );
+      // M14.9.3：第三方已发表论文只读评估——生产 gate 原样保留；另落盘标明规则适用性的评估视图
+      let publishedAssessmentSummary: Record<string, unknown> | undefined;
+      if (isPublishedAssessmentRun(ctx.state)) {
+        const view = buildPublishedAssessmentView({
+          gate, review,
+          citationReportAvailable: citation !== null,
+          evidenceRecords: evidenceRecords.length,
+          feasibilityEvaluated: feasibility !== null,
+        });
+        const dir = services.projects.reviewsDir(ctx.projectId);
+        await mkdir(dir, { recursive: true });
+        await writeJsonAtomic(join(dir, `published-assessment-r${round}.json`), view);
+        publishedAssessmentSummary = {
+          reviewPurpose: view.reviewPurpose,
+          publicationGate: view.publicationGate,
+          reviewCompleted: view.reviewCompleted,
+          scientificFindings: view.scientificFindings,
+          evidenceLimitations: view.evidenceLimitations.total,
+          notEvaluated: view.notEvaluated.map((entry) => entry.item),
+        };
+      }
       return {
         passed: gate.passed,
         reasonCount: gate.reasons.length,
         reasons: gate.reasons.slice(0, 8),
         round,
         outcome,
+        ...(publishedAssessmentSummary !== undefined ? { publishedAssessment: publishedAssessmentSummary } : {}),
         // M11.2.3：确定性收敛状态与轮次质量差（planSharedTail / stalled payload 消费）
         ...(convergence !== null ? { convergence } : {}),
         // M11.3（Phase E）：产品终态语义（completion summary / stalled payload 共用）
@@ -11431,6 +11461,18 @@ async function thesisConfirmedResearchFacts(
  * M14.6（F5）：Experiment Policy + 研究输入已确认事实的统一口径块（review.run 三路 digest /
  * 长文档单元 / 跨章一致性共用）。无研究输入的项目与 renderExperimentPolicyLines 逐字节一致。
  */
+/**
+ * M14.9.3：本 run 是否为第三方已发表论文的只读评估。只在 idea_to_paper 的显式 request.reviewPurpose 下成立；
+ * 其他工作流（已有论文返修 / 综述 / 学位论文）若携带该字段则 fail-closed（不得借只读口径放宽作者稿件守卫）。
+ */
+function isPublishedAssessmentRun(state: WorkflowState): boolean {
+  if (readReviewPurpose(state.request) !== "published_paper_assessment") return false;
+  if (state.workflowKind !== "idea_to_paper") {
+    throw new BusinessError("STAGE_CONTRACT_VIOLATION", `reviewPurpose=published_paper_assessment 只适用于 idea_to_paper 只读评估入口（当前 ${state.workflowKind}）`);
+  }
+  return true;
+}
+
 async function experimentAndResearchFactPolicyLines(services: WorkflowServices, projectId: string): Promise<string[]> {
   const policy = await services.experimentPackages.experimentPolicy(projectId);
   const registry = await services.thesis.researchInputs.list(projectId);
