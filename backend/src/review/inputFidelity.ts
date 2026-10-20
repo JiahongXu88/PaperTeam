@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 
 import { buildGramIndex, canon, canonWithMap, cjkCount, looksLikeBody, looksLikeNameList, residualBody, LABELED_PROSE_FIELD, METADATA_SIGNATURES, type GramIndex } from "./inputFidelityText.js";
 import { checkTable, parseMarkdownTables } from "./inputFidelityTables.js";
+import { detectConversionArtifacts } from "./inputFidelityArtifacts.js";
 import {
   AUTHORIZED_DELETION_KINDS, INPUT_FIDELITY_REPORT_SCHEMA,
   type Box, type DeletionAudit, type DeletionEntry, type FidelityFinding, type FidelityProjectionInput, type FidelityStatus,
@@ -595,7 +596,10 @@ function assembleReport(source: SourceEvidence, projection: FidelityProjectionIn
   const fieldResidue = beforeReferences.split(/\n+/).filter((line) => METADATA_RESIDUE.test(line.normalize("NFKC")));
   if (fieldResidue.length > 0) add({ code: "BLINDING_RESIDUE", severity: "soft", detail: `参考文献之前仍有 ${fieldResidue.length} 行带投稿元数据字段特征（基金编号 / 邮箱 / 收稿日期 / 作者简介）`, excerpt: fieldResidue[0]!.slice(0, 120) });
 
-  // ---- 7. 状态 ----
+  // ---- 7. 转写伪影（M14.9.5：私用区字形 / 版边标识成标题 / 标题吞正文 / 句子被隔断 / 断词 / 参考文献残段 / 期刊引用行） ----
+  for (const finding of detectConversionArtifacts(text, source)) add(finding);
+
+  // ---- 8. 状态 ----
   const hard = findings.filter((finding) => finding.severity === "hard");
   const soft = findings.filter((finding) => finding.severity === "soft");
   const status: FidelityStatus = source.incompleteContinuations.length > 0
