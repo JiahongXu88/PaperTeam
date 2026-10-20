@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { startTestStack, scriptedIdeaRuntime } from "../helpers/testStack.js";
-import { createExistingPaperDefinition } from "../../src/workflow/definitions.js";
+import { createExistingPaperDefinition, createIdeaToPaperDefinition } from "../../src/workflow/definitions.js";
 import type { StageRunContext } from "../../src/workflow/types.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import type { ReviewUnitRecord } from "../../src/review/coverageLedger.js";
@@ -54,7 +54,7 @@ interface Knobs {
   abortAfterUnitCalls?: number;
 }
 
-async function setup(options: { policy?: ReviewUnitContextPolicy; concurrency?: number } = {}) {
+async function setup(options: { policy?: ReviewUnitContextPolicy; concurrency?: number; published?: boolean } = {}) {
   const scripted = scriptedIdeaRuntime();
   const calls: Call[] = [];
   const knobs: Knobs = { model: "glm/claude-opus-5-5", failUnit: () => false, failCross: false };
@@ -117,13 +117,14 @@ async function setup(options: { policy?: ReviewUnitContextPolicy; concurrency?: 
     return projectId;
   };
   const projectId = await newProject();
-  const definition = createExistingPaperDefinition(services);
+  const definition = options.published === true ? createIdeaToPaperDefinition(services) : createExistingPaperDefinition(services);
   const stageOf = (id: string) => definition.stages.find((entry) => entry.id === id)! as { execute: (c: StageRunContext) => Promise<unknown> };
   const ctxFor = (pid: string, stageResults: Record<string, unknown> = {}) => {
     abort = new AbortController();
     unitCallsSinceRun = 0;
     return { projectId: pid, runId: `rel-${calls.length}`, attempt: 1, signal: abort.signal,
-      state: { workflowKind: "existing_paper_improvement", stageResults, stageHistory: [], completedStages: [], inputs: {}, request: {} },
+      state: { workflowKind: options.published === true ? "idea_to_paper" : "existing_paper_improvement", stageResults, stageHistory: [], completedStages: [], inputs: {},
+        request: options.published === true ? { reviewPurpose: "published_paper_assessment" } : {} },
       emitProgress: async () => {}, emitDomain: async () => {}, log: () => {} } as unknown as StageRunContext;
   };
   const run = (pid = projectId) => stageOf("review.run").execute(ctxFor(pid));
@@ -134,7 +135,8 @@ async function setup(options: { policy?: ReviewUnitContextPolicy; concurrency?: 
     return Promise.all((await readdir(roundDir)).map(async (name) => JSON.parse(await readFile(join(roundDir, name), "utf8")) as ReviewUnitRecord));
   };
   const unitCalls = () => calls.filter((call) => call.scope === "review/academic/unit");
-  return { calls, unitCalls, run, summary, journal, services, knobs, projectId, newProject };
+  const projectDir = (pid = projectId) => stack.store.projectDir(pid);
+  return { calls, unitCalls, run, summary, journal, services, knobs, projectId, newProject, projectDir };
 }
 
 describe("M14.9.5.2 F1：CACHE_INCOMPATIBLE 的旧完成记录不得计入覆盖率", () => {
@@ -273,5 +275,28 @@ describe("M14.9.5.2 会话隔离：跨项目 / 跨轮 / 跨章", () => {
     expect(h.calls.every((call) => call.toolPolicy === "sealed")).toBe(true);
     const crossCalls = h.calls.filter((call) => call.scope === "review/academic/consistency");
     expect(crossCalls.length).toBe(3);
+  });
+});
+
+describe("M14.9.5.2 只读口径的依赖来源标注不断言未知来源是 PDF 转写", () => {
+  it("没有送审前保真报告 → SOURCE_UNKNOWN（不写「PDF 转写投影」）；有保真报告但无人工 QA → SOURCE_UNVERIFIED（措辞不变）", async () => {
+    const h = await setup({ policy: "isolated_snapshot", published: true });
+    await h.run();
+    const withDeps = h.unitCalls().filter((call) => call.task.includes("--- [D"));
+    expect(withDeps.length).toBeGreaterThan(0);
+    for (const call of withDeps) {
+      expect(call.task).toContain("SOURCE_UNKNOWN（第三方论文输入，来源与转写方式未记录");
+      expect(call.task).not.toContain("PDF 转写投影");
+    }
+    expect((await h.summary(1)).coverage?.context?.sourceVerification).toBe("SOURCE_UNKNOWN");
+    const second = await h.newProject();
+    await mkdir(join(h.projectDir(second), "artifacts"), { recursive: true });
+    await writeFile(join(h.projectDir(second), "artifacts", "input-fidelity-report.json"), JSON.stringify({ schema: "paperteam.input-fidelity.report/v1", status: "REQUIRES_HUMAN_QA" }));
+    const before = h.unitCalls().length;
+    await h.run(second);
+    const projected = h.unitCalls().slice(before).filter((call) => call.task.includes("--- [D"));
+    expect(projected.length).toBeGreaterThan(0);
+    for (const call of projected) expect(call.task).toContain("SOURCE_UNVERIFIED（PDF 转写投影");
+    expect((await h.summary(1, second)).coverage?.context?.sourceVerification).toBe("SOURCE_UNVERIFIED");
   });
 });

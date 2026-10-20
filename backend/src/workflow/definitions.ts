@@ -11711,10 +11711,13 @@ function isPublishedAssessmentRun(state: WorkflowState): boolean {
 
 /**
  * M14.9.5.1：已发表论文转写投影中依赖原文的来源核验等级——只有与源 / 投影 / 被审稿件哈希绑定且有效的人工 QA 证明
- * 才是 SOURCE_ATTESTED；保真门自动判定或未提供报告一律 SOURCE_UNVERIFIED（上下文供给不改变保真结论）。
+ * 才是 SOURCE_ATTESTED；保真门自动判定一律 SOURCE_UNVERIFIED（上下文供给不改变保真结论）。
+ * M14.9.5.2：项目里没有送审前保真报告时，系统并不知道输入是不是 PDF 转写投影（也可能是作者 LaTeX 等），
+ * 记 SOURCE_UNKNOWN（措辞不再断言「PDF 转写投影」）；同样不等于已核验。
  */
 function publishedSourceVerification(fidelity: { report: InputFidelityReport; attestation: AttestationCheck | null } | null): SourceVerification {
-  return fidelity?.attestation?.verdict === "VALID" && fidelity.attestation.effectiveStatus === "VALID_FOR_SCORING" ? "SOURCE_ATTESTED" : "SOURCE_UNVERIFIED";
+  if (fidelity === null) return "SOURCE_UNKNOWN";
+  return fidelity.attestation?.verdict === "VALID" && fidelity.attestation.effectiveStatus === "VALID_FOR_SCORING" ? "SOURCE_ATTESTED" : "SOURCE_UNVERIFIED";
 }
 
 /**

@@ -27,8 +27,11 @@ export const DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS = 12_000;
 export type DependencyKind = "table" | "figure" | "equation";
 /** 附上的依赖类型：浮动体 / 公式，或审稿政策本身引用的「论文摘要」锚点 */
 export type AttachedKind = DependencyKind | "abstract";
-/** 依赖原文的来源核验等级（文档级）：作者 LaTeX 源稿 / 有哈希绑定人工 QA 的转写投影 / 未核验的转写投影 */
-export type SourceVerification = "AUTHOR_SOURCE" | "SOURCE_ATTESTED" | "SOURCE_UNVERIFIED";
+/**
+ * 依赖原文的来源核验等级（文档级）：作者 LaTeX 源稿 / 有哈希绑定人工 QA 的转写投影 / 有保真报告但未经人工 QA 的
+ * 转写投影 / 第三方输入且没有保真报告（M14.9.5.2：来源未记录，不断言是 PDF 转写投影）
+ */
+export type SourceVerification = "AUTHOR_SOURCE" | "SOURCE_ATTESTED" | "SOURCE_UNVERIFIED" | "SOURCE_UNKNOWN";
 export type DependencyResolution = "label" | "caption_number" | "latex_counter" | "tag" | "rubric_anchor";
 export type DependencyGapStatus = "DEPENDENCY_UNRESOLVED" | "DEPENDENCY_AMBIGUOUS" | "CONTEXT_OVERFLOW" | "NOT_ATTACHED_BY_POLICY";
 
@@ -655,6 +658,7 @@ const VERIFICATION_TEXT: Record<SourceVerification, string> = {
   AUTHOR_SOURCE: "AUTHOR_SOURCE（作者 LaTeX 源稿）",
   SOURCE_ATTESTED: "SOURCE_ATTESTED（PDF 转写投影，有哈希绑定的人工 QA 证明）",
   SOURCE_UNVERIFIED: "SOURCE_UNVERIFIED（PDF 转写投影，表格 / 公式未经人工逐格核验，不等于原始事实）",
+  SOURCE_UNKNOWN: "SOURCE_UNKNOWN（第三方论文输入，来源与转写方式未记录；表格 / 公式未经人工逐格核验，不等于原始事实）",
 };
 const VIA_TEXT: Record<DependencyResolution, string> = {
   label: "\\label 引用",
