@@ -44,6 +44,8 @@ export interface DependencyTarget {
   labels: string[];
   text: string;
   sha256: string;
+  /** M14.9.5.2：跨页续表 / 续图（与同号主表合为一个依赖对象，见 resolveUnitDependencies） */
+  continued?: true;
 }
 
 export interface DependencyIndex {
@@ -66,6 +68,8 @@ export interface AttachedDependency {
   labels: string[];
   sha256: string;
   chars: number;
+  /** M14.9.5.2：由主表与跨页续表合成的依赖（各部分 targetId，文档顺序）；缺省 = 单一对象 */
+  parts?: string[];
 }
 
 export interface DependencyGap {
@@ -224,11 +228,21 @@ function labelsOf(text: string): string[] {
   return [...text.matchAll(/\\label\{([^{}]+)\}/g)].map((match) => match[1]!.trim());
 }
 
-/** 题注 / 标题行开头的显式编号（「表 2 …」「Table 2 …」「\textbf{表 2 …}」） */
+/** 题注 / 标题行开头的显式编号（「表 2 …」「Table 2 …」「\textbf{表 2 …}」；M14.9.5.2：「续表 2」同样给出编号 2） */
 function leadingNumber(text: string, kind: Exclude<DependencyKind, "equation">): string | null {
-  const stripped = text.replace(/^\s*(?:\\noindent\s*)?(?:\\(?:textbf|textit|emph|bfseries)\s*\{?\s*)?/, "");
+  const stripped = text.replace(/^\s*(?:\\noindent\s*)?(?:\\(?:textbf|textit|emph|bfseries)\s*\{?\s*)?/, "").replace(/^续\s*(?=[表图])/, "");
   const match = new RegExp(`^${KIND_WORDS[kind]}\\s*~?\\s*${NUMBER_PATTERN}(?![\\d])`).exec(stripped);
   return match === null ? null : normalizeNumber(match[1]!);
+}
+
+/**
+ * M14.9.5.2：跨页续表 / 续图的标题（「续表 2」「Table 2 (continued)」「Table 2 (cont.)」）。续表不是一张新表：
+ * 旧口径不认「续表」标题，导致全篇标题约定被打乱、下一张表的编号被续表吞掉，或把「表 2」只附上半张。
+ */
+function isContinuationTitle(text: string, kind: Exclude<DependencyKind, "equation">): boolean {
+  const stripped = text.replace(/^\s*(?:\\noindent\s*)?(?:\\(?:textbf|textit|emph|bfseries)\s*\{?\s*)?/, "");
+  if (new RegExp(`^续\\s*${kind === "table" ? "表" : "图"}`).test(stripped)) return true;
+  return new RegExp(`^${KIND_WORDS[kind]}\\s*~?\\s*${NUMBER_PATTERN}\\s*[.:：]?\\s*[(（\\[]\\s*(?:continued|cont\\.?|续)\\s*[)）\\]]`, "i").test(stripped);
 }
 
 interface Paragraph { start: number; end: number; text: string }
@@ -251,7 +265,7 @@ const FLOAT_ENV: Record<Exclude<DependencyKind, "equation">, RegExp> = {
 };
 const EQUATION_ENV = /\\begin\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)\}[\s\S]*?\\end\{\1\}/g;
 
-interface TitleParagraph { start: number; end: number; number: string | null }
+interface TitleParagraph { start: number; end: number; number: string | null; continued?: boolean }
 interface RawBlock {
   kind: DependencyKind;
   start: number;
@@ -268,6 +282,12 @@ interface RawBlock {
   prevTitle?: TitleParagraph;
   /** 紧随其后的连续标题 / 注释段链（遇到正文段或下一个浮动体即止） */
   trailing?: TitleParagraph[];
+  /** M14.9.5.2：跨页续表 / 续图（「续表 N」「Table N (continued)」、\ContinuedFloat）：与同号主表合为一个依赖对象 */
+  continued?: boolean;
+  /** 环境内有 \ContinuedFloat（LaTeX 计数器不递增） */
+  continuedFloat?: boolean;
+  /** \caption 文字标明续表（「(continued)」/「续」） */
+  captionContinued?: boolean;
 }
 
 function floatBlocks(text: string, kind: Exclude<DependencyKind, "equation">): RawBlock[] {
@@ -289,7 +309,7 @@ function floatBlocks(text: string, kind: Exclude<DependencyKind, "equation">): R
     let prevTitle: TitleParagraph | undefined;
     if (previous !== undefined && text.slice(previous.end, range.start).trim() === "") {
       const number = leadingNumber(previous.text, kind);
-      if (number !== null) prevTitle = { start: previous.start, end: previous.end, number };
+      if (number !== null) prevTitle = { start: previous.start, end: previous.end, number, ...(isContinuationTitle(previous.text, kind) ? { continued: true } : {}) };
     }
     const trailing: TitleParagraph[] = [];
     let cursor = range.end;
@@ -298,12 +318,14 @@ function floatBlocks(text: string, kind: Exclude<DependencyKind, "equation">): R
       if (next === undefined || text.slice(cursor, next.start).trim() !== "") break;
       const number = leadingNumber(next.text, kind);
       if (number === null && !NOTE_PARAGRAPH.test(next.text)) break;
-      trailing.push({ start: next.start, end: next.end, number });
+      trailing.push({ start: next.start, end: next.end, number, ...(number !== null && isContinuationTitle(next.text, kind) ? { continued: true } : {}) });
       cursor = next.end;
     }
     return {
       kind, start: range.start, end: range.end, numbers: [], numberedCaption: captions.some((caption) => caption.numbered),
       labels: labelsOf(block), coreStart: range.start, coreEnd: range.end, captionNumbers, ...(prevTitle !== undefined ? { prevTitle } : {}), trailing,
+      ...(/\\ContinuedFloat\b/.test(block) ? { continuedFloat: true } : {}),
+      ...(captions.some((caption) => /[(（]\s*(?:continued|cont\.?|续)\s*[)）]|^\s*续/i.test(caption.text)) ? { captionContinued: true } : {}),
     };
   });
 }
@@ -328,23 +350,31 @@ function assignTitleConvention(blocks: RawBlock[]): void {
     const trailing = block.trailing ?? [];
     const useCaption = numbers.size > 0;
     const below = firstTrailingTitle(block);
+    let continued = block.continuedFloat === true || block.captionContinued === true;
     if (useCaption) {
       if (block.prevTitle?.number !== undefined && block.prevTitle.number !== null && numbers.has(block.prevTitle.number)) start = block.prevTitle.start;
     } else if (convention === "above" && block.prevTitle !== undefined) {
       numbers.add(block.prevTitle.number!);
       start = block.prevTitle.start;
+      continued ||= block.prevTitle.continued === true;
     } else if (convention === "below" && below !== undefined) {
       numbers.add(below.number!);
+      continued ||= below.continued === true;
+      // M14.9.5.2：下方标题约定下，紧邻上方的同号标题（中文题注在上、英文题注在下）一并纳入（与上方约定并入同号下方标题对称）
+      if (block.prevTitle !== undefined && block.prevTitle.number === below.number) start = block.prevTitle.start;
     } else if (convention === "union") {
-      if (block.prevTitle !== undefined) { numbers.add(block.prevTitle.number!); start = block.prevTitle.start; }
-      if (below !== undefined) numbers.add(below.number!);
+      if (block.prevTitle !== undefined) { numbers.add(block.prevTitle.number!); start = block.prevTitle.start; continued ||= block.prevTitle.continued === true; }
+      if (below !== undefined) { numbers.add(below.number!); continued ||= below.continued === true; }
     }
-    // 其后连续段：注释段与同号标题并入；遇到不同编号的标题（下一张表的上方标题）即止
+    // 其后连续段：注释段与同号标题并入；遇到不同编号的标题（下一张表的上方标题）即止。
+    // M14.9.5.2：上方标题约定下，紧随的「续表 N」标题属于下一块（续表本身），不并入主表
     let end = block.coreEnd ?? block.end;
     for (const entry of trailing) {
       if (entry.number !== null && !numbers.has(entry.number)) break;
+      if (entry.continued === true && convention !== "below" && !continued) break;
       end = entry.end;
     }
+    if (continued) block.continued = true;
     block.numbers = [...numbers];
     block.start = start;
     block.end = end;
@@ -388,6 +418,12 @@ export function indexDependencyTargets(
     let counter = 0;
     for (const entry of blocks) {
       if (!entry.block.numberedCaption) continue;
+      // M14.9.5.2：\ContinuedFloat 的续表沿用上一张表的编号（LaTeX 计数器不递增）——旧口径会让其后每张表的编号都错一位
+      if (entry.block.continuedFloat === true && counter > 0) {
+        entry.block.numbers = [String(counter)];
+        entry.block.continued = true;
+        continue;
+      }
       counter += 1;
       entry.block.numbers = [String(counter)];
     }
@@ -409,12 +445,29 @@ export function indexDependencyTargets(
       labels: block.labels,
       text,
       sha256: sha256Hex(text),
+      ...(block.continued === true ? { continued: true as const } : {}),
     });
   }
   return { targets, labelDefinitions, counterNumbering };
 }
 
 const KIND_LABEL: Record<DependencyKind, string> = { table: "表", figure: "图", equation: "公式" };
+
+/**
+ * M14.9.5.2：主表 + 跨页续表合为一个依赖对象。成立条件（任一不满足 → null，按原规则处理）：候选同类、同一个唯一编号，
+ * 全文该编号恰有一个非续表块且位于所有续表之前，至少有一个续表。
+ */
+function continuationGroup(index: DependencyIndex, candidates: readonly DependencyTarget[]): { main: DependencyTarget; parts: DependencyTarget[] } | null {
+  const first = candidates[0];
+  if (first === undefined || first.kind === "equation" || first.numbers.length !== 1) return null;
+  const number = first.numbers[0]!;
+  if (!candidates.every((candidate) => candidate.kind === first.kind && candidate.numbers.length === 1 && candidate.numbers[0] === number)) return null;
+  const same = index.targets.filter((target) => target.kind === first.kind && target.numbers.length === 1 && target.numbers[0] === number);
+  const mains = same.filter((target) => target.continued !== true);
+  if (mains.length !== 1 || same.length < 2 || same[0] !== mains[0]) return null;
+  if (!candidates.every((candidate) => same.includes(candidate))) return null;
+  return { main: mains[0]!, parts: same };
+}
 
 /**
  * 单元的跨单元依赖解析（确定性）：label 引用优先，其次文本编号；唯一候选才附上；整块附上或 CONTEXT_OVERFLOW。
@@ -523,12 +576,15 @@ export function resolveUnitDependencies(input: {
       continue;
     }
     const unique = [...new Map(entry.candidates.map((candidate) => [candidate.targetId, candidate])).values()];
-    if (unique.length > 1) {
+    // M14.9.5.2：主表 + 跨页续表（同号、恰有一个非续表块）是同一个对象，不算歧义；\label 只挂在主表上时同样带上续表
+    const group = continuationGroup(index, unique);
+    if (unique.length > 1 && group === null) {
       pushGap({ kind, mention: entry.mention, status: "DEPENDENCY_AMBIGUOUS", reason: `${unique.length} 个候选，不选择`, candidates: unique.map((candidate) => candidate.targetId) });
       continue;
     }
-    const target = unique[0]!;
-    if (target.unitId === unitId) {
+    const target = group?.main ?? unique[0]!;
+    const outside = group === null ? (target.unitId === unitId ? [] : [target]) : group.parts.filter((part) => part.unitId !== unitId);
+    if (outside.length === 0) {
       if (!inUnit.includes(entry.mention)) inUnit.push(entry.mention);
       continue;
     }
@@ -538,21 +594,24 @@ export function resolveUnitDependencies(input: {
       continue;
     }
     if (!input.attach) {
-      pushGap({ kind, mention: entry.mention, status: "NOT_ATTACHED_BY_POLICY", reason: `位于单元 ${target.unitId}；本策略不附跨单元依赖`, candidates: [target.targetId] });
+      pushGap({ kind, mention: entry.mention, status: "NOT_ATTACHED_BY_POLICY", reason: `位于单元 ${outside[0]!.unitId}；本策略不附跨单元依赖`, candidates: outside.map((part) => part.targetId) });
       continue;
     }
-    if (used + target.text.length > input.budgetChars) {
+    const text = outside.map((part) => part.text).join("\n\n");
+    if (used + text.length > input.budgetChars) {
       pushGap({
-        kind, mention: entry.mention, status: "CONTEXT_OVERFLOW", candidates: [target.targetId],
-        reason: `${target.text.length} 字超出依赖预算剩余 ${input.budgetChars - used} 字（预算 ${input.budgetChars}；不截断表格）`,
+        kind, mention: entry.mention, status: "CONTEXT_OVERFLOW", candidates: outside.map((part) => part.targetId),
+        reason: `${text.length} 字超出依赖预算剩余 ${input.budgetChars - used} 字（预算 ${input.budgetChars}；不截断表格${group !== null ? "，续表与主表整体附上或整体不附" : ""}）`,
       });
       continue;
     }
-    used += target.text.length;
+    used += text.length;
+    const source = outside[0]!;
     attachedById.set(target.targetId, {
-      refId: `D${attachedById.size + 1}`, kind: target.kind, targetId: target.targetId, sourceUnitId: target.unitId,
-      sourceFile: target.file, sourceHeading: target.heading, via: entry.via, mentions: [entry.mention],
-      numbers: target.numbers, labels: target.labels, sha256: target.sha256, chars: target.text.length, text: target.text,
+      refId: `D${attachedById.size + 1}`, kind: target.kind, targetId: target.targetId, sourceUnitId: source.unitId,
+      sourceFile: source.file, sourceHeading: source.heading, via: entry.via, mentions: [entry.mention],
+      numbers: target.numbers, labels: target.labels, sha256: group === null ? target.sha256 : sha256Hex(text), chars: text.length, text,
+      ...(group !== null ? { parts: outside.map((part) => part.targetId) } : {}),
     });
   }
   return { attached: [...attachedById.values()], gaps, inUnit, navigational, dependencyChars: used + anchorChars };
@@ -628,7 +687,7 @@ export function renderDependencyBlock(input: {
       ? ["===== 跨单元依赖（只读参考：本单元正文引用、但位于其他单元的表格 / 图 / 公式；不在本单元审查范围内）====="]
       : []),
     ...refs.flatMap((dep) => [
-      `--- [${dep.refId}] ${dep.mentions.join(" / ")} · 来源单元「${dep.sourceHeading}」（${dep.sourceFile}）· 定位：${VIA_TEXT[dep.via]} · 来源核验：${VERIFICATION_TEXT[input.sourceVerification]} · sha256:${dep.sha256.slice(0, 12)} ---`,
+      `--- [${dep.refId}] ${dep.mentions.join(" / ")} · 来源单元「${dep.sourceHeading}」（${dep.sourceFile}）· 定位：${VIA_TEXT[dep.via]}${dep.parts !== undefined ? ` · 含跨页续表 / 续图（${dep.parts.length} 部分，按原文顺序合为一个对象）` : ""} · 来源核验：${VERIFICATION_TEXT[input.sourceVerification]} · sha256:${dep.sha256.slice(0, 12)} ---`,
       dep.text,
     ]),
     ...(gaps.length > 0

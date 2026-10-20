@@ -269,6 +269,9 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
         return { applicability: "APPLICABLE_RECOUNTED", note: "只读视图按科研 finding 重新计数（证据可得性限制 / 投稿清单 / 转写伪影 / 来源未确定的表述意见单列；待核验疑点另列）；生产规则判定原样保留" };
       case "academic_score_threshold":
         return { applicability: "REPORTED_ONLY", note: "80 分是作者稿件进入 Final 的产品门槛，不是期刊录用线；对第三方已发表论文只报告分数，不作发表结论" };
+      case "review_unit_context_reported":
+      case "review_cross_chapter_reported":
+        return { applicability: "REPORTED_ONLY", note: "informational：只呈现跨单元 / 跨章核对是否执行（NOT_EVALUATED 项见 notEvaluated），不参与判定" };
       case "target_feasibility":
         return input.feasibilityEvaluated
           ? { applicability: "APPLICABLE", note: "已执行可行性评估" }
@@ -336,6 +339,10 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
         item: `cross_unit_reference:${entry.unitId}:${gap.mention}`,
         reason: `${gap.status}（BLOCKED_BY_CONTEXT）：${gap.reason}；该单元对此对象的跨单元核对未执行`,
       }))),
+      // M14.9.5.2：跨章一致性审查失败 = 跨章核对未执行（不是「无跨章冲突」）
+      ...((review.coverage?.crossChapter ?? review.coverage?.context?.crossChapter)?.status === "failed"
+        ? [{ item: "cross_chapter_consistency", reason: "跨章一致性审查调用失败：本轮没有跨章 finding 不代表没有跨章冲突" }]
+        : []),
     ],
     findings: classified.map(({ issue, index, cls }) => ({
       index, class: cls, severity: issue.severity, category: issue.category, section: issue.section, blocking: issue.blocking,

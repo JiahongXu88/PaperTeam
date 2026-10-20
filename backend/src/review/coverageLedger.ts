@@ -117,7 +117,7 @@ export interface ReviewContextCoverage {
   referenceOnlyQuoteFindings: number;
   /** 同轮 journal 记录与当前上下文策略 / 快照不等价而未复用的单元（CACHE_INCOMPATIBLE） */
   cacheIncompatibleUnitIds: string[];
-  crossChapter?: { sessionKey?: string; promptSha256?: string; status: "completed" | "failed" | "skipped" };
+  crossChapter?: { sessionKey?: string; promptSha256?: string; status: "completed" | "failed" | "skipped"; error?: string };
 }
 
 /** M14.8.1-MOT：增量复审中单元的处置（Fresh / 合法缓存 / 依赖失效重审 / 未审） */
@@ -224,6 +224,13 @@ export interface ReviewCoverageSummary {
   incremental?: IncrementalReviewLedger;
   /** M14.9.5.1：单元上下文汇总（缺省 = shared_session 或 digest 模式） */
   context?: ReviewContextCoverage;
+  /**
+   * M14.9.5.2：跨章一致性审查的执行状态（units 模式；缺省 = 旧产物 / digest 模式）。failed = 本轮跨章核对 NOT_EVALUATED，
+   * 「无跨章 finding」不代表无跨章冲突；skipped = 只有一个章节，不适用
+   */
+  crossChapter?: { status: "completed" | "failed" | "skipped"; error?: string };
+  /** M14.9.5.2：shared_session 下同轮 journal 记录与当前请求指纹不一致而未复用的单元（隔离策略见 context.cacheIncompatibleUnitIds） */
+  journalIncompatibleUnitIds?: string[];
 }
 
 /** 与 definitions.ts buildManuscriptDigest 相同的截面预算判定（不修改其输出） */

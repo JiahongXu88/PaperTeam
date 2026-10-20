@@ -223,6 +223,15 @@ export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
     description: "首轮 / 无前序修订 / 用户恢复历史修订时无法比较引用变化，本规则不参与判定（不是通过）。",
     target: { tab: "citations" },
   },
+  // M14.9.5.2：长文档单元审稿的跨单元 / 跨章核对执行情况（informational，恒不参与判定）
+  review_unit_context_reported: {
+    label: "跨单元核对执行情况",
+    description: "长文档逐单元审稿时，被引的其他单元表 / 图 / 公式是否随单元送审；未附上的对象列为 NOT_EVALUATED（未核对，不是一致）。",
+  },
+  review_cross_chapter_reported: {
+    label: "跨章一致性审查执行情况",
+    description: "跨章一致性审查是否实际执行；失败时跨章核对为 NOT_EVALUATED，没有跨章问题不代表没有冲突。",
+  },
 };
 
 /**
@@ -235,6 +244,8 @@ export const GATE_RULES_NEUTRAL: ReadonlySet<string> = new Set([
   "citation_insufficient_evidence_review",
   "citation_preservation_not_applicable",
   "fact_preservation_not_applicable",
+  "review_unit_context_reported",
+  "review_cross_chapter_reported",
 ]);
 
 /** gate 整体结论（PASS 只表示允许进入 Final，不是「论文完美」） */

@@ -860,21 +860,34 @@ function reviewRunStageInner(
               ...(unitContext !== undefined ? { unitContext: { ...unitContext, sessionLabel: "" } } : {}),
               signal: ctx.signal,
             };
-            const unitInput = unitContext !== undefined && !isHeadingOnlyUnit(unitSpan.content)
+            const headingOnly = isHeadingOnlyUnit(unitSpan.content);
+            const unitInput = unitContext !== undefined && !headingOnly
               ? await services.reviewer.describeUnitInput?.(unitParams)
               : undefined;
-            if (contextSnapshot !== undefined && unitInput !== undefined) {
-              contextSnapshot.promptSha256 = unitInput.promptSha256;
-              contextSnapshot.contextSnapshotHash = unitInput.contextSnapshotHash;
+            if (contextSnapshot !== undefined && !headingOnly) {
+              // M14.9.5.2：Reviewer 无法描述输入时快照哈希留空（同轮 / 跨轮都不复用：fail closed），依赖缺口照样进入汇总
+              if (unitInput !== undefined) {
+                contextSnapshot.promptSha256 = unitInput.promptSha256;
+                contextSnapshot.contextSnapshotHash = unitInput.contextSnapshotHash;
+              }
               contextSnapshots.set(unit.unitId, contextSnapshot);
             }
+            // M14.9.5.2：请求指纹（完整 prompt + 模型 + Skill [+ 隔离策略]）先于复用判断计算——同轮 journal 恢复与跨轮缓存
+            // 用同一强度的校验（模型 / Skill / prompt 变化后进程恢复不得沿用旧审查）
+            const currentFingerprint = headingOnly
+              ? null
+              : unitContext !== undefined
+                ? (unitInput?.requestFingerprint ?? null)
+                : ((await services.reviewer.unitRequestFingerprint?.(unitParams)) ?? null);
             const reused = journalByUnitId.get(unit.unitId);
             // M14.9.5.1：同轮 journal 复用还要求上下文策略相同；隔离策略另要求快照哈希一致（旧共享会话记录 /
-            // 不同依赖集合的记录不可互为缓存：CACHE_INCOMPATIBLE → 重新审查）
+            // 不同依赖集合的记录不可互为缓存：CACHE_INCOMPATIBLE → 重新审查）。
+            // M14.9.5.2：记录与当前都有请求指纹时还必须相等（旧记录无指纹 = 沿用既有判定；隔离策略已由快照哈希绑定）
             const journalCompatible = reused !== undefined && (
               reused.taskId === "(heading-only)" ||
               ((reused.contextPolicy ?? "shared_session") === contextPolicy &&
-                (!isolatedContext || (reused.contextSnapshot?.contextSnapshotHash !== undefined && reused.contextSnapshot.contextSnapshotHash === contextSnapshot?.contextSnapshotHash)))
+                (!isolatedContext || (reused.contextSnapshot?.contextSnapshotHash !== undefined && reused.contextSnapshot.contextSnapshotHash === contextSnapshot?.contextSnapshotHash)) &&
+                (reused.requestFingerprint === undefined || currentFingerprint === null || reused.requestFingerprint === currentFingerprint))
             );
             if (
               reused !== undefined && reused.snapshotId === coveragePlan.snapshotId &&
@@ -922,11 +935,7 @@ function reviewRunStageInner(
               await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
               return { unit, record, review: { issues: [] as ReviewIssueOfUnit[], academicScore: null, riskScore: null, summary: summaryText, taskId: "(heading-only)" }, reused: false };
             }
-            const requestFingerprint = incrementalEnabled
-              ? (unitContext !== undefined
-                  ? (unitInput?.requestFingerprint ?? null)
-                  : ((await services.reviewer.unitRequestFingerprint?.(unitParams)) ?? null))
-              : null;
+            const requestFingerprint = incrementalEnabled ? currentFingerprint : null;
             if (incrementalEnabled && requestFingerprint === null) fingerprintUnavailable = true;
             const invalidationReason = invalidation.invalidated.get(unit.unitId);
             const cachedSource = requestFingerprint !== null ? priorByFingerprint.get(requestFingerprint) : undefined;
@@ -998,7 +1007,8 @@ function reviewRunStageInner(
                     issues: review.issues as unknown as Array<Record<string, unknown>>,
                     academicScore: review.academicScore, riskScore: review.riskScore, summary: review.summary,
                   },
-                  ...(requestFingerprint !== null ? { requestFingerprint } : {}),
+                  // M14.9.5.2：请求指纹恒随完成记录落盘（同轮恢复据此校验；跨轮缓存仍只在增量开启时使用）
+                  ...(currentFingerprint !== null ? { requestFingerprint: currentFingerprint } : {}),
                   ...(dispositions.get(unit.unitId) !== undefined ? { disposition: dispositions.get(unit.unitId)!.disposition } : {}),
                   ...contextFields,
                 };
@@ -1038,7 +1048,10 @@ function reviewRunStageInner(
         }
         const settled = outcomes.map((outcome) => (outcome.ok ? outcome.value : null));
         const completedUnits = settled.filter((entry): entry is NonNullable<typeof entry> => entry !== null && entry.record.status === "completed");
-        const allRecords = [...journal, ...settled.flatMap((entry) => (entry !== null ? [entry.record] : []))];
+        // M14.9.5.2：覆盖率只认本轮每个单元的最终处置（新执行 / 通过兼容校验的 journal 复用 / 合法缓存 / 失败）。
+        // 旧口径把整个同轮 journal 也并入：CACHE_INCOMPATIBLE 的旧完成记录在重审失败时仍计为完成（coverage 虚报 100%，
+        // 而该单元的 finding 并不在本轮结果里）
+        const allRecords = settled.flatMap((entry) => (entry !== null ? [entry.record] : []));
         if (completedUnits.length === 0 && coveragePlan.units.length > 0) {
           throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVIEW_UNITS_ALL_FAILED");
         }
@@ -1063,7 +1076,7 @@ function reviewRunStageInner(
             crossChapterTrace = { status: "completed", ...(cross.sessionKey !== undefined ? { sessionKey: cross.sessionKey } : {}), ...(cross.promptSha256 !== undefined ? { promptSha256: cross.promptSha256 } : {}) };
           } catch (error) {
             if (ctx.signal.aborted) throw error;
-            crossChapterTrace = { status: "failed" };
+            crossChapterTrace = { status: "failed", error: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
             ctx.log(`[review] 跨章一致性审查失败（降级为本轮无跨章 finding；正文覆盖不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
           }
         }
@@ -1071,6 +1084,9 @@ function reviewRunStageInner(
         // 复用计数以本轮实际命中 journal 的单元为准（computeReviewCoverage 的
         // 跨轮口径无法识别同轮 stage 重启——journal 记录 round 相同）
         coverageSummary.reusedUnits = settled.filter((entry) => entry?.reused === true).length;
+        // M14.9.5.2：跨章一致性审查的执行状态进入 coverage（失败 = 跨章核对 NOT_EVALUATED，Gate / 只读视图可见）
+        coverageSummary.crossChapter = { status: crossChapterTrace.status, ...(crossChapterTrace.error !== undefined ? { error: crossChapterTrace.error } : {}) };
+        if (!isolatedContext && cacheIncompatibleUnitIds.length > 0) coverageSummary.journalIncompatibleUnitIds = [...cacheIncompatibleUnitIds];
         // M14.8.1-MOT：增量复审账本——Fresh / 合法缓存（来源轮次）/ 依赖失效重审 / 未审 分开记录；
         // 100% coverage 不等于 100% 本轮重新调用模型
         {

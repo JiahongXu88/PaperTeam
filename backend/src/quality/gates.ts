@@ -628,6 +628,34 @@ export function evaluateQualityGate(
     });
   }
 
+  // 8c. M14.9.5.2：长文档单元模式的跨单元 / 跨章核对是否真的执行（informational：永远通过，只把未执行的核对
+  // 显式写成 NOT_EVALUATED——「没有跨单元 / 跨章 finding」不得被读成「已核对且无问题」）
+  if (coverage?.mode === "units") {
+    const context = coverage.context;
+    const gaps = (context?.contextIncompleteUnits ?? []).flatMap((entry) => entry.gaps.map((gap) => ({ unitId: entry.unitId, ...gap })));
+    rules.push({
+      rule: "review_unit_context_reported",
+      passed: true,
+      detail: context === undefined
+        ? "shared_session：长文档单元共用一个审稿会话，单元能否看到其他单元的表 / 图 / 公式取决于会话历史（调度顺序、超时重建），跨单元核对未逐项记录、不可复现"
+        : gaps.length === 0
+          ? `${context.policy}：跨单元依赖 ${context.attachedDependencies} 项全部附上（${context.dependencyChars} 字，只读参考、不计覆盖率）`
+          : `${context.policy}：${gaps.length} 处跨单元核对 NOT_EVALUATED（${gaps.slice(0, 6).map((gap) => `${gap.mention} ${gap.status}`).join("；")}${gaps.length > 6 ? "；…" : ""}）——对应单元未核对这些被引对象，不代表其一致`,
+    });
+    const cross = coverage.crossChapter ?? context?.crossChapter;
+    rules.push({
+      rule: "review_cross_chapter_reported",
+      passed: true,
+      detail: cross === undefined
+        ? "跨章一致性审查执行状态未记录（旧产物）"
+        : cross.status === "completed"
+          ? "跨章一致性审查已执行（跨章 finding 为待核验、不阻断）"
+          : cross.status === "skipped"
+            ? "只有一个章节：跨章一致性审查不适用"
+            : `跨章一致性审查失败：跨章核对 NOT_EVALUATED（本轮没有跨章 finding 不代表没有跨章冲突）${"error" in cross && cross.error !== undefined ? `；${cross.error.slice(0, 120)}` : ""}`,
+    });
+  }
+
   // 9. 目标可行性达标（LOW / INSUFFICIENT 阻止 Final；用户知情接受不降低标准）
   // M10.3.1：existing_paper 的 task-aware 适用性在 detail 中可见（required
   // vs not_applicable 逐条留档于 feasibility.json；判定口径不变——level 仍由

@@ -307,4 +307,126 @@ describe("只读评估视图：单元上下文如实呈现（不改生产 Gate�
     expect(items).not.toContain("unit_context_reproducibility");
     expect(isolated.notEvaluated.find((entry) => entry.item === "cross_unit_reference:main.tex::sec:a:表 5")?.reason).toContain("BLOCKED_BY_CONTEXT");
   });
+
+  it("M14.9.5.2：跨章一致性审查失败 → notEvaluated 列出 cross_chapter_consistency；新增 informational 规则为 REPORTED_ONLY", () => {
+    const failed = view({ ...base, coverage: { ...coverage, crossChapter: { status: "failed", error: "503" } } } as unknown as ReviewSummary);
+    expect(failed.notEvaluated.map((entry) => entry.item)).toContain("cross_chapter_consistency");
+    expect(failed.ruleApplicability.find((entry) => entry.rule === "review_cross_chapter_reported")?.applicability).toBe("REPORTED_ONLY");
+    expect(failed.ruleApplicability.find((entry) => entry.rule === "review_unit_context_reported")?.applicability).toBe("REPORTED_ONLY");
+    const ok = view({ ...base, coverage: { ...coverage, crossChapter: { status: "completed" } } } as unknown as ReviewSummary);
+    expect(ok.notEvaluated.map((entry) => entry.item)).not.toContain("cross_chapter_consistency");
+  });
+});
+
+describe("M14.9.5.2 跨页续表 / 图 / 跨文件引用", () => {
+  const tab = (rows: string[]): string => ["\\begin{table}[htbp]\\centering", "\\begin{tabular}{ll}", ...rows.map((row) => `${row} \\\\`), "\\end{tabular}", "\\end{table}"].join("\n");
+  const floatWithCaption = (caption: string, rows: string[], extra = ""): string =>
+    ["\\begin{table}[t]", ...(extra !== "" ? [extra] : []), `\\caption{${caption}}`, "\\begin{tabular}{ll}", ...rows.map((row) => `${row} \\\\`), "\\end{tabular}", "\\end{table}"].join("\n");
+
+  it("转写稿「续表 2」：与表 2 合为一个依赖（含两部分全部行）；不吞掉表 3 的编号", () => {
+    const results = [
+      "\\section*{结果}", "", "\\textbf{表 1 基本特征}", "", tab(["A & 1"]), "", "正文一段。", "",
+      "\\textbf{表 2 分层患病率}", "", tab(["低 & 24.0"]), "", "\\textbf{续表 2}", "", tab(["高 & 25.2"]), "",
+      "\\textbf{表 3 多因素}", "", tab(["OR & 1.1"]),
+    ].join("\n");
+    const units = [unit("结果", results), unit("分析", "见表2与表3。")];
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    const resolution = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: 12_000, attach: true });
+    expect(resolution.gaps).toEqual([]);
+    const t2 = resolution.attached.find((dep) => dep.mentions.includes("表2"))!;
+    expect(t2.parts).toHaveLength(2);
+    expect(t2.text).toContain("低 & 24.0");
+    expect(t2.text).toContain("高 & 25.2");
+    expect(t2.text).not.toContain("OR & 1.1");
+    const t3 = resolution.attached.find((dep) => dep.mentions.includes("表3"))!;
+    expect(t3.parts).toBeUndefined();
+    expect(t3.text).toContain("OR & 1.1");
+    expect(t3.text).not.toContain("续表");
+    const block = renderDependencyBlock({ attached: resolution.attached, gaps: resolution.gaps, sourceVerification: "SOURCE_UNVERIFIED" }).join("\n");
+    expect(block).toContain("含跨页续表 / 续图（2 部分");
+  });
+
+  it("作者 LaTeX \\ContinuedFloat：计数器不递增——「Table 3」是 Ablation 而不是 Table 2 的续表；\\label 只在主表上也带上续表", () => {
+    const results = [
+      "\\section{Results}", "", floatWithCaption("Baseline", ["A & 1"]), "",
+      floatWithCaption("Main results\\label{tab:main}", ["x & 24.0"]), "",
+      floatWithCaption("Main results (continued)", ["y & 25.2"], "\\ContinuedFloat"), "",
+      floatWithCaption("Ablation", ["z & 9.9"]),
+    ].join("\n");
+    const units = [unit("Results", results), unit("Analysis", "As Table 3 shows, ablation helps; Table~\\ref{tab:main} lists main results.")];
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    expect(index.targets.filter((target) => target.kind === "table").map((target) => [target.numbers, target.continued === true])).toEqual([[["1"], false], [["2"], false], [["2"], true], [["3"], false]]);
+    const resolution = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: 12_000, attach: true });
+    expect(resolution.gaps).toEqual([]);
+    const t3 = resolution.attached.find((dep) => dep.mentions.includes("Table 3"))!;
+    expect(t3.text).toContain("z & 9.9");
+    expect(t3.text).not.toContain("25.2");
+    const main = resolution.attached.find((dep) => dep.mentions.includes("\\ref{tab:main}"))!;
+    expect(main.via).toBe("label");
+    expect(main.text).toContain("x & 24.0");
+    expect(main.text).toContain("y & 25.2");
+  });
+
+  it("英文转写「Table 2 (continued)」不再歧义；续表超预算时整体 CONTEXT_OVERFLOW（不只附半张）", () => {
+    const results = [
+      "\\section*{Results}", "", "\\textbf{Table 1 Baseline}", "", tab(["A & 1"]), "", "Body paragraph.", "",
+      "\\textbf{Table 2 Main results}", "", tab(["x & 24.0"]), "", "\\textbf{Table 2 (continued)}", "", tab(["y & 25.2"]),
+    ].join("\n");
+    const units = [unit("Results", results), unit("Analysis", "Table 2 lists main results.")];
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    const ok = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: 12_000, attach: true });
+    expect(ok.attached).toHaveLength(1);
+    expect(ok.attached[0]!.text).toContain("y & 25.2");
+    const firstPartChars = index.targets.find((target) => target.numbers[0] === "2" && target.continued !== true)!.text.length;
+    const tight = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: firstPartChars + 5, attach: true });
+    expect(tight.attached).toEqual([]);
+    expect(tight.gaps).toMatchObject([{ mention: "Table 2", status: "CONTEXT_OVERFLOW" }]);
+    expect(tight.gaps[0]!.candidates).toHaveLength(2);
+  });
+
+  it("下方标题约定（英文题注全在表下）时，紧邻上方的同号中文标题一并纳入；上一张表的下方标题不被吞入", () => {
+    const results = [
+      "\\section*{结果}", "", tab(["a & 1"]), "", "\\textbf{Tab. 1 Baseline}", "", "正文一段。", "",
+      "\\textbf{表2 精度对比}", "", tab(["b & 83.8"]), "", "\\textbf{Tab. 2 Accuracy comparison}",
+    ].join("\n");
+    const units = [unit("结果", results), unit("分析", "见表2与表1。")];
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    const resolution = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: 12_000, attach: true });
+    expect(resolution.gaps).toEqual([]);
+    const t2 = resolution.attached.find((dep) => dep.mentions.includes("表2"))!;
+    expect(t2.text).toContain("表2 精度对比");
+    expect(t2.text).toContain("Tab. 2 Accuracy comparison");
+    const t1 = resolution.attached.find((dep) => dep.mentions.includes("表1"))!;
+    expect(t1.text).not.toContain("精度对比");
+    expect(t1.text).toContain("Tab. 1 Baseline");
+  });
+
+  it("两张都标「表 2」且都不是续表：仍是 DEPENDENCY_AMBIGUOUS（续表规则不放宽同号多表）", () => {
+    const results = ["\\section*{结果}", "", "\\textbf{表 2 甲}", "", tab(["a & 1"]), "", "正文。", "", "\\textbf{表 2 乙}", "", tab(["b & 2"])].join("\n");
+    const units = [unit("结果", results), unit("分析", "见表2。")];
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    const resolution = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: 12_000, attach: true });
+    expect(resolution.attached).toEqual([]);
+    expect(resolution.gaps).toMatchObject([{ mention: "表2", status: "DEPENDENCY_AMBIGUOUS" }]);
+  });
+
+  it("图：跨文件 \\ref 经 \\label 定位，附题注与 includegraphics 路径（不含图像内容）；主表在本单元、续表在其他单元时只附续表部分", () => {
+    const fig = ["\\begin{figure}[t]", "\\includegraphics{figs/a.png}", "\\caption{Throughput vs. load}\\label{fig:tp}", "\\end{figure}"].join("\n");
+    const units = [unit("Results", `\\section{Results}\n\n${fig}`, "sections/results.tex"), unit("Discussion", "Figure~\\ref{fig:tp} shows saturation.", "sections/discussion.tex")];
+    const index = indexDependencyTargets(units, { documentOrderProven: false });
+    const resolution = resolveUnitDependencies({ unitId: units[1]!.unitId, text: units[1]!.text, index, budgetChars: 12_000, attach: true });
+    expect(resolution.attached).toHaveLength(1);
+    expect(resolution.attached[0]!).toMatchObject({ kind: "figure", via: "label", sourceFile: "sections/results.tex" });
+    expect(resolution.attached[0]!.text).toContain("figs/a.png");
+    // 主表在本单元、续表落在下一单元：引用主表的单元只需附上续表部分
+    const split = [
+      unit("A", ["\\section*{结果}", "", "\\textbf{表 1 主表}", "", tab(["x & 1"]), "", "如表1所示。"].join("\n")),
+      unit("B", ["\\textbf{续表 1}", "", tab(["y & 2"]), "", "正文。"].join("\n")),
+    ];
+    const splitIndex = indexDependencyTargets(split, { documentOrderProven: true });
+    const own = resolveUnitDependencies({ unitId: split[0]!.unitId, text: split[0]!.text, index: splitIndex, budgetChars: 12_000, attach: true });
+    expect(own.attached).toHaveLength(1);
+    expect(own.attached[0]!.text).toContain("y & 2");
+    expect(own.attached[0]!.text).not.toContain("x & 1");
+  });
 });
