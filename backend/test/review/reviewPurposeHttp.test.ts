@@ -2,8 +2,12 @@
  * M14.9.3：POST /api/projects/:id/workflows 的 reviewPurpose 字段。
  * - 缺省不写入 request（作者稿件口径，行为不变）；
  * - published_paper_assessment 只接受 idea_to_paper，并随 run request 持久化；
- * - 已有论文返修 / Quick Review / 非法值 → 400（作者稿件流程不得借只读口径放宽实验事实守卫）。
+ * - 已有论文返修 / Quick Review / 非法值 → 400（作者稿件流程不得借只读口径放宽实验事实守卫）；
+ * - M14.9.4：只读评估 run 的规划只有 review.run → quality.gate，不进入调研 / 写作 / 修订 / 构建。
  */
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { afterAll, describe, expect, it } from "vitest";
 
 import type { WorkflowState } from "../../src/workflow/types.js";
@@ -44,5 +48,40 @@ describe("POST /workflows reviewPurpose", () => {
     }
     const invalid = await stack.request("POST", `/api/projects/${third.id}/workflows`, { kind: "idea_to_paper", reviewPurpose: "lenient" });
     expect(invalid.status).toBe(400);
+  });
+
+  it("M14.9.4：published_paper_assessment run 只走 review.run → quality.gate 后以 review 结束，不调研 / 写作 / 修订，稿件逐字节不变", async () => {
+    const scripted = scriptedIdeaRuntime({ reviewSequence: ["fail"] });
+    const stack = await startTestStack(scripted.runtime, { registerCleanup: (cleanup) => cleanups.push(cleanup) });
+    const project = await stack.store.create("第三方已发表论文", { researchIdea: "只读评估" });
+    const tex = [
+      "\\documentclass{ctexart}", "\\begin{document}", "\\section*{1 对象与方法}", "调查对象为 1 200 名居民（合成文本）。",
+      "\\section*{2 结果}", "患病率为 25.0\\%（300/1 200）。", "\\section*{3 讨论}", "与既往研究一致。", "\\end{document}", "",
+    ].join("\n");
+    const mainTex = join(stack.store.manuscriptDir(project.id), "main.tex");
+    await writeFile(mainTex, tex, "utf8");
+    const started = await stack.request("POST", `/api/projects/${project.id}/workflows`, { kind: "idea_to_paper", reviewPurpose: "published_paper_assessment" });
+    expect(started.status).toBe(202);
+    const runId = started.body["runId"] as string;
+    let run: WorkflowState;
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      run = (await stack.request("GET", `/api/runs/${runId}`)).body["run"] as WorkflowState;
+      if (run.status === "completed" || run.status === "failed" || run.status === "awaiting_input") break;
+      if (Date.now() > deadline) throw new Error(`run 未结束：${run.status} @ ${run.currentStage}`);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(run.status).toBe("completed");
+    expect(run.completion?.label).toBe("review");
+    expect(run.completion?.summary["reviewPurpose"]).toBe("published_paper_assessment");
+    expect(run.completedStages).toEqual(["review.run", "quality.gate"]);
+    expect(scripted.calls.every((call) => (call.contextScope ?? "").startsWith("review/"))).toBe(true);
+    expect(await readFile(mainTex, "utf8")).toBe(tex);
+    const gate = run.stageResults["quality.gate"] ?? {};
+    expect(gate["passed"]).toBe(false);
+    expect(String(gate["terminalMessage"])).toContain("已发表论文只读评估完成");
+    expect(String(gate["terminalMessage"])).not.toContain("Draft 可用");
+    const reviews = await readdir(stack.store.reviewsDir(project.id));
+    expect(reviews).toContain("published-assessment-r1.json");
   });
 });

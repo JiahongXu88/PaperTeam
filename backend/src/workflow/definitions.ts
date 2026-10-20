@@ -1737,7 +1737,15 @@ function qualityGateStage(
         // M11.2.3：确定性收敛状态与轮次质量差（planSharedTail / stalled payload 消费）
         ...(convergence !== null ? { convergence } : {}),
         // M11.3（Phase E）：产品终态语义（completion summary / stalled payload 共用）
-        ...(gate.passed ? {} : { terminalStatus: terminal.status, terminalMessage: terminal.message }),
+        ...(gate.passed
+          ? {}
+          : {
+              terminalStatus: terminal.status,
+              // M14.9.4：只读评估没有生成 / 修订稿件，作者稿件的「Draft 可用」终态文案不适用
+              terminalMessage: publishedAssessmentSummary !== undefined
+                ? "已发表论文只读评估完成：生产 Quality Gate 按作者稿件口径未通过（仅供参考，不是发表 / 录用判定），详见 published-assessment 视图。"
+                : terminal.message,
+            }),
         // M11.4 Product Closure：分层判定（planSharedTail / completion summary 消费）
         ...(revisionTask !== null
           ? {
@@ -7004,6 +7012,10 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
       "Idea-to-Paper：（目标参照系，条件 no-op）→ 调研 → 可行性 → 确认 → 大纲 → 确认 →（证据供给提示，条件出现）→ 分节写作 → 引用核验 → 审稿 → Quality Gate →（bounded 修订 + 修订复核）→ 构建",
     stages,
     plan(state: WorkflowState): PlanDecision {
+      // M14.9.4：第三方已发表论文只读评估不得进入调研 / 大纲 / 写作 / 修订 / 构建（都会生成或改写稿件）
+      if (readReviewPurpose(state.request) === "published_paper_assessment") {
+        return planPublishedAssessment(state);
+      }
       for (const stageId of front) {
         if (!(stageId in state.stageResults)) {
           return { kind: "stage", stageId };
@@ -7038,6 +7050,29 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
         default:
           throw new WorkflowInvalidStateError(state.runId, state.status, `未知的待办节点 ${stageId}`);
       }
+    },
+  };
+}
+
+/**
+ * M14.9.4：published_paper_assessment 的只读路径——review.run → quality.gate → 以 review 标签结束。
+ * 生产 Gate 原样执行（规则 / 阈值不变），未通过也不进入修订；结论看 published-assessment 视图。
+ */
+function planPublishedAssessment(state: WorkflowState): PlanDecision {
+  for (const stageId of ["review.run", "quality.gate"]) {
+    if (!(stageId in state.stageResults)) {
+      return { kind: "stage", stageId };
+    }
+  }
+  const gate = state.stageResults["quality.gate"] ?? {};
+  return {
+    kind: "complete",
+    label: "review",
+    summary: {
+      reviewPurpose: "published_paper_assessment",
+      productionGatePassed: gate["passed"] === true,
+      productionGateReasons: gate["reasons"] ?? [],
+      publishedAssessment: gate["publishedAssessment"] ?? null,
     },
   };
 }
