@@ -5,7 +5,8 @@
  * - 已有论文返修 / Quick Review / 非法值 → 400（作者稿件流程不得借只读口径放宽实验事实守卫）；
  * - M14.9.4：只读评估 run 的规划只有 review.run → quality.gate，不进入调研 / 写作 / 修订 / 构建。
  */
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { afterAll, describe, expect, it } from "vitest";
@@ -60,6 +61,19 @@ describe("POST /workflows reviewPurpose", () => {
     ].join("\n");
     const mainTex = join(stack.store.manuscriptDir(project.id), "main.tex");
     await writeFile(mainTex, tex, "utf8");
+    // M14.9.5：随项目附送审前保真报告（人工 QA 疑点 1 条）与哈希绑定的人工 QA 证明
+    const finding = { code: "TABLE_UNVERIFIED", severity: "soft", page: 2, detail: "T1：表头无法在文本层逐列定位" };
+    const report = { schema: "paperteam.input-fidelity.report/v1", status: "REQUIRES_HUMAN_QA", sourceSha256: "a".repeat(64), projectionSha256: "b".repeat(64), reasons: ["TABLE_UNVERIFIED×1"], findings: [finding] };
+    const { fidelityFindingKey } = await import("../../src/review/inputFidelityAttestation.js");
+    const attestation = {
+      schema: "paperteam.input-qa-attestation/v1", sourceSha256: "a".repeat(64), projectionSha256: "b".repeat(64),
+      manuscriptSha256: createHash("sha256").update(tex).digest("hex"), attestedBy: "qa", attestedAt: "2026-10-20T08:00:00.000Z", method: "对照原 PDF",
+      items: [{ findingKey: fidelityFindingKey(finding), code: finding.code, page: 2, region: [50, 300, 300, 360], result: "MATCHES_SOURCE" }],
+    };
+    const artifacts = join(stack.store.projectDir(project.id), "artifacts");
+    await mkdir(artifacts, { recursive: true });
+    await writeFile(join(artifacts, "input-fidelity-report.json"), JSON.stringify(report), "utf8");
+    await writeFile(join(artifacts, "input-qa-attestation.json"), JSON.stringify(attestation), "utf8");
     const started = await stack.request("POST", `/api/projects/${project.id}/workflows`, { kind: "idea_to_paper", reviewPurpose: "published_paper_assessment" });
     expect(started.status).toBe(202);
     const runId = started.body["runId"] as string;
@@ -83,5 +97,9 @@ describe("POST /workflows reviewPurpose", () => {
     expect(String(gate["terminalMessage"])).not.toContain("Draft 可用");
     const reviews = await readdir(stack.store.reviewsDir(project.id));
     expect(reviews).toContain("published-assessment-r1.json");
+    const view = JSON.parse(await readFile(join(stack.store.reviewsDir(project.id), "published-assessment-r1.json"), "utf8"));
+    expect(view.schema).toBe("paperteam.published-assessment/v2");
+    expect(view.inputFidelity).toMatchObject({ status: "REQUIRES_HUMAN_QA", attestation: "VALID", effectiveStatus: "VALID_FOR_SCORING" });
+    expect(view.academicScore.calibration).toBe("UNVALIDATED");
   });
 });

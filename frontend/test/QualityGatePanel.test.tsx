@@ -193,6 +193,36 @@ describe("质量门禁面板", () => {
     expect(screen.queryByTestId("gate-blockers")).not.toBeInTheDocument();
   });
 
+  it("M14.9.5：学术分标注口径与未校准状态（长文档单元聚合分 / 未评分单元），旧产物不臆测口径", async () => {
+    gateApi.get.mockResolvedValue(
+      gateResponse({
+        rounds: [{ round: 1, passed: false, checkedAt: "2026-10-20T12:00:00.000Z", blockerCount: 1 }],
+        round: 1,
+        gate: {
+          passed: false,
+          reasons: ["academic_score_threshold: academicScore=67（要求 ≥ 80）"],
+          rules: [...PASS_RULES.filter((rule) => rule.rule !== "academic_score_threshold"), { rule: "academic_score_threshold", passed: false, detail: "academicScore=67（要求 ≥ 80）" }],
+          thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
+          checkedAt: "2026-10-20T12:00:00.000Z",
+        },
+        reviewSummary: {
+          generatedAt: "2026-10-20T11:00:00.000Z",
+          round: 1,
+          counts: { critical: 0, major: 0, minor: 0, blocking: 0 },
+          scores: { academicScore: 67, styleRisk: 9 },
+          openCritical: 0,
+          openMajor: 0,
+          unsupportedCriticalClaims: 0,
+          academicScoreBasis: { mode: "units_char_weighted", calibration: "UNVALIDATED", scoredUnits: 5, reviewedUnits: 6, unscoredUnitIds: ["main.tex::section:3"] },
+        },
+        latestReviewRound: 1,
+      }),
+    );
+    renderGate();
+    const context = await screen.findByTestId("gate-review-context");
+    expect(context).toHaveTextContent("学术评分 67（长文档单元聚合分，1 个单元未评分；未校准，不代表录用概率）");
+  });
+
   it("semanticMode=off：语义规则渲染为「不参与判定」，不是失败也不是 0/0 假数据", async () => {
     gateApi.get.mockResolvedValue(
       gateResponse({

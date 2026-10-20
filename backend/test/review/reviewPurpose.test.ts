@@ -159,3 +159,73 @@ describe("Reviewer prompt：缺省逐字节不变，只读评估替换 Experimen
     expect(prompts[1]).not.toContain("实验支撑缺口如实报告");
   });
 });
+
+describe("M14.9.5 只读评估视图 v2：可核验性分列、同根因分组、来源可追溯的转写伪影、分数口径", () => {
+  const withVerification = (base: ReviewIssue, verification: ReviewIssue["verification"], extra: Partial<ReviewIssue> = {}): ReviewIssue => ({ ...base, ...(verification !== undefined ? { verification } : {}), ...extra });
+  /** 合成：同一处矛盾在三个单元各报一次（共享数值锚点 0.512 / 31.4），另有一条只能由外部记录判定的疑点 */
+  const SAME_ROOT = [
+    withVerification(issue("academic", "critical", "表2中甲组粗率31.4%最高，但校正后 OR=0.512 低于对照组，方向相反且未解释。", true), "VERIFIED_IN_TEXT"),
+    withVerification(issue("academic", "major", "摘要称甲组风险更低（OR=0.512），与表2粗率31.4%方向相反。"), "AUTHOR_CHECK_REQUIRED"),
+    withVerification(issue("academic", "major", "讨论对 OR=0.512 与 31.4% 的反转给出的解释与分层数据矛盾。"), "VERIFIED_IN_TEXT"),
+  ];
+  const EXTERNAL = withVerification(issue("fact", "major", "伦理批件编号年份晚于调查开始时间，需伦理委员会记录核对。"), "EXTERNAL_DATA_REQUIRED");
+  const UNRELATED = withVerification(issue("academic", "major", "收入两组患病率 18.7% vs 20.3% 差异不显著，与「单因素均有统计学意义」矛盾。"), "VERIFIED_IN_TEXT");
+  const PUA_STYLE: ReviewIssue = { ...issue("style", "major", "统计符号显示为乱码字符。"), quote: "组间比较采用󰱽2检验或秩和检验" };
+  const LAYOUT_STYLE: ReviewIssue = { ...issue("style", "minor", "各小节标题和正文连在一起，没有分隔，层级不清。"), quote: "1.2.1 抽样方法采用多阶段分层随机抽样方法" };
+
+  const review = summary([...SAME_ROOT, EXTERNAL, UNRELATED, PUA_STYLE, LAYOUT_STYLE]);
+  (review as ReviewSummary).academicScoreBasis = { mode: "units_char_weighted", scoredUnits: 5, reviewedUnits: 6, scoredChars: 9000, reviewedChars: 10000, unscoredUnitIds: ["main.tex::section:3"], calibration: "UNVALIDATED" };
+  const gate = evaluateQualityGate({ review, citation: null, evidence: evidenceStats, feasibility: null });
+  const view = buildPublishedAssessmentView({ gate, review, citationReportAvailable: false, evidenceRecords: 0, feasibilityEvaluated: false });
+
+  it("生产 Gate 计数与判定不读 verification：critical / major / blocking 原样计入", () => {
+    expect(gate.passed).toBe(false);
+    expect(gate.rules.find((rule) => rule.rule === "open_critical_major_zero")?.detail).toBe("critical=1 major=5");
+    expect(gate.rules.find((rule) => rule.rule === "blocking_issues_zero")?.passed).toBe(false);
+    expect(view.schema).toBe("paperteam.published-assessment/v2");
+  });
+
+  it("可核验性分列：待作者 / 外部核验的疑点单列，不计为已证实错误，也不删除", () => {
+    expect(view.scientificFindings.total).toBe(5);
+    expect(view.scientificFindings.criticalMajorByVerification).toEqual({ VERIFIED_IN_TEXT: 3, AUTHOR_CHECK_REQUIRED: 1, EXTERNAL_DATA_REQUIRED: 1, UNSPECIFIED: 0 });
+    expect(view.pendingVerification).toMatchObject({ total: 2, authorCheckRequired: 1, externalDataRequired: 1 });
+    expect(view.findings).toHaveLength(review.issues.length);
+  });
+
+  it("同根因保守分组：共享 ≥2 个数值锚点的三条归为一组，原始计数不变", () => {
+    expect(view.rootCauseGroups.groups).toEqual([{ findingIndices: [0, 1, 2] }]);
+    expect(view.scientificFindings.criticalMajorRootCauseGroups).toBe(3);
+    expect(view.scientificFindings.critical + view.scientificFindings.major).toBe(5);
+  });
+
+  it("转写伪影只在有可追溯依据时认定：私用区字形引文 → CONVERSION_ARTIFACT；无 provenance 的排版意见 → 来源未确定", () => {
+    expect(classifyPublishedFinding(PUA_STYLE)).toBe("CONVERSION_ARTIFACT");
+    expect(classifyPublishedFinding(LAYOUT_STYLE)).toBe("PRESENTATION_SOURCE_UNDETERMINED");
+    expect(classifyPublishedFinding(LAYOUT_STYLE, { excerpts: ["1.2.1抽样方法采用多阶段分层随机抽样方法，首先"] })).toBe("CONVERSION_ARTIFACT");
+    expect(view.conversionArtifacts.total).toBe(1);
+    expect(view.presentationUndetermined.total).toBe(1);
+    // 「排版」不再按词面归投稿清单；投稿元数据仍是投稿清单
+    expect(classifyPublishedFinding(issue("style", "minor", "参考文献著录格式不统一。"))).toBe("PRESENTATION_SOURCE_UNDETERMINED");
+    expect(classifyPublishedFinding(SUBMISSION)).toBe("SUBMISSION_CHECKLIST");
+  });
+
+  it("rubric 一致性提示：blocking 但声明需作者核验时只提示，不改判定", () => {
+    const flagged = summary([withVerification(issue("academic", "critical", "方向相反。", true), "AUTHOR_CHECK_REQUIRED")]);
+    const flaggedView = buildPublishedAssessmentView({ gate: evaluateQualityGate({ review: flagged, citation: null, evidence: evidenceStats, feasibility: null }), review: flagged, citationReportAvailable: false, evidenceRecords: 0, feasibilityEvaluated: false });
+    expect(flaggedView.rubricConsistency).toMatchObject({ BLOCKING_WITHOUT_TEXT_VERIFICATION: 1, CRITICAL_NOT_TEXT_VERIFIED: 1 });
+    expect(flaggedView.findings[0]).toMatchObject({ severity: "critical", blocking: true, rubricFlags: ["BLOCKING_WITHOUT_TEXT_VERIFICATION", "CRITICAL_NOT_TEXT_VERIFIED"] });
+  });
+
+  it("分数口径：单元聚合分 / 未校准 / 不是录用概率；未评分单元如实列出", () => {
+    expect(view.academicScore.calibration).toBe("UNVALIDATED");
+    expect(view.academicScore.basis?.mode).toBe("units_char_weighted");
+    expect(view.academicScore.basis?.unscoredUnitIds).toEqual(["main.tex::section:3"]);
+    expect(view.academicScore.note).toContain("字符加权聚合");
+    expect(view.academicScore.note).toContain("不代表期刊等级");
+    expect(view.notEvaluated.map((entry) => entry.item)).toContain("score_calibration");
+  });
+
+  it("未随附输入保真报告 → NOT_PROVIDED（不冒充已核验）", () => {
+    expect(view.inputFidelity).toMatchObject({ status: "NOT_PROVIDED", attestation: "ABSENT", effectiveStatus: "NOT_PROVIDED" });
+  });
+});

@@ -64,6 +64,8 @@ import type { SourceStore } from "../sources/SourceStore.js";
 import type { ExperimentPackageService } from "../experiments/ExperimentPackageService.js";
 import { renderExperimentPolicyLines } from "../experiments/experimentPolicy.js";
 import { buildPublishedAssessmentView, readReviewPurpose, renderPublishedAssessmentPolicyLines } from "../review/reviewPurpose.js";
+import { checkInputQaAttestation, type AttestationCheck } from "../review/inputFidelityAttestation.js";
+import { INPUT_FIDELITY_REPORT_SCHEMA, type InputFidelityReport } from "../review/inputFidelityTypes.js";
 import type { CandidateStore, CandidateSource } from "../sources/CandidateStore.js";
 import type { SourceImportService } from "../sources/SourceImportService.js";
 import type { ResearchDiscoveryService } from "../search/researchDiscoveryService.js";
@@ -209,7 +211,7 @@ import { disconfirmBuildFindings, repairCitationSyntax } from "../citation/citat
 import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
 import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
 import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
-import { aggregateReviews, type ReviewSummary } from "../review/ReviewAggregator.js";
+import { aggregateReviews, type AcademicScoreBasis, type ReviewSummary } from "../review/ReviewAggregator.js";
 import {
   buildClaimRepairDirectives,
   computeClaimGroundingReport,
@@ -492,6 +494,8 @@ export interface WorkflowServices {
     inputMode?: "production" | "metadata_blind";
     /** M14.9.1 实验开关：审稿 prompt 追加元数据中立条款（缺省 false = prompt 逐字节不变） */
     neutralityPolicy?: boolean;
+    /** M14.9.5 实验开关：长文档单元独立会话 + 被引表格只读参考（缺省 false = 行为与 prompt 逐字节不变） */
+    unitContextIsolation?: boolean;
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -706,6 +710,7 @@ function reviewRunStageInner(
       };
       type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
       let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
+      let unitScoreBasis: AcademicScoreBasis | undefined;
       if (longDocumentMode) {
         /**
          * M14.1a P0-2 长文档模式：每个 Review Unit 一次有界全文审查（单元 ≤
@@ -727,6 +732,11 @@ function reviewRunStageInner(
           }
         }
         const chapterIndex = [...new Set(coveragePlan.units.map((unit) => `${unit.heading}（${unit.file}）`))];
+        // M14.9.5 实验开关：被引表格只读参考的来源（表号 → 所在单元与 LaTeX 原文）
+        const unitIsolation = services.review.unitContextIsolation === true;
+        const tablesByNumber = unitIsolation
+          ? indexUnitTables(coveragePlan.units.map((unit) => ({ unitId: unit.unitId, text: spanByUnitId.get(unit.unitId)?.content ?? "" })))
+          : new Map<string, { unitId: string; text: string }>();
         const evidenceDigestLines = evidenceSelection.formal.slice(0, 15).map((record, index) =>
           `- [E${String(index + 1).padStart(3, "0")}] ${record.claim.slice(0, 140)}（${record.verificationStatus}）`);
         const unitAttempts = 3;
@@ -832,6 +842,7 @@ function reviewRunStageInner(
               ...(language !== undefined ? { language } : {}),
               ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
               ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
+              ...(unitIsolation ? { contextIsolation: { referencedTables: referencedTablesFor(unit.unitId, unitSpan.content, tablesByNumber) } } : {}),
               signal: ctx.signal,
             };
             const requestFingerprint = incrementalEnabled
@@ -870,7 +881,9 @@ function reviewRunStageInner(
             let lastError: unknown;
             for (let attempt = 1; attempt <= unitAttempts; attempt += 1) {
               try {
-                const review = await services.reviewer.reviewUnit(unitParams);
+                const review = await services.reviewer.reviewUnit(unitIsolation
+                  ? { ...unitParams, contextIsolation: { ...unitParams.contextIsolation!, sessionSuffix: `r${round}-${unit.contentHash.slice(0, 12)}-a${attempt}` } }
+                  : unitParams);
                 const record = {
                   unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
                   status: "completed" as const, taskId: review.taskId, issueCount: review.issues.length,
@@ -975,6 +988,20 @@ function reviewRunStageInner(
         }
         const academicScore = scoreWeight === 0 ? null : Math.round(academicSum / scoreWeight);
         const riskScore = scoreWeight === 0 ? null : Math.round(riskSum / scoreWeight);
+        // M14.9.5：分数口径透明——有正文的完成单元中模型未给合法分数的，不参与加权（分数只覆盖其余正文）
+        {
+          const bodyUnits = completedUnits.filter((entry) => entry.review !== null && entry.record.taskId !== "(heading-only)");
+          const scored = bodyUnits.filter((entry) => entry.review!.academicScore !== null);
+          unitScoreBasis = {
+            mode: "units_char_weighted",
+            scoredUnits: scored.length,
+            reviewedUnits: bodyUnits.length,
+            scoredChars: scored.reduce((sum, entry) => sum + entry.unit.chars, 0),
+            reviewedChars: bodyUnits.reduce((sum, entry) => sum + entry.unit.chars, 0),
+            unscoredUnitIds: bodyUnits.filter((entry) => entry.review!.academicScore === null).map((entry) => entry.unit.unitId),
+            calibration: "UNVALIDATED",
+          };
+        }
         const freshCount = completedUnits.filter((entry) => !entry.reused).length;
         results = [
           { mode: "fact", taskId: `(units:${completedUnits.length}/${coveragePlan.units.length})`, issues: unitIssues, summary: `长文档单元审查：${completedUnits.length}/${coveragePlan.units.length} 单元完成（复用 ${coverageSummary.reusedUnits}，失败 ${coverageSummary.failedUnits}）` },
@@ -1047,6 +1074,14 @@ function reviewRunStageInner(
       const summary = aggregateReviews(results, round, reportPaths);
       summary.reviewedRevision = revision;
       summary.coverage = coverageSummary;
+      {
+        const academicResult = results.find((result) => result.mode === "academic");
+        summary.academicScoreBasis = unitScoreBasis ?? {
+          mode: academicConfirmation?.triggered === true ? "digest_confirmation_median" : "digest_overall",
+          dimensions: Object.keys(academicResult?.scores ?? {}),
+          calibration: "UNVALIDATED",
+        };
+      }
       await services.reviewArtifacts.saveReviewCoverage(ctx.projectId, round, coverageSummary);
       if (academicConfirmation !== undefined) {
         summary.academicConfirmation = academicConfirmation;
@@ -1714,6 +1749,7 @@ function qualityGateStage(
           citationReportAvailable: citation !== null,
           evidenceRecords: evidenceRecords.length,
           feasibilityEvaluated: feasibility !== null,
+          inputFidelity: await loadPublishedInputFidelity(services, ctx.projectId),
         });
         const dir = services.projects.reviewsDir(ctx.projectId);
         await mkdir(dir, { recursive: true });
@@ -1723,6 +1759,9 @@ function qualityGateStage(
           publicationGate: view.publicationGate,
           reviewCompleted: view.reviewCompleted,
           scientificFindings: view.scientificFindings,
+          pendingVerification: view.pendingVerification.total,
+          inputFidelity: view.inputFidelity.effectiveStatus,
+          academicScoreCalibration: view.academicScore.calibration,
           evidenceLimitations: view.evidenceLimitations.total,
           notEvaluated: view.notEvaluated.map((entry) => entry.item),
         };
@@ -11506,6 +11545,66 @@ function isPublishedAssessmentRun(state: WorkflowState): boolean {
     throw new BusinessError("STAGE_CONTRACT_VIOLATION", `reviewPurpose=published_paper_assessment 只适用于 idea_to_paper 只读评估入口（当前 ${state.workflowKind}）`);
   }
   return true;
+}
+
+/**
+ * M14.9.5 实验开关（PAPERTEAM_REVIEW_UNIT_ISOLATION）：单元正文中的表格（LaTeX table / tabular 块，表号取块前 300 字符内
+ * 最近的「表 N / Table N」题注或块内 \caption）。只做确定性索引，不改写稿件。
+ */
+function indexUnitTables(units: ReadonlyArray<{ unitId: string; text: string }>): Map<string, { unitId: string; text: string }> {
+  const index = new Map<string, { unitId: string; text: string }>();
+  for (const unit of units) {
+    for (const match of unit.text.matchAll(/\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g)) {
+      const before = unit.text.slice(Math.max(0, match.index! - 300), match.index!);
+      const captions = [...`${before}\n${match[0].slice(0, 400)}`.matchAll(/(?:表|Table)\s*(\d{1,2})/g)];
+      const number = captions.at(-1)?.[1];
+      if (number === undefined || index.has(number)) continue;
+      const caption = /[^\n]*(?:表|Table)\s*\d{1,2}[^\n]*\s*$/.exec(before)?.[0] ?? "";
+      index.set(number, { unitId: unit.unitId, text: `${caption}${match[0]}` });
+    }
+  }
+  return index;
+}
+
+/** 单元正文引用（见表 N / 表 N / Table N）而表格本体位于其他单元的表格原文（有界：合计 ≤ 8000 字符） */
+function referencedTablesFor(unitId: string, text: string, index: ReadonlyMap<string, { unitId: string; text: string }>): string[] {
+  const numbers = [...new Set([...text.matchAll(/(?:表|Table)\s*(\d{1,2})/g)].map((match) => match[1]!))];
+  const out: string[] = [];
+  let budget = 8000;
+  for (const number of numbers) {
+    const table = index.get(number);
+    if (table === undefined || table.unitId === unitId || table.text.length > budget) continue;
+    budget -= table.text.length;
+    out.push(table.text);
+  }
+  return out;
+}
+
+/**
+ * M14.9.5：已发表论文只读评估的输入保真 provenance——项目 artifacts/ 下随附的送审前保真报告与人工 QA
+ * 证明（均可缺省）。证明必须与报告的源 / 投影哈希及当前被审 main.tex 哈希绑定，否则不改变有效状态。
+ */
+async function loadPublishedInputFidelity(services: WorkflowServices, projectId: string): Promise<{ report: InputFidelityReport; attestation: AttestationCheck | null } | null> {
+  const dir = join(services.projects.projectDir(projectId), "artifacts");
+  const readJson = async (file: string): Promise<unknown> => {
+    try {
+      return JSON.parse(await readFile(join(dir, file), "utf8")) as unknown;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  };
+  const report = await readJson("input-fidelity-report.json") as InputFidelityReport | undefined;
+  if (report === undefined || report.schema !== INPUT_FIDELITY_REPORT_SCHEMA) return null;
+  const attestation = await readJson("input-qa-attestation.json");
+  if (attestation === undefined) return { report, attestation: null };
+  let manuscriptSha256: string | undefined;
+  try {
+    manuscriptSha256 = createHash("sha256").update(await readFile(join(services.projects.manuscriptDir(projectId), "main.tex"))).digest("hex");
+  } catch {
+    manuscriptSha256 = undefined;
+  }
+  return { report, attestation: checkInputQaAttestation(report, attestation, { ...(manuscriptSha256 !== undefined ? { manuscriptSha256 } : {}), requireManuscriptBinding: true }) };
 }
 
 async function experimentAndResearchFactPolicyLines(services: WorkflowServices, projectId: string): Promise<string[]> {

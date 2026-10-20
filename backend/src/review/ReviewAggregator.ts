@@ -67,7 +67,27 @@ export interface ReviewSummary {
    * 旧产物无此字段 = digest 单轮语义（gate 按不适用处理）。
    */
   coverage?: ReviewCoverageSummary;
+  /**
+   * M14.9.5：academicScore 的口径（长文档单元字符加权聚合 / 整稿 digest 维度分 / 带内复核中位数）与校准状态。
+   * 旧产物无此字段 = 口径未记录。
+   */
+  academicScoreBasis?: AcademicScoreBasis;
   reportPaths: string[];
+}
+
+/** 学术分的口径（M14.9.5）：长文档单元聚合分与整稿维度分不是同一量表，二者都未经外部质量金标准校准 */
+export interface AcademicScoreBasis {
+  mode: "units_char_weighted" | "digest_overall" | "digest_confirmation_median";
+  /** units：给出合法分数的单元数 / 已完成审查且有正文的单元数 */
+  scoredUnits?: number;
+  reviewedUnits?: number;
+  scoredChars?: number;
+  reviewedChars?: number;
+  /** units：完成审查但模型未给出合法 academicScore 的单元（不参与加权，分数只覆盖其余正文） */
+  unscoredUnitIds?: string[];
+  /** digest：模型给出的评分维度 */
+  dimensions?: string[];
+  calibration: "UNVALIDATED";
 }
 
 /** 视觉类 finding 的单列汇总（M12.2 B5；独立于既有 counts/scores 口径） */

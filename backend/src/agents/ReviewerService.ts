@@ -20,6 +20,7 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ManuscriptLanguage } from "../project/language.js";
 import type { AgentRuntime } from "../runtime/types.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
+import { normalizeFindingVerification, type FindingVerification } from "../review/severityRubric.js";
 import {
   extractJsonObject,
   readRequiredEnum,
@@ -95,6 +96,11 @@ export interface ReviewIssue {
   file?: string;
   /** M14.1b P1：单元审查模式下的章节 span id（review.run 附加，模型不产出） */
   logicalSection?: string;
+  /**
+   * M14.9.5：该问题能否只凭本文确认（review/severityRubric 口径）。目前只有已发表论文只读口径的 prompt
+   * 要求模型给出；缺省 = 未声明。生产 Gate 计数不读本字段。
+   */
+  verification?: FindingVerification;
 }
 
 /**
@@ -395,6 +401,11 @@ export class ReviewerService {
     neutralityPolicy?: boolean;
     /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
     publishedAssessmentLines?: string[];
+    /**
+     * M14.9.5 实验开关（review.unitContextIsolation）：显式独立会话（缺省 = 同项目全部单元共用 review/academic/unit 会话）
+     * 与被引表格只读参考。undefined → prompt 与会话派生逐字节不变。
+     */
+    contextIsolation?: { referencedTables: string[]; sessionSuffix?: string };
   }): Promise<{ issues: ReviewIssue[]; academicScore: number | null; riskScore: number | null; summary: string; taskId: string }> {
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
@@ -402,6 +413,9 @@ export class ReviewerService {
       signal: params.signal,
       task: buildUnitReviewPrompt(params),
       projectId: params.projectId,
+      ...(params.contextIsolation?.sessionSuffix !== undefined
+        ? { sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/unit/${params.contextIsolation.sessionSuffix}` }
+        : {}),
       contextScope: "review/academic/unit",
       ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: { role: "reviewer", skill: "unit", unit: params.unit.unitId },
@@ -443,6 +457,8 @@ export class ReviewerService {
       model: context.model,
       skills: context.skills,
       prompt: buildUnitReviewPrompt(params),
+      // M14.9.5：隔离会话的审查与共享会话不可互为缓存（缺省不出现该键，指纹不变）
+      ...(params.contextIsolation !== undefined ? { isolatedSession: true } : {}),
     })).digest("hex");
   }
 
@@ -670,6 +686,10 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
         ? { evidenceRequirement: readEvidenceRequirement(record) }
         : {}),
       blocking: record["blocking"] === true,
+      // M14.9.5：可核验性声明（非法值视为未声明，不整条拒绝）
+      ...(normalizeFindingVerification(record["verification"]) !== undefined
+        ? { verification: normalizeFindingVerification(record["verification"]) }
+        : {}),
       // M14.1b P1：原文定位片段（≥12 字才有定位价值；更短的丢弃）
       ...(typeof record["quote"] === "string" && record["quote"].trim().replace(/\s+/g, "").length >= 12
         ? { quote: record["quote"].trim().slice(0, 400) }
@@ -885,7 +905,9 @@ export function buildReviewPrompt(params: {
     '    "severity": "critical|major|minor", "section": "sections/xxx.tex、abstract（摘要问题归这里）或章节名",',
     '    "description": "问题描述", "evidenceRef": "E001（如有）",',
     '    "suggestedAction": "修改建议", "evidenceRequirement": "required|optional|none",',
-    '    "reason": "为什么是问题（可选）", "blocking": false}]',
+    params.publishedAssessmentLines !== undefined
+      ? '    "reason": "为什么是问题（可选）", "verification": "VERIFIED_IN_TEXT|AUTHOR_CHECK_REQUIRED|EXTERNAL_DATA_REQUIRED", "blocking": false}]'
+      : '    "reason": "为什么是问题（可选）", "blocking": false}]',
     "}",
     "evidenceRequirement：该问题修复是否必须依赖已核验 Evidence——required（修复只能基于现有 verified Evidence，否则弱化/删除）/ optional（有证据更好）/ none（表达/结构/编译类，与外部证据无关）。fact / evidence_gap 类问题应给 required。",
     "纪律：不虚构问题；问题描述必须可定位；确属阻断级（如关键论断无证据、引用不存在）才设 blocking=true。",
@@ -977,7 +999,9 @@ function buildUnitReviewPrompt(params: {
   language?: ManuscriptLanguage;
   neutralityPolicy?: boolean;
   publishedAssessmentLines?: string[];
+  contextIsolation?: { referencedTables: string[] };
 }): string {
+  const referencedTables = params.contextIsolation?.referencedTables ?? [];
   return [
     "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",
     ...(params.language !== undefined ? ["稿件语言以该单元原文为准。"] : []),
@@ -1002,7 +1026,10 @@ function buildUnitReviewPrompt(params: {
     '    "description": "问题描述（必须可在本单元原文中定位）", "quote": "从本单元原文逐字摘出的定位片段（≥12 字，不改写）",',
     '    "evidenceRef": "E001（如有）",',
     '    "suggestedAction": "修改建议", "evidenceRequirement": "required|optional|none",',
-    '    "reason": "为什么是问题（可选）", "blocking": false}],',
+    // M14.9.5：只读口径的 JSON 模板显式列出 verification（缺省口径模板逐字节不变）
+    params.publishedAssessmentLines !== undefined
+      ? '    "reason": "为什么是问题（可选）", "verification": "VERIFIED_IN_TEXT|AUTHOR_CHECK_REQUIRED|EXTERNAL_DATA_REQUIRED", "blocking": false}],'
+      : '    "reason": "为什么是问题（可选）", "blocking": false}],',
     '  "academicScore": 0-100（本单元学术质量）,',
     '  "riskScore": 0-100（本单元 AI 文风风险）',
     "}",
@@ -1019,6 +1046,13 @@ function buildUnitReviewPrompt(params: {
       : []),
     ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
     "",
+    ...(referencedTables.length > 0
+      ? [
+          "===== 被引表格（只读参考：本单元正文引用、但位于其他单元；不在本单元审查范围内，只用于核对本单元对表格的引述）=====",
+          ...referencedTables,
+          "",
+        ]
+      : []),
     `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
     params.unit.text,
   ].join("\n");
@@ -1060,7 +1094,9 @@ function buildCrossChapterPrompt(params: {
     '  "issues": [{"category": "academic", "severity": "major|minor",',
     '    "section": "主章节标题", "relatedSections": ["对端章节标题"],',
     '    "description": "冲突描述（含两侧的关键表述/数值）",',
-    '    "suggestedAction": "核验步骤", "blocking": false}]',
+    params.publishedAssessmentLines !== undefined
+      ? '    "suggestedAction": "核验步骤", "verification": "VERIFIED_IN_TEXT|AUTHOR_CHECK_REQUIRED|EXTERNAL_DATA_REQUIRED", "blocking": false}]'
+      : '    "suggestedAction": "核验步骤", "blocking": false}]',
     "}",
     "",
     "===== 各章摘要 =====",

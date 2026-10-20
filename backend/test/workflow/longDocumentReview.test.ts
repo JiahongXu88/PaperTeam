@@ -278,5 +278,27 @@ describe("M14.1a 长文档 Chapter-Level Review（review.run 单元模式）", (
     const summary = JSON.parse(await readFile(join(stack.store.reviewsDir(projectId), "review-summary-r1.json"), "utf8")) as ReviewSummary;
     expect(summary?.coverage?.mode).toBe("digest");
     expect(summary?.coverage?.complete).toBe(true);
+    // M14.9.5：digest 路径的分数口径 = 整稿维度分，未校准
+    expect(summary?.academicScoreBasis).toMatchObject({ mode: "digest_overall", calibration: "UNVALIDATED" });
+  });
+
+  it("M14.9.5 分数口径：某单元模型未给合法 academicScore → 不参与加权，basis 如实列出未评分单元（Gate 规则不变）", async () => {
+    const h = await setup({
+      decideUnit: (prompt) => (/^章节：「Chapter 2」/m.test(prompt)
+        ? { output: JSON.stringify({ summary: "no score", issues: [], riskScore: 10 }) }
+        : undefined),
+    });
+    await h.runReview();
+    const summary = await h.summary(1);
+    const basis = summary!.academicScoreBasis!;
+    expect(basis.mode).toBe("units_char_weighted");
+    expect(basis.calibration).toBe("UNVALIDATED");
+    expect(basis.reviewedUnits).toBe(CHAPTERS * 2);
+    expect(basis.scoredUnits).toBe(CHAPTERS * 2 - 2);
+    expect(basis.unscoredUnitIds).toHaveLength(2);
+    expect(basis.unscoredUnitIds!.every((id) => id.includes("ch2"))).toBe(true);
+    expect(basis.scoredChars!).toBeLessThan(basis.reviewedChars!);
+    expect(summary!.scores.academicScore).toBe(90);
+    expect(summary!.coverage?.complete).toBe(true);
   });
 });

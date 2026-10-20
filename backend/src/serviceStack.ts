@@ -169,6 +169,8 @@ export interface ServiceStackOptions {
     /** M14.9.1 实验开关（缺省 production / false） */
     inputMode?: "production" | "metadata_blind";
     neutralityPolicy?: boolean;
+    /** M14.9.5 实验开关（缺省 false = 单元共享会话，prompt 不变） */
+    unitContextIsolation?: boolean;
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
     revisionTask?: Partial<RevisionTaskPolicy>;
   };
@@ -1138,6 +1140,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         incrementalUnitReuse: options.review?.incrementalUnitReuse ?? true,
         inputMode: options.review?.inputMode ?? "production",
         neutralityPolicy: options.review?.neutralityPolicy ?? false,
+        unitContextIsolation: options.review?.unitContextIsolation ?? false,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
       // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →

@@ -106,6 +106,12 @@ export interface ReviewConfig {
   /** M14.9.1（实验开关，缺省关闭、未经 A/B 复核）：审稿 prompt 追加「元数据 / 投稿格式不计入学术评分」条款（PAPERTEAM_REVIEW_NEUTRALITY_POLICY） */
   neutralityPolicy: boolean;
   /**
+   * M14.9.5（实验开关，缺省关闭、A/B 未完成前不得默认启用）：长文档单元审稿每个单元 / 每次尝试使用独立 Runtime 会话，
+   * 并把单元正文引用、但位于其他单元的表格作为只读参考附上（PAPERTEAM_REVIEW_UNIT_ISOLATION）。缺省时同一项目的全部
+   * 单元共用 review/academic/unit 会话，单元能「看到」哪些其他单元取决于调度顺序与超时重建会话。
+   */
+  unitContextIsolation: boolean;
+  /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
    * 不散落 magic number；idea_to_paper / topic_survey 不受影响。
@@ -654,6 +660,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       incrementalUnitReuse: readBool(source, "PAPERTEAM_REVIEW_INCREMENTAL", true),
       inputMode: readReviewInputMode(source),
       neutralityPolicy: readBool(source, "PAPERTEAM_REVIEW_NEUTRALITY_POLICY", false),
+      unitContextIsolation: readBool(source, "PAPERTEAM_REVIEW_UNIT_ISOLATION", false),
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")

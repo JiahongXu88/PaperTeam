@@ -434,6 +434,14 @@ export interface ReviewSummaryView {
   openCritical: number;
   openMajor: number;
   unsupportedCriticalClaims: number;
+  /** M14.9.5：学术分口径（旧产物无此字段 = 口径未记录）；calibration 恒为 UNVALIDATED（未经外部质量金标准校准） */
+  academicScoreBasis?: {
+    mode: "units_char_weighted" | "digest_overall" | "digest_confirmation_median";
+    calibration: "UNVALIDATED";
+    scoredUnits?: number;
+    reviewedUnits?: number;
+    unscoredUnitIds?: string[];
+  };
 }
 
 /** GET /api/projects/:id/quality-gate[?round=N] 的响应（尚无产物时 gate / reviewSummary / round 为 null） */

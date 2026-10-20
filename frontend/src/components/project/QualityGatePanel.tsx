@@ -12,7 +12,7 @@ import {
 import { useQualityGate, useReevaluateQualityGate } from "../../hooks/queries.js";
 import { formatApiError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
-import type { QualityGateResponseView, QualityGateResultView, WorkflowKind } from "../../types/api.js";
+import type { QualityGateResponseView, QualityGateResultView, ReviewSummaryView, WorkflowKind } from "../../types/api.js";
 
 /**
  * 质量门禁面板：回答「当前论文是否允许标记为 Final」。
@@ -222,7 +222,7 @@ function GateSummary({
           <div className="kv-row">
             <dt>同轮审稿（第 {summary.round} 轮）</dt>
             <dd>
-              {summary.scores.academicScore !== null ? `学术评分 ${summary.scores.academicScore}` : "无学术评分"} ·{" "}
+              {summary.scores.academicScore !== null ? `学术评分 ${summary.scores.academicScore}${academicScoreBasisNote(summary)}` : "无学术评分"} ·{" "}
               {summary.scores.styleRisk !== null ? `文风风险 ${summary.scores.styleRisk}` : "无文风评分"} · 严重 {summary.counts.critical} / 主要{" "}
               {summary.counts.major}
               {summary.counts.blocking > 0 ? ` / 阻断 ${summary.counts.blocking}` : ""}
@@ -232,6 +232,19 @@ function GateSummary({
       ) : null}
     </div>
   );
+}
+
+/**
+ * M14.9.5：学术分口径说明——长文档单元聚合分与整稿评分不是同一量表，都未经外部校准（不是期刊录用概率）。
+ * 旧产物没有口径字段时不追加说明（不臆测口径）。
+ */
+function academicScoreBasisNote(summary: ReviewSummaryView): string {
+  const basis = summary.academicScoreBasis;
+  if (basis === undefined) return "";
+  const kind = basis.mode === "units_char_weighted"
+    ? `长文档单元聚合分${basis.unscoredUnitIds !== undefined && basis.unscoredUnitIds.length > 0 ? `，${basis.unscoredUnitIds.length} 个单元未评分` : ""}`
+    : basis.mode === "digest_confirmation_median" ? "整稿评分·带内复核中位数" : "整稿评分";
+  return `（${kind}；未校准，不代表录用概率）`;
 }
 
 /** blocker 的处理建议文案（无 target 的规则 = 通过修订流程处理，留在工作流页） */

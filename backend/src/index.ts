@@ -329,6 +329,7 @@ export async function startBackend(): Promise<void> {
       incrementalUnitReuse: config.review.incrementalUnitReuse,
       inputMode: config.review.inputMode,
       neutralityPolicy: config.review.neutralityPolicy,
+      unitContextIsolation: config.review.unitContextIsolation,
       revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,
