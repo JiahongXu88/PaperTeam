@@ -85,6 +85,11 @@ export interface AcademicScoreBasis {
   reviewedChars?: number;
   /** units：完成审查但模型未给出合法 academicScore 的单元（不参与加权，分数只覆盖其余正文） */
   unscoredUnitIds?: string[];
+  /**
+   * M14.9.5.1 units（隔离策略）：跨单元依赖有缺口的单元——分数照常聚合，但这些单元对被引表 / 图 / 公式的
+   * 核对未执行（NOT_EVALUATED / BLOCKED_BY_CONTEXT），分数不代表已完成跨单元核对
+   */
+  contextIncompleteUnitIds?: string[];
   /** digest：模型给出的评分维度 */
   dimensions?: string[];
   calibration: "UNVALIDATED";

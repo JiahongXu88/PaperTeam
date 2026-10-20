@@ -22,6 +22,14 @@ import type { AgentRuntime } from "../runtime/types.js";
 import type { EvidenceRecord } from "../evidence/EvidenceStore.js";
 import { normalizeFindingVerification, type FindingVerification } from "../review/severityRubric.js";
 import {
+  REVIEW_CONTEXT_SNAPSHOT_SCHEMA,
+  renderDependencyBlock,
+  sha256Hex,
+  type AttachedDependency,
+  type DependencyGap,
+  type SourceVerification,
+} from "../review/reviewContextSnapshot.js";
+import {
   extractJsonObject,
   readRequiredEnum,
   StructuredOutputError,
@@ -31,6 +39,31 @@ import {
 export type ReviewMode = "fact" | "academic" | "style";
 
 export const REVIEW_MODES: readonly ReviewMode[] = ["fact", "academic", "style"];
+
+/** M14.9.5.1：单元审稿的显式上下文（隔离策略；见 review/reviewContextSnapshot.ts） */
+export interface UnitReviewContext {
+  policy: "isolated_no_dependencies" | "isolated_snapshot";
+  /** 物理会话标签：调用方按尝试生成、全局唯一；不参与 prompt / 哈希 */
+  sessionLabel: string;
+  /** 附上的跨单元依赖原文（isolated_no_dependencies 恒为空） */
+  dependencies: ReadonlyArray<AttachedDependency & { text: string }>;
+  gaps: readonly DependencyGap[];
+  sourceVerification: SourceVerification;
+  dependencyFingerprint: string;
+}
+
+export interface UnitReviewResult {
+  issues: ReviewIssue[];
+  academicScore: number | null;
+  riskScore: number | null;
+  summary: string;
+  taskId: string;
+  /** M14.9.5.1 trace：实际送模型的 prompt 哈希、物理会话、模型与 usage（runtime 未提供则缺省） */
+  promptSha256?: string;
+  sessionKey?: string;
+  model?: string;
+  usage?: Record<string, unknown>;
+}
 
 export type IssueSeverity = "critical" | "major" | "minor";
 export type IssueCategory = "fact" | "academic" | "style" | "citation" | "evidence_gap" | "build";
@@ -402,20 +435,22 @@ export class ReviewerService {
     /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
     publishedAssessmentLines?: string[];
     /**
-     * M14.9.5 实验开关（review.unitContextIsolation）：显式独立会话（缺省 = 同项目全部单元共用 review/academic/unit 会话）
-     * 与被引表格只读参考。undefined → prompt 与会话派生逐字节不变。
+     * M14.9.5.1 单元上下文策略（review.unitContextPolicy）。undefined = shared_session：同项目全部单元共用
+     * review/academic/unit 会话，prompt 与会话派生与 2df31cf 逐字节一致。给出时：每次尝试一个全新物理会话
+     * （sessionLabel 由调用方生成且每次尝试唯一）+ sealed 工具（不可读工作区稿件，prompt 即完整上下文）；
+     * isolated_snapshot 另把确定性解析出的跨单元依赖（表 / 图 / 公式原文）与未能附上的缺口写进 prompt。
      */
-    contextIsolation?: { referencedTables: string[]; sessionSuffix?: string };
-  }): Promise<{ issues: ReviewIssue[]; academicScore: number | null; riskScore: number | null; summary: string; taskId: string }> {
+    unitContext?: UnitReviewContext;
+  }): Promise<UnitReviewResult> {
+    const prompt = buildUnitReviewPrompt(params);
+    const sessionKey = params.unitContext !== undefined ? this.unitSessionKey(params.projectId, params.unitContext.sessionLabel) : undefined;
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
       ...this.timeoutOverride,
       signal: params.signal,
-      task: buildUnitReviewPrompt(params),
+      task: prompt,
       projectId: params.projectId,
-      ...(params.contextIsolation?.sessionSuffix !== undefined
-        ? { sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/unit/${params.contextIsolation.sessionSuffix}` }
-        : {}),
+      ...(sessionKey !== undefined ? { sessionKey, toolPolicy: "sealed" as const } : {}),
       contextScope: "review/academic/unit",
       ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: { role: "reviewer", skill: "unit", unit: params.unit.unitId },
@@ -430,13 +465,60 @@ export class ReviewerService {
       if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 100) return null;
       return Math.round(value);
     };
+    const metaSessionKey = task.metadata?.["sessionKey"];
+    const metaModel = task.metadata?.["model"];
     return {
       issues,
       academicScore: score("academicScore"),
       riskScore: score("riskScore"),
       summary: typeof parsed["summary"] === "string" ? parsed["summary"].slice(0, 400) : "",
       taskId: task.taskId,
+      promptSha256: sha256Hex(prompt),
+      ...(typeof metaSessionKey === "string" ? { sessionKey: metaSessionKey } : sessionKey !== undefined ? { sessionKey } : {}),
+      ...(typeof metaModel === "string" ? { model: metaModel } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
     };
+  }
+
+  /** M14.9.5.1：隔离策略下单元审查的物理会话 key（与 reviewUnit 派生规则一致；trace 用） */
+  unitSessionKey(projectId: string, sessionLabel: string): string {
+    return `agent:${this.agentId}:paperteam-${projectId}--review/academic/unit/${sessionLabel}`;
+  }
+
+  /**
+   * M14.9.5.1：单元审查输入的可复现描述——规范化 prompt 的 sha256、上下文快照哈希（schema + 策略 + prompt +
+   * 依赖指纹 + 模型 / Skill）与跨轮缓存用的请求指纹。物理会话标签不参与任何哈希：重试 / 换会话 / 进程恢复后
+   * 同一冻结输入得到同一组哈希。
+   */
+  async describeUnitInput(params: Parameters<ReviewerService["reviewUnit"]>[0]): Promise<{
+    promptSha256: string; contextSnapshotHash: string; requestFingerprint: string | null; model: string | null; skills: unknown;
+  }> {
+    const prompt = buildUnitReviewPrompt(params);
+    const context = await this.runtime.describeAgentContext?.({
+      contextScope: "review/academic/unit",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+    }).catch(() => undefined);
+    const model = context === undefined || context.model.trim() === "" ? null : context.model;
+    const promptSha256 = sha256Hex(prompt);
+    const contextSnapshotHash = sha256Hex(JSON.stringify({
+      schema: REVIEW_CONTEXT_SNAPSHOT_SCHEMA,
+      agentId: this.agentId,
+      policy: params.unitContext?.policy ?? "shared_session",
+      promptSha256,
+      dependencyFingerprint: params.unitContext?.dependencyFingerprint ?? null,
+      model,
+      skills: context?.skills ?? null,
+    }));
+    const requestFingerprint = model === null ? null : createHash("sha256").update(JSON.stringify({
+      schema: "review-unit-request-v1",
+      agentId: this.agentId,
+      model,
+      skills: context!.skills,
+      prompt,
+      // M14.9.5.1：隔离会话的审查与共享会话（以及不同上下文策略之间）不可互为缓存（共享会话缺省不出现该键，指纹不变）
+      ...(params.unitContext !== undefined ? { contextPolicy: params.unitContext.policy } : {}),
+    })).digest("hex");
+    return { promptSha256, contextSnapshotHash, requestFingerprint, model, skills: context?.skills ?? null };
   }
 
   /**
@@ -446,20 +528,7 @@ export class ReviewerService {
    * Runtime 无法证明模型 / Skill 一致时返回 null（调用方必须禁用复用）。
    */
   async unitRequestFingerprint(params: Parameters<ReviewerService["reviewUnit"]>[0]): Promise<string | null> {
-    const context = await this.runtime.describeAgentContext?.({
-      contextScope: "review/academic/unit",
-      ...(params.language !== undefined ? { language: params.language } : {}),
-    }).catch(() => undefined);
-    if (context === undefined || context.model.trim() === "") return null;
-    return createHash("sha256").update(JSON.stringify({
-      schema: "review-unit-request-v1",
-      agentId: this.agentId,
-      model: context.model,
-      skills: context.skills,
-      prompt: buildUnitReviewPrompt(params),
-      // M14.9.5：隔离会话的审查与共享会话不可互为缓存（缺省不出现该键，指纹不变）
-      ...(params.contextIsolation !== undefined ? { isolatedSession: true } : {}),
-    })).digest("hex");
+    return (await this.describeUnitInput(params)).requestFingerprint;
   }
 
   /**
@@ -481,13 +550,19 @@ export class ReviewerService {
     neutralityPolicy?: boolean;
     /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
     publishedAssessmentLines?: string[];
-  }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string }> {
+    /** M14.9.5.1：隔离上下文策略下的全新物理会话 + sealed 工具（undefined → 会话派生与 prompt 不变） */
+    isolation?: { sessionLabel: string };
+  }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string; promptSha256?: string; sessionKey?: string; usage?: Record<string, unknown> }> {
+    const prompt = buildCrossChapterPrompt(params);
     const task = await this.runtime.runAgent({
       agentId: this.agentId,
       ...this.timeoutOverride,
       signal: params.signal,
-      task: buildCrossChapterPrompt(params),
+      task: prompt,
       projectId: params.projectId,
+      ...(params.isolation !== undefined
+        ? { sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/consistency/${params.isolation.sessionLabel}`, toolPolicy: "sealed" as const }
+        : {}),
       contextScope: "review/academic/consistency",
       ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: { role: "reviewer", skill: "consistency" },
@@ -502,10 +577,18 @@ export class ReviewerService {
       blocking: false,
       ...(issue.relatedSections !== undefined && issue.relatedSections.length > 0 ? {} : { relatedSections: [] as string[] }),
     }));
+    const metaSessionKey = task.metadata?.["sessionKey"];
     return {
       issues: issues.filter((issue) => (issue.relatedSections ?? []).length > 0),
       summary: typeof parsed["summary"] === "string" ? parsed["summary"].slice(0, 400) : "",
       taskId: task.taskId,
+      ...(params.isolation !== undefined
+        ? {
+            promptSha256: sha256Hex(prompt),
+            ...(typeof metaSessionKey === "string" ? { sessionKey: metaSessionKey } : {}),
+            ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+          }
+        : {}),
     };
   }
 
@@ -999,9 +1082,21 @@ function buildUnitReviewPrompt(params: {
   language?: ManuscriptLanguage;
   neutralityPolicy?: boolean;
   publishedAssessmentLines?: string[];
-  contextIsolation?: { referencedTables: string[] };
+  unitContext?: Pick<UnitReviewContext, "policy" | "dependencies" | "gaps" | "sourceVerification">;
 }): string {
-  const referencedTables = params.contextIsolation?.referencedTables ?? [];
+  const dependencyBlock = params.unitContext?.policy === "isolated_snapshot"
+    ? renderDependencyBlock({ attached: params.unitContext.dependencies, gaps: params.unitContext.gaps, sourceVerification: params.unitContext.sourceVerification })
+    : [];
+  // M14.9.5.1：隔离策略下的上下文纪律条款（共享会话缺省不出现，prompt 逐字节不变）
+  let clause = params.neutralityPolicy === true ? 6 : 5;
+  const contextClauses = params.unitContext === undefined
+    ? []
+    : [
+        `${clause++}. 本次审查只依据本消息给出的材料（单元原文${dependencyBlock.length > 0 ? "，以及下方「跨单元依赖」只读参考" : ""}）；不要读取工作区文件，也不要依赖其他对话的记忆。`,
+        ...(dependencyBlock.length > 0
+          ? [`${clause++}. 「跨单元依赖」只用于核对本单元对这些表格 / 图 / 公式的引述（数值、显著性、方向、口径）：问题必须能在本单元原文中定位，quote 只从本单元原文摘取；不要单独报告参考内容自身的问题（由其所在单元审查）。`]
+          : []),
+      ];
   return [
     "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",
     ...(params.language !== undefined ? ["稿件语言以该单元原文为准。"] : []),
@@ -1017,6 +1112,7 @@ function buildUnitReviewPrompt(params: {
     "3. evidenceRequirement：fact / evidence_gap 类问题应给 required。",
     "4. 本单元视角发现疑似跨章冲突（与索引中其他章节的符号 / 定义 / 数值 / 表述不一致）时，先记为问题并在 description 中写明冲突章节名，但不要凭单侧文本下结论。",
     ...(params.neutralityPolicy === true ? [`5. ${REVIEW_NEUTRALITY_CLAUSE}`] : []),
+    ...contextClauses,
     "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
     "{",
@@ -1046,13 +1142,7 @@ function buildUnitReviewPrompt(params: {
       : []),
     ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
     "",
-    ...(referencedTables.length > 0
-      ? [
-          "===== 被引表格（只读参考：本单元正文引用、但位于其他单元；不在本单元审查范围内，只用于核对本单元对表格的引述）=====",
-          ...referencedTables,
-          "",
-        ]
-      : []),
+    ...dependencyBlock,
     `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
     params.unit.text,
   ].join("\n");
@@ -1065,6 +1155,7 @@ function buildCrossChapterPrompt(params: {
   language?: ManuscriptLanguage;
   neutralityPolicy?: boolean;
   publishedAssessmentLines?: string[];
+  isolation?: { sessionLabel: string };
 }): string {
   return [
     "你是一名学术审稿人（Reviewer）。请检查这篇长论文各章节之间的**一致性问题**。",
@@ -1080,6 +1171,7 @@ function buildCrossChapterPrompt(params: {
     "2. 每条 issue 的 section 填冲突的**主**章节（标题或文件名），relatedSections 数组填**对端**章节（至少 1 个）。没有对端位置的不算跨章问题，不要报。",
     "3. 这些冲突是**待核验**发现：不要建议直接改写任何一侧；suggestedAction 给核验步骤（如「核对两处数值，以实验记录为准」）。",
     ...(params.neutralityPolicy === true ? [REVIEW_NEUTRALITY_CLAUSE] : []),
+    ...(params.isolation !== undefined ? ["本次审查只依据本消息给出的各章摘要；不要读取工作区文件，也不要依赖其他对话的记忆。"] : []),
     ...(params.experimentPolicyLines !== undefined
       ? [
           "4. 多章复述同一已确认研究输入事实（数值一致）不是冲突，不要报；只有数值 / 口径不一致才报。",

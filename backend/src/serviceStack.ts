@@ -105,6 +105,7 @@ import { MissingMaterialLedger } from "./thesis/MissingMaterialLedger.js";
 import { MissingMaterialService } from "./thesis/MissingMaterialService.js";
 import { ThesisAbstractService } from "./thesis/thesisAbstract.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
+import { DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS, type ReviewUnitContextPolicy } from "./review/reviewContextSnapshot.js";
 
 export interface ServiceStackOptions {
   runtime: AgentRuntime;
@@ -169,8 +170,12 @@ export interface ServiceStackOptions {
     /** M14.9.1 实验开关（缺省 production / false） */
     inputMode?: "production" | "metadata_blind";
     neutralityPolicy?: boolean;
-    /** M14.9.5 实验开关（缺省 false = 单元共享会话，prompt 不变） */
+    /** M14.9.5.1 单元上下文策略（缺省 shared_session = 单元共享会话，prompt 不变） */
+    unitContextPolicy?: ReviewUnitContextPolicy;
+    /** M14.9.5 旧实验开关（true ≡ unitContextPolicy=isolated_snapshot；unitContextPolicy 优先） */
     unitContextIsolation?: boolean;
+    /** M14.9.5.1 单元依赖原文上限（字符；缺省 12000） */
+    unitDependencyBudgetChars?: number;
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
     revisionTask?: Partial<RevisionTaskPolicy>;
   };
@@ -1140,7 +1145,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         incrementalUnitReuse: options.review?.incrementalUnitReuse ?? true,
         inputMode: options.review?.inputMode ?? "production",
         neutralityPolicy: options.review?.neutralityPolicy ?? false,
-        unitContextIsolation: options.review?.unitContextIsolation ?? false,
+        unitContextPolicy: options.review?.unitContextPolicy ?? (options.review?.unitContextIsolation === true ? "isolated_snapshot" : "shared_session"),
+        unitDependencyBudgetChars: options.review?.unitDependencyBudgetChars ?? DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
       // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →

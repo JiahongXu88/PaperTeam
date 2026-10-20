@@ -79,8 +79,12 @@ export interface RuntimeHealth {
 /** 发起一次 Agent 任务（由 PiRuntimeAdapter 真实执行） */
 export interface RunAgentInput {
   agentId: string;
-  /** Per-run tool restriction. `read_only` removes workspace mutation tools for this session. */
-  toolPolicy?: "default" | "read_only";
+  /**
+   * Per-run tool restriction. `read_only` removes workspace mutation tools for this session.
+   * `sealed`（M14.9.5.1）：封闭上下文会话——只能读 Skill 快照目录，不可读项目工作区，不注入自定义工具；
+   * 只应与显式、唯一的 sessionKey 一起使用（会话按 sessionKey 复用，工具面在会话创建时固定）。
+   */
+  toolPolicy?: "default" | "read_only" | "sealed";
   task: string;
   projectId?: string;
   /**

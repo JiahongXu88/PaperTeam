@@ -12,7 +12,7 @@
  * 运行中 cancel()（幂等）、handle.result()、close 收敛、排队任务取消。
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { getEventListeners } from "node:events";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -3483,5 +3483,48 @@ describe("PiRuntimeAdapter（M13.5.4 workspaceGuard 注入）", () => {
     await plainAdapter.runAgent({ agentId: "w", task: "write", projectId: "p-plain", contextScope: "writing/sections" });
     expect(plainCaptured[0]).toEqual([]);
     await plainAdapter.close();
+  });
+
+  it("M14.9.5.1 toolPolicy=sealed：不注入角色自定义工具、不调用外部 workspaceGuard；只有受控 read，读不到项目工作区", async () => {
+    const guardCalls: string[] = [];
+    const captured: Array<{ role: string; tools: Map<string, { execute: (...args: never[]) => Promise<unknown> }> }> = [];
+    const factory = createFakeFactory();
+    const workspaceRoot = await makeTempDir("pi-l1-ws-sealed-");
+    await mkdir(join(workspaceRoot, "p-sealed", "manuscript"), { recursive: true });
+    await writeFile(join(workspaceRoot, "p-sealed", "manuscript", "main.tex"), "SECRET MANUSCRIPT", "utf8");
+    const adapter = new PiRuntimeAdapter({
+      agentDir: await makeTempDir("pi-l1-agent-sealed-"),
+      workspaceRoot,
+      modelRuntime: stubModelRuntime(),
+      model: { provider: "fake", id: "fake-1" } as PiModel,
+      createSession: (async (params: { cwd: string; role: { role: string }; customTools?: Array<{ name: string; execute: (...args: never[]) => Promise<unknown> }> }) => {
+        captured.push({ role: params.role.role, tools: new Map((params.customTools ?? []).map((tool) => [tool.name, tool])) });
+        return factory.factory(params);
+      }) as NonNullable<PiRuntimeOptions["createSession"]>,
+      roleCustomTools: () => [
+        defineTool({ name: "evidence_query", label: "evidence_query", description: "stub", parameters: Type.Object({}), execute: async () => ({ content: [{ type: "text", text: "ok" }], details: undefined }) }),
+      ],
+      workspaceGuard: (context) => {
+        guardCalls.push(context.role);
+        return createWorkspaceGuardTools(createWorkspaceGuardPolicy({ projectDir: context.cwd, readOnlyRoots: context.skillDirs, protectedSourceIds: [] }), { cwd: context.cwd, toolNames: context.toolNames });
+      },
+      log: () => {},
+    });
+    const task = await adapter.runAgent({
+      agentId: "r", task: "unit review", projectId: "p-sealed", contextScope: "review/academic/unit",
+      sessionKey: "agent:r:paperteam-p-sealed--review/academic/unit/abc-r1-a1-0001", toolPolicy: "sealed",
+    });
+    expect(task.status).toBe("completed");
+    expect(guardCalls).toEqual([]);
+    expect([...captured[0]!.tools.keys()]).toEqual(["read"]);
+    const read = captured[0]!.tools.get("read")!;
+    const denied = await (read.execute as (...args: unknown[]) => Promise<unknown>)("c1", { path: "manuscript/main.tex" }, undefined, undefined, { cwd: join(workspaceRoot, "p-sealed") })
+      .then(() => "NO_ERROR", (error: unknown) => (error instanceof Error ? error.message : String(error)));
+    expect(denied).toContain("封闭上下文审稿会话");
+    // 同项目未 sealed 的审稿会话照旧（自定义工具 + 外部 guard）
+    await adapter.runAgent({ agentId: "r", task: "review", projectId: "p-sealed", contextScope: "review/academic" });
+    expect(guardCalls).toEqual(["reviewer"]);
+    expect([...captured[1]!.tools.keys()]).toEqual(["evidence_query", "read", "ls", "find", "grep"]);
+    await adapter.close();
   });
 });

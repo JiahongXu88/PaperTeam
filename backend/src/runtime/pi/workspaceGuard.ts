@@ -50,6 +50,8 @@ export interface WorkspaceGuardPolicyInput {
   writableDirs?: string[];
   /** 受保护子目录（相对 projectDir；缺省 ["experiments", "workflow"]） */
   protectedDirs?: string[];
+  /** M14.9.5.1：false = 封闭上下文会话，项目目录整体不可读（只读附加根仍可读）；缺省 true */
+  projectReadable?: boolean;
 }
 
 export interface WorkspaceGuardPolicy {
@@ -108,16 +110,17 @@ export function createWorkspaceGuardPolicy(input: WorkspaceGuardPolicyInput): Wo
     return false;
   };
 
+  const projectReadable = input.projectReadable !== false;
   const canRead = (absPath: string): boolean => {
     const segments = segmentsOf(absPath);
-    if (segments !== null) return !isProtectedInProject(segments);
+    if (segments !== null) return projectReadable && !isProtectedInProject(segments);
     const path = norm(absPath);
     return readOnlyRoots.some((root) => isInside(root, path));
   };
 
   const canWrite = (absPath: string): boolean => {
     const segments = segmentsOf(absPath);
-    if (segments === null) return false;
+    if (segments === null || !projectReadable) return false;
     const first = segments[0];
     if (first === undefined || !writableDirs.has(first)) return false;
     return !isProtectedInProject(segments);
@@ -134,7 +137,9 @@ export function createWorkspaceGuardPolicy(input: WorkspaceGuardPolicyInput): Wo
     canWrite,
     isHiddenEntry: (absDir, entryName) => !canRead(join(absDir, entryName)),
     describeDenial: (absPath, mode) =>
-      mode === "read"
+      !projectReadable
+        ? `本会话是封闭上下文审稿会话：审查所需材料已全部在任务消息中给出，不可访问工作区文件：${describe(absPath)}。`
+        : mode === "read"
         ? `路径受 PaperTeam 工作区隔离保护，Agent 不可读取：${describe(absPath)}。实验原始数据包（experiments/）、运行状态（workflow/）与实验包来源文件只能经作者确认并授权的结构化实验上下文进入写作；项目目录之外的文件一律不可访问。`
         : `Agent 只能写入 manuscript/ 下的稿件文件，不能写入：${describe(absPath)}。`,
   };

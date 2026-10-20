@@ -153,6 +153,7 @@ import {
 import { resolveRoleConfig, type PiRoleConfig, type PiRoleKey } from "./pi/roleConfig.js";
 import { PI_RUNTIME_VERSION } from "./pi/version.js";
 import { resolveSessionKey, sanitizeContextScope } from "./sessionKey.js";
+import { createWorkspaceGuardPolicy, createWorkspaceGuardTools } from "./pi/workspaceGuard.js";
 import {
   AGENT_MODEL_KEYS,
   agentModelKeyForScope,
@@ -2640,10 +2641,17 @@ export class PiRuntimeAdapter implements AgentRuntime {
 
     const sessionManager = SessionManager.inMemory(cwd);
     // 角色级自定义工具（受控学术检索等）与全局 customTools 合并注入
-    const roleTools = this.roleCustomTools?.(role.role, projectId) ?? [];
+    // M14.9.5.1 sealed：封闭上下文会话不注入任何自定义工具，文件工具只能读 Skill 快照目录——由 Adapter
+    // 自身构造（不依赖外部 workspaceGuard 回调是否认识该策略：fail closed）
+    const roleTools = role.sealed === true ? [] : (this.roleCustomTools?.(role.role, projectId) ?? []);
     // M13.5.4 工作区隔离：受控同名文件工具最后注入（同名覆盖内置 + 前面的自定义工具）
     const guardTools =
-      this.workspaceGuard !== undefined
+      role.sealed === true
+        ? createWorkspaceGuardTools(
+            createWorkspaceGuardPolicy({ projectDir: cwd, readOnlyRoots: skillDirs, protectedSourceIds: [], projectReadable: false }),
+            { cwd, toolNames: [...role.tools] },
+          )
+        : this.workspaceGuard !== undefined
         ? await this.workspaceGuard({
             ...(projectId !== undefined ? { projectId } : {}),
             cwd,
@@ -2659,7 +2667,7 @@ export class PiRuntimeAdapter implements AgentRuntime {
           .join(",")}]`,
       );
     }
-    const allCustomTools = [...(this.customTools ?? []), ...roleTools, ...guardTools];
+    const allCustomTools = [...(role.sealed === true ? [] : (this.customTools ?? [])), ...roleTools, ...guardTools];
     const session =
       this.createSessionImpl !== undefined
         ? await this.createSessionImpl({

@@ -26,6 +26,11 @@ export interface PiRoleConfig {
   systemPrompt: string;
   /** 内置工具白名单（createAgentSession 的 tools 参数） */
   tools: string[];
+  /**
+   * M14.9.5.1 toolPolicy=sealed：封闭上下文会话——只保留 read，且只能读 Skill 快照目录（不可读项目工作区、
+   * 不注入检索 / 证据等自定义工具）。任务消息即该次运行的完整材料。
+   */
+  sealed?: true;
 }
 
 const COMMON_DISCIPLINE = [
@@ -98,8 +103,9 @@ function roleKeyForScope(scope: string | undefined): PiRoleKey {
 }
 
 /** 按归一化后的 contextScope 解析角色配置 */
-export function resolveRoleConfig(contextScope: string | undefined, toolPolicy: "default" | "read_only" = "default"): PiRoleConfig {
+export function resolveRoleConfig(contextScope: string | undefined, toolPolicy: "default" | "read_only" | "sealed" = "default"): PiRoleConfig {
   const role = ROLE_CONFIGS[roleKeyForScope(contextScope)];
+  if (toolPolicy === "sealed") return { ...role, tools: role.tools.filter((tool) => tool === "read"), sealed: true };
   return toolPolicy === "read_only"
     ? { ...role, tools: role.tools.filter((tool) => !["write", "edit", "apply_patch"].includes(tool)) }
     : role;

@@ -328,6 +328,14 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
       { item: "build_gate", reason: "只读评估不编译投稿稿件" },
       ...(input.evidenceRecords > 0 ? [] : [{ item: "evidence_grounding", reason: "项目证据库为空" }]),
       { item: "score_calibration", reason: "学术分没有经过外部质量金标准校准（UNVALIDATED）" },
+      // M14.9.5.1：单元上下文——共享会话下跨单元依赖是否可见不可复现；隔离快照下的依赖缺口逐条列为未执行的核对
+      ...(unitMode && review.coverage?.context === undefined
+        ? [{ item: "unit_context_reproducibility", reason: "长文档单元共用一个审稿会话（shared_session）：单元能否看到其他单元的表格取决于调度顺序与超时重建，跨单元核对不可复现" }]
+        : []),
+      ...(review.coverage?.context?.contextIncompleteUnits ?? []).flatMap((entry) => entry.gaps.map((gap) => ({
+        item: `cross_unit_reference:${entry.unitId}:${gap.mention}`,
+        reason: `${gap.status}（BLOCKED_BY_CONTEXT）：${gap.reason}；该单元对此对象的跨单元核对未执行`,
+      }))),
     ],
     findings: classified.map(({ issue, index, cls }) => ({
       index, class: cls, severity: issue.severity, category: issue.category, section: issue.section, blocking: issue.blocking,

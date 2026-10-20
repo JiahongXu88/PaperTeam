@@ -18,6 +18,7 @@
  */
 
 import { fingerprintJson } from "../util/hash.js";
+import type { ReviewContextSnapshotRecord, ReviewUnitContextPolicy } from "./reviewContextSnapshot.js";
 import { locateFileSpans, partitionSpanIntoUnits } from "./logicalSpan.js";
 import { revisionSourceHash } from "./revisionScope.js";
 
@@ -79,6 +80,44 @@ export interface ReviewUnitRecord {
   reusedFrom?: { round: number; updatedAt: string; taskId?: string };
   /** M14.8.1-MOT：写入时的增量处置（同轮 journal 恢复时沿用，账本不失真） */
   disposition?: IncrementalUnitDisposition;
+  /** M14.9.5.1：产生本记录的单元上下文策略（缺省 = shared_session 旧记录） */
+  contextPolicy?: ReviewUnitContextPolicy;
+  /** M14.9.5.1：隔离策略下本单元送审输入的上下文快照（依赖原文由 sha256 绑定，不内联） */
+  contextSnapshot?: ReviewContextSnapshotRecord;
+  /** M14.9.5.1：逐次尝试 trace（物理会话 / prompt 哈希 / 状态 / usage）；缓存与复用记录为空 */
+  attemptTrace?: ReviewUnitAttemptTrace[];
+}
+
+/** M14.9.5.1：单元一次模型尝试的可核对记录（同一单元各次尝试的 promptSha256 / contextSnapshotHash 必须一致） */
+export interface ReviewUnitAttemptTrace {
+  attempt: number;
+  sessionKey: string;
+  promptSha256: string;
+  contextSnapshotHash: string;
+  status: "completed" | "failed";
+  taskId?: string;
+  model?: string;
+  usage?: Record<string, unknown>;
+  error?: string;
+  startedAt: string;
+  ms: number;
+}
+
+/** M14.9.5.1：本轮单元上下文的汇总（隔离策略才有；依赖缺口如实呈现，不计入覆盖率字符） */
+export interface ReviewContextCoverage {
+  policy: ReviewUnitContextPolicy;
+  sourceVerification: string;
+  dependencyBudgetChars: number;
+  unitsWithDependencies: number;
+  attachedDependencies: number;
+  dependencyChars: number;
+  /** 有依赖缺口（未解析 / 歧义 / 超预算 / 策略不附）的单元：相关跨单元核对 NOT_EVALUATED */
+  contextIncompleteUnits: Array<{ unitId: string; gaps: Array<{ mention: string; status: string; reason: string }> }>;
+  /** quote 只出现在依赖参考、不在本单元原文中的 finding 数（只标注，不删除） */
+  referenceOnlyQuoteFindings: number;
+  /** 同轮 journal 记录与当前上下文策略 / 快照不等价而未复用的单元（CACHE_INCOMPATIBLE） */
+  cacheIncompatibleUnitIds: string[];
+  crossChapter?: { sessionKey?: string; promptSha256?: string; status: "completed" | "failed" | "skipped" };
 }
 
 /** M14.8.1-MOT：增量复审中单元的处置（Fresh / 合法缓存 / 依赖失效重审 / 未审） */
@@ -183,6 +222,8 @@ export interface ReviewCoverageSummary {
   failedUnitIds: string[];
   /** M14.8.1-MOT：增量复审账本（Fresh / 合法缓存 / 依赖失效 / 未审；缺省 = 旧产物或 digest 模式） */
   incremental?: IncrementalReviewLedger;
+  /** M14.9.5.1：单元上下文汇总（缺省 = shared_session 或 digest 模式） */
+  context?: ReviewContextCoverage;
 }
 
 /** 与 definitions.ts buildManuscriptDigest 相同的截面预算判定（不修改其输出） */

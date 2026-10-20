@@ -13,6 +13,12 @@ import {
   formatResearchProxyUrl,
   parseResearchProxyUrl,
 } from "../network/researchProxy.js";
+import {
+  DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
+  parseReviewUnitContextPolicy,
+  REVIEW_UNIT_CONTEXT_POLICIES,
+  type ReviewUnitContextPolicy,
+} from "../review/reviewContextSnapshot.js";
 
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
@@ -106,11 +112,16 @@ export interface ReviewConfig {
   /** M14.9.1（实验开关，缺省关闭、未经 A/B 复核）：审稿 prompt 追加「元数据 / 投稿格式不计入学术评分」条款（PAPERTEAM_REVIEW_NEUTRALITY_POLICY） */
   neutralityPolicy: boolean;
   /**
-   * M14.9.5（实验开关，缺省关闭、A/B 未完成前不得默认启用）：长文档单元审稿每个单元 / 每次尝试使用独立 Runtime 会话，
-   * 并把单元正文引用、但位于其他单元的表格作为只读参考附上（PAPERTEAM_REVIEW_UNIT_ISOLATION）。缺省时同一项目的全部
-   * 单元共用 review/academic/unit 会话，单元能「看到」哪些其他单元取决于调度顺序与超时重建会话。
+   * M14.9.5.1 长文档单元审稿的上下文策略（PAPERTEAM_REVIEW_UNIT_CONTEXT；缺省 shared_session，真实验收前不默认切换）：
+   *   shared_session            同一项目全部单元共用 review/academic/unit 会话（单元能看到哪些其他单元取决于调度顺序与
+   *                             超时后会话是否重建——不可复现，仅为历史行为 / 回滚口径）；
+   *   isolated_no_dependencies  每次尝试全新封闭会话，不附跨单元依赖（归因对照臂）；
+   *   isolated_snapshot         每次尝试全新封闭会话 + 确定性 Review Context Snapshot（跨单元表 / 图 / 公式依赖与缺口）。
+   * 旧开关 PAPERTEAM_REVIEW_UNIT_ISOLATION=1 等价 isolated_snapshot（两者同时设置时以 PAPERTEAM_REVIEW_UNIT_CONTEXT 为准）。
    */
-  unitContextIsolation: boolean;
+  unitContextPolicy: ReviewUnitContextPolicy;
+  /** M14.9.5.1：单个单元附带的跨单元依赖原文上限（字符；PAPERTEAM_REVIEW_UNIT_DEPENDENCY_CHARS，缺省 12000） */
+  unitDependencyBudgetChars: number;
   /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
@@ -660,7 +671,12 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       incrementalUnitReuse: readBool(source, "PAPERTEAM_REVIEW_INCREMENTAL", true),
       inputMode: readReviewInputMode(source),
       neutralityPolicy: readBool(source, "PAPERTEAM_REVIEW_NEUTRALITY_POLICY", false),
-      unitContextIsolation: readBool(source, "PAPERTEAM_REVIEW_UNIT_ISOLATION", false),
+      unitContextPolicy: readReviewUnitContextPolicy(source),
+      unitDependencyBudgetChars: readIntWithFallback(source, "PAPERTEAM_REVIEW_UNIT_DEPENDENCY_CHARS", {
+        default: DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
+        min: 0,
+        max: 200_000,
+      }),
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")
@@ -940,6 +956,18 @@ function readOptionalValue(
 }
 
 /** M14.9.1：Reviewer 输入模式（实验开关；未知值拒绝启动，不静默回退） */
+function readReviewUnitContextPolicy(source: Record<string, string | undefined>): ReviewUnitContextPolicy {
+  const raw = readOptionalValue(source, "PAPERTEAM_REVIEW_UNIT_CONTEXT");
+  if (raw !== undefined) {
+    const policy = parseReviewUnitContextPolicy(raw);
+    if (policy === undefined) {
+      throw new ConfigError(`PAPERTEAM_REVIEW_UNIT_CONTEXT 只能是 ${REVIEW_UNIT_CONTEXT_POLICIES.join(" / ")}："${raw}"`);
+    }
+    return policy;
+  }
+  return readBool(source, "PAPERTEAM_REVIEW_UNIT_ISOLATION", false) ? "isolated_snapshot" : "shared_session";
+}
+
 function readReviewInputMode(source: Record<string, string | undefined>): "production" | "metadata_blind" {
   const value = readOptionalValue(source, "PAPERTEAM_REVIEW_INPUT_MODE") ?? "production";
   if (value !== "production" && value !== "metadata_blind") {

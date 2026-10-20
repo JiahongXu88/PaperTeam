@@ -32,7 +32,7 @@
  * 其输出必须通过各 Stage 的 DoD 校验。
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 
@@ -177,7 +177,7 @@ import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readPlanChain } from "../agents/researchPlan.js";
 import { readFeasibilityReport, type FeasibilityService } from "../agents/FeasibilityService.js";
-import type { ModeReviewResult, ReviewerService, ReviewIssue } from "../agents/ReviewerService.js";
+import type { ModeReviewResult, ReviewerService, ReviewIssue, UnitReviewContext } from "../agents/ReviewerService.js";
 import {
   ACADEMIC_CONFIRMATION_SAMPLES_MAX,
   aggregateAcademicSamples,
@@ -318,6 +318,7 @@ import {
   type IncrementalReviewLedger,
   type IncrementalUnitDisposition,
   type ReviewCoverageSummary,
+  type ReviewUnitAttemptTrace,
   type ReviewUnitPlanEntry,
   type ReviewUnitRecord,
 } from "../review/coverageLedger.js";
@@ -344,6 +345,16 @@ import {
 } from "../review/logicalSpan.js";
 import { evaluateScopedLatexRepair, isSingleFileManuscript, planScopedLatexRepair, type ScopedRepairPlan } from "../review/scopedLatexRepair.js";
 import { stripLatexReviewMetadata } from "../review/blindReviewInput.js";
+import {
+  buildContextSnapshotRecord,
+  DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
+  indexDependencyTargets,
+  referenceOnlyQuoteIndices,
+  resolveUnitDependencies,
+  type ReviewContextSnapshotRecord,
+  type ReviewUnitContextPolicy,
+  type SourceVerification,
+} from "../review/reviewContextSnapshot.js";
 import type {
   PlanDecision,
   ResumeInput,
@@ -494,8 +505,12 @@ export interface WorkflowServices {
     inputMode?: "production" | "metadata_blind";
     /** M14.9.1 实验开关：审稿 prompt 追加元数据中立条款（缺省 false = prompt 逐字节不变） */
     neutralityPolicy?: boolean;
-    /** M14.9.5 实验开关：长文档单元独立会话 + 被引表格只读参考（缺省 false = 行为与 prompt 逐字节不变） */
-    unitContextIsolation?: boolean;
+    /**
+     * M14.9.5.1 长文档单元审稿上下文策略（缺省 shared_session = 行为与 prompt 逐字节不变；见 review/reviewContextSnapshot.ts）
+     */
+    unitContextPolicy?: ReviewUnitContextPolicy;
+    /** M14.9.5.1 单元依赖原文上限（字符；缺省 DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS） */
+    unitDependencyBudgetChars?: number;
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -732,11 +747,30 @@ function reviewRunStageInner(
           }
         }
         const chapterIndex = [...new Set(coveragePlan.units.map((unit) => `${unit.heading}（${unit.file}）`))];
-        // M14.9.5 实验开关：被引表格只读参考的来源（表号 → 所在单元与 LaTeX 原文）
-        const unitIsolation = services.review.unitContextIsolation === true;
-        const tablesByNumber = unitIsolation
-          ? indexUnitTables(coveragePlan.units.map((unit) => ({ unitId: unit.unitId, text: spanByUnitId.get(unit.unitId)?.content ?? "" })))
-          : new Map<string, { unitId: string; text: string }>();
+        /**
+         * M14.9.5.1 单元上下文策略。shared_session（缺省）= 历史行为：全部单元共用一个审稿会话，prompt 与会话派生不变。
+         * 隔离策略：每次尝试一个全新封闭会话（sealed 工具，prompt 即完整上下文）；isolated_snapshot 另附确定性解析的
+         * 跨单元依赖（review/reviewContextSnapshot.ts）。快照只由冻结稿件与审稿政策决定，与调度顺序 / 并发 / 超时
+         * 重建 / 进程恢复无关；物理会话标签不进入任何哈希。
+         */
+        const contextPolicy: ReviewUnitContextPolicy = services.review.unitContextPolicy ?? "shared_session";
+        const isolatedContext = contextPolicy !== "shared_session";
+        const dependencyBudget = services.review.unitDependencyBudgetChars ?? DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS;
+        const sourceVerification: SourceVerification = !isolatedContext
+          ? "AUTHOR_SOURCE"
+          : publishedAssessment
+            ? publishedSourceVerification(await loadPublishedInputFidelity(services, ctx.projectId))
+            : "AUTHOR_SOURCE";
+        const dependencyIndex = isolatedContext
+          ? indexDependencyTargets(
+              coveragePlan.units.map((unit) => ({ unitId: unit.unitId, file: unit.file, heading: unit.heading, text: spanByUnitId.get(unit.unitId)?.content ?? "" })),
+              { documentOrderProven: coverageSourceFiles.length === 1 },
+            )
+          : null;
+        const contextSnapshots = new Map<string, ReviewContextSnapshotRecord>();
+        const cacheIncompatibleUnitIds: string[] = [];
+        const dependencyInvalidated = new Map<string, string>();
+        let referenceOnlyQuoteFindings = 0;
         const evidenceDigestLines = evidenceSelection.formal.slice(0, 15).map((record, index) =>
           `- [E${String(index + 1).padStart(3, "0")}] ${record.claim.slice(0, 140)}（${record.verificationStatus}）`);
         const unitAttempts = 3;
@@ -787,10 +821,64 @@ function reviewRunStageInner(
             if (unitSpan === undefined) {
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", `REVIEW_UNIT_UNRESOLVED: ${unit.unitId}`);
             }
+            // M14.9.5.1：隔离策略的冻结上下文（纯函数；与执行顺序无关）
+            let unitContext: Omit<UnitReviewContext, "sessionLabel"> | undefined;
+            let contextSnapshot: ReviewContextSnapshotRecord | undefined;
+            if (dependencyIndex !== null && contextPolicy !== "shared_session") {
+              const resolution = resolveUnitDependencies({
+                unitId: unit.unitId, text: unitSpan.content, index: dependencyIndex, budgetChars: dependencyBudget,
+                attach: contextPolicy === "isolated_snapshot",
+              });
+              contextSnapshot = buildContextSnapshotRecord({
+                policy: contextPolicy, unitId: unit.unitId, text: unitSpan.content, resolution, sourceVerification, budgetChars: dependencyBudget,
+              });
+              unitContext = {
+                policy: contextPolicy, dependencies: resolution.attached, gaps: resolution.gaps, sourceVerification,
+                dependencyFingerprint: contextSnapshot.dependencyFingerprint,
+              };
+            }
+            const unitParams = {
+              projectId: ctx.projectId,
+              unit: {
+                unitId: unit.unitId, file: unit.file, heading: unit.heading,
+                unitIndex: unit.unitIndex, unitCount: unit.unitCount, text: unitSpan.content,
+              },
+              ...(project.title !== "" ? { paperTitle: project.title } : {}),
+              chapterIndex,
+              ...(evidenceDigestLines.length > 0 ? { evidenceDigest: evidenceDigestLines } : {}),
+              ...(citationDigest !== undefined ? { citationDigest } : {}),
+              ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
+              ...(language !== undefined ? { language } : {}),
+              ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
+              ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
+              ...(unitContext !== undefined ? { unitContext: { ...unitContext, sessionLabel: "" } } : {}),
+              signal: ctx.signal,
+            };
+            const unitInput = unitContext !== undefined && !isHeadingOnlyUnit(unitSpan.content)
+              ? await services.reviewer.describeUnitInput?.(unitParams)
+              : undefined;
+            if (contextSnapshot !== undefined && unitInput !== undefined) {
+              contextSnapshot.promptSha256 = unitInput.promptSha256;
+              contextSnapshot.contextSnapshotHash = unitInput.contextSnapshotHash;
+              contextSnapshots.set(unit.unitId, contextSnapshot);
+            }
             const reused = journalByUnitId.get(unit.unitId);
+            // M14.9.5.1：同轮 journal 复用还要求上下文策略相同；隔离策略另要求快照哈希一致（旧共享会话记录 /
+            // 不同依赖集合的记录不可互为缓存：CACHE_INCOMPATIBLE → 重新审查）
+            const journalCompatible = reused !== undefined && (
+              reused.taskId === "(heading-only)" ||
+              ((reused.contextPolicy ?? "shared_session") === contextPolicy &&
+                (!isolatedContext || (reused.contextSnapshot?.contextSnapshotHash !== undefined && reused.contextSnapshot.contextSnapshotHash === contextSnapshot?.contextSnapshotHash)))
+            );
             if (
               reused !== undefined && reused.snapshotId === coveragePlan.snapshotId &&
-              reused.unitFingerprint === unit.contentHash
+              reused.unitFingerprint === unit.contentHash && !journalCompatible
+            ) {
+              cacheIncompatibleUnitIds.push(unit.unitId);
+            }
+            if (
+              reused !== undefined && reused.snapshotId === coveragePlan.snapshotId &&
+              reused.unitFingerprint === unit.contentHash && journalCompatible
             ) {
               // 复用 = 同 snapshot 同单元内容的既往成功审查：issues / 分数随
               // outcome 完整恢复（journal 复用绝不丢 finding）
@@ -828,32 +916,24 @@ function reviewRunStageInner(
               await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
               return { unit, record, review: { issues: [] as ReviewIssueOfUnit[], academicScore: null, riskScore: null, summary: summaryText, taskId: "(heading-only)" }, reused: false };
             }
-            const unitParams = {
-              projectId: ctx.projectId,
-              unit: {
-                unitId: unit.unitId, file: unit.file, heading: unit.heading,
-                unitIndex: unit.unitIndex, unitCount: unit.unitCount, text: unitSpan.content,
-              },
-              ...(project.title !== "" ? { paperTitle: project.title } : {}),
-              chapterIndex,
-              ...(evidenceDigestLines.length > 0 ? { evidenceDigest: evidenceDigestLines } : {}),
-              ...(citationDigest !== undefined ? { citationDigest } : {}),
-              ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
-              ...(language !== undefined ? { language } : {}),
-              ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
-              ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
-              ...(unitIsolation ? { contextIsolation: { referencedTables: referencedTablesFor(unit.unitId, unitSpan.content, tablesByNumber) } } : {}),
-              signal: ctx.signal,
-            };
             const requestFingerprint = incrementalEnabled
-              ? ((await services.reviewer.unitRequestFingerprint?.(unitParams)) ?? null)
+              ? (unitContext !== undefined
+                  ? (unitInput?.requestFingerprint ?? null)
+                  : ((await services.reviewer.unitRequestFingerprint?.(unitParams)) ?? null))
               : null;
             if (incrementalEnabled && requestFingerprint === null) fingerprintUnavailable = true;
             const invalidationReason = invalidation.invalidated.get(unit.unitId);
             const cachedSource = requestFingerprint !== null ? priorByFingerprint.get(requestFingerprint) : undefined;
+            // M14.9.5.1：单元原文未改、但其跨单元依赖（被引表 / 图 / 公式原文或缺口）与基准轮不同 → 依赖失效重审
+            const baselineDependencyFingerprint = baselineRecords.find((record) => record.unitId === unit.unitId)?.contextSnapshot?.dependencyFingerprint;
+            const dependencyChanged = contextSnapshot !== undefined && baselineDependencyFingerprint !== undefined &&
+              baselineDependencyFingerprint !== contextSnapshot.dependencyFingerprint;
             if (invalidation.changed.has(unit.unitId)) {
               dispositions.set(unit.unitId, { disposition: baselineRound !== null && !baselineUnitIds.has(unit.unitId) ? "fresh_new" : "fresh_changed" });
             } else if (invalidationReason !== undefined) {
+              dispositions.set(unit.unitId, { disposition: "fresh_invalidated" });
+            } else if (dependencyChanged) {
+              dependencyInvalidated.set(unit.unitId, `dependency_changed（跨单元依赖指纹 ${baselineDependencyFingerprint!.slice(0, 12)} → ${contextSnapshot!.dependencyFingerprint.slice(0, 12)}）`);
               dispositions.set(unit.unitId, { disposition: "fresh_invalidated" });
             } else if (cachedSource !== undefined && cachedSource.outcome !== undefined && cachedSource.unitFingerprint === unit.contentHash) {
               // 合法缓存：同一审稿请求的既往完成审查（issues / 分数完整恢复；来源可追溯）
@@ -864,6 +944,9 @@ function reviewRunStageInner(
                 outcome: cachedSource.outcome, requestFingerprint: requestFingerprint!,
                 reusedFrom: { round: cachedSource.round, updatedAt: cachedSource.updatedAt, ...(cachedSource.taskId !== undefined ? { taskId: cachedSource.taskId } : {}) },
                 disposition: "cached",
+                ...(contextSnapshot !== undefined
+                  ? { contextPolicy, contextSnapshot: { ...contextSnapshot, ...(cachedSource.contextSnapshot?.referenceOnlyQuoteIssueIndices !== undefined ? { referenceOnlyQuoteIssueIndices: cachedSource.contextSnapshot.referenceOnlyQuoteIssueIndices } : {}) }, attemptTrace: [] }
+                  : {}),
               };
               await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
               dispositions.set(unit.unitId, { disposition: "cached", sourceRound: cachedSource.round });
@@ -879,11 +962,28 @@ function reviewRunStageInner(
               dispositions.set(unit.unitId, { disposition: "fresh_no_valid_cache" });
             }
             let lastError: unknown;
+            const attemptTrace: ReviewUnitAttemptTrace[] = [];
+            const contextFields = contextSnapshot !== undefined ? { contextPolicy, contextSnapshot, attemptTrace } : {};
             for (let attempt = 1; attempt <= unitAttempts; attempt += 1) {
+              // M14.9.5.1：隔离策略每次尝试一个全新物理会话（标签含随机段：同轮 stage 重试 / 恢复也不会命中残留会话）；
+              // 规范化 prompt 与依赖集合由冻结快照决定，各次尝试逐字节一致（trace 可核对）
+              const sessionLabel = unitContext !== undefined
+                ? `${(contextSnapshot?.contextSnapshotHash ?? unit.contentHash).slice(0, 12)}-r${round}-a${attempt}-${randomUUID().slice(0, 8)}`
+                : undefined;
+              const startedAt = new Date();
               try {
-                const review = await services.reviewer.reviewUnit(unitIsolation
-                  ? { ...unitParams, contextIsolation: { ...unitParams.contextIsolation!, sessionSuffix: `r${round}-${unit.contentHash.slice(0, 12)}-a${attempt}` } }
+                const review = await services.reviewer.reviewUnit(unitContext !== undefined
+                  ? { ...unitParams, unitContext: { ...unitContext, sessionLabel: sessionLabel! } }
                   : unitParams);
+                if (contextSnapshot !== undefined) {
+                  attemptTrace.push({
+                    attempt, sessionKey: review.sessionKey ?? sessionLabel!, promptSha256: review.promptSha256 ?? "", contextSnapshotHash: contextSnapshot.contextSnapshotHash ?? "",
+                    status: "completed", taskId: review.taskId, ...(review.model !== undefined ? { model: review.model } : {}),
+                    ...(review.usage !== undefined ? { usage: review.usage } : {}), startedAt: startedAt.toISOString(), ms: Date.now() - startedAt.getTime(),
+                  });
+                  const referenceOnly = referenceOnlyQuoteIndices(unitSpan.content, (unitContext?.dependencies ?? []).map((dep) => dep.text), review.issues);
+                  if (referenceOnly.length > 0) contextSnapshot.referenceOnlyQuoteIssueIndices = referenceOnly;
+                }
                 const record = {
                   unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
                   status: "completed" as const, taskId: review.taskId, issueCount: review.issues.length,
@@ -894,11 +994,20 @@ function reviewRunStageInner(
                   },
                   ...(requestFingerprint !== null ? { requestFingerprint } : {}),
                   ...(dispositions.get(unit.unitId) !== undefined ? { disposition: dispositions.get(unit.unitId)!.disposition } : {}),
+                  ...contextFields,
                 };
                 await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
                 return { unit, record, review, reused: false };
               } catch (error) {
                 lastError = error;
+                if (contextSnapshot !== undefined) {
+                  attemptTrace.push({
+                    attempt, sessionKey: services.reviewer.unitSessionKey?.(ctx.projectId, sessionLabel!) ?? sessionLabel!,
+                    promptSha256: contextSnapshot.promptSha256 ?? "", contextSnapshotHash: contextSnapshot.contextSnapshotHash ?? "",
+                    status: "failed", error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+                    startedAt: startedAt.toISOString(), ms: Date.now() - startedAt.getTime(),
+                  });
+                }
                 if (ctx.signal.aborted && !(error instanceof BusinessError)) {
                   throw error;
                 }
@@ -909,6 +1018,7 @@ function reviewRunStageInner(
               status: "failed" as const,
               error: lastError instanceof Error ? lastError.message.slice(0, 300) : String(lastError).slice(0, 300),
               attempts: unitAttempts, updatedAt: new Date().toISOString(),
+              ...contextFields,
             };
             await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
             dispositions.set(unit.unitId, { disposition: "failed" });
@@ -932,6 +1042,7 @@ function reviewRunStageInner(
           const span = spanByUnitId.get(unit.unitId);
           return [unit.spanId, { heading: unit.heading, file: unit.file, digest: span === undefined ? "" : sliceForDigest(span.content, 1200) }];
         })).values()];
+        let crossChapterTrace: NonNullable<ReviewCoverageSummary["context"]>["crossChapter"] = { status: "skipped" };
         if (chapterDigests.length >= 2) {
           try {
             const cross = await services.reviewer.reviewCrossChapter({
@@ -939,11 +1050,14 @@ function reviewRunStageInner(
               ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
               ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
               ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
+              ...(isolatedContext ? { isolation: { sessionLabel: `r${round}-${randomUUID().slice(0, 8)}` } } : {}),
               ...(language !== undefined ? { language } : {}), signal: ctx.signal,
             });
             crossChapterIssues = cross.issues;
+            crossChapterTrace = { status: "completed", ...(cross.sessionKey !== undefined ? { sessionKey: cross.sessionKey } : {}), ...(cross.promptSha256 !== undefined ? { promptSha256: cross.promptSha256 } : {}) };
           } catch (error) {
             if (ctx.signal.aborted) throw error;
+            crossChapterTrace = { status: "failed" };
             ctx.log(`[review] 跨章一致性审查失败（降级为本轮无跨章 finding；正文覆盖不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
           }
         }
@@ -960,7 +1074,7 @@ function reviewRunStageInner(
             baselineRound,
             changedUnitIds: [...invalidation.changed].filter(() => baselineRound !== null),
             removedUnitIds: invalidation.removed,
-            invalidated: [...invalidation.invalidated.entries()].map(([unitId, reason]) => ({ unitId, reason })),
+            invalidated: [...invalidation.invalidated.entries(), ...dependencyInvalidated.entries()].map(([unitId, reason]) => ({ unitId, reason })),
             dispositions: entries,
             freshUnits: entries.filter((entry) => entry.disposition.startsWith("fresh_")).length,
             cachedUnits: entries.filter((entry) => entry.disposition === "cached").length,
@@ -970,6 +1084,29 @@ function reviewRunStageInner(
           };
           coverageSummary.incremental = ledger;
           ctx.log(`[review] 增量复审：基准轮 r${baselineRound ?? "-"}，改动 ${ledger.changedUnitIds.length}、依赖失效 ${ledger.invalidatedUnits}、新执行 ${ledger.freshUnits}、合法缓存 ${ledger.cachedUnits}`);
+        }
+        // M14.9.5.1：单元上下文汇总（依赖缺口如实呈现；依赖原文不计入覆盖率字符）
+        if (isolatedContext) {
+          const completedSnapshots = completedUnits
+            .map((entry) => (entry.record as ReviewUnitRecord).contextSnapshot ?? contextSnapshots.get(entry.unit.unitId))
+            .filter((snapshot): snapshot is ReviewContextSnapshotRecord => snapshot !== undefined);
+          referenceOnlyQuoteFindings = completedSnapshots.reduce((sum, snapshot) => sum + (snapshot.referenceOnlyQuoteIssueIndices?.length ?? 0), 0);
+          coverageSummary.context = {
+            policy: contextPolicy,
+            sourceVerification,
+            dependencyBudgetChars: dependencyBudget,
+            unitsWithDependencies: completedSnapshots.filter((snapshot) => snapshot.dependencies.length > 0).length,
+            attachedDependencies: completedSnapshots.reduce((sum, snapshot) => sum + snapshot.dependencies.length, 0),
+            dependencyChars: completedSnapshots.reduce((sum, snapshot) => sum + snapshot.dependencyChars, 0),
+            contextIncompleteUnits: [...contextSnapshots.values()].filter((snapshot) => !snapshot.contextComplete).map((snapshot) => ({
+              unitId: snapshot.unitId,
+              gaps: snapshot.gaps.map((gap) => ({ mention: gap.mention, status: gap.status, reason: gap.reason })),
+            })),
+            referenceOnlyQuoteFindings,
+            cacheIncompatibleUnitIds,
+            crossChapter: crossChapterTrace,
+          };
+          ctx.log(`[review] 单元上下文：策略 ${contextPolicy}，附依赖 ${coverageSummary.context.attachedDependencies} 项（${coverageSummary.context.dependencyChars} 字），依赖缺口单元 ${coverageSummary.context.contextIncompleteUnits.length}，CACHE_INCOMPATIBLE ${cacheIncompatibleUnitIds.length}`);
         }
         // 确定性加权聚合：academicScore / styleRisk = 全部完成单元（本次执行 +
         // journal 复用，二者 review 等价）分数的字符加权平均
@@ -999,6 +1136,9 @@ function reviewRunStageInner(
             scoredChars: scored.reduce((sum, entry) => sum + entry.unit.chars, 0),
             reviewedChars: bodyUnits.reduce((sum, entry) => sum + entry.unit.chars, 0),
             unscoredUnitIds: bodyUnits.filter((entry) => entry.review!.academicScore === null).map((entry) => entry.unit.unitId),
+            ...(coverageSummary.context !== undefined
+              ? { contextIncompleteUnitIds: coverageSummary.context.contextIncompleteUnits.map((entry) => entry.unitId) }
+              : {}),
             calibration: "UNVALIDATED",
           };
         }
@@ -11548,36 +11688,11 @@ function isPublishedAssessmentRun(state: WorkflowState): boolean {
 }
 
 /**
- * M14.9.5 实验开关（PAPERTEAM_REVIEW_UNIT_ISOLATION）：单元正文中的表格（LaTeX table / tabular 块，表号取块前 300 字符内
- * 最近的「表 N / Table N」题注或块内 \caption）。只做确定性索引，不改写稿件。
+ * M14.9.5.1：已发表论文转写投影中依赖原文的来源核验等级——只有与源 / 投影 / 被审稿件哈希绑定且有效的人工 QA 证明
+ * 才是 SOURCE_ATTESTED；保真门自动判定或未提供报告一律 SOURCE_UNVERIFIED（上下文供给不改变保真结论）。
  */
-function indexUnitTables(units: ReadonlyArray<{ unitId: string; text: string }>): Map<string, { unitId: string; text: string }> {
-  const index = new Map<string, { unitId: string; text: string }>();
-  for (const unit of units) {
-    for (const match of unit.text.matchAll(/\\begin\{table\*?\}[\s\S]*?\\end\{table\*?\}/g)) {
-      const before = unit.text.slice(Math.max(0, match.index! - 300), match.index!);
-      const captions = [...`${before}\n${match[0].slice(0, 400)}`.matchAll(/(?:表|Table)\s*(\d{1,2})/g)];
-      const number = captions.at(-1)?.[1];
-      if (number === undefined || index.has(number)) continue;
-      const caption = /[^\n]*(?:表|Table)\s*\d{1,2}[^\n]*\s*$/.exec(before)?.[0] ?? "";
-      index.set(number, { unitId: unit.unitId, text: `${caption}${match[0]}` });
-    }
-  }
-  return index;
-}
-
-/** 单元正文引用（见表 N / 表 N / Table N）而表格本体位于其他单元的表格原文（有界：合计 ≤ 8000 字符） */
-function referencedTablesFor(unitId: string, text: string, index: ReadonlyMap<string, { unitId: string; text: string }>): string[] {
-  const numbers = [...new Set([...text.matchAll(/(?:表|Table)\s*(\d{1,2})/g)].map((match) => match[1]!))];
-  const out: string[] = [];
-  let budget = 8000;
-  for (const number of numbers) {
-    const table = index.get(number);
-    if (table === undefined || table.unitId === unitId || table.text.length > budget) continue;
-    budget -= table.text.length;
-    out.push(table.text);
-  }
-  return out;
+function publishedSourceVerification(fidelity: { report: InputFidelityReport; attestation: AttestationCheck | null } | null): SourceVerification {
+  return fidelity?.attestation?.verdict === "VALID" && fidelity.attestation.effectiveStatus === "VALID_FOR_SCORING" ? "SOURCE_ATTESTED" : "SOURCE_UNVERIFIED";
 }
 
 /**
