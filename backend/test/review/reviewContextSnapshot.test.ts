@@ -13,6 +13,7 @@ import {
   buildContextSnapshotRecord,
   dependencyFingerprint,
   indexDependencyTargets,
+  locateAbstractAnchor,
   parseReviewUnitContextPolicy,
   referenceOnlyQuoteIndices,
   renderDependencyBlock,
@@ -202,6 +203,65 @@ describe("indexDependencyTargets / resolveUnitDependencies", () => {
     expect(parseReviewUnitContextPolicy("isolated_snapshot")).toBe("isolated_snapshot");
     expect(parseReviewUnitContextPolicy(" Shared_Session ")).toBe("shared_session");
     expect(parseReviewUnitContextPolicy("isolated")).toBeUndefined();
+  });
+});
+
+describe("摘要锚点（只读口径 blocking 以「摘要所述核心结论」为准）", () => {
+  const FRONT = [
+    "\\maketitle", "",
+    "\\textbf{摘要}：目的 了解两组差异。结果 A 组风险更高（OR=1.50）。结论 应优先干预 A 组。", "",
+    "\\textbf{关键词}：两组；风险", "",
+    "\\textbf{Abstract}: Objective To compare groups. Results Group A had higher risk.", "",
+    "随着人口老龄化（引言正文，不属于摘要）……",
+  ].join("\n");
+  const units = [unit("frontmatter", FRONT), unit("2 结果", RESULTS), unit("2.2", ANALYSIS), unit("3 讨论", "\\section*{3 讨论}\n\n讨论正文。")];
+
+  it("只取摘要段（中英文），不含关键词与引言；其他单元附为 D1，摘要所在单元记 inUnit", () => {
+    const anchor = locateAbstractAnchor(units);
+    expect(anchor.found).toBe(true);
+    if (!anchor.found) return;
+    expect(anchor.text).toContain("结论 应优先干预 A 组");
+    expect(anchor.text).toContain("Group A had higher risk");
+    expect(anchor.text).not.toContain("关键词");
+    expect(anchor.text).not.toContain("引言正文");
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    const analysis = resolveUnitDependencies({ unitId: units[2]!.unitId, text: ANALYSIS, index, budgetChars: 12_000, attach: true, rubricAnchor: anchor });
+    expect(analysis.attached.map((dep) => [dep.refId, dep.kind])).toEqual([["D1", "abstract"], ["D2", "table"]]);
+    expect(analysis.dependencyChars).toBe(anchor.text.length + analysis.attached[1]!.chars);
+    const front = resolveUnitDependencies({ unitId: units[0]!.unitId, text: FRONT, index, budgetChars: 12_000, attach: true, rubricAnchor: anchor });
+    expect(front.attached).toEqual([]);
+    expect(front.inUnit).toEqual(["论文摘要"]);
+    const lines = renderDependencyBlock({ attached: analysis.attached, gaps: analysis.gaps, sourceVerification: "SOURCE_UNVERIFIED" }).join("\n");
+    expect(lines.indexOf("===== 论文摘要")).toBeLessThan(lines.indexOf("===== 跨单元依赖"));
+    // 没有表格依赖的单元：只有摘要块，没有空的「跨单元依赖」块
+    const discussion = resolveUnitDependencies({ unitId: units[3]!.unitId, text: units[3]!.text, index, budgetChars: 12_000, attach: true, rubricAnchor: anchor });
+    const onlyAnchor = renderDependencyBlock({ attached: discussion.attached, gaps: discussion.gaps, sourceVerification: "AUTHOR_SOURCE" }).join("\n");
+    expect(onlyAnchor).toContain("===== 论文摘要");
+    expect(onlyAnchor).not.toContain("跨单元依赖");
+  });
+
+  it("摘要改动 → 所有引用它的单元依赖指纹变化；B 策略只记 NOT_ATTACHED_BY_POLICY（prompt 块为空）", () => {
+    const index = indexDependencyTargets(units, { documentOrderProven: true });
+    const fp = (front: string) => {
+      const changed = [unit("frontmatter", front), ...units.slice(1)];
+      return dependencyFingerprint(resolveUnitDependencies({ unitId: units[3]!.unitId, text: units[3]!.text, index, budgetChars: 12_000, attach: true, rubricAnchor: locateAbstractAnchor(changed) }));
+    };
+    expect(fp(FRONT.replace("OR=1.50", "OR=1.05"))).not.toBe(fp(FRONT));
+    const b = resolveUnitDependencies({ unitId: units[3]!.unitId, text: units[3]!.text, index, budgetChars: 12_000, attach: false, rubricAnchor: locateAbstractAnchor(units) });
+    expect(b.gaps).toMatchObject([{ kind: "abstract", status: "NOT_ATTACHED_BY_POLICY", check: "BLOCKING_DETERMINATION" }]);
+    expect(renderDependencyBlock({ attached: b.attached, gaps: b.gaps, sourceVerification: "AUTHOR_SOURCE" })).toEqual([]);
+  });
+
+  it("\\begin{abstract} 优先；找不到 / 超限 → blocking 判断 NOT_EVALUATED（不截断）", () => {
+    const env = [unit("front", "\\begin{abstract}\nWe find X.\n\\end{abstract}\n\n\\textbf{Abstract}: other"), unit("body", "Body.")];
+    const anchor = locateAbstractAnchor(env);
+    expect(anchor.found && anchor.text).toBe("\\begin{abstract}\nWe find X.\n\\end{abstract}");
+    const none = locateAbstractAnchor([unit("body", "No abstract here.")]);
+    expect(none).toMatchObject({ found: false, status: "DEPENDENCY_UNRESOLVED" });
+    const index = indexDependencyTargets([unit("body", "No abstract here.")], { documentOrderProven: true });
+    expect(resolveUnitDependencies({ unitId: "main.tex::body", text: "No abstract here.", index, budgetChars: 100, attach: true, rubricAnchor: none }).gaps)
+      .toMatchObject([{ mention: "论文摘要", status: "DEPENDENCY_UNRESOLVED", check: "BLOCKING_DETERMINATION", checkStatus: "NOT_EVALUATED" }]);
+    expect(locateAbstractAnchor([unit("front", `\\textbf{摘要}：${"长".repeat(50)}`)], 20)).toMatchObject({ found: false, status: "CONTEXT_OVERFLOW" });
   });
 });
 

@@ -349,6 +349,7 @@ import {
   buildContextSnapshotRecord,
   DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
   indexDependencyTargets,
+  locateAbstractAnchor,
   referenceOnlyQuoteIndices,
   resolveUnitDependencies,
   type ReviewContextSnapshotRecord,
@@ -767,6 +768,10 @@ function reviewRunStageInner(
               { documentOrderProven: coverageSourceFiles.length === 1 },
             )
           : null;
+        // 只读口径的三轴 rubric 以「摘要所述核心结论」定义 blocking：隔离单元附摘要锚点（作者稿件口径不注入）
+        const rubricAnchor = dependencyIndex !== null && publishedAssessmentLines !== undefined
+          ? locateAbstractAnchor(coveragePlan.units.map((unit) => ({ unitId: unit.unitId, file: unit.file, heading: unit.heading, text: spanByUnitId.get(unit.unitId)?.content ?? "" })))
+          : undefined;
         const contextSnapshots = new Map<string, ReviewContextSnapshotRecord>();
         const cacheIncompatibleUnitIds: string[] = [];
         const dependencyInvalidated = new Map<string, string>();
@@ -828,6 +833,7 @@ function reviewRunStageInner(
               const resolution = resolveUnitDependencies({
                 unitId: unit.unitId, text: unitSpan.content, index: dependencyIndex, budgetChars: dependencyBudget,
                 attach: contextPolicy === "isolated_snapshot",
+                ...(rubricAnchor !== undefined ? { rubricAnchor } : {}),
               });
               contextSnapshot = buildContextSnapshotRecord({
                 policy: contextPolicy, unitId: unit.unitId, text: unitSpan.content, resolution, sourceVerification, budgetChars: dependencyBudget,

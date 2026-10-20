@@ -1088,13 +1088,19 @@ function buildUnitReviewPrompt(params: {
     ? renderDependencyBlock({ attached: params.unitContext.dependencies, gaps: params.unitContext.gaps, sourceVerification: params.unitContext.sourceVerification })
     : [];
   // M14.9.5.1：隔离策略下的上下文纪律条款（共享会话缺省不出现，prompt 逐字节不变）
+  const hasAnchor = dependencyBlock.length > 0 && (params.unitContext?.dependencies ?? []).some((dep) => dep.kind === "abstract");
+  const hasRefBlock = dependencyBlock.some((line) => line.startsWith("===== 跨单元依赖"));
+  const readOnlyRefs = [...(hasAnchor ? ["「论文摘要」"] : []), ...(hasRefBlock ? ["「跨单元依赖」"] : [])];
   let clause = params.neutralityPolicy === true ? 6 : 5;
   const contextClauses = params.unitContext === undefined
     ? []
     : [
-        `${clause++}. 本次审查只依据本消息给出的材料（单元原文${dependencyBlock.length > 0 ? "，以及下方「跨单元依赖」只读参考" : ""}）；不要读取工作区文件，也不要依赖其他对话的记忆。`,
-        ...(dependencyBlock.length > 0
+        `${clause++}. 本次审查只依据本消息给出的材料（单元原文${readOnlyRefs.length > 0 ? `，以及下方${readOnlyRefs.join("与")}只读参考` : ""}）；不要读取工作区文件，也不要依赖其他对话的记忆。`,
+        ...(hasRefBlock
           ? [`${clause++}. 「跨单元依赖」只用于核对本单元对这些表格 / 图 / 公式的引述（数值、显著性、方向、口径）：问题必须能在本单元原文中定位，quote 只从本单元原文摘取；不要单独报告参考内容自身的问题（由其所在单元审查）。`]
+          : []),
+        ...(hasAnchor
+          ? [`${clause++}. 「论文摘要」只用于判断本单元的问题是否使摘要所述的某个核心结论不可依赖（blocking 口径）；摘要本身由其所在单元审查，不要单独报告摘要的问题。`]
           : []),
       ];
   return [

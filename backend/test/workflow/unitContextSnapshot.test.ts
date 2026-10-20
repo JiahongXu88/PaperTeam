@@ -87,7 +87,7 @@ async function setup(options: {
         return {
           taskId: `u${calls.length}`, agentId: "reviewer", status: "completed" as const, createdAt: now, updatedAt: now, events: [],
           metadata: { model: "glm/claude-opus-5-5", ...(input.sessionKey !== undefined ? { sessionKey: input.sessionKey } : {}) },
-          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 100, totalTokens: 115, assistantTurns: 1 },
+          usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 100, totalTokens: 115, contextTokens: 115, assistantTurns: 1 },
           output: JSON.stringify({
             summary: `unit ${heading}`,
             issues: [
@@ -211,7 +211,6 @@ describe("M14.9.5.1 isolated_snapshot：显式、冻结、可复现的单元输�
     const expected = promptsByUnit(reference.calls);
     const h = await setup({ policy: "isolated_snapshot", concurrency: 1, abortAfterUnitCalls: 1 });
     await expect(h.run()).rejects.toThrow();
-    const beforeResume = h.unitCalls().length;
     const completedBefore = (await h.journal(1)).filter((record) => record.status === "completed").length;
     expect(completedBefore).toBeGreaterThan(0);
     const resumed = await setupResume(h);
@@ -287,6 +286,8 @@ describe("M14.9.5.1 isolated_snapshot：显式、冻结、可复现的单元输�
     expect(prompt).toContain("- 表 9：DEPENDENCY_UNRESOLVED");
     expect(prompt).toContain("AUTHOR_SOURCE");
     expect(prompt.indexOf("===== 跨单元依赖")).toBeLessThan(prompt.indexOf("===== 单元原文"));
+    // 作者稿件口径没有以摘要定义的 blocking rubric：不附摘要锚点
+    expect(isolated.calls.some((call) => call.task.includes("===== 论文摘要"))).toBe(false);
   });
 
   it("isolated_no_dependencies：无依赖单元的 prompt 与 isolated_snapshot 逐字节相同；有依赖单元只差依赖块与依赖条款", async () => {

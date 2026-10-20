@@ -14,18 +14,22 @@
  *   3. 预算：主单元原文从不截断；依赖整块附上或整块不附（CONTEXT_OVERFLOW，绝不截断表格）。\label 引用优先于
  *      文本编号引用，按首次出现顺序。
  *   4. 依赖只是只读参考：不计入覆盖率字符，不作为本单元的独立审稿对象。
+ *   5. 审稿政策自身引用的材料也是依赖：已发表论文只读口径的 blocking 以「摘要所述核心结论」为准，隔离单元因此
+ *      附上摘要段（RubricAnchor，独立上限；找不到 / 超限时 blocking 判断记 NOT_EVALUATED）。
  */
 import { createHash } from "node:crypto";
 
 export type ReviewUnitContextPolicy = "shared_session" | "isolated_no_dependencies" | "isolated_snapshot";
 export const REVIEW_UNIT_CONTEXT_POLICIES: readonly ReviewUnitContextPolicy[] = ["shared_session", "isolated_no_dependencies", "isolated_snapshot"];
-export const REVIEW_CONTEXT_SNAPSHOT_SCHEMA = "paperteam.review-context-snapshot/v1";
+export const REVIEW_CONTEXT_SNAPSHOT_SCHEMA = "paperteam.review-context-snapshot/v2";
 export const DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS = 12_000;
 
 export type DependencyKind = "table" | "figure" | "equation";
+/** 附上的依赖类型：浮动体 / 公式，或审稿政策本身引用的「论文摘要」锚点 */
+export type AttachedKind = DependencyKind | "abstract";
 /** 依赖原文的来源核验等级（文档级）：作者 LaTeX 源稿 / 有哈希绑定人工 QA 的转写投影 / 未核验的转写投影 */
 export type SourceVerification = "AUTHOR_SOURCE" | "SOURCE_ATTESTED" | "SOURCE_UNVERIFIED";
-export type DependencyResolution = "label" | "caption_number" | "latex_counter" | "tag";
+export type DependencyResolution = "label" | "caption_number" | "latex_counter" | "tag" | "rubric_anchor";
 export type DependencyGapStatus = "DEPENDENCY_UNRESOLVED" | "DEPENDENCY_AMBIGUOUS" | "CONTEXT_OVERFLOW" | "NOT_ATTACHED_BY_POLICY";
 
 export interface DependencyTarget {
@@ -51,7 +55,7 @@ export interface DependencyIndex {
 
 export interface AttachedDependency {
   refId: string;
-  kind: DependencyKind;
+  kind: AttachedKind;
   targetId: string;
   sourceUnitId: string;
   sourceFile: string;
@@ -65,14 +69,50 @@ export interface AttachedDependency {
 }
 
 export interface DependencyGap {
-  kind: DependencyKind | "label";
+  kind: DependencyKind | "label" | "abstract";
   mention: string;
   status: DependencyGapStatus;
   reason: string;
   candidates?: string[];
-  /** 该依赖对应的核对在本单元未执行（如实呈现，不伪装已审） */
-  check: "CROSS_REFERENCE_CONSISTENCY";
+  /**
+   * 该依赖对应的核对在本单元未执行（如实呈现，不伪装已审）：跨单元引述核对，或（摘要锚点缺失时）
+   * 三轴口径中以摘要核心结论为准的 blocking 判断
+   */
+  check: "CROSS_REFERENCE_CONSISTENCY" | "BLOCKING_DETERMINATION";
   checkStatus: "NOT_EVALUATED";
+}
+
+/**
+ * M14.9.5.1：审稿政策自身引用的「论文摘要」锚点。已发表论文只读口径把 blocking 定义为「澄清之前不应把论文
+ * 摘要所述的某个核心结论当作可靠发现引用」——隔离单元看不到摘要就无从判断（共享会话里摘要只是碰巧留在历史中）。
+ * 只取摘要段本身（\begin{abstract} 或以「摘要 / Abstract」起首的段落，文档中第一个含摘要的单元），不附引言等其余前置内容。
+ */
+export interface RubricAnchor {
+  found: true;
+  unitId: string;
+  file: string;
+  heading: string;
+  text: string;
+  sha256: string;
+}
+export type RubricAnchorResult = RubricAnchor | { found: false; status: "DEPENDENCY_UNRESOLVED" | "CONTEXT_OVERFLOW"; reason: string };
+export const ABSTRACT_ANCHOR_MAX_CHARS = 4_000;
+
+const ABSTRACT_PARAGRAPH = /^\s*(?:\\noindent\s*)?(?:\\(?:textbf|textit|emph)\s*\{\s*)?(?:摘\s*要|Abstract|ABSTRACT)\s*\}?\s*[：:]/;
+
+export function locateAbstractAnchor(units: ReadonlyArray<{ unitId: string; file: string; heading: string; text: string }>, maxChars = ABSTRACT_ANCHOR_MAX_CHARS): RubricAnchorResult {
+  for (const unit of units) {
+    const envs = [...unit.text.matchAll(/\\begin\{abstract\}[\s\S]*?\\end\{abstract\}/g)].map((match) => match[0]);
+    const blocks = envs.length > 0 ? envs : paragraphs(unit.text).map((paragraph) => paragraph.text).filter((text) => ABSTRACT_PARAGRAPH.test(text));
+    if (blocks.length === 0) continue;
+    const joined = blocks.join("\n\n");
+    const text = joined.length <= maxChars ? joined : blocks[0]!.length <= maxChars ? blocks[0]! : null;
+    if (text === null) {
+      return { found: false, status: "CONTEXT_OVERFLOW", reason: `摘要 ${blocks[0]!.length} 字超出摘要锚点上限 ${maxChars} 字（不截断）` };
+    }
+    return { found: true, unitId: unit.unitId, file: unit.file, heading: unit.heading, text, sha256: sha256Hex(text) };
+  }
+  return { found: false, status: "DEPENDENCY_UNRESOLVED", reason: "全文没有 \\begin{abstract} 或以「摘要 / Abstract」起首的段落" };
 }
 
 export interface UnitDependencyResolution {
@@ -386,6 +426,8 @@ export function resolveUnitDependencies(input: {
   index: DependencyIndex;
   budgetChars: number;
   attach: boolean;
+  /** 审稿政策引用的摘要锚点（只读口径的 blocking 定义需要；不占表格依赖预算，有独立上限） */
+  rubricAnchor?: RubricAnchorResult;
 }): UnitDependencyResolution {
   const { index, unitId } = input;
   const ownTargets = index.targets.filter((target) => target.unitId === unitId);
@@ -441,12 +483,30 @@ export function resolveUnitDependencies(input: {
   const navigational: string[] = [];
   const attachedById = new Map<string, AttachedDependency & { text: string }>();
   const gapKeys = new Set<string>();
-  const pushGap = (gap: Omit<DependencyGap, "check" | "checkStatus">): void => {
+  const pushGap = (gap: Omit<DependencyGap, "check" | "checkStatus">, check: DependencyGap["check"] = "CROSS_REFERENCE_CONSISTENCY"): void => {
     const key = `${gap.status}|${gap.mention}`;
     if (gapKeys.has(key)) return;
     gapKeys.add(key);
-    gaps.push({ ...gap, check: "CROSS_REFERENCE_CONSISTENCY", checkStatus: "NOT_EVALUATED" });
+    gaps.push({ ...gap, check, checkStatus: "NOT_EVALUATED" });
   };
+  let anchorChars = 0;
+  const anchor = input.rubricAnchor;
+  if (anchor !== undefined) {
+    const mention = "论文摘要";
+    if (!anchor.found) {
+      if (input.attach) pushGap({ kind: "abstract", mention, status: anchor.status, reason: anchor.reason }, "BLOCKING_DETERMINATION");
+    } else if (anchor.unitId === unitId) {
+      inUnit.push(mention);
+    } else if (!input.attach) {
+      pushGap({ kind: "abstract", mention, status: "NOT_ATTACHED_BY_POLICY", reason: `位于单元 ${anchor.unitId}；本策略不附跨单元依赖`, candidates: [`abstract:${anchor.unitId}`] }, "BLOCKING_DETERMINATION");
+    } else {
+      anchorChars = anchor.text.length;
+      attachedById.set(`abstract:${anchor.unitId}`, {
+        refId: "D1", kind: "abstract", targetId: `abstract:${anchor.unitId}`, sourceUnitId: anchor.unitId, sourceFile: anchor.file, sourceHeading: anchor.heading,
+        via: "rubric_anchor", mentions: [mention], numbers: [], labels: [], sha256: anchor.sha256, chars: anchor.text.length, text: anchor.text,
+      });
+    }
+  }
   let used = 0;
   for (const entry of wanted) {
     if (entry.navigational === true) {
@@ -495,7 +555,7 @@ export function resolveUnitDependencies(input: {
       numbers: target.numbers, labels: target.labels, sha256: target.sha256, chars: target.text.length, text: target.text,
     });
   }
-  return { attached: [...attachedById.values()], gaps, inUnit, navigational, dependencyChars: used };
+  return { attached: [...attachedById.values()], gaps, inUnit, navigational, dependencyChars: used + anchorChars };
 }
 
 export function dependencyFingerprint(resolution: Pick<UnitDependencyResolution, "attached" | "gaps">): string {
@@ -542,9 +602,13 @@ const VIA_TEXT: Record<DependencyResolution, string> = {
   caption_number: "题注 / 标题中的唯一编号",
   latex_counter: "LaTeX 计数器顺序（全文无显式编号）",
   tag: "公式 \\tag 编号",
+  rubric_anchor: "审稿口径锚点（摘要段）",
 };
 
-/** prompt 中的依赖块（policy=isolated_snapshot 且有依赖或缺口时才非空） */
+/**
+ * prompt 中的依赖块（policy=isolated_snapshot 且有依赖或缺口时才非空）：「论文摘要」锚点块在前，
+ * 表 / 图 / 公式依赖块在后，未能附上的依赖（含摘要锚点缺口）列在末尾。
+ */
 export function renderDependencyBlock(input: {
   attached: ReadonlyArray<AttachedDependency & { text: string }>;
   gaps: readonly DependencyGap[];
@@ -552,19 +616,28 @@ export function renderDependencyBlock(input: {
 }): string[] {
   const gaps = input.gaps.filter((gap) => gap.status !== "NOT_ATTACHED_BY_POLICY");
   if (input.attached.length === 0 && gaps.length === 0) return [];
+  const anchors = input.attached.filter((dep) => dep.kind === "abstract");
+  const refs = input.attached.filter((dep) => dep.kind !== "abstract");
   return [
-    "===== 跨单元依赖（只读参考：本单元正文引用、但位于其他单元的表格 / 图 / 公式；不在本单元审查范围内）=====",
-    ...input.attached.flatMap((dep) => [
+    ...anchors.flatMap((dep) => [
+      `===== 论文摘要（只读参考：判断 blocking 时「摘要所述核心结论」以此为准；不在本单元审查范围内，不要报告摘要自身的问题）· 来源单元「${dep.sourceHeading}」（${dep.sourceFile}）· 来源核验：${VERIFICATION_TEXT[input.sourceVerification]} · sha256:${dep.sha256.slice(0, 12)} =====`,
+      dep.text,
+      "",
+    ]),
+    ...(refs.length > 0 || gaps.length > 0
+      ? ["===== 跨单元依赖（只读参考：本单元正文引用、但位于其他单元的表格 / 图 / 公式；不在本单元审查范围内）====="]
+      : []),
+    ...refs.flatMap((dep) => [
       `--- [${dep.refId}] ${dep.mentions.join(" / ")} · 来源单元「${dep.sourceHeading}」（${dep.sourceFile}）· 定位：${VIA_TEXT[dep.via]} · 来源核验：${VERIFICATION_TEXT[input.sourceVerification]} · sha256:${dep.sha256.slice(0, 12)} ---`,
       dep.text,
     ]),
     ...(gaps.length > 0
       ? [
-          "--- 未能附上的依赖（对应的跨单元核对未执行；不要猜测其内容，也不要因「看不到」而报告该对象缺失）---",
+          "--- 未能附上的依赖（对应的核对未执行；不要猜测其内容，也不要因「看不到」而报告该对象缺失）---",
           ...gaps.map((gap) => `- ${gap.mention}：${gap.status}（${gap.reason}）`),
         ]
       : []),
-    "",
+    ...(refs.length > 0 || gaps.length > 0 ? [""] : []),
   ];
 }
 
