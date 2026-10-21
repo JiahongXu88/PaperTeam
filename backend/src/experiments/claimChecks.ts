@@ -46,7 +46,8 @@ export interface ClaimCheckSpec {
   required?: boolean;
   /** core = 论文核心结论所依赖的论断（矛盾 → major finding）；supporting = 支撑性数值（矛盾 → minor finding） */
   materiality: "core" | "supporting";
-  claim: { quote: string; value: number; kind?: "number" | "boolean"; unit?: string };
+  /** alsoAt：同一论断在稿件其他位置的逐字复述（摘要 / 引言 / 讨论）——这些单元同样附复算结果；确定性 finding 只落在主位置 */
+  claim: { quote: string; value: number; kind?: "number" | "boolean"; unit?: string; alsoAt?: string[] };
   /** 逐行数据源（CSV / XLSX 等表格）；scalar 计算可省略 */
   source?: ClaimCheckFileRef & { sheet?: string };
   /** 计算参数；同一参数给出多个来源时必须一致，否则 CONFLICTING_VERSIONS */
@@ -89,7 +90,7 @@ export interface ClaimCheckResult {
   title: string;
   materiality: "core" | "supporting";
   required: boolean;
-  claimAnchor: { quote: string; found: boolean; file: string | null; line: number | null; manuscriptRevision: number | null; manuscriptSha256: string };
+  claimAnchor: { quote: string; found: boolean; file: string | null; line: number | null; manuscriptRevision: number | null; manuscriptSha256: string; alsoAt?: Array<{ quote: string; found: boolean }> };
   manuscriptValue: number;
   valueKind: "number" | "boolean";
   protocol: { id: string; status: "VERIFIED_BY_SOURCE" | "DECLARED_ONLY" | "MISMATCH" | "NOT_CHECKED"; assertions: Array<{ kind: string; ok: boolean; detail: string }> };
@@ -500,6 +501,10 @@ async function evaluateOne(
     if (resolved.others.length > 0) limitations.push(`${ref.path} 在实验包中另有不同哈希版本（${resolved.others.join("、")}），按登记哈希使用`);
     if (!resolved.file.authorized) {
       gaps.push({ code: "UNAUTHORIZED_INPUT", detail: `${ref.path} 所在实验组 ${resolved.file.groupId} 未经作者确认 / 未授权进入工作流` });
+      // 独立的缺口一并报告（未授权且未解析的文件，补授权后仍然无法复算）
+      if (resolved.file.sourceId === undefined || !["ok", "partial"].includes(resolved.file.parseStatus)) {
+        gaps.push({ code: "SOURCE_NOT_PARSED", detail: `${ref.path} 未解析为结构化记录（${resolved.file.parseStatus}）` });
+      }
       return null;
     }
     if (resolved.file.sourceId === undefined || !["ok", "partial"].includes(resolved.file.parseStatus)) {
@@ -673,7 +678,10 @@ async function evaluateOne(
     title: spec.title,
     materiality: spec.materiality,
     required: spec.required !== false,
-    claimAnchor: { quote: spec.claim.quote, found: anchor !== null, file: anchor?.file ?? null, line: anchor?.line ?? null, manuscriptRevision: env.manuscript.revision, manuscriptSha256 },
+    claimAnchor: {
+      quote: spec.claim.quote, found: anchor !== null, file: anchor?.file ?? null, line: anchor?.line ?? null, manuscriptRevision: env.manuscript.revision, manuscriptSha256,
+      ...(spec.claim.alsoAt !== undefined ? { alsoAt: spec.claim.alsoAt.map((quote) => ({ quote, found: locateQuote(env.manuscript.files, quote) !== null })) } : {}),
+    },
     manuscriptValue: spec.claim.value,
     valueKind,
     protocol: { id: spec.protocol.id, status: protocolStatus, assertions: protocolAssertions },
@@ -756,13 +764,16 @@ export function renderClaimCheckBlock(results: readonly ClaimCheckResult[]): str
     "口径：以下结果由 PaperTeam 按预先登记的协议、过滤与计算，从作者提供并授权的实验文件（哈希绑定）复算，未经外部独立核验。",
     ...results.map(renderClaimCheckLine),
     "使用口径：CONTRADICTED 的论断应在 finding 中写明 [CC-编号]、数据出处、计算与复算值，严重度按该论断在论文中的作用判断；CONSISTENT 的论断不要再以「数值无法核对 / 与实验数据不符」报告（表述或口径问题仍可照常报告）；未能复算的论断只能写成「需作者补充数据 / 待核验」，不能断言论文有错。",
+    // M14.9.5.4：真实对照中附复算块的摘要单元三臂都没再报此前稳定检出的摘要框架问题——复算只覆盖登记论断，其余照常审查
+    "复算只覆盖上面登记的论断：本单元其余内容（论证框架与结论强度、统计口径、表述、引用等）照常完整审查，不要因为有复算结果而省略或弱化其他问题。",
   ];
 }
 
 /** 论断原文落在给定文本（单元原文 / 整稿）中的复算结果 */
 export function claimChecksInText(results: readonly ClaimCheckResult[], text: string): ClaimCheckResult[] {
   const normalized = normalizeAnchorText(text);
-  return results.filter((result) => normalized.includes(normalizeAnchorText(result.claimAnchor.quote)));
+  return results.filter((result) => [result.claimAnchor.quote, ...(result.claimAnchor.alsoAt ?? []).map((entry) => entry.quote)]
+    .some((quote) => normalized.includes(normalizeAnchorText(quote))));
 }
 
 /** CONTRADICTED → 确定性 finding（rootCauseKey=claim-check:<id>；Gate 规则 4d 计因，规则 5/6 去重） */

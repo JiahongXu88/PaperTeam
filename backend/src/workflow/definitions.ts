@@ -282,6 +282,7 @@ import {
 import {
   claimCheckFinding,
   claimChecksInText,
+  normalizeAnchorText,
   renderClaimCheckBlock,
   summarizeClaimChecksForGate,
   type ClaimCheckLedger,
@@ -1471,7 +1472,8 @@ function reviewRunStageInner(
        */
       if (claimCheckLedger !== null) {
         for (const result of claimCheckLedger.results.filter((entry) => entry.verdict === "CONTRADICTED")) {
-          const unit = unitLocator.find((entry) => claimChecksInText([result], entry.text).length > 0);
+          // 主位置（claim.quote 所在单元）；alsoAt 复述处只附复算块，不重复落 finding
+          const unit = unitLocator.find((entry) => normalizeAnchorText(entry.text).includes(normalizeAnchorText(result.claimAnchor.quote)));
           const finding = claimCheckFinding(result, unit?.heading ?? result.claimAnchor.file ?? "main.tex", claimCheckLedger.ledgerHash);
           summary.issues.push({ ...finding, ...(unit !== undefined ? { file: unit.file, logicalSection: unit.spanId } : result.claimAnchor.file !== null ? { file: result.claimAnchor.file } : {}) });
           if (finding.severity === "major") { summary.counts.major += 1; summary.openMajor += 1; } else { summary.counts.minor += 1; }

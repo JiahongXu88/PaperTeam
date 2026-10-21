@@ -18,6 +18,12 @@
 > 2026-10-07 M12 Batch 2：Target Publication（§1.2m target 十端点）与 Visual Review
 > （§1.2m visual-reviews + 图资产）正式消费（TargetPanel / ReviewPanel）；错误码新增
 > TARGET_PROFILE_CORRUPTED / TARGET_READINESS_CORRUPTED。
+> 2026-10-21 M14.9.5.4：Quality Gate 规则执行状态与入口一致性（§1.2d 增补：`QualityGateRuleView.status`
+> `PASS / FAIL / NOT_EVALUATED / NOT_APPLICABLE / INFO` + `required`；`QualityGateResultView.verification`
+> 核验完整性摘要与 `evaluation` 评估入口 / 输入指纹；必需核验 NOT_EVALUATED → `passed=false`，旧产物无这些字段时
+> 前端按 `passed` 渲染）；新增 `GET / PUT /api/projects/:id/claim-checks`（预先登记的实验论断复算计划与对当前稿件的
+> 确定性复算账本）与 Gate 规则 `experiment_claims_recomputed`；`POST /quality-gate` 与 workflow `quality.gate` stage
+> 共用同一评估器（规则集合 / 状态 / 判定 / 输入指纹一致，取不到的上下文写进 `evaluation.contextGaps`）。
 > 2026-09-18 M7.0：产品化收口——§1.2 文献库（sources CRUD + import/*）
 > 与 `POST …/sources` 前端正式消费（SourcesPanel「文献库」标签页：五种入库
 > 方式、幂等与 resolver 结论如实展示；DTO 见 §2 sources 块）；无后端变更。
@@ -210,7 +216,9 @@
 | 端点 | 说明 | 前端消费方 |
 |---|---|---|
 | `GET /api/projects/:id/quality-gate` | gate 轮次读取（**只读**，不触发评估）。响应 `{rounds: [{round, passed, checkedAt, blockerCount}]（降序）, round: number\|null, gate: QualityGateResultView\|null, reviewSummary: ReviewSummaryView\|null, latestReviewRound: number\|null, stale: boolean}`。无产物 → rounds=[] / round=null / stale=false（如实空态，不虚构 0/0）。`?round=N` 读历史轮（round 隔离：gate 与其评估时的**同轮** reviewSummary 成对返回，产物结构保证）；非正整数 → 400，未知轮 → 404 | QualityGatePanel（结论 / 阻止项 / 规则 / 轮次切换）/ Overview 质量状态卡 |
-| `POST /api/projects/:id/quality-gate` | 确定性评估（既有端点；M4.6 起响应含 `round`）。前端仅在 `stale=true`（gate 轮次落后于最新 review 轮次）时提供「按最新审稿重新评估」 | QualityGatePanel（stale 重评） |
+| `POST /api/projects/:id/quality-gate` | 确定性评估（既有端点；M4.6 起响应含 `round`）。前端仅在 `stale=true`（gate 轮次落后于最新 review 轮次）时提供「按最新审稿重新评估」。**M14.9.5.4**：与 workflow `quality.gate` stage 共用 `evaluateProjectQualityGate`——工作流类型 / 审稿目的 / build 结果取项目最近一次 run（无 run 记录时如实写进 `evaluation.contextGaps`），existing-paper 项目同样给出 `revisionTask` / `publicationReadiness`；手动入口不回写 patch-validation 级联产物 | QualityGatePanel（stale 重评） |
+| `GET /api/projects/:id/claim-checks` | M14.9.5.4：`{plan: ClaimCheckPlan\|null, planError?, ledger: ClaimCheckLedger, experimentPackages}`——对**工作区当前稿件**做确定性复算（`ledger.manuscriptRevision=null`）；审稿轮次的账本见 `reviews/claim-checks-r{n}.json` | （后端 / 脚本；前端未消费） |
+| `PUT /api/projects/:id/claim-checks` | M14.9.5.4：登记 / 替换复算计划（body = `paperteam.claim-checks/v1`；不合法 → 400 INVALID_REQUEST 并列出问题）。响应同 GET。登记 ≠ 核验：只有前提全部成立（授权、文件哈希、协议声明、列、稿件锚点）才给 CONSISTENT / CONTRADICTED，否则 NOT_EVALUATED | （后端 / 脚本） |
 | `GET /api/projects/:id/evidence` | Evidence 列表（一次返回全部字段，前端本地筛选 / 搜索 / 截断，无 N+1） | EvidencePanel |
 | `GET /api/projects/:id/evidence/:eid` | 单条详情（provenance 全字段） | EvidencePanel 行内展开 |
 | `POST /api/projects/:id/evidence/:eid/verify` | 更新核验状态（既有端点；工作台「确认已核验」= `{verificationStatus:"verified", verificationLevel:"user_confirmed", verificationMethod:"user_confirmed"}`） | EvidencePanel |

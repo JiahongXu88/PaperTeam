@@ -163,6 +163,11 @@ describe("实验论断复算：已知真矛盾与正确对照可区分", () => {
     expect(block).toContain("与稿件一致（CONSISTENT）");
     expect(block).not.toContain("TAKEOVER,True"); // 不塞原始数据行
     expect(claimChecksInText(ledger.results, "无关的单元文本")).toEqual([]);
+    // alsoAt：同一论断在别处的逐字复述（摘要 / 讨论）所在单元同样附上复算结果
+    const withEcho = await evaluateClaimCheckPlan(plan({ ...MOTION_DECIDED, claim: { ...MOTION_DECIDED.claim, alsoAt: ["摘要：3 起由运动项决定。"] } }), environment({ manuscript: `${MANUSCRIPT}
+摘要：3 起由运动项决定。` }));
+    expect(withEcho.results[0]!.claimAnchor.alsoAt).toEqual([{ quote: "摘要：3 起由运动项决定。", found: true }]);
+    expect(claimChecksInText(withEcho.results, "摘要：3 起由运动项决定。")).toHaveLength(1);
     expect(renderClaimCheckBlock([])).toEqual([]);
     const finding = claimCheckFinding(ledger.results.find((result) => result.id === "MOT")!, "诊断", ledger.ledgerHash);
     expect(finding).toMatchObject({ category: "fact", severity: "major", rootCauseKey: "claim-check:MOT", blocking: false });

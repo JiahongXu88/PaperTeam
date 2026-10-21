@@ -46,7 +46,29 @@ Search Result（检索命中，默认零持久化）
   可选 dense + RRF 混合 + Context Budget Packing；**零 Vector DB**，索引是
   Derived State（可删可重建）。
 
-## 5. 可靠性证据
+## 5. 作者实验数据：预先登记的论断复算（M14.9.5.4）
+
+导入实验包只证明「这些文件由作者提供、按哈希绑定、作者确认可用于工作流」，**不等于**论文里的数值已被核验。
+要让实验数据真正参与核验，需要登记复算计划（`experiments/claim-checks.json`，`PUT /api/projects/:id/claim-checks`）：
+
+```text
+论文语句（逐字 quote + 稿件值）
+   → 实验包文件（包内相对路径 + sha256；参数取 JSON/YAML 字段，可多来源互证）
+   → 协议核对（来源清单记录的哈希 / 协议字段 / 取值范围）
+   → 过滤 + 白名单表达式计算（count / sum / mean / min / max / scalar；不执行任何代码）
+   → 复算值 vs 稿件值 → CONSISTENT / CONTRADICTED / NOT_EVALUATED
+```
+
+- 三个维度分开记录：授权（作者确认 + 授权进入工作流）、来源真实性（`AUTHOR_SUPPLIED_UNVERIFIED`，哈希绑定）、
+  推导正确性（`RECOMPUTED_BY_PAPERTEAM`）。证据等级最高只到 `RECOMPUTED_FROM_AUTHOR_DATA`，**永远不是 verified**。
+- 缺列、错协议、文件哈希不符（过期修订）、冲突版本、越界数据、未授权输入、包外路径、稿件锚点失效一律
+  `NOT_EVALUATED`，不猜测数值、不换相似实验，也不沿用旧修订的结论。
+- review.run 只把**论断原文所在单元**的复算结果写进该单元 prompt（无登记 / 无相关结果时 prompt 逐字节不变），
+  CONTRADICTED 另落成确定性 fact finding（`rootCauseKey=claim-check:<id>`）；Quality Gate 规则
+  `experiment_claims_recomputed`：矛盾 FAIL、登记却无法复算 NOT_EVALUATED（必需）、未登记但有实验包 NOT_EVALUATED（不阻断）、
+  第三方已发表论文只读评估 NOT_APPLICABLE。
+
+## 6. 可靠性证据
 
 - M6.8/M6.9 评估：Plain LLM 25/25 提案捏造引用（五模型族全部 100%）；
   PaperTeam 管线在评估场景内零捏造证据泄漏 + metadata 陷阱拦截。
