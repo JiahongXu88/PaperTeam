@@ -43,7 +43,7 @@ import { buildFeasibilityPrompt } from "../../src/agents/FeasibilityService.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import type { ReviewIssue } from "../../src/agents/ReviewerService.js";
 import type { EvidenceRecord } from "../../src/evidence/EvidenceStore.js";
-import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
+import { EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 const roots: string[] = [];
 afterEach(async () => {

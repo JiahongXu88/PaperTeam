@@ -64,6 +64,7 @@ import type { SourceStore } from "../sources/SourceStore.js";
 import type { ExperimentPackageService } from "../experiments/ExperimentPackageService.js";
 import { renderExperimentPolicyLines } from "../experiments/experimentPolicy.js";
 import { buildPublishedAssessmentView, readReviewPurpose, renderPublishedAssessmentPolicyLines } from "../review/reviewPurpose.js";
+import { indexImplicitContext } from "../review/implicitContext.js";
 import { checkInputQaAttestation, type AttestationCheck } from "../review/inputFidelityAttestation.js";
 import { INPUT_FIDELITY_REPORT_SCHEMA, type InputFidelityReport } from "../review/inputFidelityTypes.js";
 import type { CandidateStore, CandidateSource } from "../sources/CandidateStore.js";
@@ -788,6 +789,10 @@ function reviewRunStageInner(
           : publishedAssessment
             ? publishedSourceVerification(await loadPublishedInputFidelity(services, ctx.projectId))
             : "AUTHOR_SOURCE";
+        // M14.9.5.4：isolated_snapshot 另附受控的隐式依赖（共有实体 / 反向引用的最小片段；索引只由冻结稿件决定）
+        const implicitIndex = contextPolicy === "isolated_snapshot"
+          ? indexImplicitContext(coveragePlan.units.map((unit) => ({ unitId: unit.unitId, file: unit.file, heading: unit.heading, text: spanByUnitId.get(unit.unitId)?.content ?? "" })))
+          : null;
         const dependencyIndex = isolatedContext
           ? indexDependencyTargets(
               coveragePlan.units.map((unit) => ({ unitId: unit.unitId, file: unit.file, heading: unit.heading, text: spanByUnitId.get(unit.unitId)?.content ?? "" })),
@@ -859,6 +864,7 @@ function reviewRunStageInner(
               const resolution = resolveUnitDependencies({
                 unitId: unit.unitId, text: unitSpan.content, index: dependencyIndex, budgetChars: dependencyBudget,
                 attach: contextPolicy === "isolated_snapshot",
+                ...(implicitIndex !== null ? { implicit: { index: implicitIndex } } : {}),
                 ...(rubricAnchor !== undefined ? { rubricAnchor } : {}),
               });
               contextSnapshot = buildContextSnapshotRecord({
@@ -1148,6 +1154,7 @@ function reviewRunStageInner(
             dependencyBudgetChars: dependencyBudget,
             unitsWithDependencies: completedSnapshots.filter((snapshot) => snapshot.dependencies.length > 0).length,
             attachedDependencies: completedSnapshots.reduce((sum, snapshot) => sum + snapshot.dependencies.length, 0),
+            implicitDependencies: completedSnapshots.reduce((sum, snapshot) => sum + snapshot.dependencies.filter((dep) => dep.kind === "context").length, 0),
             dependencyChars: completedSnapshots.reduce((sum, snapshot) => sum + snapshot.dependencyChars, 0),
             contextIncompleteUnits: [...contextSnapshots.values()].filter((snapshot) => !snapshot.contextComplete).map((snapshot) => ({
               unitId: snapshot.unitId,

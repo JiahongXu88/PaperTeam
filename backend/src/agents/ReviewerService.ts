@@ -1105,7 +1105,9 @@ function buildUnitReviewPrompt(params: {
   // M14.9.5.1：隔离策略下的上下文纪律条款（共享会话缺省不出现，prompt 逐字节不变）
   const hasAnchor = dependencyBlock.length > 0 && (params.unitContext?.dependencies ?? []).some((dep) => dep.kind === "abstract");
   const hasRefBlock = dependencyBlock.some((line) => line.startsWith("===== 跨单元依赖"));
-  const readOnlyRefs = [...(hasAnchor ? ["「论文摘要」"] : []), ...(hasRefBlock ? ["「跨单元依赖」"] : [])];
+  // M14.9.5.4：隐式依赖（其他章节已给出定义 / 口径 / 解读的最小片段）
+  const hasContextBlock = dependencyBlock.some((line) => line.startsWith("===== 相关上下文"));
+  const readOnlyRefs = [...(hasAnchor ? ["「论文摘要」"] : []), ...(hasRefBlock ? ["「跨单元依赖」"] : []), ...(hasContextBlock ? ["「相关上下文」"] : [])];
   let clause = params.neutralityPolicy === true ? 6 : 5;
   const contextClauses = params.unitContext === undefined
     ? []
@@ -1117,6 +1119,11 @@ function buildUnitReviewPrompt(params: {
         ...(hasAnchor
           ? [`${clause++}. 「论文摘要」只用于判断本单元的问题是否使摘要所述的某个核心结论不可依赖（blocking 口径）；摘要本身由其所在单元审查，不要单独报告摘要的问题。`]
           : []),
+        ...(hasContextBlock
+          ? [`${clause++}. 「相关上下文」是按共有数值 / 标识符或反向引用确定性选出的其他章节原文片段，只用于判断本单元的说法是否已在别处定义、解释或给出数据；问题仍须在本单元原文中定位，不要报告片段自身的问题。`]
+          : []),
+        // M14.9.5.4：局部「找不到出处」≠ 全局「论文没有出处」
+        `${clause++}. 若某个问题的判断需要本消息之外的章节内容（定义、口径、数据来源、表格），而上述材料没有给出：不要断言「论文没有说明 / 没有出处 / 前后矛盾」；在 description 开头写「【需结合其他章节核对】」并说明需要核对哪类信息，severity 只按本单元已能确认的部分判断。`,
       ];
   return [
     "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",

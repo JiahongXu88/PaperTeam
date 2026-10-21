@@ -32,7 +32,7 @@ import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import type { AgentRuntime } from "../../src/runtime/types.js";
 import { createExistingPaperReviewDefinition } from "../../src/workflow/definitions.js";
 import type { WorkflowServices } from "../../src/workflow/definitions.js";
-import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
+import { cleanCitationReport } from "../helpers/gateFixtures.js";
 
 const tempRoots: string[] = [];
 afterAll(async () => {

@@ -19,20 +19,23 @@
  */
 import { createHash } from "node:crypto";
 
+import { resolveImplicitContext, type ImplicitContextIndex, type ImplicitContextOptions } from "./implicitContext.js";
+
 export type ReviewUnitContextPolicy = "shared_session" | "isolated_no_dependencies" | "isolated_snapshot";
 export const REVIEW_UNIT_CONTEXT_POLICIES: readonly ReviewUnitContextPolicy[] = ["shared_session", "isolated_no_dependencies", "isolated_snapshot"];
-export const REVIEW_CONTEXT_SNAPSHOT_SCHEMA = "paperteam.review-context-snapshot/v2";
+/** v3（M14.9.5.4）：isolated_snapshot 另附受控的隐式依赖（共有实体 / 反向引用的最小片段）；v2 记录与之不可互为缓存 */
+export const REVIEW_CONTEXT_SNAPSHOT_SCHEMA = "paperteam.review-context-snapshot/v3";
 export const DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS = 12_000;
 
 export type DependencyKind = "table" | "figure" | "equation";
-/** 附上的依赖类型：浮动体 / 公式，或审稿政策本身引用的「论文摘要」锚点 */
-export type AttachedKind = DependencyKind | "abstract";
+/** 附上的依赖类型：浮动体 / 公式，审稿政策本身引用的「论文摘要」锚点，或 M14.9.5.4 的隐式上下文片段 */
+export type AttachedKind = DependencyKind | "abstract" | "context";
 /**
  * 依赖原文的来源核验等级（文档级）：作者 LaTeX 源稿 / 有哈希绑定人工 QA 的转写投影 / 有保真报告但未经人工 QA 的
  * 转写投影 / 第三方输入且没有保真报告（M14.9.5.2：来源未记录，不断言是 PDF 转写投影）
  */
 export type SourceVerification = "AUTHOR_SOURCE" | "SOURCE_ATTESTED" | "SOURCE_UNVERIFIED" | "SOURCE_UNKNOWN";
-export type DependencyResolution = "label" | "caption_number" | "latex_counter" | "tag" | "rubric_anchor";
+export type DependencyResolution = "label" | "caption_number" | "latex_counter" | "tag" | "rubric_anchor" | "entity_cooccurrence" | "reverse_reference" | "protocol_convention";
 export type DependencyGapStatus = "DEPENDENCY_UNRESOLVED" | "DEPENDENCY_AMBIGUOUS" | "CONTEXT_OVERFLOW" | "NOT_ATTACHED_BY_POLICY";
 
 export interface DependencyTarget {
@@ -484,6 +487,8 @@ export function resolveUnitDependencies(input: {
   attach: boolean;
   /** 审稿政策引用的摘要锚点（只读口径的 blocking 定义需要；不占表格依赖预算，有独立上限） */
   rubricAnchor?: RubricAnchorResult;
+  /** M14.9.5.4：受控的隐式依赖（共有实体 / 反向引用的最小片段；独立预算）。缺省 = 不附 */
+  implicit?: { index: ImplicitContextIndex; options?: ImplicitContextOptions };
 }): UnitDependencyResolution {
   const { index, unitId } = input;
   const ownTargets = index.targets.filter((target) => target.unitId === unitId);
@@ -617,7 +622,27 @@ export function resolveUnitDependencies(input: {
       ...(group !== null ? { parts: outside.map((part) => part.targetId) } : {}),
     });
   }
-  return { attached: [...attachedById.values()], gaps, inUnit, navigational, dependencyChars: used + anchorChars };
+  // M14.9.5.4：隐式依赖在显式依赖之后解析（显式依赖原文参与实体抽取，同一段落不重复附上）；只有附依赖的策略才附
+  let implicitChars = 0;
+  if (input.implicit !== undefined && input.attach) {
+    const resolved = resolveImplicitContext({
+      unitId,
+      text: input.text,
+      attachedTexts: [...attachedById.values()].map((dep) => dep.text),
+      index: input.implicit.index,
+      ...(input.implicit.options !== undefined ? { options: input.implicit.options } : {}),
+    });
+    resolved.snippets.forEach((snippet, position) => {
+      implicitChars += snippet.text.length;
+      const targetId = `context:${snippet.sourceUnitId}#${snippet.sha256.slice(0, 12)}`;
+      attachedById.set(targetId, {
+        refId: `C${position + 1}`, kind: "context", targetId, sourceUnitId: snippet.sourceUnitId, sourceFile: snippet.sourceFile,
+        sourceHeading: snippet.sourceHeading, via: snippet.via, mentions: [...snippet.anchors], numbers: [], labels: [],
+        sha256: snippet.sha256, chars: snippet.text.length, text: snippet.text,
+      });
+    });
+  }
+  return { attached: [...attachedById.values()], gaps, inUnit, navigational, dependencyChars: used + anchorChars + implicitChars };
 }
 
 export function dependencyFingerprint(resolution: Pick<UnitDependencyResolution, "attached" | "gaps">): string {
@@ -666,6 +691,9 @@ const VIA_TEXT: Record<DependencyResolution, string> = {
   latex_counter: "LaTeX 计数器顺序（全文无显式编号）",
   tag: "公式 \\tag 编号",
   rubric_anchor: "审稿口径锚点（摘要段）",
+  entity_cooccurrence: "共有区分性实体（数值 / 标识符）",
+  reverse_reference: "其他章节引用本单元的标签",
+  protocol_convention: "口径单元（记号 / 定义 / 统计方法 / 评测协议，文档顺序在前）",
 };
 
 /**
@@ -680,7 +708,8 @@ export function renderDependencyBlock(input: {
   const gaps = input.gaps.filter((gap) => gap.status !== "NOT_ATTACHED_BY_POLICY");
   if (input.attached.length === 0 && gaps.length === 0) return [];
   const anchors = input.attached.filter((dep) => dep.kind === "abstract");
-  const refs = input.attached.filter((dep) => dep.kind !== "abstract");
+  const refs = input.attached.filter((dep) => dep.kind !== "abstract" && dep.kind !== "context");
+  const contexts = input.attached.filter((dep) => dep.kind === "context");
   return [
     ...anchors.flatMap((dep) => [
       `===== 论文摘要（只读参考：判断 blocking 时「摘要所述核心结论」以此为准；不在本单元审查范围内，不要报告摘要自身的问题）· 来源单元「${dep.sourceHeading}」（${dep.sourceFile}）· 来源核验：${VERIFICATION_TEXT[input.sourceVerification]} · sha256:${dep.sha256.slice(0, 12)} =====`,
@@ -701,6 +730,15 @@ export function renderDependencyBlock(input: {
         ]
       : []),
     ...(refs.length > 0 || gaps.length > 0 ? [""] : []),
+    // M14.9.5.4：隐式依赖（其他章节已给出的定义 / 口径 / 解读的最小片段）
+    ...(contexts.length > 0
+      ? ["===== 相关上下文（隐式依赖：按共有实体或反向引用确定性选出的其他章节最小片段；只读参考，不在本单元审查范围内）====="]
+      : []),
+    ...contexts.flatMap((dep) => [
+      `--- [${dep.refId}] 来源单元「${dep.sourceHeading}」（${dep.sourceFile}）· 定位：${VIA_TEXT[dep.via]}（${dep.mentions.slice(0, 6).join("、")}）· 来源核验：${VERIFICATION_TEXT[input.sourceVerification]} · sha256:${dep.sha256.slice(0, 12)} ---`,
+      dep.text,
+    ]),
+    ...(contexts.length > 0 ? [""] : []),
   ];
 }
 

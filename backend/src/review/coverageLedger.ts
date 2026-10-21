@@ -110,6 +110,8 @@ export interface ReviewContextCoverage {
   dependencyBudgetChars: number;
   unitsWithDependencies: number;
   attachedDependencies: number;
+  /** M14.9.5.4：其中隐式依赖（共有实体 / 反向引用的最小片段）的数量；旧产物无此字段 */
+  implicitDependencies?: number;
   dependencyChars: number;
   /** 有依赖缺口（未解析 / 歧义 / 超预算 / 策略不附）的单元：相关跨单元核对 NOT_EVALUATED */
   contextIncompleteUnits: Array<{ unitId: string; gaps: Array<{ mention: string; status: string; reason: string }> }>;

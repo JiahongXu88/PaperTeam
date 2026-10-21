@@ -277,7 +277,8 @@ describe("M14.9.5.1 isolated_snapshot：显式、冻结、可复现的单元输�
     const context = a.coverage!.context!;
     expect(context.policy).toBe("isolated_snapshot");
     expect(context.sourceVerification).toBe("AUTHOR_SOURCE");
-    expect(context.attachedDependencies).toBe(1);
+    // M14.9.5.4：显式依赖 1 项（表 2）；其余为受控的隐式依赖（kind=context），同样不计覆盖率
+    expect(context.attachedDependencies - (context.implicitDependencies ?? 0)).toBe(1);
     expect(context.contextIncompleteUnits).toHaveLength(1);
     expect(context.contextIncompleteUnits[0]!.gaps).toMatchObject([{ mention: "表 9", status: "DEPENDENCY_UNRESOLVED" }]);
     expect(a.academicScoreBasis?.contextIncompleteUnitIds).toEqual([context.contextIncompleteUnits[0]!.unitId]);
@@ -298,8 +299,9 @@ describe("M14.9.5.1 isolated_snapshot：显式、冻结、可复现的单元输�
     const pc = promptsByUnit(c.calls);
     const pb = promptsByUnit(b.calls);
     expect(Object.keys(pb).sort()).toEqual(Object.keys(pc).sort());
-    const withDeps = c.unitCalls().filter((call) => call.task.includes("===== 跨单元依赖")).map((call) => /章节：「.+?」（文件 .+?；第 \d+\/\d+ 单元）/.exec(call.task)![0]);
-    expect(withDeps).toHaveLength(1);
+    // M14.9.5.4：isolated_snapshot 另附隐式依赖（「相关上下文」块）；两种块都没有的单元 prompt 与 isolated_no_dependencies 逐字节相同
+    const withDeps = c.unitCalls().filter((call) => call.task.includes("===== 跨单元依赖") || call.task.includes("===== 相关上下文")).map((call) => /章节：「.+?」（文件 .+?；第 \d+\/\d+ 单元）/.exec(call.task)![0]);
+    expect(c.unitCalls().filter((call) => call.task.includes("===== 跨单元依赖"))).toHaveLength(1);
     for (const key of Object.keys(pc)) {
       if (withDeps.includes(key)) expect(pb[key]).not.toBe(pc[key]);
       else expect(pb[key]).toBe(pc[key]);

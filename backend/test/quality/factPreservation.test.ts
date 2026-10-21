@@ -21,7 +21,7 @@ import {
 import { DEFAULT_QUALITY_THRESHOLDS, evaluateQualityGate } from "../../src/quality/gates.js";
 import type { RevisionPlan, RevisionPlanItem } from "../../src/review/revisionPlan.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
-import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
+import { cleanCitationReport } from "../helpers/gateFixtures.js";
 
 // ---- 工厂 ----
 
