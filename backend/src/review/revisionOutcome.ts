@@ -116,11 +116,14 @@ export function classifyTerminalStatus(input: TerminalStatusInput): TerminalStat
       message: "事实 / 引用守卫未满足（冻结产物不安全）——系统级失败，需要排查修订链。",
     };
   }
+  // M14.9.5.4：必需核验未执行（NOT_EVALUATED）不是论文缺陷，也不是已通过——终态文案如实区分
+  const notEvaluated = input.gateReasons.filter((reason) => /^[a-z_]+: NOT_EVALUATED/.test(reason)).length;
+  const notEvaluatedNote = notEvaluated > 0 ? `其中 ${notEvaluated} 项必需核验尚未执行（不是论文缺陷，也不能视为已通过）。` : "";
   if (input.revisionTaskSuccess === true) {
     return {
       status: "REVISION_TASK_COMPLETE",
       message:
-        "返修任务完成：外审意见全部闭环、修订引入违规为零；论文整体投稿就绪性未达标（剩余为全稿质量 / 基线继承风险，见 publication readiness 报告），修订稿以 Draft 形式提供。",
+        "返修任务完成：外审意见全部闭环、修订引入违规为零；论文整体投稿就绪性未达标（剩余为全稿质量 / 基线继承风险，见 publication readiness 报告），修订稿以 Draft 形式提供。" + notEvaluatedNote,
     };
   }
   if (input.convergence === "STALLED") {
@@ -137,7 +140,7 @@ export function classifyTerminalStatus(input: TerminalStatusInput): TerminalStat
   }
   return {
     status: "QUALITY_NOT_REACHED",
-    message: "论文已生成，但自动质量验收未达到目标；Draft 可用，剩余问题见质量报告。",
+    message: "论文已生成，但自动质量验收未达到目标；Draft 可用，剩余问题见质量报告。" + notEvaluatedNote,
   };
 }
 

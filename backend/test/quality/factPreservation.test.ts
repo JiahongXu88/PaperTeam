@@ -21,6 +21,7 @@ import {
 import { DEFAULT_QUALITY_THRESHOLDS, evaluateQualityGate } from "../../src/quality/gates.js";
 import type { RevisionPlan, RevisionPlanItem } from "../../src/review/revisionPlan.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
+import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 // ---- 工厂 ----
 
@@ -593,7 +594,8 @@ describe("Fact Preservation：合法修订不误伤", () => {
 describe("Fact Preservation：Quality Gate 集成", () => {
   const gateInput = {
     review: emptySummary,
-    citation: null,
+    // M14.9.5.4：通过路径需要已执行的引用核验
+    citation: cleanCitationReport(),
     evidence: { contradictory: 0 } as never,
     feasibility: null,
   };

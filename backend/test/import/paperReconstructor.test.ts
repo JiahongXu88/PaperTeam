@@ -164,7 +164,14 @@ describe("PDF 导入 → improvement 全链路（scripted Runtime + fake 编译�
     const finished = await pollRun(stack, runId, ["completed", "failed", "awaiting_input"]);
 
     expect(finished.status).toBe("completed");
-    expect(finished.completion?.label).toBe("final");
+    // M14.9.5.4：重建的真实论文走长文档单元审稿，单元模式不产出 claim 级核验 → unsupported_critical_claims_zero 为
+    // NOT_EVALUATED（必需）：返修任务层照常 PASS，但投稿就绪 NOT_READY，产物是 Draft 而不是 Final（不再把「没核验」当通过）
+    expect(finished.completion?.label).toBe("draft");
+    const gateResult = (finished as unknown as { stageResults: Record<string, Record<string, unknown>> }).stageResults["quality.gate"]!;
+    expect(gateResult["revisionTaskVerdict"]).toBe("PASS");
+    expect(gateResult["publicationReadiness"]).toBe("NOT_READY");
+    expect((gateResult["reasons"] as string[]).every((reason) => reason.startsWith("unsupported_critical_claims_zero: NOT_EVALUATED"))).toBe(true);
+    expect(String(gateResult["terminalMessage"])).toContain("必需核验尚未执行");
     expect(finished.completedStages).toEqual(
       expect.arrayContaining([
         "import.parse",
@@ -177,23 +184,21 @@ describe("PDF 导入 → improvement 全链路（scripted Runtime + fake 编译�
         "hitl.plan_confirm",
         "revision.apply",
         "build.draft",
-        "build.final",
       ]),
     );
+    expect(finished.completedStages).not.toContain("build.final");
     // 重建发生在 import.parse：阶段结果携带重建事实
     const parseRecord = finished.stageHistory.find(
       (record) => record.stageId === "import.parse" && record.status === "completed",
     );
     expect(parseRecord?.summary?.["reconstructedFromPdf"]).toBe(true);
 
-    // 修订链与版本事实：重建基线 → apply 修订 → Final 产物对齐
+    // 修订链与版本事实：重建基线 → apply 修订 → Draft 产物对齐（必需核验未执行 → 不冻结 Final）
     const versions = await stack.request("GET", `/api/projects/${projectId}/versions`);
     const body = versions.body as { current: number; versions: { revision: number; source: string; isFinal: boolean }[] };
     expect(body.current).toBeGreaterThanOrEqual(2);
-    expect(body.versions[0]).toMatchObject({ isCurrent: true, isFinal: true });
+    expect(body.versions[0]).toMatchObject({ isCurrent: true, isFinal: false });
     const artifacts = await stack.request("GET", `/api/projects/${projectId}/artifacts`);
-    expect(((artifacts.body as { latestFinal: { revision: number } | null }).latestFinal)?.revision).toBe(
-      body.current,
-    );
+    expect((artifacts.body as { latestFinal: unknown }).latestFinal).toBeNull();
   });
 });

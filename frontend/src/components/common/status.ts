@@ -223,6 +223,15 @@ export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
     description: "首轮 / 无前序修订 / 用户恢复历史修订时无法比较引用变化，本规则不参与判定（不是通过）。",
     target: { tab: "citations" },
   },
+  // M14.9.5.4：作者实验数据对论文论断的确定性复算（预先登记的协议 / 过滤 / 计算）
+  experiment_claims_recomputed: {
+    label: "实验论断复算",
+    description: "预先登记的论文数值论断按作者实验数据（哈希绑定）确定性复算；矛盾阻止 Final，无法复算记为未评估（不是已核验）。",
+  },
+  patch_validation_publishable: {
+    label: "修订补丁可发布",
+    description: "本轮修订补丁全部通过范围 / 事实 / 引用核验，且无未归因违规。",
+  },
   // M14.9.5.2：长文档单元审稿的跨单元 / 跨章核对执行情况（informational，恒不参与判定）
   review_unit_context_reported: {
     label: "跨单元核对执行情况",
@@ -247,6 +256,19 @@ export const GATE_RULES_NEUTRAL: ReadonlySet<string> = new Set([
   "review_unit_context_reported",
   "review_cross_chapter_reported",
 ]);
+
+/**
+ * M14.9.5.4：规则执行状态的展示（后端给出 status 时优先使用；NOT_EVALUATED 永远不是绿色「通过」）。
+ * required 的 NOT_EVALUATED 会阻止 Final（passed=false），展示为警示而不是红色「违规」。
+ */
+export const GATE_RULE_STATUS_STYLES: Record<string, StatusStyle> = {
+  PASS: { label: "通过", tone: "ok" },
+  FAIL: { label: "未通过", tone: "danger" },
+  NOT_EVALUATED: { label: "未评估", tone: "warn" },
+  NOT_EVALUATED_REQUIRED: { label: "未评估（必需）", tone: "warn" },
+  NOT_APPLICABLE: { label: "不适用", tone: "neutral" },
+  INFO: { label: "仅呈现", tone: "neutral" },
+};
 
 /** gate 整体结论（PASS 只表示允许进入 Final，不是「论文完美」） */
 export const GATE_OUTCOME_STYLES: Record<string, StatusStyle> = {

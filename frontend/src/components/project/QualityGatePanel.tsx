@@ -5,6 +5,7 @@ import { Icon } from "../common/Icon.js";
 import {
   GATE_OUTCOME_STYLES,
   GATE_RULES_NEUTRAL,
+  GATE_RULE_STATUS_STYLES,
   GATE_RULE_STYLES,
   statusStyleOf,
   type GateRuleStyle,
@@ -12,7 +13,25 @@ import {
 import { useQualityGate, useReevaluateQualityGate } from "../../hooks/queries.js";
 import { formatApiError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
-import type { QualityGateResponseView, QualityGateResultView, ReviewSummaryView, WorkflowKind } from "../../types/api.js";
+import type { QualityGateResponseView, QualityGateResultView, QualityGateRuleView, ReviewSummaryView, WorkflowKind } from "../../types/api.js";
+
+/**
+ * M14.9.5.4：规则的展示状态。后端给出 status 时以它为准——NOT_EVALUATED（含「0 条违规」但前提不成立）永远不渲染为
+ * 绿色「通过」；旧产物没有 status 时沿用 passed + 中性规则表（不臆测）。
+ */
+export function gateRuleView(rule: QualityGateRuleView): { key: string; label: string; tone: string } {
+  if (rule.status !== undefined) {
+    const key = rule.status === "NOT_EVALUATED" && rule.required === true ? "NOT_EVALUATED_REQUIRED" : rule.status;
+    const style = statusStyleOf(GATE_RULE_STATUS_STYLES, key);
+    return { key, label: style.label, tone: style.tone };
+  }
+  const neutral = rule.passed && GATE_RULES_NEUTRAL.has(rule.rule);
+  return !rule.passed
+    ? { key: "FAIL", label: "未通过", tone: "danger" }
+    : neutral
+      ? { key: "NEUTRAL", label: "不参与判定", tone: "neutral" }
+      : { key: "PASS", label: "通过", tone: "ok" };
+}
 
 /**
  * 质量门禁面板：回答「当前论文是否允许标记为 Final」。
@@ -174,6 +193,9 @@ function GateSummary({
         <div className="gate-blockers" data-testid="gate-blockers">
           <h3>
             {blockers.length} 项阻止论文进入 Final
+            {blockers.some((rule) => rule.status === "NOT_EVALUATED")
+              ? `（其中 ${blockers.filter((rule) => rule.status === "NOT_EVALUATED").length} 项是必需核验未执行）`
+              : ""}
           </h3>
           <ol className="gate-blocker-list">
             {blockers.map((rule) => {
@@ -183,7 +205,9 @@ function GateSummary({
                   <div className="gate-blocker-main">
                     <strong>{style?.label ?? rule.rule}</strong>
                     <span className="gate-blocker-detail">{rule.detail}</span>
-                    <span className="gate-blocker-action faint">{blockerAdvice(style)}</span>
+                    <span className="gate-blocker-action faint">
+                      {rule.status === "NOT_EVALUATED" ? "必需核验尚未执行：补齐前提（报告 / 数据 / claim 核验）后重新评估——这不是违规，也不是已通过" : blockerAdvice(style)}
+                    </span>
                   </div>
                   {style?.target !== undefined ? (
                     <button
@@ -213,6 +237,9 @@ function GateSummary({
           <span>
             <span className="note-mark">✓</span> 当前质量门禁已通过：论文在构建成功后可标记为 Final。
             {summary !== null && summary.scores.academicScore !== null ? `（学术评分 ${summary.scores.academicScore}）` : ""}
+            {(gate.verification?.notEvaluated.length ?? 0) > 0
+              ? ` 另有 ${gate.verification!.notEvaluated.length} 项核验未执行（不阻断，但不代表已核验）。`
+              : ""}
           </span>
         </p>
       )}
@@ -310,16 +337,21 @@ function GateRules({ result }: { result: QualityGateResultView }) {
     <div className="gate-rules" data-testid="gate-rules">
       <div className="gate-rules-head">
         <h3>判定规则</h3>
-        <span className="faint">{result.rules.filter((rule) => rule.passed).length} / {result.rules.length} 项通过 · 确定性判定，不使用模型自评</span>
+        <span className="faint">
+          {result.verification !== undefined
+            ? `通过 ${result.verification.counts.PASS} · 未通过 ${result.verification.counts.FAIL} · 未评估 ${result.verification.counts.NOT_EVALUATED} · 不适用 ${result.verification.counts.NOT_APPLICABLE} · 仅呈现 ${result.verification.counts.INFO}`
+            : `${result.rules.filter((rule) => rule.passed).length} / ${result.rules.length} 项通过`}{" "}
+          · 确定性判定，不使用模型自评
+        </span>
       </div>
       <ul className="gate-rule-list">
         {result.rules.map((rule) => {
           const style = GATE_RULE_STYLES[rule.rule];
-          const neutral = rule.passed && GATE_RULES_NEUTRAL.has(rule.rule);
-          const tone = !rule.passed ? "danger" : neutral ? "neutral" : "ok";
-          const label = !rule.passed ? "未通过" : neutral ? "不参与判定" : "通过";
+          const view = gateRuleView(rule);
+          const tone = view.tone;
+          const label = view.label;
           return (
-            <li key={rule.rule} className={`gate-rule${!rule.passed ? " gate-rule-failed" : ""}`} data-testid="gate-rule" data-rule={rule.rule}>
+            <li key={rule.rule} className={`gate-rule${!rule.passed ? " gate-rule-failed" : ""}`} data-testid="gate-rule" data-rule={rule.rule} data-rule-status={view.key}>
               <span className={`status status-tone-${tone} gate-rule-status`} data-status={label}>
                 {label}
               </span>

@@ -14,6 +14,7 @@ import {
   DEFAULT_QUALITY_THRESHOLDS,
   evaluateBuildGate,
   evaluateQualityGate,
+  summarizeGateVerification,
 } from "../../src/quality/gates.js";
 
 afterAll(async () => {});
@@ -331,5 +332,91 @@ describe("Round 2：作者授权实验数据的 claim 披露口径", () => {
     });
     expect(opaque.rules.find((rule) => rule.rule === "unsupported_critical_claims_zero")?.passed).toBe(false);
     expect(opaque.rules.find((rule) => rule.rule === "author_experiment_data_reported")).toBeUndefined();
+  });
+});
+
+describe("M14.9.5.4 规则执行状态：「0 条违规」≠「完成核验」", () => {
+  const base = { review: passingReview, citation: cleanCitation(), evidence: cleanEvidence, feasibility: highFeasibility };
+  const statusOf = (gate: ReturnType<typeof evaluateQualityGate>, rule: string) => gate.rules.find((entry) => entry.rule === rule);
+
+  it("全部前提成立：核心规则 PASS，verification.requiredComplete=true", () => {
+    const gate = evaluateQualityGate(base);
+    expect(gate.passed).toBe(true);
+    for (const rule of ["hallucinated_citations_zero", "citation_structure_valid", "no_contradictory_evidence", "unsupported_critical_claims_zero", "open_critical_major_zero", "target_feasibility"]) {
+      expect(statusOf(gate, rule)?.status).toBe("PASS");
+    }
+    expect(gate.verification).toMatchObject({ requiredComplete: true, notEvaluated: [] });
+  });
+
+  it("证据库为空：no_contradictory_evidence = NOT_EVALUATED（不阻断，不是 PASS）", () => {
+    const gate = evaluateQualityGate({ ...base, evidence: { ...cleanEvidence, total: 0, byStatus: { ...cleanEvidence.byStatus, verified: 0 } } });
+    expect(statusOf(gate, "no_contradictory_evidence")).toMatchObject({ status: "NOT_EVALUATED", required: false, passed: true });
+    expect(gate.passed).toBe(true);
+    expect(gate.verification?.notEvaluated.map((entry) => entry.rule)).toEqual(["no_contradictory_evidence"]);
+    expect(gate.verification?.requiredComplete).toBe(true);
+  });
+
+  it("claim 级核验未执行（factVerdicts=null，如长文档单元模式）或 0 条 claim：NOT_EVALUATED（必需）→ Gate 不得 PASS", () => {
+    const unitMode = evaluateQualityGate({ ...base, review: { ...passingReview, scores: { ...passingReview.scores, factVerdicts: null } } });
+    expect(statusOf(unitMode, "unsupported_critical_claims_zero")).toMatchObject({ status: "NOT_EVALUATED", required: true, passed: false });
+    expect(unitMode.passed).toBe(false);
+    expect(unitMode.reasons).toEqual([expect.stringContaining("unsupported_critical_claims_zero: NOT_EVALUATED")]);
+    expect(unitMode.verification?.requiredComplete).toBe(false);
+    const zero = evaluateQualityGate({ ...base, review: { ...passingReview, scores: { ...passingReview.scores, factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 0, CONTRADICTED: 0 } } } });
+    expect(statusOf(zero, "unsupported_critical_claims_zero")?.status).toBe("NOT_EVALUATED");
+    expect(zero.passed).toBe(false);
+  });
+
+  it("未执行 citation.verify：两条引用规则 NOT_EVALUATED（必需）；稿件无 \cite：虚构引用检查 NOT_APPLICABLE", () => {
+    const none = evaluateQualityGate({ ...base, citation: null });
+    expect(statusOf(none, "hallucinated_citations_zero")).toMatchObject({ status: "NOT_EVALUATED", required: true, passed: false });
+    expect(statusOf(none, "citation_structure_valid")).toMatchObject({ status: "NOT_EVALUATED", required: true, passed: false });
+    expect(none.passed).toBe(false);
+    const noCites = evaluateQualityGate({ ...base, citation: cleanCitation({ citedCount: 0 }) });
+    expect(statusOf(noCites, "hallucinated_citations_zero")).toMatchObject({ status: "NOT_APPLICABLE", passed: true });
+    expect(noCites.passed).toBe(true);
+  });
+
+  it("未评估可行性：NOT_EVALUATED 但不阻断（历史语义不变，只是不再显示为通过）", () => {
+    const gate = evaluateQualityGate({ ...base, feasibility: null });
+    expect(statusOf(gate, "target_feasibility")).toMatchObject({ status: "NOT_EVALUATED", required: false, passed: true });
+    expect(gate.passed).toBe(true);
+  });
+
+  it("80 分阈值与学术分口径提示不变：长文档聚合分、尚未校准、不等同录用概率", () => {
+    expect(DEFAULT_QUALITY_THRESHOLDS.academicPassScore).toBe(80);
+    const gate = evaluateQualityGate({ ...base, review: { ...passingReview, scores: { ...passingReview.scores, academicScore: 79 }, academicScoreBasis: { mode: "units_char_weighted", calibration: "UNVALIDATED" } } });
+    expect(statusOf(gate, "academic_score_threshold")?.detail).toMatch(/^academicScore=79（要求 ≥ 80）；长文档单元聚合分，尚未校准，不等同录用概率/);
+    expect(gate.passed).toBe(false);
+  });
+
+  it("实验论断复算规则：未登记 / 矛盾 / 无法复算 / 一致 / 只读评估", () => {
+    const summary = { registered: 0, consistent: 0, contradicted: [], notEvaluated: [], ledgerHash: "f".repeat(64), experimentPackages: 0 };
+    expect(statusOf(evaluateQualityGate({ ...base, claimChecks: summary }), "experiment_claims_recomputed")?.status).toBe("NOT_APPLICABLE");
+    const unregistered = evaluateQualityGate({ ...base, claimChecks: { ...summary, experimentPackages: 1 } });
+    expect(statusOf(unregistered, "experiment_claims_recomputed")).toMatchObject({ status: "NOT_EVALUATED", required: false, passed: true });
+    expect(statusOf(unregistered, "experiment_claims_recomputed")?.detail).toContain("导入记录不等于 Verified Evidence");
+    const contradicted = evaluateQualityGate({
+      ...base,
+      review: { ...passingReview, issues: [{ category: "fact", severity: "major", section: "s", description: "d", blocking: false, rootCauseKey: "claim-check:S1b" }], counts: { ...passingReview.counts, major: 1 }, openMajor: 1 },
+      claimChecks: { ...summary, registered: 2, consistent: 1, contradicted: [{ id: "S1b", materiality: "core", manuscriptValue: 14, derivedValue: 12 }], experimentPackages: 1 },
+    });
+    expect(statusOf(contradicted, "experiment_claims_recomputed")).toMatchObject({ status: "FAIL", passed: false });
+    expect(statusOf(contradicted, "experiment_claims_recomputed")?.detail).toContain("S1b（稿件 14 ≠ 复算 12）");
+    // 同根因的确定性 finding 不在 critical/major 口径重复计因
+    expect(statusOf(contradicted, "open_critical_major_zero")).toMatchObject({ status: "PASS" });
+    const missing = evaluateQualityGate({ ...base, claimChecks: { ...summary, registered: 1, notEvaluated: [{ id: "G1", reason: "COLUMN_MISSING", required: true }], experimentPackages: 1 } });
+    expect(statusOf(missing, "experiment_claims_recomputed")).toMatchObject({ status: "NOT_EVALUATED", required: true, passed: false });
+    const consistent = evaluateQualityGate({ ...base, claimChecks: { ...summary, registered: 1, consistent: 1, experimentPackages: 1 } });
+    expect(statusOf(consistent, "experiment_claims_recomputed")?.status).toBe("PASS");
+    expect(statusOf(consistent, "experiment_claims_recomputed")?.detail).toContain("未经外部独立核验");
+    const published = evaluateQualityGate({ ...base, reviewPurpose: "published_paper_assessment", claimChecks: { ...summary, experimentPackages: 1 } });
+    expect(statusOf(published, "experiment_claims_recomputed")?.status).toBe("NOT_APPLICABLE");
+  });
+
+  it("legacy 规则（无 status 字段）按 passed 汇总，不崩溃", () => {
+    const summary = summarizeGateVerification([{ rule: "legacy_a", passed: true, detail: "" }, { rule: "legacy_b", passed: false, detail: "" }]);
+    expect(summary.counts).toMatchObject({ PASS: 1, FAIL: 1, NOT_EVALUATED: 0 });
+    expect(summary.requiredComplete).toBe(true);
   });
 });

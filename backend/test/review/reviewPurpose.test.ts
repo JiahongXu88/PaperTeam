@@ -103,9 +103,13 @@ describe("buildPublishedAssessmentView（生产 Gate 不变 + 只读评估视图
     const view = buildPublishedAssessmentView({ gate, review, citationReportAvailable: false, evidenceRecords: 0, feasibilityEvaluated: false });
     const byRule = new Map(view.ruleApplicability.map((entry) => [entry.rule, entry]));
     for (const rule of ["hallucinated_citations_zero", "citation_structure_valid", "no_contradictory_evidence", "unsupported_critical_claims_zero", "target_feasibility"]) {
-      expect(byRule.get(rule)?.productionPassed).toBe(true);
       expect(byRule.get(rule)?.applicability).toBe("NOT_EVALUATED");
+      // M14.9.5.4：生产 Gate 自身也不再把空集合 / 未执行显示为 PASS
+      expect(gate.rules.find((entry) => entry.rule === rule)?.status).toBe("NOT_EVALUATED");
     }
+    // 必需核验未执行 → 生产规则 passed=false；非必需（证据库为空 / 未评估可行性）不阻断
+    for (const rule of ["hallucinated_citations_zero", "citation_structure_valid", "unsupported_critical_claims_zero"]) expect(byRule.get(rule)?.productionPassed).toBe(false);
+    for (const rule of ["no_contradictory_evidence", "target_feasibility"]) expect(byRule.get(rule)?.productionPassed).toBe(true);
     expect(byRule.get("academic_score_threshold")?.applicability).toBe("REPORTED_ONLY");
     expect(view.notEvaluated.map((entry) => entry.item)).toEqual(expect.arrayContaining(["citation_verification", "experiment_reproduction", "target_feasibility", "build_gate", "evidence_grounding"]));
   });

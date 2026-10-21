@@ -21,6 +21,7 @@ import type { CumulativeFactValidation } from "../quality/cumulativeFactPreserva
 import type { ReviewSummary } from "./ReviewAggregator.js";
 import { reviewUnitFileName, type ReviewCoverageSummary, type ReviewUnitRecord } from "./coverageLedger.js";
 import type { ClaimGroundingReport } from "./claimGrounding.js";
+import type { ClaimCheckLedger } from "../experiments/claimChecks.js";
 import type { ClaimResolutionReport } from "./claimResolution.js";
 import type { ClaimGapAudit } from "./claimGapAudit.js";
 import type { RevisionPlan } from "./revisionPlan.js";
@@ -415,6 +416,29 @@ export class ReviewArtifactStore {
       ...(typeof report === "object" && report !== null ? (report as Record<string, unknown>) : { report }),
     });
     return `reviews/${fileName}`;
+  }
+
+  /**
+   * M14.9.5.4：同轮实验论断复算账本（reviews/claim-checks-r{round}.json）。review.run 在审稿前计算并注入 prompt，
+   * quality.gate 消费同一份（计划在审稿后变更时由 gate 重算并标注）。
+   */
+  async saveClaimCheckLedger(projectId: string, round: number, ledger: ClaimCheckLedger): Promise<string> {
+    const fileName = `claim-checks-r${round}.json`;
+    await mkdir(this.projects.reviewsDir(projectId), { recursive: true });
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), { round, ...ledger });
+    return `reviews/${fileName}`;
+  }
+
+  async loadClaimCheckLedger(projectId: string, round: number): Promise<ClaimCheckLedger | null> {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(join(this.projects.reviewsDir(projectId), `claim-checks-r${round}.json`), "utf8"));
+    } catch {
+      return null;
+    }
+    const record = parsed as Record<string, unknown> | null;
+    if (record === null || typeof record !== "object" || !Array.isArray(record["results"]) || typeof record["ledgerHash"] !== "string") return null;
+    return parsed as ClaimCheckLedger;
   }
 
   async saveClaimGrounding(projectId: string, report: ClaimGroundingReport): Promise<string> {

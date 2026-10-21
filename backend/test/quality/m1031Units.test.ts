@@ -43,6 +43,7 @@ import { buildFeasibilityPrompt } from "../../src/agents/FeasibilityService.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import type { ReviewIssue } from "../../src/agents/ReviewerService.js";
 import type { EvidenceRecord } from "../../src/evidence/EvidenceStore.js";
+import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -622,7 +623,7 @@ function emptyPassSummary(): ReviewSummary {
     round: 1,
     issues: [],
     counts: { critical: 0, major: 0, minor: 0, byCategory: {}, blocking: 0 },
-    scores: { academicScore: 88, styleRisk: 10, factVerdicts: null },
+    scores: { academicScore: 88, styleRisk: 10, factVerdicts: { ...EVALUATED_FACT_VERDICTS } },
     openCritical: 0,
     openMajor: 0,
     unsupportedCriticalClaims: 0,

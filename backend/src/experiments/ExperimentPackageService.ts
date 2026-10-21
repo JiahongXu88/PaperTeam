@@ -12,6 +12,14 @@ import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import { hashArchive, sourceNameFor, visitArchive, type ArchiveEntryInfo } from "./archive.js";
 import {
+  CLAIM_CHECK_PLAN_FILE,
+  evaluateClaimCheckPlan,
+  validateClaimCheckPlan,
+  type ClaimCheckEnvironment,
+  type ClaimCheckLedger,
+  type ClaimCheckPlan,
+} from "./claimChecks.js";
+import {
   SEMANTIC_LIMITS,
   UNDERSTANDING_SYSTEM_PROMPT,
   buildUnderstandingContext,
@@ -1233,6 +1241,57 @@ export class ExperimentPackageService {
       return item;
     });
   }
+  /**
+   * M14.9.5.4：预先登记的实验论断复算计划（experiments/claim-checks.json；不在 ep- 包目录内，list() 不受影响）。
+   * 文件缺失 = 未登记（null）；文件存在但不合法 = error（调用方如实呈现为 NOT_EVALUATED，不静默当作未登记）。
+   */
+  async loadClaimCheckPlan(projectId: string): Promise<{ plan: ClaimCheckPlan | null; error?: string }> {
+    await this.projects.getRequired(projectId);
+    let raw: string;
+    try { raw = await readFile(join(this.root(projectId), CLAIM_CHECK_PLAN_FILE), "utf8"); }
+    catch (error) { if ((error as { code?: string }).code === "ENOENT") return { plan: null }; throw error; }
+    let parsed: unknown;
+    try { parsed = JSON.parse(raw); } catch { return { plan: null, error: "claim-checks.json 不是合法 JSON" }; }
+    const problems = validateClaimCheckPlan(parsed);
+    return problems.length > 0 ? { plan: null, error: problems.slice(0, 5).join("；") } : { plan: parsed as ClaimCheckPlan };
+  }
+
+  /** 已导入实验包数量（只读目录，不解析 manifest） */
+  async packageCount(projectId: string): Promise<number> {
+    try { return (await readdir(this.root(projectId))).filter((id) => /^ep-[a-f0-9]{32}$/.test(id)).length; }
+    catch (error) { if ((error as { code?: string }).code === "ENOENT") return 0; throw error; }
+  }
+
+  async saveClaimCheckPlan(projectId: string, plan: unknown): Promise<ClaimCheckPlan> {
+    await this.projects.getRequired(projectId);
+    const problems = validateClaimCheckPlan(plan);
+    if (problems.length > 0) throw new BusinessError("INVALID_REQUEST", `复算计划不合法：${problems.slice(0, 8).join("；")}`);
+    await mkdir(this.root(projectId), { recursive: true });
+    await writeJsonAtomic(join(this.root(projectId), CLAIM_CHECK_PLAN_FILE), plan);
+    return plan as ClaimCheckPlan;
+  }
+
+  /**
+   * M14.9.5.4：按登记计划对给定稿件修订做确定性复算（只读：包 manifest 原样读取，Source 存活与解析产物哈希
+   * 逐一核对；不调用模型，不修改任何产物）。
+   */
+  async evaluateClaimChecks(projectId: string, manuscript: ClaimCheckEnvironment["manuscript"]): Promise<{ ledger: ClaimCheckLedger; experimentPackages: number }> {
+    const { plan, error } = await this.loadClaimCheckPlan(projectId);
+    let ids: string[] = [];
+    try { ids = (await readdir(this.root(projectId))).filter((id) => /^ep-[a-f0-9]{32}$/.test(id)); }
+    catch (readError) { if ((readError as { code?: string }).code !== "ENOENT") throw readError; }
+    const packages = [];
+    // 未登记计划时不读取包 manifest（大包可达数百 MB）：只需要包数量
+    if (plan !== null) for (const id of ids.sort()) packages.push(await this.readShared(projectId, id));
+    const ledger = await evaluateClaimCheckPlan(plan, {
+      packages,
+      loadDocument: (sourceId) => this.documents.load(projectId, sourceId),
+      sourceHash: async (sourceId) => (await this.sources.get(projectId, sourceId))?.contentHash ?? null,
+      manuscript,
+    }, error !== undefined ? { planError: error } : {});
+    return { ledger, experimentPackages: ids.length };
+  }
+
   async isConfirmedSource(projectId: string, sourceId: string): Promise<boolean> {
     const items = await this.list(projectId);
     const source = await this.sources.get(projectId, sourceId);

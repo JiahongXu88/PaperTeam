@@ -18,6 +18,7 @@ import { tagIssueRootCauses } from "../../src/review/claimGapAudit.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import type { ReviewIssue } from "../../src/agents/ReviewerService.js";
 import type { ClaimGroundingReport } from "../../src/review/claimGrounding.js";
+import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 function summaryOf(issues: ReviewIssue[]): ReviewSummary {
   return {
@@ -31,7 +32,7 @@ function summaryOf(issues: ReviewIssue[]): ReviewSummary {
       byCategory: {},
       blocking: issues.filter((issue) => issue.blocking).length,
     },
-    scores: { academicScore: 82, styleRisk: 20, factVerdicts: null },
+    scores: { academicScore: 82, styleRisk: 20, factVerdicts: { SUPPORTED: 2, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } },
     openCritical: issues.filter((issue) => issue.severity === "critical").length,
     openMajor: issues.filter((issue) => issue.severity === "major").length,
     unsupportedCriticalClaims: 2,
@@ -134,7 +135,7 @@ describe("tagIssueRootCauses（根因标注）", () => {
 
 describe("Quality Gate 根因去重（规则 4/5/6）", () => {
   const baseInput = {
-    citation: null,
+    citation: cleanCitationReport(),
     evidence: { total: 10, verified: 10, contradictory: 0, byLevel: {} } as never,
     feasibility: null,
   };

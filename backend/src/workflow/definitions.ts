@@ -37,7 +37,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 
 import { BusinessError, InvalidLatexOutputError, WorkflowInvalidStateError } from "../errors.js";
-import { isExistingPaperKind, isSurveyKind, isThesisKind } from "./kinds.js";
+import { isExistingPaperKind, isSurveyKind, isThesisKind, type WorkflowKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { normalizeManuscriptLanguage } from "../project/language.js";
@@ -274,9 +274,17 @@ import {
   runBuildGateForRevision,
   loadBuildGateRecord,
   saveQualityGateReport,
+  summarizeGateVerification,
   type QualityGateThresholds,
   type ThesisGateInput,
 } from "../quality/gates.js";
+import {
+  claimCheckFinding,
+  claimChecksInText,
+  renderClaimCheckBlock,
+  summarizeClaimChecksForGate,
+  type ClaimCheckLedger,
+} from "../experiments/claimChecks.js";
 import type { ThesisPlannerService } from "../thesis/ThesisPlannerService.js";
 import type { ResearchInputService } from "../thesis/ResearchInputService.js";
 import { authorDecisionFromResumeInput } from "../thesis/ResearchInputService.js";
@@ -706,6 +714,18 @@ function reviewRunStageInner(
         revision,
       });
       const attributionDigest = renderMultiKeyAttributionDigest(multiKeyAttribution);
+      /**
+       * M14.9.5.4：预先登记的实验论断复算（审稿前确定性计算，账本与 prompt / finding / Gate 同源）。未登记 = 空账本，
+       * prompt 逐字节不变；只读评估（第三方已发表论文）与综述没有作者实验数据，不适用。
+       */
+      const claimCheckLedger = options.survey === true || publishedAssessment
+        ? null
+        : (await services.experimentPackages.evaluateClaimChecks(ctx.projectId, {
+            revision,
+            files: latexForAttribution.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+          })).ledger;
+      const claimCheckResults = claimCheckLedger?.results ?? [];
+      const digestClaimCheckLines = renderClaimCheckBlock(claimCheckResults);
       const reviewParams = {
         projectId: ctx.projectId,
         manuscriptDigest: digest,
@@ -723,10 +743,13 @@ function reviewRunStageInner(
         // M14.9.1 实验开关：缺省关闭时不出现该键（prompt / 单元请求指纹逐字节不变）
         ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
         ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
+        ...(digestClaimCheckLines.length > 0 ? { claimCheckLines: digestClaimCheckLines } : {}),
       };
       type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
       let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
       let unitScoreBasis: AcademicScoreBasis | undefined;
+      /** M14.9.5.4：长文档单元的原文定位表（复算矛盾 finding 归到论断所在单元） */
+      const unitLocator: Array<{ heading: string; file: string; spanId: string; text: string }> = [];
       if (longDocumentMode) {
         /**
          * M14.1a P0-2 长文档模式：每个 Review Unit 一次有界全文审查（单元 ≤
@@ -748,6 +771,9 @@ function reviewRunStageInner(
           }
         }
         const chapterIndex = [...new Set(coveragePlan.units.map((unit) => `${unit.heading}（${unit.file}）`))];
+        for (const unit of coveragePlan.units) {
+          unitLocator.push({ heading: unit.heading, file: unit.file, spanId: unit.spanId, text: spanByUnitId.get(unit.unitId)?.content ?? "" });
+        }
         /**
          * M14.9.5.1 单元上下文策略。shared_session（缺省）= 历史行为：全部单元共用一个审稿会话，prompt 与会话派生不变。
          * 隔离策略：每次尝试一个全新封闭会话（sealed 工具，prompt 即完整上下文）；isolated_snapshot 另附确定性解析的
@@ -843,6 +869,7 @@ function reviewRunStageInner(
                 dependencyFingerprint: contextSnapshot.dependencyFingerprint,
               };
             }
+            const unitClaimCheckLines = renderClaimCheckBlock(claimChecksInText(claimCheckResults, unitSpan.content));
             const unitParams = {
               projectId: ctx.projectId,
               unit: {
@@ -857,6 +884,8 @@ function reviewRunStageInner(
               ...(language !== undefined ? { language } : {}),
               ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
               ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
+              // M14.9.5.4：只附论断原文落在本单元的复算结果（无相关结果时不出现该键，prompt 与请求指纹逐字节不变）
+              ...(unitClaimCheckLines.length > 0 ? { claimCheckLines: unitClaimCheckLines } : {}),
               ...(unitContext !== undefined ? { unitContext: { ...unitContext, sessionLabel: "" } } : {}),
               signal: ctx.signal,
             };
@@ -1429,6 +1458,23 @@ function reviewRunStageInner(
           ctx.log(`[review] 模板化表达 ${templated.findings.length} 处（记为 minor style finding，不自动修订）`);
         }
       }
+      /**
+       * M14.9.5.4：复算 CONTRADICTED → 确定性 fact finding（rootCauseKey=claim-check:<id>；Gate 规则 4d 计因、规则 5/6
+       * 去重）。定位到论断原文所在单元 / 文件；不依赖模型是否注意到该矛盾。
+       */
+      if (claimCheckLedger !== null) {
+        for (const result of claimCheckLedger.results.filter((entry) => entry.verdict === "CONTRADICTED")) {
+          const unit = unitLocator.find((entry) => claimChecksInText([result], entry.text).length > 0);
+          const finding = claimCheckFinding(result, unit?.heading ?? result.claimAnchor.file ?? "main.tex", claimCheckLedger.ledgerHash);
+          summary.issues.push({ ...finding, ...(unit !== undefined ? { file: unit.file, logicalSection: unit.spanId } : result.claimAnchor.file !== null ? { file: result.claimAnchor.file } : {}) });
+          if (finding.severity === "major") { summary.counts.major += 1; summary.openMajor += 1; } else { summary.counts.minor += 1; }
+          summary.counts.byCategory["fact"] = (summary.counts.byCategory["fact"] ?? 0) + 1;
+        }
+        if (claimCheckLedger.results.length > 0 || claimCheckLedger.planError !== undefined) {
+          await services.reviewArtifacts.saveClaimCheckLedger(ctx.projectId, round, claimCheckLedger);
+          ctx.log(`[review] 实验论断复算：登记 ${claimCheckLedger.counts.registered}，一致 ${claimCheckLedger.counts.consistent}，矛盾 ${claimCheckLedger.counts.contradicted}，未能复算 ${claimCheckLedger.counts.notEvaluated}（账本 ${claimCheckLedger.ledgerHash.slice(0, 12)}）`);
+        }
+      }
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
       if (multiKeyAttribution.sentencesWithMultiKeyCite > 0) {
@@ -1520,51 +1566,96 @@ function reviewRunStageInner(
   };
 }
 
-function qualityGateStage(
+/**
+ * M14.9.5.4：同轮实验论断复算账本。review.run 在审稿前计算并落盘（prompt 引用同一份）；Gate 优先消费它。
+ * 账本缺失（旧轮次 / 计划在审稿之后才登记）或登记计划已变更 → 按被审修订快照现场重算，并把「审稿 prompt 未包含
+ * 这些复算结果」写进上下文缺口（不冒充审稿时已核对）。
+ */
+async function loadOrRecomputeClaimChecks(
   services: WorkflowServices,
-  options: { survey?: boolean; thesis?: boolean } = {},
-): StageSpec {
-  return {
-    id: "quality.gate",
-    description: "Quality Gate：确定性判定（引用/事实/审稿/目标可行性；survey 含写作契约；thesis 含零漂移/映射/结构/冲突）",
-    requiredInputs: ["review.run"],
-    producedOutputs: ["reviews/quality-gate-r*.json"],
-    maxAttempts: 1, // 纯确定性判定，重试无意义
-    timeoutMs: services.stageTimeoutMs,
-    retryable: [],
-    async execute(ctx) {
-      const review = await latestReviewSummary(services, ctx.projectId);
-      if (review === null) {
-        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
-      }
-      const citation: CitationReport | null = await services.citation.latestReport(ctx.projectId);
-      const evidence = await services.evidence.stats(ctx.projectId);
-      const feasibility = (await readFeasibilityReport(services.projects, ctx.projectId))?.report ?? null;
+  projectId: string,
+  review: ReviewSummary,
+): Promise<{ ledger: ClaimCheckLedger; experimentPackages: number; notes: string[] }> {
+  const stored = await services.reviewArtifacts.loadClaimCheckLedger(projectId, review.round);
+  const plan = await services.experimentPackages.loadClaimCheckPlan(projectId);
+  const currentPlanSha = plan.plan === null ? null : sha256Hex(JSON.stringify(plan.plan));
+  const packages = await services.experimentPackages.packageCount(projectId);
+  if (stored !== null && stored.planSha256 === currentPlanSha && (stored.planError !== undefined) === (plan.error !== undefined)) {
+    return { ledger: stored, experimentPackages: packages, notes: [] };
+  }
+  const revision = typeof review.reviewedRevision === "number" ? review.reviewedRevision : null;
+  const snapshot = revision !== null ? await readSnapshotTex(services.revisions.snapshotDir(projectId, revision)) : null;
+  const files = snapshot ?? (await collectLatexFiles(services.projects.manuscriptDir(projectId))).allTex.map((file) => ({ file: file.relativePath, content: file.content }));
+  const { ledger, experimentPackages } = await services.experimentPackages.evaluateClaimChecks(projectId, { revision, files });
+  const notes = ledger.results.length === 0 && ledger.planError === undefined
+    ? []
+    : [stored === null
+        ? `第 ${review.round} 轮审稿没有复算账本（计划在审稿后登记 / 旧轮次）：Gate 按被审修订现场复算，审稿 prompt 未包含这些结果`
+        : `复算计划在第 ${review.round} 轮审稿之后变更：Gate 按当前计划现场复算，审稿 prompt 只包含旧计划的结果`];
+  return { ledger, experimentPackages, notes };
+}
+
+/**
+ * M14.9.5.4：Quality Gate 的唯一评估入口——workflow 的 quality.gate stage 与手动 POST /quality-gate 共用。
+ * 等价上下文（同一 review 轮次 / 被审修订 / 工作流类型 / 审稿目的 / build 结果）→ 相同的规则集合与判定；
+ * 手动入口拿不到的上下文（找不到对应 run 的 build 结果等）写进 evaluation.contextGaps，不静默假设。
+ * 只有 workflow 入口回写 patch-validation 级联产物（手动入口是只读重评）。
+ */
+export interface ProjectQualityGateContext {
+  projectId: string;
+  workflowKind: WorkflowKind | undefined;
+  survey?: boolean;
+  thesis?: boolean;
+  /** run request（reviewPurpose 等）；手动入口取该项目最近一次 run */
+  request?: Record<string, unknown>;
+  buildError?: string;
+  entry: "workflow" | "manual";
+  runId: string | null;
+  persistPatchValidation: boolean;
+  /** 手动入口发现的上下文缺口（例如没有任何 run 记录） */
+  contextGaps?: string[];
+}
+
+export async function evaluateProjectQualityGate(services: WorkflowServices, context: ProjectQualityGateContext) {
+  const projectId = context.projectId;
+  const contextGaps = [...(context.contextGaps ?? [])];
+  const review = await latestReviewSummary(services, projectId);
+  if (review === null) {
+    throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
+  }
+  // M14.9.3 只读评估口径：只在 idea_to_paper 的显式 reviewPurpose 下成立；其他工作流携带该字段 fail-closed
+  const publishedAssessment = readReviewPurpose(context.request) === "published_paper_assessment";
+  if (publishedAssessment && context.workflowKind !== "idea_to_paper") {
+    throw new BusinessError("STAGE_CONTRACT_VIOLATION", `reviewPurpose=published_paper_assessment 只适用于 idea_to_paper 只读评估入口（当前 ${context.workflowKind}）`);
+  }
+      const citation: CitationReport | null = await services.citation.latestReport(projectId);
+      const evidence = await services.evidence.stats(projectId);
+      const feasibility = (await readFeasibilityReport(services.projects, projectId))?.report ?? null;
       // M5.6 Citation Preservation：被审阅修订 vs 前一修订（快照事实源；无前序修订 → null 中性）
       const citationPreservation = await computeCitationPreservation(
         services,
-        ctx.projectId,
+        projectId,
         review.reviewedRevision,
       );
       // M5.6 Fact Preservation：实验事实保持（表格数值 / 正文数字 / 公式 / 方向结论 / 协议 / 占位回归）
       const factPreservation = await computeFactPreservation(
         services,
-        ctx.projectId,
+        projectId,
         review.reviewedRevision,
       );
       // M10.3.1 G1：累计事实校验（Frozen Baseline → 被审阅修订；授权 = 已批准
       // 改进计划台账 + Evidence。历史未授权漂移跨轮保持 unresolved）
       const cumulativeFactPreservation = await computeCumulativeFactPreservation(
         services,
-        ctx.projectId,
+        projectId,
         review.reviewedRevision,
-        { existingPaper: isExistingPaperKind(ctx.state.workflowKind) },
+        { existingPaper: isExistingPaperKind(context.workflowKind) },
       );
       // M10.3.1 G2：同轮 claim 适用性审计（existing-paper 流程在 review.run 产出；
       // 旧 / idea 项目无产物 → 规则按原口径）
-      const claimGapAudit = await services.reviewArtifacts.loadClaimGapAudit(ctx.projectId, review.round);
+      const claimGapAudit = await services.reviewArtifacts.loadClaimGapAudit(projectId, review.round);
       // M6.6 §13：正文引用 ↔ verified evidence 覆盖（可检测；默认不阻断）
-      const evidenceRecords = await services.evidence.list(ctx.projectId);
+      const evidenceRecords = await services.evidence.list(projectId);
       const evidenceCitationCoverage =
         citation !== null
           ? computeEvidenceCitationCoverage({
@@ -1575,7 +1666,7 @@ function qualityGateStage(
           : undefined;
       // M6.7 §10 Revision Gate：修订条目复核结果（对齐被审阅修订才消费；
       // 旧 / 不对齐（如用户恢复历史修订）→ 规则不出现，与 Preservation null 同纪律）
-      const latestValidation = await services.reviewArtifacts.latestValidation(ctx.projectId);
+      const latestValidation = await services.reviewArtifacts.latestValidation(projectId);
       const revisionValidation =
         latestValidation !== null && latestValidation.revision === review.reviewedRevision
           ? latestValidation
@@ -1583,21 +1674,24 @@ function qualityGateStage(
       // M11.2：survey gate 规则输入——优先消费同轮 review 落盘的评估（与 review
       // 快照对齐）；无同轮产物时（旧 run / 手动触发）现场重算
       let surveyWriting: SurveyWritingEvaluation | undefined;
-      if (options.survey === true) {
-        const stored = await services.reviewArtifacts.loadSurveyWriting(ctx.projectId, review.round);
-        surveyWriting = stored ?? (await evaluateSurveyWritingForProject(services, ctx.projectId));
+      if (context.survey === true) {
+        const stored = await services.reviewArtifacts.loadSurveyWriting(projectId, review.round);
+        surveyWriting = stored ?? (await evaluateSurveyWritingForProject(services, projectId));
       }
       // M14.2：thesis 规则输入（确定性：已确认事实零漂移 / 映射冻结 / 结构完整 / 冲突清零）
       let thesisGate: ThesisGateInput | undefined;
-      if (options.thesis === true) {
-        thesisGate = await computeThesisGateInput(services, ctx.projectId);
+      if (context.thesis === true) {
+        thesisGate = await computeThesisGateInput(services, projectId);
       }
       // M11.2.3（D-2）：同轮 claim grounding（披露口径拆分 + 根因去重的输入）
-      const claimGrounding = await services.reviewArtifacts.loadClaimGrounding(ctx.projectId, review.round);
+      const claimGrounding = await services.reviewArtifacts.loadClaimGrounding(projectId, review.round);
       // M12 A9：Target Readiness advisory（additive 透传；零规则参与、零阻断）
-      const targetReadiness = await readTargetReadinessAdvisory(services, ctx.projectId);
-      const gate = evaluateQualityGate(
-        {
+      const targetReadiness = await readTargetReadinessAdvisory(services, projectId);
+      // M14.9.5.4：同轮实验论断复算账本（review.run 落盘）；缺失或计划已变更 → 按被审修订现场重算并如实标注
+      const claimCheckEvaluation = await loadOrRecomputeClaimChecks(services, projectId, review);
+      const claimChecks = summarizeClaimChecksForGate(claimCheckEvaluation.ledger, claimCheckEvaluation.experimentPackages);
+      contextGaps.push(...claimCheckEvaluation.notes);
+      const gateInput = {
           review,
           citation,
           evidence,
@@ -1612,26 +1706,27 @@ function qualityGateStage(
           ...(surveyWriting !== undefined ? { surveyWriting } : {}),
           ...(targetReadiness !== undefined ? { targetReadiness } : {}),
           ...(thesisGate !== undefined ? { thesis: thesisGate } : {}),
-        },
-        QUALITY_THRESHOLDS(services),
-      );
+          ...(publishedAssessment ? { reviewPurpose: "published_paper_assessment" as const } : {}),
+          claimChecks,
+        };
+      const gate = evaluateQualityGate(gateInput, QUALITY_THRESHOLDS(services));
       const patchValidation = typeof review.reviewedRevision === "number"
-        ? await services.reviewArtifacts.loadPatchValidation(ctx.projectId, review.reviewedRevision)
+        ? await services.reviewArtifacts.loadPatchValidation(projectId, review.reviewedRevision)
         : null;
       // M11.4 Product Closure：existing-paper 分层 gate（Revision Task Success vs
       // Publication Ready）。任务层成功时修订循环不再追逐投稿层（whole-paper /
       // 基线继承）问题；非 existing-paper（idea_to_paper / topic_survey）与
       // legacy 模式维持原 gate.passed 单层语义，零行为变化。
       const taskScoped =
-        isExistingPaperKind(ctx.state.workflowKind) && services.review.revisionTaskPolicy.mode === "task_scoped";
+        isExistingPaperKind(context.workflowKind) && services.review.revisionTaskPolicy.mode === "task_scoped";
       let revisionTask: RevisionTaskGateResult | null = null;
       let patchSubstanceOk: boolean | null = null;
       let modifiedSections: string[] = [];
       if (patchValidation !== null && typeof review.reviewedRevision === "number") {
         const finalPatchRecords = selectFinalPatchRecords(patchValidation.records);
         const sourceRevision = Math.max(0, review.reviewedRevision - 1);
-        const previousTex = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, sourceRevision));
-        const currentTex = await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, review.reviewedRevision));
+        const previousTex = await readSnapshotTex(services.revisions.snapshotDir(projectId, sourceRevision));
+        const currentTex = await readSnapshotTex(services.revisions.snapshotDir(projectId, review.reviewedRevision));
         const facts: FactFinding[] = factPreservation === null ? [] : [
           ...factPreservation.changedFacts, ...factPreservation.removedFacts, ...factPreservation.addedUnsupportedFacts,
           ...factPreservation.directionalChanges, ...factPreservation.formulaChanges, ...factPreservation.placeholderRegressions,
@@ -1695,7 +1790,7 @@ function qualityGateStage(
         // build error）先于级联捕获——分层语义下任务层与投稿层消费不同级联
         patchSubstanceOk = patchValidation.summary.publishable &&
           (factPreservation?.ok ?? false) && (citationPreservation?.ok ?? false) &&
-          readBuildError(ctx.state) === undefined;
+          context.buildError === undefined;
         // 本轮修订修改区间（finding 归层输入：logicalTarget + 对应 heading + 文件路径
         // ——finding.section 可能是任一命名空间：逻辑名 / 标题 / 相对文件路径）
         modifiedSections = finalPatchRecords.flatMap((record) => {
@@ -1708,9 +1803,11 @@ function qualityGateStage(
           // 旧级联（非 existing-paper / legacy）：与 gate.passed AND——呈现级重复，
           // 非独立失败源（M11.4 审计定性），行为保持不变
           patchValidation.summary.publishable = patchSubstanceOk && gate.passed;
-          await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchValidation);
+          if (context.persistPatchValidation) await services.reviewArtifacts.savePatchValidation(projectId, patchValidation);
           gate.rules.push({
             rule: "patch_validation_publishable",
+            status: patchValidation.summary.publishable ? "PASS" : "FAIL",
+            required: true,
             passed: patchValidation.summary.publishable,
             detail: `patches=${patchValidation.summary.passedPatches}/${patchValidation.summary.totalPatches}; unattributed=${patchValidation.summary.unattributedViolations.length}`,
           });
@@ -1722,7 +1819,7 @@ function qualityGateStage(
       }
       // M11.4：existing-paper 任务层判定 + 投稿层合成（确定性，无 LLM）
       if (taskScoped) {
-        const instructions = await services.externalInstructions.load(ctx.projectId);
+        const instructions = await services.externalInstructions.load(projectId);
         const instructionSnapshots: ExternalInstructionSnapshot[] = instructions.map((instruction) => ({
           instructionId: instruction.instructionId,
           status: instruction.status,
@@ -1732,7 +1829,7 @@ function qualityGateStage(
         }));
         // 冻结基线学术分 = 本轮之前最早的 review 汇总（r1 审阅 rev-1 基线）；
         // 无更早轮（首轮即被 gate）→ null（非回归检查不适用，如实记录）
-        const summaries = await services.reviewArtifacts.listSummaries(ctx.projectId);
+        const summaries = await services.reviewArtifacts.listSummaries(projectId);
         const baselineSummary = summaries.find((summary) => summary.round < review.round);
         /**
          * M11.4 F23：与冻结基线逐字一致的表格数值集合（字节级 lineage 的
@@ -1741,7 +1838,7 @@ function qualityGateStage(
          * 本身未被修订修改（Fact Guard 保证任何 cell 变更都会被拦）——引用
          * 数值全部落在未修改表格的 finding 是基线遗留，不是修订引入。
          */
-        const unchangedTableNumbers = await computeUnchangedTableNumbers(services, ctx.projectId);
+        const unchangedTableNumbers = await computeUnchangedTableNumbers(services, projectId);
         const findingOrigins = classifyFindingOrigins(review.issues, claimGapAudit, modifiedSections, {
           ...(unchangedTableNumbers !== null ? { unchangedTableNumbers } : {}),
         });
@@ -1762,9 +1859,11 @@ function qualityGateStage(
           // 待作者裁决项随 publicationReadiness 呈现）
           const publishable = patchSubstanceOk === true && revisionTask.verdict !== "FAIL";
           patchValidation.summary.publishable = publishable;
-          await services.reviewArtifacts.savePatchValidation(ctx.projectId, patchValidation);
+          if (context.persistPatchValidation) await services.reviewArtifacts.savePatchValidation(projectId, patchValidation);
           gate.rules.push({
             rule: "patch_validation_publishable",
+            status: publishable ? "PASS" : "FAIL",
+            required: true,
             passed: publishable,
             detail: `patches=${patchValidation.summary.passedPatches}/${patchValidation.summary.totalPatches}; unattributed=${patchValidation.summary.unattributedViolations.length}`,
           });
@@ -1803,6 +1902,61 @@ function qualityGateStage(
           baselineInheritedRisks: revisionTask.publication.risks,
         };
       }
+      // M14.9.5.4：规则在 evaluateQualityGate 之后追加（patch 级联）→ 重新汇总核验完整性；附评估入口与输入指纹
+      gate.verification = summarizeGateVerification(gate.rules);
+      gate.evaluation = {
+        entry: context.entry,
+        workflowKind: context.workflowKind ?? null,
+        reviewPurpose: publishedAssessment ? "published_paper_assessment" : "author_manuscript",
+        reviewRound: review.round,
+        reviewedRevision: typeof review.reviewedRevision === "number" ? review.reviewedRevision : null,
+        runId: context.runId,
+        inputFingerprint: fingerprintJson({
+          gateInput: { ...gateInput, targetReadiness: undefined },
+          targetReadiness: targetReadiness ?? null,
+          workflowKind: context.workflowKind ?? null,
+          survey: context.survey === true,
+          thesis: context.thesis === true,
+          buildError: context.buildError ?? null,
+          patchValidation: patchValidation?.summary ?? null,
+          taskScoped,
+        }),
+        contextGaps,
+      };
+  return {
+    gate, review, citation, evidence, evidenceRecords, feasibility, citationPreservation, factPreservation, cumulativeFactPreservation,
+    claimGapAudit, claimGrounding, evidenceCitationCoverage, revisionValidation, surveyWriting, thesisGate, targetReadiness,
+    revisionTask, claimChecks, claimCheckLedger: claimCheckEvaluation.ledger, publishedAssessment,
+  };
+}
+
+function qualityGateStage(
+  services: WorkflowServices,
+  options: { survey?: boolean; thesis?: boolean } = {},
+): StageSpec {
+  return {
+    id: "quality.gate",
+    description: "Quality Gate：确定性判定（引用/事实/审稿/目标可行性；survey 含写作契约；thesis 含零漂移/映射/结构/冲突）",
+    requiredInputs: ["review.run"],
+    producedOutputs: ["reviews/quality-gate-r*.json"],
+    maxAttempts: 1, // 纯确定性判定，重试无意义
+    timeoutMs: services.stageTimeoutMs,
+    retryable: [],
+    async execute(ctx) {
+      const {
+        gate, review, citation, evidenceRecords, feasibility, citationPreservation, factPreservation, cumulativeFactPreservation,
+        claimGapAudit, claimGrounding, evidenceCitationCoverage, revisionValidation, surveyWriting, thesisGate, revisionTask,
+      } = await evaluateProjectQualityGate(services, {
+        projectId: ctx.projectId,
+        workflowKind: ctx.state.workflowKind,
+        ...(options.survey === true ? { survey: true } : {}),
+        ...(options.thesis === true ? { thesis: true } : {}),
+        request: ctx.state.request,
+        ...(readBuildError(ctx.state) !== undefined ? { buildError: readBuildError(ctx.state)! } : {}),
+        entry: "workflow",
+        runId: ctx.runId,
+        persistPatchValidation: true,
+      });
       // 轮次 = 所消费 review 汇总的轮次（同轮配对，跨 run 不漂移）
       const round = review.round;
       await saveQualityGateReport(services.projects, ctx.projectId, round, gate, review, {

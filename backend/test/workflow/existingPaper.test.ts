@@ -360,11 +360,45 @@ describe("M3.2 独立 HTTP 路由", () => {
     expect(missing.status).toBe(400);
 
     await stack.request("POST", `/api/projects/${project.id}/review`, {});
+    // M14.9.5.4：只做了审稿、没有执行引用核验 → 引用规则 NOT_EVALUATED（必需），Gate 不得显示为通过
+    const unchecked = await stack.request("POST", `/api/projects/${project.id}/quality-gate`, {});
+    expect(unchecked.status).toBe(200);
+    const pending = unchecked.body["gate"] as { passed: boolean; rules: { rule: string; passed: boolean; status?: string }[]; verification?: { requiredComplete: boolean } };
+    expect(pending.passed).toBe(false);
+    expect(pending.rules.filter((rule) => !rule.passed).every((rule) => rule.status === "NOT_EVALUATED")).toBe(true);
+    expect(pending.verification?.requiredComplete).toBe(false);
+    expect((await stack.request("POST", `/api/projects/${project.id}/citation-check`, {})).status).toBe(200);
     const gate = await stack.request("POST", `/api/projects/${project.id}/quality-gate`, {});
     expect(gate.status).toBe(200);
     const result = gate.body["gate"] as { passed: boolean; rules: { rule: string; passed: boolean }[] };
     expect(result.rules.length).toBeGreaterThanOrEqual(8);
     expect(result.passed).toBe(true);
+  });
+
+  it("M14.9.5.4：run 在 hitl.research_plan 暂停后被取消 → 手动 Gate 仍按该 run 的上下文完整评估（不代批 HITL、不静默少规则、重复评估确定）", async () => {
+    const stack = await newStack();
+    const project = await stack.store.create("取消后基线 Gate");
+    await stack.request("POST", `/api/projects/${project.id}/import`, { archiveBase64: IMPORT_ARCHIVE.toString("base64") });
+    const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, { kind: "existing_paper_improvement" });
+    const runId = created.body["runId"] as string;
+    const paused = await pollRunUntilAwaiting(stack, runId, "hitl.research_plan", { autoDecisions: {} });
+    expect(paused.completedStages).toContain("review.run");
+    expect(paused.completedStages).not.toContain("quality.gate");
+    expect((await stack.request("POST", `/api/runs/${runId}/cancel`, {})).status).toBe(200);
+    await pollRun(stack, runId, ["cancelled"]);
+    const first = await stack.request("POST", `/api/projects/${project.id}/quality-gate`, {});
+    expect(first.status).toBe(200);
+    const gate = first.body["gate"] as { rules: { rule: string; status?: string }[]; evaluation?: { entry: string; runId: string | null; workflowKind: string | null; inputFingerprint: string; contextGaps: string[] }; revisionTask?: unknown };
+    expect(gate.evaluation).toMatchObject({ entry: "manual", runId, workflowKind: "existing_paper_improvement", contextGaps: [] });
+    const ids = gate.rules.map((rule) => rule.rule);
+    expect(ids).toEqual(expect.arrayContaining(["cumulative_fact_preservation_not_applicable", "experiment_claims_recomputed", "citations_evidence_backed"]));
+    expect(gate.revisionTask).toBeDefined();
+    // HITL 仍是取消前的状态：没有任何批准记录被写入
+    const run = (await stack.request("GET", `/api/runs/${runId}`)).body["run"] as WorkflowState;
+    expect(run.status).toBe("cancelled");
+    expect(run.completedStages).not.toContain("hitl.research_plan");
+    const second = await stack.request("POST", `/api/projects/${project.id}/quality-gate`, {});
+    expect((second.body["gate"] as { evaluation?: { inputFingerprint: string } }).evaluation?.inputFingerprint).toBe(gate.evaluation?.inputFingerprint);
   });
 
   it("POST /build：Build Gate + Draft PDF（Quality 语义无关）", async () => {

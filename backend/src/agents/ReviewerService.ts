@@ -134,6 +134,11 @@ export interface ReviewIssue {
    * 要求模型给出；缺省 = 未声明。生产 Gate 计数不读本字段。
    */
   verification?: FindingVerification;
+  /**
+   * M14.9.5.4：确定性实验论断复算矛盾（experiments/claimChecks；review.run 生成，模型不产出）——数据出处、
+   * 稿件值与复算值随 finding 可追溯（账本 reviews/claim-checks-r{round}.json）。
+   */
+  claimCheck?: { id: string; verdict: "CONTRADICTED"; manuscriptValue: number; derivedValue: number | null; ledgerHash: string; dataSha256: string | null };
 }
 
 /**
@@ -270,6 +275,8 @@ export class ReviewerService {
      * 缺省 undefined → prompt 逐字节不变。
      */
     publishedAssessmentLines?: string[];
+    /** M14.9.5.4：预先登记的实验论断复算结果块（experiments/claimChecks 渲染；undefined → prompt 逐字节不变） */
+    claimCheckLines?: string[];
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -344,6 +351,8 @@ export class ReviewerService {
     neutralityPolicy?: boolean;
     /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
     publishedAssessmentLines?: string[];
+    /** M14.9.5.4：实验论断复算结果块（undefined → prompt 不变） */
+    claimCheckLines?: string[];
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -434,6 +443,8 @@ export class ReviewerService {
     neutralityPolicy?: boolean;
     /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 不变） */
     publishedAssessmentLines?: string[];
+    /** M14.9.5.4：论断原文落在本单元的实验论断复算结果块（undefined → prompt 与请求指纹逐字节不变） */
+    claimCheckLines?: string[];
     /**
      * M14.9.5.1 单元上下文策略（review.unitContextPolicy）。undefined = shared_session：同项目全部单元共用
      * review/academic/unit 会话，prompt 与会话派生与 2df31cf 逐字节一致。给出时：每次尝试一个全新物理会话
@@ -889,6 +900,8 @@ export function buildReviewPrompt(params: {
   neutralityPolicy?: boolean;
   /** M14.9.3：第三方已发表论文只读评估口径（undefined → prompt 逐字节不变） */
   publishedAssessmentLines?: string[];
+  /** M14.9.5.4：实验论断复算结果块（undefined → prompt 逐字节不变） */
+  claimCheckLines?: string[];
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -1022,6 +1035,7 @@ export function buildReviewPrompt(params: {
         ]
       : []),
     ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
+    ...(params.claimCheckLines ?? []),
     ...(params.surveyDigest !== undefined
       ? ["", "===== 综述确定性指标（机器可算信号；评审时对照使用）=====", params.surveyDigest]
       : []),
@@ -1082,6 +1096,7 @@ function buildUnitReviewPrompt(params: {
   language?: ManuscriptLanguage;
   neutralityPolicy?: boolean;
   publishedAssessmentLines?: string[];
+  claimCheckLines?: string[];
   unitContext?: Pick<UnitReviewContext, "policy" | "dependencies" | "gaps" | "sourceVerification">;
 }): string {
   const dependencyBlock = params.unitContext?.policy === "isolated_snapshot"
@@ -1147,6 +1162,7 @@ function buildUnitReviewPrompt(params: {
         ]
       : []),
     ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
+    ...(params.claimCheckLines ?? []),
     "",
     ...dependencyBlock,
     `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,

@@ -97,7 +97,12 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
     expect(failedRules).toContain("open_critical_major_zero");
     expect(failedRules).toContain("academic_score_threshold");
     expect(failedRules).toContain("style_risk_threshold");
-    expect(gate1Result.reasons).toHaveLength(failedRules.length);
+    // M14.9.5.4：手动入口与 workflow stage 同一评估器——导入的项目是 existing_paper_improvement，任务层 verdict
+    // （revision_task）照常进入 reasons；其余 reasons 与失败规则一一对应
+    expect(gate1Result.reasons.filter((reason) => !reason.startsWith("revision_task"))).toHaveLength(failedRules.length);
+    // 未执行 citation.verify：引用规则是 NOT_EVALUATED（必需），不是「0 条 → 通过」
+    expect(failedRules).toContain("hallucinated_citations_zero");
+    expect(gate1Result.reasons.join("\n")).toContain("hallucinated_citations_zero: NOT_EVALUATED");
     expect(gate1Result.thresholds.academicPassScore).toBeGreaterThan(0);
 
     // GET latest：r1 FAIL + 同轮 reviewSummary（round 配对）
@@ -108,13 +113,15 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
     expect((latest1.body["rounds"] as Array<{ round: number; passed: boolean; blockerCount: number }>)[0]).toMatchObject({
       round: 1,
       passed: false,
-      blockerCount: failedRules.length,
+      blockerCount: gate1Result.reasons.length,
     });
     expect((latest1.body["reviewSummary"] as { round: number }).round).toBe(1);
     expect(latest1.body["stale"]).toBe(false);
 
     // 第 2 轮审稿（pass）后未重评 gate → stale：最新 review r2 > gate r1
     await stack.request("POST", `/api/projects/${projectId}/review`);
+    // 引用核验执行后，引用规则才有前提（M14.9.5.4）
+    expect((await stack.request("POST", `/api/projects/${projectId}/citation-check`)).status).toBe(200);
     const staleNow = await stack.request("GET", `/api/projects/${projectId}/quality-gate`);
     expect(staleNow.body["latestReviewRound"]).toBe(2);
     expect(staleNow.body["stale"]).toBe(true);
@@ -155,12 +162,15 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
     await stack.request("POST", `/api/projects/${projectId}/quality-gate`);
 
     const got = await stack.request("GET", `/api/projects/${projectId}/quality-gate`);
-    const rules = ((got.body["gate"] as { rules: Array<{ rule: string }> }).rules).map((rule) => rule.rule);
+    const gateRules = (got.body["gate"] as { rules: Array<{ rule: string; status?: string; required?: boolean }> }).rules;
+    const rules = gateRules.map((rule) => rule.rule);
     expect(rules).toEqual([
       "hallucinated_citations_zero",
       "citation_structure_valid",
       "no_contradictory_evidence",
       "unsupported_critical_claims_zero",
+      // M14.9.5.4：实验论断复算（无实验包、无登记 → 不适用；与 workflow stage 同一规则集合）
+      "experiment_claims_recomputed",
       "blocking_issues_zero",
       "open_critical_major_zero",
       "academic_score_threshold",
@@ -172,6 +182,15 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       "citation_preservation_not_applicable",
       // M5.6 第二层：实验事实保持同口径（无前序修订 → 中性呈现）
       "fact_preservation_not_applicable",
+      // M14.9.5.4：手动入口不再静默少一条累计事实规则
+      "cumulative_fact_preservation_not_applicable",
     ]);
+    const status = new Map(gateRules.map((rule) => [rule.rule, rule]));
+    // 空集合上的「0 条违规」：证据库为空 → NOT_EVALUATED（不阻断）；未执行引用核验 → NOT_EVALUATED（必需）
+    expect(status.get("no_contradictory_evidence")).toMatchObject({ status: "NOT_EVALUATED", required: false });
+    expect(status.get("hallucinated_citations_zero")).toMatchObject({ status: "NOT_EVALUATED", required: true });
+    expect(status.get("target_feasibility")).toMatchObject({ status: "NOT_EVALUATED" });
+    expect(status.get("experiment_claims_recomputed")).toMatchObject({ status: "NOT_APPLICABLE" });
+    expect((got.body["gate"] as { evaluation?: { entry: string } }).evaluation?.entry).toBe("manual");
   });
 });

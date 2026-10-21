@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { evaluateQualityGate, type QualityGateInput } from "../../src/quality/gates.js";
 import type { RevisionValidationResult } from "../../src/review/revisionValidation.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
+import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 const summary: ReviewSummary = {
   generatedAt: "2026-09-18T00:00:00.000Z",
@@ -19,7 +20,7 @@ const summary: ReviewSummary = {
   reviewedRevision: 3,
   issues: [],
   counts: { critical: 0, major: 0, minor: 0, byCategory: {}, blocking: 0 },
-  scores: { academicScore: 90, styleRisk: 20, factVerdicts: null },
+  scores: { academicScore: 90, styleRisk: 20, factVerdicts: { ...EVALUATED_FACT_VERDICTS } },
   openCritical: 0,
   openMajor: 0,
   unsupportedCriticalClaims: 0,
@@ -52,7 +53,7 @@ function validation(partial: Partial<RevisionValidationResult>): RevisionValidat
 function gateWith(revisionValidation: RevisionValidationResult | undefined) {
   const input: QualityGateInput = {
     review: summary,
-    citation: null,
+    citation: cleanCitationReport(),
     evidence: { total: 0, byStatus: { unverified: 0, verified: 0, plausible: 0, mismatch: 0, unverifiable: 0, not_found: 0 }, contradictory: 0, skippedLines: 0 },
     feasibility: null,
   };

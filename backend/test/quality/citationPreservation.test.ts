@@ -32,6 +32,7 @@ import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import type { AgentRuntime } from "../../src/runtime/types.js";
 import { createExistingPaperReviewDefinition } from "../../src/workflow/definitions.js";
 import type { WorkflowServices } from "../../src/workflow/definitions.js";
+import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 const tempRoots: string[] = [];
 afterAll(async () => {
@@ -323,7 +324,8 @@ describe("evaluateCitationPreservation：纯函数判定", () => {
 describe("evaluateQualityGate：citation_keys_preserved / citation_preservation_not_applicable", () => {
   const base = {
     review: emptySummary,
-    citation: null,
+    // M14.9.5.4：通过路径需要已执行的引用核验
+    citation: cleanCitationReport(),
     evidence: { total: 0, byStatus: { unverified: 0, verified: 0, plausible: 0, mismatch: 0, unverifiable: 0, not_found: 0 }, contradictory: 0, skippedLines: 0 },
     feasibility: null,
   };

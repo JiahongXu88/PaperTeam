@@ -297,6 +297,74 @@ describe("质量门禁面板", () => {
     expect(screen.getByText("引用保持不可比较")).toBeVisible();
   });
 
+  it("M14.9.5.4：NOT_EVALUATED 永远不渲染为绿色「通过」；必需核验未执行列为阻止项并说明不是违规", async () => {
+    gateApi.get.mockResolvedValue(
+      gateResponse({
+        gate: {
+          passed: false,
+          reasons: ["unsupported_critical_claims_zero: NOT_EVALUATED（必需核验未完成）：本轮没有执行 claim 级核验"],
+          rules: [
+            { rule: "no_contradictory_evidence", passed: true, status: "NOT_EVALUATED", required: false, detail: "NOT_EVALUATED：项目证据库为空：没有可比对的证据" },
+            { rule: "unsupported_critical_claims_zero", passed: false, status: "NOT_EVALUATED", required: true, detail: "NOT_EVALUATED（必需核验未完成）：本轮没有执行 claim 级核验" },
+            { rule: "experiment_claims_recomputed", passed: false, status: "FAIL", required: true, detail: "1/2 项论断与实验数据复算不一致：S1b（稿件 14 ≠ 复算 12）" },
+            { rule: "cumulative_fact_preservation_not_applicable", passed: true, status: "NOT_APPLICABLE", required: false, detail: "累计事实不可比较" },
+            { rule: "review_unit_context_reported", passed: true, status: "INFO", required: false, detail: "shared_session" },
+            { rule: "hallucinated_citations_zero", passed: true, status: "PASS", required: true, detail: "metadata not_found 引用 0 条" },
+          ],
+          thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
+          checkedAt: "2026-10-21T12:00:00.000Z",
+          verification: {
+            requiredComplete: false,
+            notEvaluated: [
+              { rule: "no_contradictory_evidence", required: false, detail: "" },
+              { rule: "unsupported_critical_claims_zero", required: true, detail: "" },
+            ],
+            notApplicable: ["cumulative_fact_preservation_not_applicable"],
+            counts: { PASS: 1, FAIL: 1, NOT_EVALUATED: 2, NOT_APPLICABLE: 1, INFO: 1 },
+          },
+        },
+      }),
+    );
+    renderGate();
+    const rules = await screen.findByTestId("gate-rules");
+    const statusOf = (rule: string) => rules.querySelector(`[data-rule="${rule}"] .gate-rule-status`)!;
+    expect(statusOf("no_contradictory_evidence")).toHaveTextContent("未评估");
+    expect(statusOf("no_contradictory_evidence")).not.toHaveTextContent("通过");
+    expect(statusOf("no_contradictory_evidence").className).toContain("status-tone-warn");
+    expect(statusOf("unsupported_critical_claims_zero")).toHaveTextContent("未评估（必需）");
+    expect(statusOf("experiment_claims_recomputed")).toHaveTextContent("未通过");
+    expect(statusOf("cumulative_fact_preservation_not_applicable")).toHaveTextContent("不适用");
+    expect(statusOf("review_unit_context_reported")).toHaveTextContent("仅呈现");
+    expect(statusOf("hallucinated_citations_zero")).toHaveTextContent("通过");
+    expect(screen.getByText(/通过 1 · 未通过 1 · 未评估 2 · 不适用 1 · 仅呈现 1/)).toBeVisible();
+    expect(screen.getByText(/2 项阻止论文进入 Final（其中 1 项是必需核验未执行）/)).toBeVisible();
+    expect(screen.getAllByText(/必需核验尚未执行/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("实验论断复算").length).toBeGreaterThan(0);
+  });
+
+  it("M14.9.5.4：PASS 时仍提示未执行的非必需核验（不代表已核验）；legacy 规则（无 status）沿用旧渲染", async () => {
+    gateApi.get.mockResolvedValue(
+      gateResponse({
+        rounds: [{ round: 1, passed: true, checkedAt: "2026-10-21T12:00:00.000Z", blockerCount: 0 }],
+        gate: {
+          passed: true,
+          reasons: [],
+          rules: [
+            RULE("academic_score_threshold", true, "academicScore=86（要求 ≥ 80）"),
+            { rule: "no_contradictory_evidence", passed: true, status: "NOT_EVALUATED", required: false, detail: "NOT_EVALUATED：项目证据库为空" },
+          ],
+          thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
+          checkedAt: "2026-10-21T12:00:00.000Z",
+          verification: { requiredComplete: true, notEvaluated: [{ rule: "no_contradictory_evidence", required: false, detail: "" }], notApplicable: [], counts: { PASS: 1, FAIL: 0, NOT_EVALUATED: 1, NOT_APPLICABLE: 0, INFO: 0 } },
+        },
+      }),
+    );
+    renderGate();
+    expect(await screen.findByTestId("gate-passed-note")).toHaveTextContent("另有 1 项核验未执行（不阻断，但不代表已核验）");
+    const legacy = screen.getByTestId("gate-rules").querySelector('[data-rule="academic_score_threshold"] .gate-rule-status');
+    expect(legacy).toHaveTextContent("通过");
+  });
+
   it("stale：门禁落后于最新审稿 → 提示 + 手动重新评估（POST 后失效重取）", async () => {
     let call = 0;
     gateApi.get.mockImplementation(async () =>

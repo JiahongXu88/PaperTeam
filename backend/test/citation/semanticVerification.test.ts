@@ -33,6 +33,7 @@ import type { PaperDocument } from "../../src/paper/types.js";
 import { PaperStore } from "../../src/paper/PaperStore.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
 import { evaluateQualityGate } from "../../src/quality/gates.js";
+import { cleanCitationReport, EVALUATED_FACT_VERDICTS } from "../helpers/gateFixtures.js";
 
 const R001_ABSTRACT =
   "We present architecture A, a recurrent architecture for sequence modeling. It achieves state of the art results on language modeling benchmarks.";
@@ -576,7 +577,8 @@ describe("M4.3.5 语义核验 v4（atomic claim × citation group，Fake Runtime
     const clean = evaluateQualityGate(
       {
         review: passingReview(),
-        citation: null,
+        // M14.9.5.4：通过路径需要已执行的引用核验（citation=null → 引用规则 NOT_EVALUATED，必需）
+        citation: cleanCitationReport(),
         evidence: { contradictory: 0 } as never,
         feasibility: null,
         citationIntegrity: {
@@ -756,7 +758,7 @@ function passingReview() {
     round: 1,
     issues: [],
     counts: { critical: 0, major: 0, minor: 0, byCategory: {}, blocking: 0 },
-    scores: { academicScore: 90, styleRisk: 10, factVerdicts: null },
+    scores: { academicScore: 90, styleRisk: 10, factVerdicts: { ...EVALUATED_FACT_VERDICTS } },
     openCritical: 0,
     openMajor: 0,
     unsupportedCriticalClaims: 0,

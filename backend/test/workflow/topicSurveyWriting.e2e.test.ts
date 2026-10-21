@@ -144,7 +144,8 @@ const REVIEW_FAIL_FIRST_ROUND = {
 const REVIEW_PASS_LATER_ROUNDS = {
   fact: JSON.stringify({
     summary: "关键论断均有证据支撑。",
-    claims: [],
+    // M14.9.5.4：「均有证据支撑」必须有被评估的 claim（claims=[] 是未评估，Gate 不得 PASS）
+    claims: [{ section: "sections/trends-comparison.tex", claim: "跨方法比较结论有综合证据支撑", verdict: "SUPPORTED" }],
     issues: [],
   }),
   academic: JSON.stringify({

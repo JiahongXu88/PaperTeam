@@ -389,10 +389,16 @@ export interface EvidenceRecordView {
 
 // ---- Quality Gate（确定性判定结果；frontend 只展示，不重算） ----
 
+/** M14.9.5.4：规则执行状态（旧产物无此字段 = 只能按 passed 解释） */
+export type QualityGateRuleStatus = "PASS" | "FAIL" | "NOT_EVALUATED" | "NOT_APPLICABLE" | "INFO";
+
 export interface QualityGateRuleView {
   rule: string;
   passed: boolean;
   detail: string;
+  status?: QualityGateRuleStatus;
+  /** 进入 Final / READY 的必需核验（NOT_EVALUATED + required → 阻止） */
+  required?: boolean;
 }
 
 export interface QualityGateResultView {
@@ -401,6 +407,24 @@ export interface QualityGateResultView {
   rules: QualityGateRuleView[];
   thresholds: { academicPassScore: number; styleRiskMax: number; requireFeasibility: boolean };
   checkedAt: string;
+  /** M14.9.5.4：核验完整性（「没有违规」≠「完成核验」；旧产物无此字段） */
+  verification?: {
+    requiredComplete: boolean;
+    notEvaluated: { rule: string; required: boolean; detail: string }[];
+    notApplicable: string[];
+    counts: Record<QualityGateRuleStatus, number>;
+  };
+  /** M14.9.5.4：评估入口（workflow / manual 共用同一评估器）与输入指纹 */
+  evaluation?: {
+    entry: "workflow" | "manual";
+    workflowKind: string | null;
+    reviewPurpose: string;
+    reviewRound: number;
+    reviewedRevision: number | null;
+    runId: string | null;
+    inputFingerprint: string;
+    contextGaps: string[];
+  };
   /** M11.4：existing-paper 分层判定（Revision Task Success）；旧产物无该字段 = legacy 单层语义 */
   revisionTask?: {
     verdict: "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED";

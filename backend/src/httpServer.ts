@@ -74,16 +74,14 @@ import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
 import { REVIEW_PURPOSES, type ReviewPurpose } from "./review/reviewPurpose.js";
 import {
-  evaluateQualityGate,
   runBuildGateForRevision,
   loadBuildGateRecord,
   saveQualityGateReport,
 } from "./quality/gates.js";
-import { computeCitationPreservation } from "./quality/citationPreservation.js";
-import { computeFactPreservation } from "./quality/factPreservation.js";
 import { collectLatexFiles } from "./manuscript/LatexFiles.js";
 import { revisionViews } from "./manuscript/RevisionStore.js";
-import { isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
+import { isSurveyKind, isThesisKind, isWorkflowKind, WORKFLOW_KINDS, type WorkflowKind } from "./workflow/kinds.js";
+import { evaluateProjectQualityGate } from "./workflow/definitions.js";
 import {
   CITATION_SEMANTIC_MODES,
   DEFAULT_CITATION_SEMANTIC_MODE,
@@ -1182,6 +1180,31 @@ async function handleProjectResourceRoutes(
   }
 
   // ---- Experiment Packages: binary ZIP stream, bounded independently of JSON bodies ----
+  // ---- M14.9.5.4 预先登记的实验论断复算（plan + 对当前稿件的确定性复算账本）----
+  if (resource === "claim-checks" && rest === "") {
+    await stack.projects.getRequired(projectId);
+    const currentLedger = async () => {
+      const files = (await collectLatexFiles(stack.projects.manuscriptDir(projectId))).allTex.map((file) => ({ file: file.relativePath, content: file.content }));
+      // 工作区稿件（不一定等于某个已提交修订）：revision 记 null；审稿轮次的账本见 reviews/claim-checks-r{n}.json
+      return stack.experimentPackages.evaluateClaimChecks(projectId, { revision: null, files });
+    };
+    if (method === "GET") {
+      const { plan, error } = await stack.experimentPackages.loadClaimCheckPlan(projectId);
+      const { ledger, experimentPackages } = await currentLedger();
+      sendJson(res, 200, { plan, ...(error !== undefined ? { planError: error } : {}), ledger, experimentPackages });
+      return true;
+    }
+    if (method === "PUT") {
+      const body = await readJsonBody(req);
+      const plan = await stack.experimentPackages.saveClaimCheckPlan(projectId, body);
+      const { ledger, experimentPackages } = await currentLedger();
+      sendJson(res, 200, { plan, ledger, experimentPackages });
+      return true;
+    }
+    sendMethodNotAllowed(res, "GET, PUT", method);
+    return true;
+  }
+
   if (resource === "experiment-packages") {
     await stack.projects.getRequired(projectId);
     // M13.3 有界载荷：完整 manifest（含全量指标观测）可达数 MB；远程访问
@@ -3762,44 +3785,39 @@ async function handleProjectResourceRoutes(
       return true;
     }
     if (method === "POST") {
-      // 从最新 artifacts 确定性评估（缺 review 时如实报错）
+      // M14.9.5.4：与 workflow 的 quality.gate stage 共用 evaluateProjectQualityGate（同一规则集合 / 前提 / 参数）。
+      // 工作流上下文（类型 / 审稿目的 / build 结果）取项目最近一次 run；取不到的部分写进 evaluation.contextGaps。
       const summary = await stack.reviewArtifacts.latestSummary(projectId);
       if (summary === null) {
         throw new BusinessError("INVALID_REQUEST", "尚无 review 结果（先执行 review 或 workflow）");
       }
-      const citation = await stack.citation.latestReport(projectId);
-      const evidence = await stack.evidence.stats(projectId);
-      const feasibility = (await readFeasibilityReport(stack.projects, projectId))?.report ?? null;
-      // 与 quality.gate stage 同一口径（M5.6 引用保持）：手动重评不能静默少一条规则
-      const citationPreservation = await computeCitationPreservation(
-        { projects: stack.projects, revisions: stack.revisions, reviewArtifacts: stack.reviewArtifacts },
+      const project = await stack.projects.getRequired(projectId);
+      const latestRun = orchestrator !== undefined ? (await orchestrator.listRuns(projectId))[0] : undefined;
+      const workflowKind = latestRun?.workflowKind ?? project.workflowKind;
+      const contextGaps: string[] = [];
+      if (latestRun === undefined) contextGaps.push("项目没有 workflow run 记录：审稿目的按缺省 author_manuscript、build 结果按无错误处理");
+      const buildError = latestRun?.stageResults["build.draft"]?.["buildError"];
+      const evaluation = await evaluateProjectQualityGate(stack.workflowServices, {
         projectId,
-        summary.reviewedRevision,
-      );
-      // M5.6 Fact Preservation 同理：手动重评与 stage 同口径
-      const factPreservation = await computeFactPreservation(
-        {
-          projects: stack.projects,
-          revisions: stack.revisions,
-          reviewArtifacts: stack.reviewArtifacts,
-          evidence: stack.evidence,
-        },
-        projectId,
-        summary.reviewedRevision,
-      );
-      const gate = evaluateQualityGate(
-        { review: summary, citation, evidence, feasibility, citationPreservation, factPreservation },
-        {
-          academicPassScore: stack.workflowServices.review.academicPassScore,
-          styleRiskMax: stack.workflowServices.review.styleRiskMax,
-          requireFeasibility: true,
-        },
-      );
-      await saveQualityGateReport(stack.projects, projectId, summary.round, gate, summary, {
-        citationPreservation,
-        factPreservation,
+        workflowKind,
+        ...(isSurveyKind(workflowKind) ? { survey: true } : {}),
+        ...(isThesisKind(workflowKind) ? { thesis: true } : {}),
+        ...(latestRun !== undefined ? { request: latestRun.request } : {}),
+        ...(typeof buildError === "string" && buildError !== "" ? { buildError } : {}),
+        entry: "manual",
+        runId: latestRun?.runId ?? null,
+        persistPatchValidation: false,
+        contextGaps,
       });
-      sendJson(res, 200, { gate, round: summary.round });
+      await saveQualityGateReport(stack.projects, projectId, evaluation.review.round, evaluation.gate, evaluation.review, {
+        citationPreservation: evaluation.citationPreservation,
+        factPreservation: evaluation.factPreservation,
+        cumulativeFactPreservation: evaluation.cumulativeFactPreservation,
+        ...(evaluation.evidenceCitationCoverage !== undefined ? { evidenceCitationCoverage: evaluation.evidenceCitationCoverage } : {}),
+        ...(evaluation.revisionValidation !== undefined ? { revisionValidation: evaluation.revisionValidation } : {}),
+        ...(evaluation.surveyWriting !== undefined ? { surveyWriting: evaluation.surveyWriting } : {}),
+      });
+      sendJson(res, 200, { gate: evaluation.gate, round: evaluation.review.round });
       return true;
     }
     res.setHeader("Allow", "GET, POST");
