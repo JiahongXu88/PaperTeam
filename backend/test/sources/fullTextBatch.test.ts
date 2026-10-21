@@ -31,6 +31,7 @@ import { RetrievalService } from "../../src/retrieval/RetrievalService.js";
 import { SourceChunker } from "../../src/retrieval/SourceChunker.js";
 import { ChunkAccess } from "../../src/evidence/chunkAccess.js";
 import type { FullTextResolution, FullTextResolver } from "../../src/search/fullText.js";
+import type { PdfAnalysis } from "../../src/sources/PdfAnalyzer.js";
 import { ProviderHttpClient } from "../../src/search/providerHttp.js";
 
 const tempRoots: string[] = [];
@@ -512,5 +513,126 @@ describe("M9.3 边界", () => {
     });
     expect(attached.outcome).toBe("resolved");
     expect(attached.source.fullText?.attempts).toBe(0); // 手动挂载不伪造 resolver 尝试计数
+  });
+});
+
+// ---- M15：并发竞态收尾（promote 后台 fire-and-forget × 批量/手动路径） ----
+
+describe("M15 并发竞态收尾", () => {
+  /**
+   * 复现 topicSurvey E2E 偶发（全量负载下 matrix fulltext=4/5）：promote 的
+   * fire-and-forget 后台解析先挂上文件、其 analyzeFile 仍在途中且无人 await
+   * 时，后到的 tryResolveFullText 只确认「文件已挂」就返回，status 停在
+   * pending → survey.matrix 按 status 判成 abstract_only。修复：后到者在
+   * skipped_has_file 出口前补齐缺失的 analysis（幂等；失败如实 pending）。
+   */
+  it("后台解析先挂文件、分析未完成：后到 tryResolveFullText 返回时 status=available（补齐分析）", async () => {
+    const f = await newFixture();
+    let releaseBackground!: () => void;
+    const backgroundGate = new Promise<void>((resolve) => {
+      releaseBackground = resolve;
+    });
+    let analyzeCalls = 0;
+    const analysis: PdfAnalysis = {
+      analyzer: "fake-race",
+      status: "ok",
+      pageCount: 1,
+      imageCount: 0,
+      extractedChars: PDF_TEXT.length,
+      extractionQuality: "good",
+      headings: [],
+      citationMarkers: 0,
+      textPreview: PDF_TEXT.slice(0, 120),
+      analyzedAt: new Date().toISOString(),
+    };
+    const analyzer = {
+      async analyzeFile(_path: string): Promise<PdfAnalysis> {
+        analyzeCalls += 1;
+        if (analyzeCalls === 1) {
+          await backgroundGate; // 后台先到者的分析停在途中（无人 await 的窗口）
+        }
+        return analysis;
+      },
+    };
+    f.importer.attachFullTextSupport({
+      resolvers: [
+        routingResolver({
+          "10.1234/race": () => ({ kind: "found", url: "https://publisher.org/oa/race.pdf", source: "unpaywall" }),
+        }),
+      ],
+      http: deadHttp,
+      download: trackingDownload().download,
+      analyzer,
+    });
+    const { source } = await f.importer.importDoi(f.projectId, { doi: "10.1234/race", enrich: false });
+
+    // 后台先到者：promote 场景的 fire-and-forget（不 await）
+    const background = f.importer.tryResolveFullText(f.projectId, source.sourceId);
+    // 等它挂上文件（analysis 仍被 gate 挡住，status 停在 pending）
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const item = await f.sources.getRequired(f.projectId, source.sourceId);
+      if (item.fileName !== undefined) {
+        expect(item.status).toBe("pending");
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error("后台解析未在期限内挂上文件");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    // 后到者（stage 批量路径同语义）：返回前必须补齐分析
+    const second = await f.importer.tryResolveFullText(f.projectId, source.sourceId);
+    expect(second.outcome).toBe("skipped_has_file");
+    expect(second.source.status).toBe("available"); // 修复前：pending（后台 analysis 无人等）
+    expect(analyzeCalls).toBe(2); // 后到者自己补跑了一次分析
+
+    releaseBackground();
+    await background;
+    const settled = await f.sources.getRequired(f.projectId, source.sourceId);
+    expect(settled.status).toBe("available"); // 两个 setAnalysis 同内容收敛，无回退
+  });
+
+  it("已有新鲜 analysis 的 skipped 出口不重复分析（幂等）", async () => {
+    const f = await newFixture();
+    let analyzeCalls = 0;
+    const analyzer = {
+      async analyzeFile(_path: string): Promise<PdfAnalysis> {
+        analyzeCalls += 1;
+        return {
+          analyzer: "fake-idem",
+          status: "ok",
+          pageCount: 1,
+          imageCount: 0,
+          extractedChars: PDF_TEXT.length,
+          extractionQuality: "good",
+          headings: [],
+          citationMarkers: 0,
+          textPreview: PDF_TEXT.slice(0, 120),
+          analyzedAt: new Date().toISOString(),
+        };
+      },
+    };
+    f.importer.attachFullTextSupport({
+      resolvers: [
+        routingResolver({
+          "10.1234/idem": () => ({ kind: "found", url: "https://publisher.org/oa/idem.pdf", source: "unpaywall" }),
+        }),
+      ],
+      http: deadHttp,
+      download: trackingDownload().download,
+      analyzer,
+    });
+    const { source } = await f.importer.importDoi(f.projectId, { doi: "10.1234/idem", enrich: false });
+    const first = await f.importer.tryResolveFullText(f.projectId, source.sourceId);
+    expect(first.outcome).toBe("resolved");
+    expect(first.source.status).toBe("available");
+    const callsAfterFirst = analyzeCalls;
+
+    const second = await f.importer.tryResolveFullText(f.projectId, source.sourceId);
+    expect(second.outcome).toBe("skipped_has_file");
+    expect(second.source.status).toBe("available");
+    expect(analyzeCalls).toBe(callsAfterFirst); // 新鲜 analysis → 零重复分析
   });
 });

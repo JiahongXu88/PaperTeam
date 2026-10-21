@@ -566,7 +566,10 @@ export class SourceImportService {
     await this.projects.getRequired(projectId);
     let item = await this.sources.getRequired(projectId, sourceId);
     if (item.fileName !== undefined) {
-      return { outcome: "skipped_has_file", source: item };
+      return {
+        outcome: "skipped_has_file",
+        source: await this.settleAnalysisIfMissing(projectId, item, this.fullText?.analyzer),
+      };
     }
     const support = this.fullText;
     if (support === undefined) {
@@ -633,7 +636,10 @@ export class SourceImportService {
           originalName: resolution.url,
         });
         if (!attach.attached) {
-          return { outcome: "skipped_has_file", source: attach.source };
+          return {
+            outcome: "skipped_has_file",
+            source: await this.settleAnalysisIfMissing(projectId, attach.source, support.analyzer),
+          };
         }
         item = attach.source;
         // 分析与上传路径同一语义：失败不回滚挂载（原始文件已落盘），如实 pending
@@ -692,6 +698,36 @@ export class SourceImportService {
       `[sources] projectId=${projectId} ${sourceId} 全文解析未成（${sawError ? "failed" : "not_found"}，attempts=${attempts}）：${note.slice(0, 160)}`,
     );
     return { outcome: sawError ? "failed" : "not_found", source: item, note };
+  }
+
+  /**
+   * skipped_has_file 出口的确定性收尾（M15）：并发解析同一 source 时（promote 的
+   * fire-and-forget 后台尝试 × stage 批量 / 手动补挂），后到者只确认「文件已挂」
+   * 就返回，而把 status 从 pending 翻成 available/partial 的 analyze→setAnalysis
+   * 只有先到者在做、且无人 await——下游按 status 判定（如 survey.matrix 的
+   * interpretationDepth：available/partial=fulltext，其余=abstract_only）可能读到
+   * pending（全量负载下曾致 topicSurvey E2E matrix fulltext=4/5 偶发）。返回前
+   * 确保缺失/过期的 analysis 已补齐：已有新鲜 analysis 直接返回（幂等）；失败
+   * 如实保持 pending（不回滚挂载，与各挂载路径同一纪律）。
+   */
+  private async settleAnalysisIfMissing(
+    projectId: string,
+    item: SourceItem,
+    analyzer: { analyzeFile(path: string): Promise<PdfAnalysis> } | undefined,
+  ): Promise<SourceItem> {
+    if (item.fileName === undefined || (item.analysis !== undefined && this.sources.isAnalysisFresh(item))) {
+      return item;
+    }
+    const effective = analyzer ?? new BuiltinPdfAnalyzer();
+    try {
+      const analysis = await effective.analyzeFile(await this.sources.filePath(projectId, item.sourceId));
+      return await this.sources.setAnalysis(projectId, item.sourceId, analysis, {
+        ...(item.contentHash !== undefined ? { contentHash: item.contentHash } : {}),
+      });
+    } catch (error) {
+      this.log(`[sources] 全文 ${item.sourceId} 补齐分析失败（保持 pending，不影响挂载）：${errorText(error)}`);
+      return item;
+    }
   }
 
   /**
@@ -780,20 +816,26 @@ export class SourceImportService {
   ): Promise<FullTextResult> {
     await this.projects.getRequired(projectId);
     const existing = await this.sources.getRequired(projectId, sourceId);
+    const support = this.fullText;
     if (existing.fileName !== undefined) {
-      return { outcome: "skipped_has_file", source: existing };
+      return {
+        outcome: "skipped_has_file",
+        source: await this.settleAnalysisIfMissing(projectId, existing, support?.analyzer),
+      };
     }
     if (input.content.subarray(0, 5).toString("latin1") !== "%PDF-") {
       throw new BusinessError("INVALID_REQUEST", "上传内容不是 PDF（缺少 %PDF- 头）");
     }
-    const support = this.fullText;
     const attach = await this.sources.attachFile(projectId, sourceId, {
       fileName: input.fileName,
       content: input.content,
       originalName: input.fileName,
     });
     if (!attach.attached) {
-      return { outcome: "skipped_has_file", source: attach.source };
+      return {
+        outcome: "skipped_has_file",
+        source: await this.settleAnalysisIfMissing(projectId, attach.source, support?.analyzer),
+      };
     }
     let item = attach.source;
     // 分析与自动路径同一语义：失败不回滚挂载（原始文件已落盘），如实 pending
