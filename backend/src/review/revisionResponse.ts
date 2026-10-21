@@ -204,7 +204,7 @@ export function buildRevisionResponseMarkdown(input: RevisionResponseInput): str
     lines.push("## 四、Cumulative Fact Preservation（冻结基线 → 当前稿）");
     lines.push("");
     if (input.cumulativeFactPreservation === null) {
-      lines.push("（无导入冻结基线——非 existing-paper 项目，累计口径不适用。）");
+      lines.push("（累计事实不可比较：无导入冻结基线，或冻结基线之后尚无修订 / 快照缺失；累计口径不适用。）");
     } else {
       const cumulative = input.cumulativeFactPreservation;
       lines.push(

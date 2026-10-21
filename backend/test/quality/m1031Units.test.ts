@@ -116,6 +116,19 @@ describe("G1 Cumulative Fact Preservation（任务 §10 Cases A–D）", () => {
     return { projects, revisions, reviewArtifacts, evidence, projectId: project.id };
   }
 
+  it("M14.9.5.3：existing-paper 冻结基线之后尚无修订 → 不可比较，Gate 文案不得声称「非 existing-paper 项目」", async () => {
+    const stack = await newStackWithProject();
+    const cumulative = await computeCumulativeFactPreservation({ ...stack }, stack.projectId, 1, { existingPaper: true });
+    expect(cumulative).toBeNull();
+    const gate = evaluateQualityGate(
+      { review: emptyPassSummary(), citation: null, evidence: emptyEvidenceStats(), feasibility: null, cumulativeFactPreservation: cumulative },
+    );
+    const rule = gate.rules.find((entry) => entry.rule === "cumulative_fact_preservation_not_applicable");
+    expect(rule?.passed).toBe(true);
+    expect(rule?.detail).not.toContain("非 existing-paper 项目");
+    expect(rule?.detail).toContain("冻结基线之后尚无修订");
+  });
+
   it("Case A：rev1 → rev2 引入未授权数值 → 累计 unresolved ≥ 1（ok=false）", async () => {
     const stack = await newStackWithProject();
     await commitRevision(stack.projects, stack.revisions, stack.projectId, "revision.apply", DRIFTED_TEX);

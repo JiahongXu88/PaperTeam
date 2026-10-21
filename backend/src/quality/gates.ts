@@ -766,7 +766,9 @@ export function evaluateQualityGate(
       rules.push({
         rule: "cumulative_fact_preservation_not_applicable",
         passed: true,
-        detail: "无导入冻结基线（非 existing-paper 项目）；累计事实保持规则不参与判定",
+        // computeCumulativeFactPreservation 的 null 有多种成因（idea_to_paper 无冻结导入稿 /
+        // existing-paper 冻结基线之后尚无修订 / 快照缺失），这里不能断言项目类型（M14.9.5.3）
+        detail: "累计事实不可比较（无导入冻结基线，或冻结基线之后尚无修订 / 快照缺失）；累计事实保持规则不参与判定",
       });
     } else {
       rules.push({
