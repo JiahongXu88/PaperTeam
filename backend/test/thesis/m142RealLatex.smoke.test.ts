@@ -8,9 +8,9 @@
  * 模型侧仍是 scripted runtime（本 smoke 只验证编译与产物链；真实模型见
  * m142RealModel.smoke）。零新增模型调用。
  *
- * 与 thesis.e2e 的差异：testStack realLatex=true（无 fake runner）；scripted
- * 节输出剥掉 \eqref{eq:1}（canned fixture 无对应 \label，真实编译会因未解析
- * 引用正确失败——那正是 M14.1c 修复的 fail-closed，不是本 smoke 的对象）。
+ * 与 thesis.e2e 的差异：testStack realLatex=true（无 fake runner）。M15 修复：
+ * canned 节输出的 equation 环境现带 \label{eq:1}（与正文 \eqref{eq:1} 配对），
+ * 不再需要剥掉悬空 \eqref 的 workaround——fixture 本身可通过真实编译。
  */
 
 import { readFile } from "node:fs/promises";
@@ -18,7 +18,6 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { createScriptedRuntime, THESIS_CONTRIBUTION_QUOTE } from "../../src/runtime/scriptedRuntime.js";
-import type { AgentRuntime, RunAgentInput } from "../../src/runtime/types.js";
 import { startTestStack, type TestStack } from "../helpers/testStack.js";
 import { tableBlock, textBlock } from "./fixtures.js";
 import type { ParsedBlock } from "../../src/ingestion/types.js";
@@ -26,25 +25,11 @@ import type { ParsedBlock } from "../../src/ingestion/types.js";
 const live = process.env["PAPERTEAM_M142_REAL_LATEX"] === "1";
 const cleanups: (() => Promise<void>)[] = [];
 
-/** 剥掉 canned 节输出中的悬空 \eqref（真实编译 fail-closed 会拒绝未解析引用） */
-function eqrefStrippedRuntime(base: AgentRuntime): AgentRuntime {
-  return {
-    ...base,
-    runAgent: async (input: RunAgentInput) => {
-      const task = await base.runAgent(input);
-      if (input.contextScope === "writing/sections" && task.output !== undefined) {
-        return { ...task, output: task.output.replace(/检索质量与幻觉率的关系如式[^。]*。/g, "") };
-      }
-      return task;
-    },
-  };
-}
-
 describe.skipIf(!live)("M14.2 真实 LaTeX 工作流 smoke", () => {
   let stack: TestStack;
 
   beforeAll(async () => {
-    stack = await startTestStack(eqrefStrippedRuntime(createScriptedRuntime({ reviewSequence: ["pass"] }).runtime), {
+    stack = await startTestStack(createScriptedRuntime({ reviewSequence: ["pass"] }).runtime, {
       realLatex: true,
       ...(process.env["PAPERTEAM_M142_REAL_LATEX_ROOT"] !== undefined
         ? { root: process.env["PAPERTEAM_M142_REAL_LATEX_ROOT"] }

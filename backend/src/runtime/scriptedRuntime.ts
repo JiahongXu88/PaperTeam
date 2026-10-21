@@ -241,6 +241,7 @@ export const SECTION_TEX = [
   "",
   "\\begin{equation}",
   "  q = \\alpha r + (1-\\alpha) g",
+  "  \\label{eq:1}",
   "\\end{equation}",
 ].join("\n");
 
@@ -564,6 +565,7 @@ export const REPAIRED_SECTION_TEX = [
   "",
   "\\begin{equation}",
   "  q = \\alpha r + (1-\\alpha) g",
+  "  \\label{eq:1}",
   "\\end{equation}",
   "",
   "修复后的表述：已按结构化诊断修正语法，内容、引用与公式保持不变。",

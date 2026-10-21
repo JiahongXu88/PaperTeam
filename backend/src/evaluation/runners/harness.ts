@@ -568,6 +568,7 @@ export function baselineSectionContent(experimentsWithSecondCitation: boolean): 
     "",
     "\\begin{equation}",
     "  q = \\alpha r + (1-\\alpha) g",
+    "  \\label{eq:1}",
     "\\end{equation}",
   ].join("\n");
   return experimentsWithSecondCitation ? `${base}\n\n开创性工作亦见 \\cite{lewis2020rag}。` : base;
