@@ -49,7 +49,7 @@ const ACADEMIC_REDUNDANCY_PATTERN = /^academic-redundancy-rev(\d+)\.json$/;
  * 不参与任何 Gate 判定。
  */
 /** M15.1 shadow 审计产物种类 */
-export type M151AuditKind = "claim-audit" | "citation-audit" | "quality-decision-v2-shadow";
+export type M151AuditKind = "claim-audit" | "citation-audit" | "quality-decision-v2-shadow" | "finding-adjudication";
 
 export interface WritingPlanSectionRecord {
   sectionId: string;

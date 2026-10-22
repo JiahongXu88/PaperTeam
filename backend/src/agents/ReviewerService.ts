@@ -11,7 +11,7 @@
  * 会话互不污染；输出为统一结构的 ReviewIssue，经确定性校验后落盘 reviews/。
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -45,7 +45,9 @@ import {
   type CrossUnitRecheckItem,
   type CrossUnitRecheckResult,
   type UnitClaimExtraction,
+  type UnitClaimStage,
 } from "../review/claimAudit.js";
+import { parseFindingRecheckOutput, renderFindingRecheckPrompt, type FindingRecheckItem, type FindingRecheckResult } from "../review/findingVerification.js";
 
 export type ReviewMode = "fact" | "academic" | "style";
 
@@ -469,8 +471,12 @@ export class ReviewerService {
     publishedAssessmentLines?: string[];
     /** M14.9.5.4：论断原文落在本单元的实验论断复算结果块（undefined → prompt 与请求指纹逐字节不变） */
     claimCheckLines?: string[];
-    /** M15.1：单元审稿追加论断账本契约（unit-claims/v1）；缺省 → prompt 与请求指纹逐字节不变 */
-    claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT };
+    /**
+     * M15.1：单元审稿追加论断账本契约（unit-claims/v1）；缺省 → prompt 与请求指纹逐字节不变。
+     * M15.2：stage = "separate"（缺省）时单元审稿 prompt 与无契约口径逐字节一致，论断账本由紧随其后的独立 sealed 调用抽取
+     * （G5：契约内联时同输入重复采样下真实 major 根因被稳定漏掉 / 降级）；"inline" = M15.1 口径（A/B 对照用）。
+     */
+    claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT; stage?: UnitClaimStage };
     /**
      * M14.9.5.1 单元上下文策略（review.unitContextPolicy）。undefined = shared_session：同项目全部单元共用
      * review/academic/unit 会话，prompt 与会话派生与 2df31cf 逐字节一致。给出时：每次尝试一个全新物理会话
@@ -505,12 +511,45 @@ export class ReviewerService {
     const metaSessionKey = task.metadata?.["sessionKey"];
     const metaModel = task.metadata?.["model"];
     // M15.1：论断账本（extended 契约）。claims 缺失 / 非数组只做 ≤ UNIT_CLAIM_REPAIR_MAX 次有界结构化修复（同一会话、
-    // 只补 claims，不重做审稿）；修复失败如实记 ABSENT / INVALID——不阻断单元，也不伪造空账本为「已抽取」
+    // 只补 claims，不重做审稿）；修复失败如实记 ABSENT / INVALID——不阻断单元，也不伪造空账本为「已抽取」。
+    // M15.2 separate：审稿调用不含契约（与无契约口径逐字节一致）；账本由独立 sealed 会话抽取（prompt = 单元原文 + 契约 + 只读 issues 列表）
     let claimExtraction: UnitClaimExtraction | undefined;
     if (params.claimAudit !== undefined) {
-      let extraction = parseUnitClaims(parsed);
+      const separate = params.claimAudit.stage === "separate";
+      const claimSessionKey = separate
+        ? `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/unit-claims/${sha256Hex(params.unit.unitId).slice(0, 10)}-${randomUUID().slice(0, 8)}`
+        : sessionKey;
+      let stageTask: { taskId: string; promptSha256: string; usage?: Record<string, unknown>; status: string } | undefined;
+      let extraction: Omit<UnitClaimExtraction, "repairAttempts">;
+      if (separate) {
+        const claimPrompt = buildUnitClaimExtractionPrompt(params, issues);
+        const claimTask = await this.runtime.runAgent({
+          agentId: this.agentId,
+          ...this.timeoutOverride,
+          signal: params.signal,
+          task: claimPrompt,
+          projectId: params.projectId,
+          sessionKey: claimSessionKey!,
+          toolPolicy: "sealed",
+          contextScope: "review/academic/unit-claims",
+          ...(params.language !== undefined ? { language: params.language } : {}),
+          metadata: { role: "reviewer", skill: "unit-claims", unit: params.unit.unitId },
+        }).catch((error: unknown) => ({ status: "failed" as const, taskId: "(claims-stage-error)", output: "", error: error instanceof Error ? error.message : String(error) }));
+        stageTask = { taskId: claimTask.taskId, promptSha256: sha256Hex(claimPrompt), status: claimTask.status, ...("usage" in claimTask && claimTask.usage !== undefined ? { usage: claimTask.usage as unknown as Record<string, unknown> } : {}) };
+        if (claimTask.status !== "completed") {
+          extraction = { status: "ABSENT", contract: UNIT_CLAIM_CONTRACT, claims: [], errors: [`论断抽取调用失败：${String(("error" in claimTask ? claimTask.error : undefined) ?? claimTask.status).slice(0, 160)}`] };
+        } else {
+          try {
+            extraction = parseUnitClaims(extractJsonObject(claimTask.output ?? "", `Review unit（${params.unit.unitId}）论断抽取`));
+          } catch (error) {
+            extraction = { status: "INVALID", contract: UNIT_CLAIM_CONTRACT, claims: [], errors: [`论断抽取输出无法解析：${error instanceof Error ? error.message.slice(0, 120) : String(error)}`] };
+          }
+        }
+      } else {
+        extraction = parseUnitClaims(parsed);
+      }
       let repairAttempts = 0;
-      while ((extraction.status === "ABSENT" || extraction.status === "INVALID") && repairAttempts < UNIT_CLAIM_REPAIR_MAX && params.signal?.aborted !== true) {
+      while ((extraction.status === "ABSENT" || extraction.status === "INVALID") && repairAttempts < UNIT_CLAIM_REPAIR_MAX && params.signal?.aborted !== true && !(separate && stageTask?.status !== "completed")) {
         repairAttempts += 1;
         const repair = await this.runtime.runAgent({
           agentId: this.agentId,
@@ -518,10 +557,10 @@ export class ReviewerService {
           signal: params.signal,
           task: buildUnitClaimRepairPrompt(params.unit.heading, extraction.errors),
           projectId: params.projectId,
-          ...(sessionKey !== undefined ? { sessionKey, toolPolicy: "sealed" as const } : {}),
-          contextScope: "review/academic/unit",
+          ...(claimSessionKey !== undefined ? { sessionKey: claimSessionKey, toolPolicy: "sealed" as const } : {}),
+          contextScope: separate ? "review/academic/unit-claims" : "review/academic/unit",
           ...(params.language !== undefined ? { language: params.language } : {}),
-          metadata: { role: "reviewer", skill: "unit", unit: params.unit.unitId, structuredRepairAttempt: repairAttempts, repairField: "claims" },
+          metadata: { role: "reviewer", skill: separate ? "unit-claims" : "unit", unit: params.unit.unitId, structuredRepairAttempt: repairAttempts, repairField: "claims" },
         }).catch(() => null);
         if (repair === null || repair.status !== "completed") break;
         try {
@@ -531,7 +570,7 @@ export class ReviewerService {
           extraction = { ...extraction, errors: [...extraction.errors, `修复输出无法解析：${error instanceof Error ? error.message.slice(0, 120) : String(error)}`] };
         }
       }
-      claimExtraction = { ...extraction, repairAttempts };
+      claimExtraction = { ...extraction, repairAttempts, ...(separate ? { stage: "separate" as const, ...(stageTask !== undefined ? { stageTask } : {}) } : {}) };
     }
     return {
       issues,
@@ -585,6 +624,44 @@ export class ReviewerService {
     };
   }
 
+  /**
+   * M15.2：有界 finding 定向复核（一次调用一批；全新 sealed 会话，prompt 即全部材料）。候选片段由确定性查找给出，
+   * 返回的 evidenceQuote 由调用方逐字核对是否落在片段中；本方法不判定结论、不改 finding。
+   */
+  async recheckFindingsCrossUnit(params: {
+    projectId: string;
+    items: readonly FindingRecheckItem[];
+    sessionLabel: string;
+    language?: ManuscriptLanguage;
+    signal?: AbortSignal;
+  }): Promise<{ results: FindingRecheckResult[]; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
+    const prompt = renderFindingRecheckPrompt(params.items);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: prompt,
+      projectId: params.projectId,
+      sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/finding-recheck/${params.sessionLabel}`,
+      toolPolicy: "sealed",
+      contextScope: "review/academic/finding-recheck",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+      metadata: { role: "reviewer", skill: "finding-recheck", items: params.items.length },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `finding 定向复核任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "finding 定向复核结果");
+    const metaModel = task.metadata?.["model"];
+    return {
+      results: parseFindingRecheckOutput(parsed, new Set(params.items.map((item) => item.findingId))),
+      taskId: task.taskId,
+      promptSha256: sha256Hex(prompt),
+      ...(typeof metaModel === "string" ? { model: metaModel } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+    };
+  }
+
   /** M14.9.5.1：隔离策略下单元审查的物理会话 key（与 reviewUnit 派生规则一致；trace 用） */
   unitSessionKey(projectId: string, sessionLabel: string): string {
     return `agent:${this.agentId}:paperteam-${projectId}--review/academic/unit/${sessionLabel}`;
@@ -622,6 +699,8 @@ export class ReviewerService {
       prompt,
       // M14.9.5.1：隔离会话的审查与共享会话（以及不同上下文策略之间）不可互为缓存（共享会话缺省不出现该键，指纹不变）
       ...(params.unitContext !== undefined ? { contextPolicy: params.unitContext.policy } : {}),
+      // M15.2：separate 口径的审稿 prompt 与无契约口径相同，但记录里带独立抽取的账本——不可与无契约记录互为缓存
+      ...(params.claimAudit?.stage === "separate" ? { claimStage: `${params.claimAudit.contract}:separate:${UNIT_CLAIM_EXTRACTION_PROMPT_VERSION}` } : {}),
     })).digest("hex");
     return { promptSha256, contextSnapshotHash, requestFingerprint, model, skills: context?.skills ?? null };
   }
@@ -1221,6 +1300,40 @@ const DIGEST_CLAIM_AUDIT_LINES: readonly string[] = [
   "数值核对时再给 counterpartQuote（对照处逐字原文）与 claimValue / counterpartValue（照原文写，含单位）。没有找到证据时 verdict 仍按上面的规则填写，但这只表示「无已核验证据」，不要写成论断已被证伪。",
 ];
 
+/** M15.2 separate 口径：独立论断抽取调用的 prompt 版本（进入请求指纹） */
+export const UNIT_CLAIM_EXTRACTION_PROMPT_VERSION = "unit-claims-extraction/v1";
+
+/**
+ * M15.2 separate 口径的独立论断抽取（审稿之后、独立 sealed 会话）：只给单元原文 + 章节索引 + 契约 + 审稿已列 issues（只读，供 issueIndex 关联）。
+ * 不重新审稿、不新增问题；账本状态仍由 review/claimAudit 确定性判定。
+ */
+function buildUnitClaimExtractionPrompt(
+  params: { unit: { heading: string; file: string; unitIndex: number; unitCount: number; text: string }; chapterIndex: string[]; paperTitle?: string },
+  issues: ReadonlyArray<Pick<ReviewIssue, "severity" | "description" | "quote">>,
+): string {
+  return [
+    "你是学术审稿人。下面是长篇论文中一个章节片段（编辑单元）的完整原文，以及审稿时已对它列出的问题（只读）。",
+    "本次只为这个单元建立论断账本：不要重新审稿，不要新增或改写问题。",
+    ...(params.paperTitle !== undefined ? [`论文题目：${params.paperTitle}`] : []),
+    `章节：「${params.unit.heading}」（文件 ${params.unit.file}；第 ${params.unit.unitIndex}/${params.unit.unitCount} 单元）`,
+    "全文档章节索引（只读导航，不含其他章节正文）：",
+    ...params.chapterIndex.map((entry, index) => `  ${index + 1}. ${entry}`),
+    "",
+    ...UNIT_CLAIM_CONTRACT_LINES,
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏）：",
+    "{",
+    UNIT_CLAIM_JSON_TEMPLATE.replace(/,$/, ""),
+    "}",
+    "",
+    "===== 审稿已列出的问题（只读；issueIndex 指这里的 0 基下标）=====",
+    ...(issues.length === 0 ? ["（无）"] : issues.map((issue, index) => `${index}. [${issue.severity}] ${issue.description.slice(0, 240)}${issue.quote !== undefined ? ` 「${issue.quote.slice(0, 120)}」` : ""}`)),
+    "",
+    `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
+    params.unit.text,
+  ].join("\n");
+}
+
 function buildUnitClaimRepairPrompt(heading: string, errors: readonly string[]): string {
   return [
     `你上一条对章节「${heading}」的审查输出缺少合法的 claims 论断账本（${errors.slice(0, 3).join("；")}）。`,
@@ -1242,7 +1355,7 @@ function buildUnitReviewPrompt(params: {
   publishedAssessmentLines?: string[];
   claimCheckLines?: string[];
   /** M15.1：单元审稿追加论断账本契约（unit-claims/v1）；缺省 → prompt 与请求指纹逐字节不变 */
-  claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT };
+  claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT; stage?: UnitClaimStage };
   unitContext?: Pick<UnitReviewContext, "policy" | "dependencies" | "gaps" | "sourceVerification">;
 }): string {
   const dependencyBlock = params.unitContext?.policy === "isolated_snapshot"
@@ -1287,7 +1400,7 @@ function buildUnitReviewPrompt(params: {
     "4. 本单元视角发现疑似跨章冲突（与索引中其他章节的符号 / 定义 / 数值 / 表述不一致）时，先记为问题并在 description 中写明冲突章节名，但不要凭单侧文本下结论。",
     ...(params.neutralityPolicy === true ? [`5. ${REVIEW_NEUTRALITY_CLAUSE}`] : []),
     ...contextClauses,
-    ...(params.claimAudit !== undefined ? UNIT_CLAIM_CONTRACT_LINES : []),
+    ...(params.claimAudit !== undefined && params.claimAudit.stage !== "separate" ? UNIT_CLAIM_CONTRACT_LINES : []),
     "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
     "{",
@@ -1301,7 +1414,7 @@ function buildUnitReviewPrompt(params: {
     params.publishedAssessmentLines !== undefined
       ? '    "reason": "为什么是问题（可选）", "verification": "VERIFIED_IN_TEXT|AUTHOR_CHECK_REQUIRED|EXTERNAL_DATA_REQUIRED", "blocking": false}],'
       : '    "reason": "为什么是问题（可选）", "blocking": false}],',
-    ...(params.claimAudit !== undefined ? [UNIT_CLAIM_JSON_TEMPLATE] : []),
+    ...(params.claimAudit !== undefined && params.claimAudit.stage !== "separate" ? [UNIT_CLAIM_JSON_TEMPLATE] : []),
     '  "academicScore": 0-100（本单元学术质量）,',
     '  "riskScore": 0-100（本单元 AI 文风风险）',
     "}",

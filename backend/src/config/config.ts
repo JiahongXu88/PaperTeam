@@ -20,6 +20,7 @@ import {
   type ReviewUnitContextPolicy,
 } from "../review/reviewContextSnapshot.js";
 import { CLAIM_AUDIT_MODES, parseClaimAuditMode, type ClaimAuditMode } from "../review/claimAuditMode.js";
+import type { UnitClaimStage } from "../review/claimAudit.js";
 
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
@@ -131,6 +132,17 @@ export interface ReviewConfig {
   claimAudit: ClaimAuditMode;
   /** M15.1：extended 模式下每轮有界跨单元论断复核的模型调用上限（PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS，缺省 2，0 = 关闭） */
   claimRecheckMaxCalls: number;
+  /**
+   * M15.2：extended 模式下每轮 finding 定向复核的模型调用上限（PAPERTEAM_REVIEW_FINDING_RECHECK_CALLS，缺省 3，0 = 关闭）。
+   * 只复核 critical / major 中词面诊断为 CONTEXT_INCOMPLETE 的条目；结果只进 shadow 四轴裁决。
+   */
+  findingRecheckMaxCalls: number;
+  /**
+   * M15.2：extended 模式下单元论断账本的抽取方式（PAPERTEAM_REVIEW_CLAIM_STAGE，缺省 inline = M15.1 口径）。
+   * separate = 审稿 prompt 与无契约口径逐字节一致 + 每单元一次独立 sealed 抽取调用（A/B 杠杆；G5 重复采样未显示 inline 的
+   * 净召回损失，缺省未切换）。
+   */
+  claimStage: UnitClaimStage;
   /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
@@ -688,6 +700,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       }),
       claimAudit: readClaimAuditMode(source),
       claimRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS", { default: 2, min: 0, max: 8 }),
+      findingRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_FINDING_RECHECK_CALLS", { default: 3, min: 0, max: 8 }),
+      claimStage: readOptionalValue(source, "PAPERTEAM_REVIEW_CLAIM_STAGE")?.trim().toLowerCase() === "separate" ? "separate" : "inline",
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")

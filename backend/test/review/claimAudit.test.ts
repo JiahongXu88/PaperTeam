@@ -196,12 +196,18 @@ describe("M15.1 Review Claim Ledger", () => {
     expect(task.snippets.some((snippet) => snippet.text.includes("This work & 61.7"))).toBe(true);
     const items = selectRecheckItems(audit, 8);
     expect(items).toHaveLength(1);
-    // 1) 引文落在片段里且数值不同 → VERIFIED_CONTRADICTED
-    const ok = applyCrossUnitRecheck(structuredClone(audit), [{ batchId: "B1", items, status: "COMPLETED", attempts: 1, results: [{ claimId: claim.claimId, check: "INCONSISTENT", counterpartQuote: "This work & 61.7 & 74.4", claimValue: "63.7%", counterpartValue: "61.7" }] }]);
+    // 1) 引文落在片段里、数值不同、证书唯一绑定（M15.2：需传入文件内容出具证书）→ VERIFIED_CONTRADICTED
+    const recheck = [{ batchId: "B1", items, status: "COMPLETED" as const, attempts: 1, results: [{ claimId: claim.claimId, check: "INCONSISTENT" as const, counterpartQuote: "This work & 61.7 & 74.4", claimValue: "63.7%", counterpartValue: "61.7" }] }];
+    const ok = applyCrossUnitRecheck(structuredClone(audit), recheck, { files: [{ file: "main.tex", content: FILE }] });
     expect(ok.claims[0]!.verificationStatus).toBe("VERIFIED_CONTRADICTED");
+    expect(ok.claims[0]!.certificate?.outcome).toBe("CONTRADICTED");
     expect(ok.claims[0]!.reviewer.origin).toBe("cross_unit_recheck");
     expect(ok.crossUnitTasks[0]!.recheck?.status).toBe("COMPLETED");
     expect(ok.coverage.crossUnitTasks.recheckCompleted).toBe(1);
+    // 1b) 旧调用方不给文件内容 → 无证书 → 最高 REVIEWER_SUSPECTED（不再凭写出的两个数确认）
+    const noFiles = applyCrossUnitRecheck(structuredClone(audit), recheck);
+    expect(noFiles.claims[0]!.verificationStatus).toBe("REVIEWER_SUSPECTED");
+    expect(noFiles.claims[0]!.downgrades).toContain("CERTIFICATE_NOT_ISSUED");
     // 2) 引文不在片段里 → 只能 REVIEWER_SUSPECTED
     const fabricated = applyCrossUnitRecheck(structuredClone(audit), [{ batchId: "B1", items, status: "COMPLETED", attempts: 1, results: [{ claimId: claim.claimId, check: "INCONSISTENT", counterpartQuote: "This work reaches 59.9 HOTA", claimValue: "63.7%", counterpartValue: "59.9" }] }]);
     expect(fabricated.claims[0]!.verificationStatus).toBe("REVIEWER_SUSPECTED");

@@ -17,6 +17,7 @@ import type { ReviewSummary } from "../review/ReviewAggregator.js";
 import type { summarizeClaimAudit } from "../review/claimAudit.js";
 import type { summarizeCitationAudit } from "../citation/readOnlyCitationAudit.js";
 import type { FindingAuditSummary } from "../review/findingAudit.js";
+import type { FindingAdjudicationArtifact } from "../review/findingAdjudication.js";
 
 export const QUALITY_DECISION_V2_SCHEMA = "paperteam.quality-decision-v2/shadow-1";
 
@@ -62,6 +63,11 @@ export interface QualityDecisionV2Shadow {
     parseArtifactSuspected: number;
     other: number;
   } | null;
+  /**
+   * M15.2：四轴裁决摘要（根因口径）。verification / severity / blocking / taskScope 分开报告，不折算成分数；
+   * 生产 Gate 与 revisionTask / publicationReadiness 不读它。
+   */
+  findingAdjudication: (FindingAdjudicationArtifact["summary"] & { path: string | null; schema: string }) | null;
   academicQuality: { legacyScore: number | null; legacyThreshold: number; calibration: "UNVALIDATED"; role: "BASELINE_ONLY_UNTIL_M15_3" };
   styleQuality: StyleQualityV2;
   verificationCompleteness: { complete: boolean; missing: string[] };
@@ -76,6 +82,7 @@ export function computeQualityDecisionV2Shadow(input: {
   claimAudit: ReturnType<typeof summarizeClaimAudit> | null;
   citationAudit: ReturnType<typeof summarizeCitationAudit> | null;
   findingAudit: FindingAuditSummary | null;
+  findingAdjudication?: QualityDecisionV2Shadow["findingAdjudication"];
 }): QualityDecisionV2Shadow {
   const { gate, review, claimAudit, citationAudit, findingAudit } = input;
   const requiredNotEvaluated = gate.rules.filter((rule) => rule.status === "NOT_EVALUATED" && rule.required === true).map((rule) => rule.rule);
@@ -128,6 +135,7 @@ export function computeQualityDecisionV2Shadow(input: {
           parseArtifactSuspected: cm.byStatus.PARSE_ARTIFACT_SUSPECTED,
           other: cm.byStatus.QUOTE_NOT_LOCATED + cm.byStatus.NO_QUOTE,
         },
+    findingAdjudication: input.findingAdjudication ?? null,
     academicQuality: { legacyScore: review.scores.academicScore, legacyThreshold: gate.thresholds.academicPassScore, calibration: "UNVALIDATED", role: "BASELINE_ONLY_UNTIL_M15_3" },
     styleQuality: {
       role: "ADVISORY_NOT_A_GATE",

@@ -21,6 +21,7 @@
 import type { FactClaimCheck } from "../agents/ReviewerService.js";
 import type { ClaimCheckResult } from "../experiments/claimChecks.js";
 import type { FindingAuditRecord, FindingAuditSummary } from "./findingAudit.js";
+import type { FindingRecheckArtifactSection } from "./findingVerification.js";
 import {
   indexDependencyTargets,
   resolveUnitDependencies,
@@ -43,10 +44,16 @@ import {
   textContainsNumber,
   type ValueComparison,
 } from "./claimAuditText.js";
+import { buildCertificateDocument, certifyClaim, type CertificateDocument, type ClaimCertificate } from "./claimCertificate.js";
 
-export const CLAIM_AUDIT_SCHEMA = "paperteam.review-claim-audit/v1";
+export const CLAIM_AUDIT_SCHEMA = "paperteam.review-claim-audit/v2";
+/** M15.1 产物（读取兼容：状态由 verifier v1 判定，没有核验证书） */
+export const CLAIM_AUDIT_SCHEMA_V1 = "paperteam.review-claim-audit/v1";
+export const CLAIM_AUDIT_SCHEMAS: readonly string[] = [CLAIM_AUDIT_SCHEMA, CLAIM_AUDIT_SCHEMA_V1];
 export const CLAIM_ID_RULE = "claim-id/v1: sha256(file | NFKC-whitespace-stripped quote | occurrence-in-file)[0:16]";
-export const CLAIM_AUDIT_VERIFIER = "claim-audit-verifier/v1";
+/** v2（M15.2）：VERIFIED_* 只来自 claim-certificate/v1 证书（唯一绑定 / 派生量复算）；v1 的词面守卫只留作诊断 */
+export const CLAIM_AUDIT_VERIFIER = "claim-audit-verifier/v2";
+export const ROOT_CAUSE_RULE = "root-cause/v1: connected components over certificate atoms (claim atom ↔ counterpart atom ↔ uniquely bound cell); no lexical similarity";
 /** 单元审稿 prompt 的论断账本契约版本（进入 prompt → 请求指纹；变更即旧单元记录不可复用） */
 export const UNIT_CLAIM_CONTRACT = "unit-claims/v1";
 
@@ -85,7 +92,9 @@ export type ClaimDowngrade =
   | "COUNTERPART_NOT_LOCATED"
   | "VALUE_CHECK_DISAGREES"
   | "VALUE_NOT_COMPARABLE"
-  | "VALUE_NOT_IN_QUOTE";
+  | "VALUE_NOT_IN_QUOTE"
+  /** v2：确定性证书未出具（绑定不唯一 / 派生解释不唯一 / 量纲歧义 / 约数限定 …，原因码见 certificate.reasons） */
+  | "CERTIFICATE_NOT_ISSUED";
 
 /** 来源核验等级 + 依据（文档级） */
 export interface ClaimAuditSourceVerification {
@@ -115,7 +124,14 @@ export interface UnitClaimExtraction {
   errors: string[];
   /** 有界结构化修复调用次数（仅 ABSENT / INVALID 触发，≤ UNIT_CLAIM_REPAIR_MAX） */
   repairAttempts: number;
+  /** M15.2：separate = 论断由审稿之后的独立 sealed 调用抽取（缺省 / 旧记录 = 与审稿同一输出内联） */
+  stage?: "separate";
+  stageTask?: { taskId: string; promptSha256: string; status: string; usage?: Record<string, unknown> };
 }
+
+/** M15.2：单元论断账本的抽取方式（inline = M15.1 契约内联进审稿 prompt；separate = 审稿 prompt 不变 + 独立抽取调用） */
+export type UnitClaimStage = "inline" | "separate";
+export const UNIT_CLAIM_STAGES: readonly UnitClaimStage[] = ["inline", "separate"];
 
 export const UNIT_CLAIM_MAX = 12;
 export const UNIT_CLAIM_REPAIR_MAX = 1;
@@ -225,6 +241,10 @@ export interface ReviewClaimRecord {
   };
   counterpart?: { quote: string; located: "IN_UNIT" | "OTHER_UNIT" | "IN_SNIPPET" | "NOT_LOCATED"; location?: ClaimLocation };
   valueCheck?: { claimValue: string; counterpartValue: string; comparison: ValueComparison | "UNPARSEABLE"; claimValueInQuote: boolean; counterpartValueInCounterpart: boolean; descriptorsComparable: boolean; sameQuantityPremise: boolean; derived: boolean };
+  /** v2：确定性核验证书（VERIFIED_* 的唯一依据；未出具时 reasons 说明原因） */
+  certificate?: ClaimCertificate;
+  /** v2：根因 id（同一组原子 / 同一绑定单元格的论断共享；单条论断自成一类） */
+  rootCauseId?: string;
   verificationStatus: ClaimVerificationStatus;
   basis: ClaimBasis;
   verifier: { kind: "model" | "deterministic" | "model+deterministic"; id: string };
@@ -312,9 +332,11 @@ export interface ClaimAuditCoverage {
 }
 
 export interface ClaimAuditArtifact {
-  schema: typeof CLAIM_AUDIT_SCHEMA;
+  schema: typeof CLAIM_AUDIT_SCHEMA | typeof CLAIM_AUDIT_SCHEMA_V1;
   idRule: typeof CLAIM_ID_RULE;
-  verifier: typeof CLAIM_AUDIT_VERIFIER;
+  verifier: typeof CLAIM_AUDIT_VERIFIER | "claim-audit-verifier/v1";
+  /** v2：根因合并规则（v1 产物缺省） */
+  rootCauseRule?: typeof ROOT_CAUSE_RULE;
   generatedAt: string;
   projectId: string;
   round: number;
@@ -340,6 +362,8 @@ export interface ClaimAuditArtifact {
   notes: string[];
   /** finding provenance audit（同轮 summary.issues 的确定性诊断；review.run 附加） */
   findingAudit?: { summary: FindingAuditSummary; records: FindingAuditRecord[] };
+  /** M15.2：finding 定向复核（确定性队列 + 有界模型复核 + 引文校验；review.run 附加） */
+  findingRecheck?: FindingRecheckArtifactSection;
   /** 有界跨单元复核的调用账本（review.run 附加；未执行 = 缺省） */
   recheck?: { maxCalls: number; batches: Array<{ batchId: string; items: number; status: "COMPLETED" | "FAILED"; attempts: number; taskId?: string; promptSha256?: string; model?: string; usage?: Record<string, unknown>; error?: string }> };
 }
@@ -383,6 +407,10 @@ export interface ClaimAuditInput {
   sourceVerification: ClaimAuditSourceVerification;
   /** 输入保真报告记录的转写疑点摘录（命中即 PARSE_ARTIFACT_SUSPECTED） */
   conversionExcerpts?: readonly string[];
+  /** v2：论文题目（本文方法名识别；缺省从 \title 读取） */
+  title?: string | null;
+  /** v2：证书检索的全部 LaTeX 文件（缺省 = files；表格可能在覆盖范围之外的 \input 文件中） */
+  certificateFiles?: ReadonlyArray<{ file: string; content: string }>;
   body: { targetChars: number; reviewedChars: number; ratio: number; complete: boolean };
   models?: string[];
   maxCrossUnitTasks?: number;
@@ -532,6 +560,8 @@ interface DecisionInput {
   evidenceVerified: boolean;
   claimCheck?: ClaimCheckResult;
   valueCheck?: ReviewClaimRecord["valueCheck"];
+  /** v2：确定性核验证书（原文内跨处核对的唯一升级依据） */
+  certificate?: ClaimCertificate;
   counterpartLocated: boolean;
   counterpartRisk: string[];
   quoteRisk: string[];
@@ -543,6 +573,8 @@ interface DecisionInput {
 
 /**
  * 单条论断的确定性状态判定（与汇总无关：同一输入恒得同一状态，聚合层不得改写）。
+ * v2：原文内跨处核对只有在 claim-certificate/v1 出具证书（唯一绑定 / 派生量复算）且与模型核对结论一致时才给 VERIFIED_*；
+ * v1 的数值比较与词面守卫保留为诊断字段（valueCheck），不再决定状态。
  */
 export function decideClaimStatus(input: DecisionInput): Pick<ReviewClaimRecord, "verificationStatus" | "basis" | "verifier" | "downgrades" | "statusReason"> {
   const downgrades: ClaimDowngrade[] = [];
@@ -563,32 +595,44 @@ export function decideClaimStatus(input: DecisionInput): Pick<ReviewClaimRecord,
   }
   const check = input.check ?? verdictToCheck(input.verdict);
   const risky = !sourceVerifiable(input.sourceLevel) && (input.quoteRisk.length > 0 || input.counterpartRisk.length > 0 || input.conversionHit);
-  // 3. 原文内跨处核对（双引文定位 + 写出的数值比较）
-  if ((check === "CONSISTENT" || check === "INCONSISTENT") && input.valueCheck !== undefined) {
+  // 3. 原文内跨处核对（v2：证书 = 唯一升级依据；数值比较 / 词面守卫只给诊断降级原因）
+  if ((check === "CONSISTENT" || check === "INCONSISTENT") && (input.valueCheck !== undefined || input.certificate !== undefined)) {
     const value = input.valueCheck;
-    if (!value.claimValueInQuote || !value.counterpartValueInCounterpart) downgrades.push("VALUE_NOT_IN_QUOTE");
-    if (!input.counterpartLocated) downgrades.push("COUNTERPART_NOT_LOCATED");
-    if (value.comparison === "SCALE_AMBIGUOUS" || value.comparison === "UNPARSEABLE" || value.descriptorsComparable === false || value.sameQuantityPremise === false || value.derived === true) downgrades.push("VALUE_NOT_COMPARABLE");
-    const agrees = (check === "CONSISTENT" && value.comparison === "EQUAL") || (check === "INCONSISTENT" && value.comparison === "DIFFERENT");
-    if ((check === "CONSISTENT" && value.comparison === "DIFFERENT") || (check === "INCONSISTENT" && value.comparison === "EQUAL")) downgrades.push("VALUE_CHECK_DISAGREES");
+    if (value !== undefined) {
+      if (!value.claimValueInQuote || !value.counterpartValueInCounterpart) downgrades.push("VALUE_NOT_IN_QUOTE");
+      if (value.comparison === "SCALE_AMBIGUOUS" || value.comparison === "UNPARSEABLE" || value.descriptorsComparable === false || value.sameQuantityPremise === false || value.derived === true) downgrades.push("VALUE_NOT_COMPARABLE");
+      if ((check === "CONSISTENT" && value.comparison === "DIFFERENT") || (check === "INCONSISTENT" && value.comparison === "EQUAL")) downgrades.push("VALUE_CHECK_DISAGREES");
+    }
+    const certificate = input.certificate;
+    const derived = certificate?.kind === "DERIVED_RECOMPUTE";
+    if (!input.counterpartLocated && !derived) downgrades.push("COUNTERPART_NOT_LOCATED");
+    // 依赖缺口（\ref 解析不到的表 / 图）意味着「唯一绑定」只在不完整材料上成立 → 同样阻断
     if (input.contextCompleteness === "INCOMPLETE") downgrades.push("CONTEXT_INCOMPLETE");
     if (risky) downgrades.push("PARSE_ARTIFACT_SUSPECTED");
     else if (!sourceVerifiable(input.sourceLevel)) downgrades.push("SOURCE_NOT_VERIFIED");
-    if (agrees && downgrades.length === 0) {
+    const certified = certificate !== undefined && ((check === "INCONSISTENT" && certificate.outcome === "CONTRADICTED") || (check === "CONSISTENT" && certificate.outcome === "SUPPORTED"));
+    if (!certified) downgrades.push("CERTIFICATE_NOT_ISSUED");
+    // 证书出具时，v1 诊断（描述词 / 引文内数值）不再阻断；来源 / 转写 / 上下文降级仍然阻断
+    const blocking = downgrades.filter((entry) => entry === "CONTEXT_INCOMPLETE" || entry === "PARSE_ARTIFACT_SUSPECTED" || entry === "SOURCE_NOT_VERIFIED" || entry === "CERTIFICATE_NOT_ISSUED" || (entry === "COUNTERPART_NOT_LOCATED" && !derived));
+    if (certified && blocking.length === 0) {
       return {
         verificationStatus: check === "CONSISTENT" ? "VERIFIED_SUPPORTED" : "VERIFIED_CONTRADICTED",
-        basis: "IN_TEXT_CROSS_CHECK",
-        verifier: { kind: "model+deterministic", id: `${reviewerId}+${CLAIM_AUDIT_VERIFIER}:value-check` },
-        downgrades,
-        statusReason: `原文内跨处核对：论断值「${value.claimValue}」与对照处「${value.counterpartValue}」${check === "CONSISTENT" ? "一致" : "不一致"}（两处引文均在被审修订中逐字定位；对应关系由审稿模型提出，数值比较为确定性）`,
+        basis: derived ? "DETERMINISTIC_RECOMPUTE" : "IN_TEXT_CROSS_CHECK",
+        verifier: { kind: "model+deterministic", id: `${reviewerId}+${certificate!.version}` },
+        downgrades: [],
+        statusReason: derived
+          ? `派生量确定性复算（${certificate!.version}）：论断值与按措辞唯一确定的运算 ${certificate!.derived?.interpretations.find((entry) => entry.consistent !== null)?.formula ?? ""} ${check === "CONSISTENT" ? "一致" : "不一致"}（操作数为论断点名行在唯一绑定列上的单元格；区间算术含显示精度）`
+          : `原文内跨处核对（${certificate!.version}）：论断值与唯一绑定的对照值${check === "CONSISTENT" ? "一致" : "不一致"}（${certificate!.valueRelation?.note ?? ""}；对应关系由审稿模型提出，绑定唯一性与数值关系为确定性检验）`,
       };
     }
+    const unique = [...new Set(downgrades)];
+    const certificateReasons = certificate === undefined ? "无证书输入" : certificate.reasons.slice(0, 4).join(" / ") || certificate.outcome;
     return {
       verificationStatus: check === "CONSISTENT" ? "REVIEWER_CONSISTENT" : "REVIEWER_SUSPECTED",
       basis: "MODEL_JUDGEMENT",
       verifier: { kind: "model", id: reviewerId },
-      downgrades: [...new Set(downgrades)],
-      statusReason: `审稿模型判定${check === "CONSISTENT" ? "一致" : "不一致"}；确定性核对未能确认（${[...new Set(downgrades)].join(" / ")}）`,
+      downgrades: unique,
+      statusReason: `审稿模型判定${check === "CONSISTENT" ? "一致" : "不一致"}；确定性核验未能确认（${unique.join(" / ")}；证书：${certificateReasons}）`,
     };
   }
   if (risky && (check === "CONSISTENT" || check === "INCONSISTENT")) downgrades.push("PARSE_ARTIFACT_SUSPECTED");
@@ -620,6 +664,88 @@ function verdictToCheck(verdict: string | undefined): ReviewerClaimCheck | null 
   }
 }
 
+/** 原文切片 → 文件内区间（已有文件偏移优先；否则在证书文档中逐字定位，要求唯一出现） */
+function fileSpanOf(document: CertificateDocument, text: string, location: ClaimLocation | undefined): { file: string; start: number; end: number } | null {
+  if (location !== undefined && location.start !== null && location.end !== null) return { file: location.file, start: location.start, end: location.end };
+  const hits: Array<{ file: string; start: number; end: number }> = [];
+  for (const file of document.files) {
+    const span = locateQuote(file.content, text);
+    if (span !== null) {
+      if (span.occurrences > 1) return null;
+      hits.push({ file: file.file, start: span.start, end: span.end });
+    }
+  }
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/** v2：为模型提出的核对出具（或拒绝出具）确定性证书；没有数值 / 结论时返回 undefined */
+function certificateFor(
+  document: CertificateDocument,
+  claim: { quote: string; location: ClaimLocation },
+  counterpart: { text: string; location?: ClaimLocation } | null,
+  values: { claimValue?: string; counterpartValue?: string },
+  check: ReviewerClaimCheck | null,
+): ClaimCertificate | undefined {
+  if ((check !== "CONSISTENT" && check !== "INCONSISTENT") || values.claimValue === undefined) return undefined;
+  const claimSpan = fileSpanOf(document, claim.quote, claim.location);
+  if (claimSpan === null) return undefined;
+  const counterSpan = counterpart === null ? null : fileSpanOf(document, counterpart.text, counterpart.location);
+  return certifyClaim(document, {
+    claim: { ...claimSpan, value: values.claimValue },
+    counterpart: counterSpan === null ? null : { ...counterSpan, ...(values.counterpartValue !== undefined ? { value: values.counterpartValue } : {}) },
+    check,
+  });
+}
+
+/**
+ * v2 根因合并（确定性）：疑似 / 已核实矛盾的论断，若共享证书原子（论断原子、对照原子、唯一绑定单元格），归入同一根因；
+ * 没有原子的论断自成一类。不用词面相似度——两处不同实验、不同数值即使措辞相近也不会被合并。
+ */
+export function assignRootCauses(claims: ReviewClaimRecord[]): void {
+  const parent = new Map<string, string>();
+  const find = (key: string): string => {
+    let node = key;
+    while (parent.get(node) !== undefined && parent.get(node) !== node) node = parent.get(node)!;
+    return node;
+  };
+  const union = (a: string, b: string) => {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra < rb ? rb : ra, ra < rb ? ra : rb);
+  };
+  const nodesOf = (claim: ReviewClaimRecord): string[] => {
+    const certificate = claim.certificate;
+    if (certificate === undefined) return [];
+    const nodes: string[] = [];
+    const atomKey = (atom: ClaimCertificate["claimAtom"]) => (atom === null ? null : atom.cell !== undefined ? `cell:${atom.file}:${atom.cell.tableId}:${atom.cell.row}:${atom.cell.col}` : `text:${atom.file}:${atom.start}`);
+    const a = atomKey(certificate.claimAtom);
+    const b = atomKey(certificate.counterpartAtom);
+    if (a !== null) nodes.push(a);
+    if (b !== null) nodes.push(b);
+    const bound = certificate.binding?.status === "UNIQUE" ? certificate.binding.bound : undefined;
+    if (bound !== undefined) nodes.push(`cell:${bound.file}:${bound.tableId}:${bound.row}:${bound.col}`);
+    return nodes;
+  };
+  const contradiction = (claim: ReviewClaimRecord) => claim.verificationStatus === "VERIFIED_CONTRADICTED" || claim.verificationStatus === "REVIEWER_SUSPECTED";
+  for (const claim of claims) {
+    const nodes = contradiction(claim) ? nodesOf(claim) : [];
+    const own = `claim:${claim.claimId}`;
+    parent.set(own, parent.get(own) ?? own);
+    for (const node of nodes) union(own, node);
+  }
+  const members = new Map<string, string[]>();
+  for (const claim of claims) {
+    const root = find(`claim:${claim.claimId}`);
+    members.set(root, [...(members.get(root) ?? []), claim.claimId]);
+  }
+  for (const claim of claims) {
+    const group = members.get(find(`claim:${claim.claimId}`))!;
+    claim.rootCauseId = `rc1-${sha256Text([...group].sort().join("|")).slice(0, 12)}`;
+  }
+}
+
 function buildValueCheck(claimValue: string | undefined, counterpartValue: string | undefined, quote: string, counterpartText: string | null): ReviewClaimRecord["valueCheck"] | undefined {
   if (claimValue === undefined || counterpartValue === undefined) return undefined;
   const a = parseValue(claimValue);
@@ -648,6 +774,7 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
   const maxTasks = input.maxCrossUnitTasks ?? DEFAULT_MAX_TASKS;
   const snippetBudget = input.snippetBudgetChars ?? DEFAULT_SNIPPET_BUDGET;
   const locator: Locator = { units: input.units, fileContent: new Map(input.files.map((file) => [file.file, file.content])) };
+  const certificateDocument = buildCertificateDocument(input.certificateFiles ?? input.files, input.title);
   const index = indexDependencyTargets(
     input.units.map((unit) => ({ unitId: unit.unitId, file: unit.file, heading: unit.heading, text: unit.text })),
     { documentOrderProven: input.files.length === 1 },
@@ -715,6 +842,14 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
           ? "COMPLETE"
           : "UNKNOWN";
     const valueCheck = buildValueCheck(raw.claimValue, raw.counterpartValue, quote, counterpartText);
+    const claimLocation = toLocation(locator, unit, span.start, span.end);
+    const certificate = certificateFor(
+      certificateDocument,
+      { quote, location: claimLocation },
+      counterpartText === null ? null : { text: counterpartText, ...(counterpart?.location !== undefined ? { location: counterpart.location } : {}) },
+      { ...(raw.claimValue !== undefined ? { claimValue: raw.claimValue } : {}), ...(raw.counterpartValue !== undefined ? { counterpartValue: raw.counterpartValue } : {}) },
+      check,
+    );
     const claimCheck = (input.claimChecks ?? []).find((result) => {
       const anchor = compactText(result.claimAnchor.quote);
       return anchor.length >= 8 && (anchor.includes(compactQuote) || compactQuote.includes(anchor));
@@ -726,6 +861,7 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
       evidenceVerified: raw.evidenceId !== undefined && (input.formalEvidenceIds?.has(raw.evidenceId) ?? false),
       ...(claimCheck !== undefined ? { claimCheck } : {}),
       ...(valueCheck !== undefined ? { valueCheck } : {}),
+      ...(certificate !== undefined ? { certificate } : {}),
       counterpartLocated: counterpart !== undefined && counterpart.located !== "NOT_LOCATED",
       counterpartRisk: counterpartText === null ? [] : transcriptionRiskSignals(counterpartText),
       quoteRisk: transcriptionRiskSignals(quote),
@@ -745,7 +881,7 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
       file: unit.file,
       spanId: unit.spanId,
       heading: unit.heading,
-      location: toLocation(locator, unit, span.start, span.end),
+      location: claimLocation,
       quote,
       quoteSha256: sha256Text(quote),
       quoteOccurrences: span.occurrences,
@@ -764,6 +900,7 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
       },
       ...(counterpart !== undefined ? { counterpart } : {}),
       ...(valueCheck !== undefined ? { valueCheck } : {}),
+      ...(certificate !== undefined ? { certificate } : {}),
       ...decision,
       evidenceIds: decision.basis === "EVIDENCE_STORE" && raw.evidenceId !== undefined ? [raw.evidenceId] : [],
       contextCompleteness,
@@ -868,6 +1005,7 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
     schema: CLAIM_AUDIT_SCHEMA,
     idRule: CLAIM_ID_RULE,
     verifier: CLAIM_AUDIT_VERIFIER,
+    rootCauseRule: ROOT_CAUSE_RULE,
     generatedAt: (input.now ?? (() => new Date()))().toISOString(),
     projectId: input.projectId,
     round: input.round,
@@ -892,6 +1030,7 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
     limits: { maxClaimsPerUnit: UNIT_CLAIM_MAX, maxCrossUnitTasks: maxTasks, snippetBudgetChars: snippetBudget },
     notes: [],
   };
+  assignRootCauses(artifact.claims);
   artifact.coverage = computeClaimAuditCoverage(artifact, input.body, index);
   if (input.coverageMode === "units" && input.claimAuditMode !== "extended") {
     artifact.notes.push("shadow 模式：单元审稿 prompt 未请求论断账本（与生产 prompt 逐字节一致），单元模式没有可入账的论断——claim 级核验 NOT_EVALUATED，不是「论断都有支撑」");
@@ -1049,9 +1188,11 @@ export function parseCrossUnitRecheckOutput(parsed: Record<string, unknown>, all
 export function applyCrossUnitRecheck(
   artifact: ClaimAuditArtifact,
   batches: ReadonlyArray<{ batchId: string; items: readonly CrossUnitRecheckItem[]; status: "COMPLETED" | "FAILED"; attempts: number; error?: string; results: readonly CrossUnitRecheckResult[] }>,
-  options: { conversionExcerpts?: readonly string[] } = {},
+  options: { conversionExcerpts?: readonly string[]; files?: ReadonlyArray<{ file: string; content: string }>; title?: string | null } = {},
 ): ClaimAuditArtifact {
   const conversion = (options.conversionExcerpts ?? []).map((excerpt) => compactText(excerpt)).filter((excerpt) => excerpt.length >= 8);
+  // v2：没有文件内容（旧调用方）→ 不出证书，复核结论最高 REVIEWER_*
+  const certificateDocument = options.files === undefined ? null : buildCertificateDocument(options.files, options.title);
   for (const batch of batches) {
     for (const item of batch.items) {
       const task = artifact.crossUnitTasks.find((entry) => entry.taskId === item.taskId);
@@ -1080,6 +1221,15 @@ export function applyCrossUnitRecheck(
       }
       const check: ReviewerClaimCheck = result.check;
       const valueCheck = buildValueCheck(result.claimValue, result.counterpartValue, claim.quote, counterpartText);
+      const certificate = certificateDocument === null
+        ? undefined
+        : certificateFor(
+            certificateDocument,
+            { quote: claim.quote, location: claim.location },
+            counterpartText === null ? null : { text: counterpartText },
+            { ...(result.claimValue !== undefined ? { claimValue: result.claimValue } : {}), ...(result.counterpartValue !== undefined ? { counterpartValue: result.counterpartValue } : {}) },
+            check,
+          );
       const hit = (text: string): boolean => {
         const own = compactText(text);
         return own.length >= 8 && conversion.some((excerpt) => own.includes(excerpt.slice(0, 16)) || excerpt.includes(own.slice(0, 16)));
@@ -1089,6 +1239,7 @@ export function applyCrossUnitRecheck(
         claimType: claim.claimType,
         evidenceVerified: false,
         ...(valueCheck !== undefined ? { valueCheck } : {}),
+        ...(certificate !== undefined ? { certificate } : {}),
         counterpartLocated: counterpartText !== null,
         counterpartRisk: counterpartText === null ? [] : transcriptionRiskSignals(counterpartText),
         quoteRisk: transcriptionRiskSignals(claim.quote),
@@ -1108,10 +1259,13 @@ export function applyCrossUnitRecheck(
       };
       if (result.counterpartQuote !== undefined) claim.counterpart = { quote: counterpartText ?? result.counterpartQuote.slice(0, 400), located };
       if (valueCheck !== undefined) claim.valueCheck = valueCheck;
+      if (certificate !== undefined) claim.certificate = certificate;
+      else delete claim.certificate;
       claim.contextCompleteness = counterpartText !== null ? "COMPLETE" : "INCOMPLETE";
       Object.assign(claim, decision);
     }
   }
+  if (artifact.schema === CLAIM_AUDIT_SCHEMA) assignRootCauses(artifact.claims);
   const objects = artifact.coverage.documentObjects;
   artifact.coverage = computeClaimAuditCoverage(artifact, artifact.coverage.body);
   artifact.coverage.documentObjects = objects;
@@ -1138,7 +1292,7 @@ export function validateClaimAudit(
   const reasons: string[] = [];
   if (typeof artifact !== "object" || artifact === null) return { status: "MALFORMED", reasons: ["账本不是对象"], invalidClaimIds: [] };
   const record = artifact as Partial<ClaimAuditArtifact>;
-  if (record.schema !== CLAIM_AUDIT_SCHEMA || !Array.isArray(record.claims) || !Array.isArray(record.units)) {
+  if (!CLAIM_AUDIT_SCHEMAS.includes(String(record.schema)) || !Array.isArray(record.claims) || !Array.isArray(record.units)) {
     return { status: "MALFORMED", reasons: [`schema=${String(record.schema)} 或结构缺失`], invalidClaimIds: [] };
   }
   if (record.sourceRevision !== expected.sourceRevision) reasons.push(`账本修订 ${String(record.sourceRevision)} ≠ 被审修订 ${String(expected.sourceRevision)}`);
@@ -1176,8 +1330,27 @@ export function summarizeClaimAudit(artifact: ClaimAuditArtifact, validation?: C
     units: artifact.coverage.units,
     crossUnitTasks: artifact.coverage.crossUnitTasks,
     verifiedContradicted: valid
-      ? artifact.claims.filter((claim) => claim.verificationStatus === "VERIFIED_CONTRADICTED").map((claim) => ({ claimId: claim.claimId, heading: claim.heading, quote: claim.quote.slice(0, 160), basis: claim.basis, reason: claim.statusReason.slice(0, 240) }))
+      ? artifact.claims.filter((claim) => claim.verificationStatus === "VERIFIED_CONTRADICTED").map((claim) => ({
+          claimId: claim.claimId, heading: claim.heading, quote: claim.quote.slice(0, 160), basis: claim.basis, reason: claim.statusReason.slice(0, 240),
+          ...(claim.rootCauseId !== undefined ? { rootCauseId: claim.rootCauseId } : {}),
+          ...(claim.certificate !== undefined ? { certificate: { kind: claim.certificate.kind, inputsSha256: claim.certificate.inputsSha256 } } : {}),
+        }))
       : [],
+    rootCauses: valid ? summarizeRootCauses(artifact) : null,
+    verifier: artifact.verifier,
     scientificClaimCoverage: artifact.coverage.scientificClaimCoverage,
+  };
+}
+
+/** 根因口径计数：矛盾类论断（VERIFIED_CONTRADICTED / REVIEWER_SUSPECTED）按 rootCauseId 去重 */
+export function summarizeRootCauses(artifact: Pick<ClaimAuditArtifact, "claims">): { suspectedOrVerified: number; verifiedContradicted: number; claimsInMultiClaimRootCauses: number } | null {
+  if (artifact.claims.some((claim) => claim.rootCauseId === undefined)) return null;
+  const contradiction = artifact.claims.filter((claim) => claim.verificationStatus === "VERIFIED_CONTRADICTED" || claim.verificationStatus === "REVIEWER_SUSPECTED");
+  const sizes = new Map<string, number>();
+  for (const claim of contradiction) sizes.set(claim.rootCauseId!, (sizes.get(claim.rootCauseId!) ?? 0) + 1);
+  return {
+    suspectedOrVerified: sizes.size,
+    verifiedContradicted: new Set(contradiction.filter((claim) => claim.verificationStatus === "VERIFIED_CONTRADICTED").map((claim) => claim.rootCauseId)).size,
+    claimsInMultiClaimRootCauses: contradiction.filter((claim) => (sizes.get(claim.rootCauseId!) ?? 0) > 1).length,
   };
 }

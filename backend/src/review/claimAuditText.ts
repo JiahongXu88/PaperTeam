@@ -106,7 +106,8 @@ function stripLatexForNumbers(text: string): string {
 export function parseNumbers(text: string): ParsedNumber[] {
   const cleaned = stripLatexForNumbers(text);
   const out: ParsedNumber[] = [];
-  for (const match of cleaned.matchAll(/(?<![\w.])(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)/g)) {
+  // 省略前导 0 的小数（表格常见的「.0485」）同样是一个数
+  for (const match of cleaned.matchAll(/(?<![\w.])(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?|\.\d+)/g)) {
     const raw = match[1]!;
     const value = Number(raw.replace(/,/g, ""));
     if (!Number.isFinite(value)) continue;

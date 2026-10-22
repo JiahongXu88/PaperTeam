@@ -47,18 +47,36 @@ const RESULTS = [
 const DISCUSSION = ["\\section{Discussion}", filler("discussion", 2600), "The improvement over the baseline is consistent across all sequences.", ""].join("\n");
 const TEX = `\\documentclass{article}\n\\begin{document}\n${ABSTRACT}${RESULTS}${DISCUSSION}\\begin{thebibliography}{1}\n\\bibitem{sort} A. Bewley. Simple online and realtime tracking. ICIP, 2016.\n\\end{thebibliography}\n\\end{document}\n`;
 
-interface Calls { unit: string[]; recheck: string[]; repair: number }
+interface Calls { unit: string[]; recheck: string[]; repair: number; findingRecheck: string[]; unitClaims: string[] }
 
-async function setup(kind: "published" | "author", options: { recheckCalls?: number; omitClaimsOnce?: boolean } = {}) {
+async function setup(kind: "published" | "author", options: { recheckCalls?: number; omitClaimsOnce?: boolean; findingRecheckCalls?: number; claimStage?: "inline" | "separate" } = {}) {
   const scripted = scriptedIdeaRuntime();
-  const calls: Calls = { unit: [], recheck: [], repair: 0 };
+  const calls: Calls = { unit: [], recheck: [], repair: 0, findingRecheck: [], unitClaims: [] };
   let omitted = false;
+  const claimsFor = (prompt: string) => {
+    const isAbstract = /章节：「摘要与前置部分」/.test(prompt);
+    const isDiscussion = /章节：「Discussion」/.test(prompt);
+    return isAbstract
+      ? [{ quote: "achieves an HOTA of 63.7\\% on the MOT17 benchmark", claimType: "own_result", linkedRefs: [], check: "NEEDS_OTHER_SECTION", note: "table not visible" }]
+      : isDiscussion
+        ? [{ quote: "The improvement over the baseline is consistent across all sequences", claimType: "conclusion", check: "NOT_CHECKED" }]
+        : [];
+  };
   const runtime = {
     ...scripted.runtime,
     runAgent: async (input: Parameters<typeof scripted.runtime.runAgent>[0]) => {
       const now = new Date().toISOString();
       const scope = input.contextScope ?? "";
       const done = (output: unknown) => ({ taskId: `t-${calls.unit.length + calls.recheck.length}`, agentId: "reviewer", status: "completed" as const, createdAt: now, updatedAt: now, output: JSON.stringify(output), events: [] });
+      if (scope === "review/academic/unit-claims") {
+        calls.unitClaims.push(input.task);
+        return done({ claims: claimsFor(input.task) });
+      }
+      if (scope === "review/academic/finding-recheck") {
+        calls.findingRecheck.push(input.task);
+        const ids = [...input.task.matchAll(/findingId=(f1-[0-9a-f]+)/g)].map((match) => match[1]);
+        return done({ results: ids.map((findingId) => ({ findingId, verdict: "NOT_DETERMINABLE" })) });
+      }
       if (scope === "review/academic/unit") {
         if ((input.metadata as Record<string, unknown> | undefined)?.["repairField"] === "claims") {
           calls.repair += 1;
@@ -67,15 +85,8 @@ async function setup(kind: "published" | "author", options: { recheckCalls?: num
         calls.unit.push(input.task);
         const prompt = input.task;
         const extended = prompt.includes("论断账本（claims");
-        const isAbstract = /章节：「摘要与前置部分」/.test(prompt);
         const isDiscussion = /章节：「Discussion」/.test(prompt);
-        const claims = !extended
-          ? undefined
-          : isAbstract
-            ? [{ quote: "achieves an HOTA of 63.7\\% on the MOT17 benchmark", claimType: "own_result", linkedRefs: [], check: "NEEDS_OTHER_SECTION", note: "table not visible" }]
-            : isDiscussion
-              ? [{ quote: "The improvement over the baseline is consistent across all sequences", claimType: "conclusion", check: "NOT_CHECKED" }]
-              : [];
+        const claims = !extended ? undefined : claimsFor(prompt);
         if (options.omitClaimsOnce === true && extended && isDiscussion && !omitted) {
           omitted = true;
           return done({ summary: "ok", issues: [], academicScore: 70, riskScore: 20 });
@@ -96,7 +107,10 @@ async function setup(kind: "published" | "author", options: { recheckCalls?: num
       return scripted.runtime.runAgent(input);
     },
   };
-  const stack = await startTestStack(runtime, { registerCleanup: () => Promise.resolve(), review: { claimRecheckMaxCalls: options.recheckCalls ?? 0 } });
+  const stack = await startTestStack(runtime, {
+    registerCleanup: () => Promise.resolve(),
+    review: { claimRecheckMaxCalls: options.recheckCalls ?? 0, findingRecheckMaxCalls: options.findingRecheckCalls ?? 0, ...(options.claimStage !== undefined ? { claimStage: options.claimStage } : {}) },
+  });
   const projectId = (await stack.store.create("Claim audit fixture", { language: "en" })).id;
   const services = stack.stack.workflowServices;
   const manuscriptDir = stack.store.manuscriptDir(projectId);
@@ -135,12 +149,15 @@ describe("M15.1 Review Claim Ledger × review.run / quality.gate", () => {
     expect(h.calls.recheck).toHaveLength(1);
     expect(h.calls.recheck[0]).toContain("This work & 61.7");
     const audit = (await h.readReview("claim-audit-r1.json")) as ClaimAuditArtifact;
-    expect(audit.schema).toBe("paperteam.review-claim-audit/v1");
+    expect(audit.schema).toBe("paperteam.review-claim-audit/v2");
+    expect(audit.verifier).toBe("claim-audit-verifier/v2");
     expect(audit.evaluationPolicy).toMatchObject({ reviewPurpose: "published_paper_assessment", claimAuditMode: "extended", promptContract: "unit-claims/v1", productionGateImpact: "NONE_SHADOW" });
     expect(audit.sourceVerification).toMatchObject({ level: "AUTHOR_SOURCE", basis: "DECLARED_INPUT_PROVENANCE" });
     const hota = audit.claims.find((claim) => claim.quote.includes("63.7"))!;
     expect(hota.verificationStatus).toBe("VERIFIED_CONTRADICTED");
     expect(hota.basis).toBe("IN_TEXT_CROSS_CHECK");
+    expect(hota.certificate).toMatchObject({ version: "claim-certificate/v1", outcome: "CONTRADICTED", comparisonType: "SAME_OBSERVABLE" });
+    expect(hota.rootCauseId).toMatch(/^rc1-/);
     expect(hota.reviewer.origin).toBe("cross_unit_recheck");
     expect(audit.recheck?.batches).toHaveLength(1);
     // 单元 journal 记录 claims（stage 重试 / 进程恢复时随 outcome 恢复）
@@ -192,10 +209,13 @@ describe("M15.1 Review Claim Ledger × review.run / quality.gate", () => {
   });
 
   it("作者稿件工作流（auto→shadow）：单元 prompt 不含论断账本契约（与旧版一致）；账本 NOT_REQUESTED；改稿后旧账本 STALE", async () => {
-    const h = await setup("author");
+    const h = await setup("author", { findingRecheckCalls: 2 });
     await h.run("review.run");
     expect(h.calls.unit.length).toBeGreaterThanOrEqual(3);
     expect(h.calls.unit.some((prompt) => prompt.includes("论断账本"))).toBe(false);
+    // M15.2：作者稿件工作流（shadow）零额外调用——finding 复核只出确定性队列
+    expect(h.calls.findingRecheck).toHaveLength(0);
+    expect(h.calls.unitClaims).toHaveLength(0);
     const audit = (await h.readReview("claim-audit-r1.json")) as ClaimAuditArtifact;
     expect(audit.evaluationPolicy).toMatchObject({ claimAuditMode: "shadow", promptContract: "legacy-unit-no-claims", reviewPurpose: "author_manuscript" });
     expect(audit.claims).toHaveLength(0);
@@ -203,5 +223,61 @@ describe("M15.1 Review Claim Ledger × review.run / quality.gate", () => {
     // 稿件改动 → 旧账本对新原文 STALE（不得把旧原文上的结论当作新原文已评估）
     const edited = TEX.replace("63.7", "62.7");
     expect(validateClaimAudit(audit, { sourceRevision: audit.sourceRevision, documentFingerprint: "different-snapshot", files: [{ file: "main.tex", content: edited }] }).status).toBe("STALE");
+  });
+});
+
+describe("M15.2 finding 定向复核 / 四轴裁决 / separate 论断抽取 × review.run / quality.gate", () => {
+  it("只读评估：CONTEXT_INCOMPLETE 的 major 进入有界复核（sealed 调用），未解决保持原 finding；四轴裁决落盘（shadow），生产 Gate 规则不变", async () => {
+    const h = await setup("published", { recheckCalls: 2, findingRecheckCalls: 1 });
+    await h.run("review.run");
+    expect(h.calls.findingRecheck).toHaveLength(1);
+    expect(h.calls.findingRecheck[0]).toContain("does not specify the MOT17 HOTA protocol");
+    const audit = (await h.readReview("claim-audit-r1.json")) as ClaimAuditArtifact;
+    expect(audit.findingRecheck?.summary.UNRESOLVED).toBe(1);
+    expect(audit.findingRecheck?.batches).toHaveLength(1);
+    const summary = await h.readReview("review-summary-r1.json");
+    const gate = await h.run("quality.gate");
+    expect(gate["passed"]).toBe(false);
+    const adjudication = await h.readReview("finding-adjudication-r1.json");
+    expect(adjudication.schema).toBe("paperteam.finding-adjudication/v1");
+    expect(adjudication.mode).toBe("SHADOW_ONLY");
+    expect(adjudication.claimAuditValidation).toBe("VALID");
+    const cause = adjudication.rootCauses.find((entry: { findings: Array<{ issueIndex: number }> }) => entry.findings.some((finding) => summary.issues[finding.issueIndex].description.includes("MOT17 HOTA protocol")));
+    expect(cause.verification.axis).toBe("NOT_EVALUATED");
+    expect(cause.severity).toMatchObject({ observed: "major", adjudicated: "major" });
+    expect(cause.taskScope.axis).toBe("NOT_APPLICABLE_READ_ONLY");
+    // 生产 summary.issues 未被改写
+    expect(summary.issues.find((issue: { description: string }) => issue.description.includes("MOT17 HOTA protocol")).severity).toBe("major");
+    const v2 = await h.readReview("quality-decision-v2-shadow-r1.json");
+    expect(v2.findingAdjudication).toMatchObject({ schema: "paperteam.finding-adjudication/v1", rootCauses: adjudication.summary.rootCauses });
+    expect(v2.productionGate.passed).toBe(false);
+  });
+
+  it("separate：单元审稿 prompt 不含论断账本契约（与无契约口径一致），每个有正文的单元多一次独立 sealed 抽取调用；账本照常入账", async () => {
+    const h = await setup("published", { recheckCalls: 2, claimStage: "separate" });
+    await h.run("review.run");
+    expect(h.calls.unit.some((prompt) => prompt.includes("论断账本（claims"))).toBe(false);
+    expect(h.calls.unitClaims.length).toBe(h.calls.unit.length);
+    expect(h.calls.unitClaims.every((prompt) => prompt.includes("论断账本（claims") && prompt.includes("不要重新审稿"))).toBe(true);
+    const audit = (await h.readReview("claim-audit-r1.json")) as ClaimAuditArtifact;
+    expect(audit.claims.find((claim) => claim.quote.includes("63.7"))!.verificationStatus).toBe("VERIFIED_CONTRADICTED");
+    const inline = await setup("published", { recheckCalls: 2 });
+    await inline.run("review.run");
+    expect(inline.calls.unitClaims).toHaveLength(0);
+  });
+
+  it("返修工作流（existing_paper_improvement）：四轴裁决只落 shadow 产物，taskScope 不是只读口径；生产 Gate 规则集合不新增、不读裁决", async () => {
+    const h = await setup("author", { findingRecheckCalls: 2 });
+    await h.run("review.run");
+    const gate = await h.run("quality.gate");
+    const adjudication = await h.readReview("finding-adjudication-r1.json");
+    expect(adjudication.mode).toBe("SHADOW_ONLY");
+    expect(adjudication.policy).not.toBe("quick_review");
+    expect(adjudication.rootCauses.every((cause: { taskScope: { axis: string } }) => cause.taskScope.axis !== "NOT_APPLICABLE_READ_ONLY")).toBe(true);
+    const report = await h.readReview("quality-gate-r1.json");
+    const ruleNames: string[] = report.gate.rules.map((rule: { rule: string }) => rule.rule);
+    expect(ruleNames.some((name) => /adjudication|finding_recheck|certificate/i.test(name))).toBe(false);
+    expect(typeof gate["passed"]).toBe("boolean");
+    expect(h.calls.findingRecheck).toHaveLength(0);
   });
 });

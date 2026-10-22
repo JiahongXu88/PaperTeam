@@ -333,6 +333,8 @@ export async function startBackend(): Promise<void> {
       unitDependencyBudgetChars: config.review.unitDependencyBudgetChars,
       claimAudit: config.review.claimAudit,
       claimRecheckMaxCalls: config.review.claimRecheckMaxCalls,
+      findingRecheckMaxCalls: config.review.findingRecheckMaxCalls,
+      claimStage: config.review.claimStage,
       revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,

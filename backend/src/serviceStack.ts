@@ -107,6 +107,7 @@ import { ThesisAbstractService } from "./thesis/thesisAbstract.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
 import { DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS, type ReviewUnitContextPolicy } from "./review/reviewContextSnapshot.js";
 import type { ClaimAuditMode } from "./review/claimAuditMode.js";
+import type { UnitClaimStage } from "./review/claimAudit.js";
 
 export interface ServiceStackOptions {
   runtime: AgentRuntime;
@@ -181,6 +182,10 @@ export interface ServiceStackOptions {
     claimAudit?: ClaimAuditMode;
     /** M15.1 extended 模式每轮跨单元论断复核调用上限（缺省 0 = 不复核；生产 index.ts 从 config 传入缺省 2） */
     claimRecheckMaxCalls?: number;
+    /** M15.2 extended 模式每轮 finding 定向复核调用上限（缺省 0 = 不复核；生产 index.ts 从 config 传入缺省 3） */
+    findingRecheckMaxCalls?: number;
+    /** M15.2 extended 模式论断账本抽取方式（缺省 inline = M15.1 口径） */
+    claimStage?: UnitClaimStage;
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
     revisionTask?: Partial<RevisionTaskPolicy>;
   };
@@ -1154,6 +1159,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         unitDependencyBudgetChars: options.review?.unitDependencyBudgetChars ?? DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
         claimAudit: options.review?.claimAudit ?? "auto",
         claimRecheckMaxCalls: options.review?.claimRecheckMaxCalls ?? 0,
+        findingRecheckMaxCalls: options.review?.findingRecheckMaxCalls ?? 0,
+        claimStage: options.review?.claimStage ?? "inline",
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
       // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →
