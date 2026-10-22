@@ -113,19 +113,71 @@ function tryBalancedJson(text: string, start: number): BalancedJsonAttempt {
     } else if (ch === "}") {
       depth -= 1;
       if (depth === 0) {
+        const slice = text.slice(start, index + 1);
         try {
-          const parsed = JSON.parse(text.slice(start, index + 1)) as unknown;
+          const parsed = JSON.parse(slice) as unknown;
           if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
             return { kind: "parsed", value: parsed as Record<string, unknown> };
           }
           return { kind: "invalid" };
         } catch {
+          // M15.1：模型逐字摘录 LaTeX 表格时常把原始 Tab / 换行写进 JSON 字符串（JSON 不允许未转义控制字符）。
+          // 旧行为：整体解析失败 → 回退到下一个 "{" → 返回某个内层碎片（如单条 issue），整单元的 issues 与分数被静默丢弃
+          // （M15 base run 2170 次输出中 5 次，均为含表格行的单元）。这里只把字符串内的控制字符转义后重试一次；
+          // 结构本身不合法仍判 invalid，不放宽任何字段校验。
+          const repaired = escapeControlCharsInJsonStrings(slice);
+          if (repaired !== slice) {
+            try {
+              const parsed = JSON.parse(repaired) as unknown;
+              if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+                return { kind: "parsed", value: parsed as Record<string, unknown> };
+              }
+            } catch {
+              // 仍不合法：按原逻辑继续尝试下一个 "{"
+            }
+          }
           return { kind: "invalid" };
         }
       }
     }
   }
   return { kind: "unterminated" };
+}
+
+/** 只转义 JSON 字符串字面量内部的原始控制字符（U+0000–U+001F）；字符串外的空白不动 */
+export function escapeControlCharsInJsonStrings(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        out += ch;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        out += ch;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+        out += ch;
+        continue;
+      }
+      const code = ch.charCodeAt(0);
+      if (code < 0x20) {
+        out += ch === "\t" ? "\\t" : ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : `\\u${code.toString(16).padStart(4, "0")}`;
+        continue;
+      }
+      out += ch;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    out += ch;
+  }
+  return out;
 }
 
 // ---- 结构化字段的防御性读取 ----

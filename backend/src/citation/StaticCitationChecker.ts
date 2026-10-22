@@ -40,8 +40,8 @@ export interface CitationCheckResult {
   bibEntries: BibEntrySummary[];
 }
 
-/** \cite 族命令（含 natbib / biblatex 常用变体） */
-const CITE_COMMAND_PATTERN =
+/** \cite 族命令（含 natbib / biblatex 常用变体；M15.1 只读引用审计复用同一命令表——请用 .source 新建实例，勿共享 lastIndex） */
+export const CITE_COMMAND_PATTERN =
   /\\(?:cite|citep|citet|citealp|citealt|citeauthor|citeyear|citeyearpar|parencite|textcite|autocite|nocite|footcite|smartcite)\*?(?:\[[^\]\n]*\])*\{([^{}]*)\}/g;
 
 /** 解析 references.bib（容错：非法条目跳过并计数） */

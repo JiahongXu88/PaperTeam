@@ -106,6 +106,7 @@ import { MissingMaterialService } from "./thesis/MissingMaterialService.js";
 import { ThesisAbstractService } from "./thesis/thesisAbstract.js";
 import { PdfTextLayerProvider } from "./thesis/textLayer.js";
 import { DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS, type ReviewUnitContextPolicy } from "./review/reviewContextSnapshot.js";
+import type { ClaimAuditMode } from "./review/claimAuditMode.js";
 
 export interface ServiceStackOptions {
   runtime: AgentRuntime;
@@ -176,6 +177,10 @@ export interface ServiceStackOptions {
     unitContextIsolation?: boolean;
     /** M14.9.5.1 单元依赖原文上限（字符；缺省 12000） */
     unitDependencyBudgetChars?: number;
+    /** M15.1 Review Claim Ledger 模式（缺省 auto：只读评估 extended / 作者稿件 shadow） */
+    claimAudit?: ClaimAuditMode;
+    /** M15.1 extended 模式每轮跨单元论断复核调用上限（缺省 0 = 不复核；生产 index.ts 从 config 传入缺省 2） */
+    claimRecheckMaxCalls?: number;
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
     revisionTask?: Partial<RevisionTaskPolicy>;
   };
@@ -1147,6 +1152,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         neutralityPolicy: options.review?.neutralityPolicy ?? false,
         unitContextPolicy: options.review?.unitContextPolicy ?? (options.review?.unitContextIsolation === true ? "isolated_snapshot" : "shared_session"),
         unitDependencyBudgetChars: options.review?.unitDependencyBudgetChars ?? DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS,
+        claimAudit: options.review?.claimAudit ?? "auto",
+        claimRecheckMaxCalls: options.review?.claimRecheckMaxCalls ?? 0,
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },
       // M14.4 P0-3：run 级模型预算（装饰 runtime 的账本；未配置时缺省 →

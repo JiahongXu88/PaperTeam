@@ -5,6 +5,14 @@ import { join } from "node:path";
 import { ConfigError, loadConfig, resolveRuntimeRoot } from "../src/config/config.js";
 
 describe("loadConfig", () => {
+  it("M15.1 PAPERTEAM_REVIEW_CLAIM_AUDIT：缺省 auto、复核调用缺省 2；非法值拒绝启动", () => {
+    const defaults = loadConfig({});
+    expect(defaults.review.claimAudit).toBe("auto");
+    expect(defaults.review.claimRecheckMaxCalls).toBe(2);
+    expect(loadConfig({ PAPERTEAM_REVIEW_CLAIM_AUDIT: "off", PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS: "0" }).review).toMatchObject({ claimAudit: "off", claimRecheckMaxCalls: 0 });
+    expect(() => loadConfig({ PAPERTEAM_REVIEW_CLAIM_AUDIT: "always" })).toThrow(ConfigError);
+  });
+
   it("合法配置：解析端口与 Pi Runtime 配置", () => {
     const config = loadConfig({
       NODE_ENV: "production",

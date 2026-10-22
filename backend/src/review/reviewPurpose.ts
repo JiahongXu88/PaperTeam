@@ -188,6 +188,8 @@ export interface PublishedAssessmentView {
   inputFidelity: PublishedInputFidelitySummary;
   ruleApplicability: Array<{ rule: string; productionPassed: boolean; applicability: RuleApplicability; note: string }>;
   notEvaluated: Array<{ item: string; reason: string }>;
+  /** M15.1：shadow 科学审计（缺省 null = 旧产物 / claimAudit=off）；生产 Gate 与上方计数不读它 */
+  scientificAudit: Record<string, unknown> | null;
   findings: Array<{
     index: number; class: PublishedFindingClass; severity: string; category: string; section: string; blocking: boolean;
     verification: FindingVerification | "UNSPECIFIED"; rubricFlags: RubricFlag[]; rootCauseGroup: number | null; description: string;
@@ -204,6 +206,8 @@ export interface PublishedAssessmentInput {
   feasibilityEvaluated: boolean;
   /** M14.9.5：送审前输入保真报告（随项目提供时）与人工 QA 证明的校验结果 */
   inputFidelity?: { report: InputFidelityReport; attestation: AttestationCheck | null } | null;
+  /** M15.1：同轮 shadow 科学审计摘要（论断账本 / 只读引用审计 / finding provenance / V2 影子决策）；缺省 = 未产出 */
+  scientificAudit?: Record<string, unknown>;
 }
 
 function verificationCounts(issues: readonly ReviewIssue[]): VerificationCounts {
@@ -325,6 +329,7 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
     conversionArtifacts: { total: classified.filter((entry) => entry.cls === "CONVERSION_ARTIFACT").length, note: "有可追溯依据（build 类 / 私用区字形 / 保真门记录的转写疑点）的转写伪影，不计入论文科研 finding" },
     presentationUndetermined: { total: classified.filter((entry) => entry.cls === "PRESENTATION_SOURCE_UNDETERMINED").length, note: "表述 / 排版类意见：没有输入保真依据时无法区分论文原貌与转写伪影，单列不计入科研 finding" },
     inputFidelity: inputFidelitySummary(input.inputFidelity),
+    scientificAudit: input.scientificAudit ?? null,
     ruleApplicability: gate.rules.map((rule) => ({ rule: rule.rule, productionPassed: rule.passed, ...applicability(rule.rule) })),
     notEvaluated: [
       ...(input.citationReportAvailable ? [] : [{ item: "citation_verification", reason: "未执行 citation.verify（引用真实性 / 元数据 / 语义支撑）" }]),

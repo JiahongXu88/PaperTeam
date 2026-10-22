@@ -12,6 +12,15 @@ import { describe, expect, it } from "vitest";
 import { extractJsonObject, readRequiredString, StructuredOutputError } from "../../src/agents/outputParsing.js";
 
 describe("extractJsonObject", () => {
+  it("M15.1：字符串内的原始 Tab / 换行（逐字摘录 LaTeX 表格行）不再导致回退到内层碎片丢失整单元 issues 与分数", () => {
+    const raw = '{"summary": "ok", "issues": [{"category": "fact", "severity": "major", "description": "表文不一致", "quote": "This work\t\t& 61.7 & 74.4\nnext"}], "academicScore": 60, "riskScore": 20}';
+    const parsed = extractJsonObject(raw, "unit");
+    expect(Object.keys(parsed).sort()).toEqual(["academicScore", "issues", "riskScore", "summary"]);
+    expect((parsed["issues"] as Array<Record<string, unknown>>)[0]!["quote"]).toBe("This work\t\t& 61.7 & 74.4\nnext");
+    expect(parsed["academicScore"]).toBe(60);
+    // 结构本身不合法仍不放宽
+    expect(() => extractJsonObject('{"a": 1,, }', "bad")).toThrow(StructuredOutputError);
+  });
   it("合法 JSON / 围栏包裹 / 前后带说明文字：均能提取顶层对象", () => {
     const payload = { domainOverview: "综述", plan: { questions: ["q1"] } };
     const json = JSON.stringify(payload);

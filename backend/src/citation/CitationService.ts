@@ -127,6 +127,32 @@ export class CitationService {
     return join(this.projects.reviewsDir(projectId), "citation-report.json");
   }
 
+  /**
+   * M15.1 只读引用审计的外部元数据层：对任意条目（非项目 .bib，如 thebibliography / 文后参考文献解析结果）做与
+   * verify 相同的多来源比对（同一 provider 顺序、同一 not_found 法定数），**不写** citation-report.json、不改生产
+   * citation.verify 语义。metadata 关闭 → NOT_EVALUATED（原因如实给出）。有界：最多 maxLookups 条、顺序调用。
+   */
+  async verifyEntryMetadata(
+    entries: ReadonlyArray<{ key: string; title?: string; year?: number; doi?: string }>,
+  ): Promise<{ results: MetadataVerificationResult[]; providers: string[]; eligible: number } | { notEvaluatedReason: string }> {
+    if (!this.metadataEnabled) return { notEvaluatedReason: "外部元数据核验未启用（metadataEnabled=false）" };
+    const eligible = entries.filter((entry) => entry.doi !== undefined || (entry.title !== undefined && entry.title.length >= 12));
+    const candidates = [...eligible].sort((a, b) => (b.doi ? 1 : 0) - (a.doi ? 1 : 0)).slice(0, this.maxLookups);
+    const ctx: MetadataProviderContext = { http: this.http, ...(this.contactEmail !== undefined ? { contactEmail: this.contactEmail } : {}) };
+    const results: MetadataVerificationResult[] = [];
+    for (const entry of candidates) {
+      const perProvider: MetadataVerificationResult[] = [];
+      for (const provider of this.providers) {
+        const result = await provider.verify({ key: entry.key, type: "misc", ...(entry.title !== undefined ? { title: entry.title } : {}), ...(entry.year !== undefined ? { year: entry.year } : {}), ...(entry.doi !== undefined ? { doi: entry.doi } : {}) }, ctx);
+        perProvider.push(result);
+        if (result.status === "verified" || result.status === "mismatch") break;
+      }
+      const decided = decideMetadataResult(perProvider);
+      if (decided !== undefined) results.push(decided);
+    }
+    return { results, providers: this.providers.map((provider) => provider.name), eligible: eligible.length };
+  }
+
   /** 执行核验并落盘报告 */
   async verify(projectId: string): Promise<CitationReport> {
     await this.projects.getRequired(projectId);

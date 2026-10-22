@@ -19,6 +19,7 @@ import {
   REVIEW_UNIT_CONTEXT_POLICIES,
   type ReviewUnitContextPolicy,
 } from "../review/reviewContextSnapshot.js";
+import { CLAIM_AUDIT_MODES, parseClaimAuditMode, type ClaimAuditMode } from "../review/claimAuditMode.js";
 
 export class ConfigError extends Error {
   override readonly name = "ConfigError";
@@ -122,6 +123,14 @@ export interface ReviewConfig {
   unitContextPolicy: ReviewUnitContextPolicy;
   /** M14.9.5.1：单个单元附带的跨单元依赖原文上限（字符；PAPERTEAM_REVIEW_UNIT_DEPENDENCY_CHARS，缺省 12000） */
   unitDependencyBudgetChars: number;
+  /**
+   * M15.1 Review Claim Ledger（PAPERTEAM_REVIEW_CLAIM_AUDIT；缺省 auto）：auto = 只读评估 extended / 作者稿件 shadow；
+   * off = 不产出；shadow = 不改 prompt 只整理既有输出；extended = 单元 / digest prompt 追加论断账本契约。
+   * 产物 reviews/claim-audit-r{round}.json 是 shadow：生产 Gate 规则与阈值不读它。
+   */
+  claimAudit: ClaimAuditMode;
+  /** M15.1：extended 模式下每轮有界跨单元论断复核的模型调用上限（PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS，缺省 2，0 = 关闭） */
+  claimRecheckMaxCalls: number;
   /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
@@ -677,6 +686,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
         min: 0,
         max: 200_000,
       }),
+      claimAudit: readClaimAuditMode(source),
+      claimRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS", { default: 2, min: 0, max: 8 }),
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")
@@ -956,6 +967,16 @@ function readOptionalValue(
 }
 
 /** M14.9.1：Reviewer 输入模式（实验开关；未知值拒绝启动，不静默回退） */
+function readClaimAuditMode(source: Record<string, string | undefined>): ClaimAuditMode {
+  const raw = readOptionalValue(source, "PAPERTEAM_REVIEW_CLAIM_AUDIT");
+  if (raw === undefined) return "auto";
+  const mode = parseClaimAuditMode(raw);
+  if (mode === undefined) {
+    throw new ConfigError(`PAPERTEAM_REVIEW_CLAIM_AUDIT 只能是 ${CLAIM_AUDIT_MODES.join(" / ")}："${raw}"`);
+  }
+  return mode;
+}
+
 function readReviewUnitContextPolicy(source: Record<string, string | undefined>): ReviewUnitContextPolicy {
   const raw = readOptionalValue(source, "PAPERTEAM_REVIEW_UNIT_CONTEXT");
   if (raw !== undefined) {

@@ -19,6 +19,7 @@
 
 import { fingerprintJson } from "../util/hash.js";
 import type { ReviewContextSnapshotRecord, ReviewUnitContextPolicy } from "./reviewContextSnapshot.js";
+import type { UnitClaimExtraction } from "./claimAudit.js";
 import { locateFileSpans, partitionSpanIntoUnits } from "./logicalSpan.js";
 import { revisionSourceHash } from "./revisionScope.js";
 
@@ -54,6 +55,8 @@ export interface ReviewUnitOutcome {
   academicScore: number | null;
   riskScore: number | null;
   summary: string;
+  /** M15.1：extended 论断账本契约下该单元的 claims 抽取结果（journal 复用时随 outcome 恢复；旧记录缺省 = 未请求） */
+  claimExtraction?: UnitClaimExtraction;
 }
 
 export interface ReviewUnitRecord {

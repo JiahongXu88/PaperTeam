@@ -48,6 +48,9 @@ const ACADEMIC_REDUNDANCY_PATTERN = /^academic-redundancy-rev(\d+)\.json$/;
  * 原因 / 本节引用 key / 模型 usage 与耗时——可追溯、可诊断；不是第二套 Outline，
  * 不参与任何 Gate 判定。
  */
+/** M15.1 shadow 审计产物种类 */
+export type M151AuditKind = "claim-audit" | "citation-audit" | "quality-decision-v2-shadow";
+
 export interface WritingPlanSectionRecord {
   sectionId: string;
   title: string;
@@ -439,6 +442,23 @@ export class ReviewArtifactStore {
     const record = parsed as Record<string, unknown> | null;
     if (record === null || typeof record !== "object" || !Array.isArray(record["results"]) || typeof record["ledgerHash"] !== "string") return null;
     return parsed as ClaimCheckLedger;
+  }
+
+  /**
+   * M15.1：版本化 shadow 审计产物（claim-audit / citation-audit / quality-decision-v2-shadow，按轮 reviews/*-r{round}.json）。
+   * 读取方只认匹配 schema 的对象；是否与被审修订一致由 claimAudit.validateClaimAudit 判定。
+   */
+  async saveAuditArtifact(projectId: string, kind: M151AuditKind, round: number, artifact: unknown): Promise<string> {
+    const fileName = `${kind}-r${round}.json`;
+    await mkdir(this.projects.reviewsDir(projectId), { recursive: true });
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), artifact);
+    return `reviews/${fileName}`;
+  }
+
+  async loadAuditArtifact<T>(projectId: string, kind: M151AuditKind, round: number, schema: string): Promise<T | null> {
+    const parsed = await this.readJson<Record<string, unknown>>(projectId, `${kind}-r${round}.json`);
+    if (parsed === null || typeof parsed !== "object" || parsed["schema"] !== schema) return null;
+    return parsed as T;
   }
 
   async saveClaimGrounding(projectId: string, report: ClaimGroundingReport): Promise<string> {

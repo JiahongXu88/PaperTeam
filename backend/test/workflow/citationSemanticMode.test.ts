@@ -217,6 +217,8 @@ describe("citationSemanticMode：缺省 off（真跳过 semantic stage）", () =
     expect(integrity).toBeDefined();
     expect(integrity["metadataByStatus"]).toBeDefined(); // Layer 1 始终在场
     expect("semantic" in integrity).toBe(false); // off：绝不输出「支持 0 / 证据不足 0」
+    // M15.1：四层引用核验摘要（引用标记存在 ≠ 来源已核验；未取得元数据结论不计入真实性）
+    expect(integrity["auditLayers"]).toMatchObject({ schema: "paperteam.citation-audit-layers/v1", auditAttempted: "ATTEMPTED" });
     const viaHttp = await stack.request("GET", `/api/projects/${projectId}/paper-review`);
     expect((viaHttp.body["report"] as Record<string, unknown>)["citationSemanticMode"]).toBe("off");
   });

@@ -331,6 +331,8 @@ export async function startBackend(): Promise<void> {
       neutralityPolicy: config.review.neutralityPolicy,
       unitContextPolicy: config.review.unitContextPolicy,
       unitDependencyBudgetChars: config.review.unitDependencyBudgetChars,
+      claimAudit: config.review.claimAudit,
+      claimRecheckMaxCalls: config.review.claimRecheckMaxCalls,
       revisionTask: config.review.revisionTask,
     },
     summaryConcurrency: config.review.summaryConcurrency,

@@ -40,7 +40,7 @@ import { BusinessError, InvalidLatexOutputError, WorkflowInvalidStateError } fro
 import { isExistingPaperKind, isSurveyKind, isThesisKind, type WorkflowKind } from "./kinds.js";
 import type { GenerationService } from "../generation/GenerationService.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
-import { normalizeManuscriptLanguage } from "../project/language.js";
+import { normalizeManuscriptLanguage, type ManuscriptLanguage } from "../project/language.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 import type { EvidenceStore, EvidenceRecord } from "../evidence/EvidenceStore.js";
 import type { EvidenceGroundingService } from "../evidence/EvidenceGroundingService.js";
@@ -63,7 +63,27 @@ import { computeEvidenceCitationCoverage } from "../quality/evidenceCitationCove
 import type { SourceStore } from "../sources/SourceStore.js";
 import type { ExperimentPackageService } from "../experiments/ExperimentPackageService.js";
 import { renderExperimentPolicyLines } from "../experiments/experimentPolicy.js";
-import { buildPublishedAssessmentView, readReviewPurpose, renderPublishedAssessmentPolicyLines } from "../review/reviewPurpose.js";
+import { buildPublishedAssessmentView, conversionProvenanceFromReport, readReviewPurpose, renderPublishedAssessmentPolicyLines } from "../review/reviewPurpose.js";
+import {
+  CLAIM_AUDIT_SCHEMA,
+  UNIT_CLAIM_CONTRACT,
+  applyCrossUnitRecheck,
+  buildClaimAudit,
+  resolveClaimAuditMode,
+  selectRecheckItems,
+  summarizeClaimAudit,
+  validateClaimAudit,
+  type ClaimAuditArtifact,
+  type ClaimAuditMode,
+  type ClaimAuditSourceVerification,
+  type ClaimAuditUnitInput,
+  type CrossUnitRecheckItem,
+  type CrossUnitRecheckResult,
+  type UnitClaimExtraction,
+} from "../review/claimAudit.js";
+import { auditFindings } from "../review/findingAudit.js";
+import { READONLY_CITATION_AUDIT_SCHEMA, buildReadOnlyCitationAudit, summarizeCitationAudit, summarizePdfCitationLayers, type ReadOnlyCitationAudit } from "../citation/readOnlyCitationAudit.js";
+import { computeQualityDecisionV2Shadow, decisionPolicyFor } from "../quality/qualityDecisionV2.js";
 import { indexImplicitContext } from "../review/implicitContext.js";
 import { checkInputQaAttestation, type AttestationCheck } from "../review/inputFidelityAttestation.js";
 import { INPUT_FIDELITY_REPORT_SCHEMA, type InputFidelityReport } from "../review/inputFidelityTypes.js";
@@ -178,7 +198,7 @@ import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readPlanChain } from "../agents/researchPlan.js";
 import { readFeasibilityReport, type FeasibilityService } from "../agents/FeasibilityService.js";
-import type { ModeReviewResult, ReviewerService, ReviewIssue, UnitReviewContext } from "../agents/ReviewerService.js";
+import type { FactClaimCheck, ModeReviewResult, ReviewerService, ReviewIssue, UnitReviewContext } from "../agents/ReviewerService.js";
 import {
   ACADEMIC_CONFIRMATION_SAMPLES_MAX,
   aggregateAcademicSamples,
@@ -276,6 +296,7 @@ import {
   loadBuildGateRecord,
   saveQualityGateReport,
   summarizeGateVerification,
+  type QualityGateResult,
   type QualityGateThresholds,
   type ThesisGateInput,
 } from "../quality/gates.js";
@@ -327,6 +348,7 @@ import {
   planIncrementalInvalidation,
   type IncrementalReviewLedger,
   type IncrementalUnitDisposition,
+  type ReviewCoveragePlan,
   type ReviewCoverageSummary,
   type ReviewUnitAttemptTrace,
   type ReviewUnitPlanEntry,
@@ -522,6 +544,9 @@ export interface WorkflowServices {
     unitContextPolicy?: ReviewUnitContextPolicy;
     /** M14.9.5.1 单元依赖原文上限（字符；缺省 DEFAULT_UNIT_DEPENDENCY_BUDGET_CHARS） */
     unitDependencyBudgetChars?: number;
+    /** M15.1 Review Claim Ledger 模式（缺省 auto）与 extended 模式下跨单元复核调用上限（缺省 0） */
+    claimAudit?: ClaimAuditMode;
+    claimRecheckMaxCalls?: number;
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -687,6 +712,8 @@ function reviewRunStageInner(
       // idea_to_paper 只读评估入口生效——第三方已发表论文的自报数值不再按「实验支撑缺口」报告
       const publishedAssessment = isPublishedAssessmentRun(ctx.state);
       const publishedAssessmentLines = publishedAssessment ? renderPublishedAssessmentPolicyLines() : undefined;
+      // M15.1：Review Claim Ledger 模式（auto：只读评估 extended / 作者稿件 shadow——shadow 下全部 prompt 逐字节不变）
+      const claimAuditMode = resolveClaimAuditMode(services.review.claimAudit, publishedAssessment);
       const experimentPolicyLines = options.survey === true || publishedAssessment
         ? undefined
         : await experimentAndResearchFactPolicyLines(services, ctx.projectId);
@@ -746,10 +773,13 @@ function reviewRunStageInner(
         ...(services.review.neutralityPolicy === true ? { neutralityPolicy: true } : {}),
         ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
         ...(digestClaimCheckLines.length > 0 ? { claimCheckLines: digestClaimCheckLines } : {}),
+        ...(claimAuditMode === "extended" ? { claimAuditContract: true } : {}),
       };
       type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
       let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
       let unitScoreBasis: AcademicScoreBasis | undefined;
+      /** M15.1：单元模式的论断账本输入（各单元原文 / 偏移 / 抽取结果；digest 模式在审稿后按覆盖计划另建） */
+      let claimAuditUnits: ClaimAuditUnitInput[] | null = null;
       /** M14.9.5.4：长文档单元的原文定位表（复算矛盾 finding 归到论断所在单元） */
       const unitLocator: Array<{ heading: string; file: string; spanId: string; text: string }> = [];
       if (longDocumentMode) {
@@ -894,6 +924,8 @@ function reviewRunStageInner(
               // M14.9.5.4：只附论断原文落在本单元的复算结果（无相关结果时不出现该键，prompt 与请求指纹逐字节不变）
               ...(unitClaimCheckLines.length > 0 ? { claimCheckLines: unitClaimCheckLines } : {}),
               ...(unitContext !== undefined ? { unitContext: { ...unitContext, sessionLabel: "" } } : {}),
+              // M15.1：extended 论断账本契约（进入 prompt → 请求指纹；shadow / off 不出现该键，prompt 逐字节不变）
+              ...(claimAuditMode === "extended" ? { claimAudit: { contract: UNIT_CLAIM_CONTRACT } as const } : {}),
               signal: ctx.signal,
             };
             const headingOnly = isHeadingOnlyUnit(unitSpan.content);
@@ -943,6 +975,7 @@ function reviewRunStageInner(
                 riskScore: reused.outcome.riskScore,
                 summary: reused.outcome.summary,
                 taskId: reused.taskId ?? "(reused)",
+                ...(reused.outcome.claimExtraction !== undefined ? { claimExtraction: reused.outcome.claimExtraction } : {}),
               };
               // M14.8.1-MOT：同轮 journal 恢复（stage 重试 / 进程重启）沿用记录里的原处置，
               // 增量账本不把本轮新执行的单元误记为跨轮缓存
@@ -1007,6 +1040,7 @@ function reviewRunStageInner(
                   issues: cachedSource.outcome.issues as unknown as ReviewIssueOfUnit[],
                   academicScore: cachedSource.outcome.academicScore, riskScore: cachedSource.outcome.riskScore,
                   summary: cachedSource.outcome.summary, taskId: cachedSource.taskId ?? "(cached)",
+                  ...(cachedSource.outcome.claimExtraction !== undefined ? { claimExtraction: cachedSource.outcome.claimExtraction } : {}),
                 },
               };
             } else {
@@ -1042,6 +1076,7 @@ function reviewRunStageInner(
                   outcome: {
                     issues: review.issues as unknown as Array<Record<string, unknown>>,
                     academicScore: review.academicScore, riskScore: review.riskScore, summary: review.summary,
+                    ...(review.claimExtraction !== undefined ? { claimExtraction: review.claimExtraction } : {}),
                   },
                   // M14.9.5.2：请求指纹恒随完成记录落盘（同轮恢复据此校验；跨轮缓存仍只在增量开启时使用）
                   ...(currentFingerprint !== null ? { requestFingerprint: currentFingerprint } : {}),
@@ -1088,6 +1123,23 @@ function reviewRunStageInner(
         // 旧口径把整个同轮 journal 也并入：CACHE_INCOMPATIBLE 的旧完成记录在重审失败时仍计为完成（coverage 虚报 100%，
         // 而该单元的 finding 并不在本轮结果里）
         const allRecords = settled.flatMap((entry) => (entry !== null ? [entry.record] : []));
+        claimAuditUnits = coveragePlan.units.map((unit): ClaimAuditUnitInput => {
+          const entry = settled.find((candidate) => candidate?.unit.unitId === unit.unitId) ?? null;
+          const span = spanByUnitId.get(unit.unitId);
+          const review = (entry?.review ?? null) as { issues: ReviewIssueOfUnit[]; taskId: string; promptSha256?: string; model?: string; claimExtraction?: UnitClaimExtraction } | null;
+          const reviewStatus = entry === null || entry.record.status === "failed" ? "failed" : entry.record.taskId === "(heading-only)" ? "heading_only" : "completed";
+          return {
+            unitId: unit.unitId, file: unit.file, spanId: unit.spanId, heading: unit.heading, contentHash: unit.contentHash, chars: unit.chars,
+            text: span?.content ?? "", fileOffset: span?.start ?? null, reviewStatus, reused: entry?.reused === true,
+            ...(review?.claimExtraction !== undefined ? { extraction: review.claimExtraction } : {}),
+            issues: review?.issues ?? [],
+            provenance: {
+              ...(review?.taskId !== undefined ? { taskId: review.taskId } : {}),
+              ...(review?.promptSha256 !== undefined ? { promptSha256: review.promptSha256 } : {}),
+              ...(review?.model !== undefined ? { model: review.model } : {}),
+            },
+          };
+        });
         if (completedUnits.length === 0 && coveragePlan.units.length > 0) {
           throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVIEW_UNITS_ALL_FAILED");
         }
@@ -1484,6 +1536,31 @@ function reviewRunStageInner(
           ctx.log(`[review] 实验论断复算：登记 ${claimCheckLedger.counts.registered}，一致 ${claimCheckLedger.counts.consistent}，矛盾 ${claimCheckLedger.counts.contradicted}，未能复算 ${claimCheckLedger.counts.notEvaluated}（账本 ${claimCheckLedger.ledgerHash.slice(0, 12)}）`);
         }
       }
+      // M15.1：Review Claim Ledger + finding provenance audit + 只读引用审计（shadow；生产 Gate 不读）
+      let claimAuditSummary: ReturnType<typeof summarizeClaimAudit> | undefined;
+      let citationAuditSummary: ReturnType<typeof summarizeCitationAudit> | undefined;
+      if (claimAuditMode !== "off") {
+        // shadow 审计失败绝不影响生产审稿结果：取消照常上抛，其余如实记日志（本轮无审计产物 = 影子决策 NOT_EVALUATED）
+        const audits = await runReviewAudits(services, ctx, {
+          round, revision, publishedAssessment, claimAuditMode, language,
+          coverageSourceFiles: coverageSourceFiles.map((file) => ({ file: file.relativePath, content: file.content })),
+          allTex: latexForAttribution.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
+          bibContent: latexForAttribution.bibSource === "file" ? latexForAttribution.bibContent : null,
+          bibPath: latexForAttribution.bibSource === "file" ? latexForAttribution.bibPath : null,
+          coveragePlan, coverageSummary, unitMaxChars,
+          claimAuditUnits,
+          digestClaims: longDocumentMode ? undefined : results.find((result) => result.mode === "fact")?.claims,
+          formalEvidenceIds: new Set(evidence.map((record) => record.id)),
+          claimChecks: claimCheckLedger?.results ?? [],
+          issues: summary.issues,
+        }).catch((error: unknown) => {
+          if (ctx.signal.aborted) throw error;
+          ctx.log(`[review] M15.1 shadow 审计失败（不影响生产审稿 / Gate）：${error instanceof Error ? error.message.slice(0, 300) : String(error)}`);
+          return null;
+        });
+        claimAuditSummary = audits?.claimAudit;
+        citationAuditSummary = audits?.citationAudit;
+      }
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
       if (multiKeyAttribution.sentencesWithMultiKeyCite > 0) {
@@ -1559,6 +1636,9 @@ function reviewRunStageInner(
           : {}),
         // M5.4：可进入语言润色的 style minor finding 数（planner 据此决定是否询问）
         styleMinor: summary.issues.filter(isPolishableStyleIssue).length,
+        // M15.1：shadow 审计摘要（产物 reviews/claim-audit-r{round}.json / citation-audit-r{round}.json）
+        ...(claimAuditSummary !== undefined ? { claimAudit: { mode: claimAuditSummary.claimAuditMode, claims: claimAuditSummary.claims.total, verified: claimAuditSummary.claims.verified, verifiedContradicted: claimAuditSummary.claims.byStatus.VERIFIED_CONTRADICTED, notEvaluated: claimAuditSummary.claims.notEvaluated, extractionMissing: claimAuditSummary.units.extractionMissing, crossUnitTasks: claimAuditSummary.crossUnitTasks.total } } : {}),
+        ...(citationAuditSummary !== undefined ? { citationAudit: { referenceList: citationAuditSummary.referenceList.source, adequacy: citationAuditSummary.inputAdequacy, matchRate: citationAuditSummary.referenceMatching.matchRate, structure: citationAuditSummary.verdict.structure, authenticity: citationAuditSummary.verdict.authenticity } } : {}),
       };
     },
     async verifyDod(ctx) {
@@ -2066,6 +2146,14 @@ function qualityGateStage(
           ? "Quality Gate 通过"
           : `Quality Gate 未通过：${gate.reasons.length} 项阻止（${outcome ?? "首轮无对比"}${convergence !== null ? ` / ${convergence}` : ""}）`,
       );
+      // M15.1：shadow 审计（论断账本 / 只读引用审计 / finding provenance）→ Quality Decision V2 影子结果。
+      // 生产 gate 已在上方判定完毕且不读这些产物；账本与被审修订不一致（STALE）时按 NOT_EVALUATED 处理，不沿用旧结论
+      const shadow = await computeShadowDecision(services, ctx.projectId, {
+        gate, review, workflowKind: ctx.state.workflowKind, publishedAssessment: isPublishedAssessmentRun(ctx.state),
+      }).catch((error: unknown) => {
+        ctx.log(`[quality.gate] M15.1 影子决策失败（不影响生产 Gate）：${error instanceof Error ? error.message.slice(0, 300) : String(error)}`);
+        return null;
+      });
       // M14.9.3：第三方已发表论文只读评估——生产 gate 原样保留；另落盘标明规则适用性的评估视图
       let publishedAssessmentSummary: Record<string, unknown> | undefined;
       if (isPublishedAssessmentRun(ctx.state)) {
@@ -2075,6 +2163,7 @@ function qualityGateStage(
           evidenceRecords: evidenceRecords.length,
           feasibilityEvaluated: feasibility !== null,
           inputFidelity: await loadPublishedInputFidelity(services, ctx.projectId),
+          ...(shadow !== null ? { scientificAudit: shadow.view } : {}),
         });
         const dir = services.projects.reviewsDir(ctx.projectId);
         await mkdir(dir, { recursive: true });
@@ -2098,6 +2187,7 @@ function qualityGateStage(
         round,
         outcome,
         ...(publishedAssessmentSummary !== undefined ? { publishedAssessment: publishedAssessmentSummary } : {}),
+        ...(shadow !== null ? { qualityDecisionV2Shadow: shadow.brief } : {}),
         // M11.2.3：确定性收敛状态与轮次质量差（planSharedTail / stalled payload 消费）
         ...(convergence !== null ? { convergence } : {}),
         // M11.3（Phase E）：产品终态语义（completion summary / stalled payload 共用）
@@ -8644,6 +8734,12 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
         ctx.log(`review.aggregate：checkpoint 中 ${corrupted} 条 finding 结构损坏，已丢弃`);
       }
       const integrity = await services.paper.citationIntegrity.integrityReport(ctx.projectId);
+      // M15.1：引用核验四层摘要（attempted / adequate / matched / external），与 LaTeX 只读审计同一口径
+      const citationAuditLayers = summarizePdfCitationLayers({
+        references: await services.paper.store.loadReferences<ReferenceEntry>(ctx.projectId),
+        callouts: await services.paper.store.loadCallouts<CitationCallout>(ctx.projectId),
+        metadataByStatus: integrity.metadataByStatus,
+      });
       const map = await services.paper.store.loadMap(ctx.projectId);
       const project = await services.projects.getRequired(ctx.projectId);
       // 本轮语义核验模式（run request；历史 run 缺省 full）。off 时绝不把项目里
@@ -8699,6 +8795,7 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
             ? {}
             : { semantic: integrity.semantic }),
           probableFabrications: integrity.probableFabrications,
+          auditLayers: citationAuditLayers,
         },
         findings,
       };
@@ -11908,6 +12005,247 @@ async function loadPublishedInputFidelity(services: WorkflowServices, projectId:
     manuscriptSha256 = undefined;
   }
   return { report, attestation: checkInputQaAttestation(report, attestation, { ...(manuscriptSha256 !== undefined ? { manuscriptSha256 } : {}), requireManuscriptBinding: true }) };
+}
+
+/**
+ * M15.1：quality.gate 的影子决策（只读）。读取同轮 claim-audit / citation-audit，按被审修订快照校验账本，
+ * 计算 Quality Decision V2 影子结果并落盘 reviews/quality-decision-v2-shadow-r{round}.json。
+ * 返回 null = 本轮没有 shadow 审计产物（claimAudit=off / 旧轮次）。
+ */
+async function computeShadowDecision(
+  services: WorkflowServices,
+  projectId: string,
+  input: { gate: QualityGateResult; review: ReviewSummary; workflowKind: WorkflowKind | undefined; publishedAssessment: boolean },
+): Promise<{ view: Record<string, unknown>; brief: Record<string, unknown> } | null> {
+  const { review } = input;
+  const claimAudit = await services.reviewArtifacts.loadAuditArtifact<ClaimAuditArtifact>(projectId, "claim-audit", review.round, CLAIM_AUDIT_SCHEMA);
+  const citationAudit = await services.reviewArtifacts.loadAuditArtifact<ReadOnlyCitationAudit>(projectId, "citation-audit", review.round, READONLY_CITATION_AUDIT_SCHEMA);
+  if (claimAudit === null && citationAudit === null) return null;
+  const revision = typeof review.reviewedRevision === "number" ? review.reviewedRevision : null;
+  const snapshot = revision !== null ? await readSnapshotTex(services.revisions.snapshotDir(projectId, revision)) : null;
+  const validation = claimAudit === null
+    ? undefined
+    : validateClaimAudit(claimAudit, {
+        sourceRevision: revision,
+        documentFingerprint: review.coverage?.snapshotId ?? claimAudit.documentFingerprint,
+        files: snapshot ?? [],
+      });
+  const claimSummary = claimAudit === null ? null : summarizeClaimAudit(claimAudit, validation);
+  const citationSummary = citationAudit === null ? null : summarizeCitationAudit(citationAudit);
+  const instructions = await services.externalInstructions.load(projectId).catch(() => []);
+  const decision = computeQualityDecisionV2Shadow({
+    policy: decisionPolicyFor(input.workflowKind, input.publishedAssessment, instructions.length > 0),
+    gate: input.gate,
+    review,
+    claimAudit: claimSummary,
+    citationAudit: citationSummary,
+    findingAudit: claimAudit?.findingAudit?.summary ?? null,
+  });
+  const path = await services.reviewArtifacts.saveAuditArtifact(projectId, "quality-decision-v2-shadow", review.round, {
+    ...decision,
+    claimAuditValidation: validation ?? null,
+  });
+  return {
+    view: {
+      schema: "paperteam.published-scientific-audit/v1",
+      claimAudit: claimSummary,
+      citationAudit: citationSummary,
+      findingAudit: claimAudit?.findingAudit?.summary ?? null,
+      qualityDecisionV2Shadow: { path, scientificIntegrity: decision.scientificIntegrity.status, verificationCompleteness: decision.verificationCompleteness },
+    },
+    brief: {
+      path,
+      policy: decision.policy,
+      scientificIntegrity: decision.scientificIntegrity.status,
+      verifiedContradicted: decision.scientificIntegrity.verifiedContradicted,
+      citationStructure: decision.citationIntegrity.structure,
+      citationAuthenticity: decision.citationIntegrity.authenticity,
+      claimAuditValidation: validation?.status ?? null,
+      verificationMissing: decision.verificationCompleteness.missing,
+    },
+  };
+}
+
+/**
+ * M15.1：论断账本的文档级来源核验。作者稿件工作流 = 作者源稿（与单元上下文快照同口径）；只读评估按
+ * artifacts/input-provenance.json 声明（须与被审 main.tex sha256 绑定）与输入保真报告 / QA 证明判定——
+ * 没有任何记录 = SOURCE_UNKNOWN（不断言是 PDF 转写，也不当作作者源稿）。
+ */
+async function resolveClaimAuditSource(services: WorkflowServices, projectId: string, publishedAssessment: boolean): Promise<{ source: ClaimAuditSourceVerification; conversionExcerpts: string[] }> {
+  if (!publishedAssessment) {
+    return { source: { level: "AUTHOR_SOURCE", basis: "AUTHOR_WORKFLOW", note: "作者稿件工作流：被审对象是作者 LaTeX 源稿 / 其修订快照" }, conversionExcerpts: [] };
+  }
+  const fidelity = await loadPublishedInputFidelity(services, projectId);
+  const conversionExcerpts = fidelity !== null && Array.isArray(fidelity.report.findings) ? (conversionProvenanceFromReport(fidelity.report)?.excerpts ?? []) : [];
+  let declared: { sourceKind?: unknown; manuscriptSha256?: unknown; note?: unknown } | undefined;
+  try {
+    declared = JSON.parse(await readFile(join(services.projects.projectDir(projectId), "artifacts", "input-provenance.json"), "utf8")) as typeof declared;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") declared = undefined;
+  }
+  if (declared !== undefined && typeof declared === "object" && declared !== null) {
+    let manuscriptSha256: string | null = null;
+    try {
+      manuscriptSha256 = createHash("sha256").update(await readFile(join(services.projects.manuscriptDir(projectId), "main.tex"))).digest("hex");
+    } catch {
+      manuscriptSha256 = null;
+    }
+    const bound = typeof declared.manuscriptSha256 === "string" && declared.manuscriptSha256 === manuscriptSha256;
+    if (bound && declared.sourceKind === "author_latex") {
+      return { source: { level: "AUTHOR_SOURCE", basis: "DECLARED_INPUT_PROVENANCE", note: `输入来源声明：作者 LaTeX 源稿（sha256 已绑定；声明不是独立核验）${typeof declared.note === "string" ? `；${declared.note.slice(0, 160)}` : ""}` }, conversionExcerpts };
+    }
+    if (bound && declared.sourceKind === "pdf_transcription" && fidelity === null) {
+      return { source: { level: "SOURCE_UNVERIFIED", basis: "DECLARED_INPUT_PROVENANCE", note: "输入来源声明：PDF 转写投影，未随附保真报告 / 人工 QA（表格 / 公式未经逐格核验）" }, conversionExcerpts };
+    }
+  }
+  if (fidelity === null) {
+    return { source: { level: "SOURCE_UNKNOWN", basis: "NONE", note: "未记录输入来源与转写方式（无 input-provenance / 保真报告）" }, conversionExcerpts };
+  }
+  return { source: { level: publishedSourceVerification(fidelity), basis: "INPUT_FIDELITY_REPORT", note: `输入保真报告 ${fidelity.report.status}；QA 证明 ${fidelity.attestation?.verdict ?? "ABSENT"}` }, conversionExcerpts };
+}
+
+/** M15.1：单轮有界跨单元复核批大小（每次调用 ≤ 8 条论断） */
+const CLAIM_RECHECK_BATCH = 8;
+
+/**
+ * M15.1：review.run 的 shadow 审计（论断账本 / finding provenance / 只读引用审计）。全部产物版本化落盘、只读：
+ * 不改 summary.issues、计数、分数，也不进生产 Gate。跨单元复核只在 extended 模式且配置了调用上限时执行（有界、
+ * 每批 1 次重试、逐批留痕）；失败如实记 FAILED，论断保持 NOT_EVALUATED。
+ */
+async function runReviewAudits(
+  services: WorkflowServices,
+  ctx: StageRunContext,
+  input: {
+    round: number;
+    revision: number;
+    publishedAssessment: boolean;
+    claimAuditMode: "shadow" | "extended";
+    language: ManuscriptLanguage | undefined;
+    coverageSourceFiles: Array<{ file: string; content: string }>;
+    allTex: Array<{ file: string; content: string }>;
+    bibContent: string | null;
+    bibPath: string | null;
+    coveragePlan: ReviewCoveragePlan;
+    coverageSummary: ReviewCoverageSummary;
+    unitMaxChars: number;
+    claimAuditUnits: ClaimAuditUnitInput[] | null;
+    digestClaims: FactClaimCheck[] | undefined;
+    formalEvidenceIds: ReadonlySet<string>;
+    claimChecks: NonNullable<Awaited<ReturnType<typeof services.experimentPackages.evaluateClaimChecks>>["ledger"]>["results"];
+    issues: ReviewIssue[];
+  },
+): Promise<{ claimAudit: ReturnType<typeof summarizeClaimAudit>; citationAudit: ReturnType<typeof summarizeCitationAudit> }> {
+  const { source, conversionExcerpts } = await resolveClaimAuditSource(services, ctx.projectId, input.publishedAssessment);
+  let units: ClaimAuditUnitInput[] = input.claimAuditUnits ?? [];
+  if (input.claimAuditUnits === null) {
+    // digest 模式：按同一覆盖计划切单元（只用于定位与依赖解析；digest 审查覆盖全文）
+    const spans = new Map<string, RevisionSpan>();
+    for (const file of input.coverageSourceFiles) {
+      for (const span of locateFileSpans(file.file, file.content)) {
+        for (const unit of partitionSpanIntoUnits(span, input.unitMaxChars).units) spans.set(`${file.file}::${unit.logicalSection}`, unit);
+      }
+    }
+    units = input.coveragePlan.units.map((unit) => {
+      const span = spans.get(unit.unitId);
+      return {
+        unitId: unit.unitId, file: unit.file, spanId: unit.spanId, heading: unit.heading, contentHash: unit.contentHash, chars: unit.chars,
+        text: span?.content ?? "", fileOffset: span?.start ?? null, reviewStatus: isHeadingOnlyUnit(span?.content ?? "") ? "heading_only" as const : "completed" as const, reused: false,
+      };
+    });
+  }
+  const models = units.map((unit) => unit.provenance?.model).filter((model): model is string => model !== undefined);
+  let artifact: ClaimAuditArtifact = buildClaimAudit({
+    projectId: ctx.projectId,
+    round: input.round,
+    sourceRevision: input.revision,
+    documentFingerprint: input.coveragePlan.snapshotId,
+    files: input.coverageSourceFiles,
+    coverageMode: input.coverageSummary.mode,
+    claimAuditMode: input.claimAuditMode,
+    reviewPurpose: input.publishedAssessment ? "published_paper_assessment" : "author_manuscript",
+    unitContextPolicy: input.coverageSummary.mode === "units" ? (services.review.unitContextPolicy ?? "shared_session") : null,
+    units,
+    ...(input.digestClaims !== undefined ? { digestClaims: input.digestClaims } : {}),
+    formalEvidenceIds: input.formalEvidenceIds,
+    claimChecks: input.claimChecks,
+    sourceVerification: source,
+    conversionExcerpts,
+    body: { targetChars: input.coverageSummary.targetChars, reviewedChars: input.coverageSummary.reviewedChars, ratio: input.coverageSummary.ratio, complete: input.coverageSummary.complete },
+    models,
+  });
+  const maxCalls = Math.max(0, services.review.claimRecheckMaxCalls ?? 0);
+  if (input.claimAuditMode === "extended" && maxCalls > 0) {
+    const items = selectRecheckItems(artifact, maxCalls * CLAIM_RECHECK_BATCH);
+    const batches: Array<{ batchId: string; items: CrossUnitRecheckItem[]; status: "COMPLETED" | "FAILED"; attempts: number; error?: string; results: CrossUnitRecheckResult[]; trace?: { taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> } }> = [];
+    for (let start = 0; start < items.length && batches.length < maxCalls; start += CLAIM_RECHECK_BATCH) {
+      const slice = items.slice(start, start + CLAIM_RECHECK_BATCH);
+      const batchId = `B${batches.length + 1}`;
+      let lastError: string | undefined;
+      let done = false;
+      for (let attempt = 1; attempt <= 2 && !done; attempt += 1) {
+        if (ctx.signal.aborted) throw new BusinessError("WORKFLOW_CANCELLED", "审稿已被取消");
+        try {
+          const outcome = await services.reviewer.recheckClaimsCrossUnit({
+            projectId: ctx.projectId, items: slice, sessionLabel: `r${input.round}-${batchId}-a${attempt}-${randomUUID().slice(0, 8)}`,
+            ...(input.language !== undefined ? { language: input.language } : {}), signal: ctx.signal,
+          });
+          batches.push({ batchId, items: slice, status: "COMPLETED", attempts: attempt, results: outcome.results, trace: { taskId: outcome.taskId, promptSha256: outcome.promptSha256, ...(outcome.model !== undefined ? { model: outcome.model } : {}), ...(outcome.usage !== undefined ? { usage: outcome.usage } : {}) } });
+          done = true;
+        } catch (error) {
+          if (ctx.signal.aborted) throw error;
+          lastError = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+        }
+      }
+      if (!done) batches.push({ batchId, items: slice, status: "FAILED", attempts: 2, ...(lastError !== undefined ? { error: lastError } : {}), results: [] });
+    }
+    artifact = applyCrossUnitRecheck(artifact, batches, { conversionExcerpts });
+    artifact.recheck = {
+      maxCalls,
+      batches: batches.map((batch) => ({
+        batchId: batch.batchId, items: batch.items.length, status: batch.status, attempts: batch.attempts,
+        ...(batch.trace !== undefined ? { taskId: batch.trace.taskId, promptSha256: batch.trace.promptSha256, ...(batch.trace.model !== undefined ? { model: batch.trace.model } : {}), ...(batch.trace.usage !== undefined ? { usage: batch.trace.usage } : {}) } : {}),
+        ...(batch.error !== undefined ? { error: batch.error } : {}),
+      })),
+    };
+  }
+  const findings = auditFindings({
+    issues: input.issues,
+    units: units.map((unit) => ({ unitId: unit.unitId, file: unit.file, heading: unit.heading, text: unit.text })),
+    sourceVerification: source.level,
+    conversionExcerpts,
+  });
+  artifact.findingAudit = findings;
+  await services.reviewArtifacts.saveAuditArtifact(ctx.projectId, "claim-audit", input.round, artifact);
+  // 只读引用审计：项目 .bib（作者工作流）或 thebibliography / 文后参考文献（只读评估）；外部元数据只在只读评估且启用时核验
+  const preliminary = buildReadOnlyCitationAudit({
+    round: input.round, sourceRevision: input.revision, documentFingerprint: input.coveragePlan.snapshotId,
+    reviewPurpose: input.publishedAssessment ? "published_paper_assessment" : "author_manuscript",
+    files: input.allTex, bibContent: input.bibContent, bibPath: input.bibPath,
+    metadata: { notEvaluatedReason: input.publishedAssessment ? "待核验" : "作者稿件工作流：外部元数据核验由 citation.verify 负责（本审计不重复查询）" },
+  });
+  let citationAudit: ReadOnlyCitationAudit = preliminary;
+  if (input.publishedAssessment) {
+    const metadata = preliminary.layers.inputAdequacy.metadataCheckable
+      ? await services.citation.verifyEntryMetadata(preliminary.entries.filter((entry) => preliminary.mentions.some((mention) => mention.labels.some((label) => label.entryId === entry.entryId))).map((entry) => ({
+          key: entry.key ?? entry.entryId,
+          ...(entry.title !== undefined ? { title: entry.title } : {}),
+          ...(entry.year !== undefined ? { year: entry.year } : {}),
+          ...(entry.doi !== undefined ? { doi: entry.doi } : {}),
+        })))
+      : { notEvaluatedReason: "条目解析不足（过半条目没有标题 / DOI）：外部元数据核验不可行" };
+    citationAudit = buildReadOnlyCitationAudit({
+      round: input.round, sourceRevision: input.revision, documentFingerprint: input.coveragePlan.snapshotId,
+      reviewPurpose: "published_paper_assessment", files: input.allTex, bibContent: input.bibContent, bibPath: input.bibPath, metadata,
+    });
+  }
+  await services.reviewArtifacts.saveAuditArtifact(ctx.projectId, "citation-audit", input.round, citationAudit);
+  const claimSummary = summarizeClaimAudit(artifact);
+  ctx.log(
+    `[review] M15.1 论断账本（${input.claimAuditMode}）：论断 ${claimSummary.claims.total}（已核实 ${claimSummary.claims.verified}，其中矛盾 ${claimSummary.claims.byStatus.VERIFIED_CONTRADICTED}；审稿判断 ${claimSummary.claims.reviewerOnly}；待作者/外部 ${claimSummary.claims.pending}；未评估 ${claimSummary.claims.notEvaluated}；拒收 ${claimSummary.claims.rejected}），` +
+      `跨单元任务 ${claimSummary.crossUnitTasks.total}（复核 ${claimSummary.crossUnitTasks.recheckCompleted}）；finding 诊断 CONTEXT_INCOMPLETE ${findings.summary.byStatus.CONTEXT_INCOMPLETE} / PARSE_ARTIFACT_SUSPECTED ${findings.summary.byStatus.PARSE_ARTIFACT_SUSPECTED}；` +
+      `引用审计 ${citationAudit.referenceList.source} ${citationAudit.layers.inputAdequacy.status} 匹配 ${citationAudit.layers.referenceMatching.matched}/${citationAudit.layers.referenceMatching.labels} 外部元数据 ${citationAudit.layers.externalMetadata.status}`,
+  );
+  return { claimAudit: claimSummary, citationAudit: summarizeCitationAudit(citationAudit) };
 }
 
 async function experimentAndResearchFactPolicyLines(services: WorkflowServices, projectId: string): Promise<string[]> {

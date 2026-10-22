@@ -35,6 +35,17 @@ import {
   StructuredOutputError,
   describeStructuredError,
 } from "./outputParsing.js";
+import {
+  UNIT_CLAIM_CONTRACT,
+  UNIT_CLAIM_MAX,
+  UNIT_CLAIM_REPAIR_MAX,
+  parseCrossUnitRecheckOutput,
+  parseUnitClaims,
+  renderCrossUnitRecheckPrompt,
+  type CrossUnitRecheckItem,
+  type CrossUnitRecheckResult,
+  type UnitClaimExtraction,
+} from "../review/claimAudit.js";
 
 export type ReviewMode = "fact" | "academic" | "style";
 
@@ -63,6 +74,8 @@ export interface UnitReviewResult {
   sessionKey?: string;
   model?: string;
   usage?: Record<string, unknown>;
+  /** M15.1：extended 论断账本契约下该单元自报的 claims（结构解析结果；未请求 = 缺省） */
+  claimExtraction?: UnitClaimExtraction;
 }
 
 export type IssueSeverity = "critical" | "major" | "minor";
@@ -164,6 +177,13 @@ export interface FactClaimCheck {
   verdict: FactVerdict;
   evidenceId?: string;
   note?: string;
+  /** M15.1 extended 契约（可选）：原文逐字片段与核对记录（缺省 = 旧契约，claim 可能是复述） */
+  quote?: string;
+  claimType?: string;
+  linkedRefs?: string[];
+  counterpartQuote?: string;
+  claimValue?: string;
+  counterpartValue?: string;
 }
 
 export interface ModeReviewResult {
@@ -277,6 +297,8 @@ export class ReviewerService {
     publishedAssessmentLines?: string[];
     /** M14.9.5.4：预先登记的实验论断复算结果块（experiments/claimChecks 渲染；undefined → prompt 逐字节不变） */
     claimCheckLines?: string[];
+    /** M15.1：digest fact 路追加论断账本扩展字段（quote / claimType / linkedRefs / 对照）；缺省 → prompt 逐字节不变 */
+    claimAuditContract?: boolean;
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -353,6 +375,8 @@ export class ReviewerService {
     publishedAssessmentLines?: string[];
     /** M14.9.5.4：实验论断复算结果块（undefined → prompt 不变） */
     claimCheckLines?: string[];
+    /** M15.1：digest fact 路追加论断账本扩展字段（quote / claimType / linkedRefs / 对照）；缺省 → prompt 逐字节不变 */
+    claimAuditContract?: boolean;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -445,6 +469,8 @@ export class ReviewerService {
     publishedAssessmentLines?: string[];
     /** M14.9.5.4：论断原文落在本单元的实验论断复算结果块（undefined → prompt 与请求指纹逐字节不变） */
     claimCheckLines?: string[];
+    /** M15.1：单元审稿追加论断账本契约（unit-claims/v1）；缺省 → prompt 与请求指纹逐字节不变 */
+    claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT };
     /**
      * M14.9.5.1 单元上下文策略（review.unitContextPolicy）。undefined = shared_session：同项目全部单元共用
      * review/academic/unit 会话，prompt 与会话派生与 2df31cf 逐字节一致。给出时：每次尝试一个全新物理会话
@@ -478,6 +504,35 @@ export class ReviewerService {
     };
     const metaSessionKey = task.metadata?.["sessionKey"];
     const metaModel = task.metadata?.["model"];
+    // M15.1：论断账本（extended 契约）。claims 缺失 / 非数组只做 ≤ UNIT_CLAIM_REPAIR_MAX 次有界结构化修复（同一会话、
+    // 只补 claims，不重做审稿）；修复失败如实记 ABSENT / INVALID——不阻断单元，也不伪造空账本为「已抽取」
+    let claimExtraction: UnitClaimExtraction | undefined;
+    if (params.claimAudit !== undefined) {
+      let extraction = parseUnitClaims(parsed);
+      let repairAttempts = 0;
+      while ((extraction.status === "ABSENT" || extraction.status === "INVALID") && repairAttempts < UNIT_CLAIM_REPAIR_MAX && params.signal?.aborted !== true) {
+        repairAttempts += 1;
+        const repair = await this.runtime.runAgent({
+          agentId: this.agentId,
+          ...this.timeoutOverride,
+          signal: params.signal,
+          task: buildUnitClaimRepairPrompt(params.unit.heading, extraction.errors),
+          projectId: params.projectId,
+          ...(sessionKey !== undefined ? { sessionKey, toolPolicy: "sealed" as const } : {}),
+          contextScope: "review/academic/unit",
+          ...(params.language !== undefined ? { language: params.language } : {}),
+          metadata: { role: "reviewer", skill: "unit", unit: params.unit.unitId, structuredRepairAttempt: repairAttempts, repairField: "claims" },
+        }).catch(() => null);
+        if (repair === null || repair.status !== "completed") break;
+        try {
+          const retried = parseUnitClaims(extractJsonObject(repair.output ?? "", `Review unit（${params.unit.unitId}）claims 修复`));
+          extraction = retried.status === "EXTRACTED" ? retried : { ...retried, errors: [...extraction.errors, ...retried.errors] };
+        } catch (error) {
+          extraction = { ...extraction, errors: [...extraction.errors, `修复输出无法解析：${error instanceof Error ? error.message.slice(0, 120) : String(error)}`] };
+        }
+      }
+      claimExtraction = { ...extraction, repairAttempts };
+    }
     return {
       issues,
       academicScore: score("academicScore"),
@@ -486,6 +541,45 @@ export class ReviewerService {
       taskId: task.taskId,
       promptSha256: sha256Hex(prompt),
       ...(typeof metaSessionKey === "string" ? { sessionKey: metaSessionKey } : sessionKey !== undefined ? { sessionKey } : {}),
+      ...(typeof metaModel === "string" ? { model: metaModel } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+      ...(claimExtraction !== undefined ? { claimExtraction } : {}),
+    };
+  }
+
+  /**
+   * M15.1：有界跨单元论断复核（一次调用一批；全新 sealed 会话，prompt 即全部材料）。候选片段由确定性查找给出，
+   * 返回的 counterpartQuote 由调用方逐字核对是否落在片段中；本方法不判定状态。
+   */
+  async recheckClaimsCrossUnit(params: {
+    projectId: string;
+    items: readonly CrossUnitRecheckItem[];
+    sessionLabel: string;
+    language?: ManuscriptLanguage;
+    signal?: AbortSignal;
+  }): Promise<{ results: CrossUnitRecheckResult[]; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
+    const prompt = renderCrossUnitRecheckPrompt(params.items);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: prompt,
+      projectId: params.projectId,
+      sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/claim-recheck/${params.sessionLabel}`,
+      toolPolicy: "sealed",
+      contextScope: "review/academic/claim-recheck",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+      metadata: { role: "reviewer", skill: "claim-recheck", items: params.items.length },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `跨单元论断复核任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "跨单元论断复核结果");
+    const metaModel = task.metadata?.["model"];
+    return {
+      results: parseCrossUnitRecheckOutput(parsed, new Set(params.items.map((item) => item.claimId))),
+      taskId: task.taskId,
+      promptSha256: sha256Hex(prompt),
       ...(typeof metaModel === "string" ? { model: metaModel } : {}),
       ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
     };
@@ -838,9 +932,24 @@ function parseClaims(parsed: Record<string, unknown>, context: string): FactClai
         ? { evidenceId: record["evidenceId"].trim() }
         : {}),
       ...(typeof record["note"] === "string" ? { note: record["note"].trim() } : {}),
+      // M15.1 extended 契约字段（旧输出没有这些键 → 结果与旧版逐字段一致）
+      ...readOptionalStrings(record, ["quote", "claimType", "counterpartQuote", "claimValue", "counterpartValue"]),
+      ...(Array.isArray(record["linkedRefs"])
+        ? { linkedRefs: (record["linkedRefs"] as unknown[]).filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "").map((entry) => entry.trim()).slice(0, 8) }
+        : {}),
     });
   }
   return claims;
+}
+
+function readOptionalStrings(record: Record<string, unknown>, keys: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim() !== "") out[key] = value.trim().slice(0, 600);
+    else if (typeof value === "number" && Number.isFinite(value)) out[key] = String(value);
+  }
+  return out;
 }
 
 // ---- Prompt ----
@@ -902,6 +1011,8 @@ export function buildReviewPrompt(params: {
   publishedAssessmentLines?: string[];
   /** M14.9.5.4：实验论断复算结果块（undefined → prompt 逐字节不变） */
   claimCheckLines?: string[];
+  /** M15.1：digest fact 路追加论断账本扩展字段（quote / claimType / linkedRefs / 对照）；缺省 → prompt 逐字节不变 */
+  claimAuditContract?: boolean;
 }): string {
   const evidenceLines = params.evidence
     .slice(0, 20)
@@ -981,6 +1092,7 @@ export function buildReviewPrompt(params: {
           ]
         : []),
       "输出额外字段 claims: [{section, claim, verdict, evidenceId?, note?}]；",
+      ...(params.claimAuditContract === true ? DIGEST_CLAIM_AUDIT_LINES : []),
       "无已核验（verified）证据支撑的关键论断必须是 UNSUPPORTED 并生成 critical/major issue（blocking 视严重度）。",
       "issue 若源自某条 claim 的核验结论，在该 issue 中填写 claimIndex（该 claim 在 claims 数组中的 0 基下标）——用于确定性地把 finding 归因到其来源 claim。",
     ],
@@ -1085,6 +1197,38 @@ export function buildReviewRepairPrompt(
   ].join("\n");
 }
 
+/**
+ * M15.1 单元论断账本契约（unit-claims/v1）：只在 claimAudit 给出时注入（缺省口径 prompt 逐字节不变）。
+ * claims 是核对记录，不替代 issues；账本状态由 review/claimAudit 确定性判定，模型自报的 check 只是输入。
+ */
+const UNIT_CLAIM_CONTRACT_LINES: readonly string[] = [
+  `论断账本（claims，${UNIT_CLAIM_CONTRACT}）：另列出本单元中重要的事实性论断（数值结果与比较、数据集 / 实验设置、方法事实、文献归因、核心结论；一般背景句不列；最多 ${UNIT_CLAIM_MAX} 条）。每条：`,
+  "- quote：从本单元原文逐字摘出的论断片段（≥12 字，不改写、不拼接，必须能在本单元原文中逐字找到）；",
+  "- claimType：own_result | method | dataset | literature_attribution | comparison | statistic | conclusion | definition | UNKNOWN（不确定就填 UNKNOWN）；",
+  "- linkedRefs：论断依赖的表 / 图 / 公式 / 引文 / 章节，按原文写法（如 \"Table 2\"、\"\\\\ref{tab:main}\"、\"式(3)\"、\"[12]\"、\"Smith et al. 2020\"）；",
+  "- check：CONSISTENT（已用本消息中的原文核对且一致）| INCONSISTENT（已核对且不一致）| NEEDS_OTHER_SECTION（核对需要本消息之外的章节 / 表格）| NEEDS_AUTHOR_DATA | NEEDS_EXTERNAL_SOURCE | NOT_CHECKED；",
+  "- counterpartQuote：核对所依据的另一处原文（逐字；没有就省略）；claimValue / counterpartValue：数值核对时分别照原文写论断中的数值与对照处的数值（含单位；派生量不要自行换算后填写）；",
+  "- issueIndex：该论断若对应上方 issues 中的某条问题，填其 0 基下标；note：一句话说明核对过程。",
+  "只有真正对照过原文才写 CONSISTENT / INCONSISTENT；看不到依据时写 NEEDS_OTHER_SECTION 或 NOT_CHECKED，不要猜。发现的问题仍须写进 issues。",
+];
+
+const UNIT_CLAIM_JSON_TEMPLATE =
+  '  "claims": [{"quote": "逐字论断片段", "claimType": "own_result|...|UNKNOWN", "linkedRefs": ["Table 2"], "check": "CONSISTENT|INCONSISTENT|NEEDS_OTHER_SECTION|NEEDS_AUTHOR_DATA|NEEDS_EXTERNAL_SOURCE|NOT_CHECKED", "counterpartQuote": "（可选）", "claimValue": "（可选）", "counterpartValue": "（可选）", "issueIndex": 0, "note": "（可选）"}],';
+
+/** M15.1 digest fact 路的论断账本扩展字段（只在 claimAuditContract 时注入） */
+const DIGEST_CLAIM_AUDIT_LINES: readonly string[] = [
+  "论断账本扩展（M15.1）：每条 claim 另给 quote（从稿件原文逐字摘出的论断片段，≥12 字，不改写）、claimType（own_result|method|dataset|literature_attribution|comparison|statistic|conclusion|definition|UNKNOWN）、linkedRefs（依赖的表 / 图 / 公式 / 引文，按原文写法）；",
+  "数值核对时再给 counterpartQuote（对照处逐字原文）与 claimValue / counterpartValue（照原文写，含单位）。没有找到证据时 verdict 仍按上面的规则填写，但这只表示「无已核验证据」，不要写成论断已被证伪。",
+];
+
+function buildUnitClaimRepairPrompt(heading: string, errors: readonly string[]): string {
+  return [
+    `你上一条对章节「${heading}」的审查输出缺少合法的 claims 论断账本（${errors.slice(0, 3).join("；")}）。`,
+    "不要重新审稿、不要重复 issues；只按上一条消息中的 claims 契约补出本单元的论断账本。",
+    `只输出一个 JSON 对象（不要 Markdown 围栏）：{"claims": [...]}——每条含 quote（本单元原文逐字片段）、claimType、linkedRefs、check，可选 counterpartQuote / claimValue / counterpartValue / issueIndex / note；没有可列的论断时输出 {"claims": []}。`,
+  ].join("\n");
+}
+
 /** M14.1a P0-2：单元审查 prompt（长文档模式；输出契约与三路 review 同构） */
 function buildUnitReviewPrompt(params: {
   unit: { unitId: string; file: string; heading: string; unitIndex: number; unitCount: number; text: string };
@@ -1097,6 +1241,8 @@ function buildUnitReviewPrompt(params: {
   neutralityPolicy?: boolean;
   publishedAssessmentLines?: string[];
   claimCheckLines?: string[];
+  /** M15.1：单元审稿追加论断账本契约（unit-claims/v1）；缺省 → prompt 与请求指纹逐字节不变 */
+  claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT };
   unitContext?: Pick<UnitReviewContext, "policy" | "dependencies" | "gaps" | "sourceVerification">;
 }): string {
   const dependencyBlock = params.unitContext?.policy === "isolated_snapshot"
@@ -1141,6 +1287,7 @@ function buildUnitReviewPrompt(params: {
     "4. 本单元视角发现疑似跨章冲突（与索引中其他章节的符号 / 定义 / 数值 / 表述不一致）时，先记为问题并在 description 中写明冲突章节名，但不要凭单侧文本下结论。",
     ...(params.neutralityPolicy === true ? [`5. ${REVIEW_NEUTRALITY_CLAUSE}`] : []),
     ...contextClauses,
+    ...(params.claimAudit !== undefined ? UNIT_CLAIM_CONTRACT_LINES : []),
     "",
     "只输出一个 JSON 对象（不要 Markdown 围栏）：",
     "{",
@@ -1154,6 +1301,7 @@ function buildUnitReviewPrompt(params: {
     params.publishedAssessmentLines !== undefined
       ? '    "reason": "为什么是问题（可选）", "verification": "VERIFIED_IN_TEXT|AUTHOR_CHECK_REQUIRED|EXTERNAL_DATA_REQUIRED", "blocking": false}],'
       : '    "reason": "为什么是问题（可选）", "blocking": false}],',
+    ...(params.claimAudit !== undefined ? [UNIT_CLAIM_JSON_TEMPLATE] : []),
     '  "academicScore": 0-100（本单元学术质量）,',
     '  "riskScore": 0-100（本单元 AI 文风风险）',
     "}",

@@ -68,7 +68,31 @@ Search Result（检索命中，默认零持久化）
   `experiment_claims_recomputed`：矛盾 FAIL、登记却无法复算 NOT_EVALUATED（必需）、未登记但有实验包 NOT_EVALUATED（不阻断）、
   第三方已发表论文只读评估 NOT_APPLICABLE。
 
-## 6. 可靠性证据
+## 6. 审稿论断账本与只读引用审计（M15.1，shadow）
+
+审稿发现（finding）与「论文中的论断是否被核验」是两件事。M15.1 在 `review.run` 旁路产出版本化审计产物，
+**生产 Quality Gate 不读它们**（规则、80 / 35 阈值、NOT_EVALUATED 语义不变；切换决策留待 M15.4 独立测评）：
+
+| 产物 | 内容 |
+| --- | --- |
+| `reviews/claim-audit-r{n}.json`（`paperteam.review-claim-audit/v1`） | 每条论断：确定性 `claimId`（文件 + 规范化原文 + 文件内出现序号）、文件 span / 行号 / 原文 sha256、`claimType`、`linkedRefs` 解析、`verificationStatus` 与 `basis` / `verifier` 分开、`contextCompleteness`、跨单元查找任务账本、有界复核调用账本；另含 finding provenance 诊断 |
+| `reviews/citation-audit-r{n}.json`（`paperteam.readonly-citation-audit/v1`） | `.bib` / `thebibliography` / 文后参考文献列表 × `\cite` / `[n]` / 作者-年份（含中文「等」）四层：attempted → input adequate → reference matched → external metadata verified |
+| `reviews/quality-decision-v2-shadow-r{n}.json` | Quality Decision V2 影子结果：科学事实 / 引用 / 学术分（旧版基线，未校准）/ Style（advisory）/ 核验完整性分轴，按 quick_review / revision_task / autonomous_improvement 解读 |
+
+状态口径：
+
+- `VERIFIED_SUPPORTED` / `VERIFIED_CONTRADICTED` 只来自 verified Evidence、预登记复算，或「原文内跨处核对」——两处引文都在被审修订中逐字定位、
+  写出的数值可比（同种量、无量纲歧义）且确定性比较一致 / 不一致、来源为作者源稿或有哈希绑定 QA；对应关系仍由审稿模型提出（报告如实标注）。
+- 模型判断只能给 `REVIEWER_SUSPECTED` / `REVIEWER_CONSISTENT`；`UNSUPPORTED`（没找到证据）记 `AUTHOR_CHECK_REQUIRED`，**不等于已证伪**。
+- 依赖其他章节而材料不可得 → `NOT_EVALUATED` + `CONTEXT_INCOMPLETE`，交给有界跨单元查找（`\ref` / 编号 / 区分性术语）与可选复核
+  （`PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS`，每次 ≤8 条，失败如实 FAILED）；PDF 转写稿上的表格 / 公式 → `PARSE_ARTIFACT_SUSPECTED`。
+- 覆盖率由单元账本 + 抽取状态 + 任务账本计算；全文科学论断总数不可测（`NOT_MEASURABLE`），账本为空不代表论断都已核验。
+- 引用审计：没有外部权威元数据核验时真实性一律 `NOT_EVALUATED`——「没有发现虚构」不推导引用真实；作者-年份匹配失败记 `needs_review`（解析局限），只有 `\cite` key 对照缺失是确定性结构问题。
+
+模式：`PAPERTEAM_REVIEW_CLAIM_AUDIT=auto`（缺省：只读评估 extended、作者稿件 shadow——shadow 下全部审稿 prompt 逐字节不变）/ `off` / `shadow` / `extended`。
+只读评估的输入来源可用 `artifacts/input-provenance.json`（`{sourceKind: "author_latex" | "pdf_transcription", manuscriptSha256}`，须与被审 main.tex 绑定）声明；声明不是独立核验。
+
+## 7. 可靠性证据
 
 - M6.8/M6.9 评估：Plain LLM 25/25 提案捏造引用（五模型族全部 100%）；
   PaperTeam 管线在评估场景内零捏造证据泄漏 + metadata 陷阱拦截。
