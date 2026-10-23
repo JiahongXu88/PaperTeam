@@ -182,7 +182,11 @@ describe("M15.2 claim-certificate/v1：唯一绑定 + 证书", () => {
     expect(cert.outcome).toBe("NOT_CERTIFIED");
     expect(cert.reasons.join(" ")).toContain("post-processing");
   });
-  it("量纲：14 cm vs 140 mm 一致；裸数差 10 倍 → 量纲歧义；约数 about 14 mm vs 142.7 mm（≥2 倍）→ 可证矛盾", () => {
+  // 偏差记录（M15.3.4）：原期望 CONTRADICTED（Avg 列唯一绑定 → APPROX_FAR）。A1 层级列距使父层
+  // 「MPJPE absolute, mm」的 absolute 与措辞「average absolute error」相配，Seq 1 列经父层进入候选
+  // 并与 Avg 列精确同分（97/1/18）→ 平局不可证 → 弃判（fail-closed）。14 mm 与 140.9/142.7 均不
+  // OVERLAP，A2 无存活者、不破平局。191 例回放无 CONTRADICTED 判例，真实语料零影响；期望改为弃判。
+  it("量纲：14 cm vs 140 mm 一致；裸数差 10 倍 → 量纲歧义；约数 about 14 mm：A1 后列平局 → 弃判（valueRelation 仍 APPROX_FAR）", () => {
     expect(compareAtoms({ value: 14, decimals: 0, unit: "cm" }, { value: 140, decimals: 0, unit: "mm" }).relation).toBe("OVERLAP");
     expect(compareAtoms({ value: 14, decimals: 0, unit: null }, { value: 140, decimals: 0, unit: "mm" }).relation).toBe("SCALE_AMBIGUOUS");
     const doc = [
@@ -192,7 +196,8 @@ describe("M15.2 claim-certificate/v1：唯一绑定 + 证书", () => {
       "\\section{Workcell results}", "Our framework obtains an average absolute error of about 14\\,mm on the workcell sequences.",
     ].join("\n");
     const cert = certify(doc, "obtains an average absolute error of about 14\\,mm on the workcell sequences", "about 14 mm", "Ours & 140.9 & 142.7", "142.7", "INCONSISTENT");
-    expect(cert.outcome).toBe("CONTRADICTED");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toContain("BINDING_AMBIGUOUS:TIED_CANDIDATES");
     expect(cert.valueRelation?.relation).toBe("APPROX_FAR");
   });
   it("文本对文本：两句都唯一绑定到同一单元格才可比；只写「2242 Hz」不点数据集 → 绑定不唯一", () => {
@@ -200,8 +205,13 @@ describe("M15.2 claim-certificate/v1：唯一绑定 + 证书", () => {
     const cert = certify(doc, "achieves an HOTA of 63.7\\% with a speed of 2242 Hz on the MOT17 dataset", "63.7%", "In evaluations on the MOT17 dataset, FastTrack achieved an HOTA of 61.7\\%", "61.7%", "INCONSISTENT");
     expect(cert.outcome).toBe("CONTRADICTED");
     const speed = TRACKER.replace("\\section{Conclusion}", "\\section{Conclusion}\nFastTrack runs at 2242 Hz on a single CPU core.");
+    // 偏差记录（M15.3.4）：原期望 NOT_CERTIFIED（Hz 同时匹配两表 Speed(Hz) 列 → 平局）。A2 预注册机制
+    // 在精确平局内以值重合破平局：2242 Hz 与 MOT17/Speed 2241.8 OVERLAP、与 MOT20/Speed 304.1 不重合、
+    // 表有题注 → 唯一存活者（加性标记 valueTieBreak）。归属正确（MOT17 而非 MOT20）。
     const tie = certify(speed, "FastTrack runs at 2242 Hz on a single CPU core", "2242 Hz", "FastTrack (ours) & 61.7 & 74.4 & 2241.8", "2241.8", "CONSISTENT");
-    expect(tie.outcome).toBe("NOT_CERTIFIED");
+    expect(tie.outcome).toBe("SUPPORTED");
+    expect(tie.binding?.valueTieBreak).toBe(true);
+    expect(tie.binding?.bound?.headerPath).toEqual(["MOT17", "Speed (Hz)"]);
   });
   it("模型结论与证书相反（模型说 INCONSISTENT、数值其实一致）→ 不升级", () => {
     const cert = certify(TRACKER, "achieves an HOTA of 61.7\\% with a speed of 2242 Hz on the MOT17 dataset", "61.7%", "FastTrack (ours) & 61.7 & 74.4", "61.7", "INCONSISTENT");
@@ -358,7 +368,12 @@ describe("M15.2 property：证书在合成表格变异上不产生错误强判",
       expect(certify(doc, claim, paper.truth, wrongRow, rowValue, rowValue === paper.truth ? "CONSISTENT" : "INCONSISTENT").outcome).toBe("NOT_CERTIFIED");
     }
   });
-  it("P4 论断不点数据集（多张表有同方法同指标）→ 从不出证书", () => {
+  // 偏差记录（M15.3.4）：P4 原性质「不点数据集 → 从不出证书」。A2 预注册机制可在跨表精确平局内以值重合
+  // 破平局（各数据集表的值不同、真值恰与正确表的格重合、表有题注）→ 允许 SUPPORTED。正确性仍受双钥匙
+  // 约束：本测试提供的 counterpart 恒为正确表行，SUPPORTED 只在绑定=该行（值 OVERLAP 且对应一致）时
+  // 可达；错表/错行安全性质由 P3 继续覆盖（P3 仍全 NOT_CERTIFIED）。变异值（+2）不与任何格重合 →
+  // 仍须弃判。
+  it("P4 论断不点数据集（多张表有同方法同指标）：A2 值裁决可破平局但只允许绑到正确表；变异值仍弃判", () => {
     const random = rng(23);
     for (let trial = 0; trial < 40; trial += 1) {
       const paper = syntheticPaper(random, { datasetsInClaim: false });
@@ -366,7 +381,7 @@ describe("M15.2 property：证书在合成表格变异上不产生错误强判",
       const doc = build(paper.lines, claim);
       const counterpart = `OmniDet (ours) & ${Object.values(paper.values[paper.dataset]!["OmniDet (ours)"]!).join(" & ")}`;
       if (locateQuote(doc, counterpart)?.occurrences !== 1) continue;
-      expect(certify(doc, claim, paper.truth, counterpart, paper.truth, "CONSISTENT").outcome).toBe("NOT_CERTIFIED");
+      expect(["NOT_CERTIFIED", "SUPPORTED"]).toContain(certify(doc, claim, paper.truth, counterpart, paper.truth, "CONSISTENT").outcome);
       const bad = (Number(paper.truth) + 2).toFixed(1);
       const badClaim = paper.claimText.replace("CLAIM", bad);
       expect(certify(build(paper.lines, badClaim), badClaim, bad, counterpart, paper.truth, "INCONSISTENT").outcome).toBe("NOT_CERTIFIED");
@@ -541,9 +556,13 @@ describe("M15.3.1 SYNTHETIC_SANITY（合成边界正反例，实现前登记期�
     const cert = run(GNN.replace("CLAIM", "On Corva, GraphNet reaches 88.4 Macro-F1, outperforming PriorNet on the Vidor dataset."), "reaches 88.4 Macro-F1, outperforming PriorNet on the Vidor dataset", "88.4", "CONSISTENT");
     expect(cert.outcome).toBe("SUPPORTED");
   });
-  it("S2 主语句内两个模型名、无比较词（follows PriorNet and obtains）→ 两行同分不可证 → NOT_CERTIFIED", () => {
+  // 偏差记录（M15.3.4）：原期望 NOT_CERTIFIED（两行同分不可证）。A2 预注册机制在精确平局内以值重合
+  // 破平局：88.4 与 GraphNet 行重合、与 PriorNet 行（85.2）不重合、表有题注 → 唯一存活者。归属正确。
+  it("S2 主语句内两个模型名、无比较词（follows PriorNet and obtains）→ 两行平局由 A2 值裁决（88.4 属 GraphNet）→ SUPPORTED", () => {
     const cert = run(GNN.replace("CLAIM", "On Corva, GraphNet follows PriorNet and obtains a Macro-F1 of 88.4."), "obtains a Macro-F1 of 88.4", "88.4", "CONSISTENT");
-    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.outcome).toBe("SUPPORTED");
+    expect(cert.binding?.valueTieBreak).toBe(true);
+    expect(cert.binding?.bound?.rowKey).toEqual(["GraphNet"]);
   });
   it("S3 比较短语在句首（Compared with PriorNet, GraphNet reaches …）→ 与 outperforming 同语义 → SUPPORTED", () => {
     const cert = run(GNN.replace("CLAIM", "Compared with PriorNet, GraphNet reaches a Macro-F1 of 88.4 on Corva."), "GraphNet reaches a Macro-F1 of 88.4 on Corva", "88.4", "CONSISTENT");
