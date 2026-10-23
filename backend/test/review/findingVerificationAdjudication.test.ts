@@ -124,10 +124,10 @@ describe("M15.2 四轴裁决（shadow）", () => {
     expect(cause.verification.axis).toBe("VERIFIED_BY_CERTIFICATE");
     expect(cause.impact.blocking).toBe(true);
     expect(cause.taskScope.axis).toBe("NOT_APPLICABLE_READ_ONLY");
-    // 作者核对类 critical → 裁决最高 major（规则码可见）
+    // M15.2.1（N03）：作者核对类 critical 不再机械封顶 major——核验等级与严重度解耦，观察值保留
     const author = result.rootCauses.find((entry) => entry.findings.some((finding) => finding.issueIndex === 3))!;
     expect(author.verification.axis).toBe("AUTHOR_CHECK_REQUIRED");
-    expect(author.severity).toMatchObject({ observed: "critical", adjudicated: "major", rules: ["AUTHOR_OR_EXTERNAL_CAPPED_AT_MAJOR"] });
+    expect(author.severity).toMatchObject({ observed: "critical", adjudicated: "critical", rules: ["NO_CHANGE"] });
     expect(author.impact.blocking).toBe(false);
     // 词面 CONTEXT_INCOMPLETE 且未复核 → NOT_EVALUATED、severity 不变（不自动降级）
     const context = result.rootCauses.find((entry) => entry.findings.some((finding) => finding.issueIndex === 2))!;

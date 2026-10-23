@@ -283,6 +283,16 @@ const QUALIFIER_LEXICON = [
   "small", "large", "base", "tiny", "lite", "ablations", "cross-domain", "occluded", "subset", "split",
   "验证集", "训练集", "消融", "后处理", "零样本",
 ];
+/**
+ * M15.2.1（N09）：复现 / 公平对比 / 原文限定词家族——论断写的是「复现得到的 / 公平对比下的 / 原文报告的」数值时，
+ * 最佳候选的表格语境（caption / label / 行组 / 表头上层）里整个家族都不出现 → 不是同一观察量，拒绝出证。
+ * 家族内互通：「Reproduction results」的 caption 能解释「reproduced」限定词（同词族视为同一限定）。
+ */
+const QUALIFIER_FAMILIES: string[][] = [
+  ["reproduce", "reproduces", "reproduced", "reproducing", "reproduction", "reproductions", "replicate", "replicates", "replicated", "replication", "复现"],
+  ["fair"],
+  ["original"],
+];
 const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
 
 export type AtomQualifier = "APPROX" | "INEQUALITY" | "DERIVED" | "AGGREGATE" | "SIGNED";
@@ -606,6 +616,25 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   const top = pool[0]!;
   const ties = pool.filter((candidate) => better(candidate, top) === 0 && candidate.cell !== top.cell);
   if (ties.length > 0) return { status: "AMBIGUOUS", rule: "TIED_CANDIDATES", candidates: summary, rejections: [`${ties.length + 1} 个候选单元格得分相同`] };
+  // M15.2.1（N09）：跨表数值竞争——唯一性不能只在「解析成功进入候选集的单元格」里判断。
+  // 论断数值与绑定单元格不一致（即将按差异出证）而该数值逐字出现在其他表格的表格体内时，
+  // 论断指向的可能正是那张表（复现表 / 公平对比表的同名行）：跨表归属不可证 → 拒绝出证。
+  // 数值一致（OVERLAP）的绑定本身已有数值印证，不受此检查影响。
+  if (top.cell.value !== null && compareAtoms(atom, top.cell.value).relation !== "OVERLAP") {
+    const needle = atom.raw.replace(/,/g, "");
+    if (/^\d+(?:\.\d+)?$/.test(needle)) {
+      const pattern = new RegExp(`(?<![\\d.])${needle.replace(/\./g, "\\.")}(?![\\d.])`, "g");
+      const otherTableIds = new Set<string>();
+      for (const file of document.files) {
+        for (const match of file.content.matchAll(pattern)) {
+          for (const table of file.tables) {
+            if (table.tableId !== top.table.tableId && match.index! >= table.start && match.index! < table.end) otherTableIds.add(table.tableId);
+          }
+        }
+      }
+      if (otherTableIds.size > 0) rejections.push(`VALUE_APPEARS_IN_OTHER_TABLE:${[...otherTableIds].slice(0, 3).join(",")}`);
+    }
+  }
   // 多指标并列（「IoU and F1 of 80.1 and 85.2」）：数值左侧同时出现本表 ≥2 个不同列的表头词 → 列归属不唯一（除非「respectively」已按位置对齐列表）
   const leftTokens = leftScanTokens(scopes);
   const columnsMentioned = new Set(top.table.cells.filter((cell) => !cell.isHeader && cell.value !== null).map((cell) => cell.headerPath.slice(-1).join(" ")).filter((leaf) => significant(contextTokens(leaf)).some((token) => leftTokens.has(token))));
@@ -623,6 +652,10 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   }
   for (const qualifier of QUALIFIER_LEXICON) {
     if (mentions(segmentContext, qualifier) && !mentions(explain, qualifier)) rejections.push(`UNEXPLAINED_QUALIFIER:${qualifier}`);
+  }
+  for (const family of QUALIFIER_FAMILIES) {
+    const used = family.filter((qualifier) => mentions(segmentContext, qualifier));
+    if (used.length > 0 && !family.some((qualifier) => mentions(explain, qualifier))) rejections.push(`UNEXPLAINED_QUALIFIER:${used[0]}`);
   }
   // 分句里点名的、只属于其他候选语境的术语（MOT20 vs MOT17）
   const topUpper = contextOf(cellContextText(top.table, top.cell));
@@ -772,18 +805,34 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
   if (tie) reasons.push("DERIVED_COLUMN_AMBIGUOUS");
   const table = best.table;
   const cellAt = (cells: LatexTableCell[]): LatexTableCell | undefined => cells.find((cell) => cell.col === best!.col && cell.value !== null);
+  // M15.2.1（N05）：行标签读取防护——数据行可能没有行标签（续表/重复列布局/无标签数据行）。
+  // 缺标签的行无法参与点名或参照列举：跳过并计数，绝不因非空断言崩溃（此前会导致整篇账本丢失）。
+  const rowKeyCellOf = (cells: LatexTableCell[]): LatexTableCell | undefined => cells.find((cell) => cell.rowKey.length > 0);
+  const rowLabelOf = (cells: LatexTableCell[]): string | null => {
+    const keyCell = rowKeyCellOf(cells);
+    return keyCell === undefined ? null : keyCell.rowKey.join(" / ");
+  };
+  let unlabeledRows = 0;
+  const withLabel = (rows: LatexTableCell[][]): LatexTableCell[][] => {
+    const out = rows.filter((cells) => rowLabelOf(cells) !== null);
+    unlabeledRows += rows.length - out.length;
+    return out;
+  };
   // 主语行：本文方法别名 / 点名行（出现在比较词之前）
   const dataRows = table.rows.filter((row) => row.kind === "data");
   const ownRows = dataRows.filter((row) => row.cells.some((cell) => cell.rowKey.length > 0 && rowIsOwn(document, cell))).map((row) => row.cells);
   let subjectRows = rowsByMention(table, subjectText).filter((cells) => cellAt(cells) !== undefined);
   if (subjectRows.length === 0 && (OWN_ALIASES.test(subjectText) || document.ownTerms.some((term) => contextOf(subjectText).tokens.has(term)))) subjectRows = ownRows;
   if (subjectRows.length > 1 && !ROW_QUALIFIERS.test(subjectText)) {
-    const plain = subjectRows.filter((cells) => !rowQualified(cells.find((cell) => cell.rowKey.length > 0)!));
+    const plain = subjectRows.filter((cells) => {
+      const keyCell = rowKeyCellOf(cells);
+      return keyCell !== undefined && !rowQualified(keyCell);
+    });
     if (plain.length >= 1) subjectRows = plain;
   }
   const subject: DerivedRecompute["subject"] = {
     status: subjectRows.length === 1 ? "BOUND" : subjectRows.length === 0 ? "MISSING" : "AMBIGUOUS",
-    rows: subjectRows.map((cells) => cells.find((cell) => cell.rowKey.length > 0)!.rowKey.join(" / ")),
+    rows: subjectRows.map((cells) => rowLabelOf(cells) ?? ""),
   };
   if (subject.status !== "BOUND") reasons.push(`DERIVED_SUBJECT_${subject.status}`);
   if (subjectRows.length === 0) subjectRows = ownRows;
@@ -796,15 +845,17 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
   else if (referenceRows.length === 1) referenceStatus = "BOUND";
   else referenceStatus = GENERIC_REFERENCE.test(referencePhrase) || referenceRows.length > 1 ? "AMBIGUOUS" : "MISSING";
   if (referenceStatus === "AMBIGUOUS" && referenceRows.length === 0) {
-    // 非点名参照（「最佳 / 之前 / SOTA」）：列出全部非主语行供复算记录
-    referenceRows = dataRows.map((row) => row.cells).filter((cells) => !subjectRows.includes(cells) && !ownRows.includes(cells) && cellAt(cells) !== undefined);
+    // 非点名参照（「最佳 / 之前 / SOTA」）：列出全部非主语行供复算记录（无行标签的行跳过并计数）
+    referenceRows = withLabel(dataRows.map((row) => row.cells)).filter((cells) => !subjectRows.includes(cells) && !ownRows.includes(cells) && cellAt(cells) !== undefined);
   }
   const reference: DerivedRecompute["reference"] = {
     status: referenceStatus,
-    rows: referenceRows.map((cells) => cells.find((cell) => cell.rowKey.length > 0)!.rowKey.join(" / ")),
+    rows: referenceRows.map((cells) => rowLabelOf(cells) ?? ""),
     phrase: plainLatexText(referencePhrase).slice(0, 160),
   };
   if (referenceStatus !== "BOUND") reasons.push(`DERIVED_REFERENCE_${referenceStatus}`);
+  // 行枚举不完整（有无标签行被跳过）→ 复算覆盖不可证完整，fail-closed 不出证书
+  if (unlabeledRows > 0) reasons.push("DERIVED_ROW_LABEL_MISSING");
   // 原子与解释
   const atoms = new Map<string, FormulaAtom>();
   const operands: DerivedRecompute["operands"] = [];
@@ -848,12 +899,12 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
     } else {
       for (const cells of referenceRows.slice(0, 12)) {
         const r = atomOf(cells, "R");
-        if (r !== null) references.push({ ast: { op: "atom", ref: r }, label: cells.find((cell) => cell.rowKey.length > 0)!.rowKey.join(" / ") });
+        if (r !== null) references.push({ ast: { op: "atom", ref: r }, label: rowLabelOf(cells) ?? "" });
       }
     }
     for (const refEntry of references) {
       const sub: FormulaNode = { op: "atom", ref: s };
-      const label = `${subjectCells.find((cell) => cell.rowKey.length > 0)!.rowKey.join(" / ")} vs ${refEntry.label}`;
+      const label = `${rowLabelOf(subjectCells) ?? ""} vs ${refEntry.label}`;
       if (family === "DIFFERENCE" || family === "PERCENT" || family === "AGGREGATE") {
         add(`absolute_difference[${label}]`, { op: pct === true ? "percentage_point_difference" : "subtract", args: [sub, refEntry.ast] }, true);
       }
@@ -928,6 +979,22 @@ export interface CertifyInput {
 
 function sha(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/**
+ * M15.2.1（N05）：证书器异常隔离兜底——certifyClaim 意外抛错时按条兜底为 NOT_CERTIFIED，
+ * 不让单条论断的异常拖垮整篇账本。诊断有界：只记错误类别 + 一行消息（不含论文原文 / 模型原始输出）。
+ */
+export function certifierErrorCertificate(error: unknown): ClaimCertificate {
+  const name = error instanceof Error ? error.constructor.name : typeof error === "object" && error !== null ? "Error" : String(error);
+  const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").slice(0, 120) : "";
+  return {
+    version: CLAIM_CERTIFICATE_VERSION, kind: "NONE", outcome: "NOT_CERTIFIED", comparisonType: "INSUFFICIENT_EVIDENCE",
+    claimAtom: null, counterpartAtom: null, binding: null, valueRelation: null, derived: null,
+    reasons: [`CERTIFIER_ERROR:${name}${detail === "" ? "" : `:${detail}`}`],
+    inputsSha256: "",
+    provenance: { correspondenceProposedBy: "deterministic", verifier: CLAIM_CERTIFICATE_VERSION, modelCheck: null },
+  };
 }
 
 export function certifyClaim(document: CertificateDocument, input: CertifyInput): ClaimCertificate {

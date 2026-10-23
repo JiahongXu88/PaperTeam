@@ -469,15 +469,73 @@ export function parseLatexTables(text: string): LatexTable[] {
         }
       }
     }
+    // M15.2.1（N09）：体内重复表头块——首个数据行之后再次出现的「分组行 + 局部列表头行」组合（分块数据表 / 复现表）。
+    // 确定性信号：正文某行无数值，且首个非空格文字与首个表头块某行的首个非空格文字完全一致（如 "Source" / "Metric"）；
+    // 命中行与其上方紧邻的跨列分组行（≤1 行）、下方紧邻的无数值行构成一个重复块。命中后按块重建列头路径，块后数据行继承该块表头；
+    // 块覆盖不了全部数值列（列错位 / 部分覆盖）→ 不重建并记 IN_BODY_REPEATED_HEADER（下游不得依此表出证书）。
+    const initialLeadTexts = new Set<string>();
+    for (let r = 0; r < headerRowCount; r += 1) {
+      const lead = grid[r]!.find((cell) => cell.plain !== "")?.plain.trim().toLowerCase();
+      if (lead !== undefined && lead.length >= 2) initialLeadTexts.add(lead);
+    }
+    const headerLike = (row: Pending[]): boolean => row.every((cell) => cell.numeric === null) && row.some((cell) => cell.plain !== "");
+    const groupShape = (row: Pending[]): boolean => headerLike(row) && row.some((cell) => Math.max(1, cell.spec.colSpan) >= 2 && cell.plain !== "");
+    const leadTextIn = (row: Pending[]): string | undefined => row.find((cell) => cell.plain !== "")?.plain.trim().toLowerCase();
+    const repeatedBlocks: Array<{ start: number; end: number; paths: string[][] | null }> = [];
+    if (initialLeadTexts.size > 0 && headerRowCount > 0) {
+      const valueColumns = new Set<number>();
+      for (let r = headerRowCount; r < grid.length; r += 1) {
+        for (const cell of grid[r]!) if (cell.numeric !== null) valueColumns.add(cell.col);
+      }
+      for (let r = headerRowCount; r < grid.length; r += 1) {
+        const lead = leadTextIn(grid[r]!);
+        if (!headerLike(grid[r]!) || lead === undefined || !initialLeadTexts.has(lead)) continue;
+        let start = r;
+        const prev = start - 1 >= headerRowCount ? grid[start - 1]! : null;
+        if (prev !== null && headerLike(prev) && !fullSpanLabel(prev) && (groupShape(prev) || (leadTextIn(prev) !== undefined && initialLeadTexts.has(leadTextIn(prev)!)))) start -= 1;
+        let end = r;
+        // 向下并入紧邻的无数值行（整行单格的分组行除外——那属于下一个数据块的分组）
+        while (end + 1 < grid.length && headerLike(grid[end + 1]!) && !fullSpanLabel(grid[end + 1]!)) end += 1;
+        const blockRows = grid.slice(start, end + 1);
+        // 单行块必须形似局部表头（≥2 个非空格）；孤立的分组行（整行单格）不是重复表头
+        if (blockRows.length === 1 && blockRows[0]!.filter((cell) => cell.plain !== "").length < 2) continue;
+        const paths: string[][] = Array.from({ length: columnCount }, () => []);
+        let aligned = true;
+        for (const blockRow of blockRows) {
+          for (const cell of blockRow) {
+            if (cell.plain === "") continue;
+            if (cell.col + Math.max(1, cell.spec.colSpan) > columnCount) {
+              aligned = false;
+              break;
+            }
+            for (let c = cell.col; c < cell.col + Math.max(1, cell.spec.colSpan) && c < columnCount; c += 1) {
+              const path = paths[c]!;
+              if (path[path.length - 1] !== cell.plain) path.push(cell.plain);
+            }
+          }
+          if (!aligned) break;
+        }
+        const coversValueColumns = [...valueColumns].every((c) => (paths[c]?.length ?? 0) > 0 || (headerPaths[c]?.length ?? 0) === 0);
+        repeatedBlocks.push({ start, end, paths: aligned && coversValueColumns ? paths : null });
+        if (!(aligned && coversValueColumns)) parseIssues.push("IN_BODY_REPEATED_HEADER");
+        r = end;
+      }
+    }
     const rows: LatexTableRow[] = [];
     const cells: LatexTableCell[] = [];
     let group: string | null = null;
+    let blockCursor = 0;
+    let activePaths = headerPaths;
     grid.forEach((row, r) => {
       const rowRaw = rowsRaw[r]!;
+      while (blockCursor < repeatedBlocks.length && r > repeatedBlocks[blockCursor]!.end) blockCursor += 1;
+      const block = repeatedBlocks[blockCursor];
+      const inRepeatedBlock = block !== undefined && r >= block.start && r <= block.end;
+      if (block !== undefined && r === block.start && block.paths !== null) activePaths = block.paths;
       const nonEmpty = row.filter((cell) => cell.plain !== "");
       let kind: LatexTableRow["kind"];
       if (nonEmpty.length === 0) kind = "empty";
-      else if (r < headerRowCount) kind = "header";
+      else if (r < headerRowCount || inRepeatedBlock) kind = "header";
       else if (nonEmpty.length === 1 && nonEmpty[0]!.numeric === null) kind = "group";
       else if (hasNumber(row)) kind = "data";
       else kind = "other";
@@ -490,7 +548,7 @@ export function parseLatexTables(text: string): LatexTable[] {
         }
       }
       const rowCells: LatexTableCell[] = row.map((cell) => {
-        const header = headerPaths[cell.col] ?? [];
+        const header = activePaths[cell.col] ?? [];
         const ownUnit = cell.numeric?.value.unit ?? null;
         const headerUnit = header.map(unitFromHeader).find((unit) => unit !== null) ?? null;
         let valueStart: number | null = null;

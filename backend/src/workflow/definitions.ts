@@ -1573,7 +1573,9 @@ function reviewRunStageInner(
           issues: summary.issues,
         }).catch((error: unknown) => {
           if (ctx.signal.aborted) throw error;
-          ctx.log(`[review] M15.1 shadow 审计失败（不影响生产审稿 / Gate）：${error instanceof Error ? error.message.slice(0, 300) : String(error)}`);
+          // M15.2.1（N05）：最后兜底——单条论断异常已在证书层隔离（PARTIAL_AUDIT 记入账本）；到这里说明装配层失败，
+          // 必须如实写明后果：本轮无影子审计产物，影子质量决策保持 NOT_EVALUATED（绝不呈现为通过）。
+          ctx.log(`[review] M15.1 shadow 审计整体失败（不影响生产审稿 / Gate）：${error instanceof Error ? `${error.constructor.name}: ${error.message.slice(0, 280)}` : String(error).slice(0, 300)}；本轮无 claim-audit / citation-audit / finding-adjudication 产物，影子质量决策保持 NOT_EVALUATED`);
           return null;
         });
         claimAuditSummary = audits?.claimAudit;

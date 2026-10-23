@@ -7,7 +7,9 @@
  *  1. verification：VERIFIED_BY_CERTIFICATE（关联论断有 claim-certificate 证书的矛盾）/ REVIEWER_GROUNDED_SUSPICION（引文在被审原文中定位、
  *     审稿人有依据的怀疑，含派生量复算不一致但解释不唯一）/ AUTHOR_CHECK_REQUIRED / EXTERNAL_DATA_REQUIRED / INPUT_PARSE_UNRELIABLE（转写稿上的
  *     公式 / 字符损坏，无原页可回看）/ DOCUMENT_CONTEXT_CONTRADICTS（定向复核给出逐字依据：别处已给出被断言缺失的内容）/ NOT_EVALUATED；
- *  2. severity：保留模型观察值，另给结构化裁决值与规则码（只有确定性规则能改动；不因「没找到证据」改动）；
+ *  2. severity：保留模型观察值，另给结构化裁决值与规则码（只有确定性规则能改动；不因「没找到证据」改动。
+ *     M15.2.1（N03）：核验等级 ≠ 严重度——缺证书 / 需作者核对 / 需外部数据只记为未核验（verification 轴），
+ *     不机械下调观察到的 Critical；严重度只允许确定性上调（证书证实的核心矛盾）与有反证 / 可证转写损坏的下调）；
  *  3. impact：是否触及核心结论（摘要 / 结论 / 核心结果论断），blocking 只在「证书级核实 + 触及核心结论」时为 true；
  *  4. taskScope：只读评估 = NOT_APPLICABLE_READ_ONLY；返修工作流按生产已有的 finding 归层（classifyFindingOrigins）+ 用户意见章节确定。
  *
@@ -26,7 +28,7 @@ import type { FindingRecheckRecord } from "./findingVerification.js";
 import { compactText, locateQuote, sha256Text } from "./claimAuditText.js";
 
 export const FINDING_ADJUDICATION_SCHEMA = "paperteam.finding-adjudication/v1";
-export const FINDING_ADJUDICATION_RULES = "finding-adjudication-rules/v1";
+export const FINDING_ADJUDICATION_RULES = "finding-adjudication-rules/v2";
 
 export type VerificationAxis =
   | "VERIFIED_BY_CERTIFICATE"
@@ -41,8 +43,6 @@ export type VerificationAxis =
 export type TaskScopeAxis = "REVISION_INTRODUCED" | "BASELINE_EXISTING" | "USER_SPECIFIED_SCOPE" | "OUT_OF_WORKFLOW_DISCOVERY" | "UNDETERMINED" | "NOT_APPLICABLE_READ_ONLY";
 
 export type SeverityRule =
-  | "CRITICAL_REQUIRES_VERIFICATION"
-  | "AUTHOR_OR_EXTERNAL_CAPPED_AT_MAJOR"
   | "PARSE_UNRELIABLE_CAPPED_AT_MINOR"
   | "DOCUMENT_CONTEXT_CONTRADICTS_WITHDRAWAL_CANDIDATE"
   | "CERTIFIED_CORE_CONTRADICTION_AT_LEAST_MAJOR"
@@ -230,9 +230,10 @@ export function adjudicateFindings(input: AdjudicationInput): FindingAdjudicatio
     } else if (certified.length > 0) {
       axis = "VERIFIED_BY_CERTIFICATE";
       basis.push(`关联论断 ${certified.map((claim) => claim.claimId).join(", ")} 有 ${certified[0]!.certificate?.version ?? "certificate"} 证书的矛盾`);
-    } else if (rechecks.some((record) => record.outcome === "REFUTED_BY_DOCUMENT_CONTEXT") && !rechecks.some((record) => record.outcome === "CONFIRMED_WITH_DOCUMENT_CONTEXT" || record.outcome === "PARTIALLY_REFUTED_BY_DOCUMENT_CONTEXT")) {
+    } else if (rechecks.length > 0 && rechecks.every((record) => record.outcome === "REFUTED_BY_DOCUMENT_CONTEXT")) {
+      // M15.2.1（P1）：撤回候选要求根因内每条被复核的 finding 都是整条 REFUTED——部分反驳 / 未定 / 失败的成员在 → 不整组撤回
       axis = "DOCUMENT_CONTEXT_CONTRADICTS";
-      basis.push("定向复核：其他章节的逐字依据给出了被断言缺失的内容（模型提出、引文与术语确定性校验）");
+      basis.push("定向复核：其他章节的逐字依据给出了被断言缺失的内容（模型提出、引文与术语确定性校验；复合意见须逐子断言全覆盖）");
     } else if (transcription && (auditStatuses.includes("PARSE_ARTIFACT_SUSPECTED") || rechecks.some((record) => record.outcome === "UNRESOLVABLE_NO_PAGE_PROVENANCE"))) {
       axis = "INPUT_PARSE_UNRELIABLE";
       basis.push("转写稿上的公式 / 字符 / 表格损坏类：没有页面级原件可回看，不能确认为作者原稿错误");
@@ -274,14 +275,9 @@ export function adjudicateFindings(input: AdjudicationInput): FindingAdjudicatio
       if (adjudicatedRank > 1) rules.push("PARSE_UNRELIABLE_CAPPED_AT_MINOR");
       adjudicatedRank = 1;
     } else {
-      if ((axis === "AUTHOR_CHECK_REQUIRED" || axis === "EXTERNAL_DATA_REQUIRED") && adjudicatedRank > 2) {
-        adjudicatedRank = 2;
-        rules.push("AUTHOR_OR_EXTERNAL_CAPPED_AT_MAJOR");
-      }
-      if (adjudicatedRank === 3 && axis !== "VERIFIED_BY_CERTIFICATE" && !(axis === "REVIEWER_GROUNDED_SUSPICION" && declared.includes("VERIFIED_IN_TEXT"))) {
-        adjudicatedRank = 2;
-        rules.push("CRITICAL_REQUIRES_VERIFICATION");
-      }
+      // M15.2.1（N03）：核验等级 ≠ 严重度。缺证书 / 需作者核对 / 需外部数据只是「未核验」（记录在 verification 轴），
+      // 不是反证：不得机械下调观察到的 Critical（N03-V01 曾被 CRITICAL_REQUIRES_VERIFICATION 压成 major，掩盖真实缺陷）。
+      // 严重度只允许两类确定性改动：证书证实的核心矛盾上调（≥ major），反证 / 可证转写损坏下调（见上面两个分支）。
       if (axis === "VERIFIED_BY_CERTIFICATE" && coreClaimAffected && adjudicatedRank < 2) {
         adjudicatedRank = 2;
         rules.push("CERTIFIED_CORE_CONTRADICTION_AT_LEAST_MAJOR");
@@ -337,7 +333,7 @@ export function adjudicateFindings(input: AdjudicationInput): FindingAdjudicatio
   const emptyAxis = (): Record<VerificationAxis, number> => ({ VERIFIED_BY_CERTIFICATE: 0, REVIEWER_GROUNDED_SUSPICION: 0, AUTHOR_CHECK_REQUIRED: 0, EXTERNAL_DATA_REQUIRED: 0, INPUT_PARSE_UNRELIABLE: 0, DOCUMENT_CONTEXT_CONTRADICTS: 0, NOT_EVALUATED: 0, NOT_APPLICABLE_STYLE: 0 });
   const byVerification = emptyAxis();
   const byTaskScope: Record<TaskScopeAxis, number> = { REVISION_INTRODUCED: 0, BASELINE_EXISTING: 0, USER_SPECIFIED_SCOPE: 0, OUT_OF_WORKFLOW_DISCOVERY: 0, UNDETERMINED: 0, NOT_APPLICABLE_READ_ONLY: 0 };
-  const severityChanges: Record<SeverityRule, number> = { CRITICAL_REQUIRES_VERIFICATION: 0, AUTHOR_OR_EXTERNAL_CAPPED_AT_MAJOR: 0, PARSE_UNRELIABLE_CAPPED_AT_MINOR: 0, DOCUMENT_CONTEXT_CONTRADICTS_WITHDRAWAL_CANDIDATE: 0, CERTIFIED_CORE_CONTRADICTION_AT_LEAST_MAJOR: 0, NO_CHANGE: 0 };
+  const severityChanges: Record<SeverityRule, number> = { PARSE_UNRELIABLE_CAPPED_AT_MINOR: 0, DOCUMENT_CONTEXT_CONTRADICTS_WITHDRAWAL_CANDIDATE: 0, CERTIFIED_CORE_CONTRADICTION_AT_LEAST_MAJOR: 0, NO_CHANGE: 0 };
   for (const cause of rootCauses) {
     byVerification[cause.verification.axis] += 1;
     byTaskScope[cause.taskScope.axis] += 1;
@@ -346,6 +342,7 @@ export function adjudicateFindings(input: AdjudicationInput): FindingAdjudicatio
   const notes: string[] = [
     "shadow：不改 summary.issues、生产计数、Gate、Revision Task Complete / Publication Readiness",
     "severity.adjudicated 只由确定性规则改动；DOCUMENT_CONTEXT_CONTRADICTS 是撤回候选（模型提出 + 引文校验），不是已删除",
+    "M15.2.1（N03）：核验等级与严重度解耦——未核验（无证书 / 需作者核对 / 需外部数据）不下调观察严重度，核验状态见 verification 轴",
   ];
   if (!claimsValid) notes.push(`论断账本 ${input.claimAuditValidation}：不使用论断证书（全部按无证书裁决）`);
   return {
@@ -377,7 +374,7 @@ export interface AdjudicationValidation {
   reasons: string[];
 }
 
-/** 读取方校验 + 内部一致性契约（blocking ⇒ 证书；critical 裁决值 ⇒ 证书或文内已核；撤回候选 ⇒ minor） */
+/** 读取方校验 + 内部一致性契约（blocking ⇒ 证书；上调 ⇒ 证书证实核心矛盾；下调 ⇒ 反证或可证转写损坏；撤回候选 ⇒ minor） */
 export function validateFindingAdjudication(artifact: unknown, expected: { sourceRevision: number | null; documentFingerprint: string }): AdjudicationValidation {
   if (typeof artifact !== "object" || artifact === null) return { status: "MALFORMED", reasons: ["不是对象"] };
   const record = artifact as Partial<FindingAdjudicationArtifact>;
@@ -385,7 +382,13 @@ export function validateFindingAdjudication(artifact: unknown, expected: { sourc
   const reasons: string[] = [];
   for (const cause of record.rootCauses) {
     if (cause.impact.blocking && cause.verification.axis !== "VERIFIED_BY_CERTIFICATE") reasons.push(`${cause.rootCauseId}: blocking 但未经证书核实`);
-    if (cause.severity.adjudicated === "critical" && cause.verification.axis !== "VERIFIED_BY_CERTIFICATE" && cause.verification.axis !== "REVIEWER_GROUNDED_SUSPICION") reasons.push(`${cause.rootCauseId}: critical 裁决缺少核验依据`);
+    const observedRank = RANK[cause.severity.observed] ?? -1;
+    const adjudicatedRank = RANK[cause.severity.adjudicated] ?? -1;
+    // M15.2.1（N03）：未核验不是降级理由——critical 裁决允许出现在任何核验轴（保留观察严重度）；
+    // 上调只许经证书，下调只许有反证（文档语境）或可证转写损坏
+    if (observedRank < 0 || adjudicatedRank < 0) reasons.push(`${cause.rootCauseId}: severity 值不合法`);
+    else if (adjudicatedRank > observedRank && !(cause.severity.rules ?? []).includes("CERTIFIED_CORE_CONTRADICTION_AT_LEAST_MAJOR")) reasons.push(`${cause.rootCauseId}: 严重度上调须经证书证实的核心矛盾`);
+    else if (adjudicatedRank < observedRank && !(cause.severity.rules ?? []).some((rule) => rule === "DOCUMENT_CONTEXT_CONTRADICTS_WITHDRAWAL_CANDIDATE" || rule === "PARSE_UNRELIABLE_CAPPED_AT_MINOR")) reasons.push(`${cause.rootCauseId}: 严重度下调须有反证或可证转写损坏`);
     if (cause.verification.axis === "DOCUMENT_CONTEXT_CONTRADICTS" && cause.severity.adjudicated !== "minor") reasons.push(`${cause.rootCauseId}: 撤回候选未降为 minor`);
     if (cause.findings.length === 0) reasons.push(`${cause.rootCauseId}: 空根因`);
   }

@@ -10,6 +10,8 @@
  *  3. 有界模型复核：一批 ≤ 6 条、调用上限可配、独立 sealed 会话、每批 1 次重试；
  *  4. 确定性校验：模型给出的 evidenceQuote 必须逐字落在本条的候选片段中；「反驳缺失型断言」时引文必须包含该断言所指的术语之一；
  *     校验不过 / 模型说不能判定 / 调用失败 / 超预算 → UNRESOLVED（保持原 finding，不降级、不删除）。
+ *     M15.2.1（P1）：复合意见（≥2 个独立子断言）的 REFUTED 须逐子断言给出逐字覆盖（point 取自意见原文、依据落在候选片段），
+ *     覆盖不全 → 降级 PARTIALLY_REFUTED（fail-closed；N1648BF8 r2 #47 曾凭部分反证整体撤回）。
  *
  * 产物只进入 shadow 四轴裁决（findingAdjudication）；生产 issues、计数、Gate 不读它。
  */
@@ -19,7 +21,7 @@ import type { FindingAuditRecord } from "./findingAudit.js";
 import { compactText, containsTerm, distinctiveTerms, locateQuote, sha256Text } from "./claimAuditText.js";
 import { parseLatexTables } from "./latexTable.js";
 
-export const FINDING_RECHECK_CONTRACT = "finding-recheck/v1";
+export const FINDING_RECHECK_CONTRACT = "finding-recheck/v2";
 export const FINDING_RECHECK_BATCH = 6;
 const SNIPPET_BUDGET = 3_200;
 const MAX_SNIPPETS = 4;
@@ -72,6 +74,8 @@ export interface FindingRecheckRecord {
   /** 模型原始结论（校验前） */
   modelVerdict?: "SUPPORTED" | "REFUTED" | "PARTIALLY_REFUTED" | "NOT_DETERMINABLE";
   evidence?: { quote: string; snippetId: string; containsAssertedTerm: boolean };
+  /** M15.2.1（P1）：复合意见（≥2 独立子断言）REFUTED 的逐子断言覆盖情况 */
+  coverage?: { subAssertions: number; refutedPoints: number; complete: boolean };
   validation: string;
   batchId?: string;
   snippets: Array<Pick<FindingSnippet, "snippetId" | "sourceUnitId" | "sourceHeading" | "via" | "matchedTerms" | "sha256">>;
@@ -195,9 +199,10 @@ export function renderFindingRecheckPrompt(items: readonly FindingRecheckItem[])
     "你是学术审稿复核员。下面每条审稿意见（finding）来自对论文某一章节的单独审查；审查时看不到其他章节，意见可能断言了「论文没有说明 / 没有给出 / 前后不一致」。",
     "系统已按确定性规则（意见中的区分性术语）从同一篇论文的其他章节中取出候选原文片段。请只依据给出的片段逐条判断：",
     "- verdict：REFUTED（片段中明确给出了该意见断言缺失的全部内容，或明确解释了其所称的矛盾——意见在全文视角下整体不成立）| PARTIALLY_REFUTED（片段只回答了意见的一部分，例如给出了取值但没有给出选取依据——意见其余部分仍成立）| SUPPORTED（片段进一步证实该意见）| NOT_DETERMINABLE（片段不足以判断；这是正常结果，不要猜）；",
+    "- 意见可能含多个独立子断言（分号 / 并列子句，如「未给出参数取值，也没有说明选取依据」）：REFUTED 只适用于全部子断言都被逐字依据反驳；只覆盖部分时必须给 PARTIALLY_REFUTED，并在 refutedPoints 中列出已覆盖的子断言——REFUTED 时复合意见也须逐子断言给出 refutedPoints（point 逐字取自意见原文、evidenceQuote 逐字取自候选片段、snippetId 标明出处；未覆盖的子断言不得声称已反驳）；",
     "- evidenceQuote：从候选片段中逐字摘出的依据（≥12 字，不改写、不拼接；NOT_DETERMINABLE 时省略）；snippetId：依据所在片段编号；",
     "- note：一句话说明。只判断意见本身是否成立，不要评价写作好坏，也不要提出新问题；片段没有覆盖的内容不能当作「论文没有」。",
-    "只输出一个 JSON 对象（不要 Markdown 围栏）：{\"results\":[{\"findingId\":\"...\",\"verdict\":\"REFUTED|PARTIALLY_REFUTED|SUPPORTED|NOT_DETERMINABLE\",\"evidenceQuote\":\"...\",\"snippetId\":\"F1\",\"note\":\"...\"}]}",
+    "只输出一个 JSON 对象（不要 Markdown 围栏）：{\"results\":[{\"findingId\":\"...\",\"verdict\":\"REFUTED|PARTIALLY_REFUTED|SUPPORTED|NOT_DETERMINABLE\",\"evidenceQuote\":\"...\",\"snippetId\":\"F1\",\"refutedPoints\":[{\"point\":\"意见原文中的子断言子句\",\"evidenceQuote\":\"候选片段中的逐字依据\",\"snippetId\":\"F1\"}],\"note\":\"...\"}]}",
     "",
     ...items.flatMap((item, position) => [
       `===== 意见 ${position + 1}（findingId=${item.findingId}；所在章节「${item.section}」；severity=${item.severity}；category=${item.category}）=====`,
@@ -217,7 +222,23 @@ export interface FindingRecheckResult {
   verdict: "SUPPORTED" | "REFUTED" | "PARTIALLY_REFUTED" | "NOT_DETERMINABLE";
   evidenceQuote?: string;
   snippetId?: string;
+  /** M15.2.1（P1）：复合意见（≥2 独立子断言）REFUTED 时的逐子断言覆盖（point 逐字取自意见原文；evidenceQuote 逐字取自候选片段） */
+  refutedPoints?: Array<{ point: string; evidenceQuote: string; snippetId?: string }>;
   note?: string;
+}
+
+/** M15.2.1（P1）：复合意见的确定性子断言拆分：句界 / 分号 / 独立子句的并列连接词。
+ * 不设上限——解析侧 refutedPoints ≤8 条，因此 >8 个子断言的整条覆盖在数学上不可能达成（天然 fail-closed）。 */
+export function findingSubAssertions(description: string): string[] {
+  const normalized = description.replace(/\s+/g, " ").trim();
+  if (normalized === "") return [];
+  const parts = normalized
+    .split(/(?<=[.!?。！？])\s+|[；;]/)
+    .flatMap((sentence) => sentence.split(/,\s+(?:and|but)\s+(?=[A-Za-z])/i))
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 8);
+  // 只拆出一个（或零个）像样子断言 → 不是复合意见：按整条处理
+  return parts.length <= 1 ? [normalized] : parts;
 }
 
 export function parseFindingRecheckOutput(parsed: Record<string, unknown>, allowed: ReadonlySet<string>): FindingRecheckResult[] {
@@ -232,10 +253,22 @@ export function parseFindingRecheckOutput(parsed: Record<string, unknown>, allow
     const verdict = typeof record["verdict"] === "string" ? record["verdict"].trim().toUpperCase().replace(/[\s-]+/g, "_") : "";
     if (verdict !== "SUPPORTED" && verdict !== "REFUTED" && verdict !== "PARTIALLY_REFUTED" && verdict !== "NOT_DETERMINABLE") continue;
     const str = (key: string, max: number) => (typeof record[key] === "string" && (record[key] as string).trim() !== "" ? (record[key] as string).trim().slice(0, max) : undefined);
+    // M15.2.1（P1）：复合意见 REFUTED 的逐子断言覆盖（有界解析；point / 依据的逐字校验在 applyFindingRecheck）
+    const rawPoints = Array.isArray(record["refutedPoints"]) ? record["refutedPoints"] : [];
+    const refutedPoints = rawPoints
+      .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
+      .slice(0, 8)
+      .flatMap((entry) => {
+        const point = typeof entry["point"] === "string" ? entry["point"].trim().slice(0, 200) : "";
+        const quote = typeof entry["evidenceQuote"] === "string" ? entry["evidenceQuote"].trim().slice(0, 600) : "";
+        const snippetId = typeof entry["snippetId"] === "string" && entry["snippetId"].trim() !== "" ? entry["snippetId"].trim().slice(0, 12) : undefined;
+        return point !== "" && quote !== "" ? [{ point, evidenceQuote: quote, ...(snippetId !== undefined ? { snippetId } : {}) }] : [];
+      });
     out.push({
       findingId, verdict,
       ...(str("evidenceQuote", 600) !== undefined ? { evidenceQuote: str("evidenceQuote", 600)! } : {}),
       ...(str("snippetId", 12) !== undefined ? { snippetId: str("snippetId", 12)! } : {}),
+      ...(refutedPoints.length > 0 ? { refutedPoints } : {}),
       ...(str("note", 400) !== undefined ? { note: str("note", 400)! } : {}),
     });
   }
@@ -279,6 +312,34 @@ export function applyFindingRecheck(
     if ((result.verdict === "REFUTED" || result.verdict === "PARTIALLY_REFUTED") && item.absenceAssertion && !containsAssertedTerm) {
       out.push({ ...base, outcome: "UNRESOLVED", modelVerdict: result.verdict, evidence: { quote: located, snippetId: snippet.snippetId, containsAssertedTerm }, validation: "反驳缺失型断言的引文不含该断言所指的任何术语：不能确立「别处已给出」", ...(result.note !== undefined ? { note: result.note } : {}) });
       continue;
+    }
+    // M15.2.1（P1，N1648BF8 r2 #47）：复合意见（≥2 个独立子断言）不得凭单条部分反证整体 REFUTED。
+    // 整体 REFUTED 须逐子断言给出 refutedPoints：point 逐字取自意见原文、evidenceQuote 逐字落在候选片段中，
+    // 且每个子断言都被某条 point 覆盖；覆盖不全 → 降级 PARTIALLY_REFUTED（fail-closed，不作撤回候选）。
+    if (result.verdict === "REFUTED") {
+      const parts = findingSubAssertions(item.description);
+      if (parts.length > 1) {
+        const descriptionNormalized = item.description.replace(/\s+/g, " ").trim();
+        const verifiedPoints = (result.refutedPoints ?? []).filter((entry) => {
+          const point = entry.point.trim();
+          return point.length >= 8 && descriptionNormalized.includes(point)
+            && item.snippets.some((candidate) => locateQuote(candidate.text, entry.evidenceQuote, 12) !== null);
+        });
+        const covered = parts.filter((part) => verifiedPoints.some((entry) => part.includes(entry.point.trim()) || entry.point.trim().includes(part)));
+        const complete = covered.length === parts.length;
+        out.push({
+          ...base,
+          outcome: complete ? "REFUTED_BY_DOCUMENT_CONTEXT" : "PARTIALLY_REFUTED_BY_DOCUMENT_CONTEXT",
+          modelVerdict: "REFUTED",
+          coverage: { subAssertions: parts.length, refutedPoints: verifiedPoints.length, complete },
+          evidence: { quote: located, snippetId: snippet.snippetId, containsAssertedTerm },
+          validation: complete
+            ? `复合意见（${parts.length} 个子断言）：每个子断言都有逐字取自意见原文的 point 与逐字落在候选片段中的依据——整体不成立的候选（模型提出、确定性校验；不自动删除）`
+            : `复合意见（${parts.length} 个子断言）的逐子断言覆盖不全（${covered.length}/${parts.length}）：凭部分反证不得整体撤回，降级为部分反驳（fail-closed）`,
+          ...(result.note !== undefined ? { note: result.note } : {}),
+        });
+        continue;
+      }
     }
     out.push({
       ...base,

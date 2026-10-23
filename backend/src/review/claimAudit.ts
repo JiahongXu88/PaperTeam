@@ -44,7 +44,7 @@ import {
   textContainsNumber,
   type ValueComparison,
 } from "./claimAuditText.js";
-import { buildCertificateDocument, certifyClaim, type CertificateDocument, type ClaimCertificate } from "./claimCertificate.js";
+import { buildCertificateDocument, certifyClaim, certifierErrorCertificate, type CertificateDocument, type ClaimCertificate } from "./claimCertificate.js";
 
 export const CLAIM_AUDIT_SCHEMA = "paperteam.review-claim-audit/v2";
 /** M15.1 产物（读取兼容：状态由 verifier v1 判定，没有核验证书） */
@@ -678,7 +678,11 @@ function fileSpanOf(document: CertificateDocument, text: string, location: Claim
   return hits.length === 1 ? hits[0]! : null;
 }
 
-/** v2：为模型提出的核对出具（或拒绝出具）确定性证书；没有数值 / 结论时返回 undefined */
+/**
+ * v2：为模型提出的核对出具（或拒绝出具）确定性证书；没有数值 / 结论时返回 undefined。
+ * M15.2.1（N05）：单条论断的证书器异常在此隔离——兜底为 CERTIFIER_ERROR 的 NOT_CERTIFIED 证书，
+ * 不向上抛（此前一条异常会让整篇 claim-audit 账本消失）；其余论断的独立验证来源不受影响。
+ */
 function certificateFor(
   document: CertificateDocument,
   claim: { quote: string; location: ClaimLocation },
@@ -687,14 +691,18 @@ function certificateFor(
   check: ReviewerClaimCheck | null,
 ): ClaimCertificate | undefined {
   if ((check !== "CONSISTENT" && check !== "INCONSISTENT") || values.claimValue === undefined) return undefined;
-  const claimSpan = fileSpanOf(document, claim.quote, claim.location);
-  if (claimSpan === null) return undefined;
-  const counterSpan = counterpart === null ? null : fileSpanOf(document, counterpart.text, counterpart.location);
-  return certifyClaim(document, {
-    claim: { ...claimSpan, value: values.claimValue },
-    counterpart: counterSpan === null ? null : { ...counterSpan, ...(values.counterpartValue !== undefined ? { value: values.counterpartValue } : {}) },
-    check,
-  });
+  try {
+    const claimSpan = fileSpanOf(document, claim.quote, claim.location);
+    if (claimSpan === null) return undefined;
+    const counterSpan = counterpart === null ? null : fileSpanOf(document, counterpart.text, counterpart.location);
+    return certifyClaim(document, {
+      claim: { ...claimSpan, value: values.claimValue },
+      counterpart: counterSpan === null ? null : { ...counterSpan, ...(values.counterpartValue !== undefined ? { value: values.counterpartValue } : {}) },
+      check,
+    });
+  } catch (error) {
+    return certifierErrorCertificate(error);
+  }
 }
 
 /**
@@ -1037,6 +1045,11 @@ export function buildClaimAudit(input: ClaimAuditInput): ClaimAuditArtifact {
   }
   if (!sourceVerifiable(input.sourceVerification.level)) {
     artifact.notes.push(`来源核验 ${input.sourceVerification.level}：原文内跨处核对最高只给 REVIEWER_*（转写稿上的数值 / 表格 / 公式不足以确立已核实错误）`);
+  }
+  // M15.2.1（N05）：证书器异常按条隔离后的诚实披露——账本是部分审计，绝不呈现为完整成功
+  const certifierErrors = artifact.claims.filter((claim) => (claim.certificate?.reasons ?? []).some((reason) => reason.startsWith("CERTIFIER_ERROR")));
+  if (certifierErrors.length > 0) {
+    artifact.notes.push(`PARTIAL_AUDIT：${certifierErrors.length} 条论断的证书计算异常已隔离（CERTIFIER_ERROR，fail-closed 记为 NOT_CERTIFIED），其余论断照常核验；被隔离论断不参与 VERIFIED_*`);
   }
   return artifact;
 }
