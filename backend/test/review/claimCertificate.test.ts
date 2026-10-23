@@ -566,3 +566,216 @@ describe("M15.3.1 SYNTHETIC_SANITY（合成边界正反例，实现前登记期�
     expect(cert.outcome).toBe("NOT_CERTIFIED");
   });
 });
+
+describe("M15.3.3 OA 别名（全局 SYNONYMS 单条目，合成结构）", () => {
+  // 夹具全部自写合成（CloudSort/ScanBench 等），与 N03 原文 / 方法名 / 数字无关。期望在实现前登记（M15_3_3 预登记 §5）。
+  // 正例 T1a/T1b/T2b 在未加 oa 别名的基线上必须失败（NOT_CERTIFIED）；负例在基线与改后都必须保持不出证书。
+  const OA_TABLE = [
+    "\\title{Point Cloud Sorting at Scale}",
+    "\\begin{table}[t]",
+    "\\caption{Classification accuracy on the ScanBench dataset.}\\label{tab:scan}",
+    "\\begin{tabular}{lcc}",
+    "\\toprule",
+    "Method & OA & mIoU \\\\",
+    "\\midrule",
+    "CloudSort & 91.2 & 65.4 \\\\",
+    "BaseLin & 88.0 & 61.7 \\\\",
+    "\\bottomrule",
+    "\\end{tabular}",
+    "\\end{table}",
+    "\\section{Results}",
+    "On ScanBench, CloudSort obtains an overall accuracy of 91.2.",
+    "",
+  ].join("\n");
+  it("T1a 正例 VS：正文 overall accuracy ↔ 列头 OA（别名正向）→ SUPPORTED 且绑定 CloudSort×OA", () => {
+    const cert = certify(OA_TABLE, "CloudSort obtains an overall accuracy of 91.2", "91.2", "CloudSort & 91.2 & 65.4", "91.2", "CONSISTENT");
+    expect(cert.outcome).toBe("SUPPORTED");
+    expect(cert.binding?.bound?.rowKey).toEqual(["CloudSort"]);
+    expect(cert.binding?.bound?.headerPath).toEqual(["OA"]);
+  });
+  it("T1b 正例 VC：正文 OA ↔ 列头 Accuracy（别名反向）+ 值冲突且无他表同值 → CONTRADICTED", () => {
+    const doc = [
+      "\\title{Point Cloud Sorting at Scale}",
+      "\\begin{table}[t]",
+      "\\caption{Classification accuracy on the ScanBench dataset.}\\label{tab:scan}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & Accuracy \\\\",
+      "\\midrule",
+      "CloudSort & 91.2 \\\\",
+      "BaseLin & 88.0 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "On ScanBench, CloudSort reaches an OA of 90.2.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "CloudSort reaches an OA of 90.2", "90.2", "CloudSort & 91.2", "91.2", "INCONSISTENT");
+    expect(cert.outcome).toBe("CONTRADICTED");
+    expect(cert.binding?.bound?.rowKey).toEqual(["CloudSort"]);
+  });
+  it("T2a 负例：两表同列同方法同值、caption 完全相同 → 真平局必须弃判（禁止数值巧合强行唯一）", () => {
+    const table = [
+      "\\begin{table}[t]",
+      "\\caption{Classification accuracy on the ScanBench dataset.}\\label{tab:first}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & OA \\\\",
+      "\\midrule",
+      "CloudSort & 91.2 \\\\",
+      "BaseLin & 88.0 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+    ].join("\n");
+    const doc = [
+      "\\title{Point Cloud Sorting at Scale}",
+      table,
+      table.replace("tab:first", "tab:second"),
+      "\\section{Results}",
+      "On ScanBench, CloudSort obtains an overall accuracy of 91.2.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "CloudSort obtains an overall accuracy of 91.2", "91.2", "CloudSort & 91.2", "91.2", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toMatch(/TIED_CANDIDATES|NO_CELL_MATCHES|VALUE_APPEARS_IN_OTHER_TABLE/);
+  });
+  it("T2b 正例：两表同列同值、caption 一含 accuracy 一为 Ablation → contextScore 唯一化绑全称表（镜像 N03-P01）", () => {
+    const doc = [
+      "\\title{Point Cloud Sorting at Scale}",
+      "\\begin{table}[t]",
+      "\\caption{Classification accuracy on the ScanBench dataset.}\\label{tab:main}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & OA \\\\",
+      "\\midrule",
+      "CloudSort & 91.2 \\\\",
+      "BaseLin & 88.0 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\begin{table}[t]",
+      "\\caption{Ablation study on ScanBench.}\\label{tab:abl}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & OA \\\\",
+      "\\midrule",
+      "CloudSort Pro & 91.2 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "On ScanBench, CloudSort obtains an overall accuracy of 91.2.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "CloudSort obtains an overall accuracy of 91.2", "91.2", "CloudSort & 91.2", "91.2", "CONSISTENT");
+    expect(cert.outcome).toBe("SUPPORTED");
+    expect(cert.binding?.bound?.rowKey).toEqual(["CloudSort"]);
+  });
+  it("T3a 负例（行键污染）：行键 OA-Net 含 oa 词元 → 不得抢绑定（宁弃勿错；绝不绑 OA-Net / 不出矛盾证书）", () => {
+    const doc = [
+      "\\title{Point Cloud Sorting at Scale}",
+      "\\begin{table}[t]",
+      "\\caption{Classification accuracy on the ScanBench dataset.}\\label{tab:scan}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & OA \\\\",
+      "\\midrule",
+      "OA-Net & 88.0 \\\\",
+      "CloudSort & 91.2 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "On ScanBench, CloudSort obtains an accuracy of 91.2.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "CloudSort obtains an accuracy of 91.2", "91.2", "CloudSort & 91.2", "91.2", "CONSISTENT");
+    expect(cert.outcome).not.toBe("CONTRADICTED");
+    if (cert.outcome !== "NOT_CERTIFIED") {
+      expect(cert.binding?.bound?.rowKey).toEqual(["CloudSort"]);
+    }
+  });
+  // T3b 偏差记录（基线实测，M15_3_3 报告 §偏差）：登记期望 NOT_CERTIFIED；实测基线（未加别名）即 SUPPORTED——
+  // OA-Net 的原始 oa 词元与 OA 列头本来就是同一词元，方法名充当列维证据是【既有】机制面（acc 别名同理），非本条目引入。
+  // 本用例锁定真正的不变量：比较短语中点名的 OA-Net 行绝不能抢走绑定（行维上下文已剥离比较短语），且不得出矛盾证书。
+  it("T3b 负例（比较短语方法名不抢绑定）：outperforming OA-Net → 若出证书必须绑 CloudSort 行，绝不绑 OA-Net / 不出矛盾", () => {
+    const doc = [
+      "\\title{Point Cloud Sorting at Scale}",
+      "\\begin{table}[t]",
+      "\\caption{Classification accuracy on the ScanBench dataset.}\\label{tab:scan}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & OA \\\\",
+      "\\midrule",
+      "OA-Net & 88.0 \\\\",
+      "CloudSort & 91.2 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "On ScanBench, CloudSort reaches 91.2, outperforming OA-Net.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "CloudSort reaches 91.2, outperforming OA-Net", "91.2", "CloudSort & 91.2", "91.2", "CONSISTENT");
+    expect(cert.outcome).not.toBe("CONTRADICTED");
+    if (cert.outcome !== "NOT_CERTIFIED") {
+      expect(cert.binding?.bound?.rowKey).toEqual(["CloudSort"]);
+    }
+  });
+  // T4 偏差记录（基线实测）：登记期望理由 MULTIPLE_METRICS_BEFORE_VALUE；实测基线拒绝码为双钥匙
+  // PROPOSED_COUNTERPART_IS_NOT_THE_UNIQUE_BINDING（claim 侧 top 候选按就近度落到 mIoU×65.4，≠ 模型提议的 OA 格）。
+  // 结论一致（NOT_CERTIFIED、多指标列归属不可证）；MULTIPLE_METRICS 防线本身由 M15.2 既有用例（IoU and F1 of …）锁定。
+  it("T4 负例（多指标竞争）：OA and mIoU of 91.2 and 65.4 → 列归属不唯一，双钥匙/多指标防线拒绝出证", () => {
+    const doc = OA_TABLE.replace("On ScanBench, CloudSort obtains an overall accuracy of 91.2.", "On ScanBench, CloudSort achieves OA and mIoU of 91.2 and 65.4.");
+    const cert = certify(doc, "CloudSort achieves OA and mIoU of 91.2", "91.2", "CloudSort & 91.2 & 65.4", "91.2", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toMatch(/PROPOSED_COUNTERPART_IS_NOT_THE_UNIQUE_BINDING|MULTIPLE_METRICS_BEFORE_VALUE/);
+  });
+  it("T5 负例（基线枚举平局）：including PointBase and PointPlus 同值两行 → 平局弃判（N03-P07 型）", () => {
+    const doc = [
+      "\\title{Dense Point Aggregation Networks}",
+      "\\begin{table}[t]",
+      "\\caption{Point cloud classification on the ScanBench benchmark.}\\label{tab:scan}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Method & OA \\\\",
+      "\\midrule",
+      "PointBase & 91.2 \\\\",
+      "PointPlus & 91.2 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "Our method obtains an overall accuracy of 91.2, including PointBase and PointPlus.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "obtains an overall accuracy of 91.2, including PointBase and PointPlus", "91.2", "PointBase & 91.2", "91.2", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toMatch(/TIED_CANDIDATES|NO_CELL_MATCHES/);
+  });
+  it("T6 负例（MaF1/MiF1 风险锚）：maf1/mif1 不入词典，Macro-F1 与 OA 文本都不得跨绑 MaF1/MiF1 列", () => {
+    const doc = [
+      "\\title{Node Classification at Scale}",
+      "\\begin{table}[t]",
+      "\\caption{Node classification on the Corva benchmark.}\\label{tab:corva}",
+      "\\begin{tabular}{lcc}",
+      "\\toprule",
+      "Method & MaF1 & MiF1 \\\\",
+      "\\midrule",
+      "GraphNet & 88.4 & 71.0 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "On Corva, GraphNet obtains a Macro-F1 of 88.4.",
+      "",
+    ].join("\n");
+    const certMacro = certify(doc, "GraphNet obtains a Macro-F1 of 88.4", "88.4", "GraphNet & 88.4 & 71.0", "88.4", "CONSISTENT");
+    expect(certMacro.outcome).toBe("NOT_CERTIFIED");
+    const docOa = doc.replace("a Macro-F1 of 88.4", "an OA of 88.4");
+    const certOa = certify(docOa, "GraphNet obtains an OA of 88.4", "88.4", "GraphNet & 88.4 & 71.0", "88.4", "CONSISTENT");
+    expect(certOa.outcome).toBe("NOT_CERTIFIED");
+  });
+});

@@ -50,7 +50,10 @@ const STOP = new Set([
   "et", "al", "fig", "figure", "sec", "section", "see", "eq", "i", "e", "g", "vs", "via",
 ]);
 const SYNONYMS: Record<string, string> = {
-  avg: "average", mean: "average", acc: "accuracy", sec: "s", secs: "s", seconds: "s", second: "s", milliseconds: "ms", fps: "fps",
+  avg: "average", mean: "average", acc: "accuracy",
+  // 指标缩写 OA（overall accuracy）↔ 全称 accuracy：M15.3.2 逐词裁决 GO_ONE_ALIAS 的唯一条目（maf1/mif1 NO_GO，不入）
+  oa: "accuracy",
+  sec: "s", secs: "s", seconds: "s", second: "s", milliseconds: "ms", fps: "fps",
   // 速度措辞 ↔ 速度列（「N times faster」绑定 Speed / FPS 列）
   faster: "speed", slower: "speed", quicker: "speed", fastest: "speed",
   // 派生列表头（Improv. / Impr.）↔ 文中 improvement(s)
