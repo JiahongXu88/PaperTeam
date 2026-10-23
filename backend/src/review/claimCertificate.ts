@@ -641,10 +641,11 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   if (columnsMentioned.size >= 2 && !/\brespectively\b|分别/i.test(scopes.sentence)) rejections.push(`MULTIPLE_METRICS_BEFORE_VALUE:${[...columnsMentioned].slice(0, 3).join("|")}`);
   // 解释性检查：窗口内区分性术语、分句内限定词须由最佳候选的语境解释
   // 「respectively」位置对齐时，列表里其他被点名的行名是对齐结构本身，不是未解释的限定
+  // 比较对象短语（outperforming X / compared with Y）先剥离再取区分词：比较对象不是数值归属（与行维 stripComparatorPhrases 同一语义，M15.3.1）
   const alignedRowNames = aligned !== null ? top.table.cells.filter((cell) => cell.rowKey.length > 0).map((cell) => cell.rowKey.join(" ")) : [];
   const explain = contextOf([cellContextText(top.table, top.cell), ...top.table.cells.filter((cell) => cell.isHeader).map((cell) => cell.text), ...alignedRowNames].join(" \n "));
   const ownWords = new Set(document.ownTerms);
-  for (const term of distinctiveTerms(plainLatexText(scopes.window))) {
+  for (const term of distinctiveTerms(plainLatexText(stripComparatorPhrases(scopes.window)))) {
     const lower = canonical(term.toLowerCase());
     if (ownWords.has(lower) || mentions(explain, lower) || STOP.has(lower)) continue;
     if (/^(?:cpu|gpu|ghz|mhz|tb|gb|mb)$/i.test(lower)) continue;

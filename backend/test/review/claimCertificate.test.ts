@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseLatexTables } from "../../src/review/latexTable.js";
-import { buildCertificateDocument, certifyClaim, compareAtoms, type CertifyInput } from "../../src/review/claimCertificate.js";
+import { buildCertificateDocument, certifyClaim, compareAtoms, stripComparatorPhrases, type CertifyInput } from "../../src/review/claimCertificate.js";
 import { evaluateFormula, validateFormula, displayInterval, type FormulaAtom } from "../../src/review/derivedFormula.js";
 import { locateQuote } from "../../src/review/claimAuditText.js";
 
@@ -394,5 +394,175 @@ describe("M15.2 property：证书在合成表格变异上不产生错误强判",
       if (locateQuote(doc, counterpart)?.occurrences !== 1) continue;
       expect(certify(doc, claim, paper.truth, counterpart, paper.truth, "CONSISTENT").outcome).toBe("NOT_CERTIFIED");
     }
+  });
+});
+
+describe("M15.3.1 比较对象短语剥离（UNEXPLAINED_TERM 窗口一致性，合成结构）", () => {
+  // 数值结构仿照 N09（论断主语句绑本文方法行 + 句尾比较对象点名他方法、题目不含方法名 → 行点名得分 2），术语与数值全部自写合成
+  const GNN = [
+    "\\title{Graph Learning at Scale}",
+    "\\begin{table}[t]",
+    "\\caption{Node classification on the Corva benchmark.}\\label{tab:corva}",
+    "\\begin{tabular}{lcc}",
+    "\\toprule",
+    "Method & Macro-F1 & AUPRC \\\\",
+    "\\midrule",
+    "GraphNet & 88.4 & 90.1 \\\\",
+    "PriorNet & 85.2 & 87.9 \\\\",
+    "\\bottomrule",
+    "\\end{tabular}",
+    "\\end{table}",
+    "\\section{Results}",
+    "On Corva, GraphNet obtains a Macro-F1 of 88.4, outperforming the second-best PriorNet.",
+    "",
+  ].join("\n");
+  it("正例 VS：值与唯一单元一致，句尾 outperforming 点名的比较对象不造成 UNEXPLAINED_TERM → SUPPORTED", () => {
+    const cert = certify(GNN, "obtains a Macro-F1 of 88.4, outperforming the second-best PriorNet", "88.4", "GraphNet & 88.4 & 90.1", "88.4", "CONSISTENT");
+    expect(cert.binding?.bound?.rowKey).toEqual(["GraphNet"]);
+    expect(cert.binding?.bound?.headerPath).toEqual(["Macro-F1"]);
+    expect(cert.outcome).toBe("SUPPORTED");
+  });
+  it("正例 VC：surpassing 比较对象 + 同方法/指标/数据集唯一绑定但数值冲突、无他表同值 → CONTRADICTED", () => {
+    const doc = GNN.replace("Macro-F1 of 88.4, outperforming", "Macro-F1 of 77.4, surpassing");
+    const cert = certify(doc, "obtains a Macro-F1 of 77.4, surpassing the second-best PriorNet", "77.4", "GraphNet & 88.4 & 90.1", "88.4", "INCONSISTENT");
+    expect(cert.outcome).toBe("CONTRADICTED");
+    expect(cert.binding?.bound?.rowKey).toEqual(["GraphNet"]);
+  });
+  it("反例：没有比较关系的陌生方法名不能被剥离（following the setup of DeepProp）→ 继续 UNEXPLAINED_TERM 拒绝", () => {
+    const doc = GNN.replace("outperforming the second-best PriorNet.", "following the setup of DeepProp.");
+    const cert = certify(doc, "obtains a Macro-F1 of 88.4, following the setup of DeepProp", "88.4", "GraphNet & 88.4 & 90.1", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toContain("UNEXPLAINED_TERM:DeepProp");
+  });
+  it("反例：他方法名在数值后并列从句（and PriorNet trails…，非比较短语）→ 两行同分不可证，继续拒绝", () => {
+    const doc = GNN.replace("outperforming the second-best PriorNet.", "and PriorNet trails by a wide margin.");
+    const cert = certify(doc, "obtains a Macro-F1 of 88.4, and PriorNet trails by a wide margin", "88.4", "GraphNet & 88.4 & 90.1", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toMatch(/TIED_CANDIDATES|UNEXPLAINED_TERM/);
+  });
+  it("反例：reproduced 限定词（B3 家族，segmentContext 检查）不受窗口剥离影响 → 继续拒绝", () => {
+    const doc = GNN.replace("On Corva, GraphNet obtains a Macro-F1 of 88.4, outperforming the second-best PriorNet.", "On Corva, our reproduced GraphNet obtains a Macro-F1 of 77.4, outperforming the second-best PriorNet.");
+    const cert = certify(doc, "obtains a Macro-F1 of 77.4, outperforming the second-best PriorNet", "77.4", "GraphNet & 88.4 & 90.1", "88.4", "INCONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toContain("UNEXPLAINED_QUALIFIER:reproduced");
+  });
+  it("反例：值冲突且冲突值逐字出现在另一张表（B2 跨表唯一性）→ 继续拒绝，不因剥离比较对象放行", () => {
+    const doc = [
+      "\\title{Graph Learning at Scale}",
+      "\\begin{table}[t]",
+      "\\caption{Node classification on the Corva benchmark.}\\label{tab:corva}",
+      "\\begin{tabular}{lcc}",
+      "\\toprule",
+      "Method & Macro-F1 & AUPRC \\\\",
+      "\\midrule",
+      "GraphNet & 88.4 & 90.1 \\\\",
+      "PriorNet & 85.2 & 87.9 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\begin{table}[t]",
+      "\\caption{Ablation on the Corva benchmark.}\\label{tab:abl}",
+      "\\begin{tabular}{lc}",
+      "\\toprule",
+      "Variant & Macro-F1 \\\\",
+      "\\midrule",
+      "w/o aug & 77.4 \\\\",
+      "\\bottomrule",
+      "\\end{tabular}",
+      "\\end{table}",
+      "\\section{Results}",
+      "On Corva, GraphNet obtains a Macro-F1 of 77.4, outperforming the second-best PriorNet.",
+      "",
+    ].join("\n");
+    const cert = certify(doc, "obtains a Macro-F1 of 77.4, outperforming the second-best PriorNet", "77.4", "GraphNet & 88.4 & 90.1", "88.4", "INCONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toContain("VALUE_APPEARS_IN_OTHER_TABLE");
+  });
+  it("边界：stripComparatorPhrases 只剥比较短语段，不剥主语 / 指标 / 数据集 / 无比较关系的并列主语", () => {
+    expect(stripComparatorPhrases("GraphNet outperforms PriorNet on Corva")).not.toMatch(/PriorNet/);
+    expect(stripComparatorPhrases("GraphNet outperforms PriorNet on Corva")).toMatch(/GraphNet/);
+    expect(stripComparatorPhrases("Compared with PriorNet, GraphNet reaches 88.4 Macro-F1")).not.toMatch(/PriorNet/);
+    expect(stripComparatorPhrases("Compared with PriorNet, GraphNet reaches 88.4 Macro-F1")).toMatch(/GraphNet/);
+    expect(stripComparatorPhrases("Compared with PriorNet, GraphNet reaches 88.4 Macro-F1")).toMatch(/Macro-F1/);
+    expect(stripComparatorPhrases("GraphNet and PriorNet both reach 88.4 on Corva")).toMatch(/PriorNet/);
+    expect(stripComparatorPhrases("GraphNet and PriorNet both reach 88.4 on Corva")).toMatch(/Corva/);
+    expect(stripComparatorPhrases("a Macro-F1 of 88.4 versus PriorNet")).toMatch(/Macro-F1/);
+    expect(stripComparatorPhrases("a Macro-F1 of 88.4 versus PriorNet")).not.toMatch(/PriorNet/);
+  });
+});
+
+describe("M15.3.1 SYNTHETIC_SANITY（合成边界正反例，实现前登记期望）", () => {
+  const GNN = [
+    "\\title{Graph Learning at Scale}",
+    "\\begin{table}[t]",
+    "\\caption{Node classification on the Corva benchmark.}\\label{tab:corva}",
+    "\\begin{tabular}{lcc}",
+    "\\toprule",
+    "Method & Macro-F1 & AUPRC \\\\",
+    "\\midrule",
+    "GraphNet & 88.4 & 90.1 \\\\",
+    "PriorNet & 85.2 & 87.9 \\\\",
+    "\\bottomrule",
+    "\\end{tabular}",
+    "\\end{table}",
+    "\\section{Results}",
+    "CLAIM",
+    "",
+  ].join("\n");
+  const TWO_TABLES = [
+    "\\title{Graph Learning at Scale}",
+    "\\begin{table}[t]",
+    "\\caption{Node classification on the Corva benchmark.}\\label{tab:corva}",
+    "\\begin{tabular}{lcc}",
+    "\\toprule",
+    "Method & Macro-F1 & AUPRC \\\\",
+    "\\midrule",
+    "GraphNet & 88.4 & 90.1 \\\\",
+    "PriorNet & 85.2 & 87.9 \\\\",
+    "\\bottomrule",
+    "\\end{tabular}",
+    "\\end{table}",
+    "\\begin{table}[t]",
+    "\\caption{Reproduction on the Vidor benchmark.}\\label{tab:repro}",
+    "\\begin{tabular}{lc}",
+    "\\toprule",
+    "Method & Macro-F1 \\\\",
+    "\\midrule",
+    "GraphNet & 88.4 \\\\",
+    "\\bottomrule",
+    "\\end{tabular}",
+    "\\end{table}",
+    "\\section{Results}",
+    "CLAIM",
+    "",
+  ].join("\n");
+  const run = (doc: string, claim: string, value: string, check: CertifyInput["check"]) => certify(doc, claim, value, "GraphNet & 88.4 & 90.1", "88.4", check);
+  it("S1 数据集名位于比较短语内（outperforming PriorNet on the Vidor dataset）→ 剥离后不误拒 → SUPPORTED", () => {
+    const cert = run(GNN.replace("CLAIM", "On Corva, GraphNet reaches 88.4 Macro-F1, outperforming PriorNet on the Vidor dataset."), "reaches 88.4 Macro-F1, outperforming PriorNet on the Vidor dataset", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("SUPPORTED");
+  });
+  it("S2 主语句内两个模型名、无比较词（follows PriorNet and obtains）→ 两行同分不可证 → NOT_CERTIFIED", () => {
+    const cert = run(GNN.replace("CLAIM", "On Corva, GraphNet follows PriorNet and obtains a Macro-F1 of 88.4."), "obtains a Macro-F1 of 88.4", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+  });
+  it("S3 比较短语在句首（Compared with PriorNet, GraphNet reaches …）→ 与 outperforming 同语义 → SUPPORTED", () => {
+    const cert = run(GNN.replace("CLAIM", "Compared with PriorNet, GraphNet reaches a Macro-F1 of 88.4 on Corva."), "GraphNet reaches a Macro-F1 of 88.4 on Corva", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("SUPPORTED");
+    expect(cert.binding?.bound?.rowKey).toEqual(["GraphNet"]);
+  });
+  it("S4 vs. 缩写形式（88.4 vs. the PriorNet baseline）→ 剥离生效 → SUPPORTED", () => {
+    const cert = run(GNN.replace("CLAIM", "On Corva, GraphNet obtains a Macro-F1 of 88.4 vs. the PriorNet baseline."), "obtains a Macro-F1 of 88.4 vs. the PriorNet baseline", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("SUPPORTED");
+  });
+  // S5 登记期望原为 SUPPORTED；实测 NOT_CERTIFIED（B2），经基线 stash 对照为改动前后逐字节一致的既有「宁弃勿错」行为
+  //（方向 B headerEntityScore 使被比较行抢 top、值冲突触发 B2），非本修复引入 —— 期望修正见 M15_3_1 报告 §偏差记录
+  it("S5 两表同值（复现表也有 88.4）但论断点名 Corva → 方向 B 使被比较行抢 top、B2 拦截 → NOT_CERTIFIED（与基线逐字节一致）", () => {
+    const cert = run(TWO_TABLES.replace("CLAIM", "On Corva, GraphNet obtains a Macro-F1 of 88.4, outperforming PriorNet."), "obtains a Macro-F1 of 88.4, outperforming PriorNet", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
+    expect(cert.reasons.join(" ")).toContain("VALUE_APPEARS_IN_OTHER_TABLE");
+  });
+  it("S6 两表同值且论断不点数据集 → 跨表归属不可证 → NOT_CERTIFIED（正确弃判）", () => {
+    const cert = run(TWO_TABLES.replace("CLAIM", "Overall, GraphNet obtains a Macro-F1 of 88.4, outperforming PriorNet."), "GraphNet obtains a Macro-F1 of 88.4, outperforming PriorNet", "88.4", "CONSISTENT");
+    expect(cert.outcome).toBe("NOT_CERTIFIED");
   });
 });
