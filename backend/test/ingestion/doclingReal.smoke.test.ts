@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DoclingParser } from "../../src/ingestion/DoclingParser.js";
+import { resolveDefaultHfEndpoint } from "../../src/ingestion/hfEndpoint.js";
 import { ParsedDocumentStore } from "../../src/ingestion/ParsedDocumentStore.js";
 import { IngestionService } from "../../src/ingestion/IngestionService.js";
 import { ProjectStore } from "../../src/project/ProjectStore.js";
@@ -49,9 +50,8 @@ const doclingInstalled = probeDoclingInstalled();
 let tmp: string;
 
 beforeAll(async () => {
-  if (process.env.HF_ENDPOINT === undefined) {
-    process.env.HF_ENDPOINT = "https://hf-mirror.com"; // 国内网络模型下载镜像（显式设置优先）
-  }
+  // M15.3.3 B3.5：未显式设置时缺省镜像；显式设置（CI 官方源）原样透传，不被覆盖
+  process.env.HF_ENDPOINT = resolveDefaultHfEndpoint(process.env.HF_ENDPOINT);
   tmp = await mkdtemp(join(tmpdir(), "paperteam-docling-smoke-"));
 });
 

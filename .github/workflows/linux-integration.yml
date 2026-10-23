@@ -22,6 +22,14 @@ jobs:
     name: docling native（ubuntu runner · 真实全链）
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # M15.3.3 B3.1：显式直连官方源（runner 在海外）。此前本 job 不设 HF_ENDPOINT，
+      # 但 doclingReal.smoke.test.ts 会在未设置时注入 hf-mirror.com，并经 DoclingParser
+      # 的 env: { ...process.env } 传入 Python 子进程——实际下载端点是镜像站，与旧注释
+      # “直连 HuggingFace”矛盾（取证：run 39921420556 attempt 1 于 152s 断连、
+      # attempt 2 于 880s 超时，均为镜像下载）。显式设置后测试的 undefined 分支不再
+      # 注入镜像；本机（国内网络）不设置时的镜像缺省行为保持不变。
+      HF_ENDPOINT: https://huggingface.co
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,11 +45,56 @@ jobs:
           python3 -m pip install --user --break-system-packages "docling>=2,<3" "pymupdf>=1.24,<2" \
             || python3 -m pip install --user "docling>=2,<3" "pymupdf>=1.24,<2"
           python3 -c "import docling; print('docling', docling.__version__)"
+          echo "DOCLING_VERSION=$(python3 -c 'import docling; print(docling.__version__)')" >> "$GITHUB_ENV"
+      - name: 诊断 HF 端点与模型缓存路径（脱敏：仅主机名/路径，无 token/查询串）
+        run: |
+          python3 -c 'import huggingface_hub; print("huggingface_hub", huggingface_hub.__version__)'
+          # 库内解析结果即子进程实际使用的下载端点与缓存目录（证明 huggingface_hub 读取 HF_ENDPOINT）
+          python3 -c 'from urllib.parse import urlparse; from huggingface_hub import constants; e = getattr(constants, "ENDPOINT", ""); print("resolved constants.ENDPOINT host =", urlparse(e).hostname if e else "<n/a>")'
+          python3 -c 'from huggingface_hub import constants; print("resolved constants.HF_HOME =", getattr(constants, "HF_HOME", "<n/a>")); print("resolved constants.HF_HUB_CACHE =", getattr(constants, "HF_HUB_CACHE", "<n/a>"))'
+          echo "env HF_HOME = ${HF_HOME:-<unset>}"
+          echo "env HF_HUB_CACHE = ${HF_HUB_CACHE:-<unset>}"
+          echo "--- pre-smoke cache dirs ---"
+          du -sh ~/.cache/huggingface ~/.cache/docling 2>/dev/null || true
+          find ~/.cache/huggingface ~/.cache/docling -maxdepth 3 2>/dev/null | head -20 || true
+      - name: HF 模型缓存（key 含 docling 版本；仅模型目录，不含 token/凭据文件）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface/hub
+            ~/.cache/docling
+          key: docling-models-v1-${{ runner.os }}-${{ env.DOCLING_VERSION }}
       - name: Run real docling ingestion smoke（PDF → docling → blocks → IngestionService）
-        run: npm --prefix backend test -- doclingReal
         env:
           CI: "true"
-          # runner 在海外：直连 HuggingFace（不设 HF_ENDPOINT，避免镜像站干扰）
+        run: |
+          set +e
+          log="$(mktemp)"
+          npm --prefix backend test -- doclingReal 2>&1 | tee "$log"
+          rc="${PIPESTATUS[0]}"
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+          # M15.3.3 B3.3：仅对可确认的瞬时网络下载错误做一次有界重试（attempt 2/2，打印
+          # 缓存状态）。匹配集 = 传输层断连/重置/读超时 + 解析超时（首次解析超时发生在
+          # 模型下载阶段，DoclingParser 自身错误文案即注明“重试会使用已缓存模型”）。
+          # 解析错误 / schema 错误 / 表格图块断言失败不在匹配集内；即便误触发重试，
+          # 确定性失败第二次同样失败并真实退出——不吞错、不降级 PyMuPDF、不改超时。
+          if grep -Eq "Server disconnected|Connection reset|RemoteDisconnected|IncompleteRead|Read timed out|ConnectionError|Connection aborted|Temporary failure in name resolution|Network is unreachable|解析超时" "$log"; then
+            echo "::warning::docling smoke 疑似瞬时网络下载失败（rc=$rc，attempt 1/2 失败）——按 M15.3.3 B3.3 重试一次，缓存状态："
+            du -sh ~/.cache/huggingface/hub 2>/dev/null || true
+            find ~/.cache/huggingface/hub -maxdepth 2 2>/dev/null | head -10 || true
+            npm --prefix backend test -- doclingReal
+            exit "$?"
+          fi
+          exit "$rc"
+      - name: Post-smoke 模型缓存观测（大小/路径可追溯）
+        if: always()
+        run: |
+          echo "--- post-smoke cache dirs ---"
+          du -sh ~/.cache/huggingface ~/.cache/docling 2>/dev/null || true
+          find ~/.cache/huggingface/hub ~/.cache/docling -maxdepth 3 2>/dev/null | head -20 || true
 
   docling-docker:
     name: docling docker（backend-docling 镜像 · 子进程生命周期）
