@@ -204,6 +204,21 @@ function metricDistance(scopes: TextScopes, headerTokens: readonly string[]): nu
   return best;
 }
 
+/**
+ * A1（M15.3.4 预注册方案A）：层级列维距离——对 headerPath 每层取 metricDistance，
+ * 加 2×(该层距叶层深度) 的惩罚后取最小值：叶层无惩罚，上层仅在更近时胜出。
+ * 多级表头（数据集 / 指标 / 子指标）的上层词可与数值就近匹配，解决「指标词写在非叶层」的列归属失败。
+ */
+function hierarchicalMetricDistance(scopes: TextScopes, headerPath: readonly string[]): number {
+  let best = Infinity;
+  for (let level = 0; level < headerPath.length; level += 1) {
+    const distance = metricDistance(scopes, significant(contextTokens(headerPath[level]!)));
+    if (distance === Infinity) continue;
+    best = Math.min(best, distance + 2 * (headerPath.length - 1 - level));
+  }
+  return best;
+}
+
 export function textScopes(content: string, start: number, end: number): TextScopes {
   const isBoundary = (index: number): boolean => {
     const char = content[index]!;
@@ -447,6 +462,8 @@ export interface BindingResult {
   bound?: { file: string; tableId: string; row: number; col: number; value: string; rowKey: string[]; headerPath: string[] };
   candidates: Array<{ file: string; tableId: string; row: number; col: number; value: string; rowKey: string[]; headerPath: string[]; score: [number, number, number] }>;
   rejections: string[];
+  /** A2（M15.3.4）：精确同分并列集内恰一个格值区间与论断值重叠且其表有 caption/label → 以其继续（加性标记，不进 bound/哈希配方） */
+  valueTieBreak?: boolean;
 }
 
 function cellRef(candidate: { file: string; table: LatexTable; cell: LatexTableCell }) {
@@ -578,9 +595,9 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
       if (table.parseIssues.includes("NESTED_TABULAR")) continue;
       for (const cell of table.cells) {
         if (cell.value === null || cell.isHeader || cell.rowKey.length === 0) continue;
-        const headerLeaf = significant(contextTokens(cell.headerPath.slice(-1).join(" ")));
         // 方向 A（常规）：表头 = 指标、行键 = 方法；方向 B（转置表，常见于时序 / NLP）：行键 = 指标、表头 = 方法
-        const distanceA = metricDistance(scopes, headerLeaf);
+        // A1（M15.3.4）：列维距离改为多级表头逐层计算（上层加距叶深度惩罚），不再只看叶层
+        const distanceA = hierarchicalMetricDistance(scopes, cell.headerPath);
         const rowA = distanceA === Infinity ? { score: 0, own: false } : aligned !== null
           ? (aligned.some((entry) => entry.file === file.file && entry.tableIndex === table.tableIndex && entry.row === cell.row) ? { score: 10, own: rowIsOwn(document, cell) } : { score: 0, own: false })
           : segmentNamesAnyRow ? rowMentionScore(document, cell, segmentRowContext) : rowContextFor(cell);
@@ -616,9 +633,25 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   if (pool.length === 0) return { status: "UNBOUND", rule: "NO_CELL_MATCHES_METRIC_AND_ROW", candidates: summary, rejections };
   const better = (a: CellCandidate, b: CellCandidate): number => a.colScore - b.colScore || a.rowScore - b.rowScore || a.contextScore - b.contextScore || a.coverage - b.coverage || a.headingScore - b.headingScore;
   pool.sort((a, b) => better(b, a));
-  const top = pool[0]!;
+  let top = pool[0]!;
   const ties = pool.filter((candidate) => better(candidate, top) === 0 && candidate.cell !== top.cell);
-  if (ties.length > 0) return { status: "AMBIGUOUS", rule: "TIED_CANDIDATES", candidates: summary, rejections: [`${ties.length + 1} 个候选单元格得分相同`] };
+  let valueTieBreak = false;
+  if (ties.length > 0) {
+    // A2（M15.3.4 预注册方案A）：值重合平局裁决——只在精确同分并列集内生效。
+    // 存活条件：格值显示精度区间与论断值重叠（compareAtoms OVERLAP，含单位换算），且所在表有非空 caption 或 label
+    // （无题注表无归属证据，禁止用值定归属）；恰一个存活 → 以其继续；0 个或 ≥2 个 → 维持 TIED_CANDIDATES。
+    // 该裁决不改变任何非并列情形的排序，也不覆盖后续 B2 / 解释性 / 限定词检查。
+    const survivors = [top, ...ties].filter((candidate) => {
+      if (candidate.cell.value === null) return false;
+      if ((candidate.table.caption ?? "") === "" && candidate.table.label === null) return false;
+      return compareAtoms(atom, normalizedValue(candidate.cell.value)).relation === "OVERLAP";
+    });
+    if (survivors.length === 1) {
+      top = survivors[0]!;
+      valueTieBreak = true;
+    }
+  }
+  if (ties.length > 0 && !valueTieBreak) return { status: "AMBIGUOUS", rule: "TIED_CANDIDATES", candidates: summary, rejections: [`${ties.length + 1} 个候选单元格得分相同`] };
   // M15.2.1（N09）：跨表数值竞争——唯一性不能只在「解析成功进入候选集的单元格」里判断。
   // 论断数值与绑定单元格不一致（即将按差异出证）而该数值逐字出现在其他表格的表格体内时，
   // 论断指向的可能正是那张表（复现表 / 公平对比表的同名行）：跨表归属不可证 → 拒绝出证。
@@ -648,9 +681,13 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   const alignedRowNames = aligned !== null ? top.table.cells.filter((cell) => cell.rowKey.length > 0).map((cell) => cell.rowKey.join(" ")) : [];
   const explain = contextOf([cellContextText(top.table, top.cell), ...top.table.cells.filter((cell) => cell.isHeader).map((cell) => cell.text), ...alignedRowNames].join(" \n "));
   const ownWords = new Set(document.ownTerms);
+  // A1-b（M15.3.4）：聚合措辞词描述统计口径而非实体归属——原子无 AGGREGATE 限定词时不作为区分性术语要求解释。
+  // 该忽略只作用于本区分词循环，不影响下方 QUALIFIER_LEXICON / QUALIFIER_FAMILIES（reproduce/fair/original）防线。
+  const aggregateWording = atom.qualifiers.includes("AGGREGATE");
   for (const term of distinctiveTerms(plainLatexText(stripComparatorPhrases(scopes.window)))) {
     const lower = canonical(term.toLowerCase());
     if (ownWords.has(lower) || mentions(explain, lower) || STOP.has(lower)) continue;
+    if (!aggregateWording && (lower === "average" || lower === "overall")) continue;
     if (/^(?:cpu|gpu|ghz|mhz|tb|gb|mb)$/i.test(lower)) continue;
     rejections.push(`UNEXPLAINED_TERM:${term}`);
   }
@@ -663,18 +700,21 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   }
   // 分句里点名的、只属于其他候选语境的术语（MOT20 vs MOT17）
   const topUpper = contextOf(cellContextText(top.table, top.cell));
+  // A1-c（M15.3.4，与 M15.3.1 comparator 剥离同一语义）：比较对象短语里的名字（outperforming SimpleHGN by …）
+  // 既不算数值归属，也不得在此反向否决唯一绑定——「on MOT20」这类非比较语的数据集限定不受影响。
+  const segmentStripped = contextOf(stripComparatorPhrases(scopes.segment));
   for (const candidate of candidates) {
     if (candidate === top) continue;
     // 只看区分性术语（数据集 / 划分 / 设置名：MOT20、LEVIR-CD、WMT16），不看 parameters / compared 这类普通词
     const otherUpper = distinctiveTerms(plainLatexText([candidate.table.caption ?? "", candidate.cell.rowGroup ?? "", ...candidate.cell.headerPath.slice(0, -1)].join(" "))).map((term) => canonical(term.toLowerCase()));
     for (const token of otherUpper) {
-      if (mentions(segmentContext, token) && !mentions(topUpper, token) && !mentions(explain, token)) rejections.push(`DISCRIMINATING_TERM_OF_OTHER_CANDIDATE:${token}`);
+      if (mentions(segmentStripped, token) && !mentions(topUpper, token) && !mentions(explain, token)) rejections.push(`DISCRIMINATING_TERM_OF_OTHER_CANDIDATE:${token}`);
     }
   }
   if (top.table.parseIssues.length > 0) rejections.push(`TABLE_PARSE_ISSUES:${top.table.parseIssues.join(",")}`);
   const unique = [...new Set(rejections)];
-  if (unique.length > 0) return { status: "AMBIGUOUS", rule: "UNEXPLAINED_CONTEXT", bound: cellRef(top), candidates: summary, rejections: unique };
-  return { status: "UNIQUE", rule: "UNIQUE_MAX_SCORE", bound: cellRef(top), candidates: summary, rejections: [] };
+  if (unique.length > 0) return { status: "AMBIGUOUS", rule: "UNEXPLAINED_CONTEXT", bound: cellRef(top), candidates: summary, rejections: unique, ...(valueTieBreak ? { valueTieBreak: true } : {}) };
+  return { status: "UNIQUE", rule: "UNIQUE_MAX_SCORE", bound: cellRef(top), candidates: summary, rejections: [], ...(valueTieBreak ? { valueTieBreak: true } : {}) };
 }
 
 // ---- 数值关系 ----
@@ -727,6 +767,8 @@ export interface DerivedRecompute {
   /** 所有可接受解释都与论断值不相容（证据，但只在解释唯一时才出证书） */
   allInterpretationsDisagree: boolean | null;
   anyInterpretationAgrees: boolean | null;
+  /** A3（M15.3.4）：subject/reference/column 由句内操作数对发现绑定（加性标记，不参与哈希配方） */
+  bindingProvenance?: "operand-discovered";
 }
 
 const REFERENCE_WORDS = /\b(?:than|over|compared (?:to|with)|versus|vs\.?|relative to|against|beyond|from)\b|相比|相较于?|比|较/i;
@@ -788,8 +830,8 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
       const columns = new Map<number, string[]>();
       for (const cell of table.cells) if (!cell.isHeader && cell.value !== null && cell.rowKey.length > 0) columns.set(cell.col, cell.headerPath);
       for (const [col, header] of columns) {
-        const leaf = significant(contextTokens(header.slice(-1).join(" ")));
-        const distance = metricDistance(scopes, leaf);
+        // A1（M15.3.4）：派生路径列维与 bindTextAtom 共用层级匹配（上层加距叶深度惩罚）
+        const distance = hierarchicalMetricDistance(scopes, header);
         if (distance === Infinity) continue;
         const score = 100 - distance;
         const upper = significant(contextTokens([table.caption ?? "", ...header.slice(0, -1)].join(" ")));
@@ -801,14 +843,6 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
       }
     }
   }
-  if (best === null) {
-    reasons.push("DERIVED_COLUMN_UNBOUND");
-    return { recompute: empty, certifiable: false, outcome: null, reasons };
-  }
-  const column: DerivedRecompute["column"] = { status: tie ? "AMBIGUOUS" : "BOUND", header: best.header };
-  if (tie) reasons.push("DERIVED_COLUMN_AMBIGUOUS");
-  const table = best.table;
-  const cellAt = (cells: LatexTableCell[]): LatexTableCell | undefined => cells.find((cell) => cell.col === best!.col && cell.value !== null);
   // M15.2.1（N05）：行标签读取防护——数据行可能没有行标签（续表/重复列布局/无标签数据行）。
   // 缺标签的行无法参与点名或参照列举：跳过并计数，绝不因非空断言崩溃（此前会导致整篇账本丢失）。
   const rowKeyCellOf = (cells: LatexTableCell[]): LatexTableCell | undefined => cells.find((cell) => cell.rowKey.length > 0);
@@ -822,44 +856,163 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
     unlabeledRows += rows.length - out.length;
     return out;
   };
-  // 主语行：本文方法别名 / 点名行（出现在比较词之前）
-  const dataRows = table.rows.filter((row) => row.kind === "data");
-  const ownRows = dataRows.filter((row) => row.cells.some((cell) => cell.rowKey.length > 0 && rowIsOwn(document, cell))).map((row) => row.cells);
-  let subjectRows = rowsByMention(table, subjectText).filter((cells) => cellAt(cells) !== undefined);
-  if (subjectRows.length === 0 && (OWN_ALIASES.test(subjectText) || document.ownTerms.some((term) => contextOf(subjectText).tokens.has(term)))) subjectRows = ownRows;
-  if (subjectRows.length > 1 && !ROW_QUALIFIERS.test(subjectText)) {
-    const plain = subjectRows.filter((cells) => {
-      const keyCell = rowKeyCellOf(cells);
-      return keyCell !== undefined && !rowQualified(keyCell);
-    });
-    if (plain.length >= 1) subjectRows = plain;
+  // 主语 / 参照的主路径绑定（列未绑定时跳过，A3 可补救）；原因码延迟到 A3 之后按原顺序写入。
+  let subjectRows: LatexTableCell[][] = [];
+  let subjectStatus: DerivedRecompute["subject"]["status"] = "MISSING";
+  let referenceRows: LatexTableCell[][] = [];
+  let referenceStatus: DerivedRecompute["reference"]["status"] = "MISSING";
+  if (best !== null) {
+    const tbl = best.table;
+    const cellAtNow = (cells: LatexTableCell[]): LatexTableCell | undefined => cells.find((cell) => cell.col === best!.col && cell.value !== null);
+    const dataRows = tbl.rows.filter((row) => row.kind === "data");
+    const ownRows = dataRows.filter((row) => row.cells.some((cell) => cell.rowKey.length > 0 && rowIsOwn(document, cell))).map((row) => row.cells);
+    // 主语行：本文方法别名 / 点名行（出现在比较词之前）
+    subjectRows = rowsByMention(tbl, subjectText).filter((cells) => cellAtNow(cells) !== undefined);
+    if (subjectRows.length === 0 && (OWN_ALIASES.test(subjectText) || document.ownTerms.some((term) => contextOf(subjectText).tokens.has(term)))) subjectRows = ownRows;
+    if (subjectRows.length > 1 && !ROW_QUALIFIERS.test(subjectText)) {
+      const plain = subjectRows.filter((cells) => {
+        const keyCell = rowKeyCellOf(cells);
+        return keyCell !== undefined && !rowQualified(keyCell);
+      });
+      if (plain.length >= 1) subjectRows = plain;
+    }
+    subjectStatus = subjectRows.length === 1 ? "BOUND" : subjectRows.length === 0 ? "MISSING" : "AMBIGUOUS";
+    if (subjectRows.length === 0) subjectRows = ownRows;
+    // 参照：点名行（排除主语行）；「RODNet 模型平均」= 组
+    referenceRows = referencePhrase === "" ? [] : rowsByMention(tbl, referencePhrase).filter((cells) => !subjectRows.includes(cells) && cellAtNow(cells) !== undefined);
+    const groupReference = /\b(?:average|mean)\b|平均/i.test(referencePhrase) && referenceRows.length >= 2;
+    if (referencePhrase === "") referenceStatus = "MISSING";
+    else if (groupReference) referenceStatus = "GROUP";
+    else if (referenceRows.length === 1) referenceStatus = "BOUND";
+    else referenceStatus = GENERIC_REFERENCE.test(referencePhrase) || referenceRows.length > 1 ? "AMBIGUOUS" : "MISSING";
+    if (referenceStatus === "AMBIGUOUS" && referenceRows.length === 0) {
+      // 非点名参照（「最佳 / 之前 / SOTA」）：列出全部非主语行供复算记录（无行标签的行跳过并计数）
+      referenceRows = withLabel(dataRows.map((row) => row.cells)).filter((cells) => !subjectRows.includes(cells) && !ownRows.includes(cells) && cellAtNow(cells) !== undefined);
+    }
   }
+  // ---- A3（M15.3.4 预注册方案A）：操作数优先派生绑定 ----
+  // family 已定且 subject / reference / column 任一未唯一绑定时：取论断所在句的其他数值词元（每个值全文档出现 ≤2 格），
+  // 在同一表内枚举同列异行、与句内两个不同数值重合的格对，按 family 计算全部解释；
+  // 恰一个（表, 列, 行对, 解释）在显示精度内复现论断值 → 由该对绑定 subject/reference/column
+  // （DerivedRecompute.bindingProvenance = "operand-discovered"）；0 个或 ≥2 个 → 维持原弃判。
+  // 仅 DIFFERENCE / MULTIPLE / PERCENT（AGGREGATE 排除）；既有 qualifier / 方向检查 / 区间算术 / 双钥匙门槛不变。
+  const claimInterval = displayInterval(atom.value, atom.decimals);
+  let operandDiscovered = false;
+  if (family === "DIFFERENCE" || family === "MULTIPLE" || family === "PERCENT") {
+    if (best === null || tie || subjectStatus !== "BOUND" || referenceStatus !== "BOUND") {
+      // 句内数值词元（排除与论断值相同的派生数与 0；值 + 精度去重）
+      const operandNums: Array<{ value: number; decimals: number; unit: string | null }> = [];
+      for (const num of parseNumbers(plainLatexText(scopes.sentence).replace(/\\%/g, " %"))) {
+        const normalized = normalizedValue(num);
+        if (normalized.value === atom.value && normalized.decimals === atom.decimals) continue;
+        if (normalized.value === 0) continue;
+        if (!operandNums.some((entry) => entry.value === normalized.value && entry.decimals === normalized.decimals)) operandNums.push(normalized);
+      }
+      const cellMatches = (target: { value: number; decimals: number; unit: string | null }, cell: LatexTableCell): boolean =>
+        cell.value !== null && !cell.isHeader && compareAtoms(target, normalizedValue(cell.value)).relation === "OVERLAP";
+      const usable = operandNums.filter((target) => {
+        let count = 0;
+        for (const file of document.files) for (const tbl of file.tables) for (const cell of tbl.cells) if (cellMatches(target, cell)) count += 1;
+        return count <= 2;
+      });
+      const solutions: Array<{ table: LatexTable; file: string; col: number; header: string[]; a: LatexTableCell; b: LatexTableCell; name: string }> = [];
+      const entryKey = new WeakMap<object, string>();
+      if (usable.length >= 2) {
+        for (const file of document.files) {
+          for (const tbl of file.tables) {
+            const byCol = new Map<number, LatexTableCell[]>();
+            for (const cell of tbl.cells) {
+              if (cell.isHeader || cell.value === null || cell.rowKey.length === 0) continue;
+              const list = byCol.get(cell.col) ?? [];
+              list.push(cell);
+              byCol.set(cell.col, list);
+            }
+            for (const [col, cells] of byCol) {
+              const hits = cells
+                .map((cell) => ({ cell, num: usable.find((target) => cellMatches(target, cell)) }))
+                .filter((entry): entry is { cell: LatexTableCell; num: { value: number; decimals: number; unit: string | null } } => entry.num !== undefined);
+              for (const { cell: a, num: na } of hits) {
+                for (const { cell: b, num: nb } of hits) {
+                  if (a.row === b.row || na === nb) continue;
+                  const header = a.headerPath;
+                  const pctA3 = percentLike(header, a.unit);
+                  const lowerA3 = /\b(?:error|loss|latency|time|ms|mpjpe|rmse|mae|fid|params?|flops|memory)\b|误差|耗时/i.test(header.join(" "));
+                  // 主语定向（M15.3.4）：句内先出现的操作数为主语侧（「84.58 over 72.06」先述新值），后出现为参照。
+                  // 方向门（指标极性 + 措辞符号）仍独立校验：定向与措辞不合时按 OPPOSITE 弃判（fail-closed），
+                  // 不会凭措辞强行翻转强判（如「reduces」而数值实为上升 → OPPOSITE → 弃判）。
+                  const subjCell = operandNums.indexOf(na) <= operandNums.indexOf(nb) ? a : b;
+                  const refCell = subjCell === a ? b : a;
+                  const normA = normalizedValue(subjCell.value!);
+                  const normB = normalizedValue(refCell.value!);
+                  const atomsA3 = new Map<string, FormulaAtom>([
+                    ["S", { ref: "S", value: normA.value, decimals: normA.decimals, unit: normA.unit ?? subjCell.unit }],
+                    ["R", { ref: "R", value: normB.value, decimals: normB.decimals, unit: normB.unit ?? refCell.unit }],
+                  ]);
+                  const sub: FormulaNode = { op: "atom", ref: "S" };
+                  const refNode: FormulaNode = { op: "atom", ref: "R" };
+                  const formulas: Array<{ name: string; ast: FormulaNode; signed: boolean }> = [];
+                  if (family === "DIFFERENCE" || family === "PERCENT") formulas.push({ name: pctA3 === true ? "percentage_point_difference" : "subtract", ast: { op: pctA3 === true ? "percentage_point_difference" : "subtract", args: [sub, refNode] }, signed: true });
+                  if (family === "PERCENT") formulas.push({ name: "relative_change_percent", ast: { op: "relative_change_percent", args: [sub, refNode] }, signed: true });
+                  if (family === "MULTIPLE") {
+                    const ratio: FormulaNode = lowerA3 ? { op: "ratio", args: [refNode, sub] } : { op: "ratio", args: [sub, refNode] };
+                    formulas.push({ name: "ratio", ast: ratio, signed: false });
+                    formulas.push({ name: "ratio_minus_one", ast: { op: "subtract", args: [ratio, { op: "const", value: 1 }] }, signed: false });
+                  }
+                  for (const formula of formulas) {
+                    if (!validateFormula(formula.ast, atomsA3).ok) continue;
+                    const value = evaluateFormula(formula.ast, atomsA3);
+                    if (value === null) continue;
+                    const magnitude: Interval = !formula.signed ? value : value.lo >= 0 ? value : value.hi <= 0 ? { lo: -value.hi, hi: -value.lo } : { lo: 0, hi: Math.max(-value.lo, value.hi) };
+                    if (!intervalsOverlap(magnitude, claimInterval)) continue;
+                    // 有符号公式的量级与方向无关：(a,b) 与 (b,a) 是同一解——按无序行对去重，避免平白多出一解而弃判
+                    const orientationKey = formula.signed ? `${Math.min(a.row, b.row)}~${Math.max(a.row, b.row)}` : `${subjCell.row}~${refCell.row}`;
+                    const key = `${tbl.tableId}|${col}|${formula.name}|${orientationKey}`;
+                    if (!solutions.some((entry) => entryKey.get(entry) === key)) {
+                      solutions.push({ table: tbl, file: file.file, col, header, a: subjCell, b: refCell, name: formula.name });
+                      entryKey.set(solutions[solutions.length - 1]!, key);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      if (solutions.length === 1) {
+        const sol = solutions[0]!;
+        const rowCellsOf = (cell: LatexTableCell): LatexTableCell[] => sol.table.rows.find((row) => row.cells.some((entry) => entry === cell))!.cells;
+        best = { table: sol.table, file: sol.file, col: sol.col, header: sol.header, score: 0, context: 0 };
+        tie = false;
+        subjectRows = [rowCellsOf(sol.a)];
+        referenceRows = [rowCellsOf(sol.b)];
+        subjectStatus = "BOUND";
+        referenceStatus = "BOUND";
+        operandDiscovered = true;
+        unlabeledRows = 0;
+      }
+    }
+  }
+  if (best === null) {
+    reasons.push("DERIVED_COLUMN_UNBOUND");
+    return { recompute: empty, certifiable: false, outcome: null, reasons };
+  }
+  const column: DerivedRecompute["column"] = { status: tie ? "AMBIGUOUS" : "BOUND", header: best.header };
+  if (tie) reasons.push("DERIVED_COLUMN_AMBIGUOUS");
+  const table = best.table;
+  const cellAt = (cells: LatexTableCell[]): LatexTableCell | undefined => cells.find((cell) => cell.col === best!.col && cell.value !== null);
   const subject: DerivedRecompute["subject"] = {
-    status: subjectRows.length === 1 ? "BOUND" : subjectRows.length === 0 ? "MISSING" : "AMBIGUOUS",
+    status: subjectStatus,
     rows: subjectRows.map((cells) => rowLabelOf(cells) ?? ""),
   };
-  if (subject.status !== "BOUND") reasons.push(`DERIVED_SUBJECT_${subject.status}`);
-  if (subjectRows.length === 0) subjectRows = ownRows;
-  // 参照：点名行（排除主语行）；「RODNet 模型平均」= 组
-  let referenceRows = referencePhrase === "" ? [] : rowsByMention(table, referencePhrase).filter((cells) => !subjectRows.includes(cells) && cellAt(cells) !== undefined);
-  let referenceStatus: DerivedRecompute["reference"]["status"];
-  const groupReference = /\b(?:average|mean)\b|平均/i.test(referencePhrase) && referenceRows.length >= 2;
-  if (referencePhrase === "") referenceStatus = "MISSING";
-  else if (groupReference) referenceStatus = "GROUP";
-  else if (referenceRows.length === 1) referenceStatus = "BOUND";
-  else referenceStatus = GENERIC_REFERENCE.test(referencePhrase) || referenceRows.length > 1 ? "AMBIGUOUS" : "MISSING";
-  if (referenceStatus === "AMBIGUOUS" && referenceRows.length === 0) {
-    // 非点名参照（「最佳 / 之前 / SOTA」）：列出全部非主语行供复算记录（无行标签的行跳过并计数）
-    referenceRows = withLabel(dataRows.map((row) => row.cells)).filter((cells) => !subjectRows.includes(cells) && !ownRows.includes(cells) && cellAt(cells) !== undefined);
-  }
+  if (subjectStatus !== "BOUND") reasons.push(`DERIVED_SUBJECT_${subjectStatus}`);
   const reference: DerivedRecompute["reference"] = {
     status: referenceStatus,
     rows: referenceRows.map((cells) => rowLabelOf(cells) ?? ""),
     phrase: plainLatexText(referencePhrase).slice(0, 160),
   };
   if (referenceStatus !== "BOUND") reasons.push(`DERIVED_REFERENCE_${referenceStatus}`);
-  // 行枚举不完整（有无标签行被跳过）→ 复算覆盖不可证完整，fail-closed 不出证书
-  if (unlabeledRows > 0) reasons.push("DERIVED_ROW_LABEL_MISSING");
+  // 行枚举不完整（有无标签行被跳过）→ 复算覆盖不可证完整，fail-closed 不出证书（A3 恰一格对绑定的行不受此限）
+  if (!operandDiscovered && unlabeledRows > 0) reasons.push("DERIVED_ROW_LABEL_MISSING");
   // 原子与解释
   const atoms = new Map<string, FormulaAtom>();
   const operands: DerivedRecompute["operands"] = [];
@@ -872,7 +1025,6 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
     operands.push({ ref, file: best!.file, tableId: table.tableId, row: cell.row, col: cell.col, raw: cell.value.raw, rowKey: cell.rowKey });
     return ref;
   };
-  const claimInterval = displayInterval(atom.value, atom.decimals);
   const interpretations: DerivedInterpretation[] = [];
   const pct = percentLike(best.header, cellAt(subjectRows[0] ?? [])?.unit ?? null);
   const lowerIsBetter = /\b(?:error|loss|latency|time|ms|mpjpe|rmse|mae|fid|params?|flops|memory)\b|误差|耗时/i.test(best.header.join(" "));
@@ -923,6 +1075,8 @@ export function recomputeDerived(document: CertificateDocument, atom: Certificat
   const computed = interpretations.filter((entry) => entry.consistent !== null);
   const recompute: DerivedRecompute = {
     family, subject, reference, column, operands, interpretations: interpretations.slice(0, 40),
+    // A3（M15.3.4）：操作数发现绑定的加性溯源标记；derived 不参与 inputsSha256 配方，哈希不变。
+    ...(operandDiscovered ? { bindingProvenance: "operand-discovered" as const } : {}),
     allInterpretationsDisagree: computed.length === 0 ? null : computed.every((entry) => entry.consistent === false),
     anyInterpretationAgrees: computed.length === 0 ? null : computed.some((entry) => entry.consistent === true),
   };
