@@ -25,6 +25,10 @@ import { createHash } from "node:crypto";
 import { distinctiveTerms, parseNumbers, type ParsedNumber } from "./claimAuditText.js";
 import { parseLatexTables, plainLatexText, type LatexTable, type LatexTableCell } from "./latexTable.js";
 import { displayInterval, evaluateFormula, intervalsOverlap, renderFormula, unitFactor, validateFormula, type FormulaAtom, type FormulaNode, type Interval } from "./derivedFormula.js";
+import {
+  DERIVED_COLUMN_HEADER, OWN_ALIASES, OWN_ROW, STOP, crossTableValueCompetitors,
+  mentions, qualifierRejections, rowIsOwn, type GuardContext,
+} from "./claimGuards.js";
 
 export const CLAIM_CERTIFICATE_VERSION = "claim-certificate/v1";
 
@@ -41,14 +45,9 @@ export function buildCertificateDocument(files: ReadonlyArray<{ file: string; co
 }
 
 // ---- 词元 ----
+// STOP / OWN_ALIASES / OWN_ROW / QUALIFIER_LEXICON / QUALIFIER_FAMILIES / 派生列正则 / mentions / rowIsOwn /
+// B2 跨表 / B3 限定词判别：M15.4.2 起统一在 claimGuards.ts（单一事实来源，供 candidateProposer 共用）。
 
-const STOP = new Set([
-  "the", "a", "an", "of", "on", "in", "for", "and", "or", "to", "by", "at", "from", "as", "is", "are", "was", "were", "be", "with", "its", "their", "this", "that", "these", "those",
-  "method", "methods", "model", "models", "approach", "approaches", "results", "result", "table", "tab", "score", "scores", "performance", "metric", "metrics", "value", "values",
-  "achieves", "achieve", "achieved", "obtains", "obtain", "obtained", "reaches", "reach", "reached", "reports", "reported", "shows", "show", "yields", "yield", "gets", "attains",
-  "which", "while", "whereas", "also", "both", "all", "each", "respectively", "using", "used", "use", "our", "ours", "we", "proposed", "work", "paper", "new",
-  "et", "al", "fig", "figure", "sec", "section", "see", "eq", "i", "e", "g", "vs", "via",
-]);
 const SYNONYMS: Record<string, string> = {
   avg: "average", mean: "average", acc: "accuracy",
   // 指标缩写 OA（overall accuracy）↔ 全称 accuracy：M15.3.2 逐词裁决 GO_ONE_ALIAS 的唯一条目（maf1/mif1 NO_GO，不入）
@@ -63,8 +62,6 @@ const WORD_NUMBERS: Record<string, number> = {
   one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14,
   fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, hundred: 100, twice: 2, double: 2, triple: 3,
 };
-const OWN_ALIASES = /\b(?:ours|our|we|proposed|this work|this paper|the present work)\b|本文|我们|所提|提出的方法/i;
-const OWN_ROW = /\b(?:ours|proposed|this work|our method|our approach|our model)\b|本文|我们|所提/i;
 
 function canonical(token: string): string {
   const mapped = SYNONYMS[token];
@@ -97,16 +94,7 @@ function hasCjk(token: string): boolean {
   return /[一-鿿]/.test(token);
 }
 
-/** term 是否出现在 context 中（拉丁：词元相等；中文：子串包含） */
-function mentions(context: { tokens: Set<string>; plain: string }, term: string): boolean {
-  if (hasCjk(term)) return term.length >= 2 && context.plain.includes(term);
-  return context.tokens.has(term);
-}
-
-interface Context {
-  tokens: Set<string>;
-  plain: string;
-}
+type Context = GuardContext;
 
 function contextOf(text: string): Context {
   return { tokens: new Set(contextTokens(text)), plain: plainLatexText(text).toLowerCase() };
@@ -294,23 +282,6 @@ const INEQ_AFTER = /^\s*(?:\\?%\s*)?(?:or (?:more|less|higher|lower|above|below)
 const DERIVED_BEFORE = /(?:\bby\s*$|\b(?:improvements?|gains?|increases?|decreases?|reductions?|boosts?|drops?|declines?|margins?|advantages?|lead|speed-?ups?|enhancements?)\s+(?:of\s*)?(?:about\s+|approximately\s+|nearly\s+|roughly\s+|around\s+|almost\s+|up to\s+|over\s+)?$|\b(?:relative|relatively)\b[^.;]{0,40}$|[+−]\s*$|(?:^|\s)-\s*$|(?:提升|提高|降低|增加|减少|下降|超出|领先|改善)了?(?:约|近)?\s*$)/i;
 const DERIVED_AFTER = /^\s*(?:\\?%|percent)?\s*(?:percentage[- ]points?|pp\b|p\.p\.|points?\b|个百分点|百分点|[×x]\b|×|times\b|-?fold\b|倍|(?:\\?%|percent)?\s*(?:higher|lower|better|worse|faster|slower|more|less|fewer|larger|smaller|improvement|gain|increase|decrease|reduction|relative|speed-?up|boost)\b|(?:的)?(?:提升|提高|降低|增加|减少|下降))/i;
 const AGGREGATE = /\b(?:on average|average(?:d)? (?:improvement|gain|increase|decrease|reduction)|mean (?:improvement|gain)|across (?:all|the|\w+) (?:datasets|benchmarks|models|tasks|settings)|overall (?:improvement|gain))\b|平均(?:提升|提高|增益|降低)/i;
-/** 需要表格语境才能解释的限定词（论断写了、绑定单元格语境里没有 → 不是同一观察量） */
-const QUALIFIER_LEXICON = [
-  "validation", "val", "dev", "train", "training", "test-dev", "held-out", "zero-shot", "few-shot", "one-shot", "fine-tuned", "finetuned", "pretrained", "pre-trained",
-  "post-processing", "postprocessing", "offline", "ensemble", "oracle", "upper", "tta", "test-time", "w/o", "without", "ablation", "ablated", "variant", "single-scale", "multi-scale",
-  "small", "large", "base", "tiny", "lite", "ablations", "cross-domain", "occluded", "subset", "split",
-  "验证集", "训练集", "消融", "后处理", "零样本",
-];
-/**
- * M15.2.1（N09）：复现 / 公平对比 / 原文限定词家族——论断写的是「复现得到的 / 公平对比下的 / 原文报告的」数值时，
- * 最佳候选的表格语境（caption / label / 行组 / 表头上层）里整个家族都不出现 → 不是同一观察量，拒绝出证。
- * 家族内互通：「Reproduction results」的 caption 能解释「reproduced」限定词（同词族视为同一限定）。
- */
-const QUALIFIER_FAMILIES: string[][] = [
-  ["reproduce", "reproduces", "reproduced", "reproducing", "reproduction", "reproductions", "replicate", "replicates", "replicated", "replication", "复现"],
-  ["fair"],
-  ["original"],
-];
 const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
 
 export type AtomQualifier = "APPROX" | "INEQUALITY" | "DERIVED" | "AGGREGATE" | "SIGNED";
@@ -329,7 +300,23 @@ export function atomQualifiers(scopes: TextScopes, rawValue: string): AtomQualif
   for (const match of longBefore.matchAll(trigger)) lastTrigger = match.index! + match[0].length;
   // 「35.3 → 36.9」「from 35.3 to 36.9」的两端都是绝对值（前后对比写法），不继承派生语义
   const arrowAdjacent = /(?:\\rightarrow|\\to|→|->|\bto)\s*\$?\s*$/i.test(longBefore) || /^\s*\$?\s*(?:\\rightarrow|\\to|→|->)/.test(scopes.after);
-  if (!arrowAdjacent && lastTrigger >= 0 && !/\b(?:achiev\w*|reach\w*|obtain\w*|attain\w*|yield\w*|scor\w*|is|are|was|were|gets?|records?|reports?)\b|达到|取得|获得|为/i.test(longBefore.slice(lastTrigger))) out.push("DERIVED");
+  // M15.4.2（B3 局部归因阻断）：触发词与数值之间的文本以「非派生名词 + of」结尾（a Top-1 accuracy of /
+  // its AB of——数值是对该指标绝对值的逐字报告，比较词只修饰邻近语境，不改变本数值的原子性），
+  // 或以 from 结尾（区间端点，与 to 端点保护对称：「from 82.36% to 83.70%」的 82.36 是绝对值端点）时，
+  // 不继承派生语义。直接命中的派生措辞（improvement of 3.2 / by 12.52 pp / gain of）不经本分支，不受影响。
+  // 派生名词族与 DERIVED_BEFORE / 触发词表对齐，另纳入 difference/delta/gap/ratio/saving 等真派生名词，
+  // 防止「a difference of 12」被误判为原子值。
+  const DERIVED_ATTRIBUTION_NOUNS = new Set(["improvement", "gain", "increase", "decrease", "reduction", "boost", "drop", "decline", "margin", "advantage", "lead", "speedup", "speed-up", "enhancement", "difference", "delta", "gap", "ratio", "saving", "overhead", "change"]);
+  const localAttribution = (() => {
+    const slice = longBefore.slice(lastTrigger < 0 ? 0 : lastTrigger);
+    if (/\bfrom\s*$/.test(slice)) return true; // 区间起点端点
+    const ofMatch = /(?:^|\s)([A-Za-z][\w.\-']*(?:\s+[A-Za-z][\w.\-']*){0,2})\s+of\s*$/.exec(slice);
+    if (ofMatch === null) return false;
+    const raw = ofMatch[1]!.split(/\s+/).pop()!.toLowerCase();
+    const head = raw.length >= 5 && raw.endsWith("s") && !/(?:ss|us|is)$/.test(raw) ? raw.slice(0, -1) : raw;
+    return !DERIVED_ATTRIBUTION_NOUNS.has(head);
+  })();
+  if (!arrowAdjacent && !localAttribution && lastTrigger >= 0 && !/\b(?:achiev\w*|reach\w*|obtain\w*|attain\w*|yield\w*|scor\w*|is|are|was|were|gets?|records?|reports?)\b|达到|取得|获得|为/i.test(longBefore.slice(lastTrigger))) out.push("DERIVED");
   if (/^[+−]/.test(rawValue) || /[+−]\s*$/.test(before)) out.push("SIGNED");
   if (AGGREGATE.test(scopes.segment)) out.push("AGGREGATE");
   return [...new Set(out)];
@@ -472,13 +459,6 @@ function cellRef(candidate: { file: string; table: LatexTable; cell: LatexTableC
 
 function cellContextText(table: LatexTable, cell: LatexTableCell): string {
   return [table.caption ?? "", table.label ?? "", cell.rowGroup ?? "", ...cell.headerPath, ...cell.rowKey].join(" \n ");
-}
-
-function rowIsOwn(document: CertificateDocument, cell: LatexTableCell): boolean {
-  const key = cell.rowKey.join(" ");
-  if (OWN_ROW.test(key)) return true;
-  const tokens = new Set(contextTokens(key));
-  return document.ownTerms.some((term) => tokens.has(term));
 }
 
 function rowQualified(cell: LatexTableCell): boolean {
@@ -657,19 +637,8 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
   // 论断指向的可能正是那张表（复现表 / 公平对比表的同名行）：跨表归属不可证 → 拒绝出证。
   // 数值一致（OVERLAP）的绑定本身已有数值印证，不受此检查影响。
   if (top.cell.value !== null && compareAtoms(atom, top.cell.value).relation !== "OVERLAP") {
-    const needle = atom.raw.replace(/,/g, "");
-    if (/^\d+(?:\.\d+)?$/.test(needle)) {
-      const pattern = new RegExp(`(?<![\\d.])${needle.replace(/\./g, "\\.")}(?![\\d.])`, "g");
-      const otherTableIds = new Set<string>();
-      for (const file of document.files) {
-        for (const match of file.content.matchAll(pattern)) {
-          for (const table of file.tables) {
-            if (table.tableId !== top.table.tableId && match.index! >= table.start && match.index! < table.end) otherTableIds.add(table.tableId);
-          }
-        }
-      }
-      if (otherTableIds.size > 0) rejections.push(`VALUE_APPEARS_IN_OTHER_TABLE:${[...otherTableIds].slice(0, 3).join(",")}`);
-    }
+    const otherTableIds = crossTableValueCompetitors(document, [{ file: top.file, tableIndex: top.table.tableIndex }], atom.raw);
+    if (otherTableIds.length > 0) rejections.push(`VALUE_APPEARS_IN_OTHER_TABLE:${otherTableIds.join(",")}`);
   }
   // 多指标并列（「IoU and F1 of 80.1 and 85.2」）：数值左侧同时出现本表 ≥2 个不同列的表头词 → 列归属不唯一（除非「respectively」已按位置对齐列表）
   const leftTokens = leftScanTokens(scopes);
@@ -691,13 +660,7 @@ export function bindTextAtom(document: CertificateDocument, atom: CertificateAto
     if (/^(?:cpu|gpu|ghz|mhz|tb|gb|mb)$/i.test(lower)) continue;
     rejections.push(`UNEXPLAINED_TERM:${term}`);
   }
-  for (const qualifier of QUALIFIER_LEXICON) {
-    if (mentions(segmentContext, qualifier) && !mentions(explain, qualifier)) rejections.push(`UNEXPLAINED_QUALIFIER:${qualifier}`);
-  }
-  for (const family of QUALIFIER_FAMILIES) {
-    const used = family.filter((qualifier) => mentions(segmentContext, qualifier));
-    if (used.length > 0 && !family.some((qualifier) => mentions(explain, qualifier))) rejections.push(`UNEXPLAINED_QUALIFIER:${used[0]}`);
-  }
+  for (const qualifier of qualifierRejections(segmentContext, explain)) rejections.push(`UNEXPLAINED_QUALIFIER:${qualifier}`);
   // 分句里点名的、只属于其他候选语境的术语（MOT20 vs MOT17）
   const topUpper = contextOf(cellContextText(top.table, top.cell));
   // A1-c（M15.3.4，与 M15.3.1 comparator 剥离同一语义）：比较对象短语里的名字（outperforming SimpleHGN by …）
@@ -1190,7 +1153,7 @@ export function certifyClaim(document: CertificateDocument, input: CertifyInput)
   const claimAtom = claimLocated.atom;
   // 对照处若是论文自己制表的派生列（Improv. / Δ / Gain / Rel.），文中的派生数与该列是同一观察量（原子比较，不需要复算）
   const counterEarly = input.counterpart === null ? null : locateAtom(document, input.counterpart.file, input.counterpart.start, input.counterpart.end, input.counterpart.value).atom;
-  const derivedColumn = (atom: CertificateAtom | null) => atom?.kind === "TABLE_CELL" && /\b(?:improv\w*|imp\.?|gains?|increases?|delta|rel\.?|relative|changes?)\b|Δ|\\Delta|提升|增益/i.test(atom.cell!.headerPath.join(" "));
+  const derivedColumn = (atom: CertificateAtom | null) => atom?.kind === "TABLE_CELL" && DERIVED_COLUMN_HEADER.test(atom.cell!.headerPath.join(" "));
   const tabulatedDerived = derivedColumn(counterEarly) || derivedColumn(claimAtom);
   // 派生量：不依赖模型的对照，按论断措辞复算
   const textSide = claimAtom.kind === "TEXT" ? claimAtom : null;

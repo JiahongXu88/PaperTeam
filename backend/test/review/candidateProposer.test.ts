@@ -354,3 +354,327 @@ describe("M15.4.1 runCandidateProposer（propose→resolve→verify→重试）"
     expect(broken.verification).toBeNull();
   });
 });
+
+// ---- M15.4.2 事实映射验证协议（M1 回指锚定 / M2 引文四分类 / M4 context 丢弃 / 枚举修正与偏差 / 映射见证） ----
+
+/** M1 夹具：前文句含唯一行键专名锚，论断句用回指主语 */
+const ANAPHORA_DOC = [
+  "\\title{Fusion Net}",
+  "\\begin{table}[t]\\caption{Main results on Bench-R.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & MaF1 \\\\ \\midrule AlphaNet & 84.5 \\\\ BetaNet & 82.1 \\\\ Ours & 85.3 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+  "\\section{Results}",
+  "AlphaNet and BetaNet represent strong baselines on Bench-R.",
+  "This approach obtains a MaF1 of 85.3 on Bench-R.",
+  "",
+].join("\n");
+
+describe("M15.4.2 M1 anaphora anchoring", () => {
+  it("A2-1 NAMED 锚：句内回指 + 前句唯一专名 → 锚替换模型 subject → 出证且见证记录锚 span", () => {
+    const raw = proposal({
+      subject: "whatever the model wants",
+      metric: "MaF1",
+      dataset: "Bench-R",
+      candidates: [{ tableAlias: "T1", rowAlias: "R4", colAlias: "C2", interpretation: "ours row", evidenceQuotes: ["MaF1", "Bench-R"] }],
+    });
+    const result = runVerify(makeDoc(ANAPHORA_DOC), "This approach obtains a MaF1 of 85.3 on Bench-R.", "85.3", raw);
+    // 主语锚 = 前句唯一专名「AlphaNet and BetaNet」是二名并列但句内短语是 this approach（单数）→ 多前件弃判？
+    // 该夹具前句含 AlphaNet+BetaNet 两个落行短语 → 单数回指多前件 = ANTECEDENT_NOT_UNIQUE（fail-closed）
+    abstained(result);
+    expect(abstained(result).category).toBe("PROPOSAL_ANTECEDENT_NOT_UNIQUE");
+  });
+
+  it("A2-2 单一前件锚：前句恰一个专名 → 解析并出证（见证 kind=NAMED）", () => {
+    const doc = [
+      "\\title{Fusion Net}",
+      "\\begin{table}[t]\\caption{Main results on Bench-R.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & MaF1 \\\\ \\midrule BetaNet & 84.5 \\\\ Ours & 85.3 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "BetaNet is the strongest published baseline.",
+      "This method obtains a MaF1 of 84.5 on Bench-R.",
+      "",
+    ].join("\n");
+    const raw = proposal({
+      subject: "invented name",
+      metric: "MaF1",
+      dataset: "Bench-R",
+      candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "betanet row", evidenceQuotes: ["MaF1", "Bench-R"] }],
+    });
+    const result = runVerify(makeDoc(doc), "This method obtains a MaF1 of 84.5 on Bench-R.", "84.5", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      expect(result.witness.anaphora?.kind).toBe("NAMED");
+      expect(result.witness.anaphora?.effectiveSubject).toBe("BetaNet");
+      expect(result.witness.anaphora?.anchors[0]?.text).toContain("BetaNet");
+    }
+  });
+
+  it("A2-3 OWN 路线：the model + 窗口本文自指（our…）→ own 行 + 值佐证唯一 → 出证", () => {
+    const doc = [
+      "\\title{Solo Net}",
+      "\\begin{table}[t]\\caption{Challenge results.}\\label{t:1}\\begin{tabular}{lcc}\\toprule Method & Latency (ms) & PSNR \\\\ \\midrule Solo Net (ours) & 34.0 & 37.6 \\\\ RivalA & 40.2 & 36.9 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "Our submission was optimized for the target hardware.",
+      "In the challenge, the model achieved 34.0 ms latency.",
+      "",
+    ].join("\n");
+    const raw = proposal({
+      subject: "the model", metric: "", dataset: "", conditions: [],
+      candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "own row latency", evidenceQuotes: ["Challenge results"] }],
+    });
+    const result = runVerify(makeDoc(doc), "In the challenge, the model achieved 34.0 ms latency.", "34.0", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      expect(result.witness.anaphora?.kind).toBe("OWN");
+      expect(result.grounding.valueCorroborated).toBe(true);
+    }
+  });
+
+  it("A2-4 COORDINATED：the same two models + 前句恰一对「A and B」并列 → 双绑定一致 → 出证", () => {
+    const doc = [
+      "\\title{Fusion Net}",
+      "\\begin{table}[t]\\caption{Main results.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & Score \\\\ \\midrule AlphaNet & 90.1 \\\\ BetaNet & 90.1 \\\\ Ours & 91.2 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "AlphaNet and BetaNet are the two leading baselines.",
+      "The same two models again reach a Score of 90.1.",
+      "",
+    ].join("\n");
+    const raw = proposal({
+      subject: "two models", metric: "Score", dataset: "",
+      candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "both baseline rows", evidenceQuotes: ["Score"] }],
+    });
+    const result = runVerify(makeDoc(doc), "The same two models again reach a Score of 90.1.", "90.1", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      expect(result.witness.anaphora?.kind).toBe("COORDINATED");
+      expect(result.witness.uniqueness.multiBinding?.count).toBe(2);
+    }
+  });
+
+  it("A2-5 无前件（窗口空）→ ANTECEDENT_NOT_FOUND；不猜最近名字", () => {
+    const doc = [
+      "\\title{Fusion Net}",
+      "\\begin{table}[t]\\caption{Main results.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & MaF1 \\\\ \\midrule AlphaNet & 84.5 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "",
+      "This method obtains a MaF1 of 84.5.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "AlphaNet", metric: "MaF1", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["MaF1"] }] });
+    const result = runVerify(makeDoc(doc), "This method obtains a MaF1 of 84.5.", "84.5", raw);
+    abstained(result);
+    expect(abstained(result).category).toBe("PROPOSAL_ANTECEDENT_NOT_FOUND");
+  });
+
+  it("A2-6 回指负例（错前件同值）：前句引入第二个同名候选前件 → 弃判，不得借值选中其一", () => {
+    const doc = [
+      "\\title{Fusion Net}",
+      "\\begin{table}[t]\\caption{Main results.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & MaF1 \\\\ \\midrule AlphaNet & 84.5 \\\\ AlphaNet-D & 84.5 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "We also trained AlphaNet and AlphaNet-D variants for comparison.",
+      "This model obtains a MaF1 of 84.5.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "AlphaNet", metric: "MaF1", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["MaF1"] }] });
+    const result = runVerify(makeDoc(doc), "This model obtains a MaF1 of 84.5.", "84.5", raw);
+    abstained(result);
+    expect(["PROPOSAL_ANTECEDENT_NOT_UNIQUE", "PROPOSAL_NOT_UNIQUE"]).toContain(abstained(result).category);
+  });
+});
+
+describe("M15.4.2 M2 quote classification", () => {
+  it("Q-1 程序生成行引用（行组+行矩阵拼接）逐字一致 → PARSER_RENDERED_VERBATIM 可用", () => {
+    const doc = [
+      "\\title{Grouped}",
+      "\\begin{table}[t]\\caption{Results by scenario.}\\label{t:1}\\begin{tabular}{llc}\\toprule Scenario & Method & Top-1 \\\\ \\midrule ASM & AlphaNet & 0.900 \\\\ EV & AlphaNet & 0.944 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "In the ASM scenario, AlphaNet reaches a Top-1 accuracy of 0.900.",
+      "",
+    ].join("\n");
+    const raw = proposal({
+      subject: "AlphaNet", metric: "Top-1", dataset: "ASM",
+      candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C3", interpretation: "ASM row", evidenceQuotes: ["ASM & AlphaNet & 0.900"] }],
+    });
+    const result = runVerify(makeDoc(doc), "In the ASM scenario, AlphaNet reaches a Top-1 accuracy of 0.900.", "0.900", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      expect(["SOURCE_VERBATIM", "PARSER_RENDERED_VERBATIM"]).toContain(result.witness.quotes[0]?.verdict);
+      expect(result.witness.citations.row.text).toBe("ASM & AlphaNet & 0.900");
+    }
+  });
+
+  it("Q-2 数值改写（1.000→1.00）不是 verbatim；全坏引文 → 维持整案拒绝", () => {
+    const doc = [
+      "\\title{Grouped}",
+      "\\begin{table}[t]\\caption{Results by scenario.}\\label{t:1}\\begin{tabular}{llc}\\toprule Scenario & Method & Top-1 \\\\ \\midrule ASM & AlphaNet & 1.000 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "In the ASM scenario, AlphaNet reaches a Top-1 accuracy of 1.000.",
+      "",
+    ].join("\n");
+    const raw = proposal({
+      subject: "AlphaNet", metric: "Top-1", dataset: "ASM",
+      candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C3", interpretation: "asm row", evidenceQuotes: ["ASM & AlphaNet & 1.00"] }],
+    });
+    const result = runVerify(makeDoc(doc), "In the ASM scenario, AlphaNet reaches a Top-1 accuracy of 1.000.", "1.000", raw);
+    abstained(result);
+    expect(abstained(result).category).toBe("PROPOSAL_QUOTE_NOT_FOUND");
+  });
+
+  it("Q-3 部分引文为模型重构 → 仅排除重构项（QUOTES_PARTIALLY_VERBATIM），其余继续作证据", () => {
+    const doc = [
+      "\\title{Grouped}",
+      "\\begin{table}[t]\\caption{Results by scenario.}\\label{t:1}\\begin{tabular}{llc}\\toprule Scenario & Method & Top-1 \\\\ \\midrule ASM & AlphaNet & 0.900 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "In the ASM scenario, AlphaNet reaches a Top-1 accuracy of 0.900.",
+      "",
+    ].join("\n");
+    const raw = proposal({
+      subject: "AlphaNet", metric: "Top-1", dataset: "ASM",
+      candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C3", interpretation: "asm row", evidenceQuotes: ["the ASM scenario and the EV case both matter", "Top-1"] }],
+    });
+    const result = runVerify(makeDoc(doc), "In the ASM scenario, AlphaNet reaches a Top-1 accuracy of 0.900.", "0.900", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      expect(result.checks.some((c) => c.startsWith("QUOTES_PARTIALLY_VERBATIM"))).toBe(true);
+      expect(result.witness.quotes.some((q) => q.verdict === "MODEL_PARAPHRASE" || q.verdict === "UNLOCATABLE")).toBe(true);
+    }
+  });
+});
+
+describe("M15.4.2 M3 derived local attribution（atomQualifiers 共享）", () => {
+  it("M-1 比较词 + 局部「a Top-1 accuracy of」→ 原子（不继承 DERIVED）→ 出证", () => {
+    const doc = [
+      "\\title{Cmp}",
+      "\\begin{table}[t]\\caption{Results.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & Top-1 Acc. \\\\ \\midrule AlphaNet & 0.800 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "AlphaNet achieves lower accuracy here, with a Top-1 accuracy of 0.800.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "AlphaNet", metric: "Top-1", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["Top-1 Acc."] }] });
+    const result = runVerify(makeDoc(doc), "AlphaNet achieves lower accuracy here, with a Top-1 accuracy of 0.800.", "0.800", raw);
+    expect(result.status).toBe("ACCEPTED");
+  });
+
+  it("M-2 真派生措辞（improvement of X points）不受 M3 影响 → 仍 OUT_OF_SCOPE", () => {
+    const sentence = "Our method brings an improvement of 2.4 points in MaF1.";
+    const raw = proposal({ subject: "ours", metric: "MaF1", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["MaF1"] }] });
+    const result = runVerify(makeDoc(docWith(sentence)), sentence, "2.4", raw);
+    abstained(result);
+    expect(abstained(result).category).toBe("DERIVED_RECOMPUTE_OUT_OF_SCOPE");
+  });
+
+  it("M-3 from 端点（from 82.36% to 83.70% 的 82.36）→ 原子", () => {
+    const doc = [
+      "\\title{Cmp}",
+      "\\begin{table}[t]\\caption{Results.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & Acc \\\\ \\midrule Base & 82.36 \\\\ Ours+RA & 83.70 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "The Base model improves accuracy from 82.36\\% to 83.70\\%.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "Base", metric: "Acc", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["Acc"] }] });
+    const result = runVerify(makeDoc(doc), "The Base model improves accuracy from 82.36\\% to 83.70\\%.", "82.36", raw);
+    expect(result.status).toBe("ACCEPTED");
+  });
+
+  it("M-4 派生名词的 of 归因（a difference of 12）仍不阻断 → DERIVED", () => {
+    const sentence = "Ours improves the MaF1 performance, a difference of 12.0 over the baseline.";
+    const raw = proposal({ subject: "ours", metric: "MaF1", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["MaF1"] }] });
+    const result = runVerify(makeDoc(docWith(sentence)), sentence, "12.0", raw);
+    abstained(result);
+    expect(abstained(result).category).toBe("DERIVED_RECOMPUTE_OUT_OF_SCOPE");
+  });
+});
+
+describe("M15.4.2 M4 context drop + 枚举修正（FIX-1b/2b、D1、D2）", () => {
+  it("C-1 context 词不在论断句 → 丢弃不拒判（单表出证并记录丢弃；双表 → 竞争更多 → 弃判）", () => {
+    const sentence = "Our method achieves 84.5\\% macro-F1.";
+    const single = [
+      "\\title{Solo}",
+      "\\begin{table}[t]\\caption{Main results on the Bench-R benchmark.}\\label{t:1}\\begin{tabular}{lc}\\toprule Method & MaF1 \\\\ \\midrule Proposed & 84.5 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      `${sentence}`,
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "ours", metric: "macro-F1", dataset: "Bench-R", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "x", evidenceQuotes: ["MaF1"] }] });
+    const result = runVerify(makeDoc(single), sentence, "84.5", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") expect(result.witness.droppedContextTerms).toContain("Bench-R");
+    const dual = runVerify(makeDoc(docWith(sentence)), sentence, "84.5", raw);
+    abstained(dual); // 两表同签名且 Bench-R/Bench-W 词被丢弃后无表级过滤 → 不假唯一（丢弃使竞争更多）
+    expect(abstained(dual).category).toBe("PROPOSAL_NOT_UNIQUE");
+  });
+
+  it("E-1 FIX-1b 行级判别器：同表两行、context 词只在其中一行行键 → 只保留该行", () => {
+    const doc = [
+      "\\title{Scen}",
+      "\\begin{table}[t]\\caption{Results on the ASM and EV case studies.}\\label{t:1}\\begin{tabular}{llc}\\toprule Scenario & Method & Top-1 \\\\ \\midrule ASM Case & AlphaNet & 0.900 \\\\ EV Case & AlphaNet & 0.944 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "In the ASM case, AlphaNet reaches a Top-1 accuracy of 0.900.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "AlphaNet", metric: "Top-1", dataset: "ASM", conditions: [], candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C3", interpretation: "asm row", evidenceQuotes: ["Top-1"] }] });
+    const result = runVerify(makeDoc(doc), "In the ASM case, AlphaNet reaches a Top-1 accuracy of 0.900.", "0.900", raw);
+    expect(result.status).toBe("ACCEPTED");
+    // 对照：无 context 词时两行同签名 → 弃判
+    const raw2 = proposal({ subject: "AlphaNet", metric: "Top-1", dataset: "", conditions: [], candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C3", interpretation: "asm row", evidenceQuotes: ["Top-1"] }] });
+    const result2 = runVerify(makeDoc(doc), "In the ASM case, AlphaNet reaches a Top-1 accuracy of 0.900.", "0.900", raw2);
+    abstained(result2);
+    expect(abstained(result2).category).toBe("PROPOSAL_NOT_UNIQUE");
+  });
+
+  it("E-2 FIX-2 父级表头引文不得绑定叶子指标（AB≠A/F；Top-1≠Top-3）", () => {
+    const doc = [
+      "\\title{Ab}",
+      "\\begin{table}[t]\\caption{Continual results.}\\label{t:1}\\begin{tabular}{lccc}\\toprule Method & AB & A & F \\\\ \\midrule EWC & 12.00 & 21.26 & 14.43 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "EWC has an AB of 12.00 dB.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "EWC", metric: "AB", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "AB column", evidenceQuotes: ["AB"] }] });
+    const result = runVerify(makeDoc(doc), "EWC has an AB of 12.00 dB.", "12.00", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") expect(result.cell.col).toBe(1);
+  });
+
+  it("E-3 D1 转置表：方法在列、指标在行 → subject 落列头 + metric 落行键 → 出证", () => {
+    const doc = [
+      "\\title{Tsp}",
+      "\\begin{table}[t]\\caption{Query case study.}\\label{t:1}\\begin{tabular}{lcc}\\toprule Metric & Lero & LQRS (ours) \\\\ \\midrule Execution time & 21.52 & 15.24 \\\\ Memory & 3.1 & 2.8 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "Lero selects the plan greedily, resulting in an execution time of 21.52s.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "Lero", metric: "execution time", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R2", colAlias: "C2", interpretation: "lero column", evidenceQuotes: ["Execution time"] }] });
+    const result = runVerify(makeDoc(doc), "Lero selects the plan greedily, resulting in an execution time of 21.52s.", "21.52", raw);
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      expect(result.cell.row).toBe(1);
+      expect(result.cell.col).toBe(1);
+    }
+  });
+
+  it("E-4 D2 单位判别器：dB 值的 AB 只绑定 PSNR (dB) 列，不与 SSIM 列竞逐", () => {
+    const doc = [
+      "\\title{Ab}",
+      "\\begin{table}[t]\\caption{Continual results.}\\label{t:1}\\begin{tabular}{lcccc}\\toprule Method & \\multicolumn{2}{c}{PSNR (dB)} & \\multicolumn{2}{c}{SSIM} \\\\ \\cmidrule(lr){2-3} \\cmidrule(lr){4-5} & AB & A & AB & B \\\\ \\midrule EWC & 12.00 & 21.26 & 0.45 & 0.80 \\\\ \\bottomrule \\end{tabular}\\end{table}",
+      "\\section{Results}",
+      "EWC has an AB of 12.00 dB.",
+      "",
+    ].join("\n");
+    const raw = proposal({ subject: "EWC", metric: "AB", dataset: "", candidates: [{ tableAlias: "T1", rowAlias: "R3", colAlias: "C2", interpretation: "AB column", evidenceQuotes: ["AB"] }] });
+    const result = runVerify(makeDoc(doc), "EWC has an AB of 12.00 dB.", "12.00", raw);
+    expect(result.status).toBe("ACCEPTED");
+  });
+
+  it("W-1 映射见证结构：ACCEPTED 附带全部证据链字段", () => {
+    const result = runVerify(makeDoc(DOC_MAIN), "Our method achieves 84.5\\% macro-F1 on Bench-R.", "84.5", proposal());
+    expect(result.status).toBe("ACCEPTED");
+    if (result.status === "ACCEPTED") {
+      const w = result.witness;
+      expect(w.version).toBe("mapping-witness/v1");
+      expect(w.claimAtom.raw).toBe("84.5");
+      expect(w.citations.value.raw).toBe("84.5");
+      expect(typeof w.citations.row.text).toBe("string");
+      expect(w.termGroundings.length).toBeGreaterThan(0);
+      expect(w.uniqueness.hitCount).toBeGreaterThan(0);
+      expect(w.guards.parseIssues).toEqual([]);
+    }
+  });
+});

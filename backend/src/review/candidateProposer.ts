@@ -19,49 +19,39 @@
  *  - 值只由解析器从源文件读取（模型输出不含任何数值字段）；confidence 仅诊断。
  *
  * 复用（不重复造轮子）：latexTable 全套结构锚、claimCertificate 的 textScopes/contextTokens/
- * atomQualifiers/locateAtom/compareAtoms、内容寻址 tableId、claimAudit 的逐字定位纪律。本文件内少量
- * 词表/守卫（STOP/OWN_ROW/QUALIFIER/B2）自 claimCertificate@03c48fc 复制并注明来源——刻意不 export
- * 原件，保证既有 dist 逐字节不变（M15.4.1 预登记 §6 不变性证明）。
+ * atomQualifiers/locateAtom/compareAtoms、内容寻址 tableId、claimAudit 的逐字定位纪律。
+ *
+ * M15.4.2（B4 去重）：STOP / OWN_ROW / OWN_ALIASES / QUALIFIER 词表 / 派生列正则 / rowIsOwn / B2 跨表 /
+ * B3 限定词判别不再本地复制，统一 import claimGuards.ts（与生产证书器同一事实来源）。
+ * M15.4.2 新增（预登记 BASELINE_AND_PRE_REGISTERED_GATES §5 白名单，全部 fail-closed 方向）：
+ *  - M1 回指锚定：封闭词表的回指主语（this method / the model / the same two models …）只能通过程序在
+ *    同段落确定性窗口内逐字定位的行键专名锚（或本文自指锚）解析；多前件 = ANTECEDENT_NOT_UNIQUE。
+ *    模型自然语言解释不是 provenance；回指情形下模型 subject 字段被程序锚替换，不得注入任意名字。
+ *  - M2 引文四分类：SOURCE_VERBATIM / PARSER_RENDERED_VERBATIM（含程序生成的行引用 = 行组+行矩阵
+ *    拼接，解析器结构重组而非自由文本）可用；MODEL_PARAPHRASE / UNLOCATABLE 仅排除、不得作证据；
+ *    全部引文不可用 → 维持整案拒绝（防伪造 tripwire 不撤）。
+ *  - M4 claim 侧 context 词丢弃：不在论断句/锚文本的 context 词丢弃并记录（过滤只降不升 → 竞争更多
+ *    → 唯一性更严）；subject/metric 仍必须锚定。
+ *  - 映射见证（mapping-witness/v1）：claimAtom、canonical 格、程序生成引文（含源偏移）、回指锚
+ *    [start,end) 原文与竞争前件、逐条引文判定、逐 term grounding、唯一性签名与关系、B2/B3 结论。
  */
 
 import { contextTokens, locateAtom, textScopes, atomQualifiers, compareAtoms, type CertificateAtom, type CertificateDocument } from "./claimCertificate.js";
 import { plainLatexText, type LatexTable, type LatexTableCell } from "./latexTable.js";
+import {
+  DERIVED_COLUMN_HEADER, OWN_ALIASES, OWN_ROW, STOP, crossTableValueCompetitors, qualifierRejections,
+  rowIsOwn as rowIsOwnCell, type GuardContext,
+} from "./claimGuards.js";
 
 // v1→v2（M15.4.1 DEV smoke 后唯一一次 prompt 修订，逐条记录于 FREEZE_MANIFEST）：
 //   metric 指引补「纯单位/泛词（ms/%/dB/score/result）不算指标」；conditions 要求短单词；
 //   evidenceQuotes 禁 '...' 缩写；abstain 须非空 reason 且仅在无表格观察时使用。
 export const PROPOSER_PROMPT_VERSION = "candidate-proposer/v2";
-export const PROPOSER_ADAPTER_VERSION = "candidate-proposer-adapter/v1";
+// M15.4.2：验证协议升级（M1/M2/M4 + 共享守卫 + 映射见证）；prompt 不变，已落盘提案可零成本重放。
+export const PROPOSER_ADAPTER_VERSION = "candidate-proposer-adapter/v2";
+export const MAPPING_WITNESS_VERSION = "mapping-witness/v1";
 
-// ---- 自 claimCertificate.ts@03c48fc 复制的词表/正则（保持 dist 字节不变性；语义与原件一致） ----
-
-/** claimCertificate.STOP 的拷贝：proposal 验证器停用词，与绑定器同源语义 */
-const STOP = new Set([
-  "the", "a", "an", "of", "on", "in", "for", "and", "or", "to", "by", "at", "from", "as", "is", "are", "was", "were", "be", "with", "its", "their", "this", "that", "these", "those",
-  "method", "methods", "model", "models", "approach", "approaches", "results", "result", "table", "tab", "score", "scores", "performance", "metric", "metrics", "value", "values",
-  "achieves", "achieve", "achieved", "obtains", "obtain", "obtained", "reaches", "reach", "reached", "reports", "reported", "shows", "show", "yields", "yield", "gets", "attains",
-  "which", "while", "whereas", "also", "both", "all", "each", "respectively", "using", "used", "use", "our", "ours", "we", "proposed", "work", "paper", "new",
-  "et", "al", "fig", "figure", "sec", "section", "see", "eq", "i", "e", "g", "vs", "via",
-]);
-/** claimCertificate.OWN_ROW 的拷贝：本文方法行判别 */
-const OWN_ROW = /\b(?:ours|proposed|this work|our method|our approach|our model)\b|本文|我们|所提/i;
-/** claimCertificate.OWN_ALIASES 的拷贝：论断侧本文别名（ours/our/we/proposed… 家族互通） */
-const OWN_ALIASES = /\b(?:ours|our|we|proposed|this work|this paper|the present work)\b|本文|我们|所提|提出的方法/i;
-/** claimCertificate.QUALIFIER_LEXICON 的拷贝：B3 论断限定词须由表格语境解释 */
-const QUALIFIER_LEXICON = [
-  "validation", "val", "dev", "train", "training", "test-dev", "held-out", "zero-shot", "few-shot", "one-shot", "fine-tuned", "finetuned", "pretrained", "pre-trained",
-  "post-processing", "postprocessing", "offline", "ensemble", "oracle", "upper", "tta", "test-time", "w/o", "without", "ablation", "ablated", "variant", "single-scale", "multi-scale",
-  "small", "large", "base", "tiny", "lite", "ablations", "cross-domain", "occluded", "subset", "split",
-  "验证集", "训练集", "消融", "后处理", "零样本",
-];
-/** claimCertificate.QUALIFIER_FAMILIES 的拷贝：reproduce/fair/original 家族内互通 */
-const QUALIFIER_FAMILIES: string[][] = [
-  ["reproduce", "reproduces", "reproduced", "reproducing", "reproduction", "reproductions", "replicate", "replicates", "replicated", "replication", "复现"],
-  ["fair"],
-  ["original"],
-];
-/** claimCertificate.derivedColumn 同语义：论文自制派生列表头（Improv./Gain/Δ …），tabulatedDerived 路径 */
-const DERIVED_COLUMN = /\b(?:improv\w*|imp\.?|gains?|increases?|delta|rel\.?|relative|changes?)\b|Δ|\\Delta|提升|增益/i;
+// ---- 词表/守卫单一来源：claimGuards.ts（M15.4.2 B4；此前为保 dist 字节不变的本地拷贝，已删除） ----
 
 // ---- 类型 ----
 
@@ -115,7 +105,53 @@ export type ProposalAbstainCategory =
   | "PROPOSAL_SCHEMA_INVALID" | "PROPOSAL_ALIAS_INVALID" | "PROPOSER_ABSTAIN" | "CLAIM_QUALIFIER_NOT_CERTIFIABLE" | "DERIVED_RECOMPUTE_OUT_OF_SCOPE"
   | "NO_VALID_CANDIDATE" | "PROPOSAL_QUOTE_NOT_FOUND" | "PROPOSAL_TERM_NOT_IN_CLAIM" | "GROUNDING_FAILED" | "PROPOSAL_NOT_UNIQUE"
   | "UNEXPLAINED_QUALIFIER" | "VALUE_APPEARS_IN_OTHER_TABLE" | "UNIT_MISMATCH" | "SCALE_AMBIGUOUS" | "TABLE_PARSE_ISSUES"
-  | "MODEL_CHECK_MISSING" | "MODEL_CHECK_DISAGREES" | "CLAIM_ATOM_NOT_LOCATED";
+  | "MODEL_CHECK_MISSING" | "MODEL_CHECK_DISAGREES" | "CLAIM_ATOM_NOT_LOCATED"
+  // M15.4.2（M1）：
+  | "PROPOSAL_ANTECEDENT_NOT_UNIQUE" | "PROPOSAL_ANTECEDENT_NOT_FOUND";
+
+/** M2 引文判定：只有前两类可作为确定性引用来源 */
+export type QuoteVerdictKind = "SOURCE_VERBATIM" | "PARSER_RENDERED_VERBATIM" | "MODEL_PARAPHRASE" | "UNLOCATABLE";
+
+export interface QuoteVerdict {
+  quote: string;
+  verdict: QuoteVerdictKind;
+}
+
+/** M1 回指锚见证：程序在同段落窗口内逐字定位的前文锚 */
+export interface AnaphoraWitness {
+  phrase: string;
+  kind: "NAMED" | "COORDINATED" | "OWN";
+  /** 锚原文 span（源文件内偏移）；OWN 路线记录自指词出现处 */
+  anchors: Array<{ file: string; start: number; end: number; text: string }>;
+  /** 解析出的有效主语（替代模型 subject 字段） */
+  effectiveSubject: string;
+  /** 窗口内全部候选前件（含被排除的），证明唯一性判断没有隐藏竞争者 */
+  alternativesConsidered: string[];
+}
+
+/** M15.4.2 映射见证：proposal → canonical 格对应关系的全部可验证证据链 */
+export interface MappingWitness {
+  version: typeof MAPPING_WITNESS_VERSION;
+  claimAtom: { file: string; start: number; end: number; raw: string; value: number; decimals: number; unit: string | null; qualifiers: string[] };
+  proposalEcho: { subject: string; metric: string; dataset: string; conditions: string[]; comparison: string; topCandidate: { tableAlias: string; rowAlias: string; colAlias: string } };
+  resolvedCell: ResolvedCell;
+  /** 程序生成的引文（值/行/列/题注，均可回溯解析器结构与源文件偏移） */
+  citations: {
+    value: { raw: string; sourceFile: string; start: number | null; end: number | null };
+    row: { text: string; sourceFile: string; tableId: string; row: number; rowGroup: string | null; rowKey: string[] };
+    column: { headerPath: string[] };
+    caption: string | null;
+    label: string | null;
+  };
+  quotes: QuoteVerdict[];
+  anaphora?: AnaphoraWitness;
+  /** 逐 term grounding 落位记录 */
+  termGroundings: Array<{ kind: "SUBJECT" | "METRIC" | "CONTEXT"; term: string; anchored: boolean; where: string }>;
+  droppedContextTerms: string[];
+  uniqueness: { signatureSubject: string; signatureMetric: string; signatureContext: string[]; hitCount: number; hitRelation: string; valueCorroborated: boolean; multiBinding: { count: number; unanimous: string } | null };
+  guards: { unexplainedQualifiers: string[]; crossTableCompetitors: string[]; parseIssues: string[] };
+  checks: string[];
+}
 
 export type ProposalVerification =
   | {
@@ -128,6 +164,7 @@ export type ProposalVerification =
       relation: string;
       modelCheck: "CONSISTENT" | "INCONSISTENT";
       checks: string[];
+      witness: MappingWitness;
     }
   | {
       status: "ABSTAIN";
@@ -137,6 +174,7 @@ export type ProposalVerification =
       category: ProposalAbstainCategory;
       topCandidate?: ResolvedCell;
       competitorCount?: number;
+      witness?: MappingWitness;
     };
 
 // ---- 表格 allowlist（别名由 PaperTeam 生成；模型只能从中选择，不得自造 canonical id） ----
@@ -463,74 +501,52 @@ function tableContextTexts(spans: StructureSpans): string[] {
   return [spans.table.caption ?? "", spans.table.label ?? "", spans.cell.rowGroup ?? "", ...spans.cell.headerPath.slice(0, -1)];
 }
 
-/** B3：论断限定词须由该表语境解释（与 claimCertificate 同语义的本地复现） */
+/** B3 限定词（M15.4.2 B4：与生产证书器同一判别 = claimGuards.qualifierRejections；语境组装保持本臂口径） */
 function unexplainedQualifiers(segment: string, spans: StructureSpans): string[] {
-  const segmentTokens = tokensOf(segment);
-  const plain = norm(segment);
   const contextText = [...tableContextTexts(spans), ...rowKeyTexts(spans), ...columnHeaderTexts(spans)].join(" \n ");
-  const contextTokens = tokensOf(contextText);
-  const explains = (qualifier: string): boolean => norm(contextText).includes(norm(qualifier)) || contextTokens.has(qualifier);
-  const out: string[] = [];
-  for (const qualifier of QUALIFIER_LEXICON) {
-    const used = plain.includes(norm(qualifier)) || segmentTokens.has(qualifier);
-    if (used && !explains(qualifier)) out.push(qualifier);
-  }
-  for (const family of QUALIFIER_FAMILIES) {
-    const used = family.filter((q) => plain.includes(norm(q)) || segmentTokens.has(q));
-    if (used.length > 0 && !family.some((q) => explains(q))) out.push(used[0]!);
-  }
-  return [...new Set(out)];
+  return qualifierRejections(guardContextOf(segment), guardContextOf(contextText));
 }
 
-/** B2 多命中变体：论断值逐字出现在任何命中表之外的表格体 → 跨表归属不可证 */
+/** B2（M15.4.2 B4：与生产证书器同一判别 = claimGuards.crossTableValueCompetitors）；多命中/单命中统一入口 */
 function valueAppearsInOtherTablesMulti(document: CertificateDocument, hits: Array<{ file: string; tableIndex: number }>, claimRaw: string): string[] {
-  const needle = claimRaw.replace(/,/g, "");
-  if (!/^\d+(?:\.\d+)?$/.test(needle)) return [];
-  const pattern = new RegExp(`(?<![\\d.])${needle.replace(/\./g, "\\.")}(?![\\d.])`, "g");
-  const hitTableIds = new Set(hits.map((h) => document.files.find((f) => f.file === h.file)?.tables[h.tableIndex]?.tableId).filter(Boolean));
-  const otherTableIds = new Set<string>();
-  for (const file of document.files) {
-    for (const match of file.content.matchAll(pattern)) {
-      for (const table of file.tables) {
-        if (!hitTableIds.has(table.tableId) && match.index! >= table.start && match.index! < table.end) otherTableIds.add(table.tableId);
-      }
-    }
-  }
-  return [...otherTableIds].slice(0, 3);
+  return crossTableValueCompetitors(document, hits, claimRaw);
 }
 
-/** B2：论断值与提案格值不一致且该值逐字出现在他表表格体 → 跨表归属不可证（与 claimCertificate 同语义的本地复现） */
 function valueAppearsInOtherTable(document: CertificateDocument, spans: StructureSpans, claimRaw: string): string[] {
-  const needle = claimRaw.replace(/,/g, "");
-  if (!/^\d+(?:\.\d+)?$/.test(needle)) return [];
-  const pattern = new RegExp(`(?<![\\d.])${needle.replace(/\./g, "\\.")}(?![\\d.])`, "g");
-  const otherTableIds = new Set<string>();
-  for (const file of document.files) {
-    for (const match of file.content.matchAll(pattern)) {
-      for (const table of file.tables) {
-        if (table.tableId !== spans.table.tableId && match.index! >= table.start && match.index! < table.end) otherTableIds.add(table.tableId);
-      }
-    }
-  }
-  return [...otherTableIds].slice(0, 3);
+  return crossTableValueCompetitors(document, [{ file: spans.file, tableIndex: spans.table.tableIndex }], claimRaw);
 }
 
-/** 行是否本文方法行（rowIsOwn 同语义） */
+/** 行是否本文方法行（claimGuards.rowIsOwn 同一判别） */
 function rowIsOwn(document: CertificateDocument, spans: StructureSpans): boolean {
-  const key = spans.cell.rowKey.join(" ");
-  if (OWN_ROW.test(key)) return true;
-  const tokens = new Set(contextTokens(key));
-  return document.ownTerms.some((term) => tokens.has(term));
+  return rowIsOwnCell(document, spans.cell);
+}
+
+/** GuardContext 构建（claimGuards.mentions 的输入形态；非守卫逻辑本身） */
+function guardContextOf(text: string): GuardContext {
+  return { tokens: new Set(contextTokens(text)), plain: plainLatexText(text).toLowerCase() };
 }
 
 /**
  * 签名枚举（修正 A 的核心）：对全文档所有数值格，用与提案完全相同的 grounding 规则统计满足
  * subject+metric+context 全部 grounded 的单元格。模型指向不参与枚举——它不能删除任何竞争候选。
  * metric 为空 → 列不约束（供值佐证规则用行签名）。subject 为空 → 无有效签名（恒空）。
+ *
+ * M15.4.2 枚举修正（全部 fail-closed：命中集只减不增；逐条记录于报告偏差表）：
+ *  - FIX-2（引文列绑定不得绕过数值部件失配）：「Top-1」在「Top-3 Acc.」上的 term 判定本就拒绝
+ *    （数字部件 1∉原文）；此前全局引文池的 quoteIn 旁路让其他候选的「Top-3 Acc.」引文反过来放行
+ *    Top-3 列——数字翻转被拦截，缩写桥（macro-F1↔MaF1，纯字母部件）不受影响。
+ *  - FIX-1b（行级 context 判别器）：context 词在同表内若对部分命中行的行键/行组落位、对另一部分
+ *    不落位，则只保留落位行（表级 caption 同时提到多场景时不能充当行内判别——「on the ASM gasoline
+ *    engine case」应由行键场景段裁决，而非 caption）。
+ *  - D1（转置表方向 B）：subject 可落列表头叶子（方法名列、指标行），此时 metric 落行键——与生产
+ *    绑定器 bindTextAtom 的 useA/useB 双方向一致（M15.2 起生产已有，POC 此前缺失）。
+ *  - D2（单位判别器）：命中 >1 且 atom 带单位时，单位不同的命中行被剔除（「12.00 dB」的 AB 只能是
+ *    PSNR (dB)/AB 而不是 SSIM/AB——无单位格与有单位格不竞逐）。
  */
-export function enumerateSignature(document: CertificateDocument, termsIn: GroundingTerms, quotes: string[], metricUnconstrained: boolean): Map<string, ResolvedCell> {
+export function enumerateSignature(document: CertificateDocument, termsIn: GroundingTerms, quotes: string[], metricUnconstrained: boolean, atomUnit?: string | null): { hits: Map<string, ResolvedCell>; notes: string[] } {
   const hits = new Map<string, ResolvedCell>();
-  if (termsIn.subject.length === 0) return hits;
+  const notes: string[] = [];
+  if (termsIn.subject.length === 0) return { hits, notes };
   // 条件词可用性：全域任何表语境都无落位的词不承载判别信息（纯修饰词），丢弃
   const allContextTexts = document.files.flatMap((file) =>
     file.tables.flatMap((table) => [table.caption ?? "", table.label ?? "", ...table.cells.flatMap((c) => [c.rowGroup ?? "", ...c.headerPath, ...c.rowKey])]),
@@ -539,24 +555,60 @@ export function enumerateSignature(document: CertificateDocument, termsIn: Groun
   const terms: GroundingTerms = { ...termsIn, context: termsIn.context.filter((t) => termGroundedContext(t, allContextTokens, allContextTexts)) };
   const subjectIsOwn = terms.subject.some((t) => OWN_ROW.test(t) || OWN_ALIASES.test(t)) || OWN_ALIASES.test(terms.subject.join(" "));
   const subjectAlts = subjectAlternatives(terms.subject);
-  const quoteIn = (texts: string[]): boolean => quotes.some((q) => texts.some((text) => norm(text).includes(norm(q))));
+  const quoteIn = (texts: string[]): boolean => quotes.some((q) => texts.some((text) => verbatimIncludes(text, q)));
+  /** FIX-2：metric term 的纯数字部件必须落在列结构原文（数字不可被引文翻转；字母部件可由引文桥接） */
+  const numericPartsGrounded = (term: string, texts: string[]): boolean => {
+    for (const token of tokensOf(term)) {
+      for (const part of token.split(/[-_/.@]/).filter((p) => /^\d+(?:[.,]\d+)?$/.test(p))) {
+        if (!texts.some((text) => norm(text).includes(part))) return false;
+      }
+    }
+    return true;
+  };
+  /**
+   * FIX-2b：引文绑定列的窄化——引文必须落在该列叶子表头文本内，或与 metric 词共享至少一个 token。
+   * 父级表头引文（「PSNR (dB)」是多列共享的上层维度）不得证明叶子指标身份（「AB」≠「A」/「F」）；
+   * 缩写桥（「MaF1」引文 ⊆ 叶子「MaF1」）与单位形（「Acc. (%)」与 accuracy 共享 acc→accuracy）不受影响。
+   */
+  const metricQuoteBinds = (metricTerms: string[], leafText: string, columnTexts: string[]): boolean => {
+    const metricTokenSet = new Set(metricTerms.flatMap((t) => [...tokensOf(t)]));
+    return quotes.some((q) => {
+      const inColumn = columnTexts.some((text) => verbatimIncludes(text, q));
+      if (!inColumn) return false;
+      const inLeaf = verbatimIncludes(leafText, q);
+      if (inLeaf) return true;
+      return [...tokensOf(q)].some((token) => metricTokenSet.has(token));
+    });
+  };
   for (const file of document.files) {
     for (const table of file.tables) {
       if (table.parseIssues.includes("NESTED_TABULAR")) continue;
+      const tableHits: Array<{ key: string; cell: LatexTableCell; spans: StructureSpans; transposed: boolean }> = [];
       for (const cell of table.cells) {
         if (cell.value === null || cell.isHeader || cell.rowKey.length === 0) continue;
         const spans: StructureSpans = { file: file.file, content: file.content, table, cell };
-        // subject grounding：本文别名 → 行须本文行；否则 term 逐 token/逐字落行键语境
-        const rowTokens = tokensOf([...rowKeyTexts(spans), ...(cell.rowGroup ? [cell.rowGroup] : [])].join(" ") || " ");
-        const subjectOk = subjectIsOwn
+        // subject grounding：本文别名 → 行须本文行；否则 term 逐 token/逐字落行键语境（A）或列表头叶子（B，转置表）
+        const rowTokens = tokensOf([...rowKeyTexts(spans), ...(cell.rowGroup ? [cell.rowGroup] : "")].join(" ") || " ");
+        const headerLeafTokens = tokensOf(cell.headerPath.slice(-1).join(" ") || " ");
+        const subjectOkA = subjectIsOwn
           ? rowIsOwn(document, spans)
           : subjectAlts.some((alt) => alt.every((t) => termGroundedIn(t, rowTokens, rowKeyTexts(spans))));
-        if (!subjectOk) continue;
-        // metric grounding（不约束时跳过）
+        const subjectOkB = !subjectIsOwn && !subjectOkA
+          && subjectAlts.some((alt) => alt.every((t) => termGroundedIn(t, headerLeafTokens, columnHeaderTexts(spans))));
+        if (!subjectOkA && !subjectOkB) continue;
+        const transposed = subjectOkB;
+        // metric grounding（不约束时跳过）：方向 A → 列表头；方向 B（转置）→ 行键（指标在行）
         if (!metricUnconstrained && terms.metric.length > 0) {
-          const headerTokens = tokensOf(cell.headerPath.join(" ") || " ");
-          const metricOk = terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans))) || quoteIn(columnHeaderTexts(spans));
-          if (!metricOk) continue;
+          if (!transposed) {
+            const headerTokens = tokensOf(cell.headerPath.join(" ") || " ");
+            const metricOk = terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans)))
+              || (terms.metric.every((t) => numericPartsGrounded(t, columnHeaderTexts(spans))) && metricQuoteBinds(terms.metric, cell.headerPath.slice(-1).join(" "), columnHeaderTexts(spans)));
+            if (!metricOk) continue;
+          } else {
+            const rowKeyMetricTexts = [...rowKeyTexts(spans), ...(cell.rowGroup ? [cell.rowGroup] : "")];
+            const metricOk = terms.metric.every((t) => termGroundedIn(t, rowTokens, rowKeyMetricTexts));
+            if (!metricOk) continue;
+          }
         }
         // dataset/conditions grounding：表语境（题注/label/行组/全列表头路径）+ 行键语境（场景列是行键的一部分）。
         // 条件词是过滤器：term 级 any-token（见 termGroundedAnyToken 注释）。
@@ -566,14 +618,39 @@ export function enumerateSignature(document: CertificateDocument, termsIn: Groun
           const contextOk = terms.context.every((t) => termGroundedContext(t, contextTokens, contextTexts)) || quoteIn([spans.table.caption ?? "", spans.table.label ?? ""]);
           if (!contextOk) continue;
         }
-        hits.set(`${file.file}|${table.tableId}|${cell.row}|${cell.col}`, {
-          file: file.file, tableId: table.tableId, tableIndex: table.tableIndex, row: cell.row, col: cell.col,
-          rowKey: cell.rowKey, headerPath: cell.headerPath, caption: table.caption, label: table.label,
+        tableHits.push({ key: `${file.file}|${table.tableId}|${cell.row}|${cell.col}`, cell, spans, transposed });
+      }
+      // FIX-1b：同表内行级 context 判别器——context 词对部分命中行行级落位、部分不落位 → 只保留落位行
+      let survivors = tableHits;
+      if (terms.context.length > 0 && tableHits.length > 1) {
+        for (const term of terms.context) {
+          const groundedFlags = tableHits.map((h) => {
+            const texts = [...rowKeyTexts(h.spans), ...(h.cell.rowGroup ? [h.cell.rowGroup] : "")];
+            return termGroundedContext(term, tokensOf(texts.join(" ") || " "), texts);
+          });
+          if (groundedFlags.some(Boolean) && !groundedFlags.every(Boolean)) {
+            survivors = survivors.filter((_, i) => groundedFlags[i] === true);
+            notes.push(`ROW_DISCRIMINATOR:${term} kept ${survivors.length}/${tableHits.length}`);
+          }
+        }
+      }
+      // D2：单位判别器——命中 >1 且 atom 带单位 → 剔除单位不匹配的命中（无单位格不与有单位格竞逐）
+      if (atomUnit !== undefined && atomUnit !== null && survivors.length > 1) {
+        const matching = survivors.filter((h) => (h.cell.unit ?? null) === atomUnit);
+        if (matching.length >= 1 && matching.length < survivors.length) {
+          notes.push(`UNIT_DISCRIMINATOR:${atomUnit} kept ${matching.length}/${survivors.length}`);
+          survivors = matching;
+        }
+      }
+      for (const h of survivors) {
+        hits.set(h.key, {
+          file: file.file, tableId: table.tableId, tableIndex: table.tableIndex, row: h.cell.row, col: h.cell.col,
+          rowKey: h.cell.rowKey, headerPath: h.cell.headerPath, caption: table.caption, label: table.label,
         });
       }
     }
   }
-  return hits;
+  return { hits, notes };
 }
 
 export interface VerifyProposalInput {
@@ -584,17 +661,230 @@ export interface VerifyProposalInput {
   renderedTables?: string;
 }
 
+// ---- M15.4.2 M1：回指锚定（封闭词表 + 程序定位的确定性前文锚） ----
+
+/** 回指封闭词表：仅这些短语允许连接前文锚（预登记 §5 M1；词表外不触发回指解析） */
+const ANAPHORA_SINGULAR_RE = /\b(?:this (?:method|approach|model|framework)|the (?:model|method|approach)|the proposed (?:method|approach|model)|the same model)\b/i;
+const ANAPHORA_COORDINATED_RE = /\bthe same two models\b/i;
+const ANAPHORA_OWNABLE_RE = /\b(?:this (?:method|approach|model|framework)|the (?:model|method|approach)|the proposed (?:method|approach|model))\b/i;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 行键专名在原文中的逐字定位（空白容差）：返回 [start,end) 与原文；找不到 = null */
+function locatePhraseInContent(content: string, phrasePlain: string): { start: number; end: number; text: string } | null {
+  const tokens = phrasePlain.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return null;
+  const pattern = new RegExp(`(?<![\\w])${tokens.map(escapeRegExp).join("\\s+")}(?![\\w])`, "i");
+  const match = pattern.exec(content);
+  if (match === null) return null;
+  return { start: match.index, end: match.index + match[0].length, text: content.slice(match.index, match.index + match[0].length) };
+}
+
+/**
+ * 同段落确定性窗口：论断句起点向前，至多 1500 字符；遇段落边界（空行）或结构边界
+ *（\section 系 / 表格环境）即止。窗口外的文本不是合法前文锚域。
+ */
+function anaphoraWindowOf(content: string, sentenceStart: number): string {
+  let start = Math.max(0, sentenceStart - 1500);
+  const slice = content.slice(start, sentenceStart);
+  const boundaries = [...slice.matchAll(/\n\s*\n|\\(?:sub)*section\b|\\begin\{table/g)];
+  if (boundaries.length > 0) {
+    const last = boundaries[boundaries.length - 1]!;
+    start = start + last.index! + last[0].length;
+  }
+  return content.slice(start, sentenceStart);
+}
+
+/** 全文档数据行的行键专名候选（去重；须含非停用词 token——"Method"/"Ours" 这类泛词不作锚） */
+function rowKeyAnchorPhrases(document: CertificateDocument): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const file of document.files) {
+    for (const table of file.tables) {
+      for (const row of table.rows) {
+        if (row.kind !== "data") continue;
+        const keyCell = row.cells.find((c) => c.rowKey.length > 0);
+        if (keyCell === undefined) continue;
+        const phrase = plainLatexText(keyCell.rowKey.join(" "));
+        if (phrase.length < 3 || tokensOf(phrase).size === 0) continue;
+        const dedupe = norm(phrase);
+        if (seen.has(dedupe)) continue;
+        seen.add(dedupe);
+        out.push(phrase);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * M1 回指锚解析：在窗口内逐字定位行键专名锚。
+ *  - COORDINATED（"the same two models"）：窗口内恰有一个「A and B」并列（A/B 均为行键短语）→ 有效主语 "A and B"；
+ *    ≥2 个并列 → ANTECEDENT_NOT_UNIQUE。
+ *  - SINGULAR：窗口内恰一个行键短语（且不在论断句内）→ 有效主语 = 该短语；≥2 → ANTECEDENT_NOT_UNIQUE；
+ *    0 个且窗口含本文自指词（our/ours/we…）→ OWN 路线（有效主语 "ours"，结构侧仍须 rowIsOwn）。
+ * 论断句内已出现的名字不算前件（claim-internal，已在 claim 侧锚定）。
+ */
+function resolveAnaphoraAnchor(document: CertificateDocument, entry: { file: string; content: string }, sentenceStart: number, sentenceText: string):
+  | { status: "RESOLVED"; witness: AnaphoraWitness }
+  | { status: "NOT_UNIQUE" | "NOT_FOUND"; phrase: string; competitors: string[] } {
+  const window = anaphoraWindowOf(entry.content, sentenceStart);
+  const phraseMatch = ANAPHORA_COORDINATED_RE.exec(sentenceText) ?? ANAPHORA_SINGULAR_RE.exec(sentenceText);
+  const phrase = phraseMatch === null ? "" : phraseMatch[0];
+  if (phrase === "") return { status: "NOT_FOUND", phrase: "", competitors: [] };
+  const inSentence = (text: string): boolean => locatePhraseInContent(sentenceText, plainLatexText(text)) !== null;
+  // window = content.slice(windowStart, sentenceStart)，锚 span 换算回源文件偏移
+  const windowStart = sentenceStart - window.length;
+  const anchors = rowKeyAnchorPhrases(document)
+    .filter((p) => !inSentence(p))
+    .map((p) => ({ phrase: p, span: locatePhraseInContent(window, p) }))
+    .filter((p): p is { phrase: string; span: { start: number; end: number; text: string } } => p.span !== null)
+    .map((p) => ({ phrase: p.phrase, span: { start: windowStart + p.span.start, end: windowStart + p.span.end, text: p.span.text } }));
+  if (ANAPHORA_COORDINATED_RE.test(phrase)) {
+    const pairs: Array<{ a: string; b: string; start: number; end: number; text: string }> = [];
+    for (let i = 0; i < anchors.length; i += 1) {
+      for (let j = 0; j < anchors.length; j += 1) {
+        if (i === j) continue;
+        const a = anchors[i]!;
+        const b = anchors[j]!;
+        const pattern = new RegExp(`(?<![\\w])${escapeRegExp(a.span.text)}\\s+and\\s+${escapeRegExp(b.span.text)}(?![\\w])`, "i");
+        const match = pattern.exec(window);
+        if (match !== null) pairs.push({ a: a.phrase, b: b.phrase, start: windowStart + match.index, end: windowStart + match.index + match[0].length, text: match[0] });
+      }
+    }
+    // 「A and B」与「B and A」是同一并列；按无序对去重
+    const unique = pairs.filter((pair, k) => !pairs.slice(0, k).some((other) => (other.a === pair.b && other.b === pair.a)));
+    if (unique.length === 1) {
+      const pair = unique[0]!;
+      return {
+        status: "RESOLVED",
+        witness: {
+          phrase, kind: "COORDINATED", effectiveSubject: `${pair.a} and ${pair.b}`,
+          anchors: [{ file: entry.file, start: pair.start, end: pair.end, text: pair.text }],
+          alternativesConsidered: anchors.map((a) => a.phrase),
+        },
+      };
+    }
+    return { status: "NOT_UNIQUE", phrase, competitors: unique.slice(0, 4).map((p) => `${p.a} and ${p.b}`) };
+  }
+  // 单数回指
+  if (anchors.length === 1) {
+    const anchor = anchors[0]!;
+    return {
+      status: "RESOLVED",
+      witness: {
+        phrase, kind: "NAMED", effectiveSubject: anchor.phrase,
+        anchors: [{ file: entry.file, start: anchor.span.start, end: anchor.span.end, text: anchor.span.text }],
+        alternativesConsidered: anchors.map((a) => a.phrase),
+      },
+    };
+  }
+  if (anchors.length >= 2) return { status: "NOT_UNIQUE", phrase, competitors: anchors.slice(0, 4).map((a) => a.phrase) };
+  // 无专名前件 → 本文自指路线（窗口内逐字 our/ours/we/proposed…；结构侧仍须 rowIsOwn + 唯一性）
+  if (ANAPHORA_OWNABLE_RE.test(phrase) && OWN_ALIASES.test(plainLatexText(window))) {
+    return {
+      status: "RESOLVED",
+      witness: { phrase, kind: "OWN", effectiveSubject: "ours", anchors: [], alternativesConsidered: [] },
+    };
+  }
+  return { status: "NOT_FOUND", phrase, competitors: [] };
+}
+
+// ---- M15.4.2 M2：引文四分类 ----
+
+/** 程序生成的行引用：行组 + 行矩阵拼接（解析器结构重组，非自由文本；模型引文与此逐字一致 = 可回溯） */
+function rowCitationOf(document: CertificateDocument, cell: ResolvedCell): { text: string; rowGroup: string | null; rowKey: string[] } {
+  const file = document.files.find((f) => f.file === cell.file);
+  const table = file?.tables[cell.tableIndex];
+  const row = table?.rows.find((r) => r.index === cell.row);
+  if (table === undefined || row === undefined) return { text: cell.rowKey.join(" & "), rowGroup: null, rowKey: cell.rowKey };
+  const line: string[] = [];
+  for (let c = 0; c < table.columnCount; c += 1) {
+    const tableCell = row.cells.find((entry) => entry.col === c || (entry.col < c && c < entry.col + entry.colSpan));
+    line.push(cellDisplayValue(tableCell));
+  }
+  const rowCells = row.cells.filter((c) => c.rowKey.length > 0);
+  const rowGroup = rowCells[0]?.rowGroup ?? null;
+  const text = `${rowGroup !== null && rowGroup !== "" ? `${rowGroup} & ` : ""}${line.join(" & ")}`;
+  return { text, rowGroup, rowKey: rowCells[0]?.rowKey ?? cell.rowKey };
+}
+
+function tokenSet(text: string): Set<string> {
+  return new Set(norm(text).split(/\s+/).filter(Boolean));
+}
+
+/** M2 边界感知定位：数字端点不得落在更长数字中间（「1.00」不是「1.000」的逐字引文，「82.1」不是「82.19」的；
+ *  非数字词端不受限——「Bench-R.」的句点不是数字截断） */
+function verbatimIncludes(face: string, quote: string): boolean {
+  const nf = norm(face);
+  const nq = norm(quote);
+  if (nq === "") return false;
+  const leftNumeric = /[0-9.]/.test(nq[0]!);
+  const rightNumeric = /[0-9.]/.test(nq[nq.length - 1]!);
+  let at = nf.indexOf(nq);
+  while (at >= 0) {
+    const before = at > 0 ? nf[at - 1]! : "";
+    const after = at + nq.length < nf.length ? nf[at + nq.length]! : "";
+    if (!(leftNumeric && /[0-9.]/.test(before)) && !(rightNumeric && /[0-9.]/.test(after))) return true;
+    at = nf.indexOf(nq, at + 1);
+  }
+  return false;
+}
+
+/**
+ * M2 引文判定。可定位面（全部由解析器/源文件派生，模型可见）：
+ *  - 源文件纯文本（plainLatexText）；
+ *  - allowlist 渲染 + 程序生成的行引用（rowGroup + 行矩阵）+ 表头路径 "/" 拼接。
+ * MODEL_PARAPHRASE / UNLOCATABLE 仅排除（token-Jaccard ≥0.5 视为改写，否则不可定位），不得作证据。
+ */
+function classifyQuotes(document: CertificateDocument, quotes: string[], renderedTables: string | undefined, topCell: ResolvedCell): QuoteVerdict[] {
+  const renderedFace = `${visibleCorpusText(document, renderedTables)}\n${rowCitationOf(document, topCell).text}\n${topCell.headerPath.join("/")}`;
+  const sourceFace = document.files.map((f) => plainLatexText(f.content)).join("\n");
+  const structureTexts = [
+    ...document.files.flatMap((f) => f.tables.flatMap((t) => [t.caption ?? "", ...t.cells.map((c) => c.text)])),
+    renderedFace,
+  ];
+  return quotes.map((quote) => {
+    if (verbatimIncludes(sourceFace, quote)) return { quote, verdict: "SOURCE_VERBATIM" as const };
+    if (verbatimIncludes(renderedFace, quote)) return { quote, verdict: "PARSER_RENDERED_VERBATIM" as const };
+    const qTokens = tokenSet(quote);
+    const similar = structureTexts.some((text) => {
+      const sTokens = tokenSet(text);
+      if (sTokens.size === 0 || qTokens.size === 0) return false;
+      let shared = 0;
+      for (const token of qTokens) if (sTokens.has(token)) shared += 1;
+      return shared / Math.max(qTokens.size, sTokens.size) >= 0.5 || shared / qTokens.size >= 0.8;
+    });
+    return { quote, verdict: similar ? ("MODEL_PARAPHRASE" as const) : ("UNLOCATABLE" as const) };
+  });
+}
+
 /** 模型可见语料文本：各文件 plainLatexText + allowlist 渲染（确定性、与 prompt 同源） */
 function visibleCorpusText(document: CertificateDocument, renderedTables: string | undefined): string {
   if (renderedTables !== undefined) return renderedTables;
   return renderAllowlist(buildTableAllowlist(document));
 }
 
+/** FIX-2b（top 候选侧同语义）：引文绑定列须落叶子表头或与 metric 词共享 token（父级表头引文不算） */
+function metricQuoteBindsTop(metricTerms: string[], spans: StructureSpans, verifiedQuotes: readonly string[] = []): boolean {
+  const metricTokenSet = new Set(metricTerms.flatMap((t) => [...tokensOf(t)]));
+  const columnTexts = columnHeaderTexts(spans);
+  const leafText = spans.cell.headerPath.slice(-1).join(" ");
+  return verifiedQuotes.some((q) => {
+    const inColumn = columnTexts.some((text) => verbatimIncludes(text, q));
+    if (!inColumn) return false;
+    if (verbatimIncludes(leafText, q)) return true;
+    return [...tokensOf(q)].some((token) => metricTokenSet.has(token));
+  });
+}
+
 export function verifyProposal(input: VerifyProposalInput): ProposalVerification {
   const { document, claim, resolved } = input;
-  const abstain = (reason: string, detail: string, category: ProposalAbstainCategory, topCandidate?: ResolvedCell, competitorCount?: number): ProposalVerification => ({
+  const abstain = (reason: string, detail: string, category: ProposalAbstainCategory, topCandidate?: ResolvedCell, competitorCount?: number, witness?: MappingWitness): ProposalVerification => ({
     status: "ABSTAIN", claimId: resolved.claimId, reason, detail, category,
-    ...(topCandidate !== undefined ? { topCandidate } : {}), ...(competitorCount !== undefined ? { competitorCount } : {}),
+    ...(topCandidate !== undefined ? { topCandidate } : {}), ...(competitorCount !== undefined ? { competitorCount } : {}), ...(witness !== undefined ? { witness } : {}),
   });
 
   // 0) 论断原子定位（与证书器同一 locateAtom；值+显示精度逐字定位失败 → 不可核验）
@@ -615,18 +905,19 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     );
   }
   const top = valid[0]!;
+  const entry = document.files.find((f) => f.file === atom.file)!;
 
-  // 2) 引文逐字定位（fail-closed：杜撰引文 → 整个提案不可用）。可定位面 = 源文件 ∪ 模型可见的
-  //    确定性渲染文本（allowlist 渲染是解析器从源生成的，模型未见过任何别的文本——引用它看到过的
-  //    文本不算伪造；结构侧 grounding 仍只认真实结构 span，不受此影响）。
-  const quotes = valid.flatMap((c) => c.raw.evidenceQuotes).map((q) => q.trim()).filter(Boolean);
-  const visibleText = `${visibleCorpusText(document, input.renderedTables)}\n${document.files.map((f) => plainLatexText(f.content)).join("\n")}`;
-  for (const quote of quotes) {
-    if (!norm(visibleText).includes(norm(quote))) return abstain("PROPOSAL_QUOTE_NOT_FOUND", quote.slice(0, 80), "PROPOSAL_QUOTE_NOT_FOUND", top.cell);
+  // 2) M2 引文四分类：只有 SOURCE_VERBATIM / PARSER_RENDERED_VERBATIM 可作证据；改写/不可定位仅排除。
+  //    全部引文不可用 → 维持整案拒绝（防伪造 tripwire 不撤——比预登记 §5 的宽松读法更严，如实记录）。
+  const rawQuotes = valid.flatMap((c) => c.raw.evidenceQuotes).map((q) => q.trim()).filter(Boolean);
+  const quoteVerdicts = classifyQuotes(document, rawQuotes, input.renderedTables, top.cell!);
+  const quotes = quoteVerdicts.filter((v) => v.verdict === "SOURCE_VERBATIM" || v.verdict === "PARSER_RENDERED_VERBATIM").map((v) => v.quote);
+  if (rawQuotes.length > 0 && quotes.length === 0) {
+    const bad = quoteVerdicts.find((v) => v.verdict !== "SOURCE_VERBATIM" && v.verdict !== "PARSER_RENDERED_VERBATIM")!;
+    return abstain("PROPOSAL_QUOTE_NOT_FOUND", `${bad.verdict}: ${bad.quote.slice(0, 80)}`, "PROPOSAL_QUOTE_NOT_FOUND", top.cell);
   }
 
   // 3) 论断语境 / 限定词 / 派生边界
-  const entry = document.files.find((f) => f.file === atom.file)!;
   const scopes = textScopes(entry.content, atom.start, atom.end);
   const claimTokens = new Set([...tokensOf(scopes.sentence), ...tokensOf(scopes.segment), ...tokensOf(scopes.window)]);
   const spans = structureOf(document, top.cell!);
@@ -636,48 +927,95 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     return abstain("CLAIM_QUALIFIER_NOT_CERTIFIABLE", `qualifiers=${qualifiers.join(",")}`, "CLAIM_QUALIFIER_NOT_CERTIFIABLE", top.cell);
   }
   const derivedQualified = qualifiers.includes("DERIVED") || qualifiers.includes("AGGREGATE") || qualifiers.includes("SIGNED");
-  if (derivedQualified && !DERIVED_COLUMN.test(top.cell!.headerPath.join(" "))) {
-    return abstain("DERIVED_RECOMPUTE_OUT_OF_SCOPE", "claim is derived-worded; POC verifies atomic proposals only (paper's own derived columns excepted)", "DERIVED_RECOMPUTE_OUT_OF_SCOPE", top.cell);
+  if (derivedQualified && !DERIVED_COLUMN_HEADER.test(top.cell!.headerPath.join(" "))) {
+    return abstain("DERIVED_RECOMPUTE_OUT_OF_SCOPE", "claim is derived-worded; protocol verifies atomic proposals only (paper's own derived columns excepted)", "DERIVED_RECOMPUTE_OUT_OF_SCOPE", top.cell);
   }
 
-  // 4) grounding：term 必须来自论断（claim 侧，模型不得发明论断里没有的概念；本文别名家族互通）
-  const terms = groundingTermsOf(resolved.raw);
-  const subjectJoined = resolved.raw.subject.trim();
-  const subjectIsOwnAlias = OWN_ALIASES.test(subjectJoined);
+  // 4) grounding。M1：回指主语（封闭词表命中）由程序在同段落窗口内解析确定性锚，锚替换模型 subject
+  //    （模型不得借回指向提案注入任意名字）；锚不唯一 → 弃判。M4：context 词不在论断句/锚文本 → 丢弃并
+  //    记录（过滤只降不升），不拒判；subject/metric 仍必须锚定。
+  const modelTerms = groundingTermsOf(resolved.raw);
   const sentencePlain = norm(scopes.sentence);
-  const claimSideTerms = subjectIsOwnAlias ? [...terms.metric, ...terms.context] : [...terms.subject, ...terms.metric, ...terms.context];
-  for (const term of claimSideTerms) {
+  const sentenceHasAnaphora = ANAPHORA_SINGULAR_RE.test(scopes.sentence) || ANAPHORA_COORDINATED_RE.test(scopes.sentence);
+  let anaphoraWitness: AnaphoraWitness | undefined;
+  let effectiveSubject = resolved.raw.subject.trim();
+  if (sentenceHasAnaphora) {
+    const anchor = resolveAnaphoraAnchor(document, { file: entry.file, content: entry.content }, scopes.sentenceStart, scopes.sentence);
+    if (anchor.status !== "RESOLVED") {
+      const category = anchor.status === "NOT_UNIQUE" ? "PROPOSAL_ANTECEDENT_NOT_UNIQUE" : "PROPOSAL_ANTECEDENT_NOT_FOUND";
+      return abstain(category, `phrase "${anchor.phrase}": ${anchor.status === "NOT_UNIQUE" ? `competing antecedents [${anchor.competitors.join(" | ")}]` : "no locatable row-key or own-alias antecedent in paragraph window"}`, category, top.cell);
+    }
+    anaphoraWitness = anchor.witness;
+    effectiveSubject = anchor.witness.effectiveSubject;
+  }
+  const terms: GroundingTerms = { subject: effectiveSubject.trim() === "" ? [] : effectiveSubject.trim().split(/\s*[,;]\s*|\s+/).filter(Boolean), metric: modelTerms.metric, context: modelTerms.context };
+  const subjectJoined = effectiveSubject;
+  const subjectIsOwnAlias = OWN_ALIASES.test(subjectJoined);
+  const anchorTexts = anaphoraWitness !== undefined && anaphoraWitness.anchors.length > 0 ? anaphoraWitness.anchors.map((a) => a.text) : [];
+  const anchorTokens = anchorTexts.length > 0 ? tokensOf(anchorTexts.join(" ")) : null;
+  const termGroundings: MappingWitness["termGroundings"] = [];
+  // subject：回指 → 锚文本内逐字（按构造成立，仍显式验证并记录）；否则论断句内
+  for (const term of terms.subject) {
     if (term.trim() === "") continue;
-    if (!termGroundedIn(term, claimTokens, [scopes.sentence, scopes.segment, scopes.window])) {
-      return abstain("PROPOSAL_TERM_NOT_IN_CLAIM", `term "${term}" not found in claim context`, "PROPOSAL_TERM_NOT_IN_CLAIM", top.cell);
+    const anchored = anchorTokens !== null
+      ? termGroundedIn(term, anchorTokens, anchorTexts)
+      : termGroundedIn(term, claimTokens, [scopes.sentence, scopes.segment, scopes.window]);
+    termGroundings.push({ kind: "SUBJECT", term, anchored, where: anchorTokens !== null ? "ANAPHORA_ANCHOR" : "CLAIM" });
+    if (!anchored) {
+      return abstain("PROPOSAL_TERM_NOT_IN_CLAIM", `term "${term}" not found in ${anchorTokens !== null ? "antecedent anchor" : "claim context"}`, "PROPOSAL_TERM_NOT_IN_CLAIM", top.cell);
     }
   }
-  if (subjectIsOwnAlias && !OWN_ALIASES.test(sentencePlain)) {
+  // FIX-3：own 路线（M1 回指解析出的本文自指锚）下 claim 句本就不含 own 别名词——claim 侧检查
+  // 以锚见证为准（anaphoraWitness.kind === "OWN"），不因句内无 our/we 而拒判；无锚的 own-alias 仍须句内出现。
+  const ownViaAnaphora = anaphoraWitness?.kind === "OWN";
+  if (subjectIsOwnAlias && !ownViaAnaphora && anchorTokens === null && !OWN_ALIASES.test(sentencePlain)) {
     return abstain("PROPOSAL_TERM_NOT_IN_CLAIM", "own-alias subject not found in claim sentence", "PROPOSAL_TERM_NOT_IN_CLAIM", top.cell);
   }
   if (terms.subject.length === 0) return abstain("GROUNDING_FAILED", "interpretation has no subject", "GROUNDING_FAILED", top.cell);
+  for (const term of terms.metric) {
+    if (term.trim() === "") continue;
+    const anchored = termGroundedIn(term, claimTokens, [scopes.sentence, scopes.segment, scopes.window]);
+    termGroundings.push({ kind: "METRIC", term, anchored, where: "CLAIM" });
+    if (!anchored) {
+      return abstain("PROPOSAL_TERM_NOT_IN_CLAIM", `term "${term}" not found in claim context`, "PROPOSAL_TERM_NOT_IN_CLAIM", top.cell);
+    }
+  }
+  // M4：context 词 claim 侧锚定检查（锚不成立 → 丢弃，不拒判；过滤只降不升 → 唯一性更严）
+  const anchoredContext = terms.context.filter((term) => {
+    if (term.trim() === "") return false;
+    const ok = termGroundedIn(term, claimTokens, [scopes.sentence, scopes.segment, scopes.window])
+      || (anchorTokens !== null && termGroundedIn(term, anchorTokens, anchorTexts));
+    termGroundings.push({ kind: "CONTEXT", term, anchored: ok, where: ok ? (anchorTokens !== null && termGroundedIn(term, anchorTokens, anchorTexts) ? "ANAPHORA_ANCHOR" : "CLAIM") : "DROPPED" });
+    return ok;
+  });
+  const droppedClaimContext = terms.context.filter((t) => !anchoredContext.includes(t));
 
   const subjectIsOwn = subjectIsOwnAlias || terms.subject.some((t) => OWN_ROW.test(t) || OWN_ALIASES.test(t));
   const rowTokens = tokensOf([...rowKeyTexts(spans), ...(spans.cell.rowGroup ? [spans.cell.rowGroup] : "")].filter(Boolean).join(" ") || " ");
   const headerTokens = tokensOf(spans.cell.headerPath.join(" ") || " ");
+  const headerLeafTokens = tokensOf(spans.cell.headerPath.slice(-1).join(" ") || " ");
   const contextTexts = [...tableContextTexts(spans), ...rowKeyTexts(spans), spans.cell.headerPath.join(" ")];
   const contextTokens = tokensOf(contextTexts.join(" ") || " ");
   const subjectAlts = subjectAlternatives(terms.subject);
-  const subjectGrounded = subjectIsOwn ? rowIsOwn(document, spans) : subjectAlts.some((alt) => alt.every((t) => termGroundedIn(t, rowTokens, rowKeyTexts(spans))));
-  if (!subjectGrounded) return abstain("GROUNDING_FAILED", `subject "${resolved.raw.subject}" not grounded in row "${spans.cell.rowKey.join("/")}"`, "GROUNDING_FAILED", top.cell);
+  // D1（转置表方向 B，与生产绑定器一致）：subject 落列表头叶子 = 方法在列、指标在行；此时 metric 检行键
+  const subjectGroundedA = subjectIsOwn ? rowIsOwn(document, spans) : subjectAlts.some((alt) => alt.every((t) => termGroundedIn(t, rowTokens, rowKeyTexts(spans))));
+  const subjectGroundedB = !subjectIsOwn && !subjectGroundedA && subjectAlts.some((alt) => alt.every((t) => termGroundedIn(t, headerLeafTokens, columnHeaderTexts(spans))));
+  const subjectGrounded = subjectGroundedA || subjectGroundedB;
+  if (!subjectGrounded) return abstain("GROUNDING_FAILED", `subject "${subjectJoined}" not grounded in row "${spans.cell.rowKey.join("/")}" or column leaf "${spans.cell.headerPath.join("/")}"`, "GROUNDING_FAILED", top.cell);
   // 修正 A：空主语（全部停用词、非本文别名）不承载身份——只靠值碰巧相等不可证明对应
   const subjectHasContent = subjectIsOwnAlias || terms.subject.some((t) => tokensOf(t).size > 0);
   if (!subjectHasContent) return abstain("GROUNDING_FAILED", "vacuous subject (stopwords only, not own-alias): value coincidence cannot prove correspondence", "GROUNDING_FAILED", top.cell);
   const metricGrounded = terms.metric.length > 0
-    && (terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans))) || quotes.some((q) => columnHeaderTexts(spans).some((text) => norm(text).includes(norm(q)))));
+    && (!subjectGroundedB
+      ? (terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans))) || metricQuoteBindsTop(terms.metric, spans, quotes))
+      : terms.metric.every((t) => termGroundedIn(t, rowTokens, [...rowKeyTexts(spans), ...(spans.cell.rowGroup ? [spans.cell.rowGroup] : "")])));
   // 条件词佐证过滤（修正 A 语义下的安全方向）：逐条检查 top 候选的表格语境能否佐证该条件词；
   // 不能佐证的条件词（如修辞 fastest/interative 描述，论文表格语境无此词）视为解释性噪声丢弃并记录，
   // 不参与唯一性枚举——过滤器强度只降不升（竞争候选只会更多 → 唯一性更严，不会借丢弃制造假唯一）。
-  const corroboratedContext = terms.context.filter((t) =>
+  const corroboratedContext = anchoredContext.filter((t) =>
     termGroundedContext(t, contextTokens, contextTexts)
     || quotes.some((q) => norm(spans.table.caption ?? "").includes(norm(q)) || norm(spans.table.label ?? "").includes(norm(q))));
-  const droppedContext: string[] = terms.context.filter((t) => !corroboratedContext.includes(t));
-
+  const droppedContext: string[] = anchoredContext.filter((t) => !corroboratedContext.includes(t));
 
   // 5) 唯一性（签名枚举；模型指向不删除竞争候选）+ 值佐证列选择（仅 metric 未文字识别时；仿 A2 更严）
   let valueCorroborated = false;
@@ -686,7 +1024,7 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
   if (!metricGrounded) {
     // metric 未被文字/引文 grounded（含 metric 为空——正文不点名指标）：不允许引文绑定列；
     // 唯一出路 = subject+context 行签名唯一 + 该行恰一个值重叠格 + 表有题注（只能出 SUPPORTED 路径）
-    const signatureNoMetric = enumerateSignature(document, { subject: terms.subject, metric: [], context: corroboratedContext }, quotes, true);
+    const signatureNoMetric = enumerateSignature(document, { subject: terms.subject, metric: [], context: corroboratedContext }, quotes, true, atom.unit).hits;
     const hits = [...signatureNoMetric.values()];
     if (hits.length === 0) {
       return abstain("PROPOSAL_NOT_UNIQUE", "metric not textually identified; subject/context signature grounds 0 rows", "PROPOSAL_NOT_UNIQUE", top.cell, 0);
@@ -719,7 +1057,8 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     }
     valueCorroborated = true;
   } else {
-    const signature = enumerateSignature(document, { ...terms, context: corroboratedContext }, quotes, false);
+    const enumeration = enumerateSignature(document, { ...terms, context: corroboratedContext }, quotes, false, atom.unit);
+    const signature = enumeration.hits;
     if (signature.size === 0) {
       return abstain("PROPOSAL_NOT_UNIQUE", "signature grounded 0 cells", "PROPOSAL_NOT_UNIQUE", top.cell, 0);
     }
@@ -788,17 +1127,54 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     outcome = relation.relation === "OVERLAP" ? (modelCheck === "CONSISTENT" ? "SUPPORTED" : null) : modelCheck === "INCONSISTENT" ? "CONTRADICTED" : null;
   }
   if (outcome === null) return abstain("MODEL_CHECK_DISAGREES", `deterministic=${relation.relation}${multiBinding !== null ? `/multi-binding ${multiBinding.count}` : ""} model=${modelCheck}`, "MODEL_CHECK_DISAGREES", top.cell);
+
+  // 8) 映射见证（mapping-witness/v1）：全部证据链可独立复核
+  const rowCitation = rowCitationOf(document, top.cell!);
+  const witness: MappingWitness = {
+    version: MAPPING_WITNESS_VERSION,
+    claimAtom: { file: atom.file, start: atom.start, end: atom.end, raw: atom.raw, value: atom.value, decimals: atom.decimals, unit: atom.unit, qualifiers: atom.qualifiers },
+    proposalEcho: {
+      subject: resolved.raw.subject, metric: resolved.raw.metric, dataset: resolved.raw.dataset, conditions: resolved.raw.conditions, comparison: resolved.raw.comparison,
+      topCandidate: { tableAlias: top.raw.tableAlias, rowAlias: top.raw.rowAlias, colAlias: top.raw.colAlias },
+    },
+    resolvedCell: top.cell!,
+    citations: {
+      value: { raw: spans.cell.value?.raw ?? top.value!.raw, sourceFile: spans.file, start: spans.cell.valueStart, end: spans.cell.valueEnd },
+      row: { text: rowCitation.text, sourceFile: spans.file, tableId: spans.table.tableId, row: spans.cell.row, rowGroup: rowCitation.rowGroup, rowKey: rowCitation.rowKey },
+      column: { headerPath: spans.cell.headerPath },
+      caption: spans.table.caption,
+      label: spans.table.label,
+    },
+    quotes: quoteVerdicts,
+    ...(anaphoraWitness !== undefined ? { anaphora: anaphoraWitness } : {}),
+    termGroundings,
+    droppedContextTerms: [...droppedClaimContext, ...droppedContext],
+    uniqueness: {
+      signatureSubject: subjectJoined, signatureMetric: resolved.raw.metric, signatureContext: corroboratedContext,
+      hitCount: multiBinding !== null ? multiBinding.count : 1,
+      hitRelation: multiBinding !== null ? multiBinding.unanimous : relation.relation,
+      valueCorroborated, multiBinding,
+    },
+    guards: { unexplainedQualifiers: unexplained, crossTableCompetitors: [], parseIssues: spans.table.parseIssues },
+    checks: [],
+  };
+  const checks = [
+    "CLAIM_ATOM_LOCATED",
+    rawQuotes.length === 0 ? "QUOTES_NONE" : quotes.length === rawQuotes.length ? "QUOTES_VERBATIM" : `QUOTES_PARTIALLY_VERBATIM(${quotes.length}/${rawQuotes.length})`,
+    anaphoraWitness === undefined ? "TERMS_FROM_CLAIM" : `ANAPHORA_RESOLVED(${anaphoraWitness.kind})`,
+    "SUBJECT_ROW_GROUNDED",
+    metricGrounded ? "METRIC_COLUMN_GROUNDED" : "METRIC_VALUE_CORROBORATED",
+    terms.context.length === 0 ? "CONTEXT_EMPTY" : corroboratedContext.length === terms.context.length ? "CONTEXT_TABLE_GROUNDED" : `CONTEXT_PARTIALLY_CORROBORATED(${corroboratedContext.length}/${terms.context.length})`,
+    valueCorroborated ? "ROW_SIGNATURE_VALUE_CORROBORATED" : multiBinding !== null ? `MULTI_BINDING_UNANIMOUS(${multiBinding.count})` : "SIGNATURE_UNIQUE",
+    "QUALIFIERS_EXPLAINED", "B2_CROSS_TABLE_CLEAR", "DOUBLE_KEY_AGREED",
+  ];
+  witness.checks = checks;
   return {
     status: "ACCEPTED", claimId: resolved.claimId, outcome, cell: top.cell!, value: top.value!,
-    grounding: { subject: resolved.raw.subject, metric: resolved.raw.metric, context: terms.context, valueCorroborated, ...(droppedContext.length > 0 ? { droppedContext } : {}), ...(multiBinding !== null ? { multiBinding } : {}) },
+    grounding: { subject: subjectJoined, metric: resolved.raw.metric, context: terms.context, valueCorroborated, ...(droppedContext.length > 0 ? { droppedContext } : {}), ...(multiBinding !== null ? { multiBinding } : {}) },
     relation: relation.relation, modelCheck,
-    checks: [
-      "CLAIM_ATOM_LOCATED", "QUOTES_VERBATIM", "TERMS_FROM_CLAIM", "SUBJECT_ROW_GROUNDED",
-      metricGrounded ? "METRIC_COLUMN_GROUNDED" : "METRIC_VALUE_CORROBORATED",
-      terms.context.length === 0 ? "CONTEXT_EMPTY" : corroboratedContext.length === terms.context.length ? "CONTEXT_TABLE_GROUNDED" : `CONTEXT_PARTIALLY_CORROBORATED(${corroboratedContext.length}/${terms.context.length})`,
-      valueCorroborated ? "ROW_SIGNATURE_VALUE_CORROBORATED" : multiBinding !== null ? `MULTI_BINDING_UNANIMOUS(${multiBinding.count})` : "SIGNATURE_UNIQUE",
-      "QUALIFIERS_EXPLAINED", "B2_CROSS_TABLE_CLEAR", "DOUBLE_KEY_AGREED",
-    ],
+    checks,
+    witness,
   };
 }
 
