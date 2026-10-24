@@ -282,8 +282,7 @@ const INEQ_AFTER = /^\s*(?:\\?%\s*)?(?:or (?:more|less|higher|lower|above|below)
 const DERIVED_BEFORE = /(?:\bby\s*$|\b(?:improvements?|gains?|increases?|decreases?|reductions?|boosts?|drops?|declines?|margins?|advantages?|lead|speed-?ups?|enhancements?)\s+(?:of\s*)?(?:about\s+|approximately\s+|nearly\s+|roughly\s+|around\s+|almost\s+|up to\s+|over\s+)?$|\b(?:relative|relatively)\b[^.;]{0,40}$|[+−]\s*$|(?:^|\s)-\s*$|(?:提升|提高|降低|增加|减少|下降|超出|领先|改善)了?(?:约|近)?\s*$)/i;
 const DERIVED_AFTER = /^\s*(?:\\?%|percent)?\s*(?:percentage[- ]points?|pp\b|p\.p\.|points?\b|个百分点|百分点|[×x]\b|×|times\b|-?fold\b|倍|(?:\\?%|percent)?\s*(?:higher|lower|better|worse|faster|slower|more|less|fewer|larger|smaller|improvement|gain|increase|decrease|reduction|relative|speed-?up|boost)\b|(?:的)?(?:提升|提高|降低|增加|减少|下降))/i;
 const AGGREGATE = /\b(?:on average|average(?:d)? (?:improvement|gain|increase|decrease|reduction)|mean (?:improvement|gain)|across (?:all|the|\w+) (?:datasets|benchmarks|models|tasks|settings)|overall (?:improvement|gain))\b|平均(?:提升|提高|增益|降低)/i;
-/** 变体行判别（M15.4.3 起导出：candidateProposer 签名枚举的行限定与生产 bindTextAtom 同一词源） */
-export const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
+const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
 
 export type AtomQualifier = "APPROX" | "INEQUALITY" | "DERIVED" | "AGGREGATE" | "SIGNED";
 
