@@ -48,8 +48,8 @@ const ACADEMIC_REDUNDANCY_PATTERN = /^academic-redundancy-rev(\d+)\.json$/;
  * 原因 / 本节引用 key / 模型 usage 与耗时——可追溯、可诊断；不是第二套 Outline，
  * 不参与任何 Gate 判定。
  */
-/** M15.1 shadow 审计产物种类 */
-export type M151AuditKind = "claim-audit" | "citation-audit" | "quality-decision-v2-shadow" | "finding-adjudication";
+/** M15.1 shadow 审计产物种类（M15.4.3 起含 candidate-shadow：CandidateProposer 影子旁路产物） */
+export type M151AuditKind = "claim-audit" | "citation-audit" | "quality-decision-v2-shadow" | "finding-adjudication" | "candidate-shadow";
 
 export interface WritingPlanSectionRecord {
   sectionId: string;

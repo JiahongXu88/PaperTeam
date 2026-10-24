@@ -662,6 +662,41 @@ export class ReviewerService {
     };
   }
 
+  /**
+   * M15.4.3（P1）CandidateProposer Shadow 的单次提案调用（sealed，prompt 即全部材料；一次一 claim）。
+   * 只返回原始文本 + trace——解析与确定性核验在 candidateShadow.ts（不在本方法判定任何结论）。
+   * 与 claim-recheck / finding-recheck 同一 runtime 通道：复用排队 / 超时 / 取消管理，不新建 Key 存储。
+   */
+  async proposeClaimCandidate(params: {
+    projectId: string;
+    prompt: string;
+    sessionLabel: string;
+    signal?: AbortSignal;
+  }): Promise<{ text: string; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: params.prompt,
+      projectId: params.projectId,
+      sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/candidate-shadow/${params.sessionLabel}`,
+      toolPolicy: "sealed",
+      contextScope: "review/academic/candidate-shadow",
+      metadata: { role: "reviewer", skill: "candidate-shadow", claims: 1 },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `CandidateProposer shadow 任务以 ${task.status} 状态结束`);
+    }
+    const metaModel = task.metadata?.["model"];
+    return {
+      text: task.output ?? "",
+      taskId: task.taskId,
+      promptSha256: sha256Hex(params.prompt),
+      ...(typeof metaModel === "string" ? { model: metaModel } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+    };
+  }
+
   /** M14.9.5.1：隔离策略下单元审查的物理会话 key（与 reviewUnit 派生规则一致；trace 用） */
   unitSessionKey(projectId: string, sessionLabel: string): string {
     return `agent:${this.agentId}:paperteam-${projectId}--review/academic/unit/${sessionLabel}`;

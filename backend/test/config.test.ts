@@ -229,4 +229,12 @@ describe("loadConfig", () => {
     expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "0" }).ingestion.doclingConcurrency).toBe(1);
     expect(loadConfig({ PAPERTEAM_DOCLING_CONCURRENCY: "abc" }).ingestion.doclingConcurrency).toBe(1);
   });
+
+  it("M15.4.3 CandidateProposer 影子旁路开关：默认 off；on 采用；非法值回退 off", () => {
+    expect(loadConfig({}).review.candidateShadow).toBe("off");
+    expect(loadConfig({ PAPERTEAM_CANDIDATE_SHADOW: "on" }).review.candidateShadow).toBe("on");
+    expect(loadConfig({ PAPERTEAM_CANDIDATE_SHADOW: "ON" }).review.candidateShadow).toBe("on");
+    expect(loadConfig({ PAPERTEAM_CANDIDATE_SHADOW: "yes" }).review.candidateShadow).toBe("off");
+    expect(loadConfig({ PAPERTEAM_CANDIDATE_SHADOW: "1" }).review.candidateShadow).toBe("off");
+  });
 });

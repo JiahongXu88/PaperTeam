@@ -48,8 +48,11 @@ import {
 //   evidenceQuotes 禁 '...' 缩写；abstain 须非空 reason 且仅在无表格观察时使用。
 export const PROPOSER_PROMPT_VERSION = "candidate-proposer/v2";
 // M15.4.2：验证协议升级（M1/M2/M4 + 共享守卫 + 映射见证）；prompt 不变，已落盘提案可零成本重放。
-export const PROPOSER_ADAPTER_VERSION = "candidate-proposer-adapter/v2";
+// M15.4.3：P0-A 同一逻辑观察的确定性等价候选协议（logical-equivalence/v1）+ 指标数字标记冲突判别；
+//   prompt 仍不变，已落盘提案继续零成本重放（全部变更在确定性核验侧）。
+export const PROPOSER_ADAPTER_VERSION = "candidate-proposer-adapter/v3";
 export const MAPPING_WITNESS_VERSION = "mapping-witness/v1";
+export const LOGICAL_EQUIVALENCE_VERSION = "logical-equivalence/v1";
 
 // ---- 词表/守卫单一来源：claimGuards.ts（M15.4.2 B4；此前为保 dist 字节不变的本地拷贝，已删除） ----
 
@@ -129,6 +132,33 @@ export interface AnaphoraWitness {
   alternativesConsidered: string[];
 }
 
+/**
+ * M15.4.3（P0-A）同一逻辑观察的确定性等价类成员：同一实验观察被论文在多个物理表格中重复报告
+ *（主对比表 own 行 + 消融表 full-config 行）时的物理位置记录。等价判定见 partitionLogicalEquivalence；
+ * 成员只增不减——归并绝不删除竞争候选，只把「同一观察的物理副本」计为一个逻辑候选。
+ */
+export interface LogicalEquivalenceMember {
+  file: string;
+  tableId: string;
+  tableIndex: number;
+  row: number;
+  col: number;
+  rowKey: string[];
+  rowGroup: string | null;
+  headerPath: string[];
+  caption: string | null;
+  valueRaw: string;
+  unit: string | null;
+}
+
+/** 等价类归并记录（可独立复核：成员全位置 + 逐对归并证据 + 跨行指标指纹） */
+export interface LogicalEquivalenceRecord {
+  rule: typeof LOGICAL_EQUIVALENCE_VERSION;
+  members: LogicalEquivalenceMember[];
+  /** 两两归并依据（每对一行：命中列之外的 headerPath 对齐且 raw 逐字一致的列数、共同落位的主语词） */
+  pairs: Array<{ a: string; b: string; sharedMetricColumns: number; subjectTokensGroundedBoth: string[] }>;
+}
+
 /** M15.4.2 映射见证：proposal → canonical 格对应关系的全部可验证证据链 */
 export interface MappingWitness {
   version: typeof MAPPING_WITNESS_VERSION;
@@ -148,7 +178,12 @@ export interface MappingWitness {
   /** 逐 term grounding 落位记录 */
   termGroundings: Array<{ kind: "SUBJECT" | "METRIC" | "CONTEXT"; term: string; anchored: boolean; where: string }>;
   droppedContextTerms: string[];
-  uniqueness: { signatureSubject: string; signatureMetric: string; signatureContext: string[]; hitCount: number; hitRelation: string; valueCorroborated: boolean; multiBinding: { count: number; unanimous: string } | null };
+  uniqueness: {
+    signatureSubject: string; signatureMetric: string; signatureContext: string[]; hitCount: number; hitRelation: string; valueCorroborated: boolean; multiBinding: { count: number; unanimous: string } | null;
+    /** M15.4.3（P0-A）：物理命中数（去重前）与逻辑等价类记录（无归并时 physicalHitCount === hitCount、logicalEquivalence 为空） */
+    physicalHitCount: number;
+    logicalEquivalence: LogicalEquivalenceRecord[];
+  };
   guards: { unexplainedQualifiers: string[]; crossTableCompetitors: string[]; parseIssues: string[] };
   checks: string[];
 }
@@ -526,6 +561,161 @@ function guardContextOf(text: string): GuardContext {
   return { tokens: new Set(contextTokens(text)), plain: plainLatexText(text).toLowerCase() };
 }
 
+// ---- M15.4.3（P0-A2）指标数字标记冲突判别 ----
+
+/**
+ * 文本中的独立数字标记（mAP 50 的 50、mAP 50:95 的 50:95、Top-1 的 1；冒号/句点连接的区间为一个标记）。
+ * 数字标记是指标身份的一部分（mAP50 ≠ mAP50:95、Top-1 ≠ Top-3），与词元正交（contextTokens 剔除纯数字）。
+ */
+function numericMarkerSet(text: string): Set<string> {
+  const plain = plainLatexText(text).toLowerCase();
+  const out = new Set<string>();
+  for (const match of plain.matchAll(/(?<![a-z0-9.])(\d+(?:[.:]\d+)*)(?![a-z0-9.])/g)) out.add(match[1]!);
+  return out;
+}
+
+/**
+ * 指标标记冲突：论断 metric 短语带数字标记、列头指标名也带数字标记、且论断标记集不是列头标记集的子集
+ *（边界感知：「50」不是「50:95」的成员）→ 该列不承载此指标。列头无标记（mAP (%)）或论断无标记 → 不冲突
+ *（维持现状：无标记列仍可落位无标记 metric——只降不升的反方向不触发，不制造新唯一性）。
+ */
+function metricMarkerConflict(metricTerms: readonly string[], structureTexts: readonly string[]): boolean {
+  const claim = numericMarkerSet(metricTerms.join(" "));
+  if (claim.size === 0) return false;
+  const header = new Set<string>();
+  for (const text of structureTexts) for (const marker of numericMarkerSet(text)) header.add(marker);
+  if (header.size === 0) return false;
+  for (const marker of claim) if (!header.has(marker)) return true;
+  return false;
+}
+
+// ---- M15.4.3（P0-A1）同一逻辑观察的确定性等价类 ----
+
+interface HitSpans {
+  cell: ResolvedCell;
+  spans: StructureSpans;
+  valueRaw: string;
+  unit: string | null;
+  rowTexts: string[];
+  rowTokens: Set<string>;
+}
+
+const hitSpansOf = (document: CertificateDocument, cell: ResolvedCell): HitSpans | null => {
+  const spans = structureOf(document, cell);
+  if (spans === null || spans.cell.value === null) return null;
+  const rowTexts = [...rowKeyTexts(spans), ...(spans.cell.rowGroup !== null && spans.cell.rowGroup !== "" ? [spans.cell.rowGroup] : [])];
+  return {
+    cell,
+    spans,
+    valueRaw: normalizedCellValue(spans.cell).raw,
+    unit: spans.cell.value.unit ?? spans.cell.unit,
+    rowTexts,
+    rowTokens: tokensOf(rowTexts.join(" ") || " "),
+  };
+};
+
+const headerPathKey = (headerPath: readonly string[]): string => headerPath.join("/");
+
+/** 行的数值格按 headerPath 对齐表（同一行内 headerPath 歧义（多列同名）的键剔除——不参与指纹） */
+function valueColumnsByHeader(row: { cells: readonly LatexTableCell[] }): Map<string, string> {
+  const byKey = new Map<string, string[]>();
+  for (const c of row.cells) {
+    if (c.value === null || c.isHeader) continue;
+    const key = headerPathKey(c.headerPath);
+    const list = byKey.get(key) ?? [];
+    list.push(normalizedCellValue(c).raw);
+    byKey.set(key, list);
+  }
+  for (const [key, list] of byKey) if (list.length > 1) byKey.delete(key);
+  return new Map([...byKey].map(([key, list]) => [key, list[0]!]));
+}
+
+/**
+ * P0-A1 等价判定（两两，全部条件同时成立才归并；不能证明 = 不归并）：
+ *  (a) headerPath 逐层相同（指标身份）；(b) 格值 raw 逐字相同（含显示精度）且单位相同（值身份）；
+ *  (c) 同一 subject alternative 的全部词同时落位两行行键/行组（方法名身份，非值巧合）；
+ *  (d) 两表 parseIssues 均空且 caption 非空（provenance 完整；行键损坏/来源不完整不归并）；
+ *  (e) 跨行指标指纹：两行按 headerPath 对齐的其余数值列中 ≥2 列 raw 逐字一致（排除单点值巧合；
+ *      G1 实测主表 own 行与消融表 full-config 行在 mAP50:95 / Params / GFLOPs 三列额外一致）。
+ * 变体行（Ours w/o X / +组件）不设词面排除：与基准行值不同的变体由 (e) 指纹失配自然排除；
+ * 与基准行全部共享指标同值的「变体」在现行多绑定一致裁决下本就给出相同结论（allOverlap → SUPPORTED），
+ * 归并不改变其结果，只改变见证形态。B2 跨表值守卫以全部命中表（含等价成员）为白名单，照常对表外竞争生效。
+ */
+function equivalenceEvidence(a: HitSpans, b: HitSpans, subjectAlts: string[][], hitColumnKey: (h: HitSpans) => string): { equivalent: boolean; sharedMetricColumns: number; subjectTokensGroundedBoth: string[] } {
+  if (headerPathKey(a.spans.cell.headerPath) !== headerPathKey(b.spans.cell.headerPath)) return { equivalent: false, sharedMetricColumns: 0, subjectTokensGroundedBoth: [] };
+  if (a.valueRaw !== b.valueRaw || (a.unit ?? null) !== (b.unit ?? null)) return { equivalent: false, sharedMetricColumns: 0, subjectTokensGroundedBoth: [] };
+  const groundedAlt = subjectAlts.find((alt) => alt.every((t) => termGroundedIn(t, a.rowTokens, a.rowTexts)) && alt.every((t) => termGroundedIn(t, b.rowTokens, b.rowTexts))) ?? null;
+  if (groundedAlt === null) return { equivalent: false, sharedMetricColumns: 0, subjectTokensGroundedBoth: [] };
+  if (a.spans.table.parseIssues.length > 0 || b.spans.table.parseIssues.length > 0) return { equivalent: false, sharedMetricColumns: 0, subjectTokensGroundedBoth: [] };
+  if ((a.spans.table.caption ?? "") === "" || (b.spans.table.caption ?? "") === "") return { equivalent: false, sharedMetricColumns: 0, subjectTokensGroundedBoth: [] };
+  const rowA = a.spans.table.rows.find((r) => r.index === a.spans.cell.row);
+  const rowB = b.spans.table.rows.find((r) => r.index === b.spans.cell.row);
+  if (rowA === undefined || rowB === undefined) return { equivalent: false, sharedMetricColumns: 0, subjectTokensGroundedBoth: [] };
+  const colsA = valueColumnsByHeader(rowA);
+  const colsB = valueColumnsByHeader(rowB);
+  let shared = 0;
+  for (const [key, raw] of colsA) {
+    if (key === hitColumnKey(a) || key === hitColumnKey(b)) continue;
+    if (colsB.get(key) === raw) shared += 1;
+  }
+  return { equivalent: shared >= 2, sharedMetricColumns: shared, subjectTokensGroundedBoth: [...groundedAlt] };
+}
+
+/**
+ * 把物理签名命中划分为逻辑观察等价类（union-find）。返回：每类一个记录 + 命中 → 类代表的映射。
+ * 全文独立枚举先于去重：本函数只合并「同一观察的物理副本」，任何未通过等价判定的命中保持独立竞争。
+ */
+export function partitionLogicalEquivalence(
+  document: CertificateDocument,
+  hits: ReadonlyArray<ResolvedCell>,
+  subjectAlts: string[][],
+): { classes: LogicalEquivalenceRecord[]; representativeOf: Map<string, number> } {
+  const spans = hits.map((hit) => hitSpansOf(document, hit));
+  const hitKey = (h: HitSpans): string => `${h.cell.file}|${h.cell.tableId}|${h.cell.row}|${h.cell.col}`;
+  const columnKeyOf = (h: HitSpans): string => headerPathKey(h.spans.cell.headerPath);
+  const parent = spans.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  const pairs: Array<{ ai: number; bi: number; shared: number; tokens: string[] }> = [];
+  for (let i = 0; i < spans.length; i += 1) {
+    for (let j = i + 1; j < spans.length; j += 1) {
+      const a = spans[i]!;
+      const b = spans[j]!;
+      if (a === null || b === null) continue;
+      const evidence = equivalenceEvidence(a, b, subjectAlts, columnKeyOf);
+      if (!evidence.equivalent) continue;
+      pairs.push({ ai: i, bi: j, shared: evidence.sharedMetricColumns, tokens: evidence.subjectTokensGroundedBoth });
+      const ra = find(i);
+      const rb = find(j);
+      if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+    }
+  }
+  const classIndexOf = new Map<number, number>();
+  const classes: LogicalEquivalenceRecord[] = [];
+  const representativeOf = new Map<string, number>();
+  const memberOf = (h: HitSpans): LogicalEquivalenceMember => ({
+    file: h.cell.file, tableId: h.cell.tableId, tableIndex: h.cell.tableIndex, row: h.cell.row, col: h.cell.col,
+    rowKey: h.spans.cell.rowKey, rowGroup: h.spans.cell.rowGroup, headerPath: h.spans.cell.headerPath,
+    caption: h.spans.table.caption, valueRaw: h.valueRaw, unit: h.unit,
+  });
+  spans.forEach((h, i) => {
+    if (h === null) return;
+    const root = find(i);
+    let classIndex = classIndexOf.get(root);
+    if (classIndex === undefined) {
+      classIndex = classes.length;
+      classIndexOf.set(root, classIndex);
+      classes.push({ rule: LOGICAL_EQUIVALENCE_VERSION, members: [], pairs: [] });
+    }
+    classes[classIndex]!.members.push(memberOf(h));
+    representativeOf.set(hitKey(h), classIndex);
+  });
+  for (const pair of pairs) {
+    const classIndex = representativeOf.get(hitKey(spans[pair.ai]!))!;
+    classes[classIndex]!.pairs.push({ a: hitKey(spans[pair.ai]!), b: hitKey(spans[pair.bi]!), sharedMetricColumns: pair.shared, subjectTokensGroundedBoth: pair.tokens });
+  }
+  return { classes, representativeOf };
+}
+
 /**
  * 签名枚举（修正 A 的核心）：对全文档所有数值格，用与提案完全相同的 grounding 规则统计满足
  * subject+metric+context 全部 grounded 的单元格。模型指向不参与枚举——它不能删除任何竞争候选。
@@ -597,16 +787,20 @@ export function enumerateSignature(document: CertificateDocument, termsIn: Groun
           && subjectAlts.some((alt) => alt.every((t) => termGroundedIn(t, headerLeafTokens, columnHeaderTexts(spans))));
         if (!subjectOkA && !subjectOkB) continue;
         const transposed = subjectOkB;
-        // metric grounding（不约束时跳过）：方向 A → 列表头；方向 B（转置）→ 行键（指标在行）
+        // metric grounding（不约束时跳过）：方向 A → 列表头；方向 B（转置）→ 行键（指标在行）。
+        // M15.4.3（P0-A2）指标数字标记冲突为一票否决：论断 metric 带数字标记（50 / 50:95 / Top-1 的 1）
+        // 而列头/行键指标名带不同标记 → 该列不承载此指标（mAP50 ≠ mAP50:95）。
         if (!metricUnconstrained && terms.metric.length > 0) {
           if (!transposed) {
             const headerTokens = tokensOf(cell.headerPath.join(" ") || " ");
-            const metricOk = terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans)))
-              || (terms.metric.every((t) => numericPartsGrounded(t, columnHeaderTexts(spans))) && metricQuoteBinds(terms.metric, cell.headerPath.slice(-1).join(" "), columnHeaderTexts(spans)));
+            const metricOk = (terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans)))
+              || (terms.metric.every((t) => numericPartsGrounded(t, columnHeaderTexts(spans))) && metricQuoteBinds(terms.metric, cell.headerPath.slice(-1).join(" "), columnHeaderTexts(spans))))
+              && !metricMarkerConflict(terms.metric, columnHeaderTexts(spans));
             if (!metricOk) continue;
           } else {
             const rowKeyMetricTexts = [...rowKeyTexts(spans), ...(cell.rowGroup ? [cell.rowGroup] : "")];
-            const metricOk = terms.metric.every((t) => termGroundedIn(t, rowTokens, rowKeyMetricTexts));
+            const metricOk = terms.metric.every((t) => termGroundedIn(t, rowTokens, rowKeyMetricTexts))
+              && !metricMarkerConflict(terms.metric, rowKeyMetricTexts);
             if (!metricOk) continue;
           }
         }
@@ -1007,8 +1201,10 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
   if (!subjectHasContent) return abstain("GROUNDING_FAILED", "vacuous subject (stopwords only, not own-alias): value coincidence cannot prove correspondence", "GROUNDING_FAILED", top.cell);
   const metricGrounded = terms.metric.length > 0
     && (!subjectGroundedB
-      ? (terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans))) || metricQuoteBindsTop(terms.metric, spans, quotes))
-      : terms.metric.every((t) => termGroundedIn(t, rowTokens, [...rowKeyTexts(spans), ...(spans.cell.rowGroup ? [spans.cell.rowGroup] : "")])));
+      ? ((terms.metric.every((t) => termGroundedIn(t, headerTokens, columnHeaderTexts(spans))) || metricQuoteBindsTop(terms.metric, spans, quotes))
+        && !metricMarkerConflict(terms.metric, columnHeaderTexts(spans)))
+      : (terms.metric.every((t) => termGroundedIn(t, rowTokens, [...rowKeyTexts(spans), ...(spans.cell.rowGroup ? [spans.cell.rowGroup] : "")]))
+        && !metricMarkerConflict(terms.metric, [...rowKeyTexts(spans), ...(spans.cell.rowGroup ? [spans.cell.rowGroup] : "")])));
   // 条件词佐证过滤（修正 A 语义下的安全方向）：逐条检查 top 候选的表格语境能否佐证该条件词；
   // 不能佐证的条件词（如修辞 fastest/interative 描述，论文表格语境无此词）视为解释性噪声丢弃并记录，
   // 不参与唯一性枚举——过滤器强度只降不升（竞争候选只会更多 → 唯一性更严，不会借丢弃制造假唯一）。
@@ -1017,10 +1213,27 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     || quotes.some((q) => norm(spans.table.caption ?? "").includes(norm(q)) || norm(spans.table.label ?? "").includes(norm(q))));
   const droppedContext: string[] = anchoredContext.filter((t) => !corroboratedContext.includes(t));
 
-  // 5) 唯一性（签名枚举；模型指向不删除竞争候选）+ 值佐证列选择（仅 metric 未文字识别时；仿 A2 更严）
+  // 5) 唯一性（签名枚举；模型指向不删除竞争候选）+ 值佐证列选择（仅 metric 未文字识别时；仿 A2 更严）。
+  //    M15.4.3（P0-A1）：物理命中先经逻辑观察等价类划分——同一观察的物理副本（主表 own 行 + 消融表
+  //    full-config 行）计为一个逻辑候选；唯一性 / 多绑定一致裁决均按逻辑类计数，类间混合仍弃判。
+  //    全部成员物理位置保留进 witness；B2 以全部命中表（含等价成员）为白名单。
   let valueCorroborated = false;
   let multiBinding: { count: number; unanimous: string } | null = null;
   let multiBindingOutcome: "SUPPORTED_CANDIDATE" | "CONTRADICTED_CANDIDATE" | null = null;
+  let logicalEquivalence: LogicalEquivalenceRecord[] = [];
+  let physicalHitCount = 1;
+  const relationOfHit = (h: ResolvedCell): "OVERLAP" | "DISJOINT" | "UNIT_MISMATCH" | "SCALE_AMBIGUOUS" | null => {
+    const file = document.files.find((f) => f.file === h.file);
+    const cell = file?.tables[h.tableIndex]?.cells.find((c) => c.row === h.row && c.value !== null && !c.isHeader && (c.col === h.col || (c.col < h.col && h.col < c.col + c.colSpan)));
+    return cell === undefined || cell.value === null ? null : compareAtoms({ value: atom.value, decimals: atom.decimals, unit: atom.unit }, normalizedCellValue(cell)).relation;
+  };
+  /**
+   * 行限定（曾于 M15.4.3 试加、已回退）：对签名命中按 ROW_QUALIFIERS 剔除「变体行」在 51 例回放中
+   * 损失保护锚 F1-C01（gold 行 "Proposed + TAS" 因 "+" 被误判变体而剔除 → 值佐证 0 命中 → 弃判），
+   * 触发预登记 STOP → 整段移除。变体行竞争由既有机制 fail-closed 承担：与基准值不同的变体行在逻辑
+   * 等价类划分下保持独立类 → 类间混合关系 → 弃判（不删除竞争候选，不借剔除制造假唯一）。
+   */
+  const sameCellAs = (h: ResolvedCell, target: ResolvedCell): boolean => h.file === target.file && h.tableIndex === target.tableIndex && h.row === target.row && h.col === target.col;
   if (!metricGrounded) {
     // metric 未被文字/引文 grounded（含 metric 为空——正文不点名指标）：不允许引文绑定列；
     // 唯一出路 = subject+context 行签名唯一 + 该行恰一个值重叠格 + 表有题注（只能出 SUPPORTED 路径）
@@ -1030,7 +1243,8 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
       return abstain("PROPOSAL_NOT_UNIQUE", "metric not textually identified; subject/context signature grounds 0 rows", "PROPOSAL_NOT_UNIQUE", top.cell, 0);
     }
     // A2 化推广（M15.3.4 valueTieBreak 先例）：在签名命中的全部行的数值格中，恰一个与论断值 OVERLAP
-    // 且其表有题注/label → 该格承载观察（值不参与跨签名行的搜索范围——只在语义签名已收窄的行集内裁决）
+    // 且其表有题注/label → 该格承载观察（值不参与跨签名行的搜索范围——只在语义签名已收窄的行集内裁决）。
+    // P0-A1：值重叠格按逻辑观察等价类划分后须恰一个逻辑类（同一观察的重复报告不构成竞争）。
     const seen = new Set<string>();
     const rowCells: Array<{ cell: LatexTableCell; table: LatexTable }> = [];
     for (const h of hits) {
@@ -1046,15 +1260,21 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
       }
     }
     const overlapping = rowCells.filter((e) => e.table !== undefined && compareAtoms({ value: atom.value, decimals: atom.decimals, unit: atom.unit }, normalizedCellValue(e.cell)).relation === "OVERLAP");
-    const withCaption = overlapping.filter((e) => (e.table!.caption ?? "") !== "" || e.table!.label !== null);
-    if (overlapping.length !== 1 || withCaption.length !== 1) {
-      return abstain("PROPOSAL_NOT_UNIQUE", `metric not textually identified: ${overlapping.length} value-overlapping cells across ${new Set(hits.map((h) => `${h.file}|${h.row}`)).size} signature rows (need exactly 1, with caption)`, "PROPOSAL_NOT_UNIQUE", top.cell, signatureNoMetric.size);
+    const overlappingResolved: ResolvedCell[] = overlapping.map((e) => ({
+      file: document.files.find((f) => f.tables.some((t) => t === e.table))?.file ?? "",
+      tableId: e.table.tableId, tableIndex: e.table.tableIndex, row: e.cell.row, col: e.cell.col,
+      rowKey: e.cell.rowKey, headerPath: e.cell.headerPath, caption: e.table.caption, label: e.table.label,
+    }));
+    const partition = partitionLogicalEquivalence(document, overlappingResolved, subjectAlts);
+    const mergedClasses = partition.classes.filter((c) => c.members.length > 1);
+    const logicalWinnerCount = overlapping.length - mergedClasses.reduce((sum, c) => sum + c.members.length - 1, 0);
+    const topOverlapping = overlapping.find((e) => e.table!.tableId === top.cell!.tableId && e.cell.row === top.cell!.row && e.cell.col === top.cell!.col);
+    const topCaptionOk = topOverlapping !== undefined && ((topOverlapping.table!.caption ?? "") !== "" || topOverlapping.table!.label !== null);
+    if (logicalWinnerCount !== 1 || !topCaptionOk) {
+      return abstain("PROPOSAL_NOT_UNIQUE", `metric not textually identified: ${overlapping.length} value-overlapping cells (${logicalWinnerCount} logical observations) across ${new Set(hits.map((h) => `${h.file}|${h.row}`)).size} signature rows (need exactly 1, with caption)`, "PROPOSAL_NOT_UNIQUE", top.cell, signatureNoMetric.size);
     }
-    const winner = overlapping[0]!;
-    const winnerTable = winner.table!;
-    if (!(winnerTable.tableId === top.cell!.tableId && winner.cell.row === top.cell!.row && winner.cell.col === top.cell!.col)) {
-      return abstain("GROUNDING_FAILED", "value-corroborated cell differs from top proposal", "GROUNDING_FAILED", top.cell);
-    }
+    if (mergedClasses.length > 0) logicalEquivalence = mergedClasses;
+    physicalHitCount = overlapping.length;
     valueCorroborated = true;
   } else {
     const enumeration = enumerateSignature(document, { ...terms, context: corroboratedContext }, quotes, false, atom.unit);
@@ -1062,36 +1282,50 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     if (signature.size === 0) {
       return abstain("PROPOSAL_NOT_UNIQUE", "signature grounded 0 cells", "PROPOSAL_NOT_UNIQUE", top.cell, 0);
     }
-    if (signature.size === 1) {
-      const only = [...signature.values()][0]!;
-      if (!(only.file === top.cell!.file && only.tableIndex === top.cell!.tableIndex && only.row === top.cell!.row && only.col === top.cell!.col)) {
+    const hits = [...signature.values()];
+    // P0-A1：逻辑观察等价类划分（不能证明同一观察的命中保持独立竞争）
+    const partition = partitionLogicalEquivalence(document, hits, subjectAlts);
+    physicalHitCount = hits.length;
+    const mergedClasses = partition.classes.filter((c) => c.members.length > 1);
+    const topInSignature = hits.some((h) => sameCellAs(h, top.cell!));
+    if (!topInSignature) {
+      return abstain("GROUNDING_FAILED", `signature grounded ${hits.length} cells not including the top proposal`, "GROUNDING_FAILED", top.cell, hits.length);
+    }
+    if (mergedClasses.length > 0) logicalEquivalence = mergedClasses;
+    // 每个逻辑类取一个代表成员求关系（类内成员值+单位+指标逐字相同 → 关系恒一致）
+    const representativeHits: ResolvedCell[] = [];
+    const representedClasses = new Set<number>();
+    for (const h of hits) {
+      const key = `${h.file}|${h.tableId}|${h.row}|${h.col}`;
+      const classIndex = partition.representativeOf.get(key);
+      if (classIndex !== undefined && partition.classes[classIndex]!.members.length > 1) {
+        if (representedClasses.has(classIndex)) continue;
+        representedClasses.add(classIndex);
+      }
+      representativeHits.push(h);
+    }
+    if (representativeHits.length === 1) {
+      const only = representativeHits[0]!;
+      const members = mergedClasses.find((c) => c.members.some((m) => m.file === only.file && m.tableId === only.tableId && m.row === only.row && m.col === only.col));
+      const memberCells: ResolvedCell[] = members === undefined ? [only] : hits.filter((h) => members.members.some((m) => m.file === h.file && m.tableId === h.tableId && m.row === h.row && m.col === h.col));
+      if (!memberCells.some((m) => sameCellAs(m, top.cell!))) {
         return abstain("GROUNDING_FAILED", "unique signature cell differs from top proposal", "GROUNDING_FAILED", top.cell);
       }
     } else {
-      // 并列主语的多绑定（claim 明说 A and B 各自取得该值）：不删除竞争候选（修正 A），但若全部命中格
-      // 与论断值一致（或全部不一致且模型判断一致），任一格都独立佐证/反驳该论断 → 一致裁决出证；
-      // 混合（部分一致部分不一致）= 真歧义 → 弃判。
-      const hits = [...signature.values()];
-      const hitRelations = hits.map((h) => {
-        const file = document.files.find((f) => f.file === h.file);
-        const cell = file?.tables[h.tableIndex]?.cells.find((c) => c.row === h.row && c.value !== null && !c.isHeader && (c.col === h.col || (c.col < h.col && h.col < c.col + c.colSpan)));
-        return cell === undefined || cell.value === null ? null : compareAtoms({ value: atom.value, decimals: atom.decimals, unit: atom.unit }, normalizedCellValue(cell)).relation;
-      });
+      // 并列主语 / 跨逻辑类的多绑定：不删除竞争候选（修正 A），但若全部逻辑类与论断值一致（或全部不一致
+      // 且模型判断一致），任一类都独立佐证/反驳该论断 → 一致裁决出证；类间混合 = 真歧义 → 弃判。
+      const hitRelations = representativeHits.map(relationOfHit);
       if (hitRelations.some((r) => r === null || r === "UNIT_MISMATCH" || r === "SCALE_AMBIGUOUS")) {
-        return abstain("PROPOSAL_NOT_UNIQUE", `multi-binding hits contain non-comparable cells (${signature.size} cells)`, "PROPOSAL_NOT_UNIQUE", top.cell, signature.size);
+        return abstain("PROPOSAL_NOT_UNIQUE", `multi-binding hits contain non-comparable cells (${hits.length} physical / ${representativeHits.length} logical cells)`, "PROPOSAL_NOT_UNIQUE", top.cell, hits.length);
       }
       const allOverlap = hitRelations.every((r) => r === "OVERLAP");
       const allDisjoint = hitRelations.every((r) => r === "DISJOINT");
-      const topInSignature = hits.some((h) => h.file === top.cell!.file && h.tableIndex === top.cell!.tableIndex && h.row === top.cell!.row && h.col === top.cell!.col);
-      if (!topInSignature) {
-        return abstain("GROUNDING_FAILED", `signature grounded ${signature.size} cells not including the top proposal`, "GROUNDING_FAILED", top.cell, signature.size);
-      }
       if (!allOverlap && !allDisjoint) {
-        return abstain("PROPOSAL_NOT_UNIQUE", `multi-binding mixed relations over ${signature.size} cells (genuine ambiguity)`, "PROPOSAL_NOT_UNIQUE", top.cell, signature.size);
+        return abstain("PROPOSAL_NOT_UNIQUE", `multi-binding mixed relations over ${representativeHits.length} logical observations (${hits.length} physical cells; genuine ambiguity)`, "PROPOSAL_NOT_UNIQUE", top.cell, hits.length);
       }
-      multiBinding = { count: signature.size, unanimous: allOverlap ? "OVERLAP" : "DISJOINT" };
+      multiBinding = { count: representativeHits.length, unanimous: allOverlap ? "OVERLAP" : "DISJOINT" };
       if (allDisjoint) {
-        // 多格矛盾路径同样受 B2 约束：论断值出现在任何非命中表 → 跨表归属不可证
+        // 多格矛盾路径同样受 B2 约束：论断值出现在任何非命中表 → 跨表归属不可证（命中表含等价成员全部表）
         const otherTables = valueAppearsInOtherTablesMulti(document, hits, atom.raw);
         if (otherTables.length > 0) return abstain("VALUE_APPEARS_IN_OTHER_TABLE", otherTables.join(","), "VALUE_APPEARS_IN_OTHER_TABLE", top.cell);
         multiBindingOutcome = "CONTRADICTED_CANDIDATE";
@@ -1154,6 +1388,7 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
       hitCount: multiBinding !== null ? multiBinding.count : 1,
       hitRelation: multiBinding !== null ? multiBinding.unanimous : relation.relation,
       valueCorroborated, multiBinding,
+      physicalHitCount, logicalEquivalence,
     },
     guards: { unexplainedQualifiers: unexplained, crossTableCompetitors: [], parseIssues: spans.table.parseIssues },
     checks: [],
@@ -1165,7 +1400,11 @@ export function verifyProposal(input: VerifyProposalInput): ProposalVerification
     "SUBJECT_ROW_GROUNDED",
     metricGrounded ? "METRIC_COLUMN_GROUNDED" : "METRIC_VALUE_CORROBORATED",
     terms.context.length === 0 ? "CONTEXT_EMPTY" : corroboratedContext.length === terms.context.length ? "CONTEXT_TABLE_GROUNDED" : `CONTEXT_PARTIALLY_CORROBORATED(${corroboratedContext.length}/${terms.context.length})`,
-    valueCorroborated ? "ROW_SIGNATURE_VALUE_CORROBORATED" : multiBinding !== null ? `MULTI_BINDING_UNANIMOUS(${multiBinding.count})` : "SIGNATURE_UNIQUE",
+    valueCorroborated
+      ? (logicalEquivalence.length > 0 ? `ROW_SIGNATURE_VALUE_CORROBORATED_LOGICAL(${physicalHitCount} physical)` : "ROW_SIGNATURE_VALUE_CORROBORATED")
+      : multiBinding !== null
+        ? `MULTI_BINDING_UNANIMOUS(${multiBinding.count}${physicalHitCount > multiBinding.count ? ` logical/${physicalHitCount} physical` : ""})`
+        : logicalEquivalence.length > 0 ? `SIGNATURE_UNIQUE_LOGICAL(${physicalHitCount} physical copies)` : "SIGNATURE_UNIQUE",
     "QUALIFIERS_EXPLAINED", "B2_CROSS_TABLE_CLEAR", "DOUBLE_KEY_AGREED",
   ];
   witness.checks = checks;

@@ -282,7 +282,8 @@ const INEQ_AFTER = /^\s*(?:\\?%\s*)?(?:or (?:more|less|higher|lower|above|below)
 const DERIVED_BEFORE = /(?:\bby\s*$|\b(?:improvements?|gains?|increases?|decreases?|reductions?|boosts?|drops?|declines?|margins?|advantages?|lead|speed-?ups?|enhancements?)\s+(?:of\s*)?(?:about\s+|approximately\s+|nearly\s+|roughly\s+|around\s+|almost\s+|up to\s+|over\s+)?$|\b(?:relative|relatively)\b[^.;]{0,40}$|[+−]\s*$|(?:^|\s)-\s*$|(?:提升|提高|降低|增加|减少|下降|超出|领先|改善)了?(?:约|近)?\s*$)/i;
 const DERIVED_AFTER = /^\s*(?:\\?%|percent)?\s*(?:percentage[- ]points?|pp\b|p\.p\.|points?\b|个百分点|百分点|[×x]\b|×|times\b|-?fold\b|倍|(?:\\?%|percent)?\s*(?:higher|lower|better|worse|faster|slower|more|less|fewer|larger|smaller|improvement|gain|increase|decrease|reduction|relative|speed-?up|boost)\b|(?:的)?(?:提升|提高|降低|增加|减少|下降))/i;
 const AGGREGATE = /\b(?:on average|average(?:d)? (?:improvement|gain|increase|decrease|reduction)|mean (?:improvement|gain)|across (?:all|the|\w+) (?:datasets|benchmarks|models|tasks|settings)|overall (?:improvement|gain))\b|平均(?:提升|提高|增益|降低)/i;
-const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
+/** 变体行判别（M15.4.3 起导出：candidateProposer 签名枚举的行限定与生产 bindTextAtom 同一词源） */
+export const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
 
 export type AtomQualifier = "APPROX" | "INEQUALITY" | "DERIVED" | "AGGREGATE" | "SIGNED";
 
@@ -307,9 +308,45 @@ export function atomQualifiers(scopes: TextScopes, rawValue: string): AtomQualif
   // 派生名词族与 DERIVED_BEFORE / 触发词表对齐，另纳入 difference/delta/gap/ratio/saving 等真派生名词，
   // 防止「a difference of 12」被误判为原子值。
   const DERIVED_ATTRIBUTION_NOUNS = new Set(["improvement", "gain", "increase", "decrease", "reduction", "boost", "drop", "decline", "margin", "advantage", "lead", "speedup", "speed-up", "enhancement", "difference", "delta", "gap", "ratio", "saving", "overhead", "change"]);
+  // M15.4.3（P0-B）括号同位语：数值位于未闭合括号组内时，「(」前紧邻的组头词决定语义归属——
+  // 普通名词（accuracy / channel / rate）= 对该名词绝对值的同位语报告（「lower accuracy (68.9\%)」），
+  // 比较词只修饰邻近语境，不改变数值原子性；派生名词 / 继承触发词族 / 介词连词 / 单位 / 数字 = 变化量
+  // 语境（「an improvement (3.2\%)」「reduced by (68.9\%)」「(2.1 ms) 降幅重述」），维持继承。
+  // 后缀形派生（「(68.9\% higher)」「(3.2 pp)」「(2×)」）不经本分支——由 DERIVED_AFTER 直接判定兜底；
+  // 无括号的「lower by 68.9\%」由 DERIVED_BEFORE 直接判定兜底；from/to 端点语义不动。
+  const DERIVED_TRIGGER_WORD = /\b(?:improv\w*|gains?|increas\w*|decreas\w*|reduc\w*|boost\w*|outperform\w*|surpass\w*|relative(?:ly)?|higher|lower|better|worse|faster|slower|speed-?ups?|margins?)\b|提升|提高|降低|增加|减少|超出|领先/i;
+  const PAREN_GROUP_KEEP = new Set(["by", "of", "from", "than", "to", "vs", "versus", "and", "or", "per", "up", "down", "over", "under", "i.e", "e.g", "cf"]);
+  const PAREN_GROUP_UNIT = /^(?:%|pp|pts?|points?|x|×|times?|fold|ms|s|sec|secs|min|h|hz|fps|mb|gb|kb|tb|k|m|mm|cm|km|db|w|d)$/i;
+  const parenAppositiveHead = (word: string): boolean => {
+    const head = word.length >= 5 && word.endsWith("s") && !/(?:ss|us|is)$/.test(word) ? word.slice(0, -1) : word;
+    if (DERIVED_ATTRIBUTION_NOUNS.has(head) || DERIVED_ATTRIBUTION_NOUNS.has(word)) return false;
+    if (DERIVED_TRIGGER_WORD.test(word)) return false;
+    if (PAREN_GROUP_KEEP.has(word) || PAREN_GROUP_UNIT.test(word)) return false;
+    if (/ly$/.test(word) && word.length >= 4) return false; // 副词形（markedly/significantly…）不作同位语组头（fail-closed）
+    return true;
+  };
   const localAttribution = (() => {
     const slice = longBefore.slice(lastTrigger < 0 ? 0 : lastTrigger);
     if (/\bfrom\s*$/.test(slice)) return true; // 区间起点端点
+    // 数值位于括号组内：紧随「(」之后（「… channel (68.9\%）」），或组内并列元素之后
+    //（分隔词 vs / versus / and / or / 逗号，且「(」到数值之间无「)」——「accuracy (68.9\% vs 72.1\%)」的 72.1）。
+    // 组头词为普通名词 → 同位语绝对值；括号前无词（归属不可证）→ 维持继承（fail-closed）。
+    const parenHeadOf = (): { head: string | null } => {
+      if (/\(\s*$/.test(slice)) {
+        const head = /([A-Za-z][\w.\-']*)\s*$/.exec(slice.replace(/\(\s*$/, ""))?.[1]?.toLowerCase() ?? null;
+        return { head };
+      }
+      if (/(?:\bvs\.?|\bversus|\band\b|\bor\b|,)\s*$/.test(slice)) {
+        const open = slice.lastIndexOf("(");
+        if (open >= 0 && !slice.includes(")", open)) {
+          const head = /([A-Za-z][\w.\-']*)\s*$/.exec(slice.slice(0, open).trimEnd())?.[1]?.toLowerCase() ?? null;
+          return { head };
+        }
+      }
+      return { head: null };
+    };
+    const parenHead = parenHeadOf().head;
+    if (parenHead !== null) return parenHead === "" ? false : parenAppositiveHead(parenHead);
     const ofMatch = /(?:^|\s)([A-Za-z][\w.\-']*(?:\s+[A-Za-z][\w.\-']*){0,2})\s+of\s*$/.exec(slice);
     if (ofMatch === null) return false;
     const raw = ofMatch[1]!.split(/\s+/).pop()!.toLowerCase();

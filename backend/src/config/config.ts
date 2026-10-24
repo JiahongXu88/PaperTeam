@@ -144,6 +144,12 @@ export interface ReviewConfig {
    */
   claimStage: UnitClaimStage;
   /**
+   * M15.4.3：CandidateProposer 影子旁路（PAPERTEAM_CANDIDATE_SHADOW，缺省 off）。
+   * on = claim-audit 构建后为有界论断子集（≤4）运行提案→确定性核验，产物 candidate-shadow-r{round}.json
+   * （SHADOW_OBSERVATION_ONLY：不进 Quality Gate / Finding / HITL / 评分）；off = 零额外调用零产物。
+   */
+  candidateShadow: "off" | "on";
+  /**
    * M11.4 Product Closure：existing-paper revision 的分层 gate 策略
    * （Revision Task Success vs Publication Ready）。集中 typed 配置，
    * 不散落 magic number；idea_to_paper / topic_survey 不受影响。
@@ -702,6 +708,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       claimRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS", { default: 2, min: 0, max: 8 }),
       findingRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_FINDING_RECHECK_CALLS", { default: 3, min: 0, max: 8 }),
       claimStage: readOptionalValue(source, "PAPERTEAM_REVIEW_CLAIM_STAGE")?.trim().toLowerCase() === "separate" ? "separate" : "inline",
+      /** M15.4.3：CandidateProposer 影子旁路（缺省 off；off = 零额外模型调用、零产物、零行为差异） */
+      candidateShadow: readOptionalValue(source, "PAPERTEAM_CANDIDATE_SHADOW")?.trim().toLowerCase() === "on" ? "on" : "off",
     },
     skills: {
       disabledSkillIds: (readOptionalValue(source, "PAPERTEAM_DISABLED_SKILLS") ?? "")

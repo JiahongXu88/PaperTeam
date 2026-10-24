@@ -83,6 +83,7 @@ import {
   type CrossUnitRecheckResult,
   type UnitClaimExtraction,
 } from "../review/claimAudit.js";
+import { CANDIDATE_SHADOW_SCHEMA, runCandidateShadowStage, type CandidateShadowArtifact } from "../review/candidateShadow.js";
 import { auditFindings } from "../review/findingAudit.js";
 import {
   FINDING_RECHECK_BATCH,
@@ -564,6 +565,8 @@ export interface WorkflowServices {
     findingRecheckMaxCalls?: number;
     /** M15.2 extended 模式论断账本抽取方式（缺省 inline） */
     claimStage?: UnitClaimStage;
+    /** M15.4.3：CandidateProposer 影子旁路（缺省 off = 零额外调用零产物；on 见 review/candidateShadow.ts） */
+    candidateShadow?: "off" | "on";
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -12304,6 +12307,43 @@ async function runReviewAudits(
     summary: summarizeFindingRecheck(findingRecheckRecords),
   };
   await services.reviewArtifacts.saveAuditArtifact(ctx.projectId, "claim-audit", input.round, artifact);
+  /**
+   * M15.4.3（P1）CandidateProposer Shadow 旁路（缺省 off；PAPERTEAM_CANDIDATE_SHADOW=on 时执行）。
+   * 消费刚落盘的 claim-audit 账本（不重跑 Reviewer、不造新 claim）；每轮 ≤4 claim / ≤8 调用 / 并发 1；
+   * 同请求身份 terminal 条目复用（resume / 重试零额外调用）。产物 candidate-shadow-r{round}.json
+   * 是 SHADOW_OBSERVATION_ONLY：不进 Quality Gate / Finding / HITL / 终态 / 评分。
+   * 失败隔离：单 claim 异常记 FAILED；整段异常只记日志（含产物保存失败）——不影响主审稿与上方已保存产物。
+   */
+  if ((services.review.candidateShadow ?? "off") === "on") {
+    try {
+      const previous = await services.reviewArtifacts.loadAuditArtifact<CandidateShadowArtifact>(ctx.projectId, "candidate-shadow", input.round, CANDIDATE_SHADOW_SCHEMA);
+      const shadow = await runCandidateShadowStage(
+        {
+          projectId: ctx.projectId,
+          round: input.round,
+          revision: input.revision,
+          documentFingerprint: input.coveragePlan.snapshotId,
+          claimAudit: artifact,
+          certificateFiles: input.allTex,
+          signal: ctx.signal,
+        },
+        {
+          proposeClaimCandidate: (params) => services.reviewer.proposeClaimCandidate({
+            projectId: params.projectId,
+            prompt: params.prompt,
+            sessionLabel: params.sessionLabel,
+            ...(params.signal !== undefined ? { signal: params.signal } : {}),
+          }),
+        },
+        previous,
+      );
+      await services.reviewArtifacts.saveAuditArtifact(ctx.projectId, "candidate-shadow", input.round, shadow);
+      ctx.log(`[review] CandidateProposer shadow（r${input.round}）：选中 ${shadow.summary.selected}、评估 ${shadow.summary.evaluated}、复用 ${shadow.summary.reused}、接受 ${shadow.summary.accepted}（SUPPORTED ${shadow.summary.acceptedSupported} / CONTRADICTED ${shadow.summary.acceptedContradicted}）、弃判 ${shadow.summary.abstained}、调用 ${shadow.summary.calls} 次 / ${(shadow.summary.inputTokens ?? 0).toLocaleString()} in-token / ${shadow.summary.durationMs}ms；SHADOW_OBSERVATION_ONLY，不影响审稿与 Gate`);
+    } catch (error) {
+      if (ctx.signal.aborted) throw error;
+      ctx.log(`[review] CandidateProposer shadow 失败（不影响生产审稿 / Gate）：${error instanceof Error ? `${error.constructor.name}: ${error.message.replace(/\s+/g, " ").slice(0, 200)}` : String(error).slice(0, 200)}；本轮无 candidate-shadow 产物`);
+    }
+  }
   // 只读引用审计：项目 .bib（作者工作流）或 thebibliography / 文后参考文献（只读评估）；外部元数据只在只读评估且启用时核验
   const preliminary = buildReadOnlyCitationAudit({
     round: input.round, sourceRevision: input.revision, documentFingerprint: input.coveragePlan.snapshotId,
