@@ -121,7 +121,7 @@ citation.verify（确定性，scholarly HTTP 非 LLM）：81 引文、missingKey
 
 - 新增：`backend/src/review/crossSectionConsistency.ts`、`backend/src/quality/evidencePairing.ts`；修改：`backend/src/quality/gates.ts`（规则 4/5/6 + 4e 新规则）、`backend/src/review/claimCertificate.ts`（差值名词派生修复）、`backend/src/workflow/definitions.ts`（唯一入口接线）、`frontend/src/components/common/status.ts`（规则标签）；测试：`crossSectionConsistency.test.ts`（11）、`m156EvidenceAwareGate.test.ts`（20）；脚本：`m156-evidence-aware-gate-benchmark.mjs`、`m156-fresh-published-assessment.mjs`。
 - backend：vitest 4325 passed / 41 skipped（smoke）+ typecheck + build 全绿；frontend：typecheck + 364/364 全绿；gateDualEntry（双入口指纹一致）+ GateApi（10 规则集合）全绿。
-- CI / Linux Integration：推送后在 PROJECT_STATUS 与本节更新（见最终 commit 后核验）。
+- CI / Linux Integration（最终 HEAD 402fadc，2026-10-25）：**CI completed success**（https://github.com/JiahongXu88/PaperTeam/actions/runs/40206592815；build·typecheck·test ubuntu 5m18s + docker build smoke 双绿）；**Linux Integration completed success**（https://github.com/JiahongXu88/PaperTeam/actions/runs/40206592807；docling native 3m37s + docling docker 双绿）。attempt 1 一次通过，无重试。
 
 ## 10. 下一步（唯一优先）
 
