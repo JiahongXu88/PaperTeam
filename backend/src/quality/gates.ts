@@ -29,6 +29,8 @@ import {
 import type { ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { ClaimGroundingReport } from "../review/claimGrounding.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
+import type { EvidencePairingSummary } from "./evidencePairing.js";
+import type { CrossSectionConsistencySummary } from "../review/crossSectionConsistency.js";
 import type { TargetReadinessGateAdvisory } from "../target/promptBlocks.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { ClaimCheckGateSummary } from "../experiments/claimChecks.js";
@@ -359,6 +361,24 @@ export interface QualityGateInput {
    * 登记了但无法复算 → NOT_EVALUATED（必需），未登记 → 有实验包时 NOT_EVALUATED（不阻断）/ 无实验包 NOT_APPLICABLE。
    */
   claimChecks?: ClaimCheckGateSummary;
+  /**
+   * M15.6：Evidence-Aware 分层（quality/evidencePairing.ts；纯函数派生）。undefined = 调用方未计算
+   * （规则 4/5/6 按旧口径，兼容纯单元输入与旧产物）。提供时规则 4 的 UNSUPPORTED 计数与
+   * 规则 5/6 的 heavy finding 计数按预登记状态表分层：无 pairing 材料（证据库空 + formal 池空）
+   * 的 UNSUPPORTED 与 evidence_gap 工件 finding 降为 NOT_EVALUATED 呈现（published 只读不阻断；
+   * author 稿件 = 必需核验未完成仍阻断）；CONTRADICTED（formal 解析 / opaque 披露）与
+   * VERIFIED_IN_DOC / BY_EVIDENCE 类缺陷保持阻断。
+   */
+  evidencePairing?: EvidencePairingSummary;
+  /**
+   * M15.6：跨节数值一致性（摘要/结论 ↔ 结果表；review/crossSectionConsistency.ts；确定性零模型）。
+   * undefined = 调用方未计算（规则不出现，兼容纯单元输入）。EVALUATED 时呈现
+   * cross_section_numeric_consistency 规则：verifiedContradictions > 0 → FAIL（required）；
+   * suspected（跨表疑义未消解 / 派生量全解释不相容）→ NOT_EVALUATED（author 稿件 required 转作者裁决，
+   * published 只读不阻断）；绑定唯一且数值一致 → PASS；绑定不唯一 / 限定词 / 聚合口径 →
+   * NOT_EVALUATED（不阻断——不能要求所有摘要数字都绑上表，但绝不签发「已核验一致」）。
+   */
+  crossSectionConsistency?: CrossSectionConsistencySummary;
 }
 
 /** M14.2：thesis gate 规则输入（definitions.computeThesisGateInput 产出） */
@@ -569,8 +589,13 @@ export function evaluateQualityGate(
   //    单独呈现不阻断，不是 evidence-backed，学术评分照常反映缺口）
   //    M14.9.5.4：前提 = fact 路确实抽取并评估了 claim（长文档单元模式不产出 claims；fact 路返回 0 条 claim
   //    同样是「没有被评估的论断」）——未评估时 NOT_EVALUATED（必需），不再显示「0 条 → PASS」
+  //    M15.6：evidencePairing 可用时按预登记状态表分层——无 pairing 材料的 UNSUPPORTED 与被拒绝的
+  //    跨域 CONTRADICTED pairing 不再计成「已证实论断违规」（缺证据 ≠ 已证伪）；author 稿件语境下
+  //    这部分是必需核验未完成（required NOT_EVALUATED 仍阻断 READY），published 只读是诚实评估缺口。
+  //    CONTRADICTED（formal 解析 / opaque 披露）与既有 opaque 计数口径不变——真实缺陷保持阻断。
   const audit = input.claimGapAudit;
   const claimGrounding = input.claimGrounding;
+  const pairing = input.evidencePairing;
   const verdicts = input.review.scores.factVerdicts;
   const claimsEvaluated = verdicts === null || verdicts === undefined
     ? 0
@@ -578,9 +603,11 @@ export function evaluateQualityGate(
   const unsupported =
     audit !== undefined
       ? audit.counts.revisionIntroduced
-      : claimGrounding !== undefined
-        ? claimGrounding.opaqueUnsupportedClaims
-        : (input.review.unsupportedCriticalClaims ?? 0);
+      : pairing !== undefined
+        ? pairing.claims.countedUnsupported + pairing.claims.reviewerContradictions + pairing.claims.verifiedContradictions
+        : claimGrounding !== undefined
+          ? claimGrounding.opaqueUnsupportedClaims
+          : (input.review.unsupportedCriticalClaims ?? 0);
   if (claimsEvaluated === 0) {
     push(
       "unsupported_critical_claims_zero",
@@ -591,16 +618,40 @@ export function evaluateQualityGate(
       true,
     );
   } else {
-    push(
-      "unsupported_critical_claims_zero",
-      verdict(unsupported === 0),
-      audit !== undefined
-        ? `修订引入 UNSUPPORTED/CONTRADICTED claim ${unsupported} 条（另有原稿既有 ${audit.counts.excludedPreExisting} 条 / 作者数据覆盖 ${audit.counts.excludedAuthorData} 条——返修语境不重证，见 claim-gap-audit）`
-        : claimGrounding !== undefined
-          ? `UNSUPPORTED/CONTRADICTED claim ${claimGrounding.unsupportedClaims} 条（凭空断言 ${claimGrounding.opaqueUnsupportedClaims} 条计入阻断；透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条单独呈现不阻断${(claimGrounding.authorDataUnsupportedClaims ?? 0) > 0 ? `；作者授权实验数据 ${claimGrounding.authorDataUnsupportedClaims} 条单独呈现不阻断` : ""}——口径见 M11.2.3）`
-          : `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
-      true,
-    );
+    // M15.6：分层呈现（信息完整性契约：评估了什么 / 证实矛盾多少 / 审稿怀疑多少 / 缺口多少）
+    const pairingDetail = pairing === undefined
+      ? null
+      : `；M15.6 分层：已证实矛盾 ${pairing.claims.verifiedContradictions}（formal evidence / 实验复算）+ 审稿怀疑 ${pairing.claims.reviewerContradictions}（opaque CONTRADICTED，无 formal 解析）计入${
+          pairing.claims.evidenceGapUnsupported > 0 || pairing.claims.domainMismatchContradictions > 0
+            ? `；证据库无 pairing 材料的 UNSUPPORTED ${pairing.claims.evidenceGapUnsupported} 条 + 跨域 pairing 拒绝 ${pairing.claims.domainMismatchContradictions} 条不计为论断违规（NOT_EVALUATED——缺证据 ≠ 已证伪）`
+            : ""
+        }${pairing.claims.claimCheckContradicted > 0 ? `；实验复算矛盾 ${pairing.claims.claimCheckContradicted} 条由规则 4d 计数` : ""}`;
+    if (unsupported === 0 && pairing !== undefined && (pairing.claims.evidenceGapUnsupported > 0 || pairing.claims.domainMismatchContradictions > 0)) {
+      // 计违规为 0，但存在核验缺口：author 稿件 = 必需核验未完成（阻断）；published 只读 = 诚实缺口（不阻断）
+      const required = input.reviewPurpose !== "published_paper_assessment";
+      push(
+        "unsupported_critical_claims_zero",
+        "NOT_EVALUATED",
+        (pairing.pairingStatus === "NO_PAIRING_MATERIAL"
+          ? `证据库无 pairing 材料（formal 池空）：UNSUPPORTED ${pairing.claims.evidenceGapUnsupported} 条为核验缺口，不是已证实的论断违规${required ? "——author 稿件的必需核验未完成（不得据此认定论文有科学错误，也不得放行 Final/READY）" : "——只读评估：论断尚未核验（详见 pendingVerification），不是已证实错误"}`
+          : `跨域 pairing 拒绝 ${pairing.claims.domainMismatchContradictions} 条 CONTRADICTED 判定（证据与论断零词面关联）${required ? "——需作者核对" : "——只读评估：该判定不作为论文错误计数"}`) +
+          (pairingDetail ?? ""),
+        required,
+      );
+    } else {
+      push(
+        "unsupported_critical_claims_zero",
+        verdict(unsupported === 0),
+        audit !== undefined
+          ? `修订引入 UNSUPPORTED/CONTRADICTED claim ${unsupported} 条（另有原稿既有 ${audit.counts.excludedPreExisting} 条 / 作者数据覆盖 ${audit.counts.excludedAuthorData} 条——返修语境不重证，见 claim-gap-audit）`
+          : pairing !== undefined
+            ? `UNSUPPORTED/CONTRADICTED claim 计违规 ${unsupported} 条${pairingDetail ?? ""}`
+            : claimGrounding !== undefined
+              ? `UNSUPPORTED/CONTRADICTED claim ${claimGrounding.unsupportedClaims} 条（凭空断言 ${claimGrounding.opaqueUnsupportedClaims} 条计入阻断；透明未核验转述 ${claimGrounding.transparentUnsupportedClaims} 条单独呈现不阻断${(claimGrounding.authorDataUnsupportedClaims ?? 0) > 0 ? `；作者授权实验数据 ${claimGrounding.authorDataUnsupportedClaims} 条单独呈现不阻断` : ""}——口径见 M11.2.3）`
+              : `UNSUPPORTED/CONTRADICTED claim ${unsupported} 条`,
+        true,
+      );
+    }
   }
   // 4b. 透明未核验转述的可见性（informational：永远通过，只呈现计数——
   //     「诚实限定」不是 evidence-backed，也不应凭空消失）
@@ -662,9 +713,67 @@ export function evaluateQualityGate(
     }
   }
 
+  // 4e. M15.6：跨节数值一致性（摘要 / 结论 ↔ 结果表）。确定性零模型检查（review/crossSectionConsistency.ts），
+  //     复用 claimCertificate 的唯一绑定 / 数值区间判别 / 派生量复算 / 跨表疑义消解。
+  //     verifiedContradictions > 0 → FAIL（真实稿内矛盾，CE1 型盲区的确定性检出）；
+  //     suspected（跨表疑义未消解 / 派生量全解释不相容）→ NOT_EVALUATED（author 稿件 required 转作者裁决）；
+  //     全部绑定一致 → PASS；其余（绑定不唯一 / 限定词 / 聚合口径 / 整数）→ NOT_EVALUATED 不阻断——
+  //     不能要求所有摘要数字都绑上表，但绝不签发「已核验一致」。
+  const crossSection = input.crossSectionConsistency;
+  if (crossSection !== undefined) {
+    if (crossSection.status !== "EVALUATED") {
+      push(
+        "cross_section_numeric_consistency",
+        "NOT_EVALUATED",
+        crossSection.status === "UNAVAILABLE"
+          ? `跨节数值一致性检查未能执行（${crossSection.unavailableReason ?? "未知原因"}）：摘要/结论 ↔ 结果表的一致性未核验（不代表一致）`
+          : "跨节数值一致性检查状态未知（不代表一致）",
+      );
+    } else if (crossSection.counts.verifiedContradictions > 0) {
+      const witnesses = crossSection.witnesses.filter((witness) => witness.outcome === "VERIFIED_CONTRADICTION");
+      push(
+        "cross_section_numeric_consistency",
+        "FAIL",
+        `摘要/结论与结果表格的数值矛盾 ${crossSection.counts.verifiedContradictions} 处（确定性核验：唯一绑定 + 显示精度区间判别 + 跨表疑义消解）：` +
+          witnesses.slice(0, 3).map((witness) => `${witness.sectionKind === "abstract" ? "摘要" : "结论"}「${witness.quote.slice(0, 80)}」的 ${witness.raw}${witness.unit ?? ""} ↔ 表 ${witness.binding?.bound?.tableId ?? "?"} ${witness.binding?.bound?.rowKey.join("/") ?? ""} 行 ${witness.binding?.bound?.headerPath.slice(-1)[0] ?? ""} 列 = ${witness.binding?.bound?.value ?? "?"}（${witness.valueRelation?.note ?? ""}）`).join("；") +
+          `；另 consistent ${crossSection.counts.consistent} / not_evaluated ${crossSection.counts.notEvaluated} / suspected ${crossSection.counts.suspected}`,
+        true,
+      );
+    } else if (crossSection.counts.suspected > 0) {
+      const required = input.reviewPurpose !== "published_paper_assessment";
+      push(
+        "cross_section_numeric_consistency",
+        "NOT_EVALUATED",
+        `摘要/结论数值与表格存在 ${crossSection.counts.suspected} 处疑似不一致（唯一绑定 + 数值不相交，但跨表归属不可证或派生量解释不唯一——fail-closed 不出强判）${required ? "：需作者核对后再依赖" : "：只读评估如实报告，未证实为错误"}；consistent ${crossSection.counts.consistent} / not_evaluated ${crossSection.counts.notEvaluated}（含聚合口径 ${crossSection.notEvaluatedReasons["AGGREGATE_WORDING"] ?? 0}、绑定不唯一 ${Object.entries(crossSection.notEvaluatedReasons).filter(([code]) => code.startsWith("BINDING")).reduce((sum, [, count]) => sum + count, 0)}）`,
+        required,
+      );
+    } else if (crossSection.counts.consistent > 0 && crossSection.counts.notEvaluated === 0) {
+      push(
+        "cross_section_numeric_consistency",
+        "PASS",
+        `摘要/结论 ↔ 结果表数值一致性：核验 ${crossSection.counts.consistent} 处全部一致（唯一绑定 + 显示精度区间）`,
+        true,
+      );
+    } else if (crossSection.counts.consistent === 0 && crossSection.counts.notEvaluated === 0) {
+      push(
+        "cross_section_numeric_consistency",
+        "NOT_APPLICABLE",
+        `摘要/结论无可核验的测量值数值（整数计数 / 引用 / 集合量词不在核验范围；集合量词结论 ${crossSection.counts.setQuantifierClaims} 处仅观察）`,
+      );
+    } else {
+      push(
+        "cross_section_numeric_consistency",
+        "NOT_EVALUATED",
+        `摘要/结论 ↔ 结果表数值一致性：一致 ${crossSection.counts.consistent} 处，未核验 ${crossSection.counts.notEvaluated} 处（${Object.entries(crossSection.notEvaluatedReasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([code, count]) => `${code} ${count}`).join("、")}）——部分核验通过不等于全部一致`,
+      );
+    }
+  }
   // 5. blocking review issue = 0（M10.3.1：归因到被排除 claim 的不计；
   //    M11.2.3：rootCauseKey 归因到本轮 unsupported claim 的不计——同一根因
   //    已由规则 4 的 claim 口径覆盖，不重复计入 blocking 口径）
+  //    M15.6：evidencePairing 可用时，无 pairing 材料的 evidence_gap 工件 finding 与
+  //    （published 只读）rubric 自报「需作者核对 / 需外部数据」的 finding 不计为已证实违规
+  //    （NOT_EVALUATED 呈现）；真实缺陷（稿内矛盾 / verified evidence 冲突 / 引用结构）照旧计数。
   const unsupportedClaimIds = new Set(claimGrounding?.unsupportedClaimIds ?? []);
   // M14.9.5.4：与实验复算 CONTRADICTED 同根因的确定性 finding（rootCauseKey=claim-check:<id>）已由规则 4d 计因
   for (const entry of claimChecks?.contradicted ?? []) unsupportedClaimIds.add(`claim-check:${entry.id}`);
@@ -678,28 +787,36 @@ export function evaluateQualityGate(
   const blockingTotal = input.review.counts.blocking;
   const blockingExcluded = audit?.counts.issues.excludedBlocking ?? 0;
   const blockingRootCaused = rootCauseCounted((issue) => issue.blocking);
-  const blockingEffective = Math.max(0, blockingTotal - blockingExcluded - blockingRootCaused);
+  const blockingPairingExcluded = pairing?.findings.blockingEvidenceGapExcluded ?? 0;
+  const blockingEffective = Math.max(0, blockingTotal - blockingExcluded - blockingRootCaused - blockingPairingExcluded);
+  const pairingExcludedNote = (excluded: number): string =>
+    excluded > 0
+      ? `、${excluded} 条为证据库无 pairing 材料的 evidence_gap 工件 / 只读口径「需作者核对 / 需外部数据」自报（M15.6：核验不足 ≠ 已证实违规，NOT_EVALUATED 呈现不计数）`
+      : "";
   push(
     "blocking_issues_zero",
     verdict(blockingEffective === 0),
-    blockingExcluded + blockingRootCaused > 0
-      ? `blocking issue ${blockingEffective} 条（另有 ${blockingExcluded} 条归因于原稿既有 / 作者数据覆盖 claim${blockingRootCaused > 0 ? `、${blockingRootCaused} 条为 unsupported claim / 实验复算矛盾的同根因 finding（规则 4 / 4d 已计）` : ""}，不重复计入）`
+    blockingExcluded + blockingRootCaused + blockingPairingExcluded > 0
+      ? `blocking issue ${blockingEffective} 条（另有 ${blockingExcluded} 条归因于原稿既有 / 作者数据覆盖 claim${blockingRootCaused > 0 ? `、${blockingRootCaused} 条为 unsupported claim / 实验复算矛盾的同根因 finding（规则 4 / 4d 已计）` : ""}${pairingExcludedNote(blockingPairingExcluded)}，不重复计入）`
       : `blocking issue ${blockingTotal} 条`,
     true,
   );
 
-  // 6. 未解决的 critical / major = 0（M10.3.1 同 5 的归因口径；M11.2.3 根因去重同上）
+  // 6. 未解决的 critical / major = 0（M10.3.1 同 5 的归因口径；M11.2.3 根因去重同上；M15.6 分层同上）
   const criticalRootCaused = rootCauseCounted((issue) => issue.severity === "critical");
   const majorRootCaused = rootCauseCounted((issue) => issue.severity === "major");
+  const criticalPairingExcluded = pairing?.findings.criticalEvidenceGapExcluded ?? 0;
+  const majorPairingExcluded = pairing?.findings.majorEvidenceGapExcluded ?? 0;
   const criticalEffective = Math.max(
     0,
     input.review.openCritical -
       (audit?.counts.issues.excludedCritical ?? 0) -
-      criticalRootCaused,
+      criticalRootCaused -
+      criticalPairingExcluded,
   );
   const majorEffective = Math.max(
     0,
-    input.review.openMajor - (audit?.counts.issues.excludedMajor ?? 0) - majorRootCaused,
+    input.review.openMajor - (audit?.counts.issues.excludedMajor ?? 0) - majorRootCaused - majorPairingExcluded,
   );
   push(
     "open_critical_major_zero",
@@ -708,9 +825,11 @@ export function evaluateQualityGate(
       (audit?.counts.issues.excludedCritical ?? 0) +
         (audit?.counts.issues.excludedMajor ?? 0) +
         criticalRootCaused +
-        majorRootCaused >
+        majorRootCaused +
+        criticalPairingExcluded +
+        majorPairingExcluded >
       0
-        ? `（归因排除 critical ${(audit?.counts.issues.excludedCritical ?? 0) + criticalRootCaused} / major ${(audit?.counts.issues.excludedMajor ?? 0) + majorRootCaused} 条——含 unsupported claim / 实验复算矛盾同根因 finding）`
+        ? `（归因排除 critical ${(audit?.counts.issues.excludedCritical ?? 0) + criticalRootCaused} / major ${(audit?.counts.issues.excludedMajor ?? 0) + majorRootCaused} 条——含 unsupported claim / 实验复算矛盾同根因 finding${criticalPairingExcluded + majorPairingExcluded > 0 ? `；M15.6 再排除 evidence_gap 工件 / 只读核验自报 critical ${criticalPairingExcluded} / major ${majorPairingExcluded} 条（NOT_EVALUATED 呈现）` : ""}）`
         : ""
     }`,
     true,

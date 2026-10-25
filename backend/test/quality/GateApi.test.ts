@@ -153,7 +153,7 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
     expect(invalid.status).toBe(400);
   });
 
-  it("当前 workflow 链路不注入 citationIntegrity：gate rules 只含 9 条基础规则（语义规则休眠，不因缺 semantic 记录 FAIL）", async () => {
+  it("当前 workflow 链路不注入 citationIntegrity：gate rules 只含 10 条基础规则（语义规则休眠，不因缺 semantic 记录 FAIL）", async () => {
     const stack = await newStack(["pass"]);
     const created = await stack.request("POST", "/api/projects", { title: "gate 规则集" });
     const projectId = (created.body["project"] as { id: string }).id;
@@ -171,6 +171,8 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       "unsupported_critical_claims_zero",
       // M14.9.5.4：实验论断复算（无实验包、无登记 → 不适用；与 workflow stage 同一规则集合）
       "experiment_claims_recomputed",
+      // M15.6：跨节数值一致性（摘要/结论 ↔ 结果表；确定性零模型）
+      "cross_section_numeric_consistency",
       "blocking_issues_zero",
       "open_critical_major_zero",
       "academic_score_threshold",

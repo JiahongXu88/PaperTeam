@@ -314,6 +314,9 @@ import {
   type QualityGateThresholds,
   type ThesisGateInput,
 } from "../quality/gates.js";
+// M15.6：Evidence-Aware 分层（规则 4/5/6）与跨节数值一致性（摘要/结论 ↔ 结果表）
+import { deriveEvidencePairing } from "../quality/evidencePairing.js";
+import { computeCrossSectionConsistency, type CrossSectionConsistencySummary } from "../review/crossSectionConsistency.js";
 import {
   claimCheckFinding,
   claimChecksInText,
@@ -1803,6 +1806,43 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
       const claimCheckEvaluation = await loadOrRecomputeClaimChecks(services, projectId, review);
       const claimChecks = summarizeClaimChecksForGate(claimCheckEvaluation.ledger, claimCheckEvaluation.experimentPackages);
       contextGaps.push(...claimCheckEvaluation.notes);
+      // M15.6（阶段 C）：Evidence-Aware 分层（规则 4/5/6 计数输入；纯函数、确定性、零模型）。
+      // 同一输入（claimGrounding / claimChecks / evidence / review summary / 证据记录投影）在
+      // workflow 与手动 POST 双入口恒得同一结果——分层不读模型、不读 run 状态。
+      const evidencePairing = deriveEvidencePairing({
+        reviewPurpose: publishedAssessment ? "published_paper_assessment" : "author_manuscript",
+        evidence: { total: evidence.total, verified: evidence.byStatus.verified ?? 0, contradictory: evidence.contradictory },
+        claimGrounding,
+        claimChecks,
+        factVerdicts: review.scores.factVerdicts,
+        unsupportedCriticalClaims: review.unsupportedCriticalClaims,
+        issues: review.issues,
+        evidenceRecords: evidenceRecords.map((record) => ({
+          id: record.id,
+          claim: record.claim,
+          ...(record.quote !== undefined ? { quote: record.quote } : {}),
+          ...(record.source?.title !== undefined ? { title: record.source.title } : {}),
+        })),
+      });
+      // M15.6（阶段 B）：跨节数值一致性（摘要/结论 ↔ 结果表；确定性零模型）。
+      // 在被审修订快照上计算（与 review 同源材料）；快照缺失 / 无修订号 → UNAVAILABLE 如实呈现。
+      let crossSectionConsistency: CrossSectionConsistencySummary;
+      if (typeof review.reviewedRevision === "number") {
+        const snapshotTex = await readSnapshotTex(services.revisions.snapshotDir(projectId, review.reviewedRevision));
+        crossSectionConsistency = computeCrossSectionConsistency({
+          ...(snapshotTex !== null ? { files: snapshotTex } : { files: [] }),
+        });
+        if (snapshotTex === null) {
+          crossSectionConsistency = { ...crossSectionConsistency, status: "UNAVAILABLE", unavailableReason: "SNAPSHOT_UNAVAILABLE" };
+          contextGaps.push("跨节数值一致性：被审修订快照缺失（reviews 对齐的修订无可读 tex），检查未执行");
+        }
+      } else {
+        crossSectionConsistency = {
+          ...computeCrossSectionConsistency({ files: [] }),
+          status: "UNAVAILABLE",
+          unavailableReason: "NO_REVIEWED_REVISION",
+        };
+      }
       const gateInput = {
           review,
           citation,
@@ -1820,6 +1860,8 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
           ...(thesisGate !== undefined ? { thesis: thesisGate } : {}),
           ...(publishedAssessment ? { reviewPurpose: "published_paper_assessment" as const } : {}),
           claimChecks,
+          evidencePairing,
+          crossSectionConsistency,
         };
       const gate = evaluateQualityGate(gateInput, QUALITY_THRESHOLDS(services));
       const patchValidation = typeof review.reviewedRevision === "number"

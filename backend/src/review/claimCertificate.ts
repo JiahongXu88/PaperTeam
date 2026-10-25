@@ -278,8 +278,13 @@ const APPROX_BEFORE = /(?:\b(?:about|approximately|approx\.?|around|nearly|almos
 const APPROX_AFTER = /^\s*(?:\\?%\s*)?(?:or so\b|左右|上下)/i;
 const INEQ_BEFORE = /(?:\b(?:over|more than|above|exceeding|exceeds?|greater than|higher than|at least|up to|less than|below|under|at most|fewer than|lower than|no more than|no less than|beyond|surpass(?:es|ing)?)\s*$|[<>≤≥]\s*$|\\(?:leq|geq|le|ge|lt|gt)\s*\$?\s*$|(?:超过|高于|低于|不低于|不超过|大于|小于|多于|少于|以上|以下)\s*$)/i;
 const INEQ_AFTER = /^\s*(?:\\?%\s*)?(?:or (?:more|less|higher|lower|above|below)|以上|以下|以内)/i;
-/** 派生措辞（数值前）：「by 2.1」「improvement of 3.2」「relative improvements of」「outperforms X by」「+2.1」「提升了 2.1」；「improves to 61.7」不是派生 */
-const DERIVED_BEFORE = /(?:\bby\s*$|\b(?:improvements?|gains?|increases?|decreases?|reductions?|boosts?|drops?|declines?|margins?|advantages?|lead|speed-?ups?|enhancements?)\s+(?:of\s*)?(?:about\s+|approximately\s+|nearly\s+|roughly\s+|around\s+|almost\s+|up to\s+|over\s+)?$|\b(?:relative|relatively)\b[^.;]{0,40}$|[+−]\s*$|(?:^|\s)-\s*$|(?:提升|提高|降低|增加|减少|下降|超出|领先|改善)了?(?:约|近)?\s*$)/i;
+/**
+ * 派生措辞（数值前）：「by 2.1」「improvement of 3.2」「relative improvements of」「outperforms X by」「+2.1」「提升了 2.1」；「improves to 61.7」不是派生。
+ * M15.6（f1 复现 WRONG_STRONG 修复）：差值名词（increment / delta / saving / 增量 / 差值 / 变化量 / 增幅 / 降幅）是派生量——
+ * 「延迟增量为 594.1 ms」的 594.1 是两端观察量之差，绝不能按原子值绑定到任一端的表格单元格再按 DISJOINT 出矛盾。
+ * 为/是/达 后缀只对差值名词开放（「提升至 61.7」「增加到 10.2」仍是绝对端点，不进本组）。
+ */
+const DERIVED_BEFORE = /(?:\bby\s*$|\b(?:improvements?|gains?|increases?|decreases?|reductions?|boosts?|drops?|declines?|margins?|advantages?|lead|speed-?ups?|enhancements?|increments?|deltas?|savings?)\s+(?:of\s*)?(?:about\s+|approximately\s+|nearly\s+|roughly\s+|around\s+|almost\s+|up to\s+|over\s+)?$|\b(?:relative|relatively)\b[^.;]{0,40}$|[+−]\s*$|(?:^|\s)-\s*$|(?:提升|提高|降低|增加|减少|下降|超出|领先|改善)了?(?:约|近)?\s*$|(?:增量|差值|变化量|增幅|降幅)(?:约|近)?(?:为|是|达)?\s*$)/i;
 const DERIVED_AFTER = /^\s*(?:\\?%|percent)?\s*(?:percentage[- ]points?|pp\b|p\.p\.|points?\b|个百分点|百分点|[×x]\b|×|times\b|-?fold\b|倍|(?:\\?%|percent)?\s*(?:higher|lower|better|worse|faster|slower|more|less|fewer|larger|smaller|improvement|gain|increase|decrease|reduction|relative|speed-?up|boost)\b|(?:的)?(?:提升|提高|降低|增加|减少|下降))/i;
 const AGGREGATE = /\b(?:on average|average(?:d)? (?:improvement|gain|increase|decrease|reduction)|mean (?:improvement|gain)|across (?:all|the|\w+) (?:datasets|benchmarks|models|tasks|settings)|overall (?:improvement|gain))\b|平均(?:提升|提高|增益|降低)/i;
 const ROW_QUALIFIERS = /\bw\/o\b|\bwithout\b|\bonly\b|\bno\s+\w+|\bbase(?:line)?\b|\bsmall\b|\blarge\b|\btiny\b|\blite\b|\bfull\b|[-–]\s*[SMLB]\b|\+|\bvariant\b|\bablat|去掉|仅/i;
@@ -294,8 +299,9 @@ export function atomQualifiers(scopes: TextScopes, rawValue: string): AtomQualif
   if (INEQ_BEFORE.test(before) || INEQ_AFTER.test(after)) out.push("INEQUALITY");
   if (DERIVED_BEFORE.test(before) || DERIVED_AFTER.test(after)) out.push("DERIVED");
   // 派生语义继承：整句中更早出现派生触发词，且触发词与本数值之间没有「报告绝对值」的动词（achieves / reaches / is …）
+  // M15.6：差值名词（增量/差值/increment/delta）同样触发继承（「延迟增量为 594.1 ms(65.9%)」的括号内相对增量）
   const longBefore = scopes.sentenceBefore.replace(/\$/g, " ");
-  const trigger = /\b(?:improv\w*|gains?|increas\w*|decreas\w*|reduc\w*|boost\w*|outperform\w*|surpass\w*|relative(?:ly)?|higher|lower|better|worse|faster|slower|speed-?ups?|margins?)\b|提升|提高|降低|增加|减少|超出|领先/gi;
+  const trigger = /\b(?:improv\w*|gains?|increas\w*|decreas\w*|reduc\w*|boost\w*|outperform\w*|surpass\w*|relative(?:ly)?|higher|lower|better|worse|faster|slower|speed-?ups?|margins?|increments?|deltas?|savings?)\b|提升|提高|降低|增加|减少|超出|领先|增量|差值|变化量|增幅|降幅/gi;
   let lastTrigger = -1;
   for (const match of longBefore.matchAll(trigger)) lastTrigger = match.index! + match[0].length;
   // 「35.3 → 36.9」「from 35.3 to 36.9」的两端都是绝对值（前后对比写法），不继承派生语义
@@ -306,14 +312,14 @@ export function atomQualifiers(scopes: TextScopes, rawValue: string): AtomQualif
   // 不继承派生语义。直接命中的派生措辞（improvement of 3.2 / by 12.52 pp / gain of）不经本分支，不受影响。
   // 派生名词族与 DERIVED_BEFORE / 触发词表对齐，另纳入 difference/delta/gap/ratio/saving 等真派生名词，
   // 防止「a difference of 12」被误判为原子值。
-  const DERIVED_ATTRIBUTION_NOUNS = new Set(["improvement", "gain", "increase", "decrease", "reduction", "boost", "drop", "decline", "margin", "advantage", "lead", "speedup", "speed-up", "enhancement", "difference", "delta", "gap", "ratio", "saving", "overhead", "change"]);
+  const DERIVED_ATTRIBUTION_NOUNS = new Set(["improvement", "gain", "increase", "decrease", "reduction", "boost", "drop", "decline", "margin", "advantage", "lead", "speedup", "speed-up", "enhancement", "difference", "delta", "gap", "ratio", "saving", "savings", "overhead", "change", "increment"]);
   // M15.4.3（P0-B）括号同位语：数值位于未闭合括号组内时，「(」前紧邻的组头词决定语义归属——
   // 普通名词（accuracy / channel / rate）= 对该名词绝对值的同位语报告（「lower accuracy (68.9\%)」），
   // 比较词只修饰邻近语境，不改变数值原子性；派生名词 / 继承触发词族 / 介词连词 / 单位 / 数字 = 变化量
   // 语境（「an improvement (3.2\%)」「reduced by (68.9\%)」「(2.1 ms) 降幅重述」），维持继承。
   // 后缀形派生（「(68.9\% higher)」「(3.2 pp)」「(2×)」）不经本分支——由 DERIVED_AFTER 直接判定兜底；
   // 无括号的「lower by 68.9\%」由 DERIVED_BEFORE 直接判定兜底；from/to 端点语义不动。
-  const DERIVED_TRIGGER_WORD = /\b(?:improv\w*|gains?|increas\w*|decreas\w*|reduc\w*|boost\w*|outperform\w*|surpass\w*|relative(?:ly)?|higher|lower|better|worse|faster|slower|speed-?ups?|margins?)\b|提升|提高|降低|增加|减少|超出|领先/i;
+  const DERIVED_TRIGGER_WORD = /\b(?:improv\w*|gains?|increas\w*|decreas\w*|reduc\w*|boost\w*|outperform\w*|surpass\w*|relative(?:ly)?|higher|lower|better|worse|faster|slower|speed-?ups?|margins?|increments?|deltas?|savings?)\b|提升|提高|降低|增加|减少|超出|领先|增量|差值|变化量|增幅|降幅/i;
   const PAREN_GROUP_KEEP = new Set(["by", "of", "from", "than", "to", "vs", "versus", "and", "or", "per", "up", "down", "over", "under", "i.e", "e.g", "cf"]);
   const PAREN_GROUP_UNIT = /^(?:%|pp|pts?|points?|x|×|times?|fold|ms|s|sec|secs|min|h|hz|fps|mb|gb|kb|tb|k|m|mm|cm|km|db|w|d)$/i;
   const parenAppositiveHead = (word: string): boolean => {
@@ -352,7 +358,14 @@ export function atomQualifiers(scopes: TextScopes, rawValue: string): AtomQualif
     const head = raw.length >= 5 && raw.endsWith("s") && !/(?:ss|us|is)$/.test(raw) ? raw.slice(0, -1) : raw;
     return !DERIVED_ATTRIBUTION_NOUNS.has(head);
   })();
-  if (!arrowAdjacent && !localAttribution && lastTrigger >= 0 && !/\b(?:achiev\w*|reach\w*|obtain\w*|attain\w*|yield\w*|scor\w*|is|are|was|were|gets?|records?|reports?)\b|达到|取得|获得|为/i.test(longBefore.slice(lastTrigger))) out.push("DERIVED");
+  // M15.6：绝对值动词守卫只看「触发词与本数值之间最后一个数值之后」的片段——守卫语义是
+  // 「动词直接报告本数值」。若其间还有另一个数值（「增量为 594.1 ms(65.9%)」的 65.9%），
+  // 为/is 属于那个数值（增量本身已是派生），不得据此把括号内的第二表达判回绝对值。
+  // 「提升了 3.2,准确率为 78.5」不受影响：为 在最后数值之后、紧邻本数值，照旧阻断。
+  const sinceTrigger = longBefore.slice(lastTrigger);
+  const digitIndices = [...sinceTrigger.matchAll(/\d/g)].map((match) => match.index!);
+  const verbScope = digitIndices.length === 0 ? sinceTrigger : sinceTrigger.slice(digitIndices[digitIndices.length - 1]!);
+  if (!arrowAdjacent && !localAttribution && lastTrigger >= 0 && !/\b(?:achiev\w*|reach\w*|obtain\w*|attain\w*|yield\w*|scor\w*|is|are|was|were|gets?|records?|reports?)\b|达到|取得|获得|为/i.test(verbScope)) out.push("DERIVED");
   if (/^[+−]/.test(rawValue) || /[+−]\s*$/.test(before)) out.push("SIGNED");
   if (AGGREGATE.test(scopes.segment)) out.push("AGGREGATE");
   return [...new Set(out)];
