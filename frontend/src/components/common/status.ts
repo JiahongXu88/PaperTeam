@@ -241,6 +241,11 @@ export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
     label: "跨章一致性审查执行情况",
     description: "跨章一致性审查是否实际执行；失败时跨章核对为 NOT_EVALUATED，没有跨章问题不代表没有冲突。",
   },
+  // M15.6：跨节数值一致性（摘要 / 结论 ↔ 结果表；确定性零模型检查）
+  cross_section_numeric_consistency: {
+    label: "跨节数值一致",
+    description: "摘要 / 结论中的关键数值与结果表格的对应关系经确定性核验；矛盾（如摘要数值与表格不符）阻止 Final，绑定不唯一 / 聚合口径等无法判定的情形如实记为未评估（不是一致）。",
+  },
 };
 
 /**

@@ -47,7 +47,7 @@ export const CROSS_SECTION_CONSISTENCY_SCHEMA = "paperteam.cross-section-consist
 
 /** 核心节标题（结论 / 总结；与 findingAdjudication.CORE_HEADING 同族语义，本模块独立维护） */
 const CONCLUSION_HEADING =
-  /^(?:\d*\s*\.?\s*)?(?:结\s*论|总结|结语|结论与展望|工作总结|结\s*论与展\s*望|Conclusions?(?:\s+and\s+(?:Future\s+)?Work)?|Summary(?:\s+and\s+(?:Future\s+)?Work)?|Closing\s+Remarks)$/i;
+  /^(?:\d*\s*\.?\s*)?(?:结\s*论|总结|结语|结论与展望|工作总结|结\s*论与展\s*望|Conclusions?(?:\s+and\s+(?:Future\s+(?:Work|Directions?|Research|Outlook)|Outlook|Prospects?))?|Summary(?:\s+and\s+(?:Future\s+)?Work)?|Closing\s+Remarks)$/i;
 /** abstract 环境名（常见变体；中文论文常见 abstract / cnabstract 环境） */
 const ABSTRACT_ENV = /^(?:abstract|cnabstract|enabstract|chineseabstract|englishabstract)$/i;
 

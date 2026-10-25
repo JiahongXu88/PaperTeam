@@ -32,6 +32,7 @@ const FRESH_ROOT = join(WORK_DIR, "fresh-projects");
 
 const args = process.argv.slice(2);
 const onlyAnchor = args.find((a) => a.startsWith("--only="))?.slice(7);
+const doFresh = args.includes("--fresh") || onlyAnchor !== undefined;
 const doCe2 = args.includes("--ce2");
 const doSurveyDigest = args.includes("--survey-digest");
 const digestList = args.filter((a) => a.startsWith("--digest=")).map((a) => a.slice(9));
@@ -266,7 +267,7 @@ async function runFreshAnchor(anchorId, anchor) {
 }
 
 const anchors = await buildAnchors();
-const ORDER = Object.keys(anchors).filter((id) => onlyAnchor === undefined || id === onlyAnchor);
+const ORDER = doFresh ? Object.keys(anchors).filter((id) => onlyAnchor === undefined || id === onlyAnchor) : [];
 
 // 连通性 ping（1 次调用）
 const ping = await adapter.runAgent({
@@ -395,7 +396,7 @@ if (Object.keys(digestAnchors).length > 0) {
     };
     results.push(record);
     log(`${anchorId}-digest ✔ calls=${record.physicalModelCalls} claims=${JSON.stringify(summary.scores.factVerdicts)} gate=${gate.passed ? "PASS" : "FAIL"} crossSection=${JSON.stringify(crossSection.counts)}`);
-    await writeFile(join(WORK_DIR, "evaluation", "m156-fresh-report.json"), JSON.stringify({ generatedAt: new Date().toISOString(), physicalModelCalls, results }, null, 2), "utf8");
+    await writeFile(join(WORK_DIR, "evaluation", "m156-fresh-report.json"), JSON.stringify({ generatedAt: new Date().toISOString(), physicalModelCalls: physicalCalls, results }, null, 2), "utf8");
   }
 }
 

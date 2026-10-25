@@ -19,7 +19,6 @@ import { deriveEvidencePairing, type EvidencePairingInput } from "../../src/qual
 import type { ClaimGroundingReport, ClaimGroundingEntry } from "../../src/review/claimGrounding.js";
 import type { ReviewIssue } from "../../src/agents/ReviewerService.js";
 import type { CrossSectionConsistencySummary } from "../../src/review/crossSectionConsistency.js";
-import type { ClaimCheckGateSummary } from "../../src/experiments/claimChecks.js";
 
 const THRESHOLDS = { ...DEFAULT_QUALITY_THRESHOLDS, requireFeasibility: false };
 
@@ -98,13 +97,18 @@ function claimGroundingReport(entries: Partial<ClaimGroundingEntry>[], formalEvi
   };
 }
 
-const NO_EVIDENCE = { total: 0, verified: 0, contradictory: 0 };
-const SOME_EVIDENCE = { total: 3, verified: 2, contradictory: 0 };
+const NO_EVIDENCE = { total: 0, byStatus: { unverified: 0, verified: 0, plausible: 0, not_found: 0, mismatch: 0, unverifiable: 0 }, contradictory: 0, skippedLines: 0 };
+const SOME_EVIDENCE = { total: 3, byStatus: { unverified: 1, verified: 2, plausible: 0, not_found: 0, mismatch: 0, unverifiable: 0 }, contradictory: 0, skippedLines: 0 };
+
+/** EvidenceStats（gate 输入形态）→ evidencePairing 投影 */
+function pairingEvidence(stats: typeof NO_EVIDENCE): EvidencePairingInput["evidence"] {
+  return { total: stats.total, verified: stats.byStatus.verified, contradictory: stats.contradictory };
+}
 
 function pairingInput(overrides: Partial<EvidencePairingInput>): EvidencePairingInput {
   return {
     reviewPurpose: "author_manuscript",
-    evidence: NO_EVIDENCE,
+    evidence: pairingEvidence(NO_EVIDENCE),
     claimGrounding: null,
     claimChecks: undefined,
     factVerdicts: null,
@@ -131,7 +135,7 @@ describe("M15.6 deriveEvidencePairing（状态表 claim / finding 分层）", ()
 
   it("有 pairing 材料：UNSUPPORTED（opaque）维持计数（反例保护——检索执行后无支持）", () => {
     const report = claimGroundingReport([{ claimId: "c-1", verdict: "UNSUPPORTED", disclosure: "opaque_assertion" }], 3);
-    const pairing = deriveEvidencePairing(pairingInput({ evidence: SOME_EVIDENCE, claimGrounding: report, factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } }));
+    const pairing = deriveEvidencePairing(pairingInput({ evidence: pairingEvidence(SOME_EVIDENCE), claimGrounding: report, factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } }));
     expect(pairing.pairingStatus).toBe("PAIRING_AVAILABLE");
     expect(pairing.claims.countedUnsupported).toBe(1);
     expect(pairing.claims.evidenceGapUnsupported).toBe(0);
@@ -140,7 +144,7 @@ describe("M15.6 deriveEvidencePairing（状态表 claim / finding 分层）", ()
   it("CONTRADICTED + formal evidence 解析（域匹配）→ VERIFIED_CONTRADICTION（E001/S003 锚保持计数）", () => {
     const report = claimGroundingReport([{ claimId: "c-1", verdict: "CONTRADICTED", evidenceFormal: true, evidenceId: "E001", claim: "消融后机制贡献仍使所有指标均改善" }]);
     const pairing = deriveEvidencePairing(pairingInput({
-      evidence: SOME_EVIDENCE,
+      evidence: pairingEvidence(SOME_EVIDENCE),
       claimGrounding: report,
       evidenceRecords: [{ id: "E001", claim: "BDD100K 公平消融：检测器主导收益，机制项 MOTA 71.2 增益不显著" }],
       factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 0, CONTRADICTED: 1 },
@@ -152,7 +156,7 @@ describe("M15.6 deriveEvidencePairing（状态表 claim / finding 分层）", ()
   it("CONTRADICTED + formal evidence 但证据与论断零词面关联 → PAIRING_DOMAIN_MISMATCH 不计违规", () => {
     const report = claimGroundingReport([{ claimId: "c-1", verdict: "CONTRADICTED", evidenceFormal: true, evidenceId: "E999", claim: "ByteTrack 的关联机制保持身份一致性" }]);
     const pairing = deriveEvidencePairing(pairingInput({
-      evidence: SOME_EVIDENCE,
+      evidence: pairingEvidence(SOME_EVIDENCE),
       claimGrounding: report,
       evidenceRecords: [{ id: "E999", claim: "量子化学势能面的数值求解精度研究" }],
       factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 0, CONTRADICTED: 1 },
@@ -200,7 +204,7 @@ describe("M15.6 deriveEvidencePairing（状态表 claim / finding 分层）", ()
       issue({ severity: "major", blocking: false, verification: "EXTERNAL_DATA_REQUIRED", description: "需外部数据" }),
       issue({ severity: "major", blocking: false, verification: "VERIFIED_IN_TEXT", description: "稿内可证矛盾" }),
     ];
-    const pairing = deriveEvidencePairing(pairingInput({ reviewPurpose: "published_paper_assessment", evidence: SOME_EVIDENCE, issues }));
+    const pairing = deriveEvidencePairing(pairingInput({ reviewPurpose: "published_paper_assessment", evidence: pairingEvidence(SOME_EVIDENCE), issues }));
     expect(pairing.findings.verificationDeclared).toEqual({ verifiedInText: 1, authorCheck: 1, externalData: 1, undeclared: 0 });
     expect(pairing.findings.majorEvidenceGapExcluded).toBe(2);
     expect(pairing.findings.verificationDeclaredExcluded).toBe(2);
@@ -216,7 +220,7 @@ describe("M15.6 deriveEvidencePairing（状态表 claim / finding 分层）", ()
   });
 });
 
-function crossSectionSummary(counts: Partial<CrossSectionConsistencySummary["counts"]>, status: "EVALUATED" = "EVALUATED"): CrossSectionConsistencySummary {
+function crossSectionSummary(counts: Partial<CrossSectionConsistencySummary["counts"]>, status: CrossSectionConsistencySummary["status"] = "EVALUATED"): CrossSectionConsistencySummary {
   return {
     schema: "paperteam.cross-section-consistency/v1",
     status,
@@ -281,7 +285,7 @@ describe("M15.6 Gate 规则 4/5/6 消费 evidencePairing", () => {
 
   it("有 pairing：opaque UNSUPPORTED → 规则 4 FAIL 维持（反例保护）", () => {
     const report = claimGroundingReport([{ claimId: "c-1", verdict: "UNSUPPORTED", disclosure: "opaque_assertion" }], 3);
-    const pairing = deriveEvidencePairing(pairingInput({ evidence: SOME_EVIDENCE, claimGrounding: report, factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } }));
+    const pairing = deriveEvidencePairing(pairingInput({ evidence: pairingEvidence(SOME_EVIDENCE), claimGrounding: report, factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } }));
     const gate = evaluateQualityGate(baseGateInput({
       review: reviewSummary({ factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } }),
       evidencePairing: pairing,
@@ -317,14 +321,16 @@ describe("M15.6 Gate 规则 4/5/6 消费 evidencePairing", () => {
       review: reviewSummary({ factVerdicts: { SUPPORTED: 0, PARTIALLY_SUPPORTED: 0, UNSUPPORTED: 1, CONTRADICTED: 0 } }),
       evidencePairing: pairing,
       claimGapAudit: {
-        schema: "paperteam.claim-gap-audit/v1",
+        schemaVersion: 1 as const,
+        reportId: "cga-r1",
         projectId: "p",
         round: 1,
         generatedAt: "t",
+        taskKind: "existing_paper_improvement" as const,
         baselineRevision: 0,
         claims: [],
         issueAttribution: [],
-        counts: { revisionIntroduced: 1, excludedPreExisting: 2, excludedAuthorData: 0, greyZone: 0, issues: { excludedBlocking: 0, excludedCritical: 0, excludedMajor: 0 } },
+        counts: { unsupportedTotal: 3, revisionIntroduced: 1, excludedPreExisting: 2, excludedAuthorData: 0, greyZone: 0, issues: { critical: 0, major: 0, blocking: 0, excludedBlocking: 0, excludedCritical: 0, excludedMajor: 0 } },
       },
     }), THRESHOLDS);
     const rule4 = gate.rules.find((rule) => rule.rule === "unsupported_critical_claims_zero")!;
