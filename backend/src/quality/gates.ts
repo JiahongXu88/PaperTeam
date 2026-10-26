@@ -28,6 +28,9 @@ import {
 } from "./cumulativeFactPreservation.js";
 import type { ClaimGapAudit } from "../review/claimGapAudit.js";
 import type { ClaimGroundingReport } from "../review/claimGrounding.js";
+// M15.7：类型级导入（无运行时环）——qualityPolicyV2 消费本模块的类型与 summarizeGateVerification，
+// 本模块仅在 QualityGateResult.qualityPolicy 载荷上引用其差分 / 场景语义形状
+import type { QualityPolicyAssessment, QualityPolicyRuleDiff } from "./qualityPolicyV2.js";
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { EvidencePairingSummary } from "./evidencePairing.js";
 import type { CrossSectionConsistencySummary } from "../review/crossSectionConsistency.js";
@@ -546,6 +549,21 @@ export interface QualityGateResult {
    * 三层语义冻结：Correctness / Publication Ready / Target Readiness 互不侵蚀）。
    */
   targetReadiness?: TargetReadinessGateAdvisory;
+  /**
+   * M15.7：政策适配层载荷（qualityPolicyV2 policy_aware 臂在 evaluateProjectQualityGate
+   * 内应用后的呈现记录）。Legacy 引擎（evaluateQualityGate 本体）不产出本字段；历史
+   * gate 产物无此字段——读取方按无政策层解释。内容：未校准分数阈值（规则 7/8）
+   * Advisory 化的差分、场景语义块（published assessment / quick review）与 Legacy 对照。
+   */
+  qualityPolicy?: {
+    version: string;
+    arm: string;
+    legacyPassed: boolean;
+    reasonCode: string;
+    ruleDiffs: QualityPolicyRuleDiff[];
+    assessment?: QualityPolicyAssessment;
+    quickReview?: { readiness: string; note: string };
+  };
 }
 
 /** Quality Gate 判定（确定性；Draft 不经过本判定） */

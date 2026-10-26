@@ -273,6 +273,9 @@ export const GATE_RULE_STATUS_STYLES: Record<string, StatusStyle> = {
   NOT_EVALUATED_REQUIRED: { label: "未评估（必需）", tone: "warn" },
   NOT_APPLICABLE: { label: "不适用", tone: "neutral" },
   INFO: { label: "仅呈现", tone: "neutral" },
+  // M15.7：未校准分数阈值（academicScore≥80 / styleRisk≤35）Advisory 化——阈值未经独立校准，
+  // 不再单独否决（Legacy FAIL 保留为历史对照，见规则 advisory 载荷）；呈现为信息而非通过/违规
+  ADVISORY: { label: "建议参考（未校准）", tone: "info" },
 };
 
 /** gate 整体结论（PASS 只表示允许进入 Final，不是「论文完美」） */

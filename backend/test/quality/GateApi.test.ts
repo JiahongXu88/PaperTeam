@@ -91,12 +91,26 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       thresholds: { academicPassScore: number; styleRiskMax: number };
     };
     expect(gate1Result.passed).toBe(false);
-    // fail 审稿（critical blocking + academic 66 + style 68）应落在这四类 blocker
+    // fail 审稿（critical blocking + academic 66 + style 68）：blocking / critical-major 落在 blocker；
+    // 分数阈值规则经 M15.7 policy_aware 臂转 ADVISORY（未校准阈值不再单独否决）——不在 failedRules，
+    // 但 status/detail 保留呈现（原分数与阈值可见）
     const failedRules = gate1Result.rules.filter((rule) => !rule.passed).map((rule) => rule.rule);
     expect(failedRules).toContain("blocking_issues_zero");
     expect(failedRules).toContain("open_critical_major_zero");
-    expect(failedRules).toContain("academic_score_threshold");
-    expect(failedRules).toContain("style_risk_threshold");
+    expect(failedRules).not.toContain("academic_score_threshold");
+    expect(failedRules).not.toContain("style_risk_threshold");
+    const scoreRules = new Map(
+      (gate1Result.rules as Array<{ rule: string; status?: string; required?: boolean; detail?: string }>)
+        .filter((rule) => rule.rule === "academic_score_threshold" || rule.rule === "style_risk_threshold")
+        .map((rule) => [rule.rule, rule]),
+    );
+    expect(scoreRules.get("academic_score_threshold")).toMatchObject({ status: "ADVISORY", required: false, passed: true });
+    expect(scoreRules.get("academic_score_threshold")?.detail).toContain("academicScore=66");
+    expect(scoreRules.get("style_risk_threshold")).toMatchObject({ status: "ADVISORY", required: false, passed: true });
+    // M15.7：政策层载荷挂载（Legacy 对照与 reasonCode 可从产物理解）
+    const policy = (gate1.body["gate"] as { qualityPolicy?: { version: string; arm: string; legacyPassed: boolean; reasonCode: string } }).qualityPolicy;
+    expect(policy).toMatchObject({ arm: "policy_aware", legacyPassed: false, reasonCode: "REMAIN_BLOCKED" });
+    expect(typeof policy?.version).toBe("string");
     // M14.9.5.4：手动入口与 workflow stage 同一评估器——导入的项目是 existing_paper_improvement，任务层 verdict
     // （revision_task）照常进入 reasons；其余 reasons 与失败规则一一对应
     expect(gate1Result.reasons.filter((reason) => !reason.startsWith("revision_task"))).toHaveLength(failedRules.length);

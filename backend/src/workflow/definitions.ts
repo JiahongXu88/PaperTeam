@@ -314,6 +314,8 @@ import {
   type QualityGateThresholds,
   type ThesisGateInput,
 } from "../quality/gates.js";
+// M15.7：Quality Policy V2（未校准分数阈值 Advisory 化；纯函数零模型，协议 §3/§6）
+import { applyQualityPolicy, QUALITY_POLICY_VERSION } from "../quality/qualityPolicyV2.js";
 // M15.6：Evidence-Aware 分层（规则 4/5/6）与跨节数值一致性（摘要/结论 ↔ 结果表）
 import { deriveEvidencePairing } from "../quality/evidencePairing.js";
 import { computeCrossSectionConsistency, type CrossSectionConsistencySummary } from "../review/crossSectionConsistency.js";
@@ -1863,7 +1865,32 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
           evidencePairing,
           crossSectionConsistency,
         };
-      const gate = evaluateQualityGate(gateInput, QUALITY_THRESHOLDS(services));
+      const legacyGate = evaluateQualityGate(gateInput, QUALITY_THRESHOLDS(services));
+      // M15.7 生产接线（协议 §6 门槛全绿后实施）：未校准分数阈值（规则 7 academic_score_threshold /
+      // 规则 8 style_risk_threshold）经 policy_aware 臂转 ADVISORY——解释性呈现，保留原分数、原阈值、
+      // UNVALIDATED 标签与 Legacy FAIL 对照；全部科学可靠性硬门、required NOT_EVALUATED 缺口与覆盖
+      // 守卫逐条保持（MISSING_SCORE_RETAINED / COVERAGE_GUARD_RETAINED，重放 111 + fresh 2 样本实证）。
+      // 接线点在 patch 级联与 taskScoped 分层之前：Revision Task Success / Publication Readiness
+      // 分层消费政策化后的同一 gate，单一 evaluateProjectQualityGate 入口权威不变。
+      const qualityPolicyResult = applyQualityPolicy({
+        gate: legacyGate,
+        arm: "policy_aware",
+        scores: { academicScore: review.scores.academicScore ?? null, styleRisk: review.scores.styleRisk ?? null },
+        scenario: {
+          workflowKind: context.workflowKind ?? null,
+          reviewPurpose: publishedAssessment ? "published_paper_assessment" : "author_manuscript",
+        },
+      });
+      const gate = qualityPolicyResult.gate;
+      gate.qualityPolicy = {
+        version: QUALITY_POLICY_VERSION,
+        arm: "policy_aware",
+        legacyPassed: qualityPolicyResult.outcome.legacyPassed,
+        reasonCode: qualityPolicyResult.outcome.reasonCode,
+        ruleDiffs: qualityPolicyResult.ruleDiffs,
+        ...(qualityPolicyResult.assessment !== undefined ? { assessment: qualityPolicyResult.assessment } : {}),
+        ...(qualityPolicyResult.quickReview !== undefined ? { quickReview: qualityPolicyResult.quickReview } : {}),
+      };
       const patchValidation = typeof review.reviewedRevision === "number"
         ? await services.reviewArtifacts.loadPatchValidation(projectId, review.reviewedRevision)
         : null;
@@ -2077,6 +2104,8 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
           buildError: context.buildError ?? null,
           patchValidation: patchValidation?.summary ?? null,
           taskScoped,
+          // M15.7：双入口指纹携带政策版本——同输入在不同 policyVersion 下的判定不等价（差分可追溯）
+          qualityPolicyVersion: QUALITY_POLICY_VERSION,
         }),
         contextGaps,
       };
