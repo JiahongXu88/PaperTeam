@@ -434,12 +434,18 @@ if (reportExists && resume) {
   report.usage = Array.isArray(previous.usage) ? previous.usage : [];
   report.usage.push({ invocationStart: new Date().toISOString(), note: "resume invocation usage below" });
 }
+// 已知未计量缺口（2026-10-26 首次 preflight：ping 经包装 adapter 未过账本 reserve，物理 1 / 账本 0）。
+// 全计口径下从有效余量中扣除——不因账本未记录而视为免费（协议 §5）。
+const KNOWN_UNMETERED_CALLS = 1;
+const effectiveUsedCalls = () => budgetLedger.snapshot().calls + KNOWN_UNMETERED_CALLS;
 const completedSampleIds = new Set(report.samples.filter((s) => s.status === "COMPLETED").map((s) => s.sampleId));
 
 const persistReport = async () => {
   report.updatedAt = new Date().toISOString();
   report.budgetTotalsLatest = budgetLedger.snapshot();
   report.physicalModelCalls = physicalCalls;
+  report.knownUnmeteredCalls = KNOWN_UNMETERED_CALLS;
+  report.effectiveUsedCalls = effectiveUsedCalls();
   // usage = 历次调用的 invocation 标记 + 本次调用至今的物理调用流水
   report.usage = [...report.usage.filter((entry) => entry.invocationStart !== undefined), ...taskUsage];
   atomicWriteJson(REPORT_PATH, report);
@@ -526,7 +532,7 @@ const runSample = async (sample) => {
     modelSpec: String(modelSpec?.id ?? modelSpec ?? null),
     policyVersion: QUALITY_POLICY_VERSION,
     budgetBefore: snapshotBefore,
-    startedAt: startedAt.toISOString(),
+    startedAt: new Date(startedAt).toISOString(),
   };
   atomicWriteJson(join(INTENT_DIR, `${sample.sampleId}.json`), intent);
   await appendDriverLog(`RUN_INTENT ${sample.sampleId}（账本已用 ${snapshotBefore.calls}/${snapshotBefore.limits.maxCalls}）`);
@@ -673,21 +679,21 @@ if (queue.length === 0) {
 }
 for (const sample of queue) {
   if (completedSampleIds.has(sample.sampleId)) continue;
-  const headroom = maxModelCalls - budgetLedger.snapshot().calls;
+  const headroom = maxModelCalls - effectiveUsedCalls();
   if (headroom < EXPECTED_CALLS_PER_SAMPLE) {
-    report.samples.push({ sampleId: sample.sampleId, status: "PENDING_BUDGET", note: `余量 ${headroom} < 启动下界 ${EXPECTED_CALLS_PER_SAMPLE}` });
+    report.samples.push({ sampleId: sample.sampleId, status: "PENDING_BUDGET", note: `有效余量 ${headroom} < 启动下界 ${EXPECTED_CALLS_PER_SAMPLE}（含已知未计量 ${KNOWN_UNMETERED_CALLS}）` });
     await persistReport();
-    await appendDriverLog(`${sample.sampleId} STOP_BUDGET_HEADROOM（余量 ${headroom}）`);
+    await appendDriverLog(`${sample.sampleId} STOP_BUDGET_HEADROOM（有效余量 ${headroom}）`);
   }
 }
 
-// 连通性 ping（1 次调用，计入预算；仅首个有效调用执行——resume 不重复计费）
-const anyCompleted = report.samples.some((s) => s.status === "COMPLETED") || completedSampleIds.size > 0;
-if (!anyCompleted) {
-  if (budgetLedger.snapshot().calls >= maxModelCalls) {
-    console.error("[fatal] 账本已到上限，拒绝 ping");
+// 连通性 ping（1 次调用，计入账本与预算；仅首个有效调用执行，report.pingDone 防止 resume 重复计费）
+if (report.pingDone !== true) {
+  if (effectiveUsedCalls() >= maxModelCalls) {
+    console.error("[fatal] 有效预算已到上限，拒绝 ping");
     process.exit(1);
   }
+  const pingReserveId = budgetLedger.reserve({ label: "m157-ping", estimatedTokens: 200 });
   const ping = await adapter.runAgent({
     agentId: config.agents.reviewer,
     timeoutMs: 120_000,
@@ -696,11 +702,13 @@ if (!anyCompleted) {
     contextScope: "review/m157-ping",
     metadata: { role: "reviewer" },
   });
+  budgetLedger.settle(pingReserveId, ping.usage);
+  report.pingDone = ping.status === "completed";
   if (ping.status !== "completed") {
-    await appendDriverLog(`ping ✘ ${ping.status}（已计入预算，物理调用 ${physicalCalls}）`);
+    await appendDriverLog(`ping ✘ ${ping.status}（已计入账本，物理调用 ${physicalCalls}）`);
     process.exit(1);
   }
-  await appendDriverLog(`ping ✔（已计入预算；账本 ${budgetLedger.snapshot().calls}/${SESSION_MAX_CALLS}，物理计数 ${physicalCalls}）`);
+  await appendDriverLog(`ping ✔（已计入账本；账本 ${budgetLedger.snapshot().calls}/${SESSION_MAX_CALLS}，物理计数 ${physicalCalls}）`);
 }
 
 let stopAll = false;
@@ -710,12 +718,12 @@ for (const sample of queue) {
     continue;
   }
   if (completedSampleIds.has(sample.sampleId)) continue;
-  // 跑前复查余量（ping 已消耗后的真实值；账本 reserve 是最后防线）
-  const headroomNow = maxModelCalls - budgetLedger.snapshot().calls;
+  // 跑前复查有效余量（ping 已计账后的真实值；账本 reserve 是最后防线）
+  const headroomNow = maxModelCalls - effectiveUsedCalls();
   if (headroomNow < EXPECTED_CALLS_PER_SAMPLE) {
     report.samples = report.samples.filter((s) => !(s.sampleId === sample.sampleId && s.status.startsWith("PENDING")));
-    report.samples.push({ sampleId: sample.sampleId, status: "PENDING_BUDGET", note: `跑前余量 ${headroomNow} < 启动下界 ${EXPECTED_CALLS_PER_SAMPLE}` });
-    await appendDriverLog(`${sample.sampleId} STOP_BUDGET_HEADROOM（跑前余量 ${headroomNow}）`);
+    report.samples.push({ sampleId: sample.sampleId, status: "PENDING_BUDGET", note: `跑前有效余量 ${headroomNow} < 启动下界 ${EXPECTED_CALLS_PER_SAMPLE}` });
+    await appendDriverLog(`${sample.sampleId} STOP_BUDGET_HEADROOM（跑前有效余量 ${headroomNow}）`);
     continue;
   }
   if (report.samples.some((s) => s.sampleId === sample.sampleId && s.status.startsWith("PENDING"))) {
@@ -769,5 +777,5 @@ report.aggregate = {
 };
 await persistReport();
 await appendDriverLog(
-  `DONE. 完成 ${completed.length}/${queue.length}；identity=${report.aggregate.legacyIdentityViolations.length} 单调=${report.aggregate.monotonicityViolations.length} 解锁=${report.aggregate.unblockedSamples.length} falseReady=${report.aggregate.falseReadyCandidates.length}；物理调用 ${physicalCalls}；账本 ${budgetLedger.snapshot().calls}/${maxModelCalls}`,
+  `DONE. 完成 ${completed.length}/${queue.length}；identity=${report.aggregate.legacyIdentityViolations.length} 单调=${report.aggregate.monotonicityViolations.length} 解锁=${report.aggregate.unblockedSamples.length} falseReady=${report.aggregate.falseReadyCandidates.length}；物理调用 ${physicalCalls}（本次）；有效已用 ${effectiveUsedCalls()}/48（账本 ${budgetLedger.snapshot().calls} + 已知未计量 ${KNOWN_UNMETERED_CALLS}）`,
 );
