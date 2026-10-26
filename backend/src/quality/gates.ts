@@ -456,8 +456,11 @@ export interface ThesisGateInput {
  *                  required=true 时 passed=false——未完成的必需核验不得放行 Final / READY
  *   NOT_APPLICABLE 规则对本项目 / 本轮不适用（首轮无前序修订、无引用、只读评估等），passed=true
  *   INFO           只呈现、不判定的观察（informational；passed 恒 true）
+ *   ADVISORY       M15.7：已评估但结果只作解释性呈现、不单独否决（UNCALIBRATED 分数阈值等）。
+ *                  evaluateQualityGate 本身不产出该状态——由 qualityPolicyV2 的政策适配层把
+ *                  指定 FAIL 规则转为此状态；passed 恒 true，原分数 / 原阈值 / Legacy 判定保留在 detail 与 advisory 字段。
  */
-export type QualityGateRuleStatus = "PASS" | "FAIL" | "NOT_EVALUATED" | "NOT_APPLICABLE" | "INFO";
+export type QualityGateRuleStatus = "PASS" | "FAIL" | "NOT_EVALUATED" | "NOT_APPLICABLE" | "INFO" | "ADVISORY";
 
 export interface QualityGateRule {
   rule: string;
@@ -467,6 +470,21 @@ export interface QualityGateRule {
   status?: QualityGateRuleStatus;
   /** M14.9.5.4：该规则是否为进入 Final / READY 的必需核验（NOT_EVALUATED + required → passed=false） */
   required?: boolean;
+  /**
+   * M15.7：政策适配层（qualityPolicyV2）把本规则从 Legacy FAIL 转为 ADVISORY 时附带的机读载荷；
+   * evaluateQualityGate 不产出该字段，旧产物 / 非 advisory 规则无此字段。
+   */
+  advisory?: {
+    kind: "UNCALIBRATED_SCORE";
+    legacyStatus: "FAIL";
+    legacyRequired: boolean;
+    legacyDetail: string;
+    score: number | null;
+    threshold: number;
+    direction: "at_least" | "at_most";
+    calibration: "UNVALIDATED";
+    policyVersion: string;
+  };
 }
 
 /** M14.9.5.4：Gate 的核验完整性摘要——「没有违规」与「完成核验」分开报告 */
@@ -1240,7 +1258,7 @@ export function evaluateQualityGate(
 
 /** M14.9.5.4：规则状态 → 核验完整性摘要（旧产物 / 外部追加的规则没有 status 时按 passed 归 PASS / FAIL） */
 export function summarizeGateVerification(rules: readonly QualityGateRule[]): QualityGateVerificationSummary {
-  const counts: Record<QualityGateRuleStatus, number> = { PASS: 0, FAIL: 0, NOT_EVALUATED: 0, NOT_APPLICABLE: 0, INFO: 0 };
+  const counts: Record<QualityGateRuleStatus, number> = { PASS: 0, FAIL: 0, NOT_EVALUATED: 0, NOT_APPLICABLE: 0, INFO: 0, ADVISORY: 0 };
   const notEvaluated: QualityGateVerificationSummary["notEvaluated"] = [];
   const notApplicable: string[] = [];
   for (const rule of rules) {
