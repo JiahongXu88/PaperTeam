@@ -1,7 +1,7 @@
 # M15.7 — Quality Gate Policy & Calibration Closure
 
 - 日期：2026-10-26
-- 裁决：**M15_7_COMPLETE_POLICY_PRODUCTION**（待最终 HEAD CI / Linux Integration 核对，见 §10 门槛 5；若不绿按协议 deviation #4 回滚并降为 PARTIAL）
+- 裁决：**M15_7_COMPLETE_POLICY_PRODUCTION**（最终 HEAD `547da8c` CI success [run 40299975887](https://github.com/JiahongXu88/PaperTeam/actions/runs/40299975887) attempt 1 / 7m47s + Linux Integration success [run 40299975734](https://github.com/JiahongXu88/PaperTeam/actions/runs/40299975734) attempt 1 / 15m24s——协议 §6 门槛 5 全绿）
 - 仓库起点/终点：main 514ad218 → 557a9e7 → befa69e → fd0e777 → 24ce628 → 1a179dd → 3969592 → 2ab287f → 4e8640a（本轮 8 提交：7 工程 + 1 文档收口，见 §9）
 - 数据根：D:\PaperTeamData\M15\M15_7\（预登记协议、shadow 重放、fresh 运行、预算账本——均不入 Git）
 - 预登记：PRE_REGISTERED_PROTOCOL.md（FROZEN 2026-10-26T15:45:04+08:00，正文 SHA256 93027ddf…49d606，副本 frozen_body 独立可验；append-only deviation ×4）
@@ -79,7 +79,7 @@
 | 2 | NOT_EVALUATED(required) 不因 advisory 变 PASS | 单测（REMAIN_BLOCKED 用例 + requiredComplete=false 断言）+ 重放 111（required 缺口全保持）+ fresh 2（citation required 阻断保持） | **绿** |
 | 3 | quick-review assessment 可解释、不映射出版 READY | 单测（NOT_A_SUBMISSION_CREDENTIAL + assessment 三态）+ 重放（B 全 ASSESSMENT_INCOMPLETE——published 缺核验腿如实呈现） | **绿** |
 | 4 | 分数仍计算可见、advisory/uncalibrated 标注、无 AI 检测概率/假分数、新旧分歧可理解 | 单测（advisory 载荷完整断言：score/threshold/direction/legacyStatus/legacyDetail）+ fresh（unblocked 差分呈现）+ 前端 ADVISORY 样式 | **绿** |
-| 5 | 全量 regression + 双入口 + 历史 JSON 兼容 + typecheck/build + CI + Linux Integration | 见 §9/§10（typecheck/build 零错；quality 300/300、消费方 1034/1034、前端 364/364；全量两次口径见 §9；CI/Linux 见 §10） | **见 §10** |
+| 5 | 全量 regression + 双入口 + 历史 JSON 兼容 + typecheck/build + CI + Linux Integration | typecheck/build 零错；quality 300/300、消费方 1034/1034、前端 364/364；全量两次口径（§9）；**CI success attempt 1 / 7m47s（run 40299975887）+ Linux Integration success attempt 1 / 15m24s（run 40299975734）@ 547da8c** | **绿** |
 
 历史 JSON 兼容：`qualityPolicy` 为可选字段（历史产物缺省=无政策层解释）；ADVISORY 状态仅政策层产出，前端未知状态安全回退（中性色原样展示）；`summarizeGateVerification` counts 初始化含 ADVISORY:0（旧产物重放不缺键）。
 
@@ -114,7 +114,7 @@
 ## 10. 最终裁决与 CI 核对（第 1/10 问）
 
 - **裁决：M15_7_COMPLETE_POLICY_PRODUCTION**——A-F 六阶段 COMPLETE（C 阶段 fresh 腿按协议 §7 预算截断 2/4，published 分支由重放覆盖）；生产 Gate policy 变更已实施（commit 2ab287f）。
-- 按协议 deviation #4：门槛 5 的最终 HEAD CI + Linux Integration 在 push 后核对；结果记录于 PROJECT_STATUS（不绿则回滚 2ab287f、降为 M15_7_PARTIAL_POLICY_SHADOW）。
+- 门槛 5 已在最终 HEAD `547da8c` 核对：CI success（run 40299975887，attempt 1，7m47s）+ Linux Integration success（run 40299975734，attempt 1，15m24s）——协议 §6 五门槛全绿，deviation #4 的回滚条款未触发。
 - 10 问决策卡：§0（1/2/3 问）、§3-§4（3 问家族明细）、§8（4/5 问缺口）、§6（7 问复用——无第二 Gate，复用 evaluateQualityGate/evidencePairing/findingAdjudication 产物，适配层只转换两条规则的角色）、§7（8 问成本）、§9（9 问套件/提交）、下段（10 问建议）。
 
 **第 10 问（唯一优先建议）**：M15 系列可按本轮口径收束为 COMPLETE——80/35 的「未校准硬门」问题已以零 false-ready 证据的方式关闭，剩余缺口（分数-结局统计校准、EN fresh 腿）是**新的独立研究问题**（需要人工标注预算），不应在 M15 框架内继续展开；也无需第八轮 Claim Certificate 微修（Rule 6 残余是判别缺口不是工程缺陷，如实保留即可）。
