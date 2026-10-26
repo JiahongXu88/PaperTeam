@@ -87,25 +87,32 @@ if (need.length === 0) {
 const { execFile } = await import("node:child_process");
 const { promisify } = await import("node:util");
 const execFileAsync = promisify(execFile);
+const { mkdtemp, readFile: readBin } = await import("node:fs/promises");
 const urlFromNote = (note) => {
   const m = /下载失败（(https?:\/\/[^）]+)）/.exec(String(note ?? ""));
-  return m?.[1] ?? null;
+  const raw = m?.[1] ?? null;
+  if (raw === null) return null;
+  // arxiv.org/pdf（主 CDN）对本机网络呈长波节流；export.arxiv.org 镜像同库且可达（实测 200/%PDF-）
+  return raw.replace(/^https:\/\/arxiv\.org\/pdf\//, "https://export.arxiv.org/pdf/");
 };
 const curlDownload = async (url, dest) => {
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
-      const { stdout } = await execFileAsync("curl", ["-sL", "--max-time", "90", "--retry", "2", "-o", dest, "-w", "%{http_code}", url], { timeout: 120_000, maxBuffer: 10 });
-      if (stdout.trim() === "200") return true;
-      console.log(`  curl HTTP ${stdout.trim()}（attempt ${attempt}）`);
+      // curl 自限：--max-time 45（单次）；重试交给外层 sweep 轮次（网络长波 → 多轮比内联重试高效）
+      const { stdout, stderr } = await execFileAsync("curl", ["-sL", "--max-time", "45", "-o", dest, "-w", "%{http_code}", url], { timeout: 60_000, maxBuffer: 10 });
+      const code = stdout.trim();
+      let size = 0;
+      try { size = (await readBin(dest)).byteLength; } catch { /* 未落盘 */ }
+      if (code === "200" && size > 1000) return true;
+      console.log(`  curl HTTP=${code} size=${size}（attempt ${attempt}）${stderr ? ` stderr=${String(stderr).slice(0, 60)}` : ""}`);
     } catch (error) {
-      console.log(`  curl 失败（attempt ${attempt}）：${String(error.message ?? error).slice(0, 90)}`);
+      console.log(`  curl 异常（attempt ${attempt}）：${String(error.code ?? error.message ?? error).slice(0, 120)}`);
     }
-    await new Promise((r) => setTimeout(r, 8_000 * attempt));
+    await new Promise((r) => setTimeout(r, 6_000 * attempt));
   }
   return false;
 };
 
-const { mkdtemp, readFile: readBin } = await import("node:fs/promises");
 const { tmpdir } = await import("node:os");
 const tmp = await mkdtemp(join(tmpdir(), "m158-backfill-"));
 let attached = 0;
