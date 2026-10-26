@@ -49,16 +49,22 @@ const args = new Set(process.argv.slice(2));
 const dryRun = args.has("--dry-run");
 const fresh = args.has("--fresh");
 const resume = args.has("--resume");
-if (Number(dryRun) + Number(fresh) + Number(resume) !== 1) {
-  console.error("用法：--dry-run | --fresh | --resume（三选一）");
+const continueRun = args.has("--continue");
+if (Number(dryRun) + Number(fresh) + Number(resume) + Number(continueRun) !== 1) {
+  console.error("用法：--dry-run | --fresh | --resume | --continue（四选一）");
   process.exit(2);
+}
+// Dev #1：续跑 tail 账本（原 96 账本封存；--continue 必须显式给出 tail 账本路径与上限）
+if (continueRun) {
+  process.env["PAPERTEAM_GLOBAL_BUDGET_LEDGER"] = process.env["M158_TAIL_LEDGER"] ?? join(EVAL_DIR, "budget-ledger-p-tail.json");
+  process.env["PAPERTEAM_GLOBAL_MAX_MODEL_CALLS"] = process.env["M158_TAIL_MAX_CALLS"] ?? "72";
 }
 
 process.env["PROJECTS_ROOT"] = PROJECTS_ROOT;
 process.env["PAPERTEAM_PI_MODEL"] ??= "zai-coding-cn/glm-5.3";
 process.env["CITATION_MAX_METADATA_LOOKUPS"] ??= "60";
-process.env["PAPERTEAM_GLOBAL_BUDGET_LEDGER"] = join(EVAL_DIR, "budget-ledger.json");
-process.env["PAPERTEAM_GLOBAL_MAX_MODEL_CALLS"] = String(SESSION_MAX_CALLS);
+process.env["PAPERTEAM_GLOBAL_BUDGET_LEDGER"] ??= join(EVAL_DIR, "budget-ledger.json");
+process.env["PAPERTEAM_GLOBAL_MAX_MODEL_CALLS"] ??= String(SESSION_MAX_CALLS);
 process.env["PAPERTEAM_GLOBAL_MAX_TOKENS"] = "0"; // 只按调用数硬停（token 上限交给 Coding Plan 订阅额度）
 
 await mkdir(EVAL_DIR, { recursive: true });
@@ -232,7 +238,7 @@ if (dryRun) {
   process.exit(probe.steps.every(([, ok]) => ok) ? 0 : 3);
 }
 
-// ---- fresh / resume ----
+// ---- fresh / resume / continue ----
 
 let journal = await readJournal();
 if (fresh && journal !== null && journal.runId !== undefined && !process.env["M158_ALLOW_REFRESH"]) {
@@ -241,6 +247,10 @@ if (fresh && journal !== null && journal.runId !== undefined && !process.env["M1
 }
 if (resume && (journal === null || journal.runId === undefined)) {
   console.error("[refuse] --resume 但 journal 无既有 run：先用 --fresh");
+  process.exit(2);
+}
+if (continueRun && (journal === null || journal.projectId === undefined)) {
+  console.error("[refuse] --continue 但 journal 无既有项目：先用 --fresh");
   process.exit(2);
 }
 
@@ -305,6 +315,21 @@ if (fresh) {
   runId = started.body.runId;
   await appendDriverLog(`run 启动 ${runId}`);
   journal = { schema: "m158-p/v1", projectId, runId, startedAt: new Date().toISOString(), hitl: [], updatedAt: new Date().toISOString() };
+  await writeJsonAtomic(JOURNAL_PATH, journal);
+} else if (continueRun) {
+  // 同项目新 run（front 阶段指纹幂等复用；Dev #1 续跑通道）：先取消可能残留的孤儿 run
+  const orphans = await request("GET", `/runs?projectId=${projectId}`);
+  for (const orphan of orphans.body["runs"] ?? []) {
+    if (["running", "pending", "awaiting_input"].includes(orphan.status)) {
+      await appendDriverLog(`[cleanup] 取消孤儿 run ${orphan.runId}（${orphan.status}）`);
+      await request("POST", `/runs/${orphan.runId}/cancel`).catch(() => {});
+    }
+  }
+  const started = await request("POST", `/projects/${projectId}/workflows`, { kind: "topic_survey" });
+  if (started.status !== 202) throw new Error(`run 启动失败：${started.status} ${JSON.stringify(started.body).slice(0, 300)}`);
+  runId = started.body.runId;
+  await appendDriverLog(`--continue 新 run ${runId}（project=${projectId}；tail 账本 ${process.env["PAPERTEAM_GLOBAL_BUDGET_LEDGER"]}）`);
+  journal = { ...(journal ?? { schema: "m158-p/v1" }), projectId, runId, continuedAt: new Date().toISOString(), hitl: journal?.hitl ?? [], updatedAt: new Date().toISOString() };
   await writeJsonAtomic(JOURNAL_PATH, journal);
 } else {
   await appendDriverLog(`--resume 重附着 project=${projectId} run=${runId}`);
