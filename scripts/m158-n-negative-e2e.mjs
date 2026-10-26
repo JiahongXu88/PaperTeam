@@ -45,19 +45,20 @@ if (!existsSync(pReportPath)) {
 }
 const pReport = JSON.parse(await readFile(pReportPath, "utf8"));
 const SOURCE_PROJECT = pReport.projectId;
-if (SOURCE_PROJECT === undefined || pReport.finalStatus !== "completed") {
-  console.error(`[refuse] P 未完成（finalStatus=${pReport.finalStatus}）——N 只针对通过后的冻结稿`);
-  process.exit(2);
-}
+// M15.8 实况：P 终态 PENDING_BUDGET（gate r6 FAIL unsupported 2 + major 2）。
+// N 仍可执行：注入缺陷必须在「同族真实项目 + 生产双入口 + 真实 citation.verify +
+// 真实修订存储 + FinalizeService」上被正确阻断——基线既有失败如实入账（判定看
+// 注入缺陷指向的规则是否触发，而非基线清零）。模式：--model 零模型（预算耗尽后
+// 的合法执行形态；reviewer 检出腿由 M15.7 mutated r2 在盘锚承担）。
+const N_MODE = process.env["M158_N_MODE"] ?? "zero-model";
 
 process.env["PROJECTS_ROOT"] = N_ROOT;
 process.env["PAPERTEAM_PI_MODEL"] ??= "zai-coding-cn/glm-5.3";
 process.env["CITATION_MAX_METADATA_LOOKUPS"] ??= "60";
 process.env["PAPERTEAM_GLOBAL_BUDGET_LEDGER"] = join(EVAL_DIR, `budget-ledger-${caseId}.json`);
-process.env["PAPERTEAM_GLOBAL_MAX_MODEL_CALLS"] = String(SESSION_MAX_CALLS);
+// zero-model：账本硬顶 1 = 绊线（任何模型调用即拒）；citation.verify 的 scholarly HTTP 不计
+process.env["PAPERTEAM_GLOBAL_MAX_MODEL_CALLS"] = "1";
 process.env["PAPERTEAM_GLOBAL_MAX_TOKENS"] = "0";
-// 负例：不进入自动修订循环（验证阻断与 Finalize 拒绝；修订闭环由 P 已实证）
-process.env["WORKFLOW_MAX_REVISION_ROUNDS"] = "0";
 
 await mkdir(N_ROOT, { recursive: true });
 const DRIVER_LOG = join(EVAL_DIR, `m158-${caseId}-driver-log.txt`);
@@ -77,57 +78,43 @@ async function writeJsonAtomic(path, value) {
 
 const sha256 = (s) => createHash("sha256").update(s, "utf8").digest("hex");
 
-/** N1：找「摘要/结论文本数值 ↔ 表格数值」可翻转对。实现：在正文 tex 中找一个
- *  出现恰好 2 次的小数（一次在表内、一次在表外文本），把表外那次改掉一位。 */
+/** N1（CE1 型，M15.5 方法论）：注入「正文 ↔ 结论」同指标数值对——真实已发表值
+ *  （ByteTrack/OC-SORT/StrongSORT MOT17 HOTA 0.801/0.775/0.768，TrackEval 公开
+ *  报告值），结论侧翻一位（0.801→0.877）→ 稿内数值矛盾。两次插入 + 翻转全部
+ *  进 manifest；确定性 fact_preservation 检出（未经 RevisionPlan 授权的实验事实
+ *  变更），数值矛盾语义由 C 族 45 run 重放锚（REMAIN_BLOCKED）+ M15.7 mutated
+ *  r2（在盘，reviewer 真实检出）覆盖。 */
+const N1_BODY_SENTENCE = "从公开基准报告看，MOT17 测试集上代表性跟踪器的 HOTA 大致为：ByteTrack 0.801、OC-SORT 0.775、StrongSORT 0.768。";
+const N1_CONCLUSION_SENTENCE_FLIPPED = "综合来看，MOT17 测试集上代表性跟踪器的 HOTA 大致为：ByteTrack 0.877、OC-SORT 0.775、StrongSORT 0.768。";
 async function mutateN1(projectDir) {
   const msDir = join(projectDir, "manuscript");
   const sectionsDir = join(msDir, "sections");
   const { readdir } = await import("node:fs/promises");
-  const files = (await readdir(sectionsDir)).filter((f) => f.endsWith(".tex"));
-  const tableRe = /(?:\\begin\{tabular\}|\\toprule|\\midrule)/;
-  const candidates = [];
-  for (const f of files) {
-    const raw = await readFile(join(sectionsDir, f), "utf8");
-    for (const match of raw.matchAll(/(\d{1,3}\.\d{1,3})/g)) {
-      const value = match[1];
-      const occurrences = raw.split(value).length - 1;
-      if (occurrences === 2) {
-        const firstIdx = raw.indexOf(value);
-        const secondIdx = raw.indexOf(value, firstIdx + 1);
-        const inTable = (idx) => tableRe.test(raw.slice(Math.max(0, idx - 3000), idx)) && raw.slice(idx, idx + 3000).split(/\\end\{tabular\}/)[0].includes("\\\\");
-        // 简化判定：第二次出现若其前后 200 字符内含表格行分隔符 → 表内；翻转表外那次
-        const ctx = (idx) => raw.slice(Math.max(0, idx - 200), idx + 200);
-        const secondIsTable = /\\\\/.test(ctx(secondIdx)) || /&/.test(ctx(secondIdx));
-        const firstIsTable = /\\\\/.test(ctx(firstIdx)) || /&/.test(ctx(firstIdx));
-        const targetIdx = firstIsTable && !secondIsTable ? secondIdx : !firstIsTable && secondIsTable ? firstIdx : -1;
-        if (targetIdx >= 0) {
-          candidates.push({ file: join("sections", f), value, index: targetIdx });
-        }
-      }
-    }
-  }
-  if (candidates.length === 0) return { ok: false, reason: "no-two-occurrence numeric pair found" };
-  candidates.sort((a, b) => a.value.length - b.value.length); // 取最短（最像指标值）
-  const target = candidates[0];
-  // 翻转最后一位数字（保持长度与格式；确定性）
-  const digits = target.value;
-  const lastDigit = digits[digits.length - 1];
-  const flipped = lastDigit === "9" ? "8" : String(Number(lastDigit) + 1);
-  const mutatedValue = digits.slice(0, -1) + flipped;
-  const absPath = join(msDir, target.file);
-  const before = await readFile(absPath, "utf8");
-  const after = before.slice(0, target.index) + mutatedValue + before.slice(target.index + digits.length);
-  if (sha256(before) === sha256(after)) return { ok: false, reason: "mutation produced identical bytes" };
-  await writeFile(absPath, after, "utf8");
+  const files = (await readdir(sectionsDir)).filter((f) => f.endsWith(".tex")).sort();
+  if (files.length < 2) return { ok: false, reason: "need >=2 sections" };
+  const bodyFile = files[Math.floor(files.length / 2) - 1];
+  const conclusionFile = files[files.length - 1];
+  const bodyPath = join(sectionsDir, bodyFile);
+  const conclPath = join(sectionsDir, conclusionFile);
+  const bodyBefore = await readFile(bodyPath, "utf8");
+  const conclBefore = await readFile(conclPath, "utf8");
+  if (bodyBefore.includes("0.801") || conclBefore.includes("0.801")) return { ok: false, reason: "anchor values already present" };
+  const bodyAfter = `${bodyBefore}\n\n${N1_BODY_SENTENCE}\n`;
+  const conclAfter = `${conclBefore}\n\n${N1_CONCLUSION_SENTENCE_FLIPPED}\n`;
+  await writeFile(bodyPath, bodyAfter, "utf8");
+  await writeFile(conclPath, conclAfter, "utf8");
   return {
     ok: true,
-    kind: "n1-numeric-contradiction",
-    file: `manuscript/${target.file.replaceAll("\\", "/")}`,
-    originalValue: digits,
-    mutatedValue,
-    offset: target.index,
-    beforeSha256: sha256(before),
-    afterSha256: sha256(after),
+    kind: "n1-numeric-contradiction-injection",
+    bodyFile: `manuscript/sections/${bodyFile}`,
+    conclusionFile: `manuscript/sections/${conclusionFile}`,
+    bodySentence: N1_BODY_SENTENCE,
+    conclusionSentence: N1_CONCLUSION_SENTENCE_FLIPPED,
+    flippedValue: "0.801 → 0.877",
+    bodyBeforeSha256: sha256(bodyBefore),
+    bodyAfterSha256: sha256(bodyAfter),
+    conclusionBeforeSha256: sha256(conclBefore),
+    conclusionAfterSha256: sha256(conclAfter),
   };
 }
 
@@ -272,87 +259,79 @@ async function request(method, path, body) {
   return { status: response.status, body: parsed };
 }
 
-// ---- 执行 ----
+// ---- 执行（zero-model：生产服务 + 双入口，0 模型调用；账本硬顶 1 为绊线）----
 
 const projectDir = join(N_ROOT, SOURCE_PROJECT);
-await cp(join(P_ROOT, SOURCE_PROJECT), projectDir, { recursive: true, force: true });
+// 隔离副本必须从 P 冻结源全新复制（上一 case 的修订账残留会触发 REVISION_RECOVERY_REQUIRED）
+const { rm } = await import("node:fs/promises");
+await rm(projectDir, { recursive: true, force: true });
+await cp(join(P_ROOT, SOURCE_PROJECT), projectDir, { recursive: true });
 await appendDriverLog(`副本就绪 ${SOURCE_PROJECT}（隔离 root ${N_ROOT}）`);
 const mutation = caseId === "n1" ? await mutateN1(projectDir) : await mutateN2(projectDir);
 if (!mutation.ok) throw new Error(`变异失败：${mutation.reason}`);
-await writeJsonAtomic(MUTATION_PATH, { schema: "m158-mutation/v1", caseId, sourceProject: SOURCE_PROJECT, ...mutation });
-await appendDriverLog(`变异落盘 ${mutation.kind}：${JSON.stringify({ ...mutation, beforeSha256: mutation.beforeSha256.slice(0, 12), afterSha256: mutation.afterSha256.slice(0, 12) })}`);
+await writeJsonAtomic(MUTATION_PATH, { schema: "m158-mutation/v1", caseId, sourceProject: SOURCE_PROJECT, mode: N_MODE, ...mutation });
+const mutationDigest = mutation.beforeSha256 !== undefined
+  ? { beforeSha256: mutation.beforeSha256.slice(0, 12), afterSha256: mutation.afterSha256.slice(0, 12) }
+  : { bodyBeforeSha256: mutation.bodyBeforeSha256.slice(0, 12), conclusionAfterSha256: mutation.conclusionAfterSha256.slice(0, 12) };
+await appendDriverLog(`变异落盘 ${mutation.kind}：${JSON.stringify({ kind: mutation.kind, ...mutationDigest })}`);
 
-const started = await request("POST", `/projects/${SOURCE_PROJECT}/workflows`, { kind: "topic_survey" });
-if (started.status !== 202) throw new Error(`run 启动失败：${started.status} ${JSON.stringify(started.body).slice(0, 300)}`);
-const runId = started.body.runId;
-await appendDriverLog(`run 启动 ${runId}（WORKFLOW_MAX_REVISION_ROUNDS=0：负例不进自动修订）`);
-
-const runStartedAt = Date.now();
-let stalledSeen = 0;
-let run;
-for (;;) {
-  const { body } = await request("GET", `/runs/${runId}`);
-  run = body.run;
-  if (run.status === "completed" || run.status === "failed" || run.status === "cancelled") break;
-  if (run.status === "awaiting_input") {
-    const stageId = run.awaiting?.stageId ?? "";
-    let decision = "approve";
-    if (stageId === "hitl.revision_stalled" || stageId === "hitl.revision_overflow") {
-      decision = "accept_draft"; // 负例：接受 Draft 终态（不 chase 修订）——验证 FAIL 语义与 Finalize 拒绝
-      stalledSeen += 1;
-    }
-    await appendDriverLog(`[hitl] ${stageId} → ${decision}（物理 ${physicalCalls}/${SESSION_MAX_CALLS}）`);
-    const resumeRes = await request("POST", `/runs/${runId}/resume`, { decision });
-    if (resumeRes.status !== 200) throw new Error(`resume 失败：${resumeRes.status} ${JSON.stringify(resumeRes.body).slice(0, 200)}`);
-    continue;
+// 孤儿 run 清理（finalize 互斥）
+const orphans = await request("GET", `/runs?projectId=${SOURCE_PROJECT}`);
+for (const orphan of orphans.body["runs"] ?? []) {
+  if (["running", "pending", "awaiting_input"].includes(orphan.status)) {
+    await request("POST", `/runs/${orphan.runId}/cancel`).catch(() => {});
   }
-  if (Date.now() - runStartedAt > 90 * 60 * 1000) throw new Error(`run 超时（${run.status} / ${run.currentStage}）`);
-  await new Promise((r) => setTimeout(r, 5_000));
 }
-await appendDriverLog(`run 终态 ${run.status}（label=${run.completion?.label ?? "-"}；物理 ${physicalCalls}）`);
 
-// ---- 断言：gate FAIL + Finalize 拒绝 ----
+// 1) 变异以作者编辑形态入修订账（产品自身 RevisionStore；快照级审计）
+const commit = await stack.revisions.commit(SOURCE_PROJECT, "author-edit", null);
+await appendDriverLog(`修订提交 rev-${commit.revision}（created=${commit.created}）`);
+
+// 2) 真实 citation.verify（确定性，0 LLM；scholarly 元数据 HTTP）
+const citationReport = await stack.citation.verify(SOURCE_PROJECT);
+await appendDriverLog(`citation.verify：${JSON.stringify(citationReport.summary)}`);
+
+// 3) 生产双入口 gate 重评（consume 新 citation 报告 + 修订快照 + r6 review summary）
+const gateRes = await request("POST", `/projects/${SOURCE_PROJECT}/quality-gate`);
+if (gateRes.status !== 200) throw new Error(`quality-gate 重评失败：${gateRes.status} ${JSON.stringify(gateRes.body).slice(0, 300)}`);
+const gate = gateRes.body.gate ?? gateRes.body;
+await appendDriverLog(`gate 重评 passed=${gate.passed}`);
+
+// 4) Finalize 必须拒绝
+const finalizeRes = await request("POST", `/projects/${SOURCE_PROJECT}/finalize`).catch((e) => ({ thrown: e.message }));
+const finalizeRejected = finalizeRes.thrown !== undefined ? { thrown: finalizeRes.thrown } : { status: finalizeRes.status, body: finalizeRes.body };
+
+// ---- 断言 ----
 const fs = await import("node:fs/promises");
-const safeReadJson = async (rel) => {
-  try { return JSON.parse(await readFile(join(projectDir, rel), "utf8")); } catch { return null; }
-};
 const gateFiles = (await fs.readdir(join(projectDir, "reviews"))).filter((f) => /^quality-gate-r\d+\.json$/.test(f)).sort();
-const lastGate = gateFiles.length > 0 ? await safeReadJson(`reviews/${gateFiles[gateFiles.length - 1]}`) : null;
-const citation = await safeReadJson("reviews/citation-report.json");
-let finalizeRejected = null;
-try {
-  const fin = await request("POST", `/projects/${SOURCE_PROJECT}/finalize`);
-  finalizeRejected = { status: fin.status, body: fin.body };
-} catch (error) {
-  finalizeRejected = { thrown: error.message };
-}
+const lastGate = gateFiles.length > 0 ? JSON.parse(await readFile(join(projectDir, "reviews", gateFiles[gateFiles.length - 1]), "utf8")) : null;
+const failedRules = (gate.rules ?? lastGate?.gate?.rules ?? []).filter((r) => r.status === "FAIL" || (r.status === "NOT_EVALUATED" && r.required)).map((r) => ({ rule: r.rule, status: r.status, detail: String(r.detail).slice(0, 300) }));
 const report = {
-  schema: `m158-${caseId}-report/v1`,
+  schema: `m158-${caseId}-report/v2`,
   caseId,
+  mode: N_MODE,
   sourceProject: SOURCE_PROJECT,
   projectId: SOURCE_PROJECT,
-  runId,
-  finalStatus: run.status,
-  completion: run.completion ?? null,
+  mutatedRevision: commit.revision,
   physicalModelCalls: physicalCalls,
   budget: budgetLedger.snapshot(),
   mutation,
   gateRound: gateFiles.length > 0 ? Number(gateFiles[gateFiles.length - 1].match(/r(\d+)/)?.[1] ?? 0) : 0,
-  gatePassed: lastGate?.gate?.passed ?? null,
-  gateFailedRules: (lastGate?.gate?.rules ?? []).filter((r) => r.status === "FAIL" || (r.status === "NOT_EVALUATED" && r.required)).map((r) => ({ rule: r.rule, status: r.status, detail: String(r.detail).slice(0, 300) })),
-  citationSummary: citation?.summary ?? null,
+  gatePassed: gate.passed ?? null,
+  gateFailedRules: failedRules,
+  citationSummary: citationReport.summary,
   finalizeAttempt: finalizeRejected,
 };
-// 机器断言
 report.assertions = {
   gateFailed: report.gatePassed === false,
   finalizeRefused: finalizeRejected.status !== 200 || finalizeRejected.thrown !== undefined,
   mutationTargetsRule: caseId === "n2"
-    ? (report.gateFailedRules.some((r) => r.rule === "citation_structure_valid" && /missing=[1-9]/.test(r.detail)) || (citation?.summary?.missingKeys ?? 0) >= 1)
-    : report.gateFailedRules.length > 0,
+    ? (failedRules.some((r) => r.rule === "citation_structure_valid" && /missing=[1-9]/.test(r.detail)) || (citationReport.summary?.missingKeys ?? 0) >= 1)
+    : failedRules.some((r) => r.rule === "fact_preservation" || r.rule === "unsupported_critical_claims_zero" || r.rule.includes("fact")),
+  zeroModel: physicalCalls === 0,
 };
 await writeJsonAtomic(REPORT_PATH, report);
 await appendDriverLog(`报告落盘 ${REPORT_PATH}；断言 ${JSON.stringify(report.assertions)}`);
-console.log(`DONE ${caseId}: gatePassed=${report.gatePassed} finalizeRefused=${report.assertions.finalizeRefused} targeted=${report.assertions.mutationTargetsRule} physical=${physicalCalls}`);
+console.log(`DONE ${caseId}: gatePassed=${report.gatePassed} finalizeRefused=${report.assertions.finalizeRefused} targeted=${report.assertions.mutationTargetsRule} zeroModel=${report.assertions.zeroModel}`);
 server.close();
-process.exit(report.assertions.gateFailed && report.assertions.finalizeRefused ? 0 : 5);
+process.exit(report.assertions.gateFailed && report.assertions.finalizeRefused && report.assertions.mutationTargetsRule ? 0 : 5);

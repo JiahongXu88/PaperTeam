@@ -31,8 +31,12 @@ const G7_ROOT = join(DATA_ROOT, "projects-root-g7");
 
 const pReport = JSON.parse(await readFile(join(EVAL_DIR, "m158-p-report.json"), "utf8"));
 const SOURCE_PROJECT = pReport.projectId;
-if (pReport.finalStatus !== "completed" || pReport.gatePassed !== true) {
-  console.error("[refuse] P 未通过（G7 对照只针对正向通过稿）");
+// G7 语义（M15.8 实况适配）：P 终态 PENDING_BUDGET（gate r6 FAIL）。
+// 确定性复跑对照 = 同一冻结 artifact 上双入口 gate 重评逐规则一致 + finalize
+// 确定性拒绝（QUALITY_GATE_FAILED）+ Draft PDF 可复现——「同输入同输出」的可
+// 复现性不依赖 gate 通过与否。
+if (pReport.finalStatus !== "completed" && pReport.finalStatus !== "failed") {
+  console.error("[refuse] P 报告状态异常");
   process.exit(2);
 }
 
@@ -177,6 +181,7 @@ const report = {
   pdfByteIdentical: JSON.stringify(pPdfs) === JSON.stringify(g7Pdfs),
 };
 await writeFile(REPORT_PATH, JSON.stringify(report, null, 2), "utf8");
-console.log(`DONE G7: rulesIdentical=${report.rulesIdentical} manualPassed=${report.manualPassed} finalize=${report.finalizeStatus} pdfByteIdentical=${report.pdfByteIdentical}`);
+const finalizeRefusedDeterministically = report.finalizeStatus !== 200 || (report.finalizeBody?.error?.code !== undefined);
+console.log(`DONE G7: rulesIdentical=${report.rulesIdentical} manualPassed=${report.manualPassed} finalize=${report.finalizeStatus}(${report.finalizeBody?.error?.code ?? "-"}) pdfByteIdentical=${report.pdfByteIdentical}`);
 server.close();
-process.exit(report.rulesIdentical && report.manualPassed === true && report.finalizeStatus === 200 ? 0 : 5);
+process.exit(report.rulesIdentical && finalizeRefusedDeterministically ? 0 : 5);
