@@ -81,6 +81,8 @@ const dryRun = has("--dry-run");
 const fresh = has("--fresh");
 const resume = has("--resume");
 const onlySample = valueOf("--only") ?? args.find((a) => a.startsWith("--only="))?.slice(7);
+const reuseProjectId =
+  valueOf("--reuse-project") ?? args.find((a) => a.startsWith("--reuse-project="))?.slice("--reuse-project=".length);
 const maxModelCallsRaw = valueOf("--max-model-calls");
 
 if (!listOnly && !dryRun && !fresh && !resume) {
@@ -89,6 +91,10 @@ if (!listOnly && !dryRun && !fresh && !resume) {
 }
 if (fresh && resume) {
   console.error("[refuse] --fresh 与 --resume 互斥");
+  process.exit(2);
+}
+if (reuseProjectId !== undefined && (onlySample === undefined || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(reuseProjectId))) {
+  console.error("[refuse] --reuse-project 必须与 --only（恰好一个样本）同用，且 projectId 形如 p-xxxx");
   process.exit(2);
 }
 
@@ -290,10 +296,15 @@ const appendDriverLog = async (line) => {
   const stamped = `[${new Date().toISOString()}] ${line}`;
   console.log(stamped);
   logLines.push(stamped);
-  // 追加式驱动日志（resume 跨调用保留）
-  await mkdir(EVAL_DIR, { recursive: true });
-  const { appendFile } = await import("node:fs/promises");
-  await appendFile(DRIVER_LOG_PATH, stamped + "\n", "utf8");
+  // 追加式驱动日志（resume 跨调用保留）；日志失败绝不中断主流程（首轮教训：D: 瞬态 errno -4094
+  // 曾让 catch 内的日志调用把进程带走，ERROR 记录都没落盘）
+  try {
+    await mkdir(EVAL_DIR, { recursive: true });
+    const { appendFile } = await import("node:fs/promises");
+    await appendFile(DRIVER_LOG_PATH, stamped + "\n", "utf8");
+  } catch (error) {
+    console.error(`[driver-log-degraded] ${String(error?.message ?? error)}`);
+  }
 };
 
 const atomicWriteJson = (path, value) => {
@@ -540,16 +551,21 @@ const runSample = async (sample) => {
   const source = await prepareSource(sample);
   if (source.mutationRegister) atomicWriteJson(MUTATION_REGISTER_PATH, source.mutationRegister);
 
-  const created = await projects.create(`M15.7 fresh ${sample.sampleId}`, { language: sample.language });
-  const projectId = created.id;
+  // 补救模式（--reuse-project）：复用既有项目目录——D: 瞬态故障中断的 run 里 journal 已有
+  // 35 个带 requestFingerprint 的完成单元，M14.8.1 基础设施按 snapshotId+单元指纹合法复用
+  //（不重跑、不产生新调用）；只有缺口单元/跨章/聚合真实执行。
+  const projectId =
+    reuseProjectId ?? (await projects.create(`M15.7 fresh ${sample.sampleId}`, { language: sample.language })).id;
   const manuscriptDir = projects.manuscriptDir(projectId);
   await mkdir(manuscriptDir, { recursive: true });
   const artifactsDir = join(projects.projectDir(projectId), "artifacts");
   await mkdir(artifactsDir, { recursive: true });
-  for (const [path, content] of Object.entries(source.files)) {
-    const target = join(manuscriptDir, ...path.split("/"));
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, content, "utf8");
+  if (reuseProjectId === undefined) {
+    for (const [path, content] of Object.entries(source.files)) {
+      const target = join(manuscriptDir, ...path.split("/"));
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, content, "utf8");
+    }
   }
   const mainTex = source.files["main.tex"] ?? Object.values(source.files)[0];
   atomicWriteJson(join(artifactsDir, "input-provenance.json"), {
@@ -611,6 +627,7 @@ const runSample = async (sample) => {
     status: "COMPLETED",
     projectId,
     round,
+    ...(reuseProjectId !== undefined ? { salvagedFromProject: reuseProjectId } : {}),
     durationMs: Date.now() - startedAt,
     physicalModelCalls: callsUsed,
     source: source.provenance,
