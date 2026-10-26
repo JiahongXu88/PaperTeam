@@ -551,16 +551,17 @@ const runSample = async (sample) => {
   const source = await prepareSource(sample);
   if (source.mutationRegister) atomicWriteJson(MUTATION_REGISTER_PATH, source.mutationRegister);
 
-  // 补救模式（--reuse-project）：复用既有项目目录——D: 瞬态故障中断的 run 里 journal 已有
-  // 35 个带 requestFingerprint 的完成单元，M14.8.1 基础设施按 snapshotId+单元指纹合法复用
-  //（不重跑、不产生新调用）；只有缺口单元/跨章/聚合真实执行。
+  // 补救/增量模式（--reuse-project）：复用既有项目目录——
+  //  - 无变异样本：跳过文件写入，同轮 journal 恢复（D: 瞬态故障中断的 run）；
+  //  - 有变异样本（mutated r2）：写入变异稿触发 M14.8.1 跨轮增量复审——未变单元按
+  //    unitFingerprint+requestFingerprint 合法缓存，只有改动/汇总型/引用依赖单元真实重审。
   const projectId =
     reuseProjectId ?? (await projects.create(`M15.7 fresh ${sample.sampleId}`, { language: sample.language })).id;
   const manuscriptDir = projects.manuscriptDir(projectId);
   await mkdir(manuscriptDir, { recursive: true });
   const artifactsDir = join(projects.projectDir(projectId), "artifacts");
   await mkdir(artifactsDir, { recursive: true });
-  if (reuseProjectId === undefined) {
+  if (reuseProjectId === undefined || sample.mutation !== null) {
     for (const [path, content] of Object.entries(source.files)) {
       const target = join(manuscriptDir, ...path.split("/"));
       await mkdir(dirname(target), { recursive: true });
