@@ -84,7 +84,7 @@ fresh H（注入无证据实验论断 → 合法 HITL 停止 → 重启保持）
 
 - 本地：backend typecheck ✓ / build ✓ / 全量 vitest **4341 passed / 0 failed / 42 skipped（exit 0）**（基线与终态两次同口径，`logs/baseline-full-tests.log` + `logs/final-full-tests.log`）；frontend typecheck ✓。
 - 提交链：`9eef50a`（P 驱动）→ `bafb0db`（驱动族）→ 收口提交（本报告 + PROJECT_STATUS）。
-- CI / Linux Integration：最终 HEAD 实测结果回填于提交后（若未回填即 NOT_VERIFIED）。
+- CI / Linux Integration（最终 HEAD `2099673`，2026-10-26）：**CI success（run [40349628284](https://github.com/JiahongXu88/PaperTeam/actions/runs/40349628284)，attempt 1，7m35s）+ Linux Integration success（run [40349628145](https://github.com/JiahongXu88/PaperTeam/actions/runs/40349628145)，attempt 1，10m37s）**。工作树 clean，HEAD == origin/main == `2099673f8d770c34839339d94c02dd6f098dae5e`。
 
 ## 9. 下一轮最小必需事项（诚实清单）
 
