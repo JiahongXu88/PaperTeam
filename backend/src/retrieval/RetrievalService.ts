@@ -336,6 +336,22 @@ export class RetrievalService {
     };
   }
 
+  /**
+   * M15.8.2（D-2）：指定 sources 的原始 chunks 只读访问（TargetedGroundingService
+   * 锚回落候选扫描用；不构建索引、不判 stale——锚判定本身逐字核验）。无任何 chunk
+   * 文件 → null。
+   */
+  async readSourceChunks(projectId: string, sourceIds: readonly string[]): Promise<SourceChunk[] | null> {
+    const collected: SourceChunk[] = [];
+    for (const sourceId of sourceIds) {
+      const chunks = await this.chunkStore.readChunks(projectId, sourceId);
+      if (chunks !== null) {
+        collected.push(...chunks);
+      }
+    }
+    return collected.length > 0 ? collected : null;
+  }
+
   /** 单 source 重建（增量失效路径）；无法生成全文 → SOURCE_NOT_INDEXABLE（422） */
   async rebuildSource(projectId: string, sourceId: string): Promise<SourceChunkOutcome> {
     await this.projects.getRequired(projectId);

@@ -21,6 +21,7 @@
 
 import type { ProjectStore } from "../project/ProjectStore.js";
 import type { RetrievalService } from "../retrieval/RetrievalService.js";
+import type { SourceChunk } from "../retrieval/types.js";
 import type { EvidenceGroundingService } from "./EvidenceGroundingService.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
 
@@ -71,6 +72,38 @@ export const TARGETED_GROUNDING_CHUNK_LIMIT = 3;
 export const TARGETED_GROUNDING_TOP_K = 6;
 /** quote 窗口目标长度（字符；逐字切片，≤2000 由 propose 校验上限兜住） */
 const QUOTE_WINDOW_CHARS = 900;
+/** anchor 回落：单源最多扫描的 chunk 数（成本 bound；S006=67 / S002=124 量级全覆盖） */
+const ANCHOR_FALLBACK_CHUNK_SCAN_LIMIT = 400;
+
+/**
+ * M15.8.2（D-2 修复）：claim 的跨语言检索锚——数值与拉丁 token 在中→英（或反向）
+ * 转述中逐字存活（「65,213 个像素掩码」↔ "comprise 65,213 pixel masks"），而 CJK
+ * bigram 词面通道对中文 claim × 英文 chunk 结构性零命中（M15.8.2 P run r7-r9 实证：
+ * ground_existing_source 反复派发、grounding 永远 no_candidate、claim 停在
+ * UNSUPPORTED 的死循环）。数值锚要求含千分位/小数分隔或 ≥5 位（避免裸年份
+ * "2024" 之类的弱锚）；拉丁锚 ≥3 字符。
+ */
+export function claimAnchorTokens(claim: string): { numbers: string[]; latin: string[] } {
+  const numbers: string[] = [];
+  // 分隔符只认 ASCII 的 , 与 .（全角 ，是子句分隔，不是数字的一部分）
+  for (const match of claim.matchAll(/\d[\d,.]*\d|\d/g)) {
+    const raw = match[0];
+    const hasSeparator = /[,.]/.test(raw);
+    const digits = raw.replace(/[^0-9]/g, "");
+    if (hasSeparator || digits.length >= 5) numbers.push(raw);
+  }
+  const latin: string[] = [];
+  for (const match of claim.matchAll(/[A-Za-z][A-Za-z0-9_-]{2,}/g)) {
+    latin.push(match[0]);
+  }
+  return { numbers: [...new Set(numbers)], latin: [...new Set(latin)] };
+}
+
+/** 锚的归一化形态（用于 chunk 内包含判定；全角形式已在提取时排除） */
+function anchorVariants(anchor: string): string[] {
+  const noSeparator = anchor.replace(/[,.]/g, "");
+  return [...new Set([anchor, ...(noSeparator !== anchor ? [noSeparator] : [])])];
+}
 
 export class TargetedGroundingService {
   private readonly projects: ProjectStore;
@@ -148,17 +181,32 @@ export class TargetedGroundingService {
       outcome.reason = `检索失败：${error instanceof Error ? error.message : String(error)}`;
       return outcome;
     }
-    const chunks = search.results
+    let chunks = search.results
       .map((result) => result.chunk)
       .filter((chunk) => request.sourceIds.includes(chunk.sourceId))
       .slice(0, TARGETED_GROUNDING_CHUNK_LIMIT);
+    let anchorFallback = false;
+    if (chunks.length === 0) {
+      // M15.8.2（D-2）：词面零命中 → 数值/拉丁锚确定性回落（中文 claim × 英文
+      // chunk 的跨语言通道）。仍无锚命中 → 如实 no_candidate（回落弱化 / 删除）。
+      const fallback = await this.anchorFallbackChunks(projectId, request);
+      if (fallback !== null) {
+        chunks = fallback;
+        anchorFallback = true;
+        this.log(
+          `[targeted-grounding] projectId=${projectId} claim=${request.claimId} 词面零命中 → 锚回落 ${fallback.length} chunk（判定仍走三段核验）`,
+        );
+      }
+    }
     if (chunks.length === 0) {
       outcome.reason = `目标源（${request.sourceIds.join("、")}）无词面命中 chunk——回落弱化 / 删除，不硬配`;
       return outcome;
     }
     for (const chunk of chunks) {
       options.signal?.throwIfAborted();
-      const quote = selectQuoteWindow(request.claim, chunk.text);
+      const quote = anchorFallback
+        ? (selectAnchorWindow(request.claim, chunk.text) ?? selectQuoteWindow(request.claim, chunk.text))
+        : selectQuoteWindow(request.claim, chunk.text);
       if (quote === null) {
         outcome.attempts.push({
           sourceId: chunk.sourceId,
@@ -241,6 +289,63 @@ export class TargetedGroundingService {
     }
     return outcome;
   }
+
+  /**
+   * M15.8.2（D-2）：词面零命中时的锚回落候选——目标源 chunks 中包含 claim 数值锚
+   * （归一化子串）或拉丁锚（词边界、大小写不敏感）的 chunk。确定性排序：数值命中
+   * 优先、拉丁命中数降序、chunkId 字典序稳定；≤ CHUNK_LIMIT。无锚或无命中 → null
+   * （调用方保持 no_candidate）。chunk 访问经 RetrievalService.readSourceChunks
+   * （feature-detect：缺该方法 = 无回落通道，行为同旧版）。
+   */
+  private async anchorFallbackChunks(
+    projectId: string,
+    request: TargetedGroundingRequest,
+  ): Promise<SourceChunk[] | null> {
+    const reader = (this.retrieval as RetrievalService & {
+      readSourceChunks?: (projectId: string, sourceIds: readonly string[]) => Promise<SourceChunk[] | null>;
+    }).readSourceChunks;
+    if (typeof reader !== "function") {
+      return null;
+    }
+    const anchors = claimAnchorTokens(request.claim);
+    if (anchors.numbers.length === 0 && anchors.latin.length === 0) {
+      return null;
+    }
+    let pool: SourceChunk[];
+    try {
+      const read = await reader.call(this.retrieval, projectId, request.sourceIds);
+      if (read === null || read.length === 0) {
+        return null;
+      }
+      pool = read.slice(0, ANCHOR_FALLBACK_CHUNK_SCAN_LIMIT * request.sourceIds.length);
+    } catch {
+      return null; // 回落通道失败 = 保持词面结论（no_candidate），不升级为 failed
+    }
+    const numberVariants = anchors.numbers.flatMap(anchorVariants);
+    const latinLower = anchors.latin.map((token) => token.toLowerCase());
+    const ranked = pool
+      .map((chunk) => {
+        const text = chunk.text;
+        let numberHits = 0;
+        for (const variant of numberVariants) {
+          if (text.includes(variant)) numberHits += 1;
+        }
+        const latinHits = latinLower.filter((token) =>
+          new RegExp(`(?<![A-Za-z0-9_-])${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`, "i").test(text),
+        ).length;
+        return { chunk, numberHits, latinHits };
+      })
+      .filter((hit) => hit.numberHits > 0 || hit.latinHits > 0)
+      .sort(
+        (a, b) =>
+          b.numberHits - a.numberHits ||
+          b.latinHits - a.latinHits ||
+          (a.chunk.chunkId < b.chunk.chunkId ? -1 : 1),
+      )
+      .slice(0, TARGETED_GROUNDING_CHUNK_LIMIT)
+      .map((hit) => hit.chunk);
+    return ranked.length > 0 ? ranked : null;
+  }
 }
 
 /**
@@ -271,4 +376,41 @@ export function selectQuoteWindow(claim: string, chunkText: string): string | nu
     if (bestHits === claimTerms.size) break;
   }
   return best.slice(0, 2000);
+}
+
+/**
+ * M15.8.2（D-2）：锚居中的 quote 窗口——词面通道零命中时 selectQuoteWindow 只能退化为
+ * chunk 头部切片，锚句可能落在窗外。这里以首个锚（数值优先）出现位置为中心，向两侧
+ * 扩到句子边界，目标长度 QUOTE_WINDOW_CHARS（逐字切片，同 selectQuoteWindow 的非合成
+ * 约束；无锚命中 → null 交回调用方走旧路径）。
+ */
+export function selectAnchorWindow(claim: string, chunkText: string): string | null {
+  const text = chunkText.trim();
+  if (text.length === 0) {
+    return null;
+  }
+  const anchors = claimAnchorTokens(claim);
+  const ordered = [
+    ...anchors.numbers.flatMap(anchorVariants),
+    ...anchors.latin.map((token) => token.toLowerCase()),
+  ];
+  let anchorIndex = -1;
+  for (const anchor of ordered) {
+    const at = text.toLowerCase().indexOf(anchor.toLowerCase());
+    if (at >= 0 && (anchorIndex === -1 || at < anchorIndex)) {
+      anchorIndex = at;
+    }
+  }
+  if (anchorIndex === -1) {
+    return null;
+  }
+  // 从锚位向前找最近的句子边界作窗口起点（保持锚尽量靠前部，留出右侧上下文）
+  const before = text.slice(0, anchorIndex);
+  const boundary = before.matchAll(/(?<=[。！？.!?])\s+/g);
+  let start = 0;
+  for (const match of boundary) {
+    start = match.index! + match[0].length;
+  }
+  start = Math.max(0, Math.min(start, Math.max(0, anchorIndex - Math.floor(QUOTE_WINDOW_CHARS / 3))));
+  return text.slice(start, start + QUOTE_WINDOW_CHARS).slice(0, 2000);
 }

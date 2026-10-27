@@ -251,6 +251,7 @@ import { readFindings, type FindingCategory, type FindingSeverity } from "../rev
 import { aggregateReviews, type AcademicScoreBasis, type ReviewSummary } from "../review/ReviewAggregator.js";
 import {
   buildClaimRepairDirectives,
+  claimFingerprint,
   computeClaimGroundingReport,
   isUnsupportedVerdict,
   literatureRefSourceIds,
@@ -2505,6 +2506,33 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
       let claimResolution: ClaimResolutionReport | null = null;
       if (isSurveyKind(ctx.state.workflowKind) && claimGroundingForAuth !== null) {
         const resolutionContext = await buildClaimResolutionContext(services, ctx.projectId);
+        /**
+         * M15.8.2（D-2）：同 run 先前轮 targeted grounding 的 no_candidate 记忆——
+         * stageResults 只留最新一轮 ground 结果，配对「该轮的 claim-resolution」还原
+         * (指纹 + 源签名)。命中者不再重复派发 ground（防 r8→r9 死循环实证）；
+         * 跨 run 不带记忆（新 run 允许在升级后的 basis / 检索上重试一次）。
+         */
+        const priorGround = ctx.state.stageResults["evidence.ground_claims"] ?? {};
+        const priorOutcomes = Array.isArray(priorGround["outcomes"]) ? priorGround["outcomes"] : [];
+        const priorGroundRound = typeof priorGround["round"] === "number" ? (priorGround["round"] as number) : null;
+        if (priorOutcomes.length > 0 && priorGroundRound !== null && priorGroundRound < summary.round) {
+          const priorResolution = await services.reviewArtifacts.loadClaimResolution(ctx.projectId, priorGroundRound);
+          const byClaimId = new Map((priorResolution?.resolutions ?? []).map((row) => [row.claimId, row]));
+          const noCandidateKeys = new Set<string>();
+          for (const raw of priorOutcomes) {
+            const outcome = raw as { claimId?: unknown; status?: unknown };
+            if (outcome?.status !== "no_candidate" || typeof outcome.claimId !== "string") {
+              continue;
+            }
+            const row = byClaimId.get(outcome.claimId);
+            if (row !== undefined && Array.isArray(row.sourceIds)) {
+              noCandidateKeys.add(`${claimFingerprint(row.section, row.claim)}|${row.sourceIds.join("+")}`);
+            }
+          }
+          if (noCandidateKeys.size > 0) {
+            resolutionContext.priorNoCandidateGroundKeys = noCandidateKeys;
+          }
+        }
         claimResolution = computeClaimResolutions(
           claimGroundingForAuth.claims.filter((entry) => isUnsupportedVerdict(entry.verdict)),
           resolutionContext,

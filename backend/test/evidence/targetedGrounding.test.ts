@@ -12,6 +12,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   TargetedGroundingService,
+  claimAnchorTokens,
+  selectAnchorWindow,
   selectQuoteWindow,
   TARGETED_GROUNDING_CHUNK_LIMIT,
 } from "../../src/evidence/TargetedGroundingService.js";
@@ -166,6 +168,78 @@ describe("TargetedGroundingService.groundClaims", () => {
     const summary = await targeted.groundClaims("p-test", [claim]);
     expect(summary.outcomes[0]?.status).toBe("no_candidate");
     expect(calls).toHaveLength(0);
+  });
+
+  /**
+   * M15.8.2（D-2）：中文 claim × 英文 chunk 的跨语言锚回落——M15.8.2 P run
+   * r7-r9 实证 ground_existing_source 反复派发而词面通道结构性零命中
+   * （claim「…65,213 个像素掩码」↔ S025 英文摘要 "comprise 65,213 pixel masks"）。
+   */
+  it("词面零命中但数值/拉丁锚在目标源 chunk 中 → 锚回落候选仍走三段核验", async () => {
+    const zhClaim = {
+      claimId: "c-mots65213",
+      claim: "MOTS 对两个已有数据集以半自动标注创建像素级稠密标注，据其报道共获得 65,213 个像素掩码",
+      section: "sections/benchmark-protocols.tex",
+      sourceIds: ["S025"],
+    };
+    const abstractText = [
+      "This paper extends the popular task of multi-object tracking to multi-object tracking and segmentation (MOTS). ",
+      "Towards this goal, we create dense pixel-level annotations for two existing tracking datasets using a semi-automatic annotation procedure. ",
+      "Our new annotations comprise 65,213 pixel masks for 977 distinct objects (cars and pedestrians) in 10,870 video frames. ",
+      "For evaluation, we extend existing multi-object tracking metrics to this new task.",
+    ].join("");
+    const retrieval = {
+      search: async () => ({ mode: "lexical", query: "", results: [], diagnostics: { lexical: true, dense: false, suppressedAdjacent: 0, indexChunks: 0 } }),
+      readSourceChunks: async () => [chunkOf("S025", 1, abstractText).chunk],
+    } as unknown as RetrievalService;
+    const { service, calls } = fakeGrounding([{ status: "verified", evidenceId: "E018" }]);
+    const targeted = new TargetedGroundingService({ projects, retrieval, evidenceGrounding: service });
+    const summary = await targeted.groundClaims("p-test", [zhClaim]);
+    expect(summary.verifiedClaims).toBe(1);
+    expect(summary.outcomes[0]?.status).toBe("verified");
+    expect(summary.outcomes[0]?.evidenceIds).toEqual(["E018"]);
+    expect(calls).toHaveLength(1);
+    // quote 逐字来自 chunk 且锚句在窗口内（锚居中，非头部切片）
+    expect(abstractText.includes(calls[0]?.quote ?? "~")).toBe(true);
+    expect(calls[0]?.quote).toContain("65,213 pixel masks");
+  });
+
+  it("锚回落无锚可用（纯中文 claim 无数值）→ 保持 no_candidate；readSourceChunks 抛错 → 同样保持", async () => {
+    const pureZh = { ...claim, claim: "该综述指出跨帧轨迹保持仍是待研究挑战" };
+    const retrievalOk = {
+      search: async () => ({ mode: "lexical", query: "", results: [], diagnostics: { lexical: true, dense: false, suppressedAdjacent: 0, indexChunks: 0 } }),
+      readSourceChunks: async () => [chunkOf("S024", 1, "The challenge of trajectory maintenance across frames remains open.").chunk],
+    } as unknown as RetrievalService;
+    const a = new TargetedGroundingService({ projects, retrieval: retrievalOk, evidenceGrounding: fakeGrounding([]).service });
+    expect((await a.groundClaims("p-test", [pureZh])).outcomes[0]?.status).toBe("no_candidate");
+    const retrievalBroken = {
+      search: async () => ({ mode: "lexical", query: "", results: [], diagnostics: { lexical: true, dense: false, suppressedAdjacent: 0, indexChunks: 0 } }),
+      readSourceChunks: async () => {
+        throw new Error("chunk store down");
+      },
+    } as unknown as RetrievalService;
+    const b = new TargetedGroundingService({ projects, retrieval: retrievalBroken, evidenceGrounding: fakeGrounding([]).service });
+    const out = await b.groundClaims("p-test", [{ ...claim, claim: "MOTS 共获得 65,213 个像素掩码" }]);
+    expect(out.outcomes[0]?.status).toBe("no_candidate");
+  });
+
+  it("claimAnchorTokens：千分位/小数与 ≥5 位数值进锚，裸年份不进；拉丁 ≥3 字符", () => {
+    expect(claimAnchorTokens("MOTS 报道共获得 65,213 个像素掩码，HOTA 为 0.801，2024 年发表")).toEqual({
+      numbers: ["65,213", "0.801"],
+      latin: ["MOTS", "HOTA"],
+    });
+    expect(claimAnchorTokens("纯中文论断，没有任何锚")).toEqual({ numbers: [], latin: [] });
+  });
+
+  it("selectAnchorWindow：锚居中窗口包含锚句且逐字来自 chunk；无锚命中 → null", () => {
+    const filler = "Unrelated introduction sentences about the survey scope and motivation. ".repeat(30);
+    const text = `${filler}Our new annotations comprise 65,213 pixel masks for 977 distinct objects. Concluding remarks follow here.`;
+    const window = selectAnchorWindow("据其报道共获得 65,213 个像素掩码", text);
+    expect(window).not.toBeNull();
+    expect(window).toContain("65,213 pixel masks");
+    expect(text.includes(window ?? "~")).toBe(true);
+    expect(window!.length).toBeLessThanOrEqual(2000);
+    expect(selectAnchorWindow("无锚论断", "Any text without matches.")).toBeNull();
   });
 
   it("空 sourceIds → no_candidate", async () => {

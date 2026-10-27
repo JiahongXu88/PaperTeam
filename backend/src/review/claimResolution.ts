@@ -30,7 +30,7 @@
  * traceable（weakeningAuthorization 台账），Fact Preservation 依旧 fail-closed。
  */
 
-import { isUnsupportedVerdict, lookupSectionCitedSourceIds, type ClaimGroundingEntry } from "./claimGrounding.js";
+import { claimFingerprint, isUnsupportedVerdict, lookupSectionCitedSourceIds, type ClaimGroundingEntry } from "./claimGrounding.js";
 import { assessWeakenedClaim } from "./weakenedClaim.js";
 import { classifyClaimStance, numbersAnchoredInEvidence } from "./claimStance.js";
 import { tokenizeText } from "../retrieval/tokenize.js";
@@ -87,6 +87,14 @@ export interface ClaimResolutionContext {
    * 拒绝 / 不确定性立场的含数字 claim 按原有数值阶梯处理（保守）。
    */
   formalEvidence?: readonly EvidenceRecord[];
+  /**
+   * M15.8.2（D-2 配套）：同 run 内先前轮已对相同（claim 指纹 + 目标源签名）执行过
+   * targeted grounding 且结论为 no_candidate（词面 + 锚回落都找不到 chunk）的键集合。
+   * 命中 → 不再重复派发 ground_existing_source（否则每轮 re-offer → no_candidate →
+   * claim 永远停在 UNSUPPORTED 的死循环，M15.8.2 P run r8→r9 实证），按阶梯走
+   * 弱化 / 删除。源签名变化（如 basis 升级后目标源集改变）不命中——允许重试。
+   */
+  priorNoCandidateGroundKeys?: ReadonlySet<string>;
 }
 
 /** claim 的目标源选取上限（ground_existing_source 每条 claim 最多 3 源） */
@@ -158,7 +166,9 @@ export function classifyClaimResolution(
   const groundable = groundableSourcesFor(entry, context);
   const withChunks = groundable.filter((source) => source.hasChunks);
   // 2. 全文在库、证据未采：定向 grounding 优先于任何文字修改（Evidence First）
-  if (withChunks.length > 0) {
+  //    M15.8.2（D-2）：同 run 先前轮已 no_candidate 的（指纹 + 源签名）不重复派发
+  const groundKey = `${claimFingerprint(entry.section, entry.claim)}|${withChunks.map((source) => source.sourceId).join("+")}`;
+  if (withChunks.length > 0 && !(context.priorNoCandidateGroundKeys ?? new Set<string>()).has(groundKey)) {
     return {
       ...base,
       action: "ground_existing_source",

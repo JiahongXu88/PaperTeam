@@ -20,6 +20,7 @@ import {
 } from "../../src/review/claimResolution.js";
 import {
   classifyClaimDisclosure,
+  claimFingerprint,
   computeClaimGroundingReport,
   type ClaimGroundingEntry,
 } from "../../src/review/claimGrounding.js";
@@ -110,6 +111,33 @@ describe("classifyClaimResolution（Evidence First 顺序）", () => {
       contextOf([{ sourceId: "S024", title: "Tracking counting tomato agricultural", hasChunks: true }]),
     );
     expect(resolution.action).toBe("ground_existing_source");
+  });
+
+  /**
+   * M15.8.2（D-2）：同 run 先前轮 no_candidate 记忆——相同（指纹 + 目标源签名）不再
+   * 重复派发 ground（M15.8.2 P run r8→r9 死循环实证：每轮 re-offer → lexical 零命中
+   * → claim 永远 UNSUPPORTED）；源签名变化不命中（basis 升级后允许重试一次）。
+   */
+  it("2c. 先前轮已 no_candidate 的（指纹+源签名）→ 按阶梯弱化，不再 re-offer ground", () => {
+    const entry = unsupportedEntry("机器人场景仍存在广阔待探索空间与待研究挑战", { section: "sections/disagreement.tex" });
+    const cited = { "sections/disagreement.tex": ["S006"] };
+    const sources = [{ sourceId: "S006", title: "Robotic Applications Survey", hasChunks: true }];
+    const groundKey = `${claimFingerprint(entry.section, entry.claim)}|S006`;
+    const resolution = classifyClaimResolution(entry, {
+      ...contextOf(sources, { cited }),
+      priorNoCandidateGroundKeys: new Set([groundKey]),
+    });
+    expect(resolution.action).not.toBe("ground_existing_source");
+    expect(resolution.action).toBe("weaken_claim_strength");
+    // 源签名变化（如新增 S008）→ 不命中，允许重试
+    const retrySources = [...sources, { sourceId: "S008", title: "Degraded Tracking Data", hasChunks: true }];
+    const retryContext: ClaimResolutionContext = {
+      ...contextOf(retrySources, { cited: { "sections/disagreement.tex": ["S006", "S008"] } }),
+      priorNoCandidateGroundKeys: new Set([groundKey]),
+    };
+    const retried = classifyClaimResolution(unsupportedEntry(entry.claim, { section: entry.section }), retryContext);
+    expect(retried.action).toBe("ground_existing_source");
+    expect(retried.sourceIds).toEqual(["S006", "S008"]);
   });
 
   it("3. 引用源 metadata_only 且有搜索预算 → targeted_evidence_search（bounded）", () => {
