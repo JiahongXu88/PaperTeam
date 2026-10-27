@@ -477,7 +477,7 @@ describe("downloadPdf：arXiv export 镜像有界回退", () => {
   });
 
   it("非 PDF 内容（确定性判定）不回退——镜像不改变字节内容", async () => {
-    const { impl, urls } = routeFetch({});
+    const { urls } = routeFetch({});
     const html = async () => new Response("<html>landing</html>", { status: 200, headers: { "content-type": "text/html" } });
     await expect(
       downloadPdf("https://arxiv.org/pdf/2105.04322", { http: makeHttp(html as unknown as typeof fetch) }),

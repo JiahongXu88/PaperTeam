@@ -199,7 +199,7 @@ describe("probeResearchNetwork：fail-fast 分类", () => {
   type Canned = (url: string) => Response | Error;
 
   function probeFactory(canned: Canned) {
-    return (config: { protocol: string; host: string; port: number } | null): { fetch: typeof fetch; close: () => Promise<void> } => ({
+    return (_config: unknown): { fetch: typeof fetch; close: () => Promise<void> } => ({
       fetch: (async (input: string | URL | Request) => {
         const outcome = canned(String(input));
         if (outcome instanceof Error) throw outcome;
