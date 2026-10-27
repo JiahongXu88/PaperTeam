@@ -545,6 +545,23 @@ function externalDispatchText(instruction: ExternalInstruction): string {
   ].join("\n");
 }
 
+/**
+ * M15.8.3（收敛缺口）：needsEvidence 类 finding 的修订指令必须携带披露契约的
+ * 可识别标记词汇。claim-audit 的 transparent_unverified 口径要求「来源归因 +
+ * 未核验声明」双标记（claimGrounding.ts 的 DISCLOSURE_ATTRIBUTION/UNVERIFIED_
+ * MARKERS），但 Reviewer suggestedAction 只写「类别级表述 / 仅作文献定位」等
+ * 自然语言——Writer 照办后下一轮 claim 重抽仍判 opaque_assertion。M15.8.3 P
+ * run r10→r12 实证：三轮计划条目全部 validated 而阻断 8→7→7 不动，计划处方
+ * 文本本身被重抽为新 unsupported claim（fixed-point 失败）。指令侧追加产品
+ * 已定义的标记词形；分类器 / Gate 语义零改动。
+ */
+function appendEvidenceDisclosureGuidance(instruction: string, needsEvidence: boolean): string {
+  if (!needsEvidence) {
+    return instruction;
+  }
+  return `${instruction}；若该论断是对被引文献内容的转述且无已核验证据，改写时必须保留来源归因（如「据其报道」）并显式标注未核验状态（如「（未经独立核验）」「尚缺全文证据」），使其落入透明披露口径——不得改写为无标记的确定语气断言`;
+}
+
 function findingItem(
   issue: ReviewIssue,
   priority: "high" | "medium" | "low",
@@ -559,7 +576,7 @@ function findingItem(
     priority,
     section: issue.section || "(unknown)",
     problem: issue.description,
-    instruction: issue.suggestedAction ?? defaultInstruction(issue),
+    instruction: appendEvidenceDisclosureGuidance(issue.suggestedAction ?? defaultInstruction(issue), needsEvidenceFlag),
     expectedOutcome:
       issue.severity === "critical" || issue.blocking
         ? "该 critical/blocking 问题在复审中不再出现"

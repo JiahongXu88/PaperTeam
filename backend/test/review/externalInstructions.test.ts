@@ -620,3 +620,60 @@ describe("WriterService 外部意见契约（M5.7）", () => {
     ]);
   });
 });
+
+describe("M15.8.3 披露标记指引（needsEvidence 指令闭环）", () => {
+  const summaryWith = (issue: Record<string, unknown>) =>
+    ({
+      round: 2,
+      reviewedRevision: 2,
+      counts: { critical: 0, major: 1, minor: 0, blocking: 0 },
+      issues: [issue],
+      scores: { academicScore: null, styleRisk: null },
+    }) as unknown as ReviewSummary;
+
+  it("needsEvidence finding 的指令追加透明披露标记词形，且标记句可被分类器识别", async () => {
+    const factIssue = {
+      category: "fact",
+      severity: "major",
+      section: "sections/metric-critique-and-alternatives.tex",
+      description: "「已有研究关注跟踪器比较中的公平性问题」无已核验证据支撑",
+      suggestedAction: "回退到类别级表述",
+      evidenceRequirement: "required",
+      blocking: false,
+    };
+    const plan = buildRevisionPlan({
+      projectId: "p-1",
+      sourceRevision: 2,
+      reviewRound: 2,
+      summary: summaryWith(factIssue),
+    });
+    const item = plan.items.find((entry) => entry.kind === "review_finding");
+    expect(item).toBeDefined();
+    expect(item!.instruction).toContain("回退到类别级表述");
+    expect(item!.instruction).toContain("未经独立核验");
+    expect(item!.instruction).toContain("据其报道");
+    // 闭环：按指引改写出的句子能被披露分类器识别为 transparent_unverified
+    const { classifyClaimDisclosure } = await import("../../src/review/claimGrounding.js");
+    const rewritten = "据其报道，已有研究关注跟踪器比较中的公平性问题（未经独立核验）";
+    expect(classifyClaimDisclosure(rewritten)).toBe("transparent_unverified");
+  });
+
+  it("非证据类（style）finding 指令不追加披露指引", () => {
+    const styleIssue = {
+      category: "style",
+      severity: "minor",
+      section: "sections/introduction.tex",
+      description: "注记式过渡复现",
+      suggestedAction: "删去「需要指出的是」",
+      blocking: false,
+    };
+    const plan = buildRevisionPlan({
+      projectId: "p-1",
+      sourceRevision: 2,
+      reviewRound: 2,
+      summary: summaryWith(styleIssue),
+    });
+    const item = plan.items.find((entry) => entry.kind === "review_finding");
+    expect(item!.instruction).not.toContain("未经独立核验");
+  });
+});
