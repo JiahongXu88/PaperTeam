@@ -186,7 +186,16 @@ const { createRetrieveLibraryTool } = await import(distUrl("retrieval", "tools.j
 const { evidenceToolsForRole } = await import(distUrl("evidence", "tools.js"));
 const { GlobalBudgetLedger } = await import(distUrl("runtime", "globalBudgetLedger.js"));
 
+
+
+const { initResearchNetwork } = await import(distUrl("network", "researchNetworkBootstrap.js"));
 const config = loadConfig();
+// M15.8.1：Research 代理装配（与生产 index.ts 同一 helper；env > network.json > 直连）
+const researchNet = await initResearchNetwork({
+  settingsDir: join(config.runtimeRoot, "settings"),
+  ...(config.research.proxyUrl !== undefined ? { envProxyUrl: config.research.proxyUrl } : {}),
+  log: (m) => console.log(m),
+});
 const budgetLedger = new GlobalBudgetLedger({
   path: config.workflow.globalBudget.ledgerPath,
   limits: { maxCalls: config.workflow.globalBudget.maxCalls, maxTokens: config.workflow.globalBudget.maxTokens },
@@ -227,6 +236,8 @@ adapter.runAgent = async (...callArgs) => {
 };
 const projects = new ProjectStore({ root: N_ROOT });
 const stack = buildServiceStack({
+  // M15.8.1：学术出口统一经 ResearchFetchRouter（防直连漏线复发）
+  researchFetch: researchNet.router.fetch,
   runtime: adapter, projects,
   latex: new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs }),
   agentIds: config.agents, stageTimeoutMs: config.stageTimeoutMs, stageMaxAttempts: config.stageMaxAttempts,

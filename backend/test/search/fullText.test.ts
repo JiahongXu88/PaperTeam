@@ -455,3 +455,57 @@ describe("FullTextResolution 形状", () => {
 });
 
 type FullTextResolutionKinds = Record<"found" | "not_found" | "error", number>;
+
+// ---- downloadPdf：arXiv export 镜像有界回退（M15.8.1）----
+
+describe("downloadPdf：arXiv export 镜像有界回退", () => {
+  it("arxiv.org 网络类失败 → export.arxiv.org 一次回退成功，finalUrl 如实记录镜像", async () => {
+    const { impl, urls } = routeFetch({
+      "https://export.arxiv.org/pdf/": () => pdfResponse(PDF_BYTES),
+    });
+    const failing = async (url: string | URL | Request): Promise<Response> => {
+      const target = String(url);
+      if (target.startsWith("https://arxiv.org/pdf/")) {
+        throw new TypeError("terminated");
+      }
+      return impl(url);
+    };
+    const result = await downloadPdf("https://arxiv.org/pdf/2105.04322", { http: makeHttp(failing as typeof fetch) });
+    expect(result.bytes.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect(result.finalUrl).toBe("https://export.arxiv.org/pdf/2105.04322");
+    expect(urls).toContain("https://export.arxiv.org/pdf/2105.04322");
+  });
+
+  it("非 PDF 内容（确定性判定）不回退——镜像不改变字节内容", async () => {
+    const { impl, urls } = routeFetch({});
+    const html = async () => new Response("<html>landing</html>", { status: 200, headers: { "content-type": "text/html" } });
+    await expect(
+      downloadPdf("https://arxiv.org/pdf/2105.04322", { http: makeHttp(html as unknown as typeof fetch) }),
+    ).rejects.toMatchObject({ code: "FULLTEXT_DOWNLOAD_FAILED" });
+    expect(urls).toHaveLength(0);
+  });
+
+  it("非 arxiv.org 主机失败不回退", async () => {
+    const failing = async (url: string | URL | Request): Promise<Response> => {
+      if (String(url).startsWith("https://publisher.org/")) {
+        throw new TypeError("terminated");
+      }
+      return new Response("ok", { status: 200 });
+    };
+    await expect(
+      downloadPdf("https://publisher.org/oa/x.pdf", { http: makeHttp(failing as typeof fetch) }),
+    ).rejects.toMatchObject({ code: "FULLTEXT_DOWNLOAD_FAILED" });
+  });
+
+  it("镜像也失败时如实抛出镜像侧错误（一次回退即止，不递归）", async () => {
+    const failing = async (url: string | URL | Request): Promise<Response> => {
+      if (String(url).includes("arxiv.org")) {
+        throw new TypeError("terminated");
+      }
+      return new Response("no route", { status: 500 });
+    };
+    await expect(
+      downloadPdf("https://arxiv.org/pdf/2105.04322", { http: makeHttp(failing as typeof fetch) }),
+    ).rejects.toMatchObject({ code: "FULLTEXT_DOWNLOAD_FAILED" });
+  });
+});

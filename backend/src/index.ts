@@ -15,9 +15,7 @@ import { applyStoredApiChannels } from "./settings/apiChannels.js";
 import { ModelSettingsService, registerStoredCustomProviders } from "./settings/ModelSettingsService.js";
 import { ScriptedVisionRuntime } from "./vision/scriptedVisionRuntime.js";
 import { ModelSettingsStore, resolveStartupModelSpec } from "./settings/ModelSettingsStore.js";
-import { NetworkSettingsService } from "./settings/NetworkSettingsService.js";
-import { NetworkSettingsStore } from "./settings/NetworkSettingsStore.js";
-import { ResearchFetchRouter, formatResearchProxyUrl } from "./network/researchProxy.js";
+import { initResearchNetwork } from "./network/researchNetworkBootstrap.js";
 import { buildServiceStack } from "./serviceStack.js";
 import { SkillRegistry } from "./skills/SkillRegistry.js";
 import { ReadinessProbe } from "./runtime/readiness.js";
@@ -258,11 +256,11 @@ export async function startBackend(): Promise<void> {
 
   // M13.8 Research 网络代理：env PAPERTEAM_RESEARCH_PROXY_URL > settings/network.json > 直连。
   // 只注入学术检索 / 全文下载 / 元数据核验的 HTTP 客户端（buildServiceStack.researchFetch）；
-  // 模型 Runtime / 网关 / 本机 API / docling 不经过它（不触碰进程全局 dispatcher）
-  const researchRouter = new ResearchFetchRouter({ log: (message) => console.log(message) });
-  const networkSettings = new NetworkSettingsService({
-    store: new NetworkSettingsStore({ settingsDir: join(config.runtimeRoot, "settings") }),
-    router: researchRouter,
+  // 模型 Runtime / 网关 / 本机 API / docling 不经过它（不触碰进程全局 dispatcher）。
+  // M15.8.1：装配抽到 network/researchNetworkBootstrap.ts，与真实运行脚本共用同一套
+  // 初始化（脚本漏配曾致 M15.8 全程直连、19 篇全文获取失败）。
+  const researchNet = await initResearchNetwork({
+    settingsDir: join(config.runtimeRoot, "settings"),
     ...(config.research.proxyUrl !== undefined ? { envProxyUrl: config.research.proxyUrl } : {}),
     hints: {
       ...(config.search.openalexMailto !== undefined ? { openalexMailto: config.search.openalexMailto } : {}),
@@ -273,16 +271,8 @@ export async function startBackend(): Promise<void> {
     },
     log: (message) => console.log(message),
   });
-  const researchProxy = await networkSettings.applyStartupConfiguration();
-  console.log(
-    `  research net: ${
-      researchProxy === null
-        ? "直连（未配置代理）"
-        : `代理 ${formatResearchProxyUrl(researchProxy)}（来源 ${
-            config.research.proxyUrl !== undefined ? "PAPERTEAM_RESEARCH_PROXY_URL" : "settings/network.json"
-          }；仅学术检索 / 全文下载 / 元数据核验）`
-    }`,
-  );
+  const researchRouter = researchNet.router;
+  const networkSettings = researchNet.networkSettings;
   const projects = new ProjectStore({ root: config.projectsRoot });
   const latex = new LatexCompiler({ timeoutMs: config.latex.compileTimeoutMs });
   const stack = buildServiceStack({

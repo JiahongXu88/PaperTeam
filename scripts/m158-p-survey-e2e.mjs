@@ -50,8 +50,9 @@ const dryRun = args.has("--dry-run");
 const fresh = args.has("--fresh");
 const resume = args.has("--resume");
 const continueRun = args.has("--continue");
-if (Number(dryRun) + Number(fresh) + Number(resume) + Number(continueRun) !== 1) {
-  console.error("用法：--dry-run | --fresh | --resume | --continue（四选一）");
+const proxyPreflight = args.has("--proxy-preflight");
+if (Number(dryRun) + Number(fresh) + Number(resume) + Number(continueRun) + Number(proxyPreflight) !== 1) {
+  console.error("用法：--dry-run | --fresh | --resume | --continue | --proxy-preflight（五选一）");
   process.exit(2);
 }
 // Dev #1：续跑 tail 账本（原 96 账本封存；--continue 必须显式给出 tail 账本路径与上限）
@@ -128,6 +129,26 @@ const budgetLedger = new GlobalBudgetLedger({
   label: "M15.8 P survey E2E",
 });
 
+// M15.8.1：Research 代理装配（与生产 index.ts 同一 helper）——env > network.json > 直连。
+// researchFetch 只接到学术检索 / 全文下载 / 元数据核验客户端；模型 Runtime / 本机
+// HTTP API / docling 不经过它。M15.8 曾因脚本漏配 researchFetch 全程直连，19 篇全文
+// 获取失败（D:\PaperTeamData\M15\M15_8\network-repair\proxy-diagnosis.json）。
+const { initResearchNetwork, probeResearchNetwork } = await import(
+  distUrl("network", "researchNetworkBootstrap.js")
+);
+const researchNet = await initResearchNetwork({
+  settingsDir: join(config.runtimeRoot, "settings"),
+  ...(config.research.proxyUrl !== undefined ? { envProxyUrl: config.research.proxyUrl } : {}),
+  hints: {
+    ...(config.search.openalexMailto !== undefined ? { openalexMailto: config.search.openalexMailto } : {}),
+    ...(config.search.semanticScholarApiKey !== undefined
+      ? { semanticScholarApiKey: config.search.semanticScholarApiKey }
+      : {}),
+    ...(config.citation.contactEmail !== undefined ? { crossrefMailto: config.citation.contactEmail } : {}),
+  },
+  log: (message) => console.log(message),
+});
+
 let physicalCalls = 0;
 const taskUsage = [];
 let stackRef;
@@ -188,6 +209,8 @@ const stack = buildServiceStack({
   ...(config.pi.longRunTimeoutMs !== undefined ? { longRunTimeoutMs: Math.max(config.pi.longRunTimeoutMs, 600_000) } : { longRunTimeoutMs: 900_000 }),
   ...(config.search !== undefined ? { search: config.search } : {}),
   ...(config.citation !== undefined ? { citation: config.citation } : {}),
+  // M15.8.1：学术出口统一经 ResearchFetchRouter（缺省曾为内建 fetch 直连）
+  researchFetch: researchNet.router.fetch,
   globalBudget: {
     ledger: budgetLedger,
     outputReserveTokens: config.workflow.globalBudget.outputReserveTokens,
@@ -220,6 +243,31 @@ async function request(method, path, body) {
   return { status: response.status, body: parsed };
 }
 
+// ---- 统一退出：先关 HTTP server 与代理 dispatcher（在途请求自然结束），再 exit ----
+async function finish(code) {
+  server.close();
+  await researchNet.router.close().catch(() => {});
+  process.exit(code);
+}
+process.on("unhandledRejection", async (reason) => {
+  console.error("[fatal] unhandledRejection", reason);
+  await appendDriverLog(`fatal unhandledRejection：${String(reason).slice(0, 200)}`).catch(() => {});
+  await finish(1);
+});
+
+// ---- proxy-preflight：0 模型学术链路预检（经 ResearchFetchRouter 的六项探测），然后退出 ----
+if (proxyPreflight) {
+  const diagnosis = await probeResearchNetwork(researchNet);
+  await appendDriverLog(
+    `proxy-preflight ${diagnosis.status}（mode=${diagnosis.mode}${diagnosis.proxyUrl ? ` proxy=${diagnosis.proxyUrl}` : ""}；source=${researchNet.source}）：${diagnosis.detail}`,
+  );
+  console.log(
+    `PROXY_PREFLIGHT ${diagnosis.status} mode=${diagnosis.mode} proxy=${diagnosis.proxyUrl ?? "-"} source=${researchNet.source}`,
+  );
+  console.log(`  ${diagnosis.detail}`);
+  await finish(diagnosis.status === "PASS" ? 0 : 4);
+}
+
 // ---- dry-run：0 模型自检（脚本写盘 / journal / 报告路径 / HTTP 装配），然后退出 ----
 if (dryRun) {
   const probe = { schema: "m158-p-dry/v1", at: new Date().toISOString(), steps: [] };
@@ -232,10 +280,13 @@ if (dryRun) {
   const budget = budgetLedger.snapshot();
   probe.steps.push(["budget-zero", budget.calls === 0]);
   probe.steps.push(["topic", TOPIC.length > 10]);
+  probe.steps.push(["research-fetch-wired", typeof researchNet.router.fetch === "function" && researchNet.source !== undefined]);
   await writeJsonAtomic(join(EVAL_DIR, "m158-p-dry.json"), probe);
   console.log(`[dry-run] ${probe.steps.map(([k, ok]) => `${k}=${ok ? "OK" : "FAIL"}`).join(" ")}`);
-  server.close();
-  process.exit(probe.steps.every(([, ok]) => ok) ? 0 : 3);
+  await appendDriverLog(
+    `research net source=${researchNet.source} effective=${researchNet.effectiveUrl ?? "direct"} stats=${JSON.stringify(researchNet.router.stats())}`,
+  );
+  await finish(probe.steps.every(([, ok]) => ok) ? 0 : 3);
 }
 
 // ---- fresh / resume / continue ----
@@ -243,15 +294,15 @@ if (dryRun) {
 let journal = await readJournal();
 if (fresh && journal !== null && journal.runId !== undefined && !process.env["M158_ALLOW_REFRESH"]) {
   console.error(`[refuse] journal 已有 run ${journal.runId}：用 --resume 续跑，或设 M158_ALLOW_REFRESH=1 显式重建`);
-  process.exit(2);
+  await finish(2);
 }
 if (resume && (journal === null || journal.runId === undefined)) {
   console.error("[refuse] --resume 但 journal 无既有 run：先用 --fresh");
-  process.exit(2);
+  await finish(2);
 }
 if (continueRun && (journal === null || journal.projectId === undefined)) {
   console.error("[refuse] --continue 但 journal 无既有项目：先用 --fresh");
-  process.exit(2);
+  await finish(2);
 }
 
 let projectId = journal?.projectId;
@@ -260,32 +311,25 @@ let runId = journal?.runId;
 if (fresh) {
   // ---- preflight 1：学术 provider 可达（纯 HTTP，0 模型调用；arxiv 端点实测间歇性 000——重试 3 次）----
   {
-    let probeOk = false;
-    let lastError = "unreachable";
-    for (let attempt = 1; attempt <= 3 && !probeOk; attempt += 1) {
-      try {
-        const probe = await fetch("https://export.arxiv.org/api/query?search_query=all:multi-object+tracking&max_results=1", { signal: AbortSignal.timeout(20_000) });
-        await appendDriverLog(`arxiv probe HTTP ${probe.status}（attempt ${attempt}）`);
-        if (probe.status === 200) probeOk = true; else lastError = `HTTP ${probe.status}`;
-      } catch (error) {
-        lastError = error.message;
-        await new Promise((r) => setTimeout(r, 5_000 * attempt));
-      }
+    // M15.8.1：经 ResearchFetchRouter 的六项探测 + 结构化诊断（PROXY_UNREACHABLE /
+    // ARXIV_PDF_TIMEOUT / TARGET_RATE_LIMITED / ACADEMIC_UNREACHABLE）。代理已配置
+    // 但核心路径不可用 → fail-fast，不静默降级直连、不消耗模型预算；直连模式保留
+    // 旧 openalex 兜底语义（ACADEMIC_UNREACHABLE 时 10s 后重试一次）。
+    const diagnosis = await probeResearchNetwork(researchNet);
+    await appendDriverLog(
+      `preflight-1 ${diagnosis.status}（mode=${diagnosis.mode}${diagnosis.proxyUrl ? ` proxy=${diagnosis.proxyUrl}` : ""}）：${diagnosis.detail}`,
+    );
+    let pass = diagnosis.status === "PASS";
+    if (!pass && diagnosis.mode === "direct" && diagnosis.status === "ACADEMIC_UNREACHABLE") {
+      await new Promise((r) => setTimeout(r, 10_000));
+      const retry = await probeResearchNetwork(researchNet);
+      await appendDriverLog(`preflight-1 retry ${retry.status}：${retry.detail}`);
+      pass = retry.status === "PASS";
     }
-    if (!probeOk) {
-      // 开放网络兜底：openalex 可达即认为学术检索链路可用（provider 集合非单点）
-      try {
-        const fallback = await fetch("https://api.openalex.org/works?per-page=1", { signal: AbortSignal.timeout(20_000) });
-        await appendDriverLog(`openalex fallback HTTP ${fallback.status}（arxiv=${lastError}）`);
-        probeOk = fallback.status === 200;
-      } catch (error) {
-        lastError = `arxiv=${lastError}; openalex=${error.message}`;
-      }
-    }
-    if (!probeOk) {
-      await appendDriverLog(`prefail: 学术检索不可达（${lastError}）——按预登记标 BLOCKED_EXTERNAL，不启动 run`);
-      console.error(`[prefail] 学术检索不可达：${lastError}`);
-      process.exit(4);
+    if (!pass) {
+      await appendDriverLog(`prefail: ${diagnosis.status}（${diagnosis.detail}）——不启动 run`);
+      console.error(`[prefail] ${diagnosis.status}：${diagnosis.detail}`);
+      await finish(4);
     }
   }
   // ---- preflight 2：模型通道 ping（1 次物理调用，计入账本）----
@@ -302,7 +346,7 @@ if (fresh) {
   if (ping.status !== "completed") {
     await appendDriverLog(`ping ✘ ${ping.status}（已计入账本；物理 ${physicalCalls}/${SESSION_MAX_CALLS}）`);
     console.error("[prefail] 模型通道不可用");
-    process.exit(4);
+    await finish(4);
   }
   await appendDriverLog(`ping ✔（已计入账本；账本 ${budgetLedger.snapshot().calls}/${SESSION_MAX_CALLS}；物理 ${physicalCalls}）`);
 
@@ -455,5 +499,4 @@ try {
 await writeJsonAtomic(REPORT_PATH, report);
 await appendDriverLog(`报告落盘 ${REPORT_PATH}（物理 ${physicalCalls}/${SESSION_MAX_CALLS}）`);
 console.log(`DONE status=${run.status} physical=${physicalCalls}/${SESSION_MAX_CALLS} gateRound=${report.gateRound ?? "-"} gatePassed=${report.gate?.gate?.passed ?? "?"} final=${report.finalArtifact ? Object.keys(report.finalArtifact).join(",") : "NONE"}`);
-server.close();
-process.exit(0);
+await finish(0);

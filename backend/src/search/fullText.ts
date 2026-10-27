@@ -342,10 +342,56 @@ export async function downloadPdf(url: string, options: DownloadPdfOptions): Pro
     throw error;
   }
   try {
-    return await downloadPdfHops(url, options, options.maxBytes ?? MAX_SOURCE_BYTES);
+    try {
+      return await downloadPdfHops(url, options, options.maxBytes ?? MAX_SOURCE_BYTES);
+    } catch (error) {
+      // M15.8.1：arxiv.org 主 CDN 对部分文件 / 网络路径呈现 HTTP/2 流中断
+      //（ERR_HTTP2_STREAM_ERROR / body terminated——代理出口实测同文件 2/2 复现、
+      // export.arxiv.org 官方镜像 2/2 稳定）。确定性失败（非 PDF 内容 / 取消 /
+      // SSRF 拒绝）不回退；网络类失败按官方镜像做一次有界回退——同一库、每跳
+      // 护栏照常、finalUrl 如实记录镜像地址（provenance 可审计）。
+      if (options.signal?.aborted) {
+        throw error;
+      }
+      const mirror = arxivExportMirrorOf(url);
+      if (mirror === undefined || !isRecoverableDownloadFailure(error)) {
+        throw error;
+      }
+      return await downloadPdfHops(mirror, options, options.maxBytes ?? MAX_SOURCE_BYTES);
+    }
   } finally {
     release();
   }
+}
+
+/** arxiv.org(/www) 的 /pdf/ 路径 → 官方 export.arxiv.org 镜像；其余 undefined */
+function arxivExportMirrorOf(url: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (host !== "arxiv.org" && host !== "www.arxiv.org") {
+    return undefined;
+  }
+  if (!parsed.pathname.startsWith("/pdf/")) {
+    return undefined;
+  }
+  return `https://export.arxiv.org${parsed.pathname}`;
+}
+
+/** 网络类下载失败（重试 / 镜像回退有意义的形态）；确定性内容判定与取消不算 */
+function isRecoverableDownloadFailure(error: unknown): boolean {
+  if (!(error instanceof BusinessError) || error.code !== "FULLTEXT_DOWNLOAD_FAILED") {
+    return false;
+  }
+  const message = error.message;
+  if (message.includes("不是 PDF") || message.includes("已被取消")) {
+    return false;
+  }
+  return true;
 }
 
 async function downloadPdfHops(url: string, options: DownloadPdfOptions, maxBytes: number): Promise<DownloadedPdf> {
