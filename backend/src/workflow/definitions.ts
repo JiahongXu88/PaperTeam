@@ -207,7 +207,9 @@ import { reclassifyAuthorInputActions } from "../writer/WriterService.js";
  * 出现在论文正文 = 内容污染（【修订说明】裸 λ_ 曾直接炸掉 LaTeX 编译）。
  * 候选级拒绝 + bounded repair（见 revision.revise 的 revision_meta_text 失败码）。
  */
-const REVISION_META_TEXT_PATTERN = /【(修订说明|修订注记?|修复说明|执行报告|派发说明|决策点|待作者确认|待作者裁决|作者决策[：:]?)】|%%%PT-OUTCOMES%%%/;
+// M15.8.2：无书名号的行首「执行报告：/（」同判（第三变体：r7 修订以该形态绕过
+// 【】形态检测进入正文，见 M15_8_2 预登记 §0.R5）
+const REVISION_META_TEXT_PATTERN = /【(修订说明|修订注记?|修复说明|执行报告|派发说明|决策点|待作者确认|待作者裁决|作者决策[：:]?)】|%%%PT-OUTCOMES%%%|(?:^|\n)[ \t]*执行报告[：:（(]/;
 import type { ResearcherService, ResearchArtifact, BibliographyEntryInput } from "../agents/ResearcherService.js";
 import { readResearchArtifact } from "../agents/ResearcherService.js";
 import { readPlanChain } from "../agents/researchPlan.js";

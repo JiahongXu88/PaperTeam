@@ -10,10 +10,17 @@
  * 原 span 已含同一词汇时不判（论文正文合法使用该词不受影响）。
  */
 
+/**
+ * M15.8.2（第三变体）：修订 Writer 把「执行报告：…（f-xxxxxxxxxxxx / c-xxxxxxxxxxxx）」
+ * 以无书名号形态写进正文——两个既有守卫双双漏检（REVISION_META_TEXT_PATTERN 只认
+ * 【执行报告】；词汇表只有「执行说明」），泄漏段落的数字与库外实体反被事实守卫保护，
+ * 清除补丁连续被拒。「执行报告」与 finding/claim 内部 ID（f-/c- + 12 hex）并入检测。
+ */
+const INTERNAL_ID = /\b(?:improvement:\d+|patch:[0-9a-f]{6,}|[fc]-[0-9a-f]{12})\b/;
+
 const PROCESS_COMMENTARY_PATTERNS: readonly RegExp[] = [
-  /\bimprovement:\d+/,
-  /\bpatch:[0-9a-f]{6,}/,
-  /校验器|校验失败|修改要求|修订计划|重提交|上一版(?:提案|输出)|本(?:次|版)提案|编辑单元|本单元|按单元边界|执行说明/,
+  INTERNAL_ID,
+  /校验器|校验失败|修改要求|修订计划|重提交|上一版(?:提案|输出)|本(?:次|版)提案|编辑单元|本单元|按单元边界|执行说明|执行报告/,
 ];
 
 /**
@@ -60,8 +67,8 @@ export function findWriterProcessCommentary(originalSpan: string, proposal: stri
   return null;
 }
 
-const ID_MARKER = /\bimprovement:\d+|\bpatch:[0-9a-f]{6,}/;
-const PROCESS_VOCABULARY = /校验器|校验失败|修改要求|修订计划|重提交|上一版(?:提案|输出)|本(?:次|版)提案|编辑单元|本单元|按单元边界|执行说明/g;
+const ID_MARKER = INTERNAL_ID;
+const PROCESS_VOCABULARY = /校验器|校验失败|修改要求|修订计划|重提交|上一版(?:提案|输出)|本(?:次|版)提案|编辑单元|本单元|按单元边界|执行说明|执行报告/g;
 
 /**
  * 已经进入稿件的修订过程说明段落（带内部计划 / 补丁 ID，或至少两处不同的修订流程词汇）
