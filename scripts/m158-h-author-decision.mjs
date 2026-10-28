@@ -234,14 +234,13 @@ if (!mutation.ok) throw new Error(`注入失败：${mutation.reason}`);
 await writeJsonAtomic(MUTATION_PATH, { schema: "m158-h-mutation/v1", sourceProject: SOURCE_PROJECT, ...mutation });
 await appendDriverLog(`副本+注入就绪（${mutation.file}）`);
 
-// 先记录注入前证据库快照（A5 对照）
+// 先记录注入前证据库快照（A5 对照；M15.8.6 修复：EvidenceStore 构造需要 stack 的
+// projects 服务接口，裸 ProjectStore 无 evidenceDir —— 此前从未执行到此处，直接读文件）
 const evidenceBefore = await (async () => {
-  const { ProjectStore } = await import(distUrl("project", "ProjectStore.js"));
-  const { EvidenceStore } = await import(distUrl("evidence", "EvidenceStore.js"));
-  const projects = new ProjectStore({ root: H_ROOT });
-  const evidence = new EvidenceStore({ projects });
-  const list = await evidence.list(SOURCE_PROJECT);
-  return list.map((r) => r.id).sort();
+  const raw = await readFile(join(projectDir, "evidence", "evidence.jsonl"), "utf8");
+  return raw.trim().split("\n").filter(Boolean).map((line) => {
+    try { return JSON.parse(line).id; } catch { return null; }
+  }).filter(Boolean).sort();
 })();
 
 const session1 = await bootServer();
@@ -274,6 +273,7 @@ for (;;) {
   await new Promise((r) => setTimeout(r, 5_000));
 }
 
+const runStatusAtStop = run.status; // HITL 停靠时刻的真实状态（阶段 5 会重赋 run）
 const report = {
   schema: "m158-h-report/v1",
   sourceProject: SOURCE_PROJECT,
@@ -282,6 +282,7 @@ const report = {
   mutation,
   hitlReached,
   finalStatusBeforeRestart: run.status,
+  statusAtHitlReach: runStatusAtStop,
   assertions: {},
 };
 
@@ -327,11 +328,11 @@ const finalize = await request(session2.base, "POST", `/projects/${SOURCE_PROJEC
 report.finalizeAttempt = { status: finalize.status ?? null, body: finalize.body ?? null, thrown: finalize.thrown ?? null };
 
 // 阶段 7（A5）：无自动填值 / 无自动批准
-const { ProjectStore } = await import(distUrl("project", "ProjectStore.js"));
-const { EvidenceStore } = await import(distUrl("evidence", "EvidenceStore.js"));
-const projects2 = new ProjectStore({ root: H_ROOT });
-const evidence2 = new EvidenceStore({ projects: projects2 });
-const evidenceAfter = (await evidence2.list(SOURCE_PROJECT)).map((r) => r.id).sort();
+// M15.8.6 修复：EvidenceStore 需 stack 的 projects 服务（裸 ProjectStore 无 evidenceDir）——直接读文件
+const evidenceAfter = (await readFile(join(projectDir, "evidence", "evidence.jsonl"), "utf8"))
+  .trim().split("\n").filter(Boolean).map((line) => {
+    try { return JSON.parse(line).id; } catch { return null; }
+  }).filter(Boolean).sort();
 const newEvidenceIds = evidenceAfter.filter((id) => !evidenceBefore.includes(id));
 report.evidenceDelta = { before: evidenceBefore.length, after: evidenceAfter.length, newIds: newEvidenceIds };
 // 稿内论断状态：仍在（无证据）/被改写/被删（均合法；非法=被替换成带编造数据的「已验证」表述）
@@ -352,7 +353,9 @@ report.physicalModelCalls = session1.getCalls() + session2.getCalls();
 report.budget = session2.getLedger();
 
 report.assertions = {
-  A1_hitl_or_terminated_without_ready: hitlReached !== null ? run.status === "awaiting_input" : (run.status === "completed" && (run.completion?.label ?? "") !== "final"),
+  A1_hitl_or_terminated_without_ready: hitlReached !== null ? report.statusAtHitlReach === "awaiting_input" : (run.status === "completed" && (run.completion?.label ?? "") !== "final"),
+  // A1 证据链备注：hitlReached!=null ⇒ 循环因 awaiting_input@revision HITL 退出；
+  // 阶段 5 的 accept_draft 是操作者代行作者决策（manifest 登记），不构成自动批准（A5 另证）
   A2_pending_preserved_across_restart: hitlReached !== null ? (report.statusAfterRestart === "awaiting_input" && report.awaitingAfterRestart === hitlReached.stageId) : null,
   A3_draft_buildable: buildDraft.status === 200 || buildDraft.status === 201 || buildDraft.status === 202,
   A4_finalize_refused: (finalizePending.status !== 200 || finalizePending.thrown !== undefined) && (finalize.status !== 200 || finalize.thrown !== undefined),
