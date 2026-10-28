@@ -126,10 +126,15 @@ h 0/12。预算未挪用（p70 仅 P 消耗 63/70）。
 
 ## 10. Git / CI
 
-- `649eb96`（产品修复 + 测试 + 驱动脚本）、`e42b986`（驱动锚点核验修正）直推 main；工作区 clean；
-  HEAD == origin/main。
-- **CI success（run 40633222290，6m12s）+ Linux Integration success（run 40633222318，10m55s）
-  @`649eb96`**；`e42b986` 仅脚本注释级改动，CI 结论于推送后回填。
+- `649eb96`（产品修复 + 测试 + 驱动脚本）、`e42b986`（驱动锚点核验修正）、`893ed6c`（本报告）
+  直推 main；工作区 clean；HEAD == origin/main。
+- **CI 与 Linux Integration 结果矩阵**：
+  - `649eb96`：CI success（run 40633222290，6m12s，首跑无 flake）+ Linux Integration success
+    （run 40633222318，10m55s）——产品代码提交双绿；
+  - `e42b986`：两 run **cancelled**（推送 `893ed6c` 时同分支并发取消；其 4 行脚本改动被
+    `893ed6c` 完整包含且后者全绿）；
+  - `893ed6c`：CI success（run 40634624718，8m55s）+ Linux Integration success
+    （run 40634624882，5m50s）。
 
 ## 11. 已测事实 / 确定性推断 / 未验证假设（区分）
 
