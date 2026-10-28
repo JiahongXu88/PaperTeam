@@ -170,7 +170,7 @@ export function extractPaperStats(
       if (LIMITATION_PATTERN.test(text)) {
         limitationsPresent = true;
       }
-      const canonical = canonicalSectionName(block.provenance.section ?? "");
+      const canonical = canonicalSectionName(block.provenance?.section ?? "");
       if (canonical !== "") {
         sectionWords.set(canonical, (sectionWords.get(canonical) ?? 0) + countWords(text));
       }
@@ -235,7 +235,7 @@ export function extractPaperStats(
     }
     figureCount += 1;
     const caption = block.caption ?? "";
-    const section = canonicalSectionName(block.provenance.section ?? "");
+    const section = canonicalSectionName(block.provenance?.section ?? "");
     if (METHOD_DIAGRAM_CAPTION_PATTERN.test(caption) || section === "method") {
       methodDiagramPresent = true;
     }

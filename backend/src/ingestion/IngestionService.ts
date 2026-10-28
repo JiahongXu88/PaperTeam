@@ -481,7 +481,9 @@ function buildParsedDocument(input: {
     status: extraction.quality === "full" ? "ok" : "partial",
     ...(extraction.pageCount !== undefined ? { pageCount: extraction.pageCount } : {}),
     ...(extraction.sheets !== undefined ? { sheets: extraction.sheets } : {}),
-    blocks: extraction.blocks,
+    // 边界归一：docling 等解析器可能不逐块输出 provenance（运行时数据不守型）——
+    // 补 fileName 级最小 provenance，消费方（paperStats/检索层）保持可读不崩（缺 section 如实无节）
+    blocks: extraction.blocks.map((block) => ({ ...block, provenance: block.provenance ?? { fileName: item.fileName ?? "" } })),
     counts,
     ...(input.degradedFrom !== undefined ? { degradedFrom: input.degradedFrom } : {}),
     notes: extraction.notes.slice(0, 20),

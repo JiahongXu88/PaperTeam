@@ -238,12 +238,14 @@ function checkRequirement(
     }
     case "keywords.count": {
       if (facts.keywordCount === null) {
+        // 官方把关键词列为论文必备要素（"论文包括…关键词…"）——要素缺失本身是
+        // 硬性不符（不是"无法评估"）；软性要求保持 NOT_EVALUATED 不升级。
         return {
           ...base,
-          status: "NOT_EVALUATED",
-          observed: "（未识别关键词块——\\keywords{} 或 关键词： 行）",
+          status: requirement.hard ? "VIOLATION" : "NOT_EVALUATED",
+          observed: "论文要素缺失：未识别关键词块（\\keywords{} 或 关键词： 行）",
           expected: describeExpected(requirement),
-          reason: "no_keywords_block",
+          ...(requirement.hard ? {} : { reason: "no_keywords_block" }),
         };
       }
       // 数值语义：operator=min → ≥value；max → ≤value；presence → CJIG 缺省带 [5,8]

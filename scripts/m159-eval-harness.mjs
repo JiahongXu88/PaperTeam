@@ -51,9 +51,11 @@ const SAMPLES = [
   { id: "b1c-f2-kw3", docType: "survey", venues: ["cjig"], arms: ["rubricA2"] },
   { id: "b1c-f3-stale-refs", docType: "survey", venues: ["cjig"], arms: [] },
   { id: "b1c-f4-unstructured-abs", docType: "survey", venues: ["cjig"], arms: [] },
-  { id: "b1c-f5-refs12", docType: "survey", venues: ["cjig"], arms: [] },
+  { id: "b1c-f5-refs12", docType: "survey", venues: ["cjig"], arms: ["readiness"] },
   { id: "b1c-f7-citation-key-break", docType: "survey", venues: [], arms: [], special: "citation-check" },
   { id: "bnet-scope-mismatch", docType: "research", venues: ["cjig", "cea"], arms: ["rubricA2", "rubricA3"] },
+  { id: "b1c-as-research", docType: "research", venues: ["cjig"], arms: ["rubricA2"] },
+  { id: "b1-original", docType: "survey", venues: ["cjig", "cea"], arms: [] },
 ];
 
 // ---- CLI ----
@@ -64,8 +66,12 @@ const listOnly = has("--list");
 const dryRun = has("--dry-run");
 const fresh = has("--fresh");
 const resume = has("--resume");
-const onlySample = valueOf("only");
-const maxModelCalls = Number(valueOf("max-model-calls") ?? 0);
+const onlySample =
+  args.find((a) => a.startsWith("--only="))?.slice("--only=".length) ?? (args.includes("--only") ? args[args.indexOf("--only") + 1] : undefined);
+const rawMax =
+  args.find((a) => a.startsWith("--max-model-calls="))?.slice("--max-model-calls=".length) ??
+  (args.includes("--max-model-calls") ? args[args.indexOf("--max-model-calls") + 1] : undefined);
+const maxModelCalls = Number(rawMax ?? 0);
 
 if (!listOnly && !dryRun && !fresh && !resume) {
   console.error("[refuse] 缺省拒绝执行：--list / --dry-run 只读，--fresh / --resume 显式运行");
@@ -273,23 +279,34 @@ if (dryRun) {
   process.exit(ok ? 0 : 2);
 }
 
+// ---- 项目 id 映射（ProjectStore.create 自生成随机 id——稳定 key → 实际 projectId 持久化） ----
+const IDS_PATH = join(PROJECTS_ROOT, "m159-project-ids.json");
+const projectIds = existsSync(IDS_PATH) ? JSON.parse(readFileSync(IDS_PATH, "utf8")) : {};
+const rememberProject = (key, projectId) => {
+  projectIds[key] = projectId;
+  atomicWriteJson(IDS_PATH, projectIds);
+};
+
 // ---- corpus 项目（每 venue 一次；benchmark+profile 文件复制到各样本项目） ----
 
 async function buildCorpusProject(venue) {
-  const projectId = `p-m159-corpus-${venue}`;
+  const corpusKey = `corpus-${venue}`;
+  let projectId = projectIds[corpusKey];
+  if (typeof projectId !== "string" || !existsSync(join(PROJECTS_ROOT, projectId, "project.json"))) {
+    const meta = await projects.create(`M15.9 ${venue} 语料项目`, { documentType: "survey", researchField: "计算机视觉与多目标跟踪", targetVenue: venue === "cjig" ? "中国图象图形学报" : "计算机工程与应用" });
+    projectId = meta.id;
+    rememberProject(corpusKey, projectId);
+  }
   const researchDir = join(PROJECTS_ROOT, projectId, "research");
   const benchmarkPath = join(researchDir, "target-benchmark.json");
   if (!existsSync(benchmarkPath)) {
-    if (!existsSync(join(PROJECTS_ROOT, projectId))) {
-      await projects.create(`M15.9 ${venue} 语料项目`, { documentType: "survey", researchField: "计算机视觉与多目标跟踪", targetVenue: venue === "cjig" ? "中国图象图形学报" : "计算机工程与应用" });
-    }
     const manifest = JSON.parse(await readFile(join(WORK_DIR, "phase-b", "corpus", venue, `${venue}-manifest-v2.json`), "utf8"));
     const papers = [];
     let parsedSaved = 0;
     for (const paper of manifest.papers) {
-      const added = await stack.sources.addRecord(projectId, {
+      const item = await stack.sources.addRecord(projectId, {
         sourceType: "paper",
-        origin: "manual_upload",
+        origin: "USER_ADDED",
         sourceRole: "reference",
         metadata: {
           title: paper.titleZh ?? paper.title,
@@ -298,13 +315,18 @@ async function buildCorpusProject(venue) {
           ...(paper.doi !== undefined ? { doi: paper.doi } : {}),
         },
       });
-      const sourceId = added.source.sourceId;
-      // CJIG：附 PDF + 解析产物（缓存直灌，避免重复 docling）
-      if (venue === "cjig" && paper.pdfFile !== undefined) {
+      const sourceId = item.sourceId;
+      if (venue === "cjig" && typeof paper.pdfFile === "string" && paper.pdfFile !== "") {
         const pdfPath = join(CJIG_PDF_DIR, paper.pdfFile);
         if (existsSync(pdfPath)) {
           const content = await readFile(pdfPath);
-          const attached = await stack.sources.attachFile(projectId, sourceId, { fileName: paper.pdfFile, content, originalName: paper.pdfFile });
+          // 超过 SourceStore 20MB 上限的 PDF：不 attach（磁盘事实如不进库），
+          // 但解析产物照存（分析可用）；hasFullText 以解析产物可用为准并注明。
+          if (content.length <= 20_000_000) {
+            await stack.sources.attachFile(projectId, sourceId, { fileName: paper.pdfFile, content, originalName: paper.pdfFile });
+          } else {
+            await appendLog(`corpus ${venue}：${paper.pdfFile} ${(content.length / 1e6).toFixed(0)}MB 超 20MB 上限——跳过 attach，解析产物直灌`);
+          }
           const parsedPath = join(CJIG_PARSED_DIR, paper.pdfFile.replace(/\.pdf$/, ".json"));
           if (existsSync(parsedPath)) {
             const extraction = JSON.parse(await readFile(parsedPath, "utf8"));
@@ -316,14 +338,14 @@ async function buildCorpusProject(venue) {
               schemaVersion: 1,
               sourceId,
               fileName: paper.pdfFile,
-              storedFileName: attached.source.fileName ?? paper.pdfFile,
+              storedFileName: paper.pdfFile,
               kind: "paper",
               mimeType: "application/pdf",
               parser: extraction.parser ?? { id: "docling" },
               parseMode: extraction.mode ?? "structured",
               status: extraction.quality === "partial" ? "partial" : "ok",
               ...(extraction.pageCount !== undefined ? { pageCount: extraction.pageCount } : {}),
-              blocks: extraction.blocks ?? [],
+              blocks: (extraction.blocks ?? []).map((block) => ({ ...block, provenance: block.provenance ?? { fileName: paper.pdfFile ?? "" } })),
               counts,
               notes: extraction.notes ?? [],
               contentHash: sha256(content),
@@ -335,12 +357,12 @@ async function buildCorpusProject(venue) {
       }
       papers.push({
         sourceId,
-        identityKey: added.source.identity ? JSON.stringify(added.source.identity).slice(0, 64) : paper.doi ?? paper.title,
+        identityKey: item.identity ? JSON.stringify(item.identity).slice(0, 64) : paper.doi ?? paper.title,
         provenance: { provider: "m159_official_site_corpus", retrievedAt: nowIso(), queryUsed: "-" },
         inclusionReason: `stratified benchmark sample (${venue})`,
         ...(paper.citationCountCrossref !== undefined ? { citationCount: paper.citationCountCrossref } : {}),
         venueRaw: venue === "cjig" ? "中国图象图形学报" : "计算机工程与应用",
-        hasFullText: venue === "cjig" && paper.pdfFile !== undefined && existsSync(join(CJIG_PDF_DIR, paper.pdfFile)),
+        hasFullText: venue === "cjig" && typeof paper.pdfFile === "string" && existsSync(join(CJIG_PDF_DIR, paper.pdfFile)),
       });
     }
     await targets.benchmark.freeze(projectId, {
@@ -376,13 +398,16 @@ async function copyTree(src, dest) {
 }
 
 async function setupSampleProject(sample, venue, corpus) {
-  const projectId = `p-m159-${sample.id}-${venue}`.replace(/[^a-z0-9-]/g, "-").slice(0, 60);
-  if (!existsSync(join(PROJECTS_ROOT, projectId, "project.json"))) {
-    await projects.create(`M15.9 ${sample.id} × ${venue}`, {
+  const sampleKey = `${sample.id}#${venue}`;
+  let projectId = projectIds[sampleKey];
+  if (typeof projectId !== "string" || !existsSync(join(PROJECTS_ROOT, projectId, "project.json"))) {
+    const meta = await projects.create(`M15.9 ${sample.id} × ${venue}`, {
       documentType: sample.docType,
       researchField: "计算机视觉与多目标跟踪",
       targetVenue: venue === "cjig" ? "中国图象图形学报" : "计算机工程与应用",
     });
+    projectId = meta.id;
+    rememberProject(sampleKey, projectId);
   }
   // manuscript
   await copyTree(join(MATERIALZED_DIR, sample.id, "manuscript"), join(PROJECTS_ROOT, projectId, "manuscript"));

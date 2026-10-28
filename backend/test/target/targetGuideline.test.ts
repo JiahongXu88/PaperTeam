@@ -245,11 +245,16 @@ describe("evaluateCompliance 逐字段判定 + venue 差分", () => {
     expect(cea.checks.find((check) => check.requirementId === "cea-title-25")?.status).toBe("PASS");
   });
 
-  it("关键词 3 个 → CJIG VIOLATION（hard）；无关键词块 → NOT_EVALUATED（no_keywords_block）", () => {
+  it("关键词 3 个 → CJIG VIOLATION（hard）；要素缺失（无关键词块）→ 硬性要求判 VIOLATION、软性保持 NOT_EVALUATED", () => {
     const tooFew = evaluatePure(cjigGuideline(), factsOf({ keywordCount: 3 }));
     expect(tooFew.checks.find((check) => check.requirementId === "cjig-kw-58")?.status).toBe("VIOLATION");
     const none = evaluatePure(cjigGuideline(), factsOf({ keywordCount: null, keywords: null }));
-    expect(none.checks.find((check) => check.requirementId === "cjig-kw-58")?.status).toBe("NOT_EVALUATED");
+    expect(none.checks.find((check) => check.requirementId === "cjig-kw-58")?.status).toBe("VIOLATION");
+    expect(none.checks.find((check) => check.requirementId === "cjig-kw-58")?.observed).toContain("论文要素缺失");
+    const softGuideline = cjigGuideline();
+    softGuideline.requirements = softGuideline.requirements.map((r) => (r.id === "cjig-kw-58" ? { ...r, hard: false } : r));
+    const softNone = evaluatePure(softGuideline, factsOf({ keywordCount: null, keywords: null }));
+    expect(softNone.checks.find((check) => check.requirementId === "cjig-kw-58")?.status).toBe("NOT_EVALUATED");
   });
 
   it("摘要非结构化 → VIOLATION；摘要 900 字（超建议带）→ ADVISORY 不 VIOLATION", () => {
