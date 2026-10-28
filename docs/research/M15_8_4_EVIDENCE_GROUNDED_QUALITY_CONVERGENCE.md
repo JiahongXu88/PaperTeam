@@ -64,3 +64,10 @@
   1. **完整语料升级 ≈55-70**（§4 清单落地；S011 除外走 Author Decision）——唯一能让本综述在本 Gate 语义下 PASS 的路径；
   2. **接受 Draft 终态**：以 rev14 Draft + 21 条 verified evidence + 本账本作为 M15 的诚实交付（Gate 语义保持不动）。
 - M15 总目标：**INCOMPLETE**。
+
+## 7. 测试 / Git / CI（回填）
+
+- 本地：backend `tsc --noEmit` 0 错（本轮零 backend/src 变更；新增 scripts/m1584-preground-targeted.mjs）；`git diff --check` clean。
+- Git：`961544f → d52f32f` 直推 main；工作区 clean；HEAD == origin/main。
+- **CI success（run 40621230913，attempt 2，4m17s；attempt 1 失败=compose smoke 的 nginx 就绪竞态 flake——backend 5.5s 即 healthy 后 web 容器启动仅 66ms 即被 curl，连接重置；与本轮改动无关（文档+独立脚本），重跑即过）+ Linux Integration success（run 40621230853，3m48s）@`d52f32f`**。
+- M15 总目标：**INCOMPLETE**（本报告不以机制验证/质量增量替代最终产品目标）。
