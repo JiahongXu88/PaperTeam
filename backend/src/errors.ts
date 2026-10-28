@@ -86,6 +86,8 @@ export type BusinessErrorCode =
   // ---- Target profile / readiness（M12.1 A7/A8 derived artifact 损坏 fail-closed）----
   | "TARGET_PROFILE_CORRUPTED"
   | "TARGET_READINESS_CORRUPTED"
+  // ---- Target guideline（M15.9 G1：官方指南工件损坏 fail-closed）----
+  | "TARGET_GUIDELINE_CORRUPTED"
   // ---- Figures C4–C6（M12 Batch 3：产品 API / 插入 / 守卫；末尾追加） ----
   | "FIGURE_NOT_FOUND"
   | "FIGURE_RECOVERY_REQUIRED"
@@ -184,6 +186,7 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   FIGURE_PACKAGE_MISSING: 503,
   TARGET_PROFILE_CORRUPTED: 500,
   TARGET_READINESS_CORRUPTED: 500,
+  TARGET_GUIDELINE_CORRUPTED: 500,
   FIGURE_NOT_FOUND: 404,
   FIGURE_RECOVERY_REQUIRED: 409,
   FIGURE_ASSET_MISSING: 409,

@@ -24,6 +24,8 @@ import { WriterService } from "../../src/writer/WriterService.js";
 import { evaluateQualityGate } from "../../src/quality/gates.js";
 import { renderTargetReferenceBlock, renderTargetExpectationsBlock, renderPlannerTargetDigest } from "../../src/target/promptBlocks.js";
 import type { TargetServices } from "../../src/target/services.js";
+import type { TargetGuidelineService } from "../../src/target/TargetGuidelineService.js";
+import type { TargetRubricService } from "../../src/target/TargetRubricService.js";
 import type { BenchmarkDiscoveryService } from "../../src/search/benchmarkDiscoveryService.js";
 import {
   createExistingPaperDefinition,
@@ -126,6 +128,8 @@ describe("A9 workflow：target 三 stage", () => {
       } as unknown as BenchmarkDiscoveryService,
       profile: harness.profile,
       gap: harness.gap,
+      guideline: {} as unknown as TargetGuidelineService,
+      rubric: {} as unknown as TargetRubricService,
     };
     const services = minimalServices({ targets, projects: harness.projects });
     const result = await executeStage(targetStages(services)[0]!, harness.projectId);
@@ -164,6 +168,8 @@ describe("A9 workflow：target 三 stage", () => {
       } as unknown as BenchmarkDiscoveryService,
       profile: harness.profile,
       gap: harness.gap,
+      guideline: {} as unknown as TargetGuidelineService,
+      rubric: {} as unknown as TargetRubricService,
     };
     const services = minimalServices({ targets, projects: harness.projects });
     const [benchmarkStage, profileStage, readinessStage] = targetStages(services);
@@ -207,6 +213,8 @@ describe("A9 workflow：target 三 stage", () => {
       } as unknown as BenchmarkDiscoveryService,
       profile: harness.profile,
       gap: harness.gap,
+      guideline: {} as unknown as TargetGuidelineService,
+      rubric: {} as unknown as TargetRubricService,
     };
     const services = minimalServices({ targets, projects: harness.projects });
     const [benchmarkStage, profileStage, readinessStage] = targetStages(services);
@@ -249,6 +257,8 @@ describe("A9 workflow：target 三 stage", () => {
       } as unknown as BenchmarkDiscoveryService,
       profile: harness.profile,
       gap: harness.gap,
+      guideline: {} as unknown as TargetGuidelineService,
+      rubric: {} as unknown as TargetRubricService,
     };
     const result = await executeStage(targetStages(minimalServices({ targets, projects: harness.projects }))[0]!, harness.projectId);
     expect(result).toMatchObject({

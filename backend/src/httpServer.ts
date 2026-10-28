@@ -2275,6 +2275,55 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { readiness: await targets.gap.evaluate(projectId) });
       return true;
     }
+    // ---- M15.9 · G1：官方投稿要求工件 + 确定性符合度（advisory，零 gate 接线）----
+    if (rest === "/guideline") {
+      if (method === "GET") {
+        sendJson(res, 200, { guideline: await targets.guideline.get(projectId) });
+        return true;
+      }
+      if (method === "PUT") {
+        const body = await readJsonBody(req);
+        const artifact = body["guideline"];
+        if (typeof artifact !== "object" || artifact === null) {
+          sendJson(res, 400, { status: "error", error: { code: "INVALID_REQUEST", message: "请求体必须包含 guideline 工件对象" } });
+          return true;
+        }
+        sendJson(res, 200, { guideline: await targets.guideline.import_(projectId, artifact as never) });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, PUT", method);
+      return true;
+    }
+    if (rest === "/guideline/compliance") {
+      if (method === "GET") {
+        sendJson(res, 200, { compliance: await targets.guideline.getReport(projectId) });
+        return true;
+      }
+      if (method === "POST") {
+        sendJson(res, 200, { compliance: await targets.guideline.evaluate(projectId) });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method);
+      return true;
+    }
+    // ---- M15.9 · G2：期刊级 evidence-grounded rubric（模型 advisory；显式调用，不进自动 workflow）----
+    if (rest === "/rubric") {
+      if (method === "GET") {
+        sendJson(res, 200, { rubric: await targets.rubric.get(projectId) });
+        return true;
+      }
+      if (method === "POST") {
+        const body = await readOptionalJsonBody(req);
+        const guideline = await targets.guideline.getRequired(projectId);
+        const rubric = await targets.rubric.evaluate(projectId, guideline, {
+          ...(body !== null && body["omitBenchmarkBands"] === true ? { omitBenchmarkBands: true } : {}),
+        });
+        sendJson(res, 200, { rubric });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method);
+      return true;
+    }
     return false;
   }
 

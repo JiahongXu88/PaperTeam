@@ -244,3 +244,118 @@ export async function regenerateTargetProfile(projectId: string): Promise<{ prof
 export async function evaluateTargetReadiness(projectId: string): Promise<{ readiness: TargetReadinessView }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/readiness/evaluate`);
 }
+
+// ---- M15.9：官方投稿要求（G1）与期刊级 rubric（G2）——均为 advisory ----
+
+export interface GuidelineCheckView {
+  requirementId: string;
+  field: string;
+  status: "PASS" | "VIOLATION" | "NOT_EVALUATED" | "ADVISORY";
+  hard: boolean;
+  observed: string;
+  expected: string;
+  officialQuote: string;
+  sourceUrl: string;
+  reason?: string;
+}
+
+export interface GuidelineComplianceView {
+  schemaVersion: 1;
+  venueId: string;
+  guidelineFrozenAt: string;
+  evaluatedAt: string;
+  manuscriptRevision: number | null;
+  checks: GuidelineCheckView[];
+  summary: {
+    hardViolations: number;
+    passCount: number;
+    notEvaluatedCount: number;
+    advisoryCount: number;
+    topStatus: "COMPLIANT" | "HARD_VIOLATION" | "NOT_EVALUATED_ONLY";
+  };
+  provenance: { basis: string; disclaimer: string; guidelineConfidence: string };
+}
+
+export interface TargetGuidelineView {
+  schemaVersion: 1;
+  venueId: string;
+  displayName: string;
+  scope: { scopeStatement?: string; columnsZh?: string[]; quote?: string; sourceUrl?: string };
+  requirements: Array<{ id: string; field: string; operator: string; value?: number; hard: boolean; officialQuote: string; sourceUrl: string }>;
+  provenance: { sourceUrls: string[]; accessDate: string; confidence: string };
+  frozenAt: string;
+}
+
+export interface TargetRubricDimensionView {
+  dimension: string;
+  verdict: "STRONG" | "ADEQUATE" | "WEAK" | "INSUFFICIENT_EVIDENCE";
+  evidenceQuotes: string[];
+  gaps: string[];
+  needsExpertReview: boolean;
+}
+
+export interface TargetRubricView {
+  schemaVersion: 1;
+  venueId: string;
+  promptVersion: string;
+  model?: string;
+  evaluatedAt: string;
+  manuscriptRevision: number | null;
+  documentType: string;
+  withBenchmarkBands: boolean;
+  dimensions: TargetRubricDimensionView[];
+  scopeRelevance: { inScope: boolean | null; evidence: string; columnMatch?: string };
+  overall: { verdict: "STRONG" | "ADEQUATE" | "WEAK" | "INSUFFICIENT_EVIDENCE" | "NEEDS_EXPERT_REVIEW"; rationale: string };
+  summaryFailure?: string;
+  provenance: { basis: string; disclaimer: string };
+}
+
+export async function getTargetGuideline(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<TargetGuidelineView | null> {
+  const body = await apiClient.get<{ guideline: TargetGuidelineView | null }>(
+    `/api/projects/${encodeURIComponent(projectId)}/target/guideline`,
+    signal,
+  );
+  return body.guideline ?? null;
+}
+
+export async function getTargetGuidelineCompliance(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<GuidelineComplianceView | null> {
+  const body = await apiClient.get<{ compliance: GuidelineComplianceView | null }>(
+    `/api/projects/${encodeURIComponent(projectId)}/target/guideline/compliance`,
+    signal,
+  );
+  return body.compliance ?? null;
+}
+
+/** 官方要求符合度评估（确定性零模型；指南工件须先经后端/驱动导入） */
+export async function evaluateTargetGuidelineCompliance(
+  projectId: string,
+): Promise<{ compliance: GuidelineComplianceView }> {
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/guideline/compliance`);
+}
+
+export async function getTargetRubric(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<TargetRubricView | null> {
+  const body = await apiClient.get<{ rubric: TargetRubricView | null }>(
+    `/api/projects/${encodeURIComponent(projectId)}/target/rubric`,
+    signal,
+  );
+  return body.rubric ?? null;
+}
+
+/** 期刊级 rubric 评估（模型 advisory；omitBenchmarkBands=true 为 A3 消融形态） */
+export async function evaluateTargetRubric(
+  projectId: string,
+  input: { omitBenchmarkBands?: boolean } = {},
+): Promise<{ rubric: TargetRubricView }> {
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/rubric`, {
+    ...(input.omitBenchmarkBands === true ? { omitBenchmarkBands: true } : {}),
+  });
+}

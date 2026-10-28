@@ -37,6 +37,8 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import { TargetBenchmarkService } from "./TargetBenchmarkService.js";
 import { TargetGapService } from "./TargetGapService.js";
 import { TargetProfileService, type TargetSummaryModel } from "./TargetProfileService.js";
+import { TargetGuidelineService } from "./TargetGuidelineService.js";
+import { TargetRubricService } from "./TargetRubricService.js";
 
 export interface TargetServiceDeps {
   projects: ProjectStore;
@@ -53,6 +55,12 @@ export interface TargetServiceDeps {
   revisions?: Pick<ManuscriptRevisionStore, "currentRevision">;
   /** bounded LLM 摘要（method/writing；缺省 → 两维 UNAVAILABLE） */
   summaryModel?: TargetSummaryModel;
+  /**
+   * M15.9：rubric 模型（目标期刊级 advisory rubric）。缺省复用 summaryModel
+   * 同一注入（同为 text completeSimple）；两者都缺省 → rubric 整体
+   * INSUFFICIENT_EVIDENCE（不伪造）。
+   */
+  rubricModel?: TargetSummaryModel;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -63,6 +71,10 @@ export interface TargetServices {
   discovery: BenchmarkDiscoveryService;
   profile: TargetProfileService;
   gap: TargetGapService;
+  /** M15.9 · G1：官方投稿要求工件 + 确定性符合度（advisory，零 gate 接线） */
+  guideline: TargetGuidelineService;
+  /** M15.9 · G2：期刊级 evidence-grounded rubric（模型 advisory，零 gate 接线） */
+  rubric: TargetRubricService;
 }
 
 export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
@@ -119,5 +131,23 @@ export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
     now,
     log,
   });
-  return { benchmark, discovery, profile, gap };
+  const currentRevision =
+    deps.revisions !== undefined
+      ? (projectId: string) => deps.revisions!.currentRevision(projectId)
+      : undefined;
+  const guideline = new TargetGuidelineService({
+    projects: deps.projects,
+    ...(currentRevision !== undefined ? { currentRevision } : {}),
+    now,
+    log,
+  });
+  const rubricModel = deps.rubricModel ?? deps.summaryModel;
+  const rubric = new TargetRubricService({
+    projects: deps.projects,
+    ...(rubricModel !== undefined ? { rubricModel } : {}),
+    ...(currentRevision !== undefined ? { currentRevision } : {}),
+    now,
+    log,
+  });
+  return { benchmark, discovery, profile, gap, guideline, rubric };
 }

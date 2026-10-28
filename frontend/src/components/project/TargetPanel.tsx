@@ -8,15 +8,23 @@ import {
   confirmTargetBenchmark,
   discoverTargetBenchmark,
   evaluateTargetReadiness,
+  evaluateTargetGuidelineCompliance,
+  evaluateTargetRubric,
   excludeTargetBenchmarkPaper,
   getTargetBenchmark,
+  getTargetGuideline,
+  getTargetGuidelineCompliance,
   getTargetProfile,
   getTargetReadiness,
+  getTargetRubric,
   regenerateTargetProfile,
   type DistributionView,
+  type GuidelineCheckView,
+  type GuidelineComplianceView,
   type TargetProfileView,
   type TargetReadinessDimensionView,
   type TargetReadinessView,
+  type TargetRubricView,
   type TargetVerdictView,
 } from "../../api/target.js";
 import { formatApiError } from "../../utils/errors.js";
@@ -94,6 +102,18 @@ export function TargetPanel({ projectId }: { projectId: string }) {
     queryKey: ["target", projectId, "readiness"],
     queryFn: ({ signal }) => getTargetReadiness(projectId, signal),
   });
+  const guideline = useQuery({
+    queryKey: ["target", projectId, "guideline"],
+    queryFn: ({ signal }) => getTargetGuideline(projectId, signal),
+  });
+  const compliance = useQuery({
+    queryKey: ["target", projectId, "guideline-compliance"],
+    queryFn: ({ signal }) => getTargetGuidelineCompliance(projectId, signal),
+  });
+  const rubric = useQuery({
+    queryKey: ["target", projectId, "rubric"],
+    queryFn: ({ signal }) => getTargetRubric(projectId, signal),
+  });
 
   const invalidateTarget = (): Promise<void> =>
     Promise.all([
@@ -137,6 +157,22 @@ export function TargetPanel({ projectId }: { projectId: string }) {
   });
   const evaluateReadiness = useMutation({
     mutationFn: () => evaluateTargetReadiness(projectId),
+    onSuccess: () => {
+      setActionError(null);
+      void invalidateTarget();
+    },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+  const evaluateCompliance = useMutation({
+    mutationFn: () => evaluateTargetGuidelineCompliance(projectId),
+    onSuccess: () => {
+      setActionError(null);
+      void invalidateTarget();
+    },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+  const evaluateRubric = useMutation({
+    mutationFn: () => evaluateTargetRubric(projectId),
     onSuccess: () => {
       setActionError(null);
       void invalidateTarget();
@@ -426,9 +462,36 @@ export function TargetPanel({ projectId }: { projectId: string }) {
         profileReady={profileData !== null}
       />
 
+      {/* ---- 5. 官方投稿要求符合度（M15.9 G1，确定性 advisory） ---- */}
+      <TargetGuidelineSection
+        guideline={guideline.data ?? null}
+        compliance={compliance.data ?? null}
+        pending={guideline.isPending || compliance.isPending}
+        error={guideline.isError ? formatApiError(guideline.error) : compliance.isError ? formatApiError(compliance.error) : null}
+        evaluating={evaluateCompliance.isPending}
+        onEvaluate={() => evaluateCompliance.mutate()}
+        onRetry={() => {
+          void guideline.refetch();
+          void compliance.refetch();
+        }}
+      />
+
+      {/* ---- 6. 期刊级 rubric（M15.9 G2，模型 advisory） ---- */}
+      <TargetRubricSection
+        rubric={rubric.data ?? null}
+        pending={rubric.isPending}
+        error={rubric.isError ? formatApiError(rubric.error) : null}
+        evaluating={evaluateRubric.isPending}
+        onEvaluate={() => evaluateRubric.mutate()}
+        onRetry={() => void rubric.refetch()}
+        guidelineReady={guideline.data != null}
+      />
+
       <p className="section-note faint">
         目标带来自冻结 benchmark 语料的确定性观测（research/target-profile.json），不是期刊/会议官方投稿要求；
         就绪度差距是与目标带的距离陈述，不构成稿件事实错误，也不阻断任何质量门禁。
+        官方要求符合度（target-guideline.json）逐条对照期刊官方页面明文；rubric（target-rubric.json）是模型
+        在官方范围与稿件摘录上的候选判断——不构成录用判断或专家意见，均不进入质量门禁。
       </p>
     </section>
   );
@@ -676,6 +739,265 @@ function TargetReadinessSection({
               {evaluating ? "评估中…" : "评估当前稿"}
             </button>
           </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- M15.9 G1：官方投稿要求符合度（确定性 advisory） ----
+
+const GUIDELINE_STATUS_META: Record<GuidelineCheckView["status"], { label: string; tone: string }> = {
+  PASS: { label: "符合", tone: "ok" },
+  VIOLATION: { label: "不符", tone: "danger" },
+  NOT_EVALUATED: { label: "未评", tone: "neutral" },
+  ADVISORY: { label: "建议关注", tone: "warn" },
+};
+
+function TargetGuidelineSection({
+  guideline,
+  compliance,
+  pending,
+  error,
+  evaluating,
+  onEvaluate,
+  onRetry,
+}: {
+  guideline: import("../../api/target.js").TargetGuidelineView | null;
+  compliance: GuidelineComplianceView | null;
+  pending: boolean;
+  error: string | null;
+  evaluating: boolean;
+  onEvaluate: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="target-guideline" data-testid="target-guideline-section">
+      <div className="gate-rules-head">
+        <h3>官方投稿要求符合度（advisory）</h3>
+        {guideline !== null ? (
+          <span className="faint">
+            {guideline.displayName} · 指南冻结于 {formatDateTime(guideline.frozenAt) ?? "—"} · 来源访问{" "}
+            {guideline.provenance.accessDate}（{guideline.provenance.confidence}）
+          </span>
+        ) : null}
+      </div>
+      {pending ? (
+        <Loading label="加载官方要求符合度…" />
+      ) : error !== null ? (
+        <ErrorState title="官方要求符合度加载失败" message={error} onRetry={onRetry} />
+      ) : guideline === null ? (
+        <div className="state-block state-empty" data-testid="target-guideline-empty">
+          <strong>尚未导入目标期刊官方指南工件</strong>
+          <span>
+            本项目未冻结 target-guideline.json（官方范围/明文要求 + 来源快照）。导入后可对当前稿做确定性逐条对照；
+            未导入时官方要求层为 NOT_EVALUATED，不以 benchmark 观测带冒充。
+          </span>
+        </div>
+      ) : compliance === null ? (
+        <div className="state-block state-empty" data-testid="target-guideline-compliance-empty">
+          <strong>指南已冻结，尚未评估当前稿</strong>
+          <span>
+            <button type="button" className="btn btn-small" onClick={onEvaluate} disabled={evaluating}>
+              {evaluating ? "评估中…" : "逐条对照（确定性，零模型）"}
+            </button>
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="gate-rules-head">
+            <span>
+              <span className={`status status-tone-${compliance.summary.topStatus === "HARD_VIOLATION" ? "danger" : compliance.summary.topStatus === "COMPLIANT" ? "ok" : "neutral"}`}>
+                {compliance.summary.topStatus === "HARD_VIOLATION"
+                  ? `硬性不符 ${compliance.summary.hardViolations} 条`
+                  : compliance.summary.topStatus === "COMPLIANT"
+                    ? "明文条款未见硬性不符"
+                    : "全部未评"}
+              </span>{" "}
+              <span className="faint">
+                （符合 {compliance.summary.passCount} · 不符 {compliance.summary.hardViolations} · 未评{" "}
+                {compliance.summary.notEvaluatedCount} · 建议关注 {compliance.summary.advisoryCount}；评估于{" "}
+                {formatDateTime(compliance.evaluatedAt) ?? "—"}）
+              </span>
+            </span>
+            <span>
+              <button type="button" className="btn btn-small" onClick={onEvaluate} disabled={evaluating}>
+                {evaluating ? "评估中…" : "重新对照"}
+              </button>
+            </span>
+          </div>
+          <ul className="rule-list" data-testid="target-guideline-checks">
+            {compliance.checks.map((check) => (
+              <li key={check.requirementId} className="rule-item">
+                <span className={`status status-tone-${GUIDELINE_STATUS_META[check.status].tone}`}>
+                  {GUIDELINE_STATUS_META[check.status].label}
+                  {check.hard ? "·硬性" : "·建议"}
+                </span>
+                <div>
+                  <div>
+                    <strong>{check.field}</strong>
+                    <span className="faint">（{check.expected}）</span>：{check.observed}
+                    {check.status === "NOT_EVALUATED" && check.reason !== undefined ? (
+                      <span className="faint"> — 未评原因：{check.reason}</span>
+                    ) : null}
+                  </div>
+                  <details>
+                    <summary className="faint">官方原文与出处</summary>
+                    <blockquote className="section-note">
+                      “{check.officialQuote}”
+                      <br />
+                      <a href={check.sourceUrl} target="_blank" rel="noreferrer">
+                        {check.sourceUrl}
+                      </a>
+                    </blockquote>
+                  </details>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="section-note faint">{compliance.provenance.disclaimer}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---- M15.9 G2：期刊级 rubric（模型 advisory） ----
+
+const RUBRIC_VERDICT_META: Record<string, { label: string; tone: string }> = {
+  STRONG: { label: "强", tone: "ok" },
+  ADEQUATE: { label: "合格", tone: "ok" },
+  WEAK: { label: "弱", tone: "warn" },
+  INSUFFICIENT_EVIDENCE: { label: "证据不足", tone: "neutral" },
+  NEEDS_EXPERT_REVIEW: { label: "需专家复核", tone: "neutral" },
+};
+
+const RUBRIC_DIMENSION_LABELS: Record<string, string> = {
+  novelty: "创新性",
+  contribution: "研究贡献",
+  technicalSoundness: "技术可靠性",
+  experimentalAdequacy: "实验/实证充分性",
+  relevance: "期刊相关性",
+  clarity: "表达清晰度",
+};
+
+function TargetRubricSection({
+  rubric,
+  pending,
+  error,
+  evaluating,
+  onEvaluate,
+  onRetry,
+  guidelineReady,
+}: {
+  rubric: TargetRubricView | null;
+  pending: boolean;
+  error: string | null;
+  evaluating: boolean;
+  onEvaluate: () => void;
+  onRetry: () => void;
+  guidelineReady: boolean;
+}) {
+  return (
+    <div className="target-rubric" data-testid="target-rubric-section">
+      <div className="gate-rules-head">
+        <h3>期刊级质量 rubric（advisory · 模型候选判断）</h3>
+        {rubric !== null ? (
+          <span className="faint">
+            {rubric.venueId} · {rubric.model ?? "未配置模型"} · 文章类型 {rubric.documentType} ·{" "}
+            {rubric.withBenchmarkBands ? "含 benchmark 带" : "无 benchmark 带（A3 形态）"} · 评估于{" "}
+            {formatDateTime(rubric.evaluatedAt) ?? "—"}
+          </span>
+        ) : null}
+      </div>
+      {pending ? (
+        <Loading label="加载期刊级 rubric…" />
+      ) : error !== null ? (
+        <ErrorState title="rubric 加载失败" message={error} onRetry={onRetry} />
+      ) : !guidelineReady ? (
+        <div className="state-block state-empty" data-testid="target-rubric-empty">
+          <strong>需先冻结官方指南工件</strong>
+          <span>rubric 的范围判据来自 target-guideline.json 的官方范围陈述——未导入前不评估（不以 benchmark 观测冒充范围）。</span>
+        </div>
+      ) : rubric === null ? (
+        <div className="state-block state-empty" data-testid="target-rubric-unevaluated">
+          <strong>尚未评估</strong>
+          <span>
+            <button type="button" className="btn btn-small" onClick={onEvaluate} disabled={evaluating}>
+              {evaluating ? "评估中…" : "评估（模型 advisory，单次调用）"}
+            </button>
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="gate-rules-head">
+            <span>
+              <span className={`status status-tone-${RUBRIC_VERDICT_META[rubric.overall.verdict]?.tone ?? "neutral"}`}>
+                {RUBRIC_VERDICT_META[rubric.overall.verdict]?.label ?? rubric.overall.verdict}
+              </span>{" "}
+              <span className="faint">{rubric.overall.rationale}</span>
+            </span>
+            <span>
+              <button type="button" className="btn btn-small" onClick={onEvaluate} disabled={evaluating}>
+                {evaluating ? "评估中…" : "重新评估"}
+              </button>
+            </span>
+          </div>
+          <div className="kv" data-testid="target-rubric-scope">
+            <div className="kv-row">
+              <dt>范围相关性</dt>
+              <dd>
+                {rubric.scopeRelevance.inScope === null ? (
+                  <span className="status status-tone-neutral">未判定</span>
+                ) : rubric.scopeRelevance.inScope ? (
+                  <span className="status status-tone-ok">
+                    在期刊范围内{rubric.scopeRelevance.columnMatch !== undefined ? `（${rubric.scopeRelevance.columnMatch}）` : ""}
+                  </span>
+                ) : (
+                  <span className="status status-tone-danger">疑似超出期刊范围</span>
+                )}
+                <span className="faint"> — {rubric.scopeRelevance.evidence}</span>
+              </dd>
+            </div>
+          </div>
+          <ul className="rule-list" data-testid="target-rubric-dimensions">
+            {rubric.dimensions.map((dimension) => (
+              <li key={dimension.dimension} className="rule-item">
+                <span className={`status status-tone-${RUBRIC_VERDICT_META[dimension.verdict]?.tone ?? "neutral"}`}>
+                  {RUBRIC_VERDICT_META[dimension.verdict]?.label ?? dimension.verdict}
+                  {dimension.needsExpertReview ? "·需专家复核" : ""}
+                </span>
+                <div>
+                  <strong>{RUBRIC_DIMENSION_LABELS[dimension.dimension] ?? dimension.dimension}</strong>
+                  {dimension.gaps.length > 0 ? (
+                    <ul>
+                      {dimension.gaps.map((gap, index) => (
+                        <li key={index}>{gap}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {dimension.evidenceQuotes.length > 0 ? (
+                    <details>
+                      <summary className="faint">稿件引文依据</summary>
+                      <blockquote className="section-note">
+                        {dimension.evidenceQuotes.map((quote, index) => (
+                          <div key={index}>“{quote}”</div>
+                        ))}
+                      </blockquote>
+                    </details>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+          {rubric.summaryFailure !== undefined ? (
+            <div className="note note-warn" role="status" data-testid="target-rubric-failure">
+              <span>
+                <span className="note-mark">●</span> 评估失败/未配置（整体 INSUFFICIENT_EVIDENCE，不伪造）：{rubric.summaryFailure}
+              </span>
+            </div>
+          ) : null}
+          <p className="section-note faint">{rubric.provenance.disclaimer}</p>
         </>
       )}
     </div>
