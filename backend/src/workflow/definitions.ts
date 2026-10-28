@@ -486,6 +486,11 @@ export interface WorkflowServices {
    */
   corpus: CorpusSnapshotService;
   /**
+   * Corpus Upgrade（M15.8.5：显式 / 受控研究语料升级编排——scoped refresh →
+   * 增量 matrix 重建 → synthesis → outline；与活跃 run 互斥；HITL 可见性用）。
+   */
+  corpusUpgrade: import("../survey/CorpusUpgradeService.js").CorpusUpgradeService;
+  /**
    * Survey Synthesis（M11.1.4：survey.synthesis stage 消费——Matrix 指纹复用 /
    * 全量重建；grounding 规则零旁路）。
    */
@@ -5471,7 +5476,8 @@ async function summarizePairwiseFactRegressions(
  * literatureRefs）+ 词面相关度（claim ↔ 源标题）。targetedSearchBudget
  * 缺省 0：补搜索是运维级 bounded 动作，不作为分类器默认出口（§9）。
  */
-async function buildClaimResolutionContext(
+/** M15.8.5 起导出：basis 闸门语义（groundableInBasis）的单元测试复用。 */
+export async function buildClaimResolutionContext(
   services: WorkflowServices,
   projectId: string,
 ): Promise<import("../review/claimResolution.js").ClaimResolutionContext> {
@@ -5480,7 +5486,12 @@ async function buildClaimResolutionContext(
   // 可定向采证（matrix 消费过的全文）。快照后漂移到盘的全文文件（老项目在
   // 冻结特性前磁盘已漂移 / 显式 refresh 前的网络恢复）不得改变当前 Run 的
   // Research Basis：它们要进基线只能走显式 refresh → matrix 重建 → 新 revision。
+  // M15.8.5：修复 null 语义混用——basisDepth=null 的行只有「matrix 整体尚未
+  // 构建」时才可采证；matrix 已存在而条目缺席（refresh 已失效待重建 / 从未
+  // 覆盖）= 不在基线内，不得借 null+hasFulltext 放大可采证面（Phase A R3
+  // 实证：部分重建态下 6/25 消费却 24/25 可采证）。
   const corpusSnapshot = await services.corpus.get(projectId).catch(() => null);
+  const matrixForBasis = corpusSnapshot === null ? null : await services.survey.getMatrix(projectId).catch(() => null);
   const basisRow = new Map((corpusSnapshot?.sources ?? []).map((row) => [row.sourceId, row]));
   const groundableInBasis = (sourceId: string): boolean => {
     if (corpusSnapshot === null) {
@@ -5490,7 +5501,15 @@ async function buildClaimResolutionContext(
     if (row === undefined) {
       return false; // 快照后才入库的源不属于冻结基线
     }
-    return row.basisDepth === "fulltext" || (row.basisDepth === null && row.hasFulltext);
+    if (row.basisDepth === "fulltext") {
+      return true;
+    }
+    if (row.basisDepth === null && row.hasFulltext) {
+      // null 只在 matrix 未构建时代表「语料已就绪待矩阵」；
+      // matrix 存在而条目缺席 = 失效待重建 / 未覆盖——不可采证
+      return matrixForBasis === null;
+    }
+    return false;
   };
   const chunkedSourceIds = new Set<string>();
   for (const source of sources) {
@@ -9586,6 +9605,33 @@ function surveyMatrixStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/**
+ * M15.8.5：matrix_confirm HITL 的语料升级可见性（零模型，纯观测）。
+ * 有界摘要——升级候选数 + 无合法 OA 的 Author Decision 项；详情走
+ * GET /survey/corpus/availability。不在 HITL 内自动升级（预算纪律：升级是
+ * 显式操作，与 run 互斥）。
+ */
+async function corpusUpgradeAttention(
+  services: WorkflowServices,
+  projectId: string,
+): Promise<{ upgradeEligible: number; eligibleSourceIds: string[]; requiresAuthorDecision: string[] } | null> {
+  try {
+    const availability = await services.corpusUpgrade.availability(projectId);
+    const eligible = availability.sources.filter((row) => row.upgradeEligible);
+    const authorDecision = availability.sources.filter((row) => row.requiresAuthorDecision);
+    if (eligible.length === 0 && authorDecision.length === 0) {
+      return null;
+    }
+    return {
+      upgradeEligible: eligible.length,
+      eligibleSourceIds: eligible.map((row) => row.sourceId),
+      requiresAuthorDecision: authorDecision.map((row) => row.sourceId),
+    };
+  } catch {
+    return null; // 可用性计算失败不阻塞 HITL（升级本身是显式操作）
+  }
+}
+
 /** hitl.matrix_confirm：进入 Synthesis 前的矩阵修正点（重点暴露 unclassified / 弱锚 / 降级条目） */
 function matrixConfirmStage(services: WorkflowServices): StageSpec {
   return {
@@ -9637,6 +9683,9 @@ function matrixConfirmStage(services: WorkflowServices): StageSpec {
             })),
             weakAnchors: weakAnchors.map((entry) => entry.entryId),
           },
+          // M15.8.5：语料升级可见性——磁盘已有全文而基线仍摘要级的源在此提示；
+          // 升级是显式 / 受控操作（run 外执行，与 run 互斥），不在确认时自动触发
+          corpusUpgrade: await corpusUpgradeAttention(services, ctx.projectId),
           entriesWithIssues: matrix.entries.filter((entry) => (entry.issues ?? []).length > 0).length,
         };
       },
@@ -9645,8 +9694,7 @@ function matrixConfirmStage(services: WorkflowServices): StageSpec {
 }
 
 /** HITL 决策：matrix_confirm（revise = entryPatches 经服务严格校验后落盘） */
-async function applyMatrixConfirmDecision(
-  services: WorkflowServices,
+async function applyMatrixConfirmDecision(  services: WorkflowServices,
   state: WorkflowState,
   input: ResumeInput,
 ): Promise<void | "cancel"> {

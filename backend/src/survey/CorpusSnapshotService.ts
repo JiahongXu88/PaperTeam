@@ -70,7 +70,7 @@ export interface CorpusSnapshotArtifact {
 }
 
 export interface CorpusRefreshOutcome {
-  /** 本次尝试补齐的源数（快照中无全文的） */
+  /** 本次尝试补齐的源数（快照中无全文的，scoped 时为目标集 ∩ 无全文） */
   attempted: number;
   /** 补齐成功（现在有全文文件） */
   resolved: number;
@@ -78,6 +78,8 @@ export interface CorpusRefreshOutcome {
   stillMissing: number;
   /** 被失效的 matrix 条目（basisDepth 可升级 → 下次构建重建） */
   invalidatedMatrixEntries: number;
+  /** 已确认（HITL）而保留、待人工裁决的可升级条目（M15.8.5） */
+  skippedConfirmedEntries: string[];
   /** 新语料修订号 */
   revision: number;
   /** 新指纹（与旧指纹相同 = 语料实质未变） */
@@ -97,8 +99,11 @@ export interface CorpusSnapshotDeps {
   ) => Promise<{ summary: { resolved: number; notFound: number; failed: number; notResolvable: number; skipped: number } }>;
   /** 新解析全文的结构化解析（matrix fulltext 锚定前提） */
   ingest: (projectId: string, sourceId: string) => Promise<unknown>;
-  /** matrix 可升级条目失效（refresh 专用） */
-  invalidateUpgradableMatrixEntries: (projectId: string) => Promise<number>;
+  /** matrix 可升级条目失效（refresh 专用；M15.8.5：scoped + HITL 保护） */
+  invalidateUpgradableMatrixEntries: (
+    projectId: string,
+    options?: { sourceIds?: string[]; skipConfirmed?: boolean },
+  ) => Promise<{ invalidated: number; skippedConfirmed: string[] }>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -276,14 +281,19 @@ export class CorpusSnapshotService {
 
   /**
    * 显式补齐缺失全文（resume 的对立面；§17 refresh_missing_fulltext）：
-   * 1. 只处理快照中无全文文件的源（resolveFullTextBatch）；
+   * 1. 只处理快照中无全文文件的源（resolveFullTextBatch）；M15.8.5 起支持
+   *    options.sourceIds 有界范围（目标集 ∩ 无全文；缺省 = 全部无全文源）；
    * 2. 新解析的源做结构化解析（matrix fulltext 锚定前提）；
-   * 3. 失效 matrix 可升级条目（下次构建重建 → 指纹变化 → Synthesis /
-   *    Outline 按既有 staleness 链重算）；
+   * 3. 失效 matrix 可升级条目（scoped 同目标集；confirmed 条目保留待裁决；
+   *    下次构建重建 → 指纹变化 → Synthesis / Outline 按既有 staleness 链重算）；
    * 4. 快照 revision+1、指纹重算——语料变了指纹必须变（§18）。
    * 未冻结语料 → INVALID_REQUEST（先跑一次 survey.fulltext 形成基线）。
+   * sourceIds 中的未知 / 不合格源 → INVALID_REQUEST（如实点名，不静默忽略）。
    */
-  async refresh(projectId: string, options: { signal?: AbortSignal } = {}): Promise<CorpusRefreshOutcome> {
+  async refresh(
+    projectId: string,
+    options: { sourceIds?: string[]; signal?: AbortSignal } = {},
+  ): Promise<CorpusRefreshOutcome> {
     const existing = await this.get(projectId);
     if (existing === null) {
       throw new BusinessError(
@@ -291,7 +301,24 @@ export class CorpusSnapshotService {
         "研究语料尚未冻结（无 corpus-snapshot.json）；先完成一次 survey.fulltext 形成基线",
       );
     }
-    const missing = existing.sources.filter((row) => !row.hasFulltext).map((row) => row.sourceId);
+    let scope: Set<string> | null = null;
+    if (options.sourceIds !== undefined) {
+      if (options.sourceIds.length === 0) {
+        throw new BusinessError("INVALID_REQUEST", "sourceIds 必须是非空数组（不指定则处理全部缺失全文源）");
+      }
+      const known = new Set(existing.sources.map((row) => row.sourceId));
+      const unknown = options.sourceIds.filter((id) => !known.has(id));
+      if (unknown.length > 0) {
+        throw new BusinessError(
+          "INVALID_REQUEST",
+          `sourceIds 不在冻结语料内：${unknown.join("、")}（快照只有 ${known.size} 源）`,
+        );
+      }
+      scope = new Set(options.sourceIds);
+    }
+    const missing = existing.sources
+      .filter((row) => !row.hasFulltext && (scope === null || scope.has(row.sourceId)))
+      .map((row) => row.sourceId);
     let resolved = 0;
     let stillMissing = 0;
     if (missing.length > 0) {
@@ -313,7 +340,10 @@ export class CorpusSnapshotService {
         }
       }
     }
-    const invalidatedMatrixEntries = await this.deps.invalidateUpgradableMatrixEntries(projectId);
+    const invalidation = await this.deps.invalidateUpgradableMatrixEntries(
+      projectId,
+      scope === null ? {} : { sourceIds: [...scope] },
+    );
     const sources = await this.deps.listSources(projectId);
     const byId = new Map(existing.sources.map((row) => [row.sourceId, row]));
     const rows: CorpusSnapshotSourceRow[] = buildCorpusRows(sources, null).map((row) => ({
@@ -331,13 +361,14 @@ export class CorpusSnapshotService {
     };
     await writeJsonAtomic(this.artifactPath(projectId), artifact);
     this.log(
-      `[corpus] projectId=${projectId} 显式补齐：attempted=${missing.length} resolved=${resolved} stillMissing=${stillMissing} invalidatedMatrix=${invalidatedMatrixEntries} revision=${artifact.revision} fingerprint=${fingerprint}${fingerprint === existing.fingerprint ? "（未变）" : ""}`,
+      `[corpus] projectId=${projectId} 显式补齐：attempted=${missing.length} resolved=${resolved} stillMissing=${stillMissing} invalidatedMatrix=${invalidation.invalidated} revision=${artifact.revision} fingerprint=${fingerprint}${fingerprint === existing.fingerprint ? "（未变）" : ""}`,
     );
     return {
       attempted: missing.length,
       resolved,
       stillMissing,
-      invalidatedMatrixEntries,
+      invalidatedMatrixEntries: invalidation.invalidated,
+      skippedConfirmedEntries: invalidation.skippedConfirmed,
       revision: artifact.revision,
       fingerprint,
       fingerprintChanged: fingerprint !== existing.fingerprint,

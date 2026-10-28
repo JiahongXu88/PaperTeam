@@ -300,14 +300,26 @@ export class MatrixService {
    * abstract_only 记录（语料显式 refresh 后）。移除的条目在下一次
    * buildMatrix 中重建（fulltext 深度 + 锚定），matrix 内容指纹随之变化，
    * Synthesis / Outline 按既有 staleness 链重算（§18：语料变而 matrix
-   * 指纹不变是被禁止的）。返回失效条数（0 = 无可升级条目）。
+   * 指纹不变是被禁止的）。
+   *
+   * M15.8.5：scoped 失效 + HITL 保护——
+   * - options.sourceIds 给定时只失效目标集内的可升级条目（有界升级：预算
+   *   可控、失败面可控；缺省 = 全部可升级条目，行为与 M11.3 一致）；
+   * - options.skipConfirmed（缺省 true）：status=confirmed 的条目不自动失效
+   *   （人工确认的归类/字段不得被静默重建覆盖），计入 skippedConfirmed 由
+   *   调用方呈现（requires_author_decision）。
    */
-  async invalidateUpgradableEntries(projectId: string): Promise<number> {
+  async invalidateUpgradableEntries(
+    projectId: string,
+    options: { sourceIds?: string[]; skipConfirmed?: boolean } = {},
+  ): Promise<{ invalidated: number; skippedConfirmed: string[] }> {
     await this.projects.getRequired(projectId);
     const artifact = await this.store.read(projectId);
     if (artifact === null) {
-      return 0;
+      return { invalidated: 0, skippedConfirmed: [] };
     }
+    const scope = options.sourceIds !== undefined ? new Set(options.sourceIds) : null;
+    const skipConfirmed = options.skipConfirmed ?? true;
     const sources = await this.sources.list(projectId);
     const hasFile = new Set(
       sources
@@ -321,12 +333,25 @@ export class MatrixService {
         )
         .map((item) => item.sourceId),
     );
-    const kept = artifact.entries.filter(
-      (entry) => !(hasFile.has(entry.sourceId) && entry.interpretationDepth !== "fulltext"),
-    );
-    const invalidated = artifact.entries.length - kept.length;
+    const kept: SurveyMatrixEntry[] = [];
+    const skippedConfirmed: string[] = [];
+    let invalidated = 0;
+    for (const entry of artifact.entries) {
+      const upgradable = hasFile.has(entry.sourceId) && entry.interpretationDepth !== "fulltext";
+      const inScope = scope === null || scope.has(entry.sourceId);
+      if (upgradable && inScope) {
+        if (skipConfirmed && entry.status === "confirmed") {
+          skippedConfirmed.push(entry.sourceId);
+          kept.push(entry);
+          continue;
+        }
+        invalidated += 1;
+        continue;
+      }
+      kept.push(entry);
+    }
     if (invalidated === 0) {
-      return 0;
+      return { invalidated: 0, skippedConfirmed };
     }
     await this.store.write(projectId, {
       ...artifact,
@@ -334,9 +359,9 @@ export class MatrixService {
       entries: kept,
     });
     this.log(
-      `[survey] projectId=${projectId} 语料 refresh 失效可升级条目：${invalidated}（下次构建按 fulltext 深度重建）`,
+      `[survey] projectId=${projectId} 语料 refresh 失效可升级条目：${invalidated}${scope !== null ? `（scoped ${scope.size} 目标）` : ""}（下次构建按 fulltext 深度重建）${skippedConfirmed.length > 0 ? `；已确认条目保留待人工裁决：${skippedConfirmed.join("、")}` : ""}`,
     );
-    return invalidated;
+    return { invalidated, skippedConfirmed };
   }
 
   /**

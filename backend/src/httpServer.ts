@@ -644,6 +644,11 @@ async function handleRequest(
     } catch (error) {
       console.error(`[http] 运行前会话轮换失败（不阻断启动）:`, errorText(error));
     }
+    // M15.8.5：语料升级进行中 → 拒绝创建 run（升级与 run 互斥，不并发争抢
+    // 同一模型账本；升级是分钟级显式操作，完成后重试即可）
+    if (services.stack !== undefined && services.stack.corpusUpgrade.isUpgrading(projectId)) {
+      throw new ProjectBusyError(`项目 ${projectId} 正在执行研究语料升级：完成后再次启动 run`);
+    }
     const run = await services.orchestrator.createRun(projectId, kind, {
       ...(prompt !== undefined ? { prompt } : {}),
       // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
@@ -2656,6 +2661,41 @@ async function handleProjectResourceRoutes(
         return true;
       }
       const outcome = await stack.corpus.refresh(projectId);
+      sendJson(res, 200, { outcome });
+      return true;
+    }
+    // M15.8.5：GET /survey/corpus/availability——零模型可用性报告（升级候选 /
+    // 下游新鲜度 / Author Decision 项；downloadedFile ≠ parsedUsable ≠ fulltextBasis）
+    if (rest === "/corpus/availability") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      const availability = await stack.corpusUpgrade.availability(projectId);
+      sendJson(res, 200, { availability });
+      return true;
+    }
+    // M15.8.5：POST /survey/corpus/upgrade——显式 / 受控研究语料升级
+    // （scoped refresh → 增量 matrix 重建 → synthesis → outline；与活跃 run
+    // 互斥；body.sourceIds 可选 = 有界升级目标集；模型调用走正规账本）
+    if (rest === "/corpus/upgrade") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      let sourceIds: string[] | undefined;
+      const body = await readOptionalJsonBody(req);
+      const ids = body["sourceIds"];
+      if (ids !== undefined) {
+        if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+          sendJson(res, 400, { status: "error", error: { code: "INVALID_REQUEST", message: "sourceIds 必须是 string[]（不指定则升级全部可升级源）" } });
+          return true;
+        }
+        sourceIds = ids as string[];
+      }
+      const outcome = await stack.corpusUpgrade.upgrade(projectId, {
+        ...(sourceIds !== undefined ? { sourceIds } : {}),
+      });
       sendJson(res, 200, { outcome });
       return true;
     }

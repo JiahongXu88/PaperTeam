@@ -23,6 +23,8 @@ import type { ProjectStore } from "../project/ProjectStore.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import { loadBuildGateRecord } from "../quality/gates.js";
+import { fingerprintJson } from "../util/hash.js";
+import { SurveyMatrixArtifactStore, SurveySynthesisArtifactStore } from "../survey/surveyArtifacts.js";
 import type { PaperArtifact } from "./ArtifactStore.js";
 import type { PaperArtifactStore } from "./ArtifactStore.js";
 
@@ -45,12 +47,16 @@ export class FinalizeService {
   private readonly reviewArtifacts: ReviewArtifactStore;
   private readonly artifacts: PaperArtifactStore;
   private readonly revisions: ManuscriptRevisionStore;
+  private readonly matrixStore: SurveyMatrixArtifactStore;
+  private readonly synthesisStore: SurveySynthesisArtifactStore;
 
   constructor(options: FinalizeServiceOptions) {
     this.projects = options.projects;
     this.reviewArtifacts = options.reviewArtifacts;
     this.artifacts = options.artifacts;
     this.revisions = options.revisions;
+    this.matrixStore = new SurveyMatrixArtifactStore(options.projects);
+    this.synthesisStore = new SurveySynthesisArtifactStore(options.projects);
   }
 
   async finalize(projectId: string, runId?: string): Promise<FinalizeResult> {
@@ -90,6 +96,20 @@ export class FinalizeService {
       throw new QualityGateStaleError(
         `gate 轮次（r${latestGateRound}）落后于最新审稿轮次（r${latestSummary.round}）`,
       );
+    }
+
+    // ---- M15.8.5：survey 研究链新鲜度——语料升级后不得用旧基线签发 Final ----
+    // 半升级态（matrix 已重建 / synthesis 未重建，或矩阵缺失效条目）在正常
+    // 修订对齐之外可能漏网（大纲 refs 恰好不变 → 章节未重写 → 修订号不动）。
+    // 确定性守卫：survey 产物在时，synthesis 必须对齐当前 matrix。
+    const surveyMatrix = await this.matrixStore.read(projectId).catch(() => null);
+    if (surveyMatrix !== null) {
+      const surveySynthesis = await this.synthesisStore.read(projectId).catch(() => null);
+      if (surveySynthesis !== null && surveySynthesis.matrixFingerprint !== fingerprintJson(surveyMatrix)) {
+        throw new QualityGateStaleError(
+          "Survey Synthesis 相对当前 Matrix 已过期（研究语料已升级而下游未重建）：先完成 synthesis/outline 重建与重新审稿后再 Finalize",
+        );
+      }
     }
 
     // ---- Build Gate：记录存在、通过、revision 对齐 ----

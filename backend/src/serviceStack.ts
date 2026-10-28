@@ -84,6 +84,8 @@ import { TargetedGroundingService } from "./evidence/TargetedGroundingService.js
 import { ChunkAccess } from "./evidence/chunkAccess.js";
 import { MatrixService } from "./survey/MatrixService.js";
 import { CorpusSnapshotService } from "./survey/CorpusSnapshotService.js";
+import { CorpusUpgradeService } from "./survey/CorpusUpgradeService.js";
+import { WorkflowRunStore } from "./workflow/runStore.js";
 import { SynthesisService } from "./survey/SynthesisService.js";
 import { SurveyOutlineService } from "./survey/OutlineService.js";
 import { WriterService } from "./writer/WriterService.js";
@@ -347,6 +349,8 @@ export interface ServiceStack {
   survey: MatrixService;
   /** M11.3：研究语料冻结 / 显式补齐（refresh_missing_fulltext） */
   corpus: CorpusSnapshotService;
+  /** M15.8.5：显式 / 受控研究语料升级编排（scoped refresh → 增量重建链） */
+  corpusUpgrade: CorpusUpgradeService;
   /**
    * Survey Synthesis（M11.1.2）：Matrix → 跨论文 Structured Synthesis →
    * research/survey-synthesis.json（groundingLevel 由确定性规则判定；
@@ -893,7 +897,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     resolveFullTextBatch: (pid, sourceIds, batchOptions) =>
       sourceImport.resolveFullTextBatch(pid, sourceIds, batchOptions ?? {}),
     ingest: (pid, sourceId) => ingestion.ingest(pid, sourceId),
-    invalidateUpgradableMatrixEntries: (pid) => survey.invalidateUpgradableEntries(pid),
+    invalidateUpgradableMatrixEntries: (pid, invalidateOptions) =>
+      survey.invalidateUpgradableEntries(pid, invalidateOptions ?? {}),
     log,
   });
   // M11.1.2 Structured Synthesis：Matrix → 跨论文综合（七类）；taxonomy 确定性
@@ -918,6 +923,22 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     sources,
     writer,
     manuscript,
+    log,
+  });
+  // M15.8.5 Corpus Upgrade：显式 / 受控研究语料升级编排（scoped refresh →
+  // 增量 matrix → synthesis → outline；与活跃 run 互斥；审计 journal 追加）
+  const corpusUpgrade = new CorpusUpgradeService({
+    projects: options.projects,
+    sources,
+    chunkStore,
+    retrieval,
+    runStore: new WorkflowRunStore(options.projects, { log }),
+    corpus,
+    survey,
+    synthesis,
+    surveyOutline,
+    manuscript,
+    ...(options.globalBudget !== undefined ? { globalLedger: options.globalBudget.ledger } : {}),
     log,
   });
   const researcher = new ResearcherService({
@@ -1066,6 +1087,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     retrieval,
     survey,
     corpus,
+    corpusUpgrade,
     synthesis,
     surveyOutline,
     parsedDocuments,
@@ -1121,6 +1143,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
       ingestion,
       survey,
       corpus,
+      corpusUpgrade,
       synthesis,
       surveyOutline,
       manuscript,

@@ -56,9 +56,9 @@ function stubDeps(projects: ProjectStore, sources: CorpusSourceLike[]): DepStub 
         calls.ingested.push(sourceId);
         return {};
       },
-      invalidateUpgradableMatrixEntries: async () => {
+      invalidateUpgradableMatrixEntries: async (_pid: string, _options?: { sourceIds?: string[]; skipConfirmed?: boolean }) => {
         calls.invalidated += 1;
-        return 2;
+        return { invalidated: 2, skippedConfirmed: [] as string[] };
       },
       now: NOW,
       log: () => {},
@@ -216,6 +216,37 @@ describe("CorpusSnapshotService（freeze / refresh / syncBasisDepth）", () => {
     );
     expect(rows.map((row) => row.sourceId)).toEqual(["S001"]);
   });
+
+  it("M15.8.5 scoped refresh：只补齐/只失效目标集内的源；未知 sourceIds 点名拒绝", async () => {
+    const { projects, projectId, root } = await newProject();
+    roots.push(root);
+    const sources = [sourceRow("S001", { fileName: "a.pdf" }), sourceRow("S002"), sourceRow("S003")];
+    const stub = stubDeps(projects, sources);
+    const callsScoped: Array<string[] | null> = [];
+    stub.deps.invalidateUpgradableMatrixEntries = async (_pid, options) => {
+      callsScoped.push(options?.sourceIds ?? null);
+      return { invalidated: options?.sourceIds?.length ?? 2, skippedConfirmed: [] };
+    };
+    const service = new CorpusSnapshotService(stub.deps);
+    await service.freeze(projectId, { matrix: null });
+    // 未知源拒绝
+    await expect(service.refresh(projectId, { sourceIds: ["S999"] })).rejects.toMatchObject({
+      code: "INVALID_REQUEST",
+      message: expect.stringContaining("S999"),
+    });
+    // scoped：只尝试 S002（S003 不在目标集）
+    stub.sources[1] = sourceRow("S002", { fileName: "b.pdf" });
+    const outcome = await service.refresh(projectId, { sourceIds: ["S002"] });
+    expect(outcome.attempted).toBe(1);
+    expect(stub.calls.resolved).toEqual([["S002"]]);
+    expect(callsScoped).toEqual([["S002"]]);
+    // S003 磁盘也补齐了（模拟）→ scoped refresh 只尝试它
+    stub.sources[2] = sourceRow("S003", { fileName: "c.pdf" });
+    const outcome2 = await service.refresh(projectId, { sourceIds: ["S003"] });
+    expect(outcome2.attempted).toBe(1);
+    expect(stub.calls.resolved).toEqual([["S002"], ["S003"]]);
+    expect(callsScoped).toEqual([["S002"], ["S003"]]);
+  });
 });
 
 describe("MatrixService.invalidateUpgradableEntries（真实 stores）", () => {
@@ -234,7 +265,7 @@ describe("MatrixService.invalidateUpgradableEntries（真实 stores）", () => {
       now: NOW,
       log: () => {},
     });
-    expect(await matrix.invalidateUpgradableEntries(projectId)).toBe(0);
+    expect((await matrix.invalidateUpgradableEntries(projectId)).invalidated).toBe(0);
     const full = await sources.add(projectId, {
       fileName: "a.txt",
       content: Buffer.from("full text of paper one", "utf8"),
@@ -257,16 +288,81 @@ describe("MatrixService.invalidateUpgradableEntries（真实 stores）", () => {
     };
     await writeFile(join(projects.researchDir(projectId), "survey.json"), JSON.stringify(artifact), "utf8");
     // S002 尚无全文 → 无可升级
-    expect(await matrix.invalidateUpgradableEntries(projectId)).toBe(0);
+    expect((await matrix.invalidateUpgradableEntries(projectId)).invalidated).toBe(0);
     expect((await matrix.getMatrix(projectId))?.entries).toHaveLength(2);
     // S002 补挂全文（PDF 语义）→ 其 abstract_only 条目失效，fulltext 条目保留
     await sources.attachFile(projectId, record.sourceId, {
       fileName: "b.pdf",
       content: Buffer.from("%PDF-1.4 fake", "utf8"),
     });
-    expect(await matrix.invalidateUpgradableEntries(projectId)).toBe(1);
+    expect((await matrix.invalidateUpgradableEntries(projectId)).invalidated).toBe(1);
     const remaining = await matrix.getMatrix(projectId);
     expect(remaining?.entries.map((entry) => entry.sourceId)).toEqual([full.source.sourceId]);
+  });
+
+  it("M15.8.5：scoped 失效只动目标集；confirmed 条目保留并上报（HITL 不被静默覆盖）", async () => {
+    const { projects, projectId, root } = await newProject();
+    roots.push(root);
+    const sources = new SourceStore(projects);
+    const matrix = new MatrixService({
+      projects,
+      sources,
+      retrieval: { search: async () => ({ hits: [] }) } as never,
+      chunkAccess: {} as never,
+      runtime: {} as never,
+      researcherAgentId: "researcher",
+      evidence: {} as never,
+      now: NOW,
+      log: () => {},
+    });
+    const one = await sources.add(projectId, {
+      fileName: "a.txt",
+      content: Buffer.from("full text one", "utf8"),
+      metadata: { title: "Paper One" },
+    });
+    const two = await sources.addRecord(projectId, {
+      sourceType: "doi",
+      origin: "DOI_IMPORT",
+      metadata: { title: "Paper Two", doi: "10.1/two", year: 2024, authors: [] },
+    });
+    const three = await sources.addRecord(projectId, {
+      sourceType: "doi",
+      origin: "DOI_IMPORT",
+      metadata: { title: "Paper Three", doi: "10.1/three", year: 2024, authors: [] },
+    });
+    const artifact = {
+      schemaVersion: 1,
+      updatedAt: NOW().toISOString(),
+      taxonomy: { families: [{ label: "tracking_association", description: "测试用最小 taxonomy" }] },
+      entries: [
+        { entryId: `M-${one.source.sourceId}`, sourceId: one.source.sourceId, interpretationDepth: "fulltext", anchors: [], issues: [] },
+        { entryId: `M-${two.sourceId}`, sourceId: two.sourceId, interpretationDepth: "abstract_only", anchors: [], issues: [] },
+        { entryId: `M-${three.sourceId}`, sourceId: three.sourceId, interpretationDepth: "abstract_only", anchors: [], issues: [], status: "confirmed" },
+      ],
+    };
+    await writeFile(join(projects.researchDir(projectId), "survey.json"), JSON.stringify(artifact), "utf8");
+    await sources.attachFile(projectId, two.sourceId, {
+      fileName: "two.pdf",
+      content: Buffer.from("%PDF-1.4 two", "utf8"),
+    });
+    await sources.attachFile(projectId, three.sourceId, {
+      fileName: "three.pdf",
+      content: Buffer.from("%PDF-1.4 three", "utf8"),
+    });
+    // scoped：只失效 two（three 即便在范围内也因 confirmed 保留）
+    const scoped = await matrix.invalidateUpgradableEntries(projectId, { sourceIds: [two.sourceId, three.sourceId] });
+    expect(scoped.invalidated).toBe(1);
+    expect(scoped.skippedConfirmed).toEqual([three.sourceId]);
+    const afterScoped = await matrix.getMatrix(projectId);
+    expect(afterScoped?.entries.map((entry) => entry.sourceId).sort()).toEqual(
+      [one.source.sourceId, three.sourceId].sort(),
+    );
+    // 保留的 confirmed 条目原样（status 不回退）
+    expect(afterScoped?.entries.find((entry) => entry.sourceId === three.sourceId)?.status).toBe("confirmed");
+    // 全量缺省路径同样尊重 confirmed（skipConfirmed 缺省 true）
+    const threeOnly = await matrix.invalidateUpgradableEntries(projectId);
+    expect(threeOnly.invalidated).toBe(0);
+    expect(threeOnly.skippedConfirmed).toEqual([three.sourceId]);
   });
 });
 
