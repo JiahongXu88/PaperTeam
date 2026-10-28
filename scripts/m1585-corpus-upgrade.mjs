@@ -180,13 +180,15 @@ const verify = {
   availabilityAfter,
   ledger: budgetLedger.snapshot(),
 };
-// anchors 真实性抽验：目标条目每个 chunkId 可经 ChunkAccess 回取且属主正确
+// anchors 真实性抽验：目标条目每个 chunkId 可回取且属主正确
+// （注意：chunkAccess 在 stack 顶层而非 workflowServices——错误引用会把
+// 全部锚点误计为解析失败）
 let anchorIssues = 0;
 for (const entry of matrix.entries.filter((e) => target.has(e.sourceId))) {
   for (const anchor of entry.anchors ?? []) {
     for (const chunkId of anchor.chunkIds ?? []) {
       try {
-        const resolved = await services.chunkAccess.resolve(projectId, chunkId);
+        const resolved = await stack.chunkAccess.resolve(projectId, chunkId);
         if (resolved.chunk.sourceId !== entry.sourceId) { anchorIssues += 1; }
       } catch {
         anchorIssues += 1;
