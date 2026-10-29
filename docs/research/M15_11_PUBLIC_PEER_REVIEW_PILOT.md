@@ -1,7 +1,7 @@
 # M15.11 — Public Peer-Review Evidence Pilot（公开同行评审证据试点）
 
 - 日期：2026-10-29 · 任务书：M15.11（属 M15；**M15_OVERALL=INCOMPLETE 维持**）
-- 基线：`282d2450a3ef815a716dd9d48cd3e65e1ab84674`（== origin/main，clean）→ 本轮提交见 §10
+- 基线：`282d2450a3ef815a716dd9d48cd3e65e1ab84674`（== origin/main，clean）→ 终态 HEAD `0bbcbf98066bd083cb0c4648c1c6045b280ab3c4`（已推送，本地==远端复核）
 - 数据根（仓库外）：`D:\PaperTeamData\M15\M15_11\`（phase-a…e + MANIFEST.json 37 文件 SHA256 全账）
 - 预算：600 保护上限；实际 **539 次真实模型调用**（物理计数含 C0/C1/judge/失败尝试），估算成本 **$4.15**（1.30M input / 334k output / 3.34M cache-read tokens）
 - 脚本（仓库内）：`scripts/m1511/*.mjs`（13 个，采集/抽样/运行/冻结/提取/对齐/聚合/裁决）
@@ -121,6 +121,6 @@
 
 ## 10. Git/CI 收口
 
-- 本轮提交：① sectionChunking author-year 修复 + pdfIngest 测试（§6）；② `scripts/m1511/` 13 脚本；③ 本报告；④ PROJECT_STATUS 顶部条目。验证：backend typecheck/build ✓；定向回归（pdfIngest 9/9、referenceExtraction、realPaperRegression 29/29）✓；`git diff --check` ✓；提交后 HEAD==origin/main 复核。
+- 本轮提交（`0bbcbf9`，17 文件 +1925 行）：① sectionChunking author-year 修复 + pdfIngest 测试（§6）；② `scripts/m1511/` 13 脚本；③ 本报告；④ PROJECT_STATUS 顶部条目。全量 vitest 4422-4429 passed / 8-10 failed（stylePolish/academicSkills/figureHttp/orchestratorHardening——并行负载闪失，逐文件单跑 70/70 全绿，仓库既有模式，CI 为准）。验证：backend typecheck/build ✓；定向回归（pdfIngest 9/9、referenceExtraction、realPaperRegression 29/29）✓；`git diff --check` ✓；提交后 HEAD==origin/main 复核。
 - CI（GitHub CI + Linux Integration）以最终 HEAD 状态回查为准，不因等待 CI 虚报结论。
 - 数据侧完整账：`D:\PaperTeamData\M15\M15_11\MANIFEST.json`（37 文件 SHA256、来源、license/access、可发布性分类）；若早期止损则只交付已完成阶段——本轮全阶段完成，无 NOT_RUN 空文件。
