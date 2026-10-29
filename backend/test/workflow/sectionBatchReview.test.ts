@@ -211,7 +211,7 @@ describe("sectionReviewMode=batched-small（M15.13 A2）", () => {
     const sectionScopes = batch.calls.filter((c) => c.contextScope.startsWith("review/section/"));
     expect(sectionScopes).toHaveLength(8);
     expect(batch.calls.some((c) => c.contextScope.startsWith("review/section-batch/"))).toBe(false);
-    const stage = (run["stageResults"] as Record<string, Record<string, unknown>>)["review.sections"];
+    const stage = (run["stageResults"] as Record<string, Record<string, unknown>>)["review.sections"]!;
     expect(stage["sectionReviewMode"]).toBe("per-section");
     expect(stage["batchGroups"]).toBe(0);
     expect(stage["reviewCalls"]).toBe(8);
@@ -238,7 +238,7 @@ describe("sectionReviewMode=batched-small（M15.13 A2）", () => {
       "review/section-batch/sec05-sec06-sec07-sec08",
     ]);
     // 8 节 → 4 次调用（含 References 前的 9 节全文，References 页无 TOC 大节文本量不足不审）
-    const stage = (run["stageResults"] as Record<string, Record<string, unknown>>)["review.sections"];
+    const stage = (run["stageResults"] as Record<string, Record<string, unknown>>)["review.sections"]!;
     expect(stage["sectionReviewMode"]).toBe("batched-small");
     expect(stage["batchGroups"]).toBe(2);
     expect(stage["reviewCalls"]).toBe(4);
