@@ -79,17 +79,32 @@ function grounded(f) {
   return false;
 }
 const armData = {};
+const notEvaluated = [];
 for (const famId of formalFams) {
   armData[famId] = {};
   for (const arm of ARMS) {
     const p = join(ROOT, "phase-d", "out", famId, `${arm}.json`);
     armData[famId][arm] = existsSync(p) ? JSON.parse(await readFile(p, "utf8")) : null;
+    // 预注册 §4 缺失输出策略：臂级失败（解析/预算）→ 该族该臂 NOT_EVALUATED，
+    // 从该臂均值与涉及该臂的配对差中剔除（如实报告，不伪装 0 覆盖）
+    const status = armData[famId][arm]?.status;
+    const failed =
+      armData[famId][arm] === null ||
+      (arm === "c0" && status !== "ok") ||
+      (arm === "c0plus" && status !== "ok") ||
+      (arm === "c1opt" && status !== "ok") ||
+      (arm === "c2" && status !== "completed");
+    if (failed) {
+      notEvaluated.push(`${famId}/${arm} (${status ?? "missing"})`);
+      armData[famId][arm] = null;
+    }
   }
 }
 
 function coverage(arm, subset = null, strictMode = false) {
   const perFam = [];
   for (const famId of formalFams) {
+    if (armData[famId][arm] === null) { perFam.push(null); continue; } // NOT_EVALUATED
     const issues = issuesByFam.get(famId) ?? [];
     const { matched, strict } = matchedSets(famId, arm);
     const use = strictMode ? strict : matched;
@@ -362,6 +377,7 @@ const gates = {
 const out = {
   generatedAt: new Date().toISOString(),
   families: formalFams,
+  notEvaluated,
   label: "proxy-matching measurement (external labels = PeerRead ICLR 2017 public human review content; issue segmentation & matching are model-assisted; venue/year drift vs M15.11/12 disclosed)",
   coverage: primary,
   pairedDiffs: diffs,

@@ -21,6 +21,30 @@ const ROOT = process.env.M1513_ROOT ? resolve(process.env.M1513_ROOT) : resolve(
 const SEQ_DIR = join(ROOT, "sequester", "peerread-iclr2017", "reviews_raw");
 const SUBSTANTIVE_MIN_CHARS = 600;
 
+/**
+ * deviation v2（2026-10-29，arm-blind 阶段登记）：PeerRead 评审常以
+ * "Summary:" 节头开篇复述论文内容——atomicUnits 的块拆分会保留整块，
+ * 使中性概述句过滤的 ^ 锚失效（typing 抽查实证）。确定性修复：剥离
+ * 评审开头的 summary 节（至下一个实质节头），对应 M15.11/12 只取
+ * weaknesses/questions 字段的语义。规则在 typing spot-check 后、对齐
+ * judge 之前修正；两次运行的统计均保留在案。
+ */
+const SUMMARY_HEADER = /\b(?:brief\s+)?summary\s*[:\-]?\s*\n/i;
+const NEXT_SECTION = /\n\s*(?:strengths|weaknesses?|questions?|comments?|issues?|concerns?|detailed\s+comments?|flaws?)\b[^\n]*\n/i;
+function stripLeadingSummary(text) {
+  let out = String(text ?? "");
+  for (let round = 0; round < 2; round += 1) {
+    const head = out.slice(0, 400);
+    const m = SUMMARY_HEADER.exec(head);
+    if (m === null) break;
+    const after = out.slice(m.index + m[0].length);
+    const next = NEXT_SECTION.exec(after.slice(0, 4000));
+    out = next !== null ? after.slice(next.index) : "";
+    if (out.trim() === "") break;
+  }
+  return out;
+}
+
 const frozenPath = join(ROOT, "phase-e", "predictions-frozen.json");
 if (!existsSync(frozenPath)) {
   throw new Error("predictions-frozen.json 不存在：必须先冻结四臂输出再解封评审（泄漏红线）");
@@ -84,7 +108,9 @@ for (const fam of targets) {
   const raw = JSON.parse(await readFile(join(SEQ_DIR, `${fam.split}-${fam.paperId}.json`), "utf8"));
   const reviews = (raw.reviews ?? []).filter(
     (r) => r.is_meta_review !== true && r.IS_META_REVIEW !== true && String(r.comments ?? "").length >= SUBSTANTIVE_MIN_CHARS,
-  );
+  ).map((r) => ({ ...r, comments: stripLeadingSummary(r.comments) }))
+    // summary 节剥离后可能低于实质阈值（整篇几乎全是复述）——如实降级剔除
+    .filter((r) => String(r.comments ?? "").length >= Math.min(SUBSTANTIVE_MIN_CHARS, 300));
   stats.families += 1;
   stats.reviews += reviews.length;
   const famIssues = [];
