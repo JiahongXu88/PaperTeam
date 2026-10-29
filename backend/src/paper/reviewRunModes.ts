@@ -51,6 +51,38 @@ export function readGlobalReviewMode(request: Record<string, unknown> | undefine
   return isGlobalReviewMode(value) ? value : DEFAULT_GLOBAL_REVIEW_MODE;
 }
 
+/**
+ * M15.13 A2：分节审阅调用分配模式。
+ *
+ *   per-section   旧行为：每个章节一次独立调用（锚定与 journal 语义不变）
+ *   batched-small 小节合并批：<SECTION_BATCH_THRESHOLD_CHARS 字符的相邻（文档序）
+ *                 章节合并为一次调用（每批 ≤SECTION_BATCH_MAX_SECTIONS 节、
+ *                 ≤SECTION_BATCH_MAX_CHARS 字符；分组纯确定性）。批内 finding
+ *                 必须给出 sectionId（provenance 硬约束，非法整条 dropped）。
+ *                 大节（方法/实验/结果/结论正文）不受影响，仍逐节全文审阅。
+ */
+export const SECTION_REVIEW_MODES = ["per-section", "batched-small"] as const;
+export type SectionReviewMode = (typeof SECTION_REVIEW_MODES)[number];
+
+export function isSectionReviewMode(value: unknown): value is SectionReviewMode {
+  return typeof value === "string" && (SECTION_REVIEW_MODES as readonly string[]).includes(value);
+}
+
+/** 新 Review Run 的缺省模式（= 旧行为） */
+export const DEFAULT_SECTION_REVIEW_MODE: SectionReviewMode = "per-section";
+
+export function readSectionReviewMode(request: Record<string, unknown> | undefined): SectionReviewMode {
+  const value = request?.["sectionReviewMode"];
+  return isSectionReviewMode(value) ? value : DEFAULT_SECTION_REVIEW_MODE;
+}
+
+/** batched-small：进入合并批的章节字符上限（低于此值的"小节"才可合并） */
+export const SECTION_BATCH_THRESHOLD_CHARS = 2000;
+/** batched-small：每批最多章节数 */
+export const SECTION_BATCH_MAX_SECTIONS = 4;
+/** batched-small：每批章节正文总字符上限 */
+export const SECTION_BATCH_MAX_CHARS = 6000;
+
 export function readPriorityView(request: Record<string, unknown> | undefined): boolean {
   return request?.["priorityView"] === true;
 }

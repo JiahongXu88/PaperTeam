@@ -35,6 +35,8 @@ export interface CitationContextEntry {
 export interface SectionReviewContext {
   contextScope: string;
   sectionId: string;
+  /** 本次调用覆盖的全部章节（单节路径 = [sectionId]；M15.13 批式 >1） */
+  sectionIds: string[];
   sectionTitle: string;
   paperTitle: string | undefined;
   chunks: PaperChunk[];
@@ -200,6 +202,7 @@ export class ReviewContextBuilder {
     return {
       contextScope: `review/section/${sectionId.toLowerCase()}`,
       sectionId,
+      sectionIds: [sectionId],
       sectionTitle: section.title,
       paperTitle: document.title,
       chunks,
@@ -218,5 +221,146 @@ export class ReviewContextBuilder {
       .map((chunk) => chunk.text)
       .join("\n\n")
       .slice(0, BUDGET.abstract + 200);
+  }
+
+  /**
+   * 组装多个小节的合并审阅 context（M15.13 A2，sectionReviewMode=batched-small）。
+   * 与 buildSectionContext 同一事实源与预算纪律；差异仅有：
+   * - 【当前章节】块按文档顺序给出多个（各节 chunks 全文，无截断——分组规则
+   *   已保证批内总量有界）；
+   * - 引用块按节分组标注（供 finding 的 sectionId 锚定）；
+   * - prompt 声明批内 finding 必须给 sectionId。
+   * 单节路径（buildSectionContext）一行未动——两模式并存，可回滚。
+   */
+  async buildBatchedSectionContext(
+    projectId: string,
+    sectionIds: readonly string[],
+    options: { instruction?: string; citationsBySection?: ReadonlyMap<string, CitationContextEntry[]> } = {},
+  ): Promise<SectionReviewContext> {
+    await this.projects.getRequired(projectId);
+    const document = await this.store.loadDocument(projectId);
+    if (document === null) {
+      throw new BusinessError("INVALID_REQUEST", "尚未上传/解析 Final PDF");
+    }
+    const map = await this.store.loadMap(projectId);
+    const wanted = new Set(sectionIds);
+    const sections = document.sections.filter((entry) => wanted.has(entry.sectionId));
+    if (sections.length !== sectionIds.length) {
+      throw new BusinessError("INVALID_REQUEST", `部分章节不存在：${sectionIds.join(",")}`);
+    }
+    const chunks = document.chunks.filter((chunk) => wanted.has(chunk.sectionId));
+    if (chunks.length === 0) {
+      throw new BusinessError("INVALID_REQUEST", `章节组（${sectionIds.join(",")}）没有可用文本 chunk`);
+    }
+
+    // 1. 论文概览（与单节路径一致）
+    const overviewParts: string[] = [];
+    if (document.title !== undefined) {
+      overviewParts.push(`标题：${document.title}`);
+    }
+    const abstract = await this.readAbstract(projectId, document.abstractSectionId);
+    if (abstract !== undefined && abstract !== "") {
+      overviewParts.push(`摘要：${abstract.slice(0, BUDGET.abstract)}`);
+    }
+    const overview = overviewParts.join("\n");
+
+    // 2. 全文导航：批内章节整体排除（它们以全文形式在场）
+    const indexLines: string[] = [];
+    let indexChars = 0;
+    for (const entry of map?.sections ?? document.sections) {
+      if (wanted.has(entry.sectionId)) {
+        continue;
+      }
+      const summary = "summary" in entry ? entry.summary : undefined;
+      const summaryText =
+        summary !== undefined && summary.status === "ok" && summary.summary
+          ? summary.summary
+          : "（摘要未生成）";
+      const line = `- ${entry.sectionId} ${entry.title}（p${entry.pageStart}-${entry.pageEnd}）：${summaryText}`.slice(
+        0,
+        BUDGET.sectionIndexPerEntry,
+      );
+      if (indexChars + line.length > BUDGET.sectionIndexTotal) {
+        break;
+      }
+      indexLines.push(line);
+      indexChars += line.length;
+    }
+    const sectionIndex = indexLines.join("\n");
+
+    // 3. 批内各节全文（文档顺序；每节独立标注供 sectionId 锚定）
+    const sectionBlocks = sections.map((section) => {
+      const text = chunks
+        .filter((chunk) => chunk.sectionId === section.sectionId)
+        .map((chunk) => `[${chunk.chunkId} p${chunk.pageStart}-${chunk.pageEnd}]\n${chunk.text}`)
+        .join("\n\n");
+      return `【当前章节：${section.sectionId} ${section.title}（p${section.pageStart}-${section.pageEnd}）】\n${text}`;
+    });
+    const sectionText = sectionBlocks.join("\n\n");
+
+    // 4. 相关引用（按节分组标注）
+    const citationBlockParts: string[] = [];
+    let citationChars = 0;
+    for (const section of sections) {
+      const entries = options.citationsBySection?.get(section.sectionId) ?? [];
+      if (entries.length === 0) {
+        continue;
+      }
+      const lines: string[] = [];
+      for (const citation of entries) {
+        const line = `- ${citation.referenceId}${citation.status ? `（${citation.status}）` : ""}：${citation.rawText}`.slice(
+          0,
+          400,
+        );
+        if (citationChars + line.length > BUDGET.citationsTotal) {
+          break;
+        }
+        lines.push(line);
+        citationChars += line.length;
+      }
+      if (lines.length > 0) {
+        citationBlockParts.push(`${section.sectionId}：\n${lines.join("\n")}`);
+      }
+      if (citationChars >= BUDGET.citationsTotal) {
+        break;
+      }
+    }
+    const citationBlock = citationBlockParts.join("\n");
+
+    // 5. 审阅要求（批式指令由调用方传入——见 SectionReviewService）
+    const instruction = options.instruction ?? "";
+
+    const promptParts: string[] = [];
+    if (overview !== "") {
+      promptParts.push(`【论文概览】\n${overview}`);
+    }
+    if (sectionIndex !== "") {
+      promptParts.push(`【全文导航（其他章节摘要，不含全文）】\n${sectionIndex}`);
+    }
+    promptParts.push(sectionText);
+    if (citationBlock !== "") {
+      promptParts.push(`【各章节相关引用】\n${citationBlock}`);
+    }
+    if (instruction !== "") {
+      promptParts.push(`【审阅要求】\n${instruction}`);
+    }
+    const prompt = promptParts.join("\n\n");
+
+    return {
+      contextScope: `review/section-batch/${sectionIds.map((id) => id.toLowerCase()).join("-")}`,
+      sectionId: sectionIds[0]!,
+      sectionIds: [...sectionIds],
+      sectionTitle: sections[0]!.title,
+      paperTitle: document.title,
+      chunks,
+      prompt,
+      budget: {
+        paperOverviewChars: overview.length,
+        sectionIndexChars: sectionIndex.length,
+        currentSectionChars: sectionText.length,
+        citationsChars: citationBlock.length,
+        totalChars: prompt.length,
+      },
+    };
   }
 }

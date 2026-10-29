@@ -93,3 +93,21 @@ describe("buildPriorityView", () => {
     expect(findings).toHaveLength(3);
   });
 });
+
+describe("M15.13 A3：retention 诚实分母字段（poolSize/seriousPool/metaPool）", () => {
+  it("top-K 截断时池计数 = 去重池全量；seriousPool/metaPool 与池口径一致", () => {
+    const findings = [
+      ...Array.from({ length: 8 }, (_, i) => finding({ category: "style", severity: "info", message: `风格问题 ${i}` })),
+      finding({ category: "academic", severity: "critical", message: "严重学术问题" }),
+      finding({ category: "academic", severity: "major", message: "目标与实验错位", source: "fullpaper-review" }),
+    ];
+    const view = buildPriorityView(findings, 5);
+    expect(view.items).toHaveLength(5);
+    expect(view.poolSize).toBe(10); // 无重复 → 池 = 全量 findings
+    expect(view.seriousPoolCount).toBe(2);
+    expect(view.metaPoolCount).toBe(1);
+    // top-K 内 serious 计数 ≤ 池内 serious 计数（分母/分子口径分离可审计）
+    expect(view.seriousCount).toBeLessThanOrEqual(view.seriousPoolCount);
+    expect(view.metaCount).toBeLessThanOrEqual(view.metaPoolCount);
+  });
+});

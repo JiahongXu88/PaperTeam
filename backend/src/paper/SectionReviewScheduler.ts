@@ -32,11 +32,16 @@ import type {
 } from "./ReviewContextBuilder.js";
 import type { SectionReviewOutcome, SectionReviewService } from "./SectionReviewService.js";
 
-/** 一个待审阅章节（contextScope 由 ReviewContextBuilder 的规则派生） */
+/**
+ * 一个待审阅调用单元（contextScope 由 ReviewContextBuilder 的规则派生）。
+ * M15.13 A2：sectionIds 长度 1 = 旧行为（单节一次调用）；>1 = 小节合并批
+ * （sectionReviewMode=batched-small，一次调用审多个短章节）。
+ */
 export interface SectionReviewJob {
-  sectionId: string;
+  sectionIds: readonly string[];
   contextScope: string;
-  citations: CitationContextEntry[];
+  /** 按节分组的引用上下文（键 = sectionIds 成员；单节时也走该结构） */
+  citationsBySection: ReadonlyMap<string, CitationContextEntry[]>;
 }
 
 export interface SectionReviewSchedulerOptions {
@@ -49,8 +54,10 @@ export interface SectionReviewSchedulerOptions {
   attempts: number;
   /** 节内重试退避（毫秒；下标 = 已失败次数 - 1） */
   backoffMs: readonly number[];
-  /** 审阅指令（进 fingerprint：指令变化使 journal 记录失效） */
+  /** 单节审阅指令（进 fingerprint：指令变化使 journal 记录失效） */
   instruction: string;
+  /** 批式（多小节一次调用）审阅指令（M15.13 A2；批 job 的 fingerprint 用这条） */
+  batchInstruction: string;
   log?: (message: string) => void;
 }
 
@@ -152,6 +159,7 @@ export class SectionReviewScheduler {
   private readonly attempts: number;
   private readonly backoffMs: readonly number[];
   private readonly instruction: string;
+  private readonly batchInstruction: string;
   private readonly log: (message: string) => void;
 
   constructor(options: SectionReviewSchedulerOptions) {
@@ -163,6 +171,7 @@ export class SectionReviewScheduler {
     this.attempts = options.attempts;
     this.backoffMs = options.backoffMs;
     this.instruction = options.instruction;
+    this.batchInstruction = options.batchInstruction;
     this.log = options.log ?? (() => {});
   }
 
@@ -191,9 +200,9 @@ export class SectionReviewScheduler {
     };
     const queueWaits: number[] = [];
     const sectionDurations: number[] = [];
-    const findingsBySection = new Map<string, ReviewFinding[]>();
-    const parseFailedBySection = new Map<string, boolean>();
-    const droppedBySection = new Map<string, number>();
+    const findingsByJob = new Map<string, ReviewFinding[]>();
+    const parseFailedByJob = new Map<string, boolean>();
+    const droppedByJob = new Map<string, number>();
     const reviewed: string[] = [];
     const failedSections: string[] = [];
     let lastSectionError = "";
@@ -204,37 +213,54 @@ export class SectionReviewScheduler {
       const startAt = Date.now();
       telemetry.sectionsStarted += 1;
       queueWaits.push(startAt - wallStartedAt);
-      const context = await this.reviewContext.buildSectionContext(ctx.projectId, job.sectionId, {
-        instruction: this.instruction,
-        ...(job.citations.length > 0 ? { citations: job.citations } : {}),
-      });
-      // 指纹 = 章节 chunk 内容 + 本节引用上下文 + 审阅指令（任一变化 → 旧记录不可复用）
+      const isBatch = job.sectionIds.length > 1;
+      const jobKey = isBatch
+        ? `batch-${job.sectionIds.map((id) => id.toLowerCase()).join("-")}`
+        : job.sectionIds[0]!;
+      const instruction = isBatch ? this.batchInstruction : this.instruction;
+      const context = isBatch
+        ? await this.reviewContext.buildBatchedSectionContext(ctx.projectId, job.sectionIds, {
+            instruction,
+            citationsBySection: job.citationsBySection,
+          })
+        : await this.reviewContext.buildSectionContext(ctx.projectId, job.sectionIds[0]!, {
+            instruction,
+            citations: job.citationsBySection.get(job.sectionIds[0]!) ?? [],
+          });
+      // 指纹 = 本次调用覆盖章节的 chunk 内容 + 各节引用上下文 + 实际使用的审阅指令
+      // （任一变化 → 旧记录不可复用；批 job 与单节 job 的 key 空间由 batch- 前缀隔离）
       const fingerprint = fingerprintJson([
         context.chunks.map((chunk) => chunk.chunkId + ":" + chunk.text),
-        job.citations.map((citation) => [citation.referenceId, citation.rawText, citation.status ?? ""]),
-        this.instruction,
+        [...job.sectionIds].flatMap((sectionId) =>
+          (job.citationsBySection.get(sectionId) ?? []).map((citation) => [
+            citation.referenceId,
+            citation.rawText,
+            citation.status ?? "",
+          ]),
+        ),
+        instruction,
       ]);
 
-      // journal 复用：同一 runId 下已完成且输入未变的章节直接采用（零模型调用）
-      const reused = reusableRecordOutcome(journal.get(job.sectionId), fingerprint);
+      // journal 复用：同一 runId 下已完成且输入未变的调用单元直接采用（零模型调用）
+      const reused = reusableRecordOutcome(journal.get(jobKey), fingerprint);
       let outcome: { findings: ReviewFinding[]; parseFailed: boolean; dropped: number } | null;
       if (reused !== undefined) {
         outcome = reused;
         telemetry.sectionsReused += 1;
-        this.log(`章节 ${job.sectionId} 审阅复用 journal 记录（fingerprint 一致）`);
+        this.log(`调用单元 ${jobKey} 审阅复用 journal 记录（fingerprint 一致）`);
       } else {
         const sectionStartedAt = Date.now();
-        const fresh = await this.reviewWithRetry(context, job.sectionId, ctx, telemetry, (message) => {
+        const fresh = await this.reviewWithRetry(context, job, jobKey, ctx, telemetry, (message) => {
           lastSectionError = message;
         });
         sectionDurations.push(Date.now() - sectionStartedAt);
         if (fresh === null) {
           outcome = null;
         } else {
-          // 每节完成立即持久化（不等全部完成）：第 25 节崩溃，前 24 节不重跑
+          // 每个调用单元完成立即持久化（不等全部完成）：第 25 节崩溃，前 24 节不重跑
           try {
             await this.store.saveSectionReviewRecord(ctx.projectId, ctx.runId, {
-              sectionId: job.sectionId,
+              sectionId: jobKey,
               runId: ctx.runId,
               status: "completed",
               fingerprint,
@@ -246,10 +272,10 @@ export class SectionReviewScheduler {
               completedAt: new Date().toISOString(),
             });
           } catch (error) {
-            // journal 只是恢复增强：写失败不推翻本节的审阅结果（当前 run 的
-            // findings 照常进入 stage 结果，仅崩溃恢复时会重跑这一节）
+            // journal 只是恢复增强：写失败不推翻本调用单元的审阅结果（当前 run 的
+            // findings 照常进入 stage 结果，仅崩溃恢复时会重跑这一单元）
             this.log(
-              `章节 ${job.sectionId} journal 写入失败（不影响本节结果）：${
+              `调用单元 ${jobKey} journal 写入失败（不影响本单元结果）：${
                 error instanceof Error ? error.message : String(error)
               }`,
             );
@@ -262,15 +288,15 @@ export class SectionReviewScheduler {
         failedCount += 1;
         return "failed";
       }
-      findingsBySection.set(job.sectionId, outcome.findings);
-      parseFailedBySection.set(job.sectionId, outcome.parseFailed);
-      droppedBySection.set(job.sectionId, outcome.dropped);
+      findingsByJob.set(jobKey, outcome.findings);
+      parseFailedByJob.set(jobKey, outcome.parseFailed);
+      droppedByJob.set(jobKey, outcome.dropped);
       completedCount += 1;
       await ctx.emitProgress({
-        section: job.sectionId,
+        section: jobKey,
         completed: completedCount,
         total: jobs.length,
-        findings: [...findingsBySection.values()].reduce((sum, list) => sum + list.length, 0),
+        findings: [...findingsByJob.values()].reduce((sum, list) => sum + list.length, 0),
         failed: failedCount,
         reused: telemetry.sectionsReused,
         // 活跃 / 排队 / 重试口径（前端实时展示）：active = started - completed - failed，
@@ -296,12 +322,15 @@ export class SectionReviewScheduler {
     for (let index = 0; index < jobs.length; index += 1) {
       const job = jobs[index]!;
       const outcome = outcomes[index];
+      const jobKey = job.sectionIds.length > 1
+        ? `batch-${job.sectionIds.map((id) => id.toLowerCase()).join("-")}`
+        : job.sectionIds[0]!;
       if (outcome !== undefined && outcome.ok && outcome.value === "completed") {
-        reviewed.push(job.sectionId);
-        parseFailures += parseFailedBySection.get(job.sectionId) === true ? 1 : 0;
-        dropped += droppedBySection.get(job.sectionId) ?? 0;
+        reviewed.push(...job.sectionIds);
+        parseFailures += parseFailedByJob.get(jobKey) === true ? 1 : 0;
+        dropped += droppedByJob.get(jobKey) ?? 0;
       } else {
-        failedSections.push(job.sectionId);
+        failedSections.push(...job.sectionIds);
       }
     }
 
@@ -317,13 +346,18 @@ export class SectionReviewScheduler {
       throw new BusinessError("WORKFLOW_CANCELLED", "分章节审阅已被取消");
     }
     if (reviewed.length === 0) {
-      // 一节都没审成：多半是模型 / Provider 整体不可用，按 transient 交给 stage 级重试
+      // 一个调用单元都没审成：多半是模型 / Provider 整体不可用，按 transient 交给 stage 级重试
       throw new AgentRunFailedError(
-        `分章节审阅全部失败（${failedSections.length} 节），最近错误：${lastSectionError}`,
+        `分章节审阅全部失败（${failedSections.length} 节 / ${jobs.length} 个调用单元），最近错误：${lastSectionError}`,
       );
     }
     return {
-      findings: jobs.flatMap((job) => findingsBySection.get(job.sectionId) ?? []),
+      findings: jobs.flatMap((job) => {
+        const jobKey = job.sectionIds.length > 1
+          ? `batch-${job.sectionIds.map((id) => id.toLowerCase()).join("-")}`
+          : job.sectionIds[0]!;
+        return findingsByJob.get(jobKey) ?? [];
+      }),
       reviewed,
       failedSections,
       lastSectionError,
@@ -335,22 +369,32 @@ export class SectionReviewScheduler {
   /**
    * 节内退避重试（从 reviewSectionsStage 原样迁入）：瞬时失败（Provider 503 /
    * 限流 / 网络抖动）在节内消化；取消信号立即穿透。耗尽返回 null（记失败节）。
+   * 批式 job 走 SectionReviewService.reviewBatch（同重试语义）。
    */
   private async reviewWithRetry(
     context: SectionReviewContext,
-    sectionId: string,
+    job: SectionReviewJob,
+    jobKey: string,
     ctx: SchedulerRunContext,
     telemetry: SectionReviewTelemetry,
     recordError: (message: string) => void,
   ): Promise<SectionReviewOutcome | null> {
     for (let attempt = 1; attempt <= this.attempts; attempt += 1) {
       try {
-        return await this.sectionReview.reviewSection({
-          projectId: ctx.projectId,
-          runId: ctx.runId,
-          context,
-          signal: ctx.signal,
-        });
+        return await (job.sectionIds.length > 1
+          ? this.sectionReview.reviewBatch({
+              projectId: ctx.projectId,
+              runId: ctx.runId,
+              context,
+              sectionIds: job.sectionIds,
+              signal: ctx.signal,
+            })
+          : this.sectionReview.reviewSection({
+              projectId: ctx.projectId,
+              runId: ctx.runId,
+              context,
+              signal: ctx.signal,
+            }));
       } catch (error) {
         if (ctx.signal.aborted || (error instanceof BusinessError && error.code === "WORKFLOW_CANCELLED")) {
           throw error;
@@ -361,7 +405,7 @@ export class SectionReviewScheduler {
           telemetry.rateLimitedHint += 1;
         }
         recordError(message);
-        this.log(`章节 ${sectionId} 审阅第 ${attempt} 次失败：${message.slice(0, 200)}`);
+        this.log(`调用单元 ${jobKey} 审阅第 ${attempt} 次失败：${message.slice(0, 200)}`);
         if (attempt < this.attempts) {
           telemetry.sectionsRetried += 1;
           const backoff = this.backoffMs[attempt - 1] ?? 5_000;

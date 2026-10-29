@@ -71,6 +71,10 @@ export interface PriorityView {
   seriousCount: number;
   metaCount: number;
   basis: string;
+  /** M15.13 A3：去重池规模与池内 serious/meta 计数（top-K retention 的诚实分母） */
+  poolSize: number;
+  seriousPoolCount: number;
+  metaPoolCount: number;
 }
 
 /**
@@ -142,5 +146,10 @@ export function buildPriorityView(findings: readonly ReviewFinding[], k: number 
     seriousCount: items.filter((item) => item.serious).length,
     metaCount: items.filter((item) => item.meta).length,
     basis: "deterministic severity+category scoring; exact/semantic(Jaccard>=0.8) dedup within category",
+    poolSize: pool.length,
+    seriousPoolCount: pool.filter(
+      (entry) => entry.finding.severity === "critical" || entry.finding.severity === "major",
+    ).length,
+    metaPoolCount: pool.filter((entry) => entry.finding.source === "fullpaper-review").length,
   };
 }

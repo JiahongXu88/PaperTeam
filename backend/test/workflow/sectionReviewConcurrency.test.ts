@@ -17,7 +17,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import type { PdfParser, RawPdfExtraction } from "../../src/paper/PdfParser.js";
 import { SectionReviewScheduler } from "../../src/paper/SectionReviewScheduler.js";
-import { SECTION_REVIEW_INSTRUCTION } from "../../src/paper/SectionReviewService.js";
+import { SECTION_REVIEW_INSTRUCTION, SECTION_BATCH_REVIEW_INSTRUCTION } from "../../src/paper/SectionReviewService.js";
 import { AgentRunFailedError } from "../../src/errors.js";
 import { resolveSessionKey } from "../../src/runtime/sessionKey.js";
 import type { AgentRuntime, AgentTask, RunAgentInput } from "../../src/runtime/types.js";
@@ -504,22 +504,28 @@ describe("review.sections journal 复用（同一 runId 重放零模型调用）
       const statusByReference = new Map(metadataRecords.map((record) => [record.referenceId, record.status]));
       const rawTextByReference = new Map(references.map((entry) => [entry.referenceId, entry.rawText]));
       // 与 stage 完全同构的 jobs（含 charCount 门槛与 metadata status），指纹才能一致
+      // （per-section 模式：每节一个 job —— sectionIds=[id]）
       const jobs = scopes
         .filter((scope) => scope.chunkCount > 0 && scope.charCount >= 80)
         .map((scope) => ({
-          sectionId: scope.sectionId,
+          sectionIds: [scope.sectionId],
           contextScope: scope.contextScope,
-          citations: callouts
-            .filter((callout) => callout.sectionId === scope.sectionId)
-            .flatMap((callout) => callout.references)
-            .filter((relation) => relation.referenceId !== undefined)
-            .map((relation) => ({
-              referenceId: relation.referenceId!,
-              rawText: rawTextByReference.get(relation.referenceId!) ?? relation.label,
-              ...(statusByReference.get(relation.referenceId!) !== undefined
-                ? { status: String(statusByReference.get(relation.referenceId!)) }
-                : {}),
-            })),
+          citationsBySection: new Map([
+            [
+              scope.sectionId,
+              callouts
+                .filter((callout) => callout.sectionId === scope.sectionId)
+                .flatMap((callout) => callout.references)
+                .filter((relation) => relation.referenceId !== undefined)
+                .map((relation) => ({
+                  referenceId: relation.referenceId!,
+                  rawText: rawTextByReference.get(relation.referenceId!) ?? relation.label,
+                  ...(statusByReference.get(relation.referenceId!) !== undefined
+                    ? { status: String(statusByReference.get(relation.referenceId!)) }
+                    : {}),
+                })),
+            ],
+          ]),
         }));
       const callsBefore = state.calls.length;
       const scheduler = new SectionReviewScheduler({
@@ -530,6 +536,7 @@ describe("review.sections journal 复用（同一 runId 重放零模型调用）
         attempts: 3,
         backoffMs: [0, 0],
         instruction: SECTION_REVIEW_INSTRUCTION,
+        batchInstruction: SECTION_BATCH_REVIEW_INSTRUCTION,
       });
       const replay = await scheduler.run(jobs, {
         projectId,

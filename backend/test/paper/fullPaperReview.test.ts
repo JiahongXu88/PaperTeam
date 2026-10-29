@@ -23,8 +23,11 @@ import type { AgentRuntime, AgentTask, RuntimeHealth } from "../../src/runtime/t
 class FakeFullPaperRuntime implements AgentRuntime {
   readonly provider = "pi" as const;
   readonly calls: Array<{ contextScope: string; task: string }> = [];
-  /** 按 scope 定制输出 */
+  /** 按 scope 定制输出（同 scope 每次调用弹出一个；耗尽后回落 outputs） */
   outputs = new Map<string, string>();
+  outputsSeq = new Map<string, string[]>();
+  /** 指定 scope 的调用直接抛错（取消/超时传播测试） */
+  throwOn = new Map<string, Error>();
   private counter = 0;
 
   async healthCheck(): Promise<RuntimeHealth> {
@@ -35,14 +38,20 @@ class FakeFullPaperRuntime implements AgentRuntime {
     this.counter += 1;
     const scope = input.contextScope ?? "";
     this.calls.push({ contextScope: scope, task: input.task });
+    const error = this.throwOn.get(scope);
+    if (error !== undefined) {
+      throw error;
+    }
     const now = new Date().toISOString();
+    const seq = this.outputsSeq.get(scope);
+    const output = seq !== undefined && seq.length > 0 ? seq.shift()! : this.outputs.get(scope) ?? "";
     return {
       taskId: `fake-${this.counter}`,
       agentId: input.agentId,
       status: "completed",
       createdAt: now,
       updatedAt: now,
-      output: this.outputs.get(scope) ?? "",
+      output,
     };
   }
 
@@ -268,28 +277,97 @@ describe("FullPaperReviewService.reviewFullPaper", () => {
     expect(outcome.extraction).toMatchObject({ research_goal: "提出统一图结构学习方法" });
   });
 
-  it("抽取解析失败 → critique 仍执行（确定性回退：关键节全文），extractParseFailed 如实", async () => {
+  it("抽取解析失败 → 重试 1 次仍失败 → extractParseFailed 如实；critique 仍执行（确定性回退）", async () => {
     runtime.calls.length = 0;
+    runtime.outputsSeq.clear();
     runtime.outputs.set("review/fullpaper/extract", "garbage not json");
     runtime.outputs.set("review/fullpaper/critique", JSON.stringify({ findings: [] }));
     const outcome = await service.reviewFullPaper({ projectId, runId: "run2", sectionFindings: [] });
     expect(outcome.extractParseFailed).toBe(true);
-    expect(runtime.calls.map((c) => c.contextScope)).toEqual(["review/fullpaper/extract", "review/fullpaper/critique"]);
+    expect(outcome.extractRetried).toBe(true);
+    // M15.13 A1：解析失败有界重试 —— extract 调用 2 次（第 2 次附格式提醒）+ critique 1 次
+    expect(runtime.calls.map((c) => c.contextScope)).toEqual([
+      "review/fullpaper/extract",
+      "review/fullpaper/extract",
+      "review/fullpaper/critique",
+    ]);
+    expect(runtime.calls[1]!.task).toContain("上一次输出无法解析为 JSON");
     // 回退：关键节（Introduction/Conclusion 标题匹配）全文进 critique
-    const critiqueTask = runtime.calls[1]!.task;
+    const critiqueTask = runtime.calls[2]!.task;
     expect(critiqueTask).toContain("【SEC01 Introduction 全文】");
     expect(critiqueTask).toContain("【SEC04 Conclusion 全文】");
     expect(outcome.coverage.referencedSections).toBeGreaterThanOrEqual(2);
     expect(outcome.findings).toHaveLength(0);
   });
 
-  it("critique 输出不可解析 → parseFailed 如实、findings 空、不抛异常", async () => {
+  it("critique 输出不可解析 → 重试 1 次仍失败 → parseFailed 如实、findings 空、不抛异常", async () => {
     runtime.calls.length = 0;
+    runtime.outputsSeq.clear();
     runtime.outputs.set("review/fullpaper/extract", EXTRACTION_JSON);
     runtime.outputs.set("review/fullpaper/critique", "((( no json");
     const outcome = await service.reviewFullPaper({ projectId, runId: "run3", sectionFindings: [] });
     expect(outcome.critiqueParseFailed).toBe(true);
+    expect(outcome.critiqueRetried).toBe(true);
     expect(outcome.findings).toHaveLength(0);
+    expect(outcome.telemetry.calls).toBe(3); // 1 extract + 2 critique（重试是物理调用）
+  });
+
+  it("A1 回归：extract 首次非法、重试成功 → extractParseFailed=false + extractRetried=true", async () => {
+    runtime.calls.length = 0;
+    runtime.outputsSeq.clear();
+    runtime.outputs.delete("review/fullpaper/extract");
+    runtime.outputs.delete("review/fullpaper/critique");
+    runtime.outputsSeq.set("review/fullpaper/extract", ["garbage { broken", EXTRACTION_JSON]);
+    runtime.outputsSeq.set("review/fullpaper/critique", [CRITIQUE_JSON]);
+    const outcome = await service.reviewFullPaper({ projectId, runId: "run4", sectionFindings: [] });
+    expect(outcome.extractParseFailed).toBe(false);
+    expect(outcome.extractRetried).toBe(true);
+    expect(outcome.critiqueParseFailed).toBe(false);
+    expect(outcome.critiqueRetried).toBe(false);
+    expect(outcome.telemetry.calls).toBe(3);
+    expect(outcome.findings).toHaveLength(1); // CRITIQUE_JSON 中唯一合法条目
+    expect(outcome.extraction).toMatchObject({ research_goal: "提出统一图结构学习方法" });
+  });
+
+  it("A1 回归：critique 首次截断、重试成功 → findings 完整恢复（M15.12 cand-23 场景）", async () => {
+    runtime.calls.length = 0;
+    runtime.outputsSeq.clear();
+    runtime.outputs.delete("review/fullpaper/extract");
+    runtime.outputs.delete("review/fullpaper/critique");
+    runtime.outputsSeq.set("review/fullpaper/extract", [EXTRACTION_JSON]);
+    runtime.outputsSeq.set("review/fullpaper/critique", ['{"findings": [{"category": "academic", "sev', CRITIQUE_JSON]);
+    const outcome = await service.reviewFullPaper({ projectId, runId: "run5", sectionFindings: [] });
+    expect(outcome.critiqueParseFailed).toBe(false);
+    expect(outcome.critiqueRetried).toBe(true);
+    expect(outcome.findings).toHaveLength(1);
+    // 重试 prompt 追加最小格式修复指令，其余内容与首次一致（同输入重跑语义）
+    expect(runtime.calls[2]!.task).toContain("上一次输出无法解析为 JSON");
+    expect(runtime.calls[2]!.task).toContain("EXTRACTION");
+  });
+
+  it("A1 回归：telemetry 不跨 run 污染——重跑正常链路回到 calls=2", async () => {
+    runtime.calls.length = 0;
+    runtime.outputsSeq.clear();
+    runtime.outputs.set("review/fullpaper/extract", EXTRACTION_JSON);
+    runtime.outputs.set("review/fullpaper/critique", CRITIQUE_JSON);
+    const outcome = await service.reviewFullPaper({ projectId, runId: "run6", sectionFindings: [] });
     expect(outcome.telemetry.calls).toBe(2);
+    expect(outcome.extractRetried).toBe(false);
+    expect(outcome.critiqueRetried).toBe(false);
+    expect(runtime.calls.map((c) => c.contextScope)).toEqual(["review/fullpaper/extract", "review/fullpaper/critique"]);
+  });
+
+  it("A1 回归：runAgent 抛错（取消/超时）原样上抛，不被重试逻辑吞掉", async () => {
+    runtime.calls.length = 0;
+    runtime.outputsSeq.clear();
+    runtime.throwOn.set("review/fullpaper/critique", new Error("WORKFLOW_CANCELLED: 任务已取消"));
+    await expect(
+      service.reviewFullPaper({ projectId, runId: "run7", sectionFindings: [] }),
+    ).rejects.toThrow("WORKFLOW_CANCELLED");
+    expect(runtime.calls.map((c) => c.contextScope)).toEqual([
+      "review/fullpaper/extract",
+      "review/fullpaper/critique",
+    ]);
+    runtime.throwOn.clear();
   });
 });

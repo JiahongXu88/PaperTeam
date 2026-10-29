@@ -245,15 +245,19 @@ import {
   readGlobalReviewMode,
   readPaperMapSummaryMode,
   readPriorityView,
+  readSectionReviewMode,
+  SECTION_BATCH_MAX_CHARS,
+  SECTION_BATCH_MAX_SECTIONS,
+  SECTION_BATCH_THRESHOLD_CHARS,
 } from "../paper/reviewRunModes.js";
 import type { PaperStore } from "../paper/PaperStore.js";
 import type { PaperMapService } from "../paper/PaperMapService.js";
 import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
 import { disconfirmBuildFindings, repairCitationSyntax } from "../citation/citationSyntax.js";
-import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
+import { SectionReviewService, SECTION_REVIEW_INSTRUCTION, SECTION_BATCH_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
 import { FullPaperReviewService } from "../paper/FullPaperReviewService.js";
 import { buildPriorityView } from "../review/priorityView.js";
-import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
+import { SectionReviewScheduler, type SectionReviewJob } from "../paper/SectionReviewScheduler.js";
 import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type AcademicScoreBasis, type ReviewSummary } from "../review/ReviewAggregator.js";
 import {
@@ -8816,11 +8820,9 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
       const metadataRecords = await services.paper.citationIntegrity.listMetadataRecords(ctx.projectId);
       const statusByReference = new Map(metadataRecords.map((record) => [record.referenceId, record.status]));
       const rawTextByReference = new Map(references.map((entry) => [entry.referenceId, entry.rawText]));
-      const jobs = capped.map((scope) => ({
-        sectionId: scope.sectionId,
-        contextScope: scope.contextScope,
-        citations: callouts
-          .filter((callout) => callout.sectionId === scope.sectionId)
+      const citationsOf = (sectionId: string): CitationContextEntry[] =>
+        callouts
+          .filter((callout) => callout.sectionId === sectionId)
           .flatMap((callout) => callout.references)
           .filter((relation) => relation.referenceId !== undefined)
           .map((relation) => ({
@@ -8829,8 +8831,65 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
             ...(statusByReference.get(relation.referenceId!) !== undefined
               ? { status: String(statusByReference.get(relation.referenceId!)) }
               : {}),
-          })) as CitationContextEntry[],
-      }));
+          })) as CitationContextEntry[];
+
+      // M15.13 A2：调用分配模式（sectionReviewMode，随 run request 持久化）。
+      //   per-section（缺省 = 旧行为）：每节一次调用；
+      //   batched-small：<阈值字符的相邻章节合并为一批（≤N 节 / ≤M 字符，纯确定性）。
+      // 历史 run（request 无该字段）→ per-section，resume 不改道。
+      const sectionReviewMode = readSectionReviewMode(ctx.state.request);
+      const jobs: SectionReviewJob[] = [];
+      if (sectionReviewMode === "batched-small") {
+        let batch: string[] = [];
+        let batchChars = 0;
+        const flushBatch = () => {
+          if (batch.length === 0) {
+            return;
+          }
+          const sectionIds = [...batch];
+          jobs.push({
+            sectionIds,
+            contextScope:
+              sectionIds.length > 1
+                ? `review/section-batch/${sectionIds.map((id) => id.toLowerCase()).join("-")}`
+                : `review/section/${sectionIds[0]!.toLowerCase()}`,
+            citationsBySection: new Map(sectionIds.map((id) => [id, citationsOf(id)])),
+          });
+          batch = [];
+          batchChars = 0;
+        };
+        for (const scope of capped) {
+          const isSmall = scope.charCount < SECTION_BATCH_THRESHOLD_CHARS;
+          if (!isSmall) {
+            // 大节（方法/实验/结果等正文）：独占一次调用，全文审阅不受影响
+            flushBatch();
+            jobs.push({
+              sectionIds: [scope.sectionId],
+              contextScope: `review/section/${scope.sectionId.toLowerCase()}`,
+              citationsBySection: new Map([[scope.sectionId, citationsOf(scope.sectionId)]]),
+            });
+            continue;
+          }
+          const wouldExceed =
+            batch.length >= SECTION_BATCH_MAX_SECTIONS ||
+            batchChars + scope.charCount > SECTION_BATCH_MAX_CHARS;
+          if (batch.length > 0 && wouldExceed) {
+            flushBatch();
+          }
+          batch.push(scope.sectionId);
+          batchChars += scope.charCount;
+        }
+        flushBatch();
+      } else {
+        for (const scope of capped) {
+          jobs.push({
+            sectionIds: [scope.sectionId],
+            contextScope: scope.contextScope,
+            citationsBySection: new Map([[scope.sectionId, citationsOf(scope.sectionId)]]),
+          });
+        }
+      }
+      const batchGroups = jobs.filter((job) => job.sectionIds.length > 1).length;
 
       // 有界并发调度（backpressure：活跃模型调用 <= reviewConcurrency；单节失败
       // 不推翻整个池；每节完成立即落 journal；结果按论文顺序重排）。
@@ -8846,6 +8905,7 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
         attempts: SECTION_REVIEW_ATTEMPTS,
         backoffMs: services.review.sectionRetryBackoffMs ?? SECTION_REVIEW_BACKOFF_MS,
         instruction: SECTION_REVIEW_INSTRUCTION,
+        batchInstruction: SECTION_BATCH_REVIEW_INSTRUCTION,
         log: (message) => ctx.log(message),
       });
       const result = await scheduler.run(jobs, {
@@ -8855,10 +8915,14 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
         emitProgress: ctx.emitProgress,
       });
       return {
+        sectionReviewMode,
         sectionsReviewed: result.reviewed.length,
         sectionsTotal: allScopes.length,
         skippedSections: skipped,
         emptySections,
+        // M15.13 A2：批式调用分配（batched-small 时 >0；per-section 恒 0）
+        reviewCalls: jobs.length,
+        batchGroups,
         failedSections: result.failedSections,
         findingsTotal: result.findings.length,
         parseFailures: result.parseFailures,
@@ -8916,6 +8980,9 @@ function reviewFullPaperStage(services: WorkflowServices): StageSpec {
         dropped: result.dropped,
         extractParseFailed: result.extractParseFailed,
         critiqueParseFailed: result.critiqueParseFailed,
+        // M15.13 A1：解析失败有界重试的如实登记（重试是物理调用，已计入 modelTelemetry.calls）
+        extractRetried: result.extractRetried,
+        critiqueRetried: result.critiqueRetried,
         modelTelemetry: result.telemetry,
         coverage: result.coverage,
         extraction: result.extraction,

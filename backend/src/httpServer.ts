@@ -91,10 +91,13 @@ import {
 import {
   GLOBAL_REVIEW_MODES,
   PAPER_MAP_SUMMARY_MODES,
+  SECTION_REVIEW_MODES,
   isGlobalReviewMode,
   isPaperMapSummaryMode,
+  isSectionReviewMode,
   type GlobalReviewMode,
   type PaperMapSummaryMode,
+  type SectionReviewMode,
 } from "./paper/reviewRunModes.js";
 import { DEFAULT_STYLE_POLICY, STYLE_POLICIES, isStylePolicy, type StylePolicy } from "./review/stylePolicy.js";
 import {
@@ -666,6 +669,8 @@ async function handleRequest(
       // 缺省 = 旧行为，历史 run 不改道）
       ...(kind === "existing_paper_review" ? { paperMapSummaryMode: readPaperMapSummaryModeField(body) } : {}),
       ...(kind === "existing_paper_review" ? { globalReviewMode: readGlobalReviewModeField(body) } : {}),
+      // M15.13 A2：分节调用分配模式（缺省 per-section = 旧行为）
+      ...(kind === "existing_paper_review" ? { sectionReviewMode: readSectionReviewModeField(body) } : {}),
       ...(kind === "existing_paper_review" && body["priorityView"] !== undefined
         ? { priorityView: readPriorityViewField(body) }
         : {}),
@@ -5076,6 +5081,18 @@ function readGlobalReviewModeField(body: Record<string, unknown>): GlobalReviewM
   throw new BusinessError(
     "INVALID_REQUEST",
     `字段 globalReviewMode 只能是 ${GLOBAL_REVIEW_MODES.join("、")}（缺省 off）`,
+  );
+}
+
+/** M15.13 A2：分节审阅调用分配模式（缺省 per-section = 旧行为） */
+function readSectionReviewModeField(body: Record<string, unknown>): SectionReviewMode {
+  const value = body["sectionReviewMode"];
+  if (value === undefined || isSectionReviewMode(value)) {
+    return value ?? "per-section";
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    `字段 sectionReviewMode 只能是 ${SECTION_REVIEW_MODES.join("、")}（缺省 per-section）`,
   );
 }
 

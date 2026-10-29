@@ -50,6 +50,15 @@ const EXTRACTION_MAX_CHARS = 8000;
 /** critique 调用：分节 findings 摘要（条数×单条字符） */
 const FINDINGS_DIGEST_MAX_ITEMS = 60;
 const FINDINGS_DIGEST_ITEM_CHARS = 150;
+/**
+ * 解析失败的有界重试上限（含首次共 2 次调用）。M15.12 fam-cand-23 教训：
+ * critique 长输出 JSON 解析失败当时只能离线人工修复——同输入重跑即成功
+ * （瞬态格式漂移，非确定性截断）。重试是物理调用，如实计入 telemetry.calls。
+ */
+const PARSE_ATTEMPTS = 2;
+/** 重试时附加的最小格式修复指令（只在上一次输出不可解析时出现） */
+const FORMAT_REMINDER =
+  "注意：上一次输出无法解析为 JSON。请严格输出单个 JSON 对象：不要代码围栏、不要 JSON 之外的任何文字，也不要在对象内部留注释。";
 
 export interface FullPaperReviewServiceOptions {
   store: PaperStore;
@@ -77,9 +86,12 @@ export interface FullPaperCoverageLedger {
 
 export interface FullPaperReviewOutcome {
   findings: ReviewFinding[];
-  /** 任一调用整体解析失败（如实计数；findings 可能为空） */
+  /** 任一调用整体解析失败（两次尝试后仍失败才置 true；findings 可能为空） */
   extractParseFailed: boolean;
   critiqueParseFailed: boolean;
+  /** 解析失败触发过重试（第一次失败、第二次成功时 false 失败标志 + true 重试标志） */
+  extractRetried: boolean;
+  critiqueRetried: boolean;
   /** 结构非法被丢弃的 finding 条数 */
   dropped: number;
   telemetry: { calls: number; failed: number; totalMs: number; approxPromptChars: number; outputChars: number };
@@ -339,43 +351,46 @@ export class FullPaperReviewService {
       `【任务】\n${EXTRACT_INSTRUCTION}`,
     ].join("\n\n");
 
-    // ---- Call 1：论证结构抽取 ----
+    // ---- Call 1：论证结构抽取（解析失败有界重试 1 次） ----
     const telemetry = { calls: 0, failed: 0, totalMs: 0, approxPromptChars: 0, outputChars: 0 };
-    const callStart = (promptChars: number) => {
+    const callAgent = async (args: {
+      prompt: string;
+      contextScope: string;
+      pass: string;
+    }): Promise<string> => {
+      const prompt = args.prompt;
       telemetry.calls += 1;
-      telemetry.approxPromptChars += promptChars;
-      return Date.now();
-    };
-    const callEnd = (startedAt: number, outputChars: number, failed: boolean) => {
+      telemetry.approxPromptChars += prompt.length;
+      const startedAt = Date.now();
+      const task = await this.runtime.runAgent({
+        agentId: this.reviewerAgentId,
+        ...this.timeoutOverride,
+        projectId: input.projectId,
+        contextScope: args.contextScope,
+        task: prompt,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        metadata: { role: "reviewer", pass: args.pass },
+      });
+      const output = task.status === "completed" ? task.output ?? "" : "";
       telemetry.totalMs += Date.now() - startedAt;
-      telemetry.outputChars += outputChars;
-      if (failed) {
+      telemetry.outputChars += output.length;
+      if (output.trim() === "") {
         telemetry.failed += 1;
       }
+      return output;
     };
 
-    const extractStartedAt = callStart(extractPrompt.length);
-    const extractTask = await this.runtime.runAgent({
-      agentId: this.reviewerAgentId,
-      ...this.timeoutOverride,
-      projectId: input.projectId,
-      contextScope: "review/fullpaper/extract",
-      task: extractPrompt,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      metadata: { role: "reviewer", pass: "fullpaper-extract" },
-    });
-    const extractOutput = extractTask.status === "completed" ? extractTask.output ?? "" : "";
-    callEnd(extractStartedAt, extractOutput.length, extractOutput.trim() === "");
-    let extraction: unknown = undefined;
-    let extractParseFailed = false;
-    if (extractOutput.trim() !== "") {
-      extraction = parseLenientJson(extractOutput);
-      if (extraction === undefined) {
-        extractParseFailed = true;
-      }
-    } else {
-      extractParseFailed = true;
-    }
+    const extractOutcome = await this.withParseRetry(
+      (retry) =>
+        callAgent({
+          prompt: retry ? `${extractPrompt}\n\n${FORMAT_REMINDER}` : extractPrompt,
+          contextScope: "review/fullpaper/extract",
+          pass: "fullpaper-extract",
+        }),
+      (output) => parseLenientJson(output),
+    );
+    const extraction = extractOutcome.value;
+    const extractParseFailed = extractOutcome.parseFailed;
     const extractionJson =
       !extractParseFailed && extraction !== undefined
         ? JSON.stringify(extraction).slice(0, EXTRACTION_MAX_CHARS)
@@ -450,22 +465,20 @@ export class FullPaperReviewService {
       `【任务】\n${CRITIQUE_INSTRUCTION}`,
     ].join("\n\n");
 
-    const critiqueStartedAt = callStart(critiquePrompt.length);
-    const critiqueTask = await this.runtime.runAgent({
-      agentId: this.reviewerAgentId,
-      ...this.timeoutOverride,
-      projectId: input.projectId,
-      contextScope: "review/fullpaper/critique",
-      task: critiquePrompt,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      metadata: { role: "reviewer", pass: "fullpaper-critique" },
-    });
-    const critiqueOutput = critiqueTask.status === "completed" ? critiqueTask.output ?? "" : "";
-    callEnd(critiqueStartedAt, critiqueOutput.length, critiqueOutput.trim() === "");
-
-    const parsed = critiqueOutput.trim() === ""
-      ? { findings: [], dropped: 0, parseFailed: true }
-      : parseFullPaperFindingsOutput(critiqueOutput);
+    const critiqueOutcome = await this.withParseRetry(
+      (retry) =>
+        callAgent({
+          prompt: retry ? `${critiquePrompt}\n\n${FORMAT_REMINDER}` : critiquePrompt,
+          contextScope: "review/fullpaper/critique",
+          pass: "fullpaper-critique",
+        }),
+      (output) => {
+        const parsed = parseFullPaperFindingsOutput(output);
+        return parsed.parseFailed ? undefined : parsed;
+      },
+    );
+    const parsed =
+      critiqueOutcome.value ?? { findings: [], dropped: 0, parseFailed: true };
 
     const validSectionIds = new Set(map.sections.map((entry) => entry.sectionId));
     const findings: ReviewFinding[] = [];
@@ -499,6 +512,8 @@ export class FullPaperReviewService {
       findings,
       extractParseFailed,
       critiqueParseFailed: parsed.parseFailed,
+      extractRetried: extractOutcome.retried,
+      critiqueRetried: critiqueOutcome.retried,
       dropped,
       telemetry,
       coverage: {
@@ -513,5 +528,27 @@ export class FullPaperReviewService {
       },
       extraction,
     };
+  }
+
+  /**
+   * 解析失败的有界重试（PARSE_ATTEMPTS=2）：第一次输出不可解析（含 agent
+   * 失败/空输出）→ 同输入 + FORMAT_REMINDER 再试一次；两次都失败才置
+   * parseFailed（如实降级，绝不把失败静默记为成功）。取消信号经 runAgent
+   * 自然上抛（不吞）。每次调用都是物理调用（由 callAgent 计入 telemetry）。
+   */
+  private async withParseRetry<T>(
+    call: (retryAttempt: boolean) => Promise<string>,
+    parse: (output: string) => T | undefined,
+  ): Promise<{ value: T | undefined; parseFailed: boolean; retried: boolean }> {
+    let retried = false;
+    for (let attempt = 1; attempt <= PARSE_ATTEMPTS; attempt += 1) {
+      const isRetry = attempt > 1;
+      const value = parse(await call(isRetry));
+      if (value !== undefined) {
+        return { value, parseFailed: false, retried: isRetry || retried };
+      }
+      retried = retried || isRetry;
+    }
+    return { value: undefined, parseFailed: true, retried };
   }
 }
