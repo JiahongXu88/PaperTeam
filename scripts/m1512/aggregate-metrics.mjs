@@ -136,7 +136,7 @@ function pairedDiffCI(armA, armB, subset = null, strictMode = false, B = 2000, s
   const b = coverage(armB, subset, strictMode).perFamily;
   const diffs = a.map((v, i) => (v === null || b[i] === null ? null : v - b[i])).filter((v) => v !== null);
   if (diffs.length === 0) return { n: 0, meanDiff: null, ci95: null };
-  const mean = diffs.reduce((x, y) => x + y, 0) / diffs.length;
+  const meanDiff = diffs.reduce((x, y) => x + y, 0) / diffs.length;
   // 简单 LCG（种子确定，跨平台可复现）
   let s = seed;
   const rand = () => {
