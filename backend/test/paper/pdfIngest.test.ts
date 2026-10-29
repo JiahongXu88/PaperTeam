@@ -132,6 +132,61 @@ describe("M4.3.1 section/chunk 组装（确定性，无 Python）", () => {
     // 总字符量过小（< 60）→ poor
     expect(fallback.extractionQuality).toBe("poor");
   });
+
+  it("M15.11：author-year 参考文献（无 [n] 标记，ICLR/NeurIPS 风格）也能定位 References 章节", () => {
+    const authorYear = {
+      ok: true as const,
+      parser: { id: "test" },
+      pageCount: 4,
+      title: "",
+      abstract: "",
+      toc: [],
+      blocks: [
+        { page: 1, text: "1 Introduction\nWe study graph models (Wang et al., 2019)." },
+        { page: 2, text: "2 Method\nWe propose…" },
+        { page: 3, text: "3 Experiments\nResults are strong." },
+        {
+          page: 4,
+          text: "REFERENCES\n\nRui Bing, Guan Yuan, and Huifang Ma. Heterogeneous graph neural networks analysis. Artificial Intelligence, 2023.\n\nIvan Rubachev and Nikolai Kartashev. Tabular deep learning. arXiv preprint arXiv:2305.17019, 2023.\n\nYury Gorishniy. Another dataset paper. In NeurIPS 2021.\n\nLast Author. One more reference from 2020.",
+        },
+      ],
+      totalChars: 500,
+      notes: [],
+    };
+    const assembled = assemblePaper(authorYear);
+    expect(assembled.referencesSectionId).toBeDefined();
+    const referencesSection = assembled.sections.find((s) => s.sectionId === assembled.referencesSectionId);
+    expect(referencesSection?.title.toLowerCase()).toBe("references");
+    // 标题页年份稀少、条目流到次页：证据窗口 = 标题页 + 次页
+    const spillOver = {
+      ...authorYear,
+      pageCount: 5,
+      blocks: [
+        { page: 1, text: "1 Introduction\nWe study models from 2019 and 2020." },
+        { page: 2, text: "2 Method\nWe propose (Smith, 2021) something." },
+        { page: 3, text: "3 Experiments\nStrong." },
+        { page: 4, text: "4 Conclusion\nDone in 2022.\n\nREFERENCES\n\nFirst Author. One reference, 2022." },
+        {
+          page: 5,
+          text: "Second Author. Another reference, 2023.\n\nThird Author. Yet another, 2021.\n\nFourth Author. One more, 2020.",
+        },
+      ],
+    };
+    const spill = assemblePaper(spillOver);
+    expect(spill.referencesSectionId).toBeDefined();
+    // 正文页（标题行不独立 + 年份少）不触发
+    const bodyOnly = {
+      ...authorYear,
+      blocks: [
+        { page: 1, text: "1 Introduction\nWe study models from 2019 and 2020." },
+        { page: 2, text: "2 Method\nWe propose (Smith, 2021) something." },
+        { page: 3, text: "3 Experiments\nStrong." },
+        { page: 4, text: "4 Conclusion\nDone in 2022." },
+      ],
+    };
+    const noRefs = assemblePaper(bodyOnly);
+    expect(noRefs.referencesSectionId).toBeUndefined();
+  });
 });
 
 describe("M4.3.1 Ingest 服务 + HTTP（真实 PDF e2e）", () => {

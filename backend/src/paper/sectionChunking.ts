@@ -134,15 +134,33 @@ function buildSections(extraction: RawPdfExtraction, pages: PaperPage[]): PaperS
 
 /** 找 References 章节首页：标题行独立成行 + 页内含 [n] 条目标记（双条件降误报；中英文标题都算） */
 function findReferencesPage(pages: PaperPage[]): number | undefined {
-  for (const page of pages) {
+  for (let i = 0; i < pages.length; i += 1) {
+    const page = pages[i]!;
     if (!/^\s*(?:references|bibliography|参考文献)\s*$/im.test(page.text)) {
       continue;
     }
     if (/[\[［]\d{1,3}[\]］]/.test(page.text)) {
       return page.pageNumber;
     }
+    // author-year 风格：参考文献条目常从标题页流到下一页——证据窗口取标题页+次页
+    const next = pages[i + 1];
+    const yearEvidence =
+      countYearTokens(page.text) + (next !== undefined ? countYearTokens(next.text) : 0);
+    if (yearEvidence >= 4) {
+      return page.pageNumber;
+    }
   }
   return undefined;
+}
+
+/**
+ * 页内 19xx/20xx 年份 token 计数。
+ * M15.11：author-year 引用风格（ICLR/NeurIPS 模板）的参考文献页没有 [n] 标记，
+ * 旧双条件在此类页面上永远不满足 → references 恒为 0。年份密度作为第二证据：
+ * 标题行独立成行仍是主条件，正文页偶现年份不会单独触发。
+ */
+function countYearTokens(text: string): number {
+  return (text.match(/\b(?:19|20)\d{2}\b/g) ?? []).length;
 }
 
 /** TOC outline → sections（权威路径） */
