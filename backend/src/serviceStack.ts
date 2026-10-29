@@ -19,6 +19,7 @@ import { FinalizeService } from "./artifacts/FinalizeService.js";
 import { VersionService } from "./version/VersionService.js";
 import { PaperIngestService } from "./paper/PaperIngestService.js";
 import { PaperMapService } from "./paper/PaperMapService.js";
+import { FullPaperReviewService } from "./paper/FullPaperReviewService.js";
 import { PaperStore } from "./paper/PaperStore.js";
 import { ReviewContextBuilder } from "./paper/ReviewContextBuilder.js";
 import { SectionReviewService } from "./paper/SectionReviewService.js";
@@ -516,6 +517,12 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
   });
   const reviewContext = new ReviewContextBuilder({ projects: options.projects, store: paperStore });
   const sectionReview = new SectionReviewService({
+    runtime,
+    reviewerAgentId: options.agentIds.reviewer,
+    ...longRun,
+  });
+  const fullPaperReview = new FullPaperReviewService({
+    store: paperStore,
     runtime,
     reviewerAgentId: options.agentIds.reviewer,
     ...longRun,
@@ -1156,6 +1163,7 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         reviewContext,
         citationIntegrity,
         sectionReview,
+        fullPaperReview,
       },
       reviewArtifacts,
       externalInstructions,

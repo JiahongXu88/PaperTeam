@@ -116,6 +116,10 @@ describe("M5.3 路由：role + contextScope", () => {
     expect(style).toEqual(["academic-style-zh"]);
     expect(new Set([fact.join(), academic.join(), style.join()]).size).toBe(3);
     expect(resolveSkillIds("reviewer", "review/section/sec01")).toEqual(["academic-review"]);
+    // M15.12：批量摘要（纯摘要任务）不注入审稿/引用 Skill；全文级 pass 与分节审阅同方法
+    expect(resolveSkillIds("reviewer", "review/summary-batch/batch01")).toEqual([]);
+    expect(resolveSkillIds("reviewer", "review/fullpaper/extract")).toEqual(["academic-review"]);
+    expect(resolveSkillIds("reviewer", "review/fullpaper/critique")).toEqual(["academic-review"]);
     // 三个 lens 都不会无脑加载三个学术 Skill
     for (const ids of [fact, academic, style]) {
       expect(ids.filter((id) => (ACADEMIC_IDS as readonly string[]).includes(id)).length).toBeLessThanOrEqual(1);

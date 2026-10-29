@@ -74,6 +74,16 @@ export interface ReviewFinding {
   claimText?: string;
   message: string;
   suggestion?: string;
+  /**
+   * M15.12 B2（全文级 pass）additive：finding 自评置信度（high/medium/low）。
+   * 仅 fullpaper-review pass 填写；旧 JSON 缺省即通过（与 visualConfidence 同纪律）。
+   */
+  confidence?: "high" | "medium" | "low";
+  /**
+   * M15.12 B2 additive：该 finding 指出的证据缺口（缺什么实验/对照/数据）。
+   * 仅 fullpaper-review pass 填写；缺实验=证据缺口，绝不引导伪造实验。
+   */
+  evidenceGap?: string;
   evidenceIds?: string[];
   citationIds?: string[];
   referenceId?: string;
@@ -113,6 +123,8 @@ export function createFinding(input: {
   verificationStatus?: FindingVerificationStatus;
   claimText?: string;
   suggestion?: string;
+  confidence?: "high" | "medium" | "low";
+  evidenceGap?: string;
   evidenceIds?: string[];
   citationIds?: string[];
   referenceId?: string;
@@ -148,6 +160,8 @@ export function createFinding(input: {
     ...(input.claimText !== undefined ? { claimText: input.claimText } : {}),
     message: input.message,
     ...(input.suggestion !== undefined ? { suggestion: input.suggestion } : {}),
+    ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
+    ...(input.evidenceGap !== undefined ? { evidenceGap: input.evidenceGap } : {}),
     ...(input.evidenceIds !== undefined && input.evidenceIds.length > 0
       ? { evidenceIds: input.evidenceIds }
       : {}),
@@ -203,7 +217,9 @@ export function readFinding(value: unknown): ReviewFinding | undefined {
     (figureEnvRef !== undefined && typeof figureEnvRef !== "string") ||
     (assetRef !== undefined && typeof assetRef !== "string") ||
     (visualConfidence !== undefined && !isOneOf(FINDING_VISUAL_CONFIDENCES, visualConfidence)) ||
-    (verificationStatus !== undefined && !isOneOf(FINDING_VERIFICATION_STATUSES, verificationStatus))
+    (verificationStatus !== undefined && !isOneOf(FINDING_VERIFICATION_STATUSES, verificationStatus)) ||
+    (record["confidence"] !== undefined && !isOneOf(["high", "medium", "low"] as const, record["confidence"])) ||
+    (record["evidenceGap"] !== undefined && typeof record["evidenceGap"] !== "string")
   ) {
     return undefined;
   }

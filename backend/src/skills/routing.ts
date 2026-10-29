@@ -72,6 +72,18 @@ export const DEFAULT_SKILL_ROUTES: readonly SkillRoute[] = [
     skillIds: ["academic-review"],
     note: "Existing Paper 分章节审阅：以 academic 审稿方法为主",
   },
+  {
+    role: "reviewer",
+    scopePrefix: "review/summary-batch",
+    skillIds: [],
+    note: "PaperMap 批量章节摘要（M15.12 B1）：纯摘要任务，不需要审稿/引用 Skill",
+  },
+  {
+    role: "reviewer",
+    scopePrefix: "review/fullpaper",
+    skillIds: ["academic-review"],
+    note: "Existing Paper 全文级 Goal–Method–Claim–Evidence 审查（M15.12 B2）：与分节审阅同方法",
+  },
   // ---- Writer：普通写作 vs style-polish ----
   {
     role: "writer",

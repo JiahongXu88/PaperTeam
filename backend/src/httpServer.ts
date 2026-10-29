@@ -88,6 +88,14 @@ import {
   isCitationSemanticMode,
   type CitationSemanticMode,
 } from "./citation/semanticMode.js";
+import {
+  GLOBAL_REVIEW_MODES,
+  PAPER_MAP_SUMMARY_MODES,
+  isGlobalReviewMode,
+  isPaperMapSummaryMode,
+  type GlobalReviewMode,
+  type PaperMapSummaryMode,
+} from "./paper/reviewRunModes.js";
 import { DEFAULT_STYLE_POLICY, STYLE_POLICIES, isStylePolicy, type StylePolicy } from "./review/stylePolicy.js";
 import {
   EXTERNAL_INSTRUCTION_SOURCES,
@@ -654,6 +662,13 @@ async function handleRequest(
       // 语义核验模式：显式写入 request（新 run 缺省 off；读取端对缺字段的旧 run
       // 按 full 解释，两个默认值不共用同一条兜底路径）
       ...(kind === "existing_paper_review" ? { citationSemanticMode: readCitationSemanticMode(body) } : {}),
+      // M15.12：摘要模式 / 全文级 pass / 优先视图（existing_paper_review 专属；
+      // 缺省 = 旧行为，历史 run 不改道）
+      ...(kind === "existing_paper_review" ? { paperMapSummaryMode: readPaperMapSummaryModeField(body) } : {}),
+      ...(kind === "existing_paper_review" ? { globalReviewMode: readGlobalReviewModeField(body) } : {}),
+      ...(kind === "existing_paper_review" && body["priorityView"] !== undefined
+        ? { priorityView: readPriorityViewField(body) }
+        : {}),
       ...(stylePolicy !== undefined ? { stylePolicy } : {}),
       ...(runLanguage !== undefined ? { language: runLanguage } : {}),
       ...(reviewPurpose !== undefined ? { reviewPurpose } : {}),
@@ -5038,6 +5053,39 @@ function readCitationSemanticMode(body: Record<string, unknown>): CitationSemant
     "INVALID_REQUEST",
     `字段 citationSemanticMode 只能是 ${CITATION_SEMANTIC_MODES.join("、")}（缺省 ${DEFAULT_CITATION_SEMANTIC_MODE}）`,
   );
+}
+
+/** M15.12 B1：PaperMap 摘要模式（缺省 per-section = 旧行为） */
+function readPaperMapSummaryModeField(body: Record<string, unknown>): PaperMapSummaryMode {
+  const value = body["paperMapSummaryMode"];
+  if (value === undefined || isPaperMapSummaryMode(value)) {
+    return value ?? "per-section";
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    `字段 paperMapSummaryMode 只能是 ${PAPER_MAP_SUMMARY_MODES.join("、")}（缺省 per-section）`,
+  );
+}
+
+/** M15.12 B2：全文级 Goal–Method–Claim–Evidence pass（缺省 off = 旧行为） */
+function readGlobalReviewModeField(body: Record<string, unknown>): GlobalReviewMode {
+  const value = body["globalReviewMode"];
+  if (value === undefined || isGlobalReviewMode(value)) {
+    return value ?? "off";
+  }
+  throw new BusinessError(
+    "INVALID_REQUEST",
+    `字段 globalReviewMode 只能是 ${GLOBAL_REVIEW_MODES.join("、")}（缺省 off）`,
+  );
+}
+
+/** M15.12 B3：top-K 优先视图（缺省不写 request = 关闭） */
+function readPriorityViewField(body: Record<string, unknown>): boolean {
+  const value = body["priorityView"];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  throw new BusinessError("INVALID_REQUEST", "字段 priorityView 只能是布尔值（缺省 false）");
 }
 
 /** PATCH 请求体中的可选 title（重命名；非字符串或空串视为不修改） */

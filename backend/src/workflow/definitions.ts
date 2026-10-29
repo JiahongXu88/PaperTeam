@@ -241,11 +241,18 @@ import { extractCitationKeys, parseBib } from "../citation/StaticCitationChecker
 import type { CitationIntegrityService } from "../citation/CitationIntegrityService.js";
 import type { CitationCallout, ReferenceEntry } from "../citation/integrity.js";
 import { readSemanticMode } from "../citation/semanticMode.js";
+import {
+  readGlobalReviewMode,
+  readPaperMapSummaryMode,
+  readPriorityView,
+} from "../paper/reviewRunModes.js";
 import type { PaperStore } from "../paper/PaperStore.js";
 import type { PaperMapService } from "../paper/PaperMapService.js";
 import type { ReviewContextBuilder, CitationContextEntry } from "../paper/ReviewContextBuilder.js";
 import { disconfirmBuildFindings, repairCitationSyntax } from "../citation/citationSyntax.js";
 import { SectionReviewService, SECTION_REVIEW_INSTRUCTION } from "../paper/SectionReviewService.js";
+import { FullPaperReviewService } from "../paper/FullPaperReviewService.js";
+import { buildPriorityView } from "../review/priorityView.js";
 import { SectionReviewScheduler } from "../paper/SectionReviewScheduler.js";
 import { readFindings, type FindingCategory, type FindingSeverity } from "../review/finding.js";
 import { aggregateReviews, type AcademicScoreBasis, type ReviewSummary } from "../review/ReviewAggregator.js";
@@ -597,6 +604,8 @@ export interface PaperReviewServices {
   reviewContext: ReviewContextBuilder;
   citationIntegrity: CitationIntegrityService;
   sectionReview: SectionReviewService;
+  /** M15.12 B2：全文级 Goal–Method–Claim–Evidence 审查（globalReviewMode=on 时经 review.fullpaper stage） */
+  fullPaperReview: FullPaperReviewService;
 }
 
 /** 目标调整 / 大纲与改进计划修订的次数上限（bounded，防无限循环烧 Token） */
@@ -8657,12 +8666,18 @@ function paperEnsureStage(services: WorkflowServices): StageSpec {
           "尚未上传/解析 Final PDF（先导入论文 PDF 再启动 Review）",
         );
       }
-      const map = await services.paper.map.ensureMap(ctx.projectId, { signal: ctx.signal });
+      // M15.12 B1：摘要模式随 run request（缺省 per-section = 旧行为；历史 run 不改道）
+      const summaryMode = readPaperMapSummaryMode(ctx.state.request);
+      const map = await services.paper.map.ensureMap(ctx.projectId, {
+        signal: ctx.signal,
+        summaryMode,
+      });
       const mapTelemetry = services.paper.map.lastTelemetry;
       return {
         pageCount: map.pageCount,
         sections: map.sections.length,
         ...(map.documentTitle !== undefined ? { documentTitle: map.documentTitle } : {}),
+        paperMapSummaryMode: summaryMode,
         // 性能画像（run checkpoint 持久化，事后分析）
         pdfParseMs: document.parse.durationMs,
         paperMapTelemetry: mapTelemetry ?? { modelCalls: 0, summariesRefreshed: 0, failures: 0 },
@@ -8820,6 +8835,9 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
       // 有界并发调度（backpressure：活跃模型调用 <= reviewConcurrency；单节失败
       // 不推翻整个池；每节完成立即落 journal；结果按论文顺序重排）。
       // 纯串行代码路径 = reviewConcurrency 1（语义与旧版一致）。
+      // 性能画像口径修正（M15.12）：SectionReviewService.lastTelemetry 在服务实例
+      // 生命周期内跨 run 累积——stage 报告取本次执行前后差值，per-run 诚实画像
+      const telemetryBase = services.paper.sectionReview.lastTelemetry;
       const scheduler = new SectionReviewScheduler({
         store: services.paper.store,
         reviewContext: services.paper.reviewContext,
@@ -8847,19 +8865,63 @@ function reviewSectionsStage(services: WorkflowServices): StageSpec {
         dropped: result.dropped,
         findings: result.findings,
         // 性能画像：每节一次模型调用（含节内重试），prompt/输出规模（run checkpoint 持久化）
-        modelTelemetry: services.paper.sectionReview.lastTelemetry ?? {
-          calls: 0,
-          failed: 0,
-          totalMs: 0,
-          approxPromptChars: 0,
-          outputChars: 0,
-        },
+        modelTelemetry: (() => {
+          const empty = { calls: 0, failed: 0, totalMs: 0, approxPromptChars: 0, outputChars: 0 };
+          const before = telemetryBase ?? empty;
+          const after = services.paper.sectionReview.lastTelemetry ?? empty;
+          return {
+            calls: after.calls - before.calls,
+            failed: after.failed - before.failed,
+            totalMs: after.totalMs - before.totalMs,
+            approxPromptChars: after.approxPromptChars - before.approxPromptChars,
+            outputChars: after.outputChars - before.outputChars,
+          };
+        })(),
         // 性能画像：并发度 / 队列等待 / wall vs sum-duration（run checkpoint 持久化）
         concurrencyTelemetry: result.telemetry,
       };
     },
     // DoD 由 review.aggregate 的文件级校验兜底（verifyDod 运行时本次产出
     // 尚未写入 stageResults，无法自读；findings 结构在聚合层强校验）
+  };
+}
+
+/**
+ * 全文级 pass（M15.12 B2）：review.sections 完成后、聚合前执行。
+ * 两步有界调用（抽取论证结构 → 全局批判），产物 = source:"fullpaper-review" 的
+ * ReviewFinding[]，与分节 findings 同 schema 进同一聚合报告；锚校验/截断登记
+ * 在服务内完成。globalReviewMode=off（缺省）时 planner 不进入本 stage。
+ */
+function reviewFullPaperStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "review.fullpaper",
+    description: "全文级 Goal–Method–Claim–Evidence 审查（跨节综合；2 次有界调用）",
+    requiredInputs: ["review.sections"],
+    producedOutputs: ["全局 findings（进入聚合报告）"],
+    maxAttempts: services.stageMaxAttempts,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: ["transient", "timeout", "runtime_unavailable"],
+    async execute(ctx) {
+      const sections = ctx.state.stageResults["review.sections"] ?? {};
+      const { findings: sectionFindings } = readFindings(sections["findings"]);
+      const result = await services.paper.fullPaperReview.reviewFullPaper({
+        projectId: ctx.projectId,
+        runId: ctx.runId,
+        sectionFindings,
+        signal: ctx.signal,
+      });
+      return {
+        findings: result.findings,
+        findingsTotal: result.findings.length,
+        dropped: result.dropped,
+        extractParseFailed: result.extractParseFailed,
+        critiqueParseFailed: result.critiqueParseFailed,
+        modelTelemetry: result.telemetry,
+        coverage: result.coverage,
+        extraction: result.extraction,
+      };
+    },
+    // DoD：findings 结构校验由 review.aggregate 兜底（与 review.sections 同模式）
   };
 }
 
@@ -8875,9 +8937,21 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
     async execute(ctx) {
       const sections = ctx.state.stageResults["review.sections"] ?? {};
       // findings 来自 checkpoint JSON（可能被手工编辑 / 损坏）：逐条校验，不盲信结构
-      const { findings, dropped: corrupted } = readFindings(sections["findings"]);
-      if (corrupted > 0) {
-        ctx.log(`review.aggregate：checkpoint 中 ${corrupted} 条 finding 结构损坏，已丢弃`);
+      const sectionRead = readFindings(sections["findings"]);
+      let findings = sectionRead.findings;
+      if (sectionRead.dropped > 0) {
+        ctx.log(`review.aggregate：checkpoint 中 ${sectionRead.dropped} 条 finding 结构损坏，已丢弃`);
+      }
+      // M15.12 B2：全文级 pass findings（globalReviewMode=on 时存在）并入同一报告
+      const fullpaperResult = ctx.state.stageResults["review.fullpaper"];
+      let fullpaperFindingsTotal = 0;
+      if (fullpaperResult !== undefined) {
+        const fullpaperRead = readFindings(fullpaperResult["findings"]);
+        findings = [...findings, ...fullpaperRead.findings];
+        fullpaperFindingsTotal = fullpaperRead.findings.length;
+        if (fullpaperRead.dropped > 0) {
+          ctx.log(`review.aggregate：review.fullpaper checkpoint 中 ${fullpaperRead.dropped} 条 finding 结构损坏，已丢弃`);
+        }
       }
       const integrity = await services.paper.citationIntegrity.integrityReport(ctx.projectId);
       // M15.1：引用核验四层摘要（attempted / adequate / matched / external），与 LaTeX 只读审计同一口径
@@ -8894,10 +8968,16 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
 
       const bySeverity: Record<FindingSeverity, number> = { critical: 0, major: 0, minor: 0, info: 0 };
       const byCategory: Partial<Record<FindingCategory, number>> = {};
+      const bySource: Record<string, number> = {};
       for (const finding of findings) {
         bySeverity[finding.severity] += 1;
         byCategory[finding.category] = (byCategory[finding.category] ?? 0) + 1;
+        bySource[finding.source] = (bySource[finding.source] ?? 0) + 1;
       }
+      // M15.12 B3：top-K 优先视图（确定性投影；priorityView=true 时随报告输出。
+      // 只加视图——findings 全量保留，blocking/Gate 语义零变化）
+      const priorityViewEnabled = readPriorityView(ctx.state.request);
+      const priorityView = priorityViewEnabled ? buildPriorityView(findings) : undefined;
       const round = countCompletions(ctx.state, "review.aggregate") + 1;
       const report = {
         schemaVersion: 1,
@@ -8920,6 +9000,20 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
           dropped: Number(sections["dropped"] ?? 0),
           bySeverity,
           byCategory,
+          // M15.12：finding 来源分账（section-review / fullpaper-review / citation-integrity）
+          bySource,
+          // M15.12 B2：全文级 pass 概况（globalReviewMode=on 时存在）
+          ...(fullpaperResult !== undefined
+            ? {
+                fullpaper: {
+                  findingsTotal: fullpaperFindingsTotal,
+                  dropped: Number(fullpaperResult["dropped"] ?? 0),
+                  extractParseFailed: fullpaperResult["extractParseFailed"] === true,
+                  critiqueParseFailed: fullpaperResult["critiqueParseFailed"] === true,
+                  coverage: fullpaperResult["coverage"] ?? null,
+                },
+              }
+            : {}),
           // M14.1c：显式覆盖块——实际审阅范围可证明；未完成审阅不得冒充 Full Review
           // （skipped 含 emptySections：reviewed + skipped = sectionsTotal 时全部
           // 章节有终态；failedSections > 0 或缺口未补齐 → complete=false）
@@ -8943,6 +9037,8 @@ function reviewAggregateStage(services: WorkflowServices): StageSpec {
           probableFabrications: integrity.probableFabrications,
           auditLayers: citationAuditLayers,
         },
+        // M15.12 B3：top-K 优先视图（priorityView=true 时存在；确定性投影）
+        ...(priorityView !== undefined ? { priorityView } : {}),
         findings,
       };
       const reportPath = await services.reviewArtifacts.saveExistingReview(ctx.projectId, round, report);
@@ -8968,6 +9064,7 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
     citationMetadataStage(services),
     citationClaimsStage(services),
     reviewSectionsStage(services),
+    reviewFullPaperStage(services),
     reviewAggregateStage(services),
   ];
 
@@ -8977,6 +9074,7 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
     "citation.metadata",
     "citation.claims",
     "review.sections",
+    "review.fullpaper",
     "review.aggregate",
   ];
 
@@ -8991,7 +9089,15 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
       //   contradiction_only / full  执行 claims stage（服务内部按模式判定）
       // 历史 run（request 无该字段）→ full，保持升级前的 resume 语义。
       const mode = readSemanticMode(state.request);
-      const sequence = mode === "off" ? front.filter((stageId) => stageId !== "citation.claims") : front;
+      // M15.12 B2：全文级 pass 可配置（globalReviewMode，随 run request 持久化）：
+      //   on   在 review.sections 与 review.aggregate 之间执行 review.fullpaper
+      //   off  跳过（缺省；历史 run 一律按 off 解释——不给旧 run 追加模型调用）
+      const globalMode = readGlobalReviewMode(state.request);
+      const sequence = front.filter(
+        (stageId) =>
+          (mode !== "off" || stageId !== "citation.claims") &&
+          (globalMode === "on" || stageId !== "review.fullpaper"),
+      );
       for (const stageId of sequence) {
         if (!(stageId in state.stageResults)) {
           return { kind: "stage", stageId };
@@ -9007,6 +9113,7 @@ export function createExistingPaperReviewDefinition(services: WorkflowServices):
           sectionsReviewed: state.stageResults["review.sections"]?.["sectionsReviewed"] ?? 0,
           reportPath: aggregate["reportPath"] ?? null,
           citationSemanticMode: mode,
+          globalReviewMode: globalMode,
         },
       };
     },

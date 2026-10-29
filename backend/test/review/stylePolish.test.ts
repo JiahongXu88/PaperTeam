@@ -469,7 +469,16 @@ describe("M5.4 Style Revision Loop（scripted workflow e2e）", () => {
     const stack = await newStack(["pass"]);
     const definition = createExistingPaperReviewDefinition(stack.stack.workflowServices);
     const ids = definition.stages.map((stage) => stage.id);
-    expect(ids).toEqual(["paper.ensure", "citation.extract", "citation.metadata", "citation.claims", "review.sections", "review.aggregate"]);
+    // M15.12：review.fullpaper 为只读全文审阅 pass（globalReviewMode=on 时执行），非修订/润色 stage
+    expect(ids).toEqual([
+      "paper.ensure",
+      "citation.extract",
+      "citation.metadata",
+      "citation.claims",
+      "review.sections",
+      "review.fullpaper",
+      "review.aggregate",
+    ]);
     expect(ids.some((id) => id.startsWith("revision.") || id.startsWith("writing.") || id === "hitl.style_polish")).toBe(false);
     const project = await stack.store.create("快速 Review", { researchIdea: "x" });
     for (const stylePolicy of ["apply_once", "suggest_only"]) {
