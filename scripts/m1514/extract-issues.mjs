@@ -149,11 +149,11 @@ for (const fam of targets) {
   stats.unjudgeable += famIssues.filter((i) => !i.judgeable).length;
   stats.issueFamilies += groups.length;
 }
-// 合并模式：增量追加（--dev/--fam 先跑 DEV，HELD-OUT 全量重写时以本文件累积为准）
+// 合并模式：始终增量（保留先前已提取的其他族问题——DEV 先提取、HELD-OUT 后全量）
 const outPath = join(ROOT, "phase-e", "reference-issues.jsonl");
 const famLevelPath = join(ROOT, "phase-e", "issue-families.json");
 let allLines = lines;
-if (famArg !== null || devOnly) {
+{
   const covered = new Set(lines.map((l) => l.familyId));
   if (existsSync(outPath)) {
     for (const line of (await readFile(outPath, "utf8")).split("\n")) {

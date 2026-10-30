@@ -104,8 +104,31 @@ const okPdfs = new Set(pdfLedger.filter((l) => l.status === "ok").map((l) => l.c
 const existing = existsSync(OUT) ? JSON.parse(await readFile(OUT, "utf8")) : { generatedAt: null, families: [] };
 const known = new Map(existing.families.map((f) => [f.familyId, f]));
 
-const outFamilies = [];
+// ---- 替补规则（协议 §1）：DEV/PRIMARY 下载失败 → RESERVE 按候选序补位 ----
+const selected = [];
+const substitutions = [];
+const reserves = frame.candidates.filter((c) => c.role === "RESERVE" && okPdfs.has(c.candidateId));
 for (const candidate of frame.candidates) {
+  if (candidate.role === "RESERVE") continue;
+  if (okPdfs.has(candidate.candidateId)) {
+    selected.push(candidate);
+    continue;
+  }
+  const backup = reserves.shift();
+  if (backup === undefined) {
+    console.log(`[no-substitute] ${candidate.candidateId} (${candidate.role}) PDF 缺失且 RESERVE 耗尽`);
+    continue;
+  }
+  substitutions.push({ failed: candidate.candidateId, role: candidate.role, replacedBy: backup.candidateId });
+  selected.push({ ...backup, role: candidate.role, substitutedFor: candidate.candidateId });
+  console.log(`[substitute] ${candidate.candidateId} (${candidate.role}) → ${backup.candidateId}`);
+}
+if (substitutions.length > 0) {
+  await writeFile(join(ROOT, "phase-b", "substitutions.json"), JSON.stringify({ registeredAt: new Date().toISOString(), substitutions }, null, 1), "utf8");
+}
+
+const outFamilies = [];
+for (const candidate of selected) {
   const familyId = `fam-${candidate.candidateId}`;
   if (known.has(familyId) && existsSync(join(PROJECTS_ROOT, known.get(familyId).projectId, "paper", "paper-map.json"))) {
     outFamilies.push(known.get(familyId));
