@@ -77,7 +77,8 @@ gapPlan 工件字段（actionType 四态 + experimentPlan + status=author_decisi
 ## 5. 测试
 
 - 新增：`backend/test/target/targetEvidenceAudit.test.ts`（15：纯函数/pool 三通道/空查询纪律/cutoff·自引·去重/解析错误计数/服务编排 fail-closed/工件+meta/陈旧/装配缺省关/PDF facts 分层）；`cjigPdfReferenceRegression.test.ts`（5：金标准一致/逐条-聚合自洽/真实统计上的区间判定/已知 2 条 DOI 缺失形态/本地对拍）；`targetGuideline.test.ts` +6（PDF 区间三分支/DOI 不可辨/字段无观测点/双输入 TeX 优先）；`targetHttp.test.ts` +2（flag 双态路由契约）；`frontend/TargetPanel.test.tsx` +3（off 不渲染/空态点击真实 API/报告渲染+陈旧）。
-- 全量：backend **412 files / 4518 tests 全绿**（首轮 2 例 skills 超时为前端套件并行资源争抢——串行复跑全过，无新增确定性失败）；frontend **38 files / 367 tests 全绿**；backend+frontend `tsc --noEmit` 双双真实执行通过（M15.13/15 教训）；frontend `vite build` 通过；`git diff --check` PASS。
+- 全量：backend **412 files / 4518 tests 全绿**（首轮 2 例 skills 超时为前端套件并行资源争抢——串行复跑全过，无新增确定性失败）；frontend **38 files / 367 tests 全绿**；backend+frontend `tsc --noEmit` 双双真实执行通过；frontend `vite build` 通过；`git diff --check` PASS。
+- 过程如实记录：收口首推（008e2b0）的 CI 因新测试文件的 latent 类型错误失败（vitest 不做类型检查，测试写完后漏跑 tsc——M15.13/M15.15 同款教训第三次出现）；已在 e2aa82f 修复并复验（本报告描述的是修复后的最终状态）。
 
 ## 6. 复现路径
 
