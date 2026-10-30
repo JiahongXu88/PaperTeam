@@ -1,22 +1,37 @@
 /**
- * Guideline 观测事实提取（M15.9 · Phase E G1）：manuscript .tex/.bib →
- * 官方投稿要求可核查的确定性观测点。
+ * Guideline 观测事实提取（M15.9 · Phase E G1）：手稿事实源 → 官方投稿要求
+ * 可核查的确定性观测点。
+ *
+ * M15.16 · P0-B：事实源分层——
+ * - LaTeX（.tex/.bib）：全字段观测（题目/关键词/摘要/正文/参考文献 bib 口径）；
+ * - PDF-only（无 .tex 但有 PaperStore 解析产物）：仅参考文献类观测
+ *   （ReferenceExtractor 稳定条目 → 数量/年份/DOI 统计），且分母与不确定区间
+ *   单独披露（解析覆盖不足以判定 → NOT_EVALUATED，不冒充 PASS/VIOLATION）；
+ * - 都没有：exists=false（全字段 NOT_EVALUATED）。
+ * 同一项目 TeX 与 PDF 并存时 TeX 优先（作者源码是可精确核查的事实源）。
  *
  * 纪律（与 manuscriptStats 同构）：
- * - 零 LLM、零 IO 之外的状态；观测不到 → null（NOT_EVALUATED 的输入），
- *   绝不发明数值；
+ * - 零 LLM；观测不到 → null（NOT_EVALUATED 的输入），绝不发明数值；
  * - 与 TargetGapService 的观测互不干扰（独立模块，不动 manuscriptStats 的
  *   既有语义——readiness 六维行为零变化）；
  * - 口径披露：题目字数 = CJK 字符数（中文刊"汉字"口径）；关键词以
- *   \keywords{}/关键词： 行解析；参考文献统计以 bib 条目为口径。
+ *   \keywords{}/关键词： 行解析；LaTeX 参考文献统计以 bib 条目为口径，
+ *   PDF 参考文献统计以 ReferenceExtractor 条目为口径。
  */
 
 import type { LatexProjectFiles } from "../manuscript/LatexFiles.js";
 import { collectLatexFiles } from "../manuscript/LatexFiles.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
+import type { PaperDocument } from "../paper/types.js";
+import { ReferenceExtractor } from "../paper/ReferenceExtractor.js";
 
 export interface GuidelineFacts {
   exists: boolean;
+  /**
+   * M15.16：事实源与优先级——"latex"（.tex 存在，全字段） / "pdf"（仅解析产物，
+   * 参考文献类观测） / null（无可观测事实源）。
+   */
+  source: "latex" | "pdf" | null;
   /** \title{...} 原文（剥命令） */
   titleRaw: string | null;
   /** 题目汉字数（CJK）；纯英文题目为 0 */
@@ -32,18 +47,32 @@ export interface GuidelineFacts {
   abstractCjkChars: number | null;
   /** 正文总字数（CJK + 拉丁词元；与 readiness 口径无关的粗计） */
   bodyCjkAndWordChars: number | null;
-  /** 参考文献统计（bib 条目口径；无 bib/无年份可析 → 子字段如实缺省） */
-  references: {
-    entryCount: number;
-    withYearCount: number | null;
-    recent10yCount: number | null;
-    /** 近 10 年占比（evalYear-9..evalYear）；无年份样本 → null */
-    recent10yRatio: number | null;
-    withDoiCount: number | null;
-    doiCoverageRatio: number | null;
-  } | null;
+  /** 参考文献统计（LaTeX=bib 条目口径；PDF=ReferenceExtractor 条目口径；无观测 → null） */
+  references: ReferenceObservation | null;
   /** bib 来源（file / thebibliography / null）——口径披露 */
   bibSource: "file" | "thebibliography" | null;
+}
+
+export interface ReferenceObservation {
+  entryCount: number;
+  withYearCount: number | null;
+  recent10yCount: number | null;
+  /** 近 10 年占比（evalYear-9..evalYear）；无年份样本 → null */
+  recent10yRatio: number | null;
+  withDoiCount: number | null;
+  doiCoverageRatio: number | null;
+  /**
+   * M15.16 PDF 口径补充披露（LaTeX bib 路径为 null——bib 条目年份/DOI 字段
+   * 判定是精确的）：年份未解析条目数与 DOI 未识别条目数单独列出，供
+   * checkRequirement 做区间判定（不足以下结论 → NOT_EVALUATED）。
+   */
+  yearUnparsedCount?: number;
+  doiUnidentifiableCount?: number;
+  /** 观测口径（"bib 条目" / "PDF ReferenceExtractor 条目"）——checkResult 披露用 */
+  basis?: "bib" | "pdf";
+  /** PDF 路径：条目风格（numeric [n] / author-year）与抽取器备注 */
+  style?: "numeric" | "author-year";
+  extractorNotes?: string[];
 }
 
 const CJK_CHAR = /[㐀-鿿豈-﫿぀-ヿ]/g;
@@ -122,13 +151,8 @@ export function abstractStructureOf(abstractText: string): GuidelineFacts["abstr
   return Object.fromEntries(entries) as GuidelineFacts["abstractStructured"];
 }
 
-export interface BibStats {
-  entryCount: number;
-  withYearCount: number | null;
-  recent10yCount: number | null;
-  recent10yRatio: number | null;
-  withDoiCount: number | null;
-  doiCoverageRatio: number | null;
+export interface BibStats extends ReferenceObservation {
+  basis: "bib";
 }
 
 /** bib 内容 → 条目统计（@type{key, 切分；year=/doi= 字段） */
@@ -138,7 +162,7 @@ export function bibStatsOf(bibContent: string, evalYear: number): BibStats {
     .map((entry) => entry.trim())
     .filter((entry) => /^@[A-Za-z]+\s*\{[^,]+,/.test(entry));
   if (entries.length === 0) {
-    return { entryCount: 0, withYearCount: null, recent10yCount: null, recent10yRatio: null, withDoiCount: null, doiCoverageRatio: null };
+    return { entryCount: 0, withYearCount: null, recent10yCount: null, recent10yRatio: null, withDoiCount: null, doiCoverageRatio: null, basis: "bib" };
   }
   const years: number[] = [];
   const withDoi = entries.filter((entry) => /doi\s*=/i.test(entry)).length;
@@ -156,19 +180,66 @@ export function bibStatsOf(bibContent: string, evalYear: number): BibStats {
     recent10yRatio: years.length > 0 ? Math.round((recent / years.length) * 100) / 100 : null,
     withDoiCount: withDoi,
     doiCoverageRatio: Math.round((withDoi / entries.length) * 100) / 100,
+    basis: "bib",
   };
 }
 
-/** 观测官方要求核查点（collectLatexFiles 单次遍历；evalYear 控制"近10年"窗口） */
+/**
+ * PDF 解析产物 → 参考文献条目统计（M15.16 P0-B；ReferenceExtractor 口径）。
+ *
+ * 分母纪律：
+ * - entryCount = 抽取器稳定条目数（numeric [n] 或 author-year 合并后）；
+ * - 年份只对解析成功条目计算；yearUnparsedCount 单独披露（缺失年份既不当
+ *   旧文献也不当新文献——由 checkRequirement 做区间判定）；
+ * - DOI 只统计可辨识条目；doiUnidentifiableCount 单独披露（未识别 ≠ 违规：
+ *   印刷 DOI 存在但解析失败与作者未提供 DOI 在 PDF 上不可区分）。
+ */
+export function pdfReferenceStatsOf(
+  document: PaperDocument,
+  evalYear: number,
+): { references: ReferenceObservation | null; notes: string[] } {
+  const extraction = new ReferenceExtractor().extract(document);
+  if (extraction.references.length === 0) {
+    return { references: null, notes: extraction.notes };
+  }
+  const entries = extraction.references;
+  const withYear = entries.filter((entry) => entry.year !== undefined);
+  const recent = withYear.filter(
+    (entry) => (entry.year ?? 0) >= evalYear - 9 && (entry.year ?? 0) <= evalYear,
+  ).length;
+  const withDoi = entries.filter((entry) => entry.doi !== undefined && entry.doi !== "").length;
+  const style: "numeric" | "author-year" = entries.some((entry) => entry.number !== undefined)
+    ? "numeric"
+    : "author-year";
+  return {
+    references: {
+      entryCount: entries.length,
+      withYearCount: withYear.length > 0 ? withYear.length : null,
+      recent10yCount: withYear.length > 0 ? recent : null,
+      recent10yRatio: withYear.length > 0 ? Math.round((recent / withYear.length) * 100) / 100 : null,
+      withDoiCount: withDoi,
+      doiCoverageRatio: Math.round((withDoi / entries.length) * 100) / 100,
+      yearUnparsedCount: entries.length - withYear.length,
+      doiUnidentifiableCount: entries.length - withDoi,
+      basis: "pdf",
+      style,
+      extractorNotes: extraction.notes.slice(0, 5),
+    },
+    notes: extraction.notes,
+  };
+}
+
+/** 观测官方要求核查点（TeX 优先；无 TeX 时降 PDF 解析产物的参考文献观测；evalYear 控制"近10年"窗口） */
 export async function observeGuidelineFacts(
   projects: ProjectStore,
   projectId: string,
-  options: { evalYear?: number } = {},
+  options: { evalYear?: number; loadPaperDocument?: (projectId: string) => Promise<PaperDocument | null> } = {},
 ): Promise<GuidelineFacts> {
   const evalYear = options.evalYear ?? new Date().getFullYear();
   const files: LatexProjectFiles = await collectLatexFiles(projects.manuscriptDir(projectId));
   const empty: GuidelineFacts = {
     exists: false,
+    source: null,
     titleRaw: null,
     titleCjkChars: null,
     titleEnWords: null,
@@ -181,7 +252,22 @@ export async function observeGuidelineFacts(
     bibSource: files.bibSource ?? null,
   };
   if (files.allTex.length === 0) {
-    return empty;
+    // PDF-only：参考文献类官方条款可从解析产物机检（M15.16 P0-B）；
+    // 其余字段无观测点，保持 null（NOT_EVALUATED——不借用 LaTeX 字段默认值）
+    if (options.loadPaperDocument === undefined) {
+      return empty;
+    }
+    const document = await options.loadPaperDocument(projectId);
+    if (document === null) {
+      return empty;
+    }
+    const { references } = pdfReferenceStatsOf(document, evalYear);
+    return {
+      ...empty,
+      exists: references !== null,
+      source: references !== null ? "pdf" : null,
+      references,
+    };
   }
   const title = extractTitle(files.allTex);
   const titleCjk = title !== null ? countCjk(title) : null;
@@ -202,6 +288,7 @@ export async function observeGuidelineFacts(
   const references = files.bibContent !== null ? bibStatsOf(files.bibContent, evalYear) : null;
   return {
     exists: true,
+    source: "latex",
     titleRaw: title,
     titleCjkChars: titleCjk,
     titleEnWords,

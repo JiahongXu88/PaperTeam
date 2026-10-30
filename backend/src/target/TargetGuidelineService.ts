@@ -19,6 +19,7 @@ import { join } from "node:path";
 
 import { BusinessError, NotFoundError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
+import type { PaperStore } from "../paper/PaperStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { observeGuidelineFacts, type GuidelineFacts } from "./guidelineFacts.js";
 import type {
@@ -43,6 +44,8 @@ const ABSTRACT_APPROX_TOLERANCE = 0.6;
 
 export interface TargetGuidelineServiceOptions {
   projects: ProjectStore;
+  /** M15.16 P0-B：PDF-only 稿件的参考文献观测来源（缺省不观测——保持既有 NOT_EVALUATED 行为） */
+  papers?: PaperStore;
   currentRevision?: (projectId: string) => Promise<number>;
   now?: () => Date;
   log?: (message: string) => void;
@@ -50,12 +53,14 @@ export interface TargetGuidelineServiceOptions {
 
 export class TargetGuidelineService {
   private readonly projects: ProjectStore;
+  private readonly papers: PaperStore | undefined;
   private readonly currentRevision: ((projectId: string) => Promise<number>) | undefined;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
 
   constructor(options: TargetGuidelineServiceOptions) {
     this.projects = options.projects;
+    this.papers = options.papers;
     this.currentRevision = options.currentRevision;
     this.now = options.now ?? (() => new Date());
     this.log = options.log ?? (() => {});
@@ -125,7 +130,12 @@ export class TargetGuidelineService {
   ): Promise<GuidelineComplianceReport> {
     await this.projects.getRequired(projectId);
     const guideline = await this.getRequired(projectId);
-    const facts = await observeGuidelineFacts(this.projects, projectId, { evalYear: this.now().getFullYear() });
+    const facts = await observeGuidelineFacts(this.projects, projectId, {
+      evalYear: this.now().getFullYear(),
+      ...(this.papers !== undefined
+        ? { loadPaperDocument: (pid: string) => this.papers!.loadDocument(pid) }
+        : {}),
+    });
     const manuscriptRevision =
       options.manuscriptRevision !== undefined
         ? options.manuscriptRevision
@@ -138,7 +148,7 @@ export class TargetGuidelineService {
     });
     await writeJsonAtomic(this.reportPath(projectId), report);
     this.log(
-      `[target] projectId=${projectId} guideline 合规评估：venue=${guideline.venueId} hardViolations=${report.summary.hardViolations} notEvaluated=${report.summary.notEvaluatedCount}`,
+      `[target] projectId=${projectId} guideline 合规评估：venue=${guideline.venueId} factsSource=${facts.source ?? "none"} hardViolations=${report.summary.hardViolations} notEvaluated=${report.summary.notEvaluatedCount}`,
     );
     return report;
   }
@@ -192,7 +202,13 @@ function checkRequirement(
     sourceUrl: requirement.sourceUrl,
   };
   if (!facts.exists) {
-    return { ...base, status: "NOT_EVALUATED", observed: "（尚无手稿）", expected: describeExpected(requirement), reason: "manuscript 目录无 .tex 文件" };
+    return {
+      ...base,
+      status: "NOT_EVALUATED",
+      observed: "（尚无可观测手稿事实源——manuscript 目录无 .tex，且无 PDF 参考文献解析产物）",
+      expected: describeExpected(requirement),
+      reason: "no_manuscript_facts",
+    };
   }
   if (FIELDS_WITHOUT_DETERMINISTIC_CHECKER.has(requirement.field)) {
     return {
@@ -201,6 +217,18 @@ function checkRequirement(
       observed: "（无确定性检查器——渲染/排版类要求不从 .tex 冒充核查）",
       expected: describeExpected(requirement),
       reason: "no_deterministic_checker",
+    };
+  }
+  // M15.16 P0-B：PDF-only 事实源只承载参考文献类观测——其余字段（题目/关键词/
+  // 摘要结构/正文长度）无 PDF 确定性观测点，如实 NOT_EVALUATED（缺要素 ≠ 可
+  // 判违规：PDF 上"未观测到"与"不存在"不可区分）
+  if (facts.source === "pdf" && !requirement.field.startsWith("references.")) {
+    return {
+      ...base,
+      status: "NOT_EVALUATED",
+      observed: "（PDF-only 稿件：该字段无确定性观测点，不从 PDF 冒充核查）",
+      expected: describeExpected(requirement),
+      reason: "pdf_no_observation_point",
     };
   }
   switch (requirement.field) {
@@ -301,18 +329,30 @@ function checkRequirement(
     }
     case "references.count": {
       if (facts.references === null) {
-        return { ...base, status: "NOT_EVALUATED", observed: "（未识别参考文献——references.bib 或 thebibliography）", expected: describeExpected(requirement), reason: "no_references" };
+        const reason = facts.source === "pdf" ? "no_references_section_on_pdf" : "no_references";
+        return {
+          ...base,
+          status: "NOT_EVALUATED",
+          observed: facts.source === "pdf" ? "（PDF 解析产物未识别参考文献章节）" : "（未识别参考文献——references.bib 或 thebibliography）",
+          expected: describeExpected(requirement),
+          reason,
+        };
       }
       const ok = facts.references.entryCount >= (requirement.value ?? 0);
+      const observed =
+        facts.references.basis === "pdf"
+          ? `参考文献 ${facts.references.entryCount} 条（PDF ReferenceExtractor 条目口径；${facts.references.style ?? "unknown"} 风格${facts.references.extractorNotes?.length ? `；${facts.references.extractorNotes[0]}` : ""}）`
+          : `参考文献 ${facts.references.entryCount} 条（${facts.bibSource === "thebibliography" ? "正文内联 thebibliography 口径" : "bib 条目口径"}）`;
       return {
         ...base,
         status: ok ? "PASS" : requirement.hard ? "VIOLATION" : "ADVISORY",
-        observed: `参考文献 ${facts.references.entryCount} 条（${facts.bibSource === "thebibliography" ? "正文内联 thebibliography 口径" : "bib 条目口径"}）`,
+        observed,
         expected: `参考文献 ≥ ${requirement.value} 条`,
       };
     }
     case "references.recent10yRatio": {
-      if (facts.references === null || facts.references.recent10yRatio === null) {
+      const refs = facts.references;
+      if (refs === null || refs.withYearCount === null || refs.recent10yRatio === null) {
         return {
           ...base,
           status: "NOT_EVALUATED",
@@ -321,23 +361,78 @@ function checkRequirement(
           reason: "no_parseable_years",
         };
       }
-      const ok = facts.references.recent10yRatio >= (requirement.value ?? 0);
+      const threshold = requirement.value ?? 0;
+      // M15.16 P0-B PDF 口径：年份未解析条目既不当旧文献也不当新文献——
+      // 区间分析（最差/最好界），不确定区间跨越阈值 → NOT_EVALUATED（带区间披露）
+      if (refs.basis === "pdf") {
+        const total = refs.entryCount;
+        const unparsed = refs.yearUnparsedCount ?? 0;
+        const recent = refs.recent10yCount ?? 0;
+        if (total <= 0) {
+          return { ...base, status: "NOT_EVALUATED", observed: "（PDF 参考文献条目为空）", expected: describeExpected(requirement), reason: "no_references" };
+        }
+        const low = recent / total;
+        const high = (recent + unparsed) / total;
+        const pct = (value: number) => `${Math.round(value * 100)}%`;
+        const observed = `近 10 年占比（可析年份口径）${pct(refs.recent10yRatio)}（${recent}/${refs.withYearCount} 条可析年份）；未解析 ${unparsed} 条的区间分析 [${pct(low)}, ${pct(high)}]`;
+        if (low >= threshold) {
+          return { ...base, status: "PASS", observed: `${observed}——任意取值均 ≥ ${pct(threshold)}`, expected: `近 10 年占比 ≥ ${pct(threshold)}` };
+        }
+        if (high < threshold) {
+          return {
+            ...base,
+            status: requirement.hard ? "VIOLATION" : "ADVISORY",
+            observed: `${observed}——任意取值均 < ${pct(threshold)}`,
+            expected: `近 10 年占比 ≥ ${pct(threshold)}`,
+          };
+        }
+        return {
+          ...base,
+          status: "NOT_EVALUATED",
+          observed: `${observed}——区间跨越阈值 ${pct(threshold)}，无法确定达/不达`,
+          expected: `近 10 年占比 ≥ ${pct(threshold)}`,
+          reason: "pdf_year_parse_indeterminate",
+        };
+      }
+      const ok = refs.recent10yRatio >= threshold;
       return {
         ...base,
         status: ok ? "PASS" : requirement.hard ? "VIOLATION" : "ADVISORY",
-        observed: `近 10 年文献占比 ${Math.round(facts.references.recent10yRatio * 100)}%（${facts.references.recent10yCount}/${facts.references.withYearCount} 条可析年份）`,
-        expected: `近 10 年占比 ≥ ${Math.round((requirement.value ?? 0) * 100)}%`,
+        observed: `近 10 年文献占比 ${Math.round(refs.recent10yRatio * 100)}%（${refs.recent10yCount}/${refs.withYearCount} 条可析年份）`,
+        expected: `近 10 年占比 ≥ ${Math.round(threshold * 100)}%`,
       };
     }
     case "references.doiCoverage": {
-      if (facts.references === null || facts.references.doiCoverageRatio === null) {
+      const refs = facts.references;
+      if (refs === null || refs.doiCoverageRatio === null) {
         return { ...base, status: "NOT_EVALUATED", observed: "（未识别参考文献）", expected: describeExpected(requirement), reason: "no_references" };
       }
-      const ok = facts.references.doiCoverageRatio >= 1;
+      // M15.16 P0-B PDF 口径：未识别 DOI 的条目可能是印刷 DOI 解析失败（M15.15
+      // 实测 CJIG 召回 405/407）而非作者未提供——只有 100% 可辨识才判 PASS，
+      // 不足时 NOT_EVALUATED（绝不把"没认出 DOI"当"没提供 DOI"判违规）
+      if (refs.basis === "pdf") {
+        const withDoi = refs.withDoiCount ?? 0;
+        if (withDoi >= refs.entryCount) {
+          return {
+            ...base,
+            status: "PASS",
+            observed: `参考文献 ${refs.entryCount} 条全部辨识出 DOI（PDF 口径：逐条可辨识 = 每条印有 DOI）`,
+            expected: "所有参考文献提供 DOI（覆盖率 100%）",
+          };
+        }
+        return {
+          ...base,
+          status: "NOT_EVALUATED",
+          observed: `参考文献含可辨识 DOI ${withDoi}/${refs.entryCount} 条（${refs.entryCount - withDoi} 条未识别——印刷 DOI 解析失败与作者未提供 DOI 在 PDF 上不可区分）`,
+          expected: "所有参考文献提供 DOI（覆盖率 100%）",
+          reason: "pdf_doi_coverage_indeterminate",
+        };
+      }
+      const ok = refs.doiCoverageRatio >= 1;
       return {
         ...base,
         status: ok ? "PASS" : requirement.hard ? "VIOLATION" : "ADVISORY",
-        observed: `参考文献含 DOI ${facts.references.withDoiCount}/${facts.references.entryCount} 条`,
+        observed: `参考文献含 DOI ${refs.withDoiCount}/${refs.entryCount} 条`,
         expected: "所有参考文献提供 DOI（覆盖率 100%）",
       };
     }

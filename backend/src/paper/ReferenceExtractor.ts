@@ -23,8 +23,10 @@ import type { PaperChunk, PaperDocument } from "./types.js";
  * 任一变化就递增，让旧提取结果在下次 extract 时自动重算。
  * v3：callout 保留原始标记 rawText（citation group 信息不丢失——[35, 2, 5] 是
  * 一个组，不再是三条失去组归属的独立 relation）。
+ * v4（M15.16）：出版年解析剔除 DOI / arXiv id / URL 标识符 span——标识符内的
+ * 年形数字（arXiv 2004.10934 → "2004"）不再是出版年（P0-B 年份口径严谨性）。
  */
-export const REFERENCE_EXTRACTION_VERSION = `v3.n${REFERENCE_NORMALIZATION_VERSION}`;
+export const REFERENCE_EXTRACTION_VERSION = `v4.n${REFERENCE_NORMALIZATION_VERSION}`;
 
 /** range 展开上限（防 [1-999] 之类解析事故） */
 const RANGE_EXPAND_LIMIT = 60;
@@ -334,7 +336,13 @@ export function parseReferenceFields(text: string): Partial<ReferenceEntry> {
     out.arxivId = arxivMatch[1] ?? "";
   }
 
-  const years = [...text.matchAll(/\b((?:19|20)\d{2})\b/g)].map((m) => Number.parseInt(m[1] ?? "0", 10));
+  // 出版年：在剔除标识符 span 后的文本上取最后一个年形数字（M15.16：arXiv
+  // 2004.10934 / DOI 10.1109/...2016.98 内的年形数字不是出版年——先剥离再取）
+  const yearsText = identifiers
+    .replace(/10\s*[.．]\s*\d{4,5}\s*[/／][^\s］\]]*/gi, " ")
+    .replace(/arxiv(?:\.org)?[/:\s]*(?:abs|pdf)?\/?\s*\d{4}\.\d{4,5}(?:v\d+)?/gi, " ")
+    .replace(/https?\s*[：:]\s*\/\s*\/\S*/gi, " ");
+  const years = [...yearsText.matchAll(/\b((?:19|20)\d{2})\b/g)].map((m) => Number.parseInt(m[1] ?? "0", 10));
   if (years.length > 0) {
     out.year = years[years.length - 1]; // 条目末尾年份通常是出版年
   }

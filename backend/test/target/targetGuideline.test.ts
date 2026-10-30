@@ -205,10 +205,149 @@ describe("guidelineFacts 确定性提取", () => {
   });
 });
 
+// ---- M15.16 P0-B：PDF-only 参考文献机检（区间分析 / DOI 不可辨不误判 / 字段无观测点）----
+
+describe("evaluateCompliance PDF-only 参考文献（M15.16）", () => {
+  function pdfFacts(references: Partial<NonNullable<GuidelineFacts["references"]>>): GuidelineFacts {
+    return {
+      exists: true,
+      source: "pdf",
+      titleRaw: null,
+      titleCjkChars: null,
+      titleEnWords: null,
+      keywordCount: null,
+      keywords: null,
+      abstractStructured: null,
+      abstractCjkChars: null,
+      bodyCjkAndWordChars: null,
+      references: {
+        entryCount: 20,
+        withYearCount: 20,
+        recent10yCount: 15,
+        recent10yRatio: 0.75,
+        withDoiCount: 20,
+        doiCoverageRatio: 1,
+        yearUnparsedCount: 0,
+        doiUnidentifiableCount: 0,
+        basis: "pdf",
+        style: "numeric",
+        ...references,
+      } as NonNullable<GuidelineFacts["references"]>,
+      bibSource: null,
+    };
+  }
+
+  it("数量/年份/DOI 全覆盖 → 三条 PASS；非参考文献字段 → NOT_EVALUATED（pdf_no_observation_point）", () => {
+    const report = evaluateCompliance(cjigGuideline(), pdfFacts({}), {
+      evaluatedAt: "2026-10-31T00:00:00.000Z",
+      manuscriptRevision: null,
+    });
+    const byId = new Map(report.checks.map((check) => [check.requirementId, check]));
+    expect(byId.get("cjig-refs-15")?.status).toBe("PASS");
+    expect(byId.get("cjig-refs-15")?.observed).toContain("PDF ReferenceExtractor 条目口径");
+    expect(byId.get("cjig-refs-recent")?.status).toBe("PASS");
+    expect(byId.get("cjig-refs-recent")?.observed).toContain("区间分析");
+    expect(byId.get("cjig-refs-doi")?.status).toBe("PASS");
+    expect(byId.get("cjig-refs-doi")?.observed).toContain("全部辨识出 DOI");
+    // 题目/关键词/摘要/正文字段：PDF-only 无观测点（缺要素 ≠ 违规）
+    for (const id of ["cjig-title-20", "cjig-kw-58", "cjig-abs-struct", "cjig-abs-500"]) {
+      expect(byId.get(id)?.status).toBe("NOT_EVALUATED");
+      expect(byId.get(id)?.reason).toBe("pdf_no_observation_point");
+    }
+  });
+
+  it("年份区间跨越阈值 → NOT_EVALUATED（pdf_year_parse_indeterminate）；区间全低 → VIOLATION；区间全高 → PASS", () => {
+    // 20 条：8 条近年可析 + 8 条旧 + 4 条年份未解析 → low=0.4, high=0.6 → 跨越 0.6
+    const crossing = evaluateCompliance(
+      cjigGuideline(),
+      pdfFacts({ entryCount: 20, withYearCount: 16, recent10yCount: 8, recent10yRatio: 0.5, yearUnparsedCount: 4 }),
+      { evaluatedAt: "2026-10-31T00:00:00.000Z", manuscriptRevision: null },
+    );
+    const recentCheck = crossing.checks.find((check) => check.requirementId === "cjig-refs-recent");
+    expect(recentCheck?.status).toBe("NOT_EVALUATED");
+    expect(recentCheck?.reason).toBe("pdf_year_parse_indeterminate");
+    expect(recentCheck?.observed).toContain("[40%, 60%]");
+    // 15 条：3 近年 + 12 旧（无未解析）→ 0.2 < 0.6 全区间低于阈值 → VIOLATION
+    const allOld = evaluateCompliance(
+      cjigGuideline(),
+      pdfFacts({ entryCount: 15, withYearCount: 15, recent10yCount: 3, recent10yRatio: 0.2, yearUnparsedCount: 0 }),
+      { evaluatedAt: "2026-10-31T00:00:00.000Z", manuscriptRevision: null },
+    );
+    expect(allOld.checks.find((check) => check.requirementId === "cjig-refs-recent")?.status).toBe("VIOLATION");
+    // 10 条：8 近年可析 + 0 近年未解析 2 条 → low=0.8 ≥ 0.6 → PASS（任意取值均达标）
+    const allHigh = evaluateCompliance(
+      cjigGuideline(),
+      pdfFacts({ entryCount: 10, withYearCount: 8, recent10yCount: 8, recent10yRatio: 1, yearUnparsedCount: 2 }),
+      { evaluatedAt: "2026-10-31T00:00:00.000Z", manuscriptRevision: null },
+    );
+    const high = allHigh.checks.find((check) => check.requirementId === "cjig-refs-recent");
+    expect(high?.status).toBe("PASS");
+    expect(high?.observed).toContain("任意取值均 ≥ 60%");
+  });
+
+  it("DOI 部分可辨识 → NOT_EVALUATED（不把解析失败当作者未提供判 VIOLATION）", () => {
+    const report = evaluateCompliance(
+      cjigGuideline(),
+      pdfFacts({ entryCount: 20, withDoiCount: 18, doiCoverageRatio: 0.9, doiUnidentifiableCount: 2 }),
+      { evaluatedAt: "2026-10-31T00:00:00.000Z", manuscriptRevision: null },
+    );
+    const doi = report.checks.find((check) => check.requirementId === "cjig-refs-doi");
+    expect(doi?.status).toBe("NOT_EVALUATED");
+    expect(doi?.reason).toBe("pdf_doi_coverage_indeterminate");
+    expect(doi?.observed).toContain("18/20");
+  });
+
+  it("数量不足（PDF 条目口径）→ VIOLATION；参考文献节缺失 → NOT_EVALUATED（no_references_section_on_pdf）", () => {
+    const few = evaluateCompliance(
+      cjigGuideline(),
+      pdfFacts({ entryCount: 10 }),
+      { evaluatedAt: "2026-10-31T00:00:00.000Z", manuscriptRevision: null },
+    );
+    expect(few.checks.find((check) => check.requirementId === "cjig-refs-15")?.status).toBe("VIOLATION");
+    const none = evaluateCompliance(
+      cjigGuideline(),
+      { exists: false, source: null, titleRaw: null, titleCjkChars: null, titleEnWords: null, keywordCount: null, keywords: null, abstractStructured: null, abstractCjkChars: null, bodyCjkAndWordChars: null, references: null, bibSource: null },
+      { evaluatedAt: "2026-10-31T00:00:00.000Z", manuscriptRevision: null },
+    );
+    const refsCheck = none.checks.find((check) => check.requirementId === "cjig-refs-15");
+    expect(refsCheck?.status).toBe("NOT_EVALUATED");
+    expect(refsCheck?.reason).toBe("no_manuscript_facts");
+  });
+
+  it("TeX 存在时 PDF 观测不参与（双输入优先级）：latex facts 走 bib 口径", () => {
+    const latexFacts: GuidelineFacts = {
+      exists: true,
+      source: "latex",
+      titleRaw: "多目标跟踪综述",
+      titleCjkChars: 8,
+      titleEnWords: null,
+      keywordCount: 6,
+      keywords: ["a", "b", "c", "d", "e", "f"],
+      abstractStructured: { purpose: true, method: true, result: true, conclusion: true },
+      abstractCjkChars: 500,
+      bodyCjkAndWordChars: 9000,
+      references: bibStatsOf(
+        ["@article{a, title={A}, year={2024}, doi={10.1/x}}", "@article{b, title={B}, year={2020}}"].join("\n"),
+        2026,
+      ),
+      bibSource: "file",
+    };
+    const report = evaluateCompliance(cjigGuideline(), latexFacts, {
+      evaluatedAt: "2026-10-31T00:00:00.000Z",
+      manuscriptRevision: null,
+    });
+    const doi = report.checks.find((check) => check.requirementId === "cjig-refs-doi");
+    // bib 口径：1/2 有 doi 字段 → 精确判定 VIOLATION（非 PDF 的 NOT_EVALUATED）
+    expect(doi?.status).toBe("VIOLATION");
+    expect(doi?.observed).not.toContain("不可区分");
+  });
+});
+
 describe("evaluateCompliance 逐字段判定 + venue 差分", () => {
   function factsOf(overrides: Partial<GuidelineFacts>): GuidelineFacts {
     return {
       exists: true,
+      source: "latex",
       titleRaw: "多目标跟踪评测指标综述",
       titleCjkChars: 11,
       titleEnWords: null,
@@ -277,7 +416,7 @@ describe("evaluateCompliance 逐字段判定 + venue 差分", () => {
   });
 
   it("无手稿 → 全部 NOT_EVALUATED → topStatus=NOT_EVALUATED_ONLY", () => {
-    const report = evaluatePure(cjigGuideline(), { exists: false, titleRaw: null, titleCjkChars: null, titleEnWords: null, keywordCount: null, keywords: null, abstractStructured: null, abstractCjkChars: null, bodyCjkAndWordChars: null, references: null, bibSource: null });
+    const report = evaluatePure(cjigGuideline(), { exists: false, source: null, titleRaw: null, titleCjkChars: null, titleEnWords: null, keywordCount: null, keywords: null, abstractStructured: null, abstractCjkChars: null, bodyCjkAndWordChars: null, references: null, bibSource: null });
     expect(report.summary.notEvaluatedCount).toBe(report.checks.length);
     expect(report.summary.topStatus).toBe("NOT_EVALUATED_ONLY");
   });

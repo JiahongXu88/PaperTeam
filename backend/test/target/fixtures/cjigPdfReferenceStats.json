@@ -1,0 +1,2964 @@
+{
+ "schemaVersion": 1,
+ "generatedAt": "2026-10-30T16:52:27.319Z",
+ "extractorVersion": "v4.n3",
+ "evalYear": 2026,
+ "provenance": {
+  "source": "D:\\PaperTeamData\\M15\\M15_15\\phase-b\\samples（许可内本地样本；不提交仓库）",
+  "gold": "M15.15 phase-b GOLD_STANDARD.md：7 份 CJIG 合计 465 条、DOI 405/407（99.5% 召回）；2 条已知缺失形态见金标准文档",
+  "deidentification": "逐条仅保留 number/year/hasDoi/hasArxiv——rawText/title 不导出（版权全文不进仓库）"
+ },
+ "samples": [
+  {
+   "sample": "10_11834_jig_200037",
+   "entries": [
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2011,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2005,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2010,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1981,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2011,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2011,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2011,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1999,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2001,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2004,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2006,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2007,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2009,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1991,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2008,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    }
+   ],
+   "stats": {
+    "entryCount": 77,
+    "withYearCount": 77,
+    "recent10yCount": 32,
+    "recent10yRatio": 0.42,
+    "withDoiCount": 68,
+    "doiCoverageRatio": 0.88,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 9,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  },
+  {
+   "sample": "10_11834_jig_200544",
+   "entries": [
+    {
+     "number": null,
+     "year": 2010,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    }
+   ],
+   "stats": {
+    "entryCount": 19,
+    "withYearCount": 19,
+    "recent10yCount": 9,
+    "recent10yRatio": 0.47,
+    "withDoiCount": 15,
+    "doiCoverageRatio": 0.79,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 4,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  },
+  {
+   "sample": "10_11834_jig_210794",
+   "entries": [
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1998,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2004,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    }
+   ],
+   "stats": {
+    "entryCount": 35,
+    "withYearCount": 35,
+    "recent10yCount": 27,
+    "recent10yRatio": 0.77,
+    "withDoiCount": 28,
+    "doiCoverageRatio": 0.8,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 7,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  },
+  {
+   "sample": "10_11834_jig_211153",
+   "entries": [
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2007,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2006,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2008,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2010,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2010,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2003,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2004,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    }
+   ],
+   "stats": {
+    "entryCount": 121,
+    "withYearCount": 121,
+    "recent10yCount": 102,
+    "recent10yRatio": 0.84,
+    "withDoiCount": 107,
+    "doiCoverageRatio": 0.88,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 14,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  },
+  {
+   "sample": "10_11834_jig_220670",
+   "entries": [
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1983,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2006,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2010,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2007,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2007,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1993,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    }
+   ],
+   "stats": {
+    "entryCount": 93,
+    "withYearCount": 93,
+    "recent10yCount": 70,
+    "recent10yRatio": 0.75,
+    "withDoiCount": 87,
+    "doiCoverageRatio": 0.94,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 6,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  },
+  {
+   "sample": "case-R",
+   "entries": [
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2023,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2014,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2012,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    }
+   ],
+   "stats": {
+    "entryCount": 41,
+    "withYearCount": 41,
+    "recent10yCount": 33,
+    "recent10yRatio": 0.8,
+    "withDoiCount": 39,
+    "doiCoverageRatio": 0.95,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 2,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  },
+  {
+   "sample": "case-S",
+   "entries": [
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1901,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2002,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1997,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 1996,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2016,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2018,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2019,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 1993,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2015,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2013,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": false,
+     "hasArxiv": true
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2021,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2017,
+     "hasDoi": false,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2020,
+     "hasDoi": true,
+     "hasArxiv": false
+    },
+    {
+     "number": null,
+     "year": 2022,
+     "hasDoi": false,
+     "hasArxiv": true
+    }
+   ],
+   "stats": {
+    "entryCount": 79,
+    "withYearCount": 79,
+    "recent10yCount": 69,
+    "recent10yRatio": 0.87,
+    "withDoiCount": 61,
+    "doiCoverageRatio": 0.77,
+    "yearUnparsedCount": 0,
+    "doiUnidentifiableCount": 18,
+    "basis": "pdf",
+    "style": "author-year",
+    "extractorNotes": [
+     "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+    ]
+   },
+   "extractorNotes": [
+    "References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）"
+   ]
+  }
+ ]
+}
