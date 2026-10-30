@@ -86,6 +86,31 @@ const adapter = new PiRuntimeAdapter({
   roleSkills: (role, scope) => skillRegistry.skillAssignmentsFor(role, scope),
   log: () => {},
 });
+// 物理调用台账（与 run-arms 同一 jsonl，armHint=phase-d）
+const CALLS_LOG = join(ROOT, "phase-d", "model-calls.jsonl");
+const { appendFile } = await import("node:fs/promises");
+const originalRunAgentPd = adapter.runAgent.bind(adapter);
+adapter.runAgent = async (...callArgs) => {
+  const t0 = Date.now();
+  const scopeHint = callArgs[0]?.contextScope ?? "";
+  const result = await originalRunAgentPd(...callArgs);
+  await appendFile(
+    CALLS_LOG,
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      callIndex: 0,
+      familyId: `phaseD-${callArgs[0]?.metadata?.pass ?? scopeHint}`,
+      contextScope: scopeHint,
+      armHint: "phase-d",
+      status: result.status,
+      ms: Date.now() - t0,
+      usage: result.usage ?? null,
+      taskId: result.taskId,
+    }) + "\n",
+    "utf8",
+  ).catch(() => {});
+  return result;
+};
 const projects = new ProjectStore({ root: PROJECTS_ROOT });
 const paperStore = new PaperStore(projects);
 const auditService = new ContributionAuditService({

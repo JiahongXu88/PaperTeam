@@ -841,6 +841,20 @@ export class ContributionAuditService {
     };
 
     const documentText = document.chunks.map((c) => c.text).join("\n\n");
+    // CJK 锚校验修复（M15.14 Phase D 发现）：PDF 换行在中文句中插入空白，空白折叠
+    // 后 substring 仍失配——含 CJK 的引文额外用"剥离全部空白"的文本核验（任一通过即锚定）。
+    const hasCjk = (text: string): boolean => /[㐀-鿿豈-﫿　-〿＀-￯]/.test(text);
+    const stripAllWhitespace = (text: string): string => text.replace(/\s+/g, "");
+    const cjkDocumentText = hasCjk(documentText) ? stripAllWhitespace(documentText) : documentText;
+    const verifyQuoteAnywhere = (quote: string): boolean => {
+      if (verifyQuoteInChunk(quote, documentText).ok) return true;
+      return hasCjk(quote) && verifyQuoteInChunk(stripAllWhitespace(quote), cjkDocumentText).ok;
+    };
+    const verifyQuoteInSection = (quote: string, sectionId: string): boolean => {
+      const text = fullTextOf(sectionId);
+      if (verifyQuoteInChunk(quote, text).ok) return true;
+      return hasCjk(quote) && verifyQuoteInChunk(stripAllWhitespace(quote), stripAllWhitespace(text)).ok;
+    };
     const inventory: ContributionUnit[] = [];
     inventoryRaw.contributions.forEach((c, index) => {
       // 锚纪律：claimQuote 为空/sectionId 非法/引文无法在稿件中核验 → 丢弃并计数
@@ -849,7 +863,7 @@ export class ContributionAuditService {
         guards.anchorFailures += 1;
         return;
       }
-      if (!verifyQuoteInChunk(c.claimQuote, documentText).ok) {
+      if (!verifyQuoteAnywhere(c.claimQuote)) {
         guards.anchorFailures += 1;
         return;
       }
@@ -858,7 +872,7 @@ export class ContributionAuditService {
         if (s.sectionId === "" || !sectionsById.has(s.sectionId)) {
           continue;
         }
-        const verified = s.quote !== undefined && verifyQuoteInChunk(s.quote, fullTextOf(s.sectionId)).ok;
+        const verified = s.quote !== undefined && verifyQuoteInSection(s.quote, s.sectionId);
         supportLocations.push({ sectionId: s.sectionId, kind: s.kind, quote: s.quote, verified });
         sectionsIncluded.add(s.sectionId);
       }

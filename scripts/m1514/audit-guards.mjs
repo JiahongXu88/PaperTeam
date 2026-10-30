@@ -26,22 +26,40 @@ const titleFp = (t) => String(t ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ")
 const REQUEST_INTERVAL_MS = 1100;
 let lastRequestAt = 0;
 
-async function openalexTitleSearch(title) {
-  const url = new URL("https://api.openalex.org/works");
-  url.searchParams.set("filter", `title.search:${title}`);
-  url.searchParams.set("per-page", "5");
-  url.searchParams.set("select", "id,doi,title,publication_year");
-  const wait = REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
-  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-  lastRequestAt = Date.now();
-  try {
-    const response = await fetch(url, { headers: { "User-Agent": "PaperTeam-M15114-audit" }, signal: AbortSignal.timeout(20_000) });
-    if (!response.ok) return { ok: false, status: response.status };
-    const body = await response.json();
-    return { ok: true, results: (body.results ?? []).map((w) => ({ title: w.title, year: w.publication_year, doi: w.doi, id: w.id })) };
-  } catch (error) {
-    return { ok: false, status: `error:${error.message}` };
+/** 存在性核验链：Crossref（稳定）→ S2 → OpenAlex（预算窗口外常 429） */
+async function providerTitleProbe(title) {
+  const attempts = [
+    {
+      name: "crossref",
+      url: (() => { const u = new URL("https://api.crossref.org/works"); u.searchParams.set("query.bibliographic", title.slice(0, 200)); u.searchParams.set("rows", "3"); u.searchParams.set("select", "DOI,title,issued"); return u; })(),
+      parse: (body) => (body?.message?.items ?? []).map((i) => ({ title: Array.isArray(i.title) ? i.title[0] : undefined, year: i.issued?.["date-parts"]?.[0]?.[0] })),
+    },
+    {
+      name: "s2",
+      url: (() => { const u = new URL("https://api.semanticscholar.org/graph/v1/paper/search"); u.searchParams.set("query", title.slice(0, 200)); u.searchParams.set("fields", "title,year"); u.searchParams.set("limit", "3"); return u; })(),
+      parse: (body) => (body?.data ?? []).map((p) => ({ title: p.title, year: p.year })),
+    },
+    {
+      name: "openalex",
+      url: (() => { const u = new URL("https://api.openalex.org/works"); u.searchParams.set("filter", `title.search:${title}`); u.searchParams.set("per-page", "3"); u.searchParams.set("select", "id,doi,title,publication_year"); return u; })(),
+      parse: (body) => (body?.results ?? []).map((w) => ({ title: w.title, year: w.publication_year })),
+    },
+  ];
+  const notes = [];
+  for (const attempt of attempts) {
+    const wait = REQUEST_INTERVAL_MS - (Date.now() - lastRequestAt);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastRequestAt = Date.now();
+    try {
+      const response = await fetch(attempt.url, { headers: { "User-Agent": "PaperTeam-M15114-audit" }, signal: AbortSignal.timeout(20_000) });
+      if (!response.ok) { notes.push(`${attempt.name}:${response.status}`); continue; }
+      const body = await response.json();
+      return { ok: true, results: attempt.parse(body).filter((r) => r.title !== undefined), via: attempt.name, notes };
+    } catch (error) {
+      notes.push(`${attempt.name}:error`);
+    }
   }
+  return { ok: false, results: [], via: null, notes };
 }
 
 const projectsInfo = JSON.parse(await readFile(join(ROOT, "phase-c", "projects.json"), "utf8"));
@@ -107,7 +125,7 @@ for (const ref of outsidePoolRefs) {
     (prior.exists ? verified : unverified).push(ref);
     continue;
   }
-  const result = await openalexTitleSearch(ref.title.slice(0, 200));
+  const result = await providerTitleProbe(ref.title.slice(0, 200));
   let exists = null;
   let matchedTitle = null;
   if (result.ok) {
@@ -124,7 +142,7 @@ for (const ref of outsidePoolRefs) {
       exists = false;
     }
   }
-  const record = { ...ref, openalexExists: exists, matchedTitle, checkStatus: result.ok ? "ok" : `failed:${result.status}` };
+  const record = { ...ref, providerExists: exists, matchedTitle, checkedVia: result.via, checkStatus: result.ok ? "ok" : `failed:${(result.notes ?? []).join(",")}` };
   seenTitles.set(fp, { exists: exists === true });
   (exists === true ? verified : unverified).push(record);
 }
