@@ -25,6 +25,7 @@ import {
 import { buildTargetServices } from "../../src/target/services.js";
 import { pdfReferenceStatsOf, observeGuidelineFacts } from "../../src/target/guidelineFacts.js";
 import type { AgentRuntime, AgentTask, RuntimeHealth } from "../../src/runtime/types.js";
+import type { AcademicSearchResponse } from "../../src/search/academicSearchService.js";
 import type { SourceItem } from "../../src/sources/SourceStore.js";
 import type { SourceChunk } from "../../src/retrieval/types.js";
 import type { ResolverVerdict, ScholarlyQuery } from "../../src/citation/scholarly.js";
@@ -76,19 +77,7 @@ function fakeScholarly(
 
 function fakeAcademic(
   responder: (query: string) => Array<{ title: string; year?: number; doi?: string; arxivId?: string; abstract?: string; venue?: string }>,
-): {
-  search: (query: string, opts?: { limit?: number; yearTo?: number }) => Promise<{
-    status: "success" | "partial";
-    results: Array<{
-      identity: { normalizedTitleFingerprint: string; doi?: string; year?: number };
-      record: { provider: string; recordId: string; title?: string; year?: number; doi?: string; arxivId?: string; abstract?: string; venue?: string };
-      score: number;
-      sources: Array<{ provider: string; rank: number }>;
-    }>;
-    diagnostics: unknown;
-  }>;
-  queries: string[];
-} {
+): { search: (query: string) => Promise<AcademicSearchResponse>; queries: string[] } {
   const queries: string[] = [];
   return {
     queries,
@@ -103,7 +92,7 @@ function fakeAcademic(
             ...(work.doi !== undefined ? { doi: work.doi } : {}),
             ...(work.year !== undefined ? { year: work.year } : {}),
           },
-          record: { provider: "openalex", recordId: `W${index}`, ...work },
+          record: { provider: "openalex" as const, recordId: `W${index}`, retrievedAt: "2026-10-31T00:00:00.000Z", ...work },
           score: 1,
           sources: [{ provider: "openalex", rank: index + 1 }],
         })),
@@ -230,6 +219,10 @@ const methodChunks: SourceChunk[] = [
     sectionTitle: "3 Method",
     ordinal: 1,
     text: "The architecture combines a segmentation network with Differentiable Binarization (DB). The binarization threshold is learned end to end.",
+    charCount: 133,
+    tokenCount: 30,
+    contentHash: "c1",
+    generatedAt: "2026-10-31T00:00:00.000Z",
   },
   {
     chunkId: "s1c2",
@@ -239,14 +232,18 @@ const methodChunks: SourceChunk[] = [
     sectionTitle: "References",
     ordinal: 2,
     text: "References listing with many unrelated titles and citations that must not enter excerpts.",
+    charCount: 84,
+    tokenCount: 12,
+    contentHash: "c2",
+    generatedAt: "2026-10-31T00:00:00.000Z",
   },
 ];
 
 const librarySource: SourceItem = {
   sourceId: "src-0001",
   sourceRole: "reference",
-  origin: "upload",
-  status: "ready",
+  origin: "USER_ADDED",
+  status: "available",
   preferred: false,
   metadata: { title: "Real-time scene text detection with differentiable binarization", year: 2020, doi: "10.1609/aaai.v34i07.6812" },
   identity: {

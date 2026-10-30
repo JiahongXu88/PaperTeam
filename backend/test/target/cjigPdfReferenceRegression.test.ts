@@ -51,6 +51,7 @@ function cjigGuideline(): VenueGuidelineArtifact {
     schemaVersion: 1,
     venueId: "cjig",
     displayName: "中国图象图形学报",
+    identity: { issnPrint: "1006-8961", officialSite: "http://www.cjig.cn/" },
     scope: {},
     requirements: [
       { id: "cjig-refs-15", field: "references.count", operator: "min", value: 15, unit: "条", hard: true, officialQuote: "数量要求 15 篇以上", sourceUrl: "http://www.cjig.cn/zh/info/13448/", confidence: "high" },

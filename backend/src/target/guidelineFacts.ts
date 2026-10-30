@@ -195,7 +195,7 @@ export function bibStatsOf(bibContent: string, evalYear: number): BibStats {
  *   印刷 DOI 存在但解析失败与作者未提供 DOI 在 PDF 上不可区分）。
  */
 export function pdfReferenceStatsOf(
-  document: PaperDocument,
+  document: import("../paper/ReferenceExtractor.js").ReferenceExtractionDocument,
   evalYear: number,
 ): { references: ReferenceObservation | null; notes: string[] } {
   const extraction = new ReferenceExtractor().extract(document);

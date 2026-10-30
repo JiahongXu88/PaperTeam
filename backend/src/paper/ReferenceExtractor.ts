@@ -69,8 +69,11 @@ export interface ExtractionResult {
   notes: string[];
 }
 
+/** extract 的结构化输入（M15.16：AssembledPaper 与 PaperDocument 都满足——只消费这两个字段） */
+export type ReferenceExtractionDocument = Pick<PaperDocument, "referencesSectionId" | "chunks">;
+
 export class ReferenceExtractor {
-  extract(document: PaperDocument): ExtractionResult {
+  extract(document: ReferenceExtractionDocument): ExtractionResult {
     const referencesSectionId = document.referencesSectionId;
     const notes: string[] = [];
     const bodyChunks = document.chunks.filter(

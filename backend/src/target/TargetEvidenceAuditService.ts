@@ -546,15 +546,6 @@ export class TargetEvidenceAuditService {
     };
   }
 
-  /** 构建当前稿 fingerprint（无稿 → null；GET/POST 共用的 fail-closed 前置） */
-  async currentManuscriptSha(projectId: string): Promise<string | null> {
-    const document = await this.store.loadDocument(projectId);
-    if (document === null) {
-      return null;
-    }
-    return sha256Hex(document.chunks.map((chunk) => chunk.text).join("\n\n")).slice(0, 16);
-  }
-
   /** 执行证据审计：确定性 pool → ContributionAuditService（3 次有界模型调用） */
   async evaluate(
     projectId: string,
