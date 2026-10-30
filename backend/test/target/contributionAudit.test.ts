@@ -463,3 +463,59 @@ describe("ContributionAuditService（三步调用链）", () => {
     expect(shrunk.artifact.inputFingerprint.poolFingerprint).not.toBe(base.artifact.inputFingerprint.poolFingerprint);
   });
 });
+
+describe("M15.15 verified_fulltext 材料级（纯函数）", () => {
+  const fulltextPool = (): PriorWorkPool => ({
+    cutoffDate: "2021-12-31",
+    queriesUsed: [],
+    candidates: [
+      {
+        candidateId: "P01",
+        title: "Simple online and realtime tracking",
+        year: 2016,
+        arxivId: "1602.00763",
+        abstract: "This paper presents a practical approach for multiple object tracking.",
+        fullTextExcerpts: [
+          "The tracking scenario is formulated as detection + Kalman filter + Hungarian assignment.",
+        ],
+        citedByManuscript: true,
+        contentLevel: "verified_fulltext",
+        source: "arxiv:1602.00763",
+      },
+    ],
+  });
+
+  it("renderPoolMaterial：verified_fulltext 渲染摘要 + 全文片段 + 分级说明", () => {
+    const text = renderPoolMaterial(fulltextPool());
+    expect(text).toContain("[verified_fulltext; cited-by-manuscript]");
+    expect(text).toContain("Abstract:");
+    expect(text).toContain("Full-text excerpts");
+    expect(text).toContain("detection + Kalman filter + Hungarian assignment");
+    expect(text).toContain("verified_fulltext");
+  });
+
+  it("buildPoolFingerprint：excerpts 变化 → 指纹变化（staleness 语义保持）", () => {
+    const base = buildPoolFingerprint(fulltextPool());
+    const changed = fulltextPool();
+    changed.candidates[0]!.fullTextExcerpts = ["different excerpt text entirely"];
+    expect(buildPoolFingerprint(changed)).not.toBe(base);
+  });
+
+  it("enforceStatusRules：differenceBasis=fulltext 不影响既有四态规则（basis 降级守卫在 compare 后处理内）", () => {
+    const result = enforceStatusRules([
+      {
+        contributionId: "C1",
+        nearestPriorWorks: [{ title: "Simple online and realtime tracking", year: 2016, resolvesToPool: false }],
+        commonMechanism: "x",
+        substantiveDifference: "y",
+        differenceBasis: "fulltext",
+        completedVerification: "",
+        missingVerification: "",
+        status: "SUPPORTED_DIFFERENCE",
+      },
+    ]);
+    // 无 pool 支撑的先前工作 → 仍降级（fulltext basis 不豁免身份解析要求）
+    expect(result.comparisons[0]!.status).toBe("INSUFFICIENT_EVIDENCE");
+    expect(result.violations.length).toBeGreaterThan(0);
+  });
+});

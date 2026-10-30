@@ -67,7 +67,12 @@ export function deriveDocumentStructure(extraction: RawPdfExtraction): {
 }
 
 const ABSTRACT_TITLES = /^(abstract|摘要)\s*$/i;
-const REFERENCES_TITLES = /^(?:\d{1,2}\s*[.、]?\s*)?(references|bibliography|参考文献|reference list)\s*$/i;
+/** 中文期刊双语节标题（CJIG 实测版式）：「参考文献（References）」/「参考文献(References)」 */
+const BILINGUAL_REFERENCE_SUFFIX = /(?:\s*[（(]\s*(?:references|bibliography)\s*[)）])?/;
+const REFERENCES_TITLES = new RegExp(
+  `^(?:\\d{1,2}\\s*[.、]?\\s*)?(references|bibliography|参考文献|reference list)${BILINGUAL_REFERENCE_SUFFIX.source}\\s*$`,
+  "i",
+);
 
 // ---- pages ----
 
@@ -132,11 +137,15 @@ function buildSections(extraction: RawPdfExtraction, pages: PaperPage[]): PaperS
   return dedupeSections(sections);
 }
 
-/** 找 References 章节首页：标题行独立成行 + 页内含 [n] 条目标记（双条件降误报；中英文标题都算） */
+/** 找 References 章节首页：标题行独立成行 + 页内含 [n] 条目标记（双条件降误报；中英文/双语标题都算） */
 function findReferencesPage(pages: PaperPage[]): number | undefined {
+  const titleLine = new RegExp(
+    `^\\s*(?:references|bibliography|参考文献)${BILINGUAL_REFERENCE_SUFFIX.source}\\s*$`,
+    "im",
+  );
   for (let i = 0; i < pages.length; i += 1) {
     const page = pages[i]!;
-    if (!/^\s*(?:references|bibliography|参考文献)\s*$/im.test(page.text)) {
+    if (!titleLine.test(page.text)) {
       continue;
     }
     if (/[\[［]\d{1,3}[\]］]/.test(page.text)) {

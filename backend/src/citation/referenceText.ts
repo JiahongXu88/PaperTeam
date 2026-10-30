@@ -14,14 +14,14 @@
  * - 标题比对用 canonical / compact 形式：大小写、标点、连字符、空白差异不影响相等。
  */
 
-/** 归一化算法版本：变更即让旧核验记录失效（纳入 cache fingerprint） */
-export const REFERENCE_NORMALIZATION_VERSION = 2;
+/** 归一化算法版本：变更即让旧核验记录失效（纳入 cache fingerprint）。v3：+U+2043 断词符 */
+export const REFERENCE_NORMALIZATION_VERSION = 3;
 
 const SOFT_HYPHEN = /\u00AD/g;
 /** 各类空白（含 NBSP / 全角空格 / 零宽空格）→ ASCII 空格 */
 const EXOTIC_SPACES = /[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g;
-/** 连字符变体（hyphen / non-breaking hyphen / figure dash / minus）→ ASCII 连字符 */
-const HYPHEN_VARIANTS = /[\u2010\u2011\u2012\u2212]/g;
+/** 连字符变体（hyphen / non-breaking hyphen / figure dash / minus / hyphen bullet U+2043）→ ASCII 连字符 */
+const HYPHEN_VARIANTS = /[\u2010\u2011\u2012\u2212\u2043]/g;
 
 /** 断词标记：行尾连字符在 PDF 文本层的本义就是 Unicode 软连字符（可选连字符） */
 export const HYPHENATION_MARKER = "\u00AD";

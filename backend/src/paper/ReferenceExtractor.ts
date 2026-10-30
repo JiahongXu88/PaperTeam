@@ -32,6 +32,35 @@ const RANGE_EXPAND_LIMIT = 60;
 /** sentence 上下文半径（contextBefore/After） */
 const CONTEXT_CHARS = 120;
 
+/**
+ * References 节内不是条目的单元（页级 section 归属的代价：同页图注/页眉/页码/
+ * 作者简介块会落进参考文献 chunk）。CJK 期刊版式实测形态。
+ */
+const NON_ENTRY_UNIT =
+  /^(?:[图表]\s*\d+|Fig\.?\s*\d+|Tab\.?\s+\d+|Figure\s+\d+|Table\s+\d+|作者简介|基金项目|通信作者|资助信息|Vol\.?\s*\d+|\d{1,4}$)/;
+
+/** 页眉变体：CJK 作者名开头 + 行内含「第N卷/期」签名（如 CJIG 页眉「胡明娣，…
+第27 卷／第5 期…」） */
+function isNonEntryUnit(text: string): boolean {
+  return NON_ENTRY_UNIT.test(text) || (text.length < 120 && /第\s*\d+\s*[卷期]/.test(text));
+}
+
+/**
+ * author-year 条目起点（CJIG 实测：`Baek Y，` / `Alexandrov S V,` / `Child R,`）：
+ * 大写姓氏词（含 PUA 字形替身与撇号连字符）后跟 1~3 个单字母缩写 + 逗号（全/半角）。
+ * 续行（小写开头 / 出版地 / 页码 / DOI）不命中。
+ */
+const AUTHOR_YEAR_ENTRY_START =
+  /^(?:(?:van|von|de|del|der|den|di|da|dos|do|du|la|le|el|al|bin|ibn|mac|mc)\s+)?\p{Lu}[\p{L}\p{M}'’\--]*(?:\s+\p{Lu}\.?){1,3}(?:\s*[，,.．]|\s+and\s+|\s+(?=(?:19|20)\d{2}))/u;
+
+/**
+ * author-year 条目终止符（CJIG 实测条目都以之收尾）：DOI/文献标识全/半角方括号、
+ * URL（.pdf/.html 等）、页码区间（可带句点）、或全/半角右括号（双语条目的中文括注收尾）。长作者列表跨行换行的续行虽然也以
+ * 「姓氏+缩写」开头，但上一行不以终止符收尾——据此区分真条目边界与作者换行。
+ */
+const AUTHOR_YEAR_ENTRY_END =
+  /(?:[］\]]|[）)](?:\s*[．.;,;])?|pdf\b|html?\b|https?\s*[：:]\/\/\S*|\d{1,4}\s*[-–—]\s*\d{1,4}\s*[.．]?|[,，]\s*\d{1,3}$)\s*$/i;
+
 export interface ExtractionResult {
   references: ReferenceEntry[];
   callouts: CitationCallout[];
@@ -63,6 +92,7 @@ export class ReferenceExtractor {
 
   /** chunk text 由 block 以 \n\n 连接——先还原 block 单元，再按 [n] 归并 */
   private extractReferences(chunks: PaperChunk[], notes: string[]): ReferenceEntry[] {
+    const sectionId = chunks[0]?.sectionId ?? "";
     const units: Array<{ page: number; chunkId: string; text: string }> = [];
     for (const chunk of chunks) {
       // 归一化必须在按 \n\n 切单元之前：pymupdf 会把跨列/跨页的一行拆成两个 block
@@ -70,7 +100,7 @@ export class ReferenceExtractor {
       // 不猜原词是 ByteTrack 还是 multi-object——检索期由 query variants 处理
       for (const part of normalizeReferenceText(chunk.text).split(/\n{2,}/)) {
         const text = part.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
-        if (text !== "") {
+        if (text !== "" && !isNonEntryUnit(text)) {
           units.push({ page: chunk.pageStart, chunkId: chunk.chunkId, text });
         }
       }
@@ -81,6 +111,19 @@ export class ReferenceExtractor {
 
     // numeric 模式：以 [n] 开头的单元为条目起点；无标记的续行单元并入上一条
     const numericHead = /^\[(\d{1,3})\]\s*/;
+    const hasNumeric = units.some((unit) => numericHead.test(unit.text));
+    if (hasNumeric) {
+      return this.collectNumeric(units, numericHead, sectionId, notes);
+    }
+    return this.collectAuthorYear(units, sectionId, notes);
+  }
+
+  private collectNumeric(
+    units: Array<{ page: number; chunkId: string; text: string }>,
+    numericHead: RegExp,
+    sectionId: string,
+    notes: string[],
+  ): ReferenceEntry[] {
     const collected: Array<{ number?: number; text: string; page: number; chunkId: string }> = [];
     let sawNumeric = false;
     for (const unit of units) {
@@ -115,9 +158,36 @@ export class ReferenceExtractor {
       }
     }
 
-    return collected.map((entry, index) =>
-      toReferenceEntry(entry, index, chunks[0]?.sectionId ?? ""),
-    );
+    return collected.map((entry, index) => toReferenceEntry(entry, index, sectionId));
+  }
+
+  /**
+   * author-year 无编号条目（CJIG 实测版式：`Surname X， Surname Y and Surname Z. 2019.
+   * Title//Venue…`）。每个视觉行是独立 block：以「大写姓氏 + 1~3 个单字母缩写 + 逗号」
+   * 行首作为条目起点合并续行；首个条目起点之前的单元（同页正文结尾/页眉）丢弃。
+   */
+  private collectAuthorYear(
+    units: Array<{ page: number; chunkId: string; text: string }>,
+    sectionId: string,
+    notes: string[],
+  ): ReferenceEntry[] {
+    const collected: Array<{ text: string; page: number; chunkId: string }> = [];
+    for (const unit of units) {
+      const last = collected[collected.length - 1];
+      const terminated = last !== undefined && AUTHOR_YEAR_ENTRY_END.test(last.text);
+      if (AUTHOR_YEAR_ENTRY_START.test(unit.text) && (last === undefined || terminated)) {
+        collected.push({ text: unit.text, page: unit.page, chunkId: unit.chunkId });
+        continue;
+      }
+      if (last !== undefined) {
+        last.text = `${last.text} ${unit.text}`.trim();
+      }
+      // 首个条目起点之前的单元（同页正文结尾/页眉）丢弃
+    }
+    if (collected.length > 0) {
+      notes.push("References 无 [n] 编号（author-year 风格：按作者行首合并条目，字段提取 best-effort）");
+    }
+    return collected.map((entry, index) => toReferenceEntry(entry, index, sectionId));
   }
 
   // ---- 正文引用标记 ----
@@ -197,6 +267,27 @@ export class ReferenceExtractor {
           ...(sentence.after !== "" ? { contextAfter: sentence.after } : {}),
         });
       }
+      // 中文 author-year（CJK 期刊正文实测）：`Liao等人（2020）` / `Islam 等人(2017)` / `李四等（2020）`
+      // 全/半角括号都认；姓名可为拉丁或 ≤4 字汉字，必须带 等/等人/et al. 标记（降误报）
+      const cjkAuthorYearPattern =
+        /(\p{Script=Latin}[\p{Script=Latin}'’\-]*|\p{Script=Han}{1,4})\s*(?:等\s*人?|et\s+al\.?)\s*[（(]\s*((?:19|20)\d{2}[a-z]?)\s*[)）]/gu;
+      for (const match of text.matchAll(cjkAuthorYearPattern)) {
+        const label = `${match[1] ?? ""}, ${match[2] ?? ""}`;
+        const relations = resolveAuthorYear(label, references);
+        const sentence = sentenceAround(text, match.index ?? 0, (match[0] ?? "").length);
+        callouts.push({
+          citationId: `CT${String(callouts.length + 1).padStart(3, "0")}`,
+          style: "author-year",
+          references: relations,
+          rawText: match[0] ?? "",
+          page: chunk.pageStart,
+          sectionId: chunk.sectionId,
+          chunkId: chunk.chunkId,
+          sentence: sentence.sentence,
+          ...(sentence.before !== "" ? { contextBefore: sentence.before } : {}),
+          ...(sentence.after !== "" ? { contextAfter: sentence.after } : {}),
+        });
+      }
     }
     if (callouts.length === 0 && bodyChunks.length > 0) {
       notes.push("正文未提取到引用标记（可能是纯 author-year 或无引用）");
@@ -229,13 +320,16 @@ function toReferenceEntry(
 /** title/year/doi/arxiv/authors/venue best-effort（解析失败的字段留空，不猜） */
 export function parseReferenceFields(text: string): Partial<ReferenceEntry> {
   const out: Partial<ReferenceEntry> = {};
+  // 印刷空格修复（CJIG 版式实测：DOI/URL 内被排成 "10. 1007 / 978-…"、"https:/ / arxiv. org/ …"）
+  const identifiers = despaceIdentifierSpans(text);
 
-  const doiMatch = /(?:doi:|https?:\/\/doi\.org\/|DOI:\s*)?(10\.\d{4,9}\/[^\s"<>[\]]+)/i.exec(text);
+  const doiMatch = /(?:doi:|https?:\/\/doi\.org\/|DOI:\s*)?(10\.\d{4,9}\/[^\s"<>[\]]+)/i.exec(identifiers);
   if (doiMatch !== null) {
     out.doi = normalizeDoi(doiMatch[1] ?? "");
   }
 
-  const arxivMatch = /arxiv:?\s*(?:abs\/|pdf\/)?(\d{4}\.\d{4,5})(v\d+)?/i.exec(text);
+  const arxivMatch =
+    /arxiv(?:\.org)?[/:\s]*(?:abs|pdf)?\/?\s*(\d{4}\.\d{4,5})(v\d+)?/i.exec(identifiers);
   if (arxivMatch !== null) {
     out.arxivId = arxivMatch[1] ?? "";
   }
@@ -245,12 +339,19 @@ export function parseReferenceFields(text: string): Partial<ReferenceEntry> {
     out.year = years[years.length - 1]; // 条目末尾年份通常是出版年
   }
 
-  const structured = parseQuotedTitleStyle(text) ?? parseGbt7714Style(text);
+  const structured: { authors?: string[]; title: string; venue?: string; year?: number } | null =
+    parseQuotedTitleStyle(text) ?? parseCjigAuthorYearStyle(identifiers) ?? parseGbt7714Style(text);
   if (structured !== null) {
     if (structured.authors !== undefined) {
       out.authors = structured.authors;
     }
     out.title = structured.title;
+    if (Number.isInteger(structured.year)) {
+      out.year = structured.year;
+    }
+    if (structured.venue !== undefined) {
+      out.venue = structured.venue;
+    }
   } else {
     // 分段启发：作者段在最前；标题段 = 首个非作者形态的 ≥4 词段。
     // 先按"不切姓名首字母"的规则分段（IEEE 的 C.-Y. Wang），找不到标题再退回朴素句点分段（APA 的 Surname, I. Title）
@@ -263,21 +364,24 @@ export function parseReferenceFields(text: string): Partial<ReferenceEntry> {
     }
   }
 
-  // 出版物段：去掉已识别的标题后再找（否则含 "Conference" 的标题会被当成 venue）
-  const withoutTitle = out.title !== undefined ? text.replace(out.title, " ") : text;
-  const venueMatch = segmentsOf(withoutTitle, /(?<=[a-z)\]”"])[.,]\s+/)
-    .slice(1)
-    .find((segment) =>
-      /\b(proceedings|journal|transactions|letters|review|conference|workshop|symposium|nature|science|ieee|acm|springer|elsevier|corr|abs\/)\b/i.test(
-        segment,
-      ),
-    );
-  if (venueMatch !== undefined) {
-    out.venue = venueMatch
-      .replace(/^[“”",.\s]+/, "")
-      .replace(/\s*\(\d{4}\)\s*$/, "")
-      .trim()
-      .slice(0, 200);
+  // 出版物段：去掉已识别的标题后再找（否则含 "Conference" 的标题会被当成 venue）。
+  // 结构化解析（CJIG 等）已给出 venue 时跳过，避免段式启发覆盖更精确的结果
+  if (out.venue === undefined) {
+    const withoutTitle = out.title !== undefined ? text.replace(out.title, " ") : text;
+    const venueMatch = segmentsOf(withoutTitle, /(?<=[a-z)\]”"])[.,]\s+/)
+      .slice(1)
+      .find((segment) =>
+        /\b(proceedings|journal|transactions|letters|review|conference|workshop|symposium|nature|science|ieee|acm|springer|elsevier|corr|abs\/)\b/i.test(
+          segment,
+        ),
+      );
+    if (venueMatch !== undefined) {
+      out.venue = venueMatch
+        .replace(/^[“”",.\s]+/, "")
+        .replace(/\s*\(\d{4}\)\s*$/, "")
+        .trim()
+        .slice(0, 200);
+    }
   }
   return out;
 }
@@ -351,11 +455,63 @@ function splitChineseAuthors(segment: string): string[] | undefined {
   return names.length >= 1 && names.length <= 15 ? names : undefined;
 }
 
+/**
+ * DOI / URL 印刷空格去除（CJK 期刊排版实测：标识符内部被插入空格——
+ * `[DOI: 10. 1007 / 978-3-7908-2604-3_16]`、`https:/ / arxiv. org/ pdf/ 1904. 10509. pdf`）。
+ * 只在标识符 span 内去空白（DOI 从 `10 .` 起到配对括号/串尾；URL 从协议起到括号/串尾），
+ * 不动其余文本——这是排版噪声归一，与连字归一同一纪律，不是猜测补全。
+ */
+export function despaceIdentifierSpans(text: string): string {
+  return text
+    .replace(/10\s*[.．]\s*\d{4,5}\s*[/／][^］\]]*/g, (span) => span.replace(/\s+/g, ""))
+    .replace(/https?\s*[：:]\s*\/\s*\/[^［\]]*/gi, (span) => span.replace(/\s+/g, ""));
+}
+
+/**
+ * CJIG author-year 著录（中国学术期刊常见）：
+ * `Authors. Year. Title//Venue. Place： Publisher： pages ［DOI：…］`。
+ * 会议条目以 `//` 分隔题名与出版项（印刷变体 `/ /`）；期刊条目 `//` 缺省，
+ * 题名取到句点为止。作者段兼容全/半角逗号与 " and "。
+ */
+function parseCjigAuthorYearStyle(
+  text: string,
+): { authors?: string[]; title: string; venue?: string; year?: number } | null {
+  const match =
+    /^([\p{L}\p{M}­-'’\-.,，;；、\s]{3,200}?)[.．]\s*((?:19|20)\d{2}\s?[a-z]?)[.．]\s+(.+)$/u.exec(text);
+  if (match === null) {
+    return null;
+  }
+  const authors = splitChineseAuthors((match[1] ?? "").trim());
+  if (authors === undefined) {
+    return null;
+  }
+  const rest = (match[3] ?? "").replace(/\/\s*\//g, "//");
+  const separator = rest.indexOf("//");
+  const body = separator >= 0 ? rest.slice(0, separator) : rest;
+  const title = (body.split(/[.．]/)[0] ?? "")
+    .replace(/\s*[［[]\s*[A-Za-z]{1,2}(?:\s*\/\s*OL)?\s*[\]］]\s*.*$/u, "")
+    .trim();
+  if (title === "" || countWords(title) < 2) {
+    return null;
+  }
+  const venuePart = separator >= 0 ? rest.slice(separator + 2) : rest.slice(body.length);
+  const venue = venuePart
+    .split(/[.．]/)[0]
+    ?.replace(/^[\s:：,，]+/, "")
+    .trim();
+  return {
+    ...(venue !== undefined && venue !== "" && countWords(venue) >= 2 ? { venue: venue.slice(0, 200) } : {}),
+    year: Number.parseInt((match[2] ?? "").trim(), 10),
+    authors,
+    title,
+  };
+}
+
 function normalizeDoi(raw: string): string {
   return raw
     .replace(/^doi:/i, "")
     .replace(/^https?:\/\/doi\.org\//i, "")
-    .replace(/[.,;)]+$/, "")
+    .replace(/[.,;)\]］」，；:：]+$/u, "")
     .trim()
     .toLowerCase();
 }

@@ -246,3 +246,104 @@ describe("parseReferenceFields：常见著录格式", () => {
     expect(fields.year).toBe(2017);
   });
 });
+
+// ---- M15.15：CJIG（中国图象图形学报）真实文本层片段 fixture ----
+// 文本层片段转录自 M15.14/M15_9 已冻结的 CJIG OA 论文（仅少量条目，测试用途）。
+
+const CJIG_REFS_2023 = [
+  "参考文献（References）",
+  "Baek Y， Lee B， Han D， Yun S and Lee H. 2019. Character region",
+  "awareness for text detection//Proceedings of 2019 IEEE/CVF Con⁃",
+  "ference on Computer Vision and Pattern Recognition. Long Beach，",
+  "USA： IEEE： 9357-9366 ［DOI： 10.1109/CVPR.2019.00959］",
+  "Ch'ng C K and Chan C S. 2017. Total-text： a comprehensive dataset for",
+  "scene text detection and recognition//Proceedings of the 14th IAPR",
+  "International Conference on Document Analysis and Recognition. Kyoto，",
+  "Japan： IEEE： 935-942 ［DOI： 10.1109/ICDAR.2017.157］",
+  "图8　不同应用场景下的相同实体类别“姓名”",
+  "Fig. 8　Entity “name” in different applications",
+  "2292",
+].join("\n\n");
+
+const CJIG_REFS_2021 = [
+  "参考文献(References)",
+  "Bottou L. 2010. Large-scale machine learning with stochastic gradient",
+  "descent//Proceedings of the 19th International Conference on Com-",
+  "putational Statistics. Paris, France: Physica-Verlag HD: 177-186",
+  "[DOI: 10. 1007 / 978-3-7908-2604-3_16]",
+  "Child R, Gray S, Radford A and Sutskever I. 2019. Generating long",
+  "sequences with sparse transformers [ EB / OL ]. [ 2021-08-13 ].",
+  "https:/ / arxiv. org/ pdf/ 1904. 10509. pdf",
+].join("\n\n");
+
+describe("M15.15 CJIG 中文期刊版式（author-year 无编号 + 全角标点 + 印刷空格）", () => {
+  it("2023 全角版式：条目按作者行首合并（非按行碎片化）、DOI 去全角包裹、图注/页码不混入", () => {
+    const document = syntheticDocument({ referencesText: CJIG_REFS_2023, bodyText: "正文内容。" });
+    const { references, notes } = new ReferenceExtractor().extract(document);
+    // 2 条真实条目（Baek / Ch'ng），图注两行 + 页码 1 行不得成为条目
+    expect(references).toHaveLength(2);
+    const baek = references[0]!;
+    expect(baek.rawText).toContain("Baek Y");
+    expect(baek.rawText).toContain("9357-9366");
+    expect(baek.doi).toBe("10.1109/cvpr.2019.00959");
+    expect(baek.year).toBe(2019);
+    expect(baek.title).toContain("Character region awareness for text detection");
+    const chng = references[1]!;
+    expect(chng.rawText).toContain("Total-text");
+    expect(chng.doi).toBe("10.1109/icdar.2017.157");
+    expect(references.every((r) => !r.rawText.startsWith("图8") && !/^\d+$/.test(r.rawText))).toBe(true);
+    expect(notes.join(" ")).not.toContain("未识别到 References 章节");
+  });
+
+  it("2021 半角版式：DOI 内印刷空格去除、arXiv URL 修复、EB/OL 条目并入作者条目", () => {
+    const document = syntheticDocument({ referencesText: CJIG_REFS_2021, bodyText: "正文内容。" });
+    const { references } = new ReferenceExtractor().extract(document);
+    expect(references).toHaveLength(2);
+    const bottou = references[0]!;
+    expect(bottou.doi).toBe("10.1007/978-3-7908-2604-3_16");
+    expect(bottou.title).toContain("Large-scale machine learning with stochastic gradient descent");
+    const child = references[1]!;
+    expect(child.arxivId).toBe("1904.10509");
+    expect(child.title).toContain("Generating long sequences with sparse transformers");
+  });
+
+  it("正文全角 author-year 引用（Liao等人（2020）/ Islam 等人(2017)）被提取为 callout", () => {
+    const document = syntheticDocument({
+      referencesText: CJIG_REFS_2023,
+      bodyText: "在推理阶段，参考Liao等人（2020）的推理流程，并借鉴 Islam 等人(2017)的做法。",
+    });
+    const { callouts } = new ReferenceExtractor().extract(document);
+    const authorYear = callouts.filter((c) => c.style === "author-year");
+    expect(authorYear.length).toBeGreaterThanOrEqual(2);
+    expect(authorYear.some((c) => c.rawText.includes("Liao"))).toBe(true);
+    expect(authorYear.some((c) => c.rawText.includes("Islam"))).toBe(true);
+  });
+});
+
+describe("M15.15 parseReferenceFields：CJIG 著录格式", () => {
+  it("CJIG author-year：Authors. Year. Title//Venue. Place： Publisher： pages ［DOI：…］", () => {
+    const fields = parseReferenceFields(
+      "Baek Y， Lee B， Han D， Yun S and Lee H. 2019. Character region awareness for text detection//Proceedings of 2019 IEEE/CVF Conference on Computer Vision and Pattern Recognition. Long Beach， USA： IEEE： 9357-9366 ［DOI： 10.1109/CVPR.2019.00959］",
+    );
+    expect(fields.title).toBe("Character region awareness for text detection");
+    expect(fields.authors?.[0]).toBe("Baek Y");
+    expect(fields.year).toBe(2019);
+    expect(fields.doi).toBe("10.1109/cvpr.2019.00959");
+    expect(fields.venue).toContain("Proceedings of 2019 IEEE/CVF Conference");
+  });
+
+  it("DOI 内印刷空格（10. 1007 / 978-…）与全角尾部剥除", () => {
+    const fields = parseReferenceFields(
+      "Bottou L. 2010. Large-scale machine learning with stochastic gradient descent//Proceedings of the 19th International Conference on Computational Statistics. Paris, France: Physica-Verlag HD: 177-186 [DOI: 10. 1007 / 978-3-7908-2604-3_16]",
+    );
+    expect(fields.doi).toBe("10.1007/978-3-7908-2604-3_16");
+  });
+
+  it("破碎 arXiv URL（https:/ / arxiv. org/ pdf/ 1904. 10509. pdf）→ arxivId", () => {
+    const fields = parseReferenceFields(
+      "Child R, Gray S, Radford A and Sutskever I. 2019. Generating long sequences with sparse transformers [ EB / OL ]. [ 2021-08-13 ]. https:/ / arxiv. org/ pdf/ 1904. 10509. pdf",
+    );
+    expect(fields.arxivId).toBe("1904.10509");
+    expect(fields.title).toContain("Generating long sequences with sparse transformers");
+  });
+});

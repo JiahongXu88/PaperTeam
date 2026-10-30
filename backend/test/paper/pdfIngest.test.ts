@@ -187,6 +187,44 @@ describe("M4.3.1 section/chunk 组装（确定性，无 Python）", () => {
     const noRefs = assemblePaper(bodyOnly);
     expect(noRefs.referencesSectionId).toBeUndefined();
   });
+
+  it("M15.15：CJIG 双语节标题「参考文献（References）」/「参考文献(References)」也能定位 References 章节", () => {
+    const bilingualFullWidth = {
+      ok: true as const,
+      parser: { id: "test" },
+      pageCount: 4,
+      title: "",
+      abstract: "",
+      toc: [],
+      blocks: [
+        { page: 1, text: "1 引言\n研究背景…（Liao等人（2020））" },
+        { page: 2, text: "2 方法\n本文提出…" },
+        { page: 3, text: "4 结论\n结论内容。" },
+        {
+          page: 4,
+          text: "参考文献（References）\n\nBaek Y， Lee B， Han D， Yun S and Lee H. 2019. Character region awareness for text detection//Proceedings of 2019 IEEE/CVF Conference on Computer Vision and Pattern Recognition. Long Beach， USA： IEEE： 9357-9366 ［DOI： 10.1109/CVPR.2019.00959］\n\nCh'ng C K and Chan C S. 2017. Total-text： a comprehensive dataset for scene text detection and recognition//Proceedings of the 14th IAPR International Conference on Document Analysis and Recognition. Kyoto， Japan： IEEE： 935-942 ［DOI： 10.1109/ICDAR.2017.157］",
+        },
+      ],
+      totalChars: 500,
+      notes: [],
+    };
+    const assembled = assemblePaper(bilingualFullWidth);
+    expect(assembled.referencesSectionId).toBeDefined();
+
+    // 2021-2022 版式：半角括号
+    const bilingualHalfWidth = {
+      ...bilingualFullWidth,
+      blocks: [
+        ...bilingualFullWidth.blocks.slice(0, 3),
+        {
+          page: 4,
+          text: "参考文献(References)\n\nBottou L. 2010. Large-scale machine learning with stochastic gradient descent//Proceedings of the 19th International Conference on Computational Statistics. Paris, France: Physica-Verlag HD: 177-186 [DOI: 10. 1007 / 978-3-7908-2604-3_16]\n\nChild R, Gray S, Radford A and Sutskever I. 2019. Generating long sequences with sparse transformers [ EB / OL ]. [ 2021-08-13 ].\nhttps:/ / arxiv. org/ pdf/ 1904. 10509. pdf",
+        },
+      ],
+    };
+    const half = assemblePaper(bilingualHalfWidth);
+    expect(half.referencesSectionId).toBeDefined();
+  });
 });
 
 describe("M4.3.1 Ingest 服务 + HTTP（真实 PDF e2e）", () => {

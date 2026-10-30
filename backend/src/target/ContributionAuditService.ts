@@ -54,6 +54,8 @@ const KEY_SECTION_MAX_CHARS = 10_000;
 const KEY_SECTION_TOTAL_MAX_CHARS = 30_000;
 const SUPPORT_TOTAL_MAX_CHARS = 30_000;
 const POOL_ABSTRACT_MAX_CHARS = 1_500;
+/** verified_fulltext 级单个 excerpt 渲染上限 */
+const POOL_EXCERPT_MAX_CHARS = 5_000;
 const COMPARISONS_JSON_MAX_CHARS = 16_000;
 const INVENTORY_JSON_MAX_CHARS = 12_000;
 const MAX_CONTRIBUTIONS = 5;
@@ -64,7 +66,7 @@ const FORMAT_REMINDER =
 
 // ---- 类型 ----
 
-export type PriorWorkContentLevel = "abstract" | "metadata";
+export type PriorWorkContentLevel = "abstract" | "metadata" | "verified_fulltext";
 
 export interface PriorWorkCandidate {
   candidateId: string;
@@ -76,6 +78,8 @@ export interface PriorWorkCandidate {
   authors?: string;
   /** 比较材料正文（abstract）；metadata 级可为空 */
   abstract?: string;
+  /** 已核验全文片段（verified_fulltext 级）：来自先前工作解析产物的可回放 chunk 文本 */
+  fullTextExcerpts?: string[];
   /** 来自稿件自身参考文献表（作者已认为相关） */
   citedByManuscript: boolean;
   contentLevel: PriorWorkContentLevel;
@@ -135,7 +139,7 @@ export type ComparisonStatus =
   | "EVIDENCE_GAP"
   | "INSUFFICIENT_EVIDENCE";
 
-export type PriorWorkSourceLevel = "pool_abstract" | "pool_metadata" | "model_memory";
+export type PriorWorkSourceLevel = "pool_abstract" | "pool_metadata" | "pool_fulltext" | "model_memory";
 
 export interface PriorWorkRef {
   candidateId?: string;
@@ -147,11 +151,13 @@ export interface PriorWorkRef {
   quote?: string;
   /** 确定性解析结果：能对上 pool 身份（含 candidateId/doi/arXiv/标题指纹） */
   resolvesToPool: boolean;
+  /** quote 已在其 pool 材料（摘要/全文片段）内确定性回放 */
+  priorQuoteVerified?: boolean;
   /** 引用年份晚于 cutoff（时间因果违规，不计为有效先前工作） */
   timeCausalityViolation?: boolean;
 }
 
-export type DifferenceBasis = "abstract" | "metadata" | "none";
+export type DifferenceBasis = "abstract" | "metadata" | "fulltext" | "none";
 
 export interface ContributionComparison {
   contributionId: string;
@@ -204,6 +210,10 @@ export interface ContributionAuditGuards {
   cutoffViolations: number;
   statusRuleViolations: number;
   droppedFindings: number;
+  /** 模型给出的先前工作 quote 无法在其 pool 材料内回放（不可作为证据） */
+  priorQuoteReplayFailures: number;
+  /** differenceBasis="fulltext" 但缺少可回放 quote 的 pool_fulltext 先前工作 → 降级 abstract */
+  fulltextBasisDowngrades: number;
 }
 
 export interface ContributionAuditInputFingerprint {
@@ -283,6 +293,7 @@ export function buildPoolFingerprint(pool: PriorWorkPool): string {
         c.citedByManuscript ? "ref" : "ext",
         c.contentLevel,
         c.abstract ?? "",
+        c.fullTextExcerpts?.join("") ?? "",
       ].join("|"),
     )
     .sort();
@@ -375,14 +386,20 @@ export function renderPoolMaterial(pool: PriorWorkPool): string {
       + `${c.authors ? ` — ${c.authors}` : ""} (${c.year ?? "year?"}${c.venue ? `, ${c.venue}` : ""})`
       + `${c.doi ? ` doi:${c.doi}` : ""}${c.arxivId ? ` arXiv:${c.arxivId}` : ""}`;
     const abstract =
-      c.contentLevel === "abstract" && c.abstract !== undefined && c.abstract !== ""
+      (c.contentLevel === "abstract" || c.contentLevel === "verified_fulltext") && c.abstract !== undefined && c.abstract !== ""
         ? `\n  Abstract: ${c.abstract.slice(0, POOL_ABSTRACT_MAX_CHARS)}`
         : "";
-    return head + abstract;
+    const excerpts =
+      c.contentLevel === "verified_fulltext" && c.fullTextExcerpts !== undefined && c.fullTextExcerpts.length > 0
+        ? `\n  Full-text excerpts (verbatim, from the prior work's parsed text):\n${c.fullTextExcerpts
+            .map((excerpt) => `  >>> ${excerpt.slice(0, POOL_EXCERPT_MAX_CHARS)}`)
+            .join("\n  ---\n")}`
+        : "";
+    return head + abstract + excerpts;
   });
   return [
     `【PRIOR WORK MATERIAL（确定性检索；公开时间 ≤ ${pool.cutoffDate}；内容等级标注）】`,
-    `content-level 说明：abstract = 题录+摘要可观察；metadata = 仅题录。abstract 级可比较思想，但不得断言实现级异同。`,
+    `content-level 说明：abstract = 题录+摘要可观察；metadata = 仅题录；verified_fulltext = 题录+摘要+已核验全文片段。abstract 级可比较思想，但不得断言实现级异同；只有 verified_fulltext 级材料（并给出可回放 quote）才支持实现级异同判断。`,
     `novelty 评价时点 = ${cutoffYear} 年（cutoff ${pool.cutoffDate}）；不得以 cutoff 之后公开的工作否定当年 novelty。`,
     ...lines,
   ].join("\n");
@@ -461,7 +478,7 @@ const COMPARISON_STATUSES: readonly ComparisonStatus[] = [
   "EVIDENCE_GAP",
   "INSUFFICIENT_EVIDENCE",
 ];
-const DIFFERENCE_BASES: readonly DifferenceBasis[] = ["abstract", "metadata", "none"];
+const DIFFERENCE_BASES: readonly DifferenceBasis[] = ["abstract", "metadata", "fulltext", "none"];
 
 /** extract 输出的中间形态（未做锚校验/编号） */
 export interface ParsedContribution {
@@ -626,14 +643,14 @@ Output ONLY one JSON object:
 function compareInstruction(cutoffDate: string): string {
   return `For each contribution unit, compare it against the closest prior work.
 
-The PRIOR WORK MATERIAL below was retrieved deterministically (the manuscript's own reference list plus academic-database search, publication date <= ${cutoffDate}). Each entry carries an observable content level: "abstract" (title+abstract available) or "metadata" (bibliographic record only).
+The PRIOR WORK MATERIAL below was retrieved deterministically (the manuscript's own reference list plus academic-database search, publication date <= ${cutoffDate}). Each entry carries an observable content level: "abstract" (title+abstract available), "metadata" (bibliographic record only), or "verified_fulltext" (title+abstract plus verbatim full-text excerpts from the prior work).
 
 Rules:
 - Judge novelty AS OF ${cutoffDate}. Never use knowledge of work published after that date as evidence against novelty. You may additionally draw on your own knowledge of work published before the cutoff; for such works set sourceLevel "model_memory" and give title + year + DOI/arXiv id if you are confident of the identity.
 - For each contribution, list 0-3 nearestPriorWorks. For provided entries use their candidateId (P##). Prefer the closest TECHNICAL IDEAS, not merely highly-cited papers.
 - commonMechanism: the technical mechanism shared with the nearest prior work.
 - substantiveDifference: what is actually different (structural novelty / new combination / empirical improvement / scope extension / presentation-only rewording). Rephrasing is NOT a technical difference.
-- differenceBasis: the observable content level your difference judgment rests on ("abstract" | "metadata" | "none"). With abstract-level material you may compare ideas, but you CANNOT assert implementation-level sameness or difference of details; with metadata-only material you cannot support strong claims.
+- differenceBasis: the observable content level your difference judgment rests on ("abstract" | "metadata" | "fulltext" | "none"). With abstract-level material you may compare ideas, but you CANNOT assert implementation-level sameness or difference of details; with metadata-only material you cannot support strong claims. ONLY with verified_fulltext material (and a verbatim quote from that material) may you assert implementation-level sameness or difference — then set differenceBasis "fulltext" and quote the exact passage from the provided excerpts.
 - completedVerification: what the manuscript's own evidence already shows about this difference; missingVerification: what evidence is missing (baselines / ablations / datasets / statistics / analysis).
 - status (local risk semantics, NOT an acceptance verdict):
   * SUPPORTED_DIFFERENCE — a locatable technical difference exists AND the observed material (manuscript + prior work at its content level) supports it;
@@ -644,7 +661,7 @@ Rules:
 - quote: a short verbatim quote from the provided abstract when your judgment relies on specific wording (pool entries only; never fabricate quotes).
 
 Output ONLY one JSON object:
-{"comparisons":[{"contributionId":"C1","nearestPriorWorks":[{"candidateId":"P01","title":"...","year":2016,"doi":"...","arxivId":"...","sourceLevel":"pool_abstract|pool_metadata|model_memory","quote":"..."}],"commonMechanism":"...","substantiveDifference":"...","differenceBasis":"abstract|metadata|none","completedVerification":"...","missingVerification":"...","status":"...","uncertainty":"..."}]}`;
+{"comparisons":[{"contributionId":"C1","nearestPriorWorks":[{"candidateId":"P01","title":"...","year":2016,"doi":"...","arxivId":"...","sourceLevel":"pool_abstract|pool_metadata|pool_fulltext|model_memory","quote":"..."}],"commonMechanism":"...","substantiveDifference":"...","differenceBasis":"abstract|metadata|none","completedVerification":"...","missingVerification":"...","status":"...","uncertainty":"..."}]}`;
 }
 
 const SYNTHESIZE_INSTRUCTION = `Turn the contribution inventory and prior-work comparisons into review findings and an actionable gap plan.
@@ -838,6 +855,8 @@ export class ContributionAuditService {
       cutoffViolations: 0,
       statusRuleViolations: 0,
       droppedFindings: 0,
+      priorQuoteReplayFailures: 0,
+      fulltextBasisDowngrades: 0,
     };
 
     const documentText = document.chunks.map((c) => c.text).join("\n\n");
@@ -963,7 +982,22 @@ export class ContributionAuditService {
           const resolvedContentLevel = resolved?.contentLevel;
           const sourceLevel: PriorWorkSourceLevel =
             ref.sourceLevel ??
-            (resolvedContentLevel === "abstract" ? "pool_abstract" : resolvedContentLevel === "metadata" ? "pool_metadata" : "model_memory");
+            (resolvedContentLevel === "abstract" ? "pool_abstract" : resolvedContentLevel === "metadata" ? "pool_metadata" : resolvedContentLevel === "verified_fulltext" ? "pool_fulltext" : "model_memory");
+          // prior quote 回放：quote 必须出现在该候选的 pool 材料（摘要 / 全文片段）内，
+          // 否则不可作为证据（计数守卫，不静默）
+          let priorQuoteVerified: boolean | undefined = undefined;
+          if (resolved !== null && ref.quote !== undefined && ref.quote !== "") {
+            const material = [
+              ...(resolved.abstract !== undefined ? [resolved.abstract] : []),
+              ...(resolved.fullTextExcerpts ?? []),
+            ].join("\n\n");
+            priorQuoteVerified =
+              verifyQuoteInChunk(ref.quote, material).ok ||
+              (hasCjk(ref.quote) && verifyQuoteInChunk(stripAllWhitespace(ref.quote), stripAllWhitespace(material)).ok);
+            if (!priorQuoteVerified) {
+              guards.priorQuoteReplayFailures += 1;
+            }
+          }
           return {
             candidateId: resolved?.candidateId ?? ref.candidateId,
             title: resolved?.title ?? ref.title,
@@ -972,11 +1006,24 @@ export class ContributionAuditService {
             arxivId: ref.arxivId ?? resolved?.arxivId,
             sourceLevel,
             quote: ref.quote,
+            ...(priorQuoteVerified !== undefined ? { priorQuoteVerified } : {}),
             resolvesToPool: resolved !== null,
             ...(yearViolation ? { timeCausalityViolation: true } : {}),
           };
         });
-      return { ...comparison, nearestPriorWorks };
+      // fulltext basis 守卫：断言 differenceBasis="fulltext" 必须有 ≥1 个非时间违规的
+      // pool_fulltext 先前工作且其 quote 已回放；否则降级为 abstract（思想级）并计数
+      let differenceBasis = comparison.differenceBasis;
+      if (differenceBasis === "fulltext") {
+        const supported = nearestPriorWorks.some(
+          (ref) => ref.sourceLevel === "pool_fulltext" && ref.resolvesToPool && ref.timeCausalityViolation !== true && ref.priorQuoteVerified === true,
+        );
+        if (!supported) {
+          differenceBasis = "abstract";
+          guards.fulltextBasisDowngrades += 1;
+        }
+      }
+      return { ...comparison, nearestPriorWorks, differenceBasis };
     });
     const statusResult = enforceStatusRules(comparisons);
     comparisons = statusResult.comparisons;
