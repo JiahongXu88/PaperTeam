@@ -315,8 +315,8 @@ describe("M15.15 CJIG 中文期刊版式（author-year 无编号 + 全角标点 
     const { callouts } = new ReferenceExtractor().extract(document);
     const authorYear = callouts.filter((c) => c.style === "author-year");
     expect(authorYear.length).toBeGreaterThanOrEqual(2);
-    expect(authorYear.some((c) => c.rawText.includes("Liao"))).toBe(true);
-    expect(authorYear.some((c) => c.rawText.includes("Islam"))).toBe(true);
+    expect(authorYear.some((c) => (c.rawText ?? "").includes("Liao"))).toBe(true);
+    expect(authorYear.some((c) => (c.rawText ?? "").includes("Islam"))).toBe(true);
   });
 });
 
