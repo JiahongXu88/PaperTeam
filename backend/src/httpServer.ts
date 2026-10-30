@@ -2344,6 +2344,39 @@ async function handleProjectResourceRoutes(
       sendMethodNotAllowed(res, "GET, POST", method);
       return true;
     }
+    // ---- M15.16 · P0-A：贡献证据审计（实验性；feature flag off → enabled:false / 403 fail-closed）----
+    if (rest === "/evidence-audit") {
+      if (method === "GET") {
+        if (targets.evidenceAudit === null) {
+          sendJson(res, 200, { enabled: false, audit: null });
+          return true;
+        }
+        sendJson(res, 200, { enabled: true, audit: await targets.evidenceAudit.get(projectId) });
+        return true;
+      }
+      if (method === "POST") {
+        if (targets.evidenceAudit === null) {
+          sendJson(res, 403, {
+            status: "error",
+            error: {
+              code: "TARGET_EVIDENCE_AUDIT_DISABLED",
+              message:
+                "证据审计（实验性）未启用：设置 PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED=true 后重启服务（默认关闭——不影响任何既有审阅/目标参照/质量门路径）",
+            },
+          });
+          return true;
+        }
+        // venueId 取已冻结官方指南工件（未导入 → 不带 venue 语境执行，工件 venueId 缺省）
+        const guideline = await targets.guideline.get(projectId);
+        const audit = await targets.evidenceAudit.evaluate(projectId, {
+          ...(guideline !== null ? { venueId: guideline.venueId } : {}),
+        });
+        sendJson(res, 200, { enabled: true, audit });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method);
+      return true;
+    }
     return false;
   }
 

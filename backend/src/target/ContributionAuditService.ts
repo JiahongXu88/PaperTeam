@@ -85,6 +85,8 @@ export interface PriorWorkCandidate {
   contentLevel: PriorWorkContentLevel;
   /** 检索来源记录（openalex:W… / reference-list 等） */
   source: string;
+  /** verified_fulltext 级的在库来源（M15.16 通道 C；只读升级，不写 EvidenceStore） */
+  librarySourceId?: string;
 }
 
 export interface PriorWorkPool {

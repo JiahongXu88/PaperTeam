@@ -86,4 +86,35 @@ describe("target 路由契约", () => {
     const refresh = await stack.request("POST", `/api/projects/${projectId}/target/benchmark/refresh`);
     expect(refresh.status).toBe(400);
   });
+  // ---- M15.16 P0-A：证据审计（实验性）路由契约 ----
+
+  it("证据审计 flag off（缺省）：GET → enabled:false；POST → 403 TARGET_EVIDENCE_AUDIT_DISABLED", async () => {
+    const stack = await newStack();
+    const projectId = await createProject(stack, true);
+    const status = await stack.request("GET", `/api/projects/${projectId}/target/evidence-audit`);
+    expect(status.status).toBe(200);
+    expect(status.body["enabled"]).toBe(false);
+    expect(status.body["audit"]).toBeNull();
+    const post = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit`);
+    expect(post.status).toBe(403);
+    expect((post.body["error"] as { code: string }).code).toBe("TARGET_EVIDENCE_AUDIT_DISABLED");
+  });
+
+  it("证据审计 flag on：GET 无工件 → {enabled:true, audit:null}；POST 无解析稿 → 400 fail-closed", async () => {
+    const stack = await startTestStack(scriptedIdeaRuntime().runtime, {
+      registerCleanup: (cleanup) => cleanups.push(cleanup),
+      targetEvidenceAuditEnabled: true,
+    });
+    const projectId = await createProject(stack, true);
+    const status = await stack.request("GET", `/api/projects/${projectId}/target/evidence-audit`);
+    expect(status.status).toBe(200);
+    expect(status.body["enabled"]).toBe(true);
+    expect(status.body["audit"]).toBeNull();
+    const post = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit`);
+    expect(post.status).toBe(400);
+    expect((post.body["error"] as { code: string }).code).toBe("INVALID_REQUEST");
+    // 非法项目 → 404（与 target 组其余路由一致）
+    const missing = await stack.request("GET", "/api/projects/p-nonexistent00/target/evidence-audit");
+    expect(missing.status).toBe(404);
+  });
 });

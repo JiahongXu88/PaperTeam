@@ -213,6 +213,8 @@ export async function startTestStack(
     experimentSemanticModel?: ServiceStackOptionsExperiments;
     /** M12.3 C4：FigureCompiler runner 注入（缺省 fakeFigureRunner——离线可测全链） */
     figureRunner?: import("../../src/figures/FigureCompiler.js").CommandRunner;
+    /** M15.16：Target 面板证据审计（实验性）feature flag（缺省 false = 不装配） */
+    targetEvidenceAuditEnabled?: boolean;
     /** 复用已有 projects 根（重启恢复测试：第二栈不 mkdtemp、cleanup 不删根） */
     root?: string;
     registerCleanup?: (cleanup: () => Promise<void>) => void;
@@ -280,6 +282,8 @@ export async function startTestStack(
     },
     ...(options.vision !== undefined ? { vision: options.vision } : {}),
     ...(options.experimentSemanticModel !== undefined ? { experimentSemanticModel: options.experimentSemanticModel } : {}),
+    // M15.16：证据审计（实验性）flag 透传（缺省不装配 = GET enabled:false / POST 403）
+    ...(options.targetEvidenceAuditEnabled === true ? { targetEvidenceAuditEnabled: true } : {}),
     // M14.2：测试栈允许 HITL resume 显式携带 actor=test_fixture（生产栈不设 = 拒绝）
     thesis: { allowTestFixtureActor: true },
     figures: {

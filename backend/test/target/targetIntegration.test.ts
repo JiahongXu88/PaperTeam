@@ -130,6 +130,7 @@ describe("A9 workflow：target 三 stage", () => {
       gap: harness.gap,
       guideline: {} as unknown as TargetGuidelineService,
       rubric: {} as unknown as TargetRubricService,
+      evidenceAudit: null,
     };
     const services = minimalServices({ targets, projects: harness.projects });
     const result = await executeStage(targetStages(services)[0]!, harness.projectId);
@@ -170,6 +171,7 @@ describe("A9 workflow：target 三 stage", () => {
       gap: harness.gap,
       guideline: {} as unknown as TargetGuidelineService,
       rubric: {} as unknown as TargetRubricService,
+      evidenceAudit: null,
     };
     const services = minimalServices({ targets, projects: harness.projects });
     const [benchmarkStage, profileStage, readinessStage] = targetStages(services);
@@ -215,6 +217,7 @@ describe("A9 workflow：target 三 stage", () => {
       gap: harness.gap,
       guideline: {} as unknown as TargetGuidelineService,
       rubric: {} as unknown as TargetRubricService,
+      evidenceAudit: null,
     };
     const services = minimalServices({ targets, projects: harness.projects });
     const [benchmarkStage, profileStage, readinessStage] = targetStages(services);
@@ -259,6 +262,7 @@ describe("A9 workflow：target 三 stage", () => {
       gap: harness.gap,
       guideline: {} as unknown as TargetGuidelineService,
       rubric: {} as unknown as TargetRubricService,
+      evidenceAudit: null,
     };
     const result = await executeStage(targetStages(minimalServices({ targets, projects: harness.projects }))[0]!, harness.projectId);
     expect(result).toMatchObject({

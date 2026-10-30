@@ -34,11 +34,16 @@ import { identityKey } from "../sources/identity.js";
 import type { ParsedDocumentStore } from "../ingestion/ParsedDocumentStore.js";
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
+import type { AgentRuntime } from "../runtime/types.js";
+import type { PaperStore } from "../paper/PaperStore.js";
+import type { ScholarlyResolver } from "../citation/scholarly.js";
+import type { SourceChunk } from "../retrieval/types.js";
 import { TargetBenchmarkService } from "./TargetBenchmarkService.js";
 import { TargetGapService } from "./TargetGapService.js";
 import { TargetProfileService, type TargetSummaryModel } from "./TargetProfileService.js";
 import { TargetGuidelineService } from "./TargetGuidelineService.js";
 import { TargetRubricService } from "./TargetRubricService.js";
+import { TargetEvidenceAuditService } from "./TargetEvidenceAuditService.js";
 
 export interface TargetServiceDeps {
   projects: ProjectStore;
@@ -61,6 +66,21 @@ export interface TargetServiceDeps {
    * INSUFFICIENT_EVIDENCE（不伪造）。
    */
   rubricModel?: TargetSummaryModel;
+  /**
+   * M15.16 P0-B：手稿解析产物（PaperStore）。注入后 guideline 符合度在无
+   * .tex 时从 PDF 解析产物观测参考文献类官方条款（TeX 存在时 TeX 优先）。
+   */
+  papers?: PaperStore;
+  /**
+   * M15.16 P0-A：证据审计（实验性）装配。evidenceAuditEnabled=false（缺省）
+   * 或任一依赖缺失 → targets.evidenceAudit = null（HTTP 层 enabled:false /
+   * 403 fail-closed），不影响既有服务。
+   */
+  evidenceAuditEnabled?: boolean;
+  runtime?: AgentRuntime;
+  reviewerAgentId?: string;
+  scholarly?: Pick<ScholarlyResolver, "resolve">;
+  readSourceChunks?: (projectId: string, sourceId: string) => Promise<readonly SourceChunk[] | null>;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -75,6 +95,11 @@ export interface TargetServices {
   guideline: TargetGuidelineService;
   /** M15.9 · G2：期刊级 evidence-grounded rubric（模型 advisory，零 gate 接线） */
   rubric: TargetRubricService;
+  /**
+   * M15.16 · P0-A：贡献证据审计（实验性；advisory 只读）。null = feature
+   * flag 关闭或依赖缺失——HTTP 层据此返回 enabled:false / 403。
+   */
+  evidenceAudit: TargetEvidenceAuditService | null;
 }
 
 export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
@@ -137,6 +162,7 @@ export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
       : undefined;
   const guideline = new TargetGuidelineService({
     projects: deps.projects,
+    ...(deps.papers !== undefined ? { papers: deps.papers } : {}),
     ...(currentRevision !== undefined ? { currentRevision } : {}),
     now,
     log,
@@ -149,5 +175,27 @@ export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
     now,
     log,
   });
-  return { benchmark, discovery, profile, gap, guideline, rubric };
+  const evidenceAuditDeps =
+    deps.evidenceAuditEnabled === true &&
+    deps.runtime !== undefined &&
+    deps.reviewerAgentId !== undefined &&
+    deps.scholarly !== undefined &&
+    deps.readSourceChunks !== undefined &&
+    deps.papers !== undefined
+      ? {
+          projects: deps.projects,
+          store: deps.papers,
+          runtime: deps.runtime,
+          reviewerAgentId: deps.reviewerAgentId,
+          scholarly: deps.scholarly,
+          academic: deps.academic,
+          listLibrarySources: (projectId: string) => deps.sources.list(projectId),
+          readSourceChunks: deps.readSourceChunks,
+          ...(currentRevision !== undefined ? { currentRevision } : {}),
+          now,
+          log,
+        }
+      : null;
+  const evidenceAudit = evidenceAuditDeps !== null ? new TargetEvidenceAuditService(evidenceAuditDeps) : null;
+  return { benchmark, discovery, profile, gap, guideline, rubric, evidenceAudit };
 }

@@ -365,6 +365,9 @@ export async function startBackend(): Promise<void> {
       : {}),
     doclingMaxConcurrency: config.ingestion.doclingConcurrency,
     ...(targetSummaryModel !== undefined ? { targetSummaryModel } : {}),
+    // M15.16：Target 面板「证据审计（实验性）」——PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED
+    // 缺省 false（不装配服务；既有 Review / Target / Gate 路径零改动）
+    ...(config.target.evidenceAuditEnabled ? { targetEvidenceAuditEnabled: true } : {}),
     // M13.3 实验包语义理解：与 Test Connection / 真实任务同一 ModelRuntime；
     // 默认模型按调用时读取存储偏好（UI 保存切换后即时生效），回落启动快照
     experimentSemanticModel: {

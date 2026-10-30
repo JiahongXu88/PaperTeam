@@ -115,6 +115,8 @@ import type { UnitClaimStage } from "./review/claimAudit.js";
 export interface ServiceStackOptions {
   runtime: AgentRuntime;
   projects: ProjectStore;
+  /** M15.16：Target 面板实验性功能开关（证据审计；缺省 false 不装配） */
+  targetEvidenceAuditEnabled?: boolean;
   latex?: LatexCompiler;
   /** latex 缺省实例的编译超时（生产由 config.latex.compileTimeoutMs 注入） */
   latexTimeoutMs?: number;
@@ -1006,6 +1008,17 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     parsedDocuments,
     revisions,
     ...(options.targetSummaryModel !== undefined ? { summaryModel: options.targetSummaryModel } : {}),
+    // M15.16：guideline PDF-only 参考文献观测 + 证据审计（实验性，flag 缺省 off）
+    papers: paperStore,
+    ...(options.targetEvidenceAuditEnabled === true
+      ? {
+          evidenceAuditEnabled: true,
+          runtime,
+          reviewerAgentId: options.agentIds.reviewer,
+          scholarly: citationIntegrity.scholarlyResolver,
+          readSourceChunks: (projectId: string, sourceId: string) => chunkStore.readChunks(projectId, sourceId),
+        }
+      : {}),
     log,
   });
   // M12.3 C4/C5 Figure 产品服务：数据集候选（ParsedDocument 提取）→ spec 校验

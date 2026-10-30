@@ -351,6 +351,8 @@ export interface AppConfig {
   ingestion: IngestionConfig;
   research: ResearchNetworkConfig;
   skills: SkillsConfig;
+  /** M15.16：Target 面板实验性功能开关（证据审计） */
+  target: TargetConfig;
   /**
    * 进程收到 SIGTERM / SIGINT 后协作式收敛（停止受理 → 取消在途 run → checkpoint
    * 落盘 → 释放会话 → 关 HTTP）的最长等待；超过即强制退出（M5.5；
@@ -367,6 +369,18 @@ export interface SkillsConfig {
    * Skills 页但不注入任何会话（A/B 验收「academic Skills disabled」的开关）。
    */
   disabledSkillIds: string[];
+}
+
+/**
+ * Target Publication Intelligence 配置（M15.16）。
+ *
+ * evidenceAuditEnabled：目标面板「证据审计（实验性）」feature flag——
+ * PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED，缺省 false。只影响新增入口的装配：
+ * 关闭时 TargetEvidenceAuditService 不入栈（GET 返回 enabled:false、POST 403），
+ * 既有 Review / Target / Quality Gate 路径零改动。
+ */
+export interface TargetConfig {
+  evidenceAuditEnabled: boolean;
 }
 
 export interface AgentIds {
@@ -755,6 +769,9 @@ export function loadConfig(source: Record<string, string | undefined> = process.
     },
     retrieval: readRetrievalConfig(source),
     research: readResearchConfig(source),
+    target: {
+      evidenceAuditEnabled: readBool(source, "PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED", false),
+    },
     fullText: {
       batchConcurrency: readIntWithFallback(source, "PAPERTEAM_FULLTEXT_BATCH_CONCURRENCY", {
         default: DEFAULT_FULLTEXT_BATCH_CONCURRENCY,
