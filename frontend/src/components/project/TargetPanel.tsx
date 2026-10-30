@@ -10,6 +10,7 @@ import {
   evaluateTargetReadiness,
   evaluateTargetGuidelineCompliance,
   evaluateTargetRubric,
+  evaluateTargetEvidenceAudit,
   excludeTargetBenchmarkPaper,
   getTargetBenchmark,
   getTargetGuideline,
@@ -17,8 +18,11 @@ import {
   getTargetProfile,
   getTargetReadiness,
   getTargetRubric,
+  getTargetEvidenceAudit,
   regenerateTargetProfile,
   type DistributionView,
+  type EvidenceAuditComparisonStatus,
+  type EvidenceAuditGapPlanItemView,
   type GuidelineCheckView,
   type GuidelineComplianceView,
   type TargetProfileView,
@@ -114,6 +118,10 @@ export function TargetPanel({ projectId }: { projectId: string }) {
     queryKey: ["target", projectId, "rubric"],
     queryFn: ({ signal }) => getTargetRubric(projectId, signal),
   });
+  const evidenceAudit = useQuery({
+    queryKey: ["target", projectId, "evidence-audit"],
+    queryFn: ({ signal }) => getTargetEvidenceAudit(projectId, signal),
+  });
 
   const invalidateTarget = (): Promise<void> =>
     Promise.all([
@@ -173,6 +181,14 @@ export function TargetPanel({ projectId }: { projectId: string }) {
   });
   const evaluateRubric = useMutation({
     mutationFn: () => evaluateTargetRubric(projectId),
+    onSuccess: () => {
+      setActionError(null);
+      void invalidateTarget();
+    },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+  const evaluateEvidenceAudit = useMutation({
+    mutationFn: () => evaluateTargetEvidenceAudit(projectId),
     onSuccess: () => {
       setActionError(null);
       void invalidateTarget();
@@ -486,6 +502,18 @@ export function TargetPanel({ projectId }: { projectId: string }) {
         onRetry={() => void rubric.refetch()}
         guidelineReady={guideline.data != null}
       />
+
+      {/* ---- 7. 证据审计（M15.16 P0-A，实验性；flag off 时后端返回 enabled:false，区块不渲染） ---- */}
+      {evidenceAudit.data?.enabled === true ? (
+        <TargetEvidenceAuditSection
+          audit={evidenceAudit.data.audit}
+          pending={evidenceAudit.isPending}
+          error={evidenceAudit.isError ? formatApiError(evidenceAudit.error) : null}
+          evaluating={evaluateEvidenceAudit.isPending}
+          onEvaluate={() => evaluateEvidenceAudit.mutate()}
+          onRetry={() => void evidenceAudit.refetch()}
+        />
+      ) : null}
 
       <p className="section-note faint">
         目标带来自冻结 benchmark 语料的确定性观测（research/target-profile.json），不是期刊/会议官方投稿要求；
@@ -1001,5 +1029,262 @@ function TargetRubricSection({
         </>
       )}
     </div>
+  );
+}
+
+// ---- M15.16 P0-A：证据审计（实验性；贡献级先前工作比较，模型 advisory） ----
+
+const AUDIT_STATUS_META: Record<EvidenceAuditComparisonStatus, { label: string; tone: string; hint: string }> = {
+  SUPPORTED_DIFFERENCE: { label: "差异可支持", tone: "ok", hint: "可定位的技术差异且现有材料（稿件+先前工作对应内容级）支持" },
+  POTENTIAL_OVERLAP: { label: "疑似重叠", tone: "warn", hint: "先前工作可能已覆盖声称的创新——展示具体重叠与仍不可判定部分" },
+  EVIDENCE_GAP: { label: "证据缺口", tone: "warn", hint: "论文自身证据未支撑声称的进展（声称/实验不匹配）" },
+  INSUFFICIENT_EVIDENCE: { label: "证据不足", tone: "neutral", hint: "稿件细节或先前工作材料不足以判定" },
+};
+
+const CLAIM_TYPE_LABELS: Record<string, string> = {
+  technical_idea: "技术思想",
+  method_combination: "方法组合",
+  performance_advantage: "性能优势",
+  application_scope: "应用范围",
+  analysis_or_taxonomy: "分析/分类",
+  dataset_or_benchmark: "数据集/基准",
+  other: "其他",
+};
+
+const SOURCE_LEVEL_LABELS: Record<string, string> = {
+  pool_fulltext: "已核验全文",
+  pool_abstract: "摘要级",
+  pool_metadata: "题录级",
+  model_memory: "模型记忆（非证据）",
+};
+
+function identityLabel(prior: { doi?: string; arxivId?: string; year?: number }): string {
+  const parts: string[] = [];
+  if (prior.year !== undefined) parts.push(String(prior.year));
+  if (prior.doi !== undefined) parts.push(`doi:${prior.doi}`);
+  if (prior.arxivId !== undefined) parts.push(`arXiv:${prior.arxivId}`);
+  return parts.length > 0 ? `（${parts.join(" · ")}）` : "";
+}
+
+function TargetEvidenceAuditSection({
+  audit,
+  pending,
+  error,
+  evaluating,
+  onEvaluate,
+  onRetry,
+}: {
+  audit: import("../../api/target.js").TargetEvidenceAuditView | null;
+  pending: boolean;
+  error: string | null;
+  evaluating: boolean;
+  onEvaluate: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="target-evidence-audit" data-testid="target-evidence-audit-section">
+      <div className="gate-rules-head">
+        <h3>证据审计（实验性 · 贡献级先前工作比较）</h3>
+        {audit !== null ? (
+          <span className="faint">
+            评估于 {formatDateTime(audit.artifact.evaluatedAt) ?? "—"} · 文章类型 {audit.artifact.documentType}
+            {audit.artifact.venueId !== undefined ? ` · venue ${audit.artifact.venueId}` : ""} · pool {audit.artifact.priorWork.poolSize} 篇
+            （cutoff {audit.artifact.priorWork.cutoffDate}）
+          </span>
+        ) : null}
+      </div>
+      {pending ? (
+        <Loading label="加载证据审计…" />
+      ) : error !== null ? (
+        <ErrorState title="证据审计加载失败" message={error} onRetry={onRetry} />
+      ) : audit === null ? (
+        <div className="state-block state-empty" data-testid="target-evidence-audit-empty">
+          <strong>尚未执行证据审计</strong>
+          <span>
+            对当前稿的逐创新点声称构建先前工作候选池（稿件参考文献解析 + 学术检索 + 在库全文升级），
+            经 3 次有界模型调用产出可回放锚定的比较与差距行动清单。需要已解析的稿件（PDF/LaTeX 均可）。
+          </span>
+          <p>
+            <button type="button" className="btn btn-small" onClick={onEvaluate} disabled={evaluating} data-testid="target-evidence-audit-run">
+              {evaluating ? "审计中…" : "执行证据审计（3 次模型调用）"}
+            </button>
+          </p>
+        </div>
+      ) : (
+        <>
+          {audit.stale ? (
+            <div className="note note-warn" role="status" data-testid="target-evidence-audit-stale">
+              <span>
+                <span className="note-mark">●</span> 审计结果相对当前稿已陈旧（{audit.staleReason ?? "稿件或参照池变更"}）——
+                以下内容是历史工件，不可当作当前结论。
+                <button type="button" className="btn-link" onClick={onEvaluate} disabled={evaluating}>
+                  {evaluating ? "重新审计中…" : "重新审计"}
+                </button>
+              </span>
+            </div>
+          ) : null}
+          {/* 审计概览：pool 构成 / 守卫 / 调用账 */}
+          <div className="kv" data-testid="target-evidence-audit-overview">
+            <div className="kv-row">
+              <dt>先前工作池</dt>
+              <dd>
+                {audit.artifact.priorWork.poolSize} 篇（已核验全文{" "}
+                {audit.artifact.priorWork.candidates.filter((c) => c.contentLevel === "verified_fulltext").length} / 摘要{" "}
+                {audit.artifact.priorWork.candidates.filter((c) => c.contentLevel === "abstract").length} / 题录{" "}
+                {audit.artifact.priorWork.candidates.filter((c) => c.contentLevel === "metadata").length}）
+                {audit.meta !== null ? (
+                  <span className="faint">
+                    {" "}— 稿件参考文献 {audit.meta.poolBuild.referenceEntriesTotal} 条（解析 {audit.meta.poolBuild.refResolved}/{audit.meta.poolBuild.referenceEntriesEligible}）；
+                    外部检索 {audit.meta.poolBuild.externalRetrieved} 条；在库全文升级 {audit.meta.poolBuild.libraryUpgraded} 篇；
+                    模型调用 {audit.meta.telemetry.calls} 次（{(audit.meta.telemetry.totalMs / 1000).toFixed(1)}s）
+                  </span>
+                ) : null}
+              </dd>
+            </div>
+            <div className="kv-row">
+              <dt>确定性守卫</dt>
+              <dd className="faint mono" data-testid="target-evidence-audit-guards">
+                {`anchorFailures=${audit.artifact.guards.anchorFailures} unresolvedRefs=${audit.artifact.guards.unresolvedPriorWorkRefs} cutoffViolations=${audit.artifact.guards.cutoffViolations} statusRuleViolations=${audit.artifact.guards.statusRuleViolations} priorQuoteReplayFailures=${audit.artifact.guards.priorQuoteReplayFailures} fulltextBasisDowngrades=${audit.artifact.guards.fulltextBasisDowngrades} droppedFindings=${audit.artifact.guards.droppedFindings}`}
+              </dd>
+            </div>
+            {audit.meta !== null && audit.meta.poolBuild.buildNotes.length > 0 ? (
+              <div className="kv-row">
+                <dt>构建说明（如实降级）</dt>
+                <dd>
+                  <ul className="faint target-profile-notes">
+                    {audit.meta.poolBuild.buildNotes.map((note) => (
+                      <li key={note}>{note}</li>
+                    ))}
+                  </ul>
+                </dd>
+              </div>
+            ) : null}
+          </div>
+
+          {/* 逐贡献比较 */}
+          <ul className="gate-rule-list" data-testid="target-evidence-audit-comparisons">
+            {audit.artifact.inventory.map((unit) => {
+              const comparison = audit.artifact.comparisons.find((c) => c.contributionId === unit.contributionId);
+              const meta = comparison !== undefined ? AUDIT_STATUS_META[comparison.status] : null;
+              return (
+                <li key={unit.contributionId} className="gate-rule" data-testid="target-evidence-audit-contribution">
+                  {meta !== null ? (
+                    <span className={`status status-tone-${meta.tone} gate-rule-status`} title={meta.hint}>
+                      {meta.label}
+                    </span>
+                  ) : (
+                    <span className="status status-tone-neutral gate-rule-status">未比较</span>
+                  )}
+                  <div className="gate-rule-body">
+                    <span className="gate-rule-name">
+                      {unit.contributionId} · {CLAIM_TYPE_LABELS[unit.claimType] ?? unit.claimType}
+                      <span className="faint"> · 声称锚 {unit.sectionId}{unit.page !== undefined ? ` p.${unit.page}` : ""}（{unit.anchorVerified ? "已核验" : "未核验"}）· 支撑 {unit.supportStatus === "located" ? `${unit.supportLocations.length} 处` : "缺失"} · 依据级 {comparison?.differenceBasis ?? "—"}</span>
+                    </span>
+                    <blockquote className="section-note">“{unit.claimQuote}”</blockquote>
+                    {comparison !== undefined ? (
+                      <span className="gate-rule-detail">
+                        {comparison.nearestPriorWorks.length > 0 ? "最近先前工作：" : "（未给出可解析先前工作——按规则不得判差异成立）"}
+                        <ul className="target-gap-list">
+                          {comparison.nearestPriorWorks.map((prior, index) => (
+                            <li key={index}>
+                              「{prior.title}」{identityLabel(prior)}
+                              <span className={`chip ${prior.resolvesToPool ? "chip-tone-info" : "chip-tone-warn"}`}>
+                                {SOURCE_LEVEL_LABELS[prior.sourceLevel ?? ""] ?? prior.sourceLevel ?? "未标注"}
+                              </span>
+                              {prior.timeCausalityViolation === true ? <span className="chip chip-tone-warn">时间因果违规</span> : null}
+                              {prior.quote !== undefined ? (
+                                prior.priorQuoteVerified === true ? (
+                                  <span className="chip chip-tone-info">quote 已回放</span>
+                                ) : (
+                                  <span className="chip chip-tone-warn">quote 未通过回放（不作证据）</span>
+                                )
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                        {comparison.commonMechanism !== "" ? <>共同机制：{comparison.commonMechanism}<br /></> : null}
+                        {comparison.substantiveDifference !== "" ? <>实质差异：{comparison.substantiveDifference}<br /></> : null}
+                        {comparison.completedVerification !== "" ? <>已验证：{comparison.completedVerification}<br /></> : null}
+                        {comparison.missingVerification !== "" ? <>缺验证：{comparison.missingVerification}</> : null}
+                        {comparison.uncertainty !== undefined ? <><br /><span className="faint">不确定性：{comparison.uncertainty}</span></> : null}
+                      </span>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+
+          {/* 行动清单（可改写 / 需真实实验或作者输入） */}
+          {audit.artifact.gapPlan.length > 0 ? (
+            <div className="target-evidence-audit-gapplan" data-testid="target-evidence-audit-gapplan">
+              <div className="gate-rules-head">
+                <h4>差距行动清单</h4>
+                <span className="faint">requires_real_experiment 项停在 Author Decision——系统不编造实验数字</span>
+              </div>
+              <ul className="rule-list">
+                {audit.artifact.gapPlan.map((item) => (
+                  <GapPlanItem key={`${item.contributionId}-${item.gap.slice(0, 24)}`} item={item} />
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {/* findings */}
+          {audit.artifact.findings.length > 0 ? (
+            <details data-testid="target-evidence-audit-findings">
+              <summary className="faint">审查发现（{audit.artifact.findings.length} 条 · advisory）</summary>
+              <ul className="rule-list">
+                {audit.artifact.findings.map((finding) => (
+                  <li key={finding.findingId} className="rule-item">
+                    <span className={`status status-tone-${finding.severity === "critical" || finding.severity === "major" ? "danger" : "neutral"}`}>
+                      {finding.severity}·{finding.category}
+                    </span>
+                    <div>
+                      <strong>{finding.sectionId}</strong>
+                      {finding.contributionId !== undefined ? `（${finding.contributionId}）` : ""}：{finding.message}
+                      {finding.evidenceGap !== undefined ? <div className="faint">证据缺口：{finding.evidenceGap}</div> : null}
+                      {finding.suggestion !== undefined ? <div className="faint">建议：{finding.suggestion}</div> : null}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null}
+
+          <p>
+            <button type="button" className="btn btn-small" onClick={onEvaluate} disabled={evaluating} data-testid="target-evidence-audit-rerun">
+              {evaluating ? "审计中…" : "重新审计（覆盖当前工件）"}
+            </button>
+          </p>
+          <p className="section-note faint">{audit.artifact.provenance.disclaimer}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GapPlanItem({ item }: { item: EvidenceAuditGapPlanItemView }) {
+  const needsExperiment = item.actionType === "requires_real_experiment_or_author_input";
+  return (
+    <li className="rule-item" data-testid="target-evidence-audit-gapitem">
+      <span className={`status status-tone-${needsExperiment ? "warn" : "info"}`}>
+        {needsExperiment ? "需真实实验/作者输入" : "可基于现有证据改写"}
+      </span>
+      <div>
+        <strong>{item.contributionId}</strong>：{item.gap}
+        {needsExperiment && item.experimentPlan !== undefined ? (
+          <div className="faint">
+            实验目的：{item.experimentPlan.purpose}
+            {item.experimentPlan.baselines !== undefined ? `；基线：${item.experimentPlan.baselines}` : ""}
+            {item.experimentPlan.datasets !== undefined ? `；数据集：${item.experimentPlan.datasets}` : ""}
+            {item.experimentPlan.metrics !== undefined ? `；指标：${item.experimentPlan.metrics}` : ""}
+            {item.experimentPlan.expectedEvidence !== undefined ? `；所需证据：${item.experimentPlan.expectedEvidence}` : ""}
+            <br />
+            （停在 Author Decision——需作者确认或补充真实实验，系统不自动执行、不伪造数据）
+          </div>
+        ) : null}
+      </div>
+    </li>
   );
 }

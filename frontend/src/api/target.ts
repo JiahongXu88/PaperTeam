@@ -359,3 +359,182 @@ export async function evaluateTargetRubric(
     ...(input.omitBenchmarkBands === true ? { omitBenchmarkBands: true } : {}),
   });
 }
+
+// ---- M15.16：证据审计（实验性；feature flag PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED）----
+
+export type EvidenceAuditComparisonStatus =
+  | "SUPPORTED_DIFFERENCE"
+  | "POTENTIAL_OVERLAP"
+  | "EVIDENCE_GAP"
+  | "INSUFFICIENT_EVIDENCE";
+
+export interface EvidenceAuditPriorWorkView {
+  candidateId?: string;
+  title: string;
+  year?: number;
+  doi?: string;
+  arxivId?: string;
+  sourceLevel?: string;
+  quote?: string;
+  priorQuoteVerified?: boolean;
+  resolvesToPool: boolean;
+  timeCausalityViolation?: boolean;
+}
+
+export interface EvidenceAuditComparisonView {
+  contributionId: string;
+  nearestPriorWorks: EvidenceAuditPriorWorkView[];
+  commonMechanism: string;
+  substantiveDifference: string;
+  differenceBasis: string;
+  completedVerification: string;
+  missingVerification: string;
+  status: EvidenceAuditComparisonStatus;
+  uncertainty?: string;
+}
+
+export interface EvidenceAuditGapPlanItemView {
+  contributionId: string;
+  gap: string;
+  actionType: "can_rewrite_from_existing_evidence" | "requires_real_experiment_or_author_input";
+  experimentPlan?: { purpose: string; baselines?: string; datasets?: string; metrics?: string; expectedEvidence?: string };
+  status: "proposed" | "author_decision";
+}
+
+export interface EvidenceAuditArtifactView {
+  schemaVersion: number;
+  venueId?: string;
+  documentType: string;
+  promptVersion: string;
+  model?: string;
+  evaluatedAt: string;
+  manuscriptRevision?: number | null;
+  priorWork: {
+    cutoffDate: string;
+    poolFingerprint: string;
+    poolSize: number;
+    queriesUsed: string[];
+    candidates: Array<{
+      candidateId: string;
+      title: string;
+      year?: number;
+      doi?: string;
+      arxivId?: string;
+      contentLevel: "abstract" | "metadata" | "verified_fulltext";
+      citedByManuscript: boolean;
+      source: string;
+      librarySourceId?: string;
+    }>;
+  };
+  inventory: Array<{
+    contributionId: string;
+    claimQuote: string;
+    claimParaphrase?: string;
+    claimType: string;
+    sectionId: string;
+    page?: number;
+    supportStatus: string;
+    anchorVerified: boolean;
+    supportLocations: Array<{ sectionId: string; kind: string; quote?: string; verified: boolean }>;
+  }>;
+  comparisons: EvidenceAuditComparisonView[];
+  gapPlan: EvidenceAuditGapPlanItemView[];
+  findings: Array<{
+    findingId: string;
+    category: string;
+    severity: string;
+    sectionId: string;
+    contributionId?: string;
+    message: string;
+    evidenceGap?: string;
+    suggestion?: string;
+    claimText?: string;
+    priorWorkTitles?: string[];
+    comparisonStatus?: EvidenceAuditComparisonStatus;
+  }>;
+  coverage: {
+    sectionsTotal: number;
+    sectionsIndexed: number;
+    sectionsIncludedFullText: number;
+    manuscriptCharsTotal: number;
+    manuscriptCharsIncluded: number;
+    truncations: string[];
+  };
+  guards: {
+    anchorFailures: number;
+    unresolvedPriorWorkRefs: number;
+    cutoffViolations: number;
+    statusRuleViolations: number;
+    droppedFindings: number;
+    priorQuoteReplayFailures: number;
+    fulltextBasisDowngrades: number;
+  };
+  inputFingerprint: {
+    manuscriptSha256: string;
+    poolFingerprint: string;
+    promptVersion: string;
+    documentType: string;
+    venueId?: string;
+  };
+  provenance: { basis: string; disclaimer: string };
+}
+
+export interface EvidenceAuditRunMetaView {
+  schemaVersion: 1;
+  evaluatedAt: string;
+  venueId?: string;
+  documentType: string;
+  manuscriptRevision: number | null;
+  poolBuild: {
+    cutoffDate: string;
+    referenceEntriesTotal: number;
+    referenceEntriesEligible: number;
+    refResolved: number;
+    refUnresolved: number;
+    refLookupErrors: number;
+    externalQuery: string | null;
+    externalRetrieved: number;
+    libraryCandidates: number;
+    libraryUpgraded: number;
+    dedupedCandidates: number;
+    selfExcluded: number;
+    poolCap: number;
+    contentLevels: { abstract: number; metadata: number; verified_fulltext: number };
+    buildNotes: string[];
+    extractorNotes: string[];
+  };
+  telemetry: { calls: number; failed: number; totalMs: number; approxPromptChars: number; outputChars: number };
+  extractParseFailed: boolean;
+  compareParseFailed: boolean;
+  synthesizeParseFailed: boolean;
+}
+
+export interface TargetEvidenceAuditView {
+  artifact: EvidenceAuditArtifactView;
+  meta: EvidenceAuditRunMetaView | null;
+  stale: boolean;
+  staleReason?: string;
+  currentManuscriptRevision: number | null;
+}
+
+export interface TargetEvidenceAuditStatus {
+  enabled: boolean;
+  audit: TargetEvidenceAuditView | null;
+}
+
+export async function getTargetEvidenceAudit(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<TargetEvidenceAuditStatus> {
+  return apiClient.get<TargetEvidenceAuditStatus>(
+    `/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit`,
+    signal,
+  );
+}
+
+/** 执行证据审计（真实模型调用；flag off → 403 TARGET_EVIDENCE_AUDIT_DISABLED） */
+export async function evaluateTargetEvidenceAudit(
+  projectId: string,
+): Promise<{ enabled: true; audit: TargetEvidenceAuditView }> {
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit`);
+}
