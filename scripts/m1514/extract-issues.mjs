@@ -36,6 +36,8 @@ function stripLeadingSummary(text) {
 }
 
 const projectsInfo = JSON.parse(await readFile(join(ROOT, "phase-c", "projects.json"), "utf8"));
+const candidateFrame = JSON.parse(await readFile(join(ROOT, "phase-b", "candidate-frame.json"), "utf8"));
+const splitByPaperId = new Map(candidateFrame.candidates.map((c) => [c.paperId, c.split]));
 const famArg = process.argv.includes("--fam") ? process.argv[process.argv.indexOf("--fam") + 1] : null;
 const devOnly = process.argv.includes("--dev");
 let targets;
@@ -102,7 +104,7 @@ const lines = [];
 const stats = { families: 0, reviews: 0, atomicIssues: 0, judgeable: 0, unjudgeable: 0, issueFamilies: 0 };
 for (const fam of targets) {
   const famId = fam.familyId;
-  const raw = JSON.parse(await readFile(join(SEQ_DIR, `${fam.split}-${fam.paperId}.json`), "utf8"));
+  const raw = JSON.parse(await readFile(join(SEQ_DIR, `${splitByPaperId.get(fam.paperId) ?? "train"}-${fam.paperId}.json`), "utf8"));
   const reviews = (raw.reviews ?? []).filter(
     (r) => r.is_meta_review !== true && r.IS_META_REVIEW !== true && String(r.comments ?? "").length >= SUBSTANTIVE_MIN_CHARS,
   ).map((r) => ({ ...r, comments: stripLeadingSummary(r.comments) }))
