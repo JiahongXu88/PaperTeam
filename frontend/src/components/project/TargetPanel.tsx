@@ -1647,6 +1647,26 @@ function AuditClosureReportViewBlock({ report }: { report: AuditClosureReportVie
                     citation {item.verification.citation === true ? "✓" : item.verification.citation === false ? "✗" : "—"}
                   </div>
                 ) : null}
+                {item.checks !== undefined ? (
+                  <div className="faint" data-testid="target-audit-revision-report-checks">
+                    证据门：落盘 lineage {item.checks.lineage ? "✓" : "✗"} · 目标绑定 {item.checks.targetBinding ? "✓" : "✗"} ·
+                    内容变化 {item.checks.contentChanged ? "✓" : "✗"} · 未回退 {item.checks.notReverted ? "✓" : "✗"} ·
+                    守卫 {item.checks.guards ? "✓" : "✗"}
+                  </div>
+                ) : null}
+                {item.lineage !== undefined && item.lineage.length > 0 ? (
+                  <div className="faint">
+                    修订 lineage：
+                    {item.lineage
+                      .map((entry) => `${entry.file ?? "?"}@rev${entry.revision ?? "?"}（${entry.patchIds?.join("+") ?? entry.planItemId}；${(entry.beforeSha256 ?? "").slice(0, 8)}→${(entry.afterSha256 ?? "").slice(0, 8)}）`)
+                      .join("、")}
+                  </div>
+                ) : null}
+                {item.openSubItems !== undefined && item.openSubItems.length > 0 ? (
+                  <div className="faint">
+                    仍开放的子条：{item.openSubItems.map((entry) => `${entry.planItemId}（${entry.outcome}）`).join("、")}
+                  </div>
+                ) : null}
               </div>
             </li>
           );

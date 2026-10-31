@@ -84,8 +84,133 @@ export interface ExternalInstruction {
   /** 冲突依据（Writer 报告中引用的稿件数字 / Evidence 摘录） */
   conflictBasis?: string;
   resolutionTrace?: CommentResolutionTrace;
+  /**
+   * M15.18：机器转入来源的确定性 lineage（目前仅 target_audit）。原始逐字证据
+   * （texAnchor / claimQuote）与模型转述（Planner action / targetQuote）分开保存；
+   * 派发与复评只认这里的原文锚，不认转述。旧工件无该字段 → 见 isApprovedAuditRewrite。
+   */
+  origin?: ExternalInstructionOrigin;
+  /**
+   * M15.18：逐计划子条的机器结果（Planner 把一条意见拆成多条时，每条子任务的
+   * 结果独立记录；不再由任一子条覆盖整条意见的状态）。仅追加、按 planItemId+outcome 去重。
+   */
+  planItemOutcomes?: PlanItemOutcome[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface ExternalInstructionOrigin {
+  kind: "target_audit_rewrite" | "target_audit_author_decision";
+  planId: string;
+  itemId: string;
+  contributionId: string;
+  /** 审计 claimQuote（PDF/解析稿原文，逐字） */
+  claimQuote: string;
+  /** 计划期在可编辑 TeX 中逐字回放的锚（缺失 = 只能用 claimQuote 定位） */
+  texAnchor?: string;
+  /** 计划期投影到的可编辑文件 */
+  targetFile?: string;
+  approvedAt: string;
+}
+
+/**
+ * 子条机器结果（M15.18）：
+ * - author_decision / evidence_only / action_type_missing / noop_unverified：Planner 子条未派发 Writer 的原因
+ * - candidate_rejected：派发了，候选被守卫拒绝 / 未落盘
+ * - unchanged：派发了，最终写入内容与修订前一致
+ * - applied：最终写入内容真实变化（含前后 SHA / 修订号 / patch lineage）
+ */
+export type PlanItemOutcomeKind =
+  | "author_decision"
+  | "evidence_only"
+  | "action_type_missing"
+  | "noop_unverified"
+  | "noop_verified"
+  | "candidate_rejected"
+  | "unchanged"
+  | "applied";
+
+export interface PlanItemOutcome {
+  planItemId: string;
+  outcome: PlanItemOutcomeKind;
+  summary: string;
+  revision?: number;
+  target?: string;
+  file?: string;
+  patchIds?: string[];
+  beforeSha256?: string;
+  afterSha256?: string;
+  at: string;
+}
+
+const PLAN_ITEM_OUTCOME_KINDS: readonly PlanItemOutcomeKind[] = [
+  "author_decision", "evidence_only", "action_type_missing", "noop_unverified", "noop_verified", "candidate_rejected", "unchanged", "applied",
+];
+
+/**
+ * 作者已批准、可按既有证据改写的审计意见（M15.18）。旧工件（M15.17）无 origin：
+ * 以 rewriteInstructionText 的固定段落标记【允许的修改】兼容识别（作者裁决文案无该段）。
+ */
+export function isApprovedAuditRewrite(instruction: Pick<ExternalInstruction, "source" | "origin" | "text">): boolean {
+  if (instruction.source !== "target_audit") return false;
+  if (instruction.origin !== undefined) return instruction.origin.kind === "target_audit_rewrite";
+  return instruction.text.includes("【允许的修改】");
+}
+
+/** Planner 输入中作者已批准审计改写意见的前缀标记（原文不变；只出现在 prompt 别名行） */
+export const APPROVED_AUDIT_REWRITE_MARKER = "【作者已批准：按既有证据改写】";
+
+/** 追加子条结果（同 planItemId+outcome 只保留最新一条——重试/恢复不重复计数） */
+export function appendPlanItemOutcome(instruction: ExternalInstruction, outcome: PlanItemOutcome): ExternalInstruction {
+  const prior = (instruction.planItemOutcomes ?? []).filter(
+    (entry) => !(entry.planItemId === outcome.planItemId && entry.outcome === outcome.outcome && entry.revision === outcome.revision),
+  );
+  return { ...instruction, planItemOutcomes: [...prior, outcome] };
+}
+
+function readOrigin(value: unknown): ExternalInstructionOrigin | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const kind = record["kind"];
+  if (kind !== "target_audit_rewrite" && kind !== "target_audit_author_decision") return undefined;
+  for (const key of ["planId", "itemId", "contributionId", "claimQuote", "approvedAt"] as const) {
+    if (typeof record[key] !== "string") return undefined;
+  }
+  return {
+    kind,
+    planId: record["planId"] as string,
+    itemId: record["itemId"] as string,
+    contributionId: record["contributionId"] as string,
+    claimQuote: record["claimQuote"] as string,
+    ...(typeof record["texAnchor"] === "string" ? { texAnchor: record["texAnchor"] } : {}),
+    ...(typeof record["targetFile"] === "string" ? { targetFile: record["targetFile"] } : {}),
+    approvedAt: record["approvedAt"] as string,
+  };
+}
+
+function readPlanItemOutcomes(value: unknown): PlanItemOutcome[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: PlanItemOutcome[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (typeof record["planItemId"] !== "string" || typeof record["summary"] !== "string" || typeof record["at"] !== "string") continue;
+    if (!(PLAN_ITEM_OUTCOME_KINDS as readonly unknown[]).includes(record["outcome"])) continue;
+    out.push({
+      planItemId: record["planItemId"],
+      outcome: record["outcome"] as PlanItemOutcomeKind,
+      summary: record["summary"],
+      ...(typeof record["revision"] === "number" ? { revision: record["revision"] } : {}),
+      ...(typeof record["target"] === "string" ? { target: record["target"] } : {}),
+      ...(typeof record["file"] === "string" ? { file: record["file"] } : {}),
+      ...(Array.isArray(record["patchIds"]) && record["patchIds"].every((id) => typeof id === "string")
+        ? { patchIds: record["patchIds"] as string[] } : {}),
+      ...(typeof record["beforeSha256"] === "string" ? { beforeSha256: record["beforeSha256"] } : {}),
+      ...(typeof record["afterSha256"] === "string" ? { afterSha256: record["afterSha256"] } : {}),
+      at: record["at"],
+    });
+  }
+  return out;
 }
 
 /** 意见全文长度上限（超出拒绝；防误贴整篇稿件撑爆 prompt） */
@@ -194,6 +319,15 @@ export interface ExternalOutcomeReport {
   evidenceIds?: string[];
   patchIds?: string[];
   verification?: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
+  /**
+   * M15.18：该目标候选的最终处置（落盘之后确定）。rejected = 守卫拒绝 / 未写入；
+   * unchanged = 写入内容与修订前一致；accepted = 已落盘且真实变化。
+   */
+  candidateStatus?: "accepted" | "rejected" | "unchanged";
+  /** M15.18：目标文件修订前 / 落盘后 SHA-256（accepted 时两者必不同） */
+  file?: string;
+  beforeSha256?: string;
+  afterSha256?: string;
 }
 
 /**
@@ -337,6 +471,10 @@ export function readExternalInstructions(value: unknown): ExternalInstruction[] 
       ...(readResolutionTrace(record["resolutionTrace"]) !== undefined
         ? { resolutionTrace: readResolutionTrace(record["resolutionTrace"]) }
         : {}),
+      ...(readOrigin(record["origin"]) !== undefined ? { origin: readOrigin(record["origin"]) } : {}),
+      ...(readPlanItemOutcomes(record["planItemOutcomes"]) !== undefined
+        ? { planItemOutcomes: readPlanItemOutcomes(record["planItemOutcomes"]) }
+        : {}),
       createdAt,
       updatedAt: typeof record["updatedAt"] === "string" ? record["updatedAt"] : createdAt,
     });
@@ -449,6 +587,7 @@ export class ExternalInstructionStore {
     section?: string;
     initialStatus?: "already_satisfied";
     statusNote?: string;
+    origin?: ExternalInstructionOrigin;
     now?: string;
   }): Promise<ExternalInstruction | null> {
     return this.enqueue(projectId, () => this.addInner(projectId, input));
@@ -456,7 +595,7 @@ export class ExternalInstructionStore {
 
   private async addInner(projectId: string, input: {
     source: ExternalInstructionSource; text: string; reviewerLabel?: string; section?: string;
-    initialStatus?: "already_satisfied"; statusNote?: string; now?: string;
+    initialStatus?: "already_satisfied"; statusNote?: string; origin?: ExternalInstructionOrigin; now?: string;
   }): Promise<ExternalInstruction | null> {
     const now = input.now ?? new Date().toISOString();
     const instructionId = externalInstructionId(input.source, input.reviewerLabel, input.text);
@@ -480,6 +619,7 @@ export class ExternalInstructionStore {
       status: satisfied ? "already_satisfied" : "pending",
       ...(satisfied ? { statusNote: input.statusNote } : {}),
       ...(pendingAuthorDecisionNote !== undefined ? { statusNote: pendingAuthorDecisionNote } : {}),
+      ...(input.origin !== undefined && input.source === "target_audit" ? { origin: input.origin } : {}),
       ...(satisfied ? {
         resolutionTrace: {
           commentId: instructionId,
@@ -638,12 +778,15 @@ export function applyDispatchOutcome(
       };
     }
     const appliedReports = reports.filter((report) => report.outcome === "applied");
-    const realChange = appliedReports.some((report) => report.targetChanged === true);
+    // M15.18：targetChanged 由派发 stage 在落盘之后确定；candidateStatus 显式为
+    // rejected / unchanged 的报告即使带 targetChanged 也不算真实变化（防御旧顺序差）
+    const realChange = appliedReports.some((report) => report.targetChanged === true && report.candidateStatus !== "rejected" && report.candidateStatus !== "unchanged");
+    const lineage = withPlanItemLineage(instruction, reports, dispatch.revision, now);
     if (appliedReports.length > 0 && realChange) {
       const allReported = reports.every((report) => report.outcome !== "unreported");
       changed = true;
       return {
-        ...instruction,
+        ...lineage,
         status: allReported ? "handled" : "partially_handled",
         resolutionTrace: {
           commentId: instruction.instructionId,
@@ -665,25 +808,30 @@ export function applyDispatchOutcome(
     }
     if (appliedReports.length > 0 && !realChange) {
       changed = true;
+      const rejected = reports.some((report) => report.candidateStatus === "rejected");
       return {
-        ...instruction,
+        ...lineage,
         status: "unresolved",
         resolutionTrace: {
           commentId: instruction.instructionId,
           planItemIds: reports.flatMap((report) => report.planItemIds ?? []), actionType: "modify",
           evidenceIds: reports.flatMap((report) => report.evidenceIds ?? []), patchIds: reports.flatMap((report) => report.patchIds ?? []),
           verification: {}, status: "unresolved",
-          resolutionSummary: "Writer reported no applicable change or no verifiable patch.",
-          remainingIssue: "Coverage or patch verification did not pass.",
+          resolutionSummary: rejected
+            ? "Writer proposed a candidate, but the guards rejected it; nothing was written."
+            : "Writer reported no applicable change or no verifiable patch.",
+          remainingIssue: rejected ? "Candidate rejected by patch/scope/content guards." : "Coverage or patch verification did not pass.",
         },
         statusNote: preservedAuthorDecisionNote(instruction.statusNote)
-          ?? "Writer 报告已执行，但目标文件没有实际变化（不采信自称已处理）",
+          ?? (rejected
+            ? "Writer 报告已执行，但候选修改被守卫拒绝、未落盘（不采信自称已处理）"
+            : "Writer 报告已执行，但目标文件没有实际变化（不采信自称已处理）"),
         updatedAt: now,
       };
     }
     changed = true;
     return {
-      ...instruction,
+      ...lineage,
       status: "unresolved",
       resolutionTrace: {
         commentId: instruction.instructionId, planItemIds: reports.flatMap((report) => report.planItemIds ?? []),
@@ -698,6 +846,45 @@ export function applyDispatchOutcome(
     };
   });
   return { instructions: next, changed };
+}
+
+/**
+ * M15.18：把本轮派发报告的确定性落盘结果写入逐子条 lineage（applied 仅当
+ * candidateStatus=accepted 或旧口径 targetChanged=true 且未标拒绝）。
+ */
+function withPlanItemLineage(
+  instruction: ExternalInstruction,
+  reports: readonly ExternalOutcomeReport[],
+  revision: number,
+  now: string,
+): ExternalInstruction {
+  let next = instruction;
+  for (const report of reports) {
+    // lineage 记录的是磁盘事实（是否真实落盘变化），与 Writer 自报无关；
+    // conflict / not_applicable 的自报保留在 summary
+    const kind: PlanItemOutcomeKind =
+      report.candidateStatus === "rejected"
+        ? "candidate_rejected"
+        : report.candidateStatus === "unchanged" || report.targetChanged !== true
+          ? "unchanged"
+          : "applied";
+    const planItemIds = (report.planItemIds ?? []).length > 0 ? report.planItemIds! : [`external:${instruction.instructionId}`];
+    for (const planItemId of planItemIds) {
+      next = appendPlanItemOutcome(next, {
+        planItemId,
+        outcome: kind,
+        summary: `${report.outcome}${report.basis !== undefined ? `: ${report.basis.slice(0, 200)}` : ""}`,
+        revision,
+        ...(report.target !== undefined ? { target: report.target } : {}),
+        ...(report.file !== undefined ? { file: report.file } : {}),
+        ...((report.patchIds ?? []).length > 0 ? { patchIds: report.patchIds } : {}),
+        ...(report.beforeSha256 !== undefined ? { beforeSha256: report.beforeSha256 } : {}),
+        ...(report.afterSha256 !== undefined ? { afterSha256: report.afterSha256 } : {}),
+        at: now,
+      });
+    }
+  }
+  return next;
 }
 
 /**

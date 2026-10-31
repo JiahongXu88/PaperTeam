@@ -639,6 +639,17 @@ export type AuditGapClosure =
   | "AUTHOR_REJECTED"
   | "NOT_EVALUATED";
 
+export interface AuditClosureLineageEntry {
+  planItemId: string;
+  outcome: string;
+  summary: string;
+  revision?: number;
+  file?: string;
+  patchIds?: string[];
+  beforeSha256?: string;
+  afterSha256?: string;
+}
+
 export interface AuditClosureReportView {
   schemaVersion: 1;
   reportId: string;
@@ -655,6 +666,12 @@ export interface AuditClosureReportView {
     instruction?: { instructionId: string; status: string; statusNote?: string };
     patches?: Array<{ patchId: string; revision: number; finalStatus: string }>;
     verification?: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
+    /** M15.18：落盘 lineage（修订号 / 文件 / 前后 SHA / patch） */
+    lineage?: AuditClosureLineageEntry[];
+    /** M15.18：Planner 拆出的仍开放子条（作者裁决 / 仅证据 / 未核验 NO-OP） */
+    openSubItems?: AuditClosureLineageEntry[];
+    /** M15.18：VALIDATED_FIXED 证据门逐项核对 */
+    checks?: { lineage: boolean; targetBinding: boolean; contentChanged: boolean; notReverted: boolean; guards: boolean };
   }>;
   summary: { total: number } & Record<AuditGapClosure, number>;
   disclaimer: string;

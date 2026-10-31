@@ -875,6 +875,11 @@ export interface ScriptedRuntimeOptions {
   evidenceJudgeOutput?: string;
   /** research/survey-plan scope 的输出覆盖（M11.1.4；缺省 SURVEY_PLAN_JSON） */
   surveyPlanOutput?: string;
+  /**
+   * M15.18：按 scope 覆盖输出（返回 undefined = 走默认脚本）。用于构造真实形态的
+   * Planner 拆条 / Writer 自称已改但无改动 / 候选被守卫拒绝等回归。
+   */
+  scopeOutputOverride?: (scope: string, task: string) => string | undefined;
 }
 
 /**
@@ -1039,7 +1044,10 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         projectFactDrift.add(input.projectId);
       }
       let output = LATEX_DOC;
-      if (scope === "research" || scope === "research/survey-plan") {
+      const scopeOverride = options.scopeOutputOverride?.(scope, input.task);
+      if (scopeOverride !== undefined) {
+        output = scopeOverride;
+      } else if (scope === "research" || scope === "research/survey-plan") {
         // research prompt 内嵌 researchIdea（survey：project.title）——解析 E2E
         // 转向标记并按项目记忆（M11.2：topic_survey 的 fail/pass 轮次脚本驱动）
         if (projectId !== "") {

@@ -289,6 +289,9 @@ import {
 import {
   applyDispatchOutcome,
   applyPatchBackedOutcomeOverrides,
+  APPROVED_AUDIT_REWRITE_MARKER,
+  appendPlanItemOutcome,
+  isApprovedAuditRewrite,
   type ExternalDirectiveDispatch,
   type ExternalDispatchResult,
   type ExternalInstruction,
@@ -3148,7 +3151,7 @@ function revisionReviseStage(
 
       // 修订指令：shared loop 以落盘的确定性修订计划为准（计划缺失时回退执行期派生）；
       // apply 仍用改进计划（映射为 issue）
-      const directives =
+      const rawDirectives =
         stageId === "revision.apply"
           ? await collectRevisionDirectives(services, ctx.projectId, stageId)
           : await collectPlanDirectives(services, ctx.projectId);
@@ -3156,14 +3159,72 @@ function revisionReviseStage(
       // M5.7 外部修改意见：独立派发通道（最高业务优先级；不占用 issue 通道，
       // 也不改 Quality Gate 口径）。pending / partially_handled / unresolved 派发；
       // handled / conflict 不再自动派发（conflict 保留在意见列表等人工决策）。
-      const authorOwnedComments = new Set((await services.externalInstructions.load(ctx.projectId))
+      const stageInstructions = await services.externalInstructions.load(ctx.projectId);
+      // M15.18：作者已批准、可按既有证据改写的审计意见不属于「作者自有」——Planner
+      // 的 author_decision 兄弟子条只登记子条结果（planItemOutcomes），原指令（含 TeX
+      // 逐字锚）继续经本通道派发、受全部守卫约束（旧工件被翻转的 statusNote 同样不阻断）。
+      const approvedAuditRewriteIds = new Set(stageInstructions
+        .filter((instruction) => isApprovedAuditRewrite(instruction))
+        .map((instruction) => instruction.instructionId));
+      // 审计目标文件（attribution 只在该文件上成立；其它文件上的子条修改不归因到本意见）
+      const approvedAuditRewriteFiles = new Map(stageInstructions
+        .filter((instruction) => approvedAuditRewriteIds.has(instruction.instructionId))
+        .flatMap((instruction) => {
+          const file = instruction.origin?.targetFile ?? instruction.section;
+          return file !== undefined ? [[instruction.instructionId, file] as const] : [];
+        }));
+      /**
+       * M15.18 锚失效 fail-closed：已批准审计改写的 TeX 逐字锚必须仍逐字存在于其目标文件，
+       * 否则该意见（及其 Planner 子条）本轮不派发——短文件整文件目标不依赖锚定位，
+       * 不加此门会把旧审计的改写指令套到已变化的正文上。无 origin 的旧工件不做此检查。
+       * 已有落盘 lineage 的意见（锚因改写本身而消失）只跳过派发，不改状态。
+       */
+      const staleAuditAnchors = new Set<string>();
+      const normalizeEol = (text: string): string => text.replace(/\r\n/g, "\n");
+      for (const instruction of stageInstructions) {
+        if (!approvedAuditRewriteIds.has(instruction.instructionId)) continue;
+        if (instruction.status !== "pending" && instruction.status !== "unresolved" && instruction.status !== "partially_handled") continue;
+        const anchor = instruction.origin?.texAnchor;
+        const file = instruction.origin?.targetFile;
+        if (anchor === undefined || file === undefined) continue;
+        let content: string | undefined;
+        try {
+          content = await readFile(join(services.projects.manuscriptDir(ctx.projectId), file), "utf8");
+        } catch {
+          content = undefined;
+        }
+        if (content !== undefined && normalizeEol(content).includes(normalizeEol(anchor))) continue;
+        staleAuditAnchors.add(instruction.instructionId);
+      }
+      if (staleAuditAnchors.size > 0) {
+        const markedAt = new Date().toISOString();
+        await services.externalInstructions.update(ctx.projectId, (current) => current.map((instruction) => {
+          if (!staleAuditAnchors.has(instruction.instructionId)) return instruction;
+          if ((instruction.planItemOutcomes ?? []).some((outcome) => outcome.outcome === "applied")) return instruction;
+          const note = `TARGET_AUDIT_ANCHOR_STALE: 审计逐字锚已不在 ${instruction.origin?.targetFile ?? "(目标文件)"} 中（稿件已变化）——不派发、不猜位置；请重新审计生成新计划`;
+          if (instruction.status === "unresolved" && instruction.statusNote === note) return instruction;
+          return { ...instruction, status: "unresolved" as const, statusNote: note, updatedAt: markedAt };
+        }));
+        await ctx.emitDomain(
+          "revision.audit_anchor_stale",
+          { instructionIds: [...staleAuditAnchors] },
+          `${staleAuditAnchors.size} 条已批准的目标期刊审计改写意见的原文锚在当前稿中已失效——本轮不派发（fail-closed）`,
+        );
+      }
+      const directives = rawDirectives.filter(
+        (directive) => directive.item?.instructionId === undefined || !staleAuditAnchors.has(directive.item.instructionId),
+      );
+      const authorOwnedComments = new Set(stageInstructions
         .filter(instruction => /^(?:AUTHOR_DECISION_REQUIRED|EVIDENCE_ONLY_RECORDED)\b/.test(instruction.statusNote ?? ""))
+        .filter(instruction => !approvedAuditRewriteIds.has(instruction.instructionId))
         .map(instruction => instruction.instructionId));
       // Typed planning already resolved these comments to a non-Writer action.
       // Their raw, section-addressed text must not reopen dispatch via the parallel
       // external-comment channel. Safe modify siblings still dispatch via directives.
+      // M15.18：真人 / 作者意见在 Writer prompt 中先于 target_audit（advisory 不压过真人意见）
       const externalDirectives = (await collectExternalDirectives(services, ctx.projectId))
-        .filter(directive => !authorOwnedComments.has(directive.instructionId));
+        .filter(directive => !authorOwnedComments.has(directive.instructionId) && !staleAuditAnchors.has(directive.instructionId))
+        .sort((a, b) => Number(a.source === "target_audit") - Number(b.source === "target_audit"));
       const sectionScopedExternals = externalDirectives.filter(
         (directive) => directive.section !== undefined,
       );
@@ -3583,6 +3644,91 @@ function revisionReviseStage(
         }
         if (writerFailure !== undefined) throw writerFailure;
         if (result === undefined) throw new BusinessError("STAGE_CONTRACT_VIOLATION", "REVISION_WRITER_NO_RESULT");
+        /**
+         * M5.7 / M15.18：确定性 targetChanged（"已处理"不采信 Writer 自称）——只在本目标
+         * 的最终处置确定之后调用：span 候选通过全部守卫并落盘 / 文件级候选经守卫表格与
+         * 塌缩守卫后实际写入 / 摘要具名实体守卫后。候选被拒、恢复基线、noop 一律
+         * finalChanged=false（旧实现在守卫之前按 Writer 提案计算，被拒候选仍记 handled）。
+         * M9.7.6 P0：同 id 跨目标 OR——下游 transitions 不产生重复 id。
+         */
+        const recordTargetOutcome = (
+          outcomes: readonly ExternalOutcomeReport[] | undefined,
+          finalChanged: boolean,
+          candidateStatus: "accepted" | "rejected" | "unchanged",
+          lineage: { beforeSha256?: string; afterSha256?: string } = {},
+        ): void => {
+          if (candidateStatus !== "rejected") {
+            for (const item of matchedItems) {
+              const existing = dispatchedItems.find((entry) => entry.id === item.id);
+              if (existing === undefined) {
+                dispatchedItems.push({ id: item.id, targetChanged: finalChanged });
+              } else {
+                existing.targetChanged = existing.targetChanged || finalChanged;
+              }
+            }
+          }
+          const targetLabel = `${target.relativePath}#${target.logicalSpan?.heading ?? target.key}`;
+          const patchIds = target.logicalSpan !== undefined ? [`patch:${target.logicalSpan.originalHash.slice(0, 12)}`] : [];
+          const fileLineage = {
+            file: target.relativePath,
+            ...(lineage.beforeSha256 !== undefined ? { beforeSha256: lineage.beforeSha256 } : {}),
+            ...(lineage.afterSha256 !== undefined ? { afterSha256: lineage.afterSha256 } : {}),
+          };
+          const reports: ExternalOutcomeReport[] = (outcomes ?? []).map((report) => ({
+            ...report,
+            targetChanged: finalChanged,
+            candidateStatus,
+            target: targetLabel,
+            planItemIds: matchedItems.map((item) => item.id),
+            evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+            patchIds,
+            verification: target.logicalSpan !== undefined ? { scope: candidateStatus !== "rejected" } : {},
+            ...fileLineage,
+          }));
+          // M15.18：已获作者批准的审计改写意见，其 Planner modify 子条命中本目标且
+          // 候选被接受落盘时，即使原指令未进入本目标 prompt（锚绑定到其它单元 /
+          // 由子条单独派发），也补一条确定性 attribution 报告（basis 如实标注）。
+          if (finalChanged && candidateStatus === "accepted") {
+            const reported = new Set(reports.map((report) => report.instructionId));
+            for (const item of matchedItems) {
+              if (item.instructionId === undefined || reported.has(item.instructionId) || !approvedAuditRewriteIds.has(item.instructionId)) continue;
+              if (approvedAuditRewriteFiles.get(item.instructionId) !== target.relativePath) continue;
+              reported.add(item.instructionId);
+              reports.push({
+                instructionId: item.instructionId,
+                outcome: "applied",
+                basis: `deterministic plan-item attribution: Planner 子条 ${item.id} 的候选已通过守卫并落盘于审计目标 ${target.relativePath}（原指令未进入本目标 prompt）`,
+                targetChanged: true,
+                candidateStatus,
+                target: targetLabel,
+                planItemIds: matchedItems.filter((candidate) => candidate.instructionId === item.instructionId).map((candidate) => candidate.id),
+                evidenceIds: [...new Set(matchedItems.flatMap((candidate) => candidate.relatedEvidenceIds ?? []))],
+                patchIds,
+                verification: {},
+                ...fileLineage,
+              });
+            }
+          }
+          externalOutcomeReports.push(...reports);
+          /**
+           * M11.4 Reliability Closure（Run 1 实证：p-c923662f9c48 R2）：意见对应
+           * 的计划条目命中本目标、候选 patch 通过全部守卫并被接受、目标真实变化
+           * ——机器 lineage 已构成 §14 的执行证据（accepted patch + target 对应 +
+           * guards PASS）。Writer 自报 not_applicable / unreported 与该证据冲突时，
+           * 以确定性 lineage 为准（自报留档在 basis）。conflict 是更强的诚实信号，
+           * 不覆盖（其本身即合法 author_decision 终态）。
+           */
+          if (finalChanged && candidateStatus === "accepted" && patchIds.length > 0) {
+            const patchBacked = applyPatchBackedOutcomeOverrides(externalOutcomeReports, {
+              instructionIds: matchedItems.flatMap((item) => item.instructionId !== undefined ? [item.instructionId] : []),
+              target: targetLabel,
+              planItemIds: matchedItems.map((item) => item.id),
+              patchIds,
+              evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
+            });
+            if (patchBacked !== externalOutcomeReports) externalOutcomeReports = patchBacked;
+          }
+        };
         let acceptedAttempt = 0;
         let acceptedAlignment: { adjustments: Array<"eol_crlf" | "whitespace_resplice">; candidateRef?: string } | undefined;
         if (resolvedSpan !== undefined && fileBefore !== undefined && result.latex.trim() !== "") {
@@ -3887,6 +4033,8 @@ function revisionReviseStage(
               await services.reviewArtifacts.savePatchValidation(ctx.projectId, { revisionId: finalAttempt.revisionId, revision: currentRevision, records: patchValidationRecords, summary: summarizePatchValidation(selectFinalPatchRecords(patchValidationRecords), [], patchValidationRecords) });
               // Keep the rejected proposal out of the manuscript while allowing sibling patches
               // to finish; the persisted failed record keeps the candidate gate fail-closed.
+              // M15.18：被拒候选的执行报告如实记 rejected（不再落入「章节未匹配」，也绝不 handled）
+              recordTargetOutcome(result.externalOutcomes, false, "rejected", { beforeSha256: revisionSourceHash(fileBefore), afterSha256: revisionSourceHash(fileBefore) });
               await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
               continue;
             }
@@ -3924,54 +4072,17 @@ function revisionReviseStage(
             }
           }
         }
-        // M5.7：确定性 diff 补记 targetChanged（"已处理"不采信 Writer 自称）。
-        // M9.7.6 P0：一条 finding 的 section 引用可能命中多个修订目标（如
-        // 「sections/a.tex（并见 sections/b.tex）」），同 id 只记一次，
-        // targetChanged 跨目标 OR——下游 transitions 不再产生重复 id。
-        const targetChanged = result.latex.trim() !== target.currentLatex.trim();
-        for (const item of matchedItems) {
-          const existing = dispatchedItems.find((entry) => entry.id === item.id);
-          if (existing === undefined) {
-            dispatchedItems.push({ id: item.id, targetChanged });
-          } else {
-            existing.targetChanged = existing.targetChanged || targetChanged;
-          }
-        }
-        for (const report of result.externalOutcomes ?? []) {
-          externalOutcomeReports.push({
-            ...report,
-            targetChanged,
-            target: `${target.relativePath}#${target.logicalSpan?.heading ?? target.key}`,
-            planItemIds: matchedItems.map((item) => item.id),
-            evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
-            patchIds: target.logicalSpan !== undefined ? [`patch:${target.logicalSpan.originalHash.slice(0, 12)}`] : [],
-            verification: target.logicalSpan !== undefined ? { scope: true } : {},
-          });
-        }
-        /**
-         * M11.4 Reliability Closure（Run 1 实证：p-c923662f9c48 R2）：意见对应
-         * 的计划条目命中本目标、候选 patch 通过全部守卫并被接受、目标真实变化
-         * ——机器 lineage 已构成 §14 的执行证据（accepted patch + target 对应 +
-         * guards PASS）。Writer 自报 not_applicable / unreported 与该证据冲突时，
-         * 以确定性 lineage 为准（自报留档在 basis）。conflict 是更强的诚实信号，
-         * 不覆盖（其本身即合法 author_decision 终态）。
-         */
-        if (targetChanged && resolvedSpan !== undefined) {
-          const patchBacked = applyPatchBackedOutcomeOverrides(externalOutcomeReports, {
-            instructionIds: matchedItems.flatMap((item) => item.instructionId !== undefined ? [item.instructionId] : []),
-            target: `${target.relativePath}#${target.logicalSpan?.heading ?? target.key}`,
-            planItemIds: matchedItems.map((item) => item.id),
-            patchIds: [`patch:${resolvedSpan.originalHash.slice(0, 12)}`],
-            evidenceIds: [...new Set(matchedItems.flatMap((item) => item.relatedEvidenceIds ?? []))],
-          });
-          if (patchBacked !== externalOutcomeReports) externalOutcomeReports = patchBacked;
-        }
         if (isAbstractTarget) {
           // 摘要修订写回 outline.abstract（独立可写载体）；后续 writeMainTex 重组时生效
           if (outline !== null) {
             outline.abstract = result.latex.trim();
             await services.manuscript.saveOutline(ctx.projectId, outline);
           }
+          const abstractChanged = outline !== null && result.latex.trim() !== target.currentLatex.trim();
+          recordTargetOutcome(result.externalOutcomes, abstractChanged, abstractChanged ? "accepted" : "unchanged", {
+            beforeSha256: revisionSourceHash(target.currentLatex.trim()),
+            afterSha256: revisionSourceHash(abstractChanged ? result.latex.trim() : target.currentLatex.trim()),
+          });
         } else {
           let output = result.latex.trim() + "\n";
           if (resolvedSpan !== undefined && fileBefore !== undefined) {
@@ -4096,6 +4207,13 @@ function revisionReviseStage(
               }
               throw error;
             }
+            // 内容变化 = 落盘文件确有变化 且 提案相对本 span 原文非仅边界空白（span 拼接会规范化
+            // 边界空白——仅空白差异不构成对意见的执行证据）
+            const spanChanged = revisionSourceHash(actualFinal) !== revisionSourceHash(fileBefore) &&
+              result.latex.trim() !== resolvedSpan.content.trim();
+            recordTargetOutcome(result.externalOutcomes, spanChanged, spanChanged ? "accepted" : "unchanged", {
+              beforeSha256: revisionSourceHash(fileBefore), afterSha256: revisionSourceHash(actualFinal),
+            });
             revised.push(target.key);
             await ctx.emitProgress({ section: target.key, index: index + 1, revisedCount: revised.length });
             continue;
@@ -4137,6 +4255,13 @@ function revisionReviseStage(
           }
           // M14.1a：章节文件写入原子化（tmp → fsync → rename），进程中断不留半个文件
           await writeFileAtomic(targetFilePath, output);
+          // M15.18：以守卫后实际写入内容判定变化（守卫拒绝 → 原稿写回 → rejected / unchanged）
+          const writtenFile = await readFile(targetFilePath, "utf8");
+          const fileChanged = writtenFile.trim() !== target.currentLatex.trim();
+          const proposalChanged = result.latex.trim() !== "" && result.latex.trim() !== target.currentLatex.trim();
+          recordTargetOutcome(result.externalOutcomes, fileChanged, fileChanged ? "accepted" : proposalChanged ? "rejected" : "unchanged", {
+            beforeSha256: revisionSourceHash(target.currentLatex), afterSha256: revisionSourceHash(writtenFile),
+          });
         }
         revised.push(target.key);
         await ctx.emitProgress({
@@ -8386,7 +8511,8 @@ function improvementPlanStage(services: WorkflowServices): StageSpec {
       ]);
       const eligibleEvidence = plannerEligibleEvidence(evidenceIds);
       const aliasedInstructions = orderInstructionsForPlannerAliases(instructions, PLANNER_COMMENT_ALIAS_MAX);
-      const commentAliases = buildPlannerAliases(aliasedInstructions, "C", (item) => item.instructionId).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, text: alias.value.text, reviewerLabel: alias.value.reviewerLabel }));
+      // M15.18：作者已批准的审计改写意见在 Planner 输入中显式标注批准状态（原文不变，只加前缀标记）
+      const commentAliases = buildPlannerAliases(aliasedInstructions, "C", (item) => item.instructionId).map((alias) => ({ ref: alias.ref, canonicalId: alias.canonicalId, text: isApprovedAuditRewrite(alias.value) ? `${APPROVED_AUDIT_REWRITE_MARKER}${alias.value.text}` : alias.value.text, reviewerLabel: alias.value.reviewerLabel }));
       const evidenceAliases = buildPlannerAliases(eligibleEvidence, "EV", (item) => item.id).map((alias) => ({
         ref: alias.ref, canonicalId: alias.canonicalId, claim: alias.value.claim,
         provenance: `${alias.value.source?.title ?? alias.value.source?.sourceId ?? "source"}${alias.value.location?.chunk ? ` / ${alias.value.location.chunk}` : ""}`,
@@ -13456,6 +13582,33 @@ function recordUnresolvedPlanOutcome(
   if (item.instructionId === undefined) return;
   const instruction = instructions.find((candidate) => candidate.instructionId === item.instructionId);
   if (instruction === undefined || instruction.status === "handled" || instruction.status === "conflict") return;
+  /**
+   * M15.18（M15.17 真实 E2E 第三阻断）：作者已批准的审计改写意见被 Planner 拆出
+   * author_decision / evidence_only / 兜底子条时，子条结论只属于该子条——不得翻转
+   * 整条意见的 status / statusNote（旧行为：statusNote 写成 AUTHOR_DECISION_REQUIRED →
+   * authorOwnedComments 过滤 → 原指令被提前终结，真实可执行改写永不派发）。
+   * 子条结果进 planItemOutcomes（复评据此判 PARTIALLY_ADDRESSED，不夸大为已解决）。
+   */
+  if (isApprovedAuditRewrite(instruction)) {
+    const kind = reason === "EVIDENCE_ONLY_RECORDED"
+      ? "evidence_only" as const
+      : reason === "REVISION_ACTION_TYPE_REQUIRED"
+        ? "action_type_missing" as const
+        : reason === "PARTIAL_COMMENT_REMAINS_OPEN"
+          ? "noop_verified" as const
+          : summary.startsWith("Planner 主张基线已覆盖")
+            ? "noop_unverified" as const
+            : "author_decision" as const;
+    Object.assign(instruction, appendPlanItemOutcome(instruction, {
+      planItemId: item.id ?? `improvement:${index + 1}`,
+      outcome: kind,
+      summary: `${reason}: ${summary}`.slice(0, 400),
+      ...(item.logicalSection !== undefined ? { target: `main.tex#${item.logicalSection}` } : {}),
+      at: new Date().toISOString(),
+    }));
+    instruction.updatedAt = new Date().toISOString();
+    return;
+  }
   // A same-comment NO-OP may cover one subrequirement while another plan item
   // still requires an author decision. Preserve both item traces and keep the
   // composite comment open. Historical imported already_satisfied records

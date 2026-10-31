@@ -616,7 +616,10 @@ describe("TargetAuditRevisionService（generate / decide / reassess）", () => {
     );
     const report2 = await service.reassess(projectId);
     const gap1Item = report2.items.find((item) => item.itemId === "ta-gap-1");
-    expect(gap1Item?.closure).toBe("VALIDATED_FIXED");
+    // M15.18：需实验项即使被外力置 handled 且挂着 patch，也绝不判 VALIDATED_FIXED
+    //（旧实现「只看 handled 即判成功」——本断言即该缺陷的回归 oracle）
+    expect(gap1Item?.closure).not.toBe("VALIDATED_FIXED");
+    expect(gap1Item?.closure).toBe("NEEDS_AUTHOR_DECISION");
     expect(gap1Item?.patches?.[0]).toMatchObject({ patchId: "patch:abc123def456", revision: 1, finalStatus: "accepted" });
     expect(gap1Item?.verification?.fact).toBe(true);
     expect(report2.assessedAtRevision).toBe(1);

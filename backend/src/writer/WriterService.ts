@@ -28,6 +28,7 @@ import type { ClaimRepairDirective } from "../review/claimGrounding.js";
 import type { UnitEditContext } from "../review/logicalSpan.js";
 import type { RevisionPlanItem } from "../review/revisionPlan.js";
 import {
+  APPROVED_AUDIT_REWRITE_MARKER,
   EXTERNAL_OUTCOMES_MARKER,
   type ExternalDirectiveDispatch,
   type ExternalOutcomeKind,
@@ -888,6 +889,11 @@ export class WriterService {
         "8a. Reviewer 建议补充公式不等于作者提供了公式。原稿和合法来源未给出完整表达式时，使用 author_decision_required，在 rationale 具体列出缺少的损失项、符号定义、权重取值与计算过程；不得构造公式或推导。有来源时只按来源整理，保持运算关系、变量含义与参数值；已有公式优先保留，只解释文字。",
         "9. action 的执行不得依赖作者输入：凡需要「由作者确认 / 待作者确认」才能落笔的条目（如实现细节二选一、超参数最终取值），必须 actionType=author_decision_required 并在 rationale 写明决策点。注意：只把真正依赖作者输入的条目标为 author_decision_required——有证据支撑的修改（EV 别名可绑定）和纯表述 / 结构 / 弱化类修改仍然应当 modify，不要为保守而把所有意见推向作者决策。",
         "10. 不得计划新增基线没有的分析性 / 方法论论断（如指标间循环评测风险、构造性论证、机制有效性声明），除非绑定支持它的 EV 证据——此类新增论断会被事实核验判 UNSUPPORTED 并按修订引入违规阻断。对证据不足的既有论断，正确动作是弱化该论断本身（weaken），不是新增一条与之并存的相反表述。",
+        ...((params.commentAliases ?? []).some((alias) => alias.text.startsWith(APPROVED_AUDIT_REWRITE_MARKER))
+          ? [
+              `11. 带「${APPROVED_AUDIT_REWRITE_MARKER}」标记的意见已由作者批准、按稿件既有证据改写（不新增数值 / 实验 / 引用）：必须为其规划一条 actionType=modify 条目（commentRefs 指向该意见；targetQuote 逐字复制意见中「TeX 逐字锚」的原文）。只有当某个子要求确实必须新增实验事实或作者输入时，才另外拆出一条 author_decision_required 子条——该子条只记录那个子要求，不取消 modify 条目。`,
+            ]
+          : []),
         ...(params.feedback ? ["", "用户补充要求：", params.feedback] : []),
         "",
         `目标档次：${params.targetProfile ?? "未指定"}；可行性结论：${params.feasibilityLevel}`,

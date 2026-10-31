@@ -217,6 +217,7 @@ export type WorkflowDomainEventType =
   | "fact_restore.skipped"
   | "revision.skipped"
   | "revision.dispatch_unresolved"
+  | "revision.audit_anchor_stale"
   | "revision.guarded_table_rejected"
   | "revision.content_collapse_rejected"
   | "revision.best_updated"

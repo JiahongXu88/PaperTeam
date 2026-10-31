@@ -47,8 +47,11 @@ import {
   ExternalInstructionStore,
   EXTERNAL_SOURCE_LABELS,
   type ExternalInstruction,
+  type PlanItemOutcome,
 } from "../review/externalInstructions.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
+import type { PatchValidationRecord } from "../review/patchValidation.js";
+import { revisionSourceHash } from "../review/revisionScope.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import type {
@@ -210,6 +213,12 @@ export interface TargetAuditClosureReportItem {
   instruction?: { instructionId: string; status: ExternalInstruction["status"]; statusNote?: string };
   patches?: Array<{ patchId: string; revision: number; finalStatus: string }>;
   verification?: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
+  /** M15.18：落盘 lineage（applied 子条：修订号 / 文件 / 前后 SHA / patch） */
+  lineage?: PlanItemOutcome[];
+  /** M15.18：仍开放的 Planner 子条（作者裁决 / 仅证据 / 未核验 NO-OP / 类型缺失） */
+  openSubItems?: PlanItemOutcome[];
+  /** M15.18：VALIDATED_FIXED 的逐项证据核对结果（机器可读） */
+  checks?: { lineage: boolean; targetBinding: boolean; contentChanged: boolean; notReverted: boolean; guards: boolean };
 }
 
 export interface TargetAuditClosureReport {
@@ -564,6 +573,116 @@ export function authorDecisionInstructionText(
 
 export function authorDecisionStatusNote(item: TargetAuditRevisionPlanItem, plan: TargetAuditRevisionPlanArtifact): string {
   return `AUTHOR_DECISION_REQUIRED: 需真实实验 / 作者输入（${EXTERNAL_SOURCE_LABELS["target_audit"]} ${plan.planId} 条目 ${item.itemId}：${item.gap.slice(0, 120)}）`;
+}
+
+/** 复评输入：本条目关联指令在计划修订号之后的 patch 记录（attemptHistory 不计） */
+export interface ClosurePatchEvidence {
+  revision: number;
+  record: PatchValidationRecord;
+}
+
+const OPEN_SUB_ITEM_OUTCOMES = new Set<PlanItemOutcome["outcome"]>(["author_decision", "evidence_only", "action_type_missing", "noop_unverified"]);
+
+/**
+ * M15.18 确定性复评（纯函数）。VALIDATED_FIXED 需要同时具备：
+ *   ① 可核验落盘 lineage（accepted+pass 的 span patch，或文件级 applied 子条带前后 SHA 且不同）
+ *   ② 目标绑定（lineage 文件 = 计划投影文件）
+ *   ③ 内容真实变化（before ≠ after）
+ *   ④ 未被回退（当前文件 SHA ≠ 修订前 SHA；无法读取当前文件 → 不可证）
+ *   ⑤ 守卫通过（patch scope/fact/citation 无 false；指令仍为 handled——gate 复核失败会降级）
+ *   ⑥ 无仍开放的 Planner 子条（否则 PARTIALLY_ADDRESSED，如实列出）
+ * 只有 handled 状态而无 lineage（旧工件 / 证据缺失）→ NOT_EVALUATED，绝不凭状态判已修复。
+ */
+export function assessRewriteClosure(input: {
+  item: Pick<TargetAuditRevisionPlanItem, "itemId" | "classification" | "anchor">;
+  instruction: ExternalInstruction;
+  patches: readonly ClosurePatchEvidence[];
+  /** 当前磁盘目标文件内容的 revisionSourceHash（读不到 → undefined） */
+  currentTargetFileHash: string | undefined;
+}): Pick<TargetAuditClosureReportItem, "closure" | "basis" | "lineage" | "openSubItems" | "checks"> {
+  const { item, instruction, patches } = input;
+  const targetFile = instruction.origin?.targetFile ?? item.anchor.projection.file;
+  const outcomes = instruction.planItemOutcomes ?? [];
+  const appliedLatest = new Map<string, PlanItemOutcome>();
+  for (const outcome of outcomes) {
+    if (outcome.outcome === "applied") appliedLatest.set(`${outcome.planItemId}@${outcome.file ?? ""}`, outcome);
+  }
+  const resolvedPlanItems = new Set(outcomes.filter((outcome) => outcome.outcome === "applied" || outcome.outcome === "noop_verified").map((outcome) => outcome.planItemId));
+  const openSubItems = outcomes.filter((outcome) => OPEN_SUB_ITEM_OUTCOMES.has(outcome.outcome) && !resolvedPlanItems.has(outcome.planItemId));
+  const fileLineage = [...appliedLatest.values()].filter(
+    (outcome) => outcome.beforeSha256 !== undefined && outcome.afterSha256 !== undefined && outcome.beforeSha256 !== outcome.afterSha256,
+  );
+  const acceptedPatches = patches.filter(
+    (entry) => entry.record.overall === "pass" && entry.record.apply.ok && (entry.record.finalStatus ?? "accepted") === "accepted" &&
+      entry.record.beforeFileHash !== entry.record.afterFileHash,
+  );
+  const hasLineage = fileLineage.length > 0 || acceptedPatches.length > 0;
+  const boundFiles = new Set([...fileLineage.map((outcome) => outcome.file), ...acceptedPatches.map((entry) => entry.record.file)]
+    .filter((file): file is string => file !== undefined));
+  const targetBinding = targetFile !== undefined && boundFiles.has(targetFile);
+  const contentChanged = hasLineage;
+  const earliestBefore = [...fileLineage.filter((outcome) => outcome.file === targetFile).map((outcome) => outcome.beforeSha256!),
+    ...acceptedPatches.filter((entry) => entry.record.file === targetFile).map((entry) => entry.record.beforeFileHash)];
+  const notReverted = input.currentTargetFileHash !== undefined && earliestBefore.length > 0 &&
+    earliestBefore.every((hash) => hash !== input.currentTargetFileHash);
+  const guardFailure = patches.some((entry) => entry.record.overall === "pass" && (!entry.record.scope.ok || !entry.record.fact.ok || !entry.record.citation.ok)) ||
+    instruction.resolutionTrace?.verification.fact === false || instruction.resolutionTrace?.verification.citation === false;
+  const guards = !guardFailure && instruction.status === "handled";
+  const checks = { lineage: hasLineage, targetBinding, contentChanged, notReverted, guards };
+  const lineage = [...fileLineage, ...acceptedPatches.map((entry): PlanItemOutcome => ({
+    planItemId: entry.record.planItemIds.join(",") || "(external)",
+    outcome: "applied",
+    summary: `patch ${entry.record.patchId} accepted (${entry.record.logicalTarget})`,
+    revision: entry.revision,
+    file: entry.record.file,
+    patchIds: [entry.record.patchId],
+    beforeSha256: entry.record.beforeFileHash,
+    afterSha256: entry.record.afterFileHash,
+    at: "",
+  }))];
+  const extras = { ...(lineage.length > 0 ? { lineage } : {}), ...(openSubItems.length > 0 ? { openSubItems } : {}), checks };
+  const lineageText = lineage.map((entry) => `${entry.patchIds?.join("+") ?? entry.planItemId}@rev${entry.revision ?? "?"}:${entry.file ?? "?"}`).join(", ");
+  const rejected = outcomes.filter((outcome) => outcome.outcome === "candidate_rejected");
+
+  if (instruction.status === "handled") {
+    if (!hasLineage) {
+      return { closure: "NOT_EVALUATED", basis: "指令状态为 handled，但缺少可核验的落盘修订 lineage（旧工件或证据缺失）——不凭状态判定已解决", ...extras };
+    }
+    if (!targetBinding) {
+      return { closure: "STILL_OPEN", basis: `修订落在 ${[...boundFiles].join(", ") || "(未知文件)"}，未命中审计目标文件 ${targetFile ?? "(未投影)"}——目标绑定不成立`, ...extras };
+    }
+    if (!notReverted) {
+      return {
+        closure: input.currentTargetFileHash === undefined ? "NOT_EVALUATED" : "STILL_OPEN",
+        basis: input.currentTargetFileHash === undefined ? "当前目标文件不可读，无法核对修订是否仍在稿件中" : "目标文件已回到修订前内容（修订被回退 / 恢复）",
+        ...extras,
+      };
+    }
+    if (!guards) {
+      return { closure: "STILL_OPEN", basis: `存在守卫失败记录（scope/fact/citation），不视为已解决；lineage：${lineageText}`, ...extras };
+    }
+    if (openSubItems.length > 0) {
+      return {
+        closure: "PARTIALLY_ADDRESSED",
+        basis: `可改写部分已落盘并通过守卫（${lineageText}）；Planner 另拆出 ${openSubItems.length} 个子条仍待作者（${openSubItems.map((entry) => `${entry.planItemId}:${entry.outcome}`).join(", ")}）`,
+        ...extras,
+      };
+    }
+    return { closure: "VALIDATED_FIXED", basis: `已落盘修订 + 目标绑定 ${targetFile} + 内容变化 + 守卫通过；lineage：${lineageText}`, ...extras };
+  }
+  if (instruction.status === "partially_handled") {
+    return { closure: "PARTIALLY_ADDRESSED", basis: instruction.statusNote ?? "部分目标已执行，其余未报告", ...extras };
+  }
+  if (instruction.status === "conflict") {
+    return { closure: "STILL_OPEN", basis: `改写与稿件实验事实 / Evidence 冲突，系统未篡改事实：${instruction.conflictBasis ?? instruction.statusNote ?? ""}`, ...extras };
+  }
+  if (instruction.status === "already_satisfied") {
+    return { closure: "ALREADY_SATISFIED", basis: instruction.statusNote ?? "确定性核验：当前稿已满足该意见（无需修改）", ...extras };
+  }
+  if (rejected.length > 0) {
+    return { closure: "STILL_OPEN", basis: `候选修改被守卫拒绝、未落盘（${rejected.map((entry) => `${entry.planItemId}@rev${entry.revision ?? "?"}`).join(", ")}）：${instruction.statusNote ?? ""}`, ...extras };
+  }
+  return { closure: "STILL_OPEN", basis: instruction.statusNote ?? "指令尚未派发或派发后未产生可验证修改", ...extras };
 }
 
 // ---- 服务 ----
@@ -964,6 +1083,16 @@ export class TargetAuditRevisionService {
           reviewerLabel: `审计计划 ${plan.planId}`,
           text: rewriteInstructionText(item, plan),
           ...(section !== undefined ? { section } : {}),
+          origin: {
+            kind: "target_audit_rewrite",
+            planId: plan.planId,
+            itemId: item.itemId,
+            contributionId: item.contributionId,
+            claimQuote: item.anchor.claimQuote,
+            ...(item.anchor.texAnchor !== undefined ? { texAnchor: item.anchor.texAnchor } : {}),
+            ...(item.anchor.projection.file !== undefined ? { targetFile: item.anchor.projection.file } : {}),
+            approvedAt: decidedAt,
+          },
         });
         if (created !== null) {
           createdInstructions += 1;
@@ -976,6 +1105,14 @@ export class TargetAuditRevisionService {
           reviewerLabel: `审计计划 ${plan.planId}`,
           text: authorDecisionInstructionText(item, plan),
           statusNote: authorDecisionStatusNote(item, plan),
+          origin: {
+            kind: "target_audit_author_decision",
+            planId: plan.planId,
+            itemId: item.itemId,
+            contributionId: item.contributionId,
+            claimQuote: item.anchor.claimQuote,
+            approvedAt: decidedAt,
+          },
         });
         if (created !== null) {
           createdInstructions += 1;
@@ -1014,6 +1151,7 @@ export class TargetAuditRevisionService {
     // patch lineage：扫描计划绑定修订号至当前修订号之间的 patch 校验产物
     const planRevision = plan.source.manuscriptRevisionAtPlan ?? 0;
     const patchesByInstruction = new Map<string, Array<{ patchId: string; revision: number; finalStatus: string }>>();
+    const recordsByInstruction = new Map<string, ClosurePatchEvidence[]>();
     const guardsByInstruction = new Map<string, { fact?: boolean; citation?: boolean; scope?: boolean; evidence?: boolean }>();
     for (let revision = planRevision + 1; revision <= currentRevision; revision += 1) {
       const artifact = await this.reviewArtifacts.loadPatchValidation(projectId, revision).catch(() => null);
@@ -1025,6 +1163,7 @@ export class TargetAuditRevisionService {
           const list = patchesByInstruction.get(commentId) ?? [];
           list.push({ patchId: record.patchId, revision, finalStatus: record.finalStatus ?? "(unrecorded)" });
           patchesByInstruction.set(commentId, list);
+          recordsByInstruction.set(commentId, [...(recordsByInstruction.get(commentId) ?? []), { revision, record }]);
           const guards = guardsByInstruction.get(commentId) ?? {};
           guardsByInstruction.set(commentId, {
             scope: guards.scope === false ? false : record.scope.ok || undefined,
@@ -1036,6 +1175,16 @@ export class TargetAuditRevisionService {
       }
     }
 
+    // 当前目标文件内容（回退核查：修订被恢复到修订前 → 不可判已解决）
+    const currentHashes = new Map<string, string>();
+    const manuscriptDir = this.projects.manuscriptDir(projectId);
+    for (const file of new Set(plan.items.flatMap((item) => item.anchor.projection.file !== undefined ? [item.anchor.projection.file] : []))) {
+      try {
+        currentHashes.set(file, revisionSourceHash(await readFile(join(manuscriptDir, file), "utf8")));
+      } catch {
+        // 不可读 → 缺省（assessRewriteClosure 判 NOT_EVALUATED）
+      }
+    }
     const items: TargetAuditClosureReportItem[] = plan.items.map((item) => {
       const instruction = item.instructionId !== undefined ? instructionById.get(item.instructionId) : undefined;
       if (item.authorDecision?.decision === "reject") {
@@ -1064,7 +1213,6 @@ export class TargetAuditRevisionService {
       }
       const patches = patchesByInstruction.get(instruction.instructionId) ?? [];
       const verification = guardsByInstruction.get(instruction.instructionId);
-      const accepted = patches.filter((patch) => patch.finalStatus === "accepted");
       const base = {
         itemId: item.itemId,
         classification: item.classification,
@@ -1076,64 +1224,23 @@ export class TargetAuditRevisionService {
         ...(patches.length > 0 ? { patches } : {}),
         ...(verification !== undefined ? { verification } : {}),
       };
-      switch (instruction.status) {
-        case "handled":
-          // handled 状态机本身即确定性证据：Writer applied + 目标真实变化 + gate 复核通过
-          return {
-            ...base,
-            closure: "VALIDATED_FIXED" as const,
-            basis: `指令已处理（Writer applied + 目标真实变化 + gate 复核通过）；${
-              accepted.length > 0
-                ? `patch lineage：${accepted.map((patch) => `${patch.patchId}@rev${patch.revision}`).join(", ")}`
-                : "整文件目标修订（无 span patch 记录；执行证据见指令 resolutionTrace）"
-            }${verification?.fact === false || verification?.citation === false ? "（注意：存在守卫失败记录，见 verification）" : ""}`,
-          };
-        case "already_satisfied":
-          return {
-            ...base,
-            closure: "ALREADY_SATISFIED" as const,
-            basis: instruction.statusNote ?? "确定性核验：当前稿已满足该意见（无需修改）",
-          };
-        case "partially_handled":
-          return {
-            ...base,
-            closure: "PARTIALLY_ADDRESSED" as const,
-            basis: instruction.statusNote ?? "部分目标已执行，其余未报告",
-          };
-        case "conflict":
-          return {
-            ...base,
-            closure: "STILL_OPEN" as const,
-            basis: `改写与稿件实验事实 / Evidence 冲突，系统未篡改事实：${instruction.conflictBasis ?? instruction.statusNote ?? ""}`,
-          };
-        case "pending":
-        case "unresolved":
-        default: {
-          const isAuthorDecisionItem = /^AUTHOR_DECISION_REQUIRED\b/.test(instruction.statusNote ?? "");
-          // M15.17 真实 E2E 形态：同一审计差距的多个子要求被改进计划拆条——
-          // modify 子条已执行（resolutionTrace.planItemIds 留痕）而兄弟子条停作者
-          // 裁决 → 指令整体保持开放（保守正确语义）。此时闭环应为「部分解决」
-          // 并指明 lineage，而不是误报「未派发」。
-          const executedPlanItems = (instruction.resolutionTrace?.planItemIds ?? []).filter((id) => id !== "");
-          if (isAuthorDecisionItem && executedPlanItems.length > 0 && item.classification === "REWRITE_ELIGIBLE") {
-            return {
-              ...base,
-              closure: "PARTIALLY_ADDRESSED" as const,
-              basis: `部分子要求已由改进计划条目执行（${executedPlanItems.join(", ")}）；其余子要求待作者裁决（${instruction.statusNote?.slice(0, 100) ?? ""}）——指令保持开放是保守正确语义，不视为失败`,
-            };
-          }
-          return {
-            ...base,
-            closure: (isAuthorDecisionItem && item.classification !== "REWRITE_ELIGIBLE"
-              ? "NEEDS_AUTHOR_DECISION"
-              : "STILL_OPEN") as AuditGapClosure,
-            basis:
-              isAuthorDecisionItem && item.classification !== "REWRITE_ELIGIBLE"
-                ? "需真实实验 / 作者输入：系统停在作者裁决，不产生修改（预期行为，非失败）"
-                : (instruction.statusNote ?? "指令尚未派发或派发后未产生可验证修改"),
-          };
-        }
+      if (item.classification !== "REWRITE_ELIGIBLE") {
+        // 需实验 / 证据不足 / 不可定位项：永不派发 Writer——只能停在作者裁决或作者拒绝
+        const isAuthorDecisionItem = /^AUTHOR_DECISION_REQUIRED\b/.test(instruction.statusNote ?? "");
+        return {
+          ...base,
+          closure: (isAuthorDecisionItem ? "NEEDS_AUTHOR_DECISION" : "NOT_EVALUATED") as AuditGapClosure,
+          basis: isAuthorDecisionItem
+            ? "需真实实验 / 作者输入：系统停在作者裁决，不产生修改（预期行为，非失败）"
+            : `非改写项的意见状态异常（${instruction.status}；${instruction.statusNote ?? ""}）——不可复评`,
+        };
       }
+      const targetFile = instruction.origin?.targetFile ?? item.anchor.projection.file;
+      const currentTargetFileHash = targetFile !== undefined ? currentHashes.get(targetFile) : undefined;
+      return {
+        ...base,
+        ...assessRewriteClosure({ item, instruction, patches: recordsByInstruction.get(instruction.instructionId) ?? [], currentTargetFileHash }),
+      };
     });
 
     const summary = { total: items.length } as Record<AuditGapClosure, number> & { total: number };
