@@ -53,6 +53,21 @@ describe("buildSubmissionReadinessReport", () => {
     expect(report.official.staleAgainstCurrent).toBe(true);
     expect(report.remainingRisks.some((risk) => risk.includes("R-TITLE") && risk.includes("硬性"))).toBe(true);
     expect(report.remainingRisks.some((risk) => risk.includes("不可机检"))).toBe(true);
+    expect(report.official.topStatusLabel).toBe("存在 1 条硬性违规");
+  });
+
+  it("官方 topStatus=COMPLIANT 但含不可评价条款（PDF-only 真实形态）→ 展示标签不说「全部符合」", () => {
+    const compliance = {
+      ...(inputs().compliance as object),
+      checks: [
+        { requirementId: "R-REF-COUNT", field: "references.count", status: "PASS", hard: true, observed: "23", expected: "≥ 15", officialQuote: "q", sourceUrl: "u" },
+        { requirementId: "R-KW", field: "keywords.count", status: "NOT_EVALUATED", hard: true, observed: "—", expected: "5–8", officialQuote: "q", sourceUrl: "u", reason: "pdf_no_observation_point" },
+      ],
+      summary: { hardViolations: 0, passCount: 1, notEvaluatedCount: 1, advisoryCount: 0, topStatus: "COMPLIANT" },
+    } as never;
+    const report = buildSubmissionReadinessReport(inputs({ compliance }));
+    expect(report.official.topStatusLabel).toBe("机检范围内未发现硬性违规（另有 1 条不可评价，需人工核对）");
+    expect(renderSubmissionReadinessMarkdown(report)).not.toContain("总体：COMPLIANT");
   });
 
   it("benchmark 语料不足 → 统一 INSUFFICIENT（不展示「在带内」）；注明观测带非最低录用标准", () => {

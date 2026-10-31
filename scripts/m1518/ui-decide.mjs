@@ -120,6 +120,11 @@ try {
     if (clicked === true) await waitFor('[data-testid="target-audit-revision-report"]');
     await sleep(1500);
     record.reportText = String(await evaluate(`document.querySelector('[data-testid="target-audit-revision-report"]')?.innerText ?? ""`)).slice(0, 12_000);
+    const generated = await evaluate(`(() => { const b = document.querySelector('[data-testid="target-readiness-generate"]'); if (!b || b.disabled) return false; b.click(); return true; })()`);
+    record.clicks.push({ action: "generate-readiness", clicked: generated, at: new Date().toISOString() });
+    if (generated === true) await waitFor('[data-testid="target-readiness-report"]');
+    await sleep(800);
+    record.downloadHref = await evaluate(`document.querySelector('[data-testid="target-readiness-download"]')?.getAttribute("href") ?? null`);
     record.readinessText = String(await evaluate(`document.querySelector('[data-testid="target-readiness-report"]')?.innerText ?? ""`)).slice(0, 12_000);
     await screenshot(`${PROJECT}-20-closure-report.png`);
   }

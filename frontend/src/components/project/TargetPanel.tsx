@@ -1725,7 +1725,7 @@ function TargetSubmissionReadinessSection({
             <dt>官方规范</dt>
             <dd>
               {report.official.available
-                ? `${report.official.topStatus ?? "—"}：可机检 ${report.official.counts.machine_checked} · 仅部分可机检 ${report.official.counts.partially_machine_checked} · 本稿不可评价 ${report.official.counts.not_evaluable} · 硬性违规 ${report.official.counts.hardViolations}${report.official.staleAgainstCurrent === true ? "（评估修订落后于当前稿，需重评）" : ""}`
+                ? `${report.official.topStatusLabel ?? report.official.topStatus ?? "—"}：可机检 ${report.official.counts.machine_checked} · 仅部分可机检 ${report.official.counts.partially_machine_checked} · 本稿不可评价 ${report.official.counts.not_evaluable} · 硬性违规 ${report.official.counts.hardViolations}${report.official.staleAgainstCurrent === true ? "（评估修订落后于当前稿，需重评）" : ""}`
                 : "尚未执行符合度检查"}
             </dd>
           </div>

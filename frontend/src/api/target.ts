@@ -730,6 +730,7 @@ export interface SubmissionReadinessView {
   official: {
     available: boolean;
     topStatus?: string;
+    topStatusLabel?: string;
     staleAgainstCurrent?: boolean;
     counts: { machine_checked: number; partially_machine_checked: number; not_evaluable: number; hardViolations: number };
   };

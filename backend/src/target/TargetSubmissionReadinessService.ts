@@ -50,6 +50,8 @@ export interface SubmissionReadinessReport {
   official: {
     available: boolean;
     topStatus?: GuidelineComplianceReport["summary"]["topStatus"];
+    /** 展示用总体结论（不把「有不可评价条款」的 COMPLIANT 说成全部符合） */
+    topStatusLabel?: string;
     evaluatedAt?: string;
     manuscriptRevision?: number | null;
     staleAgainstCurrent?: boolean;
@@ -146,6 +148,17 @@ function checkabilityOf(check: GuidelineComplianceReport["checks"][number]): Mac
 function identityOf(ref: { doi?: string; arxivId?: string; year?: number }): string {
   return [ref.doi !== undefined ? `doi:${ref.doi}` : undefined, ref.arxivId !== undefined ? `arXiv:${ref.arxivId}` : undefined, ref.year !== undefined ? String(ref.year) : undefined]
     .filter((part): part is string => part !== undefined).join(" · ") || "（无可解析身份）";
+}
+
+function officialStatusLabel(
+  topStatus: GuidelineComplianceReport["summary"]["topStatus"],
+  counts: { not_evaluable: number; hardViolations: number },
+): string {
+  if (topStatus === "HARD_VIOLATION" || counts.hardViolations > 0) return `存在 ${counts.hardViolations} 条硬性违规`;
+  if (topStatus === "NOT_EVALUATED_ONLY") return "全部条款本稿不可机检评价（需人工核对）";
+  return counts.not_evaluable > 0
+    ? `机检范围内未发现硬性违规（另有 ${counts.not_evaluable} 条不可评价，需人工核对）`
+    : "机检范围内全部条款符合";
 }
 
 /** 纯函数：既有工件 → 报告（同输入同输出，除 generatedAt） */
@@ -251,6 +264,7 @@ export function buildSubmissionReadinessReport(input: SubmissionReadinessInputs)
       ...(input.compliance !== null
         ? {
             topStatus: input.compliance.summary.topStatus,
+            topStatusLabel: officialStatusLabel(input.compliance.summary.topStatus, counts),
             evaluatedAt: input.compliance.evaluatedAt,
             manuscriptRevision: input.compliance.manuscriptRevision,
             staleAgainstCurrent: input.compliance.manuscriptRevision !== input.manuscriptRevision,
@@ -319,7 +333,7 @@ export function renderSubmissionReadinessMarkdown(report: SubmissionReadinessRep
     lines.push("", "（尚未执行官方规范符合度检查）");
   } else {
     const counts = report.official.counts;
-    lines.push("", `总体：${report.official.topStatus ?? "—"}；可机检 ${counts.machine_checked} · 仅部分可机检 ${counts.partially_machine_checked} · 本稿不可评价 ${counts.not_evaluable}；硬性违规 ${counts.hardViolations}${report.official.staleAgainstCurrent === true ? `（注意：符合度评估于 r${report.official.manuscriptRevision ?? "?"}，当前稿 r${report.manuscriptRevision ?? "?"}——需重新评估）` : ""}`);
+    lines.push("", `总体：${report.official.topStatusLabel ?? report.official.topStatus ?? "—"}；可机检 ${counts.machine_checked} · 仅部分可机检 ${counts.partially_machine_checked} · 本稿不可评价 ${counts.not_evaluable}；硬性违规 ${counts.hardViolations}${report.official.staleAgainstCurrent === true ? `（注意：符合度评估于 r${report.official.manuscriptRevision ?? "?"}，当前稿 r${report.manuscriptRevision ?? "?"}——需重新评估）` : ""}`);
     lines.push("", "| 条款 | 硬性 | 结果 | 机检口径 | 观测 | 要求 | 说明 |", "|---|---|---|---|---|---|---|");
     for (const check of report.official.checks) {
       lines.push(`| ${md(check.requirementId)} | ${check.hard ? "是" : "否"} | ${check.status} | ${CHECKABILITY_LABELS[check.checkability]} | ${md(check.observed)} | ${md(check.expected)} | ${md(check.reason ?? "")} |`);
