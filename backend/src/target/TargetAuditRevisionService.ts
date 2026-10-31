@@ -127,6 +127,12 @@ export interface TargetAuditRevisionPlanItem {
      * 指令文本中的「quote 锚」进一步把派发收敛到引文所在段落单元。
      */
     dispatchSection?: string;
+    /**
+     * 从重建 TeX 提取的逐字锚（M15.17 E2E 实证修复：派发端锚定是逐字匹配，
+     * PDF 原文中的 %/&/_ 转义与 [n]→\cite 替换会使 PDF 形态锚失效）。
+     * 对齐失败缺省——指令退回 PDF 原文锚（短文件仍可派发）。
+     */
+    texAnchor?: string;
   };
   priorWork: AuditPlanPriorWorkNote[];
   comparisonStatus?: ContributionComparison["status"];
@@ -270,6 +276,77 @@ function meetsProjectionMinLength(needlePlain: string): boolean {
     return true;
   }
   return hasCjk(needlePlain) && stripAllWhitespace(needlePlain).length >= PROJECTION_MIN_CJK_QUOTE_CHARS;
+}
+
+/**
+ * 从重建 TeX 中提取与 PDF quote 对应的「TeX 逐字」锚（M15.17 E2E 实证修复）：
+ * 派发端的单元定位（resolveUnitByQuotes → anchorPattern）是逐字匹配，而 PDF
+ * 原文中的 %/&/_ 等在 TeX 中已转义、[n] 引用标记已替换为 \cite——PDF 形态的
+ * 锚在长章节（多编辑单元、无整 span 回退）中必然 ANCHOR_NOT_FOUND → 指令
+ * unmatched。此处在计划期做归一化对齐并把命中区段映射回原始 TeX 字节，
+ * 指令文本内嵌可逐字回放的锚；对齐失败返回 undefined（调用方退回 PDF 原文）。
+ */
+export function extractTexVerbatimQuote(tex: string, pdfQuote: string): string | undefined {
+  const haystack = latexToComparablePlain(tex);
+  const needle = quoteToComparablePlain(pdfQuote);
+  if (!meetsProjectionMinLength(needle)) {
+    return undefined;
+  }
+  // 归一化索引：折叠空白 + 小写，记录每个输出字符在 haystack 中的位置
+  const out: string[] = [];
+  const index: number[] = [];
+  let lastWasSpace = true; // 行首空白折叠
+  for (let i = 0; i < haystack.length; i += 1) {
+    const ch = haystack[i]!;
+    if (/\s/.test(ch)) {
+      if (!lastWasSpace) {
+        out.push(" ");
+        index.push(i);
+        lastWasSpace = true;
+      }
+      continue;
+    }
+    out.push(ch.toLowerCase());
+    index.push(i);
+    lastWasSpace = false;
+  }
+  const normalizedHaystack = out.join("");
+  const normalizedNeedle = collapseWhitespace(needle);
+  let start = -1;
+  let end = -1;
+  if (normalizedNeedle !== "") {
+    start = normalizedHaystack.indexOf(normalizedNeedle);
+    if (start !== -1) {
+      end = start + normalizedNeedle.length - 1;
+    }
+  }
+  if (start === -1 && hasCjk(needle)) {
+    // CJK 回退：剥全部空白后命中（双索引映射回收敛索引位置）
+    const strippedOut: string[] = [];
+    const strippedIndex: number[] = [];
+    for (let i = 0; i < normalizedHaystack.length; i += 1) {
+      const ch = normalizedHaystack[i]!;
+      if (ch !== " ") {
+        strippedOut.push(ch);
+        strippedIndex.push(i);
+      }
+    }
+    const strippedHay = strippedOut.join("");
+    const strippedNeedle = stripAllWhitespace(needle);
+    const pos = strippedHay.indexOf(strippedNeedle);
+    if (pos !== -1 && strippedIndex[pos + strippedNeedle.length - 1] !== undefined) {
+      start = strippedIndex[pos]!;
+      end = strippedIndex[pos + strippedNeedle.length - 1]!;
+    }
+  }
+  if (start === -1 || end === -1 || index[start] === undefined || index[end] === undefined) {
+    return undefined;
+  }
+  const rawStart = index[start]!;
+  const rawEnd = index[end]!;
+  const verbatim = tex.slice(rawStart, rawEnd + 1).trim();
+  // 锚必须达到派发端锚定阈值（directiveAnchors 要求引号内 ≥12 字符），否则无意义
+  return meetsProjectionMinLength(verbatim) ? verbatim : undefined;
 }
 
 /**
@@ -439,12 +516,20 @@ export function rewriteInstructionText(
   item: TargetAuditRevisionPlanItem,
   plan: TargetAuditRevisionPlanArtifact,
 ): string {
+  // 「」包裹的原文锚：revision 派发的单元定位（directiveAnchors）按出现顺序提取
+  // 引号内 ≥12 字片段——texAnchor（逐字可回放）优先放最前，PDF 原文锚随后；
+  // 短文件整文件目标不依赖锚，长文件由首个可唯一命中的锚收敛到编辑单元。
+  const anchorLines =
+    item.anchor.texAnchor !== undefined
+      ? [
+          `【目标原文锚（TeX 逐字，定位与改写基准）】「${item.anchor.texAnchor}」`,
+          `【审计引文（PDF 原文，语义参照）】「${item.anchor.claimQuote}」`,
+        ]
+      : [`【稿件原文锚（审计逐字引用）】「${item.anchor.claimQuote}」`];
   return [
     `【来源】${EXTERNAL_SOURCE_LABELS["target_audit"]}；计划 ${plan.planId}（审计指纹 ${plan.source.inputFingerprint.manuscriptSha256}；贡献 ${item.contributionId}；条目 ${item.itemId}）`,
     `【审计发现的差距】${item.gap}`,
-    // 「」包裹的原文锚：revision 派发的单元定位（directiveAnchors）会提取引号内
-    // ≥12 字片段，把本指令收敛到引文所在编辑单元（长章节段落级精度）
-    `【稿件原文锚（审计逐字引用）】「${item.anchor.claimQuote}」`,
+    ...anchorLines,
     `【审计定位】稿件解析节 ${item.anchor.sectionId}；可编辑目标：${item.anchor.projection.file ?? "(未投影)"}（quote 回放核验通过）`,
     "【先前工作身份（仅供归因 / 比较表述；不构成新证据，不得新造引用）】",
     ...priorWorkLines(item.priorWork),
@@ -763,6 +848,7 @@ export class TargetAuditRevisionService {
       // 派发节引用：超长文件（会被展开为编辑单元）用 quote 所在 span 的标题；
       // 短文件直接用文件路径（整文件目标匹配）
       let dispatchSection: string | undefined;
+      let texAnchor: string | undefined;
       if (targetFile !== undefined && targetFile.relativePath !== "abstract") {
         if (targetFile.content.length > DEFAULT_REVISION_UNIT_MAX_CHARS) {
           const spans = locateFileSpans(targetFile.relativePath, targetFile.content);
@@ -772,6 +858,8 @@ export class TargetAuditRevisionService {
         } else {
           dispatchSection = targetFile.relativePath;
         }
+        // 逐字锚：归一化对齐提取（派发端逐字回放用；PDF 形态锚会被转义破坏）
+        texAnchor = extractTexVerbatimQuote(targetFile.content, contribution?.claimQuote ?? "");
       } else if (targetFile !== undefined && targetFile.relativePath === "abstract") {
         dispatchSection = "abstract";
       }
@@ -789,6 +877,7 @@ export class TargetAuditRevisionService {
           anchorVerified: contribution?.anchorVerified ?? false,
           projection,
           ...(dispatchSection !== undefined ? { dispatchSection } : {}),
+          ...(texAnchor !== undefined ? { texAnchor } : {}),
         },
         priorWork,
         ...(comparison !== undefined ? { comparisonStatus: comparison.status } : {}),

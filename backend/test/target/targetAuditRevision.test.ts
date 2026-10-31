@@ -28,6 +28,7 @@ import {
   authorDecisionStatusNote,
   classifyAuditGap,
   comparableContains,
+  extractTexVerbatimQuote,
   latexToComparablePlain,
   projectQuoteToManuscript,
   quoteToComparablePlain,
@@ -100,6 +101,8 @@ const SEC02_TEX = [
   "",
   "方法：融合模块结合语义特征（见文献\\cite{ref1}），达到 87.5\\% 的 F1。",
 ].join("\n");
+
+const stripAll = (text: string): string => text.replace(/\s+/g, "");
 
 const INVENTORY: ContributionUnit[] = [
   {
@@ -251,6 +254,34 @@ describe("可比化纯函数（PDF ↔ 重建 LaTeX）", () => {
     expect(plain).toContain("87.5% 的 F1");
     expect(plain).not.toContain("\\cite");
     expect(plain).toContain("\\ x_y");
+  });
+
+  it("extractTexVerbatimQuote：含转义 / \\cite 的 TeX 段落提取出逐字可回放锚", () => {
+    const tex = [
+      "\\section{Method}",
+      "The detector achieves 97.9\\% F1 on Total-Text \\cite{ref3}, outperforming prior arts.",
+      "Additional filler sentence that is long enough to make the file realistic for unit expansion.",
+    ].join("\n");
+    const pdfQuote = "The detector achieves 97.9% F1 on Total-Text [3], outperforming prior arts.";
+    const verbatim = extractTexVerbatimQuote(tex, pdfQuote);
+    expect(verbatim).toBeDefined();
+    // 逐字锚必须能在 TeX 中原样回放（含转义与 \cite）
+    expect(tex).toContain(verbatim!);
+    expect(verbatim).toContain("97.9\\%");
+    expect(verbatim).toContain("\\cite{ref3}");
+    // 无关 quote → undefined；过短 → undefined
+    expect(extractTexVerbatimQuote(tex, "completely unrelated sentence not present")).toBeUndefined();
+    expect(extractTexVerbatimQuote(tex, "短")).toBeUndefined();
+  });
+
+  it("extractTexVerbatimQuote：CJK 剥空白对齐", () => {
+    // PDF 换行在中文句中插入空白（M15.14 Phase D 形态）——剥空白后仍应映射回原文
+    const tex = `\\section{引言}\n\n本 文提出一种融合多层次语义特征的场景文本检测方法，在标准数据集上\n取得了优越性能。${"引".repeat(120)}`;
+    const pdfQuote = CN_CLAIM;
+    const verbatim = extractTexVerbatimQuote(tex, pdfQuote);
+    expect(verbatim).toBeDefined();
+    expect(verbatim).toContain("融合多层次语义特征");
+    expect(stripAll(tex)).toContain(stripAll(verbatim!));
   });
 
   it("quoteToComparablePlain：[n] 引用标记剥离", () => {
