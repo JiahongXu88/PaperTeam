@@ -67,6 +67,8 @@ import type {
 
 export const TARGET_AUDIT_REVISION_PLAN_SCHEMA_VERSION = 1;
 export const TARGET_AUDIT_CLOSURE_REPORT_SCHEMA_VERSION = 1;
+/** 确定性分类 / 锚投影实现版本（M15.18：NFKC 等价 + 源偏移逐字锚） */
+export const TARGET_AUDIT_PLAN_CLASSIFIER_VERSION = "m1518-nfkc-mapped";
 
 /** PDF 重建引用标记的长度下限（与 PaperReconstructor.MIN_SECTION_CHARS 同口径的启发式） */
 const PROJECTION_MIN_QUOTE_CHARS = 12;
@@ -160,6 +162,8 @@ export interface TargetAuditRevisionPlanArtifact {
     venueId?: string;
     documentType: string;
     manuscriptRevisionAtPlan: number | null;
+    /** M15.18：确定性分类 / 投影实现版本（缺省 = 旧实现）；未决策计划在版本变化后按同一审计重算 */
+    classifierVersion?: string;
   };
   createdAt: string;
   status: "generated" | "decided";
@@ -976,8 +980,15 @@ export class TargetAuditRevisionService {
             "证据审计已重新执行且现有计划已有作者决策——不允许静默覆盖；请基于新审计重新走决策流程",
           );
         }
-      } else if (existing.plan.source.manuscriptRevisionAtPlan === currentRevision) {
+      } else if (
+        existing.plan.source.manuscriptRevisionAtPlan === currentRevision &&
+        (existing.plan.status === "decided" || existing.plan.source.classifierVersion === TARGET_AUDIT_PLAN_CLASSIFIER_VERSION)
+      ) {
+        // 同审计 + 同修订：幂等返回。旧分类实现生成且尚未决策的计划按同一审计确定性重算
+        //（派生工件；已决策计划绝不覆盖——作者决策优先于实现升级）
         return existing;
+      } else if (existing.plan.source.manuscriptRevisionAtPlan === currentRevision) {
+        this.log(`[target] projectId=${projectId} 计划 ${existing.plan.planId} 由旧分类实现（${existing.plan.source.classifierVersion ?? "pre-m1518"}）生成且未决策——按同一审计重算`);
       } else if (existing.plan.status === "decided") {
         throw new BusinessError(
           "TARGET_AUDIT_STALE",
@@ -1073,6 +1084,7 @@ export class TargetAuditRevisionService {
         ...(artifact.venueId !== undefined ? { venueId: artifact.venueId } : {}),
         documentType: artifact.documentType,
         manuscriptRevisionAtPlan: currentRevision,
+        classifierVersion: TARGET_AUDIT_PLAN_CLASSIFIER_VERSION,
       },
       createdAt: this.now().toISOString(),
       status: "generated",

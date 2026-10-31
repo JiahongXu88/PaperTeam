@@ -9,7 +9,7 @@
  *   mandatory）；externalInstructions.add 支持 pending 态受控 statusNote。
  */
 
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -29,6 +29,7 @@ import {
   classifyAuditGap,
   comparableContains,
   extractTexVerbatimQuote,
+  TARGET_AUDIT_PLAN_CLASSIFIER_VERSION,
   latexToComparablePlain,
   projectQuoteToManuscript,
   quoteToComparablePlain,
@@ -507,6 +508,17 @@ describe("TargetAuditRevisionService（generate / decide / reassess）", () => {
     const again = await service.generatePlan(projectId);
     expect(again.plan?.planId).toBe(plan!.planId);
     expect(again.fresh).toBe(true);
+    expect(again.plan?.source.classifierVersion).toBe(TARGET_AUDIT_PLAN_CLASSIFIER_VERSION);
+    // M15.18：旧分类实现生成（无版本戳）且未决策的计划 → 按同一审计重算（同 planId，新版本戳）
+    const planFile = join(projects.researchDir(projectId), "target-audit-revision-plan.json");
+    const legacy = JSON.parse(await readFile(planFile, "utf8")) as { source: Record<string, unknown>; items: Array<{ classification: string }> };
+    delete legacy.source["classifierVersion"];
+    legacy.items[1]!.classification = "UNMAPPABLE_TARGET"; // 模拟旧实现的错误分类
+    await writeFile(planFile, JSON.stringify(legacy), "utf8");
+    const recomputed = await service.generatePlan(projectId);
+    expect(recomputed.plan?.planId).toBe(plan!.planId);
+    expect(recomputed.plan?.source.classifierVersion).toBe(TARGET_AUDIT_PLAN_CLASSIFIER_VERSION);
+    expect(recomputed.plan?.items[1]?.classification).toBe("NEEDS_TARGETED_EVIDENCE");
   });
 
   it("decide：approve 需实验项 → AUTHOR_DECISION_REQUIRED 指令（pending + 受控 statusNote，无 section）", async () => {
