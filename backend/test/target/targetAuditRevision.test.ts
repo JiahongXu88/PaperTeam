@@ -274,6 +274,28 @@ describe("可比化纯函数（PDF ↔ 重建 LaTeX）", () => {
     expect(extractTexVerbatimQuote(tex, "短")).toBeUndefined();
   });
 
+  it("M15.18 extractTexVerbatimQuote：按源偏移切片——锚边界逐字等于目标句（不因 \\section / \\cite / \\% 长度差左移）", () => {
+    const tex = [
+      "\\section{Method}",
+      "Earlier work \\cite{a1,a2,a3} and 12.5\\% gains are background only.",
+      "The detector achieves 97.9\\% F1 on Total-Text \\cite{ref3}, outperforming prior arts.",
+      "Additional filler sentence that is long enough to make the file realistic for unit expansion.",
+    ].join("\n");
+    const verbatim = extractTexVerbatimQuote(tex, "The detector achieves 97.9% F1 on Total-Text [3], outperforming prior arts.");
+    expect(verbatim).toBe("The detector achieves 97.9\\% F1 on Total-Text \\cite{ref3}, outperforming prior arts.");
+  });
+
+  it("M15.18 PDF 连字 ﬁ / 软连字符：投影与逐字锚与审计锚校验同一等价（NFKC），锚保留原 TeX 字节", () => {
+    const tex = "\\section{Conclusions}\nAs deep learning has been introduced only recently in the \uFB01eld of MOT, a number of promising future research directions\nhave also been identi\u00ADfied.";
+    const quote = "As deep learning has been introduced only recently in the field of MOT, a number of promising future research directions";
+    expect(projectQuoteToManuscript(quote, [{ relativePath: "sections/sec05.tex", content: tex }])).toMatchObject({ status: "resolved", file: "sections/sec05.tex" });
+    const verbatim = extractTexVerbatimQuote(tex, quote);
+    expect(verbatim).toBe("As deep learning has been introduced only recently in the \uFB01eld of MOT, a number of promising future research directions");
+    expect(tex).toContain(verbatim!);
+    // 不同词仍 fail-closed（NFKC 只消排版变体，不做语义匹配）
+    expect(extractTexVerbatimQuote(tex, "As deep learning has been introduced only recently in the area of MOT")).toBeUndefined();
+  });
+
   it("extractTexVerbatimQuote：CJK 剥空白对齐", () => {
     // PDF 换行在中文句中插入空白（M15.14 Phase D 形态）——剥空白后仍应映射回原文
     const tex = `\\section{引言}\n\n本 文提出一种融合多层次语义特征的场景文本检测方法，在标准数据集上\n取得了优越性能。${"引".repeat(120)}`;

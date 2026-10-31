@@ -54,6 +54,7 @@ import type { PatchValidationRecord } from "../review/patchValidation.js";
 import { revisionSourceHash } from "../review/revisionScope.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
+import { normalizeForQuoteMatch } from "../evidence/quoteVerification.js";
 import type {
   ContributionAuditArtifact,
   ContributionAuditInputFingerprint,
@@ -237,15 +238,56 @@ export interface TargetAuditClosureReport {
 
 // ---- 纯函数（导出供测试） ----
 
+/**
+ * PDF 正文 → 重建 LaTeX 的近似逆变换（escapeLatexText 逆 + \cite / 标题命令 → 分隔），
+ * 同时记录每个输出字符对应的 TeX 源偏移（M15.18：逐字锚提取必须按源偏移切片——
+ * 旧实现在变换后文本上定位却按同一下标切原 TeX，\section{…} / \cite{…} / \% 的长度差
+ * 使「TeX 逐字锚」整体左移，可能指向无关文本）。
+ */
+export function latexToComparableMapped(content: string): { text: string; map: number[] } {
+  const out: string[] = [];
+  const map: number[] = [];
+  const emit = (text: string, sourceIndex: number): void => {
+    for (const ch of text) {
+      out.push(ch);
+      map.push(sourceIndex);
+    }
+  };
+  const literal: Array<[string, string]> = [["\\textbackslash{}", "\\"], ["\\textasciicircum{}", "^"], ["\\textasciitilde{}", "~"]];
+  let i = 0;
+  scan: while (i < content.length) {
+    for (const [token, replacement] of literal) {
+      if (content.startsWith(token, i)) {
+        emit(replacement, i);
+        i += token.length;
+        continue scan;
+      }
+    }
+    if (content[i] === "\\") {
+      const next = content[i + 1];
+      if (next !== undefined && "*&%$#_{}".includes(next)) {
+        emit(next, i + 1);
+        i += 2;
+        continue;
+      }
+      const command = /^\\(?:cite|section|subsection)\{[^}]*\}/.exec(content.slice(i, i + 4096));
+      if (command !== null) {
+        emit(" ", i);
+        i += command[0].length;
+        continue;
+      }
+    }
+    const codePoint = content.codePointAt(i)!;
+    const ch = String.fromCodePoint(codePoint);
+    emit(ch, i);
+    i += ch.length;
+  }
+  return { text: out.join(""), map };
+}
+
 /** PDF 正文 → 重建 LaTeX 的近似逆变换（escapeLatexText 逆 + \cite 还原为分隔） */
 export function latexToComparablePlain(content: string): string {
-  return content
-    .replace(/\\textbackslash\{\}/g, "\\")
-    .replace(/\\textasciicircum\{\}/g, "^")
-    .replace(/\\textasciitilde\{\}/g, "~")
-    .replace(/\\([*&%$#_{}])/g, "$1")
-    .replace(/\\cite\{[^}]*\}/g, " ")
-    .replace(/\\(section|subsection)\{[^}]*\}/g, " ");
+  return latexToComparableMapped(content).text;
 }
 
 /** quote 侧：剥离 [12] / [12,13] 引用标记（重建时已被替换为 \cite） */
@@ -253,6 +295,7 @@ export function quoteToComparablePlain(quote: string): string {
   return quote.replace(/\[\d+(?:\s*[,\-–]\s*\d+)*\]/g, " ");
 }
 
+const INVISIBLE_QUOTE_CHARS = new Set([0x00ad, 0x200b, 0x200c, 0x200d, 0xfeff].map((code) => String.fromCharCode(code)));
 const hasCjk = (text: string): boolean => /[㐀-鿿豈-﫿　-〿＀-￯]/.test(text);
 const collapseWhitespace = (text: string): string => text.replace(/\s+/g, " ").trim().toLowerCase();
 const stripAllWhitespace = (text: string): string => text.replace(/\s+/g, "");
@@ -262,8 +305,10 @@ export function comparableContains(haystackPlain: string, needlePlain: string): 
   if (!meetsProjectionMinLength(needlePlain)) {
     return false;
   }
-  const a = collapseWhitespace(haystackPlain);
-  const b = collapseWhitespace(needlePlain);
+  // M15.18：与审计锚校验同一等价定义（normalizeForQuoteMatch：NFKC 连字/全半角 + 去零宽/软连字符 +
+  // 空白折叠 + 小写）——旧实现缺 NFKC，PDF 连字「ﬁ」使真实可改写项被判 quote-not-found
+  const a = normalizeForQuoteMatch(haystackPlain);
+  const b = normalizeForQuoteMatch(needlePlain);
   if (b !== "" && a.includes(b)) {
     return true;
   }
@@ -296,31 +341,37 @@ function meetsProjectionMinLength(needlePlain: string): boolean {
  * 指令文本内嵌可逐字回放的锚；对齐失败返回 undefined（调用方退回 PDF 原文）。
  */
 export function extractTexVerbatimQuote(tex: string, pdfQuote: string): string | undefined {
-  const haystack = latexToComparablePlain(tex);
+  const mapped = latexToComparableMapped(tex);
   const needle = quoteToComparablePlain(pdfQuote);
   if (!meetsProjectionMinLength(needle)) {
     return undefined;
   }
-  // 归一化索引：折叠空白 + 小写，记录每个输出字符在 haystack 中的位置
+  // 归一化索引（与 normalizeForQuoteMatch 同口径：NFKC + 去零宽 + 空白折叠 + 小写），
+  // 每个归一化字符记录其 TeX 源偏移
   const out: string[] = [];
   const index: number[] = [];
   let lastWasSpace = true; // 行首空白折叠
-  for (let i = 0; i < haystack.length; i += 1) {
-    const ch = haystack[i]!;
-    if (/\s/.test(ch)) {
+  for (let k = 0; k < mapped.text.length; k += 1) {
+    const raw = mapped.text[k]!;
+    const source = mapped.map[k]!;
+    if (/\s/.test(raw)) {
       if (!lastWasSpace) {
         out.push(" ");
-        index.push(i);
+        index.push(source);
         lastWasSpace = true;
       }
       continue;
     }
-    out.push(ch.toLowerCase());
-    index.push(i);
-    lastWasSpace = false;
+    if (INVISIBLE_QUOTE_CHARS.has(raw)) continue;
+    for (const ch of raw.normalize("NFKC").toLowerCase()) {
+      if (/\s/.test(ch)) continue;
+      out.push(ch);
+      index.push(source);
+      lastWasSpace = false;
+    }
   }
   const normalizedHaystack = out.join("");
-  const normalizedNeedle = collapseWhitespace(needle);
+  const normalizedNeedle = normalizeForQuoteMatch(needle);
   let start = -1;
   let end = -1;
   if (normalizedNeedle !== "") {
@@ -333,15 +384,15 @@ export function extractTexVerbatimQuote(tex: string, pdfQuote: string): string |
     // CJK 回退：剥全部空白后命中（双索引映射回收敛索引位置）
     const strippedOut: string[] = [];
     const strippedIndex: number[] = [];
-    for (let i = 0; i < normalizedHaystack.length; i += 1) {
-      const ch = normalizedHaystack[i]!;
+    for (let k = 0; k < normalizedHaystack.length; k += 1) {
+      const ch = normalizedHaystack[k]!;
       if (ch !== " ") {
         strippedOut.push(ch);
-        strippedIndex.push(i);
+        strippedIndex.push(k);
       }
     }
     const strippedHay = strippedOut.join("");
-    const strippedNeedle = stripAllWhitespace(needle);
+    const strippedNeedle = stripAllWhitespace(normalizedNeedle);
     const pos = strippedHay.indexOf(strippedNeedle);
     if (pos !== -1 && strippedIndex[pos + strippedNeedle.length - 1] !== undefined) {
       start = strippedIndex[pos]!;
@@ -352,8 +403,13 @@ export function extractTexVerbatimQuote(tex: string, pdfQuote: string): string |
     return undefined;
   }
   const rawStart = index[start]!;
-  const rawEnd = index[end]!;
-  const verbatim = tex.slice(rawStart, rawEnd + 1).trim();
+  const rawEndChar = tex.codePointAt(index[end]!)!;
+  const rawEnd = index[end]! + String.fromCodePoint(rawEndChar).length;
+  const verbatim = tex.slice(rawStart, rawEnd).trim();
+  // 回放自检（fail-closed）：切出的逐字锚经同一归一化后必须仍包含审计引文
+  if (!comparableContains(latexToComparablePlain(verbatim), needle)) {
+    return undefined;
+  }
   // 锚必须达到派发端锚定阈值（directiveAnchors 要求引号内 ≥12 字符），否则无意义
   return meetsProjectionMinLength(verbatim) ? verbatim : undefined;
 }
