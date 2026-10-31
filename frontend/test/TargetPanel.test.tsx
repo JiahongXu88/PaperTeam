@@ -34,6 +34,8 @@ vi.mock("../src/api/target.js", () => ({
   generateTargetAuditRevisionPlan: vi.fn(),
   decideTargetAuditRevisionPlan: vi.fn(),
   reassessTargetAuditRevision: vi.fn(),
+  getTargetSubmissionReadiness: vi.fn(),
+  submissionReadinessMarkdownUrl: (projectId: string) => `/api/projects/${projectId}/target/submission-readiness.md`,
 }));
 
 const projectsApi = await import("../src/api/projects.js");
@@ -493,5 +495,44 @@ describe("TargetPanel", () => {
     expect(await screen.findByTestId("target-audit-revision-stale")).toBeTruthy();
     expect(screen.queryByTestId("target-audit-revision-approve-ta-gap-1")).toBeNull();
     expect(screen.queryByTestId("target-audit-revision-reject-ta-gap-1")).toBeNull();
+  });
+  it("M15.18 投稿准备度：flag off 不渲染；flag on 点击生成 → 报告（风险 / 局限 / 免责声明）+ 下载链接", async () => {
+    vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
+    vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetProfile).mockResolvedValue({ profile: null, fresh: null });
+    vi.mocked(targetApi.getTargetReadiness).mockResolvedValue(null);
+    const off = renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    await screen.findByTestId("target-panel");
+    expect(screen.queryByTestId("target-readiness-section")).toBeNull();
+    off.unmount();
+
+    vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: true, audit: auditFresh });
+    vi.mocked(targetApi.getTargetAuditRevisionPlan).mockResolvedValue({ enabled: true, plan: null, report: null });
+    vi.mocked(targetApi.getTargetSubmissionReadiness).mockResolvedValue({
+      enabled: true,
+      report: {
+        schemaVersion: 1, projectId: "p-target00001", generatedAt: "2026-11-01T00:00:00.000Z",
+        venue: { venueId: "cjig", displayName: "中国图象图形学报" }, manuscriptRevision: 4,
+        official: { available: true, topStatus: "HARD_VIOLATION", counts: { machine_checked: 5, partially_machine_checked: 2, not_evaluable: 3, hardViolations: 1 } },
+        benchmark: { available: true, sufficiency: "insufficient", corpusSize: 5, overall: "证据不足（INSUFFICIENT）", note: "观测带不是最低录用标准" },
+        contribution: { available: true, items: [{ contributionId: "C1", status: "EVIDENCE_GAP" }] },
+        actions: { available: true, rewriteFromExistingEvidence: [{}], needsTargetedEvidence: [], needsRealExperimentOrAuthorDecision: [{}, {}], notActionable: [] },
+        closure: { available: true, summary: { total: 3, VALIDATED_FIXED: 1, NEEDS_AUTHOR_DECISION: 2 } },
+        remainingRisks: ["审计差距 ta-gap-2 仍开放：NEEDS_AUTHOR_DECISION"],
+        limitations: ["目标期刊独立人类审稿质量标签 = 0"],
+        disclaimer: "本报告……不是录用预测",
+      },
+    });
+    renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    const generate = await screen.findByTestId("target-readiness-generate");
+    expect(screen.getByTestId("target-readiness-download").getAttribute("href")).toBe("/api/projects/p-target00001/target/submission-readiness.md");
+    await userEvent.click(generate);
+    const report = await screen.findByTestId("target-readiness-report");
+    expect(targetApi.getTargetSubmissionReadiness).toHaveBeenCalledWith("p-target00001");
+    expect(report.textContent).toContain("本稿不可评价 3");
+    expect(report.textContent).toContain("必须真实实验或作者决策 2");
+    expect(report.textContent).toContain("VALIDATED_FIXED 1");
+    expect(report.textContent).toContain("ta-gap-2 仍开放");
+    expect(report.textContent).toContain("不是录用预测");
   });
 });

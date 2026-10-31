@@ -718,3 +718,44 @@ export async function reassessTargetAuditRevision(
 ): Promise<{ enabled: true; report: AuditClosureReportView }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit/revision-plan/reassess`);
 }
+
+// ---- M15.18：目标期刊投稿准备度报告（既有工件确定性汇总；flag off → enabled:false） ----
+
+export interface SubmissionReadinessView {
+  schemaVersion: 1;
+  projectId: string;
+  generatedAt: string;
+  venue: { venueId: string; displayName: string } | null;
+  manuscriptRevision: number | null;
+  official: {
+    available: boolean;
+    topStatus?: string;
+    staleAgainstCurrent?: boolean;
+    counts: { machine_checked: number; partially_machine_checked: number; not_evaluable: number; hardViolations: number };
+  };
+  benchmark: { available: boolean; sufficiency: string; corpusSize?: number; overall?: string; note: string };
+  contribution: { available: boolean; stale?: boolean; items: Array<{ contributionId: string; status: string }> };
+  actions: {
+    available: boolean;
+    rewriteFromExistingEvidence: unknown[];
+    needsTargetedEvidence: unknown[];
+    needsRealExperimentOrAuthorDecision: unknown[];
+    notActionable: unknown[];
+  };
+  closure: { available: boolean; summary?: Record<string, number> };
+  remainingRisks: string[];
+  limitations: string[];
+  disclaimer: string;
+}
+
+/** GET 投稿准备度报告（零模型；按需生成，不轮询） */
+export async function getTargetSubmissionReadiness(
+  projectId: string,
+): Promise<{ enabled: boolean; report: SubmissionReadinessView | null; markdown?: string }> {
+  return apiClient.get(`/api/projects/${encodeURIComponent(projectId)}/target/submission-readiness`);
+}
+
+/** Markdown 下载地址（同源相对路径） */
+export function submissionReadinessMarkdownUrl(projectId: string): string {
+  return `/api/projects/${encodeURIComponent(projectId)}/target/submission-readiness.md`;
+}

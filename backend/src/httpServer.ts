@@ -72,6 +72,7 @@ import {
 } from "./agents/researchLoopPolicy.js";
 import { aggregateReviews } from "./review/ReviewAggregator.js";
 import { ReviewReportExporter, contentDisposition } from "./review/ReviewReportExporter.js";
+import { buildSubmissionReadinessReport, renderSubmissionReadinessMarkdown } from "./target/TargetSubmissionReadinessService.js";
 import { REVIEW_PURPOSES, type ReviewPurpose } from "./review/reviewPurpose.js";
 import {
   runBuildGateForRevision,
@@ -2461,6 +2462,60 @@ async function handleProjectResourceRoutes(
       }
       const report = await targets.auditRevision.reassess(projectId);
       sendJson(res, 200, { enabled: true, report });
+      return true;
+    }
+    // ---- M15.18：目标期刊投稿准备度报告（既有工件确定性汇总，零模型；flag off → enabled:false / 403）----
+    if (rest === "/submission-readiness" || rest === "/submission-readiness.md") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      if (targets.evidenceAudit === null || targets.auditRevision === null) {
+        if (rest === "/submission-readiness") {
+          sendJson(res, 200, { enabled: false, report: null });
+        } else {
+          sendJson(res, 403, {
+            status: "error",
+            error: { code: "TARGET_EVIDENCE_AUDIT_DISABLED", message: "证据审计（实验性）未启用：投稿准备度报告入口关闭（PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED）" },
+          });
+        }
+        return true;
+      }
+      const [guideline, compliance, profile, readiness, benchmark, audit, plan, closure, manuscriptRevision] = await Promise.all([
+        targets.guideline.get(projectId),
+        targets.guideline.getReport(projectId),
+        targets.profile.get(projectId),
+        targets.gap.get(projectId),
+        targets.benchmark.get(projectId),
+        targets.evidenceAudit.get(projectId),
+        targets.auditRevision.getPlan(projectId),
+        targets.auditRevision.getReport(projectId),
+        stack.revisions.currentRevision(projectId).catch(() => null),
+      ]);
+      const report = buildSubmissionReadinessReport({
+        projectId,
+        now: new Date(),
+        manuscriptRevision,
+        guideline,
+        compliance,
+        profile,
+        readiness,
+        ...(benchmark?.selection !== undefined ? { benchmarkSufficiency: benchmark.selection.sufficiency } : {}),
+        ...(benchmark !== null ? { benchmarkSize: effectiveBenchmarkPapers(benchmark.papers) } : {}),
+        audit,
+        plan,
+        closure,
+      });
+      const markdown = renderSubmissionReadinessMarkdown(report);
+      if (rest === "/submission-readiness") {
+        sendJson(res, 200, { enabled: true, report, markdown });
+        return true;
+      }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Disposition", contentDisposition(`submission-readiness-${projectId}-r${manuscriptRevision ?? 0}.md`));
+      res.end(markdown);
       return true;
     }
     return false;

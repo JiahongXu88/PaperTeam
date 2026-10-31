@@ -161,4 +161,38 @@ describe("target 路由契约", () => {
     });
     expect(badDecide2.status).toBe(400);
   });
+  // ---- M15.18：投稿准备度报告路由契约 ----
+
+  it("投稿准备度 flag off：JSON → enabled:false；Markdown 下载 → 403", async () => {
+    const stack = await newStack();
+    const projectId = await createProject(stack, true);
+    const status = await stack.request("GET", `/api/projects/${projectId}/target/submission-readiness`);
+    expect(status.status).toBe(200);
+    expect(status.body["enabled"]).toBe(false);
+    const download = await fetch(`http://127.0.0.1:${stack.port()}/api/projects/${projectId}/target/submission-readiness.md`);
+    expect(download.status).toBe(403);
+  });
+
+  it("投稿准备度 flag on：无任何工件 → 各区块 available=false；Markdown 附件含免责声明", async () => {
+    const stack = await startTestStack(scriptedIdeaRuntime().runtime, {
+      registerCleanup: (cleanup) => cleanups.push(cleanup),
+      targetEvidenceAuditEnabled: true,
+    });
+    const projectId = await createProject(stack, true);
+    const status = await stack.request("GET", `/api/projects/${projectId}/target/submission-readiness`);
+    expect(status.status).toBe(200);
+    expect(status.body["enabled"]).toBe(true);
+    const report = status.body["report"] as { official: { available: boolean }; contribution: { available: boolean }; closure: { available: boolean }; disclaimer: string };
+    expect(report.official.available).toBe(false);
+    expect(report.contribution.available).toBe(false);
+    expect(report.closure.available).toBe(false);
+    expect(report.disclaimer).toContain("不是录用预测");
+    const download = await fetch(`http://127.0.0.1:${stack.port()}/api/projects/${projectId}/target/submission-readiness.md`);
+    expect(download.status).toBe(200);
+    expect(download.headers.get("content-type")).toContain("text/markdown");
+    expect(download.headers.get("content-disposition")).toContain("submission-readiness-");
+    expect(await download.text()).toContain("独立人类审稿质量标签 = 0");
+    const post = await stack.request("POST", `/api/projects/${projectId}/target/submission-readiness`);
+    expect(post.status).toBe(405);
+  });
 });

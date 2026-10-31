@@ -23,6 +23,9 @@ import {
   getTargetEvidenceAudit,
   getTargetAuditRevisionPlan,
   reassessTargetAuditRevision,
+  getTargetSubmissionReadiness,
+  submissionReadinessMarkdownUrl,
+  type SubmissionReadinessView,
   regenerateTargetProfile,
   type AuditClosureReportView,
   type AuditGapClassification,
@@ -232,6 +235,12 @@ export function TargetPanel({ projectId }: { projectId: string }) {
       setActionError(null);
       void invalidateTarget();
     },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+
+  const submissionReadiness = useMutation({
+    mutationFn: () => getTargetSubmissionReadiness(projectId),
+    onSuccess: () => setActionError(null),
     onError: (error) => setActionError(formatApiError(error)),
   });
 
@@ -566,6 +575,13 @@ export function TargetPanel({ projectId }: { projectId: string }) {
             onDecide={(decisions) => decideAuditPlan.mutate(decisions)}
             onReassess={() => reassessAuditPlan.mutate()}
             onRetry={() => void auditRevisionPlan.refetch()}
+          />
+          {/* ---- 7c. 投稿准备度报告（M15.18；既有工件确定性汇总，按需生成；随审计 flag 渲染） ---- */}
+          <TargetSubmissionReadinessSection
+            projectId={projectId}
+            report={submissionReadiness.data?.report ?? null}
+            loading={submissionReadiness.isPending}
+            onGenerate={() => submissionReadiness.mutate()}
           />
         </>
       ) : null}
@@ -1674,5 +1690,100 @@ function AuditClosureReportViewBlock({ report }: { report: AuditClosureReportVie
       </ul>
       <p className="section-note faint">{report.disclaimer}</p>
     </details>
+  );
+}
+
+function TargetSubmissionReadinessSection({
+  projectId,
+  report,
+  loading,
+  onGenerate,
+}: {
+  projectId: string;
+  report: SubmissionReadinessView | null;
+  loading: boolean;
+  onGenerate: () => void;
+}) {
+  return (
+    <div className="target-submission-readiness" data-testid="target-readiness-section">
+      <h3>投稿准备度报告（可追溯的规范 / 证据 / 风险清单，不是录用预测）</h3>
+      <p>
+        <button type="button" className="btn" disabled={loading} onClick={onGenerate} data-testid="target-readiness-generate">
+          {loading ? "汇总中…" : report === null ? "生成投稿准备度报告（零模型）" : "刷新报告"}
+        </button>{" "}
+        <a href={submissionReadinessMarkdownUrl(projectId)} download data-testid="target-readiness-download">
+          下载 Markdown
+        </a>
+      </p>
+      {report !== null ? (
+        <div className="kv" data-testid="target-readiness-report">
+          <div className="kv-row">
+            <dt>目标期刊</dt>
+            <dd>{report.venue?.displayName ?? "（未冻结官方指南）"} · 稿件修订 r{report.manuscriptRevision ?? "?"}</dd>
+          </div>
+          <div className="kv-row">
+            <dt>官方规范</dt>
+            <dd>
+              {report.official.available
+                ? `${report.official.topStatus ?? "—"}：可机检 ${report.official.counts.machine_checked} · 仅部分可机检 ${report.official.counts.partially_machine_checked} · 本稿不可评价 ${report.official.counts.not_evaluable} · 硬性违规 ${report.official.counts.hardViolations}${report.official.staleAgainstCurrent === true ? "（评估修订落后于当前稿，需重评）" : ""}`
+                : "尚未执行符合度检查"}
+            </dd>
+          </div>
+          <div className="kv-row">
+            <dt>benchmark 观测</dt>
+            <dd>
+              {report.benchmark.available
+                ? `${report.benchmark.overall ?? "—"}（语料 ${report.benchmark.corpusSize ?? "?"} 篇，${report.benchmark.sufficiency}）——${report.benchmark.note}`
+                : "尚无观测报告"}
+            </dd>
+          </div>
+          <div className="kv-row">
+            <dt>贡献风险</dt>
+            <dd>
+              {report.contribution.available
+                ? `${report.contribution.items.map((item) => `${item.contributionId}:${item.status}`).join("、")}${report.contribution.stale === true ? "（审计已陈旧）" : ""}`
+                : "未执行贡献证据审计"}
+            </dd>
+          </div>
+          <div className="kv-row">
+            <dt>行动清单</dt>
+            <dd>
+              {report.actions.available
+                ? `可基于现有证据改写 ${report.actions.rewriteFromExistingEvidence.length} · 需补文献/定向证据 ${report.actions.needsTargetedEvidence.length} · 必须真实实验或作者决策 ${report.actions.needsRealExperimentOrAuthorDecision.length} · 不可定位 ${report.actions.notActionable.length}`
+                : "尚未生成修订计划"}
+            </dd>
+          </div>
+          <div className="kv-row">
+            <dt>闭环对账</dt>
+            <dd>
+              {report.closure.available
+                ? Object.entries(report.closure.summary ?? {}).filter(([key, value]) => key !== "total" && value > 0).map(([key, value]) => `${key} ${value}`).join(" · ")
+                : "尚未复评"}
+            </dd>
+          </div>
+          <div className="kv-row">
+            <dt>仍未解决</dt>
+            <dd>
+              <ul data-testid="target-readiness-risks">
+                {(report.remainingRisks.length > 0 ? report.remainingRisks : ["（机器可识别范围内无开放风险——不代表可投稿或可录用）"]).map((risk) => (
+                  <li key={risk}>{risk}</li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+          <div className="kv-row">
+            <dt>局限</dt>
+            <dd>
+              <ul>
+                {report.limitations.map((limitation) => (
+                  <li key={limitation}>{limitation}</li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+          <p className="section-note faint">{report.disclaimer}</p>
+        </div>
+      ) : null}
+    </div>
   );
 }
