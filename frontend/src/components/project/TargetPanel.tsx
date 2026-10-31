@@ -12,6 +12,8 @@ import {
   evaluateTargetRubric,
   evaluateTargetEvidenceAudit,
   excludeTargetBenchmarkPaper,
+  decideTargetAuditRevisionPlan,
+  generateTargetAuditRevisionPlan,
   getTargetBenchmark,
   getTargetGuideline,
   getTargetGuidelineCompliance,
@@ -19,7 +21,13 @@ import {
   getTargetReadiness,
   getTargetRubric,
   getTargetEvidenceAudit,
+  getTargetAuditRevisionPlan,
+  reassessTargetAuditRevision,
   regenerateTargetProfile,
+  type AuditClosureReportView,
+  type AuditGapClassification,
+  type AuditRevisionPlanItemView,
+  type AuditRevisionPlanView,
   type DistributionView,
   type EvidenceAuditComparisonStatus,
   type EvidenceAuditGapPlanItemView,
@@ -122,6 +130,12 @@ export function TargetPanel({ projectId }: { projectId: string }) {
     queryKey: ["target", projectId, "evidence-audit"],
     queryFn: ({ signal }) => getTargetEvidenceAudit(projectId, signal),
   });
+  // M15.17：审计修订计划（只在证据审计 flag 开启时查询）
+  const auditRevisionPlan = useQuery({
+    queryKey: ["target", projectId, "audit-revision-plan"],
+    queryFn: ({ signal }) => getTargetAuditRevisionPlan(projectId, signal),
+    enabled: evidenceAudit.data?.enabled === true,
+  });
 
   const invalidateTarget = (): Promise<void> =>
     Promise.all([
@@ -189,6 +203,31 @@ export function TargetPanel({ projectId }: { projectId: string }) {
   });
   const evaluateEvidenceAudit = useMutation({
     mutationFn: () => evaluateTargetEvidenceAudit(projectId),
+    onSuccess: () => {
+      setActionError(null);
+      void invalidateTarget();
+    },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+  const generateAuditPlan = useMutation({
+    mutationFn: () => generateTargetAuditRevisionPlan(projectId),
+    onSuccess: () => {
+      setActionError(null);
+      void invalidateTarget();
+    },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+  const decideAuditPlan = useMutation({
+    mutationFn: (decisions: Array<{ itemId: string; decision: "approve" | "reject" }>) =>
+      decideTargetAuditRevisionPlan(projectId, decisions),
+    onSuccess: () => {
+      setActionError(null);
+      void invalidateTarget();
+    },
+    onError: (error) => setActionError(formatApiError(error)),
+  });
+  const reassessAuditPlan = useMutation({
+    mutationFn: () => reassessTargetAuditRevision(projectId),
     onSuccess: () => {
       setActionError(null);
       void invalidateTarget();
@@ -505,14 +544,30 @@ export function TargetPanel({ projectId }: { projectId: string }) {
 
       {/* ---- 7. 证据审计（M15.16 P0-A，实验性；flag off 时后端返回 enabled:false，区块不渲染） ---- */}
       {evidenceAudit.data?.enabled === true ? (
-        <TargetEvidenceAuditSection
-          audit={evidenceAudit.data.audit}
-          pending={evidenceAudit.isPending}
-          error={evidenceAudit.isError ? formatApiError(evidenceAudit.error) : null}
-          evaluating={evaluateEvidenceAudit.isPending}
-          onEvaluate={() => evaluateEvidenceAudit.mutate()}
-          onRetry={() => void evidenceAudit.refetch()}
-        />
+        <>
+          <TargetEvidenceAuditSection
+            audit={evidenceAudit.data.audit}
+            pending={evidenceAudit.isPending}
+            error={evidenceAudit.isError ? formatApiError(evidenceAudit.error) : null}
+            evaluating={evaluateEvidenceAudit.isPending}
+            onEvaluate={() => evaluateEvidenceAudit.mutate()}
+            onRetry={() => void evidenceAudit.refetch()}
+          />
+          {/* ---- 7b. 审计差距 → 修订计划（M15.17；随审计 flag 渲染） ---- */}
+          <TargetAuditRevisionSection
+            auditStale={evidenceAudit.data.audit?.stale ?? false}
+            planStatus={auditRevisionPlan.data ?? null}
+            pending={auditRevisionPlan.isPending}
+            error={auditRevisionPlan.isError ? formatApiError(auditRevisionPlan.error) : null}
+            generating={generateAuditPlan.isPending}
+            deciding={decideAuditPlan.isPending}
+            reassessing={reassessAuditPlan.isPending}
+            onGenerate={() => generateAuditPlan.mutate()}
+            onDecide={(decisions) => decideAuditPlan.mutate(decisions)}
+            onReassess={() => reassessAuditPlan.mutate()}
+            onRetry={() => void auditRevisionPlan.refetch()}
+          />
+        </>
       ) : null}
 
       <p className="section-note faint">
@@ -1286,5 +1341,318 @@ function GapPlanItem({ item }: { item: EvidenceAuditGapPlanItemView }) {
         ) : null}
       </div>
     </li>
+  );
+}
+
+// ---- M15.17：审计差距 → 修订计划区块 ----
+
+const AUDIT_CLASSIFICATION_META: Record<AuditGapClassification, { label: string; tone: "ok" | "info" | "warn" | "neutral" }> = {
+  REWRITE_ELIGIBLE: { label: "可基于现有证据改写", tone: "ok" },
+  NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT: { label: "需真实实验 / 作者输入", tone: "warn" },
+  NEEDS_TARGETED_EVIDENCE: { label: "需查阅 / 补充证据", tone: "info" },
+  EVIDENCE_INSUFFICIENT: { label: "审计证据不足（作者裁决）", tone: "neutral" },
+  UNMAPPABLE_TARGET: { label: "无法定位可编辑目标", tone: "neutral" },
+};
+
+const AUDIT_CLOSURE_META: Record<string, { label: string; tone: "ok" | "info" | "warn" | "neutral" }> = {
+  VALIDATED_FIXED: { label: "已验证解决（机器可证）", tone: "ok" },
+  PARTIALLY_ADDRESSED: { label: "部分解决", tone: "info" },
+  STILL_OPEN: { label: "仍未解决", tone: "warn" },
+  NEEDS_AUTHOR_DECISION: { label: "待作者决策 / 实验补充", tone: "warn" },
+  ALREADY_SATISFIED: { label: "基线已覆盖", tone: "ok" },
+  AUTHOR_REJECTED: { label: "作者不采纳", tone: "neutral" },
+  NOT_EVALUATED: { label: "不可复评", tone: "neutral" },
+};
+
+const INSTRUCTION_STATUS_LABEL: Record<string, string> = {
+  pending: "待派发",
+  handled: "已处理",
+  partially_handled: "部分处理",
+  unresolved: "未处理",
+  conflict: "与事实冲突（保留事实）",
+  already_satisfied: "当前稿已满足",
+};
+
+function TargetAuditRevisionSection({
+  auditStale,
+  planStatus,
+  pending,
+  error,
+  generating,
+  deciding,
+  reassessing,
+  onGenerate,
+  onDecide,
+  onReassess,
+  onRetry,
+}: {
+  auditStale: boolean;
+  planStatus: { enabled: boolean; plan: AuditRevisionPlanView | null; report: AuditClosureReportView | null } | null;
+  pending: boolean;
+  error: string | null;
+  generating: boolean;
+  deciding: boolean;
+  reassessing: boolean;
+  onGenerate: () => void;
+  onDecide: (decisions: Array<{ itemId: string; decision: "approve" | "reject" }>) => void;
+  onReassess: () => void;
+  onRetry: () => void;
+}) {
+  const plan = planStatus?.plan?.plan ?? null;
+  const instructionById = new Map((planStatus?.plan?.instructions ?? []).map((instruction) => [instruction.instructionId, instruction]));
+  const report = planStatus?.report ?? null;
+  const canGenerate = !auditStale;
+  return (
+    <div className="target-audit-revision" data-testid="target-audit-revision-section">
+      <div className="gate-rules-head">
+        <h3>审计差距 → 修订计划（实验性）</h3>
+        {plan !== null ? (
+          <span className="faint">
+            计划 {plan.planId} · 生成于 {formatDateTime(plan.createdAt) ?? "—"} · 状态 {plan.status === "decided" ? "已决策" : "待决策"}
+            {" "}· 绑定修订 r{plan.source.manuscriptRevisionAtPlan ?? "?"}
+          </span>
+        ) : null}
+      </div>
+      {pending ? (
+        <Loading label="加载审计修订计划…" />
+      ) : error !== null ? (
+        <ErrorState title="审计修订计划加载失败" message={error} onRetry={onRetry} />
+      ) : plan === null ? (
+        <div className="state-block state-empty" data-testid="target-audit-revision-empty">
+          <strong>尚未制定修改计划</strong>
+          <span>
+            把证据审计的差距清单（gapPlan）经确定性门禁分类为「可改写 / 需真实实验 / 需补证据 / 不可定位」，
+            作者逐项决策后，可改写项转入修订意见队列（由既有改进工作流执行——全套事实 / 引用 / 范围守卫生效；
+            需实验项停在作者裁决，系统不伪造数据）。
+          </span>
+          <p>
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={onGenerate}
+              disabled={generating || !canGenerate}
+              data-testid="target-audit-revision-generate"
+            >
+              {generating ? "生成中…" : "根据审计建议制定修改计划（零模型调用）"}
+            </button>
+          </p>
+        </div>
+      ) : (
+        <>
+          {auditStale || !planStatus?.plan?.fresh ? (
+            <div className="note note-warn" role="status" data-testid="target-audit-revision-stale">
+              <span>
+                <span className="note-mark">●</span> 计划相对当前状态已陈旧（
+                {planStatus?.plan?.staleReason ?? "证据审计已陈旧"}）——决策入口已关闭；重新执行证据审计后再生成新计划。
+              </span>
+            </div>
+          ) : null}
+          <div className="kv" data-testid="target-audit-revision-summary">
+            <div className="kv-row">
+              <dt>分类汇总</dt>
+              <dd>
+                共 {plan.summary.total} 项：可改写 {plan.summary.rewriteEligible} · 需真实实验 {plan.summary.needsRealExperiment} ·
+                需补证据 {plan.summary.needsTargetedEvidence} · 证据不足 {plan.summary.evidenceInsufficient} · 不可定位 {plan.summary.unmappable}
+                {plan.status === "decided" ? `（已批准 ${plan.summary.approved} / 已拒绝 ${plan.summary.rejected}）` : ""}
+              </dd>
+            </div>
+          </div>
+          <ul className="rule-list" data-testid="target-audit-revision-items">
+            {plan.items.map((item) => (
+              <AuditPlanItemRow
+                key={item.itemId}
+                item={item}
+                fresh={planStatus?.plan?.fresh ?? false}
+                decided={plan.status === "decided"}
+                instruction={item.instructionId !== undefined ? instructionById.get(item.instructionId) : undefined}
+                deciding={deciding}
+                onDecide={onDecide}
+              />
+            ))}
+          </ul>
+          {plan.summary.approved + plan.summary.rejected > 0 ? (
+            <div className="note note-info" data-testid="target-audit-revision-dispatch-hint">
+              <span>
+                已批准的可改写项已转入「外部修改意见」队列（来源：目标期刊证据审计 advisory——派发优先级低于真人意见）。
+                在工作流面板启动「论文改进」后由 Writer 按既有守卫执行；需真实实验项登记在作者裁决队列（不派发、不伪造数据）。
+                执行并产生修订后，点击下方「复评闭环」查看逐项结果。
+              </span>
+            </div>
+          ) : null}
+          <p>
+            <button
+              type="button"
+              className="btn btn-small"
+              onClick={onReassess}
+              disabled={reassessing || plan.summary.approved + plan.summary.rejected === 0}
+              data-testid="target-audit-revision-reassess"
+            >
+              {reassessing ? "复评中…" : "复评闭环（确定性核对，零模型）"}
+            </button>
+          </p>
+          {report !== null ? <AuditClosureReportViewBlock report={report} /> : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AuditPlanItemRow({
+  item,
+  fresh,
+  decided,
+  instruction,
+  deciding,
+  onDecide,
+}: {
+  item: AuditRevisionPlanItemView;
+  fresh: boolean;
+  decided: boolean;
+  instruction?: { instructionId: string; status: string; statusNote?: string; section?: string };
+  deciding: boolean;
+  onDecide: (decisions: Array<{ itemId: string; decision: "approve" | "reject" }>) => void;
+}) {
+  const meta = AUDIT_CLASSIFICATION_META[item.classification];
+  const decision = item.authorDecision?.decision;
+  return (
+    <li className="rule-item" data-testid="target-audit-revision-item">
+      <span className={`status status-tone-${meta.tone}`}>{meta.label}</span>
+      <div>
+        <strong>
+          {item.itemId}（贡献 {item.contributionId}）
+        </strong>
+        ：{item.gap}
+        <div className="faint">分类依据：{item.classificationReason}</div>
+        {item.anchor.claimQuote !== "" ? (
+          <blockquote className="claim-quote">
+            「{item.anchor.claimQuote.slice(0, 220)}
+            {item.anchor.claimQuote.length > 220 ? "…" : ""}」
+          </blockquote>
+        ) : null}
+        <div className="faint">
+          锚定：审计节 {item.anchor.sectionId || "—"} ·{" "}
+          {item.anchor.projection.status === "resolved"
+            ? `可编辑目标 ${item.anchor.projection.file}${item.anchor.projection.ambiguous === true ? "（多文件命中，按节序定位）" : ""}（quote 回放核验通过）`
+            : `不可投影（${item.anchor.projection.reason === "no-editable-manuscript" ? "项目无可编辑稿件" : item.anchor.projection.reason === "quote-ambiguous" ? "quote 多文件命中" : "quote 无法回放"}）——不改写`}
+        </div>
+        {item.priorWork.length > 0 ? (
+          <div className="faint">
+            先前工作：
+            {item.priorWork
+              .map(
+                (ref) =>
+                  `${ref.title}（${ref.year ?? "?"}${ref.doi !== undefined ? ` · doi:${ref.doi}` : ""}；${ref.resolvesToPool ? "身份可解析" : "不可解析"}${ref.priorQuoteVerified === true ? " · quote 已回放" : ""}）`,
+              )
+              .join("；")}
+          </div>
+        ) : (
+          <div className="faint">先前工作：无可解析身份（不得新增比较结论）</div>
+        )}
+        {item.forbidden.citationKeys.length > 0 || item.forbidden.values.length > 0 ? (
+          <div className="faint">
+            禁止变更：数值 {item.forbidden.values.slice(0, 8).join("、")}
+            {item.forbidden.values.length > 8 ? ` 等 ${item.forbidden.values.length} 项` : ""}
+            {" "}· cite key {item.forbidden.citationKeys.slice(0, 8).join("、")}
+            {item.forbidden.citationKeys.length > 8 ? ` 等 ${item.forbidden.citationKeys.length} 个` : ""}
+          </div>
+        ) : null}
+        {item.classification === "REWRITE_ELIGIBLE" ? (
+          <div className="faint">允许的修改：{item.allowedScope}</div>
+        ) : null}
+        {item.experimentPlan !== undefined ? (
+          <div className="faint">
+            实验需求：目的 {item.experimentPlan.purpose}
+            {item.experimentPlan.baselines !== undefined ? `；基线 ${item.experimentPlan.baselines}` : ""}
+            {item.experimentPlan.datasets !== undefined ? `；数据集 ${item.experimentPlan.datasets}` : ""}
+            {item.experimentPlan.metrics !== undefined ? `；指标 ${item.experimentPlan.metrics}` : ""}
+            {item.experimentPlan.expectedEvidence !== undefined ? `；所需证据 ${item.experimentPlan.expectedEvidence}` : ""}
+          </div>
+        ) : null}
+        {instruction !== undefined ? (
+          <div className="faint">
+            已转入意见队列（{instruction.instructionId}）：状态 {INSTRUCTION_STATUS_LABEL[instruction.status] ?? instruction.status}
+            {instruction.statusNote !== undefined ? ` · ${instruction.statusNote.slice(0, 120)}` : ""}
+          </div>
+        ) : null}
+        {!decided && fresh && item.authorDecision === undefined ? (
+          <p>
+            <button
+              type="button"
+              className="btn btn-small"
+              disabled={deciding}
+              onClick={() => onDecide([{ itemId: item.itemId, decision: "approve" }])}
+              data-testid={`target-audit-revision-approve-${item.itemId}`}
+            >
+              批准转入
+            </button>{" "}
+            <button
+              type="button"
+              className="btn btn-small btn-danger"
+              disabled={deciding}
+              onClick={() => onDecide([{ itemId: item.itemId, decision: "reject" }])}
+              data-testid={`target-audit-revision-reject-${item.itemId}`}
+            >
+              不采纳
+            </button>
+          </p>
+        ) : decision !== undefined ? (
+          <div className="faint">
+            作者决策：{decision === "approve" ? "已批准（转入执行通道）" : "不采纳"}
+            {item.authorDecision !== undefined ? `（${formatDateTime(item.authorDecision.decidedAt) ?? ""}）` : ""}
+          </div>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function AuditClosureReportViewBlock({ report }: { report: AuditClosureReportView }) {
+  const summaryRecord = report.summary as unknown as Record<string, number>;
+  return (
+    <details className="details-block" data-testid="target-audit-revision-report" open>
+      <summary>
+        闭环复评报告（{report.reportId} · 评估于修订 r{report.assessedAtRevision ?? "?"} · {formatDateTime(report.generatedAt) ?? "—"}）
+      </summary>
+      <div className="kv">
+        <div className="kv-row">
+          <dt>闭环汇总</dt>
+          <dd>
+            共 {report.summary.total} 项：
+            {Object.entries(AUDIT_CLOSURE_META)
+              .filter(([key]) => (summaryRecord[key] ?? 0) > 0)
+              .map(([key, meta]) => `${meta.label} ${summaryRecord[key] ?? 0}`)
+              .join(" · ")}
+            {report.auditStaleNow ? "（注：证据审计工件相对当前稿已陈旧——复评为确定性核对，不依赖重新审计）" : ""}
+          </dd>
+        </div>
+      </div>
+      <ul className="rule-list">
+        {report.items.map((item) => {
+          const meta = AUDIT_CLOSURE_META[item.closure] ?? { label: item.closure, tone: "neutral" as const };
+          return (
+            <li className="rule-item" key={item.itemId} data-testid="target-audit-revision-report-item">
+              <span className={`status status-tone-${meta.tone}`}>{meta.label}</span>
+              <div>
+                <strong>{item.itemId}</strong>（{AUDIT_CLASSIFICATION_META[item.classification]?.label ?? item.classification}）：{item.basis}
+                {item.patches !== undefined && item.patches.length > 0 ? (
+                  <div className="faint">
+                    patch lineage：
+                    {item.patches.map((patch) => `${patch.patchId}@rev${patch.revision}（${patch.finalStatus}）`).join("、")}
+                  </div>
+                ) : null}
+                {item.verification !== undefined ? (
+                  <div className="faint">
+                    守卫：scope {item.verification.scope === true ? "✓" : item.verification.scope === false ? "✗" : "—"} ·
+                    fact {item.verification.fact === true ? "✓" : item.verification.fact === false ? "✗" : "—"} ·
+                    citation {item.verification.citation === true ? "✓" : item.verification.citation === false ? "✗" : "—"}
+                  </div>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="section-note faint">{report.disclaimer}</p>
+    </details>
   );
 }

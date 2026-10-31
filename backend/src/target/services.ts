@@ -44,6 +44,9 @@ import { TargetProfileService, type TargetSummaryModel } from "./TargetProfileSe
 import { TargetGuidelineService } from "./TargetGuidelineService.js";
 import { TargetRubricService } from "./TargetRubricService.js";
 import { TargetEvidenceAuditService } from "./TargetEvidenceAuditService.js";
+import { TargetAuditRevisionService } from "./TargetAuditRevisionService.js";
+import type { ExternalInstructionStore } from "../review/externalInstructions.js";
+import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
 
 export interface TargetServiceDeps {
   projects: ProjectStore;
@@ -81,6 +84,13 @@ export interface TargetServiceDeps {
   reviewerAgentId?: string;
   scholarly?: Pick<ScholarlyResolver, "resolve">;
   readSourceChunks?: (projectId: string, sourceId: string) => Promise<readonly SourceChunk[] | null>;
+  /**
+   * M15.17：审计差距 → 修订计划闭环。随 evidenceAudit flag 一起装配（审计
+   * 关闭则计划入口整体不存在）；externalInstructions / reviewArtifacts 由
+   * serviceStack 注入（指令队列与 patch lineage 的确定性数据源）。
+   */
+  externalInstructions?: ExternalInstructionStore;
+  reviewArtifacts?: ReviewArtifactStore;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -100,6 +110,12 @@ export interface TargetServices {
    * flag 关闭或依赖缺失——HTTP 层据此返回 enabled:false / 403。
    */
   evidenceAudit: TargetEvidenceAuditService | null;
+  /**
+   * M15.17：审计差距 → 修订计划（确定性分类 / 作者决策 / 转入意见队列 /
+   * 闭环复评）。null = 证据审计 flag 关闭或依赖缺失（HTTP 层同 evidenceAudit
+   * fail-closed）；零模型调用。
+   */
+  auditRevision: TargetAuditRevisionService | null;
 }
 
 export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
@@ -197,5 +213,21 @@ export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
         }
       : null;
   const evidenceAudit = evidenceAuditDeps !== null ? new TargetEvidenceAuditService(evidenceAuditDeps) : null;
-  return { benchmark, discovery, profile, gap, guideline, rubric, evidenceAudit };
+  // M15.17：审计修订闭环——只在证据审计开启且指令 / patch 工件 / 修订号存储注入时装配
+  const auditRevision =
+    evidenceAuditDeps !== null &&
+    deps.revisions !== undefined &&
+    deps.externalInstructions !== undefined &&
+    deps.reviewArtifacts !== undefined
+      ? new TargetAuditRevisionService({
+          projects: deps.projects,
+          papers: deps.papers!,
+          revisions: deps.revisions,
+          externalInstructions: deps.externalInstructions,
+          reviewArtifacts: deps.reviewArtifacts,
+          now,
+          log,
+        })
+      : null;
+  return { benchmark, discovery, profile, gap, guideline, rubric, evidenceAudit, auditRevision };
 }

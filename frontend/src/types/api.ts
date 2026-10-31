@@ -1035,7 +1035,8 @@ export type ExternalInstructionSource =
   | "journal_reviewer"
   | "editor"
   | "advisor"
-  | "other";
+  | "other"
+  | "target_audit";
 
 export interface ParsedExternalCommentView {
   source: ExternalInstructionSource;

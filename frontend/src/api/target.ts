@@ -538,3 +538,166 @@ export async function evaluateTargetEvidenceAudit(
 ): Promise<{ enabled: true; audit: TargetEvidenceAuditView }> {
   return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit`);
 }
+
+// ---- M15.17：审计差距 → 修订计划（确定性分类 / 作者决策 / 转入意见队列 / 闭环复评）----
+
+export type AuditGapClassification =
+  | "REWRITE_ELIGIBLE"
+  | "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT"
+  | "NEEDS_TARGETED_EVIDENCE"
+  | "EVIDENCE_INSUFFICIENT"
+  | "UNMAPPABLE_TARGET";
+
+export interface AuditRevisionPlanItemView {
+  itemId: string;
+  contributionId: string;
+  gap: string;
+  sourceActionType: "can_rewrite_from_existing_evidence" | "requires_real_experiment_or_author_input";
+  classification: AuditGapClassification;
+  classificationReason: string;
+  experimentPlan?: { purpose: string; baselines?: string; datasets?: string; metrics?: string; expectedEvidence?: string };
+  anchor: {
+    claimQuote: string;
+    sectionId: string;
+    anchorVerified: boolean;
+    projection: {
+      status: "resolved" | "unresolved";
+      file?: string;
+      basis?: string;
+      ambiguous?: boolean;
+      reason?: string;
+    };
+  };
+  priorWork: Array<{
+    title: string;
+    year?: number;
+    doi?: string;
+    arxivId?: string;
+    sourceLevel?: string;
+    resolvesToPool: boolean;
+    priorQuoteVerified?: boolean;
+    timeCausalityViolation?: boolean;
+  }>;
+  comparisonStatus?: string;
+  forbidden: { values: string[]; citationKeys: string[] };
+  allowedScope: string;
+  authorDecision?: { decision: "approve" | "reject"; decidedAt: string };
+  instructionId?: string;
+}
+
+export interface AuditRevisionPlanView {
+  plan: {
+    schemaVersion: 1;
+    planId: string;
+    projectId: string;
+    source: {
+      auditArtifact: string;
+      inputFingerprint: {
+        manuscriptSha256: string;
+        poolFingerprint: string;
+        promptVersion: string;
+        model?: string;
+        documentType: string;
+        venueId?: string;
+      };
+      auditEvaluatedAt: string;
+      venueId?: string;
+      documentType: string;
+      manuscriptRevisionAtPlan: number | null;
+    };
+    createdAt: string;
+    status: "generated" | "decided";
+    items: AuditRevisionPlanItemView[];
+    summary: {
+      total: number;
+      rewriteEligible: number;
+      needsRealExperiment: number;
+      needsTargetedEvidence: number;
+      evidenceInsufficient: number;
+      unmappable: number;
+      approved: number;
+      rejected: number;
+    };
+  } | null;
+  fresh: boolean;
+  staleReason?: string;
+  currentManuscriptRevision: number | null;
+  instructions: Array<{
+    instructionId: string;
+    status: string;
+    statusNote?: string;
+    section?: string;
+  }>;
+}
+
+export type AuditGapClosure =
+  | "VALIDATED_FIXED"
+  | "PARTIALLY_ADDRESSED"
+  | "STILL_OPEN"
+  | "NEEDS_AUTHOR_DECISION"
+  | "ALREADY_SATISFIED"
+  | "AUTHOR_REJECTED"
+  | "NOT_EVALUATED";
+
+export interface AuditClosureReportView {
+  schemaVersion: 1;
+  reportId: string;
+  planId: string;
+  projectId: string;
+  generatedAt: string;
+  assessedAtRevision: number | null;
+  auditStaleNow: boolean;
+  items: Array<{
+    itemId: string;
+    classification: AuditGapClassification;
+    closure: AuditGapClosure;
+    basis: string;
+    instruction?: { instructionId: string; status: string; statusNote?: string };
+    patches?: Array<{ patchId: string; revision: number; finalStatus: string }>;
+    verification?: { scope?: boolean; fact?: boolean; citation?: boolean; evidence?: boolean };
+  }>;
+  summary: { total: number } & Record<AuditGapClosure, number>;
+  disclaimer: string;
+}
+
+export interface TargetAuditRevisionStatus {
+  enabled: boolean;
+  plan: AuditRevisionPlanView | null;
+  report: AuditClosureReportView | null;
+}
+
+/** GET 修订计划 + 最近复评报告（flag off → {enabled:false, plan:null, report:null}） */
+export async function getTargetAuditRevisionPlan(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<TargetAuditRevisionStatus> {
+  return apiClient.get<TargetAuditRevisionStatus>(
+    `/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit/revision-plan`,
+    signal,
+  );
+}
+
+/** POST 生成修订计划（确定性；审计陈旧 → 409 TARGET_AUDIT_STALE fail-closed） */
+export async function generateTargetAuditRevisionPlan(
+  projectId: string,
+): Promise<{ enabled: true; plan: AuditRevisionPlanView }> {
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit/revision-plan`);
+}
+
+/** POST 作者逐项决策（approve 的可改写项转入修订意见队列；不自动改稿） */
+export async function decideTargetAuditRevisionPlan(
+  projectId: string,
+  decisions: Array<{ itemId: string; decision: "approve" | "reject" }>,
+): Promise<{ enabled: true; plan: AuditRevisionPlanView }> {
+  return apiClient.post(
+    `/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit/revision-plan/decide`,
+    { decisions },
+  );
+}
+
+/** POST 闭环复评（确定性：指令状态 + patch lineage + 守卫结果 → 逐项闭环状态） */
+export async function reassessTargetAuditRevision(
+  projectId: string,
+): Promise<{ enabled: true; report: AuditClosureReportView }> {
+  return apiClient.post(`/api/projects/${encodeURIComponent(projectId)}/target/evidence-audit/revision-plan/reassess`);
+}

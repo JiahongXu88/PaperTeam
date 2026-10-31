@@ -33,6 +33,9 @@ export const EXTERNAL_INSTRUCTION_SOURCES = [
   "editor",
   "advisor",
   "other",
+  // M15.17：目标期刊证据审计 → 修订计划的机器转入通道（不是人工意见；
+  // 派发优先级低于真人意见——见 revisionPlan.ts 的 source 映射）
+  "target_audit",
 ] as const;
 export type ExternalInstructionSource = (typeof EXTERNAL_INSTRUCTION_SOURCES)[number];
 
@@ -43,6 +46,7 @@ export const EXTERNAL_SOURCE_LABELS: Record<ExternalInstructionSource, string> =
   editor: "编辑",
   advisor: "导师",
   other: "其他",
+  target_audit: "目标期刊证据审计（advisory）",
 };
 
 /**
@@ -434,6 +438,9 @@ export class ExternalInstructionStore {
    * initialStatus 仅允许 already_satisfied（M10.3：登记导入前已在当前稿落实的
    * 历史意见，需携带 statusNote 说明依据）；其余状态一律从 pending 起步，
    * 由派发/复核状态机确定性流转。
+   * M15.17：pending 态允许携带 AUTHOR_DECISION_REQUIRED / EVIDENCE_ONLY_RECORDED
+   * 前缀的 statusNote（机器审计转入的作者裁决项——创建即进入合法待裁决闭环，
+   * 不派发 Writer；前缀白名单保证人工通道语义不变）。
    */
   async add(projectId: string, input: {
     source: ExternalInstructionSource;
@@ -459,6 +466,11 @@ export class ExternalInstructionStore {
     }
     const satisfied =
       input.initialStatus === "already_satisfied" && (input.statusNote ?? "").trim() !== "";
+    const pendingAuthorDecisionNote =
+      !satisfied &&
+      PRESERVED_AUTHOR_DECISION_PREFIXES.some((prefix) => (input.statusNote ?? "").startsWith(prefix))
+        ? input.statusNote
+        : undefined;
     const instruction: ExternalInstruction = {
       instructionId,
       source: input.source,
@@ -467,6 +479,7 @@ export class ExternalInstructionStore {
       ...(input.section !== undefined ? { section: input.section } : {}),
       status: satisfied ? "already_satisfied" : "pending",
       ...(satisfied ? { statusNote: input.statusNote } : {}),
+      ...(pendingAuthorDecisionNote !== undefined ? { statusNote: pendingAuthorDecisionNote } : {}),
       ...(satisfied ? {
         resolutionTrace: {
           commentId: instructionId,

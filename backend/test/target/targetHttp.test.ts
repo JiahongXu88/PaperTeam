@@ -117,4 +117,48 @@ describe("target 路由契约", () => {
     const missing = await stack.request("GET", "/api/projects/p-nonexistent00/target/evidence-audit");
     expect(missing.status).toBe(404);
   });
+
+  // ---- M15.17：审计差距 → 修订计划路由契约 ----
+
+  it("修订计划 flag off：GET → enabled:false；POST/decide/reassess → 403", async () => {
+    const stack = await newStack();
+    const projectId = await createProject(stack, true);
+    const status = await stack.request("GET", `/api/projects/${projectId}/target/evidence-audit/revision-plan`);
+    expect(status.status).toBe(200);
+    expect(status.body["enabled"]).toBe(false);
+    expect(status.body["plan"]).toBeNull();
+    expect(status.body["report"]).toBeNull();
+    const post = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit/revision-plan`);
+    expect(post.status).toBe(403);
+    expect((post.body["error"] as { code: string }).code).toBe("TARGET_EVIDENCE_AUDIT_DISABLED");
+    const decide = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit/revision-plan/decide`, {
+      decisions: [{ itemId: "ta-gap-1", decision: "approve" }],
+    });
+    expect(decide.status).toBe(403);
+    const reassess = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit/revision-plan/reassess`);
+    expect(reassess.status).toBe(403);
+  });
+
+  it("修订计划 flag on：GET 无计划 → {enabled:true, plan:null}；POST 无审计工件 → 409 fail-closed；decide 非法体 → 400", async () => {
+    const stack = await startTestStack(scriptedIdeaRuntime().runtime, {
+      registerCleanup: (cleanup) => cleanups.push(cleanup),
+      targetEvidenceAuditEnabled: true,
+    });
+    const projectId = await createProject(stack, true);
+    const status = await stack.request("GET", `/api/projects/${projectId}/target/evidence-audit/revision-plan`);
+    expect(status.status).toBe(200);
+    expect(status.body["enabled"]).toBe(true);
+    expect(status.body["plan"]).toBeNull();
+    const post = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit/revision-plan`);
+    expect(post.status).toBe(409);
+    expect((post.body["error"] as { code: string }).code).toBe("TARGET_AUDIT_PLAN_INVALID_STATE");
+    const badDecide = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit/revision-plan/decide`, {
+      decisions: [],
+    });
+    expect(badDecide.status).toBe(400);
+    const badDecide2 = await stack.request("POST", `/api/projects/${projectId}/target/evidence-audit/revision-plan/decide`, {
+      decisions: [{ itemId: "x" }],
+    });
+    expect(badDecide2.status).toBe(400);
+  });
 });

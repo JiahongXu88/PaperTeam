@@ -90,6 +90,9 @@ export type BusinessErrorCode =
   | "TARGET_GUIDELINE_CORRUPTED"
   // ---- Target evidence audit（M15.16：实验性证据审计 feature flag 关闭）----
   | "TARGET_EVIDENCE_AUDIT_DISABLED"
+  // ---- Target audit → revision（M15.17：审计差距修订计划陈旧 / 非法状态）----
+  | "TARGET_AUDIT_STALE"
+  | "TARGET_AUDIT_PLAN_INVALID_STATE"
   // ---- Figures C4–C6（M12 Batch 3：产品 API / 插入 / 守卫；末尾追加） ----
   | "FIGURE_NOT_FOUND"
   | "FIGURE_RECOVERY_REQUIRED"
@@ -190,6 +193,8 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   TARGET_READINESS_CORRUPTED: 500,
   TARGET_GUIDELINE_CORRUPTED: 500,
   TARGET_EVIDENCE_AUDIT_DISABLED: 403,
+  TARGET_AUDIT_STALE: 409,
+  TARGET_AUDIT_PLAN_INVALID_STATE: 409,
   FIGURE_NOT_FOUND: 404,
   FIGURE_RECOVERY_REQUIRED: 409,
   FIGURE_ASSET_MISSING: 409,

@@ -273,7 +273,10 @@ export interface BuildRevisionPlanInput {
 export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
   const items: RevisionPlanItem[] = [];
 
-  // M5.7 外部修改意见：最高业务优先级（mandatory），先于内部审稿意见入列
+  // M5.7 外部修改意见：最高业务优先级（mandatory），先于内部审稿意见入列。
+  // M15.17：target_audit 来源是模型证据审计的机器转入（advisory）——不与真人
+  // 意见同级：priority 降为 high（仍先于内部 medium/low 派发，但排序在全部
+  // mandatory 真人意见之后）；守卫与授权口径完全不变。
   for (const instruction of input.externalInstructions ?? []) {
     const label = instructionLabel(instruction);
     const firstLine = firstTextLine(instruction.text);
@@ -282,7 +285,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     items.push({
       id: `external:${instruction.instructionId}`,
       kind: "external_instruction",
-      priority: "mandatory",
+      priority: instruction.source === "target_audit" ? "high" : "mandatory",
       section: instruction.section ?? "(global)",
       problem: `外部修改意见${label}：${firstLine}`,
       instruction: externalDispatchText(instruction),
@@ -537,9 +540,14 @@ function externalDispatchText(instruction: ExternalInstruction): string {
     instruction.section !== undefined
       ? `（指定章节：${instruction.section}）`
       : "（未指定章节：只在与本节内容直接相关时在本节落实，其余章节保持原样）";
+  // M15.17：机器审计转入的意见不自称「最高业务优先级」——advisory 语义如实标注
+  const priorityLine =
+    instruction.source === "target_audit"
+      ? "审计建议（模型 advisory 转入；不高于真人外部意见的优先级）："
+      : "意见原文（最高业务优先级，必须优先尝试执行）：";
   return [
     `${instructionLabel(instruction)} ${target}`,
-    "意见原文（最高业务优先级，必须优先尝试执行）：",
+    priorityLine,
     instruction.text,
     "执行约束：不得突破实验事实 / 引用 / 证据约束——与稿件数字或结论冲突时保留事实并如实报告 CONFLICT（引用具体数值作依据），不得伪造、篡改或美化。",
   ].join("\n");

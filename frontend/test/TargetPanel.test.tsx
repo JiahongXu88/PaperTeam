@@ -30,6 +30,10 @@ vi.mock("../src/api/target.js", () => ({
   evaluateTargetReadiness: vi.fn(),
   getTargetEvidenceAudit: vi.fn(),
   evaluateTargetEvidenceAudit: vi.fn(),
+  getTargetAuditRevisionPlan: vi.fn(),
+  generateTargetAuditRevisionPlan: vi.fn(),
+  decideTargetAuditRevisionPlan: vi.fn(),
+  reassessTargetAuditRevision: vi.fn(),
 }));
 
 const projectsApi = await import("../src/api/projects.js");
@@ -39,6 +43,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   // M15.16：证据审计缺省 flag off（既有用例不涉及该区块时也返回合法信封）
   vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: false, audit: null });
+  // M15.17：修订计划缺省无计划（flag off 不查询 / 不渲染）
+  vi.mocked(targetApi.getTargetAuditRevisionPlan).mockResolvedValue({ enabled: false, plan: null, report: null });
 });
 
 const projectConfigured = {
@@ -334,5 +340,158 @@ describe("TargetPanel", () => {
     expect(gapItems[0]!.textContent).toContain("Author Decision");
     expect(gapItems[1]!.textContent).toContain("可基于现有证据改写");
     expect(screen.getByTestId("target-evidence-audit-guards").textContent).toContain("priorQuoteReplayFailures=0");
+  });
+
+  // ---- M15.17：审计差距 → 修订计划 ----
+
+  const auditFresh = {
+    artifact: auditArtifact,
+    meta: auditMeta,
+    stale: false,
+    currentManuscriptRevision: 1,
+  };
+
+  const revisionPlanView = {
+    plan: {
+      schemaVersion: 1 as const,
+      planId: "tap-abc123def456-rev1",
+      projectId: "p-target00001",
+      source: {
+        auditArtifact: "research/target-contribution-audit.json",
+        inputFingerprint: {
+          manuscriptSha256: "abc123def4567890",
+          poolFingerprint: "pool",
+          promptVersion: "m1514-caudit-v1",
+          documentType: "conference_paper",
+        },
+        auditEvaluatedAt: "2026-10-31T01:00:00.000Z",
+        documentType: "conference_paper",
+        manuscriptRevisionAtPlan: 1,
+      },
+      createdAt: "2026-10-31T02:00:00.000Z",
+      status: "generated" as const,
+      items: [
+        {
+          itemId: "ta-gap-1",
+          contributionId: "C1",
+          gap: "前后不一致需收敛措辞",
+          sourceActionType: "can_rewrite_from_existing_evidence" as const,
+          classification: "REWRITE_ELIGIBLE" as const,
+          classificationReason: "锚已核验并投影到 sections/sec01.tex",
+          anchor: {
+            claimQuote: "We propose a hierarchical fusion module.",
+            sectionId: "SEC01",
+            anchorVerified: true,
+            projection: { status: "resolved" as const, file: "sections/sec01.tex", basis: "quote-replay" as const, ambiguous: false },
+            dispatchSection: "sections/sec01.tex",
+          },
+          priorWork: [{ title: "Prior Work One", year: 2020, doi: "10.1/x", resolvesToPool: true, priorQuoteVerified: true }],
+          comparisonStatus: "SUPPORTED_DIFFERENCE",
+          forbidden: { values: ["87.5"], citationKeys: ["ref1"] },
+          allowedScope: "仅限：弱化过度声称等",
+        },
+        {
+          itemId: "ta-gap-2",
+          contributionId: "C2",
+          gap: "消融与方差缺失",
+          sourceActionType: "requires_real_experiment_or_author_input" as const,
+          classification: "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT" as const,
+          classificationReason: "审计判定需真实实验",
+          experimentPlan: { purpose: "补消融", baselines: "去融合变体", metrics: "F1" },
+          anchor: {
+            claimQuote: "outperforms all baselines",
+            sectionId: "SEC03",
+            anchorVerified: true,
+            projection: { status: "resolved" as const, file: "sections/sec03.tex", basis: "quote-replay" as const, ambiguous: false },
+          },
+          priorWork: [],
+          forbidden: { values: [], citationKeys: [] },
+          allowedScope: "",
+        },
+      ],
+      summary: {
+        total: 2,
+        rewriteEligible: 1,
+        needsRealExperiment: 1,
+        needsTargetedEvidence: 0,
+        evidenceInsufficient: 0,
+        unmappable: 0,
+        approved: 0,
+        rejected: 0,
+      },
+    },
+    fresh: true,
+    currentManuscriptRevision: 1,
+    instructions: [],
+  };
+
+  it("M15.17 flag off → 修订计划区块不渲染（同审计区块一致）", async () => {
+    vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
+    vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetProfile).mockResolvedValue({ profile: null, fresh: null });
+    vi.mocked(targetApi.getTargetReadiness).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: false, audit: null });
+
+    renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    await screen.findByTestId("target-benchmark-empty");
+    expect(screen.queryByTestId("target-audit-revision-section")).toBeNull();
+  });
+
+  it("M15.17 flag on + fresh 审计无计划 → 空态与生成按钮；点击触发 generate API", async () => {
+    vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
+    vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetProfile).mockResolvedValue({ profile: null, fresh: null });
+    vi.mocked(targetApi.getTargetReadiness).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: true, audit: auditFresh });
+    vi.mocked(targetApi.getTargetAuditRevisionPlan).mockResolvedValue({ enabled: true, plan: null, report: null });
+    vi.mocked(targetApi.generateTargetAuditRevisionPlan).mockResolvedValue({ enabled: true, plan: revisionPlanView });
+
+    renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    const generateButton = await screen.findByTestId("target-audit-revision-generate");
+    await userEvent.click(generateButton);
+    expect(await vi.waitFor(() => targetApi.generateTargetAuditRevisionPlan)).toHaveBeenCalledWith("p-target00001");
+  });
+
+  it("M15.17 计划渲染：分组徽章 / 锚与先前工作身份 / 禁止项 / 决策按钮 → approve 调用 decide API", async () => {
+    vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
+    vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetProfile).mockResolvedValue({ profile: null, fresh: null });
+    vi.mocked(targetApi.getTargetReadiness).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: true, audit: auditFresh });
+    vi.mocked(targetApi.getTargetAuditRevisionPlan).mockResolvedValue({ enabled: true, plan: revisionPlanView, report: null });
+    vi.mocked(targetApi.decideTargetAuditRevisionPlan).mockResolvedValue({ enabled: true, plan: revisionPlanView });
+
+    renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    const items = await screen.findAllByTestId("target-audit-revision-item");
+    expect(items.length).toBe(2);
+    expect(items[0]!.textContent).toContain("可基于现有证据改写");
+    expect(items[0]!.textContent).toContain("sections/sec01.tex");
+    expect(items[0]!.textContent).toContain("Prior Work One");
+    expect(items[0]!.textContent).toContain("ref1");
+    expect(items[1]!.textContent).toContain("需真实实验 / 作者输入");
+    expect(items[1]!.textContent).toContain("补消融");
+    // 决策：批准可改写项 → decide API
+    await userEvent.click(screen.getByTestId("target-audit-revision-approve-ta-gap-1"));
+    expect(await vi.waitFor(() => targetApi.decideTargetAuditRevisionPlan)).toHaveBeenCalledWith("p-target00001", [
+      { itemId: "ta-gap-1", decision: "approve" },
+    ]);
+  });
+
+  it("M15.17 计划陈旧（fresh:false）→ 决策按钮不出现在剩余条目 + 陈旧警示", async () => {
+    vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
+    vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetProfile).mockResolvedValue({ profile: null, fresh: null });
+    vi.mocked(targetApi.getTargetReadiness).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: true, audit: auditFresh });
+    vi.mocked(targetApi.getTargetAuditRevisionPlan).mockResolvedValue({
+      enabled: true,
+      plan: { ...revisionPlanView, fresh: false, staleReason: "稿件修订号已变更（计划 1 ≠ 当前 2）" },
+      report: null,
+    });
+
+    renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    expect(await screen.findByTestId("target-audit-revision-stale")).toBeTruthy();
+    expect(screen.queryByTestId("target-audit-revision-approve-ta-gap-1")).toBeNull();
+    expect(screen.queryByTestId("target-audit-revision-reject-ta-gap-1")).toBeNull();
   });
 });

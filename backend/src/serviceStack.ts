@@ -1010,6 +1010,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     ...(options.targetSummaryModel !== undefined ? { summaryModel: options.targetSummaryModel } : {}),
     // M15.16：guideline PDF-only 参考文献观测 + 证据审计（实验性，flag 缺省 off）
     papers: paperStore,
+    // M15.17：审计差距 → 修订计划闭环（指令队列 + patch lineage 数据源）
+    externalInstructions,
+    reviewArtifacts,
     ...(options.targetEvidenceAuditEnabled === true
       ? {
           evidenceAuditEnabled: true,

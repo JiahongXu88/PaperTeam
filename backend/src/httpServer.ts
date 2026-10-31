@@ -2377,6 +2377,92 @@ async function handleProjectResourceRoutes(
       sendMethodNotAllowed(res, "GET, POST", method);
       return true;
     }
+    // ---- M15.17：审计差距 → 修订计划（flag off → enabled:false / 403，同 evidence-audit fail-closed）----
+    if (rest === "/evidence-audit/revision-plan") {
+      if (method === "GET") {
+        if (targets.evidenceAudit === null || targets.auditRevision === null) {
+          sendJson(res, 200, { enabled: false, plan: null, report: null });
+          return true;
+        }
+        const plan = await targets.auditRevision.getPlan(projectId);
+        const report = await targets.auditRevision.getReport(projectId);
+        sendJson(res, 200, { enabled: true, plan, report });
+        return true;
+      }
+      if (method === "POST") {
+        if (targets.evidenceAudit === null || targets.auditRevision === null) {
+          sendJson(res, 403, {
+            status: "error",
+            error: {
+              code: "TARGET_EVIDENCE_AUDIT_DISABLED",
+              message:
+                "证据审计（实验性）未启用：设置 PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED=true 后重启服务（默认关闭——审计修订计划入口随之关闭）",
+            },
+          });
+          return true;
+        }
+        const plan = await targets.auditRevision.generatePlan(projectId);
+        sendJson(res, 200, { enabled: true, plan });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method);
+      return true;
+    }
+    if (rest === "/evidence-audit/revision-plan/decide") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      if (targets.evidenceAudit === null || targets.auditRevision === null) {
+        sendJson(res, 403, {
+          status: "error",
+          error: {
+            code: "TARGET_EVIDENCE_AUDIT_DISABLED",
+            message: "证据审计（实验性）未启用：审计修订决策入口关闭（PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED）",
+          },
+        });
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const decisions = body["decisions"];
+      if (!Array.isArray(decisions) || decisions.length === 0) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空 decisions 数组（[{itemId, decision:\"approve\"|\"reject\"}]）");
+      }
+      for (const entry of decisions) {
+        if (
+          typeof entry !== "object" ||
+          entry === null ||
+          typeof (entry as Record<string, unknown>)["itemId"] !== "string" ||
+          typeof (entry as Record<string, unknown>)["decision"] !== "string"
+        ) {
+          throw new BusinessError("INVALID_REQUEST", "decisions 条目必须为 {itemId: string, decision: \"approve\"|\"reject\"}");
+        }
+      }
+      const plan = await targets.auditRevision.decide(projectId, {
+        decisions: decisions as Array<{ itemId: string; decision: "approve" | "reject" }>,
+      });
+      sendJson(res, 200, { enabled: true, plan });
+      return true;
+    }
+    if (rest === "/evidence-audit/revision-plan/reassess") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      if (targets.evidenceAudit === null || targets.auditRevision === null) {
+        sendJson(res, 403, {
+          status: "error",
+          error: {
+            code: "TARGET_EVIDENCE_AUDIT_DISABLED",
+            message: "证据审计（实验性）未启用：审计闭环复评入口关闭（PAPERTEAM_TARGET_EVIDENCE_AUDIT_ENABLED）",
+          },
+        });
+        return true;
+      }
+      const report = await targets.auditRevision.reassess(projectId);
+      sendJson(res, 200, { enabled: true, report });
+      return true;
+    }
     return false;
   }
 
