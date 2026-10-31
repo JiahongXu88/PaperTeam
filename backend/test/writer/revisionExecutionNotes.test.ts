@@ -70,4 +70,22 @@ describe("stripRevisionExecutionNotes", () => {
     expect(removed).toEqual([]);
     expect(latex).toBe(text);
   });
+
+  it("M15.18 真实 run（S2 rev-3 sec01）：散文式执行报告行 / 含内部标识的行剥离；正文与 LaTeX 引用行保留", () => {
+    const leaked = "冲突报告（保留原表述，未擅自恢复）：fact-preserve 系列条目要求「恢复」被删除的 arXiv 封面块 / 版权横幅 / 标题元数据，但上一轮修订计划已明确授权整体删除该封面块。";
+    const body = [
+      "\\section{Introduction}",
+      "Multiple Object Tracking (MOT) is a computer vision task \\cite{ref1}.",
+      leaked,
+      "本节的冲突报告方法见 \\ref{sec:conflict}。",
+      "% 注释行里的 f-0123456789ab 不是正文，保留注释原样",
+      "The survey is further organized in this manner.",
+    ].join("\n");
+    const { latex, removed } = stripRevisionExecutionNotes(body);
+    expect(removed).toEqual([leaked]);
+    expect(latex).toContain("\\cite{ref1}");
+    expect(latex).toContain("本节的冲突报告方法见 \\ref{sec:conflict}。");
+    expect(latex).toContain("% 注释行里的 f-0123456789ab");
+    expect(latex).toContain("The survey is further organized in this manner.");
+  });
 });

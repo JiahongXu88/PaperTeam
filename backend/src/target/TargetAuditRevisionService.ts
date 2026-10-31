@@ -659,6 +659,11 @@ export function assessRewriteClosure(input: {
   patches: readonly ClosurePatchEvidence[];
   /** 当前磁盘目标文件内容的 revisionSourceHash（读不到 → undefined） */
   currentTargetFileHash: string | undefined;
+  /**
+   * 覆盖 lineage 修订号的最新 Quality Gate 的事实 / 引用保持结论（文件级 lineage 的守卫证据；
+   * 无覆盖该修订的 gate → undefined）
+   */
+  gateEvidence?: (lineageRevision: number) => { fact: boolean; citation: boolean; round: number; reviewedRevision: number } | undefined;
 }): Pick<TargetAuditClosureReportItem, "closure" | "basis" | "lineage" | "openSubItems" | "checks"> {
   const { item, instruction, patches } = input;
   const targetFile = instruction.origin?.targetFile ?? item.anchor.projection.file;
@@ -687,7 +692,17 @@ export function assessRewriteClosure(input: {
     earliestBefore.every((hash) => hash !== input.currentTargetFileHash);
   const guardFailure = patches.some((entry) => entry.record.overall === "pass" && (!entry.record.scope.ok || !entry.record.fact.ok || !entry.record.citation.ok)) ||
     instruction.resolutionTrace?.verification.fact === false || instruction.resolutionTrace?.verification.citation === false;
-  const guards = !guardFailure && instruction.status === "handled";
+  // 文件级 lineage（无 span patch 记录）没有候选级 Fact/Citation 校验——必须已有 gate 复核的正向记录
+  //（reverifyHandledInstructions 写入 verification.fact/citation=true）才可判守卫通过（M15.18 真实 run：
+  // 文件级路径曾把执行注记写入正文，仅靠表格 / 塌缩守卫不足以证明守卫通过）
+  const fileLevelOnly = acceptedPatches.length === 0 && fileLineage.length > 0;
+  const lineageRevision = Math.max(0, ...fileLineage.map((outcome) => outcome.revision ?? 0));
+  const gate = fileLevelOnly ? input.gateEvidence?.(lineageRevision) : undefined;
+  const fileLevelVerified =
+    (instruction.resolutionTrace?.verification.fact === true && instruction.resolutionTrace?.verification.citation === true) ||
+    (gate !== undefined && gate.fact && gate.citation);
+  const gateFailed = gate !== undefined && (!gate.fact || !gate.citation);
+  const guards = !guardFailure && !gateFailed && instruction.status === "handled" && (!fileLevelOnly || fileLevelVerified);
   const checks = { lineage: hasLineage, targetBinding, contentChanged, notReverted, guards };
   const lineage = [...fileLineage, ...acceptedPatches.map((entry): PlanItemOutcome => ({
     planItemId: entry.record.planItemIds.join(",") || "(external)",
@@ -719,6 +734,9 @@ export function assessRewriteClosure(input: {
       };
     }
     if (!guards) {
+      if (!guardFailure && !gateFailed && fileLevelOnly && !fileLevelVerified) {
+        return { closure: "NOT_EVALUATED", basis: `文件级修订已落盘（${lineageText}），但尚无 gate 对该修订的 Fact / Citation 复核记录——守卫通过不可证，暂不判已解决`, ...extras };
+      }
       return { closure: "STILL_OPEN", basis: `存在守卫失败记录（scope/fact/citation），不视为已解决；lineage：${lineageText}`, ...extras };
     }
     if (openSubItems.length > 0) {
@@ -728,7 +746,11 @@ export function assessRewriteClosure(input: {
         ...extras,
       };
     }
-    return { closure: "VALIDATED_FIXED", basis: `已落盘修订 + 目标绑定 ${targetFile} + 内容变化 + 守卫通过；lineage：${lineageText}`, ...extras };
+    return {
+      closure: "VALIDATED_FIXED",
+      basis: `已落盘修订 + 目标绑定 ${targetFile} + 内容变化 + 守卫通过${gate !== undefined ? `（文件级：quality-gate r${gate.round} 覆盖修订 ${gate.reviewedRevision}，事实 / 引用保持 PASS）` : ""}；lineage：${lineageText}`,
+      ...extras,
+    };
   }
   if (instruction.status === "partially_handled") {
     return { closure: "PARTIALLY_ADDRESSED", basis: instruction.statusNote ?? "部分目标已执行，其余未报告", ...extras };
@@ -1243,6 +1265,20 @@ export class TargetAuditRevisionService {
       }
     }
 
+    // 文件级 lineage 的守卫证据：覆盖该修订号的最新 Quality Gate 的事实 / 引用保持结论
+    const gates = await this.reviewArtifacts.listGates(projectId).catch(() => []);
+    const gateEvidence = (lineageRevision: number): { fact: boolean; citation: boolean; round: number; reviewedRevision: number } | undefined => {
+      const covering = gates
+        .filter((gate) => (gate.reviewedRevision ?? gate.factPreservation?.currentRevision ?? -1) >= lineageRevision)
+        .sort((a, b) => b.round - a.round)[0];
+      if (covering === undefined || covering.factPreservation == null || covering.citationPreservation == null) return undefined;
+      return {
+        fact: covering.factPreservation.ok,
+        citation: covering.citationPreservation.ok,
+        round: covering.round,
+        reviewedRevision: covering.reviewedRevision ?? covering.factPreservation.currentRevision,
+      };
+    };
     // 当前目标文件内容（回退核查：修订被恢复到修订前 → 不可判已解决）
     const currentHashes = new Map<string, string>();
     const manuscriptDir = this.projects.manuscriptDir(projectId);
@@ -1307,7 +1343,7 @@ export class TargetAuditRevisionService {
       const currentTargetFileHash = targetFile !== undefined ? currentHashes.get(targetFile) : undefined;
       return {
         ...base,
-        ...assessRewriteClosure({ item, instruction, patches: recordsByInstruction.get(instruction.instructionId) ?? [], currentTargetFileHash }),
+        ...assessRewriteClosure({ item, instruction, patches: recordsByInstruction.get(instruction.instructionId) ?? [], currentTargetFileHash, gateEvidence }),
       };
     });
 

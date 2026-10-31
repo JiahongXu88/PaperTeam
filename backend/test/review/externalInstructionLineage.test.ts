@@ -133,9 +133,17 @@ describe("assessRewriteClosure（VALIDATED_FIXED 证据门）", () => {
     expect(result.checks).toEqual({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true });
   });
 
-  it("文件级 applied lineage（前后 SHA 不同）同样可证", () => {
+  it("文件级 applied lineage（前后 SHA 不同）：无 gate 复核记录 → NOT_EVALUATED；fact/citation 复核为 true 才可证", () => {
     const instruction = appendPlanItemOutcome(handled(), { planItemId: "improvement:1", outcome: "applied", summary: "", file: "sections/sec02.tex", beforeSha256: "b0", afterSha256: "b1", revision: 3, at: NOW });
-    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1" }).closure).toBe("VALIDATED_FIXED");
+    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1" }).closure).toBe("NOT_EVALUATED");
+    const verified = { ...instruction, resolutionTrace: { commentId: "x-rewrite0001", planItemIds: ["improvement:1"], actionType: "modify" as const, evidenceIds: [], patchIds: [], verification: { fact: true, citation: true }, status: "handled" as const, resolutionSummary: "" } };
+    expect(assessRewriteClosure({ item, instruction: verified, patches: [], currentTargetFileHash: "b1" }).closure).toBe("VALIDATED_FIXED");
+    // 守卫证据也可来自覆盖该修订的 Quality Gate（事实 / 引用保持 PASS）；gate FAIL → STILL_OPEN；gate 覆盖不到 → NOT_EVALUATED
+    const gatePass = () => ({ fact: true, citation: true, round: 2, reviewedRevision: 3 });
+    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: gatePass }).closure).toBe("VALIDATED_FIXED");
+    const gateFail = () => ({ fact: false, citation: true, round: 2, reviewedRevision: 3 });
+    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: gateFail }).closure).toBe("STILL_OPEN");
+    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: () => undefined }).closure).toBe("NOT_EVALUATED");
   });
 
   it("只有 handled 状态、无任何 lineage（旧「只看 handled 即判成功」路径）→ NOT_EVALUATED", () => {

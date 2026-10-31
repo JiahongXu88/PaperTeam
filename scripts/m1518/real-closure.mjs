@@ -235,10 +235,11 @@ if (CMD === "prepare") {
   state.s1.rewriteEligible = state.s1.plan.items.filter((item) => item.classification === "REWRITE_ELIGIBLE").length;
   step(state, "D4b S1 重计划", state.s1.plan);
   await saveState(state);
-} else if (CMD === "execute") {
+} else if (CMD === "execute" || CMD === "collect") {
   const { projectId, runId } = state.s1;
   const decided = (await api("GET", `/api/projects/${projectId}/target/evidence-audit/revision-plan`)).body.plan;
   assert(decided?.plan?.status === "decided", `计划未全部决策（${decided?.plan?.status}）——先完成 ui-decide`);
+  if (CMD === "execute") {
   state.s1.decisions = decided.plan.items.map((item) => ({ itemId: item.itemId, classification: item.classification, decision: item.authorDecision?.decision ?? null, decidedAt: item.authorDecision?.decidedAt ?? null, instructionId: item.instructionId ?? null }));
   step(state, "D6 决策核对（UI 点击产生）", { decisions: state.s1.decisions });
   const hitlDecisions = [];
@@ -257,10 +258,10 @@ if (CMD === "prepare") {
   });
   step(state, "D7 run 结束态", { status: finished.status, awaiting: finished.awaiting?.stageId ?? null, error: finished.error ?? null, durationMs: Date.now() - t0, completedStages: finished.completedStages, hitlDecisions });
   await saveState(state);
+  }
   await checkBudget(state, "run");
-  // ---- 证据收集 ----
-  const events = await api("GET", `/api/runs/${runId}/events`);
-  await writeFile(join(OUT, `${runId}-events.json`), JSON.stringify(events.body, null, 1), "utf8");
+  // ---- 证据收集（零模型；/events 是 SSE 流——改为复制落盘的 events.jsonl）----
+  await cp(join(STACK, projectId, "workflow", "runs", runId, "events.jsonl"), join(OUT, `${runId}-events.jsonl`));
   const instructions = (await api("GET", `/api/projects/${projectId}/external-instructions`)).body.instructions;
   await writeFile(join(OUT, `${projectId}-instructions.json`), JSON.stringify(instructions, null, 1), "utf8");
   const revisions = (await api("GET", `/api/projects/${projectId}/revisions`)).body.revisions ?? [];

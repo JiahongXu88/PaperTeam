@@ -1782,8 +1782,15 @@ export function stripRevisionExecutionNotes(latex: string): { latex: string; rem
   const idToken = /\b(?:f|c|s|r|val|cg)-[0-9a-f]{6,}\b/i;
   const markerLine = /^\s*(?:[-*•]\s+)?【(?:修订说明|决策点|待作者确认|执行报告|执行注记|修订注记)】/;
   const actionWord = /^\s*[-*•]\s+[^\n]{0,80}?(?:：|:)\s*(?:WEAKEN|REMOVE|SUPPORT|KEEP|REPLACE|applied|conflict|not_applicable)\b/;
+  // M15.18 真实 run（S2 rev-3 sec01）：非项目符号的散文式执行报告行——以执行报告标签起头并带冒号
+  //（「冲突报告（保留原表述，未擅自恢复）：fact-preserve 系列条目……」），或含只存在于系统内部的
+  // 标识（fact-preserve / 计划·finding id）。这些标识不会出现在论文正文里。
+  const reportLabelLine = /^\s*(?:冲突报告|执行报告|执行说明|修订说明|修订报告|处理说明)(?:（[^）\n]{0,40}）)?\s*[：:]/;
+  const internalToken = /\bfact-preserve\b|\b(?:f|c|s|val|cg)-[0-9a-f]{10,}\b|\bimprovement:\d+\b/i;
   const isNote = (line: string): boolean =>
     markerLine.test(line) ||
+    reportLabelLine.test(line) ||
+    (!line.trimStart().startsWith("%") && !/\\(?:label|ref|cite[a-zA-Z]*)\{/.test(line) && internalToken.test(line)) ||
     (bullet.test(line) && (idToken.test(line) || /^\s*[-*•]\s+fact-preserve/.test(line) || actionWord.test(line)));
   const removed: string[] = [];
   const kept = lines.map((line) => (isNote(line) ? (removed.push(line), null) : line));
