@@ -13522,6 +13522,8 @@ async function collectRevisionDirectives(
       const spans = locateLatexSections("main.tex", source);
       const instructions = await services.externalInstructions.load(projectId);
       const instructionBaseline = structuredClone(instructions);
+      // M15.17：instructionId → 指令原文（改进条目伪 item 的 sourceText 来源）
+      const instructionTextById = new Map(instructions.map((instruction) => [instruction.instructionId, instruction.text]));
       let instructionsChanged = false;
       const actionable = items.filter((item) => {
         if (item.actionType === "author_decision_required") {
@@ -13655,6 +13657,13 @@ async function collectRevisionDirectives(
           ...(item.targetQuote !== undefined ? { targetQuote: item.targetQuote } : {}),
           ...(item.instructionId !== undefined ? { instructionId: item.instructionId } : {}),
           ...(item.instructionId !== undefined ? { source: "external" as const } : {}),
+          // M15.17：关联外部指令的条目携带指令原文（RevisionPlan external 条目同款
+          // 语义）。审计转入的指令内嵌「TeX 逐字锚」——派发单元定位
+          // （directiveAnchors → sourceText）由此可取到逐字锚，避免规划器转述
+          // 引文的近似性导致长章节（多编辑单元）绑定失败（真实 E2E 实证形态）。
+          ...(item.instructionId !== undefined && instructionTextById.has(item.instructionId)
+            ? { sourceText: instructionTextById.get(item.instructionId)! }
+            : {}),
           ...(item.relatedEvidenceIds !== undefined && item.relatedEvidenceIds.length > 0
             ? { relatedEvidenceIds: item.relatedEvidenceIds }
             : {}),

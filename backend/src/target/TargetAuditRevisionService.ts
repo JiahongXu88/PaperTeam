@@ -1110,6 +1110,18 @@ export class TargetAuditRevisionService {
         case "unresolved":
         default: {
           const isAuthorDecisionItem = /^AUTHOR_DECISION_REQUIRED\b/.test(instruction.statusNote ?? "");
+          // M15.17 真实 E2E 形态：同一审计差距的多个子要求被改进计划拆条——
+          // modify 子条已执行（resolutionTrace.planItemIds 留痕）而兄弟子条停作者
+          // 裁决 → 指令整体保持开放（保守正确语义）。此时闭环应为「部分解决」
+          // 并指明 lineage，而不是误报「未派发」。
+          const executedPlanItems = (instruction.resolutionTrace?.planItemIds ?? []).filter((id) => id !== "");
+          if (isAuthorDecisionItem && executedPlanItems.length > 0 && item.classification === "REWRITE_ELIGIBLE") {
+            return {
+              ...base,
+              closure: "PARTIALLY_ADDRESSED" as const,
+              basis: `部分子要求已由改进计划条目执行（${executedPlanItems.join(", ")}）；其余子要求待作者裁决（${instruction.statusNote?.slice(0, 100) ?? ""}）——指令保持开放是保守正确语义，不视为失败`,
+            };
+          }
           return {
             ...base,
             closure: (isAuthorDecisionItem && item.classification !== "REWRITE_ELIGIBLE"

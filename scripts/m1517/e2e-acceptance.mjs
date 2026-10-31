@@ -28,7 +28,11 @@ const SAMPLES = "D:\\PaperTeamData\\M15\\M15_15\\phase-b\\samples";
 
 const baseArg = process.argv.includes("--base") ? process.argv[process.argv.indexOf("--base") + 1] : "http://127.0.0.1:3117";
 const BASE = baseArg.replace(/\/$/, "");
-const RUN_TIMEOUT_MS = 90 * 60 * 1000; // b1 全流程（真实模型）上限 90 分钟
+const SKIP_A = process.argv.includes("--skip-a");
+// 断点续跑：--resume-b <projectId> <runId>（综述项目已导入且 run 已暂停在 research_plan）
+const resumeBIndex = process.argv.indexOf("--resume-b");
+const RESUME_B = resumeBIndex !== -1 ? { project: process.argv[resumeBIndex + 1], run: process.argv[resumeBIndex + 2] } : null;
+const RUN_TIMEOUT_MS = 90 * 60 * 1000; // 综述全流程（真实模型）上限 90 分钟
 const MODEL_CALL_BUDGET = 120;
 
 const log = (...args) => console.log("[e2e]", ...args);
@@ -61,6 +65,8 @@ const step = (name, data) => {
 const assert = (condition, message) => {
   if (!condition) throw new Error(`断言失败：${message}`);
 };
+// CJIG 官方指南工件（复用 M15.9 冻结产物；顶层加载供 A/B/C 共用）
+const cjig = JSON.parse(await readFile(join(M159_GUIDELINES, "cjig.json"), "utf8"));
 const countCalls = (meta) => {
   summary.modelCalls += meta?.telemetry?.calls ?? 0;
   if (summary.modelCalls > MODEL_CALL_BUDGET) {
@@ -93,8 +99,11 @@ async function pollRun(runId, { untilStatuses, targetStage, autoDecisions = {}, 
 }
 
 // ---------- A. case-R：全部需实验 → Author Decision，零修改 ----------
+//（--skip-a：A 已在早前轮次通过时跳过复跑，节省模型预算）
 
-const caseRPath = join(SAMPLES, "case-R.pdf");
+let caseRProject = SKIP_A ? "p-6ba45809ed5b" : null;
+const caseRPath = join(SAMPLES, "case-R.pdf"); // 顶层（C 场景复用）
+if (!SKIP_A) {
 const caseR = await uploadJson("POST", "/api/projects/import-paper", caseRPath, {
   format: "pdf",
   title: "M15.17 E2E case-R（CJIG·只读）",
@@ -104,10 +113,9 @@ const caseR = await uploadJson("POST", "/api/projects/import-paper", caseRPath, 
   workflowKind: "existing_paper_review",
 });
 assert(caseR.status === 201, `import case-R failed: ${caseR.status}`);
-const caseRProject = caseR.body.project.id;
+caseRProject = caseR.body.project.id;
 step("A1 import case-R（review_only）", { projectId: caseRProject });
 
-const cjig = JSON.parse(await readFile(join(M159_GUIDELINES, "cjig.json"), "utf8"));
 const putGuidelineR = await api("PUT", `/api/projects/${caseRProject}/target/guideline`, { guideline: cjig });
 assert(putGuidelineR.status === 200, "PUT guideline (case-R) failed");
 step("A2 freeze CJIG guideline", { venueId: putGuidelineR.body.guideline.venueId });
@@ -180,28 +188,71 @@ assert(reassessR.body.report.summary.VALIDATED_FIXED === 0, "只读项目不得�
 for (const item of reassessR.body.report.items) {
   assert(item.closure === "NEEDS_AUTHOR_DECISION", `case-R 全部条目应为待作者决策（${item.itemId} 得 ${item.closure}）`);
 }
+} // if (!SKIP_A)
 
-// ---------- B. b1 综述：审计 → 计划 → 批准 → 真实修订执行 → 复评 ----------
+// ---------- B. 综述：审计 → 计划 → 批准 → 真实修订执行 → 复评 ----------
+// 样本说明：b1（作者中文综述 PDF）与 CJIG 已刊综述 PDF 的解析产物均为近无结构
+//（正文并入单一节 / Whole Document），确定性重建（PaperReconstructor 需 ≥3 个
+// 有效正文节）fail-closed——如实记录为 B0 负例；按任务书改用有真实来源的其他
+// 可编辑综述样本：arXiv 2609.08265「Tracking-by-detection in Multi-object
+// Tracking: Survey and Experiments」（KAIST，开放获取，39 个 TOC 节）。
 
+let b1Project = null;
+let b1Run = null;
+if (RESUME_B !== null) {
+  b1Project = RESUME_B.project;
+  b1Run = RESUME_B.run;
+  const state = (await api("GET", `/api/runs/${b1Run}`)).body["run"];
+  assert(state.status === "awaiting_input" && state.awaiting?.stageId === "hitl.research_plan", `断点续跑要求 run 暂停在 research_plan（得 ${state.status} @ ${state.awaiting?.stageId ?? state.currentStage}）`);
+  step("B2R 断点续跑（复用已暂停 run）", { projectId: b1Project, runId: b1Run, stage: state.awaiting?.stageId });
+} else {
+// B0：b1 不可重建（负例，零模型调用——import.parse 在任何模型调用前失败）
 const b1Path = join(SAMPLES, "b1-original.pdf");
-const b1 = await uploadJson("POST", "/api/projects/import-paper", b1Path, {
+const b1Probe = await uploadJson("POST", "/api/projects/import-paper", b1Path, {
   format: "pdf",
-  title: "M15.17 E2E b1（CJIG·改进）",
+  title: "M15.17 E2E b1（结构探测）",
+  documentType: "survey",
+  targetVenue: "中国图象图形学报",
+  workflowKind: "existing_paper_improvement",
+});
+assert(b1Probe.status === 201, "b1 导入（探测）失败");
+const b1ProbeRun = await api("POST", `/api/projects/${b1Probe.body.project.id}/workflows`, {});
+assert(b1ProbeRun.status === 202, "b1 探测 run 创建失败");
+let b1ProbeFailure = null;
+try {
+  await pollRun(b1ProbeRun.body.runId, { untilStatuses: ["completed"], timeoutMs: 10 * 60 * 1000, autoDecisions: {
+    "hitl.research_plan": "approve", "hitl.evidence_supply": "continue", "hitl.plan_confirm": "approve",
+  } });
+} catch (error) {
+  b1ProbeFailure = String(error.message ?? error);
+}
+assert(b1ProbeFailure !== null && b1ProbeFailure.includes("IMPORT_VALIDATION"), `b1 应在重建处 fail-closed（得：${b1ProbeFailure}）`);
+await api("POST", `/api/projects/${b1Probe.body.project.id}/archive`, {});
+step("B0 b1 结构探测（不可重建，如实记录）", {
+  projectId: b1Probe.body.project.id,
+  failure: b1ProbeFailure.slice(0, 160),
+  note: "b1/CJIG 综述 PDF 解析为近无结构（正文并入单节）→ 重建需 ≥3 正文节 fail-closed；改用 arXiv 2609.08265 真实综述完成可编辑闭环",
+});
+
+const surveyPath = join(ROOT, "e2e", "mot-tbd-survey-2609.08265.pdf");
+const survey = await uploadJson("POST", "/api/projects/import-paper", surveyPath, {
+  format: "pdf",
+  title: "M15.17 E2E MOT TBD Survey（CJIG·改进）",
   researchField: "multiple object tracking",
   documentType: "survey",
   targetVenue: "中国图象图形学报",
   workflowKind: "existing_paper_improvement",
 });
-assert(b1.status === 201, `import b1 failed: ${b1.status}`);
-const b1Project = b1.body.project.id;
-step("B1 import b1（goal=improvement）", { projectId: b1Project });
+assert(survey.status === 201, `import survey failed: ${survey.status}`);
+b1Project = survey.body.project.id;
+step("B1 import MOT survey（goal=improvement）", { projectId: b1Project, source: "arXiv:2609.08265" });
 
 const putGuidelineB = await api("PUT", `/api/projects/${b1Project}/target/guideline`, { guideline: cjig });
 assert(putGuidelineB.status === 200, "PUT guideline (b1) failed");
 
 const runCreated = await api("POST", `/api/projects/${b1Project}/workflows`, {});
 assert(runCreated.status === 202, `create run failed: ${runCreated.status}`);
-const b1Run = runCreated.body.runId;
+b1Run = runCreated.body.runId;
 log("B2 run 启动 → 等待 hitl.research_plan 暂停（import.parse 重建 + review.run baseline；真实模型）…");
 const paused = await pollRun(b1Run, {
   targetStage: "hitl.research_plan",
@@ -211,9 +262,35 @@ const revisionsResponse = await api("GET", `/api/projects/${b1Project}/revisions
 const revisionAtPause = (revisionsResponse.body["revisions"] ?? []).length;
 assert(revisionAtPause >= 1, "暂停时应有 baseline 修订");
 step("B2 run 暂停在 hitl.research_plan", { runId: b1Run, revisionAtPause, stagesDone: paused.completedStages.length });
+} // if (RESUME_B === null)
 
-log("B3 b1 证据审计（真实模型）…");
-const auditB = await api("POST", `/api/projects/${b1Project}/target/evidence-audit`);
+let revisionAtPause = 0;
+{
+  const revisionsResponse = await api("GET", `/api/projects/${b1Project}/revisions`);
+  revisionAtPause = (revisionsResponse.body["revisions"] ?? []).length;
+}
+
+// 审计调用带一次重试（外部解析端点偶发 Headers Timeout）
+async function auditWithRetry(projectId) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await api("POST", `/api/projects/${projectId}/target/evidence-audit`);
+      if (response.status === 200) return response;
+      throw new Error(`evidence-audit ${response.status}: ${JSON.stringify(response.body).slice(0, 200)}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) {
+        log(`审计失败（${String(error.message ?? error).slice(0, 120)}），30s 后重试一次…`);
+        await new Promise((r) => setTimeout(r, 30_000));
+      }
+    }
+  }
+  throw lastError;
+}
+
+log("B3 综述证据审计（真实模型）…");
+const auditB = await auditWithRetry(b1Project);
 assert(auditB.status === 200, `evidence-audit (b1) failed: ${auditB.status} ${JSON.stringify(auditB.body).slice(0, 300)}`);
 const auditBArtifact = auditB.body.audit.artifact;
 countCalls(auditB.body.audit.meta);
@@ -264,6 +341,9 @@ const finished = await pollRun(b1Run, {
   autoDecisions: {
     "hitl.evidence_supply": "continue",
     "hitl.plan_confirm": "approve",
+    // 复核阻断时的作者裁决（needs_review/rejected 条目）：E2E 代理作者批准放行
+    //（守卫已拦截的内容不会因此恢复；该决策本身进 run 事件留痕）
+    "hitl.revision_validation": "approve",
     "hitl.revision_overflow": "accept_draft",
     "hitl.revision_stalled": "accept_draft",
     "hitl.style_polish": "skip",
