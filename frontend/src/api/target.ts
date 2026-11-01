@@ -579,6 +579,8 @@ export interface AuditRevisionPlanItemView {
       basis?: string;
       ambiguous?: boolean;
       reason?: string;
+      /** M15.19 D1a: other files that also contain the quote (reconstruction duplicate; not dispatched) */
+      alsoFoundIn?: string[];
     };
   };
   priorWork: Array<{

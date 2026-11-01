@@ -1548,7 +1548,7 @@ function AuditPlanItemRow({
         <div className="faint">
           锚定：审计节 {item.anchor.sectionId || "—"} ·{" "}
           {item.anchor.projection.status === "resolved"
-            ? `可编辑目标 ${item.anchor.projection.file}${item.anchor.projection.ambiguous === true ? "（多文件命中，按节序定位）" : ""}（quote 回放核验通过）`
+            ? `可编辑目标 ${item.anchor.projection.file}${item.anchor.projection.basis === "abstract-carrier+quote-replay" ? `（摘要载体；同一原文亦见于 ${(item.anchor.projection.alsoFoundIn ?? []).join("、")}——重建副本，不派发）` : item.anchor.projection.ambiguous === true ? "（多文件命中，按节序定位）" : ""}（quote 回放核验通过）`
             : `不可投影（${item.anchor.projection.reason === "no-editable-manuscript" ? "项目无可编辑稿件" : item.anchor.projection.reason === "quote-ambiguous" ? "quote 多文件命中" : "quote 无法回放"}）——不改写`}
         </div>
         {item.priorWork.length > 0 ? (

@@ -72,7 +72,7 @@ import type { PriorWorkCoverageEntry, TargetEvidenceAuditRunMeta } from "./Targe
 export const TARGET_AUDIT_REVISION_PLAN_SCHEMA_VERSION = 1;
 export const TARGET_AUDIT_CLOSURE_REPORT_SCHEMA_VERSION = 1;
 /** 确定性分类 / 锚投影实现版本（M15.18：NFKC 等价 + 源偏移逐字锚；M15.19：原子子缺口门禁） */
-export const TARGET_AUDIT_PLAN_CLASSIFIER_VERSION = "m1519-atomic-subgap";
+export const TARGET_AUDIT_PLAN_CLASSIFIER_VERSION = "m1519-atomic-subgap-abs";
 
 /** PDF 重建引用标记的长度下限（与 PaperReconstructor.MIN_SECTION_CHARS 同口径的启发式） */
 const PROJECTION_MIN_QUOTE_CHARS = 12;
@@ -99,8 +99,10 @@ export const AUDIT_CLASSIFICATION_LABELS: Record<AuditGapClassification, string>
 export interface AuditPlanAnchorProjection {
   status: "resolved" | "unresolved";
   file?: string;
-  basis?: "quote-replay" | "ordinal-hint+quote-replay";
+  basis?: "quote-replay" | "ordinal-hint+quote-replay" | "abstract-carrier+quote-replay";
   ambiguous?: boolean;
+  /** M15.19 D1a: other editable files that also contain the quote (e.g. the reconstruction's front-matter duplicate) */
+  alsoFoundIn?: string[];
   reason?: "no-editable-manuscript" | "quote-not-found" | "quote-ambiguous" | "quote-too-short";
 }
 
@@ -501,6 +503,13 @@ export function projectQuoteToManuscript(
     return { status: "resolved", file: matches[0], basis: "quote-replay", ambiguous: false };
   }
   if (matches.length > 1) {
+    // M15.19 D1a (real E1 run): PDF reconstruction keeps the page-1 front matter (title / authors / abstract) inside the
+    // first section file while the abstract also lives in outline.abstract, the carrier main.tex renders as
+    // egin{abstract}. A quote found in both must target the abstract carrier -- editing the body duplicate leaves the
+    // paper's actual abstract unchanged. The duplicate locations are listed for the author (not dispatched).
+    if (matches.includes("abstract")) {
+      return { status: "resolved", file: "abstract", basis: "abstract-carrier+quote-replay", ambiguous: true, alsoFoundIn: matches.filter((file) => file !== "abstract") };
+    }
     if (ordinalHintFile !== undefined && matches.includes(ordinalHintFile)) {
       return { status: "resolved", file: ordinalHintFile, basis: "ordinal-hint+quote-replay", ambiguous: true };
     }
@@ -1642,7 +1651,14 @@ export class TargetAuditRevisionService {
     const manuscriptDir = this.projects.manuscriptDir(projectId);
     for (const file of new Set(plan.items.flatMap((item) => item.anchor.projection.file !== undefined ? [item.anchor.projection.file] : []))) {
       try {
-        currentHashes.set(file, revisionSourceHash(await readFile(join(manuscriptDir, file), "utf8")));
+        // M15.19 D1b: the virtual abstract target lives in outline.abstract; hash it exactly as the revision stage's
+        // abstract lineage does (revisionSourceHash(abstract.trim())) -- reading manuscript/abstract never succeeds
+        currentHashes.set(
+          file,
+          file === "abstract"
+            ? revisionSourceHash(((JSON.parse(await readFile(join(manuscriptDir, "outline.json"), "utf8")) as { abstract?: string }).abstract ?? "").trim())
+            : revisionSourceHash(await readFile(join(manuscriptDir, file), "utf8")),
+        );
       } catch {
         // 不可读 → 缺省（assessRewriteClosure 判 NOT_EVALUATED）
       }

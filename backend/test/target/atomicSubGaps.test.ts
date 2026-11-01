@@ -650,3 +650,78 @@ describe("旧 v1 审计工件兼容（无子缺口字段 → 旧口径分类，i
     }
   });
 });
+
+describe("M15.19 Deviation D1（真实 E1 暴露）：摘要载体投影 + 摘要目标复评", () => {
+  const ABSTRACT = `${CLAIM} The individual components are intentionally simple.`;
+  const SEC01_WITH_FRONT_MATTER = `\\section{I Introduction}\n\nTitle Line\n\nAbstract—${CLAIM}\n\nIntroduction body text follows here.\n`;
+
+  it("D1a：同一引文同时在摘要载体与正文重复副本中 → 投影到摘要载体（main.tex 渲染的摘要），重复位置如实列出", async () => {
+    const { projectQuoteToManuscript } = await import("../../src/target/TargetAuditRevisionService.js");
+    const projection = projectQuoteToManuscript(CLAIM, [
+      { relativePath: "sections/sec01.tex", content: SEC01_WITH_FRONT_MATTER },
+      { relativePath: "abstract", content: ABSTRACT },
+    ], "sections/sec01.tex");
+    expect(projection).toEqual({ status: "resolved", file: "abstract", basis: "abstract-carrier+quote-replay", ambiguous: true, alsoFoundIn: ["sections/sec01.tex"] });
+    // 只在正文 → 仍按正文投影（不误用摘要）
+    expect(projectQuoteToManuscript("Introduction body text follows here.", [
+      { relativePath: "sections/sec01.tex", content: SEC01_WITH_FRONT_MATTER },
+      { relativePath: "abstract", content: ABSTRACT },
+    ])).toMatchObject({ status: "resolved", file: "sections/sec01.tex", basis: "quote-replay" });
+  });
+
+  it("D1b：摘要目标的复评按 outline.abstract 同口径取哈希——真实落盘 + 守卫 → VALIDATED_FIXED；回退 → STILL_OPEN", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperteam-m1519-abs-"));
+    try {
+      const projects = new ProjectStore({ root });
+      const papers = new PaperStore(projects);
+      const revisions = new ManuscriptRevisionStore({ projects });
+      const externalInstructions = new ExternalInstructionStore(projects);
+      const service = new TargetAuditRevisionService({ projects, papers, revisions, externalInstructions, reviewArtifacts: new ReviewArtifactStore(projects) });
+      const projectId = (await projects.create("m1519 abstract", { documentType: "research_article" })).id;
+      const document = makeDocument();
+      await papers.saveIngest(projectId, { ...document, projectId });
+      const manuscriptDir = projects.manuscriptDir(projectId);
+      await mkdir(join(manuscriptDir, "sections"), { recursive: true });
+      await writeFile(join(manuscriptDir, "sections", "sec01.tex"), SEC01_WITH_FRONT_MATTER, "utf8");
+      await writeFile(join(manuscriptDir, "sections", "sec03.tex"), SEC03_TEX, "utf8");
+      const outlinePath = join(manuscriptDir, "outline.json");
+      await writeFile(outlinePath, JSON.stringify({ title: "Memory Tracking", abstract: ABSTRACT, sections: [] }), "utf8");
+      const gaps = buildAtomicGapPlan(
+        [{ contributionId: "C1", gapKind: "INTERNAL_CLAIM_MISMATCH", gap: "abstract overclaim", targetQuote: "achieves state-of-the-art accuracy on all three benchmarks, outperforming every prior method", targetSectionId: "SEC01", evidence: [{ sectionId: "SEC03", quote: EVIDENCE }], priorWork: [] }],
+        verifiers(document),
+      ).gapPlan;
+      await mkdir(projects.researchDir(projectId), { recursive: true });
+      await writeFile(join(projects.researchDir(projectId), "target-contribution-audit.json"), JSON.stringify(makeArtifact(gaps, document)), "utf8");
+      const plan = (await service.generatePlan(projectId)).plan;
+      const item = plan.items[0]!;
+      expect(item.classification).toBe("REWRITE_ELIGIBLE");
+      expect(item.anchor.projection).toMatchObject({ file: "abstract", alsoFoundIn: ["sections/sec01.tex"] });
+      expect(item.anchor.dispatchSection).toBe("abstract");
+      await service.decide(projectId, { decisions: [{ itemId: item.itemId, decision: "approve" }] });
+      await revisions.commit(projectId, "revision.apply", "run-abs");
+      // revision 端摘要 lineage 口径：revisionSourceHash(abstract.trim())
+      const revisedAbstract = ABSTRACT.replace("on all three benchmarks, outperforming every prior method", "on MOT17, while remaining below the strongest baseline on DanceTrack");
+      await writeFile(outlinePath, JSON.stringify({ title: "Memory Tracking", abstract: revisedAbstract, sections: [] }), "utf8");
+      await externalInstructions.update(projectId, (current) =>
+        current.map((entry) =>
+          entry.origin?.itemId === item.itemId
+            ? {
+                ...entry,
+                status: "handled" as const,
+                planItemOutcomes: [{ planItemId: "improvement:1", outcome: "applied" as const, summary: "applied", revision: 1, file: "abstract", beforeSha256: revisionSourceHash(ABSTRACT.trim()), afterSha256: revisionSourceHash(revisedAbstract.trim()), at: "2026-11-01T02:00:00.000Z" }],
+                resolutionTrace: { commentId: entry.instructionId, planItemIds: ["improvement:1"], actionType: "modify" as const, evidenceIds: [], patchIds: [], verification: { fact: true, citation: true }, status: "handled" as const, resolutionSummary: "weakened" },
+              }
+            : entry,
+        ),
+      );
+      const report = await service.reassess(projectId);
+      expect(report.items[0]?.closure).toBe("VALIDATED_FIXED");
+      expect(report.items[0]?.checks).toMatchObject({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true });
+      // 摘要被恢复为修订前内容 → 非 FIXED
+      await writeFile(outlinePath, JSON.stringify({ title: "Memory Tracking", abstract: ABSTRACT, sections: [] }), "utf8");
+      expect((await service.reassess(projectId)).items[0]?.closure).toBe("STILL_OPEN");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
