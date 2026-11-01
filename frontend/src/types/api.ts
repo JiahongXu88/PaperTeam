@@ -217,6 +217,8 @@ export interface WorkflowStageRecordView {
  */
 export type HitlDecisionInput =
   | { action: "approve" }
+  /** M15.20 P0：hitl.plan_confirm 批准绑定所见计划版本 + 逐项勾选的结构化值变更 */
+  | { action: "approve"; payload: Record<string, unknown> }
   | { action: "adjust"; payload: { targetProfile?: string; targetVenue?: string } }
   | { action: "revise"; payload: { feedback: string } }
   | { action: "accept_draft" }

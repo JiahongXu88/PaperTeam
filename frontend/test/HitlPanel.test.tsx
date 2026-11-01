@@ -160,6 +160,56 @@ describe("HitlPanel：payload 渲染（统一 shell，按 stageId 差异化）",
     await waitFor(() => expect(vi.mocked(runsApi.resumeWorkflowRun)).toHaveBeenCalledWith("w-hitl00001", { action: "reject" }));
   });
 
+  it("M15.20 改进计划节点：展示编辑契约（范围 / 受保护数值 / 审计禁改 / 文本改数告警）；知悉前不可批准；批准携带 planHash + 逐项勾选的值变更", async () => {
+    const user = userEvent.setup();
+    const fixture = hitlRunFixture({
+      workflowKind: "existing_paper_improvement",
+      currentStage: "hitl.plan_confirm",
+      awaiting: {
+        stageId: "hitl.plan_confirm",
+        prompt: "改进计划已生成，请确认后开始逐节改造",
+        options: ["approve", "revise", "cancel"],
+        payload: {
+          items: [
+            { id: "improvement:1", section: "sections/sec01.tex", logicalSection: "abstract", actionType: "modify", action: "把旧值 5.402 改为 3.312（作者已批准）", priority: "high" },
+            { id: "improvement:2", section: "sections/sec05.tex", actionType: "modify", action: "统一表格精度", priority: "medium", expectedFactChanges: [{ before: "45.042", after: "45.04" }] },
+          ],
+          totalItems: 2,
+          planHash: "h".repeat(64),
+          approvalToken: "tok123",
+          editContracts: [
+            {
+              itemId: "improvement:1", target: "abstract", scope: "anchors", anchor: "improving the previous best HOTA by 5.402",
+              protectedValueCount: 4, protectedValuesSample: ["5.402", "6.075", "11.549", "12.789"], proposedValueChanges: [],
+              linkedAuditContract: { contractId: "ec-1", hardNumericFreeze: true, anchors: ["improving ..."], conflicts: ["建议换数与禁改冲突——禁改优先"] },
+              unstructuredValueChangeWarning: "计划文本点名了受保护数值（5.402）并出现目标中没有的数值（3.312）——计划文字不构成改数授权",
+            },
+            {
+              itemId: "improvement:2", target: "sections/sec05.tex", scope: "whole_target", protectedValueCount: 2, protectedValuesSample: ["45.042", "57.108"],
+              proposedValueChanges: [{ before: "45.042", after: "45.04", basis: "表格精度", blockedByHardFreeze: false }],
+            },
+          ],
+        },
+      },
+    });
+    vi.mocked(runsApi.resumeWorkflowRun).mockResolvedValue(hitlRunFixture({ status: "running", awaiting: null, currentStage: "revision.apply" }));
+    renderHitl(fixture);
+    const section = await screen.findByTestId("hitl-plan-contracts");
+    expect(section).toHaveTextContent("计划文字中的「改为 / 已批准」不构成授权");
+    expect(screen.getByTestId("hitl-contract-hard-freeze-improvement:1")).toHaveTextContent("计划批准不能解除");
+    expect(screen.getByTestId("hitl-contract-warning-improvement:1")).toHaveTextContent("不构成改数授权");
+    expect(screen.getByTestId("hitl-contract-protected-improvement:1")).toHaveTextContent("5.402");
+    // 有契约提示未知悉 → 不可批准
+    expect(screen.getByTestId("hitl-approve")).toBeDisabled();
+    await user.click(screen.getByTestId("hitl-contract-notice-ack"));
+    await user.click(screen.getByTestId("hitl-contract-change-improvement:2-45.042"));
+    await user.click(screen.getByTestId("hitl-approve"));
+    await waitFor(() => expect(vi.mocked(runsApi.resumeWorkflowRun)).toHaveBeenCalledWith("w-hitl00001", {
+      action: "approve",
+      payload: { planHash: "h".repeat(64), approvalToken: "tok123", approvedFactChanges: [{ itemId: "improvement:2", before: "45.042", after: "45.04" }] },
+    }));
+  });
+
   it("大纲节点：标题 + 摘要 + 章节列表；动作只有 继续 / 提出修改意见 / 取消任务", async () => {
     renderHitl(
       hitlRunFixture({

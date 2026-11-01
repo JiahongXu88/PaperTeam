@@ -715,7 +715,15 @@ export interface AuditClosureReportView {
     /** M15.18：Planner 拆出的仍开放子条（作者裁决 / 仅证据 / 未核验 NO-OP） */
     openSubItems?: AuditClosureLineageEntry[];
     /** M15.18：VALIDATED_FIXED 证据门逐项核对 */
-    checks?: { lineage: boolean; targetBinding: boolean; contentChanged: boolean; notReverted: boolean; guards: boolean };
+    checks?: { lineage: boolean; targetBinding: boolean; contentChanged: boolean; notReverted: boolean; guards: boolean; editContract?: boolean };
+    /** M15.20 P0：落盘修改的编辑契约核验（只有 SATISFIED 才可能 VALIDATED_FIXED） */
+    editContract?: {
+      status: "SATISFIED" | "VIOLATED" | "NOT_EVALUATED";
+      basis: string;
+      contractIds: string[];
+      contractSource?: "contract" | "legacy_reconstruction";
+      violations?: Array<{ code: string; detail: string; value?: string; sentence?: string }>;
+    };
   }>;
   summary: { total: number } & Record<AuditGapClosure, number>;
   disclaimer: string;

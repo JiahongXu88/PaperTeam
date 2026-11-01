@@ -37,11 +37,16 @@ import {
 } from "./missingMaterialLabels.js";
 import { PlanConfirmPayload } from "./HitlPlanConfirm.js";
 import {
+  buildPlanApprovalPayload,
   planAckStorageKey,
+  planContractNoticeCount,
   readPlanConfirmItems,
+  readPlanEditContracts,
   summarizePlanConfirm,
   type PlanConfirmItem,
   type PlanConfirmSummary,
+  type PlanEditContractPreview,
+  type PlanValueChangeSelection,
 } from "./planConfirmView.js";
 
 /**
@@ -84,6 +89,9 @@ export function HitlPanel({
   const [styleSelection, setStyleSelection] = useState<string[] | null>(null);
   // M14.9.1 C0：计划确认中「未派发条目已知悉」——按 run + 计划内容持久化到 sessionStorage（刷新后保留）
   const [planAck, setPlanAck] = useState<Record<string, boolean>>({});
+  // M15.20 P0：作者逐项勾选的结构化值变更 + 契约提示知悉（批准请求体绑定 planHash / approvalToken）
+  const [valueChanges, setValueChanges] = useState<PlanValueChangeSelection[]>([]);
+  const [contractNoticeAck, setContractNoticeAck] = useState(false);
   const formId = useId();
 
   if (awaiting === null || awaiting === undefined) {
@@ -100,7 +108,13 @@ export function HitlPanel({
     setPlanAck({ ...planAck, [planAckKey]: checked });
     writeSessionFlag(planAckKey, checked);
   };
-  const planApproveBlocked = planSummary.notDispatched > 0 && !planAckChecked;
+  const planContracts = awaiting.stageId === "hitl.plan_confirm" && awaiting.payload !== undefined ? readPlanEditContracts(awaiting.payload) : [];
+  const contractNoticeBlocked = planContractNoticeCount(planContracts) > 0 && !contractNoticeAck;
+  const planApproveBlocked = (planSummary.notDispatched > 0 && !planAckChecked) || contractNoticeBlocked;
+  const toggleValueChange = (change: PlanValueChangeSelection) => {
+    const exists = valueChanges.some((entry) => entry.itemId === change.itemId && entry.before === change.before && entry.after === change.after);
+    setValueChanges(exists ? valueChanges.filter((entry) => !(entry.itemId === change.itemId && entry.before === change.before && entry.after === change.after)) : [...valueChanges, change]);
+  };
 
   const submit = (input: HitlDecisionInput) => {
     resume.mutate(
@@ -163,7 +177,12 @@ export function HitlPanel({
         styleSelection={{ selected: selectedStyleIds, onToggle: toggleStyleFinding }}
         supply={{ projectId: run.projectId, onOpenTab }}
         thesisActions={{ pending, onSubmit: submit }}
-        planConfirm={{ items: planItems, summary: planSummary, ack: { checked: planAckChecked, onChange: setPlanAckChecked } }}
+        planConfirm={{
+          items: planItems,
+          summary: planSummary,
+          ack: { checked: planAckChecked, onChange: setPlanAckChecked },
+          contracts: { previews: planContracts, selected: valueChanges, onToggle: toggleValueChange, noticeAck: { checked: contractNoticeAck, onChange: setContractNoticeAck } },
+        }}
       />
 
       <div className="hitl-actions" data-testid="hitl-actions">
@@ -199,8 +218,11 @@ export function HitlPanel({
             className="btn btn-primary"
             data-testid="hitl-approve"
             disabled={pending || planApproveBlocked}
-            {...(planApproveBlocked ? { title: `有 ${planSummary.notDispatched} 条计划不会自动执行，请先在上方确认已知悉` } : {})}
-            onClick={() => submit({ action: "approve" })}
+            {...(planApproveBlocked ? { title: contractNoticeBlocked ? "请先确认已知悉编辑契约提示（计划文字中的数值变更不会被执行）" : `有 ${planSummary.notDispatched} 条计划不会自动执行，请先在上方确认已知悉` } : {})}
+            onClick={() => {
+              const approvalPayload = awaiting.stageId === "hitl.plan_confirm" && awaiting.payload !== undefined ? buildPlanApprovalPayload(awaiting.payload, valueChanges) : {};
+              submit(Object.keys(approvalPayload).length > 0 ? { action: "approve", payload: approvalPayload } : { action: "approve" });
+            }}
           >
             <Icon name="play" />
             {pending && resume.variables?.input.action === "approve" ? "提交中…" : "继续"}
@@ -547,7 +569,12 @@ function HitlPayload({
   /** M14.3 thesis payload 内联决策（与通用按钮同一 resume 通道） */
   thesisActions?: { pending: boolean; onSubmit: (input: HitlDecisionInput) => void };
   /** M14.9.1 C0：计划确认的条目处置视图 + 未派发条目「已知悉」状态（HitlPanel 持有） */
-  planConfirm?: { items: PlanConfirmItem[]; summary: PlanConfirmSummary; ack: { checked: boolean; onChange: (checked: boolean) => void } };
+  planConfirm?: {
+    items: PlanConfirmItem[];
+    summary: PlanConfirmSummary;
+    ack: { checked: boolean; onChange: (checked: boolean) => void };
+    contracts?: { previews: PlanEditContractPreview[]; selected: PlanValueChangeSelection[]; onToggle: (change: PlanValueChangeSelection) => void; noticeAck: { checked: boolean; onChange: (checked: boolean) => void } };
+  };
 }) {
   if (payload === undefined) {
     return null;
@@ -567,6 +594,7 @@ function HitlPayload({
           items={planConfirm?.items ?? []}
           summary={planConfirm?.summary ?? summarizePlanConfirm([], undefined)}
           ack={planConfirm?.ack ?? { checked: false, onChange: () => {} }}
+          {...(planConfirm?.contracts !== undefined ? { contracts: planConfirm.contracts } : {})}
           {...(supply !== undefined ? { projectId: supply.projectId } : {})}
           feasibility={level !== undefined ? (
             <p className="hitl-payload-level">

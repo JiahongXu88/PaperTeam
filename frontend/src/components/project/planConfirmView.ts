@@ -129,3 +129,80 @@ export function planAckStorageKey(runId: string, items: readonly PlanConfirmItem
   }
   return `paperteam:plan-confirm-ack:${runId}:${hash.toString(36)}`;
 }
+
+/**
+ * M15.20 P0：编辑契约预览（后端 hitl.plan_confirm payload.editContracts）：批准前如实展示每个可执行条目
+ * 的可写范围、受保护数值、结构化值变更提案与审计硬禁改——计划文字本身不构成改数授权，只有逐项勾选的
+ * 结构化值变更会随批准提交；服务端独立复核（伪造 / 计划外 / 旧计划 / 硬禁改 → 409）。
+ */
+export interface PlanEditContractPreview {
+  itemId: string;
+  target: string;
+  scope: "anchors" | "whole_target";
+  anchor: string | null;
+  protectedValueCount: number;
+  protectedValuesSample: string[];
+  proposedValueChanges: Array<{ before: string; after: string; basis: string | null; blockedByHardFreeze: boolean }>;
+  linkedAuditContract: { contractId: string; hardNumericFreeze: boolean; anchors: string[]; conflicts: string[] } | null;
+  unstructuredValueChangeWarning: string | null;
+  unenforceable: string | null;
+}
+
+export interface PlanValueChangeSelection {
+  itemId: string;
+  before: string;
+  after: string;
+}
+
+function strArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+export function readPlanEditContracts(payload: Record<string, unknown>): PlanEditContractPreview[] {
+  const raw = Array.isArray(payload["editContracts"]) ? payload["editContracts"] : [];
+  const previews: PlanEditContractPreview[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    const itemId = str(record["itemId"]);
+    const target = str(record["target"]);
+    if (itemId === null || target === null) continue;
+    const audit = typeof record["linkedAuditContract"] === "object" && record["linkedAuditContract"] !== null
+      ? (record["linkedAuditContract"] as Record<string, unknown>)
+      : null;
+    previews.push({
+      itemId,
+      target,
+      scope: record["scope"] === "anchors" ? "anchors" : "whole_target",
+      anchor: str(record["anchor"]),
+      protectedValueCount: typeof record["protectedValueCount"] === "number" ? record["protectedValueCount"] : 0,
+      protectedValuesSample: strArray(record["protectedValuesSample"]),
+      proposedValueChanges: (Array.isArray(record["proposedValueChanges"]) ? record["proposedValueChanges"] : []).flatMap((change) => {
+        if (typeof change !== "object" || change === null) return [];
+        const c = change as Record<string, unknown>;
+        return typeof c["before"] === "string" && typeof c["after"] === "string"
+          ? [{ before: c["before"], after: c["after"], basis: str(c["basis"]), blockedByHardFreeze: c["blockedByHardFreeze"] === true }]
+          : [];
+      }),
+      linkedAuditContract: audit !== null && typeof audit["contractId"] === "string"
+        ? { contractId: audit["contractId"], hardNumericFreeze: audit["hardNumericFreeze"] === true, anchors: strArray(audit["anchors"]), conflicts: strArray(audit["conflicts"]) }
+        : null,
+      unstructuredValueChangeWarning: str(record["unstructuredValueChangeWarning"]),
+      unenforceable: str(record["unenforceable"]),
+    });
+  }
+  return previews;
+}
+
+/** 批准请求体：绑定所见计划版本 + 逐项勾选的结构化值变更（未提供哈希的旧 payload → 只批准范围） */
+export function buildPlanApprovalPayload(payload: Record<string, unknown>, selected: readonly PlanValueChangeSelection[]): Record<string, unknown> {
+  const planHash = str(payload["planHash"]);
+  const approvalToken = str(payload["approvalToken"]);
+  if (planHash === null || approvalToken === null) return {};
+  return { planHash, approvalToken, approvedFactChanges: selected.map((change) => ({ itemId: change.itemId, before: change.before, after: change.after })) };
+}
+
+/** 需要作者额外知悉的契约提示（计划文本暗含改数 / 不可执行条目）——未知悉前不允许无条件批准 */
+export function planContractNoticeCount(previews: readonly PlanEditContractPreview[]): number {
+  return previews.filter((preview) => preview.unstructuredValueChangeWarning !== null || preview.unenforceable !== null).length;
+}

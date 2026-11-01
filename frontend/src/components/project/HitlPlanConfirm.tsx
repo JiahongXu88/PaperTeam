@@ -8,6 +8,8 @@ import {
   type PlanConfirmItem,
   type PlanConfirmSummary,
   type PlanDisposition,
+  type PlanEditContractPreview,
+  type PlanValueChangeSelection,
 } from "./planConfirmView.js";
 
 /**
@@ -37,12 +39,20 @@ export function PlanConfirmPayload({
   feasibility,
   projectId,
   ack,
+  contracts,
 }: {
   items: PlanConfirmItem[];
   summary: PlanConfirmSummary;
   feasibility?: React.ReactNode;
   projectId?: string;
   ack: { checked: boolean; onChange: (checked: boolean) => void };
+  /** M15.20 P0：编辑契约预览 + 结构化值变更勾选 + 契约提示知悉（HitlPanel 持有状态） */
+  contracts?: {
+    previews: PlanEditContractPreview[];
+    selected: PlanValueChangeSelection[];
+    onToggle: (change: PlanValueChangeSelection) => void;
+    noticeAck: { checked: boolean; onChange: (checked: boolean) => void };
+  };
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [expanded, setExpanded] = useState(false);
@@ -86,6 +96,7 @@ export function PlanConfirmPayload({
           </label>
         </div>
       ) : null}
+      {contracts !== undefined && contracts.previews.length > 0 ? <EditContractSection contracts={contracts} /> : null}
       <div className="hitl-plan-filter" role="group" aria-label="按处置筛选计划条目">
         {(["all", "dispatched", "not_dispatched"] as const).map((value) => (
           <button
@@ -152,6 +163,75 @@ function PlanItemRow({ item, projectId }: { item: PlanConfirmItem; projectId?: s
         </details>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * M15.20 P0：批准内容的结构化呈现——批准计划 = 批准每条可执行条目的可写范围；数值只有在此逐项勾选的
+ * 结构化值变更才会被授权（计划文字、理由与「作者已批准」等措辞都不是授权）；审计硬禁改不可经此解除。
+ */
+function EditContractSection({ contracts }: { contracts: NonNullable<Parameters<typeof PlanConfirmPayload>[0]["contracts"]> }) {
+  const notices = contracts.previews.filter((preview) => preview.unstructuredValueChangeWarning !== null || preview.unenforceable !== null);
+  const isSelected = (change: PlanValueChangeSelection) =>
+    contracts.selected.some((entry) => entry.itemId === change.itemId && entry.before === change.before && entry.after === change.after);
+  return (
+    <div className="hitl-plan-contracts" data-testid="hitl-plan-contracts">
+      <p className="hitl-plan-undispatched-lead">
+        <strong>本次批准的授权范围</strong>（系统确定性强制，越界改动不会落盘）：数值只有在下方逐项勾选的变更才被授权；计划文字中的「改为 / 已批准」不构成授权。
+      </p>
+      <ul>
+        {contracts.previews.map((preview) => (
+          <li key={preview.itemId} data-testid={`hitl-contract-${preview.itemId}`}>
+            <span className="mono">{preview.itemId}</span>
+            <span className="mono">{preview.target}</span>
+            <span className="chip chip-tone-neutral" data-testid={`hitl-contract-scope-${preview.itemId}`}>
+              {preview.scope === "anchors" ? "只可改写定位原文" : "整个目标（其外不改）"}
+            </span>
+            <span className="muted" data-testid={`hitl-contract-protected-${preview.itemId}`}>
+              受保护数值 {preview.protectedValueCount} 个{preview.protectedValuesSample.length > 0 ? `（${preview.protectedValuesSample.slice(0, 6).join("、")}${preview.protectedValueCount > 6 ? " 等" : ""}）` : ""}
+            </span>
+            {preview.linkedAuditContract?.hardNumericFreeze === true ? (
+              <span className="status status-tone-danger" data-testid={`hitl-contract-hard-freeze-${preview.itemId}`} title={preview.linkedAuditContract.conflicts.join("；")}>
+                审计禁改：数字不可改、不可新增（计划批准不能解除）
+              </span>
+            ) : null}
+            {preview.unstructuredValueChangeWarning !== null ? (
+              <p className="field-help status-tone-warn" data-testid={`hitl-contract-warning-${preview.itemId}`}>{preview.unstructuredValueChangeWarning}</p>
+            ) : null}
+            {preview.unenforceable !== null ? (
+              <p className="field-help status-tone-danger" data-testid={`hitl-contract-unenforceable-${preview.itemId}`}>{preview.unenforceable}</p>
+            ) : null}
+            {preview.proposedValueChanges.length > 0 ? (
+              <div className="hitl-contract-changes">
+                {preview.proposedValueChanges.map((change) => {
+                  const selection = { itemId: preview.itemId, before: change.before, after: change.after };
+                  return (
+                    <label key={`${change.before}->${change.after}`} className="hitl-plan-ack">
+                      <input
+                        type="checkbox"
+                        disabled={change.blockedByHardFreeze}
+                        checked={isSelected(selection)}
+                        onChange={() => contracts.onToggle(selection)}
+                        data-testid={`hitl-contract-change-${preview.itemId}-${change.before}`}
+                      />
+                      授权将 <span className="mono">{change.before}</span> 改为 <span className="mono">{change.after === "" ? "（删除）" : change.after}</span>
+                      {change.basis !== null ? <span className="muted">（依据：{change.basis}）</span> : null}
+                      {change.blockedByHardFreeze ? <span className="muted">——受审计禁改约束，不可授权</span> : null}
+                    </label>
+                  );
+                })}
+              </div>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {notices.length > 0 ? (
+        <label className="hitl-plan-ack">
+          <input type="checkbox" checked={contracts.noticeAck.checked} onChange={(event) => contracts.noticeAck.onChange(event.target.checked)} data-testid="hitl-contract-notice-ack" />
+          我已知悉以上 {notices.length} 条的提示：计划文字中的数值变更不会被执行，不可执行条目不会改稿
+        </label>
+      ) : null}
+    </div>
   );
 }
 

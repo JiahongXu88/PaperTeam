@@ -1760,6 +1760,13 @@ function AuditClosureReportViewBlock({ report }: { report: AuditClosureReportVie
                     证据门：落盘 lineage {item.checks.lineage ? "✓" : "✗"} · 目标绑定 {item.checks.targetBinding ? "✓" : "✗"} ·
                     内容变化 {item.checks.contentChanged ? "✓" : "✗"} · 未回退 {item.checks.notReverted ? "✓" : "✗"} ·
                     守卫 {item.checks.guards ? "✓" : "✗"}
+                    {item.checks.editContract !== undefined ? <> · 编辑契约 {item.checks.editContract ? "✓" : "✗"}</> : null}
+                  </div>
+                ) : null}
+                {item.editContract !== undefined && item.editContract.status !== "SATISFIED" ? (
+                  <div className={item.editContract.status === "VIOLATED" ? "status status-tone-danger" : "faint"} data-testid="target-audit-revision-report-edit-contract">
+                    {item.editContract.status === "VIOLATED" ? "越权修改（未获授权，不算已修复）" : "授权核验不可得"}：{item.editContract.basis}
+                    {item.editContract.contractSource === "legacy_reconstruction" ? "（旧审批无冻结契约：按计划条目结构化字段重建核验）" : ""}
                   </div>
                 ) : null}
                 {item.lineage !== undefined && item.lineage.length > 0 ? (
