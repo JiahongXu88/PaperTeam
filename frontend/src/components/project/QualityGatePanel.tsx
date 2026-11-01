@@ -11,6 +11,7 @@ import {
   type GateRuleStyle,
 } from "../common/status.js";
 import { useQualityGate, useReevaluateQualityGate } from "../../hooks/queries.js";
+import { QualityReportLayers, ValueChangeRequestsPanel } from "./QualityReportLayers.js";
 import { formatApiError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import type { QualityGateResponseView, QualityGateResultView, QualityGateRuleView, ReviewSummaryView, WorkflowKind } from "../../types/api.js";
@@ -130,6 +131,7 @@ export function QualityGatePanel({
           <GateRules result={data.gate} />
         </>
       )}
+      <ValueChangeRequestsPanel projectId={projectId} />
       <p className="section-note faint">
         Draft 只需要构建门禁（LaTeX 编译）通过；标记为 Final 需要构建门禁 + 质量门禁都通过。质量门禁未通过不影响生成 PDF。
       </p>
@@ -172,6 +174,8 @@ function GateSummary({
           学术评分 ≥ {gate.thresholds.academicPassScore} · 文风风险 ≤ {gate.thresholds.styleRiskMax}
         </span>
       </div>
+
+      {data.qualityReport !== undefined && data.qualityReport !== null ? <QualityReportLayers report={data.qualityReport} /> : null}
 
       {data.stale && viewingLatest ? (
         <div className="note note-warn" role="status" data-testid="gate-stale">
@@ -235,7 +239,7 @@ function GateSummary({
       ) : (
         <p className="note note-success" role="status" data-testid="gate-passed-note">
           <span>
-            <span className="note-mark">✓</span> 当前质量门禁已通过：论文在构建成功后可标记为 Final。
+            <span className="note-mark">✓</span> 当前质量门禁已通过：论文在构建成功后可标记为 Final（门禁通过不代表达到任何期刊水平或可投稿）。
             {summary !== null && summary.scores.academicScore !== null ? `（学术评分 ${summary.scores.academicScore}）` : ""}
             {(gate.verification?.notEvaluated.length ?? 0) > 0
               ? ` 另有 ${gate.verification!.notEvaluated.length} 项核验未执行（不阻断，但不代表已核验）。`

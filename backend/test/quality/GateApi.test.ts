@@ -59,6 +59,7 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       reviewSummary: null,
       latestReviewRound: null,
       stale: false,
+      qualityReport: null,
     });
 
     // POST 缺 review：如实 400

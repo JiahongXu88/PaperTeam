@@ -115,8 +115,8 @@ export interface ExternalInstructionSnapshot {
 }
 
 export interface RevisionTaskGateInput {
-  /** evaluateQualityGate 的同轮规则结果（任务层消费守卫子集） */
-  gateRules: readonly { rule: string; passed: boolean; detail: string }[];
+  /** evaluateQualityGate 的同轮规则结果（任务层消费守卫子集；status 缺失 = 旧产物，按 passed 解释） */
+  gateRules: readonly { rule: string; passed: boolean; detail: string; status?: string }[];
   externalInstructions: readonly ExternalInstructionSnapshot[];
   claimGapAudit: ClaimGapAudit | null;
   /** 已归层的 heavy finding（critical / major / blocking） */
@@ -143,7 +143,8 @@ export interface BaselineInheritedRisk {
 export interface RevisionTaskGateResult {
   verdict: RevisionTaskVerdict;
   success: boolean;
-  checks: { check: string; passed: boolean; detail: string }[];
+  /** advisory=true：已评估但不构成硬失败，只作作者裁决项（M15 长程：未校准分数回退） */
+  checks: { check: string; passed: boolean; detail: string; advisory?: boolean }[];
   reasons: string[];
   /** author-decision 项计数（意见 / claim 灰区 / unknown-origin finding） */
   authorDecisions: {
@@ -186,7 +187,7 @@ export function evaluateRevisionTaskGate(input: RevisionTaskGateInput): Revision
     };
   }
 
-  const checks: { check: string; passed: boolean; detail: string }[] = [];
+  const checks: RevisionTaskGateResult["checks"] = [];
   const authorReasons: string[] = [];
 
   // 1. 外审意见闭环（假关闭由 revision.plan 的 gate 复核降级兜底）
@@ -212,12 +213,16 @@ export function evaluateRevisionTaskGate(input: RevisionTaskGateInput): Revision
   // 2. 确定性守卫（Fact / Citation / Evidence / Scope / Build 子集）
   const guardRules = input.gateRules.filter((rule) => TASK_GUARD_RULE_IDS.has(rule.rule));
   const failedGuards = guardRules.filter((rule) => !rule.passed);
+  // M15 长程 B：非必需 NOT_EVALUATED 的守卫 passed=true，但「未评估」不等于「通过」——如实分开报告（不改判定）
+  const unevaluatedGuards = guardRules.filter((rule) => rule.passed && rule.status === "NOT_EVALUATED");
   checks.push({
     check: "deterministic_guards",
     passed: failedGuards.length === 0,
     detail:
       failedGuards.length === 0
-        ? `确定性守卫 ${guardRules.length} 项全过（fact / citation / evidence / scope / build）`
+        ? unevaluatedGuards.length === 0
+          ? `确定性守卫 ${guardRules.length} 项全过（fact / citation / evidence / scope / build）`
+          : `确定性守卫无失败：${guardRules.length - unevaluatedGuards.length} 项通过，${unevaluatedGuards.length} 项未评估（${unevaluatedGuards.map((rule) => rule.rule).join("、")}；未评估不代表通过）`
         : `守卫失败 ${failedGuards.length} 项：${failedGuards.map((rule) => rule.rule).join("、")}`,
   });
 
@@ -279,13 +284,20 @@ export function evaluateRevisionTaskGate(input: RevisionTaskGateInput): Revision
   const regressed = nonRegressionApplicable
     ? input.academicScore! < input.baselineAcademicScore! - tolerance
     : false;
+  // M15 长程 B：学术分是未校准的单样本 LLM 分（同稿重复评审 SD 5–12，容差 10 内外均被噪声支配）——
+  // 回退不再是任务层硬 FAIL（否则未校准分数暗中承担「质量」硬门），改为作者裁决项（advisory）；不删除警示。
   checks.push({
     check: "academic_non_regression",
     passed: !regressed,
+    ...(regressed ? { advisory: true } : {}),
     detail: !nonRegressionApplicable
       ? "无冻结基线评审分可比（基线轮缺失 / 分数缺失）——非回归检查不适用（如实记录，不判失败）"
-      : `academicScore=${input.academicScore} vs 基线 ${input.baselineAcademicScore}（容差 ${tolerance}；回退判定线 ${input.baselineAcademicScore! - tolerance}）`,
+      : `academicScore=${input.academicScore} vs 基线 ${input.baselineAcademicScore}（容差 ${tolerance}；回退判定线 ${input.baselineAcademicScore! - tolerance}）` +
+        (regressed ? "——未校准分数回退，转作者裁决（不作为硬失败；不代表论文质量下降已被证实）" : ""),
   });
+  if (regressed) {
+    authorReasons.push(`academic_non_regression: 未校准学术分 ${input.academicScore} 低于基线 ${input.baselineAcademicScore} 超过容差 ${tolerance}——需作者裁决（分数未校准，不作硬失败）`);
+  }
 
   // 6. 校准 floor（未校准 → 呈现不阻断；绝不把拟合值伪装成已校准）
   const floorEnforced = input.policy.academicFloor !== null;
@@ -298,7 +310,7 @@ export function evaluateRevisionTaskGate(input: RevisionTaskGateInput): Revision
       : `academicScore=${input.academicScore}（floor ${input.policy.academicFloor}，${input.policy.academicFloorStatus}）`,
   });
 
-  const hardFailures = checks.filter((check) => !check.passed);
+  const hardFailures = checks.filter((check) => !check.passed && check.advisory !== true);
   const verdict: RevisionTaskVerdict =
     hardFailures.length > 0 ? "FAIL" : authorReasons.length > 0 ? "AUTHOR_DECISION_REQUIRED" : "PASS";
   const reasons = [...hardFailures.map((check) => `${check.check}: ${check.detail}`), ...authorReasons];

@@ -65,10 +65,12 @@ async function writeGate(
   await writeFile(
     join(root, id, "reviews", `quality-gate-r${round}.json`),
     JSON.stringify({
+      // M15 长程 B：现行格式产物（规则带 status + verification）；无规则 / 无状态的产物经分层报告投影为不可冻结
       gate: {
         passed: options.passed,
         reasons: options.passed ? [] : ["academic_score_threshold: academicScore=66（要求 ≥ 80）"],
-        rules: [],
+        rules: [{ rule: "review_coverage_complete", passed: true, status: "PASS", required: true, detail: "fixture" }],
+        verification: { requiredComplete: true, notEvaluated: [], notApplicable: [], counts: { PASS: 1, FAIL: 0, NOT_EVALUATED: 0, NOT_APPLICABLE: 0, INFO: 0, ADVISORY: 0 } },
         checkedAt: new Date().toISOString(),
         thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
       },

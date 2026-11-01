@@ -10,6 +10,7 @@
 
 import { apiClient } from "./client.js";
 import type { EvidenceRecordView, QualityGateResponseView, QualityGateResultView } from "../types/api.js";
+import type { ValueChangeRequestView } from "../types/qualityReport.js";
 
 export async function listEvidence(
   projectId: string,
@@ -61,6 +62,27 @@ export async function getQualityGate(
     `/api/projects/${encodeURIComponent(projectId)}/quality-gate${query}`,
     signal,
   );
+}
+
+/** M15 长程 A3（R4）：审稿驱动修订改动作者冻结数值的待批准请求 */
+export async function listValueChangeRequests(projectId: string, signal?: AbortSignal): Promise<ValueChangeRequestView[]> {
+  const body = await apiClient.get<{ requests: ValueChangeRequestView[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/value-change-requests`,
+    signal,
+  );
+  return body.requests;
+}
+
+/** 逐项决策：boundHash 必须回传所见请求的内容哈希（服务端 409 拒绝陈旧 / 伪造） */
+export async function decideValueChangeRequests(
+  projectId: string,
+  decisions: Array<{ requestId: string; decision: "approve" | "reject"; boundHash: string }>,
+): Promise<ValueChangeRequestView[]> {
+  const body = await apiClient.post<{ requests: ValueChangeRequestView[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/value-change-requests/decide`,
+    { decisions },
+  );
+  return body.requests;
 }
 
 /** 从最新 review / citation / evidence artifacts 重新确定性评估并按 review 轮落盘 */

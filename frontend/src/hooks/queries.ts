@@ -28,6 +28,8 @@ import {
   getQualityGate,
   listEvidence,
   reevaluateQualityGate,
+  listValueChangeRequests,
+  decideValueChangeRequests,
 } from "../api/evidence.js";
 import {
   attachSourceFullTextPdf,
@@ -181,6 +183,7 @@ export const queryKeys = {
   /** round 缺省 = 最新（后端决定；不在前端缓存「最新」的轮次号，避免轮次漂移） */
   qualityGate: (projectId: string, round?: number) =>
     ["project", projectId, "quality-gate", ...(round !== undefined ? [round] : ["latest"])] as const,
+  valueChangeRequests: (projectId: string) => ["project", projectId, "value-change-requests"] as const,
   runtimeStatus: ["runtime-status"] as const,
   /** Search provider 健康（M9.2；全局只读观测，非项目维度） */
   researchProviders: ["research", "providers"] as const,
@@ -965,6 +968,27 @@ export function useReevaluateQualityGate(projectId: string | undefined) {
   return useMutation({
     mutationFn: () => reevaluateQualityGate(projectId ?? ""),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["project", projectId ?? "", "quality-gate"] });
+    },
+  });
+}
+
+/** M15 长程 A3（R4）：待作者逐项批准的数值修改请求 */
+export function useValueChangeRequests(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.valueChangeRequests(projectId ?? ""),
+    queryFn: ({ signal }) => listValueChangeRequests(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+export function useDecideValueChangeRequests(projectId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (decisions: Array<{ requestId: string; decision: "approve" | "reject"; boundHash: string }>) =>
+      decideValueChangeRequests(projectId ?? "", decisions),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.valueChangeRequests(projectId ?? "") });
       void queryClient.invalidateQueries({ queryKey: ["project", projectId ?? "", "quality-gate"] });
     },
   });

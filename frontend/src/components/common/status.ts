@@ -442,7 +442,7 @@ export const ITERATION_OUTCOME_STYLES: Record<string, StatusStyle> = {
  * 只有 SYSTEM_FAILED 用 danger。
  */
 export const TERMINAL_STATUS_STYLES: Record<string, StatusStyle> = {
-  PASS: { label: "质量验收通过", tone: "ok" },
+  PASS: { label: "完整性与已证实缺陷检查通过", tone: "ok" },
   REVISION_TASK_COMPLETE: { label: "返修任务完成", tone: "ok" },
   QUALITY_NOT_REACHED: { label: "质量未达标（Draft 可用）", tone: "warn" },
   NO_PROGRESS: { label: "自动修订已达收敛上限", tone: "warn" },
@@ -452,8 +452,8 @@ export const TERMINAL_STATUS_STYLES: Record<string, StatusStyle> = {
 
 /**
  * M11.4 分层终态徽章（existing-paper 改进 run 的 completion 携带；旧 run 无 = 单层语义）：
- * 返修任务层回答「审稿意见是否全部闭环且修订安全」，投稿就绪层回答「全稿是否达到可投稿状态」。
- * 任务成功 ≠ 投稿就绪，两层分开呈现，不合并成一个结论。
+ * 返修任务层回答「审稿意见是否全部闭环且修订安全」；全稿层回答「是否还有已证实 / 未核验的阻断项」。
+ * M15 长程：全稿层不宣称「可投稿」——目标期刊水平未经独立校准（L4 UNVALIDATED）。
  */
 export const REVISION_TASK_VERDICT_STYLES: Record<string, StatusStyle> = {
   PASS: { label: "返修任务完成", tone: "ok" },
@@ -462,16 +462,16 @@ export const REVISION_TASK_VERDICT_STYLES: Record<string, StatusStyle> = {
 };
 
 export const PUBLICATION_READINESS_STYLES: Record<string, StatusStyle> = {
-  READY: { label: "投稿就绪", tone: "ok" },
-  NOT_READY: { label: "未达投稿就绪", tone: "warn" },
-  AUTHOR_DECISION_REQUIRED: { label: "投稿就绪性需作者裁决", tone: "accent" },
+  READY: { label: "无阻断项（不代表可投稿）", tone: "ok" },
+  NOT_READY: { label: "存在阻断项", tone: "warn" },
+  AUTHOR_DECISION_REQUIRED: { label: "全稿层需作者裁决", tone: "accent" },
 };
 
 /** TERMINAL_STATUS_STYLES 的用户可读说明（与后端 classifyTerminalStatus 同口径） */
 export const TERMINAL_STATUS_HINTS: Record<string, string> = {
-  PASS: "质量验收通过，论文已冻结。",
+  PASS: "完整性与已证实缺陷检查通过，论文已冻结（不代表达到任何期刊水平或可投稿）。",
   REVISION_TASK_COMPLETE:
-    "返修任务完成：外审意见全部闭环、修订引入违规为零；投稿就绪性见下方分层判定（剩余为全稿质量 / 基线继承风险），修订稿以 Draft 形式提供。",
+    "返修任务完成：外审意见全部闭环、修订引入违规为零；全稿层结论见下方分层判定（剩余为全稿质量 / 基线继承风险），修订稿以 Draft 形式提供。",
   QUALITY_NOT_REACHED: "论文已生成，但自动质量验收未达到目标；Draft 可用，剩余问题见质量报告。",
   NO_PROGRESS: "自动修订已达到收敛上限，继续自动修改预计收益有限；当前稿可作为 Draft 使用。",
   AUTHOR_DECISION_REQUIRED: "自动修订已停止：剩余问题需要作者提供研究判断或额外数据（语言模型改稿无法解决）。",

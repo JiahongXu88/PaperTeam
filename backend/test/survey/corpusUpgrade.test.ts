@@ -588,7 +588,7 @@ describe("FinalizeService 研究链新鲜度守卫（M15.8.5）", { timeout: 60_
       await writeFile(
         join(root, projectId, "reviews", "quality-gate-r1.json"),
         JSON.stringify({
-          gate: { passed: true, reasons: [], rules: [], checkedAt: new Date().toISOString(), thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true } },
+          gate: { passed: true, reasons: [], rules: [{ rule: "review_coverage_complete", passed: true, status: "PASS", required: true, detail: "fixture" }], verification: { requiredComplete: true, notEvaluated: [], notApplicable: [], counts: { PASS: 1, FAIL: 0, NOT_EVALUATED: 0, NOT_APPLICABLE: 0, INFO: 0, ADVISORY: 0 } }, checkedAt: new Date().toISOString(), thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true } },
           reviewSummary: { round: 1 },
           revision: committed.revision,
           reviewedRevision: committed.revision,

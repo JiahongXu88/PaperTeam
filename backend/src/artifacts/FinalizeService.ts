@@ -12,6 +12,7 @@
  * 前置校验；workflow 的 build.final stage 本身就是活跃 run，跳过该校验。
  */
 
+import { qualityReportOf } from "../quality/qualityReport.js";
 import {
   BusinessError,
   BuildGateFailedError,
@@ -96,6 +97,12 @@ export class FinalizeService {
       throw new QualityGateStaleError(
         `gate 轮次（r${latestGateRound}）落后于最新审稿轮次（r${latestSummary.round}）`,
       );
+    }
+    // M15 长程 B：冻结资格以分层报告为准（新产物嵌入；旧产物只读投影——缺核验状态的旧产物不可冻结，需重新评估）。
+    // 放在新鲜度检查之后：陈旧产物先如实报告陈旧（更可操作），再判报告层阻断
+    const qualityReport = qualityReportOf(gateArtifact.gate);
+    if (!qualityReport.overall.finalizable) {
+      throw new QualityGateFailedError([qualityReport.overall.statement, ...qualityReport.overall.reasons].slice(0, 12));
     }
 
     // ---- M15.8.5：survey 研究链新鲜度——语料升级后不得用旧基线签发 Final ----

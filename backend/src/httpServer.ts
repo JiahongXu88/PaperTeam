@@ -112,6 +112,7 @@ import {
 import { loadEditContractStore, updateEditContractStore } from "./quality/editContractStore.js";
 import { applyValueChangeDecisions, type ValueChangeDecision, type ValueChangeRequest } from "./quality/valueChangeRequests.js";
 import { sha256 as sha256Hex } from "./quality/editContract.js";
+import { qualityReportOf } from "./quality/qualityReport.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -4108,11 +4109,15 @@ async function handleProjectResourceRoutes(
         rounds: summaries.map((item) => ({
           round: item.round,
           passed: item.gate.passed,
+          // M15 长程 B：分层报告的总体状态（旧产物为只读投影）
+          overall: qualityReportOf(item.gate).overall.status,
           checkedAt: item.gate.checkedAt,
           blockerCount: item.gate.reasons.length,
         })),
         round: artifact?.round ?? null,
         gate: artifact?.gate ?? null,
+        /** M15 长程 B：唯一决策事实源（新产物 = 嵌入报告；旧产物 = 只读投影，缺失信息为 NOT_EVALUATED） */
+        qualityReport: artifact !== null ? qualityReportOf(artifact.gate) : null,
         /** 同轮审稿汇总快照（gate 评估时消费的输入；round 配对由产物结构保证） */
         reviewSummary: artifact?.reviewSummary ?? null,
         /** 最新三路审稿轮次（gate 落后于它 → gate 结果可能已过期） */
@@ -4154,7 +4159,7 @@ async function handleProjectResourceRoutes(
         ...(evaluation.revisionValidation !== undefined ? { revisionValidation: evaluation.revisionValidation } : {}),
         ...(evaluation.surveyWriting !== undefined ? { surveyWriting: evaluation.surveyWriting } : {}),
       });
-      sendJson(res, 200, { gate: evaluation.gate, round: evaluation.review.round });
+      sendJson(res, 200, { gate: evaluation.gate, qualityReport: evaluation.gate.qualityReport ?? null, round: evaluation.review.round });
       return true;
     }
     res.setHeader("Allow", "GET, POST");

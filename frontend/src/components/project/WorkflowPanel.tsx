@@ -542,7 +542,7 @@ function CompletedBlock({
           <span className="workflow-layered-result" data-testid="workflow-layered-result">
             <br />
             返修任务 <RegistryStatus style={statusStyleOf(REVISION_TASK_VERDICT_STYLES, run.completion.revisionTaskVerdict)} />
-            {" · "}投稿就绪性{" "}
+            {" · "}全稿层{" "}
             {typeof run.completion.publicationReadiness === "string" ? (
               <RegistryStatus style={statusStyleOf(PUBLICATION_READINESS_STYLES, run.completion.publicationReadiness)} />
             ) : (

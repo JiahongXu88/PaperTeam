@@ -279,6 +279,7 @@ import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirect
 import { describeEditContractVerdict, factRestorePolicyContract, validateCandidateEdit, type EditContract, type EditContractVerdict } from "../quality/editContract.js";
 import { eventFromVerdict, loadEditContractStore, recordEditContractEvents, saveEditContracts, type EditContractEvent } from "../quality/editContractStore.js";
 import { approvedValueChangesForWrite, deriveValueChangeRequests, type ValueChangeRequest } from "../quality/valueChangeRequests.js";
+import { buildQualityReport } from "../quality/qualityReport.js";
 import {
   ABSTRACT_TARGET,
   buildPlanContractPreviews,
@@ -2165,6 +2166,34 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
         }),
         contextGaps,
       };
+      // M15 长程 B：分层 QualityReport = 唯一决策事实源。gate.passed / publicationReadiness 只从报告派生
+      // （双入口同一函数、同一输入 → 同一报告）；待作者批准的数值修改请求计入 L3，契约存储不可读 → L3 未评估（fail closed）
+      let pendingValueChangeRequests: number | null;
+      try {
+        pendingValueChangeRequests = ((await loadEditContractStore(services.projects, projectId)).valueChangeRequests ?? [])
+          .filter((request) => request.status === "pending").length;
+      } catch {
+        pendingValueChangeRequests = null;
+        contextGaps.push("编辑契约存储不可读：待作者批准的数值修改请求数未知（L3 未评估）");
+      }
+      const qualityReport = buildQualityReport(gate, {
+        pendingValueChangeRequests,
+        claimAuditMode: resolveClaimAuditMode(services.review.claimAudit, publishedAssessment),
+        entry: context.entry,
+      });
+      gate.qualityReport = qualityReport;
+      if (gate.passed !== qualityReport.overall.finalizable) {
+        gate.passed = qualityReport.overall.finalizable;
+        gate.reasons.push(`quality_report: ${qualityReport.compat.difference ?? qualityReport.overall.status}`);
+      }
+      if (gate.publicationReadiness !== undefined) {
+        const verdict = qualityReport.overall.status === "PASS" ? "READY" : qualityReport.overall.status === "NEEDS_AUTHOR_DECISION" ? "AUTHOR_DECISION_REQUIRED" : "NOT_READY";
+        gate.publicationReadiness = {
+          ...gate.publicationReadiness,
+          verdict,
+          reasons: verdict === "READY" ? [] : gate.publicationReadiness.reasons.length > 0 ? gate.publicationReadiness.reasons : qualityReport.overall.reasons.slice(0, 12),
+        };
+      }
   return {
     gate, review, citation, evidence, evidenceRecords, feasibility, citationPreservation, factPreservation, cumulativeFactPreservation,
     claimGapAudit, claimGrounding, evidenceCitationCoverage, revisionValidation, surveyWriting, thesisGate, targetReadiness,

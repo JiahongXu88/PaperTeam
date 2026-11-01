@@ -530,7 +530,7 @@ export interface QualityGateResult {
   revisionTask?: {
     verdict: "PASS" | "FAIL" | "AUTHOR_DECISION_REQUIRED";
     success: boolean;
-    checks: { check: string; passed: boolean; detail: string }[];
+    checks: { check: string; passed: boolean; detail: string; advisory?: boolean }[];
     reasons: string[];
     authorDecisions: { instructions: number; greyZoneClaims: number; unknownOriginFindings: number };
   };
@@ -555,6 +555,11 @@ export interface QualityGateResult {
    * gate 产物无此字段——读取方按无政策层解释。内容：未校准分数阈值（规则 7/8）
    * Advisory 化的差分、场景语义块（published assessment / quick review）与 Legacy 对照。
    */
+  /**
+   * M15 长程 B：分层 QualityReport（唯一决策事实源；evaluateProjectQualityGate 生成并据此派生 passed）。
+   * 旧产物无此字段——读取方经 qualityReportOf 只读投影（缺失信息 = NOT_EVALUATED，绝不默认合格）。
+   */
+  qualityReport?: import("./qualityReport.js").QualityReport;
   qualityPolicy?: {
     version: string;
     arm: string;
@@ -764,6 +769,9 @@ export function evaluateQualityGate(
         crossSection.status === "UNAVAILABLE"
           ? `跨节数值一致性检查未能执行（${crossSection.unavailableReason ?? "未知原因"}）：摘要/结论 ↔ 结果表的一致性未核验（不代表一致）`
           : "跨节数值一致性检查状态未知（不代表一致）",
+        // M15 长程 C：被审修订快照缺失 / 无被审修订 = 检查的输入工件不存在（不是「稿件无可核验数值」）——
+        // 必需核验未完成，不得因移除工件而放行
+        crossSection.unavailableReason === "SNAPSHOT_UNAVAILABLE" || crossSection.unavailableReason === "NO_REVIEWED_REVISION",
       );
     } else if (crossSection.counts.verifiedContradictions > 0) {
       const witnesses = crossSection.witnesses.filter((witness) => witness.outcome === "VERIFIED_CONTRADICTION");

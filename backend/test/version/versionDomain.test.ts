@@ -258,7 +258,9 @@ describe("VersionService.restore（不可变恢复）", () => {
         gate: {
           passed: true,
           reasons: [],
-          rules: [{ rule: "academic_score_threshold", passed: true, detail: "" }],
+          // M15 长程 B：现行格式（规则带 status + verification）——无状态旧产物经分层报告投影为不可冻结
+          rules: [{ rule: "academic_score_threshold", passed: true, status: "PASS", detail: "" }],
+          verification: { requiredComplete: true, notEvaluated: [], notApplicable: [], counts: { PASS: 1, FAIL: 0, NOT_EVALUATED: 0, NOT_APPLICABLE: 0, INFO: 0, ADVISORY: 0 } },
           checkedAt: new Date().toISOString(),
           thresholds: { academicPassScore: 80, styleRiskMax: 35, requireFeasibility: true },
         },

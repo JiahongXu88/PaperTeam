@@ -8,6 +8,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { scriptedIdeaRuntime, startTestStack, type TestStack } from "../helpers/testStack.js";
 import type { WorkflowState } from "../../src/workflow/types.js";
 import type { QualityGateResult } from "../../src/quality/gates.js";
+import type { QualityReport } from "../../src/quality/qualityReport.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
@@ -57,6 +58,13 @@ async function runAndCompare(reviewSequence: ("pass" | "fail" | "fail2" | "fail3
   expect(manualGate.reasons).toEqual(workflowGate.reasons);
   expect(manualGate.verification).toEqual(workflowGate.verification);
   expect(manualGate.evaluation?.inputFingerprint).toBe(workflowGate.evaluation?.inputFingerprint);
+  // M15 长程 B：分层报告双入口同源一致（除入口标识与生成时间）；GET 返回的报告 = 产物嵌入报告；passed 由报告派生
+  const strip = (report: QualityReport) => ({ ...report, generatedAt: "", binding: { ...report.binding, entry: "" } });
+  expect(workflowGate.qualityReport).toBeDefined();
+  expect(strip(manualGate.qualityReport!)).toEqual(strip(workflowGate.qualityReport!));
+  expect(stored.body["qualityReport"]).toEqual(workflowGate.qualityReport);
+  expect(workflowGate.passed).toBe(workflowGate.qualityReport!.overall.finalizable);
+  expect(workflowGate.qualityReport!.layers.L4.status).toBe("UNVALIDATED");
   return workflowGate;
 }
 

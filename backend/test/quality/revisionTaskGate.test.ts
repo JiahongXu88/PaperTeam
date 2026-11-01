@@ -147,10 +147,12 @@ describe("evaluateRevisionTaskGate（分层判定）", () => {
     expect(result.verdict).toBe("PASS");
   });
 
-  it("6b. 非回归容差：基线 62、当前 51 → 回退 11 分超带 → FAIL", () => {
+  it("6b. 非回归容差：基线 62、当前 51 → 回退 11 分超带 → 作者裁决（M15 长程：未校准分数不作硬 FAIL，警示保留）", () => {
     const result = evaluateRevisionTaskGate(baseInput({ academicScore: 51 }));
-    expect(result.verdict).toBe("FAIL");
+    expect(result.verdict).toBe("AUTHOR_DECISION_REQUIRED");
+    expect(result.success).toBe(false);
     expect(result.reasons.join(" ")).toContain("academic_non_regression");
+    expect(result.checks.find((check) => check.check === "academic_non_regression")).toMatchObject({ passed: false, advisory: true });
   });
 
   it("6c. 无基线分可比 → 非回归检查不适用（不判失败，如实记录）", () => {

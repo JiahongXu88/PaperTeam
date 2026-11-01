@@ -404,7 +404,10 @@ export interface QualityGateRuleView {
 }
 
 export interface QualityGateResultView {
+  /** M15 长程 B：由分层报告派生（overall.finalizable）；不代表达到期刊水平或可投稿 */
   passed: boolean;
+  /** M15 长程 B：嵌入的分层报告（旧产物无；GET 响应顶层 qualityReport 为权威视图） */
+  qualityReport?: import("./qualityReport.js").QualityReportView;
   reasons: string[];
   rules: QualityGateRuleView[];
   thresholds: { academicPassScore: number; styleRiskMax: number; requireFeasibility: boolean };
@@ -479,6 +482,8 @@ export interface QualityGateResponseView {
   /** 最新三路审稿轮次；大于当前 gate 轮次 → gate 结果已过期（stale） */
   latestReviewRound: number | null;
   stale: boolean;
+  /** M15 长程 B：唯一决策事实源（新产物 = 嵌入报告；旧产物 = 后端只读投影）；旧后端无此字段 */
+  qualityReport?: import("./qualityReport.js").QualityReportView | null;
 }
 
 // ---- Paper Artifacts / Build / Finalize（M4.7 Draft-Final 闭环） ----

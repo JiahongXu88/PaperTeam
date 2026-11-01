@@ -220,8 +220,9 @@ PaperTeam is built around what it will *not* do:
   unverified claims need your confirmation before insertion. A figure is never
   treated as evidence.
 - **Revision success ≠ publication ready.** Comment closure, deterministic guards,
-  and full-manuscript readiness are reported separately, with author decisions
-  surfaced instead of silently resolved.
+  verified defects and AI review opinions are reported as separate layers, with author
+  decisions surfaced instead of silently resolved. Scores and target-journal fit are not
+  calibrated against independent human labels and are shown as advisory only.
 - **No silent rewriting.** Revisions are scoped patches; unauthorized value changes
   and claim escalations are rejected by code, not by prompt.
 

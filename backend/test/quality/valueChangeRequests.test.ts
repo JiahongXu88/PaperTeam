@@ -103,7 +103,7 @@ describe("R4 HTTP 决策通道", () => {
   afterAll(async () => t?.cleanup());
 
   it("GET 列出请求；POST decide：错误哈希 409、正确批准 → 状态 approved + 批准事件（actor=author）", async () => {
-    t = await startTestStack(scriptedIdeaRuntime());
+    t = await startTestStack(scriptedIdeaRuntime().runtime);
     const project = await t.store.create("R4", {});
     const { requests } = derive(BASE, CANDIDATE);
     await saveEditContracts(t.store, project.id, []);
