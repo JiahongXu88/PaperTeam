@@ -1713,7 +1713,7 @@ export class TargetAuditRevisionService {
           ...base,
           closure: (isAuthorDecisionItem ? "NEEDS_AUTHOR_DECISION" : "NOT_EVALUATED") as AuditGapClosure,
           basis: isAuthorDecisionItem
-            ? "需真实实验 / 作者输入：系统停在作者裁决，不产生修改（预期行为，非失败）"
+            ? `${AUDIT_CLASSIFICATION_LABELS[item.classification]}：系统停在作者裁决，不产生修改（预期行为，非失败）`
             : `非改写项的意见状态异常（${instruction.status}；${instruction.statusNote ?? ""}）——不可复评`,
         };
       }
