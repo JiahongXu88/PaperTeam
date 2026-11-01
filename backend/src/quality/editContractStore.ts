@@ -16,13 +16,14 @@ import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import type { EditContract, EditContractVerdict, EditContractViolationCode } from "./editContract.js";
+import { mergeValueChangeRequests, type ValueChangeRequest } from "./valueChangeRequests.js";
 
 export const EDIT_CONTRACTS_FILE = "edit-contracts.json";
 export const EDIT_CONTRACT_STORE_SCHEMA_VERSION = "edit-contract-store/v1" as const;
 
 export interface EditApprovalEvent {
   approvalId: string;
-  kind: "target_audit_item_approve" | "plan_confirm_approve";
+  kind: "target_audit_item_approve" | "plan_confirm_approve" | "value_change_request_approve";
   /** author = 真实用户经 HTTP 决策通道；synthetic_test_actor = 测试夹具 */
   actor: "author" | "synthetic_test_actor";
   channel: string;
@@ -57,6 +58,8 @@ export interface EditContractStoreFile {
   contracts: EditContract[];
   approvals: EditApprovalEvent[];
   events: EditContractEvent[];
+  /** M15 长程 A3（R4）：审稿驱动修订的数值修改请求（旧存储无此字段 = 空） */
+  valueChangeRequests?: ValueChangeRequest[];
 }
 
 const MAX_EVENTS = 2000;
@@ -110,6 +113,7 @@ export async function updateEditContractStore(
       contracts: [...seen.values()],
       approvals: next.approvals.filter((approval, index, all) => all.findIndex((other) => other.approvalId === approval.approvalId) === index),
       events: next.events.slice(-MAX_EVENTS),
+      ...(next.valueChangeRequests !== undefined && next.valueChangeRequests.length > 0 ? { valueChangeRequests: next.valueChangeRequests } : {}),
     };
     await mkdir(projects.researchDir(projectId), { recursive: true });
     await writeJsonAtomic(storePath(projects, projectId), normalized);
@@ -130,9 +134,18 @@ export async function saveEditContracts(
   }));
 }
 
-export async function recordEditContractEvents(projects: ProjectStore, projectId: string, events: readonly EditContractEvent[]): Promise<void> {
-  if (events.length === 0) return;
-  await updateEditContractStore(projects, projectId, (store) => ({ ...store, events: [...store.events, ...events] }));
+export async function recordEditContractEvents(
+  projects: ProjectStore,
+  projectId: string,
+  events: readonly EditContractEvent[],
+  valueChangeRequests: readonly ValueChangeRequest[] = [],
+): Promise<void> {
+  if (events.length === 0 && valueChangeRequests.length === 0) return;
+  await updateEditContractStore(projects, projectId, (store) => ({
+    ...store,
+    events: [...store.events, ...events],
+    valueChangeRequests: mergeValueChangeRequests(store.valueChangeRequests ?? [], valueChangeRequests),
+  }));
 }
 
 export function eventFromVerdict(

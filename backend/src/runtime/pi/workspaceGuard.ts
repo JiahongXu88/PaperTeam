@@ -52,6 +52,11 @@ export interface WorkspaceGuardPolicyInput {
   protectedDirs?: string[];
   /** M14.9.5.1：false = 封闭上下文会话，项目目录整体不可读（只读附加根仍可读）；缺省 true */
   projectReadable?: boolean;
+  /**
+   * M15 长程 A1：可写目录内仍不可写的系统路径（相对 projectDir，posix）；缺省 DEFAULT_PROTECTED_WRITE_PATHS。
+   * 修订快照 / 修订登记 / 恢复意图是 lineage 与复评回放的证据源——Agent 写入它们等于伪造证据。
+   */
+  protectedWritePaths?: string[];
 }
 
 export interface WorkspaceGuardPolicy {
@@ -65,6 +70,11 @@ export interface WorkspaceGuardPolicy {
 
 export const DEFAULT_PROTECTED_DIRS = ["experiments", "workflow"] as const;
 export const DEFAULT_WRITABLE_DIRS = ["manuscript"] as const;
+export const DEFAULT_PROTECTED_WRITE_PATHS = [
+  "manuscript/revisions",
+  "manuscript/revisions.json",
+  "manuscript/restore-intent.json",
+] as const;
 const PROTECTED_SOURCE_SUBDIRS = new Set(["papers", "parsed", "chunks"]);
 /** sources/{papers,parsed,chunks} 条目名 → sourceId（win32 路径已小写化，故大小写不敏感） */
 const SOURCE_ENTRY_ID = /^(s\d+)(?:[-.]|$)/i;
@@ -85,6 +95,8 @@ export function createWorkspaceGuardPolicy(input: WorkspaceGuardPolicyInput): Wo
   const protectAllSources = input.protectAllSources === true;
   const writableDirs = new Set((input.writableDirs ?? [...DEFAULT_WRITABLE_DIRS]).map((dir) => (CASE_INSENSITIVE ? dir.toLowerCase() : dir)));
   const protectedDirs = new Set((input.protectedDirs ?? [...DEFAULT_PROTECTED_DIRS]).map((dir) => (CASE_INSENSITIVE ? dir.toLowerCase() : dir)));
+  const protectedWritePaths = (input.protectedWritePaths ?? [...DEFAULT_PROTECTED_WRITE_PATHS]).map((path) =>
+    (CASE_INSENSITIVE ? path.toLowerCase() : path).split("/").filter((part) => part !== ""));
 
   /** 项目内相对路径段（已归一化）；不在项目内返回 null */
   const segmentsOf = (absPath: string): string[] | null => {
@@ -123,6 +135,7 @@ export function createWorkspaceGuardPolicy(input: WorkspaceGuardPolicyInput): Wo
     if (segments === null || !projectReadable) return false;
     const first = segments[0];
     if (first === undefined || !writableDirs.has(first)) return false;
+    if (protectedWritePaths.some((prefix) => prefix.length <= segments.length && prefix.every((part, index) => segments[index] === part))) return false;
     return !isProtectedInProject(segments);
   };
 
@@ -141,7 +154,7 @@ export function createWorkspaceGuardPolicy(input: WorkspaceGuardPolicyInput): Wo
         ? `本会话是封闭上下文审稿会话：审查所需材料已全部在任务消息中给出，不可访问工作区文件：${describe(absPath)}。`
         : mode === "read"
         ? `路径受 PaperTeam 工作区隔离保护，Agent 不可读取：${describe(absPath)}。实验原始数据包（experiments/）、运行状态（workflow/）与实验包来源文件只能经作者确认并授权的结构化实验上下文进入写作；项目目录之外的文件一律不可访问。`
-        : `Agent 只能写入 manuscript/ 下的稿件文件，不能写入：${describe(absPath)}。`,
+        : `Agent 只能写入 manuscript/ 下的稿件文件（修订快照 / 修订登记 / 恢复意图除外），不能写入：${describe(absPath)}。`,
   };
 }
 
@@ -154,6 +167,11 @@ export interface WorkspaceGuardToolsOptions {
   cwd: string;
   /** 需要生成的工具名（按角色白名单；未知名字忽略） */
   toolNames: readonly string[];
+  /**
+   * M15 长程 A2：Agent 文件写入成功后的回调（写入日志）。review.snapshot 据此区分「Agent 写入但未经契约校验提交」
+   * 与作者自己在磁盘上的编辑。回调失败 → 本次工具调用报错（不让无记录的 Agent 写入静默存在）。
+   */
+  onWrite?: (absPath: string, content: string) => Promise<void>;
 }
 
 const GUARDED_TOOL_NAMES = ["read", "ls", "find", "grep", "write", "edit"] as const;
@@ -433,6 +451,7 @@ export function createWorkspaceGuardTools(policy: WorkspaceGuardPolicy, options:
           writeFile: async (absPath, content) => {
             assertWrite(absPath);
             await writeFile(absPath, content, "utf-8");
+            await options.onWrite?.(absPath, content);
           },
         },
       }) as ToolDefinition,
@@ -454,6 +473,7 @@ export function createWorkspaceGuardTools(policy: WorkspaceGuardPolicy, options:
             assertWrite(absPath);
             await mkdir(dirname(absPath), { recursive: true });
             await writeFile(absPath, content, "utf-8");
+            await options.onWrite?.(absPath, content);
           },
         },
       }) as ToolDefinition,

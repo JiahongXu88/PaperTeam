@@ -278,6 +278,7 @@ import { attributeCitationChangesToPatches, summarizePatchValidation, validation
 import { buildPatchRepairPrompt, selectFinalPatchRecords, type PatchRepairDirective, type RevisionViolationCode } from "../review/revisionHarness.js";
 import { describeEditContractVerdict, factRestorePolicyContract, validateCandidateEdit, type EditContract, type EditContractVerdict } from "../quality/editContract.js";
 import { eventFromVerdict, loadEditContractStore, recordEditContractEvents, saveEditContracts, type EditContractEvent } from "../quality/editContractStore.js";
+import { approvedValueChangesForWrite, deriveValueChangeRequests, type ValueChangeRequest } from "../quality/valueChangeRequests.js";
 import {
   ABSTRACT_TARGET,
   buildPlanContractPreviews,
@@ -752,7 +753,16 @@ function reviewRunStageInner(
       const digest = await buildManuscriptDigest(services, ctx.projectId);
       // 审稿前固化修订版本：本轮 review 审阅的就是这个不可变修订（幂等提交，
       // 未变化的 manuscript 不产生新修订号）。gate / Finalize 据此对齐。
-      const { revision } = await services.revisions.commit(ctx.projectId, "review.snapshot", ctx.runId);
+      // M15 长程 A2：Agent 工具写入、未经编辑契约校验提交的改动不被快照吸收（恢复 + 隔离 + 事件），
+      // 非 Agent 改动（作者磁盘编辑等）逐文件登记来源后吸收
+      const { revision, provenance: snapshotProvenance } = await services.revisions.commitReviewSnapshot(ctx.projectId, ctx.runId);
+      if (snapshotProvenance !== null && snapshotProvenance.revertedAgentWrites.length > 0) {
+        await ctx.emitDomain(
+          "review.snapshot_agent_writes_reverted",
+          { baseRevision: snapshotProvenance.baseRevision, files: snapshotProvenance.revertedAgentWrites },
+          `审稿快照拒绝吸收 ${snapshotProvenance.revertedAgentWrites.length} 个未经编辑契约校验的 Agent 写入（已恢复为 rev-${snapshotProvenance.baseRevision} 内容并隔离原文）`,
+        );
+      }
       // M6.6：正式上下文只进 verified formal 池；排除计数随 stage 结果可观测
       const evidenceSelection = await services.evidenceSelection.selectForWriting(ctx.projectId);
       const evidence = evidenceSelection.formal;
@@ -3279,6 +3289,7 @@ function revisionReviseStage(
       };
       const auditContracts = await resolveAuditRewriteContracts({ instructions: stageInstructions, store: contractStore, readTarget: readContractTarget, skip: staleAuditAnchors });
       const contractEvents: EditContractEvent[] = [];
+      const valueChangeRequests: ValueChangeRequest[] = [];
       if (auditContracts.blocked.size > 0) {
         const markedAt = new Date().toISOString();
         await services.externalInstructions.update(ctx.projectId, (current) => current.map((instruction) => {
@@ -3594,7 +3605,18 @@ function revisionReviseStage(
             return contract !== undefined ? [contract] : [];
           }),
           improvementContracts: matchedItems.flatMap((item) => improvementContracts.get(item.id) ?? []),
+          approvedValueChanges: approvedValueChangesForWrite(contractStore.valueChangeRequests ?? [], targetKey, baseContent),
         });
+        // M15 长程 A3（R4）：被拒候选中可确定配对的冻结数值变更 → 待作者逐项批准的数值修改请求（不自动生效）
+        const validateWrite = async (baseline: string, candidate: string): Promise<EditContractVerdict> => {
+          const contracts = await writeContracts(baseline);
+          const verdict = validateCandidateEdit({ target: targetKey, baseline, candidate, contracts });
+          valueChangeRequests.push(...deriveValueChangeRequests({
+            target: targetKey, baseline, candidate, verdict, contracts, runId: ctx.runId, stageId, baseRevision: currentRevision,
+            instructionIds: driverInstructionIds, planItemIds: matchedItems.map((item) => item.id),
+          }));
+          return verdict;
+        };
         const contractEvent = (verdict: EditContractVerdict, appliedHash?: string): void => {
           contractEvents.push(eventFromVerdict(verdict, {
             stageId,
@@ -3922,7 +3944,7 @@ function revisionReviseStage(
             const candidate = applyRevisionSpan(fileBefore, resolvedSpan, proposal, { preserveBoundaryWhitespace: matchedItems.some(item => item.targetQuote !== undefined) });
             const failures: { code: RevisionViolationCode; detail: string; evidenceId?: string; metric?: string }[] = [];
             // M15.20 P0：授权判定（是否有权改）先于安全守卫；与 scope / fact / citation 判定相互独立
-            const contractVerdict = validateCandidateEdit({ target: targetKey, baseline: fileBefore, candidate, contracts: await writeContracts(fileBefore) });
+            const contractVerdict = await validateWrite(fileBefore, candidate);
             lastContractVerdict = contractVerdict;
             if (!contractVerdict.ok) failures.push({ code: "edit_contract_violation", detail: describeEditContractVerdict(contractVerdict) });
             const scope = checkGlobalRevisionScope(fileBefore, candidate, [resolvedSpan]);
@@ -4326,7 +4348,7 @@ function revisionReviseStage(
           let abstractAccepted = false;
           const abstractAttempted = outline !== null && abstractProposal !== "" && abstractProposal !== abstractBaseline.trim();
           if (outline !== null && abstractAttempted) {
-            const verdict = validateCandidateEdit({ target: ABSTRACT_TARGET, baseline: abstractBaseline, candidate: abstractProposal, contracts: await writeContracts(abstractBaseline) });
+            const verdict = await validateWrite(abstractBaseline, abstractProposal);
             const failures: Array<{ code: RevisionViolationCode; detail: string }> = verdict.ok ? [] : [{ code: "edit_contract_violation", detail: describeEditContractVerdict(verdict) }];
             const snapshotMain = (await readSnapshotTex(services.revisions.snapshotDir(ctx.projectId, currentRevision)))?.find((file) => file.file === "main.tex");
             const mainCandidate = snapshotMain !== undefined ? replaceAbstractInMainTex(snapshotMain.content, abstractProposal) : null;
@@ -4529,7 +4551,7 @@ function revisionReviseStage(
           // （编辑契约）+ 事实 / 引用 / 具名实体 / 执行注记守卫；任一失败 → 目标保留原稿（fail closed）
           let fileContractVerdict: EditContractVerdict | undefined;
           if (output.trim() !== target.currentLatex.trim()) {
-            const verdict = validateCandidateEdit({ target: targetKey, baseline: target.currentLatex, candidate: output, contracts: await writeContracts(target.currentLatex) });
+            const verdict = await validateWrite(target.currentLatex, output);
             fileContractVerdict = verdict;
             const failures: Array<{ code: RevisionViolationCode; detail: string }> = verdict.ok ? [] : [{ code: "edit_contract_violation", detail: describeEditContractVerdict(verdict) }];
             failures.push(...await candidateSafetyFailures({ file: targetKey, content: output }, result.latex, target.currentLatex));
@@ -4595,7 +4617,14 @@ function revisionReviseStage(
       // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
       // M15.20 P0：提交边界——相对上一修订的每处 .tex / 摘要改动必须等于某条已通过契约校验的写入，
       // 否则恢复为上一修订内容（Writer 工具直写其它文件 / 遗漏校验的路径）；以校验时的工作树指纹提交（竞态拒绝）
-      await recordEditContractEvents(services.projects, ctx.projectId, contractEvents);
+      await recordEditContractEvents(services.projects, ctx.projectId, contractEvents, valueChangeRequests);
+      if (valueChangeRequests.length > 0) {
+        await ctx.emitDomain(
+          "revision.value_change_requested",
+          { requests: valueChangeRequests.map((request) => ({ requestId: request.requestId, target: request.target, before: request.before, after: request.after })) },
+          `${valueChangeRequests.length} 项改动作者冻结数值的修订候选被拒，已登记为待作者逐项批准的数值修改请求`,
+        );
+      }
       const guarded = await guardedRevisionCommit(services, { projectId: ctx.projectId, runId: ctx.runId, stageId, registry: writeRegistry, withBibliography: bibliography.length > 0, stageStart });
       if (guarded.reverted.length > 0) {
         await ctx.emitDomain("revision.unvalidated_write_reverted", { files: guarded.reverted }, `提交边界恢复了 ${guarded.reverted.length} 处未经编辑契约校验的改动：${guarded.reverted.join(", ")}`);

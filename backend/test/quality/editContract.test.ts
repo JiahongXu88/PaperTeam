@@ -216,3 +216,45 @@ describe("validateCandidateEdit —— 合法正例（不得系统性误拒）",
     expect(validateCandidateEdit({ target: "abstract", baseline: E1_ABSTRACT_BEFORE, candidate: E1_ABSTRACT_BEFORE, contracts: [auditContract(E1_ABSTRACT_BEFORE)] }).ok).toBe(true);
   });
 });
+
+describe("M15 长程 A3（R2）：数值语义换绑（整目标软策略）", () => {
+  const policyFor = (base: string) =>
+    systemRevisionPolicyContract({ projectId: "p", file: "sections/s.tex", carrier: "file", baseContent: base, frozenContent: base, stageId: "revision.revise" });
+  const check = (base: string, candidate: string) => validateCandidateEdit({ target: "sections/s.tex", baseline: base, candidate, contracts: [policyFor(base)] });
+
+  it("负例：HOTA / IDF1 数值互换（多重集守恒）→ VALUE_REBOUND", () => {
+    const base = "Method A reaches 5.402 HOTA and 11.549 IDF1 on BENCH-A.";
+    const verdict = check(base, "Method A reaches 11.549 HOTA and 5.402 IDF1 on BENCH-A.");
+    expect(codes(verdict)).toEqual(["EDIT_CONTRACT_VALUE_REBOUND"]);
+    const preLabel = check("HOTA is 5.402 while IDF1 is 11.549 in our runs.", "HOTA is 11.549 while IDF1 is 5.402 in our runs.");
+    expect(codes(preLabel)).toEqual(["EDIT_CONTRACT_VALUE_REBOUND"]);
+  });
+
+  it("不判定的形态（保守边界）：单向挪动 / 多次出现的值 / 跨句——交给其它守卫或不判定", () => {
+    expect(check("Our tracker obtains 61.2 MOTA. It also obtains 58.4 IDF1 on the test split.", "Our tracker obtains 58.4 MOTA. It also obtains 61.2 IDF1 on the test split.").violations
+      .some((violation) => violation.code === "EDIT_CONTRACT_VALUE_REBOUND")).toBe(false);
+    expect(check("R5 uses 17 runs and HOTA gains 17 points.", "HOTA uses 17 runs and R5 gains 17 points.").ok).toBe(true);
+  });
+
+  it("回归：数字后接单词 in / ex / em 不是长度字面量（旧 token 化漏保护）", () => {
+    expect(extractValueTokens("improves by 11.549 in IDF1 and 3 ex").map((token) => token.norm)).toEqual(["11.549", "IDF1", "3"]);
+    expect(extractValueTokens("\\vspace{2cm} width 0.5in").filter((token) => token.kind === "number")).toEqual([]);
+    const base = "It improves by 11.549 in IDF1 on the test split.";
+    expect(check(base, "It improves by 9.798 in IDF1 on the test split.").ok).toBe(false);
+  });
+
+  it("正例：换序但绑定不变 / 改写措辞去掉标签 / 无标签数字 / 连字符指标名 → 放行", () => {
+    const base = "Method A reaches 5.402 HOTA and 11.549 IDF1 on BENCH-A.";
+    expect(check(base, "On BENCH-A, method A reaches 11.549 IDF1 and 5.402 HOTA.").ok).toBe(true);
+    expect(check(base, "Method A improves the baseline by 5.402 HOTA points and by 11.549 IDF1 points on BENCH-A.").ok).toBe(true);
+    expect(check("We train for 30 epochs with 4 GPUs.", "With 4 GPUs, we train for 30 epochs.").ok).toBe(true);
+    expect(check("BLEU-4 reaches 27.3 and ROUGE-L reaches 41.0.", "ROUGE-L reaches 41.0 and BLEU-4 reaches 27.3.").ok).toBe(true);
+  });
+
+  it("锚范围 / 硬冻结契约下互换由顺序守恒拦截（不依赖标签绑定）", () => {
+    const base = "Method A reaches 5.402 HOTA and 11.549 IDF1 on BENCH-A.";
+    const strict = preservingPolicyContract({ projectId: "p", file: "sections/s.tex", carrier: "file", baseContent: base, kind: "style_polish_policy" });
+    const verdict = validateCandidateEdit({ target: "sections/s.tex", baseline: base, candidate: "Method A reaches 11.549 HOTA and 5.402 IDF1 on BENCH-A.", contracts: [strict] });
+    expect(verdict.ok).toBe(false);
+  });
+});

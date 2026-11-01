@@ -116,7 +116,8 @@ export type BusinessErrorCode =
   | "SEMANTIC_MODEL_FAILED"
   // ---- M15.20 P0 编辑契约（授权内核）：越权写入 / 陈旧批准 ----
   | "EDIT_CONTRACT_VIOLATION"
-  | "EDIT_CONTRACT_STALE";
+  | "EDIT_CONTRACT_STALE"
+  | "REVIEW_SNAPSHOT_PROVENANCE_UNAVAILABLE";
 
 /** 错误码 → HTTP 状态码 */
 const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
@@ -220,6 +221,7 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   SEMANTIC_MODEL_FAILED: 502,
   EDIT_CONTRACT_VIOLATION: 409,
   EDIT_CONTRACT_STALE: 409,
+  REVIEW_SNAPSHOT_PROVENANCE_UNAVAILABLE: 409,
 };
 
 export class BusinessError extends Error {

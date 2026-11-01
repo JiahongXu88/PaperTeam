@@ -109,6 +109,9 @@ import {
   parseExternalCommentBatch,
   type ExternalInstructionSource,
 } from "./review/externalInstructions.js";
+import { loadEditContractStore, updateEditContractStore } from "./quality/editContractStore.js";
+import { applyValueChangeDecisions, type ValueChangeDecision, type ValueChangeRequest } from "./quality/valueChangeRequests.js";
+import { sha256 as sha256Hex } from "./quality/editContract.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -3719,6 +3722,56 @@ async function handleProjectResourceRoutes(
     return true;
   }
 
+  // M15 长程 A3（R4）：审稿驱动修订改动作者冻结数值的逐项批准入口。
+  //   GET  /value-change-requests          → {requests}
+  //   POST /value-change-requests/decide   {decisions:[{requestId, decision:"approve"|"reject", boundHash}]}
+  // 批准只来自本 HTTP 决策通道（Agent 无 HTTP 工具）；boundHash 必须等于所见请求内容哈希，任一条不合法整批 409。
+  if (resource === "value-change-requests") {
+    if (rest === "" && method === "GET") {
+      const store = await loadEditContractStore(stack.projects, projectId);
+      sendJson(res, 200, { requests: store.valueChangeRequests ?? [] });
+      return true;
+    }
+    if (rest === "/decide" && method === "POST") {
+      const body = await readJsonBody(req);
+      const decisions = body["decisions"];
+      if (!Array.isArray(decisions) || decisions.length === 0 || !decisions.every((entry) =>
+        entry !== null && typeof entry === "object" &&
+        typeof (entry as Record<string, unknown>)["requestId"] === "string" &&
+        typeof (entry as Record<string, unknown>)["boundHash"] === "string" &&
+        ["approve", "reject"].includes((entry as Record<string, unknown>)["decision"] as string))) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含非空 decisions 数组（[{requestId, decision:\"approve\"|\"reject\", boundHash}]）");
+      }
+      const at = new Date().toISOString();
+      const typed = decisions as ValueChangeDecision[];
+      const approvalId = `appr-vcr-${sha256Hex(`${projectId}|${JSON.stringify(typed)}|${at}`).slice(0, 16)}`;
+      let decided: ValueChangeRequest[] = [];
+      await updateEditContractStore(stack.projects, projectId, (store) => {
+        const next = applyValueChangeDecisions(store.valueChangeRequests ?? [], typed, approvalId, at);
+        decided = next.filter((request) => typed.some((decision) => decision.requestId === request.requestId));
+        const approved = decided.filter((request) => request.status === "approved");
+        return {
+          ...store,
+          valueChangeRequests: next,
+          approvals: approved.length === 0 ? store.approvals : [...store.approvals, {
+            approvalId,
+            kind: "value_change_request_approve" as const,
+            actor: "author" as const,
+            channel: "http:POST /api/projects/:id/value-change-requests/decide",
+            at,
+            boundContentHash: sha256Hex(JSON.stringify(approved.map((request) => request.boundHash))),
+            approvedValueChanges: approved.map((request) => ({ planItemId: request.requestId, before: request.before, after: request.after })),
+            contractIds: [],
+          }],
+        };
+      });
+      sendJson(res, 200, { requests: decided });
+      return true;
+    }
+    sendMethodNotAllowed(res, rest === "" ? "GET" : "POST", method);
+    return true;
+  }
+
   // revision-plan：确定性修订计划（缺省最新轮；?round=N 指定轮）
   if (resource === "revision-plan" && rest === "") {
     if (method !== "GET") {
@@ -3992,7 +4045,8 @@ async function handleProjectResourceRoutes(
       // 独立全面审稿：三路并行 + 确定性聚合（同 workflow 内的 review.run）。
       // 同样先固化修订版本（review.snapshot），使 gate / Finalize 的修订对齐
       // 在 HTTP 独立调用路径上与 workflow 路径一致
-      const { revision } = await stack.revisions.commit(projectId, "review.snapshot");
+      // M15 长程 A2：与 workflow 同一快照边界（Agent 未校验写入不吸收）
+      const { revision } = await stack.revisions.commitReviewSnapshot(projectId);
       const digest = await buildReviewDigest(stack, projectId);
       const evidence = await stack.evidence.list(projectId);
       const project = await stack.projects.getRequired(projectId);

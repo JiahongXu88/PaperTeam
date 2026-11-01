@@ -249,7 +249,17 @@ export async function startBackend(): Promise<void> {
             }
             return createWorkspaceGuardTools(
               createWorkspaceGuardPolicy({ projectDir: cwd, readOnlyRoots: skillDirs, protectedSourceIds, protectAllSources }),
-              { cwd, toolNames },
+              {
+                cwd,
+                toolNames,
+                // M15 长程 A2：Agent 写入日志（review.snapshot 据此拒绝吸收未经契约校验的 Agent 改动）。
+                // stack 未就绪时无法记录 → 拒绝写入（fail closed），不让无记录写入存在
+                onWrite: async (absPath, content) => {
+                  if (projectId === undefined) return;
+                  if (stackRef === undefined) throw new Error("Agent 写入日志不可用：拒绝写入");
+                  await stackRef.revisions.agentWriteJournal.record(projectId, absPath, content);
+                },
+              },
             );
           },
         });

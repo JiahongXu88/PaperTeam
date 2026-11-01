@@ -15,11 +15,12 @@
 
 import { createHash } from "node:crypto";
 import { copyFile, mkdir, readdir, readFile, rm, stat } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 
 import { BusinessError } from "../errors.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
 import { writeFileAtomic, writeJsonAtomic } from "../util/atomic.js";
+import { AgentWriteJournal } from "./agentWriteJournal.js";
 
 /** 快照目录名（同时是 revisions.json 所在 manuscript/ 下的排除项） */
 const REVISIONS_DIR = "revisions";
@@ -56,6 +57,26 @@ export interface RevisionRecord {
   restoredFrom?: number;
   /** manuscript 工作树内容指纹（幂等判断用） */
   fingerprint: string;
+  /** M15 长程 A2：review.snapshot 吸收的改动来源分类（旧记录无此字段） */
+  provenance?: ReviewSnapshotProvenance;
+}
+
+/**
+ * M15 长程 A2：review.snapshot 的改动来源。
+ * - revertedAgentWrites：Agent 工具写入、从未经编辑契约校验提交的改动——不吸收，恢复为上一修订内容（原内容隔离保存）。
+ * - absorbedNonAgentChanges：非 Agent 工具产生的工作区改动（作者磁盘编辑 / 服务端写入）——吸收并逐文件登记。
+ */
+export interface ReviewSnapshotProvenance {
+  kind: "review_snapshot";
+  baseRevision: number;
+  absorbedNonAgentChanges: Array<{ path: string; change: "added" | "modified" | "removed"; sha256: string | null }>;
+  revertedAgentWrites: Array<{ path: string; sha256: string; quarantinedAs: string }>;
+}
+
+export interface ReviewSnapshotResult {
+  revision: number;
+  created: boolean;
+  provenance: ReviewSnapshotProvenance | null;
 }
 
 export interface RevisionState {
@@ -86,9 +107,97 @@ export class ManuscriptRevisionStore {
   /** 每项目串行化 commit（并发 commit 不产生重复 / 交叉快照） */
   private readonly queues = new Map<string, Promise<unknown>>();
 
+  private readonly agentWrites: AgentWriteJournal;
+
   constructor(options: ManuscriptRevisionStoreOptions) {
     this.projects = options.projects;
     this.now = options.now ?? (() => new Date());
+    this.agentWrites = new AgentWriteJournal({ projects: options.projects, now: this.now });
+  }
+
+  /** Agent 写入日志（workspaceGuard onWrite 回调写入；review.snapshot 读取） */
+  get agentWriteJournal(): AgentWriteJournal {
+    return this.agentWrites;
+  }
+
+  /**
+   * M15 长程 A2：审稿前固化修订（替代裸 commit(reason=review.snapshot)）。
+   * 上一修订之后、由 Agent 工具写入且当前内容仍是该次写入结果的文件 = 未经编辑契约校验的 Agent 改动：
+   * 不吸收进修订，原内容隔离到 workflow/review-snapshot-quarantine/ 后恢复为上一修订内容；其余改动按非 Agent
+   * 来源吸收并逐文件登记 provenance。分类、恢复与提交在同一每项目串行队列内完成，并以工作树指纹约束提交
+   * （分类后被改动 → EDIT_CONTRACT_STALE，不落修订）。
+   */
+  async commitReviewSnapshot(projectId: string, runId?: string): Promise<ReviewSnapshotResult> {
+    const previous = this.queues.get(projectId) ?? Promise.resolve();
+    const task = previous.then(() => this.reviewSnapshotInner(projectId, runId));
+    this.queues.set(projectId, task.catch(() => undefined));
+    return task;
+  }
+
+  private async reviewSnapshotInner(projectId: string, runId?: string): Promise<ReviewSnapshotResult> {
+    await this.recoverRestore(projectId);
+    const state = await this.loadState(projectId);
+    const latest = state.revisions.at(-1);
+    if (latest === undefined) {
+      // 无基线：首个修订即被审对象本身（导入 / 新草稿），没有「上一修订」可比较
+      const committed = await this.commitInner(projectId, "review.snapshot", runId);
+      return { ...committed, provenance: null };
+    }
+    const manuscriptDir = this.projects.manuscriptDir(projectId);
+    const baseDir = this.snapshotDir(projectId, latest.revision);
+    const work = new Map<string, string>();
+    for (const file of await this.listWorkTreeFiles(projectId)) work.set(file.relativePath, hashBytes(await readFile(file.absolutePath)));
+    const base = new Map<string, string>();
+    for (const file of await listSnapshotFiles(baseDir)) base.set(file.relativePath, hashBytes(await readFile(join(baseDir, file.relativePath))));
+    const changed = [...new Set([...work.keys(), ...base.keys()])].sort().filter((path) => work.get(path) !== base.get(path));
+    if (changed.length === 0) return { revision: state.current, created: false, provenance: null };
+
+    let journal;
+    try {
+      journal = await this.agentWrites.list(projectId);
+    } catch (error) {
+      throw new BusinessError(
+        "REVIEW_SNAPSHOT_PROVENANCE_UNAVAILABLE",
+        `Agent 写入日志不可读，无法判定工作区改动来源——拒绝固化审稿修订：${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const cutoff = Date.parse(latest.createdAt);
+    const agentHashes = new Map<string, Set<string>>();
+    for (const entry of journal) {
+      if (!(Date.parse(entry.at) > cutoff)) continue;
+      const set = agentHashes.get(entry.path) ?? new Set<string>();
+      set.add(entry.sha256);
+      agentHashes.set(entry.path, set);
+    }
+    const stamp = this.now().toISOString().replace(/[:.]/g, "-");
+    const quarantineRoot = join(this.projects.workflowDir(projectId), "review-snapshot-quarantine", `rev-${latest.revision}-${stamp}`);
+    const reverted: ReviewSnapshotProvenance["revertedAgentWrites"] = [];
+    const absorbed: ReviewSnapshotProvenance["absorbedNonAgentChanges"] = [];
+    for (const path of changed) {
+      const current = work.get(path);
+      if (current !== undefined && agentHashes.get(path)?.has(current) === true) {
+        const quarantined = join(quarantineRoot, path);
+        await mkdir(dirname(quarantined), { recursive: true });
+        await copyFile(join(manuscriptDir, path), quarantined);
+        if (base.has(path)) {
+          await writeFileAtomic(join(manuscriptDir, path), await readFile(join(baseDir, path)));
+        } else {
+          await rm(join(manuscriptDir, path), { force: true });
+        }
+        reverted.push({ path, sha256: current, quarantinedAs: relative(this.projects.projectDir(projectId), quarantined).split(sep).join("/") });
+      } else {
+        absorbed.push({ path, change: current === undefined ? "removed" : base.has(path) ? "modified" : "added", sha256: current ?? null });
+      }
+    }
+    const provenance: ReviewSnapshotProvenance = {
+      kind: "review_snapshot",
+      baseRevision: latest.revision,
+      absorbedNonAgentChanges: absorbed,
+      revertedAgentWrites: reverted,
+    };
+    const fingerprint = await fingerprintFiles(projectId, await this.listWorkTreeFiles(projectId));
+    const committed = await this.commitInner(projectId, "review.snapshot", runId, fingerprint, absorbed.length > 0 ? provenance : undefined);
+    return { ...committed, provenance };
   }
 
   /** 未完成 restore 会阻断只读版本判断，避免把半恢复稿当成当前修订。 */
@@ -376,6 +485,7 @@ export class ManuscriptRevisionStore {
     reason: string,
     runId?: string,
     expectedFingerprint?: string,
+    provenance?: ReviewSnapshotProvenance,
   ): Promise<{ revision: number; created: boolean }> {
     await this.recoverRestore(projectId);
     const state = await this.loadState(projectId);
@@ -410,6 +520,16 @@ export class ManuscriptRevisionStore {
         await mkdir(join(target, ".."), { recursive: true });
         await copyFile(file.absolutePath, target);
       }
+      // M15 长程 A2：指纹约束的提交在复制后复核快照本身（复制期间工作树被改 → 快照与登记指纹不符）
+      if (expectedFingerprint !== undefined && await fingerprintFiles(projectId, (await listSnapshotFiles(snapshotDir)).map((file) => ({
+        relativePath: file.relativePath, absolutePath: join(snapshotDir, file.relativePath),
+      }))) !== fingerprint) {
+        await rm(snapshotDir, { recursive: true, force: true });
+        throw new BusinessError(
+          "EDIT_CONTRACT_STALE",
+          "EDIT_CONTRACT_RACE: 修订快照复制期间工作树发生变化——拒绝提交（快照必须等于已校验内容）",
+        );
+      }
     }
     const record: RevisionRecord = {
       revision,
@@ -417,6 +537,7 @@ export class ManuscriptRevisionStore {
       reason,
       ...(runId !== undefined ? { runId } : {}),
       fingerprint,
+      ...(provenance !== undefined ? { provenance } : {}),
     };
     const next: RevisionState = {
       schemaVersion: 1,

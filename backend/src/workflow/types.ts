@@ -225,6 +225,8 @@ export type WorkflowDomainEventType =
   | "revision.guarded_table_rejected"
   | "revision.content_collapse_rejected"
   | "revision.best_updated"
+  | "review.snapshot_agent_writes_reverted"
+  | "revision.value_change_requested"
   | "revision.best_restored"
   | "evidence.ground_claims"
   | "final.created"

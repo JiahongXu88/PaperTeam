@@ -25,6 +25,7 @@ import {
   validateCandidateEdit,
   type EditContract,
   type EditContractVerdict,
+  type ApprovedValueChange,
 } from "../quality/editContract.js";
 import { recordEditContractEvents, type EditContractEvent, type EditContractStoreFile } from "../quality/editContractStore.js";
 import { isApprovedAuditRewrite, type ExternalInstruction } from "../review/externalInstructions.js";
@@ -146,6 +147,8 @@ export function contractsForWrite(input: {
   frozenContent: string | undefined;
   auditContracts: readonly EditContract[];
   improvementContracts: readonly EditContract[];
+  /** M15 长程 A3（R4）：作者经数值修改请求逐项批准、对本次写入仍有效的值对 */
+  approvedValueChanges?: readonly ApprovedValueChange[];
 }): EditContract[] {
   return [
     systemRevisionPolicyContract({
@@ -156,6 +159,7 @@ export function contractsForWrite(input: {
       baseContent: input.baseContent,
       frozenContent: input.frozenContent,
       stageId: input.stageId,
+      ...(input.approvedValueChanges !== undefined && input.approvedValueChanges.length > 0 ? { approvedValueChanges: input.approvedValueChanges } : {}),
     }),
     ...input.auditContracts,
     ...input.improvementContracts.filter((contract) => contract.target.file === input.target),

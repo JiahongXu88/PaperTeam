@@ -152,6 +152,7 @@ export type EditContractViolationCode =
   | "EDIT_CONTRACT_PROTECTED_VALUE_CHANGED"
   | "EDIT_CONTRACT_PROTECTED_VALUE_REMOVED"
   | "EDIT_CONTRACT_VALUE_ORDER_CHANGED"
+  | "EDIT_CONTRACT_VALUE_REBOUND"
   | "EDIT_CONTRACT_NEW_VALUE"
   | "EDIT_CONTRACT_CITATION_REMOVED"
   | "EDIT_CONTRACT_CITATION_ADDED";
@@ -199,7 +200,9 @@ export interface ValueToken {
 /** 结构性 LaTeX 参数（label / ref / cite / 尺寸 / 文件名）中的数字不是事实值 */
 const STRUCTURAL_COMMAND_ARG =
   /\\(?:cite[a-zA-Z]*|citep|citet|ref|eqref|autoref|cref|Cref|pageref|label|url|href|includegraphics|input|include|bibliography|bibliographystyle|vspace|hspace|setlength|addtolength|resizebox|scalebox|rule|hypersetup|usepackage|documentclass|begin|end)\*?(?:\[[^\]]*\])*(?:\{[^{}]*\})+/g;
-const LENGTH_LITERAL = /(?<![\w.])\d+(?:\.\d+)?\s*(?:pt|mm|cm|em|ex|bp|in)\b/g;
+// M15 长程：长度字面量必须紧贴单位（2cm / 0.5in）。旧写法允许空白，导致「11.549 in IDF1」「3 ex」这类正文数字被当作
+// 长度剥离、不受数值保护（受保护值静默漏检）
+const LENGTH_LITERAL = /(?<![\w.])\d+(?:\.\d+)?(?:pt|mm|cm|em|ex|bp|in)\b/g;
 
 function stripStructural(text: string): string {
   return text.replace(STRUCTURAL_COMMAND_ARG, " ").replace(LENGTH_LITERAL, " ");
@@ -245,6 +248,60 @@ export function extractValueTokens(text: string): ValueToken[] {
     tokens.push({ raw: match[0].trim().replace(/^[-−‐-‒–]/, sign), norm, kind: "number" });
   }
   return tokens;
+}
+
+/**
+ * M15 长程 A3（R2）：数值 ↔ 指标标签的句内绑定。多重集守恒看不见「HOTA=5.402、IDF1=11.549」被换成
+ * 「HOTA=11.549、IDF1=5.402」——值都还在，含义交换了。这里只做最小、保守的绑定：同一句内距离数字最近
+ * （≤ 24 字符、中间无其它数字）的指标式标签（≥2 个大写字母，或字母后接数字：HOTA / IDF1 / mAP / AP50 / BLEU-4）；
+ * 平局或无标签 → 不绑定（不判定）。不宣称理解所有科研语义：中文指标名、表格列头不在此处判定（表格由事实守卫负责）。
+ */
+export interface ValueBinding {
+  label: string;
+  norm: string;
+  /** 所在句序号（交换判定只在同一句内成立） */
+  sentence: number;
+}
+
+const METRIC_LABEL = /(?<![A-Za-z\d])(?:[A-Za-z]*[A-Z][A-Za-z]*[A-Z][A-Za-z\d]*|[A-Za-z]+\d+[A-Za-z\d]*)(?:-[A-Za-z\d]+)*(?![A-Za-z\d])/g;
+const PROSE_NUMBER = /(?<![A-Za-z\d.])[-−]?\d+(?:\.\d+)?(?:\s*%)?(?![A-Za-z\d])/g;
+const BINDING_MAX_GAP = 24;
+
+export function extractValueBindings(text: string): ValueBinding[] {
+  const bindings: ValueBinding[] = [];
+  const sentences = collapseWhitespace(stripStructural(text.normalize("NFKC")).replace(/\\%/g, "%"))
+    .split(/(?<=[.!?。！？；;])\s+|(?<=[。！？；])|\\\\|&/);
+  for (const [sentenceIndex, sentence] of sentences.entries()) {
+    const numbers = [...sentence.matchAll(PROSE_NUMBER)].map((match) => {
+      const start = match.index ?? 0;
+      // 连接号不是负号（BLEU-4 / RGB–2）：与 extractValueTokens 同一规则
+      const raw = /^[-−]/.test(match[0]) && start > 0 && /[A-Za-z\d]/.test(sentence[start - 1]!) ? match[0].slice(1) : match[0];
+      return { start, end: start + match[0].length, raw };
+    });
+    if (numbers.length === 0) continue;
+    const labels = [...sentence.matchAll(METRIC_LABEL)].map((match) => ({ start: match.index ?? 0, end: (match.index ?? 0) + match[0].length, text: match[0] }));
+    for (const number of numbers) {
+      let best: { label: string; distance: number } | null = null;
+      let tie = false;
+      for (const label of labels) {
+        const before = label.end <= number.start;
+        const gapStart = before ? label.end : number.end;
+        const gapEnd = before ? number.start : label.start;
+        if (!before && label.start < number.end) continue;
+        const distance = gapEnd - gapStart;
+        if (distance > BINDING_MAX_GAP) continue;
+        if (numbers.some((other) => other !== number && other.start >= gapStart && other.end <= gapEnd)) continue;
+        if (best === null || distance < best.distance) {
+          best = { label: label.text, distance };
+          tie = false;
+        } else if (distance === best.distance && label.text !== best.label) {
+          tie = true;
+        }
+      }
+      if (best !== null && !tie) bindings.push({ label: best.label, norm: normValue(number.raw), sentence: sentenceIndex });
+    }
+  }
+  return bindings;
 }
 
 // ---------------------------------------------------------------------------
@@ -694,6 +751,36 @@ export function validateCandidateEdit(input: ValidateCandidateEditInput): EditCo
           ? `受保护数值 ${value} 被替换（候选新增 ${introduced.slice(0, 6).join("、")}）${hardFreeze ? "——硬禁改约束：任何批准都不能解除" : "——无对应的结构化用户批准"}`
           : `受保护数值 ${value} 被删除${hardFreeze ? "——硬禁改约束" : "——无对应的结构化用户批准"}`,
       });
+    }
+  }
+  // R2：整目标软策略只按多重集守恒——补「同一句内两个受保护值在两个指标标签之间互换」的语义交换检查。
+  // 只判定交换（A:v,B:w → A:w,B:v，同句、两值在基线中唯一出现）：单向挪动 / 多次出现的值 / 非同句重写
+  // 不在此判定（历史回放实证这些形态以合法改写为主，强行判定会系统性误拒）
+  if (!orderStrict) {
+    const protectedNorms = new Set(expected.map((token) => token.norm));
+    const baselineCounts = multisetCount(baselineTokens.map((token) => token.norm));
+    const unique = (norm: string) => protectedNorms.has(norm) && baselineCounts.get(norm) === 1;
+    const baselineBindings = extractValueBindings(baseline).filter((binding) => unique(binding.norm));
+    const candidateBindings = extractValueBindings(candidate).filter((binding) => unique(binding.norm));
+    const has = (bindings: readonly ValueBinding[], label: string, norm: string, sentence?: number) =>
+      bindings.some((binding) => binding.label === label && binding.norm === norm && (sentence === undefined || binding.sentence === sentence));
+    const reported = new Set<string>();
+    for (const first of baselineBindings) {
+      for (const second of baselineBindings) {
+        if (second.sentence !== first.sentence || second.label === first.label || second.norm === first.norm) continue;
+        if (reported.has(first.norm) || reported.has(second.norm)) continue;
+        if (has(baselineBindings, first.label, second.norm) || has(baselineBindings, second.label, first.norm)) continue;
+        const swapped = candidateBindings.find((binding) => binding.label === first.label && binding.norm === second.norm &&
+          has(candidateBindings, second.label, first.norm, binding.sentence));
+        if (swapped === undefined) continue;
+        reported.add(first.norm);
+        reported.add(second.norm);
+        violations.push({
+          code: "EDIT_CONTRACT_VALUE_REBOUND",
+          value: first.norm,
+          detail: `受保护数值互换：${first.label}=${first.norm}、${second.label}=${second.norm} 在候选中变为 ${first.label}=${second.norm}、${second.label}=${first.norm}（数值多重集守恒但含义交换）——无对应的结构化用户批准`,
+        });
+      }
     }
   }
   if (!allowNew) {
