@@ -58,7 +58,7 @@ async function waitRunStatus(
 }
 
 async function cleanupProject(request: APIRequestContext, projectId: string): Promise<void> {
-  if (projectId === "") {
+  if (projectId === "" || process.env.PAPERTEAM_E2E_KEEP === "1") {
     return;
   }
   await request.post(`/api/projects/${projectId}/archive`);
@@ -101,17 +101,59 @@ test.describe.serial("M4.8 Existing Paper Improvement（scripted + 真实 LaTeX�
     await page.goto(`/projects/${projectId}?tab=workflow`);
     await expect(page.getByTestId("stage-timeline")).toBeVisible();
     await expect(page.getByTestId("hitl-panel")).toBeVisible({ timeout: 180_000 });
-    await expect(page.getByTestId("hitl-approve")).toBeVisible();
-    await page.getByTestId("hitl-approve").click();
-
-    // 4. 修订 → 真实 LaTeX 构建 → Draft → 复审 → Gate → Final（API 权威等待终态）
     const runsResponse = await request.get(`/api/runs?projectId=${projectId}`);
     const runs = ((await runsResponse.json()) as { runs: { runId: string; workflowKind: string }[] }).runs;
     const improvementRun = runs.find((run) => run.workflowKind === "existing_paper_improvement");
     expect(improvementRun).toBeDefined();
-    const finished = await waitRunStatus(request, improvementRun!.runId, ["completed", "failed", "awaiting_input"]);
+    // M10.3 起改进流程在计划确认前还有 hitl.research_plan / hitl.evidence_supply 决策点（旧断言只批准一次已过期，
+    // M15 长程修正）：逐个在浏览器里批准；到 hitl.plan_confirm 时核对 M15.20 的「本次批准的授权范围」呈现
+    let sawPlanConfirm = false;
+    let finished = await waitRunStatus(request, improvementRun!.runId, ["completed", "failed", "awaiting_input"]);
+    for (let guard = 0; finished.status === "awaiting_input" && guard < 6; guard += 1) {
+      const awaiting = ((await (await request.get(`/api/runs/${improvementRun!.runId}`)).json()) as { run: { awaiting?: { stageId?: string } } }).run.awaiting?.stageId;
+      await page.goto(`/projects/${projectId}?tab=workflow`);
+      await expect(page.getByTestId("hitl-panel")).toBeVisible({ timeout: 60_000 });
+      if (awaiting === "hitl.plan_confirm") {
+        sawPlanConfirm = true;
+        await expect(page.getByTestId("hitl-payload-plan")).toBeVisible();
+        const contracts = page.getByTestId("hitl-plan-contracts");
+        if (await contracts.count() > 0) await expect(contracts).toContainText("本次批准的授权范围");
+        const notice = page.getByTestId("hitl-contract-notice-ack");
+        if (await notice.count() > 0) await notice.check();
+        const ack = page.getByTestId("hitl-plan-ack");
+        if (await ack.count() > 0) await ack.check();
+      }
+      if (awaiting === "hitl.evidence_supply") {
+        // 证据补充决策点不是本用例焦点：与 backend testStack.pollRunUntilAwaiting 同口径 continue
+        await request.post(`/api/runs/${improvementRun!.runId}/resume`, { data: { decision: "continue" } });
+      } else {
+        await page.getByTestId("hitl-approve").click();
+      }
+      await delay(1500);
+      finished = await waitRunStatus(request, improvementRun!.runId, ["completed", "failed", "awaiting_input"]);
+    }
+    expect(sawPlanConfirm).toBe(true);
+    if (sawPlanConfirm) {
+      const store = await request.get(`/api/projects/${projectId}/value-change-requests`);
+      expect(store.ok()).toBeTruthy();
+    }
     expect(finished.status).toBe("completed");
-    expect(finished.completion?.label).toBe("final");
+    // M15 长程：终态以分层报告为准——长文档单元审稿模式不产出 claims，必需的 claim 级核验 NOT_EVALUATED，
+    // 诚实终态是 Draft（M14.9.5.4 起即如此；旧断言「必达 Final」已过期）。报告可冻结时才期望 Final
+    const gateBody = (await (await request.get(`/api/projects/${projectId}/quality-gate`)).json()) as {
+      gate: { passed: boolean }; qualityReport: { overall: { status: string; finalizable: boolean }; layers: Record<string, { status: string }> };
+    };
+    expect(gateBody.gate.passed).toBe(gateBody.qualityReport.overall.finalizable);
+    expect(gateBody.qualityReport.layers["L4"]!.status).toBe("UNVALIDATED");
+    expect(finished.completion?.label).toBe(gateBody.qualityReport.overall.finalizable ? "final" : "draft");
+    if (!gateBody.qualityReport.overall.finalizable) {
+      await page.goto(`/projects/${projectId}?tab=workflow`);
+      await expect(page.getByTestId("quality-report")).toHaveAttribute("data-overall", gateBody.qualityReport.overall.status);
+      await page.goto(`/projects/${projectId}?tab=paper`);
+      await expect(page.getByTestId("draft-card")).toBeVisible();
+      await page.screenshot({ path: `${SHOTS_DIR}/m15-improvement-draft-terminal.png`, fullPage: true });
+      return;
+    }
 
     // 5. 阶段事实：PDF 重建发生在 import.parse
     const parseStage = await request.get(`/api/runs/${improvementRun!.runId}`);

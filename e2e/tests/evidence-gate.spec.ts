@@ -223,7 +223,8 @@ test.describe.serial("证据工作台 + 质量门禁（scripted Runtime 栈）",
     // 总数随场景 9–12+ 浮动；旧断言固定 9 在 pristine HEAD 上即过期（M9.4 修正）
     const ruleCount = await gatePanel.locator('[data-testid="gate-rule"]').count();
     expect(ruleCount).toBeGreaterThanOrEqual(9);
-    await expect(gatePanel.locator('[data-rule="academic_score_threshold"] [data-status="未通过"]')).toHaveCount(1);
+    // M15.7 起未校准分数阈值为 ADVISORY（不单独否决）；此前断言「未通过」自 M15.7 起已过期（M15 长程修正）
+    await expect(gatePanel.locator('[data-rule="academic_score_threshold"] [data-status="建议参考（未校准）"]')).toHaveCount(1);
     // 同轮审稿上下文（round 隔离：r1 gate ↔ r1 review）
     await expect(gatePanel.getByTestId("gate-review-context")).toContainText("第 1 轮");
     await expect(gatePanel.getByTestId("gate-review-context")).toContainText("学术评分 66");
