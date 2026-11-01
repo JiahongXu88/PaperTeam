@@ -83,7 +83,7 @@ describe("Experiment 2 baseline 物化（scriptedRevision 同源故障）", () =
 });
 
 describe("Experiment 2 paperteam：[cite:drop] 全链路拦截", () => {
-  it("revision.validate 拦截 → HITL reject 恢复快照 → 复审 → 终稿引用完整", async () => {
+  it("候选守卫写前拦截（M15.20：文件级目标同一守卫）→ 删光引用的候选不落盘 → 终稿引用完整", async () => {
     const harness = await createWorkflowHarness({ reviewSequence: ["fail", "pass"] });
     try {
       const project = await harness.store.create("cite-drop-e2e", {
@@ -94,15 +94,20 @@ describe("Experiment 2 paperteam：[cite:drop] 全链路拦截", () => {
       expect(driven.timedOut).toBe(false);
       expect(driven.run.status).toBe("completed");
 
+      // M15.20 P0：文件级修订目标与 span 候选同一候选守卫——删光引用的候选在写入前即被拒绝（不再落盘后
+      // 才由 revision.validate 拦截 / HITL 恢复快照）；拦截点前移，终稿引用完整的结论不变
+      const { readdir, readFile } = await import("node:fs/promises");
+      const { join } = await import("node:path");
+      const reviewsDir = join(harness.root, project.id, "reviews");
+      const patchFiles = (await readdir(reviewsDir)).filter((name) => /^patch-validation-rev-\d+\.json$/.test(name));
+      const records = (await Promise.all(patchFiles.map(async (name) => (JSON.parse(await readFile(join(reviewsDir, name), "utf8")) as { records: Array<{ apply: { status: string }; citation: { violations: string[] } }> }).records))).flat();
+      expect(records.some((record) => record.apply.status === "rejected" && record.citation.violations.some((violation) => violation.includes("lewis2020retrieval")))).toBe(true);
       const validations = await readRevisionValidations(harness.root, project.id);
-      expect(validations.length).toBeGreaterThan(0);
-      const reasonCodes = validations.flatMap((round) => round.reasonCodes);
-      expect(reasonCodes).toContain("citation_removal_unauthorized");
+      expect(validations.flatMap((round) => round.reasonCodes)).not.toContain("citation_removal_unauthorized");
 
       const snapshot = await readManuscriptSnapshot(harness.root, project.id);
-      // reject 策略恢复快照：lewis2020retrieval 回到终稿
+      // 删光引用的候选从未落盘：lewis2020retrieval 始终在终稿
       expect(snapshot.citationKeys).toContain("lewis2020retrieval");
-      expect(driven.hitlStages).toContain("hitl.revision_validation");
     } finally {
       await harness.cleanup();
     }

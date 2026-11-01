@@ -21,7 +21,9 @@ export type StyleInvariantRule =
   | "latex_structure"
   | "protected_terms"
   | "sentinel_words"
-  | "source_boundaries";
+  | "source_boundaries"
+  /** M15.20 P0：纯表述系统策略编辑契约（数值 / 引用逐个守恒）——由修订 stage 追加，不由本模块计算 */
+  | "edit_contract";
 
 export interface StyleInvariantViolation {
   rule: StyleInvariantRule;

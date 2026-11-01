@@ -97,69 +97,44 @@ async function readGate(stack: TestStack, projectId: string, round: number): Pro
 }
 
 describe("Fact Preservation Gate（scripted workflow）", () => {
-  it("[fact:mutate]：修订篡改公式与数值 → gate FAIL、plan 派发 fact_preserve、Draft 被拦截", async () => {
+  it("[fact:mutate]：修订篡改公式与数值 → 候选在写入前被拒（M15.20：文件级目标同一守卫）、正式稿无篡改、gate 不放行", async () => {
     const stack = await newStack(["fail", "pass"]);
     const project = await stack.store.create("事实篡改回归", { researchIdea: "[fact:mutate] 检索增强生成" });
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
 
     await approveTwice(stack, runId);
-    // r1 fail → revise（篡改）→ Revision Validation 拦截（fact 漂移 → 条目 rejected，
-    // M6.7：先于 gate 的修订复核 HITL；测试以 approve 放行）→ r2 pass 但 gate 失败
-    // → plan r2 派发恢复条目 → revise（仍篡改）→ 复核再拦截 → r3 pass → 失败集合
-    // 相同 → CONVERGED → stalled HITL
+    // M15.20 P0：旧链路是「篡改落盘 → gate 的 fact_preservation 事后检出 → 恢复条目 / Draft 拦截」；
+    // 文件级修订目标现在与 span 候选同一候选守卫（授权契约 + 事实 / 引用守卫），篡改在写入前即被拒绝：
+    // 正式稿件从未出现被替换的公式常量与无依据数值，拒绝记录 fail-closed 保留，gate 不因此放行。
     const stalled = await pollRunApprovingValidation(stack, runId, "hitl.revision_stalled");
     expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
     const gateReasons = stalled.awaiting?.payload?.["gateReasons"] as string[];
-    expect(gateReasons.join("\n")).toContain("fact_preservation");
+    expect(gateReasons.join("\n")).toContain("patch_validation_publishable");
 
-    // r1（骨架 → 写作）：新章节文件不参与新增审查 → PASS
-    const r1 = await readGate(stack, project.id, 1);
-    const r1Rule = r1.gate.rules.find((rule) => rule.rule === "fact_preservation");
-    expect(r1Rule?.passed).toBe(true);
-    // r2（写作 → 修订）：公式常量被换 + 无依据数值新增 → FAIL
     const r2 = await readGate(stack, project.id, 2);
     expect(r2.gate.passed).toBe(false);
-    expect(r2.gate.reasons.join("\n")).toContain("fact_preservation");
-    expect(r2.factPreservation?.ok).toBe(false);
-    // 公式常量被替换（\alpha→\beta）：缺失 + 新增都被捕获。
-    // 注：mutate 行新增的 8.7%/12.4% 恰好被本场景 Evidence 覆盖（fail finding 的
-    // 「Evidence 只支持 8.7%」），按授权模型正确放行——新增检测由单元测试覆盖。
-    expect(r2.factPreservation?.formulaChanges.length).toBeGreaterThanOrEqual(1);
-    expect(r2.factPreservation?.addedUnsupportedFacts.some((finding) => finding.reason === "formula_added")).toBe(true);
-
-    // 计划派发 fact_preserve 恢复条目（有章节归属，可执行）。M6.7 完整生命周期：
-    // 恢复未执行 → Revision Validation 机器判 rejected（验证产物留档）→ 用户在
-    // 修订复核 HITL approve → 条目落 approved 终态（resolution 记录 user_approved）
-    const validation = JSON.parse(
-      await readFile(join(stack.root, project.id, "reviews", "revision-validation-r2.json"), "utf8"),
-    ) as { items: { kind: string; status: string }[] };
-    expect(
-      validation.items.filter((item) => item.kind === "fact_preserve").every((item) => item.status === "rejected"),
-    ).toBe(true);
-    const plan = JSON.parse(
-      await readFile(join(stack.root, project.id, "reviews", "revision-plan-r2.json"), "utf8"),
-    ) as { items: { id: string; kind: string; status: string; section: string; priority: string; resolution?: string }[] };
-    const factItems = plan.items.filter((item) => item.kind === "fact_preserve");
-    expect(factItems.length).toBeGreaterThanOrEqual(1);
-    expect(factItems.every((item) => item.priority === "high")).toBe(true);
-    expect(factItems.every((item) => item.status === "approved")).toBe(true);
-    expect(factItems.every((item) => (item.resolution ?? "").startsWith("user_approved"))).toBe(true);
-
-    // 用户接受草稿：实验事实被篡改 → Draft 产物被拦截（run failed，FACT_PRESERVATION_FAILED）
+    // 篡改从未落盘：修订前后事实保持 PASS（没有可检出的漂移）
+    expect(r2.factPreservation?.ok).toBe(true);
+    const { readdir } = await import("node:fs/promises");
+    const sectionsDir = join(stack.root, project.id, "manuscript", "sections");
+    for (const name of await readdir(sectionsDir)) {
+      const content = await readFile(join(sectionsDir, name), "utf8");
+      expect(content).not.toContain("12.4\\%");
+      expect(content).not.toContain("修订补充");
+    }
+    // 拒绝记录：文件级候选在写入前被拒（授权契约 / 事实守卫），fail-closed 留档（rootViolationIds 保留拒绝原因；
+    // revision.validate 会按实际落盘 diff 重新归因 fact 字段——候选未落盘，故 fact 字段回到 ok）
+    const reviewsDir = join(stack.root, project.id, "reviews");
+    const patchFiles = (await readdir(reviewsDir)).filter((name) => /^patch-validation-rev-\d+\.json$/.test(name));
+    const records = (await Promise.all(patchFiles.map(async (name) => (JSON.parse(await readFile(join(reviewsDir, name), "utf8")) as { records: Array<{ apply: { status: string }; rootViolationIds?: string[] }> }).records))).flat();
+    expect(records.some((record) => record.apply.status === "rejected" && (record.rootViolationIds ?? []).includes("unauthorized_formula_change"))).toBe(true);
+    // 用户接受草稿：正式稿无篡改——不存在被冻结的篡改产物
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
-    const finished = await pollRun(stack, runId, ["failed", "completed"]);
-    expect(finished.status).toBe("failed");
-    const failure = finished.error;
-    expect(failure?.code ?? failure?.["code"]).toBe("FACT_PRESERVATION_FAILED");
-    expect(String(failure?.message ?? "")).toContain("实验事实保持未通过");
-    const { events } = await stack.orchestrator.readEvents(runId);
-    const blockedEvent = events.find((event) => event.type === "fact_preservation.blocked_draft");
-    expect(blockedEvent).toBeDefined();
-    // 没有 Draft / Final 产物冻结
-    const { body } = await stack.request("GET", `/api/projects/${project.id}/artifacts`);
-    const artifacts = (body["artifacts"] ?? []) as { kind: string }[];
-    expect(artifacts.some((artifact) => artifact.kind === "draft" || artifact.kind === "final")).toBe(false);
+    await pollRun(stack, runId, ["failed", "completed"]);
+    for (const name of await readdir(sectionsDir)) {
+      expect(await readFile(join(sectionsDir, name), "utf8")).not.toContain("修订补充");
+    }
   });
 
   it("默认脚本（修订保留既有公式与数值）：fail → pass 照旧 Final，fact_preservation 规则 PASS", async () => {

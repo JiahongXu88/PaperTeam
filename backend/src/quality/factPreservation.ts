@@ -155,6 +155,13 @@ export interface FactPreservationInput {
   strictPlanTextAuthorization?: boolean;
   /** Verified source quotes, kept separate from model-written claims/summaries. */
   formulaSources?: { id: string; text: string }[];
+  /**
+   * M15.20 P0：数值的改 / 删 / 增授权只认可信来源（plan_confirm 中作者逐项勾选的结构化值对）。
+   * 开启时 improvementPlanItems（Planner 自由文本）不再作为数值授权依据——公式 / 方向 / 弱化等
+   * 其余授权通道语义不变（公式新增仍须 verified Evidence 原文支撑）。
+   */
+  valueAuthorizationTrustedOnly?: boolean;
+  trustedValueItems?: { section: string; action: string }[];
 }
 
 // ---- 提取：表格 ----
@@ -433,6 +440,8 @@ interface AuthorizationContext {
   formulaSources: { id: string; text: string }[];
   planTexts: { id: string; section: string; text: string }[];
   improvementTexts: { id: string; section: string; text: string; logicalSection?: string }[];
+  /** M15.20：数值改 / 删 / 增授权所用文本（trusted-only 模式下只含结构化批准的值对渲染） */
+  valueTexts: { id: string; section: string; text: string; logicalSection?: string }[];
   evidenceTexts: string[];
   bibliographyKeys: string[];
   needsEvidenceItems: RevisionPlanItem[];
@@ -462,7 +471,7 @@ function buildAuthorization(
   evidenceTexts: readonly string[],
   bibliographyKeys: readonly string[] = [],
   weakeningAuthorizations: readonly WeakeningAuthorizationInput[] = [],
-  options: { strictPlanTextAuthorization?: boolean; formulaSources?: { id: string; text: string }[] } = {},
+  options: { strictPlanTextAuthorization?: boolean; formulaSources?: { id: string; text: string }[]; valueAuthorizationTrustedOnly?: boolean; trustedValueItems?: { section: string; action: string }[] } = {},
 ): AuthorizationContext {
   /**
    * M11.2.1：匹配轮次计划（sourceRevision == previous）的条目授权在条目生命
@@ -521,6 +530,9 @@ function buildAuthorization(
     formulaSources: options.formulaSources ?? [],
     planTexts,
     improvementTexts,
+    valueTexts: options.valueAuthorizationTrustedOnly === true
+      ? (options.trustedValueItems ?? []).map((item, index) => ({ id: `trusted-value-approval:${index}`, section: item.section, text: item.action }))
+      : improvementTexts,
     evidenceTexts: [...evidenceTexts],
     bibliographyKeys: [...bibliographyKeys],
     needsEvidenceItems,
@@ -575,7 +587,7 @@ function valueChangeAuthorized(
   after: string,
   file?: string,
 ): { basis: string; planItemId: string } | null {
-  const entries = [...auth.planTexts, ...auth.improvementTexts];
+  const entries = [...auth.planTexts, ...auth.valueTexts];
   for (const entry of entries) {
     if (mentionsValue([entry.text], before)) {
       if (mentionsValue([entry.text], after)) {
@@ -630,7 +642,7 @@ function valueRemovalAuthorized(
   const localized = (entry: { id: string; section: string; text: string; logicalSection?: string }): boolean =>
     entry.logicalSection === undefined || removedInSpans === undefined || removedInSpans.size === 0 ||
     removedInSpans.has(entry.logicalSection.replace(/#u\d+$/, ""));
-  const entries = [...auth.planTexts, ...auth.improvementTexts].filter(localized);
+  const entries = [...auth.planTexts, ...auth.valueTexts].filter(localized);
   /**
    * M14.8.1-MOT：删除 / 替换词与被删数值须出现在计划文本的**同一条指令子句**中，且该子句
    * 不是保留声明。真实计划条目常是多指令长文本——「所有数值保持原样（121、80、…）……
@@ -678,7 +690,7 @@ function valueAdditionAuthorized(
   if (mentionsValue(auth.evidenceTexts, value)) {
     return { basis: "evidence", planItemId: "(evidence)" };
   }
-  const entries = [...auth.planTexts, ...auth.improvementTexts];
+  const entries = [...auth.planTexts, ...auth.valueTexts];
   for (const entry of entries) {
     if (mentionsValue([entry.text], value)) {
       return { basis: "plan_value", planItemId: entry.id };
@@ -1596,7 +1608,8 @@ export function evaluateFactPreservation(input: FactPreservationInput): FactPres
     input.bibliographyKeys ?? [],
     input.weakeningAuthorizations ?? [],
     { ...(input.strictPlanTextAuthorization !== undefined ? { strictPlanTextAuthorization: input.strictPlanTextAuthorization } : {}),
-      ...(input.formulaSources !== undefined ? { formulaSources: input.formulaSources } : {}) },
+      ...(input.formulaSources !== undefined ? { formulaSources: input.formulaSources } : {}),
+      ...(input.valueAuthorizationTrustedOnly === true ? { valueAuthorizationTrustedOnly: true, trustedValueItems: input.trustedValueItems ?? [] } : {}) },
   );
   const changedFacts: FactFinding[] = [];
   const removedFacts: FactFinding[] = [];
@@ -2400,6 +2413,7 @@ export function describeFactPreservation(summary: FactPreservationSummary): stri
 
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { loadEditContractStore } from "./editContractStore.js";
 
 import type { ManuscriptRevisionStore } from "../manuscript/RevisionStore.js";
 import type { ProjectStore } from "../project/ProjectStore.js";
@@ -2557,6 +2571,13 @@ export async function computeFactPreservationForCandidate(
       break;
     }
   }
+  /**
+   * M15.20 P0（M15.19 E1 实证：Planner 计划文本点名「旧值 → 新值」并自称作者已批准，plan_confirm 后
+   * 候选级 / 冻结口径均按文本提及放行）：候选级授权只认 plan_confirm 中作者逐项勾选、冻结在编辑契约里的
+   * 结构化值对；Planner 自由文本（action / rationale）与旧授权台账的文本条目不再授权候选写入。
+   * Quality Gate 的 pairwise / cumulative 口径不变（历史产物只读兼容）。
+   */
+  const trustedValueItems = await readTrustedValueChangeItems(deps.projects, projectId);
   const improvementPlanItems = await readImprovementPlanItems(deps.projects, projectId);
   const evidenceRecords = await deps.evidence.list(projectId);
   const evidenceTexts = evidenceRecords.flatMap((record) => [record.claim, record.summary ?? "", record.quote ?? ""]);
@@ -2593,6 +2614,8 @@ export async function computeFactPreservationForCandidate(
        * 只带本 run 的计划条目，冻结口径便把这些既有变更判为未授权，本 run 每个补丁都被同一条旧违规
        * 拒绝（8/8 实录）。授权来源与累计 gate 对齐：本 run 计划 + 授权台账（全部已批准条目）。
        */
+      // M15.20：冻结口径的数值授权同样只认结构化批准（跨 run 的已批准值对都在契约存储里）；
+      // 旧台账文本仍参与公式 / 方向等非数值通道（与本 run 计划同口径）
       const ledgerItems = await readLedgerImprovementItems(deps.projects, projectId);
       const frozenAuthorizationItems = [...improvementPlanItems, ...ledgerItems];
       const frozenAgainst = (files: FactTexFile[], revision: number): FactPreservationSummary =>
@@ -2606,6 +2629,8 @@ export async function computeFactPreservationForCandidate(
           weakeningAuthorizations,
           strictPlanTextAuthorization: true,
           formulaSources,
+          valueAuthorizationTrustedOnly: true,
+          trustedValueItems,
         });
       frozenSummary = frozenAgainst(candidateFiles, sourceRevision + 1);
       /**
@@ -2630,6 +2655,8 @@ export async function computeFactPreservationForCandidate(
     // patch 层放行、gate 层判漂移且不可恢复）
     strictPlanTextAuthorization: true,
     formulaSources,
+    valueAuthorizationTrustedOnly: true,
+    trustedValueItems,
   });
   if (frozenSummary === null) return pairwise;
   const frozenOwn = ownFrozenFindings(frozenSummary, frozenAtSource);
@@ -2694,6 +2721,26 @@ async function readBibliographyKeys(
     }
   }
   return [];
+}
+
+/**
+ * M15.20 P0：作者在 plan_confirm 中逐项勾选的结构化值变更（research/edit-contracts.json）→ 授权条目口径。
+ * 删除（after 为空）渲染为删除授权；渲染文本只含值对本身，不携带任何模型生成文字。
+ */
+async function readTrustedValueChangeItems(
+  projects: ProjectStore,
+  projectId: string,
+): Promise<{ section: string; action: string; rationale?: string }[]> {
+  const store = await loadEditContractStore(projects, projectId);
+  return store.contracts
+    .filter((contract) => contract.source.kind === "improvement_plan_item" && contract.status === "executable" && contract.allowedValueChanges.length > 0 &&
+      contract.authority.some((entry) => entry.kind === "user_approval" || entry.kind === "synthetic_test_actor"))
+    .map((contract) => ({
+      section: contract.target.file,
+      action: contract.allowedValueChanges
+        .map((change) => (change.after.trim() === "" ? `删除 ${change.before}` : `${change.before} → ${change.after}`))
+        .join("\n"),
+    }));
 }
 
 async function readImprovementPlanItems(

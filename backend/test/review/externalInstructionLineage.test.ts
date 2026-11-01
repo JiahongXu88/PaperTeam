@@ -126,21 +126,46 @@ describe("applyDispatchOutcome × candidateStatus（落盘后裁决）", () => {
 
 describe("assessRewriteClosure（VALIDATED_FIXED 证据门）", () => {
   const handled = (extra: Partial<ExternalInstruction> = {}) => rewriteInstruction({ status: "handled", ...extra });
+  // M15.20：VALIDATED_FIXED 额外要求落盘 diff 满足编辑契约（缺省 = NOT_EVALUATED，绝不默认满足）
+  const SAT = { editContract: { status: "SATISFIED" as const, basis: "test replay", contractIds: ["ec-test"] } };
 
-  it("accepted span patch + 绑定 + 变化 + 未回退 + 守卫 + 无开放子条 → VALIDATED_FIXED", () => {
-    const result = assessRewriteClosure({ item, instruction: handled(), patches: [patch()], currentTargetFileHash: "after" });
+  it("accepted span patch + 绑定 + 变化 + 未回退 + 守卫 + 契约满足 + 无开放子条 → VALIDATED_FIXED", () => {
+    const result = assessRewriteClosure({ item, instruction: handled(), patches: [patch()], currentTargetFileHash: "after", ...SAT });
     expect(result.closure).toBe("VALIDATED_FIXED");
-    expect(result.checks).toEqual({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true });
+    expect(result.checks).toEqual({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true, editContract: true });
+  });
+
+  it("M15.20：哈希变化 + 守卫无告警但缺契约核验 → NOT_EVALUATED；契约违反 → STILL_OPEN（EDIT_CONTRACT_VIOLATION）", () => {
+    const missing = assessRewriteClosure({ item, instruction: handled(), patches: [patch()], currentTargetFileHash: "after" });
+    expect(missing.closure).toBe("NOT_EVALUATED");
+    expect(missing.checks?.editContract).toBe(false);
+    const violated = assessRewriteClosure({
+      item,
+      instruction: handled(),
+      patches: [patch()],
+      currentTargetFileHash: "after",
+      editContract: {
+        status: "VIOLATED",
+        basis: "受保护数值 5.402 被替换",
+        contractIds: ["ec-test"],
+        violations: [{ code: "EDIT_CONTRACT_PROTECTED_VALUE_CHANGED", detail: "受保护数值 5.402 被替换", value: "5.402" }],
+      },
+    });
+    expect(violated.closure).toBe("STILL_OPEN");
+    expect(violated.basis).toMatch(/^EDIT_CONTRACT_VIOLATION\[EDIT_CONTRACT_PROTECTED_VALUE_CHANGED\]/);
+    // patch 记录的契约判定为 false（越权候选被错误标 pass 的防御）→ 守卫失败
+    const flagged = assessRewriteClosure({ item, instruction: handled(), patches: [patch({ editContract: { ok: false, contractIds: ["ec-test"], codes: ["EDIT_CONTRACT_OUT_OF_SCOPE"], violations: ["x"] } })], currentTargetFileHash: "after", ...SAT });
+    expect(flagged.closure).toBe("STILL_OPEN");
   });
 
   it("文件级 applied lineage（前后 SHA 不同）：无 gate 复核记录 → NOT_EVALUATED；fact/citation 复核为 true 才可证", () => {
     const instruction = appendPlanItemOutcome(handled(), { planItemId: "improvement:1", outcome: "applied", summary: "", file: "sections/sec02.tex", beforeSha256: "b0", afterSha256: "b1", revision: 3, at: NOW });
     expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1" }).closure).toBe("NOT_EVALUATED");
     const verified = { ...instruction, resolutionTrace: { commentId: "x-rewrite0001", planItemIds: ["improvement:1"], actionType: "modify" as const, evidenceIds: [], patchIds: [], verification: { fact: true, citation: true }, status: "handled" as const, resolutionSummary: "" } };
-    expect(assessRewriteClosure({ item, instruction: verified, patches: [], currentTargetFileHash: "b1" }).closure).toBe("VALIDATED_FIXED");
+    expect(assessRewriteClosure({ item, instruction: verified, patches: [], currentTargetFileHash: "b1", ...SAT }).closure).toBe("VALIDATED_FIXED");
     // 守卫证据也可来自覆盖该修订的 Quality Gate（事实 / 引用保持 PASS）；gate FAIL → STILL_OPEN；gate 覆盖不到 → NOT_EVALUATED
     const gatePass = () => ({ fact: true, citation: true, round: 2, reviewedRevision: 3 });
-    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: gatePass }).closure).toBe("VALIDATED_FIXED");
+    expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: gatePass, ...SAT }).closure).toBe("VALIDATED_FIXED");
     const gateFail = () => ({ fact: false, citation: true, round: 2, reviewedRevision: 3 });
     expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: gateFail }).closure).toBe("STILL_OPEN");
     expect(assessRewriteClosure({ item, instruction, patches: [], currentTargetFileHash: "b1", gateEvidence: () => undefined }).closure).toBe("NOT_EVALUATED");
@@ -168,11 +193,11 @@ describe("assessRewriteClosure（VALIDATED_FIXED 证据门）", () => {
 
   it("仍有作者裁决子条 → PARTIALLY_ADDRESSED，并列出子条；后续该子条 applied 则不再开放", () => {
     const open = appendPlanItemOutcome(handled(), { planItemId: "improvement:2", outcome: "author_decision", summary: "", at: NOW });
-    const partial = assessRewriteClosure({ item, instruction: open, patches: [patch()], currentTargetFileHash: "after" });
+    const partial = assessRewriteClosure({ item, instruction: open, patches: [patch()], currentTargetFileHash: "after", ...SAT });
     expect(partial.closure).toBe("PARTIALLY_ADDRESSED");
     expect(partial.openSubItems?.map((entry) => entry.planItemId)).toEqual(["improvement:2"]);
     const resolved = appendPlanItemOutcome(open, { planItemId: "improvement:2", outcome: "applied", summary: "", file: "sections/sec02.tex", beforeSha256: "after", afterSha256: "after2", at: NOW });
-    expect(assessRewriteClosure({ item, instruction: resolved, patches: [patch()], currentTargetFileHash: "after2" }).closure).toBe("VALIDATED_FIXED");
+    expect(assessRewriteClosure({ item, instruction: resolved, patches: [patch()], currentTargetFileHash: "after2", ...SAT }).closure).toBe("VALIDATED_FIXED");
   });
 
   it("被拒 patch 不构成 lineage；unresolved + candidate_rejected → STILL_OPEN", () => {

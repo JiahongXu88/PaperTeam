@@ -218,6 +218,10 @@ export type WorkflowDomainEventType =
   | "revision.skipped"
   | "revision.dispatch_unresolved"
   | "revision.audit_anchor_stale"
+  // M15.20 P0：编辑契约（授权）——派发前不可执行 / 写入候选越权被拒 / 提交边界恢复未校验改动
+  | "revision.edit_contract_blocked"
+  | "revision.edit_contract_rejected"
+  | "revision.unvalidated_write_reverted"
   | "revision.guarded_table_rejected"
   | "revision.content_collapse_rejected"
   | "revision.best_updated"

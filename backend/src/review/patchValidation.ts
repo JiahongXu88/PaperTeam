@@ -57,6 +57,8 @@ export interface PatchValidationRecord {
   proposalAdjustments?: Array<"eol_crlf" | "whitespace_resplice">;
   /** M14.8.1-MOT：候选原文落盘位置（reviews/patch-candidates/...） */
   candidateRef?: string;
+  /** M15.20 P0：编辑契约（授权）判定——与 scope / fact / citation（安全）判定相互独立 */
+  editContract?: { ok: boolean; contractIds: string[]; codes: string[]; violations: string[] };
 }
 
 /**

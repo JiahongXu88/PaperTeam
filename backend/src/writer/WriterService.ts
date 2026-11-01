@@ -577,6 +577,11 @@ export class WriterService {
     /** Existing-paper scoped revision: proposal-only session with mutation tools removed. */
     proposalOnly?: boolean;
     /**
+     * M15.20 P0：摘要 / 章节文件目标同样只返回提案文本（工具只读）——Writer 不得经工具直写工作区
+     * 绕过候选校验；整文件目标保留 M10.3.1 磁盘回退（其结果仍走同一候选校验与提交边界）。
+     */
+    readOnlyTools?: boolean;
+    /**
      * M11.2 Survey：本节的写作上下文投影（存在 = Survey 修订模式）。注入
      * 综述结构红线——taxonomy / gap / speculative 语气 / 文献集合不得因
      * 「修得更漂亮」而被改写；引用白名单与写作阶段同源。
@@ -627,7 +632,7 @@ export class WriterService {
       }),
       projectId: params.projectId,
       contextScope: params.proposalOnly ? "writing/revision-proposal" : "writing/revision",
-      ...(params.proposalOnly ? { toolPolicy: "read_only" as const } : {}),
+      ...(params.proposalOnly || params.readOnlyTools === true ? { toolPolicy: "read_only" as const } : {}),
       ...(params.language !== undefined ? { language: params.language } : {}),
       metadata: {
         role: "writer",

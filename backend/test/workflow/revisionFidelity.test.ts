@@ -177,6 +177,25 @@ describe("M13.7.5 production revision.apply fidelity", () => {
     expect(await run.source()).toBe(PAPER.replace("model use", "model uses").replace("Accuracy is", "The accuracy is"));
     expect((await run.artifact())?.summary.patchFirstPassPassRate).toBe(0.5);
   });
+  // M15.20 P0（E1-PATH 整文件变体）：单文件稿件的整文件目标与 span 候选同一契约 + 守卫——无结构化批准的改数被拒、
+  // 稿件字节不变；合法的局部语法修正照常落盘
+  it.each([
+    ["unauthorized numeric change", PAPER.replace("Accuracy is 82.4\\%.", "Accuracy is 92.4\\%."), false],
+    ["local grammar fix", PAPER.replace("model use", "model uses"), true],
+  ] as const)("whole-file target (no logical section): %s", async (_label, proposal, accepted) => {
+    const run = await setup([proposal]);
+    const path = join(run.stack.store.researchDir(run.project.id), "improvement-plan.json");
+    const data = JSON.parse(await readFile(path, "utf8"));
+    delete data.plan.items[0].logicalSection;
+    await writeFile(path, JSON.stringify(data));
+    await run.execute();
+    expect(await run.source()).toBe(accepted ? proposal : PAPER);
+    if (!accepted) {
+      const artifact = await run.services.reviewArtifacts.loadPatchValidation(run.project.id, 1);
+      const rejected = artifact?.records.find((record) => record.file === "main.tex" && record.apply.status === "rejected");
+      expect(rejected?.editContract?.codes).toContain("EDIT_CONTRACT_PROTECTED_VALUE_CHANGED");
+    }
+  });
   it("format-only numeric restatement is accepted without a spurious repair", async () => {
     const run = await setup([good.replace("0.25", "0.250")]);
     await run.execute();
@@ -439,7 +458,11 @@ describe("M13.7.5 production revision.apply fidelity", () => {
       await writeFile(path, JSON.stringify(data));
     };
     it("deleting the quoted paragraph together with its paragraph break is accepted on the first attempt", async () => {
-      const run = await setup([leakedMethod.replace(`\n\n${leak}`, "").trim()], undefined, undefined, undefined, leaked);
+      // M15.20：真实形态——泄漏段由此前某轮修订写入（不在冻结基线中），其数字不是作者原稿的受保护事实；
+      // 冻结基线中的数字被删除须经结构化批准（见 test/workflow/editContractWorkflow.test.ts）
+      const run = await setup([leakedMethod.replace(`\n\n${leak}`, "").trim()]);
+      await writeFile(join(run.stack.store.manuscriptDir(run.project.id), "main.tex"), leaked);
+      await run.services.revisions.commit(run.project.id, "revision.revise");
       await withLeakQuote(run);
       await run.execute();
       expect(await run.source()).toBe(PAPER);

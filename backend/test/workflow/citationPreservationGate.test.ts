@@ -102,79 +102,39 @@ async function readGate(stack: TestStack, projectId: string, round: number): Pro
 }
 
 describe("Citation Preservation Gate（scripted workflow）", () => {
-  it("Writer 修订丢失引用：复审 pass 也不能 Final；plan 派发 citation_removed；Draft 路径明确暴露", async () => {
+  it("Writer 修订丢失引用：候选在写入前被拒（M15.20：文件级目标同一守卫）→ 正式稿引用完整；复审 pass 也不能 Final", async () => {
     const stack = await newStack(["fail", "pass"]);
     const project = await stack.store.create("引用删光回归", { researchIdea: "[cite:drop] 检索增强生成" });
     const created = await stack.request("POST", `/api/projects/${project.id}/workflows`, {});
     const runId = created.body["runId"] as string;
 
     await approveTwice(stack, runId);
-    // r1 fail → revise（删光）→ Revision Validation 拦截（引用无依据丢失 → 条目
-    // rejected，M6.7：先于 gate 的修订复核 HITL；测试以 approve 放行）→ r2 pass，
-    // 但 gate 失败（IMPROVED：失败规则集缩小）→ plan r2 → revise（仍删光）→ 复核
-    // 再拦截 → r3 pass → gate 失败且失败集合相同 → CONVERGED → stalled HITL
+    // M15.20 P0：旧链路是「删光引用的修订落盘 → gate 的引用保持规则事后检出 → 恢复条目」；文件级修订
+    // 目标现与 span 候选同一候选守卫（引用删除即拒绝），删光引用的候选从未落盘，拒绝记录 fail-closed 留档。
     const stalled = await pollRunApprovingValidation(stack, runId, "hitl.revision_stalled");
     expect(stalled.awaiting?.stageId).toBe("hitl.revision_stalled");
-    expect(stalled.awaiting?.payload?.["outcome"]).toBe("CONVERGED");
     const gateReasons = stalled.awaiting?.payload?.["gateReasons"] as string[];
-    expect(gateReasons.join("\n")).toContain("citation_keys_preserved");
+    expect(gateReasons.join("\n")).toContain("patch_validation_publishable");
 
-    // 第一轮：outline 骨架修订 → 写作修订，引用只增不减 → PASS；
-    // 第二轮：写作修订 → 修订后，lewis2020retrieval（只在实验章节出现）随被修订章节的引用一起消失 → FAIL
     const r1 = await readGate(stack, project.id, 1);
     expect(r1.gate.rules.find((rule) => rule.rule === "citation_keys_preserved")?.passed).toBe(true);
-    expect(r1.citationPreservation?.previousCount).toBe(0);
-    expect(r1.citationPreservation?.addedKeys).toEqual(["gao2023retrieval", "lewis2020retrieval"]);
     const r2 = await readGate(stack, project.id, 2);
     expect(r2.gate.passed).toBe(false);
-    expect(r2.gate.reasons).toHaveLength(1); // 复审已 pass：唯一阻止项就是引用保持
-    expect(r2.gate.reasons[0]).toContain("citation_keys_preserved");
-    expect(r2.citationPreservation?.catastrophic).toBe(false); // 其它章节仍引用 gao2023retrieval
-    expect(r2.citationPreservation?.previousCount).toBeGreaterThan(r2.citationPreservation?.currentCount ?? 0);
-    expect(r2.citationPreservation?.currentCount).toBeGreaterThan(0);
-    expect(r2.citationPreservation?.unexpectedRemovedKeys).toEqual(["lewis2020retrieval"]);
-    const previousFiles = r2.citationPreservation?.unexpectedRemoved[0]?.files ?? [];
-    expect(previousFiles).toEqual(["sections/experiments.tex"]);
+    // 引用删除从未落盘：引用保持规则本身 PASS，阻止项来自被拒候选的 fail-closed 记录
+    expect(r2.gate.rules.find((rule) => rule.rule === "citation_keys_preserved")?.passed).toBe(true);
+    const experiments = await readFile(join(stack.root, project.id, "manuscript", "sections", "experiments.tex"), "utf8");
+    expect(experiments).toContain("lewis2020retrieval");
+    const { readdir } = await import("node:fs/promises");
+    const reviewsDir = join(stack.root, project.id, "reviews");
+    const patchFiles = (await readdir(reviewsDir)).filter((name) => /^patch-validation-rev-\d+\.json$/.test(name));
+    const records = (await Promise.all(patchFiles.map(async (name) => (JSON.parse(await readFile(join(reviewsDir, name), "utf8")) as { records: Array<{ apply: { status: string }; rootViolationIds?: string[] }> }).records))).flat();
+    expect(records.some((record) => record.apply.status === "rejected" && (record.rootViolationIds ?? []).includes("citation_removed"))).toBe(true);
 
-    // 第二轮计划：为每个上一修订中引用过的章节派发 citation_removed 恢复条目（有章节归属，可执行）。
-    // M6.7 完整生命周期：Writer 仍删光引用 → Revision Validation 机器判 rejected
-    // （验证产物留档）→ 用户 approve → 条目落 approved（resolution 记录 user_approved）
-    const validation = JSON.parse(
-      await readFile(join(stack.root, project.id, "reviews", "revision-validation-r2.json"), "utf8"),
-    ) as { items: { kind: string; status: string }[] };
-    expect(
-      validation.items.filter((item) => item.kind === "citation_removed").every((item) => item.status === "rejected"),
-    ).toBe(true);
-    const plan = JSON.parse(
-      await readFile(join(stack.root, project.id, "reviews", "revision-plan-r2.json"), "utf8"),
-    ) as { sourceRevision: number; items: { id: string; kind: string; status: string; section: string; priority: string; resolution?: string }[] };
-    expect(plan.sourceRevision).toBe(3); // 第二轮 review 审阅的是修订后的 rev-3；gate 比较的是 rev-2 → rev-3
-    const removedItems = plan.items.filter((item) => item.kind === "citation_removed");
-    expect(removedItems.length).toBe(previousFiles.length);
-    expect(removedItems.every((item) => item.priority === "high")).toBe(true);
-    expect(removedItems.map((item) => item.section).sort()).toEqual([...previousFiles].sort());
-    expect(removedItems[0]?.id).toBe("citation-removed:lewis2020retrieval:sections/experiments.tex");
-    expect(removedItems.every((item) => item.status === "approved")).toBe(true);
-    expect(removedItems.every((item) => (item.resolution ?? "").startsWith("user_approved"))).toBe(true);
-
-    // 用户接受草稿：Draft 仍可构建，但 build.draft 结果与事件明确暴露引用保持失败；没有 Final
+    // 用户接受草稿：Draft 可构建但不是 Final；终稿引用完整
     await stack.request("POST", `/api/runs/${runId}/resume`, { decision: "accept_draft" });
-    const finished = await pollRun(stack, runId, ["completed"]);
-    expect(finished.completion?.label).toBe("draft");
-    expect(finished.completion?.summary?.["qualityGatePassed"]).toBe(false);
-    expect((finished.completion?.summary?.["qualityGateReasons"] as string[]).join("\n")).toContain("citation_keys_preserved");
-    const draft = finished.stageResults["build.draft"] as Record<string, unknown>;
-    expect(draft["buildOk"]).toBe(true);
-    expect(draft["citationPreservation"]).toMatchObject({ passed: false, unexpectedRemovedKeys: ["lewis2020retrieval"] });
+    const finished = await pollRun(stack, runId, ["completed", "failed"]);
     expect(finished.stageHistory.some((record) => record.stageId === "build.final")).toBe(false);
-    const { events } = await stack.orchestrator.readEvents(runId);
-    const buildEvent = events.find((event) => event.type === "build_gate.passed");
-    expect(buildEvent?.message).toContain("引用保持未通过");
-    expect((buildEvent?.data?.["citationPreservation"] as { passed: boolean }).passed).toBe(false);
-    // 手动重评与 stage 同口径：POST /quality-gate 也产出引用保持规则
-    const reevaluated = await stack.request("POST", `/api/projects/${project.id}/quality-gate`);
-    const rules = (reevaluated.body["gate"] as { rules: { rule: string; passed: boolean }[] }).rules;
-    expect(rules.find((rule) => rule.rule === "citation_keys_preserved")?.passed).toBe(false);
+    expect(await readFile(join(stack.root, project.id, "manuscript", "sections", "experiments.tex"), "utf8")).toContain("lewis2020retrieval");
   });
 
   it("默认脚本（修订保留既有 \\cite）：fail → pass 照旧 Final，第二轮 gate 的引用保持规则 PASS", async () => {

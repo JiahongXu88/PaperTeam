@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
 import type { PdfParser, RawPdfExtraction } from "../../src/paper/PdfParser.js";
+import { scriptedExternalOutcomes } from "../../src/runtime/scriptedRuntime.js";
 import { scriptedIdeaRuntime, startTestStack, pollRunUntilAwaiting, type TestStack } from "../helpers/testStack.js";
 import { sha256Hex } from "../../src/util/hash.js";
 
@@ -165,7 +166,23 @@ async function writeAuditArtifact(
 
 describe("target_audit 指令 × existing_paper_improvement 工作流（集成）", () => {
   it("审计计划决策 → run 恢复 → 可改写项派发执行 / 需实验项不派发 → 复评闭环", async () => {
-    const scripted = scriptedIdeaRuntime({ reviewSequence: ["pass"] });
+    // M15.20：审计改写受冻结编辑契约约束（只可改写目标锚、锚外逐字、数值守恒）——脚本 Writer 镜像合规改写：
+    // 只弱化锚句本身（默认脚本整节重写会越出契约范围，被确定性拒绝）
+    const scripted = scriptedIdeaRuntime({
+      reviewSequence: ["pass"],
+      scopeOutputOverride: (scope, task) => {
+        if (scope !== "writing/revision" && scope !== "writing/revision-proposal") return undefined;
+        const marker = "===== 本章节当前内容 =====\n";
+        const start = task.indexOf(marker);
+        if (start < 0 || task.includes("修订论文摘要")) return undefined;
+        const end = task.indexOf("\n\n===== 针对本章节的问题", start);
+        const content = task.slice(start + marker.length, end < 0 ? undefined : end);
+        if (!content.includes(CLAIM_QUOTE)) return undefined;
+        const outcomes = scriptedExternalOutcomes(task);
+        const body = content.replace(CLAIM_QUOTE, "The fusion module is designed to combine hierarchical semantic features across stages.");
+        return outcomes !== null ? `${body}\n${outcomes}` : body;
+      },
+    });
     const stack = await startTestStack(scripted.runtime, {
       paperParser: fakeParser(sampleExtraction),
       targetEvidenceAuditEnabled: true,

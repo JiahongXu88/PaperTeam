@@ -113,7 +113,10 @@ export type BusinessErrorCode =
   | "EXPERIMENT_MANIFEST_CORRUPTED"
   | "EXPERIMENT_CONFIRM_CONFLICT"
   | "SEMANTIC_MODEL_UNAVAILABLE"
-  | "SEMANTIC_MODEL_FAILED";
+  | "SEMANTIC_MODEL_FAILED"
+  // ---- M15.20 P0 编辑契约（授权内核）：越权写入 / 陈旧批准 ----
+  | "EDIT_CONTRACT_VIOLATION"
+  | "EDIT_CONTRACT_STALE";
 
 /** 错误码 → HTTP 状态码 */
 const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
@@ -215,6 +218,8 @@ const HTTP_STATUS_BY_CODE: Readonly<Record<BusinessErrorCode, number>> = {
   EXPERIMENT_CONFIRM_CONFLICT: 409,
   SEMANTIC_MODEL_UNAVAILABLE: 503,
   SEMANTIC_MODEL_FAILED: 502,
+  EDIT_CONTRACT_VIOLATION: 409,
+  EDIT_CONTRACT_STALE: 409,
 };
 
 export class BusinessError extends Error {

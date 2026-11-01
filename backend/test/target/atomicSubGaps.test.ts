@@ -572,9 +572,11 @@ describe("计划 / 决策 / 复评：同一贡献可改写子项与需实验子�
     const plan = (await service.getPlan(projectId))!.plan;
     const internal = plan.items.find((item) => item.rewriteBasis === "internal_evidence")!;
     const experiment = plan.items.find((item) => item.classification === "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT")!;
-    await revisions.commit(projectId, "revision.apply", "run-m1519");
+    // M15.20：真实修订链（基线修订 → 修订后修订），复评对快照做编辑契约确定性回放
+    await revisions.commit(projectId, "baseline", "run-m1519");
     const revised = SEC01_TEX.replace("on all three benchmarks, outperforming every prior method", "on MOT17, while remaining below the strongest baseline on DanceTrack");
     await writeFile(sec01(), revised, "utf8");
+    const applied = await revisions.commit(projectId, "revision.apply", "run-m1519");
     const setOutcome = async (file: string) =>
       externalInstructions.update(projectId, (current) =>
         current.map((entry) =>
@@ -582,7 +584,7 @@ describe("计划 / 决策 / 复评：同一贡献可改写子项与需实验子�
             ? {
                 ...entry,
                 status: "handled" as const,
-                planItemOutcomes: [{ planItemId: "improvement:1", outcome: "applied" as const, summary: "applied", revision: 1, file, beforeSha256: revisionSourceHash(SEC01_TEX), afterSha256: revisionSourceHash(revised), at: "2026-11-01T02:00:00.000Z" }],
+                planItemOutcomes: [{ planItemId: "improvement:1", outcome: "applied" as const, summary: "applied", revision: applied.revision, file, beforeSha256: revisionSourceHash(SEC01_TEX), afterSha256: revisionSourceHash(revised), at: "2026-11-01T02:00:00.000Z" }],
                 resolutionTrace: { commentId: entry.instructionId, planItemIds: ["improvement:1"], actionType: "modify" as const, evidenceIds: [], patchIds: [], verification: { fact: true, citation: true, scope: true }, status: "handled" as const, resolutionSummary: "weakened" },
               }
             : entry,
@@ -592,6 +594,7 @@ describe("计划 / 决策 / 复评：同一贡献可改写子项与需实验子�
     const report = await service.reassess(projectId);
     const internalItem = report.items.find((item) => item.itemId === internal.itemId)!;
     expect(internalItem.closure).toBe("VALIDATED_FIXED");
+    expect(internalItem.editContract).toMatchObject({ status: "SATISFIED", contractSource: "contract" });
     expect(internalItem).toMatchObject({ gapKind: "INTERNAL_CLAIM_MISMATCH", rewriteBasis: "internal_evidence", parentContributionId: "C1" });
     const experimentItem = report.items.find((item) => item.itemId === experiment.itemId)!;
     expect(experimentItem.closure).toBe("NEEDS_AUTHOR_DECISION");
@@ -698,17 +701,18 @@ describe("M15.19 Deviation D1（真实 E1 暴露）：摘要载体投影 + 摘�
       expect(item.anchor.projection).toMatchObject({ file: "abstract", alsoFoundIn: ["sections/sec01.tex"] });
       expect(item.anchor.dispatchSection).toBe("abstract");
       await service.decide(projectId, { decisions: [{ itemId: item.itemId, decision: "approve" }] });
-      await revisions.commit(projectId, "revision.apply", "run-abs");
+      await revisions.commit(projectId, "baseline", "run-abs");
       // revision 端摘要 lineage 口径：revisionSourceHash(abstract.trim())
       const revisedAbstract = ABSTRACT.replace("on all three benchmarks, outperforming every prior method", "on MOT17, while remaining below the strongest baseline on DanceTrack");
       await writeFile(outlinePath, JSON.stringify({ title: "Memory Tracking", abstract: revisedAbstract, sections: [] }), "utf8");
+      const applied = await revisions.commit(projectId, "revision.apply", "run-abs");
       await externalInstructions.update(projectId, (current) =>
         current.map((entry) =>
           entry.origin?.itemId === item.itemId
             ? {
                 ...entry,
                 status: "handled" as const,
-                planItemOutcomes: [{ planItemId: "improvement:1", outcome: "applied" as const, summary: "applied", revision: 1, file: "abstract", beforeSha256: revisionSourceHash(ABSTRACT.trim()), afterSha256: revisionSourceHash(revisedAbstract.trim()), at: "2026-11-01T02:00:00.000Z" }],
+                planItemOutcomes: [{ planItemId: "improvement:1", outcome: "applied" as const, summary: "applied", revision: applied.revision, file: "abstract", beforeSha256: revisionSourceHash(ABSTRACT.trim()), afterSha256: revisionSourceHash(revisedAbstract.trim()), at: "2026-11-01T02:00:00.000Z" }],
                 resolutionTrace: { commentId: entry.instructionId, planItemIds: ["improvement:1"], actionType: "modify" as const, evidenceIds: [], patchIds: [], verification: { fact: true, citation: true }, status: "handled" as const, resolutionSummary: "weakened" },
               }
             : entry,
@@ -716,7 +720,7 @@ describe("M15.19 Deviation D1（真实 E1 暴露）：摘要载体投影 + 摘�
       );
       const report = await service.reassess(projectId);
       expect(report.items[0]?.closure).toBe("VALIDATED_FIXED");
-      expect(report.items[0]?.checks).toMatchObject({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true });
+      expect(report.items[0]?.checks).toMatchObject({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true, editContract: true });
       // 摘要被恢复为修订前内容 → 非 FIXED
       await writeFile(outlinePath, JSON.stringify({ title: "Memory Tracking", abstract: ABSTRACT, sections: [] }), "utf8");
       expect((await service.reassess(projectId)).items[0]?.closure).toBe("STILL_OPEN");

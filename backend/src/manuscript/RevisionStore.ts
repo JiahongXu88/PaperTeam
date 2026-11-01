@@ -146,9 +146,10 @@ export class ManuscriptRevisionStore {
     projectId: string,
     reason: string,
     runId?: string,
+    options: { expectedFingerprint?: string } = {},
   ): Promise<{ revision: number; created: boolean }> {
     const previous = this.queues.get(projectId) ?? Promise.resolve();
-    const task = previous.then(() => this.commitInner(projectId, reason, runId));
+    const task = previous.then(() => this.commitInner(projectId, reason, runId, options.expectedFingerprint));
     // 队列只保序，失败不阻塞后续 commit
     this.queues.set(
       projectId,
@@ -175,6 +176,14 @@ export class ManuscriptRevisionStore {
     }
     const { revision } = await this.commit(projectId, "baseline", runId);
     return revision;
+  }
+
+  /**
+   * M15.20 P0：工作树指纹（与 commit 去重同一口径）。编辑契约提交边界先取指纹、再校验、再以
+   * expectedFingerprint 提交——校验后工作树若被改动（竞态），commit 在同一串行队列内拒绝，不落修订。
+   */
+  async workTreeFingerprint(projectId: string): Promise<string> {
+    return fingerprintFiles(projectId, await this.listWorkTreeFiles(projectId));
   }
 
   /** 修订快照目录（绝对路径） */
@@ -366,6 +375,7 @@ export class ManuscriptRevisionStore {
     projectId: string,
     reason: string,
     runId?: string,
+    expectedFingerprint?: string,
   ): Promise<{ revision: number; created: boolean }> {
     await this.recoverRestore(projectId);
     const state = await this.loadState(projectId);
@@ -375,6 +385,12 @@ export class ManuscriptRevisionStore {
       return { revision: state.current, created: false };
     }
     const fingerprint = await fingerprintFiles(projectId, files);
+    if (expectedFingerprint !== undefined && fingerprint !== expectedFingerprint) {
+      throw new BusinessError(
+        "EDIT_CONTRACT_STALE",
+        "EDIT_CONTRACT_RACE: 编辑契约校验后、提交前工作树发生变化——拒绝提交（未经校验的内容不得成为正式修订）",
+      );
+    }
     const latest = state.revisions[state.revisions.length - 1];
     if (latest !== undefined && latest.fingerprint === fingerprint) {
       return { revision: state.current, created: false };

@@ -9,6 +9,7 @@ export type RevisionViolationCode =
   | "revision_meta_text"
   | "revision_content_loss"
   | "unsupported_named_reference"
+  | "edit_contract_violation"
   | "AUTHOR_DECISION_REQUIRED";
 
 export interface StructuredPlanItem {

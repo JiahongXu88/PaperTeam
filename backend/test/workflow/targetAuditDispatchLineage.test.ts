@@ -329,7 +329,7 @@ describe("M15.18 已批准审计改写：Planner 拆条不再吞掉派发（真�
     const report = await reassess(h);
     const item = report.get("ta-gap-1")!;
     expect(item.closure).toBe("VALIDATED_FIXED");
-    expect(item.checks).toEqual({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true });
+    expect(item.checks).toEqual({ lineage: true, targetBinding: true, contentChanged: true, notReverted: true, guards: true, editContract: true });
 
     // 幂等 / 重跑：新 run 不重复执行已 handled 的指令，不伪造新的 lineage
     const appliedBefore = (rewrite.planItemOutcomes ?? []).filter((entry) => entry.outcome === "applied").length;

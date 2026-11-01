@@ -111,6 +111,11 @@ export interface ExternalInstructionOrigin {
   /** 计划期投影到的可编辑文件 */
   targetFile?: string;
   approvedAt: string;
+  /**
+   * M15.20 P0：作者批准时冻结的结构化编辑契约（research/edit-contracts.json）。缺失 = 旧审批
+   * （M15.17–M15.19）：不可升级为当前写入授权，派发前需在审计计划中重新批准。
+   */
+  contractId?: string;
 }
 
 /**
@@ -185,6 +190,7 @@ function readOrigin(value: unknown): ExternalInstructionOrigin | undefined {
     ...(typeof record["texAnchor"] === "string" ? { texAnchor: record["texAnchor"] } : {}),
     ...(typeof record["targetFile"] === "string" ? { targetFile: record["targetFile"] } : {}),
     approvedAt: record["approvedAt"] as string,
+    ...(typeof record["contractId"] === "string" ? { contractId: record["contractId"] } : {}),
   };
 }
 

@@ -55,6 +55,17 @@ import { revisionSourceHash } from "../review/revisionScope.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import { normalizeForQuoteMatch, verifyQuoteInChunk } from "../evidence/quoteVerification.js";
+import {
+  buildEditContract,
+  extractValueTokens,
+  sha256 as contractSha256,
+  validateCandidateEdit,
+  type EditAuthority,
+  type EditContract,
+  type EditContractConflict,
+  type EditContractViolation,
+} from "../quality/editContract.js";
+import { loadEditContractStore, saveEditContracts, type EditApprovalEvent } from "../quality/editContractStore.js";
 import type {
   ContributionAuditArtifact,
   ContributionAuditInputFingerprint,
@@ -284,8 +295,25 @@ export interface TargetAuditClosureReportItem {
   lineage?: PlanItemOutcome[];
   /** M15.18：仍开放的 Planner 子条（作者裁决 / 仅证据 / 未核验 NO-OP / 类型缺失） */
   openSubItems?: PlanItemOutcome[];
-  /** M15.18：VALIDATED_FIXED 的逐项证据核对结果（机器可读） */
-  checks?: { lineage: boolean; targetBinding: boolean; contentChanged: boolean; notReverted: boolean; guards: boolean };
+  /** M15.18：VALIDATED_FIXED 的逐项证据核对结果（机器可读）；M15.20：editContract = 落盘 diff 满足授权契约 */
+  checks?: { lineage: boolean; targetBinding: boolean; contentChanged: boolean; notReverted: boolean; guards: boolean; editContract?: boolean };
+  /** M15.20 P0：本条目落盘修改的授权契约核验（SATISFIED 才可能 VALIDATED_FIXED） */
+  editContract?: ClosureEditContractEvidence;
+}
+
+/**
+ * M15.20 P0：复评所用的契约核验证据。
+ * - SATISFIED：落盘 diff 经确定性校验满足契约（记录的 accepted 事件，或对快照的确定性回放）
+ * - VIOLATED：落盘 diff 越权（越界改写 / 受保护数值变化 / 引用增删）——问题未被合法解决
+ * - NOT_EVALUATED：无法取得契约或修改前后内容（旧工件 / 快照缺失）——不判已解决
+ */
+export interface ClosureEditContractEvidence {
+  status: "SATISFIED" | "VIOLATED" | "NOT_EVALUATED";
+  basis: string;
+  contractIds: string[];
+  /** contract：作者批准时冻结；legacy_reconstruction：旧审批无契约，由计划条目结构化字段确定性重建（只用于复评，不授权写入） */
+  contractSource?: "contract" | "legacy_reconstruction";
+  violations?: EditContractViolation[];
 }
 
 export interface TargetAuditClosureReport {
@@ -832,6 +860,7 @@ function priorWorkLines(priorWork: readonly AuditPlanPriorWorkNote[]): string[] 
 export function rewriteInstructionText(
   item: TargetAuditRevisionPlanItem,
   plan: TargetAuditRevisionPlanArtifact,
+  conflicts: readonly EditContractConflict[] = [],
 ): string {
   // 「」包裹的原文锚：revision 派发的单元定位（directiveAnchors）按出现顺序提取
   // 引号内 ≥12 字片段——texAnchor（逐字可回放）优先放最前，PDF 原文锚随后；
@@ -853,6 +882,9 @@ export function rewriteInstructionText(
     ...priorWorkLines(item.priorWork),
     `【允许的修改】${item.allowedScope}`,
     "【禁止】不得新增数值 / 实验结果 / 图表 / 基线 / 新的正面性能声称；不得新增或删除任何 \\cite key；不得改变既有数字、单位、公式、否定关系、比较方向与结论强度语义；若认为必须新增科学事实才能解决该差距，不要修改，报告 CONFLICT 并说明。",
+    // M15.20：约束优先级（确定性契约强制；此段只告知 Writer，判定不依赖 Writer 遵守）
+    "【编辑契约（系统强制）】只可改写目标原文锚这一处；锚外文字逐字保留（含其它句子，不得删除 / 合并 / 重排）；目标内全部既有数值逐个保留、不得新增数值；违反即整段候选被拒、不落盘。",
+    ...conflicts.map((conflict) => `【约束优先级】${conflict.detail}`),
     item.rewriteBasis === "internal_evidence" || item.rewriteBasis === "prior_work_verified"
       ? `【依据边界】本指令来自模型证据审计（advisory）的原子子缺口，经确定性门禁放行（${item.rewriteBasis === "internal_evidence" ? "目标锚与稿内证据锚均逐字回放" : "先前工作身份可解析、quote 回放、已在参考文献中"}）；不授权任何实验事实变更。改写后由事实 / 引用 / 范围守卫复核。`
       : "【依据边界】本指令来自模型证据审计（advisory）的 can_rewrite_from_existing_evidence 判定；不授权任何实验事实变更。改写后由事实 / 引用 / 范围守卫复核。",
@@ -931,6 +963,140 @@ export function authorDecisionStatusNote(item: TargetAuditRevisionPlanItem, plan
   return `AUTHOR_DECISION_REQUIRED: ${need}（${EXTERNAL_SOURCE_LABELS["target_audit"]} ${plan.planId} 条目 ${item.itemId}：${item.gap.slice(0, 120)}）`;
 }
 
+// ---- M15.20 P0：审计改写的结构化编辑契约 ----
+
+export const TARGET_AUDIT_REWRITE_POLICY = "target-audit-rewrite-policy/v1";
+
+/** 批准时向作者展示、被批准绑定的条目内容（哈希即审批绑定；任一字段变化 → 旧批准不可复用） */
+export function auditItemApprovalHash(item: TargetAuditRevisionPlanItem, plan: Pick<TargetAuditRevisionPlanArtifact, "planId" | "source">): string {
+  return contractSha256(JSON.stringify({
+    planId: plan.planId,
+    fingerprint: plan.source.inputFingerprint.manuscriptSha256,
+    revision: plan.source.manuscriptRevisionAtPlan ?? null,
+    itemId: item.itemId,
+    classification: item.classification,
+    anchor: { claimQuote: item.anchor.claimQuote, texAnchor: item.anchor.texAnchor ?? null, file: item.anchor.projection.file ?? null },
+    forbidden: item.forbidden,
+    allowedScope: item.allowedScope,
+  }));
+}
+
+/**
+ * 审计建议方向与禁改约束的确定性冲突检测：建议文本出现目标锚中没有的数值 = 建议换数 / 新增数值。
+ * 禁改优先（constraint_wins）：契约不因建议而扩大，冲突如实登记并在指令 / UI 中展示。
+ */
+export function detectAuditAdviceConflicts(item: Pick<TargetAuditRevisionPlanItem, "anchor" | "subGap">): EditContractConflict[] {
+  const direction = item.subGap?.proposedDirection;
+  if (direction === undefined || direction.trim() === "") return [];
+  const anchorValues = new Set(extractValueTokens(item.anchor.texAnchor ?? item.anchor.claimQuote).filter((token) => token.kind === "number").map((token) => token.norm));
+  const foreign = [...new Set(extractValueTokens(direction).filter((token) => token.kind === "number" && !anchorValues.has(token.norm)).map((token) => token.raw))];
+  if (foreign.length === 0) return [];
+  return [{
+    kind: "advice_conflicts_with_numeric_freeze",
+    detail: `审计建议方向含目标锚之外的数值（${foreign.slice(0, 8).join("、")}），与「不得改变既有数字 / 不得新增数值」冲突——禁改优先，契约不扩大`,
+    resolution: "constraint_wins",
+  }];
+}
+
+/**
+ * 审计改写契约（确定性）：可写范围 = 目标锚（逐字回放）；操作 = 弱化 / 限定 / 改写措辞（不含删除）；
+ * 硬禁改：目标全部既有数值逐个守恒、不得新增数值、不得增删 \cite（冻结协议，任何下游批准不可覆盖）。
+ * baseContent 不可得 → 契约 unenforceable（fail closed）。
+ */
+export function buildAuditRewriteContract(input: {
+  projectId: string;
+  plan: Pick<TargetAuditRevisionPlanArtifact, "planId" | "source">;
+  item: TargetAuditRevisionPlanItem;
+  instructionId?: string;
+  baseContent: string | undefined;
+  approval: { approvalId: string; actor: EditApprovalEvent["actor"]; channel: string; at: string };
+  now?: Date;
+}): EditContract {
+  const { item, plan } = input;
+  const file = item.anchor.projection.file ?? "(unprojected)";
+  const anchor = item.anchor.texAnchor ?? item.anchor.claimQuote;
+  const authority: EditAuthority[] = [
+    { kind: "frozen_protocol", ref: TARGET_AUDIT_REWRITE_POLICY },
+    {
+      kind: input.approval.actor === "author" ? "user_approval" : "synthetic_test_actor",
+      ref: input.approval.approvalId,
+      actor: input.approval.actor,
+      channel: input.approval.channel,
+      at: input.approval.at,
+      boundContentHash: auditItemApprovalHash(item, plan),
+    },
+  ];
+  return buildEditContract({
+    projectId: input.projectId,
+    source: {
+      kind: "target_audit_rewrite",
+      ref: `${plan.planId}:${item.itemId}`,
+      planId: plan.planId,
+      planItemId: item.itemId,
+      ...(input.instructionId !== undefined ? { instructionId: input.instructionId } : {}),
+    },
+    authority,
+    target: {
+      carrier: file === "abstract" ? "abstract" : "file",
+      file,
+      ...(typeof plan.source.manuscriptRevisionAtPlan === "number" ? { baseRevision: plan.source.manuscriptRevisionAtPlan } : {}),
+      baseContent: input.baseContent ?? "",
+    },
+    anchors: [anchor],
+    allowedOps: ["qualify", "weaken", "replace_wording"],
+    constraints: {
+      numericProtect: "all_existing",
+      protectedValues: input.baseContent !== undefined ? extractValueTokens(input.baseContent).filter((token) => token.kind === "number").map((token) => token.norm) : [],
+      allowNewValues: false,
+      hardNumericFreeze: true,
+      citationPolicy: "preserve_existing_no_new",
+      protectedCitationKeys: item.forbidden.citationKeys,
+      unenforceable: input.baseContent === undefined || item.anchor.projection.status !== "resolved"
+        ? ["审计目标在可编辑稿件中不可读 / 未唯一投影——无法冻结基线，不可执行"]
+        : [],
+    },
+    conflicts: detectAuditAdviceConflicts(item),
+    ...(input.now !== undefined ? { now: input.now } : {}),
+  });
+}
+
+/**
+ * 复评契约核验（纯函数）：对落盘修改前后内容做确定性回放。契约缺失（旧审批）时由计划条目的结构化
+ * 字段（目标锚 + 禁改）重建——重建只用于判定历史修改是否越权，永不作为写入授权。
+ */
+export function assessEditContractForClosure(input: {
+  contract: EditContract | undefined;
+  legacyItem: TargetAuditRevisionPlanItem;
+  plan: Pick<TargetAuditRevisionPlanArtifact, "planId" | "source">;
+  projectId: string;
+  target: string;
+  before: string | undefined;
+  after: string | undefined;
+}): ClosureEditContractEvidence {
+  if (input.before === undefined || input.after === undefined) {
+    return { status: "NOT_EVALUATED", basis: "修改前后内容不可从修订快照取得（无法确定性回放）", contractIds: input.contract !== undefined ? [input.contract.contractId] : [] };
+  }
+  const contract = input.contract ?? buildAuditRewriteContract({
+    projectId: input.projectId,
+    plan: input.plan,
+    item: input.legacyItem,
+    baseContent: input.before,
+    approval: { approvalId: "legacy-reconstruction", actor: "author", channel: "legacy:no-contract", at: "" },
+  });
+  // 契约绑定的是批准时内容；复评回放以 lineage 的修改前快照为基线（契约在批准后未被重新绑定）
+  const verdict = validateCandidateEdit({ target: input.target, baseline: input.before, candidate: input.after, contracts: [contract] });
+  const source = input.contract !== undefined ? "contract" : "legacy_reconstruction";
+  return verdict.ok
+    ? { status: "SATISFIED", basis: `确定性回放：落盘 diff 满足${source === "contract" ? "契约" : "由计划结构化字段重建的契约"} ${contract.contractId}`, contractIds: [contract.contractId], contractSource: source }
+    : {
+        status: "VIOLATED",
+        basis: `确定性回放：${verdict.violations.slice(0, 3).map((violation) => violation.detail).join("；")}`,
+        contractIds: [contract.contractId],
+        contractSource: source,
+        violations: verdict.violations.slice(0, 20),
+      };
+}
+
 /** 复评输入：本条目关联指令在计划修订号之后的 patch 记录（attemptHistory 不计） */
 export interface ClosurePatchEvidence {
   revision: number;
@@ -948,6 +1114,8 @@ const OPEN_SUB_ITEM_OUTCOMES = new Set<PlanItemOutcome["outcome"]>(["author_deci
  *   ⑤ 守卫通过（patch scope/fact/citation 无 false；指令仍为 handled——gate 复核失败会降级）
  *   ⑥ 无仍开放的 Planner 子条（否则 PARTIALLY_ADDRESSED，如实列出）
  * 只有 handled 状态而无 lineage（旧工件 / 证据缺失）→ NOT_EVALUATED，绝不凭状态判已修复。
+ * M15.20 P0：⑦ 落盘 diff 满足作者批准时冻结的编辑契约（editContract=SATISFIED）——哈希变化 + 守卫无告警
+ * 不足以证明修改在授权范围内；契约违反 → STILL_OPEN（EDIT_CONTRACT_VIOLATION），缺证据 → NOT_EVALUATED。
  */
 export function assessRewriteClosure(input: {
   item: Pick<TargetAuditRevisionPlanItem, "itemId" | "classification" | "anchor">;
@@ -960,7 +1128,9 @@ export function assessRewriteClosure(input: {
    * 无覆盖该修订的 gate → undefined）
    */
   gateEvidence?: (lineageRevision: number) => { fact: boolean; citation: boolean; round: number; reviewedRevision: number } | undefined;
-}): Pick<TargetAuditClosureReportItem, "closure" | "basis" | "lineage" | "openSubItems" | "checks"> {
+  /** M15.20：落盘修改的契约核验（缺省 = NOT_EVALUATED，绝不默认满足） */
+  editContract?: ClosureEditContractEvidence;
+}): Pick<TargetAuditClosureReportItem, "closure" | "basis" | "lineage" | "openSubItems" | "checks" | "editContract"> {
   const { item, instruction, patches } = input;
   const targetFile = instruction.origin?.targetFile ?? item.anchor.projection.file;
   const outcomes = instruction.planItemOutcomes ?? [];
@@ -986,7 +1156,7 @@ export function assessRewriteClosure(input: {
     ...acceptedPatches.filter((entry) => entry.record.file === targetFile).map((entry) => entry.record.beforeFileHash)];
   const notReverted = input.currentTargetFileHash !== undefined && earliestBefore.length > 0 &&
     earliestBefore.every((hash) => hash !== input.currentTargetFileHash);
-  const guardFailure = patches.some((entry) => entry.record.overall === "pass" && (!entry.record.scope.ok || !entry.record.fact.ok || !entry.record.citation.ok)) ||
+  const guardFailure = patches.some((entry) => entry.record.overall === "pass" && (!entry.record.scope.ok || !entry.record.fact.ok || !entry.record.citation.ok || entry.record.editContract?.ok === false)) ||
     instruction.resolutionTrace?.verification.fact === false || instruction.resolutionTrace?.verification.citation === false;
   // 文件级 lineage（无 span patch 记录）没有候选级 Fact/Citation 校验——必须已有 gate 复核的正向记录
   //（reverifyHandledInstructions 写入 verification.fact/citation=true）才可判守卫通过（M15.18 真实 run：
@@ -999,7 +1169,12 @@ export function assessRewriteClosure(input: {
     (gate !== undefined && gate.fact && gate.citation);
   const gateFailed = gate !== undefined && (!gate.fact || !gate.citation);
   const guards = !guardFailure && !gateFailed && instruction.status === "handled" && (!fileLevelOnly || fileLevelVerified);
-  const checks = { lineage: hasLineage, targetBinding, contentChanged, notReverted, guards };
+  const editContract: ClosureEditContractEvidence = input.editContract ?? {
+    status: "NOT_EVALUATED",
+    basis: "未提供编辑契约核验证据（不默认满足）",
+    contractIds: [],
+  };
+  const checks = { lineage: hasLineage, targetBinding, contentChanged, notReverted, guards, editContract: editContract.status === "SATISFIED" };
   const lineage = [...fileLineage, ...acceptedPatches.map((entry): PlanItemOutcome => ({
     planItemId: entry.record.planItemIds.join(",") || "(external)",
     outcome: "applied",
@@ -1011,7 +1186,7 @@ export function assessRewriteClosure(input: {
     afterSha256: entry.record.afterFileHash,
     at: "",
   }))];
-  const extras = { ...(lineage.length > 0 ? { lineage } : {}), ...(openSubItems.length > 0 ? { openSubItems } : {}), checks };
+  const extras = { ...(lineage.length > 0 ? { lineage } : {}), ...(openSubItems.length > 0 ? { openSubItems } : {}), checks, editContract };
   const lineageText = lineage.map((entry) => `${entry.patchIds?.join("+") ?? entry.planItemId}@rev${entry.revision ?? "?"}:${entry.file ?? "?"}`).join(", ");
   const rejected = outcomes.filter((outcome) => outcome.outcome === "candidate_rejected");
 
@@ -1035,6 +1210,17 @@ export function assessRewriteClosure(input: {
       }
       return { closure: "STILL_OPEN", basis: `存在守卫失败记录（scope/fact/citation），不视为已解决；lineage：${lineageText}`, ...extras };
     }
+    if (editContract.status === "VIOLATED") {
+      const codes = [...new Set((editContract.violations ?? []).map((violation) => violation.code))].join(",");
+      return {
+        closure: "STILL_OPEN",
+        basis: `EDIT_CONTRACT_VIOLATION[${codes}]：落盘修改超出作者批准的编辑契约（${editContract.basis}）——问题未被合法解决；lineage：${lineageText}`,
+        ...extras,
+      };
+    }
+    if (editContract.status !== "SATISFIED") {
+      return { closure: "NOT_EVALUATED", basis: `落盘修改的编辑契约核验不可得（${editContract.basis}）——授权范围内修复不可证，暂不判已解决；lineage：${lineageText}`, ...extras };
+    }
     if (openSubItems.length > 0) {
       return {
         closure: "PARTIALLY_ADDRESSED",
@@ -1044,7 +1230,7 @@ export function assessRewriteClosure(input: {
     }
     return {
       closure: "VALIDATED_FIXED",
-      basis: `已落盘修订 + 目标绑定 ${targetFile} + 内容变化 + 守卫通过${gate !== undefined ? `（文件级：quality-gate r${gate.round} 覆盖修订 ${gate.reviewedRevision}，事实 / 引用保持 PASS）` : ""}；lineage：${lineageText}`,
+      basis: `已落盘修订 + 目标绑定 ${targetFile} + 内容变化 + 守卫通过 + 编辑契约满足（${editContract.basis}）${gate !== undefined ? `（文件级：quality-gate r${gate.round} 覆盖修订 ${gate.reviewedRevision}，事实 / 引用保持 PASS）` : ""}；lineage：${lineageText}`,
       ...extras,
     };
   }
@@ -1215,6 +1401,72 @@ export class TargetAuditRevisionService {
       projection.push({ relativePath: "abstract", content: outlineAbstract });
     }
     return projection;
+  }
+
+  /** M15.20：修订快照中的目标内容（摘要 = outline.abstract；不可读 → undefined） */
+  private async readSnapshotTarget(projectId: string, revision: number, file: string): Promise<string | undefined> {
+    if (!Number.isInteger(revision) || revision <= 0) return undefined;
+    const dir = join(this.projects.manuscriptDir(projectId), "revisions", `rev-${revision}`);
+    try {
+      if (file === "abstract") {
+        return (JSON.parse(await readFile(join(dir, "outline.json"), "utf8")) as { abstract?: string }).abstract ?? undefined;
+      }
+      return await readFile(join(dir, file), "utf8");
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * M15.20：落盘修改的契约核验证据。优先对修订快照确定性回放（快照内容须与 lineage 前后哈希一致）；
+   * 快照不可对齐时退回校验期记录的 accepted 事件（appliedHash 精确匹配）；都没有 → NOT_EVALUATED。
+   */
+  private async closureContractEvidence(
+    projectId: string,
+    plan: TargetAuditRevisionPlanArtifact,
+    item: TargetAuditRevisionPlanItem,
+    instruction: ExternalInstruction,
+    patches: readonly ClosurePatchEvidence[],
+    store: Awaited<ReturnType<typeof loadEditContractStore>> | null,
+  ): Promise<ClosureEditContractEvidence | undefined> {
+    if (instruction.status !== "handled") return undefined;
+    const targetFile = instruction.origin?.targetFile ?? item.anchor.projection.file;
+    if (targetFile === undefined) return undefined;
+    const contractId = instruction.origin?.contractId;
+    const contract = contractId !== undefined ? store?.contracts.find((entry) => entry.contractId === contractId) : undefined;
+    if (contractId !== undefined && contract === undefined) {
+      return { status: "NOT_EVALUATED", basis: `指令引用的编辑契约 ${contractId} 不可读（存储缺失 / 损坏）`, contractIds: [contractId] };
+    }
+    const hashOf = (content: string): string => (targetFile === "abstract" ? revisionSourceHash(content.trim()) : revisionSourceHash(content));
+    const writes: Array<{ revision: number; before?: string; after?: string }> = [
+      ...(instruction.planItemOutcomes ?? [])
+        .filter((outcome) => outcome.outcome === "applied" && outcome.file === targetFile && outcome.beforeSha256 !== outcome.afterSha256)
+        .map((outcome) => ({ revision: outcome.revision ?? 0, ...(outcome.beforeSha256 !== undefined ? { before: outcome.beforeSha256 } : {}), ...(outcome.afterSha256 !== undefined ? { after: outcome.afterSha256 } : {}) })),
+      ...patches
+        .filter((entry) => entry.record.file === targetFile && entry.record.overall === "pass" && entry.record.apply.ok && entry.record.beforeFileHash !== entry.record.afterFileHash)
+        .map((entry) => ({ revision: entry.revision, before: entry.record.beforeFileHash, after: entry.record.afterFileHash })),
+    ];
+    if (writes.length === 0) return undefined;
+    const evidences: ClosureEditContractEvidence[] = [];
+    for (const write of writes) {
+      const before = await this.readSnapshotTarget(projectId, write.revision - 1, targetFile);
+      const after = await this.readSnapshotTarget(projectId, write.revision, targetFile);
+      const aligned = before !== undefined && after !== undefined && (write.before === undefined || hashOf(before) === write.before) && (write.after === undefined || hashOf(after) === write.after);
+      if (aligned) {
+        evidences.push(assessEditContractForClosure({ contract, legacyItem: item, plan, projectId, target: targetFile, before: targetFile === "abstract" ? before!.trim() : before, after: targetFile === "abstract" ? after!.trim() : after }));
+        continue;
+      }
+      const recorded = contract !== undefined
+        ? store?.events.find((event) => event.kind === "candidate_accepted" && event.contractIds.includes(contract.contractId) && write.after !== undefined && event.appliedHash === write.after)
+        : undefined;
+      evidences.push(recorded !== undefined
+        ? { status: "SATISFIED", basis: `校验期记录：契约 ${contract!.contractId} 在 ${recorded.stageId ?? "revision"} 接受该写入（appliedHash 精确匹配）`, contractIds: [contract!.contractId], contractSource: "contract" }
+        : { status: "NOT_EVALUATED", basis: `rev ${write.revision} 的修改前后快照与 lineage 哈希不能对齐，且无校验期记录`, contractIds: contract !== undefined ? [contract.contractId] : [] });
+    }
+    const violated = evidences.find((evidence) => evidence.status === "VIOLATED");
+    if (violated !== undefined) return violated;
+    const missing = evidences.find((evidence) => evidence.status === "NOT_EVALUATED");
+    return missing ?? evidences[0];
   }
 
   /** GET：计划 + 新鲜度 + 已转入指令的当前状态 */
@@ -1491,10 +1743,16 @@ export class TargetAuditRevisionService {
     return view;
   }
 
-  /** POST decide：作者逐项决策；approve 转入意见队列（幂等），rewrite 项不自动改稿 */
+  /**
+   * POST decide：作者逐项决策；approve 转入意见队列（幂等），rewrite 项不自动改稿。
+   * M15.20 P0：approve 的改写项同时冻结结构化编辑契约（锚范围 + 硬禁改，绑定批准时目标内容与所见条目哈希）。
+   * actor 只能由服务端调用方确定（HTTP 通道 = author；测试 = synthetic_test_actor）——请求体无法声明批准主体。
+   * 旧审批（指令无 contractId）再次 approve 即重新批准：为原指令补冻结契约，不新增重复指令。
+   */
   async decide(
     projectId: string,
     input: { decisions: Array<{ itemId: string; decision: "approve" | "reject" }> },
+    approval: { actor?: EditApprovalEvent["actor"]; channel?: string } = {},
   ): Promise<TargetAuditRevisionPlanView> {
     await this.projects.getRequired(projectId);
     const view = await this.getPlan(projectId);
@@ -1520,12 +1778,52 @@ export class TargetAuditRevisionService {
     }
     const decidedAt = this.now().toISOString();
     let createdInstructions = 0;
+    const actor = approval.actor ?? "author";
+    const channel = approval.channel ?? "http:POST /api/projects/:id/target/evidence-audit/revision-plan/decide";
+    const approvalId = `appr-ta-${contractSha256(`${plan.planId}|${decidedAt}|${[...decisions.keys()].sort().join(",")}`).slice(0, 16)}`;
+    const projectionFiles = await this.loadProjectionFiles(projectId);
+    const existingInstructions = await this.externalInstructions.load(projectId);
+    const instructionById = new Map(existingInstructions.map((instruction) => [instruction.instructionId, instruction]));
+    const mintedContracts: EditContract[] = [];
+    const mintContract = (item: TargetAuditRevisionPlanItem): EditContract => {
+      const contract = buildAuditRewriteContract({
+        projectId,
+        plan,
+        item,
+        baseContent: projectionFiles.find((file) => file.relativePath === item.anchor.projection.file)?.content,
+        approval: { approvalId, actor, channel, at: decidedAt },
+        now: this.now(),
+      });
+      mintedContracts.push(contract);
+      return contract;
+    };
     for (const item of plan.items) {
       const decision = decisions.get(item.itemId);
       if (decision === undefined) {
         continue;
       }
       if (item.authorDecision !== undefined && item.authorDecision.decision === decision) {
+        // M15.20：旧审批（改写指令无冻结契约）重新 approve = 补冻结契约（同一指令，不重复派发）
+        const legacy = decision === "approve" && item.classification === "REWRITE_ELIGIBLE" && item.instructionId !== undefined
+          ? instructionById.get(item.instructionId)
+          : undefined;
+        if (legacy !== undefined && legacy.origin?.kind === "target_audit_rewrite" && legacy.origin.contractId === undefined) {
+          const contract = mintContract(item);
+          // 契约先于指令引用落盘：派发端读到 contractId 时契约必然可读
+          await saveEditContracts(this.projects, projectId, [contract]);
+          await this.externalInstructions.update(projectId, (current) => current.map((instruction) =>
+            instruction.instructionId !== legacy.instructionId || instruction.origin === undefined
+              ? instruction
+              : {
+                  ...instruction,
+                  origin: { ...instruction.origin, contractId: contract.contractId, approvedAt: decidedAt },
+                  ...(/^EDIT_CONTRACT_REAPPROVAL_REQUIRED/.test(instruction.statusNote ?? "") && instruction.status === "unresolved"
+                    ? { status: "pending" as const, statusNote: `已重新批准并冻结编辑契约 ${contract.contractId}` }
+                    : {}),
+                  updatedAt: decidedAt,
+                }));
+          this.log(`[target] projectId=${projectId} 审计条目 ${item.itemId} 旧审批已重新批准：补冻结编辑契约 ${contract.contractId}`);
+        }
         continue; // 幂等：同值重复决策不重复处理
       }
       item.authorDecision = { decision, decidedAt };
@@ -1535,10 +1833,12 @@ export class TargetAuditRevisionService {
       // approve：转入意见队列（rewrite → pending 待派发；其余 → AUTHOR_DECISION_REQUIRED 永不派发）
       if (item.classification === "REWRITE_ELIGIBLE" && item.anchor.projection.status === "resolved") {
         const section = item.anchor.dispatchSection ?? item.anchor.projection.file ?? undefined;
+        const contract = mintContract(item);
+        await saveEditContracts(this.projects, projectId, [contract]);
         const created = await this.externalInstructions.add(projectId, {
           source: "target_audit",
           reviewerLabel: `审计计划 ${plan.planId}`,
-          text: rewriteInstructionText(item, plan),
+          text: rewriteInstructionText(item, plan, contract.conflicts),
           ...(section !== undefined ? { section } : {}),
           origin: {
             kind: "target_audit_rewrite",
@@ -1549,12 +1849,13 @@ export class TargetAuditRevisionService {
             ...(item.anchor.texAnchor !== undefined ? { texAnchor: item.anchor.texAnchor } : {}),
             ...(item.anchor.projection.file !== undefined ? { targetFile: item.anchor.projection.file } : {}),
             approvedAt: decidedAt,
+            contractId: contract.contractId,
           },
         });
         if (created !== null) {
           createdInstructions += 1;
           item.instructionId = created.instructionId;
-          this.log(`[target] projectId=${projectId} 审计条目 ${item.itemId} 已转入修订意见（${created.instructionId}，pending 待派发）`);
+          this.log(`[target] projectId=${projectId} 审计条目 ${item.itemId} 已转入修订意见（${created.instructionId}，pending 待派发；编辑契约 ${contract.contractId}）`);
         }
       } else {
         const created = await this.externalInstructions.add(projectId, {
@@ -1579,6 +1880,17 @@ export class TargetAuditRevisionService {
           );
         }
       }
+    }
+    if (mintedContracts.length > 0) {
+      await saveEditContracts(this.projects, projectId, [], {
+        approvalId,
+        kind: "target_audit_item_approve",
+        actor,
+        channel,
+        at: decidedAt,
+        boundContentHash: contractSha256(mintedContracts.map((contract) => contract.authority.find((entry) => entry.boundContentHash !== undefined)?.boundContentHash ?? "").join("|")),
+        contractIds: mintedContracts.map((contract) => contract.contractId),
+      });
     }
     // 全部条目决策完毕才算 decided（部分决策保持 generated——剩余条目可继续补交）
     plan.status = plan.items.every((item) => item.authorDecision !== undefined) ? "decided" : "generated";
@@ -1663,6 +1975,14 @@ export class TargetAuditRevisionService {
         // 不可读 → 缺省（assessRewriteClosure 判 NOT_EVALUATED）
       }
     }
+    // M15.20：契约存储（损坏 → null → 契约证据 NOT_EVALUATED，绝不默认满足）
+    const contractStore = await loadEditContractStore(this.projects, projectId).catch(() => null);
+    const contractEvidence = new Map<string, ClosureEditContractEvidence | undefined>();
+    for (const item of plan.items) {
+      const instruction = item.instructionId !== undefined ? instructionById.get(item.instructionId) : undefined;
+      if (instruction === undefined || item.classification !== "REWRITE_ELIGIBLE" || item.authorDecision?.decision !== "approve") continue;
+      contractEvidence.set(item.itemId, await this.closureContractEvidence(projectId, plan, item, instruction, recordsByInstruction.get(instruction.instructionId) ?? [], contractStore));
+    }
     const items: TargetAuditClosureReportItem[] = plan.items.map((item) => {
       const instruction = item.instructionId !== undefined ? instructionById.get(item.instructionId) : undefined;
       if (item.authorDecision?.decision === "reject") {
@@ -1721,7 +2041,14 @@ export class TargetAuditRevisionService {
       const currentTargetFileHash = targetFile !== undefined ? currentHashes.get(targetFile) : undefined;
       return {
         ...base,
-        ...assessRewriteClosure({ item, instruction, patches: recordsByInstruction.get(instruction.instructionId) ?? [], currentTargetFileHash, gateEvidence }),
+        ...assessRewriteClosure({
+          item,
+          instruction,
+          patches: recordsByInstruction.get(instruction.instructionId) ?? [],
+          currentTargetFileHash,
+          gateEvidence,
+          ...(contractEvidence.get(item.itemId) !== undefined ? { editContract: contractEvidence.get(item.itemId)! } : {}),
+        }),
       };
     });
 

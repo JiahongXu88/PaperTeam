@@ -106,7 +106,10 @@ describe("M14.1a 长文档闭环：review → 修订 → 重审（snapshot 失�
     // 2) P0-1：Chapter 10 尾部锚点的修订 —— 单元级局部 patch，其余逐字节保持
     // 锚点窗口取自最后一段的唯一 token 区（p38/obs 38——含唯一标识，避免与
     // 其他 ref 同号段落的固定句式重复导致 ANCHOR_AMBIGUOUS）
-    const tailAnchor = chapters[9]!.content.slice(-110, -50);
+    // M15.20：锚从词边界开始（旧写法可能切开 "p72" 之类的标识符，插入标记后产生游离数字 "72"——
+    // 旧实现靠 Planner 文本提及该数字「授权」新增；数值授权现只认结构化批准）
+    const lastParagraph = chapters[9]!.content.split("\n\n").at(-1)!;
+    const tailAnchor = lastParagraph.slice(0, lastParagraph.indexOf(").") + 2);
     await writeFile(join(stack.store.researchDir(projectId), "improvement-plan.json"), JSON.stringify({ plan: { items: [
       { id: "improvement:1", section: "sections/ch10.tex", actionType: "modify", priority: "high",
         action: `Revise the sentence containing "${tailAnchor}".`, rationale: "Integration revision", targetQuote: tailAnchor },
