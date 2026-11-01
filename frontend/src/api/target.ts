@@ -399,7 +399,20 @@ export interface EvidenceAuditGapPlanItemView {
   actionType: "can_rewrite_from_existing_evidence" | "requires_real_experiment_or_author_input";
   experimentPlan?: { purpose: string; baselines?: string; datasets?: string; metrics?: string; expectedEvidence?: string };
   status: "proposed" | "author_decision";
+  /** M15.19 atomic sub-gap fields (v2 audit artifacts only) */
+  subGapId?: string;
+  gapKind?: AuditSubGapKind;
+  targetQuote?: string;
 }
+
+export type AuditSubGapKind =
+  | "INTERNAL_CLAIM_MISMATCH"
+  | "TEXT_OR_STRUCTURE_CORRECTION"
+  | "PRIOR_WORK_COMPARISON"
+  | "EXPERIMENT_OR_AUTHOR_INPUT"
+  | "UNCERTAIN_OR_MISSING_EVIDENCE";
+
+export type AuditRewriteBasis = "internal_evidence" | "prior_work_verified" | "legacy_gap_plan";
 
 export interface EvidenceAuditArtifactView {
   schemaVersion: number;
@@ -583,6 +596,23 @@ export interface AuditRevisionPlanItemView {
   allowedScope: string;
   authorDecision?: { decision: "approve" | "reject"; decidedAt: string };
   instructionId?: string;
+  /** M15.19 atomic sub-gap metadata (v2 plans) */
+  subGap?: {
+    subGapId: string;
+    gapKind: AuditSubGapKind;
+    parentContributionId: string;
+    contributionClaimQuote: string;
+    evidenceAnchors: Array<{ sectionId: string; quote: string; verified: boolean; distinctFromTarget: boolean; replayed: boolean }>;
+    priorWorkRefs: Array<{ title: string; year?: number; candidateId?: string; contentLevel?: string; citedByManuscript?: boolean; resolvesToPool: boolean; priorQuoteVerified?: boolean }>;
+    proposedDirection?: string;
+    missingEvidence?: string;
+  };
+  rewriteBasis?: AuditRewriteBasis;
+  evidenceRequest?: {
+    reason: string;
+    missingSources: Array<{ title: string; year?: number; doi?: string; arxivId?: string; status: string; coverage?: string }>;
+    guidance: string[];
+  };
 }
 
 export interface AuditRevisionPlanView {
@@ -617,6 +647,13 @@ export interface AuditRevisionPlanView {
       unmappable: number;
       approved: number;
       rejected: number;
+      atomic?: {
+        subGaps: number;
+        contributions: number;
+        contributionsWithMixedNeeds: number;
+        byKind: Partial<Record<AuditSubGapKind, number>>;
+        rewriteByBasis: Partial<Record<AuditRewriteBasis, number>>;
+      };
     };
   } | null;
   fresh: boolean;
@@ -661,6 +698,11 @@ export interface AuditClosureReportView {
   items: Array<{
     itemId: string;
     classification: AuditGapClassification;
+    /** M15.19 sub-gap identity (v2 plans) */
+    subGapId?: string;
+    gapKind?: AuditSubGapKind;
+    parentContributionId?: string;
+    rewriteBasis?: AuditRewriteBasis;
     closure: AuditGapClosure;
     basis: string;
     instruction?: { instructionId: string; status: string; statusNote?: string };

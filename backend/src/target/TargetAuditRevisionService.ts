@@ -54,7 +54,7 @@ import type { PatchValidationRecord } from "../review/patchValidation.js";
 import { revisionSourceHash } from "../review/revisionScope.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
-import { normalizeForQuoteMatch } from "../evidence/quoteVerification.js";
+import { normalizeForQuoteMatch, verifyQuoteInChunk } from "../evidence/quoteVerification.js";
 import type {
   ContributionAuditArtifact,
   ContributionAuditInputFingerprint,
@@ -63,12 +63,16 @@ import type {
   ExperimentPlan,
   GapPlanItem,
   PriorWorkSourceLevel,
+  SubGapEvidenceAnchor,
+  SubGapKind,
+  SubGapPriorWorkRef,
 } from "./ContributionAuditService.js";
+import type { PriorWorkCoverageEntry, TargetEvidenceAuditRunMeta } from "./TargetEvidenceAuditService.js";
 
 export const TARGET_AUDIT_REVISION_PLAN_SCHEMA_VERSION = 1;
 export const TARGET_AUDIT_CLOSURE_REPORT_SCHEMA_VERSION = 1;
-/** 确定性分类 / 锚投影实现版本（M15.18：NFKC 等价 + 源偏移逐字锚） */
-export const TARGET_AUDIT_PLAN_CLASSIFIER_VERSION = "m1518-nfkc-mapped";
+/** 确定性分类 / 锚投影实现版本（M15.18：NFKC 等价 + 源偏移逐字锚；M15.19：原子子缺口门禁） */
+export const TARGET_AUDIT_PLAN_CLASSIFIER_VERSION = "m1519-atomic-subgap";
 
 /** PDF 重建引用标记的长度下限（与 PaperReconstructor.MIN_SECTION_CHARS 同口径的启发式） */
 const PROJECTION_MIN_QUOTE_CHARS = 12;
@@ -149,6 +153,49 @@ export interface TargetAuditRevisionPlanItem {
   authorDecision?: { decision: "approve" | "reject"; decidedAt: string };
   /** 决策 approve 后转入意见队列的稳定指令 id */
   instructionId?: string;
+  /** M15.19：原子子缺口元数据（v2 审计工件；旧工件缺省——分类走旧口径） */
+  subGap?: AuditPlanSubGap;
+  /** M15.19：REWRITE_ELIGIBLE 的放行依据（内部证据弱化 / 已核验先前工作比较 / 旧口径） */
+  rewriteBasis?: AuditRewriteBasis;
+  /** M15.19 Phase C：需补证据项的缺失来源清单与导入指引 */
+  evidenceRequest?: AuditEvidenceRequest;
+}
+
+export type AuditRewriteBasis = "internal_evidence" | "prior_work_verified" | "legacy_gap_plan";
+
+export interface AuditPlanSubGap {
+  subGapId: string;
+  gapKind: SubGapKind;
+  parentContributionId: string;
+  /** 所属贡献的声称原文（展示用；改写锚为 anchor.claimQuote，即子缺口目标锚） */
+  contributionClaimQuote: string;
+  /** 稿内证据锚：审计侧回放 + 计划期对当前稿再次回放（replayed）——两者都通过才可作为放行依据 */
+  evidenceAnchors: Array<SubGapEvidenceAnchor & { replayed: boolean }>;
+  priorWorkRefs: SubGapPriorWorkRef[];
+  proposedDirection?: string;
+  missingEvidence?: string;
+}
+
+export type AuditEvidenceSourceStatus =
+  | "model_memory_only"
+  | "unresolved"
+  | "time_causality_violation"
+  | "quote_not_replayed"
+  | "not_cited_by_manuscript"
+  | "abstract_or_metadata_only";
+
+export interface AuditEvidenceRequest {
+  reason: string;
+  missingSources: Array<{
+    title: string;
+    year?: number;
+    doi?: string;
+    arxivId?: string;
+    status: AuditEvidenceSourceStatus;
+    /** 审计 meta 覆盖诊断（若有）：为何未达已核验全文 */
+    coverage?: PriorWorkCoverageEntry["diagnosis"];
+  }>;
+  guidance: string[];
 }
 
 export interface TargetAuditRevisionPlanArtifact {
@@ -177,6 +224,14 @@ export interface TargetAuditRevisionPlanArtifact {
     unmappable: number;
     approved: number;
     rejected: number;
+    /** M15.19: atomic sub-gap stats (v2 audit artifacts only) */
+    atomic?: {
+      subGaps: number;
+      contributions: number;
+      contributionsWithMixedNeeds: number;
+      byKind: Partial<Record<SubGapKind, number>>;
+      rewriteByBasis: Partial<Record<AuditRewriteBasis, number>>;
+    };
   };
 }
 
@@ -212,6 +267,11 @@ export const AUDIT_CLOSURE_LABELS: Record<AuditGapClosure, string> = {
 export interface TargetAuditClosureReportItem {
   itemId: string;
   classification: AuditGapClassification;
+  /** M15.19: atomic sub-gap identity (v2 plans) */
+  subGapId?: string;
+  gapKind?: SubGapKind;
+  parentContributionId?: string;
+  rewriteBasis?: AuditRewriteBasis;
   closure: AuditGapClosure;
   /** 确定性依据（指令状态 / patch lineage / 守卫结果 / 无执行路径原因） */
   basis: string;
@@ -538,12 +598,191 @@ export function classifyAuditGap(input: ClassifyGapInput): ClassifyGapResult {
   };
 }
 
-/** 允许的修改方向（模板化；随先前工作可解析性分化） */
-export function allowedScopeText(priorWork: readonly AuditPlanPriorWorkNote[]): string {
+export interface ClassifySubGapInput {
+  gap: GapPlanItem;
+  projection: AuditPlanAnchorProjection;
+  /** 计划期对当前稿的目标锚再回放（审计侧 targetVerified 之外的独立复核） */
+  targetReplayed: boolean;
+  /** 计划期对当前稿的证据锚再回放（与 gap.evidenceAnchors 同序） */
+  evidenceReplayed: readonly boolean[];
+}
+
+/**
+ * M15.19 原子子缺口确定性分类门禁（模型 gapKind / actionType 只是建议，不是通行证）：
+ * - 需实验 / 作者输入 → 永不改写；模型自报证据不足 → 需补证据；
+ * - 改写类先过目标锚：审计回放 + 计划期再回放 + 唯一投影到可编辑文件，任一不成立 → fail-closed；
+ * - 内部不一致 / 文本纠正：≥1 个稿内证据锚（审计回放 + 计划期再回放 + 与目标锚互不包含）→ 内部证据弱化型放行
+ *   （与先前工作四态无关——不依赖外部文献，旧 B2 门禁对此子类偏严，见 M15.18 §5.2）；否则证据不足；
+ * - 先前工作比较：≥1 个先前工作同时满足 pool 身份可解析 + 无时间因果违规 + quote 在其材料内回放 + 已在稿件
+ *   参考文献中（只能引用既有文献）→ 比较型放行；否则需补证据（附缺失来源清单）。
+ */
+export function classifyAuditSubGap(input: ClassifySubGapInput): ClassifyGapResult & { rewriteBasis?: AuditRewriteBasis } {
+  const { gap, projection } = input;
+  const kind = gap.gapKind ?? "UNCERTAIN_OR_MISSING_EVIDENCE";
+  if (kind === "EXPERIMENT_OR_AUTHOR_INPUT") {
+    return {
+      classification: "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT",
+      reason: "子缺口需要真实实验 / 作者提供研究材料（experimentPlan 在案；系统停在作者裁决，不造数据）",
+    };
+  }
+  if (kind === "UNCERTAIN_OR_MISSING_EVIDENCE") {
+    return {
+      classification: "NEEDS_TARGETED_EVIDENCE",
+      reason: `审计自报材料不足以判断${gap.missingEvidence !== undefined ? `（缺：${gap.missingEvidence.slice(0, 160)}）` : ""}——先补证据 / 作者裁决`,
+    };
+  }
+  if (gap.targetQuote === undefined || gap.targetQuote.trim() === "" || gap.targetVerified !== true || !input.targetReplayed) {
+    return {
+      classification: "EVIDENCE_INSUFFICIENT",
+      reason: "子缺口目标锚缺失或不可在稿件中逐字回放——不允许对不可追溯位置改写",
+    };
+  }
+  if (projection.status === "unresolved") {
+    return {
+      classification: "UNMAPPABLE_TARGET",
+      reason:
+        projection.reason === "no-editable-manuscript"
+          ? "项目无可编辑稿件（manuscript/ 无章节文件）——审计为只读上下文，不改写；导入为「改进」目标可重建可修订稿"
+          : `目标锚无法唯一投影到可编辑章节（${projection.reason ?? "unknown"}）——不猜位置改写`,
+    };
+  }
+  if (kind === "INTERNAL_CLAIM_MISMATCH" || kind === "TEXT_OR_STRUCTURE_CORRECTION") {
+    const anchors = gap.evidenceAnchors ?? [];
+    const usable = anchors.filter((anchor, index) => anchor.verified && anchor.distinctFromTarget && input.evidenceReplayed[index] === true);
+    if (usable.length === 0) {
+      const reason = anchors.length === 0
+        ? "无稿内证据锚"
+        : anchors.some((anchor) => !anchor.distinctFromTarget)
+          ? "证据锚与目标锚重合（声称本身不能作为证据）"
+          : "稿内证据锚不可逐字回放";
+      return {
+        classification: "EVIDENCE_INSUFFICIENT",
+        reason: `${kind === "INTERNAL_CLAIM_MISMATCH" ? "内部声称不一致" : "文本纠正"}缺少可核验的稿内依据（${reason}）——不放行改写`,
+      };
+    }
+    return {
+      classification: "REWRITE_ELIGIBLE",
+      rewriteBasis: "internal_evidence",
+      reason: `内部证据弱化型：目标锚已回放并投影到 ${projection.file}；${usable.length} 个稿内证据锚（${usable.map((anchor) => anchor.sectionId || "全文").join(", ")}）逐字回放——仅限按证据强度弱化 / 限定 / 纠正，不新增比较结论或事实`,
+    };
+  }
+  // PRIOR_WORK_COMPARISON
+  const refs = gap.priorWorkRefs ?? [];
+  const eligible = refs.filter(
+    (ref) => ref.resolvesToPool && ref.timeCausalityViolation !== true && ref.priorQuoteVerified === true && ref.citedByManuscript === true,
+  );
+  if (eligible.length === 0) {
+    return {
+      classification: "NEEDS_TARGETED_EVIDENCE",
+      reason: "比较型改写缺少可核验先前工作（需 pool 身份可解析 + quote 在其材料内回放 + 已在稿件参考文献中）——先补文献 / 全文或作者裁决",
+    };
+  }
+  const levels = [...new Set(eligible.map((ref) => ref.contentLevel ?? "metadata"))].join("/");
+  return {
+    classification: "REWRITE_ELIGIBLE",
+    rewriteBasis: "prior_work_verified",
+    reason: `先前工作比较型：${eligible.length} 个已核验先前工作（材料等级 ${levels}${levels.includes("verified_fulltext") ? "" : "——摘要 / 题录级只支持思想级表述，不得断言实现细节"}），目标锚投影到 ${projection.file}`,
+  };
+}
+
+/**
+ * M15.19 Phase C：需补证据项的缺失来源清单（确定性；来源 = 子缺口先前工作引用，旧工件为比较记录的最近先前工作）。
+ * 只列出与指引，不检索、不升格任何候选。
+ */
+export function buildEvidenceRequest(
+  gap: GapPlanItem,
+  comparison: ContributionComparison | undefined,
+  coverage: readonly PriorWorkCoverageEntry[] = [],
+): AuditEvidenceRequest {
+  const refs: Array<SubGapPriorWorkRef & { sourceLevel?: PriorWorkSourceLevel }> =
+    gap.priorWorkRefs !== undefined && gap.priorWorkRefs.length > 0
+      ? gap.priorWorkRefs
+      : (comparison?.nearestPriorWorks ?? []).map((ref) => ({
+          title: ref.title,
+          ...(ref.year !== undefined ? { year: ref.year } : {}),
+          ...(ref.doi !== undefined ? { doi: ref.doi } : {}),
+          ...(ref.arxivId !== undefined ? { arxivId: ref.arxivId } : {}),
+          resolvesToPool: ref.resolvesToPool,
+          ...(ref.priorQuoteVerified !== undefined ? { priorQuoteVerified: ref.priorQuoteVerified } : {}),
+          ...(ref.timeCausalityViolation !== undefined ? { timeCausalityViolation: ref.timeCausalityViolation } : {}),
+          ...(ref.sourceLevel !== undefined ? { sourceLevel: ref.sourceLevel } : {}),
+        }));
+  const missingSources = refs
+    .filter((ref) => ref.title.trim() !== "")
+    .map((ref) => {
+      const status: AuditEvidenceSourceStatus = !ref.resolvesToPool
+        ? ref.sourceLevel === "model_memory" || gap.priorWorkRefs === undefined ? "model_memory_only" : "unresolved"
+        : ref.timeCausalityViolation === true
+          ? "time_causality_violation"
+          : ref.priorQuoteVerified !== true
+            ? "quote_not_replayed"
+            : ref.citedByManuscript === false
+              ? "not_cited_by_manuscript"
+              : "abstract_or_metadata_only";
+      const diagnosis = coverage.find(
+        (entry) =>
+          entry.contributionId === gap.contributionId &&
+          normalizeForQuoteMatch(entry.title) === normalizeForQuoteMatch(ref.title),
+      )?.diagnosis;
+      return {
+        title: ref.title,
+        ...(ref.year !== undefined ? { year: ref.year } : {}),
+        ...(ref.doi !== undefined ? { doi: ref.doi } : {}),
+        ...(ref.arxivId !== undefined ? { arxivId: ref.arxivId } : {}),
+        status,
+        ...(diagnosis !== undefined ? { coverage: diagnosis } : {}),
+      };
+    });
+  return {
+    reason:
+      gap.missingEvidence !== undefined
+        ? `审计自报缺失：${gap.missingEvidence.slice(0, 300)}`
+        : missingSources.length > 0
+          ? "比较 / 定位依据的先前工作未达可核验等级（身份不可解析 / quote 未回放 / 仅摘要或模型记忆）"
+          : "审计未点名可补的具体来源——需作者判断所需证据",
+    missingSources,
+    guidance: [
+      "把列出的先前工作合法全文（PDF）导入本项目文献库（Sources）；按 DOI / arXiv / 题名匹配，系统不从模型记忆构造全文",
+      "导入后重新执行证据审计：在库全文按身份匹配升级为 verified_fulltext（有界方法节摘录，quote 可回放），再重新生成修改计划",
+      "若该文献不应引用或无法合法获取全文：在计划中拒绝本条，或作为作者裁决项保留（系统不会自动改写比较 / 定位表述）",
+    ],
+  };
+}
+
+/** 允许的修改方向（模板化；随放行依据 / 先前工作可解析性分化） */
+export function allowedScopeText(priorWork: readonly AuditPlanPriorWorkNote[], basis?: AuditRewriteBasis): string {
+  if (basis === "internal_evidence") {
+    return "仅限：①把目标锚中的过度 / 过宽声称弱化或限定到「稿内证据锚」所支持的强度与范围（如只保留证据表明成立的数据集 / 指标 / 条件）；②纠正与稿内证据锚不一致的表述。不得新增比较结论、先前工作归因、数值、实验或引用；不得修改证据锚所在的表格 / 结果文本";
+  }
   const resolvable = priorWork.some((ref) => ref.resolvesToPool && ref.timeCausalityViolation !== true);
   return resolvable
     ? "仅限：①弱化过度声称（把无支撑的强表述降为稿件现有证据可支撑的强度）；②修正前后不一致的表述；③基于指令内列出的已核验先前工作身份修正比较 / 归因表述（只可引用 references.bib 中已有 key，不得新增文献）；④修正范围 / 适用性限定词"
     : "仅限：①弱化过度声称（把无支撑的强表述降为稿件现有证据可支撑的强度）；②修正前后不一致的表述；③修正范围 / 适用性限定词。不得新增比较结论或先前工作归因（审计材料中无可解析先前工作身份）";
+}
+
+const GAP_KIND_LABELS: Record<SubGapKind, string> = {
+  INTERNAL_CLAIM_MISMATCH: "内部声称与稿内证据不一致",
+  TEXT_OR_STRUCTURE_CORRECTION: "文本 / 结构纠正（不改科学结果）",
+  PRIOR_WORK_COMPARISON: "先前工作比较 / 定位",
+  EXPERIMENT_OR_AUTHOR_INPUT: "需真实实验 / 作者输入",
+  UNCERTAIN_OR_MISSING_EVIDENCE: "证据不足 / 无法判断",
+};
+
+/** 子缺口专属指令段（证据锚用〔〕包裹——不参与派发端「」锚定位，只作只读依据） */
+function subGapInstructionLines(item: TargetAuditRevisionPlanItem): string[] {
+  const subGap = item.subGap;
+  if (subGap === undefined) return [];
+  const usableEvidence = subGap.evidenceAnchors.filter((anchor) => anchor.verified && anchor.replayed && anchor.distinctFromTarget);
+  return [
+    `【子缺口】${subGap.subGapId}（${GAP_KIND_LABELS[subGap.gapKind]}；所属贡献 ${subGap.parentContributionId}；放行依据 ${item.rewriteBasis ?? "未放行"}）`,
+    ...(usableEvidence.length > 0
+      ? [
+          "【稿内证据锚（只读，不得修改；改写后的声称强度与范围不得超过其支持）】",
+          ...usableEvidence.map((anchor) => `- ${anchor.sectionId !== "" ? `${anchor.sectionId}：` : ""}〔${anchor.quote}〕`),
+        ]
+      : []),
+    ...(subGap.proposedDirection !== undefined ? [`【审计建议的修改方向（advisory，不授权新增事实）】${subGap.proposedDirection}`] : []),
+  ];
 }
 
 // ---- 指令文案（确定性模板；嵌入 planId + 指纹保证跨稿幂等与可追溯） ----
@@ -599,12 +838,15 @@ export function rewriteInstructionText(
     `【来源】${EXTERNAL_SOURCE_LABELS["target_audit"]}；计划 ${plan.planId}（审计指纹 ${plan.source.inputFingerprint.manuscriptSha256}；贡献 ${item.contributionId}；条目 ${item.itemId}）`,
     `【审计发现的差距】${item.gap}`,
     ...anchorLines,
+    ...subGapInstructionLines(item),
     `【审计定位】稿件解析节 ${item.anchor.sectionId}；可编辑目标：${item.anchor.projection.file ?? "(未投影)"}（quote 回放核验通过）`,
     "【先前工作身份（仅供归因 / 比较表述；不构成新证据，不得新造引用）】",
     ...priorWorkLines(item.priorWork),
     `【允许的修改】${item.allowedScope}`,
     "【禁止】不得新增数值 / 实验结果 / 图表 / 基线 / 新的正面性能声称；不得新增或删除任何 \\cite key；不得改变既有数字、单位、公式、否定关系、比较方向与结论强度语义；若认为必须新增科学事实才能解决该差距，不要修改，报告 CONFLICT 并说明。",
-    "【依据边界】本指令来自模型证据审计（advisory）的 can_rewrite_from_existing_evidence 判定；不授权任何实验事实变更。改写后由事实 / 引用 / 范围守卫复核。",
+    item.rewriteBasis === "internal_evidence" || item.rewriteBasis === "prior_work_verified"
+      ? `【依据边界】本指令来自模型证据审计（advisory）的原子子缺口，经确定性门禁放行（${item.rewriteBasis === "internal_evidence" ? "目标锚与稿内证据锚均逐字回放" : "先前工作身份可解析、quote 回放、已在参考文献中"}）；不授权任何实验事实变更。改写后由事实 / 引用 / 范围守卫复核。`
+      : "【依据边界】本指令来自模型证据审计（advisory）的 can_rewrite_from_existing_evidence 判定；不授权任何实验事实变更。改写后由事实 / 引用 / 范围守卫复核。",
   ].join("\n");
 }
 
@@ -613,26 +855,71 @@ export function authorDecisionInstructionText(
   plan: TargetAuditRevisionPlanArtifact,
 ): string {
   const experiment = item.experimentPlan;
+  const request = item.evidenceRequest;
+  const needLines =
+    request !== undefined && item.classification !== "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT"
+      ? [
+          "【所需证据（系统不自动检索升格，不从模型记忆构造全文）】",
+          `原因：${request.reason}`,
+          ...request.missingSources.map(
+            (source) =>
+              `- ${source.title}（${[source.year !== undefined ? String(source.year) : "年份未解析", source.doi !== undefined ? `doi:${source.doi}` : undefined, source.arxivId !== undefined ? `arXiv:${source.arxivId}` : undefined]
+                .filter((part): part is string => part !== undefined)
+                .join(" · ")}）〔${EVIDENCE_SOURCE_STATUS_LABELS[source.status]}${source.coverage !== undefined ? `；${COVERAGE_LABELS[source.coverage]}` : ""}〕`,
+          ),
+          ...request.guidance.map((line, index) => `${index + 1}. ${line}`),
+        ]
+      : [
+          "【所需真实实验 / 作者输入（系统不自动执行，不伪造数据）】",
+          ...(experiment !== undefined
+            ? [
+                `目的：${experiment.purpose}`,
+                experiment.baselines !== undefined ? `基线：${experiment.baselines}` : undefined,
+                experiment.datasets !== undefined ? `数据集：${experiment.datasets}` : undefined,
+                experiment.metrics !== undefined ? `指标：${experiment.metrics}` : undefined,
+                experiment.expectedEvidence !== undefined ? `所需证据形态：${experiment.expectedEvidence}` : undefined,
+              ].filter((line): line is string => line !== undefined)
+            : ["（审计未给出结构化实验计划——需作者补充研究材料）"]),
+        ];
   return [
     `【来源】${EXTERNAL_SOURCE_LABELS["target_audit"]}；计划 ${plan.planId}（审计指纹 ${plan.source.inputFingerprint.manuscriptSha256}；贡献 ${item.contributionId}；条目 ${item.itemId}）`,
     `【审计发现的差距】${item.gap}`,
     `【稿件原文锚（审计逐字引用）】「${item.anchor.claimQuote}」`,
-    "【所需真实实验 / 作者输入（系统不自动执行，不伪造数据）】",
-    ...(experiment !== undefined
-      ? [
-          `目的：${experiment.purpose}`,
-          experiment.baselines !== undefined ? `基线：${experiment.baselines}` : undefined,
-          experiment.datasets !== undefined ? `数据集：${experiment.datasets}` : undefined,
-          experiment.metrics !== undefined ? `指标：${experiment.metrics}` : undefined,
-          experiment.expectedEvidence !== undefined ? `所需证据形态：${experiment.expectedEvidence}` : undefined,
-        ].filter((line): line is string => line !== undefined)
-      : ["（审计未给出结构化实验计划——需作者补充研究材料）"]),
-    "【处置】该项需要作者补充真实实验结果或作者输入后方可改写；系统停在作者裁决，不产生任何修改。作者完成后可手动录入意见或上传证据再派发。",
+    ...needLines,
+    "【处置】该项需要作者补充真实实验结果、证据或作者输入后方可改写；系统停在作者裁决，不产生任何修改。作者完成后可手动录入意见或上传证据再派发。",
   ].join("\n");
 }
 
+export const EVIDENCE_SOURCE_STATUS_LABELS: Record<AuditEvidenceSourceStatus, string> = {
+  model_memory_only: "仅模型记忆，未进入审计材料",
+  unresolved: "身份不可解析",
+  time_causality_violation: "时间因果违规（晚于 cutoff）",
+  quote_not_replayed: "引文未在其材料内回放",
+  not_cited_by_manuscript: "不在稿件参考文献中（不得新增引用）",
+  abstract_or_metadata_only: "仅摘要 / 题录级",
+};
+
+export const COVERAGE_LABELS: Record<PriorWorkCoverageEntry["diagnosis"], string> = {
+  in_pool_fulltext: "审计材料内为已核验全文",
+  in_pool_abstract_or_metadata: "审计材料内仅摘要 / 题录",
+  in_library_not_upgraded: "文献库已有但未升级为已核验全文",
+  cut_by_pool_cap: "已检索但被审计材料上限截掉",
+  reference_not_resolved: "在稿件参考文献中但未解析进审计材料",
+  model_memory_not_in_references: "既不在审计材料也不在稿件参考文献中",
+};
+
 export function authorDecisionStatusNote(item: TargetAuditRevisionPlanItem, plan: TargetAuditRevisionPlanArtifact): string {
-  return `AUTHOR_DECISION_REQUIRED: 需真实实验 / 作者输入（${EXTERNAL_SOURCE_LABELS["target_audit"]} ${plan.planId} 条目 ${item.itemId}：${item.gap.slice(0, 120)}）`;
+  const need =
+    item.classification === "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT"
+      ? "需真实实验 / 作者输入"
+      : item.classification === "NEEDS_TARGETED_EVIDENCE"
+        ? "需补充定向证据 / 文献全文"
+        : item.classification === "UNMAPPABLE_TARGET"
+          ? "无法定位可编辑目标"
+          : item.classification === "EVIDENCE_INSUFFICIENT"
+            ? "审计证据不足"
+            : "需作者裁决";
+  return `AUTHOR_DECISION_REQUIRED: ${need}（${EXTERNAL_SOURCE_LABELS["target_audit"]} ${plan.planId} 条目 ${item.itemId}：${item.gap.slice(0, 120)}）`;
 }
 
 /** 复评输入：本条目关联指令在计划修订号之后的 patch 记录（attemptHistory 不计） */
@@ -767,6 +1054,14 @@ export function assessRewriteClosure(input: {
   return { closure: "STILL_OPEN", basis: instruction.statusNote ?? "指令尚未派发或派发后未产生可验证修改", ...extras };
 }
 
+/** M15.19: sub-gap identity copied onto closure report items (UI grouping / per-item settlement) */
+function subGapReportFields(item: TargetAuditRevisionPlanItem): Pick<TargetAuditClosureReportItem, "subGapId" | "gapKind" | "parentContributionId" | "rewriteBasis"> {
+  return {
+    ...(item.subGap !== undefined ? { subGapId: item.subGap.subGapId, gapKind: item.subGap.gapKind, parentContributionId: item.subGap.parentContributionId } : {}),
+    ...(item.rewriteBasis !== undefined ? { rewriteBasis: item.rewriteBasis } : {}),
+  };
+}
+
 // ---- 服务 ----
 
 export interface TargetAuditRevisionServiceOptions {
@@ -818,6 +1113,16 @@ export class TargetAuditRevisionService {
       return typeof parsed.venueId === "string" && parsed.venueId !== "" ? parsed.venueId : undefined;
     } catch {
       return undefined;
+    }
+  }
+
+  /** M15.19 Phase C: prior-work coverage diagnosis from the audit meta (missing / corrupt -> empty, never blocks) */
+  private async readPriorWorkCoverage(projectId: string): Promise<PriorWorkCoverageEntry[]> {
+    try {
+      const raw = await readFile(join(this.projects.researchDir(projectId), "target-evidence-audit-meta.json"), "utf8");
+      return (JSON.parse(raw) as Partial<TargetEvidenceAuditRunMeta>).priorWorkCoverage ?? [];
+    } catch {
+      return [];
     }
   }
 
@@ -1020,23 +1325,60 @@ export class TargetAuditRevisionService {
     }
 
     const projectionFiles = await this.loadProjectionFiles(projectId);
+    const coverage = await this.readPriorWorkCoverage(projectId);
+    // 计划期对当前稿的独立回放（审计侧回放之外的第二道确定性复核；CJK 剥空白回退与审计同纪律）
+    const documentText = document.chunks.map((chunk) => chunk.text).join("\n\n");
+    const strippedDocumentText = stripAllWhitespace(documentText);
+    const replay = (quote: string | undefined): boolean =>
+      quote !== undefined &&
+      quote.trim() !== "" &&
+      (verifyQuoteInChunk(quote, documentText).ok || (hasCjk(quote) && verifyQuoteInChunk(stripAllWhitespace(quote), strippedDocumentText).ok));
     const items: TargetAuditRevisionPlanItem[] = [];
     artifact.gapPlan.forEach((gap, index) => {
       const contribution = artifact.inventory.find((unit) => unit.contributionId === gap.contributionId);
       const comparison = artifact.comparisons.find((entry) => entry.contributionId === gap.contributionId);
+      // M15.19：v2 原子子缺口以子缺口目标锚（targetQuote）为改写锚；旧工件 / 无目标锚的子项沿用贡献 claimQuote
+      const atomic = gap.gapKind !== undefined && gap.subGapId !== undefined;
+      const anchorQuote = atomic && gap.targetQuote !== undefined && gap.targetQuote.trim() !== "" ? gap.targetQuote : contribution?.claimQuote ?? "";
+      const anchorSectionId = atomic && gap.targetSectionId !== undefined ? gap.targetSectionId : contribution?.sectionId ?? "";
       // 锚投影（PDF-only 只读项目 → 全部不可映射；可编辑项目 → quote 回放核验）
       const projection: AuditPlanAnchorProjection =
         projectionFiles.length === 0
           ? { status: "unresolved", reason: "no-editable-manuscript" }
           : projectQuoteToManuscript(
-              contribution?.claimQuote ?? "",
+              anchorQuote,
               projectionFiles,
-              contribution !== undefined
-                ? expectedFileForAuditSection(document, contribution.sectionId, projectionFiles)
-                : undefined,
+              anchorSectionId !== "" ? expectedFileForAuditSection(document, anchorSectionId, projectionFiles) : undefined,
             );
-      const classification = classifyAuditGap({ gap, contribution, comparison, projection });
-      const priorWork: AuditPlanPriorWorkNote[] = (comparison?.nearestPriorWorks ?? [])
+      const evidenceReplayed = (gap.evidenceAnchors ?? []).map((anchor) => replay(anchor.quote));
+      const targetReplayed = replay(gap.targetQuote);
+      const classification: ClassifyGapResult & { rewriteBasis?: AuditRewriteBasis } = atomic
+        ? classifyAuditSubGap({ gap, projection, targetReplayed, evidenceReplayed })
+        : classifyAuditGap({ gap, contribution, comparison, projection });
+      const rewriteBasis: AuditRewriteBasis | undefined =
+        classification.classification === "REWRITE_ELIGIBLE" ? classification.rewriteBasis ?? "legacy_gap_plan" : undefined;
+      const priorWorkSource: Array<Pick<AuditPlanPriorWorkNote, "title" | "year" | "doi" | "arxivId" | "sourceLevel" | "resolvesToPool" | "priorQuoteVerified" | "timeCausalityViolation">> = atomic
+        ? // 内部证据型子项不携带先前工作（指令据此声明「不得新增比较结论」）；比较型只携带子项点名并经解析的先前工作
+          gap.gapKind === "PRIOR_WORK_COMPARISON"
+          ? (gap.priorWorkRefs ?? []).map((ref) => ({
+              title: ref.title,
+              ...(ref.year !== undefined ? { year: ref.year } : {}),
+              ...(ref.doi !== undefined ? { doi: ref.doi } : {}),
+              ...(ref.arxivId !== undefined ? { arxivId: ref.arxivId } : {}),
+              sourceLevel: !ref.resolvesToPool
+                ? ("model_memory" as const)
+                : ref.contentLevel === "verified_fulltext"
+                  ? ("pool_fulltext" as const)
+                  : ref.contentLevel === "abstract"
+                    ? ("pool_abstract" as const)
+                    : ("pool_metadata" as const),
+              resolvesToPool: ref.resolvesToPool,
+              ...(ref.priorQuoteVerified !== undefined ? { priorQuoteVerified: ref.priorQuoteVerified } : {}),
+              ...(ref.timeCausalityViolation !== undefined ? { timeCausalityViolation: ref.timeCausalityViolation } : {}),
+            }))
+          : []
+        : comparison?.nearestPriorWorks ?? [];
+      const priorWork: AuditPlanPriorWorkNote[] = priorWorkSource
         .filter((ref) => ref.title.trim() !== "")
         .slice(0, 3)
         .map((ref) => ({
@@ -1060,19 +1402,19 @@ export class TargetAuditRevisionService {
       if (targetFile !== undefined && targetFile.relativePath !== "abstract") {
         if (targetFile.content.length > DEFAULT_REVISION_UNIT_MAX_CHARS) {
           const spans = locateFileSpans(targetFile.relativePath, targetFile.content);
-          const needle = quoteToComparablePlain(contribution?.claimQuote ?? "");
+          const needle = quoteToComparablePlain(anchorQuote);
           const span = spans.find((candidate) => comparableContains(latexToComparablePlain(candidate.content), needle));
           dispatchSection = span !== undefined && span.heading.trim() !== "" ? span.heading.trim() : targetFile.relativePath;
         } else {
           dispatchSection = targetFile.relativePath;
         }
         // 逐字锚：归一化对齐提取（派发端逐字回放用；PDF 形态锚会被转义破坏）
-        texAnchor = extractTexVerbatimQuote(targetFile.content, contribution?.claimQuote ?? "");
+        texAnchor = extractTexVerbatimQuote(targetFile.content, anchorQuote);
       } else if (targetFile !== undefined && targetFile.relativePath === "abstract") {
         dispatchSection = "abstract";
       }
       items.push({
-        itemId: `ta-gap-${index + 1}`,
+        itemId: atomic ? `ta-${gap.subGapId}` : `ta-gap-${index + 1}`,
         contributionId: gap.contributionId,
         gap: gap.gap,
         sourceActionType: gap.actionType,
@@ -1080,9 +1422,9 @@ export class TargetAuditRevisionService {
         classificationReason: classification.reason,
         ...(gap.experimentPlan !== undefined ? { experimentPlan: gap.experimentPlan } : {}),
         anchor: {
-          claimQuote: contribution?.claimQuote ?? "",
-          sectionId: contribution?.sectionId ?? "",
-          anchorVerified: contribution?.anchorVerified ?? false,
+          claimQuote: anchorQuote,
+          sectionId: anchorSectionId,
+          anchorVerified: atomic ? gap.targetVerified === true && targetReplayed : contribution?.anchorVerified ?? false,
           projection,
           ...(dispatchSection !== undefined ? { dispatchSection } : {}),
           ...(texAnchor !== undefined ? { texAnchor } : {}),
@@ -1090,7 +1432,23 @@ export class TargetAuditRevisionService {
         priorWork,
         ...(comparison !== undefined ? { comparisonStatus: comparison.status } : {}),
         forbidden: { values: inventory.numbers.slice(0, 40), citationKeys: inventory.citationKeys.slice(0, 30) },
-        allowedScope: allowedScopeText(priorWork),
+        allowedScope: allowedScopeText(priorWork, rewriteBasis),
+        ...(atomic
+          ? {
+              subGap: {
+                subGapId: gap.subGapId!,
+                gapKind: gap.gapKind!,
+                parentContributionId: gap.parentContributionId ?? gap.contributionId,
+                contributionClaimQuote: contribution?.claimQuote ?? "",
+                evidenceAnchors: (gap.evidenceAnchors ?? []).map((anchor, anchorIndex) => ({ ...anchor, replayed: evidenceReplayed[anchorIndex] === true })),
+                priorWorkRefs: gap.priorWorkRefs ?? [],
+                ...(gap.proposedDirection !== undefined ? { proposedDirection: gap.proposedDirection } : {}),
+                ...(gap.missingEvidence !== undefined ? { missingEvidence: gap.missingEvidence } : {}),
+              },
+            }
+          : {}),
+        ...(rewriteBasis !== undefined ? { rewriteBasis } : {}),
+        ...(classification.classification === "NEEDS_TARGETED_EVIDENCE" ? { evidenceRequest: buildEvidenceRequest(gap, comparison, coverage) } : {}),
       });
     });
 
@@ -1295,6 +1653,7 @@ export class TargetAuditRevisionService {
         return {
           itemId: item.itemId,
           classification: item.classification,
+          ...subGapReportFields(item),
           closure: "AUTHOR_REJECTED" as const,
           basis: `作者于 ${item.authorDecision.decidedAt} 明确不采纳该审计建议`,
         };
@@ -1304,6 +1663,7 @@ export class TargetAuditRevisionService {
           return {
             itemId: item.itemId,
             classification: item.classification,
+            ...subGapReportFields(item),
             closure: "NEEDS_AUTHOR_DECISION" as const,
             basis: "作者尚未决策（计划待定）",
           };
@@ -1311,6 +1671,7 @@ export class TargetAuditRevisionService {
         return {
           itemId: item.itemId,
           classification: item.classification,
+          ...subGapReportFields(item),
           closure: "NOT_EVALUATED" as const,
           basis: "已批准但意见记录缺失（可能被人工删除）——不可复评",
         };
@@ -1320,6 +1681,7 @@ export class TargetAuditRevisionService {
       const base = {
         itemId: item.itemId,
         classification: item.classification,
+        ...subGapReportFields(item),
         instruction: {
           instructionId: instruction.instructionId,
           status: instruction.status,
@@ -1393,5 +1755,31 @@ function summarizePlan(items: readonly TargetAuditRevisionPlanItem[]): TargetAud
     unmappable: items.filter((item) => item.classification === "UNMAPPABLE_TARGET").length,
     approved: items.filter((item) => item.authorDecision?.decision === "approve").length,
     rejected: items.filter((item) => item.authorDecision?.decision === "reject").length,
+    ...(atomicSummary(items) !== undefined ? { atomic: atomicSummary(items) } : {}),
+  };
+}
+
+/** M15.19: per-kind / per-basis counts; "mixed needs" = one contribution with both a rewrite-eligible and an author-decision sub-gap */
+function atomicSummary(items: readonly TargetAuditRevisionPlanItem[]): NonNullable<TargetAuditRevisionPlanArtifact["summary"]["atomic"]> | undefined {
+  const atomic = items.filter((item) => item.subGap !== undefined);
+  if (atomic.length === 0) return undefined;
+  const byKind: Partial<Record<SubGapKind, number>> = {};
+  const rewriteByBasis: Partial<Record<AuditRewriteBasis, number>> = {};
+  const perContribution = new Map<string, { rewrite: boolean; other: boolean }>();
+  for (const item of atomic) {
+    const kind = item.subGap!.gapKind;
+    byKind[kind] = (byKind[kind] ?? 0) + 1;
+    if (item.rewriteBasis !== undefined) rewriteByBasis[item.rewriteBasis] = (rewriteByBasis[item.rewriteBasis] ?? 0) + 1;
+    const entry = perContribution.get(item.subGap!.parentContributionId) ?? { rewrite: false, other: false };
+    if (item.classification === "REWRITE_ELIGIBLE") entry.rewrite = true;
+    else entry.other = true;
+    perContribution.set(item.subGap!.parentContributionId, entry);
+  }
+  return {
+    subGaps: atomic.length,
+    contributions: perContribution.size,
+    contributionsWithMixedNeeds: [...perContribution.values()].filter((entry) => entry.rewrite && entry.other).length,
+    byKind,
+    rewriteByBasis,
   };
 }

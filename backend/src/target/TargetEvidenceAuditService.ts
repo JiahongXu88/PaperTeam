@@ -45,10 +45,12 @@ import { writeJsonAtomic } from "../util/atomic.js";
 import { sha256Hex } from "../util/hash.js";
 import {
   ContributionAuditService,
+  CONTRIBUTION_AUDIT_PROMPT_VERSION_V2,
   type ContributionAuditArtifact,
   type ContributionAuditTelemetry,
   type PriorWorkCandidate,
   type PriorWorkPool,
+  type PriorWorkSourceLevel,
   titleFingerprint,
 } from "./ContributionAuditService.js";
 
@@ -174,7 +176,25 @@ export interface EvidenceAuditPoolBuildStats {
   contentLevels: { abstract: number; metadata: number; verified_fulltext: number };
   buildNotes: string[];
   extractorNotes: string[];
+  /** M15.19：参考文献解析选择口径（缺省 = 旧口径：按年份新近） */
+  refSelectionBasis?: "claim-section-callouts";
+  refsWithClaimSectionCallouts?: number;
+  /** 合格但超出解析上限而未解析的参考文献（有界列表） */
+  refsNotSelected?: CoverageWork[];
+  /** 已检索 / 解析但因 pool 上限未进入审计材料的候选（有界列表） */
+  cutFromPool?: Array<CoverageWork & { citedByManuscript: boolean; contentLevel: PriorWorkCandidate["contentLevel"] }>;
 }
+
+export interface CoverageWork {
+  title: string;
+  year?: number;
+  doi?: string;
+  arxivId?: string;
+}
+
+/** 声称所在节（引用计数用于解析优先级） */
+const CLAIM_SECTION_TITLE_PATTERN = /abstract|intro|related|background|contribut|conclu|summar|discussion/i;
+const COVERAGE_LIST_MAX = 40;
 
 interface PoolWork {
   title: string;
@@ -212,7 +232,22 @@ export async function buildPriorWorkPool(
   const extraction = new ReferenceExtractor().extract(document);
   const isJunkTitle = (title: string): boolean =>
     /^https?:|^www\.|accessed:/i.test(title) || title.split(/\s+/).length < 3;
-  const refEntries = extraction.references
+  // M15.19 Phase C：解析上限内优先「在声称所在节被引用」的参考文献（摘要 / 引言 / 相关工作 / 贡献 / 结论的
+  // 引用标记计数——作者自己放在声称旁的文献最可能是最近先前工作），其次全文被引次数，再按年份新近。
+  // 旧口径只按年份取最新 20 条（M15.18 S2：模型给出的最近先前工作均未进入 pool）。上限不变。
+  const claimSectionIds = new Set(
+    document.sections.filter((section) => CLAIM_SECTION_TITLE_PATTERN.test(section.title) || section.sectionId === document.abstractSectionId).map((section) => section.sectionId),
+  );
+  const keyCallouts = new Map<string, number>();
+  const allCallouts = new Map<string, number>();
+  for (const callout of extraction.callouts) {
+    for (const relation of callout.references) {
+      if (relation.referenceId === undefined) continue;
+      allCallouts.set(relation.referenceId, (allCallouts.get(relation.referenceId) ?? 0) + 1);
+      if (claimSectionIds.has(callout.sectionId)) keyCallouts.set(relation.referenceId, (keyCallouts.get(relation.referenceId) ?? 0) + 1);
+    }
+  }
+  const eligibleRefs = extraction.references
     .filter(
       (ref) =>
         ref.title !== undefined &&
@@ -220,8 +255,15 @@ export async function buildPriorWorkPool(
         !isJunkTitle(ref.title) &&
         (ref.year ?? cutoffYear) <= cutoffYear,
     )
-    .sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || String(a.title).localeCompare(String(b.title)))
-    .slice(0, EVIDENCE_AUDIT_MAX_REFS);
+    .sort(
+      (a, b) =>
+        (keyCallouts.get(b.referenceId) ?? 0) - (keyCallouts.get(a.referenceId) ?? 0) ||
+        (allCallouts.get(b.referenceId) ?? 0) - (allCallouts.get(a.referenceId) ?? 0) ||
+        (b.year ?? 0) - (a.year ?? 0) ||
+        String(a.title).localeCompare(String(b.title)),
+    );
+  const refEntries = eligibleRefs.slice(0, EVIDENCE_AUDIT_MAX_REFS);
+  const refsNotSelected = eligibleRefs.slice(EVIDENCE_AUDIT_MAX_REFS);
   let refResolved = 0;
   let refUnresolved = 0;
   let refLookupErrors = 0;
@@ -396,6 +438,7 @@ export async function buildPriorWorkPool(
     return (b.year ?? 0) - (a.year ?? 0) || a.title.localeCompare(b.title);
   });
   const finalCandidates = candidates.slice(0, EVIDENCE_AUDIT_POOL_CAP);
+  const cutFromPool = candidates.slice(EVIDENCE_AUDIT_POOL_CAP);
 
   const pool: PriorWorkPool = {
     cutoffDate,
@@ -423,6 +466,22 @@ export async function buildPriorWorkPool(
     },
     buildNotes,
     extractorNotes: extraction.notes.slice(0, 5),
+    refSelectionBasis: "claim-section-callouts",
+    refsWithClaimSectionCallouts: refEntries.filter((ref) => (keyCallouts.get(ref.referenceId) ?? 0) > 0).length,
+    refsNotSelected: refsNotSelected.slice(0, COVERAGE_LIST_MAX).map((ref) => ({
+      title: String(ref.title),
+      ...(ref.year !== undefined ? { year: ref.year } : {}),
+      ...(ref.doi !== undefined ? { doi: ref.doi } : {}),
+      ...(ref.arxivId !== undefined ? { arxivId: ref.arxivId } : {}),
+    })),
+    cutFromPool: cutFromPool.slice(0, COVERAGE_LIST_MAX).map((candidate) => ({
+      title: candidate.title,
+      ...(candidate.year !== undefined ? { year: candidate.year } : {}),
+      ...(candidate.doi !== undefined ? { doi: candidate.doi } : {}),
+      ...(candidate.arxivId !== undefined ? { arxivId: candidate.arxivId } : {}),
+      citedByManuscript: candidate.citedByManuscript,
+      contentLevel: candidate.contentLevel,
+    })),
   };
   return { pool, stats };
 }
@@ -440,6 +499,94 @@ export interface TargetEvidenceAuditRunMeta {
   extractParseFailed: boolean;
   compareParseFailed: boolean;
   synthesizeParseFailed: boolean;
+  /** M15.19 Phase C：审计点名的最近先前工作的覆盖诊断（为何未达已核验全文；确定性，零网络） */
+  priorWorkCoverage?: PriorWorkCoverageEntry[];
+}
+
+export type PriorWorkCoverageDiagnosis =
+  | "in_pool_fulltext"
+  | "in_pool_abstract_or_metadata"
+  | "in_library_not_upgraded"
+  | "cut_by_pool_cap"
+  | "reference_not_resolved"
+  | "model_memory_not_in_references";
+
+export interface PriorWorkCoverageEntry extends CoverageWork {
+  contributionId: string;
+  sourceLevel?: PriorWorkSourceLevel;
+  resolvesToPool: boolean;
+  /** 在稿件参考文献表中（DOI / arXiv / 题名指纹） */
+  inManuscriptReferences: boolean;
+  /** 在参考文献中但超出解析上限未解析 */
+  referenceNotSelected: boolean;
+  /** 已检索 / 解析但被 pool 上限截掉 */
+  retrievedButCut: boolean;
+  /** 项目文献库已有匹配 source */
+  inLibrary: boolean;
+  diagnosis: PriorWorkCoverageDiagnosis;
+}
+
+const coverageWorkMatches = (a: CoverageWork, b: CoverageWork): boolean => {
+  const doiA = a.doi !== undefined ? normalizeDoi(a.doi) : undefined;
+  const doiB = b.doi !== undefined ? normalizeDoi(b.doi) : undefined;
+  if (doiA !== undefined && doiA === doiB) return true;
+  const arxivA = a.arxivId !== undefined ? normalizeArxivId(a.arxivId) : undefined;
+  const arxivB = b.arxivId !== undefined ? normalizeArxivId(b.arxivId) : undefined;
+  if (arxivA !== undefined && arxivA === arxivB) return true;
+  const fp = titleFingerprint(a.title);
+  return fp !== "" && fp === titleFingerprint(b.title);
+};
+
+/**
+ * M15.19 Phase C：审计比较中点名的每个最近先前工作 → 为何不是已核验全文（确定性诊断）。
+ * 区分：已在稿件参考文献但未解析 / 已检索但被 pool 上限截掉 / 在库全文未升级 / 仅模型记忆且不在参考文献。
+ * 只做诊断与提示，不扩大检索、不把任何候选升格为证据。
+ */
+export function diagnosePriorWorkCoverage(
+  artifact: Pick<ContributionAuditArtifact, "comparisons">,
+  document: PaperDocument,
+  stats: Pick<EvidenceAuditPoolBuildStats, "refsNotSelected" | "cutFromPool">,
+  librarySources: readonly SourceItem[],
+): PriorWorkCoverageEntry[] {
+  const references = new ReferenceExtractor().extract(document).references.filter((ref) => ref.title !== undefined && ref.title !== "");
+  const entries: PriorWorkCoverageEntry[] = [];
+  for (const comparison of artifact.comparisons) {
+    for (const ref of comparison.nearestPriorWorks) {
+      const work: CoverageWork = {
+        title: ref.title,
+        ...(ref.year !== undefined ? { year: ref.year } : {}),
+        ...(ref.doi !== undefined ? { doi: ref.doi } : {}),
+        ...(ref.arxivId !== undefined ? { arxivId: ref.arxivId } : {}),
+      };
+      const inManuscriptReferences = references.some((entry) =>
+        coverageWorkMatches(work, { title: String(entry.title), ...(entry.doi !== undefined ? { doi: entry.doi } : {}), ...(entry.arxivId !== undefined ? { arxivId: entry.arxivId } : {}) }),
+      );
+      const referenceNotSelected = (stats.refsNotSelected ?? []).some((entry) => coverageWorkMatches(work, entry));
+      const retrievedButCut = (stats.cutFromPool ?? []).some((entry) => coverageWorkMatches(work, entry));
+      const inLibrary = librarySources.some((source) => librarySourceMatches(work, source));
+      const diagnosis: PriorWorkCoverageDiagnosis = ref.resolvesToPool
+        ? ref.sourceLevel === "pool_fulltext" ? "in_pool_fulltext" : inLibrary ? "in_library_not_upgraded" : "in_pool_abstract_or_metadata"
+        : inLibrary
+          ? "in_library_not_upgraded"
+          : retrievedButCut
+            ? "cut_by_pool_cap"
+            : inManuscriptReferences
+              ? "reference_not_resolved"
+              : "model_memory_not_in_references";
+      entries.push({
+        contributionId: comparison.contributionId,
+        ...work,
+        ...(ref.sourceLevel !== undefined ? { sourceLevel: ref.sourceLevel } : {}),
+        resolvesToPool: ref.resolvesToPool,
+        inManuscriptReferences,
+        referenceNotSelected,
+        retrievedButCut,
+        inLibrary,
+        diagnosis,
+      });
+    }
+  }
+  return entries;
 }
 
 export interface TargetEvidenceAuditView {
@@ -486,6 +633,8 @@ export class TargetEvidenceAuditService {
       reviewerAgentId: options.reviewerAgentId,
       researchDir: (projectId: string) => this.projects.researchDir(projectId),
       ...(options.runTimeoutMs !== undefined ? { runTimeoutMs: options.runTimeoutMs } : {}),
+      // M15.19: product path uses atomic sub-gap synthesis (v2); research scripts keep v1
+      promptVersion: CONTRIBUTION_AUDIT_PROMPT_VERSION_V2,
       now: this.now,
       log: this.log,
     });
@@ -597,6 +746,7 @@ export class TargetEvidenceAuditService {
       compareParseFailed: outcome.compareParseFailed,
       synthesizeParseFailed: outcome.synthesizeParseFailed,
       ...(options.venueId !== undefined ? { venueId: options.venueId } : {}),
+      priorWorkCoverage: diagnosePriorWorkCoverage(outcome.artifact, document, stats, librarySources),
     };
     const dir = this.projects.researchDir(projectId);
     await mkdir(dir, { recursive: true });

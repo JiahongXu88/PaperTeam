@@ -1564,6 +1564,41 @@ function AuditPlanItemRow({
         ) : (
           <div className="faint">先前工作：无可解析身份（不得新增比较结论）</div>
         )}
+        {item.subGap !== undefined ? (
+          <div className="faint" data-testid="target-audit-revision-subgap">
+            子缺口 {item.subGap.subGapId}：{AUDIT_SUBGAP_KIND_LABELS[item.subGap.gapKind] ?? item.subGap.gapKind} · 所属贡献 {item.subGap.parentContributionId}
+            {item.rewriteBasis !== undefined ? ` · 放行依据：${AUDIT_REWRITE_BASIS_LABELS[item.rewriteBasis]}` : ""}
+          </div>
+        ) : null}
+        {item.subGap !== undefined && item.subGap.evidenceAnchors.length > 0 ? (
+          <div className="faint" data-testid="target-audit-revision-evidence-anchors">
+            稿内证据锚（只读）：
+            {item.subGap.evidenceAnchors
+              .map(
+                (anchor) =>
+                  `${anchor.sectionId !== "" ? `${anchor.sectionId} ` : ""}〔${anchor.quote.slice(0, 160)}${anchor.quote.length > 160 ? "…" : ""}〕${anchor.verified && anchor.replayed ? "✓ 回放" : "✗ 不可回放"}${anchor.distinctFromTarget ? "" : "（与目标锚重合，不作依据）"}`,
+              )
+              .join("；")}
+          </div>
+        ) : null}
+        {item.subGap?.proposedDirection !== undefined && item.classification === "REWRITE_ELIGIBLE" ? (
+          <div className="faint">审计建议的修改方向（advisory）：{item.subGap.proposedDirection}</div>
+        ) : null}
+        {item.evidenceRequest !== undefined ? (
+          <div className="faint" data-testid="target-audit-revision-evidence-request">
+            所需证据：{item.evidenceRequest.reason}
+            {item.evidenceRequest.missingSources.length > 0
+              ? `；缺失来源：${item.evidenceRequest.missingSources
+                  .map((source) => `${source.title}（${source.year ?? "?"}${source.doi !== undefined ? ` · doi:${source.doi}` : ""}${source.arxivId !== undefined ? ` · arXiv:${source.arxivId}` : ""}；${EVIDENCE_SOURCE_STATUS_LABELS[source.status] ?? source.status}）`)
+                  .join("；")}`
+              : ""}
+            <ol>
+              {item.evidenceRequest.guidance.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
         {item.forbidden.citationKeys.length > 0 || item.forbidden.values.length > 0 ? (
           <div className="faint">
             禁止变更：数值 {item.forbidden.values.slice(0, 8).join("、")}
@@ -1622,14 +1657,71 @@ function AuditPlanItemRow({
   );
 }
 
+const AUDIT_SUBGAP_KIND_LABELS: Record<string, string> = {
+  INTERNAL_CLAIM_MISMATCH: "内部声称与稿内证据不一致",
+  TEXT_OR_STRUCTURE_CORRECTION: "文本 / 结构纠正",
+  PRIOR_WORK_COMPARISON: "先前工作比较 / 定位",
+  EXPERIMENT_OR_AUTHOR_INPUT: "需真实实验 / 作者输入",
+  UNCERTAIN_OR_MISSING_EVIDENCE: "证据不足 / 无法判断",
+};
+
+const AUDIT_REWRITE_BASIS_LABELS: Record<string, string> = {
+  internal_evidence: "稿内证据弱化型（目标锚 + 稿内证据锚均回放）",
+  prior_work_verified: "已核验先前工作比较型",
+  legacy_gap_plan: "旧审计口径",
+};
+
+const EVIDENCE_SOURCE_STATUS_LABELS: Record<string, string> = {
+  model_memory_only: "仅模型记忆，未进入审计材料",
+  unresolved: "身份不可解析",
+  time_causality_violation: "时间因果违规",
+  quote_not_replayed: "引文未在其材料内回放",
+  not_cited_by_manuscript: "不在稿件参考文献中",
+  abstract_or_metadata_only: "仅摘要 / 题录级",
+};
+
+/** M15.19：复评结果按处置分组（已改 / 需实验 / 需补文献 / 不可评价 / 未完成 / 作者不采纳） */
+type AuditClosureGroup = "fixed" | "needs_experiment" | "needs_evidence" | "not_evaluable" | "open" | "satisfied" | "rejected";
+
+const AUDIT_CLOSURE_GROUP_LABELS: Record<AuditClosureGroup, string> = {
+  fixed: "已改（机器可证）",
+  needs_experiment: "需真实实验 / 作者决策",
+  needs_evidence: "需补文献 / 定向证据",
+  not_evaluable: "不可评价 / 不可定位",
+  open: "改写未完成（仍开放 / 部分）",
+  satisfied: "基线已满足（无需修改）",
+  rejected: "作者不采纳",
+};
+
+function auditClosureGroup(item: AuditClosureReportView["items"][number]): AuditClosureGroup {
+  if (item.closure === "VALIDATED_FIXED") return "fixed";
+  if (item.closure === "AUTHOR_REJECTED") return "rejected";
+  if (item.closure === "ALREADY_SATISFIED") return "satisfied";
+  if (item.classification === "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT") return "needs_experiment";
+  if (item.classification === "NEEDS_TARGETED_EVIDENCE") return "needs_evidence";
+  if (item.closure === "NOT_EVALUATED" || item.classification === "UNMAPPABLE_TARGET" || item.classification === "EVIDENCE_INSUFFICIENT") return "not_evaluable";
+  return "open";
+}
+
 function AuditClosureReportViewBlock({ report }: { report: AuditClosureReportView }) {
   const summaryRecord = report.summary as unknown as Record<string, number>;
+  const groupCounts = new Map<AuditClosureGroup, number>();
+  for (const item of report.items) groupCounts.set(auditClosureGroup(item), (groupCounts.get(auditClosureGroup(item)) ?? 0) + 1);
   return (
     <details className="details-block" data-testid="target-audit-revision-report" open>
       <summary>
         闭环复评报告（{report.reportId} · 评估于修订 r{report.assessedAtRevision ?? "?"} · {formatDateTime(report.generatedAt) ?? "—"}）
       </summary>
       <div className="kv">
+        <div className="kv-row">
+          <dt>按处置分组</dt>
+          <dd data-testid="target-audit-revision-report-groups">
+            {(Object.keys(AUDIT_CLOSURE_GROUP_LABELS) as AuditClosureGroup[])
+              .filter((group) => (groupCounts.get(group) ?? 0) > 0)
+              .map((group) => `${AUDIT_CLOSURE_GROUP_LABELS[group]} ${groupCounts.get(group) ?? 0}`)
+              .join(" · ")}
+          </dd>
+        </div>
         <div className="kv-row">
           <dt>闭环汇总</dt>
           <dd>
@@ -1649,7 +1741,7 @@ function AuditClosureReportViewBlock({ report }: { report: AuditClosureReportVie
             <li className="rule-item" key={item.itemId} data-testid="target-audit-revision-report-item">
               <span className={`status status-tone-${meta.tone}`}>{meta.label}</span>
               <div>
-                <strong>{item.itemId}</strong>（{AUDIT_CLASSIFICATION_META[item.classification]?.label ?? item.classification}）：{item.basis}
+                <strong>{item.itemId}</strong>（{AUDIT_CLASSIFICATION_META[item.classification]?.label ?? item.classification}{item.parentContributionId !== undefined ? ` · 贡献 ${item.parentContributionId}` : ""} · {AUDIT_CLOSURE_GROUP_LABELS[auditClosureGroup(item)]}）：{item.basis}
                 {item.patches !== undefined && item.patches.length > 0 ? (
                   <div className="faint">
                     patch lineage：

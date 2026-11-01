@@ -28,7 +28,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { AgentRunFailedError } from "../errors.js";
 import type { AgentRuntime } from "../runtime/types.js";
-import { verifyQuoteInChunk } from "../evidence/quoteVerification.js";
+import { normalizeForQuoteMatch, verifyQuoteInChunk } from "../evidence/quoteVerification.js";
 import {
   createFinding,
   FINDING_CATEGORIES,
@@ -43,6 +43,13 @@ import { sha256Hex } from "../util/hash.js";
 
 /** prompt/输出契约版本（纳入工件 fingerprint；任何 prompt 变更必须递增） */
 export const CONTRIBUTION_AUDIT_PROMPT_VERSION = "m1514-caudit-v1";
+/**
+ * M15.19：综合阶段（Call 3）的原子子缺口契约——同一贡献可拆为证据需求不同的多个子项
+ * （内部声称不一致 / 文本纠正 / 先前工作比较 / 需实验 / 证据不足）。抽取与比较阶段与 v1 完全相同。
+ * 产品路径（TargetEvidenceAuditService）使用 v2；研究脚本缺省仍为 v1（M15.14/15 复现口径不变）。
+ */
+export const CONTRIBUTION_AUDIT_PROMPT_VERSION_V2 = "m1519-caudit-v2";
+export type ContributionAuditPromptVersion = typeof CONTRIBUTION_AUDIT_PROMPT_VERSION | typeof CONTRIBUTION_AUDIT_PROMPT_VERSION_V2;
 export const CONTRIBUTION_AUDIT_SCHEMA_VERSION = 1;
 
 // ---- 预算常量（对齐 FullPaperReviewService 的截断披露纪律） ----
@@ -58,8 +65,13 @@ const POOL_ABSTRACT_MAX_CHARS = 1_500;
 const POOL_EXCERPT_MAX_CHARS = 5_000;
 const COMPARISONS_JSON_MAX_CHARS = 16_000;
 const INVENTORY_JSON_MAX_CHARS = 12_000;
+/** M15.19 v2：综合调用附带的稿件正文上限（关键节 + 支撑节去重） */
+const SYNTHESIS_SECTIONS_MAX_CHARS = 40_000;
 const MAX_CONTRIBUTIONS = 5;
 const MAX_NEAREST_PRIOR = 3;
+/** M15.19 v2：每个贡献 / 全工件的子缺口上限（防凑数；超限如实计数） */
+export const MAX_SUB_GAPS_PER_CONTRIBUTION = 4;
+export const MAX_SUB_GAPS_TOTAL = 16;
 const KEY_SECTION_TITLE_PATTERN = /intro|conclu|contribut|abstract|summar|related|method|experiment|evaluat/i;
 const FORMAT_REMINDER =
   "【格式提醒】上一次输出无法解析为 JSON。请只输出一个合法 JSON 对象（无围栏、无前后说明文字），字段名与示例完全一致。";
@@ -188,6 +200,71 @@ export interface GapPlanItem {
   experimentPlan?: ExperimentPlan;
   /** requires_real_experiment 恒为 author_decision——模型停在提议，不造数 */
   status: "proposed" | "author_decision";
+  // ---- M15.19 原子子缺口（仅 m1519-caudit-v2 工件；v1 工件缺省——分类走旧口径，语义不变） ----
+  /** 确定性稳定 id：sha256(contributionId | gapKind | 归一化目标锚或差距文本) 前 10 位 */
+  subGapId?: string;
+  gapKind?: SubGapKind;
+  /** 所属贡献（与 contributionId 相同；显式字段便于同一贡献多子项的审计追溯） */
+  parentContributionId?: string;
+  /** 需修改的稿件原文（逐字；可与贡献 claimQuote 不同，例如摘要中的过度声称句） */
+  targetQuote?: string;
+  targetSectionId?: string;
+  /** targetQuote 已在稿件中确定性回放 */
+  targetVerified?: boolean;
+  /** 稿内证据锚（表格 / 结果 / 实验描述的逐字引文；只读，作为改写强度上限） */
+  evidenceAnchors?: SubGapEvidenceAnchor[];
+  /** 比较型子项引用的先前工作（只允许 pool 候选；逐项身份解析 + quote 回放） */
+  priorWorkRefs?: SubGapPriorWorkRef[];
+  /** 模型建议的修改方向（advisory；不授权新增事实） */
+  proposedDirection?: string;
+  /** 证据不足型子项：缺什么才能判断 */
+  missingEvidence?: string;
+}
+
+/** M15.19：原子子缺口类型（同一贡献可有多个，彼此证据需求不同） */
+export const SUB_GAP_KINDS = [
+  "INTERNAL_CLAIM_MISMATCH",
+  "TEXT_OR_STRUCTURE_CORRECTION",
+  "PRIOR_WORK_COMPARISON",
+  "EXPERIMENT_OR_AUTHOR_INPUT",
+  "UNCERTAIN_OR_MISSING_EVIDENCE",
+] as const;
+export type SubGapKind = (typeof SUB_GAP_KINDS)[number];
+
+export interface SubGapEvidenceAnchor {
+  sectionId: string;
+  quote: string;
+  /** 逐字回放通过（sectionId 合法时在该节内回放，否则全文回放） */
+  verified: boolean;
+  /** 证据锚与目标锚互不包含（证据不能就是声称本身） */
+  distinctFromTarget: boolean;
+}
+
+export interface SubGapPriorWorkRef {
+  candidateId?: string;
+  title: string;
+  year?: number;
+  doi?: string;
+  arxivId?: string;
+  contentLevel?: PriorWorkContentLevel;
+  /** 该先前工作是否已在稿件参考文献中（比较型改写只可引用既有文献） */
+  citedByManuscript?: boolean;
+  librarySourceId?: string;
+  quote?: string;
+  resolvesToPool: boolean;
+  priorQuoteVerified?: boolean;
+  timeCausalityViolation?: boolean;
+}
+
+/** M15.19 子缺口确定性守卫计数（v2 工件；非法 / 重复条目如实计数，不带病入工件） */
+export interface SubGapGuards {
+  duplicatesDropped: number;
+  overLimitDropped: number;
+  unknownContribution: number;
+  targetAnchorFailures: number;
+  evidenceAnchorFailures: number;
+  priorWorkUnresolved: number;
+  priorQuoteReplayFailures: number;
 }
 
 /** ReviewFinding 的 additive 扩展（不改 finding.ts 本体；extra 字段随工件落盘） */
@@ -216,6 +293,8 @@ export interface ContributionAuditGuards {
   priorQuoteReplayFailures: number;
   /** differenceBasis="fulltext" 但缺少可回放 quote 的 pool_fulltext 先前工作 → 降级 abstract */
   fulltextBasisDowngrades: number;
+  /** M15.19：v2 原子子缺口守卫（v1 工件缺省） */
+  subGaps?: SubGapGuards;
 }
 
 export interface ContributionAuditInputFingerprint {
@@ -628,6 +707,199 @@ export function parseSynthesisOutput(raw: string): {
   return { findings, gapPlan, parseFailed: parsed === undefined };
 }
 
+// ---- M15.19 v2：原子子缺口（解析 + 确定性守卫，纯函数导出供测试） ----
+
+export interface RawSubGap {
+  contributionId: string;
+  gapKind: SubGapKind;
+  gap: string;
+  targetQuote?: string;
+  targetSectionId?: string;
+  evidence: Array<{ sectionId: string; quote: string }>;
+  priorWork: Array<{ candidateId?: string; title: string; year?: number; doi?: string; arxivId?: string; quote?: string }>;
+  proposedDirection?: string;
+  missingEvidence?: string;
+  experimentPlan?: ExperimentPlan;
+}
+
+/** v2 综合输出的 gapPlan 解析（findings 沿用 parseSynthesisOutput；未知 gapKind → 证据不足型，不猜为可改写） */
+export function parseSubGapsOutput(raw: string): { subGaps: RawSubGap[]; parseFailed: boolean } {
+  const parsed = parseLenientJson(raw);
+  const record = (parsed ?? {}) as Record<string, unknown>;
+  const rawGaps = Array.isArray(record["gapPlan"]) ? (record["gapPlan"] as unknown[]) : [];
+  const subGaps = rawGaps.map((item): RawSubGap => {
+    const gr = (item ?? {}) as Record<string, unknown>;
+    const gapKind = enumOf(gr["gapKind"], SUB_GAP_KINDS, "UNCERTAIN_OR_MISSING_EVIDENCE");
+    const ep = (gr["experimentPlan"] ?? null) as Record<string, unknown> | null;
+    const evidence = (Array.isArray(gr["evidence"]) ? (gr["evidence"] as unknown[]) : []).slice(0, 4).map((entry) => {
+      const er = (entry ?? {}) as Record<string, unknown>;
+      return { sectionId: str(er["sectionId"], 64), quote: str(er["quote"], 600) };
+    }).filter((entry) => entry.quote !== "");
+    const priorWork = (Array.isArray(gr["priorWork"]) ? (gr["priorWork"] as unknown[]) : []).slice(0, MAX_NEAREST_PRIOR).map((entry) => {
+      const pr = (entry ?? {}) as Record<string, unknown>;
+      const year = typeof pr["year"] === "number" && Number.isFinite(pr["year"]) ? (pr["year"] as number) : undefined;
+      return {
+        ...(optionalStr(pr["candidateId"], 16) !== undefined ? { candidateId: optionalStr(pr["candidateId"], 16) } : {}),
+        title: str(pr["title"], 300),
+        ...(year !== undefined ? { year } : {}),
+        ...(optionalStr(pr["doi"], 200) !== undefined ? { doi: optionalStr(pr["doi"], 200) } : {}),
+        ...(optionalStr(pr["arxivId"], 40) !== undefined ? { arxivId: optionalStr(pr["arxivId"], 40) } : {}),
+        ...(optionalStr(pr["quote"], 600) !== undefined ? { quote: optionalStr(pr["quote"], 600) } : {}),
+      };
+    });
+    return {
+      contributionId: str(gr["contributionId"], 16),
+      gapKind,
+      gap: str(gr["gap"], 1000),
+      ...(optionalStr(gr["targetQuote"], 600) !== undefined ? { targetQuote: optionalStr(gr["targetQuote"], 600) } : {}),
+      ...(optionalStr(gr["targetSectionId"], 64) !== undefined ? { targetSectionId: optionalStr(gr["targetSectionId"], 64) } : {}),
+      evidence,
+      priorWork,
+      ...(optionalStr(gr["proposedDirection"], 800) !== undefined ? { proposedDirection: optionalStr(gr["proposedDirection"], 800) } : {}),
+      ...(optionalStr(gr["missingEvidence"], 800) !== undefined ? { missingEvidence: optionalStr(gr["missingEvidence"], 800) } : {}),
+      ...(ep !== null && gapKind === "EXPERIMENT_OR_AUTHOR_INPUT"
+        ? {
+            experimentPlan: {
+              purpose: str(ep["purpose"], 800),
+              baselines: optionalStr(ep["baselines"], 500),
+              datasets: optionalStr(ep["datasets"], 500),
+              metrics: optionalStr(ep["metrics"], 500),
+              expectedEvidence: optionalStr(ep["expectedEvidence"], 500),
+            },
+          }
+        : {}),
+    };
+  });
+  return { subGaps, parseFailed: parsed === undefined };
+}
+
+/** 子缺口类型 → 兼容旧字段 actionType（只有前三类才可能进入改写；最终放行仍由确定性分类门禁决定） */
+export function subGapActionType(kind: SubGapKind): GapPlanItem["actionType"] {
+  return kind === "EXPERIMENT_OR_AUTHOR_INPUT" || kind === "UNCERTAIN_OR_MISSING_EVIDENCE"
+    ? "requires_real_experiment_or_author_input"
+    : "can_rewrite_from_existing_evidence";
+}
+
+/** 稳定子缺口 id：同一贡献 + 同一类型 + 同一目标锚（归一化）→ 同一 id（换字眼重复 → 去重） */
+export function subGapStableId(contributionId: string, kind: SubGapKind, targetQuote: string | undefined, gap: string): string {
+  const basis = targetQuote !== undefined && targetQuote.trim() !== "" ? targetQuote : gap;
+  return `sg-${sha256Hex(`${contributionId}|${kind}|${normalizeForQuoteMatch(basis)}`).slice(0, 10)}`;
+}
+
+export interface AtomicGapPlanContext {
+  /** 审计清册中锚校验通过的贡献 id */
+  contributionIds: ReadonlySet<string>;
+  sectionIds: ReadonlySet<string>;
+  verifyAnywhere: (quote: string) => boolean;
+  verifyInSection: (quote: string, sectionId: string) => boolean;
+  pool: PriorWorkPool;
+}
+
+/**
+ * v2 原子子缺口 → GapPlanItem（确定性守卫）：
+ * - 未知贡献 → 丢弃计数；同 id 重复（换字眼凑数）→ 丢弃计数；每贡献 / 全工件超限 → 丢弃计数；
+ * - targetQuote / 证据锚逐字回放（不通过的保留并标 false——分类门禁 fail-closed，不吞掉其他子项）；
+ * - 证据锚必须与目标锚互不包含（声称本身不能当证据）；
+ * - 先前工作只解析到 pool（模型记忆不升格）；quote 在其 pool 材料内回放；时间因果检查。
+ */
+export function buildAtomicGapPlan(raw: readonly RawSubGap[], context: AtomicGapPlanContext): { gapPlan: GapPlanItem[]; guards: SubGapGuards } {
+  const guards: SubGapGuards = {
+    duplicatesDropped: 0,
+    overLimitDropped: 0,
+    unknownContribution: 0,
+    targetAnchorFailures: 0,
+    evidenceAnchorFailures: 0,
+    priorWorkUnresolved: 0,
+    priorQuoteReplayFailures: 0,
+  };
+  const seen = new Set<string>();
+  const perContribution = new Map<string, number>();
+  const gapPlan: GapPlanItem[] = [];
+  for (const item of raw) {
+    if (item.gap === "" || item.contributionId === "" || !context.contributionIds.has(item.contributionId)) {
+      guards.unknownContribution += 1;
+      continue;
+    }
+    const subGapId = subGapStableId(item.contributionId, item.gapKind, item.targetQuote, item.gap);
+    if (seen.has(subGapId)) {
+      guards.duplicatesDropped += 1;
+      continue;
+    }
+    const count = perContribution.get(item.contributionId) ?? 0;
+    if (count >= MAX_SUB_GAPS_PER_CONTRIBUTION || gapPlan.length >= MAX_SUB_GAPS_TOTAL) {
+      guards.overLimitDropped += 1;
+      continue;
+    }
+    seen.add(subGapId);
+    perContribution.set(item.contributionId, count + 1);
+    const targetQuote = item.targetQuote?.trim() === "" ? undefined : item.targetQuote;
+    const targetSectionId = item.targetSectionId !== undefined && context.sectionIds.has(item.targetSectionId) ? item.targetSectionId : undefined;
+    const targetVerified =
+      targetQuote !== undefined &&
+      (targetSectionId !== undefined ? context.verifyInSection(targetQuote, targetSectionId) || context.verifyAnywhere(targetQuote) : context.verifyAnywhere(targetQuote));
+    if (targetQuote !== undefined && !targetVerified) guards.targetAnchorFailures += 1;
+    const normalizedTarget = targetQuote !== undefined ? normalizeForQuoteMatch(targetQuote) : "";
+    const evidenceAnchors: SubGapEvidenceAnchor[] = item.evidence.map((entry) => {
+      const sectionValid = context.sectionIds.has(entry.sectionId);
+      const verified = sectionValid ? context.verifyInSection(entry.quote, entry.sectionId) : context.verifyAnywhere(entry.quote);
+      if (!verified) guards.evidenceAnchorFailures += 1;
+      const normalizedEvidence = normalizeForQuoteMatch(entry.quote);
+      const distinctFromTarget =
+        normalizedTarget === "" || (!normalizedTarget.includes(normalizedEvidence) && !normalizedEvidence.includes(normalizedTarget));
+      return { sectionId: sectionValid ? entry.sectionId : "", quote: entry.quote, verified, distinctFromTarget };
+    });
+    const priorWorkRefs: SubGapPriorWorkRef[] = item.priorWork
+      .filter((ref) => ref.title !== "" || (ref.candidateId ?? "") !== "")
+      .map((ref) => {
+        const resolved = resolvePriorWorkRef(ref, context.pool);
+        if (resolved === null) {
+          guards.priorWorkUnresolved += 1;
+          return { title: ref.title, ...(ref.year !== undefined ? { year: ref.year } : {}), ...(ref.doi !== undefined ? { doi: ref.doi } : {}), ...(ref.arxivId !== undefined ? { arxivId: ref.arxivId } : {}), resolvesToPool: false };
+        }
+        const year = resolved.year ?? ref.year;
+        let priorQuoteVerified: boolean | undefined;
+        if (ref.quote !== undefined && ref.quote !== "") {
+          const material = [...(resolved.abstract !== undefined ? [resolved.abstract] : []), ...(resolved.fullTextExcerpts ?? [])].join("\n\n");
+          priorQuoteVerified = verifyQuoteInChunk(ref.quote, material).ok;
+          if (!priorQuoteVerified) guards.priorQuoteReplayFailures += 1;
+        }
+        const violation = isCutoffViolation(year, context.pool.cutoffDate);
+        return {
+          candidateId: resolved.candidateId,
+          title: resolved.title,
+          ...(year !== undefined ? { year } : {}),
+          ...(resolved.doi !== undefined ? { doi: resolved.doi } : {}),
+          ...(resolved.arxivId !== undefined ? { arxivId: resolved.arxivId } : {}),
+          contentLevel: resolved.contentLevel,
+          citedByManuscript: resolved.citedByManuscript,
+          ...(resolved.librarySourceId !== undefined ? { librarySourceId: resolved.librarySourceId } : {}),
+          ...(ref.quote !== undefined ? { quote: ref.quote } : {}),
+          resolvesToPool: true,
+          ...(priorQuoteVerified !== undefined ? { priorQuoteVerified } : {}),
+          ...(violation ? { timeCausalityViolation: true } : {}),
+        };
+      });
+    const actionType = subGapActionType(item.gapKind);
+    gapPlan.push({
+      contributionId: item.contributionId,
+      gap: item.gap,
+      actionType,
+      ...(item.experimentPlan !== undefined ? { experimentPlan: item.experimentPlan } : {}),
+      status: actionType === "requires_real_experiment_or_author_input" ? "author_decision" : "proposed",
+      subGapId,
+      gapKind: item.gapKind,
+      parentContributionId: item.contributionId,
+      ...(targetQuote !== undefined ? { targetQuote, targetVerified } : {}),
+      ...(targetSectionId !== undefined ? { targetSectionId } : {}),
+      ...(evidenceAnchors.length > 0 ? { evidenceAnchors } : {}),
+      ...(priorWorkRefs.length > 0 ? { priorWorkRefs } : {}),
+      ...(item.proposedDirection !== undefined ? { proposedDirection: item.proposedDirection } : {}),
+      ...(item.missingEvidence !== undefined ? { missingEvidence: item.missingEvidence } : {}),
+    });
+  }
+  return { gapPlan, guards };
+}
+
 // ---- prompt 指令（版本随 CONTRIBUTION_AUDIT_PROMPT_VERSION 冻结） ----
 
 const EXTRACT_INSTRUCTION = `Extract the manuscript's core claimed contributions as a structured inventory.
@@ -677,6 +949,26 @@ Output ONLY one JSON object:
 
 // ---- 服务 ----
 
+/**
+ * M15.19 v2 综合指令：gapPlan 拆为原子子缺口。与 v1 的唯一差异是 gapPlan 契约（findings 契约不变）——
+ * v1「每贡献恰一项」把可改写的局部表述问题与必须做实验的科学问题捆成一项（M15.18 S1 / S2 真实实证）。
+ */
+const SYNTHESIZE_INSTRUCTION_V2 = `Turn the contribution inventory and prior-work comparisons into review findings and an ATOMIC actionable gap plan.
+
+Rules:
+- findings: only substantive, checkable issues about novelty positioning, contribution substance, related-work coverage, claim-evidence support, or overclaiming. Each finding: category (academic|fact|citation|consistency), severity (critical|major|minor|info — critical/major only for substantive academic defects), sectionId (an existing SEC id, ideally where the claim is stated), claimText (a short verbatim anchor from the manuscript), message (1-3 sentences, concrete: which claim, which prior work, what gap), evidenceGap, suggestion. Do not fabricate manuscript text or prior-work identities; refer only to what appears in the inventory/comparisons.
+- gapPlan: decompose each contribution's missing verification into ATOMIC sub-gaps (at most 4 per contribution). Each sub-gap has exactly ONE evidence need. A part that can be fixed by rewording must be a separate item from a part that needs new experiments — never bundle them. Never list the same problem twice with different wording. gapKind is one of:
+  * "INTERNAL_CLAIM_MISMATCH" — the manuscript states something stronger or broader than its OWN results/tables/experiment descriptions show. targetQuote = the verbatim overclaiming sentence fragment to revise; evidence = 1-3 verbatim quotes from the manuscript (results text, table rows/captions, experiment setup) that show the weaker reality, each with its sectionId. Both ends must be quotable from the manuscript text shown to you; the evidence quote must be different text from the targetQuote. Only use this kind when the mismatch is visible in the manuscript itself.
+  * "TEXT_OR_STRUCTURE_CORRECTION" — a locatable factual/textual inconsistency inside the manuscript that does not change any scientific result (e.g. a dataset/benchmark named inconsistently with the manuscript's own tables, a mislabeled reference to a table or section). targetQuote + evidence (the manuscript passage that shows the correct form). Pure spelling/punctuation is not a sub-gap.
+  * "PRIOR_WORK_COMPARISON" — the positioning/comparison wording relative to a specific prior work should change. priorWork must reference PROVIDED pool entries by candidateId with a verbatim quote from their provided material; never from memory. targetQuote = the manuscript wording to revise.
+  * "EXPERIMENT_OR_AUTHOR_INPUT" — needs real experiments, ablations, baselines, datasets, statistics, or author-provided facts. Include experimentPlan {purpose, baselines, datasets, metrics, expectedEvidence} and STOP at proposing — never invent results, tables, or numbers.
+  * "UNCERTAIN_OR_MISSING_EVIDENCE" — you cannot decide from the material shown; state in missingEvidence exactly what is missing (e.g. full text of a named prior work).
+- proposedDirection (rewrite kinds only): how to weaken, qualify, or correct the targetQuote using ONLY existing manuscript evidence — e.g. restrict the claim to the datasets/metrics where the tables support it. Never propose adding numbers, results, experiments, or citations.
+- targetQuote and evidence quotes MUST be verbatim contiguous text (<= 300 chars each) copied from the manuscript sections shown above; do not paraphrase inside quotes.
+
+Output ONLY one JSON object:
+{"findings":[{"category":"academic","severity":"major","sectionId":"SEC01","contributionId":"C1","claimText":"...","message":"...","evidenceGap":"...","confidence":"high|medium|low","suggestion":"...","priorWorkTitles":["..."]}],"gapPlan":[{"contributionId":"C1","gapKind":"INTERNAL_CLAIM_MISMATCH|TEXT_OR_STRUCTURE_CORRECTION|PRIOR_WORK_COMPARISON|EXPERIMENT_OR_AUTHOR_INPUT|UNCERTAIN_OR_MISSING_EVIDENCE","gap":"...","targetQuote":"...","targetSectionId":"SECxx","evidence":[{"sectionId":"SECxx","quote":"..."}],"priorWork":[{"candidateId":"P01","quote":"..."}],"proposedDirection":"...","missingEvidence":"...","experimentPlan":{"purpose":"...","baselines":"...","datasets":"...","metrics":"...","expectedEvidence":"..."}}]}`;
+
 export interface ContributionAuditServiceOptions {
   store: PaperStore;
   runtime: AgentRuntime;
@@ -684,6 +976,8 @@ export interface ContributionAuditServiceOptions {
   /** 工件落盘根（projects.researchDir） */
   researchDir: (projectId: string) => string;
   runTimeoutMs?: number;
+  /** M15.19: synthesis contract version (default v1 keeps M15.14/15 research reproducibility) */
+  promptVersion?: ContributionAuditPromptVersion;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -707,6 +1001,7 @@ export class ContributionAuditService {
   private readonly researchDir: (projectId: string) => string;
   private readonly now: () => Date;
   private readonly timeoutOverride: { timeoutMs?: number };
+  private readonly promptVersion: ContributionAuditPromptVersion;
 
   constructor(options: ContributionAuditServiceOptions) {
     this.store = options.store;
@@ -715,6 +1010,7 @@ export class ContributionAuditService {
     this.researchDir = options.researchDir;
     this.now = options.now ?? (() => new Date());
     this.timeoutOverride = options.runTimeoutMs !== undefined ? { timeoutMs: options.runTimeoutMs } : {};
+    this.promptVersion = options.promptVersion ?? CONTRIBUTION_AUDIT_PROMPT_VERSION;
   }
 
   artifactPath(projectId: string): string {
@@ -1033,11 +1329,31 @@ export class ContributionAuditService {
 
     // ---- Call 3：findings + gapPlan 综合 ----
     const comparisonsJson = JSON.stringify(comparisons).slice(0, COMPARISONS_JSON_MAX_CHARS);
+    const atomic = this.promptVersion === CONTRIBUTION_AUDIT_PROMPT_VERSION_V2;
+    // v2：子缺口的目标锚 / 证据锚必须逐字来自稿件——综合调用需看到稿件正文（关键节 + 支撑节，去重、有界、截断登记）
+    const synthesisSectionBlocks: string[] = [];
+    if (atomic) {
+      let used = 0;
+      const included = new Set<string>();
+      for (const block of [...keySectionBlocks, ...supportBlocks]) {
+        const header = /^【(\S+)/.exec(block)?.[1] ?? block.slice(0, 40);
+        if (included.has(header)) continue;
+        if (used + block.length > SYNTHESIS_SECTIONS_MAX_CHARS) {
+          truncations.push(`synthesis-sections-truncated-at-${header}`);
+          break;
+        }
+        included.add(header);
+        synthesisSectionBlocks.push(block);
+        used += block.length;
+      }
+    }
     const synthesizePrompt = [
       ...(overview !== "" ? [`【Manuscript overview】\n${overview}`] : []),
+      ...(synthesisSectionBlocks.length > 0 ? [`【Manuscript sections (quote targetQuote / evidence verbatim from here)】\n${synthesisSectionBlocks.join("\n\n")}`] : []),
       `【CONTRIBUTION INVENTORY】\n${inventoryJson}`,
       `【PRIOR-WORK COMPARISONS（已通过确定性守卫：锚校验/身份解析/时间因果/四态规则）】\n${comparisonsJson}`,
-      `【Task】\n${SYNTHESIZE_INSTRUCTION}`,
+      ...(atomic ? [renderPoolMaterial(pool)] : []),
+      `【Task】\n${atomic ? SYNTHESIZE_INSTRUCTION_V2 : SYNTHESIZE_INSTRUCTION}`,
     ].join("\n\n");
     const synthesizeOutcome = await withParseRetry(
       (retry) =>
@@ -1077,7 +1393,18 @@ export class ContributionAuditService {
       if (comparison !== undefined) extended.comparisonStatus = comparison.status;
       findings.push(extended);
     }
-    const gapPlan = synthesis.gapPlan.filter((item) => item.gap !== "" && item.contributionId !== "");
+    let gapPlan = synthesis.gapPlan.filter((item) => item.gap !== "" && item.contributionId !== "");
+    if (atomic) {
+      const built = buildAtomicGapPlan(parseSubGapsOutput(synthesizeOutcome.value).subGaps, {
+        contributionIds: new Set(inventory.map((unit) => unit.contributionId)),
+        sectionIds: validSectionIds,
+        verifyAnywhere: verifyQuoteAnywhere,
+        verifyInSection: verifyQuoteInSection,
+        pool,
+      });
+      gapPlan = built.gapPlan;
+      guards.subGaps = built.guards;
+    }
 
     let manuscriptCharsIncluded = keyChars + supportChars;
     if (manuscriptCharsIncluded > manuscriptCharsTotal) {
@@ -1096,7 +1423,7 @@ export class ContributionAuditService {
       schemaVersion: CONTRIBUTION_AUDIT_SCHEMA_VERSION,
       ...(input.venueId !== undefined ? { venueId: input.venueId } : {}),
       documentType: input.documentType,
-      promptVersion: CONTRIBUTION_AUDIT_PROMPT_VERSION,
+      promptVersion: this.promptVersion,
       evaluatedAt: this.now().toISOString(),
       ...(input.manuscriptRevision !== undefined ? { manuscriptRevision: input.manuscriptRevision } : {}),
       priorWork: {
@@ -1115,7 +1442,7 @@ export class ContributionAuditService {
       inputFingerprint: {
         manuscriptSha256: sha256Hex(documentText).slice(0, 16),
         poolFingerprint,
-        promptVersion: CONTRIBUTION_AUDIT_PROMPT_VERSION,
+        promptVersion: this.promptVersion,
         documentType: input.documentType,
         ...(input.venueId !== undefined ? { venueId: input.venueId } : {}),
       },

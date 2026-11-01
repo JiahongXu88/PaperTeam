@@ -2583,6 +2583,7 @@ export async function computeFactPreservationForCandidate(
   const ordered = [...state.revisions].sort((a, b) => a.revision - b.revision);
   const frozen = ordered[0];
   let frozenSummary: import("./factPreservation.js").FactPreservationSummary | null = null;
+  let frozenAtSource: import("./factPreservation.js").FactPreservationSummary | null = null;
   if (frozen !== undefined && frozen.revision < sourceRevision) {
     const frozenFiles = await readSnapshotTex(deps.revisions.snapshotDir(projectId, frozen.revision));
     if (frozenFiles !== null && frozenFiles.length > 0) {
@@ -2594,17 +2595,26 @@ export async function computeFactPreservationForCandidate(
        */
       const ledgerItems = await readLedgerImprovementItems(deps.projects, projectId);
       const frozenAuthorizationItems = [...improvementPlanItems, ...ledgerItems];
-      frozenSummary = evaluateFactPreservation({
-        previous: { revision: frozen.revision, files: frozenFiles },
-        current: { revision: sourceRevision + 1, files: candidateFiles },
-        plan: null,
-        ...(frozenAuthorizationItems.length > 0 ? { improvementPlanItems: frozenAuthorizationItems } : {}),
-        evidenceTexts,
-        ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
-        weakeningAuthorizations,
-        strictPlanTextAuthorization: true,
-        formulaSources,
-      });
+      const frozenAgainst = (files: FactTexFile[], revision: number): FactPreservationSummary =>
+        evaluateFactPreservation({
+          previous: { revision: frozen.revision, files: frozenFiles },
+          current: { revision, files },
+          plan: null,
+          ...(frozenAuthorizationItems.length > 0 ? { improvementPlanItems: frozenAuthorizationItems } : {}),
+          evidenceTexts,
+          ...(bibliographyKeys.length > 0 ? { bibliographyKeys } : {}),
+          weakeningAuthorizations,
+          strictPlanTextAuthorization: true,
+          formulaSources,
+        });
+      frozenSummary = frozenAgainst(candidateFiles, sourceRevision + 1);
+      /**
+       * M15.19 Phase D（M15.18 真实 run p-724f527d6766 实证：rev-3 的 21 个 span 候选全部被拒，其冻结口径
+       * 违规均来自 sec01 在 rev-2 文件级路径已落盘的封面 / 单位块删除，与候选所改的 sec02–sec05 无关）：
+       * 冻结口径只追究候选自身引入的累计违规——同一口径对「源修订、无候选」再评一次，按多重集扣减。
+       * 既有累计漂移仍由 Quality Gate 的 cumulative 口径追究（gate 不变）；候选自身的跨轮翻转 / 删除照常拦截。
+       */
+      frozenAtSource = frozenAgainst(previousFiles, sourceRevision);
     }
   }
   const pairwise = evaluateFactPreservation({
@@ -2622,16 +2632,48 @@ export async function computeFactPreservationForCandidate(
     formulaSources,
   });
   if (frozenSummary === null) return pairwise;
+  const frozenOwn = ownFrozenFindings(frozenSummary, frozenAtSource);
   return {
     ...pairwise,
-    changedFacts: cap([...pairwise.changedFacts, ...frozenSummary.changedFacts]),
-    removedFacts: cap([...pairwise.removedFacts, ...frozenSummary.removedFacts]),
-    addedUnsupportedFacts: cap([...pairwise.addedUnsupportedFacts, ...frozenSummary.addedUnsupportedFacts]),
-    directionalChanges: cap([...pairwise.directionalChanges, ...frozenSummary.directionalChanges]),
-    formulaChanges: cap([...pairwise.formulaChanges, ...frozenSummary.formulaChanges]),
-    placeholderRegressions: cap([...pairwise.placeholderRegressions, ...frozenSummary.placeholderRegressions]),
-    ok: pairwise.ok && frozenSummary.ok,
+    changedFacts: cap([...pairwise.changedFacts, ...frozenOwn.changedFacts]),
+    removedFacts: cap([...pairwise.removedFacts, ...frozenOwn.removedFacts]),
+    addedUnsupportedFacts: cap([...pairwise.addedUnsupportedFacts, ...frozenOwn.addedUnsupportedFacts]),
+    directionalChanges: cap([...pairwise.directionalChanges, ...frozenOwn.directionalChanges]),
+    formulaChanges: cap([...pairwise.formulaChanges, ...frozenOwn.formulaChanges]),
+    placeholderRegressions: cap([...pairwise.placeholderRegressions, ...frozenOwn.placeholderRegressions]),
+    ok: pairwise.ok && FROZEN_BUCKETS.every((bucket) => frozenOwn[bucket].length === 0),
   };
+}
+
+const FROZEN_BUCKETS = ["changedFacts", "removedFacts", "addedUnsupportedFacts", "directionalChanges", "formulaChanges", "placeholderRegressions"] as const;
+type FrozenBucket = (typeof FROZEN_BUCKETS)[number];
+
+/** 候选冻结口径中候选自身引入的违规（源修订口径缺省 → 原样保留） */
+export function ownFrozenFindings(
+  candidate: FactPreservationSummary,
+  atSource: FactPreservationSummary | null,
+): Record<FrozenBucket, FactFinding[]> {
+  return Object.fromEntries(
+    FROZEN_BUCKETS.map((bucket) => [bucket, atSource === null ? candidate[bucket] : subtractPreexistingFindings(candidate[bucket], atSource[bucket])]),
+  ) as Record<FrozenBucket, FactFinding[]>;
+}
+
+/**
+ * 候选冻结口径违规 − 源修订既有违规（多重集，按 reason / file / before / after 精确匹配）。
+ * fail-closed：候选口径该桶已达上限（可能截断了候选自身违规）→ 不扣减（保持旧口径）；
+ * 片段不完全相同（如候选改动了既有违规附近的文字）→ 不扣减（宁可多报）。
+ */
+export function subtractPreexistingFindings(candidate: readonly FactFinding[], preexisting: readonly FactFinding[]): FactFinding[] {
+  if (candidate.length >= MAX_FINDINGS_PER_BUCKET) return [...candidate];
+  const key = (finding: FactFinding): string => JSON.stringify([finding.reason, finding.file, finding.before, finding.after]);
+  const remaining = new Map<string, number>();
+  for (const finding of preexisting) remaining.set(key(finding), (remaining.get(key(finding)) ?? 0) + 1);
+  return candidate.filter((finding) => {
+    const count = remaining.get(key(finding)) ?? 0;
+    if (count === 0) return true;
+    remaining.set(key(finding), count - 1);
+    return false;
+  });
 }
 
 /**

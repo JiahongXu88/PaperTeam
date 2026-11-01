@@ -496,6 +496,95 @@ describe("TargetPanel", () => {
     expect(screen.queryByTestId("target-audit-revision-approve-ta-gap-1")).toBeNull();
     expect(screen.queryByTestId("target-audit-revision-reject-ta-gap-1")).toBeNull();
   });
+  it("M15.19 原子子缺口：同一贡献「可改写（稿内证据锚）+ 需实验」分列；需补文献附缺失来源；复评按处置分组", async () => {
+    vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
+    vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetProfile).mockResolvedValue({ profile: null, fresh: null });
+    vi.mocked(targetApi.getTargetReadiness).mockResolvedValue(null);
+    vi.mocked(targetApi.getTargetEvidenceAudit).mockResolvedValue({ enabled: true, audit: auditFresh });
+    const basePlan = revisionPlanView.plan;
+    const atomicPlan = {
+      ...revisionPlanView,
+      plan: {
+        ...basePlan,
+        status: "decided" as const,
+        items: [
+          {
+            ...basePlan.items[0]!,
+            itemId: "ta-sg-aaaa111111",
+            priorWork: [],
+            rewriteBasis: "internal_evidence" as const,
+            subGap: {
+              subGapId: "sg-aaaa111111",
+              gapKind: "INTERNAL_CLAIM_MISMATCH" as const,
+              parentContributionId: "C1",
+              contributionClaimQuote: "We propose a hierarchical fusion module.",
+              evidenceAnchors: [{ sectionId: "SEC03", quote: "On DanceTrack our tracker obtains 61.2 HOTA", verified: true, distinctFromTarget: true, replayed: true }],
+              priorWorkRefs: [],
+              proposedDirection: "Restrict the claim to MOT17.",
+            },
+            authorDecision: { decision: "approve" as const, decidedAt: "2026-11-01T01:00:00.000Z" },
+          },
+          {
+            ...basePlan.items[1]!,
+            itemId: "ta-sg-bbbb222222",
+            contributionId: "C1",
+            subGap: { subGapId: "sg-bbbb222222", gapKind: "EXPERIMENT_OR_AUTHOR_INPUT" as const, parentContributionId: "C1", contributionClaimQuote: "x", evidenceAnchors: [], priorWorkRefs: [] },
+            authorDecision: { decision: "approve" as const, decidedAt: "2026-11-01T01:00:00.000Z" },
+          },
+          {
+            ...basePlan.items[1]!,
+            itemId: "ta-sg-cccc333333",
+            contributionId: "C2",
+            classification: "NEEDS_TARGETED_EVIDENCE" as const,
+            experimentPlan: undefined,
+            subGap: { subGapId: "sg-cccc333333", gapKind: "PRIOR_WORK_COMPARISON" as const, parentContributionId: "C2", contributionClaimQuote: "y", evidenceAnchors: [], priorWorkRefs: [] },
+            evidenceRequest: {
+              reason: "比较依据未达可核验等级",
+              missingSources: [{ title: "Luo 2014 survey", year: 2014, status: "model_memory_only" }],
+              guidance: ["导入合法全文后重新审计"],
+            },
+            authorDecision: { decision: "approve" as const, decidedAt: "2026-11-01T01:00:00.000Z" },
+          },
+        ],
+        summary: { ...basePlan.summary, total: 3, needsTargetedEvidence: 1, approved: 3 },
+      },
+    };
+    const report = {
+      schemaVersion: 1 as const,
+      reportId: "tar-1",
+      planId: basePlan.planId,
+      projectId: "p-target00001",
+      generatedAt: "2026-11-01T03:00:00.000Z",
+      assessedAtRevision: 3,
+      auditStaleNow: true,
+      items: [
+        { itemId: "ta-sg-aaaa111111", classification: "REWRITE_ELIGIBLE" as const, gapKind: "INTERNAL_CLAIM_MISMATCH" as const, parentContributionId: "C1", rewriteBasis: "internal_evidence" as const, closure: "VALIDATED_FIXED" as const, basis: "已落盘修订 + 目标绑定" },
+        { itemId: "ta-sg-bbbb222222", classification: "NEEDS_REAL_EXPERIMENT_OR_AUTHOR_INPUT" as const, gapKind: "EXPERIMENT_OR_AUTHOR_INPUT" as const, parentContributionId: "C1", closure: "NEEDS_AUTHOR_DECISION" as const, basis: "需真实实验" },
+        { itemId: "ta-sg-cccc333333", classification: "NEEDS_TARGETED_EVIDENCE" as const, gapKind: "PRIOR_WORK_COMPARISON" as const, parentContributionId: "C2", closure: "NEEDS_AUTHOR_DECISION" as const, basis: "需补证据" },
+      ],
+      summary: { total: 3, VALIDATED_FIXED: 1, PARTIALLY_ADDRESSED: 0, STILL_OPEN: 0, NEEDS_AUTHOR_DECISION: 2, ALREADY_SATISFIED: 0, AUTHOR_REJECTED: 0, NOT_EVALUATED: 0 },
+      disclaimer: "确定性核对",
+    };
+    vi.mocked(targetApi.getTargetAuditRevisionPlan).mockResolvedValue({ enabled: true, plan: atomicPlan, report });
+
+    renderWithProviders(<TargetPanel projectId="p-target00001" />);
+    const subGaps = await screen.findAllByTestId("target-audit-revision-subgap");
+    expect(subGaps[0]!.textContent).toContain("内部声称与稿内证据不一致");
+    expect(subGaps[0]!.textContent).toContain("稿内证据弱化型");
+    expect(subGaps[1]!.textContent).toContain("所属贡献 C1");
+    expect(screen.getByTestId("target-audit-revision-evidence-anchors").textContent).toContain("〔On DanceTrack our tracker obtains 61.2 HOTA〕✓ 回放");
+    expect(screen.getByTestId("target-audit-revision-evidence-request").textContent).toContain("Luo 2014 survey");
+    expect(screen.getByTestId("target-audit-revision-evidence-request").textContent).toContain("仅模型记忆");
+    const groups = screen.getByTestId("target-audit-revision-report-groups").textContent ?? "";
+    expect(groups).toContain("已改（机器可证） 1");
+    expect(groups).toContain("需真实实验 / 作者决策 1");
+    expect(groups).toContain("需补文献 / 定向证据 1");
+    const reportItems = screen.getAllByTestId("target-audit-revision-report-item");
+    expect(reportItems[0]!.textContent).toContain("已改（机器可证）");
+    expect(reportItems[1]!.textContent).toContain("贡献 C1");
+  });
+
   it("M15.18 投稿准备度：flag off 不渲染；flag on 点击生成 → 报告（风险 / 局限 / 免责声明）+ 下载链接", async () => {
     vi.mocked(projectsApi.getProject).mockResolvedValue(projectConfigured as never);
     vi.mocked(targetApi.getTargetBenchmark).mockResolvedValue(null);
