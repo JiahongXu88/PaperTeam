@@ -238,7 +238,20 @@ if (CMD === "prepare") {
   assert(state.e1.rewriteEligible === 0, "首轮已有合格可改写子项——协议不允许重审计");
   await auditAndPlan(state, "E1-audit-2");
   await saveState(state);
-} else if (CMD === "execute") {
+} else if (CMD === "execute" || CMD === "rerun") {
+  if (CMD === "rerun") {
+    // Deviation D2: exactly one new run on the same project after a failed run (audit / plan / decisions unchanged)
+    assert(state.e1.runEnd?.status === "failed" && (state.e1.previousRuns ?? []).length === 0, "rerun only allowed once, after a failed run");
+    state.e1.previousRuns = [{ runId: state.e1.runId, end: state.e1.runEnd }];
+    const created = await api("POST", `/api/projects/${state.e1.projectId}/workflows`, {});
+    assert(created.status === 202, `create run failed ${created.status} ${JSON.stringify(created.body).slice(0, 300)}`);
+    state.e1.runId = created.body.runId;
+    await saveState(state);
+    const paused = await pollRun(state.e1.runId, { targetStage: "hitl.research_plan" });
+    assert(paused.status === "awaiting_input" && paused.awaiting?.stageId === "hitl.research_plan", `rerun did not pause at research_plan: ${paused.status} ${JSON.stringify(paused.error ?? {}).slice(0, 300)}`);
+    step(state, "E5r new run paused at research_plan", { runId: state.e1.runId });
+    await checkBudget(state, "rerun-pause");
+  }
   const { projectId, runId } = state.e1;
   const decided = (await api("GET", `/api/projects/${projectId}/target/evidence-audit/revision-plan`)).body.plan;
   assert(decided?.plan?.status === "decided", `计划未全部决策（${decided?.plan?.status}）——先完成 ui-decide`);

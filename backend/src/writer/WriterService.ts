@@ -37,7 +37,7 @@ import {
 import { extractCitationKeys, protectedInventory } from "../review/styleInvariants.js";
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
 import { validateOutline } from "../manuscript/ManuscriptService.js";
-import { extractJsonObject } from "../agents/outputParsing.js";
+import { extractJsonObject, StructuredOutputError } from "../agents/outputParsing.js";
 import type { SurveyOutlineDigest } from "../survey/outlineDigest.js";
 import {
   renderDigestItems,
@@ -961,7 +961,19 @@ export class WriterService {
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `改进计划任务以 ${task.status} 状态结束`);
     }
-    const parsed = extractJsonObject(task.output ?? "", "改进计划");
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = extractJsonObject(task.output ?? "", "改进计划");
+    } catch (error) {
+      // M15.19 D2 (real E1 run): two attempts failed as "unterminated JSON" with no raw output persisted, so a length
+      // cutoff could not be told apart from malformed JSON. Keep the same error class / kind (retry semantics unchanged)
+      // and append output length + a short tail to the persisted stage error for diagnosis.
+      if (error instanceof StructuredOutputError) {
+        const output = task.output ?? "";
+        throw new StructuredOutputError(`${error.message}（diagnostic: output ${output.length} chars; tail ${JSON.stringify(output.slice(-160))}）`, error.kind, error.field);
+      }
+      throw error;
+    }
     const rawPlanValue = parsed["plan"];
     if (!Array.isArray(rawPlanValue) || rawPlanValue.length === 0) {
       throw new AgentRunFailedError("改进计划：缺少非空 plan 数组");
