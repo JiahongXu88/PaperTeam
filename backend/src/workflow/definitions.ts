@@ -3141,10 +3141,10 @@ function revisionReportStage(services: WorkflowServices): StageSpec {
  * 修的只是 outcome 唯一明确的结构问题（见 citationSyntax.repairCitationSyntax）；
  * 返回计数供 stage result / 报告消费。写盘发生在修订 commit 之前（同修订号）。
  */
-async function normalizeManuscriptCitationSyntax(
+export async function normalizeManuscriptCitationSyntax(
   services: WorkflowServices,
   projectId: string,
-  guard?: { registry: ValidatedWriteRegistry; runId: string },
+  guard?: { registry: ValidatedWriteRegistry; runId: string; events?: EditContractEvent[] },
 ): Promise<{ fixed: number; unresolved: number; fixes: { kind: string; count: number }[] }> {
   const files = await collectLatexFiles(services.projects.manuscriptDir(projectId));
   const bibliography = await manuscriptBibliography(services, projectId);
@@ -3163,6 +3163,8 @@ async function normalizeManuscriptCitationSyntax(
         continue;
       }
       guard.registry.register(target, result.content, verdict);
+      // M15 长程 E2（真实运行暴露）：归一写入此前只登记、不入契约事件——修订 lineage 无法从事件审计追溯
+      guard.events?.push(eventFromVerdict(verdict, { stageId: "revision.citation_syntax_normalize", runId: guard.runId, appliedHash: revisionSourceHash(result.content) }));
     }
     if (result.repaired) {
       await writeFile(
@@ -4642,7 +4644,7 @@ function revisionReviseStage(
       // key 完整命中 bib 的未闭合补右括号）；绝不猜 key（残缺 key 留
       // unresolved，编译诊断 / Quality Gate 报错 → Writer / 作者决策）。
       // 归一发生在提交前：与 Writer 改动落在同一修订号，守卫按同一口径核验。
-      const syntaxNormalize = await normalizeManuscriptCitationSyntax(services, ctx.projectId, { registry: writeRegistry, runId: ctx.runId });
+      const syntaxNormalize = await normalizeManuscriptCitationSyntax(services, ctx.projectId, { registry: writeRegistry, runId: ctx.runId, events: contractEvents });
       // 一轮修订 = 一个不可变修订号（全部章节写完后统一提交，不逐节切碎）
       // M15.20 P0：提交边界——相对上一修订的每处 .tex / 摘要改动必须等于某条已通过契约校验的写入，
       // 否则恢复为上一修订内容（Writer 工具直写其它文件 / 遗漏校验的路径）；以校验时的工作树指纹提交（竞态拒绝）
