@@ -1,5 +1,5 @@
 /**
- * M16 后续：实验性整稿综合审查通道（PAPERTEAM_REVIEW_WHOLE_PAPER，缺省 off）——真实 review.run stage + mock runtime（零模型）。
+ * M16 后续：整稿综合审查通道（PAPERTEAM_REVIEW_WHOLE_PAPER；配置缺省 on，服务未注入时视为关闭）——真实 review.run stage + mock runtime（零模型）。
  *  - off：不发起整稿调用，单元 prompt 逐字节不变，coverage 无 wholePaper 字段；
  *  - on：单元 + 跨章之后恰好 1 次调用，输入为被审全文（FULL_TEXT），finding 标 origin=whole_paper_synthesis、
  *    blocking=false、AUTHOR_CHECK_REQUIRED（恒 L2）；正文覆盖率不变（整稿节点不能掩盖未读章节）；
@@ -16,6 +16,7 @@ import { createExistingPaperDefinition } from "../../src/workflow/definitions.js
 import type { StageRunContext } from "../../src/workflow/types.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import { chapterBody } from "../review/logicalSpan.test.js";
+import { loadConfig } from "../../src/config/config.js";
 
 const FILES = {
   "sections/methods.tex": `\\section{Methods}\n\n${chapterBody(4_200, "met")}`,
@@ -109,5 +110,15 @@ describe("M16 后续：整稿综合审查实验通道", () => {
     expect(failed.summary.coverage?.wholePaper).toMatchObject({ status: "failed", findings: 0 });
     expect(failed.summary.coverage?.complete).toBe(true);
     expect(failed.summary.issues.some((issue) => issue.origin === "whole_paper_synthesis")).toBe(false);
+  });
+});
+
+describe("整稿综合审查配置缺省（新留出集预注册判定 ADOPT_HYBRID_DEFAULT 后启用）", () => {
+  it("缺省 on；PAPERTEAM_REVIEW_WHOLE_PAPER=off 可关闭；其他值不关闭", () => {
+    expect(loadConfig({}).review.wholePaperSynthesis).toBe("on");
+    expect(loadConfig({ PAPERTEAM_REVIEW_WHOLE_PAPER: "off" }).review.wholePaperSynthesis).toBe("off");
+    expect(loadConfig({ PAPERTEAM_REVIEW_WHOLE_PAPER: " OFF " }).review.wholePaperSynthesis).toBe("off");
+    expect(loadConfig({ PAPERTEAM_REVIEW_WHOLE_PAPER: "on" }).review.wholePaperSynthesis).toBe("on");
+    expect(loadConfig({}).review.wholePaperMaxChars).toBe(160_000);
   });
 });
