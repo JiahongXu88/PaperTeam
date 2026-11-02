@@ -335,6 +335,7 @@ if (mode === "generate") {
       locatability: { B: { located: share(loc(bFindings), "LOCATED"), dangling: share(loc(bFindings), "DANGLING") } },
       retest: { judge1: retest.hybridSpec, judge2: h.S10.hybridSpec },
       wholePaper: readJson(join(runDir(p.id), "artifacts", "review-summary-r1.json")).coverage?.wholePaper ?? null,
+      coverageComplete: readJson(join(runDir(p.id), "artifacts", "review-summary-r1.json")).coverage?.complete ?? null,
       verifiedFindings: vf === null ? null : vf.summary,
       gateRule: gate.rules.find((r) => r.rule === "review_findings_certified")?.status ?? null,
       synthL1: (synthFindings ?? []).filter((x) => vf?.records?.find((r) => r.issueIndex === x.index)?.status === "VERIFIED_CONTRADICTED").length,
@@ -356,6 +357,15 @@ if (mode === "generate") {
     judgeSpec_C_minus_B: ci((r) => d("C", "B")(r.judgeSpec)),
     synthSpecificity_minus_G0: ci((r) => (r.synth.specificity === null ? null : r.synth.specificity - r.specificity.G0)),
   };
+  // DEVIATIONS #4（judge2 之前登记）：敏感性分析——只看整稿调用实际执行的论文；不替代主判定
+  const executed = per.filter((r) => r.wholePaper?.status === "completed");
+  const executedCi = (fn) => bootstrapCi(executed.map(fn).filter((v) => v !== null && Number.isFinite(v)));
+  const sensitivityExecutedOnly = {
+    n: executed.length,
+    PRIMARY_hybrid_C_minus_B: executedCi((r) => d("C", "B")(r.hybrid)),
+    WHOLE_hybrid_C_minus_B: executedCi((r) => d("C", "B")(r.hybridWhole)),
+  };
+  const coverageIncomplete = per.filter((r) => r.coverageComplete !== true).map((r) => r.id);
   const synthCallShare = per.reduce((n, r) => n + r.cost.SYNTH.calls, 0) / Math.max(1, per.reduce((n, r) => n + r.cost.B.calls + r.cost.SYNTH.calls, 0));
   const retestAbs = ci((r) => Math.abs(r.retest.judge1 - r.retest.judge2));
   const synthL1 = per.reduce((n, r) => n + r.synthL1, 0);
@@ -373,7 +383,7 @@ if (mode === "generate") {
   const summary = Object.fromEntries(["S10", "B", "C"].map((k) => [k, { hybrid: ci((r) => r.hybrid[k]), hybridWhole: ci((r) => r.hybridWhole[k]), judgeSpec: ci((r) => r.judgeSpec[k]) }]));
   const totals = Object.fromEntries(["S", "B", "SYNTH"].map((arm) => [arm, Object.fromEntries(["calls", "input", "output", "ms"].map((k) => [k, per.reduce((n, r) => n + (r.cost[arm][k] ?? 0), 0)]))]));
   const vfTotals = per.reduce((acc, r) => { for (const k of ["findings", "located", "checked", "verifiedContradicted", "certifiedOnTranscript", "notCertified", "danglingReferences"]) acc[k] = (acc[k] ?? 0) + (r.verifiedFindings?.[k] ?? 0); return acc; }, {});
-  const out = { schema: "m16-verified-findings-abc/v1", generatedAt: new Date().toISOString(), nPapers: per.length, MID_HYBRID, summary, contrasts, retestAbsHybrid: retestAbs, synthCallShare, synthL1, meanSynthDangling, safety, decision, totals, verifiedFindingsTotals: vfTotals, per };
+  const out = { schema: "m16-verified-findings-abc/v1", generatedAt: new Date().toISOString(), nPapers: per.length, MID_HYBRID, summary, contrasts, retestAbsHybrid: retestAbs, synthCallShare, synthL1, meanSynthDangling, safety, decision, sensitivityExecutedOnly, coverageIncomplete, totals, verifiedFindingsTotals: vfTotals, per };
   writeFileSync(join(C, "score-c.json"), `${JSON.stringify(out, null, 1)}\n`);
   console.log(`n=${per.length}`);
   for (const [k, v] of Object.entries(summary)) console.log(k.padEnd(5), Object.entries(v).map(([m, c]) => `${m} ${f(c)}`).join(" | "));
@@ -381,6 +391,7 @@ if (mode === "generate") {
   console.log("retest", f(retestAbs), "synthCallShare", synthCallShare.toFixed(3), "synthL1", synthL1, "synthDangling", f(meanSynthDangling), "safety", safety);
   console.log("totals", JSON.stringify(totals));
   console.log("verifiedFindings", JSON.stringify(vfTotals));
+  console.log("sensitivity executed-only n=" + executed.length, f(sensitivityExecutedOnly.PRIMARY_hybrid_C_minus_B), "| whole", f(sensitivityExecutedOnly.WHOLE_hybrid_C_minus_B), "| coverageIncomplete", coverageIncomplete.join(","));
   console.log("DECISION =", decision);
 } else if (mode === "verify-pool") {
   // 盲化核验池：每篇每臂按名次（P 按严重度）取前 3 条「未与任何 SPECIFIC 意见混合匹配」且 LOCATED 的条目；混合乱序、去掉臂标签
