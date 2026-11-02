@@ -141,6 +141,14 @@ export function manuscriptRevisionHash(files: ReadonlyArray<{ path: string; cont
   return hash.digest("hex");
 }
 
+/**
+ * M16：模型 rubric 的正向维度判断（STRONG / ADEQUATE）在外部基准上系统性偏正向——
+ * SurveyReview 正负平衡新样本（22 个维度）中审稿人判负的维度只有 27% 被模型判负、balanced accuracy 0.64；
+ * M15 D3（25 个维度）为 0.55。正向判断因此不能被读成「达到该刊学术要求」（仅展示限定，不影响任何结论）。
+ */
+export const POSITIVE_RUBRIC_CAVEAT =
+  "模型对主观维度给出的正向判断（STRONG / ADEQUATE）不表示达到该刊学术要求：在公开审稿基准上，同类模型的维度打分系统性偏正向（审稿人判为负面的维度只有约 27% 被模型判负，M16 平衡新样本 22 个维度），需作者 / 专家复核。";
+
 export function buildJournalAssessment(input: BuildAssessmentInput): JournalAssessment {
   const revisionHash = manuscriptRevisionHash(input.facts.manuscriptFiles);
   const qr = input.qualityReport;
@@ -290,13 +298,14 @@ export function buildJournalAssessment(input: BuildAssessmentInput): JournalAsse
       "不预测录用：没有该刊的投稿记录与已确认拒稿负样本，录用概率预测禁用。",
       "已发表论文只作正向参照（幸存者偏差），不是负例，也不是隐含的硬质量阈值。",
       "创新性、价值与贡献等主观维度只有模型意见，未经独立人类校准。",
+      ...(subjective.some((d) => d.verdict === "STRONG" || d.verdict === "ADEQUATE") ? [POSITIVE_RUBRIC_CAVEAT] : []),
       ...(input.facts.fidelity !== "latex" ? ["稿件不是 LaTeX 源码：大部分格式类要求无法确定性检查。"] : []),
       ...(input.trust.status === "VERIFIED_SNAPSHOT" ? [`期刊规则来自 ${input.trust.verifiedAt?.slice(0, 10)} 的官方页面快照，不是即时规则；可点「在线复核来源」。`] : []),
     ],
     externalValidity: {
       status: "EXTERNAL_CALIBRATION_NOT_VALIDATED",
       independentHumanLabels: 0,
-      benchmarkProvenance: "M15 Target Journal Assessment 外部参考评测（docs/research/M15_TARGET_JOURNAL_ASSESSMENT_ACCEPTANCE.md §5）：只覆盖规则检查器在真实已发表论文上的误报与公开专家意见对齐，不构成期刊级质量校准",
+      benchmarkProvenance: "M15 Target Journal Assessment 外部参考评测（docs/research/M15_TARGET_JOURNAL_ASSESSMENT_ACCEPTANCE.md §5）与 M16 审稿有效性复测（docs/research/M16_REVIEW_VALIDITY_FINAL.md）：只覆盖规则检查器在真实已发表论文上的误报、英文公开评审的意见对齐与维度打分偏差，不构成期刊级质量校准",
       statement: "本评估检查可观察且可核验的投稿要求与已证实缺陷；不代表达到该刊学术标准，也不预测录用。",
     },
     inputs: {

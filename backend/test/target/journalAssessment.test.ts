@@ -22,7 +22,7 @@ import { BUILTIN_JOURNAL_PROFILES, journalProfileHash, resolveJournalProfile } f
 import { htmlToText, profileQuotes, profileTrust, quoteKey, verifyProfileAgainstPages } from "../../src/target/journal/profileVerification.js";
 import { evaluateProfileRules } from "../../src/target/journal/criteria.js";
 import { observeJournalFacts } from "../../src/target/journal/journalFacts.js";
-import { buildJournalAssessment } from "../../src/target/journal/assessment.js";
+import { POSITIVE_RUBRIC_CAVEAT, buildJournalAssessment } from "../../src/target/journal/assessment.js";
 import { JournalAssessmentService } from "../../src/target/journal/JournalAssessmentService.js";
 import type { JournalArticleType, JournalProfile } from "../../src/target/journal/profileTypes.js";
 import type { TargetRubricArtifact } from "../../src/target/TargetRubricService.js";
@@ -331,6 +331,29 @@ describe("规则判定（A 块）与五态结论（D 块）", () => {
     expect(a.subjectiveEstimates).toHaveLength(3);
     expect(a.fitEvidence.find((f) => f.aspect === "scope")?.status).toBe("MODEL_OPINION");
     expect(a.capabilities.SUBJECTIVE_QUALITY_ESTIMATE).toBe("MODEL_OPINION_UNCALIBRATED");
+  });
+
+  it("M16：模型 rubric 有正向维度判断 → uncertainty 加入正向偏差限定；只有 WEAK / 无 rubric → 不加；结论不变", async () => {
+    const rubricWith = (verdicts: Array<"STRONG" | "ADEQUATE" | "WEAK" | "INSUFFICIENT_EVIDENCE">) =>
+      ({
+        schemaVersion: 1, venueId: "cjig", promptVersion: "m159-rubric-v1", evaluatedAt: NOW.toISOString(), manuscriptRevision: 1, documentType: "x", withBenchmarkBands: false,
+        dimensions: verdicts.map((verdict, i) => ({ dimension: `d${i}`, verdict, evidenceQuotes: ["引文"], gaps: verdict === "WEAK" ? ["缺口"] : [], needsExpertReview: true })),
+        scopeRelevance: { inScope: true, evidence: "图像分析" }, overall: { verdict: verdicts[0], rationale: "r" },
+        inputFingerprint: { guidelineFrozenAt: cjig.rulesVersion, manuscriptDigestSha256: "x", scopeStatementSha256: "y", benchmarkBandsIncluded: false, promptVersion: "m159-rubric-v1" },
+        provenance: { basis: "model_judgment_advisory" as const, disclaimer: "" },
+      }) as TargetRubricArtifact;
+    const p = await project(cjigTex());
+    const none = await assess(p, cjig, "research");
+    const positive = await assess(p, cjig, "research", { rubric: rubricWith(["ADEQUATE", "WEAK"]) });
+    const weakOnly = await assess(p, cjig, "research", { rubric: rubricWith(["WEAK", "INSUFFICIENT_EVIDENCE"]) });
+    expect(positive.uncertainty).toContain(POSITIVE_RUBRIC_CAVEAT);
+    expect(weakOnly.uncertainty).not.toContain(POSITIVE_RUBRIC_CAVEAT);
+    expect(none.uncertainty).not.toContain(POSITIVE_RUBRIC_CAVEAT);
+    // 展示限定不改结论、不产生 passed
+    expect(positive.summary.verdict).toBe(none.summary.verdict);
+    expect(weakOnly.summary.verdict).toBe(none.summary.verdict);
+    expect(positive.externalValidity.status).toBe("EXTERNAL_CALIBRATION_NOT_VALIDATED");
+    expect(JSON.stringify(positive)).not.toMatch(/"passed"/);
   });
 
   it("缺质量门禁 / 门禁对应旧修订 / 必需未评估 → INSUFFICIENT_EVIDENCE", async () => {
