@@ -6,6 +6,8 @@
  */
 
 import { afterAll, describe, expect, it } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 import { startTestStack, scriptedIdeaRuntime, type TestStack } from "../helpers/testStack.js";
 
@@ -194,5 +196,48 @@ describe("target 路由契约", () => {
     expect(await download.text()).toContain("独立人类审稿质量标签 = 0");
     const post = await stack.request("POST", `/api/projects/${projectId}/target/submission-readiness`);
     expect(post.status).toBe(405);
+  });
+
+  it("M15 TJA：期刊 profile 列表 / 评估 / 逐条转入修订 / 陈旧 409 / 参数校验（零模型、不触网）", async () => {
+    const stack = await newStack();
+    const projectId = await createProject(stack, true);
+    const profiles = await stack.request("GET", `/api/projects/${projectId}/target/journal-profiles`);
+    expect(profiles.status).toBe(200);
+    const list = profiles.body["profiles"] as Array<{ journalId: string; verification: { status: string } }>;
+    expect(list.map((p) => p.journalId).sort()).toEqual(["cjig", "plos-one"]);
+
+    expect((await stack.request("GET", `/api/projects/${projectId}/target/journal-assessment`)).body["assessment"]).toBeNull();
+    expect((await stack.request("POST", `/api/projects/${projectId}/target/journal-assessment`, { journalId: "cjig" })).status).toBe(400);
+    expect((await stack.request("POST", `/api/projects/${projectId}/target/journal-assessment`, { articleType: "research" })).status).toBe(400);
+
+    const dir = stack.store.manuscriptDir(projectId);
+    await mkdir(dir, { recursive: true });
+    const tex = [
+      String.raw`\documentclass{article}`,
+      String.raw`\title{基于深度学习的一种方法}`,
+      String.raw`\begin{document}`,
+      String.raw`\begin{abstract}目的：研究。方法：见\cite{a}。结果：提升。结论：有效。\end{abstract}`,
+      String.raw`\section{引言}正文`,
+      String.raw`\end{document}`,
+    ].join("\n");
+    await writeFile(join(dir, "main.tex"), tex, "utf8");
+    const evaluated = await stack.request("POST", `/api/projects/${projectId}/target/journal-assessment`, { name: "中国图象图形学报", articleType: "research" });
+    expect(evaluated.status).toBe(200);
+    const assessment = evaluated.body["assessment"] as { assessmentId: string; summary: { verdict: string }; criteria: Array<{ criterionId: string; status: string; convertible: boolean }> };
+    expect(assessment.summary.verdict).toBe("BLOCKED_BY_VERIFIED_ISSUE");
+    expect(JSON.stringify(evaluated.body)).not.toContain("\"passed\"");
+    const convertible = assessment.criteria.filter((c) => c.convertible).map((c) => c.criterionId);
+    expect(convertible).toContain("rule:cjig-abstract-no-refs");
+
+    const converted = await stack.request("POST", `/api/projects/${projectId}/target/journal-assessment/revision-instructions`, { assessmentId: assessment.assessmentId, criterionIds: ["rule:cjig-abstract-no-refs"] });
+    expect(converted.status).toBe(200);
+    expect((converted.body["created"] as Array<{ source: string }>)[0]!.source).toBe("target_journal");
+    const queue = await stack.request("GET", `/api/projects/${projectId}/external-instructions`);
+    expect((queue.body["instructions"] as Array<{ source: string }>).some((i) => i.source === "target_journal")).toBe(true);
+
+    const stale = await stack.request("POST", `/api/projects/${projectId}/target/journal-assessment/revision-instructions`, { assessmentId: "ja-000000000000", criterionIds: ["rule:cjig-abstract-no-refs"] });
+    expect(stale.status).toBe(409);
+    expect((stale.body["error"] as { code: string }).code).toBe("JOURNAL_ASSESSMENT_STALE");
+    expect((await stack.request("POST", `/api/projects/${projectId}/target/journal-profiles/unknown-journal/refresh`)).status).toBe(404);
   });
 });

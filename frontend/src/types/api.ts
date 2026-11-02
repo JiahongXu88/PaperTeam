@@ -1043,7 +1043,8 @@ export type ExternalInstructionSource =
   | "editor"
   | "advisor"
   | "other"
-  | "target_audit";
+  | "target_audit"
+  | "target_journal";
 
 export interface ParsedExternalCommentView {
   source: ExternalInstructionSource;

@@ -38,6 +38,7 @@ const SOURCE_LABEL: Record<ExternalInstructionSource, string> = {
   other: "其他",
   // M15.17：目标期刊证据审计机器转入（advisory；不提供手工创建入口）
   target_audit: "目标期刊证据审计（advisory）",
+  target_journal: "目标期刊评估（advisory）",
 };
 
 const STATUS_VIEW: Record<

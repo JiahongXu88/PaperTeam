@@ -47,6 +47,7 @@ import { TargetEvidenceAuditService } from "./TargetEvidenceAuditService.js";
 import { TargetAuditRevisionService } from "./TargetAuditRevisionService.js";
 import type { ExternalInstructionStore } from "../review/externalInstructions.js";
 import type { ReviewArtifactStore } from "../review/reviewArtifacts.js";
+import { JournalAssessmentService } from "./journal/JournalAssessmentService.js";
 
 export interface TargetServiceDeps {
   projects: ProjectStore;
@@ -91,6 +92,9 @@ export interface TargetServiceDeps {
    */
   externalInstructions?: ExternalInstructionStore;
   reviewArtifacts?: ReviewArtifactStore;
+  /** M15 TJA：期刊 profile 在线原句回放用的 fetch（缺省 → 复核入口返回 FETCH_UNAVAILABLE） */
+  fetchImpl?: typeof fetch;
+  journalFetchDelayMs?: number;
   now?: () => Date;
   log?: (message: string) => void;
 }
@@ -116,6 +120,11 @@ export interface TargetServices {
    * fail-closed）；零模型调用。
    */
   auditRevision: TargetAuditRevisionService | null;
+  /**
+   * M15 TJA：目标期刊评估（官方规则 profile + 分层 QualityReport + rubric 意见 → 五态结论）。
+   * 只读 QualityReport，不产生任何 gate / passed；可改写条目经 target_journal 意见通道进入既有修订。
+   */
+  journal: JournalAssessmentService;
 }
 
 export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
@@ -229,5 +238,19 @@ export function buildTargetServices(deps: TargetServiceDeps): TargetServices {
           log,
         })
       : null;
-  return { benchmark, discovery, profile, gap, guideline, rubric, evidenceAudit, auditRevision };
+  const journal = new JournalAssessmentService({
+    projects: deps.projects,
+    ...(deps.papers !== undefined ? { papers: deps.papers } : {}),
+    ...(currentRevision !== undefined ? { currentRevision } : {}),
+    ...(deps.reviewArtifacts !== undefined ? { reviewArtifacts: deps.reviewArtifacts } : {}),
+    ...(deps.externalInstructions !== undefined ? { externalInstructions: deps.externalInstructions } : {}),
+    ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+    ...(deps.journalFetchDelayMs !== undefined ? { fetchDelayMs: deps.journalFetchDelayMs } : {}),
+    rubric,
+    benchmark,
+    gap,
+    now,
+    log,
+  });
+  return { benchmark, discovery, profile, gap, guideline, rubric, evidenceAudit, auditRevision, journal };
 }

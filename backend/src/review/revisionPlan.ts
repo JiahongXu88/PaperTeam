@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { ReviewSummary } from "./ReviewAggregator.js";
-import { EXTERNAL_SOURCE_LABELS, type ExternalInstruction } from "./externalInstructions.js";
+import { EXTERNAL_SOURCE_LABELS, isMachineAdvisorySource, type ExternalInstruction } from "./externalInstructions.js";
 import { RevisionProtocolError, validateRevisionPlanShape } from "./revisionItemStatus.js";
 
 export type RevisionPlanItemKind =
@@ -285,7 +285,7 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
     items.push({
       id: `external:${instruction.instructionId}`,
       kind: "external_instruction",
-      priority: instruction.source === "target_audit" ? "high" : "mandatory",
+      priority: isMachineAdvisorySource(instruction.source) ? "high" : "mandatory",
       section: instruction.section ?? "(global)",
       problem: `外部修改意见${label}：${firstLine}`,
       instruction: externalDispatchText(instruction),
@@ -542,7 +542,7 @@ function externalDispatchText(instruction: ExternalInstruction): string {
       : "（未指定章节：只在与本节内容直接相关时在本节落实，其余章节保持原样）";
   // M15.17：机器审计转入的意见不自称「最高业务优先级」——advisory 语义如实标注
   const priorityLine =
-    instruction.source === "target_audit"
+    isMachineAdvisorySource(instruction.source)
       ? "审计建议（模型 advisory 转入；不高于真人外部意见的优先级）："
       : "意见原文（最高业务优先级，必须优先尝试执行）：";
   return [

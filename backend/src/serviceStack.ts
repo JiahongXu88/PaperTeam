@@ -1013,6 +1013,9 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
     // M15.17：审计差距 → 修订计划闭环（指令队列 + patch lineage 数据源）
     externalInstructions,
     reviewArtifacts,
+    // M15 TJA：期刊官方页面原句回放走 Research 代理路由（与检索同一网络出口）；页面间隔 31s 遵守 PLOS Crawl-delay
+    fetchImpl: options.researchFetch ?? fetch,
+    journalFetchDelayMs: 31_000,
     ...(options.targetEvidenceAuditEnabled === true
       ? {
           evidenceAuditEnabled: true,

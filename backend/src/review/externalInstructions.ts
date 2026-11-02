@@ -36,6 +36,8 @@ export const EXTERNAL_INSTRUCTION_SOURCES = [
   // M15.17：目标期刊证据审计 → 修订计划的机器转入通道（不是人工意见；
   // 派发优先级低于真人意见——见 revisionPlan.ts 的 source 映射）
   "target_audit",
+  // M15 TJA：目标期刊评估中可改写条目的机器转入通道（advisory；优先级同 target_audit）
+  "target_journal",
 ] as const;
 export type ExternalInstructionSource = (typeof EXTERNAL_INSTRUCTION_SOURCES)[number];
 
@@ -47,7 +49,13 @@ export const EXTERNAL_SOURCE_LABELS: Record<ExternalInstructionSource, string> =
   advisor: "导师",
   other: "其他",
   target_audit: "目标期刊证据审计（advisory）",
+  target_journal: "目标期刊评估（advisory）",
 };
+
+/** 机器转入（advisory）来源：派发优先级低于真人意见，不自称最高业务优先级 */
+export function isMachineAdvisorySource(source: ExternalInstructionSource): boolean {
+  return source === "target_audit" || source === "target_journal";
+}
 
 /**
  * 处理状态（确定性口径）：

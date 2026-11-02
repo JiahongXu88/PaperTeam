@@ -316,6 +316,7 @@ import {
   APPROVED_AUDIT_REWRITE_MARKER,
   appendPlanItemOutcome,
   isApprovedAuditRewrite,
+  isMachineAdvisorySource,
   type ExternalDirectiveDispatch,
   type ExternalDispatchResult,
   type ExternalInstruction,
@@ -3376,7 +3377,7 @@ function revisionReviseStage(
       // M15.18：真人 / 作者意见在 Writer prompt 中先于 target_audit（advisory 不压过真人意见）
       const externalDirectives = (await collectExternalDirectives(services, ctx.projectId))
         .filter(directive => !authorOwnedComments.has(directive.instructionId) && !staleAuditAnchors.has(directive.instructionId))
-        .sort((a, b) => Number(a.source === "target_audit") - Number(b.source === "target_audit"));
+        .sort((a, b) => Number(isMachineAdvisorySource(a.source)) - Number(isMachineAdvisorySource(b.source)));
       const sectionScopedExternals = externalDirectives.filter(
         (directive) => directive.section !== undefined,
       );

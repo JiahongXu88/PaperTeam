@@ -2300,6 +2300,72 @@ async function handleProjectResourceRoutes(
       sendJson(res, 200, { readiness: await targets.gap.evaluate(projectId) });
       return true;
     }
+    // ---- M15 TJA：目标期刊评估（官方规则 profile × 分层 QualityReport；不产生任何 gate / passed）----
+    //   GET  /target/journal-profiles                         → { profiles }（内置 profile + 本项目来源复核状态）
+    //   POST /target/journal-profiles/:journalId/refresh      → 在线原句回放（只读公开官方页面）
+    //   GET  /target/journal-assessment                       → { assessment | null }
+    //   POST /target/journal-assessment                       → 生成评估（body: journalId|name|issn, articleType, includeModelReview?）
+    //   POST /target/journal-assessment/revision-instructions → 逐条把可改写条目转入修改意见队列（body: assessmentId, criterionIds）
+    if (rest === "/journal-profiles") {
+      if (method !== "GET") {
+        sendMethodNotAllowed(res, "GET", method);
+        return true;
+      }
+      sendJson(res, 200, { profiles: await targets.journal.listProfiles(projectId) });
+      return true;
+    }
+    const journalRefreshMatch = rest.match(/^\/journal-profiles\/([a-z0-9-]{1,40})\/refresh$/);
+    if (journalRefreshMatch !== null) {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      sendJson(res, 200, await targets.journal.refreshProfile(projectId, journalRefreshMatch[1]!));
+      return true;
+    }
+    if (rest === "/journal-assessment") {
+      if (method === "GET") {
+        sendJson(res, 200, { assessment: await targets.journal.get(projectId) });
+        return true;
+      }
+      if (method === "POST") {
+        const body = await readJsonBody(req);
+        const articleType = readStringField(body, "articleType");
+        if (articleType === undefined) {
+          throw new BusinessError("INVALID_REQUEST", "请求体必须包含 articleType");
+        }
+        const journalId = readStringField(body, "journalId");
+        const name = readStringField(body, "name");
+        const issn = readStringField(body, "issn");
+        const includeModelReview = body["includeModelReview"] === true;
+        const assessment = await targets.journal.evaluate(projectId, {
+          articleType: articleType as never,
+          ...(journalId !== undefined ? { journalId } : {}),
+          ...(name !== undefined ? { name } : {}),
+          ...(issn !== undefined ? { issn } : {}),
+          includeModelReview,
+        });
+        sendJson(res, 200, { assessment });
+        return true;
+      }
+      sendMethodNotAllowed(res, "GET, POST", method);
+      return true;
+    }
+    if (rest === "/journal-assessment/revision-instructions") {
+      if (method !== "POST") {
+        sendMethodNotAllowed(res, "POST", method);
+        return true;
+      }
+      const body = await readJsonBody(req);
+      const assessmentId = readStringField(body, "assessmentId");
+      const criterionIds = readStringArrayField(body, "criterionIds");
+      if (assessmentId === undefined || criterionIds === undefined) {
+        throw new BusinessError("INVALID_REQUEST", "请求体必须包含 assessmentId 与 criterionIds");
+      }
+      const result = await targets.journal.convertToRevision(projectId, { assessmentId, criterionIds });
+      sendJson(res, 200, { ...result, instructions: await stack.externalInstructions.load(projectId) });
+      return true;
+    }
     // ---- M15.9 · G1：官方投稿要求工件 + 确定性符合度（advisory，零 gate 接线）----
     if (rest === "/guideline") {
       if (method === "GET") {

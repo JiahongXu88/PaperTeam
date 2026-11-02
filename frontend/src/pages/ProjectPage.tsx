@@ -22,6 +22,7 @@ import { ReviewPanel } from "../components/project/ReviewPanel.js";
 import { SourcesPanel } from "../components/project/SourcesPanel.js";
 import { ResearchInputsPanel } from "../components/project/ResearchInputsPanel.js";
 import { TargetPanel } from "../components/project/TargetPanel.js";
+import { JournalAssessmentPanel } from "../components/project/JournalAssessmentPanel.js";
 import { WorkflowPanel } from "../components/project/WorkflowPanel.js";
 import { readSectionProgress } from "../components/project/workflowTimeline.js";
 import { optionLabel, DOCUMENT_TYPE_OPTIONS, TARGET_PROFILE_OPTIONS, WORKFLOW_KIND_RUN_LABELS } from "../constants/projectMeta.js";
@@ -498,7 +499,10 @@ export function ProjectPage() {
           ) : tab === "experiments" ? (
             <ExperimentPackagesPanel projectId={project.id} />
           ) : tab === "target" ? (
-            <TargetPanel projectId={project.id} />
+            <>
+              <JournalAssessmentPanel projectId={project.id} />
+              <TargetPanel projectId={project.id} />
+            </>
           ) : tab === "workflow" ? (
             <WorkflowPanel projectId={project.id} project={project} onOpenTab={openTab} connection={connection} />
           ) : (

@@ -84,6 +84,18 @@ promise of publication success**. There is deliberately no numeric "score"; targ
 stages are advisory-only and can never block or alter a workflow verdict; benchmark
 papers are role-isolated so they can never leak into your evidence pool.
 
+**Target journal assessment** (top of the Target tab): pick a journal (built-in: Journal of
+Image and Graphics / 中国图象图形学报 and PLOS ONE; every rule is quoted verbatim from the
+official site and can be re-verified online by quote replay) and an article type. You get the
+official submission requirements item by item (satisfied / violated / not evaluated / not
+applicable, with the official quote, link and manuscript location), the verified defects and
+pending model opinions reused from the layered quality report, article-type / language / scope
+fit, and a five-state verdict (no blocking checkable issue / changes required / blocked by a
+verified issue / insufficient evidence / journal profile unverified). Rewritable violations can
+be sent, one by one, to the revision comment queue, where the edit contract still applies. It
+**does not predict acceptance or produce a score**; subjective dimensions are uncalibrated model
+opinions only.
+
 ### 4. Multimodal review of figures and tables
 
 A visual review pass runs over the **registered visual assets** of your project —
