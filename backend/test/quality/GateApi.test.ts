@@ -188,6 +188,8 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
       "experiment_claims_recomputed",
       // M15.6：跨节数值一致性（摘要/结论 ↔ 结果表；确定性零模型）
       "cross_section_numeric_consistency",
+      // M16 后续：审稿 finding 确定性证书核验（L1；无可核对数值 → 不适用，不出 PASS）
+      "review_findings_certified",
       "blocking_issues_zero",
       "open_critical_major_zero",
       "academic_score_threshold",
@@ -208,6 +210,7 @@ describe("Quality Gate API（GET latest / by round / stale）", () => {
     expect(status.get("hallucinated_citations_zero")).toMatchObject({ status: "NOT_EVALUATED", required: true });
     expect(status.get("target_feasibility")).toMatchObject({ status: "NOT_EVALUATED" });
     expect(status.get("experiment_claims_recomputed")).toMatchObject({ status: "NOT_APPLICABLE" });
+    expect(status.get("review_findings_certified")?.status).not.toBe("PASS");
     expect((got.body["gate"] as { evaluation?: { entry: string } }).evaluation?.entry).toBe("manual");
   });
 });

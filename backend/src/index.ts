@@ -335,6 +335,8 @@ export async function startBackend(): Promise<void> {
       claimRecheckMaxCalls: config.review.claimRecheckMaxCalls,
       findingRecheckMaxCalls: config.review.findingRecheckMaxCalls,
       claimStage: config.review.claimStage,
+      wholePaperSynthesis: config.review.wholePaperSynthesis,
+      wholePaperMaxChars: config.review.wholePaperMaxChars,
       candidateShadow: config.review.candidateShadow,
       revisionTask: config.review.revisionTask,
     },

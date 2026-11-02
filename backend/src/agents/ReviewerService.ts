@@ -135,6 +135,8 @@ export interface ReviewIssue {
    * finding（blocking=false），系统不得自动将任一版本覆盖为权威事实。
    */
   relatedSections?: string[];
+  /** M16 后续：finding 来源通道（缺省 = 单元 / digest 审稿）；whole_paper_synthesis = 实验性整稿综合审查（恒 L2 待核验） */
+  origin?: "whole_paper_synthesis";
   /**
    * M14.1b P1：Reviewer 从被审原文逐字摘出的定位片段（≥12 字）。revision.plan 用它
    * 在被审修订快照中做唯一定位并投影为 targetQuote；不唯一 / 不存在 = 不投影。
@@ -811,6 +813,54 @@ export class ReviewerService {
     };
   }
 
+  /**
+   * M16 后续（实验开关 PAPERTEAM_REVIEW_WHOLE_PAPER，缺省关闭）：整稿综合审查——单次有界调用，补单元审稿结构性看不到的
+   * 整稿问题（研究问题 / 贡献与证据断裂 / 最近强基线 / 实验充分性 / 跨章论证闭环）。局部细节（公式、数值、引用、措辞）
+   * 留给单元审稿与确定性核验。输入模式如实返回：FULL_TEXT = 被审全文逐字；GLOBAL_DIGEST = 超出字符上限时的各章摘要
+   * （只能声称「全局摘要评估」）。所有 finding：origin=whole_paper_synthesis、blocking=false、verification=AUTHOR_CHECK_REQUIRED。
+   */
+  async reviewWholePaper(params: {
+    projectId: string;
+    text: string;
+    inputMode: "FULL_TEXT" | "GLOBAL_DIGEST";
+    language?: ManuscriptLanguage;
+    signal?: AbortSignal;
+    isolation?: { sessionLabel: string };
+    maxIssues?: number;
+  }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string; promptSha256: string; sessionKey?: string; usage?: Record<string, unknown> }> {
+    const prompt = buildWholePaperPrompt(params);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: prompt,
+      projectId: params.projectId,
+      ...(params.isolation !== undefined
+        ? { sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/academic/whole-paper/${params.isolation.sessionLabel}`, toolPolicy: "sealed" as const }
+        : {}),
+      contextScope: "review/academic/whole-paper",
+      ...(params.language !== undefined ? { language: params.language } : {}),
+      metadata: { role: "reviewer", skill: "whole-paper" },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `整稿综合审查任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "整稿综合审查结果");
+    const issues = parseIssues(parsed, "整稿综合审查")
+      .filter((issue) => issue.category !== "style" && issue.category !== "build")
+      .slice(0, params.maxIssues ?? 8)
+      .map((issue) => ({ ...issue, origin: "whole_paper_synthesis" as const, blocking: false, verification: "AUTHOR_CHECK_REQUIRED" as const }));
+    const metaSessionKey = task.metadata?.["sessionKey"];
+    return {
+      issues,
+      summary: typeof parsed["summary"] === "string" ? parsed["summary"].slice(0, 400) : "",
+      taskId: task.taskId,
+      promptSha256: sha256Hex(prompt),
+      ...(typeof metaSessionKey === "string" ? { sessionKey: metaSessionKey } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+    };
+  }
+
   /** 落盘单个 mode 的报告（reviews/review-<round>-<mode>.json） */
   async saveReport(projectId: string, round: number, result: ModeReviewResult): Promise<string> {
     const dir = this.projects.reviewsDir(projectId);
@@ -1482,6 +1532,62 @@ function buildUnitReviewPrompt(params: {
 }
 
 /** M14.1a P0-2：跨章一致性审查 prompt（各章短摘要；冲突 finding 必须带双位置） */
+export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_TEXT" | "GLOBAL_DIGEST"; language?: ManuscriptLanguage; isolation?: { sessionLabel: string }; maxIssues?: number }): string {
+  const max = params.maxIssues ?? 8;
+  if (params.language === "en") {
+    return [
+      "You are a senior reviewer for this paper's venue. Section-level reviewers have already checked local details (equations, numbers, citations, wording).",
+      params.inputMode === "FULL_TEXT"
+        ? "Below is the COMPLETE paper text. Judge the paper as a whole."
+        : "Below are per-section DIGESTS (the full text did not fit). You have NOT read the full paper: only report issues the digests clearly support.",
+      "",
+      `Report at most ${max} paper-level weaknesses a strong reviewer would raise, most important first. Only these kinds:`,
+      "- the research question or claimed contribution is unclear, overstated, or not supported by the evidence presented;",
+      "- missing comparison with a specific strong or recent baseline / prior method (name it if you can);",
+      "- experimental adequacy: missing ablations, datasets, settings, variance / significance, or scale that the claims require;",
+      "- the argument does not close: conclusions or abstract claim more than the experiments show, or sections contradict each other.",
+      "Do NOT report typos, notation, formatting, single-number mismatches, or citation formatting. Be specific to THIS paper: name the claim, table, experiment or baseline; generic advice is not acceptable.",
+      "If you cite text, \"quote\" must be copied verbatim from the paper (12-200 characters); leave it empty for absence-type issues.",
+      ...(params.isolation !== undefined ? ["Use only the text in this message; do not read workspace files or rely on other conversations."] : []),
+      "",
+      "Output exactly one JSON object (no Markdown fences):",
+      "{",
+      '  "summary": "overall assessment in <= 60 words",',
+      '  "issues": [{"category": "academic", "severity": "major|minor", "section": "most relevant section title or \'Whole paper\'",',
+      '    "description": "specific weakness", "reason": "why it matters for the paper\'s claims", "suggestedAction": "what the authors should do",',
+      '    "quote": "verbatim excerpt or empty", "blocking": false}]',
+      "}",
+      "",
+      params.inputMode === "FULL_TEXT" ? "===== PAPER =====" : "===== SECTION DIGESTS =====",
+      params.text,
+    ].join("\n");
+  }
+  return [
+    "你是该论文目标期刊 / 会议的资深审稿人。章节审稿人已经检查了局部细节（公式、数值、引用、措辞）。",
+    params.inputMode === "FULL_TEXT" ? "下面是论文完整正文，请从整篇论文角度判断。" : "下面是各章摘要（全文超出长度上限）。你没有通读全文：只报告摘要明确支持的问题。",
+    "",
+    `最多报告 ${max} 条整稿层面的主要问题，按重要性排序，只限以下几类：`,
+    "- 研究问题或声称的贡献不清楚、夸大，或没有被文中证据支持；",
+    "- 缺少与具体的强基线 / 最新方法的比较（能点名就点名）；",
+    "- 实验充分性：论断所需的消融、数据集、设置、方差 / 显著性或规模缺失；",
+    "- 论证不闭合：摘要或结论的论断超出实验所示，或章节之间相互矛盾。",
+    "不要报告错别字、符号、格式、单个数值不符、引用格式。必须针对本文：点名具体论断、表格、实验或基线；泛泛建议不可接受。",
+    "如引用原文，quote 必须逐字摘自论文（12–200 字）；缺失类问题 quote 留空。",
+    ...(params.isolation !== undefined ? ["本次审查只依据本消息给出的文本；不要读取工作区文件，也不要依赖其他对话的记忆。"] : []),
+    "",
+    "只输出一个 JSON 对象（不要 Markdown 围栏）：",
+    "{",
+    '  "summary": "总体评价（80 字内）",',
+    '  "issues": [{"category": "academic", "severity": "major|minor", "section": "最相关章节标题或「全文」",',
+    '    "description": "具体问题", "reason": "为什么影响论文论断", "suggestedAction": "作者应当做什么",',
+    '    "quote": "逐字摘录或留空", "blocking": false}]',
+    "}",
+    "",
+    params.inputMode === "FULL_TEXT" ? "===== 论文全文 =====" : "===== 各章摘要 =====",
+    params.text,
+  ].join("\n");
+}
+
 function buildCrossChapterPrompt(params: {
   chapters: ReadonlyArray<{ heading: string; file: string; digest: string }>;
   experimentPolicyLines?: string[];

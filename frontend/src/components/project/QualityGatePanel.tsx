@@ -12,6 +12,7 @@ import {
 } from "../common/status.js";
 import { useQualityGate, useReevaluateQualityGate } from "../../hooks/queries.js";
 import { QualityReportLayers, ValueChangeRequestsPanel } from "./QualityReportLayers.js";
+import { VerifiedFindingsPanel } from "./VerifiedFindingsPanel.js";
 import { formatApiError } from "../../utils/errors.js";
 import { formatDateTime } from "../../utils/format.js";
 import type { QualityGateResponseView, QualityGateResultView, QualityGateRuleView, ReviewSummaryView, WorkflowKind } from "../../types/api.js";
@@ -176,6 +177,7 @@ function GateSummary({
       </div>
 
       {data.qualityReport !== undefined && data.qualityReport !== null ? <QualityReportLayers report={data.qualityReport} /> : null}
+      <VerifiedFindingsPanel summary={gate.verifiedFindings} />
 
       {data.stale && viewingLatest ? (
         <div className="note note-warn" role="status" data-testid="gate-stale">

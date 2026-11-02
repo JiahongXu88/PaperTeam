@@ -403,9 +403,51 @@ export interface QualityGateRuleView {
   required?: boolean;
 }
 
+/** M16 后续：审稿 finding 证书核验（后端 review/verifiedFindings.ts 的 gate 摘要） */
+export interface VerifiedFindingCheckView {
+  kind: "TEXT_TABLE_VALUE" | "TABLE_MULTIPLIER";
+  outcome: "CONTRADICTED" | "CONSISTENT" | "NOT_CERTIFIED";
+  claim: { raw: string; value: number; decimals: number; unit: string | null; file: string; start: number; end: number; line: number; sentence: string };
+  counterpart?: { file: string; tableLabel: string | null; tableCaption: string | null; rowKey: string[]; headerPath: string[]; raw: string; line: number };
+  recompute?: {
+    table: { file: string; label: string | null; caption: string | null; number: number | null; line: number; resolvedVia: string };
+    qualifier: "UP_TO" | "EXACT";
+    claimInterval: [number, number];
+    candidates: number;
+    nearest: { value: number; formula: string } | null;
+  };
+  tolerance: string;
+  reasons: string[];
+  inputsSha256: string;
+}
+
+export interface VerifiedFindingRecordView {
+  findingId: string;
+  issueIndex: number;
+  category: string;
+  severityObserved: string;
+  anchor: { status: "LOCATED" | "QUOTE_NOT_LOCATED" | "NO_QUOTE"; file: string | null; line: number | null; danglingReferences: string[] };
+  status: "VERIFIED_CONTRADICTED" | "CERTIFIED_ON_TRANSCRIPT" | "NOT_CERTIFIED" | "NOT_APPLICABLE";
+  statement: string | null;
+  checks: VerifiedFindingCheckView[];
+}
+
+export interface VerifiedFindingsGateSummaryView {
+  schema: "paperteam.verified-findings/v1";
+  status: "EVALUATED" | "UNAVAILABLE";
+  unavailableReason: string | null;
+  path: string | null;
+  documentFingerprint: string | null;
+  summary: { findings: number; located: number; checked: number; verifiedContradicted: number; certifiedOnTranscript: number; notCertified: number; danglingReferences: number; sourceVerification: string };
+  statements: string[];
+  records: VerifiedFindingRecordView[];
+}
+
 export interface QualityGateResultView {
   /** M15 长程 B：由分层报告派生（overall.finalizable）；不代表达到期刊水平或可投稿 */
   passed: boolean;
+  /** M16 后续：审稿意见证书核验（旧产物无 = 未评估） */
+  verifiedFindings?: VerifiedFindingsGateSummaryView;
   /** M15 长程 B：嵌入的分层报告（旧产物无；GET 响应顶层 qualityReport 为权威视图） */
   qualityReport?: import("./qualityReport.js").QualityReportView;
   reasons: string[];

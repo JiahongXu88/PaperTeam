@@ -191,6 +191,9 @@ export interface ServiceStackOptions {
     findingRecheckMaxCalls?: number;
     /** M15.2 extended 模式论断账本抽取方式（缺省 inline = M15.1 口径） */
     claimStage?: UnitClaimStage;
+    /** M16 后续：实验性整稿综合审查（缺省 off） */
+    wholePaperSynthesis?: "off" | "on";
+    wholePaperMaxChars?: number;
     /** M15.4.3：CandidateProposer 影子旁路（缺省 off；PAPERTEAM_CANDIDATE_SHADOW） */
     candidateShadow?: "off" | "on";
     /** M11.4：existing-paper 分层 gate 策略（缺省 task_scoped / floor 未启用） */
@@ -1213,6 +1216,8 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         claimRecheckMaxCalls: options.review?.claimRecheckMaxCalls ?? 0,
         findingRecheckMaxCalls: options.review?.findingRecheckMaxCalls ?? 0,
         claimStage: options.review?.claimStage ?? "inline",
+        wholePaperSynthesis: options.review?.wholePaperSynthesis ?? "off",
+        wholePaperMaxChars: options.review?.wholePaperMaxChars ?? 160_000,
         candidateShadow: options.review?.candidateShadow ?? "off",
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },
       },

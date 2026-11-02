@@ -34,6 +34,7 @@ import type { QualityPolicyAssessment, QualityPolicyRuleDiff } from "./qualityPo
 import type { ReviewIssue } from "../agents/ReviewerService.js";
 import type { EvidencePairingSummary } from "./evidencePairing.js";
 import type { CrossSectionConsistencySummary } from "../review/crossSectionConsistency.js";
+import type { VerifiedFindingsGateSummary } from "../review/verifiedFindings.js";
 import type { TargetReadinessGateAdvisory } from "../target/promptBlocks.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { ClaimCheckGateSummary } from "../experiments/claimChecks.js";
@@ -382,6 +383,12 @@ export interface QualityGateInput {
    * NOT_EVALUATED（不阻断——不能要求所有摘要数字都绑上表，但绝不签发「已核验一致」）。
    */
   crossSectionConsistency?: CrossSectionConsistencySummary;
+  /**
+   * M16 后续：审稿 finding 的确定性证书核验（review/verifiedFindings.ts；零模型）。undefined = 调用方未计算（规则不出现，兼容旧入口）。
+   * verifiedContradicted > 0 → review_findings_certified FAIL（required，L1 已核验缺陷）；只在转写文本上成立 → NOT_EVALUATED（需对照原件）；
+   * 其余 → NOT_APPLICABLE（未被证书证实 ≠ 没有问题）。
+   */
+  verifiedFindings?: VerifiedFindingsGateSummary;
 }
 
 /** M14.2：thesis gate 规则输入（definitions.computeThesisGateInput 产出） */
@@ -501,6 +508,8 @@ export interface QualityGateVerificationSummary {
 
 export interface QualityGateResult {
   passed: boolean;
+  /** M16 后续：审稿 finding 证书核验摘要（UI / API 展示 L1 已核验发现与证书要素；旧产物无此字段 = 未评估，不补 VERIFIED） */
+  verifiedFindings?: VerifiedFindingsGateSummary;
   reasons: string[];
   rules: QualityGateRule[];
   thresholds: QualityGateThresholds;
@@ -809,6 +818,36 @@ export function evaluateQualityGate(
         "cross_section_numeric_consistency",
         "NOT_EVALUATED",
         `摘要/结论 ↔ 结果表数值一致性：一致 ${crossSection.counts.consistent} 处，未核验 ${crossSection.counts.notEvaluated} 处（${Object.entries(crossSection.notEvaluatedReasons).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([code, count]) => `${code} ${count}`).join("、")}）——部分核验通过不等于全部一致`,
+      );
+    }
+  }
+  // 4f. M16 后续：审稿 finding 的确定性证书核验（文表数值唯一绑定 / 倍数论断无法由所引表格复现）。
+  //     证书 + 可核验来源 → L1 已核验缺陷（FAIL）；证书只在转写投影上成立 → NOT_EVALUATED（转写可能损坏表格，需对照原件）；
+  //     其余一律不出 PASS——「没有被证实的矛盾」不等于「没有问题」。
+  const verifiedFindings = input.verifiedFindings;
+  if (verifiedFindings !== undefined) {
+    const summary = verifiedFindings.summary;
+    if (verifiedFindings.status === "UNAVAILABLE") {
+      push("review_findings_certified", "NOT_EVALUATED", `审稿 finding 证书核验未执行（${verifiedFindings.unavailableReason ?? "未知原因"}）：可复算的数值问题未核验（不代表没有）`);
+    } else if (summary.verifiedContradicted > 0) {
+      push(
+        "review_findings_certified",
+        "FAIL",
+        `已核验缺陷 ${summary.verifiedContradicted} 条（确定性证书，来源 ${summary.sourceVerification}）：${verifiedFindings.statements.slice(0, 3).join("；")}`,
+        true,
+      );
+    } else if (summary.certifiedOnTranscript > 0) {
+      push(
+        "review_findings_certified",
+        "NOT_EVALUATED",
+        `${summary.certifiedOnTranscript} 条 finding 的数值矛盾在被审文本上可复算成立，但被审文本是转写投影 / 来源未核验（${summary.sourceVerification}）——表格可能是转写损坏，需对照原件核对后才算已证实：${verifiedFindings.statements.slice(0, 2).join("；")}`,
+      );
+    } else {
+      push(
+        "review_findings_certified",
+        "NOT_APPLICABLE",
+        `可定位 finding ${summary.located} / ${summary.findings} 条，其中 ${summary.checked} 条含可做证书核对的数值，0 条被证书证实矛盾（未证实 ≠ 没有问题；其余 finding 仍是待核验的模型意见）` +
+          (summary.danglingReferences > 0 ? `；${summary.danglingReferences} 条 finding 点名了原文中不存在的表 / 公式 / 引文编号（定位质量问题）` : ""),
       );
     }
   }

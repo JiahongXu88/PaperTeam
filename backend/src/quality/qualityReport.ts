@@ -131,6 +131,7 @@ const RULE_CLASSES: Record<string, RuleClass> = {
   review_cross_chapter_reported: { layer: "L0", grade: "deterministic" },
   // L1 已证实（确定性 / 作者数据复算 / 元数据 / 已核验证据）
   cross_section_numeric_consistency: { layer: "L1", grade: "deterministic" },
+  review_findings_certified: { layer: "L1", grade: "deterministic" },
   experiment_claims_recomputed: { layer: "L1", grade: "author_data_recomputed" },
   author_experiment_data_reported: { layer: "L1", grade: "author_data_recomputed" },
   hallucinated_citations_zero: { layer: "L1", grade: "metadata_lookup" },

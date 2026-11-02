@@ -235,6 +235,11 @@ export interface ReviewCoverageSummary {
    * 「无跨章 finding」不代表无跨章冲突；skipped = 只有一个章节，不适用
    */
   crossChapter?: { status: "completed" | "failed" | "skipped"; error?: string };
+  /**
+   * M16 后续：实验性整稿综合审查的执行记录（缺省 = 未启用）。不计入正文覆盖率：整稿节点不能掩盖未读章节。
+   * inputMode GLOBAL_DIGEST = 只看了各章摘要（不得声称通读全文）。
+   */
+  wholePaper?: { status: "completed" | "failed"; inputMode: "FULL_TEXT" | "GLOBAL_DIGEST"; inputChars: number; fullTextChars: number; findings: number; promptSha256?: string; error?: string };
   /** M14.9.5.2：shared_session 下同轮 journal 记录与当前请求指纹不一致而未复用的单元（隔离策略见 context.cacheIncompatibleUnitIds） */
   journalIncompatibleUnitIds?: string[];
   /**

@@ -361,6 +361,7 @@ import { applyQualityPolicy, QUALITY_POLICY_VERSION } from "../quality/qualityPo
 // M15.6：Evidence-Aware 分层（规则 4/5/6）与跨节数值一致性（摘要/结论 ↔ 结果表）
 import { deriveEvidencePairing } from "../quality/evidencePairing.js";
 import { computeCrossSectionConsistency, type CrossSectionConsistencySummary } from "../review/crossSectionConsistency.js";
+import { verifyFindings, verifiedFindingsGateSummary, type VerifiedFindingsGateSummary } from "../review/verifiedFindings.js";
 import {
   claimCheckFinding,
   claimChecksInText,
@@ -621,6 +622,9 @@ export interface WorkflowServices {
     findingRecheckMaxCalls?: number;
     /** M15.2 extended 模式论断账本抽取方式（缺省 inline） */
     claimStage?: UnitClaimStage;
+    /** M16 后续：实验性整稿综合审查（缺省 off；PAPERTEAM_REVIEW_WHOLE_PAPER）与全文字符上限 */
+    wholePaperSynthesis?: "off" | "on";
+    wholePaperMaxChars?: number;
     /** M15.4.3：CandidateProposer 影子旁路（缺省 off = 零额外调用零产物；on 见 review/candidateShadow.ts） */
     candidateShadow?: "off" | "on";
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
@@ -1262,8 +1266,31 @@ function reviewRunStageInner(
             ctx.log(`[review] 跨章一致性审查失败（降级为本轮无跨章 finding；正文覆盖不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
           }
         }
+        // M16 后续（实验开关，缺省 off）：整稿综合审查——单元 / 跨章之后的单次有界调用；不计入覆盖率，失败不影响单元结果
+        let wholePaperIssues: ReviewIssue[] = [];
+        let wholePaperTrace: NonNullable<ReviewCoverageSummary["wholePaper"]> | null = null;
+        if (services.review.wholePaperSynthesis === "on") {
+          const wholePaperMaxChars = services.review.wholePaperMaxChars ?? 160_000;
+          const fullText = coveragePlan.units.map((unit) => spanByUnitId.get(unit.unitId)?.content ?? "").filter((text) => text.trim() !== "").join("\n\n");
+          const inputMode = fullText.length <= wholePaperMaxChars ? "FULL_TEXT" as const : "GLOBAL_DIGEST" as const;
+          const text = inputMode === "FULL_TEXT" ? fullText : chapterDigests.map((chapter) => `--- ${chapter.heading} ---\n${chapter.digest}`).join("\n");
+          try {
+            const whole = await services.reviewer.reviewWholePaper({
+              projectId: ctx.projectId, text, inputMode,
+              ...(isolatedContext ? { isolation: { sessionLabel: `r${round}-${randomUUID().slice(0, 8)}` } } : {}),
+              ...(language !== undefined ? { language } : {}), signal: ctx.signal,
+            });
+            wholePaperIssues = whole.issues;
+            wholePaperTrace = { status: "completed", inputMode, inputChars: text.length, fullTextChars: fullText.length, findings: whole.issues.length, promptSha256: whole.promptSha256 };
+          } catch (error) {
+            if (ctx.signal.aborted) throw error;
+            wholePaperTrace = { status: "failed", inputMode, inputChars: text.length, fullTextChars: fullText.length, findings: 0, error: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+            ctx.log(`[review] 整稿综合审查失败（实验通道；本轮无整稿 finding，单元结果不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+          }
+        }
         coverageSummary = computeReviewCoverage(coveragePlan, round, allRecords, "units");
         coverageSummary.sources = coverageSourceManifest(coveragePlan);
+        if (wholePaperTrace !== null) coverageSummary.wholePaper = wholePaperTrace;
         // 复用计数以本轮实际命中 journal 的单元为准（computeReviewCoverage 的
         // 跨轮口径无法识别同轮 stage 重启——journal 记录 round 相同）
         coverageSummary.reusedUnits = settled.filter((entry) => entry?.reused === true).length;
@@ -1352,7 +1379,7 @@ function reviewRunStageInner(
         results = [
           { mode: "fact", taskId: `(units:${completedUnits.length}/${coveragePlan.units.length})`, issues: unitIssues, summary: `长文档单元审查：${completedUnits.length}/${coveragePlan.units.length} 单元完成（复用 ${coverageSummary.reusedUnits}，失败 ${coverageSummary.failedUnits}）` },
           {
-            mode: "academic", taskId: "(units)", issues: crossChapterIssues,
+            mode: "academic", taskId: "(units)", issues: [...crossChapterIssues, ...wholePaperIssues],
             ...(academicScore !== null ? { overallScore: academicScore } : {}),
             summary: `单元分数字符加权聚合（${freshCount} 新执行 + ${coverageSummary.reusedUnits} 复用；coverage ${(coverageSummary.ratio * 100).toFixed(1)}%）`,
           },
@@ -1915,6 +1942,28 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
           unavailableReason: "NO_REVIEWED_REVISION",
         };
       }
+      // M16 后续：审稿 finding 的确定性证书核验（被审修订快照；来源等级与论断账本同口径——转写 / 未知来源不升 L1）
+      let verifiedFindingsSummary: VerifiedFindingsGateSummary;
+      if (typeof review.reviewedRevision === "number") {
+        const snapshotTex = await readSnapshotTex(services.revisions.snapshotDir(projectId, review.reviewedRevision));
+        if (snapshotTex === null) {
+          verifiedFindingsSummary = verifiedFindingsGateSummary(null, "SNAPSHOT_UNAVAILABLE");
+        } else {
+          const source = await resolveClaimAuditSource(services, projectId, publishedAssessment);
+          const artifact = verifyFindings({
+            round: review.round,
+            sourceRevision: review.reviewedRevision,
+            files: snapshotTex,
+            issues: review.issues,
+            sourceVerification: source.source.level,
+            findingFingerprint,
+          });
+          const path = await services.reviewArtifacts.saveAuditArtifact(projectId, "verified-findings", review.round, artifact);
+          verifiedFindingsSummary = verifiedFindingsGateSummary(artifact, null, path);
+        }
+      } else {
+        verifiedFindingsSummary = verifiedFindingsGateSummary(null, "NO_REVIEWED_REVISION");
+      }
       const gateInput = {
           review,
           citation,
@@ -1934,6 +1983,7 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
           claimChecks,
           evidencePairing,
           crossSectionConsistency,
+          verifiedFindings: verifiedFindingsSummary,
         };
       const legacyGate = evaluateQualityGate(gateInput, QUALITY_THRESHOLDS(services));
       // M15.7 生产接线（协议 §6 门槛全绿后实施）：未校准分数阈值（规则 7 academic_score_threshold /
@@ -2195,6 +2245,7 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
         entry: context.entry,
       });
       gate.qualityReport = qualityReport;
+      gate.verifiedFindings = verifiedFindingsSummary;
       if (gate.passed !== qualityReport.overall.finalizable) {
         gate.passed = qualityReport.overall.finalizable;
         gate.reasons.push(`quality_report: ${qualityReport.compat.difference ?? qualityReport.overall.status}`);

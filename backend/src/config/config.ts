@@ -144,6 +144,15 @@ export interface ReviewConfig {
    */
   claimStage: UnitClaimStage;
   /**
+   * M16 后续（实验开关，缺省 off，未经独立验证不得默认开启）：长文档单元审稿之后追加一次有界的整稿综合审查
+   * （PAPERTEAM_REVIEW_WHOLE_PAPER=on）。输入为被审全文（超出 wholePaperMaxChars 时退化为各章摘要，并如实标注
+   * GLOBAL_DIGEST——不冒充通读全文）；只报研究问题 / 贡献 / 强基线 / 实验充分性 / 论证闭环类整稿意见；
+   * 产出一律 L2 待核验（blocking=false、AUTHOR_CHECK_REQUIRED），不计入正文覆盖率。
+   */
+  wholePaperSynthesis: "off" | "on";
+  /** 整稿综合审查的全文字符上限（PAPERTEAM_REVIEW_WHOLE_PAPER_MAX_CHARS，缺省 160000） */
+  wholePaperMaxChars: number;
+  /**
    * M15.4.3：CandidateProposer 影子旁路（PAPERTEAM_CANDIDATE_SHADOW，缺省 off）。
    * on = claim-audit 构建后为有界论断子集（≤4）运行提案→确定性核验，产物 candidate-shadow-r{round}.json
    * （SHADOW_OBSERVATION_ONLY：不进 Quality Gate / Finding / HITL / 评分）；off = 零额外调用零产物。
@@ -722,6 +731,8 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       claimRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_CLAIM_RECHECK_CALLS", { default: 2, min: 0, max: 8 }),
       findingRecheckMaxCalls: readIntWithFallback(source, "PAPERTEAM_REVIEW_FINDING_RECHECK_CALLS", { default: 3, min: 0, max: 8 }),
       claimStage: readOptionalValue(source, "PAPERTEAM_REVIEW_CLAIM_STAGE")?.trim().toLowerCase() === "separate" ? "separate" : "inline",
+      wholePaperSynthesis: readOptionalValue(source, "PAPERTEAM_REVIEW_WHOLE_PAPER")?.trim().toLowerCase() === "on" ? "on" : "off",
+      wholePaperMaxChars: readIntWithFallback(source, "PAPERTEAM_REVIEW_WHOLE_PAPER_MAX_CHARS", { default: 160_000, min: 10_000, max: 600_000 }),
       /** M15.4.3：CandidateProposer 影子旁路（缺省 off；off = 零额外模型调用、零产物、零行为差异） */
       candidateShadow: readOptionalValue(source, "PAPERTEAM_CANDIDATE_SHADOW")?.trim().toLowerCase() === "on" ? "on" : "off",
     },
