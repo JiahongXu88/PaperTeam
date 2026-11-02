@@ -26,7 +26,7 @@
 | G4 外部参考验证诚实 | **PARTIAL**（有界执行，非校准） | D1 零模型 23 篇真实 CJIG 已发表论文；D2 CoCoReviewBench 12 篇真实审稿意见；D3 SurveyReview 8 篇真实审稿报告分数；D4 ReviseBench 许可缺失 → DATA_BLOCKED。中文期刊人工质量标签 = 0 → 无期刊级校准 |
 | G5 受控模型与负例 | **PASS** | 付费调用 45/80、真实 E2E 2/2（§6）；负例全部 fail-closed（§4） |
 | G6 工程回归 | **PASS**（见 §7 已知项） | 后端全量、前端 380/380、双端 typecheck / build、`git diff --check`、19 个浏览器 E2E；CI / Linux Integration 见 §9 |
-| G7 Git 与透明交付 | 见 §9 | |
+| G7 Git 与透明交付 | **PASS** | §9：快进推送、三方一致、clean；证据 / 成本账本 `budget/`、`runlog.txt`、`MANIFEST.json` |
 
 ## 3. 真实运行（2 条，均为已有真实产物的只读副本；冻结源目录未写入）
 
@@ -107,7 +107,9 @@ ReviseBench 无许可证 → DATA_BLOCKED（未下载）。L3 修订闭环沿用
 产品主路径（G0–G3、G5、G6）通过，外部基准也有真实证据；但这些证据只说明：(a) 规则检查器在真实已发表 CJIG 论文上不误报（D1，仅参考文献类可判）；(b) 模型主观意见在英文领域既不比单次 LLM 召回更好（D2），也与人类质量分严重不一致（D3）。**没有任何中文期刊的独立人类质量标签**，所以「论文是否达到目标期刊学术要求」的主观部分仍无校准。按合同取 `ENGINEERING_COMPLETE_EXTERNAL_VALIDITY_LIMITED`。缺什么：目标期刊（或同类中文期刊）的独立专家质量标签，或含已确认拒稿的投稿记录——M15 长程 `E3-calibration` 校准包仍适用。
 
 ## 9. Git / CI
-见交付说明（提交后补记：HEAD、origin/main、ls-remote、CI 与 Linux Integration 运行结果）。
+- 实现提交 `058da2aed492709917f9bd1cfb2a1b92aba67665`（7f133ee 快进推送，无 force）：推送后 HEAD = origin/main = ls-remote，工作区 clean。
+- GitHub Actions：CI run 41387385420 **success**；Linux Integration run 41387385458 **success**（均针对 058da2a）。
+- 本报告的这一节由随后的纯文档提交补记；该提交的 CI 结果见交付说明。
 
 ## 10. 遗留与 Next Steps（不在本轮扩展）
 1. 更多期刊 profile（同 schema 逐句摘录 + 回放脚本）；用户自带 profile 的导入 UI。
