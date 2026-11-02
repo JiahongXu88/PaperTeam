@@ -837,12 +837,21 @@ export function evaluateQualityGate(
     excluded > 0
       ? `、${excluded} 条为证据库无 pairing 材料的 evidence_gap 工件 / 只读口径「需作者核对 / 需外部数据」自报（M15.6：核验不足 ≠ 已证实违规，NOT_EVALUATED 呈现不计数）`
       : "";
+  /**
+   * M16 续期收口（真实运行暴露）：审查覆盖不完整时，「0 条 blocking / critical / major」只说明已审部分没有发现，
+   * 不能以 PASS 呈现为全文结论——改为必需 NOT_EVALUATED 并写明覆盖比例；已发现的问题照常 FAIL（发现与覆盖无关）。
+   */
+  const reviewCoverage = input.review.coverage;
+  const partialCoverageNote = reviewCoverage !== undefined && reviewCoverage.complete === false
+    ? `；review coverage 不完整（${reviewCoverage.mode} 模式 ${(reviewCoverage.ratio * 100).toFixed(1)}%，失败单元 ${reviewCoverage.failedUnits}）——未审正文中的问题未知，0 条不代表全文无此类问题`
+    : null;
+  const zeroCountStatus = (ok: boolean): QualityGateRuleStatus => (ok && partialCoverageNote !== null ? "NOT_EVALUATED" : verdict(ok));
   push(
     "blocking_issues_zero",
-    verdict(blockingEffective === 0),
+    zeroCountStatus(blockingEffective === 0),
     blockingExcluded + blockingRootCaused + blockingPairingExcluded > 0
       ? `blocking issue ${blockingEffective} 条（另有 ${blockingExcluded} 条归因于原稿既有 / 作者数据覆盖 claim${blockingRootCaused > 0 ? `、${blockingRootCaused} 条为 unsupported claim / 实验复算矛盾的同根因 finding（规则 4 / 4d 已计）` : ""}${pairingExcludedNote(blockingPairingExcluded)}，不重复计入）`
-      : `blocking issue ${blockingTotal} 条`,
+      : `blocking issue ${blockingTotal} 条${blockingEffective === 0 && partialCoverageNote !== null ? partialCoverageNote : ""}`,
     true,
   );
 
@@ -864,7 +873,7 @@ export function evaluateQualityGate(
   );
   push(
     "open_critical_major_zero",
-    verdict(criticalEffective === 0 && majorEffective === 0),
+    zeroCountStatus(criticalEffective === 0 && majorEffective === 0),
     `critical=${criticalEffective} major=${majorEffective}${
       (audit?.counts.issues.excludedCritical ?? 0) +
         (audit?.counts.issues.excludedMajor ?? 0) +
@@ -875,7 +884,7 @@ export function evaluateQualityGate(
       0
         ? `（归因排除 critical ${(audit?.counts.issues.excludedCritical ?? 0) + criticalRootCaused} / major ${(audit?.counts.issues.excludedMajor ?? 0) + majorRootCaused} 条——含 unsupported claim / 实验复算矛盾同根因 finding${criticalPairingExcluded + majorPairingExcluded > 0 ? `；M15.6 再排除 evidence_gap 工件 / 只读核验自报 critical ${criticalPairingExcluded} / major ${majorPairingExcluded} 条（NOT_EVALUATED 呈现）` : ""}）`
         : ""
-    }`,
+    }${criticalEffective === 0 && majorEffective === 0 && partialCoverageNote !== null ? partialCoverageNote : ""}`,
     true,
   );
 
