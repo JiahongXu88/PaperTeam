@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { buildReviewPrompt, ReviewerService, type ReviewIssue } from "../../src/agents/ReviewerService.js";
+import { buildReviewPrompt, ReviewerService, UNIT_EN_OUTPUT_DIRECTIVE, type ReviewIssue } from "../../src/agents/ReviewerService.js";
 import { DEFAULT_QUALITY_THRESHOLDS, evaluateQualityGate } from "../../src/quality/gates.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import { buildPublishedAssessmentView, classifyPublishedFinding, readReviewPurpose, renderPublishedAssessmentPolicyLines } from "../../src/review/reviewPurpose.js";
@@ -161,6 +161,28 @@ describe("Reviewer prompt：缺省逐字节不变，只读评估替换 Experimen
     expect(prompts[0]).not.toContain("PAPER_REPORTED");
     expect(prompts[1]).toContain("PAPER_REPORTED");
     expect(prompts[1]).not.toContain("实验支撑缺口如实报告");
+  });
+
+  it("M16 收口：英文稿件 unit prompt 带英文输出指令（与 digest 同一契约）；中文 / 未指定语言逐字节不变", async () => {
+    const prompts: string[] = [];
+    const runtime = {
+      runAgent: async (input: { task: string }) => {
+        prompts.push(input.task);
+        return { taskId: "t", status: "completed", output: JSON.stringify({ summary: "s", issues: [], academicScore: 70, riskScore: 10 }) };
+      },
+    };
+    const reviewer = new ReviewerService({ runtime: runtime as never, agentId: "reviewer", projects: {} as never });
+    const unit = { unitId: "u1", file: "main.tex", heading: "2 Results", unitIndex: 1, unitCount: 1, text: "We enrolled 5,642 participants ($n=5642$)." };
+    await reviewer.reviewUnit({ projectId: "p", unit, chapterIndex: ["2 Results"], language: "en" });
+    await reviewer.reviewUnit({ projectId: "p", unit, chapterIndex: ["2 Results"], language: "zh" });
+    await reviewer.reviewUnit({ projectId: "p", unit, chapterIndex: ["2 Results"] });
+    expect(prompts[0]).toContain(UNIT_EN_OUTPUT_DIRECTIVE);
+    expect(prompts[0]).toContain("$n=5642$");
+    expect(prompts[1]).not.toContain(UNIT_EN_OUTPUT_DIRECTIVE);
+    expect(prompts[1]).toContain("稿件语言以该单元原文为准。");
+    expect(prompts[2]).not.toContain(UNIT_EN_OUTPUT_DIRECTIVE);
+    expect(prompts[2]).not.toContain("稿件语言以该单元原文为准。");
+    expect(prompts[0]!.replace(`${UNIT_EN_OUTPUT_DIRECTIVE}\n`, "")).toBe(prompts[1]);
   });
 });
 

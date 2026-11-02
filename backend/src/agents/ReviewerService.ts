@@ -1378,6 +1378,10 @@ function buildUnitClaimRepairPrompt(heading: string, errors: readonly string[]):
 }
 
 /** M14.1a P0-2：单元审查 prompt（长文档模式；输出契约与三路 review 同构） */
+/** 英文稿件 unit 审稿的输出语言指令（与 digest 模式 languageDirective 同一契约；引文仍逐字取自原文） */
+export const UNIT_EN_OUTPUT_DIRECTIVE =
+  `Manuscript language: English. Write every issue's free-text fields ("description" / "suggestedAction" / "reason") in English; quotes stay verbatim from the unit text. The JSON contract below is unchanged.`;
+
 function buildUnitReviewPrompt(params: {
   unit: { unitId: string; file: string; heading: string; unitIndex: number; unitCount: number; text: string };
   paperTitle?: string;
@@ -1421,7 +1425,11 @@ function buildUnitReviewPrompt(params: {
       ];
   return [
     "你是一名学术审稿人（Reviewer）。请审查长篇论文中一个章节片段（编辑单元）的完整原文。",
-    ...(params.language !== undefined ? ["稿件语言以该单元原文为准。"] : []),
+    // M16 收口：unit 模式补齐 digest 模式（M9.7.4）的输出语言契约——英文稿 finding 用英文；
+    // 中文 / 未指定语言的 prompt 逐字节不变
+    ...(params.language === "en"
+      ? ["稿件语言以该单元原文为准。", UNIT_EN_OUTPUT_DIRECTIVE]
+      : params.language !== undefined ? ["稿件语言以该单元原文为准。"] : []),
     ...(params.paperTitle !== undefined ? [`论文题目：${params.paperTitle}`] : []),
     "",
     `章节：「${params.unit.heading}」（文件 ${params.unit.file}；第 ${params.unit.unitIndex}/${params.unit.unitCount} 单元）`,
