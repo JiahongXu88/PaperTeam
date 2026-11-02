@@ -28,7 +28,7 @@
  * (`applyRevisionSpan` / `checkGlobalRevisionScope` in revisionScope.ts).
  */
 
-import { locateLatexSections, revisionSourceHash, type RevisionSpan } from "./revisionScope.js";
+import { FRONT_MATTER_SECTION, locateLatexSections, revisionSourceHash, type RevisionSpan } from "./revisionScope.js";
 
 /** Default Writer working size per edit unit (chars). Units are bounded by construction; nothing is truncated. */
 export const DEFAULT_REVISION_UNIT_MAX_CHARS = 9_000;
@@ -69,6 +69,41 @@ export function fileBodySpan(file: string, source: string): RevisionSpan {
 export function locateFileSpans(file: string, source: string): RevisionSpan[] {
   const spans = locateLatexSections(file, source);
   return spans.length > 0 ? spans : [fileBodySpan(file, source)];
+}
+
+/** Reviewable prose of a span once structural commands are removed (assembly lines, headings, labels, bibliography). */
+const ROOT_PROSE_MIN_CHARS = 40;
+export function hasSubstantiveProse(content: string): boolean {
+  const prose = content
+    .replace(/(^|[^\\])%.*$/gm, "$1")
+    .replace(/\\(?:input|include|bibliography|bibliographystyle|addbibresource|label)\s*\{[^}]*\}/g, "")
+    .replace(/\\(?:part|chapter|(?:sub){0,2}section|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{[^{}\n]*(?:\{[^{}\n]*\}[^{}\n]*)*\}/g, "")
+    .replace(/\\[a-zA-Z@]+\*?(\[[^\]]*\])?/g, "")
+    .replace(/[{}\s]/g, "");
+  return prose.length >= ROOT_PROSE_MIN_CHARS;
+}
+
+/**
+ * M16 A1: reviewable body spans of the root main.tex of a multi-file project.
+ * Text written directly in main.tex (abstract / introduction / conclusion) is manuscript content, but the
+ * preamble is not, and `\input` lines are reviewed in their own files. Heading spans come from the shared
+ * locator (its front-matter span already starts after `\begin{document}` / `\maketitle`); a headless root
+ * gets one span from `\begin{document}` to `\end{document}` (never the preamble). Spans without
+ * substantive prose (pure assembly: `\section{X}\input{x}`) are dropped — no unit, no model call.
+ */
+export function rootBodySpans(file: string, source: string): RevisionSpan[] {
+  const spans = locateLatexSections(file, source);
+  if (spans.length > 0) return spans.filter((span) => hasSubstantiveProse(span.content));
+  const documentBegin = /\\begin\{document\}[^\n]*\n?/.exec(source);
+  if (documentBegin === null) return [];
+  let start = documentBegin.index + documentBegin[0].length;
+  const maketitle = /\\maketitle[^\n]*\n?/.exec(source.slice(start));
+  if (maketitle !== null && source.slice(start, start + maketitle.index).trim() === "") start += maketitle.index + maketitle[0].length;
+  const endCandidates = [source.indexOf("\\begin{thebibliography}", start), source.indexOf("\\end{document}", start)].filter((index) => index >= 0);
+  const end = endCandidates.length > 0 ? Math.min(...endCandidates) : source.length;
+  const content = source.slice(start, end);
+  if (!hasSubstantiveProse(content)) return [];
+  return [{ file, logicalSection: FRONT_MATTER_SECTION, heading: "摘要与前置部分", start, end, originalHash: revisionSourceHash(content), content }];
 }
 
 interface Block {

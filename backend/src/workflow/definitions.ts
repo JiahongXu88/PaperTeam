@@ -392,7 +392,7 @@ import { checkFactDrift, summarizeDrift } from "../thesis/publishedFactsDrift.js
 import { outlineFingerprintFromChapters } from "../thesis/thesisWorkflowTypes.js";
 import { validateThesisDocumentModel } from "../thesis/thesisDocumentTypes.js";
 import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js";
-import { collectLatexFiles, type LatexProjectFiles } from "../manuscript/LatexFiles.js";
+import { collectLatexFiles, type LatexProjectFiles, type TexFile } from "../manuscript/LatexFiles.js";
 import {
   readinessGateAdvisory,
   renderPlannerTargetDigest,
@@ -405,7 +405,10 @@ import { mapWithConcurrency } from "../util/concurrency.js";
 import {
   buildReviewCoveragePlan,
   computeReviewCoverage,
+  coverageSourceManifest,
   digestIsLossy,
+  reviewSourceSpans,
+  type ReviewSourceFile,
   planIncrementalInvalidation,
   type IncrementalReviewLedger,
   type IncrementalUnitDisposition,
@@ -435,6 +438,7 @@ import {
   partitionSpanIntoUnits,
   relocateRevisionSpan,
   resolveUnitByQuotes,
+  rootBodySpans,
 } from "../review/logicalSpan.js";
 import { evaluateScopedLatexRepair, isSingleFileManuscript, planScopedLatexRepair, type ScopedRepairPlan } from "../review/scopedLatexRepair.js";
 import { stripLatexReviewMetadata } from "../review/blindReviewInput.js";
@@ -808,15 +812,21 @@ function reviewRunStageInner(
       // M14.1a P0-2：覆盖计划先于审查执行构建——review 到底看了多少正文由此可证明。
       // digest 有损（节 >3600 / 总量 >60k / 文件 >24）→ 切换 per-unit 长文档模式；
       // 否则维持既有单 digest 三路 review（短论文行为零变化，coverage = 完整 digest）。
-      const coverageSourceFiles = latexForAttribution.sections.length > 0
-        ? latexForAttribution.sections
+      // M16 A1：多文件项目的根 main.tex 若直接写有正文（摘要 / 引言 / 结论），其实质正文 span 同样进入计划
+      //（导言区与纯 \input 组装行不进入；纯组装根不产生条目，计划与 snapshotId 逐字节不变）
+      const rootMainTex = latexForAttribution.sections.length > 0 && latexForAttribution.mainTex !== null &&
+        rootBodySpans(latexForAttribution.mainTex.relativePath, latexForAttribution.mainTex.content).length > 0
+        ? latexForAttribution.mainTex
+        : null;
+      const coverageSourceFiles: Array<TexFile & { root?: boolean }> = latexForAttribution.sections.length > 0
+        ? [...(rootMainTex !== null ? [{ ...rootMainTex, root: true }] : []), ...latexForAttribution.sections]
         : latexForAttribution.mainTex !== null ? [latexForAttribution.mainTex] : [];
+      const reviewSources: ReviewSourceFile[] = coverageSourceFiles.map((file) => ({ file: file.relativePath, content: file.content, ...(file.root === true ? { root: true } : {}) }));
       const unitMaxChars = services.revisionUnitMaxChars ?? DEFAULT_REVISION_UNIT_MAX_CHARS;
-      const coveragePlan = buildReviewCoveragePlan(
-        coverageSourceFiles.map((file) => ({ file: file.relativePath, content: file.content })),
-        unitMaxChars,
-      );
-      const longDocumentMode = digestIsLossy(coverageSourceFiles);
+      const coveragePlan = buildReviewCoveragePlan(reviewSources, unitMaxChars);
+      // digest 有损判定：子文件同既有口径；根正文按 digest 实际视图（有大纲 = outline.abstract 2000 字；否则按节切块 2600 字）
+      const longDocumentMode = digestIsLossy(coverageSourceFiles.filter((file) => file.root !== true)) ||
+        (rootMainTex !== null && rootDigestIsLossy(rootMainTex.content, await services.manuscript.loadOutline(ctx.projectId)));
       const round = await services.reviewArtifacts.nextSummaryRound(ctx.projectId);
       let coverageSummary: ReviewCoverageSummary;
       const multiKeyAttribution = computeMultiKeyAttribution({
@@ -878,10 +888,10 @@ function reviewRunStageInner(
         const journal = await services.reviewArtifacts.loadReviewUnitRecords(ctx.projectId, round);
         const journalByUnitId = new Map(journal.filter((record) => record.status === "completed").map((record) => [record.unitId, record]));
         const spanByUnitId = new Map<string, RevisionSpan>();
-        for (const file of coverageSourceFiles) {
-          for (const span of locateFileSpans(file.relativePath, file.content)) {
+        for (const file of reviewSources) {
+          for (const span of reviewSourceSpans(file)) {
             for (const unit of partitionSpanIntoUnits(span, unitMaxChars).units) {
-              spanByUnitId.set(`${file.relativePath}::${unit.logicalSection}`, unit);
+              spanByUnitId.set(`${file.file}::${unit.logicalSection}`, unit);
             }
           }
         }
@@ -1253,6 +1263,7 @@ function reviewRunStageInner(
           }
         }
         coverageSummary = computeReviewCoverage(coveragePlan, round, allRecords, "units");
+        coverageSummary.sources = coverageSourceManifest(coveragePlan);
         // 复用计数以本轮实际命中 journal 的单元为准（computeReviewCoverage 的
         // 跨轮口径无法识别同轮 stage 重启——journal 记录 round 相同）
         coverageSummary.reusedUnits = settled.filter((entry) => entry?.reused === true).length;
@@ -1362,6 +1373,7 @@ function reviewRunStageInner(
           failedUnits: 0, reusedUnits: 0,
           targetChars: coveragePlan.targetChars, reviewedChars: coveragePlan.targetChars,
           ratio: 1, complete: true, failedUnitIds: [],
+          sources: coverageSourceManifest(coveragePlan),
         };
       }
 
@@ -1627,7 +1639,7 @@ function reviewRunStageInner(
         // shadow 审计失败绝不影响生产审稿结果：取消照常上抛，其余如实记日志（本轮无审计产物 = 影子决策 NOT_EVALUATED）
         const audits = await runReviewAudits(services, ctx, {
           round, revision, publishedAssessment, claimAuditMode, language,
-          coverageSourceFiles: coverageSourceFiles.map((file) => ({ file: file.relativePath, content: file.content })),
+          coverageSourceFiles: reviewSources,
           allTex: latexForAttribution.allTex.map((file) => ({ file: file.relativePath, content: file.content })),
           bibContent: latexForAttribution.bibSource === "file" ? latexForAttribution.bibContent : null,
           bibPath: latexForAttribution.bibSource === "file" ? latexForAttribution.bibPath : null,
@@ -13103,7 +13115,7 @@ async function runReviewAudits(
     publishedAssessment: boolean;
     claimAuditMode: "shadow" | "extended";
     language: ManuscriptLanguage | undefined;
-    coverageSourceFiles: Array<{ file: string; content: string }>;
+    coverageSourceFiles: ReviewSourceFile[];
     allTex: Array<{ file: string; content: string }>;
     bibContent: string | null;
     bibPath: string | null;
@@ -13123,7 +13135,7 @@ async function runReviewAudits(
     // digest 模式：按同一覆盖计划切单元（只用于定位与依赖解析；digest 审查覆盖全文）
     const spans = new Map<string, RevisionSpan>();
     for (const file of input.coverageSourceFiles) {
-      for (const span of locateFileSpans(file.file, file.content)) {
+      for (const span of reviewSourceSpans(file)) {
         for (const unit of partitionSpanIntoUnits(span, input.unitMaxChars).units) spans.set(`${file.file}::${unit.logicalSection}`, unit);
       }
     }
@@ -13622,7 +13634,21 @@ export function sliceForDigest(content: string, budget: number): string {
  *   截断系统注）——M11.3 Phase D 已为分节路径修复同一缺陷类
  *   （截断误报 build/结构问题），单文件路径此前漏改。
  */
+/**
+ * M16 A1：多文件项目根 main.tex 的正文在 digest 视图中是否被截断（与 buildManuscriptDigest 同口径）：
+ * 有大纲 → 只有 outline.abstract（2000 字）进入 digest；否则根文件按节切块（每块 2600 字、≤ 64 块）。
+ */
+function rootDigestIsLossy(content: string, outline: Outline | null): boolean {
+  if (outline !== null) return (outline.abstract ?? "").trim().length > 2000;
+  const chunks = singleFileDigestChunks(content);
+  return chunks.length > 64 || chunks.some((chunk) => chunk.content.length > 2600);
+}
+
 function splitSingleFileDigest(content: string): string[] {
+  return singleFileDigestChunks(content).slice(0, 64).map((chunk) => `[${chunk.label}]\n${sliceForDigest(chunk.content, 2600)}`);
+}
+
+function singleFileDigestChunks(content: string): Array<{ label: string; content: string }> {
   const normalized = content.replace(/\r\n/g, "\n");
   const boundary = /(^|\n)\\(?:sub)*section\*?\{[^}]*\}/g;
   const indices: number[] = [0];
@@ -13632,7 +13658,7 @@ function splitSingleFileDigest(content: string): string[] {
       indices.push(at);
     }
   }
-  const parts: string[] = [];
+  const chunks: Array<{ label: string; content: string }> = [];
   for (const [position, start] of indices.entries()) {
     const end = position + 1 < indices.length ? indices[position + 1]! : normalized.length;
     const chunk = normalized.slice(start, end).trim();
@@ -13644,12 +13670,9 @@ function splitSingleFileDigest(content: string): string[] {
       position === 0
         ? "main.tex（导言 + 标题 + 摘要）"
         : `main.tex · ${headerMatch?.[1]?.trim() ?? `第 ${position} 段`}`;
-    parts.push(`[${label}]\n${sliceForDigest(chunk, 2600)}`);
-    if (parts.length >= 64) {
-      break;
-    }
+    chunks.push({ label, content: chunk });
   }
-  return parts;
+  return chunks;
 }
 
 /** 读取最新 review 汇总（按 round 编号最大） */

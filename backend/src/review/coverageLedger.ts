@@ -20,8 +20,8 @@
 import { fingerprintJson } from "../util/hash.js";
 import type { ReviewContextSnapshotRecord, ReviewUnitContextPolicy } from "./reviewContextSnapshot.js";
 import type { UnitClaimExtraction } from "./claimAudit.js";
-import { locateFileSpans, partitionSpanIntoUnits } from "./logicalSpan.js";
-import { revisionSourceHash } from "./revisionScope.js";
+import { locateFileSpans, partitionSpanIntoUnits, rootBodySpans } from "./logicalSpan.js";
+import { revisionSourceHash, type RevisionSpan } from "./revisionScope.js";
 
 /** 既有 digest 路径的结构化预算（definitions.ts buildManuscriptDigest 同口径） */
 export const SECTION_DIGEST_BUDGET = 3_600;
@@ -44,7 +44,8 @@ export interface ReviewCoveragePlan {
   snapshotId: string;
   createdAt: string;
   maxUnitChars: number;
-  files: Array<{ file: string; chars: number; hash: string }>;
+  /** root = 多文件项目根 main.tex（只计其实质正文单元；chars 仍为整文件字符数） */
+  files: Array<{ file: string; chars: number; hash: string; root?: boolean }>;
   units: ReviewUnitPlanEntry[];
   targetChars: number;
 }
@@ -236,6 +237,20 @@ export interface ReviewCoverageSummary {
   crossChapter?: { status: "completed" | "failed" | "skipped"; error?: string };
   /** M14.9.5.2：shared_session 下同轮 journal 记录与当前请求指纹不一致而未复用的单元（隔离策略见 context.cacheIncompatibleUnitIds） */
   journalIncompatibleUnitIds?: string[];
+  /**
+   * M16 A1：计划的源文件与单元清单（单元原文 sha256 = journal unitFingerprint）——覆盖账本、单元输入与源文件可逐项核对；
+   * 缺省 = 旧产物
+   */
+  sources?: CoverageSourceManifest;
+}
+
+export interface CoverageSourceManifest {
+  files: ReviewCoveragePlan["files"];
+  units: Array<{ unitId: string; file: string; chars: number; contentHash: string }>;
+}
+
+export function coverageSourceManifest(plan: ReviewCoveragePlan): CoverageSourceManifest {
+  return { files: plan.files, units: plan.units.map((unit) => ({ unitId: unit.unitId, file: unit.file, chars: unit.chars, contentHash: unit.contentHash })) };
 }
 
 /** 与 definitions.ts buildManuscriptDigest 相同的截面预算判定（不修改其输出） */
@@ -255,8 +270,23 @@ export function digestIsLossy(
   return total > totalBudget;
 }
 
+/**
+ * 审查源文件条目。root = 多文件项目的根 main.tex：只有其实质正文（egin{document} 之后、去掉纯组装行）进入审查，
+ * 导言区与 \input 行不成为单元（M16 A1；此前根文件整体不进入计划，写在根文件里的摘要 / 引言 / 结论漏审）。
+ */
+export interface ReviewSourceFile {
+  file: string;
+  content: string;
+  root?: boolean;
+}
+
+/** 计划 / 单元原文 / 论断定位共用的唯一 span 选择（三处必须同口径，否则单元 id 与原文对不上） */
+export function reviewSourceSpans(entry: ReviewSourceFile): RevisionSpan[] {
+  return entry.root === true ? rootBodySpans(entry.file, entry.content) : locateFileSpans(entry.file, entry.content);
+}
+
 export function buildReviewCoveragePlan(
-  files: ReadonlyArray<{ file: string; content: string }>,
+  files: ReadonlyArray<ReviewSourceFile>,
   maxUnitChars: number,
 ): ReviewCoveragePlan {
   const fileEntries: ReviewCoveragePlan["files"] = [];
@@ -264,9 +294,9 @@ export function buildReviewCoveragePlan(
   const snapshotInput: Record<string, string> = {};
   for (const entry of files) {
     const hash = revisionSourceHash(entry.content);
-    fileEntries.push({ file: entry.file, chars: entry.content.length, hash });
+    fileEntries.push({ file: entry.file, chars: entry.content.length, hash, ...(entry.root === true ? { root: true } : {}) });
     snapshotInput[entry.file] = hash;
-    const spans = locateFileSpans(entry.file, entry.content);
+    const spans = reviewSourceSpans(entry);
     for (const span of spans) {
       const partition = partitionSpanIntoUnits(span, maxUnitChars);
       partition.units.forEach((unit, index) => {
