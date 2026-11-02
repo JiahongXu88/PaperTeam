@@ -36,7 +36,9 @@ const corpus = loadCorpus(humanWeaknesses);
 const recordById = new Map(corpus.records.map((r) => [r.id, r]));
 const tree = new Map(readJson(join(M15, "coco-tree.json")).tree.filter((t) => t.type === "blob").map((t) => [t.path, t]));
 const prevSelected = new Set(readJson(join(PREV, "B", "heldout-selection.json")).selected.map((p) => p.id));
-const prevOpened = new Set(readJson(join(PREV, "B", "heldout-selection.json")).openedIds ?? []);
+const prevOpenedRaw = readJson(join(PREV, "B", "heldout-selection.json")).openedIds;
+// 上一轮选篇文件中 openedIds 是计数（不是列表）；已开封论文在 unit-screen 生成时已被排除
+const prevOpened = new Set(Array.isArray(prevOpenedRaw) ? prevOpenedRaw : []);
 const screen = readJson(join(PREV, "B", "unit-screen.json")).rows;
 const pool = screen
   .filter((row) => row.specific >= 3 && !prevSelected.has(row.id) && !prevOpened.has(row.id))
