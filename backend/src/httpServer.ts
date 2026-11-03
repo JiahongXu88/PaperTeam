@@ -113,6 +113,7 @@ import { loadEditContractStore, updateEditContractStore } from "./quality/editCo
 import { applyValueChangeDecisions, type ValueChangeDecision, type ValueChangeRequest } from "./quality/valueChangeRequests.js";
 import { sha256 as sha256Hex } from "./quality/editContract.js";
 import { qualityReportOf } from "./quality/qualityReport.js";
+import { publicationTargetOptions } from "./review/publicationTargetOptions.js";
 import type { WorkflowDomainEvent } from "./workflow/types.js";
 import type { WorkflowOrchestrator } from "./workflow/WorkflowOrchestrator.js";
 
@@ -449,6 +450,17 @@ async function handleRequest(
       return;
     }
     sendJson(res, 404, { status: "not_found", path: pathname });
+    return;
+  }
+
+  // ---- GET /api/publication-target/options（发表目标的合法体系 / 层级 / 已核验期刊；零模型、只读）----
+  if (pathname === "/api/publication-target/options") {
+    if (method !== "GET") {
+      res.setHeader("Allow", "GET");
+      sendJson(res, 405, { status: "method_not_allowed", method });
+      return;
+    }
+    sendJson(res, 200, publicationTargetOptions());
     return;
   }
 
@@ -2338,11 +2350,17 @@ async function handleProjectResourceRoutes(
         const name = readStringField(body, "name");
         const issn = readStringField(body, "issn");
         const includeModelReview = body["includeModelReview"] === true;
+        // 未显式指定期刊 → 沿用项目发表目标中的期刊（已核验 profile 身份优先；自填名称按名称查找，查不到如实 UNVERIFIED）
+        const projectTarget = journalId === undefined && name === undefined && issn === undefined
+          ? (await stack.projects.getRequired(projectId)).publicationTarget
+          : undefined;
         const assessment = await targets.journal.evaluate(projectId, {
           articleType: articleType as never,
           ...(journalId !== undefined ? { journalId } : {}),
           ...(name !== undefined ? { name } : {}),
           ...(issn !== undefined ? { issn } : {}),
+          ...(projectTarget?.targetJournalId !== undefined ? { journalId: projectTarget.targetJournalId } : {}),
+          ...(projectTarget?.customJournalName !== undefined ? { name: projectTarget.customJournalName } : {}),
           includeModelReview,
         });
         sendJson(res, 200, { assessment });
@@ -4403,6 +4421,10 @@ function readResearchMeta(body: Record<string, unknown>, forPatch = false): Reco
     } else if (forPatch && typeof value === "string") {
       meta[field] = value; // PATCH 允许空串清除（ProjectStore 归一化为不设置）
     }
+  }
+  // 发表目标：对象 = 设置（ProjectStore 校验体系 / 层级 / 年份 / 期刊）；null = 清除（PATCH）
+  if (body["publicationTarget"] !== undefined) {
+    meta["publicationTarget"] = body["publicationTarget"];
   }
   const workflowKind = body["workflowKind"];
   if (isWorkflowKind(workflowKind)) {

@@ -52,6 +52,8 @@ function itemNeedsAttention(item: QualityReportItemView): boolean {
   return item.status === "FAIL" || item.status === "NEEDS_VERIFICATION" || item.status === "NEEDS_AUTHOR_DECISION" || item.status === "NOT_EVALUATED";
 }
 
+const REVIEW_ARTICLE_TYPE_LABELS: Record<string, string> = { research: "研究论文", survey: "综述论文", thesis: "学位论文" };
+
 export function QualityReportLayers({ report }: { report: QualityReportView }) {
   const overall = styleOf(OVERALL_STYLES, report.overall.status);
   return (
@@ -67,6 +69,15 @@ export function QualityReportLayers({ report }: { report: QualityReportView }) {
           <span className="chip chip-tone-info" data-testid="quality-report-legacy">旧版产物投影（需重新评估）</span>
         ) : null}
       </div>
+      {report.binding.reviewPolicy !== undefined ? (
+        <p className="section-note" data-testid="quality-report-review-policy">
+          审稿政策 {report.binding.reviewPolicy.policyVersion}（{REVIEW_ARTICLE_TYPE_LABELS[report.binding.reviewPolicy.articleType] ?? report.binding.reviewPolicy.articleType}）
+          {report.binding.reviewPolicy.targetLabel !== null
+            ? `：发表目标「${report.binding.reviewPolicy.targetLabel}」${report.binding.reviewPolicy.tierFactStatus === "JOURNAL_SELF_DECLARED" ? "（层级为期刊官方自述）" : report.binding.reviewPolicy.tierFactStatus === "USER_TARGET_UNVERIFIED" ? "（用户设定目标，未核实）" : ""}`
+            : "：未设置发表目标（通用学术审稿）"}
+          。发表目标只决定审稿关注点与建议排序；本报告不预测录用，也不证明稿件达到某分区 / 期刊的学术水平。
+        </p>
+      ) : null}
       <ol className="quality-report-layers">
         {LAYERS.map((id) => {
           const layer = report.layers[id];

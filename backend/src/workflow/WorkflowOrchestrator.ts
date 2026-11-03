@@ -33,6 +33,7 @@ import {
   type StageFailureCategory,
 } from "../errors.js";
 import { buildPerformanceReport } from "../observability/traceReport.js";
+import { freezeReviewPolicy } from "../review/reviewPolicySnapshot.js";
 import {
   finishRunTraceSession,
   getOrCreateRunTraceSession,
@@ -133,7 +134,7 @@ export class WorkflowOrchestrator {
     if (this.closed) {
       throw new BusinessError("WORKFLOW_INVALID_STATE", "Orchestrator 已关闭，不能创建新的 run");
     }
-    await this.projects.getRequired(projectId);
+    const project = await this.projects.getRequired(projectId);
     const definition = this.definitionFactory(kind);
 
     if (this.creatingProjects.has(projectId)) {
@@ -160,6 +161,8 @@ export class WorkflowOrchestrator {
         createdAt: timestamp,
         updatedAt: timestamp,
         ...(Object.keys(request).length > 0 ? { request } : {}),
+        // 发表目标 → 审稿政策快照：本 run 的全部审稿轮次只读这一份（项目设置后续变化只影响新 run）
+        reviewPolicy: freezeReviewPolicy(project, kind, this.now()),
         completedStages: [],
         stageResults: {},
         stageHistory: [],

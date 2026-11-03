@@ -8,6 +8,8 @@ import {
   getManuscriptOverview,
   getProject,
   importProjectPaper,
+  getPublicationTargetOptions,
+  updatePublicationTarget,
   listProjects,
   renameProject,
   restoreProject,
@@ -125,6 +127,7 @@ import type {
   CustomProviderInput,
   HitlDecisionInput,
   ImportProjectPaperInput,
+  PublicationTargetInput,
   WorkflowKind,
   WorkflowRunView,
 } from "../types/api.js";
@@ -290,6 +293,24 @@ export function useManuscriptOverview(projectId: string | undefined) {
     queryKey: queryKeys.manuscript(projectId ?? ""),
     queryFn: ({ signal }) => getManuscriptOverview(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
+  });
+}
+
+/** 发表目标的合法选项（全局静态：体系 / 层级 / 已核验期刊） */
+export function usePublicationTargetOptions() {
+  return useQuery({
+    queryKey: ["publication-target-options"],
+    queryFn: ({ signal }) => getPublicationTargetOptions(signal),
+    staleTime: Infinity,
+  });
+}
+
+/** 设置 / 清除发表目标（只影响之后新建的运行） */
+export function useUpdatePublicationTarget(projectId: string | undefined) {
+  const { syncProject } = useProjectMutationEffects();
+  return useMutation({
+    mutationFn: (target: PublicationTargetInput | null) => updatePublicationTarget(projectId ?? "", target),
+    onSuccess: (project) => syncProject(project, project),
   });
 }
 

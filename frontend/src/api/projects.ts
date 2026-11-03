@@ -5,6 +5,8 @@ import type {
   ImportProjectPaperResult,
   ManuscriptOverviewView,
   ProjectView,
+  PublicationTargetInput,
+  PublicationTargetOptionsView,
 } from "../types/api.js";
 
 /**
@@ -83,6 +85,20 @@ export async function restoreProject(projectId: string): Promise<ProjectView> {
     `/api/projects/${encodeURIComponent(projectId)}/restore`,
   );
   return body.project;
+}
+
+/** 设置 / 清除发表目标（null = 清除）；只影响之后新建的运行，已完成 / 进行中的审稿不变 */
+export async function updatePublicationTarget(projectId: string, target: PublicationTargetInput | null): Promise<ProjectView> {
+  const body = await apiClient.patch<{ project: ProjectView }>(
+    `/api/projects/${encodeURIComponent(projectId)}`,
+    { publicationTarget: target },
+  );
+  return body.project;
+}
+
+/** 发表目标的合法体系 / 层级 / 已核验期刊（全局只读；无需项目） */
+export async function getPublicationTargetOptions(signal?: AbortSignal): Promise<PublicationTargetOptionsView> {
+  return apiClient.get<PublicationTargetOptionsView>("/api/publication-target/options", signal);
 }
 
 /** 永久删除（仅已归档项目；删除整个工作区，不可恢复） */

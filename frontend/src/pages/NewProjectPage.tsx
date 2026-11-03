@@ -2,6 +2,13 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 
 import { ErrorState } from "../components/common/StateViews.js";
+import {
+  draftToInput,
+  EMPTY_PUBLICATION_TARGET,
+  PublicationTargetFields,
+  validatePublicationDraft,
+  type PublicationTargetDraft,
+} from "../components/project/PublicationTargetFields.js";
 import { Icon } from "../components/common/Icon.js";
 import { CITATION_SEMANTIC_MODE_OPTIONS } from "../components/common/status.js";
 import { TARGET_PROFILE_OPTIONS } from "../constants/projectMeta.js";
@@ -109,9 +116,11 @@ function withPicked<K extends string>(key: K, value: string): Partial<Record<K, 
   return trimmed === undefined ? {} : ({ [key]: trimmed } as Record<K, string>);
 }
 
-function toCreateInput(form: FormState): CreateProjectInput {
+function toCreateInput(form: FormState, publication: PublicationTargetDraft): CreateProjectInput {
+  const publicationTarget = draftToInput(publication);
   // M11.2.1：不发送 workflowKind——后端按 documentType 派生（单一映射事实源）
   return {
+    ...(publicationTarget !== null ? { publicationTarget } : {}),
     title: form.title.trim(),
     documentType: "research_article",
     ...withPicked("researchIdea", form.researchIdea),
@@ -316,6 +325,7 @@ function ResearchArticleForm({
   const navigate = useNavigate();
   const createProject = useCreateProject();
   const [form, setForm] = useState<FormState>(INITIAL_FORM);
+  const [publication, setPublication] = useState<PublicationTargetDraft>(EMPTY_PUBLICATION_TARGET);
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const update = (field: keyof FormState) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
@@ -324,12 +334,12 @@ function ResearchArticleForm({
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
-    const error = validateIdeaForm(form);
+    const error = validateIdeaForm(form) ?? validatePublicationDraft(publication);
     setValidationError(error);
     if (error !== null) {
       return;
     }
-    createProject.mutate(toCreateInput(form), {
+    createProject.mutate(toCreateInput(form, publication), {
       onSuccess: (project) => void navigate(`/projects/${project.id}`),
     });
   };
@@ -399,6 +409,11 @@ function ResearchArticleForm({
         </div>
       </fieldset>
 
+      <fieldset className="form-section">
+        <legend>发表目标（可选）</legend>
+        <PublicationTargetFields value={publication} onChange={setPublication} idPrefix="new-pt" />
+      </fieldset>
+
       {validationError !== null ? (
         <p className="form-error" role="alert" data-testid="validation-error">
           {validationError}
@@ -462,6 +477,7 @@ function SurveyForm({
   const createProject = useCreateProject();
   const startRun = useCreateWorkflowRun();
   const [form, setForm] = useState<SurveyFormState>(INITIAL_SURVEY_FORM);
+  const [publication, setPublication] = useState<PublicationTargetDraft>(EMPTY_PUBLICATION_TARGET);
   const [validationError, setValidationError] = useState<string | null>(null);
   const submitting = createProject.isPending || startRun.isPending;
 
@@ -490,6 +506,12 @@ function SurveyForm({
       setValidationError("起始年份不能晚于结束年份");
       return;
     }
+    const publicationError = validatePublicationDraft(publication);
+    if (publicationError !== null) {
+      setValidationError(publicationError);
+      return;
+    }
+    const publicationTarget = draftToInput(publication);
     setValidationError(null);
     try {
       // M11.2.1：documentType=survey → 后端派生 topic_survey（不发送 workflowKind）
@@ -498,6 +520,7 @@ function SurveyForm({
         documentType: "survey",
         ...withPicked("language", form.language),
         ...withPicked("targetVenue", form.targetVenue),
+        ...(publicationTarget !== null ? { publicationTarget } : {}),
       });
       // 只输入 Topic 即启动：其余都是可选范围参数（随 run request 持久化）；
       // kind 省略 → 后端回落 project.workflowKind
@@ -569,6 +592,13 @@ function SurveyForm({
             <label htmlFor="survey-language">综述语言</label>
             <input id="survey-language" value={form.language} onChange={update("language")} placeholder="如：中文 / English（可选）" maxLength={LIMITS.language + 1} />
           </div>
+        </div>
+      </details>
+
+      <details className="advanced-options">
+        <summary>发表目标（可选：影响审稿关注点，综述不按原创实验标准审）</summary>
+        <div style={{ marginTop: "var(--s-3)" }}>
+          <PublicationTargetFields value={publication} onChange={setPublication} idPrefix="survey-pt" />
         </div>
       </details>
 
@@ -645,6 +675,7 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) =
     targetProfile: "",
     language: "",
   });
+  const [publication, setPublication] = useState<PublicationTargetDraft>(EMPTY_PUBLICATION_TARGET);
   const [phase, setPhase] = useState<ImportPhase>("idle");
   const [validationError, setValidationError] = useState<string | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
@@ -693,6 +724,12 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) =
       setValidationError(format === "pdf" ? "请先选择论文 PDF 文件" : "请先选择 LaTeX 工程 ZIP 归档");
       return;
     }
+    const publicationError = validatePublicationDraft(publication);
+    if (publicationError !== null) {
+      setValidationError(publicationError);
+      return;
+    }
+    const publicationTarget = draftToInput(publication);
     setValidationError(null);
     setReadError(null);
 
@@ -717,6 +754,7 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) =
             ...withPicked("targetVenue", advanced.targetVenue),
             ...withPicked("targetProfile", advanced.targetProfile),
             ...withPicked("language", advanced.language),
+            ...(publicationTarget !== null ? { publicationTarget } : {}),
           }
         : {
             format,
@@ -727,6 +765,7 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) =
             ...withPicked("targetVenue", advanced.targetVenue),
             ...withPicked("targetProfile", advanced.targetProfile),
             ...withPicked("language", advanced.language),
+            ...(publicationTarget !== null ? { publicationTarget } : {}),
           };
     setPhase("uploading");
     importPaper.mutate(input, {
@@ -832,6 +871,12 @@ function ExistingPaperForm({ onSwitchMode }: { onSwitchMode: (mode: EntryMode) =
 
       <details className="advanced-options">
         <summary>高级选项（研究领域、目标期刊等，可选）</summary>
+        <div style={{ marginTop: "var(--s-3)" }}>
+          <p className="field-help" style={{ margin: 0 }}>
+            发表目标（可选）。你提供的审稿 / 修改意见优先于发表目标：目标层级只补充额外的审稿关注点，不会覆盖或降低这些意见的处理要求。
+          </p>
+          <PublicationTargetFields value={publication} onChange={setPublication} idPrefix="import-pt" />
+        </div>
         <div className="form-grid" style={{ marginTop: "var(--s-3)" }}>
           <div className="field">
             <label htmlFor="import-research-field">研究领域</label>

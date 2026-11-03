@@ -8,6 +8,7 @@
  * - WorkflowState 是可持久化、可恢复的 checkpoint（Authoritative State）。
  */
 
+import type { ReviewPolicySnapshot } from "../review/publicationPolicy.js";
 import type { StageFailureCategory } from "../errors.js";
 
 /** WorkflowRun 状态（PRD §9.7） */
@@ -143,6 +144,11 @@ export interface WorkflowState {
   finishedAt?: string;
   /** 创建 run 时的请求参数（如 prompt），随 checkpoint 持久化 */
   request?: Record<string, unknown>;
+  /**
+   * 发表目标审稿政策快照（review-policy/v1；createRun 时由项目设置冻结）。运行中修改项目设置不影响本 run；
+   * 缺省 = 旧 run（升级前创建）——审稿 prompt 与旧版逐字节一致。
+   */
+  reviewPolicy?: ReviewPolicySnapshot;
   /** 当前（或最近一次）执行的 stage */
   currentStage?: string;
   /**

@@ -25,6 +25,13 @@ import {
 } from "../errors.js";
 import { writeJsonAtomic } from "../util/atomic.js";
 import { isWorkflowKind, type WorkflowKind } from "../workflow/kinds.js";
+import {
+  normalizePublicationTarget,
+  PublicationTargetValidationError,
+  readStoredPublicationTarget,
+  type PublicationTarget,
+} from "../review/publicationPolicy.js";
+import { listBuiltinJournalProfiles } from "../target/journal/profileRegistry.js";
 
 /** 项目状态 */
 export type ProjectStatus = "created" | "generated" | "failed";
@@ -125,6 +132,11 @@ export interface ProjectMetadata {
   targetProfile?: string;
   targetVenue?: string;
   language?: string;
+  /**
+   * 发表目标（publication-target/v1）：体系 / 层级 / 名单年份 / 期刊的投稿意图（不是事实认证）。
+   * 缺省 = 未设置（通用审稿策略）；旧项目无此字段行为不变。targetProfile / targetVenue 保留为旧字段。
+   */
+  publicationTarget?: PublicationTarget;
 }
 
 /** 创建项目时可提供的研究定位字段（全部可选、经同一套校验） */
@@ -136,6 +148,8 @@ export interface ProjectResearchMetaInput {
   targetProfile?: string;
   targetVenue?: string;
   language?: string;
+  /** 原始发表目标输入（对象 = 设置；null = 清除；缺省 = 不修改），经 normalizePublicationTarget 校验 */
+  publicationTarget?: unknown;
 }
 
 /** 合法 projectId：小写字母/数字开头，允许连字符，长度 1-64 */
@@ -192,7 +206,8 @@ export class ProjectStore {
   /** 创建项目：生成目录结构与 project.json（可选研究定位字段） */
   async create(title: string, meta: ProjectResearchMetaInput = {}): Promise<ProjectMetadata> {
     const normalizedTitle = normalizeTitle(title);
-    const normalizedMeta = normalizeResearchMeta(meta);
+    const normalizedMeta = normalizeResearchMeta(meta, this.now());
+    if (normalizedMeta.publicationTarget === undefined) delete normalizedMeta.publicationTarget;
 
     // 根目录首次使用时可能不存在
     await mkdir(this.root, { recursive: true });
@@ -286,13 +301,19 @@ export class ProjectStore {
     patch: ProjectResearchMetaInput & { title?: string },
   ): Promise<ProjectMetadata> {
     // 先校验再进队列：非法输入不占用写锁
-    const normalized = normalizeResearchMeta(patch);
+    const normalized = normalizeResearchMeta(patch, this.now());
     const title = patch.title !== undefined ? normalizeTitle(patch.title) : undefined;
-    return this.mutate(projectId, (metadata) => ({
-      ...metadata,
-      ...(title !== undefined ? { title } : {}),
-      ...normalized,
-    }));
+    // publicationTarget：null = 显式清除；undefined 键 = 不修改
+    const clearTarget = patch.publicationTarget === null || ("publicationTarget" in normalized && normalized.publicationTarget === undefined);
+    return this.mutate(projectId, (metadata) => {
+      const next: ProjectMetadata = {
+        ...metadata,
+        ...(title !== undefined ? { title } : {}),
+        ...normalized,
+      };
+      if (clearTarget) delete next.publicationTarget;
+      return next;
+    });
   }
 
   /**
@@ -534,6 +555,8 @@ function normalizeMetadata(value: unknown): ProjectMetadata | null {
   }
   // 可选研究定位字段：只在合法时保留，非法值静默丢弃（防御性读取）
   const research = readOptionalResearchFields(record);
+  const publicationTarget = readStoredPublicationTarget(record["publicationTarget"], knownJournalIds());
+  if (publicationTarget !== null) research.publicationTarget = publicationTarget;
   const workflowKind = isWorkflowKind(record["workflowKind"])
     ? record["workflowKind"]
     : undefined;
@@ -595,9 +618,22 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function knownJournalIds(): ReadonlySet<string> {
+  return new Set(listBuiltinJournalProfiles().map((profile) => profile.journalId));
+}
+
 /** 校验并归一化研究定位输入（非法值直接抛业务错误） */
-function normalizeResearchMeta(meta: ProjectResearchMetaInput): Partial<ProjectMetadata> {
+function normalizeResearchMeta(meta: ProjectResearchMetaInput, now: Date): Partial<ProjectMetadata> {
   const out: Partial<ProjectMetadata> = {};
+  if ("publicationTarget" in meta && meta.publicationTarget !== undefined) {
+    try {
+      // null / {scheme:"none"} 且无期刊 → undefined（= 清除 / 不设置）
+      out.publicationTarget = normalizePublicationTarget(meta.publicationTarget, { now, knownJournalIds: knownJournalIds() }) ?? undefined;
+    } catch (error) {
+      if (error instanceof PublicationTargetValidationError) throw new BusinessError("INVALID_REQUEST", error.message);
+      throw error;
+    }
+  }
   if (meta.workflowKind !== undefined) {
     if (!isWorkflowKind(meta.workflowKind)) {
       throw new BusinessError("INVALID_REQUEST", `非法的 workflowKind："${meta.workflowKind}"`);

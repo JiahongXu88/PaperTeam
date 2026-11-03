@@ -72,6 +72,18 @@ export interface QualityReport {
     entry: "workflow" | "manual" | "legacy_projection";
     workflowKind: string | null;
     reviewPurpose: string | null;
+    /**
+     * 本轮审稿使用的发表目标政策（review-policy/v1 摘要，来自同轮 review summary）。缺省 = 旧产物 / 未冻结政策的 run。
+     * 只说明「审稿关注点从何而来」；不参与 overall / finalizable 的任何判定。
+     */
+    reviewPolicy?: {
+      policyVersion: string;
+      policyHash: string;
+      articleType: string;
+      targetLabel: string | null;
+      tierFactStatus: string;
+      journal: string | null;
+    };
   };
   layers: Record<QualityLayerId, QualityReportLayer>;
   overall: {
@@ -240,6 +252,33 @@ export interface QualityReportContext {
   independentHumanLabels?: number;
   generatedAt?: string;
   entry?: QualityReport["binding"]["entry"];
+  /** 同轮 review summary 的发表目标政策摘要（reviewPolicySummary 产物；只读展示） */
+  reviewPolicy?: Record<string, unknown> | null;
+}
+
+/** review summary 的政策摘要 → binding 字段（字段不全 = 不绑定，不猜） */
+function reviewPolicyBinding(summary: Record<string, unknown> | null): NonNullable<QualityReport["binding"]["reviewPolicy"]> | null {
+  if (summary === null) return null;
+  const policyVersion = summary["policyVersion"];
+  const policyHash = summary["policyHash"];
+  const articleType = summary["articleType"];
+  if (typeof policyVersion !== "string" || typeof policyHash !== "string" || typeof articleType !== "string") return null;
+  const target = (summary["target"] ?? null) as Record<string, unknown> | null;
+  const journal = (summary["targetJournal"] ?? null) as Record<string, unknown> | null;
+  const tierFact = (summary["tierFact"] ?? null) as Record<string, unknown> | null;
+  const tier = target !== null && typeof target["tierLabel"] === "string" ? target["tierLabel"] : null;
+  const journalName = journal !== null && typeof journal["displayName"] === "string"
+    ? journal["displayName"]
+    : target !== null && typeof target["customJournalName"] === "string" ? target["customJournalName"] : null;
+  const label = [tier, journalName].filter((part): part is string => part !== null).join(" · ");
+  return {
+    policyVersion,
+    policyHash,
+    articleType,
+    targetLabel: label === "" ? null : label,
+    tierFactStatus: tierFact !== null && typeof tierFact["status"] === "string" ? tierFact["status"] : "NOT_SET",
+    journal: journalName,
+  };
 }
 
 /** 规则层结果 → 分层报告（纯函数、确定性：同一 gate 结果 + 同一 context 恒得同一报告，generatedAt 除外） */
@@ -325,8 +364,9 @@ export function buildQualityReport(gate: QualityGateResult, context: QualityRepo
     });
   }
 
-  // L4：目标期刊——独立标签为 0 时固定 UNVALIDATED
+  // L4：目标期刊——独立标签为 0 时固定 UNVALIDATED（设置了发表目标也不改变：目标只决定审稿关注点）
   const labels = context.independentHumanLabels ?? 0;
+  const policyBinding = reviewPolicyBinding(context.reviewPolicy ?? null);
   const readiness = gate.targetReadiness as { status?: string; summary?: string } | undefined;
   items.push({
     id: "target_journal_level",
@@ -337,6 +377,7 @@ export function buildQualityReport(gate: QualityGateResult, context: QualityRepo
     evidenceGrade: "unclassified",
     detail:
       `目标期刊水平未经独立校准（独立人类标签 ${labels}）：系统不判定「达到某期刊要求」或「可投稿」` +
+      (policyBinding?.targetLabel != null ? `；用户设定的发表目标「${policyBinding.targetLabel}」只用于决定审稿关注点，不是本层的通过标准` : "") +
       (readiness !== undefined ? `；目标画像观察（advisory）：${String(readiness.summary ?? readiness.status ?? "已生成")}` : ""),
     reasonCode: "NO_INDEPENDENT_CALIBRATION",
   });
@@ -381,6 +422,7 @@ export function buildQualityReport(gate: QualityGateResult, context: QualityRepo
       entry: context.entry ?? gate.evaluation?.entry ?? "legacy_projection",
       workflowKind: gate.evaluation?.workflowKind ?? null,
       reviewPurpose: gate.evaluation?.reviewPurpose ?? null,
+      ...(policyBinding !== null ? { reviewPolicy: policyBinding } : {}),
     },
     layers,
     overall: {

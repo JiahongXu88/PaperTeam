@@ -50,6 +50,47 @@ export interface ProjectView {
   targetProfile?: string;
   targetVenue?: string;
   language?: string;
+  /** 发表目标（publication-target/v1；用户投稿意图，不是事实认证）；缺省 = 未设置 */
+  publicationTarget?: PublicationTargetView;
+}
+
+export type PublicationScheme = "none" | "chinese_index" | "cas" | "jcr";
+
+/** Backend review/publicationPolicy.ts 的 PublicationTarget（只读视图） */
+export interface PublicationTargetView {
+  schemaVersion: "publication-target/v1";
+  scheme: PublicationScheme;
+  tier?: string;
+  schemeYear?: number;
+  targetJournalId?: string;
+  customJournalName?: string;
+  updatedAt: string;
+}
+
+/** 写入发表目标的输入（null = 清除） */
+export interface PublicationTargetInput {
+  scheme: PublicationScheme;
+  tier?: string;
+  schemeYear?: number;
+  targetJournalId?: string;
+  customJournalName?: string;
+}
+
+/** GET /api/publication-target/options */
+export interface PublicationTargetOptionsView {
+  policyVersion: string;
+  schemes: Array<{ scheme: PublicationScheme; label: string; tiers: Array<{ tier: string; label: string }>; note?: string }>;
+  journals: Array<{
+    journalId: string;
+    displayName: string;
+    nameEn?: string;
+    language: "zh" | "en";
+    rulesVersion: string;
+    retrievedAt: string;
+    verification: { status: string; trusted: boolean };
+    indexing: Array<{ label: string; status: "SELF_DECLARED" | "UNVERIFIED"; year?: string; sourceUrl?: string }>;
+  }>;
+  statement: string;
 }
 
 /** 创建项目输入（Backend readResearchMeta 接受的字段） */
@@ -62,6 +103,7 @@ export interface CreateProjectInput {
   targetProfile?: string;
   targetVenue?: string;
   language?: string;
+  publicationTarget?: PublicationTargetInput;
 }
 
 /** 已有论文导入目标（UI 两个入口的内部映射，不进 prompt） */
@@ -76,6 +118,7 @@ export interface ImportPaperMetaInput {
   targetVenue?: string;
   targetProfile?: string;
   language?: string;
+  publicationTarget?: PublicationTargetInput;
 }
 
 /** POST /api/projects/import-paper 输入：format=pdf（缺省兼容） */
@@ -138,11 +181,28 @@ export type WorkflowRunStatus =
   | "cancelled";
 
 /** Run 摘要（GET /api/runs?projectId= 的逐条映射，只保留 UI 消费的子集） */
+/** run 创建时冻结的审稿政策（Backend review-policy/v1；旧 run 无该字段） */
+export interface ReviewPolicySnapshotView {
+  schemaVersion: "review-policy/v1";
+  policyVersion: string;
+  policyHash: string;
+  frozenAt: string;
+  articleType: "research" | "survey" | "thesis";
+  target: PublicationTargetView | null;
+  targetJournal: { journalId: string; displayName: string; rulesVersion: string } | null;
+  tierFact: { status: "NOT_SET" | "USER_TARGET_UNVERIFIED" | "JOURNAL_SELF_DECLARED"; note: string; sourceUrl?: string };
+  emphasis: string;
+  focus: string[];
+  active: boolean;
+}
+
 export interface WorkflowRunView {
   runId: string;
   projectId: string;
   workflowKind: WorkflowKind;
   status: WorkflowRunStatus;
+  /** 发表目标审稿政策快照（运行开始时冻结） */
+  reviewPolicy?: ReviewPolicySnapshotView | null;
   currentStage?: string;
   createdAt: string;
   updatedAt: string;

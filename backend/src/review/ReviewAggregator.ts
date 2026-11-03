@@ -43,6 +43,11 @@ export interface ReviewSummary {
    * Writer），单独保留供报告 / 前端透明展示。
    */
   disconfirmedIssues?: ReviewIssue[];
+  /**
+   * 发表目标审稿政策（review-policy/v1 摘要；run 冻结）。缺省 = 旧产物 / 旧 run（通用审稿口径）。
+   * 只记录本轮审稿关注点来自哪个目标 / 政策版本，不参与任何计数、分数或 Gate 判定。
+   */
+  reviewPolicy?: Record<string, unknown>;
   /** M14.6（F5）：被确定性反证的事实 finding（要求删除 / 弱化的数值全部为作者已确认研究输入事实） */
   researchFactDisconfirmed?: Array<{ section: string; description: string; matchedFacts: Array<{ factId: string; surface: string }>; reason: string }>;
   /**

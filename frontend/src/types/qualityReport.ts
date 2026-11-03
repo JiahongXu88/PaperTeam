@@ -37,6 +37,8 @@ export interface QualityReportView {
     entry: "workflow" | "manual" | "legacy_projection";
     workflowKind: string | null;
     reviewPurpose: string | null;
+    /** 本轮审稿使用的发表目标政策（只说明审稿关注点来源；缺省 = 旧产物 / 未冻结政策的 run） */
+    reviewPolicy?: { policyVersion: string; policyHash: string; articleType: string; targetLabel: string | null; tierFactStatus: string; journal: string | null };
   };
   layers: Record<QualityLayerIdView, QualityReportLayerView>;
   overall: { status: QualityOverallStatusView; finalizable: boolean; reasons: string[]; unknowns: string[]; statement: string };

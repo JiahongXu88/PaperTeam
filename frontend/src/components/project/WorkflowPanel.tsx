@@ -548,6 +548,14 @@ function CompletedBlock({
             ) : (
               <span className="muted">未评估（旧任务）</span>
             )}
+            {run.completion.revisionTaskVerdict === "PASS" ? (
+              <>
+                <br />
+                <span className="muted" data-testid="workflow-task-not-publication">
+                  返修任务完成只表示本轮指定问题已闭环，不等于投稿就绪，也不代表达到所设发表目标的学术水平；新的非阻断建议见修订报告的「下一轮可选改进」。
+                </span>
+              </>
+            ) : null}
           </span>
         ) : null}
       </span>

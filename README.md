@@ -96,6 +96,13 @@ be sent, one by one, to the revision comment queue, where the edit contract stil
 **does not predict acceptance or produce a score**; subjective dimensions are uncalibrated model
 opinions only.
 
+**Publication target** (optional; set when creating / importing, or in the project overview):
+PKU Core / CSCD / CSSCI, CAS quartile or JCR quartile (validated per system, never mixed), plus an
+optional target journal. It only changes review emphasis and the ordering of suggestions (with
+separate rubrics for research articles, surveys and theses) and is frozen at the start of each run;
+it does not verify quartile facts, set score thresholds or predict acceptance. See
+[docs/product-guide.md §7.5](docs/product-guide.md).
+
 ### 4. Multimodal review of figures and tables
 
 A visual review pass runs over the **registered visual assets** of your project —

@@ -220,6 +220,12 @@ export interface BuildRevisionPlanInput {
   sourceRevision: number;
   reviewRound: number;
   summary: ReviewSummary;
+  /**
+   * 发表目标审稿政策（review-policy/v1）冻结的 run：整稿综合审查意见（origin=whole_paper_synthesis，恒为
+   * AUTHOR_CHECK_REQUIRED 的主观 AI 学术建议，常需新实验 / 新文献）不自动派发 Writer，留档进入「下一轮可选改进
+   * 清单」。缺省 false = 旧 run 行为不变。
+   */
+  deferWholePaperAdvisory?: boolean;
   /** 引用核验发现的 missing key → 出现该引用的文件（确定性扫描结果） */
   citationMissing?: { key: string; files: string[] }[];
   /** Citation Preservation Gate 判定为无依据删除的 key → 上一修订中出现的文件（M5.6） */
@@ -335,6 +341,16 @@ export function buildRevisionPlan(input: BuildRevisionPlanInput): RevisionPlan {
         withNote(
           findingItem(issue, severity === "critical" || blocking ? "high" : severity === "major" ? "medium" : "low", "skipped", input.projectFinding),
           `返修语境不适用（claim-gap-audit 归因排除）：${inapplicableNote || "原稿既有 claim，证据完备性属作者裁决"}`,
+        ),
+      );
+      continue;
+    }
+    if (input.deferWholePaperAdvisory === true && issue.origin === "whole_paper_synthesis") {
+      // 主观 AI 学术建议：不追加为本轮必修 Writer 任务（避免为刷分无限扩张修订范围）；作者可在下一轮显式纳入
+      items.push(
+        withNote(
+          findingItem(issue, severity === "major" ? "medium" : "low", "skipped", input.projectFinding),
+          "整稿 AI 学术建议（待作者核验）：进入下一轮可选改进清单，不自动派发 Writer",
         ),
       );
       continue;

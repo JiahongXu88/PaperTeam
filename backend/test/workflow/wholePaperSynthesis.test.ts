@@ -17,6 +17,8 @@ import type { StageRunContext } from "../../src/workflow/types.js";
 import type { ReviewSummary } from "../../src/review/ReviewAggregator.js";
 import { chapterBody } from "../review/logicalSpan.test.js";
 import { loadConfig } from "../../src/config/config.js";
+import { freezeReviewPolicy } from "../../src/review/reviewPolicySnapshot.js";
+import { normalizePublicationTarget } from "../../src/review/publicationPolicy.js";
 
 const FILES = {
   "sections/methods.tex": `\\section{Methods}\n\n${chapterBody(4_200, "met")}`,
@@ -26,7 +28,7 @@ const FILES = {
 
 interface Call { task: string; scope: string; toolPolicy?: string }
 
-async function setup(review: { wholePaperSynthesis?: "off" | "on"; wholePaperMaxChars?: number }, failWhole = false) {
+async function setup(review: { wholePaperSynthesis?: "off" | "on"; wholePaperMaxChars?: number }, failWhole = false, reviewPolicy?: unknown) {
   const scripted = scriptedIdeaRuntime();
   const calls: Call[] = [];
   const runtime = {
@@ -66,7 +68,7 @@ async function setup(review: { wholePaperSynthesis?: "off" | "on"; wholePaperMax
   const definition = createExistingPaperDefinition(services);
   const stage = definition.stages.find((entry) => entry.id === "review.run")! as { execute: (c: StageRunContext) => Promise<unknown> };
   const ctx = { projectId, runId: "wp-1", attempt: 1, signal: new AbortController().signal,
-    state: { workflowKind: "existing_paper_improvement", stageResults: {}, stageHistory: [], completedStages: [], inputs: {}, request: {} },
+    state: { workflowKind: "existing_paper_improvement", stageResults: {}, stageHistory: [], completedStages: [], inputs: {}, request: {}, ...(reviewPolicy !== undefined ? { reviewPolicy } : {}) },
     emitProgress: async () => {}, emitDomain: async () => {}, log: () => {} } as unknown as StageRunContext;
   await stage.execute(ctx);
   const summary = JSON.parse(await readFile(join(stack.store.reviewsDir(projectId), "review-summary-r1.json"), "utf8")) as ReviewSummary;
@@ -120,5 +122,36 @@ describe("整稿综合审查配置缺省（新留出集预注册判定 ADOPT_HYB
     expect(loadConfig({ PAPERTEAM_REVIEW_WHOLE_PAPER: " OFF " }).review.wholePaperSynthesis).toBe("off");
     expect(loadConfig({ PAPERTEAM_REVIEW_WHOLE_PAPER: "on" }).review.wholePaperSynthesis).toBe("on");
     expect(loadConfig({}).review.wholePaperMaxChars).toBe(160_000);
+  });
+});
+
+describe("发表目标审稿政策：真实 review.run 把冻结快照交给单元与整稿审查（零模型）", () => {
+  const now = new Date("2026-11-03T00:00:00Z");
+  const surveyPolicy = freezeReviewPolicy(
+    { documentType: "survey", publicationTarget: normalizePublicationTarget({ scheme: "cas", tier: "2" }, { now, knownJournalIds: new Set() })! },
+    "existing_paper_improvement",
+    now,
+  );
+  it("快照 active：单元 / 整稿 prompt 含同一冻结政策；整稿换成综述类别；summary 记录政策摘要", async () => {
+    const run = await setup({ wholePaperSynthesis: "on" }, false, JSON.parse(JSON.stringify(surveyPolicy)));
+    const units = run.calls.filter((call) => call.scope === "review/academic/unit");
+    expect(units.length).toBeGreaterThan(0);
+    for (const call of units) {
+      expect(call.task).toContain("===== 审稿政策（publication-review-policy/1；本次运行冻结）=====");
+      expect(call.task).toContain("中科院二区——用户设定目标，未核实");
+    }
+    const whole = run.calls.find((call) => call.scope === "review/academic/whole-paper")!.task;
+    expect(whole).toContain("[cross_study_synthesis]");
+    expect(whole).not.toContain("缺少与具体的强基线 / 最新方法的比较");
+    expect(run.summary.reviewPolicy).toMatchObject({ policyHash: surveyPolicy.policyHash, articleType: "survey", emphasis: "elevated" });
+  });
+  it("旧 run（state 无快照）：单元与整稿 prompt 与升级前完全一致，summary 无政策字段", async () => {
+    const legacy = await setup({ wholePaperSynthesis: "on" });
+    expect(legacy.summary.reviewPolicy).toBeUndefined();
+    for (const call of legacy.calls) expect(call.task).not.toContain("审稿政策（publication-review-policy");
+    const generic = freezeReviewPolicy({ documentType: "research_article" }, "existing_paper_improvement", now);
+    const inactive = await setup({ wholePaperSynthesis: "on" }, false, JSON.parse(JSON.stringify(generic)));
+    const tasks = (calls: Call[]) => calls.map((call) => call.task).sort();
+    expect(tasks(inactive.calls)).toEqual(tasks(legacy.calls));
   });
 });

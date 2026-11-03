@@ -32,6 +32,7 @@
  * 其输出必须通过各 Stage 的 DoD 校验。
  */
 
+import { readReviewPolicySnapshot, reviewPolicySummary } from "../review/publicationPolicy.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
@@ -806,6 +807,8 @@ function reviewRunStageInner(
       // idea_to_paper 只读评估入口生效——第三方已发表论文的自报数值不再按「实验支撑缺口」报告
       const publishedAssessment = isPublishedAssessmentRun(ctx.state);
       const publishedAssessmentLines = publishedAssessment ? renderPublishedAssessmentPolicyLines() : undefined;
+      // 发表目标审稿政策：只读 run 创建时冻结的快照（运行中改项目设置不影响本 run；旧 run 无快照 = null = prompt 逐字节不变）
+      const reviewPolicy = readReviewPolicySnapshot(ctx.state.reviewPolicy);
       // M15.1：Review Claim Ledger 模式（auto：只读评估 extended / 作者稿件 shadow——shadow 下全部 prompt 逐字节不变）
       const claimAuditMode = resolveClaimAuditMode(services.review.claimAudit, publishedAssessment);
       const experimentPolicyLines = options.survey === true || publishedAssessment
@@ -874,6 +877,7 @@ function reviewRunStageInner(
         ...(publishedAssessmentLines !== undefined ? { publishedAssessmentLines } : {}),
         ...(digestClaimCheckLines.length > 0 ? { claimCheckLines: digestClaimCheckLines } : {}),
         ...(claimAuditMode === "extended" ? { claimAuditContract: true } : {}),
+        ...(reviewPolicy !== null ? { reviewPolicy } : {}),
       };
       type ReviewIssueOfUnit = Awaited<ReturnType<typeof services.reviewer.reviewUnit>>["issues"][number];
       let results: Awaited<ReturnType<typeof services.reviewer.reviewAll>>;
@@ -1037,6 +1041,8 @@ function reviewRunStageInner(
               // M15.1：extended 论断账本契约（进入 prompt → 请求指纹；shadow / off 不出现该键，prompt 逐字节不变）。
               // M15.2：stage=separate 时审稿 prompt 不含契约、账本由独立调用抽取（inline 与 M15.1 逐字节一致）
               ...(claimAuditMode === "extended" ? { claimAudit: { contract: UNIT_CLAIM_CONTRACT, stage: services.review.claimStage ?? "inline" } as const } : {}),
+              // 发表目标审稿政策（active=false 时不出现该键：prompt 与请求指纹逐字节不变；active 时进入指纹 → 目标变化即重审）
+              ...(reviewPolicy !== null && reviewPolicy.active ? { reviewPolicy } : {}),
               signal: ctx.signal,
             };
             const headingOnly = isHeadingOnlyUnit(unitSpan.content);
@@ -1316,6 +1322,7 @@ function reviewRunStageInner(
                 projectId: ctx.projectId, text, inputMode,
                 ...(isolatedContext ? { isolation: { sessionLabel: `r${round}-${randomUUID().slice(0, 8)}` } } : {}),
                 ...(language !== undefined ? { language } : {}), signal: ctx.signal,
+                ...(reviewPolicy !== null && reviewPolicy.active ? { reviewPolicy } : {}),
               });
               wholePaperIssues = whole.issues;
               wholePaperTrace = { ...base, status: "completed", executed: true, callsUsed: 1, findings: whole.issues.length, promptSha256: whole.promptSha256 };
@@ -1739,6 +1746,8 @@ function reviewRunStageInner(
         claimAuditSummary = audits?.claimAudit;
         citationAuditSummary = audits?.citationAudit;
       }
+      // 发表目标审稿政策摘要随本轮审稿落盘（追溯用；不参与计数 / 分数 / Gate）
+      if (reviewPolicy !== null) summary.reviewPolicy = reviewPolicySummary(reviewPolicy) ?? undefined;
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
       await services.reviewArtifacts.saveClaimGrounding(ctx.projectId, claimGrounding);
       if (multiKeyAttribution.sentencesWithMultiKeyCite > 0) {
@@ -2296,6 +2305,7 @@ export async function evaluateProjectQualityGate(services: WorkflowServices, con
         pendingValueChangeRequests,
         claimAuditMode: resolveClaimAuditMode(services.review.claimAudit, publishedAssessment),
         entry: context.entry,
+        reviewPolicy: review.reviewPolicy ?? null,
       });
       gate.qualityReport = qualityReport;
       gate.verifiedFindings = verifiedFindingsSummary;
@@ -2654,6 +2664,8 @@ function revisionPlanStage(services: WorkflowServices): StageSpec {
         sourceRevision,
         reviewRound: summary.round,
         summary,
+        // 冻结了发表目标政策的 run：整稿 AI 建议留作可选改进，不进入本轮自动修订（旧 run 无快照 → 行为不变）
+        ...(readReviewPolicySnapshot(ctx.state.reviewPolicy) !== null ? { deferWholePaperAdvisory: true } : {}),
         ...(reviewedSnapshot !== null ? { projectFinding: (issue) => projectFindingTarget(issue, reviewedSnapshot) } : {}),
         citationMissing: await citationMissingTargets(services, ctx.projectId),
         ...(citationRemoved.length > 0 ? { citationRemoved } : {}),

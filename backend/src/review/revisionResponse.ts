@@ -11,6 +11,9 @@
  * 无据可写的地方如实写「未派发 / 无变化」，不编造执行内容。
  */
 
+import { qualityReportOf } from "../quality/qualityReport.js";
+import type { JournalAssessment } from "../target/journal/assessment.js";
+import { buildRevisionGoalSummaryLines, type RevisionGoalSummaryInput } from "./revisionGoalSummary.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -50,6 +53,8 @@ export interface RevisionResponseInput {
   claimGapAudit?: ClaimGapAudit | null;
   /** M10.3.1 G2：最新 feasibility（含 task-aware criterionApplicability） */
   feasibility?: FeasibilityReport | null;
+  /** 「本轮目标与终止」段落（buildRevisionGoalSummaryLines 产物；缺省 = 不渲染该段，旧调用方输出不变） */
+  goalSummaryLines?: string[];
 }
 
 const STATUS_LABELS: Record<ExternalInstruction["status"], string> = {
@@ -84,6 +89,9 @@ export function buildRevisionResponseMarkdown(input: RevisionResponseInput): str
     + "本轮没有新的审稿意见输入时，它不是 Response Letter；已有意见按导入时登记的状态如实呈现。",
   );
   lines.push("");
+  if (input.goalSummaryLines !== undefined && input.goalSummaryLines.length > 0) {
+    lines.push(...input.goalSummaryLines);
+  }
 
   // ---- 一、外部意见逐条 ----
   lines.push("## 一、外部修改意见（逐条）");
@@ -318,6 +326,39 @@ async function loadLatestClaimAudit(
   return deps.reviewArtifacts.loadClaimGapAudit(projectId, summary.round);
 }
 
+/** 「本轮目标与终止」段的输入（全部只读既有产物；缺失 = 如实呈现缺失） */
+async function loadGoalSummaryInput(
+  deps: RevisionResponseDeps,
+  projectId: string,
+  instructions: ExternalInstruction[],
+  currentRevision: number,
+): Promise<RevisionGoalSummaryInput> {
+  const summary = await deps.reviewArtifacts.latestSummary(projectId);
+  const gateRound = (await deps.reviewArtifacts.gateRounds(projectId))[0];
+  const gateArtifact = gateRound !== undefined ? await deps.reviewArtifacts.loadGate(projectId, gateRound) : null;
+  let journalAssessment: RevisionGoalSummaryInput["journalAssessment"] = null;
+  try {
+    const parsed = JSON.parse(await readFile(join(deps.projects.researchDir(projectId), "journal-assessment.json"), "utf8")) as JournalAssessment;
+    journalAssessment = parsed.schemaVersion === "journal-assessment/v1" ? parsed : null;
+  } catch {
+    journalAssessment = null;
+  }
+  const gate = gateArtifact?.gate ?? null;
+  return {
+    instructions,
+    review: summary === null ? null : { round: summary.round, issues: summary.issues, ...(summary.reviewPolicy !== undefined ? { reviewPolicy: summary.reviewPolicy } : {}) },
+    gate: gate === null
+      ? null
+      : {
+          ...(gate.revisionTask !== undefined ? { revisionTask: { verdict: gate.revisionTask.verdict, reasons: gate.revisionTask.reasons } } : {}),
+          ...(gate.publicationReadiness !== undefined ? { publicationReadiness: { verdict: gate.publicationReadiness.verdict } } : {}),
+          l1Failures: qualityReportOf(gate).layers.L1.items.filter((item) => item.status === "FAIL").map((item) => item.detail),
+        },
+    journalAssessment,
+    currentRevision,
+  };
+}
+
 export interface RevisionResponseResult {
   path: string;
   instructions: number;
@@ -400,6 +441,7 @@ export async function writeRevisionResponse(
     cumulativeFactPreservation: await loadLatestCumulative(deps, projectId),
     claimGapAudit: await loadLatestClaimAudit(deps, projectId),
     feasibility: (await readFeasibilityReport(deps.projects, projectId))?.report ?? null,
+    goalSummaryLines: buildRevisionGoalSummaryLines(await loadGoalSummaryInput(deps, projectId, instructions, artifacts.revision)),
   });
   const buildDir = deps.projects.buildDir(projectId);
   await mkdir(buildDir, { recursive: true });

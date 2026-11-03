@@ -11,6 +11,7 @@
  * 会话互不污染；输出为统一结构的 ReviewIssue，经确定性校验后落盘 reviews/。
  */
 
+import { isPolicyDimensionId, renderDigestPolicyLines, renderUnitPolicyLines, renderWholePaperPolicy, type ReviewPolicySnapshot } from "../review/publicationPolicy.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -144,6 +145,8 @@ export interface ReviewIssue {
   relatedSections?: string[];
   /** M16 后续：finding 来源通道（缺省 = 单元 / digest 审稿）；whole_paper_synthesis = 实验性整稿综合审查（恒 L2 待核验） */
   origin?: "whole_paper_synthesis";
+  /** 发表目标审稿政策维度（review/publicationPolicy registry id；只是归类，不改变 severity / blocking 语义） */
+  policyDimension?: string;
   /**
    * M14.1b P1：Reviewer 从被审原文逐字摘出的定位片段（≥12 字）。revision.plan 用它
    * 在被审修订快照中做唯一定位并投影为 targetQuote；不唯一 / 不存在 = 不投影。
@@ -310,6 +313,8 @@ export class ReviewerService {
     claimCheckLines?: string[];
     /** M15.1：digest fact 路追加论断账本扩展字段（quote / claimType / linkedRefs / 对照）；缺省 → prompt 逐字节不变 */
     claimAuditContract?: boolean;
+    /** 发表目标审稿政策快照（run 冻结；null / 缺省或未设置目标 → academic prompt 逐字节不变） */
+    reviewPolicy?: ReviewPolicySnapshot | null;
   }): Promise<ModeReviewResult[]> {
     const roundController = new AbortController();
     const abortRound = () => roundController.abort();
@@ -388,6 +393,8 @@ export class ReviewerService {
     claimCheckLines?: string[];
     /** M15.1：digest fact 路追加论断账本扩展字段（quote / claimType / linkedRefs / 对照）；缺省 → prompt 逐字节不变 */
     claimAuditContract?: boolean;
+    /** 发表目标审稿政策快照（见 reviewAll） */
+    reviewPolicy?: ReviewPolicySnapshot | null;
   }): Promise<ModeReviewResult> {
     const contextScope = `review/${params.mode}`;
     let lastOutput = "";
@@ -498,6 +505,8 @@ export class ReviewerService {
      * 账本如实保持 ABSENT / INVALID 并记 repairSkippedReason。不进入 prompt / 请求指纹。
      */
     admitClaimRepair?: () => boolean;
+    /** 发表目标审稿政策快照（run 冻结；active=false / 缺省 → prompt 与请求指纹逐字节不变） */
+    reviewPolicy?: ReviewPolicySnapshot | null;
   }): Promise<UnitReviewResult> {
     const prompt = buildUnitReviewPrompt(params);
     const sessionKey = params.unitContext !== undefined ? this.unitSessionKey(params.projectId, params.unitContext.sessionLabel) : undefined;
@@ -853,6 +862,7 @@ export class ReviewerService {
     signal?: AbortSignal;
     isolation?: { sessionLabel: string };
     maxIssues?: number;
+    reviewPolicy?: ReviewPolicySnapshot | null;
   }): Promise<{ issues: ReviewIssue[]; summary: string; taskId: string; promptSha256: string; sessionKey?: string; usage?: Record<string, unknown> }> {
     const prompt = buildWholePaperPrompt(params);
     const task = await this.runtime.runAgent({
@@ -1077,6 +1087,8 @@ function parseIssues(parsed: Record<string, unknown>, context: string): ReviewIs
       ...(typeof record["claimIndex"] === "number" && Number.isInteger(record["claimIndex"]) && record["claimIndex"] >= 0
         ? { claimIndex: record["claimIndex"] as number }
         : {}),
+      // 发表目标审稿政策维度（只接受 registry 中的 id；非法 / 缺省丢弃，不整条拒绝）
+      ...(isPolicyDimensionId(record["policyDimension"]) ? { policyDimension: record["policyDimension"] } : {}),
       ...(Array.isArray(record["relatedSections"]) && record["relatedSections"].length > 0
         ? {
             relatedSections: (record["relatedSections"] as unknown[])
@@ -1203,7 +1215,11 @@ export function buildReviewPrompt(params: {
   claimCheckLines?: string[];
   /** M15.1：digest fact 路追加论断账本扩展字段（quote / claimType / linkedRefs / 对照）；缺省 → prompt 逐字节不变 */
   claimAuditContract?: boolean;
+  /** 发表目标审稿政策快照：设置了目标时替代旧的「目标档次」行（只影响 academic 模式） */
+  reviewPolicy?: ReviewPolicySnapshot | null;
 }): string {
+  // 发表目标政策：未设置目标 → null，academic 模式沿用旧「目标档次」行（逐字节不变）
+  const policyLines = renderDigestPolicyLines(params.reviewPolicy ?? null);
   const evidenceLines = params.evidence
     .slice(0, 20)
     .map(
@@ -1250,7 +1266,7 @@ export function buildReviewPrompt(params: {
           "5. 引用支撑：综合结论是否有多源引用支撑（两篇论文的共识不得叫「领域共识」）；speculative 内容是否被写成既定事实；",
           "6. research gap 是否有 synthesis / 文献依据（Writer 不得自造 gap）；future direction 是否区分 grounded 与 speculative；",
           "7. 是否退化成 literature listing（逐篇摘要式罗列）；synthesis → 正文是否发生语义漂移（正文表述超出综合结论的范围）。",
-          `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
+          ...(policyLines ?? [`结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`]),
           "输出额外字段 scores: {覆盖完整性: 0-100, 分类与组织: 0-100, 文献均衡性: 0-100, 比较与论证: 0-100, 引用支撑: 0-100, 写作质量: 0-100} 与 overallScore。",
           // M12 A9：目标带数值期望（benchmark 观测）——academic 模式专有注入
           ...(params.targetExpectations !== undefined
@@ -1259,7 +1275,7 @@ export function buildReviewPrompt(params: {
         ]
       : [
           "你使用 academic review skill：从问题定义、方法合理性、实验充分性、论证逻辑、写作质量评审。",
-          `结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`,
+          ...(policyLines ?? [`结合目标档次标准执行（目标档次：${params.targetProfile ?? "未指定"}）。`]),
           "输出额外字段 scores: {问题定义: 0-100, 方法合理性: 0-100, 实验充分性: 0-100, 论证逻辑: 0-100, 写作质量: 0-100} 与 overallScore。",
           ...(params.targetExpectations !== undefined
             ? ["", params.targetExpectations]
@@ -1501,7 +1517,10 @@ function buildUnitReviewPrompt(params: {
   /** M15.1：单元审稿追加论断账本契约（unit-claims/v1）；缺省 → prompt 与请求指纹逐字节不变 */
   claimAudit?: { contract: typeof UNIT_CLAIM_CONTRACT; stage?: UnitClaimStage };
   unitContext?: Pick<UnitReviewContext, "policy" | "dependencies" | "gaps" | "sourceVerification">;
+  /** 发表目标审稿政策快照（active=false / 缺省 → prompt 与请求指纹逐字节不变） */
+  reviewPolicy?: ReviewPolicySnapshot | null;
 }): string {
+  const policyLines = renderUnitPolicyLines(params.reviewPolicy ?? null, params.language === "en" ? "en" : params.language === "zh" ? "zh" : undefined);
   const dependencyBlock = params.unitContext?.policy === "isolated_snapshot"
     ? renderDependencyBlock({ attached: params.unitContext.dependencies, gaps: params.unitContext.gaps, sourceVerification: params.unitContext.sourceVerification })
     : [];
@@ -1579,6 +1598,7 @@ function buildUnitReviewPrompt(params: {
       : []),
     ...(params.publishedAssessmentLines !== undefined ? params.publishedAssessmentLines : []),
     ...(params.claimCheckLines ?? []),
+    ...(policyLines.length > 0 ? ["", ...policyLines] : []),
     "",
     ...dependencyBlock,
     `===== 单元原文（${params.unit.file} · ${params.unit.heading} · ${params.unit.unitIndex}/${params.unit.unitCount}，完整无截断）=====`,
@@ -1587,8 +1607,11 @@ function buildUnitReviewPrompt(params: {
 }
 
 /** M14.1a P0-2：跨章一致性审查 prompt（各章短摘要；冲突 finding 必须带双位置） */
-export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_TEXT" | "GLOBAL_DIGEST"; language?: ManuscriptLanguage; isolation?: { sessionLabel: string }; maxIssues?: number }): string {
+export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_TEXT" | "GLOBAL_DIGEST"; language?: ManuscriptLanguage; isolation?: { sessionLabel: string }; maxIssues?: number; reviewPolicy?: ReviewPolicySnapshot | null }): string {
   const max = params.maxIssues ?? 8;
+  // 发表目标审稿政策：active=false / 缺省 → null（下面两种语言的 prompt 逐字节不变）。active 时按稿件类型替换问题类别清单
+  //（综述 / 学位论文不再套用研究论文的基线 / 消融口径），并附冻结目标与纪律条款
+  const policy = renderWholePaperPolicy(params.reviewPolicy ?? null, params.language === "en" ? "en" : "zh");
   if (params.language === "en") {
     return [
       "You are a senior reviewer for this paper's venue. Section-level reviewers have already checked local details (equations, numbers, citations, wording).",
@@ -1597,10 +1620,15 @@ export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_T
         : "Below are per-section DIGESTS (the full text did not fit). You have NOT read the full paper: only report issues the digests clearly support.",
       "",
       `Report at most ${max} paper-level weaknesses a strong reviewer would raise, most important first. Only these kinds:`,
-      "- the research question or claimed contribution is unclear, overstated, or not supported by the evidence presented;",
-      "- missing comparison with a specific strong or recent baseline / prior method (name it if you can);",
-      "- experimental adequacy: missing ablations, datasets, settings, variance / significance, or scale that the claims require;",
-      "- the argument does not close: conclusions or abstract claim more than the experiments show, or sections contradict each other.",
+      ...(policy !== null
+        ? policy.kinds
+        : [
+            "- the research question or claimed contribution is unclear, overstated, or not supported by the evidence presented;",
+            "- missing comparison with a specific strong or recent baseline / prior method (name it if you can);",
+            "- experimental adequacy: missing ablations, datasets, settings, variance / significance, or scale that the claims require;",
+            "- the argument does not close: conclusions or abstract claim more than the experiments show, or sections contradict each other.",
+          ]),
+      ...(policy !== null ? policy.extra : []),
       "Do NOT report typos, notation, formatting, single-number mismatches, or citation formatting. Be specific to THIS paper: name the claim, table, experiment or baseline; generic advice is not acceptable.",
       "If you cite text, \"quote\" must be copied verbatim from the paper (12-200 characters); leave it empty for absence-type issues.",
       ...(params.isolation !== undefined ? ["Use only the text in this message; do not read workspace files or rely on other conversations."] : []),
@@ -1610,7 +1638,9 @@ export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_T
       '  "summary": "overall assessment in <= 60 words",',
       '  "issues": [{"category": "academic", "severity": "major|minor", "section": "most relevant section title or \'Whole paper\'",',
       '    "description": "specific weakness", "reason": "why it matters for the paper\'s claims", "suggestedAction": "what the authors should do",',
-      '    "quote": "verbatim excerpt or empty", "blocking": false}]',
+      policy !== null
+        ? '    "quote": "verbatim excerpt or empty", "policyDimension": "kind id", "blocking": false}]'
+        : '    "quote": "verbatim excerpt or empty", "blocking": false}]',
       "}",
       "",
       params.inputMode === "FULL_TEXT" ? "===== PAPER =====" : "===== SECTION DIGESTS =====",
@@ -1622,10 +1652,15 @@ export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_T
     params.inputMode === "FULL_TEXT" ? "下面是论文完整正文，请从整篇论文角度判断。" : "下面是各章摘要（全文超出长度上限）。你没有通读全文：只报告摘要明确支持的问题。",
     "",
     `最多报告 ${max} 条整稿层面的主要问题，按重要性排序，只限以下几类：`,
-    "- 研究问题或声称的贡献不清楚、夸大，或没有被文中证据支持；",
-    "- 缺少与具体的强基线 / 最新方法的比较（能点名就点名）；",
-    "- 实验充分性：论断所需的消融、数据集、设置、方差 / 显著性或规模缺失；",
-    "- 论证不闭合：摘要或结论的论断超出实验所示，或章节之间相互矛盾。",
+    ...(policy !== null
+      ? policy.kinds
+      : [
+          "- 研究问题或声称的贡献不清楚、夸大，或没有被文中证据支持；",
+          "- 缺少与具体的强基线 / 最新方法的比较（能点名就点名）；",
+          "- 实验充分性：论断所需的消融、数据集、设置、方差 / 显著性或规模缺失；",
+          "- 论证不闭合：摘要或结论的论断超出实验所示，或章节之间相互矛盾。",
+        ]),
+    ...(policy !== null ? policy.extra : []),
     "不要报告错别字、符号、格式、单个数值不符、引用格式。必须针对本文：点名具体论断、表格、实验或基线；泛泛建议不可接受。",
     "如引用原文，quote 必须逐字摘自论文（12–200 字）；缺失类问题 quote 留空。",
     ...(params.isolation !== undefined ? ["本次审查只依据本消息给出的文本；不要读取工作区文件，也不要依赖其他对话的记忆。"] : []),
@@ -1635,7 +1670,9 @@ export function buildWholePaperPrompt(params: { text: string; inputMode: "FULL_T
     '  "summary": "总体评价（80 字内）",',
     '  "issues": [{"category": "academic", "severity": "major|minor", "section": "最相关章节标题或「全文」",',
     '    "description": "具体问题", "reason": "为什么影响论文论断", "suggestedAction": "作者应当做什么",',
-    '    "quote": "逐字摘录或留空", "blocking": false}]',
+    policy !== null
+      ? '    "quote": "逐字摘录或留空", "policyDimension": "类别 id", "blocking": false}]'
+      : '    "quote": "逐字摘录或留空", "blocking": false}]',
     "}",
     "",
     params.inputMode === "FULL_TEXT" ? "===== 论文全文 =====" : "===== 各章摘要 =====",

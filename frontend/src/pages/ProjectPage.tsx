@@ -14,6 +14,7 @@ import { FiguresPanel } from "../components/project/FiguresPanel.js";
 import { ExperimentPackagesPanel } from "../components/project/ExperimentPackagesPanel.js";
 import { listExperimentPackages } from "../api/experimentPackages.js";
 import { ManuscriptOverviewCard } from "../components/project/ManuscriptOverviewCard.js";
+import { PublicationTargetCard } from "../components/project/PublicationTargetCard.js";
 import { PaperPanel } from "../components/project/PaperPanel.js";
 import { PdfPanel } from "../components/project/PdfPanel.js";
 import { ProjectAside, isExistingPaper } from "../components/project/ProjectAside.js";
@@ -258,6 +259,7 @@ function OverviewTab({ project, onOpenTab, onOpenGate }: { project: ProjectView;
         ) : (
           <p className="panel-empty">尚未填写研究定位字段。</p>
         )}
+        {project.workflowKind !== "existing_paper_review" ? <PublicationTargetCard project={project} /> : null}
         {project.researchIdea ? (
           <div className="idea-block">
             <h3>研究想法</h3>
