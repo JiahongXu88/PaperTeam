@@ -403,6 +403,7 @@ import {
 import type { TargetServices } from "../target/services.js";
 import { writeFileAtomic, writeJsonAtomic } from "../util/atomic.js";
 import { mapWithConcurrency } from "../util/concurrency.js";
+import { BUDGET_RESERVED_REASON, createReviewCallBudget } from "../review/reviewCallBudget.js";
 import {
   buildReviewCoveragePlan,
   computeReviewCoverage,
@@ -625,6 +626,8 @@ export interface WorkflowServices {
     /** M16 后续：实验性整稿综合审查（缺省 off；PAPERTEAM_REVIEW_WHOLE_PAPER）与全文字符上限 */
     wholePaperSynthesis?: "off" | "on";
     wholePaperMaxChars?: number;
+    /** M16 工程收口 B：有调用上限时的必需阶段预留（缺省 on；见 review/reviewCallBudget.ts） */
+    stageCallReserve?: "on" | "off";
     /** M15.4.3：CandidateProposer 影子旁路（缺省 off = 零额外调用零产物；on 见 review/candidateShadow.ts） */
     candidateShadow?: "off" | "on";
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
@@ -977,10 +980,20 @@ function reviewRunStageInner(
         const baselineUnitIds = new Set(baselineRecords.map((record) => record.unitId));
         const dispositions = new Map<string, { disposition: IncrementalUnitDisposition; sourceRound?: number }>();
         let fingerprintUnavailable = false;
+        // M16 工程收口 B：有调用上限时，可选调用（单元重试 / 论断修复）按优先级为必需阶段预留额度（无上限恒放行）
+        const wholePaperRequired = services.review.wholePaperSynthesis === "on";
+        const crossChapterPlanned = new Set(coveragePlan.units.map((unit) => unit.spanId)).size >= 2;
+        const callBudget = createReviewCallBudget({
+          policy: services.review.stageCallReserve ?? "on",
+          totalUnits: coveragePlan.units.length,
+          stageReserve: (crossChapterPlanned ? 1 : 0) + (wholePaperRequired ? 1 : 0),
+          remainingCalls: () => services.modelBudget?.snapshotSync(ctx.projectId, ctx.runId)?.remainingCalls,
+        });
         const outcomes = await mapWithConcurrency(
           coveragePlan.units,
           services.review.reviewConcurrency,
           async (unit: ReviewUnitPlanEntry) => {
+            callBudget.notePrimaryStart();
             const unitSpan = spanByUnitId.get(unit.unitId);
             if (unitSpan === undefined) {
               throw new BusinessError("STAGE_CONTRACT_VIOLATION", `REVIEW_UNIT_UNRESOLVED: ${unit.unitId}`);
@@ -1147,7 +1160,16 @@ function reviewRunStageInner(
             let lastError: unknown;
             const attemptTrace: ReviewUnitAttemptTrace[] = [];
             const contextFields = contextSnapshot !== undefined ? { contextPolicy, contextSnapshot, attemptTrace } : {};
+            let retrySkipped = false;
+            let attemptsMade = 0;
             for (let attempt = 1; attempt <= unitAttempts; attempt += 1) {
+              if (attempt > 1 && !callBudget.admit("unit_retry")) {
+                retrySkipped = true;
+                break;
+              }
+              attemptsMade = attempt;
+              if (attempt === 1) callBudget.accounting.unitPrimaryCalls += 1;
+              else callBudget.accounting.unitRetryCalls += 1;
               // M14.9.5.1：隔离策略每次尝试一个全新物理会话（标签含随机段：同轮 stage 重试 / 恢复也不会命中残留会话）；
               // 规范化 prompt 与依赖集合由冻结快照决定，各次尝试逐字节一致（trace 可核对）
               const sessionLabel = unitContext !== undefined
@@ -1155,9 +1177,11 @@ function reviewRunStageInner(
                 : undefined;
               const startedAt = new Date();
               try {
+                const admitClaimRepair = (): boolean => callBudget.admit("claims_repair");
                 const review = await services.reviewer.reviewUnit(unitContext !== undefined
-                  ? { ...unitParams, unitContext: { ...unitContext, sessionLabel: sessionLabel! } }
-                  : unitParams);
+                  ? { ...unitParams, unitContext: { ...unitContext, sessionLabel: sessionLabel! }, admitClaimRepair }
+                  : { ...unitParams, admitClaimRepair });
+                callBudget.accounting.claimRepairCalls += review.claimExtraction?.repairAttempts ?? 0;
                 if (contextSnapshot !== undefined) {
                   attemptTrace.push({
                     attempt, sessionKey: review.sessionKey ?? sessionLabel!, promptSha256: review.promptSha256 ?? "", contextSnapshotHash: contextSnapshot.contextSnapshotHash ?? "",
@@ -1175,6 +1199,7 @@ function reviewRunStageInner(
                     issues: review.issues as unknown as Array<Record<string, unknown>>,
                     academicScore: review.academicScore, riskScore: review.riskScore, summary: review.summary,
                     ...(review.claimExtraction !== undefined ? { claimExtraction: review.claimExtraction } : {}),
+                    ...(review.outputContract !== undefined ? { outputContract: review.outputContract } : {}),
                   },
                   // M14.9.5.2：请求指纹恒随完成记录落盘（同轮恢复据此校验；跨轮缓存仍只在增量开启时使用）
                   ...(currentFingerprint !== null ? { requestFingerprint: currentFingerprint } : {}),
@@ -1201,8 +1226,9 @@ function reviewRunStageInner(
             const record = {
               unitId: unit.unitId, round, snapshotId: coveragePlan.snapshotId, unitFingerprint: unit.contentHash,
               status: "failed" as const,
-              error: lastError instanceof Error ? lastError.message.slice(0, 300) : String(lastError).slice(0, 300),
-              attempts: unitAttempts, updatedAt: new Date().toISOString(),
+              error: (retrySkipped ? `UNIT_RETRY_SKIPPED（${BUDGET_RESERVED_REASON}）：` : "") +
+                (lastError instanceof Error ? lastError.message.slice(0, 260) : String(lastError).slice(0, 260)),
+              attempts: attemptsMade, updatedAt: new Date().toISOString(),
               ...contextFields,
             };
             await services.reviewArtifacts.saveReviewUnitRecord(ctx.projectId, record);
@@ -1250,6 +1276,7 @@ function reviewRunStageInner(
         let crossChapterTrace: NonNullable<ReviewCoverageSummary["context"]>["crossChapter"] = { status: "skipped" };
         if (chapterDigests.length >= 2) {
           try {
+            callBudget.accounting.crossChapterCalls += 1;
             const cross = await services.reviewer.reviewCrossChapter({
               projectId: ctx.projectId, chapters: [...chapterDigests],
               ...(experimentPolicyLines !== undefined ? { experimentPolicyLines } : {}),
@@ -1266,31 +1293,57 @@ function reviewRunStageInner(
             ctx.log(`[review] 跨章一致性审查失败（降级为本轮无跨章 finding；正文覆盖不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
           }
         }
-        // M16 后续（实验开关，缺省 off）：整稿综合审查——单元 / 跨章之后的单次有界调用；不计入覆盖率，失败不影响单元结果
+        // M16 后续（缺省 on）：整稿综合审查——单元 / 跨章之后的单次有界调用；不计入覆盖率，失败不影响单元结果。
+        // M16 工程收口 B：开关 on = 本轮要求执行；未执行（预算耗尽 / 调用失败）如实记 skipped / failed，
+        // 本轮结果即为纯单元审查，不得被读成 hybrid（Gate review_whole_paper_reported = NOT_EVALUATED）
         let wholePaperIssues: ReviewIssue[] = [];
         let wholePaperTrace: NonNullable<ReviewCoverageSummary["wholePaper"]> | null = null;
-        if (services.review.wholePaperSynthesis === "on") {
+        if (wholePaperRequired) {
           const wholePaperMaxChars = services.review.wholePaperMaxChars ?? 160_000;
           const fullText = coveragePlan.units.map((unit) => spanByUnitId.get(unit.unitId)?.content ?? "").filter((text) => text.trim() !== "").join("\n\n");
           const inputMode = fullText.length <= wholePaperMaxChars ? "FULL_TEXT" as const : "GLOBAL_DIGEST" as const;
           const text = inputMode === "FULL_TEXT" ? fullText : chapterDigests.map((chapter) => `--- ${chapter.heading} ---\n${chapter.digest}`).join("\n");
-          try {
-            const whole = await services.reviewer.reviewWholePaper({
-              projectId: ctx.projectId, text, inputMode,
-              ...(isolatedContext ? { isolation: { sessionLabel: `r${round}-${randomUUID().slice(0, 8)}` } } : {}),
-              ...(language !== undefined ? { language } : {}), signal: ctx.signal,
-            });
-            wholePaperIssues = whole.issues;
-            wholePaperTrace = { status: "completed", inputMode, inputChars: text.length, fullTextChars: fullText.length, findings: whole.issues.length, promptSha256: whole.promptSha256 };
-          } catch (error) {
-            if (ctx.signal.aborted) throw error;
-            wholePaperTrace = { status: "failed", inputMode, inputChars: text.length, fullTextChars: fullText.length, findings: 0, error: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
-            ctx.log(`[review] 整稿综合审查失败（实验通道；本轮无整稿 finding，单元结果不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+          const base = { required: true as const, inputMode, inputChars: text.length, fullTextChars: fullText.length, findings: 0 };
+          const budgetSnapshot = services.modelBudget?.snapshotSync(ctx.projectId, ctx.runId) ?? null;
+          if (text.trim() === "") {
+            wholePaperTrace = { ...base, status: "skipped", executed: false, skippedReason: "NO_BODY_TEXT", callsUsed: 0 };
+          } else if (budgetSnapshot !== null && (budgetExhausted(budgetSnapshot) || budgetSnapshot.remainingCalls === 0)) {
+            wholePaperTrace = { ...base, status: "skipped", executed: false, skippedReason: "BUDGET_EXHAUSTED", callsUsed: 0, ...(budgetSnapshot.exceededReason !== undefined ? { error: budgetSnapshot.exceededReason.slice(0, 300) } : {}) };
+          } else {
+            try {
+              callBudget.accounting.wholePaperCalls += 1;
+              const whole = await services.reviewer.reviewWholePaper({
+                projectId: ctx.projectId, text, inputMode,
+                ...(isolatedContext ? { isolation: { sessionLabel: `r${round}-${randomUUID().slice(0, 8)}` } } : {}),
+                ...(language !== undefined ? { language } : {}), signal: ctx.signal,
+              });
+              wholePaperIssues = whole.issues;
+              wholePaperTrace = { ...base, status: "completed", executed: true, callsUsed: 1, findings: whole.issues.length, promptSha256: whole.promptSha256 };
+            } catch (error) {
+              if (ctx.signal.aborted) throw error;
+              const refused = error instanceof BusinessError && error.code === "MODEL_BUDGET_EXCEEDED";
+              if (refused) callBudget.accounting.wholePaperCalls -= 1;
+              wholePaperTrace = refused
+                ? { ...base, status: "skipped", executed: false, skippedReason: "BUDGET_EXHAUSTED", callsUsed: 0, error: error.message.slice(0, 300) }
+                : { ...base, status: "failed", executed: false, callsUsed: 1, error: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+              ctx.log(`[review] 整稿综合审查未执行（${refused ? "预算拒绝" : "调用失败"}；本轮为纯单元审查结果，单元结果不受影响）：${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+            }
           }
         }
         coverageSummary = computeReviewCoverage(coveragePlan, round, allRecords, "units");
         coverageSummary.sources = coverageSourceManifest(coveragePlan);
         if (wholePaperTrace !== null) coverageSummary.wholePaper = wholePaperTrace;
+        // M16 工程收口 A/B：输出契约观测（只针对本轮新执行的单元）与调用账
+        {
+          const fresh = settled.filter((entry): entry is NonNullable<typeof entry> => entry !== null && !entry.reused && entry.review !== null);
+          const contractOf = (entry: (typeof fresh)[number]) => (entry.review as { outputContract?: { jsonRepairs?: string[]; languageDrift?: string[] } }).outputContract;
+          coverageSummary.outputContract = {
+            ...(language !== undefined ? { expectedLanguage: language } : {}),
+            jsonRepairedUnitIds: fresh.filter((entry) => (contractOf(entry)?.jsonRepairs?.length ?? 0) > 0).map((entry) => entry.unit.unitId),
+            languageDriftUnitIds: fresh.filter((entry) => (contractOf(entry)?.languageDrift?.length ?? 0) > 0).map((entry) => entry.unit.unitId),
+          };
+          coverageSummary.callAccounting = { ...callBudget.accounting };
+        }
         // 复用计数以本轮实际命中 journal 的单元为准（computeReviewCoverage 的
         // 跨轮口径无法识别同轮 stage 重启——journal 记录 round 相同）
         coverageSummary.reusedUnits = settled.filter((entry) => entry?.reused === true).length;

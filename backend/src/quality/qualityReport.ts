@@ -129,6 +129,8 @@ const RULE_CLASSES: Record<string, RuleClass> = {
   citation_semantic_verification_off: { layer: "L0", grade: "deterministic" },
   review_unit_context_reported: { layer: "L0", grade: "deterministic" },
   review_cross_chapter_reported: { layer: "L0", grade: "deterministic" },
+  review_whole_paper_reported: { layer: "L0", grade: "deterministic" },
+  review_output_contract_reported: { layer: "L0", grade: "deterministic" },
   // L1 已证实（确定性 / 作者数据复算 / 元数据 / 已核验证据）
   cross_section_numeric_consistency: { layer: "L1", grade: "deterministic" },
   review_findings_certified: { layer: "L1", grade: "deterministic" },

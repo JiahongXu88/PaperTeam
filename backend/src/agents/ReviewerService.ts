@@ -29,8 +29,10 @@ import {
   type DependencyGap,
   type SourceVerification,
 } from "../review/reviewContextSnapshot.js";
+import { BUDGET_RESERVED_REASON } from "../review/reviewCallBudget.js";
 import {
   extractJsonObject,
+  type JsonRepairKind,
   readRequiredEnum,
   StructuredOutputError,
   describeStructuredError,
@@ -78,6 +80,11 @@ export interface UnitReviewResult {
   usage?: Record<string, unknown>;
   /** M15.1：extended 论断账本契约下该单元自报的 claims（结构解析结果；未请求 = 缺省） */
   claimExtraction?: UnitClaimExtraction;
+  /**
+   * M16 工程收口 A：输出契约观测（确定性；缺省 = 无修复、无漂移）。jsonRepairs = 顶层对象经只加转义修复后解析
+   * （内容逐字保留）；languageDrift = 英文稿件下仍以中文书写的自由文本字段（只记录、不触发修复调用、不删 finding）
+   */
+  outputContract?: { jsonRepairs?: JsonRepairKind[]; languageDrift?: Array<"summary" | "issues" | "claims"> };
 }
 
 export type IssueSeverity = "critical" | "major" | "minor";
@@ -486,6 +493,11 @@ export class ReviewerService {
      * isolated_snapshot 另把确定性解析出的跨单元依赖（表 / 图 / 公式原文）与未能附上的缺口写进 prompt。
      */
     unitContext?: UnitReviewContext;
+    /**
+     * M16 工程收口 B：论断修复调用的准入（缺省恒放行）。返回 false = 为必需阶段预留调用额度：不发修复，
+     * 账本如实保持 ABSENT / INVALID 并记 repairSkippedReason。不进入 prompt / 请求指纹。
+     */
+    admitClaimRepair?: () => boolean;
   }): Promise<UnitReviewResult> {
     const prompt = buildUnitReviewPrompt(params);
     const sessionKey = params.unitContext !== undefined ? this.unitSessionKey(params.projectId, params.unitContext.sessionLabel) : undefined;
@@ -503,7 +515,11 @@ export class ReviewerService {
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `Review unit（${params.unit.unitId}）任务以 ${task.status} 状态结束`);
     }
-    const parsed = extractJsonObject(task.output ?? "", `Review unit（${params.unit.unitId}）结果`);
+    let jsonRepairs: JsonRepairKind[] | undefined;
+    const parsed = extractJsonObject(task.output ?? "", `Review unit（${params.unit.unitId}）结果`, {
+      expectAnyKey: UNIT_REVIEW_KEYS,
+      onRepair: (kinds) => { jsonRepairs = kinds; },
+    });
     const issues = parseIssues(parsed, `Review unit（${params.unit.unitId}）`);
     const score = (field: string): number | null => {
       const value = parsed[field];
@@ -542,7 +558,7 @@ export class ReviewerService {
           extraction = { status: "ABSENT", contract: UNIT_CLAIM_CONTRACT, claims: [], errors: [`论断抽取调用失败：${String(("error" in claimTask ? claimTask.error : undefined) ?? claimTask.status).slice(0, 160)}`] };
         } else {
           try {
-            extraction = parseUnitClaims(extractJsonObject(claimTask.output ?? "", `Review unit（${params.unit.unitId}）论断抽取`));
+            extraction = parseUnitClaims(extractJsonObject(claimTask.output ?? "", `Review unit（${params.unit.unitId}）论断抽取`, { expectAnyKey: ["claims"] }));
           } catch (error) {
             extraction = { status: "INVALID", contract: UNIT_CLAIM_CONTRACT, claims: [], errors: [`论断抽取输出无法解析：${error instanceof Error ? error.message.slice(0, 120) : String(error)}`] };
           }
@@ -551,7 +567,12 @@ export class ReviewerService {
         extraction = parseUnitClaims(parsed);
       }
       let repairAttempts = 0;
+      let repairSkippedReason: typeof BUDGET_RESERVED_REASON | undefined;
       while ((extraction.status === "ABSENT" || extraction.status === "INVALID") && repairAttempts < UNIT_CLAIM_REPAIR_MAX && params.signal?.aborted !== true && !(separate && stageTask?.status !== "completed")) {
+        if (params.admitClaimRepair !== undefined && !params.admitClaimRepair()) {
+          repairSkippedReason = BUDGET_RESERVED_REASON;
+          break;
+        }
         repairAttempts += 1;
         const repair = await this.runtime.runAgent({
           agentId: this.agentId,
@@ -566,14 +587,18 @@ export class ReviewerService {
         }).catch(() => null);
         if (repair === null || repair.status !== "completed") break;
         try {
-          const retried = parseUnitClaims(extractJsonObject(repair.output ?? "", `Review unit（${params.unit.unitId}）claims 修复`));
+          const retried = parseUnitClaims(extractJsonObject(repair.output ?? "", `Review unit（${params.unit.unitId}）claims 修复`, { expectAnyKey: ["claims"] }));
           extraction = retried.status === "EXTRACTED" ? retried : { ...retried, errors: [...extraction.errors, ...retried.errors] };
         } catch (error) {
           extraction = { ...extraction, errors: [...extraction.errors, `修复输出无法解析：${error instanceof Error ? error.message.slice(0, 120) : String(error)}`] };
         }
       }
-      claimExtraction = { ...extraction, repairAttempts, ...(separate ? { stage: "separate" as const, ...(stageTask !== undefined ? { stageTask } : {}) } : {}) };
+      claimExtraction = { ...extraction, repairAttempts, ...(repairSkippedReason !== undefined ? { repairSkippedReason } : {}), ...(separate ? { stage: "separate" as const, ...(stageTask !== undefined ? { stageTask } : {}) } : {}) };
     }
+    const languageDrift = params.language === "en" ? detectUnitLanguageDrift(parsed, issues, claimExtraction) : [];
+    const outputContract = jsonRepairs !== undefined || languageDrift.length > 0
+      ? { ...(jsonRepairs !== undefined ? { jsonRepairs } : {}), ...(languageDrift.length > 0 ? { languageDrift } : {}) }
+      : undefined;
     return {
       issues,
       academicScore: score("academicScore"),
@@ -585,6 +610,7 @@ export class ReviewerService {
       ...(typeof metaModel === "string" ? { model: metaModel } : {}),
       ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
       ...(claimExtraction !== undefined ? { claimExtraction } : {}),
+      ...(outputContract !== undefined ? { outputContract } : {}),
     };
   }
 
@@ -791,7 +817,7 @@ export class ReviewerService {
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `跨章一致性审查任务以 ${task.status} 状态结束`);
     }
-    const parsed = extractJsonObject(task.output ?? "", "跨章一致性审查结果");
+    const parsed = extractJsonObject(task.output ?? "", "跨章一致性审查结果", { expectAnyKey: ["issues", "summary"] });
     const issues = parseIssues(parsed, "跨章一致性审查").map((issue) => ({
       ...issue,
       // 待核验：跨章冲突不阻断、不自动修订（只记录双位置，留给作者裁决）
@@ -845,7 +871,7 @@ export class ReviewerService {
     if (task.status !== "completed") {
       throw new AgentRunFailedError(task.error ?? `整稿综合审查任务以 ${task.status} 状态结束`);
     }
-    const parsed = extractJsonObject(task.output ?? "", "整稿综合审查结果");
+    const parsed = extractJsonObject(task.output ?? "", "整稿综合审查结果", { expectAnyKey: ["issues", "summary"] });
     const issues = parseIssues(parsed, "整稿综合审查")
       .filter((issue) => issue.category !== "style" && issue.category !== "build")
       .slice(0, params.maxIssues ?? 8)
@@ -1429,8 +1455,37 @@ function buildUnitClaimRepairPrompt(heading: string, errors: readonly string[]):
 
 /** M14.1a P0-2：单元审查 prompt（长文档模式；输出契约与三路 review 同构） */
 /** 英文稿件 unit 审稿的输出语言指令（与 digest 模式 languageDirective 同一契约；引文仍逐字取自原文） */
+// M16 工程收口 A：旧指令只点名 issue 字段、漏了最先输出的 "summary"——M16 留出集 12 篇英文稿 153 个单元中 summary 写成中文
+// 50 次、description 中文 14 次，且从未出现「summary 英文而 description 中文」：中文 summary 先行、shared_session 下逐单元延续。
+// 现与 digest 模式（languageDirective）同口径点名 summary 与 claims 的 note；中文 / 未指定语言的 prompt 不变。
 export const UNIT_EN_OUTPUT_DIRECTIVE =
-  `Manuscript language: English. Write every issue's free-text fields ("description" / "suggestedAction" / "reason") in English; quotes stay verbatim from the unit text. The JSON contract below is unchanged.`;
+  `Manuscript language: English. Write the "summary", every issue's free-text fields ("description" / "suggestedAction" / "reason") and every claim's "note" in English; quotes stay verbatim from the unit text. The JSON contract below is unchanged.`;
+
+/** 单元审稿合法输出至少含其一的顶层键（拒绝错误体 / 内层碎片被当成整份输出） */
+const UNIT_REVIEW_KEYS = ["summary", "issues", "academicScore", "riskScore", "claims"] as const;
+
+/** 自由文本「以中文书写」的确定性判据：CJK 字符占比 > 15%（逐字引文 quote 不计——它照原文） */
+function isMostlyCjk(text: string): boolean {
+  const compact = text.replace(/\s+/g, "");
+  if (compact.length < 8) return false;
+  const cjk = (compact.match(/[一-鿿]/g) ?? []).length;
+  return cjk / compact.length > 0.15;
+}
+
+/** M16 工程收口 A：英文稿件单元输出的语言契约检查（只观测：不改写、不翻译、不删 finding、不花修复调用） */
+export function detectUnitLanguageDrift(
+  parsed: Record<string, unknown>,
+  issues: readonly ReviewIssue[],
+  claims: UnitClaimExtraction | undefined,
+): Array<"summary" | "issues" | "claims"> {
+  const drift: Array<"summary" | "issues" | "claims"> = [];
+  if (typeof parsed["summary"] === "string" && isMostlyCjk(parsed["summary"])) drift.push("summary");
+  const issueText = issues.map((issue) => [issue.description, issue.suggestedAction ?? "", issue.reason ?? ""].join(" ")).join(" ");
+  if (isMostlyCjk(issueText)) drift.push("issues");
+  const noteText = (claims?.claims ?? []).map((claim) => claim.note ?? "").join(" ");
+  if (isMostlyCjk(noteText)) drift.push("claims");
+  return drift;
+}
 
 function buildUnitReviewPrompt(params: {
   unit: { unitId: string; file: string; heading: string; unitIndex: number; unitCount: number; text: string };

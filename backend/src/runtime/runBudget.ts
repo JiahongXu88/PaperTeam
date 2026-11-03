@@ -65,6 +65,11 @@ export interface RunBudgetSnapshot {
   limits: RunBudgetLimits;
   exceeded: boolean;
   exceededReason?: string;
+  /**
+   * M16 工程收口 B：还能启动的模型调用数（run 级上限与任务级上限取小；缺省 = 两者都不限调用数）。
+   * 供 review.run 为必需阶段预留额度；只是准入参考，硬约束仍在 chargeCall / reserve。
+   */
+  remainingCalls?: number;
 }
 
 export interface RunBudgetLedgerOptions {
@@ -331,9 +336,11 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
   snapshotSync(projectId: string, runId: string): RunBudgetSnapshot | null {
     const ledger = this.cache.get(projectId);
     const globalReason = this.globalExhaustedReason();
-    if (ledger === undefined && globalReason === undefined) return null;
+    const globalRemaining = this.globalRemainingCalls();
+    if (ledger === undefined && globalReason === undefined && globalRemaining === undefined) return null;
     const entry = ledger?.entries[runId] ?? emptyEntry(runId);
     const reason = this.exceedReason(entry) ?? globalReason;
+    const remainingCalls = this.remainingCalls(entry, globalRemaining);
     return {
       runId,
       calls: entry.calls,
@@ -341,7 +348,22 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
       limits: this.limits,
       exceeded: reason !== undefined,
       ...(reason !== undefined ? { exceededReason: reason } : {}),
+      ...(remainingCalls !== undefined ? { remainingCalls } : {}),
     };
+  }
+
+  /** 任务级账本剩余调用数（未配置 / 不限调用数 → undefined） */
+  private globalRemainingCalls(): number | undefined {
+    if (this.global === undefined) return undefined;
+    const snapshot = this.global.ledger.snapshot();
+    if (snapshot.limits.maxCalls <= 0) return undefined;
+    return snapshot.exhaustedReason !== undefined ? 0 : Math.max(0, snapshot.limits.maxCalls - snapshot.calls);
+  }
+
+  private remainingCalls(entry: RunLedgerEntry, globalRemaining: number | undefined): number | undefined {
+    const runRemaining = this.limits.maxModelCallsPerRun > 0 ? Math.max(0, this.limits.maxModelCallsPerRun - entry.calls) : undefined;
+    if (runRemaining === undefined) return globalRemaining;
+    return globalRemaining === undefined ? runRemaining : Math.min(runRemaining, globalRemaining);
   }
 
   /** 观测面：本 run 预算状态（planSharedTail 优雅降级 / stalled payload / API） */
@@ -349,6 +371,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
     const ledger = await this.loadLedger(projectId);
     const entry = ledger.entries[runId] ?? emptyEntry(runId);
     const reason = this.exceedReason(entry) ?? this.globalExhaustedReason();
+    const remainingCalls = this.remainingCalls(entry, this.globalRemainingCalls());
     return {
       runId,
       calls: entry.calls,
@@ -356,6 +379,7 @@ export class RunBudgetLedgerRuntime implements AgentRuntime {
       limits: this.limits,
       exceeded: reason !== undefined,
       ...(reason !== undefined ? { exceededReason: reason } : {}),
+      ...(remainingCalls !== undefined ? { remainingCalls } : {}),
     };
   }
 

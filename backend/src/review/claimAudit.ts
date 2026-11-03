@@ -124,6 +124,8 @@ export interface UnitClaimExtraction {
   errors: string[];
   /** 有界结构化修复调用次数（仅 ABSENT / INVALID 触发，≤ UNIT_CLAIM_REPAIR_MAX） */
   repairAttempts: number;
+  /** M16 工程收口 B：修复因预算预留未发出（账本保持 ABSENT / INVALID，不伪造为已抽取） */
+  repairSkippedReason?: "BUDGET_RESERVED_FOR_REQUIRED_STAGES";
   /** M15.2：separate = 论断由审稿之后的独立 sealed 调用抽取（缺省 / 旧记录 = 与审稿同一输出内联） */
   stage?: "separate";
   stageTask?: { taskId: string; promptSha256: string; status: string; usage?: Record<string, unknown> };

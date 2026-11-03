@@ -20,6 +20,7 @@
 import { fingerprintJson } from "../util/hash.js";
 import type { ReviewContextSnapshotRecord, ReviewUnitContextPolicy } from "./reviewContextSnapshot.js";
 import type { UnitClaimExtraction } from "./claimAudit.js";
+import type { ReviewCallAccounting } from "./reviewCallBudget.js";
 import { locateFileSpans, partitionSpanIntoUnits, rootBodySpans } from "./logicalSpan.js";
 import { revisionSourceHash, type RevisionSpan } from "./revisionScope.js";
 
@@ -58,6 +59,8 @@ export interface ReviewUnitOutcome {
   summary: string;
   /** M15.1：extended 论断账本契约下该单元的 claims 抽取结果（journal 复用时随 outcome 恢复；旧记录缺省 = 未请求） */
   claimExtraction?: UnitClaimExtraction;
+  /** M16 工程收口 A：输出契约观测（只加转义的 JSON 修复 / 英文稿语言漂移字段；缺省 = 无） */
+  outputContract?: { jsonRepairs?: string[]; languageDrift?: string[] };
 }
 
 export interface ReviewUnitRecord {
@@ -239,7 +242,28 @@ export interface ReviewCoverageSummary {
    * M16 后续：实验性整稿综合审查的执行记录（缺省 = 未启用）。不计入正文覆盖率：整稿节点不能掩盖未读章节。
    * inputMode GLOBAL_DIGEST = 只看了各章摘要（不得声称通读全文）。
    */
-  wholePaper?: { status: "completed" | "failed"; inputMode: "FULL_TEXT" | "GLOBAL_DIGEST"; inputChars: number; fullTextChars: number; findings: number; promptSha256?: string; error?: string };
+  wholePaper?: {
+    status: "completed" | "failed" | "skipped";
+    inputMode: "FULL_TEXT" | "GLOBAL_DIGEST";
+    inputChars: number;
+    fullTextChars: number;
+    findings: number;
+    promptSha256?: string;
+    error?: string;
+    /** M16 工程收口 B：开关 on = 本轮要求执行（缺省 = 旧产物，按 on 理解） */
+    required?: true;
+    /** 模型调用是否实际发出并完成（failed 也可能已发出；skipped 恒 false） */
+    executed?: boolean;
+    /** skipped 的机器可读原因：BUDGET_EXHAUSTED = 预算已耗尽未发出调用；NO_BODY_TEXT = 无可审正文 */
+    skippedReason?: "BUDGET_EXHAUSTED" | "NO_BODY_TEXT";
+    callsUsed?: number;
+  };
+  /**
+   * M16 工程收口 A/B：单元模式输出契约与调用账（缺省 = 旧产物）。languageDriftUnitIds 只是观测（finding 照常保留）；
+   * callAccounting 是本 stage 自己的计数，不替代 Runtime 预算账本
+   */
+  outputContract?: { expectedLanguage?: "zh" | "en"; jsonRepairedUnitIds: string[]; languageDriftUnitIds: string[] };
+  callAccounting?: ReviewCallAccounting;
   /** M14.9.5.2：shared_session 下同轮 journal 记录与当前请求指纹不一致而未复用的单元（隔离策略见 context.cacheIncompatibleUnitIds） */
   journalIncompatibleUnitIds?: string[];
   /**

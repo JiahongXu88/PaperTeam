@@ -82,7 +82,7 @@ export function VerifiedFindingsPanel({ summary }: { summary: VerifiedFindingsGa
       <div className="quality-report-layer-head">
         <strong>确定性核验的审稿意见</strong>
         <span className="faint">
-          被审文本：{SOURCE_LABEL[summary.summary.sourceVerification] ?? summary.summary.sourceVerification} · 可定位 {summary.summary.located}/{summary.summary.findings} · 含可核对数值 {summary.summary.checked} · 已核验缺陷 {summary.summary.verifiedContradicted} · 需对照原件 {summary.summary.certifiedOnTranscript}
+          被审文本：{SOURCE_LABEL[summary.summary.sourceVerification] ?? summary.summary.sourceVerification} · 可定位 {summary.summary.reliablyLocated ?? summary.summary.located}/{summary.summary.findings} · 含可核对数值 {summary.summary.checked} · 已核验缺陷 {summary.summary.verifiedContradicted} · 需对照原件 {summary.summary.certifiedOnTranscript}
         </span>
       </div>
       {certified.length > 0 ? (
@@ -94,10 +94,15 @@ export function VerifiedFindingsPanel({ summary }: { summary: VerifiedFindingsGa
         <ul className="quality-report-items" data-testid="verified-findings-dangling">
           {dangling.map((record) => (
             <li key={record.findingId}>
-              <span className="status status-tone-warn">定位问题</span> 审稿意见 #{record.issueIndex + 1} 点名了原文中不存在的 {record.anchor.danglingReferences.join("、")}（意见保留，请核对其所指位置）
+              <span className="status status-tone-warn">定位不可信</span> 审稿意见 #{record.issueIndex + 1} 点名了原文中确定不存在的 {record.anchor.danglingReferences.join("、")}（意见保留、待核验，不作为准确锚点）
             </li>
           ))}
         </ul>
+      ) : null}
+      {(summary.summary.unverifiableLocators ?? 0) > 0 ? (
+        <p className="faint" data-testid="verified-findings-unverifiable-locators">
+          另有 {summary.summary.unverifiableLocators} 条意见引用的表 / 图 / 公式编号无法在本输入中核对（例如转写稿丢失了公式编号）：未知，不代表不存在，也不代表已核实。
+        </p>
       ) : null}
       <p className="section-note faint">
         证书只证明被审文本内部的数值关系（原文数字、唯一绑定或所引表格、显示精度区间）；它不授权任何修改（数值修改仍需在修订中逐项批准），也不是期刊学术水平判断。

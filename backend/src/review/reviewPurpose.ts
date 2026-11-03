@@ -275,6 +275,8 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
         return { applicability: "REPORTED_ONLY", note: "80 分是作者稿件进入 Final 的产品门槛，不是期刊录用线；对第三方已发表论文只报告分数，不作发表结论" };
       case "review_unit_context_reported":
       case "review_cross_chapter_reported":
+      case "review_whole_paper_reported":
+      case "review_output_contract_reported":
         return { applicability: "REPORTED_ONLY", note: "informational：只呈现跨单元 / 跨章核对是否执行（NOT_EVALUATED 项见 notEvaluated），不参与判定" };
       case "experiment_claims_recomputed":
         return { applicability: "NOT_APPLICABLE", note: "第三方已发表论文没有作者原始实验数据：论文自报数值不做复算（只做稿内一致性核查）" };
@@ -349,6 +351,10 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
       // M14.9.5.2：跨章一致性审查失败 = 跨章核对未执行（不是「无跨章冲突」）
       ...((review.coverage?.crossChapter ?? review.coverage?.context?.crossChapter)?.status === "failed"
         ? [{ item: "cross_chapter_consistency", reason: "跨章一致性审查调用失败：本轮没有跨章 finding 不代表没有跨章冲突" }]
+        : []),
+      // M16 工程收口 B：要求的整稿综合审查未执行 = 本轮只是纯单元审查（不是 hybrid）
+      ...(review.coverage?.wholePaper !== undefined && review.coverage.wholePaper.status !== "completed"
+        ? [{ item: "whole_paper_synthesis", reason: `整稿综合审查未执行（${review.coverage.wholePaper.status === "skipped" ? review.coverage.wholePaper.skippedReason ?? "skipped" : "调用失败"}）：本轮没有整稿 finding 不代表整稿层面无问题` }]
         : []),
     ],
     findings: classified.map(({ issue, index, cls }) => ({

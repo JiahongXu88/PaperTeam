@@ -153,6 +153,11 @@ export interface ReviewConfig {
   /** 整稿综合审查的全文字符上限（PAPERTEAM_REVIEW_WHOLE_PAPER_MAX_CHARS，缺省 160000） */
   wholePaperMaxChars: number;
   /**
+   * M16 工程收口 B（PAPERTEAM_REVIEW_STAGE_CALL_RESERVE，缺省 on；off = 旧的先到先得）：配置了 run / 任务级调用上限时，
+   * 单元论断修复为跨章 / 整稿预留调用额度，单元重试为未开始的单元首审预留。无调用上限时不生效。
+   */
+  stageCallReserve: "on" | "off";
+  /**
    * M15.4.3：CandidateProposer 影子旁路（PAPERTEAM_CANDIDATE_SHADOW，缺省 off）。
    * on = claim-audit 构建后为有界论断子集（≤4）运行提案→确定性核验，产物 candidate-shadow-r{round}.json
    * （SHADOW_OBSERVATION_ONLY：不进 Quality Gate / Finding / HITL / 评分）；off = 零额外调用零产物。
@@ -733,6 +738,7 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       claimStage: readOptionalValue(source, "PAPERTEAM_REVIEW_CLAIM_STAGE")?.trim().toLowerCase() === "separate" ? "separate" : "inline",
       wholePaperSynthesis: readOptionalValue(source, "PAPERTEAM_REVIEW_WHOLE_PAPER")?.trim().toLowerCase() === "off" ? "off" : "on",
       wholePaperMaxChars: readIntWithFallback(source, "PAPERTEAM_REVIEW_WHOLE_PAPER_MAX_CHARS", { default: 160_000, min: 10_000, max: 600_000 }),
+      stageCallReserve: readOptionalValue(source, "PAPERTEAM_REVIEW_STAGE_CALL_RESERVE")?.trim().toLowerCase() === "off" ? "off" : "on",
       /** M15.4.3：CandidateProposer 影子旁路（缺省 off；off = 零额外模型调用、零产物、零行为差异） */
       candidateShadow: readOptionalValue(source, "PAPERTEAM_CANDIDATE_SHADOW")?.trim().toLowerCase() === "on" ? "on" : "off",
     },

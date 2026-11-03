@@ -68,4 +68,17 @@ describe("VerifiedFindingsPanel", () => {
     expect(screen.getByTestId("verified-findings-dangling")).toHaveTextContent("Table 7");
     expect(screen.getByTestId("verified-findings").textContent).not.toMatch(/达到.*水平|可投稿|录用/);
   });
+
+  it("M16 工程收口 C：确定无效的引用标「定位不可信」；无法核对的编号单列为未知；可定位计数用可靠定位口径", () => {
+    const invalid: VerifiedFindingRecordView = {
+      ...contradictedRecord, findingId: "f-3", issueIndex: 2, status: "NOT_APPLICABLE", statement: null, checks: [],
+      anchor: { status: "LOCATED", file: "main.tex", line: 3, danglingReferences: ["Table 9"], reliable: false, locator: { status: "INVALID_LOCATOR", refs: [{ ref: "Table 9", kind: "table", status: "INVALID", reason: "NUMBER_EXCEEDS_OBJECTS_AND_MENTIONS" }] } },
+    };
+    render(<VerifiedFindingsPanel summary={summary({ records: [invalid] }, { danglingReferences: 1, unverifiableLocators: 4, reliablyLocated: 1 })} />);
+    expect(screen.getByTestId("verified-findings-dangling")).toHaveTextContent("定位不可信");
+    expect(screen.getByTestId("verified-findings-dangling")).toHaveTextContent("Table 9");
+    expect(screen.getByTestId("verified-findings-unverifiable-locators")).toHaveTextContent("4 条");
+    expect(screen.getByTestId("verified-findings-unverifiable-locators")).toHaveTextContent("不代表不存在");
+    expect(screen.getByTestId("verified-findings")).toHaveTextContent("可定位 1/3");
+  });
 });

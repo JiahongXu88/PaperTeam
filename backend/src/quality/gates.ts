@@ -847,7 +847,8 @@ export function evaluateQualityGate(
         "review_findings_certified",
         "NOT_APPLICABLE",
         `可定位 finding ${summary.located} / ${summary.findings} 条，其中 ${summary.checked} 条含可做证书核对的数值，0 条被证书证实矛盾（未证实 ≠ 没有问题；其余 finding 仍是待核验的模型意见）` +
-          (summary.danglingReferences > 0 ? `；${summary.danglingReferences} 条 finding 点名了原文中不存在的表 / 公式 / 引文编号（定位质量问题）` : ""),
+          (summary.danglingReferences > 0 ? `；${summary.danglingReferences} 条 finding 点名了原文中确定不存在的表 / 公式 / 引文编号（定位不可信，意见保留待核验）` : "") +
+          ((summary.unverifiableLocators ?? 0) > 0 ? `；${summary.unverifiableLocators} 条 finding 的引用编号无法在本输入中核对（如转写稿丢失公式编号——不代表不存在）` : ""),
       );
     }
   }
@@ -1004,6 +1005,37 @@ export function evaluateQualityGate(
             ? "只有一个章节：跨章一致性审查不适用"
             : `跨章一致性审查失败：跨章核对 NOT_EVALUATED（本轮没有跨章 finding 不代表没有跨章冲突）${"error" in cross && cross.error !== undefined ? `；${cross.error.slice(0, 120)}` : ""}`,
     );
+    // M16 工程收口 B：整稿综合审查（hybrid 的第二通道）是否真的执行——开关 on 而未执行时本轮只是纯单元审查，
+    // 不得被读成 hybrid；informational，不参与判定（整稿意见本身恒为 L2 待核验）
+    const whole = coverage.wholePaper;
+    push(
+      "review_whole_paper_reported",
+      whole === undefined ? "NOT_APPLICABLE" : whole.status === "completed" ? "INFO" : "NOT_EVALUATED",
+      whole === undefined
+        ? "整稿综合审查未启用（PAPERTEAM_REVIEW_WHOLE_PAPER=off 或旧产物）：本轮为纯单元审查"
+        : whole.status === "completed"
+          ? `整稿综合审查已执行（hybrid；${whole.inputMode === "FULL_TEXT" ? "全文" : "仅各章摘要，非通读全文"}；整稿 finding ${whole.findings} 条，待核验、不计覆盖率）`
+          : `要求的整稿综合审查未执行（${whole.status === "skipped" ? `skipped：${whole.skippedReason ?? "UNKNOWN"}` : "调用失败"}）：本轮结果是纯单元审查，不是 hybrid${whole.error !== undefined ? `；${whole.error.slice(0, 120)}` : ""}`,
+    );
+    // M16 工程收口 A：单元输出契约（只加转义的 JSON 修复 / 英文稿语言漂移 / 预算预留跳过的可选调用）——只呈现、不判定
+    const contract = coverage.outputContract;
+    const calls = coverage.callAccounting;
+    const skipped = (calls?.unitRetriesSkipped ?? 0) + (calls?.claimRepairsSkipped ?? 0);
+    if (contract !== undefined || calls !== undefined) {
+      const drift = contract?.languageDriftUnitIds.length ?? 0;
+      push(
+        "review_output_contract_reported",
+        drift > 0 || skipped > 0 ? "NOT_EVALUATED" : "INFO",
+        [
+          `只加转义修复后解析的单元 ${contract?.jsonRepairedUnitIds.length ?? 0} 个（内容逐字保留）`,
+          contract?.expectedLanguage === "en" ? `英文稿件中以中文书写的单元 ${drift} 个（finding 保留，仅语言违约）` : null,
+          calls !== undefined
+            ? `调用：首审 ${calls.unitPrimaryCalls}、重试 ${calls.unitRetryCalls}、论断修复 ${calls.claimRepairCalls}、跨章 ${calls.crossChapterCalls}、整稿 ${calls.wholePaperCalls}` +
+              (skipped > 0 ? `；为必需阶段预留而未发出：重试 ${calls.unitRetriesSkipped}、论断修复 ${calls.claimRepairsSkipped}（对应单元论断账本 / 覆盖如实不完整）` : "")
+            : null,
+        ].filter((line): line is string => line !== null).join("；"),
+      );
+    }
   }
 
   // 9. 目标可行性达标（LOW / INSUFFICIENT 阻止 Final；用户知情接受不降低标准）

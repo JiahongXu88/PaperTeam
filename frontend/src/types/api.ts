@@ -426,7 +426,16 @@ export interface VerifiedFindingRecordView {
   issueIndex: number;
   category: string;
   severityObserved: string;
-  anchor: { status: "LOCATED" | "QUOTE_NOT_LOCATED" | "NO_QUOTE"; file: string | null; line: number | null; danglingReferences: string[] };
+  anchor: {
+    status: "LOCATED" | "QUOTE_NOT_LOCATED" | "NO_QUOTE";
+    file: string | null;
+    line: number | null;
+    /** 确定性可判「原文不存在」的引用 */
+    danglingReferences: string[];
+    /** M16 工程收口 C：定位引用三态（旧产物缺省） */
+    locator?: { status: "NONE" | "VALID" | "INVALID_LOCATOR" | "UNVERIFIABLE_LOCATOR"; refs: Array<{ ref: string; kind: string; status: "VALID" | "INVALID" | "UNVERIFIABLE"; reason: string }> };
+    reliable?: boolean;
+  };
   status: "VERIFIED_CONTRADICTED" | "CERTIFIED_ON_TRANSCRIPT" | "NOT_CERTIFIED" | "NOT_APPLICABLE";
   statement: string | null;
   checks: VerifiedFindingCheckView[];
@@ -438,7 +447,7 @@ export interface VerifiedFindingsGateSummaryView {
   unavailableReason: string | null;
   path: string | null;
   documentFingerprint: string | null;
-  summary: { findings: number; located: number; checked: number; verifiedContradicted: number; certifiedOnTranscript: number; notCertified: number; danglingReferences: number; sourceVerification: string };
+  summary: { findings: number; located: number; checked: number; verifiedContradicted: number; certifiedOnTranscript: number; notCertified: number; danglingReferences: number; unverifiableLocators?: number; reliablyLocated?: number; sourceVerification: string };
   statements: string[];
   records: VerifiedFindingRecordView[];
 }

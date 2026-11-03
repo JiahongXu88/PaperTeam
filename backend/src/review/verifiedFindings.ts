@@ -23,6 +23,9 @@
  *   NOT_APPLICABLE          无可检查数值 / 非实质性类别 / 引文无法定位。
  * 「锚定」（引文逐字在原文中）与「已核验」严格区分；另检查 finding 文字点名的表 / 图 / 公式 / 节 / 引文编号是否在原文中存在
  * （DANGLING_REFERENCE 只作定位质量提示，不删除、不降级 finding）。
+ * M16 工程收口 C：定位引用三态（VALID / INVALID / UNVERIFIABLE，见 findingLocators.ts）——danglingReferences 只列确定性可判
+ * 不存在的引用；转写稿丢失编号等无法判定的情形记 UNVERIFIABLE，不再断言「原文不存在」。INVALID 的 finding 不算可靠定位
+ * （anchor.reliable=false），但意见文本与证书判定照旧（证书只依赖被引表格的唯一解析，不可能借无效编号成立）。
  *
  * 证书只说明「被审文本内部的数值关系」；它不授权任何修改（修订仍走 EditContract），也不构成期刊级学术判断。
  */
@@ -42,6 +45,7 @@ import {
   type CertificateDocument,
 } from "./claimCertificate.js";
 import type { LatexTable } from "./latexTable.js";
+import { assessFindingLocators, buildLocatorIndex, type FindingLocatorAssessment, type LocatorIndex } from "./findingLocators.js";
 
 export const VERIFIED_FINDINGS_SCHEMA = "paperteam.verified-findings/v1";
 export const VERIFIED_FINDINGS_RULES = "verified-findings-rules/v1";
@@ -78,7 +82,17 @@ export interface FindingVerificationRecord {
   issueIndex: number;
   category: string;
   severityObserved: string;
-  anchor: { status: AnchorStatus; file: string | null; line: number | null; danglingReferences: string[] };
+  anchor: {
+    status: AnchorStatus;
+    file: string | null;
+    line: number | null;
+    /** 确定性可判「原文不存在」的引用（= locator 中 INVALID 项） */
+    danglingReferences: string[];
+    /** M16 工程收口 C：定位引用三态评估（缺省 = 旧产物） */
+    locator?: FindingLocatorAssessment;
+    /** 引文逐字定位且没有确定性无效的引用（缺省 = 旧产物，按 status === LOCATED 理解） */
+    reliable?: boolean;
+  };
   status: FindingVerificationStatus;
   /** 确定性陈述（由证书生成，不含模型文字） */
   statement: string | null;
@@ -108,6 +122,10 @@ export interface VerifiedFindingsSummary {
   certifiedOnTranscript: number;
   notCertified: number;
   danglingReferences: number;
+  /** M16 工程收口 C：含无法在本输入判定的定位引用的 finding 数（缺省 = 旧产物） */
+  unverifiableLocators?: number;
+  /** 可靠定位（引文逐字定位且无确定性无效引用）的 finding 数（缺省 = 旧产物） */
+  reliablyLocated?: number;
   sourceVerification: SourceVerification;
 }
 
@@ -476,31 +494,20 @@ function checkTextTable(document: CertificateDocument, file: string, hit: Number
 
 // ---- 定位质量 ----
 
-/** finding 文字点名、但原文中不存在的表 / 图 / 公式 / 节 / 数字引文编号 */
-export function danglingReferences(text: string, document: CertificateDocument): string[] {
-  const all = document.files.map((file) => file.content).join("\n");
-  const tables = document.files.reduce((sum, file) => sum + new Set(file.tables.map((table) => table.floatStart ?? table.start)).size, 0);
-  const figures = (all.match(/\\begin\{figure\*?\}/g) ?? []).length;
-  const out: string[] = [];
-  const has = (pattern: RegExp) => pattern.test(all);
-  for (const match of text.matchAll(/\b(Table|Figure|Fig\.)\s*~?\s*(\d+)\b/g)) {
-    const n = Number(match[2]);
-    const isTable = match[1] === "Table";
-    const count = isTable ? tables : figures;
-    const word = isTable ? "Table" : "(?:Figure|Fig\\.)";
-    if (n > count && !has(new RegExp(`\\b${word}\\s*~?\\s*${n}\\b`))) out.push(`${match[1]} ${n}`);
-  }
-  for (const match of text.matchAll(/\b(?:Eq\.|Eqn\.|Equation)\s*~?\s*\(?(\d+)\)?/g)) {
-    const n = match[1]!;
-    const numberedEnvs = (all.match(/\\begin\{(?:equation|align|gather|multline|eqnarray)\}/g) ?? []).length;
-    if (Number(n) > numberedEnvs && !has(new RegExp(`\\(${n}\\)|\\\\tag\\{${n}\\}`))) out.push(`Eq. (${n})`);
-  }
-  for (const match of text.matchAll(/(?<![\w\\])\[(\d{1,3})\](?!\()/g)) {
-    const n = match[1]!;
-    const bibitems = (all.match(/\\bibitem/g) ?? []).length;
-    if (Number(n) > bibitems && !has(new RegExp(`\\[${n}\\]|\\[[0-9, ]*\\b${n}\\b[0-9, ]*\\]`))) out.push(`[${n}]`);
-  }
-  return [...new Set(out)];
+/**
+ * finding 文字点名、且在确定性可判范围内证明原文中不存在的表 / 图 / 公式 / 数字引文 / 标签 / 引文键
+ * （M16 工程收口 C：无法判定的引用不在此列，见 assessFindingLocators）
+ */
+export function danglingReferences(text: string, document: CertificateDocument, sourceVerification: SourceVerification = "SOURCE_UNKNOWN"): string[] {
+  return invalidRefs(assessFindingLocators(text, locatorIndexOf(document, sourceVerification)));
+}
+
+function locatorIndexOf(document: CertificateDocument, sourceVerification: SourceVerification): LocatorIndex {
+  return buildLocatorIndex({ files: document.files, sourceVerification });
+}
+
+function invalidRefs(assessment: FindingLocatorAssessment): string[] {
+  return assessment.refs.filter((entry) => entry.status === "INVALID").map((entry) => entry.ref);
 }
 
 // ---- 主入口 ----
@@ -508,10 +515,12 @@ export function danglingReferences(text: string, document: CertificateDocument):
 export function verifyFindings(input: VerifyFindingsInput): VerifiedFindingsArtifact {
   const document = buildCertificateDocument(input.files);
   const verifiable = sourceIsVerifiable(input.sourceVerification);
+  const locatorIndex = locatorIndexOf(document, input.sourceVerification);
   const records: FindingVerificationRecord[] = input.issues.map((issue, issueIndex) => {
     const findingId = input.findingFingerprint(issue);
     const findingText = [issue.description, issue.reason ?? ""].join("\n");
-    const dangling = danglingReferences(findingText, document);
+    const locator = assessFindingLocators(findingText, locatorIndex);
+    const dangling = invalidRefs(locator);
     const quote = typeof issue.quote === "string" ? issue.quote : "";
     let span: { file: string; start: number; end: number } | null = null;
     if (quote.trim() !== "") {
@@ -530,6 +539,8 @@ export function verifyFindings(input: VerifyFindingsInput): VerifiedFindingsArti
       file: span?.file ?? null,
       line: span === null || anchorContent === null ? null : lineOf(anchorContent, span.start),
       danglingReferences: dangling,
+      locator,
+      reliable: span !== null && locator.status !== "INVALID_LOCATOR",
     };
     const record: FindingVerificationRecord = { findingId, issueIndex, category: issue.category, severityObserved: issue.severity, anchor, status: "NOT_APPLICABLE", statement: null, checks: [] };
     if (span === null || !SUBSTANTIVE.has(issue.category) || issue.deterministicDisconfirmed === true) return record;
@@ -565,6 +576,8 @@ export function verifyFindings(input: VerifyFindingsInput): VerifiedFindingsArti
     certifiedOnTranscript: records.filter((record) => record.status === "CERTIFIED_ON_TRANSCRIPT").length,
     notCertified: records.filter((record) => record.status === "NOT_CERTIFIED").length,
     danglingReferences: records.filter((record) => record.anchor.danglingReferences.length > 0).length,
+    unverifiableLocators: records.filter((record) => record.anchor.locator?.status === "UNVERIFIABLE_LOCATOR").length,
+    reliablyLocated: records.filter((record) => record.anchor.reliable === true).length,
     sourceVerification: input.sourceVerification,
   };
   return {

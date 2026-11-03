@@ -54,21 +54,66 @@ export function stripCodeFence(text: string): string {
   return text.trim();
 }
 
+/**
+ * M16 工程收口 A：顶层对象的「只加转义」修复种类（不改任何字符内容，只把模型漏写的转义补上）。
+ * - control_chars：字符串内原始 Tab / 换行（既有，M15.1）
+ * - invalid_escape：字符串内 JSON 不认的反斜杠转义（LaTeX \mathcal、\cite 等）→ 反斜杠按字面量保留
+ * - stray_quote：字符串内未转义的 ASCII 双引号（后面不是 , } ] : 等结构跟随符）→ 按字面量保留
+ */
+export type JsonRepairKind = "control_chars" | "invalid_escape" | "stray_quote";
+
+export interface ExtractJsonOptions {
+  /**
+   * 合法结果必须至少含其中一个顶层键（缺省不校验）。防止把错误体（如 `401: {"code":…}`）或
+   * 内层碎片（单条 issue / claim）当成整份输出接受。
+   */
+  expectAnyKey?: readonly string[];
+  /** 顶层对象经只加转义修复后才解析成功时回调（调用方记入 provenance；未修复不回调） */
+  onRepair?: (kinds: JsonRepairKind[]) => void;
+}
+
 /** 从模型输出中提取 JSON 对象（不信任自述；找不到抛 StructuredOutputError） */
-export function extractJsonObject(raw: string, what: string): Record<string, unknown> {
+export function extractJsonObject(raw: string, what: string, options: ExtractJsonOptions = {}): Record<string, unknown> {
   const text = stripCodeFence(raw);
   const start = text.indexOf("{");
   if (start === -1) {
     throw new StructuredOutputError(`${what}：输出中找不到 JSON 对象`, "json_parse");
   }
-  // 从每个 "{" 起尝试平衡匹配（容忍字符串内的花括号）
+  const keysOk = (value: Record<string, unknown>): boolean =>
+    options.expectAnyKey === undefined || options.expectAnyKey.some((key) => key in value);
+  // M16 工程收口 A：输出本身就是一个顶层对象（首字符 "{" 且末字符 "}"）时，内层的 "{" 只可能是它的子对象。
+  // 旧行为：顶层因未转义引号 / 反斜杠解析失败 → 回退到下一个 "{" → 返回单条 issue 碎片，整单元 issues 与分数
+  // 被静默清零（单元仍记 completed，claims 缺失又触发修复调用）。M16 留出集 232 次单元输出中 35 次如此。
+  // 现在：先对顶层对象做只加转义的修复；仍失败就如实报错（调用方按既有重试 / 失败处理），绝不回退到碎片。
+  const wholeObject = start === 0 && text.endsWith("}");
   for (let from = start; from < text.length; from += 1) {
     if (text[from] !== "{") {
       continue;
     }
     const attempt = tryBalancedJson(text, from);
-    if (attempt.kind === "parsed") {
+    if (attempt.kind === "parsed" && keysOk(attempt.value)) {
       return attempt.value;
+    }
+    if (from === start && attempt.kind !== "parsed") {
+      const end = text.lastIndexOf("}");
+      const repaired = end > from ? repairJsonEscapes(text.slice(from, end + 1)) : null;
+      if (repaired !== null && repaired.kinds.length > 0) {
+        try {
+          const parsed = JSON.parse(repaired.text) as unknown;
+          if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) && keysOk(parsed as Record<string, unknown>)) {
+            options.onRepair?.(repaired.kinds);
+            return parsed as Record<string, unknown>;
+          }
+        } catch {
+          // 修复后仍不合法：落到下面的如实报错 / 旧回退逻辑
+        }
+      }
+      if (wholeObject) {
+        throw new StructuredOutputError(
+          `${what}：输出的顶层 JSON 对象不合法（只加转义修复后仍无法解析；不回退到内层片段）`,
+          "json_parse",
+        );
+      }
     }
     if (attempt.kind === "unterminated") {
       // 该 "{" 直到文本末尾都没有闭合：之后的每个 "{" 都是它的嵌套子对象，
@@ -80,7 +125,98 @@ export function extractJsonObject(raw: string, what: string): Record<string, unk
       );
     }
   }
+  if (options.expectAnyKey !== undefined) {
+    throw new StructuredOutputError(`${what}：输出中没有含 ${options.expectAnyKey.join(" / ")} 的 JSON 对象`, "missing_field");
+  }
   throw new StructuredOutputError(`${what}：输出的 JSON 无法解析`, "json_parse");
+}
+
+/**
+ * 只加转义的修复（control_chars → invalid_escape → stray_quote）。返回实际生效的修复种类；
+ * 不删除、不改写任何字符，结构不合法的输出修复后仍会解析失败（fail-closed）。
+ */
+export function repairJsonEscapes(text: string): { text: string; kinds: JsonRepairKind[] } {
+  const kinds: JsonRepairKind[] = [];
+  const controls = escapeControlCharsInJsonStrings(text);
+  if (controls !== text) kinds.push("control_chars");
+  const escapes = escapeInvalidBackslashesInJsonStrings(controls);
+  if (escapes !== controls) kinds.push("invalid_escape");
+  const quotes = escapeStrayQuotesInJsonStrings(escapes);
+  if (quotes !== escapes) kinds.push("stray_quote");
+  return { text: quotes, kinds };
+}
+
+const VALID_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+
+/** 字符串内 JSON 不认的转义（\m、\c、\u 后不足 4 位十六进制…）→ 把反斜杠本身转义（字面量保留） */
+export function escapeInvalidBackslashesInJsonStrings(text: string): string {
+  let out = "";
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index]!;
+    if (!inString) {
+      if (ch === '"') inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      const next = text[index + 1];
+      const validUnicode = next !== "u" || /^[0-9a-fA-F]{4}$/.test(text.slice(index + 2, index + 6));
+      if (next !== undefined && VALID_ESCAPES.has(next) && validUnicode) {
+        out += ch + next;
+        index += 1;
+      } else {
+        out += "\\\\";
+      }
+      continue;
+    }
+    if (ch === '"') inString = false;
+    out += ch;
+  }
+  return out;
+}
+
+/** 字符串内未转义的双引号：其后（跳过空白）不是 } ] : 、文本结束或「, + 值起始符」→ 视为字面量并转义 */
+export function escapeStrayQuotesInJsonStrings(text: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index]!;
+    if (!inString) {
+      if (ch === '"') inString = true;
+      out += ch;
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      out += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '"') {
+      let next = index + 1;
+      while (next < text.length && /\s/.test(text[next]!)) next += 1;
+      const follower = text[next];
+      // "," 之后还须是 JSON 值 / 键的起始符（"Splatting", a loose… 里的逗号属于正文）
+      let afterComma = next + 1;
+      while (follower === "," && afterComma < text.length && /\s/.test(text[afterComma]!)) afterComma += 1;
+      const commaIsStructural = follower === "," && /["{[\-0-9tfn]/.test(text[afterComma] ?? "");
+      if (follower === undefined || commaIsStructural || follower === "}" || follower === "]" || follower === ":") {
+        inString = false;
+        out += ch;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 type BalancedJsonAttempt =

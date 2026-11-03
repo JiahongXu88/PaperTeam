@@ -189,7 +189,9 @@ SAM-CP & R50 & 38.5 & 25.1 & 42.4 \\
 describe("verified-findings/v1 · anchor quality and compatibility", () => {
   it("flags references to tables / equations / citations that do not exist, without changing the finding status", () => {
     const doc = buildCertificateDocument([{ file: "main.tex", content: SAMCP_TEX }]);
-    expect(danglingReferences("Table 1 and Table 7 disagree; see Eq. (12) and [99].", doc)).toEqual(["Table 7", "Eq. (12)", "[99]"]);
+    // M16 工程收口 C：该原文没有编号公式且不是作者源稿 → Eq. (12) 无法判定（UNVERIFIABLE），不再断言「不存在」
+    expect(danglingReferences("Table 1 and Table 7 disagree; see Eq. (12) and [99].", doc)).toEqual(["Table 7", "[99]"]);
+    expect(danglingReferences("Table 1 and Table 7 disagree; see Eq. (12) and [99].", doc, "AUTHOR_SOURCE")).toEqual(["Table 7", "Eq. (12)", "[99]"]);
     expect(danglingReferences("Table 1 lists FCCLIP [56].", doc)).toEqual([]);
     const artifact = run(SAMCP_TEX, [{ ...SAMCP_FINDING, description: `${SAMCP_FINDING.description} See also Table 9.` }]);
     expect(artifact.records[0]!.anchor.danglingReferences).toEqual(["Table 9"]);
