@@ -172,4 +172,10 @@ PUBLICATION TARGET + REVIEW POLICY: COMPLETE（零模型验收；真实模型行
 
 ## 11. 交付
 
-见提交后补记（下一节由同一提交流程追加）。
+| 项 | 事实 |
+|---|---|
+| 代码提交 | `2865e152cd13d70611f1bdff7dbdfa099692a473`（35 files，+2530 / −30；推送前 fetch 确认 origin/main 仍为起点 3f5304a） |
+| CI（2865e15） | `CI` run 41620463715 success |
+| Linux Integration（2865e15） | run 41620463778：attempt 1 **failure**——`docling docker` job 构建镜像时 GitHub runner「No space left on device」（基础设施；同轮 `docling native` 真实全链 success）；只重跑失败 job，attempt 2 两个 job 均 success |
+| 本报告 | 其后的 docs-only 提交；最终 HEAD / origin/main / ls-remote / 工作区与最终提交的 CI 状态见会话最终答复 |
+| 分支 / MR | 直接在 main，无新分支、无 MR、无 force push |
