@@ -3782,6 +3782,25 @@ async function handleProjectResourceRoutes(
     return true;
   }
 
+  // M17.1：默认学术风格审查报告（覆盖账本 + 发现 + 机器处置）与最近一次受控定点修订（before / after / 守卫结论）（只读）
+  if (resource === "style-audit" && rest === "") {
+    if (method !== "GET") {
+      sendMethodNotAllowed(res, "GET", method);
+      return true;
+    }
+    const [report, revision, summary] = await Promise.all([
+      stack.reviewArtifacts.latestStyleAudit(projectId),
+      stack.reviewArtifacts.latestStyleRevision(projectId),
+      stack.reviewArtifacts.latestSummary(projectId),
+    ]);
+    sendJson(res, 200, {
+      report,
+      revision,
+      reviewedRevision: typeof summary?.reviewedRevision === "number" ? summary.reviewedRevision : null,
+    });
+    return true;
+  }
+
   // style-polish（M5.4）：最新 style plan + 润色结果 + 是否已复审（只读）
   if (resource === "style-polish" && rest === "") {
     if (method !== "GET") {

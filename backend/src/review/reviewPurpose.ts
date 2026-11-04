@@ -277,6 +277,7 @@ export function buildPublishedAssessmentView(input: PublishedAssessmentInput): P
       case "review_cross_chapter_reported":
       case "review_whole_paper_reported":
       case "review_output_contract_reported":
+      case "academic_style_audit_reported":
         return { applicability: "REPORTED_ONLY", note: "informational：只呈现跨单元 / 跨章核对是否执行（NOT_EVALUATED 项见 notEvaluated），不参与判定" };
       case "experiment_claims_recomputed":
         return { applicability: "NOT_APPLICABLE", note: "第三方已发表论文没有作者原始实验数据：论文自报数值不做复算（只做稿内一致性核查）" };

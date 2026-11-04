@@ -21,6 +21,7 @@ import {
   listArtifacts,
   listIterations,
   getStylePolish,
+  getAcademicStyleAudit,
   runBuild,
 } from "../api/artifacts.js";
 import { cancelWorkflowRun, createWorkflowRun, listProjectRuns, resumeWorkflowRun } from "../api/runs.js";
@@ -192,6 +193,7 @@ export const queryKeys = {
   researchProviders: ["research", "providers"] as const,
   skills: ["skills"] as const,
   stylePolish: (projectId: string) => ["project", projectId, "style-polish"] as const,
+  academicStyleAudit: (projectId: string) => ["project", projectId, "style-audit"] as const,
   skillProvenance: (skillId: string) => ["skills", skillId, "provenance"] as const,
   skillUpdatePreview: (skillId: string) => ["skills", skillId, "update-preview"] as const,
   modelSettings: ["model-settings"] as const,
@@ -1061,6 +1063,15 @@ export function useStylePolish(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.stylePolish(projectId ?? ""),
     queryFn: ({ signal }) => getStylePolish(projectId ?? "", signal),
+    enabled: isNonEmpty(projectId),
+  });
+}
+
+/** M17.1 默认学术风格审查（覆盖 / 发现 / 定点修订对比） */
+export function useAcademicStyleAudit(projectId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.academicStyleAudit(projectId ?? ""),
+    queryFn: ({ signal }) => getAcademicStyleAudit(projectId ?? "", signal),
     enabled: isNonEmpty(projectId),
   });
 }

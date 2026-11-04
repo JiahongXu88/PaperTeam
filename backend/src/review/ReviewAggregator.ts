@@ -13,6 +13,7 @@ import type { FactVerdict, ModeReviewResult, ReviewIssue } from "../agents/Revie
 import type { ReviewFinding } from "./finding.js";
 import type { AcademicScoreConfirmation } from "./academicConfirmation.js";
 import type { ReviewCoverageSummary } from "./coverageLedger.js";
+import type { StyleAuditSummary } from "./academicStyleAudit.js";
 
 export interface ReviewSummary {
   generatedAt: string;
@@ -77,7 +78,29 @@ export interface ReviewSummary {
    * 旧产物无此字段 = 口径未记录。
    */
   academicScoreBasis?: AcademicScoreBasis;
+  /**
+   * M17.1：默认风格审查的覆盖与处置摘要（完整报告在 reviews/style-audit-r{round}.json）。只进入建议性的
+   * academic_style_audit_reported 规则（非必需）；不参与 counts / openCritical / openMajor / 分数。
+   */
+  styleAudit?: StyleAuditSummary;
   reportPaths: string[];
+}
+
+/**
+ * M17.1：style 类 finding 的机器侧严重度政策。风格问题是建议性 / 可修复问题：模型输出的 critical / major / blocking
+ * 记入 modelSeverity / modelBlocking 留痕，计数口径一律 minor、非 blocking。改变证据强度或结论方向的问题按审稿契约
+ * 归 fact / academic，不受影响。
+ */
+export function applyStyleAdvisoryPolicy(issue: ReviewIssue): ReviewIssue {
+  if (issue.category !== "style" || (issue.severity === "minor" && !issue.blocking)) return issue;
+  return {
+    ...issue,
+    modelSeverity: issue.modelSeverity ?? issue.severity,
+    modelBlocking: issue.modelBlocking ?? issue.blocking,
+    severity: "minor",
+    blocking: false,
+    severityPolicy: "style_advisory/v1",
+  };
 }
 
 /** 学术分的口径（M14.9.5）：长文档单元聚合分与整稿维度分不是同一量表，二者都未经外部质量金标准校准 */
@@ -151,7 +174,8 @@ export function aggregateReviews(
   const seen = new Set<string>();
   const issues: ReviewIssue[] = [];
   for (const result of results) {
-    for (const issue of result.issues) {
+    for (const original of result.issues) {
+      const issue = applyStyleAdvisoryPolicy(original);
       const key = `${issue.category}|${issue.section}|${issue.description}`;
       if (seen.has(key)) {
         continue; // 三路 review 报出完全相同的问题时去重

@@ -1241,6 +1241,17 @@ export function createScriptedRuntime(options: ScriptedRuntimeOptions = {}): Scr
         });
       } else if (scope === "review/academic/consistency") {
         output = JSON.stringify({ summary: "scripted consistency review", issues: [] });
+      } else if (scope === "review/style/unit") {
+        // M17.1 默认风格审查：缺省「已审查、无问题」；单元原文含「粗浅的尝试」样板句时报一条可删除的自谦（E2E 用）
+        const unitText = input.task.split(/完整无截断）=====\n/)[1] ?? "";
+        const styleFindings = (unitText.match(/[^。！？\n]*粗浅的尝试[^。！？\n]*[。！？]/g) ?? []).slice(0, 1).map((quote) => ({
+          quote: quote.trim(), styleCategory: "repeated_modesty_apology", reason: "无信息的自谦，不承载科学信息",
+          necessity: "UNNECESSARY", constraints: [], action: "MINIMAL_REWRITE", rewrite: "",
+        }));
+        output = JSON.stringify({ styleFindings, unitNote: "scripted style audit" });
+      } else if (scope === "review/style/rewrite-check") {
+        const ids = [...input.task.matchAll(/--- 条目 (sty-[0-9a-f]+)/g)].map((match) => match[1]);
+        output = JSON.stringify({ checks: ids.map((id) => ({ id, verdict: "EQUIVALENT", reason: "scripted" })) });
       } else if (scope.startsWith("review/")) {
         // 轮次计数按项目隔离（E2E 单栈多项目互不串台；无 projectId 时退回全局计数）
         if (projectId !== "") {

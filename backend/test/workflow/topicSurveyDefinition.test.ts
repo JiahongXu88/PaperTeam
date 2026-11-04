@@ -83,6 +83,7 @@ describe("topic_survey definition", () => {
       "hitl.revision_stalled",
       "hitl.style_polish",
       "revision.style_polish",
+      "revision.style_audit_apply",
       "build.draft",
       "build.final",
     ]);

@@ -39,7 +39,9 @@ export type EditContractSourceKind =
   | "system_revision_policy"
   | "style_polish_policy"
   | "latex_repair_policy"
-  | "fact_restore_policy";
+  | "fact_restore_policy"
+  /** M17.1：默认风格审查的锚定措辞修订（系统策略；锚内替换 / 删除，数值与引用硬冻结） */
+  | "academic_style_rewrite";
 
 export type EditAuthorityKind =
   /** 确定性系统策略（代码常量，版本化） */
@@ -503,6 +505,35 @@ export function preservingPolicyContract(input: {
     source: { kind: input.kind, ref: `${input.kind}/v1` },
     authority: [{ kind: "system_policy", ref: `${input.kind}/v1` }],
     target: { carrier: input.carrier, file: input.file, baseContent: input.baseContent },
+    constraints: {
+      numericProtect: "all_existing",
+      allowNewValues: false,
+      hardNumericFreeze: true,
+      citationPolicy: "preserve_existing_no_new",
+    },
+  });
+}
+
+/**
+ * M17.1 风格定点修订：只能改写 / 删除风格审查定位的原句（anchors，基线中唯一可回放），锚外逐字保留；
+ * 全部数值与引用逐个守恒、不得新增。授权来源是代码常量策略（审查 → 机器分级 → 守卫），不是模型自述的「已批准」。
+ */
+export function academicStyleRewriteContract(input: {
+  projectId: string;
+  runId?: string;
+  file: string;
+  carrier: "abstract" | "file";
+  baseContent: string;
+  anchors: readonly string[];
+}): EditContract {
+  return buildEditContract({
+    projectId: input.projectId,
+    ...(input.runId !== undefined ? { runId: input.runId } : {}),
+    source: { kind: "academic_style_rewrite", ref: "academic-style-rewrite/v1" },
+    authority: [{ kind: "system_policy", ref: "academic-style-rewrite/v1" }],
+    target: { carrier: input.carrier, file: input.file, baseContent: input.baseContent },
+    anchors: input.anchors,
+    allowedOps: ["replace_wording", "delete_text"],
     constraints: {
       numericProtect: "all_existing",
       allowNewValues: false,

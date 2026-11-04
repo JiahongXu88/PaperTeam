@@ -962,6 +962,23 @@ export function evaluateQualityGate(
     true,
   );
 
+  // 8a. M17.1：默认风格审查的覆盖（建议性维度，非必需：风格问题本身不硬 FAIL；但审查未完成 / 失败不得呈现为
+  // 「已审查通过」——COMPLETE = INFO，PARTIAL / FAILED / DISABLED = NOT_EVALUATED，不适用 = NOT_APPLICABLE）。
+  // 旧产物无该字段 → 规则不出现（不改历史判定）。
+  const styleAudit = input.review.styleAudit;
+  if (styleAudit !== undefined) {
+    const counts = `发现 ${styleAudit.findings} 条（可自动定点修订 ${styleAudit.autoEligible}、保留 ${styleAudit.keep}、待作者裁决 ${styleAudit.authorDecision}）`;
+    push(
+      "academic_style_audit_reported",
+      styleAudit.state === "COMPLETE" ? "INFO" : styleAudit.state === "NOT_APPLICABLE" ? "NOT_APPLICABLE" : "NOT_EVALUATED",
+      styleAudit.state === "COMPLETE"
+        ? `学术风格与过度防御性表达审查已覆盖 ${styleAudit.reviewedUnits}/${styleAudit.eligibleUnits} 个中文正文单元；${counts}。建议性维度，不进入科学正确性判定`
+        : styleAudit.state === "NOT_APPLICABLE"
+          ? "无可审查的中文正文单元（纯标题 / 英文稿件）：学术风格审查不适用"
+          : `学术风格审查${styleAudit.state === "DISABLED" ? "被诊断开关关闭" : styleAudit.state === "FAILED" ? "未完成（全部单元失败）" : "部分完成"}：${styleAudit.reviewedUnits}/${styleAudit.eligibleUnits} 单元（失败 ${styleAudit.failedUnits}、预算跳过 ${styleAudit.skippedUnits}）；${counts}——未审单元的风格问题未知，不代表无问题${styleAudit.reasons.length > 0 ? `（${styleAudit.reasons.slice(0, 3).join("；")}）` : ""}`,
+    );
+  }
+
   // 8b. M14.1a P0-2：review 覆盖完整性——计划纳入审查的目标正文必须全部由成功
   // 完成的 Review Unit 覆盖。coverage 是确定性账本（不是模型自述）；旧产物无
   // 该字段 = digest 单轮语义，按不适用呈现（不改历史判定）。

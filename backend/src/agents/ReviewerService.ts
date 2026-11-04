@@ -51,6 +51,16 @@ import {
   type UnitClaimStage,
 } from "../review/claimAudit.js";
 import { parseFindingRecheckOutput, renderFindingRecheckPrompt, type FindingRecheckItem, type FindingRecheckResult } from "../review/findingVerification.js";
+import {
+  buildStyleRewriteCheckPrompt,
+  buildUnitStyleAuditPrompt,
+  parseStyleRewriteCheckOutput,
+  parseUnitStyleAuditOutput,
+  type ParsedUnitStyleAudit,
+  type StyleCandidate,
+  type StyleRewriteCheckItem,
+  type StyleSemanticVerdict,
+} from "../review/academicStyleAudit.js";
 
 export type ReviewMode = "fact" | "academic" | "style";
 
@@ -166,6 +176,14 @@ export interface ReviewIssue {
    * 稿件值与复算值随 finding 可追溯（账本 reviews/claim-checks-r{round}.json）。
    */
   claimCheck?: { id: string; verdict: "CONTRADICTED"; manuscriptValue: number; derivedValue: number | null; ledgerHash: string; dataSha256: string | null };
+  /**
+   * M17.1：风格类 finding 的机器侧严重度政策（ReviewAggregator 写入，模型不产出）。style 是建议性 / 可修复问题：
+   * 模型给出的 critical / major / blocking 原样保留在 modelSeverity / modelBlocking，计数口径钳为 minor、非 blocking——
+   * 不靠提示词，也不让风格建议变成科学正确性硬 FAIL。
+   */
+  modelSeverity?: IssueSeverity;
+  modelBlocking?: boolean;
+  severityPolicy?: "style_advisory/v1";
 }
 
 /**
@@ -692,6 +710,87 @@ export class ReviewerService {
     const metaModel = task.metadata?.["model"];
     return {
       results: parseFindingRecheckOutput(parsed, new Set(params.items.map((item) => item.findingId))),
+      taskId: task.taskId,
+      promptSha256: sha256Hex(prompt),
+      ...(typeof metaModel === "string" ? { model: metaModel } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+    };
+  }
+
+  /**
+   * M17.1：单个 Review Unit 的学术写作风格 / 过度防御性表达审查（默认必检；全新 sealed 会话，prompt 即单元全文）。
+   * 走 review/style 路由（academic-style-zh），与学术单元审稿相互独立——不改变 review/academic/unit 的 prompt 与请求指纹。
+   * styleFindings 缺失 / 非数组即结构违约（抛出，由调用方有界重试后记 FAILED），绝不把非法输出当作「已审无问题」。
+   */
+  async auditUnitStyle(params: {
+    projectId: string;
+    unit: { unitId: string; file: string; heading: string; unitIndex: number; unitCount: number; text: string };
+    paperTitle?: string;
+    candidates: readonly StyleCandidate[];
+    sessionLabel: string;
+    signal?: AbortSignal;
+  }): Promise<{ parsed: ParsedUnitStyleAudit; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
+    const prompt = buildUnitStyleAuditPrompt(params);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: prompt,
+      projectId: params.projectId,
+      sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/style/unit/${params.sessionLabel}`,
+      toolPolicy: "sealed",
+      contextScope: "review/style/unit",
+      language: "zh",
+      metadata: { role: "reviewer", skill: "style-unit", unit: params.unit.unitId },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `风格审查（${params.unit.unitId}）任务以 ${task.status} 状态结束`);
+    }
+    const parsed = parseUnitStyleAuditOutput(
+      extractJsonObject(task.output ?? "", `风格审查（${params.unit.unitId}）结果`, { expectAnyKey: ["styleFindings"] }),
+      params.unit.text,
+      `风格审查（${params.unit.unitId}）`,
+    );
+    const metaModel = task.metadata?.["model"];
+    return {
+      parsed,
+      taskId: task.taskId,
+      promptSha256: sha256Hex(prompt),
+      ...(typeof metaModel === "string" ? { model: metaModel } : {}),
+      ...(task.usage !== undefined ? { usage: task.usage as unknown as Record<string, unknown> } : {}),
+    };
+  }
+
+  /**
+   * M17.1：风格改写的语义复核（一批 ≤ STYLE_REWRITE_CHECK_BATCH 条；全新 sealed 会话）。只可否决：
+   * 调用方只把 EQUIVALENT 视为可落盘，CHANGED / UNSURE / 缺失 / 调用失败一律保留原文。
+   */
+  async checkStyleRewrites(params: {
+    projectId: string;
+    items: readonly StyleRewriteCheckItem[];
+    sessionLabel: string;
+    signal?: AbortSignal;
+  }): Promise<{ verdicts: Map<string, { verdict: StyleSemanticVerdict; reason: string }>; taskId: string; promptSha256: string; model?: string; usage?: Record<string, unknown> }> {
+    const prompt = buildStyleRewriteCheckPrompt(params.items);
+    const task = await this.runtime.runAgent({
+      agentId: this.agentId,
+      ...this.timeoutOverride,
+      signal: params.signal,
+      task: prompt,
+      projectId: params.projectId,
+      sessionKey: `agent:${this.agentId}:paperteam-${params.projectId}--review/style/rewrite-check/${params.sessionLabel}`,
+      toolPolicy: "sealed",
+      contextScope: "review/style/rewrite-check",
+      language: "zh",
+      metadata: { role: "reviewer", skill: "style-rewrite-check", items: params.items.length },
+    });
+    if (task.status !== "completed") {
+      throw new AgentRunFailedError(task.error ?? `风格改写语义复核任务以 ${task.status} 状态结束`);
+    }
+    const parsed = extractJsonObject(task.output ?? "", "风格改写语义复核结果", { expectAnyKey: ["checks"] });
+    const metaModel = task.metadata?.["model"];
+    return {
+      verdicts: parseStyleRewriteCheckOutput(parsed, new Set(params.items.map((item) => item.id))),
       taskId: task.taskId,
       promptSha256: sha256Hex(prompt),
       ...(typeof metaModel === "string" ? { model: metaModel } : {}),

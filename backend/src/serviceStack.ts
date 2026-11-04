@@ -194,6 +194,10 @@ export interface ServiceStackOptions {
     /** M16 后续：实验性整稿综合审查（缺省 off） */
     wholePaperSynthesis?: "off" | "on";
     wholePaperMaxChars?: number;
+    /** M17.1：默认学术风格审查（缺省 on）与调用 / 自动修订上限 */
+    academicStyleAudit?: "on" | "off";
+    academicStyleAuditMaxCalls?: number;
+    academicStyleMaxAutoRewrites?: number;
     /** M16 工程收口 B：有调用上限时为必需阶段预留额度（缺省 on） */
     stageCallReserve?: "on" | "off";
     /** M15.4.3：CandidateProposer 影子旁路（缺省 off；PAPERTEAM_CANDIDATE_SHADOW） */
@@ -1220,6 +1224,10 @@ export function buildServiceStack(options: ServiceStackOptions): ServiceStack {
         claimStage: options.review?.claimStage ?? "inline",
         wholePaperSynthesis: options.review?.wholePaperSynthesis ?? "off",
         wholePaperMaxChars: options.review?.wholePaperMaxChars ?? 160_000,
+        // M17.1：产品默认必检（测试 / 嵌入式装配同样默认开启；关闭需显式 off）
+        academicStyleAudit: options.review?.academicStyleAudit ?? "on",
+        academicStyleAuditMaxCalls: options.review?.academicStyleAuditMaxCalls ?? 80,
+        academicStyleMaxAutoRewrites: options.review?.academicStyleMaxAutoRewrites ?? 30,
         stageCallReserve: options.review?.stageCallReserve ?? "on",
         candidateShadow: options.review?.candidateShadow ?? "off",
         revisionTaskPolicy: { ...DEFAULT_REVISION_TASK_POLICY, ...options.review?.revisionTask },

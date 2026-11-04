@@ -167,6 +167,8 @@ const RULE_CLASSES: Record<string, RuleClass> = {
   style_risk_threshold: { layer: "L2", grade: "uncalibrated_score" },
   transparent_unverified_reported: { layer: "L2", grade: "llm_judgment" },
   templated_phrasing_reported: { layer: "L2", grade: "llm_judgment" },
+  // M17.1：默认风格审查覆盖（建议性；风格发现是模型建议，非科学缺陷）
+  academic_style_audit_reported: { layer: "L2", grade: "llm_judgment" },
   cross_chapter_consistency_reported: { layer: "L2", grade: "deterministic" },
   survey_writing_metrics: { layer: "L2", grade: "deterministic" },
   survey_synthesis_traceability: { layer: "L2", grade: "deterministic" },

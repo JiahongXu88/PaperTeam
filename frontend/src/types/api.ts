@@ -738,6 +738,84 @@ export interface StylePolishView {
   reReviewed: boolean | null;
 }
 
+// ---- M17.1 默认学术风格审查（覆盖账本 + 发现 + 受控定点修订；只读） ----
+
+export type AcademicStyleCoverageState = "COMPLETE" | "PARTIAL" | "FAILED" | "NOT_APPLICABLE" | "DISABLED";
+export type AcademicStyleDisposition = "AUTO_REWRITE_ELIGIBLE" | "KEEP" | "AUTHOR_DECISION";
+export type AcademicStyleRevisionStatus =
+  | "NOT_DISPATCHED" | "KEPT" | "AUTHOR_DECISION" | "AUTO_FIXED" | "GUARD_REJECTED" | "SEMANTIC_REJECTED" | "ANCHOR_LOST" | "STALE";
+
+export interface AcademicStyleFindingView {
+  id: string;
+  file: string;
+  heading: string;
+  originalQuote: string;
+  styleCategory: string;
+  candidateReason: string;
+  necessityJudgment: "UNNECESSARY" | "REQUIRED" | "UNCERTAIN";
+  evidenceConstraints: string[];
+  suggestedAction: "KEEP" | "MINIMAL_REWRITE" | "AUTHOR_DECISION";
+  proposedRewrite?: string;
+  disposition: AcademicStyleDisposition;
+  dispositionReason: string;
+  revisionStatus: AcademicStyleRevisionStatus;
+}
+
+export interface AcademicStyleUnitView {
+  unitId: string;
+  file: string;
+  heading: string;
+  status: "COMPLETE" | "REUSED" | "FAILED" | "SKIPPED_BUDGET" | "NOT_APPLICABLE";
+  reason?: string;
+  error?: string;
+  findings: number;
+}
+
+export interface AcademicStyleAuditReportView {
+  round: number;
+  reviewedRevision?: number;
+  generatedAt: string;
+  coverage: {
+    state: AcademicStyleCoverageState;
+    eligibleUnits: number;
+    completedUnits: number;
+    reusedUnits: number;
+    failedUnits: number;
+    skippedUnits: number;
+    notApplicableUnits: number;
+    reasons: string[];
+  };
+  units: AcademicStyleUnitView[];
+  findings: AcademicStyleFindingView[];
+  counts: { findings: number; byCategory: Record<string, number>; byDisposition: Record<AcademicStyleDisposition, number>; unanchored: number };
+  disclaimer: string;
+}
+
+export interface AcademicStyleRevisionItemView {
+  findingId: string;
+  file: string;
+  heading: string;
+  styleCategory: string;
+  before: string;
+  after: string;
+  status: AcademicStyleRevisionStatus;
+  detail: string;
+}
+
+export interface AcademicStyleRevisionView {
+  reviewRound: number;
+  sourceRevision: number;
+  revision?: number;
+  status: "applied" | "noop" | "stale";
+  items: AcademicStyleRevisionItemView[];
+}
+
+export interface AcademicStyleAuditView {
+  report: AcademicStyleAuditReportView | null;
+  revision: AcademicStyleRevisionView | null;
+  reviewedRevision: number | null;
+}
+
 // ---- Manuscript Overview（M7.0.3：当前稿件聚合视图，只读；事实全部来自 Backend） ----
 
 /** 稿件进入系统的方式（Backend 从落盘事实推导） */

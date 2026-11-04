@@ -38,6 +38,8 @@ const DOMAIN_EVENT_TYPES = [
   "final.created",
   "style_polish.applied",
   "style_polish.skipped",
+  "style_audit.revision_applied",
+  "style_audit.revision_skipped",
   "external_instructions.updated",
 ] as const;
 
@@ -193,6 +195,10 @@ export function useWorkflowEvents({ runId, projectId, enabled }: WorkflowEventsO
       if (event.type === "workflow.awaiting_input") {
         invalidateRuns();
         return;
+      }
+      if (projectId !== undefined && (event.type === "style_audit.revision_applied" || event.type === "style_audit.revision_skipped" || (event.type === "stage.completed" && event.stageId === "review.run"))) {
+        // M17.1：风格审查 / 定点修订结果变化 → 失效风格报告
+        void queryClient.invalidateQueries({ queryKey: queryKeys.academicStyleAudit(projectId) });
       }
       if (event.type === "external_instructions.updated" && projectId !== undefined) {
         // M5.7：外部意见状态回写（派发 / 冲突）→ 失效意见列表与修订计划

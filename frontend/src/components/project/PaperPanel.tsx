@@ -24,6 +24,7 @@ import { ApiError } from "../../api/client.js";
 import { formatApiError } from "../../utils/errors.js";
 import { formatBytes, formatDateTime, formatDurationMs } from "../../utils/format.js";
 import { VersionHistoryCard } from "./VersionHistory.js";
+import { AcademicStyleAuditCard } from "./AcademicStyleAuditPanel.js";
 import type {
   BuildGateRecordView,
   PaperArtifactView,
@@ -121,6 +122,7 @@ export function PaperPanel({ projectId }: { projectId: string }) {
       <BuildStatusCard projectId={projectId} />
       <VersionHistoryCard projectId={projectId} />
       <IterationsCard projectId={projectId} />
+      <AcademicStyleAuditCard projectId={projectId} />
       <StylePolishCard projectId={projectId} />
     </div>
   );

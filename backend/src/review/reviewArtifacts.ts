@@ -29,6 +29,7 @@ import type { RevisionValidationResult } from "./revisionValidation.js";
 import type { IterationRecord } from "./revisionOutcome.js";
 import type { BestRevisionArtifact } from "./bestRevision.js";
 import type { StylePolishResult } from "./stylePolicy.js";
+import type { StyleAuditReport, StyleRevisionRecord } from "./academicStyleAudit.js";
 import type { SurveyWritingEvaluation } from "../survey/writingInvariants.js";
 import type { PatchCandidateRecord, PatchValidationArtifact } from "./patchValidation.js";
 import type { AcademicRedundancyReport } from "./academicRedundancyClassifier.js";
@@ -749,6 +750,40 @@ export class ReviewArtifactStore {
     const rounds = await this.rounds(projectId, /^style-polish-r(\d+)\.json$/);
     const round = rounds[0];
     return round === undefined ? null : this.loadStylePolishResult(projectId, round);
+  }
+
+  /** M17.1：默认风格审查报告（reviews/style-audit-r{round}.json；每轮 review.run 写一份，含覆盖账本） */
+  async saveStyleAudit(projectId: string, report: StyleAuditReport): Promise<string> {
+    const fileName = `style-audit-r${report.round}.json`;
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), report);
+    return `reviews/${fileName}`;
+  }
+
+  async loadStyleAudit(projectId: string, round: number): Promise<StyleAuditReport | null> {
+    const parsed = await this.readJson<StyleAuditReport>(projectId, `style-audit-r${round}.json`);
+    return parsed !== null && Array.isArray(parsed.units) && Array.isArray(parsed.findings) ? parsed : null;
+  }
+
+  /** 最新一轮风格审查报告；before 给出时只找严格早于该轮的（跨轮复用基准） */
+  async latestStyleAudit(projectId: string, before?: number): Promise<StyleAuditReport | null> {
+    const rounds = (await this.rounds(projectId, /^style-audit-r(\d+)\.json$/)).filter((round) => before === undefined || round < before);
+    const round = rounds[0];
+    return round === undefined ? null : this.loadStyleAudit(projectId, round);
+  }
+
+  /** M17.1：风格定点修订记录（reviews/style-revision-r{reviewRound}.json；before / after / 守卫 / 语义复核 / 处理结果） */
+  async saveStyleRevision(projectId: string, record: StyleRevisionRecord): Promise<string> {
+    const fileName = `style-revision-r${record.reviewRound}.json`;
+    await writeJsonAtomic(join(this.projects.reviewsDir(projectId), fileName), record);
+    return `reviews/${fileName}`;
+  }
+
+  async latestStyleRevision(projectId: string): Promise<StyleRevisionRecord | null> {
+    const rounds = await this.rounds(projectId, /^style-revision-r(\d+)\.json$/);
+    const round = rounds[0];
+    if (round === undefined) return null;
+    const parsed = await this.readJson<StyleRevisionRecord>(projectId, `style-revision-r${round}.json`);
+    return parsed !== null && Array.isArray(parsed.items) ? parsed : null;
   }
 
   /** 最新一轮 style plan（无则 null） */

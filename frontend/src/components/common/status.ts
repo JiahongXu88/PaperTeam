@@ -241,6 +241,11 @@ export const GATE_RULE_STYLES: Record<string, GateRuleStyle> = {
     label: "跨章一致性审查执行情况",
     description: "跨章一致性审查是否实际执行；失败时跨章核对为 NOT_EVALUATED，没有跨章问题不代表没有冲突。",
   },
+  // M17.1：默认学术风格与过度防御性表达审查（建议性维度，不参与科学正确性判定）
+  academic_style_audit_reported: {
+    label: "学术风格审查覆盖",
+    description: "默认审查模板化套话、无信息防御性限定、重复自谦与贡献弱化；只报告覆盖与处置情况，风格问题不阻止 Final。部分 / 失败时显示为未评估（未审单元的风格问题未知）。这不是 AI 生成检测。",
+  },
   // M15.6：跨节数值一致性（摘要 / 结论 ↔ 结果表；确定性零模型检查）
   cross_section_numeric_consistency: {
     label: "跨节数值一致",
@@ -265,6 +270,7 @@ export const GATE_RULES_NEUTRAL: ReadonlySet<string> = new Set([
   "fact_preservation_not_applicable",
   "review_unit_context_reported",
   "review_cross_chapter_reported",
+  "academic_style_audit_reported",
 ]);
 
 /**

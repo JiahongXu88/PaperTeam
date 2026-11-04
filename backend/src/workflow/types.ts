@@ -238,6 +238,8 @@ export type WorkflowDomainEventType =
   | "final.created"
   | "style_polish.applied"
   | "style_polish.skipped"
+  | "style_audit.revision_applied"
+  | "style_audit.revision_skipped"
   | "external_instructions.updated"
   | "revision_report.created";
 

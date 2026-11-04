@@ -79,6 +79,18 @@ export function artifactDownloadUrl(
   return apiUrl(disposition === "attachment" ? `${base}?disposition=attachment` : base);
 }
 
+/** M17.1：默认学术风格审查报告 + 最近一次受控定点修订（只读） */
+export async function getAcademicStyleAudit(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<import("../types/api.js").AcademicStyleAuditView> {
+  const body = await apiClient.get<Partial<import("../types/api.js").AcademicStyleAuditView>>(
+    `/api/projects/${encodeURIComponent(projectId)}/style-audit`,
+    signal,
+  );
+  return { report: body.report ?? null, revision: body.revision ?? null, reviewedRevision: body.reviewedRevision ?? null };
+}
+
 /** M5.4：最新 style plan + 润色结果 + 是否已复审（只读） */
 export async function getStylePolish(
   projectId: string,

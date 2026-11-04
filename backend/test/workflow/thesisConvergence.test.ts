@@ -85,7 +85,7 @@ interface ConvSpec {
   revisionProposal?: (current: string) => string;
 }
 
-function convergenceRuntime(base: ReturnType<typeof scriptedIdeaRuntime>["runtime"], spec: ConvSpec, counter?: { calls: number }) {
+function convergenceRuntime(base: ReturnType<typeof scriptedIdeaRuntime>["runtime"], spec: ConvSpec, counter?: { calls: number; styleByRound?: number[] }) {
   let reviewRound = 0;
   return {
     ...base,
@@ -117,7 +117,11 @@ function convergenceRuntime(base: ReturnType<typeof scriptedIdeaRuntime>["runtim
           status: "completed" as const, createdAt: now, updatedAt: now, output, events: [],
         } as never;
       }
-      if (counter !== undefined) counter.calls += 1;
+      // M17.1：默认风格审查调用按审稿轮单独计数（第二轮只重审改动单元，调用数与第一轮不同）
+      if (counter !== undefined && scope.startsWith("review/style/")) {
+        counter.styleByRound ??= [];
+        counter.styleByRound[reviewRound] = (counter.styleByRound[reviewRound] ?? 0) + 1;
+      } else if (counter !== undefined) counter.calls += 1;
       return base.runAgent(input);
     },
   };
@@ -232,7 +236,7 @@ export async function poll(
 
 export async function setupConvergenceRun(
   spec: ConvSpec,
-  options: { runBudget?: { maxModelCallsPerRun: number; maxRunTokensPerRun: number }; counter?: { calls: number } } = {},
+  options: { runBudget?: { maxModelCallsPerRun: number; maxRunTokensPerRun: number }; counter?: { calls: number; styleByRound?: number[] } } = {},
 ): Promise<{ stack: TestStack; runId: string; projectId: string }> {
   const scripted = scriptedIdeaRuntime({ reviewSequence: ["pass"] });
   const stack = await startTestStack(convergenceRuntime(scripted.runtime, spec, options.counter), {
@@ -303,7 +307,7 @@ describe("M14.4 修订循环收敛与最佳版本恢复（thesis_from_papers 全
 
   it("场景 F：run 级模型预算耗尽 → 第二轮 review 不再启动（overflow HITL → Draft，优雅降级）", { timeout: 240_000 }, async () => {
     // 基线计数：writing/规划等调用 + 每轮 3 路 review + 每轮 1 次 bounded 修订
-    const counter = { calls: 0 };
+    const counter: { calls: number; styleByRound?: number[] } = { calls: 0 };
     const spec: ConvSpec = {
       rounds: [
         { academic: ROUND1_ACADEMIC, fact: PASS_FACT, style: PASS_STYLE },
@@ -313,9 +317,9 @@ describe("M14.4 修订循环收敛与最佳版本恢复（thesis_from_papers 全
     const baseline = await setupConvergenceRun(spec, { counter });
     const baselineRun = await poll(baseline.stack, baseline.runId, "accept_draft");
     expect(baselineRun.status).toBe("completed");
-    const totalBaseline = counter.calls + 3 * reviewCompletions(baselineRun) + reviseCompletions(baselineRun);
-    // 预算恰好覆盖 writing + 第一轮 review（3）+ 第一次修订（1）——第二轮 review 不再启动
-    const budget = Math.max(1, totalBaseline - 3);
+    expect(reviewCompletions(baselineRun)).toBe(2);
+    // 预算恰好覆盖 writing + 第一轮 review（3 + 第一轮风格审查）+ 第一次修订（1）——第二轮 review 不再启动
+    const budget = Math.max(1, counter.calls + 3 + (counter.styleByRound?.[1] ?? 0) + reviseCompletions(baselineRun));
 
     const budgetRun = await setupConvergenceRun(spec, {
       runBudget: { maxModelCallsPerRun: budget, maxRunTokensPerRun: 0 },

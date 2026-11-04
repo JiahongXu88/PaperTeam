@@ -3748,3 +3748,28 @@
   margin: var(--s-2) 0 var(--s-1);
   font-size: var(--fs-sm);
 }
+
+/* M17.1 学术风格审查卡：原句引用与定点修订对比 */
+.style-quote {
+  margin: var(--s-2) 0;
+  padding-left: var(--s-3);
+  border-left: 2px solid var(--border-default);
+  color: var(--text-secondary);
+}
+
+.style-diff {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: var(--s-2);
+}
+
+.style-diff del {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.style-diff ins {
+  color: var(--success);
+  text-decoration: none;
+}

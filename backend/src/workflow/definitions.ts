@@ -335,6 +335,18 @@ import {
 } from "../review/stylePolicy.js";
 import { checkStyleInvariants, extractCitationKeys as extractCitedKeyList } from "../review/styleInvariants.js";
 import {
+  ACADEMIC_STYLE_REVISION_SCHEMA,
+  STYLE_REWRITE_CHECK_BATCH,
+  locateStyleQuote,
+  styleAuditSummaryOf,
+  type StyleAuditReport,
+  type StyleAuditSummary,
+  type StyleRevisionRecord,
+  type StyleSemanticVerdict,
+} from "../review/academicStyleAudit.js";
+import { runAcademicStyleAudit, type StyleAuditUnitInput } from "../review/academicStyleAuditRunner.js";
+import { finalizeStyleRevisions, prepareStyleRevisions, styleRewriteCheckItems, type StyleRevisionTarget } from "../review/academicStyleRevision.js";
+import {
   judgeOutcome,
   judgeConvergence,
   iterationsForRun,
@@ -631,6 +643,14 @@ export interface WorkflowServices {
     stageCallReserve?: "on" | "off";
     /** M15.4.3：CandidateProposer 影子旁路（缺省 off = 零额外调用零产物；on 见 review/candidateShadow.ts） */
     candidateShadow?: "off" | "on";
+    /**
+     * M17.1：默认学术风格 / 过度防御性表达审查（缺省 on = 产品默认必检；off 只用于开发 / 故障排查——覆盖状态如实为
+     * DISABLED，Gate 呈现 NOT_EVALUATED，绝不冒充已审）。maxCalls = 每轮风格审查调用上限（含重试，缺省 80）；
+     * maxAutoRewrites = 每 run 自动定点修订条数上限（缺省 30）。
+     */
+    academicStyleAudit?: "on" | "off";
+    academicStyleAuditMaxCalls?: number;
+    academicStyleMaxAutoRewrites?: number;
     /** M11.4：existing-paper 分层 gate 策略（Revision Task vs Publication Ready） */
     revisionTaskPolicy: RevisionTaskPolicy;
   };
@@ -1746,6 +1766,13 @@ function reviewRunStageInner(
         claimAuditSummary = audits?.claimAudit;
         citationAuditSummary = audits?.citationAudit;
       }
+      // M17.1：默认学术风格 / 过度防御性表达审查（每个覆盖计划单元一次 sealed 调用，独立于学术单元审稿；
+      // 失败 / 预算不足只降为风格覆盖 PARTIAL / FAILED，不影响学术审稿结果与正文覆盖率）
+      const styleAudit = await runStyleAuditForReview(services, ctx, {
+        round, revision, coveragePlan, reviewSources, unitMaxChars, language, publishedAssessment,
+        ...(project.title !== "" ? { paperTitle: project.title } : {}),
+      });
+      summary.styleAudit = styleAudit.summary;
       // 发表目标审稿政策摘要随本轮审稿落盘（追溯用；不参与计数 / 分数 / Gate）
       if (reviewPolicy !== null) summary.reviewPolicy = reviewPolicySummary(reviewPolicy) ?? undefined;
       await services.reviewArtifacts.saveSummary(ctx.projectId, round, summary);
@@ -1823,6 +1850,10 @@ function reviewRunStageInner(
           : {}),
         // M5.4：可进入语言润色的 style minor finding 数（planner 据此决定是否询问）
         styleMinor: summary.issues.filter(isPolishableStyleIssue).length,
+        // M17.1：默认风格审查（planner 据 styleAuditAutoEligible 决定是否进入 revision.style_audit_apply）
+        styleAuditState: styleAudit.summary.state,
+        styleAuditFindings: styleAudit.summary.findings,
+        styleAuditAutoEligible: styleAudit.summary.autoEligible,
         // M15.1：shadow 审计摘要（产物 reviews/claim-audit-r{round}.json / citation-audit-r{round}.json）
         ...(claimAuditSummary !== undefined ? { claimAudit: { mode: claimAuditSummary.claimAuditMode, claims: claimAuditSummary.claims.total, verified: claimAuditSummary.claims.verified, verifiedContradicted: claimAuditSummary.claims.byStatus.VERIFIED_CONTRADICTED, notEvaluated: claimAuditSummary.claims.notEvaluated, extractionMissing: claimAuditSummary.units.extractionMissing, crossUnitTasks: claimAuditSummary.crossUnitTasks.total } } : {}),
         ...(citationAuditSummary !== undefined ? { citationAudit: { referenceList: citationAuditSummary.referenceList.source, adequacy: citationAuditSummary.inputAdequacy, matchRate: citationAuditSummary.referenceMatching.matchRate, structure: citationAuditSummary.verdict.structure, authenticity: citationAuditSummary.verdict.authenticity } } : {}),
@@ -5501,6 +5532,181 @@ function stylePolishStage(services: WorkflowServices): StageSpec {
   };
 }
 
+/** M17.1：每次风格修订的语义复核调用上限（每批 STYLE_REWRITE_CHECK_BATCH 条） */
+const STYLE_SEMANTIC_CHECK_MAX_CALLS = 2;
+
+/**
+ * M17.1：默认风格审查的受控定点修订（每 run 至多一次，见 planStyleAuditApply）。只处理最新一轮风格审查中机器分级为
+ * AUTO_REWRITE_ELIGIBLE 的条目：锚定原句唯一定位 → 锚内守卫 → academic_style_rewrite 编辑契约 → 只可否决的语义复核
+ * （有界）→ 合并后整体再校验 → 提交边界（guardedRevisionCommit）。任何一步不通过都保持原文，并在
+ * reviews/style-revision-r{round}.json 写明原因（AUTHOR_DECISION / GUARD_REJECTED / SEMANTIC_REJECTED / ANCHOR_LOST）。
+ * 产生新修订后尾部照旧重走引用核验 / 复审 / Gate（复审只对改动单元重新审查）。
+ */
+function styleAuditApplyStage(services: WorkflowServices): StageSpec {
+  return {
+    id: "revision.style_audit_apply",
+    description: "默认风格审查的受控定点修订（锚定原句；守卫 + 语义复核；每 run 至多一次）",
+    requiredInputs: ["quality.gate"],
+    producedOutputs: ["reviews/style-revision-r{round}.json", "manuscript（新修订，仅当有改写通过全部守卫时）"],
+    maxAttempts: 1,
+    timeoutMs: services.stageTimeoutMs,
+    retryable: [],
+    async execute(ctx) {
+      const summary = await latestReviewSummary(services, ctx.projectId);
+      if (summary === null) {
+        throw new BusinessError("STAGE_CONTRACT_VIOLATION", "缺少 review 汇总（先执行 review.run）");
+      }
+      const entry: StyleRevisionRecord["entry"] = ctx.state.stageResults["quality.gate"]?.["passed"] === true ? "final" : "draft";
+      const sourceRevision = await services.revisions.currentRevision(ctx.projectId);
+      const report = await services.reviewArtifacts.loadStyleAudit(ctx.projectId, summary.round);
+      const maxAutoRewrites = services.review.academicStyleMaxAutoRewrites ?? DEFAULT_STYLE_MAX_AUTO_REWRITES;
+      const calls = { semanticCheck: 0, failures: 0 };
+      const finish = async (status: StyleRevisionRecord["status"], items: StyleRevisionRecord["items"], revision?: number): Promise<Record<string, unknown>> => {
+        const record: StyleRevisionRecord = {
+          schemaVersion: ACADEMIC_STYLE_REVISION_SCHEMA,
+          projectId: ctx.projectId,
+          runId: ctx.runId,
+          reviewRound: summary.round,
+          sourceRevision,
+          ...(revision !== undefined ? { revision } : {}),
+          status,
+          entry,
+          items,
+          limits: { maxAutoRewrites, semanticCheckCalls: STYLE_SEMANTIC_CHECK_MAX_CALLS },
+          calls,
+          completedAt: new Date().toISOString(),
+        };
+        await services.reviewArtifacts.saveStyleRevision(ctx.projectId, record);
+        const count = (state: string): number => items.filter((item) => item.status === state).length;
+        const applied = count("AUTO_FIXED");
+        await ctx.emitDomain(
+          status === "applied" ? "style_audit.revision_applied" : "style_audit.revision_skipped",
+          { status, applied, items: items.length, ...(revision !== undefined ? { revision } : {}) },
+          status === "applied"
+            ? `风格定点修订已应用 ${applied} 处（修订 ${revision}），将重新核验引用、复审与门禁`
+            : status === "stale"
+              ? "风格审查结果与当前稿件修订不一致：未执行定点修订"
+              : `没有通过全部守卫的风格改写（${items.length} 条均保持原文）`,
+        );
+        return {
+          status, changed: status === "applied", entry, round: summary.round, sourceRevision,
+          ...(revision !== undefined ? { revision } : {}),
+          applied,
+          guardRejected: count("GUARD_REJECTED"),
+          semanticRejected: count("SEMANTIC_REJECTED"),
+          authorDecision: count("AUTHOR_DECISION"),
+          anchorLost: count("ANCHOR_LOST"),
+          notDispatched: count("NOT_DISPATCHED"),
+          semanticCheckCalls: calls.semanticCheck,
+        };
+      };
+      if (report === null || report.reviewedRevision !== sourceRevision) {
+        return finish("stale", []);
+      }
+      const prior = await services.reviewArtifacts.latestStyleRevision(ctx.projectId);
+      const attempted = new Set(prior !== null && prior.runId === ctx.runId ? prior.items.map((item) => item.findingId) : []);
+      const manuscriptDir = services.projects.manuscriptDir(ctx.projectId);
+      const files = await collectLatexFiles(manuscriptDir);
+      const contentByFile = new Map(files.allTex.map((file) => [file.relativePath.replaceAll("\\", "/"), file.content]));
+      const outline = await services.manuscript.loadOutline(ctx.projectId);
+      const prepared = prepareStyleRevisions({
+        findings: report.findings,
+        attempted,
+        maxAutoRewrites,
+        resolveTarget: (finding): StyleRevisionTarget | { error: string } => {
+          const file = finding.file.replaceAll("\\", "/");
+          if (outline !== null && file === "main.tex") {
+            // 组装根 main.tex 由大纲重新生成：只有摘要载体可定点修订（写回 outline.abstract 后重组装）
+            const abstract = outline.abstract ?? "";
+            return abstract.trim() !== "" && locateStyleQuote(abstract, finding.originalQuote).count > 0
+              ? { target: ABSTRACT_TARGET, carrier: "abstract", content: abstract }
+              : { error: "原句位于由大纲组装的 main.tex 且不在摘要中：组装根不可直接改写，保持原文" };
+          }
+          const content = contentByFile.get(file);
+          return content === undefined ? { error: `目标文件 ${file} 不存在` } : { target: file, carrier: "file", content };
+        },
+      });
+      let verdicts: Map<string, { verdict: StyleSemanticVerdict; reason: string }> | null = null;
+      let unavailable: string | undefined;
+      if (prepared.candidates.length > 0) {
+        const checkItems = styleRewriteCheckItems(prepared.candidates);
+        const reviewer = services.reviewer as Partial<Pick<ReviewerService, "checkStyleRewrites">>;
+        verdicts = new Map();
+        for (let offset = 0; offset < checkItems.length; offset += STYLE_REWRITE_CHECK_BATCH) {
+          const batch = checkItems.slice(offset, offset + STYLE_REWRITE_CHECK_BATCH);
+          const snapshot = services.modelBudget?.snapshotSync(ctx.projectId, ctx.runId) ?? null;
+          if (calls.semanticCheck >= STYLE_SEMANTIC_CHECK_MAX_CALLS || (snapshot !== null && (budgetExhausted(snapshot) || snapshot.remainingCalls === 0))) {
+            unavailable = calls.semanticCheck >= STYLE_SEMANTIC_CHECK_MAX_CALLS ? `语义复核调用上限 ${STYLE_SEMANTIC_CHECK_MAX_CALLS} 已用尽` : "模型预算不足";
+            break;
+          }
+          if (typeof reviewer.checkStyleRewrites !== "function") {
+            unavailable = "当前 Reviewer 不支持语义复核调用";
+            break;
+          }
+          calls.semanticCheck += 1;
+          try {
+            const result = await reviewer.checkStyleRewrites.call(services.reviewer, {
+              projectId: ctx.projectId, items: batch, sessionLabel: `r${summary.round}-b${offset / STYLE_REWRITE_CHECK_BATCH + 1}-${randomUUID().slice(0, 8)}`, signal: ctx.signal,
+            });
+            for (const [id, verdict] of result.verdicts) verdicts.set(id, verdict);
+          } catch (error) {
+            if (ctx.signal.aborted) throw error;
+            calls.failures += 1;
+            unavailable = `语义复核调用失败：${(error instanceof Error ? error.message : String(error)).slice(0, 160)}`;
+          }
+        }
+      }
+      const finalized = finalizeStyleRevisions({
+        projectId: ctx.projectId, runId: ctx.runId, candidates: prepared.candidates, verdicts,
+        ...(unavailable !== undefined ? { semanticUnavailableReason: unavailable } : {}),
+      });
+      const items = [...prepared.settled, ...finalized.items];
+      if (finalized.writes.length === 0) {
+        return finish("noop", items);
+      }
+      const registry = new ValidatedWriteRegistry();
+      const stageStart = await captureWorkspaceState(services, ctx.projectId);
+      const bibliographyKeys = (await manuscriptBibliography(services, ctx.projectId)).map((bib) => bib.key);
+      for (const write of finalized.writes) {
+        if (write.target.carrier === "abstract") {
+          if (outline !== null) {
+            outline.abstract = write.after.trim();
+            await services.manuscript.saveOutline(ctx.projectId, outline);
+          }
+          registry.register(ABSTRACT_TARGET, write.after.trim(), write.verdict);
+        } else {
+          await writeFile(join(manuscriptDir, write.target.target), write.after, "utf8");
+          registry.register(write.target.target, write.after, write.verdict);
+        }
+      }
+      if (outline !== null) {
+        await services.manuscript.writeMainTex(ctx.projectId, outline, bibliographyKeys.length > 0);
+        await services.manuscript.rebuildContext(ctx.projectId, { evidenceStats: await services.evidence.stats(ctx.projectId) });
+      }
+      const commit = await guardedRevisionCommit(services, { projectId: ctx.projectId, runId: ctx.runId, stageId: "revision.style_audit_apply", registry, withBibliography: bibliographyKeys.length > 0, stageStart });
+      return finish("applied", items, commit.revision);
+    },
+    async verifyDod(ctx) {
+      const record = await services.reviewArtifacts.latestStyleRevision(ctx.projectId);
+      return record === null ? ["reviews/style-revision-r*.json 不存在"] : [];
+    },
+  };
+}
+
+/**
+ * M17.1 planner 片段：默认风格审查的定点修订（纯函数，只看 state）。每 run 至多一次（无论 applied / noop / stale）；
+ * 只有最新 review.run 报告了可自动修订的风格条目时才进入。由 gate 通过分支（Final 前）与 Draft 链（构建前）调用——
+ * 风格修订作用于质量回路收敛后的稿件，不被后续质量修订覆盖，也不为风格单独增加质量轮次。
+ */
+function planStyleAuditApply(state: WorkflowState): PlanDecision | null {
+  if (countCompletions(state, "revision.style_audit_apply") > 0) {
+    return null;
+  }
+  const review = state.stageResults["review.run"] ?? {};
+  const eligible = typeof review["styleAuditAutoEligible"] === "number" ? review["styleAuditAutoEligible"] : 0;
+  return eligible > 0 ? { kind: "stage", stageId: "revision.style_audit_apply" } : null;
+}
+
 /**
  * M5.4 planner 片段：gate 通过后是否进入语言润色（纯函数，只看 state）。
  * - stylePolicy !== apply_once → 不进入（默认 suggest_only：minor 只是建议）
@@ -6625,7 +6831,10 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   // 任何改稿动作（修订 / 编译修复 / 语言润色都写入 manuscript）；
   // M10.3.1：确定性事实恢复（revision.restore_facts）同样写入 manuscript
   const restoreIdx = lastCompletionIndex(state, "revision.restore_facts");
-  const contentIdx = Math.max(reviseIdx, repairIdx, polishIdx, restoreIdx);
+  // M17.1：风格定点修订只有真正落盘（changed=true）才算改稿
+  const styleApplyIdx = lastCompletionIndex(state, "revision.style_audit_apply");
+  const styleApplyContentIdx = state.stageResults["revision.style_audit_apply"]?.["changed"] === true ? styleApplyIdx : -1;
+  const contentIdx = Math.max(reviseIdx, repairIdx, polishIdx, restoreIdx, styleApplyContentIdx);
   const citationIdx = lastCompletionIndex(state, "citation.verify");
   const reviewIdx = lastCompletionIndex(state, "review.run");
   const gateIdx = lastCompletionIndex(state, "quality.gate");
@@ -6766,6 +6975,11 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   const draftPath = (): PlanDecision => {
     // M14.4：模型预算耗尽时不再进入润色（润色也是模型调用）
     if (budgetStop === null) {
+      // M17.1：默认风格审查的定点修订（Draft 构建前，每 run 至多一次）
+      const styleAuditBeforeDraft = planStyleAuditApply(state);
+      if (styleAuditBeforeDraft !== null) {
+        return styleAuditBeforeDraft;
+      }
       const stylePolishBeforeDraft = planStylePolish(state, gateRound);
       if (stylePolishBeforeDraft !== null) {
         return stylePolishBeforeDraft;
@@ -6893,6 +7107,13 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
     if (gateIdx < contentIdx) {
       return { kind: "stage", stageId: "citation.verify" };
     }
+    // M17.1：默认风格审查的定点修订（gate 通过后、构建之前，每 run 至多一次；产生新修订则尾部整段重走）
+    if (budgetStop === null) {
+      const styleAuditApply = planStyleAuditApply(state);
+      if (styleAuditApply !== null) {
+        return styleAuditApply;
+      }
+    }
     // M5.4 Style Polish（用户显式 apply_once；默认 suggest_only 不进入）：gate 通过后、
     // 构建之前最多一轮；产生新修订则尾部整段重走（复审 / gate / build 都不得沿用旧结论）
     const stylePolish = planStylePolish(state, gateRound);
@@ -6934,6 +7155,11 @@ function planSharedTail(state: WorkflowState, services: WorkflowServices): PlanD
   // 无法也不应单方解决）；Draft 完成态为 REVISION_TASK_COMPLETE（completion
   // 内 classifyTerminalStatus 消费 revisionTaskSuccess）。
   if (revisionTaskSuccess) {
+    return draftPath();
+  }
+  // M17.1：从 Draft 链进入的风格定点修订已被复审 / gate 覆盖 → 回到 Draft 链（不重新追问 stalled、不再自动续轮：
+  // 进入 Draft 链的决定已经作出，风格修订不改变它）
+  if (state.stageResults["revision.style_audit_apply"]?.["entry"] === "draft" && styleApplyIdx > -1 && gateIdx > styleApplyIdx) {
     return draftPath();
   }
 
@@ -8257,6 +8483,7 @@ export function createIdeaToPaperDefinition(services: WorkflowServices): Workflo
     revisionStalledStage(services),
     stylePolishDecisionStage(services),
     stylePolishStage(services),
+    styleAuditApplyStage(services),
     buildDraftStage(services),
     buildFinalStage(services),
   ];
@@ -9283,6 +9510,7 @@ export function createExistingPaperDefinition(services: WorkflowServices): Workf
     revisionStalledStage(services),
     stylePolishDecisionStage(services),
     stylePolishStage(services),
+    styleAuditApplyStage(services),
     buildDraftStage(services),
     qualityGateStage(services),
     buildFinalStage(services),
@@ -11213,6 +11441,7 @@ export function createTopicSurveyDefinition(services: WorkflowServices): Workflo
     revisionStalledStage(services),
     stylePolishDecisionStage(services),
     stylePolishStage(services),
+    styleAuditApplyStage(services),
     buildDraftStage(services),
     buildFinalStage(services),
   ];
@@ -12932,6 +13161,7 @@ export function createThesisFromPapersDefinition(services: WorkflowServices): Wo
     revisionStalledStage(services),
     stylePolishDecisionStage(services),
     stylePolishStage(services),
+    styleAuditApplyStage(services),
     buildDraftStage(services, { thesis: true }),
     buildFinalStage(services),
   ];
@@ -13213,6 +13443,93 @@ async function resolveClaimAuditSource(services: WorkflowServices, projectId: st
     return { source: { level: "SOURCE_UNKNOWN", basis: "NONE", note: "未记录输入来源与转写方式（无 input-provenance / 保真报告）" }, conversionExcerpts };
   }
   return { source: { level: publishedSourceVerification(fidelity), basis: "INPUT_FIDELITY_REPORT", note: `输入保真报告 ${fidelity.report.status}；QA 证明 ${fidelity.attestation?.verdict ?? "ABSENT"}` }, conversionExcerpts };
+}
+
+/** M17.1：每轮风格审查调用上限缺省（含重试；超出的单元如实记 SKIPPED_BUDGET → 覆盖 PARTIAL） */
+const DEFAULT_STYLE_AUDIT_MAX_CALLS = 80;
+/** M17.1：每 run 自动风格定点修订条数上限缺省 */
+const DEFAULT_STYLE_MAX_AUTO_REWRITES = 30;
+
+/**
+ * M17.1：review.run 内的默认风格审查。单元集合 = 本轮覆盖计划（与学术审稿同一份冻结稿件与切分）；报告落盘
+ * reviews/style-audit-r{round}.json。任何非取消异常都只降为风格覆盖 FAILED（如实可见），不影响学术审稿。
+ */
+async function runStyleAuditForReview(
+  services: WorkflowServices,
+  ctx: StageRunContext,
+  input: {
+    round: number;
+    revision: number;
+    coveragePlan: ReviewCoveragePlan;
+    reviewSources: ReviewSourceFile[];
+    unitMaxChars: number;
+    language: ManuscriptLanguage | undefined;
+    publishedAssessment: boolean;
+    paperTitle?: string;
+  },
+): Promise<{ report: StyleAuditReport | null; summary: StyleAuditSummary }> {
+  const textByUnitId = new Map<string, string>();
+  for (const file of input.reviewSources) {
+    for (const span of reviewSourceSpans(file)) {
+      for (const unit of partitionSpanIntoUnits(span, input.unitMaxChars).units) {
+        textByUnitId.set(`${file.file}::${unit.logicalSection}`, unit.content);
+      }
+    }
+  }
+  const units: StyleAuditUnitInput[] = input.coveragePlan.units.map((unit) => ({
+    unitId: unit.unitId, file: unit.file, spanId: unit.spanId, heading: unit.heading, unitIndex: unit.unitIndex,
+    unitCount: unit.unitCount, chars: unit.chars, contentHash: unit.contentHash, text: textByUnitId.get(unit.unitId) ?? "",
+  }));
+  const reviewer = services.reviewer as Partial<Pick<ReviewerService, "auditUnitStyle">>;
+  const failedSummary = (reason: string): StyleAuditSummary => ({
+    state: "FAILED", round: input.round, eligibleUnits: units.length, reviewedUnits: 0, failedUnits: units.length, skippedUnits: 0,
+    findings: 0, autoEligible: 0, keep: 0, authorDecision: 0, reasons: [reason.slice(0, 300)],
+  });
+  try {
+    const previous = await services.reviewArtifacts.latestStyleAudit(ctx.projectId, input.round);
+    const previousRevision = await services.reviewArtifacts.latestStyleRevision(ctx.projectId);
+    const report = await runAcademicStyleAudit({
+      projectId: ctx.projectId,
+      round: input.round,
+      reviewedRevision: input.revision,
+      ...(input.paperTitle !== undefined ? { paperTitle: input.paperTitle } : {}),
+      ...(input.language !== undefined ? { language: input.language } : {}),
+      units,
+      isHeadingOnly: isHeadingOnlyUnit,
+      ...(services.review.academicStyleAudit === "off"
+        ? { disabledReason: "DISABLED_BY_DIAGNOSTIC_SWITCH（PAPERTEAM_ACADEMIC_STYLE_AUDIT=off：仅限开发 / 故障排查）" }
+        : {}),
+      ...(input.publishedAssessment ? { notApplicableReason: "PUBLISHED_ASSESSMENT（第三方已发表论文只读评估：不审查作者写作风格）" } : {}),
+      previous,
+      previousRevision: previousRevision !== null && previousRevision.reviewRound < input.round ? previousRevision : null,
+      callAudit: async ({ unit, candidates, sessionLabel }) => {
+        if (typeof reviewer.auditUnitStyle !== "function") throw new Error("REVIEWER_STYLE_AUDIT_UNAVAILABLE（当前 Reviewer 不支持风格审查调用）");
+        return reviewer.auditUnitStyle.call(services.reviewer, {
+          projectId: ctx.projectId,
+          unit: { unitId: unit.unitId, file: unit.file, heading: unit.heading, unitIndex: unit.unitIndex, unitCount: unit.unitCount, text: unit.text },
+          ...(input.paperTitle !== undefined ? { paperTitle: input.paperTitle } : {}),
+          candidates, sessionLabel, signal: ctx.signal,
+        });
+      },
+      admitCall: () => {
+        const snapshot = services.modelBudget?.snapshotSync(ctx.projectId, ctx.runId) ?? null;
+        return snapshot === null || (!budgetExhausted(snapshot) && snapshot.remainingCalls !== 0);
+      },
+      concurrency: services.review.reviewConcurrency,
+      maxCalls: services.review.academicStyleAuditMaxCalls ?? DEFAULT_STYLE_AUDIT_MAX_CALLS,
+      signal: ctx.signal,
+      log: (message) => ctx.log(message),
+    });
+    await services.reviewArtifacts.saveStyleAudit(ctx.projectId, report);
+    const summary = styleAuditSummaryOf(report);
+    ctx.log(`[review] 学术风格审查：${summary.state}，单元 ${summary.reviewedUnits}/${summary.eligibleUnits}（失败 ${summary.failedUnits}，预算跳过 ${summary.skippedUnits}，复用 ${report.coverage.reusedUnits}），发现 ${summary.findings}（可自动 ${summary.autoEligible} / 保留 ${summary.keep} / 待裁决 ${summary.authorDecision}），调用 ${report.calls.audit}+${report.calls.retries} 次`);
+    return { report, summary };
+  } catch (error) {
+    if (ctx.signal.aborted) throw error;
+    const reason = `STYLE_AUDIT_INTERNAL_ERROR：${error instanceof Error ? error.message : String(error)}`;
+    ctx.log(`[review] 学术风格审查整体失败（不影响学术审稿）：${reason.slice(0, 240)}`);
+    return { report: null, summary: failedSummary(reason) };
+  }
 }
 
 /** M15.1：单轮有界跨单元复核批大小（每次调用 ≤ 8 条论断） */

@@ -39,6 +39,7 @@ import type { Outline, OutlineSection } from "../manuscript/ManuscriptService.js
 import { validateOutline } from "../manuscript/ManuscriptService.js";
 import { extractJsonObject, StructuredOutputError } from "../agents/outputParsing.js";
 import type { SurveyOutlineDigest } from "../survey/outlineDigest.js";
+import { ACADEMIC_STYLE_WRITER_LINES } from "../review/academicStyleAudit.js";
 import {
   renderDigestItems,
   renderDigestLiterature,
@@ -157,6 +158,8 @@ const MANUSCRIPT_CONTENT_LINES = [
   "正式论文内容边界：检索状态、核验过程、作者授权状态、Evidence 编号、修订过程属于内部工作状态，不属于学术论述。不得将「本轮检索未发现」「作者确认、尚未核验」「待补实验」等工作注记复制到正文。",
   "科学限制必须保留：在实验或局限性章节集中准确说明尚缺的评测范围、负结果与适用条件；相关结论处保留必要限定，不在引言、方法、讨论机械重复免责。缺少实验意味着不能声称已验证，不能隐藏这一限制。",
   "方法章节描述实际方法；未来实验计划放在展望或局限性，不列为已完成贡献。各节承担不同论述任务，避免重复同一观点；摘要与结论必要呼应可以保留。",
+  // M17.1：与 Reviewer 默认风格审查同源的预防规则（review/academicStyleAudit.ts）；Writer 自检不替代 Reviewer 必检
+  ...ACADEMIC_STYLE_WRITER_LINES,
 ];
 
 /**

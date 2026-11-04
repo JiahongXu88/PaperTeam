@@ -7,6 +7,7 @@ import { Loading } from "../common/StateViews.js";
 import { RunStatusBadge } from "./Badges.js";
 import { QualityGateSummaryLink } from "./QualityGatePanel.js";
 import { ExternalInstructionsPanel } from "./ExternalInstructionsPanel.js";
+import { AcademicStyleAuditCard } from "./AcademicStyleAuditPanel.js";
 import { RevisionPlanPanel } from "./RevisionPlanPanel.js";
 import {
   CITATION_SEMANTIC_MODE_LABELS,
@@ -218,6 +219,7 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
           ) : null}
           <ExternalInstructionsPanel projectId={projectId} />
           <RevisionPlanPanel projectId={projectId} />
+          <AcademicStyleAuditCard projectId={projectId} />
         </section>
       );
     }
@@ -396,6 +398,8 @@ export function ReviewPanel({ projectId, workflowKind, onOpenTab }: { projectId:
         <>
           <ExternalInstructionsPanel projectId={projectId} />
           <RevisionPlanPanel projectId={projectId} />
+          {/* M17.1：默认学术风格审查（无需开启；覆盖 / 已修订 / 待作者决定） */}
+          <AcademicStyleAuditCard projectId={projectId} />
         </>
       ) : null}
 

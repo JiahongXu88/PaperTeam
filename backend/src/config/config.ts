@@ -153,6 +153,14 @@ export interface ReviewConfig {
   /** 整稿综合审查的全文字符上限（PAPERTEAM_REVIEW_WHOLE_PAPER_MAX_CHARS，缺省 160000） */
   wholePaperMaxChars: number;
   /**
+   * M17.1：默认学术风格 / 过度防御性表达审查（PAPERTEAM_ACADEMIC_STYLE_AUDIT，缺省 on——产品默认必检；
+   * off 只用于开发 / 故障排查，覆盖状态如实为 DISABLED）。每轮调用上限 PAPERTEAM_ACADEMIC_STYLE_AUDIT_MAX_CALLS（缺省 80），
+   * 每 run 自动定点修订上限 PAPERTEAM_ACADEMIC_STYLE_MAX_AUTO_REWRITES（缺省 30）。
+   */
+  academicStyleAudit: "on" | "off";
+  academicStyleAuditMaxCalls: number;
+  academicStyleMaxAutoRewrites: number;
+  /**
    * M16 工程收口 B（PAPERTEAM_REVIEW_STAGE_CALL_RESERVE，缺省 on；off = 旧的先到先得）：配置了 run / 任务级调用上限时，
    * 单元论断修复为跨章 / 整稿预留调用额度，单元重试为未开始的单元首审预留。无调用上限时不生效。
    */
@@ -738,6 +746,9 @@ export function loadConfig(source: Record<string, string | undefined> = process.
       claimStage: readOptionalValue(source, "PAPERTEAM_REVIEW_CLAIM_STAGE")?.trim().toLowerCase() === "separate" ? "separate" : "inline",
       wholePaperSynthesis: readOptionalValue(source, "PAPERTEAM_REVIEW_WHOLE_PAPER")?.trim().toLowerCase() === "off" ? "off" : "on",
       wholePaperMaxChars: readIntWithFallback(source, "PAPERTEAM_REVIEW_WHOLE_PAPER_MAX_CHARS", { default: 160_000, min: 10_000, max: 600_000 }),
+      academicStyleAudit: readOptionalValue(source, "PAPERTEAM_ACADEMIC_STYLE_AUDIT")?.trim().toLowerCase() === "off" ? "off" : "on",
+      academicStyleAuditMaxCalls: readIntWithFallback(source, "PAPERTEAM_ACADEMIC_STYLE_AUDIT_MAX_CALLS", { default: 80, min: 1, max: 1000 }),
+      academicStyleMaxAutoRewrites: readIntWithFallback(source, "PAPERTEAM_ACADEMIC_STYLE_MAX_AUTO_REWRITES", { default: 30, min: 0, max: 200 }),
       stageCallReserve: readOptionalValue(source, "PAPERTEAM_REVIEW_STAGE_CALL_RESERVE")?.trim().toLowerCase() === "off" ? "off" : "on",
       /** M15.4.3：CandidateProposer 影子旁路（缺省 off；off = 零额外模型调用、零产物、零行为差异） */
       candidateShadow: readOptionalValue(source, "PAPERTEAM_CANDIDATE_SHADOW")?.trim().toLowerCase() === "on" ? "on" : "off",
